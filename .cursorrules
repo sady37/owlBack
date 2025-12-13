@@ -1,0 +1,29 @@
+# OwlBack Project Rules
+
+## Project Structure
+- owlRD is the core reference for database design and requirements
+- All database schemas are defined in `../owlRD/db/*.sql`
+- Reference `../owlRD/docs/` for business rules and technical specifications
+
+## Code Style
+- Use Go 1.21+ features
+- Follow Go standard project layout
+- Use zap for logging
+- Use owl-common for shared utilities
+
+## Database
+- PostgreSQL 15+ with TimescaleDB
+- All table structures reference `owlRD/db/`
+- Use snake_case for database fields
+- Use UUID for primary keys
+
+## Dependencies
+- owl-common: Shared library for database, redis, mqtt, logger
+- Reference wisefido-backend for v1.0 implementation patterns
+
+## Important References
+- Database schemas: `../owlRD/db/*.sql`
+- FHIR guide: `../owlRD/docs/06_FHIR_Simple_Conversion_Guide.md`
+- Card rules: `../owlRD/docs/20_Card_Creation_Rules_Final.md`
+- Alarm design: `../owlRD/docs/25_Alarm_Notification_Flow.md`
+
