@@ -51,6 +51,12 @@ func HashAccountPassword(account, password string) string {
 	return sha256Hex(normalizeAccount(account) + ":" + password)
 }
 
+// HashPassword hashes password only (independent of account/phone/email)
+// Used for contact password_hash which should only depend on password itself
+func HashPassword(password string) string {
+	return sha256Hex(password)
+}
+
 func (s *AuthStore) UpsertUser(tenantID, userAccount, role, password string) AuthUser {
 	s.mu.Lock()
 	defer s.mu.Unlock()

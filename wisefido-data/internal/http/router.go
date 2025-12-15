@@ -24,6 +24,11 @@ func (r *Router) Handle(pattern string, h http.HandlerFunc) {
 	r.mux.HandleFunc(pattern, h)
 }
 
+// HandleHandler 支持 http.Handler 接口（用于 pprof 等）
+func (r *Router) HandleHandler(pattern string, h http.Handler) {
+	r.mux.Handle(pattern, h)
+}
+
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mux.ServeHTTP(w, req)
 }

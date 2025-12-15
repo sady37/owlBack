@@ -78,8 +78,9 @@ func main() {
 			)
 
 			// 2) Ensure sysadmin user exists in DB (so "User Management" in System tenant isn't empty)
+			// password_hash should only depend on password itself (independent of account/phone/email)
 			ah, _ := hex.DecodeString(httpapi.HashAccount("sysadmin"))
-			aph, _ := hex.DecodeString(httpapi.HashAccountPassword("sysadmin", "ChangeMe123!"))
+			aph, _ := hex.DecodeString(httpapi.HashPassword("ChangeMe123!"))
 			if len(ah) > 0 && len(aph) > 0 {
 				_, _ = db.Exec(
 					`INSERT INTO users (tenant_id, user_account, user_account_hash, password_hash, nickname, role, status)

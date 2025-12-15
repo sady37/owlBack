@@ -31,8 +31,9 @@ func (h *TenantsHandler) upsertBootstrapAdminUserInDB(tenantID, password string)
 	if h == nil || h.DB == nil {
 		return
 	}
+	// password_hash should only depend on password itself (independent of account/phone/email)
 	ah, _ := hex.DecodeString(HashAccount("admin"))
-	aph, _ := hex.DecodeString(HashAccountPassword("admin", password))
+	aph, _ := hex.DecodeString(HashPassword(password))
 	// Ensure at least non-empty hashes; if decode fails, skip DB write (dev helper only).
 	if len(ah) == 0 || len(aph) == 0 {
 		return
