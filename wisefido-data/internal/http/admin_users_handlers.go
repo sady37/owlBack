@@ -288,7 +288,6 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				newPassword, _ := payload["new_password"].(string)
-				newPassword = strings.TrimSpace(newPassword)
 				if newPassword == "" {
 					writeJSON(w, http.StatusOK, Fail("new_password is required"))
 					return
@@ -337,6 +336,57 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(path, "/reset-pin") {
 			if r.Method != http.MethodPost {
 				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			if s != nil && s.DB != nil {
+				tenantID, ok := s.tenantIDFromReq(w, r)
+				if !ok {
+					return
+				}
+				userID := strings.TrimSuffix(path, "/reset-pin")
+				if userID == "" || strings.Contains(userID, "/") {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				var payload map[string]any
+				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
+					writeJSON(w, http.StatusOK, Fail("invalid body"))
+					return
+				}
+				newPin, _ := payload["new_pin"].(string)
+				if newPin == "" {
+					writeJSON(w, http.StatusOK, Fail("new_pin is required"))
+					return
+				}
+				// Validate PIN: must be exactly 4 digits
+				if len(newPin) != 4 {
+					writeJSON(w, http.StatusOK, Fail("PIN must be exactly 4 digits"))
+					return
+				}
+				for _, c := range newPin {
+					if c < '0' || c > '9' {
+						writeJSON(w, http.StatusOK, Fail("PIN must contain only digits"))
+						return
+					}
+				}
+
+				// Hash PIN: sha256(pin) - only depends on PIN itself
+				pinHash, _ := hex.DecodeString(HashPassword(newPin))
+				if len(pinHash) == 0 {
+					writeJSON(w, http.StatusOK, Fail("failed to hash PIN"))
+					return
+				}
+				_, err := s.DB.ExecContext(
+					r.Context(),
+					`UPDATE users SET pin_hash = $3
+					  WHERE tenant_id = $1 AND user_id::text = $2`,
+					tenantID, userID, pinHash,
+				)
+				if err != nil {
+					writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to reset PIN: %v", err)))
+					return
+				}
+				writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 				return
 			}
 			writeJSON(w, http.StatusOK, Fail("database not available"))

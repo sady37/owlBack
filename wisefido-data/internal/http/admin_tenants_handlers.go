@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"strings"
 	"wisefido-data/internal/repository"
@@ -147,8 +148,8 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Dev-only helper: reset bootstrap passwords for this tenant (AuthStore is in-memory).
 			// POST /admin/api/v1/tenants/:id/bootstrap-accounts/reset
 			if len(parts) == 3 && parts[1] == "bootstrap-accounts" && parts[2] == "reset" {
-				if h.Auth == nil {
-					writeJSON(w, http.StatusOK, Fail("auth store is not configured"))
+				if h.DB == nil {
+					writeJSON(w, http.StatusOK, Fail("database not available"))
 					return
 				}
 				// Reset ONLY admin (bootstrap account).
@@ -158,9 +159,39 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					writeJSON(w, http.StatusOK, Fail("invalid user_account"))
 					return
 				}
-				adminPwd := genTempPassword()
-				_ = h.Auth.UpsertUser(id, "admin", "Admin", adminPwd)
-				h.upsertBootstrapAdminUserInDB(id, adminPwd)
+				// Read password from request body if provided, otherwise generate temp password
+				var adminPwd string
+				var payload map[string]any
+				if err := readBodyJSON(r, 1<<20, &payload); err == nil {
+					if pwd, ok := payload["new_password"].(string); ok && pwd != "" {
+						adminPwd = pwd
+					}
+				}
+				// If no password provided in body, generate temp password (backward compatibility)
+				if adminPwd == "" {
+					adminPwd = genTempPassword()
+				}
+				// Update password in DB
+				ah, _ := hex.DecodeString(HashAccount("admin"))
+				aph, _ := hex.DecodeString(HashPassword(adminPwd))
+				if len(ah) == 0 || len(aph) == 0 {
+					writeJSON(w, http.StatusOK, Fail("failed to hash credentials"))
+					return
+				}
+				_, err := h.DB.ExecContext(
+					r.Context(),
+					`UPDATE users SET password_hash = $2
+					 WHERE tenant_id = $1 AND user_account = 'admin'`,
+					id, aph,
+				)
+				if err != nil {
+					writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to reset admin password: %v", err)))
+					return
+				}
+				// Optional: keep AuthStore in sync for dev/stub flows
+				if h.Auth != nil {
+					_ = h.Auth.UpsertUser(id, "admin", "Admin", adminPwd)
+				}
 				outAccounts := []any{
 					map[string]any{"user_account": "admin", "role": "Admin", "temp_password": adminPwd},
 				}

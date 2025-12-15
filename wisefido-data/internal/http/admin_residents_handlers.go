@@ -529,7 +529,6 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				newPassword, _ := payload["password"].(string)
-				newPassword = strings.TrimSpace(newPassword)
 				if newPassword == "" {
 					writeJSON(w, http.StatusOK, Fail("password is required"))
 					return
@@ -861,7 +860,6 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				newPassword, _ := payload["password"].(string)
-				newPassword = strings.TrimSpace(newPassword)
 				if newPassword == "" {
 					writeJSON(w, http.StatusOK, Fail("password is required"))
 					return
