@@ -325,15 +325,40 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					noteArg = note
 				}
 
+				// Get phone_hash and email_hash from frontend (calculated on frontend)
+				// Note: phone/email are stored in resident_phi table, but phone_hash/email_hash are stored in residents table for login
+				var phoneHashArg, emailHashArg any = nil, nil
+				if phoneHashHex, exists := payload["phone_hash"].(string); exists {
+					if phoneHashHex != "" {
+						ph, _ := hex.DecodeString(phoneHashHex)
+						if len(ph) > 0 {
+							phoneHashArg = ph
+						}
+					} else {
+						phoneHashArg = nil // Empty string means null
+					}
+				}
+				if emailHashHex, exists := payload["email_hash"].(string); exists {
+					if emailHashHex != "" {
+						eh, _ := hex.DecodeString(emailHashHex)
+						if len(eh) > 0 {
+							emailHashArg = eh
+						}
+					} else {
+						emailHashArg = nil // Empty string means null
+					}
+				}
+
 				// Insert into residents table
-				// Note: phone_hash and email_hash will be updated separately if provided
+				// phone_hash and email_hash are stored in residents table for login
 				var residentID string
 				err := s.DB.QueryRowContext(
 					r.Context(),
-					`INSERT INTO residents (tenant_id, resident_account, resident_account_hash, password_hash, nickname, status, service_level, admission_date, unit_id, family_tag, can_view_status, note)
-					 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+					`INSERT INTO residents (tenant_id, resident_account, resident_account_hash, password_hash, nickname, status, service_level, admission_date, unit_id, family_tag, can_view_status, note, phone_hash, email_hash)
+					 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 					 RETURNING resident_id::text`,
 					tenantID, residentAccount, ah, aph, nickname, status, serviceLevelArg, admissionDate, unitIDArg, familyTagArg, isAccessEnabled, noteArg,
+					phoneHashArg, emailHashArg,
 				).Scan(&residentID)
 				if err != nil {
 					fmt.Printf("[AdminResidents] Create error: %v\n", err)
@@ -343,10 +368,9 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 
 				// Always create PHI record (even if empty) to simplify update logic
 				// This ensures that UPDATE operations always work without needing INSERT ... ON CONFLICT
+				// Note: residentPhone and residentEmail were already read above for hash calculation
 				firstName, _ := payload["first_name"].(string)
 				lastName, _ := payload["last_name"].(string)
-				residentPhone, _ := payload["resident_phone"].(string)
-				residentEmail, _ := payload["resident_email"].(string)
 
 				// Build dynamic INSERT for PHI (include provided fields, or create empty record)
 				phiCols := []string{"tenant_id", "resident_id"}
@@ -366,16 +390,30 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					phiArgs = append(phiArgs, lastName)
 					phiArgIdx++
 				}
-				if residentPhone != "" {
+				// Only save phone/email plaintext to resident_phi if save_phone/save_email flags are true
+				// Note: phone_hash/email_hash are already saved to residents table above
+				savePhone, _ := payload["save_phone"].(bool)
+				saveEmail, _ := payload["save_email"].(bool)
+				residentPhone, _ := payload["resident_phone"]
+				residentEmail, _ := payload["resident_email"]
+				if savePhone {
 					phiCols = append(phiCols, "resident_phone")
 					phiVals = append(phiVals, fmt.Sprintf("$%d", phiArgIdx))
-					phiArgs = append(phiArgs, residentPhone)
+					if str, ok := residentPhone.(string); ok && str != "" {
+						phiArgs = append(phiArgs, str)
+					} else {
+						phiArgs = append(phiArgs, nil) // null if not provided or empty
+					}
 					phiArgIdx++
 				}
-				if residentEmail != "" {
+				if saveEmail {
 					phiCols = append(phiCols, "resident_email")
 					phiVals = append(phiVals, fmt.Sprintf("$%d", phiArgIdx))
-					phiArgs = append(phiArgs, residentEmail)
+					if str, ok := residentEmail.(string); ok && str != "" {
+						phiArgs = append(phiArgs, str)
+					} else {
+						phiArgs = append(phiArgs, nil) // null if not provided or empty
+					}
 					phiArgIdx++
 				}
 
@@ -628,24 +666,66 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						argIdx++
 					}
 				}
-				if residentPhone, exists := payload["resident_phone"]; exists {
-					if str, ok := residentPhone.(string); ok {
-						updates = append(updates, fmt.Sprintf("resident_phone = $%d", argIdx))
+				// Track if phone/email are being updated to also update residents table hash
+				// Frontend sends phone_hash/email_hash (calculated on frontend) and resident_phone/resident_email based on save flags
+				var phoneUpdated, emailUpdated bool
+				var phoneHashArg, emailHashArg any = nil, nil
+				savePhone, _ := payload["save_phone"].(bool)
+				saveEmail, _ := payload["save_email"].(bool)
+
+				// Get phone_hash from frontend (calculated on frontend)
+				if phoneHashHex, exists := payload["phone_hash"]; exists {
+					phoneUpdated = true
+					if str, ok := phoneHashHex.(string); ok {
 						if str != "" {
+							ph, _ := hex.DecodeString(str)
+							if len(ph) > 0 {
+								phoneHashArg = ph
+							}
+						} else {
+							phoneHashArg = nil // Empty string means null
+						}
+					} else if phoneHashHex == nil {
+						phoneHashArg = nil // null means null
+					}
+				}
+				// Only save plaintext to resident_phi if save_phone flag is true
+				if savePhone {
+					if residentPhone, exists := payload["resident_phone"]; exists {
+						updates = append(updates, fmt.Sprintf("resident_phone = $%d", argIdx))
+						if str, ok := residentPhone.(string); ok && str != "" {
 							args = append(args, str)
 						} else {
-							args = append(args, nil) // Set to NULL
+							args = append(args, nil) // null if not provided or empty
 						}
 						argIdx++
 					}
 				}
-				if residentEmail, exists := payload["resident_email"]; exists {
-					if str, ok := residentEmail.(string); ok {
-						updates = append(updates, fmt.Sprintf("resident_email = $%d", argIdx))
+
+				// Get email_hash from frontend (calculated on frontend)
+				if emailHashHex, exists := payload["email_hash"]; exists {
+					emailUpdated = true
+					if str, ok := emailHashHex.(string); ok {
 						if str != "" {
+							eh, _ := hex.DecodeString(str)
+							if len(eh) > 0 {
+								emailHashArg = eh
+							}
+						} else {
+							emailHashArg = nil // Empty string means null
+						}
+					} else if emailHashHex == nil {
+						emailHashArg = nil // null means null
+					}
+				}
+				// Only save plaintext to resident_phi if save_email flag is true
+				if saveEmail {
+					if residentEmail, exists := payload["resident_email"]; exists {
+						updates = append(updates, fmt.Sprintf("resident_email = $%d", argIdx))
+						if str, ok := residentEmail.(string); ok && str != "" {
 							args = append(args, str)
 						} else {
-							args = append(args, nil) // Set to NULL
+							args = append(args, nil) // null if not provided or empty
 						}
 						argIdx++
 					}
@@ -660,6 +740,32 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					if err != nil {
 						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to update PHI: %v", err)))
 						return
+					}
+
+					// Also update phone_hash and email_hash in residents table if phone/email were updated
+					// Note: phone/email are stored in resident_phi table, but phone_hash/email_hash are stored in residents table for login
+					if phoneUpdated || emailUpdated {
+						residentUpdates := []string{}
+						residentArgs := []any{tenantID, residentID}
+						residentArgIdx := 3
+						if phoneUpdated {
+							residentUpdates = append(residentUpdates, fmt.Sprintf("phone_hash = $%d", residentArgIdx))
+							residentArgs = append(residentArgs, phoneHashArg)
+							residentArgIdx++
+						}
+						if emailUpdated {
+							residentUpdates = append(residentUpdates, fmt.Sprintf("email_hash = $%d", residentArgIdx))
+							residentArgs = append(residentArgs, emailHashArg)
+							residentArgIdx++
+						}
+						if len(residentUpdates) > 0 {
+							residentUpdateQuery := fmt.Sprintf(`UPDATE residents SET %s WHERE tenant_id = $1 AND resident_id::text = $2`, strings.Join(residentUpdates, ", "))
+							_, err = s.DB.ExecContext(r.Context(), residentUpdateQuery, residentArgs...)
+							if err != nil {
+								writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to update resident hash: %v", err)))
+								return
+							}
+						}
 					}
 				}
 				writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
@@ -699,8 +805,6 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				relationship, _ := payload["relationship"].(string)
 				contactFirstName, _ := payload["contact_first_name"].(string)
 				contactLastName, _ := payload["contact_last_name"].(string)
-				contactPhone, _ := payload["contact_phone"].(string)
-				contactEmail, _ := payload["contact_email"].(string)
 				contactFamilyTag, _ := payload["contact_family_tag"].(string)
 				receiveSms, _ := payload["receive_sms"].(bool)
 				receiveEmail, _ := payload["receive_email"].(bool)
@@ -719,35 +823,60 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				if contactLastName != "" {
 					contactLastNameArg = contactLastName
 				}
+				// Get phone_hash and email_hash from frontend (calculated on frontend)
+				var phoneHashArg, emailHashArg any = nil, nil
+				var phoneHashBytes, emailHashBytes []byte
+				if phoneHashHex, exists := payload["phone_hash"]; exists {
+					if str, ok := phoneHashHex.(string); ok {
+						if str != "" {
+							ph, _ := hex.DecodeString(str)
+							if len(ph) > 0 {
+								phoneHashArg = ph
+								phoneHashBytes = ph
+							}
+						} else {
+							phoneHashArg = nil // Empty string means null
+						}
+					} else if phoneHashHex == nil {
+						phoneHashArg = nil // null means null
+					}
+				}
+				if emailHashHex, exists := payload["email_hash"]; exists {
+					if str, ok := emailHashHex.(string); ok {
+						if str != "" {
+							eh, _ := hex.DecodeString(str)
+							if len(eh) > 0 {
+								emailHashArg = eh
+								emailHashBytes = eh
+							}
+						} else {
+							emailHashArg = nil // Empty string means null
+						}
+					} else if emailHashHex == nil {
+						emailHashArg = nil // null means null
+					}
+				}
+
+				// Handle phone/email plaintext based on save flags (frontend sends null if not saving)
 				var contactPhoneArg any = nil
-				if contactPhone != "" {
-					contactPhoneArg = contactPhone
+				if contactPhoneVal, exists := payload["contact_phone"]; exists {
+					if str, ok := contactPhoneVal.(string); ok && str != "" {
+						contactPhoneArg = str
+					} else {
+						contactPhoneArg = nil // null or empty means null
+					}
 				}
 				var contactEmailArg any = nil
-				if contactEmail != "" {
-					contactEmailArg = contactEmail
+				if contactEmailVal, exists := payload["contact_email"]; exists {
+					if str, ok := contactEmailVal.(string); ok && str != "" {
+						contactEmailArg = str
+					} else {
+						contactEmailArg = nil // null or empty means null
+					}
 				}
 				var contactFamilyTagArg any = nil
 				if contactFamilyTag != "" {
 					contactFamilyTagArg = contactFamilyTag
-				}
-
-				// Calculate phone_hash and email_hash for login (if phone/email provided)
-				var phoneHashArg, emailHashArg any = nil, nil
-				var phoneHashBytes, emailHashBytes []byte
-				if contactPhone != "" {
-					ph, _ := hex.DecodeString(HashAccount(contactPhone))
-					if len(ph) > 0 {
-						phoneHashArg = ph
-						phoneHashBytes = ph
-					}
-				}
-				if contactEmail != "" {
-					eh, _ := hex.DecodeString(HashAccount(contactEmail))
-					if len(eh) > 0 {
-						emailHashArg = eh
-						emailHashBytes = eh
-					}
 				}
 
 				// Check uniqueness before insert/update
