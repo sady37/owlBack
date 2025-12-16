@@ -51,7 +51,7 @@ func main() {
 	// Stub depends on tenantsRepo + authStore (used by /auth/api/v1/institutions/search + /auth/api/v1/login)
 	stub := httpapi.NewStubHandler(nil, authStore, nil)
 	// Always register admin routes; if DB is not available, AdminAPI will fall back to stub (no 404).
-	admin := httpapi.NewAdminAPI(nil, nil, nil, stub, logger)
+	admin := httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger)
 	if cfg.DBEnabled {
 		if d, err := database.NewPostgresDB(&cfg.Database); err == nil {
 			db = d
@@ -103,10 +103,13 @@ func main() {
 
 		unitsRepo := repository.NewPostgresUnitsRepo(db)
 		devicesRepo := repository.NewPostgresDevicesRepo(db)
+		devicesRepo.SetLogger(logger) // Set logger for device connection logging
+		deviceStoreRepo := repository.NewPostgresDeviceStoreRepo(db)
 		tenantResolver := repository.NewPostgresTenantResolver(db)
 		tenantsRepo = repository.NewPostgresTenantsRepo(db)
 		stub = httpapi.NewStubHandler(tenantsRepo, authStore, db)
-		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, tenantResolver, stub, logger)
+		stub.SetLogger(logger) // Set logger for user login logging
+		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, deviceStoreRepo, tenantResolver, stub, logger)
 	} else {
 		// DB 未就绪：使用内存 repo 支持联测（UnitList/Devices 等页面不再 404/不再因无 DB 失败）
 		unitsRepo := repository.NewMemoryUnitsRepo()
@@ -121,7 +124,7 @@ func main() {
 		_ = authStore.UpsertUser("00000000-0000-0000-0000-000000000001", "sysadmin", "SystemAdmin", "ChangeMe123!")
 		stub = httpapi.NewStubHandler(tenantsRepo, authStore, nil)
 		// Devices 仍可先保持 stub（后续需要再补内存设备库）
-		admin = httpapi.NewAdminAPI(unitsRepo, nil, nil, stub, logger)
+		admin = httpapi.NewAdminAPI(unitsRepo, nil, nil, nil, stub, logger)
 	}
 	router.RegisterAdminUnitDeviceRoutes(admin)
 	router.RegisterAdminTenantRoutes(httpapi.NewTenantsHandler(tenantsRepo, authStore, db))

@@ -6,17 +6,51 @@ import (
 	"os"
 	"strings"
 	"wisefido-data/internal/repository"
+
+	"go.uber.org/zap"
 )
 
 // StubHandler：用于 DB/真实逻辑未就绪时，先保证 owlFront 不 404、页面可渲染（code=2000 + 空数据）
 type StubHandler struct {
 	Tenants   repository.TenantsRepo
 	AuthStore *AuthStore
-	DB        *sql.DB // optional: when set, some admin endpoints read/write real DB
+	DB        *sql.DB      // optional: when set, some admin endpoints read/write real DB
+	Logger    *zap.Logger  // optional logger for login logging
 }
 
 func NewStubHandler(tenants repository.TenantsRepo, auth *AuthStore, db *sql.DB) *StubHandler {
 	return &StubHandler{Tenants: tenants, AuthStore: auth, DB: db}
+}
+
+// SetLogger sets the logger for login event logging
+func (s *StubHandler) SetLogger(logger *zap.Logger) {
+	s.Logger = logger
+}
+
+// getClientIP extracts the client IP address from the request
+func getClientIP(r *http.Request) string {
+	// Check X-Forwarded-For header (from proxy/load balancer)
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff != "" {
+		// X-Forwarded-For can contain multiple IPs, take the first one
+		ips := strings.Split(xff, ",")
+		if len(ips) > 0 {
+			return strings.TrimSpace(ips[0])
+		}
+	}
+
+	// Check X-Real-IP header
+	xri := r.Header.Get("X-Real-IP")
+	if xri != "" {
+		return xri
+	}
+
+	// Fall back to RemoteAddr
+	ip := r.RemoteAddr
+	if idx := strings.LastIndex(ip, ":"); idx != -1 {
+		ip = ip[:idx]
+	}
+	return ip
 }
 
 func allowAuthStoreFallback() bool {

@@ -218,4 +218,77 @@ type DevicesRepo interface {
 	GetDevice(ctx context.Context, tenantID, deviceID string) (*Device, error)
 	UpdateDevice(ctx context.Context, tenantID, deviceID string, payload map[string]any) error
 	DisableDevice(ctx context.Context, tenantID, deviceID string) error
+	GetOrCreateDeviceFromStore(ctx context.Context, identifier string, mqttTopic string) (*Device, error)
+}
+
+// --- Device Store ---
+
+type DeviceStore struct {
+	DeviceStoreID            string         `json:"device_store_id"`
+	DeviceType               string         `json:"device_type"`
+	DeviceModel              sql.NullString `json:"-"`
+	SerialNumber             sql.NullString `json:"-"`
+	UID                      sql.NullString `json:"-"`
+	IMEI                     sql.NullString `json:"-"`
+	CommMode                 sql.NullString `json:"-"`
+	MCUModel                 sql.NullString `json:"-"`
+	FirmwareVersion          sql.NullString `json:"-"`
+	OTATargetFirmwareVersion sql.NullString `json:"-"`
+	OTATargetMCUModel        sql.NullString `json:"-"`
+	TenantID                 string         `json:"tenant_id"`
+	TenantName               sql.NullString `json:"-"`
+	AllowAccess              bool           `json:"allow_access"`
+	ImportDate               sql.NullTime   `json:"-"`
+	AllocateTime             sql.NullTime   `json:"-"`
+}
+
+func (d DeviceStore) ToJSON() map[string]any {
+	m := map[string]any{
+		"device_store_id": d.DeviceStoreID,
+		"device_type":     d.DeviceType,
+		"tenant_id":       d.TenantID,
+		"allow_access":    d.AllowAccess,
+	}
+	if d.DeviceModel.Valid {
+		m["device_model"] = d.DeviceModel.String
+	}
+	if d.SerialNumber.Valid {
+		m["serial_number"] = d.SerialNumber.String
+	}
+	if d.UID.Valid {
+		m["uid"] = d.UID.String
+	}
+	if d.IMEI.Valid {
+		m["imei"] = d.IMEI.String
+	}
+	if d.CommMode.Valid {
+		m["comm_mode"] = d.CommMode.String
+	}
+	if d.MCUModel.Valid {
+		m["mcu_model"] = d.MCUModel.String
+	}
+	if d.FirmwareVersion.Valid {
+		m["firmware_version"] = d.FirmwareVersion.String
+	}
+	if d.OTATargetFirmwareVersion.Valid {
+		m["ota_target_firmware_version"] = d.OTATargetFirmwareVersion.String
+	}
+	if d.OTATargetMCUModel.Valid {
+		m["ota_target_mcu_model"] = d.OTATargetMCUModel.String
+	}
+	if d.TenantName.Valid {
+		m["tenant_name"] = d.TenantName.String
+	}
+	if d.ImportDate.Valid {
+		m["import_date"] = d.ImportDate.Time.Format("2006-01-02 15:04:05")
+	}
+	if d.AllocateTime.Valid {
+		m["allocate_time"] = d.AllocateTime.Time.Format("2006-01-02 15:04:05")
+	}
+	return m
+}
+
+type DeviceStoreRepo interface {
+	ListDeviceStores(ctx context.Context, filters map[string]any) (items []DeviceStore, total int, err error)
+	BatchUpdateDeviceStores(ctx context.Context, updates []map[string]any) error
 }

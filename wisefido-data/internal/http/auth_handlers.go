@@ -5,6 +5,9 @@ import (
 	"encoding/hex"
 	"net/http"
 	"strings"
+	"time"
+
+	"go.uber.org/zap"
 )
 
 func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
@@ -58,11 +61,27 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 		accountHash = strings.TrimSpace(accountHash)
 		passwordHash = strings.TrimSpace(passwordHash)
 		if accountHash == "" {
+			if s != nil && s.Logger != nil {
+				s.Logger.Warn("User login failed: missing credentials",
+					zap.String("ip_address", getClientIP(r)),
+					zap.String("user_agent", r.UserAgent()),
+					zap.String("reason", "missing_credentials"),
+					zap.String("missing_field", "accountHash"),
+				)
+			}
 			writeJSON(w, http.StatusOK, Fail("missing credentials"))
 			return
 		}
 		// passwordHash must be provided (account_hash and password_hash are independent)
 		if passwordHash == "" {
+			if s != nil && s.Logger != nil {
+				s.Logger.Warn("User login failed: missing credentials",
+					zap.String("ip_address", getClientIP(r)),
+					zap.String("user_agent", r.UserAgent()),
+					zap.String("reason", "missing_credentials"),
+					zap.String("missing_field", "passwordHash"),
+				)
+			}
 			writeJSON(w, http.StatusOK, Fail("missing credentials"))
 			return
 		}
@@ -81,10 +100,26 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 			ah, err1 = hex.DecodeString(accountHash)
 			ph, err2 = hex.DecodeString(passwordHash)
 			if err1 != nil || len(ah) == 0 {
+				if s != nil && s.Logger != nil {
+					s.Logger.Warn("User login failed: invalid account hash format",
+						zap.String("ip_address", getClientIP(r)),
+						zap.String("user_agent", r.UserAgent()),
+						zap.String("reason", "invalid_account_hash"),
+						zap.Error(err1),
+					)
+				}
 				writeJSON(w, http.StatusOK, Fail("invalid credentials"))
 				return
 			}
 			if err2 != nil || len(ph) == 0 {
+				if s != nil && s.Logger != nil {
+					s.Logger.Warn("User login failed: invalid password hash format",
+						zap.String("ip_address", getClientIP(r)),
+						zap.String("user_agent", r.UserAgent()),
+						zap.String("reason", "invalid_password_hash"),
+						zap.Error(err2),
+					)
+				}
 				writeJSON(w, http.StatusOK, Fail("invalid credentials"))
 				return
 			}
@@ -240,6 +275,15 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if len(tids) == 0 {
+				if s != nil && s.Logger != nil {
+					s.Logger.Warn("User login failed: invalid credentials",
+						zap.String("ip_address", getClientIP(r)),
+						zap.String("user_agent", r.UserAgent()),
+						zap.String("user_type", normalizedUserType),
+						zap.String("reason", "invalid_credentials"),
+						zap.String("note", "no matching tenant found"),
+					)
+				}
 				writeJSON(w, http.StatusOK, Fail("invalid credentials"))
 				return
 			}
@@ -258,6 +302,7 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 		tenantName := "Stub Tenant"
 		domain := ""
 		var branchTag sql.NullString
+		var residentIDForContact, contactSlot string // For resident_contact password reset
 
 		if s != nil && s.DB != nil {
 			if tenantID == "" {
@@ -284,6 +329,8 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 				err := s.DB.QueryRowContext(
 					r.Context(),
 					`SELECT rc.contact_id::text,
+					        rc.resident_id::text,
+					        rc.slot,
 					        COALESCE(rc.contact_first_name,''),
 					        COALESCE(rc.contact_last_name,''),
 					        rc.role,
@@ -311,7 +358,7 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 					    END ASC
 					  LIMIT 1`,
 					tenantID, ah, ph,
-				).Scan(&userID, &first, &last, &role, &enabled, &tenantName, &domain, &familyBranchTag, &accountType)
+				).Scan(&userID, &residentIDForContact, &contactSlot, &first, &last, &role, &enabled, &tenantName, &domain, &familyBranchTag, &accountType)
 				if err != nil {
 					// Step 2: Try resident login
 					var residentBranchTag sql.NullString
@@ -350,10 +397,30 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 					if err2 == nil {
 						branchTag = residentBranchTag
 						if status != "active" {
+							if s != nil && s.Logger != nil {
+								s.Logger.Warn("User login failed: account not active",
+									zap.String("user_id", userID),
+									zap.String("tenant_id", tenantID),
+									zap.String("user_type", normalizedUserType),
+									zap.String("status", status),
+									zap.String("ip_address", getClientIP(r)),
+									zap.String("reason", "account_not_active"),
+								)
+							}
 							writeJSON(w, http.StatusOK, Fail("user is not active"))
 							return
 						}
 					} else {
+						if s != nil && s.Logger != nil {
+							s.Logger.Warn("User login failed: invalid credentials",
+								zap.String("tenant_id", tenantID),
+								zap.String("user_type", normalizedUserType),
+								zap.String("ip_address", getClientIP(r)),
+								zap.String("user_agent", r.UserAgent()),
+								zap.String("reason", "invalid_credentials"),
+								zap.String("note", "resident login failed"),
+							)
+						}
 						writeJSON(w, http.StatusOK, Fail("invalid credentials"))
 						return
 					}
@@ -361,6 +428,16 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 					// Family contact login succeeded
 					branchTag = familyBranchTag
 					if !enabled {
+						if s != nil && s.Logger != nil {
+							s.Logger.Warn("User login failed: account not active",
+								zap.String("user_id", userID),
+								zap.String("tenant_id", tenantID),
+								zap.String("user_type", normalizedUserType),
+								zap.String("reason", "account_not_active"),
+								zap.String("note", "family contact not enabled"),
+								zap.String("ip_address", getClientIP(r)),
+							)
+						}
 						writeJSON(w, http.StatusOK, Fail("user is not active"))
 						return
 					}
@@ -413,10 +490,31 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 					branchTag = staffBranchTag
 				}
 				if err != nil {
+					if s != nil && s.Logger != nil {
+						s.Logger.Warn("User login failed: invalid credentials",
+							zap.String("tenant_id", tenantID),
+							zap.String("user_type", normalizedUserType),
+							zap.String("ip_address", getClientIP(r)),
+							zap.String("user_agent", r.UserAgent()),
+							zap.String("reason", "invalid_credentials"),
+							zap.String("note", "staff login failed"),
+						)
+					}
 					writeJSON(w, http.StatusOK, Fail("invalid credentials"))
 					return
 				}
 				if status != "active" {
+					if s != nil && s.Logger != nil {
+						s.Logger.Warn("User login failed: account not active",
+							zap.String("user_id", userID),
+							zap.String("user_account", userAccount),
+							zap.String("tenant_id", tenantID),
+							zap.String("user_type", normalizedUserType),
+							zap.String("status", status),
+							zap.String("ip_address", getClientIP(r)),
+							zap.String("reason", "account_not_active"),
+						)
+					}
 					writeJSON(w, http.StatusOK, Fail("user is not active"))
 					return
 				}
@@ -430,6 +528,13 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if (s == nil || s.DB == nil) && !allowAuthStoreFallback() {
+			if s != nil && s.Logger != nil {
+				s.Logger.Warn("User login failed: database not configured",
+					zap.String("ip_address", getClientIP(r)),
+					zap.String("user_agent", r.UserAgent()),
+					zap.String("reason", "db_not_configured"),
+				)
+			}
 			writeJSON(w, http.StatusOK, Fail("db auth not configured"))
 			return
 		}
@@ -442,6 +547,30 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 				nickName = userAccount
 			}
 		}
+
+		// Update last_login_at for staff users (in users table)
+		if normalizedUserType == "staff" && s != nil && s.DB != nil {
+			_, _ = s.DB.ExecContext(r.Context(),
+				"UPDATE users SET last_login_at = $1 WHERE user_id = $2",
+				time.Now(), userID,
+			)
+		}
+
+		// Log successful login
+		if s != nil && s.Logger != nil {
+			s.Logger.Info("User login successful",
+				zap.String("user_id", userID),
+				zap.String("user_account", userAccount),
+				zap.String("user_type", normalizedUserType),
+				zap.String("tenant_id", tenantID),
+				zap.String("tenant_name", tenantName),
+				zap.String("role", role),
+				zap.String("ip_address", getClientIP(r)),
+				zap.String("user_agent", r.UserAgent()),
+				zap.Time("login_time", time.Now()),
+			)
+		}
+
 		result := map[string]any{
 			"accessToken":  "stub-access-token",
 			"refreshToken": "stub-refresh-token",
@@ -459,6 +588,7 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 		if branchTag.Valid && branchTag.String != "" {
 			result["branchTag"] = branchTag.String
 		}
+		// Note: For resident_contact login, userId is already contact_id, no need for additional fields
 		writeJSON(w, http.StatusOK, Ok(result))
 		return
 	case "/auth/api/v1/institutions/search":

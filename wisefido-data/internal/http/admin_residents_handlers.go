@@ -5,11 +5,69 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
 
 func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
+	// Handle contact password reset: /admin/api/v1/contacts/:contact_id/reset-password
+	if strings.HasPrefix(r.URL.Path, "/admin/api/v1/contacts/") {
+		path := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/contacts/")
+		if strings.HasSuffix(path, "/reset-password") {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			contactID := strings.TrimSuffix(path, "/reset-password")
+			if contactID == "" || strings.Contains(contactID, "/") {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if s != nil && s.DB != nil {
+				tenantID, ok := s.tenantIDFromReq(w, r)
+				if !ok {
+					return
+				}
+				var payload map[string]any
+				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
+					writeJSON(w, http.StatusOK, Fail("invalid body"))
+					return
+				}
+				newPassword, _ := payload["password"].(string)
+				if newPassword == "" {
+					writeJSON(w, http.StatusOK, Fail("password is required"))
+					return
+				}
+				// Hash password: sha256(password) - only depends on password itself
+				aph, _ := hex.DecodeString(HashPassword(newPassword))
+				if len(aph) == 0 {
+					writeJSON(w, http.StatusOK, Fail("failed to hash password"))
+					return
+				}
+				_, err := s.DB.ExecContext(
+					r.Context(),
+					`UPDATE resident_contacts SET password_hash = $3
+					  WHERE tenant_id = $1 AND contact_id::text = $2`,
+					tenantID, contactID, aph,
+				)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						writeJSON(w, http.StatusOK, Fail("contact not found"))
+					} else {
+						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to reset contact password: %v", err)))
+					}
+					return
+				}
+				writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
+				return
+			}
+			writeJSON(w, http.StatusOK, Fail("database not available"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 	if r.URL.Path == "/admin/api/v1/residents" {
 		switch r.Method {
 		case http.MethodGet:
@@ -76,7 +134,8 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				             COALESCE(u.unit_number, '') as unit_number,
 				             COALESCE(u.is_multi_person_room, false) as is_multi_person_room,
 				             COALESCE(rm.room_name, '') as room_name,
-				             COALESCE(b.bed_name, '') as bed_name
+				             COALESCE(b.bed_name, '') as bed_name,
+				             r.can_view_status
 				      FROM residents r
 				      LEFT JOIN units u ON u.unit_id = r.unit_id
 				      LEFT JOIN rooms rm ON rm.room_id = r.room_id
@@ -160,21 +219,23 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					var unitName, branchTag, areaTag, unitNumber sql.NullString
 					var isMultiPersonRoom bool
 					var roomName, bedName sql.NullString
+					var canViewStatus bool
 					if err := rows.Scan(
 						&residentID, &tid, &residentAccount, &nickname,
 						&status, &serviceLevel, &admissionDate, &dischargeDate,
 						&familyTag, &unitID, &roomID, &bedID,
 						&unitName, &branchTag, &areaTag, &unitNumber, &isMultiPersonRoom,
-						&roomName, &bedName,
+						&roomName, &bedName, &canViewStatus,
 					); err != nil {
 						fmt.Printf("[AdminResidents] Scan error: %v\n", err)
 						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to scan resident: %v", err)))
 						return
 					}
 					item := map[string]any{
-						"resident_id": residentID.String,
-						"tenant_id":   tid.String,
-						"status":      status.String,
+						"resident_id":       residentID.String,
+						"tenant_id":         tid.String,
+						"status":            status.String,
+						"is_access_enabled": canViewStatus,
 					}
 					if residentAccount.Valid {
 						item["resident_account"] = residentAccount.String
@@ -370,18 +431,26 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				// This ensures that UPDATE operations always work without needing INSERT ... ON CONFLICT
 				// Note: residentPhone and residentEmail were already read above for hash calculation
 				firstName, _ := payload["first_name"].(string)
+				firstName = strings.TrimSpace(firstName)
+				// first_name is required when creating resident
+				if firstName == "" {
+					writeJSON(w, http.StatusOK, Fail("first_name is required"))
+					return
+				}
 				lastName, _ := payload["last_name"].(string)
+				lastName = strings.TrimSpace(lastName)
 
 				// Build dynamic INSERT for PHI (include provided fields, or create empty record)
-				phiCols := []string{"tenant_id", "resident_id"}
-				phiVals := []string{"$1", "$2"}
-				phiArgs := []any{tenantID, residentID}
-				phiArgIdx := 3
+				// first_name is always included (required)
+				phiCols := []string{"tenant_id", "resident_id", "first_name"}
+				phiVals := []string{"$1", "$2", "$3"}
+				phiArgs := []any{tenantID, residentID, firstName}
+				phiArgIdx := 4
 
-				if firstName != "" {
-					phiCols = append(phiCols, "first_name")
+				if lastName != "" {
+					phiCols = append(phiCols, "last_name")
 					phiVals = append(phiVals, fmt.Sprintf("$%d", phiArgIdx))
-					phiArgs = append(phiArgs, firstName)
+					phiArgs = append(phiArgs, lastName)
 					phiArgIdx++
 				}
 				if lastName != "" {
@@ -667,13 +736,14 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				// Track if phone/email are being updated to also update residents table hash
-				// Frontend sends phone_hash/email_hash (calculated on frontend) and resident_phone/resident_email based on save flags
+				// Frontend sends phone_hash/email_hash (calculated on frontend) and resident_phone/resident_email
+				// If resident_phone/resident_email is provided (even if null), update it
+				// If not provided, don't update (keep existing value)
 				var phoneUpdated, emailUpdated bool
 				var phoneHashArg, emailHashArg any = nil, nil
-				savePhone, _ := payload["save_phone"].(bool)
-				saveEmail, _ := payload["save_email"].(bool)
 
 				// Get phone_hash from frontend (calculated on frontend)
+				// If phone_hash is provided (even if null), it means phone is being updated
 				if phoneHashHex, exists := payload["phone_hash"]; exists {
 					phoneUpdated = true
 					if str, ok := phoneHashHex.(string); ok {
@@ -686,23 +756,22 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 							phoneHashArg = nil // Empty string means null
 						}
 					} else if phoneHashHex == nil {
-						phoneHashArg = nil // null means null
+						phoneHashArg = nil // null means null (delete)
 					}
 				}
-				// Only save plaintext to resident_phi if save_phone flag is true
-				if savePhone {
+				// Update resident_phone if provided in payload (even if null, means delete)
 					if residentPhone, exists := payload["resident_phone"]; exists {
 						updates = append(updates, fmt.Sprintf("resident_phone = $%d", argIdx))
 						if str, ok := residentPhone.(string); ok && str != "" {
 							args = append(args, str)
 						} else {
-							args = append(args, nil) // null if not provided or empty
+						args = append(args, nil) // null or empty means delete/clear
 						}
 						argIdx++
-					}
 				}
 
 				// Get email_hash from frontend (calculated on frontend)
+				// If email_hash is provided (even if null), it means email is being updated
 				if emailHashHex, exists := payload["email_hash"]; exists {
 					emailUpdated = true
 					if str, ok := emailHashHex.(string); ok {
@@ -715,28 +784,348 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 							emailHashArg = nil // Empty string means null
 						}
 					} else if emailHashHex == nil {
-						emailHashArg = nil // null means null
+						emailHashArg = nil // null means null (delete)
 					}
 				}
-				// Only save plaintext to resident_phi if save_email flag is true
-				if saveEmail {
+				// Update resident_email if provided in payload (even if null, means delete)
 					if residentEmail, exists := payload["resident_email"]; exists {
 						updates = append(updates, fmt.Sprintf("resident_email = $%d", argIdx))
 						if str, ok := residentEmail.(string); ok && str != "" {
 							args = append(args, str)
 						} else {
-							args = append(args, nil) // null if not provided or empty
+						args = append(args, nil) // null or empty means delete/clear
+						}
+						argIdx++
+					}
+				// Add more PHI fields (gender, date_of_birth, biometric, functional, chronic conditions, etc.)
+				if gender, exists := payload["gender"]; exists {
+					if str, ok := gender.(string); ok {
+						updates = append(updates, fmt.Sprintf("gender = $%d", argIdx))
+						if str != "" {
+							args = append(args, str)
+						} else {
+							args = append(args, nil) // Set to NULL
 						}
 						argIdx++
 					}
 				}
-				// Add more PHI fields as needed (gender, date_of_birth, etc.)
+				if dateOfBirth, exists := payload["date_of_birth"]; exists {
+					if str, ok := dateOfBirth.(string); ok {
+						updates = append(updates, fmt.Sprintf("date_of_birth = $%d", argIdx))
+						if str != "" {
+							if t, err := time.Parse("2006-01-02", str); err == nil {
+								args = append(args, t)
+							} else {
+								args = append(args, nil) // Invalid date, set to NULL
+							}
+						} else {
+							args = append(args, nil) // Set to NULL
+						}
+						argIdx++
+					}
+				}
+				// Biometric PHI
+				if weightLb, exists := payload["weight_lb"]; exists {
+					updates = append(updates, fmt.Sprintf("weight_lb = $%d", argIdx))
+					if num, ok := weightLb.(float64); ok && num > 0 {
+						args = append(args, num)
+					} else {
+						args = append(args, nil) // Set to NULL
+					}
+					argIdx++
+				}
+				if heightFt, exists := payload["height_ft"]; exists {
+					updates = append(updates, fmt.Sprintf("height_ft = $%d", argIdx))
+					if num, ok := heightFt.(float64); ok && num > 0 {
+						args = append(args, num)
+					} else {
+						args = append(args, nil) // Set to NULL
+					}
+					argIdx++
+				}
+				if heightIn, exists := payload["height_in"]; exists {
+					updates = append(updates, fmt.Sprintf("height_in = $%d", argIdx))
+					if num, ok := heightIn.(float64); ok && num > 0 {
+						args = append(args, num)
+					} else {
+						args = append(args, nil) // Set to NULL
+					}
+					argIdx++
+				}
+				// Functional Mobility
+				if mobilityLevel, exists := payload["mobility_level"]; exists {
+					updates = append(updates, fmt.Sprintf("mobility_level = $%d", argIdx))
+					if num, ok := mobilityLevel.(float64); ok {
+						args = append(args, int(num))
+					} else if num, ok := mobilityLevel.(int); ok {
+						args = append(args, num)
+					} else {
+						args = append(args, nil) // Set to NULL
+					}
+					argIdx++
+				}
+				// Functional Health
+				if tremorStatus, exists := payload["tremor_status"]; exists {
+					if str, ok := tremorStatus.(string); ok {
+						updates = append(updates, fmt.Sprintf("tremor_status = $%d", argIdx))
+						if str != "" {
+							args = append(args, str)
+						} else {
+							args = append(args, nil) // Set to NULL
+						}
+						argIdx++
+					}
+				}
+				if mobilityAid, exists := payload["mobility_aid"]; exists {
+					if str, ok := mobilityAid.(string); ok {
+						updates = append(updates, fmt.Sprintf("mobility_aid = $%d", argIdx))
+						if str != "" {
+							args = append(args, str)
+						} else {
+							args = append(args, nil) // Set to NULL
+						}
+						argIdx++
+					}
+				}
+				if adlAssistance, exists := payload["adl_assistance"]; exists {
+					if str, ok := adlAssistance.(string); ok {
+						updates = append(updates, fmt.Sprintf("adl_assistance = $%d", argIdx))
+						if str != "" {
+							args = append(args, str)
+						} else {
+							args = append(args, nil) // Set to NULL
+						}
+						argIdx++
+					}
+				}
+				if commStatus, exists := payload["comm_status"]; exists {
+					if str, ok := commStatus.(string); ok {
+						updates = append(updates, fmt.Sprintf("comm_status = $%d", argIdx))
+						if str != "" {
+							args = append(args, str)
+						} else {
+							args = append(args, nil) // Set to NULL
+						}
+						argIdx++
+					}
+				}
+				// Chronic Conditions
+				if hasHypertension, exists := payload["has_hypertension"]; exists {
+					updates = append(updates, fmt.Sprintf("has_hypertension = $%d", argIdx))
+					if b, ok := hasHypertension.(bool); ok {
+						args = append(args, b)
+					} else {
+						args = append(args, nil) // Set to NULL
+					}
+					argIdx++
+				}
+				if hasHyperlipaemia, exists := payload["has_hyperlipaemia"]; exists {
+					updates = append(updates, fmt.Sprintf("has_hyperlipaemia = $%d", argIdx))
+					if b, ok := hasHyperlipaemia.(bool); ok {
+						args = append(args, b)
+					} else {
+						args = append(args, nil) // Set to NULL
+					}
+					argIdx++
+				}
+				if hasHyperglycaemia, exists := payload["has_hyperglycaemia"]; exists {
+					updates = append(updates, fmt.Sprintf("has_hyperglycaemia = $%d", argIdx))
+					if b, ok := hasHyperglycaemia.(bool); ok {
+						args = append(args, b)
+					} else {
+						args = append(args, nil) // Set to NULL
+					}
+					argIdx++
+				}
+				if hasStrokeHistory, exists := payload["has_stroke_history"]; exists {
+					updates = append(updates, fmt.Sprintf("has_stroke_history = $%d", argIdx))
+					if b, ok := hasStrokeHistory.(bool); ok {
+						args = append(args, b)
+					} else {
+						args = append(args, nil) // Set to NULL
+					}
+					argIdx++
+				}
+				if hasParalysis, exists := payload["has_paralysis"]; exists {
+					updates = append(updates, fmt.Sprintf("has_paralysis = $%d", argIdx))
+					if b, ok := hasParalysis.(bool); ok {
+						args = append(args, b)
+					} else {
+						args = append(args, nil) // Set to NULL
+					}
+					argIdx++
+				}
+				if hasAlzheimer, exists := payload["has_alzheimer"]; exists {
+					updates = append(updates, fmt.Sprintf("has_alzheimer = $%d", argIdx))
+					if b, ok := hasAlzheimer.(bool); ok {
+						args = append(args, b)
+					} else {
+						args = append(args, nil) // Set to NULL
+					}
+					argIdx++
+				}
+				if medicalHistory, exists := payload["medical_history"]; exists {
+					if str, ok := medicalHistory.(string); ok {
+						updates = append(updates, fmt.Sprintf("medical_history = $%d", argIdx))
+						if str != "" {
+							args = append(args, str)
+						} else {
+							args = append(args, nil) // Set to NULL
+						}
+						argIdx++
+					}
+				}
+				// HIS Integration
+				if hisResidentName, exists := payload["HIS_resident_name"]; exists {
+					if str, ok := hisResidentName.(string); ok {
+						updates = append(updates, fmt.Sprintf("his_resident_name = $%d", argIdx))
+						if str != "" {
+							args = append(args, str)
+						} else {
+							args = append(args, nil) // Set to NULL
+						}
+						argIdx++
+					}
+				}
+				if hisResidentAdmissionDate, exists := payload["HIS_resident_admission_date"]; exists {
+					if str, ok := hisResidentAdmissionDate.(string); ok {
+						updates = append(updates, fmt.Sprintf("his_resident_admission_date = $%d", argIdx))
+						if str != "" {
+							if t, err := time.Parse("2006-01-02", str); err == nil {
+								args = append(args, t)
+							} else {
+								args = append(args, nil) // Invalid date, set to NULL
+							}
+						} else {
+							args = append(args, nil) // Set to NULL
+						}
+						argIdx++
+					}
+				}
+				if hisResidentDischargeDate, exists := payload["HIS_resident_discharge_date"]; exists {
+					if str, ok := hisResidentDischargeDate.(string); ok {
+						updates = append(updates, fmt.Sprintf("his_resident_discharge_date = $%d", argIdx))
+						if str != "" {
+							if t, err := time.Parse("2006-01-02", str); err == nil {
+								args = append(args, t)
+							} else {
+								args = append(args, nil) // Invalid date, set to NULL
+							}
+						} else {
+							args = append(args, nil) // Set to NULL
+						}
+						argIdx++
+					}
+				}
+				// Home Address
+				if homeAddressStreet, exists := payload["home_address_street"]; exists {
+					if str, ok := homeAddressStreet.(string); ok {
+						updates = append(updates, fmt.Sprintf("home_address_street = $%d", argIdx))
+						if str != "" {
+							args = append(args, str)
+						} else {
+							args = append(args, nil) // Set to NULL
+						}
+						argIdx++
+					}
+				}
+				if homeAddressCity, exists := payload["home_address_city"]; exists {
+					if str, ok := homeAddressCity.(string); ok {
+						updates = append(updates, fmt.Sprintf("home_address_city = $%d", argIdx))
+						if str != "" {
+							args = append(args, str)
+						} else {
+							args = append(args, nil) // Set to NULL
+						}
+						argIdx++
+					}
+				}
+				if homeAddressState, exists := payload["home_address_state"]; exists {
+					if str, ok := homeAddressState.(string); ok {
+						updates = append(updates, fmt.Sprintf("home_address_state = $%d", argIdx))
+						if str != "" {
+							args = append(args, str)
+						} else {
+							args = append(args, nil) // Set to NULL
+						}
+						argIdx++
+					}
+				}
+				if homeAddressPostalCode, exists := payload["home_address_postal_code"]; exists {
+					if str, ok := homeAddressPostalCode.(string); ok {
+						updates = append(updates, fmt.Sprintf("home_address_postal_code = $%d", argIdx))
+						if str != "" {
+							args = append(args, str)
+						} else {
+							args = append(args, nil) // Set to NULL
+						}
+						argIdx++
+					}
+				}
+				if plusCode, exists := payload["plus_code"]; exists {
+					if str, ok := plusCode.(string); ok {
+						updates = append(updates, fmt.Sprintf("plus_code = $%d", argIdx))
+						if str != "" {
+							args = append(args, str)
+						} else {
+							args = append(args, nil) // Set to NULL
+						}
+						argIdx++
+					}
+				}
 
 				if len(updates) > 0 {
-					// Since PHI record is always created when resident is created,
-					// we can use a simple UPDATE query (no need for INSERT ... ON CONFLICT)
-					updateQuery := fmt.Sprintf(`UPDATE resident_phi SET %s WHERE tenant_id = $1 AND resident_id = $2`, strings.Join(updates, ", "))
-					_, err := s.DB.ExecContext(r.Context(), updateQuery, args...)
+					// Use INSERT ... ON CONFLICT DO UPDATE to ensure record exists
+					// This handles both create and update cases (if record doesn't exist, create it)
+					// Build INSERT columns and values from updates
+					// Note: args array structure: args[0]=tenantID, args[1]=residentID, args[2+]=update values in order
+					phiCols := []string{"tenant_id", "resident_id"}
+					phiVals := []string{"$1", "$2"}
+					phiArgs := []any{tenantID, residentID}
+					phiArgIdx := 3
+					
+					// Extract column names and values from updates in order
+					// The args array already contains values in the same order as updates
+					// args[0]=tenantID, args[1]=residentID, args[2]=first update value, args[3]=second update value, etc.
+					for i, update := range updates {
+						// Parse "column = $N" format
+						parts := strings.Split(update, " = $")
+						if len(parts) == 2 {
+							colName := parts[0]
+							phiCols = append(phiCols, colName)
+							phiVals = append(phiVals, fmt.Sprintf("$%d", phiArgIdx))
+							// Get the corresponding value from args (skip tenantID and residentID, so use i+2)
+							// args[0]=tenantID, args[1]=residentID, args[2+]=update values in same order as updates
+							if i+2 < len(args) {
+								phiArgs = append(phiArgs, args[i+2])
+							} else {
+								// Fallback: try to get value by parsing the original argIdx
+								argIdx, _ := strconv.Atoi(parts[1])
+								if argIdx >= 3 && argIdx-3 < len(args) {
+									phiArgs = append(phiArgs, args[argIdx-3])
+								} else {
+									phiArgs = append(phiArgs, nil) // Safety fallback
+								}
+							}
+							phiArgIdx++
+						}
+					}
+					
+					// Build conflict updates using EXCLUDED (references the values being inserted)
+					// This avoids duplicating parameter values
+					conflictUpdates := []string{}
+					for _, update := range updates {
+						parts := strings.Split(update, " = $")
+						if len(parts) == 2 {
+							colName := parts[0]
+							conflictUpdates = append(conflictUpdates, fmt.Sprintf("%s = EXCLUDED.%s", colName, colName))
+						}
+					}
+					
+					updateQuery := fmt.Sprintf(`INSERT INTO resident_phi (%s) VALUES (%s)
+					                        ON CONFLICT (tenant_id, resident_id) DO UPDATE SET %s`,
+						strings.Join(phiCols, ", "), strings.Join(phiVals, ", "), strings.Join(conflictUpdates, ", "))
+					_, err := s.DB.ExecContext(r.Context(), updateQuery, phiArgs...)
 					if err != nil {
 						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to update PHI: %v", err)))
 						return
@@ -858,20 +1247,25 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// Handle phone/email plaintext based on save flags (frontend sends null if not saving)
+				// If contact_phone/contact_email is provided (even if null), update it
 				var contactPhoneArg any = nil
 				if contactPhoneVal, exists := payload["contact_phone"]; exists {
-					if str, ok := contactPhoneVal.(string); ok && str != "" {
+					if contactPhoneVal == nil {
+						contactPhoneArg = nil // Explicitly null: delete phone
+					} else if str, ok := contactPhoneVal.(string); ok && str != "" {
 						contactPhoneArg = str
 					} else {
-						contactPhoneArg = nil // null or empty means null
+						contactPhoneArg = nil // Empty string means null
 					}
 				}
 				var contactEmailArg any = nil
 				if contactEmailVal, exists := payload["contact_email"]; exists {
-					if str, ok := contactEmailVal.(string); ok && str != "" {
+					if contactEmailVal == nil {
+						contactEmailArg = nil // Explicitly null: delete email
+					} else if str, ok := contactEmailVal.(string); ok && str != "" {
 						contactEmailArg = str
 					} else {
-						contactEmailArg = nil // null or empty means null
+						contactEmailArg = nil // Empty string means null
 					}
 				}
 				var contactFamilyTagArg any = nil
@@ -898,8 +1292,51 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
+				// Handle password_hash if contact_password is provided (like create user, password is included in INSERT)
+				// Password hash should only depend on password itself (independent of account/phone/email)
+				var passwordHashArg any = nil
+				hasPassword := false
+				if contactPassword != "" {
+					// Hash password: sha256(password) - only depends on password
+					aph, _ := hex.DecodeString(HashPassword(contactPassword))
+					if len(aph) == 0 {
+						writeJSON(w, http.StatusOK, Fail("failed to hash password"))
+						return
+					}
+					passwordHashArg = aph
+					hasPassword = true
+				}
+
 				// Build UPDATE query for contact fields
-				contactQuery := `INSERT INTO resident_contacts 
+				// Include password_hash in INSERT ... ON CONFLICT DO UPDATE only if password is provided (like create user)
+				var contactQuery string
+				var contactArgs []any
+				if hasPassword {
+					// Include password_hash in INSERT and UPDATE
+					contactQuery = `INSERT INTO resident_contacts 
+					                (tenant_id, resident_id, slot, is_enabled, relationship,
+					                 contact_first_name, contact_last_name, contact_phone, contact_email,
+					                 contact_family_tag, receive_sms, receive_email, phone_hash, email_hash, password_hash)
+					                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+					                ON CONFLICT (tenant_id, resident_id, slot) DO UPDATE SET
+					                is_enabled = EXCLUDED.is_enabled,
+					                relationship = EXCLUDED.relationship,
+					                contact_first_name = EXCLUDED.contact_first_name,
+					                contact_last_name = EXCLUDED.contact_last_name,
+					                contact_phone = EXCLUDED.contact_phone,
+					                contact_email = EXCLUDED.contact_email,
+					                contact_family_tag = EXCLUDED.contact_family_tag,
+					                receive_sms = EXCLUDED.receive_sms,
+					                receive_email = EXCLUDED.receive_email,
+					                phone_hash = EXCLUDED.phone_hash,
+					                email_hash = EXCLUDED.email_hash,
+					                password_hash = EXCLUDED.password_hash`
+					contactArgs = []any{tenantID, residentID, slot, isEnabled, relationshipArg,
+						contactFirstNameArg, contactLastNameArg, contactPhoneArg, contactEmailArg,
+						contactFamilyTagArg, receiveSms, receiveEmail, phoneHashArg, emailHashArg, passwordHashArg}
+				} else {
+					// Don't update password_hash if password is not provided (keep existing value)
+					contactQuery = `INSERT INTO resident_contacts 
 				                (tenant_id, resident_id, slot, is_enabled, relationship,
 				                 contact_first_name, contact_last_name, contact_phone, contact_email,
 				                 contact_family_tag, receive_sms, receive_email, phone_hash, email_hash)
@@ -916,11 +1353,12 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				                receive_email = EXCLUDED.receive_email,
 				                phone_hash = EXCLUDED.phone_hash,
 				                email_hash = EXCLUDED.email_hash`
-
-				_, err = s.DB.ExecContext(r.Context(), contactQuery,
-					tenantID, residentID, slot, isEnabled, relationshipArg,
+					contactArgs = []any{tenantID, residentID, slot, isEnabled, relationshipArg,
 					contactFirstNameArg, contactLastNameArg, contactPhoneArg, contactEmailArg,
-					contactFamilyTagArg, receiveSms, receiveEmail, phoneHashArg, emailHashArg)
+						contactFamilyTagArg, receiveSms, receiveEmail, phoneHashArg, emailHashArg}
+				}
+
+				_, err = s.DB.ExecContext(r.Context(), contactQuery, contactArgs...)
 				if err != nil {
 					// Check for unique constraint violation
 					if msg := checkUniqueConstraintError(err, "phone or email"); msg != "" {
@@ -931,28 +1369,6 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				// Handle password update if provided
-				// Password hash should only depend on password itself (independent of account/phone/email)
-				if contactPassword != "" {
-					// Hash password: sha256(password) - only depends on password
-					aph, _ := hex.DecodeString(HashPassword(contactPassword))
-					if len(aph) == 0 {
-						writeJSON(w, http.StatusOK, Fail("failed to hash password"))
-						return
-					}
-
-					_, err := s.DB.ExecContext(
-						r.Context(),
-						`UPDATE resident_contacts SET password_hash = $4
-						  WHERE tenant_id = $1 AND resident_id::text = $2 AND slot = $3`,
-						tenantID, residentID, slot, aph,
-					)
-					if err != nil {
-						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to update contact password: %v", err)))
-						return
-					}
-				}
-
 				writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 				return
 			}
@@ -960,6 +1376,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Check for contact password reset: /residents/:id/contacts/:slot/reset-password
+		// OR /contacts/:contact_id/reset-password (simpler, uses contact_id directly)
 		if strings.Contains(path, "/contacts/") && strings.HasSuffix(path, "/reset-password") {
 			if r.Method != http.MethodPost {
 				w.WriteHeader(http.StatusMethodNotAllowed)
@@ -971,18 +1388,23 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					return
 				}
-				// Extract resident_id and slot from path: "resident_id/contacts/slot/reset-password"
+				// Extract from path: could be "resident_id/contacts/slot/reset-password" or "contacts/contact_id/reset-password"
 				parts := strings.Split(path, "/")
-				if len(parts) != 4 || parts[1] != "contacts" {
+				var contactID string
+				var residentID, slot string
+				
+				if len(parts) == 3 && parts[0] == "contacts" {
+					// New format: /contacts/:contact_id/reset-password
+					contactID = parts[1]
+				} else if len(parts) == 4 && parts[1] == "contacts" {
+					// Old format: /residents/:id/contacts/:slot/reset-password (for backward compatibility)
+					residentID = parts[0]
+					slot = parts[2]
+				} else {
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
-				residentID := parts[0]
-				slot := parts[2]
-				if residentID == "" || slot == "" {
-					w.WriteHeader(http.StatusNotFound)
-					return
-				}
+				
 				var payload map[string]any
 				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 					writeJSON(w, http.StatusOK, Fail("invalid body"))
@@ -1001,14 +1423,34 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				_, err := s.DB.ExecContext(
+				var err error
+				if contactID != "" {
+					// Use contact_id directly (simpler, each slot is independent)
+					_, err = s.DB.ExecContext(
+						r.Context(),
+						`UPDATE resident_contacts SET password_hash = $3
+						  WHERE tenant_id = $1 AND contact_id::text = $2`,
+						tenantID, contactID, aph,
+					)
+				} else if residentID != "" && slot != "" {
+					// Use resident_id + slot (backward compatibility)
+					_, err = s.DB.ExecContext(
 					r.Context(),
 					`UPDATE resident_contacts SET password_hash = $4
 					  WHERE tenant_id = $1 AND resident_id::text = $2 AND slot = $3`,
 					tenantID, residentID, slot, aph,
 				)
+				} else {
+					writeJSON(w, http.StatusOK, Fail("invalid path: contact_id or resident_id+slot required"))
+					return
+				}
+				
 				if err != nil {
+					if err == sql.ErrNoRows {
+						writeJSON(w, http.StatusOK, Fail("contact not found"))
+					} else {
 					writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to reset contact password: %v", err)))
+					}
 					return
 				}
 				writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
@@ -1042,6 +1484,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				var note sql.NullString
 				var canViewStatus bool
 
+				var residentPhoneHash, residentEmailHash []byte
 				err := s.DB.QueryRowContext(
 					r.Context(),
 					`SELECT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,
@@ -1054,7 +1497,8 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					        COALESCE(u.is_multi_person_room, false) as is_multi_person_room,
 					        COALESCE(rm.room_name, '') as room_name,
 					        COALESCE(b.bed_name, '') as bed_name,
-					        r.note, r.can_view_status
+					        r.note, r.can_view_status,
+					        r.phone_hash, r.email_hash
 					 FROM residents r
 					 LEFT JOIN units u ON u.unit_id = r.unit_id
 					 LEFT JOIN rooms rm ON rm.room_id = r.room_id
@@ -1067,6 +1511,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					&familyTag, &unitID, &roomID, &bedID,
 					&unitName, &branchTag, &areaTag, &unitNumber, &isMultiPersonRoom,
 					&roomName, &bedName, &note, &canViewStatus,
+					&residentPhoneHash, &residentEmailHash,
 				)
 				if err != nil {
 					if err == sql.ErrNoRows {
@@ -1135,14 +1580,28 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 
 				// Load PHI if requested
 				if includePHI {
-					var phiID, phiFirstName, phiLastName sql.NullString
+					var phiID, phiFirstName, phiLastName, gender, residentPhone, residentEmail, tremorStatus, mobilityAid, adlAssistance, commStatus, medicalHistory, hisResidentName, homeAddressStreet, homeAddressCity, homeAddressState, homeAddressPostalCode, plusCode sql.NullString
+					var dateOfBirth, hisAdmissionDate, hisDischargeDate sql.NullTime
+					var weightLb, heightFt, heightIn sql.NullFloat64
+					var mobilityLevel sql.NullInt64
+					var hasHypertension, hasHyperlipaemia, hasHyperglycaemia, hasStrokeHistory, hasParalysis, hasAlzheimer sql.NullBool
 					err = s.DB.QueryRowContext(
 						r.Context(),
-						`SELECT phi_id::text, first_name, last_name
+						`SELECT phi_id::text, first_name, last_name, gender, date_of_birth,
+						        resident_phone, resident_email, weight_lb, height_ft, height_in,
+						        mobility_level, tremor_status, mobility_aid, adl_assistance, comm_status,
+						        has_hypertension, has_hyperlipaemia, has_hyperglycaemia, has_stroke_history, has_paralysis, has_alzheimer,
+						        medical_history, HIS_resident_name, HIS_resident_admission_date, HIS_resident_discharge_date,
+						        home_address_street, home_address_city, home_address_state, home_address_postal_code, plus_code
 						 FROM resident_phi
 						 WHERE tenant_id = $1 AND resident_id = $2`,
 						tenantID, id,
-					).Scan(&phiID, &phiFirstName, &phiLastName)
+					).Scan(&phiID, &phiFirstName, &phiLastName, &gender, &dateOfBirth,
+						&residentPhone, &residentEmail, &weightLb, &heightFt, &heightIn,
+						&mobilityLevel, &tremorStatus, &mobilityAid, &adlAssistance, &commStatus,
+						&hasHypertension, &hasHyperlipaemia, &hasHyperglycaemia, &hasStrokeHistory, &hasParalysis, &hasAlzheimer,
+						&medicalHistory, &hisResidentName, &hisAdmissionDate, &hisDischargeDate,
+						&homeAddressStreet, &homeAddressCity, &homeAddressState, &homeAddressPostalCode, &plusCode)
 					if err == nil {
 						phi := map[string]any{
 							"phi_id":      phiID.String,
@@ -1154,6 +1613,101 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						if phiLastName.Valid {
 							phi["last_name"] = phiLastName.String
 						}
+						if gender.Valid {
+							phi["gender"] = gender.String
+						}
+						if dateOfBirth.Valid {
+							phi["date_of_birth"] = dateOfBirth.Time.Format("2006-01-02")
+						}
+						// If phone_hash exists but phone is NULL, return placeholder
+						if residentPhoneHash != nil && len(residentPhoneHash) > 0 {
+							if residentPhone.Valid {
+								phi["resident_phone"] = residentPhone.String
+							} else {
+								phi["resident_phone"] = "xxx-xxx-xxxx" // Placeholder when hash exists but phone is not saved
+							}
+						} else if residentPhone.Valid {
+							phi["resident_phone"] = residentPhone.String
+						}
+						// If email_hash exists but email is NULL, return placeholder
+						if residentEmailHash != nil && len(residentEmailHash) > 0 {
+							if residentEmail.Valid {
+								phi["resident_email"] = residentEmail.String
+							} else {
+								phi["resident_email"] = "***@***" // Placeholder when hash exists but email is not saved
+							}
+						} else if residentEmail.Valid {
+							phi["resident_email"] = residentEmail.String
+						}
+						if weightLb.Valid {
+							phi["weight_lb"] = weightLb.Float64
+						}
+						if heightFt.Valid {
+							phi["height_ft"] = heightFt.Float64
+						}
+						if heightIn.Valid {
+							phi["height_in"] = heightIn.Float64
+						}
+						if mobilityLevel.Valid {
+							phi["mobility_level"] = mobilityLevel.Int64
+						}
+						if tremorStatus.Valid {
+							phi["tremor_status"] = tremorStatus.String
+						}
+						if mobilityAid.Valid {
+							phi["mobility_aid"] = mobilityAid.String
+						}
+						if adlAssistance.Valid {
+							phi["adl_assistance"] = adlAssistance.String
+						}
+						if commStatus.Valid {
+							phi["comm_status"] = commStatus.String
+						}
+						if hasHypertension.Valid {
+							phi["has_hypertension"] = hasHypertension.Bool
+						}
+						if hasHyperlipaemia.Valid {
+							phi["has_hyperlipaemia"] = hasHyperlipaemia.Bool
+						}
+						if hasHyperglycaemia.Valid {
+							phi["has_hyperglycaemia"] = hasHyperglycaemia.Bool
+						}
+						if hasStrokeHistory.Valid {
+							phi["has_stroke_history"] = hasStrokeHistory.Bool
+						}
+						if hasParalysis.Valid {
+							phi["has_paralysis"] = hasParalysis.Bool
+						}
+						if hasAlzheimer.Valid {
+							phi["has_alzheimer"] = hasAlzheimer.Bool
+						}
+						if medicalHistory.Valid {
+							phi["medical_history"] = medicalHistory.String
+						}
+						if hisResidentName.Valid {
+							phi["HIS_resident_name"] = hisResidentName.String
+						}
+						if hisAdmissionDate.Valid {
+							phi["HIS_resident_admission_date"] = hisAdmissionDate.Time.Format("2006-01-02")
+						}
+						if hisDischargeDate.Valid {
+							phi["HIS_resident_discharge_date"] = hisDischargeDate.Time.Format("2006-01-02")
+						}
+						if homeAddressStreet.Valid {
+							phi["home_address_street"] = homeAddressStreet.String
+						}
+						if homeAddressCity.Valid {
+							phi["home_address_city"] = homeAddressCity.String
+						}
+						if homeAddressState.Valid {
+							phi["home_address_state"] = homeAddressState.String
+						}
+						if homeAddressPostalCode.Valid {
+							phi["home_address_postal_code"] = homeAddressPostalCode.String
+						}
+						if plusCode.Valid {
+							phi["plus_code"] = plusCode.String
+						}
 						item["phi"] = phi
 					}
 				}
@@ -1164,7 +1718,8 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						r.Context(),
 						`SELECT contact_id::text, slot, is_enabled, relationship,
 						        contact_first_name, contact_last_name, contact_phone, contact_email,
-						        contact_family_tag, receive_sms, receive_email
+						        contact_family_tag, receive_sms, receive_email,
+						        phone_hash, email_hash
 						 FROM resident_contacts
 						 WHERE tenant_id = $1 AND resident_id = $2
 						 ORDER BY slot ASC`,
@@ -1177,10 +1732,11 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 							var contactID, slot, relationship sql.NullString
 							var isEnabled, receiveSMS, receiveEmail bool
 							var firstName, lastName, phone, email, familyTag sql.NullString
+							var phoneHash, emailHash []byte
 							if err := rows.Scan(
 								&contactID, &slot, &isEnabled, &relationship,
 								&firstName, &lastName, &phone, &email, &familyTag,
-								&receiveSMS, &receiveEmail,
+								&receiveSMS, &receiveEmail, &phoneHash, &emailHash,
 							); err == nil {
 								contact := map[string]any{
 									"contact_id":    contactID.String,
@@ -1199,10 +1755,24 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 								if lastName.Valid {
 									contact["contact_last_name"] = lastName.String
 								}
+								// If phone_hash exists but phone is NULL, return placeholder
+								if phoneHash != nil && len(phoneHash) > 0 {
 								if phone.Valid {
 									contact["contact_phone"] = phone.String
+									} else {
+										contact["contact_phone"] = "xxx-xxx-xxxx" // Placeholder when hash exists but phone is not saved
 								}
+								} else if phone.Valid {
+									contact["contact_phone"] = phone.String
+								}
+								// If email_hash exists but email is NULL, return placeholder
+								if emailHash != nil && len(emailHash) > 0 {
 								if email.Valid {
+										contact["contact_email"] = email.String
+									} else {
+										contact["contact_email"] = "***@***" // Placeholder when hash exists but email is not saved
+									}
+								} else if email.Valid {
 									contact["contact_email"] = email.String
 								}
 								if familyTag.Valid {
