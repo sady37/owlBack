@@ -85,8 +85,6 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				var userRole, alarmScope, userBranchTag sql.NullString
 				var isResidentLogin bool
 				var residentIDForSelf sql.NullString
-				var isContactLogin bool
-				var contactIDForSelf sql.NullString
 
 				// Check if this is a resident login (userType from auth)
 				userType := r.Header.Get("X-User-Type")
@@ -103,8 +101,6 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						).Scan(&foundResidentID)
 						if err == nil && foundResidentID.Valid {
 							// This is a resident_contact login
-							isContactLogin = true
-							contactIDForSelf = sql.NullString{String: userID, Valid: true}
 							residentIDForSelf = foundResidentID
 						} else {
 							// This is a resident login, X-User-Id is resident_id
