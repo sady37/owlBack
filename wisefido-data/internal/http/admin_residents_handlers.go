@@ -85,14 +85,31 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				var userRole, alarmScope, userBranchTag sql.NullString
 				var isResidentLogin bool
 				var residentIDForSelf sql.NullString
+				var isContactLogin bool
+				var contactIDForSelf sql.NullString
 
 				// Check if this is a resident login (userType from auth)
 				userType := r.Header.Get("X-User-Type")
 				if userType == "resident" || userType == "family" {
 					isResidentLogin = true
-					// For resident login, X-User-Id is actually resident_id
-					if userID != "" {
-						residentIDForSelf = sql.NullString{String: userID, Valid: true}
+					// Check if this is a resident_contact login (contact_id) or resident login (resident_id)
+					// Try to find if userID exists in resident_contacts table
+					if userID != "" && s != nil && s.DB != nil {
+						var foundResidentID sql.NullString
+						err := s.DB.QueryRowContext(r.Context(),
+							`SELECT resident_id::text FROM resident_contacts 
+							 WHERE tenant_id = $1 AND contact_id::text = $2`,
+							tenantID, userID,
+						).Scan(&foundResidentID)
+						if err == nil && foundResidentID.Valid {
+							// This is a resident_contact login
+							isContactLogin = true
+							contactIDForSelf = sql.NullString{String: userID, Valid: true}
+							residentIDForSelf = foundResidentID
+						} else {
+							// This is a resident login, X-User-Id is resident_id
+							residentIDForSelf = sql.NullString{String: userID, Valid: true}
+						}
 					}
 				} else if userID != "" {
 					// For staff login, get role and alarm_scope from users table
@@ -698,6 +715,32 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
+				
+				// Check permissions: resident can only update self, resident_contact can only update linked resident
+				userID := r.Header.Get("X-User-Id")
+				userType := r.Header.Get("X-User-Type")
+				if (userType == "resident" || userType == "family") && userID != "" {
+					// Check if this is a resident_contact login
+					var foundResidentID sql.NullString
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT resident_id::text FROM resident_contacts 
+						 WHERE tenant_id = $1 AND contact_id::text = $2`,
+						tenantID, userID,
+					).Scan(&foundResidentID)
+					if err == nil && foundResidentID.Valid {
+						// This is a resident_contact login - can only update linked resident
+						if foundResidentID.String != residentID {
+							writeJSON(w, http.StatusOK, Fail("access denied: can only update linked resident"))
+							return
+						}
+					} else {
+						// This is a resident login - can only update self
+						if userID != residentID {
+							writeJSON(w, http.StatusOK, Fail("access denied: can only update own information"))
+							return
+						}
+					}
+				}
 				var payload map[string]any
 				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 					writeJSON(w, http.StatusOK, Fail("invalid body"))
@@ -1178,6 +1221,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
+				
 				var payload map[string]any
 				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 					writeJSON(w, http.StatusOK, Fail("invalid body"))
@@ -1189,6 +1233,38 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				if slot == "" {
 					writeJSON(w, http.StatusOK, Fail("slot is required"))
 					return
+				}
+				
+				// Check permissions: resident_contact can only modify own slot
+				userID := r.Header.Get("X-User-Id")
+				userType := r.Header.Get("X-User-Type")
+				if (userType == "resident" || userType == "family") && userID != "" {
+					// Check if this is a resident_contact login
+					var foundResidentID sql.NullString
+					var foundSlot sql.NullString
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT resident_id::text, slot FROM resident_contacts 
+						 WHERE tenant_id = $1 AND contact_id::text = $2`,
+						tenantID, userID,
+					).Scan(&foundResidentID, &foundSlot)
+					if err == nil && foundResidentID.Valid {
+						// This is a resident_contact login - can only modify own slot
+						if foundResidentID.String != residentID {
+							writeJSON(w, http.StatusOK, Fail("access denied: can only modify contacts for linked resident"))
+							return
+						}
+						// Verify that the slot matches the contact's own slot
+						if foundSlot.Valid && foundSlot.String != slot {
+							writeJSON(w, http.StatusOK, Fail("access denied: can only modify own slot"))
+							return
+						}
+					} else {
+						// This is a resident login - can modify contacts for self
+						if userID != residentID {
+							writeJSON(w, http.StatusOK, Fail("access denied: can only modify contacts for self"))
+							return
+						}
+					}
 				}
 				isEnabled, _ := payload["is_enabled"].(bool)
 				relationship, _ := payload["relationship"].(string)
@@ -1472,6 +1548,33 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					return
 				}
+				
+				// Check permissions: resident can only view self, resident_contact can only view linked resident
+				userID := r.Header.Get("X-User-Id")
+				userType := r.Header.Get("X-User-Type")
+				if (userType == "resident" || userType == "family") && userID != "" {
+					// Check if this is a resident_contact login
+					var foundResidentID sql.NullString
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT resident_id::text FROM resident_contacts 
+						 WHERE tenant_id = $1 AND contact_id::text = $2`,
+						tenantID, userID,
+					).Scan(&foundResidentID)
+					if err == nil && foundResidentID.Valid {
+						// This is a resident_contact login - can only view linked resident
+						if foundResidentID.String != id {
+							writeJSON(w, http.StatusOK, Fail("access denied: can only view linked resident"))
+							return
+						}
+					} else {
+						// This is a resident login - can only view self
+						if userID != id {
+							writeJSON(w, http.StatusOK, Fail("access denied: can only view own information"))
+							return
+						}
+					}
+				}
+				
 				includePHI := r.URL.Query().Get("include_phi") == "true"
 				includeContacts := r.URL.Query().Get("include_contacts") == "true"
 
@@ -1795,6 +1898,32 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				tenantID, ok := s.tenantIDFromReq(w, r)
 				if !ok {
 					return
+				}
+				
+				// Check permissions: resident can only update self, resident_contact can only update linked resident
+				userID := r.Header.Get("X-User-Id")
+				userType := r.Header.Get("X-User-Type")
+				if (userType == "resident" || userType == "family") && userID != "" {
+					// Check if this is a resident_contact login
+					var foundResidentID sql.NullString
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT resident_id::text FROM resident_contacts 
+						 WHERE tenant_id = $1 AND contact_id::text = $2`,
+						tenantID, userID,
+					).Scan(&foundResidentID)
+					if err == nil && foundResidentID.Valid {
+						// This is a resident_contact login - can only update linked resident
+						if foundResidentID.String != id {
+							writeJSON(w, http.StatusOK, Fail("access denied: can only update linked resident"))
+							return
+						}
+					} else {
+						// This is a resident login - can only update self
+						if userID != id {
+							writeJSON(w, http.StatusOK, Fail("access denied: can only update own information"))
+							return
+						}
+					}
 				}
 				var payload map[string]any
 				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
