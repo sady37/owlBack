@@ -402,11 +402,13 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				// Get phone_hash and email_hash from frontend (calculated on frontend)
 				// Note: phone/email are stored in resident_phi table, but phone_hash/email_hash are stored in residents table for login
 				var phoneHashArg, emailHashArg any = nil, nil
+				var phoneHashBytes, emailHashBytes []byte
 				if phoneHashHex, exists := payload["phone_hash"].(string); exists {
 					if phoneHashHex != "" {
 						ph, _ := hex.DecodeString(phoneHashHex)
 						if len(ph) > 0 {
 							phoneHashArg = ph
+							phoneHashBytes = ph
 						}
 					} else {
 						phoneHashArg = nil // Empty string means null
@@ -417,10 +419,19 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						eh, _ := hex.DecodeString(emailHashHex)
 						if len(eh) > 0 {
 							emailHashArg = eh
+							emailHashBytes = eh
 						}
 					} else {
 						emailHashArg = nil // Empty string means null
 					}
+				}
+
+				// Check uniqueness of phone_hash and email_hash in residents table (only if hash is provided)
+				// Note: email/phone can be empty, so we only check hash uniqueness when hash is provided
+				if err := checkHashUniqueness(s.DB, r, tenantID, "residents", phoneHashBytes, emailHashBytes, "", ""); err != nil {
+					fmt.Printf("[AdminResidents] Create resident uniqueness check error: %v\n", err)
+					writeJSON(w, http.StatusOK, Fail(err.Error()))
+					return
 				}
 
 				// Insert into residents table
@@ -549,10 +560,11 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						}
 
 						// Check uniqueness before insert
+						// Note: email/phone can be empty, so we only check hash uniqueness when hash is provided
 						if err := checkHashUniqueness(s.DB, r, tenantID, "resident_contacts", phoneHashBytes, emailHashBytes, "", ""); err != nil {
 							fmt.Printf("[AdminResidents] Create contact uniqueness check error: %v\n", err)
-							// Don't fail the whole operation, just log
-							continue
+							writeJSON(w, http.StatusOK, Fail(err.Error()))
+							return
 						}
 
 						contactQuery := `INSERT INTO resident_contacts 
@@ -711,7 +723,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
-				
+
 				// Check permissions: resident can only update self, resident_contact can only update linked resident
 				userID := r.Header.Get("X-User-Id")
 				userType := r.Header.Get("X-User-Type")
@@ -799,14 +811,14 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				// Update resident_phone if provided in payload (even if null, means delete)
-					if residentPhone, exists := payload["resident_phone"]; exists {
-						updates = append(updates, fmt.Sprintf("resident_phone = $%d", argIdx))
-						if str, ok := residentPhone.(string); ok && str != "" {
-							args = append(args, str)
-						} else {
+				if residentPhone, exists := payload["resident_phone"]; exists {
+					updates = append(updates, fmt.Sprintf("resident_phone = $%d", argIdx))
+					if str, ok := residentPhone.(string); ok && str != "" {
+						args = append(args, str)
+					} else {
 						args = append(args, nil) // null or empty means delete/clear
-						}
-						argIdx++
+					}
+					argIdx++
 				}
 
 				// Get email_hash from frontend (calculated on frontend)
@@ -827,15 +839,15 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				// Update resident_email if provided in payload (even if null, means delete)
-					if residentEmail, exists := payload["resident_email"]; exists {
-						updates = append(updates, fmt.Sprintf("resident_email = $%d", argIdx))
-						if str, ok := residentEmail.(string); ok && str != "" {
-							args = append(args, str)
-						} else {
+				if residentEmail, exists := payload["resident_email"]; exists {
+					updates = append(updates, fmt.Sprintf("resident_email = $%d", argIdx))
+					if str, ok := residentEmail.(string); ok && str != "" {
+						args = append(args, str)
+					} else {
 						args = append(args, nil) // null or empty means delete/clear
-						}
-						argIdx++
 					}
+					argIdx++
+				}
 				// Add more PHI fields (gender, date_of_birth, biometric, functional, chronic conditions, etc.)
 				if gender, exists := payload["gender"]; exists {
 					if str, ok := gender.(string); ok {
@@ -1122,7 +1134,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					phiVals := []string{"$1", "$2"}
 					phiArgs := []any{tenantID, residentID}
 					phiArgIdx := 3
-					
+
 					// Extract column names and values from updates in order
 					// The args array already contains values in the same order as updates
 					// args[0]=tenantID, args[1]=residentID, args[2]=first update value, args[3]=second update value, etc.
@@ -1149,7 +1161,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 							phiArgIdx++
 						}
 					}
-					
+
 					// Build conflict updates using EXCLUDED (references the values being inserted)
 					// This avoids duplicating parameter values
 					conflictUpdates := []string{}
@@ -1160,7 +1172,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 							conflictUpdates = append(conflictUpdates, fmt.Sprintf("%s = EXCLUDED.%s", colName, colName))
 						}
 					}
-					
+
 					updateQuery := fmt.Sprintf(`INSERT INTO resident_phi (%s) VALUES (%s)
 					                        ON CONFLICT (tenant_id, resident_id) DO UPDATE SET %s`,
 						strings.Join(phiCols, ", "), strings.Join(phiVals, ", "), strings.Join(conflictUpdates, ", "))
@@ -1173,6 +1185,25 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					// Also update phone_hash and email_hash in residents table if phone/email were updated
 					// Note: phone/email are stored in resident_phi table, but phone_hash/email_hash are stored in residents table for login
 					if phoneUpdated || emailUpdated {
+						// Check uniqueness of phone_hash and email_hash in residents table (only if hash is provided)
+						// Note: email/phone can be empty, so we only check hash uniqueness when hash is provided
+						// Exclude current resident from uniqueness check
+						var phoneHashBytes, emailHashBytes []byte
+						if phoneHashArg != nil {
+							if ph, ok := phoneHashArg.([]byte); ok {
+								phoneHashBytes = ph
+							}
+						}
+						if emailHashArg != nil {
+							if eh, ok := emailHashArg.([]byte); ok {
+								emailHashBytes = eh
+							}
+						}
+						if err := checkHashUniqueness(s.DB, r, tenantID, "residents", phoneHashBytes, emailHashBytes, residentID, "resident_id"); err != nil {
+							writeJSON(w, http.StatusOK, Fail(err.Error()))
+							return
+						}
+
 						residentUpdates := []string{}
 						residentArgs := []any{tenantID, residentID}
 						residentArgIdx := 3
@@ -1217,7 +1248,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
-				
+
 				var payload map[string]any
 				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 					writeJSON(w, http.StatusOK, Fail("invalid body"))
@@ -1230,7 +1261,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					writeJSON(w, http.StatusOK, Fail("slot is required"))
 					return
 				}
-				
+
 				// Check permissions: resident_contact can only modify own slot
 				userID := r.Header.Get("X-User-Id")
 				userType := r.Header.Get("X-User-Type")
@@ -1426,7 +1457,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				                phone_hash = EXCLUDED.phone_hash,
 				                email_hash = EXCLUDED.email_hash`
 					contactArgs = []any{tenantID, residentID, slot, isEnabled, relationshipArg,
-					contactFirstNameArg, contactLastNameArg, contactPhoneArg, contactEmailArg,
+						contactFirstNameArg, contactLastNameArg, contactPhoneArg, contactEmailArg,
 						contactFamilyTagArg, receiveSms, receiveEmail, phoneHashArg, emailHashArg}
 				}
 
@@ -1464,7 +1495,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				parts := strings.Split(path, "/")
 				var contactID string
 				var residentID, slot string
-				
+
 				if len(parts) == 3 && parts[0] == "contacts" {
 					// New format: /contacts/:contact_id/reset-password
 					contactID = parts[1]
@@ -1476,7 +1507,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
-				
+
 				var payload map[string]any
 				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 					writeJSON(w, http.StatusOK, Fail("invalid body"))
@@ -1507,21 +1538,21 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				} else if residentID != "" && slot != "" {
 					// Use resident_id + slot (backward compatibility)
 					_, err = s.DB.ExecContext(
-					r.Context(),
-					`UPDATE resident_contacts SET password_hash = $4
+						r.Context(),
+						`UPDATE resident_contacts SET password_hash = $4
 					  WHERE tenant_id = $1 AND resident_id::text = $2 AND slot = $3`,
-					tenantID, residentID, slot, aph,
-				)
+						tenantID, residentID, slot, aph,
+					)
 				} else {
 					writeJSON(w, http.StatusOK, Fail("invalid path: contact_id or resident_id+slot required"))
 					return
 				}
-				
+
 				if err != nil {
 					if err == sql.ErrNoRows {
 						writeJSON(w, http.StatusOK, Fail("contact not found"))
 					} else {
-					writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to reset contact password: %v", err)))
+						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to reset contact password: %v", err)))
 					}
 					return
 				}
@@ -1544,7 +1575,33 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					return
 				}
-				
+
+				// Support both resident_id and contact_id in the path parameter
+				// If id is a contact_id, find the associated resident_id first
+				var actualResidentID string = id
+				var foundContactID sql.NullString
+				err := s.DB.QueryRowContext(r.Context(),
+					`SELECT contact_id::text FROM resident_contacts 
+					 WHERE tenant_id = $1 AND contact_id::text = $2`,
+					tenantID, id,
+				).Scan(&foundContactID)
+				if err == nil && foundContactID.Valid {
+					// id is a contact_id, find the associated resident_id
+					var linkedResidentID sql.NullString
+					err2 := s.DB.QueryRowContext(r.Context(),
+						`SELECT resident_id::text FROM resident_contacts 
+						 WHERE tenant_id = $1 AND contact_id::text = $2`,
+						tenantID, id,
+					).Scan(&linkedResidentID)
+					if err2 == nil && linkedResidentID.Valid {
+						actualResidentID = linkedResidentID.String
+					} else {
+						writeJSON(w, http.StatusOK, Fail("contact not found or not linked to any resident"))
+						return
+					}
+				}
+				// If id is not a contact_id, assume it's a resident_id (existing behavior)
+
 				// Check permissions: resident can only view self, resident_contact can only view linked resident
 				userID := r.Header.Get("X-User-Id")
 				userType := r.Header.Get("X-User-Type")
@@ -1558,19 +1615,19 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					).Scan(&foundResidentID)
 					if err == nil && foundResidentID.Valid {
 						// This is a resident_contact login - can only view linked resident
-						if foundResidentID.String != id {
+						if foundResidentID.String != actualResidentID {
 							writeJSON(w, http.StatusOK, Fail("access denied: can only view linked resident"))
 							return
 						}
 					} else {
 						// This is a resident login - can only view self
-						if userID != id {
+						if userID != actualResidentID {
 							writeJSON(w, http.StatusOK, Fail("access denied: can only view own information"))
 							return
 						}
 					}
 				}
-				
+
 				includePHI := r.URL.Query().Get("include_phi") == "true"
 				includeContacts := r.URL.Query().Get("include_contacts") == "true"
 
@@ -1584,7 +1641,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				var canViewStatus bool
 
 				var residentPhoneHash, residentEmailHash []byte
-				err := s.DB.QueryRowContext(
+				err = s.DB.QueryRowContext(
 					r.Context(),
 					`SELECT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,
 					        r.status, r.service_level, r.admission_date, r.discharge_date,
@@ -1603,7 +1660,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					 LEFT JOIN rooms rm ON rm.room_id = r.room_id
 					 LEFT JOIN beds b ON b.bed_id = r.bed_id
 					 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
-					tenantID, id,
+					tenantID, actualResidentID,
 				).Scan(
 					&residentID, &tid, &residentAccount, &nickname,
 					&status, &serviceLevel, &admissionDate, &dischargeDate,
@@ -1694,7 +1751,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						        home_address_street, home_address_city, home_address_state, home_address_postal_code, plus_code
 						 FROM resident_phi
 						 WHERE tenant_id = $1 AND resident_id = $2`,
-						tenantID, id,
+						tenantID, actualResidentID,
 					).Scan(&phiID, &phiFirstName, &phiLastName, &gender, &dateOfBirth,
 						&residentPhone, &residentEmail, &weightLb, &heightFt, &heightIn,
 						&mobilityLevel, &tremorStatus, &mobilityAid, &adlAssistance, &commStatus,
@@ -1822,7 +1879,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						 FROM resident_contacts
 						 WHERE tenant_id = $1 AND resident_id = $2
 						 ORDER BY slot ASC`,
-						tenantID, id,
+						tenantID, actualResidentID,
 					)
 					if err == nil {
 						defer rows.Close()
@@ -1856,17 +1913,17 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 								}
 								// If phone_hash exists but phone is NULL, return placeholder
 								if phoneHash != nil && len(phoneHash) > 0 {
-								if phone.Valid {
-									contact["contact_phone"] = phone.String
+									if phone.Valid {
+										contact["contact_phone"] = phone.String
 									} else {
 										contact["contact_phone"] = "xxx-xxx-xxxx" // Placeholder when hash exists but phone is not saved
-								}
+									}
 								} else if phone.Valid {
 									contact["contact_phone"] = phone.String
 								}
 								// If email_hash exists but email is NULL, return placeholder
 								if emailHash != nil && len(emailHash) > 0 {
-								if email.Valid {
+									if email.Valid {
 										contact["contact_email"] = email.String
 									} else {
 										contact["contact_email"] = "***@***" // Placeholder when hash exists but email is not saved
@@ -1895,7 +1952,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					return
 				}
-				
+
 				// Check permissions: resident can only update self, resident_contact can only update linked resident
 				userID := r.Header.Get("X-User-Id")
 				userType := r.Header.Get("X-User-Type")
