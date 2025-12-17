@@ -163,9 +163,11 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 					          ELSE 3
 					        END as priority
 					   FROM resident_contacts rc
+					   JOIN residents r ON r.resident_id = rc.resident_id AND r.tenant_id = rc.tenant_id
 					  WHERE rc.password_hash = $2
 					    AND COALESCE(rc.is_enabled,true) = true
 					    AND (rc.email_hash = $1 OR rc.phone_hash = $1)
+					    AND COALESCE(r.can_view_status,true) = true
 					  ORDER BY priority ASC, rc.tenant_id::text ASC`,
 					ah, ph,
 				)
@@ -197,6 +199,7 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 							  WHERE r.password_hash = $2
 							    AND COALESCE(r.status,'active') = 'active'
 							    AND (r.email_hash = $1 OR r.phone_hash = $1 OR r.resident_account_hash = $1)
+							    AND COALESCE(r.can_view_status,true) = true
 							  ORDER BY priority ASC, r.tenant_id::text ASC`,
 							ah, ph,
 						)
@@ -350,6 +353,8 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 					  WHERE rc.tenant_id = $1
 					    AND rc.password_hash = $3
 					    AND (rc.email_hash = $2 OR rc.phone_hash = $2)
+					    AND COALESCE(rc.is_enabled,true) = true
+					    AND COALESCE(r.can_view_status,true) = true
 					  ORDER BY 
 					    CASE
 					      WHEN rc.email_hash = $2 THEN 1
@@ -384,6 +389,8 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 						  WHERE r.tenant_id = $1
 						    AND r.password_hash = $3
 						    AND (r.email_hash = $2 OR r.phone_hash = $2 OR r.resident_account_hash = $2)
+						    AND COALESCE(r.status,'active') = 'active'
+						    AND COALESCE(r.can_view_status,true) = true
 						  ORDER BY 
 						    CASE
 						      WHEN r.email_hash = $2 THEN 1
@@ -653,9 +660,11 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 					          ELSE 3
 					        END as priority
 					   FROM resident_contacts rc
+					   JOIN residents r ON r.resident_id = rc.resident_id AND r.tenant_id = rc.tenant_id
 					  WHERE rc.password_hash = $2
 					    AND COALESCE(rc.is_enabled,true) = true
 					    AND (rc.email_hash = $1 OR rc.phone_hash = $1)
+					    AND COALESCE(r.can_view_status,true) = true
 					  ORDER BY priority ASC, rc.tenant_id::text ASC`,
 					ah, ph,
 				)
@@ -687,6 +696,7 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 							  WHERE r.password_hash = $2
 							    AND COALESCE(r.status,'active') = 'active'
 							    AND (r.email_hash = $1 OR r.phone_hash = $1 OR r.resident_account_hash = $1)
+							    AND COALESCE(r.can_view_status,true) = true
 							  ORDER BY priority ASC, r.tenant_id::text ASC`,
 							ah, ph,
 						)
