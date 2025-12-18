@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 	
+	logpkg "owl-common/logger"
+	
 	"go.uber.org/zap"
 	"wisefido-radar/internal/config"
 	"wisefido-radar/internal/service"
@@ -20,7 +22,7 @@ func main() {
 	}
 	
 	// 初始化Logger
-	logger, err := zap.NewProduction()
+	logger, err := logpkg.NewLogger(cfg.Log.Level, cfg.Log.Format)
 	if err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}

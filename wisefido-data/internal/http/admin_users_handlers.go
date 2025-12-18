@@ -12,6 +12,44 @@ import (
 	"github.com/lib/pq"
 )
 
+// getRoleLevel 返回角色的层级（数字越小，权限越高）
+// Level 1: SystemAdmin, SystemOperator (系统级)
+// Level 2: Admin (租户管理员)
+// Level 3: Manager, IT (业务管理层)
+// Level 4: Nurse, Caregiver (操作层)
+// Level 5: Resident, Family (用户角色)
+func getRoleLevel(role string) int {
+	switch strings.ToLower(role) {
+	case "systemadmin", "systemoperator":
+		return 1
+	case "admin":
+		return 2
+	case "manager", "it":
+		return 3
+	case "nurse", "caregiver":
+		return 4
+	case "resident", "family":
+		return 5
+	default:
+		return 999 // 未知角色，最严格
+	}
+}
+
+// canCreateRole 检查当前用户是否可以创建指定角色
+// 规则：可以创建同级或下级角色（方案A）
+func canCreateRole(currentRole, targetRole string) bool {
+	// SystemAdmin 和 SystemOperator 只能由 SystemAdmin 创建（已有单独检查）
+	if targetRole == "SystemAdmin" || targetRole == "SystemOperator" {
+		return false // 这个检查在调用前已经单独处理
+	}
+
+	currentLevel := getRoleLevel(currentRole)
+	targetLevel := getRoleLevel(targetRole)
+
+	// 方案A：允许创建同级或下级角色
+	return targetLevel >= currentLevel
+}
+
 func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/admin/api/v1/users" {
 		switch r.Method {
@@ -24,6 +62,37 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 				}
 				fmt.Printf("[AdminUsers] Got tenant_id: %s\n", tenantID)
 				search := strings.TrimSpace(r.URL.Query().Get("search"))
+
+				// Get current user info for permission-based filtering
+				userID := r.Header.Get("X-User-Id")
+				var userRole, userBranchTag sql.NullString
+
+				if userID != "" {
+					// Get user role and branch_tag
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT role, branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+						tenantID, userID,
+					).Scan(&userRole, &userBranchTag)
+					if err != nil && err != sql.ErrNoRows {
+						fmt.Printf("[AdminUsers] Failed to get user info: %v\n", err)
+					}
+				}
+
+				// Check role_permissions for users resource
+				var permCheck *PermissionCheck
+				if userRole.Valid && userRole.String != "" {
+					var err error
+					permCheck, err = GetResourcePermission(s.DB, r.Context(), userRole.String, "users", "R")
+					if err != nil {
+						fmt.Printf("[AdminUsers] Failed to check role permissions: %v\n", err)
+						// Default to most restrictive permissions for safety
+						permCheck = &PermissionCheck{AssignedOnly: true, BranchOnly: true}
+					}
+				} else {
+					// If no role found, default to most restrictive permissions for safety
+					permCheck = &PermissionCheck{AssignedOnly: true, BranchOnly: true}
+				}
+
 				args := []any{tenantID}
 				q := `SELECT user_id::text, tenant_id::text, user_account, nickname, email, phone, role, status,
 				             COALESCE(alarm_levels, ARRAY[]::varchar[]) as alarm_levels,
@@ -33,9 +102,28 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 				             COALESCE(preferences, '{}'::jsonb) as preferences
 				      FROM users
 				      WHERE tenant_id = $1`
+
+				// Apply permission-based filtering
+				if permCheck.AssignedOnly && userID != "" {
+					// Caregiver/Nurse: can only view self
+					args = append(args, userID)
+					q += fmt.Sprintf(` AND user_id::text = $%d`, len(args))
+				} else if permCheck.BranchOnly {
+					// Manager: can only view users in the same branch
+					if !userBranchTag.Valid || userBranchTag.String == "" {
+						// User branch_tag is NULL: can only view users with branch_tag IS NULL OR '-'
+						q += ` AND (users.branch_tag IS NULL OR users.branch_tag = '-')`
+					} else {
+						// User branch_tag has value: can only view users with matching branch_tag
+						args = append(args, userBranchTag.String)
+						q += fmt.Sprintf(` AND users.branch_tag = $%d`, len(args))
+					}
+				}
+				// Admin/IT: no additional filtering (can view all users)
+
 				if search != "" {
 					args = append(args, "%"+search+"%")
-					q += ` AND (user_account ILIKE $2 OR COALESCE(nickname,'') ILIKE $2 OR COALESCE(email,'') ILIKE $2 OR COALESCE(phone,'') ILIKE $2)`
+					q += fmt.Sprintf(` AND (user_account ILIKE $%d OR COALESCE(nickname,'') ILIKE $%d OR COALESCE(email,'') ILIKE $%d OR COALESCE(phone,'') ILIKE $%d)`, len(args), len(args), len(args), len(args))
 				}
 				q += ` ORDER BY user_account ASC`
 				fmt.Printf("[AdminUsers] Executing query: %s with args: %v\n", q, args)
@@ -147,10 +235,38 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				role = strings.TrimSpace(role)
+				
+				// Get current user's real role from database (security: don't trust header)
+				currentUserID := r.Header.Get("X-User-Id")
+				var currentUserRole string
+				if currentUserID != "" {
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+						tenantID, currentUserID,
+					).Scan(&currentUserRole)
+					if err != nil {
+						if err == sql.ErrNoRows {
+							writeJSON(w, http.StatusOK, Fail("current user not found"))
+						} else {
+							writeJSON(w, http.StatusOK, Fail("failed to get current user role"))
+						}
+						return
+					}
+				} else {
+					writeJSON(w, http.StatusOK, Fail("user ID is required"))
+					return
+				}
+				
 				// Security: system roles can only be assigned by SystemAdmin within System tenant.
 				if role == "SystemAdmin" || role == "SystemOperator" {
-					if tenantID != SystemTenantID() || !strings.EqualFold(r.Header.Get("X-User-Role"), "SystemAdmin") {
+					if tenantID != SystemTenantID() || !strings.EqualFold(currentUserRole, "SystemAdmin") {
 						writeJSON(w, http.StatusOK, Fail("not allowed to assign system role"))
+						return
+					}
+				} else {
+					// Check role hierarchy: can only create same level or lower level roles
+					if currentUserRole != "" && !canCreateRole(currentUserRole, role) {
+						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("not allowed to create %s role (current role: %s)", role, currentUserRole)))
 						return
 					}
 				}
@@ -165,6 +281,20 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 				nickname, _ := payload["nickname"].(string)
 				email, _ := payload["email"].(string)
 				phone, _ := payload["phone"].(string)
+				// Calculate email_hash and phone_hash for login (if email/phone provided)
+				var emailHashArg, phoneHashArg any = nil, nil
+				if email != "" {
+					eh, _ := hex.DecodeString(HashAccount(email))
+					if len(eh) > 0 {
+						emailHashArg = eh
+					}
+				}
+				if phone != "" {
+					ph, _ := hex.DecodeString(HashAccount(phone))
+					if len(ph) > 0 {
+						phoneHashArg = ph
+					}
+				}
 				status := "active"
 				if st, ok := payload["status"].(string); ok && st != "" {
 					status = st
@@ -237,11 +367,12 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 				var userID string
 				err := s.DB.QueryRowContext(
 					r.Context(),
-					`INSERT INTO users (tenant_id, user_account, user_account_hash, password_hash, nickname, email, phone, role, status, alarm_levels, alarm_channels, alarm_scope, tags)
-					 VALUES ($1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13)
+					`INSERT INTO users (tenant_id, user_account, user_account_hash, password_hash, nickname, email, phone, email_hash, phone_hash, role, status, alarm_levels, alarm_channels, alarm_scope, tags)
+					 VALUES ($1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15)
 					 RETURNING user_id::text`,
-					tenantID, userAccount, ah, aph, nickname, email, phone, role, status,
-					pq.Array(alarmLevels), pq.Array(alarmChannels), alarmScope, tagsArg,
+					tenantID, userAccount, ah, aph, nickname, email, phone,
+					emailHashArg, phoneHashArg,
+					role, status, pq.Array(alarmLevels), pq.Array(alarmChannels), alarmScope, tagsArg,
 				).Scan(&userID)
 				if err != nil {
 					// Check for unique constraint violation
@@ -282,6 +413,55 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
+
+				// Permission check: can reset own password or have permission to reset other user's password
+				currentUserID := r.Header.Get("X-User-Id")
+				if currentUserID == "" {
+					writeJSON(w, http.StatusOK, Fail("user ID is required"))
+					return
+				}
+				
+				// Get current user's real role from database (security: don't trust header)
+				var currentUserRole string
+				err := s.DB.QueryRowContext(r.Context(),
+					`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+					tenantID, currentUserID,
+				).Scan(&currentUserRole)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						writeJSON(w, http.StatusOK, Fail("current user not found"))
+					} else {
+						writeJSON(w, http.StatusOK, Fail("failed to get current user role"))
+					}
+					return
+				}
+				
+				isResettingSelf := currentUserID == userID
+
+				// If resetting other user's password, check role hierarchy
+				if !isResettingSelf {
+					// Get target user's role
+					var targetUserRole string
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+						tenantID, userID,
+					).Scan(&targetUserRole)
+					if err != nil {
+						if err == sql.ErrNoRows {
+							writeJSON(w, http.StatusOK, Fail("user not found"))
+						} else {
+							writeJSON(w, http.StatusOK, Fail("failed to get user info"))
+						}
+						return
+					}
+
+					// Check if current user can reset target user's password (role hierarchy check)
+					if currentUserRole != "" && !canCreateRole(currentUserRole, targetUserRole) {
+						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("not allowed to reset password for %s role user (current role: %s)", targetUserRole, currentUserRole)))
+						return
+					}
+				}
+
 				var payload map[string]any
 				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 					writeJSON(w, http.StatusOK, Fail("invalid body"))
@@ -295,7 +475,7 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 
 				// Look up user_account for hashing
 				var userAccount, role string
-				err := s.DB.QueryRowContext(
+				err = s.DB.QueryRowContext(
 					r.Context(),
 					`SELECT user_account, role
 					   FROM users
@@ -348,6 +528,56 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
+
+				// Permission check: can reset own PIN or have permission to reset other user's PIN
+				// Note: Currently Caregiver/Nurse don't have UI to reset PIN, but backend allows it for consistency
+				currentUserID := r.Header.Get("X-User-Id")
+				if currentUserID == "" {
+					writeJSON(w, http.StatusOK, Fail("user ID is required"))
+					return
+				}
+				
+				// Get current user's real role from database (security: don't trust header)
+				var currentUserRole string
+				err := s.DB.QueryRowContext(r.Context(),
+					`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+					tenantID, currentUserID,
+				).Scan(&currentUserRole)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						writeJSON(w, http.StatusOK, Fail("current user not found"))
+					} else {
+						writeJSON(w, http.StatusOK, Fail("failed to get current user role"))
+					}
+					return
+				}
+				
+				isResettingSelf := currentUserID == userID
+
+				// If resetting other user's PIN, check role hierarchy
+				if !isResettingSelf {
+					// Get target user's role
+					var targetUserRole string
+					err = s.DB.QueryRowContext(r.Context(),
+						`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+						tenantID, userID,
+					).Scan(&targetUserRole)
+					if err != nil {
+						if err == sql.ErrNoRows {
+							writeJSON(w, http.StatusOK, Fail("user not found"))
+						} else {
+							writeJSON(w, http.StatusOK, Fail("failed to get user info"))
+						}
+						return
+					}
+
+					// Check if current user can reset target user's PIN (role hierarchy check)
+					if currentUserRole != "" && !canCreateRole(currentUserRole, targetUserRole) {
+						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("not allowed to reset PIN for %s role user (current role: %s)", targetUserRole, currentUserRole)))
+						return
+					}
+				}
+
 				var payload map[string]any
 				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 					writeJSON(w, http.StatusOK, Fail("invalid body"))
@@ -376,7 +606,7 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 					writeJSON(w, http.StatusOK, Fail("failed to hash PIN"))
 					return
 				}
-				_, err := s.DB.ExecContext(
+				_, err = s.DB.ExecContext(
 					r.Context(),
 					`UPDATE users SET pin_hash = $3
 					  WHERE tenant_id = $1 AND user_id::text = $2`,
@@ -411,7 +641,50 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 				}
 				// Soft delete via {_delete:true}
 				if del, ok := payload["_delete"].(bool); ok && del {
-					_, err := s.DB.ExecContext(
+					// Check permission: can only delete users with same level or lower level roles
+					currentUserID := r.Header.Get("X-User-Id")
+					if currentUserID == "" {
+						writeJSON(w, http.StatusOK, Fail("user ID is required"))
+						return
+					}
+					
+					// Get current user's real role from database (security: don't trust header)
+					var currentUserRole string
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+						tenantID, currentUserID,
+					).Scan(&currentUserRole)
+					if err != nil {
+						if err == sql.ErrNoRows {
+							writeJSON(w, http.StatusOK, Fail("current user not found"))
+						} else {
+							writeJSON(w, http.StatusOK, Fail("failed to get current user role"))
+						}
+						return
+					}
+
+					// Get target user's role
+					var targetUserRole string
+					err = s.DB.QueryRowContext(r.Context(),
+						`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+						tenantID, id,
+					).Scan(&targetUserRole)
+					if err != nil {
+						if err == sql.ErrNoRows {
+							writeJSON(w, http.StatusOK, Fail("user not found"))
+						} else {
+							writeJSON(w, http.StatusOK, Fail("failed to get user info"))
+						}
+						return
+					}
+
+					// Check if current user can delete target user (role hierarchy check)
+					if currentUserRole != "" && !canCreateRole(currentUserRole, targetUserRole) {
+						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("not allowed to delete %s role (current role: %s)", targetUserRole, currentUserRole)))
+						return
+					}
+
+					_, err = s.DB.ExecContext(
 						r.Context(),
 						`UPDATE users SET status = 'left' WHERE tenant_id = $1 AND user_id::text = $2`,
 						tenantID, id,
@@ -426,18 +699,155 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 
 				// Update editable fields
 				nickname, _ := payload["nickname"].(string)
-				email, _ := payload["email"].(string)
-				phone, _ := payload["phone"].(string)
+				// Handle email: can be string or empty string (to clear to NULL)
+				// Frontend sends email_hash (always) and email (only if save is checked)
+				var email string
+				var emailProvided bool
+				var emailIsNull bool
+				var emailHashProvided bool
+				var emailHashArg any = nil
+				// Get email_hash from frontend (calculated on frontend, always sent if email has value)
+				if emailHashHex, exists := payload["email_hash"]; exists {
+					emailHashProvided = true
+					if str, ok := emailHashHex.(string); ok {
+						if str != "" {
+							eh, _ := hex.DecodeString(str)
+							if len(eh) > 0 {
+								emailHashArg = eh
+							}
+						} else {
+							emailHashArg = nil // Empty string means null
+						}
+					} else if emailHashHex == nil {
+						emailHashArg = nil // null means null
+					}
+				}
+				// Get email: if null, means delete; if string, means save
+				if emailVal, ok := payload["email"]; ok {
+					emailProvided = true
+					if emailVal == nil {
+						emailIsNull = true // Explicitly null: delete email
+					} else if emailStr, ok := emailVal.(string); ok {
+						email = strings.TrimSpace(emailStr)
+						if email == "" {
+							emailIsNull = true // Empty string: also means delete
+						}
+					}
+				}
+				// Handle phone: can be string, null, or empty string (to clear to NULL)
+				// Frontend sends phone_hash (always if phone has value) and phone (null if save is unchecked, value if save is checked)
+				var phone string
+				var phoneProvided bool
+				var phoneIsNull bool
+				var phoneHashProvided bool
+				var phoneHashArg any = nil
+				// Get phone_hash from frontend (calculated on frontend, always sent if phone has value)
+				if phoneHashHex, exists := payload["phone_hash"]; exists {
+					phoneHashProvided = true
+					if str, ok := phoneHashHex.(string); ok {
+						if str != "" {
+							ph, _ := hex.DecodeString(str)
+							if len(ph) > 0 {
+								phoneHashArg = ph
+							}
+						} else {
+							phoneHashArg = nil // Empty string means null
+						}
+					} else if phoneHashHex == nil {
+						phoneHashArg = nil // null means null
+					}
+				}
+				// Get phone: if null, means delete; if string, means save
+				if phoneVal, ok := payload["phone"]; ok {
+					phoneProvided = true
+					if phoneVal == nil {
+						phoneIsNull = true // Explicitly null: delete phone
+					} else if phoneStr, ok := phoneVal.(string); ok {
+						phone = strings.TrimSpace(phoneStr)
+						if phone == "" {
+							phoneIsNull = true // Empty string: also means delete
+						}
+					}
+				}
 				role, _ := payload["role"].(string)
 				status, _ := payload["status"].(string)
 				role = strings.TrimSpace(role)
 				status = strings.TrimSpace(status)
 
-				// Security: system roles can only be assigned by SystemAdmin within System tenant.
-				if role == "SystemAdmin" || role == "SystemOperator" {
-					if tenantID != SystemTenantID() || !strings.EqualFold(r.Header.Get("X-User-Role"), "SystemAdmin") {
-						writeJSON(w, http.StatusOK, Fail("not allowed to assign system role"))
+				// Get current user info for permission check (security: get real role from database, don't trust header)
+				currentUserID := r.Header.Get("X-User-Id")
+				var currentUserRole string
+				if currentUserID != "" {
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+						tenantID, currentUserID,
+					).Scan(&currentUserRole)
+					if err != nil {
+						if err == sql.ErrNoRows {
+							writeJSON(w, http.StatusOK, Fail("current user not found"))
+						} else {
+							writeJSON(w, http.StatusOK, Fail("failed to get current user role"))
+						}
 						return
+					}
+				} else {
+					writeJSON(w, http.StatusOK, Fail("user ID is required"))
+					return
+				}
+
+				// Check if updating self or other user
+				isUpdatingSelf := currentUserID != "" && currentUserID == id
+
+				// Determine what fields are being updated (excluding password which is handled separately)
+				updatingRole := role != ""
+				updatingStatus := status != ""
+				updatingOtherFields := nickname != "" || emailProvided || phoneProvided ||
+					payload["alarm_levels"] != nil || payload["alarm_channels"] != nil ||
+					payload["alarm_scope"] != nil || payload["tags"] != nil || payload["branch_tag"] != nil
+
+				// Permission check:
+				// 1. If updating self and only updating password/email/phone, no restriction
+				// 2. If updating other user or updating role/status/other fields, need permission check
+				if !isUpdatingSelf || updatingRole || updatingStatus || updatingOtherFields {
+					// Get target user's current role for comparison
+					var targetUserRole string
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+						tenantID, id,
+					).Scan(&targetUserRole)
+					if err != nil {
+						if err == sql.ErrNoRows {
+							writeJSON(w, http.StatusOK, Fail("user not found"))
+						} else {
+							writeJSON(w, http.StatusOK, Fail("failed to get user info"))
+						}
+						return
+					}
+
+					// If updating role, check if can assign new role
+					if updatingRole {
+						// Security: system roles can only be assigned by SystemAdmin within System tenant.
+						if role == "SystemAdmin" || role == "SystemOperator" {
+							if tenantID != SystemTenantID() || !strings.EqualFold(currentUserRole, "SystemAdmin") {
+								writeJSON(w, http.StatusOK, Fail("not allowed to assign system role"))
+								return
+							}
+						} else {
+							// Check role hierarchy: can only assign same level or lower level roles
+							if currentUserRole != "" && !canCreateRole(currentUserRole, role) {
+								writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("not allowed to assign %s role (current role: %s)", role, currentUserRole)))
+								return
+							}
+						}
+					}
+
+					// If updating other user or updating status/other fields, check if can manage target user
+					if !isUpdatingSelf || updatingStatus || updatingOtherFields {
+						// Check if current user can manage target user (role hierarchy check)
+						if currentUserRole != "" && !canCreateRole(currentUserRole, targetUserRole) {
+							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("not allowed to update %s role user (current role: %s)", targetUserRole, currentUserRole)))
+							return
+						}
 					}
 				}
 
@@ -500,15 +910,71 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 					args = append(args, nickname)
 					argIdx++
 				}
-				if email != "" {
-					updates = append(updates, fmt.Sprintf("email = $%d", argIdx))
-					args = append(args, email)
-					argIdx++
+				// Update email: if email_hash is provided, update hash (for login)
+				// If email is also provided and not null, update both email and hash (save is checked)
+				// If email is null but hash is provided, delete email but keep hash (save is unchecked)
+				if emailHashProvided {
+					if emailProvided && emailIsNull {
+						// email is explicitly null: delete email but keep hash (save is unchecked)
+						updates = append(updates, fmt.Sprintf("email = $%d, email_hash = $%d", argIdx, argIdx+1))
+						args = append(args, nil, emailHashArg)
+						argIdx += 2
+					} else if emailProvided && email != "" {
+						// Save both email and hash (save is checked)
+						updates = append(updates, fmt.Sprintf("email = $%d, email_hash = $%d", argIdx, argIdx+1))
+						args = append(args, email, emailHashArg)
+						argIdx += 2
+					} else {
+						// email not provided but hash is: only update hash (legacy case, shouldn't happen with new frontend)
+						updates = append(updates, fmt.Sprintf("email_hash = $%d", argIdx))
+						args = append(args, emailHashArg)
+						argIdx++
+					}
+				} else if emailProvided {
+					// Legacy: if only email is provided (no hash), calculate hash
+					if emailIsNull {
+						updates = append(updates, fmt.Sprintf("email = $%d, email_hash = $%d", argIdx, argIdx+1))
+						args = append(args, nil, nil)
+						argIdx += 2
+					} else if email != "" {
+						emailHash, _ := hex.DecodeString(HashAccount(email))
+						updates = append(updates, fmt.Sprintf("email = $%d, email_hash = $%d", argIdx, argIdx+1))
+						args = append(args, email, emailHash)
+						argIdx += 2
+					}
 				}
-				if phone != "" {
-					updates = append(updates, fmt.Sprintf("phone = $%d", argIdx))
-					args = append(args, phone)
-					argIdx++
+				// Update phone: if phone_hash is provided, update hash (for login)
+				// If phone is also provided and not null, update both phone and hash (save is checked)
+				// If phone is null but hash is provided, delete phone but keep hash (save is unchecked)
+				if phoneHashProvided {
+					if phoneProvided && phoneIsNull {
+						// phone is explicitly null: delete phone but keep hash (save is unchecked)
+						updates = append(updates, fmt.Sprintf("phone = $%d, phone_hash = $%d", argIdx, argIdx+1))
+						args = append(args, nil, phoneHashArg)
+						argIdx += 2
+					} else if phoneProvided && phone != "" {
+						// Save both phone and hash (save is checked)
+						updates = append(updates, fmt.Sprintf("phone = $%d, phone_hash = $%d", argIdx, argIdx+1))
+						args = append(args, phone, phoneHashArg)
+						argIdx += 2
+					} else {
+						// phone not provided but hash is: only update hash (legacy case, shouldn't happen with new frontend)
+						updates = append(updates, fmt.Sprintf("phone_hash = $%d", argIdx))
+						args = append(args, phoneHashArg)
+						argIdx++
+					}
+				} else if phoneProvided {
+					// Legacy: if only phone is provided (no hash), calculate hash
+					if phoneIsNull {
+						updates = append(updates, fmt.Sprintf("phone = $%d, phone_hash = $%d", argIdx, argIdx+1))
+						args = append(args, nil, nil)
+						argIdx += 2
+					} else if phone != "" {
+						phoneHash, _ := hex.DecodeString(HashAccount(phone))
+						updates = append(updates, fmt.Sprintf("phone = $%d, phone_hash = $%d", argIdx, argIdx+1))
+						args = append(args, phone, phoneHash)
+						argIdx += 2
+					}
 				}
 				if role != "" {
 					updates = append(updates, fmt.Sprintf("role = $%d", argIdx))
@@ -555,14 +1021,14 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				// Check email/phone uniqueness before update (if being updated)
-				if email != "" {
+				// Check email/phone uniqueness before update (if being updated and not null)
+				if emailProvided && !emailIsNull && email != "" {
 					if err := checkEmailUniqueness(s.DB, r, tenantID, email, id); err != nil {
 						writeJSON(w, http.StatusOK, Fail(err.Error()))
 						return
 					}
 				}
-				if phone != "" {
+				if phoneProvided && !phoneIsNull && phone != "" {
 					if err := checkPhoneUniqueness(s.DB, r, tenantID, phone, id); err != nil {
 						writeJSON(w, http.StatusOK, Fail(err.Error()))
 						return
@@ -592,7 +1058,51 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					return
 				}
-				_, err := s.DB.ExecContext(
+
+				// Check permission: can only delete users with same level or lower level roles
+				currentUserID := r.Header.Get("X-User-Id")
+				if currentUserID == "" {
+					writeJSON(w, http.StatusOK, Fail("user ID is required"))
+					return
+				}
+				
+				// Get current user's real role from database (security: don't trust header)
+				var currentUserRole string
+				err := s.DB.QueryRowContext(r.Context(),
+					`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+					tenantID, currentUserID,
+				).Scan(&currentUserRole)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						writeJSON(w, http.StatusOK, Fail("current user not found"))
+					} else {
+						writeJSON(w, http.StatusOK, Fail("failed to get current user role"))
+					}
+					return
+				}
+
+				// Get target user's role
+				var targetUserRole string
+				err = s.DB.QueryRowContext(r.Context(),
+					`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+					tenantID, id,
+				).Scan(&targetUserRole)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						writeJSON(w, http.StatusOK, Fail("user not found"))
+					} else {
+						writeJSON(w, http.StatusOK, Fail("failed to get user info"))
+					}
+					return
+				}
+
+				// Check if current user can delete target user (role hierarchy check)
+				if currentUserRole != "" && !canCreateRole(currentUserRole, targetUserRole) {
+					writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("not allowed to delete %s role (current role: %s)", targetUserRole, currentUserRole)))
+					return
+				}
+
+				_, err = s.DB.ExecContext(
 					r.Context(),
 					`UPDATE users SET status = 'left' WHERE tenant_id = $1 AND user_id::text = $2`,
 					tenantID, id,
@@ -612,6 +1122,56 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					return
 				}
+
+				// Permission check: Caregiver/Nurse can only view self, others need role hierarchy check
+				currentUserID := r.Header.Get("X-User-Id")
+				if currentUserID == "" {
+					writeJSON(w, http.StatusOK, Fail("user ID is required"))
+					return
+				}
+				
+				// Get current user's real role from database (security: don't trust header)
+				var currentUserRole string
+				err := s.DB.QueryRowContext(r.Context(),
+					`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+					tenantID, currentUserID,
+				).Scan(&currentUserRole)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						writeJSON(w, http.StatusOK, Fail("current user not found"))
+					} else {
+						writeJSON(w, http.StatusOK, Fail("failed to get current user role"))
+					}
+					return
+				}
+				
+				isViewingSelf := currentUserID == id
+
+				// If not viewing self, check permissions
+				if !isViewingSelf {
+					// Get target user's role
+					var targetUserRole string
+					err = s.DB.QueryRowContext(r.Context(),
+						`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+						tenantID, id,
+					).Scan(&targetUserRole)
+					if err != nil {
+						if err == sql.ErrNoRows {
+							writeJSON(w, http.StatusOK, Fail("user not found"))
+						} else {
+							writeJSON(w, http.StatusOK, Fail("failed to get user info"))
+						}
+						return
+					}
+
+					// Check if current user can view target user (role hierarchy check)
+					// Caregiver/Nurse have assigned_only=true for users resource, so they can only view self
+					// Other roles can view same level or lower level users
+					if currentUserRole != "" && !canCreateRole(currentUserRole, targetUserRole) {
+						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("not allowed to view %s role user (current role: %s)", targetUserRole, currentUserRole)))
+						return
+					}
+				}
 				var (
 					userID, tenantIDStr, userAccount, nickname, email, phone, role, status string
 					alarmLevels, alarmChannels                                             []string
@@ -619,7 +1179,7 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 					lastLoginAt                                                            sql.NullTime
 					tagsRaw, prefRaw                                                       []byte
 				)
-				err := s.DB.QueryRowContext(
+				err = s.DB.QueryRowContext(
 					r.Context(),
 					`SELECT user_id::text,
 					        tenant_id::text,
@@ -647,6 +1207,8 @@ func (s *StubHandler) AdminUsers(w http.ResponseWriter, r *http.Request) {
 					writeJSON(w, http.StatusOK, Fail("failed to get user"))
 					return
 				}
+				// Users (staff) are not subject to HIPAA restrictions, so email/phone are always saved directly
+				// No need for placeholder logic
 				item := map[string]any{
 					"user_id":      userID,
 					"tenant_id":    tenantIDStr,

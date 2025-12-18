@@ -21,7 +21,7 @@ func (s *StubHandler) AdminRolePermissions(w http.ResponseWriter, r *http.Reques
 
 				sysT := SystemTenantID()
 				args := []any{sysT}
-				q := `SELECT permission_id::text, COALESCE(tenant_id::text, NULL), role_code, resource_type, permission_type, assigned_only
+				q := `SELECT permission_id::text, COALESCE(tenant_id::text, NULL), role_code, resource_type, permission_type, assigned_only, branch_only
 				      FROM role_permissions
 				      WHERE tenant_id = $1`
 				// Filters
@@ -57,8 +57,8 @@ func (s *StubHandler) AdminRolePermissions(w http.ResponseWriter, r *http.Reques
 				for rows.Next() {
 					var pid, rc, rt, pt string
 					var tenantIDStr sql.NullString
-					var assignedOnly bool
-					if err := rows.Scan(&pid, &tenantIDStr, &rc, &rt, &pt, &assignedOnly); err != nil {
+					var assignedOnly, branchOnly bool
+					if err := rows.Scan(&pid, &tenantIDStr, &rc, &rt, &pt, &assignedOnly, &branchOnly); err != nil {
 						writeJSON(w, http.StatusOK, Fail("failed to list role permissions"))
 						return
 					}
@@ -73,6 +73,7 @@ func (s *StubHandler) AdminRolePermissions(w http.ResponseWriter, r *http.Reques
 						"resource_type":   rt,
 						"permission_type": perm,
 						"scope":           scope,
+						"branch_only":     branchOnly,
 						"is_active":       true,
 					}
 					if tenantIDStr.Valid {
@@ -104,6 +105,7 @@ func (s *StubHandler) AdminRolePermissions(w http.ResponseWriter, r *http.Reques
 				resourceType, _ := payload["resource_type"].(string)
 				permType, _ := payload["permission_type"].(string)
 				scope, _ := payload["scope"].(string)
+				branchOnly, _ := payload["branch_only"].(bool)
 				roleCode = strings.TrimSpace(roleCode)
 				resourceType = strings.TrimSpace(resourceType)
 				permType = strings.TrimSpace(permType)
@@ -121,12 +123,12 @@ func (s *StubHandler) AdminRolePermissions(w http.ResponseWriter, r *http.Reques
 				var permissionID string
 				err := s.DB.QueryRowContext(
 					r.Context(),
-					`INSERT INTO role_permissions (tenant_id, role_code, resource_type, permission_type, assigned_only)
-					 VALUES ($1, $2, $3, $4, $5)
+					`INSERT INTO role_permissions (tenant_id, role_code, resource_type, permission_type, assigned_only, branch_only)
+					 VALUES ($1, $2, $3, $4, $5, $6)
 					 ON CONFLICT ((COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)), role_code, resource_type, permission_type)
-					 DO UPDATE SET assigned_only = EXCLUDED.assigned_only
+					 DO UPDATE SET assigned_only = EXCLUDED.assigned_only, branch_only = EXCLUDED.branch_only
 					 RETURNING permission_id::text`,
-					sysT, roleCode, resourceType, pt, assignedOnly,
+					sysT, roleCode, resourceType, pt, assignedOnly, branchOnly,
 				).Scan(&permissionID)
 				if err != nil {
 					writeJSON(w, http.StatusOK, Fail("failed to create permission"))
@@ -195,6 +197,7 @@ func (s *StubHandler) AdminRolePermissions(w http.ResponseWriter, r *http.Reques
 				resourceType, _ := m["resource_type"].(string)
 				permType, _ := m["permission_type"].(string)
 				scope, _ := m["scope"].(string)
+				branchOnly, _ := m["branch_only"].(bool)
 				isActive := true
 				if v, ok := m["is_active"].(bool); ok {
 					isActive = v
@@ -229,11 +232,11 @@ func (s *StubHandler) AdminRolePermissions(w http.ResponseWriter, r *http.Reques
 				for _, l := range letters {
 					_, err := tx.ExecContext(
 						r.Context(),
-						`INSERT INTO role_permissions (tenant_id, role_code, resource_type, permission_type, assigned_only)
-						 VALUES ($1, $2, $3, $4, $5)
+						`INSERT INTO role_permissions (tenant_id, role_code, resource_type, permission_type, assigned_only, branch_only)
+						 VALUES ($1, $2, $3, $4, $5, $6)
 						 ON CONFLICT ((COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)), role_code, resource_type, permission_type)
-						 DO UPDATE SET assigned_only = EXCLUDED.assigned_only`,
-						sysT, roleCode, resourceType, l, assignedOnly,
+						 DO UPDATE SET assigned_only = EXCLUDED.assigned_only, branch_only = EXCLUDED.branch_only`,
+						sysT, roleCode, resourceType, l, assignedOnly, branchOnly,
 					)
 					if err != nil {
 						failed++
@@ -355,8 +358,9 @@ func (s *StubHandler) AdminRolePermissions(w http.ResponseWriter, r *http.Reques
 				return
 			}
 			scope, _ := payload["scope"].(string)
+			branchOnly, _ := payload["branch_only"].(bool)
 			assignedOnly := strings.TrimSpace(scope) == "assigned_only"
-			_, err := s.DB.ExecContext(r.Context(), `UPDATE role_permissions SET assigned_only = $2 WHERE permission_id::text = $1`, permissionID, assignedOnly)
+			_, err := s.DB.ExecContext(r.Context(), `UPDATE role_permissions SET assigned_only = $2, branch_only = $3 WHERE permission_id::text = $1`, permissionID, assignedOnly, branchOnly)
 			if err != nil {
 				writeJSON(w, http.StatusOK, Fail("failed to update permission"))
 				return

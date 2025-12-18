@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -215,5 +216,83 @@ func (s *StubHandler) AdminUnits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.WriteHeader(http.StatusNotFound)
+}
+
+func (s *StubHandler) AdminDeviceStore(w http.ResponseWriter, r *http.Request) {
+	// GET /admin/api/v1/device-store
+	// PUT /admin/api/v1/device-store/batch
+	// POST /admin/api/v1/device-store/import
+	// GET /admin/api/v1/device-store/import-template
+	// GET /admin/api/v1/device-store/export
+	switch {
+	case r.URL.Path == "/admin/api/v1/device-store":
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, Ok(map[string]any{"items": []any{}, "total": 0}))
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	case r.URL.Path == "/admin/api/v1/device-store/batch":
+		switch r.Method {
+		case http.MethodPut:
+			writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true, "updated": 0}))
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	case r.URL.Path == "/admin/api/v1/device-store/import":
+		switch r.Method {
+		case http.MethodPost:
+			writeJSON(w, http.StatusOK, Ok(map[string]any{
+				"success":       true,
+				"total":         0,
+				"success_count": 0,
+				"failed_count":  0,
+				"skipped_count": 0,
+				"errors":        []any{},
+				"skipped":       []any{},
+			}))
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	case r.URL.Path == "/admin/api/v1/device-store/import-template":
+		switch r.Method {
+		case http.MethodGet:
+			// Generate Excel template with headers only (no data, only import fields)
+			excelData, err := GenerateDeviceStoreImportTemplate()
+			if err != nil {
+				writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to generate template: %v", err)))
+				return
+			}
+			w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+			w.Header().Set("Content-Disposition", "attachment; filename=device-store-import-template.xlsx")
+			w.WriteHeader(http.StatusOK)
+			w.Write(excelData)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	case r.URL.Path == "/admin/api/v1/device-store/export":
+		switch r.Method {
+		case http.MethodGet:
+			// Generate Excel export with headers (data can be empty, includes all fields)
+			// In real implementation, query data from database here
+			excelData, err := GenerateDeviceStoreExport([]map[string]any{})
+			if err != nil {
+				writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to generate export: %v", err)))
+				return
+			}
+			w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+			w.Header().Set("Content-Disposition", "attachment; filename=device-store-export.xlsx")
+			w.WriteHeader(http.StatusOK)
+			w.Write(excelData)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	}
 	w.WriteHeader(http.StatusNotFound)
 }

@@ -93,17 +93,28 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 		return fmt.Errorf("failed to unmarshal message: %w", err)
 	}
 	
-	// 3. 查询设备信息
+	// 3. 查询设备信息（如果不存在，尝试从 device_store 自动创建）
 	device, err := c.deviceRepo.GetDeviceBySerialNumber(deviceIdentifier)
 	if err != nil {
 		// 尝试使用 UID 查询
 		device, err = c.deviceRepo.GetDeviceByUID(deviceIdentifier)
 		if err != nil {
-			c.logger.Warn("Device not found",
+			// 设备不存在，尝试从 device_store 自动创建
+			device, err = c.deviceRepo.GetOrCreateDeviceFromStore(context.Background(), deviceIdentifier, topic)
+			if err != nil {
+				c.logger.Warn("Device not found and cannot be created from device_store",
+					zap.String("identifier", deviceIdentifier),
+					zap.String("mqtt_topic", topic),
+					zap.Error(err),
+				)
+				return fmt.Errorf("device not found: %s", deviceIdentifier)
+			}
+			// 设备已从 device_store 自动创建
+			c.logger.Info("Device auto-created from device_store on MQTT connection",
+				zap.String("device_id", device.DeviceID),
 				zap.String("identifier", deviceIdentifier),
-				zap.Error(err),
+				zap.String("mqtt_topic", topic),
 			)
-			return fmt.Errorf("device not found: %s", deviceIdentifier)
 		}
 	}
 	

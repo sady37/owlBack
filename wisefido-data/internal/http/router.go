@@ -73,6 +73,7 @@ func (r *Router) RegisterStubRoutes(s *StubHandler) {
 	// admin
 	r.Handle("/admin/api/v1/residents", s.AdminResidents)
 	r.Handle("/admin/api/v1/residents/", s.AdminResidents)
+	r.Handle("/admin/api/v1/contacts/", s.AdminResidents) // For contact password reset
 
 	r.Handle("/admin/api/v1/tags", s.AdminTags)
 	r.Handle("/admin/api/v1/tags/", s.AdminTags)
@@ -146,6 +147,12 @@ func (r *Router) RegisterAdminUnitDeviceRoutes(admin *AdminAPI) {
 
 	r.Handle("/admin/api/v1/devices", admin.DevicesHandler)
 	r.Handle("/admin/api/v1/devices/", admin.DevicesHandler)
+
+	// device-store
+	r.Handle("/admin/api/v1/device-store", admin.DeviceStoreHandler)
+	r.Handle("/admin/api/v1/device-store/", admin.DeviceStoreHandler)
+	r.Handle("/admin/api/v1/device-store/batch", admin.DeviceStoreHandler)
+	r.Handle("/admin/api/v1/device-store/import", admin.DeviceStoreHandler)
+	r.Handle("/admin/api/v1/device-store/import-template", admin.DeviceStoreHandler)
+	r.Handle("/admin/api/v1/device-store/export", admin.DeviceStoreHandler)
 }
-
-

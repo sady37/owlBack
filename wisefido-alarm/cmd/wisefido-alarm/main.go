@@ -9,6 +9,8 @@ import (
 	"wisefido-alarm/internal/config"
 	"wisefido-alarm/internal/service"
 
+	logpkg "owl-common/logger"
+
 	"go.uber.org/zap"
 )
 
@@ -20,7 +22,7 @@ func main() {
 	}
 
 	// 2. 初始化日志
-	logger, err := initLogger(cfg)
+	logger, err := logpkg.NewLogger(cfg.Log.Level, cfg.Log.Format)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to init logger: %v", err))
 	}
@@ -70,23 +72,5 @@ func main() {
 	}
 
 	logger.Info("Alarm service stopped")
-}
-
-// initLogger 初始化日志
-func initLogger(cfg *config.Config) (*zap.Logger, error) {
-	var logger *zap.Logger
-	var err error
-
-	if cfg.Log.Format == "json" {
-		logger, err = zap.NewProduction()
-	} else {
-		logger, err = zap.NewDevelopment()
-	}
-
-	if err != nil {
-		return nil, err
-	}
-
-	return logger, nil
 }
 

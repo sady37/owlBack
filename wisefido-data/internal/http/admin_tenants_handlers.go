@@ -160,18 +160,24 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				// Read password from request body if provided, otherwise generate temp password
+				// IMPORTANT: password_hash should only depend on password itself (no trim, no modification)
 				var adminPwd string
 				var payload map[string]any
-				if err := readBodyJSON(r, 1<<20, &payload); err == nil {
-					if pwd, ok := payload["new_password"].(string); ok && pwd != "" {
-						adminPwd = pwd
-					}
+				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
+					writeJSON(w, http.StatusOK, Fail("invalid body"))
+					return
+				}
+				// Read password from payload (use as-is, no trim)
+				if pwd, ok := payload["new_password"].(string); ok && pwd != "" {
+					// Use password as-is, no trim (password_hash = SHA256(password))
+					adminPwd = pwd
 				}
 				// If no password provided in body, generate temp password (backward compatibility)
 				if adminPwd == "" {
 					adminPwd = genTempPassword()
 				}
 				// Update password in DB
+				// password_hash should only depend on password itself (independent of account/phone/email)
 				ah, _ := hex.DecodeString(HashAccount("admin"))
 				aph, _ := hex.DecodeString(HashPassword(adminPwd))
 				if len(ah) == 0 || len(aph) == 0 {

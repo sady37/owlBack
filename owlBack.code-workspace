@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../owlFront"
+		},
+		{
+			"path": "../owlRD"
+		}
+	],
+	"settings": {}
+}

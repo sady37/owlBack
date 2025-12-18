@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,6 +16,7 @@ import (
 	"wisefido-data/internal/store"
 
 	"owl-common/database"
+	logpkg "owl-common/logger"
 
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -23,7 +25,13 @@ import (
 func main() {
 	cfg := config.Load()
 
-	logger, _ := zap.NewProduction()
+	// 初始化Logger（SaaS多租户日志管理：自动添加service_name字段）
+	logger, err := logpkg.NewLogger(cfg.Log.Level, cfg.Log.Format, "wisefido-data")
+	if err != nil {
+		// 如果日志初始化失败，使用标准库log输出错误
+		log.Printf("Failed to initialize logger: %v, using default logger", err)
+		logger, _ = zap.NewProduction()
+	}
 	defer logger.Sync()
 
 	redisClient := redis.NewClient(&redis.Options{

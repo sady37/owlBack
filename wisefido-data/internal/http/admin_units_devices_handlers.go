@@ -10,20 +10,22 @@ import (
 )
 
 type AdminAPI struct {
-	Units   repository.UnitsRepo
-	Devices repository.DevicesRepo
-	Tenant  repository.TenantResolver
-	Stub    *StubHandler
-	Log     *zap.Logger
+	Units       repository.UnitsRepo
+	Devices     repository.DevicesRepo
+	DeviceStore repository.DeviceStoreRepo
+	Tenant      repository.TenantResolver
+	Stub        *StubHandler
+	Log         *zap.Logger
 }
 
-func NewAdminAPI(units repository.UnitsRepo, devices repository.DevicesRepo, tenant repository.TenantResolver, stub *StubHandler, log *zap.Logger) *AdminAPI {
+func NewAdminAPI(units repository.UnitsRepo, devices repository.DevicesRepo, deviceStore repository.DeviceStoreRepo, tenant repository.TenantResolver, stub *StubHandler, log *zap.Logger) *AdminAPI {
 	return &AdminAPI{
-		Units:   units,
-		Devices: devices,
-		Tenant:  tenant,
-		Stub:    stub,
-		Log:     log,
+		Units:       units,
+		Devices:     devices,
+		DeviceStore: deviceStore,
+		Tenant:      tenant,
+		Stub:        stub,
+		Log:         log,
 	}
 }
 
@@ -280,4 +282,55 @@ func (a *AdminAPI) DevicesHandler(w http.ResponseWriter, r *http.Request) {
 	a.Stub.AdminDevices(w, r)
 }
 
+// --- Device Store ---
 
+func (a *AdminAPI) DeviceStoreHandler(w http.ResponseWriter, r *http.Request) {
+	if a.DeviceStore == nil {
+		a.Stub.AdminDeviceStore(w, r)
+		return
+	}
+
+	switch {
+	case r.URL.Path == "/admin/api/v1/device-store":
+		switch r.Method {
+		case http.MethodGet:
+			a.getDeviceStores(w, r)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	case r.URL.Path == "/admin/api/v1/device-store/batch":
+		switch r.Method {
+		case http.MethodPut:
+			a.batchUpdateDeviceStores(w, r)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	case r.URL.Path == "/admin/api/v1/device-store/import":
+		switch r.Method {
+		case http.MethodPost:
+			a.importDeviceStores(w, r)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	case r.URL.Path == "/admin/api/v1/device-store/import-template":
+		switch r.Method {
+		case http.MethodGet:
+			a.getImportTemplate(w, r)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	case r.URL.Path == "/admin/api/v1/device-store/export":
+		switch r.Method {
+		case http.MethodGet:
+			a.exportDeviceStores(w, r)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	}
+	a.Stub.AdminDeviceStore(w, r)
+}

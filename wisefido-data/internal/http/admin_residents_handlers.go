@@ -3,6 +3,7 @@ package httpapi
 import (
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -29,6 +30,145 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					return
 				}
+
+				// Permission check
+				userID := r.Header.Get("X-User-Id")
+				userType := r.Header.Get("X-User-Type")
+
+				// Resident/Family self-check
+				if userType == "resident" || userType == "family" {
+					// Check if this is a resident_contact login
+					var foundContactID sql.NullString
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT contact_id::text FROM resident_contacts 
+						 WHERE tenant_id = $1 AND contact_id::text = $2`,
+						tenantID, userID,
+					).Scan(&foundContactID)
+					if err == nil && foundContactID.Valid {
+						// This is a resident_contact login - can only reset own password
+						if foundContactID.String != contactID {
+							writeJSON(w, http.StatusOK, Fail("access denied: can only reset own password"))
+							return
+						}
+					} else {
+						// This is a resident login - can only reset own contact password
+						// Check if contact_id belongs to this resident
+						var linkedResidentID sql.NullString
+						err := s.DB.QueryRowContext(r.Context(),
+							`SELECT resident_id::text FROM resident_contacts 
+							 WHERE tenant_id = $1 AND contact_id::text = $2`,
+							tenantID, contactID,
+						).Scan(&linkedResidentID)
+						if err != nil || !linkedResidentID.Valid || linkedResidentID.String != userID {
+							writeJSON(w, http.StatusOK, Fail("access denied: can only reset password for own contacts"))
+							return
+						}
+					}
+				} else {
+					// Staff permission check
+					var userRole, userBranchTag sql.NullString
+					if userID != "" {
+						err := s.DB.QueryRowContext(r.Context(),
+							`SELECT role, branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+							tenantID, userID,
+						).Scan(&userRole, &userBranchTag)
+						if err != nil && err != sql.ErrNoRows {
+							fmt.Printf("[AdminResidents] Failed to get user info: %v\n", err)
+						}
+					}
+
+					// Check U permission (Caregiver has no U permission, should be denied; IT has U permission, can reset)
+					var permCheck *PermissionCheck
+					if userRole.Valid && userRole.String != "" {
+						var err error
+						permCheck, err = GetResourcePermission(s.DB, r.Context(), userRole.String, "resident_contacts", "U")
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail("permission denied: failed to check permissions"))
+							return
+						}
+
+						// Check if U permission record exists (Caregiver has no U permission)
+						var hasUPermission bool
+						err = s.DB.QueryRowContext(r.Context(),
+							`SELECT EXISTS(
+								SELECT 1 FROM role_permissions
+								WHERE tenant_id = $1 AND role_code = $2 AND resource_type = 'resident_contacts' AND permission_type = 'U'
+							)`,
+							SystemTenantID(), userRole.String,
+						).Scan(&hasUPermission)
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail("permission denied: failed to verify permissions"))
+							return
+						}
+						if !hasUPermission {
+							writeJSON(w, http.StatusOK, Fail("permission denied: no update permission for resident_contacts"))
+							return
+						}
+					} else {
+						writeJSON(w, http.StatusOK, Fail("permission denied: no role found"))
+						return
+					}
+
+					// Get target contact's resident_id and branch_tag
+					var targetResidentID sql.NullString
+					var targetBranchTag sql.NullString
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT rc.resident_id::text, COALESCE(u.branch_tag, '') as branch_tag
+						 FROM resident_contacts rc
+						 LEFT JOIN residents r ON r.resident_id = rc.resident_id
+						 LEFT JOIN units u ON u.unit_id = r.unit_id
+						 WHERE rc.tenant_id = $1 AND rc.contact_id::text = $2`,
+						tenantID, contactID,
+					).Scan(&targetResidentID, &targetBranchTag)
+					if err != nil {
+						if err == sql.ErrNoRows {
+							writeJSON(w, http.StatusOK, Fail("contact not found"))
+						} else {
+							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to get contact info: %v", err)))
+						}
+						return
+					}
+
+					// Check assigned_only (Nurse: can only reset password for contacts of assigned residents)
+					if permCheck.AssignedOnly && userID != "" {
+						var isAssigned bool
+						err := s.DB.QueryRowContext(r.Context(),
+							`SELECT EXISTS(
+								SELECT 1 FROM resident_caregivers rc
+								WHERE rc.tenant_id = $1
+								  AND rc.resident_id::text = $2
+								  AND (rc.userList::text LIKE $3 OR rc.userList::text LIKE $4)
+							)`,
+							tenantID, targetResidentID.String, userID, "%\""+userID+"\"%",
+						).Scan(&isAssigned)
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to check assignment: %v", err)))
+							return
+						}
+						if !isAssigned {
+							writeJSON(w, http.StatusOK, Fail("permission denied: can only reset password for contacts of assigned residents"))
+							return
+						}
+					}
+
+					// Check branch_only (Manager: can only reset password for contacts of residents in same branch)
+					if permCheck.BranchOnly {
+						if !userBranchTag.Valid || userBranchTag.String == "" {
+							// User branch_tag is NULL: can only reset password for contacts of residents in units with branch_tag IS NULL OR '-'
+							if targetBranchTag.Valid && targetBranchTag.String != "" && targetBranchTag.String != "-" {
+								writeJSON(w, http.StatusOK, Fail("permission denied: can only reset password for contacts of residents in units with branch_tag IS NULL or '-'"))
+								return
+							}
+						} else {
+							// User branch_tag has value: can only reset password for contacts of residents in matching branch
+							if !targetBranchTag.Valid || targetBranchTag.String != userBranchTag.String {
+								writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("permission denied: can only reset password for contacts of residents in units with branch_tag = %s", userBranchTag.String)))
+								return
+							}
+						}
+					}
+				}
+
 				var payload map[string]any
 				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 					writeJSON(w, http.StatusOK, Fail("invalid body"))
@@ -82,7 +222,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 
 				// Get current user info for permission-based filtering
 				userID := r.Header.Get("X-User-Id")
-				var userRole, alarmScope, userBranchTag sql.NullString
+				var userRole, userBranchTag sql.NullString
 				var isResidentLogin bool
 				var residentIDForSelf sql.NullString
 
@@ -108,33 +248,29 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				} else if userID != "" {
-					// For staff login, get role and alarm_scope from users table
+					// For staff login, get role and branch_tag from users table
 					err := s.DB.QueryRowContext(r.Context(),
-						`SELECT role, alarm_scope, branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+						`SELECT role, branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
 						tenantID, userID,
-					).Scan(&userRole, &alarmScope, &userBranchTag)
+					).Scan(&userRole, &userBranchTag)
 					if err != nil && err != sql.ErrNoRows {
 						fmt.Printf("[AdminResidents] Failed to get user info: %v\n", err)
 					}
 				}
 
-				// Check role_permissions for residents resource
-				var assignedOnly bool
+				// Check role_permissions for residents resource using unified function
+				var permCheck *PermissionCheck
 				if userRole.Valid && userRole.String != "" {
-					err := s.DB.QueryRowContext(r.Context(),
-						`SELECT assigned_only FROM role_permissions
-						 WHERE tenant_id = $1 AND role_code = $2 AND resource_type = 'residents' AND permission_type = 'R'
-						 LIMIT 1`,
-						SystemTenantID(), userRole.String,
-					).Scan(&assignedOnly)
-					if err != nil && err != sql.ErrNoRows {
+					var err error
+					permCheck, err = GetResourcePermission(s.DB, r.Context(), userRole.String, "residents", "R")
+					if err != nil {
 						fmt.Printf("[AdminResidents] Failed to check role permissions: %v\n", err)
-						// Default to assigned_only=true for safety if query fails
-						assignedOnly = true
+						// Default to most restrictive permissions for safety if query fails
+						permCheck = &PermissionCheck{AssignedOnly: true, BranchOnly: true}
 					}
 				} else {
-					// If no role found, default to assigned_only=true for safety
-					assignedOnly = true
+					// If no role found, default to most restrictive permissions for safety
+					permCheck = &PermissionCheck{AssignedOnly: true, BranchOnly: true}
 				}
 
 				args := []any{tenantID}
@@ -165,17 +301,16 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						// If resident ID not found, return empty list
 						q += ` WHERE 1=0`
 					}
-				} else if assignedOnly && userID != "" {
-					// Staff with assigned_only permission: filter by alarm_scope
-					if alarmScope.Valid && alarmScope.String == "BRANCH" && userBranchTag.Valid {
-						// Filter by branch_tag: match users.branch_tag with units.branch_tag
-						args = append(args, userBranchTag.String)
-						q += fmt.Sprintf(` WHERE r.tenant_id = $1 AND u.branch_tag = $%d`, len(args))
-					} else if alarmScope.Valid && alarmScope.String == "ASSIGNED_ONLY" {
+				} else {
+					// Staff login: apply permission-based filtering
+					// Build base WHERE condition
+					q += ` WHERE r.tenant_id = $1`
+
+					// Apply assigned_only filtering (Caregiver/Nurse: filter by resident_caregivers)
+					if permCheck.AssignedOnly && userID != "" {
 						// Filter by resident_caregivers.userList
 						args = append(args, userID)
-						q += fmt.Sprintf(` WHERE r.tenant_id = $1
-						                  AND EXISTS (
+						q += fmt.Sprintf(` AND EXISTS (
 						                      SELECT 1 FROM resident_caregivers rc
 						                      WHERE rc.tenant_id = r.tenant_id
 						                        AND rc.resident_id = r.resident_id
@@ -183,20 +318,12 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						                  )`, len(args), len(args)+1)
 						// Add pattern matching: exact match or in array
 						args = append(args, "%\""+userID+"\"%")
-					} else {
-						// alarm_scope='ALL' or NULL: show all (but this is unusual for assigned_only roles)
-						q += ` WHERE r.tenant_id = $1`
 					}
-				} else {
-					// No assigned_only restriction (Admin/Manager) or no user info
-					// Special case: Manager role should filter by branch_tag if set (alarm_scope='BRANCH' by default)
-					// For Manager with alarm_scope='BRANCH', filter by matching users.branch_tag with units.branch_tag
-					if userRole.Valid && userRole.String == "Manager" && userBranchTag.Valid && userBranchTag.String != "" {
-						args = append(args, userBranchTag.String)
-						q += fmt.Sprintf(` WHERE r.tenant_id = $1 AND u.branch_tag = $%d`, len(args))
-					} else {
-						// Show all residents (Admin or Manager without branch_tag)
-						q += ` WHERE r.tenant_id = $1`
+
+					// Apply branch_only filtering (Manager: filter by branch_tag with null matching)
+					if permCheck.BranchOnly {
+						// Use ApplyBranchFilter() to implement branch filtering with null matching
+						ApplyBranchFilter(&q, &args, userBranchTag, "u", false) // false = not first condition (already has WHERE)
 					}
 				}
 				argIdx := len(args) + 1
@@ -308,6 +435,61 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					return
 				}
+
+				// Permission check: verify user has C (Create) permission for residents
+				userID := r.Header.Get("X-User-Id")
+				var userRole, userBranchTag sql.NullString
+				if userID != "" {
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT role, branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+						tenantID, userID,
+					).Scan(&userRole, &userBranchTag)
+					if err != nil && err != sql.ErrNoRows {
+						fmt.Printf("[AdminResidents] Failed to get user info: %v\n", err)
+					}
+				}
+
+				// Check C permission using unified function
+				var permCheck *PermissionCheck
+				if userRole.Valid && userRole.String != "" {
+					var err error
+					permCheck, err = GetResourcePermission(s.DB, r.Context(), userRole.String, "residents", "C")
+					if err != nil {
+						fmt.Printf("[AdminResidents] Failed to check role permissions: %v\n", err)
+						writeJSON(w, http.StatusOK, Fail("permission denied: failed to check permissions"))
+						return
+					}
+				} else {
+					// No role found: deny creation
+					writeJSON(w, http.StatusOK, Fail("permission denied: no role found"))
+					return
+				}
+
+				// If GetResourcePermission returns most restrictive permissions (assigned_only=true, branch_only=true),
+				// it means the role has no C permission record in role_permissions table
+				// In this case, we should deny creation
+				// Note: GetResourcePermission returns assigned_only=true, branch_only=true when record not found
+				// We need to check if the role actually has C permission by querying again
+				// For now, we'll use a simpler approach: if assigned_only=true AND branch_only=true, deny
+				// But this might be too strict. Let's check the actual permission record exists.
+				var hasCPermission bool
+				err := s.DB.QueryRowContext(r.Context(),
+					`SELECT EXISTS(
+						SELECT 1 FROM role_permissions
+						WHERE tenant_id = $1 AND role_code = $2 AND resource_type = 'residents' AND permission_type = 'C'
+					)`,
+					SystemTenantID(), userRole.String,
+				).Scan(&hasCPermission)
+				if err != nil {
+					fmt.Printf("[AdminResidents] Failed to check C permission existence: %v\n", err)
+					writeJSON(w, http.StatusOK, Fail("permission denied: failed to verify permissions"))
+					return
+				}
+				if !hasCPermission {
+					writeJSON(w, http.StatusOK, Fail("permission denied: no create permission for residents"))
+					return
+				}
+
 				var payload map[string]any
 				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 					writeJSON(w, http.StatusOK, Fail("invalid body"))
@@ -380,6 +562,38 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				var unitIDArg any = nil
 				if unitID != "" {
 					unitIDArg = unitID
+
+					// If branch_only=TRUE, check if the unit's branch_tag matches user's branch_tag
+					if permCheck.BranchOnly {
+						var unitBranchTag sql.NullString
+						err := s.DB.QueryRowContext(r.Context(),
+							`SELECT branch_tag FROM units WHERE tenant_id = $1 AND unit_id::text = $2`,
+							tenantID, unitID,
+						).Scan(&unitBranchTag)
+						if err != nil {
+							if err == sql.ErrNoRows {
+								writeJSON(w, http.StatusOK, Fail("unit not found"))
+							} else {
+								writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to check unit branch: %v", err)))
+							}
+							return
+						}
+
+						// Check branch_tag matching with null matching logic
+						if !userBranchTag.Valid || userBranchTag.String == "" {
+							// User branch_tag is NULL: can only create residents in units with branch_tag IS NULL OR '-'
+							if unitBranchTag.Valid && unitBranchTag.String != "" && unitBranchTag.String != "-" {
+								writeJSON(w, http.StatusOK, Fail("permission denied: can only create residents in units with branch_tag IS NULL or '-'"))
+								return
+							}
+						} else {
+							// User branch_tag has value: can only create residents in units with matching branch_tag
+							if !unitBranchTag.Valid || unitBranchTag.String != userBranchTag.String {
+								writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("permission denied: can only create residents in units with branch_tag = %s", userBranchTag.String)))
+								return
+							}
+						}
+					}
 				}
 
 				familyTag, _ := payload["family_tag"].(string)
@@ -437,7 +651,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				// Insert into residents table
 				// phone_hash and email_hash are stored in residents table for login
 				var residentID string
-				err := s.DB.QueryRowContext(
+				err = s.DB.QueryRowContext(
 					r.Context(),
 					`INSERT INTO residents (tenant_id, resident_account, resident_account_hash, password_hash, nickname, status, service_level, admission_date, unit_id, family_tag, can_view_status, note, phone_hash, email_hash)
 					 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
@@ -655,6 +869,126 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
+
+				// Permission check
+				userID := r.Header.Get("X-User-Id")
+				userType := r.Header.Get("X-User-Type")
+
+				// Resident/Family self-check
+				if userType == "resident" {
+					// Resident can only reset own password
+					if userID != residentID {
+						writeJSON(w, http.StatusOK, Fail("access denied: can only reset own password"))
+						return
+					}
+				} else if userType == "family" {
+					// Family should use /contacts/:contact_id/reset-password to reset contact password
+					writeJSON(w, http.StatusOK, Fail("access denied: family should use /contacts/:contact_id/reset-password to reset contact password"))
+					return
+				} else {
+					// Staff permission check
+					var userRole, userBranchTag sql.NullString
+					if userID != "" {
+						err := s.DB.QueryRowContext(r.Context(),
+							`SELECT role, branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+							tenantID, userID,
+						).Scan(&userRole, &userBranchTag)
+						if err != nil && err != sql.ErrNoRows {
+							fmt.Printf("[AdminResidents] Failed to get user info: %v\n", err)
+						}
+					}
+
+					// Check U permission (Caregiver has no U permission, should be denied)
+					var permCheck *PermissionCheck
+					if userRole.Valid && userRole.String != "" {
+						var err error
+						permCheck, err = GetResourcePermission(s.DB, r.Context(), userRole.String, "residents", "U")
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail("permission denied: failed to check permissions"))
+							return
+						}
+
+						// Check if U permission record exists (Caregiver has no U permission)
+						var hasUPermission bool
+						err = s.DB.QueryRowContext(r.Context(),
+							`SELECT EXISTS(
+								SELECT 1 FROM role_permissions
+								WHERE tenant_id = $1 AND role_code = $2 AND resource_type = 'residents' AND permission_type = 'U'
+							)`,
+							SystemTenantID(), userRole.String,
+						).Scan(&hasUPermission)
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail("permission denied: failed to verify permissions"))
+							return
+						}
+						if !hasUPermission {
+							writeJSON(w, http.StatusOK, Fail("permission denied: no update permission for residents"))
+							return
+						}
+					} else {
+						writeJSON(w, http.StatusOK, Fail("permission denied: no role found"))
+						return
+					}
+
+					// Get target resident's unit_id and branch_tag
+					var targetUnitID sql.NullString
+					var targetBranchTag sql.NullString
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT r.unit_id::text, COALESCE(u.branch_tag, '') as branch_tag
+						 FROM residents r
+						 LEFT JOIN units u ON u.unit_id = r.unit_id
+						 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
+						tenantID, residentID,
+					).Scan(&targetUnitID, &targetBranchTag)
+					if err != nil {
+						if err == sql.ErrNoRows {
+							writeJSON(w, http.StatusOK, Fail("resident not found"))
+						} else {
+							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to get resident info: %v", err)))
+						}
+						return
+					}
+
+					// Check assigned_only (Nurse: can only reset assigned residents)
+					if permCheck.AssignedOnly && userID != "" {
+						var isAssigned bool
+						err := s.DB.QueryRowContext(r.Context(),
+							`SELECT EXISTS(
+								SELECT 1 FROM resident_caregivers rc
+								WHERE rc.tenant_id = $1
+								  AND rc.resident_id::text = $2
+								  AND (rc.userList::text LIKE $3 OR rc.userList::text LIKE $4)
+							)`,
+							tenantID, residentID, userID, "%\""+userID+"\"%",
+						).Scan(&isAssigned)
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to check assignment: %v", err)))
+							return
+						}
+						if !isAssigned {
+							writeJSON(w, http.StatusOK, Fail("permission denied: can only reset password for assigned residents"))
+							return
+						}
+					}
+
+					// Check branch_only (Manager: can only reset residents in same branch)
+					if permCheck.BranchOnly {
+						if !userBranchTag.Valid || userBranchTag.String == "" {
+							// User branch_tag is NULL: can only reset residents in units with branch_tag IS NULL OR '-'
+							if targetBranchTag.Valid && targetBranchTag.String != "" && targetBranchTag.String != "-" {
+								writeJSON(w, http.StatusOK, Fail("permission denied: can only reset password for residents in units with branch_tag IS NULL or '-'"))
+								return
+							}
+						} else {
+							// User branch_tag has value: can only reset residents in matching branch
+							if !targetBranchTag.Valid || targetBranchTag.String != userBranchTag.String {
+								writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("permission denied: can only reset password for residents in units with branch_tag = %s", userBranchTag.String)))
+								return
+							}
+						}
+					}
+				}
+
 				var payload map[string]any
 				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 					writeJSON(w, http.StatusOK, Fail("invalid body"))
@@ -724,27 +1058,89 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				// Check permissions: resident can only update self, resident_contact can only update linked resident
+				// Permission check: Resident/Family cannot update PHI (PHI is sensitive health information, only managed by medical staff)
 				userID := r.Header.Get("X-User-Id")
 				userType := r.Header.Get("X-User-Type")
-				if (userType == "resident" || userType == "family") && userID != "" {
-					// Check if this is a resident_contact login
-					var foundResidentID sql.NullString
+				if userType == "resident" || userType == "family" {
+					writeJSON(w, http.StatusOK, Fail("permission denied: resident/family cannot update PHI"))
+					return
+				}
+
+				// Staff permission check
+				var userRole, userBranchTag sql.NullString
+				if userID != "" {
 					err := s.DB.QueryRowContext(r.Context(),
-						`SELECT resident_id::text FROM resident_contacts 
-						 WHERE tenant_id = $1 AND contact_id::text = $2`,
+						`SELECT role, branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
 						tenantID, userID,
-					).Scan(&foundResidentID)
-					if err == nil && foundResidentID.Valid {
-						// This is a resident_contact login - can only update linked resident
-						if foundResidentID.String != residentID {
-							writeJSON(w, http.StatusOK, Fail("access denied: can only update linked resident"))
+					).Scan(&userRole, &userBranchTag)
+					if err != nil && err != sql.ErrNoRows {
+						fmt.Printf("[AdminResidents] Failed to get user info: %v\n", err)
+					}
+				}
+
+				// Check U permission (IT/Caregiver/Nurse have no U permission, should be denied)
+				var permCheck *PermissionCheck
+				if userRole.Valid && userRole.String != "" {
+					var err error
+					permCheck, err = GetResourcePermission(s.DB, r.Context(), userRole.String, "resident_phi", "U")
+					if err != nil {
+						writeJSON(w, http.StatusOK, Fail("permission denied: failed to check permissions"))
+						return
+					}
+
+					// Check if U permission record exists (IT/Caregiver/Nurse have no U permission)
+					var hasUPermission bool
+					err = s.DB.QueryRowContext(r.Context(),
+						`SELECT EXISTS(
+							SELECT 1 FROM role_permissions
+							WHERE tenant_id = $1 AND role_code = $2 AND resource_type = 'resident_phi' AND permission_type = 'U'
+						)`,
+						SystemTenantID(), userRole.String,
+					).Scan(&hasUPermission)
+					if err != nil {
+						writeJSON(w, http.StatusOK, Fail("permission denied: failed to verify permissions"))
+						return
+					}
+					if !hasUPermission {
+						writeJSON(w, http.StatusOK, Fail("permission denied: no update permission for resident_phi"))
+						return
+					}
+				} else {
+					writeJSON(w, http.StatusOK, Fail("permission denied: no role found"))
+					return
+				}
+
+				// Get target resident's unit_id and branch_tag
+				var targetUnitID sql.NullString
+				var targetBranchTag sql.NullString
+				err := s.DB.QueryRowContext(r.Context(),
+					`SELECT r.unit_id::text, COALESCE(u.branch_tag, '') as branch_tag
+					 FROM residents r
+					 LEFT JOIN units u ON u.unit_id = r.unit_id
+					 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
+					tenantID, residentID,
+				).Scan(&targetUnitID, &targetBranchTag)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						writeJSON(w, http.StatusOK, Fail("resident not found"))
+					} else {
+						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to get resident info: %v", err)))
+					}
+					return
+				}
+
+				// Check branch_only (Manager: can only update PHI for residents in same branch)
+				if permCheck.BranchOnly {
+					if !userBranchTag.Valid || userBranchTag.String == "" {
+						// User branch_tag is NULL: can only update PHI for residents in units with branch_tag IS NULL OR '-'
+						if targetBranchTag.Valid && targetBranchTag.String != "" && targetBranchTag.String != "-" {
+							writeJSON(w, http.StatusOK, Fail("permission denied: can only update PHI for residents in units with branch_tag IS NULL or '-'"))
 							return
 						}
 					} else {
-						// This is a resident login - can only update self
-						if userID != residentID {
-							writeJSON(w, http.StatusOK, Fail("access denied: can only update own information"))
+						// User branch_tag has value: can only update PHI for residents in matching branch
+						if !targetBranchTag.Valid || targetBranchTag.String != userBranchTag.String {
+							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("permission denied: can only update PHI for residents in units with branch_tag = %s", userBranchTag.String)))
 							return
 						}
 					}
@@ -1262,9 +1658,11 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				// Check permissions: resident_contact can only modify own slot
+				// Permission check
 				userID := r.Header.Get("X-User-Id")
 				userType := r.Header.Get("X-User-Type")
+
+				// Resident/Family self-check (business exception: Resident can update own contacts despite having only R permission)
 				if (userType == "resident" || userType == "family") && userID != "" {
 					// Check if this is a resident_contact login
 					var foundResidentID sql.NullString
@@ -1290,6 +1688,108 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						if userID != residentID {
 							writeJSON(w, http.StatusOK, Fail("access denied: can only modify contacts for self"))
 							return
+						}
+					}
+				} else {
+					// Staff permission check
+					var userRole, userBranchTag sql.NullString
+					if userID != "" {
+						err := s.DB.QueryRowContext(r.Context(),
+							`SELECT role, branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+							tenantID, userID,
+						).Scan(&userRole, &userBranchTag)
+						if err != nil && err != sql.ErrNoRows {
+							fmt.Printf("[AdminResidents] Failed to get user info: %v\n", err)
+						}
+					}
+
+					// Check U permission (IT/Caregiver have no U permission, should be denied)
+					var permCheck *PermissionCheck
+					if userRole.Valid && userRole.String != "" {
+						var err error
+						permCheck, err = GetResourcePermission(s.DB, r.Context(), userRole.String, "resident_contacts", "U")
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail("permission denied: failed to check permissions"))
+							return
+						}
+
+						// Check if U permission record exists (IT/Caregiver have no U permission)
+						var hasUPermission bool
+						err = s.DB.QueryRowContext(r.Context(),
+							`SELECT EXISTS(
+								SELECT 1 FROM role_permissions
+								WHERE tenant_id = $1 AND role_code = $2 AND resource_type = 'resident_contacts' AND permission_type = 'U'
+							)`,
+							SystemTenantID(), userRole.String,
+						).Scan(&hasUPermission)
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail("permission denied: failed to verify permissions"))
+							return
+						}
+						if !hasUPermission {
+							writeJSON(w, http.StatusOK, Fail("permission denied: no update permission for resident_contacts"))
+							return
+						}
+					} else {
+						writeJSON(w, http.StatusOK, Fail("permission denied: no role found"))
+						return
+					}
+
+					// Get target resident's unit_id and branch_tag
+					var targetUnitID sql.NullString
+					var targetBranchTag sql.NullString
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT r.unit_id::text, COALESCE(u.branch_tag, '') as branch_tag
+						 FROM residents r
+						 LEFT JOIN units u ON u.unit_id = r.unit_id
+						 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
+						tenantID, residentID,
+					).Scan(&targetUnitID, &targetBranchTag)
+					if err != nil {
+						if err == sql.ErrNoRows {
+							writeJSON(w, http.StatusOK, Fail("resident not found"))
+						} else {
+							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to get resident info: %v", err)))
+						}
+						return
+					}
+
+					// Check assigned_only (Nurse: can only update contacts for assigned residents)
+					if permCheck.AssignedOnly && userID != "" {
+						var isAssigned bool
+						err := s.DB.QueryRowContext(r.Context(),
+							`SELECT EXISTS(
+								SELECT 1 FROM resident_caregivers rc
+								WHERE rc.tenant_id = $1
+								  AND rc.resident_id::text = $2
+								  AND (rc.userList::text LIKE $3 OR rc.userList::text LIKE $4)
+							)`,
+							tenantID, residentID, userID, "%\""+userID+"\"%",
+						).Scan(&isAssigned)
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to check assignment: %v", err)))
+							return
+						}
+						if !isAssigned {
+							writeJSON(w, http.StatusOK, Fail("permission denied: can only update contacts for assigned residents"))
+							return
+						}
+					}
+
+					// Check branch_only (Manager: can only update contacts for residents in same branch)
+					if permCheck.BranchOnly {
+						if !userBranchTag.Valid || userBranchTag.String == "" {
+							// User branch_tag is NULL: can only update contacts for residents in units with branch_tag IS NULL OR '-'
+							if targetBranchTag.Valid && targetBranchTag.String != "" && targetBranchTag.String != "-" {
+								writeJSON(w, http.StatusOK, Fail("permission denied: can only update contacts for residents in units with branch_tag IS NULL or '-'"))
+								return
+							}
+						} else {
+							// User branch_tag has value: can only update contacts for residents in matching branch
+							if !targetBranchTag.Valid || targetBranchTag.String != userBranchTag.String {
+								writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("permission denied: can only update contacts for residents in units with branch_tag = %s", userBranchTag.String)))
+								return
+							}
 						}
 					}
 				}
@@ -1626,6 +2126,126 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 							return
 						}
 					}
+				} else {
+					// Staff permission check
+					var userRole, userBranchTag sql.NullString
+					if userID != "" {
+						err := s.DB.QueryRowContext(r.Context(),
+							`SELECT role, branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+							tenantID, userID,
+						).Scan(&userRole, &userBranchTag)
+						if err != nil && err != sql.ErrNoRows {
+							fmt.Printf("[AdminResidents] Failed to get user info: %v\n", err)
+						}
+					}
+
+					// Check R permission
+					var permCheck *PermissionCheck
+					if userRole.Valid && userRole.String != "" {
+						var err error
+						permCheck, err = GetResourcePermission(s.DB, r.Context(), userRole.String, "residents", "R")
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail("permission denied: failed to check permissions"))
+							return
+						}
+
+						// Check if R permission record exists
+						var hasRPermission bool
+						err = s.DB.QueryRowContext(r.Context(),
+							`SELECT EXISTS(
+								SELECT 1 FROM role_permissions
+								WHERE tenant_id = $1 AND role_code = $2 AND resource_type = 'residents' AND permission_type = 'R'
+							)`,
+							SystemTenantID(), userRole.String,
+						).Scan(&hasRPermission)
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail("permission denied: failed to verify permissions"))
+							return
+						}
+						if !hasRPermission {
+							writeJSON(w, http.StatusOK, Fail("permission denied: no read permission for residents"))
+							return
+						}
+					} else {
+						writeJSON(w, http.StatusOK, Fail("permission denied: no role found"))
+						return
+					}
+
+					// Check assigned_only (Nurse/Caregiver: can only view assigned residents)
+					if permCheck.AssignedOnly && userID != "" {
+						// First verify that resident exists
+						var residentExists bool
+						err := s.DB.QueryRowContext(r.Context(),
+							`SELECT EXISTS(
+								SELECT 1 FROM residents
+								WHERE tenant_id = $1 AND resident_id::text = $2
+							)`,
+							tenantID, actualResidentID,
+						).Scan(&residentExists)
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to check resident existence: %v", err)))
+							return
+						}
+						if !residentExists {
+							writeJSON(w, http.StatusOK, Fail("resident not found"))
+							return
+						}
+
+						// Then check if user is assigned to this resident
+						var isAssigned bool
+						err = s.DB.QueryRowContext(r.Context(),
+							`SELECT EXISTS(
+								SELECT 1 FROM resident_caregivers rc
+								WHERE rc.tenant_id = $1
+								  AND rc.resident_id::text = $2
+								  AND (rc.userList::text LIKE $3 OR rc.userList::text LIKE $4)
+							)`,
+							tenantID, actualResidentID, userID, "%\""+userID+"\"%",
+						).Scan(&isAssigned)
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to check assignment: %v", err)))
+							return
+						}
+						if !isAssigned {
+							writeJSON(w, http.StatusOK, Fail("permission denied: can only view assigned residents"))
+							return
+						}
+					}
+
+					// Check branch_only (Manager: can only view residents in same branch)
+					// Only query branch_tag if branch_only check is needed
+					if permCheck.BranchOnly {
+						var targetBranchTag sql.NullString
+						err := s.DB.QueryRowContext(r.Context(),
+							`SELECT COALESCE(u.branch_tag, '') as branch_tag
+							 FROM residents r
+							 LEFT JOIN units u ON u.unit_id = r.unit_id
+							 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
+							tenantID, actualResidentID,
+						).Scan(&targetBranchTag)
+						if err != nil {
+							if err == sql.ErrNoRows {
+								writeJSON(w, http.StatusOK, Fail("resident not found"))
+							} else {
+								writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to get resident info: %v", err)))
+							}
+							return
+						}
+
+						if !userBranchTag.Valid || userBranchTag.String == "" {
+							// User branch_tag is NULL: can only view residents in units with branch_tag IS NULL OR '-'
+							if targetBranchTag.Valid && targetBranchTag.String != "" && targetBranchTag.String != "-" {
+								writeJSON(w, http.StatusOK, Fail("permission denied: can only view residents in units with branch_tag IS NULL or '-'"))
+								return
+							}
+						} else {
+							// User branch_tag has value: can only view residents in matching branch
+							if !targetBranchTag.Valid || targetBranchTag.String != userBranchTag.String {
+								writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("permission denied: can only view residents in units with branch_tag = %s", userBranchTag.String)))
+								return
+							}
+						}
+					}
 				}
 
 				includePHI := r.URL.Query().Get("include_phi") == "true"
@@ -1671,7 +2291,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				)
 				if err != nil {
 					if err == sql.ErrNoRows {
-						w.WriteHeader(http.StatusNotFound)
+						writeJSON(w, http.StatusOK, Fail("resident not found"))
 						return
 					}
 					writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to get resident: %v", err)))
@@ -1941,6 +2561,40 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
+				// Load resident_caregivers if requested (always load for profile page)
+				var userListRaw, groupListRaw []byte
+				err = s.DB.QueryRowContext(
+					r.Context(),
+					`SELECT userList, groupList
+					 FROM resident_caregivers
+					 WHERE tenant_id = $1 AND resident_id = $2`,
+					tenantID, actualResidentID,
+				).Scan(&userListRaw, &groupListRaw)
+				if err == nil {
+					// Parse JSONB fields
+					var userList []string
+					var groupList []string
+					if len(userListRaw) > 0 {
+						// userList is JSONB array, parse it as JSON
+						if err := json.Unmarshal(userListRaw, &userList); err != nil {
+							fmt.Printf("[AdminResidents] Failed to parse userList JSON: %v\n", err)
+						}
+					}
+					if len(groupListRaw) > 0 {
+						// groupList is JSONB array, parse it as JSON
+						if err := json.Unmarshal(groupListRaw, &groupList); err != nil {
+							fmt.Printf("[AdminResidents] Failed to parse groupList JSON: %v\n", err)
+						}
+					}
+					item["caregivers"] = map[string]any{
+						"userList":  userList,
+						"groupList": groupList,
+					}
+				} else if err != sql.ErrNoRows {
+					// Log error but don't fail the request
+					fmt.Printf("[AdminResidents] Failed to get resident_caregivers: %v\n", err)
+				}
+
 				writeJSON(w, http.StatusOK, Ok(item))
 				return
 			}
@@ -1975,6 +2629,107 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						if userID != id {
 							writeJSON(w, http.StatusOK, Fail("access denied: can only update own information"))
 							return
+						}
+					}
+				} else {
+					// Staff permission check
+					var userRole, userBranchTag sql.NullString
+					if userID != "" {
+						err := s.DB.QueryRowContext(r.Context(),
+							`SELECT role, branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+							tenantID, userID,
+						).Scan(&userRole, &userBranchTag)
+						if err != nil && err != sql.ErrNoRows {
+							fmt.Printf("[AdminResidents] Failed to get user info: %v\n", err)
+						}
+					}
+
+					// Check U permission (Caregiver has no U permission, should be denied)
+					var permCheck *PermissionCheck
+					if userRole.Valid && userRole.String != "" {
+						var err error
+						permCheck, err = GetResourcePermission(s.DB, r.Context(), userRole.String, "residents", "U")
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail("permission denied: failed to check permissions"))
+							return
+						}
+
+						// Check if U permission record exists (Caregiver has no U permission)
+						var hasUPermission bool
+						err = s.DB.QueryRowContext(r.Context(),
+							`SELECT EXISTS(
+								SELECT 1 FROM role_permissions
+								WHERE tenant_id = $1 AND role_code = $2 AND resource_type = 'residents' AND permission_type = 'U'
+							)`,
+							SystemTenantID(), userRole.String,
+						).Scan(&hasUPermission)
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail("permission denied: failed to verify permissions"))
+							return
+						}
+						if !hasUPermission {
+							writeJSON(w, http.StatusOK, Fail("permission denied: no update permission for residents"))
+							return
+						}
+					} else {
+						writeJSON(w, http.StatusOK, Fail("permission denied: no role found"))
+						return
+					}
+
+					// Get target resident's branch_tag
+					var targetBranchTag sql.NullString
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT COALESCE(u.branch_tag, '') as branch_tag
+						 FROM residents r
+						 LEFT JOIN units u ON u.unit_id = r.unit_id
+						 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
+						tenantID, id,
+					).Scan(&targetBranchTag)
+					if err != nil {
+						if err == sql.ErrNoRows {
+							writeJSON(w, http.StatusOK, Fail("resident not found"))
+						} else {
+							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to get resident info: %v", err)))
+						}
+						return
+					}
+
+					// Check assigned_only (Nurse: can only update assigned residents)
+					if permCheck.AssignedOnly && userID != "" {
+						var isAssigned bool
+						err := s.DB.QueryRowContext(r.Context(),
+							`SELECT EXISTS(
+								SELECT 1 FROM resident_caregivers rc
+								WHERE rc.tenant_id = $1
+								  AND rc.resident_id::text = $2
+								  AND (rc.userList::text LIKE $3 OR rc.userList::text LIKE $4)
+							)`,
+							tenantID, id, userID, "%\""+userID+"\"%",
+						).Scan(&isAssigned)
+						if err != nil {
+							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to check assignment: %v", err)))
+							return
+						}
+						if !isAssigned {
+							writeJSON(w, http.StatusOK, Fail("permission denied: can only update assigned residents"))
+							return
+						}
+					}
+
+					// Check branch_only (Manager: can only update residents in same branch)
+					if permCheck.BranchOnly {
+						if !userBranchTag.Valid || userBranchTag.String == "" {
+							// User branch_tag is NULL: can only update residents in units with branch_tag IS NULL OR '-'
+							if targetBranchTag.Valid && targetBranchTag.String != "" && targetBranchTag.String != "-" {
+								writeJSON(w, http.StatusOK, Fail("permission denied: can only update residents in units with branch_tag IS NULL or '-'"))
+								return
+							}
+						} else {
+							// User branch_tag has value: can only update residents in matching branch
+							if !targetBranchTag.Valid || targetBranchTag.String != userBranchTag.String {
+								writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("permission denied: can only update residents in units with branch_tag = %s", userBranchTag.String)))
+								return
+							}
 						}
 					}
 				}
@@ -2078,6 +2833,59 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 				}
+
+				// Update resident_caregivers if provided
+				if caregivers, exists := payload["caregivers"].(map[string]any); exists {
+					// Build userList JSONB array
+					var userListJSON []byte = []byte("[]")
+					if userList, ok := caregivers["userList"].([]any); ok && len(userList) > 0 {
+						// Convert to string array
+						userIDs := make([]string, 0, len(userList))
+						for _, uid := range userList {
+							if uidStr, ok := uid.(string); ok && uidStr != "" {
+								userIDs = append(userIDs, uidStr)
+							}
+						}
+						if len(userIDs) > 0 {
+							if jsonBytes, err := json.Marshal(userIDs); err == nil {
+								userListJSON = jsonBytes
+							}
+						}
+					}
+
+					// Build groupList JSONB array
+					var groupListJSON []byte = []byte("[]")
+					if groupList, ok := caregivers["groupList"].([]any); ok && len(groupList) > 0 {
+						// Convert to string array
+						tagIDs := make([]string, 0, len(groupList))
+						for _, tid := range groupList {
+							if tidStr, ok := tid.(string); ok && tidStr != "" {
+								tagIDs = append(tagIDs, tidStr)
+							}
+						}
+						if len(tagIDs) > 0 {
+							if jsonBytes, err := json.Marshal(tagIDs); err == nil {
+								groupListJSON = jsonBytes
+							}
+						}
+					}
+
+					// Use INSERT ... ON CONFLICT DO UPDATE to upsert resident_caregivers
+					_, err := s.DB.ExecContext(
+						r.Context(),
+						`INSERT INTO resident_caregivers (tenant_id, resident_id, userList, groupList)
+						 VALUES ($1, $2, $3::jsonb, $4::jsonb)
+						 ON CONFLICT (tenant_id, resident_id) 
+						 DO UPDATE SET userList = EXCLUDED.userList, groupList = EXCLUDED.groupList`,
+						tenantID, id, userListJSON, groupListJSON,
+					)
+					if err != nil {
+						fmt.Printf("[AdminResidents] Failed to update resident_caregivers: %v\n", err)
+						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to update caregivers: %v", err)))
+						return
+					}
+				}
+
 				writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 				return
 			}
@@ -2090,7 +2898,119 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					return
 				}
-				_, err := s.DB.ExecContext(
+
+				// Permission check
+				userID := r.Header.Get("X-User-Id")
+				userType := r.Header.Get("X-User-Type")
+
+				// Reject Resident/Family: cannot delete any residents (including self)
+				if userType == "resident" || userType == "family" {
+					writeJSON(w, http.StatusOK, Fail("permission denied: resident/family cannot delete residents"))
+					return
+				}
+
+				// Staff permission check
+				var userRole, userBranchTag sql.NullString
+				if userID != "" {
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT role, branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+						tenantID, userID,
+					).Scan(&userRole, &userBranchTag)
+					if err != nil && err != sql.ErrNoRows {
+						fmt.Printf("[AdminResidents] Failed to get user info: %v\n", err)
+					}
+				}
+
+				// Check D permission (Caregiver has no D permission, should be denied)
+				var permCheck *PermissionCheck
+				if userRole.Valid && userRole.String != "" {
+					var err error
+					permCheck, err = GetResourcePermission(s.DB, r.Context(), userRole.String, "residents", "D")
+					if err != nil {
+						writeJSON(w, http.StatusOK, Fail("permission denied: failed to check permissions"))
+						return
+					}
+
+					// Check if D permission record exists (Caregiver has no D permission)
+					var hasDPermission bool
+					err = s.DB.QueryRowContext(r.Context(),
+						`SELECT EXISTS(
+							SELECT 1 FROM role_permissions
+							WHERE tenant_id = $1 AND role_code = $2 AND resource_type = 'residents' AND permission_type = 'D'
+						)`,
+						SystemTenantID(), userRole.String,
+					).Scan(&hasDPermission)
+					if err != nil {
+						writeJSON(w, http.StatusOK, Fail("permission denied: failed to verify permissions"))
+						return
+					}
+					if !hasDPermission {
+						writeJSON(w, http.StatusOK, Fail("permission denied: no delete permission for residents"))
+						return
+					}
+				} else {
+					writeJSON(w, http.StatusOK, Fail("permission denied: no role found"))
+					return
+				}
+
+				// Get target resident's branch_tag
+				var targetBranchTag sql.NullString
+				err := s.DB.QueryRowContext(r.Context(),
+					`SELECT COALESCE(u.branch_tag, '') as branch_tag
+					 FROM residents r
+					 LEFT JOIN units u ON u.unit_id = r.unit_id
+					 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
+					tenantID, id,
+				).Scan(&targetBranchTag)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						writeJSON(w, http.StatusOK, Fail("resident not found"))
+					} else {
+						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to get resident info: %v", err)))
+					}
+					return
+				}
+
+				// Check assigned_only (Nurse: can only delete assigned residents)
+				if permCheck.AssignedOnly && userID != "" {
+					var isAssigned bool
+					err := s.DB.QueryRowContext(r.Context(),
+						`SELECT EXISTS(
+							SELECT 1 FROM resident_caregivers rc
+							WHERE rc.tenant_id = $1
+							  AND rc.resident_id::text = $2
+							  AND (rc.userList::text LIKE $3 OR rc.userList::text LIKE $4)
+						)`,
+						tenantID, id, userID, "%\""+userID+"\"%",
+					).Scan(&isAssigned)
+					if err != nil {
+						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to check assignment: %v", err)))
+						return
+					}
+					if !isAssigned {
+						writeJSON(w, http.StatusOK, Fail("permission denied: can only delete assigned residents"))
+						return
+					}
+				}
+
+				// Check branch_only (Manager: can only delete residents in same branch)
+				if permCheck.BranchOnly {
+					if !userBranchTag.Valid || userBranchTag.String == "" {
+						// User branch_tag is NULL: can only delete residents in units with branch_tag IS NULL OR '-'
+						if targetBranchTag.Valid && targetBranchTag.String != "" && targetBranchTag.String != "-" {
+							writeJSON(w, http.StatusOK, Fail("permission denied: can only delete residents in units with branch_tag IS NULL or '-'"))
+							return
+						}
+					} else {
+						// User branch_tag has value: can only delete residents in matching branch
+						if !targetBranchTag.Valid || targetBranchTag.String != userBranchTag.String {
+							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("permission denied: can only delete residents in units with branch_tag = %s", userBranchTag.String)))
+							return
+						}
+					}
+				}
+
+				_, err = s.DB.ExecContext(
 					r.Context(),
 					`UPDATE residents SET status = 'discharged' WHERE tenant_id = $1 AND resident_id::text = $2`,
 					tenantID, id,

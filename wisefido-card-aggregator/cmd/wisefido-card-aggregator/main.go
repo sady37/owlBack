@@ -9,7 +9,7 @@ import (
 	"wisefido-card-aggregator/internal/config"
 	"wisefido-card-aggregator/internal/service"
 
-	"owl-common/logger"
+	logpkg "owl-common/logger"
 
 	"go.uber.org/zap"
 )
@@ -23,7 +23,7 @@ func main() {
 	}
 
 	// 初始化日志
-	log, err := logger.NewLogger(cfg.Log.Level)
+	log, err := logpkg.NewLogger(cfg.Log.Level, cfg.Log.Format)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
 		os.Exit(1)

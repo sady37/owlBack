@@ -1,0 +1,52 @@
+# Loki + Promtail 日志管理配置（SaaS多租户日志聚合）
+# 使用方法: docker-compose -f docker-compose.yml -f docker-compose.logging.yml up -d
+
+version: '3.8'
+
+services:
+  # Loki - 日志聚合服务
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: owl-loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Promtail - 日志收集器
+  promtail:
+    image: grafana/promtail:2.9.0
+    container_name: owl-promtail
+    volumes:
+      - ./logging/promtail-config.yml:/etc/promtail/config.yml
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+
+  # Grafana - 日志可视化（可选）
+  grafana:
+    image: grafana/grafana:10.0.0
+    container_name: owl-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./logging/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+    depends_on:
+      - loki
+
+volumes:
+  loki_data:
+  grafana_data:
+

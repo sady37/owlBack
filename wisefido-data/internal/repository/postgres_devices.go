@@ -401,6 +401,12 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 
 	if err != nil {
 		// Unexpected database error
+		logWarn("Device connection failed: database error",
+			zap.String("identifier", identifier),
+			zap.String("mqtt_topic", mqttTopic),
+			zap.String("reason", "database_error"),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("failed to query device_store: %w", err)
 	}
 
@@ -428,6 +434,13 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 	// Case 1: Device is registered and allocated, create devices record
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
+		logWarn("Device connection failed: transaction error",
+			zap.String("device_store_id", dsDeviceStoreID),
+			zap.String("identifier", identifier),
+			zap.String("mqtt_topic", mqttTopic),
+			zap.String("reason", "transaction_error"),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() {
@@ -469,10 +482,27 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 	).Scan(&newDeviceID)
 
 	if err != nil {
+		logWarn("Device connection failed: failed to create device record",
+			zap.String("device_store_id", dsDeviceStoreID),
+			zap.String("tenant_id", dsTenantID),
+			zap.String("identifier", identifier),
+			zap.String("mqtt_topic", mqttTopic),
+			zap.String("reason", "device_creation_failed"),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("failed to create device record: %w", err)
 	}
 
 	if err = tx.Commit(); err != nil {
+		logWarn("Device connection failed: transaction commit error",
+			zap.String("device_store_id", dsDeviceStoreID),
+			zap.String("device_id", newDeviceID),
+			zap.String("tenant_id", dsTenantID),
+			zap.String("identifier", identifier),
+			zap.String("mqtt_topic", mqttTopic),
+			zap.String("reason", "transaction_commit_failed"),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 

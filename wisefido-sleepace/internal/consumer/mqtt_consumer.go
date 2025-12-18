@@ -112,14 +112,25 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 
 // processMessage 处理单条 Sleepace 消息
 func (c *MQTTConsumer) processMessage(msg *models.ReceivedMessage) error {
-	// 1. 查询设备信息
+	// 1. 查询设备信息（如果不存在，尝试从 device_store 自动创建）
 	device, err := c.deviceRepo.GetDeviceByCode(msg.DeviceId)
 	if err != nil {
-		c.logger.Warn("Device not found",
+		// 设备不存在，尝试从 device_store 自动创建
+		device, err = c.deviceRepo.GetOrCreateDeviceFromStore(context.Background(), msg.DeviceId, "sleepace/realtime")
+		if err != nil {
+			c.logger.Warn("Device not found and cannot be created from device_store",
+				zap.String("device_code", msg.DeviceId),
+				zap.String("data_key", msg.DataKey),
+				zap.Error(err),
+			)
+			return fmt.Errorf("device not found: %s", msg.DeviceId)
+		}
+		// 设备已从 device_store 自动创建
+		c.logger.Info("Device auto-created from device_store on MQTT connection",
+			zap.String("device_id", device.DeviceID),
 			zap.String("device_code", msg.DeviceId),
-			zap.Error(err),
+			zap.String("data_key", msg.DataKey),
 		)
-		return fmt.Errorf("device not found: %s", msg.DeviceId)
 	}
 	
 	// 2. 根据 DataKey 处理不同类型的数据
