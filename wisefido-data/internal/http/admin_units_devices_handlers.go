@@ -10,15 +10,15 @@ import (
 )
 
 type AdminAPI struct {
-	Units       repository.UnitsRepo
-	Devices     repository.DevicesRepo
-	DeviceStore repository.DeviceStoreRepo
+	Units       repository.UnitsRepository
+	Devices     repository.DevicesRepository
+	DeviceStore repository.DeviceStoreRepository
 	Tenant      repository.TenantResolver
 	Stub        *StubHandler
 	Log         *zap.Logger
 }
 
-func NewAdminAPI(units repository.UnitsRepo, devices repository.DevicesRepo, deviceStore repository.DeviceStoreRepo, tenant repository.TenantResolver, stub *StubHandler, log *zap.Logger) *AdminAPI {
+func NewAdminAPI(units repository.UnitsRepository, devices repository.DevicesRepository, deviceStore repository.DeviceStoreRepository, tenant repository.TenantResolver, stub *StubHandler, log *zap.Logger) *AdminAPI {
 	return &AdminAPI{
 		Units:       units,
 		Devices:     devices,
@@ -70,7 +70,7 @@ func (a *AdminAPI) UnitsHandler(w http.ResponseWriter, r *http.Request) {
 	a.Stub.AdminUnits(w, r)
 }
 
-// --- Buildings (virtual via units) ---
+// --- Buildings (实体表) ---
 
 func (a *AdminAPI) BuildingsHandler(w http.ResponseWriter, r *http.Request) {
 	if a.Units == nil {

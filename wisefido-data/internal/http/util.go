@@ -68,6 +68,29 @@ func checkUniqueConstraintError(err error, fieldName string) string {
 	return ""
 }
 
+// checkUnitUniqueConstraintError checks if an error is a unit uniqueness constraint violation
+// and returns a user-friendly error message
+func checkUnitUniqueConstraintError(err error) string {
+	if err == nil {
+		return ""
+	}
+	// Check for PostgreSQL unique constraint violation (error code 23505)
+	if pqErr, ok := err.(*pq.Error); ok {
+		if pqErr.Code == "23505" { // unique_violation
+			// Check if it's a units table unique constraint
+			if strings.Contains(pqErr.Constraint, "units_unique") || strings.Contains(pqErr.Message, "units") {
+				// Extract building, floor, and unit_name from error message if possible
+				// Error message format: "duplicate key value violates unique constraint ... Key (tenant_id, branch_tag, building, floor, unit_name)=(...)"
+				if strings.Contains(pqErr.Message, "building") && strings.Contains(pqErr.Message, "floor") {
+					return "A unit with the same name already exists in this building and floor. Please use a different unit name or select a different floor."
+				}
+				return "A unit with the same name already exists in this location. Please use a different unit name."
+			}
+		}
+	}
+	return ""
+}
+
 // checkEmailUniqueness checks if email already exists in users table for the given tenant
 func checkEmailUniqueness(db *sql.DB, r *http.Request, tenantID, email, excludeUserID string) error {
 	if email == "" {

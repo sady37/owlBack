@@ -1,0 +1,59 @@
+package repository
+
+import (
+	"context"
+	"wisefido-data/internal/domain"
+)
+
+// ResidentsRepository 住户Repository接口
+// 使用强类型领域模型，不使用map[string]any
+type ResidentsRepository interface {
+	// 查询
+	GetResident(ctx context.Context, tenantID, residentID string) (*domain.Resident, error)
+	GetResidentByAccount(ctx context.Context, tenantID string, accountHash []byte) (*domain.Resident, error)
+	GetResidentByEmail(ctx context.Context, tenantID string, emailHash []byte) (*domain.Resident, error)
+	GetResidentByPhone(ctx context.Context, tenantID string, phoneHash []byte) (*domain.Resident, error)
+	ListResidents(ctx context.Context, tenantID string, filters ResidentFilters, page, size int) ([]*domain.Resident, int, error)
+
+	// 创建（替代触发器：trigger_sync_family_tag）
+	CreateResident(ctx context.Context, tenantID string, resident *domain.Resident) (string, error)
+
+	// 更新（替代触发器：trigger_sync_family_tag）
+	UpdateResident(ctx context.Context, tenantID, residentID string, resident *domain.Resident) error
+
+	// 删除（替代触发器：trigger_cleanup_resident_from_tags）
+	DeleteResident(ctx context.Context, tenantID, residentID string) error
+
+	// PHI 操作
+	GetResidentPHI(ctx context.Context, tenantID, residentID string) (*domain.ResidentPHI, error)
+	UpsertResidentPHI(ctx context.Context, tenantID, residentID string, phi *domain.ResidentPHI) error
+
+	// Contact 操作
+	GetResidentContacts(ctx context.Context, tenantID, residentID string) ([]*domain.ResidentContact, error)
+	CreateResidentContact(ctx context.Context, tenantID, residentID string, contact *domain.ResidentContact) (string, error)
+	UpdateResidentContact(ctx context.Context, tenantID, contactID string, contact *domain.ResidentContact) error
+	DeleteResidentContact(ctx context.Context, tenantID, contactID string) error
+
+	// Caregiver 操作
+	GetResidentCaregivers(ctx context.Context, tenantID, residentID string) ([]*domain.ResidentCaregiver, error)
+	UpsertResidentCaregiver(ctx context.Context, tenantID, residentID string, caregiver *domain.ResidentCaregiver) error
+}
+
+// ResidentFilters 住户查询过滤器
+type ResidentFilters struct {
+	// 基本过滤
+	Status       string
+	ServiceLevel string
+	FamilyTag    string
+	UnitID       string
+	RoomID       string
+	BedID        string
+
+	// 搜索（支持account, email_hash, phone_hash, nickname, unit_name, first_name）
+	Search string // 模糊搜索：支持resident_account, nickname, unit_name, first_name (在resident_phi表中)
+
+	// 权限过滤
+	AssignedUserID string // 仅查询分配给该用户的住户
+	BranchTag      string // 仅查询该分支的住户
+}
+

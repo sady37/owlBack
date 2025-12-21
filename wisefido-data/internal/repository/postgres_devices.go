@@ -8,25 +8,31 @@ import (
 
 	"github.com/lib/pq"
 	"go.uber.org/zap"
+	"wisefido-data/internal/domain"
 )
 
-type PostgresDevicesRepo struct {
+// PostgresDevicesRepository 设备Repository实现（强类型）
+// 遵循"bottom-up"设计原则，替代已删除的数据库触发器
+type PostgresDevicesRepository struct {
 	db     *sql.DB
 	logger *zap.Logger
 }
 
-func NewPostgresDevicesRepo(db *sql.DB) *PostgresDevicesRepo {
-	return &PostgresDevicesRepo{db: db}
+// NewPostgresDevicesRepository 创建设备Repository
+func NewPostgresDevicesRepository(db *sql.DB) *PostgresDevicesRepository {
+	return &PostgresDevicesRepository{db: db}
 }
 
-// SetLogger sets the logger for this repository (optional, for logging device connection events)
-func (r *PostgresDevicesRepo) SetLogger(logger *zap.Logger) {
+// SetLogger 设置日志记录器（可选，用于记录设备连接事件）
+func (r *PostgresDevicesRepository) SetLogger(logger *zap.Logger) {
 	r.logger = logger
 }
 
-func (r *PostgresDevicesRepo) ListDevices(ctx context.Context, tenantID string, filters map[string]any) ([]Device, int, error) {
+// ListDevices 查询设备列表
+// 功能：支持多种过滤条件和分页，自动过滤status='disabled'的设备
+func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID string, filters DeviceFilters, page, size int) ([]*domain.Device, int, error) {
 	if tenantID == "" {
-		return []Device{}, 0, nil
+		return []*domain.Device{}, 0, nil
 	}
 
 	where := []string{"d.tenant_id = $1", "d.status <> 'disabled'"}
@@ -34,39 +40,34 @@ func (r *PostgresDevicesRepo) ListDevices(ctx context.Context, tenantID string, 
 	argN := 2
 
 	// status IN (...)
-	if v, ok := filters["status"]; ok {
-		if arr, ok := v.([]string); ok && len(arr) > 0 {
-			where = append(where, fmt.Sprintf("d.status = ANY($%d)", argN))
-			args = append(args, pq.Array(arr))
-			argN++
-		}
+	if len(filters.Status) > 0 {
+		where = append(where, fmt.Sprintf("d.status = ANY($%d)", argN))
+		args = append(args, pq.Array(filters.Status))
+		argN++
 	}
-	if v, ok := filters["business_access"].(string); ok && v != "" {
+	if filters.BusinessAccess != "" {
 		where = append(where, fmt.Sprintf("d.business_access = $%d", argN))
-		args = append(args, v)
+		args = append(args, filters.BusinessAccess)
 		argN++
 	}
-	if v, ok := filters["device_type"].(string); ok && v != "" {
+	if filters.DeviceType != "" {
 		where = append(where, fmt.Sprintf("ds.device_type = $%d", argN))
-		args = append(args, v)
+		args = append(args, filters.DeviceType)
 		argN++
 	}
-	if v, ok := filters["search_type"].(string); ok && v != "" {
-		kw, _ := filters["search_keyword"].(string)
-		if kw != "" {
-			col := "d.device_name"
-			switch v {
-			case "device_name":
-				col = "d.device_name"
-			case "serial_number":
-				col = "d.serial_number"
-			case "uid":
-				col = "d.uid"
-			}
-			where = append(where, fmt.Sprintf("%s ILIKE $%d", col, argN))
-			args = append(args, "%"+kw+"%")
-			argN++
+	if filters.SearchType != "" && filters.SearchKeyword != "" {
+		col := "d.device_name"
+		switch filters.SearchType {
+		case "device_name":
+			col = "d.device_name"
+		case "serial_number":
+			col = "d.serial_number"
+		case "uid":
+			col = "d.uid"
 		}
+		where = append(where, fmt.Sprintf("%s ILIKE $%d", col, argN))
+		args = append(args, "%"+filters.SearchKeyword+"%")
+		argN++
 	}
 
 	queryCount := `
@@ -79,8 +80,6 @@ func (r *PostgresDevicesRepo) ListDevices(ctx context.Context, tenantID string, 
 		return nil, 0, err
 	}
 
-	page, _ := filters["page"].(int)
-	size, _ := filters["size"].(int)
 	if page <= 0 {
 		page = 1
 	}
@@ -97,28 +96,18 @@ func (r *PostgresDevicesRepo) ListDevices(ctx context.Context, tenantID string, 
 		SELECT
 			d.device_id::text,
 			d.tenant_id::text,
-			CASE WHEN d.device_store_id IS NULL THEN NULL ELSE d.device_store_id::text END as device_store_id,
+			d.device_store_id,
 			d.device_name,
-			ds.device_model,
-			ds.device_type,
 			d.serial_number,
 			d.uid,
-			ds.imei,
-			ds.comm_mode,
-			ds.firmware_version,
-			ds.mcu_model,
+			d.bound_room_id,
+			d.bound_bed_id,
 			d.status,
 			d.business_access,
 			d.monitoring_enabled,
-			COALESCE(r1.unit_id::text, r2.unit_id::text) as unit_id,
-			CASE WHEN d.bound_room_id IS NULL THEN NULL ELSE d.bound_room_id::text END as bound_room_id,
-			CASE WHEN d.bound_bed_id  IS NULL THEN NULL ELSE d.bound_bed_id::text  END as bound_bed_id,
-			CASE WHEN d.metadata IS NULL THEN NULL ELSE d.metadata::text END as metadata
+			d.metadata
 		FROM devices d
 		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
-		LEFT JOIN rooms r1 ON d.bound_room_id = r1.room_id
-		LEFT JOIN beds  b  ON d.bound_bed_id  = b.bed_id
-		LEFT JOIN rooms r2 ON b.room_id = r2.room_id
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY d.device_name
 		LIMIT $` + fmt.Sprintf("%d", limitPos) + ` OFFSET $` + fmt.Sprintf("%d", offsetPos)
@@ -129,102 +118,319 @@ func (r *PostgresDevicesRepo) ListDevices(ctx context.Context, tenantID string, 
 	}
 	defer rows.Close()
 
-	out := []Device{}
+	out := []*domain.Device{}
 	for rows.Next() {
-		var d Device
+		var d domain.Device
 		if err := rows.Scan(
 			&d.DeviceID,
 			&d.TenantID,
 			&d.DeviceStoreID,
 			&d.DeviceName,
-			&d.DeviceModel,
-			&d.DeviceType,
 			&d.SerialNumber,
 			&d.UID,
-			&d.IMEI,
-			&d.CommMode,
-			&d.FirmwareVersion,
-			&d.MCUModel,
+			&d.BoundRoomID,
+			&d.BoundBedID,
 			&d.Status,
 			&d.BusinessAccess,
 			&d.MonitoringEnabled,
-			&d.UnitID,
-			&d.BoundRoomID,
-			&d.BoundBedID,
 			&d.Metadata,
 		); err != nil {
 			return nil, 0, err
 		}
-		out = append(out, d)
+		out = append(out, &d)
 	}
 	return out, total, rows.Err()
 }
 
-func (r *PostgresDevicesRepo) GetDevice(ctx context.Context, tenantID, deviceID string) (*Device, error) {
+// GetDevice 查询单个设备
+func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, deviceID string) (*domain.Device, error) {
 	q := `
 		SELECT
 			d.device_id::text,
 			d.tenant_id::text,
-			CASE WHEN d.device_store_id IS NULL THEN NULL ELSE d.device_store_id::text END as device_store_id,
+			d.device_store_id,
 			d.device_name,
-			ds.device_model,
-			ds.device_type,
 			d.serial_number,
 			d.uid,
-			ds.imei,
-			ds.comm_mode,
-			ds.firmware_version,
-			ds.mcu_model,
+			d.bound_room_id,
+			d.bound_bed_id,
 			d.status,
 			d.business_access,
 			d.monitoring_enabled,
-			COALESCE(r1.unit_id::text, r2.unit_id::text) as unit_id,
-			CASE WHEN d.bound_room_id IS NULL THEN NULL ELSE d.bound_room_id::text END as bound_room_id,
-			CASE WHEN d.bound_bed_id  IS NULL THEN NULL ELSE d.bound_bed_id::text  END as bound_bed_id,
-			CASE WHEN d.metadata IS NULL THEN NULL ELSE d.metadata::text END as metadata
+			d.metadata
 		FROM devices d
-		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
-		LEFT JOIN rooms r1 ON d.bound_room_id = r1.room_id
-		LEFT JOIN beds  b  ON d.bound_bed_id  = b.bed_id
-		LEFT JOIN rooms r2 ON b.room_id = r2.room_id
 		WHERE d.tenant_id = $1 AND d.device_id = $2
 	`
-	var d Device
+	var d domain.Device
 	if err := r.db.QueryRowContext(ctx, q, tenantID, deviceID).Scan(
 		&d.DeviceID,
 		&d.TenantID,
 		&d.DeviceStoreID,
 		&d.DeviceName,
-		&d.DeviceModel,
-		&d.DeviceType,
 		&d.SerialNumber,
 		&d.UID,
-		&d.IMEI,
-		&d.CommMode,
-		&d.FirmwareVersion,
-		&d.MCUModel,
+		&d.BoundRoomID,
+		&d.BoundBedID,
 		&d.Status,
 		&d.BusinessAccess,
 		&d.MonitoringEnabled,
-		&d.UnitID,
-		&d.BoundRoomID,
-		&d.BoundBedID,
 		&d.Metadata,
 	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("device not found: tenant_id=%s, device_id=%s", tenantID, deviceID)
+		}
 		return nil, err
 	}
 	return &d, nil
 }
 
-func (r *PostgresDevicesRepo) UpdateDevice(ctx context.Context, tenantID, deviceID string, payload map[string]any) error {
+// CreateDevice 手动创建设备与位置的绑定关系（出库操作）
+// 替代触发器：trigger_validate_device_bed_tenant, trigger_validate_device_store_tenant
+// 功能：系统管理员从device_store出库，创建设备与位置的绑定关系
+func (r *PostgresDevicesRepository) CreateDevice(ctx context.Context, tenantID string, device *domain.Device) (string, error) {
+	if tenantID == "" {
+		return "", fmt.Errorf("tenant_id is required")
+	}
+	if device == nil {
+		return "", fmt.Errorf("device is required")
+	}
+
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return "", err
+	}
+	defer tx.Rollback()
+
+	// 1. 验证device_store_id
+	if !device.DeviceStoreID.Valid || device.DeviceStoreID.String == "" {
+		return "", fmt.Errorf("device_store_id is required")
+	}
+	deviceStoreID := device.DeviceStoreID.String
+
+	// 2. 查询device_store，验证是否存在且已分配给该tenant
+	var dsTenantID sql.NullString
+	var dsSerialNumber, dsUID sql.NullString
+	err = tx.QueryRowContext(ctx, `
+		SELECT tenant_id, serial_number, uid
+		FROM device_store
+		WHERE device_store_id = $1
+	`, deviceStoreID).Scan(&dsTenantID, &dsSerialNumber, &dsUID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("device_store not found: device_store_id=%s", deviceStoreID)
+		}
+		return "", fmt.Errorf("failed to query device_store: %w", err)
+	}
+
+	// 验证租户一致性
+	unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
+	if !dsTenantID.Valid || dsTenantID.String == unallocatedTenantID {
+		return "", fmt.Errorf("device_store not allocated to tenant: device_store_id=%s (device must be allocated before checkout)", deviceStoreID)
+	}
+	if dsTenantID.String != tenantID {
+		return "", fmt.Errorf("device_store belongs to different tenant: device_store_id=%s (expected %s, got %s)", deviceStoreID, tenantID, dsTenantID.String)
+	}
+
+	// 3. 验证serial_number和uid至少填一个（从device_store获取）
+	if !dsSerialNumber.Valid && !dsUID.Valid {
+		return "", fmt.Errorf("device_store has no serial_number or uid: device_store_id=%s", deviceStoreID)
+	}
+
+	// 4. 验证位置绑定（如果提供）
+	boundRoomID := ""
+	if device.BoundRoomID.Valid {
+		boundRoomID = device.BoundRoomID.String
+	}
+	boundBedID := ""
+	if device.BoundBedID.Valid {
+		boundBedID = device.BoundBedID.String
+	}
+
+	// 验证bound_room_id（如果提供）
+	if boundRoomID != "" {
+		var unitTenantID string
+		err := tx.QueryRowContext(ctx, `
+			SELECT u.tenant_id::text
+			FROM rooms r
+			JOIN units u ON r.unit_id = u.unit_id
+			WHERE r.room_id = $1
+		`, boundRoomID).Scan(&unitTenantID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return "", fmt.Errorf("room not found: room_id=%s (room must belong to an existing unit)", boundRoomID)
+			}
+			return "", fmt.Errorf("failed to validate room: %w", err)
+		}
+		if unitTenantID != tenantID {
+			return "", fmt.Errorf("room belongs to different tenant: room_id=%s (expected %s, got %s)", boundRoomID, tenantID, unitTenantID)
+		}
+	}
+
+	// 验证bound_bed_id（如果提供）
+	if boundBedID != "" {
+		var unitTenantID string
+		err := tx.QueryRowContext(ctx, `
+			SELECT u.tenant_id::text
+			FROM beds b
+			JOIN rooms r ON b.room_id = r.room_id
+			JOIN units u ON r.unit_id = u.unit_id
+			WHERE b.bed_id = $1
+		`, boundBedID).Scan(&unitTenantID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return "", fmt.Errorf("bed not found: bed_id=%s (bed must belong to an existing room)", boundBedID)
+			}
+			return "", fmt.Errorf("failed to validate bed: %w", err)
+		}
+		if unitTenantID != tenantID {
+			return "", fmt.Errorf("bed belongs to different tenant: bed_id=%s (expected %s, got %s)", boundBedID, tenantID, unitTenantID)
+		}
+	}
+
+	// 验证不能同时绑定到room和bed
+	if boundRoomID != "" && boundBedID != "" {
+		return "", fmt.Errorf("cannot bind to both room and bed: bound_room_id=%s, bound_bed_id=%s (mutually exclusive)", boundRoomID, boundBedID)
+	}
+
+	// 5. 生成device_name（如果未提供，从device_store生成）
+	deviceName := device.DeviceName
+	if deviceName == "" {
+		if dsSerialNumber.Valid && dsSerialNumber.String != "" {
+			deviceName = dsSerialNumber.String
+		} else if dsUID.Valid && dsUID.String != "" {
+			deviceName = dsUID.String
+		} else {
+			deviceName = "Device-" + deviceStoreID[:8]
+		}
+	}
+
+	// 6. 插入devices记录
+	insertQuery := `
+		INSERT INTO devices (
+			tenant_id, device_store_id, device_name,
+			serial_number, uid,
+			bound_room_id, bound_bed_id,
+			status, business_access, monitoring_enabled
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING device_id::text
+	`
+
+	var deviceID string
+	var boundRoomIDVal, boundBedIDVal interface{}
+	if boundRoomID != "" {
+		boundRoomIDVal = boundRoomID
+	} else {
+		boundRoomIDVal = nil
+	}
+	if boundBedID != "" {
+		boundBedIDVal = boundBedID
+	} else {
+		boundBedIDVal = nil
+	}
+
+	status := device.Status
+	if status == "" {
+		status = "offline"
+	}
+	businessAccess := device.BusinessAccess
+	if businessAccess == "" {
+		businessAccess = "pending"
+	}
+
+	err = tx.QueryRowContext(ctx, insertQuery,
+		tenantID,
+		deviceStoreID,
+		deviceName,
+		dsSerialNumber,
+		dsUID,
+		boundRoomIDVal,
+		boundBedIDVal,
+		status,
+		businessAccess,
+		device.MonitoringEnabled,
+	).Scan(&deviceID)
+	if err != nil {
+		return "", fmt.Errorf("failed to create device: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+
+	return deviceID, nil
+}
+
+// UpdateDevice 更新设备信息
+// 替代触发器: trigger_validate_device_bed_tenant, trigger_validate_device_store_tenant
+func (r *PostgresDevicesRepository) UpdateDevice(ctx context.Context, tenantID, deviceID string, device *domain.Device) error {
+	if tenantID == "" || deviceID == "" {
+		return fmt.Errorf("tenant_id and device_id are required")
+	}
+	if device == nil {
+		return fmt.Errorf("device is required")
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() {
 		_ = tx.Rollback()
 	}()
 
+	// 1. 验证bound_room_id（如果更新）
+	if device.BoundRoomID.Valid && device.BoundRoomID.String != "" {
+		var unitTenantID string
+		if err := tx.QueryRowContext(ctx,
+			"SELECT u.tenant_id::text FROM rooms r JOIN units u ON r.unit_id = u.unit_id WHERE r.room_id = $1",
+			device.BoundRoomID.String,
+		).Scan(&unitTenantID); err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("room not found: room_id=%s", device.BoundRoomID.String)
+			}
+			return fmt.Errorf("failed to validate bound_room_id: %w", err)
+		}
+		if unitTenantID != tenantID {
+			return fmt.Errorf("room not found: room_id=%s (room's unit belongs to tenant %s, expected %s)", device.BoundRoomID.String, unitTenantID, tenantID)
+		}
+	}
+
+	// 2. 验证bound_bed_id（如果更新）
+	if device.BoundBedID.Valid && device.BoundBedID.String != "" {
+		var unitTenantID string
+		if err := tx.QueryRowContext(ctx,
+			"SELECT u.tenant_id::text FROM beds b JOIN rooms r ON b.room_id = r.room_id JOIN units u ON r.unit_id = u.unit_id WHERE b.bed_id = $1",
+			device.BoundBedID.String,
+		).Scan(&unitTenantID); err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("bed not found: bed_id=%s", device.BoundBedID.String)
+			}
+			return fmt.Errorf("failed to validate bound_bed_id: %w", err)
+		}
+		if unitTenantID != tenantID {
+			return fmt.Errorf("bed not found: bed_id=%s (bed's room's unit belongs to tenant %s, expected %s)", device.BoundBedID.String, unitTenantID, tenantID)
+		}
+	}
+
+	// 3. 验证device_store_id的租户一致性（如果更新）
+	if device.DeviceStoreID.Valid && device.DeviceStoreID.String != "" {
+		var dsTenantID sql.NullString
+		if err := tx.QueryRowContext(ctx,
+			"SELECT tenant_id FROM device_store WHERE device_store_id = $1",
+			device.DeviceStoreID.String,
+		).Scan(&dsTenantID); err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("device_store not found: device_store_id=%s", device.DeviceStoreID.String)
+			}
+			return fmt.Errorf("failed to validate device_store_id: %w", err)
+		}
+		unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
+		if dsTenantID.Valid && dsTenantID.String != unallocatedTenantID && dsTenantID.String != tenantID {
+			return fmt.Errorf("device_store_id %s is assigned to a different tenant (expected %s, got %s)", device.DeviceStoreID.String, tenantID, dsTenantID.String)
+		}
+	}
+
+	// 4. 执行UPDATE（动态构建）
 	set := []string{}
 	args := []any{tenantID, deviceID}
 	argN := 3
@@ -233,23 +439,42 @@ func (r *PostgresDevicesRepo) UpdateDevice(ctx context.Context, tenantID, device
 		args = append(args, v)
 		argN++
 	}
-	if v, ok := payload["device_name"]; ok {
-		add("device_name", v)
+
+	if device.DeviceName != "" {
+		add("device_name", device.DeviceName)
 	}
-	if v, ok := payload["business_access"]; ok {
-		add("business_access", v)
+	if device.BusinessAccess != "" {
+		add("business_access", device.BusinessAccess)
 	}
-	if v, ok := payload["status"]; ok {
-		add("status", v)
+	if device.Status != "" {
+		add("status", device.Status)
 	}
-	if v, ok := payload["monitoring_enabled"]; ok {
-		add("monitoring_enabled", v)
+	add("monitoring_enabled", device.MonitoringEnabled)
+	if device.BoundRoomID.Valid {
+		if device.BoundRoomID.String != "" {
+			add("bound_room_id", device.BoundRoomID.String)
+		} else {
+			set = append(set, "bound_room_id = NULL")
+		}
 	}
-	if v, ok := payload["bound_room_id"]; ok {
-		add("bound_room_id", v)
+	if device.BoundBedID.Valid {
+		if device.BoundBedID.String != "" {
+			add("bound_bed_id", device.BoundBedID.String)
+		} else {
+			set = append(set, "bound_bed_id = NULL")
+		}
 	}
-	if v, ok := payload["bound_bed_id"]; ok {
-		add("bound_bed_id", v)
+	if device.DeviceStoreID.Valid {
+		if device.DeviceStoreID.String != "" {
+			add("device_store_id", device.DeviceStoreID.String)
+		} else {
+			set = append(set, "device_store_id = NULL")
+		}
+	}
+	if device.Metadata.Valid {
+		set = append(set, fmt.Sprintf("metadata = $%d::jsonb", argN))
+		args = append(args, device.Metadata.String)
+		argN++
 	}
 
 	if len(set) == 0 {
@@ -262,7 +487,47 @@ func (r *PostgresDevicesRepo) UpdateDevice(ctx context.Context, tenantID, device
 	return tx.Commit()
 }
 
-func (r *PostgresDevicesRepo) DisableDevice(ctx context.Context, tenantID, deviceID string) error {
+// DeleteDevice 删除设备与位置的绑定关系（设备退回）
+// 验证：检查设备是否已使用（is_device_used()），如果已使用，只能软删除（DisableDevice）
+func (r *PostgresDevicesRepository) DeleteDevice(ctx context.Context, tenantID, deviceID string) error {
+	// 1. 检查设备是否存在
+	var deviceExists bool
+	err := r.db.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM devices WHERE tenant_id = $1 AND device_id = $2)
+	`, tenantID, deviceID).Scan(&deviceExists)
+	if err != nil {
+		return fmt.Errorf("failed to check device: %w", err)
+	}
+	if !deviceExists {
+		return fmt.Errorf("device not found: tenant_id=%s, device_id=%s", tenantID, deviceID)
+	}
+
+	// 2. 检查设备是否已使用（调用is_device_used()函数）
+	var isUsed bool
+	err = r.db.QueryRowContext(ctx, `SELECT is_device_used($1)`, deviceID).Scan(&isUsed)
+	if err != nil {
+		return fmt.Errorf("failed to check if device is used: %w", err)
+	}
+
+	if isUsed {
+		return fmt.Errorf("cannot delete device: device has reported data (use DisableDevice for soft delete): device_id=%s", deviceID)
+	}
+
+	// 3. 物理删除设备记录
+	_, err = r.db.ExecContext(ctx, `
+		DELETE FROM devices
+		WHERE tenant_id = $1 AND device_id = $2
+	`, tenantID, deviceID)
+	if err != nil {
+		return fmt.Errorf("failed to delete device: %w", err)
+	}
+
+	return nil
+}
+
+// DisableDevice 软删除设备
+// 功能：设置status='disabled', business_access='rejected', monitoring_enabled=FALSE
+func (r *PostgresDevicesRepository) DisableDevice(ctx context.Context, tenantID, deviceID string) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE devices
 		SET status='disabled', business_access='rejected', monitoring_enabled=FALSE
@@ -271,12 +536,9 @@ func (r *PostgresDevicesRepo) DisableDevice(ctx context.Context, tenantID, devic
 	return err
 }
 
-// GetOrCreateDeviceFromStore attempts to get device from devices table, and if not found,
-// checks device_store table. If device_store exists and is allocated, creates devices record.
-// This is used for automatic device creation on first MQTT connection.
-// Returns the device and error. Errors are logged for security auditing.
-func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, identifier string, mqttTopic string) (*Device, error) {
-	// Helper function to log messages (if logger is available)
+// GetOrCreateDeviceFromStore 首次连接时自动创建设备记录
+// 替代触发器: trigger_validate_device_identifier, trigger_validate_device_store_tenant
+func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Context, identifier string, mqttTopic string) (*domain.Device, error) {
 	logInfo := func(msg string, fields ...zap.Field) {
 		if r.logger != nil {
 			r.logger.Info(msg, fields...)
@@ -288,80 +550,58 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 		}
 	}
 
-	// 1. First, try to get device from devices table by serial_number or uid
+	// 1. 先尝试从devices表查询
 	deviceQuery := `
 		SELECT
 			d.device_id::text,
 			d.tenant_id::text,
-			CASE WHEN d.device_store_id IS NULL THEN NULL ELSE d.device_store_id::text END as device_store_id,
+			d.device_store_id,
 			d.device_name,
-			ds.device_model,
-			ds.device_type,
 			d.serial_number,
 			d.uid,
-			ds.imei,
-			ds.comm_mode,
-			ds.firmware_version,
-			ds.mcu_model,
+			d.bound_room_id,
+			d.bound_bed_id,
 			d.status,
 			d.business_access,
 			d.monitoring_enabled,
-			NULL as unit_id,
-			CASE WHEN d.bound_room_id IS NULL THEN NULL ELSE d.bound_room_id::text END as bound_room_id,
-			CASE WHEN d.bound_bed_id  IS NULL THEN NULL ELSE d.bound_bed_id::text  END as bound_bed_id,
-			CASE WHEN d.metadata IS NULL THEN NULL ELSE d.metadata::text END as metadata
+			d.metadata
 		FROM devices d
-		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
 		WHERE (d.serial_number = $1 OR d.uid = $1)
 		LIMIT 1
 	`
 
-	var d Device
+	var d domain.Device
 	err := r.db.QueryRowContext(ctx, deviceQuery, identifier).Scan(
 		&d.DeviceID,
 		&d.TenantID,
 		&d.DeviceStoreID,
 		&d.DeviceName,
-		&d.DeviceModel,
-		&d.DeviceType,
 		&d.SerialNumber,
 		&d.UID,
-		&d.IMEI,
-		&d.CommMode,
-		&d.FirmwareVersion,
-		&d.MCUModel,
+		&d.BoundRoomID,
+		&d.BoundBedID,
 		&d.Status,
 		&d.BusinessAccess,
 		&d.MonitoringEnabled,
-		&d.UnitID,
-		&d.BoundRoomID,
-		&d.BoundBedID,
 		&d.Metadata,
 	)
 
 	if err == nil {
-		// Device found in devices table, return it
 		return &d, nil
 	}
 
 	if err != sql.ErrNoRows {
-		// Unexpected database error
 		return nil, fmt.Errorf("failed to query device: %w", err)
 	}
 
-	// 2. Device not found in devices table, check device_store table
+	// 2. 从device_store表查询
 	unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
 	deviceStoreQuery := `
 		SELECT
 			device_store_id::text,
 			device_type,
-			device_model,
 			serial_number,
 			uid,
-			imei,
-			comm_mode,
-			mcu_model,
-			firmware_version,
 			tenant_id::text,
 			allow_access
 		FROM device_store
@@ -370,77 +610,52 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 	`
 
 	var dsDeviceStoreID, dsDeviceType, dsTenantID string
-	var dsDeviceModel, dsSerialNumber, dsUID, dsIMEI, dsCommMode, dsMCUModel, dsFirmwareVersion sql.NullString
+	var dsSerialNumber, dsUID sql.NullString
 	var dsAllowAccess bool
 
 	err = r.db.QueryRowContext(ctx, deviceStoreQuery, identifier).Scan(
 		&dsDeviceStoreID,
 		&dsDeviceType,
-		&dsDeviceModel,
 		&dsSerialNumber,
 		&dsUID,
-		&dsIMEI,
-		&dsCommMode,
-		&dsMCUModel,
-		&dsFirmwareVersion,
 		&dsTenantID,
 		&dsAllowAccess,
 	)
 
 	if err == sql.ErrNoRows {
-		// Case 3: Device not registered in device_store
 		logWarn("Unauthorized device connection attempt",
 			zap.String("identifier", identifier),
 			zap.String("mqtt_topic", mqttTopic),
 			zap.String("reason", "device_not_registered"),
-			zap.String("action", "connection_rejected"),
-			zap.String("security_level", "warning"),
 		)
 		return nil, fmt.Errorf("unauthorized device: not registered in device_store")
 	}
 
 	if err != nil {
-		// Unexpected database error
-		logWarn("Device connection failed: database error",
-			zap.String("identifier", identifier),
-			zap.String("mqtt_topic", mqttTopic),
-			zap.String("reason", "database_error"),
-			zap.Error(err),
-		)
 		return nil, fmt.Errorf("failed to query device_store: %w", err)
 	}
 
-	// 3. Check if device is allocated to a tenant
+	// 3. 检查设备是否已分配给租户
 	if dsTenantID == unallocatedTenantID {
-		// Case 2: Device registered but not allocated
-		serialNum := ""
-		if dsSerialNumber.Valid {
-			serialNum = dsSerialNumber.String
-		}
-		uid := ""
-		if dsUID.Valid {
-			uid = dsUID.String
-		}
 		logWarn("Device connection rejected: not allocated",
 			zap.String("device_store_id", dsDeviceStoreID),
-			zap.String("serial_number", serialNum),
-			zap.String("uid", uid),
 			zap.String("reason", "device_not_allocated"),
-			zap.String("action", "connection_rejected"),
 		)
 		return nil, fmt.Errorf("device not allocated to tenant")
 	}
 
-	// Case 1: Device is registered and allocated, create devices record
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		logWarn("Device connection failed: transaction error",
+	// 4. 验证serial_number和uid至少填一个
+	if (!dsSerialNumber.Valid || dsSerialNumber.String == "") && (!dsUID.Valid || dsUID.String == "") {
+		logWarn("Device connection rejected: missing identifier",
 			zap.String("device_store_id", dsDeviceStoreID),
 			zap.String("identifier", identifier),
-			zap.String("mqtt_topic", mqttTopic),
-			zap.String("reason", "transaction_error"),
-			zap.Error(err),
 		)
+		return nil, fmt.Errorf("device must have at least one identifier: serial_number or uid")
+	}
+
+	// 5. 创建设备记录
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() {
@@ -449,7 +664,6 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 		}
 	}()
 
-	// Generate device name from device_type and serial_number/uid
 	deviceName := dsDeviceType
 	if dsSerialNumber.Valid && dsSerialNumber.String != "" {
 		deviceName = dsDeviceType + "-" + dsSerialNumber.String
@@ -457,7 +671,6 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 		deviceName = dsDeviceType + "-" + dsUID.String
 	}
 
-	// Insert device record
 	insertQuery := `
 		INSERT INTO devices (
 			tenant_id,
@@ -482,52 +695,20 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 	).Scan(&newDeviceID)
 
 	if err != nil {
-		logWarn("Device connection failed: failed to create device record",
-			zap.String("device_store_id", dsDeviceStoreID),
-			zap.String("tenant_id", dsTenantID),
-			zap.String("identifier", identifier),
-			zap.String("mqtt_topic", mqttTopic),
-			zap.String("reason", "device_creation_failed"),
-			zap.Error(err),
-		)
 		return nil, fmt.Errorf("failed to create device record: %w", err)
 	}
 
 	if err = tx.Commit(); err != nil {
-		logWarn("Device connection failed: transaction commit error",
-			zap.String("device_store_id", dsDeviceStoreID),
-			zap.String("device_id", newDeviceID),
-			zap.String("tenant_id", dsTenantID),
-			zap.String("identifier", identifier),
-			zap.String("mqtt_topic", mqttTopic),
-			zap.String("reason", "transaction_commit_failed"),
-			zap.Error(err),
-		)
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	// Log successful auto-creation
-	serialNum := ""
-	if dsSerialNumber.Valid {
-		serialNum = dsSerialNumber.String
-	}
-	uid := ""
-	if dsUID.Valid {
-		uid = dsUID.String
-	}
 	logInfo("Device auto-created from device_store",
 		zap.String("device_store_id", dsDeviceStoreID),
 		zap.String("device_id", newDeviceID),
 		zap.String("tenant_id", dsTenantID),
-		zap.String("serial_number", serialNum),
-		zap.String("uid", uid),
 		zap.String("device_type", dsDeviceType),
-		zap.String("source", "mqtt_first_connection"),
-		zap.String("mqtt_topic", mqttTopic),
 	)
 
-	// Query and return the newly created device
 	return r.GetDevice(ctx, dsTenantID, newDeviceID)
 }
-
 

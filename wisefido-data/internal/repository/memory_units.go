@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"sync"
 
 	"github.com/google/uuid"
@@ -51,10 +52,17 @@ func (r *MemoryUnitsRepo) CreateBuilding(_ context.Context, tenantID string, pay
 	}
 
 	buildingName, _ := payload["building_name"].(string)
+	branchTag, _ := payload["branch_tag"].(string)
+	
+	// 验证：branch_tag 或 building_name 必须有一个不为空
+	if (branchTag == "" || branchTag == "-") && (buildingName == "" || buildingName == "-") {
+		return nil, fmt.Errorf("branch_tag or building_name must be provided (at least one must not be empty)")
+	}
+	
+	// 设置默认值
 	if buildingName == "" {
 		buildingName = "-"
 	}
-	branchTag, _ := payload["branch_tag"].(string)
 	if branchTag == "" {
 		branchTag = "-"
 	}

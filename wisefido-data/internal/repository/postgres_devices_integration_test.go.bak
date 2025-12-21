@@ -1,0 +1,1109 @@
+// +build integration
+
+package repository
+
+import (
+	"context"
+	"database/sql"
+	"testing"
+
+	"owl-common/database"
+	"owl-common/config"
+)
+
+// 获取测试数据库连接
+func getTestDBForDevices(t *testing.T) *sql.DB {
+	cfg := &config.DatabaseConfig{
+		Host:     getEnv("TEST_DB_HOST", "localhost"),
+		Port:     getEnvInt("TEST_DB_PORT", 5432),
+		User:     getEnv("TEST_DB_USER", "postgres"),
+		Password: getEnv("TEST_DB_PASSWORD", "postgres"),
+		Database: getEnv("TEST_DB_NAME", "owlrd"),
+		SSLMode:  getEnv("TEST_DB_SSLMODE", "disable"),
+	}
+
+	db, err := database.NewPostgresDB(cfg)
+	if err != nil {
+		t.Skipf("Skipping integration test: cannot connect to database: %v", err)
+		return nil
+	}
+
+	// 测试连接
+	if err := db.Ping(); err != nil {
+		t.Skipf("Skipping integration test: cannot ping database: %v", err)
+		return nil
+	}
+
+	return db
+}
+
+// getEnv 和 getEnvInt 已在 postgres_users_integration_test.go 中定义，这里不再重复定义
+
+// 创建测试租户
+func createTestTenantForDevices(t *testing.T, db *sql.DB) string {
+	tenantID := "00000000-0000-0000-0000-000000000998"
+	_, err := db.Exec(
+		`INSERT INTO tenants (tenant_id, tenant_name, domain, status)
+		 VALUES ($1, $2, $3, 'active')
+		 ON CONFLICT (tenant_id) DO UPDATE SET tenant_name = EXCLUDED.tenant_name`,
+		tenantID, "Test Tenant Devices", "test-devices.local",
+	)
+	if err != nil {
+		t.Fatalf("Failed to create test tenant: %v", err)
+	}
+	return tenantID
+}
+
+// 清理测试数据
+func cleanupTestDataForDevices(t *testing.T, db *sql.DB, tenantID string) {
+	// 删除顺序：devices -> device_store -> tenants
+	db.Exec(`DELETE FROM devices WHERE tenant_id = $1`, tenantID)
+	db.Exec(`DELETE FROM device_store WHERE tenant_id = $1`, tenantID)
+	db.Exec(`DELETE FROM tenants WHERE tenant_id = $1`, tenantID)
+}
+
+// 创建测试unit（用于位置绑定测试）
+func createTestUnit(t *testing.T, db *sql.DB, tenantID string) string {
+	unitID := "00000000-0000-0000-0000-000000000001"
+	// 使用有效的branch_tag值（如果数据库要求NOT NULL，则使用"-"或有效值）
+	_, err := db.Exec(
+		`INSERT INTO units (unit_id, tenant_id, unit_name, unit_number, unit_type, timezone, branch_tag, building)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 ON CONFLICT (unit_id) DO UPDATE SET unit_name = EXCLUDED.unit_name`,
+		unitID, tenantID, "Test Unit", "U001", "Facility", "America/Los_Angeles", "TEST-BRANCH", "TEST-BUILDING",
+	)
+	if err != nil {
+		t.Fatalf("Failed to create test unit: %v", err)
+	}
+	return unitID
+}
+
+// 创建测试room
+func createTestRoom(t *testing.T, db *sql.DB, tenantID, unitID string) string {
+	roomID := "00000000-0000-0000-0000-000000000002"
+	_, err := db.Exec(
+		`INSERT INTO rooms (room_id, tenant_id, unit_id, room_name)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (room_id) DO UPDATE SET room_name = EXCLUDED.room_name`,
+		roomID, tenantID, unitID, "Test Room",
+	)
+	if err != nil {
+		t.Fatalf("Failed to create test room: %v", err)
+	}
+	return roomID
+}
+
+// ============================================
+// DeviceStoreRepo 测试
+// ============================================
+
+func TestPostgresDeviceStoreRepo_CreateDeviceStore(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDeviceStoreRepo(db)
+	ctx := context.Background()
+
+	// 测试：创建设备库存
+	payload := map[string]any{
+		"device_type":    "Radar",
+		"device_model":   "WF-RADAR-60G-V2",
+		"serial_number":  "TEST-SN-001",
+		"uid":            "TEST-UID-001",
+		"imei":           "123456789012345",
+		"comm_mode":      "WiFi",
+		"mcu_model":      "ESP32",
+		"firmware_version": "1.0.0",
+		"allow_access":   true,
+	}
+
+	deviceStoreID, err := repo.CreateDeviceStore(ctx, payload)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	if deviceStoreID == "" {
+		t.Fatal("CreateDeviceStore returned empty device_store_id")
+	}
+	t.Logf("Created device_store_id: %s", deviceStoreID)
+
+	// 清理
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+
+	// 验证：查询创建的设备
+	deviceStore, err := repo.GetDeviceStore(ctx, deviceStoreID)
+	if err != nil {
+		t.Fatalf("GetDeviceStore failed: %v", err)
+	}
+	if deviceStore.DeviceType != "Radar" {
+		t.Errorf("Expected device_type=Radar, got %s", deviceStore.DeviceType)
+	}
+	if !deviceStore.SerialNumber.Valid || deviceStore.SerialNumber.String != "TEST-SN-001" {
+		t.Errorf("Expected serial_number=TEST-SN-001, got %v", deviceStore.SerialNumber)
+	}
+}
+
+func TestPostgresDeviceStoreRepo_GetDeviceStore(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDeviceStoreRepo(db)
+	ctx := context.Background()
+
+	// 先创建一个设备
+	payload := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-002",
+		"uid":           "TEST-UID-002",
+		"allow_access":  true,
+	}
+
+	deviceStoreID, err := repo.CreateDeviceStore(ctx, payload)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+
+	// 测试：查询设备
+	deviceStore, err := repo.GetDeviceStore(ctx, deviceStoreID)
+	if err != nil {
+		t.Fatalf("GetDeviceStore failed: %v", err)
+	}
+	if deviceStore.DeviceStoreID != deviceStoreID {
+		t.Errorf("Expected device_store_id=%s, got %s", deviceStoreID, deviceStore.DeviceStoreID)
+	}
+	if deviceStore.DeviceType != "Radar" {
+		t.Errorf("Expected device_type=Radar, got %s", deviceStore.DeviceType)
+	}
+}
+
+func TestPostgresDeviceStoreRepo_DeleteDeviceStore(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDeviceStoreRepo(db)
+	ctx := context.Background()
+
+	// 先创建一个未分配的设备
+	payload := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-003",
+		"uid":           "TEST-UID-003",
+		"allow_access":  true,
+	}
+
+	deviceStoreID, err := repo.CreateDeviceStore(ctx, payload)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+
+	// 测试：删除设备库存
+	err = repo.DeleteDeviceStore(ctx, deviceStoreID)
+	if err != nil {
+		t.Fatalf("DeleteDeviceStore failed: %v", err)
+	}
+
+	// 验证：设备已删除
+	_, err = repo.GetDeviceStore(ctx, deviceStoreID)
+	if err == nil {
+		t.Fatal("DeviceStore should be deleted, but GetDeviceStore succeeded")
+	}
+}
+
+func TestPostgresDeviceStoreRepo_DeleteDeviceStore_WithAllocation(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDeviceStoreRepo(db)
+	ctx := context.Background()
+	tenantID := createTestTenantForDevices(t, db)
+	defer cleanupTestDataForDevices(t, db, tenantID)
+
+	// 先创建一个已分配的设备
+	payload := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-004",
+		"uid":           "TEST-UID-004",
+		"tenant_id":     tenantID,
+		"allow_access":  true,
+	}
+
+	deviceStoreID, err := repo.CreateDeviceStore(ctx, payload)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+
+	// 测试：尝试删除已分配的设备（应该失败）
+	err = repo.DeleteDeviceStore(ctx, deviceStoreID)
+	if err == nil {
+		t.Fatal("DeleteDeviceStore should fail for allocated device, but succeeded")
+	}
+	t.Logf("Expected error for allocated device: %v", err)
+}
+
+// ============================================
+// DevicesRepo 测试
+// ============================================
+
+func TestPostgresDevicesRepo_CreateDevice(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDevicesRepo(db)
+	ctx := context.Background()
+	tenantID := createTestTenantForDevices(t, db)
+	defer cleanupTestDataForDevices(t, db, tenantID)
+
+	// 先创建一个已分配的device_store
+	deviceStoreRepo := NewPostgresDeviceStoreRepo(db)
+	deviceStorePayload := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-005",
+		"uid":           "TEST-UID-005",
+		"tenant_id":     tenantID,
+		"allow_access":  true,
+	}
+	deviceStoreID, err := deviceStoreRepo.CreateDeviceStore(ctx, deviceStorePayload)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+
+	// 测试：创建设备（出库操作）
+	payload := map[string]any{
+		"device_store_id": deviceStoreID,
+		"device_name":     "Test Device 005",
+	}
+
+	deviceID, err := repo.CreateDevice(ctx, tenantID, payload)
+	if err != nil {
+		t.Fatalf("CreateDevice failed: %v", err)
+	}
+	if deviceID == "" {
+		t.Fatal("CreateDevice returned empty device_id")
+	}
+	t.Logf("Created device_id: %s", deviceID)
+	defer db.Exec(`DELETE FROM devices WHERE device_id = $1`, deviceID)
+
+	// 验证：查询创建的设备
+	device, err := repo.GetDevice(ctx, tenantID, deviceID)
+	if err != nil {
+		t.Fatalf("GetDevice failed: %v", err)
+	}
+	if device.DeviceName != "Test Device 005" {
+		t.Errorf("Expected device_name=Test Device 005, got %s", device.DeviceName)
+	}
+	if device.Status != "offline" {
+		t.Errorf("Expected status=offline, got %s", device.Status)
+	}
+	if device.BusinessAccess != "pending" {
+		t.Errorf("Expected business_access=pending, got %s", device.BusinessAccess)
+	}
+}
+
+func TestPostgresDevicesRepo_CreateDevice_WithRoomBinding(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDevicesRepo(db)
+	ctx := context.Background()
+	tenantID := createTestTenantForDevices(t, db)
+	defer cleanupTestDataForDevices(t, db, tenantID)
+
+	// 创建测试unit和room
+	unitID := createTestUnit(t, db, tenantID)
+	defer db.Exec(`DELETE FROM units WHERE unit_id = $1`, unitID)
+	roomID := createTestRoom(t, db, tenantID, unitID)
+	defer db.Exec(`DELETE FROM rooms WHERE room_id = $1`, roomID)
+
+	// 先创建一个已分配的device_store
+	deviceStoreRepo := NewPostgresDeviceStoreRepo(db)
+	deviceStorePayload := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-006",
+		"uid":           "TEST-UID-006",
+		"tenant_id":     tenantID,
+		"allow_access":  true,
+	}
+	deviceStoreID, err := deviceStoreRepo.CreateDeviceStore(ctx, deviceStorePayload)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+
+	// 测试：创建设备并绑定到room
+	payload := map[string]any{
+		"device_store_id": deviceStoreID,
+		"device_name":     "Test Device 006",
+		"bound_room_id":   roomID,
+	}
+
+	deviceID, err := repo.CreateDevice(ctx, tenantID, payload)
+	if err != nil {
+		t.Fatalf("CreateDevice failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM devices WHERE device_id = $1`, deviceID)
+
+	// 验证：查询创建的设备
+	device, err := repo.GetDevice(ctx, tenantID, deviceID)
+	if err != nil {
+		t.Fatalf("GetDevice failed: %v", err)
+	}
+	if !device.BoundRoomID.Valid || device.BoundRoomID.String != roomID {
+		t.Errorf("Expected bound_room_id=%s, got %v", roomID, device.BoundRoomID)
+	}
+}
+
+func TestPostgresDevicesRepo_DeleteDevice(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDevicesRepo(db)
+	ctx := context.Background()
+	tenantID := createTestTenantForDevices(t, db)
+	defer cleanupTestDataForDevices(t, db, tenantID)
+
+	// 先创建一个已分配的device_store
+	deviceStoreRepo := NewPostgresDeviceStoreRepo(db)
+	deviceStorePayload := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-007",
+		"uid":           "TEST-UID-007",
+		"tenant_id":     tenantID,
+		"allow_access":  true,
+	}
+	deviceStoreID, err := deviceStoreRepo.CreateDeviceStore(ctx, deviceStorePayload)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+
+	// 创建设备
+	createPayload := map[string]any{
+		"device_store_id": deviceStoreID,
+		"device_name":     "Test Device 007",
+	}
+	deviceID, err := repo.CreateDevice(ctx, tenantID, createPayload)
+	if err != nil {
+		t.Fatalf("CreateDevice failed: %v", err)
+	}
+
+	// 测试：删除设备（未使用过的设备可以物理删除）
+	err = repo.DeleteDevice(ctx, tenantID, deviceID)
+	if err != nil {
+		t.Fatalf("DeleteDevice failed: %v", err)
+	}
+
+	// 验证：设备已删除
+	_, err = repo.GetDevice(ctx, tenantID, deviceID)
+	if err == nil {
+		t.Fatal("Device should be deleted, but GetDevice succeeded")
+	}
+}
+
+func TestPostgresDevicesRepo_CreateDevice_UnallocatedDeviceStore(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDevicesRepo(db)
+	ctx := context.Background()
+	tenantID := createTestTenantForDevices(t, db)
+	defer cleanupTestDataForDevices(t, db, tenantID)
+
+	// 先创建一个未分配的device_store
+	deviceStoreRepo := NewPostgresDeviceStoreRepo(db)
+	deviceStorePayload := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-008",
+		"uid":           "TEST-UID-008",
+		"allow_access":  true,
+	}
+	deviceStoreID, err := deviceStoreRepo.CreateDeviceStore(ctx, deviceStorePayload)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+
+	// 测试：尝试从未分配的device_store创建设备（应该失败）
+	payload := map[string]any{
+		"device_store_id": deviceStoreID,
+		"device_name":     "Test Device 008",
+	}
+
+	_, err = repo.CreateDevice(ctx, tenantID, payload)
+	if err == nil {
+		t.Fatal("CreateDevice should fail for unallocated device_store, but succeeded")
+	}
+	t.Logf("Expected error for unallocated device_store: %v", err)
+}
+
+// ============================================
+// 补充测试：DevicesRepo 其他方法
+// ============================================
+
+func TestPostgresDevicesRepo_ListDevices(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDevicesRepo(db)
+	ctx := context.Background()
+	tenantID := createTestTenantForDevices(t, db)
+	defer cleanupTestDataForDevices(t, db, tenantID)
+
+	// 创建测试数据
+	deviceStoreRepo := NewPostgresDeviceStoreRepo(db)
+	deviceStorePayload := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-LIST-001",
+		"uid":           "TEST-UID-LIST-001",
+		"tenant_id":     tenantID,
+		"allow_access":  true,
+	}
+	deviceStoreID, err := deviceStoreRepo.CreateDeviceStore(ctx, deviceStorePayload)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+
+	// 创建设备
+	createPayload := map[string]any{
+		"device_store_id": deviceStoreID,
+		"device_name":     "Test Device List 001",
+	}
+	deviceID, err := repo.CreateDevice(ctx, tenantID, createPayload)
+	if err != nil {
+		t.Fatalf("CreateDevice failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM devices WHERE device_id = $1`, deviceID)
+
+	// 测试：查询设备列表
+	filters := map[string]any{
+		"page": 1,
+		"size": 20,
+	}
+	devices, total, err := repo.ListDevices(ctx, tenantID, filters)
+	if err != nil {
+		t.Fatalf("ListDevices failed: %v", err)
+	}
+	if total < 1 {
+		t.Errorf("Expected total >= 1, got %d", total)
+	}
+	if len(devices) < 1 {
+		t.Errorf("Expected at least 1 device, got %d", len(devices))
+	}
+
+	// 验证返回的设备
+	found := false
+	for _, d := range devices {
+		if d.DeviceID == deviceID {
+			found = true
+			if d.DeviceName != "Test Device List 001" {
+				t.Errorf("Expected device_name=Test Device List 001, got %s", d.DeviceName)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("Created device not found in list")
+	}
+}
+
+func TestPostgresDevicesRepo_UpdateDevice(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDevicesRepo(db)
+	ctx := context.Background()
+	tenantID := createTestTenantForDevices(t, db)
+	defer cleanupTestDataForDevices(t, db, tenantID)
+
+	// 创建测试数据
+	deviceStoreRepo := NewPostgresDeviceStoreRepo(db)
+	deviceStorePayload := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-UPDATE-001",
+		"uid":           "TEST-UID-UPDATE-001",
+		"tenant_id":     tenantID,
+		"allow_access":  true,
+	}
+	deviceStoreID, err := deviceStoreRepo.CreateDeviceStore(ctx, deviceStorePayload)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+
+	// 创建设备
+	createPayload := map[string]any{
+		"device_store_id": deviceStoreID,
+		"device_name":     "Test Device Update 001",
+	}
+	deviceID, err := repo.CreateDevice(ctx, tenantID, createPayload)
+	if err != nil {
+		t.Fatalf("CreateDevice failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM devices WHERE device_id = $1`, deviceID)
+
+	// 测试：更新设备
+	updatePayload := map[string]any{
+		"device_name":     "Updated Device Name",
+		"business_access": "approved",
+		"status":          "online",
+	}
+	err = repo.UpdateDevice(ctx, tenantID, deviceID, updatePayload)
+	if err != nil {
+		t.Fatalf("UpdateDevice failed: %v", err)
+	}
+
+	// 验证更新
+	device, err := repo.GetDevice(ctx, tenantID, deviceID)
+	if err != nil {
+		t.Fatalf("GetDevice failed: %v", err)
+	}
+	if device.DeviceName != "Updated Device Name" {
+		t.Errorf("Expected device_name=Updated Device Name, got %s", device.DeviceName)
+	}
+	if device.BusinessAccess != "approved" {
+		t.Errorf("Expected business_access=approved, got %s", device.BusinessAccess)
+	}
+	if device.Status != "online" {
+		t.Errorf("Expected status=online, got %s", device.Status)
+	}
+}
+
+func TestPostgresDevicesRepo_DisableDevice(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDevicesRepo(db)
+	ctx := context.Background()
+	tenantID := createTestTenantForDevices(t, db)
+	defer cleanupTestDataForDevices(t, db, tenantID)
+
+	// 创建测试数据
+	deviceStoreRepo := NewPostgresDeviceStoreRepo(db)
+	deviceStorePayload := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-DISABLE-001",
+		"uid":           "TEST-UID-DISABLE-001",
+		"tenant_id":     tenantID,
+		"allow_access":  true,
+	}
+	deviceStoreID, err := deviceStoreRepo.CreateDeviceStore(ctx, deviceStorePayload)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+
+	// 创建设备
+	createPayload := map[string]any{
+		"device_store_id": deviceStoreID,
+		"device_name":     "Test Device Disable 001",
+	}
+	deviceID, err := repo.CreateDevice(ctx, tenantID, createPayload)
+	if err != nil {
+		t.Fatalf("CreateDevice failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM devices WHERE device_id = $1`, deviceID)
+
+	// 测试：软删除设备
+	err = repo.DisableDevice(ctx, tenantID, deviceID)
+	if err != nil {
+		t.Fatalf("DisableDevice failed: %v", err)
+	}
+
+	// 验证：设备状态已更新
+	device, err := repo.GetDevice(ctx, tenantID, deviceID)
+	if err != nil {
+		t.Fatalf("GetDevice failed: %v", err)
+	}
+	if device.Status != "disabled" {
+		t.Errorf("Expected status=disabled, got %s", device.Status)
+	}
+	if device.BusinessAccess != "rejected" {
+		t.Errorf("Expected business_access=rejected, got %s", device.BusinessAccess)
+	}
+	if device.MonitoringEnabled {
+		t.Error("Expected monitoring_enabled=false, got true")
+	}
+
+	// 验证：ListDevices 应该过滤掉 disabled 设备
+	filters := map[string]any{
+		"page": 1,
+		"size": 20,
+	}
+	devices, _, err := repo.ListDevices(ctx, tenantID, filters)
+	if err != nil {
+		t.Fatalf("ListDevices failed: %v", err)
+	}
+	for _, d := range devices {
+		if d.DeviceID == deviceID {
+			t.Error("Disabled device should not appear in ListDevices")
+		}
+	}
+}
+
+func TestPostgresDevicesRepo_GetOrCreateDeviceFromStore(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDevicesRepo(db)
+	ctx := context.Background()
+	tenantID := createTestTenantForDevices(t, db)
+	defer cleanupTestDataForDevices(t, db, tenantID)
+
+	// 创建已分配的device_store
+	deviceStoreRepo := NewPostgresDeviceStoreRepo(db)
+	deviceStorePayload := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-AUTO-001",
+		"uid":           "TEST-UID-AUTO-001",
+		"tenant_id":     tenantID,
+		"allow_access":  true,
+	}
+	deviceStoreID, err := deviceStoreRepo.CreateDeviceStore(ctx, deviceStorePayload)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+
+	// 测试：首次连接时自动创建设备
+	device, err := repo.GetOrCreateDeviceFromStore(ctx, "TEST-SN-AUTO-001", "test/mqtt/topic")
+	if err != nil {
+		t.Fatalf("GetOrCreateDeviceFromStore failed: %v", err)
+	}
+	if device == nil {
+		t.Fatal("GetOrCreateDeviceFromStore returned nil device")
+	}
+	defer db.Exec(`DELETE FROM devices WHERE device_id = $1`, device.DeviceID)
+
+	// 验证：设备已创建
+	if !device.DeviceStoreID.Valid || device.DeviceStoreID.String != deviceStoreID {
+		t.Errorf("Expected device_store_id=%s, got %v", deviceStoreID, device.DeviceStoreID)
+	}
+	if device.Status != "online" {
+		t.Errorf("Expected status=online, got %s", device.Status)
+	}
+	if device.BusinessAccess != "pending" {
+		t.Errorf("Expected business_access=pending, got %s", device.BusinessAccess)
+	}
+
+	// 测试：再次调用应该返回已存在的设备（不创建新设备）
+	device2, err := repo.GetOrCreateDeviceFromStore(ctx, "TEST-SN-AUTO-001", "test/mqtt/topic")
+	if err != nil {
+		t.Fatalf("GetOrCreateDeviceFromStore (second call) failed: %v", err)
+	}
+	if device2.DeviceID != device.DeviceID {
+		t.Errorf("Expected same device_id, got %s vs %s", device.DeviceID, device2.DeviceID)
+	}
+}
+
+func TestPostgresDevicesRepo_GetDevice(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDevicesRepo(db)
+	ctx := context.Background()
+	tenantID := createTestTenantForDevices(t, db)
+	defer cleanupTestDataForDevices(t, db, tenantID)
+
+	// 创建另一个租户（用于测试跨租户查询）
+	otherTenantID := "00000000-0000-0000-0000-000000000999"
+	_, err := db.Exec(
+		`INSERT INTO tenants (tenant_id, tenant_name, domain, status)
+		 VALUES ($1, $2, $3, 'active')
+		 ON CONFLICT (tenant_id) DO UPDATE SET tenant_name = EXCLUDED.tenant_name`,
+		otherTenantID, "Other Test Tenant", "other-test.local",
+	)
+	if err != nil {
+		t.Fatalf("Failed to create other test tenant: %v", err)
+	}
+	defer db.Exec(`DELETE FROM tenants WHERE tenant_id = $1`, otherTenantID)
+
+	// 创建测试数据
+	deviceStoreRepo := NewPostgresDeviceStoreRepo(db)
+	deviceStorePayload := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-GET-001",
+		"uid":           "TEST-UID-GET-001",
+		"tenant_id":     tenantID,
+		"allow_access":  true,
+	}
+	deviceStoreID, err := deviceStoreRepo.CreateDeviceStore(ctx, deviceStorePayload)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+
+	// 创建设备
+	createPayload := map[string]any{
+		"device_store_id": deviceStoreID,
+		"device_name":     "Test Device Get 001",
+		"status":           "online",
+		"business_access": "approved",
+	}
+	deviceID, err := repo.CreateDevice(ctx, tenantID, createPayload)
+	if err != nil {
+		t.Fatalf("CreateDevice failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM devices WHERE device_id = $1`, deviceID)
+
+	// 测试1：查询成功的情况
+	device, err := repo.GetDevice(ctx, tenantID, deviceID)
+	if err != nil {
+		t.Fatalf("GetDevice failed: %v", err)
+	}
+	if device == nil {
+		t.Fatal("GetDevice returned nil device")
+	}
+	if device.DeviceID != deviceID {
+		t.Errorf("Expected device_id=%s, got %s", deviceID, device.DeviceID)
+	}
+	if device.DeviceName != "Test Device Get 001" {
+		t.Errorf("Expected device_name=Test Device Get 001, got %s", device.DeviceName)
+	}
+	if device.Status != "online" {
+		t.Errorf("Expected status=online, got %s", device.Status)
+	}
+	if device.BusinessAccess != "approved" {
+		t.Errorf("Expected business_access=approved, got %s", device.BusinessAccess)
+	}
+	if !device.DeviceStoreID.Valid || device.DeviceStoreID.String != deviceStoreID {
+		t.Errorf("Expected device_store_id=%s, got %v", deviceStoreID, device.DeviceStoreID)
+	}
+
+	// 测试2：查询不存在的设备（应该返回错误）
+	nonExistentDeviceID := "00000000-0000-0000-0000-000000000000"
+	_, err = repo.GetDevice(ctx, tenantID, nonExistentDeviceID)
+	if err == nil {
+		t.Fatal("GetDevice should fail for non-existent device, but succeeded")
+	}
+	t.Logf("Expected error for non-existent device: %v", err)
+
+	// 测试3：查询不同租户的设备（应该返回错误）
+	// 先为另一个租户创建设备
+	otherDeviceStorePayload := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-GET-002",
+		"uid":           "TEST-UID-GET-002",
+		"tenant_id":     otherTenantID,
+		"allow_access":  true,
+	}
+	otherDeviceStoreID, err := deviceStoreRepo.CreateDeviceStore(ctx, otherDeviceStorePayload)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore (other tenant) failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, otherDeviceStoreID)
+
+	otherCreatePayload := map[string]any{
+		"device_store_id": otherDeviceStoreID,
+		"device_name":     "Other Tenant Device",
+	}
+	otherDeviceID, err := repo.CreateDevice(ctx, otherTenantID, otherCreatePayload)
+	if err != nil {
+		t.Fatalf("CreateDevice (other tenant) failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM devices WHERE device_id = $1`, otherDeviceID)
+
+	// 尝试用当前租户查询另一个租户的设备（应该失败）
+	_, err = repo.GetDevice(ctx, tenantID, otherDeviceID)
+	if err == nil {
+		t.Fatal("GetDevice should fail for device from different tenant, but succeeded")
+	}
+	t.Logf("Expected error for device from different tenant: %v", err)
+
+	// 验证：用正确的租户可以查询到
+	otherDevice, err := repo.GetDevice(ctx, otherTenantID, otherDeviceID)
+	if err != nil {
+		t.Fatalf("GetDevice (other tenant) failed: %v", err)
+	}
+	if otherDevice.DeviceID != otherDeviceID {
+		t.Errorf("Expected device_id=%s, got %s", otherDeviceID, otherDevice.DeviceID)
+	}
+}
+
+// ============================================
+// 补充测试：DeviceStoreRepo 其他方法
+// ============================================
+
+func TestPostgresDeviceStoreRepo_ListDeviceStores(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDeviceStoreRepo(db)
+	ctx := context.Background()
+	tenantID := createTestTenantForDevices(t, db)
+	defer cleanupTestDataForDevices(t, db, tenantID)
+
+	// 创建测试数据
+	payload1 := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-LIST-001",
+		"uid":           "TEST-UID-LIST-001",
+		"tenant_id":     tenantID,
+		"allow_access":  true,
+	}
+	deviceStoreID1, err := repo.CreateDeviceStore(ctx, payload1)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID1)
+
+	payload2 := map[string]any{
+		"device_type":   "SleepPad",
+		"serial_number": "TEST-SN-LIST-002",
+		"uid":           "TEST-UID-LIST-002",
+		"allow_access":  true,
+	}
+	deviceStoreID2, err := repo.CreateDeviceStore(ctx, payload2)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID2)
+
+	// 测试：查询设备库存列表
+	filters := map[string]any{
+		"page": 1,
+		"size": 20,
+	}
+	items, total, err := repo.ListDeviceStores(ctx, filters)
+	if err != nil {
+		t.Fatalf("ListDeviceStores failed: %v", err)
+	}
+	if total < 2 {
+		t.Errorf("Expected total >= 2, got %d", total)
+	}
+
+	// 验证返回的设备
+	found1, found2 := false, false
+	for _, item := range items {
+		if item.DeviceStoreID == deviceStoreID1 {
+			found1 = true
+			if item.DeviceType != "Radar" {
+				t.Errorf("Expected device_type=Radar, got %s", item.DeviceType)
+			}
+		}
+		if item.DeviceStoreID == deviceStoreID2 {
+			found2 = true
+			if item.DeviceType != "SleepPad" {
+				t.Errorf("Expected device_type=SleepPad, got %s", item.DeviceType)
+			}
+		}
+	}
+	if !found1 {
+		t.Error("Created device_store 1 not found in list")
+	}
+	if !found2 {
+		t.Error("Created device_store 2 not found in list")
+	}
+
+	// 测试：按租户过滤
+	filters = map[string]any{
+		"tenant_id": tenantID,
+		"page":      1,
+		"size":      20,
+	}
+	items, total, err = repo.ListDeviceStores(ctx, filters)
+	if err != nil {
+		t.Fatalf("ListDeviceStores (with tenant filter) failed: %v", err)
+	}
+	for _, item := range items {
+		if item.DeviceStoreID == deviceStoreID2 {
+			t.Error("Unallocated device_store should not appear when filtering by tenant")
+		}
+	}
+}
+
+func TestPostgresDeviceStoreRepo_BatchUpdateDeviceStores(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDeviceStoreRepo(db)
+	ctx := context.Background()
+	tenantID := createTestTenantForDevices(t, db)
+	defer cleanupTestDataForDevices(t, db, tenantID)
+
+	// 创建测试数据
+	payload1 := map[string]any{
+		"device_type":   "Radar",
+		"serial_number": "TEST-SN-BATCH-001",
+		"uid":           "TEST-UID-BATCH-001",
+		"allow_access":  true,
+	}
+	deviceStoreID1, err := repo.CreateDeviceStore(ctx, payload1)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID1)
+
+	payload2 := map[string]any{
+		"device_type":   "SleepPad",
+		"serial_number": "TEST-SN-BATCH-002",
+		"uid":           "TEST-UID-BATCH-002",
+		"allow_access":  true,
+	}
+	deviceStoreID2, err := repo.CreateDeviceStore(ctx, payload2)
+	if err != nil {
+		t.Fatalf("CreateDeviceStore failed: %v", err)
+	}
+	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID2)
+
+	// 测试：批量更新设备库存
+	updates := []map[string]any{
+		{
+			"device_store_id":              deviceStoreID1,
+			"tenant_id":                    tenantID,
+			"ota_target_firmware_version":  "2.0.0",
+			"ota_target_mcu_model":        "ESP32-V2",
+			"allow_access":                 true,
+		},
+		{
+			"device_store_id":              deviceStoreID2,
+			"tenant_id":                    tenantID,
+			"ota_target_firmware_version":  "1.5.0",
+			"allow_access":                 false,
+		},
+	}
+	err = repo.BatchUpdateDeviceStores(ctx, updates)
+	if err != nil {
+		t.Fatalf("BatchUpdateDeviceStores failed: %v", err)
+	}
+
+	// 验证更新
+	deviceStore1, err := repo.GetDeviceStore(ctx, deviceStoreID1)
+	if err != nil {
+		t.Fatalf("GetDeviceStore failed: %v", err)
+	}
+	if deviceStore1.TenantID != tenantID {
+		t.Errorf("Expected tenant_id=%s, got %s", tenantID, deviceStore1.TenantID)
+	}
+	if !deviceStore1.OTATargetFirmwareVersion.Valid || deviceStore1.OTATargetFirmwareVersion.String != "2.0.0" {
+		t.Errorf("Expected ota_target_firmware_version=2.0.0, got %v", deviceStore1.OTATargetFirmwareVersion)
+	}
+
+	deviceStore2, err := repo.GetDeviceStore(ctx, deviceStoreID2)
+	if err != nil {
+		t.Fatalf("GetDeviceStore failed: %v", err)
+	}
+	if deviceStore2.TenantID != tenantID {
+		t.Errorf("Expected tenant_id=%s, got %s", tenantID, deviceStore2.TenantID)
+	}
+	if deviceStore2.AllowAccess {
+		t.Error("Expected allow_access=false, got true")
+	}
+}
+
+func TestPostgresDeviceStoreRepo_ImportDeviceStores(t *testing.T) {
+	db := getTestDBForDevices(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	repo := NewPostgresDeviceStoreRepo(db)
+	ctx := context.Background()
+	tenantID := createTestTenantForDevices(t, db)
+	defer cleanupTestDataForDevices(t, db, tenantID)
+
+	// 测试：批量导入设备库存
+	items := []map[string]any{
+		{
+			"device_type":   "Radar",
+			"serial_number": "TEST-SN-IMPORT-001",
+			"uid":           "TEST-UID-IMPORT-001",
+			"device_model":  "WF-RADAR-60G-V2",
+			"tenant_name":   "Test Tenant Devices",
+		},
+		{
+			"device_type":   "SleepPad",
+			"serial_number": "TEST-SN-IMPORT-002",
+			"uid":           "TEST-UID-IMPORT-002",
+			"device_model":  "WF-SLEEPPAD-V1",
+		},
+		{
+			"device_type":   "Radar",
+			"serial_number": "TEST-SN-IMPORT-003",
+			"uid":           "TEST-UID-IMPORT-003",
+		},
+	}
+
+	successCount, errors, skipped, err := repo.ImportDeviceStores(ctx, items)
+	if err != nil {
+		t.Fatalf("ImportDeviceStores failed: %v", err)
+	}
+	if successCount < 2 {
+		t.Errorf("Expected successCount >= 2, got %d", successCount)
+	}
+	if len(errors) > 0 {
+		t.Logf("Import errors: %v", errors)
+	}
+	if len(skipped) > 0 {
+		t.Logf("Skipped items: %v", skipped)
+	}
+
+	// 验证导入的设备
+	filters := map[string]any{
+		"search": "TEST-SN-IMPORT",
+		"page":   1,
+		"size":   20,
+	}
+	importedItems, _, err := repo.ListDeviceStores(ctx, filters)
+	if err != nil {
+		t.Fatalf("ListDeviceStores failed: %v", err)
+	}
+	if len(importedItems) < successCount {
+		t.Errorf("Expected at least %d imported items, got %d", successCount, len(importedItems))
+	}
+
+	// 清理
+	for _, item := range importedItems {
+		if item.SerialNumber.Valid && item.SerialNumber.String != "" {
+			db.Exec(`DELETE FROM device_store WHERE serial_number = $1`, item.SerialNumber.String)
+		}
+	}
+}
+

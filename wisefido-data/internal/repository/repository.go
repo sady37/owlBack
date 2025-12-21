@@ -115,24 +115,8 @@ func (b Bed) ToJSON() map[string]any {
 	return m
 }
 
-type UnitsRepo interface {
-	ListBuildings(ctx context.Context, tenantID string, branchTag string) ([]map[string]any, error)
-	ListUnits(ctx context.Context, tenantID string, filters map[string]string, page, size int) (items []Unit, total int, err error)
-	GetUnit(ctx context.Context, tenantID, unitID string) (*Unit, error)
-	CreateUnit(ctx context.Context, tenantID string, payload map[string]any) (*Unit, error)
-	UpdateUnit(ctx context.Context, tenantID, unitID string, payload map[string]any) (*Unit, error)
-	DeleteUnit(ctx context.Context, tenantID, unitID string) error
-
-	ListRoomsWithBeds(ctx context.Context, unitID string) ([]map[string]any, error)
-	CreateRoom(ctx context.Context, unitID string, payload map[string]any) (*Room, error)
-	UpdateRoom(ctx context.Context, roomID string, payload map[string]any) (*Room, error)
-	DeleteRoom(ctx context.Context, roomID string) error
-
-	ListBeds(ctx context.Context, roomID string) ([]Bed, error)
-	CreateBed(ctx context.Context, roomID string, payload map[string]any) (*Bed, error)
-	UpdateBed(ctx context.Context, bedID string, payload map[string]any) (*Bed, error)
-	DeleteBed(ctx context.Context, bedID string) error
-}
+// UnitsRepo 接口已迁移到 units_repo.go，使用强类型 UnitsRepository
+// 旧接口已删除，请使用 repository.UnitsRepository
 
 // --- Devices ---
 
@@ -216,7 +200,9 @@ func (d Device) ToJSON() map[string]any {
 type DevicesRepo interface {
 	ListDevices(ctx context.Context, tenantID string, filters map[string]any) (items []Device, total int, err error)
 	GetDevice(ctx context.Context, tenantID, deviceID string) (*Device, error)
+	CreateDevice(ctx context.Context, tenantID string, payload map[string]any) (string, error)
 	UpdateDevice(ctx context.Context, tenantID, deviceID string, payload map[string]any) error
+	DeleteDevice(ctx context.Context, tenantID, deviceID string) error
 	DisableDevice(ctx context.Context, tenantID, deviceID string) error
 	GetOrCreateDeviceFromStore(ctx context.Context, identifier string, mqttTopic string) (*Device, error)
 }
@@ -290,5 +276,9 @@ func (d DeviceStore) ToJSON() map[string]any {
 
 type DeviceStoreRepo interface {
 	ListDeviceStores(ctx context.Context, filters map[string]any) (items []DeviceStore, total int, err error)
+	GetDeviceStore(ctx context.Context, deviceStoreID string) (*DeviceStore, error)
+	CreateDeviceStore(ctx context.Context, payload map[string]any) (string, error)
 	BatchUpdateDeviceStores(ctx context.Context, updates []map[string]any) error
+	DeleteDeviceStore(ctx context.Context, deviceStoreID string) error
+	ImportDeviceStores(ctx context.Context, items []map[string]any) (int, []map[string]any, []map[string]any, error)
 }

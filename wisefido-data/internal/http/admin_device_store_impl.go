@@ -2,10 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
 
+	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
 	"github.com/xuri/excelize/v2"
@@ -14,15 +16,15 @@ import (
 // -------- Device Store impl --------
 
 func (a *AdminAPI) getDeviceStores(w http.ResponseWriter, r *http.Request) {
-	filters := map[string]any{
-		"search":      r.URL.Query().Get("search"),
-		"tenant_id":   r.URL.Query().Get("tenant_id"),
-		"device_type": r.URL.Query().Get("device_type"),
-		"page":        parseInt(r.URL.Query().Get("page"), 1),
-		"size":        parseInt(r.URL.Query().Get("size"), 100),
+	filters := repository.DeviceStoreFilters{
+		Search:     r.URL.Query().Get("search"),
+		TenantID:   r.URL.Query().Get("tenant_id"),
+		DeviceType: r.URL.Query().Get("device_type"),
 	}
+	page := parseInt(r.URL.Query().Get("page"), 1)
+	size := parseInt(r.URL.Query().Get("size"), 100)
 
-	items, total, err := a.DeviceStore.ListDeviceStores(r.Context(), filters)
+	items, total, err := a.DeviceStore.ListDeviceStores(r.Context(), filters, page, size)
 	if err != nil {
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to list device stores: %v", err)))
 		return
@@ -52,19 +54,14 @@ func (a *AdminAPI) batchUpdateDeviceStores(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	updates := make([]map[string]any, 0, len(updatesRaw))
+	updates := make([]*domain.DeviceStore, 0, len(updatesRaw))
 	for _, u := range updatesRaw {
 		if m, ok := u.(map[string]any); ok {
 			deviceStoreID, _ := m["device_store_id"].(string)
 			data, _ := m["data"].(map[string]any)
 			if deviceStoreID != "" {
-				updateItem := map[string]any{
-					"device_store_id": deviceStoreID,
-				}
-				// Copy data fields
-				for k, v := range data {
-					updateItem[k] = v
-				}
+				updateItem := payloadToDeviceStore(data)
+				updateItem.DeviceStoreID = deviceStoreID
 				updates = append(updates, updateItem)
 			}
 		}
@@ -96,15 +93,13 @@ func (a *AdminAPI) getImportTemplate(w http.ResponseWriter, r *http.Request) {
 
 func (a *AdminAPI) exportDeviceStores(w http.ResponseWriter, r *http.Request) {
 	// Query data with same filters
-	filters := map[string]any{
-		"search":      r.URL.Query().Get("search"),
-		"tenant_id":   r.URL.Query().Get("tenant_id"),
-		"device_type": r.URL.Query().Get("device_type"),
-		"page":        1,
-		"size":        10000, // Export all (adjust if needed)
+	filters := repository.DeviceStoreFilters{
+		Search:     r.URL.Query().Get("search"),
+		TenantID:   r.URL.Query().Get("tenant_id"),
+		DeviceType: r.URL.Query().Get("device_type"),
 	}
 
-	items, _, err := a.DeviceStore.ListDeviceStores(r.Context(), filters)
+	items, _, err := a.DeviceStore.ListDeviceStores(r.Context(), filters, 1, 10000)
 	if err != nil {
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to list device stores: %v", err)))
 		return
@@ -210,10 +205,10 @@ func (a *AdminAPI) importDeviceStores(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse data rows
-	items := make([]map[string]any, 0, len(rows)-1)
+	items := make([]*domain.DeviceStore, 0, len(rows)-1)
 	for rowIdx := 1; rowIdx < len(rows); rowIdx++ {
 		row := rows[rowIdx]
-		item := make(map[string]any)
+		itemMap := make(map[string]any)
 
 		for colName, colIdx := range headerMap {
 			if colIdx < len(row) && row[colIdx] != "" {
@@ -228,27 +223,37 @@ func (a *AdminAPI) importDeviceStores(w http.ResponseWriter, r *http.Request) {
 				if colName == "Allow Access" {
 					value := row[colIdx]
 					if value == "Yes" || value == "yes" || value == "TRUE" || value == "true" || value == "1" {
-						item[fieldName] = true
+						itemMap[fieldName] = true
 					} else {
-						item[fieldName] = false
+						itemMap[fieldName] = false
 					}
 				} else {
-					item[fieldName] = row[colIdx]
+					itemMap[fieldName] = row[colIdx]
 				}
 			}
 		}
 
-		if len(item) > 0 {
+		if len(itemMap) > 0 {
+			item := payloadToDeviceStore(itemMap)
 			items = append(items, item)
 		}
 	}
 
-	// Import using repository (need to add ImportDeviceStores method)
-	// For now, use batch insert approach
-	successCount, errors, skipped, err := a.importDeviceStoresData(r.Context(), items)
+	// Import using repository
+	successCount, skipped, errors, err := a.DeviceStore.ImportDeviceStores(r.Context(), items)
 	if err != nil {
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to import: %v", err)))
 		return
+	}
+
+	// Convert errors and skipped to JSON format
+	errorsJSON := make([]any, 0, len(errors))
+	for _, e := range errors {
+		errorsJSON = append(errorsJSON, e.ToJSON())
+	}
+	skippedJSON := make([]any, 0, len(skipped))
+	for _, s := range skipped {
+		skippedJSON = append(skippedJSON, s.ToJSON())
 	}
 
 	writeJSON(w, http.StatusOK, Ok(map[string]any{
@@ -257,20 +262,9 @@ func (a *AdminAPI) importDeviceStores(w http.ResponseWriter, r *http.Request) {
 		"success_count": successCount,
 		"failed_count":  len(errors),
 		"skipped_count": len(skipped),
-		"errors":        errors,
-		"skipped":       skipped,
+		"errors":        errorsJSON,
+		"skipped":       skippedJSON,
 	}))
-}
-
-// importDeviceStoresData imports device stores data
-func (a *AdminAPI) importDeviceStoresData(ctx context.Context, items []map[string]any) (int, []map[string]any, []map[string]any, error) {
-	// Use repository method
-	if repo, ok := a.DeviceStore.(*repository.PostgresDeviceStoreRepo); ok {
-		return repo.ImportDeviceStores(ctx, items)
-	}
-
-	// Fallback: not implemented
-	return 0, nil, nil, fmt.Errorf("import not supported for this repository type")
 }
 
 // bytesReader implements io.ReaderAt and io.Reader for excelize
@@ -301,4 +295,56 @@ func (br *bytesReader) ReadAt(p []byte, off int64) (n int, err error) {
 
 func (br *bytesReader) Size() int64 {
 	return int64(len(br.data))
+}
+
+// payloadToDeviceStore 将map[string]any转换为domain.DeviceStore
+func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
+	ds := &domain.DeviceStore{}
+	
+	if v, ok := payload["device_type"].(string); ok {
+		ds.DeviceType = v
+	}
+	if v, ok := payload["device_model"].(string); ok && v != "" {
+		ds.DeviceModel = sql.NullString{String: v, Valid: true}
+	}
+	if v, ok := payload["serial_number"].(string); ok && v != "" {
+		ds.SerialNumber = sql.NullString{String: v, Valid: true}
+	}
+	if v, ok := payload["uid"].(string); ok && v != "" {
+		ds.UID = sql.NullString{String: v, Valid: true}
+	}
+	if v, ok := payload["imei"].(string); ok && v != "" {
+		ds.IMEI = sql.NullString{String: v, Valid: true}
+	}
+	if v, ok := payload["comm_mode"].(string); ok && v != "" {
+		ds.CommMode = sql.NullString{String: v, Valid: true}
+	}
+	if v, ok := payload["mcu_model"].(string); ok && v != "" {
+		ds.MCUModel = sql.NullString{String: v, Valid: true}
+	}
+	if v, ok := payload["firmware_version"].(string); ok && v != "" {
+		ds.FirmwareVersion = sql.NullString{String: v, Valid: true}
+	}
+	if v, ok := payload["ota_target_firmware_version"].(string); ok {
+		if v != "" {
+			ds.OTATargetFirmwareVersion = sql.NullString{String: v, Valid: true}
+		} else {
+			ds.OTATargetFirmwareVersion = sql.NullString{Valid: false}
+		}
+	}
+	if v, ok := payload["ota_target_mcu_model"].(string); ok {
+		if v != "" {
+			ds.OTATargetMCUModel = sql.NullString{String: v, Valid: true}
+		} else {
+			ds.OTATargetMCUModel = sql.NullString{Valid: false}
+		}
+	}
+	if v, ok := payload["tenant_id"].(string); ok {
+		ds.TenantID = v
+	}
+	if v, ok := payload["allow_access"].(bool); ok {
+		ds.AllowAccess = v
+	}
+	
+	return ds
 }

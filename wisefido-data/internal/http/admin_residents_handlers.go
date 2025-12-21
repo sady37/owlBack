@@ -154,9 +154,9 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					// Check branch_only (Manager: can only reset password for contacts of residents in same branch)
 					if permCheck.BranchOnly {
 						if !userBranchTag.Valid || userBranchTag.String == "" {
-							// User branch_tag is NULL: can only reset password for contacts of residents in units with branch_tag IS NULL OR '-'
-							if targetBranchTag.Valid && targetBranchTag.String != "" && targetBranchTag.String != "-" {
-								writeJSON(w, http.StatusOK, Fail("permission denied: can only reset password for contacts of residents in units with branch_tag IS NULL or '-'"))
+							// User branch_tag is NULL: can only reset password for contacts of residents in units with branch_tag IS NULL
+							if targetBranchTag.Valid && targetBranchTag.String != "" {
+								writeJSON(w, http.StatusOK, Fail("permission denied: can only reset password for contacts of residents in units with branch_tag IS NULL"))
 								return
 							}
 						} else {
@@ -581,9 +581,9 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 
 						// Check branch_tag matching with null matching logic
 						if !userBranchTag.Valid || userBranchTag.String == "" {
-							// User branch_tag is NULL: can only create residents in units with branch_tag IS NULL OR '-'
-							if unitBranchTag.Valid && unitBranchTag.String != "" && unitBranchTag.String != "-" {
-								writeJSON(w, http.StatusOK, Fail("permission denied: can only create residents in units with branch_tag IS NULL or '-'"))
+							// User branch_tag is NULL: can only create residents in units with branch_tag IS NULL
+							if unitBranchTag.Valid && unitBranchTag.String != "" {
+								writeJSON(w, http.StatusOK, Fail("permission denied: can only create residents in units with branch_tag IS NULL"))
 								return
 							}
 						} else {
@@ -974,9 +974,9 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					// Check branch_only (Manager: can only reset residents in same branch)
 					if permCheck.BranchOnly {
 						if !userBranchTag.Valid || userBranchTag.String == "" {
-							// User branch_tag is NULL: can only reset residents in units with branch_tag IS NULL OR '-'
-							if targetBranchTag.Valid && targetBranchTag.String != "" && targetBranchTag.String != "-" {
-								writeJSON(w, http.StatusOK, Fail("permission denied: can only reset password for residents in units with branch_tag IS NULL or '-'"))
+							// User branch_tag is NULL: can only reset residents in units with branch_tag IS NULL
+							if targetBranchTag.Valid && targetBranchTag.String != "" {
+								writeJSON(w, http.StatusOK, Fail("permission denied: can only reset password for residents in units with branch_tag IS NULL"))
 								return
 							}
 						} else {
@@ -1132,9 +1132,9 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				// Check branch_only (Manager: can only update PHI for residents in same branch)
 				if permCheck.BranchOnly {
 					if !userBranchTag.Valid || userBranchTag.String == "" {
-						// User branch_tag is NULL: can only update PHI for residents in units with branch_tag IS NULL OR '-'
-						if targetBranchTag.Valid && targetBranchTag.String != "" && targetBranchTag.String != "-" {
-							writeJSON(w, http.StatusOK, Fail("permission denied: can only update PHI for residents in units with branch_tag IS NULL or '-'"))
+						// User branch_tag is NULL: can only update PHI for residents in units with branch_tag IS NULL
+						if targetBranchTag.Valid && targetBranchTag.String != "" {
+							writeJSON(w, http.StatusOK, Fail("permission denied: can only update PHI for residents in units with branch_tag IS NULL"))
 							return
 						}
 					} else {
@@ -1779,9 +1779,9 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					// Check branch_only (Manager: can only update contacts for residents in same branch)
 					if permCheck.BranchOnly {
 						if !userBranchTag.Valid || userBranchTag.String == "" {
-							// User branch_tag is NULL: can only update contacts for residents in units with branch_tag IS NULL OR '-'
-							if targetBranchTag.Valid && targetBranchTag.String != "" && targetBranchTag.String != "-" {
-								writeJSON(w, http.StatusOK, Fail("permission denied: can only update contacts for residents in units with branch_tag IS NULL or '-'"))
+							// User branch_tag is NULL: can only update contacts for residents in units with branch_tag IS NULL
+							if targetBranchTag.Valid && targetBranchTag.String != "" {
+								writeJSON(w, http.StatusOK, Fail("permission denied: can only update contacts for residents in units with branch_tag IS NULL"))
 								return
 							}
 						} else {
@@ -2233,9 +2233,9 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 						}
 
 						if !userBranchTag.Valid || userBranchTag.String == "" {
-							// User branch_tag is NULL: can only view residents in units with branch_tag IS NULL OR '-'
-							if targetBranchTag.Valid && targetBranchTag.String != "" && targetBranchTag.String != "-" {
-								writeJSON(w, http.StatusOK, Fail("permission denied: can only view residents in units with branch_tag IS NULL or '-'"))
+							// User branch_tag is NULL: can only view residents in units with branch_tag IS NULL
+							if targetBranchTag.Valid && targetBranchTag.String != "" {
+								writeJSON(w, http.StatusOK, Fail("permission denied: can only view residents in units with branch_tag IS NULL"))
 								return
 							}
 						} else {
@@ -2719,9 +2719,9 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					// Check branch_only (Manager: can only update residents in same branch)
 					if permCheck.BranchOnly {
 						if !userBranchTag.Valid || userBranchTag.String == "" {
-							// User branch_tag is NULL: can only update residents in units with branch_tag IS NULL OR '-'
-							if targetBranchTag.Valid && targetBranchTag.String != "" && targetBranchTag.String != "-" {
-								writeJSON(w, http.StatusOK, Fail("permission denied: can only update residents in units with branch_tag IS NULL or '-'"))
+							// User branch_tag is NULL: can only update residents in units with branch_tag IS NULL
+							if targetBranchTag.Valid && targetBranchTag.String != "" {
+								writeJSON(w, http.StatusOK, Fail("permission denied: can only update residents in units with branch_tag IS NULL"))
 								return
 							}
 						} else {
@@ -2996,9 +2996,9 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				// Check branch_only (Manager: can only delete residents in same branch)
 				if permCheck.BranchOnly {
 					if !userBranchTag.Valid || userBranchTag.String == "" {
-						// User branch_tag is NULL: can only delete residents in units with branch_tag IS NULL OR '-'
-						if targetBranchTag.Valid && targetBranchTag.String != "" && targetBranchTag.String != "-" {
-							writeJSON(w, http.StatusOK, Fail("permission denied: can only delete residents in units with branch_tag IS NULL or '-'"))
+						// User branch_tag is NULL: can only delete residents in units with branch_tag IS NULL
+						if targetBranchTag.Valid && targetBranchTag.String != "" {
+							writeJSON(w, http.StatusOK, Fail("permission denied: can only delete residents in units with branch_tag IS NULL"))
 							return
 						}
 					} else {

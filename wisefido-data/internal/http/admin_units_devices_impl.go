@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"net/http"
 	"strings"
+
+	"wisefido-data/internal/domain"
 )
 
 // -------- tenant helpers --------
@@ -55,14 +57,29 @@ func (a *AdminAPI) getUnits(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	filters := map[string]string{
-		"branch_tag":  r.URL.Query().Get("branch_tag"),
-		"building":    r.URL.Query().Get("building"),
-		"floor":       r.URL.Query().Get("floor"),
-		"area_tag":    r.URL.Query().Get("area_tag"),
-		"unit_number": r.URL.Query().Get("unit_number"),
-		"unit_name":   r.URL.Query().Get("unit_name"),
-		"unit_type":   r.URL.Query().Get("unit_type"),
+	filters := map[string]string{}
+	// Only add branch_tag if it's explicitly provided in query params
+	// Empty string means match NULL in database
+	if _, ok := r.URL.Query()["branch_tag"]; ok {
+		filters["branch_tag"] = r.URL.Query().Get("branch_tag")
+	}
+	if v := r.URL.Query().Get("building"); v != "" {
+		filters["building"] = v
+	}
+	if v := r.URL.Query().Get("floor"); v != "" {
+		filters["floor"] = v
+	}
+	if v := r.URL.Query().Get("area_tag"); v != "" {
+		filters["area_tag"] = v
+	}
+	if v := r.URL.Query().Get("unit_number"); v != "" {
+		filters["unit_number"] = v
+	}
+	if v := r.URL.Query().Get("unit_name"); v != "" {
+		filters["unit_name"] = v
+	}
+	if v := r.URL.Query().Get("unit_type"); v != "" {
+		filters["unit_type"] = v
 	}
 	page := parseInt(r.URL.Query().Get("page"), 1)
 	size := parseInt(r.URL.Query().Get("size"), 100)
@@ -111,7 +128,12 @@ func (a *AdminAPI) createUnit(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := a.Units.CreateUnit(r.Context(), tenantID, payload)
 	if err != nil {
-		writeJSON(w, http.StatusOK, Fail("failed to create unit"))
+		// Check for unique constraint violation
+		if msg := checkUnitUniqueConstraintError(err); msg != "" {
+			writeJSON(w, http.StatusOK, Fail(msg))
+			return
+		}
+		writeJSON(w, http.StatusOK, Fail("failed to create unit: "+err.Error()))
 		return
 	}
 	writeJSON(w, http.StatusOK, Ok(u.ToJSON()))
@@ -129,7 +151,12 @@ func (a *AdminAPI) updateUnit(w http.ResponseWriter, r *http.Request, unitID str
 	}
 	u, err := a.Units.UpdateUnit(r.Context(), tenantID, unitID, payload)
 	if err != nil {
-		writeJSON(w, http.StatusOK, Fail("failed to update unit"))
+		// Check for unique constraint violation
+		if msg := checkUnitUniqueConstraintError(err); msg != "" {
+			writeJSON(w, http.StatusOK, Fail(msg))
+			return
+		}
+		writeJSON(w, http.StatusOK, Fail("failed to update unit: "+err.Error()))
 		return
 	}
 	writeJSON(w, http.StatusOK, Ok(u.ToJSON()))
@@ -274,16 +301,16 @@ func (a *AdminAPI) getDevices(w http.ResponseWriter, r *http.Request) {
 	if len(statuses) == 1 && strings.Contains(statuses[0], ",") {
 		statuses = strings.Split(statuses[0], ",")
 	}
-	filters := map[string]any{
-		"status":          statuses,
-		"business_access": r.URL.Query().Get("business_access"),
-		"device_type":     r.URL.Query().Get("device_type"),
-		"search_type":     r.URL.Query().Get("search_type"),
-		"search_keyword":  r.URL.Query().Get("search_keyword"),
-		"page":            parseInt(r.URL.Query().Get("page"), 1),
-		"size":            parseInt(r.URL.Query().Get("size"), 20),
+	filters := repository.DeviceFilters{
+		Status:         statuses,
+		BusinessAccess: r.URL.Query().Get("business_access"),
+		DeviceType:     r.URL.Query().Get("device_type"),
+		SearchType:     r.URL.Query().Get("search_type"),
+		SearchKeyword:  r.URL.Query().Get("search_keyword"),
 	}
-	items, total, err := a.Devices.ListDevices(r.Context(), tenantID, filters)
+	page := parseInt(r.URL.Query().Get("page"), 1)
+	size := parseInt(r.URL.Query().Get("size"), 20)
+	items, total, err := a.Devices.ListDevices(r.Context(), tenantID, filters, page, size)
 	if err != nil {
 		writeJSON(w, http.StatusOK, Fail("failed to list devices"))
 		return
@@ -339,7 +366,9 @@ func (a *AdminAPI) updateDevice(w http.ResponseWriter, r *http.Request, deviceID
 		}
 	}
 
-	if err := a.Devices.UpdateDevice(r.Context(), tenantID, deviceID, payload); err != nil {
+	// 转换为domain.Device
+	device := payloadToDevice(payload)
+	if err := a.Devices.UpdateDevice(r.Context(), tenantID, deviceID, device); err != nil {
 		writeJSON(w, http.StatusOK, Fail("failed to update device"))
 		return
 	}
@@ -356,4 +385,50 @@ func (a *AdminAPI) deleteDevice(w http.ResponseWriter, r *http.Request, deviceID
 		return
 	}
 	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
+}
+
+// payloadToDevice 将map[string]any转换为domain.Device
+func payloadToDevice(payload map[string]any) *domain.Device {
+	device := &domain.Device{}
+	
+	if v, ok := payload["device_name"].(string); ok {
+		device.DeviceName = v
+	}
+	if v, ok := payload["device_store_id"].(string); ok && v != "" {
+		device.DeviceStoreID = sql.NullString{String: v, Valid: true}
+	}
+	if v, ok := payload["serial_number"].(string); ok && v != "" {
+		device.SerialNumber = sql.NullString{String: v, Valid: true}
+	}
+	if v, ok := payload["uid"].(string); ok && v != "" {
+		device.UID = sql.NullString{String: v, Valid: true}
+	}
+	if v, ok := payload["bound_room_id"].(string); ok {
+		if v != "" {
+			device.BoundRoomID = sql.NullString{String: v, Valid: true}
+		} else {
+			device.BoundRoomID = sql.NullString{Valid: false}
+		}
+	}
+	if v, ok := payload["bound_bed_id"].(string); ok {
+		if v != "" {
+			device.BoundBedID = sql.NullString{String: v, Valid: true}
+		} else {
+			device.BoundBedID = sql.NullString{Valid: false}
+		}
+	}
+	if v, ok := payload["status"].(string); ok {
+		device.Status = v
+	}
+	if v, ok := payload["business_access"].(string); ok {
+		device.BusinessAccess = v
+	}
+	if v, ok := payload["monitoring_enabled"].(bool); ok {
+		device.MonitoringEnabled = v
+	}
+	if v, ok := payload["metadata"].(string); ok && v != "" {
+		device.Metadata = sql.NullString{String: v, Valid: true}
+	}
+	
+	return device
 }

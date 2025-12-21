@@ -1,0 +1,453 @@
+package repository
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// PostgresResidentsRepo 住户 Repository 实现
+type PostgresResidentsRepo struct {
+	db *sql.DB
+}
+
+// NewPostgresResidentsRepo 创建住户 Repository
+func NewPostgresResidentsRepo(db *sql.DB) *PostgresResidentsRepo {
+	return &PostgresResidentsRepo{db: db}
+}
+
+// CreateResident 创建住户
+// 替代触发器: trigger_sync_family_tag (INSERT)
+func (r *PostgresResidentsRepo) CreateResident(ctx context.Context, tenantID string, payload map[string]any) (string, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 1. 执行 INSERT
+	residentID, err := r.insertResidentTx(ctx, tx, tenantID, payload)
+	if err != nil {
+		return "", err
+	}
+
+	// 2. 同步 family_tag 到 tags_catalog（替代 trigger_sync_family_tag）
+	if familyTag, ok := payload["family_tag"].(string); ok && familyTag != "" {
+		nickname, _ := payload["nickname"].(string)
+		if nickname == "" {
+			nickname = fmt.Sprintf("Resident %s", residentID)
+		}
+		
+		err = r.syncFamilyTagToCatalogTx(ctx, tx, tenantID, residentID, familyTag, nickname)
+		if err != nil {
+			return "", fmt.Errorf("failed to sync family_tag: %w", err)
+		}
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return "", fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return residentID, nil
+}
+
+// UpdateResident 更新住户
+// 替代触发器: trigger_sync_family_tag (UPDATE)
+func (r *PostgresResidentsRepo) UpdateResident(ctx context.Context, tenantID, residentID string, payload map[string]any) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 1. 获取旧数据（用于比较 family_tag 变化）
+	var oldFamilyTag sql.NullString
+	err = tx.QueryRowContext(ctx,
+		`SELECT family_tag FROM residents WHERE tenant_id = $1 AND resident_id = $2`,
+		tenantID, residentID,
+	).Scan(&oldFamilyTag)
+	if err != nil {
+		return fmt.Errorf("failed to get old resident data: %w", err)
+	}
+
+	// 2. 执行 UPDATE
+	err = r.updateResidentTx(ctx, tx, tenantID, residentID, payload)
+	if err != nil {
+		return err
+	}
+
+	// 3. 同步 family_tag 变化（替代 trigger_sync_family_tag）
+	newFamilyTag, _ := payload["family_tag"].(string)
+	oldFamilyTagValue := ""
+	if oldFamilyTag.Valid {
+		oldFamilyTagValue = oldFamilyTag.String
+	}
+
+	// 如果 family_tag 发生变化，维护tags_catalog目录
+	if oldFamilyTagValue != newFamilyTag {
+		// 如果新tag不为空，添加到目录
+		if newFamilyTag != "" {
+			_, err = tx.ExecContext(ctx,
+				`SELECT upsert_tag_to_catalog($1::uuid, $2, $3)`,
+				tenantID, newFamilyTag, "family_tag",
+			)
+			if err != nil {
+				return fmt.Errorf("failed to sync new family_tag to catalog: %w", err)
+			}
+		}
+		// 注意：不需要从旧tag移除，因为tag_objects已删除，tags_catalog只是目录
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteResident 删除住户
+// 替代触发器: trigger_cleanup_resident_from_tags (DELETE)
+func (r *PostgresResidentsRepo) DeleteResident(ctx context.Context, tenantID, residentID string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 1. 获取 resident 信息（用于清理 tags_catalog）
+	var familyTag sql.NullString
+	err = tx.QueryRowContext(ctx,
+		`SELECT family_tag FROM residents WHERE tenant_id = $1 AND resident_id = $2`,
+		tenantID, residentID,
+	).Scan(&familyTag)
+	if err != nil {
+		return fmt.Errorf("failed to get resident data: %w", err)
+	}
+
+	// 2. 注意：tag_objects字段已删除，不需要清理tags_catalog
+	// tags_catalog只是目录，不需要反向索引维护
+
+	// 3. 执行 DELETE
+	_, err = tx.ExecContext(ctx,
+		`DELETE FROM residents WHERE tenant_id = $1 AND resident_id = $2`,
+		tenantID, residentID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to delete resident: %w", err)
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// ============================================================================
+// 私有辅助方法
+// ============================================================================
+
+// insertResidentTx 在事务中插入住户
+func (r *PostgresResidentsRepo) insertResidentTx(ctx context.Context, tx *sql.Tx, tenantID string, payload map[string]any) (string, error) {
+	// 提取必填字段
+	nickname, _ := payload["nickname"].(string)
+	nickname = strings.TrimSpace(nickname)
+	if nickname == "" {
+		return "", fmt.Errorf("nickname is required")
+	}
+
+	residentAccount, _ := payload["resident_account"].(string)
+	residentAccount = strings.TrimSpace(residentAccount)
+	if residentAccount == "" {
+		return "", fmt.Errorf("resident_account is required (each institution has its own encoding pattern)")
+	}
+	// Store as lowercase for consistency
+	residentAccount = strings.ToLower(residentAccount)
+
+	// Hash account (for login)
+	ah, _ := hex.DecodeString(hashAccount(residentAccount))
+	if len(ah) == 0 {
+		return "", fmt.Errorf("failed to hash account")
+	}
+
+	// Generate default password hash
+	password := "ChangeMe123!"
+	if pwd, ok := payload["password"].(string); ok && pwd != "" {
+		password = pwd
+	}
+	aph, _ := hex.DecodeString(hashPassword(password))
+	if len(aph) == 0 {
+		return "", fmt.Errorf("failed to hash password")
+	}
+
+	// Extract optional fields
+	status := "active"
+	if st, ok := payload["status"].(string); ok && st != "" {
+		status = st
+	}
+	serviceLevel, _ := payload["service_level"].(string)
+	var serviceLevelArg any = nil
+	if serviceLevel != "" {
+		serviceLevelArg = serviceLevel
+	}
+
+	// Parse admission_date: 如果为空，使用当天日期（避免空值）
+	var admissionDate time.Time
+	if admDate, ok := payload["admission_date"].(string); ok && admDate != "" {
+		if t, err := time.Parse("2006-01-02", admDate); err == nil {
+			admissionDate = t
+		} else {
+			// 如果格式错误，使用当天日期
+			now := time.Now()
+			admissionDate = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		}
+	} else {
+		// 如果为空，使用当天日期（只取日期部分，时间设为00:00:00）
+		now := time.Now()
+		admissionDate = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	}
+
+	unitID, _ := payload["unit_id"].(string)
+	var unitIDArg any = nil
+	if unitID != "" {
+		unitIDArg = unitID
+	}
+
+	familyTag, _ := payload["family_tag"].(string)
+	var familyTagArg any = nil
+	if familyTag != "" {
+		familyTagArg = familyTag
+	}
+
+	isAccessEnabled := false
+	if enabled, ok := payload["is_access_enabled"].(bool); ok {
+		isAccessEnabled = enabled
+	}
+
+	note, _ := payload["note"].(string)
+	var noteArg any = nil
+	if note != "" {
+		noteArg = note
+	}
+
+	// Get phone_hash and email_hash from payload
+	var phoneHashArg, emailHashArg any = nil, nil
+	if phoneHashHex, exists := payload["phone_hash"].(string); exists {
+		if phoneHashHex != "" {
+			ph, _ := hex.DecodeString(phoneHashHex)
+			if len(ph) > 0 {
+				phoneHashArg = ph
+			}
+		}
+	}
+	if emailHashHex, exists := payload["email_hash"].(string); exists {
+		if emailHashHex != "" {
+			eh, _ := hex.DecodeString(emailHashHex)
+			if len(eh) > 0 {
+				emailHashArg = eh
+			}
+		}
+	}
+
+	// Insert into residents table
+	var residentID string
+	err := tx.QueryRowContext(ctx,
+		`INSERT INTO residents (tenant_id, resident_account, resident_account_hash, password_hash, nickname, status, service_level, admission_date, unit_id, family_tag, can_view_status, note, phone_hash, email_hash)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		 RETURNING resident_id::text`,
+		tenantID, residentAccount, ah, aph, nickname, status, serviceLevelArg, admissionDate, unitIDArg, familyTagArg, isAccessEnabled, noteArg,
+		phoneHashArg, emailHashArg,
+	).Scan(&residentID)
+	if err != nil {
+		return "", fmt.Errorf("failed to insert resident: %w", err)
+	}
+
+	return residentID, nil
+}
+
+// updateResidentTx 在事务中更新住户
+func (r *PostgresResidentsRepo) updateResidentTx(ctx context.Context, tx *sql.Tx, tenantID, residentID string, payload map[string]any) error {
+	// Build dynamic UPDATE query
+	updates := []string{}
+	args := []any{tenantID, residentID}
+	argIdx := 3
+
+	if val, ok := payload["nickname"].(string); ok && val != "" {
+		updates = append(updates, fmt.Sprintf("nickname = $%d", argIdx))
+		args = append(args, val)
+		argIdx++
+	}
+	if val, ok := payload["status"].(string); ok && val != "" {
+		updates = append(updates, fmt.Sprintf("status = $%d", argIdx))
+		args = append(args, val)
+		argIdx++
+	}
+	if val, ok := payload["service_level"].(string); ok {
+		if val != "" {
+			updates = append(updates, fmt.Sprintf("service_level = $%d", argIdx))
+			args = append(args, val)
+		} else {
+			updates = append(updates, "service_level = NULL")
+		}
+		argIdx++
+	}
+	// admission_date: 如果提供则更新，如果不提供则不更新（保持原值）
+	// 注意：admission_date 是 NOT NULL，但更新时可以不提供（保持原值）
+	if val, ok := payload["admission_date"].(string); ok && val != "" {
+		if t, err := time.Parse("2006-01-02", val); err == nil {
+			updates = append(updates, fmt.Sprintf("admission_date = $%d", argIdx))
+			args = append(args, t)
+			argIdx++
+		}
+	}
+	if val, ok := payload["discharge_date"].(string); ok {
+		if val != "" {
+			if t, err := time.Parse("2006-01-02", val); err == nil {
+				// Only allow discharge_date if status is discharged or transferred
+				currentStatus, _ := payload["status"].(string)
+				if currentStatus == "" {
+					// If status is not being updated, check current status from DB
+					var currentStatusFromDB string
+					tx.QueryRowContext(ctx,
+						`SELECT status FROM residents WHERE tenant_id = $1 AND resident_id = $2`,
+						tenantID, residentID,
+					).Scan(&currentStatusFromDB)
+					currentStatus = currentStatusFromDB
+				}
+				if currentStatus == "discharged" || currentStatus == "transferred" {
+					updates = append(updates, fmt.Sprintf("discharge_date = $%d", argIdx))
+					args = append(args, t)
+					argIdx++
+				}
+			}
+		} else {
+			updates = append(updates, "discharge_date = NULL")
+		}
+	}
+	if val, ok := payload["unit_id"].(string); ok {
+		if val != "" {
+			updates = append(updates, fmt.Sprintf("unit_id = $%d", argIdx))
+			args = append(args, val)
+		} else {
+			updates = append(updates, "unit_id = NULL")
+		}
+		argIdx++
+	}
+	if val, ok := payload["family_tag"].(string); ok {
+		if val != "" {
+			updates = append(updates, fmt.Sprintf("family_tag = $%d", argIdx))
+			args = append(args, val)
+		} else {
+			updates = append(updates, "family_tag = NULL")
+		}
+		argIdx++
+	}
+	if val, ok := payload["is_access_enabled"].(bool); ok {
+		updates = append(updates, fmt.Sprintf("can_view_status = $%d", argIdx))
+		args = append(args, val)
+		argIdx++
+	}
+	if val, ok := payload["note"].(string); ok {
+		if val != "" {
+			updates = append(updates, fmt.Sprintf("note = $%d", argIdx))
+			args = append(args, val)
+		} else {
+			updates = append(updates, "note = NULL")
+		}
+		argIdx++
+	}
+
+	if len(updates) == 0 {
+		// No updates to perform
+		return nil
+	}
+
+	query := fmt.Sprintf(`UPDATE residents SET %s WHERE tenant_id = $1 AND resident_id = $2`, strings.Join(updates, ", "))
+	_, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update resident: %w", err)
+	}
+
+	return nil
+}
+
+// syncFamilyTagToCatalogTx 同步 family_tag 到 tags_catalog（替代 trigger_sync_family_tag）
+func (r *PostgresResidentsRepo) syncFamilyTagToCatalogTx(ctx context.Context, tx *sql.Tx, tenantID, residentID, familyTag, residentName string) error {
+	// 1. 确保 tag 存在于目录表（使用 upsert_tag_to_catalog 函数）
+	var tagID string
+	err := tx.QueryRowContext(ctx,
+		`SELECT upsert_tag_to_catalog($1, $2, $3)::text`,
+		tenantID, familyTag, "family_tag",
+	).Scan(&tagID)
+	if err != nil {
+		return fmt.Errorf("failed to upsert tag to catalog: %w", err)
+	}
+
+	// 2. 注意：tag_objects字段已删除，不需要更新tag_objects
+	// 只需要维护tags_catalog目录即可（已通过upsert_tag_to_catalog完成）
+
+	return nil
+}
+
+// removeResidentFromTagTx 从指定 tag 中移除 resident
+func (r *PostgresResidentsRepo) removeResidentFromTagTx(ctx context.Context, tx *sql.Tx, tenantID, tagName, residentID string) error {
+	// 查找 tag_id
+	var tagID sql.NullString
+	err := tx.QueryRowContext(ctx,
+		`SELECT tag_id::text FROM tags_catalog WHERE tenant_id = $1 AND tag_name = $2`,
+		tenantID, tagName,
+	).Scan(&tagID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// Tag 不存在，无需移除
+			return nil
+		}
+		return fmt.Errorf("failed to find tag: %w", err)
+	}
+
+	if !tagID.Valid {
+		return nil
+	}
+
+	// 注意：tag_objects字段已删除，不需要从tag_objects中移除
+	// tags_catalog只是目录，不需要反向索引维护
+
+	return nil
+}
+
+// dropResidentFromAllTagsTx 从所有 tag 中移除 resident（替代 trigger_cleanup_resident_from_tags）
+// 注意：tag_objects字段已删除，不需要清理tags_catalog
+// tags_catalog只是目录，不需要反向索引维护
+func (r *PostgresResidentsRepo) dropResidentFromAllTagsTx(ctx context.Context, tx *sql.Tx, tenantID, residentID string) error {
+	// 注意：tag_objects字段已删除，不需要清理
+	// tags_catalog只是目录，不需要反向索引维护
+	return nil
+}
+
+// ============================================================================
+// 辅助函数（从 auth_store.go 移植）
+// ============================================================================
+
+// hashAccount 计算 account 的 hash (sha256(lower(account)))
+func hashAccount(account string) string {
+	return sha256Hex(strings.TrimSpace(strings.ToLower(account)))
+}
+
+// hashPassword 计算 password 的 hash (sha256(password))
+func hashPassword(password string) string {
+	return sha256Hex(password)
+}
+
+// sha256Hex 计算字符串的 SHA256 并返回 hex 编码
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+

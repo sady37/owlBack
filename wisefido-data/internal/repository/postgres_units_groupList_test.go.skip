@@ -1,0 +1,137 @@
+package repository
+
+import (
+	"context"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TestPostgresUnitsRepo_UpdateUnit_GroupListChange 测试更新 unit groupList 时同步到 cards
+func TestPostgresUnitsRepo_UpdateUnit_GroupListChange(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	repo := NewPostgresUnitsRepository(db)
+	ctx := context.Background()
+	tenantID := "tenant-1"
+	unitID := "unit-1"
+	payload := map[string]any{
+		"groupList": `["Tag1", "Tag2"]`,
+	}
+
+	// Mock: GetUnit (获取当前 unit 信息)
+	mock.ExpectQuery(`SELECT`).
+		WithArgs(tenantID, unitID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"unit_id", "tenant_id", "branch_tag", "unit_name", "building", "floor", "area_tag",
+			"unit_number", "layout_config", "unit_type", "is_public_space", "is_multi_person_room", "timezone",
+		}).AddRow(
+			unitID, tenantID, nil, "Unit 1", "Building A", "1F", nil,
+			"101", nil, "Facility", false, false, "America/Denver",
+		))
+
+	// Mock: 获取旧的 groupList
+	mock.ExpectQuery(`SELECT groupList FROM units`).
+		WithArgs(tenantID, unitID).
+		WillReturnRows(sqlmock.NewRows([]string{"groupList"}).AddRow(`["OldTag"]`))
+
+	// Mock: JSONB 比较
+	mock.ExpectQuery(`SELECT COALESCE`).
+		WithArgs(`["OldTag"]`, `["Tag1", "Tag2"]`).
+		WillReturnRows(sqlmock.NewRows([]string{"changed"}).AddRow(true))
+
+	// Mock: UPDATE units
+	mock.ExpectExec(`UPDATE units SET`).
+		WithArgs(tenantID, unitID, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// Mock: 转换 groupList 为数组
+	// 注意：PostgreSQL 数组在 Go 中需要使用 pq.Array 或直接传递字符串
+	// 这里简化处理，直接 mock 数组转换结果
+	mock.ExpectQuery(`SELECT ARRAY`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"array"}).AddRow("{Tag1,Tag2}"))
+
+	// Mock: UPDATE cards
+	// 注意：pq.Array 会将 []string 转换为 PostgreSQL 数组格式
+	mock.ExpectExec(`UPDATE cards`).
+		WithArgs(sqlmock.AnyArg(), unitID, tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 2)) // 更新了 2 个 cards
+
+	// Mock: GetUnit (返回更新后的 unit)
+	mock.ExpectQuery(`SELECT`).
+		WithArgs(tenantID, unitID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"unit_id", "tenant_id", "branch_tag", "unit_name", "building", "floor", "area_tag",
+			"unit_number", "layout_config", "unit_type", "is_public_space", "is_multi_person_room", "timezone",
+		}).AddRow(
+			unitID, tenantID, nil, "Unit 1", "Building A", "1F", nil,
+			"101", nil, "Facility", false, false, "America/Denver",
+		))
+
+	// Execute
+	unit, err := repo.UpdateUnit(ctx, tenantID, unitID, payload)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.NotNil(t, unit)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestPostgresUnitsRepo_UpdateUnit_NoGroupListChange 测试更新 unit 但 groupList 未变化
+func TestPostgresUnitsRepo_UpdateUnit_NoGroupListChange(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	repo := NewPostgresUnitsRepository(db)
+	ctx := context.Background()
+	tenantID := "tenant-1"
+	unitID := "unit-1"
+	payload := map[string]any{
+		"unit_name": "Updated Unit Name",
+		// 不更新 groupList
+	}
+
+	// Mock: GetUnit (获取当前 unit 信息)
+	mock.ExpectQuery(`SELECT`).
+		WithArgs(tenantID, unitID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"unit_id", "tenant_id", "branch_tag", "unit_name", "building", "floor", "area_tag",
+			"unit_number", "layout_config", "unit_type", "is_public_space", "is_multi_person_room", "timezone",
+		}).AddRow(
+			unitID, tenantID, nil, "Unit 1", "Building A", "1F", nil,
+			"101", nil, "Facility", false, false, "America/Denver",
+		))
+
+	// Mock: UPDATE units (不包含 groupList)
+	mock.ExpectExec(`UPDATE units SET`).
+		WithArgs(tenantID, unitID, "Updated Unit Name").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// Mock: GetUnit (返回更新后的 unit)
+	mock.ExpectQuery(`SELECT`).
+		WithArgs(tenantID, unitID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"unit_id", "tenant_id", "branch_tag", "unit_name", "building", "floor", "area_tag",
+			"unit_number", "layout_config", "unit_type", "is_public_space", "is_multi_person_room", "timezone",
+		}).AddRow(
+			unitID, tenantID, nil, "Updated Unit Name", "Building A", "1F", nil,
+			"101", nil, "Facility", false, false, "America/Denver",
+		))
+
+	// Execute
+	unit, err := repo.UpdateUnit(ctx, tenantID, unitID, payload)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.NotNil(t, unit)
+	assert.Equal(t, "Updated Unit Name", unit.UnitName)
+	// 不应该有 cards 更新操作
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+

@@ -7,39 +7,43 @@ import (
 	"strings"
 
 	"github.com/lib/pq"
+	"wisefido-data/internal/domain"
 )
 
-type PostgresDeviceStoreRepo struct {
+// PostgresDeviceStoreRepository 设备库存Repository实现（强类型）
+type PostgresDeviceStoreRepository struct {
 	db *sql.DB
 }
 
-func NewPostgresDeviceStoreRepo(db *sql.DB) *PostgresDeviceStoreRepo {
-	return &PostgresDeviceStoreRepo{db: db}
+// NewPostgresDeviceStoreRepository 创建设备库存Repository
+func NewPostgresDeviceStoreRepository(db *sql.DB) *PostgresDeviceStoreRepository {
+	return &PostgresDeviceStoreRepository{db: db}
 }
 
-func (r *PostgresDeviceStoreRepo) ListDeviceStores(ctx context.Context, filters map[string]any) ([]DeviceStore, int, error) {
+// ListDeviceStores 查询设备库存列表
+func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, filters DeviceStoreFilters, page, size int) ([]*domain.DeviceStore, int, error) {
 	where := []string{}
 	args := []any{}
 	argN := 1
 
-	// Search filter (search by serial_number, uid, imei)
-	if search, ok := filters["search"].(string); ok && search != "" {
+	// Search filter
+	if filters.Search != "" {
 		where = append(where, fmt.Sprintf("(ds.serial_number ILIKE $%d OR ds.uid ILIKE $%d OR ds.imei ILIKE $%d)", argN, argN, argN))
-		args = append(args, "%"+search+"%")
+		args = append(args, "%"+filters.Search+"%")
 		argN++
 	}
 
 	// Tenant filter
-	if tenantID, ok := filters["tenant_id"].(string); ok && tenantID != "" {
+	if filters.TenantID != "" {
 		where = append(where, fmt.Sprintf("ds.tenant_id = $%d", argN))
-		args = append(args, tenantID)
+		args = append(args, filters.TenantID)
 		argN++
 	}
 
 	// Device type filter
-	if deviceType, ok := filters["device_type"].(string); ok && deviceType != "" {
+	if filters.DeviceType != "" {
 		where = append(where, fmt.Sprintf("ds.device_type = $%d", argN))
-		args = append(args, deviceType)
+		args = append(args, filters.DeviceType)
 		argN++
 	}
 
@@ -61,13 +65,11 @@ func (r *PostgresDeviceStoreRepo) ListDeviceStores(ctx context.Context, filters 
 	}
 
 	// Pagination
-	page, _ := filters["page"].(int)
-	size, _ := filters["size"].(int)
 	if page <= 0 {
 		page = 1
 	}
 	if size <= 0 {
-		size = 100 // Default larger size for device store
+		size = 100
 	}
 	offset := (page - 1) * size
 
@@ -106,9 +108,9 @@ func (r *PostgresDeviceStoreRepo) ListDeviceStores(ctx context.Context, filters 
 	}
 	defer rows.Close()
 
-	out := []DeviceStore{}
+	out := []*domain.DeviceStore{}
 	for rows.Next() {
-		var d DeviceStore
+		var d domain.DeviceStore
 		if err := rows.Scan(
 			&d.DeviceStoreID,
 			&d.DeviceType,
@@ -129,12 +131,146 @@ func (r *PostgresDeviceStoreRepo) ListDeviceStores(ctx context.Context, filters 
 		); err != nil {
 			return nil, 0, err
 		}
-		out = append(out, d)
+		out = append(out, &d)
 	}
 	return out, total, rows.Err()
 }
 
-func (r *PostgresDeviceStoreRepo) BatchUpdateDeviceStores(ctx context.Context, updates []map[string]any) error {
+// GetDeviceStore 查询单个设备库存
+func (r *PostgresDeviceStoreRepository) GetDeviceStore(ctx context.Context, deviceStoreID string) (*domain.DeviceStore, error) {
+	query := `
+		SELECT
+			ds.device_store_id::text,
+			ds.device_type,
+			ds.device_model,
+			ds.serial_number,
+			ds.uid,
+			ds.imei,
+			ds.comm_mode,
+			ds.mcu_model,
+			ds.firmware_version,
+			ds.ota_target_firmware_version,
+			ds.ota_target_mcu_model,
+			ds.tenant_id::text,
+			COALESCE(t.tenant_name, '') as tenant_name,
+			ds.allow_access,
+			ds.import_date,
+			ds.allocate_time
+		FROM device_store ds
+		LEFT JOIN tenants t ON ds.tenant_id = t.tenant_id
+		WHERE ds.device_store_id = $1
+	`
+
+	var d domain.DeviceStore
+	err := r.db.QueryRowContext(ctx, query, deviceStoreID).Scan(
+		&d.DeviceStoreID,
+		&d.DeviceType,
+		&d.DeviceModel,
+		&d.SerialNumber,
+		&d.UID,
+		&d.IMEI,
+		&d.CommMode,
+		&d.MCUModel,
+		&d.FirmwareVersion,
+		&d.OTATargetFirmwareVersion,
+		&d.OTATargetMCUModel,
+		&d.TenantID,
+		&d.TenantName,
+		&d.AllowAccess,
+		&d.ImportDate,
+		&d.AllocateTime,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("device_store not found: device_store_id=%s", deviceStoreID)
+		}
+		return nil, err
+	}
+	return &d, nil
+}
+
+// CreateDeviceStore 单个创建设备库存（入库操作）
+func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, deviceStore *domain.DeviceStore) (string, error) {
+	if deviceStore == nil {
+		return "", fmt.Errorf("device_store is required")
+	}
+
+	// 1. 验证必填字段
+	if deviceStore.DeviceType == "" {
+		return "", fmt.Errorf("device_type is required")
+	}
+
+	serialNumber := ""
+	if deviceStore.SerialNumber.Valid {
+		serialNumber = deviceStore.SerialNumber.String
+	}
+	uid := ""
+	if deviceStore.UID.Valid {
+		uid = deviceStore.UID.String
+	}
+	if serialNumber == "" && uid == "" {
+		return "", fmt.Errorf("serial_number or uid is required")
+	}
+
+	// 2. 检查是否已存在
+	var existingID string
+	checkQuery := `
+		SELECT device_store_id::text
+		FROM device_store
+		WHERE (serial_number = $1 AND serial_number IS NOT NULL)
+		   OR (uid = $2 AND uid IS NOT NULL)
+		LIMIT 1
+	`
+	err := r.db.QueryRowContext(ctx, checkQuery, serialNumber, uid).Scan(&existingID)
+	if err == nil {
+		return "", fmt.Errorf("device already exists: device_store_id=%s (serial_number=%s, uid=%s)", existingID, serialNumber, uid)
+	} else if err != sql.ErrNoRows {
+		return "", fmt.Errorf("failed to check existing device: %w", err)
+	}
+
+	// 3. 处理tenant_id（如果未提供，使用默认值）
+	tenantID := deviceStore.TenantID
+	if tenantID == "" {
+		tenantID = "00000000-0000-0000-0000-000000000000"
+	}
+
+	// 4. 插入新设备
+	insertQuery := `
+		INSERT INTO device_store (
+			device_type, device_model, serial_number, uid, imei,
+			comm_mode, mcu_model, firmware_version,
+			tenant_id, allow_access
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING device_store_id::text
+	`
+
+	args := []any{
+		deviceStore.DeviceType,
+		nullStringToAny(deviceStore.DeviceModel),
+		nullStringToAny(deviceStore.SerialNumber),
+		nullStringToAny(deviceStore.UID),
+		nullStringToAny(deviceStore.IMEI),
+		nullStringToAny(deviceStore.CommMode),
+		nullStringToAny(deviceStore.MCUModel),
+		nullStringToAny(deviceStore.FirmwareVersion),
+		tenantID,
+		deviceStore.AllowAccess,
+	}
+
+	var deviceStoreID string
+	err = r.db.QueryRowContext(ctx, insertQuery, args...).Scan(&deviceStoreID)
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+			return "", fmt.Errorf("device already exists (duplicate serial_number or uid)")
+		}
+		return "", fmt.Errorf("failed to create device_store: %w", err)
+	}
+
+	return deviceStoreID, nil
+}
+
+// BatchUpdateDeviceStores 批量更新设备库存
+func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Context, updates []*domain.DeviceStore) error {
 	if len(updates) == 0 {
 		return nil
 	}
@@ -146,63 +282,44 @@ func (r *PostgresDeviceStoreRepo) BatchUpdateDeviceStores(ctx context.Context, u
 	defer tx.Rollback()
 
 	for _, update := range updates {
-		deviceStoreID, ok := update["device_store_id"].(string)
-		if !ok || deviceStoreID == "" {
+		if update == nil || update.DeviceStoreID == "" {
 			continue
 		}
+		deviceStoreID := update.DeviceStoreID
 
 		setParts := []string{}
 		args := []any{}
 		argN := 1
 
 		// tenant_id
-		if tenantID, ok := update["tenant_id"].(string); ok {
-			if tenantID == "" || tenantID == "null" {
-				setParts = append(setParts, fmt.Sprintf("tenant_id = $%d", argN))
-				args = append(args, "00000000-0000-0000-0000-000000000000") // Default unallocated tenant ID
-			} else {
-				setParts = append(setParts, fmt.Sprintf("tenant_id = $%d", argN))
-				args = append(args, tenantID)
-			}
+		if update.TenantID != "" {
+			setParts = append(setParts, fmt.Sprintf("tenant_id = $%d", argN))
+			args = append(args, update.TenantID)
 			argN++
 		}
 
 		// ota_target_firmware_version
-		if val, ok := update["ota_target_firmware_version"]; ok {
-			if val == nil || val == "" || val == "null" {
-				setParts = append(setParts, fmt.Sprintf("ota_target_firmware_version = $%d", argN))
-				args = append(args, nil)
-			} else if s, ok := val.(string); ok {
-				setParts = append(setParts, fmt.Sprintf("ota_target_firmware_version = $%d", argN))
-				args = append(args, s)
-			}
+		if update.OTATargetFirmwareVersion.Valid {
+			setParts = append(setParts, fmt.Sprintf("ota_target_firmware_version = $%d", argN))
+			args = append(args, update.OTATargetFirmwareVersion.String)
 			argN++
 		}
 
 		// ota_target_mcu_model
-		if val, ok := update["ota_target_mcu_model"]; ok {
-			if val == nil || val == "" || val == "null" {
-				setParts = append(setParts, fmt.Sprintf("ota_target_mcu_model = $%d", argN))
-				args = append(args, nil)
-			} else if s, ok := val.(string); ok {
-				setParts = append(setParts, fmt.Sprintf("ota_target_mcu_model = $%d", argN))
-				args = append(args, s)
-			}
+		if update.OTATargetMCUModel.Valid {
+			setParts = append(setParts, fmt.Sprintf("ota_target_mcu_model = $%d", argN))
+			args = append(args, update.OTATargetMCUModel.String)
 			argN++
 		}
 
 		// allow_access
-		if val, ok := update["allow_access"].(bool); ok {
-			setParts = append(setParts, fmt.Sprintf("allow_access = $%d", argN))
-			args = append(args, val)
-			argN++
-		}
+		setParts = append(setParts, fmt.Sprintf("allow_access = $%d", argN))
+		args = append(args, update.AllowAccess)
+		argN++
 
 		// Update allocate_time when tenant_id is set
-		if _, hasTenantID := update["tenant_id"]; hasTenantID {
-			if tenantID, ok := update["tenant_id"].(string); ok && tenantID != "" && tenantID != "00000000-0000-0000-0000-000000000000" {
-				setParts = append(setParts, fmt.Sprintf("allocate_time = CASE WHEN allocate_time IS NULL THEN CURRENT_TIMESTAMP ELSE allocate_time END"))
-			}
+		if update.TenantID != "" && update.TenantID != "00000000-0000-0000-0000-000000000000" {
+			setParts = append(setParts, "allocate_time = CASE WHEN allocate_time IS NULL THEN CURRENT_TIMESTAMP ELSE allocate_time END")
 		}
 
 		if len(setParts) == 0 {
@@ -224,15 +341,62 @@ func (r *PostgresDeviceStoreRepo) BatchUpdateDeviceStores(ctx context.Context, u
 	return tx.Commit()
 }
 
-// ImportDeviceStores imports device stores from data (for batch import)
-func (r *PostgresDeviceStoreRepo) ImportDeviceStores(ctx context.Context, items []map[string]any) (int, []map[string]any, []map[string]any, error) {
+// DeleteDeviceStore 删除设备库存
+func (r *PostgresDeviceStoreRepository) DeleteDeviceStore(ctx context.Context, deviceStoreID string) error {
+	// 1. 检查设备是否已分配给租户
+	var tenantID string
+	err := r.db.QueryRowContext(ctx, `
+		SELECT tenant_id::text
+		FROM device_store
+		WHERE device_store_id = $1
+	`, deviceStoreID).Scan(&tenantID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("device_store not found: device_store_id=%s", deviceStoreID)
+		}
+		return fmt.Errorf("failed to query device_store: %w", err)
+	}
+
+	unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
+	if tenantID != unallocatedTenantID {
+		return fmt.Errorf("cannot delete device_store: device is allocated to tenant %s (must unallocate first)", tenantID)
+	}
+
+	// 2. 检查设备是否已出库（devices表中有记录）
+	var deviceCount int
+	err = r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM devices
+		WHERE device_store_id = $1
+	`, deviceStoreID).Scan(&deviceCount)
+	if err != nil {
+		return fmt.Errorf("failed to check devices: %w", err)
+	}
+	if deviceCount > 0 {
+		return fmt.Errorf("cannot delete device_store: device has been checked out (devices table has %d records)", deviceCount)
+	}
+
+	// 3. 删除设备库存记录
+	_, err = r.db.ExecContext(ctx, `
+		DELETE FROM device_store
+		WHERE device_store_id = $1
+	`, deviceStoreID)
+	if err != nil {
+		return fmt.Errorf("failed to delete device_store: %w", err)
+	}
+
+	return nil
+}
+
+// ImportDeviceStores 批量导入设备库存
+func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, items []*domain.DeviceStore) (int, []*domain.DeviceStore, []*domain.DeviceStore, error) {
 	if len(items) == 0 {
 		return 0, nil, nil, nil
 	}
 
 	var successCount int
-	var errors []map[string]any
-	var skipped []map[string]any
+	var errors []*domain.DeviceStore
+	var skipped []*domain.DeviceStore
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -240,52 +404,27 @@ func (r *PostgresDeviceStoreRepo) ImportDeviceStores(ctx context.Context, items 
 	}
 	defer tx.Rollback()
 
-	for rowIdx, item := range items {
-		row := rowIdx + 1
-
-		// Convert tenant_name to tenant_id if provided
-		if tenantName, ok := item["tenant_name"].(string); ok && tenantName != "" {
-			var tenantID string
-			err := tx.QueryRowContext(ctx, "SELECT tenant_id::text FROM tenants WHERE tenant_name = $1 LIMIT 1", tenantName).Scan(&tenantID)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					errors = append(errors, map[string]any{
-						"row":         row,
-						"tenant_name": tenantName,
-						"error":       fmt.Sprintf("Tenant name '%s' not found", tenantName),
-					})
-					continue
-				}
-				errors = append(errors, map[string]any{
-					"row":   row,
-					"error": fmt.Sprintf("Failed to lookup tenant: %v", err),
-				})
-				continue
-			}
-			item["tenant_id"] = tenantID
-			// Remove tenant_name from item since we've converted it to tenant_id
-			delete(item, "tenant_name")
-		}
-
-		// Validate required fields
-		deviceType, _ := item["device_type"].(string)
-		if deviceType == "" {
-			errors = append(errors, map[string]any{
-				"row":   row,
-				"error": "Device type is required",
-			})
+	for _, item := range items {
+		if item == nil {
 			continue
 		}
 
-		serialNumber, _ := item["serial_number"].(string)
-		uid, _ := item["uid"].(string)
+		// Validate required fields
+		if item.DeviceType == "" {
+			errors = append(errors, item)
+			continue
+		}
+
+		serialNumber := ""
+		if item.SerialNumber.Valid {
+			serialNumber = item.SerialNumber.String
+		}
+		uid := ""
+		if item.UID.Valid {
+			uid = item.UID.String
+		}
 		if serialNumber == "" && uid == "" {
-			errors = append(errors, map[string]any{
-				"row":           row,
-				"serial_number": serialNumber,
-				"uid":           uid,
-				"error":         "Serial number or UID is required",
-			})
+			errors = append(errors, item)
 			continue
 		}
 
@@ -300,20 +439,17 @@ func (r *PostgresDeviceStoreRepo) ImportDeviceStores(ctx context.Context, items 
 		`
 		err := tx.QueryRowContext(ctx, checkQuery, serialNumber, uid).Scan(&existingID)
 		if err == nil {
-			// Device already exists, skip
-			skipped = append(skipped, map[string]any{
-				"row":           row,
-				"serial_number": serialNumber,
-				"uid":           uid,
-				"reason":        "Device already exists",
-			})
+			skipped = append(skipped, item)
 			continue
 		} else if err != sql.ErrNoRows {
-			errors = append(errors, map[string]any{
-				"row":   row,
-				"error": fmt.Sprintf("Failed to check existing device: %v", err),
-			})
+			errors = append(errors, item)
 			continue
+		}
+
+		// Get tenant_id (use default if not provided)
+		tenantID := item.TenantID
+		if tenantID == "" {
+			tenantID = "00000000-0000-0000-0000-000000000000"
 		}
 
 		// Insert new device
@@ -324,51 +460,23 @@ func (r *PostgresDeviceStoreRepo) ImportDeviceStores(ctx context.Context, items 
 				tenant_id, allow_access
 			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		`
-		// Get allow_access value (can be bool or string "Yes"/"No")
-		allowAccess := false
-		if val, ok := item["allow_access"].(bool); ok {
-			allowAccess = val
-		} else if val, ok := item["allow_access"].(string); ok {
-			allowAccess = (val == "Yes" || val == "yes" || val == "TRUE" || val == "true" || val == "1")
-		}
-
-		// Get tenant_id value, use default if not provided in Excel
-		tenantID := getNullableString(item, "tenant_id")
-		if tenantID == nil {
-			// If tenant_id is not provided in Excel, use database default
-			// Database default is '00000000-0000-0000-0000-000000000000' (unallocated)
-			tenantID = "00000000-0000-0000-0000-000000000000"
-		}
 
 		args := []any{
-			deviceType,
-			getNullableString(item, "device_model"),
-			getNullableString(item, "serial_number"),
-			getNullableString(item, "uid"),
-			getNullableString(item, "imei"),
-			getNullableString(item, "comm_mode"),
-			getNullableString(item, "mcu_model"),
-			getNullableString(item, "firmware_version"),
+			item.DeviceType,
+			nullStringToAny(item.DeviceModel),
+			nullStringToAny(item.SerialNumber),
+			nullStringToAny(item.UID),
+			nullStringToAny(item.IMEI),
+			nullStringToAny(item.CommMode),
+			nullStringToAny(item.MCUModel),
+			nullStringToAny(item.FirmwareVersion),
 			tenantID,
-			allowAccess,
+			item.AllowAccess,
 		}
 
-		if _, err := tx.ExecContext(ctx, insertQuery, args...); err != nil {
-			if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" { // unique_violation
-				skipped = append(skipped, map[string]any{
-					"row":           row,
-					"serial_number": serialNumber,
-					"uid":           uid,
-					"reason":        "Device already exists (duplicate)",
-				})
-			} else {
-				errors = append(errors, map[string]any{
-					"row":           row,
-					"serial_number": serialNumber,
-					"uid":           uid,
-					"error":         fmt.Sprintf("Failed to insert: %v", err),
-				})
-			}
+		_, err = tx.ExecContext(ctx, insertQuery, args...)
+		if err != nil {
+			errors = append(errors, item)
 			continue
 		}
 
@@ -379,13 +487,9 @@ func (r *PostgresDeviceStoreRepo) ImportDeviceStores(ctx context.Context, items 
 		return 0, nil, nil, err
 	}
 
-	return successCount, errors, skipped, nil
+	return successCount, skipped, errors, nil
 }
 
-// getNullableString returns sql.NullString from map
-func getNullableString(item map[string]any, key string) interface{} {
-	if val, ok := item[key].(string); ok && val != "" {
-		return val
-	}
-	return nil
-}
+// Helper function to convert sql.NullString to any (already defined in postgres_units.go)
+// Using the same function from postgres_units.go
+

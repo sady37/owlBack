@@ -50,29 +50,31 @@ func (s *StubHandler) AdminTags(w http.ResponseWriter, r *http.Request) {
 				tagTypeFilter := strings.TrimSpace(r.URL.Query().Get("tag_type"))
 				includeSystem := r.URL.Query().Get("include_system_tag_types") != "false"
 
-				where := "tenant_id = $1"
-				args := []any{tenantID}
-				argIdx := 2
-
+				// 使用 get_tags_for_tenant 函数（不包含 tag_objects，因为该字段已删除）
+				// tag 的使用情况需要从源表查询：residents.family_tag, units.branch_tag, units.area_tag, users.tags
+				var q string
+				var queryArgs []any
+				
 				if tagTypeFilter != "" {
-					where += fmt.Sprintf(" AND tag_type = $%d", argIdx)
-					args = append(args, tagTypeFilter)
-					argIdx++
-				} else if !includeSystem {
-					// Exclude system predefined tag types
-					where += fmt.Sprintf(" AND tag_type NOT IN ($%d, $%d, $%d)", argIdx, argIdx+1, argIdx+2)
-					args = append(args, "branch_tag", "family_tag", "area_tag")
-					argIdx += 3
+					// 指定 tag_type
+					q = `SELECT tag_id::text, tenant_id::text, tag_type, tag_name
+					      FROM get_tags_for_tenant($1, $2)
+					      ORDER BY tag_type, tag_name`
+					queryArgs = []any{tenantID, tagTypeFilter}
+				} else {
+					// 不指定 tag_type，使用函数返回所有类型
+					q = `SELECT tag_id::text, tenant_id::text, tag_type, tag_name
+					      FROM get_tags_for_tenant($1, NULL)
+					      ORDER BY tag_type, tag_name`
+					queryArgs = []any{tenantID}
+					
+					// 如果需要排除系统预定义类型，在应用层过滤
+					if !includeSystem {
+						// 先查询所有，然后在应用层过滤
+					}
 				}
 
-				q := fmt.Sprintf(`
-					SELECT tag_id::text, tenant_id::text, tag_type, tag_name, tag_objects
-					FROM tags_catalog
-					WHERE %s
-					ORDER BY tag_type, tag_name
-				`, where)
-
-				rows, err := s.DB.QueryContext(r.Context(), q, args...)
+				rows, err := s.DB.QueryContext(r.Context(), q, queryArgs...)
 				if err != nil {
 					fmt.Printf("[AdminTags] Query error: %v\n", err)
 					writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to list tags: %v", err)))
@@ -83,25 +85,30 @@ func (s *StubHandler) AdminTags(w http.ResponseWriter, r *http.Request) {
 				items := []any{}
 				for rows.Next() {
 					var tagID, tid, tagType, tagName string
-					var tagObjectsRaw []byte
-					if err := rows.Scan(&tagID, &tid, &tagType, &tagName, &tagObjectsRaw); err != nil {
+					if err := rows.Scan(&tagID, &tid, &tagType, &tagName); err != nil {
 						fmt.Printf("[AdminTags] Scan error: %v\n", err)
 						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to scan tag: %v", err)))
 						return
 					}
-					var tagObjects map[string]any
-					if len(tagObjectsRaw) > 0 {
-						_ = json.Unmarshal(tagObjectsRaw, &tagObjects)
+					
+					// 如果需要排除系统预定义类型，在应用层过滤
+					if !includeSystem && tagTypeFilter == "" {
+						if tagType == "branch_tag" || tagType == "family_tag" || tagType == "area_tag" {
+							continue
+						}
 					}
-					if tagObjects == nil {
-						tagObjects = make(map[string]any)
-					}
+					
+					// tag_objects 字段已删除，不再返回
+					// 如果需要 tag 的使用情况，需要从源表查询：
+					// - family_tag: SELECT COUNT(*) FROM residents WHERE family_tag = tag_name
+					// - branch_tag: SELECT COUNT(*) FROM units WHERE branch_tag = tag_name
+					// - area_tag: SELECT COUNT(*) FROM units WHERE area_tag = tag_name
+					// - user_tag: SELECT COUNT(*) FROM users WHERE tags ? tag_name
 					items = append(items, map[string]any{
-						"tag_id":      tagID,
-						"tenant_id":   tid,
-						"tag_type":    tagType,
-						"tag_name":    tagName,
-						"tag_objects": tagObjects,
+						"tag_id":    tagID,
+						"tenant_id": tid,
+						"tag_type":  tagType,
+						"tag_name":  tagName,
 					})
 				}
 
@@ -196,31 +203,62 @@ func (s *StubHandler) AdminTags(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				// Add each object using update_tag_objects function
-				for _, obj := range objects {
-					objMap, ok := obj.(map[string]any)
-					if !ok {
-						continue
-					}
-					objectID, _ := objMap["object_id"].(string)
-					objectName, _ := objMap["object_name"].(string)
+			// Get tag_name and tag_type for user_tag sync (needed for syncing users.tags)
+			var tagName string
+			var tagType string
+			err := s.DB.QueryRowContext(
+				r.Context(),
+				`SELECT tag_name, tag_type FROM tags_catalog WHERE tag_id = $1`,
+				tagID,
+			).Scan(&tagName, &tagType)
+			if err != nil {
+				fmt.Printf("[AdminTags] Failed to get tag info: %v\n", err)
+				writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to get tag info: %v", err)))
+				return
+			}
 
-					if objectID == "" || objectName == "" {
-						continue
-					}
+			// Add each object using update_tag_objects function
+			for _, obj := range objects {
+				objMap, ok := obj.(map[string]any)
+				if !ok {
+					continue
+				}
+				objectID, _ := objMap["object_id"].(string)
+				objectName, _ := objMap["object_name"].(string)
 
-					// Use PostgreSQL UUID casting
-					_, err := s.DB.ExecContext(
+				if objectID == "" || objectName == "" {
+					continue
+				}
+
+				// Use PostgreSQL UUID casting
+				_, err := s.DB.ExecContext(
+					r.Context(),
+					`SELECT update_tag_objects($1::uuid, $2, $3::uuid, $4, 'add')`,
+					tagID, objectType, objectID, objectName,
+				)
+				if err != nil {
+					fmt.Printf("[AdminTags] Failed to add tag object: %v\n", err)
+					writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to add tag object: %v", err)))
+					return
+				}
+
+				// If adding a user to user_tag, also add the tag to user's tags JSONB
+				if objectType == "user" && tagType == "user_tag" {
+					// Use jsonb concatenation to add the tag to array (avoid duplicates)
+					_, err = s.DB.ExecContext(
 						r.Context(),
-						`SELECT update_tag_objects($1::uuid, $2, $3::uuid, $4, 'add')`,
-						tagID, objectType, objectID, objectName,
+						`UPDATE users 
+						 SET tags = COALESCE(tags, '[]'::jsonb) || jsonb_build_array($1::text)
+						 WHERE user_id = $2::uuid
+						   AND (tags IS NULL OR NOT (tags ? $1))`,
+						tagName, objectID,
 					)
 					if err != nil {
-						fmt.Printf("[AdminTags] Failed to add tag object: %v\n", err)
-						writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to add tag object: %v", err)))
-						return
+						fmt.Printf("[AdminTags] Failed to add tag to user's tags: %v\n", err)
+						// Don't fail the whole operation, just log the error
 					}
 				}
+			}
 
 				writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 				return
@@ -311,6 +349,22 @@ func (s *StubHandler) AdminTags(w http.ResponseWriter, r *http.Request) {
 								// Don't fail the whole operation, just log the error
 							}
 						}
+
+						// If removing a resident from family_tag, also clear the resident's family_tag field
+						if objectType == "resident" && tagType == "family_tag" {
+							_, err = s.DB.ExecContext(
+								r.Context(),
+								`UPDATE residents 
+								 SET family_tag = NULL
+								 WHERE resident_id = $1::uuid
+								   AND family_tag = $2`,
+								objectID, tagName,
+							)
+							if err != nil {
+								fmt.Printf("[AdminTags] Failed to clear family_tag from resident: %v\n", err)
+								// Don't fail the whole operation, just log the error
+							}
+						}
 					}
 					writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 					return
@@ -369,6 +423,22 @@ func (s *StubHandler) AdminTags(w http.ResponseWriter, r *http.Request) {
 							)
 							if err != nil {
 								fmt.Printf("[AdminTags] Failed to remove tag from user's tags: %v\n", err)
+								// Don't fail the whole operation, just log the error
+							}
+						}
+
+						// If removing a resident from family_tag, also clear the resident's family_tag field
+						if objectType == "resident" && tagType == "family_tag" {
+							_, err = s.DB.ExecContext(
+								r.Context(),
+								`UPDATE residents 
+								 SET family_tag = NULL
+								 WHERE resident_id = $1::uuid
+								   AND family_tag = $2`,
+								objectID, tagName,
+							)
+							if err != nil {
+								fmt.Printf("[AdminTags] Failed to clear family_tag from resident: %v\n", err)
 								// Don't fail the whole operation, just log the error
 							}
 						}
