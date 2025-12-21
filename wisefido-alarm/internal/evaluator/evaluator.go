@@ -1,6 +1,7 @@
 package evaluator
 
 import (
+	"context"
 	"wisefido-alarm/internal/config"
 	"wisefido-alarm/internal/consumer"
 	"wisefido-alarm/internal/models"
@@ -110,8 +111,9 @@ func (e *Evaluator) Evaluate(tenantID string, card repository.CardInfo, realtime
 	}
 
 	// 写入报警事件到 PostgreSQL
+	ctx := context.Background()
 	for _, alarm := range alarms {
-		if err := e.alarmEventsRepo.CreateAlarmEvent(&alarm); err != nil {
+		if err := e.alarmEventsRepo.CreateAlarmEvent(ctx, tenantID, &alarm); err != nil {
 			e.logger.Error("Failed to create alarm event",
 				zap.String("event_id", alarm.EventID),
 				zap.String("event_type", alarm.EventType),

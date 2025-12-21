@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -31,8 +32,15 @@ type RoomInfo struct {
 	BedCount int // 房间内的床数量
 }
 
-// GetRoomInfo 获取房间信息
-func (r *RoomRepository) GetRoomInfo(tenantID, roomID string) (*RoomInfo, error) {
+// GetRoomInfo 获取房间信息（需验证 tenant_id）
+func (r *RoomRepository) GetRoomInfo(ctx context.Context, tenantID, roomID string) (*RoomInfo, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	if roomID == "" {
+		return nil, fmt.Errorf("room_id is required")
+	}
+
 	query := `
 		SELECT 
 			r.room_id,
@@ -46,7 +54,7 @@ func (r *RoomRepository) GetRoomInfo(tenantID, roomID string) (*RoomInfo, error)
 	`
 	
 	var info RoomInfo
-	err := r.db.QueryRow(query, roomID, tenantID).Scan(
+	err := r.db.QueryRowContext(ctx, query, roomID, tenantID).Scan(
 		&info.RoomID,
 		&info.RoomName,
 		&info.UnitID,
@@ -56,7 +64,7 @@ func (r *RoomRepository) GetRoomInfo(tenantID, roomID string) (*RoomInfo, error)
 	
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("room not found: %s", roomID)
+			return nil, fmt.Errorf("room not found: room_id=%s, tenant_id=%s", roomID, tenantID)
 		}
 		return nil, fmt.Errorf("failed to query room: %w", err)
 	}
@@ -64,12 +72,19 @@ func (r *RoomRepository) GetRoomInfo(tenantID, roomID string) (*RoomInfo, error)
 	return &info, nil
 }
 
-// IsBathroom 判断房间是否为卫生间
+// IsBathroom 判断房间是否为卫生间（需验证 tenant_id）
 // 通过 room_name 或 unit_name 中是否包含以下词（不区分大小写）：
 // - bathroom
 // - restroom
 // - toilet
-func (r *RoomRepository) IsBathroom(tenantID, roomID string) (bool, error) {
+func (r *RoomRepository) IsBathroom(ctx context.Context, tenantID, roomID string) (bool, error) {
+	if tenantID == "" {
+		return false, fmt.Errorf("tenant_id is required")
+	}
+	if roomID == "" {
+		return false, fmt.Errorf("room_id is required")
+	}
+
 	query := `
 		SELECT 
 			LOWER(r.room_name) as room_name,
@@ -80,10 +95,10 @@ func (r *RoomRepository) IsBathroom(tenantID, roomID string) (bool, error) {
 	`
 	
 	var roomName, unitName string
-	err := r.db.QueryRow(query, roomID, tenantID).Scan(&roomName, &unitName)
+	err := r.db.QueryRowContext(ctx, query, roomID, tenantID).Scan(&roomName, &unitName)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return false, fmt.Errorf("room not found: %s", roomID)
+			return false, fmt.Errorf("room not found: room_id=%s, tenant_id=%s", roomID, tenantID)
 		}
 		return false, fmt.Errorf("failed to query room: %w", err)
 	}
@@ -100,8 +115,15 @@ func (r *RoomRepository) IsBathroom(tenantID, roomID string) (bool, error) {
 	return false, nil
 }
 
-// GetRoomByBedID 根据 bed_id 获取房间信息
-func (r *RoomRepository) GetRoomByBedID(tenantID, bedID string) (*RoomInfo, error) {
+// GetRoomByBedID 根据 bed_id 获取房间信息（需验证 tenant_id）
+func (r *RoomRepository) GetRoomByBedID(ctx context.Context, tenantID, bedID string) (*RoomInfo, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	if bedID == "" {
+		return nil, fmt.Errorf("bed_id is required")
+	}
+
 	query := `
 		SELECT 
 			r.room_id,
@@ -116,7 +138,7 @@ func (r *RoomRepository) GetRoomByBedID(tenantID, bedID string) (*RoomInfo, erro
 	`
 	
 	var info RoomInfo
-	err := r.db.QueryRow(query, bedID, tenantID).Scan(
+	err := r.db.QueryRowContext(ctx, query, bedID, tenantID).Scan(
 		&info.RoomID,
 		&info.RoomName,
 		&info.UnitID,
@@ -126,7 +148,7 @@ func (r *RoomRepository) GetRoomByBedID(tenantID, bedID string) (*RoomInfo, erro
 	
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("room not found for bed: %s", bedID)
+			return nil, fmt.Errorf("room not found for bed: bed_id=%s, tenant_id=%s", bedID, tenantID)
 		}
 		return nil, fmt.Errorf("failed to query room by bed: %w", err)
 	}

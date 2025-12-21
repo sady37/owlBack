@@ -1,6 +1,7 @@
 package evaluator
 
 import (
+	"context"
 	"strings"
 	"wisefido-alarm/internal/models"
 	"wisefido-alarm/internal/repository"
@@ -76,7 +77,7 @@ func (e *Event3Evaluator) checkBathroom(tenantID string, card repository.CardInf
 
 	// 方法2：如果卡片有 room_id，直接查询房间信息
 	if card.RoomID != nil {
-		isBathroom, err := e.evaluator.roomRepo.IsBathroom(tenantID, *card.RoomID)
+		isBathroom, err := e.evaluator.roomRepo.IsBathroom(context.Background(), tenantID, *card.RoomID)
 		if err != nil {
 			return false, err
 		}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"time"
-	httpapi "wisefido-data/internal/http"
 
 	"go.uber.org/zap"
 )
@@ -32,7 +31,4 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.logger.Info("Stopping wisefido-data HTTP server")
 	return s.httpServer.Shutdown(ctx)
 }
-
-var _ = httpapi.Ok[any]
-
 

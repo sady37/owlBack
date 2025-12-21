@@ -109,15 +109,49 @@ func main() {
 			}
 		}
 
-		unitsRepo := repository.NewPostgresUnitsRepo(db)
-		devicesRepo := repository.NewPostgresDevicesRepo(db)
+		unitsRepo := repository.NewPostgresUnitsRepository(db)
+		devicesRepo := repository.NewPostgresDevicesRepository(db)
 		devicesRepo.SetLogger(logger) // Set logger for device connection logging
-		deviceStoreRepo := repository.NewPostgresDeviceStoreRepo(db)
+		deviceStoreRepo := repository.NewPostgresDeviceStoreRepository(db)
 		tenantResolver := repository.NewPostgresTenantResolver(db)
 		tenantsRepo = repository.NewPostgresTenantsRepo(db)
 		stub = httpapi.NewStubHandler(tenantsRepo, authStore, db)
 		stub.SetLogger(logger) // Set logger for user login logging
 		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, deviceStoreRepo, tenantResolver, stub, logger)
+
+		// 创建 Role 和 RolePermission Service 和 Handler
+		roleRepo := repository.NewPostgresRolesRepository(db)
+		rolePermRepo := repository.NewPostgresRolePermissionsRepository(db)
+		roleService := service.NewRoleService(roleRepo, logger)
+		rolePermService := service.NewRolePermissionService(rolePermRepo, logger)
+		rolesHandler := httpapi.NewRolesHandler(roleService, logger)
+		rolePermHandler := httpapi.NewRolePermissionsHandler(rolePermService, logger)
+		router.RegisterRolesRoutes(rolesHandler)
+		router.RegisterRolePermissionsRoutes(rolePermHandler)
+
+		// 创建 Tag Service 和 Handler
+		tagRepo := repository.NewPostgresTagsRepository(db)
+		tagService := service.NewTagService(tagRepo, logger)
+		tagsHandler := httpapi.NewTagsHandler(tagService, logger)
+		router.RegisterTagsRoutes(tagsHandler)
+
+		// 创建 AlarmCloud Service 和 Handler
+		alarmCloudRepo := repository.NewPostgresAlarmCloudRepository(db)
+		alarmCloudService := service.NewAlarmCloudService(alarmCloudRepo, logger)
+		alarmCloudHandler := httpapi.NewAlarmCloudHandler(alarmCloudService, logger)
+		router.RegisterAlarmCloudRoutes(alarmCloudHandler)
+
+		// 创建 Auth Service 和 Handler
+		authRepo := repository.NewPostgresAuthRepository(db)
+		authService := service.NewAuthService(authRepo, tenantsRepo, logger)
+		authHandler := httpapi.NewAuthHandler(authService, logger)
+		router.RegisterAuthRoutes(authHandler)
+
+		// 创建 Device Service 和 Handler
+		devicesRepo.SetLogger(logger) // 确保 logger 已设置（用于设备连接日志）
+		deviceService := service.NewDeviceService(devicesRepo, logger)
+		deviceHandler := httpapi.NewDeviceHandler(deviceService, logger)
+		router.RegisterDeviceRoutes(deviceHandler)
 	} else {
 		// DB 未就绪：使用内存 repo 支持联测（UnitList/Devices 等页面不再 404/不再因无 DB 失败）
 		unitsRepo := repository.NewMemoryUnitsRepo()

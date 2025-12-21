@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -31,8 +32,15 @@ type AlarmDeviceConfig struct {
 	Metadata      json.RawMessage `json:"metadata"`       // 元数据（JSONB）
 }
 
-// GetAlarmDeviceConfig 获取设备的报警配置
-func (r *AlarmDeviceRepository) GetAlarmDeviceConfig(tenantID, deviceID string) (*AlarmDeviceConfig, error) {
+// GetAlarmDeviceConfig 获取设备的报警配置（需验证 tenant_id）
+func (r *AlarmDeviceRepository) GetAlarmDeviceConfig(ctx context.Context, tenantID, deviceID string) (*AlarmDeviceConfig, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	if deviceID == "" {
+		return nil, fmt.Errorf("device_id is required")
+	}
+
 	query := `
 		SELECT 
 			device_id,
@@ -45,7 +53,7 @@ func (r *AlarmDeviceRepository) GetAlarmDeviceConfig(tenantID, deviceID string) 
 	`
 
 	var config AlarmDeviceConfig
-	err := r.db.QueryRow(query, deviceID, tenantID).Scan(
+	err := r.db.QueryRowContext(ctx, query, deviceID, tenantID).Scan(
 		&config.DeviceID,
 		&config.TenantID,
 		&config.MonitorConfig,
@@ -63,12 +71,19 @@ func (r *AlarmDeviceRepository) GetAlarmDeviceConfig(tenantID, deviceID string) 
 	return &config, nil
 }
 
-// GetDeviceMonitorConfig 获取设备的完整监控配置（使用数据库函数）
-func (r *AlarmDeviceRepository) GetDeviceMonitorConfig(tenantID, deviceID string) (json.RawMessage, error) {
+// GetDeviceMonitorConfig 获取设备的完整监控配置（使用数据库函数，需验证 tenant_id）
+func (r *AlarmDeviceRepository) GetDeviceMonitorConfig(ctx context.Context, tenantID, deviceID string) (json.RawMessage, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	if deviceID == "" {
+		return nil, fmt.Errorf("device_id is required")
+	}
+
 	query := `SELECT get_iot_monitor_config($1, $2)`
 
 	var config json.RawMessage
-	err := r.db.QueryRow(query, tenantID, deviceID).Scan(&config)
+	err := r.db.QueryRowContext(ctx, query, tenantID, deviceID).Scan(&config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get device monitor config: %w", err)
 	}
@@ -76,12 +91,19 @@ func (r *AlarmDeviceRepository) GetDeviceMonitorConfig(tenantID, deviceID string
 	return config, nil
 }
 
-// GetDeviceDefaultMonitorConfig 获取设备类型的默认配置（用于初次配置）
-func (r *AlarmDeviceRepository) GetDeviceDefaultMonitorConfig(tenantID, deviceType string) (json.RawMessage, error) {
+// GetDeviceDefaultMonitorConfig 获取设备类型的默认配置（用于初次配置，需验证 tenant_id）
+func (r *AlarmDeviceRepository) GetDeviceDefaultMonitorConfig(ctx context.Context, tenantID, deviceType string) (json.RawMessage, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	if deviceType == "" {
+		return nil, fmt.Errorf("device_type is required")
+	}
+
 	query := `SELECT get_device_default_monitor_config($1, $2, NULL)`
 
 	var config json.RawMessage
-	err := r.db.QueryRow(query, tenantID, deviceType).Scan(&config)
+	err := r.db.QueryRowContext(ctx, query, tenantID, deviceType).Scan(&config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get device default monitor config: %w", err)
 	}

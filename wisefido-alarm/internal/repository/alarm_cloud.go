@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -34,9 +35,13 @@ type AlarmCloudConfig struct {
 	Metadata          json.RawMessage `json:"metadata"`           // 元数据（JSONB）
 }
 
-// GetAlarmCloudConfig 获取租户的报警策略配置
+// GetAlarmCloudConfig 获取租户的报警策略配置（需验证 tenant_id）
 // 匹配优先级：1) 租户特定配置，2) 系统默认配置（tenant_id = NULL）
-func (r *AlarmCloudRepository) GetAlarmCloudConfig(tenantID string) (*AlarmCloudConfig, error) {
+func (r *AlarmCloudRepository) GetAlarmCloudConfig(ctx context.Context, tenantID string) (*AlarmCloudConfig, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+
 	// 1. 优先查询租户特定配置
 	var config AlarmCloudConfig
 	query := `
@@ -53,7 +58,7 @@ func (r *AlarmCloudRepository) GetAlarmCloudConfig(tenantID string) (*AlarmCloud
 		WHERE tenant_id = $1
 	`
 
-	err := r.db.QueryRow(query, tenantID).Scan(
+	err := r.db.QueryRowContext(ctx, query, tenantID).Scan(
 		&config.TenantID,
 		&config.OfflineAlarm,
 		&config.LowBattery,
@@ -88,7 +93,7 @@ func (r *AlarmCloudRepository) GetAlarmCloudConfig(tenantID string) (*AlarmCloud
 		WHERE tenant_id IS NULL
 	`
 
-	err = r.db.QueryRow(query).Scan(
+	err = r.db.QueryRowContext(ctx, query).Scan(
 		&config.TenantID,
 		&config.OfflineAlarm,
 		&config.LowBattery,
@@ -112,13 +117,20 @@ func (r *AlarmCloudRepository) GetAlarmCloudConfig(tenantID string) (*AlarmCloud
 	return &config, nil
 }
 
-// GetDeviceTypeAlarmConfig 获取设备类型的报警配置（使用数据库函数）
+// GetDeviceTypeAlarmConfig 获取设备类型的报警配置（使用数据库函数，需验证 tenant_id）
 // 返回包含通用报警和设备特定报警的配置
-func (r *AlarmCloudRepository) GetDeviceTypeAlarmConfig(tenantID, deviceType string) (json.RawMessage, error) {
+func (r *AlarmCloudRepository) GetDeviceTypeAlarmConfig(ctx context.Context, tenantID, deviceType string) (json.RawMessage, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	if deviceType == "" {
+		return nil, fmt.Errorf("device_type is required")
+	}
+
 	query := `SELECT get_device_type_alarm_config($1, $2)`
 
 	var config json.RawMessage
-	err := r.db.QueryRow(query, tenantID, deviceType).Scan(&config)
+	err := r.db.QueryRowContext(ctx, query, tenantID, deviceType).Scan(&config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get device type alarm config: %w", err)
 	}

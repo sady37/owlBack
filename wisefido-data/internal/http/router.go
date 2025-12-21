@@ -111,12 +111,9 @@ func (r *Router) RegisterStubRoutes(s *StubHandler) {
 	// device relations
 	r.Handle("/device/api/v1/device/", s.DeviceRelations)
 
-	// auth
-	r.Handle("/auth/api/v1/login", s.Auth)
-	r.Handle("/auth/api/v1/institutions/search", s.Auth)
-	r.Handle("/auth/api/v1/forgot-password/send-code", s.Auth)
-	r.Handle("/auth/api/v1/forgot-password/verify-code", s.Auth)
-	r.Handle("/auth/api/v1/forgot-password/reset", s.Auth)
+	// auth - 已迁移到 AuthHandler，不再使用 StubHandler.Auth
+	// 新路由在 RegisterAuthRoutes 中注册（需要数据库连接）
+	// 如果数据库未启用，这些路由将不可用（返回 404）
 
 	// example
 	r.Handle("/api/v1/example/items", s.Example)
@@ -132,7 +129,7 @@ func (r *Router) RegisterAdminTenantRoutes(h *TenantsHandler) {
 
 // RegisterAdminUnitDeviceRoutes：Unit/Room/Bed + Devices（地址类 + 设备类）
 func (r *Router) RegisterAdminUnitDeviceRoutes(admin *AdminAPI) {
-	// buildings（虚拟 derived from units）
+	// buildings（实体表）
 	r.Handle("/admin/api/v1/buildings", admin.BuildingsHandler)
 	r.Handle("/admin/api/v1/buildings/", admin.BuildingsHandler)
 
@@ -155,4 +152,46 @@ func (r *Router) RegisterAdminUnitDeviceRoutes(admin *AdminAPI) {
 	r.Handle("/admin/api/v1/device-store/import", admin.DeviceStoreHandler)
 	r.Handle("/admin/api/v1/device-store/import-template", admin.DeviceStoreHandler)
 	r.Handle("/admin/api/v1/device-store/export", admin.DeviceStoreHandler)
+}
+
+// RegisterRolesRoutes 注册角色管理路由
+func (r *Router) RegisterRolesRoutes(h *RolesHandler) {
+	r.Handle("/admin/api/v1/roles", h.ServeHTTP)
+	r.Handle("/admin/api/v1/roles/", h.ServeHTTP)
+}
+
+// RegisterRolePermissionsRoutes 注册角色权限管理路由
+func (r *Router) RegisterRolePermissionsRoutes(h *RolePermissionsHandler) {
+	r.Handle("/admin/api/v1/role-permissions", h.ServeHTTP)
+	r.Handle("/admin/api/v1/role-permissions/", h.ServeHTTP)
+	r.Handle("/admin/api/v1/role-permissions/batch", h.ServeHTTP)
+	r.Handle("/admin/api/v1/role-permissions/resource-types", h.ServeHTTP)
+}
+
+// RegisterTagsRoutes 注册标签管理路由
+func (r *Router) RegisterTagsRoutes(h *TagsHandler) {
+	r.Handle("/admin/api/v1/tags", h.ServeHTTP)
+	r.Handle("/admin/api/v1/tags/", h.ServeHTTP)
+	r.Handle("/admin/api/v1/tags/types", h.ServeHTTP)
+	r.Handle("/admin/api/v1/tags/for-object", h.ServeHTTP)
+}
+
+// RegisterAlarmCloudRoutes 注册告警配置管理路由
+func (r *Router) RegisterAlarmCloudRoutes(h *AlarmCloudHandler) {
+	r.Handle("/admin/api/v1/alarm-cloud", h.ServeHTTP)
+}
+
+// RegisterAuthRoutes 注册认证授权路由
+func (r *Router) RegisterAuthRoutes(h *AuthHandler) {
+	r.Handle("/auth/api/v1/login", h.ServeHTTP)
+	r.Handle("/auth/api/v1/institutions/search", h.ServeHTTP)
+	r.Handle("/auth/api/v1/forgot-password/send-code", h.ServeHTTP)
+	r.Handle("/auth/api/v1/forgot-password/verify-code", h.ServeHTTP)
+	r.Handle("/auth/api/v1/forgot-password/reset", h.ServeHTTP)
+}
+
+// RegisterDeviceRoutes 注册设备管理路由
+func (r *Router) RegisterDeviceRoutes(h *DeviceHandler) {
+	r.Handle("/admin/api/v1/devices", h.ServeHTTP)
+	r.Handle("/admin/api/v1/devices/", h.ServeHTTP)
 }

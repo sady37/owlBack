@@ -1,6 +1,7 @@
 package evaluator
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -100,10 +101,11 @@ func BuildTriggerData(
 
 // CheckDuplicate 检查是否重复报警（在 Evaluator 中使用）
 func (e *Evaluator) CheckDuplicate(
+	ctx context.Context,
 	tenantID, deviceID, eventType string,
 	withinMinutes int,
 ) (bool, error) {
-	recentEvent, err := e.alarmEventsRepo.GetRecentAlarmEvent(tenantID, deviceID, eventType, withinMinutes)
+	recentEvent, err := e.alarmEventsRepo.GetRecentAlarmEvent(ctx, tenantID, deviceID, eventType, withinMinutes)
 	if err != nil {
 		return false, err
 	}
