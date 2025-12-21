@@ -94,7 +94,7 @@ func TestAuthService_Login_Staff_Success(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 创建测试数据
 	tenantID := createTestTenantForAuth(t, db)
@@ -202,7 +202,7 @@ func TestAuthService_Login_MissingCredentials(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 测试缺少 accountHash
 	req1 := LoginRequest{
@@ -255,7 +255,7 @@ func TestAuthService_Login_InvalidHash(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 测试无效的 accountHash
 	req1 := LoginRequest{
@@ -308,7 +308,7 @@ func TestAuthService_Login_InvalidCredentials(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 创建测试数据
 	tenantID := createTestTenantForAuth(t, db)
@@ -350,7 +350,7 @@ func TestAuthService_Login_UserNotActive(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 创建测试数据
 	tenantID := createTestTenantForAuth(t, db)
@@ -404,7 +404,7 @@ func TestAuthService_Login_AutoResolveTenantID(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 创建测试数据
 	tenantID := createTestTenantForAuth(t, db)
@@ -446,7 +446,7 @@ func TestAuthService_SearchInstitutions_Staff_Success(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 创建测试数据
 	tenantID := createTestTenantForAuth(t, db)
@@ -504,7 +504,7 @@ func TestAuthService_SearchInstitutions_NoMatch(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 测试搜索不存在的账号
 	req := SearchInstitutionsRequest{
@@ -539,7 +539,7 @@ func TestAuthService_SearchInstitutions_InvalidHash(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 测试无效的 hash
 	req := SearchInstitutionsRequest{
@@ -574,7 +574,7 @@ func TestAuthService_SearchInstitutions_MultipleTenants(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 创建两个测试租户
 	tenantID1 := createTestTenantForAuth(t, db)
@@ -631,7 +631,7 @@ func TestAuthService_Login_MultipleTenants_ShouldFail(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 创建两个测试租户
 	tenantID1 := createTestTenantForAuth(t, db)
@@ -767,7 +767,7 @@ func TestAuthService_Login_Resident_Success(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 创建测试数据
 	tenantID := createTestTenantForAuth(t, db)
@@ -872,7 +872,7 @@ func TestAuthService_Login_ResidentContact_Success(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 创建测试数据
 	tenantID := createTestTenantForAuth(t, db)
@@ -976,7 +976,7 @@ func TestAuthService_Login_ResidentContact_NotEnabled(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 创建测试数据
 	tenantID := createTestTenantForAuth(t, db)
@@ -1040,7 +1040,7 @@ func TestAuthService_SearchInstitutions_Resident(t *testing.T) {
 	ctx := context.Background()
 	authRepo := repository.NewPostgresAuthRepository(db)
 	tenantsRepo := repository.NewPostgresTenantsRepository(db)
-	authService := NewAuthService(authRepo, tenantsRepo, getTestLogger())
+	authService := NewAuthService(authRepo, tenantsRepo, nil, getTestLogger())
 
 	// 创建测试数据
 	tenantID := createTestTenantForAuth(t, db)

@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"net/http"
 	"strings"
 	"wisefido-data/internal/repository"
@@ -30,219 +29,39 @@ func NewAdminAPI(units repository.UnitsRepository, devices repository.DevicesRep
 }
 
 // --- Units ---
+// 注意：Units 路由已迁移到 UnitHandler（见 RegisterUnitRoutes）
+// 这里保留作为备用，但不再被调用
 
 func (a *AdminAPI) UnitsHandler(w http.ResponseWriter, r *http.Request) {
-	if a.Units == nil {
-		a.Stub.AdminUnits(w, r)
-		return
-	}
-	switch r.URL.Path {
-	case "/admin/api/v1/units":
-		switch r.Method {
-		case http.MethodGet:
-			a.getUnits(w, r)
-		case http.MethodPost:
-			a.createUnit(w, r)
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-		}
-		return
-	default:
-		if strings.HasPrefix(r.URL.Path, "/admin/api/v1/units/") {
-			id := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/units/")
-			if id == "" || strings.Contains(id, "/") {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			switch r.Method {
-			case http.MethodGet:
-				a.getUnitDetail(w, r, id)
-			case http.MethodPut:
-				a.updateUnit(w, r, id)
-			case http.MethodDelete:
-				a.deleteUnit(w, r, id)
-			default:
-				w.WriteHeader(http.StatusMethodNotAllowed)
-			}
-			return
-		}
-	}
+	// Units 路由已迁移到 UnitHandler，这里返回 stub
 	a.Stub.AdminUnits(w, r)
 }
 
 // --- Buildings (实体表) ---
+// 注意：Buildings 路由已迁移到 UnitHandler（见 RegisterUnitRoutes）
+// 这里保留作为备用，但不再被调用
 
 func (a *AdminAPI) BuildingsHandler(w http.ResponseWriter, r *http.Request) {
-	if a.Units == nil {
-		a.Stub.AdminUnits(w, r)
-		return
-	}
-	// building write support is optional (memory repo provides it; postgres repo may not)
-	type buildingWriter interface {
-		CreateBuilding(ctx context.Context, tenantID string, payload map[string]any) (map[string]any, error)
-		UpdateBuilding(ctx context.Context, tenantID, buildingID string, payload map[string]any) (map[string]any, error)
-		DeleteBuilding(ctx context.Context, tenantID, buildingID string) error
-	}
-
-	switch {
-	case r.URL.Path == "/admin/api/v1/buildings":
-		switch r.Method {
-		case http.MethodGet:
-			a.getBuildings(w, r)
-			return
-		case http.MethodPost:
-			bw, ok := a.Units.(buildingWriter)
-			if !ok {
-				a.Stub.AdminUnits(w, r)
-				return
-			}
-			tenantID, ok2 := a.tenantIDFromReq(w, r)
-			if !ok2 {
-				return
-			}
-			var payload map[string]any
-			if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-				writeJSON(w, http.StatusOK, Fail("invalid body"))
-				return
-			}
-			out, err := bw.CreateBuilding(r.Context(), tenantID, payload)
-			if err != nil {
-				writeJSON(w, http.StatusOK, Fail("failed to create building"))
-				return
-			}
-			writeJSON(w, http.StatusOK, Ok(out))
-			return
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-
-	case strings.HasPrefix(r.URL.Path, "/admin/api/v1/buildings/"):
-		id := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/buildings/")
-		if id == "" || strings.Contains(id, "/") {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		bw, ok := a.Units.(buildingWriter)
-		if !ok {
-			a.Stub.AdminUnits(w, r)
-			return
-		}
-		tenantID, ok2 := a.tenantIDFromReq(w, r)
-		if !ok2 {
-			return
-		}
-		switch r.Method {
-		case http.MethodPut:
-			var payload map[string]any
-			if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-				writeJSON(w, http.StatusOK, Fail("invalid body"))
-				return
-			}
-			out, err := bw.UpdateBuilding(r.Context(), tenantID, id, payload)
-			if err != nil {
-				writeJSON(w, http.StatusOK, Fail("failed to update building"))
-				return
-			}
-			writeJSON(w, http.StatusOK, Ok(out))
-			return
-		case http.MethodDelete:
-			_ = bw.DeleteBuilding(r.Context(), tenantID, id)
-			writeJSON(w, http.StatusOK, Ok[any](nil))
-			return
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-	}
-
+	// Buildings 路由已迁移到 UnitHandler，这里返回 stub
 	a.Stub.AdminUnits(w, r)
 }
 
+// Rooms 路由已迁移到 UnitHandler
 func (a *AdminAPI) RoomsHandler(w http.ResponseWriter, r *http.Request) {
-	if a.Units == nil {
-		a.Stub.AdminUnits(w, r)
-		return
-	}
-	if r.URL.Path != "/admin/api/v1/rooms" {
-		a.Stub.AdminUnits(w, r)
-		return
-	}
-	switch r.Method {
-	case http.MethodGet:
-		a.getRoomsWithBeds(w, r)
-	case http.MethodPost:
-		a.createRoom(w, r)
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	}
+	a.Stub.AdminUnits(w, r)
 }
 
 func (a *AdminAPI) RoomByIDHandler(w http.ResponseWriter, r *http.Request) {
-	if a.Units == nil {
-		a.Stub.AdminUnits(w, r)
-		return
-	}
-	if !strings.HasPrefix(r.URL.Path, "/admin/api/v1/rooms/") {
-		a.Stub.AdminUnits(w, r)
-		return
-	}
-	id := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/rooms/")
-	if id == "" || strings.Contains(id, "/") {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-	switch r.Method {
-	case http.MethodPut:
-		a.updateRoom(w, r, id)
-	case http.MethodDelete:
-		a.deleteRoom(w, r, id)
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	}
+	a.Stub.AdminUnits(w, r)
 }
 
+// Beds 路由已迁移到 UnitHandler
 func (a *AdminAPI) BedsHandler(w http.ResponseWriter, r *http.Request) {
-	if a.Units == nil {
-		a.Stub.AdminUnits(w, r)
-		return
-	}
-	if r.URL.Path != "/admin/api/v1/beds" {
-		a.Stub.AdminUnits(w, r)
-		return
-	}
-	switch r.Method {
-	case http.MethodGet:
-		a.getBeds(w, r)
-	case http.MethodPost:
-		a.createBed(w, r)
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	}
+	a.Stub.AdminUnits(w, r)
 }
 
 func (a *AdminAPI) BedByIDHandler(w http.ResponseWriter, r *http.Request) {
-	if a.Units == nil {
-		a.Stub.AdminUnits(w, r)
-		return
-	}
-	if !strings.HasPrefix(r.URL.Path, "/admin/api/v1/beds/") {
-		a.Stub.AdminUnits(w, r)
-		return
-	}
-	id := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/beds/")
-	if id == "" || strings.Contains(id, "/") {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-	switch r.Method {
-	case http.MethodPut:
-		a.updateBed(w, r, id)
-	case http.MethodDelete:
-		a.deleteBed(w, r, id)
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	}
+	a.Stub.AdminUnits(w, r)
 }
 
 // --- Devices ---

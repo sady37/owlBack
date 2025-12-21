@@ -6,7 +6,12 @@ import (
 	"strings"
 
 	"wisefido-data/internal/domain"
+	"wisefido-data/internal/repository"
 )
+
+// 注意：以下方法已迁移到 UnitHandler，不再使用
+// 保留此文件仅作为参考，实际路由由 UnitHandler 处理
+// 如果编译错误，可以暂时注释掉这些方法
 
 // -------- tenant helpers --------
 
@@ -29,263 +34,82 @@ func (a *AdminAPI) tenantIDFromReq(w http.ResponseWriter, r *http.Request) (stri
 	}
 	// Convenience: SystemAdmin without tenant header falls back to System tenant
 	if strings.EqualFold(r.Header.Get("X-User-Role"), "SystemAdmin") {
-		// SystemTenantID is defined in stub_handlers.go
-		return "00000000-0000-0000-0000-000000000001", true
+		return SystemTenantID(), true
 	}
 	writeJSON(w, http.StatusOK, Fail("tenant_id is required"))
 	return "", false
 }
 
+// getBuildings 已迁移到 UnitHandler.ListBuildings
 func (a *AdminAPI) getBuildings(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := a.tenantIDFromReq(w, r)
-	if !ok {
-		return
-	}
-	branchTag := r.URL.Query().Get("branch_tag")
-	items, err := a.Units.ListBuildings(r.Context(), tenantID, branchTag)
-	if err != nil {
-		writeJSON(w, http.StatusOK, Fail("failed to list buildings"))
-		return
-	}
-	writeJSON(w, http.StatusOK, Ok(items))
+	a.Stub.AdminUnits(w, r)
 }
 
 // -------- Units impl --------
 
+// getUnits 已迁移到 UnitHandler.ListUnits
 func (a *AdminAPI) getUnits(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := a.tenantIDFromReq(w, r)
-	if !ok {
-		return
-	}
-	filters := map[string]string{}
-	// Only add branch_tag if it's explicitly provided in query params
-	// Empty string means match NULL in database
-	if _, ok := r.URL.Query()["branch_tag"]; ok {
-		filters["branch_tag"] = r.URL.Query().Get("branch_tag")
-	}
-	if v := r.URL.Query().Get("building"); v != "" {
-		filters["building"] = v
-	}
-	if v := r.URL.Query().Get("floor"); v != "" {
-		filters["floor"] = v
-	}
-	if v := r.URL.Query().Get("area_tag"); v != "" {
-		filters["area_tag"] = v
-	}
-	if v := r.URL.Query().Get("unit_number"); v != "" {
-		filters["unit_number"] = v
-	}
-	if v := r.URL.Query().Get("unit_name"); v != "" {
-		filters["unit_name"] = v
-	}
-	if v := r.URL.Query().Get("unit_type"); v != "" {
-		filters["unit_type"] = v
-	}
-	page := parseInt(r.URL.Query().Get("page"), 1)
-	size := parseInt(r.URL.Query().Get("size"), 100)
-
-	items, total, err := a.Units.ListUnits(r.Context(), tenantID, filters, page, size)
-	if err != nil {
-		writeJSON(w, http.StatusOK, Fail("failed to list units"))
-		return
-	}
-	out := make([]any, 0, len(items))
-	for _, u := range items {
-		out = append(out, u.ToJSON())
-	}
-	writeJSON(w, http.StatusOK, Ok(map[string]any{
-		"items": out,
-		"total": total,
-	}))
+	a.Stub.AdminUnits(w, r)
 }
 
+// getUnitDetail 已迁移到 UnitHandler.GetUnit
 func (a *AdminAPI) getUnitDetail(w http.ResponseWriter, r *http.Request, unitID string) {
-	tenantID, ok := a.tenantIDFromReq(w, r)
-	if !ok {
-		return
-	}
-	u, err := a.Units.GetUnit(r.Context(), tenantID, unitID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			writeJSON(w, http.StatusOK, Fail("unit not found"))
-			return
-		}
-		writeJSON(w, http.StatusOK, Fail("failed to get unit"))
-		return
-	}
-	writeJSON(w, http.StatusOK, Ok(u.ToJSON()))
+	a.Stub.AdminUnits(w, r)
 }
 
+// createUnit 已迁移到 UnitHandler.CreateUnit
 func (a *AdminAPI) createUnit(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := a.tenantIDFromReq(w, r)
-	if !ok {
-		return
-	}
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
-		return
-	}
-	u, err := a.Units.CreateUnit(r.Context(), tenantID, payload)
-	if err != nil {
-		// Check for unique constraint violation
-		if msg := checkUnitUniqueConstraintError(err); msg != "" {
-			writeJSON(w, http.StatusOK, Fail(msg))
-			return
-		}
-		writeJSON(w, http.StatusOK, Fail("failed to create unit: "+err.Error()))
-		return
-	}
-	writeJSON(w, http.StatusOK, Ok(u.ToJSON()))
+	a.Stub.AdminUnits(w, r)
 }
 
+// updateUnit 已迁移到 UnitHandler.UpdateUnit
 func (a *AdminAPI) updateUnit(w http.ResponseWriter, r *http.Request, unitID string) {
-	tenantID, ok := a.tenantIDFromReq(w, r)
-	if !ok {
-		return
-	}
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
-		return
-	}
-	u, err := a.Units.UpdateUnit(r.Context(), tenantID, unitID, payload)
-	if err != nil {
-		// Check for unique constraint violation
-		if msg := checkUnitUniqueConstraintError(err); msg != "" {
-			writeJSON(w, http.StatusOK, Fail(msg))
-			return
-		}
-		writeJSON(w, http.StatusOK, Fail("failed to update unit: "+err.Error()))
-		return
-	}
-	writeJSON(w, http.StatusOK, Ok(u.ToJSON()))
+	a.Stub.AdminUnits(w, r)
 }
 
+// deleteUnit 已迁移到 UnitHandler.DeleteUnit
 func (a *AdminAPI) deleteUnit(w http.ResponseWriter, r *http.Request, unitID string) {
-	tenantID, ok := a.tenantIDFromReq(w, r)
-	if !ok {
-		return
-	}
-	if err := a.Units.DeleteUnit(r.Context(), tenantID, unitID); err != nil {
-		writeJSON(w, http.StatusOK, Fail("failed to delete unit"))
-		return
-	}
-	writeJSON(w, http.StatusOK, Ok[any](nil))
+	a.Stub.AdminUnits(w, r)
 }
 
+// getRoomsWithBeds 已迁移到 UnitHandler.ListRoomsWithBeds
 func (a *AdminAPI) getRoomsWithBeds(w http.ResponseWriter, r *http.Request) {
-	unitID := r.URL.Query().Get("unit_id")
-	if unitID == "" {
-		writeJSON(w, http.StatusOK, Fail("unit_id is required"))
-		return
-	}
-	out, err := a.Units.ListRoomsWithBeds(r.Context(), unitID)
-	if err != nil {
-		writeJSON(w, http.StatusOK, Fail("failed to list rooms"))
-		return
-	}
-	writeJSON(w, http.StatusOK, Ok(out))
+	a.Stub.AdminUnits(w, r)
 }
 
+// createRoom 已迁移到 UnitHandler.CreateRoom
 func (a *AdminAPI) createRoom(w http.ResponseWriter, r *http.Request) {
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
-		return
-	}
-	unitID, _ := payload["unit_id"].(string)
-	if unitID == "" {
-		writeJSON(w, http.StatusOK, Fail("unit_id is required"))
-		return
-	}
-	rr, err := a.Units.CreateRoom(r.Context(), unitID, payload)
-	if err != nil {
-		writeJSON(w, http.StatusOK, Fail("failed to create room"))
-		return
-	}
-	writeJSON(w, http.StatusOK, Ok(rr.ToJSON()))
+	a.Stub.AdminUnits(w, r)
 }
 
+// updateRoom 已迁移到 UnitHandler.UpdateRoom
 func (a *AdminAPI) updateRoom(w http.ResponseWriter, r *http.Request, roomID string) {
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
-		return
-	}
-	rr, err := a.Units.UpdateRoom(r.Context(), roomID, payload)
-	if err != nil {
-		writeJSON(w, http.StatusOK, Fail("failed to update room"))
-		return
-	}
-	writeJSON(w, http.StatusOK, Ok(rr.ToJSON()))
+	a.Stub.AdminUnits(w, r)
 }
 
+// deleteRoom 已迁移到 UnitHandler.DeleteRoom
 func (a *AdminAPI) deleteRoom(w http.ResponseWriter, r *http.Request, roomID string) {
-	if err := a.Units.DeleteRoom(r.Context(), roomID); err != nil {
-		writeJSON(w, http.StatusOK, Fail("failed to delete room"))
-		return
-	}
-	writeJSON(w, http.StatusOK, Ok[any](nil))
+	a.Stub.AdminUnits(w, r)
 }
 
+// getBeds 已迁移到 UnitHandler.ListBeds
 func (a *AdminAPI) getBeds(w http.ResponseWriter, r *http.Request) {
-	roomID := r.URL.Query().Get("room_id")
-	if roomID == "" {
-		writeJSON(w, http.StatusOK, Fail("room_id is required"))
-		return
-	}
-	beds, err := a.Units.ListBeds(r.Context(), roomID)
-	if err != nil {
-		writeJSON(w, http.StatusOK, Fail("failed to list beds"))
-		return
-	}
-	out := make([]any, 0, len(beds))
-	for _, b := range beds {
-		out = append(out, b.ToJSON())
-	}
-	writeJSON(w, http.StatusOK, Ok(out))
+	a.Stub.AdminUnits(w, r)
 }
 
+// createBed 已迁移到 UnitHandler.CreateBed
 func (a *AdminAPI) createBed(w http.ResponseWriter, r *http.Request) {
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
-		return
-	}
-	roomID, _ := payload["room_id"].(string)
-	if roomID == "" {
-		writeJSON(w, http.StatusOK, Fail("room_id is required"))
-		return
-	}
-	b, err := a.Units.CreateBed(r.Context(), roomID, payload)
-	if err != nil {
-		writeJSON(w, http.StatusOK, Fail("failed to create bed"))
-		return
-	}
-	writeJSON(w, http.StatusOK, Ok(b.ToJSON()))
+	a.Stub.AdminUnits(w, r)
 }
 
+// updateBed 已迁移到 UnitHandler.UpdateBed
 func (a *AdminAPI) updateBed(w http.ResponseWriter, r *http.Request, bedID string) {
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
-		return
-	}
-	b, err := a.Units.UpdateBed(r.Context(), bedID, payload)
-	if err != nil {
-		writeJSON(w, http.StatusOK, Fail("failed to update bed"))
-		return
-	}
-	writeJSON(w, http.StatusOK, Ok(b.ToJSON()))
+	a.Stub.AdminUnits(w, r)
 }
 
+// deleteBed 已迁移到 UnitHandler.DeleteBed
 func (a *AdminAPI) deleteBed(w http.ResponseWriter, r *http.Request, bedID string) {
-	if err := a.Units.DeleteBed(r.Context(), bedID); err != nil {
-		writeJSON(w, http.StatusOK, Fail("failed to delete bed"))
-		return
-	}
-	writeJSON(w, http.StatusOK, Ok[any](nil))
+	a.Stub.AdminUnits(w, r)
 }
 
 // -------- Devices impl --------

@@ -447,7 +447,10 @@ func (r *PostgresUsersRepository) ListUsers(ctx context.Context, tenantID string
 		args = append(args, filters.Status)
 		argIdx++
 	}
-	if filters.BranchTag != "" {
+	if filters.BranchTagNull {
+		// 匹配 branch_tag IS NULL OR branch_tag = '-'
+		where = append(where, "(u.branch_tag IS NULL OR u.branch_tag = '-')")
+	} else if filters.BranchTag != "" {
 		where = append(where, fmt.Sprintf("u.branch_tag = $%d", argIdx))
 		args = append(args, filters.BranchTag)
 		argIdx++
@@ -806,25 +809,55 @@ func (r *PostgresUsersRepository) UpdateUser(ctx context.Context, tenantID, user
 		args = append(args, user.Nickname)
 		argIdx++
 	}
+	// Email 和 EmailHash：常规 CRUD 逻辑
+	// Service 层已经处理了所有业务逻辑，这里只需要根据字段值决定是否更新
+	// 如果 Email.Valid = true，更新 email；如果 Email.Valid = false，设置为 NULL（通过 nil 参数）
+	// 如果 EmailHash 有值，更新 hash；如果 EmailHash 为 nil，设置为 NULL
 	if user.Email.Valid {
 		updates = append(updates, fmt.Sprintf("email = $%d", argIdx))
 		args = append(args, user.Email)
 		argIdx++
+	} else if user.EmailHash != nil {
+		// Email.Valid = false 且 EmailHash 被设置，说明要删除 email 但保留 hash
+		// 这种情况在 Service 层已经处理，这里只需要设置 email 为 NULL
+		updates = append(updates, fmt.Sprintf("email = $%d", argIdx))
+		args = append(args, nil)
+		argIdx++
 	}
+	// 更新 email_hash（如果被设置）
+	if user.EmailHash != nil {
+		if len(user.EmailHash) > 0 {
+			updates = append(updates, fmt.Sprintf("email_hash = $%d", argIdx))
+			args = append(args, user.EmailHash)
+			argIdx++
+		} else {
+			// EmailHash 为 nil slice，设置为 NULL
+			updates = append(updates, fmt.Sprintf("email_hash = $%d", argIdx))
+			args = append(args, nil)
+			argIdx++
+		}
+	}
+
+	// Phone 和 PhoneHash：同 Email 逻辑
 	if user.Phone.Valid {
 		updates = append(updates, fmt.Sprintf("phone = $%d", argIdx))
 		args = append(args, user.Phone)
 		argIdx++
-	}
-	if len(user.EmailHash) > 0 {
-		updates = append(updates, fmt.Sprintf("email_hash = $%d", argIdx))
-		args = append(args, user.EmailHash)
+	} else if user.PhoneHash != nil {
+		updates = append(updates, fmt.Sprintf("phone = $%d", argIdx))
+		args = append(args, nil)
 		argIdx++
 	}
-	if len(user.PhoneHash) > 0 {
-		updates = append(updates, fmt.Sprintf("phone_hash = $%d", argIdx))
-		args = append(args, user.PhoneHash)
-		argIdx++
+	if user.PhoneHash != nil {
+		if len(user.PhoneHash) > 0 {
+			updates = append(updates, fmt.Sprintf("phone_hash = $%d", argIdx))
+			args = append(args, user.PhoneHash)
+			argIdx++
+		} else {
+			updates = append(updates, fmt.Sprintf("phone_hash = $%d", argIdx))
+			args = append(args, nil)
+			argIdx++
+		}
 	}
 	if user.Role != "" {
 		updates = append(updates, fmt.Sprintf("role = $%d", argIdx))
@@ -1019,6 +1052,85 @@ func (r *PostgresUsersRepository) SyncUserTagsToCatalog(ctx context.Context, ten
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	return nil
+}
+
+// GetResourcePermission 查询资源权限配置
+// 从 role_permissions 表中查询指定角色对指定资源的权限配置
+func (r *PostgresUsersRepository) GetResourcePermission(ctx context.Context, roleCode, resourceType, permissionType string) (*PermissionCheck, error) {
+	// SystemTenantID 常量
+	const SystemTenantID = "00000000-0000-0000-0000-000000000001"
+
+	var assignedOnly, branchOnly bool
+	err := r.db.QueryRowContext(ctx,
+		`SELECT 
+			COALESCE(assigned_only, FALSE) as assigned_only,
+			COALESCE(branch_only, FALSE) as branch_only
+		 FROM role_permissions
+		 WHERE tenant_id = $1 
+		   AND role_code = $2 
+		   AND resource_type = $3 
+		   AND permission_type = $4
+		 LIMIT 1`,
+		SystemTenantID, roleCode, resourceType, permissionType,
+	).Scan(&assignedOnly, &branchOnly)
+
+	if err == sql.ErrNoRows {
+		// 记录不存在：返回最严格的权限（安全默认值）
+		return &PermissionCheck{AssignedOnly: true, BranchOnly: true}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &PermissionCheck{AssignedOnly: assignedOnly, BranchOnly: branchOnly}, nil
+}
+
+// CheckEmailUniqueness 检查 email 唯一性
+func (r *PostgresUsersRepository) CheckEmailUniqueness(ctx context.Context, tenantID, email, excludeUserID string) error {
+	if email == "" {
+		return nil
+	}
+	var query string
+	var args []interface{}
+	if excludeUserID != "" {
+		query = `SELECT COUNT(*) FROM users WHERE tenant_id = $1 AND email = $2 AND user_id::text != $3`
+		args = []interface{}{tenantID, email, excludeUserID}
+	} else {
+		query = `SELECT COUNT(*) FROM users WHERE tenant_id = $1 AND email = $2`
+		args = []interface{}{tenantID, email}
+	}
+	var count int
+	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("email already exists in this organization")
+	}
+	return nil
+}
+
+// CheckPhoneUniqueness 检查 phone 唯一性
+func (r *PostgresUsersRepository) CheckPhoneUniqueness(ctx context.Context, tenantID, phone, excludeUserID string) error {
+	if phone == "" {
+		return nil
+	}
+	var query string
+	var args []interface{}
+	if excludeUserID != "" {
+		query = `SELECT COUNT(*) FROM users WHERE tenant_id = $1 AND phone = $2 AND user_id::text != $3`
+		args = []interface{}{tenantID, phone, excludeUserID}
+	} else {
+		query = `SELECT COUNT(*) FROM users WHERE tenant_id = $1 AND phone = $2`
+		args = []interface{}{tenantID, phone}
+	}
+	var count int
+	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("phone already exists in this organization")
+	}
 	return nil
 }
 

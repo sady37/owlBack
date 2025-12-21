@@ -1,9 +1,7 @@
 package httpapi
 
 import (
-	"context"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"wisefido-data/internal/service"
@@ -365,8 +363,10 @@ func (h *TagsHandler) RemoveTagObjects(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetTagsForObject 查询对象标签
-// TODO: tag_objects 字段已删除，需要重新设计此功能
-// 当前实现：返回空列表
+// 从源表查询标签（tag_objects 字段已删除）：
+// - user: 从 users.tags JSONB 字段查询
+// - resident: 从 residents.family_tag 查询
+// - unit: 从 units.branch_tag 和 units.area_tag 查询
 func (h *TagsHandler) GetTagsForObject(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 

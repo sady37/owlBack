@@ -20,7 +20,7 @@ func TestAlarmCloudService_GetAlarmCloudConfig(t *testing.T) {
 
 	ctx := context.Background()
 	alarmCloudRepo := repository.NewPostgresAlarmCloudRepository(db)
-	alarmCloudService := NewAlarmCloudService(alarmCloudRepo, getTestLogger())
+	alarmCloudService := NewAlarmCloudService(alarmCloudRepo, nil, getTestLogger())
 
 	// 测试查询告警配置
 	req := GetAlarmCloudConfigRequest{
@@ -50,7 +50,7 @@ func TestAlarmCloudService_GetAlarmCloudConfig_WithFallback(t *testing.T) {
 
 	ctx := context.Background()
 	alarmCloudRepo := repository.NewPostgresAlarmCloudRepository(db)
-	alarmCloudService := NewAlarmCloudService(alarmCloudRepo, getTestLogger())
+	alarmCloudService := NewAlarmCloudService(alarmCloudRepo, nil, getTestLogger())
 
 	// 测试查询不存在的租户配置（应该回退到系统默认配置）
 	// 使用一个不存在的 tenant_id
@@ -84,7 +84,7 @@ func TestAlarmCloudService_UpdateAlarmCloudConfig(t *testing.T) {
 
 	ctx := context.Background()
 	alarmCloudRepo := repository.NewPostgresAlarmCloudRepository(db)
-	alarmCloudService := NewAlarmCloudService(alarmCloudRepo, getTestLogger())
+	alarmCloudService := NewAlarmCloudService(alarmCloudRepo, nil, getTestLogger())
 
 	// 使用一个测试租户ID（不是系统租户）
 	testTenantID := "00000000-0000-0000-0000-000000000999"
@@ -129,7 +129,7 @@ func TestAlarmCloudService_UpdateAlarmCloudConfig_SystemTenant_ShouldFail(t *tes
 
 	ctx := context.Background()
 	alarmCloudRepo := repository.NewPostgresAlarmCloudRepository(db)
-	alarmCloudService := NewAlarmCloudService(alarmCloudRepo, getTestLogger())
+	alarmCloudService := NewAlarmCloudService(alarmCloudRepo, nil, getTestLogger())
 
 	// 测试更新系统默认配置（应该失败）
 	req := UpdateAlarmCloudConfigRequest{

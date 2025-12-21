@@ -3,8 +3,8 @@ module wisefido-data
 go 1.24.0
 
 require (
-	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/go-redis/redis/v8 v8.11.5
+	github.com/go-resty/resty/v2 v2.17.1
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.10.9
 	github.com/stretchr/testify v1.11.1
@@ -31,3 +31,5 @@ require (
 )
 
 replace owl-common => ../owl-common
+
+replace wisefido-alarm => ../wisefido-alarm

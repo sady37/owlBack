@@ -5,19 +5,21 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 )
 
 type TenantsHandler struct {
-	Repo repository.TenantsRepo
-	Auth *AuthStore // optional (dev only)
-	DB   *sql.DB    // optional (dev only): seed bootstrap admin into DB users table
+	Repo repository.TenantsRepository // 使用新的 TenantsRepository 接口
+	Auth *AuthStore                   // optional (dev only)
+	DB   *sql.DB                      // optional (dev only): seed bootstrap admin into DB users table
 }
 
-func NewTenantsHandler(repo repository.TenantsRepo, auth *AuthStore, db *sql.DB) *TenantsHandler {
+func NewTenantsHandler(repo repository.TenantsRepository, auth *AuthStore, db *sql.DB) *TenantsHandler {
 	return &TenantsHandler{Repo: repo, Auth: auth, DB: db}
 }
 
@@ -69,9 +71,14 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			status := r.URL.Query().Get("status")
+			search := r.URL.Query().Get("search")
 			page := parseInt(r.URL.Query().Get("page"), 1)
 			size := parseInt(r.URL.Query().Get("size"), 50)
-			items, total, err := h.Repo.ListTenants(r.Context(), status, page, size)
+			filter := repository.TenantFilters{
+				Status: status,
+				Search: search,
+			}
+			items, total, err := h.Repo.ListTenants(r.Context(), filter, page, size)
 			if err != nil {
 				writeJSON(w, http.StatusOK, Fail("failed to list tenants"))
 				return
@@ -96,13 +103,28 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, Fail("invalid body"))
 				return
 			}
-			// default status
-			if _, ok := payload["status"]; !ok {
-				payload["status"] = "active"
+			// 转换为 domain.Tenant
+			tenant := &domain.Tenant{
+				TenantName: getStringFromMap(payload, "tenant_name"),
+				Domain:     getStringFromMap(payload, "domain"),
+				Email:      getStringFromMap(payload, "email"),
+				Phone:      getStringFromMap(payload, "phone"),
+				Status:     getStringOrDefaultFromMap(payload, "status", "active"),
 			}
-			t, err := h.Repo.CreateTenant(r.Context(), payload)
+			if v, ok := payload["metadata"]; ok && v != nil {
+				if b, err := json.Marshal(v); err == nil {
+					tenant.Metadata = b
+				}
+			}
+			tenantID, err := h.Repo.CreateTenant(r.Context(), tenant)
 			if err != nil {
 				writeJSON(w, http.StatusOK, Fail("failed to create tenant"))
+				return
+			}
+			// 获取创建的租户
+			t, err := h.Repo.GetTenant(r.Context(), tenantID)
+			if err != nil {
+				writeJSON(w, http.StatusOK, Fail("failed to get created tenant"))
 				return
 			}
 			out := map[string]any{
@@ -228,13 +250,41 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 				return
 			}
-			t, err := h.Repo.UpdateTenant(r.Context(), id, payload)
+			// 获取现有租户
+			existing, err := h.Repo.GetTenant(r.Context(), id)
 			if err != nil {
-				if err == sql.ErrNoRows {
-					writeJSON(w, http.StatusOK, Fail("tenant not found"))
-					return
+				writeJSON(w, http.StatusOK, Fail("tenant not found"))
+				return
+			}
+			// 更新字段
+			if v := getStringFromMap(payload, "tenant_name"); v != "" {
+				existing.TenantName = v
+			}
+			if _, ok := payload["domain"]; ok {
+				existing.Domain = getStringFromMap(payload, "domain")
+			}
+			if _, ok := payload["email"]; ok {
+				existing.Email = getStringFromMap(payload, "email")
+			}
+			if _, ok := payload["phone"]; ok {
+				existing.Phone = getStringFromMap(payload, "phone")
+			}
+			if v, ok := payload["metadata"]; ok {
+				if v == nil {
+					existing.Metadata = nil
+				} else if b, err := json.Marshal(v); err == nil {
+					existing.Metadata = b
 				}
+			}
+			err = h.Repo.UpdateTenant(r.Context(), id, existing)
+			if err != nil {
 				writeJSON(w, http.StatusOK, Fail("failed to update tenant"))
+				return
+			}
+			// 获取更新后的租户
+			t, err := h.Repo.GetTenant(r.Context(), id)
+			if err != nil {
+				writeJSON(w, http.StatusOK, Fail("failed to get updated tenant"))
 				return
 			}
 			writeJSON(w, http.StatusOK, Ok(map[string]any{
@@ -263,4 +313,19 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNotFound)
+}
+
+// 辅助函数（避免与 unit_handler.go 中的 getString 冲突）
+func getStringFromMap(m map[string]any, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func getStringOrDefaultFromMap(m map[string]any, key, defaultValue string) string {
+	if v := getStringFromMap(m, key); v != "" {
+		return v
+	}
+	return defaultValue
 }

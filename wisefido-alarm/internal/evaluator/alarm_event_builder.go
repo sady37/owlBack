@@ -34,24 +34,24 @@ func (b *AlarmEventBuilder) BuildAlarmEvent(
 ) (*models.AlarmEvent, error) {
 	now := time.Now()
 
-	// 序列化 trigger_data
+	// 序列化 trigger_data（直接使用 json.RawMessage）
 	triggerDataJSON, err := json.Marshal(triggerData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal trigger data: %w", err)
 	}
 
-	// 序列化 metadata
-	metadataJSON := "{}"
+	// 序列化 metadata（直接使用 json.RawMessage）
+	var metadataJSON json.RawMessage = json.RawMessage("{}")
 	if metadata != nil {
 		metadataBytes, err := json.Marshal(metadata)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal metadata: %w", err)
 		}
-		metadataJSON = string(metadataBytes)
+		metadataJSON = metadataBytes
 	}
 
-	// 序列化 notified_users（默认空数组）
-	notifiedUsersJSON := "[]"
+	// 序列化 notified_users（默认空数组，直接使用 json.RawMessage）
+	notifiedUsersJSON := json.RawMessage("[]")
 
 	event := &models.AlarmEvent{
 		EventID:         uuid.New().String(),
@@ -62,7 +62,7 @@ func (b *AlarmEventBuilder) BuildAlarmEvent(
 		AlarmLevel:      alarmLevel,
 		AlarmStatus:     "active",
 		TriggeredAt:     now,
-		TriggerData:     string(triggerDataJSON),
+		TriggerData:     triggerDataJSON,
 		NotifiedUsers:   notifiedUsersJSON,
 		Metadata:        metadataJSON,
 		CreatedAt:       now,

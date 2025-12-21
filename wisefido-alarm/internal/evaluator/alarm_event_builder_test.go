@@ -50,22 +50,28 @@ func TestAlarmEventBuilder_BuildAlarmEvent(t *testing.T) {
 	assert.Equal(t, "active", event.AlarmStatus)
 
 	// 验证 trigger_data 序列化
+	// 注意：event.TriggerData 是 json.RawMessage，可以直接 Unmarshal
 	var triggerDataParsed models.TriggerData
-	err = json.Unmarshal([]byte(event.TriggerData), &triggerDataParsed)
+	err = json.Unmarshal(event.TriggerData, &triggerDataParsed)
 	require.NoError(t, err)
 	assert.Equal(t, "Fall", triggerDataParsed.EventType)
 	assert.Equal(t, "Radar", triggerDataParsed.Source)
 	assert.Equal(t, intPtr(72), triggerDataParsed.HeartRate)
 
 	// 验证 metadata 序列化
+	// 注意：event.Metadata 是 json.RawMessage，可以直接 Unmarshal
 	var metadataParsed map[string]interface{}
-	err = json.Unmarshal([]byte(event.Metadata), &metadataParsed)
+	err = json.Unmarshal(event.Metadata, &metadataParsed)
 	require.NoError(t, err)
 	assert.Equal(t, "cloud", metadataParsed["trigger_source"])
 	assert.Equal(t, "card-789", metadataParsed["card_id"])
 
 	// 验证 notified_users 默认为空数组
-	assert.Equal(t, "[]", event.NotifiedUsers)
+	// 注意：event.NotifiedUsers 是 json.RawMessage，可以直接比较或 Unmarshal
+	var notifiedUsersParsed []interface{}
+	err = json.Unmarshal(event.NotifiedUsers, &notifiedUsersParsed)
+	require.NoError(t, err)
+	assert.Equal(t, 0, len(notifiedUsersParsed))
 }
 
 func TestBuildTriggerData(t *testing.T) {

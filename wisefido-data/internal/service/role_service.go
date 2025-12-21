@@ -26,8 +26,7 @@ func NewRoleService(roleRepo repository.RolesRepository, logger *zap.Logger) *Ro
 	}
 }
 
-// SystemTenantID 系统租户ID
-const SystemTenantID = "00000000-0000-0000-0000-000000000001"
+// SystemTenantID 已移至 constants.go
 
 // ProtectedRoles 受保护的关键系统角色（不能禁用）
 var ProtectedRoles = []string{"SystemAdmin", "SystemOperator", "Admin", "Manager", "Caregiver", "Resident", "Family"}

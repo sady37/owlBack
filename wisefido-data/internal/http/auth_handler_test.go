@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"owl-common/database"
-	"owl-common/config"
+	"wisefido-data/internal/config"
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/service"
 
@@ -34,7 +34,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 // createTestTenantForHandler 创建测试租户
 func createTestTenantForHandler(t *testing.T, db *sql.DB) string {
 	tenantID := "00000000-0000-0000-0000-000000000998"
-	_, err := db.Exec(
+	_, err := db.ExecContext(context.Background(),
 		`INSERT INTO tenants (tenant_id, tenant_name, domain, status)
 		 VALUES ($1, $2, $3, 'active')
 		 ON CONFLICT (tenant_id) DO UPDATE SET tenant_name = EXCLUDED.tenant_name, domain = EXCLUDED.domain, status = EXCLUDED.status`,
@@ -60,7 +60,7 @@ func createTestUserForHandler(t *testing.T, db *sql.DB, tenantID, userAccount, p
 		phoneHash = ph[:]
 	}
 
-	_, err := db.Exec(
+	_, err := db.ExecContext(context.Background(),
 		`INSERT INTO users (tenant_id, user_account, user_account_hash, password_hash, email_hash, phone_hash, nickname, role, status)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active')
 		 ON CONFLICT (tenant_id, user_account) DO UPDATE SET
@@ -80,8 +80,9 @@ func createTestUserForHandler(t *testing.T, db *sql.DB, tenantID, userAccount, p
 
 // cleanupTestDataForHandler 清理测试数据
 func cleanupTestDataForHandler(t *testing.T, db *sql.DB, tenantID string) {
-	_, _ = db.Exec(`DELETE FROM users WHERE tenant_id = $1`, tenantID)
-	_, _ = db.Exec(`DELETE FROM tenants WHERE tenant_id = $1`, tenantID)
+	ctx := context.Background()
+	_, _ = db.ExecContext(ctx, `DELETE FROM users WHERE tenant_id = $1`, tenantID)
+	_, _ = db.ExecContext(ctx, `DELETE FROM tenants WHERE tenant_id = $1`, tenantID)
 }
 
 // hashAccount 计算账号 hash
@@ -110,9 +111,9 @@ func TestAuthHandler_Login_Success(t *testing.T) {
 
 	// 创建 Handler
 	authRepo := repository.NewPostgresAuthRepository(db)
-	tenantsRepo := repository.NewPostgresTenantsRepo(db)
+	tenantsRepo := repository.NewPostgresTenantsRepository(db)
 	logger := zap.NewNop()
-	authService := service.NewAuthService(authRepo, tenantsRepo, logger)
+	authService := service.NewAuthService(authRepo, tenantsRepo, nil, logger)
 	authHandler := NewAuthHandler(authService, logger)
 
 	// 准备请求
@@ -184,9 +185,9 @@ func TestAuthHandler_Login_MissingCredentials(t *testing.T) {
 	defer db.Close()
 
 	authRepo := repository.NewPostgresAuthRepository(db)
-	tenantsRepo := repository.NewPostgresTenantsRepo(db)
+	tenantsRepo := repository.NewPostgresTenantsRepository(db)
 	logger := zap.NewNop()
-	authService := service.NewAuthService(authRepo, tenantsRepo, logger)
+	authService := service.NewAuthService(authRepo, tenantsRepo, nil, logger)
 	authHandler := NewAuthHandler(authService, logger)
 
 	// 测试缺少 accountHash
@@ -241,9 +242,9 @@ func TestAuthHandler_SearchInstitutions_Success(t *testing.T) {
 
 	// 创建 Handler
 	authRepo := repository.NewPostgresAuthRepository(db)
-	tenantsRepo := repository.NewPostgresTenantsRepo(db)
+	tenantsRepo := repository.NewPostgresTenantsRepository(db)
 	logger := zap.NewNop()
-	authService := service.NewAuthService(authRepo, tenantsRepo, logger)
+	authService := service.NewAuthService(authRepo, tenantsRepo, nil, logger)
 	authHandler := NewAuthHandler(authService, logger)
 
 	// 准备请求
@@ -303,9 +304,9 @@ func TestAuthHandler_SearchInstitutions_NoMatch(t *testing.T) {
 	defer db.Close()
 
 	authRepo := repository.NewPostgresAuthRepository(db)
-	tenantsRepo := repository.NewPostgresTenantsRepo(db)
+	tenantsRepo := repository.NewPostgresTenantsRepository(db)
 	logger := zap.NewNop()
-	authService := service.NewAuthService(authRepo, tenantsRepo, logger)
+	authService := service.NewAuthService(authRepo, tenantsRepo, nil, logger)
 	authHandler := NewAuthHandler(authService, logger)
 
 	// 使用不存在的账号
@@ -345,9 +346,9 @@ func TestAuthHandler_ServeHTTP_Routing(t *testing.T) {
 	defer db.Close()
 
 	authRepo := repository.NewPostgresAuthRepository(db)
-	tenantsRepo := repository.NewPostgresTenantsRepo(db)
+	tenantsRepo := repository.NewPostgresTenantsRepository(db)
 	logger := zap.NewNop()
-	authService := service.NewAuthService(authRepo, tenantsRepo, logger)
+	authService := service.NewAuthService(authRepo, tenantsRepo, nil, logger)
 	authHandler := NewAuthHandler(authService, logger)
 
 	tests := []struct {

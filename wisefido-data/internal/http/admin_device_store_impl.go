@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"io"
@@ -300,7 +299,7 @@ func (br *bytesReader) Size() int64 {
 // payloadToDeviceStore 将map[string]any转换为domain.DeviceStore
 func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
 	ds := &domain.DeviceStore{}
-	
+
 	if v, ok := payload["device_type"].(string); ok {
 		ds.DeviceType = v
 	}
@@ -345,6 +344,6 @@ func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
 	if v, ok := payload["allow_access"].(bool); ok {
 		ds.AllowAccess = v
 	}
-	
+
 	return ds
 }

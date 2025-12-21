@@ -19,7 +19,7 @@ func TestTagService_ListTags(t *testing.T) {
 
 	ctx := context.Background()
 	tagRepo := repository.NewPostgresTagsRepository(db)
-	tagService := NewTagService(tagRepo, getTestLogger())
+	tagService := NewTagService(tagRepo, db, getTestLogger())
 
 	// 测试查询标签列表
 	req := ListTagsRequest{
@@ -51,7 +51,7 @@ func TestTagService_CreateTag(t *testing.T) {
 
 	ctx := context.Background()
 	tagRepo := repository.NewPostgresTagsRepository(db)
-	tagService := NewTagService(tagRepo, getTestLogger())
+	tagService := NewTagService(tagRepo, db, getTestLogger())
 
 	// 清理测试数据
 	defer func() {
@@ -87,7 +87,7 @@ func TestTagService_DeleteTag(t *testing.T) {
 
 	ctx := context.Background()
 	tagRepo := repository.NewPostgresTagsRepository(db)
-	tagService := NewTagService(tagRepo, getTestLogger())
+	tagService := NewTagService(tagRepo, db, getTestLogger())
 
 	// 先创建一个测试标签
 	createReq := CreateTagRequest{
@@ -126,7 +126,7 @@ func TestTagService_DeleteTag_SystemTagType_ShouldFail(t *testing.T) {
 
 	ctx := context.Background()
 	tagRepo := repository.NewPostgresTagsRepository(db)
-	tagService := NewTagService(tagRepo, getTestLogger())
+	tagService := NewTagService(tagRepo, db, getTestLogger())
 
 	// 尝试删除系统预定义类型（应该失败）
 	// 先查询一个 branch_tag
@@ -165,7 +165,7 @@ func TestTagService_AddTagObjects(t *testing.T) {
 
 	ctx := context.Background()
 	tagRepo := repository.NewPostgresTagsRepository(db)
-	tagService := NewTagService(tagRepo, getTestLogger())
+	tagService := NewTagService(tagRepo, db, getTestLogger())
 
 	// 先创建一个测试标签
 	createReq := CreateTagRequest{
@@ -228,7 +228,7 @@ func TestTagService_RemoveTagObjects(t *testing.T) {
 
 	ctx := context.Background()
 	tagRepo := repository.NewPostgresTagsRepository(db)
-	tagService := NewTagService(tagRepo, getTestLogger())
+	tagService := NewTagService(tagRepo, db, getTestLogger())
 
 	// 先创建一个测试标签
 	createReq := CreateTagRequest{
@@ -289,7 +289,7 @@ func TestTagService_GetTagsForObject(t *testing.T) {
 
 	ctx := context.Background()
 	tagRepo := repository.NewPostgresTagsRepository(db)
-	tagService := NewTagService(tagRepo, getTestLogger())
+	tagService := NewTagService(tagRepo, db, getTestLogger())
 
 	// 查询一个测试用户
 	var userID string
@@ -320,7 +320,7 @@ func TestTagService_GetTagsForObject(t *testing.T) {
 		t.Fatal("GetTagsForObject returned nil response")
 	}
 
-	// 当前实现返回空列表（TODO: 需要重新设计）
-	t.Logf("GetTagsForObject success: items=%d (TODO: needs redesign)", len(resp.Items))
+	// GetTagsForObject 已实现，从源表查询标签
+	t.Logf("GetTagsForObject success: items=%d", len(resp.Items))
 }
 

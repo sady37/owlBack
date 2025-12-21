@@ -13,6 +13,40 @@ import (
 	"go.uber.org/zap"
 )
 
+// getResourcePermission 查询资源权限配置（从 role_permissions 表）
+// 为了避免循环导入，这里复制了 httpapi.GetResourcePermission 的逻辑
+func getResourcePermission(db *sql.DB, ctx context.Context, roleCode, resourceType, permissionType string) (*permissionCheck, error) {
+	var assignedOnly, branchOnly bool
+	err := db.QueryRowContext(ctx,
+		`SELECT 
+			COALESCE(assigned_only, FALSE) as assigned_only,
+			COALESCE(branch_only, FALSE) as branch_only
+		 FROM role_permissions
+		 WHERE tenant_id = $1 
+		   AND role_code = $2 
+		   AND resource_type = $3 
+		   AND permission_type = $4
+		 LIMIT 1`,
+		"00000000-0000-0000-0000-000000000001", // SystemTenantID
+		roleCode, resourceType, permissionType,
+	).Scan(&assignedOnly, &branchOnly)
+
+	if err == sql.ErrNoRows {
+		// 记录不存在：返回最严格的权限（安全默认值）
+		return &permissionCheck{AssignedOnly: true, BranchOnly: true}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &permissionCheck{AssignedOnly: assignedOnly, BranchOnly: branchOnly}, nil
+}
+
+type permissionCheck struct {
+	AssignedOnly bool
+	BranchOnly   bool
+}
+
 // AlarmCloudService 告警配置服务接口
 type AlarmCloudService interface {
 	GetAlarmCloudConfig(ctx context.Context, req GetAlarmCloudConfigRequest) (*AlarmCloudConfigResponse, error)
@@ -22,13 +56,15 @@ type AlarmCloudService interface {
 // alarmCloudService 实现
 type alarmCloudService struct {
 	alarmCloudRepo repository.AlarmCloudRepository
-	logger         *zap.Logger
+	db              *sql.DB // 用于权限检查
+	logger          *zap.Logger
 }
 
 // NewAlarmCloudService 创建 AlarmCloudService 实例
-func NewAlarmCloudService(alarmCloudRepo repository.AlarmCloudRepository, logger *zap.Logger) AlarmCloudService {
+func NewAlarmCloudService(alarmCloudRepo repository.AlarmCloudRepository, db *sql.DB, logger *zap.Logger) AlarmCloudService {
 	return &alarmCloudService{
 		alarmCloudRepo: alarmCloudRepo,
+		db:             db,
 		logger:         logger,
 	}
 }
@@ -73,8 +109,28 @@ func (s *alarmCloudService) GetAlarmCloudConfig(ctx context.Context, req GetAlar
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 
-	// TODO: 权限检查（需要 role_permissions 表支持）
-	// 当前实现：暂时跳过权限检查，后续可以添加
+	// 权限检查：只有 SystemAdmin 或 Admin 可以查看告警配置
+	if req.UserRole != "" && s.db != nil {
+		normalizedRole := strings.ToLower(strings.TrimSpace(req.UserRole))
+		// SystemAdmin 和 Admin 可以查看
+		if normalizedRole != "systemadmin" && normalizedRole != "admin" {
+			// 检查是否有 read 权限
+			permCheck, err := getResourcePermission(s.db, ctx, req.UserRole, "alarm_cloud", "R")
+			if err != nil {
+				s.logger.Warn("Failed to check permission for GetAlarmCloudConfig",
+					zap.String("user_role", req.UserRole),
+					zap.Error(err),
+				)
+				// 权限检查失败时，使用默认严格权限（不允许访问）
+				return nil, fmt.Errorf("permission denied: failed to check permissions")
+			}
+			// 如果权限检查返回最严格权限（assigned_only=true, branch_only=true），表示没有权限记录
+			// 这种情况下，只有 SystemAdmin 和 Admin 可以访问
+			if permCheck.AssignedOnly && permCheck.BranchOnly {
+				return nil, fmt.Errorf("permission denied: only SystemAdmin or Admin can view alarm cloud config")
+			}
+		}
+	}
 
 	// 1. 优先查询租户特定配置
 	alarmCloud, err := s.alarmCloudRepo.GetAlarmCloud(ctx, req.TenantID)
@@ -152,9 +208,30 @@ func (s *alarmCloudService) UpdateAlarmCloudConfig(ctx context.Context, req Upda
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 
-	// TODO: 权限检查（需要 role_permissions 表支持）
-	// 业务规则：只有 SystemAdmin 或 Admin 可以更新告警配置
-	// 当前实现：暂时跳过权限检查，后续可以添加
+	// 权限检查：只有 SystemAdmin 或 Admin 可以更新告警配置
+	if req.UserRole == "" {
+		return nil, fmt.Errorf("user_role is required for update operation")
+	}
+	if s.db != nil {
+		normalizedRole := strings.ToLower(strings.TrimSpace(req.UserRole))
+		// SystemAdmin 和 Admin 可以更新
+		if normalizedRole != "systemadmin" && normalizedRole != "admin" {
+			// 检查是否有 update 权限
+			permCheck, err := getResourcePermission(s.db, ctx, req.UserRole, "alarm_cloud", "U")
+			if err != nil {
+				s.logger.Warn("Failed to check permission for UpdateAlarmCloudConfig",
+					zap.String("user_role", req.UserRole),
+					zap.Error(err),
+				)
+				return nil, fmt.Errorf("permission denied: failed to check permissions")
+			}
+			// 如果权限检查返回最严格权限（assigned_only=true, branch_only=true），表示没有权限记录
+			// 这种情况下，只有 SystemAdmin 和 Admin 可以更新
+			if permCheck.AssignedOnly && permCheck.BranchOnly {
+				return nil, fmt.Errorf("permission denied: only SystemAdmin or Admin can update alarm cloud config")
+			}
+		}
+	}
 
 	// 业务规则验证：不能更新系统默认配置
 	if req.TenantID == "00000000-0000-0000-0000-000000000001" {

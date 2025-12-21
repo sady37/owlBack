@@ -2,9 +2,14 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	"wisefido-data/internal/repository"
@@ -26,19 +31,53 @@ type AuthService interface {
 	ResetPassword(ctx context.Context, req ResetPasswordRequest) (*ResetPasswordResponse, error)
 }
 
+// verificationCodeStore 验证码存储（内存实现，后续可以改为 Redis）
+type verificationCodeStore struct {
+	mu    sync.RWMutex
+	codes map[string]verificationCodeData // key: account:userType:tenantName -> data
+}
+
+type verificationCodeData struct {
+	Code      string
+	ExpiresAt time.Time
+}
+
+type resetTokenStore struct {
+	mu    sync.RWMutex
+	tokens map[string]resetTokenData // key: token -> data
+}
+
+type resetTokenData struct {
+	Account    string
+	UserType   string
+	TenantID   string
+	TenantName string
+	ExpiresAt  time.Time
+}
+
 // authService 实现
 type authService struct {
 	authRepo     repository.AuthRepository
 	tenantsRepo  repository.TenantsRepository
+	db           *sql.DB // 用于验证码和重置密码功能（需要直接查询数据库）
 	logger       *zap.Logger
+	codeStore    *verificationCodeStore
+	tokenStore   *resetTokenStore
 }
 
 // NewAuthService 创建 AuthService 实例
-func NewAuthService(authRepo repository.AuthRepository, tenantsRepo repository.TenantsRepository, logger *zap.Logger) AuthService {
+func NewAuthService(authRepo repository.AuthRepository, tenantsRepo repository.TenantsRepository, db *sql.DB, logger *zap.Logger) AuthService {
 	return &authService{
 		authRepo:    authRepo,
 		tenantsRepo: tenantsRepo,
+		db:          db,
 		logger:      logger,
+		codeStore: &verificationCodeStore{
+			codes: make(map[string]verificationCodeData),
+		},
+		tokenStore: &resetTokenStore{
+			tokens: make(map[string]resetTokenData),
+		},
 	}
 }
 
@@ -390,10 +429,9 @@ func (s *authService) SearchInstitutions(ctx context.Context, req SearchInstitut
 		}
 
 		// Special handling for System tenant
-		systemTenantID := "00000000-0000-0000-0000-000000000001"
-		if match.TenantID == systemTenantID {
+		if match.TenantID == SystemTenantID {
 			institutions = append(institutions, Institution{
-				ID:          systemTenantID,
+				ID:          SystemTenantID,
 				Name:        "System",
 				AccountType: match.AccountType,
 			})
@@ -432,11 +470,173 @@ type SendVerificationCodeResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
+// sha256HexAuth 计算字符串的 SHA256 hash（hex 编码）（用于 auth_service，避免与 user_service.go 中的 sha256Hex 冲突）
+func sha256HexAuth(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// generateVerificationCode 生成6位数字验证码
+func generateVerificationCode() (string, error) {
+	// 生成 100000-999999 之间的随机数
+	max := big.NewInt(900000)
+	n, err := rand.Int(rand.Reader, max)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate verification code: %w", err)
+	}
+	code := 100000 + int(n.Int64())
+	return fmt.Sprintf("%06d", code), nil
+}
+
+// createCodeKey 创建验证码存储键
+func createCodeKey(account, userType, tenantName string) string {
+	// 使用小写和规范化，确保键的一致性
+	normalizedAccount := strings.ToLower(strings.TrimSpace(account))
+	normalizedUserType := strings.ToLower(strings.TrimSpace(userType))
+	normalizedTenantName := strings.ToLower(strings.TrimSpace(tenantName))
+	return fmt.Sprintf("%s:%s:%s", normalizedAccount, normalizedUserType, normalizedTenantName)
+}
+
 // SendVerificationCode 发送验证码
 func (s *authService) SendVerificationCode(ctx context.Context, req SendVerificationCodeRequest) (*SendVerificationCodeResponse, error) {
-	// TODO: 实现发送验证码逻辑
-	return nil, fmt.Errorf("database not available")
+	// 参数验证
+	if strings.TrimSpace(req.Account) == "" {
+		return nil, fmt.Errorf("account is required")
+	}
+	if strings.TrimSpace(req.UserType) == "" {
+		return nil, fmt.Errorf("user_type is required")
+	}
+	if strings.TrimSpace(req.TenantName) == "" {
+		return nil, fmt.Errorf("tenant_name is required")
+	}
+
+	// 1. 查找用户（验证账号是否存在）
+	normalizedUserType := strings.ToLower(strings.TrimSpace(req.UserType))
+	var found bool
+
+	if s.db != nil {
+		// 从数据库查找用户
+		accountHash, err := hex.DecodeString(sha256HexAuth(strings.ToLower(strings.TrimSpace(req.Account))))
+		if err == nil {
+			if normalizedUserType == "staff" {
+				// 查找 users 表
+				var userIDFromDB sql.NullString
+				var tenantIDFromDB sql.NullString
+				err := s.db.QueryRowContext(ctx,
+					`SELECT user_id::text, tenant_id::text FROM users 
+					 WHERE user_account_hash = $1 OR email_hash = $1 OR phone_hash = $1
+					 LIMIT 1`,
+					accountHash,
+				).Scan(&userIDFromDB, &tenantIDFromDB)
+				if err == nil && userIDFromDB.Valid {
+					found = true
+				}
+			} else if normalizedUserType == "resident" {
+				// 查找 residents 表或 resident_contacts 表
+				var residentIDFromDB sql.NullString
+				var tenantIDFromDB sql.NullString
+				err := s.db.QueryRowContext(ctx,
+					`SELECT resident_id::text, tenant_id::text FROM residents 
+					 WHERE resident_account_hash = $1 OR email_hash = $1 OR phone_hash = $1
+					 LIMIT 1`,
+					accountHash,
+				).Scan(&residentIDFromDB, &tenantIDFromDB)
+				if err == nil && residentIDFromDB.Valid {
+					found = true
+				} else {
+					// 尝试 resident_contacts 表
+					var contactIDFromDB sql.NullString
+					err := s.db.QueryRowContext(ctx,
+						`SELECT contact_id::text FROM resident_contacts 
+						 WHERE email_hash = $1 OR phone_hash = $1
+						 LIMIT 1`,
+						accountHash,
+					).Scan(&contactIDFromDB)
+					if err == nil && contactIDFromDB.Valid {
+						found = true
+					}
+				}
+			}
+		}
+	}
+
+	if !found {
+		// 为了安全，即使账号不存在也返回成功（防止账号枚举攻击）
+		s.logger.Warn("SendVerificationCode: account not found",
+			zap.String("account", req.Account),
+			zap.String("user_type", req.UserType),
+			zap.String("tenant_name", req.TenantName),
+		)
+		return &SendVerificationCodeResponse{
+			Success: true,
+			Message: "If the account exists, a verification code has been sent",
+		}, nil
+	}
+
+	// 2. 生成验证码
+	code, err := generateVerificationCode()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate verification code: %w", err)
+	}
+
+	// 3. 存储验证码（5分钟有效期）
+	key := createCodeKey(req.Account, req.UserType, req.TenantName)
+	s.codeStore.mu.Lock()
+	s.codeStore.codes[key] = verificationCodeData{
+		Code:      code,
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+	s.codeStore.mu.Unlock()
+
+	// 4. 清理过期验证码（后台清理）
+	go s.cleanupExpiredCodes()
+
+	// 5. 发送验证码（TODO: 实际发送邮件或短信）
+	// 当前实现：只记录日志，不实际发送
+	s.logger.Info("Verification code generated",
+		zap.String("account", req.Account),
+		zap.String("user_type", req.UserType),
+		zap.String("tenant_name", req.TenantName),
+		zap.String("code", code), // 开发环境可以记录，生产环境应该移除
+	)
+
+	// TODO: 实际发送验证码到用户邮箱或手机
+	// - 如果账号是邮箱，发送邮件
+	// - 如果账号是手机，发送短信
+	// - 需要集成邮件服务或短信服务
+
+	return &SendVerificationCodeResponse{
+		Success: true,
+		Message: "Verification code has been sent",
+	}, nil
 }
+
+// cleanupExpiredCodes 清理过期的验证码
+func (s *authService) cleanupExpiredCodes() {
+	s.codeStore.mu.Lock()
+	defer s.codeStore.mu.Unlock()
+
+	now := time.Now()
+	for key, data := range s.codeStore.codes {
+		if now.After(data.ExpiresAt) {
+			delete(s.codeStore.codes, key)
+		}
+	}
+}
+
+// cleanupExpiredTokens 清理过期的重置令牌
+func (s *authService) cleanupExpiredTokens() {
+	s.tokenStore.mu.Lock()
+	defer s.tokenStore.mu.Unlock()
+
+	now := time.Now()
+	for token, data := range s.tokenStore.tokens {
+		if now.After(data.ExpiresAt) {
+			delete(s.tokenStore.tokens, token)
+		}
+	}
+}
+
 
 // VerifyCodeRequest 验证验证码请求
 type VerifyCodeRequest struct {
@@ -454,10 +654,107 @@ type VerifyCodeResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
+// generateResetToken 生成重置密码令牌
+func generateResetToken() (string, error) {
+	// 生成 32 字节的随机令牌
+	b := make([]byte, 32)
+	_, err := rand.Read(b)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate reset token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
 // VerifyCode 验证验证码
 func (s *authService) VerifyCode(ctx context.Context, req VerifyCodeRequest) (*VerifyCodeResponse, error) {
-	// TODO: 实现验证验证码逻辑
-	return nil, fmt.Errorf("database not available")
+	// 参数验证
+	if strings.TrimSpace(req.Account) == "" {
+		return nil, fmt.Errorf("account is required")
+	}
+	if strings.TrimSpace(req.Code) == "" {
+		return nil, fmt.Errorf("code is required")
+	}
+	if strings.TrimSpace(req.UserType) == "" {
+		return nil, fmt.Errorf("user_type is required")
+	}
+	if strings.TrimSpace(req.TenantName) == "" {
+		return nil, fmt.Errorf("tenant_name is required")
+	}
+
+	// 1. 查找验证码
+	key := createCodeKey(req.Account, req.UserType, req.TenantName)
+	s.codeStore.mu.RLock()
+	data, exists := s.codeStore.codes[key]
+	s.codeStore.mu.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("verification code not found or expired")
+	}
+
+	// 2. 检查是否过期
+	if time.Now().After(data.ExpiresAt) {
+		// 清理过期验证码
+		s.codeStore.mu.Lock()
+		delete(s.codeStore.codes, key)
+		s.codeStore.mu.Unlock()
+		return nil, fmt.Errorf("verification code expired")
+	}
+
+	// 3. 验证验证码
+	if data.Code != req.Code {
+		return nil, fmt.Errorf("invalid verification code")
+	}
+
+	// 4. 验证码正确，生成重置令牌
+	token, err := generateResetToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate reset token: %w", err)
+	}
+
+	// 5. 查找租户信息
+	var tenantID string
+	if req.TenantID != "" {
+		tenantID = req.TenantID
+	} else if s.tenantsRepo != nil {
+		// 根据 tenant_name 查找 tenant_id
+		tenants, _, err := s.tenantsRepo.ListTenants(ctx, repository.TenantFilters{
+			Search: req.TenantName,
+		}, 1, 10)
+		if err == nil && len(tenants) > 0 {
+			// 精确匹配 tenant_name（不区分大小写）
+			for _, t := range tenants {
+				if strings.EqualFold(t.TenantName, req.TenantName) {
+					tenantID = t.TenantID
+					break
+				}
+			}
+		}
+	}
+
+	// 6. 存储重置令牌（10分钟有效期）
+	s.tokenStore.mu.Lock()
+	s.tokenStore.tokens[token] = resetTokenData{
+		Account:    req.Account,
+		UserType:   req.UserType,
+		TenantID:   tenantID,
+		TenantName: req.TenantName,
+		ExpiresAt:  time.Now().Add(10 * time.Minute),
+	}
+	s.tokenStore.mu.Unlock()
+
+	// 7. 清理过期令牌（后台清理）
+	go s.cleanupExpiredTokens()
+
+	// 8. 删除已使用的验证码
+	s.codeStore.mu.Lock()
+	delete(s.codeStore.codes, key)
+	s.codeStore.mu.Unlock()
+
+	return &VerifyCodeResponse{
+		Success: true,
+		Token:   token,
+		Message: "Verification code verified successfully",
+	}, nil
 }
 
 // ResetPasswordRequest 重置密码请求
@@ -475,7 +772,122 @@ type ResetPasswordResponse struct {
 
 // ResetPassword 重置密码
 func (s *authService) ResetPassword(ctx context.Context, req ResetPasswordRequest) (*ResetPasswordResponse, error) {
-	// TODO: 实现重置密码逻辑
-	return nil, fmt.Errorf("database not available")
+	// 参数验证
+	if strings.TrimSpace(req.Token) == "" {
+		return nil, fmt.Errorf("token is required")
+	}
+	if strings.TrimSpace(req.NewPassword) == "" {
+		return nil, fmt.Errorf("new_password is required")
+	}
+	if strings.TrimSpace(req.UserType) == "" {
+		return nil, fmt.Errorf("user_type is required")
+	}
+
+	if s.db == nil {
+		return nil, fmt.Errorf("database connection is required")
+	}
+
+	// 1. 验证重置令牌
+	s.tokenStore.mu.RLock()
+	tokenData, exists := s.tokenStore.tokens[req.Token]
+	s.tokenStore.mu.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("invalid or expired reset token")
+	}
+
+	// 2. 检查令牌是否过期
+	if time.Now().After(tokenData.ExpiresAt) {
+		// 清理过期令牌
+		s.tokenStore.mu.Lock()
+		delete(s.tokenStore.tokens, req.Token)
+		s.tokenStore.mu.Unlock()
+		return nil, fmt.Errorf("reset token expired")
+	}
+
+	// 3. 验证 user_type 是否匹配
+	if strings.ToLower(strings.TrimSpace(req.UserType)) != strings.ToLower(strings.TrimSpace(tokenData.UserType)) {
+		return nil, fmt.Errorf("user_type mismatch")
+	}
+
+	// 4. 查找用户并更新密码
+	normalizedUserType := strings.ToLower(strings.TrimSpace(req.UserType))
+	accountHash, err := hex.DecodeString(sha256Hex(strings.ToLower(strings.TrimSpace(tokenData.Account))))
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash account: %w", err)
+	}
+
+	// 计算新密码的 hash
+	passwordHashHex := sha256HexAuth(req.NewPassword)
+	passwordHash, err := hex.DecodeString(passwordHashHex)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	var rowsAffected int64
+	if normalizedUserType == "staff" {
+		// 更新 users 表的 password_hash
+		result, err := s.db.ExecContext(ctx,
+			`UPDATE users 
+			 SET password_hash = $1
+			 WHERE (user_account_hash = $2 OR email_hash = $2 OR phone_hash = $2)
+			   AND tenant_id = $3`,
+			passwordHash, accountHash, tokenData.TenantID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reset password: %w", err)
+		}
+		rowsAffected, _ = result.RowsAffected()
+	} else if normalizedUserType == "resident" {
+		// 先尝试更新 residents 表
+		result, err := s.db.ExecContext(ctx,
+			`UPDATE residents 
+			 SET password_hash = $1
+			 WHERE (resident_account_hash = $2 OR email_hash = $2 OR phone_hash = $2)
+			   AND tenant_id = $3`,
+			passwordHash, accountHash, tokenData.TenantID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reset password: %w", err)
+		}
+		rowsAffected, _ = result.RowsAffected()
+
+		// 如果没有更新 residents 表，尝试更新 resident_contacts 表
+		if rowsAffected == 0 {
+			result, err := s.db.ExecContext(ctx,
+				`UPDATE resident_contacts 
+				 SET password_hash = $1
+				 WHERE (email_hash = $2 OR phone_hash = $2)
+				   AND tenant_id = $3`,
+				passwordHash, accountHash, tokenData.TenantID,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("failed to reset password: %w", err)
+			}
+			rowsAffected, _ = result.RowsAffected()
+		}
+	} else {
+		return nil, fmt.Errorf("unsupported user_type: %s", req.UserType)
+	}
+
+	if rowsAffected == 0 {
+		return nil, fmt.Errorf("account not found")
+	}
+
+	// 5. 删除已使用的重置令牌
+	s.tokenStore.mu.Lock()
+	delete(s.tokenStore.tokens, req.Token)
+	s.tokenStore.mu.Unlock()
+
+	s.logger.Info("Password reset successful",
+		zap.String("account", tokenData.Account),
+		zap.String("user_type", tokenData.UserType),
+		zap.String("tenant_id", tokenData.TenantID),
+	)
+
+	return &ResetPasswordResponse{
+		Success: true,
+		Message: "Password has been reset successfully",
+	}, nil
 }
 

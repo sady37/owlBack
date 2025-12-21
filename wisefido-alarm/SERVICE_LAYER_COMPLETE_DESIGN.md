@@ -504,7 +504,10 @@ func (s *UnitService) DeleteBed(ctx, tenantID, userID, userRole, bedID) // 检�
 3. ✅ **AlarmEventService** - 复杂查询、权限过滤
 
 ### Phase 3: 中优先级（复杂度中）
-4. ✅ **TagService** - 576 行 Handler 需要重构
+4. ✅ **TagService** - 576 行 Handler 已完成重构 ✅
+   - Service: `internal/service/tag_service.go`
+   - Handler: `internal/http/admin_tags_handler.go`
+   - 已注册路由，功能完整
 5. ✅ **RoleService** - ~250 行 Handler 需要重构
 6. ✅ **RolePermissionService** - ~230 行 Handler 需要重构
 7. ✅ **AlarmCloudService** - ~240 行 Handler 需要重构

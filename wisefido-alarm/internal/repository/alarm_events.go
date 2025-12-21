@@ -105,7 +105,10 @@ func (r *AlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenantID, eve
 
 	var event models.AlarmEvent
 	var handTimePtr sql.NullTime
-	var iotTimeSeriesID, handler, operation, notes sql.NullString
+	var iotTimeSeriesID sql.NullInt64
+	var handler, operation, notes sql.NullString
+	var triggerData, notifiedUsers, metadata []byte
+
 	err := r.db.QueryRowContext(ctx, query, eventID, tenantID).Scan(
 		&event.EventID,
 		&event.TenantID,
@@ -117,12 +120,12 @@ func (r *AlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenantID, eve
 		&event.TriggeredAt,
 		&handTimePtr,
 		&iotTimeSeriesID,
-		&event.TriggerData,
+		&triggerData,
 		&handler,
 		&operation,
 		&notes,
-		&event.NotifiedUsers,
-		&event.Metadata,
+		&notifiedUsers,
+		&metadata,
 		&event.CreatedAt,
 		&event.UpdatedAt,
 	)
@@ -139,9 +142,7 @@ func (r *AlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenantID, eve
 		event.HandTime = &handTimePtr.Time
 	}
 	if iotTimeSeriesID.Valid {
-		var id int64
-		fmt.Sscanf(iotTimeSeriesID.String, "%d", &id)
-		event.IoTTimeSeriesID = &id
+		event.IoTTimeSeriesID = &iotTimeSeriesID.Int64
 	}
 	if handler.Valid {
 		event.Handler = &handler.String
@@ -151,6 +152,23 @@ func (r *AlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenantID, eve
 	}
 	if notes.Valid {
 		event.Notes = &notes.String
+	}
+
+	// 处理 JSONB 字段
+	if len(triggerData) > 0 {
+		event.TriggerData = triggerData
+	} else {
+		event.TriggerData = json.RawMessage("{}")
+	}
+	if len(notifiedUsers) > 0 {
+		event.NotifiedUsers = notifiedUsers
+	} else {
+		event.NotifiedUsers = json.RawMessage("[]")
+	}
+	if len(metadata) > 0 {
+		event.Metadata = metadata
+	} else {
+		event.Metadata = json.RawMessage("{}")
 	}
 
 	return &event, nil
@@ -598,7 +616,9 @@ func (r *AlarmEventsRepository) ListAlarmEvents(ctx context.Context, tenantID st
 	for rows.Next() {
 		var event models.AlarmEvent
 		var handTimePtr sql.NullTime
-		var iotTimeSeriesID, handler, operation, notes sql.NullString
+		var iotTimeSeriesID sql.NullInt64
+		var handler, operation, notes sql.NullString
+		var triggerData, notifiedUsers, metadata []byte
 
 		err := rows.Scan(
 			&event.EventID,
@@ -611,12 +631,12 @@ func (r *AlarmEventsRepository) ListAlarmEvents(ctx context.Context, tenantID st
 			&event.TriggeredAt,
 			&handTimePtr,
 			&iotTimeSeriesID,
-			&event.TriggerData,
+			&triggerData,
 			&handler,
 			&operation,
 			&notes,
-			&event.NotifiedUsers,
-			&event.Metadata,
+			&notifiedUsers,
+			&metadata,
 			&event.CreatedAt,
 			&event.UpdatedAt,
 		)
@@ -629,9 +649,7 @@ func (r *AlarmEventsRepository) ListAlarmEvents(ctx context.Context, tenantID st
 			event.HandTime = &handTimePtr.Time
 		}
 		if iotTimeSeriesID.Valid {
-			var id int64
-			fmt.Sscanf(iotTimeSeriesID.String, "%d", &id)
-			event.IoTTimeSeriesID = &id
+			event.IoTTimeSeriesID = &iotTimeSeriesID.Int64
 		}
 		if handler.Valid {
 			event.Handler = &handler.String
@@ -641,6 +659,23 @@ func (r *AlarmEventsRepository) ListAlarmEvents(ctx context.Context, tenantID st
 		}
 		if notes.Valid {
 			event.Notes = &notes.String
+		}
+
+		// 处理 JSONB 字段
+		if len(triggerData) > 0 {
+			event.TriggerData = triggerData
+		} else {
+			event.TriggerData = json.RawMessage("{}")
+		}
+		if len(notifiedUsers) > 0 {
+			event.NotifiedUsers = notifiedUsers
+		} else {
+			event.NotifiedUsers = json.RawMessage("[]")
+		}
+		if len(metadata) > 0 {
+			event.Metadata = metadata
+		} else {
+			event.Metadata = json.RawMessage("{}")
 		}
 
 		events = append(events, &event)
@@ -702,7 +737,10 @@ func (r *AlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context, tenantI
 
 	var event models.AlarmEvent
 	var handTimePtr sql.NullTime
-	var iotTimeSeriesID, handler, operation, notes sql.NullString
+	var iotTimeSeriesID sql.NullInt64
+	var handler, operation, notes sql.NullString
+	var triggerData, notifiedUsers, metadata []byte
+
 	err := r.db.QueryRowContext(ctx, query, tenantID, deviceID, eventType, thresholdTime).Scan(
 		&event.EventID,
 		&event.TenantID,
@@ -714,12 +752,12 @@ func (r *AlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context, tenantI
 		&event.TriggeredAt,
 		&handTimePtr,
 		&iotTimeSeriesID,
-		&event.TriggerData,
+		&triggerData,
 		&handler,
 		&operation,
 		&notes,
-		&event.NotifiedUsers,
-		&event.Metadata,
+		&notifiedUsers,
+		&metadata,
 		&event.CreatedAt,
 		&event.UpdatedAt,
 	)
@@ -736,9 +774,7 @@ func (r *AlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context, tenantI
 		event.HandTime = &handTimePtr.Time
 	}
 	if iotTimeSeriesID.Valid {
-		var id int64
-		fmt.Sscanf(iotTimeSeriesID.String, "%d", &id)
-		event.IoTTimeSeriesID = &id
+		event.IoTTimeSeriesID = &iotTimeSeriesID.Int64
 	}
 	if handler.Valid {
 		event.Handler = &handler.String
@@ -748,6 +784,23 @@ func (r *AlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context, tenantI
 	}
 	if notes.Valid {
 		event.Notes = &notes.String
+	}
+
+	// 处理 JSONB 字段
+	if len(triggerData) > 0 {
+		event.TriggerData = triggerData
+	} else {
+		event.TriggerData = json.RawMessage("{}")
+	}
+	if len(notifiedUsers) > 0 {
+		event.NotifiedUsers = notifiedUsers
+	} else {
+		event.NotifiedUsers = json.RawMessage("[]")
+	}
+	if len(metadata) > 0 {
+		event.Metadata = metadata
+	} else {
+		event.Metadata = json.RawMessage("{}")
 	}
 
 	return &event, nil

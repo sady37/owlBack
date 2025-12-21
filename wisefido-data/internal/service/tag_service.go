@@ -15,13 +15,15 @@ import (
 // TagService 标签服务
 type TagService struct {
 	tagRepo repository.TagsRepository
+	db      *sql.DB // 用于复杂查询（JOIN、从源表查询标签）
 	logger  *zap.Logger
 }
 
 // NewTagService 创建标签服务
-func NewTagService(tagRepo repository.TagsRepository, logger *zap.Logger) *TagService {
+func NewTagService(tagRepo repository.TagsRepository, db *sql.DB, logger *zap.Logger) *TagService {
 	return &TagService{
 		tagRepo: tagRepo,
+		db:      db,
 		logger:  logger,
 	}
 }
@@ -46,10 +48,11 @@ type ListTagsResponse struct {
 
 // TagItem 标签项（前端格式）
 type TagItem struct {
-	TagID    string `json:"tag_id"`
-	TenantID string `json:"tenant_id"`
-	TagType  string `json:"tag_type"`
-	TagName  string `json:"tag_name"`
+	TagID          string  `json:"tag_id"`
+	TenantID       string  `json:"tenant_id,omitempty"` // 可选，GetTagsForObject 响应中不包含
+	TagType        string  `json:"tag_type"`
+	TagName        string  `json:"tag_name"`
+	ObjectNameInTag *string `json:"object_name_in_tag,omitempty"` // 对象在 tag 中的名称（GetTagsForObject 使用）
 }
 
 // ListTags 查询标签列表
@@ -214,16 +217,13 @@ func (s *TagService) UpdateTag(ctx context.Context, req UpdateTagRequest) error 
 	}
 
 	// 更新标签名称
-	// 注意：根据数据库设计，tag_name 可以修改，但 tag_id 不变（因为 tag_id 基于 tag_name 生成）
-	// 但修改 tag_name 会导致 tag_id 变化，所以实际上不应该允许修改 tag_name
-	// 这里暂时保留原有逻辑，直接更新 tag_name
-	// TODO: 重新设计，tag_name 修改应该通过删除旧 tag 和创建新 tag 实现
+	// 注意：tag_id 在创建时基于 tag_name 确定性生成（UUID v5），但生成后就不变了
+	// 即使 tag_name 修改，tag_id 也不会变化（因为 tag_id 是主键，不会自动重新计算）
+	// 所以可以直接更新 tag_name，tag_id 保持不变
 	err = s.tagRepo.UpdateTagName(ctx, req.TenantID, req.TagID, strings.TrimSpace(req.TagName))
 	if err != nil {
 		return fmt.Errorf("failed to update tag: %w", err)
 	}
-
-	return nil
 
 	return nil
 }
@@ -512,17 +512,125 @@ func (s *TagService) GetTagsForObject(ctx context.Context, req GetTagsForObjectR
 		return nil, fmt.Errorf("object_type and object_id are required")
 	}
 
-	// 查询对象的标签
-	// 注意：tag_objects 字段已删除，需要从源表查询：
-	// - user: 从 users.tags 查询
+	// 从源表查询标签（tag_objects 字段已删除）
+	// 根据 object_type 从不同的源表查询：
+	// - user: 从 users.tags JSONB 字段查询
 	// - resident: 从 residents.family_tag 查询
-	// - unit: 从 units.branch_tag, units.area_tag 查询
-	// 但当前 Handler 实现是查询 tag_objects，所以这里暂时保留原有逻辑
-	
-	// TODO: 重新设计此功能，从源表查询标签
-	// 暂时返回空列表
+	// - unit: 从 units.branch_tag 和 units.area_tag 查询
+	items := make([]TagItem, 0)
+
+	switch req.ObjectType {
+	case "user":
+		// 查询 users.tags JSONB 字段
+		// 需要查询哪些 tag_name 在 users.tags 数组中
+		query := `
+			SELECT DISTINCT tc.tag_id::text, tc.tag_type, tc.tag_name, COALESCE(u.nickname, '') as object_name_in_tag
+			FROM tags_catalog tc
+			INNER JOIN users u ON u.tenant_id = tc.tenant_id AND u.user_id::text = $2
+			WHERE tc.tenant_id = $1
+			  AND u.tags IS NOT NULL
+			  AND u.tags ? tc.tag_name
+		`
+		rows, err := s.db.QueryContext(ctx, query, req.TenantID, req.ObjectID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query user tags: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var tagID, tagType, tagName, objectNameInTag sql.NullString
+			if err := rows.Scan(&tagID, &tagType, &tagName, &objectNameInTag); err != nil {
+				return nil, fmt.Errorf("failed to scan user tag: %w", err)
+			}
+			if tagID.Valid && tagType.Valid && tagName.Valid {
+				var objectName *string
+				if objectNameInTag.Valid && objectNameInTag.String != "" {
+					objectName = &objectNameInTag.String
+				}
+				items = append(items, TagItem{
+					TagID:          tagID.String,
+					TagType:        tagType.String,
+					TagName:        tagName.String,
+					ObjectNameInTag: objectName,
+				})
+			}
+		}
+
+	case "resident":
+		// 查询 residents.family_tag
+		query := `
+			SELECT DISTINCT tc.tag_id::text, tc.tag_type, tc.tag_name, COALESCE(r.nickname, '') as object_name_in_tag
+			FROM tags_catalog tc
+			INNER JOIN residents r ON r.tenant_id = tc.tenant_id AND r.resident_id::text = $2
+			WHERE tc.tenant_id = $1
+			  AND r.family_tag IS NOT NULL
+			  AND r.family_tag = tc.tag_name
+		`
+		rows, err := s.db.QueryContext(ctx, query, req.TenantID, req.ObjectID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query resident tags: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var tagID, tagType, tagName, objectNameInTag sql.NullString
+			if err := rows.Scan(&tagID, &tagType, &tagName, &objectNameInTag); err != nil {
+				return nil, fmt.Errorf("failed to scan resident tag: %w", err)
+			}
+			if tagID.Valid && tagType.Valid && tagName.Valid {
+				var objectName *string
+				if objectNameInTag.Valid && objectNameInTag.String != "" {
+					objectName = &objectNameInTag.String
+				}
+				items = append(items, TagItem{
+					TagID:          tagID.String,
+					TagType:        tagType.String,
+					TagName:        tagName.String,
+					ObjectNameInTag: objectName,
+				})
+			}
+		}
+
+	case "unit":
+		// 查询 units.branch_tag 和 units.area_tag
+		query := `
+			SELECT DISTINCT tc.tag_id::text, tc.tag_type, tc.tag_name, COALESCE(u.unit_name, '') as object_name_in_tag
+			FROM tags_catalog tc
+			INNER JOIN units u ON u.tenant_id = tc.tenant_id AND u.unit_id::text = $2
+			WHERE tc.tenant_id = $1
+			  AND (u.branch_tag = tc.tag_name OR u.area_tag = tc.tag_name)
+		`
+		rows, err := s.db.QueryContext(ctx, query, req.TenantID, req.ObjectID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query unit tags: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var tagID, tagType, tagName, objectNameInTag sql.NullString
+			if err := rows.Scan(&tagID, &tagType, &tagName, &objectNameInTag); err != nil {
+				return nil, fmt.Errorf("failed to scan unit tag: %w", err)
+			}
+			if tagID.Valid && tagType.Valid && tagName.Valid {
+				var objectName *string
+				if objectNameInTag.Valid && objectNameInTag.String != "" {
+					objectName = &objectNameInTag.String
+				}
+				items = append(items, TagItem{
+					TagID:          tagID.String,
+					TagType:        tagType.String,
+					TagName:        tagName.String,
+					ObjectNameInTag: objectName,
+				})
+			}
+		}
+
+	default:
+		return nil, fmt.Errorf("unsupported object_type: %s. Supported types: user, resident, unit", req.ObjectType)
+	}
+
 	return &GetTagsForObjectResponse{
-		Items: []TagItem{},
+		Items: items,
 	}, nil
 }
 
