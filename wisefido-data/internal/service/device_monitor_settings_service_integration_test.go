@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
 	"github.com/stretchr/testify/assert"

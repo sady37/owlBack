@@ -519,8 +519,8 @@ func (s *alarmEventService) enrichAlarmEventDTO(ctx context.Context, tenantID st
 				if unit.UnitName != "" {
 					dto.UnitName = &unit.UnitName
 				}
-				if unit.AreaTag.Valid && unit.AreaTag.String != "" {
-					dto.AreaTag = &unit.AreaTag.String
+				if unit.AreaName.Valid && unit.AreaName.String != "" {
+					dto.AreaTag = &unit.AreaName.String
 				}
 				// 查询 location 信息（branch_tag, building, floor）
 				// 注意：需要扩展 UnitsRepository 或直接查询 locations 表

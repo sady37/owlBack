@@ -9,11 +9,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"owl-common/database"
-	"owl-common/config"
 	"wisefido-data/internal/repository"
-
-	"go.uber.org/zap"
 )
 
 // createTestTenantForAuth 创建测试租户
@@ -66,9 +62,16 @@ func createTestUserForAuth(t *testing.T, db *sql.DB, tenantID, userAccount, pass
 
 // cleanupTestDataForAuth 清理测试数据
 func cleanupTestDataForAuth(t *testing.T, db *sql.DB, tenantID string) {
-	db.Exec(`DELETE FROM users WHERE tenant_id = $1`, tenantID)
-	db.Exec(`DELETE FROM residents WHERE tenant_id = $1`, tenantID)
+	db.Exec(`DELETE FROM resident_caregivers WHERE tenant_id = $1`, tenantID)
 	db.Exec(`DELETE FROM resident_contacts WHERE tenant_id = $1`, tenantID)
+	db.Exec(`DELETE FROM resident_phi WHERE tenant_id = $1`, tenantID)
+	db.Exec(`DELETE FROM residents WHERE tenant_id = $1`, tenantID)
+	db.Exec(`DELETE FROM users WHERE tenant_id = $1`, tenantID)
+	db.Exec(`DELETE FROM beds WHERE tenant_id = $1`, tenantID)
+	db.Exec(`DELETE FROM rooms WHERE tenant_id = $1`, tenantID)
+	db.Exec(`DELETE FROM units WHERE tenant_id = $1`, tenantID)
+	db.Exec(`DELETE FROM buildings WHERE tenant_id = $1`, tenantID)
+	db.Exec(`DELETE FROM tags_catalog WHERE tenant_id = $1`, tenantID)
 	db.Exec(`DELETE FROM tenants WHERE tenant_id = $1`, tenantID)
 }
 
@@ -742,20 +745,6 @@ func createTestUnitForAuth(t *testing.T, db *sql.DB, tenantID string) string {
 	return unitID
 }
 
-// cleanupTestDataForAuth 清理测试数据（更新）
-func cleanupTestDataForAuth(t *testing.T, db *sql.DB, tenantID string) {
-	db.Exec(`DELETE FROM resident_caregivers WHERE tenant_id = $1`, tenantID)
-	db.Exec(`DELETE FROM resident_contacts WHERE tenant_id = $1`, tenantID)
-	db.Exec(`DELETE FROM resident_phi WHERE tenant_id = $1`, tenantID)
-	db.Exec(`DELETE FROM residents WHERE tenant_id = $1`, tenantID)
-	db.Exec(`DELETE FROM users WHERE tenant_id = $1`, tenantID)
-	db.Exec(`DELETE FROM beds WHERE tenant_id = $1`, tenantID)
-	db.Exec(`DELETE FROM rooms WHERE tenant_id = $1`, tenantID)
-	db.Exec(`DELETE FROM units WHERE tenant_id = $1`, tenantID)
-	db.Exec(`DELETE FROM buildings WHERE tenant_id = $1`, tenantID)
-	db.Exec(`DELETE FROM tags_catalog WHERE tenant_id = $1`, tenantID)
-	db.Exec(`DELETE FROM tenants WHERE tenant_id = $1`, tenantID)
-}
 
 func TestAuthService_Login_Resident_Success(t *testing.T) {
 	db := getTestDBForService(t)

@@ -3,7 +3,6 @@ package mqtt
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"wisefido-data/internal/service"
 

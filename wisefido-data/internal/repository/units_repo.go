@@ -40,10 +40,10 @@ type UnitsRepository interface {
 
 // UnitFilters 单元查询过滤器
 type UnitFilters struct {
-	BranchTag   string
+	BranchName  string
 	Building    string
 	Floor       string
-	AreaTag     string
+	AreaName    string
 	UnitNumber  string
 	UnitName    string
 	UnitType    string

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -96,7 +97,7 @@ func (h *UnitHandler) ListBuildings(w http.ResponseWriter, r *http.Request) {
 
 	req := service.ListBuildingsRequest{
 		TenantID:  tenantID,
-		BranchTag: branchTag,
+		BranchName: branchTag,
 	}
 
 	resp, err := h.unitService.ListBuildings(ctx, req)
@@ -162,7 +163,7 @@ func (h *UnitHandler) CreateBuilding(w http.ResponseWriter, r *http.Request) {
 
 	req := service.CreateBuildingRequest{
 		TenantID:     tenantID,
-		BranchTag:    getString(payload, "branch_tag"),
+		BranchName:    getString(payload, "branch_tag"),
 		BuildingName: getString(payload, "building_name"),
 	}
 
@@ -212,7 +213,7 @@ func (h *UnitHandler) UpdateBuilding(w http.ResponseWriter, r *http.Request) {
 	req := service.UpdateBuildingRequest{
 		TenantID:     tenantID,
 		BuildingID:   buildingID,
-		BranchTag:    getString(payload, "branch_tag"),
+		BranchName:    getString(payload, "branch_tag"),
 		BuildingName: getString(payload, "building_name"),
 	}
 
@@ -282,26 +283,21 @@ func (h *UnitHandler) ListUnits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 构建过滤器（与旧 Handler 逻辑对齐）
+	// 构建过滤器
+	// 空字符串视为 null（nil），nil 表示匹配 NULL 或未提供
 	req := service.ListUnitsRequest{
-		TenantID:   tenantID,
-		BranchTag:  r.URL.Query().Get("branch_tag"), // 空字符串表示匹配 NULL
-		Building:   r.URL.Query().Get("building"),
-		Floor:      r.URL.Query().Get("floor"),
-		AreaTag:    r.URL.Query().Get("area_tag"),
-		UnitNumber: r.URL.Query().Get("unit_number"),
-		UnitName:   r.URL.Query().Get("unit_name"),
-		UnitType:   r.URL.Query().Get("unit_type"),
-		Search:     r.URL.Query().Get("search"),
+		TenantID: tenantID,
+		// branch_tag: 如果 query 参数不存在或为空字符串，设置为 nil（表示匹配 NULL）
+		BranchName:  stringPtrOrNil(r.URL.Query().Get("branch_tag")),
+		Building:   stringPtrOrNil(r.URL.Query().Get("building")),
+		Floor:      stringPtrOrNil(r.URL.Query().Get("floor")),
+		AreaName:    stringPtrOrNil(r.URL.Query().Get("area_name")),
+		UnitNumber: stringPtrOrNil(r.URL.Query().Get("unit_number")),
+		UnitName:   stringPtrOrNil(r.URL.Query().Get("unit_name")),
+		UnitType:   stringPtrOrNil(r.URL.Query().Get("unit_type")),
+		Search:     stringPtrOrNil(r.URL.Query().Get("search")),
 		Page:       parseInt(r.URL.Query().Get("page"), 1),
 		Size:       parseInt(r.URL.Query().Get("size"), 100),
-	}
-
-	// 特殊处理：branch_tag 如果 query 参数存在（即使为空），也要传递
-	// 这样 Service 层可以区分"未提供"和"空字符串"（空字符串表示匹配 NULL）
-	if _, ok := r.URL.Query()["branch_tag"]; !ok {
-		// 如果 query 参数不存在，设置为空字符串（表示不筛选）
-		req.BranchTag = ""
 	}
 
 	resp, err := h.unitService.ListUnits(ctx, req)
@@ -370,11 +366,11 @@ func (h *UnitHandler) CreateUnit(w http.ResponseWriter, r *http.Request) {
 
 	req := service.CreateUnitRequest{
 		TenantID:          tenantID,
-		BranchTag:         getString(payload, "branch_tag"),
+		BranchName:         getString(payload, "branch_tag"),
 		UnitName:          getString(payload, "unit_name"),
 		Building:          getString(payload, "building"),
 		Floor:             getString(payload, "floor"),
-		AreaTag:           getString(payload, "area_tag"),
+		AreaName:           getString(payload, "area_name"),
 		UnitNumber:        getString(payload, "unit_number"),
 		LayoutConfig:      getString(payload, "layout_config"),
 		UnitType:          getString(payload, "unit_type"),
@@ -429,11 +425,11 @@ func (h *UnitHandler) UpdateUnit(w http.ResponseWriter, r *http.Request) {
 	req := service.UpdateUnitRequest{
 		TenantID:          tenantID,
 		UnitID:            unitID,
-		BranchTag:         getString(payload, "branch_tag"),
+		BranchName:         getString(payload, "branch_tag"),
 		UnitName:          getString(payload, "unit_name"),
 		Building:          getString(payload, "building"),
 		Floor:             getString(payload, "floor"),
-		AreaTag:           getString(payload, "area_tag"),
+		AreaName:           getString(payload, "area_name"),
 		UnitNumber:        getString(payload, "unit_number"),
 		LayoutConfig:      getString(payload, "layout_config"),
 		UnitType:          getString(payload, "unit_type"),
@@ -731,7 +727,7 @@ func (h *UnitHandler) CreateBed(w http.ResponseWriter, r *http.Request) {
 		TenantID:         tenantID,
 		RoomID:           roomID,
 		BedName:          getString(payload, "bed_name"),
-		BedType:          getString(payload, "bed_type"),
+		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 		MattressMaterial: getString(payload, "mattress_material"),
 		MattressThickness: getString(payload, "mattress_thickness"),
 	}
@@ -783,7 +779,7 @@ func (h *UnitHandler) UpdateBed(w http.ResponseWriter, r *http.Request) {
 		TenantID:         tenantID,
 		BedID:            bedID,
 		BedName:          getString(payload, "bed_name"),
-		BedType:          getString(payload, "bed_type"),
+		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 		MattressMaterial: getString(payload, "mattress_material"),
 		MattressThickness: getString(payload, "mattress_thickness"),
 	}
@@ -845,6 +841,15 @@ func (h *UnitHandler) DeleteBed(w http.ResponseWriter, r *http.Request) {
 // 辅助方法
 // ============================================
 
+// stringPtrOrNil 将空字符串转换为 nil，非空字符串转换为指针
+// 用于区分"未提供"和"空字符串"（空字符串视为 null）
+func stringPtrOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 // tenantIDFromReq 从请求中获取 tenant_id（复用 DeviceHandler 的逻辑）
 func (h *UnitHandler) tenantIDFromReq(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if tid := r.URL.Query().Get("tenant_id"); tid != "" {
@@ -867,6 +872,13 @@ func getString(payload map[string]any, key string) string {
 	if v, ok := payload[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
+		}
+		// 如果是 number 类型，转换为 string（用于 floor 字段）
+		if num, ok := v.(float64); ok {
+			return fmt.Sprintf("%.0f", num)
+		}
+		if num, ok := v.(int); ok {
+			return fmt.Sprintf("%d", num)
 		}
 	}
 	return ""
@@ -917,19 +929,25 @@ func unitToJSON(u *domain.Unit) map[string]any {
 		"unit_id":              u.UnitID,
 		"tenant_id":            u.TenantID,
 		"unit_name":            u.UnitName,
-		"building":             u.Building,
-		"floor":                u.Floor,
 		"unit_number":          u.UnitNumber,
 		"unit_type":            u.UnitType,
 		"is_public_space":      u.IsPublicSpace,
 		"is_multi_person_room": u.IsMultiPersonRoom,
 		"timezone":             u.Timezone,
 	}
-	if u.BranchTag.Valid {
-		m["branch_tag"] = u.BranchTag.String
+	// building: 如果为 NULL，不包含在 JSON 中（前端会收到 undefined）
+	if u.Building.Valid {
+		m["building"] = u.Building.String
 	}
-	if u.AreaTag.Valid {
-		m["area_tag"] = u.AreaTag.String
+	// floor: 如果为 NULL，不包含在 JSON 中（前端会收到 undefined）
+	if u.Floor.Valid && u.Floor.String != "" {
+		m["floor"] = u.Floor.String
+	}
+	if u.BranchName.Valid {
+		m["branch_name"] = u.BranchName.String
+	}
+	if u.AreaName.Valid {
+		m["area_name"] = u.AreaName.String
 	}
 	if u.LayoutConfig.Valid {
 		m["layout_config"] = jsonRawOrString(u.LayoutConfig.String)
@@ -987,7 +1005,7 @@ func bedToJSON(b *domain.Bed) map[string]any {
 		"tenant_id": b.TenantID,
 		"room_id":   b.RoomID,
 		"bed_name":  b.BedName,
-		"bed_type":  b.BedType,
+		// 注意：bed_type 字段已删除，ActiveBed 判断由应用层动态计算
 	}
 	if b.MattressMaterial.Valid {
 		m["mattress_material"] = b.MattressMaterial.String

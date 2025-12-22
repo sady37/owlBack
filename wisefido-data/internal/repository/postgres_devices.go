@@ -536,6 +536,119 @@ func (r *PostgresDevicesRepository) DisableDevice(ctx context.Context, tenantID,
 	return err
 }
 
+// GetDeviceRelations 获取设备关联关系（设备、地址、住户）
+func (r *PostgresDevicesRepository) GetDeviceRelations(ctx context.Context, tenantID, deviceID string) (*DeviceRelations, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	if deviceID == "" {
+		return nil, fmt.Errorf("device_id is required")
+	}
+
+	// 查询设备基本信息、关联的 unit 信息
+	query := `
+		SELECT 
+			d.device_id,
+			d.device_name,
+			COALESCE(d.serial_number, '') as device_internal_code,
+			CASE 
+				WHEN ds.device_type = 'Sleepad' THEN 0
+				WHEN ds.device_type = 'Radar' THEN 1
+				ELSE 0
+			END as device_type,
+			COALESCE(u.unit_id::text, '') as address_id,
+			COALESCE(u.unit_name, '') as address_name,
+			CASE 
+				WHEN u.unit_type = 'Facility' THEN 0
+				WHEN u.unit_type = 'Home' THEN 1
+				ELSE 0
+			END as address_type
+		FROM devices d
+		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
+		LEFT JOIN rooms r ON (d.bound_room_id = r.room_id AND d.tenant_id = r.tenant_id) 
+			OR (b.room_id = r.room_id AND b.tenant_id = r.tenant_id)
+		LEFT JOIN units u ON r.unit_id = u.unit_id AND r.tenant_id = u.tenant_id
+		WHERE d.device_id = $1 AND d.tenant_id = $2
+	`
+
+	var relations DeviceRelations
+	var deviceType, addressType int
+	err := r.db.QueryRowContext(ctx, query, deviceID, tenantID).Scan(
+		&relations.DeviceID,
+		&relations.DeviceName,
+		&relations.DeviceInternalCode,
+		&deviceType,
+		&relations.AddressID,
+		&relations.AddressName,
+		&addressType,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("device not found: tenant_id=%s, device_id=%s", tenantID, deviceID)
+		}
+		return nil, fmt.Errorf("failed to get device relations: %w", err)
+	}
+	relations.DeviceType = deviceType
+	relations.AddressType = addressType
+
+	// 查询关联的住户信息（通过 bed 或 room）
+	residentsQuery := `
+		SELECT 
+			res.resident_id::text,
+			res.nickname,
+			COALESCE(res.metadata->>'gender', '') as gender,
+			COALESCE(res.metadata->>'birthday', '') as birthday
+		FROM residents res
+		WHERE res.tenant_id = $1
+		  AND (
+			-- 通过 bed 关联
+			(res.bed_id IN (
+				SELECT b.bed_id 
+				FROM devices d
+				JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
+				WHERE d.device_id = $2 AND d.tenant_id = $1
+			))
+			OR
+			-- 通过 room 关联
+			(res.room_id IN (
+				SELECT r.room_id
+				FROM devices d
+				LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
+				LEFT JOIN rooms r ON (d.bound_room_id = r.room_id AND d.tenant_id = r.tenant_id)
+					OR (b.room_id = r.room_id AND b.tenant_id = r.tenant_id)
+				WHERE d.device_id = $2 AND d.tenant_id = $1 AND r.room_id IS NOT NULL
+			))
+		  )
+		ORDER BY res.nickname
+	`
+
+	rows, err := r.db.QueryContext(ctx, residentsQuery, tenantID, deviceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query residents: %w", err)
+	}
+	defer rows.Close()
+
+	relations.Residents = []DeviceRelationResident{}
+	for rows.Next() {
+		var resident DeviceRelationResident
+		if err := rows.Scan(
+			&resident.ID,
+			&resident.Name,
+			&resident.Gender,
+			&resident.Birthday,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan resident: %w", err)
+		}
+		relations.Residents = append(relations.Residents, resident)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate residents: %w", err)
+	}
+
+	return &relations, nil
+}
+
 // GetOrCreateDeviceFromStore 首次连接时自动创建设备记录
 // 替代触发器: trigger_validate_device_identifier, trigger_validate_device_store_tenant
 func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Context, identifier string, mqttTopic string) (*domain.Device, error) {

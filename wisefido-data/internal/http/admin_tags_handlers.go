@@ -50,7 +50,7 @@ func (s *StubHandler) AdminTags(w http.ResponseWriter, r *http.Request) {
 				includeSystem := r.URL.Query().Get("include_system_tag_types") != "false"
 
 				// 使用 get_tags_for_tenant 函数（不包含 tag_objects，因为该字段已删除）
-				// tag 的使用情况需要从源表查询：residents.family_tag, units.branch_tag, units.area_tag, users.tags
+				// tag 的使用情况需要从源表查询：residents.family_tag, units.branch_name, units.area_name, users.tags
 				var q string
 				var queryArgs []any
 				
@@ -100,8 +100,8 @@ func (s *StubHandler) AdminTags(w http.ResponseWriter, r *http.Request) {
 					// tag_objects 字段已删除，不再返回
 					// 如果需要 tag 的使用情况，需要从源表查询：
 					// - family_tag: SELECT COUNT(*) FROM residents WHERE family_tag = tag_name
-					// - branch_tag: SELECT COUNT(*) FROM units WHERE branch_tag = tag_name
-					// - area_tag: SELECT COUNT(*) FROM units WHERE area_tag = tag_name
+					// - branch_tag: SELECT COUNT(*) FROM units WHERE branch_name = tag_name
+					// - area_tag: SELECT COUNT(*) FROM units WHERE area_name = tag_name
 					// - user_tag: SELECT COUNT(*) FROM users WHERE tags ? tag_name
 					items = append(items, map[string]any{
 						"tag_id":    tagID,

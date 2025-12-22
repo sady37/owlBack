@@ -77,30 +77,50 @@ func (r *Router) RegisterStubRoutes(s *StubHandler) {
 	// r.Handle("/admin/api/v1/residents/", s.AdminResidents)
 	// r.Handle("/admin/api/v1/contacts/", s.AdminResidents) // For contact password reset
 
-	r.Handle("/admin/api/v1/tags", s.AdminTags)
-	r.Handle("/admin/api/v1/tags/", s.AdminTags)
-	r.Handle("/admin/api/v1/tags/types", s.AdminTags)
-	r.Handle("/admin/api/v1/tags/for-object", s.AdminTags)
+	// tags - 已迁移到 TagsHandler，不再使用 StubHandler.AdminTags
+	// 新路由在 RegisterTagsRoutes 中注册（需要数据库连接）
+	// 如果数据库未启用，这些路由将不可用（返回 404）
+	// r.Handle("/admin/api/v1/tags", s.AdminTags)
+	// r.Handle("/admin/api/v1/tags/", s.AdminTags)
+	// r.Handle("/admin/api/v1/tags/types", s.AdminTags)
+	// r.Handle("/admin/api/v1/tags/for-object", s.AdminTags)
 
 	// users - 已迁移到 UserHandler，不再使用 StubHandler.AdminUsers
 	// 新路由在 RegisterUsersRoutes 中注册（需要数据库连接）
 	// 如果数据库未启用，这些路由将不可用（返回 404）
 
-	r.Handle("/admin/api/v1/roles", s.AdminRoles)
-	r.Handle("/admin/api/v1/roles/", s.AdminRoles)
+	// roles - 已迁移到 RolesHandler，不再使用 StubHandler.AdminRoles
+	// 新路由在 RegisterRolesRoutes 中注册（需要数据库连接）
+	// 如果数据库未启用，这些路由将不可用（返回 404）
+	// r.Handle("/admin/api/v1/roles", s.AdminRoles)
+	// r.Handle("/admin/api/v1/roles/", s.AdminRoles)
 
-	r.Handle("/admin/api/v1/role-permissions", s.AdminRolePermissions)
-	r.Handle("/admin/api/v1/role-permissions/", s.AdminRolePermissions)
-	r.Handle("/admin/api/v1/role-permissions/batch", s.AdminRolePermissions)
-	r.Handle("/admin/api/v1/role-permissions/resource-types", s.AdminRolePermissions)
+	// role-permissions - 已迁移到 RolePermissionsHandler，不再使用 StubHandler.AdminRolePermissions
+	// 新路由在 RegisterRolePermissionsRoutes 中注册（需要数据库连接）
+	// 如果数据库未启用，这些路由将不可用（返回 404）
+	// r.Handle("/admin/api/v1/role-permissions", s.AdminRolePermissions)
+	// r.Handle("/admin/api/v1/role-permissions/", s.AdminRolePermissions)
+	// r.Handle("/admin/api/v1/role-permissions/batch", s.AdminRolePermissions)
+	// r.Handle("/admin/api/v1/role-permissions/resource-types", s.AdminRolePermissions)
 
 	r.Handle("/admin/api/v1/service-levels", s.AdminServiceLevels)
-	r.Handle("/admin/api/v1/card-overview", s.AdminCardOverview)
+	
+	// card-overview - 已迁移到 CardOverviewHandler，不再使用 StubHandler.AdminCardOverview
+	// 新路由在 RegisterCardOverviewRoutes 中注册（需要数据库连接）
+	// 如果数据库未启用，这些路由将不可用（返回 404）
+	// r.Handle("/admin/api/v1/card-overview", s.AdminCardOverview)
 
-	r.Handle("/admin/api/v1/addresses", s.AdminAddresses)
-	r.Handle("/admin/api/v1/addresses/", s.AdminAddresses)
+	// addresses - 已被 units 替换，前端未使用，已移除
+	// 数据库中没有 addresses 表，地址管理已迁移到 units 表
+	// 如果前端需要，应使用 /admin/api/v1/units API
+	// r.Handle("/admin/api/v1/addresses", s.AdminAddresses)
+	// r.Handle("/admin/api/v1/addresses/", s.AdminAddresses)
 
-	r.Handle("/admin/api/v1/alarm-cloud", s.AdminAlarm)
+	// alarm-cloud - 已迁移到 AlarmCloudHandler，不再使用 StubHandler.AdminAlarm
+	// 新路由在 RegisterAlarmCloudRoutes 中注册（需要数据库连接）
+	// 如果数据库未启用，这些路由将不可用（返回 404）
+	// r.Handle("/admin/api/v1/alarm-cloud", s.AdminAlarm)
+	
 	// alarm-events 路由已迁移到 AlarmEventHandler（见 RegisterAlarmEventRoutes）
 	// 如果数据库未启用，这些路由将不可用（返回 404）
 
@@ -112,8 +132,10 @@ func (r *Router) RegisterStubRoutes(s *StubHandler) {
 	// sleepace reports - 已迁移到 SleepaceReportHandler（见 RegisterSleepaceReportRoutes）
 	// 如果数据库未启用，这些路由将不可用（返回 404）
 
-	// device relations
-	r.Handle("/device/api/v1/device/", s.DeviceRelations)
+	// device relations - 已迁移到 DeviceHandler，不再使用 StubHandler.DeviceRelations
+	// 新路由在 RegisterDeviceRoutes 中注册（需要数据库连接）
+	// 如果数据库未启用，这些路由将不可用（返回 404）
+	// r.Handle("/device/api/v1/device/", s.DeviceRelations)
 
 	// auth - 已迁移到 AuthHandler，不再使用 StubHandler.Auth
 	// 新路由在 RegisterAuthRoutes 中注册（需要数据库连接）
@@ -133,7 +155,8 @@ func (r *Router) RegisterAdminTenantRoutes(h *TenantsHandler) {
 
 // RegisterAdminUnitDeviceRoutes：Unit/Room/Bed + Devices（地址类 + 设备类）
 // 注意：Unit/Room/Bed 路由已迁移到 UnitHandler（见 RegisterUnitRoutes）
-// 这里只保留 Devices 路由，Unit/Room/Bed 路由已由 UnitHandler 处理
+// 注意：Devices 路由已迁移到 DeviceHandler（见 RegisterDeviceRoutes）
+// 此函数已废弃，保留仅为向后兼容（不再注册任何路由）
 func (r *Router) RegisterAdminUnitDeviceRoutes(admin *AdminAPI) {
 	// Unit/Room/Bed 路由已迁移到 UnitHandler，不再在这里注册
 	// r.Handle("/admin/api/v1/buildings", admin.BuildingsHandler)
@@ -145,8 +168,9 @@ func (r *Router) RegisterAdminUnitDeviceRoutes(admin *AdminAPI) {
 	// r.Handle("/admin/api/v1/beds", admin.BedsHandler)
 	// r.Handle("/admin/api/v1/beds/", admin.BedByIDHandler)
 
-	r.Handle("/admin/api/v1/devices", admin.DevicesHandler)
-	r.Handle("/admin/api/v1/devices/", admin.DevicesHandler)
+	// Devices 路由已迁移到 DeviceHandler（见 RegisterDeviceRoutes），不再在这里注册
+	// r.Handle("/admin/api/v1/devices", admin.DevicesHandler)
+	// r.Handle("/admin/api/v1/devices/", admin.DevicesHandler)
 
 	// device-store 路由已迁移到独立的 DeviceStoreHandler（见 RegisterDeviceStoreRoutes）
 	// 保留 AdminAPI.DeviceStoreHandler 作为备用（向后兼容）
@@ -192,6 +216,8 @@ func (r *Router) RegisterAuthRoutes(h *AuthHandler) {
 func (r *Router) RegisterDeviceRoutes(h *DeviceHandler) {
 	r.Handle("/admin/api/v1/devices", h.ServeHTTP)
 	r.Handle("/admin/api/v1/devices/", h.ServeHTTP)
+	// 设备关联关系查询
+	r.Handle("/device/api/v1/device/", h.GetDeviceRelations)
 }
 
 // RegisterDeviceStoreRoutes 注册设备库存管理路由
@@ -252,4 +278,9 @@ func (r *Router) RegisterResidentRoutes(h *ResidentHandler) {
 // RegisterSleepaceReportRoutes 注册 Sleepace 睡眠报告路由
 func (r *Router) RegisterSleepaceReportRoutes(h *SleepaceReportHandler) {
 	r.Handle("/sleepace/api/v1/sleepace/reports/", h.ServeHTTP)
+}
+
+// RegisterCardOverviewRoutes 注册卡片概览路由
+func (r *Router) RegisterCardOverviewRoutes(h *CardOverviewHandler) {
+	r.Handle("/admin/api/v1/card-overview", h.ServeHTTP)
 }

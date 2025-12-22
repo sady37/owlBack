@@ -233,6 +233,19 @@ func main() {
 		sleepaceReportHandler := httpapi.NewSleepaceReportHandler(sleepaceReportService, db, logger)
 		router.RegisterSleepaceReportRoutes(sleepaceReportHandler)
 
+		// 创建 Card Service 和 Handler
+		cardsRepo := repository.NewPostgresCardsRepository(db)
+		cardService := service.NewCardService(
+			cardsRepo,
+			residentsRepo,
+			devicesRepo,
+			usersRepo,
+			db,
+			logger,
+		)
+		cardOverviewHandler := httpapi.NewCardOverviewHandler(stub, cardService, logger)
+		router.RegisterCardOverviewRoutes(cardOverviewHandler)
+
 		// TODO: MQTT 触发下载功能（默认禁用）
 		// 参考：wisefido-backend/wisefido-sleepace/modules/borker.go
 		// 实现步骤：
@@ -296,6 +309,17 @@ func main() {
 	router.RegisterAdminUnitDeviceRoutes(admin)
 	router.RegisterAdminTenantRoutes(httpapi.NewTenantsHandler(tenantsRepo, authStore, db))
 	router.RegisterStubRoutes(stub)
+
+	// 注册 Doctor 路由（健康检查和诊断功能）
+	doctorEnabled := os.Getenv("DOCTOR_ENABLED")
+	if doctorEnabled != "false" {
+		doctor := httpapi.NewDoctorHandler(db, redisClient, logger)
+		// 启用 pprof（如果配置了）
+		if os.Getenv("DOCTOR_PPROF") == "true" {
+			doctor.EnablePprof(true)
+		}
+		router.RegisterDoctorRoutes(doctor)
+	}
 
 	srv := service.NewServer(cfg.HTTP.Addr, router, logger)
 

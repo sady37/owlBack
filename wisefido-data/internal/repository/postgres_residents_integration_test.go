@@ -578,12 +578,13 @@ func TestPostgresResidentsRepository_BindResidentToLocation(t *testing.T) {
 		t.Fatalf("Failed to create test room: %v", err)
 	}
 
+	// 注意：bed_type 字段已删除，ActiveBed 判断由应用层动态计算
 	bedID := "00000000-0000-0000-0000-000000000994"
 	_, err = db.Exec(
-		`INSERT INTO beds (bed_id, tenant_id, room_id, bed_name, bed_type)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO beds (bed_id, tenant_id, room_id, bed_name)
+		 VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (bed_id) DO UPDATE SET bed_name = EXCLUDED.bed_name`,
-		bedID, tenantID, roomID, "Test Bed 001", "NonActiveBed",
+		bedID, tenantID, roomID, "Test Bed 001",
 	)
 	if err != nil {
 		t.Fatalf("Failed to create test bed: %v", err)

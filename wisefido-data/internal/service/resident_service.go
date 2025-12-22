@@ -490,8 +490,8 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 	             r.status, r.service_level, r.admission_date, r.discharge_date,
 	             r.family_tag, r.unit_id::text, r.room_id::text, r.bed_id::text,
 	             COALESCE(u.unit_name, '') as unit_name,
-	             COALESCE(u.branch_tag, '') as branch_tag,
-	             COALESCE(u.area_tag, '') as area_tag,
+	             COALESCE(u.branch_name, '') as branch_tag,
+	             COALESCE(u.area_name, '') as area_tag,
 	             COALESCE(u.unit_number, '') as unit_number,
 	             COALESCE(u.is_multi_person_room, false) as is_multi_person_room,
 	             COALESCE(rm.room_name, '') as room_name,
@@ -549,11 +549,11 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 			userBranchTag := sql.NullString{String: req.PermissionCheck.UserBranchTag, Valid: req.PermissionCheck.UserBranchTag != ""}
 			if !userBranchTag.Valid || userBranchTag.String == "" {
 				// User branch_tag is NULL: can only view residents in units with branch_tag IS NULL
-				q += ` AND (u.branch_tag IS NULL OR u.branch_tag = '-')`
+				q += ` AND (u.branch_name IS NULL OR u.branch_name = '-')`
 			} else {
 				// User branch_tag has value: can only view residents in matching branch
 				args = append(args, userBranchTag.String)
-				q += fmt.Sprintf(` AND u.branch_tag = $%d`, len(args))
+				q += fmt.Sprintf(` AND u.branch_name = $%d`, len(args))
 			}
 		}
 	}
@@ -782,7 +782,7 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 			if req.PermissionCheck.BranchOnly && s.db != nil {
 				var targetBranchTag sql.NullString
 				err := s.db.QueryRowContext(ctx,
-					`SELECT COALESCE(u.branch_tag, '') as branch_tag
+					`SELECT COALESCE(u.branch_name, '') as branch_tag
 					 FROM residents r
 					 LEFT JOIN units u ON u.unit_id = r.unit_id
 					 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
@@ -827,7 +827,7 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 		        r.family_tag, r.unit_id::text, r.room_id::text, r.bed_id::text,
 		        COALESCE(u.unit_name, '') as unit_name,
 		        COALESCE(u.branch_tag, '') as branch_tag,
-		        COALESCE(u.area_tag, '') as area_tag,
+		        COALESCE(u.area_name, '') as area_tag,
 		        COALESCE(u.unit_number, '') as unit_number,
 		        COALESCE(u.is_multi_person_room, false) as is_multi_person_room,
 		        COALESCE(rm.room_name, '') as room_name,
@@ -1152,7 +1152,7 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 		if req.PermissionCheck != nil && req.PermissionCheck.BranchOnly {
 			var unitBranchTag sql.NullString
 			err := s.db.QueryRowContext(ctx,
-				`SELECT branch_tag FROM units WHERE tenant_id = $1 AND unit_id::text = $2`,
+				`SELECT branch_name FROM units WHERE tenant_id = $1 AND unit_id::text = $2`,
 				req.TenantID, req.UnitID,
 			).Scan(&unitBranchTag)
 			if err != nil {
@@ -1427,7 +1427,7 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 			if req.PermissionCheck.BranchOnly {
 				var targetBranchTag sql.NullString
 				err := s.db.QueryRowContext(ctx,
-					`SELECT COALESCE(u.branch_tag, '') as branch_tag
+					`SELECT COALESCE(u.branch_name, '') as branch_tag
 					 FROM residents r
 					 LEFT JOIN units u ON u.unit_id = r.unit_id
 					 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
@@ -1728,7 +1728,7 @@ func (s *residentService) ResetResidentPassword(ctx context.Context, req ResetRe
 			if req.PermissionCheck.BranchOnly {
 				var targetBranchTag sql.NullString
 				err := s.db.QueryRowContext(ctx,
-					`SELECT COALESCE(u.branch_tag, '') as branch_tag
+					`SELECT COALESCE(u.branch_name, '') as branch_tag
 					 FROM residents r
 					 LEFT JOIN units u ON u.unit_id = r.unit_id
 					 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
@@ -1842,7 +1842,7 @@ func (s *residentService) ResetContactPassword(ctx context.Context, req ResetCon
 			if req.PermissionCheck.BranchOnly {
 				var targetBranchTag sql.NullString
 				err := s.db.QueryRowContext(ctx,
-					`SELECT COALESCE(u.branch_tag, '') as branch_tag
+					`SELECT COALESCE(u.branch_name, '') as branch_tag
 					 FROM residents r
 					 LEFT JOIN units u ON u.unit_id = r.unit_id
 					 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,

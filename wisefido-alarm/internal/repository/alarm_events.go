@@ -38,8 +38,8 @@ type AlarmEventFilters struct {
 	ResidentID *string // 住户ID（通过 device_id JOIN devices → beds → residents 获取）
 
 	// 位置过滤
-	BranchTag *string // 分支标签（通过 device_id JOIN devices → beds/rooms → units → units.branch_tag 获取）
-	UnitID    *string // 单元ID（通过 device_id JOIN devices → beds/rooms → units 获取）
+	BranchName *string // 分支名称（通过 device_id JOIN devices → beds/rooms → units → units.branch_name 获取）
+	UnitID     *string // 单元ID（通过 device_id JOIN devices → beds/rooms → units 获取）
 
 	// 设备过滤
 	DeviceID     *string // 设备ID（直接过滤）
@@ -493,7 +493,7 @@ func (r *AlarmEventsRepository) ListAlarmEvents(ctx context.Context, tenantID st
 	
 	// 需要 JOIN devices 表的情况
 	needDevicesJoin := filters.DeviceName != nil || filters.DeviceSerial != nil || 
-		filters.ResidentID != nil || filters.BranchTag != nil || filters.UnitID != nil
+		filters.ResidentID != nil || filters.BranchName != nil || filters.UnitID != nil
 
 	if needDevicesJoin {
 		joins = append(joins, "LEFT JOIN devices d ON ae.device_id = d.device_id")
@@ -515,7 +515,7 @@ func (r *AlarmEventsRepository) ListAlarmEvents(ctx context.Context, tenantID st
 	}
 
 	// 需要 JOIN beds/rooms/units 的情况
-	needLocationJoin := filters.ResidentID != nil || filters.BranchTag != nil || filters.UnitID != nil
+	needLocationJoin := filters.ResidentID != nil || filters.BranchName != nil || filters.UnitID != nil
 
 	if needLocationJoin {
 		joins = append(joins, `
@@ -533,9 +533,9 @@ func (r *AlarmEventsRepository) ListAlarmEvents(ctx context.Context, tenantID st
 		}
 
 		// 分支标签过滤
-		if filters.BranchTag != nil {
-			where = append(where, fmt.Sprintf("u.branch_tag = $%d", argN))
-			args = append(args, *filters.BranchTag)
+		if filters.BranchName != nil {
+			where = append(where, fmt.Sprintf("u.branch_name = $%d", argN))
+			args = append(args, *filters.BranchName)
 			argN++
 		}
 
@@ -888,7 +888,7 @@ func (r *AlarmEventsRepository) CountAlarmEvents(ctx context.Context, tenantID s
 	// 构建 JOIN 子句（如果需要）
 	joins := []string{}
 	needDevicesJoin := filters.DeviceName != nil || filters.DeviceSerial != nil || 
-		filters.ResidentID != nil || filters.BranchTag != nil || filters.UnitID != nil
+		filters.ResidentID != nil || filters.BranchName != nil || filters.UnitID != nil
 
 	if needDevicesJoin {
 		joins = append(joins, "LEFT JOIN devices d ON ae.device_id = d.device_id")
@@ -906,7 +906,7 @@ func (r *AlarmEventsRepository) CountAlarmEvents(ctx context.Context, tenantID s
 		}
 	}
 
-	needLocationJoin := filters.ResidentID != nil || filters.BranchTag != nil || filters.UnitID != nil
+	needLocationJoin := filters.ResidentID != nil || filters.BranchName != nil || filters.UnitID != nil
 	if needLocationJoin {
 		joins = append(joins, `
 			LEFT JOIN beds b ON d.bound_bed_id = b.bed_id
@@ -920,9 +920,9 @@ func (r *AlarmEventsRepository) CountAlarmEvents(ctx context.Context, tenantID s
 			args = append(args, *filters.ResidentID)
 			argN++
 		}
-		if filters.BranchTag != nil {
-			where = append(where, fmt.Sprintf("u.branch_tag = $%d", argN))
-			args = append(args, *filters.BranchTag)
+		if filters.BranchName != nil {
+			where = append(where, fmt.Sprintf("u.branch_name = $%d", argN))
+			args = append(args, *filters.BranchName)
 			argN++
 		}
 		if filters.UnitID != nil {

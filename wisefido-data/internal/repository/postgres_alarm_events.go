@@ -181,7 +181,7 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 
 		// 分支标签过滤
 		if filters.BranchTag != nil {
-			where = append(where, fmt.Sprintf("u.branch_tag = $%d", argN))
+			where = append(where, fmt.Sprintf("u.branch_name = $%d", argN))
 			args = append(args, *filters.BranchTag)
 			argN++
 		}
@@ -892,7 +892,7 @@ func (r *PostgresAlarmEventsRepository) CountAlarmEvents(ctx context.Context, te
 			argN++
 		}
 		if filters.BranchTag != nil {
-			where = append(where, fmt.Sprintf("u.branch_tag = $%d", argN))
+			where = append(where, fmt.Sprintf("u.branch_name = $%d", argN))
 			args = append(args, *filters.BranchTag)
 			argN++
 		}

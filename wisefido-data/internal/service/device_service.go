@@ -17,6 +17,7 @@ type DeviceService interface {
 	// 查询
 	ListDevices(ctx context.Context, req ListDevicesRequest) (*ListDevicesResponse, error)
 	GetDevice(ctx context.Context, req GetDeviceRequest) (*GetDeviceResponse, error)
+	GetDeviceRelations(ctx context.Context, req GetDeviceRelationsRequest) (*GetDeviceRelationsResponse, error)
 
 	// 更新
 	UpdateDevice(ctx context.Context, req UpdateDeviceRequest) (*UpdateDeviceResponse, error)
@@ -230,6 +231,76 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 
 	return &DeleteDeviceResponse{
 		Success: true,
+	}, nil
+}
+
+// GetDeviceRelationsRequest 查询设备关联关系请求
+type GetDeviceRelationsRequest struct {
+	TenantID string // 必填
+	DeviceID string // 必填
+}
+
+// GetDeviceRelationsResponse 查询设备关联关系响应
+type GetDeviceRelationsResponse struct {
+	DeviceID           string
+	DeviceName         string
+	DeviceInternalCode string
+	DeviceType         int
+	AddressID          string
+	AddressName        string
+	AddressType        int
+	Residents          []DeviceRelationResidentItem
+}
+
+// DeviceRelationResidentItem 设备关联的住户信息
+type DeviceRelationResidentItem struct {
+	ID       string
+	Name     string
+	Gender   string
+	Birthday string
+}
+
+// GetDeviceRelations 查询设备关联关系
+func (s *deviceService) GetDeviceRelations(ctx context.Context, req GetDeviceRelationsRequest) (*GetDeviceRelationsResponse, error) {
+	// 1. 参数验证
+	if req.TenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	if req.DeviceID == "" {
+		return nil, fmt.Errorf("device_id is required")
+	}
+
+	// 2. 调用 Repository
+	relations, err := s.devicesRepo.GetDeviceRelations(ctx, req.TenantID, req.DeviceID)
+	if err != nil {
+		s.logger.Error("GetDeviceRelations failed",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("device_id", req.DeviceID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to get device relations: %w", err)
+	}
+
+	// 3. 转换响应格式
+	residents := make([]DeviceRelationResidentItem, len(relations.Residents))
+	for i, r := range relations.Residents {
+		residents[i] = DeviceRelationResidentItem{
+			ID:       r.ID,
+			Name:     r.Name,
+			Gender:   r.Gender,
+			Birthday: r.Birthday,
+		}
+	}
+
+	return &GetDeviceRelationsResponse{
+		DeviceID:           relations.DeviceID,
+		DeviceName:         relations.DeviceName,
+		DeviceInternalCode: relations.DeviceInternalCode,
+		DeviceType:         relations.DeviceType,
+		AddressID:          relations.AddressID,
+		AddressName:        relations.AddressName,
+		AddressType:        relations.AddressType,
+		Residents:          residents,
 	}, nil
 }
 

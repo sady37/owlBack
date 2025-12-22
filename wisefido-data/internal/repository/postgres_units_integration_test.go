@@ -915,7 +915,7 @@ func TestPostgresUnitsRepository_ListRoomsWithBeds(t *testing.T) {
 		TenantID: tenantID,
 		RoomID:   roomID,
 		BedName:  "Bed A",
-		BedType:  "NonActiveBed",
+		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 	}
 	bedID, err := repo.CreateBed(ctx, tenantID, roomID, bed)
 	if err != nil {
@@ -1277,7 +1277,7 @@ func TestPostgresUnitsRepository_ListBeds(t *testing.T) {
 		TenantID: tenantID,
 		RoomID:   roomID,
 		BedName:  "Bed A",
-		BedType:  "NonActiveBed",
+		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 	}
 	bedID1, err := repo.CreateBed(ctx, tenantID, roomID, bed1)
 	if err != nil {
@@ -1288,7 +1288,7 @@ func TestPostgresUnitsRepository_ListBeds(t *testing.T) {
 		TenantID: tenantID,
 		RoomID:   roomID,
 		BedName:  "Bed B",
-		BedType:  "NonActiveBed",
+		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 	}
 	bedID2, err := repo.CreateBed(ctx, tenantID, roomID, bed2)
 	if err != nil {
@@ -1378,7 +1378,7 @@ func TestPostgresUnitsRepository_GetBed(t *testing.T) {
 		TenantID: tenantID,
 		RoomID:   roomID,
 		BedName:  "Bed A",
-		BedType:  "NonActiveBed",
+		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 	}
 	bedID, err := repo.CreateBed(ctx, tenantID, roomID, bed)
 	if err != nil {
@@ -1453,11 +1453,11 @@ func TestPostgresUnitsRepository_CreateBed(t *testing.T) {
 	}
 
 	// 测试：创建床位
+	// 注意：bed_type 字段已删除，ActiveBed 判断由应用层动态计算
 	bed := &domain.Bed{
 		TenantID:         tenantID,
 		RoomID:           roomID,
 		BedName:          "Bed A",
-		BedType:          "NonActiveBed",
 		MattressMaterial: sql.NullString{String: "Memory Foam", Valid: true},
 	}
 	bedID, err := repo.CreateBed(ctx, tenantID, roomID, bed)
@@ -1546,7 +1546,7 @@ func TestPostgresUnitsRepository_UpdateBed(t *testing.T) {
 		TenantID: tenantID,
 		RoomID:   roomID,
 		BedName:  "Bed A",
-		BedType:  "NonActiveBed",
+		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 	}
 	bedID, err := repo.CreateBed(ctx, tenantID, roomID, bed)
 	if err != nil {
@@ -1623,7 +1623,7 @@ func TestPostgresUnitsRepository_DeleteBed(t *testing.T) {
 		TenantID: tenantID,
 		RoomID:   roomID,
 		BedName:  "Bed A",
-		BedType:  "NonActiveBed",
+		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 	}
 	bedID, err := repo.CreateBed(ctx, tenantID, roomID, bed)
 	if err != nil {

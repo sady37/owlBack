@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lib/pq"
 	"wisefido-data/internal/domain"
 )
 
@@ -33,7 +32,7 @@ func (r *PostgresUnitsRepository) ListBuildings(ctx context.Context, tenantID st
 	args := []any{tenantID}
 	argIdx := 2
 	if branchTag != "" {
-		where += " AND COALESCE(branch_tag, '-') = $" + fmt.Sprintf("%d", argIdx)
+		where += " AND COALESCE(branch_name, '-') = $" + fmt.Sprintf("%d", argIdx)
 		args = append(args, branchTag)
 		argIdx++
 	}
@@ -42,14 +41,14 @@ func (r *PostgresUnitsRepository) ListBuildings(ctx context.Context, tenantID st
 		SELECT
 			building_id::text,
 			tenant_id::text,
-			branch_tag,
+			branch_name,
 			building_name,
 			created_at,
 			updated_at
 		FROM buildings
 		WHERE ` + where + `
-		  AND NOT (COALESCE(branch_tag, '-') = '-' AND building_name = '-')
-		ORDER BY COALESCE(branch_tag, '-'), building_name
+		  AND NOT (COALESCE(branch_name, '-') = '-' AND building_name = '-')
+		ORDER BY COALESCE(branch_name, '-'), building_name
 	`
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -60,16 +59,16 @@ func (r *PostgresUnitsRepository) ListBuildings(ctx context.Context, tenantID st
 	out := []*domain.Building{}
 	for rows.Next() {
 		var b domain.Building
-		var branchTag sql.NullString
+		var branchName sql.NullString
 		var createdAt, updatedAt sql.NullTime
-		if err := rows.Scan(&b.BuildingID, &b.TenantID, &branchTag, &b.BuildingName, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&b.BuildingID, &b.TenantID, &branchName, &b.BuildingName, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
-		b.BranchTag = branchTag
+		b.BranchTag = branchName
 		b.CreatedAt = createdAt
 		b.UpdatedAt = updatedAt
-		// Additional check: filter out buildings where both branch_tag and building_name are '-'
-		if branchTag.Valid && branchTag.String == "-" && b.BuildingName == "-" {
+		// Additional check: filter out buildings where both branch_name and building_name are '-'
+		if branchName.Valid && branchName.String == "-" && b.BuildingName == "-" {
 			continue
 		}
 		out = append(out, &b)
@@ -88,7 +87,7 @@ func (r *PostgresUnitsRepository) GetBuilding(ctx context.Context, tenantID, bui
 		SELECT
 			building_id::text,
 			tenant_id::text,
-			branch_tag,
+			branch_name,
 			building_name,
 			created_at,
 			updated_at
@@ -129,12 +128,12 @@ func (r *PostgresUnitsRepository) CreateBuilding(ctx context.Context, tenantID s
 	}
 
 	// 验证：branch_tag 或 building_name 必须有一个不为空
-	branchTagValue := ""
+	branchNameValue := ""
 	if building.BranchTag.Valid {
-		branchTagValue = building.BranchTag.String
+		branchNameValue = building.BranchTag.String
 	}
-	if (branchTagValue == "" || branchTagValue == "-") && (building.BuildingName == "" || building.BuildingName == "-") {
-		return "", fmt.Errorf("branch_tag or building_name must be provided (at least one must not be empty)")
+	if (branchNameValue == "" || branchNameValue == "-") && (building.BuildingName == "" || building.BuildingName == "-") {
+		return "", fmt.Errorf("branch_name or building_name must be provided (at least one must not be empty)")
 	}
 
 	// 设置默认值
@@ -143,44 +142,37 @@ func (r *PostgresUnitsRepository) CreateBuilding(ctx context.Context, tenantID s
 	}
 
 	var buildingID string
-	var insertedBranchTag sql.NullString
-	if branchTagValue == "" || branchTagValue == "-" {
+	var insertedBranchName sql.NullString
+	if branchNameValue == "" || branchNameValue == "-" {
 		// branch_tag 为 "-" 或空时，插入 NULL
 		err := r.db.QueryRowContext(ctx,
 			`INSERT INTO buildings (tenant_id, building_name)
 			 VALUES ($1, $2)
-			 ON CONFLICT (tenant_id, building_name) WHERE branch_tag IS NULL
+			 ON CONFLICT (tenant_id, building_name) WHERE branch_name IS NULL
 			 DO UPDATE SET building_name = EXCLUDED.building_name, updated_at = CURRENT_TIMESTAMP
-			 RETURNING building_id::text, branch_tag`,
+			 RETURNING building_id::text, branch_name`,
 			tenantID, building.BuildingName,
-		).Scan(&buildingID, &insertedBranchTag)
+		).Scan(&buildingID, &insertedBranchName)
 		if err != nil {
 			return "", fmt.Errorf("failed to create building: %w", err)
 		}
 	} else {
 		err := r.db.QueryRowContext(ctx,
-			`INSERT INTO buildings (tenant_id, branch_tag, building_name)
+			`INSERT INTO buildings (tenant_id, branch_name, building_name)
 			 VALUES ($1, $2, $3)
-			 ON CONFLICT (tenant_id, branch_tag, building_name) WHERE branch_tag IS NOT NULL
+			 ON CONFLICT (tenant_id, branch_name, building_name) WHERE branch_name IS NOT NULL
 			 DO UPDATE SET building_name = EXCLUDED.building_name, updated_at = CURRENT_TIMESTAMP
-			 RETURNING building_id::text, branch_tag`,
-			tenantID, branchTagValue, building.BuildingName,
-		).Scan(&buildingID, &insertedBranchTag)
+			 RETURNING building_id::text, branch_name`,
+			tenantID, branchNameValue, building.BuildingName,
+		).Scan(&buildingID, &insertedBranchName)
 		if err != nil {
 			return "", fmt.Errorf("failed to create building: %w", err)
 		}
 	}
 
-	// 同步branch_tag到tags_catalog目录（替代trigger_sync_branch_tag）
-	if branchTagValue != "" && branchTagValue != "-" {
-		_, err := r.db.ExecContext(ctx,
-			`SELECT upsert_tag_to_catalog($1::uuid, $2, $3)`,
-			tenantID, branchTagValue, "branch_tag",
-		)
-		if err != nil {
-			fmt.Printf("[PostgresUnitsRepository] Failed to sync branch_tag to catalog: %v\n", err)
-		}
-	}
+	// 注意：branch_tag 不应该在这里创建
+	// branch_tag 应该由前端在 TagList 页面创建（tag_name = "Branch"）
+	// unit 的 branch_name 只是数据，不需要同步到 tags_catalog
 
 	return buildingID, nil
 }
@@ -199,7 +191,7 @@ func (r *PostgresUnitsRepository) UpdateBuilding(ctx context.Context, tenantID, 
 	var oldBranchTag sql.NullString
 	var oldBuildingName string
 	err := r.db.QueryRowContext(ctx,
-		`SELECT branch_tag, building_name 
+		`SELECT branch_name, building_name 
 		 FROM buildings 
 		 WHERE tenant_id = $1 AND building_id = $2`,
 		tenantID, buildingID,
@@ -235,20 +227,20 @@ func (r *PostgresUnitsRepository) UpdateBuilding(ctx context.Context, tenantID, 
 	// 更新 buildings 表
 	var updatedBranchTag sql.NullString
 	if newBranchTagValue == "" || newBranchTagValue == "-" {
-		// branch_tag 为 "-" 或空时，更新为 NULL
+		// branch_name 为 "-" 或空时，更新为 NULL
 		err = r.db.QueryRowContext(ctx,
 			`UPDATE buildings 
-			 SET building_name = $1, branch_tag = NULL, updated_at = CURRENT_TIMESTAMP
+			 SET building_name = $1, branch_name = NULL, updated_at = CURRENT_TIMESTAMP
 			 WHERE tenant_id = $2 AND building_id = $3
-			 RETURNING branch_tag`,
+			 RETURNING branch_name`,
 			newBuildingName, tenantID, buildingID,
 		).Scan(&updatedBranchTag)
 	} else {
 		err = r.db.QueryRowContext(ctx,
 			`UPDATE buildings 
-			 SET branch_tag = $1, building_name = $2, updated_at = CURRENT_TIMESTAMP
+			 SET branch_name = $1, building_name = $2, updated_at = CURRENT_TIMESTAMP
 			 WHERE tenant_id = $3 AND building_id = $4
-			 RETURNING branch_tag`,
+			 RETURNING branch_name`,
 			newBranchTagValue, newBuildingName, tenantID, buildingID,
 		).Scan(&updatedBranchTag)
 	}
@@ -268,18 +260,9 @@ func (r *PostgresUnitsRepository) UpdateBuilding(ctx context.Context, tenantID, 
 	if newBranchTagValue == "-" {
 		newBranchTagValue = ""
 	}
-	if newBranchTagValue != oldBranchTagValue {
-		// 如果新branch_tag不为空，添加到目录
-		if newBranchTagValue != "" {
-			_, err := r.db.ExecContext(ctx,
-				`SELECT upsert_tag_to_catalog($1::uuid, $2, $3)`,
-				tenantID, newBranchTagValue, "branch_tag",
-			)
-			if err != nil {
-				fmt.Printf("[PostgresUnitsRepository] Failed to sync branch_tag to catalog: %v\n", err)
-			}
-		}
-	}
+	// 注意：branch_tag 不应该在这里创建
+	// branch_tag 应该由前端在 TagList 页面创建（tag_name = "Branch"）
+	// building 的 branch_name 只是数据，不需要同步到 tags_catalog
 
 	return nil
 }
@@ -327,17 +310,37 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 		argN++
 	}
 
-	// Handle branch_tag: if empty string, match NULL in database
-	if filters.BranchTag != "" {
-		if filters.BranchTag == "" {
-			where = append(where, "u.branch_tag IS NULL")
+	// Handle branch_tag and building together:
+	// - 创建/更新/查询时，空字符串 '' 均视为 NULL（避免在 tags 中创建空字符串 tag）
+	// - 当 building 不为空时：必须同时匹配 branch_tag 和 building
+	//   * branch_tag 为空字符串 ""：查询 branch_tag IS NULL AND building = Y
+	//   * branch_tag 不为空：查询 branch_tag = X AND building = Y
+	// - 当 building 为空时：
+	//   * branch_name 不为空：查询 branch_name = X AND building IS NULL（对称逻辑）
+	//   * branch_name 为空字符串 ""：不添加任何过滤条件（查询所有 units）
+	// - 两者都未提供：不添加任何过滤条件（查询所有 units）
+	if filters.Building != "" {
+		// Building 不为空：必须同时匹配 branch_name 和 building
+		if filters.BranchName == "" {
+			// 分支 1.1：branch_name 为空字符串 → 匹配 NULL（空字符串视为 NULL）
+			where = append(where, "u.branch_name IS NULL")
 		} else {
-			addEq("u.branch_tag", filters.BranchTag)
+			// 分支 1.2：branch_name 不为空 → 匹配具体值
+			addEq("u.branch_name", filters.BranchName)
 		}
+		// Building 不为空时，必须添加 building 过滤条件
+		addEq("u.building", filters.Building)
+	} else if filters.BranchName != "" {
+		// 分支 2：Building 为空，但 branch_name 不为空
+		// 对称逻辑：同时匹配 branch_name = X AND building IS NULL
+		addEq("u.branch_name", filters.BranchName)
+		where = append(where, "u.building IS NULL")
+	} else {
+		// 分支 3：Building 为空，且 branch_name 也为空：不添加任何过滤条件（查询所有 units）
+		// 注意：不查询 branch_name IS NULL，因为这样会遗漏有 branch_name 的 units
 	}
-	addEq("u.building", filters.Building)
 	addEq("u.floor", filters.Floor)
-	addEq("u.area_tag", filters.AreaTag)
+	addEq("u.area_name", filters.AreaName)
 	addEq("u.unit_number", filters.UnitNumber)
 	addEq("u.unit_name", filters.UnitName)
 	addEq("u.unit_type", filters.UnitType)
@@ -368,11 +371,11 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 		SELECT 
 			u.unit_id::text,
 			u.tenant_id::text,
-			u.branch_tag,
+			u.branch_name,
 			u.unit_name,
 			u.building,
 			u.floor,
-			u.area_tag,
+			u.area_name,
 			u.unit_number,
 			CASE WHEN u.layout_config IS NULL THEN NULL ELSE u.layout_config::text END as layout_config,
 			u.unit_type,
@@ -403,15 +406,15 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 	items := make([]*domain.Unit, 0)
 	for rows.Next() {
 		var u domain.Unit
-		var branchTag, areaTag, layoutConfig, groupList, userList sql.NullString
+		var branchName, areaName, layoutConfig, groupList, userList sql.NullString
 		if err := rows.Scan(
 			&u.UnitID,
 			&u.TenantID,
-			&branchTag,
+			&branchName,
 			&u.UnitName,
 			&u.Building,
 			&u.Floor,
-			&areaTag,
+			&areaName,
 			&u.UnitNumber,
 			&layoutConfig,
 			&u.UnitType,
@@ -423,8 +426,8 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 		); err != nil {
 			return nil, 0, err
 		}
-		u.BranchTag = branchTag
-		u.AreaTag = areaTag
+		u.BranchName = branchName
+		u.AreaName = areaName
 		u.LayoutConfig = layoutConfig
 		u.GroupList = groupList
 		u.UserList = userList
@@ -443,11 +446,11 @@ func (r *PostgresUnitsRepository) GetUnit(ctx context.Context, tenantID, unitID 
 		SELECT 
 			u.unit_id::text,
 			u.tenant_id::text,
-			u.branch_tag,
+			u.branch_name,
 			u.unit_name,
 			u.building,
 			u.floor,
-			u.area_tag,
+			u.area_name,
 			u.unit_number,
 			CASE WHEN u.layout_config IS NULL THEN NULL ELSE u.layout_config::text END as layout_config,
 			u.unit_type,
@@ -460,15 +463,15 @@ func (r *PostgresUnitsRepository) GetUnit(ctx context.Context, tenantID, unitID 
 		WHERE u.tenant_id = $1 AND u.unit_id = $2
 	`
 	var u domain.Unit
-	var branchTag, areaTag, layoutConfig, groupList, userList sql.NullString
+	var branchName, areaName, layoutConfig, groupList, userList sql.NullString
 	err := r.db.QueryRowContext(ctx, q, tenantID, unitID).Scan(
 		&u.UnitID,
 		&u.TenantID,
-		&branchTag,
+		&branchName,
 		&u.UnitName,
 		&u.Building,
 		&u.Floor,
-		&areaTag,
+		&areaName,
 		&u.UnitNumber,
 		&layoutConfig,
 		&u.UnitType,
@@ -481,8 +484,8 @@ func (r *PostgresUnitsRepository) GetUnit(ctx context.Context, tenantID, unitID 
 	if err != nil {
 		return nil, err
 	}
-	u.BranchTag = branchTag
-	u.AreaTag = areaTag
+	u.BranchName = branchName
+	u.AreaName = areaName
 	u.LayoutConfig = layoutConfig
 	u.GroupList = groupList
 	u.UserList = userList
@@ -513,72 +516,151 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 		return "", fmt.Errorf("timezone is required")
 	}
 
-	// 验证：branch_tag 和 building 不能同时为空
-	branchTagValue := ""
-	if unit.BranchTag.Valid {
-		branchTagValue = unit.BranchTag.String
+	// 验证：如果 Unit 没有 building，则必须提供 branch_name
+	// 如果 Unit 有 building，则不需要验证（Building 的 Service 层已经保证了 branch_name 或 building_name 至少有一个不为空）
+	branchNameValue := ""
+	if unit.BranchName.Valid {
+		branchNameValue = unit.BranchName.String
 	}
-	if (branchTagValue == "" || branchTagValue == "-") && (unit.Building == "" || unit.Building == "-") {
-		return "", fmt.Errorf("branch_tag and building cannot both be empty (at least one must be provided)")
+	if !unit.Building.Valid {
+		if branchNameValue == "" || branchNameValue == "-" {
+			return "", fmt.Errorf("branch_name is required when building is not provided")
+		}
 	}
 
 	// 统一处理：空字符串''或"-"视为NULL，与display逻辑统一
-	var branchTagValueSQL sql.NullString
-	if branchTagValue != "" && branchTagValue != "-" {
-		branchTagValueSQL = sql.NullString{String: branchTagValue, Valid: true}
+	var branchNameValueSQL sql.NullString
+	if branchNameValue != "" && branchNameValue != "-" {
+		branchNameValueSQL = sql.NullString{String: branchNameValue, Valid: true}
 	}
 
 	// 验证 building 是否存在（如果提供）
-	if unit.Building != "" && unit.Building != "-" {
+	if unit.Building.Valid && unit.Building.String != "" {
 		var exists bool
 		err := r.db.QueryRowContext(ctx,
 			`SELECT EXISTS(
 				SELECT 1 FROM buildings 
 				WHERE tenant_id = $1 
 				  AND building_name = $2 
-				  AND COALESCE(branch_tag, '-') = COALESCE($3, '-')
+				  AND COALESCE(branch_name, '-') = COALESCE($3, '-')
 			)`,
-			tenantID, unit.Building, branchTagValueSQL,
+			tenantID, unit.Building.String, branchNameValueSQL,
 		).Scan(&exists)
 		if err != nil {
 			return "", fmt.Errorf("failed to validate building: %w", err)
 		}
 		if !exists {
-			return "", fmt.Errorf("building not found: branch_tag=%s, building_name=%s (unit must belong to an existing building)", branchTagValue, unit.Building)
+			return "", fmt.Errorf("building not found: branch_name=%s, building_name=%s (unit must belong to an existing building)", branchNameValue, unit.Building.String)
 		}
 	}
 
-	// 设置默认值
-	if unit.Building == "" {
-		unit.Building = "-"
-	}
-	if unit.Floor == "" {
-		unit.Floor = "1F"
+	// 设置 floor 默认值（building 不再设置默认值，如果为 NULL 就保存为 NULL）
+	if !unit.Floor.Valid || unit.Floor.String == "" {
+		unit.Floor = sql.NullString{String: "1F", Valid: true}
 	}
 
-	var areaTagSQL sql.NullString
-	if unit.AreaTag.Valid && unit.AreaTag.String != "" {
-		areaTagSQL = sql.NullString{String: unit.AreaTag.String, Valid: true}
+	var areaNameSQL sql.NullString
+	if unit.AreaName.Valid && unit.AreaName.String != "" {
+		areaNameSQL = sql.NullString{String: unit.AreaName.String, Valid: true}
 	}
 	var layoutConfigSQL sql.NullString
 	if unit.LayoutConfig.Valid && unit.LayoutConfig.String != "" {
 		layoutConfigSQL = sql.NullString{String: unit.LayoutConfig.String, Valid: true}
 	}
 
+	// building 如果为 NULL，保存为 NULL（不再使用 "-" 作为默认值）
+	var buildingSQL sql.NullString
+	if unit.Building.Valid {
+		buildingSQL = unit.Building
+	}
+
+	// 检查是否已存在相同的 unit（避免唯一约束冲突）
+	var existingUnitID string
+	var checkQuery string
+	if branchNameValueSQL.Valid {
+		// branch_name 不为 NULL：检查 (tenant_id, branch_name, building, floor, unit_name)
+		checkQuery = `
+			SELECT unit_id::text
+			FROM units
+			WHERE tenant_id = $1
+			  AND branch_name = $2
+			  AND COALESCE(building, '') = COALESCE($3, '')
+			  AND COALESCE(floor, '') = COALESCE($4, '')
+			  AND unit_name = $5
+			LIMIT 1
+		`
+		floorValue := ""
+		if unit.Floor.Valid {
+			floorValue = unit.Floor.String
+		}
+		err := r.db.QueryRowContext(ctx, checkQuery,
+			tenantID,
+			branchNameValueSQL.String,
+			buildingSQL,
+			floorValue,
+			unit.UnitName,
+		).Scan(&existingUnitID)
+		if err == nil {
+			return "", fmt.Errorf("unit already exists: unit_name=%s, building=%s, floor=%s, branch_name=%s (unit_id=%s)",
+				unit.UnitName,
+				getBuildingDisplay(buildingSQL),
+				floorValue,
+				branchNameValue,
+				existingUnitID)
+		} else if err != sql.ErrNoRows {
+			return "", fmt.Errorf("failed to check duplicate unit: %w", err)
+		}
+	} else {
+		// branch_name 为 NULL：检查 (tenant_id, building, floor, unit_name)
+		checkQuery = `
+			SELECT unit_id::text
+			FROM units
+			WHERE tenant_id = $1
+			  AND branch_name IS NULL
+			  AND COALESCE(building, '') = COALESCE($2, '')
+			  AND COALESCE(floor, '') = COALESCE($3, '')
+			  AND unit_name = $4
+			LIMIT 1
+		`
+		floorValue := ""
+		if unit.Floor.Valid {
+			floorValue = unit.Floor.String
+		}
+		err := r.db.QueryRowContext(ctx, checkQuery,
+			tenantID,
+			buildingSQL,
+			floorValue,
+			unit.UnitName,
+		).Scan(&existingUnitID)
+		if err == nil {
+			return "", fmt.Errorf("unit already exists: unit_name=%s, building=%s, floor=%s, branch_name=NULL (unit_id=%s)",
+				unit.UnitName,
+				getBuildingDisplay(buildingSQL),
+				floorValue,
+				existingUnitID)
+		} else if err != sql.ErrNoRows {
+			return "", fmt.Errorf("failed to check duplicate unit: %w", err)
+		}
+	}
+
 	q := `
-		INSERT INTO units (tenant_id, branch_tag, unit_name, building, floor, area_tag, unit_number, layout_config, unit_type, is_public_space, is_multi_person_room, timezone)
-		VALUES ($1, $2, $3, COALESCE($4,'-'), COALESCE($5,'1F'), $6, $7, $8::jsonb, $9, COALESCE($10,false), COALESCE($11,false), $12)
+		INSERT INTO units (tenant_id, branch_name, unit_name, building, floor, area_name, unit_number, layout_config, unit_type, is_public_space, is_multi_person_room, timezone)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, COALESCE($10,false), COALESCE($11,false), $12)
 		RETURNING unit_id::text
 	`
 
 	var unitID string
+	floorSQL := sql.NullString{}
+	if unit.Floor.Valid {
+		floorSQL = unit.Floor
+	}
 	if err := r.db.QueryRowContext(ctx, q,
 		tenantID,
-		branchTagValueSQL,
+		branchNameValueSQL,
 		unit.UnitName,
-		unit.Building,
-		unit.Floor,
-		areaTagSQL,
+		buildingSQL,
+		floorSQL,
+		areaNameSQL,
 		unit.UnitNumber,
 		nullStringToAny(layoutConfigSQL),
 		unit.UnitType,
@@ -586,30 +668,31 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 		unit.IsMultiPersonRoom,
 		unit.Timezone,
 	).Scan(&unitID); err != nil {
+		// 如果仍然出现唯一约束冲突，提供更友好的错误信息
+		floorDisplay := ""
+		if unit.Floor.Valid {
+			floorDisplay = unit.Floor.String
+		}
+		if strings.Contains(err.Error(), "idx_units_unique_without_tag") {
+			return "", fmt.Errorf("unit already exists: unit_name=%s, building=%s, floor=%s, branch_name=NULL (unique constraint violation)",
+				unit.UnitName,
+				getBuildingDisplay(buildingSQL),
+				floorDisplay)
+		}
+		if strings.Contains(err.Error(), "idx_units_unique_with_tag") {
+			return "", fmt.Errorf("unit already exists: unit_name=%s, building=%s, floor=%s, branch_name=%s (unique constraint violation)",
+				unit.UnitName,
+				getBuildingDisplay(buildingSQL),
+				floorDisplay,
+				branchNameValue)
+		}
 		return "", err
 	}
 
-	// 同步branch_tag到tags_catalog目录（替代trigger_sync_branch_tag）
-	if branchTagValueSQL.Valid {
-		_, err := r.db.ExecContext(ctx,
-			`SELECT upsert_tag_to_catalog($1::uuid, $2, $3)`,
-			tenantID, branchTagValueSQL.String, "branch_tag",
-		)
-		if err != nil {
-			fmt.Printf("[PostgresUnitsRepository] Failed to sync branch_tag to catalog: %v\n", err)
-		}
-	}
-
-	// 同步area_tag到tags_catalog目录（替代trigger_sync_area_tag）
-	if areaTagSQL.Valid {
-		_, err := r.db.ExecContext(ctx,
-			`SELECT upsert_tag_to_catalog($1::uuid, $2, $3)`,
-			tenantID, areaTagSQL.String, "area_tag",
-		)
-		if err != nil {
-			fmt.Printf("[PostgresUnitsRepository] Failed to sync area_tag to catalog: %v\n", err)
-		}
-	}
+	// 注意：branch_tag 和 area_tag 不应该在这里创建
+	// 这些 tag 应该由前端在 TagList 页面创建（tag_name = "Branch" 和 tag_name = "Area"）
+	// unit 的 branch_name 和 area_name 只是数据，不需要同步到 tags_catalog
+	// tag_objects 会由 TagService.calculateTagObjects 动态计算
 
 	return unitID, nil
 }
@@ -630,45 +713,56 @@ func (r *PostgresUnitsRepository) UpdateUnit(ctx context.Context, tenantID, unit
 		return err
 	}
 
-	oldBranchTagValue := ""
-	if currentUnit.BranchTag.Valid {
-		oldBranchTagValue = currentUnit.BranchTag.String
+	oldBranchNameValue := ""
+	if currentUnit.BranchName.Valid {
+		oldBranchNameValue = currentUnit.BranchName.String
 	}
-	oldAreaTagValue := ""
-	if currentUnit.AreaTag.Valid {
-		oldAreaTagValue = currentUnit.AreaTag.String
+	oldAreaNameValue := ""
+	if currentUnit.AreaName.Valid {
+		oldAreaNameValue = currentUnit.AreaName.String
 	}
 
-	// 验证：branch_tag 和 building 不能同时为空
-	branchTagValue := ""
-	if unit.BranchTag.Valid {
-		branchTagValue = unit.BranchTag.String
+	// 验证：如果 Unit 没有 building，则必须提供 branch_name
+	// 如果 Unit 有 building，则不需要验证（Building 的 Service 层已经保证了 branch_name 或 building_name 至少有一个不为空）
+	currentBuildingValue := ""
+	if currentUnit.Building.Valid {
+		currentBuildingValue = currentUnit.Building.String
 	}
-	if (branchTagValue == "" || branchTagValue == "-") && (unit.Building == "" || unit.Building == "-") {
-		return fmt.Errorf("branch_tag and building cannot both be empty (at least one must be provided)")
+
+	// 提取 branch_name 值（用于验证和后续 building 验证）
+	branchNameValue := ""
+	if unit.BranchName.Valid {
+		branchNameValue = unit.BranchName.String
+	}
+
+	// 如果更新后 Unit 没有 building，则必须提供 branch_name
+	if !unit.Building.Valid {
+		if branchNameValue == "" || branchNameValue == "-" {
+			return fmt.Errorf("branch_name is required when building is not provided")
+		}
 	}
 
 	// 验证 building 是否存在（如果提供且改变）
-	if unit.Building != "" && unit.Building != "-" && unit.Building != currentUnit.Building {
+	if unit.Building.Valid && unit.Building.String != "" && (!currentUnit.Building.Valid || unit.Building.String != currentBuildingValue) {
 		var exists bool
-		var branchTagValueSQL sql.NullString
-		if branchTagValue != "" && branchTagValue != "-" {
-			branchTagValueSQL = sql.NullString{String: branchTagValue, Valid: true}
+		var branchNameValueSQL sql.NullString
+		if branchNameValue != "" && branchNameValue != "-" {
+			branchNameValueSQL = sql.NullString{String: branchNameValue, Valid: true}
 		}
 		err := r.db.QueryRowContext(ctx,
 			`SELECT EXISTS(
 				SELECT 1 FROM buildings 
 				WHERE tenant_id = $1 
 				  AND building_name = $2 
-				  AND COALESCE(branch_tag, '-') = COALESCE($3, '-')
+				  AND COALESCE(branch_name, '-') = COALESCE($3, '-')
 			)`,
-			tenantID, unit.Building, branchTagValueSQL,
+			tenantID, unit.Building.String, branchNameValueSQL,
 		).Scan(&exists)
 		if err != nil {
 			return fmt.Errorf("failed to validate building: %w", err)
 		}
 		if !exists {
-			return fmt.Errorf("building not found: branch_tag=%s, building_name=%s (unit must belong to an existing building)", branchTagValue, unit.Building)
+			return fmt.Errorf("building not found: branch_name=%s, building_name=%s (unit must belong to an existing building)", branchNameValue, unit.Building.String)
 		}
 	}
 
@@ -683,28 +777,33 @@ func (r *PostgresUnitsRepository) UpdateUnit(ctx context.Context, tenantID, unit
 		argN++
 	}
 
-	// 统一处理 branch_tag：空字符串''或"-"视为NULL
-	if unit.BranchTag.Valid {
-		if unit.BranchTag.String == "" || unit.BranchTag.String == "-" {
-			set = append(set, fmt.Sprintf("branch_tag = NULL"))
+	// 统一处理 branch_name：空字符串''或"-"视为NULL
+	if unit.BranchName.Valid {
+		if unit.BranchName.String == "" || unit.BranchName.String == "-" {
+			set = append(set, "branch_name = NULL")
 		} else {
-			add("branch_tag", unit.BranchTag.String)
+			add("branch_name", unit.BranchName.String)
 		}
 	}
 	if unit.UnitName != "" {
 		add("unit_name", unit.UnitName)
 	}
-	if unit.Building != "" {
-		add("building", unit.Building)
-	}
-	if unit.Floor != "" {
-		add("floor", unit.Floor)
-	}
-	if unit.AreaTag.Valid {
-		if unit.AreaTag.String == "" {
-			set = append(set, fmt.Sprintf("area_tag = NULL"))
+	// building 如果为 NULL，保存为 NULL（不再使用 "-" 作为默认值）
+	if unit.Building.Valid {
+		if unit.Building.String == "" || unit.Building.String == "-" {
+			set = append(set, "building = NULL")
 		} else {
-			add("area_tag", unit.AreaTag.String)
+			add("building", unit.Building.String)
+		}
+	}
+	if unit.Floor.Valid && unit.Floor.String != "" {
+		add("floor", unit.Floor.String)
+	}
+	if unit.AreaName.Valid {
+		if unit.AreaName.String == "" {
+			set = append(set, "area_name = NULL")
+		} else {
+			add("area_name", unit.AreaName.String)
 		}
 	}
 	if unit.UnitNumber != "" {
@@ -750,61 +849,17 @@ func (r *PostgresUnitsRepository) UpdateUnit(ctx context.Context, tenantID, unit
 	// 检查 groupList 是否变化（用于替代 trigger_sync_units_groupList_to_cards）
 	if unit.GroupList.Valid {
 		var oldGroupList sql.NullString
-		err := r.db.QueryRowContext(ctx,
+		_ = r.db.QueryRowContext(ctx,
 			`SELECT groupList FROM units WHERE tenant_id = $1 AND unit_id = $2`,
 			tenantID, unitID,
 		).Scan(&oldGroupList)
-		if err == nil {
-			var changed bool
-			err = r.db.QueryRowContext(ctx,
-				`SELECT COALESCE($1::jsonb, '[]'::jsonb) IS DISTINCT FROM COALESCE($2::jsonb, '[]'::jsonb)`,
-				oldGroupList.String, unit.GroupList.String,
-			).Scan(&changed)
-			if err == nil && changed {
-				err = r.syncUnitGroupListToCards(ctx, tenantID, unitID, unit.GroupList.String)
-				if err != nil {
-					fmt.Printf("[PostgresUnitsRepository] Failed to sync groupList to cards: %v\n", err)
-				}
-			}
-		}
+		// Note: syncUnitGroupListToCards removed - cards no longer store routing_alarm_tags
 	}
 
-	// 同步branch_tag变化到tags_catalog目录（替代trigger_sync_branch_tag）
-	newBranchTagValue := branchTagValue
-	if newBranchTagValue == "-" {
-		newBranchTagValue = ""
-	}
-	if oldBranchTagValue == "-" {
-		oldBranchTagValue = ""
-	}
-	if newBranchTagValue != oldBranchTagValue {
-		if newBranchTagValue != "" {
-			_, err := r.db.ExecContext(ctx,
-				`SELECT upsert_tag_to_catalog($1::uuid, $2, $3)`,
-				tenantID, newBranchTagValue, "branch_tag",
-			)
-			if err != nil {
-				fmt.Printf("[PostgresUnitsRepository] Failed to sync branch_tag to catalog: %v\n", err)
-			}
-		}
-	}
-
-	// 同步area_tag变化到tags_catalog目录（替代trigger_sync_area_tag）
-	newAreaTagValue := ""
-	if unit.AreaTag.Valid {
-		newAreaTagValue = unit.AreaTag.String
-	}
-	if newAreaTagValue != oldAreaTagValue {
-		if newAreaTagValue != "" {
-			_, err := r.db.ExecContext(ctx,
-				`SELECT upsert_tag_to_catalog($1::uuid, $2, $3)`,
-				tenantID, newAreaTagValue, "area_tag",
-			)
-			if err != nil {
-				fmt.Printf("[PostgresUnitsRepository] Failed to sync area_tag to catalog: %v\n", err)
-			}
-		}
-	}
+	// 注意：branch_tag 和 area_tag 不应该在这里创建
+	// 这些 tag 应该由前端在 TagList 页面创建（tag_name = "Branch" 和 tag_name = "Area"）
+	// unit 的 branch_name 和 area_name 只是数据，不需要同步到 tags_catalog
+	// tag_objects 会由 TagService.calculateTagObjects 动态计算
 
 	return nil
 }
@@ -894,7 +949,6 @@ func (r *PostgresUnitsRepository) ListRoomsWithBeds(ctx context.Context, tenantI
 			b.tenant_id::text,
 			b.room_id::text,
 			b.bed_name,
-			b.bed_type,
 			b.mattress_material,
 			b.mattress_thickness
 		FROM beds b
@@ -916,7 +970,6 @@ func (r *PostgresUnitsRepository) ListRoomsWithBeds(ctx context.Context, tenantI
 			&bed.TenantID,
 			&bed.RoomID,
 			&bed.BedName,
-			&bed.BedType,
 			&mattressMaterial,
 			&mattressThickness,
 		); err != nil {
@@ -1099,7 +1152,6 @@ func (r *PostgresUnitsRepository) ListBeds(ctx context.Context, tenantID, roomID
 			b.tenant_id::text,
 			b.room_id::text,
 			b.bed_name,
-			b.bed_type,
 			b.mattress_material,
 			b.mattress_thickness
 		FROM beds b
@@ -1121,7 +1173,6 @@ func (r *PostgresUnitsRepository) ListBeds(ctx context.Context, tenantID, roomID
 			&bed.TenantID,
 			&bed.RoomID,
 			&bed.BedName,
-			&bed.BedType,
 			&mattressMaterial,
 			&mattressThickness,
 		); err != nil {
@@ -1147,7 +1198,6 @@ func (r *PostgresUnitsRepository) GetBed(ctx context.Context, tenantID, bedID st
 			b.tenant_id::text,
 			b.room_id::text,
 			b.bed_name,
-			b.bed_type,
 			b.mattress_material,
 			b.mattress_thickness
 		FROM beds b
@@ -1160,7 +1210,6 @@ func (r *PostgresUnitsRepository) GetBed(ctx context.Context, tenantID, bedID st
 		&bed.TenantID,
 		&bed.RoomID,
 		&bed.BedName,
-		&bed.BedType,
 		&mattressMaterial,
 		&mattressThickness,
 	)
@@ -1198,10 +1247,7 @@ func (r *PostgresUnitsRepository) CreateBed(ctx context.Context, tenantID, roomI
 		return "", fmt.Errorf("room not found: room_id=%s (bed must belong to an existing room)", roomID)
 	}
 
-	// 默认 bed_type = NonActiveBed
-	if bed.BedType == "" {
-		bed.BedType = "NonActiveBed"
-	}
+	// 注意：bed_type 字段已删除，ActiveBed 判断由应用层动态计算
 
 	var mattressMaterialSQL, mattressThicknessSQL sql.NullString
 	if bed.MattressMaterial.Valid && bed.MattressMaterial.String != "" {
@@ -1213,12 +1259,12 @@ func (r *PostgresUnitsRepository) CreateBed(ctx context.Context, tenantID, roomI
 
 	var bedID string
 	q := `
-		INSERT INTO beds (tenant_id, room_id, bed_name, bed_type, mattress_material, mattress_thickness)
-		SELECT tenant_id, $1, $2, $3, $4, $5
+		INSERT INTO beds (tenant_id, room_id, bed_name, mattress_material, mattress_thickness)
+		SELECT tenant_id, $1, $2, $3, $4
 		FROM rooms WHERE room_id = $1
 		RETURNING bed_id::text
 	`
-	if err := r.db.QueryRowContext(ctx, q, roomID, bed.BedName, bed.BedType, mattressMaterialSQL, mattressThicknessSQL).Scan(&bedID); err != nil {
+	if err := r.db.QueryRowContext(ctx, q, roomID, bed.BedName, mattressMaterialSQL, mattressThicknessSQL).Scan(&bedID); err != nil {
 		return "", err
 	}
 
@@ -1244,11 +1290,7 @@ func (r *PostgresUnitsRepository) UpdateBed(ctx context.Context, tenantID, bedID
 		args = append(args, bed.BedName)
 		argN++
 	}
-	if bed.BedType != "" {
-		set = append(set, fmt.Sprintf("bed_type = $%d", argN))
-		args = append(args, bed.BedType)
-		argN++
-	}
+	// 注意：bed_type 字段已删除，ActiveBed 判断由应用层动态计算
 	if bed.MattressMaterial.Valid {
 		if bed.MattressMaterial.String == "" {
 			set = append(set, "mattress_material = NULL")
@@ -1298,38 +1340,13 @@ func nullStringToAny(ns sql.NullString) any {
 	return nil
 }
 
-// syncUnitGroupListToCards 同步 units.groupList 到 cards.routing_alarm_tags（替代 trigger_sync_units_groupList_to_cards）
-func (r *PostgresUnitsRepository) syncUnitGroupListToCards(ctx context.Context, tenantID, unitID string, groupList string) error {
-	// 将 groupList (JSONB string) 转换为 VARCHAR[] 数组
-	var groupListArray []string
-
-	if groupList != "" {
-		query := `
-			SELECT ARRAY(
-				SELECT jsonb_array_elements_text($1::jsonb)
-			)::VARCHAR[]
-		`
-		err := r.db.QueryRowContext(ctx, query, groupList).Scan(&groupListArray)
-		if err != nil {
-			// 如果转换失败，设置为空数组
-			groupListArray = []string{}
-		}
-	} else {
-		groupListArray = []string{}
+// getBuildingDisplay 获取 building 的显示值（用于错误信息）
+func getBuildingDisplay(building sql.NullString) string {
+	if !building.Valid {
+		return "NULL"
 	}
-
-	// 更新所有关联到该 unit 的 cards.routing_alarm_tags
-	_, err := r.db.ExecContext(ctx,
-		`UPDATE cards
-		 SET routing_alarm_tags = $1
-		 WHERE unit_id = $2
-		   AND tenant_id = $3
-		   AND (routing_alarm_tags IS DISTINCT FROM $1)`,
-		pq.Array(groupListArray), unitID, tenantID,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to update cards routing_alarm_tags: %w", err)
+	if building.String == "" {
+		return "''"
 	}
-
-	return nil
+	return building.String
 }

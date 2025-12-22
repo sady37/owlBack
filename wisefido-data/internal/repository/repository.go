@@ -100,9 +100,7 @@ func (b Bed) ToJSON() map[string]any {
 	if b.TenantID.Valid {
 		m["tenant_id"] = b.TenantID.String
 	}
-	if b.BedType.Valid {
-		m["bed_type"] = b.BedType.String
-	}
+	// 注意：bed_type 字段已删除，ActiveBed 判断由应用层动态计算
 	if b.MattressMaterial.Valid {
 		m["mattress_material"] = b.MattressMaterial.String
 	}

@@ -22,7 +22,6 @@ type CardRepositoryInterface interface {
 		bedID *string, unitID, cardName, cardAddress string,
 		residentID *string,
 		devicesJSON, residentsJSON []byte,
-		routingAlarmUserIDs, routingAlarmTags []string,
 	) (string, error)
 	GetAllUnits(tenantID string) ([]string, error)
 	GetUnitIDByBedID(tenantID, bedID string) (string, error)
@@ -141,18 +140,7 @@ func (c *CardCreator) createActiveBedCardWithUnboundDevices(
 		return fmt.Errorf("failed to convert residents to JSON: %w", err)
 	}
 
-	// 8. Convert alarm routing configuration (from units.groupList and units.userList)
-	routingAlarmUserIDs, err := repository.ConvertUserListToUUIDArray(unitInfo.UserList)
-	if err != nil {
-		return fmt.Errorf("failed to convert userList: %w", err)
-	}
-
-	routingAlarmTags, err := repository.ConvertGroupListToStringArray(unitInfo.GroupList)
-	if err != nil {
-		return fmt.Errorf("failed to convert groupList: %w", err)
-	}
-
-	// 9. Create card
+	// 8. Create card
 	cardID, err := c.repo.CreateCard(
 		tenantID,
 		"ActiveBed",
@@ -163,8 +151,6 @@ func (c *CardCreator) createActiveBedCardWithUnboundDevices(
 		residentID,
 		devicesJSON,
 		residentsJSON,
-		routingAlarmUserIDs,
-		routingAlarmTags,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create card: %w", err)
@@ -235,17 +221,6 @@ func (c *CardCreator) createMultipleActiveBedCards(
 			return fmt.Errorf("failed to convert residents to JSON: %w", err)
 		}
 
-		// Convert alarm routing configuration (from units.groupList and units.userList)
-		routingAlarmUserIDs, err := repository.ConvertUserListToUUIDArray(unitInfo.UserList)
-		if err != nil {
-			return fmt.Errorf("failed to convert userList: %w", err)
-		}
-
-		routingAlarmTags, err := repository.ConvertGroupListToStringArray(unitInfo.GroupList)
-		if err != nil {
-			return fmt.Errorf("failed to convert groupList: %w", err)
-		}
-
 		// Create card
 		cardID, err := c.repo.CreateCard(
 			tenantID,
@@ -257,8 +232,6 @@ func (c *CardCreator) createMultipleActiveBedCards(
 			residentID,
 			devicesJSON,
 			residentsJSON,
-			routingAlarmUserIDs,
-			routingAlarmTags,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create card: %w", err)
@@ -327,18 +300,7 @@ func (c *CardCreator) createUnitCard(
 		return fmt.Errorf("failed to convert residents to JSON: %w", err)
 	}
 
-	// 7. Convert alarm routing configuration (from units.groupList and units.userList)
-	routingAlarmUserIDs, err := repository.ConvertUserListToUUIDArray(unitInfo.UserList)
-	if err != nil {
-		return fmt.Errorf("failed to convert userList: %w", err)
-	}
-
-	routingAlarmTags, err := repository.ConvertGroupListToStringArray(unitInfo.GroupList)
-	if err != nil {
-		return fmt.Errorf("failed to convert groupList: %w", err)
-	}
-
-	// 8. Create card
+	// 7. Create card
 	cardID, err := c.repo.CreateCard(
 		tenantID,
 		"Location",
@@ -349,8 +311,6 @@ func (c *CardCreator) createUnitCard(
 		nil, // UnitCard has no resident_id
 		devicesJSON,
 		residentsJSON,
-		routingAlarmUserIDs,
-		routingAlarmTags,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create card: %w", err)
@@ -442,14 +402,14 @@ func (c *CardCreator) calculateUnitCardName(
 }
 
 // calculateCardAddress calculates card address
-// Rule: branch_tag + "-" + building + "-" + unit_name
+// Rule: branch_name + "-" + building + "-" + unit_name
 // Skip empty values or default value "-"
 func (c *CardCreator) calculateCardAddress(unitInfo *repository.UnitInfo) string {
 	var parts []string
 
-	// branch_tag
-	if unitInfo.BranchTag != "" && unitInfo.BranchTag != "-" {
-		parts = append(parts, unitInfo.BranchTag)
+	// branch_name
+	if unitInfo.BranchName != "" && unitInfo.BranchName != "-" {
+		parts = append(parts, unitInfo.BranchName)
 	}
 
 	// building (skip "-")

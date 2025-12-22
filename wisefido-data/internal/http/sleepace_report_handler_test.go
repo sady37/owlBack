@@ -46,12 +46,13 @@ func setupSleepaceTestData(t *testing.T, db *sql.DB, tenantID string) (deviceID,
 	}
 
 	// 3. 创建床位（bed）
+	// 注意：bed_type 字段已删除，ActiveBed 判断由应用层动态计算
 	bedID = "00000000-0000-0000-0000-000000000301"
 	_, err = db.ExecContext(ctx,
-		`INSERT INTO beds (bed_id, tenant_id, room_id, bed_name, bed_type)
-		 VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT (bed_id) DO UPDATE SET bed_name = EXCLUDED.bed_name, bed_type = EXCLUDED.bed_type`,
-		bedID, tenantID, roomID, "Test Bed", "ActiveBed",
+		`INSERT INTO beds (bed_id, tenant_id, room_id, bed_name)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (bed_id) DO UPDATE SET bed_name = EXCLUDED.bed_name`,
+		bedID, tenantID, roomID, "Test Bed",
 	)
 	if err != nil {
 		t.Fatalf("Failed to create test bed: %v", err)

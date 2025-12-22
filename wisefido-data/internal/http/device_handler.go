@@ -40,6 +40,68 @@ func (h *DeviceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GetDeviceRelations 查询设备关联关系
+func (h *DeviceHandler) GetDeviceRelations(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 1. 参数解析
+	// 路径格式：/device/api/v1/device/:id/relations
+	if !strings.HasPrefix(r.URL.Path, "/device/api/v1/device/") || !strings.HasSuffix(r.URL.Path, "/relations") {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	deviceID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/device/api/v1/device/"), "/relations")
+	if deviceID == "" || strings.Contains(deviceID, "/") {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	tenantID, ok := h.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+
+	// 2. 调用 Service
+	req := service.GetDeviceRelationsRequest{
+		TenantID: tenantID,
+		DeviceID: deviceID,
+	}
+
+	resp, err := h.deviceService.GetDeviceRelations(ctx, req)
+	if err != nil {
+		h.logger.Error("GetDeviceRelations failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	// 3. 构建响应（匹配前端期望的格式）
+	residents := make([]map[string]any, len(resp.Residents))
+	for i, r := range resp.Residents {
+		residents[i] = map[string]any{
+			"id":       r.ID,
+			"name":     r.Name,
+			"gender":   r.Gender,
+			"birthday": r.Birthday,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, Ok(map[string]any{
+		"deviceId":           resp.DeviceID,
+		"deviceName":         resp.DeviceName,
+		"deviceInternalCode": resp.DeviceInternalCode,
+		"deviceType":         resp.DeviceType,
+		"addressId":          resp.AddressID,
+		"addressName":        resp.AddressName,
+		"addressType":        resp.AddressType,
+		"residents":          residents,
+	}))
+}
+
 // ListDevices 查询设备列表
 func (h *DeviceHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

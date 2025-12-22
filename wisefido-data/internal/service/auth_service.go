@@ -243,17 +243,18 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 				return nil, fmt.Errorf("invalid credentials")
 			}
 
-			if residentInfo.Status != "active" {
-				s.logger.Warn("User login failed: account not active",
-					zap.String("user_id", residentInfo.ResidentID),
-					zap.String("tenant_id", tenantID),
-					zap.String("user_type", normalizedUserType),
-					zap.String("status", residentInfo.Status),
-					zap.String("ip_address", req.IPAddress),
-					zap.String("reason", "account_not_active"),
-				)
-				return nil, fmt.Errorf("user is not active")
-			}
+		// 检查用户状态：仅允许 active 状态的用户登录
+		if residentInfo.Status != "active" {
+			s.logger.Warn("User login failed: account not active",
+				zap.String("user_id", residentInfo.ResidentID),
+				zap.String("tenant_id", tenantID),
+				zap.String("user_type", normalizedUserType),
+				zap.String("status", residentInfo.Status),
+				zap.String("ip_address", req.IPAddress),
+				zap.String("reason", "account_not_active"),
+			)
+			return nil, fmt.Errorf("user is not active")
+		}
 
 			userID = residentInfo.ResidentID
 			userAccount = residentInfo.ResidentAccount
@@ -277,6 +278,7 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 			return nil, fmt.Errorf("invalid credentials")
 		}
 
+		// 检查用户状态：仅允许 active 状态的用户登录
 		if userInfo.Status != "active" {
 			s.logger.Warn("User login failed: account not active",
 				zap.String("user_id", userInfo.UserID),

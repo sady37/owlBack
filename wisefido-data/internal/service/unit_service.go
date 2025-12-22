@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"wisefido-data/internal/domain"
@@ -64,7 +65,7 @@ func NewUnitService(unitsRepo repository.UnitsRepository, logger *zap.Logger) Un
 
 type ListBuildingsRequest struct {
 	TenantID  string // 必填
-	BranchTag string // 可选
+	BranchName string // 可选
 }
 
 type ListBuildingsResponse struct {
@@ -82,7 +83,7 @@ type GetBuildingResponse struct {
 
 type CreateBuildingRequest struct {
 	TenantID    string // 必填
-	BranchTag   string // 可选
+	BranchName   string // 可选
 	BuildingName string // 必填（branch_tag 或 building_name 至少一个）
 }
 
@@ -93,7 +94,7 @@ type CreateBuildingResponse struct {
 type UpdateBuildingRequest struct {
 	TenantID     string // 必填
 	BuildingID   string // 必填
-	BranchTag    string // 可选
+	BranchName    string // 可选
 	BuildingName string // 可选
 }
 
@@ -115,17 +116,17 @@ type DeleteBuildingResponse struct {
 // ============================================
 
 type ListUnitsRequest struct {
-	TenantID   string // 必填
-	BranchTag  string // 可选（空字符串表示匹配 NULL）
-	Building   string // 可选
-	Floor      string // 可选
-	AreaTag    string // 可选
-	UnitNumber string // 可选
-	UnitName   string // 可选
-	UnitType   string // 可选
-	Search     string // 可选（模糊搜索 unit_name, unit_number）
-	Page       int    // 可选，默认 1
-	Size       int    // 可选，默认 100
+	TenantID   string  // 必填
+	BranchName  *string // 可选（nil 表示匹配 NULL）
+	Building   *string // 可选（nil 表示未提供）
+	Floor      *string // 可选（nil 表示未提供）
+	AreaName    *string // 可选（nil 表示未提供）
+	UnitNumber *string // 可选（nil 表示未提供）
+	UnitName   *string // 可选（nil 表示未提供）
+	UnitType   *string // 可选（nil 表示未提供）
+	Search     *string // 可选（nil 表示未提供，模糊搜索 unit_name, unit_number）
+	Page       int     // 可选，默认 1
+	Size       int     // 可选，默认 100
 }
 
 type ListUnitsResponse struct {
@@ -144,11 +145,11 @@ type GetUnitResponse struct {
 
 type CreateUnitRequest struct {
 	TenantID          string // 必填
-	BranchTag         string // 可选
+	BranchName         string // 可选
 	UnitName          string // 必填
-	Building          string // 可选（默认 "-"）
+	Building          string // 可选（保持空字符串，不使用 "-"）
 	Floor             string // 可选（默认 "1F"）
-	AreaTag           string // 可选
+	AreaName           string // 可选
 	UnitNumber        string // 必填
 	LayoutConfig      string // 可选（JSON 字符串）
 	UnitType          string // 必填
@@ -164,11 +165,11 @@ type CreateUnitResponse struct {
 type UpdateUnitRequest struct {
 	TenantID          string // 必填
 	UnitID            string // 必填
-	BranchTag         string // 可选
+	BranchName         string // 可选
 	UnitName          string // 可选
 	Building          string // 可选
 	Floor             string // 可选
-	AreaTag           string // 可选
+	AreaName           string // 可选
 	UnitNumber        string // 可选
 	LayoutConfig      string // 可选（JSON 字符串）
 	UnitType          string // 可选
@@ -278,7 +279,7 @@ type CreateBedRequest struct {
 	TenantID         string // 必填
 	RoomID           string // 必填
 	BedName          string // 必填
-	BedType          string // 必填
+	// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 	MattressMaterial string // 可选
 	MattressThickness string // 可选
 }
@@ -291,7 +292,7 @@ type UpdateBedRequest struct {
 	TenantID         string // 必填
 	BedID            string // 必填
 	BedName          string // 可选
-	BedType          string // 可选
+	// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 	MattressMaterial string // 可选
 	MattressThickness string // 可选
 }
@@ -319,11 +320,11 @@ func (s *unitService) ListBuildings(ctx context.Context, req ListBuildingsReques
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 
-	items, err := s.unitsRepo.ListBuildings(ctx, req.TenantID, req.BranchTag)
+	items, err := s.unitsRepo.ListBuildings(ctx, req.TenantID, req.BranchName)
 	if err != nil {
 		s.logger.Error("ListBuildings failed",
 			zap.String("tenant_id", req.TenantID),
-			zap.String("branch_tag", req.BranchTag),
+			zap.String("branch_name", req.BranchName),
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to list buildings: %w", err)
@@ -367,15 +368,15 @@ func (s *unitService) CreateBuilding(ctx context.Context, req CreateBuildingRequ
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 
-	// 验证：branch_tag 或 building_name 必须有一个不为空
-	branchTagValue := strings.TrimSpace(req.BranchTag)
-	if (branchTagValue == "" || branchTagValue == "-") && (req.BuildingName == "" || req.BuildingName == "-") {
-		return nil, fmt.Errorf("branch_tag or building_name must be provided (at least one must not be empty)")
+	// 验证：branch_name 或 building_name 必须有一个不为空
+	branchNameValue := strings.TrimSpace(req.BranchName)
+	if (branchNameValue == "" || branchNameValue == "-") && (req.BuildingName == "" || req.BuildingName == "-") {
+		return nil, fmt.Errorf("branch_name or building_name must be provided (at least one must not be empty)")
 	}
 
 	building := &domain.Building{
 		TenantID:    req.TenantID,
-		BranchTag:   normalizeBranchTag(req.BranchTag),
+		BranchTag:   normalizeBranchTag(req.BranchName),
 		BuildingName: strings.TrimSpace(req.BuildingName),
 	}
 
@@ -426,8 +427,8 @@ func (s *unitService) UpdateBuilding(ctx context.Context, req UpdateBuildingRequ
 	}
 
 	// 更新提供的字段
-	if req.BranchTag != "" || req.BranchTag == "" { // 允许设置为空
-		building.BranchTag = normalizeBranchTag(req.BranchTag)
+	if req.BranchName != "" || req.BranchName == "" { // 允许设置为空
+		building.BranchTag = normalizeBranchTag(req.BranchName)
 	}
 	if req.BuildingName != "" {
 		building.BuildingName = strings.TrimSpace(req.BuildingName)
@@ -436,6 +437,16 @@ func (s *unitService) UpdateBuilding(ctx context.Context, req UpdateBuildingRequ
 	// 设置默认值
 	if building.BuildingName == "" {
 		building.BuildingName = "-"
+	}
+
+	// 验证：branch_tag 或 building_name 必须有一个不为空（更新后）
+	branchTagValue := ""
+	if building.BranchTag.Valid {
+		branchTagValue = building.BranchTag.String
+	}
+	buildingNameValue := strings.TrimSpace(building.BuildingName)
+	if (branchTagValue == "" || branchTagValue == "-") && (buildingNameValue == "" || buildingNameValue == "-") {
+		return nil, fmt.Errorf("branch_tag or building_name must be provided (at least one must not be empty)")
 	}
 
 	err = s.unitsRepo.UpdateBuilding(ctx, req.TenantID, req.BuildingID, building)
@@ -488,16 +499,22 @@ func (s *unitService) ListUnits(ctx context.Context, req ListUnitsRequest) (*Lis
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 
-	// 2. 构建过滤器（与旧 Handler 逻辑对齐）
+	// 2. 构建过滤器
+	// 关键逻辑：当提供了 building 时，必须同时匹配 branch_tag 和 building
+	// - branch_tag 为 nil：查询 branch_tag IS NULL
+	// - branch_tag 不为 nil：查询 branch_tag = X
+	// - building 为 nil：不添加 building 过滤条件
+	// - building 不为 nil：添加 building 过滤条件
+	// 空字符串视为 null（nil → ""，用于 Repository 层转换为 IS NULL）
 	filters := repository.UnitFilters{
-		BranchTag:  strings.TrimSpace(req.BranchTag),
-		Building:   strings.TrimSpace(req.Building),
-		Floor:      strings.TrimSpace(req.Floor),
-		AreaTag:    strings.TrimSpace(req.AreaTag),
-		UnitNumber: strings.TrimSpace(req.UnitNumber),
-		UnitName:   strings.TrimSpace(req.UnitName),
-		UnitType:   strings.TrimSpace(req.UnitType),
-		Search:     strings.TrimSpace(req.Search),
+		BranchName:  stringValueOrEmpty(req.BranchName),
+		Building:   stringValueOrEmpty(req.Building),
+		Floor:      stringValueOrEmpty(req.Floor),
+		AreaName:    stringValueOrEmpty(req.AreaName),
+		UnitNumber: stringValueOrEmpty(req.UnitNumber),
+		UnitName:   stringValueOrEmpty(req.UnitName),
+		UnitType:   stringValueOrEmpty(req.UnitType),
+		Search:     stringValueOrEmpty(req.Search),
 	}
 
 	// 3. 分页参数（与旧 Handler 逻辑对齐：默认 page=1, size=100）
@@ -563,7 +580,7 @@ func (s *unitService) GetUnit(ctx context.Context, req GetUnitRequest) (*GetUnit
 
 // CreateUnit 创建单元
 func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*CreateUnitResponse, error) {
-	// 1. 参数验证
+	// 1. 参数验证（必填字段）
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
@@ -573,44 +590,40 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 	if req.UnitNumber == "" {
 		return nil, fmt.Errorf("unit_number is required")
 	}
-	if req.UnitType == "" {
-		return nil, fmt.Errorf("unit_type is required")
-	}
-	if req.Timezone == "" {
-		return nil, fmt.Errorf("timezone is required")
-	}
 
-	// 2. 构建 domain.Unit（与 Repository 逻辑对齐）
+	// 2. 应用默认值和格式转换（可选字段）
+	unitType := normalizeUnitType(req.UnitType)      // "" → "Facility"
+	building := normalizeBuilding(req.Building)      // 保持空字符串 ''（不再使用 "-"）
+	floor := normalizeFloor(req.Floor)                // ""/"1"/1 → sql.NullString{String: "1F", Valid: true}
+	timezone := normalizeTimezone(req.Timezone)       // "" → "America/Denver" (IANA 标识符)
+
+	// 3. 构建 domain.Unit
 	unit := &domain.Unit{
 		TenantID:          req.TenantID,
-		BranchTag:         normalizeBranchTag(req.BranchTag),
+		BranchName:         normalizeBranchTag(req.BranchName),
 		UnitName:          strings.TrimSpace(req.UnitName),
-		Building:          strings.TrimSpace(req.Building),
-		Floor:             strings.TrimSpace(req.Floor),
-		AreaTag:           normalizeAreaTag(req.AreaTag),
+		Building:          building,
+		Floor:             floor,
+		AreaName:           normalizeAreaTag(req.AreaName),
 		UnitNumber:        strings.TrimSpace(req.UnitNumber),
 		LayoutConfig:      normalizeLayoutConfig(req.LayoutConfig),
-		UnitType:          strings.TrimSpace(req.UnitType),
+		UnitType:          unitType,
 		IsPublicSpace:     req.IsPublicSpace,
 		IsMultiPersonRoom: req.IsMultiPersonRoom,
-		Timezone:          strings.TrimSpace(req.Timezone),
+		Timezone:          timezone,
 	}
 
-	// 3. 设置默认值（与 Repository 逻辑对齐）
-	if unit.Building == "" {
-		unit.Building = "-"
-	}
-	if unit.Floor == "" {
-		unit.Floor = "1F"
-	}
-
-	// 4. 业务规则验证（Repository 会再次验证，但 Service 层提前验证更友好）
-	branchTagValue := ""
-	if unit.BranchTag.Valid {
-		branchTagValue = unit.BranchTag.String
-	}
-	if (branchTagValue == "" || branchTagValue == "-") && (unit.Building == "" || unit.Building == "-") {
-		return nil, fmt.Errorf("branch_tag and building cannot both be empty (at least one must be provided)")
+	// 4. 业务规则验证
+	// 如果 Unit 没有 building，则必须提供 branch_name
+	// 如果 Unit 有 building，则不需要验证（Building 的 Service 层已经保证了 branch_name 或 building_name 至少有一个不为空）
+	if !unit.Building.Valid {
+		branchNameValue := ""
+		if unit.BranchName.Valid {
+			branchNameValue = unit.BranchName.String
+		}
+		if branchNameValue == "" || branchNameValue == "-" {
+			return nil, fmt.Errorf("branch_name is required when building is not provided")
+		}
 	}
 
 	// 5. 调用 Repository
@@ -663,11 +676,11 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 	unit := &domain.Unit{
 		UnitID:            req.UnitID,
 		TenantID:          req.TenantID,
-		BranchTag:         currentUnit.BranchTag,
+		BranchName:         currentUnit.BranchName,
 		UnitName:          currentUnit.UnitName,
 		Building:          currentUnit.Building,
 		Floor:             currentUnit.Floor,
-		AreaTag:           currentUnit.AreaTag,
+		AreaName:           currentUnit.AreaName,
 		UnitNumber:        currentUnit.UnitNumber,
 		LayoutConfig:      currentUnit.LayoutConfig,
 		UnitType:          currentUnit.UnitType,
@@ -680,8 +693,8 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 
 	// 更新提供的字段
 	// Repository 的 UpdateUnit 逻辑：
-	// - 如果 unit.BranchTag.Valid == true，会更新（即使 String 为空，也会设置为 NULL）
-	// - 如果 unit.BranchTag.Valid == false，不会更新（保持原值）
+	// - 如果 unit.BranchName.Valid == true，会更新（即使 String 为空，也会设置为 NULL）
+	// - 如果 unit.BranchName.Valid == false，不会更新（保持原值）
 	// 
 	// Service 层策略：
 	// - 如果请求中提供了非空值，设置 Valid=true 和 String 值
@@ -692,30 +705,33 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 	// - 非空值：更新
 	// - 空字符串：如果当前值存在，清除它（设置为 NULL）；否则不更新
 	
-	// branch_tag: 如果提供了非空值，更新；如果为空字符串，清除（Repository 会处理为 NULL）
-	if req.BranchTag != "" {
-		unit.BranchTag = normalizeBranchTag(req.BranchTag)
-	} else if req.BranchTag == "" && currentUnit.BranchTag.Valid {
+	// branch_name: 如果提供了非空值，更新；如果为空字符串，清除（Repository 会处理为 NULL）
+	if req.BranchName != "" {
+		unit.BranchName = normalizeBranchTag(req.BranchName)
+	} else if req.BranchName == "" && currentUnit.BranchName.Valid {
 		// 请求值为空且当前值存在，清除它（设置为 Valid=true, String=""，Repository 会转换为 NULL）
-		unit.BranchTag = sql.NullString{String: "", Valid: true}
+		unit.BranchName = sql.NullString{String: "", Valid: true}
 	}
-	// 如果 req.BranchTag == "" 且当前值不存在，保持 unit.BranchTag.Valid = false（不更新）
+	// 如果 req.BranchName == "" 且当前值不存在，保持 unit.BranchName.Valid = false（不更新）
 	
 	if req.UnitName != "" {
 		unit.UnitName = strings.TrimSpace(req.UnitName)
 	}
 	if req.Building != "" {
-		unit.Building = strings.TrimSpace(req.Building)
+		unit.Building = normalizeBuilding(req.Building)
+	} else {
+		// 如果请求中未提供 building，保持原值（不更新）
+		unit.Building = currentUnit.Building
 	}
 	if req.Floor != "" {
-		unit.Floor = strings.TrimSpace(req.Floor)
+		unit.Floor = normalizeFloor(req.Floor)
 	}
 	
-	// area_tag: 类似 branch_tag
-	if req.AreaTag != "" {
-		unit.AreaTag = normalizeAreaTag(req.AreaTag)
-	} else if req.AreaTag == "" && currentUnit.AreaTag.Valid {
-		unit.AreaTag = sql.NullString{String: "", Valid: true}
+	// area_name: 类似 branch_name
+	if req.AreaName != "" {
+		unit.AreaName = normalizeAreaTag(req.AreaName)
+	} else if req.AreaName == "" && currentUnit.AreaName.Valid {
+		unit.AreaName = sql.NullString{String: "", Valid: true}
 	}
 	
 	if req.UnitNumber != "" {
@@ -730,7 +746,7 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 	}
 	
 	if req.UnitType != "" {
-		unit.UnitType = strings.TrimSpace(req.UnitType)
+		unit.UnitType = normalizeUnitType(req.UnitType)
 	}
 	if req.IsPublicSpace != nil {
 		unit.IsPublicSpace = *req.IsPublicSpace
@@ -739,7 +755,7 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 		unit.IsMultiPersonRoom = *req.IsMultiPersonRoom
 	}
 	if req.Timezone != "" {
-		unit.Timezone = strings.TrimSpace(req.Timezone)
+		unit.Timezone = normalizeTimezone(req.Timezone)
 	}
 
 	// 4. 调用 Repository
@@ -1040,15 +1056,12 @@ func (s *unitService) CreateBed(ctx context.Context, req CreateBedRequest) (*Cre
 	if req.BedName == "" {
 		return nil, fmt.Errorf("bed_name is required")
 	}
-	if req.BedType == "" {
-		return nil, fmt.Errorf("bed_type is required")
-	}
 
+	// 注意：bed_type 字段已删除，ActiveBed 判断由应用层动态计算
 	bed := &domain.Bed{
 		TenantID:         req.TenantID,
 		RoomID:            req.RoomID,
 		BedName:          strings.TrimSpace(req.BedName),
-		BedType:          strings.TrimSpace(req.BedType),
 		MattressMaterial: normalizeMattressMaterial(req.MattressMaterial),
 		MattressThickness: normalizeMattressThickness(req.MattressThickness),
 	}
@@ -1093,17 +1106,14 @@ func (s *unitService) UpdateBed(ctx context.Context, req UpdateBedRequest) (*Upd
 		TenantID:         req.TenantID,
 		RoomID:           currentBed.RoomID,
 		BedName:          currentBed.BedName,
-		BedType:          currentBed.BedType,
 		MattressMaterial: currentBed.MattressMaterial,
 		MattressThickness: currentBed.MattressThickness,
 	}
 
 	// 更新提供的字段
+	// 注意：bed_type 字段已删除，ActiveBed 判断由应用层动态计算
 	if req.BedName != "" {
 		bed.BedName = strings.TrimSpace(req.BedName)
-	}
-	if req.BedType != "" {
-		bed.BedType = strings.TrimSpace(req.BedType)
 	}
 	if req.MattressMaterial != "" || req.MattressMaterial == "" { // 允许设置为空
 		bed.MattressMaterial = normalizeMattressMaterial(req.MattressMaterial)
@@ -1155,6 +1165,15 @@ func (s *unitService) DeleteBed(ctx context.Context, req DeleteBedRequest) (*Del
 // 辅助函数
 // ============================================
 
+// stringValueOrEmpty 将 *string 转换为 string（nil → ""，非 nil → 去除首尾空格）
+// 用于将 Service 层的 *string（nil 表示 null）转换为 Repository 层的 string（"" 表示 null）
+func stringValueOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return strings.TrimSpace(*s)
+}
+
 // normalizeBranchTag 规范化 branch_tag：空字符串或 "-" 视为 NULL
 func normalizeBranchTag(branchTag string) sql.NullString {
 	if branchTag == "" || branchTag == "-" {
@@ -1193,5 +1212,70 @@ func normalizeMattressThickness(thickness string) sql.NullString {
 		return sql.NullString{Valid: false}
 	}
 	return sql.NullString{String: thickness, Valid: true}
+}
+
+// normalizeBuilding 规范化 building：空字符串或 "-" → NULL，否则返回 trimmed 字符串
+func normalizeBuilding(building string) sql.NullString {
+	b := strings.TrimSpace(building)
+	if b == "" || b == "-" {
+		return sql.NullString{Valid: false}
+	}
+	return sql.NullString{String: b, Valid: true}
+}
+
+// normalizeUnitType 规范化 unit_type：空字符串 → "Facility"
+func normalizeUnitType(unitType string) string {
+	t := strings.TrimSpace(unitType)
+	if t == "" {
+		return "Facility"
+	}
+	return t
+}
+
+// normalizeFloor 规范化 floor：
+// - number (1) → sql.NullString{String: "1F", Valid: true}
+// - string without "F" ("1") → sql.NullString{String: "1F", Valid: true}
+// - string with "F" ("1F") → sql.NullString{String: "1F", Valid: true}
+// - empty string → sql.NullString{String: "1F", Valid: true} (default)
+func normalizeFloor(floor interface{}) sql.NullString {
+	if floor == nil {
+		return sql.NullString{String: "1F", Valid: true}
+	}
+
+	var floorStr string
+	switch v := floor.(type) {
+	case int:
+		floorStr = fmt.Sprintf("%dF", v)
+	case float64:
+		floorStr = fmt.Sprintf("%.0fF", v)
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			floorStr = "1F"
+		} else {
+			// 如果是纯数字，添加 "F" 后缀
+			if matched, _ := regexp.MatchString(`^\d+$`, s); matched {
+				floorStr = s + "F"
+			} else if strings.HasSuffix(s, "F") || strings.HasSuffix(s, "f") {
+				// 如果已经有 "F" 或 "f" 后缀，保持不变
+				floorStr = s
+			} else {
+				// 其他情况，添加 "F" 后缀
+				floorStr = s + "F"
+			}
+		}
+	default:
+		floorStr = "1F"
+	}
+	return sql.NullString{String: floorStr, Valid: true}
+}
+
+// normalizeTimezone 规范化 timezone：空字符串 → "America/Denver" (Mountain Time, 有夏令时)
+func normalizeTimezone(timezone string) string {
+	tz := strings.TrimSpace(timezone)
+	if tz == "" {
+		return "America/Denver"
+	}
+	return tz
 }
 

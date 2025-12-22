@@ -448,10 +448,10 @@ func (r *PostgresUsersRepository) ListUsers(ctx context.Context, tenantID string
 		argIdx++
 	}
 	if filters.BranchTagNull {
-		// 匹配 branch_tag IS NULL OR branch_tag = '-'
-		where = append(where, "(u.branch_tag IS NULL OR u.branch_tag = '-')")
+		// 匹配 branch_name IS NULL OR branch_name = '-'
+		where = append(where, "(u.branch_name IS NULL OR u.branch_name = '-')")
 	} else if filters.BranchTag != "" {
-		where = append(where, fmt.Sprintf("u.branch_tag = $%d", argIdx))
+		where = append(where, fmt.Sprintf("u.branch_name = $%d", argIdx))
 		args = append(args, filters.BranchTag)
 		argIdx++
 	}
@@ -736,16 +736,9 @@ func (r *PostgresUsersRepository) CreateUser(ctx context.Context, tenantID strin
 		}
 	}
 
-	// 同步branch_tag到tags_catalog目录（如果branch_tag存在）
-	if user.BranchTag.Valid && user.BranchTag.String != "" {
-		_, err = tx.ExecContext(ctx,
-			`SELECT upsert_tag_to_catalog($1::uuid, $2, $3)`,
-			tenantID, user.BranchTag.String, "branch_tag",
-		)
-		if err != nil {
-			return "", fmt.Errorf("failed to sync branch_tag to catalog: %w", err)
-		}
-	}
+	// 注意：branch_tag 不应该在这里创建
+	// branch_tag 应该由前端在 TagList 页面创建（tag_name = "Branch"）
+	// user 的 branch_tag 只是数据，不需要同步到 tags_catalog
 
 	if err = tx.Commit(); err != nil {
 		return "", fmt.Errorf("failed to commit transaction: %w", err)
@@ -972,16 +965,9 @@ func (r *PostgresUsersRepository) UpdateUser(ctx context.Context, tenantID, user
 			oldBranchTagValue = oldBranchTag.String
 		}
 		if oldBranchTagValue != user.BranchTag.String {
-			// 如果新branch_tag不为空，添加到目录
-			if user.BranchTag.String != "" {
-				_, err = tx.ExecContext(ctx,
-					`SELECT upsert_tag_to_catalog($1::uuid, $2, $3)`,
-					tenantID, user.BranchTag.String, "branch_tag",
-				)
-				if err != nil {
-					return fmt.Errorf("failed to sync branch_tag to catalog: %w", err)
-				}
-			}
+			// 注意：branch_tag 不应该在这里创建
+			// branch_tag 应该由前端在 TagList 页面创建（tag_name = "Branch"）
+			// user 的 branch_tag 只是数据，不需要同步到 tags_catalog
 			// 注意：不需要从旧branch_tag移除，因为tag_objects已删除
 		}
 	}

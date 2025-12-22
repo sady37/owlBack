@@ -113,7 +113,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					var targetResidentID sql.NullString
 					var targetBranchTag sql.NullString
 					err := s.DB.QueryRowContext(r.Context(),
-						`SELECT rc.resident_id::text, COALESCE(u.branch_tag, '') as branch_tag
+						`SELECT rc.resident_id::text, COALESCE(u.branch_name, '') as branch_tag
 						 FROM resident_contacts rc
 						 LEFT JOIN residents r ON r.resident_id = rc.resident_id
 						 LEFT JOIN units u ON u.unit_id = r.unit_id
@@ -278,8 +278,8 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				             r.status, r.service_level, r.admission_date, r.discharge_date,
 				             r.family_tag, r.unit_id::text, r.room_id::text, r.bed_id::text,
 				             COALESCE(u.unit_name, '') as unit_name,
-				             COALESCE(u.branch_tag, '') as branch_tag,
-				             COALESCE(u.area_tag, '') as area_tag,
+				             COALESCE(u.branch_name, '') as branch_tag,
+				             COALESCE(u.area_name, '') as area_tag,
 				             COALESCE(u.unit_number, '') as unit_number,
 				             COALESCE(u.is_multi_person_room, false) as is_multi_person_room,
 				             COALESCE(rm.room_name, '') as room_name,
@@ -567,7 +567,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					if permCheck.BranchOnly {
 						var unitBranchTag sql.NullString
 						err := s.DB.QueryRowContext(r.Context(),
-							`SELECT branch_tag FROM units WHERE tenant_id = $1 AND unit_id::text = $2`,
+							`SELECT branch_name FROM units WHERE tenant_id = $1 AND unit_id::text = $2`,
 							tenantID, unitID,
 						).Scan(&unitBranchTag)
 						if err != nil {
@@ -934,7 +934,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					var targetUnitID sql.NullString
 					var targetBranchTag sql.NullString
 					err := s.DB.QueryRowContext(r.Context(),
-						`SELECT r.unit_id::text, COALESCE(u.branch_tag, '') as branch_tag
+						`SELECT r.unit_id::text, COALESCE(u.branch_name, '') as branch_tag
 						 FROM residents r
 						 LEFT JOIN units u ON u.unit_id = r.unit_id
 						 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
@@ -1114,7 +1114,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				var targetUnitID sql.NullString
 				var targetBranchTag sql.NullString
 				err := s.DB.QueryRowContext(r.Context(),
-					`SELECT r.unit_id::text, COALESCE(u.branch_tag, '') as branch_tag
+					`SELECT r.unit_id::text, COALESCE(u.branch_name, '') as branch_tag
 					 FROM residents r
 					 LEFT JOIN units u ON u.unit_id = r.unit_id
 					 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
@@ -1739,7 +1739,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					var targetUnitID sql.NullString
 					var targetBranchTag sql.NullString
 					err := s.DB.QueryRowContext(r.Context(),
-						`SELECT r.unit_id::text, COALESCE(u.branch_tag, '') as branch_tag
+						`SELECT r.unit_id::text, COALESCE(u.branch_name, '') as branch_tag
 						 FROM residents r
 						 LEFT JOIN units u ON u.unit_id = r.unit_id
 						 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
@@ -2217,7 +2217,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					if permCheck.BranchOnly {
 						var targetBranchTag sql.NullString
 						err := s.DB.QueryRowContext(r.Context(),
-							`SELECT COALESCE(u.branch_tag, '') as branch_tag
+							`SELECT COALESCE(u.branch_name, '') as branch_tag
 							 FROM residents r
 							 LEFT JOIN units u ON u.unit_id = r.unit_id
 							 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
@@ -2679,7 +2679,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					// Get target resident's branch_tag
 					var targetBranchTag sql.NullString
 					err := s.DB.QueryRowContext(r.Context(),
-						`SELECT COALESCE(u.branch_tag, '') as branch_tag
+						`SELECT COALESCE(u.branch_name, '') as branch_tag
 						 FROM residents r
 						 LEFT JOIN units u ON u.unit_id = r.unit_id
 						 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
@@ -2956,7 +2956,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 				// Get target resident's branch_tag
 				var targetBranchTag sql.NullString
 				err := s.DB.QueryRowContext(r.Context(),
-					`SELECT COALESCE(u.branch_tag, '') as branch_tag
+					`SELECT COALESCE(u.branch_name, '') as branch_tag
 					 FROM residents r
 					 LEFT JOIN units u ON u.unit_id = r.unit_id
 					 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,

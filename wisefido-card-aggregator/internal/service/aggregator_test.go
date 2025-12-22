@@ -70,10 +70,9 @@ func (m *MockCardRepository) CreateCard(
 	bedID *string, unitID, cardName, cardAddress string,
 	residentID *string,
 	devicesJSON, residentsJSON []byte,
-	routingAlarmUserIDs, routingAlarmTags []string,
 ) (string, error) {
 	args := m.Called(tenantID, cardType, bedID, unitID, cardName, cardAddress,
-		residentID, devicesJSON, residentsJSON, routingAlarmUserIDs, routingAlarmTags)
+		residentID, devicesJSON, residentsJSON)
 	return args.String(0), args.Error(1)
 }
 

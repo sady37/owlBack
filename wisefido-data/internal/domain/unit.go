@@ -9,11 +9,11 @@ import (
 type Unit struct {
 	UnitID            string         `db:"unit_id"`
 	TenantID          string         `db:"tenant_id"`
-	BranchTag         sql.NullString `db:"branch_tag"`         // nullable
+	BranchName        sql.NullString `db:"branch_name"`        // nullable
 	UnitName          string         `db:"unit_name"`           // NOT NULL
-	Building          string         `db:"building"`            // NOT NULL, default '-'
-	Floor             string         `db:"floor"`               // NOT NULL, default '1F'
-	AreaTag           sql.NullString `db:"area_tag"`            // nullable
+	Building          sql.NullString `db:"building"`            // nullable (如果为 NULL，保存为 NULL)
+	Floor             sql.NullString `db:"floor"`               // nullable, default '1F' (由 Service 层控制)
+	AreaName          sql.NullString `db:"area_name"`           // nullable
 	UnitNumber        string         `db:"unit_number"`         // NOT NULL
 	LayoutConfig      sql.NullString `db:"layout_config"`       // nullable, JSONB
 	UnitType          string         `db:"unit_type"`           // NOT NULL

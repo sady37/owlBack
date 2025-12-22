@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -36,7 +35,7 @@ type ActiveBedInfo struct {
 type UnitInfo struct {
 	UnitID            string
 	UnitName          string
-	BranchTag         string
+	BranchName        string
 	Building          string
 	IsPublicSpace     bool
 	IsMultiPersonRoom bool
@@ -68,21 +67,26 @@ type ResidentInfo struct {
 }
 
 // GetActiveBedsByUnit gets all ActiveBeds under the specified unit
-// ActiveBed conditions:
-// 1. beds.bound_device_count > 0
-// 2. Devices bound to this bed have monitoring_enabled = TRUE
+// ActiveBed condition: 床上有 monitoring_enabled = TRUE 的设备即可
+// 注意：bed_type 字段已删除，改为动态查询设备绑定状态
 func (r *CardRepository) GetActiveBedsByUnit(tenantID, unitID string) ([]ActiveBedInfo, error) {
 	query := `
-		SELECT 
+		SELECT DISTINCT
 			b.bed_id,
-			b.unit_id,
-			b.bound_device_count,
-			b.resident_id,
+			r.unit_id,
+			COUNT(DISTINCT d.device_id)::int AS bound_device_count,
+			r2.resident_id,
 			b.room_id
 		FROM beds b
+		INNER JOIN rooms r ON b.room_id = r.room_id
+		INNER JOIN devices d ON d.bound_bed_id = b.bed_id
+		LEFT JOIN residents r2 ON r2.bed_id = b.bed_id AND r2.tenant_id = $1
 		WHERE b.tenant_id = $1
-		  AND b.unit_id = $2
-		  AND b.bound_device_count > 0
+		  AND r.unit_id = $2
+		  AND d.monitoring_enabled = TRUE
+		  AND d.status <> 'disabled'
+		GROUP BY b.bed_id, r.unit_id, r2.resident_id, b.room_id
+		HAVING COUNT(DISTINCT d.device_id) > 0
 		ORDER BY b.bed_name
 	`
 
@@ -123,7 +127,7 @@ func (r *CardRepository) GetUnitInfo(tenantID, unitID string) (*UnitInfo, error)
 		SELECT 
 			unit_id,
 			unit_name,
-			branch_tag,
+			branch_name,
 			building,
 			is_public_space,
 			is_multi_person_room,
@@ -140,7 +144,7 @@ func (r *CardRepository) GetUnitInfo(tenantID, unitID string) (*UnitInfo, error)
 	err := r.db.QueryRow(query, tenantID, unitID).Scan(
 		&unit.UnitID,
 		&unit.UnitName,
-		&unit.BranchTag,
+		&unit.BranchName,
 		&unit.Building,
 		&unit.IsPublicSpace,
 		&unit.IsMultiPersonRoom,
@@ -468,7 +472,6 @@ func (r *CardRepository) DeleteCardsByUnit(tenantID, unitID string) error {
 // Fields to insert:
 // - Required fields: tenant_id, card_type, bed_id/unit_id, card_name, card_address, devices, residents
 // - Optional fields: resident_id (primary resident for ActiveBed cards)
-// - Optional fields: routing_alarm_user_ids, routing_alarm_tags (converted from units.groupList and units.userList)
 //
 // Fields using default values (not inserted):
 // - unhandled_alarm_0 ~ unhandled_alarm_4 (unhandled alarm statistics, default 0)
@@ -479,9 +482,8 @@ func (r *CardRepository) DeleteCardsByUnit(tenantID, unitID string) error {
 // - ActiveBed: bed_id IS NOT NULL, unit_id can be NULL (redundant)
 // - Location: unit_id IS NOT NULL, bed_id must be NULL
 //
-// Alarm routing configuration:
-// - routing_alarm_user_ids: converted from units.userList (JSONB), format UUID[]
-// - routing_alarm_tags: converted from units.groupList (JSONB), format VARCHAR[]
+// Note: Alarm routing configuration (routing_alarm_user_ids, routing_alarm_tags) has been removed.
+// Cards only handle alarm level display, not alarm routing.
 func (r *CardRepository) CreateCard(
 	tenantID string,
 	cardType string, // "ActiveBed" or "Location"
@@ -492,8 +494,6 @@ func (r *CardRepository) CreateCard(
 	residentID *string,
 	devicesJSON []byte,
 	residentsJSON []byte,
-	routingAlarmUserIDs []string, // UUID[] format, converted from units.userList
-	routingAlarmTags []string, // VARCHAR[] format, converted from units.groupList
 ) (string, error) {
 	query := `
 		INSERT INTO cards (
@@ -505,31 +505,10 @@ func (r *CardRepository) CreateCard(
 			card_address,
 			resident_id,
 			devices,
-			residents,
-			routing_alarm_user_ids,
-			routing_alarm_tags
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			residents
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING card_id
 	`
-
-	// Convert routing_alarm_user_ids and routing_alarm_tags
-	// If empty, use NULL (PostgreSQL array type)
-	var routingUserIDs interface{}
-	var routingTags interface{}
-
-	if len(routingAlarmUserIDs) > 0 {
-		// Convert to PostgreSQL UUID[] format
-		routingUserIDs = pq.Array(routingAlarmUserIDs)
-	} else {
-		routingUserIDs = nil
-	}
-
-	if len(routingAlarmTags) > 0 {
-		// Convert to PostgreSQL VARCHAR[] format
-		routingTags = pq.Array(routingAlarmTags)
-	} else {
-		routingTags = nil
-	}
 
 	var cardID string
 	err := r.db.QueryRow(
@@ -543,8 +522,6 @@ func (r *CardRepository) CreateCard(
 		residentID,
 		devicesJSON,
 		residentsJSON,
-		routingUserIDs,
-		routingTags,
 	).Scan(&cardID)
 
 	if err != nil {

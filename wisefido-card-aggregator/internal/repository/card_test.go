@@ -28,11 +28,12 @@ func TestGetActiveBedsByUnit_Success(t *testing.T) {
 	unitID := "unit-456"
 
 	// Setup expected SQL query
+	// 注意：查询已改为动态 JOIN devices 表，检查 monitoring_enabled = TRUE
 	rows := sqlmock.NewRows([]string{"bed_id", "unit_id", "bound_device_count", "resident_id", "room_id"}).
 		AddRow("bed-1", "unit-456", 2, "resident-1", "room-1").
 		AddRow("bed-2", "unit-456", 1, nil, "room-1")
 
-	mock.ExpectQuery(`SELECT`).
+	mock.ExpectQuery(`SELECT DISTINCT`).
 		WithArgs(tenantID, unitID).
 		WillReturnRows(rows)
 
@@ -62,9 +63,10 @@ func TestGetActiveBedsByUnit_EmptyResult(t *testing.T) {
 	unitID := "unit-456"
 
 	// Setup expected SQL query (empty result)
+	// 注意：查询已改为动态 JOIN devices 表，检查 monitoring_enabled = TRUE
 	rows := sqlmock.NewRows([]string{"bed_id", "unit_id", "bound_device_count", "resident_id", "room_id"})
 
-	mock.ExpectQuery(`SELECT`).
+	mock.ExpectQuery(`SELECT DISTINCT`).
 		WithArgs(tenantID, unitID).
 		WillReturnRows(rows)
 
@@ -88,7 +90,7 @@ func TestGetUnitInfo_Success(t *testing.T) {
 
 	// Setup expected SQL query
 	rows := sqlmock.NewRows([]string{
-		"unit_id", "unit_name", "branch_tag", "building",
+		"unit_id", "unit_name", "branch_name", "building",
 		"is_public_space", "is_multi_person_room", "unit_type",
 		"groupList", "userList",
 	}).
@@ -109,7 +111,7 @@ func TestGetUnitInfo_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "unit-456", unitInfo.UnitID)
 	assert.Equal(t, "E203", unitInfo.UnitName)
-	assert.Equal(t, "BranchA", unitInfo.BranchTag)
+	assert.Equal(t, "BranchA", unitInfo.BranchName)
 	assert.Equal(t, "MainBuilding", unitInfo.Building)
 	assert.False(t, unitInfo.IsPublicSpace)
 	assert.False(t, unitInfo.IsMultiPersonRoom)
@@ -130,7 +132,7 @@ func TestGetUnitInfo_WithNullGroupList(t *testing.T) {
 
 	// Setup expected SQL query (groupList and userList are NULL)
 	rows := sqlmock.NewRows([]string{
-		"unit_id", "unit_name", "branch_tag", "building",
+		"unit_id", "unit_name", "branch_name", "building",
 		"is_public_space", "is_multi_person_room", "unit_type",
 		"groupList", "userList",
 	}).
@@ -193,8 +195,6 @@ func TestCreateCard_ActiveBed(t *testing.T) {
 	residentID := "resident-1"
 	devicesJSON := []byte(`[{"device_id": "device-1"}]`)
 	residentsJSON := []byte(`[{"resident_id": "resident-1"}]`)
-	routingUserIDs := []string{"user-id-1"}
-	routingTags := []string{"tag1"}
 
 	// Setup expected SQL insert
 	rows := sqlmock.NewRows([]string{"card_id"}).
@@ -204,8 +204,6 @@ func TestCreateCard_ActiveBed(t *testing.T) {
 		WithArgs(
 			tenantID, cardType, bedID, unitID, cardName, cardAddress,
 			residentID, devicesJSON, residentsJSON,
-			sqlmock.AnyArg(), // routing_alarm_user_ids (pq.Array)
-			sqlmock.AnyArg(), // routing_alarm_tags (pq.Array)
 		).
 		WillReturnRows(rows)
 
@@ -213,7 +211,6 @@ func TestCreateCard_ActiveBed(t *testing.T) {
 	cardID, err := repo.CreateCard(
 		tenantID, cardType, &bedID, unitID, cardName, cardAddress,
 		&residentID, devicesJSON, residentsJSON,
-		routingUserIDs, routingTags,
 	)
 
 	// Verify results
@@ -235,8 +232,6 @@ func TestCreateCard_Location(t *testing.T) {
 	cardAddress := "BranchA-MainBuilding-E203"
 	devicesJSON := []byte(`[{"device_id": "device-1"}]`)
 	residentsJSON := []byte(`[{"resident_id": "resident-1"}]`)
-	routingUserIDs := []string{}
-	routingTags := []string{}
 
 	// Setup expected SQL insert
 	rows := sqlmock.NewRows([]string{"card_id"}).
@@ -246,8 +241,6 @@ func TestCreateCard_Location(t *testing.T) {
 		WithArgs(
 			tenantID, cardType, nil, unitID, cardName, cardAddress,
 			nil, devicesJSON, residentsJSON,
-			nil, // routing_alarm_user_ids (NULL)
-			nil, // routing_alarm_tags (NULL)
 		).
 		WillReturnRows(rows)
 
@@ -255,7 +248,6 @@ func TestCreateCard_Location(t *testing.T) {
 	cardID, err := repo.CreateCard(
 		tenantID, cardType, nil, unitID, cardName, cardAddress,
 		nil, devicesJSON, residentsJSON,
-		routingUserIDs, routingTags,
 	)
 
 	// Verify results

@@ -74,10 +74,9 @@ func (m *MockCardRepository) CreateCard(
 	bedID *string, unitID, cardName, cardAddress string,
 	residentID *string,
 	devicesJSON, residentsJSON []byte,
-	routingAlarmUserIDs, routingAlarmTags []string,
 ) (string, error) {
 	args := m.Called(tenantID, cardType, bedID, unitID, cardName, cardAddress,
-		residentID, devicesJSON, residentsJSON, routingAlarmUserIDs, routingAlarmTags)
+		residentID, devicesJSON, residentsJSON)
 	return args.String(0), args.Error(1)
 }
 
@@ -112,7 +111,7 @@ func TestCreateCardsForUnit_ScenarioA_SingleActiveBed(t *testing.T) {
 	unitInfo := &repository.UnitInfo{
 		UnitID:            unitID,
 		UnitName:          "E203",
-		BranchTag:         "BranchA",
+		BranchName:        "BranchA",
 		Building:          "MainBuilding",
 		IsPublicSpace:     false,
 		IsMultiPersonRoom: false,
@@ -183,10 +182,8 @@ func TestCreateCardsForUnit_ScenarioA_SingleActiveBed(t *testing.T) {
 		mock.AnythingOfType("string"), // cardName
 		mock.AnythingOfType("string"), // cardAddress
 		&resident.ResidentID,
-		mock.AnythingOfType("[]uint8"),  // devicesJSON
-		mock.AnythingOfType("[]uint8"),  // residentsJSON
-		mock.AnythingOfType("[]string"), // routingAlarmUserIDs
-		mock.AnythingOfType("[]string"), // routingAlarmTags
+		mock.AnythingOfType("[]uint8"), // devicesJSON
+		mock.AnythingOfType("[]uint8"), // residentsJSON
 	).Return("card-123", nil)
 
 	// Execute test
@@ -209,7 +206,7 @@ func TestCreateCardsForUnit_ScenarioB_MultipleActiveBeds(t *testing.T) {
 	unitInfo := &repository.UnitInfo{
 		UnitID:            unitID,
 		UnitName:          "E203",
-		BranchTag:         "BranchA",
+		BranchName:        "BranchA",
 		Building:          "MainBuilding",
 		IsPublicSpace:     false,
 		IsMultiPersonRoom: false,
@@ -311,7 +308,7 @@ func TestCreateCardsForUnit_ScenarioC_NoActiveBed(t *testing.T) {
 	unitInfo := &repository.UnitInfo{
 		UnitID:            unitID,
 		UnitName:          "E203",
-		BranchTag:         "BranchA",
+		BranchName:        "BranchA",
 		Building:          "MainBuilding",
 		IsPublicSpace:     false,
 		IsMultiPersonRoom: false,
@@ -372,7 +369,7 @@ func TestCreateCardsForUnit_ScenarioC_NoUnboundDevices(t *testing.T) {
 	unitInfo := &repository.UnitInfo{
 		UnitID:            unitID,
 		UnitName:          "E203",
-		BranchTag:         "BranchA",
+		BranchName:        "BranchA",
 		Building:          "MainBuilding",
 		IsPublicSpace:     false,
 		IsMultiPersonRoom: false,

@@ -53,6 +53,7 @@ type TagItem struct {
 	TagType        string  `json:"tag_type"`
 	TagName        string  `json:"tag_name"`
 	ObjectNameInTag *string `json:"object_name_in_tag,omitempty"` // 对象在 tag 中的名称（GetTagsForObject 使用）
+	TagObjects     map[string]map[string]string `json:"tag_objects,omitempty"` // 动态计算的 tag 成员（ListTags 使用）
 }
 
 // ListTags 查询标签列表
@@ -80,15 +81,29 @@ func (s *TagService) ListTags(ctx context.Context, req ListTagsRequest) (*ListTa
 		return nil, fmt.Errorf("failed to list tags: %w", err)
 	}
 
-	// 转换为前端格式
+	// 转换为前端格式，并动态计算 tag_objects
 	items := make([]TagItem, 0, len(tags))
 	for _, tag := range tags {
-		items = append(items, TagItem{
+		tagItem := TagItem{
 			TagID:    tag.TagID,
 			TenantID: tag.TenantID,
 			TagType:  tag.TagType,
 			TagName:  tag.TagName,
-		})
+		}
+
+		// 根据 tag_type 动态计算 tag_objects
+		tagObjects, err := s.calculateTagObjects(ctx, req.TenantID, tag.TagType, tag.TagName)
+		if err != nil {
+			s.logger.Warn("Failed to calculate tag_objects", zap.String("tag_id", tag.TagID), zap.String("tag_type", tag.TagType), zap.String("tag_name", tag.TagName), zap.Error(err))
+			// 不失败整个操作，只记录警告
+		} else if tagObjects != nil && len(tagObjects) > 0 {
+			tagItem.TagObjects = tagObjects
+			s.logger.Debug("Calculated tag_objects", zap.String("tag_id", tag.TagID), zap.String("tag_type", tag.TagType), zap.String("tag_name", tag.TagName), zap.Int("object_types_count", len(tagObjects)))
+		} else {
+			s.logger.Debug("No tag_objects calculated", zap.String("tag_id", tag.TagID), zap.String("tag_type", tag.TagType), zap.String("tag_name", tag.TagName))
+		}
+
+		items = append(items, tagItem)
 	}
 
 	return &ListTagsResponse{
@@ -444,6 +459,40 @@ func (s *TagService) RemoveTagObjects(ctx context.Context, req RemoveTagObjectsR
 					s.logger.Warn("Failed to clear family_tag from resident", zap.Error(err))
 				}
 			}
+
+			// 如果是 branch_tag 类型，同步清除 units.branch_name 和 buildings.branch_name
+			// objectID 就是 branch_name 的值
+			if tag.TagType == "branch_tag" && req.ObjectType == "branch" {
+				// 清除 units 表中使用该 branch_name 的记录
+				_, err = s.db.ExecContext(ctx,
+					`UPDATE units SET branch_name = NULL WHERE tenant_id = $1 AND branch_name = $2`,
+					req.TenantID, objectID,
+				)
+				if err != nil {
+					s.logger.Warn("Failed to clear branch_name from units", zap.Error(err))
+				}
+
+				// 清除 buildings 表中使用该 branch_name 的记录
+				_, err = s.db.ExecContext(ctx,
+					`UPDATE buildings SET branch_name = NULL WHERE tenant_id = $1 AND branch_name = $2`,
+					req.TenantID, objectID,
+				)
+				if err != nil {
+					s.logger.Warn("Failed to clear branch_name from buildings", zap.Error(err))
+				}
+			}
+
+			// 如果是 area_tag 类型，同步清除 units.area_name
+			// objectID 就是 area_name 的值
+			if tag.TagType == "area_tag" && req.ObjectType == "area" {
+				_, err = s.db.ExecContext(ctx,
+					`UPDATE units SET area_name = NULL WHERE tenant_id = $1 AND area_name = $2`,
+					req.TenantID, objectID,
+				)
+				if err != nil {
+					s.logger.Warn("Failed to clear area_name from units", zap.Error(err))
+				}
+			}
 		}
 	}
 
@@ -478,6 +527,40 @@ func (s *TagService) RemoveTagObjects(ctx context.Context, req RemoveTagObjectsR
 				err = s.tagRepo.SyncResidentFamilyTag(ctx, tag.TagName, obj.ObjectID, true)
 				if err != nil {
 					s.logger.Warn("Failed to clear family_tag from resident", zap.Error(err))
+				}
+			}
+
+			// 如果是 branch_tag 类型，同步清除 units.branch_name 和 buildings.branch_name
+			// obj.ObjectID 就是 branch_name 的值
+			if tag.TagType == "branch_tag" && req.ObjectType == "branch" {
+				// 清除 units 表中使用该 branch_name 的记录
+				_, err = s.db.ExecContext(ctx,
+					`UPDATE units SET branch_name = NULL WHERE tenant_id = $1 AND branch_name = $2`,
+					req.TenantID, obj.ObjectID,
+				)
+				if err != nil {
+					s.logger.Warn("Failed to clear branch_name from units", zap.Error(err))
+				}
+
+				// 清除 buildings 表中使用该 branch_name 的记录
+				_, err = s.db.ExecContext(ctx,
+					`UPDATE buildings SET branch_name = NULL WHERE tenant_id = $1 AND branch_name = $2`,
+					req.TenantID, obj.ObjectID,
+				)
+				if err != nil {
+					s.logger.Warn("Failed to clear branch_name from buildings", zap.Error(err))
+				}
+			}
+
+			// 如果是 area_tag 类型，同步清除 units.area_name
+			// obj.ObjectID 就是 area_name 的值
+			if tag.TagType == "area_tag" && req.ObjectType == "area" {
+				_, err = s.db.ExecContext(ctx,
+					`UPDATE units SET area_name = NULL WHERE tenant_id = $1 AND area_name = $2`,
+					req.TenantID, obj.ObjectID,
+				)
+				if err != nil {
+					s.logger.Warn("Failed to clear area_name from units", zap.Error(err))
 				}
 			}
 		}
@@ -516,7 +599,7 @@ func (s *TagService) GetTagsForObject(ctx context.Context, req GetTagsForObjectR
 	// 根据 object_type 从不同的源表查询：
 	// - user: 从 users.tags JSONB 字段查询
 	// - resident: 从 residents.family_tag 查询
-	// - unit: 从 units.branch_tag 和 units.area_tag 查询
+	// - unit: 从 units.branch_name 和 units.area_name 查询
 	items := make([]TagItem, 0)
 
 	switch req.ObjectType {
@@ -592,13 +675,13 @@ func (s *TagService) GetTagsForObject(ctx context.Context, req GetTagsForObjectR
 		}
 
 	case "unit":
-		// 查询 units.branch_tag 和 units.area_tag
+		// 查询 units.branch_name 和 units.area_name
 		query := `
 			SELECT DISTINCT tc.tag_id::text, tc.tag_type, tc.tag_name, COALESCE(u.unit_name, '') as object_name_in_tag
 			FROM tags_catalog tc
 			INNER JOIN units u ON u.tenant_id = tc.tenant_id AND u.unit_id::text = $2
 			WHERE tc.tenant_id = $1
-			  AND (u.branch_tag = tc.tag_name OR u.area_tag = tc.tag_name)
+			  AND (u.branch_name = tc.tag_name OR u.area_name = tc.tag_name)
 		`
 		rows, err := s.db.QueryContext(ctx, query, req.TenantID, req.ObjectID)
 		if err != nil {
@@ -632,5 +715,159 @@ func (s *TagService) GetTagsForObject(ctx context.Context, req GetTagsForObjectR
 	return &GetTagsForObjectResponse{
 		Items: items,
 	}, nil
+}
+
+// calculateTagObjects 动态计算 tag_objects（tag 的成员列表）
+// 根据 tag_type 从源表查询：
+// - branch_tag（tag_name = "Branch"）：从 units 表查询所有不同的 branch_name 值
+// - area_tag（tag_name = "Area"）：从 units 表查询所有不同的 area_name 值
+// - family_tag：从 residents 表查询所有不同的 family_tag 值
+// - user_tag：从 users.tags JSONB 字段查询
+func (s *TagService) calculateTagObjects(ctx context.Context, tenantID, tagType, tagName string) (map[string]map[string]string, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+
+	tagObjects := make(map[string]map[string]string)
+
+	switch tagType {
+	case "branch_tag":
+		// 对于 branch_tag，tag_name 应该是 "Branch"，members 是所有不同的 branch_name 值
+		// 查询 units 和 buildings 表中所有不同的 branch_name 值
+		// 使用 branch_name 作为 object_id 和 object_name
+		query := `
+			SELECT DISTINCT COALESCE(u.branch_name, '') as branch_name
+			FROM units u
+			WHERE u.tenant_id = $1
+			  AND u.branch_name IS NOT NULL
+			  AND u.branch_name != ''
+			UNION
+			SELECT DISTINCT COALESCE(b.branch_name, '') as branch_name
+			FROM buildings b
+			WHERE b.tenant_id = $1
+			  AND b.branch_name IS NOT NULL
+			  AND b.branch_name != ''
+			ORDER BY branch_name
+		`
+		rows, err := s.db.QueryContext(ctx, query, tenantID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query branch_name: %w", err)
+		}
+		defer rows.Close()
+
+		branchMap := make(map[string]string)
+		for rows.Next() {
+			var branchName sql.NullString
+			if err := rows.Scan(&branchName); err != nil {
+				return nil, fmt.Errorf("failed to scan branch_name: %w", err)
+			}
+			if branchName.Valid && branchName.String != "" {
+				// 使用 branch_name 作为 object_id 和 object_name
+				branchMap[branchName.String] = branchName.String
+			}
+		}
+		if len(branchMap) > 0 {
+			tagObjects["branch"] = branchMap
+		}
+
+	case "area_tag":
+		// 对于 area_tag，tag_name 应该是 "Area"，members 是所有不同的 area_name 值
+		// 查询 units 表中所有不同的 area_name 值
+		// 使用 area_name 作为 object_id 和 object_name
+		query := `
+			SELECT DISTINCT COALESCE(u.area_name, '') as area_name
+			FROM units u
+			WHERE u.tenant_id = $1
+			  AND u.area_name IS NOT NULL
+			  AND u.area_name != ''
+			ORDER BY area_name
+		`
+		rows, err := s.db.QueryContext(ctx, query, tenantID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query area_name: %w", err)
+		}
+		defer rows.Close()
+
+		areaMap := make(map[string]string)
+		for rows.Next() {
+			var areaName sql.NullString
+			if err := rows.Scan(&areaName); err != nil {
+				return nil, fmt.Errorf("failed to scan area_name: %w", err)
+			}
+			if areaName.Valid && areaName.String != "" {
+				// 使用 area_name 作为 object_id 和 object_name
+				areaMap[areaName.String] = areaName.String
+			}
+		}
+		if len(areaMap) > 0 {
+			tagObjects["area"] = areaMap
+		}
+
+	case "family_tag":
+		// 查询 residents 表中所有不同的 family_tag 值
+		query := `
+			SELECT DISTINCT r.resident_id::text, COALESCE(r.nickname, '') as nickname
+			FROM residents r
+			WHERE r.tenant_id = $1
+			  AND r.family_tag IS NOT NULL
+			  AND r.family_tag != ''
+			ORDER BY r.family_tag, r.nickname
+		`
+		rows, err := s.db.QueryContext(ctx, query, tenantID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query family_tag from residents: %w", err)
+		}
+		defer rows.Close()
+
+		residentMap := make(map[string]string)
+		for rows.Next() {
+			var residentID, nickname sql.NullString
+			if err := rows.Scan(&residentID, &nickname); err != nil {
+				return nil, fmt.Errorf("failed to scan resident: %w", err)
+			}
+			if residentID.Valid {
+				residentMap[residentID.String] = nickname.String
+			}
+		}
+		if len(residentMap) > 0 {
+			tagObjects["resident"] = residentMap
+		}
+
+	case "user_tag":
+		// 查询 users.tags JSONB 字段中所有包含该 tag_name 的用户
+		query := `
+			SELECT DISTINCT u.user_id::text, COALESCE(u.nickname, '') as nickname
+			FROM users u
+			WHERE u.tenant_id = $1
+			  AND u.tags IS NOT NULL
+			  AND u.tags ? $2
+			ORDER BY u.nickname
+		`
+		rows, err := s.db.QueryContext(ctx, query, tenantID, tagName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query user_tag from users: %w", err)
+		}
+		defer rows.Close()
+
+		userMap := make(map[string]string)
+		for rows.Next() {
+			var userID, nickname sql.NullString
+			if err := rows.Scan(&userID, &nickname); err != nil {
+				return nil, fmt.Errorf("failed to scan user: %w", err)
+			}
+			if userID.Valid {
+				userMap[userID.String] = nickname.String
+			}
+		}
+		if len(userMap) > 0 {
+			tagObjects["user"] = userMap
+		}
+	}
+
+	if len(tagObjects) == 0 {
+		return nil, nil
+	}
+
+	return tagObjects, nil
 }
 

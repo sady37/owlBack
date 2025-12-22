@@ -11,6 +11,7 @@ type DevicesRepository interface {
 	// 查询
 	ListDevices(ctx context.Context, tenantID string, filters DeviceFilters, page, size int) ([]*domain.Device, int, error)
 	GetDevice(ctx context.Context, tenantID, deviceID string) (*domain.Device, error)
+	GetDeviceRelations(ctx context.Context, tenantID, deviceID string) (*DeviceRelations, error)
 
 	// 创建（手动创建设备绑定）
 	CreateDevice(ctx context.Context, tenantID string, device *domain.Device) (string, error)
@@ -26,6 +27,26 @@ type DevicesRepository interface {
 
 	// 自动创建（设备首次连接时自动创建）
 	GetOrCreateDeviceFromStore(ctx context.Context, identifier string, mqttTopic string) (*domain.Device, error)
+}
+
+// DeviceRelations 设备关联关系
+type DeviceRelations struct {
+	DeviceID           string
+	DeviceName         string
+	DeviceInternalCode string // serial_number
+	DeviceType         int    // 从 device_store.device_type 转换
+	AddressID          string // unit_id
+	AddressName        string // unit_name
+	AddressType        int    // 0=Facility, 1=Home (从 unit_type 转换)
+	Residents          []DeviceRelationResident
+}
+
+// DeviceRelationResident 设备关联的住户信息
+type DeviceRelationResident struct {
+	ID       string
+	Name     string
+	Gender   string
+	Birthday string
 }
 
 // DeviceFilters 设备查询过滤器

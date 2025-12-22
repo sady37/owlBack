@@ -53,9 +53,9 @@ func main() {
 	fmt.Printf("Branch Only: %v\n", perm.BranchOnly)
 	fmt.Printf("Expected: AssignedOnly=false, BranchOnly=true\n")
 	if perm.AssignedOnly == false && perm.BranchOnly == true {
-		fmt.Println("✅ Test 1 PASSED\n")
+		fmt.Println("✅ Test 1 PASSED")
 	} else {
-		fmt.Println("❌ Test 1 FAILED\n")
+		fmt.Println("❌ Test 1 FAILED")
 	}
 
 	// Test 2: Get Admin permissions for residents (R)
@@ -68,9 +68,9 @@ func main() {
 	fmt.Printf("Branch Only: %v\n", perm2.BranchOnly)
 	fmt.Printf("Expected: AssignedOnly=false, BranchOnly=false\n")
 	if perm2.AssignedOnly == false && perm2.BranchOnly == false {
-		fmt.Println("✅ Test 2 PASSED\n")
+		fmt.Println("✅ Test 2 PASSED")
 	} else {
-		fmt.Println("❌ Test 2 FAILED\n")
+		fmt.Println("❌ Test 2 FAILED")
 	}
 
 	// Test 3: Get Nurse permissions for residents (R)
@@ -83,9 +83,9 @@ func main() {
 	fmt.Printf("Branch Only: %v\n", perm3.BranchOnly)
 	fmt.Printf("Expected: AssignedOnly=true, BranchOnly=false\n")
 	if perm3.AssignedOnly == true && perm3.BranchOnly == false {
-		fmt.Println("✅ Test 3 PASSED\n")
+		fmt.Println("✅ Test 3 PASSED")
 	} else {
-		fmt.Println("❌ Test 3 FAILED\n")
+		fmt.Println("❌ Test 3 FAILED")
 	}
 
 	// Test 4: Test ApplyBranchFilter with NULL branch_tag
@@ -99,7 +99,7 @@ func main() {
 	fmt.Printf("Expected: WHERE (u.branch_tag IS NULL OR u.branch_tag = '-')\n")
 	expectedQuery := "SELECT * FROM residents r LEFT JOIN units u ON u.unit_id = r.unit_id WHERE (u.branch_tag IS NULL OR u.branch_tag = '-')"
 	if len(args) == 0 && query == expectedQuery {
-		fmt.Println("✅ Test 4 PASSED\n")
+		fmt.Println("✅ Test 4 PASSED")
 	} else {
 		fmt.Printf("❌ Test 4 FAILED - Query mismatch\n")
 		fmt.Printf("  Expected: %s\n", expectedQuery)
@@ -117,7 +117,7 @@ func main() {
 	fmt.Printf("Expected: WHERE u.branch_tag = $1, Args: [BranchA]\n")
 	expectedQuery2 := "SELECT * FROM residents r LEFT JOIN units u ON u.unit_id = r.unit_id WHERE u.branch_tag = $1"
 	if len(args2) == 1 && args2[0] == "BranchA" && query2 == expectedQuery2 {
-		fmt.Println("✅ Test 5 PASSED\n")
+		fmt.Println("✅ Test 5 PASSED")
 	} else {
 		fmt.Printf("❌ Test 5 FAILED\n")
 		fmt.Printf("  Expected Query: %s\n", expectedQuery2)
