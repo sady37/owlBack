@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"wisefido-data/internal/domain"
+
 	"github.com/lib/pq"
 )
 
@@ -802,51 +803,76 @@ func (r *PostgresUsersRepository) UpdateUser(ctx context.Context, tenantID, user
 		args = append(args, user.Nickname)
 		argIdx++
 	}
-	// Email 和 EmailHash：常规 CRUD 逻辑
-	// Service 层已经处理了所有业务逻辑，这里只需要根据字段值决定是否更新
-	// 如果 Email.Valid = true，更新 email；如果 Email.Valid = false，设置为 NULL（通过 nil 参数）
-	// 如果 EmailHash 有值，更新 hash；如果 EmailHash 为 nil，设置为 NULL
+	// Email 字段：独立处理
+	// Service 层已经明确表达了意图：
+	// - user.Email.Valid = true && user.Email.String != "" -> 更新 email 字段
+	// - user.Email.Valid = true && user.Email.String == "" -> 删除 email 字段（设置为 NULL）
+	// - user.Email 未设置（零值）-> 不更新 email 字段
+	// Repository 层只执行指令，不做业务判断
 	if user.Email.Valid {
-		updates = append(updates, fmt.Sprintf("email = $%d", argIdx))
-		args = append(args, user.Email)
-		argIdx++
-	} else if user.EmailHash != nil {
-		// Email.Valid = false 且 EmailHash 被设置，说明要删除 email 但保留 hash
-		// 这种情况在 Service 层已经处理，这里只需要设置 email 为 NULL
-		updates = append(updates, fmt.Sprintf("email = $%d", argIdx))
-		args = append(args, nil)
-		argIdx++
+		if user.Email.String != "" {
+			// Valid == true && String != ""，更新字段
+			updates = append(updates, fmt.Sprintf("email = $%d", argIdx))
+			args = append(args, user.Email.String)
+			argIdx++
+		} else {
+			// Valid == true && String == ""，删除字段（设置为 NULL）
+			updates = append(updates, fmt.Sprintf("email = $%d", argIdx))
+			args = append(args, nil)
+			argIdx++
+		}
 	}
-	// 更新 email_hash（如果被设置）
+	// 如果 Email 是零值（未设置），不处理（不更新）
+	// EmailHash 字段：独立处理
+	// Service 层已经明确表达了意图：
+	// - user.EmailHash != nil 且 len > 0 -> 更新 email_hash 字段
+	// - user.EmailHash != nil 且 len == 0 -> 删除 email_hash 字段（设置为 NULL）
+	// - user.EmailHash == nil -> 不更新 email_hash 字段
 	if user.EmailHash != nil {
 		if len(user.EmailHash) > 0 {
 			updates = append(updates, fmt.Sprintf("email_hash = $%d", argIdx))
 			args = append(args, user.EmailHash)
 			argIdx++
 		} else {
-			// EmailHash 为 nil slice，设置为 NULL
+			// EmailHash 为空 slice，设置为 NULL
 			updates = append(updates, fmt.Sprintf("email_hash = $%d", argIdx))
 			args = append(args, nil)
 			argIdx++
 		}
 	}
 
-	// Phone 和 PhoneHash：同 Email 逻辑
+	// Phone 字段：独立处理
+	// Service 层已经明确表达了意图：
+	// - user.Phone.Valid = true && user.Phone.String != "" -> 更新 phone 字段
+	// - user.Phone.Valid = true && user.Phone.String == "" -> 删除 phone 字段（设置为 NULL）
+	// - user.Phone 未设置（零值）-> 不更新 phone 字段
+	// Repository 层只执行指令，不做业务判断
 	if user.Phone.Valid {
-		updates = append(updates, fmt.Sprintf("phone = $%d", argIdx))
-		args = append(args, user.Phone)
-		argIdx++
-	} else if user.PhoneHash != nil {
-		updates = append(updates, fmt.Sprintf("phone = $%d", argIdx))
-		args = append(args, nil)
-		argIdx++
+		if user.Phone.String != "" {
+			// Valid == true && String != ""，更新字段
+			updates = append(updates, fmt.Sprintf("phone = $%d", argIdx))
+			args = append(args, user.Phone.String)
+			argIdx++
+		} else {
+			// Valid == true && String == ""，删除字段（设置为 NULL）
+			updates = append(updates, fmt.Sprintf("phone = $%d", argIdx))
+			args = append(args, nil)
+			argIdx++
+		}
 	}
+	// 如果 Phone 是零值（未设置），不处理（不更新）
+	// PhoneHash 字段：独立处理
+	// Service 层已经明确表达了意图：
+	// - user.PhoneHash != nil 且 len > 0 -> 更新 phone_hash 字段
+	// - user.PhoneHash != nil 且 len == 0 -> 删除 phone_hash 字段（设置为 NULL）
+	// - user.PhoneHash == nil -> 不更新 phone_hash 字段
 	if user.PhoneHash != nil {
 		if len(user.PhoneHash) > 0 {
 			updates = append(updates, fmt.Sprintf("phone_hash = $%d", argIdx))
 			args = append(args, user.PhoneHash)
 			argIdx++
 		} else {
+			// PhoneHash 为空 slice，设置为 NULL
 			updates = append(updates, fmt.Sprintf("phone_hash = $%d", argIdx))
 			args = append(args, nil)
 			argIdx++
@@ -1119,4 +1145,3 @@ func (r *PostgresUsersRepository) CheckPhoneUniqueness(ctx context.Context, tena
 	}
 	return nil
 }
-

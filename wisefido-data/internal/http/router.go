@@ -104,7 +104,7 @@ func (r *Router) RegisterStubRoutes(s *StubHandler) {
 	// r.Handle("/admin/api/v1/role-permissions/resource-types", s.AdminRolePermissions)
 
 	r.Handle("/admin/api/v1/service-levels", s.AdminServiceLevels)
-	
+
 	// card-overview - 已迁移到 CardOverviewHandler，不再使用 StubHandler.AdminCardOverview
 	// 新路由在 RegisterCardOverviewRoutes 中注册（需要数据库连接）
 	// 如果数据库未启用，这些路由将不可用（返回 404）
@@ -120,7 +120,7 @@ func (r *Router) RegisterStubRoutes(s *StubHandler) {
 	// 新路由在 RegisterAlarmCloudRoutes 中注册（需要数据库连接）
 	// 如果数据库未启用，这些路由将不可用（返回 404）
 	// r.Handle("/admin/api/v1/alarm-cloud", s.AdminAlarm)
-	
+
 	// alarm-events 路由已迁移到 AlarmEventHandler（见 RegisterAlarmEventRoutes）
 	// 如果数据库未启用，这些路由将不可用（返回 404）
 
@@ -269,10 +269,10 @@ func (r *Router) RegisterAlarmEventRoutes(h *AlarmEventHandler) {
 
 // RegisterResidentRoutes 注册住户管理路由
 func (r *Router) RegisterResidentRoutes(h *ResidentHandler) {
-	r.Handle("/admin/api/v1/residents", h.ServeHTTP)
-	r.Handle("/admin/api/v1/residents/", h.ServeHTTP)
+	r.HandleHandler("/admin/api/v1/residents", h)
+	r.HandleHandler("/admin/api/v1/residents/", h)
 	// 联系人密码重置路由
-	r.Handle("/admin/api/v1/contacts/", h.ServeHTTP)
+	r.HandleHandler("/admin/api/v1/contacts/", h)
 }
 
 // RegisterSleepaceReportRoutes 注册 Sleepace 睡眠报告路由

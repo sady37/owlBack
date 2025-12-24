@@ -124,7 +124,7 @@ type AlarmEventDTO struct {
 
 	// 关联数据（通过 JOIN 查询）
 	CardID     *string `json:"card_id,omitempty"`     // 卡片ID（通过 device_id JOIN cards 获取）
-	DeviceName *string  `json:"device_name,omitempty"` // 设备名称（通过 device_id JOIN devices 获取）
+	DeviceName *string `json:"device_name,omitempty"` // 设备名称（通过 device_id JOIN devices 获取）
 
 	// 住户信息（通过 device → bed → resident 获取）
 	ResidentID      *string `json:"resident_id,omitempty"`      // 住户ID
@@ -137,10 +137,10 @@ type AlarmEventDTO struct {
 	BranchTag      *string `json:"branch_tag,omitempty"`      // 分支标签
 	Building       *string `json:"building,omitempty"`        // 建筑名称
 	Floor          *string `json:"floor,omitempty"`           // 楼层（如 "2F"）
-	AreaTag        *string `json:"area_tag,omitempty"`       // 区域标签（从 units 表获取）
-	UnitName       *string `json:"unit_name,omitempty"`      // 单元名称
-	RoomName       *string `json:"room_name,omitempty"`      // 房间名称（从 rooms 表获取）
-	BedName        *string `json:"bed_name,omitempty"`       // 床位名称（从 beds 表获取）
+	AreaTag        *string `json:"area_tag,omitempty"`        // 区域标签（从 units 表获取）
+	UnitName       *string `json:"unit_name,omitempty"`       // 单元名称
+	RoomName       *string `json:"room_name,omitempty"`       // 房间名称（从 rooms 表获取）
+	BedName        *string `json:"bed_name,omitempty"`        // 床位名称（从 beds 表获取）
 	AddressDisplay *string `json:"address_display,omitempty"` // 格式化地址显示（"branch_tag-Building-UnitName"）
 
 	// JSONB 字段（解析后返回）
@@ -421,7 +421,7 @@ func (s *alarmEventService) convertAlarmEventToDTO(ctx context.Context, tenantID
 		Category:    event.Category,
 		AlarmLevel:  event.AlarmLevel,
 		AlarmStatus: event.AlarmStatus,
-		TriggeredAt:  event.TriggeredAt.Unix(),
+		TriggeredAt: event.TriggeredAt.Unix(),
 	}
 
 	// 处理信息
@@ -678,7 +678,7 @@ func (s *alarmEventService) getResidentByDeviceID(ctx context.Context, tenantID,
 	query := `
 		SELECT DISTINCT
 			r.resident_id::text,
-			u.branch_tag,
+			u.branch_name,
 			u.unit_id::text
 		FROM devices d
 		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id
@@ -885,4 +885,3 @@ func mapOperationToHandleType(operation string) string {
 		return ""
 	}
 }
-

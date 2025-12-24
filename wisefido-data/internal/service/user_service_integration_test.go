@@ -6,6 +6,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"strings"
 	"testing"
 
 	"wisefido-data/internal/repository"
@@ -648,6 +650,307 @@ func TestUserService_ResetPIN_InvalidPIN(t *testing.T) {
 	_, err = userService.ResetPIN(context.Background(), req)
 	if err == nil {
 		t.Fatalf("Expected error for invalid PIN format, got nil")
+	}
+}
+
+// ============================================
+// GetAccountSettings 测试
+// ============================================
+
+// TestUserService_GetAccountSettings_Success 测试获取账户设置成功
+func TestUserService_GetAccountSettings_Success(t *testing.T) {
+	db := setupTestDBForUser(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	tenantID := createTestTenantForUser(t, db)
+	defer cleanupTestDataForUser(t, db, tenantID)
+
+	// 创建 Service
+	usersRepo := repository.NewPostgresUsersRepository(db)
+	userService := NewUserService(usersRepo, getTestLoggerForUser())
+
+	// 创建测试用户
+	userID := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000001", tenantID, "testuser", "password123", "test@example.com", "1234567890", "Admin", "BRANCH-1")
+
+	// 测试获取自己的账户设置
+	req := GetAccountSettingsRequest{
+		TenantID:      tenantID,
+		UserID:        userID,
+		CurrentUserID: userID, // 自己查看自己的账户设置
+	}
+
+	resp, err := userService.GetAccountSettings(context.Background(), req)
+	if err != nil {
+		t.Fatalf("GetAccountSettings failed: %v", err)
+	}
+
+	if resp.UserAccount != "testuser" {
+		t.Fatalf("Expected user_account 'testuser', got '%s'", resp.UserAccount)
+	}
+	if resp.Email == nil || *resp.Email != "test@example.com" {
+		t.Fatalf("Expected email 'test@example.com', got '%v'", resp.Email)
+	}
+	if resp.Phone == nil || *resp.Phone != "1234567890" {
+		t.Fatalf("Expected phone '1234567890', got '%v'", resp.Phone)
+	}
+}
+
+// TestUserService_GetAccountSettings_PermissionDenied 测试权限拒绝
+func TestUserService_GetAccountSettings_PermissionDenied(t *testing.T) {
+	db := setupTestDBForUser(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	tenantID := createTestTenantForUser(t, db)
+	defer cleanupTestDataForUser(t, db, tenantID)
+
+	// 创建 Service
+	usersRepo := repository.NewPostgresUsersRepository(db)
+	userService := NewUserService(usersRepo, getTestLoggerForUser())
+
+	// 创建两个测试用户
+	userID1 := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000001", tenantID, "user1", "password1", "user1@test.com", "1234567890", "Nurse", "BRANCH-1")
+	userID2 := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000002", tenantID, "user2", "password2", "user2@test.com", "0987654321", "Nurse", "BRANCH-1")
+
+	// 测试：Nurse 用户不能查看其他用户的账户设置
+	req := GetAccountSettingsRequest{
+		TenantID:      tenantID,
+		UserID:        userID2,
+		CurrentUserID: userID1, // Nurse 尝试查看另一个 Nurse 的账户设置
+	}
+
+	_, err := userService.GetAccountSettings(context.Background(), req)
+	if err == nil {
+		t.Fatalf("Expected permission denied error, got nil")
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("Expected 'permission denied' error, got: %v", err)
+	}
+}
+
+
+// ============================================
+// UpdateAccountSettings 测试
+// ============================================
+
+// TestUserService_UpdateAccountSettings_Success 测试更新账户设置成功
+func TestUserService_UpdateAccountSettings_Success(t *testing.T) {
+	db := setupTestDBForUser(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	tenantID := createTestTenantForUser(t, db)
+	defer cleanupTestDataForUser(t, db, tenantID)
+
+	// 创建 Service
+	usersRepo := repository.NewPostgresUsersRepository(db)
+	userService := NewUserService(usersRepo, getTestLoggerForUser())
+
+	// 创建测试用户
+	userID := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000001", tenantID, "testuser", "password123", "old@example.com", "1111111111", "Admin", "BRANCH-1")
+
+	// 计算新的密码 hash
+	newPasswordHash := sha256.Sum256([]byte("newpassword123"))
+	newPasswordHashHex := hex.EncodeToString(newPasswordHash[:])
+
+	// 计算新的 email hash
+	newEmail := "new@example.com"
+	newEmailHash := sha256.Sum256([]byte(strings.ToLower(newEmail)))
+	newEmailHashHex := hex.EncodeToString(newEmailHash[:])
+
+	// 计算新的 phone hash
+	newPhone := "2222222222"
+	newPhoneHash := sha256.Sum256([]byte(newPhone))
+	newPhoneHashHex := hex.EncodeToString(newPhoneHash[:])
+
+	// 测试更新账户设置（密码、邮箱、电话）
+	req := UpdateAccountSettingsRequest{
+		TenantID:      tenantID,
+		UserID:        userID,
+		CurrentUserID: userID,
+		PasswordHash:  &newPasswordHashHex,
+		Email:         &newEmail,
+		EmailHash:     &newEmailHashHex,
+		Phone:         &newPhone,
+		PhoneHash:     &newPhoneHashHex,
+	}
+
+	resp, err := userService.UpdateAccountSettings(context.Background(), req)
+	if err != nil {
+		t.Fatalf("UpdateAccountSettings failed: %v", err)
+	}
+
+	if !resp.Success {
+		t.Fatalf("Expected success=true, got false")
+	}
+
+	// 验证更新是否成功
+	getReq := GetAccountSettingsRequest{
+		TenantID:      tenantID,
+		UserID:        userID,
+		CurrentUserID: userID,
+	}
+	getResp, err := userService.GetAccountSettings(context.Background(), getReq)
+	if err != nil {
+		t.Fatalf("GetAccountSettings failed: %v", err)
+	}
+
+	if getResp.Email == nil || *getResp.Email != newEmail {
+		t.Fatalf("Expected email '%s', got '%v'", newEmail, getResp.Email)
+	}
+	if getResp.Phone == nil || *getResp.Phone != newPhone {
+		t.Fatalf("Expected phone '%s', got '%v'", newPhone, getResp.Phone)
+	}
+
+	// 验证密码是否更新（通过尝试登录）
+	user, err := usersRepo.GetUser(context.Background(), tenantID, userID)
+	if err != nil {
+		t.Fatalf("GetUser failed: %v", err)
+	}
+	expectedPasswordHash := sha256.Sum256([]byte("newpassword123"))
+	if hex.EncodeToString(user.PasswordHash) != hex.EncodeToString(expectedPasswordHash[:]) {
+		t.Fatalf("Password hash mismatch")
+	}
+}
+
+// TestUserService_UpdateAccountSettings_EmailUniqueness 测试邮箱唯一性检查
+func TestUserService_UpdateAccountSettings_EmailUniqueness(t *testing.T) {
+	db := setupTestDBForUser(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	tenantID := createTestTenantForUser(t, db)
+	defer cleanupTestDataForUser(t, db, tenantID)
+
+	// 创建 Service
+	usersRepo := repository.NewPostgresUsersRepository(db)
+	userService := NewUserService(usersRepo, getTestLoggerForUser())
+
+	// 创建两个测试用户
+	userID1 := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000001", tenantID, "user1", "password1", "user1@test.com", "1111111111", "Admin", "BRANCH-1")
+	userID2 := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000002", tenantID, "user2", "password2", "user2@test.com", "2222222222", "Admin", "BRANCH-1")
+
+	// 尝试将 user2 的邮箱更新为 user1 的邮箱（应该失败）
+	duplicateEmail := "user1@test.com"
+	emailHash := sha256.Sum256([]byte(strings.ToLower(duplicateEmail)))
+	emailHashHex := hex.EncodeToString(emailHash[:])
+
+	req := UpdateAccountSettingsRequest{
+		TenantID:      tenantID,
+		UserID:        userID2,
+		CurrentUserID: userID2,
+		Email:         &duplicateEmail,
+		EmailHash:     &emailHashHex,
+	}
+
+	_, err := userService.UpdateAccountSettings(context.Background(), req)
+	if err == nil {
+		t.Fatalf("Expected error for duplicate email, got nil")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("Expected 'already exists' error, got: %v", err)
+	}
+}
+
+// TestUserService_UpdateAccountSettings_PermissionDenied 测试权限拒绝（只能更新自己的账户设置）
+func TestUserService_UpdateAccountSettings_PermissionDenied(t *testing.T) {
+	db := setupTestDBForUser(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	tenantID := createTestTenantForUser(t, db)
+	defer cleanupTestDataForUser(t, db, tenantID)
+
+	// 创建 Service
+	usersRepo := repository.NewPostgresUsersRepository(db)
+	userService := NewUserService(usersRepo, getTestLoggerForUser())
+
+	// 创建两个测试用户
+	userID1 := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000001", tenantID, "user1", "password1", "user1@test.com", "1111111111", "Nurse", "BRANCH-1")
+	userID2 := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000002", tenantID, "user2", "password2", "user2@test.com", "2222222222", "Admin", "BRANCH-1")
+
+	// 尝试：即使是 Admin 也不能更新其他用户的账户设置（只能更新自己的）
+	newEmail := "newemail@test.com"
+	emailHash := sha256.Sum256([]byte(strings.ToLower(newEmail)))
+	emailHashHex := hex.EncodeToString(emailHash[:])
+
+	req := UpdateAccountSettingsRequest{
+		TenantID:      tenantID,
+		UserID:        userID2,
+		CurrentUserID: userID1, // Nurse 尝试更新 Admin 的账户设置（应该失败）
+		Email:         &newEmail,
+		EmailHash:     &emailHashHex,
+	}
+
+	_, err := userService.UpdateAccountSettings(context.Background(), req)
+	if err == nil {
+		t.Fatalf("Expected permission denied error, got nil")
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("Expected 'permission denied' error, got: %v", err)
+	}
+}
+
+// TestUserService_UpdateAccountSettings_DeleteEmail 测试删除邮箱
+func TestUserService_UpdateAccountSettings_DeleteEmail(t *testing.T) {
+	db := setupTestDBForUser(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	tenantID := createTestTenantForUser(t, db)
+	defer cleanupTestDataForUser(t, db, tenantID)
+
+	// 创建 Service
+	usersRepo := repository.NewPostgresUsersRepository(db)
+	userService := NewUserService(usersRepo, getTestLoggerForUser())
+
+	// 创建测试用户（有邮箱）
+	userID := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000001", tenantID, "testuser", "password123", "test@example.com", "1234567890", "Admin", "BRANCH-1")
+
+	// 删除邮箱（设置为空字符串）
+	emptyEmail := ""
+	req := UpdateAccountSettingsRequest{
+		TenantID:      tenantID,
+		UserID:        userID,
+		CurrentUserID: userID,
+		Email:         &emptyEmail,
+	}
+
+	resp, err := userService.UpdateAccountSettings(context.Background(), req)
+	if err != nil {
+		t.Fatalf("UpdateAccountSettings failed: %v", err)
+	}
+
+	if !resp.Success {
+		t.Fatalf("Expected success=true, got false")
+	}
+
+	// 验证邮箱是否已删除
+	getReq := GetAccountSettingsRequest{
+		TenantID:      tenantID,
+		UserID:        userID,
+		CurrentUserID: userID,
+	}
+	getResp, err := userService.GetAccountSettings(context.Background(), getReq)
+	if err != nil {
+		t.Fatalf("GetAccountSettings failed: %v", err)
+	}
+
+	if getResp.Email != nil {
+		t.Fatalf("Expected email to be nil (deleted), got '%v'", getResp.Email)
 	}
 }
 

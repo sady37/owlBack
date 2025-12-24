@@ -149,6 +149,8 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 
 				// Step 1: Query resident_contacts table
 				// Priority: email_hash > phone_hash
+				// 注意：一个 contact 的 email_hash/phone_hash 可能被多个 resident_contacts 记录共享（同一联系人关联多个住户）
+				// 因此，需要检查该 email_hash/phone_hash 对应的所有关联住户，只要至少有一个住户的 can_view_status=true，就允许登录
 				rows, err = s.DB.QueryContext(
 					r.Context(),
 					`SELECT DISTINCT rc.tenant_id::text,
@@ -163,11 +165,15 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 					          ELSE 3
 					        END as priority
 					   FROM resident_contacts rc
-					   JOIN residents r ON r.resident_id = rc.resident_id AND r.tenant_id = rc.tenant_id
 					  WHERE rc.password_hash = $2
 					    AND COALESCE(rc.is_enabled,true) = true
 					    AND (rc.email_hash = $1 OR rc.phone_hash = $1)
-					    AND COALESCE(r.can_view_status,true) = true
+					    AND EXISTS (
+					      SELECT 1 FROM residents r
+					      WHERE r.resident_id = rc.resident_id
+					        AND r.tenant_id = rc.tenant_id
+					        AND COALESCE(r.can_view_status,true) = true
+					    )
 					  ORDER BY priority ASC, rc.tenant_id::text ASC`,
 					ah, ph,
 				)
@@ -325,6 +331,8 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 				// account_hash and password_hash are independent: account_hash = SHA256(account), password_hash = SHA256(password)
 
 				// Step 1: Try family contact login first
+				// 注意：一个 contact 的 email_hash/phone_hash 可能被多个 resident_contacts 记录共享（同一联系人关联多个住户）
+				// 优先选择关联的 resident 的 can_view_status=true 的 contact
 				var enabled bool
 				var first, last string
 				var familyBranchTag sql.NullString
@@ -340,7 +348,7 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 					        COALESCE(rc.is_enabled,true),
 					        COALESCE(t.tenant_name,''),
 					        COALESCE(t.domain,''),
-					        COALESCE(u.branch_tag, '') as branch_tag,
+					        COALESCE(u.branch_name, '') as branch_tag,
 					        CASE
 					          WHEN rc.email_hash = $2 THEN 'email'
 					          WHEN rc.phone_hash = $2 THEN 'phone'
@@ -354,8 +362,16 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 					    AND rc.password_hash = $3
 					    AND (rc.email_hash = $2 OR rc.phone_hash = $2)
 					    AND COALESCE(rc.is_enabled,true) = true
-					    AND COALESCE(r.can_view_status,true) = true
+					    -- 检查该 email_hash/phone_hash 对应的所有关联住户，只要至少有一个住户的 can_view_status=true，就允许登录
+					    AND EXISTS (
+					      SELECT 1 FROM residents r2
+					      WHERE r2.resident_id = rc.resident_id
+					        AND r2.tenant_id = rc.tenant_id
+					        AND COALESCE(r2.can_view_status,true) = true
+					    )
 					  ORDER BY 
+					    -- 优先选择 can_view_status=true 的记录
+					    CASE WHEN COALESCE(r.can_view_status,true) = true THEN 0 ELSE 1 END ASC,
 					    CASE
 					      WHEN rc.email_hash = $2 THEN 1
 					      WHEN rc.phone_hash = $2 THEN 2
@@ -376,7 +392,7 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 						        COALESCE(r.status,'active'),
 						        COALESCE(t.tenant_name,''),
 						        COALESCE(t.domain,''),
-						        COALESCE(u.branch_tag, '') as branch_tag,
+						        COALESCE(u.branch_name, '') as branch_tag,
 						        CASE
 						          WHEN r.email_hash = $2 THEN 'email'
 						          WHEN r.phone_hash = $2 THEN 'phone'
@@ -646,6 +662,8 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 				// Step 1: Query resident_contacts table
 				// Security: Only return tenant_id and account_type for matched institutions (already verified by password)
 				// Priority: email_hash > phone_hash
+				// 注意：一个 contact 的 email_hash/phone_hash 可能被多个 resident_contacts 记录共享（同一联系人关联多个住户）
+				// 因此，需要检查该 email_hash/phone_hash 对应的所有关联住户，只要至少有一个住户的 can_view_status=true，就允许登录
 				rows, err = s.DB.QueryContext(
 					r.Context(),
 					`SELECT DISTINCT rc.tenant_id::text,
@@ -660,11 +678,15 @@ func (s *StubHandler) Auth(w http.ResponseWriter, r *http.Request) {
 					          ELSE 3
 					        END as priority
 					   FROM resident_contacts rc
-					   JOIN residents r ON r.resident_id = rc.resident_id AND r.tenant_id = rc.tenant_id
 					  WHERE rc.password_hash = $2
 					    AND COALESCE(rc.is_enabled,true) = true
 					    AND (rc.email_hash = $1 OR rc.phone_hash = $1)
-					    AND COALESCE(r.can_view_status,true) = true
+					    AND EXISTS (
+					      SELECT 1 FROM residents r
+					      WHERE r.resident_id = rc.resident_id
+					        AND r.tenant_id = rc.tenant_id
+					        AND COALESCE(r.can_view_status,true) = true
+					    )
 					  ORDER BY priority ASC, rc.tenant_id::text ASC`,
 					ah, ph,
 				)

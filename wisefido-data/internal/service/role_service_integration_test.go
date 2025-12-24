@@ -78,7 +78,8 @@ func TestRoleService_ListRoles(t *testing.T) {
 
 	ctx := context.Background()
 	roleRepo := repository.NewPostgresRolesRepository(db)
-	roleService := NewRoleService(roleRepo, getTestLogger())
+	usersRepo := repository.NewPostgresUsersRepository(db)
+	roleService := NewRoleService(roleRepo, usersRepo, getTestLogger())
 
 	// 测试查询角色列表
 	req := ListRolesRequest{
@@ -108,7 +109,8 @@ func TestRoleService_CreateRole(t *testing.T) {
 
 	ctx := context.Background()
 	roleRepo := repository.NewPostgresRolesRepository(db)
-	roleService := NewRoleService(roleRepo, getTestLogger())
+	usersRepo := repository.NewPostgresUsersRepository(db)
+	roleService := NewRoleService(roleRepo, usersRepo, getTestLogger())
 
 	// 测试创建角色
 	req := CreateRoleRequest{
@@ -142,7 +144,8 @@ func TestRoleService_UpdateRole(t *testing.T) {
 
 	ctx := context.Background()
 	roleRepo := repository.NewPostgresRolesRepository(db)
-	roleService := NewRoleService(roleRepo, getTestLogger())
+	usersRepo := repository.NewPostgresUsersRepository(db)
+	roleService := NewRoleService(roleRepo, usersRepo, getTestLogger())
 
 	// 先创建一个测试角色
 	createReq := CreateRoleRequest{
@@ -182,7 +185,8 @@ func TestRoleService_UpdateRoleStatus(t *testing.T) {
 
 	ctx := context.Background()
 	roleRepo := repository.NewPostgresRolesRepository(db)
-	roleService := NewRoleService(roleRepo, getTestLogger())
+	usersRepo := repository.NewPostgresUsersRepository(db)
+	roleService := NewRoleService(roleRepo, usersRepo, getTestLogger())
 
 	// 先创建一个测试角色
 	createReq := CreateRoleRequest{
@@ -220,7 +224,8 @@ func TestRoleService_DeleteRole(t *testing.T) {
 
 	ctx := context.Background()
 	roleRepo := repository.NewPostgresRolesRepository(db)
-	roleService := NewRoleService(roleRepo, getTestLogger())
+	usersRepo := repository.NewPostgresUsersRepository(db)
+	roleService := NewRoleService(roleRepo, usersRepo, getTestLogger())
 
 	// 先创建一个测试角色
 	createReq := CreateRoleRequest{
@@ -257,7 +262,8 @@ func TestRoleService_ProtectedRoles(t *testing.T) {
 
 	ctx := context.Background()
 	roleRepo := repository.NewPostgresRolesRepository(db)
-	roleService := NewRoleService(roleRepo, getTestLogger())
+	usersRepo := repository.NewPostgresUsersRepository(db)
+	roleService := NewRoleService(roleRepo, usersRepo, getTestLogger())
 
 	// 获取 SystemAdmin 角色
 	sysAdminRole, err := roleRepo.GetRoleByCode(ctx, func() *string { s := SystemTenantID; return &s }(), "SystemAdmin")

@@ -89,7 +89,7 @@ func TestUnitService_ListBuildings_Success(t *testing.T) {
 	// 测试查询所有楼栋
 	req := ListBuildingsRequest{
 		TenantID:  tenantID,
-		BranchTag: "",
+		BranchName: "",
 	}
 	resp, err := unitService.ListBuildings(context.Background(), req)
 	if err != nil {
@@ -137,7 +137,7 @@ func TestUnitService_CreateBuilding_Success(t *testing.T) {
 	// 测试创建楼栋
 	req := CreateBuildingRequest{
 		TenantID:     tenantID,
-		BranchTag:    "BRANCH-1",
+		BranchName:    "BRANCH-1",
 		BuildingName: "Test Building",
 	}
 
@@ -180,10 +180,10 @@ func TestUnitService_ListUnits_Success(t *testing.T) {
 	// 创建测试数据
 	unit1 := &domain.Unit{
 		TenantID:   tenantID,
-		BranchTag:  sql.NullString{String: "BRANCH-1", Valid: true},
+		BranchName:  sql.NullString{String: "BRANCH-1", Valid: true},
 		UnitName:   "Unit A",
-		Building:   "Building A",
-		Floor:      "1F",
+		Building:   sql.NullString{String: "Building A", Valid: true},
+		Floor:      sql.NullString{String: "1F", Valid: true},
 		UnitNumber: "101",
 		UnitType:   "Facility",
 		Timezone:   "America/Denver",
@@ -195,10 +195,10 @@ func TestUnitService_ListUnits_Success(t *testing.T) {
 
 	unit2 := &domain.Unit{
 		TenantID:   tenantID,
-		BranchTag:  sql.NullString{String: "BRANCH-1", Valid: true},
+		BranchName:  sql.NullString{String: "BRANCH-1", Valid: true},
 		UnitName:   "Unit B",
-		Building:   "Building A",
-		Floor:      "2F",
+		Building:   sql.NullString{String: "Building A", Valid: true},
+		Floor:      sql.NullString{String: "2F", Valid: true},
 		UnitNumber: "201",
 		UnitType:   "Facility",
 		Timezone:   "America/Denver",
@@ -260,7 +260,7 @@ func TestUnitService_CreateUnit_Success(t *testing.T) {
 	// 测试创建单元
 	req := CreateUnitRequest{
 		TenantID:   tenantID,
-		BranchTag:  "BRANCH-1",
+		BranchName:  "BRANCH-1",
 		UnitName:   "Test Unit",
 		Building:   "Test Building",
 		Floor:      "1F",
@@ -304,10 +304,10 @@ func TestUnitService_GetUnit_Success(t *testing.T) {
 	// 创建测试数据
 	unit := &domain.Unit{
 		TenantID:   tenantID,
-		BranchTag:  sql.NullString{String: "BRANCH-1", Valid: true},
+		BranchName:  sql.NullString{String: "BRANCH-1", Valid: true},
 		UnitName:   "Test Unit",
-		Building:   "Test Building",
-		Floor:      "1F",
+		Building:   sql.NullString{String: "Test Building", Valid: true},
+		Floor:      sql.NullString{String: "1F", Valid: true},
 		UnitNumber: "101",
 		UnitType:   "Facility",
 		Timezone:   "America/Denver",
@@ -352,10 +352,10 @@ func TestUnitService_UpdateUnit_Success(t *testing.T) {
 	// 创建测试数据
 	unit := &domain.Unit{
 		TenantID:   tenantID,
-		BranchTag:  sql.NullString{String: "BRANCH-1", Valid: true},
+		BranchName:  sql.NullString{String: "BRANCH-1", Valid: true},
 		UnitName:   "Original Unit",
-		Building:   "Test Building",
-		Floor:      "1F",
+		Building:   sql.NullString{String: "Test Building", Valid: true},
+		Floor:      sql.NullString{String: "1F", Valid: true},
 		UnitNumber: "101",
 		UnitType:   "Facility",
 		Timezone:   "America/Denver",
@@ -407,10 +407,10 @@ func TestUnitService_DeleteUnit_Success(t *testing.T) {
 	// 创建测试数据
 	unit := &domain.Unit{
 		TenantID:   tenantID,
-		BranchTag:  sql.NullString{String: "BRANCH-1", Valid: true},
+		BranchName:  sql.NullString{String: "BRANCH-1", Valid: true},
 		UnitName:   "Test Unit",
-		Building:   "Test Building",
-		Floor:      "1F",
+		Building:   sql.NullString{String: "Test Building", Valid: true},
+		Floor:      sql.NullString{String: "1F", Valid: true},
 		UnitNumber: "101",
 		UnitType:   "Facility",
 		Timezone:   "America/Denver",
@@ -461,10 +461,10 @@ func TestUnitService_CreateRoom_Success(t *testing.T) {
 	// 先创建单元
 	unit := &domain.Unit{
 		TenantID:   tenantID,
-		BranchTag:  sql.NullString{String: "BRANCH-1", Valid: true},
+		BranchName:  sql.NullString{String: "BRANCH-1", Valid: true},
 		UnitName:   "Test Unit",
-		Building:   "Test Building",
-		Floor:      "1F",
+		Building:   sql.NullString{String: "Test Building", Valid: true},
+		Floor:      sql.NullString{String: "1F", Valid: true},
 		UnitNumber: "101",
 		UnitType:   "Facility",
 		Timezone:   "America/Denver",
@@ -520,10 +520,10 @@ func TestUnitService_CreateBed_Success(t *testing.T) {
 	// 先创建单元和房间
 	unit := &domain.Unit{
 		TenantID:   tenantID,
-		BranchTag:  sql.NullString{String: "BRANCH-1", Valid: true},
+		BranchName:  sql.NullString{String: "BRANCH-1", Valid: true},
 		UnitName:   "Test Unit",
-		Building:   "Test Building",
-		Floor:      "1F",
+		Building:   sql.NullString{String: "Test Building", Valid: true},
+		Floor:      sql.NullString{String: "1F", Valid: true},
 		UnitNumber: "101",
 		UnitType:   "Facility",
 		Timezone:   "America/Denver",
@@ -548,7 +548,6 @@ func TestUnitService_CreateBed_Success(t *testing.T) {
 		TenantID: tenantID,
 		RoomID:   roomID,
 		BedName:  "Test Bed",
-		BedType:  "Standard",
 	}
 
 	resp, err := unitService.CreateBed(context.Background(), req)

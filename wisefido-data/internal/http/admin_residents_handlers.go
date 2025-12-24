@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"wisefido-data/internal/service"
 )
 
 func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
@@ -174,22 +175,22 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					writeJSON(w, http.StatusOK, Fail("invalid body"))
 					return
 				}
-				newPassword, _ := payload["password"].(string)
-				if newPassword == "" {
-					writeJSON(w, http.StatusOK, Fail("password is required"))
+				passwordHashHex, _ := payload["password"].(string)
+				if passwordHashHex == "" {
+					writeJSON(w, http.StatusOK, Fail("password hash is required"))
 					return
 				}
-				// Hash password: sha256(password) - only depends on password itself
-				aph, _ := hex.DecodeString(HashPassword(newPassword))
-				if len(aph) == 0 {
-					writeJSON(w, http.StatusOK, Fail("failed to hash password"))
+				// 前端已 hash，这里直接解码 hex 字符串
+				passwordHash, err := hex.DecodeString(passwordHashHex)
+				if err != nil || len(passwordHash) == 0 {
+					writeJSON(w, http.StatusOK, Fail("failed to decode password hash"))
 					return
 				}
-				_, err := s.DB.ExecContext(
+				_, err = s.DB.ExecContext(
 					r.Context(),
 					`UPDATE resident_contacts SET password_hash = $3
 					  WHERE tenant_id = $1 AND contact_id::text = $2`,
-					tenantID, contactID, aph,
+					tenantID, contactID, passwordHash,
 				)
 				if err != nil {
 					if err == sql.ErrNoRows {
@@ -521,17 +522,24 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				// Generate default password hash (if password is provided, use it; otherwise generate default)
-				// Password hash should only depend on password itself (independent of account/phone/email)
-				password := "ChangeMe123!"
-				if pwd, ok := payload["password"].(string); ok && pwd != "" {
-					password = pwd
+				// 前端已 hash，这里直接解码 hex 字符串
+				// 规则：前端禁止发送明文密码，Server 只接收 passwordHash
+				// 如果前端未发送 password_hash 字段，不传递该字段（不包含在 SQL INSERT 中）
+				// 原因：passwd 是不回显的，没有从密码改为无密码的状态转换，所以不能发送 ""
+				// vue 要么发送有效 password 的 hash，要么不发送该字段，表示 passwd 未修改
+				var passwordHashArg []byte
+				var hasPasswordHash bool
+				if passwordHashHex, ok := payload["password_hash"].(string); ok && passwordHashHex != "" {
+					// 前端已 hash，直接解码（前端禁止发送明文密码）
+					var err error
+					passwordHashArg, err = hex.DecodeString(passwordHashHex)
+					if err != nil || len(passwordHashArg) == 0 {
+						writeJSON(w, http.StatusOK, Fail("failed to decode password hash"))
+						return
+					}
+					hasPasswordHash = true
 				}
-				aph, _ := hex.DecodeString(HashPassword(password))
-				if len(aph) == 0 {
-					writeJSON(w, http.StatusOK, Fail("failed to hash password"))
-					return
-				}
+				// 如果前端未发送 password_hash 字段，hasPasswordHash 为 false，不包含在 SQL INSERT 中
 
 				// Extract optional fields
 				status := "active"
@@ -650,15 +658,26 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 
 				// Insert into residents table
 				// phone_hash and email_hash are stored in residents table for login
+				// 动态构建 SQL INSERT 语句，根据是否有 password_hash 决定是否包含该字段
 				var residentID string
-				err = s.DB.QueryRowContext(
-					r.Context(),
-					`INSERT INTO residents (tenant_id, resident_account, resident_account_hash, password_hash, nickname, status, service_level, admission_date, unit_id, family_tag, can_view_status, note, phone_hash, email_hash)
+				var insertSQL string
+				var args []any
+
+				if hasPasswordHash {
+					// 包含 password_hash 字段
+					insertSQL = `INSERT INTO residents (tenant_id, resident_account, resident_account_hash, password_hash, nickname, status, service_level, admission_date, unit_id, family_tag, can_view_status, note, phone_hash, email_hash)
 					 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-					 RETURNING resident_id::text`,
-					tenantID, residentAccount, ah, aph, nickname, status, serviceLevelArg, admissionDate, unitIDArg, familyTagArg, isAccessEnabled, noteArg,
-					phoneHashArg, emailHashArg,
-				).Scan(&residentID)
+					 RETURNING resident_id::text`
+					args = []any{tenantID, residentAccount, ah, passwordHashArg, nickname, status, serviceLevelArg, admissionDate, unitIDArg, familyTagArg, isAccessEnabled, noteArg, phoneHashArg, emailHashArg}
+				} else {
+					// 不包含 password_hash 字段（使用数据库默认值 NULL）
+					insertSQL = `INSERT INTO residents (tenant_id, resident_account, resident_account_hash, nickname, status, service_level, admission_date, unit_id, family_tag, can_view_status, note, phone_hash, email_hash)
+					 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+					 RETURNING resident_id::text`
+					args = []any{tenantID, residentAccount, ah, nickname, status, serviceLevelArg, admissionDate, unitIDArg, familyTagArg, isAccessEnabled, noteArg, phoneHashArg, emailHashArg}
+				}
+
+				err = s.DB.QueryRowContext(r.Context(), insertSQL, args...).Scan(&residentID)
 				if err != nil {
 					fmt.Printf("[AdminResidents] Create error: %v\n", err)
 					writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to create resident: %v", err)))
@@ -1018,10 +1037,15 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				// Hash password: sha256(password) - only depends on password itself (independent of account/phone/email)
-				aph, _ := hex.DecodeString(HashPassword(newPassword))
-				if len(aph) == 0 {
-					writeJSON(w, http.StatusOK, Fail("failed to hash password"))
+				// 前端已 hash，这里直接解码 hex 字符串
+				passwordHashHex, _ := payload["password"].(string)
+				if passwordHashHex == "" {
+					writeJSON(w, http.StatusOK, Fail("password hash is required"))
+					return
+				}
+				passwordHash, err := hex.DecodeString(passwordHashHex)
+				if err != nil || len(passwordHash) == 0 {
+					writeJSON(w, http.StatusOK, Fail("failed to decode password hash"))
 					return
 				}
 
@@ -1029,7 +1053,7 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					r.Context(),
 					`UPDATE residents SET password_hash = $3
 					  WHERE tenant_id = $1 AND resident_id::text = $2`,
-					tenantID, residentID, aph,
+					tenantID, residentID, passwordHash,
 				)
 				if err != nil {
 					writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to reset password: %v", err)))
@@ -1658,141 +1682,88 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				// Permission check
+				// Handler 职责：只从 Header 获取用户信息，调用 Service 层
 				userID := r.Header.Get("X-User-Id")
 				userType := r.Header.Get("X-User-Type")
+				userRole := r.Header.Get("X-User-Role") // 前端已设置
 
-				// Resident/Family self-check (business exception: Resident can update own contacts despite having only R permission)
-				if (userType == "resident" || userType == "family") && userID != "" {
-					// Check if this is a resident_contact login
-					var foundResidentID sql.NullString
-					var foundSlot sql.NullString
-					err := s.DB.QueryRowContext(r.Context(),
-						`SELECT resident_id::text, slot FROM resident_contacts 
-						 WHERE tenant_id = $1 AND contact_id::text = $2`,
-						tenantID, userID,
-					).Scan(&foundResidentID, &foundSlot)
-					if err == nil && foundResidentID.Valid {
-						// This is a resident_contact login - can only modify own slot
-						if foundResidentID.String != residentID {
-							writeJSON(w, http.StatusOK, Fail("access denied: can only modify contacts for linked resident"))
-							return
-						}
-						// Verify that the slot matches the contact's own slot
-						if foundSlot.Valid && foundSlot.String != slot {
-							writeJSON(w, http.StatusOK, Fail("access denied: can only modify own slot"))
-							return
-						}
-					} else {
-						// This is a resident login - can modify contacts for self
-						if userID != residentID {
-							writeJSON(w, http.StatusOK, Fail("access denied: can only modify contacts for self"))
-							return
-						}
-					}
-				} else {
-					// Staff permission check
-					var userRole, userBranchTag sql.NullString
-					if userID != "" {
-						err := s.DB.QueryRowContext(r.Context(),
-							`SELECT role, branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
-							tenantID, userID,
-						).Scan(&userRole, &userBranchTag)
-						if err != nil && err != sql.ErrNoRows {
-							fmt.Printf("[AdminResidents] Failed to get user info: %v\n", err)
-						}
+				// 如果 Service 层可用，使用 Service 层
+				if s.ResidentService != nil {
+					// 构建 Service 请求（权限检查由 Service 层自己处理）
+					req := service.UpdateResidentContactRequest{
+						TenantID:        tenantID,
+						ResidentID:      residentID,
+						Slot:            slot,
+						CurrentUserID:   userID,
+						CurrentUserType: userType,
+						CurrentUserRole: userRole,
+						// PermissionCheck 不再需要，Service 层自己查询
 					}
 
-					// Check U permission (IT/Caregiver have no U permission, should be denied)
-					var permCheck *PermissionCheck
-					if userRole.Valid && userRole.String != "" {
-						var err error
-						permCheck, err = GetResourcePermission(s.DB, r.Context(), userRole.String, "resident_contacts", "U")
-						if err != nil {
-							writeJSON(w, http.StatusOK, Fail("permission denied: failed to check permissions"))
-							return
-						}
-
-						// Check if U permission record exists (IT/Caregiver have no U permission)
-						var hasUPermission bool
-						err = s.DB.QueryRowContext(r.Context(),
-							`SELECT EXISTS(
-								SELECT 1 FROM role_permissions
-								WHERE tenant_id = $1 AND role_code = $2 AND resource_type = 'resident_contacts' AND permission_type = 'U'
-							)`,
-							SystemTenantID(), userRole.String,
-						).Scan(&hasUPermission)
-						if err != nil {
-							writeJSON(w, http.StatusOK, Fail("permission denied: failed to verify permissions"))
-							return
-						}
-						if !hasUPermission {
-							writeJSON(w, http.StatusOK, Fail("permission denied: no update permission for resident_contacts"))
-							return
-						}
-					} else {
-						writeJSON(w, http.StatusOK, Fail("permission denied: no role found"))
-						return
+					// 解析字段（参考 ResidentHandler 的实现）
+					if isEnabled, ok := payload["is_enabled"].(bool); ok {
+						req.IsEnabled = &isEnabled
+					}
+					if firstName, ok := payload["contact_first_name"].(string); ok {
+						req.ContactFirstName = &firstName
+					}
+					if lastName, ok := payload["contact_last_name"].(string); ok {
+						req.ContactLastName = &lastName
+					}
+					if relationship, ok := payload["relationship"].(string); ok {
+						req.Relationship = &relationship
+					}
+					// 处理 contact_phone
+					if phone, ok := payload["contact_phone"].(string); ok {
+						req.ContactPhone = &phone
+					} else if payload["contact_phone"] == nil {
+						emptyStr := ""
+						req.ContactPhone = &emptyStr
+					}
+					// 处理 contact_email
+					if email, ok := payload["contact_email"].(string); ok {
+						req.ContactEmail = &email
+					} else if payload["contact_email"] == nil {
+						emptyStr := ""
+						req.ContactEmail = &emptyStr
+					}
+					if receiveSMS, ok := payload["receive_sms"].(bool); ok {
+						req.ReceiveSMS = &receiveSMS
+					}
+					if receiveEmail, ok := payload["receive_email"].(bool); ok {
+						req.ReceiveEmail = &receiveEmail
+					}
+					// 处理 password_hash
+					if passwordHash, ok := payload["password_hash"].(string); ok && passwordHash != "" {
+						req.PasswordHash = &passwordHash
+					}
+					// 处理 email_hash
+					if emailHash, ok := payload["email_hash"].(string); ok {
+						req.EmailHash = &emailHash
+					} else if payload["email_hash"] == nil {
+						emptyStr := ""
+						req.EmailHash = &emptyStr
+					}
+					// 处理 phone_hash
+					if phoneHash, ok := payload["phone_hash"].(string); ok {
+						req.PhoneHash = &phoneHash
+					} else if payload["phone_hash"] == nil {
+						emptyStr := ""
+						req.PhoneHash = &emptyStr
 					}
 
-					// Get target resident's unit_id and branch_tag
-					var targetUnitID sql.NullString
-					var targetBranchTag sql.NullString
-					err := s.DB.QueryRowContext(r.Context(),
-						`SELECT r.unit_id::text, COALESCE(u.branch_name, '') as branch_tag
-						 FROM residents r
-						 LEFT JOIN units u ON u.unit_id = r.unit_id
-						 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
-						tenantID, residentID,
-					).Scan(&targetUnitID, &targetBranchTag)
+					// 调用 Service 层
+					resp, err := s.ResidentService.UpdateResidentContact(r.Context(), req)
 					if err != nil {
-						if err == sql.ErrNoRows {
-							writeJSON(w, http.StatusOK, Fail("resident not found"))
-						} else {
-							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to get resident info: %v", err)))
-						}
+						writeJSON(w, http.StatusOK, Fail(err.Error()))
 						return
 					}
 
-					// Check assigned_only (Nurse: can only update contacts for assigned residents)
-					if permCheck.AssignedOnly && userID != "" {
-						var isAssigned bool
-						err := s.DB.QueryRowContext(r.Context(),
-							`SELECT EXISTS(
-								SELECT 1 FROM resident_caregivers rc
-								WHERE rc.tenant_id = $1
-								  AND rc.resident_id::text = $2
-								  AND (rc.userList::text LIKE $3 OR rc.userList::text LIKE $4)
-							)`,
-							tenantID, residentID, userID, "%\""+userID+"\"%",
-						).Scan(&isAssigned)
-						if err != nil {
-							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to check assignment: %v", err)))
-							return
-						}
-						if !isAssigned {
-							writeJSON(w, http.StatusOK, Fail("permission denied: can only update contacts for assigned residents"))
-							return
-						}
-					}
-
-					// Check branch_only (Manager: can only update contacts for residents in same branch)
-					if permCheck.BranchOnly {
-						if !userBranchTag.Valid || userBranchTag.String == "" {
-							// User branch_tag is NULL: can only update contacts for residents in units with branch_tag IS NULL
-							if targetBranchTag.Valid && targetBranchTag.String != "" {
-								writeJSON(w, http.StatusOK, Fail("permission denied: can only update contacts for residents in units with branch_tag IS NULL"))
-								return
-							}
-						} else {
-							// User branch_tag has value: can only update contacts for residents in matching branch
-							if !targetBranchTag.Valid || targetBranchTag.String != userBranchTag.String {
-								writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("permission denied: can only update contacts for residents in units with branch_tag = %s", userBranchTag.String)))
-								return
-							}
-						}
-					}
+					writeJSON(w, http.StatusOK, Ok(map[string]any{"success": resp.Success}))
+					return
 				}
+
+				// Fallback: 如果没有 Service 层，使用旧的直接 DB 操作（向后兼容）
 				isEnabled, _ := payload["is_enabled"].(bool)
 				relationship, _ := payload["relationship"].(string)
 				contactFirstName, _ := payload["contact_first_name"].(string)
@@ -1895,18 +1866,17 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				// Handle password_hash if contact_password is provided (like create user, password is included in INSERT)
-				// Password hash should only depend on password itself (independent of account/phone/email)
+				// Handle password_hash if contact_password is provided (前端已 hash，这里直接解码)
 				var passwordHashArg any = nil
 				hasPassword := false
 				if contactPassword != "" {
-					// Hash password: sha256(password) - only depends on password
-					aph, _ := hex.DecodeString(HashPassword(contactPassword))
-					if len(aph) == 0 {
-						writeJSON(w, http.StatusOK, Fail("failed to hash password"))
+					// 前端已 hash，这里直接解码 hex 字符串
+					passwordHash, err := hex.DecodeString(contactPassword)
+					if err != nil || len(passwordHash) == 0 {
+						writeJSON(w, http.StatusOK, Fail("failed to decode password hash"))
 						return
 					}
-					passwordHashArg = aph
+					passwordHashArg = passwordHash
 					hasPassword = true
 				}
 
@@ -2267,8 +2237,8 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					        r.status, r.service_level, r.admission_date, r.discharge_date,
 					        r.family_tag, r.unit_id::text, r.room_id::text, r.bed_id::text,
 					        COALESCE(u.unit_name, '') as unit_name,
-					        COALESCE(u.branch_tag, '') as branch_tag,
-					        COALESCE(u.area_tag, '') as area_tag,
+					        COALESCE(u.branch_name, '') as branch_tag,
+					        COALESCE(u.area_name, '') as area_tag,
 					        COALESCE(u.unit_number, '') as unit_number,
 					        COALESCE(u.is_multi_person_room, false) as is_multi_person_room,
 					        COALESCE(rm.room_name, '') as room_name,
@@ -2607,138 +2577,106 @@ func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				// Check permissions: resident can only update self, resident_contact can only update linked resident
+				// Handler 职责：只从 Header 获取用户信息，调用 Service 层
 				userID := r.Header.Get("X-User-Id")
 				userType := r.Header.Get("X-User-Type")
-				if (userType == "resident" || userType == "family") && userID != "" {
-					// Check if this is a resident_contact login
-					var foundResidentID sql.NullString
-					err := s.DB.QueryRowContext(r.Context(),
-						`SELECT resident_id::text FROM resident_contacts 
-						 WHERE tenant_id = $1 AND contact_id::text = $2`,
-						tenantID, userID,
-					).Scan(&foundResidentID)
-					if err == nil && foundResidentID.Valid {
-						// This is a resident_contact login - can only update linked resident
-						if foundResidentID.String != id {
-							writeJSON(w, http.StatusOK, Fail("access denied: can only update linked resident"))
-							return
-						}
-					} else {
-						// This is a resident login - can only update self
-						if userID != id {
-							writeJSON(w, http.StatusOK, Fail("access denied: can only update own information"))
-							return
-						}
-					}
-				} else {
-					// Staff permission check
-					var userRole, userBranchTag sql.NullString
-					if userID != "" {
-						err := s.DB.QueryRowContext(r.Context(),
-							`SELECT role, branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
-							tenantID, userID,
-						).Scan(&userRole, &userBranchTag)
-						if err != nil && err != sql.ErrNoRows {
-							fmt.Printf("[AdminResidents] Failed to get user info: %v\n", err)
-						}
-					}
+				userRole := r.Header.Get("X-User-Role") // 前端已设置
 
-					// Check U permission (Caregiver has no U permission, should be denied)
-					var permCheck *PermissionCheck
-					if userRole.Valid && userRole.String != "" {
-						var err error
-						permCheck, err = GetResourcePermission(s.DB, r.Context(), userRole.String, "residents", "U")
-						if err != nil {
-							writeJSON(w, http.StatusOK, Fail("permission denied: failed to check permissions"))
-							return
-						}
-
-						// Check if U permission record exists (Caregiver has no U permission)
-						var hasUPermission bool
-						err = s.DB.QueryRowContext(r.Context(),
-							`SELECT EXISTS(
-								SELECT 1 FROM role_permissions
-								WHERE tenant_id = $1 AND role_code = $2 AND resource_type = 'residents' AND permission_type = 'U'
-							)`,
-							SystemTenantID(), userRole.String,
-						).Scan(&hasUPermission)
-						if err != nil {
-							writeJSON(w, http.StatusOK, Fail("permission denied: failed to verify permissions"))
-							return
-						}
-						if !hasUPermission {
-							writeJSON(w, http.StatusOK, Fail("permission denied: no update permission for residents"))
-							return
-						}
-					} else {
-						writeJSON(w, http.StatusOK, Fail("permission denied: no role found"))
-						return
-					}
-
-					// Get target resident's branch_tag
-					var targetBranchTag sql.NullString
-					err := s.DB.QueryRowContext(r.Context(),
-						`SELECT COALESCE(u.branch_name, '') as branch_tag
-						 FROM residents r
-						 LEFT JOIN units u ON u.unit_id = r.unit_id
-						 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
-						tenantID, id,
-					).Scan(&targetBranchTag)
-					if err != nil {
-						if err == sql.ErrNoRows {
-							writeJSON(w, http.StatusOK, Fail("resident not found"))
-						} else {
-							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to get resident info: %v", err)))
-						}
-						return
-					}
-
-					// Check assigned_only (Nurse: can only update assigned residents)
-					if permCheck.AssignedOnly && userID != "" {
-						var isAssigned bool
-						err := s.DB.QueryRowContext(r.Context(),
-							`SELECT EXISTS(
-								SELECT 1 FROM resident_caregivers rc
-								WHERE rc.tenant_id = $1
-								  AND rc.resident_id::text = $2
-								  AND (rc.userList::text LIKE $3 OR rc.userList::text LIKE $4)
-							)`,
-							tenantID, id, userID, "%\""+userID+"\"%",
-						).Scan(&isAssigned)
-						if err != nil {
-							writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to check assignment: %v", err)))
-							return
-						}
-						if !isAssigned {
-							writeJSON(w, http.StatusOK, Fail("permission denied: can only update assigned residents"))
-							return
-						}
-					}
-
-					// Check branch_only (Manager: can only update residents in same branch)
-					if permCheck.BranchOnly {
-						if !userBranchTag.Valid || userBranchTag.String == "" {
-							// User branch_tag is NULL: can only update residents in units with branch_tag IS NULL
-							if targetBranchTag.Valid && targetBranchTag.String != "" {
-								writeJSON(w, http.StatusOK, Fail("permission denied: can only update residents in units with branch_tag IS NULL"))
-								return
-							}
-						} else {
-							// User branch_tag has value: can only update residents in matching branch
-							if !targetBranchTag.Valid || targetBranchTag.String != userBranchTag.String {
-								writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("permission denied: can only update residents in units with branch_tag = %s", userBranchTag.String)))
-								return
-							}
-						}
-					}
-				}
 				var payload map[string]any
 				if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 					writeJSON(w, http.StatusOK, Fail("invalid body"))
 					return
 				}
 
+				// 如果 Service 层可用，使用 Service 层
+				if s.ResidentService != nil {
+					// 构建 Service 请求（权限检查由 Service 层自己处理）
+					req := service.UpdateResidentRequest{
+						TenantID:        tenantID,
+						ResidentID:      id,
+						CurrentUserID:   userID,
+						CurrentUserType: userType,
+						CurrentUserRole: userRole,
+						// PermissionCheck 不再需要，Service 层自己查询
+					}
+
+					// 提取可更新字段（参考 ResidentHandler 的实现）
+					if residentAccount, ok := payload["resident_account"].(string); ok && residentAccount != "" {
+						req.ResidentAccount = &residentAccount
+					}
+					if nickname, ok := payload["nickname"].(string); ok {
+						req.Nickname = &nickname
+					}
+					if status, ok := payload["status"].(string); ok {
+						req.Status = &status
+					}
+					if serviceLevel, ok := payload["service_level"].(string); ok {
+						req.ServiceLevel = &serviceLevel
+					}
+					if admDate, ok := payload["admission_date"].(string); ok && admDate != "" {
+						if t, err := time.Parse("2006-01-02", admDate); err == nil {
+							ts := t.Unix()
+							req.AdmissionDate = &ts
+						}
+					}
+					if disDate, ok := payload["discharge_date"].(string); ok {
+						if disDate != "" {
+							if t, err := time.Parse("2006-01-02", disDate); err == nil {
+								ts := t.Unix()
+								req.DischargeDate = &ts
+							}
+						} else {
+							var zero int64
+							req.DischargeDate = &zero
+						}
+					}
+					if unitID, ok := payload["unit_id"].(string); ok {
+						req.UnitID = &unitID
+					}
+					if familyTag, ok := payload["family_tag"].(string); ok {
+						req.FamilyTag = &familyTag
+					}
+					if isAccessEnabled, ok := payload["is_access_enabled"].(bool); ok {
+						req.IsAccessEnabled = &isAccessEnabled
+					}
+					if note, ok := payload["note"].(string); ok {
+						req.Note = &note
+					}
+
+					// 处理 Caregivers 更新
+					if caregivers, ok := payload["caregivers"].(map[string]any); ok {
+						cg := &service.UpdateResidentCaregiversRequest{}
+						if userList, ok := caregivers["userList"].([]any); ok {
+							cg.UserList = make([]string, 0, len(userList))
+							for _, uid := range userList {
+								if uidStr, ok := uid.(string); ok {
+									cg.UserList = append(cg.UserList, uidStr)
+								}
+							}
+						}
+						if groupList, ok := caregivers["groupList"].([]any); ok {
+							cg.GroupList = make([]string, 0, len(groupList))
+							for _, gid := range groupList {
+								if gidStr, ok := gid.(string); ok {
+									cg.GroupList = append(cg.GroupList, gidStr)
+								}
+							}
+						}
+						req.Caregivers = cg
+					}
+
+					// 调用 Service 层
+					resp, err := s.ResidentService.UpdateResident(r.Context(), req)
+					if err != nil {
+						writeJSON(w, http.StatusOK, Fail(err.Error()))
+						return
+					}
+
+					writeJSON(w, http.StatusOK, Ok(map[string]any{"success": resp.Success}))
+					return
+				}
+
+				// Fallback: 如果没有 Service 层，使用旧的直接 DB 操作（向后兼容）
 				// Build dynamic UPDATE query
 				updates := []string{}
 				args := []any{tenantID, id}

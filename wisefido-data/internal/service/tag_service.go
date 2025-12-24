@@ -100,7 +100,12 @@ func (s *TagService) ListTags(ctx context.Context, req ListTagsRequest) (*ListTa
 			tagItem.TagObjects = tagObjects
 			s.logger.Debug("Calculated tag_objects", zap.String("tag_id", tag.TagID), zap.String("tag_type", tag.TagType), zap.String("tag_name", tag.TagName), zap.Int("object_types_count", len(tagObjects)))
 		} else {
-			s.logger.Debug("No tag_objects calculated", zap.String("tag_id", tag.TagID), zap.String("tag_type", tag.TagType), zap.String("tag_name", tag.TagName))
+			// 对于 user_tag，如果没有计算到 tag_objects，记录更详细的信息用于调试
+			if tag.TagType == "user_tag" {
+				s.logger.Debug("No tag_objects calculated for user_tag", zap.String("tag_id", tag.TagID), zap.String("tag_type", tag.TagType), zap.String("tag_name", tag.TagName), zap.Any("tagObjects", tagObjects))
+			} else {
+				s.logger.Debug("No tag_objects calculated", zap.String("tag_id", tag.TagID), zap.String("tag_type", tag.TagType), zap.String("tag_name", tag.TagName))
+			}
 		}
 
 		items = append(items, tagItem)
@@ -835,33 +840,44 @@ func (s *TagService) calculateTagObjects(ctx context.Context, tenantID, tagType,
 
 	case "user_tag":
 		// 查询 users.tags JSONB 字段中所有包含该 tag_name 的用户
+		// 注意：users.tags 是 JSONB 数组格式，使用 ? 操作符检查数组中是否包含该 tag_name
 		query := `
-			SELECT DISTINCT u.user_id::text, COALESCE(u.nickname, '') as nickname
+			SELECT u.user_id::text, COALESCE(u.nickname, u.user_account, '') as nickname
 			FROM users u
 			WHERE u.tenant_id = $1
 			  AND u.tags IS NOT NULL
 			  AND u.tags ? $2
-			ORDER BY u.nickname
+			ORDER BY COALESCE(u.nickname, u.user_account, '')
 		`
 		rows, err := s.db.QueryContext(ctx, query, tenantID, tagName)
 		if err != nil {
+			s.logger.Warn("Failed to query user_tag from users", zap.String("tenant_id", tenantID), zap.String("tag_name", tagName), zap.Error(err))
 			return nil, fmt.Errorf("failed to query user_tag from users: %w", err)
 		}
 		defer rows.Close()
 
 		userMap := make(map[string]string)
+		rowCount := 0
 		for rows.Next() {
 			var userID, nickname sql.NullString
 			if err := rows.Scan(&userID, &nickname); err != nil {
+				s.logger.Warn("Failed to scan user", zap.String("tag_name", tagName), zap.Error(err))
 				return nil, fmt.Errorf("failed to scan user: %w", err)
 			}
 			if userID.Valid {
 				userMap[userID.String] = nickname.String
+				rowCount++
 			}
 		}
+		s.logger.Debug("Query user_tag members", zap.String("tag_name", tagName), zap.Int("row_count", rowCount), zap.Int("user_map_size", len(userMap)))
 		if len(userMap) > 0 {
 			tagObjects["user"] = userMap
 		}
+
+	default:
+		// 未知的 tag_type，记录警告但不失败
+		s.logger.Warn("Unknown tag_type in calculateTagObjects", zap.String("tag_type", tagType), zap.String("tag_name", tagName))
+		return nil, nil
 	}
 
 	if len(tagObjects) == 0 {

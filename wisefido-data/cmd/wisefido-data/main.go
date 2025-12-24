@@ -125,7 +125,8 @@ func main() {
 		// 创建 Role 和 RolePermission Service 和 Handler
 		roleRepo := repository.NewPostgresRolesRepository(db)
 		rolePermRepo := repository.NewPostgresRolePermissionsRepository(db)
-		roleService := service.NewRoleService(roleRepo, logger)
+		usersRepo := repository.NewPostgresUsersRepository(db)
+		roleService := service.NewRoleService(roleRepo, usersRepo, logger)
 		rolePermService := service.NewRolePermissionService(rolePermRepo, logger)
 		rolesHandler := httpapi.NewRolesHandler(roleService, logger)
 		rolePermHandler := httpapi.NewRolePermissionsHandler(rolePermService, logger)
@@ -166,7 +167,7 @@ func main() {
 		router.RegisterUnitRoutes(unitHandler)
 
 		// 创建 User Service 和 Handler
-		usersRepo := repository.NewPostgresUsersRepository(db)
+		// usersRepo 已在上面创建 RoleService 时声明，这里直接使用
 		userService := service.NewUserService(usersRepo, logger)
 		userHandler := httpapi.NewUserHandler(userService, logger)
 		router.RegisterUsersRoutes(userHandler)
@@ -200,6 +201,9 @@ func main() {
 		residentService := service.NewResidentService(residentsRepo, db, logger)
 		residentHandler := httpapi.NewResidentHandler(residentService, db, logger)
 		router.RegisterResidentRoutes(residentHandler)
+		
+		// 设置 ResidentService 到 StubHandler（用于 AdminResidents 使用 Service 层）
+		stub.SetResidentService(residentService)
 
 		// SleepaceReportService
 		sleepaceReportsRepo := repository.NewPostgresSleepaceReportsRepository(db)
@@ -336,8 +340,14 @@ func main() {
 
 	select {
 	case <-sigCh:
+		logger.Info("Received shutdown signal")
 		cancel()
-	case <-errCh:
+	case err := <-errCh:
+		if err != nil {
+			logger.Error("Server stopped with error", zap.Error(err))
+		} else {
+			logger.Info("Server stopped")
+		}
 		cancel()
 	}
 

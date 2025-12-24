@@ -47,10 +47,8 @@ func (h *RolesHandler) ListRoles(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// 1. 参数解析和验证
-	tenantID, ok := h.tenantIDFromReq(w, r)
-	if !ok {
-		return
-	}
+	// 角色是全局的，存储在 System tenant 下，所有租户都应该能看到
+	systemTenantID := service.SystemTenantID
 
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
 	page := parseInt(r.URL.Query().Get("page"), 1)
@@ -58,7 +56,7 @@ func (h *RolesHandler) ListRoles(w http.ResponseWriter, r *http.Request) {
 
 	// 2. 调用 Service
 	req := service.ListRolesRequest{
-		TenantID: &tenantID,
+		TenantID: &systemTenantID,
 		Search:   search,
 		Page:     page,
 		Size:     size,
@@ -95,12 +93,26 @@ func (h *RolesHandler) CreateRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. 调用 Service
+	// 2. 获取当前用户信息
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("user ID is required"))
+		return
+	}
+	userRole := r.Header.Get("X-User-Role")
+	if userRole == "" {
+		writeJSON(w, http.StatusOK, Fail("user role is required"))
+		return
+	}
+
+	// 3. 调用 Service
 	req := service.CreateRoleRequest{
-		TenantID:    tenantID,
-		RoleCode:    payload.RoleCode,
-		DisplayName: payload.DisplayName,
-		Description: payload.Description,
+		TenantID:      tenantID,
+		CurrentUserID: currentUserID,
+		UserRole:      userRole,
+		RoleCode:      payload.RoleCode,
+		DisplayName:   payload.DisplayName,
+		Description:   payload.Description,
 	}
 
 	resp, err := h.roleService.CreateRole(ctx, req)

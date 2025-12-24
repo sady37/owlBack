@@ -654,7 +654,6 @@ func (r *PostgresResidentsRepository) ListResidents(ctx context.Context, tenantI
 	return residents, total, nil
 }
 
-
 // CreateResident 创建新住户
 // 触发器替代：同步family_tag到tags_catalog（调用upsert_tag_to_catalog）
 func (r *PostgresResidentsRepository) CreateResident(ctx context.Context, tenantID string, resident *domain.Resident) (string, error) {
@@ -859,15 +858,28 @@ func (r *PostgresResidentsRepository) UpdateResident(ctx context.Context, tenant
 		args = append(args, resident.Note)
 		argIdx++
 	}
-	if len(resident.PhoneHash) > 0 {
-		updates = append(updates, fmt.Sprintf("phone_hash = $%d", argIdx))
-		args = append(args, resident.PhoneHash)
-		argIdx++
+	// 处理 phone_hash：如果提供了（包括 nil），则更新
+	// 使用指针判断是否提供了值，nil 表示设置为 NULL，非 nil 且长度 > 0 表示设置值
+	if resident.PhoneHash != nil {
+		if len(resident.PhoneHash) > 0 {
+			updates = append(updates, fmt.Sprintf("phone_hash = $%d", argIdx))
+			args = append(args, resident.PhoneHash)
+			argIdx++
+		} else {
+			// 空 slice 表示设置为 NULL
+			updates = append(updates, "phone_hash = NULL")
+		}
 	}
-	if len(resident.EmailHash) > 0 {
-		updates = append(updates, fmt.Sprintf("email_hash = $%d", argIdx))
-		args = append(args, resident.EmailHash)
-		argIdx++
+	// 处理 email_hash：如果提供了（包括 nil），则更新
+	if resident.EmailHash != nil {
+		if len(resident.EmailHash) > 0 {
+			updates = append(updates, fmt.Sprintf("email_hash = $%d", argIdx))
+			args = append(args, resident.EmailHash)
+			argIdx++
+		} else {
+			// 空 slice 表示设置为 NULL
+			updates = append(updates, "email_hash = NULL")
+		}
 	}
 	if len(resident.PasswordHash) > 0 {
 		updates = append(updates, fmt.Sprintf("password_hash = $%d", argIdx))
@@ -1038,7 +1050,6 @@ func (r *PostgresResidentsRepository) BindResidentToLocation(ctx context.Context
 
 	return nil
 }
-
 
 // ============================================
 // ResidentPHI 表操作
@@ -1375,7 +1386,6 @@ func (r *PostgresResidentsRepository) UpsertResidentPHI(ctx context.Context, ten
 	return nil
 }
 
-
 // ============================================
 // ResidentContacts 表操作
 // ============================================
@@ -1625,18 +1635,24 @@ func (r *PostgresResidentsRepository) UpdateResidentContact(ctx context.Context,
 	} else {
 		updates = append(updates, "contact_last_name = NULL")
 	}
+	// 处理 contact_phone：Valid=True 且="" → NULL
+	// 使用 sql.NullString 语义：如果字段被设置（即使是空字符串），也要更新
+	// 空字符串 "" 表示删除（设置为 NULL）
 	if contact.ContactPhone != "" {
 		updates = append(updates, fmt.Sprintf("contact_phone = $%d", argIdx))
 		args = append(args, contact.ContactPhone)
 		argIdx++
 	} else {
+		// 空字符串或未设置：设置为 NULL
 		updates = append(updates, "contact_phone = NULL")
 	}
+	// 处理 contact_email：Valid=True 且="" → NULL
 	if contact.ContactEmail != "" {
 		updates = append(updates, fmt.Sprintf("contact_email = $%d", argIdx))
 		args = append(args, contact.ContactEmail)
 		argIdx++
 	} else {
+		// 空字符串或未设置：设置为 NULL
 		updates = append(updates, "contact_email = NULL")
 	}
 	updates = append(updates, fmt.Sprintf("receive_sms = $%d", argIdx))
@@ -1659,13 +1675,16 @@ func (r *PostgresResidentsRepository) UpdateResidentContact(ctx context.Context,
 	} else {
 		updates = append(updates, "email_hash = NULL")
 	}
-	if len(contact.PasswordHash) > 0 {
+	// 处理 password_hash
+	// 规则：passwd 是不回显的，没有从密码改为无密码的状态转换，所以不能发送 ""
+	// 如果 contact.PasswordHash 为 nil（未传递），不更新该字段（不包含在 UPDATE 中）
+	// 如果 contact.PasswordHash 有值（len > 0），更新该字段
+	if contact.PasswordHash != nil && len(contact.PasswordHash) > 0 {
 		updates = append(updates, fmt.Sprintf("password_hash = $%d", argIdx))
 		args = append(args, contact.PasswordHash)
 		argIdx++
-	} else {
-		updates = append(updates, "password_hash = NULL")
 	}
+	// 如果 contact.PasswordHash 为 nil，不包含在 UPDATE 语句中（不更新）
 
 	if len(updates) == 0 {
 		return fmt.Errorf("no fields to update")
@@ -1716,8 +1735,8 @@ func (r *PostgresResidentsRepository) DeleteResidentContact(ctx context.Context,
 
 // GetResidentCaregivers 获取住户的护理人员关联
 // 返回数组，包含两类配置：
-//   1. 首先：通过所绑定的unit，unit指定的caregiver/caregiver_group（从units表获取）
-//   2. 其次：通过直接绑定的caregiver/caregiver_group（从resident_caregivers表获取）
+//  1. 首先：通过所绑定的unit，unit指定的caregiver/caregiver_group（从units表获取）
+//  2. 其次：通过直接绑定的caregiver/caregiver_group（从resident_caregivers表获取）
 func (r *PostgresResidentsRepository) GetResidentCaregivers(ctx context.Context, tenantID, residentID string) ([]*domain.ResidentCaregiver, error) {
 	if tenantID == "" || residentID == "" {
 		return nil, fmt.Errorf("tenant_id and resident_id are required")
@@ -1844,4 +1863,3 @@ func (r *PostgresResidentsRepository) UpsertResidentCaregiver(ctx context.Contex
 
 	return nil
 }
-

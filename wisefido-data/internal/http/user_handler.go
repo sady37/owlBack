@@ -36,6 +36,42 @@ func (h *UserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// CreateUser
 	case path == "/admin/api/v1/users" && r.Method == http.MethodPost:
 		h.CreateUser(w, r)
+	// GetAccountSettings (必须在 GetUser 之前，因为路径更具体)
+	case strings.HasSuffix(path, "/account-settings") && r.Method == http.MethodGet:
+		userID := strings.TrimSuffix(path, "/account-settings")
+		userID = strings.TrimPrefix(userID, "/admin/api/v1/users/")
+		if userID != "" && !strings.Contains(userID, "/") {
+			h.GetAccountSettings(w, r, userID)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	// UpdateAccountSettings (必须在 UpdateUser 之前，因为路径更具体)
+	case strings.HasSuffix(path, "/account-settings") && r.Method == http.MethodPut:
+		userID := strings.TrimSuffix(path, "/account-settings")
+		userID = strings.TrimPrefix(userID, "/admin/api/v1/users/")
+		if userID != "" && !strings.Contains(userID, "/") {
+			h.UpdateAccountSettings(w, r, userID)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	// ResetPassword
+	case strings.HasSuffix(path, "/reset-password") && r.Method == http.MethodPost:
+		userID := strings.TrimSuffix(path, "/reset-password")
+		userID = strings.TrimPrefix(userID, "/admin/api/v1/users/")
+		if userID != "" && !strings.Contains(userID, "/") {
+			h.ResetPassword(w, r, userID)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	// ResetPIN
+	case strings.HasSuffix(path, "/reset-pin") && r.Method == http.MethodPost:
+		userID := strings.TrimSuffix(path, "/reset-pin")
+		userID = strings.TrimPrefix(userID, "/admin/api/v1/users/")
+		if userID != "" && !strings.Contains(userID, "/") {
+			h.ResetPIN(w, r, userID)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
 	// GetUser
 	case strings.HasPrefix(path, "/admin/api/v1/users/") && r.Method == http.MethodGet:
 		userID := strings.TrimPrefix(path, "/admin/api/v1/users/")
@@ -57,24 +93,6 @@ func (h *UserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		userID := strings.TrimPrefix(path, "/admin/api/v1/users/")
 		if userID != "" && !strings.Contains(userID, "/") {
 			h.DeleteUser(w, r, userID)
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
-	// ResetPassword
-	case strings.HasSuffix(path, "/reset-password") && r.Method == http.MethodPost:
-		userID := strings.TrimSuffix(path, "/reset-password")
-		userID = strings.TrimPrefix(userID, "/admin/api/v1/users/")
-		if userID != "" && !strings.Contains(userID, "/") {
-			h.ResetPassword(w, r, userID)
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
-	// ResetPIN
-	case strings.HasSuffix(path, "/reset-pin") && r.Method == http.MethodPost:
-		userID := strings.TrimSuffix(path, "/reset-pin")
-		userID = strings.TrimPrefix(userID, "/admin/api/v1/users/")
-		if userID != "" && !strings.Contains(userID, "/") {
-			h.ResetPIN(w, r, userID)
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -568,9 +586,9 @@ func (h *UserHandler) ResetPassword(w http.ResponseWriter, r *http.Request, user
 		return
 	}
 
-	newPassword, _ := payload["new_password"].(string)
-	if newPassword == "" {
-		writeJSON(w, http.StatusOK, Fail("new_password is required"))
+	passwordHash, _ := payload["password_hash"].(string)
+	if passwordHash == "" {
+		writeJSON(w, http.StatusOK, Fail("password_hash is required"))
 		return
 	}
 
@@ -578,7 +596,7 @@ func (h *UserHandler) ResetPassword(w http.ResponseWriter, r *http.Request, user
 		TenantID:      tenantID,
 		UserID:        userID,
 		CurrentUserID: currentUserID,
-		NewPassword:   newPassword,
+		NewPassword:   passwordHash,
 	}
 
 	resp, err := h.userService.ResetPassword(ctx, req)
@@ -644,3 +662,159 @@ func (h *UserHandler) ResetPIN(w http.ResponseWriter, r *http.Request, userID st
 	}))
 }
 
+// ============================================
+// GetAccountSettings 获取账户设置
+// ============================================
+
+// GetAccountSettings 获取账户设置
+func (h *UserHandler) GetAccountSettings(w http.ResponseWriter, r *http.Request, userID string) {
+	ctx := r.Context()
+
+	tenantID, ok := h.base.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("user ID is required"))
+		return
+	}
+
+	req := service.GetAccountSettingsRequest{
+		TenantID:      tenantID,
+		UserID:        userID,
+		CurrentUserID: currentUserID,
+	}
+
+	resp, err := h.userService.GetAccountSettings(ctx, req)
+	if err != nil {
+		h.logger.Error("GetAccountSettings failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	item := map[string]any{
+		"id":         resp.ID,
+		"account":    resp.Account,
+		"nickname":   resp.Nickname,
+		"role":       resp.Role,
+		"save_email": resp.SaveEmail,
+		"save_phone": resp.SavePhone,
+	}
+	if resp.Email != nil {
+		item["email"] = *resp.Email
+	}
+	if resp.Phone != nil {
+		item["phone"] = *resp.Phone
+	}
+
+	writeJSON(w, http.StatusOK, Ok(item))
+}
+
+// ============================================
+// UpdateAccountSettings 更新账户设置
+// ============================================
+
+// UpdateAccountSettings 更新账户设置（统一 API）
+func (h *UserHandler) UpdateAccountSettings(w http.ResponseWriter, r *http.Request, userID string) {
+	ctx := r.Context()
+
+	tenantID, ok := h.base.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("user ID is required"))
+		return
+	}
+
+	var payload map[string]any
+	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
+		writeJSON(w, http.StatusOK, Fail("invalid body"))
+		return
+	}
+
+	req := service.UpdateAccountSettingsRequest{
+		TenantID:      tenantID,
+		UserID:        userID,
+		CurrentUserID: currentUserID,
+	}
+
+	// 解析 password_hash
+	if passwordHash, ok := payload["password_hash"].(string); ok && passwordHash != "" {
+		req.PasswordHash = &passwordHash
+	}
+
+	// 解析 email 和 email_hash
+	// 处理 email 可能是 null 或空字符串的情况
+	if emailVal, ok := payload["email"]; ok {
+		if emailVal == nil {
+			// null 转换为空字符串（表示删除明文但保留 hash）
+			emptyStr := ""
+			req.Email = &emptyStr
+		} else if email, ok := emailVal.(string); ok {
+			req.Email = &email
+		}
+	}
+	// email_hash 处理：
+	// 1. 如果字段存在且值为 null -> 删除 hash（设置为空字符串指针）
+	// 2. 如果字段存在且值为字符串 -> 更新 hash
+	// 3. 如果字段不存在（undefined）-> 不更新 hash（保持 nil）
+	if emailHashVal, ok := payload["email_hash"]; ok {
+		if emailHashVal == nil {
+			// null 表示删除 hash（前端明确传递 null）
+			emptyStr := ""
+			req.EmailHash = &emptyStr
+		} else if emailHash, ok := emailHashVal.(string); ok {
+			req.EmailHash = &emailHash
+		}
+	}
+	// 如果字段不存在（ok == false），req.EmailHash 保持为 nil，表示不更新 hash
+
+	// 解析 phone 和 phone_hash
+	// 处理 phone 可能是 null 或空字符串的情况
+	if phoneVal, ok := payload["phone"]; ok {
+		if phoneVal == nil {
+			// null 转换为空字符串（表示删除明文但保留 hash）
+			emptyStr := ""
+			req.Phone = &emptyStr
+		} else if phone, ok := phoneVal.(string); ok {
+			req.Phone = &phone
+		}
+	}
+	// phone_hash 处理：
+	// 1. 如果字段存在且值为 null -> 删除 hash（设置为空字符串指针）
+	// 2. 如果字段存在且值为字符串 -> 更新 hash
+	// 3. 如果字段不存在（undefined）-> 不更新 hash（保持 nil）
+	if phoneHashVal, ok := payload["phone_hash"]; ok {
+		if phoneHashVal == nil {
+			// null 表示删除 hash（前端明确传递 null）
+			emptyStr := ""
+			req.PhoneHash = &emptyStr
+		} else if phoneHash, ok := phoneHashVal.(string); ok {
+			req.PhoneHash = &phoneHash
+		}
+	}
+	// 如果字段不存在（ok == false），req.PhoneHash 保持为 nil，表示不更新 hash
+
+	// 检查是否有任何更新
+	if req.PasswordHash == nil && req.Email == nil && req.Phone == nil {
+		writeJSON(w, http.StatusOK, Fail("no fields to update"))
+		return
+	}
+
+	resp, err := h.userService.UpdateAccountSettings(ctx, req)
+	if err != nil {
+		h.logger.Error("UpdateAccountSettings failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Ok(map[string]any{
+		"success": resp.Success,
+		"message": resp.Message,
+	}))
+}

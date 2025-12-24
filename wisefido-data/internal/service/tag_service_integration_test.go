@@ -40,6 +40,44 @@ func TestTagService_ListTags(t *testing.T) {
 	}
 
 	t.Logf("ListTags success: total=%d, items=%d", resp.Total, len(resp.Items))
+
+	// 验证 tag_objects 的计算结果
+	for _, item := range resp.Items {
+		t.Logf("Tag: tag_id=%s, tag_type=%s, tag_name=%s, has_tag_objects=%v", 
+			item.TagID, item.TagType, item.TagName, item.TagObjects != nil)
+		
+		// 对于不同类型的 tag，验证 tag_objects 是否正确计算
+		if item.TagType == "branch_tag" {
+			if item.TagObjects == nil {
+				t.Errorf("branch_tag %s should have tag_objects", item.TagName)
+			} else if branchMap, ok := item.TagObjects["branch"]; !ok || len(branchMap) == 0 {
+				t.Errorf("branch_tag %s should have branch members in tag_objects", item.TagName)
+			}
+		} else if item.TagType == "area_tag" {
+			if item.TagObjects == nil {
+				t.Errorf("area_tag %s should have tag_objects", item.TagName)
+			} else if areaMap, ok := item.TagObjects["area"]; !ok || len(areaMap) == 0 {
+				t.Errorf("area_tag %s should have area members in tag_objects", item.TagName)
+			}
+		} else if item.TagType == "family_tag" {
+			if item.TagObjects == nil {
+				t.Logf("family_tag %s has no tag_objects (may be empty)", item.TagName)
+			} else if residentMap, ok := item.TagObjects["resident"]; ok {
+				t.Logf("family_tag %s has %d resident members", item.TagName, len(residentMap))
+			}
+		} else if item.TagType == "user_tag" {
+			if item.TagObjects == nil {
+				t.Errorf("user_tag %s should have tag_objects (may be empty but should not be nil)", item.TagName)
+			} else if userMap, ok := item.TagObjects["user"]; ok {
+				t.Logf("user_tag %s has %d user members", item.TagName, len(userMap))
+				if len(userMap) == 0 {
+					t.Logf("Warning: user_tag %s has no members", item.TagName)
+				}
+			} else {
+				t.Errorf("user_tag %s should have user members in tag_objects", item.TagName)
+			}
+		}
+	}
 }
 
 func TestTagService_CreateTag(t *testing.T) {

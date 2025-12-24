@@ -14,15 +14,17 @@ import (
 
 // RoleService 角色服务
 type RoleService struct {
-	roleRepo repository.RolesRepository
-	logger   *zap.Logger
+	roleRepo  repository.RolesRepository
+	usersRepo repository.UsersRepository // 用于权限检查
+	logger    *zap.Logger
 }
 
 // NewRoleService 创建角色服务
-func NewRoleService(roleRepo repository.RolesRepository, logger *zap.Logger) *RoleService {
+func NewRoleService(roleRepo repository.RolesRepository, usersRepo repository.UsersRepository, logger *zap.Logger) *RoleService {
 	return &RoleService{
-		roleRepo: roleRepo,
-		logger:   logger,
+		roleRepo:  roleRepo,
+		usersRepo: usersRepo,
+		logger:    logger,
 	}
 }
 
@@ -92,10 +94,12 @@ func (s *RoleService) ListRoles(ctx context.Context, req ListRolesRequest) (*Lis
 
 // CreateRoleRequest 创建角色请求
 type CreateRoleRequest struct {
-	TenantID    string
-	RoleCode    string
-	DisplayName string
-	Description string
+	TenantID      string
+	CurrentUserID string // 用于权限检查
+	UserRole      string // 用于权限检查
+	RoleCode      string
+	DisplayName   string
+	Description   string
 }
 
 // CreateRoleResponse 创建角色响应
@@ -109,6 +113,32 @@ func (s *RoleService) CreateRole(ctx context.Context, req CreateRoleRequest) (*C
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required")
+	}
+	if req.UserRole == "" {
+		return nil, fmt.Errorf("user_role is required")
+	}
+	
+	// 权限检查：检查是否有 roles 资源的 C 权限
+	// 注意：GetResourcePermission 在记录不存在时返回 &PermissionCheck{AssignedOnly: true, BranchOnly: true}
+	// 但 roles 资源的 C 权限不应该有这些限制，所以如果返回这些值，可能是记录不存在
+	// 为了准确检查，我们检查返回的 permCheck：如果 AssignedOnly 和 BranchOnly 都是 true，可能是记录不存在
+	permCheck, err := s.usersRepo.GetResourcePermission(ctx, req.UserRole, "roles", "C")
+	if err != nil {
+		s.logger.Warn("Failed to check resource permission", zap.Error(err))
+		return nil, fmt.Errorf("permission denied: no permission to create roles")
+	}
+	// 如果 permCheck 为 nil，拒绝创建
+	if permCheck == nil {
+		return nil, fmt.Errorf("permission denied: no permission to create roles")
+	}
+	// 如果返回的 permCheck 的 AssignedOnly 和 BranchOnly 都是 true，可能是记录不存在（GetResourcePermission 的默认返回值）
+	// roles 资源的 C 权限不应该有这些限制，所以如果返回这些值，说明记录不存在，拒绝创建
+	if permCheck.AssignedOnly && permCheck.BranchOnly {
+		return nil, fmt.Errorf("permission denied: no permission to create roles")
+	}
+	
 	req.RoleCode = strings.TrimSpace(req.RoleCode)
 	if req.RoleCode == "" {
 		return nil, fmt.Errorf("role_code is required")
@@ -177,8 +207,26 @@ func (s *RoleService) UpdateRole(ctx context.Context, req UpdateRoleRequest) err
 		return s.roleRepo.DeleteRole(ctx, req.RoleID)
 	}
 
-	// 处理状态更新
+	// 处理状态更新（禁用/启用）
 	if req.IsActive != nil {
+		// 权限检查：检查是否有 roles 资源的 U 权限
+		if req.UserRole == "" {
+			return fmt.Errorf("user_role is required for permission check")
+		}
+		permCheck, err := s.usersRepo.GetResourcePermission(ctx, req.UserRole, "roles", "U")
+		if err != nil {
+			s.logger.Warn("Failed to check resource permission", zap.Error(err))
+			return fmt.Errorf("permission denied: no permission to update roles")
+		}
+		if permCheck == nil {
+			return fmt.Errorf("permission denied: no permission to update roles")
+		}
+		// 如果返回的 permCheck 的 AssignedOnly 和 BranchOnly 都是 true，可能是记录不存在（GetResourcePermission 的默认返回值）
+		// roles 资源的 U 权限不应该有这些限制，所以如果返回这些值，说明记录不存在，拒绝更新
+		if permCheck.AssignedOnly && permCheck.BranchOnly {
+			return fmt.Errorf("permission denied: no permission to update roles")
+		}
+		
 		// 检查是否为受保护角色
 		if !*req.IsActive {
 			for _, protected := range ProtectedRoles {
@@ -186,16 +234,44 @@ func (s *RoleService) UpdateRole(ctx context.Context, req UpdateRoleRequest) err
 					return fmt.Errorf("%s is a critical system role and cannot be disabled", role.RoleCode)
 				}
 			}
+			// Admin/Manager 只能禁用非系统角色或非受保护的系统角色（如 IT, Nurse）
+			// 系统角色中，只有 IT 和 Nurse 不是受保护角色，可以被禁用
+			if role.IsSystem && !strings.EqualFold(req.UserRole, "SystemAdmin") {
+				// 检查是否是 IT 或 Nurse（这两个可以被 Admin/Manager 禁用）
+				if role.RoleCode != "IT" && role.RoleCode != "Nurse" {
+					return fmt.Errorf("only SystemAdmin can disable system roles other than IT and Nurse")
+				}
+			}
 		}
 		role.IsActive = sql.NullBool{Bool: *req.IsActive, Valid: true}
 		return s.roleRepo.UpdateRole(ctx, req.RoleID, role)
 	}
 
-	// 处理字段更新
-	if role.IsSystem {
-		// 系统角色只能由 SystemAdmin 修改
-		if !strings.EqualFold(req.UserRole, "SystemAdmin") {
-			return fmt.Errorf("system roles can only be modified by SystemAdmin")
+	// 处理字段更新（display_name, description）
+	if req.DisplayName != nil || req.Description != nil {
+		// 权限检查：检查是否有 roles 资源的 U 权限
+		if req.UserRole == "" {
+			return fmt.Errorf("user_role is required for permission check")
+		}
+		permCheck, err := s.usersRepo.GetResourcePermission(ctx, req.UserRole, "roles", "U")
+		if err != nil {
+			s.logger.Warn("Failed to check resource permission", zap.Error(err))
+			return fmt.Errorf("permission denied: no permission to update roles")
+		}
+		if permCheck == nil {
+			return fmt.Errorf("permission denied: no permission to update roles")
+		}
+		// 如果返回的 permCheck 的 AssignedOnly 和 BranchOnly 都是 true，可能是记录不存在（GetResourcePermission 的默认返回值）
+		// roles 资源的 U 权限不应该有这些限制，所以如果返回这些值，说明记录不存在，拒绝更新
+		if permCheck.AssignedOnly && permCheck.BranchOnly {
+			return fmt.Errorf("permission denied: no permission to update roles")
+		}
+		
+		if role.IsSystem {
+			// 系统角色只能由 SystemAdmin 修改
+			if !strings.EqualFold(req.UserRole, "SystemAdmin") {
+				return fmt.Errorf("system roles can only be modified by SystemAdmin")
+			}
 		}
 	}
 

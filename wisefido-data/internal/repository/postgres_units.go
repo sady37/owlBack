@@ -707,19 +707,10 @@ func (r *PostgresUnitsRepository) UpdateUnit(ctx context.Context, tenantID, unit
 		return fmt.Errorf("unit is required")
 	}
 
-	// 先获取当前 unit 的信息（用于比较 branch_tag、area_tag、groupList）
+	// 先获取当前 unit 的信息（用于验证）
 	currentUnit, err := r.GetUnit(ctx, tenantID, unitID)
 	if err != nil {
 		return err
-	}
-
-	oldBranchNameValue := ""
-	if currentUnit.BranchName.Valid {
-		oldBranchNameValue = currentUnit.BranchName.String
-	}
-	oldAreaNameValue := ""
-	if currentUnit.AreaName.Valid {
-		oldAreaNameValue = currentUnit.AreaName.String
 	}
 
 	// 验证：如果 Unit 没有 building，则必须提供 branch_name

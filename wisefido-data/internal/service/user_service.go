@@ -33,6 +33,10 @@ type UserService interface {
 	// 密码和 PIN 管理
 	ResetPassword(ctx context.Context, req UserResetPasswordRequest) (*UserResetPasswordResponse, error)
 	ResetPIN(ctx context.Context, req UserResetPINRequest) (*UserResetPINResponse, error)
+
+	// 账户设置管理（统一 API）
+	GetAccountSettings(ctx context.Context, req GetAccountSettingsRequest) (*GetAccountSettingsResponse, error)
+	UpdateAccountSettings(ctx context.Context, req UpdateAccountSettingsRequest) (*UpdateAccountSettingsResponse, error)
 }
 
 // userService 实现
@@ -165,6 +169,43 @@ type UserResetPINRequest struct {
 // UserResetPINResponse 重置用户 PIN 响应
 type UserResetPINResponse struct {
 	Success bool // 是否成功
+}
+
+// GetAccountSettingsRequest 获取账户设置请求
+type GetAccountSettingsRequest struct {
+	TenantID      string // 必填
+	UserID        string // 必填
+	CurrentUserID string // 当前用户 ID（用于权限检查）
+}
+
+// GetAccountSettingsResponse 获取账户设置响应
+type GetAccountSettingsResponse struct {
+	ID        string  // UUID: user_id（前端需要）
+	Account   string  // user_account
+	Nickname  string  // 昵称
+	Email     *string // 邮箱（可选，nil 表示不存在）
+	Phone     *string // 电话（可选，nil 表示不存在）
+	Role      string  // 角色代码（前端需要，用于判断使用哪种表）
+	SaveEmail bool    // 是否保存 email 明文（Staff 总是 true）
+	SavePhone bool    // 是否保存 phone 明文（Staff 总是 true）
+}
+
+// UpdateAccountSettingsRequest 更新账户设置请求（统一 API，在同一个事务中处理所有更新）
+type UpdateAccountSettingsRequest struct {
+	TenantID      string  // 必填
+	UserID        string  // 必填
+	CurrentUserID string  // 当前用户 ID（用于权限检查）
+	PasswordHash  *string // 可选：密码 hash（nil 表示不更新）
+	Email         *string // 可选：邮箱（nil 表示不更新，空字符串表示删除）
+	EmailHash     *string // 可选：邮箱 hash（前端计算的 hash）
+	Phone         *string // 可选：电话（nil 表示不更新，空字符串表示删除）
+	PhoneHash     *string // 可选：电话 hash（前端计算的 hash）
+}
+
+// UpdateAccountSettingsResponse 更新账户设置响应
+type UpdateAccountSettingsResponse struct {
+	Success bool   // 是否成功
+	Message string // 消息（可选，用于错误详情）
 }
 
 // UserDTO 用户数据传输对象（用于响应）
@@ -477,9 +518,11 @@ func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*C
 		return nil, fmt.Errorf("failed to hash account")
 	}
 
-	passwordHash, err := hex.DecodeString(HashPassword(req.Password))
+	// 密码哈希（前端已 hash，这里直接解码 hex 字符串）
+	// 前端发送的是 SHA256(password) 的 hex 字符串，直接解码为 byte slice
+	passwordHash, err := hex.DecodeString(req.Password)
 	if err != nil || len(passwordHash) == 0 {
-		return nil, fmt.Errorf("failed to hash password")
+		return nil, fmt.Errorf("failed to decode password hash: %w", err)
 	}
 
 	// Email 和 Phone 哈希
@@ -882,10 +925,11 @@ func (s *userService) ResetPassword(ctx context.Context, req UserResetPasswordRe
 		return nil, fmt.Errorf("user not found: %w", err)
 	}
 
-	// 5. 密码哈希
-	passwordHash, err := hex.DecodeString(HashPassword(req.NewPassword))
+	// 5. 密码哈希（前端已 hash，这里直接解码 hex 字符串）
+	// 前端发送的是 SHA256(password) 的 hex 字符串，直接解码为 byte slice
+	passwordHash, err := hex.DecodeString(req.NewPassword)
 	if err != nil || len(passwordHash) == 0 {
-		return nil, fmt.Errorf("failed to hash password")
+		return nil, fmt.Errorf("failed to decode password hash: %w", err)
 	}
 
 	// 6. 更新密码
@@ -971,5 +1015,140 @@ func (s *userService) ResetPIN(ctx context.Context, req UserResetPINRequest) (*U
 
 	return &UserResetPINResponse{
 		Success: true,
+	}, nil
+}
+
+// ============================================
+// GetAccountSettings 获取账户设置
+// ============================================
+
+// GetAccountSettings 获取账户设置（只返回账户设置相关字段）
+// 注意：这个 API 只能查看自己的账户设置，不允许查看其他用户的
+func (s *userService) GetAccountSettings(ctx context.Context, req GetAccountSettingsRequest) (*GetAccountSettingsResponse, error) {
+	// 1. 权限检查：只能查看自己的账户设置
+	if req.CurrentUserID != req.UserID {
+		return nil, fmt.Errorf("permission denied: can only view own account settings")
+	}
+
+	// 2. 获取用户信息
+	user, err := s.usersRepo.GetUser(ctx, req.TenantID, req.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("user not found: %w", err)
+	}
+
+	// 3. 构建响应（只返回账户设置相关字段）
+	resp := &GetAccountSettingsResponse{
+		ID:        user.UserID,
+		Account:   user.UserAccount,
+		Nickname:  "",
+		Role:      user.Role,
+		SaveEmail: true, // Staff 总是保存
+		SavePhone: true, // Staff 总是保存
+	}
+	if user.Nickname.Valid {
+		resp.Nickname = user.Nickname.String
+	}
+
+	// Email 处理：如果存在返回值，否则返回 nil，但 save_email 总是 true
+	if user.Email.Valid && user.Email.String != "" {
+		email := user.Email.String
+		resp.Email = &email
+		resp.SaveEmail = true // 存在明文，已保存
+	} else {
+		resp.Email = nil
+		resp.SaveEmail = true // Staff 总是保存，即使当前不存在，将来添加时也会保存
+	}
+
+	// Phone 处理：如果存在返回值，否则返回 nil，但 save_phone 总是 true
+	if user.Phone.Valid && user.Phone.String != "" {
+		phone := user.Phone.String
+		resp.Phone = &phone
+		resp.SavePhone = true // 存在明文，已保存
+	} else {
+		resp.Phone = nil
+		resp.SavePhone = true // Staff 总是保存，即使当前不存在，将来添加时也会保存
+	}
+
+	return resp, nil
+}
+
+// ============================================
+// UpdateAccountSettings 更新账户设置（统一 API）
+// ============================================
+
+// UpdateAccountSettings 更新账户设置（在同一个事务中处理所有更新）
+// 注意：这个 API 只能更新自己的账户设置，不允许更新其他用户的
+func (s *userService) UpdateAccountSettings(ctx context.Context, req UpdateAccountSettingsRequest) (*UpdateAccountSettingsResponse, error) {
+	// 1. 参数验证
+	if req.TenantID == "" || req.UserID == "" || req.CurrentUserID == "" {
+		return nil, fmt.Errorf("tenant_id, user_id, and current_user_id are required")
+	}
+
+	// 2. 权限检查：只能更新自己的账户设置
+	if req.CurrentUserID != req.UserID {
+		return nil, fmt.Errorf("permission denied: can only update own account settings")
+	}
+
+	// 3. 获取目标用户信息
+	targetUser, err := s.usersRepo.GetUser(ctx, req.TenantID, req.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("user not found: %w", err)
+	}
+
+	// 4. 构建更新对象（只更新提供的字段）
+	updateUser := domain.User{
+		UserID:   targetUser.UserID,
+		TenantID: targetUser.TenantID,
+	}
+
+	// 4.1 更新密码（如果提供，!= nil 就更新，不进行任何判断）
+	if req.PasswordHash != nil {
+		passwordHashBytes, _ := hex.DecodeString(*req.PasswordHash)
+		updateUser.PasswordHash = passwordHashBytes
+	}
+
+	// 4.2 更新 email 字段（如果提供，!= nil 就更新，不进行任何判断）
+	if req.Email != nil {
+		updateUser.Email = sql.NullString{String: *req.Email, Valid: true}
+	}
+
+	// 4.2.1 更新 email_hash 字段（如果提供，!= nil 就更新，不进行任何判断）
+	if req.EmailHash != nil {
+		if *req.EmailHash == "" {
+			// 空字符串，删除 email_hash 字段（设置为 NULL）
+			updateUser.EmailHash = []byte{}
+		} else {
+			// 解码 hex 字符串
+			emailHashBytes, _ := hex.DecodeString(*req.EmailHash)
+			updateUser.EmailHash = emailHashBytes
+		}
+	}
+
+	// 4.3 更新 phone 字段（如果提供，!= nil 就更新，不进行任何判断）
+	if req.Phone != nil {
+		updateUser.Phone = sql.NullString{String: *req.Phone, Valid: true}
+	}
+
+	// 4.3.1 更新 phone_hash 字段（如果提供，!= nil 就更新，不进行任何判断）
+	if req.PhoneHash != nil {
+		if *req.PhoneHash == "" {
+			// 空字符串，删除 phone_hash 字段（设置为 NULL）
+			updateUser.PhoneHash = []byte{}
+		} else {
+			// 解码 hex 字符串
+			phoneHashBytes, _ := hex.DecodeString(*req.PhoneHash)
+			updateUser.PhoneHash = phoneHashBytes
+		}
+	}
+
+	// 6. 执行更新（Repository 层会在事务中处理）
+	if err := s.usersRepo.UpdateUser(ctx, req.TenantID, req.UserID, &updateUser); err != nil {
+		s.logger.Error("UpdateAccountSettings failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to update account settings: %w", err)
+	}
+
+	return &UpdateAccountSettingsResponse{
+		Success: true,
+		Message: "Account settings updated successfully",
 	}, nil
 }
