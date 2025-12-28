@@ -49,11 +49,13 @@ func (r *PostgresResidentsRepository) GetResident(ctx context.Context, tenantID,
 			role,
 			COALESCE(metadata, '{}'::jsonb)::text as metadata,
 			COALESCE(note, '') as note,
+			phone,
+			email,
 			phone_hash,
 			email_hash,
 			password_hash,
-			family_tag,
-			can_view_status,
+			is_access_enabled,
+			branch_id::text,
 			unit_id::text,
 			room_id::text,
 			bed_id::text
@@ -63,7 +65,7 @@ func (r *PostgresResidentsRepository) GetResident(ctx context.Context, tenantID,
 
 	var resident domain.Resident
 	var admissionDate, dischargeDate sql.NullTime
-	var serviceLevel, note, familyTag, unitID, roomID, bedID sql.NullString
+	var serviceLevel, note, phone, email, branchID, unitID, roomID, bedID sql.NullString
 	var metadataRaw sql.NullString
 	var phoneHash, emailHash, passwordHash sql.Null[[]byte]
 
@@ -80,11 +82,13 @@ func (r *PostgresResidentsRepository) GetResident(ctx context.Context, tenantID,
 		&resident.Role,
 		&metadataRaw,
 		&note,
+		&phone,
+		&email,
 		&phoneHash,
 		&emailHash,
 		&passwordHash,
-		&familyTag,
-		&resident.CanViewStatus,
+		&resident.IsAccessEnabled,
+		&branchID,
 		&unitID,
 		&roomID,
 		&bedID,
@@ -109,8 +113,14 @@ func (r *PostgresResidentsRepository) GetResident(ctx context.Context, tenantID,
 	if note.Valid {
 		resident.Note = note.String
 	}
-	if familyTag.Valid {
-		resident.FamilyTag = familyTag.String
+	if phone.Valid {
+		resident.Phone = phone.String
+	}
+	if email.Valid {
+		resident.Email = email.String
+	}
+	if branchID.Valid {
+		resident.BranchID = branchID.String
 	}
 	if unitID.Valid {
 		resident.UnitID = unitID.String
@@ -157,11 +167,13 @@ func (r *PostgresResidentsRepository) GetResidentByAccount(ctx context.Context, 
 			role,
 			COALESCE(metadata, '{}'::jsonb)::text as metadata,
 			COALESCE(note, '') as note,
+			phone,
+			email,
 			phone_hash,
 			email_hash,
 			password_hash,
-			family_tag,
-			can_view_status,
+			is_access_enabled,
+			branch_id::text,
 			unit_id::text,
 			room_id::text,
 			bed_id::text
@@ -171,7 +183,7 @@ func (r *PostgresResidentsRepository) GetResidentByAccount(ctx context.Context, 
 
 	var resident domain.Resident
 	var admissionDate, dischargeDate sql.NullTime
-	var serviceLevel, note, familyTag, unitID, roomID, bedID sql.NullString
+	var serviceLevel, note, phone, email, branchID, unitID, roomID, bedID sql.NullString
 	var metadataRaw sql.NullString
 	var phoneHash, emailHash, passwordHash sql.Null[[]byte]
 
@@ -188,11 +200,13 @@ func (r *PostgresResidentsRepository) GetResidentByAccount(ctx context.Context, 
 		&resident.Role,
 		&metadataRaw,
 		&note,
+		&phone,
+		&email,
 		&phoneHash,
 		&emailHash,
 		&passwordHash,
-		&familyTag,
-		&resident.CanViewStatus,
+		&resident.IsAccessEnabled,
+		&branchID,
 		&unitID,
 		&roomID,
 		&bedID,
@@ -204,7 +218,7 @@ func (r *PostgresResidentsRepository) GetResidentByAccount(ctx context.Context, 
 		return nil, fmt.Errorf("failed to get resident by account: %w", err)
 	}
 
-	// 处理可空字段（与GetResident相同）
+	// 处理可空字段
 	if admissionDate.Valid {
 		resident.AdmissionDate = &admissionDate.Time
 	}
@@ -217,8 +231,14 @@ func (r *PostgresResidentsRepository) GetResidentByAccount(ctx context.Context, 
 	if note.Valid {
 		resident.Note = note.String
 	}
-	if familyTag.Valid {
-		resident.FamilyTag = familyTag.String
+	if phone.Valid {
+		resident.Phone = phone.String
+	}
+	if email.Valid {
+		resident.Email = email.String
+	}
+	if branchID.Valid {
+		resident.BranchID = branchID.String
 	}
 	if unitID.Valid {
 		resident.UnitID = unitID.String
@@ -266,11 +286,13 @@ func (r *PostgresResidentsRepository) GetResidentByEmail(ctx context.Context, te
 			role,
 			COALESCE(metadata, '{}'::jsonb)::text as metadata,
 			COALESCE(note, '') as note,
+			phone,
+			email,
 			phone_hash,
 			email_hash,
 			password_hash,
-			family_tag,
-			can_view_status,
+			is_access_enabled,
+			branch_id::text,
 			unit_id::text,
 			room_id::text,
 			bed_id::text
@@ -280,7 +302,7 @@ func (r *PostgresResidentsRepository) GetResidentByEmail(ctx context.Context, te
 
 	var resident domain.Resident
 	var admissionDate, dischargeDate sql.NullTime
-	var serviceLevel, note, familyTag, unitID, roomID, bedID sql.NullString
+	var serviceLevel, note, phone, email, branchID, unitID, roomID, bedID sql.NullString
 	var metadataRaw sql.NullString
 	var phoneHashVal, emailHashVal, passwordHash sql.Null[[]byte]
 
@@ -297,11 +319,13 @@ func (r *PostgresResidentsRepository) GetResidentByEmail(ctx context.Context, te
 		&resident.Role,
 		&metadataRaw,
 		&note,
+		&phone,
+		&email,
 		&phoneHashVal,
 		&emailHashVal,
 		&passwordHash,
-		&familyTag,
-		&resident.CanViewStatus,
+		&resident.IsAccessEnabled,
+		&branchID,
 		&unitID,
 		&roomID,
 		&bedID,
@@ -326,8 +350,14 @@ func (r *PostgresResidentsRepository) GetResidentByEmail(ctx context.Context, te
 	if note.Valid {
 		resident.Note = note.String
 	}
-	if familyTag.Valid {
-		resident.FamilyTag = familyTag.String
+	if phone.Valid {
+		resident.Phone = phone.String
+	}
+	if email.Valid {
+		resident.Email = email.String
+	}
+	if branchID.Valid {
+		resident.BranchID = branchID.String
 	}
 	if unitID.Valid {
 		resident.UnitID = unitID.String
@@ -375,11 +405,13 @@ func (r *PostgresResidentsRepository) GetResidentByPhone(ctx context.Context, te
 			role,
 			COALESCE(metadata, '{}'::jsonb)::text as metadata,
 			COALESCE(note, '') as note,
+			phone,
+			email,
 			phone_hash,
 			email_hash,
 			password_hash,
-			family_tag,
-			can_view_status,
+			is_access_enabled,
+			branch_id::text,
 			unit_id::text,
 			room_id::text,
 			bed_id::text
@@ -389,7 +421,7 @@ func (r *PostgresResidentsRepository) GetResidentByPhone(ctx context.Context, te
 
 	var resident domain.Resident
 	var admissionDate, dischargeDate sql.NullTime
-	var serviceLevel, note, familyTag, unitID, roomID, bedID sql.NullString
+	var serviceLevel, note, phone, email, branchID, unitID, roomID, bedID sql.NullString
 	var metadataRaw sql.NullString
 	var phoneHashVal, emailHashVal, passwordHash sql.Null[[]byte]
 
@@ -406,11 +438,13 @@ func (r *PostgresResidentsRepository) GetResidentByPhone(ctx context.Context, te
 		&resident.Role,
 		&metadataRaw,
 		&note,
+		&phone,
+		&email,
 		&phoneHashVal,
 		&emailHashVal,
 		&passwordHash,
-		&familyTag,
-		&resident.CanViewStatus,
+		&resident.IsAccessEnabled,
+		&branchID,
 		&unitID,
 		&roomID,
 		&bedID,
@@ -435,8 +469,14 @@ func (r *PostgresResidentsRepository) GetResidentByPhone(ctx context.Context, te
 	if note.Valid {
 		resident.Note = note.String
 	}
-	if familyTag.Valid {
-		resident.FamilyTag = familyTag.String
+	if phone.Valid {
+		resident.Phone = phone.String
+	}
+	if email.Valid {
+		resident.Email = email.String
+	}
+	if branchID.Valid {
+		resident.BranchID = branchID.String
 	}
 	if unitID.Valid {
 		resident.UnitID = unitID.String
@@ -493,11 +533,7 @@ func (r *PostgresResidentsRepository) ListResidents(ctx context.Context, tenantI
 		args = append(args, filters.ServiceLevel)
 		argIdx++
 	}
-	if filters.FamilyTag != "" {
-		where = append(where, fmt.Sprintf("r.family_tag = $%d", argIdx))
-		args = append(args, filters.FamilyTag)
-		argIdx++
-	}
+	// family_tag 字段已删除，不再支持此过滤
 	if filters.UnitID != "" {
 		where = append(where, fmt.Sprintf("r.unit_id = $%d", argIdx))
 		args = append(args, filters.UnitID)
@@ -550,11 +586,13 @@ func (r *PostgresResidentsRepository) ListResidents(ctx context.Context, tenantI
 			r.role,
 			COALESCE(r.metadata, '{}'::jsonb)::text as metadata,
 			COALESCE(r.note, '') as note,
+			r.phone,
+			r.email,
 			r.phone_hash,
 			r.email_hash,
 			r.password_hash,
-			r.family_tag,
-			r.can_view_status,
+			r.is_access_enabled,
+			r.branch_id::text,
 			r.unit_id::text,
 			r.room_id::text,
 			r.bed_id::text
@@ -576,7 +614,7 @@ func (r *PostgresResidentsRepository) ListResidents(ctx context.Context, tenantI
 	for rows.Next() {
 		var resident domain.Resident
 		var admissionDate, dischargeDate sql.NullTime
-		var serviceLevel, note, familyTag, unitID, roomID, bedID sql.NullString
+		var serviceLevel, note, phone, email, branchID, unitID, roomID, bedID sql.NullString
 		var metadataRaw sql.NullString
 		var phoneHash, emailHash, passwordHash sql.Null[[]byte]
 
@@ -593,11 +631,13 @@ func (r *PostgresResidentsRepository) ListResidents(ctx context.Context, tenantI
 			&resident.Role,
 			&metadataRaw,
 			&note,
+			&phone,
+			&email,
 			&phoneHash,
 			&emailHash,
 			&passwordHash,
-			&familyTag,
-			&resident.CanViewStatus,
+			&resident.IsAccessEnabled,
+			&branchID,
 			&unitID,
 			&roomID,
 			&bedID,
@@ -619,8 +659,14 @@ func (r *PostgresResidentsRepository) ListResidents(ctx context.Context, tenantI
 		if note.Valid {
 			resident.Note = note.String
 		}
-		if familyTag.Valid {
-			resident.FamilyTag = familyTag.String
+		if phone.Valid {
+			resident.Phone = phone.String
+		}
+		if email.Valid {
+			resident.Email = email.String
+		}
+		if branchID.Valid {
+			resident.BranchID = branchID.String
 		}
 		if unitID.Valid {
 			resident.UnitID = unitID.String
@@ -655,7 +701,6 @@ func (r *PostgresResidentsRepository) ListResidents(ctx context.Context, tenantI
 }
 
 // CreateResident 创建新住户
-// 触发器替代：同步family_tag到tags_catalog（调用upsert_tag_to_catalog）
 func (r *PostgresResidentsRepository) CreateResident(ctx context.Context, tenantID string, resident *domain.Resident) (string, error) {
 	if tenantID == "" {
 		return "", fmt.Errorf("tenant_id is required")
@@ -716,9 +761,17 @@ func (r *PostgresResidentsRepository) CreateResident(ctx context.Context, tenant
 	if resident.BedID != "" {
 		bedIDArg = resident.BedID
 	}
-	var familyTagArg any = nil
-	if resident.FamilyTag != "" {
-		familyTagArg = resident.FamilyTag
+	var branchIDArg any = nil
+	if resident.BranchID != "" {
+		branchIDArg = resident.BranchID
+	}
+	var phoneArg any = nil
+	if resident.Phone != "" {
+		phoneArg = resident.Phone
+	}
+	var emailArg any = nil
+	if resident.Email != "" {
+		emailArg = resident.Email
 	}
 	var noteArg any = nil
 	if resident.Note != "" {
@@ -747,28 +800,17 @@ func (r *PostgresResidentsRepository) CreateResident(ctx context.Context, tenant
 		`INSERT INTO residents (
 			tenant_id, resident_account, resident_account_hash, nickname,
 			admission_date, discharge_date, service_level, status, role,
-			metadata, note, phone_hash, email_hash, password_hash,
-			family_tag, can_view_status, unit_id, room_id, bed_id
-		) VALUES ($1, LOWER($2), $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+			metadata, note, phone, email, phone_hash, email_hash, password_hash,
+			is_access_enabled, branch_id, unit_id, room_id, bed_id
+		) VALUES ($1, LOWER($2), $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		RETURNING resident_id::text`,
 		tenantID, resident.ResidentAccount, resident.ResidentAccountHash, resident.Nickname,
 		admissionDate, dischargeDateArg, serviceLevelArg, status, role,
-		metadataArg, noteArg, phoneHashArg, emailHashArg, passwordHashArg,
-		familyTagArg, resident.CanViewStatus, unitIDArg, roomIDArg, bedIDArg,
+		metadataArg, noteArg, phoneArg, emailArg, phoneHashArg, emailHashArg, passwordHashArg,
+		resident.IsAccessEnabled, branchIDArg, unitIDArg, roomIDArg, bedIDArg,
 	).Scan(&residentID)
 	if err != nil {
 		return "", fmt.Errorf("failed to create resident: %w", err)
-	}
-
-	// 同步family_tag到tags_catalog（替代trigger_sync_family_tag）
-	if resident.FamilyTag != "" {
-		_, err = tx.ExecContext(ctx,
-			`SELECT upsert_tag_to_catalog($1::uuid, $2, $3)`,
-			tenantID, resident.FamilyTag, "family_tag",
-		)
-		if err != nil {
-			return "", fmt.Errorf("failed to sync family_tag to catalog: %w", err)
-		}
 	}
 
 	err = tx.Commit()
@@ -780,7 +822,7 @@ func (r *PostgresResidentsRepository) CreateResident(ctx context.Context, tenant
 }
 
 // UpdateResident 更新住户信息
-// 触发器替代：同步family_tag到tags_catalog（调用upsert_tag_to_catalog）
+// Deprecated: Use UpdateResidentFields instead.
 func (r *PostgresResidentsRepository) UpdateResident(ctx context.Context, tenantID, residentID string, resident *domain.Resident) error {
 	if tenantID == "" || residentID == "" {
 		return fmt.Errorf("tenant_id and resident_id are required")
@@ -794,16 +836,6 @@ func (r *PostgresResidentsRepository) UpdateResident(ctx context.Context, tenant
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
-
-	// 获取旧数据（用于比较family_tag变化）
-	var oldFamilyTag sql.NullString
-	err = tx.QueryRowContext(ctx,
-		`SELECT family_tag FROM residents WHERE tenant_id = $1 AND resident_id = $2`,
-		tenantID, residentID,
-	).Scan(&oldFamilyTag)
-	if err != nil {
-		return fmt.Errorf("failed to get old resident data: %w", err)
-	}
 
 	// 构建UPDATE语句
 	updates := []string{}
@@ -886,18 +918,40 @@ func (r *PostgresResidentsRepository) UpdateResident(ctx context.Context, tenant
 		args = append(args, resident.PasswordHash)
 		argIdx++
 	}
-	if resident.FamilyTag != "" {
-		updates = append(updates, fmt.Sprintf("family_tag = $%d", argIdx))
-		args = append(args, resident.FamilyTag)
+	if resident.Phone != "" {
+		updates = append(updates, fmt.Sprintf("phone = $%d", argIdx))
+		args = append(args, resident.Phone)
 		argIdx++
+	} else {
+		// 允许设置为NULL
+		updates = append(updates, "phone = NULL")
 	}
-	updates = append(updates, fmt.Sprintf("can_view_status = $%d", argIdx))
-	args = append(args, resident.CanViewStatus)
+	if resident.Email != "" {
+		updates = append(updates, fmt.Sprintf("email = $%d", argIdx))
+		args = append(args, resident.Email)
+		argIdx++
+	} else {
+		// 允许设置为NULL
+		updates = append(updates, "email = NULL")
+	}
+	updates = append(updates, fmt.Sprintf("is_access_enabled = $%d", argIdx))
+	args = append(args, resident.IsAccessEnabled)
 	argIdx++
+	if resident.BranchID != "" {
+		updates = append(updates, fmt.Sprintf("branch_id = $%d", argIdx))
+		args = append(args, resident.BranchID)
+		argIdx++
+	} else {
+		// 允许设置为NULL
+		updates = append(updates, "branch_id = NULL")
+	}
 	if resident.UnitID != "" {
 		updates = append(updates, fmt.Sprintf("unit_id = $%d", argIdx))
 		args = append(args, resident.UnitID)
 		argIdx++
+	} else {
+		// 允许设置为NULL
+		updates = append(updates, "unit_id = NULL")
 	}
 	if resident.RoomID != "" {
 		updates = append(updates, fmt.Sprintf("room_id = $%d", argIdx))
@@ -944,27 +998,6 @@ func (r *PostgresResidentsRepository) UpdateResident(ctx context.Context, tenant
 		return fmt.Errorf("resident not found: tenant_id '%s', resident_id '%s'", tenantID, residentID)
 	}
 
-	// 同步family_tag变化（替代trigger_sync_family_tag）
-	oldFamilyTagValue := ""
-	if oldFamilyTag.Valid {
-		oldFamilyTagValue = oldFamilyTag.String
-	}
-	newFamilyTagValue := resident.FamilyTag
-
-	if oldFamilyTagValue != newFamilyTagValue {
-		// 如果新tag不为空，添加到目录
-		if newFamilyTagValue != "" {
-			_, err = tx.ExecContext(ctx,
-				`SELECT upsert_tag_to_catalog($1::uuid, $2, $3)`,
-				tenantID, newFamilyTagValue, "family_tag",
-			)
-			if err != nil {
-				return fmt.Errorf("failed to sync new family_tag to catalog: %w", err)
-			}
-		}
-		// 注意：不删除旧tag（用户确认：不删除family_tag）
-	}
-
 	err = tx.Commit()
 	if err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
@@ -973,8 +1006,356 @@ func (r *PostgresResidentsRepository) UpdateResident(ctx context.Context, tenant
 	return nil
 }
 
+// UpdateResidentFields 更新住户信息（使用更新模型）
+func (r *PostgresResidentsRepository) UpdateResidentFields(ctx context.Context, tenantID, residentID string, update *domain.ResidentUpdate) error {
+	if tenantID == "" || residentID == "" {
+		return fmt.Errorf("tenant_id and resident_id are required")
+	}
+	if update == nil {
+		return fmt.Errorf("update is required")
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	updates := []string{}
+	args := []any{tenantID, residentID}
+	argIdx := 3
+
+	// Helper function to add update part
+	addUpdate := func(col string, val any) {
+		updates = append(updates, fmt.Sprintf("%s = $%d", col, argIdx))
+		args = append(args, val)
+		argIdx++
+	}
+
+	// Handle ResidentAccount (NOT NULL)
+	if update.ResidentAccount != nil {
+		switch update.ResidentAccount.Action {
+		case domain.UpdateActionUpdate:
+			if update.ResidentAccount.Value == "" {
+				return fmt.Errorf("resident_account cannot be empty (NOT NULL constraint)")
+			}
+			updates = append(updates, fmt.Sprintf("resident_account = LOWER($%d)", argIdx))
+			args = append(args, update.ResidentAccount.Value)
+			argIdx++
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("resident_account cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle ResidentAccountHash (NOT NULL)
+	if update.ResidentAccountHash != nil {
+		switch update.ResidentAccountHash.Action {
+		case domain.UpdateActionUpdate:
+			if len(update.ResidentAccountHash.Value) == 0 {
+				return fmt.Errorf("resident_account_hash cannot be empty (NOT NULL constraint)")
+			}
+			addUpdate("resident_account_hash", update.ResidentAccountHash.Value)
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("resident_account_hash cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle Nickname (NOT NULL)
+	if update.Nickname != nil {
+		switch update.Nickname.Action {
+		case domain.UpdateActionUpdate:
+			if update.Nickname.Value == "" {
+				return fmt.Errorf("nickname cannot be empty (NOT NULL constraint)")
+			}
+			addUpdate("nickname", update.Nickname.Value)
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("nickname cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle AdmissionDate (NOT NULL)
+	if update.AdmissionDate != nil {
+		switch update.AdmissionDate.Action {
+		case domain.UpdateActionUpdate:
+			if update.AdmissionDate.Value == nil {
+				return fmt.Errorf("admission_date cannot be empty (NOT NULL constraint)")
+			}
+			addUpdate("admission_date", *update.AdmissionDate.Value)
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("admission_date cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle DischargeDate (nullable)
+	if update.DischargeDate != nil {
+		switch update.DischargeDate.Action {
+		case domain.UpdateActionUpdate:
+			if update.DischargeDate.Value != nil {
+				addUpdate("discharge_date", *update.DischargeDate.Value)
+			} else {
+				updates = append(updates, "discharge_date = NULL")
+			}
+		case domain.UpdateActionDelete:
+			updates = append(updates, "discharge_date = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle ServiceLevel (nullable)
+	if update.ServiceLevel != nil {
+		switch update.ServiceLevel.Action {
+		case domain.UpdateActionUpdate:
+			addUpdate("service_level", update.ServiceLevel.Value)
+		case domain.UpdateActionDelete:
+			updates = append(updates, "service_level = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle Status (NOT NULL)
+	if update.Status != nil {
+		switch update.Status.Action {
+		case domain.UpdateActionUpdate:
+			if update.Status.Value == "" {
+				return fmt.Errorf("status cannot be empty (NOT NULL constraint)")
+			}
+			addUpdate("status", update.Status.Value)
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("status cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle Role (NOT NULL)
+	if update.Role != nil {
+		switch update.Role.Action {
+		case domain.UpdateActionUpdate:
+			if update.Role.Value == "" {
+				return fmt.Errorf("role cannot be empty (NOT NULL constraint)")
+			}
+			addUpdate("role", update.Role.Value)
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("role cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle Metadata (nullable JSONB)
+	if update.Metadata != nil {
+		switch update.Metadata.Action {
+		case domain.UpdateActionUpdate:
+			if len(update.Metadata.Value) > 0 {
+				updates = append(updates, fmt.Sprintf("metadata = $%d::jsonb", argIdx))
+				args = append(args, string(update.Metadata.Value))
+				argIdx++
+			} else {
+				updates = append(updates, "metadata = NULL")
+			}
+		case domain.UpdateActionDelete:
+			updates = append(updates, "metadata = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle Note (nullable)
+	if update.Note != nil {
+		switch update.Note.Action {
+		case domain.UpdateActionUpdate:
+			addUpdate("note", update.Note.Value)
+		case domain.UpdateActionDelete:
+			updates = append(updates, "note = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle Phone (nullable)
+	if update.Phone != nil {
+		switch update.Phone.Action {
+		case domain.UpdateActionUpdate:
+			addUpdate("phone", update.Phone.Value)
+		case domain.UpdateActionDelete:
+			updates = append(updates, "phone = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle Email (nullable)
+	if update.Email != nil {
+		switch update.Email.Action {
+		case domain.UpdateActionUpdate:
+			addUpdate("email", update.Email.Value)
+		case domain.UpdateActionDelete:
+			updates = append(updates, "email = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle PhoneHash (nullable)
+	if update.PhoneHash != nil {
+		switch update.PhoneHash.Action {
+		case domain.UpdateActionUpdate:
+			if len(update.PhoneHash.Value) > 0 {
+				addUpdate("phone_hash", update.PhoneHash.Value)
+			} else {
+				updates = append(updates, "phone_hash = NULL")
+			}
+		case domain.UpdateActionDelete:
+			updates = append(updates, "phone_hash = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle EmailHash (nullable)
+	if update.EmailHash != nil {
+		switch update.EmailHash.Action {
+		case domain.UpdateActionUpdate:
+			if len(update.EmailHash.Value) > 0 {
+				addUpdate("email_hash", update.EmailHash.Value)
+			} else {
+				updates = append(updates, "email_hash = NULL")
+			}
+		case domain.UpdateActionDelete:
+			updates = append(updates, "email_hash = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle PasswordHash (NOT NULL)
+	if update.PasswordHash != nil {
+		switch update.PasswordHash.Action {
+		case domain.UpdateActionUpdate:
+			if len(update.PasswordHash.Value) == 0 {
+				return fmt.Errorf("password_hash cannot be empty (NOT NULL constraint)")
+			}
+			addUpdate("password_hash", update.PasswordHash.Value)
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("password_hash cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle IsAccessEnabled (NOT NULL)
+	if update.IsAccessEnabled != nil {
+		switch update.IsAccessEnabled.Action {
+		case domain.UpdateActionUpdate:
+			addUpdate("is_access_enabled", update.IsAccessEnabled.Value)
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("is_access_enabled cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle BranchID (nullable)
+	if update.BranchID != nil {
+		switch update.BranchID.Action {
+		case domain.UpdateActionUpdate:
+			if update.BranchID.Value == "" {
+				updates = append(updates, "branch_id = NULL")
+			} else {
+				addUpdate("branch_id", update.BranchID.Value)
+			}
+		case domain.UpdateActionDelete:
+			updates = append(updates, "branch_id = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle UnitID (nullable)
+	if update.UnitID != nil {
+		switch update.UnitID.Action {
+		case domain.UpdateActionUpdate:
+			if update.UnitID.Value == "" {
+				updates = append(updates, "unit_id = NULL")
+			} else {
+				addUpdate("unit_id", update.UnitID.Value)
+			}
+		case domain.UpdateActionDelete:
+			updates = append(updates, "unit_id = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle RoomID (nullable)
+	if update.RoomID != nil {
+		switch update.RoomID.Action {
+		case domain.UpdateActionUpdate:
+			if update.RoomID.Value == "" {
+				updates = append(updates, "room_id = NULL")
+			} else {
+				addUpdate("room_id", update.RoomID.Value)
+			}
+		case domain.UpdateActionDelete:
+			updates = append(updates, "room_id = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle BedID (nullable)
+	if update.BedID != nil {
+		switch update.BedID.Action {
+		case domain.UpdateActionUpdate:
+			if update.BedID.Value == "" {
+				updates = append(updates, "bed_id = NULL")
+			} else {
+				addUpdate("bed_id", update.BedID.Value)
+			}
+		case domain.UpdateActionDelete:
+			updates = append(updates, "bed_id = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	if len(updates) == 0 {
+		return fmt.Errorf("no fields to update")
+	}
+
+	query := fmt.Sprintf(`
+		UPDATE residents
+		SET %s
+		WHERE tenant_id = $1 AND resident_id = $2
+	`, strings.Join(updates, ", "))
+
+	result, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update resident: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("resident not found")
+	}
+
+	return tx.Commit()
+}
+
 // DeleteResident 删除住户
-// 注意：不删除family_tag（即使没有其他住户使用，也保留在tags_catalog中）
 func (r *PostgresResidentsRepository) DeleteResident(ctx context.Context, tenantID, residentID string) error {
 	if tenantID == "" || residentID == "" {
 		return fmt.Errorf("tenant_id and resident_id are required")
@@ -1386,6 +1767,246 @@ func (r *PostgresResidentsRepository) UpsertResidentPHI(ctx context.Context, ten
 	return nil
 }
 
+// UpsertResidentPHIFields 创建或更新住户PHI信息（使用更新模型）
+// 注意：使用 UPSERT 语义（UNIQUE(tenant_id, resident_id)）
+func (r *PostgresResidentsRepository) UpsertResidentPHIFields(ctx context.Context, tenantID, residentID string, update *domain.ResidentPHIUpdate) error {
+	if tenantID == "" || residentID == "" {
+		return fmt.Errorf("tenant_id and resident_id are required")
+	}
+	if update == nil {
+		return fmt.Errorf("update is required")
+	}
+
+	// 获取当前记录（如果存在）
+	currentPHI, err := r.GetResidentPHI(ctx, tenantID, residentID)
+	if err != nil && err.Error() != "resident PHI not found: sql: no rows in result set" {
+		// 如果不是"未找到"错误，返回错误
+		if !strings.Contains(err.Error(), "not found") {
+			return fmt.Errorf("failed to get current resident PHI: %w", err)
+		}
+		// 如果是"未找到"，currentPHI 为 nil，继续处理
+		currentPHI = nil
+	}
+
+	// Helper functions to get final values
+	getFinalStringValue := func(updateField *domain.UpdateString, currentValue string) interface{} {
+		if updateField == nil {
+			return currentValue
+		}
+		switch updateField.Action {
+		case domain.UpdateActionUpdate:
+			return updateField.Value
+		case domain.UpdateActionDelete:
+			return nil
+		case domain.UpdateActionKeep:
+			return currentValue
+		default:
+			return currentValue
+		}
+	}
+
+	getFinalTimeValue := func(updateField *domain.UpdateTime, currentValue *time.Time) interface{} {
+		if updateField == nil {
+			return currentValue
+		}
+		switch updateField.Action {
+		case domain.UpdateActionUpdate:
+			return updateField.Value
+		case domain.UpdateActionDelete:
+			return nil
+		case domain.UpdateActionKeep:
+			return currentValue
+		default:
+			return currentValue
+		}
+	}
+
+	getFinalFloat64Value := func(updateField *domain.UpdateFloat64, currentValue *float64) interface{} {
+		if updateField == nil {
+			return currentValue
+		}
+		switch updateField.Action {
+		case domain.UpdateActionUpdate:
+			return updateField.Value
+		case domain.UpdateActionDelete:
+			return nil
+		case domain.UpdateActionKeep:
+			return currentValue
+		default:
+			return currentValue
+		}
+	}
+
+	getFinalIntValue := func(updateField *domain.UpdateInt, currentValue *int) interface{} {
+		if updateField == nil {
+			return currentValue
+		}
+		switch updateField.Action {
+		case domain.UpdateActionUpdate:
+			return updateField.Value
+		case domain.UpdateActionDelete:
+			return nil
+		case domain.UpdateActionKeep:
+			return currentValue
+		default:
+			return currentValue
+		}
+	}
+
+	getFinalBoolValue := func(updateField *domain.UpdateBool, currentValue bool) interface{} {
+		if updateField == nil {
+			return currentValue
+		}
+		switch updateField.Action {
+		case domain.UpdateActionUpdate:
+			return updateField.Value
+		case domain.UpdateActionDelete:
+			return nil
+		case domain.UpdateActionKeep:
+			return currentValue
+		default:
+			return currentValue
+		}
+	}
+
+	// 确定最终值
+	var currentFirstName, currentLastName, currentGender, currentResidentPhone, currentResidentEmail string
+	var currentDateOfBirth *time.Time
+	var currentWeightLb, currentHeightFt, currentHeightIn *float64
+	var currentMobilityLevel *int
+	var currentTremorStatus, currentMobilityAid, currentADLAssistance, currentCommStatus, currentMedicalHistory string
+	var currentHasHypertension, currentHasHyperlipaemia, currentHasHyperglycaemia, currentHasStrokeHistory, currentHasParalysis, currentHasAlzheimer bool
+	var currentHomeAddressStreet, currentHomeAddressCity, currentHomeAddressState, currentHomeAddressPostalCode, currentPlusCode string
+
+	if currentPHI != nil {
+		currentFirstName = currentPHI.FirstName
+		currentLastName = currentPHI.LastName
+		currentGender = currentPHI.Gender
+		currentDateOfBirth = currentPHI.DateOfBirth
+		currentResidentPhone = currentPHI.ResidentPhone
+		currentResidentEmail = currentPHI.ResidentEmail
+		currentWeightLb = currentPHI.WeightLb
+		currentHeightFt = currentPHI.HeightFt
+		currentHeightIn = currentPHI.HeightIn
+		currentMobilityLevel = currentPHI.MobilityLevel
+		currentTremorStatus = currentPHI.TremorStatus
+		currentMobilityAid = currentPHI.MobilityAid
+		currentADLAssistance = currentPHI.ADLAssistance
+		currentCommStatus = currentPHI.CommStatus
+		currentHasHypertension = currentPHI.HasHypertension
+		currentHasHyperlipaemia = currentPHI.HasHyperlipaemia
+		currentHasHyperglycaemia = currentPHI.HasHyperglycaemia
+		currentHasStrokeHistory = currentPHI.HasStrokeHistory
+		currentHasParalysis = currentPHI.HasParalysis
+		currentHasAlzheimer = currentPHI.HasAlzheimer
+		currentMedicalHistory = currentPHI.MedicalHistory
+		currentHomeAddressStreet = currentPHI.HomeAddressStreet
+		currentHomeAddressCity = currentPHI.HomeAddressCity
+		currentHomeAddressState = currentPHI.HomeAddressState
+		currentHomeAddressPostalCode = currentPHI.HomeAddressPostalCode
+		currentPlusCode = currentPHI.PlusCode
+	}
+
+	finalFirstName := getFinalStringValue(update.FirstName, currentFirstName)
+	finalLastName := getFinalStringValue(update.LastName, currentLastName)
+	finalGender := getFinalStringValue(update.Gender, currentGender)
+	finalDateOfBirth := getFinalTimeValue(update.DateOfBirth, currentDateOfBirth)
+	finalResidentPhone := getFinalStringValue(update.ResidentPhone, currentResidentPhone)
+	finalResidentEmail := getFinalStringValue(update.ResidentEmail, currentResidentEmail)
+	finalWeightLb := getFinalFloat64Value(update.WeightLb, currentWeightLb)
+	finalHeightFt := getFinalFloat64Value(update.HeightFt, currentHeightFt)
+	finalHeightIn := getFinalFloat64Value(update.HeightIn, currentHeightIn)
+	finalMobilityLevel := getFinalIntValue(update.MobilityLevel, currentMobilityLevel)
+	finalTremorStatus := getFinalStringValue(update.TremorStatus, currentTremorStatus)
+	finalMobilityAid := getFinalStringValue(update.MobilityAid, currentMobilityAid)
+	finalADLAssistance := getFinalStringValue(update.ADLAssistance, currentADLAssistance)
+	finalCommStatus := getFinalStringValue(update.CommStatus, currentCommStatus)
+	finalHasHypertension := getFinalBoolValue(update.HasHypertension, currentHasHypertension)
+	finalHasHyperlipaemia := getFinalBoolValue(update.HasHyperlipaemia, currentHasHyperlipaemia)
+	finalHasHyperglycaemia := getFinalBoolValue(update.HasHyperglycaemia, currentHasHyperglycaemia)
+	finalHasStrokeHistory := getFinalBoolValue(update.HasStrokeHistory, currentHasStrokeHistory)
+	finalHasParalysis := getFinalBoolValue(update.HasParalysis, currentHasParalysis)
+	finalHasAlzheimer := getFinalBoolValue(update.HasAlzheimer, currentHasAlzheimer)
+	finalMedicalHistory := getFinalStringValue(update.MedicalHistory, currentMedicalHistory)
+	finalHomeAddressStreet := getFinalStringValue(update.HomeAddressStreet, currentHomeAddressStreet)
+	finalHomeAddressCity := getFinalStringValue(update.HomeAddressCity, currentHomeAddressCity)
+	finalHomeAddressState := getFinalStringValue(update.HomeAddressState, currentHomeAddressState)
+	finalHomeAddressPostalCode := getFinalStringValue(update.HomeAddressPostalCode, currentHomeAddressPostalCode)
+	finalPlusCode := getFinalStringValue(update.PlusCode, currentPlusCode)
+
+	query := `
+		INSERT INTO resident_phi (
+			tenant_id, resident_id,
+			first_name, last_name, gender, date_of_birth,
+			resident_phone, resident_email,
+			weight_lb, height_ft, height_in,
+			mobility_level,
+			tremor_status, mobility_aid, adl_assistance, comm_status,
+			has_hypertension, has_hyperlipaemia, has_hyperglycaemia,
+			has_stroke_history, has_paralysis, has_alzheimer,
+			medical_history,
+			home_address_street, home_address_city, home_address_state, home_address_postal_code, plus_code
+		) VALUES (
+			$1, $2,
+			NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6,
+			NULLIF($7, ''), NULLIF($8, ''),
+			$9, $10, $11,
+			$12,
+			NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''),
+			$17, $18, $19,
+			$20, $21, $22,
+			NULLIF($23, ''),
+			NULLIF($24, ''), NULLIF($25, ''), NULLIF($26, ''), NULLIF($27, ''), NULLIF($28, '')
+		)
+		ON CONFLICT (tenant_id, resident_id)
+		DO UPDATE SET
+			first_name = EXCLUDED.first_name,
+			last_name = EXCLUDED.last_name,
+			gender = EXCLUDED.gender,
+			date_of_birth = EXCLUDED.date_of_birth,
+			resident_phone = EXCLUDED.resident_phone,
+			resident_email = EXCLUDED.resident_email,
+			weight_lb = EXCLUDED.weight_lb,
+			height_ft = EXCLUDED.height_ft,
+			height_in = EXCLUDED.height_in,
+			mobility_level = EXCLUDED.mobility_level,
+			tremor_status = EXCLUDED.tremor_status,
+			mobility_aid = EXCLUDED.mobility_aid,
+			adl_assistance = EXCLUDED.adl_assistance,
+			comm_status = EXCLUDED.comm_status,
+			has_hypertension = EXCLUDED.has_hypertension,
+			has_hyperlipaemia = EXCLUDED.has_hyperlipaemia,
+			has_hyperglycaemia = EXCLUDED.has_hyperglycaemia,
+			has_stroke_history = EXCLUDED.has_stroke_history,
+			has_paralysis = EXCLUDED.has_paralysis,
+			has_alzheimer = EXCLUDED.has_alzheimer,
+			medical_history = EXCLUDED.medical_history,
+			home_address_street = EXCLUDED.home_address_street,
+			home_address_city = EXCLUDED.home_address_city,
+			home_address_state = EXCLUDED.home_address_state,
+			home_address_postal_code = EXCLUDED.home_address_postal_code,
+			plus_code = EXCLUDED.plus_code
+	`
+
+	_, err = r.db.ExecContext(ctx, query,
+		tenantID, residentID,
+		finalFirstName, finalLastName, finalGender, finalDateOfBirth,
+		finalResidentPhone, finalResidentEmail,
+		finalWeightLb, finalHeightFt, finalHeightIn,
+		finalMobilityLevel,
+		finalTremorStatus, finalMobilityAid, finalADLAssistance, finalCommStatus,
+		finalHasHypertension, finalHasHyperlipaemia, finalHasHyperglycaemia,
+		finalHasStrokeHistory, finalHasParalysis, finalHasAlzheimer,
+		finalMedicalHistory,
+		finalHomeAddressStreet, finalHomeAddressCity, finalHomeAddressState, finalHomeAddressPostalCode, finalPlusCode,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to upsert resident PHI: %w", err)
+	}
+
+	return nil
+}
+
 // ============================================
 // ResidentContacts 表操作
 // ============================================
@@ -1398,24 +2019,18 @@ func (r *PostgresResidentsRepository) GetResidentContacts(ctx context.Context, t
 
 	query := `
 		SELECT 
-			contact_id::text,
 			tenant_id::text,
 			resident_id::text,
 			slot,
-			is_enabled,
 			relationship,
-			role,
-			is_emergency_contact,
+			is_enabled,
 			COALESCE(alert_time_window, '{}'::jsonb)::text as alert_time_window,
 			contact_first_name,
 			contact_last_name,
 			contact_phone,
 			contact_email,
 			receive_sms,
-			receive_email,
-			phone_hash,
-			email_hash,
-			password_hash
+			receive_email
 		FROM resident_contacts
 		WHERE tenant_id = $1 AND resident_id = $2
 		ORDER BY slot
@@ -1432,17 +2047,13 @@ func (r *PostgresResidentsRepository) GetResidentContacts(ctx context.Context, t
 		var contact domain.ResidentContact
 		var relationship, contactFirstName, contactLastName, contactPhone, contactEmail sql.NullString
 		var alertTimeWindow sql.NullString
-		var phoneHash, emailHash, passwordHash sql.Null[[]byte]
 
 		err := rows.Scan(
-			&contact.ContactID,
 			&contact.TenantID,
 			&contact.ResidentID,
 			&contact.Slot,
-			&contact.IsEnabled,
 			&relationship,
-			&contact.Role,
-			&contact.IsEmergencyContact,
+			&contact.IsEnabled,
 			&alertTimeWindow,
 			&contactFirstName,
 			&contactLastName,
@@ -1450,41 +2061,19 @@ func (r *PostgresResidentsRepository) GetResidentContacts(ctx context.Context, t
 			&contactEmail,
 			&contact.ReceiveSMS,
 			&contact.ReceiveEmail,
-			&phoneHash,
-			&emailHash,
-			&passwordHash,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan contact: %w", err)
 		}
 
 		// 处理可空字段
-		if relationship.Valid {
-			contact.Relationship = relationship.String
-		}
-		if contactFirstName.Valid {
-			contact.ContactFirstName = contactFirstName.String
-		}
-		if contactLastName.Valid {
-			contact.ContactLastName = contactLastName.String
-		}
-		if contactPhone.Valid {
-			contact.ContactPhone = contactPhone.String
-		}
-		if contactEmail.Valid {
-			contact.ContactEmail = contactEmail.String
-		}
-		if alertTimeWindow.Valid && alertTimeWindow.String != "" {
+		contact.Relationship = relationship
+		contact.ContactFirstName = contactFirstName
+		contact.ContactLastName = contactLastName
+		contact.ContactPhone = contactPhone
+		contact.ContactEmail = contactEmail
+		if alertTimeWindow.Valid && alertTimeWindow.String != "" && alertTimeWindow.String != "null" {
 			contact.AlertTimeWindow = json.RawMessage(alertTimeWindow.String)
-		}
-		if phoneHash.Valid {
-			contact.PhoneHash = phoneHash.V
-		}
-		if emailHash.Valid {
-			contact.EmailHash = emailHash.V
-		}
-		if passwordHash.Valid {
-			contact.PasswordHash = passwordHash.V
 		}
 
 		contacts = append(contacts, &contact)
@@ -1510,77 +2099,67 @@ func (r *PostgresResidentsRepository) CreateResidentContact(ctx context.Context,
 		return "", fmt.Errorf("slot is required")
 	}
 
-	// 处理默认值
-	role := contact.Role
-	if role == "" {
-		role = "Family"
-	}
-
 	// 处理可空字段
 	var relationshipArg any = nil
-	if contact.Relationship != "" {
-		relationshipArg = contact.Relationship
+	if contact.Relationship.Valid {
+		relationshipArg = contact.Relationship.String
 	}
 	var contactFirstNameArg any = nil
-	if contact.ContactFirstName != "" {
-		contactFirstNameArg = contact.ContactFirstName
+	if contact.ContactFirstName.Valid {
+		contactFirstNameArg = contact.ContactFirstName.String
 	}
 	var contactLastNameArg any = nil
-	if contact.ContactLastName != "" {
-		contactLastNameArg = contact.ContactLastName
+	if contact.ContactLastName.Valid {
+		contactLastNameArg = contact.ContactLastName.String
 	}
 	var contactPhoneArg any = nil
-	if contact.ContactPhone != "" {
-		contactPhoneArg = contact.ContactPhone
+	if contact.ContactPhone.Valid {
+		contactPhoneArg = contact.ContactPhone.String
 	}
 	var contactEmailArg any = nil
-	if contact.ContactEmail != "" {
-		contactEmailArg = contact.ContactEmail
-	}
-	var phoneHashArg any = nil
-	if len(contact.PhoneHash) > 0 {
-		phoneHashArg = contact.PhoneHash
-	}
-	var emailHashArg any = nil
-	if len(contact.EmailHash) > 0 {
-		emailHashArg = contact.EmailHash
-	}
-	var passwordHashArg any = nil
-	if len(contact.PasswordHash) > 0 {
-		passwordHashArg = contact.PasswordHash
+	if contact.ContactEmail.Valid {
+		contactEmailArg = contact.ContactEmail.String
 	}
 	var alertTimeWindowArg any = nil
 	if len(contact.AlertTimeWindow) > 0 {
 		alertTimeWindowArg = string(contact.AlertTimeWindow)
 	}
 
-	var contactID string
-	err := r.db.QueryRowContext(ctx,
+	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO resident_contacts (
-			tenant_id, resident_id, slot, is_enabled, relationship, role,
-			is_emergency_contact, alert_time_window,
+			tenant_id, resident_id, slot, relationship,
+			is_enabled, alert_time_window,
 			contact_first_name, contact_last_name, contact_phone, contact_email,
-			receive_sms, receive_email,
-			phone_hash, email_hash, password_hash
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-		RETURNING contact_id::text`,
-		tenantID, residentID, contact.Slot, contact.IsEnabled, relationshipArg, role,
-		contact.IsEmergencyContact, alertTimeWindowArg,
+			receive_sms, receive_email
+		) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12)
+		ON CONFLICT (tenant_id, resident_id, slot) DO UPDATE SET
+			relationship = EXCLUDED.relationship,
+			is_enabled = EXCLUDED.is_enabled,
+			alert_time_window = EXCLUDED.alert_time_window,
+			contact_first_name = EXCLUDED.contact_first_name,
+			contact_last_name = EXCLUDED.contact_last_name,
+			contact_phone = EXCLUDED.contact_phone,
+			contact_email = EXCLUDED.contact_email,
+			receive_sms = EXCLUDED.receive_sms,
+			receive_email = EXCLUDED.receive_email`,
+		tenantID, residentID, contact.Slot, relationshipArg,
+		contact.IsEnabled, alertTimeWindowArg,
 		contactFirstNameArg, contactLastNameArg, contactPhoneArg, contactEmailArg,
 		contact.ReceiveSMS, contact.ReceiveEmail,
-		phoneHashArg, emailHashArg, passwordHashArg,
-	).Scan(&contactID)
+	)
 	if err != nil {
 		return "", fmt.Errorf("failed to create resident contact: %w", err)
 	}
 
-	return contactID, nil
+	// 返回组合键标识（用于兼容性，实际使用 (resident_id, slot)）
+	return fmt.Sprintf("%s:%s", residentID, contact.Slot), nil
 }
 
 // UpdateResidentContact 更新联系人信息
-func (r *PostgresResidentsRepository) UpdateResidentContact(ctx context.Context, tenantID, contactID string, contact *domain.ResidentContact) error {
-	if tenantID == "" || contactID == "" {
-		return fmt.Errorf("tenant_id and contact_id are required")
+// 注意：主键是 (resident_id, slot)，不是 contact_id
+func (r *PostgresResidentsRepository) UpdateResidentContact(ctx context.Context, tenantID, residentID, slot string, contact *domain.ResidentContact) error {
+	if tenantID == "" || residentID == "" || slot == "" {
+		return fmt.Errorf("tenant_id, resident_id and slot are required")
 	}
 	if contact == nil {
 		return fmt.Errorf("contact is required")
@@ -1588,32 +2167,22 @@ func (r *PostgresResidentsRepository) UpdateResidentContact(ctx context.Context,
 
 	// 构建UPDATE语句
 	updates := []string{}
-	args := []any{tenantID, contactID}
-	argIdx := 3
+	args := []any{tenantID, residentID, slot}
+	argIdx := 4
 
-	if contact.Slot != "" {
-		updates = append(updates, fmt.Sprintf("slot = $%d", argIdx))
-		args = append(args, contact.Slot)
-		argIdx++
-	}
-	updates = append(updates, fmt.Sprintf("is_enabled = $%d", argIdx))
-	args = append(args, contact.IsEnabled)
-	argIdx++
-	if contact.Relationship != "" {
+	// 处理可空字段
+	if contact.Relationship.Valid {
 		updates = append(updates, fmt.Sprintf("relationship = $%d", argIdx))
-		args = append(args, contact.Relationship)
+		args = append(args, contact.Relationship.String)
 		argIdx++
 	} else {
 		updates = append(updates, "relationship = NULL")
 	}
-	if contact.Role != "" {
-		updates = append(updates, fmt.Sprintf("role = $%d", argIdx))
-		args = append(args, contact.Role)
-		argIdx++
-	}
-	updates = append(updates, fmt.Sprintf("is_emergency_contact = $%d", argIdx))
-	args = append(args, contact.IsEmergencyContact)
+
+	updates = append(updates, fmt.Sprintf("is_enabled = $%d", argIdx))
+	args = append(args, contact.IsEnabled)
 	argIdx++
+
 	if len(contact.AlertTimeWindow) > 0 {
 		updates = append(updates, fmt.Sprintf("alert_time_window = $%d::jsonb", argIdx))
 		args = append(args, string(contact.AlertTimeWindow))
@@ -1621,70 +2190,46 @@ func (r *PostgresResidentsRepository) UpdateResidentContact(ctx context.Context,
 	} else {
 		updates = append(updates, "alert_time_window = NULL")
 	}
-	if contact.ContactFirstName != "" {
+
+	if contact.ContactFirstName.Valid {
 		updates = append(updates, fmt.Sprintf("contact_first_name = $%d", argIdx))
-		args = append(args, contact.ContactFirstName)
+		args = append(args, contact.ContactFirstName.String)
 		argIdx++
 	} else {
 		updates = append(updates, "contact_first_name = NULL")
 	}
-	if contact.ContactLastName != "" {
+
+	if contact.ContactLastName.Valid {
 		updates = append(updates, fmt.Sprintf("contact_last_name = $%d", argIdx))
-		args = append(args, contact.ContactLastName)
+		args = append(args, contact.ContactLastName.String)
 		argIdx++
 	} else {
 		updates = append(updates, "contact_last_name = NULL")
 	}
-	// 处理 contact_phone：Valid=True 且="" → NULL
-	// 使用 sql.NullString 语义：如果字段被设置（即使是空字符串），也要更新
-	// 空字符串 "" 表示删除（设置为 NULL）
-	if contact.ContactPhone != "" {
+
+	if contact.ContactPhone.Valid {
 		updates = append(updates, fmt.Sprintf("contact_phone = $%d", argIdx))
-		args = append(args, contact.ContactPhone)
+		args = append(args, contact.ContactPhone.String)
 		argIdx++
 	} else {
-		// 空字符串或未设置：设置为 NULL
 		updates = append(updates, "contact_phone = NULL")
 	}
-	// 处理 contact_email：Valid=True 且="" → NULL
-	if contact.ContactEmail != "" {
+
+	if contact.ContactEmail.Valid {
 		updates = append(updates, fmt.Sprintf("contact_email = $%d", argIdx))
-		args = append(args, contact.ContactEmail)
+		args = append(args, contact.ContactEmail.String)
 		argIdx++
 	} else {
-		// 空字符串或未设置：设置为 NULL
 		updates = append(updates, "contact_email = NULL")
 	}
+
 	updates = append(updates, fmt.Sprintf("receive_sms = $%d", argIdx))
 	args = append(args, contact.ReceiveSMS)
 	argIdx++
+
 	updates = append(updates, fmt.Sprintf("receive_email = $%d", argIdx))
 	args = append(args, contact.ReceiveEmail)
 	argIdx++
-	if len(contact.PhoneHash) > 0 {
-		updates = append(updates, fmt.Sprintf("phone_hash = $%d", argIdx))
-		args = append(args, contact.PhoneHash)
-		argIdx++
-	} else {
-		updates = append(updates, "phone_hash = NULL")
-	}
-	if len(contact.EmailHash) > 0 {
-		updates = append(updates, fmt.Sprintf("email_hash = $%d", argIdx))
-		args = append(args, contact.EmailHash)
-		argIdx++
-	} else {
-		updates = append(updates, "email_hash = NULL")
-	}
-	// 处理 password_hash
-	// 规则：passwd 是不回显的，没有从密码改为无密码的状态转换，所以不能发送 ""
-	// 如果 contact.PasswordHash 为 nil（未传递），不更新该字段（不包含在 UPDATE 中）
-	// 如果 contact.PasswordHash 有值（len > 0），更新该字段
-	if contact.PasswordHash != nil && len(contact.PasswordHash) > 0 {
-		updates = append(updates, fmt.Sprintf("password_hash = $%d", argIdx))
-		args = append(args, contact.PasswordHash)
-		argIdx++
-	}
-	// 如果 contact.PasswordHash 为 nil，不包含在 UPDATE 语句中（不更新）
 
 	if len(updates) == 0 {
 		return fmt.Errorf("no fields to update")
@@ -1693,7 +2238,7 @@ func (r *PostgresResidentsRepository) UpdateResidentContact(ctx context.Context,
 	query := fmt.Sprintf(`
 		UPDATE resident_contacts
 		SET %s
-		WHERE tenant_id = $1 AND contact_id = $2
+		WHERE tenant_id = $1 AND resident_id = $2 AND slot = $3
 	`, strings.Join(updates, ", "))
 
 	result, err := r.db.ExecContext(ctx, query, args...)
@@ -1706,21 +2251,166 @@ func (r *PostgresResidentsRepository) UpdateResidentContact(ctx context.Context,
 		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
 	if rowsAffected == 0 {
-		return fmt.Errorf("resident contact not found: tenant_id '%s', contact_id '%s'", tenantID, contactID)
+		return fmt.Errorf("resident contact not found: tenant_id '%s', resident_id '%s', slot '%s'", tenantID, residentID, slot)
+	}
+
+	return nil
+}
+
+// UpdateResidentContactFields 更新联系人（使用更新模型）
+func (r *PostgresResidentsRepository) UpdateResidentContactFields(ctx context.Context, tenantID, residentID, slot string, update *domain.ResidentContactUpdate) error {
+	if tenantID == "" || residentID == "" || slot == "" {
+		return fmt.Errorf("tenant_id, resident_id and slot are required")
+	}
+	if update == nil {
+		return fmt.Errorf("update is required")
+	}
+
+	updates := []string{}
+	args := []any{tenantID, residentID, slot}
+	argIdx := 4
+
+	// Helper function to add update part
+	addUpdate := func(col string, val any) {
+		updates = append(updates, fmt.Sprintf("%s = $%d", col, argIdx))
+		args = append(args, val)
+		argIdx++
+	}
+
+	// Handle Relationship (nullable)
+	if update.Relationship != nil {
+		switch update.Relationship.Action {
+		case domain.UpdateActionUpdate:
+			addUpdate("relationship", update.Relationship.Value)
+		case domain.UpdateActionDelete:
+			updates = append(updates, "relationship = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle IsEnabled (NOT NULL)
+	if update.IsEnabled != nil {
+		switch update.IsEnabled.Action {
+		case domain.UpdateActionUpdate:
+			addUpdate("is_enabled", update.IsEnabled.Value)
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("is_enabled cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle AlertTimeWindow (nullable JSONB)
+	if update.AlertTimeWindow != nil {
+		switch update.AlertTimeWindow.Action {
+		case domain.UpdateActionUpdate:
+			if len(update.AlertTimeWindow.Value) > 0 {
+				updates = append(updates, fmt.Sprintf("alert_time_window = $%d::jsonb", argIdx))
+				args = append(args, string(update.AlertTimeWindow.Value))
+				argIdx++
+			} else {
+				updates = append(updates, "alert_time_window = NULL")
+			}
+		case domain.UpdateActionDelete:
+			updates = append(updates, "alert_time_window = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle nullable string fields
+	nullableStringFields := map[string]*domain.UpdateString{
+		"contact_first_name": update.ContactFirstName,
+		"contact_last_name":  update.ContactLastName,
+		"contact_phone":      update.ContactPhone,
+		"contact_email":      update.ContactEmail,
+	}
+
+	for col, updateField := range nullableStringFields {
+		if updateField != nil {
+			switch updateField.Action {
+			case domain.UpdateActionUpdate:
+				addUpdate(col, updateField.Value)
+			case domain.UpdateActionDelete:
+				updates = append(updates, fmt.Sprintf("%s = NULL", col))
+			case domain.UpdateActionKeep:
+				// Do nothing
+			}
+		}
+	}
+
+	// Handle ReceiveSMS (NOT NULL)
+	if update.ReceiveSMS != nil {
+		switch update.ReceiveSMS.Action {
+		case domain.UpdateActionUpdate:
+			addUpdate("receive_sms", update.ReceiveSMS.Value)
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("receive_sms cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle ReceiveEmail (NOT NULL)
+	if update.ReceiveEmail != nil {
+		switch update.ReceiveEmail.Action {
+		case domain.UpdateActionUpdate:
+			addUpdate("receive_email", update.ReceiveEmail.Value)
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("receive_email cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	if len(updates) == 0 {
+		return fmt.Errorf("no fields to update")
+	}
+
+	query := fmt.Sprintf(`
+		UPDATE resident_contacts
+		SET %s
+		WHERE tenant_id = $1 AND resident_id = $2 AND slot = $3
+	`, strings.Join(updates, ", "))
+
+	result, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update resident contact: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("resident contact not found: tenant_id '%s', resident_id '%s', slot '%s'", tenantID, residentID, slot)
 	}
 
 	return nil
 }
 
 // DeleteResidentContact 删除联系人
+// Deprecated: 主键是 (resident_id, slot)，不是 contact_id。使用 DeleteResidentContactBySlot 替代
 func (r *PostgresResidentsRepository) DeleteResidentContact(ctx context.Context, tenantID, contactID string) error {
-	if tenantID == "" || contactID == "" {
-		return fmt.Errorf("tenant_id and contact_id are required")
+	// 为了向后兼容，尝试解析 contactID 为 "residentID:slot" 格式
+	// 如果解析失败，返回错误
+	parts := strings.Split(contactID, ":")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid contact_id format, expected 'residentID:slot', got '%s'", contactID)
+	}
+	return r.DeleteResidentContactBySlot(ctx, tenantID, parts[0], parts[1])
+}
+
+// DeleteResidentContactBySlot 删除联系人（使用主键 resident_id 和 slot）
+func (r *PostgresResidentsRepository) DeleteResidentContactBySlot(ctx context.Context, tenantID, residentID, slot string) error {
+	if tenantID == "" || residentID == "" || slot == "" {
+		return fmt.Errorf("tenant_id, resident_id and slot are required")
 	}
 
 	_, err := r.db.ExecContext(ctx,
-		`DELETE FROM resident_contacts WHERE tenant_id = $1 AND contact_id = $2`,
-		tenantID, contactID,
+		`DELETE FROM resident_contacts WHERE tenant_id = $1 AND resident_id = $2 AND slot = $3`,
+		tenantID, residentID, slot,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to delete resident contact: %w", err)
@@ -1757,38 +2447,7 @@ func (r *PostgresResidentsRepository) GetResidentCaregivers(ctx context.Context,
 
 	caregivers := []*domain.ResidentCaregiver{}
 
-	// 2. 获取unit级别的caregiver配置（如果unit_id存在）
-	if unitID.Valid && unitID.String != "" {
-		var unitGroupList, unitUserList sql.NullString
-		err = r.db.QueryRowContext(ctx,
-			`SELECT 
-				CASE WHEN groupList IS NULL THEN NULL ELSE groupList::text END as groupList,
-				CASE WHEN userList IS NULL THEN NULL ELSE userList::text END as userList
-			FROM units
-			WHERE tenant_id = $1 AND unit_id = $2`,
-			tenantID, unitID.String,
-		).Scan(&unitGroupList, &unitUserList)
-		if err != nil && err != sql.ErrNoRows {
-			return nil, fmt.Errorf("failed to get unit caregiver config: %w", err)
-		}
-
-		// 如果unit有caregiver配置，添加到结果
-		if (unitGroupList.Valid && unitGroupList.String != "" && unitGroupList.String != "null") ||
-			(unitUserList.Valid && unitUserList.String != "" && unitUserList.String != "null") {
-			caregiver := &domain.ResidentCaregiver{
-				TenantID:   tenantID,
-				ResidentID: residentID,
-				Source:     "unit",
-			}
-			if unitGroupList.Valid && unitGroupList.String != "" && unitGroupList.String != "null" {
-				caregiver.GroupList = json.RawMessage(unitGroupList.String)
-			}
-			if unitUserList.Valid && unitUserList.String != "" && unitUserList.String != "null" {
-				caregiver.UserList = json.RawMessage(unitUserList.String)
-			}
-			caregivers = append(caregivers, caregiver)
-		}
-	}
+	// 2. 获取unit级别的caregiver配置（已移除，units表不再有groupList和userList字段）
 
 	// 3. 获取resident级别的caregiver配置（从resident_caregivers表）
 	var caregiverID sql.NullString
@@ -1796,8 +2455,8 @@ func (r *PostgresResidentsRepository) GetResidentCaregivers(ctx context.Context,
 	err = r.db.QueryRowContext(ctx,
 		`SELECT 
 			caregiver_id::text,
-			CASE WHEN groupList IS NULL THEN NULL ELSE groupList::text END as groupList,
-			CASE WHEN userList IS NULL THEN NULL ELSE userList::text END as userList
+			CASE WHEN group_list IS NULL THEN NULL ELSE group_list::text END as group_list,
+			CASE WHEN user_list IS NULL THEN NULL ELSE user_list::text END as user_list
 		FROM resident_caregivers
 		WHERE tenant_id = $1 AND resident_id = $2`,
 		tenantID, residentID,
@@ -1848,15 +2507,109 @@ func (r *PostgresResidentsRepository) UpsertResidentCaregiver(ctx context.Contex
 
 	query := `
 		INSERT INTO resident_caregivers (
-			tenant_id, resident_id, groupList, userList
+			tenant_id, resident_id, group_list, user_list
 		) VALUES ($1, $2, $3::jsonb, $4::jsonb)
 		ON CONFLICT (tenant_id, resident_id)
 		DO UPDATE SET
-			groupList = EXCLUDED.groupList,
-			userList = EXCLUDED.userList
+			group_list = EXCLUDED.group_list,
+			user_list = EXCLUDED.user_list
 	`
 
 	_, err := r.db.ExecContext(ctx, query, tenantID, residentID, groupListArg, userListArg)
+	if err != nil {
+		return fmt.Errorf("failed to upsert resident caregiver: %w", err)
+	}
+
+	return nil
+}
+
+// UpsertResidentCaregiverFields 创建或更新护理人员关联（使用更新模型）
+// 注意：使用 UPSERT 语义（UNIQUE(tenant_id, residentID)）
+func (r *PostgresResidentsRepository) UpsertResidentCaregiverFields(ctx context.Context, tenantID, residentID string, update *domain.ResidentCaregiverUpdate) error {
+	if tenantID == "" || residentID == "" {
+		return fmt.Errorf("tenant_id and resident_id are required")
+	}
+	if update == nil {
+		return fmt.Errorf("update is required")
+	}
+
+	// 获取当前记录（如果存在）
+	currentCaregiver, err := r.GetResidentCaregivers(ctx, tenantID, residentID)
+	if err != nil {
+		return fmt.Errorf("failed to get current resident caregiver: %w", err)
+	}
+
+	// 确定最终值
+	var finalGroupList interface{}
+	var finalUserList interface{}
+
+	// 处理 GroupList
+	if update.GroupList != nil {
+		switch update.GroupList.Action {
+		case domain.UpdateActionUpdate:
+			if len(update.GroupList.Value) > 0 {
+				finalGroupList = string(update.GroupList.Value)
+			} else {
+				finalGroupList = nil
+			}
+		case domain.UpdateActionDelete:
+			finalGroupList = nil
+		case domain.UpdateActionKeep:
+			// 保持现有值
+			if len(currentCaregiver) > 0 && len(currentCaregiver[0].GroupList) > 0 {
+				finalGroupList = string(currentCaregiver[0].GroupList)
+			} else {
+				finalGroupList = nil
+			}
+		}
+	} else {
+		// 如果没有指定，保持现有值或使用 nil
+		if len(currentCaregiver) > 0 && len(currentCaregiver[0].GroupList) > 0 {
+			finalGroupList = string(currentCaregiver[0].GroupList)
+		} else {
+			finalGroupList = nil
+		}
+	}
+
+	// 处理 UserList
+	if update.UserList != nil {
+		switch update.UserList.Action {
+		case domain.UpdateActionUpdate:
+			if len(update.UserList.Value) > 0 {
+				finalUserList = string(update.UserList.Value)
+			} else {
+				finalUserList = nil
+			}
+		case domain.UpdateActionDelete:
+			finalUserList = nil
+		case domain.UpdateActionKeep:
+			// 保持现有值
+			if len(currentCaregiver) > 0 && len(currentCaregiver[0].UserList) > 0 {
+				finalUserList = string(currentCaregiver[0].UserList)
+			} else {
+				finalUserList = nil
+			}
+		}
+	} else {
+		// 如果没有指定，保持现有值或使用 nil
+		if len(currentCaregiver) > 0 && len(currentCaregiver[0].UserList) > 0 {
+			finalUserList = string(currentCaregiver[0].UserList)
+		} else {
+			finalUserList = nil
+		}
+	}
+
+	query := `
+		INSERT INTO resident_caregivers (
+			tenant_id, resident_id, group_list, user_list
+		) VALUES ($1, $2, $3::jsonb, $4::jsonb)
+		ON CONFLICT (tenant_id, resident_id)
+		DO UPDATE SET
+			group_list = EXCLUDED.group_list,
+			user_list = EXCLUDED.user_list
+	`
+
+	_, err = r.db.ExecContext(ctx, query, tenantID, residentID, finalGroupList, finalUserList)
 	if err != nil {
 		return fmt.Errorf("failed to upsert resident caregiver: %w", err)
 	}

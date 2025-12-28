@@ -21,10 +21,10 @@ import (
 type AuthService interface {
 	// 登录功能
 	Login(ctx context.Context, req LoginRequest) (*LoginResponse, error)
-	
+
 	// 搜索机构功能
 	SearchInstitutions(ctx context.Context, req SearchInstitutionsRequest) (*SearchInstitutionsResponse, error)
-	
+
 	// 密码重置功能（待实现）
 	SendVerificationCode(ctx context.Context, req SendVerificationCodeRequest) (*SendVerificationCodeResponse, error)
 	VerifyCode(ctx context.Context, req VerifyCodeRequest) (*VerifyCodeResponse, error)
@@ -43,7 +43,7 @@ type verificationCodeData struct {
 }
 
 type resetTokenStore struct {
-	mu    sync.RWMutex
+	mu     sync.RWMutex
 	tokens map[string]resetTokenData // key: token -> data
 }
 
@@ -57,12 +57,12 @@ type resetTokenData struct {
 
 // authService 实现
 type authService struct {
-	authRepo     repository.AuthRepository
-	tenantsRepo  repository.TenantsRepository
-	db           *sql.DB // 用于验证码和重置密码功能（需要直接查询数据库）
-	logger       *zap.Logger
-	codeStore    *verificationCodeStore
-	tokenStore   *resetTokenStore
+	authRepo    repository.AuthRepository
+	tenantsRepo repository.TenantsRepository
+	db          *sql.DB // 用于验证码和重置密码功能（需要直接查询数据库）
+	logger      *zap.Logger
+	codeStore   *verificationCodeStore
+	tokenStore  *resetTokenStore
 }
 
 // NewAuthService 创建 AuthService 实例
@@ -93,18 +93,19 @@ type LoginRequest struct {
 
 // LoginResponse 登录响应
 type LoginResponse struct {
-	AccessToken  string  `json:"accessToken"`  // 访问令牌（占位符）
-	RefreshToken string  `json:"refreshToken"` // 刷新令牌（占位符）
-	UserID       string  `json:"userId"`       // 用户 ID
-	UserAccount  string  `json:"user_account"` // 用户账号
-	UserType     string  `json:"userType"`     // 用户类型
-	Role         string  `json:"role"`         // 角色
-	NickName     string  `json:"nickName"`     // 昵称
-	TenantID     string  `json:"tenant_id"`    // 租户 ID
-	TenantName   string  `json:"tenant_name"`  // 租户名称
-	Domain       string  `json:"domain"`        // 域名
-	HomePath     string  `json:"homePath"`      // 首页路径
-	BranchTag    *string `json:"branchTag,omitempty"` // 分支标签（可选）
+	AccessToken  string `json:"accessToken"`         // 访问令牌（占位符）
+	RefreshToken string `json:"refreshToken"`        // 刷新令牌（占位符）
+	UserID       string `json:"userId"`              // 用户 ID
+	UserAccount  string `json:"user_account"`        // 用户账号
+	UserType     string `json:"userType"`            // 用户类型
+	Role         string `json:"role"`                // 角色
+	NickName     string `json:"nickName"`            // 昵称
+	TenantID     string `json:"tenant_id"`           // 租户 ID
+	TenantName   string `json:"tenant_name"`         // 租户名称
+	Domain       string `json:"domain"`              // 域名
+	BranchID     string `json:"branch_id,omitempty"` // 院区 ID（从 user_branches 获取主院区，前端使用 ID 调用服务）
+	BranchTag    string `json:"branchTag,omitempty"` // 院区名称（用于显示，前端使用 ID 调用服务）
+	HomePath     string `json:"homePath"`            // 首页路径
 }
 
 // Login 用户登录
@@ -197,51 +198,24 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 
-	var userID, userAccount, nickName, role, tenantName, domain, branchTag string
+	var userID, userAccount, nickName, role, tenantName, domain string
 
 	switch normalizedUserType {
 	case "resident":
-		// Step 1: Try resident_contacts table first
-		contactInfo, err := s.authRepo.GetResidentContactForLogin(ctx, tenantID, accountHashBytes, passwordHashBytes)
-		if err == nil {
-			// Family contact login succeeded
-			if !contactInfo.IsEnabled {
-				s.logger.Warn("User login failed: account not active",
-					zap.String("user_id", contactInfo.ContactID),
-					zap.String("tenant_id", tenantID),
-					zap.String("user_type", normalizedUserType),
-					zap.String("reason", "account_not_active"),
-					zap.String("note", "family contact not enabled"),
-					zap.String("ip_address", req.IPAddress),
-				)
-				return nil, fmt.Errorf("user is not active")
-			}
-
-			userID = contactInfo.ContactID
-			userAccount = contactInfo.ContactID // For family contacts, expose a stable identifier as user_account
-			if strings.TrimSpace(contactInfo.ContactFirstName+" "+contactInfo.ContactLastName) != "" {
-				nickName = strings.TrimSpace(contactInfo.ContactFirstName + " " + contactInfo.ContactLastName)
-			} else {
-				nickName = contactInfo.Role
-			}
-			role = contactInfo.Role
-			tenantName = contactInfo.TenantName
-			domain = contactInfo.Domain
-			branchTag = contactInfo.BranchTag
-		} else {
-			// Step 2: Try resident login
-			residentInfo, err := s.authRepo.GetResidentForLogin(ctx, tenantID, accountHashBytes, passwordHashBytes)
-			if err != nil {
-				s.logger.Warn("User login failed: invalid credentials",
-					zap.String("tenant_id", tenantID),
-					zap.String("user_type", normalizedUserType),
-					zap.String("ip_address", req.IPAddress),
-					zap.String("user_agent", req.UserAgent),
-					zap.String("reason", "invalid_credentials"),
-					zap.String("note", "resident login failed"),
-				)
-				return nil, fmt.Errorf("invalid credentials")
-			}
+		// Query residents table only (resident_contacts cannot login)
+		// Note: Emergency contacts (resident_contacts) cannot login, they only receive notifications
+		residentInfo, err := s.authRepo.GetResidentForLogin(ctx, tenantID, accountHashBytes, passwordHashBytes)
+		if err != nil {
+			s.logger.Warn("User login failed: invalid credentials",
+				zap.String("tenant_id", tenantID),
+				zap.String("user_type", normalizedUserType),
+				zap.String("ip_address", req.IPAddress),
+				zap.String("user_agent", req.UserAgent),
+				zap.String("reason", "invalid_credentials"),
+				zap.String("note", "resident login failed"),
+			)
+			return nil, fmt.Errorf("invalid credentials")
+		}
 
 		// 检查用户状态：仅允许 active 状态的用户登录
 		if residentInfo.Status != "active" {
@@ -256,14 +230,12 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 			return nil, fmt.Errorf("user is not active")
 		}
 
-			userID = residentInfo.ResidentID
-			userAccount = residentInfo.ResidentAccount
-			nickName = residentInfo.Nickname
-			role = residentInfo.Role
-			tenantName = residentInfo.TenantName
-			domain = residentInfo.Domain
-			branchTag = residentInfo.BranchTag
-		}
+		userID = residentInfo.ResidentID
+		userAccount = residentInfo.ResidentAccount
+		nickName = residentInfo.Nickname
+		role = residentInfo.Role
+		tenantName = residentInfo.TenantName
+		domain = residentInfo.Domain
 	default: // staff
 		userInfo, err := s.authRepo.GetUserForLogin(ctx, tenantID, accountHashBytes, passwordHashBytes)
 		if err != nil {
@@ -298,7 +270,6 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 		role = userInfo.Role
 		tenantName = userInfo.TenantName
 		domain = userInfo.Domain
-		branchTag = userInfo.BranchTag
 	}
 
 	// 5. 登录后处理
@@ -322,6 +293,45 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 		}
 	}
 
+	// 6. 查询用户的 branch_id 和 branch_name（从 user_branches 获取主院区）
+	var branchID, branchTag string
+	if normalizedUserType == "staff" && s.db != nil {
+		// Staff: 从 user_branches 表获取主院区
+		var branchIDVal, branchNameVal sql.NullString
+		err := s.db.QueryRowContext(ctx,
+			`SELECT ub.branch_id::text, COALESCE(b.branch_name, '') as branch_name
+			 FROM user_branches ub
+			 LEFT JOIN branches b ON ub.branch_id = b.branch_id
+			 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2 AND ub.is_primary = TRUE
+			 LIMIT 1`,
+			tenantID, userID,
+		).Scan(&branchIDVal, &branchNameVal)
+		if err == nil && branchIDVal.Valid {
+			branchID = branchIDVal.String
+			if branchNameVal.Valid {
+				branchTag = branchNameVal.String
+			}
+		}
+	} else if normalizedUserType == "resident" && s.db != nil {
+		// Resident: 从 residents.unit_id -> units.branch_id 获取院区
+		var branchIDVal, branchNameVal sql.NullString
+		err := s.db.QueryRowContext(ctx,
+			`SELECT u.branch_id::text, COALESCE(b.branch_name, '') as branch_name
+			 FROM residents r
+			 LEFT JOIN units u ON u.unit_id = r.unit_id
+			 LEFT JOIN branches b ON b.branch_id = u.branch_id
+			 WHERE r.tenant_id = $1 AND r.resident_id::text = $2
+			 LIMIT 1`,
+			tenantID, userID,
+		).Scan(&branchIDVal, &branchNameVal)
+		if err == nil && branchIDVal.Valid {
+			branchID = branchIDVal.String
+			if branchNameVal.Valid {
+				branchTag = branchNameVal.String
+			}
+		}
+	}
+
 	// Log successful login
 	s.logger.Info("User login successful",
 		zap.String("user_id", userID),
@@ -329,13 +339,15 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 		zap.String("user_type", normalizedUserType),
 		zap.String("tenant_id", tenantID),
 		zap.String("tenant_name", tenantName),
+		zap.String("branch_id", branchID),
+		zap.String("branch_tag", branchTag),
 		zap.String("role", role),
 		zap.String("ip_address", req.IPAddress),
 		zap.String("user_agent", req.UserAgent),
 		zap.Time("login_time", time.Now()),
 	)
 
-	// 6. 构建响应
+	// 7. 构建响应
 	resp := &LoginResponse{
 		AccessToken:  "stub-access-token",
 		RefreshToken: "stub-refresh-token",
@@ -347,11 +359,9 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 		TenantID:     tenantID,
 		TenantName:   tenantName,
 		Domain:       domain,
+		BranchID:     branchID,
+		BranchTag:    branchTag,
 		HomePath:     "/monitoring/overview",
-	}
-
-	if branchTag != "" {
-		resp.BranchTag = &branchTag
 	}
 
 	return resp, nil
@@ -366,10 +376,10 @@ type SearchInstitutionsRequest struct {
 
 // Institution 机构信息
 type Institution struct {
-	ID          string `json:"id"`          // 机构 ID
-	Name        string `json:"name"`       // 机构名称
+	ID          string `json:"id"`               // 机构 ID
+	Name        string `json:"name"`             // 机构名称
 	Domain      string `json:"domain,omitempty"` // 机构域名（可选）
-	AccountType string `json:"accountType"` // 账号类型（email/phone/account）
+	AccountType string `json:"accountType"`      // 账号类型（email/phone/account）
 }
 
 // SearchInstitutionsResponse 搜索机构响应
@@ -534,7 +544,7 @@ func (s *authService) SendVerificationCode(ctx context.Context, req SendVerifica
 					found = true
 				}
 			} else if normalizedUserType == "resident" {
-				// 查找 residents 表或 resident_contacts 表
+				// 查找 residents 表（resident_contacts 不能登录）
 				var residentIDFromDB sql.NullString
 				var tenantIDFromDB sql.NullString
 				err := s.db.QueryRowContext(ctx,
@@ -545,18 +555,6 @@ func (s *authService) SendVerificationCode(ctx context.Context, req SendVerifica
 				).Scan(&residentIDFromDB, &tenantIDFromDB)
 				if err == nil && residentIDFromDB.Valid {
 					found = true
-				} else {
-					// 尝试 resident_contacts 表
-					var contactIDFromDB sql.NullString
-					err := s.db.QueryRowContext(ctx,
-						`SELECT contact_id::text FROM resident_contacts 
-						 WHERE email_hash = $1 OR phone_hash = $1
-						 LIMIT 1`,
-						accountHash,
-					).Scan(&contactIDFromDB)
-					if err == nil && contactIDFromDB.Valid {
-						found = true
-					}
 				}
 			}
 		}
@@ -638,7 +636,6 @@ func (s *authService) cleanupExpiredTokens() {
 		}
 	}
 }
-
 
 // VerifyCodeRequest 验证验证码请求
 type VerifyCodeRequest struct {
@@ -853,21 +850,7 @@ func (s *authService) ResetPassword(ctx context.Context, req ResetPasswordReques
 			return nil, fmt.Errorf("failed to reset password: %w", err)
 		}
 		rowsAffected, _ = result.RowsAffected()
-
-		// 如果没有更新 residents 表，尝试更新 resident_contacts 表
-		if rowsAffected == 0 {
-			result, err := s.db.ExecContext(ctx,
-				`UPDATE resident_contacts 
-				 SET password_hash = $1
-				 WHERE (email_hash = $2 OR phone_hash = $2)
-				   AND tenant_id = $3`,
-				passwordHash, accountHash, tokenData.TenantID,
-			)
-			if err != nil {
-				return nil, fmt.Errorf("failed to reset password: %w", err)
-			}
-			rowsAffected, _ = result.RowsAffected()
-		}
+		// Note: Emergency contacts (resident_contacts) cannot login, so password reset is not supported for them
 	} else {
 		return nil, fmt.Errorf("unsupported user_type: %s", req.UserType)
 	}
@@ -892,4 +875,3 @@ func (s *authService) ResetPassword(ctx context.Context, req ResetPasswordReques
 		Message: "Password has been reset successfully",
 	}, nil
 }
-

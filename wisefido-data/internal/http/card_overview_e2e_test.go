@@ -151,9 +151,9 @@ func setupCardOverviewE2ETestData(t *testing.T, db *sql.DB, tenantID string) (un
 	// 9. 创建住户分配关系（resident_caregivers）
 	userListJSON, _ := json.Marshal([]string{userID})
 	_, err = db.ExecContext(ctx,
-		`INSERT INTO resident_caregivers (tenant_id, resident_id, userList)
+		`INSERT INTO resident_caregivers (tenant_id, resident_id, user_list)
 		 VALUES ($1, $2, $3)
-		 ON CONFLICT (tenant_id, resident_id) DO UPDATE SET userList = EXCLUDED.userList`,
+		 ON CONFLICT (tenant_id, resident_id) DO UPDATE SET user_list = EXCLUDED.user_list`,
 		tenantID, residentID1, userListJSON,
 	)
 	require.NoError(t, err)

@@ -8,8 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"wisefido-data/internal/domain"
+
+	"github.com/google/uuid"
 )
 
 // PostgresAlarmEventsRepository 报警事件Repository实现
@@ -179,9 +180,20 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 			argN++
 		}
 
-		// 分支标签过滤
+		// 分支标签过滤（通过 JOIN branches 表获取 branch_name）
 		if filters.BranchTag != nil {
-			where = append(where, fmt.Sprintf("u.branch_name = $%d", argN))
+			// 确保 JOIN branches 表
+			needBranchesJoin := true
+			for _, join := range joins {
+				if strings.Contains(join, "branches") {
+					needBranchesJoin = false
+					break
+				}
+			}
+			if needBranchesJoin {
+				joins = append(joins, "LEFT JOIN branches br ON u.branch_id = br.branch_id")
+			}
+			where = append(where, fmt.Sprintf("br.branch_name = $%d", argN))
 			args = append(args, *filters.BranchTag)
 			argN++
 		}
@@ -615,14 +627,14 @@ func (r *PostgresAlarmEventsRepository) UpdateAlarmEvent(ctx context.Context, te
 
 	// 允许更新的字段
 	allowedFields := map[string]bool{
-		"alarm_status":     true,
-		"hand_time":        true,
-		"handler":          true,
-		"operation":        true,
-		"notes":            true,
-		"notified_users":   true,
-		"metadata":         true,
-		"trigger_data":     true,
+		"alarm_status":      true,
+		"hand_time":         true,
+		"handler":           true,
+		"operation":         true,
+		"notes":             true,
+		"notified_users":    true,
+		"metadata":          true,
+		"trigger_data":      true,
 		"iot_timeseries_id": true,
 	}
 
@@ -662,6 +674,219 @@ func (r *PostgresAlarmEventsRepository) UpdateAlarmEvent(ctx context.Context, te
 	}
 
 	return nil
+}
+
+// UpdateAlarmEventFields 更新报警事件（使用更新模型）
+func (r *PostgresAlarmEventsRepository) UpdateAlarmEventFields(ctx context.Context, tenantID, eventID string, update *domain.AlarmEventUpdate) error {
+	if tenantID == "" || eventID == "" {
+		return fmt.Errorf("tenant_id and event_id are required")
+	}
+	if update == nil {
+		return fmt.Errorf("update is required")
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	updates := []string{}
+	args := []any{eventID, tenantID}
+	argIdx := 3
+
+	// 处理 UpdateString
+	if update.Category != nil {
+		switch update.Category.Action {
+		case domain.UpdateActionUpdate:
+			updates = append(updates, fmt.Sprintf("category = $%d", argIdx))
+			args = append(args, update.Category.Value)
+			argIdx++
+		case domain.UpdateActionDelete:
+			updates = append(updates, "category = NULL")
+		case domain.UpdateActionKeep:
+			// 不更新，跳过
+		}
+	}
+
+	if update.AlarmLevel != nil {
+		switch update.AlarmLevel.Action {
+		case domain.UpdateActionUpdate:
+			updates = append(updates, fmt.Sprintf("alarm_level = $%d", argIdx))
+			args = append(args, update.AlarmLevel.Value)
+			argIdx++
+		case domain.UpdateActionDelete:
+			// alarm_level 是 NOT NULL，不能删除，只能更新
+			return fmt.Errorf("alarm_level cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// 不更新，跳过
+		}
+	}
+
+	if update.AlarmStatus != nil {
+		switch update.AlarmStatus.Action {
+		case domain.UpdateActionUpdate:
+			updates = append(updates, fmt.Sprintf("alarm_status = $%d", argIdx))
+			args = append(args, update.AlarmStatus.Value)
+			argIdx++
+		case domain.UpdateActionDelete:
+			// alarm_status 是 NOT NULL，不能删除，只能更新
+			return fmt.Errorf("alarm_status cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// 不更新，跳过
+		}
+	}
+
+	if update.Operation != nil {
+		switch update.Operation.Action {
+		case domain.UpdateActionUpdate:
+			updates = append(updates, fmt.Sprintf("operation = $%d", argIdx))
+			args = append(args, update.Operation.Value)
+			argIdx++
+		case domain.UpdateActionDelete:
+			updates = append(updates, "operation = NULL")
+		case domain.UpdateActionKeep:
+			// 不更新，跳过
+		}
+	}
+
+	if update.Notes != nil {
+		switch update.Notes.Action {
+		case domain.UpdateActionUpdate:
+			updates = append(updates, fmt.Sprintf("notes = $%d", argIdx))
+			args = append(args, update.Notes.Value)
+			argIdx++
+		case domain.UpdateActionDelete:
+			updates = append(updates, "notes = NULL")
+		case domain.UpdateActionKeep:
+			// 不更新，跳过
+		}
+	}
+
+	if update.Handler != nil {
+		switch update.Handler.Action {
+		case domain.UpdateActionUpdate:
+			updates = append(updates, fmt.Sprintf("handler = $%d", argIdx))
+			args = append(args, update.Handler.Value)
+			argIdx++
+		case domain.UpdateActionDelete:
+			updates = append(updates, "handler = NULL")
+		case domain.UpdateActionKeep:
+			// 不更新，跳过
+		}
+	}
+
+	// 处理 UpdateTime
+	if update.HandTime != nil {
+		switch update.HandTime.Action {
+		case domain.UpdateActionUpdate:
+			if update.HandTime.Value != nil {
+				updates = append(updates, fmt.Sprintf("hand_time = $%d", argIdx))
+				args = append(args, *update.HandTime.Value)
+				argIdx++
+			} else {
+				updates = append(updates, "hand_time = NULL")
+			}
+		case domain.UpdateActionDelete:
+			updates = append(updates, "hand_time = NULL")
+		case domain.UpdateActionKeep:
+			// 不更新，跳过
+		}
+	}
+
+	// 处理 UpdateInt64
+	if update.IoTTimeSeriesID != nil {
+		switch update.IoTTimeSeriesID.Action {
+		case domain.UpdateActionUpdate:
+			updates = append(updates, fmt.Sprintf("iot_timeseries_id = $%d", argIdx))
+			args = append(args, update.IoTTimeSeriesID.Value)
+			argIdx++
+		case domain.UpdateActionDelete:
+			updates = append(updates, "iot_timeseries_id = NULL")
+		case domain.UpdateActionKeep:
+			// 不更新，跳过
+		}
+	}
+
+	// 处理 UpdateJSON
+	if update.TriggerData != nil {
+		switch update.TriggerData.Action {
+		case domain.UpdateActionUpdate:
+			if len(update.TriggerData.Value) > 0 {
+				updates = append(updates, fmt.Sprintf("trigger_data = $%d::jsonb", argIdx))
+				args = append(args, string(update.TriggerData.Value))
+				argIdx++
+			} else {
+				updates = append(updates, "trigger_data = NULL")
+			}
+		case domain.UpdateActionDelete:
+			updates = append(updates, "trigger_data = NULL")
+		case domain.UpdateActionKeep:
+			// 不更新，跳过
+		}
+	}
+
+	if update.NotifiedUsers != nil {
+		switch update.NotifiedUsers.Action {
+		case domain.UpdateActionUpdate:
+			if len(update.NotifiedUsers.Value) > 0 {
+				updates = append(updates, fmt.Sprintf("notified_users = $%d::jsonb", argIdx))
+				args = append(args, string(update.NotifiedUsers.Value))
+				argIdx++
+			} else {
+				updates = append(updates, "notified_users = '[]'::jsonb")
+			}
+		case domain.UpdateActionDelete:
+			updates = append(updates, "notified_users = '[]'::jsonb")
+		case domain.UpdateActionKeep:
+			// 不更新，跳过
+		}
+	}
+
+	if update.Metadata != nil {
+		switch update.Metadata.Action {
+		case domain.UpdateActionUpdate:
+			if len(update.Metadata.Value) > 0 {
+				updates = append(updates, fmt.Sprintf("metadata = $%d::jsonb", argIdx))
+				args = append(args, string(update.Metadata.Value))
+				argIdx++
+			} else {
+				updates = append(updates, "metadata = '{}'::jsonb")
+			}
+		case domain.UpdateActionDelete:
+			updates = append(updates, "metadata = '{}'::jsonb")
+		case domain.UpdateActionKeep:
+			// 不更新，跳过
+		}
+	}
+
+	if len(updates) == 0 {
+		return fmt.Errorf("no fields to update")
+	}
+
+	// 自动更新 updated_at
+	updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
+
+	query := fmt.Sprintf(`
+		UPDATE alarm_events
+		SET %s
+		WHERE event_id = $1 AND tenant_id = $2 AND (metadata->>'deleted_at' IS NULL)
+	`, strings.Join(updates, ", "))
+
+	result, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update alarm event: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("alarm event not found or already deleted")
+	}
+
+	return tx.Commit()
 }
 
 // DeleteAlarmEvent 软删除报警事件（需验证 tenant_id）
@@ -891,8 +1116,20 @@ func (r *PostgresAlarmEventsRepository) CountAlarmEvents(ctx context.Context, te
 			args = append(args, *filters.ResidentID)
 			argN++
 		}
+		// 分支标签过滤（通过 JOIN branches 表获取 branch_name）
 		if filters.BranchTag != nil {
-			where = append(where, fmt.Sprintf("u.branch_name = $%d", argN))
+			// 确保 JOIN branches 表
+			needBranchesJoin := true
+			for _, join := range joins {
+				if strings.Contains(join, "branches") {
+					needBranchesJoin = false
+					break
+				}
+			}
+			if needBranchesJoin {
+				joins = append(joins, "LEFT JOIN branches br ON u.branch_id = br.branch_id")
+			}
+			where = append(where, fmt.Sprintf("br.branch_name = $%d", argN))
 			args = append(args, *filters.BranchTag)
 			argN++
 		}
@@ -924,4 +1161,3 @@ func (r *PostgresAlarmEventsRepository) CountAlarmEvents(ctx context.Context, te
 
 	return total, nil
 }
-

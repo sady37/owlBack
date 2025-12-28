@@ -96,7 +96,7 @@ func (h *UnitHandler) ListBuildings(w http.ResponseWriter, r *http.Request) {
 	branchTag := r.URL.Query().Get("branch_tag")
 
 	req := service.ListBuildingsRequest{
-		TenantID:  tenantID,
+		TenantID:   tenantID,
 		BranchName: branchTag,
 	}
 
@@ -161,9 +161,21 @@ func (h *UnitHandler) CreateBuilding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 优先使用 branch_id，如果没有则使用 branch_name（向后兼容 branch_tag）
+	branchID := getString(payload, "branch_id")
+	branchName := getString(payload, "branch_name")
+	if branchName == "" {
+		// 向后兼容：也支持 branch_tag
+		branchName = getString(payload, "branch_tag")
+	}
+	if branchID != "" {
+		// 如果提供了 branch_id，忽略 branch_name（service 层会通过 branch_id 查找）
+		branchName = ""
+	}
 	req := service.CreateBuildingRequest{
 		TenantID:     tenantID,
-		BranchName:    getString(payload, "branch_tag"),
+		BranchID:     branchID,
+		BranchName:   branchName,
 		BuildingName: getString(payload, "building_name"),
 	}
 
@@ -210,10 +222,22 @@ func (h *UnitHandler) UpdateBuilding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 优先使用 branch_id，如果没有则使用 branch_name（向后兼容 branch_tag）
+	branchID := getString(payload, "branch_id")
+	branchName := getString(payload, "branch_name")
+	if branchName == "" {
+		// 向后兼容：也支持 branch_tag
+		branchName = getString(payload, "branch_tag")
+	}
+	if branchID != "" {
+		// 如果提供了 branch_id，忽略 branch_name（service 层会通过 branch_id 查找）
+		branchName = ""
+	}
 	req := service.UpdateBuildingRequest{
 		TenantID:     tenantID,
 		BuildingID:   buildingID,
-		BranchName:    getString(payload, "branch_tag"),
+		BranchID:     branchID,
+		BranchName:   branchName,
 		BuildingName: getString(payload, "building_name"),
 	}
 
@@ -288,10 +312,10 @@ func (h *UnitHandler) ListUnits(w http.ResponseWriter, r *http.Request) {
 	req := service.ListUnitsRequest{
 		TenantID: tenantID,
 		// branch_tag: 如果 query 参数不存在或为空字符串，设置为 nil（表示匹配 NULL）
-		BranchName:  stringPtrOrNil(r.URL.Query().Get("branch_tag")),
+		BranchName: stringPtrOrNil(r.URL.Query().Get("branch_tag")),
 		Building:   stringPtrOrNil(r.URL.Query().Get("building")),
 		Floor:      stringPtrOrNil(r.URL.Query().Get("floor")),
-		AreaName:    stringPtrOrNil(r.URL.Query().Get("area_name")),
+		AreaName:   stringPtrOrNil(r.URL.Query().Get("area_name")),
 		UnitNumber: stringPtrOrNil(r.URL.Query().Get("unit_number")),
 		UnitName:   stringPtrOrNil(r.URL.Query().Get("unit_name")),
 		UnitType:   stringPtrOrNil(r.URL.Query().Get("unit_type")),
@@ -364,13 +388,22 @@ func (h *UnitHandler) CreateUnit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 优先使用 branch_id，如果没有则使用 branch_tag（向后兼容）
+	branchID := getString(payload, "branch_id")
+	branchName := getString(payload, "branch_tag")
+	if branchID == "" {
+		branchName = getString(payload, "branch_tag")
+	} else {
+		branchName = "" // 如果提供了 branch_id，忽略 branch_tag
+	}
 	req := service.CreateUnitRequest{
 		TenantID:          tenantID,
-		BranchName:         getString(payload, "branch_tag"),
+		BranchID:          branchID,
+		BranchName:        branchName,
 		UnitName:          getString(payload, "unit_name"),
 		Building:          getString(payload, "building"),
 		Floor:             getString(payload, "floor"),
-		AreaName:           getString(payload, "area_name"),
+		AreaName:          getString(payload, "area_name"),
 		UnitNumber:        getString(payload, "unit_number"),
 		LayoutConfig:      getString(payload, "layout_config"),
 		UnitType:          getString(payload, "unit_type"),
@@ -422,14 +455,23 @@ func (h *UnitHandler) UpdateUnit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 优先使用 branch_id，如果没有则使用 branch_tag（向后兼容）
+	branchID := getString(payload, "branch_id")
+	branchName := getString(payload, "branch_tag")
+	if branchID == "" {
+		branchName = getString(payload, "branch_tag")
+	} else {
+		branchName = "" // 如果提供了 branch_id，忽略 branch_tag
+	}
 	req := service.UpdateUnitRequest{
 		TenantID:          tenantID,
 		UnitID:            unitID,
-		BranchName:         getString(payload, "branch_tag"),
+		BranchID:          branchID,
+		BranchName:        branchName,
 		UnitName:          getString(payload, "unit_name"),
 		Building:          getString(payload, "building"),
 		Floor:             getString(payload, "floor"),
-		AreaName:           getString(payload, "area_name"),
+		AreaName:          getString(payload, "area_name"),
 		UnitNumber:        getString(payload, "unit_number"),
 		LayoutConfig:      getString(payload, "layout_config"),
 		UnitType:          getString(payload, "unit_type"),
@@ -724,11 +766,11 @@ func (h *UnitHandler) CreateBed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := service.CreateBedRequest{
-		TenantID:         tenantID,
-		RoomID:           roomID,
-		BedName:          getString(payload, "bed_name"),
+		TenantID: tenantID,
+		RoomID:   roomID,
+		BedName:  getString(payload, "bed_name"),
 		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
-		MattressMaterial: getString(payload, "mattress_material"),
+		MattressMaterial:  getString(payload, "mattress_material"),
 		MattressThickness: getString(payload, "mattress_thickness"),
 	}
 
@@ -776,11 +818,11 @@ func (h *UnitHandler) UpdateBed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := service.UpdateBedRequest{
-		TenantID:         tenantID,
-		BedID:            bedID,
-		BedName:          getString(payload, "bed_name"),
+		TenantID: tenantID,
+		BedID:    bedID,
+		BedName:  getString(payload, "bed_name"),
 		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
-		MattressMaterial: getString(payload, "mattress_material"),
+		MattressMaterial:  getString(payload, "mattress_material"),
 		MattressThickness: getString(payload, "mattress_thickness"),
 	}
 
@@ -908,11 +950,16 @@ func getBoolPtr(payload map[string]any, key string) *bool {
 func buildingToJSON(b *domain.Building) map[string]any {
 	m := map[string]any{
 		"building_id":   b.BuildingID,
-		"tenant_id":    b.TenantID,
+		"tenant_id":     b.TenantID,
 		"building_name": b.BuildingName,
 	}
-	if b.BranchTag.Valid {
-		m["branch_tag"] = b.BranchTag.String
+	// 返回 branch_id（前端需要 ID 来选择对象）
+	if b.BranchID.Valid {
+		m["branch_id"] = b.BranchID.String
+	}
+	// 返回 branch_name（前端需要名称来显示）
+	if b.BranchName.Valid {
+		m["branch_name"] = b.BranchName.String
 	}
 	if b.CreatedAt.Valid {
 		m["created_at"] = b.CreatedAt.Time
@@ -926,37 +973,32 @@ func buildingToJSON(b *domain.Building) map[string]any {
 // 辅助函数：转换 Unit 为 JSON（复用 repository.Unit.ToJSON 的逻辑）
 func unitToJSON(u *domain.Unit) map[string]any {
 	m := map[string]any{
-		"unit_id":              u.UnitID,
-		"tenant_id":            u.TenantID,
-		"unit_name":            u.UnitName,
-		"unit_number":          u.UnitNumber,
-		"unit_type":            u.UnitType,
-		"is_public_space":      u.IsPublicSpace,
-		"is_multi_person_room": u.IsMultiPersonRoom,
-		"timezone":             u.Timezone,
+		"unit_id":        u.UnitID,
+		"tenant_id":      u.TenantID,
+		"unit_name":      u.UnitName,
+		"unit_type":      u.UnitType,
+		"is_public":      u.IsPublic,
+		"is_shared_unit": u.IsSharedUnit,
+		"timezone":       u.Timezone,
 	}
-	// building: 如果为 NULL，不包含在 JSON 中（前端会收到 undefined）
-	if u.Building.Valid {
-		m["building"] = u.Building.String
+	// 返回 branch_id（前端需要 ID 来选择对象）
+	if u.BranchID.Valid {
+		m["branch_id"] = u.BranchID.String
+	}
+	// 返回 branch_name（用于显示）
+	if u.BranchName.Valid {
+		m["branch_name"] = u.BranchName.String
+	}
+	// building_name: 如果为 NULL，不包含在 JSON 中（前端会收到 undefined）
+	if u.BuildingName.Valid {
+		m["building_name"] = u.BuildingName.String
 	}
 	// floor: 如果为 NULL，不包含在 JSON 中（前端会收到 undefined）
 	if u.Floor.Valid && u.Floor.String != "" {
 		m["floor"] = u.Floor.String
 	}
-	if u.BranchName.Valid {
-		m["branch_name"] = u.BranchName.String
-	}
-	if u.AreaName.Valid {
-		m["area_name"] = u.AreaName.String
-	}
 	if u.LayoutConfig.Valid {
 		m["layout_config"] = jsonRawOrString(u.LayoutConfig.String)
-	}
-	if u.GroupList.Valid {
-		m["groupList"] = jsonRawOrString(u.GroupList.String)
-	}
-	if u.UserList.Valid {
-		m["userList"] = jsonRawOrString(u.UserList.String)
 	}
 	return m
 }
@@ -968,6 +1010,10 @@ func roomToJSON(r *domain.Room) map[string]any {
 		"tenant_id": r.TenantID,
 		"unit_id":   r.UnitID,
 		"room_name": r.RoomName,
+	}
+	// 返回 unit_name（前端需要名称来显示）
+	if r.UnitName.Valid {
+		m["unit_name"] = r.UnitName.String
 	}
 	if r.LayoutConfig.Valid {
 		m["layout_config"] = jsonRawOrString(r.LayoutConfig.String)
@@ -1001,11 +1047,15 @@ func roomWithBedsToJSON(rwb *repository.RoomWithBeds) map[string]any {
 // 辅助函数：转换 Bed 为 JSON
 func bedToJSON(b *domain.Bed) map[string]any {
 	m := map[string]any{
-		"bed_id":   b.BedID,
+		"bed_id":    b.BedID,
 		"tenant_id": b.TenantID,
 		"room_id":   b.RoomID,
 		"bed_name":  b.BedName,
 		// 注意：bed_type 字段已删除，ActiveBed 判断由应用层动态计算
+	}
+	// 返回 room_name（前端需要名称来显示）
+	if b.RoomName.Valid {
+		m["room_name"] = b.RoomName.String
 	}
 	if b.MattressMaterial.Valid {
 		m["mattress_material"] = b.MattressMaterial.String
@@ -1015,4 +1065,3 @@ func bedToJSON(b *domain.Bed) map[string]any {
 	}
 	return m
 }
-

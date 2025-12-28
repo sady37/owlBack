@@ -34,33 +34,36 @@ func (r *PostgresUsersRepository) GetUser(ctx context.Context, tenantID, userID 
 
 	query := `
 		SELECT 
-			user_id::text,
-			tenant_id::text,
-			user_account,
-			user_account_hash,
-			password_hash,
-			pin_hash,
-			nickname,
-			email,
-			phone,
-			email_hash,
-			phone_hash,
-			role,
-			status,
-			alarm_levels,
-			alarm_channels,
-			alarm_scope,
-			last_login_at,
-			tags::text,
-			branch_tag,
-			preferences::text
-		FROM users
-		WHERE tenant_id = $1 AND user_id = $2
+			u.user_id::text,
+			u.tenant_id::text,
+			u.user_account,
+			u.user_account_hash,
+			u.password_hash,
+			u.pin_hash,
+			u.nickname,
+			u.email,
+			u.phone,
+			u.email_hash,
+			u.phone_hash,
+			u.role,
+			u.status,
+			u.alarm_levels,
+			u.alarm_channels,
+			u.alarm_scope,
+			u.last_login_at,
+			u.user_tags::text,
+			ub.branch_id::text as branch_id,
+			COALESCE(b.branch_name, NULL) as branch_name,
+			u.preferences::text
+		FROM users u
+		LEFT JOIN user_branches ub ON ub.user_id = u.user_id AND ub.tenant_id = u.tenant_id AND ub.is_primary = TRUE
+		LEFT JOIN branches b ON b.branch_id = ub.branch_id
+		WHERE u.tenant_id = $1 AND u.user_id = $2
 	`
 
 	var user domain.User
 	var passwordHash, pinHash, emailHash, phoneHash sql.Null[[]byte]
-	var nickname, email, phone, alarmScope, tags, branchTag, preferences sql.NullString
+	var nickname, email, phone, alarmScope, tags, branchID, branchName, preferences sql.NullString
 	var lastLoginAt sql.NullTime
 	var alarmLevels, alarmChannels pq.StringArray
 
@@ -83,7 +86,8 @@ func (r *PostgresUsersRepository) GetUser(ctx context.Context, tenantID, userID 
 		&alarmScope,
 		&lastLoginAt,
 		&tags,
-		&branchTag,
+		&branchID,
+		&branchName,
 		&preferences,
 	)
 	if err != nil {
@@ -108,7 +112,8 @@ func (r *PostgresUsersRepository) GetUser(ctx context.Context, tenantID, userID 
 	user.Phone = phone
 	user.AlarmScope = alarmScope
 	user.LastLoginAt = lastLoginAt
-	user.BranchTag = branchTag
+	user.BranchID = branchID
+	user.BranchName = branchName
 	user.Preferences = preferences
 
 	// 处理数组字段
@@ -138,33 +143,36 @@ func (r *PostgresUsersRepository) GetUserByAccount(ctx context.Context, tenantID
 
 	query := `
 		SELECT 
-			user_id::text,
-			tenant_id::text,
-			user_account,
-			user_account_hash,
-			password_hash,
-			pin_hash,
-			nickname,
-			email,
-			phone,
-			email_hash,
-			phone_hash,
-			role,
-			status,
-			alarm_levels,
-			alarm_channels,
-			alarm_scope,
-			last_login_at,
-			tags::text,
-			branch_tag,
-			preferences::text
-		FROM users
-		WHERE tenant_id = $1 AND user_account = $2
+			u.user_id::text,
+			u.tenant_id::text,
+			u.user_account,
+			u.user_account_hash,
+			u.password_hash,
+			u.pin_hash,
+			u.nickname,
+			u.email,
+			u.phone,
+			u.email_hash,
+			u.phone_hash,
+			u.role,
+			u.status,
+			u.alarm_levels,
+			u.alarm_channels,
+			u.alarm_scope,
+			u.last_login_at,
+			u.user_tags::text,
+			ub.branch_id::text as branch_id,
+			COALESCE(b.branch_name, NULL) as branch_name,
+			u.preferences::text
+		FROM users u
+		LEFT JOIN user_branches ub ON ub.user_id = u.user_id AND ub.tenant_id = u.tenant_id AND ub.is_primary = TRUE
+		LEFT JOIN branches b ON b.branch_id = ub.branch_id
+		WHERE u.tenant_id = $1 AND u.user_account = $2
 	`
 
 	var user domain.User
 	var passwordHash, pinHash, emailHash, phoneHash sql.Null[[]byte]
-	var nickname, email, phone, alarmScope, tags, branchTag, preferences sql.NullString
+	var nickname, email, phone, alarmScope, tags, branchID, branchName, preferences sql.NullString
 	var lastLoginAt sql.NullTime
 	var alarmLevels, alarmChannels pq.StringArray
 
@@ -187,7 +195,8 @@ func (r *PostgresUsersRepository) GetUserByAccount(ctx context.Context, tenantID
 		&alarmScope,
 		&lastLoginAt,
 		&tags,
-		&branchTag,
+		&branchID,
+		&branchName,
 		&preferences,
 	)
 	if err != nil {
@@ -212,7 +221,8 @@ func (r *PostgresUsersRepository) GetUserByAccount(ctx context.Context, tenantID
 	user.Phone = phone
 	user.AlarmScope = alarmScope
 	user.LastLoginAt = lastLoginAt
-	user.BranchTag = branchTag
+	user.BranchID = branchID
+	user.BranchName = branchName
 	user.Preferences = preferences
 
 	if alarmLevels != nil {
@@ -237,33 +247,36 @@ func (r *PostgresUsersRepository) GetUserByEmail(ctx context.Context, tenantID s
 
 	query := `
 		SELECT 
-			user_id::text,
-			tenant_id::text,
-			user_account,
-			user_account_hash,
-			password_hash,
-			pin_hash,
-			nickname,
-			email,
-			phone,
-			email_hash,
-			phone_hash,
-			role,
-			status,
-			alarm_levels,
-			alarm_channels,
-			alarm_scope,
-			last_login_at,
-			tags::text,
-			branch_tag,
-			preferences::text
-		FROM users
-		WHERE tenant_id = $1 AND email_hash = $2
+			u.user_id::text,
+			u.tenant_id::text,
+			u.user_account,
+			u.user_account_hash,
+			u.password_hash,
+			u.pin_hash,
+			u.nickname,
+			u.email,
+			u.phone,
+			u.email_hash,
+			u.phone_hash,
+			u.role,
+			u.status,
+			u.alarm_levels,
+			u.alarm_channels,
+			u.alarm_scope,
+			u.last_login_at,
+			u.user_tags::text,
+			ub.branch_id::text as branch_id,
+			COALESCE(b.branch_name, NULL) as branch_name,
+			u.preferences::text
+		FROM users u
+		LEFT JOIN user_branches ub ON ub.user_id = u.user_id AND ub.tenant_id = u.tenant_id AND ub.is_primary = TRUE
+		LEFT JOIN branches b ON b.branch_id = ub.branch_id
+		WHERE u.tenant_id = $1 AND u.email_hash = $2
 	`
 
 	var user domain.User
 	var passwordHash, pinHash, emailHashDB, phoneHash sql.Null[[]byte]
-	var nickname, email, phone, alarmScope, tags, branchTag, preferences sql.NullString
+	var nickname, email, phone, alarmScope, tags, branchID, branchName, preferences sql.NullString
 	var lastLoginAt sql.NullTime
 	var alarmLevels, alarmChannels pq.StringArray
 
@@ -286,7 +299,8 @@ func (r *PostgresUsersRepository) GetUserByEmail(ctx context.Context, tenantID s
 		&alarmScope,
 		&lastLoginAt,
 		&tags,
-		&branchTag,
+		&branchID,
+		&branchName,
 		&preferences,
 	)
 	if err != nil {
@@ -311,7 +325,8 @@ func (r *PostgresUsersRepository) GetUserByEmail(ctx context.Context, tenantID s
 	user.Phone = phone
 	user.AlarmScope = alarmScope
 	user.LastLoginAt = lastLoginAt
-	user.BranchTag = branchTag
+	user.BranchID = branchID
+	user.BranchName = branchName
 	user.Preferences = preferences
 
 	if alarmLevels != nil {
@@ -336,33 +351,36 @@ func (r *PostgresUsersRepository) GetUserByPhone(ctx context.Context, tenantID s
 
 	query := `
 		SELECT 
-			user_id::text,
-			tenant_id::text,
-			user_account,
-			user_account_hash,
-			password_hash,
-			pin_hash,
-			nickname,
-			email,
-			phone,
-			email_hash,
-			phone_hash,
-			role,
-			status,
-			alarm_levels,
-			alarm_channels,
-			alarm_scope,
-			last_login_at,
-			tags::text,
-			branch_tag,
-			preferences::text
-		FROM users
-		WHERE tenant_id = $1 AND phone_hash = $2
+			u.user_id::text,
+			u.tenant_id::text,
+			u.user_account,
+			u.user_account_hash,
+			u.password_hash,
+			u.pin_hash,
+			u.nickname,
+			u.email,
+			u.phone,
+			u.email_hash,
+			u.phone_hash,
+			u.role,
+			u.status,
+			u.alarm_levels,
+			u.alarm_channels,
+			u.alarm_scope,
+			u.last_login_at,
+			u.user_tags::text,
+			ub.branch_id::text as branch_id,
+			COALESCE(b.branch_name, NULL) as branch_name,
+			u.preferences::text
+		FROM users u
+		LEFT JOIN user_branches ub ON ub.user_id = u.user_id AND ub.tenant_id = u.tenant_id AND ub.is_primary = TRUE
+		LEFT JOIN branches b ON b.branch_id = ub.branch_id
+		WHERE u.tenant_id = $1 AND u.phone_hash = $2
 	`
 
 	var user domain.User
 	var passwordHash, pinHash, emailHash, phoneHashDB sql.Null[[]byte]
-	var nickname, email, phone, alarmScope, tags, branchTag, preferences sql.NullString
+	var nickname, email, phone, alarmScope, tags, branchID, branchName, preferences sql.NullString
 	var lastLoginAt sql.NullTime
 	var alarmLevels, alarmChannels pq.StringArray
 
@@ -385,7 +403,8 @@ func (r *PostgresUsersRepository) GetUserByPhone(ctx context.Context, tenantID s
 		&alarmScope,
 		&lastLoginAt,
 		&tags,
-		&branchTag,
+		&branchID,
+		&branchName,
 		&preferences,
 	)
 	if err != nil {
@@ -410,7 +429,8 @@ func (r *PostgresUsersRepository) GetUserByPhone(ctx context.Context, tenantID s
 	user.Phone = phone
 	user.AlarmScope = alarmScope
 	user.LastLoginAt = lastLoginAt
-	user.BranchTag = branchTag
+	user.BranchID = branchID
+	user.BranchName = branchName
 	user.Preferences = preferences
 
 	if alarmLevels != nil {
@@ -448,16 +468,30 @@ func (r *PostgresUsersRepository) ListUsers(ctx context.Context, tenantID string
 		args = append(args, filters.Status)
 		argIdx++
 	}
-	if filters.BranchTagNull {
-		// 匹配 branch_name IS NULL OR branch_name = '-'
-		where = append(where, "(u.branch_name IS NULL OR u.branch_name = '-')")
-	} else if filters.BranchTag != "" {
-		where = append(where, fmt.Sprintf("u.branch_name = $%d", argIdx))
-		args = append(args, filters.BranchTag)
+	if filters.BranchNameNull {
+		// 匹配没有主院区或主院区名称为 NULL、""、"-"（都视为空院区）
+		where = append(where, "(ub.user_id IS NULL OR b.branch_name IS NULL OR b.branch_name = '' OR b.branch_name = '-')")
+	} else if len(filters.BranchIDs) > 0 {
+		// 支持多个 branch_id 的 IN 查询（1 对多关系）
+		// 使用 EXISTS 子查询，检查用户是否关联了任何一个指定的 branch_id
+		placeholders := make([]string, len(filters.BranchIDs))
+		for i, branchID := range filters.BranchIDs {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, branchID)
+			argIdx++
+		}
+		where = append(where, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM user_branches ub2 WHERE ub2.tenant_id = u.tenant_id AND ub2.user_id = u.user_id AND ub2.branch_id::text IN (%s))",
+			strings.Join(placeholders, ", "),
+		))
+	} else if filters.BranchName != "" {
+		// 单个 branch_name 精确匹配（主院区）
+		where = append(where, fmt.Sprintf("b.branch_name = $%d", argIdx))
+		args = append(args, filters.BranchName)
 		argIdx++
 	}
 	if filters.Tag != "" {
-		where = append(where, fmt.Sprintf("u.tags ? $%d", argIdx))
+		where = append(where, fmt.Sprintf("u.user_tags ? $%d", argIdx))
 		args = append(args, filters.Tag)
 		argIdx++
 	}
@@ -468,7 +502,7 @@ func (r *PostgresUsersRepository) ListUsers(ctx context.Context, tenantID string
 	}
 
 	// 计算总数
-	countQuery := "SELECT COUNT(*) FROM users u WHERE " + strings.Join(where, " AND ")
+	countQuery := "SELECT COUNT(*) FROM users u LEFT JOIN user_branches ub ON ub.user_id = u.user_id AND ub.tenant_id = u.tenant_id AND ub.is_primary = TRUE LEFT JOIN branches b ON b.branch_id = ub.branch_id WHERE " + strings.Join(where, " AND ")
 	var total int
 	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
@@ -502,10 +536,13 @@ func (r *PostgresUsersRepository) ListUsers(ctx context.Context, tenantID string
 			u.alarm_channels,
 			u.alarm_scope,
 			u.last_login_at,
-			u.tags::text,
-			u.branch_tag,
+			u.user_tags::text,
+			ub.branch_id::text as branch_id,
+			COALESCE(b.branch_name, NULL) as branch_name,
 			u.preferences::text
 		FROM users u
+		LEFT JOIN user_branches ub ON ub.user_id = u.user_id AND ub.tenant_id = u.tenant_id AND ub.is_primary = TRUE
+		LEFT JOIN branches b ON b.branch_id = ub.branch_id
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY u.user_account ASC
 		LIMIT $` + fmt.Sprintf("%d", argIdx) + ` OFFSET $` + fmt.Sprintf("%d", argIdx+1)
@@ -534,7 +571,7 @@ func (r *PostgresUsersRepository) ListUsers(ctx context.Context, tenantID string
 func (r *PostgresUsersRepository) scanUser(rows *sql.Rows) (*domain.User, error) {
 	var user domain.User
 	var passwordHash, pinHash, emailHash, phoneHash sql.Null[[]byte]
-	var nickname, email, phone, alarmScope, tags, branchTag, preferences sql.NullString
+	var nickname, email, phone, alarmScope, tags, branchID, branchName, preferences sql.NullString
 	var lastLoginAt sql.NullTime
 	var alarmLevels, alarmChannels pq.StringArray
 
@@ -557,7 +594,8 @@ func (r *PostgresUsersRepository) scanUser(rows *sql.Rows) (*domain.User, error)
 		&alarmScope,
 		&lastLoginAt,
 		&tags,
-		&branchTag,
+		&branchID,
+		&branchName,
 		&preferences,
 	)
 	if err != nil {
@@ -582,7 +620,8 @@ func (r *PostgresUsersRepository) scanUser(rows *sql.Rows) (*domain.User, error)
 	user.Phone = phone
 	user.AlarmScope = alarmScope
 	user.LastLoginAt = lastLoginAt
-	user.BranchTag = branchTag
+	user.BranchID = branchID
+	user.BranchName = branchName
 	user.Preferences = preferences
 
 	if alarmLevels != nil {
@@ -657,9 +696,9 @@ func (r *PostgresUsersRepository) CreateUser(ctx context.Context, tenantID strin
 			password_hash, pin_hash, nickname, email, phone,
 			email_hash, phone_hash, role, status,
 			alarm_levels, alarm_channels, alarm_scope,
-			last_login_at, tags, branch_tag, preferences
+			last_login_at, user_tags, preferences
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, $19::jsonb
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18::jsonb
 		)
 		RETURNING user_id::text
 	`
@@ -712,11 +751,41 @@ func (r *PostgresUsersRepository) CreateUser(ctx context.Context, tenantID strin
 		toAnyString(user.AlarmScope),
 		toAnyTime(user.LastLoginAt),
 		tagsArg,
-		toAnyString(user.BranchTag),
 		preferencesArg,
 	).Scan(&userID)
 	if err != nil {
 		return "", fmt.Errorf("failed to insert user: %w", err)
+	}
+
+	// 如果提供了 BranchID 或 BranchName，在 user_branches 表中创建主院区关联
+	var branchIDToUse sql.NullString
+	if user.BranchID.Valid && user.BranchID.String != "" {
+		branchIDToUse = user.BranchID
+	} else if user.BranchName.Valid && user.BranchName.String != "" {
+		// 通过 branch_name 查找 branch_id
+		err = tx.QueryRowContext(ctx,
+			`SELECT branch_id::text FROM branches WHERE tenant_id = $1 AND branch_name = $2`,
+			tenantID, user.BranchName.String,
+		).Scan(&branchIDToUse)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return "", fmt.Errorf("branch not found: branch_name '%s'", user.BranchName.String)
+			}
+			return "", fmt.Errorf("failed to find branch: %w", err)
+		}
+	}
+
+	if branchIDToUse.Valid && branchIDToUse.String != "" {
+		// 在 user_branches 表中创建主院区关联（is_primary = TRUE）
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO user_branches (tenant_id, user_id, branch_id, is_primary)
+			 VALUES ($1, $2, $3, TRUE)
+			 ON CONFLICT (tenant_id, user_id, branch_id) DO NOTHING`,
+			tenantID, userID, branchIDToUse.String,
+		)
+		if err != nil {
+			return "", fmt.Errorf("failed to create user branch association: %w", err)
+		}
 	}
 
 	// 同步tags到tags_catalog目录（如果tags存在）
@@ -763,12 +832,16 @@ func (r *PostgresUsersRepository) UpdateUser(ctx context.Context, tenantID, user
 	}
 	defer tx.Rollback()
 
-	// 获取旧的tags和branch_tag
-	var oldTags, oldBranchTag sql.NullString
+	// 获取旧的tags和branch_name（从 user_branches 表获取主院区）
+	var oldTags, oldBranchName sql.NullString
 	err = tx.QueryRowContext(ctx,
-		`SELECT tags::text, branch_tag FROM users WHERE tenant_id = $1 AND user_id = $2`,
+		`SELECT u.user_tags::text, COALESCE(b.branch_name, NULL) as branch_name 
+		 FROM users u 
+		 LEFT JOIN user_branches ub ON ub.user_id = u.user_id AND ub.tenant_id = u.tenant_id AND ub.is_primary = TRUE
+		 LEFT JOIN branches b ON b.branch_id = ub.branch_id 
+		 WHERE u.tenant_id = $1 AND u.user_id = $2`,
 		tenantID, userID,
-	).Scan(&oldTags, &oldBranchTag)
+	).Scan(&oldTags, &oldBranchName)
 	if err != nil {
 		return fmt.Errorf("failed to get old user data: %w", err)
 	}
@@ -914,15 +987,12 @@ func (r *PostgresUsersRepository) UpdateUser(ctx context.Context, tenantID, user
 		if err := json.Unmarshal([]byte(user.Tags.String), &tagsArray); err != nil {
 			return fmt.Errorf("invalid tags JSON: %w", err)
 		}
-		updates = append(updates, fmt.Sprintf("tags = $%d::jsonb", argIdx))
+		updates = append(updates, fmt.Sprintf("user_tags = $%d::jsonb", argIdx))
 		args = append(args, user.Tags.String)
 		argIdx++
 	}
-	if user.BranchTag.Valid {
-		updates = append(updates, fmt.Sprintf("branch_tag = $%d", argIdx))
-		args = append(args, user.BranchTag)
-		argIdx++
-	}
+	// 处理 branch 更新：更新 user_branches 表（在事务提交前处理）
+	// 注意：这里不更新 users 表，而是在事务提交前更新 user_branches 表
 	if user.Preferences.Valid {
 		// 验证preferences JSON有效性
 		var prefsMap map[string]any
@@ -984,17 +1054,68 @@ func (r *PostgresUsersRepository) UpdateUser(ctx context.Context, tenantID, user
 		}
 	}
 
-	// 处理branch_tag变化：同步到tags_catalog目录
-	if user.BranchTag.Valid {
-		oldBranchTagValue := ""
-		if oldBranchTag.Valid {
-			oldBranchTagValue = oldBranchTag.String
+	// 处理 branch 更新：更新 user_branches 表
+	// 优先使用 BranchID，如果没有则使用 BranchName 查找
+	var branchIDToUse sql.NullString
+	if user.BranchID.Valid && user.BranchID.String != "" {
+		branchIDToUse = user.BranchID
+	} else if user.BranchName.Valid && user.BranchName.String != "" {
+		// 通过 branch_name 查找 branch_id
+		err = tx.QueryRowContext(ctx,
+			`SELECT branch_id::text FROM branches WHERE tenant_id = $1 AND branch_name = $2`,
+			tenantID, user.BranchName.String,
+		).Scan(&branchIDToUse)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("branch not found: branch_name '%s'", user.BranchName.String)
+			}
+			return fmt.Errorf("failed to find branch: %w", err)
 		}
-		if oldBranchTagValue != user.BranchTag.String {
-			// 注意：branch_tag 不应该在这里创建
-			// branch_tag 应该由前端在 TagList 页面创建（tag_name = "Branch"）
-			// user 的 branch_tag 只是数据，不需要同步到 tags_catalog
-			// 注意：不需要从旧branch_tag移除，因为tag_objects已删除
+	}
+
+	// 检查是否需要更新 branch 关联
+	oldBranchNameValue := ""
+	if oldBranchName.Valid {
+		oldBranchNameValue = oldBranchName.String
+	}
+	newBranchNameValue := ""
+	if user.BranchName.Valid {
+		newBranchNameValue = user.BranchName.String
+	}
+
+	if oldBranchNameValue != newBranchNameValue {
+		if branchIDToUse.Valid && branchIDToUse.String != "" {
+			// 删除该用户的所有主院区关联
+			_, err = tx.ExecContext(ctx,
+				`UPDATE user_branches SET is_primary = FALSE 
+				 WHERE tenant_id = $1 AND user_id = $2 AND is_primary = TRUE`,
+				tenantID, userID,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to clear primary branches: %w", err)
+			}
+
+			// 创建或更新主院区关联（is_primary = TRUE）
+			_, err = tx.ExecContext(ctx,
+				`INSERT INTO user_branches (tenant_id, user_id, branch_id, is_primary)
+				 VALUES ($1, $2, $3, TRUE)
+				 ON CONFLICT (tenant_id, user_id, branch_id) 
+				 DO UPDATE SET is_primary = TRUE`,
+				tenantID, userID, branchIDToUse.String,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to update user branch association: %w", err)
+			}
+		} else {
+			// 如果 branch_name 为空，删除所有主院区关联
+			_, err = tx.ExecContext(ctx,
+				`UPDATE user_branches SET is_primary = FALSE 
+				 WHERE tenant_id = $1 AND user_id = $2 AND is_primary = TRUE`,
+				tenantID, userID,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to clear primary branches: %w", err)
+			}
 		}
 	}
 
@@ -1069,15 +1190,18 @@ func (r *PostgresUsersRepository) SyncUserTagsToCatalog(ctx context.Context, ten
 
 // GetResourcePermission 查询资源权限配置
 // 从 role_permissions 表中查询指定角色对指定资源的权限配置
+//
+// 注意: permission_scope 值映射:
+//   - 'A' = All (no restriction) → assigned_only=false, branch_only=false
+//   - 'S' = assigned_only → assigned_only=true, branch_only=false
+//   - 'B' = branch_only → assigned_only=false, branch_only=true
 func (r *PostgresUsersRepository) GetResourcePermission(ctx context.Context, roleCode, resourceType, permissionType string) (*PermissionCheck, error) {
 	// SystemTenantID 常量
 	const SystemTenantID = "00000000-0000-0000-0000-000000000001"
 
-	var assignedOnly, branchOnly bool
+	var permissionScope string
 	err := r.db.QueryRowContext(ctx,
-		`SELECT 
-			COALESCE(assigned_only, FALSE) as assigned_only,
-			COALESCE(branch_only, FALSE) as branch_only
+		`SELECT permission_scope
 		 FROM role_permissions
 		 WHERE tenant_id = $1 
 		   AND role_code = $2 
@@ -1085,7 +1209,7 @@ func (r *PostgresUsersRepository) GetResourcePermission(ctx context.Context, rol
 		   AND permission_type = $4
 		 LIMIT 1`,
 		SystemTenantID, roleCode, resourceType, permissionType,
-	).Scan(&assignedOnly, &branchOnly)
+	).Scan(&permissionScope)
 
 	if err == sql.ErrNoRows {
 		// 记录不存在：返回最严格的权限（安全默认值）
@@ -1093,6 +1217,27 @@ func (r *PostgresUsersRepository) GetResourcePermission(ctx context.Context, rol
 	}
 	if err != nil {
 		return nil, err
+	}
+
+	// 将 permission_scope 转换为 assigned_only 和 branch_only 标志
+	var assignedOnly, branchOnly bool
+	switch permissionScope {
+	case "A":
+		// All (no restriction)
+		assignedOnly = false
+		branchOnly = false
+	case "S":
+		// assigned_only
+		assignedOnly = true
+		branchOnly = false
+	case "B":
+		// branch_only
+		assignedOnly = false
+		branchOnly = true
+	default:
+		// 未知值，返回最严格的权限（安全默认值）
+		assignedOnly = true
+		branchOnly = true
 	}
 
 	return &PermissionCheck{AssignedOnly: assignedOnly, BranchOnly: branchOnly}, nil

@@ -11,9 +11,9 @@ type AlarmCloud struct {
 	// 通用报警（全局的，与具体设备型号无关）
 	// 这些是所有设备类型都支持的通用报警项
 	// 如果为 NULL，表示使用全局默认值
-	OfflineAlarm  string `db:"offline_alarm"`  // VARCHAR(20), nullable - DangerLevel
-	LowBattery    string `db:"low_battery"`    // VARCHAR(20), nullable - DangerLevel
-	DeviceFailure string `db:"device_failure"` // VARCHAR(20), nullable - DangerLevel
+	OfflineAlarm  string `db:"offlinealarm"`  // VARCHAR(20), nullable, DEFAULT 'ERROR' - DangerLevel
+	LowBattery    string `db:"lowbattery"`    // VARCHAR(20), nullable, DEFAULT 'WARNING' - DangerLevel
+	DeviceFailure string `db:"devicefailure"` // VARCHAR(20), nullable, DEFAULT 'ERROR' - DangerLevel
 
 	// 设备特定报警配置（JSONB）
 	// 包含所有设备类型的报警配置，第一层 key 为设备类型，第二层 key 为报警类型

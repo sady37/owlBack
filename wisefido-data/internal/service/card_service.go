@@ -9,8 +9,8 @@ import (
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
-	"go.uber.org/zap"
 	"github.com/lib/pq"
+	"go.uber.org/zap"
 )
 
 // CardService 卡片服务接口
@@ -50,15 +50,15 @@ func NewCardService(
 
 // GetCardOverviewRequest 获取卡片概览请求
 type GetCardOverviewRequest struct {
-	TenantID        string
-	CardID          string // 可选：查询单个卡片
-	Search          string // 搜索关键词
-	CardType        string // "ActiveBed" | "Unit"
-	UnitType        string // "Home" | "Facility"
-	IsPublicSpace   *bool
+	TenantID          string
+	CardID            string // 可选：查询单个卡片
+	Search            string // 搜索关键词
+	CardType          string // "ActiveBed" | "Unit"
+	UnitType          string // "Home" | "Facility"
+	IsPublicSpace     *bool
 	IsMultiPersonRoom *bool
-	Sort            string // "card_name" | "card_address"
-	Direction       string // "asc" | "desc"
+	Sort              string // "card_name" | "card_address"
+	Direction         string // "asc" | "desc"
 
 	// 权限相关
 	CurrentUserID   string
@@ -76,15 +76,15 @@ type GetCardOverviewResponse struct {
 func (s *cardService) GetCardOverview(ctx context.Context, req GetCardOverviewRequest) (*GetCardOverviewResponse, error) {
 	// 1. 构建 Repository 请求
 	repoReq := repository.ListCardsRequest{
-		TenantID:        req.TenantID,
-		CardID:          req.CardID,
-		Search:          req.Search,
-		CardType:        req.CardType,
-		UnitType:        req.UnitType,
-		IsPublicSpace:   req.IsPublicSpace,
+		TenantID:          req.TenantID,
+		CardID:            req.CardID,
+		Search:            req.Search,
+		CardType:          req.CardType,
+		UnitType:          req.UnitType,
+		IsPublicSpace:     req.IsPublicSpace,
 		IsMultiPersonRoom: req.IsMultiPersonRoom,
-		Sort:            req.Sort,
-		Direction:       req.Direction,
+		Sort:              req.Sort,
+		Direction:         req.Direction,
 	}
 
 	// 2. 处理 Family 用户类型
@@ -117,9 +117,9 @@ func (s *cardService) GetCardOverview(ctx context.Context, req GetCardOverviewRe
 			if err != nil {
 				return nil, fmt.Errorf("failed to get user: %w", err)
 			}
-			if user.BranchTag.Valid {
-				branchTag := user.BranchTag.String
-				repoReq.PermissionFilter.UserBranchTag = &branchTag
+			if user.BranchName.Valid {
+				branchName := user.BranchName.String
+				repoReq.PermissionFilter.UserBranchTag = &branchName
 			} else {
 				emptyTag := ""
 				repoReq.PermissionFilter.UserBranchTag = &emptyTag
@@ -192,19 +192,22 @@ func (s *cardService) getResidentIDByContactID(ctx context.Context, tenantID, co
 }
 
 // getResourcePermission 查询资源权限配置
+// 
+// 注意: permission_scope 值映射:
+//   - 'A' = All (no restriction) → assigned_only=false, branch_only=false
+//   - 'S' = assigned_only → assigned_only=true, branch_only=false
+//   - 'B' = branch_only → assigned_only=false, branch_only=true
 func (s *cardService) getResourcePermission(ctx context.Context, roleCode, resourceType, permissionType string) (*PermissionCheck, error) {
-	var perm PermissionCheck
+	var permissionScope string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT 
-			COALESCE(assigned_only, FALSE) as assigned_only,
-			COALESCE(branch_only, FALSE) as branch_only
+		`SELECT permission_scope
 		 FROM role_permissions
-		 WHERE tenant_id = '00000000-0000-0000-0000-000000000000'
+		 WHERE tenant_id = '00000000-0000-0000-0000-000000000001'
 		   AND role_code = $1
 		   AND resource_type = $2
 		   AND permission_type = $3`,
 		roleCode, resourceType, permissionType,
-	).Scan(&perm.AssignedOnly, &perm.BranchOnly)
+	).Scan(&permissionScope)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -217,7 +220,28 @@ func (s *cardService) getResourcePermission(ctx context.Context, roleCode, resou
 		return nil, fmt.Errorf("failed to query resource permission: %w", err)
 	}
 
-	return &perm, nil
+	// 将 permission_scope 转换为 assigned_only 和 branch_only 标志
+	var assignedOnly, branchOnly bool
+	switch permissionScope {
+	case "A":
+		// All (no restriction)
+		assignedOnly = false
+		branchOnly = false
+	case "S":
+		// assigned_only
+		assignedOnly = true
+		branchOnly = false
+	case "B":
+		// branch_only
+		assignedOnly = false
+		branchOnly = true
+	default:
+		// 未知值，返回默认值（无限制）
+		assignedOnly = false
+		branchOnly = false
+	}
+
+	return &PermissionCheck{AssignedOnly: assignedOnly, BranchOnly: branchOnly}, nil
 }
 
 // PermissionCheck 权限检查结果（已在 alarm_event_service.go 中定义，这里不再重复定义）
@@ -299,11 +323,11 @@ func (s *cardService) aggregateSingleCard(
 	residents map[string]*domain.Resident,
 ) (*domain.CardOverviewItem, error) {
 	item := &domain.CardOverviewItem{
-		CardID:      card.Card.CardID,
-		TenantID:    card.Card.TenantID,
-		CardType:    card.Card.CardType,
-		CardName:    card.Card.CardName,
-		CardAddress: card.Card.CardAddress,
+		CardID:          card.Card.CardID,
+		TenantID:        card.Card.TenantID,
+		CardType:        card.Card.CardType,
+		CardName:        card.Card.CardName,
+		CardAddress:     card.Card.CardAddress,
 		UnhandledAlarm0: card.Card.UnhandledAlarm0,
 		UnhandledAlarm1: card.Card.UnhandledAlarm1,
 		UnhandledAlarm2: card.Card.UnhandledAlarm2,
@@ -327,8 +351,8 @@ func (s *cardService) aggregateSingleCard(
 	// 设置 Unit 信息
 	if card.Unit != nil {
 		item.UnitType = card.Unit.UnitType
-		item.IsPublicSpace = card.Unit.IsPublicSpace
-		item.IsMultiPersonRoom = card.Unit.IsMultiPersonRoom
+		item.IsPublicSpace = card.Unit.IsPublic
+		item.IsMultiPersonRoom = card.Unit.IsSharedUnit
 	}
 
 	// 聚合设备
@@ -494,7 +518,7 @@ func (s *cardService) batchGetResidents(ctx context.Context, tenantID string, re
 			resident_account,
 			nickname,
 			status,
-			can_view_status
+			is_access_enabled
 		FROM residents
 		WHERE tenant_id = $1
 		  AND resident_id = ANY($2::uuid[])
@@ -515,7 +539,7 @@ func (s *cardService) batchGetResidents(ctx context.Context, tenantID string, re
 			&resident.ResidentAccount,
 			&resident.Nickname,
 			&resident.Status,
-			&resident.CanViewStatus,
+			&resident.IsAccessEnabled,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan resident: %w", err)
@@ -542,7 +566,7 @@ func (s *cardService) getFamilyView(ctx context.Context, item *domain.CardOvervi
 	if item.CardType == "ActiveBed" && item.ResidentID != nil {
 		var canViewStatus sql.NullBool
 		err := s.db.QueryRowContext(ctx,
-			`SELECT can_view_status FROM residents 
+			`SELECT is_access_enabled FROM residents 
 			 WHERE tenant_id = $1 AND resident_id = $2`,
 			item.TenantID, *item.ResidentID,
 		).Scan(&canViewStatus)
@@ -554,10 +578,10 @@ func (s *cardService) getFamilyView(ctx context.Context, item *domain.CardOvervi
 
 	// 3. Unit 卡片（数据库中使用 'Location'）：从第一个住户获取
 	if (item.CardType == "Unit" || item.CardType == "Location") && len(item.Residents) > 0 {
-		// 第一个住户的 can_view_status
+		// 第一个住户的 is_access_enabled
 		var canViewStatus1 sql.NullBool
 		err := s.db.QueryRowContext(ctx,
-			`SELECT can_view_status FROM residents 
+			`SELECT is_access_enabled FROM residents 
 			 WHERE tenant_id = $1 AND resident_id = $2`,
 			item.TenantID, item.Residents[0].ResidentID,
 		).Scan(&canViewStatus1)
@@ -565,7 +589,7 @@ func (s *cardService) getFamilyView(ctx context.Context, item *domain.CardOvervi
 			return false, err
 		}
 
-		// 如果只有一个人，返回第一个住户的 can_view_status
+		// 如果只有一个人，返回第一个住户的 is_access_enabled
 		if len(item.Residents) == 1 {
 			return canViewStatus1.Valid && canViewStatus1.Bool, nil
 		}
@@ -574,7 +598,7 @@ func (s *cardService) getFamilyView(ctx context.Context, item *domain.CardOvervi
 		if len(item.Residents) >= 2 {
 			var canViewStatus2 sql.NullBool
 			err := s.db.QueryRowContext(ctx,
-				`SELECT can_view_status FROM residents 
+				`SELECT is_access_enabled FROM residents 
 				 WHERE tenant_id = $1 AND resident_id = $2`,
 				item.TenantID, item.Residents[1].ResidentID,
 			).Scan(&canViewStatus2)
@@ -599,4 +623,3 @@ func mapKeys(m map[string]bool) []string {
 	}
 	return keys
 }
-

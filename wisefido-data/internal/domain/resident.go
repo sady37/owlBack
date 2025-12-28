@@ -36,22 +36,23 @@ type Resident struct {
 
 	// 扩展信息
 	Metadata json.RawMessage `db:"metadata"` // JSONB, nullable（仅包含非PII信息）
-	Note     string          `db:"note"`    // TEXT, nullable（客户备注，非PII信息）
+	Note     string          `db:"note"`     // TEXT, nullable（客户备注，非PII信息）
 
-	// 登录/重置用的联系方式哈希
-	PhoneHash    []byte `db:"phone_hash"`     // BYTEA, nullable
-	EmailHash    []byte `db:"email_hash"`      // BYTEA, nullable
-	PasswordHash []byte `db:"password_hash"`  // BYTEA, nullable
-
-	// 家庭标签
-	FamilyTag string `db:"family_tag"` // VARCHAR(100), nullable（家庭标识符）
+	// 联系方式（可选 PHI）
+	Phone        string `db:"phone"`         // VARCHAR(50), nullable
+	Email        string `db:"email"`         // VARCHAR(255), nullable
+	PhoneHash    []byte `db:"phone_hash"`    // BYTEA, nullable
+	EmailHash    []byte `db:"email_hash"`    // BYTEA, nullable
+	PasswordHash []byte `db:"password_hash"` // BYTEA, NOT NULL
 
 	// 权限控制
-	CanViewStatus bool `db:"can_view_status"` // BOOLEAN, NOT NULL, DEFAULT TRUE
+	IsAccessEnabled bool `db:"is_access_enabled"` // BOOLEAN, NOT NULL, DEFAULT FALSE
+
+	// 院区关联
+	BranchID string `db:"branch_id"` // UUID, nullable（引用branches.branch_id）
 
 	// 位置绑定关系
-	UnitID string `db:"unit_id"` // UUID, NOT NULL（必须指定unit）
+	UnitID string `db:"unit_id"` // UUID, nullable
 	RoomID string `db:"room_id"` // UUID, nullable
-	BedID  string `db:"bed_id"`  // UUID, nullable（如果指定bed_id，必须同时指定room_id）
+	BedID  string `db:"bed_id"`  // UUID, nullable
 }
-

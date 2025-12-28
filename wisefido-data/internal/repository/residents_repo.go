@@ -20,8 +20,11 @@ type ResidentsRepository interface {
 	// 创建接口（替代触发器：trigger_sync_family_tag）
 	CreateResident(ctx context.Context, tenantID string, resident *domain.Resident) (string, error)
 
-	// 更新接口（替代触发器：trigger_sync_family_tag）
+	// Deprecated: Use UpdateResidentFields instead.
 	UpdateResident(ctx context.Context, tenantID, residentID string, resident *domain.Resident) error
+	// UpdateResidentFields 更新住户信息（使用更新模型）
+	// 支持区分"不更新"、"更新"、"删除"三种状态
+	UpdateResidentFields(ctx context.Context, tenantID, residentID string, update *domain.ResidentUpdate) error
 
 	// 删除接口
 	DeleteResident(ctx context.Context, tenantID, residentID string) error
@@ -31,17 +34,36 @@ type ResidentsRepository interface {
 
 	// ========== ResidentPHI 表操作 ==========
 	GetResidentPHI(ctx context.Context, tenantID, residentID string) (*domain.ResidentPHI, error)
+	// Deprecated: 使用 UpsertResidentPHIFields 替代，支持区分"不更新"、"更新"、"删除"三种状态
 	UpsertResidentPHI(ctx context.Context, tenantID, residentID string, phi *domain.ResidentPHI) error
+	// UpsertResidentPHIFields 创建或更新住户PHI信息（使用更新模型）
+	// 支持区分"不更新"、"更新"、"删除"三种状态
+	// 注意：使用 UPSERT 语义（UNIQUE(tenant_id, resident_id)）
+	UpsertResidentPHIFields(ctx context.Context, tenantID, residentID string, update *domain.ResidentPHIUpdate) error
 
 	// ========== ResidentContacts 表操作 ==========
 	GetResidentContacts(ctx context.Context, tenantID, residentID string) ([]*domain.ResidentContact, error)
 	CreateResidentContact(ctx context.Context, tenantID, residentID string, contact *domain.ResidentContact) (string, error)
-	UpdateResidentContact(ctx context.Context, tenantID, contactID string, contact *domain.ResidentContact) error
+	// Deprecated: 使用 UpdateResidentContactFields 替代，支持区分"不更新"、"更新"、"删除"三种状态
+	// 注意：主键是 (resident_id, slot)，不是 contact_id
+	UpdateResidentContact(ctx context.Context, tenantID, residentID, slot string, contact *domain.ResidentContact) error
+	// UpdateResidentContactFields 更新联系人（使用更新模型）
+	// 支持区分"不更新"、"更新"、"删除"三种状态
+	// 注意：主键是 (resident_id, slot)
+	UpdateResidentContactFields(ctx context.Context, tenantID, residentID, slot string, update *domain.ResidentContactUpdate) error
+	// Deprecated: 主键是 (resident_id, slot)，不是 contact_id
 	DeleteResidentContact(ctx context.Context, tenantID, contactID string) error
+	// DeleteResidentContactBySlot 删除联系人（使用主键 resident_id 和 slot）
+	DeleteResidentContactBySlot(ctx context.Context, tenantID, residentID, slot string) error
 
 	// ========== ResidentCaregivers 表操作 ==========
 	GetResidentCaregivers(ctx context.Context, tenantID, residentID string) ([]*domain.ResidentCaregiver, error)
+	// Deprecated: 使用 UpsertResidentCaregiverFields 替代，支持区分"不更新"、"更新"、"删除"三种状态
 	UpsertResidentCaregiver(ctx context.Context, tenantID, residentID string, caregiver *domain.ResidentCaregiver) error
+	// UpsertResidentCaregiverFields 创建或更新护理人员关联（使用更新模型）
+	// 支持区分"不更新"、"更新"、"删除"三种状态
+	// 注意：使用 UPSERT 语义（UNIQUE(tenant_id, resident_id)）
+	UpsertResidentCaregiverFields(ctx context.Context, tenantID, residentID string, update *domain.ResidentCaregiverUpdate) error
 }
 
 // ResidentFilters 住户查询过滤器
@@ -49,10 +71,10 @@ type ResidentFilters struct {
 	// 基本过滤
 	Status       string // 按status过滤
 	ServiceLevel string // 按service_level过滤
-	FamilyTag    string // 按family_tag过滤
 	UnitID       string // 按unit_id过滤
 	RoomID       string // 按room_id过滤
 	BedID        string // 按bed_id过滤
+	BranchID     string // 按branch_id过滤
 
 	// 搜索（支持account, email_hash, phone_hash, nickname, unit_name, first_name）
 	Search string // 模糊搜索：支持resident_account, nickname, first_name (在resident_phi表中)
@@ -61,4 +83,3 @@ type ResidentFilters struct {
 	AssignedUserID string // 仅查询分配给该用户的住户
 	BranchTag      string // 仅查询该分支的住户
 }
-

@@ -47,15 +47,17 @@ type UnitService interface {
 
 // unitService 实现
 type unitService struct {
-	unitsRepo repository.UnitsRepository
-	logger    *zap.Logger
+	unitsRepo    repository.UnitsRepository
+	branchesRepo repository.BranchesRepository // 用于通过 branch_name 查找 branch_id
+	logger       *zap.Logger
 }
 
 // NewUnitService 创建 UnitService 实例
-func NewUnitService(unitsRepo repository.UnitsRepository, logger *zap.Logger) UnitService {
+func NewUnitService(unitsRepo repository.UnitsRepository, branchesRepo repository.BranchesRepository, logger *zap.Logger) UnitService {
 	return &unitService{
-		unitsRepo: unitsRepo,
-		logger:    logger,
+		unitsRepo:    unitsRepo,
+		branchesRepo: branchesRepo,
+		logger:       logger,
 	}
 }
 
@@ -64,7 +66,7 @@ func NewUnitService(unitsRepo repository.UnitsRepository, logger *zap.Logger) Un
 // ============================================
 
 type ListBuildingsRequest struct {
-	TenantID  string // 必填
+	TenantID   string // 必填
 	BranchName string // 可选
 }
 
@@ -82,9 +84,10 @@ type GetBuildingResponse struct {
 }
 
 type CreateBuildingRequest struct {
-	TenantID    string // 必填
-	BranchName   string // 可选
-	BuildingName string // 必填（branch_tag 或 building_name 至少一个）
+	TenantID     string // 必填
+	BranchID     string // 可选（优先使用，如果提供则忽略 BranchName）
+	BranchName   string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID）
+	BuildingName string // 必填（branch_id 或 building_name 至少一个）
 }
 
 type CreateBuildingResponse struct {
@@ -94,7 +97,8 @@ type CreateBuildingResponse struct {
 type UpdateBuildingRequest struct {
 	TenantID     string // 必填
 	BuildingID   string // 必填
-	BranchName    string // 可选
+	BranchID     string // 可选（优先使用，如果提供则忽略 BranchName）
+	BranchName   string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID）
 	BuildingName string // 可选
 }
 
@@ -117,10 +121,10 @@ type DeleteBuildingResponse struct {
 
 type ListUnitsRequest struct {
 	TenantID   string  // 必填
-	BranchName  *string // 可选（nil 表示匹配 NULL）
+	BranchName *string // 可选（nil 表示匹配 NULL）
 	Building   *string // 可选（nil 表示未提供）
 	Floor      *string // 可选（nil 表示未提供）
-	AreaName    *string // 可选（nil 表示未提供）
+	AreaName   *string // 可选（nil 表示未提供）
 	UnitNumber *string // 可选（nil 表示未提供）
 	UnitName   *string // 可选（nil 表示未提供）
 	UnitType   *string // 可选（nil 表示未提供）
@@ -145,11 +149,12 @@ type GetUnitResponse struct {
 
 type CreateUnitRequest struct {
 	TenantID          string // 必填
-	BranchName         string // 可选
+	BranchID          string // 可选（优先使用，如果提供则忽略 BranchName）
+	BranchName        string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID）
 	UnitName          string // 必填
 	Building          string // 可选（保持空字符串，不使用 "-"）
 	Floor             string // 可选（默认 "1F"）
-	AreaName           string // 可选
+	AreaName          string // 可选
 	UnitNumber        string // 必填
 	LayoutConfig      string // 可选（JSON 字符串）
 	UnitType          string // 必填
@@ -165,11 +170,12 @@ type CreateUnitResponse struct {
 type UpdateUnitRequest struct {
 	TenantID          string // 必填
 	UnitID            string // 必填
-	BranchName         string // 可选
+	BranchID          string // 可选（优先使用，如果提供则忽略 BranchName）
+	BranchName        string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID）
 	UnitName          string // 可选
 	Building          string // 可选
 	Floor             string // 可选
-	AreaName           string // 可选
+	AreaName          string // 可选
 	UnitNumber        string // 可选
 	LayoutConfig      string // 可选（JSON 字符串）
 	UnitType          string // 可选
@@ -276,11 +282,11 @@ type GetBedResponse struct {
 }
 
 type CreateBedRequest struct {
-	TenantID         string // 必填
-	RoomID           string // 必填
-	BedName          string // 必填
+	TenantID string // 必填
+	RoomID   string // 必填
+	BedName  string // 必填
 	// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
-	MattressMaterial string // 可选
+	MattressMaterial  string // 可选
 	MattressThickness string // 可选
 }
 
@@ -289,11 +295,11 @@ type CreateBedResponse struct {
 }
 
 type UpdateBedRequest struct {
-	TenantID         string // 必填
-	BedID            string // 必填
-	BedName          string // 可选
+	TenantID string // 必填
+	BedID    string // 必填
+	BedName  string // 可选
 	// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
-	MattressMaterial string // 可选
+	MattressMaterial  string // 可选
 	MattressThickness string // 可选
 }
 
@@ -368,19 +374,39 @@ func (s *unitService) CreateBuilding(ctx context.Context, req CreateBuildingRequ
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 
-	// 验证：branch_name 或 building_name 必须有一个不为空
-	branchNameValue := strings.TrimSpace(req.BranchName)
-	if (branchNameValue == "" || branchNameValue == "-") && (req.BuildingName == "" || req.BuildingName == "-") {
-		return nil, fmt.Errorf("branch_name or building_name must be provided (at least one must not be empty)")
+	// 处理 branch_id：优先使用 BranchID，如果没有则通过 BranchName 查找
+	var branchID sql.NullString
+	if req.BranchID != "" {
+		// 优先使用 BranchID
+		branchID = sql.NullString{String: req.BranchID, Valid: true}
+	} else if req.BranchName != "" && req.BranchName != "-" {
+		// 向后兼容：通过 BranchName 查找 BranchID
+		branch, err := s.branchesRepo.GetBranchByName(ctx, req.TenantID, strings.TrimSpace(req.BranchName))
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, fmt.Errorf("branch not found: branch_name=%s", req.BranchName)
+			}
+			return nil, fmt.Errorf("failed to find branch: %w", err)
+		}
+		branchID = sql.NullString{String: branch.BranchID, Valid: true}
+	}
+
+	// Service 层职责：Trim 首尾空格 + 空字符串自动转换为 "-"
+	// 注意：Vue 层只负责 trim，不处理空字符串转换
+	buildingNameValue := strings.TrimSpace(req.BuildingName)
+
+	// 验证：branch_id 或 building_name 必须有一个不为空
+	if !branchID.Valid && (buildingNameValue == "" || buildingNameValue == "-") {
+		return nil, fmt.Errorf("branch_id or building_name must be provided (at least one must not be empty)")
 	}
 
 	building := &domain.Building{
-		TenantID:    req.TenantID,
-		BranchTag:   normalizeBranchTag(req.BranchName),
-		BuildingName: strings.TrimSpace(req.BuildingName),
+		TenantID:     req.TenantID,
+		BranchID:     branchID,
+		BuildingName: buildingNameValue,
 	}
 
-	// 设置默认值
+	// Service 层职责：空字符串自动转换为 "-"（不能由 Vue 决定）
 	if building.BuildingName == "" {
 		building.BuildingName = "-"
 	}
@@ -422,31 +448,47 @@ func (s *unitService) UpdateBuilding(ctx context.Context, req UpdateBuildingRequ
 	building := &domain.Building{
 		BuildingID:   req.BuildingID,
 		TenantID:     req.TenantID,
-		BranchTag:    currentBuilding.BranchTag,
+		BranchID:     currentBuilding.BranchID,
 		BuildingName: currentBuilding.BuildingName,
 	}
 
-	// 更新提供的字段
-	if req.BranchName != "" || req.BranchName == "" { // 允许设置为空
-		building.BranchTag = normalizeBranchTag(req.BranchName)
+	// 处理 branch_id：优先使用 BranchID，如果没有则通过 BranchName 查找
+	if req.BranchID != "" {
+		// 优先使用 BranchID
+		building.BranchID = sql.NullString{String: req.BranchID, Valid: true}
+	} else if req.BranchName != "" {
+		// 向后兼容：通过 BranchName 查找 BranchID
+		branchNameTrimmed := strings.TrimSpace(req.BranchName)
+		if branchNameTrimmed == "" || branchNameTrimmed == "-" {
+			// 如果 trim 后为空或 "-"，设置为 NULL
+			building.BranchID = sql.NullString{Valid: false}
+		} else {
+			branch, err := s.branchesRepo.GetBranchByName(ctx, req.TenantID, branchNameTrimmed)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					return nil, fmt.Errorf("branch not found: branch_name=%s", branchNameTrimmed)
+				}
+				return nil, fmt.Errorf("failed to find branch: %w", err)
+			}
+			building.BranchID = sql.NullString{String: branch.BranchID, Valid: true}
+		}
 	}
+
+	// Service 层职责：Trim 首尾空格 + 空字符串自动转换为 "-"
+	// 注意：Vue 层只负责 trim，不处理空字符串转换
 	if req.BuildingName != "" {
 		building.BuildingName = strings.TrimSpace(req.BuildingName)
 	}
 
-	// 设置默认值
+	// Service 层职责：空字符串自动转换为 "-"（不能由 Vue 决定）
 	if building.BuildingName == "" {
 		building.BuildingName = "-"
 	}
 
-	// 验证：branch_tag 或 building_name 必须有一个不为空（更新后）
-	branchTagValue := ""
-	if building.BranchTag.Valid {
-		branchTagValue = building.BranchTag.String
-	}
+	// 验证：branch_id 或 building_name 必须有一个不为空（更新后）
 	buildingNameValue := strings.TrimSpace(building.BuildingName)
-	if (branchTagValue == "" || branchTagValue == "-") && (buildingNameValue == "" || buildingNameValue == "-") {
-		return nil, fmt.Errorf("branch_tag or building_name must be provided (at least one must not be empty)")
+	if !building.BranchID.Valid && (buildingNameValue == "" || buildingNameValue == "-") {
+		return nil, fmt.Errorf("branch_id or building_name must be provided (at least one must not be empty)")
 	}
 
 	err = s.unitsRepo.UpdateBuilding(ctx, req.TenantID, req.BuildingID, building)
@@ -507,10 +549,10 @@ func (s *unitService) ListUnits(ctx context.Context, req ListUnitsRequest) (*Lis
 	// - building 不为 nil：添加 building 过滤条件
 	// 空字符串视为 null（nil → ""，用于 Repository 层转换为 IS NULL）
 	filters := repository.UnitFilters{
-		BranchName:  stringValueOrEmpty(req.BranchName),
+		BranchName: stringValueOrEmpty(req.BranchName),
 		Building:   stringValueOrEmpty(req.Building),
 		Floor:      stringValueOrEmpty(req.Floor),
-		AreaName:    stringValueOrEmpty(req.AreaName),
+		AreaName:   stringValueOrEmpty(req.AreaName),
 		UnitNumber: stringValueOrEmpty(req.UnitNumber),
 		UnitName:   stringValueOrEmpty(req.UnitName),
 		UnitType:   stringValueOrEmpty(req.UnitType),
@@ -587,46 +629,52 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 	if req.UnitName == "" {
 		return nil, fmt.Errorf("unit_name is required")
 	}
-	if req.UnitNumber == "" {
-		return nil, fmt.Errorf("unit_number is required")
+
+	// 2. 处理 branch_id：优先使用 BranchID，如果没有则通过 BranchName 查找
+	var branchID sql.NullString
+	if req.BranchID != "" {
+		// 优先使用 BranchID
+		branchID = sql.NullString{String: req.BranchID, Valid: true}
+	} else if req.BranchName != "" && req.BranchName != "-" {
+		// 向后兼容：通过 BranchName 查找 BranchID
+		branch, err := s.branchesRepo.GetBranchByName(ctx, req.TenantID, strings.TrimSpace(req.BranchName))
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, fmt.Errorf("branch not found: branch_name=%s", req.BranchName)
+			}
+			return nil, fmt.Errorf("failed to find branch: %w", err)
+		}
+		branchID = sql.NullString{String: branch.BranchID, Valid: true}
 	}
 
-	// 2. 应用默认值和格式转换（可选字段）
-	unitType := normalizeUnitType(req.UnitType)      // "" → "Facility"
-	building := normalizeBuilding(req.Building)      // 保持空字符串 ''（不再使用 "-"）
-	floor := normalizeFloor(req.Floor)                // ""/"1"/1 → sql.NullString{String: "1F", Valid: true}
-	timezone := normalizeTimezone(req.Timezone)       // "" → "America/Denver" (IANA 标识符)
+	// 3. 应用默认值和格式转换（可选字段）
+	unitType := normalizeUnitType(req.UnitType)     // "" → "Facility"
+	buildingName := normalizeBuilding(req.Building) // 保持空字符串 ''（不再使用 "-"）
+	floor := normalizeFloor(req.Floor)              // ""/"1"/1 → sql.NullString{String: "1F", Valid: true}
+	timezone := normalizeTimezone(req.Timezone)     // "" → "America/Denver" (IANA 标识符)
 
-	// 3. 构建 domain.Unit
+	// 4. 构建 domain.Unit（使用新的字段名）
 	unit := &domain.Unit{
-		TenantID:          req.TenantID,
-		BranchName:         normalizeBranchTag(req.BranchName),
-		UnitName:          strings.TrimSpace(req.UnitName),
-		Building:          building,
-		Floor:             floor,
-		AreaName:           normalizeAreaTag(req.AreaName),
-		UnitNumber:        strings.TrimSpace(req.UnitNumber),
-		LayoutConfig:      normalizeLayoutConfig(req.LayoutConfig),
-		UnitType:          unitType,
-		IsPublicSpace:     req.IsPublicSpace,
-		IsMultiPersonRoom: req.IsMultiPersonRoom,
-		Timezone:          timezone,
+		TenantID:     req.TenantID,
+		BranchID:     branchID,
+		UnitName:     strings.TrimSpace(req.UnitName),
+		BuildingName: buildingName,
+		Floor:        floor,
+		LayoutConfig: normalizeLayoutConfig(req.LayoutConfig),
+		UnitType:     unitType,
+		IsPublic:     req.IsPublicSpace,
+		IsSharedUnit: req.IsMultiPersonRoom,
+		Timezone:     timezone,
 	}
 
-	// 4. 业务规则验证
-	// 如果 Unit 没有 building，则必须提供 branch_name
-	// 如果 Unit 有 building，则不需要验证（Building 的 Service 层已经保证了 branch_name 或 building_name 至少有一个不为空）
-	if !unit.Building.Valid {
-		branchNameValue := ""
-		if unit.BranchName.Valid {
-			branchNameValue = unit.BranchName.String
-		}
-		if branchNameValue == "" || branchNameValue == "-" {
-			return nil, fmt.Errorf("branch_name is required when building is not provided")
-		}
+	// 5. 业务规则验证
+	// 如果 Unit 没有 building_name，则必须提供 branch_id
+	// 业务规则：branch_id 和 building_name 不能同时为空（NULL），至少一个必须提供
+	if !unit.BuildingName.Valid && !branchID.Valid {
+		return nil, fmt.Errorf("branch_id or building_name is required (at least one must be provided)")
 	}
 
-	// 5. 调用 Repository
+	// 6. 调用 Repository
 	unitID, err := s.unitsRepo.CreateUnit(ctx, req.TenantID, unit)
 	if err != nil {
 		// 检查唯一约束错误（Repository 会返回数据库错误）
@@ -638,7 +686,7 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 		return nil, fmt.Errorf("failed to create unit: %w", err)
 	}
 
-	// 6. 构建响应
+	// 7. 构建响应
 	return &CreateUnitResponse{
 		UnitID: unitID,
 	}, nil
@@ -672,87 +720,68 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 		return nil, fmt.Errorf("failed to get unit: %w", err)
 	}
 
-	// 3. 构建更新后的 unit（只更新提供的字段）
+	// 3. 构建更新后的 unit（只更新提供的字段，使用新的字段名）
 	unit := &domain.Unit{
-		UnitID:            req.UnitID,
-		TenantID:          req.TenantID,
-		BranchName:         currentUnit.BranchName,
-		UnitName:          currentUnit.UnitName,
-		Building:          currentUnit.Building,
-		Floor:             currentUnit.Floor,
-		AreaName:           currentUnit.AreaName,
-		UnitNumber:        currentUnit.UnitNumber,
-		LayoutConfig:      currentUnit.LayoutConfig,
-		UnitType:          currentUnit.UnitType,
-		IsPublicSpace:     currentUnit.IsPublicSpace,
-		IsMultiPersonRoom: currentUnit.IsMultiPersonRoom,
-		Timezone:          currentUnit.Timezone,
-		GroupList:         currentUnit.GroupList,
-		UserList:          currentUnit.UserList,
+		UnitID:       req.UnitID,
+		TenantID:     req.TenantID,
+		BranchID:     currentUnit.BranchID,
+		UnitName:     currentUnit.UnitName,
+		BuildingName: currentUnit.BuildingName,
+		Floor:        currentUnit.Floor,
+		LayoutConfig: currentUnit.LayoutConfig,
+		UnitType:     currentUnit.UnitType,
+		IsPublic:     currentUnit.IsPublic,
+		IsSharedUnit: currentUnit.IsSharedUnit,
+		Timezone:     currentUnit.Timezone,
 	}
 
-	// 更新提供的字段
-	// Repository 的 UpdateUnit 逻辑：
-	// - 如果 unit.BranchName.Valid == true，会更新（即使 String 为空，也会设置为 NULL）
-	// - 如果 unit.BranchName.Valid == false，不会更新（保持原值）
-	// 
-	// Service 层策略：
-	// - 如果请求中提供了非空值，设置 Valid=true 和 String 值
-	// - 如果请求中提供了空字符串，设置 Valid=true 和 String=""（Repository 会转换为 NULL）
-	// - 如果请求中未提供（空字符串且当前值不存在），保持 Valid=false（不更新）
-	// 
-	// 注意：由于无法区分"未提供"和"空字符串"，我们采用：
-	// - 非空值：更新
-	// - 空字符串：如果当前值存在，清除它（设置为 NULL）；否则不更新
-	
-	// branch_name: 如果提供了非空值，更新；如果为空字符串，清除（Repository 会处理为 NULL）
-	if req.BranchName != "" {
-		unit.BranchName = normalizeBranchTag(req.BranchName)
-	} else if req.BranchName == "" && currentUnit.BranchName.Valid {
-		// 请求值为空且当前值存在，清除它（设置为 Valid=true, String=""，Repository 会转换为 NULL）
-		unit.BranchName = sql.NullString{String: "", Valid: true}
+	// 4. 处理 branch_id：优先使用 BranchID，如果没有则通过 BranchName 查找
+	if req.BranchID != "" {
+		// 优先使用 BranchID
+		unit.BranchID = sql.NullString{String: req.BranchID, Valid: true}
+	} else if req.BranchName != "" {
+		// 向后兼容：通过 BranchName 查找 BranchID
+		branch, err := s.branchesRepo.GetBranchByName(ctx, req.TenantID, strings.TrimSpace(req.BranchName))
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, fmt.Errorf("branch not found: branch_name=%s", req.BranchName)
+			}
+			return nil, fmt.Errorf("failed to find branch: %w", err)
+		}
+		unit.BranchID = sql.NullString{String: branch.BranchID, Valid: true}
+	} else if req.BranchName == "" && currentUnit.BranchID.Valid {
+		// 请求值为空且当前值存在，清除它（设置为 NULL）
+		unit.BranchID = sql.NullString{Valid: false}
 	}
-	// 如果 req.BranchName == "" 且当前值不存在，保持 unit.BranchName.Valid = false（不更新）
-	
+	// 如果 req.BranchName == "" 且当前值不存在，保持 unit.BranchID.Valid = false（不更新）
+
 	if req.UnitName != "" {
 		unit.UnitName = strings.TrimSpace(req.UnitName)
 	}
 	if req.Building != "" {
-		unit.Building = normalizeBuilding(req.Building)
-	} else {
-		// 如果请求中未提供 building，保持原值（不更新）
-		unit.Building = currentUnit.Building
+		unit.BuildingName = normalizeBuilding(req.Building)
 	}
+	// 如果请求中未提供 building，保持原值（不更新）
+
 	if req.Floor != "" {
 		unit.Floor = normalizeFloor(req.Floor)
 	}
-	
-	// area_name: 类似 branch_name
-	if req.AreaName != "" {
-		unit.AreaName = normalizeAreaTag(req.AreaName)
-	} else if req.AreaName == "" && currentUnit.AreaName.Valid {
-		unit.AreaName = sql.NullString{String: "", Valid: true}
-	}
-	
-	if req.UnitNumber != "" {
-		unit.UnitNumber = strings.TrimSpace(req.UnitNumber)
-	}
-	
+
 	// layout_config: 类似处理
 	if req.LayoutConfig != "" {
 		unit.LayoutConfig = normalizeLayoutConfig(req.LayoutConfig)
 	} else if req.LayoutConfig == "" && currentUnit.LayoutConfig.Valid {
 		unit.LayoutConfig = sql.NullString{String: "", Valid: true}
 	}
-	
+
 	if req.UnitType != "" {
 		unit.UnitType = normalizeUnitType(req.UnitType)
 	}
 	if req.IsPublicSpace != nil {
-		unit.IsPublicSpace = *req.IsPublicSpace
+		unit.IsPublic = *req.IsPublicSpace
 	}
 	if req.IsMultiPersonRoom != nil {
-		unit.IsMultiPersonRoom = *req.IsMultiPersonRoom
+		unit.IsSharedUnit = *req.IsMultiPersonRoom
 	}
 	if req.Timezone != "" {
 		unit.Timezone = normalizeTimezone(req.Timezone)
@@ -1059,10 +1088,10 @@ func (s *unitService) CreateBed(ctx context.Context, req CreateBedRequest) (*Cre
 
 	// 注意：bed_type 字段已删除，ActiveBed 判断由应用层动态计算
 	bed := &domain.Bed{
-		TenantID:         req.TenantID,
+		TenantID:          req.TenantID,
 		RoomID:            req.RoomID,
-		BedName:          strings.TrimSpace(req.BedName),
-		MattressMaterial: normalizeMattressMaterial(req.MattressMaterial),
+		BedName:           strings.TrimSpace(req.BedName),
+		MattressMaterial:  normalizeMattressMaterial(req.MattressMaterial),
 		MattressThickness: normalizeMattressThickness(req.MattressThickness),
 	}
 
@@ -1102,11 +1131,11 @@ func (s *unitService) UpdateBed(ctx context.Context, req UpdateBedRequest) (*Upd
 
 	// 构建更新后的 bed
 	bed := &domain.Bed{
-		BedID:            req.BedID,
-		TenantID:         req.TenantID,
-		RoomID:           currentBed.RoomID,
-		BedName:          currentBed.BedName,
-		MattressMaterial: currentBed.MattressMaterial,
+		BedID:             req.BedID,
+		TenantID:          req.TenantID,
+		RoomID:            currentBed.RoomID,
+		BedName:           currentBed.BedName,
+		MattressMaterial:  currentBed.MattressMaterial,
 		MattressThickness: currentBed.MattressThickness,
 	}
 
@@ -1278,4 +1307,3 @@ func normalizeTimezone(timezone string) string {
 	}
 	return tz
 }
-

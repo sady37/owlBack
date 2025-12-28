@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 package repository
@@ -101,7 +102,7 @@ func createTestResidentForCardsWithAccount(t *testing.T, db *sql.DB, tenantID, u
 	err := db.QueryRow(`
 		INSERT INTO residents (
 			tenant_id, resident_account, resident_account_hash, nickname,
-			status, can_view_status, unit_id, admission_date
+			status, is_access_enabled, unit_id, admission_date
 		) VALUES (
 			$1, $2, $3, $4,
 			'active', true, $5, CURRENT_DATE
@@ -404,4 +405,3 @@ func TestPostgresCardsRepository_ListCards_ByCardID(t *testing.T) {
 		t.Errorf("Expected card_id %s, got %s", cardID1, cards[0].Card.CardID)
 	}
 }
-

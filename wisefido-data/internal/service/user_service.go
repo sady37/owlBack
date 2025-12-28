@@ -37,19 +37,26 @@ type UserService interface {
 	// 账户设置管理（统一 API）
 	GetAccountSettings(ctx context.Context, req GetAccountSettingsRequest) (*GetAccountSettingsResponse, error)
 	UpdateAccountSettings(ctx context.Context, req UpdateAccountSettingsRequest) (*UpdateAccountSettingsResponse, error)
+
+	// Branch 管理（用于前端创建用户时选择 branch）
+	GetAvailableBranches(ctx context.Context, req GetAvailableBranchesRequest) (*GetAvailableBranchesResponse, error)
 }
 
 // userService 实现
 type userService struct {
-	usersRepo repository.UsersRepository
-	logger    *zap.Logger
+	usersRepo    repository.UsersRepository
+	branchesRepo repository.BranchesRepository // 用于获取可用 branch 列表
+	db           *sql.DB                       // 用于复杂查询（JOIN、权限过滤）
+	logger       *zap.Logger
 }
 
 // NewUserService 创建 UserService 实例
-func NewUserService(usersRepo repository.UsersRepository, logger *zap.Logger) UserService {
+func NewUserService(usersRepo repository.UsersRepository, branchesRepo repository.BranchesRepository, db *sql.DB, logger *zap.Logger) UserService {
 	return &userService{
-		usersRepo: usersRepo,
-		logger:    logger,
+		usersRepo:    usersRepo,
+		branchesRepo: branchesRepo,
+		db:           db,
+		logger:       logger,
 	}
 }
 
@@ -99,7 +106,8 @@ type CreateUserRequest struct {
 	AlarmChannels []string // 可选
 	AlarmScope    string   // 可选，根据角色设置默认值
 	Tags          []string // 可选
-	BranchTag     string   // 可选
+	BranchID      string   // 可选：通过 branch_id 在 user_branches 表中创建主院区关联（优先使用）
+	BranchName    string   // 可选：通过 branch_name 在 user_branches 表中创建主院区关联（如果 BranchID 未提供时使用，""、"-" 视为空院区）
 }
 
 // CreateUserResponse 创建用户响应
@@ -124,7 +132,8 @@ type UpdateUserRequest struct {
 	AlarmChannels []string // 可选（nil 表示不更新，空数组表示清空）
 	AlarmScope    *string  // 可选
 	Tags          []string // 可选（nil 表示不更新，空数组表示清空）
-	BranchTag     *string  // 可选（空字符串表示 NULL）
+	BranchID      *string  // 可选：通过 branch_id 在 user_branches 表中更新主院区关联（优先使用，nil 表示不更新，"" 表示删除主院区）
+	BranchName    *string  // 可选：通过 branch_name 在 user_branches 表中更新主院区关联（如果 BranchID 未提供时使用，nil 表示不更新，""、"-" 表示删除主院区）
 }
 
 // UpdateUserResponse 更新用户响应
@@ -208,6 +217,23 @@ type UpdateAccountSettingsResponse struct {
 	Message string // 消息（可选，用于错误详情）
 }
 
+// GetAvailableBranchesRequest 获取可用 branch 列表请求
+type GetAvailableBranchesRequest struct {
+	TenantID      string // 必填
+	CurrentUserID string // 当前用户 ID（用于权限过滤，可选）
+}
+
+// GetAvailableBranchesResponse 获取可用 branch 列表响应
+type GetAvailableBranchesResponse struct {
+	Branches []BranchDTO // 可用 branch 列表（包含 branch_id 和 branch_name）
+}
+
+// BranchDTO branch 数据传输对象（用于响应）
+type BranchDTO struct {
+	BranchID   string `json:"branch_id"`   // branch_id（前端需要 ID 来选择对象）
+	BranchName string `json:"branch_name"` // branch_name（用于显示）
+}
+
 // UserDTO 用户数据传输对象（用于响应）
 type UserDTO struct {
 	UserID        string                 `json:"user_id"`
@@ -221,7 +247,8 @@ type UserDTO struct {
 	AlarmLevels   []string               `json:"alarm_levels,omitempty"`
 	AlarmChannels []string               `json:"alarm_channels,omitempty"`
 	AlarmScope    string                 `json:"alarm_scope,omitempty"`
-	BranchTag     string                 `json:"branch_tag,omitempty"`
+	BranchID      string                 `json:"branch_id,omitempty"`     // 返回 branch_id（前端需要 ID 来选择对象）
+	BranchName    string                 `json:"branch_name,omitempty"`   // 返回 branch_name（用于显示）
 	LastLoginAt   string                 `json:"last_login_at,omitempty"` // RFC3339 格式
 	Tags          []string               `json:"tags,omitempty"`
 	Preferences   map[string]interface{} `json:"preferences,omitempty"`
@@ -230,6 +257,74 @@ type UserDTO struct {
 // ============================================
 // Helper Functions
 // ============================================
+
+// normalizeBranchName 规范化 branch_name：将 ""、"-" 视为空院区（返回 sql.NullString{Valid: false}）
+// null、""、"-" 都表示空院区，等价处理
+func normalizeBranchName(branchName string) sql.NullString {
+	if branchName == "" || branchName == "-" {
+		return sql.NullString{Valid: false}
+	}
+	return sql.NullString{String: branchName, Valid: true}
+}
+
+// UserBranchInfo 用户院区信息（包含 branch_id 和 branch_name）
+type UserBranchInfo struct {
+	BranchID   string // 院区 ID
+	BranchName string // 院区名称（用于显示）
+}
+
+// getUserBranchIDs 查询用户所属的院区信息（Service 层内部方法）
+// 从 user_branches 表 JOIN branches 表查询用户关联的所有院区（包含 branch_id 和 branch_name）
+// 返回：
+//   - branches: 用户所属的院区信息列表（包含 branch_id 和 branch_name，可能为空）
+//   - hasBranches: 用户是否有关联的院区（false 表示可以访问所有院区或 NULL 院区）
+func (s *userService) getUserBranchIDs(ctx context.Context, tenantID, userID string) (branches []UserBranchInfo, hasBranches bool, err error) {
+	if tenantID == "" || userID == "" {
+		return nil, false, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT 
+			ub.branch_id::text,
+			COALESCE(b.branch_name, '') as branch_name
+		 FROM user_branches ub
+		 LEFT JOIN branches b ON b.branch_id = ub.branch_id
+		 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2
+		 ORDER BY ub.is_primary DESC, b.branch_name ASC`,
+		tenantID, userID,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, false, nil // 用户没有关联任何院区
+		}
+		return nil, false, fmt.Errorf("failed to query user branches: %w", err)
+	}
+	defer rows.Close()
+
+	var branchList []UserBranchInfo
+	for rows.Next() {
+		var branchID, branchName sql.NullString
+		if err := rows.Scan(&branchID, &branchName); err != nil {
+			return nil, false, fmt.Errorf("failed to scan branch info: %w", err)
+		}
+		if branchID.Valid && branchID.String != "" {
+			branchList = append(branchList, UserBranchInfo{
+				BranchID:   branchID.String,
+				BranchName: branchName.String, // 如果 branch_name 为 NULL，返回空字符串
+			})
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("failed to iterate user branches: %w", err)
+	}
+
+	if len(branchList) == 0 {
+		return nil, false, nil // 用户没有关联任何院区
+	}
+
+	return branchList, true, nil
+}
 
 // getRoleLevel 返回角色的层级（数字越小，权限越高）
 func getRoleLevel(role string) int {
@@ -316,8 +411,12 @@ func domainUserToDTO(user *domain.User) *UserDTO {
 	if user.AlarmScope.Valid {
 		dto.AlarmScope = user.AlarmScope.String
 	}
-	if user.BranchTag.Valid {
-		dto.BranchTag = user.BranchTag.String
+	// BranchID 和 BranchName 现在都从 user_branches 表获取，不再从 users.branch_id 获取
+	if user.BranchID.Valid {
+		dto.BranchID = user.BranchID.String
+	}
+	if user.BranchName.Valid && user.BranchName.String != "" && user.BranchName.String != "-" {
+		dto.BranchName = user.BranchName.String
 	}
 	if user.LastLoginAt.Valid {
 		dto.LastLoginAt = user.LastLoginAt.Time.Format("2006-01-02T15:04:05Z07:00")
@@ -388,11 +487,23 @@ func (s *userService) ListUsers(ctx context.Context, req ListUsersRequest) (*Lis
 		}, nil
 	} else if permCheck.BranchOnly {
 		// Manager: 只能查看同 branch 的用户
-		if currentUser.BranchTag.Valid && currentUser.BranchTag.String != "" {
-			filters.BranchTag = currentUser.BranchTag.String
+		// 查询用户关联的所有院区信息（支持 1 对多关系，包含 branch_id 和 branch_name）
+		userBranches, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
+		if err != nil {
+			s.logger.Error("Failed to get user branch IDs", zap.Error(err))
+			return nil, fmt.Errorf("failed to get user branch IDs: %w", err)
+		}
+
+		if hasBranches && len(userBranches) > 0 {
+			// 用户有关联的院区：提取 branch_id 列表进行 IN 查询
+			branchIDs := make([]string, 0, len(userBranches))
+			for _, branch := range userBranches {
+				branchIDs = append(branchIDs, branch.BranchID)
+			}
+			filters.BranchIDs = branchIDs
 		} else {
-			// 如果当前用户的 branch_tag 为 NULL，只能查看 branch_tag 为 NULL 或 '-' 的用户
-			filters.BranchTagNull = true
+			// 用户没有关联任何院区：只能查看 branch_name 为 NULL、"" 或 '-' 的用户（都视为空院区）
+			filters.BranchNameNull = true
 		}
 	}
 	// Admin/IT: 无额外过滤（可以查看所有用户）
@@ -602,8 +713,13 @@ func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*C
 	if len(req.AlarmChannels) > 0 {
 		user.AlarmChannels = req.AlarmChannels
 	}
-	if req.BranchTag != "" {
-		user.BranchTag = sql.NullString{String: req.BranchTag, Valid: true}
+	// 使用 BranchID 或 BranchName 创建 user_branches 关联（在 Repository 层处理）
+	// 优先使用 BranchID，如果没有提供则使用 BranchName
+	// null、""、"-" 都视为空院区，不创建关联
+	if req.BranchID != "" {
+		user.BranchID = sql.NullString{String: req.BranchID, Valid: true}
+	} else if req.BranchName != "" && req.BranchName != "-" {
+		user.BranchName = normalizeBranchName(req.BranchName)
 	}
 	if len(tagsJSON) > 0 {
 		user.Tags = sql.NullString{String: string(tagsJSON), Valid: true}
@@ -658,7 +774,7 @@ func (s *userService) UpdateUser(ctx context.Context, req UpdateUserRequest) (*U
 	updatingStatus := req.Status != nil && *req.Status != ""
 	updatingOtherFields := req.Nickname != nil || req.Email != nil || req.Phone != nil ||
 		req.AlarmLevels != nil || req.AlarmChannels != nil ||
-		req.AlarmScope != nil || req.Tags != nil || req.BranchTag != nil
+		req.AlarmScope != nil || req.Tags != nil || req.BranchName != nil
 
 	// 权限规则：如果更新自己且只更新 password/email/phone，无限制
 	// 如果更新其他用户或更新 role/status/otherFields，需要权限检查
@@ -796,12 +912,17 @@ func (s *userService) UpdateUser(ctx context.Context, req UpdateUserRequest) (*U
 			updateUser.AlarmScope = sql.NullString{String: *req.AlarmScope, Valid: true}
 		}
 	}
-	if req.BranchTag != nil {
-		if *req.BranchTag == "" {
-			updateUser.BranchTag = sql.NullString{Valid: false}
+	// 使用 BranchID 或 BranchName 更新 user_branches 关联（在 Repository 层处理）
+	// 优先使用 BranchID，如果没有提供则使用 BranchName
+	// null、""、"-" 都视为空院区，删除关联
+	if req.BranchID != nil {
+		if *req.BranchID == "" {
+			updateUser.BranchID = sql.NullString{Valid: false}
 		} else {
-			updateUser.BranchTag = sql.NullString{String: *req.BranchTag, Valid: true}
+			updateUser.BranchID = sql.NullString{String: *req.BranchID, Valid: true}
 		}
+	} else if req.BranchName != nil {
+		updateUser.BranchName = normalizeBranchName(*req.BranchName)
 	}
 	if req.Tags != nil {
 		if len(req.Tags) == 0 {
@@ -1150,5 +1271,38 @@ func (s *userService) UpdateAccountSettings(ctx context.Context, req UpdateAccou
 	return &UpdateAccountSettingsResponse{
 		Success: true,
 		Message: "Account settings updated successfully",
+	}, nil
+}
+
+// ============================================
+// GetAvailableBranches 获取可用 branch 列表
+// ============================================
+
+// GetAvailableBranches 获取可用 branch 列表（用于前端创建用户时选择 branch）
+// 返回所有可用的 branch（包含 branch_id 和 branch_name）
+func (s *userService) GetAvailableBranches(ctx context.Context, req GetAvailableBranchesRequest) (*GetAvailableBranchesResponse, error) {
+	// 1. 参数验证
+	if req.TenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+
+	// 2. 获取所有 branch（不分页，返回所有）
+	branches, _, err := s.branchesRepo.ListBranches(ctx, req.TenantID, 1, 1000) // 使用较大的 size，获取所有 branch
+	if err != nil {
+		s.logger.Error("Failed to list branches", zap.Error(err))
+		return nil, fmt.Errorf("failed to list branches: %w", err)
+	}
+
+	// 3. 转换为 DTO
+	branchDTOs := make([]BranchDTO, 0, len(branches))
+	for _, branch := range branches {
+		branchDTOs = append(branchDTOs, BranchDTO{
+			BranchID:   branch.BranchID,
+			BranchName: branch.BranchName,
+		})
+	}
+
+	return &GetAvailableBranchesResponse{
+		Branches: branchDTOs,
 	}, nil
 }

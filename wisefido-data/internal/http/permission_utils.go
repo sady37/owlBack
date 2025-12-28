@@ -27,14 +27,17 @@ type PermissionCheck struct {
 // 返回:
 //   - *PermissionCheck: 权限检查结果，如果查询失败或记录不存在，返回最严格的权限（assigned_only=true, branch_only=true）
 //   - error: 查询错误（如果记录不存在，返回 nil，使用默认值）
+//
+// 注意: permission_scope 值映射:
+//   - 'A' = All (no restriction) → assigned_only=false, branch_only=false
+//   - 'S' = assigned_only → assigned_only=true, branch_only=false
+//   - 'B' = branch_only → assigned_only=false, branch_only=true
 func GetResourcePermission(db *sql.DB, ctx context.Context,
 	roleCode, resourceType, permissionType string) (*PermissionCheck, error) {
 
-	var assignedOnly, branchOnly bool
+	var permissionScope string
 	err := db.QueryRowContext(ctx,
-		`SELECT 
-			COALESCE(assigned_only, FALSE) as assigned_only,
-			COALESCE(branch_only, FALSE) as branch_only
+		`SELECT permission_scope
 		 FROM role_permissions
 		 WHERE tenant_id = $1 
 		   AND role_code = $2 
@@ -42,7 +45,7 @@ func GetResourcePermission(db *sql.DB, ctx context.Context,
 		   AND permission_type = $4
 		 LIMIT 1`,
 		SystemTenantID(), roleCode, resourceType, permissionType,
-	).Scan(&assignedOnly, &branchOnly)
+	).Scan(&permissionScope)
 
 	if err == sql.ErrNoRows {
 		// 记录不存在：返回最严格的权限（安全默认值）
@@ -50,6 +53,27 @@ func GetResourcePermission(db *sql.DB, ctx context.Context,
 	}
 	if err != nil {
 		return nil, err
+	}
+
+	// 将 permission_scope 转换为 assigned_only 和 branch_only 标志
+	var assignedOnly, branchOnly bool
+	switch permissionScope {
+	case "A":
+		// All (no restriction)
+		assignedOnly = false
+		branchOnly = false
+	case "S":
+		// assigned_only
+		assignedOnly = true
+		branchOnly = false
+	case "B":
+		// branch_only
+		assignedOnly = false
+		branchOnly = true
+	default:
+		// 未知值，返回最严格的权限（安全默认值）
+		assignedOnly = true
+		branchOnly = true
 	}
 
 	return &PermissionCheck{AssignedOnly: assignedOnly, BranchOnly: branchOnly}, nil

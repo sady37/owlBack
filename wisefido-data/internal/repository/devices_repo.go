@@ -17,7 +17,12 @@ type DevicesRepository interface {
 	CreateDevice(ctx context.Context, tenantID string, device *domain.Device) (string, error)
 
 	// 更新
+	// Deprecated: 使用 UpdateDeviceFields 替代，支持区分"不更新"、"更新"、"删除"三种状态
 	UpdateDevice(ctx context.Context, tenantID, deviceID string, device *domain.Device) error
+
+	// UpdateDeviceFields 更新设备（使用更新模型）
+	// 支持区分"不更新"、"更新"、"删除"三种状态
+	UpdateDeviceFields(ctx context.Context, tenantID, deviceID string, update *domain.DeviceUpdate) error
 
 	// 删除（物理删除，仅当设备未使用时）
 	DeleteDevice(ctx context.Context, tenantID, deviceID string) error

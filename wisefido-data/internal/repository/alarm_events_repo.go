@@ -26,7 +26,12 @@ type AlarmEventsRepository interface {
 	UpdateAlarmEventOperation(ctx context.Context, tenantID, eventID, operation, handlerID string, notes *string) error
 
 	// 更新报警事件（部分更新）
+	// Deprecated: 使用 UpdateAlarmEventFields 替代，支持区分"不更新"、"更新"、"删除"三种状态
 	UpdateAlarmEvent(ctx context.Context, tenantID, eventID string, updates map[string]interface{}) error
+
+	// 更新报警事件（使用更新模型）
+	// 支持区分"不更新"、"更新"、"删除"三种状态
+	UpdateAlarmEventFields(ctx context.Context, tenantID, eventID string, update *domain.AlarmEventUpdate) error
 
 	// 软删除报警事件（通过 metadata 标记删除时间）
 	DeleteAlarmEvent(ctx context.Context, tenantID, eventID string) error

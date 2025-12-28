@@ -10,7 +10,7 @@ type Room struct {
 	RoomID       string         `db:"room_id"`
 	TenantID     string         `db:"tenant_id"`
 	UnitID       string         `db:"unit_id"`
+	UnitName     sql.NullString `db:"-"` // 不映射到数据库字段，通过 JOIN units 表获取
 	RoomName     string         `db:"room_name"`
 	LayoutConfig sql.NullString `db:"layout_config"` // nullable, JSONB
 }
-

@@ -36,6 +36,9 @@ func (h *UserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// CreateUser
 	case path == "/admin/api/v1/users" && r.Method == http.MethodPost:
 		h.CreateUser(w, r)
+	// GetAvailableBranches
+	case path == "/admin/api/v1/users/branches" && r.Method == http.MethodGet:
+		h.GetAvailableBranches(w, r)
 	// GetAccountSettings (必须在 GetUser 之前，因为路径更具体)
 	case strings.HasSuffix(path, "/account-settings") && r.Method == http.MethodGet:
 		userID := strings.TrimSuffix(path, "/account-settings")
@@ -167,8 +170,11 @@ func (h *UserHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 		if u.AlarmScope != "" {
 			item["alarm_scope"] = u.AlarmScope
 		}
-		if u.BranchTag != "" {
-			item["branch_tag"] = u.BranchTag
+		if u.BranchID != "" {
+			item["branch_id"] = u.BranchID
+		}
+		if u.BranchName != "" {
+			item["branch_name"] = u.BranchName
 		}
 		if u.LastLoginAt != "" {
 			item["last_login_at"] = u.LastLoginAt
@@ -246,8 +252,11 @@ func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request, userID str
 	if resp.User.AlarmScope != "" {
 		item["alarm_scope"] = resp.User.AlarmScope
 	}
-	if resp.User.BranchTag != "" {
-		item["branch_tag"] = resp.User.BranchTag
+	if resp.User.BranchID != "" {
+		item["branch_id"] = resp.User.BranchID
+	}
+	if resp.User.BranchName != "" {
+		item["branch_name"] = resp.User.BranchName
 	}
 	if resp.User.LastLoginAt != "" {
 		item["last_login_at"] = resp.User.LastLoginAt
@@ -336,8 +345,13 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 解析 branch_tag
-	branchTag, _ := payload["branch_tag"].(string)
+	// 解析 branch_id 或 branch_name（优先使用 branch_id）
+	var branchID, branchName string
+	if branchIDVal, ok := payload["branch_id"].(string); ok && branchIDVal != "" {
+		branchID = branchIDVal
+	} else if branchNameVal, ok := payload["branch_name"].(string); ok {
+		branchName = branchNameVal
+	}
 
 	req := service.CreateUserRequest{
 		TenantID:      tenantID,
@@ -353,7 +367,8 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		AlarmChannels: alarmChannels,
 		AlarmScope:    alarmScope,
 		Tags:          tags,
-		BranchTag:     branchTag,
+		BranchID:      branchID,
+		BranchName:    branchName,
 	}
 
 	resp, err := h.userService.CreateUser(ctx, req)
@@ -503,9 +518,11 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request, userID 
 		req.Tags = tags
 	}
 
-	// BranchTag
-	if branchTag, ok := payload["branch_tag"].(string); ok {
-		req.BranchTag = &branchTag
+	// Branch: 支持 branch_id 或 branch_name（优先使用 branch_id）
+	if branchID, ok := payload["branch_id"].(string); ok && branchID != "" {
+		req.BranchID = &branchID
+	} else if branchName, ok := payload["branch_name"].(string); ok {
+		req.BranchName = &branchName
 	}
 
 	resp, err := h.userService.UpdateUser(ctx, req)
@@ -816,5 +833,50 @@ func (h *UserHandler) UpdateAccountSettings(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, Ok(map[string]any{
 		"success": resp.Success,
 		"message": resp.Message,
+	}))
+}
+
+// ============================================
+// GetAvailableBranches 获取可用 branch 列表
+// ============================================
+
+// GetAvailableBranches 获取可用 branch 列表（用于前端创建用户时选择 branch）
+// GET /admin/api/v1/users/branches
+func (h *UserHandler) GetAvailableBranches(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 1. 获取 tenant_id
+	tenantID, ok := h.base.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+
+	// 2. 获取 current_user_id（可选，用于权限过滤）
+	currentUserID := r.Header.Get("X-User-Id")
+
+	// 3. 调用 Service
+	req := service.GetAvailableBranchesRequest{
+		TenantID:      tenantID,
+		CurrentUserID: currentUserID,
+	}
+
+	resp, err := h.userService.GetAvailableBranches(ctx, req)
+	if err != nil {
+		h.logger.Error("GetAvailableBranches failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	// 4. 转换为前端格式
+	branches := make([]map[string]any, 0, len(resp.Branches))
+	for _, branch := range resp.Branches {
+		branches = append(branches, map[string]any{
+			"branch_id":   branch.BranchID,
+			"branch_name": branch.BranchName,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, Ok(map[string]any{
+		"branches": branches,
 	}))
 }

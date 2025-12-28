@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 package repository
@@ -96,7 +97,7 @@ func TestPostgresResidentsRepository_CreateResident(t *testing.T) {
 		Status:              "active",
 		Role:                "Resident",
 		FamilyTag:           "F0001",
-		CanViewStatus:       true,
+		IsAccessEnabled:     true,
 		UnitID:              unitID,
 	}
 
@@ -243,7 +244,7 @@ func TestPostgresResidentsRepository_GetResidentByEmail(t *testing.T) {
 	resident := &domain.Resident{
 		ResidentAccount:     "testresident004",
 		ResidentAccountHash: hashString("testresident004"),
-		Nickname:             "Test Resident 004",
+		Nickname:            "Test Resident 004",
 		AdmissionDate:       &admissionDate,
 		Status:              "active",
 		EmailHash:           hashString(email),
@@ -696,10 +697,10 @@ func TestPostgresResidentsRepository_GetResidentPHI(t *testing.T) {
 	// 创建PHI
 	dob := time.Date(1950, 1, 1, 0, 0, 0, 0, time.UTC)
 	phi := &domain.ResidentPHI{
-		FirstName:    "John",
-		LastName:     "Doe",
-		Gender:       "Male",
-		DateOfBirth:  &dob,
+		FirstName:     "John",
+		LastName:      "Doe",
+		Gender:        "Male",
+		DateOfBirth:   &dob,
 		ResidentPhone: "1234567890",
 		ResidentEmail: "john@example.com",
 	}
@@ -760,13 +761,13 @@ func TestPostgresResidentsRepository_UpsertResidentPHI(t *testing.T) {
 	heightFt := 5.0
 	heightIn := 10.0
 	phi := &domain.ResidentPHI{
-		FirstName:     "Jane",
-		LastName:      "Smith",
-		Gender:         "Female",
-		DateOfBirth:    &dob,
-		WeightLb:       &weight,
-		HeightFt:       &heightFt,
-		HeightIn:       &heightIn,
+		FirstName:       "Jane",
+		LastName:        "Smith",
+		Gender:          "Female",
+		DateOfBirth:     &dob,
+		WeightLb:        &weight,
+		HeightFt:        &heightFt,
+		HeightIn:        &heightIn,
 		HasHypertension: true,
 		HasAlzheimer:    true,
 	}
@@ -836,7 +837,7 @@ func TestPostgresResidentsRepository_GetResidentContacts(t *testing.T) {
 
 	// 创建联系人
 	contact1 := &domain.ResidentContact{
-		Slot:              "A",
+		Slot:               "A",
 		IsEnabled:          true,
 		Relationship:       "Child",
 		ContactFirstName:   "Contact",
@@ -852,9 +853,9 @@ func TestPostgresResidentsRepository_GetResidentContacts(t *testing.T) {
 	}
 
 	contact2 := &domain.ResidentContact{
-		Slot:            "B",
-		IsEnabled:       true,
-		Relationship:    "Spouse",
+		Slot:             "B",
+		IsEnabled:        true,
+		Relationship:     "Spouse",
 		ContactFirstName: "Contact",
 		ContactLastName:  "Two",
 	}
@@ -927,7 +928,7 @@ func TestPostgresResidentsRepository_CreateResidentContact(t *testing.T) {
 
 	// 创建联系人
 	contact := &domain.ResidentContact{
-		Slot:              "A",
+		Slot:               "A",
 		IsEnabled:          true,
 		Relationship:       "Child",
 		ContactFirstName:   "Contact",
@@ -1005,9 +1006,9 @@ func TestPostgresResidentsRepository_UpdateResidentContact(t *testing.T) {
 
 	// 创建联系人
 	contact := &domain.ResidentContact{
-		Slot:            "A",
-		IsEnabled:       true,
-		Relationship:    "Child",
+		Slot:             "A",
+		IsEnabled:        true,
+		Relationship:     "Child",
 		ContactFirstName: "Contact",
 		ContactLastName:  "Original",
 	}
@@ -1019,11 +1020,11 @@ func TestPostgresResidentsRepository_UpdateResidentContact(t *testing.T) {
 
 	// 更新联系人
 	updatedContact := &domain.ResidentContact{
-		Slot:              "A",
-		IsEnabled:         false,
-		Relationship:      "Spouse",
-		ContactFirstName:  "Contact",
-		ContactLastName:   "Updated",
+		Slot:               "A",
+		IsEnabled:          false,
+		Relationship:       "Spouse",
+		ContactFirstName:   "Contact",
+		ContactLastName:    "Updated",
 		IsEmergencyContact: true,
 	}
 
@@ -1093,8 +1094,8 @@ func TestPostgresResidentsRepository_DeleteResidentContact(t *testing.T) {
 	// 创建联系人
 	contact := &domain.ResidentContact{
 		Slot:         "A",
-		IsEnabled:     true,
-		Relationship:  "Child",
+		IsEnabled:    true,
+		Relationship: "Child",
 	}
 
 	contactID, err := repo.CreateResidentContact(ctx, tenantID, residentID, contact)
@@ -1298,4 +1299,3 @@ func TestPostgresResidentsRepository_UpsertResidentCaregiver(t *testing.T) {
 
 	t.Logf("✅ UpsertResidentCaregiver test passed: residentID=%s", residentID)
 }
-

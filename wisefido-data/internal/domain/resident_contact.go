@@ -1,44 +1,37 @@
 package domain
 
-import "encoding/json"
+import (
+	"database/sql"
+	"encoding/json"
+)
 
 // ResidentContact 住户联系人领域模型（对应 resident_contacts 表）
-// 住户紧急联系人 / 家属账号
+// 注意：联系人不能登录系统，仅作为住户的属性用于接收告警通知，不是角色
+// 主键：PRIMARY KEY (resident_id, slot)
+// 注意：contact_id字段已从数据库删除，但前端DTO需要返回标识，这里使用空字符串表示
 type ResidentContact struct {
-	// 主键
-	ContactID string `db:"contact_id"` // UUID, PRIMARY KEY
-
 	// 租户和住户
 	TenantID   string `db:"tenant_id"`   // UUID, NOT NULL
 	ResidentID string `db:"resident_id"` // UUID, NOT NULL
 
-	// 槽位
-	Slot string `db:"slot"` // VARCHAR(1), NOT NULL（'A','B','C','D','E'），UNIQUE(tenant_id, resident_id, slot)
-
-	// 启用状态
-	IsEnabled bool `db:"is_enabled"` // BOOLEAN, NOT NULL, DEFAULT TRUE
+	// 槽位（主键的一部分）
+	Slot string `db:"slot"` // VARCHAR(1), NOT NULL（'A','B','C','D','E'），PRIMARY KEY (resident_id, slot), UNIQUE(tenant_id, resident_id, slot)
+	
+	// ContactID 用于前端标识（数据库表已删除contact_id字段，这里为空字符串或使用resident_id+slot组合）
+	ContactID string `db:"-"` // 不映射到数据库，前端需要时返回空字符串或组合值
 
 	// 关系
-	Relationship string `db:"relationship"` // VARCHAR(50), nullable（Child/Spouse/Friend/Caregiver）
+	Relationship sql.NullString `db:"relationship"` // VARCHAR(50), nullable（Child/Spouse/Friend/Caregiver）
 
-	// 角色
-	Role string `db:"role"` // VARCHAR(20), NOT NULL, DEFAULT 'Family'
-
-	// 告警接收控制
-	IsEmergencyContact bool          `db:"is_emergency_contact"` // BOOLEAN, NOT NULL, DEFAULT FALSE
-	AlertTimeWindow    json.RawMessage `db:"alert_time_window"`  // JSONB, nullable
+	// 启用控制
+	IsEnabled        bool            `db:"is_enabled"`        // BOOLEAN, NOT NULL, DEFAULT FALSE（是否启用该联系人，对应前端的 "slot Enable" 复选框）
+	AlertTimeWindow  json.RawMessage `db:"alert_time_window"` // JSONB, nullable（告警接收时间窗口）
 
 	// 可选的PHI（姓名/联系方式）
-	ContactFirstName string `db:"contact_first_name"` // VARCHAR(100), nullable
-	ContactLastName  string `db:"contact_last_name"` // VARCHAR(100), nullable
-	ContactPhone     string `db:"contact_phone"`     // VARCHAR(25), nullable
-	ContactEmail     string `db:"contact_email"`     // VARCHAR(255), nullable
-	ReceiveSMS        bool   `db:"receive_sms"`      // BOOLEAN, DEFAULT FALSE
-	ReceiveEmail      bool   `db:"receive_email"`    // BOOLEAN, DEFAULT FALSE
-
-	// 登录/重置用的联系方式哈希
-	PhoneHash    []byte `db:"phone_hash"`     // BYTEA, nullable
-	EmailHash    []byte `db:"email_hash"`     // BYTEA, nullable
-	PasswordHash []byte `db:"password_hash"` // BYTEA, nullable
+	ContactFirstName sql.NullString `db:"contact_first_name"` // VARCHAR(100), nullable
+	ContactLastName  sql.NullString `db:"contact_last_name"`  // VARCHAR(100), nullable
+	ContactPhone     sql.NullString `db:"contact_phone"`      // VARCHAR(25), nullable
+	ContactEmail     sql.NullString `db:"contact_email"`      // VARCHAR(255), nullable
+	ReceiveSMS       bool           `db:"receive_sms"`        // BOOLEAN, DEFAULT FALSE
+	ReceiveEmail     bool           `db:"receive_email"`      // BOOLEAN, DEFAULT FALSE
 }
-

@@ -133,11 +133,7 @@ func main() {
 		router.RegisterRolesRoutes(rolesHandler)
 		router.RegisterRolePermissionsRoutes(rolePermHandler)
 
-		// 创建 Tag Service 和 Handler
-		tagRepo := repository.NewPostgresTagsRepository(db)
-		tagService := service.NewTagService(tagRepo, db, logger)
-		tagsHandler := httpapi.NewTagsHandler(tagService, logger)
-		router.RegisterTagsRoutes(tagsHandler)
+		// tags - 已删除（tags 表不存在）
 
 		// 创建 AlarmCloud Service 和 Handler
 		alarmCloudRepo := repository.NewPostgresAlarmCloudRepository(db)
@@ -162,13 +158,20 @@ func main() {
 		router.RegisterDeviceStoreRoutes(deviceStoreHandler)
 
 		// 创建 Unit Service 和 Handler
-		unitService := service.NewUnitService(unitsRepo, logger)
+		branchesRepo := repository.NewPostgresBranchesRepository(db)
+		unitService := service.NewUnitService(unitsRepo, branchesRepo, logger)
 		unitHandler := httpapi.NewUnitHandler(unitService, logger)
 		router.RegisterUnitRoutes(unitHandler)
 
+		// 创建 Branch Service 和 Handler
+		branchService := service.NewBranchService(branchesRepo, db, logger)
+		branchesHandler := httpapi.NewBranchesHandler(branchService, db, logger)
+		router.RegisterBranchesRoutes(branchesHandler)
+
 		// 创建 User Service 和 Handler
 		// usersRepo 已在上面创建 RoleService 时声明，这里直接使用
-		userService := service.NewUserService(usersRepo, logger)
+		// branchesRepo 已在上面创建 UnitService 时声明，这里直接使用
+		userService := service.NewUserService(usersRepo, branchesRepo, db, logger)
 		userHandler := httpapi.NewUserHandler(userService, logger)
 		router.RegisterUsersRoutes(userHandler)
 
@@ -201,14 +204,11 @@ func main() {
 		residentService := service.NewResidentService(residentsRepo, db, logger)
 		residentHandler := httpapi.NewResidentHandler(residentService, db, logger)
 		router.RegisterResidentRoutes(residentHandler)
-		
-		// 设置 ResidentService 到 StubHandler（用于 AdminResidents 使用 Service 层）
-		stub.SetResidentService(residentService)
 
 		// SleepaceReportService
 		sleepaceReportsRepo := repository.NewPostgresSleepaceReportsRepository(db)
 		sleepaceReportService := service.NewSleepaceReportService(sleepaceReportsRepo, db, logger)
-		
+
 		// 初始化 Sleepace 客户端（如果配置了 Sleepace 服务）
 		if cfg.Sleepace.HttpAddress != "" && cfg.Sleepace.AppID != "" && cfg.Sleepace.SecretKey != "" {
 			sleepaceClient := service.NewSleepaceClient(
@@ -233,7 +233,7 @@ func main() {
 				zap.String("app_id", cfg.Sleepace.AppID),
 			)
 		}
-		
+
 		sleepaceReportHandler := httpapi.NewSleepaceReportHandler(sleepaceReportService, db, logger)
 		router.RegisterSleepaceReportRoutes(sleepaceReportHandler)
 
@@ -311,7 +311,14 @@ func main() {
 		admin = httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger)
 	}
 	router.RegisterAdminUnitDeviceRoutes(admin)
-	router.RegisterAdminTenantRoutes(httpapi.NewTenantsHandler(tenantsRepo, authStore, db))
+	// 如果 DB 启用，传入 BranchesRepository 以便创建 tenant 时自动创建默认 branch
+	var branchesRepoForTenants repository.BranchesRepository
+	if db != nil {
+		branchesRepoForTenants = repository.NewPostgresBranchesRepository(db)
+		router.RegisterAdminTenantRoutes(httpapi.NewTenantsHandlerWithLogger(tenantsRepo, branchesRepoForTenants, authStore, db, logger))
+	} else {
+		router.RegisterAdminTenantRoutes(httpapi.NewTenantsHandler(tenantsRepo, branchesRepoForTenants, authStore, db))
+	}
 	router.RegisterStubRoutes(stub)
 
 	// 注册 Doctor 路由（健康检查和诊断功能）

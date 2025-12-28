@@ -11,16 +11,26 @@ import (
 	"strings"
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
+	
+	"go.uber.org/zap"
 )
 
 type TenantsHandler struct {
-	Repo repository.TenantsRepository // 使用新的 TenantsRepository 接口
-	Auth *AuthStore                   // optional (dev only)
-	DB   *sql.DB                      // optional (dev only): seed bootstrap admin into DB users table
+	Repo          repository.TenantsRepository   // 使用新的 TenantsRepository 接口
+	BranchesRepo  repository.BranchesRepository  // optional: 用于创建默认 branch
+	Auth          *AuthStore                     // optional (dev only)
+	DB            *sql.DB                        // optional (dev only): seed bootstrap admin into DB users table
+	logger        *zap.Logger                    // optional: 用于记录创建默认 branch 的错误
 }
 
-func NewTenantsHandler(repo repository.TenantsRepository, auth *AuthStore, db *sql.DB) *TenantsHandler {
-	return &TenantsHandler{Repo: repo, Auth: auth, DB: db}
+func NewTenantsHandler(repo repository.TenantsRepository, branchesRepo repository.BranchesRepository, auth *AuthStore, db *sql.DB) *TenantsHandler {
+	// 如果 logger 不可用，创建一个 no-op logger
+	logger := zap.NewNop()
+	return &TenantsHandler{Repo: repo, BranchesRepo: branchesRepo, Auth: auth, DB: db, logger: logger}
+}
+
+func NewTenantsHandlerWithLogger(repo repository.TenantsRepository, branchesRepo repository.BranchesRepository, auth *AuthStore, db *sql.DB, logger *zap.Logger) *TenantsHandler {
+	return &TenantsHandler{Repo: repo, BranchesRepo: branchesRepo, Auth: auth, DB: db, logger: logger}
 }
 
 func genTempPassword() string {
@@ -87,6 +97,7 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			for _, t := range items {
 				out = append(out, map[string]any{
 					"tenant_id":   t.TenantID,
+					"tenant_type": t.TenantType,
 					"tenant_name": t.TenantName,
 					"domain":      t.Domain,
 					"email":       t.Email,
@@ -105,6 +116,7 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			// 转换为 domain.Tenant
 			tenant := &domain.Tenant{
+				TenantType: getStringOrDefaultFromMap(payload, "tenant_type", "organization"),
 				TenantName: getStringFromMap(payload, "tenant_name"),
 				Domain:     getStringFromMap(payload, "domain"),
 				Email:      getStringFromMap(payload, "email"),
@@ -121,6 +133,25 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, Fail("failed to create tenant"))
 				return
 			}
+			
+			// 自动创建默认 branch（branch_name = "-"）
+			if h.BranchesRepo != nil {
+				defaultBranch := &domain.Branch{
+					BranchName: "-",
+				}
+				_, err = h.BranchesRepo.CreateBranch(r.Context(), tenantID, defaultBranch)
+				if err != nil {
+					// 记录错误但继续执行（不影响 tenant 创建）
+					// 如果创建失败，用户可以手动创建 branch
+					if h.logger != nil {
+						h.logger.Warn("Failed to create default branch for tenant",
+							zap.String("tenant_id", tenantID),
+							zap.Error(err),
+						)
+					}
+				}
+			}
+			
 			// 获取创建的租户
 			t, err := h.Repo.GetTenant(r.Context(), tenantID)
 			if err != nil {
@@ -129,6 +160,7 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			out := map[string]any{
 				"tenant_id":   t.TenantID,
+				"tenant_type": t.TenantType,
 				"tenant_name": t.TenantName,
 				"domain":      t.Domain,
 				"email":       t.Email,
@@ -257,6 +289,9 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// 更新字段
+			if v := getStringFromMap(payload, "tenant_type"); v != "" {
+				existing.TenantType = v
+			}
 			if v := getStringFromMap(payload, "tenant_name"); v != "" {
 				existing.TenantName = v
 			}
@@ -289,6 +324,7 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusOK, Ok(map[string]any{
 				"tenant_id":   t.TenantID,
+				"tenant_type": t.TenantType,
 				"tenant_name": t.TenantName,
 				"domain":      t.Domain,
 				"email":       t.Email,

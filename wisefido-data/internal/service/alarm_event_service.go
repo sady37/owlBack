@@ -134,12 +134,17 @@ type AlarmEventDTO struct {
 	ResidentNetwork *string `json:"resident_network,omitempty"` // 住户网络（从 residents 表获取）
 
 	// 地址信息（通过 device → unit/room/bed → locations 获取）
-	BranchTag      *string `json:"branch_tag,omitempty"`      // 分支标签
-	Building       *string `json:"building,omitempty"`        // 建筑名称
+	BranchID       *string `json:"branch_id,omitempty"`       // 分支ID（前端需要 ID 来选择对象）
+	BranchTag      *string `json:"branch_tag,omitempty"`      // 分支标签（用于显示，向后兼容）
+	BuildingID     *string `json:"building_id,omitempty"`     // 建筑ID（前端需要 ID 来选择对象）
+	Building       *string `json:"building,omitempty"`        // 建筑名称（用于显示，向后兼容）
 	Floor          *string `json:"floor,omitempty"`           // 楼层（如 "2F"）
 	AreaTag        *string `json:"area_tag,omitempty"`        // 区域标签（从 units 表获取）
-	UnitName       *string `json:"unit_name,omitempty"`       // 单元名称
+	UnitID         *string `json:"unit_id,omitempty"`         // 单元ID（前端需要 ID 来选择对象）
+	UnitName       *string `json:"unit_name,omitempty"`       // 单元名称（用于显示，向后兼容）
+	RoomID         *string `json:"room_id,omitempty"`         // 房间ID（前端需要 ID 来选择对象）
 	RoomName       *string `json:"room_name,omitempty"`       // 房间名称（从 rooms 表获取）
+	BedID          *string `json:"bed_id,omitempty"`          // 床位ID（前端需要 ID 来选择对象）
 	BedName        *string `json:"bed_name,omitempty"`        // 床位名称（从 beds 表获取）
 	AddressDisplay *string `json:"address_display,omitempty"` // 格式化地址显示（"branch_tag-Building-UnitName"）
 
@@ -514,17 +519,40 @@ func (s *alarmEventService) enrichAlarmEventDTO(ctx context.Context, tenantID st
 		}
 
 		if err == nil && unitID != "" {
+			dto.UnitID = &unitID
 			unit, err := s.unitsRepo.GetUnit(ctx, tenantID, unitID)
 			if err == nil {
 				if unit.UnitName != "" {
 					dto.UnitName = &unit.UnitName
 				}
-				if unit.AreaName.Valid && unit.AreaName.String != "" {
-					dto.AreaTag = &unit.AreaName.String
+				// 设置 branch_id 和 branch_name
+				if unit.BranchID.Valid && unit.BranchID.String != "" {
+					dto.BranchID = &unit.BranchID.String
+					// 查询 branch_name
+					if unit.BranchName.Valid && unit.BranchName.String != "" {
+						dto.BranchTag = &unit.BranchName.String
+					}
 				}
-				// 查询 location 信息（branch_tag, building, floor）
-				// 注意：需要扩展 UnitsRepository 或直接查询 locations 表
+				// 设置 building_name（从 unit.BuildingName 获取）
+				if unit.BuildingName.Valid && unit.BuildingName.String != "" {
+					dto.Building = &unit.BuildingName.String
+					// 注意：building_id 需要从 buildings 表查询，暂时不设置
+				}
+				// 设置 floor
+				if unit.Floor.Valid && unit.Floor.String != "" {
+					dto.Floor = &unit.Floor.String
+				}
 			}
+		}
+
+		// 设置 room_id 和 bed_id
+		if device.BoundRoomID.Valid {
+			roomID := device.BoundRoomID.String
+			dto.RoomID = &roomID
+		}
+		if device.BoundBedID.Valid {
+			bedID := device.BoundBedID.String
+			dto.BedID = &bedID
 		}
 	}
 
@@ -635,15 +663,18 @@ type PermissionCheck struct {
 
 // getResourcePermission 查询资源权限配置
 // 从 role_permissions 表中查询指定角色对指定资源的权限配置
+// 
+// 注意: permission_scope 值映射:
+//   - 'A' = All (no restriction) → assigned_only=false, branch_only=false
+//   - 'S' = assigned_only → assigned_only=true, branch_only=false
+//   - 'B' = branch_only → assigned_only=false, branch_only=true
 func (s *alarmEventService) getResourcePermission(ctx context.Context, roleCode, resourceType, permissionType string) (*PermissionCheck, error) {
 	// 使用 SystemTenantID（全局权限配置）
-	systemTenantID := "00000000-0000-0000-0000-000000000000"
+	systemTenantID := "00000000-0000-0000-0000-000000000001"
 
-	var assignedOnly, branchOnly bool
+	var permissionScope string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT 
-			COALESCE(assigned_only, FALSE) as assigned_only,
-			COALESCE(branch_only, FALSE) as branch_only
+		`SELECT permission_scope
 		 FROM role_permissions
 		 WHERE tenant_id = $1 
 		   AND role_code = $2 
@@ -651,7 +682,7 @@ func (s *alarmEventService) getResourcePermission(ctx context.Context, roleCode,
 		   AND permission_type = $4
 		 LIMIT 1`,
 		systemTenantID, roleCode, resourceType, permissionType,
-	).Scan(&assignedOnly, &branchOnly)
+	).Scan(&permissionScope)
 
 	if err == sql.ErrNoRows {
 		// 记录不存在：返回最严格的权限（安全默认值）
@@ -659,6 +690,27 @@ func (s *alarmEventService) getResourcePermission(ctx context.Context, roleCode,
 	}
 	if err != nil {
 		return nil, err
+	}
+
+	// 将 permission_scope 转换为 assigned_only 和 branch_only 标志
+	var assignedOnly, branchOnly bool
+	switch permissionScope {
+	case "A":
+		// All (no restriction)
+		assignedOnly = false
+		branchOnly = false
+	case "S":
+		// assigned_only
+		assignedOnly = true
+		branchOnly = false
+	case "B":
+		// branch_only
+		assignedOnly = false
+		branchOnly = true
+	default:
+		// 未知值，返回最严格的权限（安全默认值）
+		assignedOnly = true
+		branchOnly = true
 	}
 
 	return &PermissionCheck{AssignedOnly: assignedOnly, BranchOnly: branchOnly}, nil
@@ -710,9 +762,9 @@ func (s *alarmEventService) getResidentByDeviceID(ctx context.Context, tenantID,
 // isResidentAssignedToUser 检查住户是否分配给该用户
 // resident_caregivers 表通过 userList (JSONB) 存储用户ID列表
 func (s *alarmEventService) isResidentAssignedToUser(ctx context.Context, tenantID, residentID, userID string) bool {
-	// 查询 resident_caregivers 表的 userList 字段（JSONB 数组）
+	// 查询 resident_caregivers 表的 user_list 字段（JSONB 数组）
 	query := `
-		SELECT userList
+		SELECT user_list
 		FROM resident_caregivers
 		WHERE tenant_id = $1::uuid
 		  AND resident_id = $2::uuid

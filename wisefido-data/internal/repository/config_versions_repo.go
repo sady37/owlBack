@@ -29,7 +29,12 @@ type ConfigVersionsRepository interface {
 	CreateConfigVersion(ctx context.Context, tenantID string, configVersion *domain.ConfigVersion) (string, error)
 
 	// UpdateConfigVersion 更新配置版本
+	// Deprecated: 使用 UpdateConfigVersionFields 替代，支持区分"不更新"、"更新"、"删除"三种状态
 	UpdateConfigVersion(ctx context.Context, tenantID, versionID string, configVersion *domain.ConfigVersion) error
+
+	// UpdateConfigVersionFields 更新配置版本（使用更新模型）
+	// 支持区分"不更新"、"更新"、"删除"三种状态
+	UpdateConfigVersionFields(ctx context.Context, tenantID, versionID string, update *domain.ConfigVersionUpdate) error
 
 	// DeleteConfigVersion 删除配置版本
 	DeleteConfigVersion(ctx context.Context, tenantID, versionID string) error

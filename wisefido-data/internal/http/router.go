@@ -73,17 +73,8 @@ func (r *Router) RegisterStubRoutes(s *StubHandler) {
 	// admin
 	// residents 路由已迁移到 ResidentHandler（见 RegisterResidentRoutes）
 	// 如果数据库未启用，这些路由将不可用（返回 404）
-	// r.Handle("/admin/api/v1/residents", s.AdminResidents)
-	// r.Handle("/admin/api/v1/residents/", s.AdminResidents)
-	// r.Handle("/admin/api/v1/contacts/", s.AdminResidents) // For contact password reset
 
-	// tags - 已迁移到 TagsHandler，不再使用 StubHandler.AdminTags
-	// 新路由在 RegisterTagsRoutes 中注册（需要数据库连接）
-	// 如果数据库未启用，这些路由将不可用（返回 404）
-	// r.Handle("/admin/api/v1/tags", s.AdminTags)
-	// r.Handle("/admin/api/v1/tags/", s.AdminTags)
-	// r.Handle("/admin/api/v1/tags/types", s.AdminTags)
-	// r.Handle("/admin/api/v1/tags/for-object", s.AdminTags)
+	// tags - 已删除（tags 表不存在）
 
 	// users - 已迁移到 UserHandler，不再使用 StubHandler.AdminUsers
 	// 新路由在 RegisterUsersRoutes 中注册（需要数据库连接）
@@ -95,13 +86,9 @@ func (r *Router) RegisterStubRoutes(s *StubHandler) {
 	// r.Handle("/admin/api/v1/roles", s.AdminRoles)
 	// r.Handle("/admin/api/v1/roles/", s.AdminRoles)
 
-	// role-permissions - 已迁移到 RolePermissionsHandler，不再使用 StubHandler.AdminRolePermissions
+	// role-permissions - 已迁移到 RolePermissionsHandler
 	// 新路由在 RegisterRolePermissionsRoutes 中注册（需要数据库连接）
-	// 如果数据库未启用，这些路由将不可用（返回 404）
-	// r.Handle("/admin/api/v1/role-permissions", s.AdminRolePermissions)
-	// r.Handle("/admin/api/v1/role-permissions/", s.AdminRolePermissions)
-	// r.Handle("/admin/api/v1/role-permissions/batch", s.AdminRolePermissions)
-	// r.Handle("/admin/api/v1/role-permissions/resource-types", s.AdminRolePermissions)
+	// 旧的 StubHandler.AdminRolePermissions 已删除
 
 	r.Handle("/admin/api/v1/service-levels", s.AdminServiceLevels)
 
@@ -182,20 +169,18 @@ func (r *Router) RegisterRolesRoutes(h *RolesHandler) {
 	r.Handle("/admin/api/v1/roles/", h.ServeHTTP)
 }
 
+// RegisterBranchesRoutes 注册院区管理路由
+func (r *Router) RegisterBranchesRoutes(h *BranchesHandler) {
+	r.Handle("/admin/api/v1/branches", h.ServeHTTP)
+	r.Handle("/admin/api/v1/branches/", h.ServeHTTP)
+}
+
 // RegisterRolePermissionsRoutes 注册角色权限管理路由
 func (r *Router) RegisterRolePermissionsRoutes(h *RolePermissionsHandler) {
 	r.Handle("/admin/api/v1/role-permissions", h.ServeHTTP)
 	r.Handle("/admin/api/v1/role-permissions/", h.ServeHTTP)
 	r.Handle("/admin/api/v1/role-permissions/batch", h.ServeHTTP)
 	r.Handle("/admin/api/v1/role-permissions/resource-types", h.ServeHTTP)
-}
-
-// RegisterTagsRoutes 注册标签管理路由
-func (r *Router) RegisterTagsRoutes(h *TagsHandler) {
-	r.Handle("/admin/api/v1/tags", h.ServeHTTP)
-	r.Handle("/admin/api/v1/tags/", h.ServeHTTP)
-	r.Handle("/admin/api/v1/tags/types", h.ServeHTTP)
-	r.Handle("/admin/api/v1/tags/for-object", h.ServeHTTP)
 }
 
 // RegisterAlarmCloudRoutes 注册告警配置管理路由

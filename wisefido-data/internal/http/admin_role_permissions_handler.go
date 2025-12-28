@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"wisefido-data/internal/service"
@@ -62,6 +64,11 @@ func (h *RolePermissionsHandler) ListPermissions(w http.ResponseWriter, r *http.
 	page := parseInt(r.URL.Query().Get("page"), 1)
 	size := parseInt(r.URL.Query().Get("size"), 100)
 
+	// Log to STDOUT
+	fmt.Fprintf(os.Stdout, "[RolePermissionsHandler] GET /admin/api/v1/role-permissions - tenant_id=%s, role_code=%s, resource_type=%s, permission_type=%s\n",
+		tenantID, roleCode, resourceType, permType)
+	os.Stdout.Sync()
+
 	// 2. 调用 Service
 	req := service.ListPermissionsRequest{
 		TenantID:       &tenantID,
@@ -72,12 +79,37 @@ func (h *RolePermissionsHandler) ListPermissions(w http.ResponseWriter, r *http.
 		Size:           size,
 	}
 
+	// Handler 调用 Service 后打印：查看 Service 返回的数据
 	resp, err := h.permService.ListPermissions(ctx, req)
 	if err != nil {
+		fmt.Fprintf(os.Stdout, "[RolePermissionsHandler] ❌ Service.ListPermissions failed: %v\n", err)
+		os.Stdout.Sync()
 		h.logger.Error("ListPermissions failed", zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
+
+	fmt.Fprintf(os.Stdout, "[RolePermissionsHandler] Service returned: %d items (total: %d, role_code=%s)\n",
+		len(resp.Items), resp.Total, roleCode)
+	if len(resp.Items) > 0 {
+		// 打印前10条权限记录的详细信息
+		printCount := len(resp.Items)
+		if printCount > 10 {
+			printCount = 10
+		}
+		fmt.Fprintf(os.Stdout, "[RolePermissionsHandler] Items from Service (showing first %d):\n", printCount)
+		for i := 0; i < printCount; i++ {
+			item := resp.Items[i]
+			fmt.Fprintf(os.Stdout, "  [%d] role_code=%s, resource_type=%s, permission_type=%s, permission_scope=%s, is_active=%v\n",
+				i+1, item.RoleCode, item.ResourceType, item.PermissionType, item.PermissionScope, item.IsActive)
+		}
+		if len(resp.Items) > 10 {
+			fmt.Fprintf(os.Stdout, "  ... and %d more items\n", len(resp.Items)-10)
+		}
+	} else {
+		fmt.Fprintf(os.Stdout, "[RolePermissionsHandler] ⚠️  Service returned empty items!\n")
+	}
+	os.Stdout.Sync()
 
 	// 3. 返回响应
 	writeJSON(w, http.StatusOK, Ok(resp))
@@ -96,11 +128,10 @@ func (h *RolePermissionsHandler) CreatePermission(w http.ResponseWriter, r *http
 	userRole := r.Header.Get("X-User-Role")
 
 	var payload struct {
-		RoleCode       string `json:"role_code"`
-		ResourceType   string `json:"resource_type"`
-		PermissionType string `json:"permission_type"`
-		Scope          string `json:"scope"`
-		BranchOnly     bool   `json:"branch_only"`
+		RoleCode        string `json:"role_code"`
+		ResourceType    string `json:"resource_type"`
+		PermissionType  string `json:"permission_type"`
+		PermissionScope string `json:"permission_scope"` // "A" (all), "S" (assigned_only), "B" (branch_only)
 	}
 	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 		writeJSON(w, http.StatusOK, Fail("invalid body"))
@@ -109,13 +140,12 @@ func (h *RolePermissionsHandler) CreatePermission(w http.ResponseWriter, r *http
 
 	// 2. 调用 Service
 	req := service.CreatePermissionRequest{
-		TenantID:       tenantID,
-		UserRole:       userRole,
-		RoleCode:       payload.RoleCode,
-		ResourceType:   payload.ResourceType,
-		PermissionType: payload.PermissionType,
-		Scope:          payload.Scope,
-		BranchOnly:     payload.BranchOnly,
+		TenantID:        tenantID,
+		UserRole:        userRole,
+		RoleCode:        payload.RoleCode,
+		ResourceType:    payload.ResourceType,
+		PermissionType:  payload.PermissionType,
+		PermissionScope: payload.PermissionScope,
 	}
 
 	resp, err := h.permService.CreatePermission(ctx, req)
@@ -142,7 +172,7 @@ func (h *RolePermissionsHandler) BatchCreatePermissions(w http.ResponseWriter, r
 	userRole := r.Header.Get("X-User-Role")
 
 	var payload struct {
-		RoleCode    string                              `json:"role_code"`
+		RoleCode    string                        `json:"role_code"`
 		Permissions []service.BatchPermissionItem `json:"permissions"`
 	}
 	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
@@ -188,8 +218,7 @@ func (h *RolePermissionsHandler) UpdatePermission(w http.ResponseWriter, r *http
 	userRole := r.Header.Get("X-User-Role")
 
 	var payload struct {
-		Scope      string `json:"scope"`
-		BranchOnly bool   `json:"branch_only"`
+		PermissionScope string `json:"permission_scope"` // "A" (all), "S" (assigned_only), "B" (branch_only)
 	}
 	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 		writeJSON(w, http.StatusOK, Fail("invalid body"))
@@ -198,11 +227,10 @@ func (h *RolePermissionsHandler) UpdatePermission(w http.ResponseWriter, r *http
 
 	// 2. 调用 Service
 	req := service.UpdatePermissionRequest{
-		PermissionID: permissionID,
-		TenantID:     tenantID,
-		UserRole:     userRole,
-		Scope:        &payload.Scope,
-		BranchOnly:   &payload.BranchOnly,
+		PermissionID:    permissionID,
+		TenantID:        tenantID,
+		UserRole:        userRole,
+		PermissionScope: &payload.PermissionScope,
 	}
 
 	err := h.permService.UpdatePermission(ctx, req)
@@ -302,13 +330,23 @@ func (h *RolePermissionsHandler) DeletePermission(w http.ResponseWriter, r *http
 func (h *RolePermissionsHandler) GetResourceTypes(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// Log to STDOUT
+	fmt.Fprintf(os.Stdout, "[RolePermissionsHandler] GET /admin/api/v1/role-permissions/resource-types\n")
+	os.Stdout.Sync()
+
 	// 调用 Service
 	resp, err := h.permService.GetResourceTypes(ctx)
 	if err != nil {
+		fmt.Fprintf(os.Stdout, "[RolePermissionsHandler] ❌ GetResourceTypes failed: %v\n", err)
+		os.Stdout.Sync()
 		h.logger.Error("GetResourceTypes failed", zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
+
+	fmt.Fprintf(os.Stdout, "[RolePermissionsHandler] ✅ GetResourceTypes success: %d resource types\n", len(resp.ResourceTypes))
+	fmt.Fprintf(os.Stdout, "[RolePermissionsHandler] Resource types: %v\n", resp.ResourceTypes)
+	os.Stdout.Sync()
 
 	// 返回响应
 	writeJSON(w, http.StatusOK, Ok(resp))
@@ -330,4 +368,3 @@ func (h *RolePermissionsHandler) tenantIDFromReq(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, Fail("tenant_id is required"))
 	return "", false
 }
-

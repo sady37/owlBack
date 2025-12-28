@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 package service
@@ -63,12 +64,13 @@ func TestUnitService_ListBuildings_Success(t *testing.T) {
 
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
-	unitService := NewUnitService(unitsRepo, getTestLoggerForUnit())
+	branchesRepo := repository.NewPostgresBranchesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
 
 	// 创建测试数据
 	building1 := &domain.Building{
 		TenantID:     tenantID,
-		BranchTag:    sql.NullString{String: "BRANCH-1", Valid: true},
+		BranchID:     sql.NullString{String: "", Valid: false}, // TODO: 需要先创建 branch
 		BuildingName: "Building A",
 	}
 	buildingID1, err := unitsRepo.CreateBuilding(context.Background(), tenantID, building1)
@@ -78,7 +80,7 @@ func TestUnitService_ListBuildings_Success(t *testing.T) {
 
 	building2 := &domain.Building{
 		TenantID:     tenantID,
-		BranchTag:    sql.NullString{String: "BRANCH-1", Valid: true},
+		BranchID:     sql.NullString{String: "", Valid: false}, // TODO: 需要先创建 branch
 		BuildingName: "Building B",
 	}
 	buildingID2, err := unitsRepo.CreateBuilding(context.Background(), tenantID, building2)
@@ -88,7 +90,7 @@ func TestUnitService_ListBuildings_Success(t *testing.T) {
 
 	// 测试查询所有楼栋
 	req := ListBuildingsRequest{
-		TenantID:  tenantID,
+		TenantID:   tenantID,
 		BranchName: "",
 	}
 	resp, err := unitService.ListBuildings(context.Background(), req)
@@ -132,12 +134,13 @@ func TestUnitService_CreateBuilding_Success(t *testing.T) {
 
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
-	unitService := NewUnitService(unitsRepo, getTestLoggerForUnit())
+	branchesRepo := repository.NewPostgresBranchesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
 
 	// 测试创建楼栋
 	req := CreateBuildingRequest{
 		TenantID:     tenantID,
-		BranchName:    "BRANCH-1",
+		BranchName:   "BRANCH-1",
 		BuildingName: "Test Building",
 	}
 
@@ -175,18 +178,18 @@ func TestUnitService_ListUnits_Success(t *testing.T) {
 
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
-	unitService := NewUnitService(unitsRepo, getTestLoggerForUnit())
+	branchesRepo := repository.NewPostgresBranchesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
 
 	// 创建测试数据
 	unit1 := &domain.Unit{
-		TenantID:   tenantID,
-		BranchName:  sql.NullString{String: "BRANCH-1", Valid: true},
-		UnitName:   "Unit A",
-		Building:   sql.NullString{String: "Building A", Valid: true},
-		Floor:      sql.NullString{String: "1F", Valid: true},
-		UnitNumber: "101",
-		UnitType:   "Facility",
-		Timezone:   "America/Denver",
+		TenantID:     tenantID,
+		BranchName:   sql.NullString{String: "BRANCH-1", Valid: true},
+		UnitName:     "Unit A",
+		BuildingName: sql.NullString{String: "Building A", Valid: true},
+		Floor:        sql.NullString{String: "1F", Valid: true},
+		UnitType:     "Facility",
+		Timezone:     "America/Denver",
 	}
 	unitID1, err := unitsRepo.CreateUnit(context.Background(), tenantID, unit1)
 	if err != nil {
@@ -194,14 +197,13 @@ func TestUnitService_ListUnits_Success(t *testing.T) {
 	}
 
 	unit2 := &domain.Unit{
-		TenantID:   tenantID,
-		BranchName:  sql.NullString{String: "BRANCH-1", Valid: true},
-		UnitName:   "Unit B",
-		Building:   sql.NullString{String: "Building A", Valid: true},
-		Floor:      sql.NullString{String: "2F", Valid: true},
-		UnitNumber: "201",
-		UnitType:   "Facility",
-		Timezone:   "America/Denver",
+		TenantID:     tenantID,
+		BranchName:   sql.NullString{String: "BRANCH-1", Valid: true},
+		UnitName:     "Unit B",
+		BuildingName: sql.NullString{String: "Building A", Valid: true},
+		Floor:        sql.NullString{String: "2F", Valid: true},
+		UnitType:     "Facility",
+		Timezone:     "America/Denver",
 	}
 	unitID2, err := unitsRepo.CreateUnit(context.Background(), tenantID, unit2)
 	if err != nil {
@@ -255,12 +257,13 @@ func TestUnitService_CreateUnit_Success(t *testing.T) {
 
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
-	unitService := NewUnitService(unitsRepo, getTestLoggerForUnit())
+	branchesRepo := repository.NewPostgresBranchesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
 
 	// 测试创建单元
 	req := CreateUnitRequest{
 		TenantID:   tenantID,
-		BranchName:  "BRANCH-1",
+		BranchName: "BRANCH-1",
 		UnitName:   "Test Unit",
 		Building:   "Test Building",
 		Floor:      "1F",
@@ -299,18 +302,18 @@ func TestUnitService_GetUnit_Success(t *testing.T) {
 
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
-	unitService := NewUnitService(unitsRepo, getTestLoggerForUnit())
+	branchesRepo := repository.NewPostgresBranchesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
 
 	// 创建测试数据
 	unit := &domain.Unit{
-		TenantID:   tenantID,
-		BranchName:  sql.NullString{String: "BRANCH-1", Valid: true},
-		UnitName:   "Test Unit",
-		Building:   sql.NullString{String: "Test Building", Valid: true},
-		Floor:      sql.NullString{String: "1F", Valid: true},
-		UnitNumber: "101",
-		UnitType:   "Facility",
-		Timezone:   "America/Denver",
+		TenantID:     tenantID,
+		BranchName:   sql.NullString{String: "BRANCH-1", Valid: true},
+		UnitName:     "Test Unit",
+		BuildingName: sql.NullString{String: "Test Building", Valid: true},
+		Floor:        sql.NullString{String: "1F", Valid: true},
+		UnitType:     "Facility",
+		Timezone:     "America/Denver",
 	}
 	unitID, err := unitsRepo.CreateUnit(context.Background(), tenantID, unit)
 	if err != nil {
@@ -347,18 +350,18 @@ func TestUnitService_UpdateUnit_Success(t *testing.T) {
 
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
-	unitService := NewUnitService(unitsRepo, getTestLoggerForUnit())
+	branchesRepo := repository.NewPostgresBranchesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
 
 	// 创建测试数据
 	unit := &domain.Unit{
-		TenantID:   tenantID,
-		BranchName:  sql.NullString{String: "BRANCH-1", Valid: true},
-		UnitName:   "Original Unit",
-		Building:   sql.NullString{String: "Test Building", Valid: true},
-		Floor:      sql.NullString{String: "1F", Valid: true},
-		UnitNumber: "101",
-		UnitType:   "Facility",
-		Timezone:   "America/Denver",
+		TenantID:     tenantID,
+		BranchName:   sql.NullString{String: "BRANCH-1", Valid: true},
+		UnitName:     "Original Unit",
+		BuildingName: sql.NullString{String: "Test Building", Valid: true},
+		Floor:        sql.NullString{String: "1F", Valid: true},
+		UnitType:     "Facility",
+		Timezone:     "America/Denver",
 	}
 	unitID, err := unitsRepo.CreateUnit(context.Background(), tenantID, unit)
 	if err != nil {
@@ -402,18 +405,18 @@ func TestUnitService_DeleteUnit_Success(t *testing.T) {
 
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
-	unitService := NewUnitService(unitsRepo, getTestLoggerForUnit())
+	branchesRepo := repository.NewPostgresBranchesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
 
 	// 创建测试数据
 	unit := &domain.Unit{
-		TenantID:   tenantID,
-		BranchName:  sql.NullString{String: "BRANCH-1", Valid: true},
-		UnitName:   "Test Unit",
-		Building:   sql.NullString{String: "Test Building", Valid: true},
-		Floor:      sql.NullString{String: "1F", Valid: true},
-		UnitNumber: "101",
-		UnitType:   "Facility",
-		Timezone:   "America/Denver",
+		TenantID:     tenantID,
+		BranchName:   sql.NullString{String: "BRANCH-1", Valid: true},
+		UnitName:     "Test Unit",
+		BuildingName: sql.NullString{String: "Test Building", Valid: true},
+		Floor:        sql.NullString{String: "1F", Valid: true},
+		UnitType:     "Facility",
+		Timezone:     "America/Denver",
 	}
 	unitID, err := unitsRepo.CreateUnit(context.Background(), tenantID, unit)
 	if err != nil {
@@ -456,18 +459,18 @@ func TestUnitService_CreateRoom_Success(t *testing.T) {
 
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
-	unitService := NewUnitService(unitsRepo, getTestLoggerForUnit())
+	branchesRepo := repository.NewPostgresBranchesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
 
 	// 先创建单元
 	unit := &domain.Unit{
-		TenantID:   tenantID,
-		BranchName:  sql.NullString{String: "BRANCH-1", Valid: true},
-		UnitName:   "Test Unit",
-		Building:   sql.NullString{String: "Test Building", Valid: true},
-		Floor:      sql.NullString{String: "1F", Valid: true},
-		UnitNumber: "101",
-		UnitType:   "Facility",
-		Timezone:   "America/Denver",
+		TenantID:     tenantID,
+		BranchName:   sql.NullString{String: "BRANCH-1", Valid: true},
+		UnitName:     "Test Unit",
+		BuildingName: sql.NullString{String: "Test Building", Valid: true},
+		Floor:        sql.NullString{String: "1F", Valid: true},
+		UnitType:     "Facility",
+		Timezone:     "America/Denver",
 	}
 	unitID, err := unitsRepo.CreateUnit(context.Background(), tenantID, unit)
 	if err != nil {
@@ -515,18 +518,18 @@ func TestUnitService_CreateBed_Success(t *testing.T) {
 
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
-	unitService := NewUnitService(unitsRepo, getTestLoggerForUnit())
+	branchesRepo := repository.NewPostgresBranchesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
 
 	// 先创建单元和房间
 	unit := &domain.Unit{
-		TenantID:   tenantID,
-		BranchName:  sql.NullString{String: "BRANCH-1", Valid: true},
-		UnitName:   "Test Unit",
-		Building:   sql.NullString{String: "Test Building", Valid: true},
-		Floor:      sql.NullString{String: "1F", Valid: true},
-		UnitNumber: "101",
-		UnitType:   "Facility",
-		Timezone:   "America/Denver",
+		TenantID:     tenantID,
+		BranchName:   sql.NullString{String: "BRANCH-1", Valid: true},
+		UnitName:     "Test Unit",
+		BuildingName: sql.NullString{String: "Test Building", Valid: true},
+		Floor:        sql.NullString{String: "1F", Valid: true},
+		UnitType:     "Facility",
+		Timezone:     "America/Denver",
 	}
 	unitID, err := unitsRepo.CreateUnit(context.Background(), tenantID, unit)
 	if err != nil {
@@ -569,5 +572,3 @@ func TestUnitService_CreateBed_Success(t *testing.T) {
 		t.Errorf("Expected Bed Name 'Test Bed', got %s", bed.BedName)
 	}
 }
-
-

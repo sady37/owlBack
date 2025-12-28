@@ -529,11 +529,11 @@ func (h *SleepaceReportHandler) getResidentByDeviceID(ctx context.Context, tenan
 }
 
 // isResidentAssignedToUser 检查住户是否分配给该用户
-// resident_caregivers 表通过 userList (JSONB) 存储用户ID列表
+// resident_caregivers 表通过 user_list (JSONB) 存储用户ID列表
 func (h *SleepaceReportHandler) isResidentAssignedToUser(ctx context.Context, tenantID, residentID, userID string) bool {
-	// 查询 resident_caregivers 表的 userList 字段（JSONB 数组）
+	// 查询 resident_caregivers 表的 user_list 字段（JSONB 数组）
 	query := `
-		SELECT userList
+		SELECT user_list
 		FROM resident_caregivers
 		WHERE tenant_id = $1::uuid
 		  AND resident_id = $2::uuid

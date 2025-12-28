@@ -31,11 +31,10 @@ type RolePermissionsRepository interface {
 
 // RolePermissionsFilter 权限查询过滤器
 type RolePermissionsFilter struct {
-	RoleCode       string // 可选，按role_code过滤
-	ResourceType   string // 可选，按resource_type过滤
-	PermissionType string // 可选，按permission_type过滤（'R', 'C', 'U', 'D'）
-	AssignedOnly   *bool  // 可选，按assigned_only过滤
-	BranchOnly     *bool  // 可选，按branch_only过滤
+	RoleCode        string // 可选，按role_code过滤
+	ResourceType    string // 可选，按resource_type过滤
+	PermissionType  string // 可选，按permission_type过滤（'R', 'C', 'U', 'D'）
+	PermissionScope string // 可选，按permission_scope过滤（'A', 'S', 'B'）
 }
 
 // PermissionUpdate 权限更新请求
@@ -43,4 +42,3 @@ type PermissionUpdate struct {
 	PermissionID string
 	Permission   *domain.RolePermission
 }
-

@@ -341,6 +341,141 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 	return tx.Commit()
 }
 
+// BatchUpdateDeviceStoresFields 批量更新设备库存（使用更新模型）
+func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStoresFields(ctx context.Context, updates []*DeviceStoreUpdateItem) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, item := range updates {
+		if item == nil || item.DeviceStoreID == "" || item.Update == nil {
+			continue
+		}
+
+		setParts := []string{}
+		args := []any{}
+		argN := 1
+
+		// Helper function to add update part
+		addUpdate := func(col string, val any) {
+			setParts = append(setParts, fmt.Sprintf("%s = $%d", col, argN))
+			args = append(args, val)
+			argN++
+		}
+
+		// Handle DeviceType (NOT NULL)
+		if item.Update.DeviceType != nil {
+			switch item.Update.DeviceType.Action {
+			case domain.UpdateActionUpdate:
+				if item.Update.DeviceType.Value == "" {
+					return fmt.Errorf("device_type cannot be empty (NOT NULL constraint)")
+				}
+				addUpdate("device_type", item.Update.DeviceType.Value)
+			case domain.UpdateActionDelete:
+				return fmt.Errorf("device_type cannot be deleted (NOT NULL constraint)")
+			case domain.UpdateActionKeep:
+				// Do nothing
+			}
+		}
+
+		// Handle nullable string fields
+		nullableStringFields := map[string]*domain.UpdateString{
+			"device_model":                item.Update.DeviceModel,
+			"serial_number":               item.Update.SerialNumber,
+			"uid":                         item.Update.UID,
+			"imei":                        item.Update.IMEI,
+			"comm_mode":                   item.Update.CommMode,
+			"mcu_model":                  item.Update.MCUModel,
+			"firmware_version":            item.Update.FirmwareVersion,
+			"ota_target_firmware_version": item.Update.OTATargetFirmwareVersion,
+			"ota_target_mcu_model":        item.Update.OTATargetMCUModel,
+		}
+
+		for col, updateField := range nullableStringFields {
+			if updateField != nil {
+				switch updateField.Action {
+				case domain.UpdateActionUpdate:
+					addUpdate(col, updateField.Value)
+				case domain.UpdateActionDelete:
+					addUpdate(col, nil)
+				case domain.UpdateActionKeep:
+					// Do nothing
+				}
+			}
+		}
+
+		// Handle TenantID (NOT NULL)
+		if item.Update.TenantID != nil {
+			switch item.Update.TenantID.Action {
+			case domain.UpdateActionUpdate:
+				if item.Update.TenantID.Value == "" {
+					return fmt.Errorf("tenant_id cannot be empty (NOT NULL constraint)")
+				}
+				addUpdate("tenant_id", item.Update.TenantID.Value)
+				// Update allocate_time when tenant_id is set (and not default value)
+				if item.Update.TenantID.Value != "00000000-0000-0000-0000-000000000000" {
+					setParts = append(setParts, "allocate_time = CASE WHEN allocate_time IS NULL THEN CURRENT_TIMESTAMP ELSE allocate_time END")
+				}
+			case domain.UpdateActionDelete:
+				return fmt.Errorf("tenant_id cannot be deleted (NOT NULL constraint)")
+			case domain.UpdateActionKeep:
+				// Do nothing
+			}
+		}
+
+		// Handle AllocateTime (nullable)
+		if item.Update.AllocateTime != nil {
+			switch item.Update.AllocateTime.Action {
+			case domain.UpdateActionUpdate:
+				if item.Update.AllocateTime.Value != nil {
+					addUpdate("allocate_time", *item.Update.AllocateTime.Value)
+				} else {
+					addUpdate("allocate_time", nil)
+				}
+			case domain.UpdateActionDelete:
+				addUpdate("allocate_time", nil)
+			case domain.UpdateActionKeep:
+				// Do nothing
+			}
+		}
+
+		// Handle AllowAccess (NOT NULL)
+		if item.Update.AllowAccess != nil {
+			switch item.Update.AllowAccess.Action {
+			case domain.UpdateActionUpdate:
+				addUpdate("allow_access", item.Update.AllowAccess.Value)
+			case domain.UpdateActionDelete:
+				return fmt.Errorf("allow_access cannot be deleted (NOT NULL constraint)")
+			case domain.UpdateActionKeep:
+				// Do nothing
+			}
+		}
+
+		if len(setParts) == 0 {
+			continue
+		}
+
+		query := fmt.Sprintf(`
+			UPDATE device_store
+			SET %s
+			WHERE device_store_id = $%d
+		`, strings.Join(setParts, ", "), argN)
+		args = append(args, item.DeviceStoreID)
+
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("failed to update device_store %s: %w", item.DeviceStoreID, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
 // DeleteDeviceStore 删除设备库存
 func (r *PostgresDeviceStoreRepository) DeleteDeviceStore(ctx context.Context, deviceStoreID string) error {
 	// 1. 检查设备是否已分配给租户

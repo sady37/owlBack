@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -26,14 +27,13 @@ type ResidentService interface {
 
 	// 更新
 	UpdateResident(ctx context.Context, req UpdateResidentRequest) (*UpdateResidentResponse, error)
-	UpdateResidentContact(ctx context.Context, req UpdateResidentContactRequest) (*UpdateResidentContactResponse, error)
+	UpdateResidentContact(ctx context.Context, req UpdateResidentContactStandaloneRequest) (*UpdateResidentContactResponse, error)
 
 	// 删除
 	DeleteResident(ctx context.Context, req DeleteResidentRequest) (*DeleteResidentResponse, error)
 
 	// 密码管理
 	ResetResidentPassword(ctx context.Context, req ResetResidentPasswordRequest) (*ResetResidentPasswordResponse, error)
-	ResetContactPassword(ctx context.Context, req ResetContactPasswordRequest) (*ResetContactPasswordResponse, error)
 
 	// 账户设置管理（统一 API）
 	GetResidentAccountSettings(ctx context.Context, req GetResidentAccountSettingsRequest) (*GetResidentAccountSettingsResponse, error)
@@ -58,12 +58,15 @@ func NewResidentService(residentsRepo repository.ResidentsRepository, db *sql.DB
 
 // getResourcePermission 查询资源权限配置（Service 层内部方法）
 // 从 role_permissions 表中查询指定角色对指定资源的权限配置
+//
+// 注意: permission_scope 值映射:
+//   - 'A' = All (no restriction) → assigned_only=false, branch_only=false
+//   - 'S' = assigned_only → assigned_only=true, branch_only=false
+//   - 'B' = branch_only → assigned_only=false, branch_only=true
 func (s *residentService) getResourcePermission(ctx context.Context, roleCode, resourceType, permissionType string) (*PermissionCheckResult, error) {
-	var assignedOnly, branchOnly bool
+	var permissionScope string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT 
-			COALESCE(assigned_only, FALSE) as assigned_only,
-			COALESCE(branch_only, FALSE) as branch_only
+		`SELECT permission_scope
 		 FROM role_permissions
 		 WHERE tenant_id = $1 
 		   AND role_code = $2 
@@ -71,7 +74,7 @@ func (s *residentService) getResourcePermission(ctx context.Context, roleCode, r
 		   AND permission_type = $4
 		 LIMIT 1`,
 		SystemTenantID, roleCode, resourceType, permissionType,
-	).Scan(&assignedOnly, &branchOnly)
+	).Scan(&permissionScope)
 
 	if err == sql.ErrNoRows {
 		// 记录不存在：返回最严格的权限（安全默认值）
@@ -81,26 +84,67 @@ func (s *residentService) getResourcePermission(ctx context.Context, roleCode, r
 		return nil, err
 	}
 
+	// 将 permission_scope 转换为 assigned_only 和 branch_only 标志
+	var assignedOnly, branchOnly bool
+	switch permissionScope {
+	case "A":
+		// All (no restriction)
+		assignedOnly = false
+		branchOnly = false
+	case "S":
+		// assigned_only
+		assignedOnly = true
+		branchOnly = false
+	case "B":
+		// branch_only
+		assignedOnly = false
+		branchOnly = true
+	default:
+		// 未知值，返回最严格的权限（安全默认值）
+		assignedOnly = true
+		branchOnly = true
+	}
+
 	return &PermissionCheckResult{AssignedOnly: assignedOnly, BranchOnly: branchOnly}, nil
 }
 
-// getUserBranchTag 查询用户的 branch_tag（Service 层内部方法）
-func (s *residentService) getUserBranchTag(ctx context.Context, tenantID, userID string) (string, error) {
-	var branchTag sql.NullString
-	err := s.db.QueryRowContext(ctx,
-		`SELECT branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+// getUserBranchIDs 查询用户所属的 branch_id 列表（Service 层内部方法）
+// 从 user_branches 表查询用户关联的所有院区 ID
+// 返回：
+//   - branchIDs: 用户所属的 branch_id 列表（可能为空）
+//   - hasBranches: 用户是否有关联的院区（false 表示可以访问所有院区或 NULL 院区）
+func (s *residentService) getUserBranchIDs(ctx context.Context, tenantID, userID string) (branchIDs []string, hasBranches bool, err error) {
+	if tenantID == "" || userID == "" {
+		return nil, false, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT branch_id::text FROM user_branches 
+		 WHERE tenant_id = $1 AND user_id::text = $2`,
 		tenantID, userID,
-	).Scan(&branchTag)
+	)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return "", nil // 用户不存在或没有 branch_tag
+			return nil, false, nil // 用户没有关联任何院区
 		}
-		return "", err
+		return nil, false, fmt.Errorf("failed to query user branches: %w", err)
 	}
-	if branchTag.Valid {
-		return branchTag.String, nil
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var branchID string
+		if err := rows.Scan(&branchID); err != nil {
+			return nil, false, fmt.Errorf("failed to scan branch_id: %w", err)
+		}
+		ids = append(ids, branchID)
 	}
-	return "", nil
+
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("failed to iterate user branches: %w", err)
+	}
+
+	return ids, len(ids) > 0, nil
 }
 
 // ============================================
@@ -129,9 +173,10 @@ type ListResidentsRequest struct {
 
 // PermissionCheckResult 权限检查结果（Service 层内部使用，不信任外部传入）
 type PermissionCheckResult struct {
-	AssignedOnly  bool   // 是否仅限分配的资源
-	BranchOnly    bool   // 是否仅限同一 Branch 的资源
-	UserBranchTag string // 用户的 branch_tag（用于分支过滤）
+	AssignedOnly bool // 是否仅限分配的资源
+	BranchOnly   bool // 是否仅限同一 Branch 的资源
+	// 注意：权限检查应通过 branch_id 进行，不再使用 branch_tag
+	// Service 层会自己查询用户的 branch_id（通过 user_branches 表）
 }
 
 // ListResidentsResponse 查询住户列表响应
@@ -142,26 +187,25 @@ type ListResidentsResponse struct {
 
 // ResidentListItemDTO 住户列表项 DTO
 type ResidentListItemDTO struct {
-	ResidentID        string  `json:"resident_id"`
-	TenantID          string  `json:"tenant_id"`
-	ResidentAccount   *string `json:"resident_account,omitempty"`
-	Nickname          string  `json:"nickname"`
-	Status            string  `json:"status"`
-	ServiceLevel      *string `json:"service_level,omitempty"`
-	AdmissionDate     *int64  `json:"admission_date,omitempty"` // Unix timestamp
-	DischargeDate     *int64  `json:"discharge_date,omitempty"` // Unix timestamp
-	FamilyTag         *string `json:"family_tag,omitempty"`
-	UnitID            *string `json:"unit_id,omitempty"`
-	UnitName          *string `json:"unit_name,omitempty"`
-	BranchTag         *string `json:"branch_tag,omitempty"`
-	AreaTag           *string `json:"area_tag,omitempty"`
-	UnitNumber        *string `json:"unit_number,omitempty"`
-	IsMultiPersonRoom bool    `json:"is_multi_person_room"`
-	RoomID            *string `json:"room_id,omitempty"`
-	RoomName          *string `json:"room_name,omitempty"`
-	BedID             *string `json:"bed_id,omitempty"`
-	BedName           *string `json:"bed_name,omitempty"`
-	IsAccessEnabled   bool    `json:"is_access_enabled"`
+	ResidentID      string  `json:"resident_id"`
+	TenantID        string  `json:"tenant_id"`
+	ResidentAccount *string `json:"resident_account,omitempty"`
+	Nickname        string  `json:"nickname"`
+	Status          string  `json:"status"`
+	ServiceLevel    *string `json:"service_level,omitempty"`
+	AdmissionDate   *int64  `json:"admission_date,omitempty"` // Unix timestamp
+	DischargeDate   *int64  `json:"discharge_date,omitempty"` // Unix timestamp
+	UnitID          *string `json:"unit_id,omitempty"`
+	UnitName        *string `json:"unit_name,omitempty"`
+	BuildingName    *string `json:"building_name,omitempty"` // 从 units.building_name 获取
+	BranchName      *string `json:"branch_name,omitempty"`   // 从 branches.branch_name 获取（通过 residents.branch_id）
+	IsSharedUnit    bool    `json:"is_shared_unit"`          // 从 units.is_shared_unit 获取（原 is_multi_person_room）
+	RoomID          *string `json:"room_id,omitempty"`
+	RoomName        *string `json:"room_name,omitempty"`
+	BedID           *string `json:"bed_id,omitempty"`
+	BedName         *string `json:"bed_name,omitempty"`
+	IsAccessEnabled bool    `json:"is_access_enabled"`
+	// Note: 列表不需要 Note 字段
 }
 
 // GetResidentRequest 获取住户详情请求
@@ -180,36 +224,41 @@ type GetResidentRequest struct {
 	IncludeContacts bool // 是否包含联系人数据
 }
 
+// ResidentCaregiverDTO 住户护理人员分配 DTO
+type ResidentCaregiverDTO struct {
+	UserList  []string `json:"user_list,omitempty"`  // JSONB array -> []string
+	GroupList []string `json:"group_list,omitempty"` // JSONB array -> []string
+}
+
 // GetResidentResponse 获取住户详情响应
 type GetResidentResponse struct {
-	Resident *ResidentDetailDTO    `json:"resident"`
-	PHI      *ResidentPHIDTO       `json:"phi,omitempty"`
-	Contacts []*ResidentContactDTO `json:"contacts,omitempty"`
+	Resident   *ResidentDetailDTO    `json:"resident"`
+	PHI        *ResidentPHIDTO       `json:"phi,omitempty"`
+	Contacts   []*ResidentContactDTO `json:"contacts,omitempty"`
+	Caregivers *ResidentCaregiverDTO `json:"caregivers,omitempty"` // 从 resident_caregivers 表获取
 }
 
 // ResidentDetailDTO 住户详情 DTO
 type ResidentDetailDTO struct {
-	ResidentID        string  `json:"resident_id"`
-	TenantID          string  `json:"tenant_id"`
-	ResidentAccount   *string `json:"resident_account,omitempty"`
-	Nickname          string  `json:"nickname"`
-	Status            string  `json:"status"`
-	ServiceLevel      *string `json:"service_level,omitempty"`
-	AdmissionDate     *int64  `json:"admission_date,omitempty"` // Unix timestamp
-	DischargeDate     *int64  `json:"discharge_date,omitempty"` // Unix timestamp
-	FamilyTag         *string `json:"family_tag,omitempty"`
-	UnitID            *string `json:"unit_id,omitempty"`
-	UnitName          *string `json:"unit_name,omitempty"`
-	BranchTag         *string `json:"branch_tag,omitempty"`
-	AreaTag           *string `json:"area_tag,omitempty"`
-	UnitNumber        *string `json:"unit_number,omitempty"`
-	IsMultiPersonRoom bool    `json:"is_multi_person_room"`
-	RoomID            *string `json:"room_id,omitempty"`
-	RoomName          *string `json:"room_name,omitempty"`
-	BedID             *string `json:"bed_id,omitempty"`
-	BedName           *string `json:"bed_name,omitempty"`
-	IsAccessEnabled   bool    `json:"is_access_enabled"`
-	Note              *string `json:"note,omitempty"`
+	ResidentID      string  `json:"resident_id"`
+	TenantID        string  `json:"tenant_id"`
+	ResidentAccount *string `json:"resident_account,omitempty"`
+	Nickname        string  `json:"nickname"`
+	Status          string  `json:"status"`
+	ServiceLevel    *string `json:"service_level,omitempty"`
+	AdmissionDate   *int64  `json:"admission_date,omitempty"` // Unix timestamp
+	DischargeDate   *int64  `json:"discharge_date,omitempty"` // Unix timestamp
+	UnitID          *string `json:"unit_id,omitempty"`
+	UnitName        *string `json:"unit_name,omitempty"`
+	BuildingName    *string `json:"building_name,omitempty"` // 从 units.building_name 获取
+	BranchName      *string `json:"branch_name,omitempty"`   // 从 branches.branch_name 获取（通过 residents.branch_id）
+	IsSharedUnit    bool    `json:"is_shared_unit"`          // 从 units.is_shared_unit 获取（原 is_multi_person_room）
+	RoomID          *string `json:"room_id,omitempty"`
+	RoomName        *string `json:"room_name,omitempty"`
+	BedID           *string `json:"bed_id,omitempty"`
+	BedName         *string `json:"bed_name,omitempty"`
+	IsAccessEnabled bool    `json:"is_access_enabled"`
+	Note            *string `json:"note,omitempty"`
 }
 
 // ResidentPHIDTO 住户 PHI 数据 DTO
@@ -259,38 +308,69 @@ type ResidentContactDTO struct {
 	IsEmergencyContact bool    `json:"is_emergency_contact"`
 }
 
-// CreateResidentRequest 创建住户请求
-type CreateResidentRequest struct {
-	TenantID        string // 必填
-	CurrentUserID   string // 当前用户ID
-	CurrentUserRole string // 当前用户角色
-
-	// 权限检查结果（由 Handler 层传入）
-	PermissionCheck *PermissionCheckResult // 权限检查结果
-
+// CreateResidentInherentAttributes Resident 固有属性创建结构体
+// 包含3张表：residents, resident_phi, resident_contacts
+type CreateResidentInherentAttributes struct {
+	// ========== residents 表字段 ==========
 	// 必填字段
 	ResidentAccount string // 住户账号（必填）
 	Nickname        string // 昵称（必填）
 
 	// 可选字段
-	Password        string // 密码（默认 "ChangeMe123!"）
-	Status          string // 状态（默认 "active"）
-	ServiceLevel    string // 护理级别
-	AdmissionDate   *int64 // 入院日期（Unix timestamp，默认当前日期）
-	UnitID          string // 单元ID
-	FamilyTag       string // 家庭标签
-	IsAccessEnabled bool   // 是否允许查看状态
-	Note            string // 备注
+	PasswordHash    string          // password_hash hex 字符串（可选，前端已计算）
+	Status          string          // 状态（可选，默认 "active"）
+	ServiceLevel    string          // 护理级别（可选）
+	AdmissionDate   *int64          // 入院日期（Unix 时间戳，可选）
+	DischargeDate   *int64          // 出院日期（Unix 时间戳，可选）
+	BranchID        string          // 院区ID（可选）
+	IsAccessEnabled bool            // 是否允许查看状态（可选，默认 false）
+	Note            string          // 备注（可选）
+	PhoneHash       string          // phone_hash hex 字符串（可选，前端已计算）
+	EmailHash       string          // email_hash hex 字符串（可选，前端已计算）
+	Metadata        json.RawMessage // metadata JSONB（可选）
 
-	// Hash 字段（前端计算，hex 字符串）
-	PhoneHash string // phone_hash (hex)
-	EmailHash string // email_hash (hex)
+	// ========== resident_phi 表字段 ==========
+	PHI *CreateResidentPHIRequest // PHI 数据（可选）
 
-	// PHI 数据（可选）
-	PHI *CreateResidentPHIRequest
+	// ========== resident_contacts 表字段 ==========
+	Contacts []*CreateResidentContactRequest // 联系人列表（可选）
+}
 
-	// 联系人数据（可选）
-	Contacts []*CreateResidentContactRequest
+// CreateResidentUnitRelation Resident 与 Unit 的关系创建结构体
+// 业务属性：位置分配（虽然存储在 residents 表中，但属于业务分配属性）
+type CreateResidentUnitRelation struct {
+	UnitID string // 单元ID（可选）
+	RoomID string // 房间ID（可选）
+	BedID  string // 床位ID（可选）
+	// 业务规则：bed → room → unit（如果指定 bed_id，则必须同时指定 room_id 和 unit_id）
+}
+
+// CreateResidentCaregiverRelation Resident 与 Caregiver 的关系创建结构体
+// 业务属性：护理人员分配（存储在 resident_caregivers 表中）
+type CreateResidentCaregiverRelation struct {
+	UserList  []string // 用户ID列表（可选，JSONB array）
+	GroupList []string // 用户组标签列表（可选，JSONB array，用于匹配 users.user_tags）
+	// 说明：
+	//   - 每个租户+住户最多一条记录（UNIQUE(tenant_id, resident_id)）
+	//   - 如果 user_list 和 group_list 都为空，使用默认告警路由规则（由应用层处理）
+}
+
+// CreateResidentRequest 创建住户请求
+// 包含3部分：Resident 固有属性 + 与 Unit 的关系 + 与 Caregiver 的关系
+type CreateResidentRequest struct {
+	TenantID        string                 // 必填
+	CurrentUserID   string                 // 当前用户ID
+	CurrentUserRole string                 // 当前用户角色
+	PermissionCheck *PermissionCheckResult // 权限检查结果
+
+	// Resident 固有属性（3张表：residents, resident_phi, resident_contacts）
+	InherentAttributes *CreateResidentInherentAttributes
+
+	// Resident 与 Unit 的关系（位置分配）
+	UnitRelation *CreateResidentUnitRelation
+
+	// Resident 与 Caregiver 的关系（护理人员分配）
+	CaregiverRelation *CreateResidentCaregiverRelation
 }
 
 // CreateResidentPHIRequest 创建住户 PHI 请求
@@ -326,19 +406,19 @@ type CreateResidentPHIRequest struct {
 }
 
 // CreateResidentContactRequest 创建住户联系人请求
+// 注意：联系人不登录系统，仅作为住户的属性
 type CreateResidentContactRequest struct {
-	Slot             string // 'A', 'B', 'C', 'D', 'E'
-	IsEnabled        bool
-	Relationship     string
-	ContactFirstName string
-	ContactLastName  string
-	ContactPhone     string
-	ContactEmail     string
-	PhoneHash        string // phone_hash (hex)
-	EmailHash        string // email_hash (hex)
-	ReceiveSMS       bool
-	ReceiveEmail     bool
-	ContactFamilyTag string
+	Slot             string          // 槽位 'A', 'B', 'C', 'D', 'E'（必填）
+	IsEnabled        bool            // 是否启用该联系人（可选，默认 false）
+	Relationship     string          // 关系（可选）：Child/Spouse/Friend/Caregiver/Other
+	ContactFirstName string          // 联系人名（可选）
+	ContactLastName  string          // 联系人姓（可选）
+	ContactPhone     string          // 联系人电话（可选），明文保存
+	ContactEmail     string          // 联系人邮箱（可选），明文保存
+	ReceiveSMS       bool            // 是否接收短信（可选，默认 false）
+	ReceiveEmail     bool            // 是否接收邮件（可选，默认 false）
+	AlertTimeWindow  json.RawMessage // 告警接收时间窗口 JSONB（可选）
+	// 注意：不再包含 PhoneHash, EmailHash, PasswordHash 等字段，因为联系人不登录系统
 }
 
 // CreateResidentResponse 创建住户响应
@@ -346,73 +426,118 @@ type CreateResidentResponse struct {
 	ResidentID string // 创建的住户ID
 }
 
-// UpdateResidentRequest 更新住户请求
-type UpdateResidentRequest struct {
-	TenantID        string // 必填
-	ResidentID      string // 必填
-	CurrentUserID   string // 当前用户ID
-	CurrentUserType string // 当前用户类型
-	CurrentUserRole string // 当前用户角色（Service 层自己查询权限）
+// UpdateResidentInherentAttributes Resident 固有属性更新结构体
+// 包含3张表：residents, resident_phi, resident_contacts
+type UpdateResidentInherentAttributes struct {
+	// ========== residents 表字段（使用 domain.UpdateX 类型）==========
+	ResidentAccount *domain.UpdateString // 住户账号（可选更新）
+	Nickname        *domain.UpdateString // 昵称（可选更新）
+	PasswordHash    *domain.UpdateBytes  // password_hash（可选更新）
+	Status          *domain.UpdateString // 状态（可选更新）
+	ServiceLevel    *domain.UpdateString // 护理级别（可选更新）
+	AdmissionDate   *domain.UpdateTime   // 入院日期（可选更新）
+	DischargeDate   *domain.UpdateTime   // 出院日期（可选更新）
+	BranchID        *domain.UpdateString // 院区ID（可选更新）
+	IsAccessEnabled *domain.UpdateBool   // 是否允许查看状态（可选更新）
+	Note            *domain.UpdateString // 备注（可选更新）
+	Phone           *domain.UpdateString // phone（可选更新）
+	Email           *domain.UpdateString // email（可选更新）
+	PhoneHash       *domain.UpdateBytes  // phone_hash（可选更新）
+	EmailHash       *domain.UpdateBytes  // email_hash（可选更新）
+	Metadata        *domain.UpdateJSON   // metadata JSONB（可选更新）
 
-	// 可更新字段（使用指针表示可选）
-	ResidentAccount *string // 住户账号（机构内部唯一标识）
-	Nickname        *string
-	Status          *string
-	ServiceLevel    *string
-	AdmissionDate   *int64
-	DischargeDate   *int64
-	UnitID          *string
-	FamilyTag       *string
-	IsAccessEnabled *bool
-	Note            *string
+	// ========== resident_phi 表字段 ==========
+	PHI *UpdateResidentPHIRequest // PHI 数据（可选更新）
 
-	// PHI 更新（可选）
-	PHI *UpdateResidentPHIRequest
-
-	// Caregivers 更新（可选）
-	Caregivers *UpdateResidentCaregiversRequest
+	// ========== resident_contacts 表字段 ==========
+	Contacts []*UpdateResidentContactRequest // 联系人列表（可选更新，每个联系人通过 slot 标识）
 }
 
 // UpdateResidentPHIRequest 更新住户 PHI 请求
+// 使用 domain.UpdateX 类型来明确表示更新意图
 type UpdateResidentPHIRequest struct {
-	// 所有 PHI 字段（使用指针表示可选）
-	FirstName                *string
-	LastName                 *string
-	Gender                   *string
-	DateOfBirth              *int64
-	ResidentPhone            *string
-	ResidentEmail            *string
-	PhoneHash                *string // phone_hash (hex string, 前端已计算)
-	EmailHash                *string // email_hash (hex string, 前端已计算)
-	WeightLb                 *float64
-	HeightFt                 *float64
-	HeightIn                 *float64
-	MobilityLevel            *int
-	TremorStatus             *string
-	MobilityAid              *string
-	ADLAssistance            *string
-	CommStatus               *string
-	HasHypertension          *bool
-	HasHyperlipaemia         *bool
-	HasHyperglycaemia        *bool
-	HasStrokeHistory         *bool
-	HasParalysis             *bool
-	HasAlzheimer             *bool
-	MedicalHistory           *string
-	HISResidentName          *string
-	HISResidentAdmissionDate *int64
-	HISResidentDischargeDate *int64
-	HomeAddressStreet        *string
-	HomeAddressCity          *string
-	HomeAddressState         *string
-	HomeAddressPostalCode    *string
-	PlusCode                 *string
+	FirstName             *domain.UpdateString  // 名（可选更新）
+	LastName              *domain.UpdateString  // 姓（可选更新）
+	Gender                *domain.UpdateString  // 性别（可选更新）
+	DateOfBirth           *domain.UpdateTime    // 出生日期（可选更新）
+	ResidentPhone         *domain.UpdateString  // 住户电话（可选更新）
+	ResidentEmail         *domain.UpdateString  // 住户邮箱（可选更新）
+	SavePhone             *domain.UpdateBool    // 是否保存电话（可选更新）
+	SaveEmail             *domain.UpdateBool    // 是否保存邮箱（可选更新）
+	WeightLb              *domain.UpdateFloat64 // 体重（lb，可选更新）
+	HeightFt              *domain.UpdateFloat64 // 身高：feet（可选更新）
+	HeightIn              *domain.UpdateFloat64 // 身高：inches（可选更新）
+	MobilityLevel         *domain.UpdateInt     // 行动能力（可选更新，0-5）
+	TremorStatus          *domain.UpdateString  // 颤抖状态（可选更新）
+	MobilityAid           *domain.UpdateString  // 行走辅助（可选更新）
+	ADLAssistance         *domain.UpdateString  // 日常活动协助（可选更新）
+	CommStatus            *domain.UpdateString  // 沟通状态（可选更新）
+	HasHypertension       *domain.UpdateBool    // 高血压（可选更新）
+	HasHyperlipaemia      *domain.UpdateBool    // 高血脂（可选更新）
+	HasHyperglycaemia     *domain.UpdateBool    // 高血糖/糖尿病（可选更新）
+	HasStrokeHistory      *domain.UpdateBool    // 既往脑卒中史（可选更新）
+	HasParalysis          *domain.UpdateBool    // 肢体瘫痪/偏瘫（可选更新）
+	HasAlzheimer          *domain.UpdateBool    // 阿尔茨海默病/痴呆（可选更新）
+	MedicalHistory        *domain.UpdateString  // 其他病史说明（可选更新）
+	HomeAddressStreet     *domain.UpdateString  // 街道地址（可选更新）
+	HomeAddressCity       *domain.UpdateString  // 城市（可选更新）
+	HomeAddressState      *domain.UpdateString  // 州/省（可选更新）
+	HomeAddressPostalCode *domain.UpdateString  // 邮编（可选更新）
+	PlusCode              *domain.UpdateString  // Google Plus Code（可选更新）
 }
 
-// UpdateResidentCaregiversRequest 更新住户 Caregivers 请求
-type UpdateResidentCaregiversRequest struct {
-	UserList  []string // 用户ID列表
-	GroupList []string // 标签ID列表
+// UpdateResidentContactRequest 更新住户联系人请求
+// 使用 domain.UpdateX 类型来明确表示更新意图
+// 注意：联系人的主键是 (resident_id, slot)，所以 slot 字段必须提供（用于标识要更新哪个联系人）
+type UpdateResidentContactRequest struct {
+	Slot             string               // 槽位 'A', 'B', 'C', 'D', 'E'（必填，用于标识联系人）
+	IsEnabled        *domain.UpdateBool   // 是否启用（可选更新）
+	Relationship     *domain.UpdateString // 关系（可选更新）：Child/Spouse/Friend/Caregiver/Other
+	ContactFirstName *domain.UpdateString // 联系人名（可选更新）
+	ContactLastName  *domain.UpdateString // 联系人姓（可选更新）
+	ContactPhone     *domain.UpdateString // 联系人电话（可选更新），明文保存
+	ContactEmail     *domain.UpdateString // 联系人邮箱（可选更新），明文保存
+	ReceiveSMS       *domain.UpdateBool   // 是否接收短信（可选更新）
+	ReceiveEmail     *domain.UpdateBool   // 是否接收邮件（可选更新）
+	AlertTimeWindow  *domain.UpdateJSON   // 告警接收时间窗口（可选更新，JSONB）
+}
+
+// UpdateResidentUnitRelation Resident 与 Unit 的关系更新结构体
+// 业务属性：位置分配（虽然存储在 residents 表中，但属于业务分配属性）
+type UpdateResidentUnitRelation struct {
+	UnitID *domain.UpdateString // 单元ID（可选更新）
+	RoomID *domain.UpdateString // 房间ID（可选更新）
+	BedID  *domain.UpdateString // 床位ID（可选更新）
+	// 业务规则：bed → room → unit（如果指定 bed_id，则必须同时指定 room_id 和 unit_id）
+}
+
+// UpdateResidentCaregiverRelation Resident 与 Caregiver 的关系更新结构体
+// 业务属性：护理人员分配（存储在 resident_caregivers 表中）
+type UpdateResidentCaregiverRelation struct {
+	UserList  *domain.UpdateJSON // 用户ID列表（可选更新，JSONB array）
+	GroupList *domain.UpdateJSON // 用户组标签列表（可选更新，JSONB array，用于匹配 users.user_tags）
+	// 说明：
+	//   - 每个租户+住户最多一条记录（UNIQUE(tenant_id, resident_id)）
+	//   - 如果 user_list 和 group_list 都为空，使用默认告警路由规则（由应用层处理）
+}
+
+// UpdateResidentRequest 更新住户请求
+// 包含3部分：Resident 固有属性 + 与 Unit 的关系 + 与 Caregiver 的关系
+type UpdateResidentRequest struct {
+	TenantID        string                 // 必填
+	ResidentID      string                 // 必填（要更新的住户ID）
+	CurrentUserID   string                 // 当前用户ID
+	CurrentUserRole string                 // 当前用户角色
+	PermissionCheck *PermissionCheckResult // 权限检查结果
+
+	// Resident 固有属性（3张表：residents, resident_phi, resident_contacts）
+	InherentAttributes *UpdateResidentInherentAttributes
+
+	// Resident 与 Unit 的关系（位置分配）
+	UnitRelation *UpdateResidentUnitRelation
+
+	// Resident 与 Caregiver 的关系（护理人员分配）
+	CaregiverRelation *UpdateResidentCaregiverRelation
 }
 
 // UpdateResidentResponse 更新住户响应
@@ -420,8 +545,10 @@ type UpdateResidentResponse struct {
 	Success bool
 }
 
-// UpdateResidentContactRequest 更新住户联系人请求
-type UpdateResidentContactRequest struct {
+// UpdateResidentContactStandaloneRequest 更新住户联系人请求（独立接口）
+// Deprecated: 此接口用于独立的 UpdateResidentContact 方法
+// 建议使用 UpdateResident 方法中的 Contacts 字段来更新联系人
+type UpdateResidentContactStandaloneRequest struct {
 	TenantID        string // 必填
 	ResidentID      string // 必填
 	Slot            string // 必填：通过 resident_id + slot 定位 contact
@@ -472,31 +599,12 @@ type ResetResidentPasswordRequest struct {
 	CurrentUserID   string                 // 当前用户ID
 	CurrentUserType string                 // 当前用户类型
 	CurrentUserRole string                 // 当前用户角色
-	UserBranchTag   *string                // 当前用户 BranchTag (用于权限过滤)
 	PermissionCheck *PermissionCheckResult // 权限检查结果
 	NewPassword     string                 // 新密码（可选，默认生成）
 }
 
 // ResetResidentPasswordResponse 重置住户密码响应
 type ResetResidentPasswordResponse struct {
-	Success     bool
-	NewPassword string // 生成的新密码
-}
-
-// ResetContactPasswordRequest 重置联系人密码请求
-type ResetContactPasswordRequest struct {
-	TenantID        string                 // 必填
-	ContactID       string                 // 必填
-	CurrentUserID   string                 // 当前用户ID
-	CurrentUserType string                 // 当前用户类型
-	CurrentUserRole string                 // 当前用户角色
-	UserBranchTag   *string                // 当前用户 BranchTag (用于权限过滤)
-	PermissionCheck *PermissionCheckResult // 权限检查结果
-	NewPassword     string                 // 新密码（可选，默认生成）
-}
-
-// ResetContactPasswordResponse 重置联系人密码响应
-type ResetContactPasswordResponse struct {
 	Success     bool
 	NewPassword string // 生成的新密码
 }
@@ -567,6 +675,25 @@ func unixTimestampToTime(ts *int64) *time.Time {
 
 // HashAccount, HashPassword, sha256Hex 已在 user_service.go 中定义，这里不再重复定义
 
+// sha256Hash 计算 SHA256 hash 并返回 []byte（用于与 domain.UpdateBytes 配合）
+func sha256Hash(data string) []byte {
+	h := sha256.Sum256([]byte(strings.ToLower(data)))
+	return h[:]
+}
+
+// equalBytes 比较两个 []byte 是否相等
+func equalBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // ============================================
 // Service 方法实现
 // ============================================
@@ -600,23 +727,23 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 		pageSize = 20
 	}
 
-	// 2. 构建基础查询（JOIN units, rooms, beds）
+	// 2. 构建基础查询（JOIN units, rooms, beds, branches）
 	args := []any{req.TenantID}
 	q := `SELECT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,
 	             r.status, r.service_level, r.admission_date, r.discharge_date,
-	             r.family_tag, r.unit_id::text, r.room_id::text, r.bed_id::text,
-	             COALESCE(u.unit_name, '') as unit_name,
-	             COALESCE(u.branch_name, '') as branch_tag,
-	             COALESCE(u.area_name, '') as area_tag,
-	             COALESCE(u.unit_number, '') as unit_number,
-	             COALESCE(u.is_multi_person_room, false) as is_multi_person_room,
-	             COALESCE(rm.room_name, '') as room_name,
-	             COALESCE(b.bed_name, '') as bed_name,
-	             r.can_view_status
+	             r.unit_id::text, r.room_id::text, r.bed_id::text,
+	             u.unit_name,
+	             u.building_name,
+	             u.is_shared_unit,
+	             br.branch_name,
+	             rm.room_name,
+	             b.bed_name,
+	             r.is_access_enabled
 	      FROM residents r
 	      LEFT JOIN units u ON u.unit_id = r.unit_id
 	      LEFT JOIN rooms rm ON rm.room_id = r.room_id
-	      LEFT JOIN beds b ON b.bed_id = r.bed_id`
+	      LEFT JOIN beds b ON b.bed_id = r.bed_id
+	      LEFT JOIN branches br ON br.branch_id = r.branch_id`
 
 	// 3. 权限过滤
 	if req.CurrentUserType == "resident" || req.CurrentUserType == "family" {
@@ -660,16 +787,35 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 			args = append(args, "%\""+req.CurrentUserID+"\"%")
 		}
 
-		// BranchOnly 过滤
-		if req.PermissionCheck != nil && req.PermissionCheck.BranchOnly {
-			userBranchTag := sql.NullString{String: req.PermissionCheck.UserBranchTag, Valid: req.PermissionCheck.UserBranchTag != ""}
-			if !userBranchTag.Valid || userBranchTag.String == "" {
-				// User branch_tag is NULL: can only view residents in units with branch_tag IS NULL
-				q += ` AND (u.branch_name IS NULL OR u.branch_name = '-')`
+		// BranchOnly 过滤（通过 residents.branch_id 匹配用户的 branch_id）
+		// 注意：NULL、""、"-" 在 branch 表中都表示空院区
+		if req.PermissionCheck != nil && req.PermissionCheck.BranchOnly && req.CurrentUserID != "" {
+			userBranchIDs, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get user branch IDs: %w", err)
+			}
+
+			if !hasBranches {
+				// 用户没有关联任何院区：可以访问所有 NULL 院区的住户
+				// NULL 院区包括：branch_id IS NULL，或 branch_name IS NULL，或 branch_name = ''，或 branch_name = '-'
+				q += ` AND (
+					r.branch_id IS NULL 
+					OR br.branch_name IS NULL 
+					OR br.branch_name = '' 
+					OR br.branch_name = '-'
+				)`
+			} else if len(userBranchIDs) == 1 {
+				// 用户只属于一个院区：只查看该院区的住户
+				args = append(args, userBranchIDs[0])
+				q += fmt.Sprintf(` AND r.branch_id::text = $%d`, len(args))
 			} else {
-				// User branch_tag has value: can only view residents in matching branch
-				args = append(args, userBranchTag.String)
-				q += fmt.Sprintf(` AND u.branch_name = $%d`, len(args))
+				// 用户属于多个院区：查看所有关联院区的住户（使用 IN 查询）
+				placeholders := make([]string, len(userBranchIDs))
+				for i, branchID := range userBranchIDs {
+					args = append(args, branchID)
+					placeholders[i] = fmt.Sprintf("$%d", len(args))
+				}
+				q += fmt.Sprintf(` AND r.branch_id::text IN (%s)`, strings.Join(placeholders, ", "))
 			}
 		}
 	}
@@ -713,17 +859,18 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 	for rows.Next() {
 		var residentID, tid, residentAccount, nickname, status, serviceLevel sql.NullString
 		var admissionDate, dischargeDate sql.NullTime
-		var familyTag, unitID, roomID, bedID sql.NullString
-		var unitName, branchTag, areaTag, unitNumber sql.NullString
-		var isMultiPersonRoom bool
+		var unitID, roomID, bedID sql.NullString
+		var unitName, buildingName, branchName sql.NullString
+		var isSharedUnit bool
 		var roomName, bedName sql.NullString
 		var canViewStatus bool
 
 		if err := rows.Scan(
 			&residentID, &tid, &residentAccount, &nickname,
 			&status, &serviceLevel, &admissionDate, &dischargeDate,
-			&familyTag, &unitID, &roomID, &bedID,
-			&unitName, &branchTag, &areaTag, &unitNumber, &isMultiPersonRoom,
+			&unitID, &roomID, &bedID,
+			&unitName, &buildingName, &isSharedUnit,
+			&branchName,
 			&roomName, &bedName, &canViewStatus,
 		); err != nil {
 			s.logger.Error("ListResidents scan failed",
@@ -734,12 +881,12 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 		}
 
 		item := &ResidentListItemDTO{
-			ResidentID:        residentID.String,
-			TenantID:          tid.String,
-			Nickname:          nickname.String,
-			Status:            status.String,
-			IsMultiPersonRoom: isMultiPersonRoom,
-			IsAccessEnabled:   canViewStatus,
+			ResidentID:      residentID.String,
+			TenantID:        tid.String,
+			Nickname:        nickname.String,
+			Status:          status.String,
+			IsSharedUnit:    isSharedUnit,
+			IsAccessEnabled: canViewStatus,
 		}
 
 		if residentAccount.Valid {
@@ -756,23 +903,17 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 			ts := dischargeDate.Time.Unix()
 			item.DischargeDate = &ts
 		}
-		if familyTag.Valid {
-			item.FamilyTag = &familyTag.String
-		}
 		if unitID.Valid {
 			item.UnitID = &unitID.String
 		}
 		if unitName.Valid && unitName.String != "" {
 			item.UnitName = &unitName.String
 		}
-		if branchTag.Valid && branchTag.String != "" {
-			item.BranchTag = &branchTag.String
+		if buildingName.Valid && buildingName.String != "" {
+			item.BuildingName = &buildingName.String
 		}
-		if areaTag.Valid && areaTag.String != "" {
-			item.AreaTag = &areaTag.String
-		}
-		if unitNumber.Valid && unitNumber.String != "" {
-			item.UnitNumber = &unitNumber.String
+		if branchName.Valid && branchName.String != "" {
+			item.BranchName = &branchName.String
 		}
 		if roomID.Valid {
 			item.RoomID = &roomID.String
@@ -791,7 +932,7 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 	}
 
 	// 8. 查询总数（使用相同的 WHERE 条件，但不包含 JOIN 和分页）
-	countQuery := strings.Replace(q, "SELECT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,\n\t             r.status, r.service_level, r.admission_date, r.discharge_date,\n\t             r.family_tag, r.unit_id::text, r.room_id::text, r.bed_id::text,\n\t             COALESCE(u.unit_name, '') as unit_name,\n\t             COALESCE(u.branch_name, '') as branch_tag,\n\t             COALESCE(u.area_name, '') as area_tag,\n\t             COALESCE(u.unit_number, '') as unit_number,\n\t             COALESCE(u.is_multi_person_room, false) as is_multi_person_room,\n\t             COALESCE(rm.room_name, '') as room_name,\n\t             COALESCE(b.bed_name, '') as bed_name,\n\t             r.can_view_status\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN rooms rm ON rm.room_id = r.room_id\n	      LEFT JOIN beds b ON b.bed_id = r.bed_id", "SELECT COUNT(*)\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id", 1)
+	countQuery := strings.Replace(q, "SELECT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,\n\t             r.status, r.service_level, r.admission_date, r.discharge_date,\n\t             r.unit_id::text, r.room_id::text, r.bed_id::text,\n\t             u.unit_name,\n\t             u.building_name,\n\t             u.is_shared_unit,\n\t             br.branch_name,\n\t             rm.room_name,\n\t             b.bed_name,\n\t             r.is_access_enabled\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN rooms rm ON rm.room_id = r.room_id\n	      LEFT JOIN beds b ON b.bed_id = r.bed_id\n	      LEFT JOIN branches br ON br.branch_id = r.branch_id", "SELECT COUNT(*)\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN branches br ON br.branch_id = r.branch_id", 1)
 	countQuery = strings.Replace(countQuery, " ORDER BY r.nickname ASC", "", 1)
 	countQuery = strings.Replace(countQuery, fmt.Sprintf(` LIMIT $%d OFFSET $%d`, argIdx, argIdx+1), "", 1)
 
@@ -897,45 +1038,77 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 				}
 			}
 
-			// BranchOnly 检查
-			if req.PermissionCheck.BranchOnly && s.db != nil {
-				var targetBranchTag sql.NullString
+			// BranchOnly 权限检查（通过 residents.branch_id 匹配用户的 branch_id）
+			// 注意：NULL、""、"-" 在 branch 表中都表示空院区
+			if req.PermissionCheck.BranchOnly && s.db != nil && req.CurrentUserID != "" {
+				// 查询目标住户的 branch_id 和 branch_name
+				var residentBranchID sql.NullString
+				var residentBranchName sql.NullString
 				err := s.db.QueryRowContext(ctx,
-					`SELECT COALESCE(u.branch_name, '') as branch_tag
+					`SELECT r.branch_id::text, br.branch_name
 					 FROM residents r
-					 LEFT JOIN units u ON u.unit_id = r.unit_id
+					 LEFT JOIN branches br ON br.branch_id = r.branch_id
 					 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
 					req.TenantID, actualResidentID,
-				).Scan(&targetBranchTag)
+				).Scan(&residentBranchID, &residentBranchName)
 				if err != nil {
 					if err == sql.ErrNoRows {
 						return nil, fmt.Errorf("resident not found")
 					}
-					return nil, fmt.Errorf("failed to get resident info: %w", err)
+					return nil, fmt.Errorf("failed to get resident branch info: %w", err)
 				}
 
-				userBranchTag := req.PermissionCheck.UserBranchTag
-				if userBranchTag == "" {
-					// User branch_tag is NULL: can only view residents in units with branch_tag IS NULL
-					if targetBranchTag.Valid && targetBranchTag.String != "" {
-						return nil, fmt.Errorf("permission denied: can only view residents in units with branch_tag IS NULL")
+				// 判断住户是否属于空院区（NULL、""、"-"）
+				isNullBranch := !residentBranchID.Valid ||
+					!residentBranchName.Valid ||
+					residentBranchName.String == "" ||
+					residentBranchName.String == "-"
+
+				// 查询用户所属的 branch_id 列表
+				userBranchIDs, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get user branch IDs: %w", err)
+				}
+
+				// 权限检查
+				if !hasBranches {
+					// 用户没有关联任何院区：只能查看空院区的住户（NULL、""、"-"）
+					if !isNullBranch {
+						return nil, fmt.Errorf("permission denied: can only view residents with null branch (null, '', or '-')")
 					}
 				} else {
-					// User branch_tag has value: can only view residents in matching branch
-					if !targetBranchTag.Valid || targetBranchTag.String != userBranchTag {
-						return nil, fmt.Errorf("permission denied: can only view residents in units with branch_tag = %s", userBranchTag)
+					// 用户有关联院区：只能查看关联院区的住户（不能查看空院区的住户）
+					if isNullBranch {
+						return nil, fmt.Errorf("permission denied: can only view residents in assigned branches")
+					}
+
+					// 检查住户的 branch_id 是否在用户的 branch_id 列表中
+					if !residentBranchID.Valid {
+						return nil, fmt.Errorf("permission denied: can only view residents in assigned branches")
+					}
+
+					allowed := false
+					for _, userBranchID := range userBranchIDs {
+						if userBranchID == residentBranchID.String {
+							allowed = true
+							break
+						}
+					}
+
+					if !allowed {
+						return nil, fmt.Errorf("permission denied: can only view residents in assigned branches")
 					}
 				}
 			}
 		}
 	}
 
-	// 3. 查询住户基本信息（JOIN units, rooms, beds）
+	// 3. 查询住户基本信息（JOIN units, rooms, beds, branches）
 	var residentID, tid, residentAccount, nickname, status, serviceLevel sql.NullString
 	var admissionDate, dischargeDate sql.NullTime
-	var familyTag, unitID, roomID, bedID sql.NullString
-	var unitName, branchTag, areaTag, unitNumber sql.NullString
-	var isMultiPersonRoom bool
+	var unitID, roomID, bedID sql.NullString
+	var unitName, buildingName, branchName sql.NullString
+	var isSharedUnit bool
 	var roomName, bedName sql.NullString
 	var note sql.NullString
 	var canViewStatus bool
@@ -943,27 +1116,28 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 	err := s.db.QueryRowContext(ctx,
 		`SELECT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,
 		        r.status, r.service_level, r.admission_date, r.discharge_date,
-		        r.family_tag, r.unit_id::text, r.room_id::text, r.bed_id::text,
-		        COALESCE(u.unit_name, '') as unit_name,
-		        COALESCE(u.branch_name, '') as branch_tag,
-		        COALESCE(u.area_name, '') as area_tag,
-		        COALESCE(u.unit_number, '') as unit_number,
-		        COALESCE(u.is_multi_person_room, false) as is_multi_person_room,
-		        COALESCE(rm.room_name, '') as room_name,
-		        COALESCE(b.bed_name, '') as bed_name,
-		        COALESCE(r.note, '') as note,
-		        r.can_view_status
+		        r.unit_id::text, r.room_id::text, r.bed_id::text,
+		        u.unit_name,
+		        u.building_name,
+		        u.is_shared_unit,
+		        br.branch_name,
+		        rm.room_name,
+		        b.bed_name,
+		        r.note,
+		        r.is_access_enabled
 		 FROM residents r
 		 LEFT JOIN units u ON u.unit_id = r.unit_id
 		 LEFT JOIN rooms rm ON rm.room_id = r.room_id
 		 LEFT JOIN beds b ON b.bed_id = r.bed_id
+		 LEFT JOIN branches br ON br.branch_id = r.branch_id
 		 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
 		req.TenantID, actualResidentID,
 	).Scan(
 		&residentID, &tid, &residentAccount, &nickname,
 		&status, &serviceLevel, &admissionDate, &dischargeDate,
-		&familyTag, &unitID, &roomID, &bedID,
-		&unitName, &branchTag, &areaTag, &unitNumber, &isMultiPersonRoom,
+		&unitID, &roomID, &bedID,
+		&unitName, &buildingName, &isSharedUnit,
+		&branchName,
 		&roomName, &bedName, &note, &canViewStatus,
 	)
 	if err != nil {
@@ -980,12 +1154,12 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 
 	// 4. 转换为 DTO
 	resident := &ResidentDetailDTO{
-		ResidentID:        residentID.String,
-		TenantID:          tid.String,
-		Nickname:          nickname.String,
-		Status:            status.String,
-		IsMultiPersonRoom: isMultiPersonRoom,
-		IsAccessEnabled:   canViewStatus,
+		ResidentID:      residentID.String,
+		TenantID:        tid.String,
+		Nickname:        nickname.String,
+		Status:          status.String,
+		IsSharedUnit:    isSharedUnit,
+		IsAccessEnabled: canViewStatus,
 	}
 
 	if residentAccount.Valid {
@@ -1002,23 +1176,17 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 		ts := dischargeDate.Time.Unix()
 		resident.DischargeDate = &ts
 	}
-	if familyTag.Valid {
-		resident.FamilyTag = &familyTag.String
-	}
 	if unitID.Valid {
 		resident.UnitID = &unitID.String
 	}
 	if unitName.Valid && unitName.String != "" {
 		resident.UnitName = &unitName.String
 	}
-	if branchTag.Valid && branchTag.String != "" {
-		resident.BranchTag = &branchTag.String
+	if buildingName.Valid && buildingName.String != "" {
+		resident.BuildingName = &buildingName.String
 	}
-	if areaTag.Valid && areaTag.String != "" {
-		resident.AreaTag = &areaTag.String
-	}
-	if unitNumber.Valid && unitNumber.String != "" {
-		resident.UnitNumber = &unitNumber.String
+	if branchName.Valid && branchName.String != "" {
+		resident.BranchName = &branchName.String
 	}
 	if roomID.Valid {
 		resident.RoomID = &roomID.String
@@ -1084,10 +1252,45 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 		}
 	}
 
+	// 7. 查询 Caregivers 数据（必须查询，Profile Tab 需要）
+	var caregivers *ResidentCaregiverDTO
+	var userListRaw, groupListRaw sql.NullString
+	err = s.db.QueryRowContext(ctx,
+		`SELECT user_list::text, group_list::text
+		 FROM resident_caregivers
+		 WHERE tenant_id = $1 AND resident_id::text = $2`,
+		req.TenantID, actualResidentID,
+	).Scan(&userListRaw, &groupListRaw)
+	if err == nil {
+		caregivers = &ResidentCaregiverDTO{}
+		// 解析 user_list JSONB array -> []string
+		if userListRaw.Valid && userListRaw.String != "" && userListRaw.String != "null" {
+			var userList []string
+			if err := json.Unmarshal([]byte(userListRaw.String), &userList); err == nil {
+				caregivers.UserList = userList
+			}
+		}
+		// 解析 group_list JSONB array -> []string
+		if groupListRaw.Valid && groupListRaw.String != "" && groupListRaw.String != "null" {
+			var groupList []string
+			if err := json.Unmarshal([]byte(groupListRaw.String), &groupList); err == nil {
+				caregivers.GroupList = groupList
+			}
+		}
+	} else if err != sql.ErrNoRows {
+		// 查询出错但不是"记录不存在"，记录日志但不阻止返回
+		s.logger.Warn("GetResident failed to query caregivers",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("resident_id", actualResidentID),
+			zap.Error(err),
+		)
+	}
+
 	return &GetResidentResponse{
-		Resident: resident,
-		PHI:      phi,
-		Contacts: contacts,
+		Resident:   resident,
+		PHI:        phi,
+		Contacts:   contacts,
+		Caregivers: caregivers,
 	}, nil
 }
 
@@ -1180,25 +1383,23 @@ func domainContactToDTO(contact *domain.ResidentContact) *ResidentContactDTO {
 		IsEnabled:          contact.IsEnabled,
 		ReceiveSMS:         contact.ReceiveSMS,
 		ReceiveEmail:       contact.ReceiveEmail,
-		IsEmergencyContact: contact.IsEmergencyContact,
+		IsEmergencyContact: contact.IsEnabled, // 使用 IsEnabled 作为 IsEmergencyContact（向后兼容）
 	}
-	if contact.Relationship != "" {
-		dto.Relationship = &contact.Relationship
+	if contact.Relationship.Valid && contact.Relationship.String != "" {
+		dto.Relationship = &contact.Relationship.String
 	}
-	if contact.ContactFirstName != "" {
-		dto.ContactFirstName = &contact.ContactFirstName
+	if contact.ContactFirstName.Valid && contact.ContactFirstName.String != "" {
+		dto.ContactFirstName = &contact.ContactFirstName.String
 	}
-	if contact.ContactLastName != "" {
-		dto.ContactLastName = &contact.ContactLastName
+	if contact.ContactLastName.Valid && contact.ContactLastName.String != "" {
+		dto.ContactLastName = &contact.ContactLastName.String
 	}
-	if contact.ContactPhone != "" {
-		dto.ContactPhone = &contact.ContactPhone
+	if contact.ContactPhone.Valid && contact.ContactPhone.String != "" {
+		dto.ContactPhone = &contact.ContactPhone.String
 	}
-	if contact.ContactEmail != "" {
-		dto.ContactEmail = &contact.ContactEmail
+	if contact.ContactEmail.Valid && contact.ContactEmail.String != "" {
+		dto.ContactEmail = &contact.ContactEmail.String
 	}
-	// ContactFamilyTag 字段在 domain.ResidentContact 中不存在，需要从数据库查询
-	// 暂时跳过，如果需要可以从数据库单独查询
 	return dto
 }
 
@@ -1208,16 +1409,19 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
-	if req.ResidentAccount == "" {
+	if req.InherentAttributes == nil {
+		return nil, fmt.Errorf("inherent_attributes is required")
+	}
+	if req.InherentAttributes.ResidentAccount == "" {
 		return nil, fmt.Errorf("resident_account is required (each institution has its own encoding pattern)")
 	}
-	if req.Nickname == "" {
+	if req.InherentAttributes.Nickname == "" {
 		return nil, fmt.Errorf("nickname is required")
 	}
 
 	// 2. 业务规则验证
 	// 2.1 resident_account 转换为小写
-	residentAccount := strings.ToLower(strings.TrimSpace(req.ResidentAccount))
+	residentAccount := strings.ToLower(strings.TrimSpace(req.InherentAttributes.ResidentAccount))
 
 	// 2.2 计算 account_hash
 	accountHashHex := HashAccount(residentAccount)
@@ -1226,27 +1430,33 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 		return nil, fmt.Errorf("failed to hash account")
 	}
 
-	// 2.3 生成 password_hash
-	password := req.Password
-	if password == "" {
-		password = "ChangeMe123!" // 默认密码
+	// 2.3 处理 password_hash（如果提供了）
+	var passwordHash []byte
+	if req.InherentAttributes.PasswordHash != "" {
+		ph, err := hex.DecodeString(req.InherentAttributes.PasswordHash)
+		if err == nil && len(ph) > 0 {
+			passwordHash = ph
+		}
 	}
-	passwordHashHex := HashPassword(password)
-	passwordHash, err := hex.DecodeString(passwordHashHex)
-	if err != nil || len(passwordHash) == 0 {
-		return nil, fmt.Errorf("failed to hash password")
+	// 如果没有提供 password_hash，生成默认密码的 hash
+	if len(passwordHash) == 0 {
+		passwordHashHex := HashPassword("ChangeMe123!") // 默认密码
+		ph, err := hex.DecodeString(passwordHashHex)
+		if err == nil && len(ph) > 0 {
+			passwordHash = ph
+		}
 	}
 
 	// 2.4 处理 phone_hash 和 email_hash（从请求中获取，前端已计算）
 	var phoneHash, emailHash []byte
-	if req.PhoneHash != "" {
-		ph, err := hex.DecodeString(req.PhoneHash)
+	if req.InherentAttributes.PhoneHash != "" {
+		ph, err := hex.DecodeString(req.InherentAttributes.PhoneHash)
 		if err == nil && len(ph) > 0 {
 			phoneHash = ph
 		}
 	}
-	if req.EmailHash != "" {
-		eh, err := hex.DecodeString(req.EmailHash)
+	if req.InherentAttributes.EmailHash != "" {
+		eh, err := hex.DecodeString(req.InherentAttributes.EmailHash)
 		if err == nil && len(eh) > 0 {
 			emailHash = eh
 		}
@@ -1259,23 +1469,27 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 
 	// 2.6 处理 admission_date（默认当前日期）
 	admissionDate := time.Now()
-	if req.AdmissionDate != nil {
-		admissionDate = *unixTimestampToTime(req.AdmissionDate)
+	if req.InherentAttributes.AdmissionDate != nil {
+		admissionDate = time.Unix(*req.InherentAttributes.AdmissionDate, 0).UTC()
 	}
 
 	// 2.7 处理 status（默认 "active"）
-	status := req.Status
+	status := req.InherentAttributes.Status
 	if status == "" {
 		status = "active"
 	}
 
-	// 2.8 unit_id 验证和权限检查
-	if req.UnitID != "" {
+	// 2.8 unit_id 验证和权限检查（从 UnitRelation 获取）
+	unitID := ""
+	if req.UnitRelation != nil {
+		unitID = req.UnitRelation.UnitID
+	}
+	if unitID != "" {
 		// 验证 unit 存在
 		var unitExists bool
 		err := s.db.QueryRowContext(ctx,
 			`SELECT EXISTS(SELECT 1 FROM units WHERE tenant_id = $1 AND unit_id::text = $2)`,
-			req.TenantID, req.UnitID,
+			req.TenantID, unitID,
 		).Scan(&unitExists)
 		if err != nil {
 			return nil, fmt.Errorf("failed to check unit existence: %w", err)
@@ -1284,27 +1498,62 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 			return nil, fmt.Errorf("unit not found")
 		}
 
-		// BranchOnly 权限检查
-		if req.PermissionCheck != nil && req.PermissionCheck.BranchOnly {
-			var unitBranchTag sql.NullString
+		// BranchOnly 权限检查（使用 branch_id）
+		// 注意：NULL、""、"-" 在 branch 表中都表示空院区
+		if req.PermissionCheck != nil && req.PermissionCheck.BranchOnly && req.CurrentUserID != "" {
+			// 查询 unit 的 branch_id 和 branch_name
+			var unitBranchID sql.NullString
+			var unitBranchName sql.NullString
 			err := s.db.QueryRowContext(ctx,
-				`SELECT branch_name FROM units WHERE tenant_id = $1 AND unit_id::text = $2`,
-				req.TenantID, req.UnitID,
-			).Scan(&unitBranchTag)
+				`SELECT u.branch_id::text, br.branch_name
+				 FROM units u
+				 LEFT JOIN branches br ON br.branch_id = u.branch_id
+				 WHERE u.tenant_id = $1 AND u.unit_id::text = $2`,
+				req.TenantID, unitID,
+			).Scan(&unitBranchID, &unitBranchName)
 			if err != nil {
-				return nil, fmt.Errorf("failed to check unit branch: %w", err)
+				return nil, fmt.Errorf("failed to check unit branch info: %w", err)
 			}
 
-			userBranchTag := req.PermissionCheck.UserBranchTag
-			if userBranchTag == "" {
-				// User branch_tag is NULL: can only create residents in units with branch_tag IS NULL
-				if unitBranchTag.Valid && unitBranchTag.String != "" {
-					return nil, fmt.Errorf("permission denied: can only create residents in units with branch_tag IS NULL")
+			// 判断 unit 是否属于空院区（NULL、""、"-"）
+			isNullBranch := !unitBranchID.Valid ||
+				!unitBranchName.Valid ||
+				unitBranchName.String == "" ||
+				unitBranchName.String == "-"
+
+			// 查询用户所属的 branch_id 列表
+			userBranchIDs, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get user branch IDs: %w", err)
+			}
+
+			// 权限检查
+			if !hasBranches {
+				// 用户没有关联任何院区：只能创建空院区的住户（NULL、""、"-"）
+				if !isNullBranch {
+					return nil, fmt.Errorf("permission denied: can only create residents with null branch (null, '', or '-')")
 				}
 			} else {
-				// User branch_tag has value: can only create residents in units with matching branch_tag
-				if !unitBranchTag.Valid || unitBranchTag.String != userBranchTag {
-					return nil, fmt.Errorf("permission denied: can only create residents in units with branch_tag = %s", userBranchTag)
+				// 用户有关联院区：只能创建关联院区的住户（不能创建空院区的住户）
+				if isNullBranch {
+					return nil, fmt.Errorf("permission denied: can only create residents in assigned branches")
+				}
+
+				// 检查 unit 的 branch_id 是否在用户的 branch_id 列表中
+				if !unitBranchID.Valid {
+					return nil, fmt.Errorf("permission denied: can only create residents in assigned branches")
+				}
+
+				allowed := false
+				for _, userBranchID := range userBranchIDs {
+					if userBranchID == unitBranchID.String {
+						allowed = true
+						break
+					}
+				}
+
+				if !allowed {
+					return nil, fmt.Errorf("permission denied: can only create residents in assigned branches")
 				}
 			}
 		}
@@ -1317,20 +1566,40 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 	resident := &domain.Resident{
 		ResidentAccount:     residentAccount,
 		ResidentAccountHash: accountHash,
-		Nickname:            strings.TrimSpace(req.Nickname),
+		Nickname:            strings.TrimSpace(req.InherentAttributes.Nickname),
 		Status:              status,
 		Role:                "Resident",
 		AdmissionDate:       &admissionDate,
-		CanViewStatus:       req.IsAccessEnabled,
-		UnitID:              req.UnitID,
-		FamilyTag:           req.FamilyTag,
-		Note:                req.Note,
+		IsAccessEnabled:     req.InherentAttributes.IsAccessEnabled,
+		Note:                req.InherentAttributes.Note,
 		PhoneHash:           phoneHash,
 		EmailHash:           emailHash,
 		PasswordHash:        passwordHash,
 	}
-	if req.ServiceLevel != "" {
-		resident.ServiceLevel = req.ServiceLevel
+	if req.InherentAttributes.ServiceLevel != "" {
+		resident.ServiceLevel = req.InherentAttributes.ServiceLevel
+	}
+	if req.InherentAttributes.BranchID != "" {
+		resident.BranchID = req.InherentAttributes.BranchID
+	}
+	if req.InherentAttributes.DischargeDate != nil {
+		dischargeDate := time.Unix(*req.InherentAttributes.DischargeDate, 0).UTC()
+		resident.DischargeDate = &dischargeDate
+	}
+	// UnitRelation 中的 UnitID, RoomID, BedID
+	if req.UnitRelation != nil {
+		if req.UnitRelation.UnitID != "" {
+			resident.UnitID = req.UnitRelation.UnitID
+		}
+		if req.UnitRelation.RoomID != "" {
+			resident.RoomID = req.UnitRelation.RoomID
+		}
+		if req.UnitRelation.BedID != "" {
+			resident.BedID = req.UnitRelation.BedID
+		}
+	}
+	if len(req.InherentAttributes.Metadata) > 0 {
+		resident.Metadata = req.InherentAttributes.Metadata
 	}
 
 	residentID, err := s.residentsRepo.CreateResident(ctx, req.TenantID, resident)
@@ -1344,57 +1613,174 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 	}
 
 	// 4. 创建 PHI 记录（如果提供了 PHI 数据）
-	if req.PHI != nil && req.PHI.FirstName != "" {
-		phi := &domain.ResidentPHI{
-			FirstName: req.PHI.FirstName,
-			LastName:  req.PHI.LastName,
-			Gender:    req.PHI.Gender,
+	// 注意：即使 FirstName 为空，也可以创建 PHI（FirstName 是可选字段）
+	if req.InherentAttributes.PHI != nil {
+		phiUpdate := &domain.ResidentPHIUpdate{}
+
+		phi := req.InherentAttributes.PHI
+		// 转换所有字段为 UpdateX 类型（创建时，有值的字段设置为 UpdateActionUpdate）
+		if phi.FirstName != "" {
+			phiUpdate.FirstName = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.FirstName,
+			}
 		}
-		if req.PHI.DateOfBirth != nil {
-			phi.DateOfBirth = unixTimestampToTime(req.PHI.DateOfBirth)
+		if phi.LastName != "" {
+			phiUpdate.LastName = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.LastName,
+			}
 		}
-		// 只在 save_phone/save_email 为 true 时保存明文
-		if req.PHI.SavePhone && req.PHI.ResidentPhone != "" {
-			phi.ResidentPhone = req.PHI.ResidentPhone
+		if phi.Gender != "" {
+			phiUpdate.Gender = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.Gender,
+			}
 		}
-		if req.PHI.SaveEmail && req.PHI.ResidentEmail != "" {
-			phi.ResidentEmail = req.PHI.ResidentEmail
+		if phi.DateOfBirth != nil {
+			dobTime := time.Unix(*phi.DateOfBirth, 0).UTC()
+			phiUpdate.DateOfBirth = &domain.UpdateTime{
+				Action: domain.UpdateActionUpdate,
+				Value:  &dobTime,
+			}
+		}
+		// 只在 save_phone/save_email 为 true 时保存明文到 resident_phi 表
+		if phi.SavePhone && phi.ResidentPhone != "" {
+			phiUpdate.ResidentPhone = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.ResidentPhone,
+			}
+		}
+		if phi.SaveEmail && phi.ResidentEmail != "" {
+			phiUpdate.ResidentEmail = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.ResidentEmail,
+			}
 		}
 		// 其他 PHI 字段
-		phi.WeightLb = req.PHI.WeightLb
-		phi.HeightFt = req.PHI.HeightFt
-		phi.HeightIn = req.PHI.HeightIn
-		phi.MobilityLevel = req.PHI.MobilityLevel
-		phi.TremorStatus = req.PHI.TremorStatus
-		phi.MobilityAid = req.PHI.MobilityAid
-		phi.ADLAssistance = req.PHI.ADLAssistance
-		phi.CommStatus = req.PHI.CommStatus
-		if req.PHI.HasHypertension != nil {
-			phi.HasHypertension = *req.PHI.HasHypertension
+		if phi.WeightLb != nil {
+			phiUpdate.WeightLb = &domain.UpdateFloat64{
+				Action: domain.UpdateActionUpdate,
+				Value:  *phi.WeightLb,
+			}
 		}
-		if req.PHI.HasHyperlipaemia != nil {
-			phi.HasHyperlipaemia = *req.PHI.HasHyperlipaemia
+		if phi.HeightFt != nil {
+			phiUpdate.HeightFt = &domain.UpdateFloat64{
+				Action: domain.UpdateActionUpdate,
+				Value:  *phi.HeightFt,
+			}
 		}
-		if req.PHI.HasHyperglycaemia != nil {
-			phi.HasHyperglycaemia = *req.PHI.HasHyperglycaemia
+		if phi.HeightIn != nil {
+			phiUpdate.HeightIn = &domain.UpdateFloat64{
+				Action: domain.UpdateActionUpdate,
+				Value:  *phi.HeightIn,
+			}
 		}
-		if req.PHI.HasStrokeHistory != nil {
-			phi.HasStrokeHistory = *req.PHI.HasStrokeHistory
+		if phi.MobilityLevel != nil {
+			phiUpdate.MobilityLevel = &domain.UpdateInt{
+				Action: domain.UpdateActionUpdate,
+				Value:  *phi.MobilityLevel,
+			}
 		}
-		if req.PHI.HasParalysis != nil {
-			phi.HasParalysis = *req.PHI.HasParalysis
+		if phi.TremorStatus != "" {
+			phiUpdate.TremorStatus = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.TremorStatus,
+			}
 		}
-		if req.PHI.HasAlzheimer != nil {
-			phi.HasAlzheimer = *req.PHI.HasAlzheimer
+		if phi.MobilityAid != "" {
+			phiUpdate.MobilityAid = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.MobilityAid,
+			}
 		}
-		phi.MedicalHistory = req.PHI.MedicalHistory
-		phi.HomeAddressStreet = req.PHI.HomeAddressStreet
-		phi.HomeAddressCity = req.PHI.HomeAddressCity
-		phi.HomeAddressState = req.PHI.HomeAddressState
-		phi.HomeAddressPostalCode = req.PHI.HomeAddressPostalCode
-		phi.PlusCode = req.PHI.PlusCode
+		if phi.ADLAssistance != "" {
+			phiUpdate.ADLAssistance = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.ADLAssistance,
+			}
+		}
+		if phi.CommStatus != "" {
+			phiUpdate.CommStatus = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.CommStatus,
+			}
+		}
+		if phi.HasHypertension != nil {
+			phiUpdate.HasHypertension = &domain.UpdateBool{
+				Action: domain.UpdateActionUpdate,
+				Value:  *phi.HasHypertension,
+			}
+		}
+		if phi.HasHyperlipaemia != nil {
+			phiUpdate.HasHyperlipaemia = &domain.UpdateBool{
+				Action: domain.UpdateActionUpdate,
+				Value:  *phi.HasHyperlipaemia,
+			}
+		}
+		if phi.HasHyperglycaemia != nil {
+			phiUpdate.HasHyperglycaemia = &domain.UpdateBool{
+				Action: domain.UpdateActionUpdate,
+				Value:  *phi.HasHyperglycaemia,
+			}
+		}
+		if phi.HasStrokeHistory != nil {
+			phiUpdate.HasStrokeHistory = &domain.UpdateBool{
+				Action: domain.UpdateActionUpdate,
+				Value:  *phi.HasStrokeHistory,
+			}
+		}
+		if phi.HasParalysis != nil {
+			phiUpdate.HasParalysis = &domain.UpdateBool{
+				Action: domain.UpdateActionUpdate,
+				Value:  *phi.HasParalysis,
+			}
+		}
+		if phi.HasAlzheimer != nil {
+			phiUpdate.HasAlzheimer = &domain.UpdateBool{
+				Action: domain.UpdateActionUpdate,
+				Value:  *phi.HasAlzheimer,
+			}
+		}
+		if phi.MedicalHistory != "" {
+			phiUpdate.MedicalHistory = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.MedicalHistory,
+			}
+		}
+		if phi.HomeAddressStreet != "" {
+			phiUpdate.HomeAddressStreet = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.HomeAddressStreet,
+			}
+		}
+		if phi.HomeAddressCity != "" {
+			phiUpdate.HomeAddressCity = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.HomeAddressCity,
+			}
+		}
+		if phi.HomeAddressState != "" {
+			phiUpdate.HomeAddressState = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.HomeAddressState,
+			}
+		}
+		if phi.HomeAddressPostalCode != "" {
+			phiUpdate.HomeAddressPostalCode = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.HomeAddressPostalCode,
+			}
+		}
+		if phi.PlusCode != "" {
+			phiUpdate.PlusCode = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  phi.PlusCode,
+			}
+		}
 
-		if err := s.residentsRepo.UpsertResidentPHI(ctx, req.TenantID, residentID, phi); err != nil {
+		// 使用 UpsertResidentPHIFields 方法（UPSERT 语义，如果不存在则创建，如果存在则更新）
+		if err := s.residentsRepo.UpsertResidentPHIFields(ctx, req.TenantID, residentID, phiUpdate); err != nil {
 			s.logger.Warn("Failed to create PHI record",
 				zap.String("tenant_id", req.TenantID),
 				zap.String("resident_id", residentID),
@@ -1405,75 +1791,22 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 	}
 
 	// 5. 创建联系人记录（如果提供了 contacts）
-	if len(req.Contacts) > 0 {
-		for _, contactReq := range req.Contacts {
-			// Hash 唯一性检查
-			var contactPhoneHash, contactEmailHash []byte
-			if contactReq.PhoneHash != "" {
-				ph, err := hex.DecodeString(contactReq.PhoneHash)
-				if err == nil && len(ph) > 0 {
-					contactPhoneHash = ph
-				}
-			}
-			if contactReq.EmailHash != "" {
-				eh, err := hex.DecodeString(contactReq.EmailHash)
-				if err == nil && len(eh) > 0 {
-					contactEmailHash = eh
-				}
-			}
-
-			// 如果 phone_hash 或 email_hash 已存在，复用已存在的联系人信息
-			var existingContact *domain.ResidentContact
-			if len(contactPhoneHash) > 0 || len(contactEmailHash) > 0 {
-				existingContact = s.findExistingContactByHash(ctx, req.TenantID, contactPhoneHash, contactEmailHash)
-			}
-
-			// 生成默认密码 hash（联系人密码独立于 account）
-			contactPassword := "ChangeMe123!"
-			contactPasswordHashHex := HashPassword(contactPassword)
-			contactPasswordHash, _ := hex.DecodeString(contactPasswordHashHex)
-
+	// 注意：联系人不登录系统，仅作为住户的属性，不需要 password_hash, phone_hash, email_hash
+	if req.InherentAttributes.Contacts != nil && len(req.InherentAttributes.Contacts) > 0 {
+		for _, contactReq := range req.InherentAttributes.Contacts {
 			contact := &domain.ResidentContact{
-				Slot:               contactReq.Slot,
-				IsEnabled:          contactReq.IsEnabled,
-				Relationship:       contactReq.Relationship,
-				ContactFirstName:   contactReq.ContactFirstName,
-				ContactLastName:    contactReq.ContactLastName,
-				ContactPhone:       contactReq.ContactPhone,
-				ContactEmail:       contactReq.ContactEmail,
-				ReceiveSMS:         contactReq.ReceiveSMS,
-				ReceiveEmail:       contactReq.ReceiveEmail,
-				PhoneHash:          contactPhoneHash,
-				EmailHash:          contactEmailHash,
-				PasswordHash:       contactPasswordHash,
-				Role:               "Family",
-				IsEmergencyContact: false,
+				Slot:             contactReq.Slot,
+				IsEnabled:        contactReq.IsEnabled,
+				Relationship:     sql.NullString{String: contactReq.Relationship, Valid: contactReq.Relationship != ""},
+				ContactFirstName: sql.NullString{String: contactReq.ContactFirstName, Valid: contactReq.ContactFirstName != ""},
+				ContactLastName:  sql.NullString{String: contactReq.ContactLastName, Valid: contactReq.ContactLastName != ""},
+				ContactPhone:     sql.NullString{String: contactReq.ContactPhone, Valid: contactReq.ContactPhone != ""},
+				ContactEmail:     sql.NullString{String: contactReq.ContactEmail, Valid: contactReq.ContactEmail != ""},
+				ReceiveSMS:       contactReq.ReceiveSMS,
+				ReceiveEmail:     contactReq.ReceiveEmail,
 			}
 			if contact.Slot == "" {
 				contact.Slot = "A" // 默认 slot
-			}
-
-			// 如果找到已存在的联系人，复用其信息（优先使用请求中的值，如果请求中为空则使用已存在的值）
-			if existingContact != nil {
-				if contact.ContactFirstName == "" && existingContact.ContactFirstName != "" {
-					contact.ContactFirstName = existingContact.ContactFirstName
-				}
-				if contact.ContactLastName == "" && existingContact.ContactLastName != "" {
-					contact.ContactLastName = existingContact.ContactLastName
-				}
-				if contact.ContactPhone == "" && existingContact.ContactPhone != "" {
-					contact.ContactPhone = existingContact.ContactPhone
-				}
-				if contact.ContactEmail == "" && existingContact.ContactEmail != "" {
-					contact.ContactEmail = existingContact.ContactEmail
-				}
-				if contact.Relationship == "" && existingContact.Relationship != "" {
-					contact.Relationship = existingContact.Relationship
-				}
-				// 复用 password_hash（如果已存在联系人已有密码）
-				if len(existingContact.PasswordHash) > 0 && len(contactPasswordHash) == 0 {
-					contact.PasswordHash = existingContact.PasswordHash
-				}
 			}
 
 			_, err := s.residentsRepo.CreateResidentContact(ctx, req.TenantID, residentID, contact)
@@ -1501,187 +1834,12 @@ func (s *residentService) findExistingContactByHash(ctx context.Context, tenantI
 }
 
 // findExistingContactByHashExcluding 根据 phone_hash 或 email_hash 查找已存在的联系人（排除指定的 contact_id）
+// Deprecated: 联系人不登录系统，不再使用 phone_hash/email_hash 字段，此函数暂时返回 nil
 // 如果找到，返回联系人信息以便复用
 func (s *residentService) findExistingContactByHashExcluding(ctx context.Context, tenantID string, phoneHash, emailHash []byte, excludeContactID string) *domain.ResidentContact {
-	var query string
-	var args []any
-
-	// 优先使用 phone_hash，如果没有则使用 email_hash
-	if len(phoneHash) > 0 {
-		if excludeContactID != "" {
-			query = `
-				SELECT 
-					contact_id::text,
-					tenant_id::text,
-					resident_id::text,
-					slot,
-					is_enabled,
-					relationship,
-					role,
-					is_emergency_contact,
-					COALESCE(alert_time_window, '{}'::jsonb)::text as alert_time_window,
-					contact_first_name,
-					contact_last_name,
-					contact_phone,
-					contact_email,
-					receive_sms,
-					receive_email,
-					phone_hash,
-					email_hash,
-					password_hash
-				FROM resident_contacts
-				WHERE tenant_id = $1 AND phone_hash = $2 AND contact_id::text != $3
-				LIMIT 1
-			`
-			args = []any{tenantID, phoneHash, excludeContactID}
-		} else {
-			query = `
-				SELECT 
-					contact_id::text,
-					tenant_id::text,
-					resident_id::text,
-					slot,
-					is_enabled,
-					relationship,
-					role,
-					is_emergency_contact,
-					COALESCE(alert_time_window, '{}'::jsonb)::text as alert_time_window,
-					contact_first_name,
-					contact_last_name,
-					contact_phone,
-					contact_email,
-					receive_sms,
-					receive_email,
-					phone_hash,
-					email_hash,
-					password_hash
-				FROM resident_contacts
-				WHERE tenant_id = $1 AND phone_hash = $2
-				LIMIT 1
-			`
-			args = []any{tenantID, phoneHash}
-		}
-	} else if len(emailHash) > 0 {
-		if excludeContactID != "" {
-			query = `
-				SELECT 
-					contact_id::text,
-					tenant_id::text,
-					resident_id::text,
-					slot,
-					is_enabled,
-					relationship,
-					role,
-					is_emergency_contact,
-					COALESCE(alert_time_window, '{}'::jsonb)::text as alert_time_window,
-					contact_first_name,
-					contact_last_name,
-					contact_phone,
-					contact_email,
-					receive_sms,
-					receive_email,
-					phone_hash,
-					email_hash,
-					password_hash
-				FROM resident_contacts
-				WHERE tenant_id = $1 AND email_hash = $2 AND contact_id::text != $3
-				LIMIT 1
-			`
-			args = []any{tenantID, emailHash, excludeContactID}
-		} else {
-			query = `
-				SELECT 
-					contact_id::text,
-					tenant_id::text,
-					resident_id::text,
-					slot,
-					is_enabled,
-					relationship,
-					role,
-					is_emergency_contact,
-					COALESCE(alert_time_window, '{}'::jsonb)::text as alert_time_window,
-					contact_first_name,
-					contact_last_name,
-					contact_phone,
-					contact_email,
-					receive_sms,
-					receive_email,
-					phone_hash,
-					email_hash,
-					password_hash
-				FROM resident_contacts
-				WHERE tenant_id = $1 AND email_hash = $2
-				LIMIT 1
-			`
-			args = []any{tenantID, emailHash}
-		}
-	} else {
-		return nil
-	}
-
-	var contact domain.ResidentContact
-	var relationship, contactFirstName, contactLastName, contactPhone, contactEmail sql.NullString
-	var alertTimeWindow sql.NullString
-	var phoneHashDB, emailHashDB, passwordHashDB sql.Null[[]byte]
-
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(
-		&contact.ContactID,
-		&contact.TenantID,
-		&contact.ResidentID,
-		&contact.Slot,
-		&contact.IsEnabled,
-		&relationship,
-		&contact.Role,
-		&contact.IsEmergencyContact,
-		&alertTimeWindow,
-		&contactFirstName,
-		&contactLastName,
-		&contactPhone,
-		&contactEmail,
-		&contact.ReceiveSMS,
-		&contact.ReceiveEmail,
-		&phoneHashDB,
-		&emailHashDB,
-		&passwordHashDB,
-	)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		// 查询错误，返回 nil（不中断流程）
-		return nil
-	}
-
-	// 处理可空字段
-	if relationship.Valid {
-		contact.Relationship = relationship.String
-	}
-	if contactFirstName.Valid {
-		contact.ContactFirstName = contactFirstName.String
-	}
-	if contactLastName.Valid {
-		contact.ContactLastName = contactLastName.String
-	}
-	if contactPhone.Valid {
-		contact.ContactPhone = contactPhone.String
-	}
-	if contactEmail.Valid {
-		contact.ContactEmail = contactEmail.String
-	}
-	if alertTimeWindow.Valid && alertTimeWindow.String != "" {
-		contact.AlertTimeWindow = json.RawMessage(alertTimeWindow.String)
-	}
-	if phoneHashDB.Valid {
-		contact.PhoneHash = phoneHashDB.V
-	}
-	if emailHashDB.Valid {
-		contact.EmailHash = emailHashDB.V
-	}
-	if passwordHashDB.Valid {
-		contact.PasswordHash = passwordHashDB.V
-	}
-
-	return &contact
+	// 联系人不登录系统，不再使用 phone_hash/email_hash 字段
+	// 此函数已废弃，暂时返回 nil
+	return nil
 }
 
 // checkHashUniqueness 检查 phone_hash 或 email_hash 的唯一性
@@ -1869,230 +2027,251 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 		return nil, fmt.Errorf("permission denied: role %s has no update permission", req.CurrentUserRole)
 	}
 
-	// 2. 获取现有住户信息
+	// 2. 验证住户存在
 	existingResident, err := s.residentsRepo.GetResident(ctx, req.TenantID, req.ResidentID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get resident: %w", err)
 	}
 
-	// 3. 构建更新字段
-	updates := &domain.Resident{
-		ResidentID: req.ResidentID,
-	}
+	// 3. 处理 InherentAttributes（residents 表字段 + PHI + Contacts）
+	if req.InherentAttributes != nil {
+		// 3.1 构建 residents 表字段更新
+		residentUpdate := &domain.ResidentUpdate{}
 
-	// 基本字段更新
-	if req.ResidentAccount != nil {
-		// 更新 resident_account 需要同时更新 resident_account_hash
-		updates.ResidentAccount = strings.ToLower(*req.ResidentAccount)
-		// HashAccount 返回 hex 字符串，需要转换为 []byte
-		hashHex := HashAccount(updates.ResidentAccount)
-		hashBytes, err := hex.DecodeString(hashHex)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode resident_account_hash: %w", err)
+		// 处理 ResidentAccount（需要同时更新 ResidentAccountHash）
+		if req.InherentAttributes.ResidentAccount != nil && req.InherentAttributes.ResidentAccount.Action == domain.UpdateActionUpdate {
+			residentAccount := strings.ToLower(strings.TrimSpace(req.InherentAttributes.ResidentAccount.Value))
+			residentUpdate.ResidentAccount = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  residentAccount,
+			}
+			// 同时更新 resident_account_hash
+			hashHex := HashAccount(residentAccount)
+			hashBytes, err := hex.DecodeString(hashHex)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode resident_account_hash: %w", err)
+			}
+			residentUpdate.ResidentAccountHash = &domain.UpdateBytes{
+				Action: domain.UpdateActionUpdate,
+				Value:  hashBytes,
+			}
 		}
-		updates.ResidentAccountHash = hashBytes
-	} else {
-		updates.ResidentAccount = existingResident.ResidentAccount
-		updates.ResidentAccountHash = existingResident.ResidentAccountHash
-	}
 
-	if req.Nickname != nil {
-		updates.Nickname = *req.Nickname
-	} else {
-		updates.Nickname = existingResident.Nickname
-	}
+		// 处理其他 residents 表字段
+		residentUpdate.Nickname = req.InherentAttributes.Nickname
+		residentUpdate.PasswordHash = req.InherentAttributes.PasswordHash
+		residentUpdate.Status = req.InherentAttributes.Status
+		residentUpdate.ServiceLevel = req.InherentAttributes.ServiceLevel
+		residentUpdate.AdmissionDate = req.InherentAttributes.AdmissionDate
+		residentUpdate.DischargeDate = req.InherentAttributes.DischargeDate
+		residentUpdate.BranchID = req.InherentAttributes.BranchID
+		residentUpdate.IsAccessEnabled = req.InherentAttributes.IsAccessEnabled
+		residentUpdate.Note = req.InherentAttributes.Note
+		residentUpdate.Phone = req.InherentAttributes.Phone
+		residentUpdate.Email = req.InherentAttributes.Email
+		residentUpdate.PhoneHash = req.InherentAttributes.PhoneHash
+		residentUpdate.EmailHash = req.InherentAttributes.EmailHash
+		residentUpdate.Metadata = req.InherentAttributes.Metadata
 
-	if req.Status != nil {
-		updates.Status = *req.Status
-	} else {
-		updates.Status = existingResident.Status
-	}
-
-	if req.ServiceLevel != nil {
-		updates.ServiceLevel = *req.ServiceLevel
-	} else {
-		updates.ServiceLevel = existingResident.ServiceLevel
-	}
-
-	if req.AdmissionDate != nil {
-		updates.AdmissionDate = unixTimestampToTime(req.AdmissionDate)
-	} else {
-		updates.AdmissionDate = existingResident.AdmissionDate
-	}
-
-	if req.DischargeDate != nil {
 		// discharge_date 验证：仅在 status='discharged' 或 'transferred' 时可以有值
-		if updates.Status != "discharged" && updates.Status != "transferred" {
-			return nil, fmt.Errorf("discharge_date can only be set when status is 'discharged' or 'transferred'")
+		if residentUpdate.DischargeDate != nil && residentUpdate.DischargeDate.Action == domain.UpdateActionUpdate && residentUpdate.DischargeDate.Value != nil {
+			var currentStatus string
+			if residentUpdate.Status != nil && residentUpdate.Status.Action == domain.UpdateActionUpdate {
+				currentStatus = residentUpdate.Status.Value
+			} else {
+				currentStatus = existingResident.Status
+			}
+			if currentStatus != "discharged" && currentStatus != "transferred" {
+				return nil, fmt.Errorf("discharge_date can only be set when status is 'discharged' or 'transferred'")
+			}
 		}
-		updates.DischargeDate = unixTimestampToTime(req.DischargeDate)
-	} else {
-		updates.DischargeDate = existingResident.DischargeDate
-	}
 
-	if req.UnitID != nil {
-		updates.UnitID = *req.UnitID
-	} else {
-		updates.UnitID = existingResident.UnitID
-	}
+		// 处理 phone_hash/email_hash 的唯一性检查和验证
+		var phoneHashToCheck, emailHashToCheck []byte
+		if req.InherentAttributes.PhoneHash != nil && req.InherentAttributes.PhoneHash.Action == domain.UpdateActionUpdate {
+			phoneHashToCheck = req.InherentAttributes.PhoneHash.Value
+		}
+		if req.InherentAttributes.EmailHash != nil && req.InherentAttributes.EmailHash.Action == domain.UpdateActionUpdate {
+			emailHashToCheck = req.InherentAttributes.EmailHash.Value
+		}
 
-	// RoomID 和 BedID 不在 UpdateResidentRequest 中，保持现有值
-	updates.RoomID = existingResident.RoomID
-	updates.BedID = existingResident.BedID
-
-	if req.FamilyTag != nil {
-		updates.FamilyTag = *req.FamilyTag
-	} else {
-		updates.FamilyTag = existingResident.FamilyTag
-	}
-
-	if req.IsAccessEnabled != nil {
-		updates.CanViewStatus = *req.IsAccessEnabled
-	} else {
-		updates.CanViewStatus = existingResident.CanViewStatus
-	}
-
-	if req.Note != nil {
-		updates.Note = *req.Note
-	} else {
-		updates.Note = existingResident.Note
-	}
-
-	// 4. 更新 Resident 记录
-	if err := s.residentsRepo.UpdateResident(ctx, req.TenantID, req.ResidentID, updates); err != nil {
-		s.logger.Error("UpdateResident failed",
-			zap.String("tenant_id", req.TenantID),
-			zap.String("resident_id", req.ResidentID),
-			zap.Error(err),
-		)
-		return nil, fmt.Errorf("failed to update resident: %w", err)
-	}
-
-	// 5. 更新 residents 表的 phone_hash/email_hash（如果提供了）
-	if req.PHI != nil && (req.PHI.PhoneHash != nil || req.PHI.EmailHash != nil) {
-		// 获取现有 resident 数据
-		existingResident, err := s.residentsRepo.GetResident(ctx, req.TenantID, req.ResidentID)
-		if err != nil {
-			s.logger.Warn("Failed to get existing resident for hash update",
-				zap.String("tenant_id", req.TenantID),
-				zap.String("resident_id", req.ResidentID),
-				zap.Error(err),
-			)
-		} else if existingResident != nil {
-			// 准备更新 phone_hash/email_hash
-			hashUpdated := false
-			var phoneHashBytes, emailHashBytes []byte
-			var phoneHashToSet, emailHashToSet *[]byte
-
-			// 处理 phone_hash
-			if req.PHI.PhoneHash != nil {
-				if *req.PHI.PhoneHash == "" {
-					// 空字符串表示删除（设置为 NULL）
-					phoneHashToSet = nil
-					hashUpdated = true
+		// 检查 phone/email 和 hash 的一致性
+		if req.InherentAttributes.Phone != nil && req.InherentAttributes.Phone.Action == domain.UpdateActionUpdate {
+			phone := strings.ToLower(strings.TrimSpace(req.InherentAttributes.Phone.Value))
+			if phone != "" {
+				expectedHash := sha256Hash(phone)
+				if req.InherentAttributes.PhoneHash != nil && req.InherentAttributes.PhoneHash.Action == domain.UpdateActionUpdate {
+					if !equalBytes(expectedHash, req.InherentAttributes.PhoneHash.Value) {
+						return nil, fmt.Errorf("phone and phone_hash mismatch")
+					}
 				} else {
-					// 解码 hex 字符串
-					decoded, err := hex.DecodeString(*req.PHI.PhoneHash)
-					if err != nil {
-						s.logger.Warn("Failed to decode phone_hash",
+					// 如果提供了 phone 但没有提供 phoneHash，需要计算
+					residentUpdate.PhoneHash = &domain.UpdateBytes{
+						Action: domain.UpdateActionUpdate,
+						Value:  expectedHash,
+					}
+					phoneHashToCheck = expectedHash
+				}
+			}
+		}
+		if req.InherentAttributes.Email != nil && req.InherentAttributes.Email.Action == domain.UpdateActionUpdate {
+			email := strings.ToLower(strings.TrimSpace(req.InherentAttributes.Email.Value))
+			if email != "" {
+				expectedHash := sha256Hash(email)
+				if req.InherentAttributes.EmailHash != nil && req.InherentAttributes.EmailHash.Action == domain.UpdateActionUpdate {
+					if !equalBytes(expectedHash, req.InherentAttributes.EmailHash.Value) {
+						return nil, fmt.Errorf("email and email_hash mismatch")
+					}
+				} else {
+					// 如果提供了 email 但没有提供 emailHash，需要计算
+					residentUpdate.EmailHash = &domain.UpdateBytes{
+						Action: domain.UpdateActionUpdate,
+						Value:  expectedHash,
+					}
+					emailHashToCheck = expectedHash
+				}
+			}
+		}
+
+		// 检查 hash 唯一性（排除当前 resident）
+		if len(phoneHashToCheck) > 0 {
+			if err := s.checkHashUniqueness(ctx, req.TenantID, "residents", phoneHashToCheck, nil, req.ResidentID, "resident_id"); err != nil {
+				return nil, err
+			}
+		}
+		if len(emailHashToCheck) > 0 {
+			if err := s.checkHashUniqueness(ctx, req.TenantID, "residents", nil, emailHashToCheck, req.ResidentID, "resident_id"); err != nil {
+				return nil, err
+			}
+		}
+
+		// 检查是否有需要更新的字段
+		hasResidentFields := residentUpdate.ResidentAccount != nil || residentUpdate.Nickname != nil ||
+			residentUpdate.PasswordHash != nil || residentUpdate.Status != nil || residentUpdate.ServiceLevel != nil ||
+			residentUpdate.AdmissionDate != nil || residentUpdate.DischargeDate != nil || residentUpdate.BranchID != nil ||
+			residentUpdate.IsAccessEnabled != nil || residentUpdate.Note != nil || residentUpdate.Phone != nil ||
+			residentUpdate.Email != nil || residentUpdate.PhoneHash != nil || residentUpdate.EmailHash != nil ||
+			residentUpdate.Metadata != nil
+
+		// 如果有需要更新的字段，调用 UpdateResidentFields
+		if hasResidentFields {
+			if err := s.residentsRepo.UpdateResidentFields(ctx, req.TenantID, req.ResidentID, residentUpdate); err != nil {
+				s.logger.Error("UpdateResidentFields failed",
+					zap.String("tenant_id", req.TenantID),
+					zap.String("resident_id", req.ResidentID),
+					zap.Error(err),
+				)
+				return nil, fmt.Errorf("failed to update resident: %w", err)
+			}
+		}
+
+		// 3.2 处理 PHI 数据更新
+		if req.InherentAttributes.PHI != nil {
+			phiUpdate := &domain.ResidentPHIUpdate{}
+
+			// 映射所有 PHI 字段
+			phiUpdate.FirstName = req.InherentAttributes.PHI.FirstName
+			phiUpdate.LastName = req.InherentAttributes.PHI.LastName
+			phiUpdate.Gender = req.InherentAttributes.PHI.Gender
+			phiUpdate.DateOfBirth = req.InherentAttributes.PHI.DateOfBirth
+			phiUpdate.ResidentPhone = req.InherentAttributes.PHI.ResidentPhone
+			phiUpdate.ResidentEmail = req.InherentAttributes.PHI.ResidentEmail
+			// SavePhone 和 SaveEmail 不是 domain.ResidentPHIUpdate 的字段，它们用于控制是否在 residents 表中保存明文
+			// 这里只映射其他 PHI 字段
+			phiUpdate.WeightLb = req.InherentAttributes.PHI.WeightLb
+			phiUpdate.HeightFt = req.InherentAttributes.PHI.HeightFt
+			phiUpdate.HeightIn = req.InherentAttributes.PHI.HeightIn
+			phiUpdate.MobilityLevel = req.InherentAttributes.PHI.MobilityLevel
+			phiUpdate.TremorStatus = req.InherentAttributes.PHI.TremorStatus
+			phiUpdate.MobilityAid = req.InherentAttributes.PHI.MobilityAid
+			phiUpdate.ADLAssistance = req.InherentAttributes.PHI.ADLAssistance
+			phiUpdate.CommStatus = req.InherentAttributes.PHI.CommStatus
+			phiUpdate.HasHypertension = req.InherentAttributes.PHI.HasHypertension
+			phiUpdate.HasHyperlipaemia = req.InherentAttributes.PHI.HasHyperlipaemia
+			phiUpdate.HasHyperglycaemia = req.InherentAttributes.PHI.HasHyperglycaemia
+			phiUpdate.HasStrokeHistory = req.InherentAttributes.PHI.HasStrokeHistory
+			phiUpdate.HasParalysis = req.InherentAttributes.PHI.HasParalysis
+			phiUpdate.HasAlzheimer = req.InherentAttributes.PHI.HasAlzheimer
+			phiUpdate.MedicalHistory = req.InherentAttributes.PHI.MedicalHistory
+			phiUpdate.HomeAddressStreet = req.InherentAttributes.PHI.HomeAddressStreet
+			phiUpdate.HomeAddressCity = req.InherentAttributes.PHI.HomeAddressCity
+			phiUpdate.HomeAddressState = req.InherentAttributes.PHI.HomeAddressState
+			phiUpdate.HomeAddressPostalCode = req.InherentAttributes.PHI.HomeAddressPostalCode
+			phiUpdate.PlusCode = req.InherentAttributes.PHI.PlusCode
+
+			// 处理 SaveEmail/SavePhone 逻辑：如果 SaveEmail/SavePhone 为 true，需要同时更新 residents 表的 email/phone
+			saveEmail := req.InherentAttributes.PHI.SaveEmail
+			savePhone := req.InherentAttributes.PHI.SavePhone
+			if saveEmail != nil && saveEmail.Action == domain.UpdateActionUpdate && saveEmail.Value {
+				if phiUpdate.ResidentEmail != nil && phiUpdate.ResidentEmail.Action == domain.UpdateActionUpdate && phiUpdate.ResidentEmail.Value != "" {
+					// 需要在 residents 表中保存 email
+					if residentUpdate.Email == nil {
+						residentUpdate.Email = phiUpdate.ResidentEmail
+					}
+				}
+			}
+			if savePhone != nil && savePhone.Action == domain.UpdateActionUpdate && savePhone.Value {
+				if phiUpdate.ResidentPhone != nil && phiUpdate.ResidentPhone.Action == domain.UpdateActionUpdate && phiUpdate.ResidentPhone.Value != "" {
+					// 需要在 residents 表中保存 phone
+					if residentUpdate.Phone == nil {
+						residentUpdate.Phone = phiUpdate.ResidentPhone
+					}
+				}
+			}
+
+			// 调用 UpsertResidentPHIFields
+			if err := s.residentsRepo.UpsertResidentPHIFields(ctx, req.TenantID, req.ResidentID, phiUpdate); err != nil {
+				s.logger.Warn("UpsertResidentPHIFields failed",
+					zap.String("tenant_id", req.TenantID),
+					zap.String("resident_id", req.ResidentID),
+					zap.Error(err),
+				)
+				// 不失败整个操作，只记录警告
+			}
+
+			// 如果 SaveEmail/SavePhone 导致需要更新 residents 表的 email/phone，需要再次调用 UpdateResidentFields
+			if (saveEmail != nil && saveEmail.Action == domain.UpdateActionUpdate && saveEmail.Value) ||
+				(savePhone != nil && savePhone.Action == domain.UpdateActionUpdate && savePhone.Value) {
+				if hasResidentFields || residentUpdate.Email != nil || residentUpdate.Phone != nil {
+					// residentUpdate 可能已经在上面被更新，如果新增了 Email/Phone，需要再次更新
+					if err := s.residentsRepo.UpdateResidentFields(ctx, req.TenantID, req.ResidentID, residentUpdate); err != nil {
+						s.logger.Warn("UpdateResidentFields for email/phone failed",
 							zap.String("tenant_id", req.TenantID),
 							zap.String("resident_id", req.ResidentID),
 							zap.Error(err),
 						)
-					} else if len(decoded) > 0 {
-						phoneHashBytes = decoded
-						phoneHashToSet = &phoneHashBytes
-						hashUpdated = true
+						// 不失败整个操作，只记录警告
 					}
 				}
 			}
+		}
 
-			// 处理 email_hash
-			if req.PHI.EmailHash != nil {
-				if *req.PHI.EmailHash == "" {
-					// 空字符串表示删除（设置为 NULL）
-					emailHashToSet = nil
-					hashUpdated = true
-				} else {
-					// 解码 hex 字符串
-					decoded, err := hex.DecodeString(*req.PHI.EmailHash)
-					if err != nil {
-						s.logger.Warn("Failed to decode email_hash",
-							zap.String("tenant_id", req.TenantID),
-							zap.String("resident_id", req.ResidentID),
-							zap.Error(err),
-						)
-					} else if len(decoded) > 0 {
-						emailHashBytes = decoded
-						emailHashToSet = &emailHashBytes
-						hashUpdated = true
-					}
+		// 3.3 处理 Contacts 更新
+		if len(req.InherentAttributes.Contacts) > 0 {
+			for _, contactReq := range req.InherentAttributes.Contacts {
+				if contactReq.Slot == "" {
+					continue // slot 是必填字段
 				}
-			}
 
-			// 检查唯一性（排除当前 resident）
-			if phoneHashToSet != nil && len(*phoneHashToSet) > 0 {
-				var count int
-				err := s.db.QueryRowContext(ctx,
-					`SELECT COUNT(*) FROM residents WHERE tenant_id = $1 AND phone_hash = $2 AND resident_id::text != $3`,
-					req.TenantID, *phoneHashToSet, req.ResidentID,
-				).Scan(&count)
-				if err != nil {
-					s.logger.Warn("Failed to check phone_hash uniqueness",
+				contactUpdate := &domain.ResidentContactUpdate{}
+
+				// 映射所有 Contact 字段
+				contactUpdate.IsEnabled = contactReq.IsEnabled
+				contactUpdate.Relationship = contactReq.Relationship
+				contactUpdate.ContactFirstName = contactReq.ContactFirstName
+				contactUpdate.ContactLastName = contactReq.ContactLastName
+				contactUpdate.ContactPhone = contactReq.ContactPhone
+				contactUpdate.ContactEmail = contactReq.ContactEmail
+				contactUpdate.ReceiveSMS = contactReq.ReceiveSMS
+				contactUpdate.ReceiveEmail = contactReq.ReceiveEmail
+				contactUpdate.AlertTimeWindow = contactReq.AlertTimeWindow
+
+				// 调用 UpdateResidentContactFields
+				if err := s.residentsRepo.UpdateResidentContactFields(ctx, req.TenantID, req.ResidentID, contactReq.Slot, contactUpdate); err != nil {
+					s.logger.Warn("UpdateResidentContactFields failed",
 						zap.String("tenant_id", req.TenantID),
 						zap.String("resident_id", req.ResidentID),
-						zap.Error(err),
-					)
-				} else if count > 0 {
-					return nil, fmt.Errorf("phone already exists in this organization")
-				}
-			}
-
-			if emailHashToSet != nil && len(*emailHashToSet) > 0 {
-				var count int
-				err := s.db.QueryRowContext(ctx,
-					`SELECT COUNT(*) FROM residents WHERE tenant_id = $1 AND email_hash = $2 AND resident_id::text != $3`,
-					req.TenantID, *emailHashToSet, req.ResidentID,
-				).Scan(&count)
-				if err != nil {
-					s.logger.Warn("Failed to check email_hash uniqueness",
-						zap.String("tenant_id", req.TenantID),
-						zap.String("resident_id", req.ResidentID),
-						zap.Error(err),
-					)
-				} else if count > 0 {
-					return nil, fmt.Errorf("email already exists in this organization")
-				}
-			}
-
-			// 更新 residents 表的 phone_hash/email_hash
-			if hashUpdated {
-				hashUpdate := &domain.Resident{
-					ResidentID: existingResident.ResidentID,
-					TenantID:   existingResident.TenantID,
-				}
-				// 设置 phone_hash（nil 表示不更新，空 slice 表示设置为 NULL，非空 slice 表示设置值）
-				if phoneHashToSet != nil {
-					if len(*phoneHashToSet) > 0 {
-						hashUpdate.PhoneHash = *phoneHashToSet
-					} else {
-						hashUpdate.PhoneHash = []byte{} // 空 slice 表示设置为 NULL
-					}
-				}
-				// 设置 email_hash（nil 表示不更新，空 slice 表示设置为 NULL，非空 slice 表示设置值）
-				if emailHashToSet != nil {
-					if len(*emailHashToSet) > 0 {
-						hashUpdate.EmailHash = *emailHashToSet
-					} else {
-						hashUpdate.EmailHash = []byte{} // 空 slice 表示设置为 NULL
-					}
-				}
-
-				// 只更新 phone_hash/email_hash
-				if err := s.residentsRepo.UpdateResident(ctx, req.TenantID, req.ResidentID, hashUpdate); err != nil {
-					s.logger.Warn("Failed to update phone_hash/email_hash",
-						zap.String("tenant_id", req.TenantID),
-						zap.String("resident_id", req.ResidentID),
+						zap.String("slot", contactReq.Slot),
 						zap.Error(err),
 					)
 					// 不失败整个操作，只记录警告
@@ -2101,137 +2280,67 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 		}
 	}
 
-	// 6. 更新 PHI 数据（如果提供了）
-	if req.PHI != nil {
-		phi := &domain.ResidentPHI{}
-		// 从现有 PHI 获取，然后更新提供的字段
-		existingPHI, _ := s.residentsRepo.GetResidentPHI(ctx, req.TenantID, req.ResidentID)
-		if existingPHI != nil {
-			phi = existingPHI
-		}
+	// 4. 处理 UnitRelation（unit_id, room_id, bed_id）
+	if req.UnitRelation != nil {
+		residentUpdate := &domain.ResidentUpdate{}
 
-		// 更新提供的字段
-		if req.PHI.FirstName != nil {
-			phi.FirstName = *req.PHI.FirstName
-		}
-		if req.PHI.LastName != nil {
-			phi.LastName = *req.PHI.LastName
-		}
-		if req.PHI.Gender != nil {
-			phi.Gender = *req.PHI.Gender
-		}
-		if req.PHI.DateOfBirth != nil {
-			phi.DateOfBirth = unixTimestampToTime(req.PHI.DateOfBirth)
-		}
-		// 处理 resident_phone（空字符串表示删除，设置为 NULL）
-		if req.PHI.ResidentPhone != nil {
-			if *req.PHI.ResidentPhone == "" {
-				phi.ResidentPhone = "" // 空字符串，repository 会设置为 NULL
-			} else {
-				phi.ResidentPhone = *req.PHI.ResidentPhone
-			}
-		}
-		// 处理 resident_email（空字符串表示删除，设置为 NULL）
-		if req.PHI.ResidentEmail != nil {
-			if *req.PHI.ResidentEmail == "" {
-				phi.ResidentEmail = "" // 空字符串，repository 会设置为 NULL
-			} else {
-				phi.ResidentEmail = *req.PHI.ResidentEmail
-			}
-		}
-		if req.PHI.WeightLb != nil {
-			phi.WeightLb = req.PHI.WeightLb
-		}
-		if req.PHI.HeightFt != nil {
-			phi.HeightFt = req.PHI.HeightFt
-		}
-		if req.PHI.HeightIn != nil {
-			phi.HeightIn = req.PHI.HeightIn
-		}
-		if req.PHI.MobilityLevel != nil {
-			phi.MobilityLevel = req.PHI.MobilityLevel
-		}
-		if req.PHI.TremorStatus != nil {
-			phi.TremorStatus = *req.PHI.TremorStatus
-		}
-		if req.PHI.MobilityAid != nil {
-			phi.MobilityAid = *req.PHI.MobilityAid
-		}
-		if req.PHI.ADLAssistance != nil {
-			phi.ADLAssistance = *req.PHI.ADLAssistance
-		}
-		if req.PHI.CommStatus != nil {
-			phi.CommStatus = *req.PHI.CommStatus
-		}
-		if req.PHI.HasHypertension != nil {
-			phi.HasHypertension = *req.PHI.HasHypertension
-		}
-		if req.PHI.HasHyperlipaemia != nil {
-			phi.HasHyperlipaemia = *req.PHI.HasHyperlipaemia
-		}
-		if req.PHI.HasHyperglycaemia != nil {
-			phi.HasHyperglycaemia = *req.PHI.HasHyperglycaemia
-		}
-		if req.PHI.HasStrokeHistory != nil {
-			phi.HasStrokeHistory = *req.PHI.HasStrokeHistory
-		}
-		if req.PHI.HasParalysis != nil {
-			phi.HasParalysis = *req.PHI.HasParalysis
-		}
-		if req.PHI.HasAlzheimer != nil {
-			phi.HasAlzheimer = *req.PHI.HasAlzheimer
-		}
-		if req.PHI.MedicalHistory != nil {
-			phi.MedicalHistory = *req.PHI.MedicalHistory
-		}
-		if req.PHI.HomeAddressStreet != nil {
-			phi.HomeAddressStreet = *req.PHI.HomeAddressStreet
-		}
-		if req.PHI.HomeAddressCity != nil {
-			phi.HomeAddressCity = *req.PHI.HomeAddressCity
-		}
-		if req.PHI.HomeAddressState != nil {
-			phi.HomeAddressState = *req.PHI.HomeAddressState
-		}
-		if req.PHI.HomeAddressPostalCode != nil {
-			phi.HomeAddressPostalCode = *req.PHI.HomeAddressPostalCode
-		}
-		if req.PHI.PlusCode != nil {
-			phi.PlusCode = *req.PHI.PlusCode
-		}
+		residentUpdate.UnitID = req.UnitRelation.UnitID
+		residentUpdate.RoomID = req.UnitRelation.RoomID
+		residentUpdate.BedID = req.UnitRelation.BedID
 
-		if err := s.residentsRepo.UpsertResidentPHI(ctx, req.TenantID, req.ResidentID, phi); err != nil {
-			s.logger.Warn("Failed to update PHI",
-				zap.String("tenant_id", req.TenantID),
-				zap.String("resident_id", req.ResidentID),
-				zap.Error(err),
-			)
-			// 不失败整个操作，只记录警告
+		// 检查是否有需要更新的字段
+		hasUnitRelation := residentUpdate.UnitID != nil || residentUpdate.RoomID != nil || residentUpdate.BedID != nil
+
+		if hasUnitRelation {
+			// 验证 bed → room → unit 的层级关系
+			if residentUpdate.BedID != nil && residentUpdate.BedID.Action == domain.UpdateActionUpdate && residentUpdate.BedID.Value != "" {
+				// 如果指定了 bed_id，必须同时指定 room_id 和 unit_id
+				if residentUpdate.RoomID == nil || residentUpdate.RoomID.Action != domain.UpdateActionUpdate || residentUpdate.RoomID.Value == "" {
+					return nil, fmt.Errorf("bed_id requires room_id")
+				}
+				if residentUpdate.UnitID == nil || residentUpdate.UnitID.Action != domain.UpdateActionUpdate || residentUpdate.UnitID.Value == "" {
+					return nil, fmt.Errorf("bed_id requires unit_id")
+				}
+			}
+			if residentUpdate.RoomID != nil && residentUpdate.RoomID.Action == domain.UpdateActionUpdate && residentUpdate.RoomID.Value != "" {
+				// 如果指定了 room_id，必须同时指定 unit_id
+				if residentUpdate.UnitID == nil || residentUpdate.UnitID.Action != domain.UpdateActionUpdate || residentUpdate.UnitID.Value == "" {
+					return nil, fmt.Errorf("room_id requires unit_id")
+				}
+			}
+
+			// 调用 UpdateResidentFields
+			if err := s.residentsRepo.UpdateResidentFields(ctx, req.TenantID, req.ResidentID, residentUpdate); err != nil {
+				s.logger.Error("UpdateResidentFields for unit relation failed",
+					zap.String("tenant_id", req.TenantID),
+					zap.String("resident_id", req.ResidentID),
+					zap.Error(err),
+				)
+				return nil, fmt.Errorf("failed to update resident unit relation: %w", err)
+			}
 		}
 	}
 
-	// 6. 更新 Caregivers 数据（如果提供了）
-	if req.Caregivers != nil {
-		// 将 []string 转换为 json.RawMessage
-		var userListJSON, groupListJSON json.RawMessage
-		if len(req.Caregivers.UserList) > 0 {
-			userListJSON, _ = json.Marshal(req.Caregivers.UserList)
-		}
-		if len(req.Caregivers.GroupList) > 0 {
-			groupListJSON, _ = json.Marshal(req.Caregivers.GroupList)
-		}
+	// 5. 处理 CaregiverRelation（user_list, group_list）
+	if req.CaregiverRelation != nil {
+		caregiverUpdate := &domain.ResidentCaregiverUpdate{}
 
-		caregiver := &domain.ResidentCaregiver{
-			UserList:  userListJSON,
-			GroupList: groupListJSON,
-		}
-		if err := s.residentsRepo.UpsertResidentCaregiver(ctx, req.TenantID, req.ResidentID, caregiver); err != nil {
-			s.logger.Warn("Failed to update caregivers",
-				zap.String("tenant_id", req.TenantID),
-				zap.String("resident_id", req.ResidentID),
-				zap.Error(err),
-			)
-			// 不失败整个操作，只记录警告
+		caregiverUpdate.UserList = req.CaregiverRelation.UserList
+		caregiverUpdate.GroupList = req.CaregiverRelation.GroupList
+
+		// 检查是否有需要更新的字段
+		hasCaregiverRelation := caregiverUpdate.UserList != nil || caregiverUpdate.GroupList != nil
+
+		if hasCaregiverRelation {
+			// 调用 UpsertResidentCaregiverFields
+			if err := s.residentsRepo.UpsertResidentCaregiverFields(ctx, req.TenantID, req.ResidentID, caregiverUpdate); err != nil {
+				s.logger.Warn("UpsertResidentCaregiverFields failed",
+					zap.String("tenant_id", req.TenantID),
+					zap.String("resident_id", req.ResidentID),
+					zap.Error(err),
+				)
+				// 不失败整个操作，只记录警告
+			}
 		}
 	}
 
@@ -2242,157 +2351,294 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 
 // DeleteResident 删除住户（软删除）
 func (s *residentService) DeleteResident(ctx context.Context, req DeleteResidentRequest) (*DeleteResidentResponse, error) {
+	// ========== 1. 参数验证 ==========
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 	if req.ResidentID == "" {
 		return nil, fmt.Errorf("resident_id is required")
 	}
-
-	// 1. 权限检查
-	if req.CurrentUserType == "resident" || req.CurrentUserType == "family" {
-		// Resident/Family 不能删除
-		return nil, fmt.Errorf("access denied: residents and family members cannot delete residents")
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required")
 	}
 
-	// Staff: 权限检查（AssignedOnly, BranchOnly）
-	if req.PermissionCheck != nil {
-		if req.PermissionCheck.AssignedOnly && req.CurrentUserID != "" {
-			var isAssigned bool
-			err := s.db.QueryRowContext(ctx,
-				`SELECT EXISTS(
+	// ========== 2. 验证用户身份和权限 ==========
+
+	// 2.1 查询用户信息（不信任前端传入的数据）
+	var dbTenantID, dbRole, dbStatus string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT tenant_id::text, role, status 
+		 FROM users 
+		 WHERE user_id::text = $1`,
+		req.CurrentUserID,
+	).Scan(&dbTenantID, &dbRole, &dbStatus)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("user not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query user: %w", err)
+	}
+
+	// 验证用户状态
+	if dbStatus != "active" {
+		return nil, fmt.Errorf("user is not active")
+	}
+
+	// 2.2 验证 tenant_id 一致性
+	if req.TenantID != dbTenantID {
+		return nil, fmt.Errorf("tenant_id mismatch")
+	}
+	tenantID := dbTenantID
+
+	// 2.3 角色验证
+	if dbRole == "Individual" {
+		return nil, fmt.Errorf("individual users cannot delete residents")
+	}
+
+	// ========== 3. 验证住户存在 ==========
+	var residentTenantID, residentStatus string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT tenant_id::text, status 
+		 FROM residents 
+		 WHERE resident_id::text = $1`,
+		req.ResidentID,
+	).Scan(&residentTenantID, &residentStatus)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("resident not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query resident: %w", err)
+	}
+
+	// 验证 tenant_id 一致性
+	if residentTenantID != tenantID {
+		return nil, fmt.Errorf("resident tenant_id mismatch")
+	}
+
+	// ========== 4. 权限检查（AssignedOnly, BranchOnly）==========
+
+	// 4.1 AssignedOnly 检查
+	if req.PermissionCheck != nil && req.PermissionCheck.AssignedOnly {
+		var isAssigned bool
+		err := s.db.QueryRowContext(ctx,
+			`SELECT EXISTS(
 					SELECT 1 FROM resident_caregivers rc
 					WHERE rc.tenant_id = $1
 					  AND rc.resident_id::text = $2
-					  AND (rc.userList::text LIKE $3 OR rc.userList::text LIKE $4)
+					  AND (rc.user_list::text LIKE $3 OR rc.user_list::text LIKE $4)
 				)`,
-				req.TenantID, req.ResidentID, req.CurrentUserID, "%\""+req.CurrentUserID+"\"%",
-			).Scan(&isAssigned)
-			if err != nil {
-				return nil, fmt.Errorf("failed to check assignment: %w", err)
-			}
-			if !isAssigned {
-				return nil, fmt.Errorf("permission denied: can only delete assigned residents")
-			}
+			tenantID, req.ResidentID, req.CurrentUserID, "%\""+req.CurrentUserID+"\"%",
+		).Scan(&isAssigned)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check assignment: %w", err)
+		}
+		if !isAssigned {
+			return nil, fmt.Errorf("permission denied: can only delete assigned residents")
+		}
+	}
+
+	// 4.2 BranchOnly 检查
+	if req.PermissionCheck != nil && req.PermissionCheck.BranchOnly {
+		// 获取住户的 branch_id
+		var residentBranchID sql.NullString
+		err := s.db.QueryRowContext(ctx,
+			`SELECT branch_id::text 
+			 FROM residents 
+			 WHERE tenant_id = $1 AND resident_id::text = $2`,
+			tenantID, req.ResidentID,
+		).Scan(&residentBranchID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get resident branch_id: %w", err)
 		}
 
-		if req.PermissionCheck.BranchOnly {
-			var targetBranchTag sql.NullString
-			err := s.db.QueryRowContext(ctx,
-				`SELECT COALESCE(u.branch_name, '') as branch_tag
-				 FROM residents r
-				 LEFT JOIN units u ON u.unit_id = r.unit_id
-				 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
-				req.TenantID, req.ResidentID,
-			).Scan(&targetBranchTag)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					return nil, fmt.Errorf("resident not found")
-				}
-				return nil, fmt.Errorf("failed to get resident info: %w", err)
-			}
+		// 获取用户的主院区 branch_id
+		var userBranchID sql.NullString
+		err = s.db.QueryRowContext(ctx,
+			`SELECT ub.branch_id::text 
+			 FROM user_branches ub
+			 WHERE ub.user_id::text = $1 AND ub.is_primary = true
+			 LIMIT 1`,
+			req.CurrentUserID,
+		).Scan(&userBranchID)
 
-			userBranchTag := req.PermissionCheck.UserBranchTag
-			if userBranchTag == "" {
-				if targetBranchTag.Valid && targetBranchTag.String != "" {
-					return nil, fmt.Errorf("permission denied: can only delete residents in units with branch_tag IS NULL")
-				}
-			} else {
-				if !targetBranchTag.Valid || targetBranchTag.String != userBranchTag {
-					return nil, fmt.Errorf("permission denied: can only delete residents in units with branch_tag = %s", userBranchTag)
-				}
+		// 验证 branch_id 匹配
+		if userBranchID.Valid {
+			// 用户有 branch_id，住户必须有相同的 branch_id
+			if !residentBranchID.Valid || residentBranchID.String != userBranchID.String {
+				return nil, fmt.Errorf("permission denied: can only delete residents in the same branch")
+			}
+		} else {
+			// 用户没有 branch_id，只能删除没有 branch_id 的住户
+			if residentBranchID.Valid {
+				return nil, fmt.Errorf("permission denied: can only delete residents without branch_id")
 			}
 		}
 	}
 
-	// 2. 软删除：将 status 设置为 'discharged'
-	dischargedStatus := "discharged"
-	updates := &domain.Resident{
-		Status: dischargedStatus,
+	// ========== 5. 软删除：将 status 设置为 'discharged' ==========
+	residentUpdate := &domain.ResidentUpdate{
+		Status: &domain.UpdateString{
+			Action: domain.UpdateActionUpdate,
+			Value:  "discharged",
+		},
 	}
 
-	if err := s.residentsRepo.UpdateResident(ctx, req.TenantID, req.ResidentID, updates); err != nil {
+	err = s.residentsRepo.UpdateResidentFields(ctx, tenantID, req.ResidentID, residentUpdate)
+	if err != nil {
 		s.logger.Error("DeleteResident failed",
-			zap.String("tenant_id", req.TenantID),
+			zap.String("tenant_id", tenantID),
 			zap.String("resident_id", req.ResidentID),
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to delete resident: %w", err)
 	}
 
-	return &DeleteResidentResponse{
-		Success: true,
-	}, nil
+	return &DeleteResidentResponse{Success: true}, nil
 }
 
 // ResetResidentPassword 重置住户密码
 func (s *residentService) ResetResidentPassword(ctx context.Context, req ResetResidentPasswordRequest) (*ResetResidentPasswordResponse, error) {
+	// ========== 1. 参数验证 ==========
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 	if req.ResidentID == "" {
 		return nil, fmt.Errorf("resident_id is required")
 	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required")
+	}
 
-	// 1. 权限检查
-	if req.CurrentUserType == "resident" || req.CurrentUserType == "family" {
-		// Resident/Family: 只能重置自己的密码
+	// ========== 2. 验证用户身份和权限 ==========
+
+	// 2.1 查询用户信息（不信任前端传入的数据）
+	var dbTenantID, dbRole, dbStatus string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT tenant_id::text, role, status 
+		 FROM users 
+		 WHERE user_id::text = $1`,
+		req.CurrentUserID,
+	).Scan(&dbTenantID, &dbRole, &dbStatus)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("user not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query user: %w", err)
+	}
+
+	// 验证用户状态
+	if dbStatus != "active" {
+		return nil, fmt.Errorf("user is not active")
+	}
+
+	// 2.2 验证 tenant_id 一致性
+	if req.TenantID != dbTenantID {
+		return nil, fmt.Errorf("tenant_id mismatch")
+	}
+	tenantID := dbTenantID
+
+	// 2.3 权限检查
+	if dbRole == "Individual" {
+		// Individual 用户可以重置自己的密码（通过 resident_id 匹配）
+		if req.CurrentUserID != req.ResidentID {
+			return nil, fmt.Errorf("access denied: individual users can only reset own password")
+		}
+	} else if dbRole == "Resident" || dbRole == "Family" {
+		// Resident/Family 用户只能重置自己的密码
 		if req.CurrentUserID != req.ResidentID {
 			return nil, fmt.Errorf("access denied: can only reset own password")
 		}
-	} else {
-		// Staff: 权限检查（AssignedOnly, BranchOnly）
-		if req.PermissionCheck != nil {
-			if req.PermissionCheck.AssignedOnly && req.CurrentUserID != "" {
-				var isAssigned bool
-				err := s.db.QueryRowContext(ctx,
-					`SELECT EXISTS(
+	}
+	// Staff 用户（Admin, Manager, Caregiver, IT）可以重置其他住户的密码（需要后续权限检查）
+
+	// ========== 3. 验证住户存在 ==========
+	var residentTenantID string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT tenant_id::text 
+		 FROM residents 
+		 WHERE resident_id::text = $1`,
+		req.ResidentID,
+	).Scan(&residentTenantID)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("resident not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query resident: %w", err)
+	}
+
+	// 验证 tenant_id 一致性
+	if residentTenantID != tenantID {
+		return nil, fmt.Errorf("resident tenant_id mismatch")
+	}
+
+	// ========== 4. Staff 权限检查（AssignedOnly, BranchOnly）==========
+
+	// 只有 Staff 用户才需要检查 AssignedOnly 和 BranchOnly
+	if dbRole != "Individual" && dbRole != "Resident" && dbRole != "Family" {
+		// 4.1 AssignedOnly 检查
+		if req.PermissionCheck != nil && req.PermissionCheck.AssignedOnly {
+			var isAssigned bool
+			err := s.db.QueryRowContext(ctx,
+				`SELECT EXISTS(
 						SELECT 1 FROM resident_caregivers rc
 						WHERE rc.tenant_id = $1
 						  AND rc.resident_id::text = $2
-						  AND (rc.userList::text LIKE $3 OR rc.userList::text LIKE $4)
+						  AND (rc.user_list::text LIKE $3 OR rc.user_list::text LIKE $4)
 					)`,
-					req.TenantID, req.ResidentID, req.CurrentUserID, "%\""+req.CurrentUserID+"\"%",
-				).Scan(&isAssigned)
-				if err != nil {
-					return nil, fmt.Errorf("failed to check assignment: %w", err)
-				}
-				if !isAssigned {
-					return nil, fmt.Errorf("permission denied: can only reset password for assigned residents")
-				}
+				tenantID, req.ResidentID, req.CurrentUserID, "%\""+req.CurrentUserID+"\"%",
+			).Scan(&isAssigned)
+			if err != nil {
+				return nil, fmt.Errorf("failed to check assignment: %w", err)
+			}
+			if !isAssigned {
+				return nil, fmt.Errorf("permission denied: can only reset password for assigned residents")
+			}
+		}
+
+		// 4.2 BranchOnly 检查
+		if req.PermissionCheck != nil && req.PermissionCheck.BranchOnly {
+			// 获取住户的 branch_id
+			var residentBranchID sql.NullString
+			err := s.db.QueryRowContext(ctx,
+				`SELECT branch_id::text 
+				 FROM residents 
+				 WHERE tenant_id = $1 AND resident_id::text = $2`,
+				tenantID, req.ResidentID,
+			).Scan(&residentBranchID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get resident branch_id: %w", err)
 			}
 
-			if req.PermissionCheck.BranchOnly {
-				var targetBranchTag sql.NullString
-				err := s.db.QueryRowContext(ctx,
-					`SELECT COALESCE(u.branch_name, '') as branch_tag
-					 FROM residents r
-					 LEFT JOIN units u ON u.unit_id = r.unit_id
-					 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
-					req.TenantID, req.ResidentID,
-				).Scan(&targetBranchTag)
-				if err != nil {
-					if err == sql.ErrNoRows {
-						return nil, fmt.Errorf("resident not found")
-					}
-					return nil, fmt.Errorf("failed to get resident info: %w", err)
-				}
+			// 获取用户的主院区 branch_id
+			var userBranchID sql.NullString
+			err = s.db.QueryRowContext(ctx,
+				`SELECT ub.branch_id::text 
+				 FROM user_branches ub
+				 WHERE ub.user_id::text = $1 AND ub.is_primary = true
+				 LIMIT 1`,
+				req.CurrentUserID,
+			).Scan(&userBranchID)
 
-				userBranchTag := req.PermissionCheck.UserBranchTag
-				if userBranchTag == "" {
-					if targetBranchTag.Valid && targetBranchTag.String != "" {
-						return nil, fmt.Errorf("permission denied: can only reset password for residents in units with branch_tag IS NULL")
-					}
-				} else {
-					if !targetBranchTag.Valid || targetBranchTag.String != userBranchTag {
-						return nil, fmt.Errorf("permission denied: can only reset password for residents in units with branch_tag = %s", userBranchTag)
-					}
+			// 验证 branch_id 匹配
+			if userBranchID.Valid {
+				// 用户有 branch_id，住户必须有相同的 branch_id
+				if !residentBranchID.Valid || residentBranchID.String != userBranchID.String {
+					return nil, fmt.Errorf("permission denied: can only reset password for residents in the same branch")
+				}
+			} else {
+				// 用户没有 branch_id，只能重置没有 branch_id 的住户的密码
+				if residentBranchID.Valid {
+					return nil, fmt.Errorf("permission denied: can only reset password for residents without branch_id")
 				}
 			}
 		}
 	}
 
-	// 2. 密码哈希（前端已 hash，这里直接解码 hex 字符串）
+	// ========== 5. 密码哈希（前端已 hash，这里直接解码 hex 字符串）==========
 	// 前端发送的是 SHA256(password) 的 hex 字符串，直接解码为 byte slice
 	if req.NewPassword == "" {
 		return nil, fmt.Errorf("password hash is required")
@@ -2402,14 +2648,18 @@ func (s *residentService) ResetResidentPassword(ctx context.Context, req ResetRe
 		return nil, fmt.Errorf("failed to decode password hash: %w", err)
 	}
 
-	// 4. 更新 residents 表
-	_, err = s.db.ExecContext(ctx,
-		`UPDATE residents SET password_hash = $1 WHERE tenant_id = $2 AND resident_id::text = $3`,
-		passwordHash, req.TenantID, req.ResidentID,
-	)
+	// ========== 6. 使用 UpdateResidentFields 更新 password_hash ==========
+	residentUpdate := &domain.ResidentUpdate{
+		PasswordHash: &domain.UpdateBytes{
+			Action: domain.UpdateActionUpdate,
+			Value:  passwordHash,
+		},
+	}
+
+	err = s.residentsRepo.UpdateResidentFields(ctx, tenantID, req.ResidentID, residentUpdate)
 	if err != nil {
 		s.logger.Error("ResetResidentPassword failed",
-			zap.String("tenant_id", req.TenantID),
+			zap.String("tenant_id", tenantID),
 			zap.String("resident_id", req.ResidentID),
 			zap.Error(err),
 		)
@@ -2417,113 +2667,6 @@ func (s *residentService) ResetResidentPassword(ctx context.Context, req ResetRe
 	}
 
 	return &ResetResidentPasswordResponse{
-		Success:     true,
-		NewPassword: "", // 不再返回密码（前端已 hash，后端不存储明文）
-	}, nil
-}
-
-// ResetContactPassword 重置联系人密码
-func (s *residentService) ResetContactPassword(ctx context.Context, req ResetContactPasswordRequest) (*ResetContactPasswordResponse, error) {
-	if req.TenantID == "" {
-		return nil, fmt.Errorf("tenant_id is required")
-	}
-	if req.ContactID == "" {
-		return nil, fmt.Errorf("contact_id is required")
-	}
-
-	// 1. 获取联系人信息（用于权限检查）
-	var residentID sql.NullString
-	err := s.db.QueryRowContext(ctx,
-		`SELECT resident_id::text FROM resident_contacts WHERE tenant_id = $1 AND contact_id::text = $2`,
-		req.TenantID, req.ContactID,
-	).Scan(&residentID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("contact not found")
-		}
-		return nil, fmt.Errorf("failed to get contact info: %w", err)
-	}
-
-	// 2. 权限检查
-	if req.CurrentUserType == "resident" || req.CurrentUserType == "family" {
-		// Resident/Family: 只能重置自己的联系人密码
-		if req.CurrentUserID != residentID.String {
-			return nil, fmt.Errorf("access denied: can only reset password for own contacts")
-		}
-	} else {
-		// Staff: 权限检查（AssignedOnly, BranchOnly）
-		if req.PermissionCheck != nil {
-			if req.PermissionCheck.AssignedOnly && req.CurrentUserID != "" {
-				var isAssigned bool
-				err := s.db.QueryRowContext(ctx,
-					`SELECT EXISTS(
-						SELECT 1 FROM resident_caregivers rc
-						WHERE rc.tenant_id = $1
-						  AND rc.resident_id::text = $2
-						  AND (rc.userList::text LIKE $3 OR rc.userList::text LIKE $4)
-					)`,
-					req.TenantID, residentID.String, req.CurrentUserID, "%\""+req.CurrentUserID+"\"%",
-				).Scan(&isAssigned)
-				if err != nil {
-					return nil, fmt.Errorf("failed to check assignment: %w", err)
-				}
-				if !isAssigned {
-					return nil, fmt.Errorf("permission denied: can only reset password for contacts of assigned residents")
-				}
-			}
-
-			if req.PermissionCheck.BranchOnly {
-				var targetBranchTag sql.NullString
-				err := s.db.QueryRowContext(ctx,
-					`SELECT COALESCE(u.branch_name, '') as branch_tag
-					 FROM residents r
-					 LEFT JOIN units u ON u.unit_id = r.unit_id
-					 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
-					req.TenantID, residentID.String,
-				).Scan(&targetBranchTag)
-				if err != nil {
-					return nil, fmt.Errorf("failed to get resident info: %w", err)
-				}
-
-				userBranchTag := req.PermissionCheck.UserBranchTag
-				if userBranchTag == "" {
-					if targetBranchTag.Valid && targetBranchTag.String != "" {
-						return nil, fmt.Errorf("permission denied: can only reset password for contacts of residents in units with branch_tag IS NULL")
-					}
-				} else {
-					if !targetBranchTag.Valid || targetBranchTag.String != userBranchTag {
-						return nil, fmt.Errorf("permission denied: can only reset password for contacts of residents in units with branch_tag = %s", userBranchTag)
-					}
-				}
-			}
-		}
-	}
-
-	// 3. 密码哈希（前端已 hash，这里直接解码 hex 字符串）
-	// 前端发送的是 SHA256(password) 的 hex 字符串，直接解码为 byte slice
-	if req.NewPassword == "" {
-		return nil, fmt.Errorf("password hash is required")
-	}
-	passwordHash, err := hex.DecodeString(req.NewPassword)
-	if err != nil || len(passwordHash) == 0 {
-		return nil, fmt.Errorf("failed to decode password hash: %w", err)
-	}
-
-	// 4. 更新 resident_contacts 表
-	_, err = s.db.ExecContext(ctx,
-		`UPDATE resident_contacts SET password_hash = $1 WHERE tenant_id = $2 AND contact_id::text = $3`,
-		passwordHash, req.TenantID, req.ContactID,
-	)
-	if err != nil {
-		s.logger.Error("ResetContactPassword failed",
-			zap.String("tenant_id", req.TenantID),
-			zap.String("contact_id", req.ContactID),
-			zap.Error(err),
-		)
-		return nil, fmt.Errorf("failed to reset password: %w", err)
-	}
-
-	return &ResetContactPasswordResponse{
 		Success:     true,
 		NewPassword: "", // 不再返回密码（前端已 hash，后端不存储明文）
 	}, nil
@@ -2543,107 +2686,64 @@ func generateRandomPassword(length int) string {
 // GetResidentAccountSettings 获取住户/联系人账户设置
 // ============================================
 
-// GetResidentAccountSettings 获取住户/联系人账户设置（只返回账户设置相关字段）
+// GetResidentAccountSettings 获取住户账户设置（只返回账户设置相关字段）
 // 注意：这个 API 只能查看自己的账户设置，不允许查看其他用户的
+// 注意：联系人不能登录系统，所以不支持联系人的账户设置
 func (s *residentService) GetResidentAccountSettings(ctx context.Context, req GetResidentAccountSettingsRequest) (*GetResidentAccountSettingsResponse, error) {
 	// 1. 权限检查：只能查看自己的账户设置
 	if req.CurrentUserID != req.ResidentID {
 		return nil, fmt.Errorf("permission denied: can only view own account settings")
 	}
 
-	// 2. 判断是 resident 还是 contact
-	// 使用 role 来判断：Family = contact, Resident = resident
-	var isContact bool
+	// 2. 如果是 Family 角色，不支持（联系人不登录，不需要账户设置）
 	if req.CurrentUserRole == "Family" {
-		isContact = true
-	} else {
-		// Resident 或其他情况，默认为 resident
-		isContact = false
+		return nil, fmt.Errorf("contacts do not log in, account settings are not available for contacts")
 	}
 
-	// 3. 构建响应
+	// 3. 构建响应（只支持 Resident）
 	resp := &GetResidentAccountSettingsResponse{
-		IsContact: isContact,
+		IsContact: false,
 	}
 
-	if isContact {
-		// Contact: 从 resident_contacts 表获取（逻辑与 Resident 一样，处理占位符）
-		var contactEmail, contactPhone sql.NullString
-		var contactNickname sql.NullString
-		var linkedResidentAccount sql.NullString
+	// 4. Resident: 从 residents 和 resident_phi 表获取
+	var residentAccount, nickname sql.NullString
+	var residentEmail, residentPhone sql.NullString
 
-		err := s.db.QueryRowContext(ctx,
-			`SELECT 
-				COALESCE(rc.contact_email, '') as contact_email,
-				COALESCE(rc.contact_phone, '') as contact_phone,
-				COALESCE(rc.contact_first_name || ' ' || rc.contact_last_name, '') as nickname,
-				COALESCE(r.resident_account, '') as resident_account
-			 FROM resident_contacts rc
-			 JOIN residents r ON r.resident_id = rc.resident_id AND r.tenant_id = rc.tenant_id
-			 WHERE rc.tenant_id = $1 AND rc.contact_id::text = $2`,
-			req.TenantID, req.ResidentID,
-		).Scan(&contactEmail, &contactPhone, &contactNickname, &linkedResidentAccount)
-
-		if err != nil {
-			return nil, fmt.Errorf("contact not found: %w", err)
-		}
-
-		if linkedResidentAccount.Valid {
-			account := linkedResidentAccount.String
-			resp.ResidentAccount = &account
-		}
-		if contactNickname.Valid {
-			resp.Nickname = contactNickname.String
-		}
-		// Contact 的 email/phone 处理逻辑与 Resident 一样（处理占位符）
-		if contactEmail.Valid && contactEmail.String != "" && contactEmail.String != "***@***" {
-			email := contactEmail.String
-			resp.Email = &email
-			resp.SaveEmail = true // 如果存在且不是占位符，说明已保存
-		}
-		if contactPhone.Valid && contactPhone.String != "" && contactPhone.String != "xxx-xxx-xxxx" {
-			phone := contactPhone.String
-			resp.Phone = &phone
-			resp.SavePhone = true // 如果存在且不是占位符，说明已保存
-		}
-	} else {
-		// Resident: 从 residents 和 resident_phi 表获取
-		var residentAccount, nickname sql.NullString
-		var residentEmail, residentPhone sql.NullString
-
-		err := s.db.QueryRowContext(ctx,
-			`SELECT 
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 
 				r.resident_account,
 				COALESCE(r.nickname, '') as nickname,
-				COALESCE(rp.resident_email, '') as resident_email,
-				COALESCE(rp.resident_phone, '') as resident_phone
+			COALESCE(rp.resident_email, '') as resident_email,
+			COALESCE(rp.resident_phone, '') as resident_phone
 			 FROM residents r
 			 LEFT JOIN resident_phi rp ON rp.resident_id = r.resident_id AND rp.tenant_id = r.tenant_id
 			 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
-			req.TenantID, req.ResidentID,
-		).Scan(&residentAccount, &nickname, &residentEmail, &residentPhone)
+		req.TenantID, req.ResidentID,
+	).Scan(&residentAccount, &nickname, &residentEmail, &residentPhone)
 
-		if err != nil {
-			return nil, fmt.Errorf("resident not found: %w", err)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("resident not found")
 		}
+		return nil, fmt.Errorf("failed to get resident account settings: %w", err)
+	}
 
-		if residentAccount.Valid {
-			account := residentAccount.String
-			resp.ResidentAccount = &account
-		}
-		if nickname.Valid {
-			resp.Nickname = nickname.String
-		}
-		if residentEmail.Valid && residentEmail.String != "" && residentEmail.String != "***@***" {
-			email := residentEmail.String
-			resp.Email = &email
-			resp.SaveEmail = true // 如果存在且不是占位符，说明已保存
-		}
-		if residentPhone.Valid && residentPhone.String != "" && residentPhone.String != "xxx-xxx-xxxx" {
-			phone := residentPhone.String
-			resp.Phone = &phone
-			resp.SavePhone = true // 如果存在且不是占位符，说明已保存
-		}
+	if residentAccount.Valid {
+		account := residentAccount.String
+		resp.ResidentAccount = &account
+	}
+	if nickname.Valid {
+		resp.Nickname = nickname.String
+	}
+	if residentEmail.Valid && residentEmail.String != "" && residentEmail.String != "***@***" {
+		email := residentEmail.String
+		resp.Email = &email
+		resp.SaveEmail = true // 如果存在且不是占位符，说明已保存
+	}
+	if residentPhone.Valid && residentPhone.String != "" && residentPhone.String != "xxx-xxx-xxxx" {
+		phone := residentPhone.String
+		resp.Phone = &phone
+		resp.SavePhone = true // 如果存在且不是占位符，说明已保存
 	}
 
 	return resp, nil
@@ -2653,8 +2753,9 @@ func (s *residentService) GetResidentAccountSettings(ctx context.Context, req Ge
 // UpdateResidentAccountSettings 更新住户/联系人账户设置（统一 API）
 // ============================================
 
-// UpdateResidentAccountSettings 更新住户/联系人账户设置（在同一个事务中处理所有更新）
+// UpdateResidentAccountSettings 更新住户账户设置（在同一个事务中处理所有更新）
 // 注意：这个 API 只能更新自己的账户设置，不允许更新其他用户的
+// 注意：联系人不能登录系统，所以不支持联系人的账户设置
 func (s *residentService) UpdateResidentAccountSettings(ctx context.Context, req UpdateResidentAccountSettingsRequest) (*UpdateResidentAccountSettingsResponse, error) {
 	// 1. 参数验证
 	if req.TenantID == "" || req.ResidentID == "" || req.CurrentUserID == "" {
@@ -2666,14 +2767,9 @@ func (s *residentService) UpdateResidentAccountSettings(ctx context.Context, req
 		return nil, fmt.Errorf("permission denied: can only update own account settings")
 	}
 
-	// 3. 判断是 resident 还是 contact
-	// 使用 role 来判断：Family = contact, Resident = resident
-	var isContact bool
+	// 3. 如果是 Family 角色，不支持（联系人不登录，不需要账户设置）
 	if req.CurrentUserRole == "Family" {
-		isContact = true
-	} else {
-		// Resident 或其他情况，默认为 resident
-		isContact = false
+		return nil, fmt.Errorf("contacts do not log in, account settings cannot be updated for contacts")
 	}
 
 	// 4. 开始事务
@@ -2683,66 +2779,14 @@ func (s *residentService) UpdateResidentAccountSettings(ctx context.Context, req
 	}
 	defer tx.Rollback()
 
-	if isContact {
-		// Contact: 更新 resident_contacts 表
-		updates := []string{}
-		args := []interface{}{}
-		argIdx := 1
-
-		// 更新密码（如果提供，!= nil 就更新，不进行任何判断）
+	// 5. Resident: 更新 residents 和 resident_phi 表
+	{
+		// 5.1 更新密码（residents 表，如果提供，!= nil 就更新，不进行任何判断）
 		if req.PasswordHash != nil {
-			passwordHashBytes, _ := hex.DecodeString(*req.PasswordHash)
-			updates = append(updates, fmt.Sprintf("password_hash = $%d", argIdx))
-			args = append(args, passwordHashBytes)
-			argIdx++
-		}
-
-		// 更新 email（如果提供，!= nil 就更新，不进行任何判断，直接传值）
-		if req.Email != nil {
-			updates = append(updates, fmt.Sprintf("contact_email = $%d", argIdx))
-			args = append(args, *req.Email)
-			argIdx++
-		}
-
-		// 更新 email_hash（如果提供，!= nil 就更新，不进行任何判断，直接传值）
-		if req.EmailHash != nil {
-			updates = append(updates, fmt.Sprintf("email_hash = $%d", argIdx))
-			emailHashBytes, _ := hex.DecodeString(*req.EmailHash)
-			args = append(args, emailHashBytes)
-			argIdx++
-		}
-
-		// 更新 phone（如果提供，!= nil 就更新，不进行任何判断，直接传值）
-		if req.Phone != nil {
-			updates = append(updates, fmt.Sprintf("contact_phone = $%d", argIdx))
-			args = append(args, *req.Phone)
-			argIdx++
-		}
-
-		// 更新 phone_hash（如果提供，!= nil 就更新，不进行任何判断，直接传值）
-		if req.PhoneHash != nil {
-			updates = append(updates, fmt.Sprintf("phone_hash = $%d", argIdx))
-			phoneHashBytes, _ := hex.DecodeString(*req.PhoneHash)
-			args = append(args, phoneHashBytes)
-			argIdx++
-		}
-
-		if len(updates) > 0 {
-			query := fmt.Sprintf(
-				`UPDATE resident_contacts SET %s WHERE tenant_id = $%d AND contact_id::text = $%d`,
-				strings.Join(updates, ", "), argIdx, argIdx+1,
-			)
-			args = append(args, req.TenantID, req.ResidentID)
-			_, err = tx.ExecContext(ctx, query, args...)
-			if err != nil {
-				return nil, fmt.Errorf("failed to update contact: %w", err)
+			passwordHashBytes, err := hex.DecodeString(*req.PasswordHash)
+			if err != nil || len(passwordHashBytes) == 0 {
+				return nil, fmt.Errorf("failed to decode password hash: %w", err)
 			}
-		}
-	} else {
-		// Resident: 更新 residents 和 resident_phi 表
-		// 4.1 更新密码（residents 表，如果提供，!= nil 就更新，不进行任何判断）
-		if req.PasswordHash != nil {
-			passwordHashBytes, _ := hex.DecodeString(*req.PasswordHash)
 			_, err = tx.ExecContext(ctx,
 				`UPDATE residents SET password_hash = $1 WHERE tenant_id = $2 AND resident_id::text = $3`,
 				passwordHashBytes, req.TenantID, req.ResidentID,
@@ -2752,14 +2796,17 @@ func (s *residentService) UpdateResidentAccountSettings(ctx context.Context, req
 			}
 		}
 
-		// 4.2 更新 email/phone hash（residents 表，用于登录）
+		// 5.2 更新 email/phone hash（residents 表，用于登录）
 		residentUpdates := []string{}
 		residentArgs := []interface{}{}
 		residentArgIdx := 1
 
 		// 更新 email_hash（如果提供，!= nil 就更新，不进行任何判断，直接传值）
 		if req.EmailHash != nil {
-			emailHashBytes, _ := hex.DecodeString(*req.EmailHash)
+			emailHashBytes, err := hex.DecodeString(*req.EmailHash)
+			if err != nil || len(emailHashBytes) == 0 {
+				return nil, fmt.Errorf("failed to decode email hash: %w", err)
+			}
 			residentUpdates = append(residentUpdates, fmt.Sprintf("email_hash = $%d", residentArgIdx))
 			residentArgs = append(residentArgs, emailHashBytes)
 			residentArgIdx++
@@ -2767,7 +2814,10 @@ func (s *residentService) UpdateResidentAccountSettings(ctx context.Context, req
 
 		// 更新 phone_hash（如果提供，!= nil 就更新，不进行任何判断，直接传值）
 		if req.PhoneHash != nil {
-			phoneHashBytes, _ := hex.DecodeString(*req.PhoneHash)
+			phoneHashBytes, err := hex.DecodeString(*req.PhoneHash)
+			if err != nil || len(phoneHashBytes) == 0 {
+				return nil, fmt.Errorf("failed to decode phone hash: %w", err)
+			}
 			residentUpdates = append(residentUpdates, fmt.Sprintf("phone_hash = $%d", residentArgIdx))
 			residentArgs = append(residentArgs, phoneHashBytes)
 			residentArgIdx++
@@ -2785,7 +2835,7 @@ func (s *residentService) UpdateResidentAccountSettings(ctx context.Context, req
 			}
 		}
 
-		// 4.3 更新 email/phone 明文（resident_phi 表，根据 save 标志）
+		// 5.3 更新 email/phone 明文（resident_phi 表，根据 save 标志）
 		if req.Email != nil || req.Phone != nil {
 			// 检查 resident_phi 是否存在
 			var phiExists bool
@@ -2888,7 +2938,7 @@ func (s *residentService) UpdateResidentAccountSettings(ctx context.Context, req
 }
 
 // UpdateResidentContact 更新住户联系人信息
-func (s *residentService) UpdateResidentContact(ctx context.Context, req UpdateResidentContactRequest) (*UpdateResidentContactResponse, error) {
+func (s *residentService) UpdateResidentContact(ctx context.Context, req UpdateResidentContactStandaloneRequest) (*UpdateResidentContactResponse, error) {
 	// 1. 参数验证
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
@@ -2931,165 +2981,75 @@ func (s *residentService) UpdateResidentContact(ctx context.Context, req UpdateR
 		return nil, fmt.Errorf("permission denied: only Admin, Manager, and Resident can update contacts")
 	}
 
-	// 3. 查找或创建 contact（通过 resident_id + slot 定位）
-	// 如果不存在，则创建；如果存在，则更新（upsert 逻辑，类似 PHI 的 UpsertResidentPHI）
-	var contactID string
-	var isNewlyCreated bool                // 标记是否是新创建的 contact
-	var newContact *domain.ResidentContact // 保存新创建的 contact 对象，用于更新逻辑
+	// 3. 检查 contact 是否存在（通过 resident_id + slot 定位）
+	// 如果不存在，使用 UpdateResidentContactFields 时会自动创建（repository 层处理）
+	var contactExists bool
 	err := s.db.QueryRowContext(ctx,
-		`SELECT contact_id::text FROM resident_contacts WHERE tenant_id = $1 AND resident_id::text = $2 AND slot = $3`,
+		`SELECT EXISTS(SELECT 1 FROM resident_contacts WHERE tenant_id = $1 AND resident_id::text = $2 AND slot = $3)`,
 		req.TenantID, req.ResidentID, req.Slot,
-	).Scan(&contactID)
+	).Scan(&contactExists)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			isNewlyCreated = true
-			// Contact 不存在，需要创建（类似 PHI 的 UpsertResidentPHI 逻辑）
-			// 先构建一个基本的 contact 对象用于创建
-			defaultPassword := "ChangeMe123!"
-			defaultPasswordHashHex := HashPassword(defaultPassword)
-			defaultPasswordHash, _ := hex.DecodeString(defaultPasswordHashHex)
+		return nil, fmt.Errorf("failed to check contact existence: %w", err)
+	}
+	if !contactExists {
+		// Contact 不存在，需要先创建
+		newContact := &domain.ResidentContact{
+			Slot:      req.Slot,
+			IsEnabled: false, // 默认禁用
+		}
+		if req.IsEnabled != nil {
+			newContact.IsEnabled = *req.IsEnabled
+		}
+		if req.Relationship != nil {
+			newContact.Relationship = sql.NullString{String: *req.Relationship, Valid: *req.Relationship != ""}
+		}
+		if req.ContactFirstName != nil {
+			newContact.ContactFirstName = sql.NullString{String: *req.ContactFirstName, Valid: *req.ContactFirstName != ""}
+		}
+		if req.ContactLastName != nil {
+			newContact.ContactLastName = sql.NullString{String: *req.ContactLastName, Valid: *req.ContactLastName != ""}
+		}
+		if req.ContactPhone != nil {
+			newContact.ContactPhone = sql.NullString{String: *req.ContactPhone, Valid: *req.ContactPhone != ""}
+		}
+		if req.ContactEmail != nil {
+			newContact.ContactEmail = sql.NullString{String: *req.ContactEmail, Valid: *req.ContactEmail != ""}
+		}
+		if req.ReceiveSMS != nil {
+			newContact.ReceiveSMS = *req.ReceiveSMS
+		}
+		if req.ReceiveEmail != nil {
+			newContact.ReceiveEmail = *req.ReceiveEmail
+		}
 
-			newContact = &domain.ResidentContact{
-				Slot:               req.Slot,
-				IsEnabled:          false, // 默认禁用
-				Role:               "Family",
-				IsEmergencyContact: false,
-				PasswordHash:       defaultPasswordHash,
-			}
-			// 如果请求中提供了字段，使用请求的值
-			if req.IsEnabled != nil {
-				newContact.IsEnabled = *req.IsEnabled
-			}
-			if req.Relationship != nil {
-				newContact.Relationship = *req.Relationship
-			}
-			if req.ContactFirstName != nil {
-				newContact.ContactFirstName = *req.ContactFirstName
-			}
-			if req.ContactLastName != nil {
-				newContact.ContactLastName = *req.ContactLastName
-			}
-			if req.ContactPhone != nil {
-				newContact.ContactPhone = *req.ContactPhone
-			}
-			if req.ContactEmail != nil {
-				newContact.ContactEmail = *req.ContactEmail
-			}
-			if req.ReceiveSMS != nil {
-				newContact.ReceiveSMS = *req.ReceiveSMS
-			}
-			if req.ReceiveEmail != nil {
-				newContact.ReceiveEmail = *req.ReceiveEmail
-			}
-			// 解析 phone_hash 和 email_hash
-			if req.PhoneHash != nil && *req.PhoneHash != "" {
-				ph, err := hex.DecodeString(*req.PhoneHash)
-				if err == nil {
-					newContact.PhoneHash = ph
-				}
-			}
-			if req.EmailHash != nil && *req.EmailHash != "" {
-				eh, err := hex.DecodeString(*req.EmailHash)
-				if err == nil {
-					newContact.EmailHash = eh
-				}
-			}
-			if req.PasswordHash != nil && *req.PasswordHash != "" {
-				hashBytes, err := hex.DecodeString(*req.PasswordHash)
-				if err == nil {
-					newContact.PasswordHash = hashBytes
-				}
-			}
-
-			// 创建 contact
-			contactID, err = s.residentsRepo.CreateResidentContact(ctx, req.TenantID, req.ResidentID, newContact)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create contact: %w", err)
-			}
-			// 创建成功后，标记为刚创建的 contact，更新逻辑中应保留创建时的值
-			// 继续执行更新逻辑（使用新创建的 contactID）以应用其他字段的更新
-		} else {
-			return nil, fmt.Errorf("failed to get contact: %w", err)
+		_, err = s.residentsRepo.CreateResidentContact(ctx, req.TenantID, req.ResidentID, newContact)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create contact: %w", err)
 		}
 	}
 
-	// 4. 解析 phone_hash 和 email_hash，如果已存在则复用联系人信息
-	var phoneHash, emailHash []byte
-	if req.PhoneHash != nil {
-		if *req.PhoneHash != "" {
-			ph, err := hex.DecodeString(*req.PhoneHash)
-			if err != nil {
-				return nil, fmt.Errorf("invalid phone_hash format: %w", err)
-			}
-			phoneHash = ph
-		}
-	}
-	if req.EmailHash != nil {
-		if *req.EmailHash != "" {
-			eh, err := hex.DecodeString(*req.EmailHash)
-			if err != nil {
-				return nil, fmt.Errorf("invalid email_hash format: %w", err)
-			}
-			emailHash = eh
-		}
-	}
-
-	// 如果更新 phone_hash 或 email_hash，查找已存在的联系人信息（排除当前 contact）
-	var existingContact *domain.ResidentContact
-	if (req.PhoneHash != nil && len(phoneHash) > 0) || (req.EmailHash != nil && len(emailHash) > 0) {
-		existingContact = s.findExistingContactByHashExcluding(ctx, req.TenantID, phoneHash, emailHash, contactID)
-		// 如果找到已存在的联系人，说明是同一个联系人，复用其信息
-	}
-
-	// 5. 构建 domain.ResidentContact 对象
+	// 4. 构建 domain.ResidentContact 对象
+	// 注意：联系人不登录系统，不再使用 phone_hash, email_hash, password_hash 字段
 	contact := &domain.ResidentContact{
-		ContactID: contactID, // 从步骤3查询得到
-		Slot:      req.Slot,  // slot 是必填的，直接使用
+		Slot: req.Slot, // slot 是必填的，直接使用
 	}
 	if req.IsEnabled != nil {
 		contact.IsEnabled = *req.IsEnabled
 	}
 	if req.Relationship != nil {
-		contact.Relationship = *req.Relationship
-	} else if existingContact != nil && existingContact.Relationship != "" {
-		// 如果请求中未提供，复用已存在的值
-		contact.Relationship = existingContact.Relationship
+		contact.Relationship = sql.NullString{String: *req.Relationship, Valid: *req.Relationship != ""}
 	}
 	if req.ContactFirstName != nil {
-		contact.ContactFirstName = *req.ContactFirstName
-	} else if existingContact != nil && existingContact.ContactFirstName != "" {
-		// 如果请求中未提供，复用已存在的值
-		contact.ContactFirstName = existingContact.ContactFirstName
+		contact.ContactFirstName = sql.NullString{String: *req.ContactFirstName, Valid: *req.ContactFirstName != ""}
 	}
 	if req.ContactLastName != nil {
-		contact.ContactLastName = *req.ContactLastName
-	} else if existingContact != nil && existingContact.ContactLastName != "" {
-		// 如果请求中未提供，复用已存在的值
-		contact.ContactLastName = existingContact.ContactLastName
+		contact.ContactLastName = sql.NullString{String: *req.ContactLastName, Valid: *req.ContactLastName != ""}
 	}
-	// 更新 contact_phone（只要 != nil 就更新，参考 UpdateAccountSetting）
 	if req.ContactPhone != nil {
-		contact.ContactPhone = *req.ContactPhone // "" 表示删除（Repository 会处理为 NULL）
-	} else if existingContact != nil && existingContact.ContactPhone != "" {
-		// 如果请求中未提供，复用已存在的值
-		contact.ContactPhone = existingContact.ContactPhone
+		contact.ContactPhone = sql.NullString{String: *req.ContactPhone, Valid: *req.ContactPhone != ""}
 	}
-	// 更新 contact_email（只要 != nil 就更新，参考 UpdateAccountSetting）
-	// 注意：如果是新创建的 contact，且创建时已经设置了 contact_email，更新时不应该用空字符串覆盖
 	if req.ContactEmail != nil {
-		// 如果是新创建的 contact，且创建时已经设置了非空值，更新时如果是空字符串，不应该覆盖
-		if isNewlyCreated && newContact != nil && newContact.ContactEmail != "" && *req.ContactEmail == "" {
-			// 新创建的 contact，创建时已有值，更新时为空字符串，保留创建时的值
-			contact.ContactEmail = newContact.ContactEmail
-		} else {
-			contact.ContactEmail = *req.ContactEmail // "" 表示删除（Repository 会处理为 NULL）
-		}
-	} else if existingContact != nil && existingContact.ContactEmail != "" {
-		// 如果请求中未提供，复用已存在的值
-		contact.ContactEmail = existingContact.ContactEmail
-	} else if isNewlyCreated && newContact != nil && newContact.ContactEmail != "" {
-		// 如果是新创建的 contact，且创建时已经设置了值，但更新时未提供，保留创建时的值
-		contact.ContactEmail = newContact.ContactEmail
+		contact.ContactEmail = sql.NullString{String: *req.ContactEmail, Valid: *req.ContactEmail != ""}
 	}
 	if req.ReceiveSMS != nil {
 		contact.ReceiveSMS = *req.ReceiveSMS
@@ -3097,38 +3057,65 @@ func (s *residentService) UpdateResidentContact(ctx context.Context, req UpdateR
 	if req.ReceiveEmail != nil {
 		contact.ReceiveEmail = *req.ReceiveEmail
 	}
-	// 更新 phone_hash（只要 != nil 就更新，参考 UpdateAccountSetting）
-	if req.PhoneHash != nil {
-		if *req.PhoneHash == "" {
-			contact.PhoneHash = []byte{} // 空字符串，删除 phone_hash（Repository 会处理为 NULL）
-		} else {
-			contact.PhoneHash = phoneHash
-		}
-	}
-	// 更新 email_hash（只要 != nil 就更新，参考 UpdateAccountSetting）
-	if req.EmailHash != nil {
-		if *req.EmailHash == "" {
-			contact.EmailHash = []byte{} // 空字符串，删除 email_hash（Repository 会处理为 NULL）
-		} else {
-			contact.EmailHash = emailHash
-		}
-	}
-	// 更新 password_hash
-	// 规则：passwd 是不回显的，没有从密码改为无密码的状态转换，所以不能发送 ""
-	// vue 要么发送有效 password 的 hash，要么不发送该字段，表示 passwd 未修改
-	// 如果 req.PasswordHash 为 nil（未传递），不设置 contact.PasswordHash（保持为零值 nil，repository 不会更新）
-	// 如果 req.PasswordHash 有值，设置 contact.PasswordHash（repository 会更新）
-	if req.PasswordHash != nil && *req.PasswordHash != "" {
-		hashBytes, err := hex.DecodeString(*req.PasswordHash)
-		if err != nil {
-			return nil, fmt.Errorf("invalid password_hash format: %w", err)
-		}
-		contact.PasswordHash = hashBytes
-	}
-	// 如果 req.PasswordHash 为 nil 或空字符串，contact.PasswordHash 保持为零值 nil（不更新）
 
-	// 6. 调用 Repository 更新
-	err = s.residentsRepo.UpdateResidentContact(ctx, req.TenantID, contactID, contact)
+	// 5. 调用 Repository 更新（使用 UpdateResidentContactFields）
+	contactUpdate := &domain.ResidentContactUpdate{
+		IsEnabled:        nil,
+		Relationship:     nil,
+		ContactFirstName: nil,
+		ContactLastName:  nil,
+		ContactPhone:     nil,
+		ContactEmail:     nil,
+		ReceiveSMS:       nil,
+		ReceiveEmail:     nil,
+		AlertTimeWindow:  nil,
+	}
+	if req.IsEnabled != nil {
+		contactUpdate.IsEnabled = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: *req.IsEnabled}
+	}
+	if req.Relationship != nil {
+		if *req.Relationship == "" {
+			contactUpdate.Relationship = &domain.UpdateString{Action: domain.UpdateActionDelete}
+		} else {
+			contactUpdate.Relationship = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: *req.Relationship}
+		}
+	}
+	if req.ContactFirstName != nil {
+		if *req.ContactFirstName == "" {
+			contactUpdate.ContactFirstName = &domain.UpdateString{Action: domain.UpdateActionDelete}
+		} else {
+			contactUpdate.ContactFirstName = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: *req.ContactFirstName}
+		}
+	}
+	if req.ContactLastName != nil {
+		if *req.ContactLastName == "" {
+			contactUpdate.ContactLastName = &domain.UpdateString{Action: domain.UpdateActionDelete}
+		} else {
+			contactUpdate.ContactLastName = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: *req.ContactLastName}
+		}
+	}
+	if req.ContactPhone != nil {
+		if *req.ContactPhone == "" {
+			contactUpdate.ContactPhone = &domain.UpdateString{Action: domain.UpdateActionDelete}
+		} else {
+			contactUpdate.ContactPhone = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: *req.ContactPhone}
+		}
+	}
+	if req.ContactEmail != nil {
+		if *req.ContactEmail == "" {
+			contactUpdate.ContactEmail = &domain.UpdateString{Action: domain.UpdateActionDelete}
+		} else {
+			contactUpdate.ContactEmail = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: *req.ContactEmail}
+		}
+	}
+	if req.ReceiveSMS != nil {
+		contactUpdate.ReceiveSMS = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: *req.ReceiveSMS}
+	}
+	if req.ReceiveEmail != nil {
+		contactUpdate.ReceiveEmail = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: *req.ReceiveEmail}
+	}
+
+	err = s.residentsRepo.UpdateResidentContactFields(ctx, req.TenantID, req.ResidentID, req.Slot, contactUpdate)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update contact: %w", err)
 	}

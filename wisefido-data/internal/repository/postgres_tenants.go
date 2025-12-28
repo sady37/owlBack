@@ -33,6 +33,7 @@ func (r *PostgresTenantsRepository) GetTenant(ctx context.Context, tenantID stri
 	query := `
 		SELECT 
 			tenant_id::text,
+			COALESCE(tenant_type, 'organization') as tenant_type,
 			tenant_name,
 			COALESCE(domain, '') as domain,
 			COALESCE(email, '') as email,
@@ -47,6 +48,7 @@ func (r *PostgresTenantsRepository) GetTenant(ctx context.Context, tenantID stri
 	var metadataRaw json.RawMessage
 	err := r.db.QueryRowContext(ctx, query, tenantID).Scan(
 		&tenant.TenantID,
+		&tenant.TenantType,
 		&tenant.TenantName,
 		&tenant.Domain,
 		&tenant.Email,
@@ -74,6 +76,7 @@ func (r *PostgresTenantsRepository) GetTenantByDomain(ctx context.Context, domai
 	query := `
 		SELECT 
 			tenant_id::text,
+			COALESCE(tenant_type, 'organization') as tenant_type,
 			tenant_name,
 			COALESCE(domain, '') as domain,
 			COALESCE(email, '') as email,
@@ -88,6 +91,7 @@ func (r *PostgresTenantsRepository) GetTenantByDomain(ctx context.Context, domai
 	var metadataRaw json.RawMessage
 	err := r.db.QueryRowContext(ctx, query, domainName).Scan(
 		&tenant.TenantID,
+		&tenant.TenantType,
 		&tenant.TenantName,
 		&tenant.Domain,
 		&tenant.Email,
@@ -150,6 +154,7 @@ func (r *PostgresTenantsRepository) ListTenants(ctx context.Context, filter Tena
 	query := fmt.Sprintf(`
 		SELECT 
 			tenant_id::text,
+			COALESCE(tenant_type, 'organization') as tenant_type,
 			tenant_name,
 			COALESCE(domain, '') as domain,
 			COALESCE(email, '') as email,
@@ -176,6 +181,7 @@ func (r *PostgresTenantsRepository) ListTenants(ctx context.Context, filter Tena
 		var metadataRaw json.RawMessage
 		err := rows.Scan(
 			&tenant.TenantID,
+			&tenant.TenantType,
 			&tenant.TenantName,
 			&tenant.Domain,
 			&tenant.Email,
@@ -207,6 +213,10 @@ func (r *PostgresTenantsRepository) CreateTenant(ctx context.Context, tenant *do
 	}
 
 	// 处理默认值
+	tenantType := tenant.TenantType
+	if tenantType == "" {
+		tenantType = "organization"
+	}
 	status := tenant.Status
 	if status == "" {
 		status = "active"
@@ -221,9 +231,10 @@ func (r *PostgresTenantsRepository) CreateTenant(ctx context.Context, tenant *do
 	// 处理可空字段（使用NULLIF将空字符串转为NULL）
 	var tenantID string
 	err := r.db.QueryRowContext(ctx,
-		`INSERT INTO tenants (tenant_name, domain, email, phone, status, metadata)
-		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), $5, $6::jsonb)
+		`INSERT INTO tenants (tenant_type, tenant_name, domain, email, phone, status, metadata)
+		 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6, $7::jsonb)
 		 RETURNING tenant_id::text`,
+		tenantType,
 		tenant.TenantName,
 		tenant.Domain,
 		tenant.Email,
@@ -251,6 +262,12 @@ func (r *PostgresTenantsRepository) UpdateTenant(ctx context.Context, tenantID s
 	updates := []string{}
 	args := []any{tenantID}
 	argIdx := 2
+
+	if tenant.TenantType != "" {
+		updates = append(updates, fmt.Sprintf("tenant_type = $%d", argIdx))
+		args = append(args, tenant.TenantType)
+		argIdx++
+	}
 
 	if tenant.TenantName != "" {
 		updates = append(updates, fmt.Sprintf("tenant_name = $%d", argIdx))

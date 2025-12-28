@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"wisefido-data/internal/domain"
 )
@@ -33,9 +34,9 @@ func (r *PostgresAlarmCloudRepository) GetAlarmCloud(ctx context.Context, tenant
 	query := `
 		SELECT 
 			tenant_id::text,
-			OfflineAlarm,
-			LowBattery,
-			DeviceFailure,
+			offlinealarm,
+			lowbattery,
+			devicefailure,
 			device_alarms,
 			conditions,
 			notification_rules,
@@ -99,18 +100,18 @@ func (r *PostgresAlarmCloudRepository) UpsertAlarmCloud(ctx context.Context, ten
 	query := `
 		INSERT INTO alarm_cloud (
 			tenant_id,
-			OfflineAlarm,
-			LowBattery,
-			DeviceFailure,
+			offlinealarm,
+			lowbattery,
+			devicefailure,
 			device_alarms,
 			conditions,
 			notification_rules,
 			metadata
 		) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb)
 		ON CONFLICT (tenant_id) DO UPDATE SET
-			OfflineAlarm = EXCLUDED.OfflineAlarm,
-			LowBattery = EXCLUDED.LowBattery,
-			DeviceFailure = EXCLUDED.DeviceFailure,
+			offlinealarm = EXCLUDED.offlinealarm,
+			lowbattery = EXCLUDED.lowbattery,
+			devicefailure = EXCLUDED.devicefailure,
 			device_alarms = EXCLUDED.device_alarms,
 			conditions = EXCLUDED.conditions,
 			notification_rules = EXCLUDED.notification_rules,
@@ -151,6 +152,213 @@ func (r *PostgresAlarmCloudRepository) UpsertAlarmCloud(ctx context.Context, ten
 	}
 
 	return nil
+}
+
+// UpsertAlarmCloudFields 创建或更新租户的告警策略配置（使用更新模型）
+func (r *PostgresAlarmCloudRepository) UpsertAlarmCloudFields(ctx context.Context, tenantID string, update *domain.AlarmCloudUpdate) error {
+	if tenantID == "" {
+		return fmt.Errorf("tenant_id is required")
+	}
+	if update == nil {
+		return fmt.Errorf("update is required")
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 检查记录是否存在
+	var exists bool
+	err = tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM alarm_cloud WHERE tenant_id = $1)`,
+		tenantID,
+	).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("failed to check existing record: %w", err)
+	}
+
+	if exists {
+		// UPDATE 模式：只更新提供的字段
+		updates := []string{}
+		args := []any{tenantID}
+		argIdx := 2
+
+		// 处理 UpdateString
+		if update.OfflineAlarm != nil {
+			switch update.OfflineAlarm.Action {
+			case domain.UpdateActionUpdate:
+				updates = append(updates, fmt.Sprintf("offlinealarm = $%d", argIdx))
+				args = append(args, update.OfflineAlarm.Value)
+				argIdx++
+			case domain.UpdateActionDelete:
+				updates = append(updates, "offlinealarm = NULL")
+			case domain.UpdateActionKeep:
+				// 不更新，跳过
+			}
+		}
+
+		if update.LowBattery != nil {
+			switch update.LowBattery.Action {
+			case domain.UpdateActionUpdate:
+				updates = append(updates, fmt.Sprintf("lowbattery = $%d", argIdx))
+				args = append(args, update.LowBattery.Value)
+				argIdx++
+			case domain.UpdateActionDelete:
+				updates = append(updates, "lowbattery = NULL")
+			case domain.UpdateActionKeep:
+				// 不更新，跳过
+			}
+		}
+
+		if update.DeviceFailure != nil {
+			switch update.DeviceFailure.Action {
+			case domain.UpdateActionUpdate:
+				updates = append(updates, fmt.Sprintf("devicefailure = $%d", argIdx))
+				args = append(args, update.DeviceFailure.Value)
+				argIdx++
+			case domain.UpdateActionDelete:
+				updates = append(updates, "devicefailure = NULL")
+			case domain.UpdateActionKeep:
+				// 不更新，跳过
+			}
+		}
+
+		// 处理 UpdateJSON
+		if update.DeviceAlarms != nil {
+			switch update.DeviceAlarms.Action {
+			case domain.UpdateActionUpdate:
+				if len(update.DeviceAlarms.Value) > 0 {
+					updates = append(updates, fmt.Sprintf("device_alarms = $%d::jsonb", argIdx))
+					args = append(args, string(update.DeviceAlarms.Value))
+					argIdx++
+				} else {
+					updates = append(updates, "device_alarms = '{}'::jsonb")
+				}
+			case domain.UpdateActionDelete:
+				updates = append(updates, "device_alarms = NULL")
+			case domain.UpdateActionKeep:
+				// 不更新，跳过
+			}
+		}
+
+		if update.Conditions != nil {
+			switch update.Conditions.Action {
+			case domain.UpdateActionUpdate:
+				if len(update.Conditions.Value) > 0 {
+					updates = append(updates, fmt.Sprintf("conditions = $%d::jsonb", argIdx))
+					args = append(args, string(update.Conditions.Value))
+					argIdx++
+				} else {
+					updates = append(updates, "conditions = NULL")
+				}
+			case domain.UpdateActionDelete:
+				updates = append(updates, "conditions = NULL")
+			case domain.UpdateActionKeep:
+				// 不更新，跳过
+			}
+		}
+
+		if update.NotificationRules != nil {
+			switch update.NotificationRules.Action {
+			case domain.UpdateActionUpdate:
+				if len(update.NotificationRules.Value) > 0 {
+					updates = append(updates, fmt.Sprintf("notification_rules = $%d::jsonb", argIdx))
+					args = append(args, string(update.NotificationRules.Value))
+					argIdx++
+				} else {
+					updates = append(updates, "notification_rules = NULL")
+				}
+			case domain.UpdateActionDelete:
+				updates = append(updates, "notification_rules = NULL")
+			case domain.UpdateActionKeep:
+				// 不更新，跳过
+			}
+		}
+
+		if update.Metadata != nil {
+			switch update.Metadata.Action {
+			case domain.UpdateActionUpdate:
+				if len(update.Metadata.Value) > 0 {
+					updates = append(updates, fmt.Sprintf("metadata = $%d::jsonb", argIdx))
+					args = append(args, string(update.Metadata.Value))
+					argIdx++
+				} else {
+					updates = append(updates, "metadata = NULL")
+				}
+			case domain.UpdateActionDelete:
+				updates = append(updates, "metadata = NULL")
+			case domain.UpdateActionKeep:
+				// 不更新，跳过
+			}
+		}
+
+		if len(updates) > 0 {
+			query := fmt.Sprintf(`
+				UPDATE alarm_cloud
+				SET %s
+				WHERE tenant_id = $1
+			`, strings.Join(updates, ", "))
+
+			_, err = tx.ExecContext(ctx, query, args...)
+			if err != nil {
+				return fmt.Errorf("failed to update alarm cloud: %w", err)
+			}
+		}
+	} else {
+		// INSERT 模式：必须提供所有 NOT NULL 字段
+		// device_alarms 有默认值 '{}'::jsonb，所以可以为空
+		query := `
+			INSERT INTO alarm_cloud (
+				tenant_id,
+				offlinealarm,
+				lowbattery,
+				devicefailure,
+				device_alarms,
+				conditions,
+				notification_rules,
+				metadata
+			) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb)
+		`
+
+		var offlineAlarm, lowBattery, deviceFailure interface{}
+		if update.OfflineAlarm != nil && update.OfflineAlarm.Action == domain.UpdateActionUpdate {
+			offlineAlarm = update.OfflineAlarm.Value
+		}
+		if update.LowBattery != nil && update.LowBattery.Action == domain.UpdateActionUpdate {
+			lowBattery = update.LowBattery.Value
+		}
+		if update.DeviceFailure != nil && update.DeviceFailure.Action == domain.UpdateActionUpdate {
+			deviceFailure = update.DeviceFailure.Value
+		}
+
+		var deviceAlarms interface{} = "{}"
+		if update.DeviceAlarms != nil && update.DeviceAlarms.Action == domain.UpdateActionUpdate {
+			if len(update.DeviceAlarms.Value) > 0 {
+				deviceAlarms = string(update.DeviceAlarms.Value)
+			}
+		}
+
+		var conditions, notificationRules, metadata interface{}
+		if update.Conditions != nil && update.Conditions.Action == domain.UpdateActionUpdate && len(update.Conditions.Value) > 0 {
+			conditions = string(update.Conditions.Value)
+		}
+		if update.NotificationRules != nil && update.NotificationRules.Action == domain.UpdateActionUpdate && len(update.NotificationRules.Value) > 0 {
+			notificationRules = string(update.NotificationRules.Value)
+		}
+		if update.Metadata != nil && update.Metadata.Action == domain.UpdateActionUpdate && len(update.Metadata.Value) > 0 {
+			metadata = string(update.Metadata.Value)
+		}
+
+		_, err = tx.ExecContext(ctx, query, tenantID, offlineAlarm, lowBattery, deviceFailure,
+			deviceAlarms, conditions, notificationRules, metadata)
+		if err != nil {
+			return fmt.Errorf("failed to insert alarm cloud: %w", err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // GetSystemAlarmCloud 获取系统默认告警策略模板

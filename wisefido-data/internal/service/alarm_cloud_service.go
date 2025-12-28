@@ -15,12 +15,15 @@ import (
 
 // getResourcePermission 查询资源权限配置（从 role_permissions 表）
 // 为了避免循环导入，这里复制了 httpapi.GetResourcePermission 的逻辑
+// 
+// 注意: permission_scope 值映射:
+//   - 'A' = All (no restriction) → assigned_only=false, branch_only=false
+//   - 'S' = assigned_only → assigned_only=true, branch_only=false
+//   - 'B' = branch_only → assigned_only=false, branch_only=true
 func getResourcePermission(db *sql.DB, ctx context.Context, roleCode, resourceType, permissionType string) (*permissionCheck, error) {
-	var assignedOnly, branchOnly bool
+	var permissionScope string
 	err := db.QueryRowContext(ctx,
-		`SELECT 
-			COALESCE(assigned_only, FALSE) as assigned_only,
-			COALESCE(branch_only, FALSE) as branch_only
+		`SELECT permission_scope
 		 FROM role_permissions
 		 WHERE tenant_id = $1 
 		   AND role_code = $2 
@@ -29,7 +32,7 @@ func getResourcePermission(db *sql.DB, ctx context.Context, roleCode, resourceTy
 		 LIMIT 1`,
 		"00000000-0000-0000-0000-000000000001", // SystemTenantID
 		roleCode, resourceType, permissionType,
-	).Scan(&assignedOnly, &branchOnly)
+	).Scan(&permissionScope)
 
 	if err == sql.ErrNoRows {
 		// 记录不存在：返回最严格的权限（安全默认值）
@@ -37,6 +40,27 @@ func getResourcePermission(db *sql.DB, ctx context.Context, roleCode, resourceTy
 	}
 	if err != nil {
 		return nil, err
+	}
+
+	// 将 permission_scope 转换为 assigned_only 和 branch_only 标志
+	var assignedOnly, branchOnly bool
+	switch permissionScope {
+	case "A":
+		// All (no restriction)
+		assignedOnly = false
+		branchOnly = false
+	case "S":
+		// assigned_only
+		assignedOnly = true
+		branchOnly = false
+	case "B":
+		// branch_only
+		assignedOnly = false
+		branchOnly = true
+	default:
+		// 未知值，返回最严格的权限（安全默认值）
+		assignedOnly = true
+		branchOnly = true
 	}
 
 	return &permissionCheck{AssignedOnly: assignedOnly, BranchOnly: branchOnly}, nil

@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 	"wisefido-data/internal/repository"
-	"wisefido-data/internal/service"
 
 	"go.uber.org/zap"
 )
@@ -15,18 +14,12 @@ import (
 type StubHandler struct {
 	Tenants        repository.TenantsRepo
 	AuthStore      *AuthStore
-	DB             *sql.DB              // optional: when set, some admin endpoints read/write real DB
-	Logger         *zap.Logger           // optional logger for login logging
-	ResidentService service.ResidentService // optional: when set, use service layer instead of direct DB access
+	DB     *sql.DB    // optional: when set, some admin endpoints read/write real DB
+	Logger *zap.Logger // optional logger for login logging
 }
 
 func NewStubHandler(tenants repository.TenantsRepo, auth *AuthStore, db *sql.DB) *StubHandler {
 	return &StubHandler{Tenants: tenants, AuthStore: auth, DB: db}
-}
-
-// SetResidentService sets the ResidentService (optional, for using service layer)
-func (s *StubHandler) SetResidentService(residentService service.ResidentService) {
-	s.ResidentService = residentService
 }
 
 // SetLogger sets the logger for login event logging

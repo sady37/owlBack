@@ -487,6 +487,200 @@ func (r *PostgresDevicesRepository) UpdateDevice(ctx context.Context, tenantID, 
 	return tx.Commit()
 }
 
+// UpdateDeviceFields 更新设备（使用更新模型）
+func (r *PostgresDevicesRepository) UpdateDeviceFields(ctx context.Context, tenantID, deviceID string, update *domain.DeviceUpdate) error {
+	if tenantID == "" || deviceID == "" {
+		return fmt.Errorf("tenant_id and device_id are required")
+	}
+	if update == nil {
+		return fmt.Errorf("update is required")
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	// 1. 验证 bound_room_id（如果更新）
+	if update.BoundRoomID != nil && update.BoundRoomID.Action == domain.UpdateActionUpdate && update.BoundRoomID.Value != "" {
+		var unitTenantID string
+		if err := tx.QueryRowContext(ctx,
+			"SELECT u.tenant_id::text FROM rooms r JOIN units u ON r.unit_id = u.unit_id WHERE r.room_id = $1",
+			update.BoundRoomID.Value,
+		).Scan(&unitTenantID); err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("room not found: room_id=%s", update.BoundRoomID.Value)
+			}
+			return fmt.Errorf("failed to validate bound_room_id: %w", err)
+		}
+		if unitTenantID != tenantID {
+			return fmt.Errorf("room not found: room_id=%s (room's unit belongs to tenant %s, expected %s)", update.BoundRoomID.Value, unitTenantID, tenantID)
+		}
+	}
+
+	// 2. 验证 bound_bed_id（如果更新）
+	if update.BoundBedID != nil && update.BoundBedID.Action == domain.UpdateActionUpdate && update.BoundBedID.Value != "" {
+		var unitTenantID string
+		if err := tx.QueryRowContext(ctx,
+			"SELECT u.tenant_id::text FROM beds b JOIN rooms r ON b.room_id = r.room_id JOIN units u ON r.unit_id = u.unit_id WHERE b.bed_id = $1",
+			update.BoundBedID.Value,
+		).Scan(&unitTenantID); err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("bed not found: bed_id=%s", update.BoundBedID.Value)
+			}
+			return fmt.Errorf("failed to validate bound_bed_id: %w", err)
+		}
+		if unitTenantID != tenantID {
+			return fmt.Errorf("bed not found: bed_id=%s (bed's room's unit belongs to tenant %s, expected %s)", update.BoundBedID.Value, unitTenantID, tenantID)
+		}
+	}
+
+	// 3. 验证 device_store_id 的租户一致性（如果更新）
+	if update.DeviceStoreID != nil && update.DeviceStoreID.Action == domain.UpdateActionUpdate && update.DeviceStoreID.Value != "" {
+		var dsTenantID sql.NullString
+		if err := tx.QueryRowContext(ctx,
+			"SELECT tenant_id FROM device_store WHERE device_store_id = $1",
+			update.DeviceStoreID.Value,
+		).Scan(&dsTenantID); err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("device_store not found: device_store_id=%s", update.DeviceStoreID.Value)
+			}
+			return fmt.Errorf("failed to validate device_store_id: %w", err)
+		}
+		unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
+		if dsTenantID.Valid && dsTenantID.String != unallocatedTenantID && dsTenantID.String != tenantID {
+			return fmt.Errorf("device_store_id %s is assigned to a different tenant (expected %s, got %s)", update.DeviceStoreID.Value, tenantID, dsTenantID.String)
+		}
+	}
+
+	// 4. 执行 UPDATE（动态构建）
+	set := []string{}
+	args := []any{tenantID, deviceID}
+	argN := 3
+
+	// Helper function to add update part
+	addUpdate := func(col string, val any) {
+		set = append(set, fmt.Sprintf("%s = $%d", col, argN))
+		args = append(args, val)
+		argN++
+	}
+
+	// Handle DeviceName (NOT NULL)
+	if update.DeviceName != nil {
+		switch update.DeviceName.Action {
+		case domain.UpdateActionUpdate:
+			if update.DeviceName.Value == "" {
+				return fmt.Errorf("device_name cannot be empty (NOT NULL constraint)")
+			}
+			addUpdate("device_name", update.DeviceName.Value)
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("device_name cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle nullable string fields
+	nullableStringFields := map[string]*domain.UpdateString{
+		"device_store_id": update.DeviceStoreID,
+		"serial_number":   update.SerialNumber,
+		"uid":             update.UID,
+		"bound_room_id":   update.BoundRoomID,
+		"bound_bed_id":    update.BoundBedID,
+	}
+
+	for col, updateField := range nullableStringFields {
+		if updateField != nil {
+			switch updateField.Action {
+			case domain.UpdateActionUpdate:
+				if updateField.Value == "" {
+					set = append(set, fmt.Sprintf("%s = NULL", col))
+				} else {
+					addUpdate(col, updateField.Value)
+				}
+			case domain.UpdateActionDelete:
+				set = append(set, fmt.Sprintf("%s = NULL", col))
+			case domain.UpdateActionKeep:
+				// Do nothing
+			}
+		}
+	}
+
+	// Handle Status (NOT NULL)
+	if update.Status != nil {
+		switch update.Status.Action {
+		case domain.UpdateActionUpdate:
+			if update.Status.Value == "" {
+				return fmt.Errorf("status cannot be empty (NOT NULL constraint)")
+			}
+			addUpdate("status", update.Status.Value)
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("status cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle BusinessAccess (NOT NULL)
+	if update.BusinessAccess != nil {
+		switch update.BusinessAccess.Action {
+		case domain.UpdateActionUpdate:
+			if update.BusinessAccess.Value == "" {
+				return fmt.Errorf("business_access cannot be empty (NOT NULL constraint)")
+			}
+			addUpdate("business_access", update.BusinessAccess.Value)
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("business_access cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle MonitoringEnabled (NOT NULL)
+	if update.MonitoringEnabled != nil {
+		switch update.MonitoringEnabled.Action {
+		case domain.UpdateActionUpdate:
+			addUpdate("monitoring_enabled", update.MonitoringEnabled.Value)
+		case domain.UpdateActionDelete:
+			return fmt.Errorf("monitoring_enabled cannot be deleted (NOT NULL constraint)")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	// Handle Metadata (JSONB, nullable)
+	if update.Metadata != nil {
+		switch update.Metadata.Action {
+		case domain.UpdateActionUpdate:
+			if len(update.Metadata.Value) > 0 {
+				set = append(set, fmt.Sprintf("metadata = $%d::jsonb", argN))
+				args = append(args, string(update.Metadata.Value))
+				argN++
+			} else {
+				set = append(set, "metadata = NULL")
+			}
+		case domain.UpdateActionDelete:
+			set = append(set, "metadata = NULL")
+		case domain.UpdateActionKeep:
+			// Do nothing
+		}
+	}
+
+	if len(set) == 0 {
+		return nil
+	}
+
+	q := "UPDATE devices SET " + strings.Join(set, ", ") + " WHERE tenant_id = $1 AND device_id = $2"
+	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+		return fmt.Errorf("failed to update device: %w", err)
+	}
+
+	return tx.Commit()
+}
+
 // DeleteDevice 删除设备与位置的绑定关系（设备退回）
 // 验证：检查设备是否已使用（is_device_used()），如果已使用，只能软删除（DisableDevice）
 func (r *PostgresDevicesRepository) DeleteDevice(ctx context.Context, tenantID, deviceID string) error {

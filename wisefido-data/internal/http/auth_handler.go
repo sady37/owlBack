@@ -130,7 +130,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. 构建响应（与旧 Handler 格式一致）
+	// 3. 构建响应（
 	result := map[string]any{
 		"accessToken":  resp.AccessToken,
 		"refreshToken": resp.RefreshToken,
@@ -143,11 +143,6 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		"tenant_name":  resp.TenantName,
 		"domain":       resp.Domain,
 		"homePath":     resp.HomePath,
-	}
-
-	// Add branchTag if available
-	if resp.BranchTag != nil && *resp.BranchTag != "" {
-		result["branchTag"] = *resp.BranchTag
 	}
 
 	writeJSON(w, http.StatusOK, Ok(result))
@@ -300,4 +295,3 @@ func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	// 3. 返回响应
 	writeJSON(w, http.StatusOK, Ok(resp))
 }
-

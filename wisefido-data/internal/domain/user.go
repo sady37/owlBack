@@ -2,6 +2,7 @@ package domain
 
 import (
 	"database/sql"
+
 	"github.com/lib/pq"
 )
 
@@ -13,10 +14,10 @@ type User struct {
 	TenantID string `db:"tenant_id"`
 
 	// 账号信息
-	UserAccount      string `db:"user_account"`      // NOT NULL
-	UserAccountHash  []byte `db:"user_account_hash"` // NOT NULL
-	PasswordHash     []byte `db:"password_hash"`     // nullable
-	PinHash          []byte `db:"pin_hash"`          // nullable
+	UserAccount     string `db:"user_account"`      // NOT NULL
+	UserAccountHash []byte `db:"user_account_hash"` // NOT NULL
+	PasswordHash    []byte `db:"password_hash"`     // nullable
+	PinHash         []byte `db:"pin_hash"`          // nullable
 
 	// 基本信息
 	Nickname sql.NullString `db:"nickname"` // nullable
@@ -30,16 +31,18 @@ type User struct {
 	PhoneHash []byte `db:"phone_hash"` // nullable
 
 	// 告警设置
-	AlarmLevels  pq.StringArray `db:"alarm_levels"`  // nullable, VARCHAR[]
+	AlarmLevels   pq.StringArray `db:"alarm_levels"`   // nullable, VARCHAR[]
 	AlarmChannels pq.StringArray `db:"alarm_channels"` // nullable, VARCHAR[]
-	AlarmScope   sql.NullString `db:"alarm_scope"`   // nullable
+	AlarmScope    sql.NullString `db:"alarm_scope"`    // nullable
 
 	// 登录和标签
 	LastLoginAt sql.NullTime   `db:"last_login_at"` // nullable
-	Tags        sql.NullString `db:"tags"`        // nullable, JSONB数组
-	BranchTag   sql.NullString `db:"branch_tag"`  // nullable
+	Tags        sql.NullString `db:"user_tags"`     // nullable, JSONB数组
+
+	// 院区信息（通过 JOIN user_branches 和 branches 获取主院区）
+	BranchID   sql.NullString `db:"branch_id"`   // nullable, 主院区ID
+	BranchName sql.NullString `db:"branch_name"` // nullable, 主院区名称（向后兼容：也作为 BranchTag）
 
 	// 偏好设置
 	Preferences sql.NullString `db:"preferences"` // nullable, JSONB, default '{}'::jsonb
 }
-

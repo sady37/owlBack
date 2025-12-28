@@ -18,15 +18,15 @@ type CardsRepository interface {
 
 // ListCardsRequest 查询卡片列表请求
 type ListCardsRequest struct {
-	TenantID        string
-	CardID          string // 可选：查询单个卡片
-	Search          string // 搜索关键词
-	CardType        string // "ActiveBed" | "Unit"
-	UnitType        string // "Home" | "Facility"
-	IsPublicSpace   *bool
+	TenantID          string
+	CardID            string // 可选：查询单个卡片
+	Search            string // 搜索关键词
+	CardType          string // "ActiveBed" | "Unit"
+	UnitType          string // "Home" | "Facility"
+	IsPublicSpace     *bool
 	IsMultiPersonRoom *bool
-	Sort            string // "card_name" | "card_address"
-	Direction       string // "asc" | "desc"
+	Sort              string // "card_name" | "card_address"
+	Direction         string // "asc" | "desc"
 
 	// 权限过滤参数（可选）
 	PermissionFilter *PermissionFilter
@@ -75,16 +75,16 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 				FROM resident_caregivers rc
 				WHERE rc.tenant_id = $` + fmt.Sprintf("%d", argIdx) + `
 					AND (
-						-- 检查 userList JSONB 是否包含 userID
-						rc.userList::text LIKE '%"' || $` + fmt.Sprintf("%d", argIdx+1) + ` || '"%'
+						-- 检查 user_list JSONB 是否包含 userID
+						rc.user_list::text LIKE '%"' || $` + fmt.Sprintf("%d", argIdx+1) + ` || '"%'
 						OR
-						-- 检查 groupList JSONB 是否匹配用户的 tags
+						-- 检查 group_list JSONB 是否匹配用户的 tags
 						EXISTS (
 							SELECT 1 FROM users u
 							WHERE u.tenant_id = $` + fmt.Sprintf("%d", argIdx) + `
 								AND u.user_id::text = $` + fmt.Sprintf("%d", argIdx+1) + `
-								AND u.tags ?| (
-									SELECT ARRAY(SELECT jsonb_array_elements_text(rc.groupList))
+								AND u.user_tags ?| (
+									SELECT ARRAY(SELECT jsonb_array_elements_text(rc.group_list))
 								)
 						)
 					)
@@ -116,21 +116,20 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 			c.pop_alarm_emerge,
 			u.unit_id::text,
 			u.tenant_id::text,
-			u.branch_name,
+			COALESCE(br.branch_name, NULL) as branch_name,
 			u.unit_name,
-			u.building,
+			u.building_name,
 			u.floor,
 			u.area_name,
 			u.unit_number,
 			u.layout_config,
 			u.unit_type,
-			u.is_public_space,
-			u.is_multi_person_room,
-			u.timezone,
-			u.groupList,
-			u.userList
+			u.is_public,
+			u.is_shared_unit,
+			u.timezone
 		FROM cards c
 		LEFT JOIN units u ON c.unit_id = u.unit_id
+		LEFT JOIN branches br ON u.branch_id = br.branch_id
 		WHERE c.tenant_id = $` + fmt.Sprintf("%d", argIdx) + `
 	`)
 	args = append(args, req.TenantID)
@@ -164,13 +163,13 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 	}
 
 	if req.IsPublicSpace != nil {
-		query.WriteString(` AND u.is_public_space = $` + fmt.Sprintf("%d", argIdx) + ` `)
+		query.WriteString(` AND u.is_public = $` + fmt.Sprintf("%d", argIdx) + ` `)
 		args = append(args, *req.IsPublicSpace)
 		argIdx++
 	}
 
 	if req.IsMultiPersonRoom != nil {
-		query.WriteString(` AND u.is_multi_person_room = $` + fmt.Sprintf("%d", argIdx) + ` `)
+		query.WriteString(` AND u.is_shared_unit = $` + fmt.Sprintf("%d", argIdx) + ` `)
 		args = append(args, *req.IsMultiPersonRoom)
 		argIdx++
 	}
@@ -184,7 +183,7 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 			-- Unit 卡片（数据库中使用 'Location'）：检查权限
 			(c.card_type = 'Location' 
 				-- 不是 share unit
-				AND (u.is_public_space = FALSE AND u.is_multi_person_room = FALSE)
+				AND (u.is_public = FALSE AND u.is_shared_unit = FALSE)
 				-- 是第一个住户或第二个住户（且第二个住户允许）
 				AND (
 					-- 第一个住户
@@ -198,7 +197,7 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 							SELECT 1 FROM residents r
 							WHERE r.tenant_id = c.tenant_id
 								AND r.resident_id::text = $` + fmt.Sprintf("%d", argIdx) + `
-								AND r.can_view_status = TRUE
+								AND r.is_access_enabled = TRUE
 						)
 					)
 				)
@@ -208,14 +207,14 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 		argIdx++
 	}
 
-	// BranchOnly 权限过滤
+	// BranchOnly 权限过滤（通过 JOIN branches 表获取 branch_name）
 	if req.PermissionFilter != nil && req.PermissionFilter.UserBranchTag != nil {
 		userBranchTag := req.PermissionFilter.UserBranchTag
 		if *userBranchTag == "" {
 			// 用户 branch_tag 为 NULL：只能查看 unit.branch_name 为 NULL 的卡片
-			query.WriteString(` AND (u.branch_name IS NULL OR u.branch_name = '-') `)
+			query.WriteString(` AND (br.branch_name IS NULL OR br.branch_name = '-') `)
 		} else {
-			query.WriteString(` AND u.branch_name = $` + fmt.Sprintf("%d", argIdx) + ` `)
+			query.WriteString(` AND br.branch_name = $` + fmt.Sprintf("%d", argIdx) + ` `)
 			args = append(args, *userBranchTag)
 			argIdx++
 		}
@@ -230,7 +229,7 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 			-- Unit 卡片（数据库中使用 'Location'）：检查权限
 			(c.card_type = 'Location' 
 				-- 不是 share unit
-				AND (u.is_public_space = FALSE AND u.is_multi_person_room = FALSE)
+				AND (u.is_public = FALSE AND u.is_shared_unit = FALSE)
 				-- 是第一个住户或第二个住户（且第二个住户允许）
 				AND EXISTS (
 					SELECT 1 FROM assigned_residents ar
@@ -244,7 +243,7 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 								SELECT 1 FROM residents r
 								WHERE r.tenant_id = c.tenant_id
 									AND r.resident_id = ar.resident_id
-									AND r.can_view_status = TRUE
+									AND r.is_access_enabled = TRUE
 							)
 						)
 					)
@@ -278,7 +277,8 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 
 		var bedID, unitID, residentID sql.NullString
 		var devicesRaw, residentsRaw sql.NullString
-		var branchTag, areaTag, layoutConfig, groupList, userList sql.NullString
+		var branchTag, buildingTag, areaTag, layoutConfig sql.NullString
+		var isPublic, isSharedUnit bool
 
 		err := rows.Scan(
 			&card.CardID,
@@ -302,17 +302,15 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 			&unit.TenantID,
 			&branchTag,
 			&unit.UnitName,
-			&unit.Building,
+			&buildingTag,
 			&unit.Floor,
 			&areaTag,
-			&unit.UnitNumber,
+			&unit.UnitName, // 注意：数据库查询中 unit_number 字段已不存在，使用 unit_name
 			&layoutConfig,
 			&unit.UnitType,
-			&unit.IsPublicSpace,
-			&unit.IsMultiPersonRoom,
+			&isPublic,
+			&isSharedUnit,
 			&unit.Timezone,
-			&groupList,
-			&userList,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan card: %w", err)
@@ -343,18 +341,18 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 		if branchTag.Valid {
 			unit.BranchName = sql.NullString{String: branchTag.String, Valid: true}
 		}
+		if buildingTag.Valid {
+			unit.BuildingName = sql.NullString{String: buildingTag.String, Valid: true}
+		}
 		if areaTag.Valid {
-			unit.AreaName = sql.NullString{String: areaTag.String, Valid: true}
+			// unit.AreaName - 字段已删除 = sql.NullString{String: areaTag.String, Valid: true}
 		}
 		if layoutConfig.Valid {
 			unit.LayoutConfig = sql.NullString{String: layoutConfig.String, Valid: true}
 		}
-		if groupList.Valid {
-			unit.GroupList = sql.NullString{String: groupList.String, Valid: true}
-		}
-		if userList.Valid {
-			unit.UserList = sql.NullString{String: userList.String, Valid: true}
-		}
+		// 设置 Unit 的 boolean 字段（注意：domain.Unit 中的字段名与数据库不一致，但这里先按数据库字段名设置）
+		unit.IsPublic = isPublic
+		unit.IsSharedUnit = isSharedUnit
 
 		results = append(results, &domain.CardWithUnitInfo{
 			Card: card,
@@ -371,4 +369,3 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 
 // 确保实现了接口
 var _ CardsRepository = (*PostgresCardsRepository)(nil)
-

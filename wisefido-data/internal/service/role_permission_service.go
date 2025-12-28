@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	"wisefido-data/internal/domain"
@@ -28,9 +29,9 @@ func NewRolePermissionService(permRepo repository.RolePermissionsRepository, log
 
 // ListPermissionsRequest 查询权限列表请求
 type ListPermissionsRequest struct {
-	TenantID      *string
-	RoleCode      string
-	ResourceType  string
+	TenantID       *string
+	RoleCode       string
+	ResourceType   string
 	PermissionType string // "read", "create", "update", "delete", "manage"
 	Page           int
 	Size           int
@@ -44,14 +45,13 @@ type ListPermissionsResponse struct {
 
 // PermissionItem 权限项（前端格式）
 type PermissionItem struct {
-	PermissionID   string  `json:"permission_id"`
-	TenantID       *string `json:"tenant_id"`
-	RoleCode       string  `json:"role_code"`
-	ResourceType   string  `json:"resource_type"`
-	PermissionType string  `json:"permission_type"` // "read", "create", "update", "delete"
-	Scope          string  `json:"scope"`           // "all", "assigned_only"
-	BranchOnly     bool    `json:"branch_only"`
-	IsActive       bool    `json:"is_active"`
+	PermissionID    string  `json:"permission_id"`
+	TenantID        *string `json:"tenant_id"`
+	RoleCode        string  `json:"role_code"`
+	ResourceType    string  `json:"resource_type"`
+	PermissionType  string  `json:"permission_type"`  // "read", "create", "update", "delete"
+	PermissionScope string  `json:"permission_scope"` // "A" (all), "S" (assigned_only), "B" (branch_only)
+	IsActive        bool    `json:"is_active"`
 }
 
 // ListPermissions 查询权限列表
@@ -92,13 +92,12 @@ func (s *RolePermissionService) ListPermissions(ctx context.Context, req ListPer
 
 // CreatePermissionRequest 创建权限请求
 type CreatePermissionRequest struct {
-	TenantID      string
-	UserRole      string // 用于权限检查
-	RoleCode      string
-	ResourceType  string
-	PermissionType string // "read", "create", "update", "delete"
-	Scope         string  // "all", "assigned_only"
-	BranchOnly    bool
+	TenantID        string
+	UserRole        string // 用于权限检查
+	RoleCode        string
+	ResourceType    string
+	PermissionType  string // "read", "create", "update", "delete"
+	PermissionScope string // "A" (all), "S" (assigned_only), "B" (branch_only)
 }
 
 // CreatePermissionResponse 创建权限响应
@@ -128,13 +127,19 @@ func (s *RolePermissionService) CreatePermission(ctx context.Context, req Create
 	}
 
 	// 构建权限领域模型
-	assignedOnly := strings.TrimSpace(req.Scope) == "assigned_only"
+	// 验证并设置 permission_scope
+	permissionScope := strings.TrimSpace(req.PermissionScope)
+	if permissionScope == "" {
+		permissionScope = "A" // 默认：all
+	}
+	if permissionScope != "A" && permissionScope != "S" && permissionScope != "B" {
+		return nil, fmt.Errorf("invalid permission_scope: %s (must be A, S, or B)", permissionScope)
+	}
 	permission := &domain.RolePermission{
-		RoleCode:       req.RoleCode,
-		ResourceType:   req.ResourceType,
-		PermissionType: permTypeDB,
-		AssignedOnly:   assignedOnly,
-		BranchOnly:     req.BranchOnly,
+		RoleCode:        req.RoleCode,
+		ResourceType:    req.ResourceType,
+		PermissionType:  permTypeDB,
+		PermissionScope: permissionScope,
 	}
 	if req.TenantID != SystemTenantID {
 		permission.TenantID = sql.NullString{String: req.TenantID, Valid: true}
@@ -153,19 +158,18 @@ func (s *RolePermissionService) CreatePermission(ctx context.Context, req Create
 
 // BatchCreatePermissionsRequest 批量创建权限请求
 type BatchCreatePermissionsRequest struct {
-	TenantID   string
-	UserRole   string // 用于权限检查
-	RoleCode   string
+	TenantID    string
+	UserRole    string // 用于权限检查
+	RoleCode    string
 	Permissions []BatchPermissionItem
 }
 
 // BatchPermissionItem 批量权限项
 type BatchPermissionItem struct {
-	ResourceType   string `json:"resource_type"`
-	PermissionType string `json:"permission_type"` // "read", "create", "update", "delete", "manage"
-	Scope          string `json:"scope"`            // "all", "assigned_only"
-	BranchOnly     bool   `json:"branch_only"`
-	IsActive       bool   `json:"is_active"`
+	ResourceType    string `json:"resource_type"`
+	PermissionType  string `json:"permission_type"`  // "read", "create", "update", "delete", "manage"
+	PermissionScope string `json:"permission_scope"` // "A" (all), "S" (assigned_only), "B" (branch_only)
+	IsActive        bool   `json:"is_active"`
 }
 
 // BatchCreatePermissionsResponse 批量创建权限响应
@@ -187,39 +191,68 @@ func (s *RolePermissionService) BatchCreatePermissions(ctx context.Context, req 
 		return nil, fmt.Errorf("role_code is required")
 	}
 
-	// 删除该角色的所有现有权限
-	if err := s.permRepo.DeletePermissionsByRole(ctx, SystemTenantID, req.RoleCode); err != nil {
-		return nil, fmt.Errorf("failed to delete existing permissions: %w", err)
-	}
+	// 构建权限列表（局部更新：只更新前端发送的权限）
+	// 注意：不再删除所有权限，而是使用 upsert（ON CONFLICT）来更新/创建权限
+	// 这样其他权限会保持不变，只更新前端发送的变化部分
+	//
+	// 权限删除处理：
+	// - 如果前端发送 is_active=false，需要删除该权限
+	// - 如果前端不发送某个权限（未在列表中），该权限保持不变
+	permissionsToUpdate := make([]*domain.RolePermission, 0)
+	permissionsToDelete := make([]*domain.RolePermission, 0)
 
-	// 构建权限列表
-	permissions := make([]*domain.RolePermission, 0)
 	for _, item := range req.Permissions {
-		// 跳过非激活的权限
-		if !item.IsActive {
-			continue
-		}
-
 		// 处理 "manage" 类型（展开为 R, C, U, D）
 		permTypes := s.expandPermissionType(item.PermissionType)
 		if len(permTypes) == 0 {
 			continue
 		}
 
-		assignedOnly := strings.TrimSpace(item.Scope) == "assigned_only"
+		permissionScope := strings.TrimSpace(item.PermissionScope)
+		if permissionScope == "" {
+			permissionScope = "A" // 默认：all
+		}
+		if permissionScope != "A" && permissionScope != "S" && permissionScope != "B" {
+			continue // 跳过无效的 permission_scope
+		}
+
 		for _, permType := range permTypes {
 			permission := &domain.RolePermission{
-				RoleCode:       req.RoleCode,
-				ResourceType:   strings.TrimSpace(item.ResourceType),
-				PermissionType: permType,
-				AssignedOnly:   assignedOnly,
-				BranchOnly:     item.BranchOnly,
+				RoleCode:        req.RoleCode,
+				ResourceType:    strings.TrimSpace(item.ResourceType),
+				PermissionType:  permType,
+				PermissionScope: permissionScope,
 			}
-			permissions = append(permissions, permission)
+
+			if !item.IsActive {
+				// is_active=false 表示要删除该权限
+				permissionsToDelete = append(permissionsToDelete, permission)
+			} else {
+				// is_active=true 表示要更新/创建该权限
+				permissionsToUpdate = append(permissionsToUpdate, permission)
+			}
 		}
 	}
 
-	// 批量创建权限
+	// 删除需要删除的权限
+	systemTenantID := SystemTenantID
+	tenantIDPtr := &systemTenantID
+	for _, perm := range permissionsToDelete {
+		existingPerm, err := s.permRepo.GetPermissionByKey(ctx, tenantIDPtr, perm.RoleCode, perm.ResourceType, perm.PermissionType)
+		if err == nil && existingPerm != nil {
+			// 权限存在，删除它
+			if err := s.permRepo.DeletePermission(ctx, existingPerm.PermissionID); err != nil {
+				// 记录错误但继续处理其他权限
+				// 可以考虑收集错误并返回
+			}
+		}
+		// 如果权限不存在，忽略（已经是想要的状态）
+	}
+
+	permissions := permissionsToUpdate
+
+	// 批量更新/创建权限（使用 upsert：ON CONFLICT DO UPDATE）
+	// 只更新前端发送的权限，其他权限保持不变（局部更新）
 	successCount, errors, err := s.permRepo.BatchCreatePermissions(ctx, SystemTenantID, permissions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to batch create permissions: %w", err)
@@ -234,11 +267,10 @@ func (s *RolePermissionService) BatchCreatePermissions(ctx context.Context, req 
 
 // UpdatePermissionRequest 更新权限请求
 type UpdatePermissionRequest struct {
-	PermissionID string
-	TenantID     string
-	UserRole     string // 用于权限检查
-	Scope        *string // "all", "assigned_only"
-	BranchOnly   *bool
+	PermissionID    string
+	TenantID        string
+	UserRole        string  // 用于权限检查
+	PermissionScope *string // "A" (all), "S" (assigned_only), "B" (branch_only)
 }
 
 // UpdatePermission 更新权限
@@ -260,11 +292,12 @@ func (s *RolePermissionService) UpdatePermission(ctx context.Context, req Update
 	}
 
 	// 更新字段
-	if req.Scope != nil {
-		permission.AssignedOnly = strings.TrimSpace(*req.Scope) == "assigned_only"
-	}
-	if req.BranchOnly != nil {
-		permission.BranchOnly = *req.BranchOnly
+	if req.PermissionScope != nil {
+		permission.PermissionScope = strings.TrimSpace(*req.PermissionScope)
+		// 验证 permission_scope 值
+		if permission.PermissionScope != "A" && permission.PermissionScope != "S" && permission.PermissionScope != "B" {
+			return fmt.Errorf("invalid permission_scope: %s (must be A, S, or B)", permission.PermissionScope)
+		}
 	}
 
 	return s.permRepo.UpdatePermission(ctx, req.PermissionID, permission)
@@ -305,18 +338,73 @@ func (s *RolePermissionService) GetResourceTypes(ctx context.Context) (*GetResou
 		return nil, fmt.Errorf("failed to list permissions: %w", err)
 	}
 
-	// 提取唯一的资源类型
+	// 提取唯一的资源类型，过滤掉 service_levels
 	resourceTypeMap := make(map[string]bool)
 	for _, perm := range permissions {
-		if perm.ResourceType != "" {
+		if perm.ResourceType != "" && perm.ResourceType != "service_levels" {
 			resourceTypeMap[perm.ResourceType] = true
 		}
 	}
 
-	resourceTypes := make([]string, 0, len(resourceTypeMap))
-	for rt := range resourceTypeMap {
-		resourceTypes = append(resourceTypes, rt)
+	// 确保 branches 存在（如果数据库中有相关权限记录）
+	// 注意：即使数据库中没有 branches 权限记录，也强制添加 branches 到列表中
+	if !resourceTypeMap["branches"] {
+		resourceTypeMap["branches"] = true
 	}
+
+	// 定义资源类型分类和排序顺序
+	// 分类：系统管理 -> 空间管理 -> 住户管理 -> 设备管理 -> 告警管理 -> 其他
+	resourceOrder := []string{
+		// 系统管理
+		"tenants",
+		"roles",
+		"role_permissions",
+		"users",
+		"branches",
+		// 空间管理
+		"units",
+		"rooms",
+		"beds",
+		// 住户管理
+		"residents",
+		"resident_phi",
+		"resident_contacts",
+		"resident_caregivers",
+		// 设备管理
+		"devices",
+		"device_store",
+		"iot_timeseries",
+		// 告警管理
+		"alarm_events",
+		"alarm_device",
+		"alarm_cloud",
+		// 其他
+		"config_versions",
+		"cards",
+		"rounds",
+		"round_details",
+	}
+
+	// 按顺序构建输出列表
+	resourceTypes := []string{}
+	added := make(map[string]bool)
+	// 先添加有序的资源类型
+	for _, rt := range resourceOrder {
+		if resourceTypeMap[rt] && !added[rt] {
+			resourceTypes = append(resourceTypes, rt)
+			added[rt] = true
+		}
+	}
+	// 添加其他未在排序列表中的资源类型（按字母顺序）
+	others := []string{}
+	for rt := range resourceTypeMap {
+		if !added[rt] {
+			others = append(others, rt)
+		}
+	}
+	// 对 others 按字母顺序排序
+	sort.Strings(others)
+	resourceTypes = append(resourceTypes, others...)
 
 	return &GetResourceTypesResponse{
 		ResourceTypes: resourceTypes,
@@ -377,24 +465,31 @@ func (s *RolePermissionService) expandPermissionType(permType string) []string {
 // permissionToItem 将领域模型转换为前端格式
 func (s *RolePermissionService) permissionToItem(perm *domain.RolePermission) PermissionItem {
 	item := PermissionItem{
-		PermissionID:   perm.PermissionID,
-		RoleCode:       perm.RoleCode,
-		ResourceType:   perm.ResourceType,
-		PermissionType: s.permissionTypeFromDB(perm.PermissionType),
-		BranchOnly:     perm.BranchOnly,
-		IsActive:       true, // 存在即表示激活
+		PermissionID:    perm.PermissionID,
+		RoleCode:        perm.RoleCode,
+		ResourceType:    perm.ResourceType,
+		PermissionType:  s.permissionTypeFromDB(perm.PermissionType),
+		PermissionScope: perm.PermissionScope,
+		IsActive:        true, // 存在即表示激活
 	}
 
 	if perm.TenantID.Valid {
 		item.TenantID = &perm.TenantID.String
 	}
 
-	if perm.AssignedOnly {
-		item.Scope = "assigned_only"
-	} else {
-		item.Scope = "all"
-	}
-
 	return item
 }
 
+// convertToPermissionScope 将前端的 scope 和 branch_only 转换为 permission_scope
+// scope: "all" 或 "assigned_only"
+// branchOnly: true 或 false
+// 返回: "A" (all), "S" (assigned_only), "B" (branch_only)
+func (s *RolePermissionService) convertToPermissionScope(scope string, branchOnly bool) string {
+	if branchOnly {
+		return "B" // branch_only 优先级更高
+	}
+	if strings.TrimSpace(scope) == "assigned_only" {
+		return "S"
+	}
+	return "A" // 默认：all
+}

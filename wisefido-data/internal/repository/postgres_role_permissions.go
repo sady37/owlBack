@@ -39,8 +39,7 @@ func (r *PostgresRolePermissionsRepository) GetPermission(ctx context.Context, p
 			role_code,
 			resource_type,
 			permission_type,
-			assigned_only,
-			branch_only
+			permission_scope
 		FROM role_permissions
 		WHERE permission_id = $1
 	`
@@ -52,8 +51,7 @@ func (r *PostgresRolePermissionsRepository) GetPermission(ctx context.Context, p
 		&perm.RoleCode,
 		&perm.ResourceType,
 		&perm.PermissionType,
-		&perm.AssignedOnly,
-		&perm.BranchOnly,
+		&perm.PermissionScope,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -88,8 +86,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionByKey(ctx context.Conte
 				role_code,
 				resource_type,
 				permission_type,
-				assigned_only,
-				branch_only
+				permission_scope
 			FROM role_permissions
 			WHERE tenant_id = $1 AND role_code = $2 AND resource_type = $3 AND permission_type = $4
 		`
@@ -104,8 +101,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionByKey(ctx context.Conte
 				role_code,
 				resource_type,
 				permission_type,
-				assigned_only,
-				branch_only
+				permission_scope
 			FROM role_permissions
 			WHERE tenant_id = $1 AND role_code = $2 AND resource_type = $3 AND permission_type = $4
 		`
@@ -119,8 +115,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionByKey(ctx context.Conte
 		&perm.RoleCode,
 		&perm.ResourceType,
 		&perm.PermissionType,
-		&perm.AssignedOnly,
-		&perm.BranchOnly,
+		&perm.PermissionScope,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -134,7 +129,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionByKey(ctx context.Conte
 
 // ListPermissions 查询权限列表
 // 功能：查询权限列表，支持过滤和分页
-// 输入：tenantID（可选），filters（role_code, resource_type, permission_type, assigned_only, branch_only），page, size
+// 输入：tenantID（可选），filters（role_code, resource_type, permission_type, permission_scope），page, size
 func (r *PostgresRolePermissionsRepository) ListPermissions(ctx context.Context, tenantID *string, filter RolePermissionsFilter, page, size int) ([]*domain.RolePermission, int, error) {
 	where := []string{}
 	args := []any{}
@@ -174,17 +169,10 @@ func (r *PostgresRolePermissionsRepository) ListPermissions(ctx context.Context,
 		argN++
 	}
 
-	// assigned_only过滤
-	if filter.AssignedOnly != nil {
-		where = append(where, fmt.Sprintf("assigned_only = $%d", argN))
-		args = append(args, *filter.AssignedOnly)
-		argN++
-	}
-
-	// branch_only过滤
-	if filter.BranchOnly != nil {
-		where = append(where, fmt.Sprintf("branch_only = $%d", argN))
-		args = append(args, *filter.BranchOnly)
+	// permission_scope过滤
+	if filter.PermissionScope != "" {
+		where = append(where, fmt.Sprintf("permission_scope = $%d", argN))
+		args = append(args, filter.PermissionScope)
 		argN++
 	}
 
@@ -217,8 +205,7 @@ func (r *PostgresRolePermissionsRepository) ListPermissions(ctx context.Context,
 			role_code,
 			resource_type,
 			permission_type,
-			assigned_only,
-			branch_only
+			permission_scope
 		FROM role_permissions
 		` + whereClause + `
 		ORDER BY role_code, resource_type, permission_type
@@ -240,8 +227,7 @@ func (r *PostgresRolePermissionsRepository) ListPermissions(ctx context.Context,
 			&perm.RoleCode,
 			&perm.ResourceType,
 			&perm.PermissionType,
-			&perm.AssignedOnly,
-			&perm.BranchOnly,
+			&perm.PermissionScope,
 		); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan permission: %w", err)
 		}
@@ -273,8 +259,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionsByRole(ctx context.Con
 				role_code,
 				resource_type,
 				permission_type,
-				assigned_only,
-				branch_only
+				permission_scope
 			FROM role_permissions
 			WHERE tenant_id = $1 AND role_code = $2
 			ORDER BY resource_type, permission_type
@@ -290,8 +275,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionsByRole(ctx context.Con
 				role_code,
 				resource_type,
 				permission_type,
-				assigned_only,
-				branch_only
+				permission_scope
 			FROM role_permissions
 			WHERE tenant_id = $1 AND role_code = $2
 			ORDER BY resource_type, permission_type
@@ -314,8 +298,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionsByRole(ctx context.Con
 			&perm.RoleCode,
 			&perm.ResourceType,
 			&perm.PermissionType,
-			&perm.AssignedOnly,
-			&perm.BranchOnly,
+			&perm.PermissionScope,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan permission: %w", err)
 		}
@@ -347,8 +330,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionsByResource(ctx context
 				role_code,
 				resource_type,
 				permission_type,
-				assigned_only,
-				branch_only
+				permission_scope
 			FROM role_permissions
 			WHERE tenant_id = $1 AND resource_type = $2
 			ORDER BY role_code, permission_type
@@ -364,8 +346,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionsByResource(ctx context
 				role_code,
 				resource_type,
 				permission_type,
-				assigned_only,
-				branch_only
+				permission_scope
 			FROM role_permissions
 			WHERE tenant_id = $1 AND resource_type = $2
 			ORDER BY role_code, permission_type
@@ -388,8 +369,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionsByResource(ctx context
 			&perm.RoleCode,
 			&perm.ResourceType,
 			&perm.PermissionType,
-			&perm.AssignedOnly,
-			&perm.BranchOnly,
+			&perm.PermissionScope,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan permission: %w", err)
 		}
@@ -470,8 +450,8 @@ func (r *PostgresRolePermissionsRepository) CreatePermission(ctx context.Context
 
 	// 插入新权限
 	insertQuery := `
-		INSERT INTO role_permissions (tenant_id, role_code, resource_type, permission_type, assigned_only, branch_only)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO role_permissions (tenant_id, role_code, resource_type, permission_type, permission_scope)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING permission_id::text
 	`
 
@@ -481,8 +461,7 @@ func (r *PostgresRolePermissionsRepository) CreatePermission(ctx context.Context
 		permission.RoleCode,
 		permission.ResourceType,
 		permission.PermissionType,
-		permission.AssignedOnly,
-		permission.BranchOnly,
+		permission.PermissionScope,
 	).Scan(&permissionID)
 	if err != nil {
 		return "", fmt.Errorf("failed to create permission: %w", err)
@@ -554,10 +533,10 @@ func (r *PostgresRolePermissionsRepository) BatchCreatePermissions(ctx context.C
 
 		// 插入权限（使用ON CONFLICT处理重复）
 		insertQuery := `
-			INSERT INTO role_permissions (tenant_id, role_code, resource_type, permission_type, assigned_only, branch_only)
-			VALUES ($1, $2, $3, $4, $5, $6)
+			INSERT INTO role_permissions (tenant_id, role_code, resource_type, permission_type, permission_scope)
+			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT ((COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)), role_code, resource_type, permission_type)
-			DO UPDATE SET assigned_only = EXCLUDED.assigned_only, branch_only = EXCLUDED.branch_only
+			DO UPDATE SET permission_scope = EXCLUDED.permission_scope
 		`
 
 		_, err = tx.ExecContext(ctx, insertQuery,
@@ -565,8 +544,7 @@ func (r *PostgresRolePermissionsRepository) BatchCreatePermissions(ctx context.C
 			perm.RoleCode,
 			perm.ResourceType,
 			perm.PermissionType,
-			perm.AssignedOnly,
-			perm.BranchOnly,
+			perm.PermissionScope,
 		)
 		if err != nil {
 			errors = append(errors, fmt.Errorf("failed to create permission (role_code=%s, resource_type=%s, permission_type=%s): %w", perm.RoleCode, perm.ResourceType, perm.PermissionType, err))
@@ -604,7 +582,7 @@ func (r *PostgresRolePermissionsRepository) UpdatePermission(ctx context.Context
 	// 1. 查询现有权限
 	var existingPerm domain.RolePermission
 	err = tx.QueryRowContext(ctx, `
-		SELECT permission_id::text, tenant_id, role_code, resource_type, permission_type, assigned_only, branch_only
+		SELECT permission_id::text, tenant_id, role_code, resource_type, permission_type, permission_scope
 		FROM role_permissions
 		WHERE permission_id = $1
 	`, permissionID).Scan(
@@ -613,8 +591,7 @@ func (r *PostgresRolePermissionsRepository) UpdatePermission(ctx context.Context
 		&existingPerm.RoleCode,
 		&existingPerm.ResourceType,
 		&existingPerm.PermissionType,
-		&existingPerm.AssignedOnly,
-		&existingPerm.BranchOnly,
+		&existingPerm.PermissionScope,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -707,16 +684,10 @@ func (r *PostgresRolePermissionsRepository) UpdatePermission(ctx context.Context
 		argN++
 	}
 
-	// assigned_only和branch_only总是可以更新（如果提供）
-	if permission.AssignedOnly != existingPerm.AssignedOnly {
-		set = append(set, fmt.Sprintf("assigned_only = $%d", argN))
-		args = append(args, permission.AssignedOnly)
-		argN++
-	}
-
-	if permission.BranchOnly != existingPerm.BranchOnly {
-		set = append(set, fmt.Sprintf("branch_only = $%d", argN))
-		args = append(args, permission.BranchOnly)
+	// permission_scope总是可以更新（如果提供）
+	if permission.PermissionScope != existingPerm.PermissionScope {
+		set = append(set, fmt.Sprintf("permission_scope = $%d", argN))
+		args = append(args, permission.PermissionScope)
 		argN++
 	}
 
@@ -736,7 +707,7 @@ func (r *PostgresRolePermissionsRepository) UpdatePermission(ctx context.Context
 }
 
 // BatchUpdatePermissions 批量更新权限
-// 功能：批量更新权限，如批量修改assigned_only或branch_only
+// 功能：批量更新权限，如批量修改permission_scope
 func (r *PostgresRolePermissionsRepository) BatchUpdatePermissions(ctx context.Context, updates []PermissionUpdate) (int, []error, error) {
 	if len(updates) == 0 {
 		return 0, nil, nil
@@ -783,7 +754,7 @@ func (r *PostgresRolePermissionsRepository) updatePermissionTx(ctx context.Conte
 	// 查询现有权限
 	var existingPerm domain.RolePermission
 	err := tx.QueryRowContext(ctx, `
-		SELECT permission_id::text, tenant_id, role_code, resource_type, permission_type, assigned_only, branch_only
+		SELECT permission_id::text, tenant_id, role_code, resource_type, permission_type, permission_scope
 		FROM role_permissions
 		WHERE permission_id = $1
 	`, permissionID).Scan(
@@ -792,8 +763,7 @@ func (r *PostgresRolePermissionsRepository) updatePermissionTx(ctx context.Conte
 		&existingPerm.RoleCode,
 		&existingPerm.ResourceType,
 		&existingPerm.PermissionType,
-		&existingPerm.AssignedOnly,
-		&existingPerm.BranchOnly,
+		&existingPerm.PermissionScope,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -829,16 +799,10 @@ func (r *PostgresRolePermissionsRepository) updatePermissionTx(ctx context.Conte
 		argN++
 	}
 
-	// assigned_only和branch_only总是可以更新
-	if permission.AssignedOnly != existingPerm.AssignedOnly {
-		set = append(set, fmt.Sprintf("assigned_only = $%d", argN))
-		args = append(args, permission.AssignedOnly)
-		argN++
-	}
-
-	if permission.BranchOnly != existingPerm.BranchOnly {
-		set = append(set, fmt.Sprintf("branch_only = $%d", argN))
-		args = append(args, permission.BranchOnly)
+	// permission_scope总是可以更新
+	if permission.PermissionScope != "" && permission.PermissionScope != existingPerm.PermissionScope {
+		set = append(set, fmt.Sprintf("permission_scope = $%d", argN))
+		args = append(args, permission.PermissionScope)
 		argN++
 	}
 
@@ -911,4 +875,3 @@ func (r *PostgresRolePermissionsRepository) DeletePermissionsByRole(ctx context.
 
 	return nil
 }
-
