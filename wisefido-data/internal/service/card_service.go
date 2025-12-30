@@ -62,7 +62,7 @@ type GetCardOverviewRequest struct {
 
 	// 权限相关
 	CurrentUserID   string
-	CurrentUserType string // "resident" | "family" | "staff"
+	CurrentUserType string // "resident" | "staff"（注意：'family' 已被禁止，resident_contacts 不能登录系统）
 	CurrentUserRole string // "Nurse" | "Caregiver" | "Manager" | "SystemAdmin"
 }
 
@@ -87,7 +87,9 @@ func (s *cardService) GetCardOverview(ctx context.Context, req GetCardOverviewRe
 		Direction:         req.Direction,
 	}
 
-	// 2. 处理 Family 用户类型
+	// 2. 处理 Family 用户类型（已废弃）
+	// 注意：resident_contacts 不能登录系统，所以 CurrentUserType 永远不会是 "family"
+	// 保留此代码是为了向后兼容，但实际上永远不会执行
 	if req.CurrentUserType == "family" {
 		residentID, err := s.getResidentIDByContactID(ctx, req.TenantID, req.CurrentUserID)
 		if err != nil {
@@ -145,22 +147,11 @@ func (s *cardService) GetCardOverview(ctx context.Context, req GetCardOverviewRe
 		return nil, fmt.Errorf("failed to aggregate card data: %w", err)
 	}
 
-	// 5. 计算 family_view 并规范化 card_type（数据库使用 'Location'，API 返回 'Unit'）
+	// 5. 规范化 card_type（数据库使用 'Location'，API 返回 'Unit'）
 	for _, card := range allCards {
 		// 规范化 card_type：数据库中的 'Location' 转换为 API 的 'Unit'
 		if card.CardType == "Location" {
 			card.CardType = "Unit"
-		}
-
-		familyView, err := s.getFamilyView(ctx, card)
-		if err != nil {
-			s.logger.Warn("Failed to get family_view, using default",
-				zap.Error(err),
-				zap.String("card_id", card.CardID),
-			)
-			card.FamilyView = false // 默认值
-		} else {
-			card.FamilyView = familyView
 		}
 	}
 
@@ -192,7 +183,7 @@ func (s *cardService) getResidentIDByContactID(ctx context.Context, tenantID, co
 }
 
 // getResourcePermission 查询资源权限配置
-// 
+//
 // 注意: permission_scope 值映射:
 //   - 'A' = All (no restriction) → assigned_only=false, branch_only=false
 //   - 'S' = assigned_only → assigned_only=true, branch_only=false
@@ -553,66 +544,6 @@ func (s *cardService) batchGetResidents(ctx context.Context, tenantID string, re
 	}
 
 	return result, nil
-}
-
-// getFamilyView 计算 family_view
-func (s *cardService) getFamilyView(ctx context.Context, item *domain.CardOverviewItem) (bool, error) {
-	// 1. Share Unit：不对个人开放
-	if item.IsPublicSpace || item.IsMultiPersonRoom {
-		return false, nil
-	}
-
-	// 2. ActiveBed 卡片：从 resident_id 获取
-	if item.CardType == "ActiveBed" && item.ResidentID != nil {
-		var canViewStatus sql.NullBool
-		err := s.db.QueryRowContext(ctx,
-			`SELECT is_access_enabled FROM residents 
-			 WHERE tenant_id = $1 AND resident_id = $2`,
-			item.TenantID, *item.ResidentID,
-		).Scan(&canViewStatus)
-		if err != nil {
-			return false, err
-		}
-		return canViewStatus.Valid && canViewStatus.Bool, nil
-	}
-
-	// 3. Unit 卡片（数据库中使用 'Location'）：从第一个住户获取
-	if (item.CardType == "Unit" || item.CardType == "Location") && len(item.Residents) > 0 {
-		// 第一个住户的 is_access_enabled
-		var canViewStatus1 sql.NullBool
-		err := s.db.QueryRowContext(ctx,
-			`SELECT is_access_enabled FROM residents 
-			 WHERE tenant_id = $1 AND resident_id = $2`,
-			item.TenantID, item.Residents[0].ResidentID,
-		).Scan(&canViewStatus1)
-		if err != nil {
-			return false, err
-		}
-
-		// 如果只有一个人，返回第一个住户的 is_access_enabled
-		if len(item.Residents) == 1 {
-			return canViewStatus1.Valid && canViewStatus1.Bool, nil
-		}
-
-		// 如果有两个人（夫妻套房），检查第二个住户
-		if len(item.Residents) >= 2 {
-			var canViewStatus2 sql.NullBool
-			err := s.db.QueryRowContext(ctx,
-				`SELECT is_access_enabled FROM residents 
-				 WHERE tenant_id = $1 AND resident_id = $2`,
-				item.TenantID, item.Residents[1].ResidentID,
-			).Scan(&canViewStatus2)
-			if err != nil {
-				return false, err
-			}
-
-			// OR 逻辑：只要有一个允许，就允许
-			return (canViewStatus1.Valid && canViewStatus1.Bool) ||
-				(canViewStatus2.Valid && canViewStatus2.Bool), nil
-		}
-	}
-
-	return false, nil
 }
 
 // mapKeys 从 map 中提取 keys

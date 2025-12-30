@@ -133,7 +133,7 @@ func _TestResidentPasswordReset_WithAuth(t *testing.T) {
 		newPasswordHashHex := hex.EncodeToString(newPasswordHash[:])
 
 		residentsRepo := repository.NewPostgresResidentsRepository(db)
-		residentService := NewResidentService(residentsRepo, db, logger)
+		residentService := NewResidentService(residentsRepo, db, nil, logger)
 
 		resetReq := ResetResidentPasswordRequest{
 			TenantID:        tenantID,

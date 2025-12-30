@@ -33,15 +33,15 @@ type ActiveBedInfo struct {
 
 // UnitInfo Unit information
 type UnitInfo struct {
-	UnitID            string
-	UnitName          string
-	BranchName        string
-	Building          string
-	IsPublicSpace     bool
-	IsMultiPersonRoom bool
-	UnitType          string
-	GroupList         []byte // JSONB format, user group list (for alarm routing)
-	UserList          []byte // JSONB format, user ID list (for alarm routing)
+	UnitID        string
+	UnitName      string
+	BranchName    string
+	Building      string
+	IsPublic      bool   // 对应数据库字段 is_public
+	IsSharedUnit  bool   // 对应数据库字段 is_shared_unit
+	UnitType      string
+	GroupList     []byte // JSONB format, user group list (for alarm routing)
+	UserList      []byte // JSONB format, user ID list (for alarm routing)
 }
 
 // DeviceInfo device information
@@ -129,8 +129,8 @@ func (r *CardRepository) GetUnitInfo(tenantID, unitID string) (*UnitInfo, error)
 			unit_name,
 			branch_name,
 			building,
-			is_public_space,
-			is_multi_person_room,
+			is_public,
+			is_shared_unit,
 			unit_type,
 			groupList,
 			userList
@@ -146,8 +146,8 @@ func (r *CardRepository) GetUnitInfo(tenantID, unitID string) (*UnitInfo, error)
 		&unit.UnitName,
 		&unit.BranchName,
 		&unit.Building,
-		&unit.IsPublicSpace,
-		&unit.IsMultiPersonRoom,
+		&unit.IsPublic,
+		&unit.IsSharedUnit,
 		&unit.UnitType,
 		&groupList,
 		&userList,

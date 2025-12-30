@@ -35,7 +35,7 @@ func TestUpdateResident_Basic(t *testing.T) {
 	// 创建 service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
 	logger := getTestLoggerForResident()
-	service := NewResidentService(residentsRepo, db, logger)
+	service := NewResidentService(residentsRepo, db, nil, logger)
 
 	ctx := context.Background()
 
@@ -117,7 +117,7 @@ func TestUpdateResident_WithPHI(t *testing.T) {
 	// 创建 service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
 	logger := getTestLoggerForResident()
-	service := NewResidentService(residentsRepo, db, logger)
+	service := NewResidentService(residentsRepo, db, nil, logger)
 
 	ctx := context.Background()
 
@@ -226,7 +226,7 @@ func TestUpdateResident_WithContacts(t *testing.T) {
 	// 创建 service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
 	logger := getTestLoggerForResident()
-	service := NewResidentService(residentsRepo, db, logger)
+	service := NewResidentService(residentsRepo, db, nil, logger)
 
 	ctx := context.Background()
 
@@ -348,7 +348,7 @@ func TestUpdateResident_WithCaregivers(t *testing.T) {
 	// 创建 service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
 	logger := getTestLoggerForResident()
-	service := NewResidentService(residentsRepo, db, logger)
+	service := NewResidentService(residentsRepo, db, nil, logger)
 
 	ctx := context.Background()
 

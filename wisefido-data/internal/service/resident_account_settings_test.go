@@ -34,7 +34,7 @@ func TestResidentService_GetResidentAccountSettings_Success(t *testing.T) {
 
 	// 创建 Service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
-	residentService := NewResidentService(residentsRepo, db, getTestLoggerForResident())
+	residentService := NewResidentService(residentsRepo, db, nil, getTestLoggerForResident())
 
 	// 创建测试住户
 	residentID := createTestResidentWithAccount(t, db, tenantID, unitID, "testresident", "password123", "test@example.com", "1234567890")
@@ -73,7 +73,7 @@ func TestResidentService_GetResidentAccountSettings_PermissionDenied(t *testing.
 
 	// 创建 Service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
-	residentService := NewResidentService(residentsRepo, db, getTestLoggerForResident())
+	residentService := NewResidentService(residentsRepo, db, nil, getTestLoggerForResident())
 
 	// 创建两个测试住户
 	residentID1 := createTestResidentWithAccount(t, db, tenantID, unitID, "resident1", "password1", "resident1@test.com", "1111111111")
@@ -106,7 +106,7 @@ func TestResidentService_GetResidentAccountSettings_FamilyRole_NotSupported(t *t
 
 	// 创建 Service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
-	residentService := NewResidentService(residentsRepo, db, getTestLoggerForResident())
+	residentService := NewResidentService(residentsRepo, db, nil, getTestLoggerForResident())
 
 	// 创建测试住户
 	residentID := createTestResidentWithAccount(t, db, tenantID, unitID, "testresident", "password123", "test@example.com", "1234567890")
@@ -142,7 +142,7 @@ func TestResidentService_UpdateResidentAccountSettings_Success(t *testing.T) {
 
 	// 创建 Service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
-	residentService := NewResidentService(residentsRepo, db, getTestLoggerForResident())
+	residentService := NewResidentService(residentsRepo, db, nil, getTestLoggerForResident())
 
 	// 创建测试住户
 	residentID := createTestResidentWithAccount(t, db, tenantID, unitID, "testresident", "oldpassword", "old@example.com", "1111111111")
@@ -211,7 +211,7 @@ func TestResidentService_UpdateResidentAccountSettings_PermissionDenied(t *testi
 
 	// 创建 Service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
-	residentService := NewResidentService(residentsRepo, db, getTestLoggerForResident())
+	residentService := NewResidentService(residentsRepo, db, nil, getTestLoggerForResident())
 
 	// 创建两个测试住户
 	residentID1 := createTestResidentWithAccount(t, db, tenantID, unitID, "resident1", "password1", "resident1@test.com", "1111111111")
@@ -245,7 +245,7 @@ func TestResidentService_UpdateResidentAccountSettings_FamilyRole_NotSupported(t
 
 	// 创建 Service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
-	residentService := NewResidentService(residentsRepo, db, getTestLoggerForResident())
+	residentService := NewResidentService(residentsRepo, db, nil, getTestLoggerForResident())
 
 	// 创建测试住户
 	residentID := createTestResidentWithAccount(t, db, tenantID, unitID, "testresident", "password123", "test@example.com", "1234567890")
@@ -278,7 +278,7 @@ func TestResidentService_UpdateResidentAccountSettings_PlaceholderHandling(t *te
 
 	// 创建 Service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
-	residentService := NewResidentService(residentsRepo, db, getTestLoggerForResident())
+	residentService := NewResidentService(residentsRepo, db, nil, getTestLoggerForResident())
 
 	// 创建测试住户（带占位符）
 	residentID := createTestResidentWithPlaceholder(t, db, tenantID, unitID, "testresident", "password123")

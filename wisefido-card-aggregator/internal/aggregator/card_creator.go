@@ -348,8 +348,8 @@ func (c *CardCreator) calculateActiveBedCardName(
 		}
 	}
 
-	// 2. Bed is not bound to resident, decide based on unit's is_multi_person_room
-	if unitInfo.IsMultiPersonRoom {
+	// 2. Bed is not bound to resident, decide based on unit's is_shared_unit
+	if unitInfo.IsSharedUnit {
 		return "disable monitor", nil
 	}
 
@@ -369,21 +369,21 @@ func (c *CardCreator) calculateActiveBedCardName(
 
 // calculateUnitCardName calculates UnitCard name
 // Priority:
-// 1. is_public_space = TRUE → unit_name
-// 2. is_multi_person_room = TRUE → unit_name
+// 1. is_public = TRUE → unit_name
+// 2. is_shared_unit = TRUE → unit_name
 // 3. unit_type = 'HomeCare' and unit has residents bound → first resident's nickname
-// 4. is_multi_person_room = FALSE and unit has residents bound → first resident's nickname
+// 4. is_shared_unit = FALSE and unit has residents bound → first resident's nickname
 func (c *CardCreator) calculateUnitCardName(
 	tenantID string,
 	unitInfo *repository.UnitInfo,
 ) (string, error) {
 	// Priority 1: Public space
-	if unitInfo.IsPublicSpace {
+	if unitInfo.IsPublic {
 		return unitInfo.UnitName, nil
 	}
 
-	// Priority 2: Multi-person room
-	if unitInfo.IsMultiPersonRoom {
+	// Priority 2: Shared unit (multi-person room)
+	if unitInfo.IsSharedUnit {
 		return unitInfo.UnitName, nil
 	}
 

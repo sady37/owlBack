@@ -93,19 +93,20 @@ type LoginRequest struct {
 
 // LoginResponse 登录响应
 type LoginResponse struct {
-	AccessToken  string `json:"accessToken"`         // 访问令牌（占位符）
-	RefreshToken string `json:"refreshToken"`        // 刷新令牌（占位符）
-	UserID       string `json:"userId"`              // 用户 ID
-	UserAccount  string `json:"user_account"`        // 用户账号
-	UserType     string `json:"userType"`            // 用户类型
-	Role         string `json:"role"`                // 角色
-	NickName     string `json:"nickName"`            // 昵称
-	TenantID     string `json:"tenant_id"`           // 租户 ID
-	TenantName   string `json:"tenant_name"`         // 租户名称
-	Domain       string `json:"domain"`              // 域名
-	BranchID     string `json:"branch_id,omitempty"` // 院区 ID（从 user_branches 获取主院区，前端使用 ID 调用服务）
-	BranchTag    string `json:"branchTag,omitempty"` // 院区名称（用于显示，前端使用 ID 调用服务）
-	HomePath     string `json:"homePath"`            // 首页路径
+	AccessToken  string   `json:"accessToken"`         // 访问令牌（占位符）
+	RefreshToken string   `json:"refreshToken"`        // 刷新令牌（占位符）
+	UserID       string   `json:"userId"`              // 用户 ID
+	UserAccount  string   `json:"user_account"`        // 用户账号
+	UserType     string   `json:"userType"`            // 用户类型
+	Role         string   `json:"role"`                // 角色
+	NickName     string   `json:"nickName"`            // 昵称
+	TenantID     string   `json:"tenant_id"`           // 租户 ID
+	TenantName   string   `json:"tenant_name"`         // 租户名称
+	Domain       string   `json:"domain"`              // 域名
+	BranchID     string   `json:"branch_id,omitempty"` // 主院区 ID（从 user_branches 获取主院区，前端使用 ID 调用服务）
+	BranchTag    string   `json:"branchTag,omitempty"` // 主院区名称（用于显示，前端使用 ID 调用服务）
+	BranchIDs    []string `json:"branch_ids,omitempty"` // 所有关联的院区 ID 列表（从 user_branches 表查询，用于权限检查和前端选择）
+	HomePath     string   `json:"homePath"`            // 首页路径
 }
 
 // Login 用户登录
@@ -293,8 +294,9 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 		}
 	}
 
-	// 6. 查询用户的 branch_id 和 branch_name（从 user_branches 获取主院区）
+	// 6. 查询用户的 branch_id 和 branch_name（从 user_branches 获取主院区和所有关联院区）
 	var branchID, branchTag string
+	var branchIDs []string
 	if normalizedUserType == "staff" && s.db != nil {
 		// Staff: 从 user_branches 表获取主院区
 		var branchIDVal, branchNameVal sql.NullString
@@ -312,14 +314,31 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 				branchTag = branchNameVal.String
 			}
 		}
+
+		// 查询所有关联的 branch_ids（用于权限检查和前端选择）
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT ub.branch_id::text
+			 FROM user_branches ub
+			 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2
+			 ORDER BY ub.is_primary DESC, ub.branch_id ASC`,
+			tenantID, userID,
+		)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var bid sql.NullString
+				if err := rows.Scan(&bid); err == nil && bid.Valid && bid.String != "" {
+					branchIDs = append(branchIDs, bid.String)
+				}
+			}
+		}
 	} else if normalizedUserType == "resident" && s.db != nil {
-		// Resident: 从 residents.unit_id -> units.branch_id 获取院区
+		// Resident: 直接从 residents.branch_id 获取院区（residents 表直接有 branch_id 字段）
 		var branchIDVal, branchNameVal sql.NullString
 		err := s.db.QueryRowContext(ctx,
-			`SELECT u.branch_id::text, COALESCE(b.branch_name, '') as branch_name
+			`SELECT r.branch_id::text, COALESCE(b.branch_name, '') as branch_name
 			 FROM residents r
-			 LEFT JOIN units u ON u.unit_id = r.unit_id
-			 LEFT JOIN branches b ON b.branch_id = u.branch_id
+			 LEFT JOIN branches b ON b.branch_id = r.branch_id
 			 WHERE r.tenant_id = $1 AND r.resident_id::text = $2
 			 LIMIT 1`,
 			tenantID, userID,
@@ -329,6 +348,8 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 			if branchNameVal.Valid {
 				branchTag = branchNameVal.String
 			}
+			// Resident 只有一个 branch（直接从 residents.branch_id 获取）
+			branchIDs = []string{branchID}
 		}
 	}
 
@@ -361,6 +382,7 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 		Domain:       domain,
 		BranchID:     branchID,
 		BranchTag:    branchTag,
+		BranchIDs:    branchIDs,
 		HomePath:     "/monitoring/overview",
 	}
 

@@ -65,7 +65,9 @@ func TestUnitService_ListBuildings_Success(t *testing.T) {
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
+	residentsRepo := repository.NewPostgresResidentsRepository(db)
+	devicesRepo := repository.NewPostgresDevicesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, nil, getTestLoggerForUnit())
 
 	// 创建测试数据
 	building1 := &domain.Building{
@@ -135,7 +137,9 @@ func TestUnitService_CreateBuilding_Success(t *testing.T) {
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
+	residentsRepo := repository.NewPostgresResidentsRepository(db)
+	devicesRepo := repository.NewPostgresDevicesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, nil, getTestLoggerForUnit())
 
 	// 测试创建楼栋
 	req := CreateBuildingRequest{
@@ -179,7 +183,9 @@ func TestUnitService_ListUnits_Success(t *testing.T) {
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
+	residentsRepo := repository.NewPostgresResidentsRepository(db)
+	devicesRepo := repository.NewPostgresDevicesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, nil, getTestLoggerForUnit())
 
 	// 创建测试数据
 	unit1 := &domain.Unit{
@@ -258,7 +264,9 @@ func TestUnitService_CreateUnit_Success(t *testing.T) {
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
+	residentsRepo := repository.NewPostgresResidentsRepository(db)
+	devicesRepo := repository.NewPostgresDevicesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, nil, getTestLoggerForUnit())
 
 	// 测试创建单元
 	req := CreateUnitRequest{
@@ -303,7 +311,9 @@ func TestUnitService_GetUnit_Success(t *testing.T) {
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
+	residentsRepo := repository.NewPostgresResidentsRepository(db)
+	devicesRepo := repository.NewPostgresDevicesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, nil, getTestLoggerForUnit())
 
 	// 创建测试数据
 	unit := &domain.Unit{
@@ -351,7 +361,9 @@ func TestUnitService_UpdateUnit_Success(t *testing.T) {
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
+	residentsRepo := repository.NewPostgresResidentsRepository(db)
+	devicesRepo := repository.NewPostgresDevicesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, nil, getTestLoggerForUnit())
 
 	// 创建测试数据
 	unit := &domain.Unit{
@@ -406,7 +418,9 @@ func TestUnitService_DeleteUnit_Success(t *testing.T) {
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
+	residentsRepo := repository.NewPostgresResidentsRepository(db)
+	devicesRepo := repository.NewPostgresDevicesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, nil, getTestLoggerForUnit())
 
 	// 创建测试数据
 	unit := &domain.Unit{
@@ -423,10 +437,20 @@ func TestUnitService_DeleteUnit_Success(t *testing.T) {
 		t.Fatalf("Failed to create unit: %v", err)
 	}
 
+	// 获取 unit 信息以获取 branch_id
+	unitInfo, err := unitsRepo.GetUnit(context.Background(), tenantID, unitID)
+	if err != nil {
+		t.Fatalf("Failed to get unit: %v", err)
+	}
+	if !unitInfo.BranchID.Valid {
+		t.Fatal("Unit must have a valid branch_id")
+	}
+
 	// 测试删除单元
 	req := DeleteUnitRequest{
 		TenantID: tenantID,
 		UnitID:   unitID,
+		BranchID: unitInfo.BranchID.String,
 	}
 
 	resp, err := unitService.DeleteUnit(context.Background(), req)
@@ -460,7 +484,9 @@ func TestUnitService_CreateRoom_Success(t *testing.T) {
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
+	residentsRepo := repository.NewPostgresResidentsRepository(db)
+	devicesRepo := repository.NewPostgresDevicesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, nil, getTestLoggerForUnit())
 
 	// 先创建单元
 	unit := &domain.Unit{
@@ -519,7 +545,9 @@ func TestUnitService_CreateBed_Success(t *testing.T) {
 	// 创建 Service
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	unitService := NewUnitService(unitsRepo, branchesRepo, getTestLoggerForUnit())
+	residentsRepo := repository.NewPostgresResidentsRepository(db)
+	devicesRepo := repository.NewPostgresDevicesRepository(db)
+	unitService := NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, nil, getTestLoggerForUnit())
 
 	// 先创建单元和房间
 	unit := &domain.Unit{

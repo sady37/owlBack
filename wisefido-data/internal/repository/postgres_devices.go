@@ -1019,3 +1019,115 @@ func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Conte
 	return r.GetDevice(ctx, dsTenantID, newDeviceID)
 }
 
+// ============================================
+// 批量查询（用于 ListUnitsWithFullHierarchy）
+// ============================================
+
+// GetDevicesByRoomIDs 批量查询多个 rooms 的 device IDs 和 names
+func (r *PostgresDevicesRepository) GetDevicesByRoomIDs(ctx context.Context, tenantID string, roomIDs []string) (map[string][]DeviceInfo, error) {
+	if tenantID == "" || len(roomIDs) == 0 {
+		return make(map[string][]DeviceInfo), nil
+	}
+
+	// 构建 IN 子句
+	in := make([]string, len(roomIDs))
+	args := make([]any, 0, len(roomIDs)+1)
+	args = append(args, tenantID)
+	for i, id := range roomIDs {
+		in[i] = fmt.Sprintf("$%d", i+2)
+		args = append(args, id)
+	}
+
+	q := `
+		SELECT 
+			d.bound_room_id::text as room_id,
+			ARRAY_AGG(d.device_id::text ORDER BY d.device_name) FILTER (WHERE d.device_id IS NOT NULL) as device_ids,
+			ARRAY_AGG(d.device_name ORDER BY d.device_name) FILTER (WHERE d.device_name IS NOT NULL) as device_names
+		FROM devices d
+		WHERE d.tenant_id = $1 
+		  AND d.bound_room_id IS NOT NULL
+		  AND d.bound_room_id IN (` + strings.Join(in, ",") + `)
+		GROUP BY d.bound_room_id
+	`
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string][]DeviceInfo)
+	for rows.Next() {
+		var roomID string
+		var deviceIDs, deviceNames pq.StringArray
+		if err := rows.Scan(&roomID, &deviceIDs, &deviceNames); err != nil {
+			return nil, err
+		}
+
+		// 确保 deviceIDs 和 deviceNames 长度相同
+		devices := make([]DeviceInfo, 0, len(deviceIDs))
+		for i := 0; i < len(deviceIDs) && i < len(deviceNames); i++ {
+			devices = append(devices, DeviceInfo{
+				ID:   deviceIDs[i],
+				Name: deviceNames[i],
+			})
+		}
+		result[roomID] = devices
+	}
+	return result, rows.Err()
+}
+
+// GetDevicesByBedIDs 批量查询多个 beds 的 device IDs 和 names
+func (r *PostgresDevicesRepository) GetDevicesByBedIDs(ctx context.Context, tenantID string, bedIDs []string) (map[string][]DeviceInfo, error) {
+	if tenantID == "" || len(bedIDs) == 0 {
+		return make(map[string][]DeviceInfo), nil
+	}
+
+	// 构建 IN 子句
+	in := make([]string, len(bedIDs))
+	args := make([]any, 0, len(bedIDs)+1)
+	args = append(args, tenantID)
+	for i, id := range bedIDs {
+		in[i] = fmt.Sprintf("$%d", i+2)
+		args = append(args, id)
+	}
+
+	q := `
+		SELECT 
+			d.bound_bed_id::text as bed_id,
+			ARRAY_AGG(d.device_id::text ORDER BY d.device_name) FILTER (WHERE d.device_id IS NOT NULL) as device_ids,
+			ARRAY_AGG(d.device_name ORDER BY d.device_name) FILTER (WHERE d.device_name IS NOT NULL) as device_names
+		FROM devices d
+		WHERE d.tenant_id = $1 
+		  AND d.bound_bed_id IS NOT NULL
+		  AND d.bound_bed_id IN (` + strings.Join(in, ",") + `)
+		GROUP BY d.bound_bed_id
+	`
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string][]DeviceInfo)
+	for rows.Next() {
+		var bedID string
+		var deviceIDs, deviceNames pq.StringArray
+		if err := rows.Scan(&bedID, &deviceIDs, &deviceNames); err != nil {
+			return nil, err
+		}
+
+		// 确保 deviceIDs 和 deviceNames 长度相同
+		devices := make([]DeviceInfo, 0, len(deviceIDs))
+		for i := 0; i < len(deviceIDs) && i < len(deviceNames); i++ {
+			devices = append(devices, DeviceInfo{
+				ID:   deviceIDs[i],
+				Name: deviceNames[i],
+			})
+		}
+		result[bedID] = devices
+	}
+	return result, rows.Err()
+}
+

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"wisefido-data/internal/domain"
@@ -46,6 +48,8 @@ func (h *UnitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Units
 	case r.URL.Path == "/admin/api/v1/units" && r.Method == http.MethodGet:
 		h.ListUnits(w, r)
+	case r.URL.Path == "/admin/api/v1/units/with-hierarchy" && r.Method == http.MethodGet:
+		h.ListUnitsWithFullHierarchy(w, r)
 	case r.URL.Path == "/admin/api/v1/units" && r.Method == http.MethodPost:
 		h.CreateUnit(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api/v1/units/") && r.Method == http.MethodGet:
@@ -93,11 +97,22 @@ func (h *UnitHandler) ListBuildings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	branchTag := r.URL.Query().Get("branch_tag")
+	// 优先使用 branch_id，如果没有则使用 branch_name（向后兼容 branch_tag）
+	branchID := r.URL.Query().Get("branch_id")
+	branchName := r.URL.Query().Get("branch_name")
+	if branchName == "" {
+		// 向后兼容：也支持 branch_tag
+		branchName = r.URL.Query().Get("branch_tag")
+	}
+	if branchID != "" {
+		// 如果提供了 branch_id，忽略 branch_name（service 层会通过 branch_id 查找）
+		branchName = ""
+	}
 
 	req := service.ListBuildingsRequest{
 		TenantID:   tenantID,
-		BranchName: branchTag,
+		BranchID:   branchID,
+		BranchName: branchName,
 	}
 
 	resp, err := h.unitService.ListBuildings(ctx, req)
@@ -143,7 +158,23 @@ func (h *UnitHandler) GetBuilding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, Ok(buildingToJSON(resp.Building)))
+	// 构建响应，包含 building 和 units
+	response := buildingToJSON(resp.Building)
+	// 添加 units 列表
+	unitsJSON := make([]map[string]any, 0, len(resp.Units))
+	for _, u := range resp.Units {
+		unitMap := map[string]any{
+			"unit_id":   u.UnitID,
+			"unit_name": u.UnitName,
+		}
+		if u.Floor != "" {
+			unitMap["floor"] = u.Floor
+		}
+		unitsJSON = append(unitsJSON, unitMap)
+	}
+	response["units"] = unitsJSON
+
+	writeJSON(w, http.StatusOK, Ok(response))
 }
 
 // CreateBuilding 创建楼栋
@@ -161,21 +192,16 @@ func (h *UnitHandler) CreateBuilding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 优先使用 branch_id，如果没有则使用 branch_name（向后兼容 branch_tag）
+	// branch_id 是必填项，不再支持 branch_name
 	branchID := getString(payload, "branch_id")
-	branchName := getString(payload, "branch_name")
-	if branchName == "" {
-		// 向后兼容：也支持 branch_tag
-		branchName = getString(payload, "branch_tag")
+	if branchID == "" {
+		writeJSON(w, http.StatusOK, Fail("branch_id is required and cannot be empty"))
+		return
 	}
-	if branchID != "" {
-		// 如果提供了 branch_id，忽略 branch_name（service 层会通过 branch_id 查找）
-		branchName = ""
-	}
+
 	req := service.CreateBuildingRequest{
 		TenantID:     tenantID,
 		BranchID:     branchID,
-		BranchName:   branchName,
 		BuildingName: getString(payload, "building_name"),
 	}
 
@@ -198,10 +224,27 @@ func (h *UnitHandler) CreateBuilding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, Ok(buildingToJSON(getResp.Building)))
+	// 构建响应，包含 building 和 units
+	response := buildingToJSON(getResp.Building)
+	// 添加 units 列表
+	unitsJSON := make([]map[string]any, 0, len(getResp.Units))
+	for _, u := range getResp.Units {
+		unitMap := map[string]any{
+			"unit_id":   u.UnitID,
+			"unit_name": u.UnitName,
+		}
+		if u.Floor != "" {
+			unitMap["floor"] = u.Floor
+		}
+		unitsJSON = append(unitsJSON, unitMap)
+	}
+	response["units"] = unitsJSON
+
+	writeJSON(w, http.StatusOK, Ok(response))
 }
 
 // UpdateBuilding 更新楼栋
+// 注意：只能修改 building_name，不能修改 branch_id
 func (h *UnitHandler) UpdateBuilding(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -222,23 +265,17 @@ func (h *UnitHandler) UpdateBuilding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 优先使用 branch_id，如果没有则使用 branch_name（向后兼容 branch_tag）
-	branchID := getString(payload, "branch_id")
-	branchName := getString(payload, "branch_name")
-	if branchName == "" {
-		// 向后兼容：也支持 branch_tag
-		branchName = getString(payload, "branch_tag")
+	// UpdateBuilding 只能修改 building_name，不能修改 branch_id
+	buildingName := getString(payload, "building_name")
+	if buildingName == "" {
+		writeJSON(w, http.StatusOK, Fail("building_name is required and cannot be empty"))
+		return
 	}
-	if branchID != "" {
-		// 如果提供了 branch_id，忽略 branch_name（service 层会通过 branch_id 查找）
-		branchName = ""
-	}
+
 	req := service.UpdateBuildingRequest{
 		TenantID:     tenantID,
 		BuildingID:   buildingID,
-		BranchID:     branchID,
-		BranchName:   branchName,
-		BuildingName: getString(payload, "building_name"),
+		BuildingName: buildingName,
 	}
 
 	_, err := h.unitService.UpdateBuilding(ctx, req)
@@ -260,7 +297,23 @@ func (h *UnitHandler) UpdateBuilding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, Ok(buildingToJSON(getResp.Building)))
+	// 构建响应，包含 building 和 units
+	response := buildingToJSON(getResp.Building)
+	// 添加 units 列表
+	unitsJSON := make([]map[string]any, 0, len(getResp.Units))
+	for _, u := range getResp.Units {
+		unitMap := map[string]any{
+			"unit_id":   u.UnitID,
+			"unit_name": u.UnitName,
+		}
+		if u.Floor != "" {
+			unitMap["floor"] = u.Floor
+		}
+		unitsJSON = append(unitsJSON, unitMap)
+	}
+	response["units"] = unitsJSON
+
+	writeJSON(w, http.StatusOK, Ok(response))
 }
 
 // DeleteBuilding 删除楼栋
@@ -309,14 +362,31 @@ func (h *UnitHandler) ListUnits(w http.ResponseWriter, r *http.Request) {
 
 	// 构建过滤器
 	// 空字符串视为 null（nil），nil 表示匹配 NULL 或未提供
+	// 优先使用 branch_id，如果没有提供则使用 branch_name（向后兼容）
+	branchID := r.URL.Query().Get("branch_id")
+	branchName := ""
+	if branchID == "" {
+		// 如果 branch_id 未提供，则使用 branch_name（向后兼容）
+		branchName = r.URL.Query().Get("branch_name")
+	}
+
+	// building_id: 优先使用 building_id，如果提供则忽略 building
+	buildingID := r.URL.Query().Get("building_id")
+	buildingName := ""
+	if buildingID == "" {
+		// 如果 building_id 未提供，则使用 building（向后兼容，通过 building_name 过滤）
+		buildingName = r.URL.Query().Get("building")
+	}
+	
 	req := service.ListUnitsRequest{
 		TenantID: tenantID,
-		// branch_tag: 如果 query 参数不存在或为空字符串，设置为 nil（表示匹配 NULL）
-		BranchName: stringPtrOrNil(r.URL.Query().Get("branch_tag")),
-		Building:   stringPtrOrNil(r.URL.Query().Get("building")),
+		// branch_id: 优先使用 branch_id，如果提供则忽略 branch_name
+		// 如果 query 参数不存在或为空字符串，设置为 nil（表示匹配 NULL）
+		BranchID:   stringPtrOrNil(branchID),
+		BranchName: stringPtrOrNil(branchName),
+		BuildingID: stringPtrOrNil(buildingID),
+		Building:   stringPtrOrNil(buildingName),
 		Floor:      stringPtrOrNil(r.URL.Query().Get("floor")),
-		AreaName:   stringPtrOrNil(r.URL.Query().Get("area_name")),
-		UnitNumber: stringPtrOrNil(r.URL.Query().Get("unit_number")),
 		UnitName:   stringPtrOrNil(r.URL.Query().Get("unit_name")),
 		UnitType:   stringPtrOrNil(r.URL.Query().Get("unit_type")),
 		Search:     stringPtrOrNil(r.URL.Query().Get("search")),
@@ -343,12 +413,71 @@ func (h *UnitHandler) ListUnits(w http.ResponseWriter, r *http.Request) {
 	}))
 }
 
+// ListUnitsWithFullHierarchy 查询 Units 及其完整的层级结构（Rooms, Beds, Devices）
+func (h *UnitHandler) ListUnitsWithFullHierarchy(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	tenantID, ok := h.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+
+	// 获取 user_id：从 header 获取（用于权限过滤，Service 层会从 user_branches 表查询用户的 branch_id）
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
+		return
+	}
+
+	// 获取 branch_id：优先从 query 参数，其次从 header（可选，如果提供则优先使用，否则 Service 层会从 user_branches 查询）
+	branchID := r.URL.Query().Get("branch_id")
+	if branchID == "" {
+		branchID = r.Header.Get("X-Branch-Id")
+	}
+	if branchID == "null" {
+		branchID = ""
+	}
+
+	// 根据用户要求：查询时应该只有 tenant_id 和 branch_id，其他参数为空
+	// branch_id 如果未提供，Service 层会从 user_branches 表根据 user_id 查询
+
+	req := service.ListUnitsWithFullHierarchyRequest{
+		TenantID:      tenantID,
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID:      stringPtrOrNil(branchID), // 可选，如果提供则优先使用
+		BranchName:    nil,                     // 不使用 branch_name
+		BuildingID:    nil,                     // 不使用 building_id
+		Building:     nil,                     // 不使用 building
+		Floor:        nil,                     // 不使用 floor
+		UnitType:     nil,                     // 不使用 unit_type
+		Search:       nil,                     // 不使用 search
+	}
+
+	resp, err := h.unitService.ListUnitsWithFullHierarchy(ctx, req)
+	if err != nil {
+		h.logger.Error("ListUnitsWithFullHierarchy failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	// 转换响应格式
+	out := make([]any, 0, len(resp.Items))
+	for _, unitWithHierarchy := range resp.Items {
+		out = append(out, unitWithFullHierarchyToJSON(unitWithHierarchy))
+	}
+
+	writeJSON(w, http.StatusOK, Ok(map[string]any{
+		"items": out,
+		"total": resp.Total,
+	}))
+}
+
 // GetUnit 获取单个单元详情
 func (h *UnitHandler) GetUnit(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	unitID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/units/")
-	if unitID == "" || strings.Contains(unitID, "/") {
+	if unitID == "" || strings.Contains(unitID, "/") || unitID == "with-hierarchy" {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -388,20 +517,33 @@ func (h *UnitHandler) CreateUnit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 优先使用 branch_id，如果没有则使用 branch_tag（向后兼容）
+	// 优先使用 branch_id，如果没有则使用 branch_name（向后兼容 branch_tag）
 	branchID := getString(payload, "branch_id")
-	branchName := getString(payload, "branch_tag")
-	if branchID == "" {
+	branchName := getString(payload, "branch_name")
+	if branchName == "" {
+		// 向后兼容：也支持 branch_tag
 		branchName = getString(payload, "branch_tag")
-	} else {
-		branchName = "" // 如果提供了 branch_id，忽略 branch_tag
 	}
+	if branchID != "" {
+		// 如果提供了 branch_id，忽略 branch_name（service 层会通过 branch_id 查找）
+		branchName = ""
+	}
+
+	// 优先使用 building_id，如果没有则使用 building（向后兼容）
+	buildingID := getString(payload, "building_id")
+	buildingName := getString(payload, "building")
+	if buildingID != "" {
+		// 如果提供了 building_id，忽略 building（service 层会通过 building_id 查找）
+		buildingName = ""
+	}
+
 	req := service.CreateUnitRequest{
 		TenantID:          tenantID,
 		BranchID:          branchID,
 		BranchName:        branchName,
 		UnitName:          getString(payload, "unit_name"),
-		Building:          getString(payload, "building"),
+		BuildingID:        buildingID,
+		BuildingName:      buildingName,
 		Floor:             getString(payload, "floor"),
 		AreaName:          getString(payload, "area_name"),
 		UnitNumber:        getString(payload, "unit_number"),
@@ -439,7 +581,7 @@ func (h *UnitHandler) UpdateUnit(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	unitID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/units/")
-	if unitID == "" || strings.Contains(unitID, "/") {
+	if unitID == "" || strings.Contains(unitID, "/") || unitID == "with-hierarchy" {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -455,21 +597,34 @@ func (h *UnitHandler) UpdateUnit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 优先使用 branch_id，如果没有则使用 branch_tag（向后兼容）
+	// 优先使用 branch_id，如果没有则使用 branch_name（向后兼容 branch_tag）
 	branchID := getString(payload, "branch_id")
-	branchName := getString(payload, "branch_tag")
-	if branchID == "" {
+	branchName := getString(payload, "branch_name")
+	if branchName == "" {
+		// 向后兼容：也支持 branch_tag
 		branchName = getString(payload, "branch_tag")
-	} else {
-		branchName = "" // 如果提供了 branch_id，忽略 branch_tag
 	}
+	if branchID != "" {
+		// 如果提供了 branch_id，忽略 branch_name（service 层会通过 branch_id 查找）
+		branchName = ""
+	}
+
+	// 优先使用 building_id，如果没有则使用 building（向后兼容）
+	buildingID := getString(payload, "building_id")
+	buildingName := getString(payload, "building")
+	if buildingID != "" {
+		// 如果提供了 building_id，忽略 building（service 层会通过 building_id 查找）
+		buildingName = ""
+	}
+
 	req := service.UpdateUnitRequest{
 		TenantID:          tenantID,
 		UnitID:            unitID,
 		BranchID:          branchID,
 		BranchName:        branchName,
 		UnitName:          getString(payload, "unit_name"),
-		Building:          getString(payload, "building"),
+		BuildingID:        buildingID,
+		BuildingName:      buildingName,
 		Floor:             getString(payload, "floor"),
 		AreaName:          getString(payload, "area_name"),
 		UnitNumber:        getString(payload, "unit_number"),
@@ -507,7 +662,7 @@ func (h *UnitHandler) DeleteUnit(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	unitID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/units/")
-	if unitID == "" || strings.Contains(unitID, "/") {
+	if unitID == "" || strings.Contains(unitID, "/") || unitID == "with-hierarchy" {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -517,9 +672,27 @@ func (h *UnitHandler) DeleteUnit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 获取 user_id：从 header 获取（用于权限验证，Service 层会从 user_branches 表查询用户的 branch_id）
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
+		return
+	}
+
+	// 获取 branch_id：可选，如果提供则验证用户是否有权限访问该 branch
+	branchID := r.URL.Query().Get("branch_id")
+	if branchID == "" {
+		branchID = r.Header.Get("X-Branch-Id")
+	}
+	if branchID == "null" {
+		branchID = ""
+	}
+
 	req := service.DeleteUnitRequest{
-		TenantID: tenantID,
-		UnitID:   unitID,
+		TenantID:      tenantID,
+		UnitID:        unitID,
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
 	}
 
 	_, err := h.unitService.DeleteUnit(ctx, req)
@@ -552,9 +725,33 @@ func (h *UnitHandler) ListRoomsWithBeds(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// 获取 user_id：从 header 获取（用于权限验证，Service 层会从 user_branches 表查询用户的 branch_id）
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
+		return
+	}
+
+	// 获取可选参数：branch_id（可选，如果提供则验证用户是否有权限访问该 branch）和 search（用于搜索）
+	branchID := r.URL.Query().Get("branch_id")
+	if branchID == "" {
+		branchID = r.Header.Get("X-Branch-Id")
+	}
+	if branchID == "null" {
+		branchID = ""
+	}
+
+	search := r.URL.Query().Get("search")
+	if search == "null" {
+		search = ""
+	}
+
 	req := service.ListRoomsWithBedsRequest{
-		TenantID: tenantID,
-		UnitID:   unitID,
+		TenantID:      tenantID,
+		UnitID:        unitID,
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID: branchID,
+		Search:   search,
 	}
 
 	resp, err := h.unitService.ListRoomsWithBeds(ctx, req)
@@ -594,11 +791,29 @@ func (h *UnitHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 获取 user_id：从 header 获取（用于权限验证，Service 层会从 user_branches 表查询用户的 branch_id）
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
+		return
+	}
+
+	// 获取 branch_id：可选，如果提供则验证用户是否有权限访问该 branch
+	branchID := r.URL.Query().Get("branch_id")
+	if branchID == "" {
+		branchID = r.Header.Get("X-Branch-Id")
+	}
+	if branchID == "null" {
+		branchID = ""
+	}
+
 	req := service.CreateRoomRequest{
-		TenantID:     tenantID,
-		UnitID:       unitID,
-		RoomName:     getString(payload, "room_name"),
-		LayoutConfig: getString(payload, "layout_config"),
+		TenantID:      tenantID,
+		UnitID:        unitID,
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
+		RoomName:      getString(payload, "room_name"),
+		LayoutConfig:  getString(payload, "layout_config"),
 	}
 
 	resp, err := h.unitService.CreateRoom(ctx, req)
@@ -610,8 +825,10 @@ func (h *UnitHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 
 	// 获取完整的 room 对象（与旧 Handler 格式一致）
 	getReq := service.GetRoomRequest{
-		TenantID: tenantID,
-		RoomID:   resp.RoomID,
+		TenantID:      tenantID,
+		RoomID:        resp.RoomID,
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
 	}
 	getResp, err := h.unitService.GetRoom(ctx, getReq)
 	if err != nil {
@@ -644,11 +861,29 @@ func (h *UnitHandler) UpdateRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 获取 user_id：从 header 获取（用于权限验证，Service 层会从 user_branches 表查询用户的 branch_id）
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
+		return
+	}
+
+	// 获取 branch_id：可选，如果提供则验证用户是否有权限访问该 branch
+	branchID := r.URL.Query().Get("branch_id")
+	if branchID == "" {
+		branchID = r.Header.Get("X-Branch-Id")
+	}
+	if branchID == "null" {
+		branchID = ""
+	}
+
 	req := service.UpdateRoomRequest{
-		TenantID:     tenantID,
-		RoomID:       roomID,
-		RoomName:     getString(payload, "room_name"),
-		LayoutConfig: getString(payload, "layout_config"),
+		TenantID:      tenantID,
+		RoomID:        roomID,
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
+		RoomName:      getString(payload, "room_name"),
+		LayoutConfig:  getString(payload, "layout_config"),
 	}
 
 	_, err := h.unitService.UpdateRoom(ctx, req)
@@ -660,8 +895,10 @@ func (h *UnitHandler) UpdateRoom(w http.ResponseWriter, r *http.Request) {
 
 	// 获取完整的 room 对象（与旧 Handler 格式一致）
 	getReq := service.GetRoomRequest{
-		TenantID: tenantID,
-		RoomID:   roomID,
+		TenantID:      tenantID,
+		RoomID:        roomID,
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
 	}
 	getResp, err := h.unitService.GetRoom(ctx, getReq)
 	if err != nil {
@@ -688,9 +925,27 @@ func (h *UnitHandler) DeleteRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 获取 user_id：从 header 获取（用于权限验证，Service 层会从 user_branches 表查询用户的 branch_id）
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
+		return
+	}
+
+	// 获取 branch_id：可选，如果提供则验证用户是否有权限访问该 branch
+	branchID := r.URL.Query().Get("branch_id")
+	if branchID == "" {
+		branchID = r.Header.Get("X-Branch-Id")
+	}
+	if branchID == "null" {
+		branchID = ""
+	}
+
 	req := service.DeleteRoomRequest{
-		TenantID: tenantID,
-		RoomID:   roomID,
+		TenantID:      tenantID,
+		RoomID:        roomID,
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
 	}
 
 	_, err := h.unitService.DeleteRoom(ctx, req)
@@ -723,9 +978,33 @@ func (h *UnitHandler) ListBeds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 获取 user_id：从 header 获取（用于权限验证，Service 层会从 user_branches 表查询用户的 branch_id）
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
+		return
+	}
+
+	// 获取 branch_id：可选，如果提供则验证用户是否有权限访问该 branch
+	branchID := r.URL.Query().Get("branch_id")
+	if branchID == "" {
+		branchID = r.Header.Get("X-Branch-Id")
+	}
+	if branchID == "null" {
+		branchID = ""
+	}
+
+	search := r.URL.Query().Get("search")
+	if search == "null" {
+		search = ""
+	}
+
 	req := service.ListBedsRequest{
-		TenantID: tenantID,
-		RoomID:   roomID,
+		TenantID:      tenantID,
+		RoomID:        roomID,
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID:      branchID, // 可选，如果提供则验证用户是否有权限访问该 branch
+		Search:        search,   // 传递 search 用于搜索
 	}
 
 	resp, err := h.unitService.ListBeds(ctx, req)
@@ -765,10 +1044,28 @@ func (h *UnitHandler) CreateBed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 获取 user_id：从 header 获取（用于权限验证，Service 层会从 user_branches 表查询用户的 branch_id）
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
+		return
+	}
+
+	// 获取 branch_id：可选，如果提供则验证用户是否有权限访问该 branch
+	branchID := r.URL.Query().Get("branch_id")
+	if branchID == "" {
+		branchID = r.Header.Get("X-Branch-Id")
+	}
+	if branchID == "null" {
+		branchID = ""
+	}
+
 	req := service.CreateBedRequest{
-		TenantID: tenantID,
-		RoomID:   roomID,
-		BedName:  getString(payload, "bed_name"),
+		TenantID:          tenantID,
+		RoomID:            roomID,
+		CurrentUserID:     currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID:          branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
+		BedName:           getString(payload, "bed_name"),
 		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 		MattressMaterial:  getString(payload, "mattress_material"),
 		MattressThickness: getString(payload, "mattress_thickness"),
@@ -783,8 +1080,10 @@ func (h *UnitHandler) CreateBed(w http.ResponseWriter, r *http.Request) {
 
 	// 获取完整的 bed 对象（与旧 Handler 格式一致）
 	getReq := service.GetBedRequest{
-		TenantID: tenantID,
-		BedID:    resp.BedID,
+		TenantID:      tenantID,
+		BedID:         resp.BedID,
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
 	}
 	getResp, err := h.unitService.GetBed(ctx, getReq)
 	if err != nil {
@@ -817,10 +1116,28 @@ func (h *UnitHandler) UpdateBed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 获取 user_id：从 header 获取（用于权限验证，Service 层会从 user_branches 表查询用户的 branch_id）
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
+		return
+	}
+
+	// 获取 branch_id：可选，如果提供则验证用户是否有权限访问该 branch
+	branchID := r.URL.Query().Get("branch_id")
+	if branchID == "" {
+		branchID = r.Header.Get("X-Branch-Id")
+	}
+	if branchID == "null" {
+		branchID = ""
+	}
+
 	req := service.UpdateBedRequest{
-		TenantID: tenantID,
-		BedID:    bedID,
-		BedName:  getString(payload, "bed_name"),
+		TenantID:          tenantID,
+		BedID:             bedID,
+		CurrentUserID:     currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID:          branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
+		BedName:           getString(payload, "bed_name"),
 		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 		MattressMaterial:  getString(payload, "mattress_material"),
 		MattressThickness: getString(payload, "mattress_thickness"),
@@ -835,8 +1152,10 @@ func (h *UnitHandler) UpdateBed(w http.ResponseWriter, r *http.Request) {
 
 	// 获取完整的 bed 对象（与旧 Handler 格式一致）
 	getReq := service.GetBedRequest{
-		TenantID: tenantID,
-		BedID:    bedID,
+		TenantID:      tenantID,
+		BedID:         bedID,
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
 	}
 	getResp, err := h.unitService.GetBed(ctx, getReq)
 	if err != nil {
@@ -863,9 +1182,27 @@ func (h *UnitHandler) DeleteBed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 获取 user_id：从 header 获取（用于权限验证，Service 层会从 user_branches 表查询用户的 branch_id）
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
+		return
+	}
+
+	// 获取 branch_id：可选，如果提供则验证用户是否有权限访问该 branch
+	branchID := r.URL.Query().Get("branch_id")
+	if branchID == "" {
+		branchID = r.Header.Get("X-Branch-Id")
+	}
+	if branchID == "null" {
+		branchID = ""
+	}
+
 	req := service.DeleteBedRequest{
-		TenantID: tenantID,
-		BedID:    bedID,
+		TenantID:      tenantID,
+		BedID:         bedID,
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
 	}
 
 	_, err := h.unitService.DeleteBed(ctx, req)
@@ -957,16 +1294,11 @@ func buildingToJSON(b *domain.Building) map[string]any {
 	if b.BranchID.Valid {
 		m["branch_id"] = b.BranchID.String
 	}
-	// 返回 branch_name（前端需要名称来显示）
+	// 返回 branch_name（前端需要名称来显示，如 "Branch_name-Building_name"）
 	if b.BranchName.Valid {
 		m["branch_name"] = b.BranchName.String
 	}
-	if b.CreatedAt.Valid {
-		m["created_at"] = b.CreatedAt.Time
-	}
-	if b.UpdatedAt.Valid {
-		m["updated_at"] = b.UpdatedAt.Time
-	}
+	// 注意：不再返回 created_at 和 updated_at 字段
 	return m
 }
 
@@ -989,13 +1321,28 @@ func unitToJSON(u *domain.Unit) map[string]any {
 	if u.BranchName.Valid {
 		m["branch_name"] = u.BranchName.String
 	}
+	// 返回 building_id（前端需要 ID 来进行业务逻辑处理）
+	if u.BuildingID.Valid {
+		m["building_id"] = u.BuildingID.String
+	}
 	// building_name: 如果为 NULL，不包含在 JSON 中（前端会收到 undefined）
 	if u.BuildingName.Valid {
 		m["building_name"] = u.BuildingName.String
 	}
 	// floor: 如果为 NULL，不包含在 JSON 中（前端会收到 undefined）
+	// 将 "1F" 格式转换为数字（提取数字部分）
 	if u.Floor.Valid && u.Floor.String != "" {
-		m["floor"] = u.Floor.String
+		// 提取数字部分（如 "1F" -> 1, "2F" -> 2）
+		floorStr := u.Floor.String
+		var floorNum int
+		if matched := regexp.MustCompile(`\d+`).FindString(floorStr); matched != "" {
+			if n, err := strconv.Atoi(matched); err == nil {
+				floorNum = n
+			}
+		}
+		if floorNum > 0 {
+			m["floor"] = floorNum
+		}
 	}
 	if u.LayoutConfig.Valid {
 		m["layout_config"] = jsonRawOrString(u.LayoutConfig.String)
@@ -1015,10 +1362,40 @@ func roomToJSON(r *domain.Room) map[string]any {
 	if r.UnitName.Valid {
 		m["unit_name"] = r.UnitName.String
 	}
+	// 返回 floor（从 unit 继承，转换为数字类型，默认值为 1）
+	if r.Floor.Valid && r.Floor.String != "" {
+		// 从 "1F" 格式提取数字，如 "1F" -> 1, "2F" -> 2
+		floorNum := parseFloorToNumber(r.Floor.String)
+		if floorNum > 0 {
+			m["floor"] = floorNum
+		} else {
+			m["floor"] = 1 // 默认值
+		}
+	} else {
+		m["floor"] = 1 // 默认值
+	}
 	if r.LayoutConfig.Valid {
 		m["layout_config"] = jsonRawOrString(r.LayoutConfig.String)
 	}
 	return m
+}
+
+// parseFloorToNumber 从 "1F" 格式提取数字，如 "1F" -> 1, "2F" -> 2
+func parseFloorToNumber(floorStr string) int {
+	if floorStr == "" {
+		return 1
+	}
+	// 提取数字部分
+	re := regexp.MustCompile(`\d+`)
+	matches := re.FindString(floorStr)
+	if matches == "" {
+		return 1
+	}
+	num, err := strconv.Atoi(matches)
+	if err != nil {
+		return 1
+	}
+	return num
 }
 
 // jsonRawOrString 辅助函数：尝试解析 JSON，如果成功返回 RawMessage，否则返回字符串
@@ -1063,5 +1440,55 @@ func bedToJSON(b *domain.Bed) map[string]any {
 	if b.MattressThickness.Valid {
 		m["mattress_thickness"] = b.MattressThickness.String
 	}
+	return m
+}
+
+// ============================================
+// ListUnitsWithFullHierarchy 相关 JSON 转换函数
+// ============================================
+
+// unitWithFullHierarchyToJSON 转换 UnitWithFullHierarchy 为 JSON
+func unitWithFullHierarchyToJSON(unitWithHierarchy *service.UnitWithFullHierarchy) map[string]any {
+	// 先转换 Unit 基本信息
+	m := unitToJSON(unitWithHierarchy.Unit)
+
+	// 添加 Rooms 数组
+	rooms := make([]any, 0, len(unitWithHierarchy.Rooms))
+	for _, roomWithBeds := range unitWithHierarchy.Rooms {
+		rooms = append(rooms, roomWithBedsAndDevicesToJSON(roomWithBeds))
+	}
+	m["rooms"] = rooms
+
+	return m
+}
+
+// roomWithBedsAndDevicesToJSON 转换 RoomWithBedsAndDevices 为 JSON
+func roomWithBedsAndDevicesToJSON(roomWithBeds *service.RoomWithBedsAndDevices) map[string]any {
+	// 先转换 Room 基本信息
+	m := roomToJSON(roomWithBeds.Room)
+
+	// 添加 Beds 数组
+	beds := make([]any, 0, len(roomWithBeds.Beds))
+	for _, bedWithDevices := range roomWithBeds.Beds {
+		beds = append(beds, bedWithDevicesToJSON(bedWithDevices))
+	}
+	m["beds"] = beds
+
+	// 添加 Device IDs 和 Names
+	m["device_ids"] = roomWithBeds.DeviceIDs
+	m["device_names"] = roomWithBeds.DeviceNames
+
+	return m
+}
+
+// bedWithDevicesToJSON 转换 BedWithDevices 为 JSON
+func bedWithDevicesToJSON(bedWithDevices *service.BedWithDevices) map[string]any {
+	// 先转换 Bed 基本信息
+	m := bedToJSON(bedWithDevices.Bed)
+
+	// 添加 Device IDs 和 Names
+	m["device_ids"] = bedWithDevices.DeviceIDs
+	m["device_names"] = bedWithDevices.DeviceNames
+
 	return m
 }

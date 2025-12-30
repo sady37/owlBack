@@ -32,6 +32,17 @@ type DevicesRepository interface {
 
 	// 自动创建（设备首次连接时自动创建）
 	GetOrCreateDeviceFromStore(ctx context.Context, identifier string, mqttTopic string) (*domain.Device, error)
+
+	// 批量查询（用于 ListUnitsWithFullHierarchy）
+	// DeviceInfo 用于返回设备的 ID 和 Name
+	GetDevicesByRoomIDs(ctx context.Context, tenantID string, roomIDs []string) (map[string][]DeviceInfo, error)
+	GetDevicesByBedIDs(ctx context.Context, tenantID string, bedIDs []string) (map[string][]DeviceInfo, error)
+}
+
+// DeviceInfo 用于返回设备的 ID 和 Name（用于 ListUnitsWithFullHierarchy）
+type DeviceInfo struct {
+	ID   string
+	Name string
 }
 
 // DeviceRelations 设备关联关系

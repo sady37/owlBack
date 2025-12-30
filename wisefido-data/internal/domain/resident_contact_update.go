@@ -17,6 +17,8 @@ type ResidentContactUpdate struct {
 	ContactLastName  *UpdateString // VARCHAR(100), nullable
 	ContactPhone     *UpdateString // VARCHAR(25), nullable
 	ContactEmail     *UpdateString // VARCHAR(255), nullable
+	ContactPhoneHash *UpdateBytes  // VARCHAR(64), nullable (hash for search)
+	ContactEmailHash *UpdateBytes  // VARCHAR(64), nullable (hash for search)
 	ReceiveSMS       *UpdateBool   // BOOLEAN, DEFAULT FALSE
 	ReceiveEmail     *UpdateBool   // BOOLEAN, DEFAULT FALSE
 }

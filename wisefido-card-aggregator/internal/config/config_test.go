@@ -39,8 +39,8 @@ func TestLoad_DefaultValues(t *testing.T) {
 		t.Errorf("Expected CARD_TRIGGER_MODE default 'polling', got '%s'", cfg.Aggregator.TriggerMode)
 	}
 	
-	if cfg.Aggregator.Polling.Interval != 60 {
-		t.Errorf("Expected polling interval default 60, got %d", cfg.Aggregator.Polling.Interval)
+	if cfg.Aggregator.Polling.Interval != 1800 {
+		t.Errorf("Expected polling interval default 1800 (30 minutes), got %d", cfg.Aggregator.Polling.Interval)
 	}
 	
 	if cfg.Log.Level != "info" {

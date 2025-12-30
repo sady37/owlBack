@@ -13,6 +13,9 @@ import (
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
+	rediscommon "owl-common/redis"
+
+	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
 
@@ -43,15 +46,17 @@ type ResidentService interface {
 // residentService 实现
 type residentService struct {
 	residentsRepo repository.ResidentsRepository
-	db            *sql.DB // 用于复杂查询（JOIN、权限过滤）
+	db            *sql.DB       // 用于复杂查询（JOIN、权限过滤）
+	redisClient   *redis.Client // 用于发布卡片更新事件到 Redis Streams
 	logger        *zap.Logger
 }
 
 // NewResidentService 创建 ResidentService 实例
-func NewResidentService(residentsRepo repository.ResidentsRepository, db *sql.DB, logger *zap.Logger) ResidentService {
+func NewResidentService(residentsRepo repository.ResidentsRepository, db *sql.DB, redisClient *redis.Client, logger *zap.Logger) ResidentService {
 	return &residentService{
 		residentsRepo: residentsRepo,
 		db:            db,
+		redisClient:   redisClient,
 		logger:        logger,
 	}
 }
@@ -108,19 +113,44 @@ func (s *residentService) getResourcePermission(ctx context.Context, roleCode, r
 	return &PermissionCheckResult{AssignedOnly: assignedOnly, BranchOnly: branchOnly}, nil
 }
 
-// getUserBranchIDs 查询用户所属的 branch_id 列表（Service 层内部方法）
+// getUserBranchIDs 查询用户所属的 branch_id 列表（Service 层内部方法，向后兼容）
+// 注意：UserBranchInfo 在 user_service.go 中定义，两个 service 共享使用
 // 从 user_branches 表查询用户关联的所有院区 ID
 // 返回：
 //   - branchIDs: 用户所属的 branch_id 列表（可能为空）
 //   - hasBranches: 用户是否有关联的院区（false 表示可以访问所有院区或 NULL 院区）
 func (s *residentService) getUserBranchIDs(ctx context.Context, tenantID, userID string) (branchIDs []string, hasBranches bool, err error) {
+	branches, hasBranches, err := s.getUserBranches(ctx, tenantID, userID)
+	if err != nil {
+		return nil, false, err
+	}
+	ids := make([]string, 0, len(branches))
+	for _, branch := range branches {
+		ids = append(ids, branch.BranchID)
+	}
+	return ids, hasBranches, nil
+}
+
+// getUserBranches 查询用户所属的院区信息（Service 层内部方法）
+// 从 user_branches 表 JOIN branches 表查询用户关联的所有院区（包含 branch_id 和 branch_name）
+// 返回：
+//   - branches: 用户所属的院区信息列表（包含 branch_id 和 branch_name，可能为空）
+//   - hasBranches: 用户是否有关联的院区（false 表示可以访问所有院区或 NULL 院区）
+//
+// 注意：UserBranchInfo 在 user_service.go 中定义，两个 service 共享使用
+func (s *residentService) getUserBranches(ctx context.Context, tenantID, userID string) (branches []UserBranchInfo, hasBranches bool, err error) {
 	if tenantID == "" || userID == "" {
 		return nil, false, nil
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT branch_id::text FROM user_branches 
-		 WHERE tenant_id = $1 AND user_id::text = $2`,
+		`SELECT 
+			ub.branch_id::text,
+			COALESCE(b.branch_name, '') as branch_name
+		 FROM user_branches ub
+		 LEFT JOIN branches b ON b.branch_id = ub.branch_id
+		 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2
+		 ORDER BY ub.is_primary DESC, b.branch_name ASC`,
 		tenantID, userID,
 	)
 	if err != nil {
@@ -131,20 +161,26 @@ func (s *residentService) getUserBranchIDs(ctx context.Context, tenantID, userID
 	}
 	defer rows.Close()
 
-	var ids []string
+	var branchList []UserBranchInfo
 	for rows.Next() {
-		var branchID string
-		if err := rows.Scan(&branchID); err != nil {
-			return nil, false, fmt.Errorf("failed to scan branch_id: %w", err)
+		var branchID, branchName sql.NullString
+		if err := rows.Scan(&branchID, &branchName); err != nil {
+			return nil, false, fmt.Errorf("failed to scan branch info: %w", err)
 		}
-		ids = append(ids, branchID)
+		if branchID.Valid && branchID.String != "" {
+			// 使用 user_service.go 中定义的 UserBranchInfo
+			branchList = append(branchList, UserBranchInfo{
+				BranchID:   branchID.String,
+				BranchName: branchName.String, // 如果 branch_name 为 NULL，返回空字符串
+			})
+		}
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, false, fmt.Errorf("failed to iterate user branches: %w", err)
 	}
 
-	return ids, len(ids) > 0, nil
+	return branchList, len(branchList) > 0, nil
 }
 
 // ============================================
@@ -155,7 +191,7 @@ func (s *residentService) getUserBranchIDs(ctx context.Context, tenantID, userID
 type ListResidentsRequest struct {
 	TenantID        string // 必填
 	CurrentUserID   string // 当前用户ID（用于权限过滤）
-	CurrentUserType string // 当前用户类型：'resident' | 'family' | 'staff'
+	CurrentUserType string // 当前用户类型：'resident' | 'staff'（注意：'family' 已被禁止，resident_contacts 不能登录系统）
 	CurrentUserRole string // 当前用户角色（仅 staff 需要）
 
 	// 权限检查结果（由 Handler 层传入）
@@ -197,9 +233,10 @@ type ResidentListItemDTO struct {
 	DischargeDate   *int64  `json:"discharge_date,omitempty"` // Unix timestamp
 	UnitID          *string `json:"unit_id,omitempty"`
 	UnitName        *string `json:"unit_name,omitempty"`
-	BuildingName    *string `json:"building_name,omitempty"` // 从 units.building_name 获取
-	BranchName      *string `json:"branch_name,omitempty"`   // 从 branches.branch_name 获取（通过 residents.branch_id）
-	IsSharedUnit    bool    `json:"is_shared_unit"`          // 从 units.is_shared_unit 获取（原 is_multi_person_room）
+	BuildingName    *string `json:"building_name,omitempty"`  // 从 units.building_name 获取
+	BranchID        *string `json:"branch_id,omitempty"`      // 从 residents.branch_id 获取
+	BranchName      *string `json:"branch_name,omitempty"`    // 从 branches.branch_name 获取（通过 residents.branch_id）
+	IsSharedUnit    *bool   `json:"is_shared_unit,omitempty"` // 从 units.is_shared_unit 获取（原 is_multi_person_room），未绑定 unit 时为 nil
 	RoomID          *string `json:"room_id,omitempty"`
 	RoomName        *string `json:"room_name,omitempty"`
 	BedID           *string `json:"bed_id,omitempty"`
@@ -250,9 +287,10 @@ type ResidentDetailDTO struct {
 	DischargeDate   *int64  `json:"discharge_date,omitempty"` // Unix timestamp
 	UnitID          *string `json:"unit_id,omitempty"`
 	UnitName        *string `json:"unit_name,omitempty"`
-	BuildingName    *string `json:"building_name,omitempty"` // 从 units.building_name 获取
-	BranchName      *string `json:"branch_name,omitempty"`   // 从 branches.branch_name 获取（通过 residents.branch_id）
-	IsSharedUnit    bool    `json:"is_shared_unit"`          // 从 units.is_shared_unit 获取（原 is_multi_person_room）
+	BuildingName    *string `json:"building_name,omitempty"`  // 从 units.building_name 获取
+	BranchID        *string `json:"branch_id,omitempty"`      // 从 residents.branch_id 获取
+	BranchName      *string `json:"branch_name,omitempty"`    // 从 branches.branch_name 获取（通过 residents.branch_id）
+	IsSharedUnit    *bool   `json:"is_shared_unit,omitempty"` // 从 units.is_shared_unit 获取（原 is_multi_person_room），未绑定 unit 时为 nil
 	RoomID          *string `json:"room_id,omitempty"`
 	RoomName        *string `json:"room_name,omitempty"`
 	BedID           *string `json:"bed_id,omitempty"`
@@ -363,6 +401,9 @@ type CreateResidentRequest struct {
 	CurrentUserRole string                 // 当前用户角色
 	PermissionCheck *PermissionCheckResult // 权限检查结果
 
+	// 注意：AvailableBranches 不应由 Handler 传递，Service 层会自己从数据库查询用户的 branch 信息
+	// 这是用户本身的属性，不能信任前端传递的值
+
 	// Resident 固有属性（3张表：residents, resident_phi, resident_contacts）
 	InherentAttributes *CreateResidentInherentAttributes
 
@@ -415,10 +456,11 @@ type CreateResidentContactRequest struct {
 	ContactLastName  string          // 联系人姓（可选）
 	ContactPhone     string          // 联系人电话（可选），明文保存
 	ContactEmail     string          // 联系人邮箱（可选），明文保存
+	ContactPhoneHash string          // 联系人电话 hash（可选，前端计算的 hex 字符串，用于搜索）
+	ContactEmailHash string          // 联系人邮箱 hash（可选，前端计算的 hex 字符串，用于搜索）
 	ReceiveSMS       bool            // 是否接收短信（可选，默认 false）
 	ReceiveEmail     bool            // 是否接收邮件（可选，默认 false）
 	AlertTimeWindow  json.RawMessage // 告警接收时间窗口 JSONB（可选）
-	// 注意：不再包含 PhoneHash, EmailHash, PasswordHash 等字段，因为联系人不登录系统
 }
 
 // CreateResidentResponse 创建住户响应
@@ -497,6 +539,8 @@ type UpdateResidentContactRequest struct {
 	ContactLastName  *domain.UpdateString // 联系人姓（可选更新）
 	ContactPhone     *domain.UpdateString // 联系人电话（可选更新），明文保存
 	ContactEmail     *domain.UpdateString // 联系人邮箱（可选更新），明文保存
+	ContactPhoneHash *domain.UpdateBytes  // 联系人电话 hash（可选更新，用于搜索）
+	ContactEmailHash *domain.UpdateBytes  // 联系人邮箱 hash（可选更新，用于搜索）
 	ReceiveSMS       *domain.UpdateBool   // 是否接收短信（可选更新）
 	ReceiveEmail     *domain.UpdateBool   // 是否接收邮件（可选更新）
 	AlertTimeWindow  *domain.UpdateJSON   // 告警接收时间窗口（可选更新，JSONB）
@@ -727,41 +771,41 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 		pageSize = 20
 	}
 
-	// 2. 构建基础查询（JOIN units, rooms, beds, branches）
+	// 2. 构建基础查询（JOIN units, buildings, rooms, beds, branches, resident_phi, resident_contacts）
 	args := []any{req.TenantID}
-	q := `SELECT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,
+	q := `SELECT DISTINCT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,
 	             r.status, r.service_level, r.admission_date, r.discharge_date,
 	             r.unit_id::text, r.room_id::text, r.bed_id::text,
+	             r.branch_id::text,
 	             u.unit_name,
-	             u.building_name,
+	             bld.building_name,
 	             u.is_shared_unit,
 	             br.branch_name,
 	             rm.room_name,
 	             b.bed_name,
-	             r.is_access_enabled
+	             r.is_access_enabled,
+	             COALESCE(r.resident_account, '') as resident_account_for_sort,
+	             r.resident_id::text as resident_id_for_sort
 	      FROM residents r
 	      LEFT JOIN units u ON u.unit_id = r.unit_id
+	      LEFT JOIN buildings bld ON bld.building_id = u.building_id
 	      LEFT JOIN rooms rm ON rm.room_id = r.room_id
 	      LEFT JOIN beds b ON b.bed_id = r.bed_id
-	      LEFT JOIN branches br ON br.branch_id = r.branch_id`
+	      LEFT JOIN branches br ON br.branch_id = r.branch_id
+	      LEFT JOIN resident_phi rp ON rp.resident_id = r.resident_id AND rp.tenant_id = r.tenant_id
+	      LEFT JOIN resident_contacts rc ON rc.resident_id = r.resident_id AND rc.tenant_id = r.tenant_id`
 
 	// 3. 权限过滤
+	// 注意：resident_contacts 不能登录系统，所以 CurrentUserType 永远不会是 "family"
+	// 保留 "family" 检查是为了向后兼容，但实际上只会是 "resident" 或 "staff"
 	if req.CurrentUserType == "resident" || req.CurrentUserType == "family" {
-		// Resident/Family: 只能查看自己
-		// 检查是否是 resident_contact 登录
+		// Resident: 只能查看自己
+		// 注意：虽然代码中有检查 resident_contact 的逻辑，但实际上 resident_contacts 不能登录系统
+		// 所以这段代码永远不会检测到 resident_contact 登录
 		var residentIDForSelf sql.NullString
-		if req.CurrentUserID != "" && s.db != nil {
-			err := s.db.QueryRowContext(ctx,
-				`SELECT resident_id::text FROM resident_contacts 
-				 WHERE tenant_id = $1 AND contact_id::text = $2`,
-				req.TenantID, req.CurrentUserID,
-			).Scan(&residentIDForSelf)
-			if err == nil && residentIDForSelf.Valid {
-				// This is a resident_contact login
-			} else {
-				// This is a resident login
-				residentIDForSelf = sql.NullString{String: req.CurrentUserID, Valid: true}
-			}
+		if req.CurrentUserID != "" {
+			// 直接使用 CurrentUserID 作为 resident_id（因为 resident_contacts 不能登录）
+			residentIDForSelf = sql.NullString{String: req.CurrentUserID, Valid: true}
 		}
 
 		if residentIDForSelf.Valid {
@@ -782,7 +826,7 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 			                      SELECT 1 FROM resident_caregivers rc
 			                      WHERE rc.tenant_id = r.tenant_id
 			                        AND rc.resident_id = r.resident_id
-			                        AND (rc.userList::text LIKE $%d OR rc.userList::text LIKE $%d)
+			                        AND (rc.user_list::text LIKE $%d OR rc.user_list::text LIKE $%d)
 			                  )`, len(args), len(args)+1)
 			args = append(args, "%\""+req.CurrentUserID+"\"%")
 		}
@@ -823,9 +867,29 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 	// 4. 搜索和过滤
 	argIdx := len(args) + 1
 	if req.Search != "" {
-		args = append(args, "%"+req.Search+"%")
-		q += fmt.Sprintf(` AND (r.nickname ILIKE $%d OR COALESCE(u.unit_name,'') ILIKE $%d)`, argIdx, argIdx)
-		argIdx++
+		searchPattern := "%" + strings.ToLower(req.Search) + "%"
+		// 搜索支持字段（共3个）：
+		// 1. r.nickname - 住户昵称（使用 ILIKE 模糊查询）
+		// 2. r.email - residents 表中的 email（通过 r.email_hash 查询，因为是 PHI，加密存储）
+		// 3. r.phone - residents 表中的 phone（通过 r.phone_hash 查询，因为是 PHI，加密存储）
+		// 注意：first_name, last_name 需要加密存储，字母大小写 hash 不方便，不支持搜索
+		// 注意：rp.resident_email 和 rp.resident_phone 是加密存储的，但 resident_phi 表中没有 hash 字段，无法搜索
+		// 计算搜索词的 hash（用于匹配 email_hash 和 phone_hash）
+		searchLower := strings.ToLower(strings.TrimSpace(req.Search))
+		searchHashHex := HashAccount(searchLower)
+		searchHash, err := hex.DecodeString(searchHashHex)
+		if err != nil || len(searchHash) == 0 {
+			searchHash = []byte{} // 空 hash，不会匹配任何记录
+		}
+		args = append(args, searchPattern, searchHash, searchHash)
+		q += fmt.Sprintf(` AND (
+			r.nickname ILIKE $%d OR
+			-- 对于 email 和 phone，使用 hash 查询（因为它们是 PHI，加密存储）
+			r.email_hash = $%d OR
+			r.phone_hash = $%d
+			-- 注意：rp.resident_email 和 rp.resident_phone 是加密存储的，但 resident_phi 表中没有 hash 字段，无法搜索
+		)`, argIdx, argIdx+1, argIdx+2)
+		argIdx += 3
 	}
 	if req.Status != "" {
 		args = append(args, req.Status)
@@ -838,8 +902,9 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 		argIdx++
 	}
 
-	// 5. 排序和分页
-	q += ` ORDER BY r.nickname ASC`
+	// 5. 排序和分页（按 account 排序）
+	// 注意：在 SELECT DISTINCT 中，ORDER BY 的表达式必须出现在 SELECT 列表中
+	q += ` ORDER BY resident_account_for_sort ASC, resident_id_for_sort ASC`
 	args = append(args, pageSize, (page-1)*pageSize)
 	q += fmt.Sprintf(` LIMIT $%d OFFSET $%d`, argIdx, argIdx+1)
 
@@ -859,19 +924,23 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 	for rows.Next() {
 		var residentID, tid, residentAccount, nickname, status, serviceLevel sql.NullString
 		var admissionDate, dischargeDate sql.NullTime
-		var unitID, roomID, bedID sql.NullString
+		var unitID, roomID, bedID, branchID sql.NullString
 		var unitName, buildingName, branchName sql.NullString
-		var isSharedUnit bool
+		var isSharedUnit sql.NullBool // 使用 sql.NullBool 处理 NULL 值（LEFT JOIN 可能导致 NULL）
 		var roomName, bedName sql.NullString
 		var canViewStatus bool
 
+		var residentAccountForSort, residentIDForSort sql.NullString // 用于排序的字段，不需要使用
 		if err := rows.Scan(
 			&residentID, &tid, &residentAccount, &nickname,
 			&status, &serviceLevel, &admissionDate, &dischargeDate,
 			&unitID, &roomID, &bedID,
+			&branchID,
 			&unitName, &buildingName, &isSharedUnit,
 			&branchName,
 			&roomName, &bedName, &canViewStatus,
+			&residentAccountForSort, // 扫描排序字段（SELECT DISTINCT 要求 ORDER BY 字段必须在 SELECT 中）
+			&residentIDForSort,      // 扫描排序字段（SELECT DISTINCT 要求 ORDER BY 字段必须在 SELECT 中）
 		); err != nil {
 			s.logger.Error("ListResidents scan failed",
 				zap.String("tenant_id", req.TenantID),
@@ -885,8 +954,12 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 			TenantID:        tid.String,
 			Nickname:        nickname.String,
 			Status:          status.String,
-			IsSharedUnit:    isSharedUnit,
 			IsAccessEnabled: canViewStatus,
+		}
+
+		// 只有当 isSharedUnit 有效时才赋值，未绑定 unit 时为 nil
+		if isSharedUnit.Valid {
+			item.IsSharedUnit = &isSharedUnit.Bool
 		}
 
 		if residentAccount.Valid {
@@ -912,6 +985,9 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 		if buildingName.Valid && buildingName.String != "" {
 			item.BuildingName = &buildingName.String
 		}
+		if branchID.Valid && branchID.String != "" {
+			item.BranchID = &branchID.String
+		}
 		if branchName.Valid && branchName.String != "" {
 			item.BranchName = &branchName.String
 		}
@@ -932,7 +1008,8 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 	}
 
 	// 8. 查询总数（使用相同的 WHERE 条件，但不包含 JOIN 和分页）
-	countQuery := strings.Replace(q, "SELECT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,\n\t             r.status, r.service_level, r.admission_date, r.discharge_date,\n\t             r.unit_id::text, r.room_id::text, r.bed_id::text,\n\t             u.unit_name,\n\t             u.building_name,\n\t             u.is_shared_unit,\n\t             br.branch_name,\n\t             rm.room_name,\n\t             b.bed_name,\n\t             r.is_access_enabled\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN rooms rm ON rm.room_id = r.room_id\n	      LEFT JOIN beds b ON b.bed_id = r.bed_id\n	      LEFT JOIN branches br ON br.branch_id = r.branch_id", "SELECT COUNT(*)\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN branches br ON br.branch_id = r.branch_id", 1)
+	countQuery := strings.Replace(q, "SELECT DISTINCT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,\n\t             r.status, r.service_level, r.admission_date, r.discharge_date,\n\t             r.unit_id::text, r.room_id::text, r.bed_id::text,\n\t             r.branch_id::text,\n\t             u.unit_name,\n\t             bld.building_name,\n\t             u.is_shared_unit,\n\t             br.branch_name,\n\t             rm.room_name,\n\t             b.bed_name,\n\t             r.is_access_enabled,\n\t             COALESCE(r.resident_account, '') as resident_account_for_sort,\n\t             r.resident_id::text as resident_id_for_sort\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN buildings bld ON bld.building_id = u.building_id\n	      LEFT JOIN rooms rm ON rm.room_id = r.room_id\n	      LEFT JOIN beds b ON b.bed_id = r.bed_id\n	      LEFT JOIN branches br ON br.branch_id = r.branch_id\n	      LEFT JOIN resident_phi rp ON rp.resident_id = r.resident_id AND rp.tenant_id = r.tenant_id\n	      LEFT JOIN resident_contacts rc ON rc.resident_id = r.resident_id AND rc.tenant_id = r.tenant_id", "SELECT COUNT(DISTINCT r.resident_id)\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN buildings bld ON bld.building_id = u.building_id\n	      LEFT JOIN branches br ON br.branch_id = r.branch_id\n	      LEFT JOIN resident_phi rp ON rp.resident_id = r.resident_id AND rp.tenant_id = r.tenant_id\n	      LEFT JOIN resident_contacts rc ON rc.resident_id = r.resident_id AND rc.tenant_id = r.tenant_id", 1)
+	countQuery = strings.Replace(countQuery, " ORDER BY resident_account_for_sort ASC, resident_id_for_sort ASC", "", 1)
 	countQuery = strings.Replace(countQuery, " ORDER BY r.nickname ASC", "", 1)
 	countQuery = strings.Replace(countQuery, fmt.Sprintf(` LIMIT $%d OFFSET $%d`, argIdx, argIdx+1), "", 1)
 
@@ -991,29 +1068,16 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 	}
 
 	// 2. 权限检查
-	// 注意：对于 resident/family 用户，CurrentUserType 是 "resident"，CurrentUserRole 可能是 "Resident" 或 "Family"
-	// 所以需要同时检查 CurrentUserType 和 CurrentUserRole
-	isResidentOrFamily := req.CurrentUserType == "resident" || req.CurrentUserRole == "Resident" || req.CurrentUserRole == "Family"
-	if isResidentOrFamily {
-		// Resident/Family: 只能查看自己
-		var foundResidentID sql.NullString
-		if req.CurrentUserID != "" && s.db != nil {
-			err := s.db.QueryRowContext(ctx,
-				`SELECT resident_id::text FROM resident_contacts 
-				 WHERE tenant_id = $1 AND contact_id::text = $2`,
-				req.TenantID, req.CurrentUserID,
-			).Scan(&foundResidentID)
-			if err == nil && foundResidentID.Valid {
-				// This is a resident_contact login - can only view linked resident
-				if foundResidentID.String != actualResidentID {
-					return nil, fmt.Errorf("access denied: can only view linked resident")
-				}
-			} else {
-				// This is a resident login - can only view self
-				if req.CurrentUserID != actualResidentID {
-					return nil, fmt.Errorf("access denied: can only view own information")
-				}
-			}
+	// 注意：resident_contacts 不能登录系统，所以 CurrentUserType 永远不会是 "family"
+	// CurrentUserRole 也不会是 "Family"，因为只有 residents 可以登录
+	// 保留这些检查是为了向后兼容，但实际上只会是 "resident" 或 "staff"
+	isResident := req.CurrentUserType == "resident" || req.CurrentUserRole == "Resident"
+	if isResident {
+		// Resident: 只能查看自己
+		// 注意：虽然代码中有检查 resident_contact 的逻辑，但实际上 resident_contacts 不能登录系统
+		// 所以这段代码永远不会检测到 resident_contact 登录
+		if req.CurrentUserID != "" && req.CurrentUserID != actualResidentID {
+			return nil, fmt.Errorf("access denied: can only view own information")
 		}
 	} else {
 		// Staff: 权限检查
@@ -1026,7 +1090,7 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 						SELECT 1 FROM resident_caregivers rc
 						WHERE rc.tenant_id = $1
 						  AND rc.resident_id::text = $2
-						  AND (rc.userList::text LIKE $3 OR rc.userList::text LIKE $4)
+						  AND (rc.user_list::text LIKE $3 OR rc.user_list::text LIKE $4)
 					)`,
 					req.TenantID, actualResidentID, req.CurrentUserID, "%\""+req.CurrentUserID+"\"%",
 				).Scan(&isAssigned)
@@ -1106,9 +1170,9 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 	// 3. 查询住户基本信息（JOIN units, rooms, beds, branches）
 	var residentID, tid, residentAccount, nickname, status, serviceLevel sql.NullString
 	var admissionDate, dischargeDate sql.NullTime
-	var unitID, roomID, bedID sql.NullString
+	var unitID, roomID, bedID, branchID sql.NullString
 	var unitName, buildingName, branchName sql.NullString
-	var isSharedUnit bool
+	var isSharedUnit sql.NullBool // 使用 sql.NullBool 处理 NULL 值（LEFT JOIN 可能导致 NULL）
 	var roomName, bedName sql.NullString
 	var note sql.NullString
 	var canViewStatus bool
@@ -1117,8 +1181,9 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 		`SELECT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,
 		        r.status, r.service_level, r.admission_date, r.discharge_date,
 		        r.unit_id::text, r.room_id::text, r.bed_id::text,
+		        r.branch_id::text,
 		        u.unit_name,
-		        u.building_name,
+		        bld.building_name,
 		        u.is_shared_unit,
 		        br.branch_name,
 		        rm.room_name,
@@ -1127,6 +1192,7 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 		        r.is_access_enabled
 		 FROM residents r
 		 LEFT JOIN units u ON u.unit_id = r.unit_id
+		 LEFT JOIN buildings bld ON bld.building_id = u.building_id
 		 LEFT JOIN rooms rm ON rm.room_id = r.room_id
 		 LEFT JOIN beds b ON b.bed_id = r.bed_id
 		 LEFT JOIN branches br ON br.branch_id = r.branch_id
@@ -1136,6 +1202,7 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 		&residentID, &tid, &residentAccount, &nickname,
 		&status, &serviceLevel, &admissionDate, &dischargeDate,
 		&unitID, &roomID, &bedID,
+		&branchID,
 		&unitName, &buildingName, &isSharedUnit,
 		&branchName,
 		&roomName, &bedName, &note, &canViewStatus,
@@ -1158,8 +1225,12 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 		TenantID:        tid.String,
 		Nickname:        nickname.String,
 		Status:          status.String,
-		IsSharedUnit:    isSharedUnit,
 		IsAccessEnabled: canViewStatus,
+	}
+
+	// 只有当 isSharedUnit 有效时才赋值，未绑定 unit 时为 nil
+	if isSharedUnit.Valid {
+		resident.IsSharedUnit = &isSharedUnit.Bool
 	}
 
 	if residentAccount.Valid {
@@ -1184,6 +1255,9 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 	}
 	if buildingName.Valid && buildingName.String != "" {
 		resident.BuildingName = &buildingName.String
+	}
+	if branchID.Valid && branchID.String != "" {
+		resident.BranchID = &branchID.String
 	}
 	if branchName.Valid && branchName.String != "" {
 		resident.BranchName = &branchName.String
@@ -1409,6 +1483,9 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required")
+	}
 	if req.InherentAttributes == nil {
 		return nil, fmt.Errorf("inherent_attributes is required")
 	}
@@ -1417,6 +1494,49 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 	}
 	if req.InherentAttributes.Nickname == "" {
 		return nil, fmt.Errorf("nickname is required")
+	}
+
+	// 1.1 角色权限检查：只有 Admin 和 Manager 可以创建 resident
+	if req.CurrentUserRole == "" {
+		return nil, fmt.Errorf("permission denied: user role is required")
+	}
+	allowedRoles := []string{"Admin", "Manager"}
+	roleAllowed := false
+	for _, allowedRole := range allowedRoles {
+		if strings.EqualFold(req.CurrentUserRole, allowedRole) {
+			roleAllowed = true
+			break
+		}
+	}
+	if !roleAllowed {
+		return nil, fmt.Errorf("permission denied: only Admin and Manager can create residents (current role: %s)", req.CurrentUserRole)
+	}
+
+	// 1.2 验证用户角色（从数据库查询，不信任前端传递的值）
+	var userRole sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+		req.TenantID, req.CurrentUserID,
+	).Scan(&userRole)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("user not found")
+		}
+		return nil, fmt.Errorf("failed to verify user role: %w", err)
+	}
+	if !userRole.Valid {
+		return nil, fmt.Errorf("permission denied: user has no role")
+	}
+	// 再次验证角色（从数据库查询的值）
+	roleAllowed = false
+	for _, allowedRole := range allowedRoles {
+		if strings.EqualFold(userRole.String, allowedRole) {
+			roleAllowed = true
+			break
+		}
+	}
+	if !roleAllowed {
+		return nil, fmt.Errorf("permission denied: only Admin and Manager can create residents (user role: %s)", userRole.String)
 	}
 
 	// 2. 业务规则验证
@@ -1579,7 +1699,38 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 	if req.InherentAttributes.ServiceLevel != "" {
 		resident.ServiceLevel = req.InherentAttributes.ServiceLevel
 	}
+
+	// 2.10 BranchID 权限验证（在设置之前）
+	// Service 层自己查询用户的 branch 信息，不信任 Handler 传递的值
 	if req.InherentAttributes.BranchID != "" {
+		// 如果是 Manager 且有 BranchOnly 权限，验证 branch_id 必须在用户的 branch 范围内
+		if req.PermissionCheck != nil && req.PermissionCheck.BranchOnly && req.CurrentUserID != "" {
+			// Service 层自己查询用户的 branch 信息
+			userBranches, hasBranches, err := s.getUserBranches(ctx, req.TenantID, req.CurrentUserID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get user branches: %w", err)
+			}
+
+			if !hasBranches || len(userBranches) == 0 {
+				// Manager 没有关联任何院区：只能设置 NULL、""、"-" 的 branch_id
+				if req.InherentAttributes.BranchID != "" {
+					return nil, fmt.Errorf("permission denied: Manager without branches can only set null branch_id")
+				}
+			} else {
+				// Manager 有关联院区：只能设置自己 branch 的 branch_id
+				allowed := false
+				for _, userBranch := range userBranches {
+					if userBranch.BranchID == req.InherentAttributes.BranchID {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					return nil, fmt.Errorf("permission denied: can only set branch_id from assigned branches")
+				}
+			}
+		}
+		// Admin 无限制，直接设置
 		resident.BranchID = req.InherentAttributes.BranchID
 	}
 	if req.InherentAttributes.DischargeDate != nil {
@@ -1791,7 +1942,7 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 	}
 
 	// 5. 创建联系人记录（如果提供了 contacts）
-	// 注意：联系人不登录系统，仅作为住户的属性，不需要 password_hash, phone_hash, email_hash
+	// 注意：联系人不登录系统，但需要保存 phone_hash 和 email_hash 用于搜索
 	if req.InherentAttributes.Contacts != nil && len(req.InherentAttributes.Contacts) > 0 {
 		for _, contactReq := range req.InherentAttributes.Contacts {
 			contact := &domain.ResidentContact{
@@ -1807,6 +1958,36 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 			}
 			if contact.Slot == "" {
 				contact.Slot = "A" // 默认 slot
+			}
+
+			// 处理 contact_phone_hash 和 contact_email_hash
+			if contactReq.ContactPhoneHash != "" {
+				phoneHash, err := hex.DecodeString(contactReq.ContactPhoneHash)
+				if err == nil && len(phoneHash) > 0 {
+					contact.ContactPhoneHash = phoneHash
+				}
+			} else if contactReq.ContactPhone != "" {
+				// 如果前端没有提供 hash，但提供了 phone，则计算 hash
+				phone := strings.ToLower(strings.TrimSpace(contactReq.ContactPhone))
+				phoneHashHex := HashAccount(phone)
+				phoneHash, err := hex.DecodeString(phoneHashHex)
+				if err == nil && len(phoneHash) > 0 {
+					contact.ContactPhoneHash = phoneHash
+				}
+			}
+			if contactReq.ContactEmailHash != "" {
+				emailHash, err := hex.DecodeString(contactReq.ContactEmailHash)
+				if err == nil && len(emailHash) > 0 {
+					contact.ContactEmailHash = emailHash
+				}
+			} else if contactReq.ContactEmail != "" {
+				// 如果前端没有提供 hash，但提供了 email，则计算 hash
+				email := strings.ToLower(strings.TrimSpace(contactReq.ContactEmail))
+				emailHashHex := HashAccount(email)
+				emailHash, err := hex.DecodeString(emailHashHex)
+				if err == nil && len(emailHash) > 0 {
+					contact.ContactEmailHash = emailHash
+				}
 			}
 
 			_, err := s.residentsRepo.CreateResidentContact(ctx, req.TenantID, residentID, contact)
@@ -1918,26 +2099,44 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 		// 允许更新所有 resident
 	} else if req.CurrentUserRole == "Manager" {
 		// Manager: resident 与 Manager 的 branch 相同，如果两者的 branchName 均为 ""，视为相同
-		// 查询 1：用户的 branch_name 和 role（同时检查是否是 Manager）
-		var userBranchName sql.NullString
+		// 查询 1：验证用户角色是 Manager
 		var userRole sql.NullString
 		err := s.db.QueryRowContext(ctx,
-			`SELECT branch_name, role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+			`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
 			req.TenantID, req.CurrentUserID,
-		).Scan(&userBranchName, &userRole)
+		).Scan(&userRole)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get user info: %w", err)
+			return nil, fmt.Errorf("failed to verify user role: %w", err)
 		}
 		if !userRole.Valid || userRole.String != "Manager" {
 			return nil, fmt.Errorf("access denied: user role is not Manager")
 		}
 
-		// 查询 2：目标 resident 的 branch_name
+		// 查询 2：获取用户的主 branch_name（通过 user_branches 表 JOIN branches 表）
+		var userBranchName sql.NullString
+		err = s.db.QueryRowContext(ctx,
+			`SELECT COALESCE(b.branch_name, '') as branch_name
+			 FROM user_branches ub
+			 LEFT JOIN branches b ON b.branch_id = ub.branch_id
+			 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2 AND ub.is_primary = TRUE
+			 LIMIT 1`,
+			req.TenantID, req.CurrentUserID,
+		).Scan(&userBranchName)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				// 用户没有主 branch，branch_name 为空字符串
+				userBranchName = sql.NullString{Valid: true, String: ""}
+			} else {
+				return nil, fmt.Errorf("failed to get user branch info: %w", err)
+			}
+		}
+
+		// 查询 3：目标 resident 的 branch_name（从 residents.branch_id JOIN branches 表获取）
 		var targetBranchName sql.NullString
 		err = s.db.QueryRowContext(ctx,
-			`SELECT COALESCE(u.branch_name, '') as branch_name
+			`SELECT COALESCE(b.branch_name, '') as branch_name
 			 FROM residents r
-			 LEFT JOIN units u ON u.unit_id = r.unit_id
+			 LEFT JOIN branches b ON b.branch_id = r.branch_id
 			 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
 			req.TenantID, req.ResidentID,
 		).Scan(&targetBranchName)
@@ -1990,10 +2189,10 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 				WHERE rc.tenant_id = $1
 				  AND rc.resident_id::text = $2
 				  AND (
-					-- 直接分配：userList 中包含 user_id
-					rc.userList::text LIKE $3
-					OR rc.userList::text LIKE $4
-					-- 通过 user_tag 分配：groupList 中的 tag_id 对应的 tag_name 在 users.tags 中
+					-- 直接分配：user_list 中包含 user_id
+					rc.user_list::text LIKE $3
+					OR rc.user_list::text LIKE $4
+					-- 通过 user_tag 分配：group_list 中的 tag_id 对应的 tag_name 在 users.tags 中
 					OR EXISTS(
 						SELECT 1 FROM users u
 						WHERE u.tenant_id = $1
@@ -2006,7 +2205,7 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 								  AND tc.tag_type = 'user_tag'
 								  AND tc.tag_name = user_tag_name
 								  AND tc.tag_id::text = ANY(
-									SELECT jsonb_array_elements_text(rc.groupList)::text
+									SELECT jsonb_array_elements_text(rc.group_list)::text
 								  )
 							)
 						  )
@@ -2340,6 +2539,67 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 					zap.Error(err),
 				)
 				// 不失败整个操作，只记录警告
+			}
+		}
+	}
+
+	// 6. 更新成功后，发布事件到 Redis Streams（触发卡片重新计算）
+	if s.redisClient != nil {
+		// 获取更新后的 resident 信息以确定 unit_id 和 bed_id
+		updatedResident, err := s.residentsRepo.GetResident(ctx, req.TenantID, req.ResidentID)
+		if err != nil {
+			s.logger.Warn("Failed to get updated resident for event publishing",
+				zap.Error(err),
+				zap.String("tenant_id", req.TenantID),
+				zap.String("resident_id", req.ResidentID),
+			)
+		} else {
+			// 判断事件类型
+			eventType := "resident.status_changed" // 默认事件类型
+
+			// 检查是否有 bed_id 或 unit_id 的变化（通过 UnitRelation）
+			if req.UnitRelation != nil {
+				if req.UnitRelation.BedID != nil && req.UnitRelation.BedID.Action == domain.UpdateActionUpdate {
+					if req.UnitRelation.BedID.Value != "" {
+						eventType = "resident.bound"
+					} else {
+						eventType = "resident.unbound"
+					}
+				} else if req.UnitRelation.UnitID != nil && req.UnitRelation.UnitID.Action == domain.UpdateActionUpdate {
+					eventType = "resident.bound"
+				}
+			}
+
+			event := map[string]interface{}{
+				"event_type":  eventType,
+				"tenant_id":   req.TenantID,
+				"resident_id": req.ResidentID,
+				"timestamp":   time.Now().Unix(),
+			}
+
+			// 添加 unit_id 和 bed_id（如果存在）
+			if updatedResident.UnitID != "" {
+				event["unit_id"] = updatedResident.UnitID
+			}
+			if updatedResident.BedID != "" {
+				event["bed_id"] = updatedResident.BedID
+			}
+
+			_, err := rediscommon.PublishToStream(ctx, s.redisClient, "card:events", event)
+			if err != nil {
+				// 事件发布失败不应该影响 API 响应，只记录警告
+				s.logger.Warn("Failed to publish card update event",
+					zap.Error(err),
+					zap.String("event_type", eventType),
+					zap.String("tenant_id", req.TenantID),
+					zap.String("resident_id", req.ResidentID),
+				)
+			} else {
+				s.logger.Info("Published card update event",
+					zap.String("event_type", eventType),
+					zap.String("tenant_id", req.TenantID),
+					zap.String("resident_id", req.ResidentID),
+				)
 			}
 		}
 	}
@@ -3066,6 +3326,8 @@ func (s *residentService) UpdateResidentContact(ctx context.Context, req UpdateR
 		ContactLastName:  nil,
 		ContactPhone:     nil,
 		ContactEmail:     nil,
+		ContactPhoneHash: nil,
+		ContactEmailHash: nil,
 		ReceiveSMS:       nil,
 		ReceiveEmail:     nil,
 		AlertTimeWindow:  nil,
@@ -3097,15 +3359,47 @@ func (s *residentService) UpdateResidentContact(ctx context.Context, req UpdateR
 	if req.ContactPhone != nil {
 		if *req.ContactPhone == "" {
 			contactUpdate.ContactPhone = &domain.UpdateString{Action: domain.UpdateActionDelete}
+			contactUpdate.ContactPhoneHash = &domain.UpdateBytes{Action: domain.UpdateActionDelete}
 		} else {
 			contactUpdate.ContactPhone = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: *req.ContactPhone}
+			// 处理 phone_hash
+			if req.PhoneHash != nil && *req.PhoneHash != "" {
+				phoneHash, err := hex.DecodeString(*req.PhoneHash)
+				if err == nil && len(phoneHash) > 0 {
+					contactUpdate.ContactPhoneHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: phoneHash}
+				}
+			} else {
+				// 如果前端没有提供 hash，但提供了 phone，则计算 hash
+				phone := strings.ToLower(strings.TrimSpace(*req.ContactPhone))
+				phoneHashHex := HashAccount(phone)
+				phoneHash, err := hex.DecodeString(phoneHashHex)
+				if err == nil && len(phoneHash) > 0 {
+					contactUpdate.ContactPhoneHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: phoneHash}
+				}
+			}
 		}
 	}
 	if req.ContactEmail != nil {
 		if *req.ContactEmail == "" {
 			contactUpdate.ContactEmail = &domain.UpdateString{Action: domain.UpdateActionDelete}
+			contactUpdate.ContactEmailHash = &domain.UpdateBytes{Action: domain.UpdateActionDelete}
 		} else {
 			contactUpdate.ContactEmail = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: *req.ContactEmail}
+			// 处理 email_hash
+			if req.EmailHash != nil && *req.EmailHash != "" {
+				emailHash, err := hex.DecodeString(*req.EmailHash)
+				if err == nil && len(emailHash) > 0 {
+					contactUpdate.ContactEmailHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: emailHash}
+				}
+			} else {
+				// 如果前端没有提供 hash，但提供了 email，则计算 hash
+				email := strings.ToLower(strings.TrimSpace(*req.ContactEmail))
+				emailHashHex := HashAccount(email)
+				emailHash, err := hex.DecodeString(emailHashHex)
+				if err == nil && len(emailHash) > 0 {
+					contactUpdate.ContactEmailHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: emailHash}
+				}
+			}
 		}
 	}
 	if req.ReceiveSMS != nil {

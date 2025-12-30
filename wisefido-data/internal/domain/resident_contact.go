@@ -32,6 +32,8 @@ type ResidentContact struct {
 	ContactLastName  sql.NullString `db:"contact_last_name"`  // VARCHAR(100), nullable
 	ContactPhone     sql.NullString `db:"contact_phone"`      // VARCHAR(25), nullable
 	ContactEmail     sql.NullString `db:"contact_email"`      // VARCHAR(255), nullable
+	ContactPhoneHash []byte         `db:"contact_phone_hash"` // VARCHAR(64), nullable (hash for search)
+	ContactEmailHash []byte         `db:"contact_email_hash"` // VARCHAR(64), nullable (hash for search)
 	ReceiveSMS       bool           `db:"receive_sms"`        // BOOLEAN, DEFAULT FALSE
 	ReceiveEmail     bool           `db:"receive_email"`      // BOOLEAN, DEFAULT FALSE
 }

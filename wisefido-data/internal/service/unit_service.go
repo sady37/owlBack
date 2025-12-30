@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
+	rediscommon "owl-common/redis"
+
+	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
 
@@ -24,6 +28,7 @@ type UnitService interface {
 
 	// Unit 管理
 	ListUnits(ctx context.Context, req ListUnitsRequest) (*ListUnitsResponse, error)
+	ListUnitsWithFullHierarchy(ctx context.Context, req ListUnitsWithFullHierarchyRequest) (*ListUnitsWithFullHierarchyResponse, error)
 	GetUnit(ctx context.Context, req GetUnitRequest) (*GetUnitResponse, error)
 	CreateUnit(ctx context.Context, req CreateUnitRequest) (*CreateUnitResponse, error)
 	UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*UpdateUnitResponse, error)
@@ -47,18 +52,276 @@ type UnitService interface {
 
 // unitService 实现
 type unitService struct {
-	unitsRepo    repository.UnitsRepository
-	branchesRepo repository.BranchesRepository // 用于通过 branch_name 查找 branch_id
-	logger       *zap.Logger
+	unitsRepo     repository.UnitsRepository
+	branchesRepo  repository.BranchesRepository  // 用于通过 branch_name 查找 branch_id
+	residentsRepo repository.ResidentsRepository // 用于检查 unit 下的 residents
+	devicesRepo   repository.DevicesRepository   // 用于检查 unit 下的 devices
+	db            *sql.DB                        // 用于复杂查询（JOIN、权限过滤，如查询 user_branches）
+	redisClient   *redis.Client                  // 用于发布卡片更新事件到 Redis Streams
+	logger        *zap.Logger
 }
 
 // NewUnitService 创建 UnitService 实例
-func NewUnitService(unitsRepo repository.UnitsRepository, branchesRepo repository.BranchesRepository, logger *zap.Logger) UnitService {
+func NewUnitService(unitsRepo repository.UnitsRepository, branchesRepo repository.BranchesRepository, residentsRepo repository.ResidentsRepository, devicesRepo repository.DevicesRepository, db *sql.DB, redisClient *redis.Client, logger *zap.Logger) UnitService {
 	return &unitService{
-		unitsRepo:    unitsRepo,
-		branchesRepo: branchesRepo,
-		logger:       logger,
+		unitsRepo:     unitsRepo,
+		branchesRepo:  branchesRepo,
+		residentsRepo: residentsRepo,
+		devicesRepo:   devicesRepo,
+		db:            db,
+		redisClient:   redisClient,
+		logger:        logger,
 	}
+}
+
+// ============================================
+// 统一的权限验证辅助函数
+// 权限验证主要验证两个维度：
+//   1. tenant: 确保资源属于请求的 tenant（通过 Repository 层的 WHERE tenant_id = $1 自动验证）
+//   2. branch: 确保资源属于请求的 branch（通过检查资源的 branch_id 是否匹配）
+// ============================================
+
+// getUserBranchID 查询用户所属的 branch_id（Service 层内部方法）
+// 从 user_branches 表查询用户关联的主院区 ID（is_primary = TRUE）
+// 返回：
+//   - branchID: 用户的主院区 ID（is_primary = TRUE，如果存在）
+//   - hasBranches: 用户是否有关联的院区（false 表示可以访问所有院区或 NULL 院区）
+func (s *unitService) getUserBranchID(ctx context.Context, tenantID, userID string) (branchID string, hasBranches bool, err error) {
+	if tenantID == "" || userID == "" {
+		return "", false, nil
+	}
+
+	// 查询用户的主院区（is_primary = TRUE）
+	var branchIDStr sql.NullString
+	err = s.db.QueryRowContext(ctx,
+		`SELECT branch_id::text FROM user_branches 
+		 WHERE tenant_id = $1 AND user_id::text = $2 AND is_primary = TRUE
+		 LIMIT 1`,
+		tenantID, userID,
+	).Scan(&branchIDStr)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// 用户没有主院区，检查是否有任何院区关联
+			var count int
+			err2 := s.db.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM user_branches 
+				 WHERE tenant_id = $1 AND user_id::text = $2`,
+				tenantID, userID,
+			).Scan(&count)
+			if err2 == nil && count > 0 {
+				// 用户有关联的院区，但没有主院区，返回第一个
+				err2 = s.db.QueryRowContext(ctx,
+					`SELECT branch_id::text FROM user_branches 
+					 WHERE tenant_id = $1 AND user_id::text = $2
+					 ORDER BY is_primary DESC, branch_id
+					 LIMIT 1`,
+					tenantID, userID,
+				).Scan(&branchIDStr)
+				if err2 == nil && branchIDStr.Valid {
+					return branchIDStr.String, true, nil
+				}
+			}
+			return "", false, nil // 用户没有关联任何院区
+		}
+		return "", false, fmt.Errorf("failed to query user branches: %w", err)
+	}
+
+	if branchIDStr.Valid {
+		return branchIDStr.String, true, nil
+	}
+	return "", false, nil
+}
+
+// getUserBranchIDs 查询用户所属的所有 branch_id 列表（Service 层内部方法）
+// 从 user_branches 表查询用户关联的所有院区 ID
+// 返回：
+//   - branchIDs: 用户所属的 branch_id 列表（可能为空）
+//   - hasBranches: 用户是否有关联的院区（false 表示可以访问所有院区或 NULL 院区）
+func (s *unitService) getUserBranchIDs(ctx context.Context, tenantID, userID string) (branchIDs []string, hasBranches bool, err error) {
+	if tenantID == "" || userID == "" {
+		return nil, false, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT branch_id::text FROM user_branches 
+		 WHERE tenant_id = $1 AND user_id::text = $2`,
+		tenantID, userID,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, false, nil // 用户没有关联任何院区
+		}
+		return nil, false, fmt.Errorf("failed to query user branches: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var branchID string
+		if err := rows.Scan(&branchID); err != nil {
+			return nil, false, fmt.Errorf("failed to scan branch_id: %w", err)
+		}
+		ids = append(ids, branchID)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("failed to iterate user branches: %w", err)
+	}
+
+	return ids, len(ids) > 0, nil
+}
+
+// getBranchIDForPermission 统一获取 branch_id 用于权限验证
+// 优先级：
+//  1. 如果请求中提供了 BranchID，则验证该 BranchID 是否在用户绑定的 branch_id 列表中
+//  2. 如果未提供，则从 user_branches 表查询用户的主院区
+//
+// 返回：
+//   - branchID: 用于权限验证的 branch_id（可能为空，表示可以访问所有院区或 NULL 院区）
+//   - hasBranches: 用户是否有关联的院区
+func (s *unitService) getBranchIDForPermission(ctx context.Context, tenantID, userID, providedBranchID string) (branchID string, hasBranches bool, err error) {
+	// 如果提供了 BranchID，需要验证用户是否有权限访问该 branch（即该 branch_id 是否在用户的 branch_id 列表中）
+	if providedBranchID != "" {
+		// 查询用户的所有 branch_id 列表
+		userBranchIDs, hasBranches, err := s.getUserBranchIDs(ctx, tenantID, userID)
+		if err != nil {
+			return "", false, fmt.Errorf("failed to verify user branch permission: %w", err)
+		}
+		// 如果用户有关联的院区，验证提供的 branch_id 是否在列表中
+		if hasBranches {
+			found := false
+			for _, bid := range userBranchIDs {
+				if bid == providedBranchID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return "", false, fmt.Errorf("user does not have permission to access branch %s (user's branches: %v)", providedBranchID, userBranchIDs)
+			}
+		}
+		// 用户有权限，使用提供的 branch_id
+		return providedBranchID, hasBranches, nil
+	}
+
+	// 未提供 BranchID，从 user_branches 表查询用户的主院区
+	return s.getUserBranchID(ctx, tenantID, userID)
+}
+
+// verifyUnitPermission 验证 unit 的权限（tenant + branch）
+// 参数：
+//   - tenantID: 必填，用于验证 unit 是否属于该 tenant
+//   - unitID: 必填，要验证的 unit ID
+//   - branchID: 可选，如果提供则验证 unit 是否属于该 branch；如果为空字符串，跳过 branch 验证
+//
+// 返回：
+//   - *domain.Unit: 验证通过后返回 unit 对象
+//   - error: 如果验证失败（tenant 不匹配、unit 不存在、branch 不匹配等）
+func (s *unitService) verifyUnitPermission(ctx context.Context, tenantID, unitID, branchID string) (*domain.Unit, error) {
+	// 1. 获取 unit 信息（Repository 层会自动验证 tenant_id）
+	unit, err := s.unitsRepo.GetUnit(ctx, tenantID, unitID)
+	if err != nil {
+		if err == sql.ErrNoRows || strings.Contains(err.Error(), "not found") {
+			return nil, fmt.Errorf("unit not found: unit_id=%s (tenant validation failed or unit does not exist)", unitID)
+		}
+		s.logger.Error("verifyUnitPermission: failed to get unit",
+			zap.String("tenant_id", tenantID),
+			zap.String("unit_id", unitID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to get unit: %w", err)
+	}
+
+	// 2. 验证 branch 权限（如果提供了 branchID）
+	if branchID != "" {
+		if !unit.BranchID.Valid || unit.BranchID.String != branchID {
+			s.logger.Warn("verifyUnitPermission: branch_id mismatch",
+				zap.String("tenant_id", tenantID),
+				zap.String("unit_id", unitID),
+				zap.String("requested_branch_id", branchID),
+				zap.String("unit_branch_id", func() string {
+					if unit.BranchID.Valid {
+						return unit.BranchID.String
+					}
+					return "NULL"
+				}()),
+			)
+			return nil, fmt.Errorf("permission denied: unit does not belong to branch_id=%s", branchID)
+		}
+	}
+
+	return unit, nil
+}
+
+// verifyRoomPermission 验证 room 的权限（tenant + branch）
+// 通过 room 所属的 unit 来验证权限
+// 参数：
+//   - tenantID: 必填，用于验证 room 是否属于该 tenant
+//   - roomID: 必填，要验证的 room ID
+//   - branchID: 可选，如果提供则验证 room 所属的 unit 是否属于该 branch；如果为空字符串，跳过 branch 验证
+//
+// 返回：
+//   - *domain.Room: 验证通过后返回 room 对象
+//   - *domain.Unit: 验证通过后返回 room 所属的 unit 对象
+//   - error: 如果验证失败（tenant 不匹配、room 不存在、branch 不匹配等）
+func (s *unitService) verifyRoomPermission(ctx context.Context, tenantID, roomID, branchID string) (*domain.Room, *domain.Unit, error) {
+	// 1. 获取 room 信息（Repository 层会自动验证 tenant_id）
+	room, err := s.unitsRepo.GetRoom(ctx, tenantID, roomID)
+	if err != nil {
+		if err == sql.ErrNoRows || strings.Contains(err.Error(), "not found") {
+			return nil, nil, fmt.Errorf("room not found: room_id=%s (tenant validation failed or room does not exist)", roomID)
+		}
+		s.logger.Error("verifyRoomPermission: failed to get room",
+			zap.String("tenant_id", tenantID),
+			zap.String("room_id", roomID),
+			zap.Error(err),
+		)
+		return nil, nil, fmt.Errorf("failed to get room: %w", err)
+	}
+
+	// 2. 通过 unit 验证权限（包括 tenant 和 branch）
+	unit, err := s.verifyUnitPermission(ctx, tenantID, room.UnitID, branchID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return room, unit, nil
+}
+
+// verifyBedPermission 验证 bed 的权限（tenant + branch）
+// 通过 bed -> room -> unit 的层级关系来验证权限
+// 参数：
+//   - tenantID: 必填，用于验证 bed 是否属于该 tenant
+//   - bedID: 必填，要验证的 bed ID
+//   - branchID: 可选，如果提供则验证 bed 所属的 room 所属的 unit 是否属于该 branch；如果为空字符串，跳过 branch 验证
+//
+// 返回：
+//   - *domain.Bed: 验证通过后返回 bed 对象
+//   - *domain.Room: 验证通过后返回 bed 所属的 room 对象
+//   - *domain.Unit: 验证通过后返回 room 所属的 unit 对象
+//   - error: 如果验证失败（tenant 不匹配、bed 不存在、branch 不匹配等）
+func (s *unitService) verifyBedPermission(ctx context.Context, tenantID, bedID, branchID string) (*domain.Bed, *domain.Room, *domain.Unit, error) {
+	// 1. 获取 bed 信息（Repository 层会自动验证 tenant_id）
+	bed, err := s.unitsRepo.GetBed(ctx, tenantID, bedID)
+	if err != nil {
+		if err == sql.ErrNoRows || strings.Contains(err.Error(), "not found") {
+			return nil, nil, nil, fmt.Errorf("bed not found: bed_id=%s (tenant validation failed or bed does not exist)", bedID)
+		}
+		s.logger.Error("verifyBedPermission: failed to get bed",
+			zap.String("tenant_id", tenantID),
+			zap.String("bed_id", bedID),
+			zap.Error(err),
+		)
+		return nil, nil, nil, fmt.Errorf("failed to get bed: %w", err)
+	}
+
+	// 2. 通过 room 验证权限（包括 tenant 和 branch）
+	room, unit, err := s.verifyRoomPermission(ctx, tenantID, bed.RoomID, branchID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	return bed, room, unit, nil
 }
 
 // ============================================
@@ -67,7 +330,8 @@ func NewUnitService(unitsRepo repository.UnitsRepository, branchesRepo repositor
 
 type ListBuildingsRequest struct {
 	TenantID   string // 必填
-	BranchName string // 可选
+	BranchID   string // 可选（优先使用，如果提供则忽略 BranchName）
+	BranchName string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
 }
 
 type ListBuildingsResponse struct {
@@ -81,13 +345,20 @@ type GetBuildingRequest struct {
 
 type GetBuildingResponse struct {
 	Building *domain.Building `json:"building"`
+	Units    []BuildingUnit   `json:"units"` // 该 building 下的 units 列表
+}
+
+// BuildingUnit 用于 GetBuilding 返回的 unit 信息（简化版，只包含必要字段）
+type BuildingUnit struct {
+	UnitID   string `json:"unit_id"`
+	UnitName string `json:"unit_name"`
+	Floor    string `json:"floor,omitempty"` // 可选，可能为 NULL
 }
 
 type CreateBuildingRequest struct {
 	TenantID     string // 必填
-	BranchID     string // 可选（优先使用，如果提供则忽略 BranchName）
-	BranchName   string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID）
-	BuildingName string // 必填（branch_id 或 building_name 至少一个）
+	BranchID     string // 必填（不再支持 BranchName）
+	BuildingName string // 必填（不能为空或空格）
 }
 
 type CreateBuildingResponse struct {
@@ -97,9 +368,7 @@ type CreateBuildingResponse struct {
 type UpdateBuildingRequest struct {
 	TenantID     string // 必填
 	BuildingID   string // 必填
-	BranchID     string // 可选（优先使用，如果提供则忽略 BranchName）
-	BranchName   string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID）
-	BuildingName string // 可选
+	BuildingName string // 必填（只能修改 building_name，不能修改 branch_id）
 }
 
 type UpdateBuildingResponse struct {
@@ -121,8 +390,10 @@ type DeleteBuildingResponse struct {
 
 type ListUnitsRequest struct {
 	TenantID   string  // 必填
-	BranchName *string // 可选（nil 表示匹配 NULL）
-	Building   *string // 可选（nil 表示未提供）
+	BranchID   *string // 可选（优先使用，如果提供则忽略 BranchName）
+	BranchName *string // 可选（向后兼容，如果 BranchID 未提供则使用此字段）
+	BuildingID *string // 可选（优先使用，UUID 类型，如果提供则忽略 Building）
+	Building   *string // 可选（向后兼容，如果 BuildingID 未提供则使用此字段，通过 building_name 过滤）
 	Floor      *string // 可选（nil 表示未提供）
 	AreaName   *string // 可选（nil 表示未提供）
 	UnitNumber *string // 可选（nil 表示未提供）
@@ -138,6 +409,47 @@ type ListUnitsResponse struct {
 	Total int            `json:"total"`
 }
 
+// ListUnitsWithFullHierarchyRequest 查询 Units 及其完整层级结构的请求
+type ListUnitsWithFullHierarchyRequest struct {
+	TenantID      string  // 必填
+	CurrentUserID string  // 当前用户ID（用于权限过滤，从 user_branches 表查询用户的 branch_id）
+	BranchID      *string // 可选（优先使用，如果提供则忽略从 user_branches 查询的结果）
+	BranchName    *string // 可选（向后兼容，如果 BranchID 未提供则使用此字段）
+	BuildingID    *string // 可选（优先使用，UUID 类型，如果提供则忽略 Building）
+	Building      *string // 可选（向后兼容，如果 BuildingID 未提供则使用此字段）
+	Floor         *string // 可选
+	UnitType      *string // 可选
+	Search        *string // 可选（模糊搜索 unit_name）
+	// 注意：不分页，返回所有匹配的 units（因为前端需要完整层级结构）
+}
+
+// ListUnitsWithFullHierarchyResponse 查询 Units 及其完整层级结构的响应
+type ListUnitsWithFullHierarchyResponse struct {
+	Items []*UnitWithFullHierarchy `json:"items"`
+	Total int                      `json:"total"`
+}
+
+// UnitWithFullHierarchy 包含完整的层级结构
+type UnitWithFullHierarchy struct {
+	*domain.Unit                           // Unit 基本信息
+	Rooms        []*RoomWithBedsAndDevices `json:"rooms"`
+}
+
+// RoomWithBedsAndDevices 房间及其床位和设备
+type RoomWithBedsAndDevices struct {
+	*domain.Room                   // Room 基本信息
+	Beds         []*BedWithDevices `json:"beds"`
+	DeviceIDs    []string          `json:"device_ids"`   // 绑定到 room 的 device IDs（用于前端选中并向后端传递）
+	DeviceNames  []string          `json:"device_names"` // 绑定到 room 的 device names（用于前端显示）
+}
+
+// BedWithDevices 床位及其设备
+type BedWithDevices struct {
+	*domain.Bed          // Bed 基本信息
+	DeviceIDs   []string `json:"device_ids"`   // 绑定到 bed 的 device IDs（用于前端选中并向后端传递）
+	DeviceNames []string `json:"device_names"` // 绑定到 bed 的 device names（用于前端显示）
+}
+
 type GetUnitRequest struct {
 	TenantID string // 必填
 	UnitID   string // 必填
@@ -150,9 +462,10 @@ type GetUnitResponse struct {
 type CreateUnitRequest struct {
 	TenantID          string // 必填
 	BranchID          string // 可选（优先使用，如果提供则忽略 BranchName）
-	BranchName        string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID）
+	BranchName        string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
 	UnitName          string // 必填
-	Building          string // 可选（保持空字符串，不使用 "-"）
+	BuildingID        string // 可选（优先使用，如果提供则忽略 BuildingName）
+	BuildingName      string // 可选（向后兼容，如果 BuildingID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
 	Floor             string // 可选（默认 "1F"）
 	AreaName          string // 可选
 	UnitNumber        string // 必填
@@ -171,9 +484,10 @@ type UpdateUnitRequest struct {
 	TenantID          string // 必填
 	UnitID            string // 必填
 	BranchID          string // 可选（优先使用，如果提供则忽略 BranchName）
-	BranchName        string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID）
+	BranchName        string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
 	UnitName          string // 可选
-	Building          string // 可选
+	BuildingID        string // 可选（优先使用，如果提供则忽略 BuildingName）
+	BuildingName      string // 可选（向后兼容，如果 BuildingID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
 	Floor             string // 可选
 	AreaName          string // 可选
 	UnitNumber        string // 可选
@@ -189,8 +503,10 @@ type UpdateUnitResponse struct {
 }
 
 type DeleteUnitRequest struct {
-	TenantID string // 必填
-	UnitID   string // 必填
+	TenantID      string // 必填
+	UnitID        string // 必填
+	CurrentUserID string // 必填（用于权限验证，从 user_branches 表查询用户的 branch_id）
+	BranchID      string // 可选（如果提供则验证用户是否有权限访问该 branch，否则从 user_branches 查询）
 }
 
 type DeleteUnitResponse struct {
@@ -202,8 +518,11 @@ type DeleteUnitResponse struct {
 // ============================================
 
 type ListRoomsRequest struct {
-	TenantID string // 必填
-	UnitID   string // 必填
+	TenantID      string // 必填
+	UnitID        string // 必填
+	CurrentUserID string // 必填（用于权限验证，从 user_branches 表查询用户的 branch_id）
+	BranchID      string // 可选（如果提供则验证用户是否有权限访问该 branch，否则从 user_branches 查询）
+	Search        string // 可选（按 room_name 模糊搜索）
 }
 
 type ListRoomsResponse struct {
@@ -211,8 +530,11 @@ type ListRoomsResponse struct {
 }
 
 type ListRoomsWithBedsRequest struct {
-	TenantID string // 必填
-	UnitID   string // 必填
+	TenantID      string // 必填
+	UnitID        string // 必填
+	CurrentUserID string // 必填（用于权限验证，从 user_branches 表查询用户的 branch_id）
+	BranchID      string // 可选（如果提供则验证用户是否有权限访问该 branch，否则从 user_branches 查询）
+	Search        string // 可选（按 room_name 模糊搜索）
 }
 
 type ListRoomsWithBedsResponse struct {
@@ -220,8 +542,10 @@ type ListRoomsWithBedsResponse struct {
 }
 
 type GetRoomRequest struct {
-	TenantID string // 必填
-	RoomID   string // 必填
+	TenantID      string // 必填
+	RoomID        string // 必填
+	CurrentUserID string // 必填（用于权限验证，从 user_branches 表查询用户的 branch_id）
+	BranchID      string // 可选（如果提供则验证用户是否有权限访问该 branch，否则从 user_branches 查询）
 }
 
 type GetRoomResponse struct {
@@ -229,10 +553,12 @@ type GetRoomResponse struct {
 }
 
 type CreateRoomRequest struct {
-	TenantID     string // 必填
-	UnitID       string // 必填
-	RoomName     string // 必填
-	LayoutConfig string // 可选（JSON 字符串）
+	TenantID      string // 必填
+	UnitID        string // 必填
+	CurrentUserID string // 必填（用于权限验证，从 user_branches 表查询用户的 branch_id）
+	BranchID      string // 可选（如果提供则验证用户是否有权限访问该 branch，否则从 user_branches 查询）
+	RoomName      string // 必填
+	LayoutConfig  string // 可选（JSON 字符串）
 }
 
 type CreateRoomResponse struct {
@@ -240,10 +566,12 @@ type CreateRoomResponse struct {
 }
 
 type UpdateRoomRequest struct {
-	TenantID     string // 必填
-	RoomID       string // 必填
-	RoomName     string // 可选
-	LayoutConfig string // 可选（JSON 字符串）
+	TenantID      string // 必填
+	RoomID        string // 必填
+	CurrentUserID string // 必填（用于权限验证，从 user_branches 表查询用户的 branch_id）
+	BranchID      string // 可选（如果提供则验证用户是否有权限访问该 branch，否则从 user_branches 查询）
+	RoomName      string // 可选
+	LayoutConfig  string // 可选（JSON 字符串）
 }
 
 type UpdateRoomResponse struct {
@@ -251,8 +579,10 @@ type UpdateRoomResponse struct {
 }
 
 type DeleteRoomRequest struct {
-	TenantID string // 必填
-	RoomID   string // 必填
+	TenantID      string // 必填
+	RoomID        string // 必填
+	CurrentUserID string // 必填（用于权限验证，从 user_branches 表查询用户的 branch_id）
+	BranchID      string // 可选（如果提供则验证用户是否有权限访问该 branch，否则从 user_branches 查询）
 }
 
 type DeleteRoomResponse struct {
@@ -264,8 +594,11 @@ type DeleteRoomResponse struct {
 // ============================================
 
 type ListBedsRequest struct {
-	TenantID string // 必填
-	RoomID   string // 必填
+	TenantID      string // 必填
+	RoomID        string // 必填
+	CurrentUserID string // 必填（用于权限验证，从 user_branches 表查询用户的 branch_id）
+	BranchID      string // 可选（如果提供则验证用户是否有权限访问该 branch，否则从 user_branches 查询）
+	Search        string // 可选（按 bed_name 模糊搜索）
 }
 
 type ListBedsResponse struct {
@@ -273,8 +606,10 @@ type ListBedsResponse struct {
 }
 
 type GetBedRequest struct {
-	TenantID string // 必填
-	BedID    string // 必填
+	TenantID      string // 必填
+	BedID         string // 必填
+	CurrentUserID string // 必填（用于权限验证，从 user_branches 表查询用户的 branch_id）
+	BranchID      string // 可选（如果提供则验证用户是否有权限访问该 branch，否则从 user_branches 查询）
 }
 
 type GetBedResponse struct {
@@ -282,9 +617,11 @@ type GetBedResponse struct {
 }
 
 type CreateBedRequest struct {
-	TenantID string // 必填
-	RoomID   string // 必填
-	BedName  string // 必填
+	TenantID      string // 必填
+	RoomID        string // 必填
+	CurrentUserID string // 必填（用于权限验证，从 user_branches 表查询用户的 branch_id）
+	BranchID      string // 可选（如果提供则验证用户是否有权限访问该 branch，否则从 user_branches 查询）
+	BedName       string // 必填
 	// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 	MattressMaterial  string // 可选
 	MattressThickness string // 可选
@@ -295,9 +632,11 @@ type CreateBedResponse struct {
 }
 
 type UpdateBedRequest struct {
-	TenantID string // 必填
-	BedID    string // 必填
-	BedName  string // 可选
+	TenantID      string // 必填
+	BedID         string // 必填
+	CurrentUserID string // 必填（用于权限验证，从 user_branches 表查询用户的 branch_id）
+	BranchID      string // 可选（如果提供则验证用户是否有权限访问该 branch，否则从 user_branches 查询）
+	BedName       string // 可选
 	// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 	MattressMaterial  string // 可选
 	MattressThickness string // 可选
@@ -308,8 +647,10 @@ type UpdateBedResponse struct {
 }
 
 type DeleteBedRequest struct {
-	TenantID string // 必填
-	BedID    string // 必填
+	TenantID      string // 必填
+	BedID         string // 必填
+	CurrentUserID string // 必填（用于权限验证，从 user_branches 表查询用户的 branch_id）
+	BranchID      string // 可选（如果提供则验证用户是否有权限访问该 branch，否则从 user_branches 查询）
 }
 
 type DeleteBedResponse struct {
@@ -326,10 +667,35 @@ func (s *unitService) ListBuildings(ctx context.Context, req ListBuildingsReques
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 
-	items, err := s.unitsRepo.ListBuildings(ctx, req.TenantID, req.BranchName)
+	// 处理 branch_id：优先使用 BranchID，如果没有则通过 BranchName 查找
+	var branchID sql.NullString
+	var branchNameForQuery string
+
+	if req.BranchID != "" {
+		// 优先使用 BranchID
+		branchID = sql.NullString{String: req.BranchID, Valid: true}
+		// 如果提供了 BranchID，不需要 branch_name（Repository 层会直接使用 branch_id 过滤）
+		branchNameForQuery = ""
+	} else if req.BranchName != "" {
+		// 向后兼容：使用 BranchName
+		// Vue 层已经 trim 空格，这里处理空字符串自动转换为 "-"
+		branchNameTrimmed := strings.TrimSpace(req.BranchName)
+		if branchNameTrimmed == "" {
+			branchNameTrimmed = "-"
+		}
+		branchNameForQuery = branchNameTrimmed
+	} else {
+		// 都没有提供：查询整个 tenant 的所有 buildings
+		branchNameForQuery = ""
+	}
+
+	// 如果提供了 BranchID，Repository 层需要支持通过 branch_id 过滤
+	// 否则使用 branch_name 过滤（向后兼容）
+	items, err := s.unitsRepo.ListBuildings(ctx, req.TenantID, branchID, branchNameForQuery)
 	if err != nil {
 		s.logger.Error("ListBuildings failed",
 			zap.String("tenant_id", req.TenantID),
+			zap.String("branch_id", req.BranchID),
 			zap.String("branch_name", req.BranchName),
 			zap.Error(err),
 		)
@@ -341,7 +707,7 @@ func (s *unitService) ListBuildings(ctx context.Context, req ListBuildingsReques
 	}, nil
 }
 
-// GetBuilding 获取单个楼栋详情
+// GetBuilding 获取单个楼栋详情（包含关联的 units 列表）
 func (s *unitService) GetBuilding(ctx context.Context, req GetBuildingRequest) (*GetBuildingResponse, error) {
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
@@ -363,8 +729,34 @@ func (s *unitService) GetBuilding(ctx context.Context, req GetBuildingRequest) (
 		return nil, fmt.Errorf("failed to get building: %w", err)
 	}
 
+	// 获取该 building 下的所有 units（只包含 unit_id, unit_name, floor）
+	unitsData, err := s.unitsRepo.GetBuildingUnits(ctx, req.TenantID, req.BuildingID)
+	if err != nil {
+		s.logger.Warn("GetBuildingUnits failed",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("building_id", req.BuildingID),
+			zap.Error(err),
+		)
+		// 如果查询 units 失败，返回空列表而不是错误（building 信息仍然有效）
+		unitsData = []repository.BuildingUnitInfo{}
+	}
+
+	// 转换为 BuildingUnit 列表
+	units := make([]BuildingUnit, 0, len(unitsData))
+	for _, u := range unitsData {
+		unit := BuildingUnit{
+			UnitID:   u.UnitID,
+			UnitName: u.UnitName,
+		}
+		if u.Floor.Valid {
+			unit.Floor = u.Floor.String
+		}
+		units = append(units, unit)
+	}
+
 	return &GetBuildingResponse{
 		Building: building,
+		Units:    units,
 	}, nil
 }
 
@@ -374,47 +766,46 @@ func (s *unitService) CreateBuilding(ctx context.Context, req CreateBuildingRequ
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 
-	// 处理 branch_id：优先使用 BranchID，如果没有则通过 BranchName 查找
-	var branchID sql.NullString
-	if req.BranchID != "" {
-		// 优先使用 BranchID
-		branchID = sql.NullString{String: req.BranchID, Valid: true}
-	} else if req.BranchName != "" && req.BranchName != "-" {
-		// 向后兼容：通过 BranchName 查找 BranchID
-		branch, err := s.branchesRepo.GetBranchByName(ctx, req.TenantID, strings.TrimSpace(req.BranchName))
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return nil, fmt.Errorf("branch not found: branch_name=%s", req.BranchName)
-			}
-			return nil, fmt.Errorf("failed to find branch: %w", err)
-		}
-		branchID = sql.NullString{String: branch.BranchID, Valid: true}
+	// branch_id 必须提供，不能为空（业务规则：一家机构必然有一个分支或总部）
+	if req.BranchID == "" {
+		return nil, fmt.Errorf("branch_id is required and cannot be empty")
 	}
 
-	// Service 层职责：Trim 首尾空格 + 空字符串自动转换为 "-"
-	// 注意：Vue 层只负责 trim，不处理空字符串转换
-	buildingNameValue := strings.TrimSpace(req.BuildingName)
+	// building_name 必须提供，不能为空或空格
+	buildingNameTrimmed := strings.TrimSpace(req.BuildingName)
+	if buildingNameTrimmed == "" {
+		return nil, fmt.Errorf("building_name is required and cannot be empty or whitespace")
+	}
 
-	// 验证：branch_id 或 building_name 必须有一个不为空
-	if !branchID.Valid && (buildingNameValue == "" || buildingNameValue == "-") {
-		return nil, fmt.Errorf("branch_id or building_name must be provided (at least one must not be empty)")
+	// 检查是否已存在相同的 building（通过 branch_id + building_name 小写比较）
+	// 如果已存在，返回现有的 building_id，不创建新记录
+	existingBuildingID, err := s.unitsRepo.FindBuildingByBranchAndName(ctx, req.TenantID, req.BranchID, buildingNameTrimmed)
+	if err != nil && !strings.Contains(err.Error(), "not found") {
+		s.logger.Warn("FindBuildingByBranchAndName failed",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("branch_id", req.BranchID),
+			zap.String("building_name", buildingNameTrimmed),
+			zap.Error(err),
+		)
+		// 如果查询失败，继续创建流程（可能是数据库错误，不影响创建）
+	} else if err == nil && existingBuildingID != "" {
+		// 已存在相同的 building，返回现有的 building_id
+		return &CreateBuildingResponse{
+			BuildingID: existingBuildingID,
+		}, nil
 	}
 
 	building := &domain.Building{
 		TenantID:     req.TenantID,
-		BranchID:     branchID,
-		BuildingName: buildingNameValue,
-	}
-
-	// Service 层职责：空字符串自动转换为 "-"（不能由 Vue 决定）
-	if building.BuildingName == "" {
-		building.BuildingName = "-"
+		BranchID:     sql.NullString{String: req.BranchID, Valid: true},
+		BuildingName: buildingNameTrimmed,
 	}
 
 	buildingID, err := s.unitsRepo.CreateBuilding(ctx, req.TenantID, building)
 	if err != nil {
 		s.logger.Error("CreateBuilding failed",
 			zap.String("tenant_id", req.TenantID),
+			zap.String("branch_id", req.BranchID),
 			zap.String("building_name", req.BuildingName),
 			zap.Error(err),
 		)
@@ -427,12 +818,16 @@ func (s *unitService) CreateBuilding(ctx context.Context, req CreateBuildingRequ
 }
 
 // UpdateBuilding 更新楼栋
+// 注意：只能修改 building_name，不能修改 branch_id
 func (s *unitService) UpdateBuilding(ctx context.Context, req UpdateBuildingRequest) (*UpdateBuildingResponse, error) {
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 	if req.BuildingID == "" {
 		return nil, fmt.Errorf("building_id is required")
+	}
+	if req.BuildingName == "" {
+		return nil, fmt.Errorf("building_name is required and cannot be empty")
 	}
 
 	// 获取当前 building
@@ -444,51 +839,38 @@ func (s *unitService) UpdateBuilding(ctx context.Context, req UpdateBuildingRequ
 		return nil, fmt.Errorf("failed to get building: %w", err)
 	}
 
-	// 构建更新后的 building
+	// 验证：branch_id 必须存在（不能为 NULL）
+	if !currentBuilding.BranchID.Valid || currentBuilding.BranchID.String == "" {
+		return nil, fmt.Errorf("building has no branch_id, cannot update")
+	}
+
+	// Trim 首尾空格
+	buildingNameTrimmed := strings.TrimSpace(req.BuildingName)
+	if buildingNameTrimmed == "" {
+		return nil, fmt.Errorf("building_name is required and cannot be empty or whitespace")
+	}
+
+	// 验证：新的 building_name 不能与同一 branch_id 下的 branch_name 重名（忽略大小写）
+	// 获取 branch 信息
+	branch, err := s.branchesRepo.GetBranch(ctx, req.TenantID, currentBuilding.BranchID.String)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("branch not found: branch_id=%s", currentBuilding.BranchID.String)
+		}
+		return nil, fmt.Errorf("failed to get branch: %w", err)
+	}
+
+	// 检查 building_name（小写）是否与 branch_name（小写）相同
+	if strings.EqualFold(buildingNameTrimmed, branch.BranchName) {
+		return nil, fmt.Errorf("building_name cannot be the same as branch_name (case-insensitive): building_name=%s, branch_name=%s", buildingNameTrimmed, branch.BranchName)
+	}
+
+	// 构建更新后的 building（只更新 building_name，保持 branch_id 不变）
 	building := &domain.Building{
 		BuildingID:   req.BuildingID,
 		TenantID:     req.TenantID,
-		BranchID:     currentBuilding.BranchID,
-		BuildingName: currentBuilding.BuildingName,
-	}
-
-	// 处理 branch_id：优先使用 BranchID，如果没有则通过 BranchName 查找
-	if req.BranchID != "" {
-		// 优先使用 BranchID
-		building.BranchID = sql.NullString{String: req.BranchID, Valid: true}
-	} else if req.BranchName != "" {
-		// 向后兼容：通过 BranchName 查找 BranchID
-		branchNameTrimmed := strings.TrimSpace(req.BranchName)
-		if branchNameTrimmed == "" || branchNameTrimmed == "-" {
-			// 如果 trim 后为空或 "-"，设置为 NULL
-			building.BranchID = sql.NullString{Valid: false}
-		} else {
-			branch, err := s.branchesRepo.GetBranchByName(ctx, req.TenantID, branchNameTrimmed)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					return nil, fmt.Errorf("branch not found: branch_name=%s", branchNameTrimmed)
-				}
-				return nil, fmt.Errorf("failed to find branch: %w", err)
-			}
-			building.BranchID = sql.NullString{String: branch.BranchID, Valid: true}
-		}
-	}
-
-	// Service 层职责：Trim 首尾空格 + 空字符串自动转换为 "-"
-	// 注意：Vue 层只负责 trim，不处理空字符串转换
-	if req.BuildingName != "" {
-		building.BuildingName = strings.TrimSpace(req.BuildingName)
-	}
-
-	// Service 层职责：空字符串自动转换为 "-"（不能由 Vue 决定）
-	if building.BuildingName == "" {
-		building.BuildingName = "-"
-	}
-
-	// 验证：branch_id 或 building_name 必须有一个不为空（更新后）
-	buildingNameValue := strings.TrimSpace(building.BuildingName)
-	if !building.BranchID.Valid && (buildingNameValue == "" || buildingNameValue == "-") {
-		return nil, fmt.Errorf("branch_id or building_name must be provided (at least one must not be empty)")
+		BranchID:     currentBuilding.BranchID, // 保持原有 branch_id，不允许修改
+		BuildingName: buildingNameTrimmed,
 	}
 
 	err = s.unitsRepo.UpdateBuilding(ctx, req.TenantID, req.BuildingID, building)
@@ -496,6 +878,7 @@ func (s *unitService) UpdateBuilding(ctx context.Context, req UpdateBuildingRequ
 		s.logger.Error("UpdateBuilding failed",
 			zap.String("tenant_id", req.TenantID),
 			zap.String("building_id", req.BuildingID),
+			zap.String("building_name", req.BuildingName),
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to update building: %w", err)
@@ -542,15 +925,28 @@ func (s *unitService) ListUnits(ctx context.Context, req ListUnitsRequest) (*Lis
 	}
 
 	// 2. 构建过滤器
-	// 关键逻辑：当提供了 building 时，必须同时匹配 branch_tag 和 building
-	// - branch_tag 为 nil：查询 branch_tag IS NULL
-	// - branch_tag 不为 nil：查询 branch_tag = X
-	// - building 为 nil：不添加 building 过滤条件
-	// - building 不为 nil：添加 building 过滤条件
+	// 优先使用 BranchID，如果提供则忽略 BranchName
 	// 空字符串视为 null（nil → ""，用于 Repository 层转换为 IS NULL）
+	branchID := stringValueOrEmpty(req.BranchID)
+	branchName := ""
+	if branchID == "" {
+		// 如果 BranchID 未提供，则使用 BranchName（向后兼容）
+		branchName = stringValueOrEmpty(req.BranchName)
+	}
+	
+	// 优先使用 BuildingID，如果提供则忽略 Building
+	buildingID := stringValueOrEmpty(req.BuildingID)
+	building := ""
+	if buildingID == "" {
+		// 如果 BuildingID 未提供，则使用 Building（向后兼容，通过 building_name 过滤）
+		building = stringValueOrEmpty(req.Building)
+	}
+	
 	filters := repository.UnitFilters{
-		BranchName: stringValueOrEmpty(req.BranchName),
-		Building:   stringValueOrEmpty(req.Building),
+		BranchID:   branchID,
+		BranchName: branchName,
+		BuildingID: buildingID,
+		Building:   building,
 		Floor:      stringValueOrEmpty(req.Floor),
 		AreaName:   stringValueOrEmpty(req.AreaName),
 		UnitNumber: stringValueOrEmpty(req.UnitNumber),
@@ -582,6 +978,298 @@ func (s *unitService) ListUnits(ctx context.Context, req ListUnitsRequest) (*Lis
 	// 5. 构建响应
 	return &ListUnitsResponse{
 		Items: items,
+		Total: total,
+	}, nil
+}
+
+// ListUnitsWithFullHierarchy 查询 Units 及其完整的层级结构（Rooms, Beds, Devices）
+func (s *unitService) ListUnitsWithFullHierarchy(ctx context.Context, req ListUnitsWithFullHierarchyRequest) (*ListUnitsWithFullHierarchyResponse, error) {
+	// 输出输入参数到标准输出
+	// fmt.Printf("=== ListUnitsWithFullHierarchy INPUT ===\n")
+	// fmt.Printf("TenantID: %s\n", req.TenantID)
+	// fmt.Printf("CurrentUserID: %s\n", req.CurrentUserID)
+	// if req.BranchID != nil {
+	// 	fmt.Printf("BranchID: %s\n", *req.BranchID)
+	// }
+	// if req.BranchName != nil {
+	// 	fmt.Printf("BranchName: %s\n", *req.BranchName)
+	// }
+	// if req.BuildingID != nil {
+	// 	fmt.Printf("BuildingID: %s\n", *req.BuildingID)
+	// }
+	// if req.Building != nil {
+	// 	fmt.Printf("Building: %s\n", *req.Building)
+	// }
+	// if req.Floor != nil {
+	// 	fmt.Printf("Floor: %s\n", *req.Floor)
+	// }
+	// if req.UnitType != nil {
+	// 	fmt.Printf("UnitType: %s\n", *req.UnitType)
+	// }
+	// if req.Search != nil {
+	// 	fmt.Printf("Search: %s\n", *req.Search)
+	// }
+	// fmt.Printf("========================================\n\n")
+
+	// 1. 参数验证
+	if req.TenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+
+	// 2. 获取 branch_id：优先使用请求中的 BranchID，如果没有则从 user_branches 表查询
+	branchID := stringValueOrEmpty(req.BranchID)
+	if branchID == "" && req.CurrentUserID != "" {
+		// 从 user_branches 表查询用户的主院区
+		userBranchID, hasBranches, err := s.getUserBranchID(ctx, req.TenantID, req.CurrentUserID)
+		if err != nil {
+			s.logger.Error("ListUnitsWithFullHierarchy: getUserBranchID failed",
+				zap.String("tenant_id", req.TenantID),
+				zap.String("user_id", req.CurrentUserID),
+				zap.Error(err),
+			)
+			return nil, fmt.Errorf("failed to get user branch: %w", err)
+		}
+		if hasBranches {
+			branchID = userBranchID
+			// fmt.Printf("=== ListUnitsWithFullHierarchy: Got BranchID from user_branches ===\n")
+			// fmt.Printf("UserID: %s\n", req.CurrentUserID)
+			// fmt.Printf("BranchID: %s\n", branchID)
+			// fmt.Printf("==============================================================\n\n")
+		} else {
+			// fmt.Printf("=== ListUnitsWithFullHierarchy: User has no branches ===\n")
+			// fmt.Printf("UserID: %s\n", req.CurrentUserID)
+			// fmt.Printf("Will query units with branch_id IS NULL\n")
+			// fmt.Printf("====================================================\n\n")
+		}
+	}
+
+	// 3. 构建过滤器（根据用户要求：查询时应该只有 tenant_id 和 branch_id，其他参数为空）
+	branchName := ""
+	if branchID == "" {
+		branchName = stringValueOrEmpty(req.BranchName)
+	}
+
+	// 注意：如果 branchID 和 branchName 都为空，Repository 层会匹配 branch_id IS NULL
+	// 但根据业务逻辑，UnitView 需要显示用户所在 branch 的所有 units，所以 branch_id 应该是必填的
+	// 如果 branch_id 为空，可能是权限问题，应该返回错误或空结果
+
+	buildingID := stringValueOrEmpty(req.BuildingID)
+	building := ""
+	if buildingID == "" {
+		building = stringValueOrEmpty(req.Building)
+	}
+
+	filters := repository.UnitFilters{
+		BranchID:   branchID,
+		BranchName: branchName,
+		BuildingID: buildingID,
+		Building:   building,
+		Floor:      stringValueOrEmpty(req.Floor),
+		UnitType:   stringValueOrEmpty(req.UnitType),
+		Search:     stringValueOrEmpty(req.Search),
+	}
+
+	// Debug: 输出过滤器信息
+	// fmt.Printf("=== ListUnitsWithFullHierarchy: Filters ===\n")
+	// fmt.Printf("BranchID: '%s'\n", filters.BranchID)
+	// fmt.Printf("BranchName: '%s'\n", filters.BranchName)
+	// fmt.Printf("BuildingID: '%s'\n", filters.BuildingID)
+	// fmt.Printf("Building: '%s'\n", filters.Building)
+	// fmt.Printf("Floor: '%s'\n", filters.Floor)
+	// fmt.Printf("UnitType: '%s'\n", filters.UnitType)
+	// fmt.Printf("Search: '%s'\n", filters.Search)
+	// fmt.Printf("==========================================\n\n")
+
+	// 3. 查询 units（不分页，返回所有匹配的 units）
+	units, total, err := s.unitsRepo.ListUnits(ctx, req.TenantID, filters, 1, 10000)
+	if err != nil {
+		s.logger.Error("ListUnitsWithFullHierarchy: ListUnits failed",
+			zap.String("tenant_id", req.TenantID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to list units: %w", err)
+	}
+
+	// 输出查询到的 units
+	// fmt.Printf("=== ListUnitsWithFullHierarchy: Units Found ===\n")
+	// fmt.Printf("Total: %d\n", total)
+	// fmt.Printf("Units Count: %d\n", len(units))
+	// for i, unit := range units {
+	// 	fmt.Printf("Unit[%d]: unit_id=%s, unit_name=%s, building_name=%v, floor=%v, unit_type=%s\n",
+	// 		i, unit.UnitID, unit.UnitName, unit.BuildingName, unit.Floor, unit.UnitType)
+	// }
+	// fmt.Printf("==============================================\n\n")
+
+	if len(units) == 0 {
+		return &ListUnitsWithFullHierarchyResponse{
+			Items: []*UnitWithFullHierarchy{},
+			Total: total,
+		}, nil
+	}
+
+	// 4. 批量查询所有 rooms
+	unitIDs := make([]string, len(units))
+	for i, unit := range units {
+		unitIDs[i] = unit.UnitID
+	}
+	allRooms, err := s.unitsRepo.ListRoomsByUnitIDs(ctx, req.TenantID, unitIDs)
+	if err != nil {
+		s.logger.Error("ListUnitsWithFullHierarchy: ListRoomsByUnitIDs failed",
+			zap.String("tenant_id", req.TenantID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to list rooms: %w", err)
+	}
+
+	// 输出查询到的 rooms
+	// fmt.Printf("=== ListUnitsWithFullHierarchy: Rooms Found ===\n")
+	// fmt.Printf("Rooms Count: %d\n", len(allRooms))
+	// for i, room := range allRooms {
+	// 	fmt.Printf("Room[%d]: room_id=%s, room_name=%s, unit_id=%s\n",
+	// 		i, room.RoomID, room.RoomName, room.UnitID)
+	// }
+	// fmt.Printf("==============================================\n\n")
+
+	// 5. 批量查询所有 beds
+	roomIDs := make([]string, len(allRooms))
+	for i, room := range allRooms {
+		roomIDs[i] = room.RoomID
+	}
+	allBeds, err := s.unitsRepo.ListBedsByRoomIDs(ctx, req.TenantID, roomIDs)
+	if err != nil {
+		s.logger.Error("ListUnitsWithFullHierarchy: ListBedsByRoomIDs failed",
+			zap.String("tenant_id", req.TenantID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to list beds: %w", err)
+	}
+
+	// 输出查询到的 beds
+	// fmt.Printf("=== ListUnitsWithFullHierarchy: Beds Found ===\n")
+	// fmt.Printf("Beds Count: %d\n", len(allBeds))
+	// for i, bed := range allBeds {
+	// 	fmt.Printf("Bed[%d]: bed_id=%s, bed_name=%s, room_id=%s\n",
+	// 		i, bed.BedID, bed.BedName, bed.RoomID)
+	// }
+	// fmt.Printf("=============================================\n\n")
+
+	// 6. 批量查询 device IDs 和 names
+	bedIDs := make([]string, len(allBeds))
+	for i, bed := range allBeds {
+		bedIDs[i] = bed.BedID
+	}
+	roomDevices, err := s.devicesRepo.GetDevicesByRoomIDs(ctx, req.TenantID, roomIDs)
+	if err != nil {
+		s.logger.Error("ListUnitsWithFullHierarchy: GetDevicesByRoomIDs failed",
+			zap.String("tenant_id", req.TenantID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to get devices by room IDs: %w", err)
+	}
+	bedDevices, err := s.devicesRepo.GetDevicesByBedIDs(ctx, req.TenantID, bedIDs)
+	if err != nil {
+		s.logger.Error("ListUnitsWithFullHierarchy: GetDevicesByBedIDs failed",
+			zap.String("tenant_id", req.TenantID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to get devices by bed IDs: %w", err)
+	}
+
+	// 输出查询到的 devices
+	// fmt.Printf("=== ListUnitsWithFullHierarchy: Devices Found ===\n")
+	// fmt.Printf("Room Devices Count: %d\n", len(roomDevices))
+	// for roomID, devices := range roomDevices {
+	// 	fmt.Printf("Room[%s] Devices: %d\n", roomID, len(devices))
+	// 	for j, device := range devices {
+	// 		fmt.Printf("  Device[%d]: id=%s, name=%s\n", j, device.ID, device.Name)
+	// 	}
+	// }
+	// fmt.Printf("Bed Devices Count: %d\n", len(bedDevices))
+	// for bedID, devices := range bedDevices {
+	// 	fmt.Printf("Bed[%s] Devices: %d\n", bedID, len(devices))
+	// 	for j, device := range devices {
+	// 		fmt.Printf("  Device[%d]: id=%s, name=%s\n", j, device.ID, device.Name)
+	// 	}
+	// }
+	// fmt.Printf("================================================\n\n")
+
+	// 7. 组装数据
+	result := make([]*UnitWithFullHierarchy, 0, len(units))
+	for _, unit := range units {
+		// 过滤该 unit 的 rooms
+		rooms := make([]*domain.Room, 0)
+		for _, room := range allRooms {
+			if room.UnitID == unit.UnitID {
+				rooms = append(rooms, room)
+			}
+		}
+
+		roomsWithBeds := make([]*RoomWithBedsAndDevices, 0, len(rooms))
+		for _, room := range rooms {
+			// 过滤该 room 的 beds
+			beds := make([]*domain.Bed, 0)
+			for _, bed := range allBeds {
+				if bed.RoomID == room.RoomID {
+					beds = append(beds, bed)
+				}
+			}
+
+			// 构建 beds with devices
+			bedsWithDevices := make([]*BedWithDevices, 0, len(beds))
+			for _, bed := range beds {
+				bedDeviceList := bedDevices[bed.BedID]
+				deviceIDs := make([]string, 0, len(bedDeviceList))
+				deviceNames := make([]string, 0, len(bedDeviceList))
+				for _, device := range bedDeviceList {
+					deviceIDs = append(deviceIDs, device.ID)
+					deviceNames = append(deviceNames, device.Name)
+				}
+				bedsWithDevices = append(bedsWithDevices, &BedWithDevices{
+					Bed:         bed,
+					DeviceIDs:   deviceIDs,
+					DeviceNames: deviceNames,
+				})
+			}
+
+			// 获取该 room 的 devices
+			roomDeviceList := roomDevices[room.RoomID]
+			roomDeviceIDs := make([]string, 0, len(roomDeviceList))
+			roomDeviceNames := make([]string, 0, len(roomDeviceList))
+			for _, device := range roomDeviceList {
+				roomDeviceIDs = append(roomDeviceIDs, device.ID)
+				roomDeviceNames = append(roomDeviceNames, device.Name)
+			}
+
+			roomsWithBeds = append(roomsWithBeds, &RoomWithBedsAndDevices{
+				Room:        room,
+				Beds:        bedsWithDevices,
+				DeviceIDs:   roomDeviceIDs,
+				DeviceNames: roomDeviceNames,
+			})
+		}
+
+		result = append(result, &UnitWithFullHierarchy{
+			Unit:  unit,
+			Rooms: roomsWithBeds,
+		})
+	}
+
+	// 输出最终结果到标准输出
+	// fmt.Printf("=== ListUnitsWithFullHierarchy OUTPUT ===\n")
+	// fmt.Printf("Total: %d\n", total)
+	// fmt.Printf("Result Items Count: %d\n", len(result))
+	// for i, item := range result {
+	// 	fmt.Printf("Result[%d]: unit_id=%s, unit_name=%s, building_name=%v, floor=%v, rooms_count=%d\n",
+	// 		i, item.Unit.UnitID, item.Unit.UnitName, item.Unit.BuildingName, item.Unit.Floor, len(item.Rooms))
+	// 	for j, room := range item.Rooms {
+	// 		fmt.Printf("  Room[%d]: room_id=%s, room_name=%s, beds_count=%d, device_ids_count=%d\n",
+	// 			j, room.Room.RoomID, room.Room.RoomName, len(room.Beds), len(room.DeviceIDs))
+	// 	}
+	// }
+	// fmt.Printf("==========================================\n\n")
+
+	return &ListUnitsWithFullHierarchyResponse{
+		Items: result,
 		Total: total,
 	}, nil
 }
@@ -635,30 +1323,85 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 	if req.BranchID != "" {
 		// 优先使用 BranchID
 		branchID = sql.NullString{String: req.BranchID, Valid: true}
-	} else if req.BranchName != "" && req.BranchName != "-" {
+	} else if req.BranchName != "" {
 		// 向后兼容：通过 BranchName 查找 BranchID
-		branch, err := s.branchesRepo.GetBranchByName(ctx, req.TenantID, strings.TrimSpace(req.BranchName))
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return nil, fmt.Errorf("branch not found: branch_name=%s", req.BranchName)
-			}
-			return nil, fmt.Errorf("failed to find branch: %w", err)
+		// Vue 层已经 trim 空格，这里处理空字符串自动转换为 "-"
+		branchNameTrimmed := strings.TrimSpace(req.BranchName)
+		if branchNameTrimmed == "" {
+			branchNameTrimmed = "-"
 		}
-		branchID = sql.NullString{String: branch.BranchID, Valid: true}
+		if branchNameTrimmed != "-" {
+			branch, err := s.branchesRepo.GetBranchByName(ctx, req.TenantID, branchNameTrimmed)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					return nil, fmt.Errorf("branch not found: branch_name=%s", branchNameTrimmed)
+				}
+				return nil, fmt.Errorf("failed to find branch: %w", err)
+			}
+			branchID = sql.NullString{String: branch.BranchID, Valid: true}
+		}
+		// 如果 branchNameTrimmed == "-"，不设置 branchID（保持 NULL），表示默认 branch
 	}
 
-	// 3. 应用默认值和格式转换（可选字段）
-	unitType := normalizeUnitType(req.UnitType)     // "" → "Facility"
-	buildingName := normalizeBuilding(req.Building) // 保持空字符串 ''（不再使用 "-"）
-	floor := normalizeFloor(req.Floor)              // ""/"1"/1 → sql.NullString{String: "1F", Valid: true}
-	timezone := normalizeTimezone(req.Timezone)     // "" → "America/Denver" (IANA 标识符)
+	// 3. 处理 building_id：可选，可以为空（支持 home care 等无 building 的场景）
+	var buildingID sql.NullString
+	if req.BuildingID != "" {
+		// 优先使用 BuildingID
+		buildingID = sql.NullString{String: req.BuildingID, Valid: true}
+		// 验证 building_id 是否存在
+		_, err := s.unitsRepo.GetBuilding(ctx, req.TenantID, req.BuildingID)
+		if err != nil {
+			if err == sql.ErrNoRows || strings.Contains(err.Error(), "not found") {
+				return nil, fmt.Errorf("building not found: building_id=%s", req.BuildingID)
+			}
+			return nil, fmt.Errorf("failed to validate building: %w", err)
+		}
+	} else if req.BuildingName != "" {
+		// 向后兼容：通过 BuildingName 查找 BuildingID
+		buildingNameTrimmed := strings.TrimSpace(req.BuildingName)
+		if buildingNameTrimmed == "" {
+			// building_name 为空时，不查找，building_id 保持为 NULL（允许为空）
+			buildingID = sql.NullString{Valid: false}
+		} else {
+			// 通过 ListBuildings 查找 building（需要匹配 branch_id 和 building_name）
+			buildings, err := s.unitsRepo.ListBuildings(ctx, req.TenantID, branchID, buildingNameTrimmed)
+			if err != nil {
+				return nil, fmt.Errorf("failed to find building: %w", err)
+			}
+			if len(buildings) == 0 {
+				return nil, fmt.Errorf("building not found: building_name=%s", buildingNameTrimmed)
+			}
+			if len(buildings) > 1 {
+				// 如果找到多个，优先选择匹配 branch_id 的
+				var matchedBuilding *domain.Building
+				for _, b := range buildings {
+					if branchID.Valid && b.BranchID.Valid && b.BranchID.String == branchID.String {
+						matchedBuilding = b
+						break
+					}
+				}
+				if matchedBuilding == nil {
+					matchedBuilding = buildings[0] // 如果都不匹配，使用第一个
+				}
+				buildingID = sql.NullString{String: matchedBuilding.BuildingID, Valid: true}
+			} else {
+				buildingID = sql.NullString{String: buildings[0].BuildingID, Valid: true}
+			}
+		}
+	}
+	// 如果都没有提供，building_id 保持为 NULL（允许为空，支持 home care 场景）
 
-	// 4. 构建 domain.Unit（使用新的字段名）
+	// 4. 应用默认值和格式转换（可选字段）
+	unitType := normalizeUnitType(req.UnitType) // "" → "Facility"
+	floor := normalizeFloor(req.Floor)          // ""/"1"/1 → sql.NullString{String: "1F", Valid: true}
+	timezone := normalizeTimezone(req.Timezone) // "" → "America/Denver" (IANA 标识符)
+
+	// 5. 构建 domain.Unit（使用新的字段名）
 	unit := &domain.Unit{
 		TenantID:     req.TenantID,
 		BranchID:     branchID,
 		UnitName:     strings.TrimSpace(req.UnitName),
-		BuildingName: buildingName,
+		BuildingID:   buildingID,
 		Floor:        floor,
 		LayoutConfig: normalizeLayoutConfig(req.LayoutConfig),
 		UnitType:     unitType,
@@ -667,12 +1410,9 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 		Timezone:     timezone,
 	}
 
-	// 5. 业务规则验证
-	// 如果 Unit 没有 building_name，则必须提供 branch_id
-	// 业务规则：branch_id 和 building_name 不能同时为空（NULL），至少一个必须提供
-	if !unit.BuildingName.Valid && !branchID.Valid {
-		return nil, fmt.Errorf("branch_id or building_name is required (at least one must be provided)")
-	}
+	// 6. 业务规则验证
+	// 注意：branch_id 现在必须提供（已在步骤 2 中验证），building_id 可以为 NULL
+	// 不需要额外的验证
 
 	// 6. 调用 Repository
 	unitID, err := s.unitsRepo.CreateUnit(ctx, req.TenantID, unit)
@@ -726,7 +1466,7 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 		TenantID:     req.TenantID,
 		BranchID:     currentUnit.BranchID,
 		UnitName:     currentUnit.UnitName,
-		BuildingName: currentUnit.BuildingName,
+		BuildingID:   currentUnit.BuildingID,
 		Floor:        currentUnit.Floor,
 		LayoutConfig: currentUnit.LayoutConfig,
 		UnitType:     currentUnit.UnitType,
@@ -735,33 +1475,85 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 		Timezone:     currentUnit.Timezone,
 	}
 
-	// 4. 处理 branch_id：优先使用 BranchID，如果没有则通过 BranchName 查找
+	// 4. 处理 branch_id：必须提供，不能为空（业务规则：一家机构必然有一个分支或总部）
 	if req.BranchID != "" {
 		// 优先使用 BranchID
 		unit.BranchID = sql.NullString{String: req.BranchID, Valid: true}
 	} else if req.BranchName != "" {
 		// 向后兼容：通过 BranchName 查找 BranchID
-		branch, err := s.branchesRepo.GetBranchByName(ctx, req.TenantID, strings.TrimSpace(req.BranchName))
+		branchNameTrimmed := strings.TrimSpace(req.BranchName)
+		if branchNameTrimmed == "" {
+			return nil, fmt.Errorf("branch_id or branch_name is required and cannot be empty")
+		}
+		branch, err := s.branchesRepo.GetBranchByName(ctx, req.TenantID, branchNameTrimmed)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				return nil, fmt.Errorf("branch not found: branch_name=%s", req.BranchName)
+				return nil, fmt.Errorf("branch not found: branch_name=%s", branchNameTrimmed)
 			}
 			return nil, fmt.Errorf("failed to find branch: %w", err)
 		}
 		unit.BranchID = sql.NullString{String: branch.BranchID, Valid: true}
-	} else if req.BranchName == "" && currentUnit.BranchID.Valid {
-		// 请求值为空且当前值存在，清除它（设置为 NULL）
-		unit.BranchID = sql.NullString{Valid: false}
 	}
-	// 如果 req.BranchName == "" 且当前值不存在，保持 unit.BranchID.Valid = false（不更新）
+	// 如果都没有提供，保持当前值（不更新）
+	// 注意：不允许将 branch_id 设置为 NULL（业务规则要求）
 
 	if req.UnitName != "" {
 		unit.UnitName = strings.TrimSpace(req.UnitName)
 	}
-	if req.Building != "" {
-		unit.BuildingName = normalizeBuilding(req.Building)
+
+	// 5. 处理 building_id：可选，可以为空（支持 home care 等无 building 的场景）
+	if req.BuildingID != "" {
+		// 优先使用 BuildingID
+		unit.BuildingID = sql.NullString{String: req.BuildingID, Valid: true}
+		// 验证 building_id 是否存在
+		_, err := s.unitsRepo.GetBuilding(ctx, req.TenantID, req.BuildingID)
+		if err != nil {
+			if err == sql.ErrNoRows || strings.Contains(err.Error(), "not found") {
+				return nil, fmt.Errorf("building not found: building_id=%s", req.BuildingID)
+			}
+			return nil, fmt.Errorf("failed to validate building: %w", err)
+		}
+	} else if req.BuildingName != "" {
+		// 向后兼容：通过 BuildingName 查找 BuildingID
+		buildingNameTrimmed := strings.TrimSpace(req.BuildingName)
+		if buildingNameTrimmed == "" {
+			// building_name 为空时，设置为 NULL（允许为空）
+			unit.BuildingID = sql.NullString{Valid: false}
+		} else {
+			// 通过 ListBuildings 查找 building（需要匹配 branch_id 和 building_name）
+			currentBranchID := unit.BranchID
+			if !currentBranchID.Valid {
+				currentBranchID = currentUnit.BranchID
+			}
+			buildings, err := s.unitsRepo.ListBuildings(ctx, req.TenantID, currentBranchID, buildingNameTrimmed)
+			if err != nil {
+				return nil, fmt.Errorf("failed to find building: %w", err)
+			}
+			if len(buildings) == 0 {
+				return nil, fmt.Errorf("building not found: building_name=%s", buildingNameTrimmed)
+			}
+			if len(buildings) > 1 {
+				// 如果找到多个，优先选择匹配 branch_id 的
+				var matchedBuilding *domain.Building
+				for _, b := range buildings {
+					if currentBranchID.Valid && b.BranchID.Valid && b.BranchID.String == currentBranchID.String {
+						matchedBuilding = b
+						break
+					}
+				}
+				if matchedBuilding == nil {
+					matchedBuilding = buildings[0] // 如果都不匹配，使用第一个
+				}
+				unit.BuildingID = sql.NullString{String: matchedBuilding.BuildingID, Valid: true}
+			} else {
+				unit.BuildingID = sql.NullString{String: buildings[0].BuildingID, Valid: true}
+			}
+		}
+	} else if req.BuildingName == "" && currentUnit.BuildingID.Valid {
+		// 请求值为空字符串且当前值存在，清除它（设置为 NULL，允许为空）
+		unit.BuildingID = sql.NullString{Valid: false}
 	}
-	// 如果请求中未提供 building，保持原值（不更新）
+	// 如果请求中未提供 building_id 或 building_name，保持原值（不更新）
 
 	if req.Floor != "" {
 		unit.Floor = normalizeFloor(req.Floor)
@@ -798,7 +1590,33 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 		return nil, fmt.Errorf("failed to update unit: %w", err)
 	}
 
-	// 5. 构建响应
+	// 5. 更新成功后，发布事件到 Redis Streams（触发卡片重新计算）
+	if s.redisClient != nil {
+		event := map[string]interface{}{
+			"event_type": "unit.info_changed",
+			"tenant_id":  req.TenantID,
+			"unit_id":    req.UnitID,
+			"timestamp":  time.Now().Unix(),
+		}
+		_, err := rediscommon.PublishToStream(ctx, s.redisClient, "card:events", event)
+		if err != nil {
+			// 事件发布失败不应该影响 API 响应，只记录警告
+			s.logger.Warn("Failed to publish card update event",
+				zap.Error(err),
+				zap.String("event_type", "unit.info_changed"),
+				zap.String("tenant_id", req.TenantID),
+				zap.String("unit_id", req.UnitID),
+			)
+		} else {
+			s.logger.Info("Published card update event",
+				zap.String("event_type", "unit.info_changed"),
+				zap.String("tenant_id", req.TenantID),
+				zap.String("unit_id", req.UnitID),
+			)
+		}
+	}
+
+	// 6. 构建响应
 	return &UpdateUnitResponse{
 		Success: true,
 	}, nil
@@ -813,9 +1631,163 @@ func (s *unitService) DeleteUnit(ctx context.Context, req DeleteUnitRequest) (*D
 	if req.UnitID == "" {
 		return nil, fmt.Errorf("unit_id is required")
 	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required for permission validation")
+	}
 
-	// 2. 调用 Repository
-	err := s.unitsRepo.DeleteUnit(ctx, req.TenantID, req.UnitID)
+	// 2. 获取 branch_id 用于权限验证（从 user_branches 表查询）
+	branchID, _, err := s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 验证权限（tenant + branch）
+	unit, err := s.verifyUnitPermission(ctx, req.TenantID, req.UnitID, branchID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 检查关联数据：residents、devices、rooms
+	var errorDetails []string
+
+	// 3.1 检查 residents
+	residentFilters := repository.ResidentFilters{
+		UnitID: req.UnitID,
+	}
+	residents, _, err := s.residentsRepo.ListResidents(ctx, req.TenantID, residentFilters, 1, 1000)
+	if err != nil {
+		s.logger.Error("DeleteUnit: failed to check residents",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("unit_id", req.UnitID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to check residents: %w", err)
+	}
+	if len(residents) > 0 {
+		residentNames := make([]string, 0, len(residents))
+		for _, r := range residents {
+			if r.Nickname != "" {
+				residentNames = append(residentNames, r.Nickname)
+			} else {
+				residentNames = append(residentNames, r.ResidentID)
+			}
+		}
+		errorDetails = append(errorDetails, fmt.Sprintf("residents: %s", strings.Join(residentNames, ", ")))
+	}
+
+	// 3.2 检查 rooms（以及通过 rooms 关联的 beds）
+	rooms, err := s.unitsRepo.ListRooms(ctx, req.TenantID, req.UnitID, "")
+	if err != nil {
+		s.logger.Error("DeleteUnit: failed to check rooms",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("unit_id", req.UnitID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to check rooms: %w", err)
+	}
+	if len(rooms) > 0 {
+		roomNames := make([]string, 0, len(rooms))
+		for _, room := range rooms {
+			roomNames = append(roomNames, room.RoomName)
+		}
+		errorDetails = append(errorDetails, fmt.Sprintf("rooms: %s", strings.Join(roomNames, ", ")))
+
+		// 检查每个 room 下的 beds
+		allBedNames := make([]string, 0)
+		for _, room := range rooms {
+			beds, err := s.unitsRepo.ListBeds(ctx, req.TenantID, room.RoomID, "")
+			if err != nil {
+				s.logger.Warn("DeleteUnit: failed to check beds for room",
+					zap.String("tenant_id", req.TenantID),
+					zap.String("room_id", room.RoomID),
+					zap.Error(err),
+				)
+				continue
+			}
+			for _, bed := range beds {
+				allBedNames = append(allBedNames, fmt.Sprintf("%s/%s", room.RoomName, bed.BedName))
+			}
+		}
+		if len(allBedNames) > 0 {
+			errorDetails = append(errorDetails, fmt.Sprintf("beds: %s", strings.Join(allBedNames, ", ")))
+		}
+	}
+
+	// 3.3 检查 devices（通过 bound_room_id 或 bound_bed_id 间接关联到 unit）
+	// 查询所有 rooms 的 room_id
+	roomIDs := make([]string, 0, len(rooms))
+	for _, room := range rooms {
+		roomIDs = append(roomIDs, room.RoomID)
+	}
+	// 查询所有 beds 的 bed_id
+	bedIDs := make([]string, 0)
+	for _, room := range rooms {
+		beds, err := s.unitsRepo.ListBeds(ctx, req.TenantID, room.RoomID, "")
+		if err != nil {
+			continue
+		}
+		for _, bed := range beds {
+			bedIDs = append(bedIDs, bed.BedID)
+		}
+	}
+
+	// 查询绑定到这些 rooms 或 beds 的 devices
+	deviceFilters := repository.DeviceFilters{}
+	allDevices, _, err := s.devicesRepo.ListDevices(ctx, req.TenantID, deviceFilters, 1, 10000)
+	if err != nil {
+		s.logger.Error("DeleteUnit: failed to check devices",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("unit_id", req.UnitID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to check devices: %w", err)
+	}
+
+	// 过滤出绑定到该 unit 的 devices
+	unitDevices := make([]*domain.Device, 0)
+	for _, device := range allDevices {
+		// 检查是否绑定到该 unit 下的 room
+		if device.BoundRoomID.Valid {
+			for _, roomID := range roomIDs {
+				if device.BoundRoomID.String == roomID {
+					unitDevices = append(unitDevices, device)
+					break
+				}
+			}
+		}
+		// 检查是否绑定到该 unit 下的 bed
+		if device.BoundBedID.Valid {
+			for _, bedID := range bedIDs {
+				if device.BoundBedID.String == bedID {
+					unitDevices = append(unitDevices, device)
+					break
+				}
+			}
+		}
+	}
+
+	if len(unitDevices) > 0 {
+		deviceNames := make([]string, 0, len(unitDevices))
+		for _, d := range unitDevices {
+			deviceNames = append(deviceNames, d.DeviceName)
+		}
+		errorDetails = append(errorDetails, fmt.Sprintf("devices: %s", strings.Join(deviceNames, ", ")))
+	}
+
+	// 4. 如果有关联数据，禁止删除并返回详细信息
+	if len(errorDetails) > 0 {
+		errorMsg := fmt.Sprintf("cannot delete unit: unit has associated data (%s)", strings.Join(errorDetails, "; "))
+		s.logger.Warn("DeleteUnit: unit has associated data",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("unit_id", req.UnitID),
+			zap.String("unit_name", unit.UnitName),
+			zap.Strings("error_details", errorDetails),
+		)
+		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	// 5. 调用 Repository 删除
+	err = s.unitsRepo.DeleteUnit(ctx, req.TenantID, req.UnitID)
 	if err != nil {
 		s.logger.Error("DeleteUnit failed",
 			zap.String("tenant_id", req.TenantID),
@@ -825,7 +1797,7 @@ func (s *unitService) DeleteUnit(ctx context.Context, req DeleteUnitRequest) (*D
 		return nil, fmt.Errorf("failed to delete unit: %w", err)
 	}
 
-	// 3. 构建响应
+	// 6. 构建响应
 	return &DeleteUnitResponse{
 		Success: true,
 	}, nil
@@ -837,18 +1809,37 @@ func (s *unitService) DeleteUnit(ctx context.Context, req DeleteUnitRequest) (*D
 
 // ListRooms 查询房间列表
 func (s *unitService) ListRooms(ctx context.Context, req ListRoomsRequest) (*ListRoomsResponse, error) {
+	// 1. 参数验证
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 	if req.UnitID == "" {
 		return nil, fmt.Errorf("unit_id is required")
 	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required for permission validation")
+	}
 
-	items, err := s.unitsRepo.ListRooms(ctx, req.TenantID, req.UnitID)
+	// 2. 获取 branch_id 用于权限验证（从 user_branches 表查询）
+	branchID, _, err := s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 验证权限（tenant + branch）
+	_, err = s.verifyUnitPermission(ctx, req.TenantID, req.UnitID, branchID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 调用 Repository（传递搜索参数）
+	search := strings.TrimSpace(req.Search)
+	items, err := s.unitsRepo.ListRooms(ctx, req.TenantID, req.UnitID, search)
 	if err != nil {
 		s.logger.Error("ListRooms failed",
 			zap.String("tenant_id", req.TenantID),
 			zap.String("unit_id", req.UnitID),
+			zap.String("search", search),
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to list rooms: %w", err)
@@ -861,18 +1852,37 @@ func (s *unitService) ListRooms(ctx context.Context, req ListRoomsRequest) (*Lis
 
 // ListRoomsWithBeds 查询房间及其床位列表
 func (s *unitService) ListRoomsWithBeds(ctx context.Context, req ListRoomsWithBedsRequest) (*ListRoomsWithBedsResponse, error) {
+	// 1. 参数验证
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 	if req.UnitID == "" {
 		return nil, fmt.Errorf("unit_id is required")
 	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required for permission validation")
+	}
 
-	items, err := s.unitsRepo.ListRoomsWithBeds(ctx, req.TenantID, req.UnitID)
+	// 2. 获取 branch_id 用于权限验证（从 user_branches 表查询）
+	branchID, _, err := s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 验证权限（tenant + branch）
+	_, err = s.verifyUnitPermission(ctx, req.TenantID, req.UnitID, branchID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 调用 Repository（传递搜索参数）
+	search := strings.TrimSpace(req.Search)
+	items, err := s.unitsRepo.ListRoomsWithBeds(ctx, req.TenantID, req.UnitID, search)
 	if err != nil {
 		s.logger.Error("ListRoomsWithBeds failed",
 			zap.String("tenant_id", req.TenantID),
 			zap.String("unit_id", req.UnitID),
+			zap.String("search", search),
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to list rooms with beds: %w", err)
@@ -891,18 +1901,20 @@ func (s *unitService) GetRoom(ctx context.Context, req GetRoomRequest) (*GetRoom
 	if req.RoomID == "" {
 		return nil, fmt.Errorf("room_id is required")
 	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required for permission validation")
+	}
 
-	room, err := s.unitsRepo.GetRoom(ctx, req.TenantID, req.RoomID)
+	// 获取 branch_id 用于权限验证（从 user_branches 表查询）
+	branchID, _, err := s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("room not found")
-		}
-		s.logger.Error("GetRoom failed",
-			zap.String("tenant_id", req.TenantID),
-			zap.String("room_id", req.RoomID),
-			zap.Error(err),
-		)
-		return nil, fmt.Errorf("failed to get room: %w", err)
+		return nil, err
+	}
+
+	// 验证权限（tenant + branch）
+	room, _, err := s.verifyRoomPermission(ctx, req.TenantID, req.RoomID, branchID)
+	if err != nil {
+		return nil, err
 	}
 
 	return &GetRoomResponse{
@@ -920,6 +1932,21 @@ func (s *unitService) CreateRoom(ctx context.Context, req CreateRoomRequest) (*C
 	}
 	if req.RoomName == "" {
 		return nil, fmt.Errorf("room_name is required")
+	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required for permission validation")
+	}
+
+	// 获取 branch_id 用于权限验证（从 user_branches 表查询）
+	branchID, _, err := s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 验证权限（tenant + branch）
+	_, err = s.verifyUnitPermission(ctx, req.TenantID, req.UnitID, branchID)
+	if err != nil {
+		return nil, err
 	}
 
 	room := &domain.Room{
@@ -953,14 +1980,20 @@ func (s *unitService) UpdateRoom(ctx context.Context, req UpdateRoomRequest) (*U
 	if req.RoomID == "" {
 		return nil, fmt.Errorf("room_id is required")
 	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required for permission validation")
+	}
 
-	// 获取当前 room
-	currentRoom, err := s.unitsRepo.GetRoom(ctx, req.TenantID, req.RoomID)
+	// 获取 branch_id 用于权限验证（从 user_branches 表查询）
+	branchID, _, err := s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("room not found")
-		}
-		return nil, fmt.Errorf("failed to get room: %w", err)
+		return nil, err
+	}
+
+	// 验证权限（tenant + branch）
+	currentRoom, _, err := s.verifyRoomPermission(ctx, req.TenantID, req.RoomID, branchID)
+	if err != nil {
+		return nil, err
 	}
 
 	// 构建更新后的 room
@@ -997,14 +2030,108 @@ func (s *unitService) UpdateRoom(ctx context.Context, req UpdateRoomRequest) (*U
 
 // DeleteRoom 删除房间
 func (s *unitService) DeleteRoom(ctx context.Context, req DeleteRoomRequest) (*DeleteRoomResponse, error) {
+	// 1. 参数验证
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 	if req.RoomID == "" {
 		return nil, fmt.Errorf("room_id is required")
 	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required for permission validation")
+	}
 
-	err := s.unitsRepo.DeleteRoom(ctx, req.TenantID, req.RoomID)
+	// 2. 获取 branch_id 用于权限验证（从 user_branches 表查询）
+	branchID, _, err := s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 验证权限（tenant + branch）
+	room, unit, err := s.verifyRoomPermission(ctx, req.TenantID, req.RoomID, branchID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 检查关联数据：beds、devices
+	var errorDetails []string
+
+	// 3.1 检查 beds
+	beds, err := s.unitsRepo.ListBeds(ctx, req.TenantID, req.RoomID, "")
+	if err != nil {
+		s.logger.Error("DeleteRoom: failed to check beds",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("room_id", req.RoomID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to check beds: %w", err)
+	}
+	if len(beds) > 0 {
+		bedNames := make([]string, 0, len(beds))
+		for _, bed := range beds {
+			bedNames = append(bedNames, bed.BedName)
+		}
+		errorDetails = append(errorDetails, fmt.Sprintf("beds: %s", strings.Join(bedNames, ", ")))
+	}
+
+	// 3.2 检查 devices（通过 bound_room_id 关联到 room）
+	// 注意：DeviceFilters 没有 BoundRoomID 字段，需要直接查询数据库
+	// 这里我们需要通过 devicesRepo 的内部方法或直接查询，但为了保持架构清晰，
+	// 我们可以通过 ListDevices 获取所有设备，然后过滤 bound_room_id
+	// 或者，我们可以添加一个专门的查询方法，但为了简化，先使用 ListDevices 然后过滤
+	allDevices, _, err := s.devicesRepo.ListDevices(ctx, req.TenantID, repository.DeviceFilters{}, 1, 10000)
+	if err != nil {
+		s.logger.Error("DeleteRoom: failed to check devices",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("room_id", req.RoomID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to check devices: %w", err)
+	}
+	// 过滤出绑定到该 room 的 devices
+	boundDevices := make([]*domain.Device, 0)
+	for _, device := range allDevices {
+		if device.BoundRoomID.Valid && device.BoundRoomID.String == req.RoomID {
+			boundDevices = append(boundDevices, device)
+		}
+	}
+	if len(boundDevices) > 0 {
+		deviceNames := make([]string, 0, len(boundDevices))
+		for _, device := range boundDevices {
+			if device.DeviceName != "" {
+				deviceNames = append(deviceNames, device.DeviceName)
+			} else if device.SerialNumber.Valid {
+				deviceNames = append(deviceNames, device.SerialNumber.String)
+			} else {
+				deviceNames = append(deviceNames, device.DeviceID)
+			}
+		}
+		errorDetails = append(errorDetails, fmt.Sprintf("devices: %s", strings.Join(deviceNames, ", ")))
+	}
+
+	// 4. 如果有关联数据，禁止删除并返回详细错误信息
+	if len(errorDetails) > 0 {
+		errorMsg := fmt.Sprintf("cannot delete room '%s' (unit: %s) because it has associated data: %s",
+			room.RoomName,
+			func() string {
+				if unit.UnitName != "" {
+					return unit.UnitName
+				}
+				return unit.UnitID
+			}(),
+			strings.Join(errorDetails, "; "),
+		)
+		s.logger.Warn("DeleteRoom: room has associated data",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("room_id", req.RoomID),
+			zap.String("room_name", room.RoomName),
+			zap.Strings("error_details", errorDetails),
+		)
+		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	// 5. 调用 Repository 删除
+	err = s.unitsRepo.DeleteRoom(ctx, req.TenantID, req.RoomID)
 	if err != nil {
 		s.logger.Error("DeleteRoom failed",
 			zap.String("tenant_id", req.TenantID),
@@ -1025,18 +2152,37 @@ func (s *unitService) DeleteRoom(ctx context.Context, req DeleteRoomRequest) (*D
 
 // ListBeds 查询床位列表
 func (s *unitService) ListBeds(ctx context.Context, req ListBedsRequest) (*ListBedsResponse, error) {
+	// 1. 参数验证
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 	if req.RoomID == "" {
 		return nil, fmt.Errorf("room_id is required")
 	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required for permission validation")
+	}
 
-	items, err := s.unitsRepo.ListBeds(ctx, req.TenantID, req.RoomID)
+	// 2. 获取 branch_id 用于权限验证（从 user_branches 表查询）
+	branchID, _, err := s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 验证 room 是否存在并验证权限（统一权限验证）
+	_, _, err = s.verifyRoomPermission(ctx, req.TenantID, req.RoomID, branchID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 调用 Repository（传递搜索参数）
+	search := strings.TrimSpace(req.Search)
+	items, err := s.unitsRepo.ListBeds(ctx, req.TenantID, req.RoomID, search)
 	if err != nil {
 		s.logger.Error("ListBeds failed",
 			zap.String("tenant_id", req.TenantID),
 			zap.String("room_id", req.RoomID),
+			zap.String("search", search),
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to list beds: %w", err)
@@ -1055,18 +2201,20 @@ func (s *unitService) GetBed(ctx context.Context, req GetBedRequest) (*GetBedRes
 	if req.BedID == "" {
 		return nil, fmt.Errorf("bed_id is required")
 	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required for permission validation")
+	}
 
-	bed, err := s.unitsRepo.GetBed(ctx, req.TenantID, req.BedID)
+	// 获取 branch_id 用于权限验证（从 user_branches 表查询）
+	branchID, _, err := s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("bed not found")
+		return nil, err
 		}
-		s.logger.Error("GetBed failed",
-			zap.String("tenant_id", req.TenantID),
-			zap.String("bed_id", req.BedID),
-			zap.Error(err),
-		)
-		return nil, fmt.Errorf("failed to get bed: %w", err)
+
+	// 验证权限（tenant + branch）
+	bed, _, _, err := s.verifyBedPermission(ctx, req.TenantID, req.BedID, branchID)
+	if err != nil {
+		return nil, err
 	}
 
 	return &GetBedResponse{
@@ -1084,6 +2232,21 @@ func (s *unitService) CreateBed(ctx context.Context, req CreateBedRequest) (*Cre
 	}
 	if req.BedName == "" {
 		return nil, fmt.Errorf("bed_name is required")
+	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required for permission validation")
+	}
+
+	// 获取 branch_id 用于权限验证（从 user_branches 表查询）
+	branchID, _, err := s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 验证权限（tenant + branch）
+	_, _, err = s.verifyRoomPermission(ctx, req.TenantID, req.RoomID, branchID)
+	if err != nil {
+		return nil, err
 	}
 
 	// 注意：bed_type 字段已删除，ActiveBed 判断由应用层动态计算
@@ -1119,14 +2282,20 @@ func (s *unitService) UpdateBed(ctx context.Context, req UpdateBedRequest) (*Upd
 	if req.BedID == "" {
 		return nil, fmt.Errorf("bed_id is required")
 	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required for permission validation")
+	}
 
-	// 获取当前 bed
-	currentBed, err := s.unitsRepo.GetBed(ctx, req.TenantID, req.BedID)
+	// 获取 branch_id 用于权限验证（从 user_branches 表查询）
+	branchID, _, err := s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("bed not found")
-		}
-		return nil, fmt.Errorf("failed to get bed: %w", err)
+		return nil, err
+	}
+
+	// 验证权限（tenant + branch）
+	currentBed, _, _, err := s.verifyBedPermission(ctx, req.TenantID, req.BedID, branchID)
+	if err != nil {
+		return nil, err
 	}
 
 	// 构建更新后的 bed
@@ -1168,14 +2337,117 @@ func (s *unitService) UpdateBed(ctx context.Context, req UpdateBedRequest) (*Upd
 
 // DeleteBed 删除床位
 func (s *unitService) DeleteBed(ctx context.Context, req DeleteBedRequest) (*DeleteBedResponse, error) {
+	// 1. 参数验证
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 	if req.BedID == "" {
 		return nil, fmt.Errorf("bed_id is required")
 	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required for permission validation")
+	}
 
-	err := s.unitsRepo.DeleteBed(ctx, req.TenantID, req.BedID)
+	// 2. 获取 branch_id 用于权限验证（从 user_branches 表查询）
+	branchID, _, err := s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 验证权限（tenant + branch）
+	bed, room, unit, err := s.verifyBedPermission(ctx, req.TenantID, req.BedID, branchID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 检查关联数据：devices、residents
+	var errorDetails []string
+
+	// 3.1 检查 devices（通过 bound_bed_id 关联到 bed）
+	allDevices, _, err := s.devicesRepo.ListDevices(ctx, req.TenantID, repository.DeviceFilters{}, 1, 10000)
+	if err != nil {
+		s.logger.Error("DeleteBed: failed to check devices",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("bed_id", req.BedID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to check devices: %w", err)
+	}
+	// 过滤出绑定到该 bed 的 devices
+	boundDevices := make([]*domain.Device, 0)
+	for _, device := range allDevices {
+		if device.BoundBedID.Valid && device.BoundBedID.String == req.BedID {
+			boundDevices = append(boundDevices, device)
+		}
+	}
+	if len(boundDevices) > 0 {
+		deviceNames := make([]string, 0, len(boundDevices))
+		for _, device := range boundDevices {
+			if device.DeviceName != "" {
+				deviceNames = append(deviceNames, device.DeviceName)
+			} else if device.SerialNumber.Valid {
+				deviceNames = append(deviceNames, device.SerialNumber.String)
+			} else {
+				deviceNames = append(deviceNames, device.DeviceID)
+			}
+		}
+		errorDetails = append(errorDetails, fmt.Sprintf("devices: %s", strings.Join(deviceNames, ", ")))
+	}
+
+	// 3.2 检查 residents（通过 bed_id 关联到 bed）
+	residentFilters := repository.ResidentFilters{
+		BedID: req.BedID,
+	}
+	residents, _, err := s.residentsRepo.ListResidents(ctx, req.TenantID, residentFilters, 1, 1000)
+	if err != nil {
+		s.logger.Error("DeleteBed: failed to check residents",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("bed_id", req.BedID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to check residents: %w", err)
+	}
+	if len(residents) > 0 {
+		residentNames := make([]string, 0, len(residents))
+		for _, r := range residents {
+			if r.Nickname != "" {
+				residentNames = append(residentNames, r.Nickname)
+			} else {
+				residentNames = append(residentNames, r.ResidentID)
+			}
+		}
+		errorDetails = append(errorDetails, fmt.Sprintf("residents: %s", strings.Join(residentNames, ", ")))
+	}
+
+	// 4. 如果有关联数据，禁止删除并返回详细错误信息
+	if len(errorDetails) > 0 {
+		errorMsg := fmt.Sprintf("cannot delete bed '%s' (room: %s, unit: %s) because it has associated data: %s",
+			bed.BedName,
+			func() string {
+				if room.RoomName != "" {
+					return room.RoomName
+				}
+				return room.RoomID
+			}(),
+			func() string {
+				if unit.UnitName != "" {
+					return unit.UnitName
+				}
+				return unit.UnitID
+			}(),
+			strings.Join(errorDetails, "; "),
+		)
+		s.logger.Warn("DeleteBed: bed has associated data",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("bed_id", req.BedID),
+			zap.String("bed_name", bed.BedName),
+			zap.Strings("error_details", errorDetails),
+		)
+		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	// 5. 调用 Repository 删除
+	err = s.unitsRepo.DeleteBed(ctx, req.TenantID, req.BedID)
 	if err != nil {
 		s.logger.Error("DeleteBed failed",
 			zap.String("tenant_id", req.TenantID),

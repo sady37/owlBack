@@ -179,7 +179,7 @@ func TestCreateResident_Basic(t *testing.T) {
 	// 创建 service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
 	logger := getTestLoggerForResident()
-	service := NewResidentService(residentsRepo, db, logger)
+	service := NewResidentService(residentsRepo, db, nil, logger)
 
 	// 准备请求（使用三层结构）
 	admissionDate := time.Now().Unix()
@@ -232,7 +232,7 @@ func TestCreateResident_IndividualUser_Forbidden(t *testing.T) {
 	// 创建 service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
 	logger := getTestLoggerForResident()
-	service := NewResidentService(residentsRepo, db, logger)
+	service := NewResidentService(residentsRepo, db, nil, logger)
 
 	// 准备请求（使用三层结构）
 	admissionDate := time.Now().Unix()
@@ -283,7 +283,7 @@ func TestCreateResident_Manager_BranchRestriction(t *testing.T) {
 	// 创建 service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
 	logger := getTestLoggerForResident()
-	service := NewResidentService(residentsRepo, db, logger)
+	service := NewResidentService(residentsRepo, db, nil, logger)
 
 	// 测试1：Manager 尝试创建不同 branch 的住户（应该失败）
 	admissionDate := time.Now().Unix()
@@ -374,7 +374,7 @@ func TestCreateResident_DuplicateAccount(t *testing.T) {
 	// 创建 service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
 	logger := getTestLoggerForResident()
-	service := NewResidentService(residentsRepo, db, logger)
+	service := NewResidentService(residentsRepo, db, nil, logger)
 
 	// 先创建一个住户
 	admissionDate := time.Now().Unix()
@@ -441,7 +441,7 @@ func TestCreateResident_WithPHIAndContacts(t *testing.T) {
 	// 创建 service
 	residentsRepo := repository.NewPostgresResidentsRepository(db)
 	logger := getTestLoggerForResident()
-	service := NewResidentService(residentsRepo, db, logger)
+	service := NewResidentService(residentsRepo, db, nil, logger)
 
 	// 准备请求（包含 PHI 和 Contacts）
 	admissionDate := time.Now().Unix()

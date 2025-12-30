@@ -23,7 +23,7 @@ func main() {
 	}
 
 	// 初始化日志
-	log, err := logpkg.NewLogger(cfg.Log.Level, cfg.Log.Format)
+	log, err := logpkg.NewLogger(cfg.Log.Level, cfg.Log.Format, "wisefido-card-aggregator")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
 		os.Exit(1)

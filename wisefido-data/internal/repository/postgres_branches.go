@@ -111,18 +111,55 @@ func (r *PostgresBranchesRepository) GetBranchByName(ctx context.Context, tenant
 	return &branch, nil
 }
 
-// ListBranches 列出所有院区
-func (r *PostgresBranchesRepository) ListBranches(ctx context.Context, tenantID string, page, size int) ([]*domain.Branch, int, error) {
+// ListBranches 列出所有院区（支持搜索）
+func (r *PostgresBranchesRepository) ListBranches(ctx context.Context, tenantID string, search string, page, size int) ([]*domain.Branch, int, error) {
 	if tenantID == "" {
 		return []*domain.Branch{}, 0, nil
 	}
 
+	// 构建 WHERE 条件
+	where := []string{"b.tenant_id = $1"}
+	args := []any{tenantID}
+	argIdx := 2
+
+	// 搜索条件：模糊匹配 branch_name, description, user_nickname, unit_name, resident_nickname
+	if search != "" {
+		searchPattern := "%" + strings.ToLower(search) + "%"
+		// 使用 EXISTS 子查询检查关联的 users, units, residents
+		// 每个 $%d 占位符都需要一个参数，虽然值相同，但位置不同
+		searchCondition := fmt.Sprintf(`(
+			LOWER(b.branch_name) LIKE $%d OR
+			LOWER(COALESCE(b.description, '')) LIKE $%d OR
+			EXISTS (
+				SELECT 1 FROM user_branches ub
+				INNER JOIN users u ON u.user_id = ub.user_id AND u.tenant_id = ub.tenant_id
+				WHERE ub.tenant_id = b.tenant_id AND ub.branch_id::text = b.branch_id::text
+				  AND (LOWER(u.user_account) LIKE $%d OR LOWER(COALESCE(u.nickname, '')) LIKE $%d)
+			) OR
+			EXISTS (
+				SELECT 1 FROM units u
+				WHERE u.tenant_id = b.tenant_id AND u.branch_id::text = b.branch_id::text
+				  AND LOWER(u.unit_name) LIKE $%d
+			) OR
+			EXISTS (
+				SELECT 1 FROM residents r
+				INNER JOIN units u ON u.unit_id = r.unit_id AND u.tenant_id = r.tenant_id
+				WHERE r.tenant_id = b.tenant_id AND u.branch_id::text = b.branch_id::text
+				  AND LOWER(r.nickname) LIKE $%d
+			)
+		)`, argIdx, argIdx+1, argIdx+2, argIdx+3, argIdx+4, argIdx+5)
+		where = append(where, searchCondition)
+		// 每个占位符都需要一个参数，虽然值相同
+		args = append(args, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern)
+		argIdx += 6
+	}
+
+	whereClause := strings.Join(where, " AND ")
+
 	// 计算总数
+	countQuery := fmt.Sprintf(`SELECT COUNT(DISTINCT b.branch_id) FROM branches b WHERE %s`, whereClause)
 	var total int
-	err := r.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM branches WHERE tenant_id = $1`,
-		tenantID,
-	).Scan(&total)
+	err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to count branches: %w", err)
 	}
@@ -136,21 +173,23 @@ func (r *PostgresBranchesRepository) ListBranches(ctx context.Context, tenantID 
 	}
 	offset := (page - 1) * size
 
-	query := `
-		SELECT 
-			branch_id::text,
-			tenant_id::text,
-			branch_name,
-			description,
-			created_at,
-			updated_at
-		FROM branches
-		WHERE tenant_id = $1
-		ORDER BY branch_name ASC
-		LIMIT $2 OFFSET $3
-	`
+	query := fmt.Sprintf(`
+		SELECT DISTINCT
+			b.branch_id::text,
+			b.tenant_id::text,
+			b.branch_name,
+			b.description,
+			b.created_at,
+			b.updated_at
+		FROM branches b
+		WHERE %s
+		ORDER BY b.branch_name ASC
+		LIMIT $%d OFFSET $%d
+	`, whereClause, argIdx, argIdx+1)
 
-	rows, err := r.db.QueryContext(ctx, query, tenantID, size, offset)
+	args = append(args, size, offset)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list branches: %w", err)
 	}

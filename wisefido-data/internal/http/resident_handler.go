@@ -186,6 +186,8 @@ func (h *ResidentHandler) ListResidents(w http.ResponseWriter, r *http.Request) 
 	// 权限检查（仅 Staff 需要）
 	// Service 层会自己查询用户的 branch_id（通过 user_branches 表），这里不需要传递 UserBranchTag
 	var permCheck *service.PermissionCheckResult
+	// 注意：resident_contacts 不能登录系统，所以 currentUserType 永远不会是 "family"
+	// 保留此检查是为了向后兼容，但实际上只会是 "resident" 或 "staff"
 	if currentUserType != "resident" && currentUserType != "family" && currentUserRole != "" && h.db != nil {
 		// 检查权限
 		perm, err := GetResourcePermission(h.db, ctx, currentUserRole, "residents", "R")
@@ -248,6 +250,9 @@ func (h *ResidentHandler) ListResidents(w http.ResponseWriter, r *http.Request) 
 		if item.UnitName != nil {
 			itemMap["unit_name"] = *item.UnitName
 		}
+		if item.BranchID != nil {
+			itemMap["branch_id"] = *item.BranchID
+		}
 		if item.BranchName != nil {
 			itemMap["branch_name"] = *item.BranchName
 			// 保持向后兼容：同时设置 branch_tag
@@ -258,9 +263,12 @@ func (h *ResidentHandler) ListResidents(w http.ResponseWriter, r *http.Request) 
 			// 保持向后兼容：同时设置 building
 			itemMap["building"] = *item.BuildingName
 		}
-		itemMap["is_shared_unit"] = item.IsSharedUnit
-		// 保持向后兼容：同时设置 is_multi_person_room
-		itemMap["is_multi_person_room"] = item.IsSharedUnit
+		// is_shared_unit 现在为 *bool，未绑定 unit 时为 nil
+		if item.IsSharedUnit != nil {
+			itemMap["is_shared_unit"] = *item.IsSharedUnit
+			// 保持向后兼容：同时设置 is_multi_person_room
+			itemMap["is_multi_person_room"] = *item.IsSharedUnit
+		}
 		if item.RoomID != nil {
 			itemMap["room_id"] = *item.RoomID
 		}
@@ -368,6 +376,8 @@ type ContactRequest struct {
 	ContactLastName  string          `json:"contact_last_name"`  // 联系人姓（可选）
 	ContactPhone     string          `json:"contact_phone"`      // 联系人电话（可选），明文保存
 	ContactEmail     string          `json:"contact_email"`      // 联系人邮箱（可选），明文保存
+	ContactPhoneHash string          `json:"contact_phone_hash"` // 联系人电话 hash（可选，前端计算的 hex 字符串，用于搜索）
+	ContactEmailHash string          `json:"contact_email_hash"` // 联系人邮箱 hash（可选，前端计算的 hex 字符串，用于搜索）
 	ReceiveSMS       bool            `json:"receive_sms"`        // 是否接收短信（可选，默认 false）
 	ReceiveEmail     bool            `json:"receive_email"`      // 是否接收邮件（可选，默认 false）
 	AlertTimeWindow  json.RawMessage `json:"alert_time_window"`  // 告警接收时间窗口 JSONB（可选）
@@ -411,12 +421,13 @@ func (h *ResidentHandler) GetResident(w http.ResponseWriter, r *http.Request, re
 	includeContacts := r.URL.Query().Get("include_contacts") == "true"
 
 	// 权限检查（仅 Staff 需要）
-	// 注意：对于 resident/family 用户，userType 是 "resident"，role 可能是 "Resident" 或 "Family"
-	// 所以需要同时检查 userType 和 role
+	// 注意：resident_contacts 不能登录系统，所以 currentUserType 永远不会是 "family"
+	// currentUserRole 也不会是 "Family"，因为只有 residents 可以登录
+	// 保留这些检查是为了向后兼容，但实际上只会是 "resident" 或 "staff"
 	// Service 层会自己查询用户的 branch_id（通过 user_branches 表），这里不需要传递 UserBranchTag
 	var permCheck *service.PermissionCheckResult
-	isResidentOrFamily := currentUserType == "resident" || currentUserRole == "Resident" || currentUserRole == "Family"
-	if !isResidentOrFamily && currentUserRole != "" && h.db != nil {
+	isResident := currentUserType == "resident" || currentUserRole == "Resident"
+	if !isResident && currentUserRole != "" && h.db != nil {
 		perm, err := GetResourcePermission(h.db, ctx, currentUserRole, "residents", "R")
 		if err == nil {
 			permCheck = &service.PermissionCheckResult{
@@ -474,6 +485,9 @@ func (h *ResidentHandler) GetResident(w http.ResponseWriter, r *http.Request, re
 	if resp.Resident.UnitName != nil {
 		item["unit_name"] = *resp.Resident.UnitName
 	}
+	if resp.Resident.BranchID != nil {
+		item["branch_id"] = *resp.Resident.BranchID
+	}
 	if resp.Resident.BranchName != nil {
 		item["branch_name"] = *resp.Resident.BranchName
 		// 保持向后兼容：同时设置 branch_tag
@@ -484,9 +498,12 @@ func (h *ResidentHandler) GetResident(w http.ResponseWriter, r *http.Request, re
 		// 保持向后兼容：同时设置 building
 		item["building"] = *resp.Resident.BuildingName
 	}
-	item["is_shared_unit"] = resp.Resident.IsSharedUnit
-	// 保持向后兼容：同时设置 is_multi_person_room
-	item["is_multi_person_room"] = resp.Resident.IsSharedUnit
+	// is_shared_unit 现在为 *bool，未绑定 unit 时为 nil
+	if resp.Resident.IsSharedUnit != nil {
+		item["is_shared_unit"] = *resp.Resident.IsSharedUnit
+		// 保持向后兼容：同时设置 is_multi_person_room
+		item["is_multi_person_room"] = *resp.Resident.IsSharedUnit
+	}
 	if resp.Resident.RoomID != nil {
 		item["room_id"] = *resp.Resident.RoomID
 	}
@@ -768,6 +785,8 @@ func (h *ResidentHandler) CreateResident(w http.ResponseWriter, r *http.Request)
 	currentUserRole := r.Header.Get("X-User-Role")
 
 	// 权限检查（需要 C 权限）
+	// 注意：resident_contacts 不能登录系统，所以 currentUserType 永远不会是 "family"
+	// 保留此检查是为了向后兼容，但实际上只会是 "resident" 或 "staff"
 	if currentUserType != "resident" && currentUserType != "family" && currentUserRole != "" && h.db != nil {
 		hasCPermission := false
 		err := h.db.QueryRowContext(ctx,
@@ -963,6 +982,8 @@ func (h *ResidentHandler) CreateResident(w http.ResponseWriter, r *http.Request)
 	currentUserRole := r.Header.Get("X-User-Role")
 
 	// 权限检查（需要 C 权限）
+	// 注意：resident_contacts 不能登录系统，所以 currentUserType 永远不会是 "family"
+	// 保留此检查是为了向后兼容，但实际上只会是 "resident" 或 "staff"
 	if currentUserType != "resident" && currentUserType != "family" && currentUserRole != "" && h.db != nil {
 		hasCPermission := false
 		err := h.db.QueryRowContext(ctx,
@@ -997,6 +1018,10 @@ func (h *ResidentHandler) CreateResident(w http.ResponseWriter, r *http.Request)
 			}
 		}
 	}
+
+	// 注意：AvailableBranches 不应传递给 Service 层
+	// Service 层会自己从数据库查询用户的 branch 信息（这是用户本身的属性，不能信任前端传递的值）
+	// 如果前端需要获取可用 branch 列表，应该调用专门的 API（如 GetAvailableBranches）
 
 	// 转换为 Service 层请求 - 按照三个结构体组织：InherentAttributes + UnitRelation + CaregiverRelation
 	serviceReq := service.CreateResidentRequest{
@@ -1078,7 +1103,7 @@ func (h *ResidentHandler) CreateResident(w http.ResponseWriter, r *http.Request)
 			inherentAttrs.PHI = phi
 		}
 
-		// 处理联系人数据（注意：联系人不登录系统，不需要 password/hash 相关字段）
+		// 处理联系人数据（注意：联系人不登录系统，但需要保存 phone_hash 和 email_hash 用于搜索）
 		if len(handlerReq.InherentAttributes.Contacts) > 0 {
 			inherentAttrs.Contacts = make([]*service.CreateResidentContactRequest, 0, len(handlerReq.InherentAttributes.Contacts))
 			for _, handlerContact := range handlerReq.InherentAttributes.Contacts {
@@ -1090,10 +1115,11 @@ func (h *ResidentHandler) CreateResident(w http.ResponseWriter, r *http.Request)
 					ContactLastName:  handlerContact.ContactLastName,
 					ContactPhone:     handlerContact.ContactPhone,
 					ContactEmail:     handlerContact.ContactEmail,
+					ContactPhoneHash: handlerContact.ContactPhoneHash,
+					ContactEmailHash: handlerContact.ContactEmailHash,
 					ReceiveSMS:       handlerContact.ReceiveSMS,
 					ReceiveEmail:     handlerContact.ReceiveEmail,
 					AlertTimeWindow:  handlerContact.AlertTimeWindow,
-					// 注意：不再包含 PhoneHash, EmailHash 等字段，因为联系人不登录系统
 				}
 				inherentAttrs.Contacts = append(inherentAttrs.Contacts, contactReq)
 			}
@@ -1564,6 +1590,28 @@ func (h *ResidentHandler) UpdateResident(w http.ResponseWriter, r *http.Request,
 						contactReq.ContactEmail = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
 					}
 				}
+				// Handle contact_phone_hash (for search)
+				if val, exists := contactData["contact_phone_hash"]; exists {
+					if val == nil {
+						contactReq.ContactPhoneHash = &domain.UpdateBytes{Action: domain.UpdateActionDelete, Value: nil}
+					} else if str, ok := val.(string); ok && str != "" {
+						hashBytes, err := hex.DecodeString(str)
+						if err == nil && len(hashBytes) > 0 {
+							contactReq.ContactPhoneHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: hashBytes}
+						}
+					}
+				}
+				// Handle contact_email_hash (for search)
+				if val, exists := contactData["contact_email_hash"]; exists {
+					if val == nil {
+						contactReq.ContactEmailHash = &domain.UpdateBytes{Action: domain.UpdateActionDelete, Value: nil}
+					} else if str, ok := val.(string); ok && str != "" {
+						hashBytes, err := hex.DecodeString(str)
+						if err == nil && len(hashBytes) > 0 {
+							contactReq.ContactEmailHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: hashBytes}
+						}
+					}
+				}
 				if val, exists := contactData["receive_sms"]; exists {
 					if val == nil {
 						contactReq.ReceiveSMS = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
@@ -1702,6 +1750,8 @@ func (h *ResidentHandler) UpdateResidentPHI(w http.ResponseWriter, r *http.Reque
 	currentUserRole := r.Header.Get("X-User-Role")
 
 	// Permission check: Resident/Family cannot update PHI
+	// 注意：resident_contacts 不能登录系统，所以 currentUserType 永远不会是 "family"
+	// 保留此检查是为了向后兼容，但实际上只会是 "resident" 或 "staff"
 	if currentUserType == "resident" || currentUserType == "family" {
 		writeJSON(w, http.StatusOK, Fail("permission denied: resident/family cannot update PHI"))
 		return
@@ -2336,24 +2386,40 @@ func (h *ResidentHandler) UpdateResidentContact(w http.ResponseWriter, r *http.R
 
 	// 解析字段（使用指针表示可选）
 	// 规则：
-	//   - 字段不存在或为 null → nil（不更新）
-	//   - 字段为 "" → ""（更新为空，Repository 会转换为 NULL）
+	//   - 字段不存在 → nil（不更新）
+	//   - 字段为 null → ""（删除，Repository 会转换为 NULL）
+	//   - 字段为 "" → ""（删除，Repository 会转换为 NULL）
 	//   - 字段有值 → 有值（更新）
 	if isEnabled, ok := payload["is_enabled"].(bool); ok {
 		req.IsEnabled = &isEnabled
 	}
+	// 处理 contact_first_name：支持 string 和 null
 	if firstName, ok := payload["contact_first_name"].(string); ok {
 		req.ContactFirstName = &firstName // "" 表示删除
+	} else if _, exists := payload["contact_first_name"]; exists && payload["contact_first_name"] == nil {
+		// Vue 发送 null 时，转换为 ""（删除）
+		emptyStr := ""
+		req.ContactFirstName = &emptyStr
 	}
-	// contact_first_name 不存在或为 null → nil（不更新）
+	// contact_first_name 字段不存在 → nil（不更新）
+	// 处理 contact_last_name：支持 string 和 null
 	if lastName, ok := payload["contact_last_name"].(string); ok {
 		req.ContactLastName = &lastName // "" 表示删除
+	} else if _, exists := payload["contact_last_name"]; exists && payload["contact_last_name"] == nil {
+		// Vue 发送 null 时，转换为 ""（删除）
+		emptyStr := ""
+		req.ContactLastName = &emptyStr
 	}
-	// contact_last_name 不存在或为 null → nil（不更新）
+	// contact_last_name 字段不存在 → nil（不更新）
+	// 处理 relationship：支持 string 和 null
 	if relationship, ok := payload["relationship"].(string); ok {
 		req.Relationship = &relationship // "" 表示删除
+	} else if _, exists := payload["relationship"]; exists && payload["relationship"] == nil {
+		// Vue 发送 null 时，转换为 ""（删除）
+		emptyStr := ""
+		req.Relationship = &emptyStr
 	}
-	// relationship 不存在或为 null → nil（不更新）
+	// relationship 字段不存在 → nil（不更新）
 	// 处理 contact_phone：支持 string 和 null
 	if phone, ok := payload["contact_phone"].(string); ok {
 		req.ContactPhone = &phone // "" 表示删除
@@ -2372,6 +2438,27 @@ func (h *ResidentHandler) UpdateResidentContact(w http.ResponseWriter, r *http.R
 		req.ContactEmail = &emptyStr
 	}
 	// contact_email 字段不存在 → nil（不更新）
+	
+	// 处理 contact_phone_hash（用于搜索）：支持 string 和 null
+	if phoneHash, ok := payload["contact_phone_hash"].(string); ok && phoneHash != "" {
+		req.PhoneHash = &phoneHash // 有效的 hash hex 字符串
+	} else if payload["contact_phone_hash"] == nil {
+		// Vue 发送 null 时，表示删除 hash（phone 被删除）
+		emptyStr := ""
+		req.PhoneHash = &emptyStr
+	}
+	// contact_phone_hash 字段不存在 → nil（不更新）
+	
+	// 处理 contact_email_hash（用于搜索）：支持 string 和 null
+	if emailHash, ok := payload["contact_email_hash"].(string); ok && emailHash != "" {
+		req.EmailHash = &emailHash // 有效的 hash hex 字符串
+	} else if payload["contact_email_hash"] == nil {
+		// Vue 发送 null 时，表示删除 hash（email 被删除）
+		emptyStr := ""
+		req.EmailHash = &emptyStr
+	}
+	// contact_email_hash 字段不存在 → nil（不更新）
+	
 	if receiveSMS, ok := payload["receive_sms"].(bool); ok {
 		req.ReceiveSMS = &receiveSMS
 	}
@@ -2379,7 +2466,7 @@ func (h *ResidentHandler) UpdateResidentContact(w http.ResponseWriter, r *http.R
 		req.ReceiveEmail = &receiveEmail
 	}
 
-	// 处理 password_hash
+	// 处理 password_hash（已废弃，联系人不登录系统）
 	// 规则：passwd 是不回显的，没有从密码改为无密码的状态转换，所以不能发送 ""
 	// vue 要么发送有效 password 的 hash，要么不发送该字段，表示 passwd 未修改
 	// 如果前端未发送 password_hash 字段，req.PasswordHash 为 nil（不更新）
@@ -2388,26 +2475,6 @@ func (h *ResidentHandler) UpdateResidentContact(w http.ResponseWriter, r *http.R
 		req.PasswordHash = &passwordHash
 	}
 	// password_hash 字段不存在或为空字符串 → req.PasswordHash 为 nil（不更新）
-
-	// 处理 email_hash：支持 string 和 null
-	if emailHash, ok := payload["email_hash"].(string); ok {
-		req.EmailHash = &emailHash // "" 表示删除
-	} else if payload["email_hash"] == nil {
-		// Vue 发送 null 时，转换为 ""（删除）
-		emptyStr := ""
-		req.EmailHash = &emptyStr
-	}
-	// email_hash 字段不存在 → nil（不更新）
-
-	// 处理 phone_hash：支持 string 和 null
-	if phoneHash, ok := payload["phone_hash"].(string); ok {
-		req.PhoneHash = &phoneHash // "" 表示删除
-	} else if payload["phone_hash"] == nil {
-		// Vue 发送 null 时，转换为 ""（删除）
-		emptyStr := ""
-		req.PhoneHash = &emptyStr
-	}
-	// phone_hash 字段不存在 → nil（不更新）
 
 	// 调用 Service 层
 	resp, err := h.residentService.UpdateResidentContact(ctx, req)

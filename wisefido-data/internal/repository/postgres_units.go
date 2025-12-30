@@ -23,20 +23,30 @@ func NewPostgresUnitsRepository(db *sql.DB) *PostgresUnitsRepository {
 
 // ListBuildings: 从 buildings 表查询（Building 已改为实体，不再从 units 表虚拟获取）
 // 替代触发器：无（仅查询）
-func (r *PostgresUnitsRepository) ListBuildings(ctx context.Context, tenantID string, branchTag string) ([]*domain.Building, error) {
+// 参数说明：
+//   - branchID: 如果 Valid=true，直接使用 branch_id 过滤；如果 Valid=false，忽略此参数
+//   - branchName: 如果 branchID 无效且 branchName 不为空，通过 JOIN branches 表使用 branch_name 过滤（向后兼容）；如果为空，查询所有
+func (r *PostgresUnitsRepository) ListBuildings(ctx context.Context, tenantID string, branchID sql.NullString, branchName string) ([]*domain.Building, error) {
 	if tenantID == "" {
 		return []*domain.Building{}, nil
 	}
 
-	// 如果提供了 branchTag（branch_name），需要通过 JOIN branches 表查找
 	where := "b.tenant_id = $1"
 	args := []any{tenantID}
 	argIdx := 2
-	if branchTag != "" {
+
+	// 优先使用 branch_id 过滤（如果提供）
+	if branchID.Valid && branchID.String != "" {
+		where += " AND b.branch_id = $" + fmt.Sprintf("%d", argIdx)
+		args = append(args, branchID.String)
+		argIdx++
+	} else if branchName != "" {
+		// 向后兼容：如果提供了 branchName，通过 JOIN branches 表查找
 		where += " AND COALESCE(br.branch_name, '-') = $" + fmt.Sprintf("%d", argIdx)
-		args = append(args, branchTag)
+		args = append(args, branchName)
 		argIdx++
 	}
+	// 如果都没有提供，查询整个 tenant 的所有 buildings
 
 	q := `
 		SELECT
@@ -80,7 +90,7 @@ func (r *PostgresUnitsRepository) ListBuildings(ctx context.Context, tenantID st
 	return out, rows.Err()
 }
 
-// GetBuilding: 从 buildings 表获取 building 信息
+// GetBuilding: 从 buildings 表获取 building 信息（不包含 created_at/updated_at，返回 branch_name）
 // 替代触发器：无（仅查询）
 func (r *PostgresUnitsRepository) GetBuilding(ctx context.Context, tenantID, buildingID string) (*domain.Building, error) {
 	if tenantID == "" || buildingID == "" {
@@ -93,24 +103,19 @@ func (r *PostgresUnitsRepository) GetBuilding(ctx context.Context, tenantID, bui
 			b.tenant_id::text,
 			b.branch_id::text,
 			b.building_name,
-			br.branch_name,
-			b.created_at,
-			b.updated_at
+			br.branch_name
 		FROM buildings b
 		LEFT JOIN branches br ON br.branch_id = b.branch_id
 		WHERE b.tenant_id = $1 AND b.building_id = $2
 	`
 	var b domain.Building
 	var branchID, branchName sql.NullString
-	var createdAt, updatedAt sql.NullTime
 	err := r.db.QueryRowContext(ctx, q, tenantID, buildingID).Scan(
 		&b.BuildingID,
 		&b.TenantID,
 		&branchID,
 		&b.BuildingName,
 		&branchName,
-		&createdAt,
-		&updatedAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -120,9 +125,68 @@ func (r *PostgresUnitsRepository) GetBuilding(ctx context.Context, tenantID, bui
 	}
 	b.BranchID = branchID
 	b.BranchName = branchName
-	b.CreatedAt = createdAt
-	b.UpdatedAt = updatedAt
 	return &b, nil
+}
+
+// GetBuildingUnits: 获取指定 building 下的所有 units（只返回 unit_id, unit_name, floor）
+func (r *PostgresUnitsRepository) GetBuildingUnits(ctx context.Context, tenantID, buildingID string) ([]BuildingUnitInfo, error) {
+	if tenantID == "" || buildingID == "" {
+		return nil, fmt.Errorf("tenant_id and building_id are required")
+	}
+
+	q := `
+		SELECT
+			u.unit_id::text,
+			u.unit_name,
+			u.floor
+		FROM units u
+		WHERE u.tenant_id = $1 AND u.building_id = $2
+		ORDER BY u.floor, u.unit_name
+	`
+	rows, err := r.db.QueryContext(ctx, q, tenantID, buildingID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query building units: %w", err)
+	}
+	defer rows.Close()
+
+	var units []BuildingUnitInfo
+	for rows.Next() {
+		var unit BuildingUnitInfo
+		if err := rows.Scan(&unit.UnitID, &unit.UnitName, &unit.Floor); err != nil {
+			return nil, fmt.Errorf("failed to scan unit: %w", err)
+		}
+		units = append(units, unit)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate units: %w", err)
+	}
+	return units, nil
+}
+
+// FindBuildingByBranchAndName: 通过 branch_id + building_name（小写比较）查找 building
+func (r *PostgresUnitsRepository) FindBuildingByBranchAndName(ctx context.Context, tenantID, branchID, buildingName string) (string, error) {
+	if tenantID == "" || branchID == "" || buildingName == "" {
+		return "", fmt.Errorf("tenant_id, branch_id, and building_name are required")
+	}
+
+	// 使用 LOWER 函数进行大小写不敏感的比较
+	q := `
+		SELECT building_id::text
+		FROM buildings
+		WHERE tenant_id = $1 
+		  AND branch_id = $2 
+		  AND LOWER(building_name) = LOWER($3)
+		LIMIT 1
+	`
+	var buildingID string
+	err := r.db.QueryRowContext(ctx, q, tenantID, branchID, buildingName).Scan(&buildingID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("building not found")
+		}
+		return "", fmt.Errorf("failed to find building: %w", err)
+	}
+	return buildingID, nil
 }
 
 // CreateBuilding: 直接在 buildings 表中创建记录
@@ -135,41 +199,26 @@ func (r *PostgresUnitsRepository) CreateBuilding(ctx context.Context, tenantID s
 		return "", fmt.Errorf("building is required")
 	}
 
-	// 处理 branch_id：如果 BranchID 有值，使用它；如果为空，设置为 NULL
+	// 处理 branch_id：必须提供，不能为 NULL（业务规则：一家机构必然有一个分支或总部）
 	// 注意：building_name 的空值处理应该在 Service 层完成，Repository 层不做业务逻辑处理
-	var branchIDArg any = nil
-	if building.BranchID.Valid && building.BranchID.String != "" {
-		branchIDArg = building.BranchID.String
+	if !building.BranchID.Valid || building.BranchID.String == "" {
+		return "", fmt.Errorf("branch_id is required and cannot be NULL")
 	}
+	branchIDArg := building.BranchID.String
 
+	// branch_id 现在为 NOT NULL，使用唯一约束 (tenant_id, branch_id, building_name)
 	var buildingID string
 	var insertedBranchID sql.NullString
-	if branchIDArg == nil {
-		// branch_id 为 NULL 时，使用唯一约束 (tenant_id, building_name) WHERE branch_id IS NULL
-		err := r.db.QueryRowContext(ctx,
-			`INSERT INTO buildings (tenant_id, building_name, branch_id)
-			 VALUES ($1, $2, NULL)
-			 ON CONFLICT (tenant_id, building_name) WHERE branch_id IS NULL
-			 DO UPDATE SET building_name = EXCLUDED.building_name, updated_at = CURRENT_TIMESTAMP
-			 RETURNING building_id::text, branch_id::text`,
-			tenantID, building.BuildingName,
-		).Scan(&buildingID, &insertedBranchID)
-		if err != nil {
-			return "", fmt.Errorf("failed to create building: %w", err)
-		}
-	} else {
-		// branch_id 不为 NULL 时，使用唯一约束 (tenant_id, branch_id, building_name) WHERE branch_id IS NOT NULL
-		err := r.db.QueryRowContext(ctx,
-			`INSERT INTO buildings (tenant_id, branch_id, building_name)
-			 VALUES ($1, $2, $3)
-			 ON CONFLICT (tenant_id, branch_id, building_name) WHERE branch_id IS NOT NULL
-			 DO UPDATE SET building_name = EXCLUDED.building_name, updated_at = CURRENT_TIMESTAMP
-			 RETURNING building_id::text, branch_id::text`,
-			tenantID, branchIDArg, building.BuildingName,
-		).Scan(&buildingID, &insertedBranchID)
-		if err != nil {
-			return "", fmt.Errorf("failed to create building: %w", err)
-		}
+	err := r.db.QueryRowContext(ctx,
+		`INSERT INTO buildings (tenant_id, branch_id, building_name)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (tenant_id, branch_id, building_name)
+		 DO UPDATE SET building_name = EXCLUDED.building_name, updated_at = CURRENT_TIMESTAMP
+		 RETURNING building_id::text, branch_id::text`,
+		tenantID, branchIDArg, building.BuildingName,
+	).Scan(&buildingID, &insertedBranchID)
+	if err != nil {
+		return "", fmt.Errorf("failed to create building: %w", err)
 	}
 
 	// 注意：branch_tag 不应该在这里创建
@@ -217,33 +266,21 @@ func (r *PostgresUnitsRepository) UpdateBuilding(ctx context.Context, tenantID, 
 		newBuildingName = "-"
 	}
 
-	// 处理 branch_id：如果 BranchID 有值，使用它；如果为空，设置为 NULL
-	var branchIDArg any = nil
-	if building.BranchID.Valid && building.BranchID.String != "" {
-		branchIDArg = building.BranchID.String
+	// 处理 branch_id：必须提供，不能为 NULL（业务规则：一家机构必然有一个分支或总部）
+	if !building.BranchID.Valid || building.BranchID.String == "" {
+		return fmt.Errorf("branch_id is required and cannot be NULL")
 	}
+	branchIDArg := building.BranchID.String
 
-	// 更新 buildings 表
+	// 更新 buildings 表（branch_id 现在为 NOT NULL）
 	var updatedBranchID sql.NullString
-	if branchIDArg == nil {
-		// branch_id 为 NULL 时
-		err = r.db.QueryRowContext(ctx,
-			`UPDATE buildings 
-			 SET building_name = $1, branch_id = NULL, updated_at = CURRENT_TIMESTAMP
-			 WHERE tenant_id = $2 AND building_id = $3
-			 RETURNING branch_id::text`,
-			newBuildingName, tenantID, buildingID,
-		).Scan(&updatedBranchID)
-	} else {
-		// branch_id 不为 NULL 时
-		err = r.db.QueryRowContext(ctx,
-			`UPDATE buildings 
-			 SET branch_id = $1, building_name = $2, updated_at = CURRENT_TIMESTAMP
-			 WHERE tenant_id = $3 AND building_id = $4
-			 RETURNING branch_id::text`,
-			branchIDArg, newBuildingName, tenantID, buildingID,
-		).Scan(&updatedBranchID)
-	}
+	err = r.db.QueryRowContext(ctx,
+		`UPDATE buildings 
+		 SET branch_id = $1, building_name = $2, updated_at = CURRENT_TIMESTAMP
+		 WHERE tenant_id = $3 AND building_id = $4
+		 RETURNING branch_id::text`,
+		branchIDArg, newBuildingName, tenantID, buildingID,
+	).Scan(&updatedBranchID)
 
 	if err != nil {
 		return fmt.Errorf("failed to update building: %w", err)
@@ -461,38 +498,41 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 		argN++
 	}
 
-	// Handle branch_name and building_name together:
-	// - 当 building_name 不为空时：必须同时匹配 branch_name 和 building_name
-	//   * branch_name 为空字符串 ""：查询 branch_id IS NULL AND building_name = Y
-	//   * branch_name 不为空：通过 JOIN branches 表查询 branch_name = X AND building_name = Y
-	// - 当 building_name 为空时：
-	//   * branch_name 不为空：通过 JOIN branches 表查询 branch_name = X AND building_name IS NULL
-	//   * branch_name 为空字符串 ""：不添加任何过滤条件（查询所有 units）
-	// - 两者都未提供：不添加任何过滤条件（查询所有 units）
-	// 注意：现在总是 JOIN branches 表以获取 branch_name（domain模型要求）
-	if filters.Building != "" {
-		// Building 不为空：必须同时匹配 branch_name 和 building_name
-		if filters.BranchName == "" {
-			// 分支 1.1：branch_name 为空字符串 → 匹配 branch_id IS NULL
-			where = append(where, "u.branch_id IS NULL")
-		} else {
-			// 分支 1.2：branch_name 不为空 → 通过 JOIN branches 表匹配
-			where = append(where, fmt.Sprintf("b.branch_name = $%d", argN))
-			args = append(args, filters.BranchName)
-			argN++
-		}
-		// Building 不为空时，必须添加 building_name 过滤条件
-		addEq("u.building_name", filters.Building)
-	} else if filters.BranchName != "" {
-		// 分支 2：Building 为空，但 branch_name 不为空
-		// 通过 JOIN branches 表匹配 branch_name = X AND building_name IS NULL
+	// Handle branch_id/branch_name and building_id/building_name together:
+	// 优先使用 branch_id 和 building_id，如果没有提供则使用 branch_name 和 building_name（向后兼容）
+	// - 当 building_id 不为空时：直接使用 u.building_id = X
+	// - 当 building_id 为空但 building 不为空时：通过 JOIN buildings 表匹配 building_name = Y
+	// - 当 building_id 和 building 都为空时：不添加 building 过滤条件（查询所有 units，包括 building_id IS NULL 的情况）
+	
+	// 处理 branch 过滤
+	if filters.BranchID != "" {
+		// 分支 1：branch_id 不为空 → 直接使用 u.branch_id
+		where = append(where, fmt.Sprintf("u.branch_id = $%d", argN))
+		args = append(args, filters.BranchID)
+		argN++
+	} else if filters.BranchName == "" {
+		// 分支 2：branch_id 和 branch_name 都为空 → 匹配 branch_id IS NULL
+		where = append(where, "u.branch_id IS NULL")
+	} else {
+		// 分支 3：branch_id 为空，branch_name 不为空 → 通过 JOIN branches 表匹配
 		where = append(where, fmt.Sprintf("b.branch_name = $%d", argN))
 		args = append(args, filters.BranchName)
 		argN++
-		where = append(where, "u.building_name IS NULL")
-	} else {
-		// 分支 3：Building 为空，且 branch_name 也为空：不添加任何过滤条件（查询所有 units）
 	}
+	
+	// 处理 building 过滤：优先使用 building_id，如果没有则使用 building_name（向后兼容）
+	if filters.BuildingID != "" {
+		// 优先使用 building_id（UUID 类型）
+		where = append(where, fmt.Sprintf("u.building_id = $%d", argN))
+		args = append(args, filters.BuildingID)
+		argN++
+	} else if filters.Building != "" {
+		// 向后兼容：通过 JOIN buildings 表匹配 building_name
+		where = append(where, fmt.Sprintf("bd.building_name = $%d", argN))
+		args = append(args, filters.Building)
+		argN++
+	}
+	// 如果 building_id 和 building 都为空：不添加 building 过滤条件（查询所有 units，包括 building_id IS NULL 的情况）
 	addEq("u.floor", filters.Floor)
 	addEq("u.unit_name", filters.UnitName)
 	addEq("u.unit_type", filters.UnitType)
@@ -504,8 +544,13 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 		argN++
 	}
 
-	// COUNT查询也需要JOIN branches表（因为WHERE子句可能使用b.branch_name）
-	queryCount := "SELECT COUNT(*) FROM units u LEFT JOIN branches b ON b.branch_id = u.branch_id WHERE " + strings.Join(where, " AND ")
+	// 构建 FROM 子句：总是 JOIN branches 和 buildings 表以获取 branch_name 和 building_name（domain模型要求）
+	fromClause := "FROM units u"
+	fromClause += " LEFT JOIN branches b ON b.branch_id = u.branch_id"
+	fromClause += " LEFT JOIN buildings bd ON bd.building_id = u.building_id"
+
+	// COUNT查询也需要JOIN branches 和 buildings 表（因为WHERE子句可能使用b.branch_name 或 bd.building_name）
+	queryCount := "SELECT COUNT(*) " + fromClause + " WHERE " + strings.Join(where, " AND ")
 	var total int
 	if err := r.db.QueryRowContext(ctx, queryCount, args...).Scan(&total); err != nil {
 		return nil, 0, err
@@ -521,10 +566,6 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 
 	argsList := append(args, size, offset)
 
-	// 构建 FROM 子句：总是 JOIN branches 表以获取 branch_name（domain模型要求）
-	fromClause := "FROM units u"
-	fromClause += " LEFT JOIN branches b ON b.branch_id = u.branch_id"
-
 	query := `
 		SELECT 
 			u.unit_id::text,
@@ -532,7 +573,8 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 			u.branch_id::text,
 			COALESCE(b.branch_name, NULL) as branch_name,
 			u.unit_name,
-			u.building_name,
+			u.building_id::text,
+			COALESCE(bd.building_name, NULL) as building_name,
 			u.floor,
 			CASE WHEN u.layout_config IS NULL THEN NULL ELSE u.layout_config::text END as layout_config,
 			u.unit_type,
@@ -561,13 +603,14 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 	items := make([]*domain.Unit, 0)
 	for rows.Next() {
 		var u domain.Unit
-		var branchID, branchName, buildingName, floor, layoutConfig sql.NullString
+		var branchID, branchName, buildingID, buildingName, floor, layoutConfig sql.NullString
 		if err := rows.Scan(
 			&u.UnitID,
 			&u.TenantID,
 			&branchID,
 			&branchName,
 			&u.UnitName,
+			&buildingID,
 			&buildingName,
 			&floor,
 			&layoutConfig,
@@ -580,6 +623,7 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 		}
 		u.BranchID = branchID
 		u.BranchName = branchName
+		u.BuildingID = buildingID
 		u.BuildingName = buildingName
 		u.Floor = floor
 		u.LayoutConfig = layoutConfig
@@ -601,7 +645,8 @@ func (r *PostgresUnitsRepository) GetUnit(ctx context.Context, tenantID, unitID 
 			u.branch_id::text,
 			COALESCE(b.branch_name, NULL) as branch_name,
 			u.unit_name,
-			u.building_name,
+			u.building_id::text,
+			COALESCE(bd.building_name, NULL) as building_name,
 			u.floor,
 			CASE WHEN u.layout_config IS NULL THEN NULL ELSE u.layout_config::text END as layout_config,
 			u.unit_type,
@@ -610,16 +655,18 @@ func (r *PostgresUnitsRepository) GetUnit(ctx context.Context, tenantID, unitID 
 			u.timezone
 		FROM units u
 		LEFT JOIN branches b ON b.branch_id = u.branch_id
+		LEFT JOIN buildings bd ON bd.building_id = u.building_id
 		WHERE u.tenant_id = $1 AND u.unit_id = $2
 	`
 	var u domain.Unit
-	var branchID, branchName, buildingName, floor, layoutConfig sql.NullString
+	var branchID, branchName, buildingID, buildingName, floor, layoutConfig sql.NullString
 	err := r.db.QueryRowContext(ctx, q, tenantID, unitID).Scan(
 		&u.UnitID,
 		&u.TenantID,
 		&branchID,
 		&branchName,
 		&u.UnitName,
+		&buildingID,
 		&buildingName,
 		&floor,
 		&layoutConfig,
@@ -633,6 +680,7 @@ func (r *PostgresUnitsRepository) GetUnit(ctx context.Context, tenantID, unitID 
 	}
 	u.BranchID = branchID
 	u.BranchName = branchName
+	u.BuildingID = buildingID
 	u.BuildingName = buildingName
 	u.Floor = floor
 	u.LayoutConfig = layoutConfig
@@ -681,23 +729,21 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 		branchIDSQL = unit.BranchID
 	}
 
-	// 验证：如果 Unit 没有 building_name，则必须提供 branch_id
-	// 业务规则：branch_id 和 building_name 不能同时为空（NULL），至少一个必须提供
-	if !unit.BuildingName.Valid && !branchIDSQL.Valid {
-		return "", fmt.Errorf("branch_id or building_name is required (at least one must be provided)")
-	}
-
-	// 验证 building_name 是否存在（如果提供）
-	if unit.BuildingName.Valid && unit.BuildingName.String != "" && unit.BuildingName.String != "-" {
+	// 处理 building_id：如果提供了 BuildingID，使用它；如果提供了 BuildingName，通过 buildings 表查找 building_id
+	var buildingIDSQL sql.NullString
+	if unit.BuildingID.Valid && unit.BuildingID.String != "" {
+		// 如果直接提供了 BuildingID，使用它
+		buildingIDSQL = unit.BuildingID
+		// 验证 building_id 是否存在
 		var buildingBranchID sql.NullString
 		err := r.db.QueryRowContext(ctx,
 			`SELECT branch_id::text FROM buildings 
-			 WHERE tenant_id = $1 AND building_name = $2`,
-			tenantID, unit.BuildingName.String,
+			 WHERE tenant_id = $1 AND building_id = $2`,
+			tenantID, unit.BuildingID.String,
 		).Scan(&buildingBranchID)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				return "", fmt.Errorf("building not found: building_name=%s", unit.BuildingName.String)
+				return "", fmt.Errorf("building not found: building_id=%s", unit.BuildingID.String)
 			}
 			return "", fmt.Errorf("failed to validate building: %w", err)
 		}
@@ -713,7 +759,41 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 			// building 有 branch_id，但 unit 没有指定，使用 building 的 branch_id
 			branchIDSQL = buildingBranchID
 		}
+	} else if unit.BuildingName.Valid && unit.BuildingName.String != "" && unit.BuildingName.String != "-" {
+		// 如果提供了 BuildingName（向后兼容），通过 buildings 表查找 building_id
+		var buildingID string
+		var buildingBranchID sql.NullString
+		err := r.db.QueryRowContext(ctx,
+			`SELECT building_id::text, branch_id::text FROM buildings 
+			 WHERE tenant_id = $1 AND building_name = $2`,
+			tenantID, unit.BuildingName.String,
+		).Scan(&buildingID, &buildingBranchID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return "", fmt.Errorf("building not found: building_name=%s", unit.BuildingName.String)
+			}
+			return "", fmt.Errorf("failed to validate building: %w", err)
+		}
+		buildingIDSQL = sql.NullString{String: buildingID, Valid: true}
+		// 如果 unit 也指定了 branch_id，验证它们是否一致
+		if branchIDSQL.Valid && buildingBranchID.Valid {
+			if branchIDSQL.String != buildingBranchID.String {
+				return "", fmt.Errorf("branch_id mismatch: unit.branch_id=%s, building.branch_id=%s", branchIDSQL.String, buildingBranchID.String)
+			}
+		} else if branchIDSQL.Valid {
+			// unit 指定了 branch_id，但 building 的 branch_id 为 NULL，不一致
+			return "", fmt.Errorf("branch_id mismatch: unit.branch_id=%s, building.branch_id=NULL", branchIDSQL.String)
+		} else if buildingBranchID.Valid {
+			// building 有 branch_id，但 unit 没有指定，使用 building 的 branch_id
+			branchIDSQL = buildingBranchID
+		}
 	}
+
+	// 验证：branch_id 必须提供，不能为 NULL（业务规则：一家机构必然有一个分支或总部）
+	if !branchIDSQL.Valid {
+		return "", fmt.Errorf("branch_id is required and cannot be NULL")
+	}
+	// building_id 可选，可以为 NULL（支持 home care 等无 building 的场景）
 
 	// 设置 floor 默认值（如果为 NULL 或空，设置为 "1F"）
 	var floorSQL sql.NullString
@@ -728,34 +808,28 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 		layoutConfigSQL = sql.NullString{String: unit.LayoutConfig.String, Valid: true}
 	}
 
-	// building_name 如果为 NULL 或 "-"，保存为 NULL
-	var buildingNameSQL sql.NullString
-	if unit.BuildingName.Valid && unit.BuildingName.String != "" && unit.BuildingName.String != "-" {
-		buildingNameSQL = unit.BuildingName
-	}
-
 	// 检查是否已存在相同的 unit（避免唯一约束冲突）
-	// 唯一性约束：如果 branch_id 不为 NULL，使用 (tenant_id, branch_id, building_name, floor, unit_name)
-	// 如果 branch_id 为 NULL，使用 (tenant_id, building_name, floor, unit_name)
+	// 唯一性约束：如果 branch_id 不为 NULL，使用 (tenant_id, branch_id, building_id, floor, unit_name)
+	// 如果 branch_id 为 NULL，使用 (tenant_id, building_id, floor, unit_name)
 	var existingUnitID string
 	var checkQuery string
 	floorValue := ""
 	if floorSQL.Valid {
 		floorValue = floorSQL.String
 	}
-	buildingValue := ""
-	if buildingNameSQL.Valid {
-		buildingValue = buildingNameSQL.String
+	buildingIDValue := ""
+	if buildingIDSQL.Valid {
+		buildingIDValue = buildingIDSQL.String
 	}
 
 	if branchIDSQL.Valid {
-		// branch_id 不为 NULL：检查 (tenant_id, branch_id, building_name, floor, unit_name)
+		// branch_id 不为 NULL：检查 (tenant_id, branch_id, building_id, floor, unit_name)
 		checkQuery = `
 			SELECT unit_id::text
 			FROM units
 			WHERE tenant_id = $1
 			  AND branch_id = $2
-			  AND COALESCE(building_name, '') = COALESCE($3, '')
+			  AND COALESCE(building_id::text, '') = COALESCE($3, '')
 			  AND COALESCE(floor, '') = COALESCE($4, '')
 			  AND unit_name = $5
 			LIMIT 1
@@ -763,14 +837,14 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 		err := r.db.QueryRowContext(ctx, checkQuery,
 			tenantID,
 			branchIDSQL.String,
-			buildingValue,
+			buildingIDValue,
 			floorValue,
 			unit.UnitName,
 		).Scan(&existingUnitID)
 		if err == nil {
-			return "", fmt.Errorf("unit already exists: unit_name=%s, building_name=%s, floor=%s, branch_id=%s (unit_id=%s)",
+			return "", fmt.Errorf("unit already exists: unit_name=%s, building_id=%s, floor=%s, branch_id=%s (unit_id=%s)",
 				unit.UnitName,
-				buildingValue,
+				buildingIDValue,
 				floorValue,
 				branchIDSQL.String,
 				existingUnitID)
@@ -778,27 +852,27 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 			return "", fmt.Errorf("failed to check duplicate unit: %w", err)
 		}
 	} else {
-		// branch_id 为 NULL：检查 (tenant_id, building_name, floor, unit_name)
+		// branch_id 为 NULL：检查 (tenant_id, building_id, floor, unit_name)
 		checkQuery = `
 			SELECT unit_id::text
 			FROM units
 			WHERE tenant_id = $1
 			  AND branch_id IS NULL
-			  AND COALESCE(building_name, '') = COALESCE($2, '')
+			  AND COALESCE(building_id::text, '') = COALESCE($2, '')
 			  AND COALESCE(floor, '') = COALESCE($3, '')
 			  AND unit_name = $4
 			LIMIT 1
 		`
 		err := r.db.QueryRowContext(ctx, checkQuery,
 			tenantID,
-			buildingValue,
+			buildingIDValue,
 			floorValue,
 			unit.UnitName,
 		).Scan(&existingUnitID)
 		if err == nil {
-			return "", fmt.Errorf("unit already exists: unit_name=%s, building_name=%s, floor=%s, branch_id=NULL (unit_id=%s)",
+			return "", fmt.Errorf("unit already exists: unit_name=%s, building_id=%s, floor=%s, branch_id=NULL (unit_id=%s)",
 				unit.UnitName,
-				buildingValue,
+				buildingIDValue,
 				floorValue,
 				existingUnitID)
 		} else if err != sql.ErrNoRows {
@@ -806,9 +880,9 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 		}
 	}
 
-	// 构建 INSERT 语句：使用正确的数据库列名
+	// 构建 INSERT 语句：使用 building_id 而不是 building_name
 	q := `
-		INSERT INTO units (tenant_id, branch_id, unit_name, building_name, floor, layout_config, unit_type, is_public, is_shared_unit, timezone)
+		INSERT INTO units (tenant_id, branch_id, unit_name, building_id, floor, layout_config, unit_type, is_public, is_shared_unit, timezone)
 		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, COALESCE($8,false), COALESCE($9,false), $10)
 		RETURNING unit_id::text
 	`
@@ -820,11 +894,17 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 	} else {
 		layoutConfigArg = nil
 	}
+	var buildingIDArg any
+	if buildingIDSQL.Valid {
+		buildingIDArg = buildingIDSQL.String
+	} else {
+		buildingIDArg = nil
+	}
 	if err := r.db.QueryRowContext(ctx, q,
 		tenantID,
 		branchIDSQL,
 		unit.UnitName,
-		buildingNameSQL,
+		buildingIDArg,
 		floorSQL,
 		layoutConfigArg,
 		unit.UnitType,
@@ -838,8 +918,10 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 			floorDisplay = floorSQL.String
 		}
 		buildingDisplay := ""
-		if buildingNameSQL.Valid {
-			buildingDisplay = buildingNameSQL.String
+		if buildingIDSQL.Valid {
+			buildingDisplay = buildingIDSQL.String
+		} else {
+			buildingDisplay = "NULL"
 		}
 		branchDisplay := ""
 		if branchIDSQL.Valid {
@@ -848,13 +930,13 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 			branchDisplay = "NULL"
 		}
 		if strings.Contains(err.Error(), "idx_units_unique_without_branch") {
-			return "", fmt.Errorf("unit already exists: unit_name=%s, building_name=%s, floor=%s, branch_id=NULL (unique constraint violation)",
+			return "", fmt.Errorf("unit already exists: unit_name=%s, building_id=%s, floor=%s, branch_id=NULL (unique constraint violation)",
 				unit.UnitName,
 				buildingDisplay,
 				floorDisplay)
 		}
 		if strings.Contains(err.Error(), "idx_units_unique_with_branch") {
-			return "", fmt.Errorf("unit already exists: unit_name=%s, building_name=%s, floor=%s, branch_id=%s (unique constraint violation)",
+			return "", fmt.Errorf("unit already exists: unit_name=%s, building_id=%s, floor=%s, branch_id=%s (unique constraint violation)",
 				unit.UnitName,
 				buildingDisplay,
 				floorDisplay,
@@ -906,47 +988,92 @@ func (r *PostgresUnitsRepository) UpdateUnit(ctx context.Context, tenantID, unit
 		branchIDSQL = unit.BranchID
 	}
 
-	// 验证：如果 Unit 没有 building_name，则必须提供 branch_id
-	// 业务规则：branch_id 和 building_name 不能同时为空（NULL），至少一个必须提供
-	currentBuildingValue := ""
-	if currentUnit.BuildingName.Valid {
-		currentBuildingValue = currentUnit.BuildingName.String
-	}
-	newBuildingValue := ""
-	if unit.BuildingName.Valid {
-		newBuildingValue = unit.BuildingName.String
+	// 处理 building_id：如果提供了 BuildingID，使用它；如果提供了 BuildingName（向后兼容），通过 buildings 表查找 building_id
+	var buildingIDSQL sql.NullString
+	currentBuildingID := currentUnit.BuildingID
+	if unit.BuildingID.Valid && unit.BuildingID.String != "" {
+		// 如果直接提供了 BuildingID，使用它
+		buildingIDSQL = unit.BuildingID
+		// 验证 building_id 是否存在（如果改变）
+		if !currentBuildingID.Valid || currentBuildingID.String != unit.BuildingID.String {
+			var buildingBranchID sql.NullString
+			err := r.db.QueryRowContext(ctx,
+				`SELECT branch_id::text FROM buildings 
+				 WHERE tenant_id = $1 AND building_id = $2`,
+				tenantID, unit.BuildingID.String,
+			).Scan(&buildingBranchID)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					return fmt.Errorf("building not found: building_id=%s", unit.BuildingID.String)
+				}
+				return fmt.Errorf("failed to validate building: %w", err)
+			}
+			// 如果 unit 也指定了 branch_id，验证它们是否一致
+			if branchIDSQL.Valid && buildingBranchID.Valid {
+				if branchIDSQL.String != buildingBranchID.String {
+					return fmt.Errorf("branch_id mismatch: unit.branch_id=%s, building.branch_id=%s", branchIDSQL.String, buildingBranchID.String)
+				}
+			} else if branchIDSQL.Valid {
+				// unit 指定了 branch_id，但 building 的 branch_id 为 NULL，不一致
+				return fmt.Errorf("branch_id mismatch: unit.branch_id=%s, building.branch_id=NULL", branchIDSQL.String)
+			} else if buildingBranchID.Valid {
+				// building 有 branch_id，但 unit 没有指定，使用 building 的 branch_id
+				branchIDSQL = buildingBranchID
+			}
+		}
+	} else if unit.BuildingName.Valid && unit.BuildingName.String != "" && unit.BuildingName.String != "-" {
+		// 如果提供了 BuildingName（向后兼容），通过 buildings 表查找 building_id
+		currentBuildingName := ""
+		if currentUnit.BuildingName.Valid {
+			currentBuildingName = currentUnit.BuildingName.String
+		}
+		// 只有当 building_name 改变时才需要查找
+		if unit.BuildingName.String != currentBuildingName {
+			var buildingID string
+			var buildingBranchID sql.NullString
+			err := r.db.QueryRowContext(ctx,
+				`SELECT building_id::text, branch_id::text FROM buildings 
+				 WHERE tenant_id = $1 AND building_name = $2`,
+				tenantID, unit.BuildingName.String,
+			).Scan(&buildingID, &buildingBranchID)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					return fmt.Errorf("building not found: building_name=%s", unit.BuildingName.String)
+				}
+				return fmt.Errorf("failed to validate building: %w", err)
+			}
+			buildingIDSQL = sql.NullString{String: buildingID, Valid: true}
+			// 如果 unit 也指定了 branch_id，验证它们是否一致
+			if branchIDSQL.Valid && buildingBranchID.Valid {
+				if branchIDSQL.String != buildingBranchID.String {
+					return fmt.Errorf("branch_id mismatch: unit.branch_id=%s, building.branch_id=%s", branchIDSQL.String, buildingBranchID.String)
+				}
+			} else if branchIDSQL.Valid {
+				// unit 指定了 branch_id，但 building 的 branch_id 为 NULL，不一致
+				return fmt.Errorf("branch_id mismatch: unit.branch_id=%s, building.branch_id=NULL", branchIDSQL.String)
+			} else if buildingBranchID.Valid {
+				// building 有 branch_id，但 unit 没有指定，使用 building 的 branch_id
+				branchIDSQL = buildingBranchID
+			}
+		} else {
+			// building_name 没有改变，使用当前的 building_id
+			buildingIDSQL = currentBuildingID
+		}
 	}
 
-	if newBuildingValue == "" && !branchIDSQL.Valid {
-		return fmt.Errorf("branch_id or building_name is required (at least one must be provided)")
+	// 验证：branch_id 必须提供，不能为 NULL（业务规则：一家机构必然有一个分支或总部）
+	// 如果没有提供新的 branch_id，使用当前的 branch_id
+	if !branchIDSQL.Valid {
+		// 使用当前的 branch_id
+		branchIDSQL = currentUnit.BranchID
+		if !branchIDSQL.Valid {
+			return fmt.Errorf("branch_id is required and cannot be NULL")
+		}
 	}
-
-	// 验证 building_name 是否存在（如果提供且改变）
-	if unit.BuildingName.Valid && unit.BuildingName.String != "" && unit.BuildingName.String != "-" && newBuildingValue != currentBuildingValue {
-		var buildingBranchID sql.NullString
-		err := r.db.QueryRowContext(ctx,
-			`SELECT branch_id::text FROM buildings 
-			 WHERE tenant_id = $1 AND building_name = $2`,
-			tenantID, unit.BuildingName.String,
-		).Scan(&buildingBranchID)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("building not found: building_name=%s", unit.BuildingName.String)
-			}
-			return fmt.Errorf("failed to validate building: %w", err)
-		}
-		// 如果 unit 也指定了 branch_id，验证它们是否一致
-		if branchIDSQL.Valid && buildingBranchID.Valid {
-			if branchIDSQL.String != buildingBranchID.String {
-				return fmt.Errorf("branch_id mismatch: unit.branch_id=%s, building.branch_id=%s", branchIDSQL.String, buildingBranchID.String)
-			}
-		} else if branchIDSQL.Valid {
-			// unit 指定了 branch_id，但 building 的 branch_id 为 NULL，不一致
-			return fmt.Errorf("branch_id mismatch: unit.branch_id=%s, building.branch_id=NULL", branchIDSQL.String)
-		} else if buildingBranchID.Valid {
-			// building 有 branch_id，但 unit 没有指定，使用 building 的 branch_id
-			branchIDSQL = buildingBranchID
-		}
+	// building_id 可选，可以为 NULL（支持 home care 等无 building 的场景）
+	// 如果没有提供新的 building_id，保持当前值（可能是 NULL）
+	if !buildingIDSQL.Valid {
+		buildingIDSQL = currentBuildingID
 	}
 
 	// 构建动态 UPDATE 语句
@@ -960,24 +1087,28 @@ func (r *PostgresUnitsRepository) UpdateUnit(ctx context.Context, tenantID, unit
 		argN++
 	}
 
-	// 处理 branch_id：如果提供了 BranchID，更新它
+	// 处理 branch_id：必须提供，不能为 NULL（业务规则要求）
+	// branch_id 已经在验证阶段确保不为 NULL
 	if branchIDSQL.Valid {
 		add("branch_id", branchIDSQL.String)
-	} else if unit.BranchName.Valid && (unit.BranchName.String == "" || unit.BranchName.String == "-") {
-		// 如果明确设置为空字符串或 "-"，设置为 NULL
-		set = append(set, "branch_id = NULL")
+	} else {
+		// 这不应该发生，因为已经在验证阶段检查过
+		return fmt.Errorf("branch_id is required and cannot be NULL")
 	}
 	if unit.UnitName != "" {
 		add("unit_name", unit.UnitName)
 	}
-	// building_name 如果为 NULL 或 "-"，保存为 NULL
-	if unit.BuildingName.Valid {
-		if unit.BuildingName.String == "" || unit.BuildingName.String == "-" {
-			set = append(set, "building_name = NULL")
-		} else {
-			add("building_name", unit.BuildingName.String)
-		}
+	// building_id：如果提供了 BuildingID 或 BuildingName，更新它
+	if buildingIDSQL.Valid {
+		add("building_id", buildingIDSQL.String)
+	} else if unit.BuildingID.Valid && unit.BuildingID.String == "" {
+		// 如果明确设置为空字符串，设置为 NULL
+		set = append(set, "building_id = NULL")
+	} else if unit.BuildingName.Valid && (unit.BuildingName.String == "" || unit.BuildingName.String == "-") {
+		// 如果 BuildingName 明确设置为空字符串或 "-"，设置为 NULL（向后兼容）
+		set = append(set, "building_id = NULL")
 	}
+	// 注意：如果没有提供 building_id，保持当前值（不更新）
 	if unit.Floor.Valid && unit.Floor.String != "" {
 		add("floor", unit.Floor.String)
 	}
@@ -1027,25 +1158,40 @@ func (r *PostgresUnitsRepository) DeleteUnit(ctx context.Context, tenantID, unit
 
 // ListRooms: 查询 rooms 列表
 // 替代触发器：无（仅查询）
-func (r *PostgresUnitsRepository) ListRooms(ctx context.Context, tenantID, unitID string) ([]*domain.Room, error) {
+// 参数说明：
+//   - search: 可选，按 room_name 模糊搜索（如果为空则不搜索）
+func (r *PostgresUnitsRepository) ListRooms(ctx context.Context, tenantID, unitID string, search string) ([]*domain.Room, error) {
 	if tenantID == "" || unitID == "" {
 		return []*domain.Room{}, nil
 	}
 
-	q := `
+	where := []string{"r.tenant_id = $1", "r.unit_id = $2"}
+	args := []any{tenantID, unitID}
+	argN := 3
+
+	// 添加搜索条件（如果提供）
+	if search != "" {
+		where = append(where, fmt.Sprintf("r.room_name ILIKE $%d", argN))
+		args = append(args, "%"+search+"%")
+		argN++
+	}
+
+	q := fmt.Sprintf(`
 		SELECT 
 			r.room_id::text,
 			r.tenant_id::text,
 			r.unit_id::text,
 			u.unit_name,
+			u.floor,
 			r.room_name,
 			CASE WHEN r.layout_config IS NULL THEN NULL ELSE r.layout_config::text END as layout_config
 		FROM rooms r
 		LEFT JOIN units u ON u.unit_id = r.unit_id
-		WHERE r.tenant_id = $1 AND r.unit_id = $2
+		WHERE %s
 		ORDER BY r.room_name
-	`
-	rows, err := r.db.QueryContext(ctx, q, tenantID, unitID)
+	`, strings.Join(where, " AND "))
+	
+	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1054,11 +1200,12 @@ func (r *PostgresUnitsRepository) ListRooms(ctx context.Context, tenantID, unitI
 	rooms := make([]*domain.Room, 0)
 	for rows.Next() {
 		var room domain.Room
-		var unitName, layoutConfig sql.NullString
-		if err := rows.Scan(&room.RoomID, &room.TenantID, &room.UnitID, &unitName, &room.RoomName, &layoutConfig); err != nil {
+		var unitName, floor, layoutConfig sql.NullString
+		if err := rows.Scan(&room.RoomID, &room.TenantID, &room.UnitID, &unitName, &floor, &room.RoomName, &layoutConfig); err != nil {
 			return nil, err
 		}
 		room.UnitName = unitName
+		room.Floor = floor
 		room.LayoutConfig = layoutConfig
 		rooms = append(rooms, &room)
 	}
@@ -1067,13 +1214,15 @@ func (r *PostgresUnitsRepository) ListRooms(ctx context.Context, tenantID, unitI
 
 // ListRoomsWithBeds: 查询 rooms 及其 beds
 // 替代触发器：无（仅查询）
-func (r *PostgresUnitsRepository) ListRoomsWithBeds(ctx context.Context, tenantID, unitID string) ([]*RoomWithBeds, error) {
+// 参数说明：
+//   - search: 可选，按 room_name 模糊搜索（如果为空则不搜索）
+func (r *PostgresUnitsRepository) ListRoomsWithBeds(ctx context.Context, tenantID, unitID string, search string) ([]*RoomWithBeds, error) {
 	if tenantID == "" || unitID == "" {
 		return []*RoomWithBeds{}, nil
 	}
 
-	// 查询 rooms
-	rooms, err := r.ListRooms(ctx, tenantID, unitID)
+	// 查询 rooms（传递搜索参数）
+	rooms, err := r.ListRooms(ctx, tenantID, unitID, search)
 	if err != nil {
 		return nil, err
 	}
@@ -1169,6 +1318,7 @@ func (r *PostgresUnitsRepository) GetRoom(ctx context.Context, tenantID, roomID 
 			r.tenant_id::text,
 			r.unit_id::text,
 			u.unit_name,
+			u.floor,
 			r.room_name,
 			CASE WHEN r.layout_config IS NULL THEN NULL ELSE r.layout_config::text END as layout_config
 		FROM rooms r
@@ -1176,12 +1326,13 @@ func (r *PostgresUnitsRepository) GetRoom(ctx context.Context, tenantID, roomID 
 		WHERE r.tenant_id = $1 AND r.room_id = $2
 	`
 	var room domain.Room
-	var unitName, layoutConfig sql.NullString
+	var unitName, floor, layoutConfig sql.NullString
 	err := r.db.QueryRowContext(ctx, q, tenantID, roomID).Scan(
 		&room.RoomID,
 		&room.TenantID,
 		&room.UnitID,
 		&unitName,
+		&floor,
 		&room.RoomName,
 		&layoutConfig,
 	)
@@ -1189,6 +1340,7 @@ func (r *PostgresUnitsRepository) GetRoom(ctx context.Context, tenantID, roomID 
 		return nil, err
 	}
 	room.UnitName = unitName
+	room.Floor = floor
 	room.LayoutConfig = layoutConfig
 	return &room, nil
 }
@@ -1302,12 +1454,23 @@ func (r *PostgresUnitsRepository) DeleteRoom(ctx context.Context, tenantID, room
 
 // ListBeds: 查询 beds 列表
 // 替代触发器：无（仅查询）
-func (r *PostgresUnitsRepository) ListBeds(ctx context.Context, tenantID, roomID string) ([]*domain.Bed, error) {
+func (r *PostgresUnitsRepository) ListBeds(ctx context.Context, tenantID, roomID string, search string) ([]*domain.Bed, error) {
 	if tenantID == "" || roomID == "" {
 		return []*domain.Bed{}, nil
 	}
 
-	q := `
+	where := []string{"b.tenant_id = $1", "b.room_id = $2"}
+	args := []any{tenantID, roomID}
+	argN := 3
+
+	// 添加搜索条件（如果提供）
+	if search != "" {
+		where = append(where, fmt.Sprintf("b.bed_name ILIKE $%d", argN))
+		args = append(args, "%"+search+"%")
+		argN++
+	}
+
+	q := fmt.Sprintf(`
 		SELECT 
 			b.bed_id::text,
 			b.tenant_id::text,
@@ -1318,10 +1481,11 @@ func (r *PostgresUnitsRepository) ListBeds(ctx context.Context, tenantID, roomID
 			b.mattress_thickness
 		FROM beds b
 		LEFT JOIN rooms r ON r.room_id = b.room_id
-		WHERE b.tenant_id = $1 AND b.room_id = $2
+		WHERE %s
 		ORDER BY b.bed_name
-	`
-	rows, err := r.db.QueryContext(ctx, q, tenantID, roomID)
+	`, strings.Join(where, " AND "))
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1607,4 +1771,118 @@ func getBuildingDisplay(building sql.NullString) string {
 		return "''"
 	}
 	return building.String
+}
+
+// ============================================
+// 批量查询（用于 ListUnitsWithFullHierarchy）
+// ============================================
+
+// ListRoomsByUnitIDs 批量查询多个 units 的 rooms
+func (r *PostgresUnitsRepository) ListRoomsByUnitIDs(ctx context.Context, tenantID string, unitIDs []string) ([]*domain.Room, error) {
+	if tenantID == "" || len(unitIDs) == 0 {
+		return []*domain.Room{}, nil
+	}
+
+	// 构建 IN 子句
+	in := make([]string, len(unitIDs))
+	args := make([]any, 0, len(unitIDs)+1)
+	args = append(args, tenantID)
+	for i, id := range unitIDs {
+		in[i] = fmt.Sprintf("$%d", i+2)
+		args = append(args, id)
+	}
+
+	q := `
+		SELECT 
+			r.room_id::text,
+			r.tenant_id::text,
+			r.unit_id::text,
+			u.unit_name,
+			u.floor,
+			r.room_name,
+			CASE WHEN r.layout_config IS NULL THEN NULL ELSE r.layout_config::text END as layout_config
+		FROM rooms r
+		LEFT JOIN units u ON u.unit_id = r.unit_id
+		WHERE r.tenant_id = $1 AND r.unit_id IN (` + strings.Join(in, ",") + `)
+		ORDER BY r.unit_id, r.room_name
+	`
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	rooms := make([]*domain.Room, 0)
+	for rows.Next() {
+		var room domain.Room
+		var unitName, floor, layoutConfig sql.NullString
+		if err := rows.Scan(&room.RoomID, &room.TenantID, &room.UnitID, &unitName, &floor, &room.RoomName, &layoutConfig); err != nil {
+			return nil, err
+		}
+		room.UnitName = unitName
+		room.Floor = floor
+		room.LayoutConfig = layoutConfig
+		rooms = append(rooms, &room)
+	}
+	return rooms, rows.Err()
+}
+
+// ListBedsByRoomIDs 批量查询多个 rooms 的 beds
+func (r *PostgresUnitsRepository) ListBedsByRoomIDs(ctx context.Context, tenantID string, roomIDs []string) ([]*domain.Bed, error) {
+	if tenantID == "" || len(roomIDs) == 0 {
+		return []*domain.Bed{}, nil
+	}
+
+	// 构建 IN 子句
+	in := make([]string, len(roomIDs))
+	args := make([]any, 0, len(roomIDs)+1)
+	args = append(args, tenantID)
+	for i, id := range roomIDs {
+		in[i] = fmt.Sprintf("$%d", i+2)
+		args = append(args, id)
+	}
+
+	q := `
+		SELECT 
+			b.bed_id::text,
+			b.tenant_id::text,
+			b.room_id::text,
+			r.room_name,
+			b.bed_name,
+			b.mattress_material,
+			b.mattress_thickness
+		FROM beds b
+		LEFT JOIN rooms r ON r.room_id = b.room_id
+		WHERE b.tenant_id = $1 AND b.room_id IN (` + strings.Join(in, ",") + `)
+		ORDER BY b.room_id, b.bed_name
+	`
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	beds := make([]*domain.Bed, 0)
+	for rows.Next() {
+		var bed domain.Bed
+		var roomName, mattressMaterial, mattressThickness sql.NullString
+		if err := rows.Scan(
+			&bed.BedID,
+			&bed.TenantID,
+			&bed.RoomID,
+			&roomName,
+			&bed.BedName,
+			&mattressMaterial,
+			&mattressThickness,
+		); err != nil {
+			return nil, err
+		}
+		bed.RoomName = roomName
+		bed.MattressMaterial = mattressMaterial
+		bed.MattressThickness = mattressThickness
+		beds = append(beds, &bed)
+	}
+	return beds, rows.Err()
 }

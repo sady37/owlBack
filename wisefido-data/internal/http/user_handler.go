@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"database/sql"
 	"net/http"
 	"strings"
 
@@ -14,14 +15,16 @@ type UserHandler struct {
 	userService service.UserService
 	logger      *zap.Logger
 	base        *StubHandler // 用于 tenantIDFromReq
+	db          *sql.DB     // 用于权限检查和获取 branch 信息
 }
 
 // NewUserHandler 创建用户管理 Handler
-func NewUserHandler(userService service.UserService, logger *zap.Logger) *UserHandler {
+func NewUserHandler(userService service.UserService, db *sql.DB, logger *zap.Logger) *UserHandler {
 	return &UserHandler{
 		userService: userService,
 		logger:      logger,
 		base:        &StubHandler{}, // 用于 tenantIDFromReq
+		db:          db,
 	}
 }
 
@@ -170,6 +173,11 @@ func (h *UserHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 		if u.AlarmScope != "" {
 			item["alarm_scope"] = u.AlarmScope
 		}
+		if len(u.BranchIDs) > 0 {
+			item["branch_ids"] = u.BranchIDs
+			item["primary_branch_id"] = u.PrimaryBranchID
+		}
+		// 向后兼容
 		if u.BranchID != "" {
 			item["branch_id"] = u.BranchID
 		}
@@ -252,6 +260,11 @@ func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request, userID str
 	if resp.User.AlarmScope != "" {
 		item["alarm_scope"] = resp.User.AlarmScope
 	}
+	if len(resp.User.BranchIDs) > 0 {
+		item["branch_ids"] = resp.User.BranchIDs
+		item["primary_branch_id"] = resp.User.PrimaryBranchID
+	}
+	// 向后兼容
 	if resp.User.BranchID != "" {
 		item["branch_id"] = resp.User.BranchID
 	}
@@ -345,30 +358,57 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 解析 branch_id 或 branch_name（优先使用 branch_id）
-	var branchID, branchName string
-	if branchIDVal, ok := payload["branch_id"].(string); ok && branchIDVal != "" {
-		branchID = branchIDVal
-	} else if branchNameVal, ok := payload["branch_name"].(string); ok {
-		branchName = branchNameVal
+	// 解析 branch_ids（支持多个 branch，向后兼容单个 branch_id）
+	var branchIDs []string
+	var primaryBranchID string
+
+	// 优先使用 branch_ids（数组）
+	if branchIDsVal, ok := payload["branch_ids"].([]any); ok && len(branchIDsVal) > 0 {
+		for _, v := range branchIDsVal {
+			if s, ok := v.(string); ok && s != "" {
+				branchIDs = append(branchIDs, s)
+			}
+		}
+	}
+	// 向后兼容：如果 branch_ids 为空，尝试使用单个 branch_id
+	if len(branchIDs) == 0 {
+		if branchIDVal, ok := payload["branch_id"].(string); ok && branchIDVal != "" {
+			branchIDs = append(branchIDs, branchIDVal)
+		}
 	}
 
+	if len(branchIDs) == 0 {
+		writeJSON(w, http.StatusOK, Fail("at least one branch_id is required"))
+		return
+	}
+
+	// 解析 primary_branch_id（可选，如果只有一个 branch，自动设为主院区）
+	if primaryBranchIDVal, ok := payload["primary_branch_id"].(string); ok && primaryBranchIDVal != "" {
+		primaryBranchID = primaryBranchIDVal
+	} else if len(branchIDs) == 1 {
+		primaryBranchID = branchIDs[0]
+	}
+
+	// 注意：AvailableBranches 不应传递给 Service 层
+	// Service 层会自己从数据库查询用户的 branch 信息（这是用户本身的属性，不能信任前端传递的值）
+	// 如果前端需要获取可用 branch 列表，应该调用专门的 API（如 GetAvailableBranches）
+
 	req := service.CreateUserRequest{
-		TenantID:      tenantID,
-		CurrentUserID: currentUserID,
-		UserAccount:   userAccount,
-		Password:      password,
-		Role:          role,
-		Nickname:      nickname,
-		Email:         email,
-		Phone:         phone,
-		Status:        status,
-		AlarmLevels:   alarmLevels,
-		AlarmChannels: alarmChannels,
-		AlarmScope:    alarmScope,
-		Tags:          tags,
-		BranchID:      branchID,
-		BranchName:    branchName,
+		TenantID:        tenantID,
+		CurrentUserID:   currentUserID,
+		UserAccount:     userAccount,
+		Password:        password,
+		Role:            role,
+		Nickname:        nickname,
+		Email:           email,
+		Phone:           phone,
+		Status:          status,
+		AlarmLevels:     alarmLevels,
+		AlarmChannels:   alarmChannels,
+		AlarmScope:      alarmScope,
+		Tags:            tags,
+		BranchIDs:       branchIDs,
+		PrimaryBranchID: primaryBranchID,
 	}
 
 	resp, err := h.userService.CreateUser(ctx, req)
@@ -430,6 +470,10 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request, userID 
 		}
 		return
 	}
+
+	// 注意：AvailableBranches 不应传递给 Service 层
+	// Service 层会自己从数据库查询用户的 branch 信息（这是用户本身的属性，不能信任前端传递的值）
+	// 如果前端需要获取可用 branch 列表，应该调用专门的 API（如 GetAvailableBranches）
 
 	// 解析可选字段（nil 表示不更新，空字符串表示清空）
 	req := service.UpdateUserRequest{
@@ -518,11 +562,37 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request, userID 
 		req.Tags = tags
 	}
 
-	// Branch: 支持 branch_id 或 branch_name（优先使用 branch_id）
-	if branchID, ok := payload["branch_id"].(string); ok && branchID != "" {
-		req.BranchID = &branchID
-	} else if branchName, ok := payload["branch_name"].(string); ok {
-		req.BranchName = &branchName
+	// Branch: 支持 branch_ids（数组）和 primary_branch_id，向后兼容单个 branch_id
+	var branchIDs []string
+	var primaryBranchID *string
+
+	// 优先使用 branch_ids（数组）
+	if branchIDsVal, ok := payload["branch_ids"].([]any); ok {
+		for _, v := range branchIDsVal {
+			if s, ok := v.(string); ok && s != "" {
+				branchIDs = append(branchIDs, s)
+			}
+		}
+	}
+	// 向后兼容：如果 branch_ids 为空，尝试使用单个 branch_id
+	if len(branchIDs) == 0 {
+		if branchIDVal, ok := payload["branch_id"].(string); ok {
+			if branchIDVal != "" {
+				branchIDs = append(branchIDs, branchIDVal)
+			}
+		}
+	}
+
+	if len(branchIDs) > 0 {
+		req.BranchIDs = branchIDs
+		// 解析 primary_branch_id
+		if primaryBranchIDVal, ok := payload["primary_branch_id"].(string); ok && primaryBranchIDVal != "" {
+			primaryBranchID = &primaryBranchIDVal
+		} else if len(branchIDs) == 1 {
+			// 如果只有一个 branch，自动设为主院区
+			primaryBranchID = &branchIDs[0]
+		}
+		req.PrimaryBranchID = primaryBranchID
 	}
 
 	resp, err := h.userService.UpdateUser(ctx, req)

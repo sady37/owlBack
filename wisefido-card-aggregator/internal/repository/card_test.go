@@ -91,7 +91,7 @@ func TestGetUnitInfo_Success(t *testing.T) {
 	// Setup expected SQL query
 	rows := sqlmock.NewRows([]string{
 		"unit_id", "unit_name", "branch_name", "building",
-		"is_public_space", "is_multi_person_room", "unit_type",
+		"is_public", "is_shared_unit", "unit_type",
 		"groupList", "userList",
 	}).
 		AddRow(
@@ -113,8 +113,8 @@ func TestGetUnitInfo_Success(t *testing.T) {
 	assert.Equal(t, "E203", unitInfo.UnitName)
 	assert.Equal(t, "BranchA", unitInfo.BranchName)
 	assert.Equal(t, "MainBuilding", unitInfo.Building)
-	assert.False(t, unitInfo.IsPublicSpace)
-	assert.False(t, unitInfo.IsMultiPersonRoom)
+	assert.False(t, unitInfo.IsPublic)
+	assert.False(t, unitInfo.IsSharedUnit)
 	assert.Equal(t, "Institutional", unitInfo.UnitType)
 	assert.Contains(t, string(unitInfo.GroupList), "tag1")
 	assert.Contains(t, string(unitInfo.UserList), "user-id-1")
@@ -133,7 +133,7 @@ func TestGetUnitInfo_WithNullGroupList(t *testing.T) {
 	// Setup expected SQL query (groupList and userList are NULL)
 	rows := sqlmock.NewRows([]string{
 		"unit_id", "unit_name", "branch_name", "building",
-		"is_public_space", "is_multi_person_room", "unit_type",
+		"is_public", "is_shared_unit", "unit_type",
 		"groupList", "userList",
 	}).
 		AddRow(

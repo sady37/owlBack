@@ -157,9 +157,13 @@ func main() {
 		deviceStoreHandler := httpapi.NewDeviceStoreHandler(deviceStoreRepo, logger)
 		router.RegisterDeviceStoreRoutes(deviceStoreHandler)
 
-		// 创建 Unit Service 和 Handler
+		// 创建 Unit Service  and Handler
 		branchesRepo := repository.NewPostgresBranchesRepository(db)
-		unitService := service.NewUnitService(unitsRepo, branchesRepo, logger)
+		// 注意：residentsRepo 和 devicesRepo 需要在 UnitService 之前创建
+		residentsRepo := repository.NewPostgresResidentsRepository(db)
+		devicesRepo = repository.NewPostgresDevicesRepository(db)
+		devicesRepo.SetLogger(logger) // Set logger for device connection logging
+		unitService := service.NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, redisClient, logger)
 		unitHandler := httpapi.NewUnitHandler(unitService, logger)
 		router.RegisterUnitRoutes(unitHandler)
 
@@ -172,7 +176,7 @@ func main() {
 		// usersRepo 已在上面创建 RoleService 时声明，这里直接使用
 		// branchesRepo 已在上面创建 UnitService 时声明，这里直接使用
 		userService := service.NewUserService(usersRepo, branchesRepo, db, logger)
-		userHandler := httpapi.NewUserHandler(userService, logger)
+		userHandler := httpapi.NewUserHandler(userService, db, logger)
 		router.RegisterUsersRoutes(userHandler)
 
 		// 创建 DeviceMonitorSettings Service 和 Handler
@@ -200,8 +204,8 @@ func main() {
 		router.RegisterAlarmEventRoutes(alarmEventHandler)
 
 		// 创建 Resident Service 和 Handler
-		residentsRepo := repository.NewPostgresResidentsRepository(db)
-		residentService := service.NewResidentService(residentsRepo, db, logger)
+		residentsRepo = repository.NewPostgresResidentsRepository(db)
+		residentService := service.NewResidentService(residentsRepo, db, redisClient, logger)
 		residentHandler := httpapi.NewResidentHandler(residentService, db, logger)
 		router.RegisterResidentRoutes(residentHandler)
 

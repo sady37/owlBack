@@ -832,7 +832,7 @@ func TestPostgresUnitsRepository_ListRooms(t *testing.T) {
 	}
 
 	// 测试：查询房间列表
-	rooms, err := repo.ListRooms(ctx, tenantID, unitID)
+	rooms, err := repo.ListRooms(ctx, tenantID, unitID, "")
 	if err != nil {
 		t.Fatalf("ListRooms failed: %v", err)
 	}
@@ -923,7 +923,7 @@ func TestPostgresUnitsRepository_ListRoomsWithBeds(t *testing.T) {
 	}
 
 	// 测试：查询房间及其床位
-	roomsWithBeds, err := repo.ListRoomsWithBeds(ctx, tenantID, unitID)
+	roomsWithBeds, err := repo.ListRoomsWithBeds(ctx, tenantID, unitID, "")
 	if err != nil {
 		t.Fatalf("ListRoomsWithBeds failed: %v", err)
 	}
@@ -1296,7 +1296,7 @@ func TestPostgresUnitsRepository_ListBeds(t *testing.T) {
 	}
 
 	// 测试：查询床位列表
-	beds, err := repo.ListBeds(ctx, tenantID, roomID)
+	beds, err := repo.ListBeds(ctx, tenantID, roomID, "")
 	if err != nil {
 		t.Fatalf("ListBeds failed: %v", err)
 	}

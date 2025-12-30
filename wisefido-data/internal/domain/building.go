@@ -17,8 +17,8 @@ type Building struct {
 	TenantID string `db:"tenant_id"` // UUID, NOT NULL
 
 	// 院区关联：引用 branches.branch_id
-	// 注意：可以为 NULL，表示没有特定院区（默认值）
-	BranchID sql.NullString `db:"branch_id"` // UUID, nullable, FK → branches.branch_id
+	// 注意：必填字段，不能为 NULL（业务规则：一家机构必然有一个分支或总部）
+	BranchID sql.NullString `db:"branch_id"` // UUID, NOT NULL, FK → branches.branch_id（业务规则要求）
 
 	// 院区名称：从 branches 表 JOIN 获取（用于显示，不存储在 buildings 表）
 	BranchName sql.NullString `db:"-"` // 不映射到数据库字段，通过 JOIN 获取

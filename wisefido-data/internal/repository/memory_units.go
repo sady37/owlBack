@@ -137,7 +137,7 @@ func (r *MemoryUnitsRepo) DeleteBuilding(_ context.Context, tenantID, buildingID
 
 // ---- UnitsRepo interface ----
 
-func (r *MemoryUnitsRepo) ListBuildings(_ context.Context, tenantID string, branchTag string) ([]map[string]any, error) {
+func (r *MemoryUnitsRepo) ListBuildings(_ context.Context, tenantID string, branchID sql.NullString, branchName string) ([]map[string]any, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := []map[string]any{}
@@ -145,11 +145,18 @@ func (r *MemoryUnitsRepo) ListBuildings(_ context.Context, tenantID string, bran
 		return out, nil
 	}
 	for _, b := range r.buildings[tenantID] {
-		if branchTag != "" {
-			if lt, _ := b["branch_tag"].(string); lt != branchTag {
+		// 优先使用 branch_id 过滤
+		if branchID.Valid && branchID.String != "" {
+			if bid, _ := b["branch_id"].(string); bid != branchID.String {
+				continue
+			}
+		} else if branchName != "" {
+			// 向后兼容：使用 branch_name 过滤
+			if lt, _ := b["branch_tag"].(string); lt != branchName {
 				continue
 			}
 		}
+		// 如果都没有提供，返回所有 buildings
 		out = append(out, b)
 	}
 	return out, nil

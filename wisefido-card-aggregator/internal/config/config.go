@@ -18,15 +18,14 @@ type Config struct {
 		
 		// 卡片创建触发条件
 		// 监听设备/住户/床位绑定关系变化的方式
-		// 选项：polling（轮询）、events（事件驱动，待实现）
-		// 📝 当前状态：使用轮询模式（每60秒全量更新）
-		//     事件驱动模式待 wisefido-data 服务实现后再启用
-		//     详见：docs/PENDING_FEATURES.md
+		// 选项：polling（轮询）、events（事件驱动）
+		// 📝 推荐使用 events 模式（实时响应）
+		//     polling 模式作为保底机制（默认30分钟，1800秒）
 		TriggerMode string // "polling" 或 "events"
 		
 		// 轮询模式配置
 		Polling struct {
-			Interval int // 轮询间隔（秒），默认 60 秒
+			Interval int // 轮询间隔（秒），默认 30 分钟（1800 秒），作为保底机制
 		}
 		
 		// Redis Streams 配置（用于接收事件）
@@ -67,7 +66,14 @@ func Load() (*Config, error) {
 	// 卡片聚合服务配置
 	cfg.Aggregator.TenantID = getEnv("TENANT_ID", "")
 	cfg.Aggregator.TriggerMode = getEnv("CARD_TRIGGER_MODE", "polling")
-	cfg.Aggregator.Polling.Interval = 60 // 默认 60 秒
+	// 轮询间隔：默认 30 分钟（1800 秒），作为保底机制
+	// 事件驱动模式为主要更新方式，轮询模式仅作为保底
+	pollingIntervalStr := getEnv("CARD_POLLING_INTERVAL", "1800")
+	if v, err := strconv.Atoi(pollingIntervalStr); err == nil && v > 0 {
+		cfg.Aggregator.Polling.Interval = v
+	} else {
+		cfg.Aggregator.Polling.Interval = 1800 // 默认 30 分钟（1800 秒）
+	}
 	cfg.Aggregator.EventStream = getEnv("CARD_EVENT_STREAM", "card:events")
 	cfg.Aggregator.ConsumerGroup = getEnv("CARD_CONSUMER_GROUP", "card-aggregator-group")
 	cfg.Aggregator.ConsumerName = getEnv("CARD_CONSUMER_NAME", "card-aggregator-1")

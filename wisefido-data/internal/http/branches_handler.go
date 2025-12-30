@@ -141,10 +141,17 @@ func (h *BranchesHandler) CreateBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 验证：禁止空字符串作为 BranchName
+	branchNameTrimmed := strings.TrimSpace(payload.BranchName)
+	if branchNameTrimmed == "" {
+		writeJSON(w, http.StatusOK, Fail("branch_name cannot be empty"))
+		return
+	}
+
 	// 3. 调用 Service
 	req := service.CreateBranchRequest{
 		TenantID:    tenantID,
-		BranchName:  payload.BranchName,
+		BranchName:  branchNameTrimmed,
 		Description: payload.Description,
 	}
 
@@ -207,9 +214,14 @@ func (h *BranchesHandler) UpdateBranch(w http.ResponseWriter, r *http.Request) {
 		req.Delete = &deleteFlag
 	}
 
-	// 处理 branch_name
+	// 处理 branch_name：禁止空字符串
 	if v, ok := payload["branch_name"].(string); ok {
-		req.BranchName = &v
+		branchNameTrimmed := strings.TrimSpace(v)
+		if branchNameTrimmed == "" {
+			writeJSON(w, http.StatusOK, Fail("branch_name cannot be empty"))
+			return
+		}
+		req.BranchName = &branchNameTrimmed
 	}
 
 	// 处理 description

@@ -128,7 +128,7 @@ func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Reque
 		AlarmTimeStart:  alarmTimeStart,
 		AlarmTimeEnd:    alarmTimeEnd,
 		Resident:        resident,
-		BranchTag:       branchTag,
+		BranchName:      branchTag, // 使用 BranchName 字段（从查询参数 branch_name 获取）
 		UnitName:        unitName,
 		DeviceName:      deviceName,
 		EventTypes:      eventTypes,
@@ -203,17 +203,23 @@ func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Reque
 		}
 
 		// 地址信息
-		if item.BranchTag != nil {
-			itemMap["branch_tag"] = *item.BranchTag
+		if item.BranchID != nil {
+			itemMap["branch_id"] = *item.BranchID
 		}
-		if item.Building != nil {
-			itemMap["building"] = *item.Building
+		if item.BranchName != nil {
+			itemMap["branch_name"] = *item.BranchName
+		}
+		if item.BuildingID != nil {
+			itemMap["building_id"] = *item.BuildingID
+		}
+		if item.BuildingName != nil {
+			itemMap["building_name"] = *item.BuildingName
 		}
 		if item.Floor != nil {
 			itemMap["floor"] = *item.Floor
 		}
-		if item.AreaTag != nil {
-			itemMap["area_tag"] = *item.AreaTag
+		if item.UnitID != nil {
+			itemMap["unit_id"] = *item.UnitID
 		}
 		if item.UnitName != nil {
 			itemMap["unit_name"] = *item.UnitName

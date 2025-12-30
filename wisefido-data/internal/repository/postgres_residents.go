@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -2125,8 +2126,82 @@ func (r *PostgresResidentsRepository) CreateResidentContact(ctx context.Context,
 		alertTimeWindowArg = string(contact.AlertTimeWindow)
 	}
 
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO resident_contacts (
+	// 注意：contact_phone_hash 和 contact_email_hash 列可能不存在于旧版本的数据库中
+	// 如果数据库表没有这些列，则不插入它们
+	// 检查列是否存在（通过尝试查询 information_schema）
+	var hasPhoneHashColumn, hasEmailHashColumn bool
+	err := r.db.QueryRowContext(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns 
+			WHERE table_name = 'resident_contacts' 
+			AND column_name = 'contact_phone_hash'
+			AND table_schema = current_schema()
+		)`,
+	).Scan(&hasPhoneHashColumn)
+	if err != nil {
+		hasPhoneHashColumn = false // 如果查询失败，假设列不存在
+	}
+
+	err = r.db.QueryRowContext(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns 
+			WHERE table_name = 'resident_contacts' 
+			AND column_name = 'contact_email_hash'
+			AND table_schema = current_schema()
+		)`,
+	).Scan(&hasEmailHashColumn)
+	if err != nil {
+		hasEmailHashColumn = false // 如果查询失败，假设列不存在
+	}
+
+	// 处理 hash 字段：如果为空或 nil，则传入 NULL（仅在列存在时）
+	// 注意：数据库字段是 VARCHAR(64)，需要存储 hex 字符串，而不是二进制数据
+	var contactPhoneHashArg any = nil
+	if hasPhoneHashColumn && len(contact.ContactPhoneHash) > 0 {
+		// 将 []byte 转换为 hex 字符串（数据库字段是 VARCHAR(64)）
+		contactPhoneHashArg = hex.EncodeToString(contact.ContactPhoneHash)
+	}
+	var contactEmailHashArg any = nil
+	if hasEmailHashColumn && len(contact.ContactEmailHash) > 0 {
+		// 将 []byte 转换为 hex 字符串（数据库字段是 VARCHAR(64)）
+		contactEmailHashArg = hex.EncodeToString(contact.ContactEmailHash)
+	}
+
+	// 根据列是否存在构建 SQL
+	var insertSQL string
+	var args []any
+
+	if hasPhoneHashColumn && hasEmailHashColumn {
+		// 两个 hash 列都存在
+		insertSQL = `INSERT INTO resident_contacts (
+			tenant_id, resident_id, slot, relationship,
+			is_enabled, alert_time_window,
+			contact_first_name, contact_last_name, contact_phone, contact_email,
+			contact_phone_hash, contact_email_hash,
+			receive_sms, receive_email
+		) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14)
+		ON CONFLICT (tenant_id, resident_id, slot) DO UPDATE SET
+			relationship = EXCLUDED.relationship,
+			is_enabled = EXCLUDED.is_enabled,
+			alert_time_window = EXCLUDED.alert_time_window,
+			contact_first_name = EXCLUDED.contact_first_name,
+			contact_last_name = EXCLUDED.contact_last_name,
+			contact_phone = EXCLUDED.contact_phone,
+			contact_email = EXCLUDED.contact_email,
+			contact_phone_hash = EXCLUDED.contact_phone_hash,
+			contact_email_hash = EXCLUDED.contact_email_hash,
+			receive_sms = EXCLUDED.receive_sms,
+			receive_email = EXCLUDED.receive_email`
+		args = []any{
+			tenantID, residentID, contact.Slot, relationshipArg,
+			contact.IsEnabled, alertTimeWindowArg,
+			contactFirstNameArg, contactLastNameArg, contactPhoneArg, contactEmailArg,
+			contactPhoneHashArg, contactEmailHashArg,
+			contact.ReceiveSMS, contact.ReceiveEmail,
+		}
+	} else {
+		// 至少一个 hash 列不存在，不插入 hash 列
+		insertSQL = `INSERT INTO resident_contacts (
 			tenant_id, resident_id, slot, relationship,
 			is_enabled, alert_time_window,
 			contact_first_name, contact_last_name, contact_phone, contact_email,
@@ -2141,12 +2216,16 @@ func (r *PostgresResidentsRepository) CreateResidentContact(ctx context.Context,
 			contact_phone = EXCLUDED.contact_phone,
 			contact_email = EXCLUDED.contact_email,
 			receive_sms = EXCLUDED.receive_sms,
-			receive_email = EXCLUDED.receive_email`,
-		tenantID, residentID, contact.Slot, relationshipArg,
-		contact.IsEnabled, alertTimeWindowArg,
-		contactFirstNameArg, contactLastNameArg, contactPhoneArg, contactEmailArg,
-		contact.ReceiveSMS, contact.ReceiveEmail,
-	)
+			receive_email = EXCLUDED.receive_email`
+		args = []any{
+			tenantID, residentID, contact.Slot, relationshipArg,
+			contact.IsEnabled, alertTimeWindowArg,
+			contactFirstNameArg, contactLastNameArg, contactPhoneArg, contactEmailArg,
+			contact.ReceiveSMS, contact.ReceiveEmail,
+		}
+	}
+
+	_, err = r.db.ExecContext(ctx, insertSQL, args...)
 	if err != nil {
 		return "", fmt.Errorf("failed to create resident contact: %w", err)
 	}
@@ -2221,6 +2300,26 @@ func (r *PostgresResidentsRepository) UpdateResidentContact(ctx context.Context,
 		argIdx++
 	} else {
 		updates = append(updates, "contact_email = NULL")
+	}
+
+	if len(contact.ContactPhoneHash) > 0 {
+		// 将 []byte 转换为 hex 字符串（数据库字段是 VARCHAR(64)）
+		hexString := hex.EncodeToString(contact.ContactPhoneHash)
+		updates = append(updates, fmt.Sprintf("contact_phone_hash = $%d", argIdx))
+		args = append(args, hexString)
+		argIdx++
+	} else {
+		updates = append(updates, "contact_phone_hash = NULL")
+	}
+
+	if len(contact.ContactEmailHash) > 0 {
+		// 将 []byte 转换为 hex 字符串（数据库字段是 VARCHAR(64)）
+		hexString := hex.EncodeToString(contact.ContactEmailHash)
+		updates = append(updates, fmt.Sprintf("contact_email_hash = $%d", argIdx))
+		args = append(args, hexString)
+		argIdx++
+	} else {
+		updates = append(updates, "contact_email_hash = NULL")
 	}
 
 	updates = append(updates, fmt.Sprintf("receive_sms = $%d", argIdx))
@@ -2332,6 +2431,32 @@ func (r *PostgresResidentsRepository) UpdateResidentContactFields(ctx context.Co
 			switch updateField.Action {
 			case domain.UpdateActionUpdate:
 				addUpdate(col, updateField.Value)
+			case domain.UpdateActionDelete:
+				updates = append(updates, fmt.Sprintf("%s = NULL", col))
+			case domain.UpdateActionKeep:
+				// Do nothing
+			}
+		}
+	}
+
+	// Handle nullable bytes fields (hash fields)
+	// 注意：数据库字段是 VARCHAR(64)，需要存储 hex 字符串，而不是二进制数据
+	nullableBytesFields := map[string]*domain.UpdateBytes{
+		"contact_phone_hash": update.ContactPhoneHash,
+		"contact_email_hash": update.ContactEmailHash,
+	}
+
+	for col, updateField := range nullableBytesFields {
+		if updateField != nil {
+			switch updateField.Action {
+			case domain.UpdateActionUpdate:
+				if len(updateField.Value) > 0 {
+					// 将 []byte 转换为 hex 字符串（数据库字段是 VARCHAR(64)）
+					hexString := hex.EncodeToString(updateField.Value)
+					addUpdate(col, hexString)
+				} else {
+					updates = append(updates, fmt.Sprintf("%s = NULL", col))
+				}
 			case domain.UpdateActionDelete:
 				updates = append(updates, fmt.Sprintf("%s = NULL", col))
 			case domain.UpdateActionKeep:

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"wisefido-data/internal/domain"
@@ -71,7 +72,7 @@ type ListAlarmEventsRequest struct {
 
 	// 搜索参数（模糊匹配）
 	Resident   string // 住户搜索（姓名或账号）
-	BranchTag  string // 位置标签搜索
+	BranchName string // 分支名称搜索
 	UnitName   string // 单元名称搜索
 	DeviceName string // 设备名称搜索
 
@@ -135,18 +136,17 @@ type AlarmEventDTO struct {
 
 	// 地址信息（通过 device → unit/room/bed → locations 获取）
 	BranchID       *string `json:"branch_id,omitempty"`       // 分支ID（前端需要 ID 来选择对象）
-	BranchTag      *string `json:"branch_tag,omitempty"`      // 分支标签（用于显示，向后兼容）
+	BranchName     *string `json:"branch_name,omitempty"`     // 分支名称（用于显示）
 	BuildingID     *string `json:"building_id,omitempty"`     // 建筑ID（前端需要 ID 来选择对象）
-	Building       *string `json:"building,omitempty"`        // 建筑名称（用于显示，向后兼容）
-	Floor          *string `json:"floor,omitempty"`           // 楼层（如 "2F"）
-	AreaTag        *string `json:"area_tag,omitempty"`        // 区域标签（从 units 表获取）
+	BuildingName   *string `json:"building_name,omitempty"`   // 建筑名称（用于显示）
+	Floor          *int    `json:"floor,omitempty"`           // 楼层（数字，如 1, 2, 3，前端显示为 "1F", "2F"）
 	UnitID         *string `json:"unit_id,omitempty"`         // 单元ID（前端需要 ID 来选择对象）
-	UnitName       *string `json:"unit_name,omitempty"`       // 单元名称（用于显示，向后兼容）
+	UnitName       *string `json:"unit_name,omitempty"`       // 单元名称（用于显示）
 	RoomID         *string `json:"room_id,omitempty"`         // 房间ID（前端需要 ID 来选择对象）
-	RoomName       *string `json:"room_name,omitempty"`       // 房间名称（从 rooms 表获取）
+	RoomName       *string `json:"room_name,omitempty"`       // 房间名称（用于显示）
 	BedID          *string `json:"bed_id,omitempty"`          // 床位ID（前端需要 ID 来选择对象）
-	BedName        *string `json:"bed_name,omitempty"`        // 床位名称（从 beds 表获取）
-	AddressDisplay *string `json:"address_display,omitempty"` // 格式化地址显示（"branch_tag-Building-UnitName"）
+	BedName        *string `json:"bed_name,omitempty"`        // 床位名称（用于显示）
+	AddressDisplay *string `json:"address_display,omitempty"` // 格式化地址显示（"branch_name-building_name-floor-unit_name-room_name-bed_name"）
 
 	// JSONB 字段（解析后返回）
 	TriggerData   map[string]interface{} `json:"trigger_data,omitempty"`   // 触发数据快照
@@ -160,7 +160,7 @@ type HandleAlarmEventRequest struct {
 	TenantID        string // 租户ID
 	EventID         string // 报警事件ID
 	CurrentUserID   string // 当前用户ID（处理人）
-	CurrentUserType string // 当前用户类型：'resident' | 'family' | 'staff'（用于权限检查）
+	CurrentUserType string // 当前用户类型：'resident' | 'staff'（注意：'family' 已被禁止，resident_contacts 不能登录系统）
 	CurrentUserRole string // 当前用户角色（用于权限检查）
 
 	// 处理参数
@@ -231,8 +231,8 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 	if req.DeviceName != "" {
 		filters.DeviceName = &req.DeviceName
 	}
-	if req.BranchTag != "" {
-		filters.BranchTag = &req.BranchTag
+	if req.BranchName != "" {
+		filters.BranchTag = &req.BranchName // Repository 层仍使用 BranchTag 字段名，但实际存储的是 branch_name
 	}
 	// 注意：Resident 和 UnitName 搜索需要更复杂的 JOIN，暂时先不实现
 	// 后续可以在 Repository 层扩展
@@ -272,8 +272,346 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 	}
 
 	// 权限过滤（根据用户角色）
-	// 注意：权限过滤逻辑需要在 Repository 层或 Service 层实现
-	// 暂时先不实现，后续根据需求添加
+	// 注意：权限过滤逻辑在 Service 层实现，参考 card 创建逻辑
+	// 对于 Resident 用户：
+	//   - shareUnit: 只能看到绑定到自己 bed 的设备（不能看到公共区域的设备）
+	//   - 非 shareUnit: 该 unit 的住户能看到该 unit 下所有的 device（包括绑定到 bed 和绑定到 room 的设备）
+	// 对于 Staff 用户：
+	//   - Caregiver/Nurse: 通过指定的 resident → unit，可以看到该 unit 下的所有 device
+	//   - Manager: 指定 Branchs 的所有报警
+	//   - Admin: tenant 下的所有报警（不需要过滤）
+
+	// 判断用户类型（通过查询 users 或 residents 表）
+	var residentBedID, residentUnitID sql.NullString
+	var isSharedUnit bool
+	var userRole string
+
+	// 先尝试从 users 表查询（staff 用户）
+	var userAccount sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT user_account, role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+		req.TenantID, req.CurrentUserID,
+	).Scan(&userAccount, &userRole)
+
+	if err == nil && userAccount.Valid {
+		// Staff 用户：根据角色进行权限过滤
+		userRole = strings.TrimSpace(userRole)
+
+		if strings.EqualFold(userRole, "Admin") {
+			// Admin: tenant 下的所有报警，不需要过滤
+			// 不设置 filters.DeviceIDs，允许查看所有设备
+		} else if strings.EqualFold(userRole, "Manager") {
+			// Manager: 指定 Branchs 的所有报警
+			// 查询用户关联的 branch_id 列表
+			userBranchIDs, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
+			if err != nil {
+				s.logger.Warn("Failed to get user branch IDs for Manager, returning empty list",
+					zap.String("user_id", req.CurrentUserID),
+					zap.Error(err),
+				)
+				return &ListAlarmEventsResponse{
+					Items: []*AlarmEventDTO{},
+					Pagination: PaginationDTO{
+						Size:  req.PageSize,
+						Page:  req.Page,
+						Count: 0,
+						Total: 0,
+					},
+				}, nil
+			}
+
+			if len(userBranchIDs) == 0 {
+				// 用户没有关联任何 branch，返回空列表
+				return &ListAlarmEventsResponse{
+					Items: []*AlarmEventDTO{},
+					Pagination: PaginationDTO{
+						Size:  req.PageSize,
+						Page:  req.Page,
+						Count: 0,
+						Total: 0,
+					},
+				}, nil
+			}
+
+			// 查询这些 branch 下的所有 unit_ids
+			allUnitIDs, err := s.getUnitIDsByBranchIDs(ctx, req.TenantID, userBranchIDs)
+			if err != nil {
+				s.logger.Warn("Failed to get unit IDs for Manager branches, returning empty list",
+					zap.Error(err),
+				)
+				return &ListAlarmEventsResponse{
+					Items: []*AlarmEventDTO{},
+					Pagination: PaginationDTO{
+						Size:  req.PageSize,
+						Page:  req.Page,
+						Count: 0,
+						Total: 0,
+					},
+				}, nil
+			}
+
+			if len(allUnitIDs) == 0 {
+				// 没有关联的 unit，返回空列表
+				return &ListAlarmEventsResponse{
+					Items: []*AlarmEventDTO{},
+					Pagination: PaginationDTO{
+						Size:  req.PageSize,
+						Page:  req.Page,
+						Count: 0,
+						Total: 0,
+					},
+				}, nil
+			}
+
+			// 查询这些 unit 下的所有 device_ids
+			allowedDeviceIDs, err := s.getDeviceIDsByUnitIDs(ctx, req.TenantID, allUnitIDs)
+			if err != nil {
+				s.logger.Warn("Failed to get device IDs for Manager units, returning empty list",
+					zap.Error(err),
+				)
+				return &ListAlarmEventsResponse{
+					Items: []*AlarmEventDTO{},
+					Pagination: PaginationDTO{
+						Size:  req.PageSize,
+						Page:  req.Page,
+						Count: 0,
+						Total: 0,
+					},
+				}, nil
+			}
+
+			if len(allowedDeviceIDs) == 0 {
+				return &ListAlarmEventsResponse{
+					Items: []*AlarmEventDTO{},
+					Pagination: PaginationDTO{
+						Size:  req.PageSize,
+						Page:  req.Page,
+						Count: 0,
+						Total: 0,
+					},
+				}, nil
+			}
+
+			// 将允许的 device_ids 添加到过滤器中
+			if len(filters.DeviceIDs) > 0 {
+				// 取交集
+				allowedSet := make(map[string]bool)
+				for _, id := range allowedDeviceIDs {
+					allowedSet[id] = true
+				}
+				filteredDeviceIDs := []string{}
+				for _, id := range filters.DeviceIDs {
+					if allowedSet[id] {
+						filteredDeviceIDs = append(filteredDeviceIDs, id)
+					}
+				}
+				filters.DeviceIDs = filteredDeviceIDs
+			} else {
+				filters.DeviceIDs = allowedDeviceIDs
+			}
+		} else if strings.EqualFold(userRole, "Caregiver") || strings.EqualFold(userRole, "Nurse") {
+			// Caregiver/Nurse: 通过指定的 resident → unit，可以看到该 unit 下的所有 device
+			// 查询分配给该用户的 resident 列表
+			assignedResidentIDs, err := s.getAssignedResidentIDs(ctx, req.TenantID, req.CurrentUserID)
+			if err != nil {
+				s.logger.Warn("Failed to get assigned resident IDs for Caregiver/Nurse, returning empty list",
+					zap.String("user_id", req.CurrentUserID),
+					zap.Error(err),
+				)
+				return &ListAlarmEventsResponse{
+					Items: []*AlarmEventDTO{},
+					Pagination: PaginationDTO{
+						Size:  req.PageSize,
+						Page:  req.Page,
+						Count: 0,
+						Total: 0,
+					},
+				}, nil
+			}
+
+			if len(assignedResidentIDs) == 0 {
+				// 没有分配的 resident，返回空列表
+				return &ListAlarmEventsResponse{
+					Items: []*AlarmEventDTO{},
+					Pagination: PaginationDTO{
+						Size:  req.PageSize,
+						Page:  req.Page,
+						Count: 0,
+						Total: 0,
+					},
+				}, nil
+			}
+
+			// 查询这些 resident 的 unit_id 列表
+			unitIDs, err := s.getUnitIDsByResidentIDs(ctx, req.TenantID, assignedResidentIDs)
+			if err != nil {
+				s.logger.Warn("Failed to get unit IDs for assigned residents, returning empty list",
+					zap.Error(err),
+				)
+				return &ListAlarmEventsResponse{
+					Items: []*AlarmEventDTO{},
+					Pagination: PaginationDTO{
+						Size:  req.PageSize,
+						Page:  req.Page,
+						Count: 0,
+						Total: 0,
+					},
+				}, nil
+			}
+
+			if len(unitIDs) == 0 {
+				return &ListAlarmEventsResponse{
+					Items: []*AlarmEventDTO{},
+					Pagination: PaginationDTO{
+						Size:  req.PageSize,
+						Page:  req.Page,
+						Count: 0,
+						Total: 0,
+					},
+				}, nil
+			}
+
+			// 查询这些 unit 下的所有 device_ids（该 unit 下所有的 device，包括绑定到 bed 和绑定到 room 的）
+			allowedDeviceIDs, err := s.getDeviceIDsByUnitIDs(ctx, req.TenantID, unitIDs)
+			if err != nil {
+				s.logger.Warn("Failed to get device IDs for Caregiver/Nurse units, returning empty list",
+					zap.Error(err),
+				)
+				return &ListAlarmEventsResponse{
+					Items: []*AlarmEventDTO{},
+					Pagination: PaginationDTO{
+						Size:  req.PageSize,
+						Page:  req.Page,
+						Count: 0,
+						Total: 0,
+					},
+				}, nil
+			}
+
+			if len(allowedDeviceIDs) == 0 {
+				return &ListAlarmEventsResponse{
+					Items: []*AlarmEventDTO{},
+					Pagination: PaginationDTO{
+						Size:  req.PageSize,
+						Page:  req.Page,
+						Count: 0,
+						Total: 0,
+					},
+				}, nil
+			}
+
+			// 将允许的 device_ids 添加到过滤器中
+			if len(filters.DeviceIDs) > 0 {
+				// 取交集
+				allowedSet := make(map[string]bool)
+				for _, id := range allowedDeviceIDs {
+					allowedSet[id] = true
+				}
+				filteredDeviceIDs := []string{}
+				for _, id := range filters.DeviceIDs {
+					if allowedSet[id] {
+						filteredDeviceIDs = append(filteredDeviceIDs, id)
+					}
+				}
+				filters.DeviceIDs = filteredDeviceIDs
+			} else {
+				filters.DeviceIDs = allowedDeviceIDs
+			}
+		} else {
+			// 其他 Staff 角色（如 IT）：暂时不进行权限过滤，允许查看所有报警
+			// 或者可以根据需要添加其他角色的权限逻辑
+		}
+	} else {
+		// 尝试从 residents 表查询（resident 用户）
+		err = s.db.QueryRowContext(ctx,
+			`SELECT bed_id, unit_id 
+			 FROM residents 
+			 WHERE tenant_id = $1 AND resident_id::text = $2`,
+			req.TenantID, req.CurrentUserID,
+		).Scan(&residentBedID, &residentUnitID)
+
+		if err == nil {
+			// Resident 用户：查询 unit 的 is_shared_unit
+			if residentUnitID.Valid {
+				err = s.db.QueryRowContext(ctx,
+					`SELECT is_shared_unit 
+					 FROM units 
+					 WHERE tenant_id = $1 AND unit_id = $2`,
+					req.TenantID, residentUnitID.String,
+				).Scan(&isSharedUnit)
+				if err != nil {
+					s.logger.Warn("Failed to get unit is_shared_unit, defaulting to false",
+						zap.String("unit_id", residentUnitID.String),
+						zap.Error(err),
+					)
+					isSharedUnit = false
+				}
+			}
+
+			// 查询该 resident 有权限查看的设备
+			allowedDeviceIDs, err := s.getDeviceIDsForResident(ctx, req.TenantID, req.CurrentUserID, residentBedID, residentUnitID, isSharedUnit)
+			if err != nil {
+				s.logger.Warn("Failed to get device IDs for resident, returning empty list",
+					zap.String("resident_id", req.CurrentUserID),
+					zap.Error(err),
+				)
+				return &ListAlarmEventsResponse{
+					Items: []*AlarmEventDTO{},
+					Pagination: PaginationDTO{
+						Size:  req.PageSize,
+						Page:  req.Page,
+						Count: 0,
+						Total: 0,
+					},
+				}, nil
+			}
+
+			if len(allowedDeviceIDs) == 0 {
+				// 如果没有关联的设备，返回空列表
+				return &ListAlarmEventsResponse{
+					Items: []*AlarmEventDTO{},
+					Pagination: PaginationDTO{
+						Size:  req.PageSize,
+						Page:  req.Page,
+						Count: 0,
+						Total: 0,
+					},
+				}, nil
+			}
+
+			// 将允许的 device_ids 添加到过滤器中
+			if len(filters.DeviceIDs) > 0 {
+				// 取交集：只保留既在 filters.DeviceIDs 中，又在 allowedDeviceIDs 中的设备
+				allowedSet := make(map[string]bool)
+				for _, id := range allowedDeviceIDs {
+					allowedSet[id] = true
+				}
+				filteredDeviceIDs := []string{}
+				for _, id := range filters.DeviceIDs {
+					if allowedSet[id] {
+						filteredDeviceIDs = append(filteredDeviceIDs, id)
+					}
+				}
+				filters.DeviceIDs = filteredDeviceIDs
+			} else {
+				filters.DeviceIDs = allowedDeviceIDs
+			}
+		} else {
+			// 既不是 staff 也不是 resident，返回空列表
+			s.logger.Warn("User not found in users or residents table",
+				zap.String("user_id", req.CurrentUserID),
+			)
+			return &ListAlarmEventsResponse{
+				Items: []*AlarmEventDTO{},
+				Pagination: PaginationDTO{
+					Size:  req.PageSize,
+					Page:  req.Page,
+					Count: 0,
+					Total: 0,
+				},
+			}, nil
+		}
+	}
 
 	// 调用 Repository
 	events, total, err := s.alarmEventsRepo.ListAlarmEvents(ctx, req.TenantID, filters, req.Page, req.PageSize)
@@ -530,17 +868,35 @@ func (s *alarmEventService) enrichAlarmEventDTO(ctx context.Context, tenantID st
 					dto.BranchID = &unit.BranchID.String
 					// 查询 branch_name
 					if unit.BranchName.Valid && unit.BranchName.String != "" {
-						dto.BranchTag = &unit.BranchName.String
+						dto.BranchName = &unit.BranchName.String
 					}
 				}
 				// 设置 building_name（从 unit.BuildingName 获取）
 				if unit.BuildingName.Valid && unit.BuildingName.String != "" {
-					dto.Building = &unit.BuildingName.String
+					dto.BuildingName = &unit.BuildingName.String
 					// 注意：building_id 需要从 buildings 表查询，暂时不设置
 				}
-				// 设置 floor
+				// 设置 floor（从 string "1F" 转换为 number 1）
 				if unit.Floor.Valid && unit.Floor.String != "" {
-					dto.Floor = &unit.Floor.String
+					// 提取数字部分（如 "1F" -> 1, "2F" -> 2）
+					floorStr := unit.Floor.String
+					// 移除 "F" 后缀并提取数字
+					floorNum := 0
+					if len(floorStr) > 0 {
+						// 尝试解析数字（支持 "1F", "1", "2F" 等格式）
+						var n int
+						if _, err := fmt.Sscanf(floorStr, "%d", &n); err == nil {
+							floorNum = n
+						} else if len(floorStr) > 1 && floorStr[len(floorStr)-1] == 'F' {
+							// 处理 "1F" 格式
+							if _, err := fmt.Sscanf(floorStr[:len(floorStr)-1], "%d", &n); err == nil {
+								floorNum = n
+							}
+						}
+					}
+					if floorNum > 0 {
+						dto.Floor = &floorNum
+					}
 				}
 			}
 		}
@@ -623,23 +979,45 @@ func (s *alarmEventService) checkHandlePermission(ctx context.Context, tenantID,
 				// 检查权限配置
 				perm, err := s.getResourcePermission(ctx, userRole, "residents", "R")
 				if err == nil && perm.BranchOnly {
-					// 获取用户的 branch_tag
-					var userBranchTag sql.NullString
-					err := s.db.QueryRowContext(ctx,
-						`SELECT branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+					// 获取用户的 branch_id 列表（从 user_branches 表）
+					rows, err := s.db.QueryContext(ctx,
+						`SELECT branch_id::text FROM user_branches WHERE tenant_id = $1 AND user_id::text = $2`,
 						tenantID, userID,
-					).Scan(&userBranchTag)
+					)
 					if err == nil {
-						// 检查住户的 branch_tag
-						if !userBranchTag.Valid || userBranchTag.String == "" {
-							// 用户 branch_tag 为 NULL：只能访问 branch_tag 为 NULL 或 '-' 的住户
-							if residentInfo.BranchTag.Valid && residentInfo.BranchTag.String != "" && residentInfo.BranchTag.String != "-" {
-								return fmt.Errorf("access denied: can only access residents with branch_tag NULL or '-'")
+						defer rows.Close()
+						userBranchIDs := make(map[string]bool)
+						for rows.Next() {
+							var branchID sql.NullString
+							if err := rows.Scan(&branchID); err == nil && branchID.Valid {
+								userBranchIDs[branchID.String] = true
+							}
+						}
+
+						// 获取住户的 branch_id（通过 unit_id → units.branch_id）
+						if residentInfo.UnitID.Valid && residentInfo.UnitID.String != "" {
+							var residentBranchID sql.NullString
+							err := s.db.QueryRowContext(ctx,
+								`SELECT branch_id::text FROM units WHERE tenant_id = $1 AND unit_id = $2`,
+								tenantID, residentInfo.UnitID.String,
+							).Scan(&residentBranchID)
+							if err == nil {
+								if len(userBranchIDs) == 0 {
+									// 用户没有关联任何 branch：只能访问 branch_id 为 NULL 的住户
+									if residentBranchID.Valid && residentBranchID.String != "" {
+										return fmt.Errorf("access denied: can only access residents with null branch_id")
+									}
+								} else {
+									// 用户有关联 branch：只能访问匹配的 branch
+									if !residentBranchID.Valid || !userBranchIDs[residentBranchID.String] {
+										return fmt.Errorf("access denied: resident belongs to different branch")
+									}
+								}
 							}
 						} else {
-							// 用户 branch_tag 有值：只能访问匹配的 branch
-							if !residentInfo.BranchTag.Valid || residentInfo.BranchTag.String != userBranchTag.String {
-								return fmt.Errorf("access denied: resident belongs to different branch")
+							// 住户没有 unit_id：如果用户有 branch 限制，不允许访问
+							if len(userBranchIDs) > 0 {
+								return fmt.Errorf("access denied: resident has no unit_id")
 							}
 						}
 					}
@@ -663,7 +1041,7 @@ type PermissionCheck struct {
 
 // getResourcePermission 查询资源权限配置
 // 从 role_permissions 表中查询指定角色对指定资源的权限配置
-// 
+//
 // 注意: permission_scope 值映射:
 //   - 'A' = All (no restriction) → assigned_only=false, branch_only=false
 //   - 'S' = assigned_only → assigned_only=true, branch_only=false
@@ -719,7 +1097,7 @@ func (s *alarmEventService) getResourcePermission(ctx context.Context, roleCode,
 // residentInfo 住户信息（用于权限检查）
 type residentInfo struct {
 	ResidentID string
-	BranchTag  sql.NullString
+	BranchName sql.NullString // 从 units.branch_name 获取（通过 JOIN branches 表）
 	UnitID     sql.NullString
 }
 
@@ -746,7 +1124,7 @@ func (s *alarmEventService) getResidentByDeviceID(ctx context.Context, tenantID,
 	var info residentInfo
 	err := s.db.QueryRowContext(ctx, query, tenantID, deviceID).Scan(
 		&info.ResidentID,
-		&info.BranchTag,
+		&info.BranchName,
 		&info.UnitID,
 	)
 	if err != nil {
@@ -822,6 +1200,490 @@ func (s *alarmEventService) getCardDeviceIDs(ctx context.Context, tenantID, card
 	}
 
 	return deviceIDs, nil
+}
+
+// getDeviceIDsForResident 查询住户有权限查看的设备 ID 列表
+// 优先通过 card 表查找，失败时回退到直接查询 devices 表
+// 参考 card 创建逻辑：
+//   - shareUnit: 只能看到绑定到自己 bed 的设备（不能看到公共区域的设备）
+//   - 非 shareUnit: 可以看到绑定到自己 bed 的设备，以及同一 unit 下未绑定到 bed 的设备（绑定到 room 的设备）
+func (s *alarmEventService) getDeviceIDsForResident(ctx context.Context, tenantID, residentID string, bedID, unitID sql.NullString, isSharedUnit bool) ([]string, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("database connection not available")
+	}
+
+	// 优先尝试通过 card 表查找
+	deviceIDs, err := s.getDeviceIDsFromCardsForResident(ctx, tenantID, bedID, unitID, isSharedUnit)
+	if err == nil && len(deviceIDs) > 0 {
+		// 成功从 card 表获取，直接返回
+		return deviceIDs, nil
+	}
+
+	// card 表查找失败，回退到直接查询 devices 表
+	if err != nil {
+		s.logger.Warn("Failed to get device IDs from cards, falling back to direct query",
+			zap.String("resident_id", residentID),
+			zap.Error(err),
+		)
+	}
+
+	var query string
+	var args []interface{}
+
+	if isSharedUnit {
+		// shareUnit: 只能看到绑定到自己 bed 的设备
+		if !bedID.Valid {
+			// 如果没有 bed_id，返回空列表
+			return []string{}, nil
+		}
+		query = `
+			SELECT DISTINCT d.device_id::text
+			FROM devices d
+			WHERE d.tenant_id = $1
+			  AND d.bound_bed_id = $2
+			  AND d.status <> 'disabled'
+		`
+		args = []interface{}{tenantID, bedID.String}
+	} else {
+		// 非 shareUnit: 该 unit 的住户能看到该 unit 下所有的 device（包括绑定到 bed 和绑定到 room 的设备）
+		if !unitID.Valid {
+			// 如果没有 unit_id，返回空列表
+			return []string{}, nil
+		}
+
+		// 查询该 unit 下所有的 device（无论绑定到 bed 还是 room）
+		query = `
+				SELECT DISTINCT d.device_id::text
+				FROM devices d
+				LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND b.tenant_id = $1
+				LEFT JOIN rooms r1 ON b.room_id = r1.room_id AND r1.tenant_id = $1
+				LEFT JOIN rooms r2 ON d.bound_room_id = r2.room_id AND r2.tenant_id = $1
+				WHERE d.tenant_id = $1
+				  AND (
+					-- 路径1: 设备绑定到 bed，bed 属于该 unit
+					(d.bound_bed_id IS NOT NULL AND r1.unit_id = $2)
+					-- 路径2: 设备绑定到 room，room 属于该 unit
+					OR (d.bound_room_id IS NOT NULL AND r2.unit_id = $2)
+				  )
+				  AND d.status <> 'disabled'
+			`
+		args = []interface{}{tenantID, unitID.String}
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query device IDs for resident: %w", err)
+	}
+	defer rows.Close()
+
+	deviceIDs = []string{}
+	for rows.Next() {
+		var deviceID string
+		if err := rows.Scan(&deviceID); err != nil {
+			return nil, fmt.Errorf("failed to scan device ID: %w", err)
+		}
+		deviceIDs = append(deviceIDs, deviceID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating device IDs: %w", err)
+	}
+
+	return deviceIDs, nil
+}
+
+// getDeviceIDsFromCardsForResident 通过 card 表查询住户有权限查看的设备 ID 列表
+func (s *alarmEventService) getDeviceIDsFromCardsForResident(ctx context.Context, tenantID string, bedID, unitID sql.NullString, isSharedUnit bool) ([]string, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("database connection not available")
+	}
+
+	var query string
+	var args []interface{}
+
+	if isSharedUnit {
+		// shareUnit: 通过 bed_id 查找 ActiveBed card
+		if !bedID.Valid {
+			return []string{}, nil
+		}
+		query = `
+			SELECT devices
+			FROM cards
+			WHERE tenant_id = $1
+			  AND card_type = 'ActiveBed'
+			  AND bed_id = $2
+			LIMIT 1
+		`
+		args = []interface{}{tenantID, bedID.String}
+	} else {
+		// 非 shareUnit: 查找该 unit 下的所有 card（ActiveBed 和 Location）
+		if !unitID.Valid {
+			return []string{}, nil
+		}
+		query = `
+			SELECT devices
+			FROM cards
+			WHERE tenant_id = $1
+			  AND (
+				(card_type = 'ActiveBed' AND bed_id IN (
+					SELECT bed_id FROM beds WHERE room_id IN (
+						SELECT room_id FROM rooms WHERE unit_id = $2
+					)
+				))
+				OR (card_type = 'Location' AND unit_id = $2)
+			  )
+		`
+		args = []interface{}{tenantID, unitID.String}
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query cards: %w", err)
+	}
+	defer rows.Close()
+
+	deviceIDSet := make(map[string]bool)
+	for rows.Next() {
+		var devicesJSON []byte
+		if err := rows.Scan(&devicesJSON); err != nil {
+			continue
+		}
+
+		// 解析 JSONB 数组
+		var devices []map[string]interface{}
+		if err := json.Unmarshal(devicesJSON, &devices); err != nil {
+			continue
+		}
+
+		// 提取 device_id
+		for _, device := range devices {
+			if deviceID, ok := device["device_id"].(string); ok {
+				deviceIDSet[deviceID] = true
+			}
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating cards: %w", err)
+	}
+
+	// 转换为数组
+	deviceIDs := make([]string, 0, len(deviceIDSet))
+	for deviceID := range deviceIDSet {
+		deviceIDs = append(deviceIDs, deviceID)
+	}
+
+	return deviceIDs, nil
+}
+
+// getUserBranchIDs 查询用户所属的 branch_id 列表
+func (s *alarmEventService) getUserBranchIDs(ctx context.Context, tenantID, userID string) ([]string, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("database connection not available")
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT branch_id::text 
+		 FROM user_branches 
+		 WHERE tenant_id = $1 AND user_id::text = $2`,
+		tenantID, userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query user branch IDs: %w", err)
+	}
+	defer rows.Close()
+
+	branchIDs := []string{}
+	for rows.Next() {
+		var branchID sql.NullString
+		if err := rows.Scan(&branchID); err == nil && branchID.Valid {
+			branchIDs = append(branchIDs, branchID.String)
+		}
+	}
+
+	return branchIDs, rows.Err()
+}
+
+// getUnitIDsByBranchIDs 通过多个 branch_id 查询所有关联的 unit_ids
+func (s *alarmEventService) getUnitIDsByBranchIDs(ctx context.Context, tenantID string, branchIDs []string) ([]string, error) {
+	if len(branchIDs) == 0 {
+		return []string{}, nil
+	}
+
+	if s.db == nil {
+		return nil, fmt.Errorf("database connection not available")
+	}
+
+	// 构建 IN 查询的占位符
+	placeholders := make([]string, len(branchIDs))
+	args := make([]interface{}, len(branchIDs)+1)
+	args[0] = tenantID
+	for i, branchID := range branchIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		args[i+1] = branchID
+	}
+
+	query := fmt.Sprintf(`
+		SELECT DISTINCT unit_id::text
+		FROM units
+		WHERE tenant_id = $1 AND branch_id::text IN (%s)
+	`, strings.Join(placeholders, ", "))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query unit IDs by branch IDs: %w", err)
+	}
+	defer rows.Close()
+
+	unitIDs := []string{}
+	for rows.Next() {
+		var unitID string
+		if err := rows.Scan(&unitID); err != nil {
+			return nil, fmt.Errorf("failed to scan unit ID: %w", err)
+		}
+		unitIDs = append(unitIDs, unitID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating unit IDs: %w", err)
+	}
+
+	return unitIDs, nil
+}
+
+// getDeviceIDsByUnitIDs 通过多个 unit_id 查询关联的所有 device_ids
+// 优先通过 card 表查找，失败时回退到直接查询 devices 表
+// 查询路径：units → cards → devices（优先）或 units → rooms → devices（回退）
+// 返回该 unit 下所有的 device（包括绑定到 bed 和绑定到 room 的设备）
+func (s *alarmEventService) getDeviceIDsByUnitIDs(ctx context.Context, tenantID string, unitIDs []string) ([]string, error) {
+	if len(unitIDs) == 0 {
+		return []string{}, nil
+	}
+
+	if s.db == nil {
+		return nil, fmt.Errorf("database connection not available")
+	}
+
+	// 优先尝试通过 card 表查找
+	deviceIDs, err := s.getDeviceIDsFromCardsByUnitIDs(ctx, tenantID, unitIDs)
+	if err == nil && len(deviceIDs) > 0 {
+		// 成功从 card 表获取，直接返回
+		return deviceIDs, nil
+	}
+
+	// card 表查找失败，回退到直接查询 devices 表
+	if err != nil {
+		s.logger.Warn("Failed to get device IDs from cards, falling back to direct query",
+			zap.Strings("unit_ids", unitIDs),
+			zap.Error(err),
+		)
+	}
+
+	// 构建 IN 查询的占位符
+	placeholders := make([]string, len(unitIDs))
+	args := make([]interface{}, len(unitIDs)+1)
+	args[0] = tenantID
+	for i, unitID := range unitIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		args[i+1] = unitID
+	}
+
+	query := fmt.Sprintf(`
+		SELECT DISTINCT d.device_id::text
+		FROM devices d
+		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND b.tenant_id = $1
+		LEFT JOIN rooms r1 ON b.room_id = r1.room_id AND r1.tenant_id = $1
+		LEFT JOIN rooms r2 ON d.bound_room_id = r2.room_id AND r2.tenant_id = $1
+		WHERE d.tenant_id = $1
+		  AND (
+			-- 路径1: 设备绑定到 bed，bed 属于这些 unit
+			(d.bound_bed_id IS NOT NULL AND r1.unit_id::text IN (%s))
+			-- 路径2: 设备绑定到 room，room 属于这些 unit
+			OR (d.bound_room_id IS NOT NULL AND r2.unit_id::text IN (%s))
+		  )
+		  AND d.status <> 'disabled'
+	`, strings.Join(placeholders, ", "), strings.Join(placeholders, ", "))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query device IDs by unit IDs: %w", err)
+	}
+	defer rows.Close()
+
+	deviceIDs = []string{}
+	for rows.Next() {
+		var deviceID string
+		if err := rows.Scan(&deviceID); err != nil {
+			return nil, fmt.Errorf("failed to scan device ID: %w", err)
+		}
+		deviceIDs = append(deviceIDs, deviceID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating device IDs: %w", err)
+	}
+
+	return deviceIDs, nil
+}
+
+// getDeviceIDsFromCardsByUnitIDs 通过 card 表查询多个 unit_id 关联的所有 device_ids
+func (s *alarmEventService) getDeviceIDsFromCardsByUnitIDs(ctx context.Context, tenantID string, unitIDs []string) ([]string, error) {
+	if len(unitIDs) == 0 {
+		return []string{}, nil
+	}
+
+	if s.db == nil {
+		return nil, fmt.Errorf("database connection not available")
+	}
+
+	// 构建 IN 查询的占位符
+	placeholders := make([]string, len(unitIDs))
+	args := make([]interface{}, len(unitIDs)+1)
+	args[0] = tenantID
+	for i, unitID := range unitIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		args[i+1] = unitID
+	}
+
+	// 查询这些 unit 下的所有 card（ActiveBed 和 Location）
+	query := fmt.Sprintf(`
+		SELECT devices
+		FROM cards
+		WHERE tenant_id = $1
+		  AND (
+			-- Location card: 直接通过 unit_id 匹配
+			(card_type = 'Location' AND unit_id::text IN (%s))
+			-- ActiveBed card: 通过 bed → room → unit 匹配
+			OR (card_type = 'ActiveBed' AND bed_id IN (
+				SELECT bed_id FROM beds WHERE room_id IN (
+					SELECT room_id FROM rooms WHERE unit_id::text IN (%s)
+				)
+			))
+		  )
+	`, strings.Join(placeholders, ", "), strings.Join(placeholders, ", "))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query cards by unit IDs: %w", err)
+	}
+	defer rows.Close()
+
+	deviceIDSet := make(map[string]bool)
+	for rows.Next() {
+		var devicesJSON []byte
+		if err := rows.Scan(&devicesJSON); err != nil {
+			continue
+		}
+
+		// 解析 JSONB 数组
+		var devices []map[string]interface{}
+		if err := json.Unmarshal(devicesJSON, &devices); err != nil {
+			continue
+		}
+
+		// 提取 device_id
+		for _, device := range devices {
+			if deviceID, ok := device["device_id"].(string); ok {
+				deviceIDSet[deviceID] = true
+			}
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating cards: %w", err)
+	}
+
+	// 转换为数组
+	deviceIDs := make([]string, 0, len(deviceIDSet))
+	for deviceID := range deviceIDSet {
+		deviceIDs = append(deviceIDs, deviceID)
+	}
+
+	return deviceIDs, nil
+}
+
+// getAssignedResidentIDs 查询分配给指定用户的住户 ID 列表
+// 通过 resident_caregivers 表的 user_list 字段查询
+func (s *alarmEventService) getAssignedResidentIDs(ctx context.Context, tenantID, userID string) ([]string, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("database connection not available")
+	}
+
+	query := `
+		SELECT DISTINCT resident_id::text
+		FROM resident_caregivers
+		WHERE tenant_id = $1
+		  AND (user_list::text LIKE $2 OR user_list::text LIKE $3)
+	`
+	pattern1 := fmt.Sprintf("%%\"%s\"%%", userID)
+	pattern2 := fmt.Sprintf("%%\"%s\"%%", userID)
+
+	rows, err := s.db.QueryContext(ctx, query, tenantID, pattern1, pattern2)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query assigned resident IDs: %w", err)
+	}
+	defer rows.Close()
+
+	residentIDs := []string{}
+	for rows.Next() {
+		var residentID string
+		if err := rows.Scan(&residentID); err != nil {
+			return nil, fmt.Errorf("failed to scan resident ID: %w", err)
+		}
+		residentIDs = append(residentIDs, residentID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating resident IDs: %w", err)
+	}
+
+	return residentIDs, nil
+}
+
+// getUnitIDsByResidentIDs 通过多个 resident_id 查询关联的 unit_id 列表
+func (s *alarmEventService) getUnitIDsByResidentIDs(ctx context.Context, tenantID string, residentIDs []string) ([]string, error) {
+	if len(residentIDs) == 0 {
+		return []string{}, nil
+	}
+
+	if s.db == nil {
+		return nil, fmt.Errorf("database connection not available")
+	}
+
+	// 构建 IN 查询的占位符
+	placeholders := make([]string, len(residentIDs))
+	args := make([]interface{}, len(residentIDs)+1)
+	args[0] = tenantID
+	for i, residentID := range residentIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		args[i+1] = residentID
+	}
+
+	query := fmt.Sprintf(`
+		SELECT DISTINCT unit_id::text
+		FROM residents
+		WHERE tenant_id = $1 
+		  AND resident_id::text IN (%s)
+		  AND unit_id IS NOT NULL
+	`, strings.Join(placeholders, ", "))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query unit IDs by resident IDs: %w", err)
+	}
+	defer rows.Close()
+
+	unitIDs := []string{}
+	for rows.Next() {
+		var unitID sql.NullString
+		if err := rows.Scan(&unitID); err != nil {
+			return nil, fmt.Errorf("failed to scan unit ID: %w", err)
+		}
+		if unitID.Valid {
+			unitIDs = append(unitIDs, unitID.String)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating unit IDs: %w", err)
+	}
+
+	return unitIDs, nil
 }
 
 // getCardIDByDeviceID 通过 device_id 查询 card_id

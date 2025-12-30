@@ -130,7 +130,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. 构建响应（
+	// 3. 构建响应（对齐 owlFront LoginResult）
 	result := map[string]any{
 		"accessToken":  resp.AccessToken,
 		"refreshToken": resp.RefreshToken,
@@ -142,6 +142,9 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		"tenant_id":    resp.TenantID,
 		"tenant_name":  resp.TenantName,
 		"domain":       resp.Domain,
+		"branch_id":    resp.BranchID,
+		"branchTag":    resp.BranchTag,
+		"branch_ids":   resp.BranchIDs,
 		"homePath":     resp.HomePath,
 	}
 

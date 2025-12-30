@@ -19,9 +19,10 @@ type BranchesRepository interface {
 	GetBranchByName(ctx context.Context, tenantID, branchName string) (*domain.Branch, error)
 
 	// ListBranches 列出所有院区
-	// 支持分页
+	// 支持分页和搜索
+	// search: 搜索关键词，模糊匹配 branch_name, description, user_nickname, unit_name, resident_nickname
 	// 返回：院区列表和总数
-	ListBranches(ctx context.Context, tenantID string, page, size int) ([]*domain.Branch, int, error)
+	ListBranches(ctx context.Context, tenantID string, search string, page, size int) ([]*domain.Branch, int, error)
 
 	// ========== 创建接口 ==========
 
@@ -56,4 +57,3 @@ type BranchesRepository interface {
 	//   - 关联的 user_branches 记录会被删除（ON DELETE CASCADE）
 	DeleteBranch(ctx context.Context, tenantID, branchID string) error
 }
-
