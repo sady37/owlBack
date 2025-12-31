@@ -24,10 +24,6 @@ type UsersRepository interface {
 	UpdateUser(ctx context.Context, tenantID, userID string, user *domain.User) error
 	DeleteUser(ctx context.Context, tenantID, userID string) error
 
-	// 用户标签管理（维护tags_catalog目录）
-	// 注意：只需要调用upsert_tag_to_catalog维护目录，不需要反向索引
-	SyncUserTagsToCatalog(ctx context.Context, tenantID, userID string, tags []string) error
-
 	// 权限检查
 	GetResourcePermission(ctx context.Context, roleCode, resourceType, permissionType string) (*PermissionCheck, error)
 

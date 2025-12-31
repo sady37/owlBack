@@ -42,6 +42,12 @@ func (h *UserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// GetAvailableBranches
 	case path == "/admin/api/v1/users/branches" && r.Method == http.MethodGet:
 		h.GetAvailableBranches(w, r)
+	// GetAvailableCaregivers
+	case path == "/admin/api/v1/users/caregivers" && r.Method == http.MethodGet:
+		h.GetAvailableCaregivers(w, r)
+	// GetAvailableCaregiverGroups
+	case path == "/admin/api/v1/users/caregiver-groups" && r.Method == http.MethodGet:
+		h.GetAvailableCaregiverGroups(w, r)
 	// GetAccountSettings (必须在 GetUser 之前，因为路径更具体)
 	case strings.HasSuffix(path, "/account-settings") && r.Method == http.MethodGet:
 		userID := strings.TrimSuffix(path, "/account-settings")
@@ -221,10 +227,24 @@ func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request, userID str
 		return
 	}
 
+	// 解析 BranchIDs 查询参数（Create 模式时使用）
+	var branchIDs []string
+	if branchIDsParam := r.URL.Query().Get("branch_ids"); branchIDsParam != "" {
+		// 支持逗号分隔的 branch_ids，例如：?branch_ids=id1,id2,id3
+		branchIDsList := strings.Split(branchIDsParam, ",")
+		for _, id := range branchIDsList {
+			id = strings.TrimSpace(id)
+			if id != "" {
+				branchIDs = append(branchIDs, id)
+			}
+		}
+	}
+
 	req := service.GetUserRequest{
 		TenantID:      tenantID,
 		UserID:        userID,
 		CurrentUserID: currentUserID,
+		BranchIDs:     branchIDs,
 	}
 
 	resp, err := h.userService.GetUser(ctx, req)
@@ -235,6 +255,39 @@ func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request, userID str
 	}
 
 	// 转换为旧 Handler 格式
+	// Create 模式下，resp.User 为 nil，返回 available_tags 和 available_branches
+	if resp.User == nil {
+		// Create 模式：返回最小化的响应，包含 available_tags 和 available_branches
+		// 前端已有 emptyUser 初始化表单，不需要用户对象的默认值
+		// 但为了符合 User 接口类型要求，返回最小化的用户对象
+		item := map[string]any{
+			"user_id":       userID, // 对于 'new'，返回 'new'
+			"tenant_id":     tenantID,
+			"user_account":  "",
+			"role":          "",
+			"status":        "active",
+			"available_tags": []string{},
+			"available_branches": []map[string]any{},
+		}
+		if len(resp.AvailableTags) > 0 {
+			item["available_tags"] = resp.AvailableTags
+		}
+		// 转换 AvailableBranches 为前端格式
+		if len(resp.AvailableBranches) > 0 {
+			branches := make([]map[string]any, 0, len(resp.AvailableBranches))
+			for _, branch := range resp.AvailableBranches {
+				branches = append(branches, map[string]any{
+					"branch_id":   branch.BranchID,
+					"branch_name": branch.BranchName,
+				})
+			}
+			item["available_branches"] = branches
+		}
+		writeJSON(w, http.StatusOK, Ok(item))
+		return
+	}
+	
+	// Edit 模式：返回完整的用户信息
 	item := map[string]any{
 		"user_id":      resp.User.UserID,
 		"tenant_id":    resp.User.TenantID,
@@ -242,43 +295,82 @@ func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request, userID str
 		"role":         resp.User.Role,
 		"status":       resp.User.Status,
 	}
-	if resp.User.Nickname != "" {
-		item["nickname"] = resp.User.Nickname
+	
+	if resp.User != nil {
+		// 普通字段：字段不存在/空/null → 不返回字段
+		if resp.User.Nickname != "" {
+			item["nickname"] = resp.User.Nickname
+		}
+		
+		// 有 Hash 的字段（email/email_hash, phone/phone_hash）：
+		// Service 层返回：
+		// - 有值 → 实际值
+		// - 无值但 hash 有值 → 占位符（"xxx@xxx.xxx" / "xxx-xxx-xxxx"）
+		// - 无值且 hash 无值 → 空字符串（表示 null）
+		// Handler 层处理：
+		// - 空字符串 → 返回 null
+		// - 占位符 → 返回占位符
+		// - 有值 → 返回值
+		if resp.User.Email != "" {
+			if resp.User.Email == "xxx@xxx.xxx" {
+				// 占位符，返回占位符
+				item["email"] = resp.User.Email
+			} else {
+				// 有值，返回值
+				item["email"] = resp.User.Email
+			}
+		} else {
+			// 空字符串，返回 null
+			item["email"] = nil
+		}
+		
+		if resp.User.Phone != "" {
+			if resp.User.Phone == "xxx-xxx-xxxx" {
+				// 占位符，返回占位符
+				item["phone"] = resp.User.Phone
+			} else {
+				// 有值，返回值
+				item["phone"] = resp.User.Phone
+			}
+		} else {
+			// 空字符串，返回 null
+			item["phone"] = nil
+		}
+		if len(resp.User.AlarmLevels) > 0 {
+			item["alarm_levels"] = resp.User.AlarmLevels
+		}
+		if len(resp.User.AlarmChannels) > 0 {
+			item["alarm_channels"] = resp.User.AlarmChannels
+		}
+		if resp.User.AlarmScope != "" {
+			item["alarm_scope"] = resp.User.AlarmScope
+		}
+		if len(resp.User.BranchIDs) > 0 {
+			item["branch_ids"] = resp.User.BranchIDs
+			item["primary_branch_id"] = resp.User.PrimaryBranchID
+		}
+		// 向后兼容
+		if resp.User.BranchID != "" {
+			item["branch_id"] = resp.User.BranchID
+		}
+		if resp.User.BranchName != "" {
+			item["branch_name"] = resp.User.BranchName
+		}
+		if resp.User.LastLoginAt != "" {
+			item["last_login_at"] = resp.User.LastLoginAt
+		}
+		if len(resp.User.Tags) > 0 {
+			item["tags"] = resp.User.Tags
+		}
+		if resp.User.Preferences != nil {
+			item["preferences"] = resp.User.Preferences
+		}
 	}
-	if resp.User.Email != "" {
-		item["email"] = resp.User.Email
-	}
-	if resp.User.Phone != "" {
-		item["phone"] = resp.User.Phone
-	}
-	if len(resp.User.AlarmLevels) > 0 {
-		item["alarm_levels"] = resp.User.AlarmLevels
-	}
-	if len(resp.User.AlarmChannels) > 0 {
-		item["alarm_channels"] = resp.User.AlarmChannels
-	}
-	if resp.User.AlarmScope != "" {
-		item["alarm_scope"] = resp.User.AlarmScope
-	}
-	if len(resp.User.BranchIDs) > 0 {
-		item["branch_ids"] = resp.User.BranchIDs
-		item["primary_branch_id"] = resp.User.PrimaryBranchID
-	}
-	// 向后兼容
-	if resp.User.BranchID != "" {
-		item["branch_id"] = resp.User.BranchID
-	}
-	if resp.User.BranchName != "" {
-		item["branch_name"] = resp.User.BranchName
-	}
-	if resp.User.LastLoginAt != "" {
-		item["last_login_at"] = resp.User.LastLoginAt
-	}
-	if len(resp.User.Tags) > 0 {
-		item["tags"] = resp.User.Tags
-	}
-	if resp.User.Preferences != nil {
-		item["preferences"] = resp.User.Preferences
+	// 返回可用 tags（当前用户所在 Branch 中存在的 tags）
+	if len(resp.AvailableTags) > 0 {
+		item["available_tags"] = resp.AvailableTags
+	} else {
+		item["available_tags"] = []string{}
 	}
 
 	writeJSON(w, http.StatusOK, Ok(item))
@@ -475,92 +567,74 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request, userID 
 	// Service 层会自己从数据库查询用户的 branch 信息（这是用户本身的属性，不能信任前端传递的值）
 	// 如果前端需要获取可用 branch 列表，应该调用专门的 API（如 GetAvailableBranches）
 
-	// 解析可选字段（nil 表示不更新，空字符串表示清空）
+	// 解析可选字段（按照统一设计规则）
 	req := service.UpdateUserRequest{
 		TenantID:      tenantID,
 		UserID:        userID,
 		CurrentUserID: currentUserID,
 	}
 
-	// Nickname
-	if nickname, ok := payload["nickname"].(string); ok {
-		req.Nickname = &nickname
-	}
-
-	// Email 和 EmailHash（复杂逻辑）
-	if emailVal, ok := payload["email"]; ok {
-		if emailVal == nil {
-			// null 表示删除 email
-			emptyEmail := ""
-			req.Email = &emptyEmail
-		} else if email, ok := emailVal.(string); ok {
-			req.Email = &email
+	// 统一的字段解析辅助函数
+	// 规则 1：普通字段
+	// 字段不存在 → 返回 nil（不更新）
+	// 字段为 null → 返回空字符串指针（清空）
+	// 字段有值 → 返回值指针（更新）
+	parseStringField := func(fieldName string) *string {
+		val, ok := payload[fieldName]
+		if !ok {
+			return nil // 字段不存在，不更新
 		}
-	}
-	if emailHashHex, ok := payload["email_hash"].(string); ok {
-		req.EmailHash = &emailHashHex
-	}
-
-	// Phone 和 PhoneHash（同 Email）
-	if phoneVal, ok := payload["phone"]; ok {
-		if phoneVal == nil {
-			emptyPhone := ""
-			req.Phone = &emptyPhone
-		} else if phone, ok := phoneVal.(string); ok {
-			req.Phone = &phone
+		if val == nil {
+			empty := ""
+			return &empty // null，清空
 		}
+		if s, ok := val.(string); ok {
+			return &s // 有值，更新
+		}
+		return nil // 类型不匹配，不更新
 	}
-	if phoneHashHex, ok := payload["phone_hash"].(string); ok {
-		req.PhoneHash = &phoneHashHex
-	}
-
-	// Role
-	if role, ok := payload["role"].(string); ok {
-		req.Role = &role
-	}
-
-	// Status
-	if status, ok := payload["status"].(string); ok {
-		req.Status = &status
-	}
-
-	// AlarmLevels
-	if levels, ok := payload["alarm_levels"].([]any); ok {
-		alarmLevels := make([]string, 0, len(levels))
-		for _, l := range levels {
-			if s, ok := l.(string); ok && s != "" {
-				alarmLevels = append(alarmLevels, s)
+	
+	// 规则 2：数组字段
+	// 字段不存在 → 返回 nil（不更新）
+	// 字段为 null → 返回空数组（清空）
+	// 字段有值 → 返回数组（更新）
+	parseStringArrayField := func(fieldName string) []string {
+		val, ok := payload[fieldName]
+		if !ok {
+			return nil // 字段不存在，不更新
+		}
+		if val == nil {
+			return []string{} // null，清空（空数组）
+		}
+		if arr, ok := val.([]any); ok {
+			result := make([]string, 0, len(arr))
+			for _, v := range arr {
+				if s, ok := v.(string); ok && s != "" {
+					result = append(result, s)
+				}
 			}
+			return result // 有值，更新
 		}
-		req.AlarmLevels = alarmLevels
+		return nil // 类型不匹配，不更新
 	}
 
-	// AlarmChannels
-	if channels, ok := payload["alarm_channels"].([]any); ok {
-		alarmChannels := make([]string, 0, len(channels))
-		for _, c := range channels {
-			if s, ok := c.(string); ok && s != "" {
-				alarmChannels = append(alarmChannels, s)
-			}
-		}
-		req.AlarmChannels = alarmChannels
-	}
-
-	// AlarmScope
-	if scope, ok := payload["alarm_scope"].(string); ok {
-		req.AlarmScope = &scope
-	}
-
-	// Tags
-	if tagsRaw, ok := payload["tags"].([]any); ok {
-		tags := make([]string, 0, len(tagsRaw))
-		for _, t := range tagsRaw {
-			if s, ok := t.(string); ok && s != "" {
-				tags = append(tags, s)
-			}
-		}
-		req.Tags = tags
-	}
+	// 使用统一的解析函数处理所有字段
+	// 普通字段
+	req.Nickname = parseStringField("nickname")
+	req.Role = parseStringField("role")
+	req.Status = parseStringField("status")
+	req.AlarmScope = parseStringField("alarm_scope")
+	
+	// 有 Hash 的字段
+	req.Email = parseStringField("email")
+	req.EmailHash = parseStringField("email_hash")
+	req.Phone = parseStringField("phone")
+	req.PhoneHash = parseStringField("phone_hash")
+	
+	// 数组字段
+	req.AlarmLevels = parseStringArrayField("alarm_levels")
+	req.AlarmChannels = parseStringArrayField("alarm_channels")
+	req.Tags = parseStringArrayField("tags")
 
 	// Branch: 支持 branch_ids（数组）和 primary_branch_id，向后兼容单个 branch_id
 	var branchIDs []string
@@ -830,9 +904,17 @@ func (h *UserHandler) UpdateAccountSettings(w http.ResponseWriter, r *http.Reque
 		CurrentUserID: currentUserID,
 	}
 
-	// 解析 password_hash
-	if passwordHash, ok := payload["password_hash"].(string); ok && passwordHash != "" {
-		req.PasswordHash = &passwordHash
+	// 解析 password_hash（按照统一设计规则）
+	// 字段不存在 → req.PasswordHash = nil（不更新）
+	// 字段为 null → req.PasswordHash = nil（不更新，密码字段不允许清空）
+	// 字段有值 → req.PasswordHash = &hash（更新）
+	if passwordHashVal, ok := payload["password_hash"]; ok {
+		if passwordHashVal == nil {
+			// null 表示不更新（密码字段不允许清空）
+			// 不设置 req.PasswordHash
+		} else if passwordHash, ok := passwordHashVal.(string); ok && passwordHash != "" {
+			req.PasswordHash = &passwordHash
+		}
 	}
 
 	// 解析 email 和 email_hash
@@ -948,5 +1030,101 @@ func (h *UserHandler) GetAvailableBranches(w http.ResponseWriter, r *http.Reques
 
 	writeJSON(w, http.StatusOK, Ok(map[string]any{
 		"branches": branches,
+	}))
+}
+
+// GetAvailableCaregivers 获取可用 caregivers 列表
+func (h *UserHandler) GetAvailableCaregivers(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 1. 获取 tenant_id
+	tenantID, ok := h.base.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+
+	// 2. 获取 current_user_id（必填，用于权限过滤）
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("current_user_id is required"))
+		return
+	}
+
+	// 3. 调用 Service
+	req := service.GetAvailableCaregiversRequest{
+		TenantID:      tenantID,
+		CurrentUserID: currentUserID,
+	}
+
+	resp, err := h.userService.GetAvailableCaregivers(ctx, req)
+	if err != nil {
+		h.logger.Error("GetAvailableCaregivers failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	// 4. 转换为前端格式
+	items := make([]map[string]any, 0, len(resp.Items))
+	for _, user := range resp.Items {
+		item := map[string]any{
+			"user_id":      user.UserID,
+			"tenant_id":    user.TenantID,
+			"user_account": user.UserAccount,
+			"nickname":     user.Nickname,
+			"email":        user.Email,
+			"phone":        user.Phone,
+			"role":         user.Role,
+			"status":       user.Status,
+		}
+		items = append(items, item)
+	}
+
+	writeJSON(w, http.StatusOK, Ok(map[string]any{
+		"items": items,
+	}))
+}
+
+// GetAvailableCaregiverGroups 获取可用 caregiver groups 列表
+func (h *UserHandler) GetAvailableCaregiverGroups(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 1. 获取 tenant_id
+	tenantID, ok := h.base.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+
+	// 2. 获取 current_user_id（必填，用于权限过滤）
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("current_user_id is required"))
+		return
+	}
+
+	// 3. 调用 Service
+	req := service.GetAvailableCaregiverGroupsRequest{
+		TenantID:      tenantID,
+		CurrentUserID: currentUserID,
+	}
+
+	resp, err := h.userService.GetAvailableCaregiverGroups(ctx, req)
+	if err != nil {
+		h.logger.Error("GetAvailableCaregiverGroups failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	// 4. 转换为前端格式
+	items := make([]map[string]any, 0, len(resp.Items))
+	for _, group := range resp.Items {
+		item := map[string]any{
+			"tag_name":     group.TagName,
+			"member_count": group.MemberCount,
+		}
+		items = append(items, item)
+	}
+
+	writeJSON(w, http.StatusOK, Ok(map[string]any{
+		"items": items,
 	}))
 }

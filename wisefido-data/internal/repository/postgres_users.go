@@ -788,24 +788,8 @@ func (r *PostgresUsersRepository) CreateUser(ctx context.Context, tenantID strin
 		}
 	}
 
-	// 同步tags到tags_catalog目录（如果tags存在）
-	if user.Tags.Valid && user.Tags.String != "" {
-		var tagsArray []string
-		if err := json.Unmarshal([]byte(user.Tags.String), &tagsArray); err == nil {
-			for _, tagName := range tagsArray {
-				if tagName != "" {
-					_, err = tx.ExecContext(ctx,
-						`SELECT upsert_tag_to_catalog($1::uuid, $2, $3)`,
-						tenantID, tagName, "user_tag",
-					)
-					if err != nil {
-						return "", fmt.Errorf("failed to sync tag %s to catalog: %w", tagName, err)
-					}
-				}
-			}
-		}
-	}
-
+	// 注意：tags_catalog 表已删除，不再需要同步 tags 到目录
+	// 用户 tags 直接存储在 users.user_tags (JSONB) 字段中
 	// 注意：branch_tag 不应该在这里创建
 	// branch_tag 应该由前端在 TagList 页面创建（tag_name = "Branch"）
 	// user 的 branch_tag 只是数据，不需要同步到 tags_catalog
@@ -961,15 +945,27 @@ func (r *PostgresUsersRepository) UpdateUser(ctx context.Context, tenantID, user
 		args = append(args, user.Status)
 		argIdx++
 	}
+	// AlarmLevels 字段：空数组 → NULL
 	if user.AlarmLevels != nil {
-		updates = append(updates, fmt.Sprintf("alarm_levels = $%d", argIdx))
-		args = append(args, pq.Array(user.AlarmLevels))
-		argIdx++
+		if len(user.AlarmLevels) == 0 {
+			// 空数组 → NULL
+			updates = append(updates, "alarm_levels = NULL")
+		} else {
+			updates = append(updates, fmt.Sprintf("alarm_levels = $%d", argIdx))
+			args = append(args, pq.Array(user.AlarmLevels))
+			argIdx++
+		}
 	}
+	// AlarmChannels 字段：空数组 → NULL
 	if user.AlarmChannels != nil {
-		updates = append(updates, fmt.Sprintf("alarm_channels = $%d", argIdx))
-		args = append(args, pq.Array(user.AlarmChannels))
-		argIdx++
+		if len(user.AlarmChannels) == 0 {
+			// 空数组 → NULL
+			updates = append(updates, "alarm_channels = NULL")
+		} else {
+			updates = append(updates, fmt.Sprintf("alarm_channels = $%d", argIdx))
+			args = append(args, pq.Array(user.AlarmChannels))
+			argIdx++
+		}
 	}
 	if user.AlarmScope.Valid {
 		updates = append(updates, fmt.Sprintf("alarm_scope = $%d", argIdx))
@@ -1018,41 +1014,9 @@ func (r *PostgresUsersRepository) UpdateUser(ctx context.Context, tenantID, user
 		return fmt.Errorf("failed to update user: %w", err)
 	}
 
-	// 处理tags变化：同步到tags_catalog目录
-	if user.Tags.Valid {
-		var newTagsArray []string
-		if err := json.Unmarshal([]byte(user.Tags.String), &newTagsArray); err == nil {
-			// 获取旧tags数组
-			var oldTagsArray []string
-			if oldTags.Valid && oldTags.String != "" {
-				json.Unmarshal([]byte(oldTags.String), &oldTagsArray)
-			}
-
-			// 找出新增的tags
-			newTagMap := make(map[string]bool)
-			for _, tag := range newTagsArray {
-				newTagMap[tag] = true
-			}
-			for _, tag := range oldTagsArray {
-				if !newTagMap[tag] {
-					// 旧tag不在新tags中，但不需要从目录删除（目录只是记录）
-				}
-			}
-
-			// 添加新tags到目录
-			for _, tagName := range newTagsArray {
-				if tagName != "" {
-					_, err = tx.ExecContext(ctx,
-						`SELECT upsert_tag_to_catalog($1::uuid, $2, $3)`,
-						tenantID, tagName, "user_tag",
-					)
-					if err != nil {
-						return fmt.Errorf("failed to sync tag %s to catalog: %w", tagName, err)
-					}
-				}
-			}
-		}
-	}
+	// 注意：tags_catalog 表已删除，不再需要同步 tags 到目录
+	// 用户 tags 直接存储在 users.user_tags (JSONB) 字段中
+	// tags 的更新已经通过上面的 UPDATE 语句完成
 
 	// 处理 branch 更新：更新 user_branches 表
 	// 优先使用 BranchID，如果没有则使用 BranchName 查找
@@ -1147,38 +1111,6 @@ func (r *PostgresUsersRepository) DeleteUser(ctx context.Context, tenantID, user
 	)
 	if err != nil {
 		return fmt.Errorf("failed to delete user: %w", err)
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
-}
-
-// SyncUserTagsToCatalog 同步用户tags到tags_catalog目录
-func (r *PostgresUsersRepository) SyncUserTagsToCatalog(ctx context.Context, tenantID, userID string, tags []string) error {
-	if tenantID == "" || userID == "" {
-		return fmt.Errorf("tenant_id and user_id are required")
-	}
-
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	// 遍历tags数组，逐个调用upsert_tag_to_catalog
-	for _, tagName := range tags {
-		if tagName != "" {
-			_, err = tx.ExecContext(ctx,
-				`SELECT upsert_tag_to_catalog($1::uuid, $2, $3)`,
-				tenantID, tagName, "user_tag",
-			)
-			if err != nil {
-				return fmt.Errorf("failed to sync tag %s to catalog: %w", tagName, err)
-			}
-		}
 	}
 
 	if err = tx.Commit(); err != nil {

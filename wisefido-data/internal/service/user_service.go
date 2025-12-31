@@ -12,6 +12,7 @@ import (
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
+	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -40,6 +41,10 @@ type UserService interface {
 
 	// Branch 管理（用于前端创建用户时选择 branch）
 	GetAvailableBranches(ctx context.Context, req GetAvailableBranchesRequest) (*GetAvailableBranchesResponse, error)
+
+	// Caregivers 管理（用于前端选择 caregivers 和 caregiver groups）
+	GetAvailableCaregivers(ctx context.Context, req GetAvailableCaregiversRequest) (*GetAvailableCaregiversResponse, error)
+	GetAvailableCaregiverGroups(ctx context.Context, req GetAvailableCaregiverGroupsRequest) (*GetAvailableCaregiverGroupsResponse, error)
 }
 
 // userService 实现
@@ -81,14 +86,17 @@ type ListUsersResponse struct {
 
 // GetUserRequest 查询用户详情请求
 type GetUserRequest struct {
-	TenantID      string // 必填
-	UserID        string // 必填
-	CurrentUserID string // 当前用户 ID（用于权限检查）
+	TenantID      string   // 必填
+	UserID        string   // 可选：Edit 模式必填，Create 模式为空或 "new"
+	CurrentUserID string   // 当前用户 ID（用于权限检查）
+	BranchIDs     []string // 可选：Create 模式时，如果已指定 branch，传入 branch_ids
 }
 
 // GetUserResponse 查询用户详情响应
 type GetUserResponse struct {
-	User *UserDTO // 用户信息
+	User              *UserDTO    // 用户信息（Create 模式下为 nil）
+	AvailableTags     []string    // 当前用户所在 Branch 中存在的 tags（用于前端显示和选择）
+	AvailableBranches []BranchDTO // 可用的 branch 列表（Create 模式下返回，Edit 模式下为空）
 }
 
 // CreateUserRequest 创建用户请求
@@ -238,6 +246,34 @@ type GetAvailableBranchesResponse struct {
 type BranchDTO struct {
 	BranchID   string `json:"branch_id"`   // branch_id（前端需要 ID 来选择对象）
 	BranchName string `json:"branch_name"` // branch_name（用于显示）
+}
+
+// GetAvailableCaregiversRequest 获取可用 caregivers 请求
+type GetAvailableCaregiversRequest struct {
+	TenantID      string // 必填
+	CurrentUserID string // 当前用户 ID（用于权限过滤，必填）
+}
+
+// GetAvailableCaregiversResponse 获取可用 caregivers 响应
+type GetAvailableCaregiversResponse struct {
+	Items []UserDTO // 可用 caregivers 列表（role='Nurse' or 'Caregiver' and status='active'，且在当前用户可管理的 branch 内）
+}
+
+// GetAvailableCaregiverGroupsRequest 获取可用 caregiver groups 请求
+type GetAvailableCaregiverGroupsRequest struct {
+	TenantID      string // 必填
+	CurrentUserID string // 当前用户 ID（用于权限过滤，必填）
+}
+
+// GetAvailableCaregiverGroupsResponse 获取可用 caregiver groups 响应
+type GetAvailableCaregiverGroupsResponse struct {
+	Items []CaregiverGroupDTO // 可用 caregiver groups 列表（tag 名称和成员数量）
+}
+
+// CaregiverGroupDTO caregiver group 数据传输对象
+type CaregiverGroupDTO struct {
+	TagName     string `json:"tag_name"`     // 标签名称
+	MemberCount int    `json:"member_count"` // 成员数量（该 tag 下有多少个 active 的 caregiver/nurse）
 }
 
 // UserDTO 用户数据传输对象（用于响应）
@@ -500,14 +536,46 @@ func domainUserToDTO(user *domain.User) *UserDTO {
 		Status:      user.Status,
 	}
 
-	if user.Nickname.Valid {
+	// 普通字段：字段不存在/空/null → 不返回字段（omitempty）
+	if user.Nickname.Valid && user.Nickname.String != "" {
 		dto.Nickname = user.Nickname.String
 	}
-	if user.Email.Valid {
+
+	// 有 Hash 的字段（email/email_hash, phone/phone_hash）：
+	// 规则 3：有 Hash 的字段
+	// 情况 1：字段有值且不为 "" → 直接返回值
+	// 情况 2：字段无值或 ""
+	//   - 当对应的 hash 有值且不为空 → 返回占位符
+	//   - 当对应的 hash null 或 "" → 返回 null（通过指针类型或特殊值）
+	if user.Email.Valid && user.Email.String != "" {
+		// 情况 1：有值，直接返回
 		dto.Email = user.Email.String
+	} else {
+		// 情况 2：无值或空字符串，检查 hash
+		if len(user.EmailHash) > 0 {
+			// hash 有值，返回占位符
+			dto.Email = "xxx@xxx.xxx"
+		} else {
+			// hash 为空，返回 null
+			// 注意：由于 UserDTO.Email 是 string 类型，我们需要用特殊值表示 null
+			// 或者修改 UserDTO 结构，使用 *string
+			// 暂时先不设置，让 Handler 层处理（Handler 层会检查空字符串并返回 null）
+			dto.Email = "" // Handler 层会处理为空字符串的情况
+		}
 	}
-	if user.Phone.Valid {
+
+	if user.Phone.Valid && user.Phone.String != "" {
+		// 情况 1：有值，直接返回
 		dto.Phone = user.Phone.String
+	} else {
+		// 情况 2：无值或空字符串，检查 hash
+		if len(user.PhoneHash) > 0 {
+			// hash 有值，返回占位符
+			dto.Phone = "xxx-xxx-xxxx"
+		} else {
+			// hash 为空，返回 null
+			dto.Phone = "" // Handler 层会处理为空字符串的情况
+		}
 	}
 	if len(user.AlarmLevels) > 0 {
 		dto.AlarmLevels = []string(user.AlarmLevels)
@@ -668,21 +736,68 @@ func (s *userService) ListUsers(ctx context.Context, req ListUsersRequest) (*Lis
 // GetUser 查询用户详情
 func (s *userService) GetUser(ctx context.Context, req GetUserRequest) (*GetUserResponse, error) {
 	// 1. 参数验证
-	if req.TenantID == "" || req.UserID == "" {
-		return nil, fmt.Errorf("tenant_id and user_id are required")
+	if req.TenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
 	}
 	if req.CurrentUserID == "" {
 		return nil, fmt.Errorf("current_user_id is required")
 	}
+	// UserID 可以为空（Create 模式）
 
-	// 2. 获取当前用户信息（用于权限检查）
+	// 2. 判断是 Create 模式还是 Edit 模式
+	isCreateMode := req.UserID == "" || req.UserID == "new"
+
+	if isCreateMode {
+		// ========== CREATE 模式 ==========
+		// 2.1 获取 available_branches（用于前端选择 branch）
+		var availableBranches []BranchDTO
+		branchReq := GetAvailableBranchesRequest{
+			TenantID:      req.TenantID,
+			CurrentUserID: req.CurrentUserID,
+		}
+		branchResp, err := s.GetAvailableBranches(ctx, branchReq)
+		if err != nil {
+			s.logger.Warn("Failed to get available branches", zap.Error(err))
+			// 不返回错误，只是记录警告，availableBranches 为空数组
+			availableBranches = []BranchDTO{}
+		} else {
+			availableBranches = branchResp.Branches
+		}
+
+		// 2.3 计算 available_tags
+		var availableTags []string
+
+		if len(req.BranchIDs) > 0 {
+			// 分支 2.3.1: Branch 已指定，使用指定的 BranchIDs
+			availableTags, err = s.getAvailableTagsFromBranchIDs(ctx, req.TenantID, req.BranchIDs)
+		} else {
+			// 分支 2.3.2: Branch 未指定，使用当前登录用户的 branch
+			availableTags, err = s.getAvailableTagsFromBranches(ctx, req.TenantID, req.CurrentUserID)
+		}
+
+		if err != nil {
+			s.logger.Warn("Failed to get available tags", zap.Error(err))
+			// 不返回错误，只是记录警告，availableTags 为空数组
+			availableTags = []string{}
+		}
+
+		// 2.4 返回结果
+		return &GetUserResponse{
+			User:              nil, // Create 模式下没有用户数据
+			AvailableTags:     availableTags,
+			AvailableBranches: availableBranches,
+		}, nil
+	}
+
+	// ========== EDIT 模式 ==========
+	// 3. 获取当前用户信息（用于权限检查）
 	currentUser, err := s.usersRepo.GetUser(ctx, req.TenantID, req.CurrentUserID)
 	if err != nil {
 		s.logger.Error("Failed to get current user", zap.Error(err))
 		return nil, fmt.Errorf("failed to get current user: %w", err)
 	}
 
-	// 3. 权限检查
+	// 4. 权限检查
 	isViewingSelf := req.CurrentUserID == req.UserID
 	if !isViewingSelf {
 		// 获取目标用户信息
@@ -697,24 +812,24 @@ func (s *userService) GetUser(ctx context.Context, req GetUserRequest) (*GetUser
 		}
 	}
 
-	// 4. 查询用户详情
+	// 5. 查询用户详情
 	user, err := s.usersRepo.GetUser(ctx, req.TenantID, req.UserID)
 	if err != nil {
 		s.logger.Error("GetUser failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 
-	// 5. 查询用户的所有 branch 关联
+	// 6. 查询用户的所有 branch 关联
 	userBranches, _, err := s.getUserBranchIDs(ctx, req.TenantID, req.UserID)
 	if err != nil {
 		s.logger.Error("Failed to get user branches", zap.Error(err))
 		return nil, fmt.Errorf("failed to get user branches: %w", err)
 	}
 
-	// 6. 转换为 DTO
+	// 7. 转换为 DTO
 	dto := domainUserToDTO(user)
 
-	// 7. 填充所有 branch_ids 和主院区
+	// 8. 填充所有 branch_ids 和主院区
 	if len(userBranches) > 0 {
 		dto.BranchIDs = make([]string, 0, len(userBranches))
 		for _, branch := range userBranches {
@@ -729,8 +844,18 @@ func (s *userService) GetUser(ctx context.Context, req GetUserRequest) (*GetUser
 		}
 	}
 
+	// 9. 获取被编辑用户所在 Branch 中存在的 tags（使用 req.UserID 而不是 req.CurrentUserID）
+	availableTags, err := s.getAvailableTagsFromBranches(ctx, req.TenantID, req.UserID)
+	if err != nil {
+		s.logger.Warn("Failed to get available tags", zap.Error(err))
+		// 不返回错误，只是记录警告，availableTags 为空数组
+		availableTags = []string{}
+	}
+
 	return &GetUserResponse{
-		User: dto,
+		User:              dto,
+		AvailableTags:     availableTags,
+		AvailableBranches: []BranchDTO{}, // Edit 模式下不需要返回 available branches（前端已有）
 	}, nil
 }
 
@@ -798,7 +923,7 @@ func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*C
 				s.logger.Error("Failed to get manager branches", zap.Error(err))
 				return nil, fmt.Errorf("failed to get manager branches: %w", err)
 			}
-			
+
 			if !hasBranches || len(managerBranches) == 0 {
 				return nil, fmt.Errorf("Manager must have at least one branch assigned")
 			}
@@ -954,14 +1079,6 @@ func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*C
 		return nil, fmt.Errorf("failed to create user branches: %w", err)
 	}
 
-	// 8. 同步标签到目录
-	if len(req.Tags) > 0 {
-		if err := s.usersRepo.SyncUserTagsToCatalog(ctx, req.TenantID, userID, req.Tags); err != nil {
-			s.logger.Warn("Failed to sync tags to catalog", zap.Error(err))
-			// 不返回错误，标签同步失败不影响用户创建
-		}
-	}
-
 	return &CreateUserResponse{
 		UserID: userID,
 	}, nil
@@ -1038,14 +1155,49 @@ func (s *userService) UpdateUser(ctx context.Context, req UpdateUserRequest) (*U
 	// 这里我们需要先获取现有用户，然后只更新提供的字段
 	updateUser := *targetUser // 复制现有用户
 
-	// 更新字段
-	if req.Nickname != nil {
-		if *req.Nickname == "" {
-			updateUser.Nickname = sql.NullString{Valid: false}
-		} else {
-			updateUser.Nickname = sql.NullString{String: *req.Nickname, Valid: true}
+	// 统一的字段更新辅助函数
+	// 规则 1：普通字段（带值比较）
+	// req.Field == nil → 不更新
+	// req.Field != nil && *req.Field == currentValue → 不更新（值未变）
+	// req.Field != nil && *req.Field != currentValue → 更新
+	updateStringField := func(reqVal *string, currentVal sql.NullString, updateFunc func(string)) {
+		if reqVal == nil {
+			return // 不更新
 		}
+		newVal := strings.TrimSpace(*reqVal)
+		var oldVal string
+		if currentVal.Valid {
+			oldVal = currentVal.String
+		}
+		if oldVal == newVal {
+			return // 值未变，不更新
+		}
+		updateFunc(newVal) // 值改变，更新
 	}
+
+	// 规则 2：数组字段（带值比较）
+	// req.Field == nil → 不更新
+	// req.Field != nil && arraysEqual(req.Field, currentValue) → 不更新（值未变）
+	// req.Field != nil && !arraysEqual(req.Field, currentValue) → 更新
+	updateStringArrayField := func(reqVal []string, currentVal pq.StringArray, updateFunc func([]string)) {
+		if reqVal == nil {
+			return // 不更新
+		}
+		if stringSlicesEqual([]string(currentVal), reqVal) {
+			return // 值未变，不更新
+		}
+		updateFunc(reqVal) // 值改变，更新
+	}
+
+	// 更新字段（带值比较，避免不必要的更新）
+	// Nickname
+	updateStringField(req.Nickname, targetUser.Nickname, func(val string) {
+		if val == "" {
+			updateUser.Nickname = sql.NullString{Valid: false} // 清空为 NULL
+		} else {
+			updateUser.Nickname = sql.NullString{String: val, Valid: true}
+		}
+	})
 
 	// Email 和 EmailHash 的业务逻辑处理（Service 层负责）
 	// 规则（与旧 Handler 一致）：
@@ -1115,25 +1267,42 @@ func (s *userService) UpdateUser(ctx context.Context, req UpdateUserRequest) (*U
 		}
 	}
 
-	if updatingRole {
-		updateUser.Role = strings.TrimSpace(*req.Role)
-	}
-	if updatingStatus {
-		updateUser.Status = strings.TrimSpace(*req.Status)
-	}
-	if req.AlarmLevels != nil {
-		updateUser.AlarmLevels = req.AlarmLevels
-	}
-	if req.AlarmChannels != nil {
-		updateUser.AlarmChannels = req.AlarmChannels
-	}
-	if req.AlarmScope != nil {
-		if *req.AlarmScope == "" {
-			updateUser.AlarmScope = sql.NullString{Valid: false}
+	// Role
+	updateStringField(req.Role, sql.NullString{String: targetUser.Role, Valid: true}, func(val string) {
+		updateUser.Role = val
+	})
+
+	// Status
+	updateStringField(req.Status, sql.NullString{String: targetUser.Status, Valid: true}, func(val string) {
+		updateUser.Status = val
+	})
+
+	// AlarmLevels
+	updateStringArrayField(req.AlarmLevels, targetUser.AlarmLevels, func(val []string) {
+		if len(val) == 0 {
+			updateUser.AlarmLevels = []string{} // Repository 层会转换为 NULL
 		} else {
-			updateUser.AlarmScope = sql.NullString{String: *req.AlarmScope, Valid: true}
+			updateUser.AlarmLevels = val
 		}
-	}
+	})
+
+	// AlarmChannels
+	updateStringArrayField(req.AlarmChannels, targetUser.AlarmChannels, func(val []string) {
+		if len(val) == 0 {
+			updateUser.AlarmChannels = []string{} // Repository 层会转换为 NULL
+		} else {
+			updateUser.AlarmChannels = val
+		}
+	})
+
+	// AlarmScope
+	updateStringField(req.AlarmScope, targetUser.AlarmScope, func(val string) {
+		if val == "" {
+			updateUser.AlarmScope = sql.NullString{Valid: false} // 清空为 NULL
+		} else {
+			updateUser.AlarmScope = sql.NullString{String: val, Valid: true}
+		}
+	})
 	// 处理 BranchIDs：如果提供了，更新 user_branches 关联
 	if req.BranchIDs != nil {
 		// Manager 特殊限制：如果当前用户是 Manager，验证 branch 范围
@@ -1146,7 +1315,7 @@ func (s *userService) UpdateUser(ctx context.Context, req UpdateUserRequest) (*U
 					s.logger.Error("Failed to get manager branches", zap.Error(err))
 					return nil, fmt.Errorf("failed to get manager branches: %w", err)
 				}
-				
+
 				if !hasBranches || len(managerBranches) == 0 {
 					return nil, fmt.Errorf("Manager must have at least one branch assigned")
 				}
@@ -1226,13 +1395,6 @@ func (s *userService) UpdateUser(ctx context.Context, req UpdateUserRequest) (*U
 	if err := s.usersRepo.UpdateUser(ctx, req.TenantID, req.UserID, &updateUser); err != nil {
 		s.logger.Error("UpdateUser failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to update user: %w", err)
-	}
-
-	// 9. 同步标签到目录（如果 tags 更新）
-	if req.Tags != nil {
-		if err := s.usersRepo.SyncUserTagsToCatalog(ctx, req.TenantID, req.UserID, req.Tags); err != nil {
-			s.logger.Warn("Failed to sync tags to catalog", zap.Error(err))
-		}
 	}
 
 	return &UpdateUserResponse{
@@ -1626,4 +1788,385 @@ func (s *userService) GetAvailableBranches(ctx context.Context, req GetAvailable
 	return &GetAvailableBranchesResponse{
 		Branches: branchDTOs,
 	}, nil
+}
+
+// GetAvailableCaregivers 获取可用 caregivers 列表
+// 返回当前用户可管理的 branch 内的所有 active 状态的 caregiver/nurse
+func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailableCaregiversRequest) (*GetAvailableCaregiversResponse, error) {
+	// 1. 参数验证
+	if req.TenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required")
+	}
+
+	// 2. 获取当前用户可管理的 branch_ids
+	userBranches, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user branches: %w", err)
+	}
+
+	if !hasBranches || len(userBranches) == 0 {
+		// 用户没有关联任何 branch，返回空列表
+		return &GetAvailableCaregiversResponse{
+			Items: []UserDTO{},
+		}, nil
+	}
+
+	// 3. 提取 branch_id 列表
+	branchIDs := make([]string, 0, len(userBranches))
+	for _, branch := range userBranches {
+		if branch.BranchID != "" {
+			branchIDs = append(branchIDs, branch.BranchID)
+		}
+	}
+
+	if len(branchIDs) == 0 {
+		return &GetAvailableCaregiversResponse{
+			Items: []UserDTO{},
+		}, nil
+	}
+
+	// 4. 查询这些 branch_ids 中所有 active 状态的 caregiver/nurse
+	// 使用 INNER JOIN user_branches 来过滤只属于这些 branch 的用户
+	query := `
+		SELECT DISTINCT
+			u.user_id::text,
+			u.tenant_id::text,
+			u.user_account,
+			COALESCE(u.nickname, '') as nickname,
+			COALESCE(u.email, '') as email,
+			COALESCE(u.phone, '') as phone,
+			u.role,
+			u.status
+		FROM users u
+		INNER JOIN user_branches ub ON u.user_id = ub.user_id
+		WHERE u.tenant_id = $1
+		  AND ub.branch_id = ANY($2::uuid[])
+		  AND u.role IN ('Nurse', 'Caregiver')
+		  AND u.status = 'active'
+		ORDER BY u.nickname, u.user_account
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, req.TenantID, pq.Array(branchIDs))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query available caregivers: %w", err)
+	}
+	defer rows.Close()
+
+	var caregivers []UserDTO
+	for rows.Next() {
+		var user UserDTO
+		err := rows.Scan(
+			&user.UserID,
+			&user.TenantID,
+			&user.UserAccount,
+			&user.Nickname,
+			&user.Email,
+			&user.Phone,
+			&user.Role,
+			&user.Status,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan caregiver: %w", err)
+		}
+		caregivers = append(caregivers, user)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate caregivers: %w", err)
+	}
+
+	return &GetAvailableCaregiversResponse{
+		Items: caregivers,
+	}, nil
+}
+
+// GetAvailableCaregiverGroups 获取可用 caregiver groups 列表
+// 返回当前用户可管理的 branch 内的所有 active 状态的 caregiver/nurse 的 tag 合集
+func (s *userService) GetAvailableCaregiverGroups(ctx context.Context, req GetAvailableCaregiverGroupsRequest) (*GetAvailableCaregiverGroupsResponse, error) {
+	// 1. 参数验证
+	if req.TenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	if req.CurrentUserID == "" {
+		return nil, fmt.Errorf("current_user_id is required")
+	}
+
+	// 2. 获取当前用户可管理的 branch_ids
+	userBranches, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user branches: %w", err)
+	}
+
+	if !hasBranches || len(userBranches) == 0 {
+		// 用户没有关联任何 branch，返回空列表
+		return &GetAvailableCaregiverGroupsResponse{
+			Items: []CaregiverGroupDTO{},
+		}, nil
+	}
+
+	// 3. 提取 branch_id 列表
+	branchIDs := make([]string, 0, len(userBranches))
+	for _, branch := range userBranches {
+		if branch.BranchID != "" {
+			branchIDs = append(branchIDs, branch.BranchID)
+		}
+	}
+
+	if len(branchIDs) == 0 {
+		return &GetAvailableCaregiverGroupsResponse{
+			Items: []CaregiverGroupDTO{},
+		}, nil
+	}
+
+	// 4. 查询这些 branch_ids 中所有 active 状态的 caregiver/nurse 的 tags
+	// 使用 INNER JOIN user_branches 来过滤只属于这些 branch 的用户
+	// 使用 CROSS JOIN LATERAL jsonb_array_elements_text 来展开 JSONB 数组
+	query := `
+		SELECT 
+			tag,
+			COUNT(DISTINCT u.user_id) as member_count
+		FROM users u
+		INNER JOIN user_branches ub ON u.user_id = ub.user_id
+		CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(u.user_tags, '[]'::jsonb)) AS tag
+		WHERE u.tenant_id = $1
+		  AND ub.branch_id = ANY($2::uuid[])
+		  AND u.role IN ('Nurse', 'Caregiver')
+		  AND u.status = 'active'
+		  AND tag IS NOT NULL
+		  AND tag != ''
+		GROUP BY tag
+		ORDER BY tag
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, req.TenantID, pq.Array(branchIDs))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query available caregiver groups: %w", err)
+	}
+	defer rows.Close()
+
+	var groups []CaregiverGroupDTO
+	for rows.Next() {
+		var group CaregiverGroupDTO
+		err := rows.Scan(
+			&group.TagName,
+			&group.MemberCount,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan caregiver group: %w", err)
+		}
+		groups = append(groups, group)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate caregiver groups: %w", err)
+	}
+
+	return &GetAvailableCaregiverGroupsResponse{
+		Items: groups,
+	}, nil
+}
+
+// getAvailableTagsFromBranches 获取当前用户所在 Branch 中存在的 tags
+// 查询逻辑：
+// 1. 获取当前用户的所有 branch_ids
+// 2. 查询这些 branch_ids 中所有用户的 tags（排除当前用户自己）
+// 3. 去重并返回
+func (s *userService) getAvailableTagsFromBranches(ctx context.Context, tenantID, currentUserID string) ([]string, error) {
+	if tenantID == "" || currentUserID == "" {
+		return []string{}, nil
+	}
+
+	// 1. 获取当前用户的所有 branch_ids
+	userBranches, hasBranches, err := s.getUserBranchIDs(ctx, tenantID, currentUserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user branches: %w", err)
+	}
+
+	if !hasBranches || len(userBranches) == 0 {
+		// 用户没有关联任何 branch，返回空数组
+		return []string{}, nil
+	}
+
+	// 2. 提取 branch_id 列表
+	branchIDs := make([]string, 0, len(userBranches))
+	for _, branch := range userBranches {
+		if branch.BranchID != "" {
+			branchIDs = append(branchIDs, branch.BranchID)
+		}
+	}
+
+	if len(branchIDs) == 0 {
+		return []string{}, nil
+	}
+
+	// 3. 先获取当前用户的 tags（用于后续排除）
+	currentUser, err := s.usersRepo.GetUser(ctx, tenantID, currentUserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current user: %w", err)
+	}
+	currentUserTagsSet := make(map[string]bool)
+	// 解析当前用户的 tags（JSONB 格式）
+	if currentUser.Tags.Valid && currentUser.Tags.String != "" {
+		var tags []string
+		if err := json.Unmarshal([]byte(currentUser.Tags.String), &tags); err == nil {
+			for _, tag := range tags {
+				if tag != "" {
+					currentUserTagsSet[tag] = true
+				}
+			}
+		}
+	}
+
+	// 4. 查询这些 branch_ids 中所有用户的 tags（排除当前用户自己）
+	// 使用 PostgreSQL 的 ANY 操作符和 JSONB 数组操作
+	query := `
+		SELECT DISTINCT tag
+		FROM users u
+		INNER JOIN user_branches ub ON u.user_id = ub.user_id
+		CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(u.user_tags, '[]'::jsonb)) AS tag
+		WHERE u.tenant_id = $1
+		  AND ub.branch_id = ANY($2::uuid[])
+		  AND u.user_id::text != $3
+		  AND tag IS NOT NULL
+		  AND tag != ''
+		ORDER BY tag
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, tenantID, pq.Array(branchIDs), currentUserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query available tags: %w", err)
+	}
+	defer rows.Close()
+
+	var tags []string
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, fmt.Errorf("failed to scan tag: %w", err)
+		}
+		if tag != "" {
+			// 排除当前用户已有的 tags（即使其他用户也有相同的 tag）
+			if !currentUserTagsSet[tag] {
+				tags = append(tags, tag)
+			}
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate tags: %w", err)
+	}
+
+	return tags, nil
+}
+
+// getAvailableTagsFromBranchIDs 根据 branch_ids 直接查询 tags（不依赖 user_id）
+// 用于 Create 模式：当用户已指定 branch 时，直接查询这些 branch 内的所有 tags
+func (s *userService) getAvailableTagsFromBranchIDs(ctx context.Context, tenantID string, branchIDs []string) ([]string, error) {
+	if tenantID == "" {
+		return []string{}, nil
+	}
+	if len(branchIDs) == 0 {
+		return []string{}, nil
+	}
+
+	// 查询这些 branch_ids 中所有用户的 tags
+	query := `
+		SELECT DISTINCT tag
+		FROM users u
+		INNER JOIN user_branches ub ON u.user_id = ub.user_id
+		CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(u.user_tags, '[]'::jsonb)) AS tag
+		WHERE u.tenant_id = $1
+		  AND ub.branch_id = ANY($2::uuid[])
+		  AND tag IS NOT NULL
+		  AND tag != ''
+		ORDER BY tag
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, tenantID, pq.Array(branchIDs))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query available tags: %w", err)
+	}
+	defer rows.Close()
+
+	var tags []string
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, fmt.Errorf("failed to scan tag: %w", err)
+		}
+		if tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate tags: %w", err)
+	}
+
+	return tags, nil
+}
+
+// tagsEqual 比较两个字符串切片是否相等（忽略顺序）
+func tagsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	// 创建 map 用于快速查找
+	aMap := make(map[string]int)
+	for _, s := range a {
+		aMap[s]++
+	}
+
+	bMap := make(map[string]int)
+	for _, s := range b {
+		bMap[s]++
+	}
+
+	// 比较两个 map
+	if len(aMap) != len(bMap) {
+		return false
+	}
+
+	for k, v := range aMap {
+		if bMap[k] != v {
+			return false
+		}
+	}
+
+	return true
+}
+
+// stringSlicesEqual 比较两个字符串切片是否相等（忽略顺序）
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	// 创建 map 用于快速查找
+	aMap := make(map[string]int)
+	for _, s := range a {
+		aMap[s]++
+	}
+
+	bMap := make(map[string]int)
+	for _, s := range b {
+		bMap[s]++
+	}
+
+	// 比较两个 map
+	if len(aMap) != len(bMap) {
+		return false
+	}
+
+	for k, v := range aMap {
+		if bMap[k] != v {
+			return false
+		}
+	}
+
+	return true
 }
