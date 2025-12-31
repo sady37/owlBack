@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"wisefido-data/internal/domain"
@@ -252,17 +253,19 @@ type BranchDTO struct {
 type GetAvailableCaregiversRequest struct {
 	TenantID      string // 必填
 	CurrentUserID string // 当前用户 ID（用于权限过滤，必填）
+	BranchID      string // 必填：指定 branch_id，只返回该 branch 内的 caregivers/nurse
 }
 
 // GetAvailableCaregiversResponse 获取可用 caregivers 响应
 type GetAvailableCaregiversResponse struct {
-	Items []UserDTO // 可用 caregivers 列表（role='Nurse' or 'Caregiver' and status='active'，且在当前用户可管理的 branch 内）
+	Items []UserDTO // 可用 caregivers 列表（role='Nurse' or 'Caregiver' and status='active'，且在指定的 branch 内）
 }
 
 // GetAvailableCaregiverGroupsRequest 获取可用 caregiver groups 请求
 type GetAvailableCaregiverGroupsRequest struct {
 	TenantID      string // 必填
 	CurrentUserID string // 当前用户 ID（用于权限过滤，必填）
+	BranchID      string // 必填：指定 branch_id，只返回该 branch 内的 caregiver groups
 }
 
 // GetAvailableCaregiverGroupsResponse 获取可用 caregiver groups 响应
@@ -272,8 +275,10 @@ type GetAvailableCaregiverGroupsResponse struct {
 
 // CaregiverGroupDTO caregiver group 数据传输对象
 type CaregiverGroupDTO struct {
-	TagName     string `json:"tag_name"`     // 标签名称
-	MemberCount int    `json:"member_count"` // 成员数量（该 tag 下有多少个 active 的 caregiver/nurse）
+	TagName     string    `json:"tag_name"`     // 标签名称
+	MemberCount int       `json:"member_count"` // 成员数量（该 tag 下有多少个 active 的 caregiver/nurse）
+	MemberNames []string  `json:"member_names"` // 成员昵称列表（用于前端显示，向后兼容）
+	Members     []UserDTO `json:"members"`      // 成员详细信息列表（user_id, user_account, user_nickname, role, tags）
 }
 
 // UserDTO 用户数据传输对象（用于响应）
@@ -1791,7 +1796,8 @@ func (s *userService) GetAvailableBranches(ctx context.Context, req GetAvailable
 }
 
 // GetAvailableCaregivers 获取可用 caregivers 列表
-// 返回当前用户可管理的 branch 内的所有 active 状态的 caregiver/nurse
+// 返回指定 branch 内的所有 active 状态的 caregiver/nurse
+// 注意：必须先指定 branch_id，只能选择 resident 所在 branch 的 caregivers/nurse
 func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailableCaregiversRequest) (*GetAvailableCaregiversResponse, error) {
 	// 1. 参数验证
 	if req.TenantID == "" {
@@ -1800,36 +1806,38 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 	if req.CurrentUserID == "" {
 		return nil, fmt.Errorf("current_user_id is required")
 	}
+	if req.BranchID == "" {
+		return nil, fmt.Errorf("branch_id is required")
+	}
 
-	// 2. 获取当前用户可管理的 branch_ids
+	// 2. 权限验证：检查当前用户是否有权限访问指定的 branch
 	userBranches, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user branches: %w", err)
 	}
 
 	if !hasBranches || len(userBranches) == 0 {
-		// 用户没有关联任何 branch，返回空列表
-		return &GetAvailableCaregiversResponse{
-			Items: []UserDTO{},
-		}, nil
+		// 用户没有关联任何 branch，无权限
+		return nil, fmt.Errorf("permission denied: user has no accessible branches")
 	}
 
-	// 3. 提取 branch_id 列表
-	branchIDs := make([]string, 0, len(userBranches))
+	// 检查指定的 branch_id 是否在用户可管理的 branch 列表中
+	hasPermission := false
 	for _, branch := range userBranches {
-		if branch.BranchID != "" {
-			branchIDs = append(branchIDs, branch.BranchID)
+		if branch.BranchID == req.BranchID {
+			hasPermission = true
+			break
 		}
 	}
 
-	if len(branchIDs) == 0 {
-		return &GetAvailableCaregiversResponse{
-			Items: []UserDTO{},
-		}, nil
+	if !hasPermission {
+		return nil, fmt.Errorf("permission denied: user cannot access branch %s", req.BranchID)
 	}
 
-	// 4. 查询这些 branch_ids 中所有 active 状态的 caregiver/nurse
-	// 使用 INNER JOIN user_branches 来过滤只属于这些 branch 的用户
+	// 3. 查询指定 branch_id 中所有 active 状态的 caregiver/nurse
+	// 使用 INNER JOIN user_branches 来过滤只属于该 branch 的用户
+	// 包含 user_tags (JSONB) 字段
+	// 注意：不进行排序，由前端 Vue 自己排序和过滤
 	query := `
 		SELECT DISTINCT
 			u.user_id::text,
@@ -1839,17 +1847,17 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 			COALESCE(u.email, '') as email,
 			COALESCE(u.phone, '') as phone,
 			u.role,
-			u.status
+			u.status,
+			COALESCE(u.user_tags, '[]'::jsonb)::text as user_tags
 		FROM users u
 		INNER JOIN user_branches ub ON u.user_id = ub.user_id
 		WHERE u.tenant_id = $1
-		  AND ub.branch_id = ANY($2::uuid[])
+		  AND ub.branch_id = $2::uuid
 		  AND u.role IN ('Nurse', 'Caregiver')
 		  AND u.status = 'active'
-		ORDER BY u.nickname, u.user_account
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, req.TenantID, pq.Array(branchIDs))
+	rows, err := s.db.QueryContext(ctx, query, req.TenantID, req.BranchID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query available caregivers: %w", err)
 	}
@@ -1858,6 +1866,7 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 	var caregivers []UserDTO
 	for rows.Next() {
 		var user UserDTO
+		var userTagsRaw sql.NullString
 		err := rows.Scan(
 			&user.UserID,
 			&user.TenantID,
@@ -1867,9 +1876,21 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 			&user.Phone,
 			&user.Role,
 			&user.Status,
+			&userTagsRaw,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan caregiver: %w", err)
+		}
+		// 解析 user_tags (JSONB array)
+		if userTagsRaw.Valid && userTagsRaw.String != "" && userTagsRaw.String != "[]" {
+			var tags []string
+			if err := json.Unmarshal([]byte(userTagsRaw.String), &tags); err == nil {
+				user.Tags = tags
+			} else {
+				user.Tags = []string{}
+			}
+		} else {
+			user.Tags = []string{}
 		}
 		caregivers = append(caregivers, user)
 	}
@@ -1885,6 +1906,7 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 
 // GetAvailableCaregiverGroups 获取可用 caregiver groups 列表
 // 返回当前用户可管理的 branch 内的所有 active 状态的 caregiver/nurse 的 tag 合集
+// 注意：所有角色（包括 Admin）都基于绑定的 branch 进行过滤
 func (s *userService) GetAvailableCaregiverGroups(ctx context.Context, req GetAvailableCaregiverGroupsRequest) (*GetAvailableCaregiverGroupsResponse, error) {
 	// 1. 参数验证
 	if req.TenantID == "" {
@@ -1894,7 +1916,7 @@ func (s *userService) GetAvailableCaregiverGroups(ctx context.Context, req GetAv
 		return nil, fmt.Errorf("current_user_id is required")
 	}
 
-	// 2. 获取当前用户可管理的 branch_ids
+	// 2. 获取当前用户可管理的 branch_ids（所有角色都基于 branch 过滤）
 	userBranches, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user branches: %w", err)
@@ -1921,52 +1943,130 @@ func (s *userService) GetAvailableCaregiverGroups(ctx context.Context, req GetAv
 		}, nil
 	}
 
-	// 4. 查询这些 branch_ids 中所有 active 状态的 caregiver/nurse 的 tags
-	// 使用 INNER JOIN user_branches 来过滤只属于这些 branch 的用户
-	// 使用 CROSS JOIN LATERAL jsonb_array_elements_text 来展开 JSONB 数组
+	// 3. 分两步计算：
+	//    步骤1：查询指定 branch_id 中所有 active 状态的 caregiver/nurse 及其 tags
+	//    步骤2：在 Go 代码中按 tag 分组，将相同 tag 的 user 归到同一 tag 组
 	query := `
-		SELECT 
-			tag,
-			COUNT(DISTINCT u.user_id) as member_count
+		SELECT DISTINCT
+			u.user_id::text,
+			u.tenant_id::text,
+			u.user_account,
+			COALESCE(u.nickname, '') as nickname,
+			u.role,
+			COALESCE(u.user_tags, '[]'::jsonb)::text as user_tags
 		FROM users u
 		INNER JOIN user_branches ub ON u.user_id = ub.user_id
-		CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(u.user_tags, '[]'::jsonb)) AS tag
 		WHERE u.tenant_id = $1
-		  AND ub.branch_id = ANY($2::uuid[])
+		  AND ub.branch_id = $2::uuid
 		  AND u.role IN ('Nurse', 'Caregiver')
 		  AND u.status = 'active'
-		  AND tag IS NOT NULL
-		  AND tag != ''
-		GROUP BY tag
-		ORDER BY tag
+		ORDER BY u.user_account
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, req.TenantID, pq.Array(branchIDs))
+	rows, err := s.db.QueryContext(ctx, query, req.TenantID, req.BranchID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query available caregiver groups: %w", err)
+		return nil, fmt.Errorf("failed to query available caregivers: %w", err)
 	}
 	defer rows.Close()
 
-	var groups []CaregiverGroupDTO
+	// 步骤2：在内存中按 tag 分组
+	// tagGroups: map[tag_name] -> []UserDTO
+	tagGroups := make(map[string][]UserDTO)
+
 	for rows.Next() {
-		var group CaregiverGroupDTO
+		var user UserDTO
+		var userTagsRaw sql.NullString
 		err := rows.Scan(
-			&group.TagName,
-			&group.MemberCount,
+			&user.UserID,
+			&user.TenantID,
+			&user.UserAccount,
+			&user.Nickname,
+			&user.Role,
+			&userTagsRaw,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan caregiver group: %w", err)
+			return nil, fmt.Errorf("failed to scan caregiver: %w", err)
 		}
-		groups = append(groups, group)
+
+		// 解析 user_tags (JSONB array)
+		var tags []string
+		if userTagsRaw.Valid && userTagsRaw.String != "" && userTagsRaw.String != "[]" {
+			if err := json.Unmarshal([]byte(userTagsRaw.String), &tags); err != nil {
+				// 如果解析失败，跳过该用户的 tags
+				tags = []string{}
+			}
+		}
+		user.Tags = tags
+
+		// 将 user 添加到每个 tag 对应的组中
+		for _, tag := range tags {
+			if tag != "" {
+				// 如果该 tag 组不存在，创建它
+				if _, exists := tagGroups[tag]; !exists {
+					tagGroups[tag] = make([]UserDTO, 0)
+				}
+				// 检查该 user 是否已经在该 tag 组中（避免重复）
+				found := false
+				for _, existingUser := range tagGroups[tag] {
+					if existingUser.UserID == user.UserID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					tagGroups[tag] = append(tagGroups[tag], user)
+				}
+			}
+		}
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to iterate caregiver groups: %w", err)
+		return nil, fmt.Errorf("failed to iterate caregivers: %w", err)
+	}
+
+	// 步骤3：转换为 CaregiverGroupDTO 列表，按 tag 名称排序
+	var groups []CaregiverGroupDTO
+	tagNames := make([]string, 0, len(tagGroups))
+	for tagName := range tagGroups {
+		tagNames = append(tagNames, tagName)
+	}
+	sort.Strings(tagNames)
+
+	for _, tagName := range tagNames {
+		members := tagGroups[tagName]
+		// 生成 member_names（用于向后兼容）
+		memberNames := make([]string, 0, len(members))
+		for _, member := range members {
+			name := member.Nickname
+			if name == "" {
+				name = member.UserAccount
+			}
+			memberNames = append(memberNames, name)
+		}
+		sort.Strings(memberNames) // 排序 member_names
+
+		group := CaregiverGroupDTO{
+			TagName:     tagName,
+			MemberCount: len(members),
+			MemberNames: memberNames,
+			Members:     members,
+		}
+		groups = append(groups, group)
 	}
 
 	return &GetAvailableCaregiverGroupsResponse{
 		Items: groups,
 	}, nil
+}
+
+// getStringFromMap 从 map 中获取字符串值（辅助函数）
+func getStringFromMap(m map[string]interface{}, key string) string {
+	if val, ok := m[key]; ok {
+		if str, ok := val.(string); ok {
+			return str
+		}
+	}
+	return ""
 }
 
 // getAvailableTagsFromBranches 获取当前用户所在 Branch 中存在的 tags

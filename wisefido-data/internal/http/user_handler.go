@@ -1050,10 +1050,18 @@ func (h *UserHandler) GetAvailableCaregivers(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// 3. 调用 Service
+	// 3. 获取 branch_id（必填，从 query 参数获取）
+	branchID := r.URL.Query().Get("branch_id")
+	if branchID == "" {
+		writeJSON(w, http.StatusOK, Fail("branch_id is required"))
+		return
+	}
+
+	// 4. 调用 Service
 	req := service.GetAvailableCaregiversRequest{
 		TenantID:      tenantID,
 		CurrentUserID: currentUserID,
+		BranchID:      branchID,
 	}
 
 	resp, err := h.userService.GetAvailableCaregivers(ctx, req)
@@ -1067,14 +1075,16 @@ func (h *UserHandler) GetAvailableCaregivers(w http.ResponseWriter, r *http.Requ
 	items := make([]map[string]any, 0, len(resp.Items))
 	for _, user := range resp.Items {
 		item := map[string]any{
-			"user_id":      user.UserID,
-			"tenant_id":    user.TenantID,
-			"user_account": user.UserAccount,
-			"nickname":     user.Nickname,
-			"email":        user.Email,
-			"phone":        user.Phone,
-			"role":         user.Role,
-			"status":       user.Status,
+			"user_id":       user.UserID,
+			"tenant_id":     user.TenantID,
+			"user_account":  user.UserAccount,
+			"user_nickname": user.Nickname, // 前端使用 user_nickname
+			"nickname":      user.Nickname, // 向后兼容
+			"email":         user.Email,
+			"phone":         user.Phone,
+			"role":          user.Role,
+			"status":        user.Status,
+			"tags":          user.Tags, // 返回 tags 数组
 		}
 		items = append(items, item)
 	}
@@ -1101,10 +1111,18 @@ func (h *UserHandler) GetAvailableCaregiverGroups(w http.ResponseWriter, r *http
 		return
 	}
 
-	// 3. 调用 Service
+	// 3. 获取 branch_id（必填，从 query 参数获取）
+	branchID := r.URL.Query().Get("branch_id")
+	if branchID == "" {
+		writeJSON(w, http.StatusOK, Fail("branch_id is required"))
+		return
+	}
+
+	// 4. 调用 Service
 	req := service.GetAvailableCaregiverGroupsRequest{
 		TenantID:      tenantID,
 		CurrentUserID: currentUserID,
+		BranchID:      branchID,
 	}
 
 	resp, err := h.userService.GetAvailableCaregiverGroups(ctx, req)
@@ -1117,9 +1135,23 @@ func (h *UserHandler) GetAvailableCaregiverGroups(w http.ResponseWriter, r *http
 	// 4. 转换为前端格式
 	items := make([]map[string]any, 0, len(resp.Items))
 	for _, group := range resp.Items {
+		// 转换 members 为前端格式
+		members := make([]map[string]any, 0, len(group.Members))
+		for _, member := range group.Members {
+			memberMap := map[string]any{
+				"user_id":       member.UserID,
+				"user_account":  member.UserAccount,
+				"user_nickname": member.Nickname,
+				"role":          member.Role,
+				"tags":          member.Tags,
+			}
+			members = append(members, memberMap)
+		}
 		item := map[string]any{
 			"tag_name":     group.TagName,
 			"member_count": group.MemberCount,
+			"member_names": group.MemberNames, // 向后兼容：成员昵称列表
+			"members":      members,           // 成员详细信息列表
 		}
 		items = append(items, item)
 	}
