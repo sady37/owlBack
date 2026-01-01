@@ -24,7 +24,7 @@ type ListCardsRequest struct {
 	CardType          string // "ActiveBed" | "Unit"
 	UnitType          string // "Home" | "Facility"
 	IsPublicSpace     *bool
-	IsMultiPersonRoom *bool
+	IsSharedUnit *bool
 	Sort              string // "card_name" | "card_address"
 	Direction         string // "asc" | "desc"
 
@@ -168,9 +168,9 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 		argIdx++
 	}
 
-	if req.IsMultiPersonRoom != nil {
+	if req.IsSharedUnit != nil {
 		query.WriteString(` AND u.is_shared_unit = $` + fmt.Sprintf("%d", argIdx) + ` `)
-		args = append(args, *req.IsMultiPersonRoom)
+		args = append(args, *req.IsSharedUnit)
 		argIdx++
 	}
 

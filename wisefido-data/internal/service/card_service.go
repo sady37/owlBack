@@ -56,7 +56,7 @@ type GetCardOverviewRequest struct {
 	CardType          string // "ActiveBed" | "Unit"
 	UnitType          string // "Home" | "Facility"
 	IsPublicSpace     *bool
-	IsMultiPersonRoom *bool
+	IsSharedUnit *bool
 	Sort              string // "card_name" | "card_address"
 	Direction         string // "asc" | "desc"
 
@@ -82,24 +82,14 @@ func (s *cardService) GetCardOverview(ctx context.Context, req GetCardOverviewRe
 		CardType:          req.CardType,
 		UnitType:          req.UnitType,
 		IsPublicSpace:     req.IsPublicSpace,
-		IsMultiPersonRoom: req.IsMultiPersonRoom,
+		IsSharedUnit: req.IsSharedUnit,
 		Sort:              req.Sort,
 		Direction:         req.Direction,
 	}
 
-	// 2. 处理 Family 用户类型（已废弃）
-	// 注意：resident_contacts 不能登录系统，所以 CurrentUserType 永远不会是 "family"
-	// 保留此代码是为了向后兼容，但实际上永远不会执行
-	if req.CurrentUserType == "family" {
-		residentID, err := s.getResidentIDByContactID(ctx, req.TenantID, req.CurrentUserID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get resident_id for contact: %w", err)
-		}
-		repoReq.PermissionFilter = &repository.PermissionFilter{
-			UserID:   residentID,
-			UserType: "resident",
-		}
-	} else if req.CurrentUserType == "resident" {
+	// 2. 处理用户类型权限过滤
+	// 注意：contact_id 已不存在，contact 仅是 resident 的属性，不再有独立的 contact 用户类型
+	if req.CurrentUserType == "resident" {
 		repoReq.PermissionFilter = &repository.PermissionFilter{
 			UserID:   req.CurrentUserID,
 			UserType: "resident",
@@ -162,25 +152,6 @@ func (s *cardService) GetCardOverview(ctx context.Context, req GetCardOverviewRe
 	}, nil
 }
 
-// getResidentIDByContactID 根据 contact_id 获取 resident_id
-func (s *cardService) getResidentIDByContactID(ctx context.Context, tenantID, contactID string) (string, error) {
-	var residentID string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT resident_id::text 
-		 FROM resident_contacts 
-		 WHERE tenant_id = $1 AND contact_id::text = $2`,
-		tenantID, contactID,
-	).Scan(&residentID)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("contact not found: %s", contactID)
-		}
-		return "", fmt.Errorf("failed to query resident_id: %w", err)
-	}
-
-	return residentID, nil
-}
 
 // getResourcePermission 查询资源权限配置
 //
@@ -259,7 +230,8 @@ func (s *cardService) aggregateCardData(ctx context.Context, cards []*domain.Car
 		// 收集住户 ID
 		if card.Card.CardType == "ActiveBed" && card.Card.ResidentID.Valid {
 			residentIDs[card.Card.ResidentID.String] = true
-		} else if card.Card.CardType == "Unit" {
+		} else if card.Card.CardType == "Location" || card.Card.CardType == "Unit" {
+			// 注意：数据库中使用 'Location'，但逻辑上与 'Unit' 相同
 			var residentIDsFromCard []string
 			if err := json.Unmarshal(card.Card.Residents, &residentIDsFromCard); err == nil {
 				for _, id := range residentIDsFromCard {
@@ -343,7 +315,7 @@ func (s *cardService) aggregateSingleCard(
 	if card.Unit != nil {
 		item.UnitType = card.Unit.UnitType
 		item.IsPublicSpace = card.Unit.IsPublic
-		item.IsMultiPersonRoom = card.Unit.IsSharedUnit
+		item.IsSharedUnit = card.Unit.IsSharedUnit
 	}
 
 	// 聚合设备
@@ -366,33 +338,55 @@ func (s *cardService) aggregateSingleCard(
 		}
 	}
 
-	// 聚合住户
+	// 聚合住户并计算 ResidentAccess
+	// ResidentAccess: 是否允许住户访问（从 residents.is_access_enabled 获取）
+	item.ResidentAccess = false
 	if card.Card.CardType == "ActiveBed" && card.Card.ResidentID.Valid {
+		// ActiveBed 卡片：使用该 resident 的 is_access_enabled
 		if resident, ok := residents[card.Card.ResidentID.String]; ok {
 			item.Residents = append(item.Residents, domain.CardResident{
 				ResidentID:   resident.ResidentID,
 				Nickname:     resident.Nickname,
 				ServiceLevel: resident.ServiceLevel,
 			})
+			item.ResidentAccess = resident.IsAccessEnabled
 		}
 	} else if card.Card.CardType == "Location" || card.Card.CardType == "Unit" {
-		var residentIDsFromCard []string
-		if err := json.Unmarshal(card.Card.Residents, &residentIDsFromCard); err == nil {
-			for _, id := range residentIDsFromCard {
-				if resident, ok := residents[id]; ok {
-					item.Residents = append(item.Residents, domain.CardResident{
-						ResidentID:   resident.ResidentID,
-						Nickname:     resident.Nickname,
-						ServiceLevel: resident.ServiceLevel,
-					})
-				} else {
-					// 住户不存在，记录警告
-					s.logger.Warn("Resident not found, skipping",
-						zap.String("resident_id", id),
-						zap.String("card_id", card.Card.CardID),
-					)
+		// Unit 卡片：根据 Unit 类型决定
+		// 1. 如果 is_shared_unit = TRUE 或 is_public = TRUE，说明是公共区域，不能访问，ResidentAccess = FALSE
+		// 2. 如果 is_shared_unit = FALSE 且 is_public = FALSE，检查该 Unit 里的 resident 是否 is_access_enabled
+		if card.Unit != nil {
+			if card.Unit.IsSharedUnit || card.Unit.IsPublic {
+				// 公共区域或共享单元，不允许住户访问
+				item.ResidentAccess = false
+			} else {
+				// 非公共区域且非共享单元，检查 residents 的 is_access_enabled
+				var residentIDsFromCard []string
+				if err := json.Unmarshal(card.Card.Residents, &residentIDsFromCard); err == nil {
+					for _, id := range residentIDsFromCard {
+						if resident, ok := residents[id]; ok {
+							item.Residents = append(item.Residents, domain.CardResident{
+								ResidentID:   resident.ResidentID,
+								Nickname:     resident.Nickname,
+								ServiceLevel: resident.ServiceLevel,
+							})
+							// 如果至少有一个 resident 的 is_access_enabled = TRUE，则 ResidentAccess = TRUE
+							if resident.IsAccessEnabled {
+								item.ResidentAccess = true
+							}
+						} else {
+							// 住户不存在，记录警告
+							s.logger.Warn("Resident not found, skipping",
+								zap.String("resident_id", id),
+								zap.String("card_id", card.Card.CardID),
+							)
+						}
+					}
 				}
 			}
+		} else {
+			// Unit 信息不存在，默认不允许访问
+			item.ResidentAccess = false
 		}
 	}
 

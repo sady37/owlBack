@@ -66,10 +66,18 @@ func (h *CardOverviewHandler) GetCardOverview(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	var isMultiPersonRoom *bool
-	if isMultiPersonRoomStr := r.URL.Query().Get("is_multi_person_room"); isMultiPersonRoomStr != "" {
-		if val, err := strconv.ParseBool(isMultiPersonRoomStr); err == nil {
-			isMultiPersonRoom = &val
+	var isSharedUnit *bool
+	if isSharedUnitStr := r.URL.Query().Get("is_shared_unit"); isSharedUnitStr != "" {
+		if val, err := strconv.ParseBool(isSharedUnitStr); err == nil {
+			isSharedUnit = &val
+		}
+	}
+	// 向后兼容：也支持 is_multi_person_room 参数
+	if isSharedUnit == nil {
+		if isMultiPersonRoomStr := r.URL.Query().Get("is_multi_person_room"); isMultiPersonRoomStr != "" {
+			if val, err := strconv.ParseBool(isMultiPersonRoomStr); err == nil {
+				isSharedUnit = &val
+			}
 		}
 	}
 
@@ -96,7 +104,7 @@ func (h *CardOverviewHandler) GetCardOverview(w http.ResponseWriter, r *http.Req
 		CardType:          cardType,
 		UnitType:          unitType,
 		IsPublicSpace:     isPublicSpace,
-		IsMultiPersonRoom: isMultiPersonRoom,
+		IsSharedUnit: isSharedUnit,
 		Sort:              sort,
 		Direction:         direction,
 		CurrentUserID:     currentUserID,

@@ -65,7 +65,7 @@ type CardOverviewItem struct {
 	// Unit 信息
 	UnitType         string `json:"unit_type"`         // "Home" | "Facility"
 	IsPublicSpace    bool   `json:"is_public_space"`
-	IsMultiPersonRoom bool  `json:"is_multi_person_room"`
+	IsSharedUnit bool  `json:"is_shared_unit"`
 
 	// 聚合数据
 	Devices   []CardDevice   `json:"devices"`
@@ -81,7 +81,7 @@ type CardOverviewItem struct {
 	PopAlarmEmerge  int `json:"pop_alarm_emerge"`
 
 	// 权限相关
-	FamilyView bool `json:"family_view"` // 是否对家属可见
+	ResidentAccess bool `json:"resident_access"` // 是否允许住户访问
 
 	// 护理人员相关（可选，如果实现）
 	CaregiverGroups []string       `json:"caregiver_groups,omitempty"`
