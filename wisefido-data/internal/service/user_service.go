@@ -220,6 +220,7 @@ type UpdateAccountSettingsRequest struct {
 	UserID        string  // 必填
 	CurrentUserID string  // 当前用户 ID（用于权限检查）
 	PasswordHash  *string // 可选：密码 hash（nil 表示不更新）
+	PinHash       *string // 可选：PIN hash（nil 表示不更新）
 	Email         *string // 可选：邮箱（nil 表示不更新，空字符串表示删除）
 	EmailHash     *string // 可选：邮箱 hash（前端计算的 hash）
 	Phone         *string // 可选：电话（nil 表示不更新，空字符串表示删除）
@@ -1670,6 +1671,18 @@ func (s *userService) UpdateAccountSettings(ctx context.Context, req UpdateAccou
 	if req.PasswordHash != nil {
 		passwordHashBytes, _ := hex.DecodeString(*req.PasswordHash)
 		updateUser.PasswordHash = passwordHashBytes
+	}
+
+	// 4.1.1 更新 PIN（如果提供，!= nil 就更新，不进行任何判断）
+	if req.PinHash != nil {
+		if *req.PinHash == "" {
+			// 空字符串，删除 PIN（设置为 NULL）
+			updateUser.PinHash = []byte{}
+		} else {
+			// 解码 hex 字符串
+			pinHashBytes, _ := hex.DecodeString(*req.PinHash)
+			updateUser.PinHash = pinHashBytes
+		}
 	}
 
 	// 4.2 更新 email 字段（如果提供，!= nil 就更新，不进行任何判断）

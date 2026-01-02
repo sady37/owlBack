@@ -917,6 +917,20 @@ func (h *UserHandler) UpdateAccountSettings(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	// 解析 pin_hash（按照统一设计规则）
+	// 字段不存在 → req.PinHash = nil（不更新）
+	// 字段为 null → req.PinHash = nil（不更新）
+	// 字段有值 → req.PinHash = &hash（更新）
+	if pinHashVal, ok := payload["pin_hash"]; ok {
+		if pinHashVal == nil {
+			// null 表示不更新
+			// 不设置 req.PinHash
+		} else if pinHash, ok := pinHashVal.(string); ok {
+			// 允许空字符串（表示删除 PIN）
+			req.PinHash = &pinHash
+		}
+	}
+
 	// 解析 email 和 email_hash
 	// 处理 email 可能是 null 或空字符串的情况
 	if emailVal, ok := payload["email"]; ok {
@@ -970,7 +984,7 @@ func (h *UserHandler) UpdateAccountSettings(w http.ResponseWriter, r *http.Reque
 	// 如果字段不存在（ok == false），req.PhoneHash 保持为 nil，表示不更新 hash
 
 	// 检查是否有任何更新
-	if req.PasswordHash == nil && req.Email == nil && req.Phone == nil {
+	if req.PasswordHash == nil && req.PinHash == nil && req.Email == nil && req.Phone == nil {
 		writeJSON(w, http.StatusOK, Fail("no fields to update"))
 		return
 	}

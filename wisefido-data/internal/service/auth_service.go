@@ -29,6 +29,9 @@ type AuthService interface {
 	SendVerificationCode(ctx context.Context, req SendVerificationCodeRequest) (*SendVerificationCodeResponse, error)
 	VerifyCode(ctx context.Context, req VerifyCodeRequest) (*VerifyCodeResponse, error)
 	ResetPassword(ctx context.Context, req ResetPasswordRequest) (*ResetPasswordResponse, error)
+
+	// PIN 验证功能（用于锁屏解锁）
+	VerifyPIN(ctx context.Context, req VerifyPINRequest) (*VerifyPINResponse, error)
 }
 
 // verificationCodeStore 验证码存储（内存实现，后续可以改为 Redis）
@@ -896,4 +899,87 @@ func (s *authService) ResetPassword(ctx context.Context, req ResetPasswordReques
 		Success: true,
 		Message: "Password has been reset successfully",
 	}, nil
+}
+
+// VerifyPINRequest PIN 验证请求
+type VerifyPINRequest struct {
+	PinHash string // SHA256(pin) 的 hex 编码，必填
+	UserID  string // 用户 ID（从 request header X-User-Id 获取），必填
+}
+
+// VerifyPINResponse PIN 验证响应
+type VerifyPINResponse struct {
+	Success bool `json:"success"`
+}
+
+// VerifyPIN 验证 PIN（用于锁屏解锁）
+// 从 request header 中获取 user_id，然后验证 PIN
+func (s *authService) VerifyPIN(ctx context.Context, req VerifyPINRequest) (*VerifyPINResponse, error) {
+	// 参数验证
+	if strings.TrimSpace(req.PinHash) == "" {
+		return nil, fmt.Errorf("pin_hash is required")
+	}
+	if strings.TrimSpace(req.UserID) == "" {
+		return nil, fmt.Errorf("user_id is required")
+	}
+
+	// 检查数据库连接
+	if s.db == nil {
+		return nil, fmt.Errorf("database connection is required")
+	}
+
+	// 测试数据库连接
+	if err := s.db.PingContext(ctx); err != nil {
+		return nil, fmt.Errorf("database connection test failed: %w", err)
+	}
+
+	// 1. 解析 PIN hash
+	pinHash, err := hex.DecodeString(req.PinHash)
+	if err != nil {
+		return nil, fmt.Errorf("invalid pin_hash format: %w", err)
+	}
+
+	// 2. 查询用户的 PIN hash
+	var storedPinHash []byte
+	err = s.db.QueryRowContext(ctx,
+		`SELECT pin_hash FROM users WHERE user_id::text = $1`,
+		req.UserID,
+	).Scan(&storedPinHash)
+
+	if err == sql.ErrNoRows {
+		return &VerifyPINResponse{Success: false}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query user PIN: %w", err)
+	}
+
+	// 3. 验证 PIN hash
+	if len(storedPinHash) == 0 {
+		// 用户未设置 PIN
+		return &VerifyPINResponse{Success: false}, nil
+	}
+
+	// 4. 比较 PIN hash（使用 constant-time comparison 防止时序攻击）
+	match := constantTimeCompare(pinHash, storedPinHash)
+	if !match {
+		return &VerifyPINResponse{Success: false}, nil
+	}
+
+	s.logger.Info("PIN verified successfully",
+		zap.String("user_id", req.UserID),
+	)
+
+	return &VerifyPINResponse{Success: true}, nil
+}
+
+// constantTimeCompare 使用常数时间比较两个字节切片（防止时序攻击）
+func constantTimeCompare(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	result := 0
+	for i := 0; i < len(a); i++ {
+		result |= int(a[i]) ^ int(b[i])
+	}
+	return result == 0
 }

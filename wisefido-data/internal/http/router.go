@@ -195,6 +195,7 @@ func (r *Router) RegisterAuthRoutes(h *AuthHandler) {
 	r.Handle("/auth/api/v1/forgot-password/send-code", h.ServeHTTP)
 	r.Handle("/auth/api/v1/forgot-password/verify-code", h.ServeHTTP)
 	r.Handle("/auth/api/v1/forgot-password/reset", h.ServeHTTP)
+	r.Handle("/auth/api/v1/verify-pin", h.ServeHTTP)
 }
 
 // RegisterDeviceRoutes 注册设备管理路由

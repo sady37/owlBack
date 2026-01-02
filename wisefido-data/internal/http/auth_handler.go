@@ -57,6 +57,12 @@ func (h *AuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.ResetPassword(w, r)
+	case "/auth/api/v1/verify-pin":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		h.VerifyPIN(w, r)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -296,5 +302,49 @@ func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. 返回响应
+	writeJSON(w, http.StatusOK, Ok(resp))
+}
+
+// VerifyPIN 验证 PIN（用于锁屏解锁）
+func (h *AuthHandler) VerifyPIN(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+
+	// 1. 参数解析
+	var payload map[string]any
+	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
+		writeJSON(w, http.StatusOK, Fail("invalid body"))
+		return
+	}
+
+
+	pinHash, _ := payload["pin_hash"].(string)
+	if pinHash == "" {
+		writeJSON(w, http.StatusOK, Fail("pin_hash is required"))
+		return
+	}
+
+	// 2. 从 request header 获取 user_id
+	userID := r.Header.Get("X-User-Id")
+	if userID == "" {
+		writeJSON(w, http.StatusOK, Fail("user not authenticated"))
+		return
+	}
+
+
+	// 3. 调用 Service
+	req := service.VerifyPINRequest{
+		PinHash: pinHash,
+		UserID:  userID,
+	}
+
+	resp, err := h.authService.VerifyPIN(ctx, req)
+	if err != nil {
+		h.logger.Error("VerifyPIN failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	// 4. 返回响应
 	writeJSON(w, http.StatusOK, Ok(resp))
 }
