@@ -92,12 +92,10 @@ func TestGetUnitInfo_Success(t *testing.T) {
 	rows := sqlmock.NewRows([]string{
 		"unit_id", "unit_name", "branch_name", "building",
 		"is_public", "is_shared_unit", "unit_type",
-		"groupList", "userList",
 	}).
 		AddRow(
 			"unit-456", "E203", "BranchA", "MainBuilding",
 			false, false, "Institutional",
-			`["tag1", "tag2"]`, `["user-id-1", "user-id-2"]`,
 		)
 
 	mock.ExpectQuery(`SELECT`).
@@ -116,8 +114,6 @@ func TestGetUnitInfo_Success(t *testing.T) {
 	assert.False(t, unitInfo.IsPublic)
 	assert.False(t, unitInfo.IsSharedUnit)
 	assert.Equal(t, "Institutional", unitInfo.UnitType)
-	assert.Contains(t, string(unitInfo.GroupList), "tag1")
-	assert.Contains(t, string(unitInfo.UserList), "user-id-1")
 
 	// Verify all expectations were met
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -130,16 +126,14 @@ func TestGetUnitInfo_WithNullGroupList(t *testing.T) {
 	tenantID := "tenant-123"
 	unitID := "unit-456"
 
-	// Setup expected SQL query (groupList and userList are NULL)
+	// Setup expected SQL query
 	rows := sqlmock.NewRows([]string{
 		"unit_id", "unit_name", "branch_name", "building",
 		"is_public", "is_shared_unit", "unit_type",
-		"groupList", "userList",
 	}).
 		AddRow(
 			"unit-456", "E203", "BranchA", "MainBuilding",
 			false, false, "Institutional",
-			nil, nil,
 		)
 
 	mock.ExpectQuery(`SELECT`).
@@ -151,8 +145,7 @@ func TestGetUnitInfo_WithNullGroupList(t *testing.T) {
 
 	// Verify results
 	require.NoError(t, err)
-	assert.Equal(t, "[]", string(unitInfo.GroupList))
-	assert.Equal(t, "[]", string(unitInfo.UserList))
+	assert.Equal(t, "unit-456", unitInfo.UnitID)
 
 	// Verify all expectations were met
 	assert.NoError(t, mock.ExpectationsWereMet())

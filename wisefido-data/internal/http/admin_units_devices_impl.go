@@ -125,7 +125,13 @@ func (a *AdminAPI) getDevices(w http.ResponseWriter, r *http.Request) {
 	if len(statuses) == 1 && strings.Contains(statuses[0], ",") {
 		statuses = strings.Split(statuses[0], ",")
 	}
+	// SystemAdmin 可以查看所有租户的设备
+	userRole := r.Header.Get("X-User-Role")
+	isSystemAdmin := strings.EqualFold(userRole, "SystemAdmin")
+	systemTenantID := SystemTenantID()
+	
 	filters := repository.DeviceFilters{
+		IsSystemAdmin:  isSystemAdmin && tenantID == systemTenantID, // SystemAdmin 查看所有设备
 		Status:         statuses,
 		BusinessAccess: r.URL.Query().Get("business_access"),
 		DeviceType:     r.URL.Query().Get("device_type"),
@@ -227,18 +233,30 @@ func payloadToDevice(payload map[string]any) *domain.Device {
 	if v, ok := payload["uid"].(string); ok && v != "" {
 		device.UID = sql.NullString{String: v, Valid: true}
 	}
-	if v, ok := payload["bound_room_id"].(string); ok {
-		if v != "" {
-			device.BoundRoomID = sql.NullString{String: v, Valid: true}
-		} else {
+	// Handle bound_room_id: support both string and null values
+	if val, exists := payload["bound_room_id"]; exists {
+		if val == nil {
+			// Explicit null value - set to NULL in database
 			device.BoundRoomID = sql.NullString{Valid: false}
+		} else if v, ok := val.(string); ok {
+			if v != "" {
+				device.BoundRoomID = sql.NullString{String: v, Valid: true}
+			} else {
+				device.BoundRoomID = sql.NullString{Valid: false}
+			}
 		}
 	}
-	if v, ok := payload["bound_bed_id"].(string); ok {
-		if v != "" {
-			device.BoundBedID = sql.NullString{String: v, Valid: true}
-		} else {
+	// Handle bound_bed_id: support both string and null values
+	if val, exists := payload["bound_bed_id"]; exists {
+		if val == nil {
+			// Explicit null value - set to NULL in database
 			device.BoundBedID = sql.NullString{Valid: false}
+		} else if v, ok := val.(string); ok {
+			if v != "" {
+				device.BoundBedID = sql.NullString{String: v, Valid: true}
+			} else {
+				device.BoundBedID = sql.NullString{Valid: false}
+			}
 		}
 	}
 	if v, ok := payload["status"].(string); ok {

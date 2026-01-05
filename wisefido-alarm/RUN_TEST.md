@@ -99,7 +99,7 @@ go run cmd/wisefido-alarm/main.go
 - ✅ 服务成功启动
 - ✅ 无错误日志
 - ✅ 显示 "Cache consumer started"
-- ✅ 定期轮询（每5秒）
+- ✅ 定期轮询（每10秒）
 
 ### 测试 2：卡片查询测试
 
@@ -243,7 +243,7 @@ go run cmd/wisefido-sensor-fusion/main.go
 ### 监控指标
 
 1. **处理速度**：
-   - 每5秒轮询一次
+   - 每10秒轮询一次
    - 批量评估（每批10张卡片）
 
 2. **内存使用**：

@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"wisefido-data/internal/domain"
+
+	"github.com/lib/pq"
 )
 
 // CardsRepository 卡片Repository接口
@@ -18,15 +20,15 @@ type CardsRepository interface {
 
 // ListCardsRequest 查询卡片列表请求
 type ListCardsRequest struct {
-	TenantID          string
-	CardID            string // 可选：查询单个卡片
-	Search            string // 搜索关键词
-	CardType          string // "ActiveBed" | "Unit"
-	UnitType          string // "Home" | "Facility"
-	IsPublicSpace     *bool
-	IsSharedUnit *bool
-	Sort              string // "card_name" | "card_address"
-	Direction         string // "asc" | "desc"
+	TenantID      string
+	CardID        string // 可选：查询单个卡片
+	Search        string // 搜索关键词
+	CardType      string // "ActiveBed" | "Unit"
+	UnitType      string // "Home" | "Facility"
+	IsPublicSpace *bool
+	IsSharedUnit  *bool
+	Sort          string // "card_name" | "card_address"
+	Direction     string // "asc" | "desc"
 
 	// 权限过滤参数（可选）
 	PermissionFilter *PermissionFilter
@@ -42,8 +44,7 @@ type PermissionFilter struct {
 	UserBranchTag *string // 如果指定，只返回同分支的卡片
 
 	// AssignedOnly 权限
-	AssignedOnly        bool   // 如果为 true，在 SQL 中使用 CTE 过滤
-	UserIDForAssignment string // 用于 AssignedOnly 过滤的用户 ID
+	AssignedResidentIDs []string // 分配给用户的 resident_id 列表（由 service 层查询后传入）
 }
 
 // PostgresCardsRepository 卡片Repository实现
@@ -66,33 +67,6 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 	var query strings.Builder
 	var args []any
 	argIdx := 1
-
-	// 如果 AssignedOnly，使用 CTE
-	if req.PermissionFilter != nil && req.PermissionFilter.AssignedOnly {
-		query.WriteString(`
-			WITH assigned_residents AS (
-				SELECT DISTINCT rc.resident_id
-				FROM resident_caregivers rc
-				WHERE rc.tenant_id = $` + fmt.Sprintf("%d", argIdx) + `
-					AND (
-						-- 检查 user_list JSONB 是否包含 userID
-						rc.user_list::text LIKE '%"' || $` + fmt.Sprintf("%d", argIdx+1) + ` || '"%'
-						OR
-						-- 检查 group_list JSONB 是否匹配用户的 tags
-						EXISTS (
-							SELECT 1 FROM users u
-							WHERE u.tenant_id = $` + fmt.Sprintf("%d", argIdx) + `
-								AND u.user_id::text = $` + fmt.Sprintf("%d", argIdx+1) + `
-								AND u.user_tags ?| (
-									SELECT ARRAY(SELECT jsonb_array_elements_text(rc.group_list))
-								)
-						)
-					)
-			)
-		`)
-		args = append(args, req.TenantID, req.PermissionFilter.UserIDForAssignment)
-		argIdx += 2
-	}
 
 	// SELECT 子句
 	query.WriteString(`
@@ -118,10 +92,8 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 			u.tenant_id::text,
 			COALESCE(br.branch_name, NULL) as branch_name,
 			u.unit_name,
-			u.building_name,
+			COALESCE(bld.building_name, NULL) as building_name,
 			u.floor,
-			u.area_name,
-			u.unit_number,
 			u.layout_config,
 			u.unit_type,
 			u.is_public,
@@ -130,8 +102,42 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 		FROM cards c
 		LEFT JOIN units u ON c.unit_id = u.unit_id
 		LEFT JOIN branches br ON u.branch_id = br.branch_id
-		WHERE c.tenant_id = $` + fmt.Sprintf("%d", argIdx) + `
+		LEFT JOIN buildings bld ON u.building_id = bld.building_id
 	`)
+
+	// AssignedOnly 权限过滤：使用简单的 WHERE 子句，基于 service 层传入的 resident_id 列表
+	if req.PermissionFilter != nil && len(req.PermissionFilter.AssignedResidentIDs) > 0 {
+		// 使用 ANY 数组匹配，逻辑更清晰
+		query.WriteString(` AND (
+			-- ActiveBed 卡片：直接匹配 resident_id
+			(c.card_type = 'ActiveBed' AND c.resident_id = ANY($` + fmt.Sprintf("%d", argIdx) + `::uuid[]))
+			OR
+			-- Location 卡片：检查 residents JSONB 数组是否包含任何分配的 resident_id
+			(c.card_type = 'Location' 
+				AND (u.is_public = FALSE AND u.is_shared_unit = FALSE)
+				AND (
+					-- 第一个住户匹配
+					(c.residents->0->>'resident_id')::uuid = ANY($` + fmt.Sprintf("%d", argIdx) + `::uuid[])
+					OR
+					-- 第二个住户匹配（如果存在且允许）
+					(
+						jsonb_array_length(c.residents) >= 2
+						AND (c.residents->1->>'resident_id')::uuid = ANY($` + fmt.Sprintf("%d", argIdx) + `::uuid[])
+						AND EXISTS (
+							SELECT 1 FROM residents r
+							WHERE r.tenant_id = c.tenant_id
+								AND r.resident_id::text = (c.residents->1->>'resident_id')::text
+								AND r.is_access_enabled = TRUE
+						)
+					)
+				)
+			)
+		) `)
+		args = append(args, pq.Array(req.PermissionFilter.AssignedResidentIDs))
+		argIdx++
+	}
+
+	query.WriteString(` WHERE c.tenant_id = $` + fmt.Sprintf("%d", argIdx) + ` `)
 	args = append(args, req.TenantID)
 	argIdx++
 
@@ -186,13 +192,13 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 				AND (u.is_public = FALSE AND u.is_shared_unit = FALSE)
 				-- 是第一个住户或第二个住户（且第二个住户允许）
 				AND (
-					-- 第一个住户
-					c.residents->0 = to_jsonb($` + fmt.Sprintf("%d", argIdx) + `::text)
+					-- 第一个住户（从 JSONB 对象中提取 resident_id）
+					(c.residents->0->>'resident_id')::text = $` + fmt.Sprintf("%d", argIdx) + `
 					OR
 					-- 第二个住户（且允许）
 					(
 						jsonb_array_length(c.residents) >= 2
-						AND c.residents->1 = to_jsonb($` + fmt.Sprintf("%d", argIdx) + `::text)
+						AND (c.residents->1->>'resident_id')::text = $` + fmt.Sprintf("%d", argIdx) + `
 						AND EXISTS (
 							SELECT 1 FROM residents r
 							WHERE r.tenant_id = c.tenant_id
@@ -220,37 +226,7 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 		}
 	}
 
-	// AssignedOnly 权限过滤
-	if req.PermissionFilter != nil && req.PermissionFilter.AssignedOnly {
-		query.WriteString(` AND (
-			-- ActiveBed 卡片：检查 resident_id 是否在分配列表中
-			(c.card_type = 'ActiveBed' AND c.resident_id IN (SELECT resident_id FROM assigned_residents))
-			OR
-			-- Unit 卡片（数据库中使用 'Location'）：检查权限
-			(c.card_type = 'Location' 
-				-- 不是 share unit
-				AND (u.is_public = FALSE AND u.is_shared_unit = FALSE)
-				-- 是第一个住户或第二个住户（且第二个住户允许）
-				AND EXISTS (
-					SELECT 1 FROM assigned_residents ar
-					WHERE (
-						c.residents->0 = to_jsonb(ar.resident_id::text)
-						OR
-						(
-							jsonb_array_length(c.residents) >= 2
-							AND c.residents->1 = to_jsonb(ar.resident_id::text)
-							AND EXISTS (
-								SELECT 1 FROM residents r
-								WHERE r.tenant_id = c.tenant_id
-									AND r.resident_id = ar.resident_id
-									AND r.is_access_enabled = TRUE
-							)
-						)
-					)
-				)
-			)
-		) `)
-	}
+	// AssignedOnly 权限过滤已在上面处理（使用 AssignedResidentIDs）
 
 	// 排序
 	sortField := "card_name"
@@ -277,7 +253,7 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 
 		var bedID, unitID, residentID sql.NullString
 		var devicesRaw, residentsRaw sql.NullString
-		var branchTag, buildingTag, areaTag, layoutConfig sql.NullString
+		var branchTag, buildingTag, layoutConfig sql.NullString
 		var isPublic, isSharedUnit bool
 
 		err := rows.Scan(
@@ -304,8 +280,6 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 			&unit.UnitName,
 			&buildingTag,
 			&unit.Floor,
-			&areaTag,
-			&unit.UnitName, // 注意：数据库查询中 unit_number 字段已不存在，使用 unit_name
 			&layoutConfig,
 			&unit.UnitType,
 			&isPublic,
@@ -343,9 +317,6 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 		}
 		if buildingTag.Valid {
 			unit.BuildingName = sql.NullString{String: buildingTag.String, Valid: true}
-		}
-		if areaTag.Valid {
-			// unit.AreaName - 字段已删除 = sql.NullString{String: areaTag.String, Valid: true}
 		}
 		if layoutConfig.Valid {
 			unit.LayoutConfig = sql.NullString{String: layoutConfig.String, Valid: true}

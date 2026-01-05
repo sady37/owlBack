@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"strings"
 
+	"wisefido-data/internal/domain"
+
 	"github.com/lib/pq"
 	"go.uber.org/zap"
-	"wisefido-data/internal/domain"
 )
 
 // PostgresDevicesRepository 设备Repository实现（强类型）
@@ -30,14 +31,23 @@ func (r *PostgresDevicesRepository) SetLogger(logger *zap.Logger) {
 
 // ListDevices 查询设备列表
 // 功能：支持多种过滤条件和分页，自动过滤status='disabled'的设备
+// SystemAdmin 可以查看所有租户的设备（当 filters.IsSystemAdmin = true 时，不限制 tenant_id）
 func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID string, filters DeviceFilters, page, size int) ([]*domain.Device, int, error) {
 	if tenantID == "" {
 		return []*domain.Device{}, 0, nil
 	}
 
-	where := []string{"d.tenant_id = $1", "d.status <> 'disabled'"}
-	args := []any{tenantID}
-	argN := 2
+	// SystemAdmin 查看所有设备时，不限制 tenant_id
+	where := []string{"d.status <> 'disabled'"}
+	args := []any{}
+	argN := 1
+
+	if !filters.IsSystemAdmin {
+		// 普通租户：限制 tenant_id
+		where = append(where, "d.tenant_id = $1")
+		args = append(args, tenantID)
+		argN = 2
+	}
 
 	// status IN (...)
 	if len(filters.Status) > 0 {
@@ -105,7 +115,22 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 			d.status,
 			d.business_access,
 			d.monitoring_enabled,
-			d.metadata
+			d.metadata,
+			ds.device_type,
+			ds.device_model,
+			ds.imei,
+			ds.comm_mode,
+			ds.mcu_model,
+			ds.firmware_version,
+			-- 位置信息（通过 JOIN 查询得到，用于返回给前端）
+			COALESCE(
+				d.bound_room_id,
+				(SELECT r.room_id FROM rooms r JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND r.tenant_id = d.tenant_id LIMIT 1)
+			) as room_id,
+			COALESCE(
+				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id WHERE r.room_id = d.bound_room_id AND u.tenant_id = d.tenant_id LIMIT 1),
+				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND u.tenant_id = d.tenant_id LIMIT 1)
+			) as unit_id
 		FROM devices d
 		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
 		WHERE ` + strings.Join(where, " AND ") + `
@@ -134,6 +159,14 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 			&d.BusinessAccess,
 			&d.MonitoringEnabled,
 			&d.Metadata,
+			&d.DeviceType,
+			&d.DeviceModel,
+			&d.IMEI,
+			&d.CommMode,
+			&d.MCUModel,
+			&d.FirmwareVersion,
+			&d.RoomID,
+			&d.UnitID,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -157,8 +190,24 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 			d.status,
 			d.business_access,
 			d.monitoring_enabled,
-			d.metadata
+			d.metadata,
+			ds.device_type,
+			ds.device_model,
+			ds.imei,
+			ds.comm_mode,
+			ds.mcu_model,
+			ds.firmware_version,
+			-- 位置信息（通过 JOIN 查询得到，用于返回给前端）
+			COALESCE(
+				d.bound_room_id,
+				(SELECT r.room_id FROM rooms r JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND r.tenant_id = d.tenant_id LIMIT 1)
+			) as room_id,
+			COALESCE(
+				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id WHERE r.room_id = d.bound_room_id AND u.tenant_id = d.tenant_id LIMIT 1),
+				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND u.tenant_id = d.tenant_id LIMIT 1)
+			) as unit_id
 		FROM devices d
+		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
 		WHERE d.tenant_id = $1 AND d.device_id = $2
 	`
 	var d domain.Device
@@ -175,6 +224,14 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 		&d.BusinessAccess,
 		&d.MonitoringEnabled,
 		&d.Metadata,
+		&d.DeviceType,
+		&d.DeviceModel,
+		&d.IMEI,
+		&d.CommMode,
+		&d.MCUModel,
+		&d.FirmwareVersion,
+		&d.RoomID,
+		&d.UnitID,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not found: tenant_id=%s, device_id=%s", tenantID, deviceID)
@@ -450,20 +507,186 @@ func (r *PostgresDevicesRepository) UpdateDevice(ctx context.Context, tenantID, 
 		add("status", device.Status)
 	}
 	add("monitoring_enabled", device.MonitoringEnabled)
+	// Handle bound_room_id: check if field was explicitly set (even if null)
+	// We need to check if the field was in the payload, not just if Valid is true
+	// For now, we check Valid - if Valid is false, it means null was explicitly set
 	if device.BoundRoomID.Valid {
 		if device.BoundRoomID.String != "" {
 			add("bound_room_id", device.BoundRoomID.String)
 		} else {
 			set = append(set, "bound_room_id = NULL")
 		}
+	} else {
+		// Valid = false means null was explicitly set in payload
+		// We need to check if this field was in the original payload
+		// For now, we'll always set to NULL if Valid is false (this is safe for unbinding)
+		// Note: This might update fields that weren't in the payload, but it's necessary for unbinding
+		set = append(set, "bound_room_id = NULL")
 	}
+	// Handle bound_bed_id: check if field was explicitly set (even if null)
 	if device.BoundBedID.Valid {
 		if device.BoundBedID.String != "" {
 			add("bound_bed_id", device.BoundBedID.String)
 		} else {
 			set = append(set, "bound_bed_id = NULL")
 		}
+	} else {
+		// Valid = false means null was explicitly set in payload
+		set = append(set, "bound_bed_id = NULL")
 	}
+	if device.DeviceStoreID.Valid {
+		if device.DeviceStoreID.String != "" {
+			add("device_store_id", device.DeviceStoreID.String)
+		} else {
+			set = append(set, "device_store_id = NULL")
+		}
+	}
+	if device.Metadata.Valid {
+		set = append(set, fmt.Sprintf("metadata = $%d::jsonb", argN))
+		args = append(args, device.Metadata.String)
+		argN++
+	}
+
+	if len(set) == 0 {
+		return nil
+	}
+	q := "UPDATE devices SET " + strings.Join(set, ", ") + " WHERE tenant_id = $1 AND device_id = $2"
+	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// UpdateDeviceWithFlags 更新设备（带更新标志，用于区分字段是否在 payload 中）
+func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID bool) error {
+	if tenantID == "" || deviceID == "" {
+		return fmt.Errorf("tenant_id and device_id are required")
+	}
+	if device == nil {
+		return fmt.Errorf("device is required")
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	// 1. 验证bound_room_id（如果更新且值不为空）
+	if updateBoundRoomID && device.BoundRoomID.Valid && device.BoundRoomID.String != "" {
+		var unitTenantID string
+		if err := tx.QueryRowContext(ctx,
+			"SELECT u.tenant_id::text FROM rooms r JOIN units u ON r.unit_id = u.unit_id WHERE r.room_id = $1",
+			device.BoundRoomID.String,
+		).Scan(&unitTenantID); err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("room not found: room_id=%s", device.BoundRoomID.String)
+			}
+			return fmt.Errorf("failed to validate bound_room_id: %w", err)
+		}
+		if unitTenantID != tenantID {
+			return fmt.Errorf("room not found: room_id=%s (room's unit belongs to tenant %s, expected %s)", device.BoundRoomID.String, unitTenantID, tenantID)
+		}
+	}
+
+	// 2. 验证bound_bed_id（如果更新且值不为空）
+	if updateBoundBedID && device.BoundBedID.Valid && device.BoundBedID.String != "" {
+		var unitTenantID string
+		if err := tx.QueryRowContext(ctx,
+			"SELECT u.tenant_id::text FROM beds b JOIN rooms r ON b.room_id = r.room_id JOIN units u ON r.unit_id = u.unit_id WHERE b.bed_id = $1",
+			device.BoundBedID.String,
+		).Scan(&unitTenantID); err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("bed not found: bed_id=%s", device.BoundBedID.String)
+			}
+			return fmt.Errorf("failed to validate bound_bed_id: %w", err)
+		}
+		if unitTenantID != tenantID {
+			return fmt.Errorf("bed not found: bed_id=%s (bed's room's unit belongs to tenant %s, expected %s)", device.BoundBedID.String, unitTenantID, tenantID)
+		}
+	}
+
+	// 3. 验证device_store_id的租户一致性（如果更新）
+	if device.DeviceStoreID.Valid && device.DeviceStoreID.String != "" {
+		var dsTenantID sql.NullString
+		if err := tx.QueryRowContext(ctx,
+			"SELECT tenant_id FROM device_store WHERE device_store_id = $1",
+			device.DeviceStoreID.String,
+		).Scan(&dsTenantID); err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("device_store not found: device_store_id=%s", device.DeviceStoreID.String)
+			}
+			return fmt.Errorf("failed to validate device_store_id: %w", err)
+		}
+		unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
+		if dsTenantID.Valid && dsTenantID.String != unallocatedTenantID && dsTenantID.String != tenantID {
+			return fmt.Errorf("device_store_id %s is assigned to a different tenant (expected %s, got %s)", device.DeviceStoreID.String, tenantID, dsTenantID.String)
+		}
+	}
+
+	// 4. 执行UPDATE（动态构建）
+	set := []string{}
+	args := []any{tenantID, deviceID}
+	argN := 3
+	add := func(col string, v any) {
+		set = append(set, fmt.Sprintf("%s = $%d", col, argN))
+		args = append(args, v)
+		argN++
+	}
+
+	if device.DeviceName != "" {
+		add("device_name", device.DeviceName)
+	}
+	if device.BusinessAccess != "" {
+		add("business_access", device.BusinessAccess)
+	}
+	if device.Status != "" {
+		add("status", device.Status)
+	}
+	add("monitoring_enabled", device.MonitoringEnabled)
+
+	// Handle bound_room_id: only update if flag is set
+	var willSetRoomID, willSetBedID bool
+	var finalRoomID, finalBedID string
+	if updateBoundRoomID {
+		if device.BoundRoomID.Valid && device.BoundRoomID.String != "" {
+			add("bound_room_id", device.BoundRoomID.String)
+			willSetRoomID = true
+			finalRoomID = device.BoundRoomID.String
+		} else {
+			// Field is in payload but value is null - set to NULL
+			set = append(set, "bound_room_id = NULL")
+			willSetRoomID = false
+		}
+	}
+
+	// Handle bound_bed_id: only update if flag is set
+	if updateBoundBedID {
+		if device.BoundBedID.Valid && device.BoundBedID.String != "" {
+			add("bound_bed_id", device.BoundBedID.String)
+			willSetBedID = true
+			finalBedID = device.BoundBedID.String
+		} else {
+			// Field is in payload but value is null - set to NULL
+			set = append(set, "bound_bed_id = NULL")
+			willSetBedID = false
+		}
+	}
+
+	// 验证 bound_room_id 和 bound_bed_id 的逻辑一致性
+	// 根据数据库设计文档 (17_devices.sql) 和设备绑定规则：
+	//   - 绑定到 Bed：bound_bed_id IS NOT NULL, bound_room_id IS NULL
+	//   - 绑定到 Room：bound_room_id IS NOT NULL, bound_bed_id IS NULL
+	//   - 未绑定：bound_room_id IS NULL, bound_bed_id IS NULL（设备尚未安装或处于库存状态）
+	// 数据库约束 chk_device_binding_exclusive 确保两个字段互斥
+	// 注意：当绑定到 bed 时，只保存 bound_bed_id，bound_room_id 设为 NULL
+	// room_id 和 unit_id 可以通过 JOIN beds 和 rooms 表反向查询得到（减少冗余）
+	if willSetRoomID && willSetBedID {
+		return fmt.Errorf("cannot bind to both room and bed: bound_room_id=%s, bound_bed_id=%s (mutually exclusive per device binding rules in 17_devices.sql)", finalRoomID, finalBedID)
+	}
+
 	if device.DeviceStoreID.Valid {
 		if device.DeviceStoreID.String != "" {
 			add("device_store_id", device.DeviceStoreID.String)
@@ -1130,4 +1353,3 @@ func (r *PostgresDevicesRepository) GetDevicesByBedIDs(ctx context.Context, tena
 	}
 	return result, rows.Err()
 }
-

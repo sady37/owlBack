@@ -208,6 +208,11 @@ func (c *StreamConsumer) processMessage(ctx context.Context, streamMsg *StreamMe
 		"category":          stdData.Category,
 	}
 	
+	// 如果存在 event_type，添加到输出消息中（用于设备直接报警处理）
+	if stdData.EventType != nil {
+		outputData["event_type"] = *stdData.EventType
+	}
+	
 	if _, err := rediscommon.PublishJSONToStream(ctx, c.redisClient, c.config.Transformer.Streams.Output, outputData); err != nil {
 		c.logger.Warn("Failed to publish to output stream", zap.Error(err))
 	}

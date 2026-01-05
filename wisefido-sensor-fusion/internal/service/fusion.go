@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"wisefido-sensor-fusion/internal/alarm"
 	"wisefido-sensor-fusion/internal/config"
 	"wisefido-sensor-fusion/internal/consumer"
 	"wisefido-sensor-fusion/internal/fusion"
@@ -42,6 +43,13 @@ func NewFusionService(cfg *config.Config, logger *zap.Logger) (*FusionService, e
 	cardRepo := repository.NewCardRepository(db, logger)
 	iotRepo := repository.NewIoTTimeSeriesRepository(db, logger)
 	
+	// 创建报警相关 Repository
+	alarmEventsRepo := repository.NewAlarmEventsRepository(db, logger)
+	alarmDeviceRepo := repository.NewAlarmDeviceRepository(db, logger)
+	
+	// 创建报警处理器
+	alarmHandler := alarm.NewAlarmHandler(alarmEventsRepo, alarmDeviceRepo, cardRepo, logger)
+	
 	// 创建Fusion
 	sensorFusion := fusion.NewSensorFusion(cardRepo, iotRepo, logger)
 	
@@ -56,6 +64,9 @@ func NewFusionService(cfg *config.Config, logger *zap.Logger) (*FusionService, e
 		iotRepo,
 		sensorFusion,
 		cacheManager,
+		alarmEventsRepo,
+		alarmDeviceRepo,
+		alarmHandler,
 		logger,
 	)
 	

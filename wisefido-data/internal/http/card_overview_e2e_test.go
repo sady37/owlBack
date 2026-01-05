@@ -11,13 +11,41 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/service"
+	"wisefido-data/internal/store"
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
+
+// fakeKVForCardService is a fake KV implementation for testing cardService
+type fakeKVForCardService struct {
+	data map[string]string
+}
+
+func (f *fakeKVForCardService) Get(ctx context.Context, key string) (string, error) {
+	v, ok := f.data[key]
+	if !ok {
+		return "", store.ErrMiss
+	}
+	return v, nil
+}
+
+func (f *fakeKVForCardService) Set(ctx context.Context, key string, value string, ttl time.Duration) error {
+	f.data[key] = value
+	return nil
+}
+
+func (f *fakeKVForCardService) ScanKeys(ctx context.Context, pattern string) ([]string, error) {
+	keys := make([]string, 0, len(f.data))
+	for k := range f.data {
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
 
 // setupCardOverviewE2ETestData 设置端到端测试数据
 func setupCardOverviewE2ETestData(t *testing.T, db *sql.DB, tenantID string) (unitID1, unitID2, bedID1, bedID2, residentID1, residentID2, contactID, cardID1, cardID2, userID string) {
@@ -237,7 +265,9 @@ func TestCardOverviewE2E_ResidentUser(t *testing.T) {
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
 	usersRepo := repository.NewPostgresUsersRepository(db)
 	logger := zap.NewNop()
-	cardService := service.NewCardService(cardsRepo, residentsRepo, devicesRepo, usersRepo, db, logger)
+	// Create a fake KV for testing (cardService requires kv even if not used in GetCardOverview tests)
+	fakeKV := &fakeKVForCardService{data: map[string]string{}}
+	cardService := service.NewCardService(cardsRepo, residentsRepo, devicesRepo, usersRepo, fakeKV, db, logger)
 
 	// 创建 Handler
 	stub := NewStubHandler(nil, nil, db)
@@ -324,7 +354,9 @@ func TestCardOverviewE2E_FamilyUser(t *testing.T) {
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
 	usersRepo := repository.NewPostgresUsersRepository(db)
 	logger := zap.NewNop()
-	cardService := service.NewCardService(cardsRepo, residentsRepo, devicesRepo, usersRepo, db, logger)
+	// Create a fake KV for testing (cardService requires kv even if not used in GetCardOverview tests)
+	fakeKV := &fakeKVForCardService{data: map[string]string{}}
+	cardService := service.NewCardService(cardsRepo, residentsRepo, devicesRepo, usersRepo, fakeKV, db, logger)
 
 	// 创建 Handler
 	stub := NewStubHandler(nil, nil, db)
@@ -405,7 +437,9 @@ func TestCardOverviewE2E_StaffUser_AssignedOnly(t *testing.T) {
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
 	usersRepo := repository.NewPostgresUsersRepository(db)
 	logger := zap.NewNop()
-	cardService := service.NewCardService(cardsRepo, residentsRepo, devicesRepo, usersRepo, db, logger)
+	// Create a fake KV for testing (cardService requires kv even if not used in GetCardOverview tests)
+	fakeKV := &fakeKVForCardService{data: map[string]string{}}
+	cardService := service.NewCardService(cardsRepo, residentsRepo, devicesRepo, usersRepo, fakeKV, db, logger)
 
 	// 创建 Handler
 	stub := NewStubHandler(nil, nil, db)
@@ -503,7 +537,9 @@ func TestCardOverviewE2E_ShareUnit_AccessDenied(t *testing.T) {
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
 	usersRepo := repository.NewPostgresUsersRepository(db)
 	logger := zap.NewNop()
-	cardService := service.NewCardService(cardsRepo, residentsRepo, devicesRepo, usersRepo, db, logger)
+	// Create a fake KV for testing (cardService requires kv even if not used in GetCardOverview tests)
+	fakeKV := &fakeKVForCardService{data: map[string]string{}}
+	cardService := service.NewCardService(cardsRepo, residentsRepo, devicesRepo, usersRepo, fakeKV, db, logger)
 
 	// 创建 Handler
 	stub := NewStubHandler(nil, nil, db)
@@ -582,7 +618,9 @@ func TestCardOverviewE2E_FamilyView_Calculation(t *testing.T) {
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
 	usersRepo := repository.NewPostgresUsersRepository(db)
 	logger := zap.NewNop()
-	cardService := service.NewCardService(cardsRepo, residentsRepo, devicesRepo, usersRepo, db, logger)
+	// Create a fake KV for testing (cardService requires kv even if not used in GetCardOverview tests)
+	fakeKV := &fakeKVForCardService{data: map[string]string{}}
+	cardService := service.NewCardService(cardsRepo, residentsRepo, devicesRepo, usersRepo, fakeKV, db, logger)
 
 	// 创建 Handler
 	stub := NewStubHandler(nil, nil, db)

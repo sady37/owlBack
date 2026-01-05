@@ -155,12 +155,32 @@ func (t *RadarTransformer) transformVitalSigns(rawData map[string]interface{}, s
 }
 
 // transformEvent 转换事件数据
+// 处理雷达设备事件：type=1 (进出事件), type=2 (姿态变化), type=3 (人数变化)
 func (t *RadarTransformer) transformEvent(rawData map[string]interface{}, stdData *models.StandardizedData) error {
-	// 提取事件类型（如果有）
-	// 注意：事件类型可能是原始值，需要映射到标准事件类型
-	// 这里假设原始数据中已经有标准事件类型，或者需要根据其他字段判断
+	// 检查是否是雷达事件消息（cmd="event"）
+	if cmd, ok := rawData["cmd"]; ok && cmd == "event" {
+		eventType, ok := rawData["type"]
+		if !ok {
+			return nil
+		}
+		
+		// 转换为整数
+		typeInt, err := parseInt(eventType)
+		if err != nil {
+			return nil
+		}
+		
+		switch typeInt {
+		case 1: // 进出事件
+			return t.transformEnterExitEvent(rawData, stdData)
+		case 2: // 姿态变化事件
+			return t.transformPostureChangeEvent(rawData, stdData)
+		case 3: // 人数变化事件
+			return t.transformPersonCountEvent(rawData, stdData)
+		}
+	}
 	
-	// 示例：如果有 event_type 字段
+	// 兼容旧格式：如果有 event_type 字段
 	if eventType, ok := rawData["event_type"]; ok {
 		eventTypeStr := fmt.Sprintf("%v", eventType)
 		
@@ -182,6 +202,181 @@ func (t *RadarTransformer) transformEvent(rawData map[string]interface{}, stdDat
 			stdData.AreaID = &id
 		}
 	}
+	
+	return nil
+}
+
+// transformEnterExitEvent 转换进出事件（type=1）
+// data: [{"track-id": 0, "event": 1, "area_type": 2}]
+func (t *RadarTransformer) transformEnterExitEvent(rawData map[string]interface{}, stdData *models.StandardizedData) error {
+	data, ok := rawData["data"]
+	if !ok {
+		return nil
+	}
+	
+	// data 可能是数组或单个对象
+	var dataArray []interface{}
+	switch v := data.(type) {
+	case []interface{}:
+		dataArray = v
+	case map[string]interface{}:
+		dataArray = []interface{}{v}
+	default:
+		return nil
+	}
+	
+	// 处理每个事件项
+	for _, item := range dataArray {
+		itemMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		
+		// 提取 track-id
+		if trackID, ok := itemMap["track-id"]; ok {
+			if id, err := parseInt(trackID); err == nil {
+				stdData.TrackingID = &id
+			}
+		}
+		
+		// 提取 event（1-进入房间, 2-离开房间, 3-进入区域, 4-离开区域）
+		event, ok := itemMap["event"]
+		if !ok {
+			continue
+		}
+		
+		eventInt, err := parseInt(event)
+		if err != nil {
+			continue
+		}
+		
+		// 设置事件类型
+		switch eventInt {
+		case 1: // 进入房间
+			eventType := "ENTER_ROOM"
+			stdData.EventType = &eventType
+			eventDisplay := "Enter room"
+			stdData.EventDisplay = &eventDisplay
+		case 2: // 离开房间
+			eventType := "LEFT_ROOM"
+			stdData.EventType = &eventType
+			eventDisplay := "Left room"
+			stdData.EventDisplay = &eventDisplay
+		case 3: // 进入区域
+			eventType := "ENTER_AREA"
+			stdData.EventType = &eventType
+			eventDisplay := "Enter area"
+			stdData.EventDisplay = &eventDisplay
+		case 4: // 离开区域
+			eventType := "LEFT_AREA"
+			stdData.EventType = &eventType
+			eventDisplay := "Left area"
+			stdData.EventDisplay = &eventDisplay
+		}
+		
+		// 提取 area_type（2-普通床, 5-监护床, 6-感应区）
+		if areaType, ok := itemMap["area_type"]; ok {
+			if id, err := parseInt(areaType); err == nil {
+				stdData.AreaID = &id
+			}
+		}
+	}
+	
+	return nil
+}
+
+// transformPostureChangeEvent 转换姿态变化事件（type=2）
+// data: [{"track-id": 0, "pose": 2}]
+func (t *RadarTransformer) transformPostureChangeEvent(rawData map[string]interface{}, stdData *models.StandardizedData) error {
+	data, ok := rawData["data"]
+	if !ok {
+		return nil
+	}
+	
+	// data 可能是数组或单个对象
+	var dataArray []interface{}
+	switch v := data.(type) {
+	case []interface{}:
+		dataArray = v
+	case map[string]interface{}:
+		dataArray = []interface{}{v}
+	default:
+		return nil
+	}
+	
+	// 处理每个事件项
+	for _, item := range dataArray {
+		itemMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		
+		// 提取 track-id
+		if trackID, ok := itemMap["track-id"]; ok {
+			if id, err := parseInt(trackID); err == nil {
+				stdData.TrackingID = &id
+			}
+		}
+		
+		// 提取 pose（2-疑似跌倒, 5-确认跌倒, 7-疑似坐地, 8-确认坐地, 10-疑似床上坐起, 11-确认床上坐起）
+		pose, ok := itemMap["pose"]
+		if !ok {
+			continue
+		}
+		
+		poseInt, err := parseInt(pose)
+		if err != nil {
+			continue
+		}
+		
+		// 设置事件类型
+		switch poseInt {
+		case 2: // 疑似跌倒
+			eventType := "SUSPECTED_FALL"
+			stdData.EventType = &eventType
+			eventDisplay := "Suspected fall"
+			stdData.EventDisplay = &eventDisplay
+		case 5: // 确认跌倒
+			eventType := "FALL"
+			stdData.EventType = &eventType
+			eventDisplay := "Fall"
+			stdData.EventDisplay = &eventDisplay
+		case 7: // 疑似坐地
+			eventType := "SUSPECTED_SIT_GROUND"
+			stdData.EventType = &eventType
+			eventDisplay := "Suspected sit ground"
+			stdData.EventDisplay = &eventDisplay
+		case 8: // 确认坐地
+			eventType := "SIT_GROUND"
+			stdData.EventType = &eventType
+			eventDisplay := "Sit ground"
+			stdData.EventDisplay = &eventDisplay
+		case 10: // 疑似床上坐起
+			eventType := "SUSPECTED_BED_SIT_UP"
+			stdData.EventType = &eventType
+			eventDisplay := "Suspected bed sit up"
+			stdData.EventDisplay = &eventDisplay
+		case 11: // 确认床上坐起
+			eventType := "BED_SIT_UP"
+			stdData.EventType = &eventType
+			eventDisplay := "Bed sit up"
+			stdData.EventDisplay = &eventDisplay
+		}
+	}
+	
+	return nil
+}
+
+// transformPersonCountEvent 转换人数变化事件（type=3）
+func (t *RadarTransformer) transformPersonCountEvent(rawData map[string]interface{}, stdData *models.StandardizedData) error {
+	// 设置事件类型
+	eventType := "PERSON_COUNT_CHANGED"
+	stdData.EventType = &eventType
+	eventDisplay := "Person count changed"
+	stdData.EventDisplay = &eventDisplay
+	
+	// TODO: 提取人数变化信息（如果需要）
+	// data 可能包含人数变化信息
 	
 	return nil
 }

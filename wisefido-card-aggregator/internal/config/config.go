@@ -37,7 +37,7 @@ type Config struct {
 		// 数据聚合配置
 		Aggregation struct {
 			Enabled  bool // 是否启用数据聚合功能
-			Interval int  // 聚合间隔（秒），默认 10 秒
+			Interval int  // 聚合间隔（秒），默认 2 秒（匹配心率呼吸数据更新频率）
 		}
 	}
 	
@@ -66,13 +66,17 @@ func Load() (*Config, error) {
 	// 卡片聚合服务配置
 	cfg.Aggregator.TenantID = getEnv("TENANT_ID", "")
 	cfg.Aggregator.TriggerMode = getEnv("CARD_TRIGGER_MODE", "polling")
-	// 轮询间隔：默认 30 分钟（1800 秒），作为保底机制
+	// 轮询间隔：默认 60 分钟（3600 秒），作为保底机制
+	// 原因：
+	// 1. 有事件驱动触发更新机制（主要更新方式）
+	// 2. 即使触发更新失败，新入户第1小时没有生效也很正常
+	// 3. 配置更新需要时间，病人可能也没有这么快即时入住
 	// 事件驱动模式为主要更新方式，轮询模式仅作为保底
-	pollingIntervalStr := getEnv("CARD_POLLING_INTERVAL", "1800")
+	pollingIntervalStr := getEnv("CARD_POLLING_INTERVAL", "3600")
 	if v, err := strconv.Atoi(pollingIntervalStr); err == nil && v > 0 {
 		cfg.Aggregator.Polling.Interval = v
 	} else {
-		cfg.Aggregator.Polling.Interval = 1800 // 默认 30 分钟（1800 秒）
+		cfg.Aggregator.Polling.Interval = 3600 // 默认 60 分钟（3600 秒）
 	}
 	cfg.Aggregator.EventStream = getEnv("CARD_EVENT_STREAM", "card:events")
 	cfg.Aggregator.ConsumerGroup = getEnv("CARD_CONSUMER_GROUP", "card-aggregator-group")
@@ -81,11 +85,11 @@ func Load() (*Config, error) {
 	
 	// 数据聚合配置
 	cfg.Aggregator.Aggregation.Enabled = getEnv("CARD_AGGREGATION_ENABLED", "true") == "true"
-	aggIntervalStr := getEnv("CARD_AGGREGATION_INTERVAL", "10")
+	aggIntervalStr := getEnv("CARD_AGGREGATION_INTERVAL", "2")
 	if v, err := strconv.Atoi(aggIntervalStr); err == nil && v > 0 {
 		cfg.Aggregator.Aggregation.Interval = v
 	} else {
-		cfg.Aggregator.Aggregation.Interval = 10 // 默认 10 秒聚合一次
+		cfg.Aggregator.Aggregation.Interval = 2 // 默认 2 秒聚合一次（匹配心率呼吸数据更新频率）
 	}
 	
 	cfg.Log.Level = getEnv("LOG_LEVEL", "info")

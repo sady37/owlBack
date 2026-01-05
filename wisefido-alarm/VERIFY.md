@@ -106,7 +106,7 @@ go run cmd/wisefido-alarm/main.go
 
 ```json
 {"level":"info","msg":"Starting alarm service","tenant_id":"your-tenant-id"}
-{"level":"info","msg":"Cache consumer started","tenant_id":"your-tenant-id","poll_interval":5}
+{"level":"info","msg":"Cache consumer started","tenant_id":"your-tenant-id","poll_interval":10}
 {"level":"debug","msg":"Evaluating cards","card_count":10}
 ```
 
@@ -156,7 +156,7 @@ go run cmd/wisefido-alarm/main.go
 
 **预期结果**：
 - 服务正常启动
-- 定期轮询卡片（每5秒）
+- 定期轮询卡片（每10秒）
 - 日志显示评估过程
 
 ### 场景 2：卡片数据读取测试

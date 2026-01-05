@@ -19,6 +19,9 @@ type DevicesRepository interface {
 	// 更新
 	// Deprecated: 使用 UpdateDeviceFields 替代，支持区分"不更新"、"更新"、"删除"三种状态
 	UpdateDevice(ctx context.Context, tenantID, deviceID string, device *domain.Device) error
+	
+	// UpdateDeviceWithFlags 更新设备（带更新标志，用于区分字段是否在 payload 中）
+	UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID bool) error
 
 	// UpdateDeviceFields 更新设备（使用更新模型）
 	// 支持区分"不更新"、"更新"、"删除"三种状态
@@ -67,6 +70,7 @@ type DeviceRelationResident struct {
 
 // DeviceFilters 设备查询过滤器
 type DeviceFilters struct {
+	IsSystemAdmin  bool     // SystemAdmin 查看所有租户的设备（不限制 tenant_id）
 	Status         []string // 设备状态过滤（online, offline, error）
 	BusinessAccess string   // 业务访问权限（pending, approved, rejected）
 	DeviceType     string   // 设备类型

@@ -39,7 +39,7 @@ go build -o wisefido-alarm cmd/wisefido-alarm/main.go
 ## 📊 服务行为
 
 ### 轮询模式
-- 每 **5秒** 轮询一次所有卡片
+- 每 **10秒** 轮询一次所有卡片
 - 批量评估（每批 **10** 张卡片）
 - 读取 Redis 实时数据缓存
 - 评估报警事件（事件1-4）
@@ -48,7 +48,7 @@ go build -o wisefido-alarm cmd/wisefido-alarm/main.go
 ### 日志输出
 ```json
 {"level":"info","msg":"Starting alarm service","tenant_id":"your-tenant-id"}
-{"level":"info","msg":"Cache consumer started","tenant_id":"your-tenant-id","poll_interval":5}
+{"level":"info","msg":"Cache consumer started","tenant_id":"your-tenant-id","poll_interval":10}
 {"level":"debug","msg":"Evaluating cards","card_count":10}
 ```
 
@@ -56,7 +56,7 @@ go build -o wisefido-alarm cmd/wisefido-alarm/main.go
 
 ### 1. 检查日志
 - 确认服务启动成功
-- 确认定期轮询（每5秒）
+- 确认定期轮询（每10秒）
 - 确认卡片评估过程
 
 ### 2. 检查 Redis 缓存

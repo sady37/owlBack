@@ -505,16 +505,25 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 	// - 当 building_id 和 building 都为空时：不添加 building 过滤条件（查询所有 units，包括 building_id IS NULL 的情况）
 	
 	// 处理 branch 过滤
-	if filters.BranchID != "" {
-		// 分支 1：branch_id 不为空 → 直接使用 u.branch_id
+	if len(filters.BranchIDs) > 0 {
+		// 分支 1：branch_ids 不为空 → 使用 IN 查询
+		placeholders := make([]string, len(filters.BranchIDs))
+		for i := range filters.BranchIDs {
+			placeholders[i] = fmt.Sprintf("$%d", argN)
+			args = append(args, filters.BranchIDs[i])
+			argN++
+		}
+		where = append(where, fmt.Sprintf("u.branch_id IN (%s)", strings.Join(placeholders, ", ")))
+	} else if filters.BranchID != "" {
+		// 分支 2：branch_id 不为空 → 直接使用 u.branch_id
 		where = append(where, fmt.Sprintf("u.branch_id = $%d", argN))
 		args = append(args, filters.BranchID)
 		argN++
 	} else if filters.BranchName == "" {
-		// 分支 2：branch_id 和 branch_name 都为空 → 匹配 branch_id IS NULL
+		// 分支 3：branch_id 和 branch_name 都为空 → 匹配 branch_id IS NULL
 		where = append(where, "u.branch_id IS NULL")
 	} else {
-		// 分支 3：branch_id 为空，branch_name 不为空 → 通过 JOIN branches 表匹配
+		// 分支 4：branch_id 为空，branch_name 不为空 → 通过 JOIN branches 表匹配
 		where = append(where, fmt.Sprintf("b.branch_name = $%d", argN))
 		args = append(args, filters.BranchName)
 		argN++

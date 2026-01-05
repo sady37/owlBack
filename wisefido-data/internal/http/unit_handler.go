@@ -550,7 +550,7 @@ func (h *UnitHandler) CreateUnit(w http.ResponseWriter, r *http.Request) {
 		LayoutConfig:      getString(payload, "layout_config"),
 		UnitType:          getString(payload, "unit_type"),
 		IsPublicSpace:     getBool(payload, "is_public_space"),
-		IsMultiPersonRoom: getBool(payload, "is_multi_person_room"),
+		IsSharedUnit: getBool(payload, "is_shared_unit"), // 统一使用 is_shared_unit（向后兼容：也支持 is_multi_person_room）
 		Timezone:          getString(payload, "timezone"),
 	}
 
@@ -631,7 +631,7 @@ func (h *UnitHandler) UpdateUnit(w http.ResponseWriter, r *http.Request) {
 		LayoutConfig:      getString(payload, "layout_config"),
 		UnitType:          getString(payload, "unit_type"),
 		IsPublicSpace:     getBoolPtr(payload, "is_public_space"),
-		IsMultiPersonRoom: getBoolPtr(payload, "is_multi_person_room"),
+		IsSharedUnit: getBoolPtrFromMultipleKeys(payload, "is_shared_unit", "is_multi_person_room"), // 统一使用 is_shared_unit（向后兼容：也支持 is_multi_person_room）
 		Timezone:          getString(payload, "timezone"),
 	}
 
@@ -725,22 +725,10 @@ func (h *UnitHandler) ListRoomsWithBeds(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 获取 user_id：从 header 获取（用于权限验证，Service 层会从 user_branches 表查询用户的 branch_id）
+	// 获取 user_id：从 header 获取（可选，用于日志记录）
 	currentUserID := r.Header.Get("X-User-Id")
-	if currentUserID == "" {
-		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
-		return
-	}
 
-	// 获取可选参数：branch_id（可选，如果提供则验证用户是否有权限访问该 branch）和 search（用于搜索）
-	branchID := r.URL.Query().Get("branch_id")
-	if branchID == "" {
-		branchID = r.Header.Get("X-Branch-Id")
-	}
-	if branchID == "null" {
-		branchID = ""
-	}
-
+	// 获取可选参数：search（用于搜索）
 	search := r.URL.Query().Get("search")
 	if search == "null" {
 		search = ""
@@ -749,9 +737,9 @@ func (h *UnitHandler) ListRoomsWithBeds(w http.ResponseWriter, r *http.Request) 
 	req := service.ListRoomsWithBedsRequest{
 		TenantID:      tenantID,
 		UnitID:        unitID,
-		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
-		BranchID: branchID,
-		Search:   search,
+		CurrentUserID: currentUserID, // 可选，用于日志记录
+		BranchID:      "",            // 不再使用
+		Search:        search,
 	}
 
 	resp, err := h.unitService.ListRoomsWithBeds(ctx, req)
@@ -791,27 +779,14 @@ func (h *UnitHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 获取 user_id：从 header 获取（用于权限验证，Service 层会从 user_branches 表查询用户的 branch_id）
+	// 获取 user_id：从 header 获取（可选，用于日志记录）
 	currentUserID := r.Header.Get("X-User-Id")
-	if currentUserID == "" {
-		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
-		return
-	}
-
-	// 获取 branch_id：可选，如果提供则验证用户是否有权限访问该 branch
-	branchID := r.URL.Query().Get("branch_id")
-	if branchID == "" {
-		branchID = r.Header.Get("X-Branch-Id")
-	}
-	if branchID == "null" {
-		branchID = ""
-	}
 
 	req := service.CreateRoomRequest{
 		TenantID:      tenantID,
 		UnitID:        unitID,
-		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
-		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
+		CurrentUserID: currentUserID, // 可选，用于日志记录
+		BranchID:      "",            // 不再使用
 		RoomName:      getString(payload, "room_name"),
 		LayoutConfig:  getString(payload, "layout_config"),
 	}
@@ -827,8 +802,8 @@ func (h *UnitHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 	getReq := service.GetRoomRequest{
 		TenantID:      tenantID,
 		RoomID:        resp.RoomID,
-		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
-		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的所有 branch_id
+		BranchID:      "",            // 不再使用，Service 层会通过 CurrentUserID 查找用户的所有 branch_id
 	}
 	getResp, err := h.unitService.GetRoom(ctx, getReq)
 	if err != nil {
@@ -978,22 +953,10 @@ func (h *UnitHandler) ListBeds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 获取 user_id：从 header 获取（用于权限验证，Service 层会从 user_branches 表查询用户的 branch_id）
+	// 获取 user_id：从 header 获取（可选，用于日志记录）
 	currentUserID := r.Header.Get("X-User-Id")
-	if currentUserID == "" {
-		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
-		return
-	}
 
-	// 获取 branch_id：可选，如果提供则验证用户是否有权限访问该 branch
-	branchID := r.URL.Query().Get("branch_id")
-	if branchID == "" {
-		branchID = r.Header.Get("X-Branch-Id")
-	}
-	if branchID == "null" {
-		branchID = ""
-	}
-
+	// 获取可选参数：search（用于搜索）
 	search := r.URL.Query().Get("search")
 	if search == "null" {
 		search = ""
@@ -1002,9 +965,9 @@ func (h *UnitHandler) ListBeds(w http.ResponseWriter, r *http.Request) {
 	req := service.ListBedsRequest{
 		TenantID:      tenantID,
 		RoomID:        roomID,
-		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
-		BranchID:      branchID, // 可选，如果提供则验证用户是否有权限访问该 branch
-		Search:        search,   // 传递 search 用于搜索
+		CurrentUserID: currentUserID, // 可选，用于日志记录
+		BranchID:      "",            // 不再使用
+		Search:        search,
 	}
 
 	resp, err := h.unitService.ListBeds(ctx, req)
@@ -1044,27 +1007,14 @@ func (h *UnitHandler) CreateBed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 获取 user_id：从 header 获取（用于权限验证，Service 层会从 user_branches 表查询用户的 branch_id）
+	// 获取 user_id：从 header 获取（可选，用于日志记录）
 	currentUserID := r.Header.Get("X-User-Id")
-	if currentUserID == "" {
-		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
-		return
-	}
-
-	// 获取 branch_id：可选，如果提供则验证用户是否有权限访问该 branch
-	branchID := r.URL.Query().Get("branch_id")
-	if branchID == "" {
-		branchID = r.Header.Get("X-Branch-Id")
-	}
-	if branchID == "null" {
-		branchID = ""
-	}
 
 	req := service.CreateBedRequest{
 		TenantID:          tenantID,
 		RoomID:            roomID,
-		CurrentUserID:     currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
-		BranchID:          branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
+		CurrentUserID:     currentUserID, // 可选，用于日志记录
+		BranchID:          "",            // 不再使用
 		BedName:           getString(payload, "bed_name"),
 		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 		MattressMaterial:  getString(payload, "mattress_material"),
@@ -1082,8 +1032,8 @@ func (h *UnitHandler) CreateBed(w http.ResponseWriter, r *http.Request) {
 	getReq := service.GetBedRequest{
 		TenantID:      tenantID,
 		BedID:         resp.BedID,
-		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
-		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
+		CurrentUserID: currentUserID, // 可选，用于日志记录
+		BranchID:      "",            // 不再使用
 	}
 	getResp, err := h.unitService.GetBed(ctx, getReq)
 	if err != nil {
@@ -1168,6 +1118,7 @@ func (h *UnitHandler) UpdateBed(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteBed 删除床位
+// DeleteBed 删除床位
 func (h *UnitHandler) DeleteBed(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -1182,27 +1133,15 @@ func (h *UnitHandler) DeleteBed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 获取 user_id：从 header 获取（用于权限验证，Service 层会从 user_branches 表查询用户的 branch_id）
+	// 获取 user_id：从 header 获取（用于日志记录，Service 层不再强制用于权限验证）
 	currentUserID := r.Header.Get("X-User-Id")
-	if currentUserID == "" {
-		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
-		return
-	}
-
-	// 获取 branch_id：可选，如果提供则验证用户是否有权限访问该 branch
-	branchID := r.URL.Query().Get("branch_id")
-	if branchID == "" {
-		branchID = r.Header.Get("X-Branch-Id")
-	}
-	if branchID == "null" {
-		branchID = ""
-	}
+	// currentUserID is optional for logging, not for permission validation here
 
 	req := service.DeleteBedRequest{
 		TenantID:      tenantID,
 		BedID:         bedID,
-		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
-		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会用于日志记录（可选）
+		BranchID:      "",            // 不再使用，Service 层已简化权限验证逻辑
 	}
 
 	_, err := h.unitService.DeleteBed(ctx, req)
@@ -1283,6 +1222,18 @@ func getBoolPtr(payload map[string]any, key string) *bool {
 	return nil
 }
 
+// 辅助函数：从 map 中获取布尔值指针（支持多个 key，按优先级查找）
+func getBoolPtrFromMultipleKeys(payload map[string]any, keys ...string) *bool {
+	for _, key := range keys {
+		if v, ok := payload[key]; ok {
+			if b, ok := v.(bool); ok {
+				return &b
+			}
+		}
+	}
+	return nil
+}
+
 // 辅助函数：转换 Building 为 JSON
 func buildingToJSON(b *domain.Building) map[string]any {
 	m := map[string]any{
@@ -1305,13 +1256,15 @@ func buildingToJSON(b *domain.Building) map[string]any {
 // 辅助函数：转换 Unit 为 JSON（复用 repository.Unit.ToJSON 的逻辑）
 func unitToJSON(u *domain.Unit) map[string]any {
 	m := map[string]any{
-		"unit_id":        u.UnitID,
-		"tenant_id":      u.TenantID,
-		"unit_name":      u.UnitName,
-		"unit_type":      u.UnitType,
-		"is_public":      u.IsPublic,
-		"is_shared_unit": u.IsSharedUnit,
-		"timezone":       u.Timezone,
+		"unit_id":         u.UnitID,
+		"tenant_id":       u.TenantID,
+		"unit_name":       u.UnitName,
+		"unit_type":       u.UnitType,
+		"is_public_space": u.IsPublic,      // 前端使用 is_public_space，后端数据库字段是 is_public
+		"is_shared_unit":  u.IsSharedUnit, // 统一使用 is_shared_unit（不再使用 is_multi_person_room）
+		"timezone":        u.Timezone,
+		// 向后兼容：同时返回旧字段名
+		"is_public": u.IsPublic,
 	}
 	// 返回 branch_id（前端需要 ID 来选择对象）
 	if u.BranchID.Valid {

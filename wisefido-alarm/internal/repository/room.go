@@ -156,3 +156,31 @@ func (r *RoomRepository) GetRoomByBedID(ctx context.Context, tenantID, bedID str
 	return &info, nil
 }
 
+// GetRoomIDByBedID 根据 bed_id 获取 room_id（需验证 tenant_id）
+func (r *RoomRepository) GetRoomIDByBedID(ctx context.Context, tenantID, bedID string) (string, error) {
+	if tenantID == "" {
+		return "", fmt.Errorf("tenant_id is required")
+	}
+	if bedID == "" {
+		return "", fmt.Errorf("bed_id is required")
+	}
+
+	query := `
+		SELECT r.room_id
+		FROM rooms r
+		JOIN beds b ON r.room_id = b.room_id AND r.tenant_id = b.tenant_id
+		WHERE b.bed_id = $1 AND b.tenant_id = $2
+	`
+
+	var roomID string
+	err := r.db.QueryRowContext(ctx, query, bedID, tenantID).Scan(&roomID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("room not found for bed: bed_id=%s, tenant_id=%s", bedID, tenantID)
+		}
+		return "", fmt.Errorf("failed to query room_id by bed_id: %w", err)
+	}
+
+	return roomID, nil
+}
+

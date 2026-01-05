@@ -22,7 +22,7 @@ func main() {
 	}
 	
 	// 初始化Logger
-	logger, err := logpkg.NewLogger(cfg.Log.Level, cfg.Log.Format)
+	logger, err := logpkg.NewLogger(cfg.Log.Level, cfg.Log.Format, "wisefido-data-transformer")
 	if err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}

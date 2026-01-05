@@ -96,7 +96,7 @@ func TestDeviceService_ListDevices_Success(t *testing.T) {
 
 	// 创建 Service
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
-	deviceService := NewDeviceService(devicesRepo, getTestLoggerForDevice())
+	deviceService := NewDeviceService(devicesRepo, nil, getTestLoggerForDevice())
 
 	// 测试查询设备列表
 	req := ListDevicesRequest{
@@ -157,7 +157,7 @@ func TestDeviceService_ListDevices_WithFilters(t *testing.T) {
 
 	// 创建 Service
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
-	deviceService := NewDeviceService(devicesRepo, getTestLoggerForDevice())
+	deviceService := NewDeviceService(devicesRepo, nil, getTestLoggerForDevice())
 
 	// 测试按状态过滤
 	req := ListDevicesRequest{
@@ -222,7 +222,7 @@ func TestDeviceService_ListDevices_MissingTenantID(t *testing.T) {
 	defer db.Close()
 
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
-	deviceService := NewDeviceService(devicesRepo, getTestLoggerForDevice())
+	deviceService := NewDeviceService(devicesRepo, nil, getTestLoggerForDevice())
 
 	req := ListDevicesRequest{
 		Page: 1,
@@ -252,7 +252,7 @@ func TestDeviceService_GetDevice_Success(t *testing.T) {
 
 	// 创建 Service
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
-	deviceService := NewDeviceService(devicesRepo, getTestLoggerForDevice())
+	deviceService := NewDeviceService(devicesRepo, nil, getTestLoggerForDevice())
 
 	// 测试查询设备详情
 	req := GetDeviceRequest{
@@ -295,7 +295,7 @@ func TestDeviceService_GetDevice_NotFound(t *testing.T) {
 	defer cleanupTestDataForDevice(t, db, tenantID)
 
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
-	deviceService := NewDeviceService(devicesRepo, getTestLoggerForDevice())
+	deviceService := NewDeviceService(devicesRepo, nil, getTestLoggerForDevice())
 
 	req := GetDeviceRequest{
 		TenantID: tenantID,
@@ -318,7 +318,7 @@ func TestDeviceService_GetDevice_MissingTenantID(t *testing.T) {
 	defer db.Close()
 
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
-	deviceService := NewDeviceService(devicesRepo, getTestLoggerForDevice())
+	deviceService := NewDeviceService(devicesRepo, nil, getTestLoggerForDevice())
 
 	req := GetDeviceRequest{
 		DeviceID: "00000000-0000-0000-0000-000000000000",
@@ -347,7 +347,7 @@ func TestDeviceService_UpdateDevice_Success(t *testing.T) {
 
 	// 创建 Service
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
-	deviceService := NewDeviceService(devicesRepo, getTestLoggerForDevice())
+	deviceService := NewDeviceService(devicesRepo, nil, getTestLoggerForDevice())
 
 	// 测试更新设备
 	device := &domain.Device{
@@ -405,7 +405,7 @@ func TestDeviceService_UpdateDevice_MissingTenantID(t *testing.T) {
 	defer db.Close()
 
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
-	deviceService := NewDeviceService(devicesRepo, getTestLoggerForDevice())
+	deviceService := NewDeviceService(devicesRepo, nil, getTestLoggerForDevice())
 
 	req := UpdateDeviceRequest{
 		DeviceID: "00000000-0000-0000-0000-000000000000",
@@ -435,7 +435,7 @@ func TestDeviceService_DeleteDevice_Success(t *testing.T) {
 
 	// 创建 Service
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
-	deviceService := NewDeviceService(devicesRepo, getTestLoggerForDevice())
+	deviceService := NewDeviceService(devicesRepo, nil, getTestLoggerForDevice())
 
 	// 测试删除设备
 	req := DeleteDeviceRequest{
@@ -488,7 +488,7 @@ func TestDeviceService_DeleteDevice_MissingTenantID(t *testing.T) {
 	defer db.Close()
 
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
-	deviceService := NewDeviceService(devicesRepo, getTestLoggerForDevice())
+	deviceService := NewDeviceService(devicesRepo, nil, getTestLoggerForDevice())
 
 	req := DeleteDeviceRequest{
 		DeviceID: "00000000-0000-0000-0000-000000000000",
@@ -516,7 +516,7 @@ func TestDeviceService_ListDevices_StatusCommaSeparated(t *testing.T) {
 	createTestDeviceForDevice(t, db, tenantID, deviceStoreID)
 
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
-	deviceService := NewDeviceService(devicesRepo, getTestLoggerForDevice())
+	deviceService := NewDeviceService(devicesRepo, nil, getTestLoggerForDevice())
 
 	// 测试逗号分隔的 status
 	req := ListDevicesRequest{

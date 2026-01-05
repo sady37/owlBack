@@ -2,9 +2,32 @@
 
 ## 📋 简介
 
-`wisefido-alarm` 是报警评估层服务，负责：
+`wisefido-alarm` 是报警评估层服务，负责**云端事件报警评估**：
+
+### 处理的报警类型（云端事件）
+
+- **事件1**：床上跌落检测
+  - 触发：sleepad 离床事件 + radar 存在
+  - 方式：事件驱动（sleepad 离床事件触发）
+  
+- **事件3**：Bathroom可疑跌倒检测
+  - 触发：bathroom + 无出门事件
+  - 方式：基于卡片数据更新触发（2秒1次）
+  
+- **事件4**：雷达检测到人突然消失
+  - 触发：无出门事件 + 事件距雷达边界
+  - 方式：基于卡片数据更新触发（2秒1次）
+
+### 不处理的报警类型
+
+- **设备直接报警**（由 `wisefido-sensor-fusion` 处理）：
+  - Fall, SuspectedFall, OfflineAlarm, LowBattery, DeviceFailure 等
+  - 设备直接上报的报警事件，在数据流中立即处理
+
+### 服务职责
+
 - 读取融合后的实时数据（`vital-focus:card:{card_id}:realtime`）
-- 应用报警规则（事件1-4：床上跌落、Sleepad可靠性、Bathroom可疑跌倒、人突然消失）
+- 应用报警规则评估（事件1, 3, 4）
 - 生成报警事件
 - 写入 PostgreSQL（`alarm_events` 表）
 - 更新 Redis 缓存（`vital-focus:card:{card_id}:alarms`）
@@ -59,7 +82,7 @@ go build -o wisefido-alarm cmd/wisefido-alarm/main.go
 ## 📊 服务行为
 
 ### 轮询模式
-- 每 **5秒** 轮询一次所有卡片
+- 每 **10秒** 轮询一次所有卡片
 - 批量评估（每批 **10** 张卡片）
 - 读取 Redis 实时数据缓存
 - 评估报警事件（事件1-4）
@@ -70,7 +93,7 @@ go build -o wisefido-alarm cmd/wisefido-alarm/main.go
 
 ```json
 {"level":"info","msg":"Starting alarm service","tenant_id":"your-tenant-id"}
-{"level":"info","msg":"Cache consumer started","tenant_id":"your-tenant-id","poll_interval":5}
+{"level":"info","msg":"Cache consumer started","tenant_id":"your-tenant-id","poll_interval":10}
 {"level":"debug","msg":"Evaluating cards","card_count":10}
 {"level":"info","msg":"Alarm event created","event_id":"...","event_type":"Fall","alarm_level":"ALERT"}
 ```
@@ -79,7 +102,7 @@ go build -o wisefido-alarm cmd/wisefido-alarm/main.go
 
 ### 1. 检查日志
 - 确认服务启动成功
-- 确认定期轮询（每5秒）
+- 确认定期轮询（每10秒）
 - 确认卡片评估过程
 - 确认报警事件创建（如果有）
 

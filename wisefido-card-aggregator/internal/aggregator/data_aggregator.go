@@ -8,6 +8,8 @@ import (
 	"wisefido-card-aggregator/internal/models"
 	"wisefido-card-aggregator/internal/repository"
 
+	"owl-common/card"
+
 	"go.uber.org/zap"
 )
 
@@ -256,7 +258,7 @@ type AlarmEvent struct {
 
 // 辅助函数：转换数据格式
 
-func convertResidents(residents []repository.ResidentInfo) []models.CardResident {
+func convertResidents(residents []card.ResidentInfo) []models.CardResident {
 	result := make([]models.CardResident, 0, len(residents))
 	for _, r := range residents {
 		result = append(result, models.CardResident{
@@ -269,7 +271,7 @@ func convertResidents(residents []repository.ResidentInfo) []models.CardResident
 	return result
 }
 
-func convertDevices(devices []repository.DeviceInfo) []models.CardDevice {
+func convertDevices(devices []card.DeviceInfo) []models.CardDevice {
 	result := make([]models.CardDevice, 0, len(devices))
 	for _, d := range devices {
 		result = append(result, models.CardDevice{

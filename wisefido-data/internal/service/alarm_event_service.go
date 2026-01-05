@@ -747,6 +747,24 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 		zap.String("handler_id", req.CurrentUserID),
 	)
 
+	// 更新相关卡片的报警计数（因为报警状态已改变）
+	cardID, err := s.getCardIDByDeviceID(ctx, req.TenantID, event.DeviceID)
+	if err == nil && cardID != "" {
+		if err := s.updateCardAlarmCounts(ctx, req.TenantID, cardID); err != nil {
+			s.logger.Warn("Failed to update card alarm counts after handling alarm",
+				zap.String("card_id", cardID),
+				zap.String("event_id", req.EventID),
+				zap.Error(err),
+			)
+			// 不返回错误，报警处理已成功
+		} else {
+			s.logger.Debug("Updated card alarm counts after handling alarm",
+				zap.String("card_id", cardID),
+				zap.String("event_id", req.EventID),
+			)
+		}
+	}
+
 	return &HandleAlarmEventResponse{Success: true}, nil
 }
 
@@ -1798,4 +1816,122 @@ func mapOperationToHandleType(operation string) string {
 	default:
 		return ""
 	}
+}
+
+// updateCardAlarmCounts 更新卡片的未处理报警计数
+func (s *alarmEventService) updateCardAlarmCounts(ctx context.Context, tenantID, cardID string) error {
+	if s.db == nil {
+		return fmt.Errorf("database connection not available")
+	}
+
+	// 1. 查询卡片关联的所有 device_id（从 cards.devices JSONB 中提取）
+	query := `
+		SELECT devices
+		FROM cards
+		WHERE tenant_id = $1 AND card_id = $2
+	`
+	
+	var devicesJSON []byte
+	err := s.db.QueryRowContext(ctx, query, tenantID, cardID).Scan(&devicesJSON)
+	if err != nil {
+		return fmt.Errorf("failed to get card devices: %w", err)
+	}
+	
+	// 2. 解析 devices JSONB，提取 device_id 列表
+	var devices []map[string]interface{}
+	if err := json.Unmarshal(devicesJSON, &devices); err != nil {
+		return fmt.Errorf("failed to unmarshal devices JSON: %w", err)
+	}
+	
+	if len(devices) == 0 {
+		// 没有设备，将所有计数设为 0
+		return s.updateCardAlarmCountsToZero(ctx, tenantID, cardID)
+	}
+	
+	// 提取 device_id 列表
+	deviceIDs := make([]string, 0, len(devices))
+	for _, device := range devices {
+		if deviceID, ok := device["device_id"].(string); ok && deviceID != "" {
+			deviceIDs = append(deviceIDs, deviceID)
+		}
+	}
+	
+	if len(deviceIDs) == 0 {
+		// 没有有效的 device_id，将所有计数设为 0
+		return s.updateCardAlarmCountsToZero(ctx, tenantID, cardID)
+	}
+	
+	// 3. 统计这些设备的未处理报警（alarm_status = 'active'）
+	// 按 alarm_level 分组统计（映射到 0-4）
+	// 构建 IN 查询的占位符
+	placeholders := make([]string, len(deviceIDs))
+	args := make([]interface{}, len(deviceIDs)+1)
+	args[0] = tenantID
+	for i, deviceID := range deviceIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		args[i+1] = deviceID
+	}
+	
+	countQuery := fmt.Sprintf(`
+		SELECT 
+			COUNT(*) FILTER (WHERE alarm_level IN ('0', 'EMERG')) as count_0,
+			COUNT(*) FILTER (WHERE alarm_level IN ('1', 'ALERT')) as count_1,
+			COUNT(*) FILTER (WHERE alarm_level IN ('2', 'CRIT')) as count_2,
+			COUNT(*) FILTER (WHERE alarm_level IN ('3', 'ERR')) as count_3,
+			COUNT(*) FILTER (WHERE alarm_level IN ('4', 'WARNING')) as count_4
+		FROM alarm_events
+		WHERE tenant_id = $1
+		  AND device_id::text IN (%s)
+		  AND alarm_status = 'active'
+		  AND alarm_level IN ('0', '1', '2', '3', '4', 'EMERG', 'ALERT', 'CRIT', 'ERR', 'WARNING')
+		  AND (metadata->>'deleted_at' IS NULL)
+	`, strings.Join(placeholders, ", "))
+	
+	var count0, count1, count2, count3, count4 int
+	err = s.db.QueryRowContext(ctx, countQuery, args...).Scan(
+		&count0, &count1, &count2, &count3, &count4,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to count alarm events: %w", err)
+	}
+	
+	// 4. 更新 cards 表的 unhandled_alarm_0 到 unhandled_alarm_4 字段
+	updateQuery := `
+		UPDATE cards
+		SET 
+			unhandled_alarm_0 = $3,
+			unhandled_alarm_1 = $4,
+			unhandled_alarm_2 = $5,
+			unhandled_alarm_3 = $6,
+			unhandled_alarm_4 = $7
+		WHERE tenant_id = $1 AND card_id = $2
+	`
+	
+	_, err = s.db.ExecContext(ctx, updateQuery, tenantID, cardID, count0, count1, count2, count3, count4)
+	if err != nil {
+		return fmt.Errorf("failed to update card alarm counts: %w", err)
+	}
+	
+	return nil
+}
+
+// updateCardAlarmCountsToZero 将卡片的报警计数全部设为 0
+func (s *alarmEventService) updateCardAlarmCountsToZero(ctx context.Context, tenantID, cardID string) error {
+	updateQuery := `
+		UPDATE cards
+		SET 
+			unhandled_alarm_0 = 0,
+			unhandled_alarm_1 = 0,
+			unhandled_alarm_2 = 0,
+			unhandled_alarm_3 = 0,
+			unhandled_alarm_4 = 0
+		WHERE tenant_id = $1 AND card_id = $2
+	`
+	
+	_, err := s.db.ExecContext(ctx, updateQuery, tenantID, cardID)
+	if err != nil {
+		return fmt.Errorf("failed to update card alarm counts to zero: %w", err)
+	}
+	
+	return nil
 }

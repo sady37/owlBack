@@ -56,10 +56,11 @@ type UnitsRepository interface {
 
 // UnitFilters 单元查询过滤器
 type UnitFilters struct {
-	BranchID   string // 优先使用（通过 branch_id 过滤）
-	BranchName string // 可选（向后兼容，如果 BranchID 未提供则使用此字段）
-	BuildingID string // 优先使用（通过 building_id 过滤，UUID 类型）
-	Building   string // 可选（向后兼容，如果 BuildingID 未提供则使用此字段，通过 building_name 过滤）
+	BranchID   string   // 优先使用（通过 branch_id 过滤）
+	BranchIDs  []string // 支持多个 branch_id（IN 查询，如果提供则优先使用，忽略 BranchID）
+	BranchName string   // 可选（向后兼容，如果 BranchID 和 BranchIDs 都未提供则使用此字段）
+	BuildingID string   // 优先使用（通过 building_id 过滤，UUID 类型）
+	Building   string   // 可选（向后兼容，如果 BuildingID 未提供则使用此字段，通过 building_name 过滤）
 	Floor      string
 	AreaName   string
 	UnitNumber string

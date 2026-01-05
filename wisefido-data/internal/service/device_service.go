@@ -9,6 +9,8 @@ import (
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
+	"owl-common/card"
+
 	"go.uber.org/zap"
 )
 
@@ -28,21 +30,24 @@ type DeviceService interface {
 
 // deviceService 实现
 type deviceService struct {
-	devicesRepo repository.DevicesRepository
-	logger      *zap.Logger
+	devicesRepo  repository.DevicesRepository
+	cardCreator  *card.CardCreator // 用于直接更新卡片
+	logger       *zap.Logger
 }
 
 // NewDeviceService 创建 DeviceService 实例
-func NewDeviceService(devicesRepo repository.DevicesRepository, logger *zap.Logger) DeviceService {
+func NewDeviceService(devicesRepo repository.DevicesRepository, cardCreator *card.CardCreator, logger *zap.Logger) DeviceService {
 	return &deviceService{
 		devicesRepo: devicesRepo,
+		cardCreator: cardCreator,
 		logger:      logger,
 	}
 }
 
 // ListDevicesRequest 查询设备列表请求
 type ListDevicesRequest struct {
-	TenantID       string   // 必填
+	TenantID       string   // 必填（SystemAdmin 查看所有设备时，此字段仍需要但会被忽略）
+	IsSystemAdmin  bool     // SystemAdmin 查看所有租户的设备
 	Status         []string // 可选：设备状态过滤（online, offline, error）
 	BusinessAccess string   // 可选：业务访问权限（pending, approved, rejected）
 	DeviceType     string   // 可选：设备类型
@@ -82,6 +87,7 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 		DeviceType:     strings.TrimSpace(req.DeviceType),
 		SearchType:     strings.TrimSpace(req.SearchType),
 		SearchKeyword:  strings.TrimSpace(req.SearchKeyword),
+		IsSystemAdmin:  req.IsSystemAdmin, // SystemAdmin 查看所有设备
 	}
 
 	// 4. 分页参数
@@ -95,10 +101,12 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 	}
 
 	// 5. 调用 Repository
+	// SystemAdmin 查看所有设备时，tenantID 会被忽略
 	items, total, err := s.devicesRepo.ListDevices(ctx, req.TenantID, filters, page, size)
 	if err != nil {
 		s.logger.Error("ListDevices failed",
 			zap.String("tenant_id", req.TenantID),
+			zap.Bool("is_system_admin", req.IsSystemAdmin),
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to list devices")
@@ -156,9 +164,11 @@ func (s *deviceService) GetDevice(ctx context.Context, req GetDeviceRequest) (*G
 
 // UpdateDeviceRequest 更新设备请求
 type UpdateDeviceRequest struct {
-	TenantID string         // 必填
-	DeviceID string         // 必填
-	Device   *domain.Device // 设备信息（部分更新）
+	TenantID        string         // 必填
+	DeviceID        string         // 必填
+	Device          *domain.Device // 设备信息（部分更新）
+	UpdateBoundRoomID bool         // 是否更新 bound_room_id（即使为 null）
+	UpdateBoundBedID  bool         // 是否更新 bound_bed_id（即使为 null）
 }
 
 // UpdateDeviceResponse 更新设备响应
@@ -179,18 +189,63 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 		return nil, fmt.Errorf("device is required")
 	}
 
-	// 2. 业务规则验证
+	// 2. 获取旧设备信息（用于比较 monitoring_enabled 是否变化）
+	var oldDevice *domain.Device
+	var monitoringEnabledChanged bool
+	if s.cardCreator != nil {
+		oldDevice, _ = s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
+		if oldDevice != nil && req.Device.MonitoringEnabled != oldDevice.MonitoringEnabled {
+			monitoringEnabledChanged = true
+		}
+	}
+
+	// 3. 业务规则验证
 	// 注意：unit_id 验证在 Handler 层处理（因为 domain.Device 中没有 unit_id 字段）
 	// Service 层只验证 bound_room_id 和 bound_bed_id 的逻辑
 
-	// 3. 调用 Repository
-	if err := s.devicesRepo.UpdateDevice(ctx, req.TenantID, req.DeviceID, req.Device); err != nil {
+	// 4. 调用 Repository（传递更新标志）
+	if err := s.devicesRepo.UpdateDeviceWithFlags(ctx, req.TenantID, req.DeviceID, req.Device, req.UpdateBoundRoomID, req.UpdateBoundBedID); err != nil {
 		s.logger.Error("UpdateDevice failed",
 			zap.String("tenant_id", req.TenantID),
 			zap.String("device_id", req.DeviceID),
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to update device")
+	}
+
+	// 5. 如果绑定关系变化或 monitoring_enabled 变化，直接更新卡片（同步调用）
+	if s.cardCreator != nil && (req.UpdateBoundRoomID || req.UpdateBoundBedID || monitoringEnabledChanged) {
+		// 获取更新后的设备信息以获取unit_id
+		newDevice, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
+		if err != nil {
+			s.logger.Warn("Failed to get updated device for card update",
+				zap.Error(err),
+				zap.String("tenant_id", req.TenantID),
+				zap.String("device_id", req.DeviceID),
+			)
+		} else if newDevice != nil && newDevice.UnitID.Valid && newDevice.UnitID.String != "" {
+			// 直接调用CardCreator更新卡片（同步）
+			_, err := s.cardCreator.CreateCardsForUnit(req.TenantID, newDevice.UnitID.String)
+			if err != nil {
+				s.logger.Warn("Failed to update cards after device change",
+					zap.Error(err),
+					zap.String("tenant_id", req.TenantID),
+					zap.String("device_id", req.DeviceID),
+					zap.String("unit_id", newDevice.UnitID.String),
+					zap.Bool("binding_changed", req.UpdateBoundRoomID || req.UpdateBoundBedID),
+					zap.Bool("monitoring_enabled_changed", monitoringEnabledChanged),
+				)
+				// 不返回错误，只记录警告（卡片更新失败不影响设备更新）
+			} else {
+				s.logger.Info("Updated cards after device change",
+					zap.String("tenant_id", req.TenantID),
+					zap.String("device_id", req.DeviceID),
+					zap.String("unit_id", newDevice.UnitID.String),
+					zap.Bool("binding_changed", req.UpdateBoundRoomID || req.UpdateBoundBedID),
+					zap.Bool("monitoring_enabled_changed", monitoringEnabledChanged),
+				)
+			}
+		}
 	}
 
 	return &UpdateDeviceResponse{

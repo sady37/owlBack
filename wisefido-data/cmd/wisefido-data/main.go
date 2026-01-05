@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"wisefido-data/internal/service"
 	"wisefido-data/internal/store"
 
+	"owl-common/card"
 	"owl-common/database"
 	logpkg "owl-common/logger"
 
@@ -57,6 +59,8 @@ func main() {
 
 	// Optional DB-backed admin APIs (units/rooms/beds/devices)
 	var db *sql.DB
+	var cardRepo *repository.PostgresCardRepository
+	var cardCreator *card.CardCreator
 	// Stub depends on tenantsRepo + authStore (used by /auth/api/v1/institutions/search + /auth/api/v1/login)
 	stub := httpapi.NewStubHandler(nil, authStore, nil)
 	// Always register admin routes; if DB is not available, AdminAPI will fall back to stub (no 404).
@@ -70,6 +74,9 @@ func main() {
 		}
 	}
 	if db != nil {
+		// 如果数据库可用，设置 DB 连接（用于保存 preferences）
+		vital.SetDB(db)
+		
 		// DB bootstrap: ensure System tenant + sysadmin exist in DB for UI pages that query users/roles.
 		// Login still uses AuthStore hashes, but keeping DB in sync makes admin pages behave as expected.
 		if os.Getenv("SEED_SYSADMIN") != "false" {
@@ -147,9 +154,13 @@ func main() {
 		authHandler := httpapi.NewAuthHandler(authService, logger)
 		router.RegisterAuthRoutes(authHandler)
 
+		// 创建 Card Repository 和 Card Creator（用于直接更新卡片）
+		cardRepo = repository.NewPostgresCardRepository(db, logger)
+		cardCreator = card.NewCardCreator(cardRepo, logger)
+
 		// 创建 Device Service 和 Handler
 		devicesRepo.SetLogger(logger) // 确保 logger 已设置（用于设备连接日志）
-		deviceService := service.NewDeviceService(devicesRepo, logger)
+		deviceService := service.NewDeviceService(devicesRepo, cardCreator, logger)
 		deviceHandler := httpapi.NewDeviceHandler(deviceService, logger)
 		router.RegisterDeviceRoutes(deviceHandler)
 
@@ -163,7 +174,7 @@ func main() {
 		residentsRepo := repository.NewPostgresResidentsRepository(db)
 		devicesRepo = repository.NewPostgresDevicesRepository(db)
 		devicesRepo.SetLogger(logger) // Set logger for device connection logging
-		unitService := service.NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, redisClient, logger)
+		unitService := service.NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, cardCreator, logger)
 		unitHandler := httpapi.NewUnitHandler(unitService, logger)
 		router.RegisterUnitRoutes(unitHandler)
 
@@ -205,7 +216,7 @@ func main() {
 
 		// 创建 Resident Service 和 Handler
 		residentsRepo = repository.NewPostgresResidentsRepository(db)
-		residentService := service.NewResidentService(residentsRepo, db, redisClient, logger)
+		residentService := service.NewResidentService(residentsRepo, db, cardCreator, logger)
 		residentHandler := httpapi.NewResidentHandler(residentService, db, logger)
 		router.RegisterResidentRoutes(residentHandler)
 
@@ -248,11 +259,15 @@ func main() {
 			residentsRepo,
 			devicesRepo,
 			usersRepo,
+			kv, // 添加 kv 参数，用于读取 Redis full cache
 			db,
 			logger,
 		)
 		cardOverviewHandler := httpapi.NewCardOverviewHandler(stub, cardService, logger)
 		router.RegisterCardOverviewRoutes(cardOverviewHandler)
+
+		// 设置 cardService 到 VitalFocusHandler（用于权限过滤）
+		vital.SetCardService(cardService)
 
 		// TODO: MQTT 触发下载功能（默认禁用）
 		// 参考：wisefido-backend/wisefido-sleepace/modules/borker.go
@@ -340,6 +355,127 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// 启动时全量检查并更新卡片（如果 DB 和 cardCreator 可用）
+	if db != nil && cardCreator != nil {
+		go func() {
+			// 延迟启动，等待服务完全初始化
+			time.Sleep(2 * time.Second)
+			
+			logger.Info("Starting full card check/update on service startup")
+			
+			// 获取所有活跃租户
+			tenants, _, err := tenantsRepo.ListTenants(ctx, repository.TenantFilters{
+				Status: "active",
+			}, 1, 1000) // 假设不超过1000个租户
+			
+			if err != nil {
+				logger.Warn("Failed to list tenants for card check",
+					zap.Error(err),
+				)
+				return
+			}
+			
+			logger.Info("Found tenants for card check",
+				zap.Int("tenant_count", len(tenants)),
+			)
+			
+			// 统计信息
+			totalStats := struct {
+				ExistingCount  int
+				DeletedCount   int
+				CreatedCount   int
+				UpdatedCount   int
+				UnchangedCount int
+			}{}
+			successCount := 0
+			errorCount := 0
+			totalUnits := 0
+			
+			// 为每个租户的所有单元创建/更新卡片
+			for _, tenant := range tenants {
+				// 获取该租户的所有单元
+				unitIDs, err := cardRepo.GetAllUnits(tenant.TenantID)
+				if err != nil {
+					logger.Warn("Failed to get units for tenant",
+						zap.String("tenant_id", tenant.TenantID),
+						zap.Error(err),
+					)
+					errorCount++
+					continue
+				}
+				
+				totalUnits += len(unitIDs)
+				
+				// 为每个单元创建/更新卡片
+				for _, unitID := range unitIDs {
+					select {
+					case <-ctx.Done():
+						logger.Info("Card check interrupted by context cancellation")
+						return
+					default:
+						stats, err := cardCreator.CreateCardsForUnit(tenant.TenantID, unitID)
+						if err != nil {
+							logger.Error("Failed to create cards for unit",
+								zap.String("tenant_id", tenant.TenantID),
+								zap.String("unit_id", unitID),
+								zap.Error(err),
+							)
+							errorCount++
+						} else {
+							successCount++
+							if stats != nil {
+								totalStats.ExistingCount += stats.ExistingCount
+								totalStats.DeletedCount += stats.DeletedCount
+								totalStats.CreatedCount += stats.CreatedCount
+								totalStats.UpdatedCount += stats.UpdatedCount
+								totalStats.UnchangedCount += stats.UnchangedCount
+							}
+						}
+					}
+				}
+			}
+			
+			// 输出统计信息到 stdout 和日志
+			updateCount := totalStats.DeletedCount + totalStats.CreatedCount + totalStats.UpdatedCount
+			summaryMsg := fmt.Sprintf(
+				"\n=== Card Check/Update Statistics (Startup) ===\n"+
+					"Tenants processed: %d\n"+
+					"Units processed: %d (success: %d, failed: %d)\n"+
+					"Existing card count: %d\n"+
+					"Updated card count: %d (deleted: %d, created: %d, content updated: %d)\n"+
+					"Unchanged cards: %d\n"+
+					"==========================================\n",
+				len(tenants),
+				totalUnits,
+				successCount,
+				errorCount,
+				totalStats.ExistingCount,
+				updateCount,
+				totalStats.DeletedCount,
+				totalStats.CreatedCount,
+				totalStats.UpdatedCount,
+				totalStats.UnchangedCount,
+			)
+			
+			// 输出到 stdout
+			os.Stdout.WriteString(summaryMsg)
+			
+			// 同时记录到日志
+			logger.Info("Completed full card check/update on startup",
+				zap.Int("tenant_count", len(tenants)),
+				zap.Int("unit_count", totalUnits),
+				zap.Int("success_count", successCount),
+				zap.Int("error_count", errorCount),
+				zap.Int("existing_count", totalStats.ExistingCount),
+				zap.Int("updated_count", updateCount),
+				zap.Int("deleted_count", totalStats.DeletedCount),
+				zap.Int("created_count", totalStats.CreatedCount),
+				zap.Int("content_updated_count", totalStats.UpdatedCount),
+				zap.Int("unchanged_count", totalStats.UnchangedCount),
+			)
+		}()
+	}
 
 	errCh := make(chan error, 1)
 	go func() {

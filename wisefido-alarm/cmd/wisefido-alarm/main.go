@@ -22,7 +22,7 @@ func main() {
 	}
 
 	// 2. 初始化日志
-	logger, err := logpkg.NewLogger(cfg.Log.Level, cfg.Log.Format)
+	logger, err := logpkg.NewLogger(cfg.Log.Level, cfg.Log.Format, "wisefido-alarm")
 	if err != nil {
 		panic(fmt.Sprintf("Failed to init logger: %v", err))
 	}

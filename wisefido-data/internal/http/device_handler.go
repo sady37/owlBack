@@ -9,6 +9,9 @@ import (
 	"go.uber.org/zap"
 )
 
+// SystemTenantID 从 stub_handler_base.go 导入（同一包内可直接使用）
+// 如果编译错误，需要确保 stub_handler_base.go 在同一包中
+
 // DeviceHandler 设备管理 Handler
 type DeviceHandler struct {
 	deviceService service.DeviceService
@@ -107,8 +110,28 @@ func (h *DeviceHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// 1. 参数解析和验证
-	tenantID, ok := h.tenantIDFromReq(w, r)
+	// SystemAdmin 可以查看所有租户的设备，如果 tenant_id 未指定或为 System 租户，允许查询所有设备
+	userRole := r.Header.Get("X-User-Role")
+	isSystemAdmin := strings.EqualFold(userRole, "SystemAdmin")
+
+	var tenantID string
+	var ok bool
+
+	// 如果 URL 参数中明确指定了 tenant_id，使用它
+	if tid := r.URL.Query().Get("tenant_id"); tid != "" && tid != "null" {
+		tenantID = tid
+		ok = true
+	} else if tid := r.Header.Get("X-Tenant-Id"); tid != "" && tid != "null" {
+		tenantID = tid
+		ok = true
+	} else if isSystemAdmin {
+		// SystemAdmin 如果没有指定 tenant_id，使用 System 租户 ID（但查询时会显示所有设备）
+		tenantID = SystemTenantID()
+		ok = true
+	}
+
 	if !ok {
+		writeJSON(w, http.StatusOK, Fail("tenant_id is required"))
 		return
 	}
 
@@ -123,8 +146,10 @@ func (h *DeviceHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
 	size := parseInt(r.URL.Query().Get("size"), 20)
 
 	// 2. 调用 Service
+	// SystemAdmin 且 tenant_id 为 System 租户时，传递特殊标记以查询所有设备
 	req := service.ListDevicesRequest{
 		TenantID:       tenantID,
+		IsSystemAdmin:  isSystemAdmin && tenantID == SystemTenantID(), // SystemAdmin 查看所有设备
 		Status:         statuses,
 		BusinessAccess: r.URL.Query().Get("business_access"),
 		DeviceType:     r.URL.Query().Get("device_type"),
@@ -226,11 +251,25 @@ func (h *DeviceHandler) UpdateDevice(w http.ResponseWriter, r *http.Request) {
 	// 3. 数据转换（map → domain.Device）
 	device := payloadToDevice(payload)
 
-	// 4. 调用 Service
+	// 4. 检查 payload 中是否包含 bound_room_id 和 bound_bed_id
+	// 根据数据库设计文档 (17_devices.sql) 的设备绑定规则：
+	//   - 绑定到 Bed：bound_bed_id IS NOT NULL, bound_room_id IS NULL
+	//   - 绑定到 Room：bound_room_id IS NOT NULL, bound_bed_id IS NULL
+	//   - 未绑定：bound_room_id IS NULL, bound_bed_id IS NULL
+	// 前端在绑定/解绑时总是会传递这两个字段（绑定时一个为 null，解绑时两个都为 null）
+	// 如果字段在 payload 中，就需要更新（即使为 null）
+	_, hasBoundRoomID := payload["bound_room_id"]
+	_, hasBoundBedID := payload["bound_bed_id"]
+
+	// 5. 调用 Service
 	req := service.UpdateDeviceRequest{
 		TenantID: tenantID,
 		DeviceID: deviceID,
 		Device:   device,
+		// 传递 payload 信息，让 Repository 层知道哪些字段需要更新
+		// 如果字段在 payload 中（即使为 null），就更新它
+		UpdateBoundRoomID: hasBoundRoomID,
+		UpdateBoundBedID:  hasBoundBedID,
 	}
 
 	resp, err := h.deviceService.UpdateDevice(ctx, req)
@@ -295,4 +334,3 @@ func (h *DeviceHandler) tenantIDFromReq(w http.ResponseWriter, r *http.Request) 
 }
 
 // payloadToDevice 函数已在 admin_units_devices_impl.go 中定义，直接使用
-

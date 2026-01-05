@@ -173,14 +173,14 @@ redis-cli KEYS "vital-focus:card:*:alarms"
 
 ```json
 {"level":"info","msg":"Starting alarm service","tenant_id":"test-tenant"}
-{"level":"info","msg":"Cache consumer started","tenant_id":"test-tenant","poll_interval":5}
+{"level":"info","msg":"Cache consumer started","tenant_id":"test-tenant","poll_interval":10}
 {"level":"debug","msg":"Evaluating cards","card_count":10}
 ```
 
 ### 如果数据库连接成功
 
 - ✅ 服务持续运行
-- ✅ 每5秒轮询一次卡片
+- ✅ 每10秒轮询一次卡片
 - ✅ 评估报警事件
 - ✅ 写入数据库（如果有报警生成）
 

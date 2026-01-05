@@ -97,8 +97,11 @@ type CardOverviewItem struct {
 type CardDevice struct {
 	DeviceID   string `json:"device_id"`
 	DeviceName string `json:"device_name"`
-	DeviceType string `json:"device_type"`
+	DeviceType interface{} `json:"device_type"` // 数字（1=sleepace, 2=radar）或字符串（向后兼容）
 	DeviceModel string `json:"device_model,omitempty"`
+	SerialNumber string `json:"serial_number,omitempty"`
+	UID         string `json:"uid,omitempty"`
+	Status      string `json:"status,omitempty"` // "online" | "offline" | "error" | "disabled"
 	// 可以根据需要添加更多字段
 }
 

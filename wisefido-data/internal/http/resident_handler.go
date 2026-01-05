@@ -1861,16 +1861,38 @@ func (h *ResidentHandler) UpdateResidentPHI(w http.ResponseWriter, r *http.Reque
 	}
 	if val, exists := phiData["resident_phone"]; exists {
 		if val == nil {
+			// null 表示删除或占位符（不保存 phone），不更新
 			phi.ResidentPhone = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
 		} else if str, ok := val.(string); ok {
-			phi.ResidentPhone = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
+			// 如果是占位符 "xxx-xxx-xxxx"，不更新（保持现有状态）
+			if str == "xxx-xxx-xxxx" {
+				// 占位符：不更新 phone，也不更新 phone_hash（保持现有 hash）
+				// 不设置 phi.ResidentPhone，这样就不会触发更新
+			} else if str != "" {
+				// 有效的 phone 值，正常更新
+				phi.ResidentPhone = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
+			} else {
+				// 空字符串，删除
+				phi.ResidentPhone = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
+			}
 		}
 	}
 	if val, exists := phiData["resident_email"]; exists {
 		if val == nil {
+			// null 表示删除或占位符（不保存 email），不更新
 			phi.ResidentEmail = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
 		} else if str, ok := val.(string); ok {
-			phi.ResidentEmail = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
+			// 如果是占位符 "***@***"，不更新（保持现有状态）
+			if str == "***@***" {
+				// 占位符：不更新 email，也不更新 email_hash（保持现有 hash）
+				// 不设置 phi.ResidentEmail，这样就不会触发更新
+			} else if str != "" {
+				// 有效的 email 值，正常更新
+				phi.ResidentEmail = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
+			} else {
+				// 空字符串，删除
+				phi.ResidentEmail = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
+			}
 		}
 	}
 	if val, exists := phiData["save_phone"]; exists {

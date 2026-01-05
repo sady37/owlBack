@@ -96,6 +96,14 @@ func (h *CardOverviewHandler) GetCardOverview(w http.ResponseWriter, r *http.Req
 	currentUserType := r.Header.Get("X-User-Type")
 	currentUserRole := r.Header.Get("X-User-Role")
 
+	// 调试日志：记录接收到的用户信息
+	h.logger.Info("GetCardOverview request",
+		zap.String("tenant_id", tenantID),
+		zap.String("current_user_id", currentUserID),
+		zap.String("current_user_type", currentUserType),
+		zap.String("current_user_role", currentUserRole),
+	)
+
 	// 4. 构建请求
 	req := service.GetCardOverviewRequest{
 		TenantID:          tenantID,

@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 	"wisefido-data/internal/models"
+	"wisefido-data/internal/service"
 	"wisefido-data/internal/store"
 
 	"go.uber.org/zap"
@@ -14,12 +16,24 @@ import (
 
 // VitalFocusHandler 实现 owlFront Monitor API 所需接口
 type VitalFocusHandler struct {
-	kv     store.KV
-	logger *zap.Logger
+	kv          store.KV
+	db          *sql.DB             // 用于更新 users.preferences
+	cardService service.CardService // 用于权限过滤的卡片服务
+	logger      *zap.Logger
 }
 
 func NewVitalFocusHandler(kv store.KV, logger *zap.Logger) *VitalFocusHandler {
 	return &VitalFocusHandler{kv: kv, logger: logger}
+}
+
+// SetCardService 设置卡片服务（用于权限过滤）
+func (h *VitalFocusHandler) SetCardService(cardService service.CardService) {
+	h.cardService = cardService
+}
+
+// SetDB 设置数据库连接（用于更新 preferences）
+func (h *VitalFocusHandler) SetDB(db *sql.DB) {
+	h.db = db
 }
 
 // GET /data/api/v1/data/vital-focus/cards
@@ -28,9 +42,96 @@ func NewVitalFocusHandler(kv store.KV, logger *zap.Logger) *VitalFocusHandler {
 // - page? number (default 1)
 // - pageSize? number (default 10)  <-- 前端 mock 使用
 // - size? number (alias)
+// headers:
+// - X-User-Id: 用户 ID（必填）
+// - X-User-Type: 用户类型 "resident" | "staff"（必填）
+// - X-User-Role: 用户角色（staff 必填）
 func (h *VitalFocusHandler) GetCards(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// 如果 cardService 可用，使用 service 层（带权限过滤）
+	if h.cardService != nil {
+		h.getCardsWithService(ctx, w, r)
+		return
+	}
+
+	// 向后兼容：如果 cardService 不可用，使用旧的直接扫描 Redis 方式（无权限过滤）
+	h.getCardsLegacy(ctx, w, r)
+}
+
+// getCardsWithService 使用 service 层获取卡片（带权限过滤）
+func (h *VitalFocusHandler) getCardsWithService(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	// 从 Query 获取参数
+	tenantID := r.URL.Query().Get("tenant_id")
+	page := parseInt(r.URL.Query().Get("page"), 1)
+	pageSize := parseInt(r.URL.Query().Get("pageSize"), 0)
+	if pageSize <= 0 {
+		pageSize = parseInt(r.URL.Query().Get("size"), 10)
+	}
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 10
+	}
+
+	// 从 Header 获取用户信息
+	currentUserID := r.Header.Get("X-User-Id")
+	currentUserType := r.Header.Get("X-User-Type")
+	currentUserRole := r.Header.Get("X-User-Role")
+
+	if currentUserID == "" || currentUserType == "" {
+		h.logger.Warn("Missing required headers: X-User-Id or X-User-Type",
+			zap.String("user_id", currentUserID),
+			zap.String("user_type", currentUserType),
+		)
+		writeJSON(w, http.StatusOK, Fail("missing required headers: X-User-Id and X-User-Type"))
+		return
+	}
+
+	// 调用 service 层
+	req := service.ListVitalFocusCardsRequest{
+		TenantID:        tenantID,
+		Page:            page,
+		PageSize:        pageSize,
+		CurrentUserID:   currentUserID,
+		CurrentUserType: currentUserType,
+		CurrentUserRole: currentUserRole,
+	}
+
+	resp, err := h.cardService.ListVitalFocusCards(ctx, req)
+	if err != nil {
+		h.logger.Error("Failed to list vital focus cards",
+			zap.String("user_id", currentUserID),
+			zap.String("user_type", currentUserType),
+			zap.Error(err),
+		)
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	// 转换为前端模型
+	items := make([]models.VitalFocusCard, len(resp.Items))
+	for i, card := range resp.Items {
+		items[i] = card
+	}
+
+	backendResp := models.GetVitalFocusCardsModel{
+		Items: items,
+		Pagination: models.BackendPagination{
+			Size:      resp.Pagination.PageSize,
+			Page:      resp.Pagination.Page,
+			Count:     resp.Pagination.Total,
+			Sort:      "",
+			Direction: 0,
+		},
+	}
+
+	writeJSON(w, http.StatusOK, Ok(backendResp))
+}
+
+// getCardsLegacy 向后兼容：直接扫描 Redis（无权限过滤）
+func (h *VitalFocusHandler) getCardsLegacy(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	tenantID := r.URL.Query().Get("tenant_id")
 	page := parseInt(r.URL.Query().Get("page"), 1)
 	pageSize := parseInt(r.URL.Query().Get("pageSize"), 0)
@@ -152,14 +253,98 @@ func (h *VitalFocusHandler) GetCardByIDOrResident(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, Fail("card not found"))
 }
 
-// POST /data/api/v1/data/vital-focus/selection
-// body: { selected_card_ids: string[] }
-func (h *VitalFocusHandler) SaveSelection(w http.ResponseWriter, r *http.Request) {
+// GET /data/api/v1/data/vital-focus/preferences
+// headers:
+// - X-User-Id: 用户 ID（必填）
+// - X-Tenant-Id: 租户 ID（可选，用于验证）
+func (h *VitalFocusHandler) GetPreferences(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	tenantID := r.Header.Get("X-Tenant-Id")
 	userID := r.Header.Get("X-User-Id")
 	if userID == "" {
-		// 前端会发送，但为了兼容先不强制
-		userID = "anonymous"
+		writeJSON(w, http.StatusOK, Fail("user ID is required"))
+		return
+	}
+
+	// 如果 cardService 可用，使用 service 层
+	if h.cardService != nil {
+		req := service.GetVitalFocusPreferencesRequest{
+			TenantID:      tenantID,
+			CurrentUserID: userID,
+		}
+
+		resp, err := h.cardService.GetVitalFocusPreferences(ctx, req)
+		if err != nil {
+			h.logger.Error("Failed to get vital focus preferences",
+				zap.String("user_id", userID),
+				zap.Error(err),
+			)
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
+
+		writeJSON(w, http.StatusOK, Ok(map[string]any{
+			"selected_card_ids": resp.SelectedCardIDs,
+		}))
+		return
+	}
+
+	// 向后兼容：如果 cardService 不可用，直接查询数据库
+	if h.db == nil {
+		writeJSON(w, http.StatusOK, Fail("database not available"))
+		return
+	}
+
+	var preferencesJSON sql.NullString
+	err := h.db.QueryRowContext(ctx,
+		`SELECT preferences FROM users WHERE user_id = $1`,
+		userID,
+	).Scan(&preferencesJSON)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeJSON(w, http.StatusOK, Fail("user not found"))
+			return
+		}
+		writeJSON(w, http.StatusOK, Fail("failed to get user preferences"))
+		return
+	}
+
+	var selectedCardIDs []string
+	if preferencesJSON.Valid && preferencesJSON.String != "" {
+		var prefs map[string]interface{}
+		if err := json.Unmarshal([]byte(preferencesJSON.String), &prefs); err == nil {
+			if vitalFocus, ok := prefs["vitalFocus"].(map[string]interface{}); ok {
+				if cardIds, ok := vitalFocus["selectedCardIds"].([]interface{}); ok {
+					for _, id := range cardIds {
+						if idStr, ok := id.(string); ok {
+							selectedCardIDs = append(selectedCardIDs, idStr)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, Ok(map[string]any{
+		"selected_card_ids": selectedCardIDs,
+	}))
+}
+
+// POST /data/api/v1/data/vital-focus/selection
+// body: { selected_card_ids: string[] }
+// headers:
+// - X-User-Id: 用户 ID（必填）
+// - X-Tenant-Id: 租户 ID（可选，用于验证）
+func (h *VitalFocusHandler) SaveSelection(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantID := r.Header.Get("X-Tenant-Id")
+	userID := r.Header.Get("X-User-Id")
+	if userID == "" {
+		writeJSON(w, http.StatusOK, Fail("user ID is required"))
+		return
+	}
+	if tenantID == "" {
+		tenantID = SystemTenantID()
 	}
 
 	var req struct {
@@ -170,9 +355,88 @@ func (h *VitalFocusHandler) SaveSelection(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// 如果 cardService 可用，使用 service 层
+	if h.cardService != nil {
+		serviceReq := service.SaveVitalFocusPreferencesRequest{
+			TenantID:        tenantID,
+			CurrentUserID:   userID,
+			SelectedCardIDs: req.SelectedCardIDs,
+		}
+
+		err := h.cardService.SaveVitalFocusPreferences(ctx, serviceReq)
+		if err != nil {
+			h.logger.Error("Failed to save vital focus preferences",
+				zap.String("user_id", userID),
+				zap.Error(err),
+			)
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
+
+		// 同时保存到 Redis（向后兼容）
+		key := "vital-focus:selection:user:" + userID
+		raw, _ := json.Marshal(req)
+		_ = h.kv.Set(ctx, key, string(raw), 7*24*time.Hour) // 保存 7 天
+
+		writeJSON(w, http.StatusOK, Ok(map[string]any{
+			"success": true,
+			"message": "Focus selection saved successfully",
+		}))
+		return
+	}
+
+	// 向后兼容：如果 cardService 不可用，直接更新数据库
+	// 1. 保存到 Redis（向后兼容）
 	key := "vital-focus:selection:user:" + userID
 	raw, _ := json.Marshal(req)
-	_ = h.kv.Set(ctx, key, string(raw), 7*24*time.Hour) // 保存 7 天，后续可改为永久或 DB
+	_ = h.kv.Set(ctx, key, string(raw), 7*24*time.Hour) // 保存 7 天
+
+	// 2. 保存到 users.preferences.vitalFocus.selectedCardIds（如果 DB 可用）
+	if h.db != nil {
+		// 获取当前用户的 preferences
+		var currentPrefsJSON sql.NullString
+		err := h.db.QueryRowContext(ctx,
+			`SELECT preferences FROM users WHERE tenant_id = $1 AND user_id = $2`,
+			tenantID, userID,
+		).Scan(&currentPrefsJSON)
+
+		if err == nil {
+			// 解析现有 preferences
+			var prefs map[string]interface{}
+			if currentPrefsJSON.Valid && currentPrefsJSON.String != "" {
+				if err := json.Unmarshal([]byte(currentPrefsJSON.String), &prefs); err != nil {
+					prefs = make(map[string]interface{})
+				}
+			} else {
+				prefs = make(map[string]interface{})
+			}
+
+			// 更新 vitalFocus.selectedCardIds
+			if prefs["vitalFocus"] == nil {
+				prefs["vitalFocus"] = make(map[string]interface{})
+			}
+			vitalFocus, ok := prefs["vitalFocus"].(map[string]interface{})
+			if !ok {
+				vitalFocus = make(map[string]interface{})
+				prefs["vitalFocus"] = vitalFocus
+			}
+			vitalFocus["selectedCardIds"] = req.SelectedCardIDs
+
+			// 保存回数据库
+			updatedPrefsJSON, _ := json.Marshal(prefs)
+			_, err = h.db.ExecContext(ctx,
+				`UPDATE users SET preferences = $1::jsonb WHERE tenant_id = $2 AND user_id = $3`,
+				string(updatedPrefsJSON), tenantID, userID,
+			)
+			if err != nil {
+				h.logger.Warn("Failed to update user preferences", zap.Error(err))
+				// 不返回错误，因为 Redis 已保存成功
+			}
+		} else if err != sql.ErrNoRows {
+			h.logger.Warn("Failed to get user preferences", zap.Error(err))
+			// 不返回错误，因为 Redis 已保存成功
+		}
+	}
 
 	writeJSON(w, http.StatusOK, Ok(map[string]any{
 		"success": true,
@@ -301,5 +565,3 @@ func normalizeSource(s string) string {
 		return "-"
 	}
 }
-
-

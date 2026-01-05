@@ -2,7 +2,7 @@ package service
 
 import (
 	"testing"
-	"wisefido-card-aggregator/internal/repository"
+	"owl-common/card"
 
 	"github.com/stretchr/testify/mock"
 )
@@ -12,52 +12,52 @@ type MockCardRepository struct {
 	mock.Mock
 }
 
-func (m *MockCardRepository) GetUnitInfo(tenantID, unitID string) (*repository.UnitInfo, error) {
+func (m *MockCardRepository) GetUnitInfo(tenantID, unitID string) (*card.UnitInfo, error) {
 	args := m.Called(tenantID, unitID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*repository.UnitInfo), args.Error(1)
+	return args.Get(0).(*card.UnitInfo), args.Error(1)
 }
 
-func (m *MockCardRepository) GetActiveBedsByUnit(tenantID, unitID string) ([]repository.ActiveBedInfo, error) {
+func (m *MockCardRepository) GetActiveBedsByUnit(tenantID, unitID string) ([]card.ActiveBedInfo, error) {
 	args := m.Called(tenantID, unitID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).([]repository.ActiveBedInfo), args.Error(1)
+	return args.Get(0).([]card.ActiveBedInfo), args.Error(1)
 }
 
-func (m *MockCardRepository) GetDevicesByBed(tenantID, bedID string) ([]repository.DeviceInfo, error) {
+func (m *MockCardRepository) GetDevicesByBed(tenantID, bedID string) ([]card.DeviceInfo, error) {
 	args := m.Called(tenantID, bedID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).([]repository.DeviceInfo), args.Error(1)
+	return args.Get(0).([]card.DeviceInfo), args.Error(1)
 }
 
-func (m *MockCardRepository) GetUnboundDevicesByUnit(tenantID, unitID string) ([]repository.DeviceInfo, error) {
+func (m *MockCardRepository) GetUnboundDevicesByUnit(tenantID, unitID string) ([]card.DeviceInfo, error) {
 	args := m.Called(tenantID, unitID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).([]repository.DeviceInfo), args.Error(1)
+	return args.Get(0).([]card.DeviceInfo), args.Error(1)
 }
 
-func (m *MockCardRepository) GetResidentByBed(tenantID, bedID string) (*repository.ResidentInfo, error) {
+func (m *MockCardRepository) GetResidentByBed(tenantID, bedID string) (*card.ResidentInfo, error) {
 	args := m.Called(tenantID, bedID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*repository.ResidentInfo), args.Error(1)
+	return args.Get(0).(*card.ResidentInfo), args.Error(1)
 }
 
-func (m *MockCardRepository) GetResidentsByUnit(tenantID, unitID string) ([]repository.ResidentInfo, error) {
+func (m *MockCardRepository) GetResidentsByUnit(tenantID, unitID string) ([]card.ResidentInfo, error) {
 	args := m.Called(tenantID, unitID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).([]repository.ResidentInfo), args.Error(1)
+	return args.Get(0).([]card.ResidentInfo), args.Error(1)
 }
 
 func (m *MockCardRepository) DeleteCardsByUnit(tenantID, unitID string) error {

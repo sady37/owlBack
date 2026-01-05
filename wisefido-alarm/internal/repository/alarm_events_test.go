@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -127,9 +128,9 @@ func TestCreateAlarmEvent_Success(t *testing.T) {
 		AlarmLevel:   "ALERT",
 		AlarmStatus:  "active",
 		TriggeredAt:  now,
-		TriggerData:  `{"heart_rate": 120}`,
-		NotifiedUsers: `[]`,
-		Metadata:     `{}`,
+		TriggerData:  json.RawMessage(`{"heart_rate": 120}`),
+		NotifiedUsers: json.RawMessage(`[]`),
+		Metadata:     json.RawMessage(`{}`),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}

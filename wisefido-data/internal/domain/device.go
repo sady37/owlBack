@@ -15,6 +15,14 @@ type Device struct {
 	// 关联 device_store
 	DeviceStoreID sql.NullString `db:"device_store_id"` // nullable
 
+	// 物理属性（从 device_store 表获取，只读）
+	DeviceType  sql.NullString `db:"device_type"`  // from device_store.device_type
+	DeviceModel sql.NullString `db:"device_model"` // from device_store.device_model
+	IMEI        sql.NullString `db:"imei"`         // from device_store.imei
+	CommMode    sql.NullString `db:"comm_mode"`    // from device_store.comm_mode
+	MCUModel    sql.NullString `db:"mcu_model"`    // from device_store.mcu_model
+	FirmwareVersion sql.NullString `db:"firmware_version"` // from device_store.firmware_version
+
 	// 标识/资产
 	DeviceName   string         `db:"device_name"`   // NOT NULL
 	SerialNumber sql.NullString `db:"serial_number"` // nullable
@@ -23,6 +31,12 @@ type Device struct {
 	// 位置绑定（互斥）
 	BoundRoomID sql.NullString `db:"bound_room_id"` // nullable
 	BoundBedID  sql.NullString `db:"bound_bed_id"`  // nullable
+	
+	// 位置信息（通过 JOIN 查询得到，用于返回给前端）
+	// 如果绑定到 room：room_id = bound_room_id, unit_id 通过 rooms.unit_id 查询
+	// 如果绑定到 bed：room_id 通过 beds.room_id 查询, unit_id 通过 rooms.unit_id 查询
+	RoomID sql.NullString `db:"room_id"`   // 计算字段：COALESCE(bound_room_id, bed_room_id)
+	UnitID sql.NullString `db:"unit_id"`   // 计算字段：通过 room_id 或 bed_id 查询得到
 
 	// 状态/维护
 	Status            string `db:"status"`              // NOT NULL, default 'offline'
@@ -46,6 +60,25 @@ func (d *Device) ToJSON() map[string]any {
 	if d.DeviceStoreID.Valid {
 		m["device_store_id"] = d.DeviceStoreID.String
 	}
+	// 物理属性（从 device_store 获取）
+	if d.DeviceType.Valid {
+		m["device_type"] = d.DeviceType.String
+	}
+	if d.DeviceModel.Valid {
+		m["device_model"] = d.DeviceModel.String
+	}
+	if d.IMEI.Valid {
+		m["imei"] = d.IMEI.String
+	}
+	if d.CommMode.Valid {
+		m["comm_mode"] = d.CommMode.String
+	}
+	if d.MCUModel.Valid {
+		m["mcu_model"] = d.MCUModel.String
+	}
+	if d.FirmwareVersion.Valid {
+		m["firmware_version"] = d.FirmwareVersion.String
+	}
 	if d.SerialNumber.Valid {
 		m["serial_number"] = d.SerialNumber.String
 	}
@@ -61,6 +94,17 @@ func (d *Device) ToJSON() map[string]any {
 		m["bound_bed_id"] = d.BoundBedID.String
 	} else {
 		m["bound_bed_id"] = nil
+	}
+	// 位置信息（用于前端显示，通过 JOIN 查询得到）
+	if d.RoomID.Valid {
+		m["room_id"] = d.RoomID.String
+	} else {
+		m["room_id"] = nil
+	}
+	if d.UnitID.Valid {
+		m["unit_id"] = d.UnitID.String
+	} else {
+		m["unit_id"] = nil
 	}
 	if d.Metadata.Valid {
 		// 尝试解析JSON，如果失败则返回字符串

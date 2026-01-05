@@ -44,7 +44,16 @@ func (r *Router) RegisterVitalFocusRoutes(v *VitalFocusHandler) {
 		v.GetCards(w, req)
 	})
 
-	// selection
+	// preferences (GET)
+	r.Handle("/data/api/v1/data/vital-focus/preferences", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		v.GetPreferences(w, req)
+	})
+
+	// selection (POST)
 	r.Handle("/data/api/v1/data/vital-focus/selection", func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)

@@ -5,18 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-	"wisefido-card-aggregator/internal/aggregator"
 	"wisefido-card-aggregator/internal/repository"
+
+	"owl-common/card"
+	rediscommon "owl-common/redis"
 
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
-	rediscommon "owl-common/redis"
 )
 
 // EventConsumer 事件消费者
 type EventConsumer struct {
 	redisClient *redis.Client
-	cardCreator *aggregator.CardCreator
+	cardCreator *card.CardCreator
 	cardRepo    *repository.CardRepository
 	logger      *zap.Logger
 	stream      string
@@ -40,7 +41,7 @@ type CardEvent struct {
 // NewEventConsumer 创建事件消费者
 func NewEventConsumer(
 	redisClient *redis.Client,
-	cardCreator *aggregator.CardCreator,
+	cardCreator *card.CardCreator,
 	cardRepo *repository.CardRepository,
 	logger *zap.Logger,
 	stream string,
@@ -162,27 +163,48 @@ func (c *EventConsumer) processEvent(ctx context.Context, msg rediscommon.Stream
 	case "device.bound", "device.unbound", "device.monitoring_changed":
 		// 设备绑定/解绑/监护状态变化
 		if event.UnitID != "" {
-			return c.cardCreator.CreateCardsForUnit(event.TenantID, event.UnitID)
+			_, err := c.cardCreator.CreateCardsForUnit(event.TenantID, event.UnitID)
+			return err
 		} else if event.BedID != "" {
 			// 如果只有 bed_id，需要查询 unit_id
 			unitID, err := c.getUnitIDByBedID(event.TenantID, event.BedID)
 			if err != nil {
 				return fmt.Errorf("failed to get unit_id by bed_id: %w", err)
 			}
-			return c.cardCreator.CreateCardsForUnit(event.TenantID, unitID)
+			_, err = c.cardCreator.CreateCardsForUnit(event.TenantID, unitID)
+			return err
 		}
 
 	case "resident.bound", "resident.unbound", "resident.status_changed":
 		// 住户绑定/解绑/状态变化
 		if event.UnitID != "" {
-			return c.cardCreator.CreateCardsForUnit(event.TenantID, event.UnitID)
+			_, err := c.cardCreator.CreateCardsForUnit(event.TenantID, event.UnitID)
+			return err
 		} else if event.BedID != "" {
 			// 如果只有 bed_id，需要查询 unit_id
 			unitID, err := c.getUnitIDByBedID(event.TenantID, event.BedID)
 			if err != nil {
 				return fmt.Errorf("failed to get unit_id by bed_id: %w", err)
 			}
-			return c.cardCreator.CreateCardsForUnit(event.TenantID, unitID)
+			_, err = c.cardCreator.CreateCardsForUnit(event.TenantID, unitID)
+			return err
+		}
+
+	case "resident.caregivers_changed":
+		// 住户护理人员分配变化（影响卡片权限，如果采用预计算权限字段方案）
+		// 注意：当前卡片生成逻辑中，权限是在查询时动态计算的，不是预计算的
+		// 如果未来采用预计算权限字段方案，这里需要重新生成相关卡片
+		if event.UnitID != "" {
+			_, err := c.cardCreator.CreateCardsForUnit(event.TenantID, event.UnitID)
+			return err
+		} else if event.BedID != "" {
+			// 如果只有 bed_id，需要查询 unit_id
+			unitID, err := c.getUnitIDByBedID(event.TenantID, event.BedID)
+			if err != nil {
+				return fmt.Errorf("failed to get unit_id by bed_id: %w", err)
+			}
+			_, err = c.cardCreator.CreateCardsForUnit(event.TenantID, unitID)
+			return err
 		}
 
 	case "bed.status_changed", "bed.device_count_changed":
@@ -192,13 +214,15 @@ func (c *EventConsumer) processEvent(ctx context.Context, msg rediscommon.Stream
 			if err != nil {
 				return fmt.Errorf("failed to get unit_id by bed_id: %w", err)
 			}
-			return c.cardCreator.CreateCardsForUnit(event.TenantID, unitID)
+			_, err = c.cardCreator.CreateCardsForUnit(event.TenantID, unitID)
+			return err
 		}
 
 	case "unit.info_changed":
 		// 单元信息变化（地址、名称等）
 		if event.UnitID != "" {
-			return c.cardCreator.CreateCardsForUnit(event.TenantID, event.UnitID)
+			_, err := c.cardCreator.CreateCardsForUnit(event.TenantID, event.UnitID)
+			return err
 		}
 
 	default:

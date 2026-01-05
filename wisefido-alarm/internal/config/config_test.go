@@ -35,7 +35,7 @@ func TestLoad_DefaultValues(t *testing.T) {
 	assert.Equal(t, 30, cfg.Alarm.Cache.AlarmTTL)
 	assert.Equal(t, "alarm:state:", cfg.Alarm.Cache.StateKeyPrefix)
 
-	assert.Equal(t, 5, cfg.Alarm.PollInterval)
+	assert.Equal(t, 10, cfg.Alarm.PollInterval)
 	assert.Equal(t, 10, cfg.Alarm.Evaluation.BatchSize)
 
 	assert.Equal(t, "info", cfg.Log.Level)

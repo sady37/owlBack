@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"wisefido-sensor-fusion/internal/alarm"
 	"wisefido-sensor-fusion/internal/config"
 	"wisefido-sensor-fusion/internal/fusion"
 	"wisefido-sensor-fusion/internal/models"
@@ -101,14 +102,17 @@ func (m *Metrics) IncrementSkipped() {
 
 // StreamConsumer Redis Streams 消费者
 type StreamConsumer struct {
-	config       *config.Config
-	redisClient  *redis.Client
-	cardRepo     *repository.CardRepository
-	iotRepo      *repository.IoTTimeSeriesRepository
-	fusion       *fusion.SensorFusion
-	cache        *CacheManager
-	logger       *zap.Logger
-	metrics      *Metrics
+	config          *config.Config
+	redisClient     *redis.Client
+	cardRepo        *repository.CardRepository
+	iotRepo         *repository.IoTTimeSeriesRepository
+	fusion          *fusion.SensorFusion
+	cache           *CacheManager
+	alarmEventsRepo *repository.AlarmEventsRepository
+	alarmDeviceRepo *repository.AlarmDeviceRepository
+	alarmHandler    *alarm.AlarmHandler
+	logger          *zap.Logger
+	metrics         *Metrics
 }
 
 // NewStreamConsumer 创建 Streams 消费者
@@ -119,16 +123,22 @@ func NewStreamConsumer(
 	iotRepo *repository.IoTTimeSeriesRepository,
 	fusion *fusion.SensorFusion,
 	cache *CacheManager,
+	alarmEventsRepo *repository.AlarmEventsRepository,
+	alarmDeviceRepo *repository.AlarmDeviceRepository,
+	alarmHandler *alarm.AlarmHandler,
 	logger *zap.Logger,
 ) *StreamConsumer {
 	return &StreamConsumer{
-		config:      cfg,
-		redisClient: redisClient,
-		cardRepo:    cardRepo,
-		iotRepo:     iotRepo,
-		fusion:      fusion,
-		cache:       cache,
-		logger:      logger,
+		config:          cfg,
+		redisClient:     redisClient,
+		cardRepo:        cardRepo,
+		iotRepo:         iotRepo,
+		fusion:          fusion,
+		cache:           cache,
+		alarmEventsRepo: alarmEventsRepo,
+		alarmDeviceRepo: alarmDeviceRepo,
+		alarmHandler:    alarmHandler,
+		logger:          logger,
 		metrics: &Metrics{
 			StartTime: time.Now(),
 		},
@@ -290,7 +300,44 @@ func (c *StreamConsumer) processMessage(ctx context.Context, msg rediscommon.Str
 		return fmt.Errorf("failed to fuse card data: %w", err)
 	}
 	
-	// 3. 更新 Redis 缓存
+	// 3. 【新增】检测设备直接报警
+	if iotData.EventType != nil && c.alarmHandler != nil {
+		// 构建 trigger_data（可选，用于记录触发时的数据快照）
+		var triggerData *models.TriggerData
+		if realtimeData != nil {
+			triggerData = &models.TriggerData{
+				EventType:       *iotData.EventType,
+				Source:          iotData.DeviceType,
+				HeartRate:       realtimeData.Heart,
+				RespiratoryRate: realtimeData.Breath,
+			}
+		} else {
+			triggerData = &models.TriggerData{
+				EventType: *iotData.EventType,
+				Source:    iotData.DeviceType,
+			}
+		}
+
+		// 创建报警事件（如果失败，只记录警告，不影响数据融合流程）
+		iotTimeSeriesID := &iotData.IoTTimeSeriesID
+		if err := c.alarmHandler.CreateDeviceAlarm(
+			ctx,
+			iotData.TenantID,
+			iotData.DeviceID,
+			*iotData.EventType,
+			iotTimeSeriesID,
+			triggerData,
+		); err != nil {
+			c.logger.Warn("Failed to create device alarm",
+				zap.String("device_id", iotData.DeviceID),
+				zap.String("event_type", *iotData.EventType),
+				zap.Error(err),
+			)
+			// 不返回错误，继续处理数据融合
+		}
+	}
+
+	// 4. 更新 Redis 缓存
 	if err := c.cache.UpdateRealtimeData(cardInfo.CardID, realtimeData); err != nil {
 		c.metrics.IncrementFailed("cache_failed")
 		c.logger.Error("Failed to update cache",

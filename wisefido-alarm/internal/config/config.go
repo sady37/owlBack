@@ -23,7 +23,7 @@ type Config struct {
 		}
 		
 		// 轮询配置（如果使用轮询方式）
-		PollInterval int // 轮询间隔（秒），默认 5秒
+		PollInterval int // 轮询间隔（秒），默认 10秒
 		
 		// 评估配置
 		Evaluation struct {
@@ -61,7 +61,7 @@ func Load() (*Config, error) {
 	cfg.Alarm.Cache.AlarmTTL = 30 // 30秒
 	cfg.Alarm.Cache.StateKeyPrefix = getEnv("CACHE_STATE_PREFIX", "alarm:state:")
 	
-	cfg.Alarm.PollInterval = 5 // 5秒轮询一次
+	cfg.Alarm.PollInterval = 10 // 10秒轮询一次
 	cfg.Alarm.Evaluation.BatchSize = 10
 	
 	cfg.Log.Level = getEnv("LOG_LEVEL", "info")

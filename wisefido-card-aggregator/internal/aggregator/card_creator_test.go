@@ -3,12 +3,12 @@ package aggregator
 import (
 	"errors"
 	"testing"
-	"wisefido-card-aggregator/internal/repository"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"owl-common/card"
 )
 
 // MockCardRepository is a mock implementation of CardRepository
@@ -16,52 +16,65 @@ type MockCardRepository struct {
 	mock.Mock
 }
 
-func (m *MockCardRepository) GetUnitInfo(tenantID, unitID string) (*repository.UnitInfo, error) {
+func (m *MockCardRepository) GetUnitInfo(tenantID, unitID string) (*card.UnitInfo, error) {
 	args := m.Called(tenantID, unitID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*repository.UnitInfo), args.Error(1)
+	return args.Get(0).(*card.UnitInfo), args.Error(1)
 }
 
-func (m *MockCardRepository) GetActiveBedsByUnit(tenantID, unitID string) ([]repository.ActiveBedInfo, error) {
+func (m *MockCardRepository) GetActiveBedsByUnit(tenantID, unitID string) ([]card.ActiveBedInfo, error) {
 	args := m.Called(tenantID, unitID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).([]repository.ActiveBedInfo), args.Error(1)
+	return args.Get(0).([]card.ActiveBedInfo), args.Error(1)
 }
 
-func (m *MockCardRepository) GetDevicesByBed(tenantID, bedID string) ([]repository.DeviceInfo, error) {
+func (m *MockCardRepository) GetDevicesByBed(tenantID, bedID string) ([]card.DeviceInfo, error) {
 	args := m.Called(tenantID, bedID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).([]repository.DeviceInfo), args.Error(1)
+	return args.Get(0).([]card.DeviceInfo), args.Error(1)
 }
 
-func (m *MockCardRepository) GetUnboundDevicesByUnit(tenantID, unitID string) ([]repository.DeviceInfo, error) {
+func (m *MockCardRepository) GetUnboundDevicesByUnit(tenantID, unitID string) ([]card.DeviceInfo, error) {
 	args := m.Called(tenantID, unitID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).([]repository.DeviceInfo), args.Error(1)
+	return args.Get(0).([]card.DeviceInfo), args.Error(1)
 }
 
-func (m *MockCardRepository) GetResidentByBed(tenantID, bedID string) (*repository.ResidentInfo, error) {
+func (m *MockCardRepository) GetResidentByBed(tenantID, bedID string) (*card.ResidentInfo, error) {
 	args := m.Called(tenantID, bedID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*repository.ResidentInfo), args.Error(1)
+	return args.Get(0).(*card.ResidentInfo), args.Error(1)
 }
 
-func (m *MockCardRepository) GetResidentsByUnit(tenantID, unitID string) ([]repository.ResidentInfo, error) {
+func (m *MockCardRepository) GetResidentsByUnit(tenantID, unitID string) ([]card.ResidentInfo, error) {
 	args := m.Called(tenantID, unitID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).([]repository.ResidentInfo), args.Error(1)
+	return args.Get(0).([]card.ResidentInfo), args.Error(1)
+}
+
+func (m *MockCardRepository) GetCardsByUnit(tenantID, unitID string) ([]card.CardWithContent, error) {
+	args := m.Called(tenantID, unitID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]card.CardWithContent), args.Error(1)
+}
+
+func (m *MockCardRepository) DeleteCard(tenantID, cardID string) error {
+	args := m.Called(tenantID, cardID)
+	return args.Error(0)
 }
 
 func (m *MockCardRepository) DeleteCardsByUnit(tenantID, unitID string) error {
@@ -93,10 +106,27 @@ func (m *MockCardRepository) GetUnitIDByBedID(tenantID, bedID string) (string, e
 	return args.String(0), args.Error(1)
 }
 
-func setupCardCreator() (*CardCreator, *MockCardRepository) {
+func (m *MockCardRepository) CountCardsByTenant(tenantID string) (int, error) {
+	args := m.Called(tenantID)
+	return args.Int(0), args.Error(1)
+}
+
+func (m *MockCardRepository) UpdateCard(
+	tenantID, cardID string,
+	cardType string,
+	bedID *string, unitID, cardName, cardAddress string,
+	residentID *string,
+	devicesJSON, residentsJSON []byte,
+) error {
+	args := m.Called(tenantID, cardID, cardType, bedID, unitID, cardName, cardAddress,
+		residentID, devicesJSON, residentsJSON)
+	return args.Error(0)
+}
+
+func setupCardCreator() (*card.CardCreator, *MockCardRepository) {
 	mockRepo := new(MockCardRepository)
 	logger := zap.NewNop()
-	creator := NewCardCreator(mockRepo, logger)
+	creator := card.NewCardCreator(mockRepo, logger)
 	return creator, mockRepo
 }
 
@@ -108,19 +138,17 @@ func TestCreateCardsForUnit_ScenarioA_SingleActiveBed(t *testing.T) {
 	bedID := "bed-1"
 
 	// Prepare test data
-	unitInfo := &repository.UnitInfo{
-		UnitID:            unitID,
-		UnitName:          "E203",
-		BranchName:        "BranchA",
-		Building:          "MainBuilding",
+	unitInfo := &card.UnitInfo{
+		UnitID:       unitID,
+		UnitName:     "E203",
+		BranchName:   "BranchA",
+		Building:     "MainBuilding",
 		IsPublic:     false,
 		IsSharedUnit: false,
-		UnitType:          "Institutional",
-		GroupList:         []byte(`["tag1"]`),
-		UserList:          []byte(`["user-1"]`),
+		UnitType:     "Institutional",
 	}
 
-	activeBeds := []repository.ActiveBedInfo{
+	activeBeds := []card.ActiveBedInfo{
 		{
 			BedID:            bedID,
 			UnitID:           unitID,
@@ -131,7 +159,7 @@ func TestCreateCardsForUnit_ScenarioA_SingleActiveBed(t *testing.T) {
 	}
 
 	bedName := "BedA"
-	bedDevices := []repository.DeviceInfo{
+	bedDevices := []card.DeviceInfo{
 		{
 			DeviceID:          "device-1",
 			DeviceName:        "Radar01",
@@ -148,7 +176,7 @@ func TestCreateCardsForUnit_ScenarioA_SingleActiveBed(t *testing.T) {
 
 	roomID := "room-1"
 	roomName := "Room1"
-	unboundDevices := []repository.DeviceInfo{
+	unboundDevices := []card.DeviceInfo{
 		{
 			DeviceID:          "device-2",
 			DeviceName:        "SleepPad01",
@@ -163,7 +191,7 @@ func TestCreateCardsForUnit_ScenarioA_SingleActiveBed(t *testing.T) {
 		},
 	}
 
-	resident := &repository.ResidentInfo{
+	resident := &card.ResidentInfo{
 		ResidentID: "resident-1",
 		Nickname:   "Smith",
 		UnitID:     &unitID,
@@ -187,7 +215,7 @@ func TestCreateCardsForUnit_ScenarioA_SingleActiveBed(t *testing.T) {
 	).Return("card-123", nil)
 
 	// Execute test
-	err := creator.CreateCardsForUnit(tenantID, unitID)
+	_, err := creator.CreateCardsForUnit(tenantID, unitID)
 
 	// Verify results
 	require.NoError(t, err)
@@ -203,19 +231,17 @@ func TestCreateCardsForUnit_ScenarioB_MultipleActiveBeds(t *testing.T) {
 	bedID2 := "bed-2"
 
 	// Prepare test data
-	unitInfo := &repository.UnitInfo{
-		UnitID:            unitID,
-		UnitName:          "E203",
-		BranchName:        "BranchA",
-		Building:          "MainBuilding",
+	unitInfo := &card.UnitInfo{
+		UnitID:       unitID,
+		UnitName:     "E203",
+		BranchName:   "BranchA",
+		Building:     "MainBuilding",
 		IsPublic:     false,
 		IsSharedUnit: false,
-		UnitType:          "Institutional",
-		GroupList:         []byte(`[]`),
-		UserList:          []byte(`[]`),
+		UnitType:     "Institutional",
 	}
 
-	activeBeds := []repository.ActiveBedInfo{
+	activeBeds := []card.ActiveBedInfo{
 		{
 			BedID:            bedID1,
 			UnitID:           unitID,
@@ -233,25 +259,25 @@ func TestCreateCardsForUnit_ScenarioB_MultipleActiveBeds(t *testing.T) {
 	}
 
 	bed1Name := "BedA"
-	bed1Devices := []repository.DeviceInfo{
+	bed1Devices := []card.DeviceInfo{
 		{DeviceID: "device-1", DeviceName: "Radar01", DeviceType: "Radar", BoundBedID: &bedID1, BedName: &bed1Name, BoundRoomID: nil, RoomName: nil, UnitID: unitID, MonitoringEnabled: true},
 	}
 
 	bed2Name := "BedB"
-	bed2Devices := []repository.DeviceInfo{
+	bed2Devices := []card.DeviceInfo{
 		{DeviceID: "device-2", DeviceName: "Radar02", DeviceType: "Radar", BoundBedID: &bedID2, BedName: &bed2Name, BoundRoomID: nil, RoomName: nil, UnitID: unitID, MonitoringEnabled: true},
 	}
 
 	roomID := "room-1"
 	roomName := "Room1"
-	unboundDevices := []repository.DeviceInfo{
+	unboundDevices := []card.DeviceInfo{
 		{DeviceID: "device-3", DeviceName: "SleepPad01", DeviceType: "SleepPad", BoundBedID: nil, BedName: nil, BoundRoomID: &roomID, RoomName: &roomName, UnitID: unitID, MonitoringEnabled: true},
 	}
 
-	resident1 := &repository.ResidentInfo{ResidentID: "resident-1", Nickname: "Smith", BedID: &bedID1}
-	resident2 := &repository.ResidentInfo{ResidentID: "resident-2", Nickname: "Jones", BedID: &bedID2}
+	resident1 := &card.ResidentInfo{ResidentID: "resident-1", Nickname: "Smith", BedID: &bedID1}
+	resident2 := &card.ResidentInfo{ResidentID: "resident-2", Nickname: "Jones", BedID: &bedID2}
 
-	unitResidents := []repository.ResidentInfo{*resident1, *resident2}
+	unitResidents := []card.ResidentInfo{*resident1, *resident2}
 
 	// Setup mock expectations
 	mockRepo.On("GetUnitInfo", tenantID, unitID).Return(unitInfo, nil)
@@ -291,7 +317,7 @@ func TestCreateCardsForUnit_ScenarioB_MultipleActiveBeds(t *testing.T) {
 	).Return("card-3", nil)
 
 	// Execute test
-	err := creator.CreateCardsForUnit(tenantID, unitID)
+	_, err := creator.CreateCardsForUnit(tenantID, unitID)
 
 	// Verify results
 	require.NoError(t, err)
@@ -305,21 +331,19 @@ func TestCreateCardsForUnit_ScenarioC_NoActiveBed(t *testing.T) {
 	unitID := "unit-456"
 
 	// Prepare test data
-	unitInfo := &repository.UnitInfo{
-		UnitID:            unitID,
-		UnitName:          "E203",
-		BranchName:        "BranchA",
-		Building:          "MainBuilding",
+	unitInfo := &card.UnitInfo{
+		UnitID:       unitID,
+		UnitName:     "E203",
+		BranchName:   "BranchA",
+		Building:     "MainBuilding",
 		IsPublic:     false,
 		IsSharedUnit: false,
-		UnitType:          "Institutional",
-		GroupList:         []byte(`[]`),
-		UserList:          []byte(`[]`),
+		UnitType:     "Institutional",
 	}
 
 	roomID := "room-1"
 	roomName := "Room1"
-	unboundDevices := []repository.DeviceInfo{
+	unboundDevices := []card.DeviceInfo{
 		{
 			DeviceID:          "device-1",
 			DeviceName:        "Radar01",
@@ -333,13 +357,13 @@ func TestCreateCardsForUnit_ScenarioC_NoActiveBed(t *testing.T) {
 		},
 	}
 
-	unitResidents := []repository.ResidentInfo{
+	unitResidents := []card.ResidentInfo{
 		{ResidentID: "resident-1", Nickname: "Smith", UnitID: &unitID},
 	}
 
 	// Setup mock expectations
 	mockRepo.On("GetUnitInfo", tenantID, unitID).Return(unitInfo, nil)
-	mockRepo.On("GetActiveBedsByUnit", tenantID, unitID).Return([]repository.ActiveBedInfo{}, nil)
+	mockRepo.On("GetActiveBedsByUnit", tenantID, unitID).Return([]card.ActiveBedInfo{}, nil)
 	mockRepo.On("DeleteCardsByUnit", tenantID, unitID).Return(nil)
 	mockRepo.On("GetUnboundDevicesByUnit", tenantID, unitID).Return(unboundDevices, nil)
 	mockRepo.On("GetResidentsByUnit", tenantID, unitID).Return(unitResidents, nil)
@@ -352,7 +376,7 @@ func TestCreateCardsForUnit_ScenarioC_NoActiveBed(t *testing.T) {
 	).Return("card-123", nil)
 
 	// Execute test
-	err := creator.CreateCardsForUnit(tenantID, unitID)
+	_, err := creator.CreateCardsForUnit(tenantID, unitID)
 
 	// Verify results
 	require.NoError(t, err)
@@ -366,26 +390,24 @@ func TestCreateCardsForUnit_ScenarioC_NoUnboundDevices(t *testing.T) {
 	unitID := "unit-456"
 
 	// Prepare test data
-	unitInfo := &repository.UnitInfo{
-		UnitID:            unitID,
-		UnitName:          "E203",
-		BranchName:        "BranchA",
-		Building:          "MainBuilding",
+	unitInfo := &card.UnitInfo{
+		UnitID:       unitID,
+		UnitName:     "E203",
+		BranchName:   "BranchA",
+		Building:     "MainBuilding",
 		IsPublic:     false,
 		IsSharedUnit: false,
-		UnitType:          "Institutional",
-		GroupList:         []byte(`[]`),
-		UserList:          []byte(`[]`),
+		UnitType:     "Institutional",
 	}
 
 	// Setup mock expectations (no unbound devices, should not create UnitCard)
 	mockRepo.On("GetUnitInfo", tenantID, unitID).Return(unitInfo, nil)
-	mockRepo.On("GetActiveBedsByUnit", tenantID, unitID).Return([]repository.ActiveBedInfo{}, nil)
+	mockRepo.On("GetActiveBedsByUnit", tenantID, unitID).Return([]card.ActiveBedInfo{}, nil)
 	mockRepo.On("DeleteCardsByUnit", tenantID, unitID).Return(nil)
-	mockRepo.On("GetUnboundDevicesByUnit", tenantID, unitID).Return([]repository.DeviceInfo{}, nil)
+	mockRepo.On("GetUnboundDevicesByUnit", tenantID, unitID).Return([]card.DeviceInfo{}, nil)
 
 	// Execute test
-	err := creator.CreateCardsForUnit(tenantID, unitID)
+	_, err := creator.CreateCardsForUnit(tenantID, unitID)
 
 	// Verify results (should not create any cards, should not error)
 	require.NoError(t, err)
@@ -404,7 +426,7 @@ func TestCreateCardsForUnit_Error_GetUnitInfoFailed(t *testing.T) {
 	mockRepo.On("GetUnitInfo", tenantID, unitID).Return(nil, errors.New("database error"))
 
 	// Execute test
-	err := creator.CreateCardsForUnit(tenantID, unitID)
+	_, err := creator.CreateCardsForUnit(tenantID, unitID)
 
 	// Verify results
 	assert.Error(t, err)
@@ -418,11 +440,14 @@ func TestCreateCardsForUnit_Error_GetActiveBedsFailed(t *testing.T) {
 	tenantID := "tenant-123"
 	unitID := "unit-456"
 
-	unitInfo := &repository.UnitInfo{
-		UnitID:    unitID,
-		UnitName:  "E203",
-		GroupList: []byte(`[]`),
-		UserList:  []byte(`[]`),
+	unitInfo := &card.UnitInfo{
+		UnitID:       unitID,
+		UnitName:     "E203",
+		BranchName:   "BranchA",
+		Building:     "MainBuilding",
+		IsPublic:     false,
+		IsSharedUnit: false,
+		UnitType:     "Institutional",
 	}
 
 	// Setup mock expectations
@@ -430,7 +455,7 @@ func TestCreateCardsForUnit_Error_GetActiveBedsFailed(t *testing.T) {
 	mockRepo.On("GetActiveBedsByUnit", tenantID, unitID).Return(nil, errors.New("database error"))
 
 	// Execute test
-	err := creator.CreateCardsForUnit(tenantID, unitID)
+	_, err := creator.CreateCardsForUnit(tenantID, unitID)
 
 	// Verify results
 	assert.Error(t, err)

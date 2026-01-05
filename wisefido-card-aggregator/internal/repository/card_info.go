@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+
+	"owl-common/card"
 )
 
 // CardInfo 卡片信息（用于数据聚合）
@@ -117,7 +119,7 @@ func (r *CardRepository) GetCardByID(tenantID, cardID string) (*CardInfo, error)
 }
 
 // GetCardDevices 获取卡片绑定的设备列表（从 cards.devices JSONB 字段）
-func (r *CardRepository) GetCardDevices(cardID string) ([]DeviceInfo, error) {
+func (r *CardRepository) GetCardDevices(cardID string) ([]card.DeviceInfo, error) {
 	query := `
 		SELECT devices
 		FROM cards
@@ -134,7 +136,7 @@ func (r *CardRepository) GetCardDevices(cardID string) ([]DeviceInfo, error) {
 	}
 
 	// 解析 JSONB
-	var devices []DeviceInfo
+	var devices []card.DeviceInfo
 	if err := json.Unmarshal(devicesJSON, &devices); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal devices JSON: %w", err)
 	}
@@ -143,7 +145,7 @@ func (r *CardRepository) GetCardDevices(cardID string) ([]DeviceInfo, error) {
 }
 
 // GetCardResidents 获取卡片绑定的住户列表（从 cards.residents JSONB 字段）
-func (r *CardRepository) GetCardResidents(cardID string) ([]ResidentInfo, error) {
+func (r *CardRepository) GetCardResidents(cardID string) ([]card.ResidentInfo, error) {
 	query := `
 		SELECT residents
 		FROM cards
@@ -160,7 +162,7 @@ func (r *CardRepository) GetCardResidents(cardID string) ([]ResidentInfo, error)
 	}
 
 	// 解析 JSONB
-	var residents []ResidentInfo
+	var residents []card.ResidentInfo
 	if err := json.Unmarshal(residentsJSON, &residents); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal residents JSON: %w", err)
 	}

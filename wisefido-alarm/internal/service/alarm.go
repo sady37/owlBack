@@ -9,9 +9,9 @@ import (
 	"wisefido-alarm/internal/evaluator"
 	"wisefido-alarm/internal/repository"
 
-	"go.uber.org/zap"
 	"github.com/go-redis/redis/v8"
 	_ "github.com/lib/pq"
+	"go.uber.org/zap"
 )
 
 // AlarmService 报警服务（整合各层）
@@ -29,10 +29,11 @@ type AlarmService struct {
 	cardRepo        *repository.CardRepository
 	deviceRepo      *repository.DeviceRepository
 	roomRepo        *repository.RoomRepository
-	alarmCloudRepo  *repository.AlarmCloudRepository
-	alarmDeviceRepo *repository.AlarmDeviceRepository
-	alarmEventsRepo *repository.AlarmEventsRepository
-	evaluator       *evaluator.Evaluator
+	alarmCloudRepo     *repository.AlarmCloudRepository
+	alarmDeviceRepo    *repository.AlarmDeviceRepository
+	alarmEventsRepo    *repository.AlarmEventsRepository
+	configVersionRepo  *repository.ConfigVersionRepository
+	evaluator          *evaluator.Evaluator
 }
 
 // NewAlarmService 创建报警服务
@@ -68,6 +69,8 @@ func NewAlarmService(cfg *config.Config, logger *zap.Logger, tenantID string) (*
 	alarmCloudRepo := repository.NewAlarmCloudRepository(db, logger)
 	alarmDeviceRepo := repository.NewAlarmDeviceRepository(db, logger)
 	alarmEventsRepo := repository.NewAlarmEventsRepository(db, logger)
+	iotRepo := repository.NewIoTTimeSeriesRepository(db, logger)
+	configVersionRepo := repository.NewConfigVersionRepository(db, logger)
 
 	// 4. 创建 Consumer 层
 	cacheManager := consumer.NewCacheManager(cfg, redisClient, logger)
@@ -83,6 +86,8 @@ func NewAlarmService(cfg *config.Config, logger *zap.Logger, tenantID string) (*
 		alarmCloudRepo,
 		alarmDeviceRepo,
 		alarmEventsRepo,
+		iotRepo,
+		configVersionRepo,
 		logger,
 	)
 
@@ -107,10 +112,11 @@ func NewAlarmService(cfg *config.Config, logger *zap.Logger, tenantID string) (*
 		cardRepo:        cardRepo,
 		deviceRepo:      deviceRepo,
 		roomRepo:        roomRepo,
-		alarmCloudRepo:  alarmCloudRepo,
-		alarmDeviceRepo: alarmDeviceRepo,
-		alarmEventsRepo: alarmEventsRepo,
-		evaluator:       eval,
+		alarmCloudRepo:    alarmCloudRepo,
+		alarmDeviceRepo:   alarmDeviceRepo,
+		alarmEventsRepo:   alarmEventsRepo,
+		configVersionRepo: configVersionRepo,
+		evaluator:         eval,
 	}, nil
 }
 
@@ -161,4 +167,3 @@ func buildDSN(cfg *config.Config) string {
 		cfg.Database.SSLMode,
 	)
 }
-
