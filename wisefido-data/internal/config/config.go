@@ -23,8 +23,11 @@ type Config struct {
 		Level  string
 		Format string
 	}
-	Sleepace SleepaceConfig `yaml:"sleepace"`
-	MQTT     MQTTConfig     `yaml:"mqtt"`
+	Sleepace      SleepaceConfig      `yaml:"sleepace"`
+	MQTT          MQTTConfig          `yaml:"mqtt"`
+	Radar         RadarConfig         `yaml:"radar"`
+	CardManage    CardManageConfig    `yaml:"card_manage"`
+	IoTTimeSeries IoTTimeSeriesConfig `yaml:"iot_timeseries"`
 }
 
 // SleepaceConfig Sleepace 厂家服务配置
@@ -44,6 +47,21 @@ type MQTTConfig struct {
 	Username string `yaml:"username"` // 用户名（可选）
 	Password string `yaml:"password"` // 密码（可选）
 	Topic    string `yaml:"topic"`    // 订阅的主题（如 "sleepace-57136"）
+}
+
+// RadarConfig Radar 服务配置（用于调用 wisefido-radar 内部 API）
+type RadarConfig struct {
+	InternalAPIBaseURL string `yaml:"internal_api_base_url"` // wisefido-radar 内部 API 地址（如 "http://localhost:8443"）
+}
+
+// CardManageConfig 卡片管理服务配置（用于调用 wisefido-card-manage API）
+type CardManageConfig struct {
+	APIBaseURL string `yaml:"api_base_url"` // wisefido-card-manage API 地址（如 "http://localhost:8082"）
+}
+
+// IoTTimeSeriesConfig IoT 时序数据服务配置（用于调用 wisefido-iot-timeseries 内部 API）
+type IoTTimeSeriesConfig struct {
+	InternalAPIBaseURL string `yaml:"internal_api_base_url"` // wisefido-iot-timeseries 内部 API 地址（如 "http://localhost:8083"）
 }
 
 func Load() *Config {
@@ -67,7 +85,7 @@ func Load() *Config {
 	cfg.Log.Format = getEnv("LOG_FORMAT", "json")
 
 	// Sleepace 配置
-	cfg.Sleepace.HttpAddress = getEnv("SLEEPACE_HTTP_ADDRESS", "http://47.90.180.176:8080")
+	cfg.Sleepace.HttpAddress = getEnv("SLEEPACE_HTTP_ADDRESS", "http://127.0.0.1:8090")
 	cfg.Sleepace.AppID = getEnv("SLEEPACE_APP_ID", "")
 	cfg.Sleepace.ChannelID = getEnv("SLEEPACE_CHANNEL_ID", "")
 	cfg.Sleepace.SecretKey = getEnv("SLEEPACE_SECRET_KEY", "")
@@ -80,6 +98,15 @@ func Load() *Config {
 	cfg.MQTT.Username = getEnv("MQTT_USERNAME", "")
 	cfg.MQTT.Password = getEnv("MQTT_PASSWORD", "")
 	cfg.MQTT.Topic = getEnv("MQTT_TOPIC", "sleepace-57136") // Sleepace 厂家提供的主题
+
+	// Radar 服务配置（用于调用 wisefido-radar 内部 API）
+	cfg.Radar.InternalAPIBaseURL = getEnv("RADAR_INTERNAL_API_BASE_URL", "http://localhost:8443")
+
+	// CardManage 服务配置（用于调用 wisefido-card-manage API）
+	cfg.CardManage.APIBaseURL = getEnv("CARD_MANAGE_API_BASE_URL", "http://localhost:8082")
+
+	// IoTTimeSeries 服务配置（用于调用 wisefido-iot-timeseries 内部 API）
+	cfg.IoTTimeSeries.InternalAPIBaseURL = getEnv("IOT_TIMESERIES_INTERNAL_API_BASE_URL", "http://localhost:8083")
 
 	return cfg
 }

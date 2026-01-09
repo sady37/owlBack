@@ -306,8 +306,21 @@ func (s *cardService) aggregateCardData(ctx context.Context, cards []*domain.Car
 		}
 
 		// 收集住户 ID
-		if card.Card.CardType == "ActiveBed" && card.Card.ResidentID.Valid {
-			residentIDs[card.Card.ResidentID.String] = true
+		if card.Card.CardType == "ActiveBed" {
+			// ActiveBed 卡片：优先使用 resident_id，如果为 NULL 则从 residents JSONB 读取
+			if card.Card.ResidentID.Valid {
+				residentIDs[card.Card.ResidentID.String] = true
+			} else {
+				// resident_id 为 NULL，从 residents JSONB 字段读取
+				var residentsFromCard []map[string]interface{}
+				if err := json.Unmarshal(card.Card.Residents, &residentsFromCard); err == nil {
+					for _, residentObj := range residentsFromCard {
+						if residentID, ok := residentObj["resident_id"].(string); ok && residentID != "" {
+							residentIDs[residentID] = true
+						}
+					}
+				}
+			}
 		} else if card.Card.CardType == "Location" || card.Card.CardType == "Unit" {
 			// 注意：数据库中使用 'Location'，但逻辑上与 'Unit' 相同
 			// 从 JSONB 对象数组中提取 resident_id
@@ -492,15 +505,56 @@ func (s *cardService) aggregateSingleCard(
 	// 聚合住户并计算 ResidentAccess
 	// ResidentAccess: 是否允许住户访问（从 residents.is_access_enabled 获取）
 	item.ResidentAccess = false
-	if card.Card.CardType == "ActiveBed" && card.Card.ResidentID.Valid {
-		// ActiveBed 卡片：使用该 resident 的 is_access_enabled
-		if resident, ok := residents[card.Card.ResidentID.String]; ok {
-			item.Residents = append(item.Residents, domain.CardResident{
-				ResidentID:   resident.ResidentID,
-				Nickname:     resident.Nickname,
-				ServiceLevel: resident.ServiceLevel,
-			})
-			item.ResidentAccess = resident.IsAccessEnabled
+	if card.Card.CardType == "ActiveBed" {
+		// ActiveBed 卡片：优先使用 resident_id，如果为 NULL 则从 residents JSONB 读取
+		if card.Card.ResidentID.Valid {
+			// 使用 resident_id 字段
+			if resident, ok := residents[card.Card.ResidentID.String]; ok {
+				item.Residents = append(item.Residents, domain.CardResident{
+					ResidentID:   resident.ResidentID,
+					Nickname:     resident.Nickname,
+					ServiceLevel: resident.ServiceLevel,
+				})
+				item.ResidentAccess = resident.IsAccessEnabled
+			}
+		} else {
+			// resident_id 为 NULL，从 residents JSONB 字段读取
+			var residentsFromCard []map[string]interface{}
+			if err := json.Unmarshal(card.Card.Residents, &residentsFromCard); err != nil {
+				s.logger.Warn("Failed to parse residents JSONB for ActiveBed card",
+					zap.Error(err),
+					zap.String("card_id", card.Card.CardID),
+				)
+			} else {
+				// 解析住户信息
+				for _, residentObj := range residentsFromCard {
+					residentID, _ := residentObj["resident_id"].(string)
+					nickname, _ := residentObj["nickname"].(string)
+
+					if residentID != "" {
+						// 尝试从数据库获取完整信息（用于获取 service_level, is_access_enabled 等）
+						if resident, ok := residents[residentID]; ok {
+							// 使用数据库中的完整信息
+							item.Residents = append(item.Residents, domain.CardResident{
+								ResidentID:   resident.ResidentID,
+								Nickname:     resident.Nickname,
+								ServiceLevel: resident.ServiceLevel,
+							})
+							// 如果至少有一个 resident 的 is_access_enabled = TRUE，则 ResidentAccess = TRUE
+							if resident.IsAccessEnabled {
+								item.ResidentAccess = true
+							}
+						} else {
+							// 如果数据库中没有，使用 JSONB 中的数据
+							item.Residents = append(item.Residents, domain.CardResident{
+								ResidentID:   residentID,
+								Nickname:     nickname,
+								ServiceLevel: "",
+							})
+						}
+					}
+				}
+			}
 		}
 	} else if card.Card.CardType == "Location" || card.Card.CardType == "Unit" {
 		// Unit 卡片：根据 Unit 类型决定

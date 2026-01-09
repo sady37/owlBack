@@ -1,0 +1,26 @@
+# wisefido-card-manage 定时任务配置示例
+# 
+# 用途：每天早上 8:00 执行全量卡片创建/更新
+# 
+# 使用方法：
+# 1. 复制此文件到系统 crontab：
+#    crontab -e
+# 
+# 2. 添加以下行（根据实际路径调整）：
+# 
+#    方法 1：使用 curl 直接调用 API
+#    0 8 * * * curl -X POST http://localhost:8082/api/v1/cards/create-all -H "Content-Type: application/json" -d '{"tenant_id":"YOUR_TENANT_ID"}'
+# 
+#    方法 2：使用提供的脚本（推荐）
+#    0 8 * * * /path/to/wisefido-card-manage/scripts/create-all-cards.sh
+# 
+#    注意：使用脚本时，需要设置环境变量：
+#    export CARD_MANAGE_URL="http://localhost:8082"
+#    export TENANT_ID="YOUR_TENANT_ID"
+# 
+# 说明：
+# - 0 8 * * * 表示每天上午 8:00 执行
+# - 确保 wisefido-card-manage 服务正在运行
+# - 确保设置了正确的 TENANT_ID 环境变量或通过 API 传递
+# - 脚本路径需要根据实际部署位置调整
+

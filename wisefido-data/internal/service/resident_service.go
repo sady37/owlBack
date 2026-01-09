@@ -13,8 +13,6 @@ import (
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
-	"owl-common/card"
-
 	"go.uber.org/zap"
 )
 
@@ -46,17 +44,17 @@ type ResidentService interface {
 type residentService struct {
 	residentsRepo repository.ResidentsRepository
 	db            *sql.DB            // 用于复杂查询（JOIN、权限过滤）
-	cardCreator   *card.CardCreator // 用于直接更新卡片
-	logger        *zap.Logger
+	cardManageClient *CardManageClient // 用于调用 wisefido-card-manage API
+	logger           *zap.Logger
 }
 
 // NewResidentService 创建 ResidentService 实例
-func NewResidentService(residentsRepo repository.ResidentsRepository, db *sql.DB, cardCreator *card.CardCreator, logger *zap.Logger) ResidentService {
+func NewResidentService(residentsRepo repository.ResidentsRepository, db *sql.DB, cardManageClient *CardManageClient, logger *zap.Logger) ResidentService {
 	return &residentService{
-		residentsRepo: residentsRepo,
-		db:            db,
-		cardCreator:   cardCreator,
-		logger:        logger,
+		residentsRepo:    residentsRepo,
+		db:               db,
+		cardManageClient: cardManageClient,
+		logger:           logger,
 	}
 }
 
@@ -2569,8 +2567,8 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 				)
 				// 不失败整个操作，只记录警告
 			} else {
-				// 5.1 更新成功后，直接更新卡片（同步调用）
-				if s.cardCreator != nil {
+				// 5.1 更新成功后，调用 wisefido-card-manage API 更新卡片（同步调用）
+				if s.cardManageClient != nil {
 					// 获取更新后的 resident 信息以确定 unit_id
 					updatedResident, err := s.residentsRepo.GetResident(ctx, req.TenantID, req.ResidentID)
 					if err != nil {
@@ -2580,8 +2578,7 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 							zap.String("resident_id", req.ResidentID),
 						)
 					} else if updatedResident != nil && updatedResident.UnitID != "" {
-						_, err := s.cardCreator.CreateCardsForUnit(req.TenantID, updatedResident.UnitID)
-						if err != nil {
+						if err := s.cardManageClient.CreateCardsForUnit(ctx, req.TenantID, updatedResident.UnitID); err != nil {
 							s.logger.Warn("Failed to update cards after resident caregivers change",
 								zap.Error(err),
 								zap.String("tenant_id", req.TenantID),
@@ -2601,8 +2598,8 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 		}
 	}
 
-	// 6. 更新成功后，直接更新卡片（同步调用）
-	if s.cardCreator != nil {
+	// 6. 更新成功后，调用 wisefido-card-manage API 更新卡片（同步调用）
+	if s.cardManageClient != nil {
 		// 获取更新后的 resident 信息以确定 unit_id
 		updatedResident, err := s.residentsRepo.GetResident(ctx, req.TenantID, req.ResidentID)
 		if err != nil {
@@ -2612,8 +2609,7 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 				zap.String("resident_id", req.ResidentID),
 			)
 		} else if updatedResident != nil && updatedResident.UnitID != "" {
-			_, err := s.cardCreator.CreateCardsForUnit(req.TenantID, updatedResident.UnitID)
-			if err != nil {
+			if err := s.cardManageClient.CreateCardsForUnit(ctx, req.TenantID, updatedResident.UnitID); err != nil {
 				s.logger.Warn("Failed to update cards after resident change",
 					zap.Error(err),
 					zap.String("tenant_id", req.TenantID),

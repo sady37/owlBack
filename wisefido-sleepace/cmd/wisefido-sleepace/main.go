@@ -22,7 +22,7 @@ func main() {
 	}
 	
 	// 初始化Logger
-	logger, err := logpkg.NewLogger(cfg.Log.Level, cfg.Log.Format)
+	logger, err := logpkg.NewLogger(cfg.Log.Level, cfg.Log.Format, "wisefido-sleepace")
 	if err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
@@ -32,7 +32,7 @@ func main() {
 		zap.String("version", "1.5.0"),
 		zap.String("mqtt_broker", cfg.MQTT.Broker),
 		zap.String("mqtt_topic", cfg.Sleepace.Topic),
-		zap.String("stream", cfg.Sleepace.Stream),
+		zap.String("data_streams", "iot:monitor:stream, iot:event:stream, iot:alarm:stream"),
 	)
 	
 	// 创建服务

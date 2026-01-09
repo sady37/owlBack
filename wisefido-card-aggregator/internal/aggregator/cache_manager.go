@@ -31,6 +31,30 @@ func NewCacheManager(
 	}
 }
 
+// UpdateRealtimeDataCache 更新实时数据缓存（由 IoTStreamConsumer 调用）
+func (c *CacheManager) UpdateRealtimeDataCache(ctx context.Context, cardID string, realtimeData *models.RealtimeData) error {
+	key := fmt.Sprintf("vital-focus:card:%s:realtime", cardID)
+
+	// 序列化数据
+	jsonData, err := json.Marshal(realtimeData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal realtime data: %w", err)
+	}
+
+	// 写入 Redis（设置 TTL 为 10 秒，与 full 缓存一致）
+	err = c.kv.Set(ctx, key, string(jsonData), 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("failed to set cache: %w", err)
+	}
+
+	c.logger.Debug("Updated realtime data cache",
+		zap.String("card_id", cardID),
+		zap.String("key", key),
+	)
+
+	return nil
+}
+
 // UpdateFullCardCache 更新完整的卡片缓存
 func (c *CacheManager) UpdateFullCardCache(ctx context.Context, cardID string, vitalCard *models.VitalFocusCard) error {
 	key := fmt.Sprintf("vital-focus:card:%s:full", cardID)

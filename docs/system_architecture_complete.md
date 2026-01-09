@@ -67,16 +67,15 @@
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                           │
 │  ┌─────────────────────────────────────────────────────┐               │
-│  │         wisefido-card-aggregator                     │               │
+│  │         wisefido-card-manage                        │               │
 │  │  (卡片创建和维护服务) ✅ 已实现                       │               │
 │  │                                                       │               │
 │  │  触发条件：                                           │               │
-│  │  - 事件驱动：监听 Redis Streams (card:events)        │               │
-│  │    * 设备绑定关系变化 (devices.bound_bed_id, etc.)   │               │
-│  │    * 住户绑定关系变化 (residents.bed_id, etc.)       │               │
-│  │    * 床位状态变化 (beds.bound_device_count)          │               │
-│  │    * 单元信息变化 (units.unit_name, etc.)            │               │
-│  │  - 定时兜底：每天上午9:00全量更新                     │               │
+│  │  - API 触发：wisefido-data 的 service 层直接调用     │               │
+│  │    * 设备绑定/解绑 API → cardCreator.CreateCardsForUnit │
+│  │    * 住户绑定/解绑 API → cardCreator.CreateCardsForUnit │
+│  │    * 单元信息更新 API → cardCreator.CreateCardsForUnit │
+│  │  - 定时兜底：wisefido-card-manage 定时全量更新      │               │
 │  │                                                       │               │
 │  │  处理逻辑：                                           │               │
 │  │  - 根据规则创建/更新 cards 表                        │               │
@@ -98,92 +97,39 @@
 │  │  - routing_alarm_user_ids, routing_alarm_tags       │               │
 │  └─────────────────────────────────────────────────────┘               │
 │                                                                           │
-│  ⚠️ 事件发布：需要在 wisefido-data API 服务中发布事件到 Redis Streams  │
-│     - 设备绑定/解绑 API 需要发布 device.bound/unbound 事件              │
-│     - 住户绑定/解绑 API 需要发布 resident.bound/unbound 事件            │
-│     - 单元信息更新 API 需要发布 unit.info_changed 事件                  │
-│                                                                           │
-│  📝 当前状态：暂时使用轮询模式（每60秒全量更新）                         │
-│     事件发布功能待 wisefido-data 服务实现后再启用                        │
+│  ✅ 卡片更新机制：                                         │               │
+│     - wisefido-data 的 service 层直接调用 wisefido-card-manage API      │
+│     - 设备/住户/单元变化时，同步更新 cards 表（实时响应）                │
+│     - wisefido-card-manage 的轮询模式仅作为保底机制（定时全量更新）    │
 └─────────────────────────────────────────────────────────────────────────┘
                               │
-                              │ ✅ 卡片已创建，传感器融合层可以正常工作
+                              │ ✅ 卡片已创建
                               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                   传感器融合层 (Sensor Fusion)                            │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────┐               │
-│  │         wisefido-sensor-fusion                       │               │
-│  │                                                       │               │
-│  │  输入：                                               │               │
-│  │  - Redis Streams: iot:data:stream (设备数据事件)     │               │
-│  │                                                       │               │
-│  │  处理流程：                                           │               │
-│  │  1. 消费 iot:data:stream (单条设备数据)              │               │
-│  │  2. 根据 device_id 查询 cards 表                     │               │
-│  │     → 找到该设备所属的卡片 (card_id)                 │               │
-│  │  3. 查询该卡片的所有设备 (cards.devices JSONB)       │               │
-│  │  4. 从 iot_timeseries 获取这些设备的最新数据          │               │
-│  │  5. 融合数据：                                        │               │
-│  │     - HR/RR: 优先 Sleepace，无则 Radar               │               │
-│  │     - 床状态/睡眠状态: 优先 Sleepace                  │               │
-│  │     - 姿态数据: 使用所有 Radar 数据                   │               │
-│  │  6. 输出融合后的实时数据                              │               │
-│  └───────────────┬───────────────────────────────────────┘               │
-│                  │                                                       │
-│                  ▼                                                       │
-│  ┌─────────────────────────────────────────────────────┐               │
-│  │         Redis Cache                                  │               │
-│  │         vital-focus:card:{card_id}:realtime          │               │
-│  │         (TTL: 5分钟)                                 │               │
-│  └─────────────────────────────────────────────────────┘               │
-└─────────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                   报警评估层 (Alarm Evaluation)                            │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────┐               │
-│  │         wisefido-alarm                               │               │
-│  │                                                       │               │
-│  │  输入：                                               │               │
-│  │  - Redis: vital-focus:card:{card_id}:realtime       │               │
-│  │  - PostgreSQL: alarm_cloud, alarm_device (规则)     │               │
-│  │                                                       │               │
-│  │  处理：                                               │               │
-│  │  - 读取融合后的实时数据                               │               │
-│  │  - 应用报警规则 (HR/RR异常、跌倒、离床等)            │               │
-│  │  - 生成报警事件                                       │               │
-│  └───────────────┬───────────────────────┬───────────────┘               │
-│                  │                       │                               │
-│                  ▼                       ▼                               │
-│  ┌──────────────────────┐   ┌──────────────────────┐                    │
-│  │  PostgreSQL          │   │  Redis Cache         │                    │
-│  │  alarm_events        │   │  vital-focus:card:   │                    │
-│  │  (报警事件记录)       │   │  {card_id}:alarms    │                    │
-│  │                      │   │  (TTL: 30秒)         │                    │
-│  └──────────────────────┘   └──────────────────────┘                    │
-└─────────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                   卡片聚合层 (Card Aggregation)                           │
+│                   卡片数据聚合层 (Card Data Aggregation)                  │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                           │
 │  ┌─────────────────────────────────────────────────────┐               │
 │  │         wisefido-card-aggregator                     │               │
-│  │  (卡片数据聚合服务)                                   │               │
+│  │  (卡片数据聚合服务) ✅ 已实现                         │               │
 │  │                                                       │               │
 │  │  输入：                                               │               │
-│  │  - PostgreSQL: cards, devices, residents (基础信息)  │               │
-│  │  - Redis: vital-focus:card:{card_id}:realtime       │               │
-│  │  - Redis: vital-focus:card:{card_id}:alarms         │               │
+│  │  - Redis Streams: iot:data:stream (设备数据事件)     │               │
+│  │  - PostgreSQL: cards 表（基础信息）                   │               │
+│  │  - PostgreSQL: iot_timeseries 表（设备原始数据）      │               │
+│  │  - PostgreSQL: alarm_events 表（报警数据）            │               │
 │  │                                                       │               │
-│  │  处理：                                               │               │
-│  │  - 聚合所有卡片数据                                   │               │
-│  │  - 组装完整的 VitalFocusCard 对象                   │               │
+│  │  处理流程（2秒聚合一次）：                            │               │
+│  │  1. 直接消费 iot:data:stream（事件驱动）              │               │
+│  │  2. 检测设备直接报警并同步更新 alarm_events          │               │
+│  │  3. 从 iot_timeseries 读取设备原始数据                │               │
+│  │  4. 融合数据（真实事件的展示）：                      │               │
+│  │     - HR/RR: 优先 Sleepace，无则 Radar               │               │
+│  │     - 床状态/睡眠状态: 优先 Sleepace                  │               │
+│  │     - 姿态数据: 使用所有 Radar 数据                   │               │
+│  │  5. 读取卡片基础信息（从 cards 表）                    │               │
+│  │  6. 读取报警数据（从 alarm_events 或 Redis）          │               │
+│  │  7. 聚合完整的 VitalFocusCard 对象                   │               │
 │  └───────────────┬───────────────────────────────────────┘               │
 │                  │                                                       │
 │                  ▼                                                       │
@@ -192,6 +138,31 @@
 │  │         vital-focus:card:{card_id}:full              │               │
 │  │         (完整的 VitalFocusCard, TTL: 10秒)           │               │
 │  └─────────────────────────────────────────────────────┘               │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────┐               │
+│  │         wisefido-alarm                               │               │
+│  │  (云端高级推理报警) ✅ 已实现                         │               │
+│  │                                                       │               │
+│  │  输入：                                               │               │
+│  │  - Redis: vital-focus:card:{card_id}:full            │               │
+│  │  - PostgreSQL: alarm_cloud (云端报警规则)             │               │
+│  │                                                       │               │
+│  │  处理：                                               │               │
+│  │  - 读取融合后的实时数据                               │               │
+│  │  - 应用云端推理规则 (事件1, 3, 4)                    │               │
+│  │    * 事件1：床上跌落检测                              │               │
+│  │    * 事件3：Bathroom可疑跌倒检测                      │               │
+│  │    * 事件4：雷达检测到人突然消失                      │               │
+│  │  - 生成报警事件                                       │               │
+│  └───────────────┬───────────────────────┬───────────────┘               │
+│                  │                       │                               │
+│                  ▼                       ▼                               │
+│  ┌──────────────────────┐   ┌──────────────────────┐                    │
+│  │  PostgreSQL          │   │  Redis Cache         │                    │
+│  │  alarm_events        │   │  vital-focus:card:    │                    │
+│  │  (云端报警事件)       │   │  {card_id}:alarms    │                    │
+│  │                      │   │  (TTL: 30秒)         │                    │
+│  └──────────────────────┘   └──────────────────────┘                    │
 └─────────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -209,14 +180,11 @@
 │  │  - 从 Redis 读取 vital-focus:card:{card_id}:full     │               │
 │  │  - 返回 VitalFocusCard[]                             │               │
 │  │                                                       │               │
-│  │  ⚠️ 事件发布功能（待实现）：                           │               │
-│  │  - 设备绑定/解绑 API → 发布 device.bound/unbound     │               │
-│  │  - 住户绑定/解绑 API → 发布 resident.bound/unbound  │               │
-│  │  - 单元信息更新 API → 发布 unit.info_changed         │               │
-│  │  - 发布到 Redis Streams: card:events                │               │
-│  │                                                       │               │
-│  │  📝 备注：wisefido-data 服务尚未实现，当前使用轮询模式 │               │
-│  │     详见：docs/PENDING_FEATURES.md                  │               │
+│  │  ✅ 卡片更新机制：                                     │               │
+│  │  - 设备绑定/解绑 API → 直接调用 cardCreator.CreateCardsForUnit │
+│  │  - 住户绑定/解绑 API → 直接调用 cardCreator.CreateCardsForUnit │
+│  │  - 单元信息更新 API → 直接调用 cardCreator.CreateCardsForUnit │
+│  │  - 同步更新 cards 表（cards 表是最终结果）            │               │
 │  └───────────────┬───────────────────────────────────────┘               │
 │                  │                                                       │
 │                  ▼                                                       │
@@ -234,32 +202,28 @@
 设备/住户/床位绑定关系变化
     │
     ▼
-wisefido-data (API 服务) ⚠️ 待实现
+wisefido-data (API 服务) ✅ 已实现
     │
     ├─ 更新数据库 (devices/residents/beds/units 表)
-    └─ 发布事件到 Redis Streams (card:events)
-    │
-    ▼
-Redis Streams: card:events
-    │
-    ▼
-wisefido-card-aggregator (事件消费)
-    │
-    ├─ 查询 devices, beds, residents, units 表
-    ├─ 根据规则计算需要创建的卡片
-    ├─ 创建/更新 cards 表
-    │   ├─ card_type (ActiveBed / Location)
-    │   ├─ devices (JSONB) - 该卡片绑定的所有设备
-    │   ├─ residents (JSONB) - 该卡片关联的所有住户
-    │   └─ routing_alarm_user_ids, routing_alarm_tags
-    └─ 完成
+    └─ 直接调用 wisefido-card-manage API  ← 同步更新
+       │
+       ▼
+wisefido-card-manage (卡片管理服务) ✅ 已实现
+       │
+       ├─ 查询 devices, beds, residents, units 表
+       ├─ 根据规则计算需要创建的卡片
+       └─ 创建/更新 cards 表（cards 表是最终结果）
+          ├─ card_type (ActiveBed / Location)
+          ├─ devices (JSONB) - 该卡片绑定的所有设备
+          ├─ residents (JSONB) - 该卡片关联的所有住户
+          └─ routing_alarm_user_ids, routing_alarm_tags
 
-定时兜底（每天上午9:00）：
+定时兜底（wisefido-card-manage 定时任务）：
     │
     ▼
-wisefido-card-aggregator (定时任务)
+wisefido-card-manage (定时全量更新)
     │
-    └─ 全量重新创建所有卡片（确保数据一致性）
+    └─ 全量重新创建所有卡片（确保数据最终一致性，保底机制）
 ```
 
 ### 2. 实时数据流（设备数据 → 卡片数据）
@@ -283,33 +247,32 @@ wisefido-data-transformer
     └─→ Redis Streams (iot:data:stream) - 触发下游
     │
     ▼
-wisefido-sensor-fusion
+wisefido-card-aggregator (卡片数据聚合服务，2秒聚合一次)
     │
-    ├─ 消费 iot:data:stream (单条设备数据事件)
+    ├─ 直接消费 iot:data:stream（事件驱动）
+    ├─ 检测设备直接报警 (Fall, SuspectedFall, OfflineAlarm 等)
+    │   └─→ PostgreSQL (alarm_events - 设备报警)
     ├─ 根据 device_id 查询 cards 表
     │   └─ 找到该设备所属的卡片 (card_id)
     ├─ 查询该卡片的所有设备 (cards.devices JSONB)
     ├─ 从 iot_timeseries 获取这些设备的最新数据
-    ├─ 融合数据 (HR/RR, 床状态, 姿态)
-    └─→ Redis (vital-focus:card:{card_id}:realtime)
+    ├─ 融合数据（真实事件的展示）：
+    │   - HR/RR: 优先 Sleepace，无则 Radar
+    │   - 床状态/睡眠状态: 优先 Sleepace
+    │   - 姿态数据: 使用所有 Radar 数据
+    ├─ 读取卡片基础信息（从 cards 表）
+    ├─ 读取报警数据（从 alarm_events 或 Redis）
+    ├─ 聚合完整的 VitalFocusCard 对象
+    └─→ Redis (vital-focus:card:{card_id}:full, TTL: 10秒)
     │
     ▼
-wisefido-alarm
+wisefido-alarm (云端高级推理报警)
     │
-    ├─ 读取 vital-focus:card:{card_id}:realtime
-    ├─ 读取报警规则 (alarm_cloud, alarm_device)
-    ├─ 评估报警条件
-    ├─→ PostgreSQL (alarm_events)
+    ├─ 读取 vital-focus:card:{card_id}:full
+    ├─ 读取云端报警规则 (alarm_cloud)
+    ├─ 评估云端推理事件 (事件1, 3, 4)
+    ├─→ PostgreSQL (alarm_events - 云端报警)
     └─→ Redis (vital-focus:card:{card_id}:alarms)
-    │
-    ▼
-wisefido-card-aggregator (聚合)
-    │
-    ├─ 读取 cards, devices, residents (基础信息)
-    ├─ 读取 vital-focus:card:{card_id}:realtime
-    ├─ 读取 vital-focus:card:{card_id}:alarms
-    ├─ 聚合所有数据
-    └─→ Redis (vital-focus:card:{card_id}:full)
     │
     ▼
 wisefido-data (API)
@@ -334,10 +297,13 @@ wisefido-data (API)
 - **输出**：以卡片为单位输出融合后的实时数据
 
 ### 3. 服务职责分离
-- **wisefido-card-aggregator**：卡片创建和维护（基础信息）
-- **wisefido-sensor-fusion**：传感器数据融合（实时数据）
-- **wisefido-alarm**：报警规则评估（报警数据）
-- **wisefido-card-aggregator**：卡片数据聚合（完整卡片对象）
+- **wisefido-card-manage**：卡片创建和维护（低频操作）
+- **wisefido-card-aggregator**：卡片数据聚合（高频操作，2秒一次）
+  - 消费 `iot:data:stream`（事件驱动）
+  - 检测设备直接报警并更新 `alarm_events`
+  - 从 `iot_timeseries` 读取设备数据并融合（HR/RR、床状态、姿态）
+  - 聚合完整卡片数据
+- **wisefido-alarm**：云端高级推理报警评估（事件1, 3, 4）
 - **wisefido-data**：API 服务（HTTP 接口）
 
 ## ⚠️ 当前问题分析
@@ -386,38 +352,41 @@ wisefido-data (API)
 **已实现** ✅：
 - 数据采集层（wisefido-radar, wisefido-sleepace）
 - 数据转换层（wisefido-data-transformer）
-- **卡片管理层（wisefido-card-aggregator - 卡片创建）** ✅ **已完成**
-- **传感器融合层（wisefido-sensor-fusion）** ✅ **已实现，依赖卡片**
+- **卡片管理层（wisefido-card-manage - 卡片创建）** ✅ **已完成**
+- **卡片数据聚合层（wisefido-card-aggregator）** ✅ **已实现**
+  - 消费 `iot:data:stream`（事件驱动）✅
+  - 检测设备直接报警并更新 `alarm_events` ✅
+  - 从 `iot_timeseries` 读取设备数据并融合（HR/RR、床状态、姿态）✅
+  - 聚合完整卡片数据 ✅
+- **报警评估层（wisefido-alarm）** ✅ **已实现**
+  - 云端高级推理报警（事件1, 3, 4）✅
+- **API 服务层（wisefido-data - HTTP API 功能）** ✅ **已实现**
 
-**未实现** ❌：
-- **传感器融合验证** ⏳ **需要验证**：确保 wisefido-sensor-fusion 能正确读取卡片并融合数据
-- **wisefido-data API 服务的事件发布功能** ⏸️ **已暂停，使用轮询模式**
-  - 设备绑定/解绑 API 需要发布事件
-  - 住户绑定/解绑 API 需要发布事件
-  - 单元信息更新 API 需要发布事件
-- 报警评估层（wisefido-alarm）
-- 卡片聚合层（wisefido-card-aggregator - 数据聚合）
-- API 服务层（wisefido-data - HTTP API 功能）
+**已移除** ❌：
+- **wisefido-sensor-fusion**：功能已整合到 `wisefido-card-aggregator`
 
 ### 🔧 下一步行动
 
-**优先级 1**：验证传感器融合功能 ✅ **卡片已创建，应该验证融合**
-- 确保 `wisefido-sensor-fusion` 可以正确查询到卡片数据
+**优先级 1**：架构调整和实现
+- 拆分 `wisefido-card-aggregator` 为两个服务：
+  - `wisefido-card-manage`：卡片创建和维护
+  - `wisefido-card-aggregator`：卡片数据聚合
+- 在 `wisefido-card-aggregator` 中实现：
+  - 消费 `iot:data:stream`（事件驱动）
+  - 检测设备直接报警并更新 `alarm_events`
+  - 从 `iot_timeseries` 读取设备数据并融合（HR/RR、床状态、姿态）
+- 移除 `wisefido-sensor-fusion` 服务
+- 更新 `wisefido-data` 调用 `wisefido-card-manage` API
+
+**优先级 2**：验证完整数据流
 - 验证融合逻辑是否正确（HR/RR、床状态、姿态数据）
-- 验证 Redis 缓存更新是否正常（`vital-focus:card:{card_id}:realtime`）
-- 测试完整数据流：设备数据 → 传感器融合 → 缓存更新
+- 验证设备直接报警处理是否正常（Fall, SuspectedFall, OfflineAlarm 等）
+- 验证云端推理报警评估是否正常（事件1, 3, 4）
+- 验证 Redis 缓存更新是否正常（`vital-focus:card:{card_id}:full`, TTL: 10秒）
+- 测试完整数据流：设备数据 → 数据融合 → 设备报警 → 云端推理报警 → 缓存更新
 
-**优先级 2**：实现报警评估层（wisefido-alarm）
-- 读取融合后的实时数据（`vital-focus:card:{card_id}:realtime`）
-- 实现报警规则评估（HR/RR异常、跌倒、离床等）
-- 写入报警事件到 PostgreSQL（`alarm_events` 表）
-- 更新报警缓存到 Redis（`vital-focus:card:{card_id}:alarms`）
-
-**优先级 3**：实现 `wisefido-data` API 服务的事件发布功能 ⏸️ **已暂停，使用轮询模式**
-- 在设备绑定/解绑 API 中发布 `device.bound/unbound` 事件
-- 在住户绑定/解绑 API 中发布 `resident.bound/unbound` 事件
-- 在单元信息更新 API 中发布 `unit.info_changed` 事件
-- 发布到 Redis Streams: `card:events`
-- **当前状态**：`wisefido-data` 服务尚未实现，暂时使用轮询模式（每60秒全量更新）
-- **待实现文档**：`docs/PENDING_FEATURES.md`
+**优先级 2**：优化和验证
+- 验证卡片创建逻辑是否正确（设备/住户/单元变化时）
+- 验证卡片数据聚合是否正常（实时数据、报警数据）
+- 性能优化（如有需要）
 

@@ -70,7 +70,7 @@ func NewEvaluator(
 
 // Evaluate 评估卡片数据，返回报警事件列表
 // 注意：现在只处理高级推理报警（事件1和事件3）
-// 设备直接报警由 wisefido-sensor-fusion 处理
+// 设备直接报警由 wisefido-card-aggregator 处理
 func (e *Evaluator) Evaluate(tenantID string, card repository.CardInfo, realtimeData *models.RealtimeData) ([]models.AlarmEvent, error) {
 	var alarms []models.AlarmEvent
 
@@ -98,7 +98,7 @@ func (e *Evaluator) Evaluate(tenantID string, card repository.CardInfo, realtime
 
 	// 注意：事件2（Sleepad可靠性判断）已移除
 	// 注意：事件4（雷达检测到人突然消失）已移除
-	// 设备直接报警由 wisefido-sensor-fusion 处理
+	// 设备直接报警由 wisefido-card-aggregator 处理
 
 	// 写入报警事件到 PostgreSQL
 	ctx := context.Background()

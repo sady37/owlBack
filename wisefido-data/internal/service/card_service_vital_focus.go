@@ -201,6 +201,15 @@ func (s *cardService) ListVitalFocusCards(ctx context.Context, req ListVitalFocu
 			continue
 		}
 
+		// 处理时间字段（bed_status_timestamp 和 status_duration）
+		if err := s.enrichCardTimeFields(ctx, &card); err != nil {
+			s.logger.Warn("Failed to enrich card time fields, continuing with empty time fields",
+				zap.String("card_id", cardID),
+				zap.Error(err),
+			)
+			// 继续处理，时间字段保持为空
+		}
+
 		allCards = append(allCards, card)
 	}
 
@@ -393,6 +402,15 @@ func (s *cardService) GetVitalFocusCard(ctx context.Context, req GetVitalFocusCa
 			zap.String("card_id", req.CardID),
 		)
 		return nil, fmt.Errorf("failed to process card data")
+	}
+
+	// 处理时间字段（bed_status_timestamp 和 status_duration）
+	if err := s.enrichCardTimeFields(ctx, &card); err != nil {
+		s.logger.Warn("Failed to enrich card time fields, continuing with empty time fields",
+			zap.String("card_id", req.CardID),
+			zap.Error(err),
+		)
+		// 继续处理，时间字段保持为空
 	}
 
 	return &card, nil

@@ -12,6 +12,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	rediscommon "owl-common/redis"
 	mqttcommon "owl-common/mqtt"
+	"owl-common/encode"
 )
 
 // MQTTConsumer MQTT消息消费者
@@ -55,7 +56,6 @@ func (c *MQTTConsumer) Start(ctx context.Context) error {
 	
 	c.logger.Info("MQTT consumer started",
 		zap.String("topic", topic),
-		zap.String("stream", c.config.Sleepace.Stream),
 	)
 	
 	// 等待上下文取消
@@ -166,37 +166,49 @@ func (c *MQTTConsumer) handleRealtimeData(msg *models.ReceivedMessage, device *r
 		return fmt.Errorf("failed to unmarshal realtime data: %w", err)
 	}
 	
-	// 构建标准化数据（与 wisefido-radar 格式一致）
-	standardizedData := map[string]interface{}{
-		"device_id":      device.DeviceID,
-		"tenant_id":      device.TenantID,
-		"serial_number":  device.SerialNumber,
-		"uid":            device.UID,
-		"device_type":    "Sleepace", // 或 "SleepPad"
-		"raw_data": map[string]interface{}{
-			"breath":        realtimeData.Breath,
-			"heart":         realtimeData.Heart,
-			"turnOver":      realtimeData.TurnOver,
-			"bodyMove":      realtimeData.BodyMove,
-			"sitUp":         realtimeData.SitUp,
-			"initStatus":    realtimeData.InitStatus,
-			"bedStatus":     realtimeData.BedStatus,
-			"signalQuality": realtimeData.SignalQuality,
-			"leftRight":     realtimeData.LeftRight,
-		},
-		"timestamp": msg.TimeStamp,
-		"topic":     "sleepace/realtime",
+	// 构建基础数据（直接展开原始数据）
+	data := make(map[string]interface{})
+	
+	// 添加元数据
+	data["device_id"] = device.DeviceID
+	data["tenant_id"] = device.TenantID
+	data["serial_number"] = device.SerialNumber
+	data["uid"] = device.UID
+	data["device_type"] = "Sleepace"
+	data["data_key"] = "realtime"
+	data["timestamp"] = msg.TimeStamp
+	
+	// 直接展开原始数据到顶层
+	data["breath"] = realtimeData.Breath
+	data["heart"] = realtimeData.Heart
+	data["turnOver"] = realtimeData.TurnOver
+	data["bodyMove"] = realtimeData.BodyMove
+	data["sitUp"] = realtimeData.SitUp
+	data["initStatus"] = realtimeData.InitStatus
+	data["bedStatus"] = realtimeData.BedStatus
+	data["signalQuality"] = realtimeData.SignalQuality
+	data["leftRight"] = realtimeData.LeftRight
+	
+	// 调用 encode 公共函数进行编码转换
+	encodedData, err := encode.SleepaceEncode(data, "realtime")
+	if err != nil {
+		return fmt.Errorf("failed to encode sleepace data: %w", err)
 	}
 	
 	// 发布到 Redis Streams
-	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, c.config.Sleepace.Stream, standardizedData)
+	// 数据流分类规则（与 wisefido-radar 保持一致）：
+	// - realtime/sleepStage → iot:monitor:stream (实时数据)
+	// - connectionStatus → iot:event:stream (事件/日志)
+	// - alarmNotify → iot:alarm:stream (告警)
+	streamName := "iot:monitor:stream" // 实时数据
+	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData)
 	if err != nil {
 		return fmt.Errorf("failed to publish to stream: %w", err)
 	}
 	
 	c.logger.Info("Published sleepace realtime data to Redis Streams",
 		zap.String("device_id", device.DeviceID),
-		zap.String("stream", c.config.Sleepace.Stream),
+		zap.String("stream", streamName),
 		zap.String("stream_id", streamID),
 	)
 	
@@ -211,30 +223,39 @@ func (c *MQTTConsumer) handleSleepStageData(msg *models.ReceivedMessage, device 
 		return fmt.Errorf("failed to unmarshal sleep stage data: %w", err)
 	}
 	
-	// 构建标准化数据
-	standardizedData := map[string]interface{}{
-		"device_id":      device.DeviceID,
-		"tenant_id":      device.TenantID,
-		"serial_number":  device.SerialNumber,
-		"uid":            device.UID,
-		"device_type":    "Sleepace",
-		"raw_data": map[string]interface{}{
-			"sleepStage": sleepStageData.SleepStage,
-			"leftRight":  sleepStageData.LeftRight,
-		},
-		"timestamp": msg.TimeStamp,
-		"topic":     "sleepace/sleepStage",
+	// 构建基础数据（直接展开原始数据）
+	data := make(map[string]interface{})
+	
+	// 添加元数据
+	data["device_id"] = device.DeviceID
+	data["tenant_id"] = device.TenantID
+	data["serial_number"] = device.SerialNumber
+	data["uid"] = device.UID
+	data["device_type"] = "Sleepace"
+	data["data_key"] = "sleepStage"
+	data["timestamp"] = msg.TimeStamp
+	
+	// 直接展开原始数据到顶层
+	data["sleepStage"] = sleepStageData.SleepStage
+	data["leftRight"] = sleepStageData.LeftRight
+	
+	// 调用 encode 公共函数进行编码转换
+	encodedData, err := encode.SleepaceEncode(data, "sleepStage")
+	if err != nil {
+		return fmt.Errorf("failed to encode sleepace data: %w", err)
 	}
 	
 	// 发布到 Redis Streams
-	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, c.config.Sleepace.Stream, standardizedData)
+	// 睡眠阶段数据属于实时数据，发布到 monitor stream
+	streamName := "iot:monitor:stream" // 实时数据
+	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData)
 	if err != nil {
 		return fmt.Errorf("failed to publish to stream: %w", err)
 	}
 	
 	c.logger.Info("Published sleepace sleep stage data to Redis Streams",
 		zap.String("device_id", device.DeviceID),
-		zap.String("stream", c.config.Sleepace.Stream),
+		zap.String("stream", streamName),
 		zap.String("stream_id", streamID),
 	)
 	
@@ -250,26 +271,38 @@ func (c *MQTTConsumer) handleConnectionStatus(msg *models.ReceivedMessage, devic
 		return fmt.Errorf("failed to unmarshal connection status data: %w", err)
 	}
 	
-	standardizedData := map[string]interface{}{
-		"device_id":      device.DeviceID,
-		"tenant_id":      device.TenantID,
-		"serial_number":  device.SerialNumber,
-		"uid":            device.UID,
-		"device_type":    "Sleepace",
-		"raw_data": map[string]interface{}{
-			"connectionStatus": connData.ConnectionStatus,
-		},
-		"timestamp": msg.TimeStamp,
-		"topic":     "sleepace/connectionStatus",
+	// 构建基础数据（直接展开原始数据）
+	data := make(map[string]interface{})
+	
+	// 添加元数据
+	data["device_id"] = device.DeviceID
+	data["tenant_id"] = device.TenantID
+	data["serial_number"] = device.SerialNumber
+	data["uid"] = device.UID
+	data["device_type"] = "Sleepace"
+	data["data_key"] = "connectionStatus"
+	data["timestamp"] = msg.TimeStamp
+	
+	// 直接展开原始数据到顶层
+	data["connectionStatus"] = connData.ConnectionStatus
+	
+	// 调用 encode 公共函数进行编码转换
+	encodedData, err := encode.SleepaceEncode(data, "connectionStatus")
+	if err != nil {
+		return fmt.Errorf("failed to encode sleepace data: %w", err)
 	}
 	
-	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, c.config.Sleepace.Stream, standardizedData)
+	// 发布到 Redis Streams
+	// 连接状态属于事件数据，发布到 event stream
+	streamName := "iot:event:stream" // 事件/日志
+	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData)
 	if err != nil {
 		return fmt.Errorf("failed to publish to stream: %w", err)
 	}
 	
 	c.logger.Debug("Published sleepace connection status to Redis Streams",
 		zap.String("device_id", device.DeviceID),
+		zap.String("stream", streamName),
 		zap.String("stream_id", streamID),
 	)
 	
@@ -285,25 +318,36 @@ func (c *MQTTConsumer) handleAlarmNotify(msg *models.ReceivedMessage, device *re
 		return fmt.Errorf("failed to unmarshal alarm notify data: %w", err)
 	}
 	
-	standardizedData := map[string]interface{}{
-		"device_id":      device.DeviceID,
-		"tenant_id":      device.TenantID,
-		"serial_number":  device.SerialNumber,
-		"uid":            device.UID,
-		"device_type":    "Sleepace",
-		"raw_data": map[string]interface{}{
-			"alarmId":       alarmData.Id,
-			"alarmType":     alarmData.Type,
-			"alarmStatus":   alarmData.Status,
-			"userId":        alarmData.UserId,
-			"relieveReason": alarmData.RelieveReason,
-			"relieveTime":   alarmData.RelieveTime,
-		},
-		"timestamp": msg.TimeStamp,
-		"topic":     "sleepace/alarmNotify",
+	// 构建基础数据（直接展开原始数据）
+	data := make(map[string]interface{})
+	
+	// 添加元数据
+	data["device_id"] = device.DeviceID
+	data["tenant_id"] = device.TenantID
+	data["serial_number"] = device.SerialNumber
+	data["uid"] = device.UID
+	data["device_type"] = "Sleepace"
+	data["data_key"] = "alarmNotify"
+	data["timestamp"] = msg.TimeStamp
+	
+	// 直接展开原始数据到顶层
+	data["alarmId"] = alarmData.Id
+	data["alarmType"] = alarmData.Type
+	data["alarmStatus"] = alarmData.Status
+	data["userId"] = alarmData.UserId
+	data["relieveReason"] = alarmData.RelieveReason
+	data["relieveTime"] = alarmData.RelieveTime
+	
+	// 调用 encode 公共函数进行编码转换
+	encodedData, err := encode.SleepaceEncode(data, "alarmNotify")
+	if err != nil {
+		return fmt.Errorf("failed to encode sleepace data: %w", err)
 	}
 	
-	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, c.config.Sleepace.Stream, standardizedData)
+	// 发布到 Redis Streams
+	// 告警通知属于告警数据，发布到 alarm stream
+	streamName := "iot:alarm:stream" // 告警
+	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData)
 	if err != nil {
 		return fmt.Errorf("failed to publish to stream: %w", err)
 	}

@@ -1,0 +1,127 @@
+package encode
+
+// SleepaceEncode 编码 Sleepace 数据
+// data: 包含 device_id, tenant_id, device_type, data_key, timestamp 和原始数据字段
+// dataKey: 数据类型 ("realtime", "sleepStage", "connectionStatus", "alarmNotify")
+// 返回: 编码后的数据（格式统一、字段重命名、SNOMED 映射）
+func SleepaceEncode(data map[string]interface{}, dataKey string) (map[string]interface{}, error) {
+	encoded := make(map[string]interface{})
+
+	// 1. 保留元数据
+	encoded["device_id"] = data["device_id"]
+	encoded["tenant_id"] = data["tenant_id"]
+	encoded["device_type"] = data["device_type"]
+	encoded["data_key"] = dataKey
+	encoded["timestamp"] = data["timestamp"]
+
+	// 2. 根据 dataKey 进行不同的编码转换
+	switch dataKey {
+	case "realtime":
+		return encodeSleepaceRealtime(data, encoded)
+	case "sleepStage":
+		return encodeSleepaceSleepStage(data, encoded)
+	case "connectionStatus":
+		return encodeSleepaceConnectionStatus(data, encoded)
+	case "alarmNotify":
+		return encodeSleepaceAlarmNotify(data, encoded)
+	default:
+		// 默认：直接复制其他字段
+		copyOtherFields(data, encoded, []string{"device_id", "tenant_id", "device_type", "data_key", "timestamp"})
+		return encoded, nil
+	}
+}
+
+// encodeSleepaceRealtime 编码实时数据
+func encodeSleepaceRealtime(data, encoded map[string]interface{}) (map[string]interface{}, error) {
+	// 字段重命名（保持兼容性）
+	if breath, ok := data["breath"]; ok {
+		encoded["respiratory_rate"] = breath
+		encoded["breath"] = breath // 保留原始字段名
+	}
+	if heart, ok := data["heart"]; ok {
+		encoded["heart_rate"] = heart
+		encoded["heart"] = heart // 保留原始字段名
+	}
+
+	// bedStatus: 0=在床, 1=离床 - 需要 SNOMED 映射
+	if bedStatus, ok := data["bedStatus"]; ok {
+		applySleepaceSNOMedMapping(encoded, "bedStatus", "realtime.bedStatus", bedStatus)
+	}
+
+	// sitUp: 床上坐起 - 需要 SNOMED 映射（只有当值 > 0 时才映射）
+	if sitUp, ok := data["sitUp"]; ok {
+		if sitUpVal, err := parseInt(sitUp); err == nil && sitUpVal > 0 {
+			// sitUp > 0 时映射为 "1"（坐起事件）
+			applySleepaceSNOMedMapping(encoded, "sitUp", "realtime.sitUp", 1)
+			encoded["sitUp"] = sitUpVal // 保留原始值
+		} else {
+			// sitUp = 0 时不映射，只保留原始值
+			encoded["sitUp"] = sitUp
+		}
+	}
+
+	// turnOver 和 bodyMove: 体动相关，不进行 SNOMED 映射，直接保留
+	if turnOver, ok := data["turnOver"]; ok {
+		encoded["turnOver"] = turnOver
+	}
+	if bodyMove, ok := data["bodyMove"]; ok {
+		encoded["bodyMove"] = bodyMove
+	}
+
+	// 复制其他字段（包括 signalQuality, initStatus, leftRight 等）
+	// 注意：realtime 数据中不包含 sleepStage 字段（sleepStage 只在 sleepStage 数据类型中存在）
+	excludeFields := []string{"device_id", "tenant_id", "device_type", "data_key", "timestamp", "breath", "heart", "bedStatus", "sitUp", "turnOver", "bodyMove"}
+	copyOtherFields(data, encoded, excludeFields)
+
+	return encoded, nil
+}
+
+// encodeSleepaceSleepStage 编码睡眠阶段数据
+func encodeSleepaceSleepStage(data, encoded map[string]interface{}) (map[string]interface{}, error) {
+	// sleepStage: 0=清醒, 1=浅睡眠, 2=深睡眠, 3=REM睡眠 - 需要 SNOMED 映射
+	if sleepStage, ok := data["sleepStage"]; ok {
+		applySleepaceSNOMedMapping(encoded, "sleepStage", "sleepStage.sleepStage", sleepStage)
+	}
+
+	// 复制其他字段（如 leftRight）
+	excludeFields := []string{"device_id", "tenant_id", "device_type", "data_key", "timestamp", "sleepStage"}
+	copyOtherFields(data, encoded, excludeFields)
+
+	return encoded, nil
+}
+
+// encodeSleepaceConnectionStatus 编码连接状态数据
+func encodeSleepaceConnectionStatus(data, encoded map[string]interface{}) (map[string]interface{}, error) {
+	// connectionStatus: 0=离线, 1=在线 - 需要 SNOMED 映射
+	if connectionStatus, ok := data["connectionStatus"]; ok {
+		applySleepaceSNOMedMapping(encoded, "connectionStatus", "connectionStatus.connectionStatus", connectionStatus)
+	}
+
+	// 复制其他字段
+	excludeFields := []string{"device_id", "tenant_id", "device_type", "data_key", "timestamp", "connectionStatus"}
+	copyOtherFields(data, encoded, excludeFields)
+
+	return encoded, nil
+}
+
+// encodeSleepaceAlarmNotify 编码告警通知数据
+func encodeSleepaceAlarmNotify(data, encoded map[string]interface{}) (map[string]interface{}, error) {
+	// alarmType: 报警类型 - 需要 SNOMED 映射
+	// 优先使用 alarmType 字段（从 handleAlarmNotify 中设置）
+	if alarmType, ok := data["alarmType"]; ok {
+		applySleepaceSNOMedMapping(encoded, "alarmType", "alarmNotify.type", alarmType)
+	} else if alarmType, ok := data["type"]; ok {
+		// 如果只有 type 字段，也进行映射（兼容性处理）
+		applySleepaceSNOMedMapping(encoded, "alarmType", "alarmNotify.type", alarmType)
+		encoded["type"] = alarmType // 保留原始字段名
+	}
+
+	// 复制其他字段（status, userId, relieveReason, relieveTime 等）
+	// 注意：alarmStatus, userId, relieveReason, relieveTime 等字段不需要 SNOMED 映射
+	excludeFields := []string{"device_id", "tenant_id", "device_type", "data_key", "timestamp", "type", "alarmType"}
+	copyOtherFields(data, encoded, excludeFields)
+
+	return encoded, nil
+}
+
+// applySleepaceSNOMedMapping 已在 snomed_mapping.go 中定义

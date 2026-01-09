@@ -108,7 +108,7 @@ if [ "$REALTIME_KEYS" -gt 0 ]; then
     echo -e "${GREEN}✓${NC} 找到 $REALTIME_KEYS 个实时数据缓存"
 else
     echo -e "${YELLOW}⚠${NC} 没有找到实时数据缓存"
-    echo "   提示: 请先运行 wisefido-sensor-fusion 生成实时数据"
+    echo "   提示: 请先运行 wisefido-card-aggregator 生成实时数据"
 fi
 echo ""
 

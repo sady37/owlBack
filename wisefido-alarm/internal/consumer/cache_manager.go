@@ -60,7 +60,47 @@ func (c *CacheManager) GetRealtimeData(cardID string) (*models.RealtimeData, err
 	return &data, nil
 }
 
+// alarmEventForCache 用于缓存的报警事件结构体（时间字段转换为 Unix timestamp）
+// 注意：只包含 wisefido-card-aggregator 需要的字段，以匹配其 AlarmEvent 结构体
+type alarmEventForCache struct {
+	EventID         string                 `json:"event_id"`
+	EventType       string                 `json:"event_type"`
+	Category        string                 `json:"category,omitempty"`
+	AlarmLevel      string                 `json:"alarm_level"`
+	AlarmStatus     string                 `json:"alarm_status"`
+	TriggeredAt     int64                  `json:"triggered_at"` // Unix timestamp (秒级)
+	TriggeredBy     *string                `json:"triggered_by,omitempty"`
+	TriggerData     json.RawMessage        `json:"trigger_data,omitempty"` // 保持 json.RawMessage，aggregator 会转换为 map
+	IoTTimeSeriesID *int64                 `json:"iot_timeseries_id,omitempty"`
+}
+
+// convertAlarmForCache 将 models.AlarmEvent 转换为缓存格式（时间字段转换为 Unix timestamp）
+func convertAlarmForCache(alarm models.AlarmEvent) alarmEventForCache {
+	cacheAlarm := alarmEventForCache{
+		EventID:         alarm.EventID,
+		EventType:       alarm.EventType,
+		AlarmLevel:      alarm.AlarmLevel,
+		AlarmStatus:     alarm.AlarmStatus,
+		TriggeredAt:     alarm.TriggeredAt.Unix(), // 转换为 Unix timestamp (秒级)
+		IoTTimeSeriesID: alarm.IoTTimeSeriesID,
+		TriggerData:     alarm.TriggerData,
+	}
+
+	// 可选字段
+	if alarm.Category != "" {
+		cacheAlarm.Category = alarm.Category
+	}
+
+	// 从 metadata 中提取 triggered_by（如果有）
+	// 注意：wisefido-card-aggregator 期望 triggered_by 字段，但 models.AlarmEvent 没有
+	// 如果 metadata 中有相关信息，可以提取出来
+	// 这里先留空，如果需要可以从 metadata 中解析
+
+	return cacheAlarm
+}
+
 // UpdateAlarmCache 更新报警缓存
+// 注意：将 time.Time 字段转换为 Unix timestamp (秒级) 以匹配 wisefido-card-aggregator 的期望格式
 func (c *CacheManager) UpdateAlarmCache(cardID string, alarms []models.AlarmEvent) error {
 	// 构建缓存键
 	key := fmt.Sprintf("%s%s%s",
@@ -69,8 +109,14 @@ func (c *CacheManager) UpdateAlarmCache(cardID string, alarms []models.AlarmEven
 		c.config.Alarm.Cache.AlarmSuffix,
 	)
 
+	// 转换为缓存格式（时间字段转换为 Unix timestamp）
+	cacheAlarms := make([]alarmEventForCache, len(alarms))
+	for i, alarm := range alarms {
+		cacheAlarms[i] = convertAlarmForCache(alarm)
+	}
+
 	// 序列化数据
-	jsonData, err := json.Marshal(alarms)
+	jsonData, err := json.Marshal(cacheAlarms)
 	if err != nil {
 		return fmt.Errorf("failed to marshal alarm data: %w", err)
 	}

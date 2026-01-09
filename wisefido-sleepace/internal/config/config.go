@@ -23,7 +23,10 @@ type Config struct {
 		ReportUploadType int    // 报告上传类型
 		ReportUploadTime int    // 报告上传时间
 		Topic            string // MQTT 主题（Sleepace 厂家提供的主题，如 "sleepace-57136"）
-		Stream           string // Redis Streams 输出流，如 "sleepace:data:stream"
+		// 注意：数据流分类直接硬编码在代码中，与 wisefido-radar 保持一致
+		// realtime/sleepStage → iot:monitor:stream
+		// connectionStatus → iot:event:stream
+		// alarmNotify → iot:alarm:stream
 	}
 	
 	Log struct {
@@ -64,7 +67,6 @@ func Load() (*Config, error) {
 	cfg.Sleepace.ReportUploadType = 0
 	cfg.Sleepace.ReportUploadTime = 0
 	cfg.Sleepace.Topic = getEnv("SLEEPACE_MQTT_TOPIC", "sleepace-57136")
-	cfg.Sleepace.Stream = getEnv("SLEEPACE_STREAM", "sleepace:data:stream")
 	
 	cfg.Log.Level = getEnv("LOG_LEVEL", "info")
 	cfg.Log.Format = getEnv("LOG_FORMAT", "json")

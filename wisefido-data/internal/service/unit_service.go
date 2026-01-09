@@ -10,8 +10,6 @@ import (
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
-	"owl-common/card"
-
 	"go.uber.org/zap"
 )
 
@@ -55,20 +53,20 @@ type unitService struct {
 	residentsRepo repository.ResidentsRepository // 用于检查 unit 下的 residents
 	devicesRepo   repository.DevicesRepository   // 用于检查 unit 下的 devices
 	db            *sql.DB                        // 用于复杂查询（JOIN、权限过滤，如查询 user_branches）
-	cardCreator   *card.CardCreator              // 用于直接更新卡片
-	logger        *zap.Logger
+	cardManageClient *CardManageClient              // 用于调用 wisefido-card-manage API
+	logger           *zap.Logger
 }
 
 // NewUnitService 创建 UnitService 实例
-func NewUnitService(unitsRepo repository.UnitsRepository, branchesRepo repository.BranchesRepository, residentsRepo repository.ResidentsRepository, devicesRepo repository.DevicesRepository, db *sql.DB, cardCreator *card.CardCreator, logger *zap.Logger) UnitService {
+func NewUnitService(unitsRepo repository.UnitsRepository, branchesRepo repository.BranchesRepository, residentsRepo repository.ResidentsRepository, devicesRepo repository.DevicesRepository, db *sql.DB, cardManageClient *CardManageClient, logger *zap.Logger) UnitService {
 	return &unitService{
-		unitsRepo:     unitsRepo,
-		branchesRepo:  branchesRepo,
-		residentsRepo: residentsRepo,
-		devicesRepo:   devicesRepo,
-		db:            db,
-		cardCreator:   cardCreator,
-		logger:        logger,
+		unitsRepo:        unitsRepo,
+		branchesRepo:     branchesRepo,
+		residentsRepo:    residentsRepo,
+		devicesRepo:      devicesRepo,
+		db:               db,
+		cardManageClient: cardManageClient,
+		logger:           logger,
 	}
 }
 
@@ -1585,10 +1583,9 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 		return nil, fmt.Errorf("failed to update unit: %w", err)
 	}
 
-	// 5. 更新成功后，直接更新卡片（同步调用）
-	if s.cardCreator != nil {
-		_, err := s.cardCreator.CreateCardsForUnit(req.TenantID, req.UnitID)
-		if err != nil {
+	// 5. 更新成功后，调用 wisefido-card-manage API 更新卡片（同步调用）
+	if s.cardManageClient != nil {
+		if err := s.cardManageClient.CreateCardsForUnit(ctx, req.TenantID, req.UnitID); err != nil {
 			// 卡片更新失败不应该影响 API 响应，只记录警告
 			s.logger.Warn("Failed to update cards after unit change",
 				zap.Error(err),

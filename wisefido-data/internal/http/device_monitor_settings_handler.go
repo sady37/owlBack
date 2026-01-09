@@ -29,6 +29,24 @@ func NewDeviceMonitorSettingsHandler(deviceMonitorSettingsService service.Device
 func (h *DeviceMonitorSettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
+	// 检查是否是获取默认设置的请求
+	if strings.HasPrefix(path, "/settings/api/v1/monitor/default/sleepace") {
+		if r.Method == http.MethodGet {
+			h.GetDefaultDeviceMonitorSettings(w, r, "sleepace")
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if strings.HasPrefix(path, "/settings/api/v1/monitor/default/radar") {
+		if r.Method == http.MethodGet {
+			h.GetDefaultDeviceMonitorSettings(w, r, "radar")
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
 	// 解析设备类型和设备ID
 	var deviceType string
 	var deviceID string
@@ -130,3 +148,28 @@ func (h *DeviceMonitorSettingsHandler) UpdateDeviceMonitorSettings(w http.Respon
 	}))
 }
 
+// GetDefaultDeviceMonitorSettings 获取默认设备监控配置
+// 阈值：硬编码（与 System 租户模板设备的值相同）
+// Alarm Level：优先从当前租户的 alarm_cloud 读取，如果没有则使用硬编码值
+func (h *DeviceMonitorSettingsHandler) GetDefaultDeviceMonitorSettings(w http.ResponseWriter, r *http.Request, deviceType string) {
+	ctx := r.Context()
+
+	// 从请求中获取 tenantID
+	tenantID, ok := h.base.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+
+	resp, err := h.deviceMonitorSettingsService.GetDefaultDeviceMonitorSettings(ctx, tenantID, deviceType)
+	if err != nil {
+		h.logger.Error("GetDefaultDeviceMonitorSettings failed",
+			zap.String("tenant_id", tenantID),
+			zap.String("device_type", deviceType),
+			zap.Error(err),
+		)
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Ok(resp.Settings))
+}

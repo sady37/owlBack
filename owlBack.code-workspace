@@ -8,6 +8,9 @@
 		},
 		{
 			"path": "../owlRD"
+		},
+		{
+			"path": "../third-api-testing-program"
 		}
 	],
 	"settings": {}

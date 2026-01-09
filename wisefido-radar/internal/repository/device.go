@@ -196,17 +196,18 @@ func (r *DeviceRepository) GetOrCreateDeviceFromStore(ctx context.Context, ident
 
 	if err == sql.ErrNoRows {
 		// Case 3: Device not registered in device_store
-		serialNum := ""
+		var serialNum, uid string
 		if dsSerialNumber.Valid {
 			serialNum = dsSerialNumber.String
 		}
-		uid := ""
 		if dsUID.Valid {
 			uid = dsUID.String
 		}
 		logWarn("Unauthorized device connection attempt",
 			zap.String("identifier", identifier),
 			zap.String("mqtt_topic", mqttTopic),
+			zap.String("serial_number", serialNum),
+			zap.String("uid", uid),
 			zap.String("reason", "device_not_registered"),
 			zap.String("action", "connection_rejected"),
 			zap.String("security_level", "warning"),
@@ -367,22 +368,22 @@ func (r *DeviceRepository) GetOrCreateDeviceFromStore(ctx context.Context, ident
 		WHERE d.device_id = $1
 		LIMIT 1
 	`
-	device := &Device{}
+	var fallbackDevice Device
 	err = r.db.QueryRowContext(ctx, query, newDeviceID).Scan(
-		&device.DeviceID,
-		&device.TenantID,
-		&device.SerialNumber,
-		&device.UID,
-		&device.DeviceName,
-		&device.Status,
-		&device.BusinessAccess,
-		&device.BoundBedID,
-		&device.BoundRoomID,
+		&fallbackDevice.DeviceID,
+		&fallbackDevice.TenantID,
+		&fallbackDevice.SerialNumber,
+		&fallbackDevice.UID,
+		&fallbackDevice.DeviceName,
+		&fallbackDevice.Status,
+		&fallbackDevice.BusinessAccess,
+		&fallbackDevice.BoundBedID,
+		&fallbackDevice.BoundRoomID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query newly created device: %w", err)
 	}
-	return device, nil
+	return &fallbackDevice, nil
 }
 
 // Device 设备模型

@@ -76,7 +76,7 @@ func main() {
 	if db != nil {
 		// 如果数据库可用，设置 DB 连接（用于保存 preferences）
 		vital.SetDB(db)
-		
+
 		// DB bootstrap: ensure System tenant + sysadmin exist in DB for UI pages that query users/roles.
 		// Login still uses AuthStore hashes, but keeping DB in sync makes admin pages behave as expected.
 		if os.Getenv("SEED_SYSADMIN") != "false" {
@@ -154,13 +154,19 @@ func main() {
 		authHandler := httpapi.NewAuthHandler(authService, logger)
 		router.RegisterAuthRoutes(authHandler)
 
-		// 创建 Card Repository 和 Card Creator（用于直接更新卡片）
+		// 创建 Card Repository 和 Card Creator（用于启动时全量更新，保留向后兼容）
 		cardRepo = repository.NewPostgresCardRepository(db, logger)
 		cardCreator = card.NewCardCreator(cardRepo, logger)
 
+		// 创建 CardManageClient（用于调用 wisefido-card-manage API）
+		cardManageClient := service.NewCardManageClient(cfg.CardManage.APIBaseURL, logger)
+
+		// 创建 IoTTimeSeriesClient（用于调用 wisefido-iot-timeseries 内部 API）
+		iotTimeSeriesClient := service.NewIoTTimeSeriesClient(cfg.IoTTimeSeries.InternalAPIBaseURL, logger)
+
 		// 创建 Device Service 和 Handler
 		devicesRepo.SetLogger(logger) // 确保 logger 已设置（用于设备连接日志）
-		deviceService := service.NewDeviceService(devicesRepo, cardCreator, logger)
+		deviceService := service.NewDeviceService(devicesRepo, cardManageClient, iotTimeSeriesClient, logger)
 		deviceHandler := httpapi.NewDeviceHandler(deviceService, logger)
 		router.RegisterDeviceRoutes(deviceHandler)
 
@@ -168,13 +174,18 @@ func main() {
 		deviceStoreHandler := httpapi.NewDeviceStoreHandler(deviceStoreRepo, logger)
 		router.RegisterDeviceStoreRoutes(deviceStoreHandler)
 
+		// 创建 Radar Service 和 Handler（调用 wisefido-radar 内部 API）
+		radarService := service.NewRadarService(cfg, devicesRepo, logger)
+		radarHandler := httpapi.NewRadarHandler(radarService, stub, logger)
+		router.RegisterRadarRoutes(radarHandler)
+
 		// 创建 Unit Service  and Handler
 		branchesRepo := repository.NewPostgresBranchesRepository(db)
 		// 注意：residentsRepo 和 devicesRepo 需要在 UnitService 之前创建
 		residentsRepo := repository.NewPostgresResidentsRepository(db)
 		devicesRepo = repository.NewPostgresDevicesRepository(db)
 		devicesRepo.SetLogger(logger) // Set logger for device connection logging
-		unitService := service.NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, cardCreator, logger)
+		unitService := service.NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, cardManageClient, logger)
 		unitHandler := httpapi.NewUnitHandler(unitService, logger)
 		router.RegisterUnitRoutes(unitHandler)
 
@@ -192,12 +203,64 @@ func main() {
 
 		// 创建 DeviceMonitorSettings Service 和 Handler
 		alarmDeviceRepo := repository.NewPostgresAlarmDeviceRepository(db)
+		// 使用已创建的 alarmCloudRepo（在 AlarmCloud Service 创建时已创建）
 		deviceMonitorSettingsService := service.NewDeviceMonitorSettingsService(
 			alarmDeviceRepo,
+			alarmCloudRepo,
 			devicesRepo,
 			deviceStoreRepo,
 			logger,
 		)
+
+		// SleepaceReportService
+		sleepaceReportsRepo := repository.NewPostgresSleepaceReportsRepository(db)
+		sleepaceReportService := service.NewSleepaceReportService(sleepaceReportsRepo, db, logger)
+
+		// 初始化 Sleepace 客户端（如果配置了 Sleepace 服务）
+		var sleepaceClient *service.SleepaceClient
+		if cfg.Sleepace.HttpAddress != "" && cfg.Sleepace.AppID != "" && cfg.Sleepace.SecretKey != "" {
+			sleepaceClient = service.NewSleepaceClient(
+				cfg.Sleepace.HttpAddress,
+				cfg.Sleepace.AppID,
+				cfg.Sleepace.SecretKey,
+				logger,
+			)
+
+			// 设置 pushType = MQTT（参考 v1.0: wisefido-backend/wisefido-sleepace/modules/sleepace_service.go::setPushType）
+			// 这是全局配置，只需要在服务启动时设置一次
+			if err := sleepaceClient.SetPushType(); err != nil {
+				logger.Warn("Failed to set Sleepace push type to MQTT (this may affect data reception)",
+					zap.Error(err),
+				)
+				// 不阻止服务启动，只记录警告
+			} else {
+				logger.Info("Sleepace push type set to MQTT successfully")
+			}
+
+			// 设置客户端到 SleepaceReportService（延迟初始化）
+			if svc, ok := sleepaceReportService.(interface {
+				SetSleepaceClient(client *service.SleepaceClient)
+			}); ok {
+				svc.SetSleepaceClient(sleepaceClient)
+			}
+			// 设置客户端到 DeviceMonitorSettingsService（用于从硬件读取配置）
+			if svc, ok := deviceMonitorSettingsService.(interface {
+				SetSleepaceClient(client *service.SleepaceClient)
+			}); ok {
+				svc.SetSleepaceClient(sleepaceClient)
+				logger.Info("Sleepace client set for device monitor settings service")
+			}
+			logger.Info("Sleepace client initialized",
+				zap.String("http_address", cfg.Sleepace.HttpAddress),
+				zap.String("app_id", cfg.Sleepace.AppID),
+			)
+		} else {
+			logger.Warn("Sleepace client not initialized (missing configuration)",
+				zap.String("http_address", cfg.Sleepace.HttpAddress),
+				zap.String("app_id", cfg.Sleepace.AppID),
+			)
+		}
+
 		deviceMonitorSettingsHandler := httpapi.NewDeviceMonitorSettingsHandler(deviceMonitorSettingsService, logger)
 		router.RegisterDeviceMonitorSettingsRoutes(deviceMonitorSettingsHandler)
 
@@ -216,38 +279,9 @@ func main() {
 
 		// 创建 Resident Service 和 Handler
 		residentsRepo = repository.NewPostgresResidentsRepository(db)
-		residentService := service.NewResidentService(residentsRepo, db, cardCreator, logger)
+		residentService := service.NewResidentService(residentsRepo, db, cardManageClient, logger)
 		residentHandler := httpapi.NewResidentHandler(residentService, db, logger)
 		router.RegisterResidentRoutes(residentHandler)
-
-		// SleepaceReportService
-		sleepaceReportsRepo := repository.NewPostgresSleepaceReportsRepository(db)
-		sleepaceReportService := service.NewSleepaceReportService(sleepaceReportsRepo, db, logger)
-
-		// 初始化 Sleepace 客户端（如果配置了 Sleepace 服务）
-		if cfg.Sleepace.HttpAddress != "" && cfg.Sleepace.AppID != "" && cfg.Sleepace.SecretKey != "" {
-			sleepaceClient := service.NewSleepaceClient(
-				cfg.Sleepace.HttpAddress,
-				cfg.Sleepace.AppID,
-				cfg.Sleepace.SecretKey,
-				logger,
-			)
-			// 设置客户端到 Service（延迟初始化）
-			if svc, ok := sleepaceReportService.(interface {
-				SetSleepaceClient(client *service.SleepaceClient)
-			}); ok {
-				svc.SetSleepaceClient(sleepaceClient)
-			}
-			logger.Info("Sleepace client initialized",
-				zap.String("http_address", cfg.Sleepace.HttpAddress),
-				zap.String("app_id", cfg.Sleepace.AppID),
-			)
-		} else {
-			logger.Warn("Sleepace client not initialized (missing configuration)",
-				zap.String("http_address", cfg.Sleepace.HttpAddress),
-				zap.String("app_id", cfg.Sleepace.AppID),
-			)
-		}
 
 		sleepaceReportHandler := httpapi.NewSleepaceReportHandler(sleepaceReportService, db, logger)
 		router.RegisterSleepaceReportRoutes(sleepaceReportHandler)
@@ -361,25 +395,25 @@ func main() {
 		go func() {
 			// 延迟启动，等待服务完全初始化
 			time.Sleep(2 * time.Second)
-			
+
 			logger.Info("Starting full card check/update on service startup")
-			
+
 			// 获取所有活跃租户
 			tenants, _, err := tenantsRepo.ListTenants(ctx, repository.TenantFilters{
 				Status: "active",
 			}, 1, 1000) // 假设不超过1000个租户
-			
+
 			if err != nil {
 				logger.Warn("Failed to list tenants for card check",
 					zap.Error(err),
 				)
 				return
 			}
-			
+
 			logger.Info("Found tenants for card check",
 				zap.Int("tenant_count", len(tenants)),
 			)
-			
+
 			// 统计信息
 			totalStats := struct {
 				ExistingCount  int
@@ -391,7 +425,7 @@ func main() {
 			successCount := 0
 			errorCount := 0
 			totalUnits := 0
-			
+
 			// 为每个租户的所有单元创建/更新卡片
 			for _, tenant := range tenants {
 				// 获取该租户的所有单元
@@ -404,9 +438,9 @@ func main() {
 					errorCount++
 					continue
 				}
-				
+
 				totalUnits += len(unitIDs)
-				
+
 				// 为每个单元创建/更新卡片
 				for _, unitID := range unitIDs {
 					select {
@@ -435,7 +469,7 @@ func main() {
 					}
 				}
 			}
-			
+
 			// 输出统计信息到 stdout 和日志
 			updateCount := totalStats.DeletedCount + totalStats.CreatedCount + totalStats.UpdatedCount
 			summaryMsg := fmt.Sprintf(
@@ -457,10 +491,10 @@ func main() {
 				totalStats.UpdatedCount,
 				totalStats.UnchangedCount,
 			)
-			
+
 			// 输出到 stdout
 			os.Stdout.WriteString(summaryMsg)
-			
+
 			// 同时记录到日志
 			logger.Info("Completed full card check/update on startup",
 				zap.Int("tenant_count", len(tenants)),

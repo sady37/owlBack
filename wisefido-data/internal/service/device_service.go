@@ -9,8 +9,6 @@ import (
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
-	"owl-common/card"
-
 	"go.uber.org/zap"
 )
 
@@ -30,17 +28,19 @@ type DeviceService interface {
 
 // deviceService 实现
 type deviceService struct {
-	devicesRepo  repository.DevicesRepository
-	cardCreator  *card.CardCreator // 用于直接更新卡片
-	logger       *zap.Logger
+	devicesRepo         repository.DevicesRepository
+	cardManageClient    *CardManageClient    // 用于调用 wisefido-card-manage API
+	iotTimeSeriesClient *IoTTimeSeriesClient // 用于调用 wisefido-iot-timeseries 内部 API
+	logger              *zap.Logger
 }
 
 // NewDeviceService 创建 DeviceService 实例
-func NewDeviceService(devicesRepo repository.DevicesRepository, cardCreator *card.CardCreator, logger *zap.Logger) DeviceService {
+func NewDeviceService(devicesRepo repository.DevicesRepository, cardManageClient *CardManageClient, iotTimeSeriesClient *IoTTimeSeriesClient, logger *zap.Logger) DeviceService {
 	return &deviceService{
-		devicesRepo: devicesRepo,
-		cardCreator: cardCreator,
-		logger:      logger,
+		devicesRepo:         devicesRepo,
+		cardManageClient:    cardManageClient,
+		iotTimeSeriesClient: iotTimeSeriesClient,
+		logger:              logger,
 	}
 }
 
@@ -192,7 +192,7 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 	// 2. 获取旧设备信息（用于比较 monitoring_enabled 是否变化）
 	var oldDevice *domain.Device
 	var monitoringEnabledChanged bool
-	if s.cardCreator != nil {
+	if s.cardManageClient != nil {
 		oldDevice, _ = s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
 		if oldDevice != nil && req.Device.MonitoringEnabled != oldDevice.MonitoringEnabled {
 			monitoringEnabledChanged = true
@@ -213,37 +213,58 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 		return nil, fmt.Errorf("failed to update device")
 	}
 
-	// 5. 如果绑定关系变化或 monitoring_enabled 变化，直接更新卡片（同步调用）
-	if s.cardCreator != nil && (req.UpdateBoundRoomID || req.UpdateBoundBedID || monitoringEnabledChanged) {
-		// 获取更新后的设备信息以获取unit_id
-		newDevice, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
-		if err != nil {
-			s.logger.Warn("Failed to get updated device for card update",
-				zap.Error(err),
-				zap.String("tenant_id", req.TenantID),
-				zap.String("device_id", req.DeviceID),
-			)
-		} else if newDevice != nil && newDevice.UnitID.Valid && newDevice.UnitID.String != "" {
-			// 直接调用CardCreator更新卡片（同步）
-			_, err := s.cardCreator.CreateCardsForUnit(req.TenantID, newDevice.UnitID.String)
-			if err != nil {
-				s.logger.Warn("Failed to update cards after device change",
+	// 5. 如果绑定关系变化或 monitoring_enabled 变化，触发相关服务更新
+	if req.UpdateBoundRoomID || req.UpdateBoundBedID || monitoringEnabledChanged {
+		// 5.1 如果设备绑定关系变化，清除 wisefido-iot-timeseries 的位置信息缓存
+		if s.iotTimeSeriesClient != nil && (req.UpdateBoundRoomID || req.UpdateBoundBedID) {
+			if err := s.iotTimeSeriesClient.InvalidateLocationCache(ctx, req.DeviceID); err != nil {
+				s.logger.Warn("Failed to invalidate location cache after device binding change",
 					zap.Error(err),
 					zap.String("tenant_id", req.TenantID),
 					zap.String("device_id", req.DeviceID),
-					zap.String("unit_id", newDevice.UnitID.String),
 					zap.Bool("binding_changed", req.UpdateBoundRoomID || req.UpdateBoundBedID),
-					zap.Bool("monitoring_enabled_changed", monitoringEnabledChanged),
 				)
-				// 不返回错误，只记录警告（卡片更新失败不影响设备更新）
+				// 不返回错误，只记录警告（缓存清除失败不影响设备更新）
 			} else {
-				s.logger.Info("Updated cards after device change",
+				s.logger.Info("Invalidated location cache after device binding change",
 					zap.String("tenant_id", req.TenantID),
 					zap.String("device_id", req.DeviceID),
-					zap.String("unit_id", newDevice.UnitID.String),
 					zap.Bool("binding_changed", req.UpdateBoundRoomID || req.UpdateBoundBedID),
-					zap.Bool("monitoring_enabled_changed", monitoringEnabledChanged),
 				)
+			}
+		}
+
+		// 5.2 调用 wisefido-card-manage API 更新卡片（同步调用）
+		if s.cardManageClient != nil {
+			// 获取更新后的设备信息以获取unit_id
+			newDevice, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
+			if err != nil {
+				s.logger.Warn("Failed to get updated device for card update",
+					zap.Error(err),
+					zap.String("tenant_id", req.TenantID),
+					zap.String("device_id", req.DeviceID),
+				)
+			} else if newDevice != nil && newDevice.UnitID.Valid && newDevice.UnitID.String != "" {
+				// 调用 wisefido-card-manage API 更新卡片（同步）
+				if err := s.cardManageClient.CreateCardsForUnit(ctx, req.TenantID, newDevice.UnitID.String); err != nil {
+					s.logger.Warn("Failed to update cards after device change",
+						zap.Error(err),
+						zap.String("tenant_id", req.TenantID),
+						zap.String("device_id", req.DeviceID),
+						zap.String("unit_id", newDevice.UnitID.String),
+						zap.Bool("binding_changed", req.UpdateBoundRoomID || req.UpdateBoundBedID),
+						zap.Bool("monitoring_enabled_changed", monitoringEnabledChanged),
+					)
+					// 不返回错误，只记录警告（卡片更新失败不影响设备更新）
+				} else {
+					s.logger.Info("Updated cards after device change",
+						zap.String("tenant_id", req.TenantID),
+						zap.String("device_id", req.DeviceID),
+						zap.String("unit_id", newDevice.UnitID.String),
+						zap.Bool("binding_changed", req.UpdateBoundRoomID || req.UpdateBoundBedID),
+						zap.Bool("monitoring_enabled_changed", monitoringEnabledChanged),
+					)
+				}
 			}
 		}
 	}

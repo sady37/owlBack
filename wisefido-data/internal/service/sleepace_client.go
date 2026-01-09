@@ -117,3 +117,49 @@ func (c *SleepaceClient) Get24HourDailyWithMaxReport(deviceID, deviceCode string
 	return reports, nil
 }
 
+// SetPushType 设置 Sleepace 云服务平台的推送类型为 MQTT
+// 参考：wisefido-backend/wisefido-sleepace/modules/sleepace_service.go::setPushType
+// API: POST /sleepace/system/pushType/set
+func (c *SleepaceClient) SetPushType() error {
+	request := SleepaceRequest{
+		Token: c.token,
+		Data: map[string]any{
+			"pushType":      "MQTT",
+			"alarmDataType": "array",
+		},
+	}
+
+	c.logger.Info("Calling Sleepace API: setPushType",
+		zap.String("push_type", "MQTT"),
+		zap.String("alarm_data_type", "array"),
+	)
+
+	var response SleepaceResponse
+	resp, err := c.httpClient.R().
+		SetBody(request).
+		SetResult(&response).
+		Post("/sleepace/system/pushType/set")
+
+	if err != nil {
+		c.logger.Error("Sleepace API call failed",
+			zap.Error(err),
+			zap.Int("status_code", resp.StatusCode()),
+		)
+		return fmt.Errorf("failed to call Sleepace API: %w", err)
+	}
+
+	if response.Status != 0 {
+		c.logger.Error("Sleepace API returned error",
+			zap.Int("status", response.Status),
+			zap.String("msg", response.Msg),
+		)
+		return fmt.Errorf("Sleepace API error: %s (status: %d)", response.Msg, response.Status)
+	}
+
+	c.logger.Info("Successfully set push type to MQTT",
+		zap.String("msg", response.Msg),
+	)
+
+	return nil
+}
+

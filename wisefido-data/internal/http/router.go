@@ -149,6 +149,23 @@ func (r *Router) RegisterAdminTenantRoutes(h *TenantsHandler) {
 	r.Handle("/admin/api/v1/tenants/", h.ServeHTTP)
 }
 
+// RegisterRadarRoutes 注册 Radar 设备 API 路由（v1.0 兼容）
+func (r *Router) RegisterRadarRoutes(h *RadarHandler) {
+	// GET /radar-device/api/v1/radar-device/device/:id/realtime
+	r.Handle("/radar-device/api/v1/radar-device/device/", func(w http.ResponseWriter, req *http.Request) {
+		path := req.URL.Path
+		if strings.HasSuffix(path, "/realtime") && req.Method == http.MethodGet {
+			h.GetRealtimeData(w, req)
+		} else if strings.HasSuffix(path, "/original-properties") && req.Method == http.MethodGet {
+			h.GetOriginalProperties(w, req)
+		} else if strings.HasSuffix(path, "/config") && req.Method == http.MethodPut {
+			h.UpdateConfig(w, req)
+		} else {
+			http.NotFound(w, req)
+		}
+	})
+}
+
 // RegisterAdminUnitDeviceRoutes：Unit/Room/Bed + Devices（地址类 + 设备类）
 // 注意：Unit/Room/Bed 路由已迁移到 UnitHandler（见 RegisterUnitRoutes）
 // 注意：Devices 路由已迁移到 DeviceHandler（见 RegisterDeviceRoutes）
@@ -254,6 +271,9 @@ func (r *Router) RegisterUsersRoutes(h *UserHandler) {
 func (r *Router) RegisterDeviceMonitorSettingsRoutes(h *DeviceMonitorSettingsHandler) {
 	r.Handle("/settings/api/v1/monitor/sleepace/", h.ServeHTTP)
 	r.Handle("/settings/api/v1/monitor/radar/", h.ServeHTTP)
+	// 注册默认设置路由
+	r.Handle("/settings/api/v1/monitor/default/sleepace", h.ServeHTTP)
+	r.Handle("/settings/api/v1/monitor/default/radar", h.ServeHTTP)
 }
 
 // RegisterAlarmEventRoutes 注册报警事件管理路由

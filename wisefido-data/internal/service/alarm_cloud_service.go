@@ -156,39 +156,24 @@ func (s *alarmCloudService) GetAlarmCloudConfig(ctx context.Context, req GetAlar
 		}
 	}
 
-	// 1. 优先查询租户特定配置
+	// 1. 查询租户特定配置
 	alarmCloud, err := s.alarmCloudRepo.GetAlarmCloud(ctx, req.TenantID)
 	if err != nil {
 		// 检查是否是 "not found" 错误
 		isNotFound := err == sql.ErrNoRows || 
-			(err != nil && (fmt.Sprintf("%v", err) == "alarm cloud not found: sql: no rows in result set" || 
-				strings.Contains(fmt.Sprintf("%v", err), "alarm cloud not found")))
+			(fmt.Sprintf("%v", err) == "alarm cloud not found: sql: no rows in result set" || 
+				strings.Contains(fmt.Sprintf("%v", err), "alarm cloud not found"))
 		
 		if isNotFound {
-			// 2. 如果租户没有配置，查询系统默认配置
-			systemTenantID := "00000000-0000-0000-0000-000000000001"
-			systemAlarmCloud, err2 := s.alarmCloudRepo.GetAlarmCloud(ctx, systemTenantID)
-			if err2 != nil {
-				// 检查是否是 "not found" 错误
-				isNotFound2 := err2 == sql.ErrNoRows || 
-					(err2 != nil && (fmt.Sprintf("%v", err2) == "alarm cloud not found: sql: no rows in result set" || 
-						strings.Contains(fmt.Sprintf("%v", err2), "alarm cloud not found")))
-				
-				if isNotFound2 {
-					// 如果系统默认配置也不存在，返回空配置
-					// 注意：返回的 tenant_id 是请求的 tenant_id（与旧 Handler 一致）
-					return &AlarmCloudConfigResponse{
-						TenantID:     req.TenantID,
-						DeviceAlarms: json.RawMessage("{}"),
-					}, nil
-				}
-				return nil, fmt.Errorf("failed to get system alarm cloud: %w", err2)
-			}
-			// 使用系统默认配置，tenant_id 保持为 SystemTenantID（反映实际来源，与旧 Handler 一致）
-			alarmCloud = systemAlarmCloud
-		} else {
-			return nil, fmt.Errorf("failed to get alarm cloud: %w", err)
+			// 如果租户没有配置，直接返回空配置
+			// 前端会使用默认值初始化，不需要后端回退到 System 租户
+			return &AlarmCloudConfigResponse{
+				TenantID:     req.TenantID,
+				DeviceAlarms: json.RawMessage("{}"),
+			}, nil
 		}
+		// 其他错误，返回错误
+		return nil, fmt.Errorf("failed to get alarm cloud: %w", err)
 	}
 
 	// 3. 转换为响应格式
@@ -267,8 +252,8 @@ func (s *alarmCloudService) UpdateAlarmCloudConfig(ctx context.Context, req Upda
 	if err != nil {
 		// 检查是否是 "not found" 错误
 		isNotFound := err == sql.ErrNoRows || 
-			(err != nil && (fmt.Sprintf("%v", err) == "alarm cloud not found: sql: no rows in result set" || 
-				strings.Contains(fmt.Sprintf("%v", err), "alarm cloud not found")))
+			(fmt.Sprintf("%v", err) == "alarm cloud not found: sql: no rows in result set" || 
+				strings.Contains(fmt.Sprintf("%v", err), "alarm cloud not found"))
 		if !isNotFound {
 			return nil, fmt.Errorf("failed to get existing alarm cloud: %w", err)
 		}
@@ -281,28 +266,11 @@ func (s *alarmCloudService) UpdateAlarmCloudConfig(ctx context.Context, req Upda
 		// 使用现有配置作为基础
 		alarmCloud = *existingAlarmCloud
 	} else {
-		// 新建配置，尝试使用系统默认配置作为基础
-		systemTenantID := "00000000-0000-0000-0000-000000000001"
-		systemAlarmCloud, err := s.alarmCloudRepo.GetAlarmCloud(ctx, systemTenantID)
-		if err != nil {
-			// 检查是否是 "not found" 错误
-			isNotFound := err == sql.ErrNoRows || 
-				(err != nil && (fmt.Sprintf("%v", err) == "alarm cloud not found: sql: no rows in result set" || 
-					strings.Contains(fmt.Sprintf("%v", err), "alarm cloud not found")))
-			if isNotFound {
-				// 如果系统默认配置不存在，使用空配置
-				alarmCloud = domain.AlarmCloud{
-					TenantID:     req.TenantID,
-					DeviceAlarms: json.RawMessage("{}"),
-				}
-			} else {
-				// 其他错误，返回错误
-				return nil, fmt.Errorf("failed to get system alarm cloud: %w", err)
-			}
-		} else {
-			// 使用系统默认配置作为基础
-			alarmCloud = *systemAlarmCloud
-			alarmCloud.TenantID = req.TenantID // 更新为当前租户ID
+		// 新建配置，使用空配置作为基础
+		// 前端会发送完整的配置（包括默认值），不需要后端提供基础配置
+		alarmCloud = domain.AlarmCloud{
+			TenantID:     req.TenantID,
+			DeviceAlarms: json.RawMessage("{}"),
 		}
 	}
 

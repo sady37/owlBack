@@ -26,7 +26,8 @@ export DB_PASSWORD="${DB_PASSWORD:-postgres}"
 export DB_NAME="${DB_NAME:-owlrd}"
 export DB_SSLMODE="${DB_SSLMODE:-disable}"
 
-export REDIS_ADDR="${REDIS_ADDR:-localhost:6379}"
+# 使用 127.0.0.1 而不是 localhost 以避免 IPv6 解析问题
+export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
 export REDIS_PASSWORD="${REDIS_PASSWORD:-}"
 
 export CARD_TRIGGER_MODE="${CARD_TRIGGER_MODE:-polling}"

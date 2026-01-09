@@ -223,7 +223,7 @@ func (a *DataAggregator) mergeRealtimeData(vitalCard *models.VitalFocusCard, rea
 	}
 }
 
-// RealtimeData 实时数据结构（与 wisefido-sensor-fusion 保持一致）
+// RealtimeData 实时数据结构
 type RealtimeData struct {
 	Heart        *int      `json:"heart"`
 	Breath       *int      `json:"breath"`

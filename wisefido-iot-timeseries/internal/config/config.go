@@ -1,0 +1,68 @@
+package config
+
+import (
+	"os"
+	"owl-common/config"
+)
+
+// Config IoT 时序数据服务配置
+type Config struct {
+	Database config.DatabaseConfig
+	Redis    config.RedisConfig
+
+	// IoT 时序数据服务特定配置
+	Streams struct {
+		Monitor string // iot:monitor:stream
+		Stat    string // iot:stat:stream
+		Event   string // iot:event:stream
+		Alarm   string // iot:alarm:stream
+		Output  string // iot:data:stream (可选，触发下游服务)
+	}
+	ConsumerGroup string // 消费者组名称
+	ConsumerName  string // 消费者名称
+	BatchSize     int64  // 批量处理大小
+
+	Log struct {
+		Level  string
+		Format string
+	}
+}
+
+// Load 加载配置
+func Load() (*Config, error) {
+	cfg := &Config{}
+
+	// 从环境变量加载（默认值）
+	cfg.Database.Host = getEnv("DB_HOST", "localhost")
+	cfg.Database.Port = 5432
+	cfg.Database.User = getEnv("DB_USER", "postgres")
+	cfg.Database.Password = getEnv("DB_PASSWORD", "postgres")
+	cfg.Database.Database = getEnv("DB_NAME", "owlrd")
+	cfg.Database.SSLMode = getEnv("DB_SSLMODE", "disable")
+
+	cfg.Redis.Addr = getEnv("REDIS_ADDR", "localhost:6379")
+	cfg.Redis.Password = getEnv("REDIS_PASSWORD", "")
+	cfg.Redis.DB = 0
+
+	// IoT 时序数据服务配置
+	cfg.Streams.Monitor = getEnv("STREAM_MONITOR", "iot:monitor:stream")
+	cfg.Streams.Stat = getEnv("STREAM_STAT", "iot:stat:stream")
+	cfg.Streams.Event = getEnv("STREAM_EVENT", "iot:event:stream")
+	cfg.Streams.Alarm = getEnv("STREAM_ALARM", "iot:alarm:stream")
+	cfg.Streams.Output = getEnv("STREAM_OUTPUT", "iot:data:stream")
+	cfg.ConsumerGroup = getEnv("CONSUMER_GROUP", "iot-timeseries-group")
+	cfg.ConsumerName = getEnv("CONSUMER_NAME", "iot-timeseries-1")
+	cfg.BatchSize = 10
+
+	cfg.Log.Level = getEnv("LOG_LEVEL", "info")
+	cfg.Log.Format = getEnv("LOG_FORMAT", "json")
+
+	return cfg, nil
+}
+
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}

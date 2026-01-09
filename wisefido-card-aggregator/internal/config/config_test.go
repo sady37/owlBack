@@ -35,14 +35,6 @@ func TestLoad_DefaultValues(t *testing.T) {
 		t.Errorf("Expected REDIS_ADDR default 'localhost:6379', got '%s'", cfg.Redis.Addr)
 	}
 	
-	if cfg.Aggregator.TriggerMode != "polling" {
-		t.Errorf("Expected CARD_TRIGGER_MODE default 'polling', got '%s'", cfg.Aggregator.TriggerMode)
-	}
-	
-	if cfg.Aggregator.Polling.Interval != 1800 {
-		t.Errorf("Expected polling interval default 1800 (30 minutes), got %d", cfg.Aggregator.Polling.Interval)
-	}
-	
 	if cfg.Log.Level != "info" {
 		t.Errorf("Expected LOG_LEVEL default 'info', got '%s'", cfg.Log.Level)
 	}
@@ -55,7 +47,6 @@ func TestLoad_EnvironmentVariables(t *testing.T) {
 	os.Setenv("DB_PASSWORD", "test-password")
 	os.Setenv("DB_NAME", "test-db")
 	os.Setenv("TENANT_ID", "test-tenant-id")
-	os.Setenv("CARD_TRIGGER_MODE", "events")
 	os.Setenv("LOG_LEVEL", "debug")
 	
 	defer func() {
@@ -64,7 +55,6 @@ func TestLoad_EnvironmentVariables(t *testing.T) {
 		os.Unsetenv("DB_PASSWORD")
 		os.Unsetenv("DB_NAME")
 		os.Unsetenv("TENANT_ID")
-		os.Unsetenv("CARD_TRIGGER_MODE")
 		os.Unsetenv("LOG_LEVEL")
 	}()
 	
@@ -92,10 +82,6 @@ func TestLoad_EnvironmentVariables(t *testing.T) {
 	
 	if cfg.Aggregator.TenantID != "test-tenant-id" {
 		t.Errorf("Expected TENANT_ID 'test-tenant-id', got '%s'", cfg.Aggregator.TenantID)
-	}
-	
-	if cfg.Aggregator.TriggerMode != "events" {
-		t.Errorf("Expected CARD_TRIGGER_MODE 'events', got '%s'", cfg.Aggregator.TriggerMode)
 	}
 	
 	if cfg.Log.Level != "debug" {

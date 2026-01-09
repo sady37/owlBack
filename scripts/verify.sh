@@ -42,7 +42,7 @@ fi
 # 3. 编译检查
 echo ""
 echo "3. 编译所有服务..."
-services=("wisefido-radar" "wisefido-sleepace" "wisefido-data-transformer" "wisefido-sensor-fusion")
+services=("wisefido-radar" "wisefido-sleepace" "wisefido-data-transformer" "wisefido-card-aggregator" "wisefido-card-manage")
 failed_services=()
 
 for service in "${services[@]}"; do
