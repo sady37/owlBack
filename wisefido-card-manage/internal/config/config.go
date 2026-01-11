@@ -50,7 +50,16 @@ func Load() (*Config, error) {
 
 	// 从环境变量加载（默认值）
 	cfg.Database.Host = getEnv("DB_HOST", "localhost")
-	cfg.Database.Port = 5432
+	// 默认端口使用环境变量，如果没有则使用 5433（与 Docker PostgreSQL 一致）
+	if portStr := getEnv("DB_PORT", ""); portStr != "" {
+		if port, err := strconv.Atoi(portStr); err == nil && port > 0 {
+			cfg.Database.Port = port
+		} else {
+			cfg.Database.Port = 5433 // 默认使用 5433（Docker PostgreSQL 端口）
+		}
+	} else {
+		cfg.Database.Port = 5433 // 默认使用 5433（Docker PostgreSQL 端口）
+	}
 	cfg.Database.User = getEnv("DB_USER", "postgres")
 	cfg.Database.Password = getEnv("DB_PASSWORD", "postgres")
 	cfg.Database.Database = getEnv("DB_NAME", "owlrd")

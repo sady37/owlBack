@@ -53,7 +53,7 @@
 ### 1. 数据源整合
 - ✅ PostgreSQL: 卡片基础信息、设备列表、住户列表
 - ✅ Redis: 实时数据（来自 wisefido-sensor-fusion）
-- ✅ Redis: 报警数据（来自 wisefido-alarm）
+- ✅ Redis: 报警数据（来自 wisefido-ai）
 
 ### 2. 数据转换
 - ✅ SNOMED 编码转换为数字（sleep_stage, bed_status, postures）

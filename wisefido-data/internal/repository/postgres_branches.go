@@ -24,28 +24,50 @@ func NewPostgresBranchesRepository(db *sql.DB) *PostgresBranchesRepository {
 var _ BranchesRepository = (*PostgresBranchesRepository)(nil)
 
 // GetBranch 获取院区信息（通过 branch_id）
+// 如果 tenantID 为空，只通过 branchID 查询（branch_id 是主键，全局唯一）
 func (r *PostgresBranchesRepository) GetBranch(ctx context.Context, tenantID, branchID string) (*domain.Branch, error) {
-	if tenantID == "" || branchID == "" {
+	if branchID == "" {
 		return nil, sql.ErrNoRows
 	}
 
-	query := `
-		SELECT 
-			branch_id::text,
-			tenant_id::text,
-			branch_name,
-			description,
-			created_at,
-			updated_at
-		FROM branches
-		WHERE tenant_id = $1 AND branch_id = $2
-	`
+	var query string
+	var args []any
+
+	if tenantID == "" {
+		// 只通过 branch_id 查询（branch_id 是主键，全局唯一）
+		query = `
+			SELECT 
+				branch_id::text,
+				tenant_id::text,
+				branch_name,
+				description,
+				created_at,
+				updated_at
+			FROM branches
+			WHERE branch_id = $1
+		`
+		args = []any{branchID}
+	} else {
+		// 通过 tenant_id 和 branch_id 查询（更精确）
+		query = `
+			SELECT 
+				branch_id::text,
+				tenant_id::text,
+				branch_name,
+				description,
+				created_at,
+				updated_at
+			FROM branches
+			WHERE tenant_id = $1 AND branch_id = $2
+		`
+		args = []any{tenantID, branchID}
+	}
 
 	var branch domain.Branch
 	var description sql.NullString
 	var createdAt, updatedAt sql.NullTime
 
-	err := r.db.QueryRowContext(ctx, query, tenantID, branchID).Scan(
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(
 		&branch.BranchID,
 		&branch.TenantID,
 		&branch.BranchName,
@@ -55,7 +77,7 @@ func (r *PostgresBranchesRepository) GetBranch(ctx context.Context, tenantID, br
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("branch not found: tenant_id '%s', branch_id '%s'", tenantID, branchID)
+			return nil, fmt.Errorf("branch not found: branch_id '%s'", branchID)
 		}
 		return nil, fmt.Errorf("failed to get branch: %w", err)
 	}

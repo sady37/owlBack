@@ -11,7 +11,7 @@ import (
 	"wisefido-card-aggregator/internal/consumer"
 	"wisefido-card-aggregator/internal/fusion"
 	"wisefido-card-aggregator/internal/repository"
-	
+
 	"owl-common/database"
 	rediscommon "owl-common/redis"
 
@@ -38,13 +38,13 @@ func NewAggregatorService(cfg *config.Config, logger *zap.Logger) (*AggregatorSe
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
-	
+
 	// 初始化 Redis（用于事件驱动模式和数据聚合）
 	redisClient := rediscommon.NewRedisClient(&cfg.Redis)
 	if err := rediscommon.Ping(context.Background(), redisClient); err != nil {
 		return nil, fmt.Errorf("failed to connect to redis: %w", err)
 	}
-	
+
 	// 创建 Repository
 	cardRepo := repository.NewCardRepository(db, logger)
 
@@ -89,7 +89,7 @@ func NewAggregatorService(cfg *config.Config, logger *zap.Logger) (*AggregatorSe
 			)
 		}
 	}
-	
+
 	return &AggregatorService{
 		config:            cfg,
 		logger:            logger,
@@ -108,7 +108,7 @@ func (s *AggregatorService) Start(ctx context.Context) error {
 		zap.Bool("aggregation_enabled", s.config.Aggregator.Aggregation.Enabled),
 		zap.Bool("iot_stream_enabled", s.config.Aggregator.IoTStream.Enabled),
 	)
-	
+
 	// 启动数据聚合任务（如果启用）
 	if s.config.Aggregator.Aggregation.Enabled {
 		go s.startDataAggregation(ctx)
@@ -127,7 +127,6 @@ func (s *AggregatorService) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil
 }
-
 
 // startDataAggregation 启动数据聚合任务
 func (s *AggregatorService) startDataAggregation(ctx context.Context) {
@@ -219,22 +218,21 @@ func (s *AggregatorService) aggregateAllCards(ctx context.Context) error {
 // Stop 停止服务
 func (s *AggregatorService) Stop(ctx context.Context) error {
 	s.logger.Info("Stopping card aggregator service")
-	
+
 	// 关闭 Redis
 	if s.redisClient != nil {
 		if err := rediscommon.Close(s.redisClient); err != nil {
 			s.logger.Error("Error closing redis connection", zap.Error(err))
 		}
 	}
-	
+
 	// 关闭数据库
 	if s.db != nil {
 		if err := s.db.Close(); err != nil {
 			s.logger.Error("Error closing database connection", zap.Error(err))
 		}
 	}
-	
+
 	s.logger.Info("Card aggregator service stopped")
 	return nil
 }
-

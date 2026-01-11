@@ -13,9 +13,9 @@ import (
 
 // CacheManager Redis 缓存管理器（用于数据聚合）
 type CacheManager struct {
-	config      *config.Config
-	kv          KVStore
-	logger      *zap.Logger
+	config *config.Config
+	kv     KVStore
+	logger *zap.Logger
 }
 
 // NewCacheManager 创建缓存管理器
@@ -25,9 +25,9 @@ func NewCacheManager(
 	logger *zap.Logger,
 ) *CacheManager {
 	return &CacheManager{
-		config:      cfg,
-		kv:          kv,
-		logger:      logger,
+		config: cfg,
+		kv:     kv,
+		logger: logger,
 	}
 }
 
@@ -78,4 +78,3 @@ func (c *CacheManager) UpdateFullCardCache(ctx context.Context, cardID string, v
 
 	return nil
 }
-

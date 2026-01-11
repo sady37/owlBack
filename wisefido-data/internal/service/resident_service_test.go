@@ -127,9 +127,9 @@ func createTestUserForCreateResident(t *testing.T, db *sql.DB, tenantID, userID,
 		err := db.QueryRow(`SELECT branch_id::text FROM branches WHERE tenant_id = $1 AND branch_name = $2`, tenantID, branchTag).Scan(&branchID)
 		if err == nil {
 			_, err = db.Exec(
-				`INSERT INTO user_branches (tenant_id, user_id, branch_id, is_primary)
-				 VALUES ($1, $2, $3, true)
-				 ON CONFLICT (tenant_id, user_id, branch_id) DO UPDATE SET is_primary = EXCLUDED.is_primary`,
+				`INSERT INTO user_branches (tenant_id, user_id, branch_id)
+				 VALUES ($1, $2, $3)
+				 ON CONFLICT (tenant_id, user_id, branch_id) DO NOTHING`,
 				tenantID, userID, branchID,
 			)
 			require.NoError(t, err)

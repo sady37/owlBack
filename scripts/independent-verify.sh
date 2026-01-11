@@ -35,13 +35,13 @@ cd /Users/sady3721/project/owlBack
 
 # 1. 代码格式检查
 echo "1. 代码格式检查 (go fmt)..."
-$GO_CMD fmt ./wisefido-radar/... ./wisefido-sleepace/... ./wisefido-data-transformer/... ./wisefido-card-aggregator/... ./wisefido-card-manage/... > /dev/null 2>&1
+$GO_CMD fmt ./wisefido-radar/... ./wisefido-sleepace/... ./wisefido-iot-timeseries/... ./wisefido-card-aggregator/... ./wisefido-card-manage/... ./wisefido-ai/... ./wisefido-data/... > /dev/null 2>&1
 echo -e "${GREEN}✅ 代码格式正确${NC}"
 
 # 2. 代码规范检查
 echo ""
 echo "2. 代码规范检查 (go vet)..."
-if $GO_CMD vet ./wisefido-radar/... ./wisefido-sleepace/... ./wisefido-data-transformer/... ./wisefido-card-aggregator/... ./wisefido-card-manage/... 2>&1 | grep -v "vendor"; then
+if $GO_CMD vet ./wisefido-radar/... ./wisefido-sleepace/... ./wisefido-iot-timeseries/... ./wisefido-card-aggregator/... ./wisefido-card-manage/... ./wisefido-ai/... ./wisefido-data/... 2>&1 | grep -v "vendor"; then
     echo -e "${YELLOW}⚠️  代码规范检查有警告${NC}"
 else
     echo -e "${GREEN}✅ 代码规范检查通过${NC}"

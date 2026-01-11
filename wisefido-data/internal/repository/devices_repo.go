@@ -21,7 +21,7 @@ type DevicesRepository interface {
 	UpdateDevice(ctx context.Context, tenantID, deviceID string, device *domain.Device) error
 	
 	// UpdateDeviceWithFlags 更新设备（带更新标志，用于区分字段是否在 payload 中）
-	UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID bool) error
+	UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID, updateBusinessAccess, updateMonitoringEnabled bool) error
 
 	// UpdateDeviceFields 更新设备（使用更新模型）
 	// 支持区分"不更新"、"更新"、"删除"三种状态

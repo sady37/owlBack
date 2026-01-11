@@ -11,7 +11,7 @@
 
 **理由**：
 1. ✅ 项目已有 Redis Streams 基础设施（`owl-common/redis/streams.go`）
-2. ✅ 其他服务（`wisefido-sensor-fusion`, `wisefido-data-transformer`）都在使用
+2. ✅ 其他服务（`wisefido-iot-timeseries`, `wisefido-ai`）都在使用
 3. ✅ 支持消息持久化和消费者组
 4. ✅ 解耦：API 层发布事件，卡片聚合服务消费事件
 

@@ -103,7 +103,8 @@ func TestUserService_ListUsers_Success(t *testing.T) {
 	// 创建 Service
 	usersRepo := repository.NewPostgresUsersRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	userService := NewUserService(usersRepo, branchesRepo, db, getTestLoggerForUser())
+	userBranchesRepo := repository.NewPostgresUserBranchesRepository(db)
+	userService := NewUserService(usersRepo, branchesRepo, userBranchesRepo, db, getTestLoggerForUser())
 
 	// 创建测试用户
 	userID1 := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000001", tenantID, "user1", "password1", "user1@test.com", "1234567890", "Admin", "BRANCH-1")
@@ -683,7 +684,8 @@ func TestUserService_GetAccountSettings_Success(t *testing.T) {
 	// 创建 Service
 	usersRepo := repository.NewPostgresUsersRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	userService := NewUserService(usersRepo, branchesRepo, db, getTestLoggerForUser())
+	userBranchesRepo := repository.NewPostgresUserBranchesRepository(db)
+	userService := NewUserService(usersRepo, branchesRepo, userBranchesRepo, db, getTestLoggerForUser())
 
 	// 创建测试用户
 	userID := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000001", tenantID, "testuser", "password123", "test@example.com", "1234567890", "Admin", "BRANCH-1")
@@ -725,7 +727,8 @@ func TestUserService_GetAccountSettings_PermissionDenied(t *testing.T) {
 	// 创建 Service
 	usersRepo := repository.NewPostgresUsersRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	userService := NewUserService(usersRepo, branchesRepo, db, getTestLoggerForUser())
+	userBranchesRepo := repository.NewPostgresUserBranchesRepository(db)
+	userService := NewUserService(usersRepo, branchesRepo, userBranchesRepo, db, getTestLoggerForUser())
 
 	// 创建两个测试用户
 	userID1 := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000001", tenantID, "user1", "password1", "user1@test.com", "1234567890", "Nurse", "BRANCH-1")
@@ -765,7 +768,8 @@ func TestUserService_UpdateAccountSettings_Success(t *testing.T) {
 	// 创建 Service
 	usersRepo := repository.NewPostgresUsersRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	userService := NewUserService(usersRepo, branchesRepo, db, getTestLoggerForUser())
+	userBranchesRepo := repository.NewPostgresUserBranchesRepository(db)
+	userService := NewUserService(usersRepo, branchesRepo, userBranchesRepo, db, getTestLoggerForUser())
 
 	// 创建测试用户
 	userID := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000001", tenantID, "testuser", "password123", "old@example.com", "1111111111", "Admin", "BRANCH-1")
@@ -848,7 +852,8 @@ func TestUserService_UpdateAccountSettings_EmailUniqueness(t *testing.T) {
 	// 创建 Service
 	usersRepo := repository.NewPostgresUsersRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	userService := NewUserService(usersRepo, branchesRepo, db, getTestLoggerForUser())
+	userBranchesRepo := repository.NewPostgresUserBranchesRepository(db)
+	userService := NewUserService(usersRepo, branchesRepo, userBranchesRepo, db, getTestLoggerForUser())
 
 	// 创建两个测试用户
 	_ = createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000001", tenantID, "user1", "password1", "user1@test.com", "1111111111", "Admin", "BRANCH-1")
@@ -890,7 +895,8 @@ func TestUserService_UpdateAccountSettings_PermissionDenied(t *testing.T) {
 	// 创建 Service
 	usersRepo := repository.NewPostgresUsersRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	userService := NewUserService(usersRepo, branchesRepo, db, getTestLoggerForUser())
+	userBranchesRepo := repository.NewPostgresUserBranchesRepository(db)
+	userService := NewUserService(usersRepo, branchesRepo, userBranchesRepo, db, getTestLoggerForUser())
 
 	// 创建两个测试用户
 	userID1 := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000001", tenantID, "user1", "password1", "user1@test.com", "1111111111", "Nurse", "BRANCH-1")
@@ -932,7 +938,8 @@ func TestUserService_UpdateAccountSettings_DeleteEmail(t *testing.T) {
 	// 创建 Service
 	usersRepo := repository.NewPostgresUsersRepository(db)
 	branchesRepo := repository.NewPostgresBranchesRepository(db)
-	userService := NewUserService(usersRepo, branchesRepo, db, getTestLoggerForUser())
+	userBranchesRepo := repository.NewPostgresUserBranchesRepository(db)
+	userService := NewUserService(usersRepo, branchesRepo, userBranchesRepo, db, getTestLoggerForUser())
 
 	// 创建测试用户（有邮箱）
 	userID := createTestUserForUser(t, db, "00000000-0000-0000-0000-000000000001", tenantID, "testuser", "password123", "test@example.com", "1234567890", "Admin", "BRANCH-1")

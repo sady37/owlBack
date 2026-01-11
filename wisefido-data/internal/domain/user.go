@@ -39,9 +39,9 @@ type User struct {
 	LastLoginAt sql.NullTime   `db:"last_login_at"` // nullable
 	Tags        sql.NullString `db:"user_tags"`     // nullable, JSONB数组
 
-	// 院区信息（通过 JOIN user_branches 和 branches 获取主院区）
-	BranchID   sql.NullString `db:"branch_id"`   // nullable, 主院区ID
-	BranchName sql.NullString `db:"branch_name"` // nullable, 主院区名称（向后兼容：也作为 BranchTag）
+	// 院区信息（通过 JOIN user_branches 和 branches 获取第一个院区，按 branch_name 排序）
+	BranchID   sql.NullString `db:"branch_id"`   // nullable, 第一个院区ID（按 branch_name 排序，用于向后兼容）
+	BranchName sql.NullString `db:"branch_name"` // nullable, 第一个院区名称（用于向后兼容显示）
 
 	// 偏好设置
 	Preferences sql.NullString `db:"preferences"` // nullable, JSONB, default '{}'::jsonb

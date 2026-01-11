@@ -32,4 +32,4 @@ require (
 
 replace owl-common => ../owl-common
 
-replace wisefido-alarm => ../wisefido-alarm
+replace wisefido-ai => ../wisefido-ai

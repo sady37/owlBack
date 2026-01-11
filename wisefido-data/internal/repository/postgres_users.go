@@ -56,7 +56,12 @@ func (r *PostgresUsersRepository) GetUser(ctx context.Context, tenantID, userID 
 			COALESCE(b.branch_name, NULL) as branch_name,
 			u.preferences::text
 		FROM users u
-		LEFT JOIN user_branches ub ON ub.user_id = u.user_id AND ub.tenant_id = u.tenant_id AND ub.is_primary = TRUE
+		LEFT JOIN LATERAL (
+			SELECT ub2.branch_id FROM user_branches ub2
+			LEFT JOIN branches b2 ON b2.branch_id = ub2.branch_id
+			WHERE ub2.user_id = u.user_id AND ub2.tenant_id = u.tenant_id 
+			ORDER BY COALESCE(b2.branch_name, '') ASC LIMIT 1
+		) ub ON true
 		LEFT JOIN branches b ON b.branch_id = ub.branch_id
 		WHERE u.tenant_id = $1 AND u.user_id = $2
 	`
@@ -165,7 +170,12 @@ func (r *PostgresUsersRepository) GetUserByAccount(ctx context.Context, tenantID
 			COALESCE(b.branch_name, NULL) as branch_name,
 			u.preferences::text
 		FROM users u
-		LEFT JOIN user_branches ub ON ub.user_id = u.user_id AND ub.tenant_id = u.tenant_id AND ub.is_primary = TRUE
+		LEFT JOIN LATERAL (
+			SELECT ub2.branch_id FROM user_branches ub2
+			LEFT JOIN branches b2 ON b2.branch_id = ub2.branch_id
+			WHERE ub2.user_id = u.user_id AND ub2.tenant_id = u.tenant_id 
+			ORDER BY COALESCE(b2.branch_name, '') ASC LIMIT 1
+		) ub ON true
 		LEFT JOIN branches b ON b.branch_id = ub.branch_id
 		WHERE u.tenant_id = $1 AND u.user_account = $2
 	`
@@ -269,7 +279,12 @@ func (r *PostgresUsersRepository) GetUserByEmail(ctx context.Context, tenantID s
 			COALESCE(b.branch_name, NULL) as branch_name,
 			u.preferences::text
 		FROM users u
-		LEFT JOIN user_branches ub ON ub.user_id = u.user_id AND ub.tenant_id = u.tenant_id AND ub.is_primary = TRUE
+		LEFT JOIN LATERAL (
+			SELECT ub2.branch_id FROM user_branches ub2
+			LEFT JOIN branches b2 ON b2.branch_id = ub2.branch_id
+			WHERE ub2.user_id = u.user_id AND ub2.tenant_id = u.tenant_id 
+			ORDER BY COALESCE(b2.branch_name, '') ASC LIMIT 1
+		) ub ON true
 		LEFT JOIN branches b ON b.branch_id = ub.branch_id
 		WHERE u.tenant_id = $1 AND u.email_hash = $2
 	`
@@ -373,7 +388,12 @@ func (r *PostgresUsersRepository) GetUserByPhone(ctx context.Context, tenantID s
 			COALESCE(b.branch_name, NULL) as branch_name,
 			u.preferences::text
 		FROM users u
-		LEFT JOIN user_branches ub ON ub.user_id = u.user_id AND ub.tenant_id = u.tenant_id AND ub.is_primary = TRUE
+		LEFT JOIN LATERAL (
+			SELECT ub2.branch_id FROM user_branches ub2
+			LEFT JOIN branches b2 ON b2.branch_id = ub2.branch_id
+			WHERE ub2.user_id = u.user_id AND ub2.tenant_id = u.tenant_id 
+			ORDER BY COALESCE(b2.branch_name, '') ASC LIMIT 1
+		) ub ON true
 		LEFT JOIN branches b ON b.branch_id = ub.branch_id
 		WHERE u.tenant_id = $1 AND u.phone_hash = $2
 	`
@@ -502,7 +522,7 @@ func (r *PostgresUsersRepository) ListUsers(ctx context.Context, tenantID string
 	}
 
 	// 计算总数
-	countQuery := "SELECT COUNT(*) FROM users u LEFT JOIN user_branches ub ON ub.user_id = u.user_id AND ub.tenant_id = u.tenant_id AND ub.is_primary = TRUE LEFT JOIN branches b ON b.branch_id = ub.branch_id WHERE " + strings.Join(where, " AND ")
+	countQuery := "SELECT COUNT(*) FROM users u LEFT JOIN LATERAL (SELECT ub2.branch_id FROM user_branches ub2 LEFT JOIN branches b2 ON b2.branch_id = ub2.branch_id WHERE ub2.user_id = u.user_id AND ub2.tenant_id = u.tenant_id ORDER BY COALESCE(b2.branch_name, '') ASC LIMIT 1) ub ON true LEFT JOIN branches b ON b.branch_id = ub.branch_id WHERE " + strings.Join(where, " AND ")
 	var total int
 	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
@@ -541,7 +561,12 @@ func (r *PostgresUsersRepository) ListUsers(ctx context.Context, tenantID string
 			COALESCE(b.branch_name, NULL) as branch_name,
 			u.preferences::text
 		FROM users u
-		LEFT JOIN user_branches ub ON ub.user_id = u.user_id AND ub.tenant_id = u.tenant_id AND ub.is_primary = TRUE
+		LEFT JOIN LATERAL (
+			SELECT ub2.branch_id FROM user_branches ub2
+			LEFT JOIN branches b2 ON b2.branch_id = ub2.branch_id
+			WHERE ub2.user_id = u.user_id AND ub2.tenant_id = u.tenant_id 
+			ORDER BY COALESCE(b2.branch_name, '') ASC LIMIT 1
+		) ub ON true
 		LEFT JOIN branches b ON b.branch_id = ub.branch_id
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY u.user_account ASC
@@ -776,10 +801,10 @@ func (r *PostgresUsersRepository) CreateUser(ctx context.Context, tenantID strin
 	}
 
 	if branchIDToUse.Valid && branchIDToUse.String != "" {
-		// 在 user_branches 表中创建主院区关联（is_primary = TRUE）
+		// 在 user_branches 表中创建院区关联
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO user_branches (tenant_id, user_id, branch_id, is_primary)
-			 VALUES ($1, $2, $3, TRUE)
+			`INSERT INTO user_branches (tenant_id, user_id, branch_id)
+			 VALUES ($1, $2, $3)
 			 ON CONFLICT (tenant_id, user_id, branch_id) DO NOTHING`,
 			tenantID, userID, branchIDToUse.String,
 		)
@@ -816,16 +841,12 @@ func (r *PostgresUsersRepository) UpdateUser(ctx context.Context, tenantID, user
 	}
 	defer tx.Rollback()
 
-	// 获取旧的tags和branch_name（从 user_branches 表获取主院区）
-	var oldTags, oldBranchName sql.NullString
+	// 获取旧的tags（用于验证 JSON 格式，不再获取 branch_name，因为 user_branches 由 Service 层管理）
+	var oldTags sql.NullString
 	err = tx.QueryRowContext(ctx,
-		`SELECT u.user_tags::text, COALESCE(b.branch_name, NULL) as branch_name 
-		 FROM users u 
-		 LEFT JOIN user_branches ub ON ub.user_id = u.user_id AND ub.tenant_id = u.tenant_id AND ub.is_primary = TRUE
-		 LEFT JOIN branches b ON b.branch_id = ub.branch_id 
-		 WHERE u.tenant_id = $1 AND u.user_id = $2`,
+		`SELECT u.user_tags::text FROM users u WHERE u.tenant_id = $1 AND u.user_id = $2`,
 		tenantID, userID,
-	).Scan(&oldTags, &oldBranchName)
+	).Scan(&oldTags)
 	if err != nil {
 		return fmt.Errorf("failed to get old user data: %w", err)
 	}
@@ -1018,70 +1039,10 @@ func (r *PostgresUsersRepository) UpdateUser(ctx context.Context, tenantID, user
 	// 用户 tags 直接存储在 users.user_tags (JSONB) 字段中
 	// tags 的更新已经通过上面的 UPDATE 语句完成
 
-	// 处理 branch 更新：更新 user_branches 表
-	// 优先使用 BranchID，如果没有则使用 BranchName 查找
-	var branchIDToUse sql.NullString
-	if user.BranchID.Valid && user.BranchID.String != "" {
-		branchIDToUse = user.BranchID
-	} else if user.BranchName.Valid && user.BranchName.String != "" {
-		// 通过 branch_name 查找 branch_id
-		err = tx.QueryRowContext(ctx,
-			`SELECT branch_id::text FROM branches WHERE tenant_id = $1 AND branch_name = $2`,
-			tenantID, user.BranchName.String,
-		).Scan(&branchIDToUse)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("branch not found: branch_name '%s'", user.BranchName.String)
-			}
-			return fmt.Errorf("failed to find branch: %w", err)
-		}
-	}
-
-	// 检查是否需要更新 branch 关联
-	oldBranchNameValue := ""
-	if oldBranchName.Valid {
-		oldBranchNameValue = oldBranchName.String
-	}
-	newBranchNameValue := ""
-	if user.BranchName.Valid {
-		newBranchNameValue = user.BranchName.String
-	}
-
-	if oldBranchNameValue != newBranchNameValue {
-		if branchIDToUse.Valid && branchIDToUse.String != "" {
-			// 删除该用户的所有主院区关联
-			_, err = tx.ExecContext(ctx,
-				`UPDATE user_branches SET is_primary = FALSE 
-				 WHERE tenant_id = $1 AND user_id = $2 AND is_primary = TRUE`,
-				tenantID, userID,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to clear primary branches: %w", err)
-			}
-
-			// 创建或更新主院区关联（is_primary = TRUE）
-			_, err = tx.ExecContext(ctx,
-				`INSERT INTO user_branches (tenant_id, user_id, branch_id, is_primary)
-				 VALUES ($1, $2, $3, TRUE)
-				 ON CONFLICT (tenant_id, user_id, branch_id) 
-				 DO UPDATE SET is_primary = TRUE`,
-				tenantID, userID, branchIDToUse.String,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to update user branch association: %w", err)
-			}
-		} else {
-			// 如果 branch_name 为空，删除所有主院区关联
-			_, err = tx.ExecContext(ctx,
-				`UPDATE user_branches SET is_primary = FALSE 
-				 WHERE tenant_id = $1 AND user_id = $2 AND is_primary = TRUE`,
-				tenantID, userID,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to clear primary branches: %w", err)
-			}
-		}
-	}
+	// 注意：user_branches 表的更新现在由 Service 层的 updateUserBranches 函数统一管理
+	// Repository 层的 UpdateUser 不再处理 user_branches 表的更新，避免与 Service 层逻辑冲突
+	// users.branch_id 和 users.branch_name 字段仅用于向后兼容，通过 LEFT JOIN LATERAL 从 user_branches 表获取
+	// 这些字段不应该在 Repository 层的 UpdateUser 中更新，因为它们是从 user_branches 表派生出来的
 
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)

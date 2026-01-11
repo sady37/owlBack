@@ -72,12 +72,12 @@ check_dependencies() {
     echo ""
     echo "🔍 Checking dependencies..."
     
-    # 检查 PostgreSQL
+    # 检查 PostgreSQL（端口 5433，与 start_owlback.sh 保持一致）
     if command -v nc > /dev/null 2>&1; then
-        if nc -zv 127.0.0.1 5432 > /dev/null 2>&1; then
-            echo -e "${GREEN}✅ PostgreSQL (127.0.0.1:5432) is accessible${NC}"
+        if nc -zv 127.0.0.1 5433 > /dev/null 2>&1; then
+            echo -e "${GREEN}✅ PostgreSQL (127.0.0.1:5433) is accessible${NC}"
         else
-            echo -e "${RED}❌ PostgreSQL (127.0.0.1:5432) is not accessible${NC}"
+            echo -e "${RED}❌ PostgreSQL (127.0.0.1:5433) is not accessible${NC}"
             echo "  Please start it: docker-compose up -d postgresql"
             return 1
         fi
@@ -132,9 +132,15 @@ export RADAR_HTTPS_PORT=8443
 
 # 证书文件配置
 # 如果证书文件不存在，运行 ./generate-cert.sh 生成自签名证书
-CERT_DIR="${RADAR_CERT_DIR:-.}"
+# 获取脚本所在目录（wisefido-radar 目录）
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CERT_DIR="${RADAR_CERT_DIR:-$SCRIPT_DIR}"
 CERT_FILE="${RADAR_HTTPS_CERT_FILE:-$CERT_DIR/server.crt}"
 KEY_FILE="${RADAR_HTTPS_KEY_FILE:-$CERT_DIR/server.key}"
+
+# 转换为绝对路径（确保路径正确）
+CERT_FILE=$(cd "$(dirname "$CERT_FILE")" && pwd)/$(basename "$CERT_FILE")
+KEY_FILE=$(cd "$(dirname "$KEY_FILE")" && pwd)/$(basename "$KEY_FILE")
 
 # 检查证书文件是否存在
 if [ ! -f "$CERT_FILE" ] || [ ! -f "$KEY_FILE" ]; then
@@ -152,6 +158,7 @@ if [ ! -f "$CERT_FILE" ] || [ ! -f "$KEY_FILE" ]; then
     echo "⚠️  Starting without TLS (HTTP only - not recommended for production)"
     echo ""
 else
+    # 使用绝对路径设置环境变量
     export RADAR_HTTPS_CERT_FILE="$CERT_FILE"
     export RADAR_HTTPS_KEY_FILE="$KEY_FILE"
     echo "✅ Using TLS certificates:"
@@ -160,9 +167,9 @@ else
     echo ""
 fi
 
-# 数据库配置（使用 127.0.0.1 避免 IPv6 问题）
+# 数据库配置（使用 127.0.0.1 避免 IPv6 问题，端口 5433 与 start_owlback.sh 保持一致）
 export DB_HOST=127.0.0.1
-export DB_PORT=5432
+export DB_PORT=5433
 export DB_USER=postgres
 export DB_PASSWORD=postgres
 export DB_NAME=owlrd
@@ -170,7 +177,7 @@ export DB_SSLMODE=disable
 
 # Redis 配置（使用 127.0.0.1 避免 IPv6 问题）
 export REDIS_ADDR=127.0.0.1:6379
-export REDIS_PASSWORD=
+export REDIS_PASSWORD=TeLunSu-36kr
 export REDIS_DB=0
 
 # MQTT 配置（wisefido-radar 服务连接 MQTT 的配置）
@@ -181,7 +188,7 @@ export MQTT_USERNAME=
 export MQTT_PASSWORD=
 
 # MQTT 配置（返回给设备的配置）
-export RADAR_MQTT_SERVER=10.0.0.30
+export RADAR_MQTT_SERVER=47.77.194.143
 export RADAR_MQTT_PORT=1883
 export RADAR_MQTT_PROTOCOL=1  # 1=不加密
 export RADAR_MQTT_ACCOUNT=wfiot
@@ -210,4 +217,24 @@ echo ""
 echo -e "${GREEN}🚀 Starting wisefido-radar service...${NC}"
 echo ""
 
-go run cmd/wisefido-radar/main.go
+# 日志文件路径
+LOG_FILE="${RADAR_LOG_FILE:-/tmp/owl_radar_startup.log}"
+
+# 确保日志目录存在
+LOG_DIR=$(dirname "$LOG_FILE")
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+
+# 记录启动信息到日志
+echo "==========================================" >> "$LOG_FILE"
+echo "wisefido-radar service starting at $(date)" >> "$LOG_FILE"
+echo "==========================================" >> "$LOG_FILE"
+
+# 如果通过 nohup 启动（stdout 已重定向），直接运行
+# 如果是直接运行，同时输出到控制台和日志
+if [ -t 1 ]; then
+    # 交互式终端，同时输出到控制台和日志
+    go run cmd/wisefido-radar/main.go 2>&1 | tee -a "$LOG_FILE"
+else
+    # 非交互式（nohup），stdout 已重定向，直接运行
+    go run cmd/wisefido-radar/main.go 2>&1
+fi

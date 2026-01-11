@@ -503,7 +503,7 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 	// - 当 building_id 不为空时：直接使用 u.building_id = X
 	// - 当 building_id 为空但 building 不为空时：通过 JOIN buildings 表匹配 building_name = Y
 	// - 当 building_id 和 building 都为空时：不添加 building 过滤条件（查询所有 units，包括 building_id IS NULL 的情况）
-	
+
 	// 处理 branch 过滤
 	if len(filters.BranchIDs) > 0 {
 		// 分支 1：branch_ids 不为空 → 使用 IN 查询
@@ -528,7 +528,7 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 		args = append(args, filters.BranchName)
 		argN++
 	}
-	
+
 	// 处理 building 过滤：优先使用 building_id，如果没有则使用 building_name（向后兼容）
 	if filters.BuildingID != "" {
 		// 优先使用 building_id（UUID 类型）
@@ -1199,7 +1199,7 @@ func (r *PostgresUnitsRepository) ListRooms(ctx context.Context, tenantID, unitI
 		WHERE %s
 		ORDER BY r.room_name
 	`, strings.Join(where, " AND "))
-	
+
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err

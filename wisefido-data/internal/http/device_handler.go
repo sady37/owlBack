@@ -251,7 +251,7 @@ func (h *DeviceHandler) UpdateDevice(w http.ResponseWriter, r *http.Request) {
 	// 3. 数据转换（map → domain.Device）
 	device := payloadToDevice(payload)
 
-	// 4. 检查 payload 中是否包含 bound_room_id 和 bound_bed_id
+	// 4. 检查 payload 中是否包含需要更新的字段
 	// 根据数据库设计文档 (17_devices.sql) 的设备绑定规则：
 	//   - 绑定到 Bed：bound_bed_id IS NOT NULL, bound_room_id IS NULL
 	//   - 绑定到 Room：bound_room_id IS NOT NULL, bound_bed_id IS NULL
@@ -260,6 +260,8 @@ func (h *DeviceHandler) UpdateDevice(w http.ResponseWriter, r *http.Request) {
 	// 如果字段在 payload 中，就需要更新（即使为 null）
 	_, hasBoundRoomID := payload["bound_room_id"]
 	_, hasBoundBedID := payload["bound_bed_id"]
+	_, hasBusinessAccess := payload["business_access"]
+	_, hasMonitoringEnabled := payload["monitoring_enabled"]
 
 	// 5. 调用 Service
 	req := service.UpdateDeviceRequest{
@@ -268,8 +270,10 @@ func (h *DeviceHandler) UpdateDevice(w http.ResponseWriter, r *http.Request) {
 		Device:   device,
 		// 传递 payload 信息，让 Repository 层知道哪些字段需要更新
 		// 如果字段在 payload 中（即使为 null），就更新它
-		UpdateBoundRoomID: hasBoundRoomID,
-		UpdateBoundBedID:  hasBoundBedID,
+		UpdateBoundRoomID:      hasBoundRoomID,
+		UpdateBoundBedID:       hasBoundBedID,
+		UpdateBusinessAccess:   hasBusinessAccess,
+		UpdateMonitoringEnabled: hasMonitoringEnabled,
 	}
 
 	resp, err := h.deviceService.UpdateDevice(ctx, req)

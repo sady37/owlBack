@@ -1,7 +1,7 @@
 package models
 
 // IoTDataMessage iot:data:stream 消息格式
-// 这是从 wisefido-data-transformer 发布到 iot:data:stream 的消息格式
+// 这是从 wisefido-iot-timeseries 发布到 iot:data:stream 的消息格式
 type IoTDataMessage struct {
 	IoTTimeSeriesID int64   `json:"iot_timeseries_id"`
 	DeviceID        string  `json:"device_id"`

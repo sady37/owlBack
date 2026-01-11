@@ -307,7 +307,8 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 			`SELECT ub.branch_id::text, COALESCE(b.branch_name, '') as branch_name
 			 FROM user_branches ub
 			 LEFT JOIN branches b ON ub.branch_id = b.branch_id
-			 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2 AND ub.is_primary = TRUE
+			 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2
+			 ORDER BY COALESCE(b.branch_name, '') ASC
 			 LIMIT 1`,
 			tenantID, userID,
 		).Scan(&branchIDVal, &branchNameVal)
@@ -322,8 +323,9 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 		rows, err := s.db.QueryContext(ctx,
 			`SELECT ub.branch_id::text
 			 FROM user_branches ub
+			 LEFT JOIN branches b ON b.branch_id = ub.branch_id
 			 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2
-			 ORDER BY ub.is_primary DESC, ub.branch_id ASC`,
+			 ORDER BY COALESCE(b.branch_name, '') ASC`,
 			tenantID, userID,
 		)
 		if err == nil {

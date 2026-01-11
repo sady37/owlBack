@@ -48,11 +48,11 @@ type UnitService interface {
 
 // unitService 实现
 type unitService struct {
-	unitsRepo     repository.UnitsRepository
-	branchesRepo  repository.BranchesRepository  // 用于通过 branch_name 查找 branch_id
-	residentsRepo repository.ResidentsRepository // 用于检查 unit 下的 residents
-	devicesRepo   repository.DevicesRepository   // 用于检查 unit 下的 devices
-	db            *sql.DB                        // 用于复杂查询（JOIN、权限过滤，如查询 user_branches）
+	unitsRepo        repository.UnitsRepository
+	branchesRepo     repository.BranchesRepository  // 用于通过 branch_name 查找 branch_id
+	residentsRepo    repository.ResidentsRepository // 用于检查 unit 下的 residents
+	devicesRepo      repository.DevicesRepository   // 用于检查 unit 下的 devices
+	db               *sql.DB                        // 用于复杂查询（JOIN、权限过滤，如查询 user_branches）
 	cardManageClient *CardManageClient              // 用于调用 wisefido-card-manage API
 	logger           *zap.Logger
 }
@@ -77,59 +77,110 @@ func NewUnitService(unitsRepo repository.UnitsRepository, branchesRepo repositor
 //   2. branch: 确保资源属于请求的 branch（通过检查资源的 branch_id 是否匹配）
 // ============================================
 
+// getResourcePermission 查询资源权限配置（Service 层内部方法）
+// 从 role_permissions 表中查询指定角色对指定资源的权限配置
+//
+// 注意: permission_scope 值映射:
+//   - 'A' = All (no restriction) → assigned_only=false, branch_only=false
+//   - 'S' = assigned_only → assigned_only=true, branch_only=false
+//   - 'B' = branch_only → assigned_only=false, branch_only=true
+func (s *unitService) getResourcePermission(ctx context.Context, roleCode, resourceType, permissionType string) (*resourcePermissionCheck, error) {
+	const SystemTenantID = "00000000-0000-0000-0000-000000000001"
+	var permissionScope string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT permission_scope
+		 FROM role_permissions
+		 WHERE tenant_id = $1 
+		   AND role_code = $2 
+		   AND resource_type = $3 
+		   AND permission_type = $4
+		 LIMIT 1`,
+		SystemTenantID, roleCode, resourceType, permissionType,
+	).Scan(&permissionScope)
+
+	if err == sql.ErrNoRows {
+		// 记录不存在：返回最严格的权限（安全默认值）
+		return &resourcePermissionCheck{AssignedOnly: true, BranchOnly: true}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// 将 permission_scope 转换为 assigned_only 和 branch_only 标志
+	var assignedOnly, branchOnly bool
+	switch permissionScope {
+	case "A":
+		// All (no restriction)
+		assignedOnly = false
+		branchOnly = false
+	case "S":
+		// assigned_only
+		assignedOnly = true
+		branchOnly = false
+	case "B":
+		// branch_only
+		assignedOnly = false
+		branchOnly = true
+	default:
+		// 未知值，返回最严格的权限（安全默认值）
+		assignedOnly = true
+		branchOnly = true
+	}
+
+	return &resourcePermissionCheck{AssignedOnly: assignedOnly, BranchOnly: branchOnly}, nil
+}
+
 // getUserBranchID 查询用户所属的 branch_id（Service 层内部方法）
-// 从 user_branches 表查询用户关联的主院区 ID（is_primary = TRUE）
+// 从 user_branches 表查询用户关联的第一个院区 ID
 // 返回：
-//   - branchID: 用户的主院区 ID（is_primary = TRUE，如果存在）
+//   - branchID: 用户的第一个院区 ID（如果存在）
 //   - hasBranches: 用户是否有关联的院区（false 表示可以访问所有院区或 NULL 院区）
 func (s *unitService) getUserBranchID(ctx context.Context, tenantID, userID string) (branchID string, hasBranches bool, err error) {
 	if tenantID == "" || userID == "" {
 		return "", false, nil
 	}
 
-	// 查询用户的主院区（is_primary = TRUE）
+	// 查询用户的第一个院区
 	var branchIDStr sql.NullString
 	err = s.db.QueryRowContext(ctx,
-		`SELECT branch_id::text FROM user_branches 
-		 WHERE tenant_id = $1 AND user_id::text = $2 AND is_primary = TRUE
+		`SELECT ub.branch_id::text FROM user_branches ub
+		 LEFT JOIN branches b ON b.branch_id = ub.branch_id
+		 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2
+		 ORDER BY COALESCE(b.branch_name, '') ASC
 		 LIMIT 1`,
 		tenantID, userID,
 	).Scan(&branchIDStr)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			// 用户没有主院区，检查是否有任何院区关联
-			var count int
-			err2 := s.db.QueryRowContext(ctx,
-				`SELECT COUNT(*) FROM user_branches 
-				 WHERE tenant_id = $1 AND user_id::text = $2`,
-				tenantID, userID,
-			).Scan(&count)
-			if err2 == nil && count > 0 {
-				// 用户有关联的院区，但没有主院区，返回第一个
-				err2 = s.db.QueryRowContext(ctx,
-					`SELECT branch_id::text FROM user_branches 
-					 WHERE tenant_id = $1 AND user_id::text = $2
-					 ORDER BY is_primary DESC, branch_id
-					 LIMIT 1`,
-					tenantID, userID,
-				).Scan(&branchIDStr)
-				if err2 == nil && branchIDStr.Valid {
-					return branchIDStr.String, true, nil
-				}
-			}
-			return "", false, nil // 用户没有关联任何院区
+			// 用户没有关联的院区
+			return "", false, nil
 		}
-		return "", false, fmt.Errorf("failed to query user branches: %w", err)
+		return "", false, fmt.Errorf("failed to query user branch: %w", err)
 	}
 
-	if branchIDStr.Valid {
-		return branchIDStr.String, true, nil
+	if branchIDStr.Valid && branchIDStr.String != "" {
+		// 检查用户是否有关联的院区
+		var count int
+		err2 := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM user_branches 
+			 WHERE tenant_id = $1 AND user_id::text = $2`,
+			tenantID, userID,
+		).Scan(&count)
+		if err2 == nil && count > 0 {
+			// 用户有关联的院区
+			return branchIDStr.String, true, nil
+		}
+		if err2 != nil {
+			return "", false, fmt.Errorf("failed to query user branch count: %w", err2)
+		}
 	}
-	return "", false, nil
+
+	return "", false, nil // 用户没有关联任何院区
 }
 
 // getUserBranchIDs 查询用户所属的所有 branch_id 列表（Service 层内部方法）
 // 从 user_branches 表查询用户关联的所有院区 ID
+// 如果 user_branches 表返回空且 role=Admin，返回所有 Branch_id
 // 返回：
 //   - branchIDs: 用户所属的 branch_id 列表（可能为空）
 //   - hasBranches: 用户是否有关联的院区（false 表示可以访问所有院区或 NULL 院区）
@@ -144,9 +195,6 @@ func (s *unitService) getUserBranchIDs(ctx context.Context, tenantID, userID str
 		tenantID, userID,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, false, nil // 用户没有关联任何院区
-		}
 		return nil, false, fmt.Errorf("failed to query user branches: %w", err)
 	}
 	defer rows.Close()
@@ -164,7 +212,51 @@ func (s *unitService) getUserBranchIDs(ctx context.Context, tenantID, userID str
 		return nil, false, fmt.Errorf("failed to iterate user branches: %w", err)
 	}
 
-	return ids, len(ids) > 0, nil
+	// 如果 user_branches 表返回空，检查是否是 Admin 的 *(ALL) 情况
+	if len(ids) == 0 {
+		return s.handleAdminAllBranches(ctx, tenantID, userID)
+	}
+
+	return ids, true, nil
+}
+
+// handleAdminAllBranches 处理 Admin 的 *(ALL) 情况（user_branches 表为空时返回所有 branch）
+// 返回所有 branch_id 列表
+func (s *unitService) handleAdminAllBranches(ctx context.Context, tenantID, userID string) (branchIDs []string, hasBranches bool, err error) {
+	// 获取用户信息，检查是否是 Admin
+	var userRole sql.NullString
+	err = s.db.QueryRowContext(ctx,
+		`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+		tenantID, userID,
+	).Scan(&userRole)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// 用户不存在，返回空列表
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("failed to get user role: %w", err)
+	}
+
+	// 如果是 Admin 角色，返回所有 branch_id
+	if userRole.Valid && strings.EqualFold(userRole.String, "Admin") {
+		allBranches, _, err := s.branchesRepo.ListBranches(ctx, tenantID, "", 1, 1000)
+		if err != nil {
+			s.logger.Warn("Failed to list all branches for Admin user", zap.String("user_id", userID), zap.Error(err))
+			// 如果查询失败，返回空列表
+			return nil, false, nil
+		}
+
+		// 构建所有 branch_id 列表（直接使用命名返回值 branchIDs）
+		branchIDs = make([]string, 0, len(allBranches))
+		for _, branch := range allBranches {
+			branchIDs = append(branchIDs, branch.BranchID)
+		}
+
+		return branchIDs, true, nil
+	}
+
+	// 非 Admin 角色，返回空列表（未分配状态）
+	return nil, false, nil
 }
 
 // getBranchIDForPermission 统一获取 branch_id 用于权限验证
@@ -208,7 +300,7 @@ func (s *unitService) getBranchIDForPermission(ctx context.Context, tenantID, us
 // 参数：
 //   - tenantID: 必填，用于验证 unit 是否属于该 tenant
 //   - unitID: 必填，要验证的 unit ID
-//   - branchID: 可选，如果提供则验证 unit 是否属于该 branch；如果为空字符串，跳过 branch 验证
+//   - branchID: 可选，如果提供则验证 unit 是否属于该 branch；如果为空字符串，跳过 branch 验证（用于权限 scope 为 'A' 的情况）
 //
 // 返回：
 //   - *domain.Unit: 验证通过后返回 unit 对象
@@ -228,21 +320,77 @@ func (s *unitService) verifyUnitPermission(ctx context.Context, tenantID, unitID
 		return nil, fmt.Errorf("failed to get unit: %w", err)
 	}
 
-	// 2. 验证 branch 权限（如果提供了 branchID）
+	// 2. 验证 branch 权限
+	// 如果提供了 branchID，验证 unit 是否属于该 branch
+	// 如果未提供 branchID（空字符串），表示权限 scope 为 'A'（无限制），跳过 branch 验证
 	if branchID != "" {
 		if !unit.BranchID.Valid || unit.BranchID.String != branchID {
+			// 查询 branch_name（优先使用 branch_name）
+			var branchName sql.NullString
+			if unit.BranchID.Valid {
+				err := s.db.QueryRowContext(ctx,
+					`SELECT branch_name FROM branches WHERE tenant_id = $1 AND branch_id = $2`,
+					tenantID, unit.BranchID.String,
+				).Scan(&branchName)
+				if err != nil && err != sql.ErrNoRows {
+					s.logger.Warn("verifyUnitPermission: failed to get branch_name",
+						zap.String("branch_id", unit.BranchID.String),
+						zap.Error(err),
+					)
+				}
+			}
+
+			// 查询请求的 branch_name
+			var requestedBranchName sql.NullString
+			err := s.db.QueryRowContext(ctx,
+				`SELECT branch_name FROM branches WHERE tenant_id = $1 AND branch_id = $2`,
+				tenantID, branchID,
+			).Scan(&requestedBranchName)
+			if err != nil && err != sql.ErrNoRows {
+				s.logger.Warn("verifyUnitPermission: failed to get requested branch_name",
+					zap.String("branch_id", branchID),
+					zap.Error(err),
+				)
+			}
+
 			s.logger.Warn("verifyUnitPermission: branch_id mismatch",
 				zap.String("tenant_id", tenantID),
 				zap.String("unit_id", unitID),
 				zap.String("requested_branch_id", branchID),
+				zap.String("requested_branch_name", func() string {
+					if requestedBranchName.Valid {
+						return requestedBranchName.String
+					}
+					return ""
+				}()),
 				zap.String("unit_branch_id", func() string {
 					if unit.BranchID.Valid {
 						return unit.BranchID.String
 					}
 					return "NULL"
 				}()),
+				zap.String("unit_branch_name", func() string {
+					if branchName.Valid {
+						return branchName.String
+					}
+					return ""
+				}()),
 			)
-			return nil, fmt.Errorf("permission denied: unit does not belong to branch_id=%s", branchID)
+
+			// 优先使用 branch_name，如果不存在则使用 branch_id
+			var errorMsg string
+			if requestedBranchName.Valid && requestedBranchName.String != "" {
+				// 优先使用 branch_name
+				errorMsg = fmt.Sprintf("permission denied: unit does not belong to branch_name=%s (branch_id=%s)", requestedBranchName.String, branchID)
+			} else {
+				// 如果没有 branch_name，使用 branch_id，并尽可能显示 unit 的 branch_name
+				if branchName.Valid && branchName.String != "" {
+					errorMsg = fmt.Sprintf("permission denied: unit does not belong to branch_id=%s (unit belongs to branch_name=%s)", branchID, branchName.String)
+				} else {
+					errorMsg = fmt.Sprintf("permission denied: unit does not belong to branch_id=%s", branchID)
+				}
+			}
+			return nil, fmt.Errorf(errorMsg)
 		}
 	}
 
@@ -456,20 +604,20 @@ type GetUnitResponse struct {
 }
 
 type CreateUnitRequest struct {
-	TenantID          string // 必填
-	BranchID          string // 可选（优先使用，如果提供则忽略 BranchName）
-	BranchName        string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
-	UnitName          string // 必填
-	BuildingID        string // 可选（优先使用，如果提供则忽略 BuildingName）
-	BuildingName      string // 可选（向后兼容，如果 BuildingID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
-	Floor             string // 可选（默认 "1F"）
-	AreaName          string // 可选
-	UnitNumber        string // 必填
-	LayoutConfig      string // 可选（JSON 字符串）
-	UnitType          string // 必填
-	IsPublicSpace     bool   // 可选（默认 false）
-	IsSharedUnit bool   // 可选（默认 false）- 统一使用 IsSharedUnit，不再使用 IsMultiPersonRoom
-	Timezone          string // 必填
+	TenantID      string // 必填
+	BranchID      string // 可选（优先使用，如果提供则忽略 BranchName）
+	BranchName    string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
+	UnitName      string // 必填
+	BuildingID    string // 可选（优先使用，如果提供则忽略 BuildingName）
+	BuildingName  string // 可选（向后兼容，如果 BuildingID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
+	Floor         string // 可选（默认 "1F"）
+	AreaName      string // 可选
+	UnitNumber    string // 必填
+	LayoutConfig  string // 可选（JSON 字符串）
+	UnitType      string // 必填
+	IsPublicSpace bool   // 可选（默认 false）
+	IsSharedUnit  bool   // 可选（默认 false）- 统一使用 IsSharedUnit，不再使用 IsMultiPersonRoom
+	Timezone      string // 必填
 }
 
 type CreateUnitResponse struct {
@@ -477,21 +625,21 @@ type CreateUnitResponse struct {
 }
 
 type UpdateUnitRequest struct {
-	TenantID          string // 必填
-	UnitID            string // 必填
-	BranchID          string // 可选（优先使用，如果提供则忽略 BranchName）
-	BranchName        string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
-	UnitName          string // 可选
-	BuildingID        string // 可选（优先使用，如果提供则忽略 BuildingName）
-	BuildingName      string // 可选（向后兼容，如果 BuildingID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
-	Floor             string // 可选
-	AreaName          string // 可选
-	UnitNumber        string // 可选
-	LayoutConfig      string // 可选（JSON 字符串）
-	UnitType          string // 可选
-	IsPublicSpace     *bool  // 可选（指针类型，nil 表示不更新）
-	IsSharedUnit *bool  // 可选（指针类型，nil 表示不更新）- 统一使用 IsSharedUnit，不再使用 IsMultiPersonRoom
-	Timezone          string // 可选
+	TenantID      string // 必填
+	UnitID        string // 必填
+	BranchID      string // 可选（优先使用，如果提供则忽略 BranchName）
+	BranchName    string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
+	UnitName      string // 可选
+	BuildingID    string // 可选（优先使用，如果提供则忽略 BuildingName）
+	BuildingName  string // 可选（向后兼容，如果 BuildingID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
+	Floor         string // 可选
+	AreaName      string // 可选
+	UnitNumber    string // 可选
+	LayoutConfig  string // 可选（JSON 字符串）
+	UnitType      string // 可选
+	IsPublicSpace *bool  // 可选（指针类型，nil 表示不更新）
+	IsSharedUnit  *bool  // 可选（指针类型，nil 表示不更新）- 统一使用 IsSharedUnit，不再使用 IsMultiPersonRoom
+	Timezone      string // 可选
 }
 
 type UpdateUnitResponse struct {
@@ -602,10 +750,11 @@ type ListBedsResponse struct {
 }
 
 type GetBedRequest struct {
-	TenantID      string // 必填
-	BedID         string // 必填
-	CurrentUserID string // 必填（用于权限验证，从 user_branches 表查询用户的 branch_id）
-	BranchID      string // 可选（如果提供则验证用户是否有权限访问该 branch，否则从 user_branches 查询）
+	TenantID        string // 必填
+	BedID           string // 必填
+	CurrentUserID   string // 必填（用于权限验证，从 user_branches 表查询用户的 branch_id）
+	CurrentUserRole string // 可选（用于权限验证，检查权限 scope，如果是 'A' 则跳过 branch 验证）
+	BranchID        string // 可选（如果提供则验证用户是否有权限访问该 branch，否则从 user_branches 查询）
 }
 
 type GetBedResponse struct {
@@ -929,7 +1078,7 @@ func (s *unitService) ListUnits(ctx context.Context, req ListUnitsRequest) (*Lis
 		// 如果 BranchID 未提供，则使用 BranchName（向后兼容）
 		branchName = stringValueOrEmpty(req.BranchName)
 	}
-	
+
 	// 优先使用 BuildingID，如果提供则忽略 Building
 	buildingID := stringValueOrEmpty(req.BuildingID)
 	building := ""
@@ -937,7 +1086,7 @@ func (s *unitService) ListUnits(ctx context.Context, req ListUnitsRequest) (*Lis
 		// 如果 BuildingID 未提供，则使用 Building（向后兼容，通过 building_name 过滤）
 		building = stringValueOrEmpty(req.Building)
 	}
-	
+
 	filters := repository.UnitFilters{
 		BranchID:   branchID,
 		BranchName: branchName,
@@ -1016,7 +1165,7 @@ func (s *unitService) ListUnitsWithFullHierarchy(ctx context.Context, req ListUn
 	branchID := stringValueOrEmpty(req.BranchID)
 	branchIDs := []string{}
 	branchName := ""
-	
+
 	if branchID == "" && req.CurrentUserID != "" {
 		// 从 user_branches 表查询用户的所有 branch_id
 		userBranchIDs, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
@@ -2030,14 +2179,76 @@ func (s *unitService) DeleteRoom(ctx context.Context, req DeleteRoomRequest) (*D
 		return nil, fmt.Errorf("current_user_id is required for permission validation")
 	}
 
-	// 2. 获取 branch_id 用于权限验证（从 user_branches 表查询）
-	branchID, _, err := s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
+	// 2. 先获取 room 和 unit 信息（用于确定 unit 的 branch_id）
+	room, err := s.unitsRepo.GetRoom(ctx, req.TenantID, req.RoomID)
 	if err != nil {
-		return nil, err
+		if err == sql.ErrNoRows || strings.Contains(err.Error(), "not found") {
+			return nil, fmt.Errorf("room not found: room_id=%s", req.RoomID)
+		}
+		return nil, fmt.Errorf("failed to get room: %w", err)
 	}
 
-	// 3. 验证权限（tenant + branch）
-	room, unit, err := s.verifyRoomPermission(ctx, req.TenantID, req.RoomID, branchID)
+	unit, err := s.unitsRepo.GetUnit(ctx, req.TenantID, room.UnitID)
+	if err != nil {
+		if err == sql.ErrNoRows || strings.Contains(err.Error(), "not found") {
+			return nil, fmt.Errorf("unit not found: unit_id=%s", room.UnitID)
+		}
+		return nil, fmt.Errorf("failed to get unit: %w", err)
+	}
+
+	// 3. 获取 branch_id 用于权限验证
+	// 如果请求中提供了 branchID，验证用户是否有权限访问该 branch
+	// 如果未提供，检查用户是否属于该 unit 的 branch
+	var branchID string
+	if req.BranchID != "" {
+		// 提供了 branchID，验证用户是否有权限访问该 branch
+		branchID, _, err = s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// 未提供 branchID，检查用户是否属于该 unit 的 branch
+		if unit.BranchID.Valid && unit.BranchID.String != "" {
+			// 检查用户是否属于该 unit 的 branch
+			userBranchIDs, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to verify user branch permission: %w", err)
+			}
+			if hasBranches {
+				// 检查用户的 branch 列表中是否包含 unit 的 branch
+				found := false
+				for _, bid := range userBranchIDs {
+					if bid == unit.BranchID.String {
+						found = true
+						branchID = bid
+						break
+					}
+				}
+				if !found {
+					// 用户不属于该 unit 的 branch
+					var branchName sql.NullString
+					s.db.QueryRowContext(ctx,
+						`SELECT branch_name FROM branches WHERE tenant_id = $1 AND branch_id = $2`,
+						req.TenantID, unit.BranchID.String,
+					).Scan(&branchName)
+					var unitBranchName string
+					if branchName.Valid {
+						unitBranchName = branchName.String
+					}
+					return nil, fmt.Errorf("permission denied: unit does not belong to any of your branches (unit belongs to branch_name=%s, branch_id=%s)", unitBranchName, unit.BranchID.String)
+				}
+			} else {
+				// 用户没有关联任何院区，可以访问所有院区
+				branchID = "" // 空字符串表示跳过 branch 验证
+			}
+		} else {
+			// unit 没有关联 branch，跳过 branch 验证
+			branchID = ""
+		}
+	}
+
+	// 4. 验证权限（tenant + branch）
+	_, _, err = s.verifyRoomPermission(ctx, req.TenantID, req.RoomID, branchID)
 	if err != nil {
 		return nil, err
 	}
@@ -2197,11 +2408,29 @@ func (s *unitService) GetBed(ctx context.Context, req GetBedRequest) (*GetBedRes
 		return nil, fmt.Errorf("current_user_id is required for permission validation")
 	}
 
-	// 获取 branch_id 用于权限验证（从 user_branches 表查询）
-	branchID, _, err := s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
-	if err != nil {
-		return nil, err
+	// 检查权限 scope：如果是 'A'（无限制），跳过 branch 验证
+	var branchID string
+	if req.CurrentUserRole != "" {
+		perm, err := s.getResourcePermission(ctx, req.CurrentUserRole, "beds", "R")
+		if err == nil && !perm.BranchOnly {
+			// 权限 scope 为 'A'，跳过 branch 验证
+			branchID = ""
+		} else {
+			// 权限 scope 为 'B' 或 'S'，需要 branch 验证
+			// 获取 branch_id 用于权限验证（从 user_branches 表查询）
+			branchID, _, err = s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
+			if err != nil {
+				return nil, err
+			}
 		}
+	} else {
+		// 未提供 CurrentUserRole，使用默认逻辑（需要 branch 验证）
+		var err error
+		branchID, _, err = s.getBranchIDForPermission(ctx, req.TenantID, req.CurrentUserID, req.BranchID)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// 验证权限（tenant + branch）
 	bed, _, _, err := s.verifyBedPermission(ctx, req.TenantID, req.BedID, branchID)
@@ -2249,7 +2478,7 @@ func (s *unitService) CreateBed(ctx context.Context, req CreateBedRequest) (*Cre
 	if bedNameTrimmed == "" {
 		return nil, fmt.Errorf("bed_name is required and cannot be empty or whitespace")
 	}
-	
+
 	// 检查是否已存在相同 bed_name 的 bed（在同一 room 下）
 	// ListBeds 需要 tenantID, roomID, 和可选的 currentUserID（用于权限验证，这里传空字符串）
 	beds, err := s.unitsRepo.ListBeds(ctx, req.TenantID, req.RoomID, "")
@@ -2261,7 +2490,7 @@ func (s *unitService) CreateBed(ctx context.Context, req CreateBedRequest) (*Cre
 		)
 		return nil, fmt.Errorf("failed to check bed name uniqueness: %w", err)
 	}
-	
+
 	for _, existingBed := range beds {
 		if strings.EqualFold(existingBed.BedName, bedNameTrimmed) {
 			return nil, fmt.Errorf("bed_name already exists in this room: bed_name='%s' (case-insensitive, constraint: beds_tenant_id_room_id_bed_name_key)", bedNameTrimmed)

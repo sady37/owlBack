@@ -7,7 +7,7 @@ import (
 )
 
 // AlarmEventsRepository 报警事件Repository接口
-// 注意：与 wisefido-alarm 的 Repository 接口保持一致，但使用 wisefido-data 的 domain 模型
+// 注意：与 wisefido-ai 的 Repository 接口保持一致，但使用 wisefido-data 的 domain 模型
 type AlarmEventsRepository interface {
 	// 查询报警事件列表（支持复杂过滤和跨表 JOIN）
 	// 注意：此方法需要支持跨表 JOIN 查询关联数据（设备、卡片、住户、地址信息）
@@ -16,7 +16,7 @@ type AlarmEventsRepository interface {
 	// 获取单个报警事件
 	GetAlarmEvent(ctx context.Context, tenantID, eventID string) (*domain.AlarmEvent, error)
 
-	// 创建报警事件（用于 wisefido-alarm 服务写入报警）
+	// 创建报警事件（用于 wisefido-ai 服务写入报警）
 	CreateAlarmEvent(ctx context.Context, tenantID string, event *domain.AlarmEvent) error
 
 	// 确认报警（更新状态为 acknowledged）
@@ -44,7 +44,7 @@ type AlarmEventsRepository interface {
 }
 
 // AlarmEventFilters 报警事件过滤条件
-// 注意：与 wisefido-alarm 的 AlarmEventFilters 保持一致
+// 注意：与 wisefido-ai 的 AlarmEventFilters 保持一致
 type AlarmEventFilters struct {
 	// 时间段过滤
 	StartTime *time.Time // 开始时间（triggered_at >= StartTime）

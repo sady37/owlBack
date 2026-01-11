@@ -13,6 +13,7 @@ import (
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
+	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -147,7 +148,7 @@ func (s *residentService) getUserBranches(ctx context.Context, tenantID, userID 
 		 FROM user_branches ub
 		 LEFT JOIN branches b ON b.branch_id = ub.branch_id
 		 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2
-		 ORDER BY ub.is_primary DESC, b.branch_name ASC`,
+		 ORDER BY b.branch_name ASC`,
 		tenantID, userID,
 	)
 	if err != nil {
@@ -260,8 +261,8 @@ type GetResidentRequest struct {
 
 // ResidentCaregiverDTO 住户护理人员分配 DTO
 type ResidentCaregiverDTO struct {
-	UserList  []string `json:"user_list,omitempty"`  // JSONB array -> []string
-	GroupList []string `json:"group_list,omitempty"` // JSONB array -> []string
+	UserList  []UserDTO `json:"user_list,omitempty"`  // 用户详细信息列表（包含 user_id, nickname, user_account 等）
+	GroupList []string  `json:"group_list,omitempty"` // JSONB array -> []string (tag_name 列表)
 }
 
 // GetResidentResponse 获取住户详情响应
@@ -1334,18 +1335,58 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 	).Scan(&userListRaw, &groupListRaw)
 	if err == nil {
 		caregivers = &ResidentCaregiverDTO{}
-		// 解析 user_list JSONB array -> []string
-		if userListRaw.Valid && userListRaw.String != "" && userListRaw.String != "null" {
-			var userList []string
-			if err := json.Unmarshal([]byte(userListRaw.String), &userList); err == nil {
-				caregivers.UserList = userList
-			}
-		}
+		
 		// 解析 group_list JSONB array -> []string
 		if groupListRaw.Valid && groupListRaw.String != "" && groupListRaw.String != "null" {
 			var groupList []string
 			if err := json.Unmarshal([]byte(groupListRaw.String), &groupList); err == nil {
 				caregivers.GroupList = groupList
+			}
+		}
+		
+		// 解析 user_list JSONB array -> []string，然后查询完整的用户信息
+		if userListRaw.Valid && userListRaw.String != "" && userListRaw.String != "null" {
+			var userIDs []string
+			if err := json.Unmarshal([]byte(userListRaw.String), &userIDs); err == nil && len(userIDs) > 0 {
+				// 查询完整的用户信息
+				query := `
+					SELECT 
+						u.user_id::text,
+						u.user_account,
+						COALESCE(u.nickname, '') as nickname,
+						u.role,
+						u.status
+					FROM users u
+					WHERE u.tenant_id = $1
+					  AND u.user_id::text = ANY($2::text[])
+					ORDER BY u.user_account
+				`
+				rows, err := s.db.QueryContext(ctx, query, req.TenantID, pq.Array(userIDs))
+				if err == nil {
+					defer rows.Close()
+					var userList []UserDTO
+					for rows.Next() {
+						var user UserDTO
+						if err := rows.Scan(
+							&user.UserID,
+							&user.UserAccount,
+							&user.Nickname,
+							&user.Role,
+							&user.Status,
+						); err == nil {
+							user.TenantID = req.TenantID
+							userList = append(userList, user)
+						}
+					}
+					caregivers.UserList = userList
+				} else {
+					// 查询用户信息失败，记录日志但不阻止返回
+					s.logger.Warn("GetResident failed to query user details",
+						zap.String("tenant_id", req.TenantID),
+						zap.Strings("user_ids", userIDs),
+						zap.Error(err),
+					)
+				}
 			}
 		}
 	} else if err != sql.ErrNoRows {
@@ -2115,7 +2156,8 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 			`SELECT COALESCE(b.branch_name, '') as branch_name
 			 FROM user_branches ub
 			 LEFT JOIN branches b ON b.branch_id = ub.branch_id
-			 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2 AND ub.is_primary = TRUE
+			 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2
+			 ORDER BY COALESCE(b.branch_name, '') ASC
 			 LIMIT 1`,
 			req.TenantID, req.CurrentUserID,
 		).Scan(&userBranchName)
@@ -2740,7 +2782,9 @@ func (s *residentService) DeleteResident(ctx context.Context, req DeleteResident
 		err = s.db.QueryRowContext(ctx,
 			`SELECT ub.branch_id::text 
 			 FROM user_branches ub
-			 WHERE ub.user_id::text = $1 AND ub.is_primary = true
+			 LEFT JOIN branches b ON b.branch_id = ub.branch_id
+			 WHERE ub.user_id::text = $1
+			 ORDER BY COALESCE(b.branch_name, '') ASC
 			 LIMIT 1`,
 			req.CurrentUserID,
 		).Scan(&userBranchID)
@@ -2895,12 +2939,14 @@ func (s *residentService) ResetResidentPassword(ctx context.Context, req ResetRe
 				return nil, fmt.Errorf("failed to get resident branch_id: %w", err)
 			}
 
-			// 获取用户的主院区 branch_id
+			// 获取用户的第一个院区 branch_id
 			var userBranchID sql.NullString
 			err = s.db.QueryRowContext(ctx,
 				`SELECT ub.branch_id::text 
 				 FROM user_branches ub
-				 WHERE ub.user_id::text = $1 AND ub.is_primary = true
+				 LEFT JOIN branches b ON b.branch_id = ub.branch_id
+				 WHERE ub.user_id::text = $1
+				 ORDER BY COALESCE(b.branch_name, '') ASC
 				 LIMIT 1`,
 				req.CurrentUserID,
 			).Scan(&userBranchID)

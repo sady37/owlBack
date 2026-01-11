@@ -197,7 +197,8 @@ func main() {
 		// 创建 User Service 和 Handler
 		// usersRepo 已在上面创建 RoleService 时声明，这里直接使用
 		// branchesRepo 已在上面创建 UnitService 时声明，这里直接使用
-		userService := service.NewUserService(usersRepo, branchesRepo, db, logger)
+		userBranchesRepo := repository.NewPostgresUserBranchesRepository(db)
+		userService := service.NewUserService(usersRepo, branchesRepo, userBranchesRepo, db, logger)
 		userHandler := httpapi.NewUserHandler(userService, db, logger)
 		router.RegisterUsersRoutes(userHandler)
 

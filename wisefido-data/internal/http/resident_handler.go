@@ -734,33 +734,29 @@ func (h *ResidentHandler) GetResident(w http.ResponseWriter, r *http.Request, re
 		item["contacts"] = contacts
 	}
 
-	// 添加 caregivers 数据（默认包含，与旧 Handler 一致）
-	{
-		var userListRaw, groupListRaw []byte
-		err := h.db.QueryRowContext(ctx,
-			`SELECT user_list, group_list
-			 FROM resident_caregivers
-			 WHERE tenant_id = $1 AND resident_id::text = $2`,
-			tenantID, residentID,
-		).Scan(&userListRaw, &groupListRaw)
-		if err == nil {
-			var userList []string
-			var groupList []string
-			if len(userListRaw) > 0 {
-				if err := json.Unmarshal(userListRaw, &userList); err == nil {
-					// userList parsed successfully
-				}
-			}
-			if len(groupListRaw) > 0 {
-				if err := json.Unmarshal(groupListRaw, &groupList); err == nil {
-					// groupList parsed successfully
-				}
-			}
-			item["caregivers"] = map[string]any{
-				"userList":  userList,
-				"groupList": groupList,
-			}
+	// 添加 caregivers 数据（使用 Service 层返回的数据）
+	if resp.Caregivers != nil {
+		caregivers := map[string]any{
+			"groupList": resp.Caregivers.GroupList,
 		}
+		// 转换 UserList 为前端格式（UserDTO 数组 -> 对象数组）
+		if len(resp.Caregivers.UserList) > 0 {
+			userList := make([]map[string]any, 0, len(resp.Caregivers.UserList))
+			for _, user := range resp.Caregivers.UserList {
+				userMap := map[string]any{
+					"user_id":       user.UserID,
+					"user_account":  user.UserAccount,
+					"nickname":      user.Nickname,
+					"role":          user.Role,
+					"status":        user.Status,
+				}
+				userList = append(userList, userMap)
+			}
+			caregivers["userList"] = userList
+		} else {
+			caregivers["userList"] = []any{}
+		}
+		item["caregivers"] = caregivers
 	}
 
 	writeJSON(w, http.StatusOK, Ok(item))

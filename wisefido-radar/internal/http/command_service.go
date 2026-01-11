@@ -142,6 +142,17 @@ func (s *CommandService) SubscribeRealtimeData(ctx context.Context, uid string, 
 		return fmt.Errorf("failed to publish monitor subscription command: %w", err)
 	}
 	
+	// 4. 记录订阅状态到 Redis（供订阅管理器使用）
+	// 注意：这里不直接依赖 SubscriptionManager，避免循环依赖
+	// 订阅管理器会从 Redis 读取状态
+	if err := s.saveSubscriptionInfo(uid, content, duration); err != nil {
+		s.logger.Warn("Failed to save subscription info to Redis",
+			zap.String("uid", uid),
+			zap.Error(err),
+		)
+		// 不返回错误，订阅已发送
+	}
+	
 	s.logger.Info("Monitor subscription command sent",
 		zap.String("device_id", device.DeviceID),
 		zap.String("uid", uid),
@@ -286,3 +297,30 @@ func (s *CommandService) waitForFunctionResponse(ctx context.Context, requestID 
 	return nil, fmt.Errorf("timeout waiting for function response: %s", requestID)
 }
 
+// saveSubscriptionInfo 保存订阅信息到 Redis
+// 供订阅管理器使用，避免循环依赖
+// 使用与 SubscriptionManager 相同的格式，确保兼容性
+func (s *CommandService) saveSubscriptionInfo(uid string, content interface{}, duration int) error {
+	now := time.Now()
+	info := map[string]interface{}{
+		"uid":          uid,
+		"content":      content,
+		"duration":     duration,
+		"subscribed_at": now.Format(time.RFC3339),
+		"expires_at":   now.Add(time.Duration(duration) * time.Second).Format(time.RFC3339),
+	}
+	
+	key := fmt.Sprintf("radar:subscription:%s", uid)
+	data, err := json.Marshal(info)
+	if err != nil {
+		return fmt.Errorf("failed to marshal subscription info: %w", err)
+	}
+	
+	// 保存到 Redis，TTL 设置为订阅时长 + 10分钟（作为缓冲）
+	ttl := time.Duration(duration)*time.Second + 10*time.Minute
+	if err := s.redisClient.Set(context.Background(), key, data, ttl).Err(); err != nil {
+		return fmt.Errorf("failed to save to Redis: %w", err)
+	}
+	
+	return nil
+}

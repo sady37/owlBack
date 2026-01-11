@@ -20,7 +20,7 @@ import (
 //   - 'A' = All (no restriction) → assigned_only=false, branch_only=false
 //   - 'S' = assigned_only → assigned_only=true, branch_only=false
 //   - 'B' = branch_only → assigned_only=false, branch_only=true
-func getResourcePermission(db *sql.DB, ctx context.Context, roleCode, resourceType, permissionType string) (*permissionCheck, error) {
+func getResourcePermission(db *sql.DB, ctx context.Context, roleCode, resourceType, permissionType string) (*resourcePermissionCheck, error) {
 	var permissionScope string
 	err := db.QueryRowContext(ctx,
 		`SELECT permission_scope
@@ -36,7 +36,7 @@ func getResourcePermission(db *sql.DB, ctx context.Context, roleCode, resourceTy
 
 	if err == sql.ErrNoRows {
 		// 记录不存在：返回最严格的权限（安全默认值）
-		return &permissionCheck{AssignedOnly: true, BranchOnly: true}, nil
+		return &resourcePermissionCheck{AssignedOnly: true, BranchOnly: true}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -63,10 +63,11 @@ func getResourcePermission(db *sql.DB, ctx context.Context, roleCode, resourceTy
 		branchOnly = true
 	}
 
-	return &permissionCheck{AssignedOnly: assignedOnly, BranchOnly: branchOnly}, nil
+	return &resourcePermissionCheck{AssignedOnly: assignedOnly, BranchOnly: branchOnly}, nil
 }
 
-type permissionCheck struct {
+// resourcePermissionCheck 资源权限检查结果（用于 service 包内的权限检查）
+type resourcePermissionCheck struct {
 	AssignedOnly bool
 	BranchOnly   bool
 }

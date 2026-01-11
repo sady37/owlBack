@@ -377,7 +377,7 @@ func (h *UnitHandler) ListUnits(w http.ResponseWriter, r *http.Request) {
 		// 如果 building_id 未提供，则使用 building（向后兼容，通过 building_name 过滤）
 		buildingName = r.URL.Query().Get("building")
 	}
-	
+
 	req := service.ListUnitsRequest{
 		TenantID: tenantID,
 		// branch_id: 优先使用 branch_id，如果提供则忽略 branch_name
@@ -443,14 +443,14 @@ func (h *UnitHandler) ListUnitsWithFullHierarchy(w http.ResponseWriter, r *http.
 
 	req := service.ListUnitsWithFullHierarchyRequest{
 		TenantID:      tenantID,
-		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		CurrentUserID: currentUserID,            // 传递 user_id，Service 层会查询用户的 branch_id
 		BranchID:      stringPtrOrNil(branchID), // 可选，如果提供则优先使用
-		BranchName:    nil,                     // 不使用 branch_name
-		BuildingID:    nil,                     // 不使用 building_id
-		Building:     nil,                     // 不使用 building
-		Floor:        nil,                     // 不使用 floor
-		UnitType:     nil,                     // 不使用 unit_type
-		Search:       nil,                     // 不使用 search
+		BranchName:    nil,                      // 不使用 branch_name
+		BuildingID:    nil,                      // 不使用 building_id
+		Building:      nil,                      // 不使用 building
+		Floor:         nil,                      // 不使用 floor
+		UnitType:      nil,                      // 不使用 unit_type
+		Search:        nil,                      // 不使用 search
 	}
 
 	resp, err := h.unitService.ListUnitsWithFullHierarchy(ctx, req)
@@ -538,20 +538,20 @@ func (h *UnitHandler) CreateUnit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := service.CreateUnitRequest{
-		TenantID:          tenantID,
-		BranchID:          branchID,
-		BranchName:        branchName,
-		UnitName:          getString(payload, "unit_name"),
-		BuildingID:        buildingID,
-		BuildingName:      buildingName,
-		Floor:             getString(payload, "floor"),
-		AreaName:          getString(payload, "area_name"),
-		UnitNumber:        getString(payload, "unit_number"),
-		LayoutConfig:      getString(payload, "layout_config"),
-		UnitType:          getString(payload, "unit_type"),
-		IsPublicSpace:     getBool(payload, "is_public_space"),
-		IsSharedUnit: getBool(payload, "is_shared_unit"), // 统一使用 is_shared_unit（向后兼容：也支持 is_multi_person_room）
-		Timezone:          getString(payload, "timezone"),
+		TenantID:      tenantID,
+		BranchID:      branchID,
+		BranchName:    branchName,
+		UnitName:      getString(payload, "unit_name"),
+		BuildingID:    buildingID,
+		BuildingName:  buildingName,
+		Floor:         getString(payload, "floor"),
+		AreaName:      getString(payload, "area_name"),
+		UnitNumber:    getString(payload, "unit_number"),
+		LayoutConfig:  getString(payload, "layout_config"),
+		UnitType:      getString(payload, "unit_type"),
+		IsPublicSpace: getBool(payload, "is_public_space"),
+		IsSharedUnit:  getBool(payload, "is_shared_unit"), // 统一使用 is_shared_unit（向后兼容：也支持 is_multi_person_room）
+		Timezone:      getString(payload, "timezone"),
 	}
 
 	resp, err := h.unitService.CreateUnit(ctx, req)
@@ -618,21 +618,21 @@ func (h *UnitHandler) UpdateUnit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := service.UpdateUnitRequest{
-		TenantID:          tenantID,
-		UnitID:            unitID,
-		BranchID:          branchID,
-		BranchName:        branchName,
-		UnitName:          getString(payload, "unit_name"),
-		BuildingID:        buildingID,
-		BuildingName:      buildingName,
-		Floor:             getString(payload, "floor"),
-		AreaName:          getString(payload, "area_name"),
-		UnitNumber:        getString(payload, "unit_number"),
-		LayoutConfig:      getString(payload, "layout_config"),
-		UnitType:          getString(payload, "unit_type"),
-		IsPublicSpace:     getBoolPtr(payload, "is_public_space"),
-		IsSharedUnit: getBoolPtrFromMultipleKeys(payload, "is_shared_unit", "is_multi_person_room"), // 统一使用 is_shared_unit（向后兼容：也支持 is_multi_person_room）
-		Timezone:          getString(payload, "timezone"),
+		TenantID:      tenantID,
+		UnitID:        unitID,
+		BranchID:      branchID,
+		BranchName:    branchName,
+		UnitName:      getString(payload, "unit_name"),
+		BuildingID:    buildingID,
+		BuildingName:  buildingName,
+		Floor:         getString(payload, "floor"),
+		AreaName:      getString(payload, "area_name"),
+		UnitNumber:    getString(payload, "unit_number"),
+		LayoutConfig:  getString(payload, "layout_config"),
+		UnitType:      getString(payload, "unit_type"),
+		IsPublicSpace: getBoolPtr(payload, "is_public_space"),
+		IsSharedUnit:  getBoolPtrFromMultipleKeys(payload, "is_shared_unit", "is_multi_person_room"), // 统一使用 is_shared_unit（向后兼容：也支持 is_multi_person_room）
+		Timezone:      getString(payload, "timezone"),
 	}
 
 	_, err := h.unitService.UpdateUnit(ctx, req)
@@ -692,7 +692,7 @@ func (h *UnitHandler) DeleteUnit(w http.ResponseWriter, r *http.Request) {
 		TenantID:      tenantID,
 		UnitID:        unitID,
 		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
-		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
+		BranchID:      branchID,      // 可选，如果提供则验证用户是否有权限访问该 branch
 	}
 
 	_, err := h.unitService.DeleteUnit(ctx, req)
@@ -856,7 +856,7 @@ func (h *UnitHandler) UpdateRoom(w http.ResponseWriter, r *http.Request) {
 		TenantID:      tenantID,
 		RoomID:        roomID,
 		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
-		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
+		BranchID:      branchID,      // 可选，如果提供则验证用户是否有权限访问该 branch
 		RoomName:      getString(payload, "room_name"),
 		LayoutConfig:  getString(payload, "layout_config"),
 	}
@@ -873,7 +873,7 @@ func (h *UnitHandler) UpdateRoom(w http.ResponseWriter, r *http.Request) {
 		TenantID:      tenantID,
 		RoomID:        roomID,
 		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
-		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
+		BranchID:      branchID,      // 可选，如果提供则验证用户是否有权限访问该 branch
 	}
 	getResp, err := h.unitService.GetRoom(ctx, getReq)
 	if err != nil {
@@ -920,7 +920,7 @@ func (h *UnitHandler) DeleteRoom(w http.ResponseWriter, r *http.Request) {
 		TenantID:      tenantID,
 		RoomID:        roomID,
 		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
-		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
+		BranchID:      branchID,      // 可选，如果提供则验证用户是否有权限访问该 branch
 	}
 
 	_, err := h.unitService.DeleteRoom(ctx, req)
@@ -1007,15 +1007,16 @@ func (h *UnitHandler) CreateBed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 获取 user_id：从 header 获取（可选，用于日志记录）
+	// 获取 user_id 和 role：从 header 获取（用于权限验证）
 	currentUserID := r.Header.Get("X-User-Id")
+	currentUserRole := r.Header.Get("X-User-Role")
 
 	req := service.CreateBedRequest{
-		TenantID:          tenantID,
-		RoomID:            roomID,
-		CurrentUserID:     currentUserID, // 可选，用于日志记录
-		BranchID:          "",            // 不再使用
-		BedName:           getString(payload, "bed_name"),
+		TenantID:      tenantID,
+		RoomID:        roomID,
+		CurrentUserID: currentUserID, // 可选，用于日志记录
+		BranchID:      "",            // 不再使用
+		BedName:       getString(payload, "bed_name"),
 		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 		MattressMaterial:  getString(payload, "mattress_material"),
 		MattressThickness: getString(payload, "mattress_thickness"),
@@ -1030,10 +1031,11 @@ func (h *UnitHandler) CreateBed(w http.ResponseWriter, r *http.Request) {
 
 	// 获取完整的 bed 对象（与旧 Handler 格式一致）
 	getReq := service.GetBedRequest{
-		TenantID:      tenantID,
-		BedID:         resp.BedID,
-		CurrentUserID: currentUserID, // 可选，用于日志记录
-		BranchID:      "",            // 不再使用
+		TenantID:        tenantID,
+		BedID:           resp.BedID,
+		CurrentUserID:   currentUserID,   // 必填，用于权限验证
+		CurrentUserRole: currentUserRole, // 用于权限验证，检查权限 scope
+		BranchID:        "",              // 不再使用
 	}
 	getResp, err := h.unitService.GetBed(ctx, getReq)
 	if err != nil {
@@ -1083,11 +1085,11 @@ func (h *UnitHandler) UpdateBed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := service.UpdateBedRequest{
-		TenantID:          tenantID,
-		BedID:             bedID,
-		CurrentUserID:     currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
-		BranchID:          branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
-		BedName:           getString(payload, "bed_name"),
+		TenantID:      tenantID,
+		BedID:         bedID,
+		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
+		BranchID:      branchID,      // 可选，如果提供则验证用户是否有权限访问该 branch
+		BedName:       getString(payload, "bed_name"),
 		// 注意：BedType 字段已删除，ActiveBed 判断由应用层动态计算
 		MattressMaterial:  getString(payload, "mattress_material"),
 		MattressThickness: getString(payload, "mattress_thickness"),
@@ -1105,7 +1107,7 @@ func (h *UnitHandler) UpdateBed(w http.ResponseWriter, r *http.Request) {
 		TenantID:      tenantID,
 		BedID:         bedID,
 		CurrentUserID: currentUserID, // 传递 user_id，Service 层会查询用户的 branch_id
-		BranchID:      branchID,     // 可选，如果提供则验证用户是否有权限访问该 branch
+		BranchID:      branchID,      // 可选，如果提供则验证用户是否有权限访问该 branch
 	}
 	getResp, err := h.unitService.GetBed(ctx, getReq)
 	if err != nil {
@@ -1260,7 +1262,7 @@ func unitToJSON(u *domain.Unit) map[string]any {
 		"tenant_id":       u.TenantID,
 		"unit_name":       u.UnitName,
 		"unit_type":       u.UnitType,
-		"is_public_space": u.IsPublic,      // 前端使用 is_public_space，后端数据库字段是 is_public
+		"is_public_space": u.IsPublic,     // 前端使用 is_public_space，后端数据库字段是 is_public
 		"is_shared_unit":  u.IsSharedUnit, // 统一使用 is_shared_unit（不再使用 is_multi_person_room）
 		"timezone":        u.Timezone,
 		// 向后兼容：同时返回旧字段名

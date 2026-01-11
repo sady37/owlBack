@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -120,8 +121,14 @@ func CreateConsumerGroup(ctx context.Context, client *redis.Client, stream strin
 	
 	// 如果错误是 "BUSYGROUP"，说明组已存在，这是正常的
 	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
-		// 如果 stream 不存在，尝试创建（通过发送一条消息）
-		if err.Error() == "NOGROUP" || err.Error() == "no such key" {
+		// 检查是否是 Stream 不存在的错误（多种可能的错误信息）
+		errStr := err.Error()
+		isStreamNotExist := strings.Contains(errStr, "requires the key to exist") ||
+			strings.Contains(errStr, "no such key") ||
+			strings.Contains(errStr, "NOGROUP") ||
+			strings.Contains(errStr, "ERR The XGROUP subcommand requires")
+		
+		if isStreamNotExist {
 			// Stream 不存在，先创建一个临时消息来创建 stream
 			msgID, createErr := client.XAdd(ctx, &redis.XAddArgs{
 				Stream: stream,

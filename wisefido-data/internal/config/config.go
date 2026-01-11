@@ -72,7 +72,7 @@ func Load() *Config {
 	// This avoids "empty admin pages" when starting with plain `go run`.
 	cfg.DBEnabled = getEnv("DB_ENABLED", "true") == "true"
 	cfg.Database.Host = getEnv("DB_HOST", "localhost")
-	cfg.Database.Port = parseInt(getEnv("DB_PORT", "5432"), 5432)
+	cfg.Database.Port = parseInt(getEnv("DB_PORT", "5433"), 5433) // 默认使用 5433（与 start_owlback.sh 保持一致）
 	cfg.Database.User = getEnv("DB_USER", "postgres")
 	cfg.Database.Password = getEnv("DB_PASSWORD", "postgres")
 	cfg.Database.Database = getEnv("DB_NAME", "owlrd")

@@ -19,13 +19,14 @@ import (
 
 // RadarService 雷达服务
 type RadarService struct {
-	config      *config.Config
-	logger      *zap.Logger
-	db          *sql.DB
-	redis       *redis.Client
-	mqttClient  *mqttcommon.Client
-	consumer    *consumer.MQTTConsumer
-	httpServer  *http.Server // 新增：HTTPS 服务器
+	config             *config.Config
+	logger             *zap.Logger
+	db                 *sql.DB
+	redis              *redis.Client
+	mqttClient         *mqttcommon.Client
+	consumer           *consumer.MQTTConsumer
+	httpServer         *http.Server // 新增：HTTPS 服务器
+	subscriptionManager *SubscriptionManager // 订阅管理器
 }
 
 // NewRadarService 创建雷达服务
@@ -61,6 +62,12 @@ func NewRadarService(cfg *config.Config, logger *zap.Logger) (*RadarService, err
 	// 创建Consumer
 	mqttConsumer := consumer.NewMQTTConsumer(cfg, mqttClient, redisClient, deviceRepo, logger)
 	
+	// 创建订阅管理器
+	subscriptionManager := NewSubscriptionManager(cfg, commandService, deviceRepo, redisClient, logger)
+	
+	// 设置订阅管理器到 Consumer（用于设备首次连接时自动订阅）
+	mqttConsumer.SetSubscriptionManager(subscriptionManager)
+	
 	// 创建认证服务（在 http 包中，避免循环依赖）
 	authService := http.NewAuthService(cfg, db, deviceRepo, logger)
 	
@@ -81,13 +88,14 @@ func NewRadarService(cfg *config.Config, logger *zap.Logger) (*RadarService, err
 	}
 	
 	return &RadarService{
-		config:     cfg,
-		logger:     logger,
-		db:         db,
-		redis:      redisClient,
-		mqttClient: mqttClient,
-		consumer:   mqttConsumer,
-		httpServer: httpServer,
+		config:             cfg,
+		logger:             logger,
+		db:                 db,
+		redis:              redisClient,
+		mqttClient:         mqttClient,
+		consumer:           mqttConsumer,
+		httpServer:         httpServer,
+		subscriptionManager: subscriptionManager,
 	}, nil
 }
 
@@ -107,6 +115,12 @@ func (s *RadarService) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start MQTT consumer: %w", err)
 	}
 	
+	// 启动订阅管理器（后台自动续订）
+	if s.subscriptionManager != nil {
+		go s.subscriptionManager.Start(ctx)
+		s.logger.Info("Subscription manager started")
+	}
+	
 	s.logger.Info("Radar service started successfully")
 	return nil
 }
@@ -120,6 +134,11 @@ func (s *RadarService) Stop(ctx context.Context) error {
 		if err := s.httpServer.Stop(ctx); err != nil {
 			s.logger.Error("Error stopping HTTPS server", zap.Error(err))
 		}
+	}
+	
+	// 停止订阅管理器
+	if s.subscriptionManager != nil {
+		s.subscriptionManager.Stop()
 	}
 	
 	// 停止Consumer

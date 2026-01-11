@@ -137,7 +137,7 @@ redis-cli GET "vital-focus:card:{card_id}:full" | jq .
 
 1. **前置依赖**：
    - 需要先运行 `wisefido-sensor-fusion` 生成实时数据缓存
-   - 需要先运行 `wisefido-alarm` 生成报警数据缓存
+   - 需要先运行 `wisefido-ai` 生成报警数据缓存
 
 2. **性能考虑**：
    - 聚合间隔默认 10 秒，可根据实际情况调整

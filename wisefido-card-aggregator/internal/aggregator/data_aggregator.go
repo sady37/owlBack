@@ -243,7 +243,7 @@ type Posture struct {
 	PostureDisplay string `json:"posture_display"`
 }
 
-// AlarmEvent 报警事件（与 wisefido-alarm 保持一致）
+// AlarmEvent 报警事件（与 wisefido-ai 保持一致）
 type AlarmEvent struct {
 	EventID         string                 `json:"event_id"`
 	EventType       string                 `json:"event_type"`

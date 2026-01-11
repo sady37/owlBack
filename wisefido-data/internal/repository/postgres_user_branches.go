@@ -30,14 +30,14 @@ func (r *PostgresUserBranchesRepository) GetUserBranches(ctx context.Context, te
 
 	query := `
 		SELECT 
-			user_branch_id::text,
-			tenant_id::text,
-			user_id::text,
-			branch_id::text,
-			is_primary
-		FROM user_branches
-		WHERE tenant_id = $1 AND user_id = $2
-		ORDER BY is_primary DESC, branch_id::text ASC
+			ub.user_branch_id::text,
+			ub.tenant_id::text,
+			ub.user_id::text,
+			ub.branch_id::text
+		FROM user_branches ub
+		LEFT JOIN branches b ON b.branch_id = ub.branch_id
+		WHERE ub.tenant_id = $1 AND ub.user_id = $2
+		ORDER BY COALESCE(b.branch_name, '') ASC
 	`
 
 	rows, err := r.db.QueryContext(ctx, query, tenantID, userID)
@@ -54,7 +54,6 @@ func (r *PostgresUserBranchesRepository) GetUserBranches(ctx context.Context, te
 			&ub.TenantID,
 			&ub.UserID,
 			&ub.BranchID,
-			&ub.IsPrimary,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan user branch: %w", err)
@@ -69,42 +68,6 @@ func (r *PostgresUserBranchesRepository) GetUserBranches(ctx context.Context, te
 	return userBranches, nil
 }
 
-// GetUserPrimaryBranch 获取用户的主院区
-func (r *PostgresUserBranchesRepository) GetUserPrimaryBranch(ctx context.Context, tenantID, userID string) (*domain.UserBranch, error) {
-	if tenantID == "" || userID == "" {
-		return nil, sql.ErrNoRows
-	}
-
-	query := `
-		SELECT 
-			user_branch_id::text,
-			tenant_id::text,
-			user_id::text,
-			branch_id::text,
-			is_primary
-		FROM user_branches
-		WHERE tenant_id = $1 AND user_id = $2 AND is_primary = TRUE
-		LIMIT 1
-	`
-
-	var ub domain.UserBranch
-	err := r.db.QueryRowContext(ctx, query, tenantID, userID).Scan(
-		&ub.UserBranchID,
-		&ub.TenantID,
-		&ub.UserID,
-		&ub.BranchID,
-		&ub.IsPrimary,
-	)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil // 没有主院区，返回 nil
-		}
-		return nil, fmt.Errorf("failed to get user primary branch: %w", err)
-	}
-
-	return &ub, nil
-}
-
 // GetBranchUsers 获取院区的所有用户关联
 func (r *PostgresUserBranchesRepository) GetBranchUsers(ctx context.Context, tenantID, branchID string) ([]*domain.UserBranch, error) {
 	if tenantID == "" || branchID == "" {
@@ -116,11 +79,10 @@ func (r *PostgresUserBranchesRepository) GetBranchUsers(ctx context.Context, ten
 			user_branch_id::text,
 			tenant_id::text,
 			user_id::text,
-			branch_id::text,
-			is_primary
+			branch_id::text
 		FROM user_branches
 		WHERE tenant_id = $1 AND branch_id = $2
-		ORDER BY is_primary DESC, user_id::text ASC
+		ORDER BY user_id::text ASC
 	`
 
 	rows, err := r.db.QueryContext(ctx, query, tenantID, branchID)
@@ -137,7 +99,6 @@ func (r *PostgresUserBranchesRepository) GetBranchUsers(ctx context.Context, ten
 			&ub.TenantID,
 			&ub.UserID,
 			&ub.BranchID,
-			&ub.IsPrimary,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan user branch: %w", err)
@@ -187,39 +148,13 @@ func (r *PostgresUserBranchesRepository) CreateUserBranch(ctx context.Context, t
 		return "", fmt.Errorf("failed to check existing user branch: %w", err)
 	}
 
-	// 检查用户是否已有其他院区关联
-	var count int
-	err = tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM user_branches WHERE tenant_id = $1 AND user_id = $2`,
-		tenantID, userBranch.UserID,
-	).Scan(&count)
-	if err != nil {
-		return "", fmt.Errorf("failed to count user branches: %w", err)
-	}
-
-	// 如果这是第一个院区关联，自动设置为主院区
-	isPrimary := userBranch.IsPrimary
-	if count == 0 {
-		isPrimary = true
-	} else if isPrimary {
-		// 如果设置为主院区，需要先将其他主院区设置为 FALSE
-		_, err = tx.ExecContext(ctx,
-			`UPDATE user_branches SET is_primary = FALSE 
-			 WHERE tenant_id = $1 AND user_id = $2 AND is_primary = TRUE`,
-			tenantID, userBranch.UserID,
-		)
-		if err != nil {
-			return "", fmt.Errorf("failed to clear other primary branches: %w", err)
-		}
-	}
-
 	// 插入新关联
 	var userBranchID string
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO user_branches (tenant_id, user_id, branch_id, is_primary)
-		 VALUES ($1, $2, $3, $4)
+		`INSERT INTO user_branches (tenant_id, user_id, branch_id)
+		 VALUES ($1, $2, $3)
 		 RETURNING user_branch_id::text`,
-		tenantID, userBranch.UserID, userBranch.BranchID, isPrimary,
+		tenantID, userBranch.UserID, userBranch.BranchID,
 	).Scan(&userBranchID)
 	if err != nil {
 		return "", fmt.Errorf("failed to create user branch: %w", err)
@@ -241,101 +176,26 @@ func (r *PostgresUserBranchesRepository) UpdateUserBranch(ctx context.Context, t
 		return fmt.Errorf("user_branch is required")
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	// 如果设置为主院区，需要先将该用户的其他主院区设置为 FALSE
-	if userBranch.IsPrimary {
-		_, err = tx.ExecContext(ctx,
-			`UPDATE user_branches SET is_primary = FALSE 
-			 WHERE tenant_id = $1 AND user_id = $2 AND is_primary = TRUE AND user_branch_id != $3`,
-			tenantID, userBranch.UserID, userBranchID,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to clear other primary branches: %w", err)
-		}
-	}
-
-	// 更新关联
-	_, err = tx.ExecContext(ctx,
+	// 更新关联（目前只更新 branch_id，如果需要可以扩展）
+	// 注意：由于移除了 is_primary 字段，UpdateUserBranch 主要用于更新 branch_id
+	// 如果需要更新其他字段，可以在这里扩展
+	result, err := r.db.ExecContext(ctx,
 		`UPDATE user_branches 
-		 SET is_primary = $1
+		 SET branch_id = $1
 		 WHERE tenant_id = $2 AND user_branch_id = $3`,
-		userBranch.IsPrimary, tenantID, userBranchID,
+		userBranch.BranchID, tenantID, userBranchID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update user branch: %w", err)
 	}
 
 	// 检查是否有行被更新
-	result, err := tx.ExecContext(ctx,
-		`SELECT 1 FROM user_branches WHERE tenant_id = $1 AND user_branch_id = $2`,
-		tenantID, userBranchID,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to check user branch: %w", err)
-	}
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
 	if rowsAffected == 0 {
 		return fmt.Errorf("user branch not found: tenant_id '%s', user_branch_id '%s'", tenantID, userBranchID)
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
-}
-
-// SetPrimaryBranch 设置用户的主院区
-func (r *PostgresUserBranchesRepository) SetPrimaryBranch(ctx context.Context, tenantID, userID, branchID string) error {
-	if tenantID == "" || userID == "" || branchID == "" {
-		return fmt.Errorf("tenant_id, user_id, and branch_id are required")
-	}
-
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	// 先将该用户的所有主院区设置为 FALSE
-	_, err = tx.ExecContext(ctx,
-		`UPDATE user_branches SET is_primary = FALSE 
-		 WHERE tenant_id = $1 AND user_id = $2 AND is_primary = TRUE`,
-		tenantID, userID,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to clear other primary branches: %w", err)
-	}
-
-	// 将指定的院区关联设置为主院区
-	result, err := tx.ExecContext(ctx,
-		`UPDATE user_branches SET is_primary = TRUE 
-		 WHERE tenant_id = $1 AND user_id = $2 AND branch_id = $3`,
-		tenantID, userID, branchID,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to set primary branch: %w", err)
-	}
-
-	// 检查是否有行被更新
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return fmt.Errorf("user branch not found: tenant_id '%s', user_id '%s', branch_id '%s'", tenantID, userID, branchID)
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil
@@ -386,6 +246,23 @@ func (r *PostgresUserBranchesRepository) DeleteUserBranchByUserAndBranch(ctx con
 	}
 	if rowsAffected == 0 {
 		return fmt.Errorf("user branch not found: tenant_id '%s', user_id '%s', branch_id '%s'", tenantID, userID, branchID)
+	}
+
+	return nil
+}
+
+// DeleteAllUserBranches 删除用户的所有院区关联（通过 user_id）
+func (r *PostgresUserBranchesRepository) DeleteAllUserBranches(ctx context.Context, tenantID, userID string) error {
+	if tenantID == "" || userID == "" {
+		return fmt.Errorf("tenant_id and user_id are required")
+	}
+
+	_, err := r.db.ExecContext(ctx,
+		`DELETE FROM user_branches WHERE tenant_id = $1 AND user_id = $2`,
+		tenantID, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to delete all user branches: %w", err)
 	}
 
 	return nil

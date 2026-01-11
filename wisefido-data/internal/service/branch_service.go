@@ -367,8 +367,6 @@ func (s *BranchService) CreateBranch(ctx context.Context, req CreateBranchReques
 			defer rows.Close()
 
 			// 为每个 Admin 用户创建 branch 关联
-			// 注意：如果用户已经有其他 branch 关联，新 branch 不作为主院区（is_primary = FALSE）
-			// 如果用户没有任何 branch 关联，新 branch 作为主院区（is_primary = TRUE）
 			for rows.Next() {
 				var userID string
 				if err := rows.Scan(&userID); err != nil {
@@ -376,26 +374,12 @@ func (s *BranchService) CreateBranch(ctx context.Context, req CreateBranchReques
 					continue
 				}
 
-				// 检查用户是否已有 branch 关联
-				var existingCount int
-				err := tx.QueryRowContext(ctx,
-					`SELECT COUNT(*) FROM user_branches WHERE tenant_id = $1 AND user_id = $2`,
-					req.TenantID, userID,
-				).Scan(&existingCount)
-				if err != nil {
-					s.logger.Warn("Failed to check existing branches for user", zap.String("user_id", userID), zap.Error(err))
-					continue
-				}
-
-				// 如果用户没有任何 branch 关联，新 branch 作为主院区
-				isPrimary := existingCount == 0
-
 				// 插入 user_branches 记录
 				_, err = tx.ExecContext(ctx,
-					`INSERT INTO user_branches (tenant_id, user_id, branch_id, is_primary)
-					 VALUES ($1, $2, $3, $4)
+					`INSERT INTO user_branches (tenant_id, user_id, branch_id)
+					 VALUES ($1, $2, $3)
 					 ON CONFLICT (tenant_id, user_id, branch_id) DO NOTHING`,
-					req.TenantID, userID, branchID, isPrimary,
+					req.TenantID, userID, branchID,
 				)
 				if err != nil {
 					s.logger.Warn("Failed to create user_branch association",

@@ -360,10 +360,10 @@ func (s *cardService) aggregateCardData(ctx context.Context, cards []*domain.Car
 		residents = make(map[string]*domain.Resident) // 继续处理，使用空 map
 	}
 
-	// 3. 聚合数据
+	// 3. 聚合数据（从 card 表获取基础信息，从 Redis full cache 获取动态数据）
 	var result []*domain.CardOverviewItem
 	for _, card := range cards {
-		item, err := s.aggregateSingleCard(card, devices, residents)
+		item, err := s.aggregateSingleCard(ctx, card, devices, residents)
 		if err != nil {
 			// 单个卡片聚合失败，记录日志，跳过该卡片
 			s.logger.Warn("Failed to aggregate card, skipping",
@@ -380,24 +380,75 @@ func (s *cardService) aggregateCardData(ctx context.Context, cards []*domain.Car
 }
 
 // aggregateSingleCard 聚合单个卡片的数据
+// 基础信息从 card 表获取，动态数据（报警统计等）从 Redis full cache（card aggregator 写入）获取
 func (s *cardService) aggregateSingleCard(
+	ctx context.Context,
 	card *domain.CardWithUnitInfo,
 	devices map[string]*domain.Device,
 	residents map[string]*domain.Resident,
 ) (*domain.CardOverviewItem, error) {
+	// 1. 初始化基础信息（从 card 表）
 	item := &domain.CardOverviewItem{
-		CardID:          card.Card.CardID,
-		TenantID:        card.Card.TenantID,
-		CardType:        card.Card.CardType,
-		CardName:        card.Card.CardName,
-		CardAddress:     card.Card.CardAddress,
+		CardID:       card.Card.CardID,
+		TenantID:     card.Card.TenantID,
+		CardType:     card.Card.CardType,
+		CardName:     card.Card.CardName,
+		CardAddress:  card.Card.CardAddress,
+		IconAlarmLevel: card.Card.IconAlarmLevel,
+		PopAlarmEmerge:  card.Card.PopAlarmEmerge,
+		// 报警统计初始值从 card 表获取（作为回退）
 		UnhandledAlarm0: card.Card.UnhandledAlarm0,
 		UnhandledAlarm1: card.Card.UnhandledAlarm1,
 		UnhandledAlarm2: card.Card.UnhandledAlarm2,
 		UnhandledAlarm3: card.Card.UnhandledAlarm3,
 		UnhandledAlarm4: card.Card.UnhandledAlarm4,
-		IconAlarmLevel:  card.Card.IconAlarmLevel,
-		PopAlarmEmerge:  card.Card.PopAlarmEmerge,
+	}
+
+	// 2. 尝试从 Redis full cache 获取动态数据（card aggregator 写入的）
+	// 如果 Redis 中有数据，使用 Redis 中的报警统计数据（更实时）
+	key := "vital-focus:card:" + card.Card.CardID + ":full"
+	raw, err := s.kv.Get(ctx, key)
+	if err == nil && raw != "" {
+		// 成功从 Redis 获取数据，解析并合并动态数据
+		vitalCard, ok := decodeAndNormalizeFullCard(raw)
+		if ok {
+			// 使用 Redis 中的报警统计数据（更实时）
+			if vitalCard.UnhandledAlarm0 != nil {
+				item.UnhandledAlarm0 = *vitalCard.UnhandledAlarm0
+			}
+			if vitalCard.UnhandledAlarm1 != nil {
+				item.UnhandledAlarm1 = *vitalCard.UnhandledAlarm1
+			}
+			if vitalCard.UnhandledAlarm2 != nil {
+				item.UnhandledAlarm2 = *vitalCard.UnhandledAlarm2
+			}
+			if vitalCard.UnhandledAlarm3 != nil {
+				item.UnhandledAlarm3 = *vitalCard.UnhandledAlarm3
+			}
+			if vitalCard.UnhandledAlarm4 != nil {
+				item.UnhandledAlarm4 = *vitalCard.UnhandledAlarm4
+			}
+			if vitalCard.IconAlarmLevel != nil {
+				item.IconAlarmLevel = *vitalCard.IconAlarmLevel
+			}
+			if vitalCard.PopAlarmEmerge != nil {
+				item.PopAlarmEmerge = *vitalCard.PopAlarmEmerge
+			}
+			s.logger.Debug("Merged dynamic data from Redis cache",
+				zap.String("card_id", card.Card.CardID),
+			)
+		} else {
+			// Redis 数据解析失败，使用 card 表的数据（已初始化）
+			s.logger.Debug("Failed to decode Redis cache, using card table data",
+				zap.String("card_id", card.Card.CardID),
+			)
+		}
+	} else {
+		// Redis 中没有数据，使用 card 表的数据（已初始化）
+		s.logger.Debug("Redis cache not available, using card table data",
+			zap.String("card_id", card.Card.CardID),
+			zap.Error(err),
+		)
 	}
 
 	// 设置 nullable 字段

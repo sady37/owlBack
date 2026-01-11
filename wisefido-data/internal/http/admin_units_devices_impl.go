@@ -262,11 +262,17 @@ func payloadToDevice(payload map[string]any) *domain.Device {
 	if v, ok := payload["status"].(string); ok {
 		device.Status = v
 	}
-	if v, ok := payload["business_access"].(string); ok {
-		device.BusinessAccess = v
+	// Handle business_access: must check if field exists in payload to distinguish between "not provided" and "empty string"
+	if val, exists := payload["business_access"]; exists {
+		if v, ok := val.(string); ok {
+			device.BusinessAccess = v // Allow empty string to be set (for validation purposes)
+		}
 	}
-	if v, ok := payload["monitoring_enabled"].(bool); ok {
-		device.MonitoringEnabled = v
+	// Handle monitoring_enabled: must check if field exists in payload
+	if val, exists := payload["monitoring_enabled"]; exists {
+		if v, ok := val.(bool); ok {
+			device.MonitoringEnabled = v
+		}
 	}
 	if v, ok := payload["metadata"].(string); ok && v != "" {
 		device.Metadata = sql.NullString{String: v, Valid: true}

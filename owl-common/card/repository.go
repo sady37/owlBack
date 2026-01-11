@@ -29,4 +29,3 @@ type RepositoryInterface interface {
 		devicesJSON, residentsJSON []byte,
 	) error
 }
-

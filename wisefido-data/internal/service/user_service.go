@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
@@ -50,19 +52,21 @@ type UserService interface {
 
 // userService 实现
 type userService struct {
-	usersRepo    repository.UsersRepository
-	branchesRepo repository.BranchesRepository // 用于获取可用 branch 列表
-	db           *sql.DB                       // 用于复杂查询（JOIN、权限过滤）
-	logger       *zap.Logger
+	usersRepo        repository.UsersRepository
+	branchesRepo     repository.BranchesRepository     // 用于获取可用 branch 列表
+	userBranchesRepo repository.UserBranchesRepository // 用于管理 user_branches 表
+	db               *sql.DB                           // 用于复杂查询（JOIN、权限过滤）
+	logger           *zap.Logger
 }
 
 // NewUserService 创建 UserService 实例
-func NewUserService(usersRepo repository.UsersRepository, branchesRepo repository.BranchesRepository, db *sql.DB, logger *zap.Logger) UserService {
+func NewUserService(usersRepo repository.UsersRepository, branchesRepo repository.BranchesRepository, userBranchesRepo repository.UserBranchesRepository, db *sql.DB, logger *zap.Logger) UserService {
 	return &userService{
-		usersRepo:    usersRepo,
-		branchesRepo: branchesRepo,
-		db:           db,
-		logger:       logger,
+		usersRepo:        usersRepo,
+		branchesRepo:     branchesRepo,
+		userBranchesRepo: userBranchesRepo,
+		db:               db,
+		logger:           logger,
 	}
 }
 
@@ -102,21 +106,20 @@ type GetUserResponse struct {
 
 // CreateUserRequest 创建用户请求
 type CreateUserRequest struct {
-	TenantID        string   // 必填
-	CurrentUserID   string   // 当前用户 ID（用于权限检查）
-	UserAccount     string   // 必填
-	Password        string   // 必填
-	Role            string   // 必填
-	Nickname        string   // 可选
-	Email           string   // 可选
-	Phone           string   // 可选
-	Status          string   // 可选，默认 "active"
-	AlarmLevels     []string // 可选
-	AlarmChannels   []string // 可选
-	AlarmScope      string   // 可选，根据角色设置默认值
-	Tags            []string // 可选
-	BranchIDs       []string // 可选：通过 branch_id 列表在 user_branches 表中创建多个院区关联
-	PrimaryBranchID string   // 可选：主院区 ID（必须在 BranchIDs 中，如果 BranchIDs 只有一个，自动设为主院区）
+	TenantID      string   // 必填
+	CurrentUserID string   // 当前用户 ID（用于权限检查）
+	UserAccount   string   // 必填
+	Password      string   // 必填
+	Role          string   // 必填
+	Nickname      string   // 可选
+	Email         string   // 可选
+	Phone         string   // 可选
+	Status        string   // 可选，默认 "active"
+	AlarmLevels   []string // 可选
+	AlarmChannels []string // 可选
+	AlarmScope    string   // 可选，根据角色设置默认值
+	Tags          []string // 可选
+	BranchIDs     []string // 可选：通过 branch_id 列表在 user_branches 表中创建多个院区关联
 
 	// 注意：AvailableBranches 不应由 Handler 传递，Service 层会自己从数据库查询用户的 branch 信息
 	// 这是用户本身的属性，不能信任前端传递的值
@@ -124,7 +127,9 @@ type CreateUserRequest struct {
 
 // CreateUserResponse 创建用户响应
 type CreateUserResponse struct {
-	UserID string // 新创建的用户 ID
+	UserID          string // 新创建的用户 ID
+	ResidentCreated bool   // Individual 用户关联的 Resident 是否创建成功
+	ResidentError   string // 如果 Resident 创建失败，错误信息（可选）
 }
 
 // UpdateUserRequest 更新用户请求
@@ -133,19 +138,18 @@ type UpdateUserRequest struct {
 	UserID        string // 必填
 	CurrentUserID string // 当前用户 ID（用于权限检查）
 	// 可选字段（nil 表示不更新，空字符串表示清空）
-	Nickname        *string  // 可选
-	Email           *string  // 可选（null 表示删除）
-	EmailHash       *string  // 可选（前端计算的 hash）
-	Phone           *string  // 可选（null 表示删除）
-	PhoneHash       *string  // 可选（前端计算的 hash）
-	Role            *string  // 可选
-	Status          *string  // 可选
-	AlarmLevels     []string // 可选（nil 表示不更新，空数组表示清空）
-	AlarmChannels   []string // 可选（nil 表示不更新，空数组表示清空）
-	AlarmScope      *string  // 可选
-	Tags            []string // 可选（nil 表示不更新，空数组表示清空）
-	BranchIDs       []string // 可选：通过 branch_id 列表在 user_branches 表中更新多个院区关联（nil 表示不更新，空数组表示删除所有关联）
-	PrimaryBranchID *string  // 可选：主院区 ID（必须在 BranchIDs 中，nil 表示不更新主院区）
+	Nickname      *string  // 可选
+	Email         *string  // 可选（null 表示删除）
+	EmailHash     *string  // 可选（前端计算的 hash）
+	Phone         *string  // 可选（null 表示删除）
+	PhoneHash     *string  // 可选（前端计算的 hash）
+	Role          *string  // 可选
+	Status        *string  // 可选
+	AlarmLevels   []string // 可选（nil 表示不更新，空数组表示清空）
+	AlarmChannels []string // 可选（nil 表示不更新，空数组表示清空）
+	AlarmScope    *string  // 可选
+	Tags          []string // 可选（nil 表示不更新，空数组表示清空）
+	BranchIDs     []string // 可选：通过 branch_id 列表在 user_branches 表中更新多个院区关联（nil 表示不更新，空数组表示删除所有关联）
 
 	// 注意：AvailableBranches 不应由 Handler 传递，Service 层会自己从数据库查询用户的 branch 信息
 	// 这是用户本身的属性，不能信任前端传递的值
@@ -153,7 +157,9 @@ type UpdateUserRequest struct {
 
 // UpdateUserResponse 更新用户响应
 type UpdateUserResponse struct {
-	Success bool // 是否成功
+	Success             bool   // 是否成功
+	ResidentTransferred bool   // Individual 用户关联的 Resident 是否已设置为 transferred（转院）
+	ResidentError       string // 如果 Resident 更新失败，错误信息（可选）
 }
 
 // DeleteUserRequest 删除用户请求
@@ -165,7 +171,9 @@ type DeleteUserRequest struct {
 
 // DeleteUserResponse 删除用户响应
 type DeleteUserResponse struct {
-	Success bool // 是否成功
+	Success            bool   // 是否成功
+	ResidentDischarged bool   // Individual 用户关联的 Resident 是否已设置为 discharged
+	ResidentError      string // 如果 Resident 更新失败，错误信息（可选）
 }
 
 // UserResetPasswordRequest 重置用户密码请求
@@ -204,14 +212,16 @@ type GetAccountSettingsRequest struct {
 
 // GetAccountSettingsResponse 获取账户设置响应
 type GetAccountSettingsResponse struct {
-	ID        string  // UUID: user_id（前端需要）
-	Account   string  // user_account
-	Nickname  string  // 昵称
-	Email     *string // 邮箱（可选，nil 表示不存在）
-	Phone     *string // 电话（可选，nil 表示不存在）
-	Role      string  // 角色代码（前端需要，用于判断使用哪种表）
-	SaveEmail bool    // 是否保存 email 明文（Staff 总是 true）
-	SavePhone bool    // 是否保存 phone 明文（Staff 总是 true）
+	ID                string      // UUID: user_id（前端需要）
+	Account           string      // user_account
+	Nickname          string      // 昵称
+	Email             *string     // 邮箱（可选，nil 表示不存在）
+	Phone             *string     // 电话（可选，nil 表示不存在）
+	Role              string      // 角色代码（前端需要，用于判断使用哪种表）
+	SaveEmail         bool        // 是否保存 email 明文（Staff 总是 true）
+	SavePhone         bool        // 是否保存 phone 明文（Staff 总是 true）
+	BranchIDs         []string    // 用户有权限的所有 branch_id 列表（Admin 可能是 ["*", "branch-id-1", ...]）
+	AvailableBranches []BranchDTO // 用户有权限的所有 branch 列表（包含 branch_id 和 branch_name，用于前端下拉选择）
 }
 
 // UpdateAccountSettingsRequest 更新账户设置请求（统一 API，在同一个事务中处理所有更新）
@@ -255,6 +265,7 @@ type GetAvailableCaregiversRequest struct {
 	TenantID      string // 必填
 	CurrentUserID string // 当前用户 ID（用于权限过滤，必填）
 	BranchID      string // 必填：指定 branch_id，只返回该 branch 内的 caregivers/nurse
+	UnitID        string // 可选：指定 unit_id，如果 unit_type 是 'Home'，允许选择 Individual 类型
 }
 
 // GetAvailableCaregiversResponse 获取可用 caregivers 响应
@@ -284,24 +295,23 @@ type CaregiverGroupDTO struct {
 
 // UserDTO 用户数据传输对象（用于响应）
 type UserDTO struct {
-	UserID          string                 `json:"user_id"`
-	TenantID        string                 `json:"tenant_id"`
-	UserAccount     string                 `json:"user_account"`
-	Nickname        string                 `json:"nickname,omitempty"`
-	Email           string                 `json:"email,omitempty"`
-	Phone           string                 `json:"phone,omitempty"`
-	Role            string                 `json:"role"`
-	Status          string                 `json:"status"`
-	AlarmLevels     []string               `json:"alarm_levels,omitempty"`
-	AlarmChannels   []string               `json:"alarm_channels,omitempty"`
-	AlarmScope      string                 `json:"alarm_scope,omitempty"`
-	BranchIDs       []string               `json:"branch_ids,omitempty"`        // 返回所有 branch_id 列表
-	PrimaryBranchID string                 `json:"primary_branch_id,omitempty"` // 返回主院区 ID
-	BranchID        string                 `json:"branch_id,omitempty"`         // 向后兼容：主院区 ID（等同于 primary_branch_id）
-	BranchName      string                 `json:"branch_name,omitempty"`       // 向后兼容：主院区名称（用于显示）
-	LastLoginAt     string                 `json:"last_login_at,omitempty"`     // RFC3339 格式
-	Tags            []string               `json:"tags,omitempty"`
-	Preferences     map[string]interface{} `json:"preferences,omitempty"`
+	UserID        string                 `json:"user_id"`
+	TenantID      string                 `json:"tenant_id"`
+	UserAccount   string                 `json:"user_account"`
+	Nickname      string                 `json:"nickname,omitempty"`
+	Email         string                 `json:"email,omitempty"`
+	Phone         string                 `json:"phone,omitempty"`
+	Role          string                 `json:"role"`
+	Status        string                 `json:"status"`
+	AlarmLevels   []string               `json:"alarm_levels,omitempty"`
+	AlarmChannels []string               `json:"alarm_channels,omitempty"`
+	AlarmScope    string                 `json:"alarm_scope,omitempty"`
+	BranchIDs     []string               `json:"branch_ids,omitempty"`    // 返回所有 branch_id 列表
+	BranchID      string                 `json:"branch_id,omitempty"`     // 向后兼容：第一个 branch ID（按 branch_name 排序）
+	BranchName    string                 `json:"branch_name,omitempty"`   // 向后兼容：第一个 branch 名称（用于显示）
+	LastLoginAt   string                 `json:"last_login_at,omitempty"` // RFC3339 格式
+	Tags          []string               `json:"tags,omitempty"`
+	Preferences   map[string]interface{} `json:"preferences,omitempty"`
 }
 
 // ============================================
@@ -324,102 +334,93 @@ type UserBranchInfo struct {
 }
 
 // createUserBranches 创建用户与多个院区的关联（Service 层内部方法）
-func (s *userService) createUserBranches(ctx context.Context, tenantID, userID string, branchIDs []string, primaryBranchID string) error {
+// 使用 Repository 层方法，而不是直接操作数据库
+// 注意：此方法不应接收包含 '*' 的 branchIDs 数组，因为 '*' 表示所有分支（user_branches 表为空）
+// 但是为了防御性编程，这里会过滤掉 '*' 字符
+func (s *userService) createUserBranches(ctx context.Context, tenantID, userID string, branchIDs []string) error {
 	if len(branchIDs) == 0 {
 		return nil // 如果没有 branch，不创建关联
 	}
 
-	// 使用事务确保原子性
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	// 先删除用户的所有现有关联（如果存在）
-	_, err = tx.ExecContext(ctx,
-		`DELETE FROM user_branches WHERE tenant_id = $1 AND user_id = $2`,
-		tenantID, userID,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to delete existing user branches: %w", err)
+	// 1. 先删除用户的所有现有关联（如果存在，使用 Repository 方法）
+	// 注意：CreateUser 时用户可能还没有关联，所以这里删除可能没有记录，但不影响
+	if err := s.userBranchesRepo.DeleteAllUserBranches(ctx, tenantID, userID); err != nil {
+		// 如果删除失败（可能是用户还没有关联），继续执行创建
+		s.logger.Warn("Failed to delete existing user branches (may not exist)", zap.Error(err))
 	}
 
-	// 创建新的关联
+	// 2. 过滤掉 '*' 字符（防御性编程）
+	// 注意：理论上不应收到 '*'，因为调用方已经在 CreateUser 中过滤了
+	// 但是如果收到了，这里会跳过，避免尝试将 '*' 作为 UUID 插入数据库
+	validBranchIDs := make([]string, 0, len(branchIDs))
 	for _, branchID := range branchIDs {
-		isPrimary := branchID == primaryBranchID
-		_, err = tx.ExecContext(ctx,
-			`INSERT INTO user_branches (tenant_id, user_id, branch_id, is_primary)
-			 VALUES ($1, $2, $3, $4)
-			 ON CONFLICT (tenant_id, user_id, branch_id) DO UPDATE SET is_primary = EXCLUDED.is_primary`,
-			tenantID, userID, branchID, isPrimary,
-		)
+		if branchID != "" && branchID != "*" {
+			validBranchIDs = append(validBranchIDs, branchID)
+		}
+	}
+
+	if len(validBranchIDs) == 0 {
+		return nil // 过滤后没有有效的 branch_id，不创建关联
+	}
+
+	// 3. 创建新的关联（使用 Repository 方法）
+	for _, branchID := range validBranchIDs {
+		userBranch := &domain.UserBranch{
+			TenantID: tenantID,
+			UserID:   userID,
+			BranchID: branchID,
+		}
+		_, err := s.userBranchesRepo.CreateUserBranch(ctx, tenantID, userBranch)
 		if err != nil {
+			// CreateUserBranch 已经处理了唯一性约束（如果已存在，返回现有ID，不报错）
+			// 所以这里只需要检查其他错误
 			return fmt.Errorf("failed to create user branch association for branch_id '%s': %w", branchID, err)
 		}
 	}
 
-	return tx.Commit()
+	return nil
 }
 
 // updateUserBranches 更新用户与多个院区的关联（Service 层内部方法）
-func (s *userService) updateUserBranches(ctx context.Context, tenantID, userID string, branchIDs []string, primaryBranchID *string) error {
-	// 使用事务确保原子性
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	// 先删除用户的所有现有关联
-	_, err = tx.ExecContext(ctx,
-		`DELETE FROM user_branches WHERE tenant_id = $1 AND user_id = $2`,
-		tenantID, userID,
-	)
-	if err != nil {
+// 使用 Repository 层方法，而不是直接操作数据库
+// 注意：此方法不应接收包含 '*' 的 branchIDs 数组，因为 '*' 表示所有分支（user_branches 表为空）
+// 但是为了防御性编程，这里会过滤掉 '*' 字符
+func (s *userService) updateUserBranches(ctx context.Context, tenantID, userID string, branchIDs []string) error {
+	// 1. 先删除用户的所有现有关联（使用 Repository 方法）
+	if err := s.userBranchesRepo.DeleteAllUserBranches(ctx, tenantID, userID); err != nil {
 		return fmt.Errorf("failed to delete existing user branches: %w", err)
 	}
 
-	// 如果有新的 branchIDs，创建新的关联
+	// 2. 如果有新的 branchIDs，过滤掉 '*' 字符后创建新的关联（使用 Repository 方法）
+	// 注意：如果 branchIDs 为空或只包含 '*'，则删除所有关联后不创建新关联（表示 *(ALL) 或未分配）
 	if len(branchIDs) > 0 {
-		// 确定主院区
-		var primaryID string
-		if primaryBranchID != nil && *primaryBranchID != "" {
-			primaryID = *primaryBranchID
-			// 验证 PrimaryBranchID 是否在 BranchIDs 中
-			found := false
-			for _, bid := range branchIDs {
-				if bid == primaryID {
-					found = true
-					break
-				}
+		// 过滤掉 '*' 字符（防御性编程）
+		// 注意：理论上不应收到 '*'，因为调用方已经在 UpdateUser 中过滤了
+		// 但是如果收到了，这里会跳过，避免尝试将 '*' 作为 UUID 插入数据库
+		validBranchIDs := make([]string, 0, len(branchIDs))
+		for _, branchID := range branchIDs {
+			if branchID != "" && branchID != "*" {
+				validBranchIDs = append(validBranchIDs, branchID)
 			}
-			if !found {
-				return fmt.Errorf("primary_branch_id must be one of the selected branch_ids")
-			}
-		} else if len(branchIDs) == 1 {
-			// 如果只有一个 branch，自动设为主院区
-			primaryID = branchIDs[0]
-		} else {
-			return fmt.Errorf("primary_branch_id is required when multiple branches are selected")
 		}
 
-		// 创建新的关联
-		for _, branchID := range branchIDs {
-			isPrimary := branchID == primaryID
-			_, err = tx.ExecContext(ctx,
-				`INSERT INTO user_branches (tenant_id, user_id, branch_id, is_primary)
-				 VALUES ($1, $2, $3, $4)
-				 ON CONFLICT (tenant_id, user_id, branch_id) DO UPDATE SET is_primary = EXCLUDED.is_primary`,
-				tenantID, userID, branchID, isPrimary,
-			)
+		// 3. 创建新的关联（使用 Repository 方法）
+		for _, branchID := range validBranchIDs {
+			userBranch := &domain.UserBranch{
+				TenantID: tenantID,
+				UserID:   userID,
+				BranchID: branchID,
+			}
+			_, err := s.userBranchesRepo.CreateUserBranch(ctx, tenantID, userBranch)
 			if err != nil {
+				// CreateUserBranch 已经处理了唯一性约束（如果已存在，返回现有ID，不报错）
+				// 所以这里只需要检查其他错误
 				return fmt.Errorf("failed to create user branch association for branch_id '%s': %w", branchID, err)
 			}
 		}
 	}
 
-	return tx.Commit()
+	return nil
 }
 
 // getUserBranchIDs 查询用户所属的院区信息（Service 层内部方法）
@@ -439,12 +440,13 @@ func (s *userService) getUserBranchIDs(ctx context.Context, tenantID, userID str
 		 FROM user_branches ub
 		 LEFT JOIN branches b ON b.branch_id = ub.branch_id
 		 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2
-		 ORDER BY ub.is_primary DESC, b.branch_name ASC`,
+		 ORDER BY b.branch_name ASC`,
 		tenantID, userID,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, false, nil // 用户没有关联任何院区
+			// 用户没有关联任何院区，检查是否是 Admin 的 *(ALL) 情况
+			return s.handleAdminAllBranches(ctx, tenantID, userID)
 		}
 		return nil, false, fmt.Errorf("failed to query user branches: %w", err)
 	}
@@ -469,10 +471,55 @@ func (s *userService) getUserBranchIDs(ctx context.Context, tenantID, userID str
 	}
 
 	if len(branchList) == 0 {
-		return nil, false, nil // 用户没有关联任何院区
+		// 用户没有关联任何院区，检查是否是 Admin 的 *(ALL) 情况
+		return s.handleAdminAllBranches(ctx, tenantID, userID)
 	}
 
 	return branchList, true, nil
+}
+
+// handleAdminAllBranches 处理 Admin 的 *(ALL) 情况（user_branches 表为空时返回所有 branch）
+// 返回格式：["*", "branch-id-1", "branch-id-2", ...]，前面加 "*" 表示所有分支
+func (s *userService) handleAdminAllBranches(ctx context.Context, tenantID, userID string) (branches []UserBranchInfo, hasBranches bool, err error) {
+	// 获取用户信息，检查是否是 Admin
+	user, err := s.usersRepo.GetUser(ctx, tenantID, userID)
+	if err != nil {
+		// 如果用户不存在，返回空列表
+		return nil, false, nil
+	}
+
+	// 如果是 Admin 角色，返回所有 branch_id/branch_name，并在前面加上 "*"
+	if strings.EqualFold(user.Role, "Admin") {
+		allBranches, _, err := s.branchesRepo.ListBranches(ctx, tenantID, "", 1, 1000)
+		if err != nil {
+			s.logger.Warn("Failed to list all branches for Admin user", zap.String("user_id", userID), zap.Error(err))
+			// 如果查询失败，至少返回 ["*"] 作为标记
+			return []UserBranchInfo{
+				{BranchID: "*", BranchName: "*(ALL)"},
+			}, true, nil
+		}
+
+		// 构建所有 branch 的列表，前面加上 "*"
+		// 格式：["*", "branch-id-1", "branch-id-2", ...]
+		branchList := make([]UserBranchInfo, 0, len(allBranches)+1)
+		// 第一个元素是 "*"，表示所有分支
+		branchList = append(branchList, UserBranchInfo{
+			BranchID:   "*",
+			BranchName: "*(ALL)",
+		})
+		// 然后添加所有实际的 branch
+		for _, branch := range allBranches {
+			branchList = append(branchList, UserBranchInfo{
+				BranchID:   branch.BranchID,
+				BranchName: branch.BranchName,
+			})
+		}
+
+		return branchList, true, nil
+	}
+
+	// 非 Admin 角色，返回空列表（未分配状态）
+	return nil, false, nil
 }
 
 // getRoleLevel 返回角色的层级（数字越小，权限越高）
@@ -592,7 +639,8 @@ func domainUserToDTO(user *domain.User) *UserDTO {
 	if user.AlarmScope.Valid {
 		dto.AlarmScope = user.AlarmScope.String
 	}
-	// BranchID 和 BranchName 现在都从 user_branches 表获取，不再从 users.branch_id 获取
+	// BranchID 和 BranchName 从 Repository 层的 LATERAL 子查询获取（第一个 branch，按 branch_name 排序）
+	// 注意：不再使用 users.branch_id 字段（已废弃），也不使用 is_primary 字段（已删除）
 	if user.BranchID.Valid {
 		dto.BranchID = user.BranchID.String
 	}
@@ -677,11 +725,22 @@ func (s *userService) ListUsers(ctx context.Context, req ListUsersRequest) (*Lis
 
 		if hasBranches && len(userBranches) > 0 {
 			// 用户有关联的院区：提取 branch_id 列表进行 IN 查询
-			branchIDs := make([]string, 0, len(userBranches))
-			for _, branch := range userBranches {
-				branchIDs = append(branchIDs, branch.BranchID)
+			// 注意：如果第一个元素是 "*"，说明是 Admin 的 *(ALL) 情况，不设置 filters.BranchIDs（查询所有用户）
+			if userBranches[0].BranchID == "*" {
+				// Admin 的 *(ALL) 情况：不设置 filters.BranchIDs，查询所有用户
+				// filters.BranchIDs 保持为 nil，表示不过滤
+			} else {
+				// 提取实际的 branch_id 列表（过滤掉 "*"）
+				branchIDs := make([]string, 0, len(userBranches))
+				for _, branch := range userBranches {
+					if branch.BranchID != "" && branch.BranchID != "*" {
+						branchIDs = append(branchIDs, branch.BranchID)
+					}
+				}
+				if len(branchIDs) > 0 {
+					filters.BranchIDs = branchIDs
+				}
 			}
-			filters.BranchIDs = branchIDs
 		} else {
 			// 用户没有关联任何院区：只能查看 branch_name 为 NULL、"" 或 '-' 的用户（都视为空院区）
 			filters.BranchNameNull = true
@@ -723,10 +782,97 @@ func (s *userService) ListUsers(ctx context.Context, req ListUsersRequest) (*Lis
 		filteredUsers = append(filteredUsers, user)
 	}
 
-	// 8. 转换为 DTO
+	// 8. 转换为 DTO，并为每个用户填充 branch_ids
 	items := make([]*UserDTO, 0, len(filteredUsers))
 	for _, user := range filteredUsers {
-		items = append(items, domainUserToDTO(user))
+		dto := domainUserToDTO(user)
+
+		// 查询用户的所有 branch_ids（支持多 branch 和 *(ALL) 逻辑）
+		userBranches, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, user.UserID)
+		if err != nil {
+			s.logger.Warn("Failed to get user branch IDs in ListUsers", zap.String("user_id", user.UserID), zap.Error(err))
+			// 如果查询失败，根据角色设置默认值
+			// Admin 角色：尝试查询所有 branch_id，失败则返回 ['*']
+			// 其他角色：返回空数组
+			if strings.EqualFold(user.Role, "Admin") {
+				allBranches, _, err := s.branchesRepo.ListBranches(ctx, req.TenantID, "", 1, 1000)
+				if err != nil {
+					s.logger.Warn("Failed to list all branches for Admin user", zap.String("user_id", user.UserID), zap.Error(err))
+					dto.BranchIDs = []string{"*"}
+				} else {
+					dto.BranchIDs = make([]string, 0, len(allBranches)+1)
+					dto.BranchIDs = append(dto.BranchIDs, "*")
+					for _, branch := range allBranches {
+						dto.BranchIDs = append(dto.BranchIDs, branch.BranchID)
+					}
+					if len(allBranches) > 0 {
+						dto.BranchID = allBranches[0].BranchID
+						dto.BranchName = allBranches[0].BranchName
+					}
+				}
+			} else {
+				dto.BranchIDs = []string{}
+			}
+		} else {
+			// 填充 branch_ids
+			if hasBranches && len(userBranches) > 0 {
+				// 用户有指定的 branch（从 user_branches 表查询到记录）
+				dto.BranchIDs = make([]string, 0, len(userBranches))
+				for _, branch := range userBranches {
+					dto.BranchIDs = append(dto.BranchIDs, branch.BranchID)
+				}
+				// 第一个 branch 用于向后兼容（branch_id 和 branch_name）
+				// 逻辑：如果 hasBranches == true，说明 user_branches 表有记录，Repository 层的 LATERAL 子查询应该已经设置了 dto.BranchID
+				// 如果 dto.BranchID == ""，说明 Repository 层没有找到 branch，不应该随便填充（数据不一致）
+				// 由于 Repository 层和 Service 层都按 branch_name 排序，如果 Repository 层有值，应该和 userBranches[0] 一致
+				if dto.BranchID != "" {
+					// Repository 层已经设置了 BranchID，确保 BranchName 也正确（可能 Repository 层没有 JOIN 到 branch_name）
+					if dto.BranchName == "" && len(userBranches) > 0 {
+						// 找到匹配的 branch 并设置 BranchName
+						for _, branch := range userBranches {
+							if branch.BranchID == dto.BranchID {
+								dto.BranchName = branch.BranchName
+								break
+							}
+						}
+					}
+				}
+				// 如果 dto.BranchID == ""，说明 Repository 层没有找到 branch，不应该随便填充
+			} else {
+				// 用户没有关联任何 branch（user_branches 表没有记录）
+				// 检查角色：如果是 Admin，返回所有 branch_id 列表，并在前面加上 '*'；否则返回 []（未分配）
+				if strings.EqualFold(user.Role, "Admin") {
+					// Admin 角色：user_branches 表无记录表示可以访问所有分支
+					// 查询 branches 表，获取该 tenant 下的所有 branch_id
+					allBranches, _, err := s.branchesRepo.ListBranches(ctx, req.TenantID, "", 1, 1000)
+					if err != nil {
+						s.logger.Warn("Failed to list all branches for Admin user", zap.String("user_id", user.UserID), zap.Error(err))
+						// 如果查询失败，至少返回 ['*'] 作为标记
+						dto.BranchIDs = []string{"*"}
+					} else {
+						// 构建 branch_ids 列表：['*', 'branch-id-1', 'branch-id-2', ...]
+						dto.BranchIDs = make([]string, 0, len(allBranches)+1)
+						dto.BranchIDs = append(dto.BranchIDs, "*")
+						for _, branch := range allBranches {
+							dto.BranchIDs = append(dto.BranchIDs, branch.BranchID)
+						}
+						// 设置第一个 branch 用于向后兼容
+						if len(allBranches) > 0 {
+							dto.BranchID = allBranches[0].BranchID
+							dto.BranchName = allBranches[0].BranchName
+						}
+					}
+				} else {
+					// 非 Admin 角色：user_branches 表无记录表示未分配，返回空数组
+					dto.BranchIDs = []string{}
+					// 向后兼容：不设置 branch_id 和 branch_name
+					dto.BranchID = ""
+					dto.BranchName = ""
+				}
+			}
+		}
+
+		items = append(items, dto)
 	}
 
 	// 9. 重新计算 total（因为过滤后数量可能不同）
@@ -826,7 +972,7 @@ func (s *userService) GetUser(ctx context.Context, req GetUserRequest) (*GetUser
 	}
 
 	// 6. 查询用户的所有 branch 关联
-	userBranches, _, err := s.getUserBranchIDs(ctx, req.TenantID, req.UserID)
+	userBranches, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.UserID)
 	if err != nil {
 		s.logger.Error("Failed to get user branches", zap.Error(err))
 		return nil, fmt.Errorf("failed to get user branches: %w", err)
@@ -835,18 +981,55 @@ func (s *userService) GetUser(ctx context.Context, req GetUserRequest) (*GetUser
 	// 7. 转换为 DTO
 	dto := domainUserToDTO(user)
 
-	// 8. 填充所有 branch_ids 和主院区
-	if len(userBranches) > 0 {
+	// 8. 填充所有 branch_ids
+	// 规则：
+	// - 如果 user_branches 表有记录，返回具体的 branch_id 列表
+	// - 如果 user_branches 表无记录：
+	//   - 如果是 Admin 角色 → 返回 ['*']（表示所有分支）
+	//   - 如果不是 Admin 角色 → 返回 []（未分配状态）
+	// 注意：user.BranchID 是从 user_branches 表通过 LEFT JOIN LATERAL 获取的，
+	// 所以如果 user_branches 表没有记录，user.BranchID 也会是 NULL
+	if hasBranches && len(userBranches) > 0 {
+		// 用户有指定的 branch（从 user_branches 表查询到记录）
 		dto.BranchIDs = make([]string, 0, len(userBranches))
 		for _, branch := range userBranches {
 			dto.BranchIDs = append(dto.BranchIDs, branch.BranchID)
 		}
-		// 第一个 branch 是主院区（getUserBranchIDs 按 is_primary DESC 排序）
-		if len(userBranches) > 0 {
-			dto.PrimaryBranchID = userBranches[0].BranchID
-			// 向后兼容
-			dto.BranchID = userBranches[0].BranchID
-			dto.BranchName = userBranches[0].BranchName
+		// 第一个 branch 用于向后兼容（branch_id 和 branch_name）
+		dto.BranchID = userBranches[0].BranchID
+		dto.BranchName = userBranches[0].BranchName
+	} else {
+		// 用户没有关联任何 branch（user_branches 表没有记录）
+		// 检查角色：如果是 Admin，返回所有 branch_id 列表，并在前面加上 '*'；否则返回 []（未分配）
+		if strings.EqualFold(user.Role, "Admin") {
+			// Admin 角色：user_branches 表无记录表示可以访问所有分支
+			// 查询 branches 表，获取该 tenant 下的所有 branch_id
+			allBranches, _, err := s.branchesRepo.ListBranches(ctx, req.TenantID, "", 1, 1000)
+			if err != nil {
+				s.logger.Warn("Failed to list all branches for Admin user", zap.String("user_id", req.UserID), zap.Error(err))
+				// 如果查询失败，至少返回 ['*'] 作为标记
+				dto.BranchIDs = []string{"*"}
+				dto.BranchID = ""
+				dto.BranchName = ""
+			} else {
+				// 构建 branch_ids 列表：['*', 'branch-id-1', 'branch-id-2', ...]
+				dto.BranchIDs = make([]string, 0, len(allBranches)+1)
+				dto.BranchIDs = append(dto.BranchIDs, "*")
+				for _, branch := range allBranches {
+					dto.BranchIDs = append(dto.BranchIDs, branch.BranchID)
+				}
+				// 设置第一个 branch 用于向后兼容
+				if len(allBranches) > 0 {
+					dto.BranchID = allBranches[0].BranchID
+					dto.BranchName = allBranches[0].BranchName
+				}
+			}
+		} else {
+			// 非 Admin 角色：user_branches 表无记录表示未分配，返回空数组
+			dto.BranchIDs = []string{}
+			// 向后兼容：不设置 branch_id 和 branch_name
+			dto.BranchID = ""
+			dto.BranchName = ""
 		}
 	}
 
@@ -923,7 +1106,15 @@ func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*C
 
 		// 4.2 验证 branch_ids 必须在 Manager 的 branch 范围内
 		// Service 层自己查询用户的 branch 信息，不信任 Handler 传递的值
+		// 注意：*(ALL) 选项只有 Admin 可以使用，Manager 不能使用
+		// 空数组 [] 表示未分配，Manager 可以创建未分配的用户
 		if len(req.BranchIDs) > 0 {
+			// 检查是否包含 *(ALL) 选项
+			if req.BranchIDs[0] == "*" {
+				return nil, fmt.Errorf("Manager cannot assign *(ALL) branch (only Admin can)")
+			}
+
+			// 验证具体的 branch_id 列表
 			managerBranches, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
 			if err != nil {
 				s.logger.Error("Failed to get manager branches", zap.Error(err))
@@ -946,7 +1137,11 @@ func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*C
 					return nil, fmt.Errorf("branch_id '%s' is not in Manager's branch scope", requestedBranchID)
 				}
 			}
+		} else {
+			// Manager 创建用户时，branch_ids 不能为空（必须指定具体的 branch）
+			return nil, fmt.Errorf("Manager must assign specific branch (cannot leave unassigned)")
 		}
+		// 如果 branchIDs 为空数组，允许创建（表示未分配）
 	}
 
 	// 4. 数据准备
@@ -1040,34 +1235,22 @@ func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*C
 	if len(req.AlarmChannels) > 0 {
 		user.AlarmChannels = req.AlarmChannels
 	}
-	// 处理 BranchIDs：至少需要一个 branch_id
-	if len(req.BranchIDs) == 0 {
-		return nil, fmt.Errorf("at least one branch_id is required")
-	}
-	// 验证 PrimaryBranchID 是否在 BranchIDs 中
-	primaryBranchID := req.PrimaryBranchID
-	if primaryBranchID == "" {
-		// 如果只有一个 branch，自动设为主院区
-		if len(req.BranchIDs) == 1 {
-			primaryBranchID = req.BranchIDs[0]
+	// 处理 BranchIDs：
+	// - 空数组 []：表示未分配，不创建 user_branches 记录，users.branch_id 为 NULL
+	// - ['*']：表示所有分支，不创建 user_branches 记录，users.branch_id 为 NULL
+	// - ['branch-id-1', ...]：创建 user_branches 记录，users.branch_id 设置为第一个
+	if len(req.BranchIDs) > 0 {
+		if req.BranchIDs[0] == "*" {
+			// *(ALL) 选项：不设置 branch_id，表示用户可以访问所有分支
+			user.BranchID = sql.NullString{Valid: false}
 		} else {
-			return nil, fmt.Errorf("primary_branch_id is required when multiple branches are selected")
+			// 具体的 branch_id 列表：设置第一个 branch 用于向后兼容（users.branch_id 字段）
+			user.BranchID = sql.NullString{String: req.BranchIDs[0], Valid: true}
 		}
 	} else {
-		// 验证 PrimaryBranchID 是否在 BranchIDs 中
-		found := false
-		for _, bid := range req.BranchIDs {
-			if bid == primaryBranchID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil, fmt.Errorf("primary_branch_id must be one of the selected branch_ids")
-		}
+		// 空数组：表示未分配，不设置 branch_id
+		user.BranchID = sql.NullString{Valid: false}
 	}
-	// 设置第一个 branch 作为主院区（用于向后兼容，Repository 层会处理多个 branch）
-	user.BranchID = sql.NullString{String: primaryBranchID, Valid: true}
 	if len(tagsJSON) > 0 {
 		user.Tags = sql.NullString{String: string(tagsJSON), Valid: true}
 	}
@@ -1080,13 +1263,37 @@ func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*C
 	}
 
 	// 8. 创建多个 user_branches 关联
-	if err := s.createUserBranches(ctx, req.TenantID, userID, req.BranchIDs, primaryBranchID); err != nil {
-		s.logger.Error("Failed to create user branches", zap.Error(err))
-		return nil, fmt.Errorf("failed to create user branches: %w", err)
+	// - 空数组 []：不创建关联（未分配状态）
+	// - ['*']：不创建关联（所有分支）
+	// - ['branch-id-1', ...]：创建关联（具体的 branch_id 列表）
+	if len(req.BranchIDs) > 0 && req.BranchIDs[0] != "*" {
+		if err := s.createUserBranches(ctx, req.TenantID, userID, req.BranchIDs); err != nil {
+			s.logger.Error("Failed to create user branches", zap.Error(err))
+			return nil, fmt.Errorf("failed to create user branches: %w", err)
+		}
+	}
+	// 如果 branchIDs 为空或包含 '*'，不创建 user_branches 记录
+
+	// 9. 如果角色是 Individual，自动创建对应的 Resident 记录
+	// 处理 Individual 用户自动创建 Resident
+	residentCreated := false
+	residentError := ""
+	if strings.EqualFold(role, "Individual") {
+		if err := s.createResidentForIndividual(ctx, req.TenantID, userID, req.Nickname, req.BranchIDs); err != nil {
+			s.logger.Error("Failed to create resident for Individual user", 
+				zap.String("user_id", userID),
+				zap.String("nickname", req.Nickname),
+				zap.Error(err))
+			residentError = err.Error()
+		} else {
+			residentCreated = true
+		}
 	}
 
 	return &CreateUserResponse{
-		UserID: userID,
+		UserID:          userID,
+		ResidentCreated: residentCreated,
+		ResidentError:   residentError,
 	}, nil
 }
 
@@ -1313,9 +1520,15 @@ func (s *userService) UpdateUser(ctx context.Context, req UpdateUserRequest) (*U
 	if req.BranchIDs != nil {
 		// Manager 特殊限制：如果当前用户是 Manager，验证 branch 范围
 		// Service 层自己查询用户的 branch 信息，不信任 Handler 传递的值
+		// 注意：*(ALL) 选项只有 Admin 可以使用，Manager 不能使用
 		if strings.EqualFold(currentUser.Role, "Manager") {
-			// 验证 branch_ids 必须在 Manager 的 branch 范围内
+			// Manager 不能选择 *(ALL)，必须指定具体的 branch
 			if len(req.BranchIDs) > 0 {
+				// 检查是否包含 *(ALL) 选项
+				if req.BranchIDs[0] == "*" {
+					return nil, fmt.Errorf("Manager cannot assign *(ALL) branch (only Admin can)")
+				}
+
 				managerBranches, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
 				if err != nil {
 					s.logger.Error("Failed to get manager branches", zap.Error(err))
@@ -1338,42 +1551,44 @@ func (s *userService) UpdateUser(ctx context.Context, req UpdateUserRequest) (*U
 						return nil, fmt.Errorf("branch_id '%s' is not in Manager's branch scope", requestedBranchID)
 					}
 				}
+			} else {
+				// Manager 更新用户时，branch_ids 不能为空（必须指定具体的 branch）
+				return nil, fmt.Errorf("Manager must assign specific branch (cannot leave unassigned)")
 			}
-		}
-
-		// 验证 PrimaryBranchID
-		var primaryBranchID *string
-		if req.PrimaryBranchID != nil && *req.PrimaryBranchID != "" {
-			// 验证 PrimaryBranchID 是否在 BranchIDs 中
-			found := false
-			for _, bid := range req.BranchIDs {
-				if bid == *req.PrimaryBranchID {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return nil, fmt.Errorf("primary_branch_id must be one of the selected branch_ids")
-			}
-			primaryBranchID = req.PrimaryBranchID
-		} else if len(req.BranchIDs) == 1 {
-			// 如果只有一个 branch，自动设为主院区
-			primaryBranchID = &req.BranchIDs[0]
-		} else if len(req.BranchIDs) > 1 {
-			return nil, fmt.Errorf("primary_branch_id is required when multiple branches are selected")
 		}
 
 		// 更新 user_branches 关联
-		if err := s.updateUserBranches(ctx, req.TenantID, req.UserID, req.BranchIDs, primaryBranchID); err != nil {
-			s.logger.Error("Failed to update user branches", zap.Error(err))
-			return nil, fmt.Errorf("failed to update user branches: %w", err)
-		}
-
-		// 同时更新 domain.User 中的 BranchID（用于向后兼容）
-		if len(req.BranchIDs) > 0 && primaryBranchID != nil {
-			updateUser.BranchID = sql.NullString{String: *primaryBranchID, Valid: true}
-		} else {
+		// - 空数组 []：删除所有关联（未分配状态）
+		// - ['*']：删除所有关联（所有分支，仅 Admin 可用，需要验证 role）
+		// - ['branch-id-1', ...]：删除所有关联，然后创建指定的 user_branches 关联
+		if len(req.BranchIDs) > 0 && req.BranchIDs[0] == "*" {
+			// *(ALL) 选项：验证 role 必须是 Admin
+			// 注意：如果 req.Role 不为 nil，说明正在更新 role，需要检查新 role；否则检查当前 role
+			roleToCheck := targetUser.Role
+			if req.Role != nil && *req.Role != "" {
+				roleToCheck = *req.Role
+			}
+			if !strings.EqualFold(roleToCheck, "Admin") {
+				return nil, fmt.Errorf("only Admin role can assign *(ALL) branch")
+			}
+			// 删除所有 user_branches 记录，表示用户可以访问所有分支
+			if err := s.updateUserBranches(ctx, req.TenantID, req.UserID, []string{}); err != nil {
+				s.logger.Error("Failed to update user branches", zap.Error(err))
+				return nil, fmt.Errorf("failed to update user branches: %w", err)
+			}
 			updateUser.BranchID = sql.NullString{Valid: false}
+		} else {
+			// 正常更新：创建指定的 user_branches 关联
+			if err := s.updateUserBranches(ctx, req.TenantID, req.UserID, req.BranchIDs); err != nil {
+				s.logger.Error("Failed to update user branches", zap.Error(err))
+				return nil, fmt.Errorf("failed to update user branches: %w", err)
+			}
+			// 同时更新 domain.User 中的 BranchID（用于向后兼容，使用第一个 branch）
+			if len(req.BranchIDs) > 0 {
+				updateUser.BranchID = sql.NullString{String: req.BranchIDs[0], Valid: true}
+			} else {
+				updateUser.BranchID = sql.NullString{Valid: false}
+			}
 		}
 	}
 	if req.Tags != nil {
@@ -1403,8 +1618,28 @@ func (s *userService) UpdateUser(ctx context.Context, req UpdateUserRequest) (*U
 		return nil, fmt.Errorf("failed to update user: %w", err)
 	}
 
+	// 9. 如果 Individual 用户被禁用（status 改为 'disabled'），将其关联的 Resident 状态改为 'transferred'（转院）
+	residentTransferred := false
+	residentError := ""
+	if strings.EqualFold(targetUser.Role, "Individual") && updatingStatus && req.Status != nil {
+		newStatus := strings.TrimSpace(*req.Status)
+		// 检查是否从其他状态改为 'disabled'（大小写不敏感比较）
+		if strings.EqualFold(newStatus, "disabled") && !strings.EqualFold(targetUser.Status, "disabled") {
+			if err := s.updateResidentsStatusForIndividual(ctx, req.TenantID, req.UserID, "transferred"); err != nil {
+				s.logger.Error("Failed to transfer residents for Individual user",
+					zap.String("user_id", req.UserID),
+					zap.Error(err))
+				residentError = err.Error()
+			} else {
+				residentTransferred = true
+			}
+		}
+	}
+
 	return &UpdateUserResponse{
-		Success: true,
+		Success:             true,
+		ResidentTransferred: residentTransferred,
+		ResidentError:      residentError,
 	}, nil
 }
 
@@ -1432,11 +1667,38 @@ func (s *userService) DeleteUser(ctx context.Context, req DeleteUserRequest) (*D
 	}
 
 	// 4. 权限检查
-	if currentUser.Role != "" && !canCreateRole(currentUser.Role, targetUser.Role) {
-		return nil, fmt.Errorf("not allowed to delete %s role (current role: %s)", targetUser.Role, currentUser.Role)
+	// 4.1 禁止删除自己
+	if req.CurrentUserID == req.UserID {
+		return nil, fmt.Errorf("not allowed to delete yourself")
 	}
 
-	// 5. 软删除（设置 status = 'left'）
+	// 4.2 系统角色保护：SystemAdmin 和 SystemOperator 只能由 SystemAdmin 删除
+	if targetUser.Role == "SystemAdmin" || targetUser.Role == "SystemOperator" {
+		if req.TenantID != SystemTenantID || !strings.EqualFold(currentUser.Role, "SystemAdmin") {
+			return nil, fmt.Errorf("not allowed to delete system role user (only SystemAdmin can delete system roles)")
+		}
+	} else {
+		// 4.3 角色层级检查：可以删除同级或下级角色
+		if currentUser.Role != "" && !canCreateRole(currentUser.Role, targetUser.Role) {
+			return nil, fmt.Errorf("not allowed to delete %s role (current role: %s)", targetUser.Role, currentUser.Role)
+		}
+	}
+
+	// 5. 如果 Individual 用户被删除，先将其关联的 Resident 状态改为 'discharged'（出院）
+	residentDischarged := false
+	residentError := ""
+	if strings.EqualFold(targetUser.Role, "Individual") {
+		if err := s.updateResidentsStatusForIndividual(ctx, req.TenantID, req.UserID, "discharged"); err != nil {
+			s.logger.Error("Failed to discharge residents for Individual user",
+				zap.String("user_id", req.UserID),
+				zap.Error(err))
+			residentError = err.Error()
+		} else {
+			residentDischarged = true
+		}
+	}
+
+	// 6. 软删除（设置 status = 'left'）
 	updateUser := *targetUser
 	updateUser.Status = "left"
 
@@ -1446,7 +1708,9 @@ func (s *userService) DeleteUser(ctx context.Context, req DeleteUserRequest) (*D
 	}
 
 	return &DeleteUserResponse{
-		Success: true,
+		Success:            true,
+		ResidentDischarged: residentDischarged,
+		ResidentError:      residentError,
 	}, nil
 }
 
@@ -1552,9 +1816,16 @@ func (s *userService) ResetPIN(ctx context.Context, req UserResetPINRequest) (*U
 			return nil, fmt.Errorf("user not found: %w", err)
 		}
 
-		// 检查是否可以重置目标用户的 PIN
-		if currentUser.Role != "" && !canCreateRole(currentUser.Role, targetUser.Role) {
-			return nil, fmt.Errorf("not allowed to reset PIN for %s role user (current role: %s)", targetUser.Role, currentUser.Role)
+		// 4.1 系统角色保护：SystemAdmin 和 SystemOperator 只能由 SystemAdmin 重置 PIN
+		if targetUser.Role == "SystemAdmin" || targetUser.Role == "SystemOperator" {
+			if req.TenantID != SystemTenantID || !strings.EqualFold(currentUser.Role, "SystemAdmin") {
+				return nil, fmt.Errorf("not allowed to reset PIN for system role user (only SystemAdmin can reset system roles)")
+			}
+		} else {
+			// 4.2 角色层级检查：可以重置同级或下级角色的 PIN
+			if currentUser.Role != "" && !canCreateRole(currentUser.Role, targetUser.Role) {
+				return nil, fmt.Errorf("not allowed to reset PIN for %s role user (current role: %s)", targetUser.Role, currentUser.Role)
+			}
 		}
 	}
 
@@ -1635,6 +1906,63 @@ func (s *userService) GetAccountSettings(ctx context.Context, req GetAccountSett
 		resp.SavePhone = true // Staff 总是保存，即使当前不存在，将来添加时也会保存
 	}
 
+	// 4. 获取用户的 branch 信息
+	userBranches, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.UserID)
+	if err != nil {
+		s.logger.Error("Failed to get user branches", zap.Error(err))
+		return nil, fmt.Errorf("failed to get user branches: %w", err)
+	}
+
+	// 5. 填充 BranchIDs 和 AvailableBranches
+	if hasBranches && len(userBranches) > 0 {
+		// 用户有指定的 branch（从 user_branches 表查询到记录）
+		resp.BranchIDs = make([]string, 0, len(userBranches))
+		for _, branch := range userBranches {
+			resp.BranchIDs = append(resp.BranchIDs, branch.BranchID)
+		}
+		// 构建 AvailableBranches 列表
+		resp.AvailableBranches = make([]BranchDTO, 0, len(userBranches))
+		for _, branch := range userBranches {
+			resp.AvailableBranches = append(resp.AvailableBranches, BranchDTO{
+				BranchID:   branch.BranchID,
+				BranchName: branch.BranchName,
+			})
+		}
+	} else {
+		// 用户没有关联任何 branch（user_branches 表没有记录）
+		// 检查角色：如果是 Admin，返回所有 branch_id 列表，并在前面加上 '*'；否则返回 []（未分配）
+		if strings.EqualFold(user.Role, "Admin") {
+			// Admin 角色：user_branches 表无记录表示可以访问所有分支
+			// 查询 branches 表，获取该 tenant 下的所有 branch_id
+			allBranches, _, err := s.branchesRepo.ListBranches(ctx, req.TenantID, "", 1, 1000)
+			if err != nil {
+				s.logger.Warn("Failed to list all branches for Admin user", zap.String("user_id", req.UserID), zap.Error(err))
+				// 如果查询失败，至少返回 ['*'] 作为标记
+				resp.BranchIDs = []string{"*"}
+				resp.AvailableBranches = []BranchDTO{}
+			} else {
+				// 构建 branch_ids 列表：['*', 'branch-id-1', 'branch-id-2', ...]
+				resp.BranchIDs = make([]string, 0, len(allBranches)+1)
+				resp.BranchIDs = append(resp.BranchIDs, "*")
+				for _, branch := range allBranches {
+					resp.BranchIDs = append(resp.BranchIDs, branch.BranchID)
+				}
+				// 构建 AvailableBranches 列表
+				resp.AvailableBranches = make([]BranchDTO, 0, len(allBranches))
+				for _, branch := range allBranches {
+					resp.AvailableBranches = append(resp.AvailableBranches, BranchDTO{
+						BranchID:   branch.BranchID,
+						BranchName: branch.BranchName,
+					})
+				}
+			}
+		} else {
+			// 非 Admin 角色：未分配状态
+			resp.BranchIDs = []string{}
+			resp.AvailableBranches = []BranchDTO{}
+		}
+	}
+
 	return resp, nil
 }
 
@@ -1661,6 +1989,15 @@ func (s *userService) UpdateAccountSettings(ctx context.Context, req UpdateAccou
 		return nil, fmt.Errorf("user not found: %w", err)
 	}
 
+	// 3.1 验证 tenant_id 一致性（安全措施）
+	if targetUser.TenantID != req.TenantID {
+		s.logger.Error("Security violation: tenant_id mismatch in UpdateAccountSettings",
+			zap.String("user_id", req.UserID),
+			zap.String("request_tenant_id", req.TenantID),
+			zap.String("db_tenant_id", targetUser.TenantID))
+		return nil, fmt.Errorf("security violation: tenant_id mismatch")
+	}
+
 	// 4. 构建更新对象（只更新提供的字段）
 	updateUser := domain.User{
 		UserID:   targetUser.UserID,
@@ -1685,37 +2022,90 @@ func (s *userService) UpdateAccountSettings(ctx context.Context, req UpdateAccou
 		}
 	}
 
-	// 4.2 更新 email 字段（如果提供，!= nil 就更新，不进行任何判断）
+	// 4.2 Email 和 EmailHash 的业务逻辑处理
+	// 规则：
+	// 1. 如果 Email 提供：
+	//    - Email 为 null/空：删除 email（设置为 NULL），同时删除 hash
+	//    - Email 有值：保存 email，计算 hash（如果 EmailHash 提供，使用提供的；否则计算）
+	// 2. 如果 EmailHash 单独提供（Email 未提供）：
+	//    - 只更新 hash，不更新 email
+	// 3. 如果两者都不提供：不更新（保持原值）
 	if req.Email != nil {
-		updateUser.Email = sql.NullString{String: *req.Email, Valid: true}
+		if *req.Email == "" {
+			// 删除 email（设置为 NULL）
+			updateUser.Email = sql.NullString{Valid: false}
+			// 删除 hash（设置为空 slice，Repository 不会更新）
+			updateUser.EmailHash = nil
+		} else {
+			// 保存 email
+			updateUser.Email = sql.NullString{String: *req.Email, Valid: true}
+			// 计算或使用提供的 hash
+			if req.EmailHash != nil && *req.EmailHash != "" {
+				emailHashBytes, _ := hex.DecodeString(*req.EmailHash)
+				if len(emailHashBytes) > 0 {
+					updateUser.EmailHash = emailHashBytes
+				}
+			} else {
+				// 计算 hash
+				emailHash, _ := hex.DecodeString(HashAccount(*req.Email))
+				updateUser.EmailHash = emailHash
+			}
+		}
+	} else if req.EmailHash != nil {
+		// 只更新 hash，不更新 email
+		if *req.EmailHash != "" {
+			emailHashBytes, _ := hex.DecodeString(*req.EmailHash)
+			if len(emailHashBytes) > 0 {
+				updateUser.EmailHash = emailHashBytes
+			}
+		}
+		// 如果 EmailHash 为空字符串，表示删除 hash，但 Repository 层不支持单独删除 hash
+		// 这种情况应该通过更新 email 来触发，所以这里不做处理
 	}
 
-	// 4.2.1 更新 email_hash 字段（如果提供，!= nil 就更新，不进行任何判断）
-	if req.EmailHash != nil {
-		if *req.EmailHash == "" {
-			// 空字符串，删除 email_hash 字段（设置为 NULL）
-			updateUser.EmailHash = []byte{}
+	// 4.3 Phone 和 PhoneHash 的业务逻辑处理（同 Email）
+	if req.Phone != nil {
+		if *req.Phone == "" {
+			// 删除 phone（设置为 NULL）
+			updateUser.Phone = sql.NullString{Valid: false}
+			// 删除 hash
+			updateUser.PhoneHash = nil
 		} else {
-			// 解码 hex 字符串
-			emailHashBytes, _ := hex.DecodeString(*req.EmailHash)
-			updateUser.EmailHash = emailHashBytes
+			// 保存 phone
+			updateUser.Phone = sql.NullString{String: *req.Phone, Valid: true}
+			// 计算或使用提供的 hash
+			if req.PhoneHash != nil && *req.PhoneHash != "" {
+				phoneHashBytes, _ := hex.DecodeString(*req.PhoneHash)
+				if len(phoneHashBytes) > 0 {
+					updateUser.PhoneHash = phoneHashBytes
+				}
+			} else {
+				// 计算 hash
+				phoneHash, _ := hex.DecodeString(HashAccount(*req.Phone))
+				updateUser.PhoneHash = phoneHash
+			}
+		}
+	} else if req.PhoneHash != nil {
+		// 只更新 hash，不更新 phone
+		if *req.PhoneHash != "" {
+			phoneHashBytes, _ := hex.DecodeString(*req.PhoneHash)
+			if len(phoneHashBytes) > 0 {
+				updateUser.PhoneHash = phoneHashBytes
+			}
+		}
+		// 如果 PhoneHash 为空字符串，表示删除 hash，但 Repository 层不支持单独删除 hash
+		// 这种情况应该通过更新 phone 来触发，所以这里不做处理
+	}
+
+	// 5. 唯一性检查（Email 和 Phone 必须在租户内唯一）
+	if req.Email != nil && *req.Email != "" {
+		if err := s.usersRepo.CheckEmailUniqueness(ctx, req.TenantID, *req.Email, req.UserID); err != nil {
+			return nil, err
 		}
 	}
-
-	// 4.3 更新 phone 字段（如果提供，!= nil 就更新，不进行任何判断）
-	if req.Phone != nil {
-		updateUser.Phone = sql.NullString{String: *req.Phone, Valid: true}
-	}
-
-	// 4.3.1 更新 phone_hash 字段（如果提供，!= nil 就更新，不进行任何判断）
-	if req.PhoneHash != nil {
-		if *req.PhoneHash == "" {
-			// 空字符串，删除 phone_hash 字段（设置为 NULL）
-			updateUser.PhoneHash = []byte{}
-		} else {
-			// 解码 hex 字符串
-			phoneHashBytes, _ := hex.DecodeString(*req.PhoneHash)
-			updateUser.PhoneHash = phoneHashBytes
+	if req.Phone != nil && *req.Phone != "" {
+		if err := s.usersRepo.CheckPhoneUniqueness(ctx, req.TenantID, *req.Phone, req.UserID); err != nil {
+			return nil, err
 		}
 	}
 
@@ -1829,17 +2219,30 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 		return nil, fmt.Errorf("failed to get user branches: %w", err)
 	}
 
+	// 检查是否是 Admin 的 *(ALL) 情况（user_branches 表为空，但 handleAdminAllBranches 返回了 ["*", ...]）
+	isAdminAllBranches := false
+	if hasBranches && len(userBranches) > 0 && userBranches[0].BranchID == "*" {
+		// Admin 用户，可以访问所有 branch
+		isAdminAllBranches = true
+	}
+
 	if !hasBranches || len(userBranches) == 0 {
-		// 用户没有关联任何 branch，无权限
+		// 用户没有关联任何 branch，且不是 Admin，无权限
 		return nil, fmt.Errorf("permission denied: user has no accessible branches")
 	}
 
 	// 检查指定的 branch_id 是否在用户可管理的 branch 列表中
 	hasPermission := false
-	for _, branch := range userBranches {
-		if branch.BranchID == req.BranchID {
-			hasPermission = true
-			break
+	if isAdminAllBranches {
+		// Admin 用户可以访问任何 branch
+		hasPermission = true
+	} else {
+		// 非 Admin 用户，检查 branch_id 是否在列表中
+		for _, branch := range userBranches {
+			if branch.BranchID == req.BranchID {
+				hasPermission = true
+				break
+			}
 		}
 	}
 
@@ -1847,11 +2250,31 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 		return nil, fmt.Errorf("permission denied: user cannot access branch %s", req.BranchID)
 	}
 
-	// 3. 查询指定 branch_id 中所有 active 状态的 caregiver/nurse
+	// 3. 判断是否需要包含 Individual 角色（如果 unit_type 是 'Home'）
+	includeIndividual := false
+	if req.UnitID != "" {
+		var unitType string
+		err := s.db.QueryRowContext(ctx,
+			`SELECT unit_type FROM units WHERE tenant_id = $1 AND unit_id = $2`,
+			req.TenantID, req.UnitID,
+		).Scan(&unitType)
+		if err == nil && unitType == "Home" {
+			// 如果 unit 是 Home 型，允许选择 Individual 类型
+			includeIndividual = true
+		}
+	}
+
+	// 4. 查询指定 branch_id 中所有 active 状态的 caregiver/nurse（如果 unit_type 是 'Home'，也包含 Individual）
 	// 使用 INNER JOIN user_branches 来过滤只属于该 branch 的用户
 	// 包含 user_tags (JSONB) 字段
 	// 注意：不进行排序，由前端 Vue 自己排序和过滤
-	query := `
+	roleCondition := "u.role IN ('Nurse', 'Caregiver')"
+	if includeIndividual {
+		// 如果 unit 是 Home 型，也包含 Individual 角色
+		roleCondition = "u.role IN ('Nurse', 'Caregiver', 'Individual')"
+	}
+
+	query := fmt.Sprintf(`
 		SELECT DISTINCT
 			u.user_id::text,
 			u.tenant_id::text,
@@ -1866,9 +2289,9 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 		INNER JOIN user_branches ub ON u.user_id = ub.user_id
 		WHERE u.tenant_id = $1
 		  AND ub.branch_id = $2::uuid
-		  AND u.role IN ('Nurse', 'Caregiver')
+		  AND %s
 		  AND u.status = 'active'
-	`
+	`, roleCondition)
 
 	rows, err := s.db.QueryContext(ctx, query, req.TenantID, req.BranchID)
 	if err != nil {
@@ -1920,6 +2343,7 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 // GetAvailableCaregiverGroups 获取可用 caregiver groups 列表
 // 返回当前用户可管理的 branch 内的所有 active 状态的 caregiver/nurse 的 tag 合集
 // 注意：所有角色（包括 Admin）都基于绑定的 branch 进行过滤
+// 如果 Admin 的 user_branches 表为空（*(ALL)），允许访问任何 branch
 func (s *userService) GetAvailableCaregiverGroups(ctx context.Context, req GetAvailableCaregiverGroupsRequest) (*GetAvailableCaregiverGroupsResponse, error) {
 	// 1. 参数验证
 	if req.TenantID == "" {
@@ -1928,35 +2352,52 @@ func (s *userService) GetAvailableCaregiverGroups(ctx context.Context, req GetAv
 	if req.CurrentUserID == "" {
 		return nil, fmt.Errorf("current_user_id is required")
 	}
+	if req.BranchID == "" {
+		return nil, fmt.Errorf("branch_id is required")
+	}
 
-	// 2. 获取当前用户可管理的 branch_ids（所有角色都基于 branch 过滤）
+	// 2. 获取当前用户信息（用于检查角色）
+	currentUser, err := s.usersRepo.GetUser(ctx, req.TenantID, req.CurrentUserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current user: %w", err)
+	}
+
+	// 3. 权限验证：检查当前用户是否有权限访问指定的 branch
 	userBranches, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user branches: %w", err)
 	}
 
+	// 检查权限：如果是 Admin 且 user_branches 表为空（*(ALL)），允许访问任何 branch
+	hasPermission := false
 	if !hasBranches || len(userBranches) == 0 {
-		// 用户没有关联任何 branch，返回空列表
-		return &GetAvailableCaregiverGroupsResponse{
-			Items: []CaregiverGroupDTO{},
-		}, nil
-	}
-
-	// 3. 提取 branch_id 列表
-	branchIDs := make([]string, 0, len(userBranches))
-	for _, branch := range userBranches {
-		if branch.BranchID != "" {
-			branchIDs = append(branchIDs, branch.BranchID)
+		// 用户没有关联任何 branch
+		if strings.EqualFold(currentUser.Role, "Admin") {
+			// Admin 的 *(ALL) 情况：允许访问任何 branch
+			hasPermission = true
+		} else {
+			// 非 Admin 用户没有关联任何 branch，返回空列表
+			return &GetAvailableCaregiverGroupsResponse{
+				Items: []CaregiverGroupDTO{},
+			}, nil
+		}
+	} else {
+		// 检查指定的 branch_id 是否在用户可管理的 branch 列表中
+		for _, branch := range userBranches {
+			if branch.BranchID == req.BranchID {
+				hasPermission = true
+				break
+			}
+		}
+		if !hasPermission {
+			// 用户没有权限访问指定的 branch，返回空列表
+			return &GetAvailableCaregiverGroupsResponse{
+				Items: []CaregiverGroupDTO{},
+			}, nil
 		}
 	}
 
-	if len(branchIDs) == 0 {
-		return &GetAvailableCaregiverGroupsResponse{
-			Items: []CaregiverGroupDTO{},
-		}, nil
-	}
-
-	// 3. 分两步计算：
+	// 4. 分两步计算：
 	//    步骤1：查询指定 branch_id 中所有 active 状态的 caregiver/nurse 及其 tags
 	//    步骤2：在 Go 代码中按 tag 分组，将相同 tag 的 user 归到同一 tag 组
 	query := `
@@ -2072,6 +2513,257 @@ func (s *userService) GetAvailableCaregiverGroups(ctx context.Context, req GetAv
 	}, nil
 }
 
+// createResidentForIndividual 为 Individual 用户自动创建对应的 Resident 记录
+// 规则：
+//   - Resident 的 FirstName = Individual 的 Nickname
+//   - Resident 的 lastName = Branch 的 branch_name
+//   - Resident 的 branch_id = Individual 的 branch_id（从 user_branches 表获取第一个）
+//   - Resident 的 caregiver = Individual（在 resident_caregivers 表中，user_list 包含 Individual 的 user_id）
+func (s *userService) createResidentForIndividual(ctx context.Context, tenantID, individualUserID, individualNickname string, branchIDs []string) error {
+	// 1. 获取 Individual 用户的 branch_id（从 user_branches 表获取第一个）
+	var branchID string
+	var branchName string
+
+	if len(branchIDs) > 0 && branchIDs[0] != "*" {
+		// 使用传入的 branchIDs（取第一个）
+		branchID = branchIDs[0]
+	} else {
+		// 从 user_branches 表查询
+		err := s.db.QueryRowContext(ctx,
+			`SELECT ub.branch_id::text 
+			 FROM user_branches ub 
+			 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2 
+			 ORDER BY ub.branch_id 
+			 LIMIT 1`,
+			tenantID, individualUserID,
+		).Scan(&branchID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				// Individual 用户没有关联 branch，无法创建 Resident
+				return fmt.Errorf("individual user has no branch assigned, cannot create resident")
+			}
+			return fmt.Errorf("failed to get individual user branch: %w", err)
+		}
+	}
+
+	// 2. 获取 branch_name（从 branches 表）
+	err := s.db.QueryRowContext(ctx,
+		`SELECT branch_name FROM branches WHERE tenant_id = $1 AND branch_id = $2`,
+		tenantID, branchID,
+	).Scan(&branchName)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			branchName = "" // 如果 branch 不存在，使用空字符串
+		} else {
+			return fmt.Errorf("failed to get branch name: %w", err)
+		}
+	}
+
+	// 3. 生成 resident_id (UUID)
+	residentID := uuid.New().String()
+
+	// 4. 生成 resident_account（使用 Individual 的 user_account，或者生成一个新的）
+	// 先获取 Individual 的 user_account
+	var userAccount string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT user_account FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+		tenantID, individualUserID,
+	).Scan(&userAccount)
+	if err != nil {
+		return fmt.Errorf("failed to get individual user account: %w", err)
+	}
+
+	// 使用 Individual 的 user_account 作为 resident_account
+	residentAccount := strings.ToLower(strings.TrimSpace(userAccount))
+	accountHashHex := HashAccount(residentAccount)
+	accountHash, err := hex.DecodeString(accountHashHex)
+	if err != nil || len(accountHash) == 0 {
+		return fmt.Errorf("failed to hash resident account")
+	}
+
+	// 5. 生成默认密码 hash（使用 Individual 的默认密码 "individual!"）
+	passwordHashHex := HashPassword("individual!")
+	passwordHash, err := hex.DecodeString(passwordHashHex)
+	if err != nil || len(passwordHash) == 0 {
+		return fmt.Errorf("failed to hash password")
+	}
+
+	// 6. 开始事务
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 7. 插入 residents 表
+	admissionDate := time.Now()
+	nickname := individualNickname
+	if nickname == "" {
+		nickname = userAccount // 如果没有 nickname，使用 user_account
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO residents (
+			resident_id, tenant_id, resident_account, resident_account_hash, 
+			password_hash, nickname, status, role, admission_date, branch_id
+		) VALUES ($1, $2, LOWER($3), $4, $5, $6, 'active', 'Resident', $7, $8)`,
+		residentID, tenantID, residentAccount, accountHash, passwordHash, nickname, admissionDate, branchID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create resident: %w", err)
+	}
+
+	// 8. 插入 resident_phi 表
+	// first_name = Individual 的 nickname
+	// last_name = Branch 的 branch_name
+	firstName := nickname
+	lastName := branchName
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO resident_phi (
+			tenant_id, resident_id, first_name, last_name
+		) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (tenant_id, resident_id) DO UPDATE SET
+			first_name = EXCLUDED.first_name,
+			last_name = EXCLUDED.last_name`,
+		tenantID, residentID, firstName, lastName,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create resident_phi: %w", err)
+	}
+
+	// 9. 插入 resident_caregivers 表
+	// user_list 包含 Individual 的 user_id
+	// caregiver_id 由数据库自动生成（如果表有 DEFAULT gen_random_uuid()）
+	userListJSON, err := json.Marshal([]string{individualUserID})
+	if err != nil {
+		return fmt.Errorf("failed to marshal user_list: %w", err)
+	}
+
+	// 生成 caregiver_id (UUID)
+	caregiverID := uuid.New().String()
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO resident_caregivers (
+			caregiver_id, tenant_id, resident_id, user_list
+		) VALUES ($1, $2, $3, $4::jsonb)
+		ON CONFLICT (tenant_id, resident_id) DO UPDATE SET
+			user_list = EXCLUDED.user_list`,
+		caregiverID, tenantID, residentID, userListJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create resident_caregivers: %w", err)
+	}
+
+	// 10. 提交事务
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	s.logger.Info("Created resident for Individual user",
+		zap.String("tenant_id", tenantID),
+		zap.String("individual_user_id", individualUserID),
+		zap.String("resident_id", residentID),
+		zap.String("branch_id", branchID),
+		zap.String("branch_name", branchName),
+	)
+
+	return nil
+}
+
+// updateResidentsStatusForIndividual 将 Individual 用户关联的 Resident 状态更新为指定状态
+// 通过查询 resident_caregivers 表，查找 user_list JSONB 数组包含 Individual user_id 的记录
+// newStatus: 'discharged'（出院）或 'transferred'（转院）
+func (s *userService) updateResidentsStatusForIndividual(ctx context.Context, tenantID, individualUserID, newStatus string) error {
+	if newStatus != "discharged" && newStatus != "transferred" {
+		return fmt.Errorf("invalid status: %s (must be 'discharged' or 'transferred')", newStatus)
+	}
+	// 1. 查询 Individual 用户关联的所有 Resident IDs
+	// 使用 @> 操作符检查 user_list JSONB 数组是否包含 user_id
+	userIDJSON, err := json.Marshal([]string{individualUserID})
+	if err != nil {
+		return fmt.Errorf("failed to marshal user_id: %w", err)
+	}
+
+	query := `
+		SELECT DISTINCT resident_id::text
+		FROM resident_caregivers
+		WHERE tenant_id = $1
+		  AND user_list @> $2::jsonb
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, tenantID, userIDJSON)
+	if err != nil {
+		return fmt.Errorf("failed to query resident_caregivers: %w", err)
+	}
+	defer rows.Close()
+
+	var residentIDs []string
+	for rows.Next() {
+		var residentID string
+		if err := rows.Scan(&residentID); err != nil {
+			return fmt.Errorf("failed to scan resident_id: %w", err)
+		}
+		residentIDs = append(residentIDs, residentID)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("failed to iterate resident_ids: %w", err)
+	}
+
+	// 2. 如果没有关联的 Resident，直接返回（不报错）
+	if len(residentIDs) == 0 {
+		s.logger.Info("No residents found for Individual user",
+			zap.String("tenant_id", tenantID),
+			zap.String("individual_user_id", individualUserID))
+		return nil
+	}
+
+	// 3. 更新所有关联的 Resident 状态为指定状态
+	// 使用事务确保原子性
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 使用 IN 查询批量更新
+	placeholders := make([]string, len(residentIDs))
+	args := make([]any, len(residentIDs)+2)
+	args[0] = tenantID
+	args[1] = newStatus
+	for i, residentID := range residentIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+3)
+		args[i+2] = residentID
+	}
+
+	updateQuery := fmt.Sprintf(`
+		UPDATE residents
+		SET status = $2
+		WHERE tenant_id = $1
+		  AND resident_id::text IN (%s)
+		  AND status != $2
+	`, strings.Join(placeholders, ", "))
+
+	_, err = tx.ExecContext(ctx, updateQuery, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update residents status: %w", err)
+	}
+
+	// 4. 提交事务
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	s.logger.Info("Updated residents status for Individual user",
+		zap.String("tenant_id", tenantID),
+		zap.String("individual_user_id", individualUserID),
+		zap.String("new_status", newStatus),
+		zap.Int("resident_count", len(residentIDs)),
+		zap.Strings("resident_ids", residentIDs))
+
+	return nil
+}
+
 // getStringFromMap 从 map 中获取字符串值（辅助函数）
 func getStringFromMap(m map[string]interface{}, key string) string {
 	if val, ok := m[key]; ok {
@@ -2084,7 +2776,7 @@ func getStringFromMap(m map[string]interface{}, key string) string {
 
 // getAvailableTagsFromBranches 获取当前用户所在 Branch 中存在的 tags
 // 查询逻辑：
-// 1. 获取当前用户的所有 branch_ids
+// 1. 获取当前用户的所有 branch_ids（如果是 Admin 且 user_branches 表为空，返回所有 branch）
 // 2. 查询这些 branch_ids 中所有用户的 tags（排除当前用户自己）
 // 3. 去重并返回
 func (s *userService) getAvailableTagsFromBranches(ctx context.Context, tenantID, currentUserID string) ([]string, error) {
@@ -2093,20 +2785,21 @@ func (s *userService) getAvailableTagsFromBranches(ctx context.Context, tenantID
 	}
 
 	// 1. 获取当前用户的所有 branch_ids
+	// 注意：getUserBranchIDs 已经处理了 Admin 的 *(ALL) 情况（user_branches 表为空时返回所有 branch）
 	userBranches, hasBranches, err := s.getUserBranchIDs(ctx, tenantID, currentUserID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user branches: %w", err)
 	}
 
 	if !hasBranches || len(userBranches) == 0 {
-		// 用户没有关联任何 branch，返回空数组
+		// 用户没有关联任何 branch（且不是 Admin 的 *(ALL) 情况），返回空数组
 		return []string{}, nil
 	}
 
-	// 2. 提取 branch_id 列表
+	// 2. 提取 branch_id 列表（过滤掉 "*"，只使用实际的 branch_id）
 	branchIDs := make([]string, 0, len(userBranches))
 	for _, branch := range userBranches {
-		if branch.BranchID != "" {
+		if branch.BranchID != "" && branch.BranchID != "*" {
 			branchIDs = append(branchIDs, branch.BranchID)
 		}
 	}
@@ -2177,6 +2870,7 @@ func (s *userService) getAvailableTagsFromBranches(ctx context.Context, tenantID
 
 // getAvailableTagsFromBranchIDs 根据 branch_ids 直接查询 tags（不依赖 user_id）
 // 用于 Create 模式：当用户已指定 branch 时，直接查询这些 branch 内的所有 tags
+// 注意：如果 branchIDs 包含 "*"，会过滤掉 "*" 字符；如果只包含 "*"，则查询所有 branch 的 tags
 func (s *userService) getAvailableTagsFromBranchIDs(ctx context.Context, tenantID string, branchIDs []string) ([]string, error) {
 	if tenantID == "" {
 		return []string{}, nil
@@ -2185,20 +2879,52 @@ func (s *userService) getAvailableTagsFromBranchIDs(ctx context.Context, tenantI
 		return []string{}, nil
 	}
 
-	// 查询这些 branch_ids 中所有用户的 tags
-	query := `
-		SELECT DISTINCT tag
-		FROM users u
-		INNER JOIN user_branches ub ON u.user_id = ub.user_id
-		CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(u.user_tags, '[]'::jsonb)) AS tag
-		WHERE u.tenant_id = $1
-		  AND ub.branch_id = ANY($2::uuid[])
-		  AND tag IS NOT NULL
-		  AND tag != ''
-		ORDER BY tag
-	`
+	// 过滤掉 "*" 字符（防御性编程）
+	validBranchIDs := make([]string, 0, len(branchIDs))
+	isAllBranches := false
+	for _, branchID := range branchIDs {
+		if branchID == "*" {
+			isAllBranches = true
+			// 如果包含 "*"，表示查询所有 branch 的 tags，不设置 branch_id 过滤
+		} else if branchID != "" {
+			validBranchIDs = append(validBranchIDs, branchID)
+		}
+	}
 
-	rows, err := s.db.QueryContext(ctx, query, tenantID, pq.Array(branchIDs))
+	// 构建 SQL 查询
+	var query string
+	var rows *sql.Rows
+	var err error
+
+	if isAllBranches || len(validBranchIDs) == 0 {
+		// 如果包含 "*" 或过滤后为空（表示 *(ALL) 情况），查询所有 branch 的 tags
+		query = `
+			SELECT DISTINCT tag
+			FROM users u
+			INNER JOIN user_branches ub ON u.user_id = ub.user_id
+			CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(u.user_tags, '[]'::jsonb)) AS tag
+			WHERE u.tenant_id = $1
+			  AND tag IS NOT NULL
+			  AND tag != ''
+			ORDER BY tag
+		`
+		rows, err = s.db.QueryContext(ctx, query, tenantID)
+	} else {
+		// 查询指定 branch_ids 中的 tags
+		query = `
+			SELECT DISTINCT tag
+			FROM users u
+			INNER JOIN user_branches ub ON u.user_id = ub.user_id
+			CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(u.user_tags, '[]'::jsonb)) AS tag
+			WHERE u.tenant_id = $1
+			  AND ub.branch_id = ANY($2::uuid[])
+			  AND tag IS NOT NULL
+			  AND tag != ''
+			ORDER BY tag
+		`
+		rows, err = s.db.QueryContext(ctx, query, tenantID, pq.Array(validBranchIDs))
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to query available tags: %w", err)
 	}

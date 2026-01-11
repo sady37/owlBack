@@ -40,25 +40,25 @@
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                   数据转换层 (Data Transformation)                        │
+│                   数据存储层 (Data Storage) ✅ 已实现                      │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                           │
 │  ┌─────────────────────────────────────────────────────┐               │
-│  │         wisefido-data-transformer                    │               │
+│  │         wisefido-iot-timeseries                      │               │
 │  │                                                       │               │
-│  │  - 消费 radar:data:stream                            │               │
-│  │  - 消费 sleepace:data:stream                         │               │
-│  │  - SNOMED CT 映射                                     │               │
-│  │  - FHIR Category 分类                                 │               │
-│  │  - 数据标准化                                         │               │
-│  └───────────────┬───────────────────────┬───────────────┘               │
-│                  │                       │                               │
-│                  ▼                       ▼                               │
-│  ┌──────────────────────┐   ┌──────────────────────┐                    │
-│  │  PostgreSQL          │   │  Redis Streams       │                    │
-│  │  TimescaleDB         │   │  iot:data:stream     │                    │
-│  │  iot_timeseries      │   │  (标准化数据事件)     │                    │
-│  └──────────────────────┘   └──────────────────────┘                    │
+│  │  - 消费 iot:monitor:stream                           │               │
+│  │  - 消费 iot:stat:stream                              │               │
+│  │  - 消费 iot:event:stream                             │               │
+│  │  - 消费 iot:alarm:stream                             │               │
+│  │  - 存储到 PostgreSQL (iot_timeseries)                │               │
+│  │  - 发布到 iot:data:stream (触发下游服务)             │               │
+│  └───────────────────────┬───────────────────────────────┘               │
+│                          │                                               │
+│                          ▼                                               │
+│  ┌─────────────────────────────────────────────────────┐               │
+│  │  PostgreSQL - iot_timeseries 表                      │               │
+│  │  (HIPAA/FDA 合规存储，只保存转换后的标准值)           │               │
+│  └─────────────────────────────────────────────────────┘               │
 └─────────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -234,16 +234,17 @@ IoT 设备发送数据
     ▼
 MQTT Broker
     │
-    ├─→ wisefido-radar → Redis Streams (radar:data:stream)
-    └─→ wisefido-sleepace → Redis Streams (sleepace:data:stream)
+    ├─→ wisefido-radar (使用 owl-common/encode.RadarEncode 转换) → Redis Streams (iot:monitor/stat/event/alarm:stream)
+    └─→ wisefido-sleepace (使用 owl-common/encode.SleepaceEncode 转换) → Redis Streams (iot:monitor/event/alarm:stream)
     │
     ▼
-wisefido-data-transformer
+wisefido-iot-timeseries (数据存储服务)
     │
-    ├─ 消费 radar:data:stream
-    ├─ 消费 sleepace:data:stream
-    ├─ 数据标准化 (SNOMED CT, FHIR Category)
-    ├─→ PostgreSQL (iot_timeseries) - 持久化存储
+    ├─ 消费 iot:monitor:stream (实时数据)
+    ├─ 消费 iot:stat:stream (统计数据)
+    ├─ 消费 iot:event:stream (事件数据)
+    ├─ 消费 iot:alarm:stream (告警数据)
+    ├─→ PostgreSQL (iot_timeseries) - 持久化存储 (HIPAA/FDA 合规)
     └─→ Redis Streams (iot:data:stream) - 触发下游
     │
     ▼
@@ -266,11 +267,13 @@ wisefido-card-aggregator (卡片数据聚合服务，2秒聚合一次)
     └─→ Redis (vital-focus:card:{card_id}:full, TTL: 10秒)
     │
     ▼
-wisefido-alarm (云端高级推理报警)
+wisefido-ai (AI智能推理)
     │
     ├─ 读取 vital-focus:card:{card_id}:full
     ├─ 读取云端报警规则 (alarm_cloud)
     ├─ 评估云端推理事件 (事件1, 3, 4)
+    ├─ 访客识别和智能分析
+    ├─ 巡房优化和模式识别
     ├─→ PostgreSQL (alarm_events - 云端报警)
     └─→ Redis (vital-focus:card:{card_id}:alarms)
     │
@@ -297,13 +300,15 @@ wisefido-data (API)
 - **输出**：以卡片为单位输出融合后的实时数据
 
 ### 3. 服务职责分离
+- **wisefido-radar / wisefido-sleepace**：设备数据采集和转换（使用 `owl-common/encode` 公共库）
+- **wisefido-iot-timeseries**：数据存储服务（消费 Redis Streams，存储到 PostgreSQL）
 - **wisefido-card-manage**：卡片创建和维护（低频操作）
 - **wisefido-card-aggregator**：卡片数据聚合（高频操作，2秒一次）
   - 消费 `iot:data:stream`（事件驱动）
   - 检测设备直接报警并更新 `alarm_events`
   - 从 `iot_timeseries` 读取设备数据并融合（HR/RR、床状态、姿态）
   - 聚合完整卡片数据
-- **wisefido-alarm**：云端高级推理报警评估（事件1, 3, 4）
+- **wisefido-ai**：AI智能推理（云端报警评估、访客识别、巡房优化）
 - **wisefido-data**：API 服务（HTTP 接口）
 
 ## ⚠️ 当前问题分析
@@ -320,13 +325,13 @@ wisefido-data (API)
 - `GetCardByDeviceID` 会返回错误，导致融合失败
 
 **正确的实现顺序应该是**：
-1. ✅ 数据采集层（wisefido-radar, wisefido-sleepace）
-2. ✅ 数据转换层（wisefido-data-transformer）
-3. ⚠️ **卡片管理层（wisefido-card-aggregator - 卡片创建）** ← **应该先实现这个**
-4. ✅ 传感器融合层（wisefido-sensor-fusion）← **依赖卡片，应该后实现**
-5. ⏳ 报警评估层（wisefido-alarm）
-6. ⏳ 卡片聚合层（wisefido-card-aggregator - 数据聚合）
-7. ⏳ API 服务层（wisefido-data）
+1. ✅ 数据采集层（wisefido-radar, wisefido-sleepace）← **已实现，使用 owl-common/encode 进行数据转换**
+2. ✅ 数据存储层（wisefido-iot-timeseries）← **已实现**
+3. ✅ **卡片管理层（wisefido-card-aggregator - 卡片创建）** ← **已实现**
+4. ✅ 传感器融合层（wisefido-sensor-fusion）← **功能已整合到 wisefido-card-aggregator**
+5. ✅ 报警评估层（wisefido-alarm）← **已实现**
+6. ✅ 卡片聚合层（wisefido-card-aggregator - 数据聚合）← **已实现**
+7. ✅ API 服务层（wisefido-data）← **已实现**
 
 ### 问题：wisefido-sensor-fusion 的流程
 
@@ -345,45 +350,44 @@ wisefido-data (API)
 系统架构是**卡片中心**的：
 1. **卡片预先存在**（由 card-aggregator 创建和维护）✅ **已实现**
 2. **数据流以卡片为单位**（设备数据触发，但处理卡片数据）
-3. **服务职责清晰**（采集 → 转换 → **卡片创建** → **传感器融合** → 报警 → 聚合 → API）
+3. **服务职责清晰**（采集 → **存储** → **卡片创建** → **数据聚合** → 报警 → API）
 
 ### ✅ 当前实现状态
 
 **已实现** ✅：
 - 数据采集层（wisefido-radar, wisefido-sleepace）
-- 数据转换层（wisefido-data-transformer）
+  - 使用 `owl-common/encode` 公共库进行数据转换 ✅
+- 数据存储层（wisefido-iot-timeseries）✅ **已实现**
+  - 消费 Redis Streams (iot:monitor/stat/event/alarm:stream) ✅
+  - 存储到 PostgreSQL (iot_timeseries) ✅
+  - 发布到 iot:data:stream (触发下游) ✅
 - **卡片管理层（wisefido-card-manage - 卡片创建）** ✅ **已完成**
 - **卡片数据聚合层（wisefido-card-aggregator）** ✅ **已实现**
   - 消费 `iot:data:stream`（事件驱动）✅
   - 检测设备直接报警并更新 `alarm_events` ✅
   - 从 `iot_timeseries` 读取设备数据并融合（HR/RR、床状态、姿态）✅
   - 聚合完整卡片数据 ✅
-- **报警评估层（wisefido-alarm）** ✅ **已实现**
+- **AI智能推理层（wisefido-ai）** ✅ **已实现**
   - 云端高级推理报警（事件1, 3, 4）✅
+  - 访客识别和智能分析 ✅
+  - 巡房优化和模式识别 ✅
 - **API 服务层（wisefido-data - HTTP API 功能）** ✅ **已实现**
 
 **已移除** ❌：
 - **wisefido-sensor-fusion**：功能已整合到 `wisefido-card-aggregator`
+- **wisefido-data-transformer**：功能已迁移到 `owl-common/encode` 公共库和 `wisefido-iot-timeseries`
 
 ### 🔧 下一步行动
 
-**优先级 1**：架构调整和实现
-- 拆分 `wisefido-card-aggregator` 为两个服务：
-  - `wisefido-card-manage`：卡片创建和维护
-  - `wisefido-card-aggregator`：卡片数据聚合
-- 在 `wisefido-card-aggregator` 中实现：
-  - 消费 `iot:data:stream`（事件驱动）
-  - 检测设备直接报警并更新 `alarm_events`
-  - 从 `iot_timeseries` 读取设备数据并融合（HR/RR、床状态、姿态）
-- 移除 `wisefido-sensor-fusion` 服务
-- 更新 `wisefido-data` 调用 `wisefido-card-manage` API
+**已完成** ✅：
+- 移除 `wisefido-data-transformer` 服务（功能已迁移到 `owl-common/encode` 公共库）
+- 实现 `wisefido-iot-timeseries` 数据存储服务
+- 验证 `wisefido-radar` 和 `wisefido-sleepace` 使用 `owl-common/encode` 进行数据转换
 
-**优先级 2**：验证完整数据流
-- 验证融合逻辑是否正确（HR/RR、床状态、姿态数据）
-- 验证设备直接报警处理是否正常（Fall, SuspectedFall, OfflineAlarm 等）
-- 验证云端推理报警评估是否正常（事件1, 3, 4）
-- 验证 Redis 缓存更新是否正常（`vital-focus:card:{card_id}:full`, TTL: 10秒）
-- 测试完整数据流：设备数据 → 数据融合 → 设备报警 → 云端推理报警 → 缓存更新
+**优先级 1**：验证完整数据流
+- 验证数据转换是否正确（`owl-common/encode` 公共库）
+- 验证数据存储是否正常（`wisefido-iot-timeseries` → PostgreSQL）
+- 验证数据流是否正常：设备 → 采集服务（带转换） → Redis Streams → 存储服务 → 下游服务
 
 **优先级 2**：优化和验证
 - 验证卡片创建逻辑是否正确（设备/住户/单元变化时）

@@ -558,7 +558,7 @@ func (r *PostgresDevicesRepository) UpdateDevice(ctx context.Context, tenantID, 
 }
 
 // UpdateDeviceWithFlags 更新设备（带更新标志，用于区分字段是否在 payload 中）
-func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID bool) error {
+func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID, updateBusinessAccess, updateMonitoringEnabled bool) error {
 	if tenantID == "" || deviceID == "" {
 		return fmt.Errorf("tenant_id and device_id are required")
 	}
@@ -639,13 +639,17 @@ func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, t
 	if device.DeviceName != "" {
 		add("device_name", device.DeviceName)
 	}
-	if device.BusinessAccess != "" {
+	// Handle business_access: only update if flag is set
+	if updateBusinessAccess && device.BusinessAccess != "" {
 		add("business_access", device.BusinessAccess)
 	}
 	if device.Status != "" {
 		add("status", device.Status)
 	}
-	add("monitoring_enabled", device.MonitoringEnabled)
+	// Handle monitoring_enabled: only update if flag is set
+	if updateMonitoringEnabled {
+		add("monitoring_enabled", device.MonitoringEnabled)
+	}
 
 	// Handle bound_room_id: only update if flag is set
 	var willSetRoomID, willSetBedID bool

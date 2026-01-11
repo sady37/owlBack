@@ -45,6 +45,15 @@ type Config struct {
 			FirmwarePath   string // 固件文件路径
 			CheckInterval  string // 检查间隔
 		}
+		
+		// 订阅配置
+		Subscription struct {
+			AutoSubscribe      bool // 是否在设备上线时自动订阅（默认 true）
+			DefaultDuration    int  // 默认订阅时长（秒），默认 3600
+			DefaultContent     int  // 默认订阅内容：0-同时订阅，1-轨迹，2-呼吸心率，默认 0
+			RenewalInterval    int  // 续订检查间隔（分钟），默认 50
+			RenewalAdvanceTime int  // 提前续订时间（分钟），默认 10
+		}
 	}
 	
 	Log struct {
@@ -59,7 +68,16 @@ func Load() (*Config, error) {
 	
 	// 从环境变量加载（默认值）
 	cfg.Database.Host = getEnv("DB_HOST", "localhost")
-	cfg.Database.Port = 5432
+	// 默认端口使用环境变量，如果没有则使用 5433（与 start_owlback.sh 保持一致）
+	if portStr := getEnv("DB_PORT", ""); portStr != "" {
+		if port, err := strconv.Atoi(portStr); err == nil && port > 0 {
+			cfg.Database.Port = port
+		} else {
+			cfg.Database.Port = 5433 // 默认使用 5433（与 start_owlback.sh 保持一致）
+		}
+	} else {
+		cfg.Database.Port = 5433 // 默认使用 5433（与 start_owlback.sh 保持一致）
+	}
 	cfg.Database.User = getEnv("DB_USER", "postgres")
 	cfg.Database.Password = getEnv("DB_PASSWORD", "postgres")
 	cfg.Database.Database = getEnv("DB_NAME", "owlrd")
@@ -80,7 +98,7 @@ func Load() (*Config, error) {
 	cfg.HTTPS.KeyFile = getEnv("RADAR_HTTPS_KEY_FILE", "")
 	
 	// 雷达设备 MQTT 配置（返回给设备的配置）
-	cfg.Radar.DeviceMQTT.Server = getEnv("RADAR_MQTT_SERVER", "192.168.2.177")
+	cfg.Radar.DeviceMQTT.Server = getEnv("RADAR_MQTT_SERVER", "47.77.194.143")
 	cfg.Radar.DeviceMQTT.Port = parseInt(getEnv("RADAR_MQTT_PORT", "8883"), 8883)
 	cfg.Radar.DeviceMQTT.Account = getEnv("RADAR_MQTT_ACCOUNT", "wfiot")
 	cfg.Radar.DeviceMQTT.Password = getEnv("RADAR_MQTT_PASSWORD", "")
@@ -95,6 +113,13 @@ func Load() (*Config, error) {
 	cfg.Radar.Topics.Data = getEnv("RADAR_TOPIC_DATA", "radar/+/data")
 	cfg.Radar.Topics.Command = getEnv("RADAR_TOPIC_COMMAND", "radar/+/command")
 	cfg.Radar.Topics.OTA = getEnv("RADAR_TOPIC_OTA", "radar/+/ota")
+	
+	// 订阅配置
+	cfg.Radar.Subscription.AutoSubscribe = getEnv("RADAR_SUBSCRIPTION_AUTO", "true") == "true"
+	cfg.Radar.Subscription.DefaultDuration = parseInt(getEnv("RADAR_SUBSCRIPTION_DURATION", "3600"), 3600)
+	cfg.Radar.Subscription.DefaultContent = parseInt(getEnv("RADAR_SUBSCRIPTION_CONTENT", "0"), 0)
+	cfg.Radar.Subscription.RenewalInterval = parseInt(getEnv("RADAR_SUBSCRIPTION_RENEWAL_INTERVAL", "50"), 50)
+	cfg.Radar.Subscription.RenewalAdvanceTime = parseInt(getEnv("RADAR_SUBSCRIPTION_RENEWAL_ADVANCE", "10"), 10)
 	
 	cfg.Log.Level = getEnv("LOG_LEVEL", "info")
 	cfg.Log.Format = getEnv("LOG_FORMAT", "json")

@@ -47,3 +47,4 @@ docker-compose.override.yml
 .DS_Store
 Thumbs.db
 
+mqtt/data/mosquitto.db

@@ -21,7 +21,7 @@ type IoTTimeSeriesFilters struct {
 }
 
 // IoTTimeSeriesRepository IoT时序数据Repository接口
-// 注意：此Repository只提供查询方法，数据写入由 wisefido-data-transformer 服务负责
+// 注意：此Repository只提供查询方法，数据写入由 wisefido-iot-timeseries 服务负责
 type IoTTimeSeriesRepository interface {
 	// GetTimeSeriesData 获取时序数据（按ID）
 	GetTimeSeriesData(ctx context.Context, id int64) (*domain.IoTTimeSeries, error)
