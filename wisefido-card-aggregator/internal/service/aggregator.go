@@ -29,6 +29,7 @@ type AggregatorService struct {
 	dataAggregator    *aggregator.DataAggregator
 	cacheManager      *aggregator.CacheManager
 	iotStreamConsumer *consumer.IoTStreamConsumer // IoT Stream 消费者（事件驱动）
+	configConsumer    *consumer.ConfigConsumer     // 配置变更消费者
 }
 
 // NewAggregatorService 创建卡片聚合服务
@@ -57,13 +58,14 @@ func NewAggregatorService(cfg *config.Config, logger *zap.Logger) (*AggregatorSe
 		dataAggregator = aggregator.NewDataAggregator(cfg, kv, cardRepo, logger)
 	}
 
+	// 创建必要的 repositories（用于 IoT Stream Consumer 和 Config Consumer）
+	iotRepo := repository.NewIoTTimeSeriesRepository(db, logger)
+	alarmEventsRepo := repository.NewAlarmEventsRepository(db, logger)
+	alarmDeviceRepo := repository.NewAlarmDeviceRepository(db, logger)
+
 	// 创建 IoT Stream Consumer（如果启用）
 	var iotStreamConsumer *consumer.IoTStreamConsumer
 	if cfg.Aggregator.IoTStream.Enabled {
-		// 创建必要的 repositories
-		iotRepo := repository.NewIoTTimeSeriesRepository(db, logger)
-		alarmEventsRepo := repository.NewAlarmEventsRepository(db, logger)
-		alarmDeviceRepo := repository.NewAlarmDeviceRepository(db, logger)
 
 		// 创建 SensorFusion
 		sensorFusion := fusion.NewSensorFusion(cardRepo, iotRepo, logger)
@@ -90,6 +92,16 @@ func NewAggregatorService(cfg *config.Config, logger *zap.Logger) (*AggregatorSe
 		}
 	}
 
+	// 创建配置变更消费者（订阅 config:change:stream）
+	// 注意：alarmDeviceRepo 已在第64行创建，直接复用
+	var configConsumer *consumer.ConfigConsumer
+	configConsumer = consumer.NewConfigConsumer(
+		cfg,
+		redisClient,
+		alarmDeviceRepo,
+		logger,
+	)
+
 	return &AggregatorService{
 		config:            cfg,
 		logger:            logger,
@@ -99,6 +111,7 @@ func NewAggregatorService(cfg *config.Config, logger *zap.Logger) (*AggregatorSe
 		dataAggregator:    dataAggregator,
 		cacheManager:      cacheManager,
 		iotStreamConsumer: iotStreamConsumer,
+		configConsumer:    configConsumer,
 	}, nil
 }
 
@@ -119,6 +132,15 @@ func (s *AggregatorService) Start(ctx context.Context) error {
 		go func() {
 			if err := s.iotStreamConsumer.Start(ctx); err != nil {
 				s.logger.Error("IoT Stream Consumer failed", zap.Error(err))
+			}
+		}()
+	}
+
+	// 启动配置变更消费者（订阅 config:change:stream）
+	if s.configConsumer != nil {
+		go func() {
+			if err := s.configConsumer.Start(ctx); err != nil {
+				s.logger.Error("Config Consumer failed", zap.Error(err))
 			}
 		}()
 	}

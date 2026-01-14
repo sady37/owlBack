@@ -195,12 +195,15 @@ func (c *MQTTConsumer) handleRealtimeData(msg *models.ReceivedMessage, device *r
 		return fmt.Errorf("failed to encode sleepace data: %w", err)
 	}
 	
+	// 调整字段顺序并添加 category 和 topic_type
+	encodedData = c.adjustFieldOrder(encodedData, "realtime", "monitor", "monitor")
+	
 	// 发布到 Redis Streams
-	// 数据流分类规则（与 wisefido-radar 保持一致）：
-	// - realtime/sleepStage → iot:monitor:stream (实时数据)
-	// - connectionStatus → iot:event:stream (事件/日志)
-	// - alarmNotify → iot:alarm:stream (告警)
-	streamName := "iot:monitor:stream" // 实时数据
+	// 数据流分类规则（设备级别 streams）：
+	// - realtime/sleepStage → sleepace:monitor:stream (实时数据)
+	// - connectionStatus → sleepace:event:stream (事件/日志)
+	// - alarmNotify → sleepace:alarm:stream (告警)
+	streamName := "sleepace:monitor:stream" // 实时数据
 	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData)
 	if err != nil {
 		return fmt.Errorf("failed to publish to stream: %w", err)
@@ -245,9 +248,12 @@ func (c *MQTTConsumer) handleSleepStageData(msg *models.ReceivedMessage, device 
 		return fmt.Errorf("failed to encode sleepace data: %w", err)
 	}
 	
+	// 调整字段顺序并添加 category 和 topic_type
+	encodedData = c.adjustFieldOrder(encodedData, "sleepStage", "statistics", "statistics")
+	
 	// 发布到 Redis Streams
 	// 睡眠阶段数据属于实时数据，发布到 monitor stream
-	streamName := "iot:monitor:stream" // 实时数据
+	streamName := "sleepace:monitor:stream" // 实时数据
 	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData)
 	if err != nil {
 		return fmt.Errorf("failed to publish to stream: %w", err)
@@ -292,9 +298,12 @@ func (c *MQTTConsumer) handleConnectionStatus(msg *models.ReceivedMessage, devic
 		return fmt.Errorf("failed to encode sleepace data: %w", err)
 	}
 	
+	// 调整字段顺序并添加 category 和 topic_type
+	encodedData = c.adjustFieldOrder(encodedData, "connectionStatus", "event", "event")
+	
 	// 发布到 Redis Streams
 	// 连接状态属于事件数据，发布到 event stream
-	streamName := "iot:event:stream" // 事件/日志
+	streamName := "sleepace:event:stream" // 事件/日志
 	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData)
 	if err != nil {
 		return fmt.Errorf("failed to publish to stream: %w", err)
@@ -344,9 +353,12 @@ func (c *MQTTConsumer) handleAlarmNotify(msg *models.ReceivedMessage, device *re
 		return fmt.Errorf("failed to encode sleepace data: %w", err)
 	}
 	
+	// 调整字段顺序并添加 category 和 topic_type
+	encodedData = c.adjustFieldOrder(encodedData, "alarmNotify", "alarm", "alarm")
+	
 	// 发布到 Redis Streams
 	// 告警通知属于告警数据，发布到 alarm stream
-	streamName := "iot:alarm:stream" // 告警
+	streamName := "sleepace:alarm:stream" // 告警
 	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData)
 	if err != nil {
 		return fmt.Errorf("failed to publish to stream: %w", err)
@@ -359,5 +371,44 @@ func (c *MQTTConsumer) handleAlarmNotify(msg *models.ReceivedMessage, device *re
 	)
 	
 	return nil
+}
+
+// adjustFieldOrder 调整字段顺序并添加 category 和 topic_type
+// dataKey: 原始数据键 ("realtime", "sleepStage", "connectionStatus", "alarmNotify")
+// category: 类别 ("monitor", "statistics", "event", "alarm")
+// topicType: 主题类型 ("monitor", "statistics", "event", "alarm")
+// 返回: 调整后的数据，字段顺序：device_id → device_type → tenant_id → timestamp → topic_type → category → 其他字段
+func (c *MQTTConsumer) adjustFieldOrder(encodedData map[string]interface{}, dataKey, category, topicType string) map[string]interface{} {
+	// 提取必需字段
+	deviceID, _ := encodedData["device_id"]
+	deviceType, _ := encodedData["device_type"]
+	tenantID, _ := encodedData["tenant_id"]
+	timestamp, _ := encodedData["timestamp"]
+	
+	// 构建新对象，按推荐顺序排列字段
+	adjusted := make(map[string]interface{})
+	
+	// 1. 标识组
+	adjusted["device_id"] = deviceID
+	adjusted["device_type"] = deviceType
+	adjusted["tenant_id"] = tenantID
+	
+	// 2. 时间组
+	adjusted["timestamp"] = timestamp
+	
+	// 3. 分类组
+	adjusted["topic_type"] = topicType
+	adjusted["category"] = category
+	
+	// 4. 数据组和其他字段（保留 data_key 和其他编码后的字段）
+	for k, v := range encodedData {
+		// 跳过已处理的字段
+		if k == "device_id" || k == "device_type" || k == "tenant_id" || k == "timestamp" {
+			continue
+		}
+		adjusted[k] = v
+	}
+	
+	return adjusted
 }
 

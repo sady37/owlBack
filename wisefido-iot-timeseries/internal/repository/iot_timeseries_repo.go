@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -22,19 +23,30 @@ func NewIoTTimeSeriesRepository(db *sql.DB, logger *zap.Logger) *IoTTimeSeriesRe
 	}
 }
 
-// Insert 插入数据到 iot_timeseries 表
+// Insert 插入数据到 iot_timeseries 表（窄表结构）
 // data: 从 Redis Stream 读取的 map[string]interface{} 数据（已通过 encode 函数转换）
-// 根据 HIPAA/FDA 要求，只保存转换后的标准值，不保存原始数据
+// 新表结构：id, uid, timestamp, data_type, data_values (JSONB)
 func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, error) {
 	// 1. 提取基本字段
-	tenantID, _ := data["tenant_id"].(string)
 	deviceID, _ := data["device_id"].(string)
-	
-	if tenantID == "" || deviceID == "" {
-		return 0, fmt.Errorf("missing required fields: tenant_id=%s, device_id=%s", tenantID, deviceID)
+	if deviceID == "" {
+		return 0, fmt.Errorf("missing required field: device_id")
 	}
 
-	// 提取 timestamp
+	// 2. 获取设备 UID（从 device_store 获取）
+	_, _, _, uid, err := r.GetDeviceHardwareInfo(deviceID)
+	if err != nil {
+		r.logger.Warn("Failed to get device hardware info",
+			zap.String("device_id", deviceID),
+			zap.Error(err),
+		)
+		return 0, fmt.Errorf("failed to get device uid: %w", err)
+	}
+	if uid == nil || *uid == "" {
+		return 0, fmt.Errorf("device uid is empty for device_id: %s", deviceID)
+	}
+
+	// 3. 提取 timestamp
 	var timestamp time.Time
 	if ts, ok := data["timestamp"]; ok {
 		switch v := ts.(type) {
@@ -55,127 +67,52 @@ func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, er
 		timestamp = time.Now()
 	}
 
-	// 2. 确定 data_type（默认为 observation）
-	dataType := "observation"
-	if dt, ok := data["data_type"].(string); ok && dt != "" {
-		dataType = dt
-	} else if topicType, ok := data["topic_type"].(string); ok {
-		if topicType == "alarm" {
+	// 4. 确定 data_type（从 topic_type 映射：monitor, statistics, event, alarm）
+	dataType := "monitor" // 默认值
+	if topicType, ok := data["topic_type"].(string); ok && topicType != "" {
+		// 映射 topic_type 到 data_type
+		switch topicType {
+		case "monitor":
+			dataType = "monitor"
+		case "stat":
+			dataType = "statistics"
+		case "event":
+			dataType = "event"
+		case "alarm":
 			dataType = "alarm"
+		default:
+			// 如果 topic_type 不在预期范围内，尝试使用原值
+			dataType = topicType
 		}
 	} else if dataKey, ok := data["data_key"].(string); ok {
+		// Sleepace 数据根据 data_key 判断
 		if dataKey == "alarmNotify" {
 			dataType = "alarm"
+		} else if dataKey == "realtime" {
+			dataType = "monitor"
+		} else if dataKey == "sleepStage" {
+			dataType = "statistics"
 		}
 	}
 
-	// 3. 获取设备硬件信息（冗余存储，避免 JOIN 查询，提高查询性能）
-	deviceType, deviceModel, serialNumber, uid, err := r.GetDeviceHardwareInfo(deviceID)
+	// 5. 将所有 encode 后的数据存储在 data_values JSONB 中
+	// 直接使用传入的 data map，它已经包含了所有 encode 后的标准字段
+	// 注意：data 的字段顺序为：device_id → device_type → tenant_id → timestamp → topic_type → data_value → 位置信息
+	// category 字段保留在 data_value 内部，不提取到顶层，避免冗余
+	dataValuesJSON, err := json.Marshal(data)
 	if err != nil {
-		r.logger.Warn("Failed to get device hardware info",
-			zap.String("device_id", deviceID),
-			zap.Error(err),
-		)
-		// 硬件信息获取失败不影响数据插入，继续处理（deviceType 等为 nil）
+		return 0, fmt.Errorf("failed to marshal data_values: %w", err)
 	}
 
-	// 4. 获取设备位置信息（unit_id, room_id）
-	// 注意：位置信息在 INSERT 时直接插入，避免后续 UPDATE 操作
-	// 设备位置信息变化频率低（设备安装、迁移、卸载），但数据插入频率高（每秒或每分钟多次）
-	// 后续优化：使用缓存机制进一步减少查询开销
-	unitID, roomID, err := r.GetDeviceLocation(deviceID)
-	if err != nil {
-		r.logger.Warn("Failed to get device location",
-			zap.String("device_id", deviceID),
-			zap.Error(err),
-		)
-		// 位置信息获取失败不影响数据插入，继续处理（unitID, roomID 为 nil）
-	}
-
-	// 5. 提取 category（可选）
-	var category sql.NullString
-	if cat, ok := data["category"].(string); ok && cat != "" {
-		category = sql.NullString{String: cat, Valid: true}
-	}
-
-	// 6. 提取转换后的标准值字段
-	trackingID, posX, posY, posZ := extractTrackingFields(data)
-	postureCode, postureDisplay := extractPostureFields(data)
-	eventType, eventCode, eventDisplay, areaID := extractEventFields(data)
-	hrCode, hrDisplay, hr, rrCode, rrDisplay, rr := extractVitalSignsFields(data)
-	sleepCode, sleepDisplay := extractSleepStateFields(data)
-
-	// 7. 提取其他字段
-	var confidence, remainingTime sql.NullInt64
-	if conf, ok := data["confidence"]; ok {
-		if c, err := parseInt(conf); err == nil {
-			confidence = sql.NullInt64{Int64: int64(c), Valid: true}
-		}
-	}
-	if rt, ok := data["remaining_time"]; ok {
-		if r, err := parseInt(rt); err == nil {
-			remainingTime = sql.NullInt64{Int64: int64(r), Valid: true}
-		}
-	}
-
-	// 8. 构建 metadata JSONB（保存统计数据和扩展信息）
-	metadataJSON, err := buildMetadata(data)
-	if err != nil {
-		r.logger.Warn("Failed to build metadata",
-			zap.String("device_id", deviceID),
-			zap.Error(err),
-		)
-		metadataJSON = []byte("{}")
-	}
-
-	// 9. 构建最小化审计数据（用于 raw_original）
-	// 根据 HIPAA/FDA 要求和用户要求，不保存原始数据，只保存必要的审计追溯信息
-	rawOriginal, err := buildMinimalAuditData(data)
-	if err != nil {
-		return 0, fmt.Errorf("failed to build minimal audit data: %w", err)
-	}
-
-	// 10. 构建完整的 INSERT 语句（包含位置信息）
+	// 6. 构建 INSERT 语句（窄表结构）
 	query := `
 		INSERT INTO iot_timeseries (
-			tenant_id,
-			device_id,
-			device_type,
-			device_model,
-			serial_number,
 			uid,
 			timestamp,
 			data_type,
-			category,
-			tracking_id,
-			radar_pos_x,
-			radar_pos_y,
-			radar_pos_z,
-			posture_snomed_code,
-			posture_display,
-			event_type,
-			event_snomed_code,
-			event_display,
-			area_id,
-			heart_rate_code,
-			heart_rate_display,
-			heart_rate,
-			respiratory_rate_code,
-			respiratory_rate_display,
-			respiratory_rate,
-			sleep_state_snomed_code,
-			sleep_state_display,
-			confidence,
-			remaining_time,
-			raw_original,
-			raw_format,
-			raw_compression,
-			metadata,
-			unit_id,
-			room_id
+			data_values
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-			$21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35
+			$1, $2, $3, $4
 		)
 		RETURNING id
 	`
@@ -183,41 +120,10 @@ func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, er
 	var id int64
 	err = r.db.QueryRow(
 		query,
-		tenantID,           // $1
-		deviceID,           // $2
-		deviceType,         // $3 (硬件信息：device_type)
-		deviceModel,        // $4 (硬件信息：device_model)
-		serialNumber,       // $5 (硬件信息：serial_number)
-		uid,                // $6 (硬件信息：uid)
-		timestamp,          // $7 (数据时间戳，设备采集时间 = 上传时间)
-		dataType,           // $8
-		category,           // $9
-		trackingID,         // $10
-		posX,               // $11
-		posY,               // $12
-		posZ,               // $13
-		postureCode,        // $14
-		postureDisplay,     // $15
-		eventType,          // $16
-		eventCode,          // $17
-		eventDisplay,       // $18
-		areaID,             // $19
-		hrCode,             // $20
-		hrDisplay,          // $21
-		hr,                 // $22
-		rrCode,             // $23
-		rrDisplay,          // $24
-		rr,                 // $25
-		sleepCode,          // $26
-		sleepDisplay,       // $27
-		confidence,         // $28
-		remainingTime,      // $29
-		rawOriginal,        // $30 (最小化审计数据)
-		"json",             // $31 (raw_format)
-		nil,                // $32 (raw_compression = NULL)
-		metadataJSON,       // $33 (metadata JSONB)
-		unitID,             // $34 (位置信息：unit_id，在 INSERT 时直接插入，避免后续 UPDATE)
-		roomID,             // $35 (位置信息：room_id，在 INSERT 时直接插入，避免后续 UPDATE)
+		*uid,              // $1 (设备 UID)
+		timestamp,         // $2 (数据时间戳)
+		dataType,          // $3 (数据类型：monitor, statistics, event, alarm)
+		dataValuesJSON,    // $4 (所有数据值存储在 JSONB 中)
 	).Scan(&id)
 
 	if err != nil {
@@ -227,8 +133,8 @@ func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, er
 	r.logger.Debug("IoT timeseries data inserted",
 		zap.Int64("id", id),
 		zap.String("device_id", deviceID),
+		zap.String("uid", *uid),
 		zap.String("data_type", dataType),
-		zap.String("category", category.String),
 	)
 
 	return id, nil

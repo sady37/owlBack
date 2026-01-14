@@ -21,7 +21,7 @@
 |------|-------------------|------|------------|---------|
 | **临床安全** | `safety` | 跌倒、滞留、危险姿态等直接威胁生命安全的事件 | Flag | Fall, SuspectedFall, Stay, NoActivity24h |
 | **生命体征** | `clinical` | 心率/呼吸率异常等生命体征告警（FHIR推荐使用 `clinical`） | Flag | ApneaHypopnea, AbnormalHeartRate, AbnormalRespiratoryRate, VitalsWeak |
-| **行为健康** | `behavioral` | 长时间无活动、异常行为模式等行为健康告警 | Flag | LeftBed, SitUp, AbnormalBodyMovement |
+| **行为健康** | `behavioral` | 长时间无活动、异常行为模式等行为健康告警 | Flag | LeftBed, SitUp, AbnormalBodyMovement（统一，不分设备） |
 | **设备技术** | `device` | 设备故障、网络异常等技术告警 | Flag | OfflineAlarm, LowBattery, DeviceFailure, AngleException |
 
 ### 2.2 Observation（观测数据）的 Category 分类
@@ -88,25 +88,25 @@
 | 字段名 | Category | SNOMED 映射字段 | 说明 |
 |-------|---------|----------------|------|
 | `event` (type=1) | `activity` / `behavioral` | `event_snomed_code`, `event_snomed_display`, `event_category`, `event_display_en` | 进出事件告警（根据具体事件类型：进入床/离开床为 `behavioral`，其他为 `activity`） |
-| `pose` (type=2) | `safety` | `pose_snomed_code`, `pose_snomed_display`, `pose_category`, `pose_display_en` | 姿态变化告警（跌倒相关：pose=2, 5, 7, 8, 10, 11 为 `safety`） |
+| `pose` (type=2) | `safety` / `activity` | `pose_snomed_code`, `pose_snomed_display`, `pose_category`, `pose_display_en` | 姿态变化告警（跌倒相关：pose=2, 5, 7, 8 为 `safety`；床上坐起：pose=9, 10, 11 为 `activity`） |
 
 **重要说明**：告警数据的 category 根据具体告警类型确定：
 
 1. **`safety`** - 临床安全告警：
-   - 跌倒相关告警（pose=5, 8, 11）：`Fall`
-   - 疑似跌倒告警（pose=2, 7, 10）：`SuspectedFall` / `At risk for falls`
+   - 跌倒相关告警（pose=5, 8）：`Fall`
+   - 疑似跌倒告警（pose=2, 7）：`SuspectedFall` / `At risk for falls`
    - 滞留告警：`Stay`
    - 24小时无人告警：`NoActivity24h`
 
 2. **`clinical`** - 生命体征异常告警：
-   - 呼吸暂停告警：`ApneaHypopnea` / `Radar_ApneaHypopnea`（从 breath_state="11" 触发）
-   - 心率异常告警：`AbnormalHeartRate` / `Radar_AbnormalHeartRate`
-   - 呼吸频率异常告警：`AbnormalRespiratoryRate` / `Radar_AbnormalRespiratoryRate`
-   - 生命体征微弱告警：`VitalsWeak`（从 vital_signs_state="11" 触发）
+   - 呼吸暂停告警：`ApneaHypopnea`（统一，不分设备，从 breath_state="11" 触发）
+   - 心率异常告警：`AbnormalHeartRate`（统一，不分设备）
+   - 呼吸频率异常告警：`AbnormalRespiratoryRate`（统一，不分设备）
+   - 生命体征微弱告警：`VitalsWeak`（统一，不分设备，从 vital_signs_state="11" 触发）
 
 3. **`behavioral`** - 行为健康告警：
-   - 离床告警：`LeftBed` / `Radar_LeftBed`（从 event=6 触发）
-   - 床上坐起告警：`SitUp` / `SleepPad_SitUp`
+   - 离床告警：`LeftBed`（统一，不分设备，从 event=6 或 bedStatus=1 触发）
+   - 床上坐起告警：`SitUp` / `BED_SIT_UP` / `pose=9,10,11`（统一 SNOMED: 225698008）
    - 异常体动告警：`AbnormalBodyMovement` / `SleepPad_AbnormalBodyMovement`
 
 4. **`device`** - 设备技术告警：
@@ -126,7 +126,7 @@
 ### 5.1 Observation 类型（monitor, stat, event）
 
 1. **`activity`**：用于行为观测数据
-   - 姿态（pose）：行走、站立、坐位、卧位等
+   - 姿态（pose）：行走、站立、坐位、卧位、床上坐起（pose=9,10,11）等
    - 事件（event）：进入房间、离开房间、进入区域、离开区域、进入床、离开床
    - 睡眠状态（sleep_state）：清醒、浅睡眠、深睡眠
 
@@ -147,16 +147,16 @@
    - 滞留告警
    - 24小时无人告警
 
-2. **`clinical`**：生命体征异常告警
-   - 呼吸暂停告警（Radar_ApneaHypopnea）
-   - 心率异常告警（Radar_AbnormalHeartRate）
-   - 呼吸频率异常告警（Radar_AbnormalRespiratoryRate）
-   - 生命体征微弱告警（VitalsWeak）
+2. **`clinical`**：生命体征异常告警（统一，不分设备）
+   - 呼吸暂停告警（`ApneaHypopnea`）
+   - 心率异常告警（`AbnormalHeartRate`）
+   - 呼吸频率异常告警（`AbnormalRespiratoryRate`）
+   - 生命体征微弱告警（`VitalsWeak`）
 
-3. **`behavioral`**：行为健康告警
-   - 离床告警（Radar_LeftBed）
-   - 床上坐起告警（SleepPad_SitUp）
-   - 异常体动告警（SleepPad_AbnormalBodyMovement）
+3. **`behavioral`**：行为健康告警（统一，不分设备）
+   - 离床告警（`LeftBed`，统一 SNOMED: 248570008）
+   - 床上坐起告警（`SitUp` / `BED_SIT_UP`，统一 SNOMED: 422256002）
+   - 异常体动告警（`AbnormalBodyMovement`）
 
 4. **`device`**：设备技术告警
    - 设备离线告警（OfflineAlarm）
@@ -193,8 +193,10 @@
 - **处理位置**：`radar_encoder.go` 中的 `encodeRadarAlarm()`
 - **Category 来源**：从 `radar_convert_table.json` 中获取（通过 `applySNOMedMapping()`）
 - **示例**：
-  - `pose=5, 8, 11` (跌倒) → `safety`
-  - `pose=2, 7, 10` (疑似跌倒) → `safety`
+  - `pose=5, 8` (跌倒) → `safety`
+  - `pose=9, 10, 11` (床上坐起) → `activity`
+  - `pose=2, 7` (疑似跌倒) → `safety`
+  - `pose=9, 10, 11` (床上坐起) → `activity`
   - `event=6` (离床) → `activity`（注：离床告警的 category 在云端计算时可能需要调整为 `behavioral`）
 
 #### 6.2.2 云端计算的告警（`wisefido-alarm` 或 `wisefido-card-aggregator` 处理）
@@ -204,8 +206,8 @@
 - **Category 确定**：使用 `GetAlarmCategory(eventType)` 函数（定义在 `wisefido-card-aggregator/internal/alarm/alarm_handler.go`）
 - **4 大类分类规则**：
   - **`safety`**：Fall, SuspectedFall, Stay, NoActivity24h
-  - **`clinical`**：Radar_ApneaHypopnea, Radar_AbnormalHeartRate, Radar_AbnormalRespiratoryRate, VitalsWeak
-  - **`behavioral`**：Radar_LeftBed, SleepPad_LeftBed, SleepPad_SitUp, NoTurning.2H, NoBodyMovement.2H
+  - **`clinical`**：ApneaHypopnea, AbnormalHeartRate, AbnormalRespiratoryRate, VitalsWeak（统一，不分设备）
+  - **`behavioral`**：LeftBed（统一 SNOMED: 248570008）, SitUp/BED_SIT_UP（统一 SNOMED: 225698008）, AbnormalBodyMovement, NoTurning.2H, NoBodyMovement.2H（统一，不分设备）
   - **`device`**：OfflineAlarm, LowBattery, DeviceFailure, AngleException
 
 ### 6.3 数据流与 Category 的对应关系总结

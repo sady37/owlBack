@@ -36,11 +36,16 @@ func main() {
 
 	logger.Info("Starting wisefido-iot-timeseries service",
 		zap.String("version", "1.0.0"),
-		zap.String("monitor_stream", cfg.Streams.Monitor),
-		zap.String("stat_stream", cfg.Streams.Stat),
-		zap.String("event_stream", cfg.Streams.Event),
-		zap.String("alarm_stream", cfg.Streams.Alarm),
-		zap.String("output_stream", cfg.Streams.Output),
+		zap.String("radar_monitor_stream", cfg.Streams.RadarMonitor),
+		zap.String("radar_stat_stream", cfg.Streams.RadarStat),
+		zap.String("radar_event_stream", cfg.Streams.RadarEvent),
+		zap.String("radar_alarm_stream", cfg.Streams.RadarAlarm),
+		zap.String("sleepace_monitor_stream", cfg.Streams.SleepaceMonitor),
+		zap.String("sleepace_event_stream", cfg.Streams.SleepaceEvent),
+		zap.String("sleepace_alarm_stream", cfg.Streams.SleepaceAlarm),
+		zap.String("consumer_group", cfg.ConsumerGroup),
+		zap.String("consumer_name", cfg.ConsumerName),
+		zap.Int64("batch_size", cfg.BatchSize),
 	)
 
 	// 初始化数据库连接

@@ -46,17 +46,33 @@ func NewEventConsumer(
 
 // Start 启动事件消费者（订阅 Redis Streams）
 func (c *EventConsumer) Start(ctx context.Context, evaluator Evaluator) error {
-	stream := "iot:data:stream"
-	consumerGroup := "wisefido-alarm-events"
-	consumerName := "alarm-consumer-1"
+	// 订阅所有设备的 streams（主要关注 event 和 alarm streams）
+	streams := []string{
+		// Radar 设备 streams（主要关注 event 和 alarm）
+		c.config.Alarm.IoTStream.RadarEvent,
+		c.config.Alarm.IoTStream.RadarAlarm,
+		// Sleepace 设备 streams（主要关注 event 和 alarm）
+		c.config.Alarm.IoTStream.SleepaceEvent,
+		c.config.Alarm.IoTStream.SleepaceAlarm,
+		// 注意：monitor 和 stat streams 不处理，因为 wisefido-ai 主要处理事件
+	}
+
+	consumerGroup := c.config.Alarm.IoTStream.ConsumerGroup
+	consumerName := c.config.Alarm.IoTStream.ConsumerName
 
 	// 创建消费者组
-	if err := rediscommon.CreateConsumerGroup(ctx, c.redisClient, stream, consumerGroup); err != nil {
-		return fmt.Errorf("failed to create consumer group: %w", err)
+	for _, stream := range streams {
+		if err := rediscommon.CreateConsumerGroup(ctx, c.redisClient, stream, consumerGroup); err != nil {
+			c.logger.Warn("Failed to create consumer group for stream, will retry",
+				zap.String("stream", stream),
+				zap.Error(err),
+			)
+			// 继续处理其他 streams，不中断
+		}
 	}
 
 	c.logger.Info("Event consumer started",
-		zap.String("stream", stream),
+		zap.Strings("streams", streams),
 		zap.String("consumer_group", consumerGroup),
 		zap.String("consumer_name", consumerName),
 		zap.String("tenant_id", c.tenantID),
@@ -69,40 +85,70 @@ func (c *EventConsumer) Start(ctx context.Context, evaluator Evaluator) error {
 			c.logger.Info("Event consumer stopped")
 			return nil
 		default:
-			// 从 Stream 读取消息
-			messages, err := rediscommon.ReadFromStream(
-				ctx,
-				c.redisClient,
-				stream,
-				consumerGroup,
-				consumerName,
-				10, // batch size
-			)
-			if err != nil {
-				c.logger.Error("Failed to read from stream",
-					zap.Error(err),
+			// 并行消费所有 streams
+			radarEventErr := c.consumeStream(ctx, c.config.Alarm.IoTStream.RadarEvent, consumerGroup, consumerName, evaluator)
+			radarAlarmErr := c.consumeStream(ctx, c.config.Alarm.IoTStream.RadarAlarm, consumerGroup, consumerName, evaluator)
+			sleepaceEventErr := c.consumeStream(ctx, c.config.Alarm.IoTStream.SleepaceEvent, consumerGroup, consumerName, evaluator)
+			sleepaceAlarmErr := c.consumeStream(ctx, c.config.Alarm.IoTStream.SleepaceAlarm, consumerGroup, consumerName, evaluator)
+
+			// 如果所有流都出错，等待后重试
+			if radarEventErr != nil && radarAlarmErr != nil && sleepaceEventErr != nil && sleepaceAlarmErr != nil {
+				c.logger.Error("Failed to consume all streams",
+					zap.Error(radarEventErr),
 				)
 				time.Sleep(time.Second)
-				continue
-			}
-
-			// 处理消息
-			for _, msg := range messages {
-				if err := c.processMessage(ctx, msg, evaluator); err != nil {
-					c.logger.Error("Failed to process message",
-						zap.String("stream_id", msg.ID),
-						zap.Error(err),
-					)
-					// 继续处理下一条消息，不中断
+			} else {
+				// 记录单个流的错误（但不中断）
+				if radarEventErr != nil {
+					c.logger.Error("Failed to consume radar event stream", zap.Error(radarEventErr))
+				}
+				if radarAlarmErr != nil {
+					c.logger.Error("Failed to consume radar alarm stream", zap.Error(radarAlarmErr))
+				}
+				if sleepaceEventErr != nil {
+					c.logger.Error("Failed to consume sleepace event stream", zap.Error(sleepaceEventErr))
+				}
+				if sleepaceAlarmErr != nil {
+					c.logger.Error("Failed to consume sleepace alarm stream", zap.Error(sleepaceAlarmErr))
 				}
 			}
 		}
 	}
 }
 
+// consumeStream 消费单个 Stream
+func (c *EventConsumer) consumeStream(ctx context.Context, stream, consumerGroup, consumerName string, evaluator Evaluator) error {
+	// 从 Stream 读取消息
+	messages, err := rediscommon.ReadFromStream(
+		ctx,
+		c.redisClient,
+		stream,
+		consumerGroup,
+		consumerName,
+		c.config.Alarm.IoTStream.BatchSize,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to read from stream %s: %w", stream, err)
+	}
+
+	// 处理消息
+	for _, msg := range messages {
+		if err := c.processMessage(ctx, msg, evaluator); err != nil {
+			c.logger.Error("Failed to process message",
+				zap.String("stream", stream),
+				zap.String("stream_id", msg.ID),
+				zap.Error(err),
+			)
+			// 继续处理下一条消息，不中断
+		}
+	}
+
+	return nil
+}
+
 // processMessage 处理单条消息
 func (c *EventConsumer) processMessage(ctx context.Context, msg rediscommon.StreamMessage, evaluator Evaluator) error {
-	// 解析消息数据
+	// 解析消息数据（直接从设备 streams 读取）
 	var dataStr string
 	if val, ok := msg.Values["data"]; ok {
 		if str, ok := val.(string); ok {
@@ -114,27 +160,75 @@ func (c *EventConsumer) processMessage(ctx context.Context, msg rediscommon.Stre
 		return fmt.Errorf("missing data field in message")
 	}
 
-	// 解析 JSON
-	var iotData models.IoTDataMessage
-	if err := json.Unmarshal([]byte(dataStr), &iotData); err != nil {
+	// 解析 JSON - 设备 streams 的格式包含 device_id, tenant_id, device_type, topic_type, timestamp, data_value 等
+	var streamData map[string]interface{}
+	if err := json.Unmarshal([]byte(dataStr), &streamData); err != nil {
 		return fmt.Errorf("failed to unmarshal message data: %w", err)
 	}
 
-	// 过滤：处理相关事件
-	if iotData.EventType == nil {
+	// 提取必要字段
+	deviceID, _ := streamData["device_id"].(string)
+	tenantID, _ := streamData["tenant_id"].(string)
+	topicType, _ := streamData["topic_type"].(string)
+	
+	if deviceID == "" || tenantID == "" {
+		return nil // 跳过无效消息
+	}
+
+	// 从 data_value 中提取事件类型
+	var eventType string
+	if topicType == "event" || topicType == "alarm" {
+		// 从 data_value 中提取事件类型
+		if dataValue, ok := streamData["data_value"].(map[string]interface{}); ok {
+			// 尝试从 data_value 中提取事件类型
+			if category, ok := dataValue["category"].(string); ok {
+				eventType = category
+			} else if evt, ok := dataValue["event"].(string); ok {
+				eventType = evt
+			}
+		} else if dataValueArray, ok := streamData["data_value"].([]interface{}); ok && len(dataValueArray) > 0 {
+			// data_value 可能是数组
+			if firstItem, ok := dataValueArray[0].(map[string]interface{}); ok {
+				if category, ok := firstItem["category"].(string); ok {
+					eventType = category
+				} else if evt, ok := firstItem["event"].(string); ok {
+					eventType = evt
+				}
+			}
+		}
+	}
+
+	// 过滤：只处理相关事件
+	if eventType == "" {
 		return nil // 跳过非事件消息
 	}
 
-	eventType := *iotData.EventType
+	// 映射事件类型到 wisefido-ai 期望的格式
+	// 例如：从 "Enter room" 映射到 "ENTER_ROOM"
+	mappedEventType := c.mapEventType(eventType)
+	if mappedEventType == "" {
+		return nil // 跳过不支持的事件类型
+	}
+
 	c.logger.Debug("Received event",
-		zap.String("event_type", eventType),
-		zap.String("device_id", iotData.DeviceID),
-		zap.String("tenant_id", iotData.TenantID),
+		zap.String("event_type", mappedEventType),
+		zap.String("original_event", eventType),
+		zap.String("device_id", deviceID),
+		zap.String("tenant_id", tenantID),
 		zap.String("stream_id", msg.ID),
 	)
 
+	// 构建 IoTDataMessage 格式（用于兼容现有处理函数）
+	iotData := models.IoTDataMessage{
+		DeviceID:   deviceID,
+		TenantID:   tenantID,
+		DeviceType: streamData["device_type"].(string),
+		Timestamp:  getTimestamp(streamData["timestamp"]),
+		EventType:  &mappedEventType,
+	}
+
 	// 根据事件类型分发处理
-	switch eventType {
+	switch mappedEventType {
 	case "BED_LEFT":
 		return c.handleBED_LEFT_Event(ctx, iotData, evaluator)
 	case "ENTER_ROOM":
@@ -145,6 +239,56 @@ func (c *EventConsumer) processMessage(ctx context.Context, msg rediscommon.Stre
 		return c.handlePERSON_COUNT_CHANGED_Event(ctx, iotData, evaluator)
 	default:
 		return nil // 跳过其他事件
+	}
+}
+
+// mapEventType 映射事件类型到 wisefido-ai 期望的格式
+func (c *EventConsumer) mapEventType(eventType string) string {
+	// 事件类型映射表
+	eventTypeMap := map[string]string{
+		// 离床事件
+		"Left bed":     "BED_LEFT",
+		"LeftBed":      "BED_LEFT",
+		"left_bed":     "BED_LEFT",
+		// 进入房间事件
+		"Enter room":   "ENTER_ROOM",
+		"EnterRoom":    "ENTER_ROOM",
+		"enter_room":   "ENTER_ROOM",
+		// 离开房间事件
+		"Leave room":   "LEFT_ROOM",
+		"LeaveRoom":    "LEFT_ROOM",
+		"leave_room":   "LEFT_ROOM",
+		// 人数变化事件
+		"number-people": "PERSON_COUNT_CHANGED",
+		"NumberPeople":  "PERSON_COUNT_CHANGED",
+		"number_people": "PERSON_COUNT_CHANGED",
+	}
+
+	if mapped, ok := eventTypeMap[eventType]; ok {
+		return mapped
+	}
+	
+	// 尝试不区分大小写匹配
+	for k, v := range eventTypeMap {
+		if strings.EqualFold(k, eventType) {
+			return v
+		}
+	}
+	
+	return ""
+}
+
+// getTimestamp 从 interface{} 提取时间戳
+func getTimestamp(ts interface{}) int64 {
+	switch v := ts.(type) {
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case int:
+		return int64(v)
+	default:
+		return time.Now().Unix()
 	}
 }
 

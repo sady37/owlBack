@@ -49,10 +49,10 @@ type UnitConversion struct {
 
 // RadarConvertTable Radar 转换表结构
 type RadarConvertTable struct {
-	Version     string                                       `json:"version"`
-	LastUpdated string                                       `json:"last_updated"`
-	Description string                                       `json:"description"`
-	Conversions map[string]map[string]map[string]interface{} `json:"conversions"`
+	Version     string                   `json:"version"`
+	LastUpdated string                   `json:"last_updated"`
+	Description string                   `json:"description"`
+	Conversions map[string]interface{}   `json:"conversions"` // 使用 interface{} 支持任意深度的嵌套结构
 }
 
 var (

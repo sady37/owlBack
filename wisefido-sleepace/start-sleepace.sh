@@ -119,7 +119,7 @@ echo "  📡 Redis: $REDIS_ADDR"
 echo "  📨 MQTT Broker: $MQTT_BROKER"
 echo "  📨 MQTT Topic: $SLEEPACE_MQTT_TOPIC"
 echo "  🌐 Sleepace HTTP: $SLEEPACE_HTTP_ADDRESS"
-echo "  📨 Data Streams: iot:monitor:stream, iot:event:stream, iot:alarm:stream"
+  echo "  📨 Data Streams: sleepace:monitor:stream, sleepace:event:stream, sleepace:alarm:stream"
 echo ""
 
 # 启动服务

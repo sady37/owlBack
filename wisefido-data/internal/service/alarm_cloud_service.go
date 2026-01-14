@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"wisefido-data/internal/domain"
+	"wisefido-data/internal/notifier"
 	"wisefido-data/internal/repository"
 
 	"go.uber.org/zap"
@@ -82,14 +83,16 @@ type AlarmCloudService interface {
 type alarmCloudService struct {
 	alarmCloudRepo repository.AlarmCloudRepository
 	db              *sql.DB // 用于权限检查
+	configNotifier  *notifier.ConfigNotifier // 配置变更通知器
 	logger          *zap.Logger
 }
 
 // NewAlarmCloudService 创建 AlarmCloudService 实例
-func NewAlarmCloudService(alarmCloudRepo repository.AlarmCloudRepository, db *sql.DB, logger *zap.Logger) AlarmCloudService {
+func NewAlarmCloudService(alarmCloudRepo repository.AlarmCloudRepository, db *sql.DB, configNotifier *notifier.ConfigNotifier, logger *zap.Logger) AlarmCloudService {
 	return &alarmCloudService{
 		alarmCloudRepo: alarmCloudRepo,
 		db:             db,
+		configNotifier: configNotifier,
 		logger:         logger,
 	}
 }
@@ -335,7 +338,18 @@ func (s *alarmCloudService) UpdateAlarmCloudConfig(ctx context.Context, req Upda
 		return nil, fmt.Errorf("failed to update alarm cloud: %w", err)
 	}
 
-	// 6. 返回更新后的配置
+	// 6. 发布配置变更通知
+	if s.configNotifier != nil {
+		if err := s.configNotifier.NotifyAlarmCloudUpdated(ctx, req.TenantID); err != nil {
+			s.logger.Warn("Failed to notify config change, but database update succeeded",
+				zap.String("tenant_id", req.TenantID),
+				zap.Error(err),
+			)
+			// 通知失败不影响数据库保存，只记录警告
+		}
+	}
+
+	// 7. 返回更新后的配置
 	return s.GetAlarmCloudConfig(ctx, GetAlarmCloudConfigRequest{
 		TenantID: req.TenantID,
 		UserID:   req.UserID,

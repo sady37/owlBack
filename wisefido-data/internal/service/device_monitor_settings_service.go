@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"wisefido-data/internal/domain"
+	"wisefido-data/internal/notifier"
 	"wisefido-data/internal/repository"
 
 	"go.uber.org/zap"
@@ -31,6 +32,7 @@ type deviceMonitorSettingsService struct {
 	devicesRepo     repository.DevicesRepository
 	deviceStoreRepo repository.DeviceStoreRepository
 	sleepaceClient  *SleepaceClient // Sleepace 硬件 API 客户端（可选）
+	configNotifier  *notifier.ConfigNotifier // 配置变更通知器
 	logger          *zap.Logger
 }
 
@@ -40,6 +42,7 @@ func NewDeviceMonitorSettingsService(
 	alarmCloudRepo repository.AlarmCloudRepository,
 	devicesRepo repository.DevicesRepository,
 	deviceStoreRepo repository.DeviceStoreRepository,
+	configNotifier *notifier.ConfigNotifier,
 	logger *zap.Logger,
 ) DeviceMonitorSettingsService {
 	return &deviceMonitorSettingsService{
@@ -48,6 +51,7 @@ func NewDeviceMonitorSettingsService(
 		devicesRepo:     devicesRepo,
 		deviceStoreRepo: deviceStoreRepo,
 		sleepaceClient:  nil, // 通过 SetSleepaceClient 延迟设置
+		configNotifier:  configNotifier,
 		logger:          logger,
 	}
 }
@@ -338,6 +342,18 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(ctx context.C
 		zap.String("device_id", req.DeviceID),
 		zap.String("device_type", req.DeviceType),
 	)
+
+	// 发布配置变更通知
+	if s.configNotifier != nil {
+		if err := s.configNotifier.NotifyAlarmDeviceUpdated(ctx, req.TenantID, req.DeviceID); err != nil {
+			s.logger.Warn("Failed to notify config change, but database update succeeded",
+				zap.String("tenant_id", req.TenantID),
+				zap.String("device_id", req.DeviceID),
+				zap.Error(err),
+			)
+			// 通知失败不影响数据库保存，只记录警告
+		}
+	}
 
 	return &UpdateDeviceMonitorSettingsResponse{
 		Success: true,

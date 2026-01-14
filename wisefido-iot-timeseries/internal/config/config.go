@@ -13,11 +13,16 @@ type Config struct {
 
 	// IoT 时序数据服务特定配置
 	Streams struct {
-		Monitor string // iot:monitor:stream
-		Stat    string // iot:stat:stream
-		Event   string // iot:event:stream
-		Alarm   string // iot:alarm:stream
-		Output  string // iot:data:stream (可选，触发下游服务)
+		// Radar 设备 streams
+		RadarMonitor string // radar:monitor:stream
+		RadarStat    string // radar:stat:stream
+		RadarEvent   string // radar:event:stream
+		RadarAlarm   string // radar:alarm:stream
+		// Sleepace 设备 streams
+		SleepaceMonitor string // sleepace:monitor:stream
+		SleepaceEvent   string // sleepace:event:stream
+		SleepaceAlarm   string // sleepace:alarm:stream
+		// 注意：Sleepace 没有 stat 数据
 	}
 	ConsumerGroup string // 消费者组名称
 	ConsumerName  string // 消费者名称
@@ -54,12 +59,14 @@ func Load() (*Config, error) {
 	cfg.Redis.Password = getEnv("REDIS_PASSWORD", "")
 	cfg.Redis.DB = 0
 
-	// IoT 时序数据服务配置
-	cfg.Streams.Monitor = getEnv("STREAM_MONITOR", "iot:monitor:stream")
-	cfg.Streams.Stat = getEnv("STREAM_STAT", "iot:stat:stream")
-	cfg.Streams.Event = getEnv("STREAM_EVENT", "iot:event:stream")
-	cfg.Streams.Alarm = getEnv("STREAM_ALARM", "iot:alarm:stream")
-	cfg.Streams.Output = getEnv("STREAM_OUTPUT", "iot:data:stream")
+	// IoT 时序数据服务配置 - 设备级别 streams
+	cfg.Streams.RadarMonitor = getEnv("STREAM_RADAR_MONITOR", "radar:monitor:stream")
+	cfg.Streams.RadarStat = getEnv("STREAM_RADAR_STAT", "radar:stat:stream")
+	cfg.Streams.RadarEvent = getEnv("STREAM_RADAR_EVENT", "radar:event:stream")
+	cfg.Streams.RadarAlarm = getEnv("STREAM_RADAR_ALARM", "radar:alarm:stream")
+	cfg.Streams.SleepaceMonitor = getEnv("STREAM_SLEEPACE_MONITOR", "sleepace:monitor:stream")
+	cfg.Streams.SleepaceEvent = getEnv("STREAM_SLEEPACE_EVENT", "sleepace:event:stream")
+	cfg.Streams.SleepaceAlarm = getEnv("STREAM_SLEEPACE_ALARM", "sleepace:alarm:stream")
 	cfg.ConsumerGroup = getEnv("CONSUMER_GROUP", "iot-timeseries-group")
 	cfg.ConsumerName = getEnv("CONSUMER_NAME", "iot-timeseries-1")
 	cfg.BatchSize = 10

@@ -22,10 +22,19 @@ type Config struct {
 			Interval int  // 聚合间隔（秒），默认 2 秒（匹配心率呼吸数据更新频率）
 		}
 
-		// IoT Stream 配置（用于消费 iot:data:stream）
+		// IoT Stream 配置（直接订阅设备级别的 streams）
 		IoTStream struct {
 			Enabled       bool   // 是否启用 IoT Stream 消费（事件驱动）
-			Stream        string // 输入数据流，如 "iot:data:stream"
+			// Radar 设备 streams
+			RadarMonitor string // radar:monitor:stream
+			RadarStat    string // radar:stat:stream
+			RadarEvent   string // radar:event:stream
+			RadarAlarm   string // radar:alarm:stream
+			// Sleepace 设备 streams
+			SleepaceMonitor string // sleepace:monitor:stream
+			SleepaceEvent   string // sleepace:event:stream
+			SleepaceAlarm   string // sleepace:alarm:stream
+			// 注意：Sleepace 没有 stat 数据
 			ConsumerGroup string // 消费者组名称
 			ConsumerName  string // 消费者名称
 			BatchSize     int64  // 批量处理大小
@@ -76,9 +85,15 @@ func Load() (*Config, error) {
 		cfg.Aggregator.Aggregation.Interval = 2 // 默认 2 秒聚合一次（匹配心率呼吸数据更新频率）
 	}
 
-	// IoT Stream 配置
+	// IoT Stream 配置 - 设备级别 streams
 	cfg.Aggregator.IoTStream.Enabled = getEnv("CARD_IOT_STREAM_ENABLED", "true") == "true"
-	cfg.Aggregator.IoTStream.Stream = getEnv("CARD_IOT_STREAM", "iot:data:stream")
+	cfg.Aggregator.IoTStream.RadarMonitor = getEnv("CARD_STREAM_RADAR_MONITOR", "radar:monitor:stream")
+	cfg.Aggregator.IoTStream.RadarStat = getEnv("CARD_STREAM_RADAR_STAT", "radar:stat:stream")
+	cfg.Aggregator.IoTStream.RadarEvent = getEnv("CARD_STREAM_RADAR_EVENT", "radar:event:stream")
+	cfg.Aggregator.IoTStream.RadarAlarm = getEnv("CARD_STREAM_RADAR_ALARM", "radar:alarm:stream")
+	cfg.Aggregator.IoTStream.SleepaceMonitor = getEnv("CARD_STREAM_SLEEPACE_MONITOR", "sleepace:monitor:stream")
+	cfg.Aggregator.IoTStream.SleepaceEvent = getEnv("CARD_STREAM_SLEEPACE_EVENT", "sleepace:event:stream")
+	cfg.Aggregator.IoTStream.SleepaceAlarm = getEnv("CARD_STREAM_SLEEPACE_ALARM", "sleepace:alarm:stream")
 	cfg.Aggregator.IoTStream.ConsumerGroup = getEnv("CARD_IOT_CONSUMER_GROUP", "card-aggregator-iot-group")
 	cfg.Aggregator.IoTStream.ConsumerName = getEnv("CARD_IOT_CONSUMER_NAME", "card-aggregator-iot-1")
 	batchSizeStr := getEnv("CARD_IOT_BATCH_SIZE", "10")

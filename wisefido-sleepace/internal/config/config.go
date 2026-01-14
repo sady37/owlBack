@@ -24,10 +24,10 @@ type Config struct {
 		ReportUploadType int    // 报告上传类型
 		ReportUploadTime int    // 报告上传时间
 		Topic            string // MQTT 主题（Sleepace 厂家提供的主题，如 "sleepace-57136"）
-		// 注意：数据流分类直接硬编码在代码中，与 wisefido-radar 保持一致
-		// realtime/sleepStage → iot:monitor:stream
-		// connectionStatus → iot:event:stream
-		// alarmNotify → iot:alarm:stream
+		// 注意：数据流分类直接硬编码在代码中，使用设备级别 streams
+		// realtime/sleepStage → sleepace:monitor:stream
+		// connectionStatus → sleepace:event:stream
+		// alarmNotify → sleepace:alarm:stream
 	}
 
 	Log struct {

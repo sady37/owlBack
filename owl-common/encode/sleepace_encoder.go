@@ -33,14 +33,13 @@ func SleepaceEncode(data map[string]interface{}, dataKey string) (map[string]int
 
 // encodeSleepaceRealtime 编码实时数据
 func encodeSleepaceRealtime(data, encoded map[string]interface{}) (map[string]interface{}, error) {
-	// 字段重命名（保持兼容性）
+	// 字段重命名：统一使用标准字段名（各厂家统一）
+	// Sleepace: breath → respiratory_rate, heart → heart_rate
 	if breath, ok := data["breath"]; ok {
-		encoded["respiratory_rate"] = breath
-		encoded["breath"] = breath // 保留原始字段名
+		encoded["respiratory_rate"] = breath  // 标准字段名（各厂家统一）
 	}
 	if heart, ok := data["heart"]; ok {
-		encoded["heart_rate"] = heart
-		encoded["heart"] = heart // 保留原始字段名
+		encoded["heart_rate"] = heart  // 标准字段名（各厂家统一）
 	}
 
 	// bedStatus: 0=在床, 1=离床 - 需要 SNOMED 映射
@@ -48,14 +47,19 @@ func encodeSleepaceRealtime(data, encoded map[string]interface{}) (map[string]in
 		applySleepaceSNOMedMapping(encoded, "bedStatus", "realtime.bedStatus", bedStatus)
 	}
 
-	// sitUp: 床上坐起 - 需要 SNOMED 映射（只有当值 > 0 时才映射）
+	// sitUp: 床上坐起/躺下 - 需要 SNOMED 映射
+	// sitUp = 0: 床上躺下 (Lying position, 109030009)
+	// sitUp > 0: 床上坐起 (Sitting up in bed, 225698008)
 	if sitUp, ok := data["sitUp"]; ok {
-		if sitUpVal, err := parseInt(sitUp); err == nil && sitUpVal > 0 {
-			// sitUp > 0 时映射为 "1"（坐起事件）
-			applySleepaceSNOMedMapping(encoded, "sitUp", "realtime.sitUp", 1)
+		if sitUpVal, err := parseInt(sitUp); err == nil {
+			// 始终进行 SNOMED 映射：sitUp = 0 映射为躺下，sitUp > 0 映射为坐起
+			if sitUpVal > 0 {
+				applySleepaceSNOMedMapping(encoded, "sitUp", "realtime.sitUp", 1) // 映射为坐起
+			} else {
+				applySleepaceSNOMedMapping(encoded, "sitUp", "realtime.sitUp", 0) // 映射为躺下
+			}
 			encoded["sitUp"] = sitUpVal // 保留原始值
 		} else {
-			// sitUp = 0 时不映射，只保留原始值
 			encoded["sitUp"] = sitUp
 		}
 	}

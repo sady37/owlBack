@@ -1,4 +1,4 @@
-package consumer
+package exports
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"wisefido-radar/internal/alarm"
 	"wisefido-radar/internal/config"
 	"wisefido-radar/internal/repository"
 	"wisefido-radar/pkg/mqtt"
@@ -21,11 +22,12 @@ import (
 // MQTTConsumer MQTT消息消费者
 // 根据协议文档 3.3.3 节，订阅设备发布的 6 个主题
 type MQTTConsumer struct {
-	config      *config.Config
-	mqttClient  *mqttcommon.Client
-	redisClient *redis.Client
-	deviceRepo  *repository.DeviceRepository
-	logger      *zap.Logger
+	config       *config.Config
+	mqttClient   *mqttcommon.Client
+	redisClient  *redis.Client
+	deviceRepo   *repository.DeviceRepository
+	alarmHandler *alarm.DeviceAlarmHandler
+	logger       *zap.Logger
 	subscriptionManager interface { // 避免循环依赖，使用接口
 		AutoSubscribe(ctx context.Context, uid string) error
 	}
@@ -39,12 +41,16 @@ func NewMQTTConsumer(
 	deviceRepo *repository.DeviceRepository,
 	logger *zap.Logger,
 ) *MQTTConsumer {
+	// 创建设备报警处理器
+	alarmHandler := alarm.NewDeviceAlarmHandler(deviceRepo, logger)
+
 	return &MQTTConsumer{
-		config:      cfg,
-		mqttClient:  mqttClient,
-		redisClient: redisClient,
-		deviceRepo:  deviceRepo,
-		logger:      logger,
+		config:       cfg,
+		mqttClient:   mqttClient,
+		redisClient:  redisClient,
+		deviceRepo:   deviceRepo,
+		alarmHandler: alarmHandler,
+		logger:       logger,
 	}
 }
 
@@ -282,22 +288,76 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 		data[k] = v
 	}
 
-	// 7. 调用 encode 公共函数进行编码转换
-	encodedData, err := encode.RadarEncode(data, string(topicInfo.Type))
+	// 7. 调用 decode 公共函数进行解码转换
+	dataValue, err := encode.RadarDecoder(data, string(topicInfo.Type))
 	if err != nil {
-		c.logger.Error("Failed to encode radar data",
+		c.logger.Error("Failed to decode radar data",
 			zap.String("device_id", device.DeviceID),
 			zap.String("uid", uid),
 			zap.String("topic_type", string(topicInfo.Type)),
 			zap.Error(err),
 		)
-		return fmt.Errorf("failed to encode radar data: %w", err)
+		return fmt.Errorf("failed to decode radar data: %w", err)
 	}
 
-	// 8. 根据 topic_type 确定输出 stream
-	streamName := c.getOutputStreamName(topicInfo.Type)
+	// 8. 构建完整的输出对象（包含元数据 + data_value）
+	topicTypeStr := string(topicInfo.Type)
+	if topicTypeStr == "stat" {
+		topicTypeStr = "statistics" // 标准格式使用 "statistics"
+	}
 
-	// 9. 发布到 Redis Streams
+	// 9. 对于 event 和 statistics 类型，检查是否应该发布为报警
+	// 注意：monitor 类型不检查报警，直接发布到 monitor stream
+	finalTopicType := topicTypeStr
+	if topicInfo.Type == mqtt.TopicTypeEvent || topicInfo.Type == mqtt.TopicTypeStat {
+		shouldPublishAsAlarm, possibleAlarmTypes, err := c.alarmHandler.ShouldPublishAsAlarm(
+			context.Background(),
+			device.TenantID,
+			device.DeviceID,
+			topicTypeStr,
+			dataValue,
+		)
+		if err != nil {
+			c.logger.Warn("Failed to check alarm enablement, publishing as normal event/stat",
+				zap.String("device_id", device.DeviceID),
+				zap.String("topic_type", topicTypeStr),
+				zap.Error(err),
+			)
+			// 查询失败，发布为普通 event/stat（避免误报）
+		} else if shouldPublishAsAlarm {
+			// 应该发布为报警，将 topic_type 改为 "alarm"
+			finalTopicType = "alarm"
+			c.logger.Debug("Publishing as alarm",
+				zap.String("device_id", device.DeviceID),
+				zap.Strings("possible_alarm_types", possibleAlarmTypes),
+			)
+		}
+	}
+
+	// 10. 构建完整的输出对象（包含所有元数据字段）
+	// 字段顺序：device_id → device_type → tenant_id → timestamp → topic_type → data_value → 位置信息
+	// 注意：category 字段保留在 data_value 内部，不提取到顶层，避免冗余
+	encodedData := map[string]interface{}{
+		"device_id":   getStringOrNull(device.DeviceID),
+		"device_type": "Radar",
+		"tenant_id":   getStringOrNull(device.TenantID),
+		"timestamp":   time.Now().Unix(),
+		"topic_type":  finalTopicType,
+		"data_value":  dataValue,
+		// 所有可选字段都设置，不存在则为 null
+		"branch_id":   nil,
+		"building_id": nil,
+		"unit_id":     nil,
+		"room_id":     getStringOrNullPtr(device.BoundRoomID),
+		"bed_id":      getStringOrNullPtr(device.BoundBedID),
+	}
+	// 注意：branch_id, building_id, unit_id 需要从关联表查询，当前 Device 结构体不包含这些字段
+	// 暂时设置为 null，后续可以通过 JOIN 查询获取
+
+	// 12. 根据最终 topic_type 确定输出 stream
+	streamName := c.getOutputStreamNameForTopicTypeStr(finalTopicType)
+
+	// 13. 发布到 Redis Streams
 	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData)
 	if err != nil {
 		c.logger.Error("Failed to publish to Redis Streams",
@@ -310,7 +370,8 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 	c.logger.Info("Published radar data to Redis Streams",
 		zap.String("device_id", device.DeviceID),
 		zap.String("uid", uid),
-		zap.String("topic_type", string(topicInfo.Type)),
+		zap.String("original_topic_type", string(topicInfo.Type)),
+		zap.String("final_topic_type", finalTopicType),
 		zap.String("stream", streamName),
 		zap.String("stream_id", streamID),
 	)
@@ -386,18 +447,40 @@ func (c *MQTTConsumer) handleLegacyMessage(topic string, payload []byte) error {
 		data[k] = v
 	}
 
-	// 5. 调用 encode 公共函数进行编码转换
-	encodedData, err := encode.RadarEncode(data, "legacy")
+	// 5. 调用 decode 公共函数进行解码转换
+	dataValue, err := encode.RadarDecoder(data, "legacy")
 	if err != nil {
-		c.logger.Error("Failed to encode legacy radar data",
+		c.logger.Error("Failed to decode legacy radar data",
 			zap.String("device_id", device.DeviceID),
 			zap.Error(err),
 		)
-		return fmt.Errorf("failed to encode legacy radar data: %w", err)
+		return fmt.Errorf("failed to decode legacy radar data: %w", err)
 	}
 
-	// 6. 发布到 Redis Streams（legacy 消息发布到默认 stream）
-	streamName := "iot:data:stream"
+	// 6. 提取 category 到顶层（从 data_value 中提取）
+	// 7. 构建完整的输出对象（包含元数据 + data_value）
+	// 字段顺序：device_id → device_type → tenant_id → timestamp → topic_type → data_value → 位置信息
+	// 注意：category 字段保留在 data_value 内部，不提取到顶层，避免冗余
+	encodedData := map[string]interface{}{
+		"device_id":   device.DeviceID,
+		"device_type": "Radar",
+		"tenant_id":   device.TenantID,
+		"timestamp":   time.Now().Unix(),
+		"topic_type":  "legacy",
+		"data_value":  dataValue,
+	}
+
+	// 添加设备绑定信息字段（如果存在）
+	if device.BoundBedID != nil && *device.BoundBedID != "" {
+		encodedData["bed_id"] = *device.BoundBedID
+	}
+	if device.BoundRoomID != nil && *device.BoundRoomID != "" {
+		encodedData["room_id"] = *device.BoundRoomID
+	}
+
+	// 7. 发布到 Redis Streams（legacy 消息发布到 radar:data:stream）
+	// 注意：legacy 消息格式不明确，发布到 radar:data:stream 作为默认流
+	streamName := "radar:data:stream"
 	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData)
 	if err != nil {
 		c.logger.Error("Failed to publish to Redis Streams",
@@ -416,20 +499,53 @@ func (c *MQTTConsumer) handleLegacyMessage(topic string, payload []byte) error {
 	return nil
 }
 
-// getOutputStreamName 根据主题类型获取输出 Redis Stream 名称（统一使用 iot: 前缀）
+// getOutputStreamName 根据主题类型获取输出 Redis Stream 名称（使用 radar: 前缀）
 func (c *MQTTConsumer) getOutputStreamName(topicType mqtt.TopicType) string {
 	switch topicType {
 	case mqtt.TopicTypeMonitor:
-		return "iot:monitor:stream" // 实时数据
+		return "radar:monitor:stream" // 实时数据
 	case mqtt.TopicTypeStat:
-		return "iot:stat:stream" // 统计数据
+		return "radar:stat:stream" // 统计数据
 	case mqtt.TopicTypeEvent:
-		return "iot:event:stream" // 事件/日志
+		return "radar:event:stream" // 事件/日志
 	case mqtt.TopicTypeAlarm:
-		return "iot:alarm:stream" // 告警
+		return "radar:alarm:stream" // 告警
 	default:
-		return "iot:data:stream" // 默认
+		return "radar:data:stream" // 默认
 	}
+}
+
+// getOutputStreamNameForTopicTypeStr 根据 topic_type 字符串获取输出 Redis Stream 名称
+// 用于处理经过报警判断后的最终 topic_type（可能是 "alarm"）
+func (c *MQTTConsumer) getOutputStreamNameForTopicTypeStr(topicTypeStr string) string {
+	switch topicTypeStr {
+	case "monitor":
+		return "radar:monitor:stream"
+	case "statistics", "stat":
+		return "radar:stat:stream"
+	case "event":
+		return "radar:event:stream"
+	case "alarm":
+		return "radar:alarm:stream"
+	default:
+		return "radar:data:stream"
+	}
+}
+
+// getStringOrNull 如果字符串为空，返回 nil，否则返回字符串
+func getStringOrNull(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// getStringOrNullPtr 如果指针为 nil 或字符串为空，返回 nil，否则返回字符串
+func getStringOrNullPtr(s *string) interface{} {
+	if s == nil || *s == "" {
+		return nil
+	}
+	return *s
 }
 
 // getStreamNameForTopicType 根据主题类型获取 Redis Stream 名称（保留用于兼容性，但不再使用）
@@ -439,16 +555,16 @@ func (c *MQTTConsumer) getStreamNameForTopicType(topicType mqtt.TopicType) strin
 	case mqtt.TopicTypeProp:
 		return "radar:prop:stream" // 属性响应（不发布到 Streams）
 	case mqtt.TopicTypeMonitor:
-		return "iot:monitor:stream" // 实时数据
+		return "radar:monitor:stream" // 实时数据
 	case mqtt.TopicTypeFunc:
 		return "radar:func:stream" // 功能响应（不发布到 Streams）
 	case mqtt.TopicTypeStat:
-		return "iot:stat:stream" // 统计数据
+		return "radar:stat:stream" // 统计数据
 	case mqtt.TopicTypeEvent:
-		return "iot:event:stream" // 事件/日志
+		return "radar:event:stream" // 事件/日志
 	case mqtt.TopicTypeAlarm:
-		return "iot:alarm:stream" // 告警
+		return "radar:alarm:stream" // 告警
 	default:
-		return "iot:data:stream" // 默认
+		return "radar:data:stream" // 默认
 	}
 }

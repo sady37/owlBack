@@ -13,6 +13,7 @@ import (
 	"wisefido-data/internal/config"
 	"wisefido-data/internal/domain"
 	httpapi "wisefido-data/internal/http"
+	"wisefido-data/internal/notifier"
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/service"
 	"wisefido-data/internal/store"
@@ -142,9 +143,12 @@ func main() {
 
 		// tags - 已删除（tags 表不存在）
 
+		// 创建配置变更通知器
+		configNotifier := notifier.NewConfigNotifier(redisClient, logger)
+
 		// 创建 AlarmCloud Service 和 Handler
 		alarmCloudRepo := repository.NewPostgresAlarmCloudRepository(db)
-		alarmCloudService := service.NewAlarmCloudService(alarmCloudRepo, db, logger)
+		alarmCloudService := service.NewAlarmCloudService(alarmCloudRepo, db, configNotifier, logger)
 		alarmCloudHandler := httpapi.NewAlarmCloudHandler(alarmCloudService, logger)
 		router.RegisterAlarmCloudRoutes(alarmCloudHandler)
 
@@ -205,11 +209,13 @@ func main() {
 		// 创建 DeviceMonitorSettings Service 和 Handler
 		alarmDeviceRepo := repository.NewPostgresAlarmDeviceRepository(db)
 		// 使用已创建的 alarmCloudRepo（在 AlarmCloud Service 创建时已创建）
+		// 使用已创建的 configNotifier（在 AlarmCloud Service 创建时已创建）
 		deviceMonitorSettingsService := service.NewDeviceMonitorSettingsService(
 			alarmDeviceRepo,
 			alarmCloudRepo,
 			devicesRepo,
 			deviceStoreRepo,
+			configNotifier,
 			logger,
 		)
 

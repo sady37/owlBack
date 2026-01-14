@@ -371,11 +371,15 @@ export DB_SSLMODE="${DB_SSLMODE:-disable}"
 export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
 export REDIS_PASSWORD="${REDIS_PASSWORD:-TeLunSu-36kr}"
 export REDIS_DB=0
-export STREAM_MONITOR=iot:monitor:stream
-export STREAM_STAT=iot:stat:stream
-export STREAM_EVENT=iot:event:stream
-export STREAM_ALARM=iot:alarm:stream
-export STREAM_OUTPUT=iot:data:stream
+# Stream 配置 - 设备级别 streams（已迁移，保留旧变量以兼容）
+export STREAM_RADAR_MONITOR=radar:monitor:stream
+export STREAM_RADAR_STAT=radar:stat:stream
+export STREAM_RADAR_EVENT=radar:event:stream
+export STREAM_RADAR_ALARM=radar:alarm:stream
+export STREAM_SLEEPACE_MONITOR=sleepace:monitor:stream
+export STREAM_SLEEPACE_EVENT=sleepace:event:stream
+export STREAM_SLEEPACE_ALARM=sleepace:alarm:stream
+# 注意：不再使用 iot:data:stream
 export CONSUMER_GROUP=iot-timeseries-group
 export CONSUMER_NAME=iot-timeseries-1
 export LOG_LEVEL="${LOG_LEVEL:-info}"

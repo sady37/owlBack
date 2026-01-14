@@ -29,13 +29,13 @@
         "unit_conversion": null,
         "mappings": {
           "0": {
-            "snomed_code": null,
-            "snomed_display": "No sit up",
+            "snomed_code": "109030009",
+            "snomed_display": "Lying position",
             "category": "activity",
-            "display_en": "No sit up"
+            "display_en": "Lying position"
           },
           "1": {
-            "snomed_code": "422256002",
+            "snomed_code": "225698008",
             "snomed_display": "Sitting up in bed",
             "category": "activity",
             "display_en": "Sitting up in bed"
@@ -124,7 +124,7 @@
             "display_en": "Left bed"
           },
           "SitUp": {
-            "snomed_code": "422256002",
+            "snomed_code": "225698008",
             "snomed_display": "Sitting up in bed",
             "category": "behavioral",
             "display_en": "Sit up"

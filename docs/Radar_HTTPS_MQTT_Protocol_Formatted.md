@@ -871,3 +871,111 @@ OTA 成功完成后，检查是否真正 OTA 成功方法：
 - 检查 OTA 参数是否正确
 - 检查文件服务器是否可正常下载
 - 如 OTA 依然失败，请联系清澜技术销售人员进行处理
+
+
+
+
+
+
+
+当前系统支持的事件列表如下：
+event数值	事件类型	事件级别
+1	人数变化	普通事件
+2	跌倒事件	告警
+3	呼吸心率相关事件，根据params参数决定事件含义:
+11：呼吸过高 12：呼吸过低 13：呼吸暂停
+14：心率过高 15：心率过低 16：生命体征弱	生命体征弱为告警；其他为普通事件
+4	进出门事件	普通事件
+5	上线/离线事件	普通事件
+6	进出床事件	普通事件
+7	信号差事件	普通事件
+8	倾角异常事件	普通事件
+9	其他告警，根据params参数决定告警含义：
+1-离床未归 2-滞留 3-长时间无人活动 4-坐地告警
+5-坐床告警 6-空 7-空 8-配件按钮告警 9-配件拉绳告警 10-配件语音告警
+注：6-10未开放使用	告警
+10	进出告警区域	普通事件
+
+
+ 	普通事件和跌倒告警无需使能即可获得；其他告警需要配置设备打开相应开关才会获得
+ 	设备掉电或掉线需>2分钟才被清澜平台感知；为减少网络波动，清澜平台感知后>1分钟才通过接口推送给第三方。也就是说：设备掉电或掉线>3分钟才会推送到第三方。
+
+
+2.3.1.	人数变化事件通知格式
+参数名	类型	必填	取值描述	示例
+cmd	String	是	固定为“DEVICE_EVENT”	{"cmd":"DEVICE_EVENT",
+"count":3,
+"event":"1",
+"uid":"F59D3E873F5B"}
+uid	String	是	设备uid	
+event	String	是	 1	
+count	int	是	人数 	
+
+
+
+2.3.2.	其他事件通知格式
+
+参数名	类型	必填	取值描述
+cmd	String	是	固定为“DEVICE_EVENT”
+uid	String	是	设备uid
+event	String	是	 2到10之间，取值请参考2.3节开头的表格
+eventName	String	是	事件描述字符串 
+params	Map	否	除跌倒告警外，其他事件均有
+
+不同的事件params参数如下表所示：
+
+事件	事件类型	params参数	示例
+2	跌倒事件	不携带此参数	{"cmd":"DEVICE_EVENT",
+"event":"2",
+"eventName":"设备检测出跌倒",
+"uid":"F59D3E873F5B"
+}
+3	呼吸心率	Breath:呼吸数值；
+heartbeat:心率数值；
+alarmType:异常类型，包括：
+11：呼吸过高 12：呼吸过低 13：呼吸暂停
+14：心率过高 15：心率过低 16：生命体征弱	{"cmd":"DEVICE_EVENT",
+"event":"3",
+"eventName":"设备检测出心率过高",
+"params":{"breath":40,"heartbeat":110,"alarmType":14},
+"uid":"F59D3E873F5B"}
+4	进出门	entry2Exit: “0表示进入，1表示离开”	{"cmd":"DEVICE_EVENT",
+"event":"4",
+"eventName":"用户1离开房间",
+"params":{"entry2Exit":"1"},
+"uid":"F59D3E873F5B"}
+5	上线/离线	isOnline(0-在线 1-离线)	{"cmd":"DEVICE_EVENT",
+"event":"5",
+"eventName":"下线",
+"params":{"isOnline":"1"},
+"uid":"F59D3E873F5B"}
+6	进出床	entry2Exit (0-进入 1-离开)	{"cmd":"DEVICE_EVENT",
+"event":"6",
+"eventName":"进入监护床",
+"params":{"entry2Exit":"0"}
+,"uid":"F59D3E873F5B"}
+7	信号差	recovery(0-触发 1-恢复)	{"cmd":"DEVICE_EVENT",
+"event":"7",
+"eventName":"信号阈值触发",
+"params":{"recovery":"0"}
+,"uid":"F59D3E873F5B"}
+8	倾角异常	recovery(0-触发 1-恢复)	{"cmd":"DEVICE_EVENT",
+"event":"8",
+"eventName":"倾角阈值触发",
+"params":{"recovery":"0"}
+,"uid":"F59D3E873F5B"}
+9	其他告警	alarmType(1-离床未归 2-滞留 3-长时间无人活动 4-坐地告警
+5-床上坐起告警 6-空 7-空 8-按钮SOS告警 9-拉绳SOS告警 10-呼救SOS告警)
+
+注：6-10未开放使用	{"cmd":"DEVICE_EVENT",
+"event":"9",
+"eventName":"设备检测出滞留",
+"uid":"F59D3E873F5B",
+"params":{"alarmType":"2"}
+}
+10	进出告警区域	entry2Exit (0-进入 1-离开)	{"cmd":"DEVICE_EVENT",
+"event":"10",
+"eventName":"进入告警区域",
+"params":{"entry2Exit":"0"}
+,"uid":"F59D3E873F5B"}
+

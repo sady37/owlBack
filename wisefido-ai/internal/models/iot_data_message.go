@@ -1,7 +1,8 @@
 package models
 
 // IoTDataMessage IoT 数据消息（从 Redis Streams 读取）
-// 这是从 wisefido-iot-timeseries 发布到 iot:data:stream 的消息格式
+// 这是从设备 streams 读取的消息格式（兼容性结构体）
+// 注意：现在直接从设备 streams 读取，不再使用 iot:data:stream
 type IoTDataMessage struct {
 	IoTTimeSeriesID int64   `json:"iot_timeseries_id"`
 	DeviceID        string  `json:"device_id"`

@@ -132,12 +132,15 @@ export REDIS_DB=0
 # HTTP 配置
 export HTTP_ADDR=:8083
 
-# Stream 配置
-export STREAM_MONITOR=iot:monitor:stream
-export STREAM_STAT=iot:stat:stream
-export STREAM_EVENT=iot:event:stream
-export STREAM_ALARM=iot:alarm:stream
-export STREAM_OUTPUT=iot:data:stream
+# Stream 配置 - 设备级别 streams
+export STREAM_RADAR_MONITOR=radar:monitor:stream
+export STREAM_RADAR_STAT=radar:stat:stream
+export STREAM_RADAR_EVENT=radar:event:stream
+export STREAM_RADAR_ALARM=radar:alarm:stream
+export STREAM_SLEEPACE_MONITOR=sleepace:monitor:stream
+export STREAM_SLEEPACE_EVENT=sleepace:event:stream
+export STREAM_SLEEPACE_ALARM=sleepace:alarm:stream
+# 注意：Sleepace 没有 stat 数据，不再发布到 iot:data:stream
 
 # 消费者配置
 export CONSUMER_GROUP=iot-timeseries-group
@@ -153,11 +156,13 @@ echo -e "${BLUE}📊 Configuration:${NC}"
 echo "  🔌 HTTP Port: 8083"
 echo "  🗄️  Database: $DB_HOST:$DB_PORT/$DB_NAME"
 echo "  📡 Redis: $REDIS_ADDR"
-echo "  📨 Monitor Stream: $STREAM_MONITOR"
-echo "  📨 Stat Stream: $STREAM_STAT"
-echo "  📨 Event Stream: $STREAM_EVENT"
-echo "  📨 Alarm Stream: $STREAM_ALARM"
-echo "  📨 Output Stream: $STREAM_OUTPUT"
+echo "  📨 Radar Monitor: $STREAM_RADAR_MONITOR"
+echo "  📨 Radar Stat: $STREAM_RADAR_STAT"
+echo "  📨 Radar Event: $STREAM_RADAR_EVENT"
+echo "  📨 Radar Alarm: $STREAM_RADAR_ALARM"
+echo "  📨 Sleepace Monitor: $STREAM_SLEEPACE_MONITOR"
+echo "  📨 Sleepace Event: $STREAM_SLEEPACE_EVENT"
+echo "  📨 Sleepace Alarm: $STREAM_SLEEPACE_ALARM"
 echo "  👥 Consumer Group: $CONSUMER_GROUP"
 echo "  👤 Consumer Name: $CONSUMER_NAME"
 echo ""

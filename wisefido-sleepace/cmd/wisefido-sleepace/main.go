@@ -32,7 +32,7 @@ func main() {
 		zap.String("version", "1.5.0"),
 		zap.String("mqtt_broker", cfg.MQTT.Broker),
 		zap.String("mqtt_topic", cfg.Sleepace.Topic),
-		zap.String("data_streams", "iot:monitor:stream, iot:event:stream, iot:alarm:stream"),
+		zap.String("data_streams", "sleepace:monitor:stream, sleepace:event:stream, sleepace:alarm:stream"),
 	)
 	
 	// 创建服务

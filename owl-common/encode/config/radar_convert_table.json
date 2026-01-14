@@ -65,22 +65,22 @@
               "display_en": "Fall"
             },
             "9": {
-              "snomed_code": "109030009",
-              "snomed_display": "Lying position",
+              "snomed_code": "225698008",
+              "snomed_display": "Sitting up in bed",
               "category": "activity",
-              "display_en": "Lying position"
+              "display_en": "Sitting up in bed"
             },
             "10": {
-              "snomed_code": "129839007",
-              "snomed_display": "At risk for falls",
-              "category": "safety",
-              "display_en": "At risk for falls"
+              "snomed_code": "225698008",
+              "snomed_display": "Sitting up in bed",
+              "category": "activity",
+              "display_en": "Sitting up in bed:suspected"
             },
             "11": {
-              "snomed_code": "161898004",
-              "snomed_display": "Fall",
-              "category": "safety",
-              "display_en": "Fall"
+              "snomed_code": "225698008",
+              "snomed_display": "Sitting up in bed",
+              "category": "activity",
+              "display_en": "Sitting up in bed:confirmed"
             }
           }
         },
