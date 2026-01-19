@@ -19,13 +19,10 @@ type DevicesRepository interface {
 	// 更新
 	// Deprecated: 使用 UpdateDeviceFields 替代，支持区分"不更新"、"更新"、"删除"三种状态
 	UpdateDevice(ctx context.Context, tenantID, deviceID string, device *domain.Device) error
-	
+
 	// UpdateDeviceWithFlags 更新设备（带更新标志，用于区分字段是否在 payload 中）
 	UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID, updateBusinessAccess, updateMonitoringEnabled bool) error
 
-	// UpdateDeviceFields 更新设备（使用更新模型）
-	// 支持区分"不更新"、"更新"、"删除"三种状态
-	UpdateDeviceFields(ctx context.Context, tenantID, deviceID string, update *domain.DeviceUpdate) error
 
 	// 删除（物理删除，仅当设备未使用时）
 	DeleteDevice(ctx context.Context, tenantID, deviceID string) error
@@ -52,7 +49,7 @@ type DeviceInfo struct {
 type DeviceRelations struct {
 	DeviceID           string
 	DeviceName         string
-	DeviceInternalCode string // serial_number
+	DeviceInternalCode string // device_uid
 	DeviceType         int    // 从 device_store.device_type 转换
 	AddressID          string // unit_id
 	AddressName        string // unit_name
@@ -74,8 +71,22 @@ type DeviceFilters struct {
 	Status         []string // 设备状态过滤（online, offline, error）
 	BusinessAccess string   // 业务访问权限（pending, approved, rejected）
 	DeviceType     string   // 设备类型
-	SearchType     string   // 搜索类型（device_name, serial_number, uid）
+	SearchType     string   // 搜索类型（device_name, device_uid）
 	SearchKeyword  string   // 搜索关键词
 }
 
-
+// DeviceLocationInfo 设备位置信息
+type DeviceLocationInfo struct {
+	DeviceID     string  // 设备ID
+	TenantID     string  // 租户ID
+	BranchID     *string // 分支ID（可选）
+	BranchName   *string // 分支名称（可选）
+	BuildingID   *string // 建筑ID（可选）
+	BuildingName *string // 建筑名称（可选）
+	UnitID       *string // 单元ID（可选）
+	UnitName     *string // 单元名称（可选）
+	RoomID       *string // 房间ID（可选）
+	RoomName     *string // 房间名称（可选）
+	BedID        *string // 床位ID（可选）
+	BedName      *string // 床位名称（可选）
+}

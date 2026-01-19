@@ -292,8 +292,9 @@ func (r *PostgresConfigVersionsRepository) CreateConfigVersion(ctx context.Conte
 			current_entity_id,
 			config_data,
 			valid_from,
-			valid_to
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+			valid_to,
+			created_by
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
 		RETURNING version_id::text
 	`
 
@@ -307,9 +308,14 @@ func (r *PostgresConfigVersionsRepository) CreateConfigVersion(ctx context.Conte
 		validTo = *configVersion.ValidTo
 	}
 
+	var createdBy interface{}
+	if configVersion.CreatedBy != nil && *configVersion.CreatedBy != "" {
+		createdBy = *configVersion.CreatedBy
+	}
+
 	var versionID string
 	err = tx.QueryRowContext(ctx, insertQuery, tenantID, configVersion.ConfigType, configVersion.EntityID,
-		currentEntityID, string(configVersion.ConfigData), configVersion.ValidFrom, validTo).Scan(&versionID)
+		currentEntityID, string(configVersion.ConfigData), configVersion.ValidFrom, validTo, createdBy).Scan(&versionID)
 	if err != nil {
 		return "", fmt.Errorf("failed to create config version: %w", err)
 	}
@@ -320,6 +326,16 @@ func (r *PostgresConfigVersionsRepository) CreateConfigVersion(ctx context.Conte
 	}
 
 	return versionID, nil
+}
+
+// CreateConfigVersionWithUser 创建新版本（支持传入 created_by 用户信息）
+func (r *PostgresConfigVersionsRepository) CreateConfigVersionWithUser(ctx context.Context, tenantID string, configVersion *domain.ConfigVersion, createdBy string) (string, error) {
+	// 设置 created_by
+	if createdBy != "" {
+		configVersion.CreatedBy = &createdBy
+	}
+	// 调用原有的 CreateConfigVersion 方法
+	return r.CreateConfigVersion(ctx, tenantID, configVersion)
 }
 
 // UpdateConfigVersion 更新配置版本
@@ -372,120 +388,6 @@ func (r *PostgresConfigVersionsRepository) UpdateConfigVersion(ctx context.Conte
 	return nil
 }
 
-// UpdateConfigVersionFields 更新配置版本（使用更新模型）
-func (r *PostgresConfigVersionsRepository) UpdateConfigVersionFields(ctx context.Context, tenantID, versionID string, update *domain.ConfigVersionUpdate) error {
-	if tenantID == "" || versionID == "" {
-		return fmt.Errorf("tenant_id and version_id are required")
-	}
-	if update == nil {
-		return fmt.Errorf("update is required")
-	}
-
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	updates := []string{}
-	args := []any{tenantID, versionID}
-	argIdx := 3
-
-	// 处理 UpdateString
-	if update.CurrentEntityID != nil {
-		switch update.CurrentEntityID.Action {
-		case domain.UpdateActionUpdate:
-			updates = append(updates, fmt.Sprintf("current_entity_id = $%d", argIdx))
-			args = append(args, update.CurrentEntityID.Value)
-			argIdx++
-		case domain.UpdateActionDelete:
-			updates = append(updates, "current_entity_id = NULL")
-		case domain.UpdateActionKeep:
-			// 不更新，跳过
-		}
-	}
-
-	// 处理 UpdateJSON
-	if update.ConfigData != nil {
-		switch update.ConfigData.Action {
-		case domain.UpdateActionUpdate:
-			if len(update.ConfigData.Value) > 0 {
-				updates = append(updates, fmt.Sprintf("config_data = $%d::jsonb", argIdx))
-				args = append(args, string(update.ConfigData.Value))
-				argIdx++
-			} else {
-				// config_data 是 NOT NULL，不能设置为空，使用默认值
-				updates = append(updates, "config_data = '{}'::jsonb")
-			}
-		case domain.UpdateActionDelete:
-			// config_data 是 NOT NULL，不能删除，只能设置为默认值
-			updates = append(updates, "config_data = '{}'::jsonb")
-		case domain.UpdateActionKeep:
-			// 不更新，跳过
-		}
-	}
-
-	// 处理 UpdateTime
-	if update.ValidFrom != nil {
-		switch update.ValidFrom.Action {
-		case domain.UpdateActionUpdate:
-			if update.ValidFrom.Value != nil {
-				updates = append(updates, fmt.Sprintf("valid_from = $%d", argIdx))
-				args = append(args, *update.ValidFrom.Value)
-				argIdx++
-			} else {
-				return fmt.Errorf("valid_from cannot be empty (NOT NULL constraint)")
-			}
-		case domain.UpdateActionDelete:
-			// valid_from 是 NOT NULL，不能删除，只能更新
-			return fmt.Errorf("valid_from cannot be deleted (NOT NULL constraint)")
-		case domain.UpdateActionKeep:
-			// 不更新，跳过
-		}
-	}
-
-	if update.ValidTo != nil {
-		switch update.ValidTo.Action {
-		case domain.UpdateActionUpdate:
-			if update.ValidTo.Value != nil {
-				updates = append(updates, fmt.Sprintf("valid_to = $%d", argIdx))
-				args = append(args, *update.ValidTo.Value)
-				argIdx++
-			} else {
-				updates = append(updates, "valid_to = NULL")
-			}
-		case domain.UpdateActionDelete:
-			updates = append(updates, "valid_to = NULL")
-		case domain.UpdateActionKeep:
-			// 不更新，跳过
-		}
-	}
-
-	if len(updates) == 0 {
-		return fmt.Errorf("no fields to update")
-	}
-
-	query := fmt.Sprintf(`
-		UPDATE config_versions
-		SET %s
-		WHERE tenant_id = $1 AND version_id = $2
-	`, strings.Join(updates, ", "))
-
-	result, err := tx.ExecContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("failed to update config version: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return fmt.Errorf("config version not found")
-	}
-
-	return tx.Commit()
-}
 
 // DeleteConfigVersion 删除配置版本
 func (r *PostgresConfigVersionsRepository) DeleteConfigVersion(ctx context.Context, tenantID, versionID string) error {

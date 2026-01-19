@@ -29,22 +29,23 @@ func NewDeviceAlarmHandler(
 // 参数：
 //   - ctx: 上下文
 //   - tenantID: 租户ID
-//   - deviceID: 设备ID
-//   - topicType: 消息类型（"event" 或 "statistics"）
+//   - deviceUID: 设备UID（device_uid）
+//   - topicType: 消息类型（"event" 或 "stat"）
 //   - dataValue: 数据值（从 RadarDecoder 返回）
+//
 // 返回：
 //   - shouldPublish: 是否应该发布为报警
 //   - possibleAlarmTypes: 可能触发的报警类型列表（用于日志）
 func (h *DeviceAlarmHandler) ShouldPublishAsAlarm(
 	ctx context.Context,
-	tenantID, deviceID, topicType string,
+	tenantID, deviceUID, topicType string,
 	dataValue interface{},
 ) (shouldPublish bool, possibleAlarmTypes []string, err error) {
 	// 1. 根据 topicType 和 dataValue 确定可能触发的报警类型
 	switch topicType {
 	case "event":
 		possibleAlarmTypes = repository.GetPossibleAlarmTypesFromEvent(dataValue)
-	case "statistics":
+	case "stat":
 		possibleAlarmTypes = repository.GetPossibleAlarmTypesFromStat(dataValue)
 	default:
 		// monitor 或其他类型，不发布为报警
@@ -57,10 +58,10 @@ func (h *DeviceAlarmHandler) ShouldPublishAsAlarm(
 	}
 
 	// 3. 获取设备的报警使能配置
-	enablement, err := h.deviceRepo.GetAlarmEnablement(ctx, tenantID, deviceID)
+	enablement, err := h.deviceRepo.GetAlarmEnablement(ctx, tenantID, deviceUID)
 	if err != nil {
 		h.logger.Warn("Failed to get alarm enablement",
-			zap.String("device_id", deviceID),
+			zap.String("device_uid", deviceUID),
 			zap.String("tenant_id", tenantID),
 			zap.Error(err),
 		)
@@ -73,7 +74,7 @@ func (h *DeviceAlarmHandler) ShouldPublishAsAlarm(
 		if enablement[alarmType] {
 			// 至少有一个报警类型已启用，应该发布为报警
 			h.logger.Debug("Alarm type is enabled, should publish as alarm",
-				zap.String("device_id", deviceID),
+				zap.String("device_uid", deviceUID),
 				zap.String("alarm_type", alarmType),
 				zap.String("topic_type", topicType),
 			)
@@ -83,7 +84,7 @@ func (h *DeviceAlarmHandler) ShouldPublishAsAlarm(
 
 	// 5. 所有可能的报警类型都未启用，不发布为报警
 	h.logger.Debug("All possible alarm types are disabled, publish as normal event/stat",
-		zap.String("device_id", deviceID),
+		zap.String("device_uid", deviceUID),
 		zap.Strings("possible_alarm_types", possibleAlarmTypes),
 		zap.String("topic_type", topicType),
 	)

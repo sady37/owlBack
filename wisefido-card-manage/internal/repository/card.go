@@ -138,7 +138,7 @@ func (r *CardRepository) GetDevicesByBed(tenantID, bedID string) ([]card.DeviceI
 			u.unit_id,
 			d.monitoring_enabled
 		FROM devices d
-		JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		JOIN device_store ds ON d.device_id = ds.device_id
 		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
 		LEFT JOIN rooms r ON b.room_id = r.room_id AND b.tenant_id = r.tenant_id
 		LEFT JOIN units u ON r.unit_id = u.unit_id AND r.tenant_id = u.tenant_id
@@ -208,7 +208,7 @@ func (r *CardRepository) GetUnboundDevicesByUnit(tenantID, unitID string) ([]car
 			u.unit_id,
 			d.monitoring_enabled
 		FROM devices d
-		JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		JOIN device_store ds ON d.device_id = ds.device_id
 		LEFT JOIN rooms r ON d.bound_room_id = r.room_id AND d.tenant_id = r.tenant_id
 		LEFT JOIN units u ON r.unit_id = u.unit_id AND r.tenant_id = u.tenant_id
 		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id

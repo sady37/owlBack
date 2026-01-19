@@ -497,7 +497,7 @@ func (r *AlarmEventsRepository) ListAlarmEvents(ctx context.Context, tenantID st
 
 	if needDevicesJoin {
 		joins = append(joins, "LEFT JOIN devices d ON ae.device_id = d.device_id")
-		joins = append(joins, "LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id")
+		joins = append(joins, "LEFT JOIN device_store ds ON d.device_id = ds.device_id")
 
 		// 设备名称过滤
 		if filters.DeviceName != nil {
@@ -892,7 +892,7 @@ func (r *AlarmEventsRepository) CountAlarmEvents(ctx context.Context, tenantID s
 
 	if needDevicesJoin {
 		joins = append(joins, "LEFT JOIN devices d ON ae.device_id = d.device_id")
-		joins = append(joins, "LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id")
+		joins = append(joins, "LEFT JOIN device_store ds ON d.device_id = ds.device_id")
 
 		if filters.DeviceName != nil {
 			where = append(where, fmt.Sprintf("d.device_name ILIKE $%d", argN))

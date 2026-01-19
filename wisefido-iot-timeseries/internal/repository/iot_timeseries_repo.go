@@ -25,25 +25,12 @@ func NewIoTTimeSeriesRepository(db *sql.DB, logger *zap.Logger) *IoTTimeSeriesRe
 
 // Insert 插入数据到 iot_timeseries 表（窄表结构）
 // data: 从 Redis Stream 读取的 map[string]interface{} 数据（已通过 encode 函数转换）
-// 新表结构：id, uid, timestamp, data_type, data_values (JSONB)
+// 新表结构：id, device_id, timestamp, data_type, data_values (JSONB)
 func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, error) {
 	// 1. 提取基本字段
 	deviceID, _ := data["device_id"].(string)
 	if deviceID == "" {
 		return 0, fmt.Errorf("missing required field: device_id")
-	}
-
-	// 2. 获取设备 UID（从 device_store 获取）
-	_, _, _, uid, err := r.GetDeviceHardwareInfo(deviceID)
-	if err != nil {
-		r.logger.Warn("Failed to get device hardware info",
-			zap.String("device_id", deviceID),
-			zap.Error(err),
-		)
-		return 0, fmt.Errorf("failed to get device uid: %w", err)
-	}
-	if uid == nil || *uid == "" {
-		return 0, fmt.Errorf("device uid is empty for device_id: %s", deviceID)
 	}
 
 	// 3. 提取 timestamp
@@ -75,7 +62,7 @@ func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, er
 		case "monitor":
 			dataType = "monitor"
 		case "stat":
-			dataType = "statistics"
+		dataType = "stat" // 统一使用 "stat"
 		case "event":
 			dataType = "event"
 		case "alarm":
@@ -107,7 +94,7 @@ func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, er
 	// 6. 构建 INSERT 语句（窄表结构）
 	query := `
 		INSERT INTO iot_timeseries (
-			uid,
+			device_id,
 			timestamp,
 			data_type,
 			data_values
@@ -120,7 +107,7 @@ func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, er
 	var id int64
 	err = r.db.QueryRow(
 		query,
-		*uid,              // $1 (设备 UID)
+		deviceID,          // $1 (设备 ID)
 		timestamp,         // $2 (数据时间戳)
 		dataType,          // $3 (数据类型：monitor, statistics, event, alarm)
 		dataValuesJSON,    // $4 (所有数据值存储在 JSONB 中)
@@ -133,7 +120,6 @@ func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, er
 	r.logger.Debug("IoT timeseries data inserted",
 		zap.Int64("id", id),
 		zap.String("device_id", deviceID),
-		zap.String("uid", *uid),
 		zap.String("data_type", dataType),
 	)
 
@@ -182,9 +168,9 @@ func (r *IoTTimeSeriesRepository) GetDeviceHardwareInfo(deviceID string) (device
 			ds.device_type,
 			ds.device_model,
 			ds.serial_number,
-			ds.uid
+			ds.device_uid
 		FROM devices d
-		JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE d.device_id = $1
 		LIMIT 1
 	`

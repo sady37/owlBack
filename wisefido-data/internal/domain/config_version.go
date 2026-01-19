@@ -29,5 +29,9 @@ type ConfigVersion struct {
 	// 版本生效时间区间：[valid_from, valid_to)
 	ValidFrom time.Time  `db:"valid_from"` // TIMESTAMPTZ, NOT NULL - 配置开始生效时间
 	ValidTo   *time.Time `db:"valid_to"`   // TIMESTAMPTZ, nullable - 配置失效时间（NULL表示当前仍生效）
+
+	// 审计字段
+	CreatedBy   *string `db:"created_by"`   // UUID, nullable - 创建该版本的用户ID（用于审计）
+	ChangeReason string `db:"change_reason"` // TEXT, nullable - 变更原因（可选，用于审计）
 }
 

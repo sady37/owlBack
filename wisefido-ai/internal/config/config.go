@@ -2,15 +2,15 @@ package config
 
 import (
 	"os"
-	"strconv"
 	"owl-common/config"
+	"strconv"
 )
 
 // Config 报警服务配置
 type Config struct {
 	Database config.DatabaseConfig
 	Redis    config.RedisConfig
-	
+
 	// 报警服务特定配置
 	Alarm struct {
 		// Redis 缓存配置
@@ -22,18 +22,18 @@ type Config struct {
 			AlarmTTL          int    // 报警数据 TTL（秒），默认 30秒
 			StateKeyPrefix    string // 报警状态缓存键前缀，如 "alarm:state:"
 		}
-		
+
 		// 轮询配置（如果使用轮询方式）
 		PollInterval int // 轮询间隔（秒），默认 10秒
-		
+
 		// 评估配置
 		Evaluation struct {
 			BatchSize int // 批量评估卡片数量，默认 10
 		}
-		
+
 		// IoT Stream 配置（直接订阅设备级别的 streams）
 		IoTStream struct {
-			Enabled       bool   // 是否启用 IoT Stream 消费（事件驱动）
+			Enabled bool // 是否启用 IoT Stream 消费（事件驱动）
 			// Radar 设备 streams
 			RadarMonitor string // radar:monitor:stream
 			RadarStat    string // radar:stat:stream
@@ -49,7 +49,7 @@ type Config struct {
 			BatchSize     int64  // 批量处理大小
 		}
 	}
-	
+
 	Log struct {
 		Level  string
 		Format string
@@ -59,7 +59,7 @@ type Config struct {
 // Load 加载配置
 func Load() (*Config, error) {
 	cfg := &Config{}
-	
+
 	// 从环境变量加载（默认值）
 	cfg.Database.Host = getEnv("DB_HOST", "localhost")
 	// 默认端口使用环境变量，如果没有则使用 5433（与 start_owlback.sh 保持一致）
@@ -76,11 +76,11 @@ func Load() (*Config, error) {
 	cfg.Database.Password = getEnv("DB_PASSWORD", "postgres")
 	cfg.Database.Database = getEnv("DB_NAME", "owlrd")
 	cfg.Database.SSLMode = getEnv("DB_SSLMODE", "disable")
-	
+
 	cfg.Redis.Addr = getEnv("REDIS_ADDR", "localhost:6379")
 	cfg.Redis.Password = getEnv("REDIS_PASSWORD", "")
 	cfg.Redis.DB = 0
-	
+
 	// 报警服务配置
 	cfg.Alarm.Cache.RealtimeKeyPrefix = getEnv("CACHE_REALTIME_PREFIX", "vital-focus:card:")
 	cfg.Alarm.Cache.RealtimeSuffix = ":realtime"
@@ -88,14 +88,14 @@ func Load() (*Config, error) {
 	cfg.Alarm.Cache.AlarmSuffix = ":alarms"
 	cfg.Alarm.Cache.AlarmTTL = 30 // 30秒
 	cfg.Alarm.Cache.StateKeyPrefix = getEnv("CACHE_STATE_PREFIX", "alarm:state:")
-	
+
 	cfg.Alarm.PollInterval = 10 // 10秒轮询一次
 	cfg.Alarm.Evaluation.BatchSize = 10
-	
+
 	// IoT Stream 配置 - 设备级别 streams
 	cfg.Alarm.IoTStream.Enabled = getEnv("AI_IOT_STREAM_ENABLED", "true") == "true"
-	cfg.Alarm.IoTStream.RadarMonitor = getEnv("AI_STREAM_RADAR_MONITOR", "radar:monitor:stream")
-	cfg.Alarm.IoTStream.RadarStat = getEnv("AI_STREAM_RADAR_STAT", "radar:stat:stream")
+	cfg.Alarm.IoTStream.RadarMonitor = getEnv("AI_STREAM_RADAR_MONITOR", "iot:monitor:stream")
+	cfg.Alarm.IoTStream.RadarStat = getEnv("AI_STREAM_RADAR_STAT", "iot:stat:stream")
 	cfg.Alarm.IoTStream.RadarEvent = getEnv("AI_STREAM_RADAR_EVENT", "radar:event:stream")
 	cfg.Alarm.IoTStream.RadarAlarm = getEnv("AI_STREAM_RADAR_ALARM", "radar:alarm:stream")
 	cfg.Alarm.IoTStream.SleepaceMonitor = getEnv("AI_STREAM_SLEEPACE_MONITOR", "sleepace:monitor:stream")
@@ -109,10 +109,10 @@ func Load() (*Config, error) {
 	} else {
 		cfg.Alarm.IoTStream.BatchSize = 10
 	}
-	
+
 	cfg.Log.Level = getEnv("LOG_LEVEL", "info")
 	cfg.Log.Format = getEnv("LOG_FORMAT", "json")
-	
+
 	return cfg, nil
 }
 
@@ -122,4 +122,3 @@ func getEnv(key, defaultValue string) string {
 	}
 	return defaultValue
 }
-

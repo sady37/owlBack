@@ -13,13 +13,7 @@ type AlarmDeviceRepository interface {
 
 	// UpsertAlarmDevice 创建或更新设备的告警配置
 	// 注意：UNIQUE(device_id)，使用UPSERT语义
-	// Deprecated: 使用 UpsertAlarmDeviceFields 替代，支持区分"不更新"、"更新"、"删除"三种状态
 	UpsertAlarmDevice(ctx context.Context, tenantID, deviceID string, alarmDevice *domain.AlarmDevice) error
-
-	// UpsertAlarmDeviceFields 创建或更新设备的告警配置（使用更新模型）
-	// 注意：UNIQUE(device_id)，使用UPSERT语义
-	// 支持区分"不更新"、"更新"、"删除"三种状态
-	UpsertAlarmDeviceFields(ctx context.Context, tenantID, deviceID string, update *domain.AlarmDeviceUpdate) error
 
 	// DeleteAlarmDevice 删除设备的告警配置
 	DeleteAlarmDevice(ctx context.Context, tenantID, deviceID string) error

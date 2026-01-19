@@ -224,14 +224,8 @@ func payloadToDevice(payload map[string]any) *domain.Device {
 	if v, ok := payload["device_name"].(string); ok {
 		device.DeviceName = v
 	}
-	if v, ok := payload["device_store_id"].(string); ok && v != "" {
-		device.DeviceStoreID = sql.NullString{String: v, Valid: true}
-	}
-	if v, ok := payload["serial_number"].(string); ok && v != "" {
-		device.SerialNumber = sql.NullString{String: v, Valid: true}
-	}
-	if v, ok := payload["uid"].(string); ok && v != "" {
-		device.UID = sql.NullString{String: v, Valid: true}
+	if v, ok := payload["device_uid"].(string); ok && v != "" {
+		device.DeviceUID = v
 	}
 	// Handle bound_room_id: support both string and null values
 	if val, exists := payload["bound_room_id"]; exists {

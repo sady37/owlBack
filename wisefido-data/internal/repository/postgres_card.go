@@ -138,7 +138,7 @@ func (r *PostgresCardRepository) GetDevicesByBed(tenantID, bedID string) ([]card
 			u.unit_id,
 			d.monitoring_enabled
 		FROM devices d
-		JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		JOIN device_store ds ON d.device_uid = ds.device_uid
 		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
 		LEFT JOIN rooms r ON b.room_id = r.room_id AND b.tenant_id = r.tenant_id
 		LEFT JOIN units u ON r.unit_id = u.unit_id AND r.tenant_id = u.tenant_id
@@ -208,7 +208,7 @@ func (r *PostgresCardRepository) GetUnboundDevicesByUnit(tenantID, unitID string
 			u.unit_id,
 			d.monitoring_enabled
 		FROM devices d
-		JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		JOIN device_store ds ON d.device_uid = ds.device_uid
 		LEFT JOIN rooms r ON d.bound_room_id = r.room_id AND d.tenant_id = r.tenant_id
 		LEFT JOIN units u ON r.unit_id = u.unit_id AND r.tenant_id = u.tenant_id
 		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id

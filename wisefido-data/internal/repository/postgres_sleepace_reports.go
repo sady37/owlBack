@@ -212,18 +212,18 @@ func (r *PostgresSleepaceReportsRepository) GetValidDates(ctx context.Context, t
 }
 
 // GetDeviceIDByDeviceCode 根据 device_code 获取 device_id
-// device_code 等价于 devices.serial_number 或 devices.uid
+// device_code 等价于 devices.device_uid
 func (r *PostgresSleepaceReportsRepository) GetDeviceIDByDeviceCode(ctx context.Context, tenantID, deviceCode string) (string, error) {
 	if tenantID == "" || deviceCode == "" {
 		return "", fmt.Errorf("tenant_id and device_code are required")
 	}
 
-	// 通过 serial_number 或 uid 匹配 device_code
+	// 通过 device_uid 匹配 device_code
 	query := `
 		SELECT device_id::text
 		FROM devices
 		WHERE tenant_id = $1::uuid
-		  AND (serial_number = $2 OR uid = $2)
+		  AND device_uid = $2
 		  AND status <> 'disabled'
 		LIMIT 1
 	`
@@ -232,7 +232,7 @@ func (r *PostgresSleepaceReportsRepository) GetDeviceIDByDeviceCode(ctx context.
 	err := r.db.QueryRowContext(ctx, query, tenantID, deviceCode).Scan(&deviceID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("device not found: device_code=%s (not found in devices.serial_number or devices.uid)", deviceCode)
+			return "", fmt.Errorf("device not found: device_code=%s (not found in devices.device_uid)", deviceCode)
 		}
 		return "", fmt.Errorf("failed to get device_id by device_code: %w", err)
 	}

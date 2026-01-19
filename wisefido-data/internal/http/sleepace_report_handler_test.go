@@ -74,10 +74,10 @@ func setupSleepaceTestData(t *testing.T, db *sql.DB, tenantID string) (deviceID,
 	// 5. 创建设备（device）
 	deviceID = "00000000-0000-0000-0000-000000000501"
 	_, err = db.ExecContext(ctx,
-		`INSERT INTO devices (device_id, tenant_id, device_name, serial_number, status, business_access, bound_bed_id)
+		`INSERT INTO devices (device_id, tenant_id, device_uid, device_name, status, business_access, bound_bed_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 ON CONFLICT (device_id) DO UPDATE SET device_name = EXCLUDED.device_name`,
-		deviceID, tenantID, "Test Sleepace Device", "SN123456", "online", "approved", bedID,
+		deviceID, tenantID, "SN123456", "Test Sleepace Device", "online", "approved", bedID,
 	)
 	if err != nil {
 		t.Fatalf("Failed to create test device: %v", err)
@@ -423,10 +423,10 @@ func TestSleepaceReportHandler_DeviceWithoutResident_Allowed(t *testing.T) {
 	// 创建设备（不关联住户）
 	deviceID := "00000000-0000-0000-0000-000000000501"
 	_, err := db.ExecContext(context.Background(),
-		`INSERT INTO devices (device_id, tenant_id, device_name, serial_number, status, business_access)
+		`INSERT INTO devices (device_id, tenant_id, device_uid, device_name, status, business_access)
 		 VALUES ($1, $2, $3, $4, $5, $6)
 		 ON CONFLICT (device_id) DO UPDATE SET device_name = EXCLUDED.device_name`,
-		deviceID, tenantID, "Test Device Without Resident", "SN999999", "online", "approved",
+		deviceID, tenantID, "SN999999", "Test Device Without Resident", "online", "approved",
 	)
 	if err != nil {
 		t.Fatalf("Failed to create test device: %v", err)

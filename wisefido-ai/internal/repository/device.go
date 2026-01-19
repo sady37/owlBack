@@ -62,7 +62,7 @@ func (r *DeviceRepository) GetDeviceBindingInfo(ctx context.Context, tenantID, d
 				NULL
 			) as room_id
 		FROM devices d
-		JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE d.device_id = $1 AND d.tenant_id = $2
 	`
 	
@@ -116,7 +116,7 @@ func (r *DeviceRepository) GetDevicesByRoom(ctx context.Context, tenantID, roomI
 			r.unit_id,
 			$2 as room_id
 		FROM devices d
-		JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		JOIN device_store ds ON d.device_id = ds.device_id
 		JOIN rooms r ON (
 			d.bound_room_id = r.room_id
 			OR d.bound_bed_id IN (
@@ -182,7 +182,7 @@ func (r *DeviceRepository) GetDevicesByBed(ctx context.Context, tenantID, bedID 
 			r.unit_id,
 			r.room_id
 		FROM devices d
-		JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		JOIN device_store ds ON d.device_id = ds.device_id
 		JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
 		JOIN rooms r ON b.room_id = r.room_id AND b.tenant_id = r.tenant_id
 		WHERE d.tenant_id = $1

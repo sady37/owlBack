@@ -17,7 +17,7 @@ import (
 type ConfigChangeEvent struct {
 	EventType string `json:"event_type"` // "alarm_device_updated" 或 "alarm_cloud_updated"
 	TenantID  string `json:"tenant_id"`
-	DeviceID  string `json:"device_id,omitempty"` // 仅当 event_type 为 "alarm_device_updated" 时存在
+	DeviceUID string `json:"device_uid,omitempty"` // 仅当 event_type 为 "alarm_device_updated" 时存在
 	Timestamp int64  `json:"timestamp"`
 }
 
@@ -154,7 +154,7 @@ func (c *ConfigConsumer) processMessage(ctx context.Context, msg rediscommon.Str
 	c.logger.Debug("Processing config change event",
 		zap.String("event_type", event.EventType),
 		zap.String("tenant_id", event.TenantID),
-		zap.String("device_id", event.DeviceID),
+		zap.String("device_uid", event.DeviceUID),
 	)
 
 	// 根据事件类型处理
@@ -178,8 +178,8 @@ func (c *ConfigConsumer) processMessage(ctx context.Context, msg rediscommon.Str
 
 // handleAlarmDeviceUpdated 处理设备报警配置更新事件
 func (c *ConfigConsumer) handleAlarmDeviceUpdated(ctx context.Context, event ConfigChangeEvent) error {
-	if event.DeviceID == "" {
-		c.logger.Warn("alarm_device_updated event missing device_id",
+	if event.DeviceUID == "" {
+		c.logger.Warn("alarm_device_updated event missing device_uid",
 			zap.String("tenant_id", event.TenantID),
 		)
 		return nil
@@ -187,12 +187,12 @@ func (c *ConfigConsumer) handleAlarmDeviceUpdated(ctx context.Context, event Con
 
 	c.logger.Info("Alarm device config updated, clearing cache",
 		zap.String("tenant_id", event.TenantID),
-		zap.String("device_id", event.DeviceID),
+		zap.String("device_uid", event.DeviceUID),
 	)
 
 	// 清除该设备的报警使能缓存
 	// 下次查询时会重新从数据库加载最新配置
-	c.deviceRepo.ClearAlarmEnablementCache(event.TenantID, event.DeviceID)
+	c.deviceRepo.ClearAlarmEnablementCache(event.TenantID, event.DeviceUID)
 
 	return nil
 }

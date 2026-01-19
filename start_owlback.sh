@@ -185,7 +185,7 @@ check_port 8082 "wisefido-card-manage"
 check_port 8083 "wisefido-iot-timeseries"
 
 # 设置默认环境变量
-export DB_HOST="${DB_HOST:-localhost}"
+export DB_HOST="${DB_HOST:-127.0.0.1}"
 export DB_PORT="${DB_PORT:-5433}"
 export DB_USER="${DB_USER:-postgres}"
 export DB_PASSWORD="${DB_PASSWORD:-postgres}"
@@ -363,7 +363,7 @@ cd "$OWLBACK_DIR/wisefido-iot-timeseries"
 # 设置环境变量（与 start-iot-timeseries.sh 保持一致）
 export HTTP_ADDR=:8083
 export DB_HOST="${DB_HOST:-127.0.0.1}"
-export DB_PORT="${DB_PORT:-5432}"
+export DB_PORT="${DB_PORT:-5433}"
 export DB_USER="${DB_USER:-postgres}"
 export DB_PASSWORD="${DB_PASSWORD:-postgres}"
 export DB_NAME="${DB_NAME:-owlrd}"
@@ -371,14 +371,26 @@ export DB_SSLMODE="${DB_SSLMODE:-disable}"
 export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
 export REDIS_PASSWORD="${REDIS_PASSWORD:-TeLunSu-36kr}"
 export REDIS_DB=0
-# Stream 配置 - 设备级别 streams（已迁移，保留旧变量以兼容）
-export STREAM_RADAR_MONITOR=radar:monitor:stream
-export STREAM_RADAR_STAT=radar:stat:stream
-export STREAM_RADAR_EVENT=radar:event:stream
-export STREAM_RADAR_ALARM=radar:alarm:stream
-export STREAM_SLEEPACE_MONITOR=sleepace:monitor:stream
-export STREAM_SLEEPACE_EVENT=sleepace:event:stream
-export STREAM_SLEEPACE_ALARM=sleepace:alarm:stream
+# Stream 配置 - 统一 IoT streams（所有设备类型）
+# 根据 RADAR_REDIS_STREAM_FORMAT_STANDARD.md 标准
+# 所有设备类型使用统一的 iot: 前缀
+# 注意：统一使用 "stat"，Redis Stream 名称是 iot:stat:stream
+export STREAM_IOT_MONITOR=${STREAM_IOT_MONITOR:-iot:monitor:stream}
+export STREAM_IOT_STAT=${STREAM_IOT_STAT:-iot:stat:stream}
+export STREAM_IOT_EVENT=${STREAM_IOT_EVENT:-iot:event:stream}
+export STREAM_IOT_ALARM=${STREAM_IOT_ALARM:-iot:alarm:stream}
+export STREAM_IOT_AUTH=${STREAM_IOT_AUTH:-iot:auth:stream}
+# 兼容性配置（旧名称，指向统一的 stream）
+export STREAM_RADAR_MONITOR=${STREAM_RADAR_MONITOR:-iot:monitor:stream}
+export STREAM_RADAR_STAT=${STREAM_RADAR_STAT:-iot:stat:stream}
+export STREAM_RADAR_EVENT=${STREAM_RADAR_EVENT:-iot:event:stream}
+export STREAM_RADAR_ALARM=${STREAM_RADAR_ALARM:-iot:alarm:stream}
+export STREAM_RADAR_AUTH=${STREAM_RADAR_AUTH:-iot:auth:stream}
+export STREAM_SLEEPACE_MONITOR=${STREAM_SLEEPACE_MONITOR:-iot:monitor:stream}
+export STREAM_SLEEPACE_STAT=${STREAM_SLEEPACE_STAT:-iot:stat:stream}
+export STREAM_SLEEPACE_EVENT=${STREAM_SLEEPACE_EVENT:-iot:event:stream}
+export STREAM_SLEEPACE_ALARM=${STREAM_SLEEPACE_ALARM:-iot:alarm:stream}
+export STREAM_SLEEPACE_AUTH=${STREAM_SLEEPACE_AUTH:-iot:auth:stream}
 # 注意：不再使用 iot:data:stream
 export CONSUMER_GROUP=iot-timeseries-group
 export CONSUMER_NAME=iot-timeseries-1
@@ -401,7 +413,7 @@ cd "$OWLBACK_DIR/wisefido-ai"
 # 设置环境变量（与 start-test.sh 保持一致）
 export TENANT_ID="${TENANT_ID:-bb045e6b-7bc2-4e59-af2e-d8b1adc77f2c}"
 export DB_HOST="${DB_HOST:-127.0.0.1}"
-export DB_PORT="${DB_PORT:-5432}"
+export DB_PORT="${DB_PORT:-5433}"
 export DB_USER="${DB_USER:-postgres}"
 export DB_PASSWORD="${DB_PASSWORD:-postgres}"
 export DB_NAME="${DB_NAME:-owlrd}"

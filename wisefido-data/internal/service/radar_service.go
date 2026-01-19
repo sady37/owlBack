@@ -47,11 +47,11 @@ func (s *RadarService) GetDeviceUID(ctx context.Context, tenantID, deviceID stri
 		return "", fmt.Errorf("failed to get device: %w", err)
 	}
 	
-	if !device.UID.Valid || device.UID.String == "" {
+	if device.DeviceUID == "" {
 		return "", fmt.Errorf("device UID not found for device_id: %s", deviceID)
 	}
 	
-	return device.UID.String, nil
+	return device.DeviceUID, nil
 }
 
 // GetDeviceProperties 读取设备属性

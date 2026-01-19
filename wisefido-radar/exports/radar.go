@@ -70,7 +70,7 @@ func NewRadarService(cfg *config.Config, logger *zap.Logger) (*RadarService, err
 	mqttConsumer.SetSubscriptionManager(subscriptionManager)
 
 	// 创建认证服务（在 http 包中，避免循环依赖）
-	authService := http.NewAuthService(cfg, db, deviceRepo, logger)
+	authService := http.NewAuthService(cfg, db, deviceRepo, redisClient, logger)
 
 	// 创建 HTTP 路由和处理器
 	router := http.NewRouter(logger)

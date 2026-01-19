@@ -164,7 +164,7 @@ func (s *cardService) calculateStatusDuration(
 	// 2.1 Sleepad offline/error
 	if !sOnline {
 		// Sleepad 离线，检查 Bed 上是否绑定了 Radar
-		hasRadar := s.hasRadarOnBed(ctx, card)
+		hasRadar := s.hasRadarInBed(ctx, card)
 		if !hasRadar {
 			// 没有 Radar，重置为 ""
 			return ""
@@ -233,9 +233,9 @@ func (s *cardService) calculateDuration(bedStatusTimestamp int64) string {
 	return fmt.Sprintf("%02d:%02d", hours, minutes)
 }
 
-// hasRadarOnBed 检查 Bed 上是否绑定了 Radar
+// hasRadarInBed 检查 Bed 上是否绑定了 Radar
 // 通过 devices 表查询 bed_id 绑定的 Radar 设备
-func (s *cardService) hasRadarOnBed(ctx context.Context, card *models.VitalFocusCard) bool {
+func (s *cardService) hasRadarInBed(ctx context.Context, card *models.VitalFocusCard) bool {
 	if card.BedID == "" {
 		return false
 	}
@@ -243,7 +243,7 @@ func (s *cardService) hasRadarOnBed(ctx context.Context, card *models.VitalFocus
 	query := `
 		SELECT COUNT(*) > 0
 		FROM devices d
-		JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		JOIN device_store ds ON d.device_uid = ds.device_uid
 		WHERE d.bound_bed_id = $1
 		  AND d.tenant_id = $2
 		  AND ds.device_type = 'Radar'
@@ -277,7 +277,7 @@ func (s *cardService) getLastBedStatusFromDevices(
 	deviceQuery := `
 		SELECT d.device_id, ds.device_type
 		FROM devices d
-		JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		JOIN device_store ds ON d.device_uid = ds.device_uid
 		WHERE d.bound_bed_id = $1
 		  AND d.tenant_id = $2
 		  AND (ds.device_type ILIKE '%sleep%' OR ds.device_type = 'Radar')
@@ -364,4 +364,3 @@ func (s *cardService) getLastBedStatusFromDevices(
 
 	return sleepadResult, radarResult, nil
 }
-

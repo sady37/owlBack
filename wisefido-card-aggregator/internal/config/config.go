@@ -24,7 +24,7 @@ type Config struct {
 
 		// IoT Stream 配置（直接订阅设备级别的 streams）
 		IoTStream struct {
-			Enabled       bool   // 是否启用 IoT Stream 消费（事件驱动）
+			Enabled bool // 是否启用 IoT Stream 消费（事件驱动）
 			// Radar 设备 streams
 			RadarMonitor string // radar:monitor:stream
 			RadarStat    string // radar:stat:stream
@@ -87,9 +87,9 @@ func Load() (*Config, error) {
 
 	// IoT Stream 配置 - 设备级别 streams
 	cfg.Aggregator.IoTStream.Enabled = getEnv("CARD_IOT_STREAM_ENABLED", "true") == "true"
-	cfg.Aggregator.IoTStream.RadarMonitor = getEnv("CARD_STREAM_RADAR_MONITOR", "radar:monitor:stream")
-	cfg.Aggregator.IoTStream.RadarStat = getEnv("CARD_STREAM_RADAR_STAT", "radar:stat:stream")
-	cfg.Aggregator.IoTStream.RadarEvent = getEnv("CARD_STREAM_RADAR_EVENT", "radar:event:stream")
+	cfg.Aggregator.IoTStream.RadarMonitor = getEnv("CARD_STREAM_RADAR_MONITOR", "iot:monitor:stream")
+	cfg.Aggregator.IoTStream.RadarStat = getEnv("CARD_STREAM_RADAR_STAT", "iot:stat:stream")
+	cfg.Aggregator.IoTStream.RadarEvent = getEnv("CARD_STREAM_RADAR_EVENT", "iot:event:stream")
 	cfg.Aggregator.IoTStream.RadarAlarm = getEnv("CARD_STREAM_RADAR_ALARM", "radar:alarm:stream")
 	cfg.Aggregator.IoTStream.SleepaceMonitor = getEnv("CARD_STREAM_SLEEPACE_MONITOR", "sleepace:monitor:stream")
 	cfg.Aggregator.IoTStream.SleepaceEvent = getEnv("CARD_STREAM_SLEEPACE_EVENT", "sleepace:event:stream")

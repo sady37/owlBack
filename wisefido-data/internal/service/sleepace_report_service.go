@@ -136,7 +136,7 @@ type GetSleepaceReportDatesResponse struct {
 type DownloadReportRequest struct {
 	TenantID   string // 必填
 	DeviceID   string // 必填（设备 ID）
-	DeviceCode string // 必填（设备编码，对应 devices.serial_number 或 devices.uid）
+	DeviceCode string // 必填（设备编码，对应 devices.device_uid）
 	StartTime  int64  // 开始时间（Unix 时间戳，秒）
 	EndTime    int64  // 结束时间（Unix 时间戳，秒）
 }

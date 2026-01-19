@@ -12,13 +12,15 @@ import (
 
 // StreamMessage Redis Streams 消息
 type StreamMessage struct {
-	Stream   string
-	ID       string
-	Values   map[string]interface{}
+	Stream string
+	ID     string
+	Values map[string]interface{}
 }
 
 // PublishToStream 发布消息到 Redis Streams
-func PublishToStream(ctx context.Context, client *redis.Client, stream string, values map[string]interface{}) (string, error) {
+// maxLen: Stream 最大长度，超过此长度时自动删除最旧的消息。0 表示不限制长度
+// retentionSeconds: 数据保留秒数，超过此秒数的消息会被自动删除。0 表示不限制时间（需要 Redis 6.2+）
+func PublishToStream(ctx context.Context, client *redis.Client, stream string, values map[string]interface{}, maxLen int64, retentionSeconds int) (string, error) {
 	// 将 values 转换为 Redis Streams 格式
 	streamValues := make(map[string]interface{})
 	for k, v := range values {
@@ -56,17 +58,37 @@ func PublishToStream(ctx context.Context, client *redis.Client, stream string, v
 		streamValues[k] = strValue
 	}
 
-	// 使用 XADD 命令添加消息
-	id, err := client.XAdd(ctx, &redis.XAddArgs{
+	// 构建 XAddArgs
+	args := &redis.XAddArgs{
 		Stream: stream,
 		Values: streamValues,
-	}).Result()
-	
+	}
+
+	// 如果设置了 maxLen，限制 Stream 长度（使用 ~ 近似值，性能更好）
+	if maxLen > 0 {
+		args.MaxLen = maxLen
+		args.Approx = true // 使用近似值，性能更好
+	}
+
+	// 如果设置了 retentionSeconds，基于时间清理旧消息（需要 Redis 6.2+）
+	if retentionSeconds > 0 {
+		// 计算最小 ID：当前时间 - 保留秒数（转换为毫秒时间戳）
+		cutoffTime := time.Now().Add(-time.Duration(retentionSeconds) * time.Second)
+		minID := fmt.Sprintf("%d-0", cutoffTime.UnixMilli())
+		args.MinID = minID
+		args.Approx = true // 使用近似值，性能更好
+	}
+
+	// 使用 XADD 命令添加消息
+	id, err := client.XAdd(ctx, args).Result()
+
 	return id, err
 }
 
 // PublishJSONToStream 发布 JSON 消息到 Redis Streams
-func PublishJSONToStream(ctx context.Context, client *redis.Client, stream string, data interface{}) (string, error) {
+// maxLen: Stream 最大长度，超过此长度时自动删除最旧的消息。0 表示不限制长度
+// retentionSeconds: 数据保留秒数，超过此秒数的消息会被自动删除。0 表示不限制时间（需要 Redis 6.2+）
+func PublishJSONToStream(ctx context.Context, client *redis.Client, stream string, data interface{}, maxLen int64, retentionSeconds int) (string, error) {
 	// 序列化为 JSON
 	jsonBytes, err := json.Marshal(data)
 	if err != nil {
@@ -77,7 +99,7 @@ func PublishJSONToStream(ctx context.Context, client *redis.Client, stream strin
 	return PublishToStream(ctx, client, stream, map[string]interface{}{
 		"data":      string(jsonBytes),
 		"timestamp": time.Now().Unix(),
-	})
+	}, maxLen, retentionSeconds)
 }
 
 // ReadFromStream 从 Redis Streams 读取消息
@@ -118,7 +140,7 @@ func CreateConsumerGroup(ctx context.Context, client *redis.Client, stream strin
 	// 注意：redis/v8 的 XGroupCreate 不支持 MkStream 参数
 	// 如果 stream 不存在，先创建 stream（通过发送一条临时消息）
 	err := client.XGroupCreate(ctx, stream, groupName, "0").Err()
-	
+
 	// 如果错误是 "BUSYGROUP"，说明组已存在，这是正常的
 	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
 		// 检查是否是 Stream 不存在的错误（多种可能的错误信息）
@@ -127,7 +149,7 @@ func CreateConsumerGroup(ctx context.Context, client *redis.Client, stream strin
 			strings.Contains(errStr, "no such key") ||
 			strings.Contains(errStr, "NOGROUP") ||
 			strings.Contains(errStr, "ERR The XGROUP subcommand requires")
-		
+
 		if isStreamNotExist {
 			// Stream 不存在，先创建一个临时消息来创建 stream
 			msgID, createErr := client.XAdd(ctx, &redis.XAddArgs{
@@ -148,7 +170,6 @@ func CreateConsumerGroup(ctx context.Context, client *redis.Client, stream strin
 			return err
 		}
 	}
-	
+
 	return nil
 }
-

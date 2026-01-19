@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
+	"owl-common/alarm"
 	"wisefido-data/internal/service"
 
 	"go.uber.org/zap"
@@ -62,8 +64,8 @@ func (h *DeviceMonitorSettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// 验证 deviceID 不为空且不包含 "/"
-	if deviceID == "" || strings.Contains(deviceID, "/") {
+	// 验证 deviceID 不为空且不包含 "/"，且不能是 "undefined" 或 "null"
+	if deviceID == "" || strings.Contains(deviceID, "/") || deviceID == "undefined" || deviceID == "null" {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -106,7 +108,7 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseW
 		return
 	}
 
-	writeJSON(w, http.StatusOK, Ok(resp.Settings))
+	writeJSON(w, http.StatusOK, Ok(resp.AlarmItems))
 }
 
 // UpdateDeviceMonitorSettings 更新设备监控配置
@@ -124,11 +126,35 @@ func (h *DeviceMonitorSettingsHandler) UpdateDeviceMonitorSettings(w http.Respon
 		return
 	}
 
+	// 从 payload 解析 alarm_items 数组
+	alarmItemsRaw, ok := payload["alarm_items"]
+	if !ok {
+		writeJSON(w, http.StatusOK, Fail("alarm_items is required"))
+		return
+	}
+
+	// 转换为 JSON 再解析为 []alarm.AlarmItem
+	alarmItemsJSON, err := json.Marshal(alarmItemsRaw)
+	if err != nil {
+		writeJSON(w, http.StatusOK, Fail("failed to marshal alarm_items: "+err.Error()))
+		return
+	}
+
+	var alarmItems []alarm.AlarmItem
+	if err := json.Unmarshal(alarmItemsJSON, &alarmItems); err != nil {
+		writeJSON(w, http.StatusOK, Fail("failed to unmarshal alarm_items: "+err.Error()))
+		return
+	}
+
+	// 获取 UserID
+	userID := r.Header.Get("X-User-Id")
+
 	req := service.UpdateDeviceMonitorSettingsRequest{
 		TenantID:   tenantID,
 		DeviceID:   deviceID,
 		DeviceType: deviceType,
-		Settings:   payload,
+		UserID:     userID,
+		AlarmItems: alarmItems,
 	}
 
 	resp, err := h.deviceMonitorSettingsService.UpdateDeviceMonitorSettings(ctx, req)
@@ -171,5 +197,5 @@ func (h *DeviceMonitorSettingsHandler) GetDefaultDeviceMonitorSettings(w http.Re
 		return
 	}
 
-	writeJSON(w, http.StatusOK, Ok(resp.Settings))
+	writeJSON(w, http.StatusOK, Ok(resp.AlarmItems))
 }

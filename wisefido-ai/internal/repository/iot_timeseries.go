@@ -171,7 +171,7 @@ func (r *IoTTimeSeriesRepository) GetBedAreaID(
 		SELECT DISTINCT its.area_id
 		FROM iot_timeseries its
 		JOIN devices d ON its.device_id = d.device_id
-		JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE its.tenant_id = $1
 		  AND its.device_id = $2
 		  AND its.data_type = 'observation'

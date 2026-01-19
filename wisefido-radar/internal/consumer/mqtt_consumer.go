@@ -5,15 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"wisefido-radar/internal/alarm"
 	"wisefido-radar/internal/config"
 	"wisefido-radar/internal/repository"
 	"wisefido-radar/pkg/mqtt"
 
-	"owl-common/encode"
 	mqttcommon "owl-common/mqtt"
 	rediscommon "owl-common/redis"
+	"wisefido-radar/internal/encode"
 
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -22,6 +23,7 @@ import (
 // MQTTConsumer MQTT消息消费者
 // 根据协议文档 3.3.3 节，订阅设备发布的 6 个主题
 type MQTTConsumer struct {
+	deviceCache         *sync.Map // 设备缓存（key: uid, value: *DeviceWithLocation）
 	config              *config.Config
 	mqttClient          *mqttcommon.Client
 	redisClient         *redis.Client
@@ -45,6 +47,7 @@ func NewMQTTConsumer(
 	alarmHandler := alarm.NewDeviceAlarmHandler(deviceRepo, logger)
 
 	return &MQTTConsumer{
+		deviceCache:  &sync.Map{},
 		config:       cfg,
 		mqttClient:   mqttClient,
 		redisClient:  redisClient,
@@ -117,6 +120,209 @@ func (c *MQTTConsumer) Start(ctx context.Context) error {
 	return nil
 }
 
+// ClearDeviceCache 清除指定设备的缓存
+func (c *MQTTConsumer) ClearDeviceCache(tenantID, deviceID string) {
+	if tenantID == "" || deviceID == "" {
+		return
+	}
+
+	// 需要根据 deviceID 找到对应的 UID
+	var uid string
+	var found bool
+
+	c.deviceCache.Range(func(key, value interface{}) bool {
+		deviceWithLocation := value.(*DeviceWithLocation)
+		if deviceWithLocation.Device.DeviceID == deviceID && deviceWithLocation.Device.TenantID == tenantID {
+			uid = key.(string)
+			found = true
+			return false // 停止遍历
+		}
+		return true // 继续遍历
+	})
+
+	if !found {
+		c.logger.Warn("Device not found in cache, cannot clear",
+			zap.String("tenant_id", tenantID),
+			zap.String("device_id", deviceID),
+		)
+		return
+	}
+
+	// 清除缓存
+	c.deviceCache.Delete(uid)
+	c.logger.Info("Cleared device cache",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_id", deviceID),
+		zap.String("uid", uid),
+	)
+}
+
+// RefreshDeviceCache 原子更新设备缓存
+func (c *MQTTConsumer) RefreshDeviceCache(tenantID, deviceID string) {
+	if tenantID == "" || deviceID == "" {
+		return
+	}
+
+	// 异步原子更新
+	go c.refreshDeviceCacheAsync(tenantID, deviceID)
+}
+
+// refreshDeviceCacheAsync 异步原子更新设备缓存
+func (c *MQTTConsumer) refreshDeviceCacheAsync(tenantID, deviceID string) {
+	// 1. 根据 deviceID 找到对应的 UID
+	var uid string
+
+	c.deviceCache.Range(func(key, value interface{}) bool {
+		deviceWithLocation := value.(*DeviceWithLocation)
+		if deviceWithLocation.Device.DeviceID == deviceID && deviceWithLocation.Device.TenantID == tenantID {
+			uid = key.(string)
+			return false // 停止遍历
+		}
+		return true // 继续遍历
+	})
+
+	if uid == "" {
+		// 设备不在缓存中，不需要刷新
+		c.logger.Debug("Device not in cache, skipping refresh",
+			zap.String("tenant_id", tenantID),
+			zap.String("device_id", deviceID),
+		)
+		return
+	}
+
+	// 2. 直接调用现有的 getOrCreateDeviceWithLocation 函数
+	// 它会自动查询最新信息并更新缓存
+	_, _, err := c.getOrCreateDeviceWithLocation(uid, "config:refresh")
+	if err != nil {
+		c.logger.Error("Failed to refresh device cache",
+			zap.String("device_id", deviceID),
+			zap.String("uid", uid),
+			zap.Error(err),
+		)
+		return
+	}
+
+	c.logger.Info("Refreshed device cache",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_id", deviceID),
+		zap.String("uid", uid),
+	)
+}
+
+// ClearDeviceCacheByUID 根据 UID 清除设备缓存
+func (c *MQTTConsumer) ClearDeviceCacheByUID(uid string) {
+	if uid == "" {
+		return
+	}
+
+	c.deviceCache.Delete(uid)
+	c.logger.Info("Cleared device cache by UID",
+		zap.String("uid", uid),
+	)
+}
+
+// ClearCacheForUnit 清除指定 unit 下所有设备的缓存
+func (c *MQTTConsumer) ClearCacheForUnit(tenantID, unitID string) {
+	if tenantID == "" || unitID == "" {
+		return
+	}
+
+	// 遍历缓存，清除属于该 unit 的设备
+	devicesCleared := 0
+	c.deviceCache.Range(func(key, value interface{}) bool {
+		deviceWithLocation := value.(*DeviceWithLocation)
+		if deviceWithLocation.Device.TenantID == tenantID &&
+			deviceWithLocation.LocationInfo != nil &&
+			deviceWithLocation.LocationInfo.UnitID != nil &&
+			*deviceWithLocation.LocationInfo.UnitID == unitID {
+			uid := key.(string)
+			c.deviceCache.Delete(uid)
+			devicesCleared++
+		}
+		return true // 继续遍历
+	})
+
+	c.logger.Info("Cleared cache for unit",
+		zap.String("tenant_id", tenantID),
+		zap.String("unit_id", unitID),
+		zap.Int("devices_cleared", devicesCleared),
+	)
+}
+
+// ClearCacheForBranch 清除指定 branch 下所有设备的缓存
+func (c *MQTTConsumer) ClearCacheForBranch(tenantID, branchID string) {
+	if tenantID == "" || branchID == "" {
+		return
+	}
+
+	// 遍历缓存，清除属于该 branch 的设备
+	devicesCleared := 0
+	c.deviceCache.Range(func(key, value interface{}) bool {
+		deviceWithLocation := value.(*DeviceWithLocation)
+		if deviceWithLocation.Device.TenantID == tenantID &&
+			deviceWithLocation.LocationInfo != nil &&
+			deviceWithLocation.LocationInfo.BranchID != nil &&
+			*deviceWithLocation.LocationInfo.BranchID == branchID {
+			uid := key.(string)
+			c.deviceCache.Delete(uid)
+			devicesCleared++
+		}
+		return true // 继续遍历
+	})
+
+	c.logger.Info("Cleared cache for branch",
+		zap.String("tenant_id", tenantID),
+		zap.String("branch_id", branchID),
+		zap.Int("devices_cleared", devicesCleared),
+	)
+}
+
+// ClearCacheForBuilding 清除指定 building 下所有设备的缓存
+func (c *MQTTConsumer) ClearCacheForBuilding(tenantID, buildingID string) {
+	if tenantID == "" || buildingID == "" {
+		return
+	}
+
+	// 遍历缓存，清除属于该 building 的设备
+	devicesCleared := 0
+	c.deviceCache.Range(func(key, value interface{}) bool {
+		deviceWithLocation := value.(*DeviceWithLocation)
+		if deviceWithLocation.Device.TenantID == tenantID &&
+			deviceWithLocation.LocationInfo != nil &&
+			deviceWithLocation.LocationInfo.BuildingID != nil &&
+			*deviceWithLocation.LocationInfo.BuildingID == buildingID {
+			uid := key.(string)
+			c.deviceCache.Delete(uid)
+			devicesCleared++
+		}
+		return true // 继续遍历
+	})
+
+	c.logger.Info("Cleared cache for building",
+		zap.String("tenant_id", tenantID),
+		zap.String("building_id", buildingID),
+		zap.Int("devices_cleared", devicesCleared),
+	)
+}
+
+// FindUnitForRoomOrBed 根据 room_id 或 bed_id 查找对应的 unit_id
+// 注意：这个方法需要查询数据库，应该谨慎使用
+func (c *MQTTConsumer) FindUnitForRoomOrBed(tenantID, addressID, addressType string) (string, error) {
+	if tenantID == "" || addressID == "" || addressType == "" {
+		return "", fmt.Errorf("missing required parameters")
+	}
+
+	// 这里需要调用 deviceRepo 的方法来查询
+	// 暂时返回空，实际实现需要查询数据库
+	c.logger.Warn("FindUnitForRoomOrBed not implemented yet",
+		zap.String("tenant_id", tenantID),
+		zap.String("address_id", addressID),
+		zap.String("address_type", addressType),
+	)
+
+	return "", nil
+}
+
 // Stop 停止消费者
 func (c *MQTTConsumer) Stop(ctx context.Context) error {
 	cfg := c.config.Radar.DeviceMQTT
@@ -178,36 +384,14 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 		return fmt.Errorf("failed to unmarshal message: %w", err)
 	}
 
-	// 4. 查询设备信息（如果不存在，尝试从 device_store 自动创建）
-	device, err := c.deviceRepo.GetDeviceByUID(uid)
-	isFirstConnection := false
+	// 4. 获取设备信息（带位置信息）
+	deviceWithLocation, isFirstConnection, err := c.getOrCreateDeviceWithLocation(uid, topic)
 	if err != nil {
-		// 设备不存在，尝试从 device_store 自动创建
-		device, err = c.deviceRepo.GetOrCreateDeviceFromStore(context.Background(), uid, topic)
-		if err != nil {
-			c.logger.Warn("Device not found and cannot be created from device_store",
-				zap.String("uid", uid),
-				zap.String("mqtt_topic", topic),
-				zap.Error(err),
-			)
-			return fmt.Errorf("device not found: %s", uid)
-		}
-		// 设备已从 device_store 自动创建
-		c.logger.Info("Device auto-created from device_store on MQTT connection",
-			zap.String("device_id", device.DeviceID),
-			zap.String("uid", uid),
-			zap.String("mqtt_topic", topic),
-		)
-		isFirstConnection = true
-	} else {
-		// 设备已存在，检查是否是首次收到消息（通过检查订阅状态）
-		// 如果设备存在但没有订阅记录，也视为首次连接
-		subscriptionKey := fmt.Sprintf("radar:subscription:%s", uid)
-		exists, err := c.redisClient.Exists(context.Background(), subscriptionKey).Result()
-		if err == nil && exists == 0 {
-			isFirstConnection = true
-		}
+		return err
 	}
+
+	device := deviceWithLocation.Device
+	locationInfo := deviceWithLocation.LocationInfo
 
 	// 设备首次连接，自动订阅实时数据
 	if isFirstConnection && c.config.Radar.Subscription.AutoSubscribe && c.subscriptionManager != nil {
@@ -273,11 +457,10 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 	// 构建基础数据（直接展开原始数据，不保存在 raw_data 中）
 	data := make(map[string]interface{})
 
-	// 添加元数据
+	// 添加元数据（用于RadarDecoder，但不会出现在最终输出中）
 	data["device_id"] = device.DeviceID
 	data["tenant_id"] = device.TenantID
-	data["serial_number"] = device.SerialNumber
-	data["uid"] = device.UID
+	data["device_uid"] = device.DeviceUID
 	data["device_type"] = "Radar"
 	data["topic_type"] = string(topicInfo.Type)
 	data["timestamp"] = time.Now().Unix()
@@ -302,18 +485,16 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 
 	// 8. 构建完整的输出对象（包含元数据 + data_value）
 	topicTypeStr := string(topicInfo.Type)
-	if topicTypeStr == "stat" {
-		topicTypeStr = "statistics" // 标准格式使用 "statistics"
-	}
+	// 统一使用 "stat"，不再转换为 "statistics"
 
-	// 9. 对于 event 和 statistics 类型，检查是否应该发布为报警
+	// 9. 对于 event 和 stat 类型，检查是否应该发布为报警
 	// 注意：monitor 类型不检查报警，直接发布到 monitor stream
 	finalTopicType := topicTypeStr
 	if topicInfo.Type == mqtt.TopicTypeEvent || topicInfo.Type == mqtt.TopicTypeStat {
 		shouldPublishAsAlarm, possibleAlarmTypes, err := c.alarmHandler.ShouldPublishAsAlarm(
 			context.Background(),
 			device.TenantID,
-			device.DeviceID,
+			device.DeviceUID,
 			topicTypeStr,
 			dataValue,
 		)
@@ -334,46 +515,86 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 		}
 	}
 
-	// 10. 构建完整的输出对象（包含所有元数据字段）
-	// 字段顺序：device_id → device_type → tenant_id → timestamp → topic_type → data_value → 位置信息
-	// 注意：category 字段保留在 data_value 内部，不提取到顶层，避免冗余
-	encodedData := map[string]interface{}{
-		"device_id":   getStringOrNull(device.DeviceID),
-		"device_type": "Radar",
-		"tenant_id":   getStringOrNull(device.TenantID),
-		"timestamp":   time.Now().Unix(),
-		"topic_type":  finalTopicType,
-		"data_value":  dataValue,
-		// 所有可选字段都设置，不存在则为 null
-		"branch_id":   nil,
-		"building_id": nil,
-		"unit_id":     nil,
-		"room_id":     getStringOrNullPtr(device.BoundRoomID),
-		"bed_id":      getStringOrNullPtr(device.BoundBedID),
-	}
-	// 注意：branch_id, building_id, unit_id 需要从关联表查询，当前 Device 结构体不包含这些字段
-	// 暂时设置为 null，后续可以通过 JOIN 查询获取
-
-	// 11. 根据最终 topic_type 确定输出 stream
+	// 10. 处理多条数据分开发送
+	// 根据标准文档 3.3：如果同时收到多条 track 或 vital 或数据，应该分开发送
+	// 对于monitor和stat类型，必须将每个数据项单独发送
 	streamName := c.getOutputStreamNameForTopicTypeStr(finalTopicType)
 
-	// 13. 发布到 Redis Streams
-	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData)
-	if err != nil {
-		c.logger.Error("Failed to publish to Redis Streams",
-			zap.String("stream", streamName),
-			zap.Error(err),
-		)
-		return fmt.Errorf("failed to publish to stream: %w", err)
+	// 将dataValue统一转换为数组格式，确保每条数据单独发送
+	var itemsToSend []map[string]interface{}
+
+	switch v := dataValue.(type) {
+	case []interface{}:
+		// dataValue 是数组，转换为map数组
+		for _, item := range v {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				itemsToSend = append(itemsToSend, itemMap)
+			}
+		}
+
+	case []map[string]interface{}:
+		// dataValue 是 map 数组，直接使用
+		itemsToSend = v
+
+	case map[string]interface{}:
+		// dataValue 是单个对象，转换为数组
+		itemsToSend = []map[string]interface{}{v}
+
+	default:
+		// 其他类型，尝试转换为map
+		if itemMap, ok := dataValue.(map[string]interface{}); ok {
+			itemsToSend = []map[string]interface{}{itemMap}
+		} else {
+			c.logger.Warn("Unknown dataValue type, cannot split into items",
+				zap.String("uid", uid),
+				zap.String("topic_type", finalTopicType),
+			)
+			return fmt.Errorf("unknown dataValue type: %T", dataValue)
+		}
 	}
 
-	c.logger.Info("Published radar data to Redis Streams",
+	// 分开发送每个数据项
+	for i, itemMap := range itemsToSend {
+		// 提取当前对象的 category
+		itemCategory := ""
+		if cat, ok := itemMap["category"].(string); ok {
+			itemCategory = cat
+		}
+
+		// 构建单个对象的 encodedData
+		// buildEncodedData 内部会调用 cleanDataValue 清理 itemMap 中的不应该出现的字段
+		encodedData := c.buildEncodedData(device, locationInfo, finalTopicType, itemCategory, itemMap)
+
+		// 发布到 Redis Streams（使用该 stream 的配置）
+		maxLen, retentionSeconds := c.config.GetStreamConfig(streamName)
+		streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData, maxLen, retentionSeconds)
+		if err != nil {
+			c.logger.Error("Failed to publish item to Redis Streams",
+				zap.String("stream", streamName),
+				zap.Int("index", i),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		c.logger.Debug("Published radar data item to Redis Streams",
+			zap.String("device_id", device.DeviceID),
+			zap.String("uid", uid),
+			zap.String("final_topic_type", finalTopicType),
+			zap.String("category", itemCategory),
+			zap.Int("index", i),
+			zap.String("stream", streamName),
+			zap.String("stream_id", streamID),
+		)
+	}
+
+	c.logger.Info("Published radar data items to Redis Streams",
 		zap.String("device_id", device.DeviceID),
 		zap.String("uid", uid),
 		zap.String("original_topic_type", string(topicInfo.Type)),
 		zap.String("final_topic_type", finalTopicType),
 		zap.String("stream", streamName),
-		zap.String("stream_id", streamID),
+		zap.Int("items_count", len(itemsToSend)),
 	)
 
 	return nil
@@ -432,11 +653,10 @@ func (c *MQTTConsumer) handleLegacyMessage(topic string, payload []byte) error {
 	// 4. 构建基础数据（直接展开原始数据）
 	data := make(map[string]interface{})
 
-	// 添加元数据
+	// 添加元数据（用于RadarDecoder，但不会出现在最终输出中）
 	data["device_id"] = device.DeviceID
 	data["tenant_id"] = device.TenantID
-	data["serial_number"] = device.SerialNumber
-	data["uid"] = device.UID
+	data["device_uid"] = device.DeviceUID
 	data["device_type"] = "Radar"
 	data["topic_type"] = "legacy"
 	data["timestamp"] = time.Now().Unix()
@@ -457,61 +677,180 @@ func (c *MQTTConsumer) handleLegacyMessage(topic string, payload []byte) error {
 		return fmt.Errorf("failed to decode legacy radar data: %w", err)
 	}
 
-	// 6. 提取 category 到顶层（从 data_value 中提取）
-	// 7. 构建完整的输出对象（包含元数据 + data_value）
-	// 字段顺序：device_id → device_type → tenant_id → timestamp → topic_type → data_value → 位置信息
-	// 注意：category 字段保留在 data_value 内部，不提取到顶层，避免冗余
-	encodedData := map[string]interface{}{
-		"device_id":   device.DeviceID,
-		"device_type": "Radar",
-		"tenant_id":   device.TenantID,
-		"timestamp":   time.Now().Unix(),
-		"topic_type":  "legacy",
-		"data_value":  dataValue,
-	}
+	// 6. 处理多条数据分开发送（legacy 消息也支持）
+	streamName := "iot:data:stream"
 
-	// 添加设备绑定信息字段（如果存在）
-	if device.BoundBedID != nil && *device.BoundBedID != "" {
-		encodedData["bed_id"] = *device.BoundBedID
-	}
-	if device.BoundRoomID != nil && *device.BoundRoomID != "" {
-		encodedData["room_id"] = *device.BoundRoomID
-	}
+	// 判断 dataValue 的类型
+	switch v := dataValue.(type) {
+	case []interface{}:
+		// dataValue 是数组，需要分开发送
+		for i, item := range v {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				// 提取当前对象的 category
+				itemCategory := ""
+				if cat, ok := itemMap["category"].(string); ok {
+					itemCategory = cat
+				}
 
-	// 7. 发布到 Redis Streams（legacy 消息发布到 radar:data:stream）
-	// 注意：legacy 消息格式不明确，发布到 radar:data:stream 作为默认流
-	streamName := "radar:data:stream"
-	streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData)
-	if err != nil {
-		c.logger.Error("Failed to publish to Redis Streams",
+				// 构建单个对象的 encodedData
+				encodedData := map[string]interface{}{
+					"device_uid":  getStringOrNull(device.DeviceUID),
+					"device_type": "Radar",
+					"tenant_id":   getStringOrNull(device.TenantID),
+					"timestamp":   time.Now().Unix(),
+					"topic_type":  "legacy",
+					"category":    itemCategory,
+					"data_value":  itemMap,
+				}
+
+				// 添加设备绑定信息字段（如果存在）
+				if device.BoundBedID != nil && *device.BoundBedID != "" {
+					encodedData["bed_id"] = *device.BoundBedID
+				}
+				if device.BoundRoomID != nil && *device.BoundRoomID != "" {
+					encodedData["room_id"] = *device.BoundRoomID
+				}
+
+				// 发布到 Redis Streams
+				maxLen, retentionSeconds := c.config.GetStreamConfig(streamName)
+				streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData, maxLen, retentionSeconds)
+				if err != nil {
+					c.logger.Error("Failed to publish legacy array item to Redis Streams",
+						zap.String("stream", streamName),
+						zap.Int("index", i),
+						zap.Error(err),
+					)
+					continue
+				}
+
+				c.logger.Debug("Published legacy radar data array item to Redis Streams",
+					zap.String("device_id", device.DeviceID),
+					zap.String("category", itemCategory),
+					zap.Int("index", i),
+					zap.String("stream", streamName),
+					zap.String("stream_id", streamID),
+				)
+			}
+		}
+
+		c.logger.Info("Published legacy radar data array to Redis Streams",
+			zap.String("device_id", device.DeviceID),
 			zap.String("stream", streamName),
-			zap.Error(err),
+			zap.Int("items_count", len(v)),
 		)
-		return fmt.Errorf("failed to publish to stream: %w", err)
-	}
 
-	c.logger.Info("Published legacy radar data to Redis Streams",
-		zap.String("device_id", device.DeviceID),
-		zap.String("stream", streamName),
-		zap.String("stream_id", streamID),
-	)
+	case []map[string]interface{}:
+		// dataValue 是 map 数组，需要分开发送
+		for i, itemMap := range v {
+			// 提取当前对象的 category
+			itemCategory := ""
+			if cat, ok := itemMap["category"].(string); ok {
+				itemCategory = cat
+			}
+
+			// 构建单个对象的 encodedData
+			encodedData := map[string]interface{}{
+				"device_uid":  getStringOrNull(device.DeviceUID),
+				"device_type": "Radar",
+				"tenant_id":   getStringOrNull(device.TenantID),
+				"timestamp":   time.Now().Unix(),
+				"topic_type":  "legacy",
+				"category":    itemCategory,
+				"data_value":  itemMap,
+			}
+
+			// 添加设备绑定信息字段（如果存在）
+			if device.BoundBedID != nil && *device.BoundBedID != "" {
+				encodedData["bed_id"] = *device.BoundBedID
+			}
+			if device.BoundRoomID != nil && *device.BoundRoomID != "" {
+				encodedData["room_id"] = *device.BoundRoomID
+			}
+
+			// 发布到 Redis Streams（使用配置的 MaxLen 限制 Stream 长度）
+			maxLen, retentionSeconds := c.config.GetStreamConfig(streamName)
+			streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData, maxLen, retentionSeconds)
+			if err != nil {
+				c.logger.Error("Failed to publish legacy map array item to Redis Streams",
+					zap.String("stream", streamName),
+					zap.Int("index", i),
+					zap.Error(err),
+				)
+				continue
+			}
+
+			c.logger.Debug("Published legacy radar data map array item to Redis Streams",
+				zap.String("device_id", device.DeviceID),
+				zap.String("category", itemCategory),
+				zap.Int("index", i),
+				zap.String("stream", streamName),
+				zap.String("stream_id", streamID),
+			)
+		}
+
+		c.logger.Info("Published legacy radar data map array to Redis Streams",
+			zap.String("device_id", device.DeviceID),
+			zap.String("stream", streamName),
+			zap.Int("items_count", len(v)),
+		)
+
+	default:
+		// dataValue 是单个对象，直接发送
+		// 提取 category 字段到顶层
+		topLevelCategory := extractCategory(dataValue)
+
+		encodedData := map[string]interface{}{
+			"device_uid":  getStringOrNull(device.DeviceUID),
+			"device_type": "Radar",
+			"tenant_id":   getStringOrNull(device.TenantID),
+			"timestamp":   time.Now().Unix(),
+			"topic_type":  "legacy",
+			"category":    topLevelCategory,
+			"data_value":  dataValue,
+		}
+
+		// 添加设备绑定信息字段（如果存在）
+		if device.BoundBedID != nil && *device.BoundBedID != "" {
+			encodedData["bed_id"] = *device.BoundBedID
+		}
+		if device.BoundRoomID != nil && *device.BoundRoomID != "" {
+			encodedData["room_id"] = *device.BoundRoomID
+		}
+
+		// 发布到 Redis Streams（使用该 stream 的配置）
+		maxLen, retentionSeconds := c.config.GetStreamConfig(streamName)
+		streamID, err := rediscommon.PublishJSONToStream(context.Background(), c.redisClient, streamName, encodedData, maxLen, retentionSeconds)
+		if err != nil {
+			c.logger.Error("Failed to publish legacy data to Redis Streams",
+				zap.String("stream", streamName),
+				zap.Error(err),
+			)
+			return fmt.Errorf("failed to publish to stream: %w", err)
+		}
+
+		c.logger.Info("Published legacy radar data to Redis Streams",
+			zap.String("device_id", device.DeviceID),
+			zap.String("stream", streamName),
+			zap.String("stream_id", streamID),
+		)
+	}
 
 	return nil
 }
 
-// getOutputStreamName 根据主题类型获取输出 Redis Stream 名称（使用 radar: 前缀）
+// getOutputStreamName 根据主题类型获取输出 Redis Stream 名称（使用 iot: 前缀）
 func (c *MQTTConsumer) getOutputStreamName(topicType mqtt.TopicType) string {
 	switch topicType {
 	case mqtt.TopicTypeMonitor:
-		return "radar:monitor:stream" // 实时数据
+		return "iot:monitor:stream" // 实时数据
 	case mqtt.TopicTypeStat:
-		return "radar:stat:stream" // 统计数据
+		return "iot:stat:stream" // 统计数据
 	case mqtt.TopicTypeEvent:
-		return "radar:event:stream" // 事件/日志
+		return "iot:event:stream" // 事件/日志
 	case mqtt.TopicTypeAlarm:
-		return "radar:alarm:stream" // 告警
+		return "iot:alarm:stream" // 告警
 	default:
-		return "radar:data:stream" // 默认
+		return "iot:data:stream" // 默认
 	}
 }
 
@@ -520,15 +859,15 @@ func (c *MQTTConsumer) getOutputStreamName(topicType mqtt.TopicType) string {
 func (c *MQTTConsumer) getOutputStreamNameForTopicTypeStr(topicTypeStr string) string {
 	switch topicTypeStr {
 	case "monitor":
-		return "radar:monitor:stream"
-	case "statistics", "stat":
-		return "radar:stat:stream"
+		return "iot:monitor:stream"
+	case "stat":
+		return "iot:stat:stream"
 	case "event":
-		return "radar:event:stream"
+		return "iot:event:stream"
 	case "alarm":
-		return "radar:alarm:stream"
+		return "iot:alarm:stream"
 	default:
-		return "radar:data:stream"
+		return "iot:data:stream"
 	}
 }
 
@@ -548,23 +887,258 @@ func getStringOrNullPtr(s *string) interface{} {
 	return *s
 }
 
+// extractCategory 从 data_value 中提取 category 字段到顶层
+func extractCategory(dataValue interface{}) string {
+	switch v := dataValue.(type) {
+	case map[string]interface{}:
+		if category, ok := v["category"].(string); ok {
+			return category
+		}
+	case []interface{}:
+		// 如果是数组，取第一个元素的category
+		if len(v) > 0 {
+			if firstItem, ok := v[0].(map[string]interface{}); ok {
+				if category, ok := firstItem["category"].(string); ok {
+					return category
+				}
+			}
+		}
+	case []map[string]interface{}:
+		// 如果是map数组，取第一个元素的category
+		if len(v) > 0 {
+			if category, ok := v[0]["category"].(string); ok {
+				return category
+			}
+		}
+	}
+	return ""
+}
+
 // getStreamNameForTopicType 根据主题类型获取 Redis Stream 名称（保留用于兼容性，但不再使用）
 // 注意：属性响应和功能响应不发布到 Streams，而是存储到 Redis 用于 request-response
 func (c *MQTTConsumer) getStreamNameForTopicType(topicType mqtt.TopicType) string {
 	switch topicType {
 	case mqtt.TopicTypeProp:
-		return "radar:prop:stream" // 属性响应（不发布到 Streams）
+		return "iot:prop:stream" // 属性响应（不发布到 Streams）
 	case mqtt.TopicTypeMonitor:
-		return "radar:monitor:stream" // 实时数据
+		return "iot:monitor:stream" // 实时数据
 	case mqtt.TopicTypeFunc:
-		return "radar:func:stream" // 功能响应（不发布到 Streams）
+		return "iot:func:stream" // 功能响应（不发布到 Streams）
 	case mqtt.TopicTypeStat:
-		return "radar:stat:stream" // 统计数据
+		return "iot:stat:stream" // 统计数据
 	case mqtt.TopicTypeEvent:
-		return "radar:event:stream" // 事件/日志
+		return "iot:event:stream" // 事件/日志
 	case mqtt.TopicTypeAlarm:
-		return "radar:alarm:stream" // 告警
+		return "iot:alarm:stream" // 告警
 	default:
-		return "radar:data:stream" // 默认
+		return "iot:data:stream" // 默认
+	}
+}
+
+// DeviceWithLocation 带位置信息的设备结构
+type DeviceWithLocation struct {
+	Device       *repository.Device
+	LocationInfo *repository.DeviceLocationInfo
+	LastUpdated  time.Time
+}
+
+// getOrCreateDeviceWithLocation 获取或创建设备（带位置信息）
+// 只使用device_uid，不需要device_id, serial, uid
+// 注意：locationInfo 包含 name 字段和硬件信息字段，但不应传递到 dataValue 中
+func (c *MQTTConsumer) getOrCreateDeviceWithLocation(uid, topic string) (*DeviceWithLocation, bool, error) {
+	// 1. 尝试从缓存获取
+	if cached, ok := c.deviceCache.Load(uid); ok {
+		deviceWithLocation := cached.(*DeviceWithLocation)
+		return deviceWithLocation, false, nil
+	}
+
+	// 2. 缓存未命中，查询数据库（只使用device_uid）
+	device, err := c.deviceRepo.GetDeviceByUID(uid)
+	isFirstConnection := false
+	if err != nil {
+		// 设备不存在，尝试从 device_store 自动创建（只使用device_uid）
+		device, err = c.deviceRepo.GetOrCreateDeviceFromStore(context.Background(), uid, topic)
+		if err != nil {
+			c.logger.Warn("Device not found and cannot be created from device_store",
+				zap.String("uid", uid),
+				zap.String("mqtt_topic", topic),
+				zap.Error(err),
+			)
+			return nil, false, fmt.Errorf("device not found: %s", uid)
+		}
+		// 设备已从 device_store 自动创建
+		c.logger.Info("Device auto-created from device_store on MQTT connection",
+			zap.String("device_id", device.DeviceID),
+			zap.String("uid", uid),
+			zap.String("mqtt_topic", topic),
+		)
+		isFirstConnection = true
+	} else {
+		// 设备已存在，检查是否是首次收到消息（通过检查订阅状态）
+		// 如果设备存在但没有订阅记录，也视为首次连接
+		subscriptionKey := fmt.Sprintf("radar:subscription:%s", uid)
+		exists, err := c.redisClient.Exists(context.Background(), subscriptionKey).Result()
+		if err == nil && exists == 0 {
+			isFirstConnection = true
+		}
+	}
+
+	// 3. 查询设备位置信息（包括address信息）
+	// 注意：locationInfo 包含 name 字段和硬件信息字段，但不应传递到 dataValue 中
+	locationInfo, err := c.deviceRepo.GetDeviceLocationInfoByIdentifier(context.Background(), uid)
+	if err != nil {
+		c.logger.Warn("Failed to get device location info",
+			zap.String("uid", uid),
+			zap.Error(err),
+		)
+		// 创建空的 LocationInfo，避免空指针
+		locationInfo = &repository.DeviceLocationInfo{}
+	}
+
+	// 4. 创建带位置信息的设备对象
+	deviceWithLocation := &DeviceWithLocation{
+		Device:       device,
+		LocationInfo: locationInfo,
+		LastUpdated:  time.Now(),
+	}
+
+	// 5. 存入缓存
+	c.deviceCache.Store(uid, deviceWithLocation)
+
+	c.logger.Debug("Cached device with location info",
+		zap.String("uid", uid),
+		zap.String("device_id", device.DeviceID),
+		zap.Bool("has_location", locationInfo != nil),
+	)
+
+	return deviceWithLocation, isFirstConnection, nil
+}
+
+// buildEncodedData 构建包含完整位置信息的输出数据
+// 符合 RADAR_REDIS_STREAM_FORMAT_STANDARD.md 标准格式
+// 字段顺序：device_uid → device_type → tenant_id → timestamp → topic_type → category → data_value → 位置信息
+// dataValue: 来自 RadarDecoder 的返回值，类型为 interface{}（可能是 map[string]interface{} 或 []map[string]interface{}）
+// 注意：dataValue 可能包含元数据字段（device_id, comm_mode, device_model等），需要清理
+func (c *MQTTConsumer) buildEncodedData(
+	device *repository.Device,
+	locationInfo *repository.DeviceLocationInfo,
+	topicType, category string,
+	dataValue interface{},
+) map[string]interface{} {
+	// 如果category为空，根据topic_type设置默认值
+	finalCategory := category
+	if finalCategory == "" {
+		switch topicType {
+		case "monitor":
+			finalCategory = "track"
+		case "stat":
+			finalCategory = "track" // 默认使用track，如果data_value有sleep则会被覆盖
+		case "event":
+			finalCategory = "other"
+		case "alarm":
+			finalCategory = "alarm"
+		default:
+			finalCategory = "unknown"
+		}
+	}
+
+	// 清理dataValue（itemMap），移除不应该出现的字段
+	// 注意：itemMap 可能包含元数据字段（device_id, comm_mode, device_model等），需要清理
+	cleanedDataValue := c.cleanDataValue(dataValue)
+
+	// 构建标准格式数据，严格按照字段顺序
+	// 字段顺序：device_id → device_uid → device_type → tenant_id → timestamp → topic_type → category → data_value → 位置信息
+	// 使用有序map确保字段顺序（Go的map在JSON序列化时可能无序，但按顺序添加可以保证大部分情况下有序）
+	encodedData := make(map[string]interface{}, 13)
+
+	// 必需字段（按标准顺序添加）
+	encodedData["device_id"] = getStringOrNull(device.DeviceID)
+	encodedData["device_uid"] = getStringOrNull(device.DeviceUID)
+
+	// device_type：优先使用locationInfo中的，否则使用默认值
+	deviceType := "Radar"
+	if locationInfo != nil && locationInfo.DeviceType != nil {
+		deviceType = *locationInfo.DeviceType
+	}
+	encodedData["device_type"] = deviceType
+
+	encodedData["tenant_id"] = getStringOrNull(device.TenantID)
+	encodedData["timestamp"] = time.Now().Unix()
+	encodedData["topic_type"] = topicType
+	encodedData["category"] = finalCategory
+	encodedData["data_value"] = cleanedDataValue
+
+	// 位置信息字段（按标准顺序：branch_id → building_id → unit_id → room_id → bed_id）
+	// 只包含ID字段，不包含name字段和硬件信息字段
+	if locationInfo != nil {
+		encodedData["branch_id"] = locationInfo.BranchID
+		encodedData["building_id"] = locationInfo.BuildingID
+		encodedData["unit_id"] = locationInfo.UnitID
+		encodedData["room_id"] = locationInfo.RoomID
+		encodedData["bed_id"] = locationInfo.BedID
+	} else {
+		// 如果位置信息为空，使用设备绑定信息
+		encodedData["branch_id"] = nil
+		encodedData["building_id"] = nil
+		encodedData["unit_id"] = nil
+		encodedData["room_id"] = getStringOrNullPtr(device.BoundRoomID)
+		encodedData["bed_id"] = getStringOrNullPtr(device.BoundBedID)
+	}
+
+	return encodedData
+}
+
+// cleanDataValue 清理dataValue，移除不应该出现的字段
+// 移除：device_id, device_serial, device_uid, tenant_id, timestamp, topic_type, topic等元数据字段
+// 移除：comm_mode, device_model, firmware_version, mcu_model等硬件信息字段
+func (c *MQTTConsumer) cleanDataValue(dataValue interface{}) interface{} {
+	// 需要移除的字段列表
+	excludedFields := map[string]bool{
+		// 元数据字段
+		"device_id":   true,
+		"device_uid":  true,
+		"tenant_id":   true,
+		"timestamp":   true,
+		"topic_type":  true,
+		"topic":       true,
+		"device_type": true,
+		// 硬件信息字段
+		"comm_mode":        true,
+		"device_model":     true,
+		"firmware_version": true,
+		"mcu_model":        true,
+		"imei":             true,
+	}
+
+	switch v := dataValue.(type) {
+	case map[string]interface{}:
+		cleaned := make(map[string]interface{})
+		for k, val := range v {
+			if !excludedFields[k] {
+				cleaned[k] = val
+			}
+		}
+		return cleaned
+
+	case []interface{}:
+		cleaned := make([]interface{}, 0, len(v))
+		for _, item := range v {
+			cleaned = append(cleaned, c.cleanDataValue(item))
+		}
+		return cleaned
+
+	case []map[string]interface{}:
+		cleaned := make([]map[string]interface{}, 0, len(v))
+		for _, item := range v {
+			if cleanedItem := c.cleanDataValue(item); cleanedItem != nil {
+				if cleanedMap, ok := cleanedItem.(map[string]interface{}); ok {
+					cleaned = append(cleaned, cleanedMap)
+				}
+			}
+		}
+		return cleaned
+
+	default:
+		return dataValue
 	}
 }

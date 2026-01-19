@@ -188,7 +188,8 @@ export MQTT_USERNAME=
 export MQTT_PASSWORD=
 
 # MQTT 配置（返回给设备的配置）
-export RADAR_MQTT_SERVER=47.77.194.143
+# 设备应该连接到本机MQTT服务器，这样wisefido-radar才能收到设备数据
+export RADAR_MQTT_SERVER=10.0.0.30
 export RADAR_MQTT_PORT=1883
 export RADAR_MQTT_PROTOCOL=1  # 1=不加密
 export RADAR_MQTT_ACCOUNT=wfiot

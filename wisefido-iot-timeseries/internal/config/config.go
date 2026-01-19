@@ -2,8 +2,8 @@ package config
 
 import (
 	"os"
-	"strconv"
 	"owl-common/config"
+	"strconv"
 )
 
 // Config IoT 时序数据服务配置
@@ -13,16 +13,12 @@ type Config struct {
 
 	// IoT 时序数据服务特定配置
 	Streams struct {
-		// Radar 设备 streams
-		RadarMonitor string // radar:monitor:stream
-		RadarStat    string // radar:stat:stream
-		RadarEvent   string // radar:event:stream
-		RadarAlarm   string // radar:alarm:stream
-		// Sleepace 设备 streams
-		SleepaceMonitor string // sleepace:monitor:stream
-		SleepaceEvent   string // sleepace:event:stream
-		SleepaceAlarm   string // sleepace:alarm:stream
-		// 注意：Sleepace 没有 stat 数据
+		// 统一 IoT streams（所有设备类型）
+		Monitor string // iot:monitor:stream - 所有设备的实时数据
+		Stat    string // iot:stat:stream    - 所有设备的统计数据
+		Event   string // iot:event:stream   - 所有设备的事件数据
+		Alarm   string // iot:alarm:stream   - 所有设备的告警数据
+		// 注意：认证流 iot:auth:stream 由其他服务处理
 	}
 	ConsumerGroup string // 消费者组名称
 	ConsumerName  string // 消费者名称
@@ -59,14 +55,11 @@ func Load() (*Config, error) {
 	cfg.Redis.Password = getEnv("REDIS_PASSWORD", "")
 	cfg.Redis.DB = 0
 
-	// IoT 时序数据服务配置 - 设备级别 streams
-	cfg.Streams.RadarMonitor = getEnv("STREAM_RADAR_MONITOR", "radar:monitor:stream")
-	cfg.Streams.RadarStat = getEnv("STREAM_RADAR_STAT", "radar:stat:stream")
-	cfg.Streams.RadarEvent = getEnv("STREAM_RADAR_EVENT", "radar:event:stream")
-	cfg.Streams.RadarAlarm = getEnv("STREAM_RADAR_ALARM", "radar:alarm:stream")
-	cfg.Streams.SleepaceMonitor = getEnv("STREAM_SLEEPACE_MONITOR", "sleepace:monitor:stream")
-	cfg.Streams.SleepaceEvent = getEnv("STREAM_SLEEPACE_EVENT", "sleepace:event:stream")
-	cfg.Streams.SleepaceAlarm = getEnv("STREAM_SLEEPACE_ALARM", "sleepace:alarm:stream")
+	// IoT 时序数据服务配置 - 统一 IoT streams
+	cfg.Streams.Monitor = getEnv("STREAM_IOT_MONITOR", "iot:monitor:stream")
+	cfg.Streams.Stat = getEnv("STREAM_IOT_STAT", "iot:stat:stream")
+	cfg.Streams.Event = getEnv("STREAM_IOT_EVENT", "iot:event:stream")
+	cfg.Streams.Alarm = getEnv("STREAM_IOT_ALARM", "iot:alarm:stream")
 	cfg.ConsumerGroup = getEnv("CONSUMER_GROUP", "iot-timeseries-group")
 	cfg.ConsumerName = getEnv("CONSUMER_NAME", "iot-timeseries-1")
 	cfg.BatchSize = 10

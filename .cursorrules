@@ -1,29 +1,44 @@
-# OwlBack Project Rules
+# OwlBack Cursor Rules (STRICT)
+
+## Global Behavior
+- Do NOT generate markdown files (.md)
+- Do NOT generate README or documentation unless explicitly requested
+- Do NOT summarize, explain, or restate requirements
+- Output must be minimal and task-focused
+- Prefer code or concrete conclusions only
+
+## Output Control
+- Use diff-style output whenever modifying existing code
+- Do NOT repeat unchanged code
+- Limit responses to what is explicitly asked
+- No architectural essays or background explanations
 
 ## Project Structure
-- owlRD is the core reference for database design and requirements
-- All database schemas are defined in `../owlRD/db/*.sql`
-- Reference `../owlRD/docs/` for business rules and technical specifications
+- owlRD is the single source of truth for database design and requirements
+- Database schemas MUST match ../owlRD/db/*.sql exactly
+- Business and technical rules MUST reference ../owlRD/docs/
+- Do NOT invent tables, fields, or constraints
 
 ## Code Style
-- Use Go 1.21+ features
-- Follow Go standard project layout
-- Use zap for logging
-- Use owl-common for shared utilities
+- Go version: 1.21+
+- Follow standard Go project layout
+- Logging: zap only
+- Shared utilities: owl-common only
+- No alternative libraries unless explicitly approved
 
-## Database
+## Database Rules
 - PostgreSQL 15+ with TimescaleDB
-- All table structures reference `owlRD/db/`
-- Use snake_case for database fields
-- Use UUID for primary keys
+- snake_case for all database fields
+- UUID for all primary keys
+- Schema definitions must align with ../owlRD/db/*.sql
 
-## Dependencies
-- owl-common: Shared library for database, redis, mqtt, logger
-- Reference wisefido-backend for v1.0 implementation patterns
+## References (READ-ONLY)
+- ../owlRD/db/*.sql
+- ../owlRD/docs/06_FHIR_Simple_Conversion_Guide.md
+- ../owlRD/docs/20_Card_Creation_Rules_Final.md
+- ../owlRD/docs/25_Alarm_Notification_Flow.md
 
-## Important References
-- Database schemas: `../owlRD/db/*.sql`
-- FHIR guide: `../owlRD/docs/06_FHIR_Simple_Conversion_Guide.md`
-- Card rules: `../owlRD/docs/20_Card_Creation_Rules_Final.md`
-- Alarm design: `../owlRD/docs/25_Alarm_Notification_Flow.md`
-
+## Prohibited Behavior
+- No auto-generated documentation
+- No speculative features
+- No file-wide rewrites unless explicitly requested

@@ -4,6 +4,7 @@ import (
 	"os"
 	"owl-common/config"
 	"strconv"
+	"strings"
 )
 
 // Config 雷达服务配置
@@ -33,6 +34,20 @@ type Config struct {
 			Timeout        int    // 连接超时（秒）
 			Keepalive      int    // 心跳间隔（秒）
 			ClientIDPrefix string // ClientID 前缀（可选）
+		}
+
+		// Redis Stream 配置
+		Stream struct {
+			// 默认配置（用于未单独配置的 stream）
+			Default struct {
+				MaxLen           int64 // Stream 最大长度，超过此长度时自动删除最旧的消息。0 表示不限制长度（默认 1000）
+				RetentionSeconds int   // 数据保留秒数，超过此秒数的消息会被自动删除。0 表示不限制时间（默认 5，需要 Redis 6.2+）
+			}
+			// 每个 stream 的单独配置（key 为 stream 名称，如 "iot:auth:stream"）
+			Streams map[string]struct {
+				MaxLen           int64
+				RetentionSeconds int
+			}
 		}
 
 		Topics struct {
@@ -121,6 +136,59 @@ func Load() (*Config, error) {
 	cfg.Radar.Subscription.RenewalInterval = parseInt(getEnv("RADAR_SUBSCRIPTION_RENEWAL_INTERVAL", "50"), 50)
 	cfg.Radar.Subscription.RenewalAdvanceTime = parseInt(getEnv("RADAR_SUBSCRIPTION_RENEWAL_ADVANCE", "10"), 10)
 
+	// Redis Stream 配置
+	// 默认值：MaxLen=1000, RetentionSeconds=3600(1小时)
+	cfg.Radar.Stream.Default.MaxLen = int64(parseInt(getEnv("RADAR_STREAM_MAXLEN", "1000"), 1000))
+	cfg.Radar.Stream.Default.RetentionSeconds = parseInt(getEnv("RADAR_STREAM_RETENTION_SECONDS", "5"), 5)
+
+	// 初始化 Streams map
+	cfg.Radar.Stream.Streams = make(map[string]struct {
+		MaxLen           int64
+		RetentionSeconds int
+	})
+
+	// 为每个 stream 加载单独配置（如果存在）
+	streamNames := []string{
+		"iot:auth:stream",
+		"iot:monitor:stream",
+		"iot:stat:stream",
+		"iot:event:stream",
+		"iot:alarm:stream",
+		"iot:data:stream",
+	}
+
+	for _, streamName := range streamNames {
+		// 将 stream 名称转换为环境变量格式（替换 : 为 _，转大写）
+		envKey := "RADAR_STREAM_" + strings.ToUpper(strings.ReplaceAll(streamName, ":", "_"))
+		maxLenKey := envKey + "_MAXLEN"
+		retentionKey := envKey + "_RETENTION_SECONDS"
+
+		// 检查环境变量是否存在
+		maxLenEnv := os.Getenv(maxLenKey)
+		retentionEnv := os.Getenv(retentionKey)
+
+		// 如果至少有一个环境变量存在，则创建该 stream 的配置
+		if maxLenEnv != "" || retentionEnv != "" {
+			var maxLen int64 = -1 // -1 表示使用默认值
+			var retentionSeconds int = -1
+
+			if maxLenEnv != "" {
+				maxLen = int64(parseInt(maxLenEnv, 0))
+			}
+			if retentionEnv != "" {
+				retentionSeconds = parseInt(retentionEnv, 0)
+			}
+
+			cfg.Radar.Stream.Streams[streamName] = struct {
+				MaxLen           int64
+				RetentionSeconds int
+			}{
+				MaxLen:           maxLen,
+				RetentionSeconds: retentionSeconds,
+			}
+		}
+	}
+
 	cfg.Log.Level = getEnv("LOG_LEVEL", "info")
 	cfg.Log.Format = getEnv("LOG_FORMAT", "json")
 
@@ -143,4 +211,28 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// GetStreamConfig 获取指定 stream 的配置（MaxLen 和 RetentionSeconds）
+// 如果该 stream 有单独配置则返回单独配置，否则返回默认配置
+// 如果单独配置中某个值为 -1，表示使用默认值
+func (c *Config) GetStreamConfig(streamName string) (maxLen int64, retentionSeconds int) {
+	if streamConfig, exists := c.Radar.Stream.Streams[streamName]; exists {
+		// 使用单独配置，如果值为 -1 则使用默认值
+		if streamConfig.MaxLen >= 0 {
+			maxLen = streamConfig.MaxLen
+		} else {
+			maxLen = c.Radar.Stream.Default.MaxLen
+		}
+
+		if streamConfig.RetentionSeconds >= 0 {
+			retentionSeconds = streamConfig.RetentionSeconds
+		} else {
+			retentionSeconds = c.Radar.Stream.Default.RetentionSeconds
+		}
+
+		return maxLen, retentionSeconds
+	}
+	// 使用默认配置
+	return c.Radar.Stream.Default.MaxLen, c.Radar.Stream.Default.RetentionSeconds
 }

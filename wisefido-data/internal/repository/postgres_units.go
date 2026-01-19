@@ -289,171 +289,6 @@ func (r *PostgresUnitsRepository) UpdateBuilding(ctx context.Context, tenantID, 
 	return nil
 }
 
-// UpdateBuildingFields 更新楼栋（使用更新模型）
-func (r *PostgresUnitsRepository) UpdateBuildingFields(ctx context.Context, tenantID, buildingID string, update *domain.BuildingUpdate) error {
-	if tenantID == "" || buildingID == "" {
-		return fmt.Errorf("tenant_id and building_id are required")
-	}
-	if update == nil {
-		return fmt.Errorf("update is required")
-	}
-
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	// 先获取现有的 building 记录（用于唯一性检查）
-	var oldBranchID sql.NullString
-	var oldBuildingName string
-	err = tx.QueryRowContext(ctx,
-		`SELECT branch_id::text, building_name 
-		 FROM buildings 
-		 WHERE tenant_id = $1 AND building_id = $2`,
-		tenantID, buildingID,
-	).Scan(&oldBranchID, &oldBuildingName)
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("building not found")
-	}
-	if err != nil {
-		return fmt.Errorf("failed to find building: %w", err)
-	}
-
-	// 确定新的 branch_id 和 building_name 值
-	newBranchID := oldBranchID
-	newBuildingName := oldBuildingName
-
-	if update.BranchID != nil {
-		switch update.BranchID.Action {
-		case domain.UpdateActionUpdate:
-			if update.BranchID.Value == "" {
-				newBranchID = sql.NullString{Valid: false}
-			} else {
-				newBranchID = sql.NullString{String: update.BranchID.Value, Valid: true}
-			}
-		case domain.UpdateActionDelete:
-			newBranchID = sql.NullString{Valid: false}
-		case domain.UpdateActionKeep:
-			// 不更新，保持原值
-		}
-	}
-
-	if update.BuildingName != nil {
-		switch update.BuildingName.Action {
-		case domain.UpdateActionUpdate:
-			// 注意：building_name 的空值处理应该在 Service 层完成，Repository 层不做业务逻辑处理
-			// 如果 Service 层未处理，这里会返回错误（NOT NULL 约束）
-			if update.BuildingName.Value == "" {
-				return fmt.Errorf("building_name cannot be empty (NOT NULL constraint)")
-			}
-			newBuildingName = update.BuildingName.Value
-		case domain.UpdateActionDelete:
-			// building_name 是 NOT NULL，不能删除，只能更新
-			return fmt.Errorf("building_name cannot be deleted (NOT NULL constraint)")
-		case domain.UpdateActionKeep:
-			// 不更新，保持原值
-		}
-	}
-
-	// 检查唯一性约束（如果 branch_id 或 building_name 发生变化）
-	if (update.BranchID != nil && update.BranchID.Action != domain.UpdateActionKeep) ||
-		(update.BuildingName != nil && update.BuildingName.Action != domain.UpdateActionKeep) {
-		var exists bool
-		var checkQuery string
-		var checkArgs []any
-
-		if newBranchID.Valid {
-			// branch_id 不为 NULL：检查 (tenant_id, branch_id, building_name) 唯一性
-			checkQuery = `
-				SELECT EXISTS(
-					SELECT 1 FROM buildings 
-					WHERE tenant_id = $1 AND branch_id = $2 AND building_name = $3 AND building_id != $4
-				)`
-			checkArgs = []any{tenantID, newBranchID.String, newBuildingName, buildingID}
-		} else {
-			// branch_id 为 NULL：检查 (tenant_id, building_name) 唯一性
-			checkQuery = `
-				SELECT EXISTS(
-					SELECT 1 FROM buildings 
-					WHERE tenant_id = $1 AND branch_id IS NULL AND building_name = $2 AND building_id != $3
-				)`
-			checkArgs = []any{tenantID, newBuildingName, buildingID}
-		}
-
-		err = tx.QueryRowContext(ctx, checkQuery, checkArgs...).Scan(&exists)
-		if err != nil {
-			return fmt.Errorf("failed to check building uniqueness: %w", err)
-		}
-		if exists {
-			branchDisplay := "NULL"
-			if newBranchID.Valid {
-				branchDisplay = newBranchID.String
-			}
-			return fmt.Errorf("building already exists: tenant_id '%s', branch_id '%s', building_name '%s'", tenantID, branchDisplay, newBuildingName)
-		}
-	}
-
-	// 构建更新语句
-	updates := []string{}
-	args := []any{tenantID, buildingID}
-	argIdx := 3
-
-	// 更新 branch_id
-	if update.BranchID != nil && update.BranchID.Action != domain.UpdateActionKeep {
-		if newBranchID.Valid {
-			updates = append(updates, fmt.Sprintf("branch_id = $%d", argIdx))
-			args = append(args, newBranchID.String)
-			argIdx++
-		} else {
-			updates = append(updates, "branch_id = NULL")
-		}
-	}
-
-	// 更新 building_name
-	if update.BuildingName != nil && update.BuildingName.Action != domain.UpdateActionKeep {
-		updates = append(updates, fmt.Sprintf("building_name = $%d", argIdx))
-		args = append(args, newBuildingName)
-		argIdx++
-	}
-
-	if len(updates) == 0 {
-		// 没有字段需要更新，但可以只更新 updated_at
-		updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
-	} else {
-		// 自动更新 updated_at
-		updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
-	}
-
-	query := fmt.Sprintf(`
-		UPDATE buildings
-		SET %s
-		WHERE tenant_id = $1 AND building_id = $2
-	`, strings.Join(updates, ", "))
-
-	result, err := tx.ExecContext(ctx, query, args...)
-	if err != nil {
-		// 检查是否是唯一性约束冲突
-		if strings.Contains(err.Error(), "unique") || strings.Contains(err.Error(), "duplicate") {
-			branchDisplay := "NULL"
-			if newBranchID.Valid {
-				branchDisplay = newBranchID.String
-			}
-			return fmt.Errorf("building already exists: tenant_id '%s', branch_id '%s', building_name '%s'", tenantID, branchDisplay, newBuildingName)
-		}
-		return fmt.Errorf("failed to update building: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return fmt.Errorf("building not found")
-	}
-
-	return tx.Commit()
-}
 
 // DeleteBuilding: 直接删除 buildings 表的记录
 // 替代触发器：无（仅删除）
@@ -1648,86 +1483,10 @@ func (r *PostgresUnitsRepository) UpdateBed(ctx context.Context, tenantID, bedID
 		} else {
 			set = append(set, fmt.Sprintf("mattress_thickness = $%d", argN))
 			args = append(args, bed.MattressThickness.String)
-			argN++
 		}
 	}
 
 	if len(set) == 0 {
-		return nil
-	}
-
-	q := "UPDATE beds SET " + strings.Join(set, ", ") + " WHERE tenant_id = $1 AND bed_id = $2"
-	if _, err := r.db.ExecContext(ctx, q, args...); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// UpdateBedFields 更新床位（使用更新模型）
-func (r *PostgresUnitsRepository) UpdateBedFields(ctx context.Context, tenantID, bedID string, update *domain.BedUpdate) error {
-	if tenantID == "" || bedID == "" {
-		return fmt.Errorf("tenant_id and bed_id are required")
-	}
-	if update == nil {
-		return fmt.Errorf("update is required")
-	}
-
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	updates := []string{}
-	args := []any{tenantID, bedID}
-	argIdx := 3
-
-	// 处理 UpdateString
-	if update.BedName != nil {
-		switch update.BedName.Action {
-		case domain.UpdateActionUpdate:
-			if update.BedName.Value == "" {
-				return fmt.Errorf("bed_name cannot be empty (NOT NULL constraint)")
-			}
-			updates = append(updates, fmt.Sprintf("bed_name = $%d", argIdx))
-			args = append(args, update.BedName.Value)
-			argIdx++
-		case domain.UpdateActionDelete:
-			// bed_name 是 NOT NULL，不能删除，只能更新
-			return fmt.Errorf("bed_name cannot be deleted (NOT NULL constraint)")
-		case domain.UpdateActionKeep:
-			// 不更新，跳过
-		}
-	}
-
-	if update.MattressMaterial != nil {
-		switch update.MattressMaterial.Action {
-		case domain.UpdateActionUpdate:
-			updates = append(updates, fmt.Sprintf("mattress_material = $%d", argIdx))
-			args = append(args, update.MattressMaterial.Value)
-			argIdx++
-		case domain.UpdateActionDelete:
-			updates = append(updates, "mattress_material = NULL")
-		case domain.UpdateActionKeep:
-			// 不更新，跳过
-		}
-	}
-
-	if update.MattressThickness != nil {
-		switch update.MattressThickness.Action {
-		case domain.UpdateActionUpdate:
-			updates = append(updates, fmt.Sprintf("mattress_thickness = $%d", argIdx))
-			args = append(args, update.MattressThickness.Value)
-			argIdx++
-		case domain.UpdateActionDelete:
-			updates = append(updates, "mattress_thickness = NULL")
-		case domain.UpdateActionKeep:
-			// 不更新，跳过
-		}
-	}
-
-	if len(updates) == 0 {
 		return fmt.Errorf("no fields to update")
 	}
 
@@ -1735,22 +1494,14 @@ func (r *PostgresUnitsRepository) UpdateBedFields(ctx context.Context, tenantID,
 		UPDATE beds
 		SET %s
 		WHERE tenant_id = $1 AND bed_id = $2
-	`, strings.Join(updates, ", "))
+	`, strings.Join(set, ", "))
 
-	result, err := tx.ExecContext(ctx, query, args...)
+	_, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to update bed: %w", err)
 	}
 
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return fmt.Errorf("bed not found")
-	}
-
-	return tx.Commit()
+	return nil
 }
 
 // DeleteBed: 删除 bed

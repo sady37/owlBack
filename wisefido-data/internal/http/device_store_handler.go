@@ -96,11 +96,11 @@ func (h *DeviceStoreHandler) BatchUpdateDeviceStores(w http.ResponseWriter, r *h
 	updates := make([]*domain.DeviceStore, 0, len(updatesRaw))
 	for _, u := range updatesRaw {
 		if m, ok := u.(map[string]any); ok {
-			deviceStoreID, _ := m["device_store_id"].(string)
+			deviceUID, _ := m["device_uid"].(string)
 			data, _ := m["data"].(map[string]any)
-			if deviceStoreID != "" {
+			if deviceUID != "" {
 				updateItem := payloadToDeviceStore(data)
-				updateItem.DeviceStoreID = deviceStoreID
+				updateItem.DeviceUID = deviceUID
 				updates = append(updates, updateItem)
 			}
 		}
@@ -239,8 +239,8 @@ func (h *DeviceStoreHandler) ImportDeviceStores(w http.ResponseWriter, r *http.R
 	headerToFieldMap := map[string]string{
 		"Device Type":                 "device_type",
 		"Device Model":                "device_model",
-		"Serial Number":               "serial_number",
-		"UID":                         "uid",
+		"Device UID":                   "device_uid",
+		"MAC":                          "mac",
 		"IMEI":                        "imei",
 		"Comm Mode":                   "comm_mode",
 		"MCU Model":                   "mcu_model",

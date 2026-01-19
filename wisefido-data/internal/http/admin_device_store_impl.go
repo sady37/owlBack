@@ -56,11 +56,11 @@ func (a *AdminAPI) batchUpdateDeviceStores(w http.ResponseWriter, r *http.Reques
 	updates := make([]*domain.DeviceStore, 0, len(updatesRaw))
 	for _, u := range updatesRaw {
 		if m, ok := u.(map[string]any); ok {
-			deviceStoreID, _ := m["device_store_id"].(string)
+			deviceUID, _ := m["device_uid"].(string)
 			data, _ := m["data"].(map[string]any)
-			if deviceStoreID != "" {
+			if deviceUID != "" {
 				updateItem := payloadToDeviceStore(data)
-				updateItem.DeviceStoreID = deviceStoreID
+				updateItem.DeviceUID = deviceUID
 				updates = append(updates, updateItem)
 			}
 		}
@@ -188,8 +188,8 @@ func (a *AdminAPI) importDeviceStores(w http.ResponseWriter, r *http.Request) {
 	headerToFieldMap := map[string]string{
 		"Device Type":                 "device_type",
 		"Device Model":                "device_model",
-		"Serial Number":               "serial_number",
-		"UID":                         "uid",
+		"Device UID":                  "device_uid",
+		"MAC":                         "mac",
 		"IMEI":                        "imei",
 		"Comm Mode":                   "comm_mode",
 		"MCU Model":                   "mcu_model",
@@ -303,14 +303,14 @@ func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
 	if v, ok := payload["device_type"].(string); ok {
 		ds.DeviceType = v
 	}
+	if v, ok := payload["device_uid"].(string); ok && v != "" {
+		ds.DeviceUID = v
+	}
 	if v, ok := payload["device_model"].(string); ok && v != "" {
 		ds.DeviceModel = sql.NullString{String: v, Valid: true}
 	}
-	if v, ok := payload["serial_number"].(string); ok && v != "" {
-		ds.SerialNumber = sql.NullString{String: v, Valid: true}
-	}
-	if v, ok := payload["uid"].(string); ok && v != "" {
-		ds.UID = sql.NullString{String: v, Valid: true}
+	if v, ok := payload["mac"].(string); ok && v != "" {
+		ds.MAC = sql.NullString{String: v, Valid: true}
 	}
 	if v, ok := payload["imei"].(string); ok && v != "" {
 		ds.IMEI = sql.NullString{String: v, Valid: true}

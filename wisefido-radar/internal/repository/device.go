@@ -5,40 +5,66 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"go.uber.org/zap"
 )
 
+// DeviceLocationInfo 设备位置信息
+// 包含完整的地址层级信息和设备规格信息
+// 注意：所有字段都是指针类型，表示可能为空
+// 不包含 name 字段（branch_name, building_name, unit_name, room_name, bed_name, device_name）
+type DeviceLocationInfo struct {
+	// 设备基本信息
+	DeviceID          string  `json:"device_id"`
+	TenantID          string  `json:"tenant_id"`
+	DeviceUID         *string `json:"device_uid,omitempty"`
+	Status            *string `json:"status,omitempty"`
+	BusinessAccess    *string `json:"business_access,omitempty"`
+	MonitoringEnabled *bool   `json:"monitoring_enabled,omitempty"`
+
+	// 位置信息（只包含ID字段，不包含name字段）
+	BranchID   *string `json:"branch_id,omitempty"`
+	BuildingID *string `json:"building_id,omitempty"`
+	UnitID     *string `json:"unit_id,omitempty"`
+	RoomID     *string `json:"room_id,omitempty"`
+	BedID      *string `json:"bed_id,omitempty"`
+
+	// 设备规格信息（来自 device_store）
+	DeviceType      *string `json:"device_type,omitempty"`
+	DeviceModel     *string `json:"device_model,omitempty"`
+	IMEI            *string `json:"imei,omitempty"`
+	MAC             *string `json:"mac,omitempty"`
+	CommMode        *string `json:"comm_mode,omitempty"`
+	MCUModel        *string `json:"mcu_model,omitempty"`
+	FirmwareVersion *string `json:"firmware_version,omitempty"`
+}
+
 // RadarAlarmTypes Radar 设备的所有报警类型列表
-// 这些是可能出现在 alarm_device.monitor_config.alarms 中的报警类型
-// 注意：Radar_AbnormalHeartRate 和 Radar_AbnormalRespiratoryRate 是从 stat 数据中判断的
 var RadarAlarmTypes = []string{
-	// 通用报警（所有设备类型都支持）
 	"OfflineAlarm",
 	"LowBattery",
 	"DeviceFailure",
-	// Radar 特定报警
-	"Radar_ApneaHypopnea",           // 从 stat 数据中判断（breath_state="Apnea"）
-	"Radar_AbnormalHeartRate",       // 从 stat 数据中判断（heart_state="Heart rate low/high"）
-	"Radar_AbnormalRespiratoryRate", // 从 stat 数据中判断（breath_state="Breath rate low/high"）
-	"SuspectedFall",                 // 从 event type=2 (pose) 中判断
-	"Fall",                          // 从 event type=2 (pose) 中判断
-	"VitalsWeak",                    // 从 stat 数据中判断（vital_signs_state="Vital signs weak"）
-	"Radar_LeftBed",                 // 从 event type=9 (alarmType="1") 中判断
-	"Stay",                          // 从 event type=9 (alarmType="2") 中判断
-	"NoActivity24h",                 // 从 event type=9 (alarmType="3") 中判断
-	"WarningArea",                   // 从 event type=1 (enter2out) 中判断
-	"PoorReception",                 // 从 event type=7 (signal_poor) 中判断
-	"AngleException",                // 从 event type=8 (angle_abnormal) 中判断
-	"SittingOnGround",               // 从 event type=2 (pose) 中判断，虽然不在 AlarmCloud.vue 的默认列表中，但在 device_monitor_settings_service.go 中存在
+	"Radar_ApneaHypopnea",
+	"Radar_AbnormalHeartRate",
+	"Radar_AbnormalRespiratoryRate",
+	"SuspectedFall",
+	"Fall",
+	"VitalsWeak",
+	"Radar_LeftBed",
+	"Stay",
+	"NoActivity24h",
+	"WarningArea",
+	"PoorReception",
+	"AngleException",
+	"SittingOnGround",
 }
 
 // DeviceRepository 设备仓库
 type DeviceRepository struct {
-	db     *sql.DB
-	logger *zap.Logger
-	// 报警使能配置缓存：key = tenantID:deviceID, value = AlarmEnablement
+	db                   *sql.DB
+	logger               *zap.Logger
 	alarmEnablementCache map[string]AlarmEnablement
 	cacheMutex           sync.RWMutex
 }
@@ -52,62 +78,38 @@ func NewDeviceRepository(db *sql.DB, logger *zap.Logger) *DeviceRepository {
 	}
 }
 
-// GetDeviceBySerialNumber 根据序列号获取设备
-func (r *DeviceRepository) GetDeviceBySerialNumber(serialNumber string) (*Device, error) {
-	query := `
-		SELECT 
-			d.device_id,
-			d.tenant_id,
-			d.serial_number,
-			d.uid,
-			d.device_name,
-			d.status,
-			d.business_access,
-			d.bound_bed_id,
-			d.bound_room_id
-		FROM devices d
-		WHERE d.serial_number = $1
-		LIMIT 1
-	`
-
-	device := &Device{}
-	err := r.db.QueryRow(query, serialNumber).Scan(
-		&device.DeviceID,
-		&device.TenantID,
-		&device.SerialNumber,
-		&device.UID,
-		&device.DeviceName,
-		&device.Status,
-		&device.BusinessAccess,
-		&device.BoundBedID,
-		&device.BoundRoomID,
-	)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("device not found: %s", serialNumber)
-		}
-		return nil, fmt.Errorf("failed to query device: %w", err)
-	}
-
-	return device, nil
+// Device 设备模型
+type Device struct {
+	DeviceID       string
+	TenantID       string
+	DeviceUID      string
+	Status         string
+	BusinessAccess string
+	BoundBedID     *string
+	BoundRoomID    *string
 }
 
-// GetDeviceByUID 根据 UID 获取设备
+// AlarmEnablement 报警使能配置
+type AlarmEnablement map[string]bool
+
+// GetDeviceBySerialNumber 根据序列号获取设备（已废弃，使用GetDeviceByUID）
+func (r *DeviceRepository) GetDeviceBySerialNumber(serialNumber string) (*Device, error) {
+	return r.GetDeviceByUID(serialNumber)
+}
+
+// GetDeviceByUID 根据 device_uid 获取设备
 func (r *DeviceRepository) GetDeviceByUID(uid string) (*Device, error) {
 	query := `
 		SELECT 
 			d.device_id,
 			d.tenant_id,
-			d.serial_number,
-			d.uid,
-			d.device_name,
+			d.device_uid,
 			d.status,
 			d.business_access,
 			d.bound_bed_id,
 			d.bound_room_id
 		FROM devices d
-		WHERE d.uid = $1
+		WHERE d.device_uid = $1
 		LIMIT 1
 	`
 
@@ -115,9 +117,7 @@ func (r *DeviceRepository) GetDeviceByUID(uid string) (*Device, error) {
 	err := r.db.QueryRow(query, uid).Scan(
 		&device.DeviceID,
 		&device.TenantID,
-		&device.SerialNumber,
-		&device.UID,
-		&device.DeviceName,
+		&device.DeviceUID,
 		&device.Status,
 		&device.BusinessAccess,
 		&device.BoundBedID,
@@ -134,321 +134,214 @@ func (r *DeviceRepository) GetDeviceByUID(uid string) (*Device, error) {
 	return device, nil
 }
 
-// GetOrCreateDeviceFromStore attempts to get device from devices table, and if not found,
-// checks device_store table. If device_store exists and is allocated, creates devices record.
-// This is used for automatic device creation on first MQTT connection.
-// Returns the device and error. Errors are logged for security auditing.
-func (r *DeviceRepository) GetOrCreateDeviceFromStore(ctx context.Context, identifier string, mqttTopic string) (*Device, error) {
-	// Helper function to log messages (if logger is available)
-	logInfo := func(msg string, fields ...zap.Field) {
-		if r.logger != nil {
-			r.logger.Info(msg, fields...)
-		}
-	}
-	logWarn := func(msg string, fields ...zap.Field) {
-		if r.logger != nil {
-			r.logger.Warn(msg, fields...)
-		}
-	}
-
-	// 1. First, try to get device from devices table by serial_number or uid
-	deviceQuery := `
+// GetOrCreateDeviceFromStore 从 device_store 获取或创建设备
+func (r *DeviceRepository) GetOrCreateDeviceFromStore(ctx context.Context, uid, topic string) (*Device, error) {
+	// 1. 查询 device_store
+	queryStore := `
 		SELECT 
-			d.device_id,
-			d.tenant_id,
-			d.serial_number,
-			d.uid,
-			d.device_name,
-			d.status,
-			d.business_access,
-			d.bound_bed_id,
-			d.bound_room_id
-		FROM devices d
-		WHERE (d.serial_number = $1 OR d.uid = $1)
+			ds.tenant_id,
+			ds.device_type,
+			ds.allow_access
+		FROM device_store ds
+		WHERE ds.device_uid = $1
 		LIMIT 1
 	`
 
-	device := &Device{}
-	err := r.db.QueryRowContext(ctx, deviceQuery, identifier).Scan(
-		&device.DeviceID,
-		&device.TenantID,
-		&device.SerialNumber,
-		&device.UID,
-		&device.DeviceName,
-		&device.Status,
-		&device.BusinessAccess,
-		&device.BoundBedID,
-		&device.BoundRoomID,
-	)
+	var tenantID sql.NullString
+	var deviceType sql.NullString
+	var allowAccess sql.NullBool
 
-	if err == nil {
-		// Device found in devices table, return it
-		return device, nil
-	}
-
-	if err != sql.ErrNoRows {
-		// Unexpected database error
-		logWarn("Device connection failed: database error",
-			zap.String("identifier", identifier),
-			zap.String("mqtt_topic", mqttTopic),
-			zap.String("reason", "database_error"),
-			zap.Error(err),
-		)
-		return nil, fmt.Errorf("failed to query device: %w", err)
-	}
-
-	// 2. Device not found in devices table, check device_store table
-	unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
-	deviceStoreQuery := `
-		SELECT
-			device_store_id::text,
-			device_type,
-			serial_number,
-			uid,
-			tenant_id::text,
-			allow_access
-		FROM device_store
-		WHERE (serial_number = $1 OR uid = $1)
-		LIMIT 1
-	`
-
-	var dsDeviceStoreID, dsDeviceType, dsTenantID string
-	var dsSerialNumber, dsUID sql.NullString
-	var dsAllowAccess bool
-
-	err = r.db.QueryRowContext(ctx, deviceStoreQuery, identifier).Scan(
-		&dsDeviceStoreID,
-		&dsDeviceType,
-		&dsSerialNumber,
-		&dsUID,
-		&dsTenantID,
-		&dsAllowAccess,
-	)
-
-	if err == sql.ErrNoRows {
-		// Case 3: Device not registered in device_store
-		var serialNum, uid string
-		if dsSerialNumber.Valid {
-			serialNum = dsSerialNumber.String
-		}
-		if dsUID.Valid {
-			uid = dsUID.String
-		}
-		logWarn("Unauthorized device connection attempt",
-			zap.String("identifier", identifier),
-			zap.String("mqtt_topic", mqttTopic),
-			zap.String("serial_number", serialNum),
-			zap.String("uid", uid),
-			zap.String("reason", "device_not_registered"),
-			zap.String("action", "connection_rejected"),
-			zap.String("security_level", "warning"),
-		)
-		return nil, fmt.Errorf("unauthorized device: not registered in device_store")
-	}
-
+	err := r.db.QueryRowContext(ctx, queryStore, uid).Scan(&tenantID, &deviceType, &allowAccess)
 	if err != nil {
-		// Unexpected database error
-		logWarn("Device connection failed: database error",
-			zap.String("identifier", identifier),
-			zap.String("mqtt_topic", mqttTopic),
-			zap.String("reason", "database_error"),
-			zap.Error(err),
-		)
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("device not found in device_store: %s", uid)
+		}
 		return nil, fmt.Errorf("failed to query device_store: %w", err)
 	}
 
-	// 3. Check if device is allocated to a tenant
-	if dsTenantID == unallocatedTenantID {
-		// Case 2: Device registered but not allocated
-		serialNum := ""
-		if dsSerialNumber.Valid {
-			serialNum = dsSerialNumber.String
-		}
-		uid := ""
-		if dsUID.Valid {
-			uid = dsUID.String
-		}
-		logWarn("Device connection rejected: not allocated",
-			zap.String("device_store_id", dsDeviceStoreID),
-			zap.String("serial_number", serialNum),
-			zap.String("uid", uid),
-			zap.String("reason", "device_not_allocated"),
-			zap.String("action", "connection_rejected"),
-		)
-		return nil, fmt.Errorf("device not allocated to tenant")
+	if !tenantID.Valid || tenantID.String == "" {
+		return nil, fmt.Errorf("device not allocated to tenant: %s", uid)
 	}
 
-	// Case 1: Device is registered and allocated, create devices record
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		logWarn("Device connection failed: transaction error",
-			zap.String("device_store_id", dsDeviceStoreID),
-			zap.String("identifier", identifier),
-			zap.String("mqtt_topic", mqttTopic),
-			zap.String("reason", "transaction_error"),
-			zap.Error(err),
-		)
-		return nil, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	// Generate device name from device_type and serial_number/uid
-	deviceName := dsDeviceType
-	serialNum := ""
-	uid := ""
-	if dsSerialNumber.Valid && dsSerialNumber.String != "" {
-		serialNum = dsSerialNumber.String
-		deviceName = dsDeviceType + "-" + serialNum
-	} else if dsUID.Valid && dsUID.String != "" {
-		uid = dsUID.String
-		deviceName = dsDeviceType + "-" + uid
+	if !allowAccess.Bool {
+		return nil, fmt.Errorf("device access not allowed: %s", uid)
 	}
 
-	// Insert device record
+	// 2. 尝试从 devices 表查询
+	device, err := r.GetDeviceByUID(uid)
+	if err == nil {
+		return device, nil
+	}
+
+	// 3. 设备不存在，创建新设备
 	insertQuery := `
 		INSERT INTO devices (
 			tenant_id,
-			device_store_id,
+			device_uid,
 			device_name,
-			serial_number,
-			uid,
 			status,
 			business_access,
 			monitoring_enabled
-		) VALUES ($1, $2, $3, $4, $5, 'online', 'pending', FALSE)
-		RETURNING device_id
+		) VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING device_id, tenant_id, device_uid, status, business_access, bound_bed_id, bound_room_id
 	`
 
-	var newDeviceID string
-	err = tx.QueryRowContext(ctx, insertQuery,
-		dsTenantID,
-		dsDeviceStoreID,
+	deviceName := fmt.Sprintf("Radar-%s", uid)
+	newDevice := &Device{}
+	err = r.db.QueryRowContext(ctx, insertQuery,
+		tenantID.String,
+		uid,
 		deviceName,
-		dsSerialNumber,
-		dsUID,
-	).Scan(&newDeviceID)
-
-	if err != nil {
-		logWarn("Device connection failed: failed to create device record",
-			zap.String("device_store_id", dsDeviceStoreID),
-			zap.String("tenant_id", dsTenantID),
-			zap.String("identifier", identifier),
-			zap.String("mqtt_topic", mqttTopic),
-			zap.String("reason", "device_creation_failed"),
-			zap.Error(err),
-		)
-		return nil, fmt.Errorf("failed to create device record: %w", err)
-	}
-
-	if err = tx.Commit(); err != nil {
-		logWarn("Device connection failed: transaction commit error",
-			zap.String("device_store_id", dsDeviceStoreID),
-			zap.String("device_id", newDeviceID),
-			zap.String("tenant_id", dsTenantID),
-			zap.String("identifier", identifier),
-			zap.String("mqtt_topic", mqttTopic),
-			zap.String("reason", "transaction_commit_failed"),
-			zap.Error(err),
-		)
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	// Log successful auto-creation
-	logInfo("Device auto-created from device_store",
-		zap.String("device_store_id", dsDeviceStoreID),
-		zap.String("device_id", newDeviceID),
-		zap.String("tenant_id", dsTenantID),
-		zap.String("serial_number", serialNum),
-		zap.String("uid", uid),
-		zap.String("device_type", dsDeviceType),
-		zap.String("source", "mqtt_first_connection"),
-		zap.String("mqtt_topic", mqttTopic),
+		"offline",
+		"pending",
+		false,
+	).Scan(
+		&newDevice.DeviceID,
+		&newDevice.TenantID,
+		&newDevice.DeviceUID,
+		&newDevice.Status,
+		&newDevice.BusinessAccess,
+		&newDevice.BoundBedID,
+		&newDevice.BoundRoomID,
 	)
 
-	// Query and return the newly created device
-	// Try serial_number first, then uid
-	if serialNum != "" {
-		device, err := r.GetDeviceBySerialNumber(serialNum)
-		if err == nil {
-			return device, nil
-		}
+	if err != nil {
+		return nil, fmt.Errorf("failed to create device: %w", err)
 	}
-	if uid != "" {
-		device, err := r.GetDeviceByUID(uid)
-		if err == nil {
-			return device, nil
-		}
+
+	return newDevice, nil
+}
+
+// GetDeviceLocationInfoByIdentifier 通过设备标识符获取位置信息
+func (r *DeviceRepository) GetDeviceLocationInfoByIdentifier(ctx context.Context, identifier string) (*DeviceLocationInfo, error) {
+	if identifier == "" {
+		return nil, fmt.Errorf("identifier is required")
 	}
-	// Fallback: query by device_id
+
 	query := `
 		SELECT 
-			d.device_id,
-			d.tenant_id,
-			d.serial_number,
-			d.uid,
-			d.device_name,
+			d.device_id::text,
+			d.tenant_id::text,
+			d.device_uid,
 			d.status,
 			d.business_access,
-			d.bound_bed_id,
-			d.bound_room_id
+			d.monitoring_enabled,
+			
+			u.branch_id,
+			u.building_id,
+			u.unit_id,
+			r.room_id,
+			b.bed_id,
+			
+			ds.device_type
 		FROM devices d
-		WHERE d.device_id = $1
+		LEFT JOIN device_store ds ON d.device_uid = ds.device_uid
+		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
+		LEFT JOIN rooms r ON (
+			(d.bound_room_id = r.room_id AND d.tenant_id = r.tenant_id) OR
+			(b.room_id = r.room_id AND b.tenant_id = r.tenant_id)
+		)
+		LEFT JOIN units u ON r.unit_id = u.unit_id AND r.tenant_id = u.tenant_id
+		WHERE d.device_uid = $1
+			AND d.status != 'disabled'
 		LIMIT 1
 	`
-	var fallbackDevice Device
-	err = r.db.QueryRowContext(ctx, query, newDeviceID).Scan(
-		&fallbackDevice.DeviceID,
-		&fallbackDevice.TenantID,
-		&fallbackDevice.SerialNumber,
-		&fallbackDevice.UID,
-		&fallbackDevice.DeviceName,
-		&fallbackDevice.Status,
-		&fallbackDevice.BusinessAccess,
-		&fallbackDevice.BoundBedID,
-		&fallbackDevice.BoundRoomID,
+
+	var (
+		deviceIDStr, tenantIDStr string
+		deviceUID                sql.NullString
+		status, businessAccess   sql.NullString
+		monitoringEnabled        sql.NullBool
+		branchID                 sql.NullString
+		buildingID               sql.NullString
+		unitID                   sql.NullString
+		roomID                   sql.NullString
+		bedID                    sql.NullString
+		deviceType               sql.NullString
+	)
+
+	err := r.db.QueryRowContext(ctx, query, identifier).Scan(
+		&deviceIDStr,
+		&tenantIDStr,
+		&deviceUID,
+		&status,
+		&businessAccess,
+		&monitoringEnabled,
+		&branchID,
+		&buildingID,
+		&unitID,
+		&roomID,
+		&bedID,
+		&deviceType,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query newly created device: %w", err)
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("device not found: identifier=%s", identifier)
+		}
+		return nil, fmt.Errorf("failed to query device location: %w", err)
 	}
-	return &fallbackDevice, nil
-}
 
-// Device 设备模型
-type Device struct {
-	DeviceID       string
-	TenantID       string
-	SerialNumber   string
-	UID            string
-	DeviceName     string
-	Status         string
-	BusinessAccess string
-	BoundBedID     *string
-	BoundRoomID    *string
-}
+	locationInfo := &DeviceLocationInfo{
+		DeviceID: deviceIDStr,
+		TenantID: tenantIDStr,
+	}
 
-// AlarmEnablement 报警使能配置
-// key: 报警类型（如 "Fall", "SuspectedFall", "OfflineAlarm" 等）
-// value: 是否启用（true=启用，false=未启用或未配置）
-type AlarmEnablement map[string]bool
+	if deviceUID.Valid && deviceUID.String != "" {
+		uidStr := deviceUID.String
+		locationInfo.DeviceUID = &uidStr
+	}
+	if status.Valid && status.String != "" {
+		statusStr := status.String
+		locationInfo.Status = &statusStr
+	}
+	if businessAccess.Valid && businessAccess.String != "" {
+		businessAccessStr := businessAccess.String
+		locationInfo.BusinessAccess = &businessAccessStr
+	}
+	if monitoringEnabled.Valid {
+		locationInfo.MonitoringEnabled = &monitoringEnabled.Bool
+	}
+
+	// 位置信息字段（按结构体顺序：BranchID → BuildingID → UnitID → RoomID → BedID）
+	if branchID.Valid {
+		branchIDStr := branchID.String
+		locationInfo.BranchID = &branchIDStr
+	}
+	if buildingID.Valid {
+		buildingIDStr := buildingID.String
+		locationInfo.BuildingID = &buildingIDStr
+	}
+	if unitID.Valid {
+		unitIDStr := unitID.String
+		locationInfo.UnitID = &unitIDStr
+	}
+	if roomID.Valid {
+		roomIDStr := roomID.String
+		locationInfo.RoomID = &roomIDStr
+	}
+	if bedID.Valid {
+		bedIDStr := bedID.String
+		locationInfo.BedID = &bedIDStr
+	}
+
+	if deviceType.Valid && deviceType.String != "" {
+		deviceTypeStr := deviceType.String
+		locationInfo.DeviceType = &deviceTypeStr
+	}
+
+	return locationInfo, nil
+}
 
 // GetAlarmEnablement 获取设备的报警使能配置
-// 从 alarm_device.monitor_config.alarms 中读取所有报警类型的 enabled 状态
-// 如果设备没有配置或某个报警类型未配置，返回 false
-// 使用内存缓存提高性能，配置变更时通过 ClearAlarmEnablementCache 清除缓存
-func (r *DeviceRepository) GetAlarmEnablement(ctx context.Context, tenantID, deviceID string) (AlarmEnablement, error) {
+func (r *DeviceRepository) GetAlarmEnablement(ctx context.Context, tenantID, deviceUID string) (AlarmEnablement, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
-	if deviceID == "" {
-		return nil, fmt.Errorf("device_id is required")
+	if deviceUID == "" {
+		return nil, fmt.Errorf("device_uid is required")
 	}
 
-	// 检查缓存
-	cacheKey := fmt.Sprintf("%s:%s", tenantID, deviceID)
+	cacheKey := fmt.Sprintf("%s:%s", tenantID, deviceUID)
 	r.cacheMutex.RLock()
 	if cached, ok := r.alarmEnablementCache[cacheKey]; ok {
 		r.cacheMutex.RUnlock()
@@ -456,87 +349,71 @@ func (r *DeviceRepository) GetAlarmEnablement(ctx context.Context, tenantID, dev
 	}
 	r.cacheMutex.RUnlock()
 
-	// 缓存未命中，从数据库查询
-	// 查询 alarm_device 表的 monitor_config 字段
 	query := `
-		SELECT monitor_config
-		FROM alarm_device
-		WHERE device_id = $1 AND tenant_id = $2
+		SELECT ad.monitor_config
+		FROM alarm_device ad
+		INNER JOIN devices d ON ad.device_id = d.device_id
+		WHERE d.tenant_id = $1 AND d.device_uid = $2
+		LIMIT 1
 	`
 
-	var monitorConfigJSON json.RawMessage
-	err := r.db.QueryRowContext(ctx, query, deviceID, tenantID).Scan(&monitorConfigJSON)
+	var monitorConfigJSON sql.NullString
+	err := r.db.QueryRowContext(ctx, query, tenantID, deviceUID).Scan(&monitorConfigJSON)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			// 设备没有配置，返回空的使能配置（所有报警类型都未启用）
-			return make(AlarmEnablement), nil
+			// 没有配置，返回所有报警类型都未启用
+			enablement := make(AlarmEnablement)
+			for _, alarmType := range RadarAlarmTypes {
+				enablement[alarmType] = false
+			}
+			return enablement, nil
 		}
-		return nil, fmt.Errorf("failed to query alarm_device: %w", err)
+		return nil, fmt.Errorf("failed to query alarm enablement: %w", err)
 	}
 
-	// 解析 monitor_config JSON
-	var monitorConfig map[string]interface{}
-	if err := json.Unmarshal(monitorConfigJSON, &monitorConfig); err != nil {
-		if r.logger != nil {
-			r.logger.Warn("Failed to parse monitor_config",
-				zap.String("device_id", deviceID),
-				zap.String("tenant_id", tenantID),
-				zap.Error(err),
-			)
-		}
-		// 解析失败，返回空的使能配置
-		return make(AlarmEnablement), nil
-	}
-
-	// 提取 alarms 对象
-	alarmsObj, ok := monitorConfig["alarms"]
-	if !ok {
-		// 没有 alarms 字段，返回空的使能配置
-		return make(AlarmEnablement), nil
-	}
-
-	// 将 alarms 转换为 map[string]interface{}
-	alarmsMap, ok := alarmsObj.(map[string]interface{})
-	if !ok {
-		if r.logger != nil {
-			r.logger.Warn("Invalid alarms format in monitor_config",
-				zap.String("device_id", deviceID),
-				zap.String("tenant_id", tenantID),
-			)
-		}
-		return make(AlarmEnablement), nil
-	}
-
-	// 构建使能配置 map
 	enablement := make(AlarmEnablement)
-	for alarmType, alarmConfig := range alarmsMap {
-		// alarmConfig 应该是 map[string]interface{}，包含 "enabled" 字段
-		alarmConfigMap, ok := alarmConfig.(map[string]interface{})
-		if !ok {
-			// 格式不正确，跳过
-			continue
-		}
-
-		// 检查 enabled 字段
-		enabled, ok := alarmConfigMap["enabled"]
-		if !ok {
-			// 没有 enabled 字段，默认为 false
-			enablement[alarmType] = false
-			continue
-		}
-
-		// 将 enabled 转换为 bool
-		enabledBool, ok := enabled.(bool)
-		if !ok {
-			// 类型转换失败，默认为 false
-			enablement[alarmType] = false
-			continue
-		}
-
-		enablement[alarmType] = enabledBool
+	for _, alarmType := range RadarAlarmTypes {
+		enablement[alarmType] = false
 	}
 
-	// 写入缓存
+	if !monitorConfigJSON.Valid || monitorConfigJSON.String == "" {
+		r.cacheMutex.Lock()
+		r.alarmEnablementCache[cacheKey] = enablement
+		r.cacheMutex.Unlock()
+		return enablement, nil
+	}
+
+	var monitorConfig map[string]interface{}
+	if err := json.Unmarshal([]byte(monitorConfigJSON.String), &monitorConfig); err != nil {
+		return nil, fmt.Errorf("failed to parse monitor_config: %w", err)
+	}
+
+	alarms, ok := monitorConfig["alarms"].(map[string]interface{})
+	if !ok {
+		r.cacheMutex.Lock()
+		r.alarmEnablementCache[cacheKey] = enablement
+		r.cacheMutex.Unlock()
+		return enablement, nil
+	}
+
+	for _, alarmType := range RadarAlarmTypes {
+		alarmConfig, ok := alarms[alarmType].(map[string]interface{})
+		if !ok {
+			enablement[alarmType] = false
+			continue
+		}
+
+		if level, ok := alarmConfig["level"].(string); ok {
+			levelUpper := strings.ToUpper(level)
+			enablement[alarmType] = (levelUpper != "DISABLE" && levelUpper != "DISABLED")
+			continue
+		}
+
+		if enabled, ok := alarmConfig["enabled"].(bool); ok {
+			enablement[alarmType] = enabled
+		}
+	}
+
 	r.cacheMutex.Lock()
 	r.alarmEnablementCache[cacheKey] = enablement
 	r.cacheMutex.Unlock()
@@ -544,169 +421,276 @@ func (r *DeviceRepository) GetAlarmEnablement(ctx context.Context, tenantID, dev
 	return enablement, nil
 }
 
-// ClearAlarmEnablementCache 清除指定设备的报警使能配置缓存
-// 当收到配置变更事件时调用此方法
-func (r *DeviceRepository) ClearAlarmEnablementCache(tenantID, deviceID string) {
-	if tenantID == "" || deviceID == "" {
+// ClearAlarmEnablementCache 清除报警使能缓存
+func (r *DeviceRepository) ClearAlarmEnablementCache(tenantID, deviceUID string) {
+	if tenantID == "" || deviceUID == "" {
 		return
 	}
-
-	cacheKey := fmt.Sprintf("%s:%s", tenantID, deviceID)
+	cacheKey := fmt.Sprintf("%s:%s", tenantID, deviceUID)
 	r.cacheMutex.Lock()
 	delete(r.alarmEnablementCache, cacheKey)
 	r.cacheMutex.Unlock()
-
-	if r.logger != nil {
-		r.logger.Debug("Cleared alarm enablement cache",
-			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
-		)
-	}
 }
 
-// IsAlarmTypeEnabled 检查特定报警类型是否启用
-// 如果设备没有配置或报警类型未配置，返回 false
-func (r *DeviceRepository) IsAlarmTypeEnabled(ctx context.Context, tenantID, deviceID, alarmType string) (bool, error) {
-	enablement, err := r.GetAlarmEnablement(ctx, tenantID, deviceID)
+// IsAlarmTypeEnabled 检查报警类型是否启用
+func (r *DeviceRepository) IsAlarmTypeEnabled(ctx context.Context, tenantID, deviceUID, alarmType string) (bool, error) {
+	enablement, err := r.GetAlarmEnablement(ctx, tenantID, deviceUID)
 	if err != nil {
 		return false, err
 	}
-
-	// 检查报警类型是否在使能配置中，且为 true
 	return enablement[alarmType], nil
 }
 
-// GetPossibleAlarmTypesFromEvent 根据 event 数据确定可能触发的报警类型列表
-// 注意：这只是根据 event type 和 category 判断可能触发的报警类型，不检查具体值
-// 具体值检查由后端服务（wisefido-AI 或 wisefido-card-aggregator）处理
-// 参考：wisefido-card-aggregator/internal/alarm/alarm_handler.go 中的 IsDeviceDirectAlarm 函数
-func GetPossibleAlarmTypesFromEvent(dataValue interface{}) []string {
-	possibleAlarms := []string{}
+// RefreshAlarmCacheForTenant 刷新租户的报警缓存
+func (r *DeviceRepository) RefreshAlarmCacheForTenant(tenantID string) {
+	r.cacheMutex.Lock()
+	defer r.cacheMutex.Unlock()
 
-	// 处理 data_value 可能是数组或对象的情况
-	var eventArray []interface{}
-	switch v := dataValue.(type) {
-	case []interface{}:
-		eventArray = v
-	case map[string]interface{}:
-		eventArray = []interface{}{v}
-	default:
-		return possibleAlarms
-	}
-
-	for _, eventItem := range eventArray {
-		eventMap, ok := eventItem.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		category, ok := eventMap["category"].(string)
-		if !ok {
-			continue
-		}
-
-		switch category {
-		case "pose":
-			// type=2: 姿态变化事件
-			// 可能触发：Fall, SuspectedFall, SittingOnGround
-			possibleAlarms = append(possibleAlarms, "Fall", "SuspectedFall", "SittingOnGround")
-
-		case "isOnline":
-			// type=5: 设备在线状态
-			// 可能触发：OfflineAlarm
-			possibleAlarms = append(possibleAlarms, "OfflineAlarm")
-
-		case "signal_poor":
-			// type=7: 信号差事件
-			// 可能触发：PoorReception
-			possibleAlarms = append(possibleAlarms, "PoorReception")
-
-		case "angle_abnormal":
-			// type=8: 倾角异常事件
-			// 可能触发：AngleException
-			possibleAlarms = append(possibleAlarms, "AngleException")
-
-		case "other":
-			// type=9: 其他告警事件
-			// 根据 alarmType 字段判断
-			if alarmType, ok := eventMap["alarmType"].(string); ok {
-				switch alarmType {
-				case "1":
-					// 离床未归
-					possibleAlarms = append(possibleAlarms, "Radar_LeftBed")
-				case "2":
-					// 滞留
-					possibleAlarms = append(possibleAlarms, "Stay")
-				case "3":
-					// 长时间无人活动
-					possibleAlarms = append(possibleAlarms, "NoActivity24h")
-				}
-			}
-
-		case "enter2out":
-			// type=1: 进出事件
-			// 可能触发：WarningArea（进入警告区域）
-			possibleAlarms = append(possibleAlarms, "WarningArea")
+	prefix := tenantID + ":"
+	for key := range r.alarmEnablementCache {
+		if strings.HasPrefix(key, prefix) {
+			delete(r.alarmEnablementCache, key)
 		}
 	}
-
-	return possibleAlarms
 }
 
-// GetPossibleAlarmTypesFromStat 根据 stat 数据确定可能触发的报警类型列表
-// 注意：这只是根据 category 和状态字段判断可能触发的报警类型，不检查具体值
-// 具体值检查由后端服务（wisefido-AI 或 wisefido-card-aggregator）处理
-func GetPossibleAlarmTypesFromStat(dataValue interface{}) []string {
-	possibleAlarms := []string{}
+// GetPossibleAlarmTypesFromEvent 从事件数据中获取可能的报警类型
+func GetPossibleAlarmTypesFromEvent(dataValue interface{}) []string {
+	var alarmTypes []string
 
-	// 处理 data_value 可能是数组或对象的情况
-	var statArray []interface{}
+	dataArray, ok := dataValue.([]interface{})
+	if !ok {
+		return alarmTypes
+	}
+
+	for _, item := range dataArray {
+		itemMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		category, _ := itemMap["category"].(string)
+
+		switch category {
+		case "enter2out":
+			event, _ := itemMap["event"].(string)
+			if event == "enter" || event == "exit" {
+				alarmTypes = append(alarmTypes, "WarningArea")
+			}
+		case "pose":
+			pose, _ := itemMap["pose"].(string)
+			if pose == "Fall" {
+				alarmTypes = append(alarmTypes, "Fall")
+			} else if pose == "SuspectedFall" {
+				alarmTypes = append(alarmTypes, "SuspectedFall")
+			} else if pose == "SittingOnGround" {
+				alarmTypes = append(alarmTypes, "SittingOnGround")
+			}
+		case "isOnline":
+			deviceStatus, _ := itemMap["device_status"].(string)
+			if deviceStatus == "offline" {
+				alarmTypes = append(alarmTypes, "OfflineAlarm")
+			}
+		case "signal_poor":
+			alarmTypes = append(alarmTypes, "PoorReception")
+		case "angle_abnormal":
+			alarmTypes = append(alarmTypes, "AngleException")
+		case "other":
+			alarmType, _ := itemMap["alarmType"].(string)
+			switch alarmType {
+			case "1":
+				alarmTypes = append(alarmTypes, "Radar_LeftBed")
+			case "2":
+				alarmTypes = append(alarmTypes, "Stay")
+			case "3":
+				alarmTypes = append(alarmTypes, "NoActivity24h")
+			}
+		}
+	}
+
+	return alarmTypes
+}
+
+// GetPossibleAlarmTypesFromStat 从统计数据中获取可能的报警类型
+func GetPossibleAlarmTypesFromStat(dataValue interface{}) []string {
+	var alarmTypes []string
+
+	var dataArray []interface{}
 	switch v := dataValue.(type) {
 	case []interface{}:
-		statArray = v
+		dataArray = v
 	case map[string]interface{}:
-		statArray = []interface{}{v}
+		dataArray = []interface{}{v}
 	default:
-		return possibleAlarms
+		return alarmTypes
 	}
 
-	for _, statItem := range statArray {
-		statMap, ok := statItem.(map[string]interface{})
+	for _, item := range dataArray {
+		itemMap, ok := item.(map[string]interface{})
 		if !ok {
 			continue
 		}
 
-		category, ok := statMap["category"].(string)
-		if !ok {
-			continue
-		}
+		category, _ := itemMap["category"].(string)
 
 		if category == "sleep" {
-			// sleep category: 可能触发生命体征相关报警
-			// 检查 heart_state
-			if heartState, ok := statMap["heart_state"].(string); ok {
-				if heartState == "Heart rate low" || heartState == "Heart rate high" {
-					possibleAlarms = append(possibleAlarms, "Radar_AbnormalHeartRate")
-				}
+			breathState, _ := itemMap["breath_state"].(string)
+			if breathState == "Apnea" {
+				alarmTypes = append(alarmTypes, "Radar_ApneaHypopnea")
+			} else if strings.Contains(breathState, "Breath rate") {
+				alarmTypes = append(alarmTypes, "Radar_AbnormalRespiratoryRate")
 			}
 
-			// 检查 breath_state
-			if breathState, ok := statMap["breath_state"].(string); ok {
-				if breathState == "Breath rate low" || breathState == "Breath rate high" {
-					possibleAlarms = append(possibleAlarms, "Radar_AbnormalRespiratoryRate")
-				} else if breathState == "Apnea" {
-					possibleAlarms = append(possibleAlarms, "Radar_ApneaHypopnea")
-				}
+			heartState, _ := itemMap["heart_state"].(string)
+			if strings.Contains(heartState, "Heart rate") {
+				alarmTypes = append(alarmTypes, "Radar_AbnormalHeartRate")
 			}
 
-			// 检查 vital_signs_state
-			if vitalState, ok := statMap["vital_signs_state"].(string); ok {
-				if vitalState == "Vital signs weak" {
-					possibleAlarms = append(possibleAlarms, "VitalsWeak")
-				}
+			vitalSignsState, _ := itemMap["vital_signs_state"].(string)
+			if vitalSignsState == "Vital signs weak" {
+				alarmTypes = append(alarmTypes, "VitalsWeak")
 			}
 		}
 	}
 
-	return possibleAlarms
+	return alarmTypes
+}
+
+// GetDevicesByBranchID 根据 branch_id 获取设备ID列表
+func (r *DeviceRepository) GetDevicesByBranchID(ctx context.Context, tenantID, branchID string) ([]string, error) {
+	query := `
+		SELECT DISTINCT d.device_id::text
+		FROM devices d
+		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
+		LEFT JOIN rooms r ON (
+			(d.bound_room_id = r.room_id AND d.tenant_id = r.tenant_id) OR
+			(b.room_id = r.room_id AND b.tenant_id = r.tenant_id)
+		)
+		LEFT JOIN units u ON r.unit_id = u.unit_id AND r.tenant_id = u.tenant_id
+		WHERE d.tenant_id = $1
+			AND u.branch_id = $2
+			AND d.status != 'disabled'
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, tenantID, branchID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query devices by branch_id: %w", err)
+	}
+	defer rows.Close()
+
+	var deviceIDs []string
+	for rows.Next() {
+		var deviceID string
+		if err := rows.Scan(&deviceID); err != nil {
+			return nil, fmt.Errorf("failed to scan device_id: %w", err)
+		}
+		deviceIDs = append(deviceIDs, deviceID)
+	}
+
+	return deviceIDs, rows.Err()
+}
+
+// GetDevicesByBuildingID 根据 building_id 获取设备ID列表
+func (r *DeviceRepository) GetDevicesByBuildingID(ctx context.Context, tenantID, buildingID string) ([]string, error) {
+	query := `
+		SELECT DISTINCT d.device_id::text
+		FROM devices d
+		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
+		LEFT JOIN rooms r ON (
+			(d.bound_room_id = r.room_id AND d.tenant_id = r.tenant_id) OR
+			(b.room_id = r.room_id AND b.tenant_id = r.tenant_id)
+		)
+		LEFT JOIN units u ON r.unit_id = u.unit_id AND r.tenant_id = u.tenant_id
+		WHERE d.tenant_id = $1
+			AND u.building_id = $2
+			AND d.status != 'disabled'
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, tenantID, buildingID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query devices by building_id: %w", err)
+	}
+	defer rows.Close()
+
+	var deviceIDs []string
+	for rows.Next() {
+		var deviceID string
+		if err := rows.Scan(&deviceID); err != nil {
+			return nil, fmt.Errorf("failed to scan device_id: %w", err)
+		}
+		deviceIDs = append(deviceIDs, deviceID)
+	}
+
+	return deviceIDs, rows.Err()
+}
+
+// GetDevicesByUnitID 根据 unit_id 获取设备ID列表
+func (r *DeviceRepository) GetDevicesByUnitID(ctx context.Context, tenantID, unitID string) ([]string, error) {
+	query := `
+		SELECT DISTINCT d.device_id::text
+		FROM devices d
+		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
+		LEFT JOIN rooms r ON (
+			(d.bound_room_id = r.room_id AND d.tenant_id = r.tenant_id) OR
+			(b.room_id = r.room_id AND b.tenant_id = r.tenant_id)
+		)
+		WHERE d.tenant_id = $1
+			AND r.unit_id = $2
+			AND d.status != 'disabled'
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, tenantID, unitID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query devices by unit_id: %w", err)
+	}
+	defer rows.Close()
+
+	var deviceIDs []string
+	for rows.Next() {
+		var deviceID string
+		if err := rows.Scan(&deviceID); err != nil {
+			return nil, fmt.Errorf("failed to scan device_id: %w", err)
+		}
+		deviceIDs = append(deviceIDs, deviceID)
+	}
+
+	return deviceIDs, rows.Err()
+}
+
+// GetUnitIDForRoomOrBed 根据 room_id 或 bed_id 获取 unit_id
+func (r *DeviceRepository) GetUnitIDForRoomOrBed(ctx context.Context, tenantID, addressID, addressType string) (string, error) {
+	var query string
+	if addressType == "room" {
+		query = `
+			SELECT r.unit_id::text
+			FROM rooms r
+			WHERE r.tenant_id = $1 AND r.room_id = $2
+			LIMIT 1
+		`
+	} else if addressType == "bed" {
+		query = `
+			SELECT r.unit_id::text
+			FROM beds b
+			INNER JOIN rooms r ON b.room_id = r.room_id AND b.tenant_id = r.tenant_id
+			WHERE b.tenant_id = $1 AND b.bed_id = $2
+			LIMIT 1
+		`
+	} else {
+		return "", fmt.Errorf("invalid address_type: %s", addressType)
+	}
+
+	var unitID sql.NullString
+	err := r.db.QueryRowContext(ctx, query, tenantID, addressID).Scan(&unitID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("unit not found for %s: %s", addressType, addressID)
+		}
+		return "", fmt.Errorf("failed to query unit_id: %w", err)
+	}
+
+	if !unitID.Valid {
+		return "", fmt.Errorf("unit_id is null for %s: %s", addressType, addressID)
+	}
+
+	return unitID.String, nil
 }

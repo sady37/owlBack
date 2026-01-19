@@ -285,11 +285,11 @@ func (s *cardService) aggregateCardData(ctx context.Context, cards []*domain.Car
 	}
 
 	// 1. 收集所有需要查询的 ID
-	deviceIDs := make(map[string]bool)
+	deviceUIDs := make(map[string]bool)
 	residentIDs := make(map[string]bool)
 
 	for _, card := range cards {
-		// 收集设备 ID（从 JSONB 对象数组中提取）
+		// 收集设备 UID（从 JSONB 对象数组中提取）
 		var devicesFromCard []map[string]interface{}
 		if err := json.Unmarshal(card.Card.Devices, &devicesFromCard); err != nil {
 			s.logger.Warn("Failed to parse devices JSONB, skipping",
@@ -299,9 +299,20 @@ func (s *cardService) aggregateCardData(ctx context.Context, cards []*domain.Car
 			continue
 		}
 		// JSONB 存储的是对象数组
+		// 优先使用 device_uid，向后兼容 device_id 和 uid
 		for _, deviceObj := range devicesFromCard {
-			if deviceID, ok := deviceObj["device_id"].(string); ok && deviceID != "" {
-				deviceIDs[deviceID] = true
+			deviceUID, _ := deviceObj["device_uid"].(string)
+			if deviceUID == "" {
+				deviceUID, _ = deviceObj["uid"].(string)
+			}
+			if deviceUID == "" {
+				// 向后兼容：尝试从 device_id 获取
+				if deviceID, ok := deviceObj["device_id"].(string); ok && deviceID != "" {
+					deviceUID = deviceID
+				}
+			}
+			if deviceUID != "" {
+				deviceUIDs[deviceUID] = true
 			}
 		}
 
@@ -342,7 +353,7 @@ func (s *cardService) aggregateCardData(ctx context.Context, cards []*domain.Car
 	}
 
 	// 2. 批量查询（一次性查询，最多 500 条）
-	devices, err := s.batchGetDevices(ctx, cards[0].Card.TenantID, mapKeys(deviceIDs))
+	devices, err := s.batchGetDevices(ctx, cards[0].Card.TenantID, mapKeys(deviceUIDs))
 	if err != nil {
 		s.logger.Warn("Failed to batch get devices, continuing with empty devices",
 			zap.Error(err),
@@ -389,13 +400,13 @@ func (s *cardService) aggregateSingleCard(
 ) (*domain.CardOverviewItem, error) {
 	// 1. 初始化基础信息（从 card 表）
 	item := &domain.CardOverviewItem{
-		CardID:       card.Card.CardID,
-		TenantID:     card.Card.TenantID,
-		CardType:     card.Card.CardType,
-		CardName:     card.Card.CardName,
-		CardAddress:  card.Card.CardAddress,
+		CardID:         card.Card.CardID,
+		TenantID:       card.Card.TenantID,
+		CardType:       card.Card.CardType,
+		CardName:       card.Card.CardName,
+		CardAddress:    card.Card.CardAddress,
 		IconAlarmLevel: card.Card.IconAlarmLevel,
-		PopAlarmEmerge:  card.Card.PopAlarmEmerge,
+		PopAlarmEmerge: card.Card.PopAlarmEmerge,
 		// 报警统计初始值从 card 表获取（作为回退）
 		UnhandledAlarm0: card.Card.UnhandledAlarm0,
 		UnhandledAlarm1: card.Card.UnhandledAlarm1,
@@ -480,12 +491,20 @@ func (s *cardService) aggregateSingleCard(
 		// 解析失败，跳过设备处理
 	} else {
 		for _, deviceObj := range devicesFromCard {
-			deviceID, _ := deviceObj["device_id"].(string)
+			// 优先使用 device_uid，向后兼容 device_id 和 uid
+			deviceUID, _ := deviceObj["device_uid"].(string)
+			if deviceUID == "" {
+				deviceUID, _ = deviceObj["uid"].(string)
+			}
+			if deviceUID == "" {
+				// 向后兼容：尝试从 device_id 获取
+				deviceUID, _ = deviceObj["device_id"].(string)
+			}
 			deviceName, _ := deviceObj["device_name"].(string)
 			deviceTypeStr, _ := deviceObj["device_type"].(string)
 			deviceModel, _ := deviceObj["device_model"].(string)
 
-			if deviceID != "" {
+			if deviceUID != "" {
 				// 将 device_type 从字符串转换为数字（前端期望：1=sleepace, 2=radar）
 				var deviceTypeNum interface{} = nil
 				if deviceTypeStr != "" {
@@ -498,8 +517,8 @@ func (s *cardService) aggregateSingleCard(
 					}
 				}
 
-				// 尝试从数据库获取完整信息（用于获取 status, serial_number 等）
-				if device, ok := devices[deviceID]; ok {
+				// 尝试从数据库获取完整信息（用于获取 status, device_uid 等）
+				if device, ok := devices[deviceUID]; ok {
 					// 如果 JSONB 中没有 device_type，尝试从数据库获取
 					if deviceTypeNum == nil && device.DeviceType.Valid {
 						deviceTypeStrFromDB := device.DeviceType.String
@@ -517,36 +536,32 @@ func (s *cardService) aggregateSingleCard(
 					}
 
 					// 使用数据库中的完整信息
-					serialNumber := ""
-					if device.SerialNumber.Valid {
-						serialNumber = device.SerialNumber.String
-					}
-					uid := ""
-					if device.UID.Valid {
-						uid = device.UID.String
-					}
 					item.Devices = append(item.Devices, domain.CardDevice{
-						DeviceID:     device.DeviceID,
-						DeviceName:   device.DeviceName,
-						DeviceType:   deviceTypeNum, // 数字类型（1 或 2）
-						DeviceModel:  deviceModel,
-						SerialNumber: serialNumber,
-						UID:          uid,
-						Status:       device.Status,
+						DeviceID:    device.DeviceID, // device_id (UUID, 主键)
+						UID:         device.DeviceUID, // device_uid 作为唯一标识
+						DeviceName:  device.DeviceName,
+						DeviceType:  deviceTypeNum, // 数字类型（1 或 2）
+						DeviceModel: deviceModel,
+						Status:      device.Status,
 					})
 				} else {
 					// 如果数据库中没有，使用 JSONB 中的数据
-					serialNumber, _ := deviceObj["serial_number"].(string)
-					uid, _ := deviceObj["uid"].(string)
+					// deviceUID 已在上面定义（第495-501行）
 					status, _ := deviceObj["status"].(string)
+					// 尝试从 JSONB 中获取 device_id，如果没有则使用 device_uid
+					deviceIDFromJSON, _ := deviceObj["device_id"].(string)
+					if deviceIDFromJSON == "" {
+						// 如果没有 device_id，尝试通过 device_uid 查询 devices 表获取 device_id
+						// 注意：这里暂时使用 device_uid 作为 device_id（向后兼容）
+						deviceIDFromJSON = deviceUID
+					}
 					item.Devices = append(item.Devices, domain.CardDevice{
-						DeviceID:     deviceID,
-						DeviceName:   deviceName,
-						DeviceType:   deviceTypeNum, // 数字类型（1 或 2）
-						DeviceModel:  deviceModel,
-						SerialNumber: serialNumber,
-						UID:          uid,
-						Status:       status,
+						DeviceID:    deviceIDFromJSON, // device_id (UUID, 主键)
+						UID:         deviceUID,        // device_uid 作为唯一标识
+						DeviceName:  deviceName,
+						DeviceType:  deviceTypeNum, // 数字类型（1 或 2）
+						DeviceModel: deviceModel,
+						Status:      status,
 					})
 				}
 			}
@@ -706,9 +721,9 @@ func (s *cardService) aggregateSingleCard(
 	return item, nil
 }
 
-// batchGetDevices 批量查询设备
-func (s *cardService) batchGetDevices(ctx context.Context, tenantID string, deviceIDs []string) (map[string]*domain.Device, error) {
-	if len(deviceIDs) == 0 {
+// batchGetDevices 批量查询设备（使用 device_uid）
+func (s *cardService) batchGetDevices(ctx context.Context, tenantID string, deviceUIDs []string) (map[string]*domain.Device, error) {
+	if len(deviceUIDs) == 0 {
 		return make(map[string]*domain.Device), nil
 	}
 
@@ -716,10 +731,8 @@ func (s *cardService) batchGetDevices(ctx context.Context, tenantID string, devi
 		SELECT 
 			d.device_id::text,
 			d.tenant_id::text,
-			d.device_store_id::text,
+			d.device_uid,
 			d.device_name,
-			d.serial_number,
-			d.uid,
 			d.bound_room_id::text,
 			d.bound_bed_id::text,
 			d.status,
@@ -729,12 +742,12 @@ func (s *cardService) batchGetDevices(ctx context.Context, tenantID string, devi
 			ds.device_type,
 			ds.device_model
 		FROM devices d
-		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		LEFT JOIN device_store ds ON d.device_uid = ds.device_uid
 		WHERE d.tenant_id = $1
-		  AND d.device_id = ANY($2::uuid[])
+		  AND d.device_uid = ANY($2::text[])
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, tenantID, pq.Array(deviceIDs))
+	rows, err := s.db.QueryContext(ctx, query, tenantID, pq.Array(deviceUIDs))
 	if err != nil {
 		return nil, fmt.Errorf("failed to query devices: %w", err)
 	}
@@ -743,16 +756,15 @@ func (s *cardService) batchGetDevices(ctx context.Context, tenantID string, devi
 	result := make(map[string]*domain.Device)
 	for rows.Next() {
 		var device domain.Device
-		var deviceStoreID, serialNumber, uid, boundRoomID, boundBedID sql.NullString
+		var deviceUID string
+		var boundRoomID, boundBedID sql.NullString
 		var metadata, deviceType, deviceModel sql.NullString
 
 		err := rows.Scan(
 			&device.DeviceID,
 			&device.TenantID,
-			&deviceStoreID,
+			&deviceUID,
 			&device.DeviceName,
-			&serialNumber,
-			&uid,
 			&boundRoomID,
 			&boundBedID,
 			&device.Status,
@@ -766,20 +778,12 @@ func (s *cardService) batchGetDevices(ctx context.Context, tenantID string, devi
 			return nil, fmt.Errorf("failed to scan device: %w", err)
 		}
 
-		if deviceStoreID.Valid {
-			device.DeviceStoreID = sql.NullString{String: deviceStoreID.String, Valid: true}
-		}
+		device.DeviceUID = deviceUID
 		if deviceType.Valid {
 			device.DeviceType = sql.NullString{String: deviceType.String, Valid: true}
 		}
 		if deviceModel.Valid {
 			device.DeviceModel = sql.NullString{String: deviceModel.String, Valid: true}
-		}
-		if serialNumber.Valid {
-			device.SerialNumber = sql.NullString{String: serialNumber.String, Valid: true}
-		}
-		if uid.Valid {
-			device.UID = sql.NullString{String: uid.String, Valid: true}
 		}
 		if boundRoomID.Valid {
 			device.BoundRoomID = sql.NullString{String: boundRoomID.String, Valid: true}
@@ -791,7 +795,7 @@ func (s *cardService) batchGetDevices(ctx context.Context, tenantID string, devi
 			device.Metadata = sql.NullString{String: metadata.String, Valid: true}
 		}
 
-		result[device.DeviceID] = &device
+		result[device.DeviceUID] = &device
 	}
 
 	if err := rows.Err(); err != nil {

@@ -21,8 +21,6 @@ type UnitsRepository interface {
 	FindBuildingByBranchAndName(ctx context.Context, tenantID, branchID, buildingName string) (string, error)
 	CreateBuilding(ctx context.Context, tenantID string, building *domain.Building) (string, error)
 	UpdateBuilding(ctx context.Context, tenantID, buildingID string, building *domain.Building) error
-	// Deprecated: 使用 UpdateBuildingFields 替代，支持区分"不更新"、"更新"、"删除"三种状态
-	UpdateBuildingFields(ctx context.Context, tenantID, buildingID string, update *domain.BuildingUpdate) error
 	DeleteBuilding(ctx context.Context, tenantID, buildingID string) error
 
 	// Unit 操作
@@ -45,8 +43,6 @@ type UnitsRepository interface {
 	GetBed(ctx context.Context, tenantID, bedID string) (*domain.Bed, error)
 	CreateBed(ctx context.Context, tenantID, roomID string, bed *domain.Bed) (string, error)
 	UpdateBed(ctx context.Context, tenantID, bedID string, bed *domain.Bed) error
-	// Deprecated: 使用 UpdateBedFields 替代，支持区分"不更新"、"更新"、"删除"三种状态
-	UpdateBedFields(ctx context.Context, tenantID, bedID string, update *domain.BedUpdate) error
 	DeleteBed(ctx context.Context, tenantID, bedID string) error
 
 	// 批量查询（用于 ListUnitsWithFullHierarchy）

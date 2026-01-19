@@ -63,9 +63,9 @@ type CardOverviewItem struct {
 	ResidentID  *string `json:"resident_id,omitempty"`
 
 	// Unit 信息
-	UnitType         string `json:"unit_type"`         // "Home" | "Facility"
-	IsPublicSpace    bool   `json:"is_public_space"`
-	IsSharedUnit bool  `json:"is_shared_unit"`
+	UnitType      string `json:"unit_type"` // "Home" | "Facility"
+	IsPublicSpace bool   `json:"is_public_space"`
+	IsSharedUnit  bool   `json:"is_shared_unit"`
 
 	// 聚合数据
 	Devices   []CardDevice   `json:"devices"`
@@ -84,7 +84,7 @@ type CardOverviewItem struct {
 	ResidentAccess bool `json:"resident_access"` // 是否允许住户访问
 
 	// 护理人员相关（可选，如果实现）
-	CaregiverGroups []string       `json:"caregiver_groups,omitempty"`
+	CaregiverGroups []string        `json:"caregiver_groups,omitempty"`
 	Caregivers      []CardCaregiver `json:"caregivers,omitempty"`
 
 	// 计数字段（用于快速显示）
@@ -95,13 +95,12 @@ type CardOverviewItem struct {
 
 // CardDevice 卡片关联的设备信息
 type CardDevice struct {
-	DeviceID   string `json:"device_id"`
-	DeviceName string `json:"device_name"`
-	DeviceType interface{} `json:"device_type"` // 数字（1=sleepace, 2=radar）或字符串（向后兼容）
-	DeviceModel string `json:"device_model,omitempty"`
-	SerialNumber string `json:"serial_number,omitempty"`
-	UID         string `json:"uid,omitempty"`
-	Status      string `json:"status,omitempty"` // "online" | "offline" | "error" | "disabled"
+	DeviceID    string      `json:"device_id"` // device_id (UUID, 主键)
+	UID         string      `json:"uid"`       // device_uid，作为设备唯一标识（代表原来的 device_serial, uid）
+	DeviceName  string      `json:"device_name"`
+	DeviceType  interface{} `json:"device_type"` // 数字（1=sleepace, 2=radar）或字符串（向后兼容）
+	DeviceModel string      `json:"device_model,omitempty"`
+	Status      string      `json:"status,omitempty"` // "online" | "offline" | "error" | "disabled"
 	// 可以根据需要添加更多字段
 }
 
@@ -121,4 +120,3 @@ type CardCaregiver struct {
 	UserRole      string `json:"user_role"`
 	UserBranchTag string `json:"user_branch_tag,omitempty"`
 }
-

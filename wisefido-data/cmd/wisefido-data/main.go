@@ -148,7 +148,8 @@ func main() {
 
 		// 创建 AlarmCloud Service 和 Handler
 		alarmCloudRepo := repository.NewPostgresAlarmCloudRepository(db)
-		alarmCloudService := service.NewAlarmCloudService(alarmCloudRepo, db, configNotifier, logger)
+		configVersionsRepo := repository.NewPostgresConfigVersionsRepository(db)
+		alarmCloudService := service.NewAlarmCloudService(alarmCloudRepo, configVersionsRepo, db, configNotifier, logger)
 		alarmCloudHandler := httpapi.NewAlarmCloudHandler(alarmCloudService, logger)
 		router.RegisterAlarmCloudRoutes(alarmCloudHandler)
 
@@ -208,13 +209,15 @@ func main() {
 
 		// 创建 DeviceMonitorSettings Service 和 Handler
 		alarmDeviceRepo := repository.NewPostgresAlarmDeviceRepository(db)
-		// 使用已创建的 alarmCloudRepo（在 AlarmCloud Service 创建时已创建）
+		// 使用已创建的 alarmCloudRepo、configVersionsRepo（在 AlarmCloud Service 创建时已创建）
 		// 使用已创建的 configNotifier（在 AlarmCloud Service 创建时已创建）
 		deviceMonitorSettingsService := service.NewDeviceMonitorSettingsService(
 			alarmDeviceRepo,
 			alarmCloudRepo,
+			configVersionsRepo, // 使用已创建的 configVersionsRepo
 			devicesRepo,
 			deviceStoreRepo,
+			db, // 添加 db 参数用于事务操作
 			configNotifier,
 			logger,
 		)

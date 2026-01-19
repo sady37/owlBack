@@ -51,7 +51,7 @@ type ListDevicesRequest struct {
 	Status         []string // 可选：设备状态过滤（online, offline, error）
 	BusinessAccess string   // 可选：业务访问权限（pending, approved, rejected）
 	DeviceType     string   // 可选：设备类型
-	SearchType     string   // 可选：搜索类型（device_name, serial_number, uid）
+	SearchType     string   // 可选：搜索类型（device_name, device_uid）
 	SearchKeyword  string   // 可选：搜索关键词
 	Page           int      // 可选，默认 1
 	Size           int      // 可选，默认 20

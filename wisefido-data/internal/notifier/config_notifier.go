@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"time"
 
+	rediscommon "owl-common/redis"
+
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
-	rediscommon "owl-common/redis"
 )
 
 // ConfigNotifier 配置变更通知器
@@ -44,7 +45,8 @@ func (n *ConfigNotifier) NotifyAlarmDeviceUpdated(ctx context.Context, tenantID,
 	}
 
 	streamName := "config:change:stream"
-	streamID, err := rediscommon.PublishJSONToStream(ctx, n.redisClient, streamName, event)
+	// 使用默认配置：maxLen=1000, retentionSeconds=0（不限制保留时间）
+	streamID, err := rediscommon.PublishJSONToStream(ctx, n.redisClient, streamName, event, 1000, 0)
 	if err != nil {
 		n.logger.Error("Failed to publish alarm_device_updated event",
 			zap.String("tenant_id", tenantID),
@@ -73,7 +75,8 @@ func (n *ConfigNotifier) NotifyAlarmCloudUpdated(ctx context.Context, tenantID s
 	}
 
 	streamName := "config:change:stream"
-	streamID, err := rediscommon.PublishJSONToStream(ctx, n.redisClient, streamName, event)
+	// 使用默认配置：maxLen=1000, retentionSeconds=0（不限制保留时间）
+	streamID, err := rediscommon.PublishJSONToStream(ctx, n.redisClient, streamName, event, 1000, 0)
 	if err != nil {
 		n.logger.Error("Failed to publish alarm_cloud_updated event",
 			zap.String("tenant_id", tenantID),

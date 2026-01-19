@@ -159,10 +159,10 @@ func generateDeviceStoreExcel(headers []string, data []map[string]any, includeAl
 				value = getStringValue(item, "device_type")
 			case "Device Model":
 				value = getStringValue(item, "device_model")
-			case "Serial Number":
-				value = getStringValue(item, "serial_number")
-			case "UID":
-				value = getStringValue(item, "uid")
+			case "Device UID":
+				value = getStringValue(item, "device_uid")
+			case "MAC":
+				value = getStringValue(item, "mac")
 			case "IMEI":
 				value = getStringValue(item, "imei")
 			case "Comm Mode":

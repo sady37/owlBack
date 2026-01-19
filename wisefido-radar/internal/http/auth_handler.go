@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"wisefido-radar/internal/models"
-	
+
 	"go.uber.org/zap"
 )
 
@@ -30,7 +30,7 @@ func (h *AuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	// 读取请求体
 	var req models.AuthRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -41,7 +41,7 @@ func (h *AuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.sendErrorResponse(w, "请求格式错误", 400)
 		return
 	}
-	
+
 	// 记录请求日志（参考 simple-https.py 的日志输出）
 	h.logger.Info("=== Request Received ===",
 		zap.String("uid", req.UID),
@@ -52,9 +52,9 @@ func (h *AuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		zap.String("radar_sw", req.Radar.SW),
 		zap.String("remote_addr", r.RemoteAddr),
 	)
-	
-	// 调用认证服务
-	response, err := h.authService.AuthenticateDevice(r.Context(), &req)
+
+	// 调用认证服务（传递 remoteAddr）
+	response, err := h.authService.AuthenticateDevice(r.Context(), &req, r.RemoteAddr)
 	if err != nil {
 		h.logger.Error("Authentication service error",
 			zap.String("uid", req.UID),
@@ -63,14 +63,14 @@ func (h *AuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.sendErrorResponse(w, "服务器内部错误", 500)
 		return
 	}
-	
+
 	// 记录响应日志（参考 simple-https.py 的日志输出）
 	h.logger.Info("=== Response Sent ===",
 		zap.String("uid", req.UID),
 		zap.Int("code", response.Code),
 		zap.String("msg", response.Msg),
 	)
-	
+
 	// 发送响应
 	h.sendJSONResponse(w, response, http.StatusOK)
 }
@@ -79,7 +79,7 @@ func (h *AuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) sendJSONResponse(w http.ResponseWriter, data interface{}, statusCode int) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(statusCode)
-	
+
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		h.logger.Error("Failed to encode response",
 			zap.Error(err),
@@ -96,4 +96,3 @@ func (h *AuthHandler) sendErrorResponse(w http.ResponseWriter, msg string, code 
 	}
 	h.sendJSONResponse(w, response, code)
 }
-

@@ -54,6 +54,7 @@ func decodeRadarMonitor(data map[string]interface{}) (interface{}, error) {
 	if len(trackDataList) > 0 {
 		// 多人情况：每个 track 数据一个对象
 		for i, trackData := range trackDataList {
+			// 按照厂家文档字节顺序构建对象：target_id, position_x, position_y, position_z, remaining_time, pose, event, area_id
 			trackObj := map[string]interface{}{
 				"category":       "track",
 				"target_id":      trackData.TargetID,
@@ -61,12 +62,12 @@ func decodeRadarMonitor(data map[string]interface{}) (interface{}, error) {
 				"position_y":     trackData.PositionY,
 				"position_z":     trackData.PositionZ,
 				"remaining_time": trackData.RemainingTime,
-				"area_id":        trackData.AreaID,
 			}
 
-			// SNOMED 映射
+			// SNOMED 映射（按照字节顺序：pose在event之前）
 			applyRadarSNOMedMapping(trackObj, "pose", "monitor.track.pose", trackData.Pose)
 			applyRadarSNOMedMapping(trackObj, "event", "monitor.track.event", trackData.Event)
+			trackObj["area_id"] = trackData.AreaID
 
 			// 只在最后一个 track 对象中添加 raw_original（如果有）
 			if i == len(trackDataList)-1 && trackBase64 != "" {
@@ -156,8 +157,20 @@ func decodeRadarMonitor(data map[string]interface{}) (interface{}, error) {
 
 	if bhBase64 != "" {
 		// 解码 base64
+		// 按照标准文档顺序：category, vital_flag, respiratory_rate, heart_rate, sleep_status, stability, raw_original
 		bhBytes, err := base64.StdEncoding.DecodeString(bhBase64)
 		if err == nil && len(bhBytes) >= 14 {
+			// 提取 vital_flag (字节 0)
+			vitalObj["vital_flag"] = 0
+			hasVitalData = true
+
+			// 提取呼吸率和心率（字节 1 和 2）
+			if len(bhBytes) > 2 {
+				vitalObj["respiratory_rate"] = int(bhBytes[1])
+				vitalObj["heart_rate"] = int(bhBytes[2])
+				hasVitalData = true
+			}
+
 			// 提取 sleep_status (字节 13, bit 7:6)
 			if len(bhBytes) > 13 {
 				byte13 := int(bhBytes[13])
@@ -174,14 +187,9 @@ func decodeRadarMonitor(data map[string]interface{}) (interface{}, error) {
 					}
 				}
 			}
-			// 提取呼吸率和心率（字节 1 和 2）
-			if len(bhBytes) > 2 {
-				vitalObj["vital_flag"] = 0
-				vitalObj["respiratory_rate"] = int(bhBytes[1])
-				vitalObj["heart_rate"] = int(bhBytes[2])
-				vitalObj["raw_original"] = bhBase64
-				hasVitalData = true
-			}
+
+			// raw_original 放在最后
+			vitalObj["raw_original"] = bhBase64
 		}
 	} else {
 		// 兼容性处理：如果字段已经存在（已解码），直接使用
@@ -231,6 +239,7 @@ func decodeRadarStat(data map[string]interface{}) (interface{}, error) {
 	var dataValue []map[string]interface{}
 
 	// 1. 处理 track 统计数据
+	// 按照厂家文档字节顺序：version, people_count, walk_distance, walk_duration, lie_duration, stand_duration, multi_person_duration
 	hasTrackData := false
 	trackObj := make(map[string]interface{})
 	trackObj["category"] = "track"
@@ -290,12 +299,22 @@ func decodeRadarStat(data map[string]interface{}) (interface{}, error) {
 
 	if sleepBase64 != "" {
 		// 解码 base64
+		// 按照厂家文档字节顺序：sleep_flag(0), respiratory_rate(1), heart_rate(2), avg_respiratory_rate(5), avg_heart_rate(6), hr_breath_event(13)
 		sleepBytes, err := base64.StdEncoding.DecodeString(sleepBase64)
 		if err == nil && len(sleepBytes) >= 14 {
 			sleepObj["sleep_flag"] = 255
 			hasSleepData = true
 
-			// 提取 hr_breath_event (字节 13) 的各个位字段
+			// 提取生命体征字段（字节1,2,5,6）
+			if len(sleepBytes) > 6 {
+				sleepObj["respiratory_rate"] = int(sleepBytes[1])
+				sleepObj["heart_rate"] = int(sleepBytes[2])
+				sleepObj["avg_respiratory_rate"] = int(sleepBytes[5])
+				sleepObj["avg_heart_rate"] = int(sleepBytes[6])
+				hasSleepData = true
+			}
+
+			// 提取 hr_breath_event (字节 13) 的各个位字段（按照bit顺序：breath_state, heart_state, vital_signs_state, sleep_state）
 			if len(sleepBytes) > 13 {
 				byte13 := int(sleepBytes[13])
 
@@ -327,15 +346,9 @@ func decodeRadarStat(data map[string]interface{}) (interface{}, error) {
 					hasSleepData = true
 				}
 			}
-			// 提取其他字段（统计数据中的生命体征）
-			if len(sleepBytes) > 6 {
-				sleepObj["respiratory_rate"] = int(sleepBytes[1])
-				sleepObj["heart_rate"] = int(sleepBytes[2])
-				sleepObj["avg_respiratory_rate"] = int(sleepBytes[5])
-				sleepObj["avg_heart_rate"] = int(sleepBytes[6])
-				sleepObj["raw_original"] = sleepBase64
-				hasSleepData = true
-			}
+
+			// raw_original 放在最后
+			sleepObj["raw_original"] = sleepBase64
 		}
 	}
 

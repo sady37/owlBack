@@ -29,7 +29,7 @@ func (r *PostgresIoTTimeSeriesRepository) buildBaseQuery(includeAlarmEvent bool)
 		SELECT 
 			its.id,
 			its.tenant_id::text,
-			its.device_id::text,
+			its.device_uid,
 			its.timestamp,
 			its.data_type,
 			its.category,
@@ -61,13 +61,12 @@ func (r *PostgresIoTTimeSeriesRepository) buildBaseQuery(includeAlarmEvent bool)
 			its.raw_compression,
 			its.metadata,
 			its.created_at,
-			COALESCE(d.serial_number, '') as device_sn,
-			COALESCE(d.uid, '') as device_uid,
+			COALESCE(d.device_uid, '') as device_uid,
 			COALESCE(ds.firmware_version, '') as firmware_version,
 			COALESCE(ds.device_type, '') as device_type
 		FROM iot_timeseries its
-		LEFT JOIN devices d ON its.device_id = d.device_id
-		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		LEFT JOIN devices d ON its.device_uid = d.device_uid
+		LEFT JOIN device_store ds ON d.device_uid = ds.device_uid
 	`
 
 	if includeAlarmEvent {
@@ -82,7 +81,7 @@ func (r *PostgresIoTTimeSeriesRepository) buildBaseQuery(includeAlarmEvent bool)
 // buildWhereClause 构建 WHERE 子句
 func (r *PostgresIoTTimeSeriesRepository) buildWhereClause(tenantID string, filters *IoTTimeSeriesFilters, args *[]interface{}, argN *int) string {
 	var where []string
-	
+
 	if tenantID != "" {
 		where = append(where, "its.tenant_id = $"+fmt.Sprintf("%d", *argN))
 		*args = append(*args, tenantID)
@@ -91,7 +90,7 @@ func (r *PostgresIoTTimeSeriesRepository) buildWhereClause(tenantID string, filt
 
 	if filters != nil {
 		if filters.DeviceID != "" {
-			where = append(where, "its.device_id = $"+fmt.Sprintf("%d", *argN))
+			where = append(where, "its.device_uid = $"+fmt.Sprintf("%d", *argN))
 			*args = append(*args, filters.DeviceID)
 			*argN++
 		}
@@ -307,7 +306,7 @@ func (r *PostgresIoTTimeSeriesRepository) GetLatestData(ctx context.Context, ten
 	}
 
 	query := r.buildBaseQuery(false) + `
-		WHERE its.tenant_id = $1 AND its.device_id = $2
+		WHERE its.tenant_id = $1 AND its.device_uid = $2
 		ORDER BY its.timestamp DESC
 		LIMIT $3
 	`
@@ -556,11 +555,11 @@ func (r *PostgresIoTTimeSeriesRepository) GetDataByResident(ctx context.Context,
 	if filters != nil && filters.IncludeAlarmEvent {
 		queryCount += " LEFT JOIN alarm_events ae ON its.alarm_event_id = ae.event_id"
 	}
-	queryCount += " LEFT JOIN devices d ON its.device_id = d.device_id"
-	queryCount += " LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id"
+	queryCount += " LEFT JOIN devices d ON its.device_uid = d.device_uid"
+	queryCount += " LEFT JOIN device_store ds ON d.device_uid = ds.device_uid"
 	queryCount += " LEFT JOIN beds b ON d.bound_bed_id = b.bed_id"
 	queryCount += " WHERE its.tenant_id = $1 AND b.resident_id = $2"
-	
+
 	// 添加其他过滤条件到 COUNT 查询（复用 additionalWhere）
 	if len(additionalWhere) > 0 {
 		queryCount += " AND " + strings.Join(additionalWhere, " AND ")
@@ -637,8 +636,8 @@ func (r *PostgresIoTTimeSeriesRepository) getDataWithFilters(ctx context.Context
 	if includeAlarmEvent {
 		queryCount += " LEFT JOIN alarm_events ae ON its.alarm_event_id = ae.event_id"
 	}
-	queryCount += " LEFT JOIN devices d ON its.device_id = d.device_id"
-	queryCount += " LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id"
+	queryCount += " LEFT JOIN devices d ON its.device_uid = d.device_uid"
+	queryCount += " LEFT JOIN device_store ds ON d.device_uid = ds.device_uid"
 	queryCount += " WHERE " + whereClause
 
 	var total int
@@ -830,4 +829,3 @@ func (r *PostgresIoTTimeSeriesRepository) scanRows(rows *sql.Rows) ([]*domain.Io
 
 	return results, nil
 }
-

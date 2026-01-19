@@ -2300,8 +2300,8 @@ func (s *unitService) DeleteRoom(ctx context.Context, req DeleteRoomRequest) (*D
 		for _, device := range boundDevices {
 			if device.DeviceName != "" {
 				deviceNames = append(deviceNames, device.DeviceName)
-			} else if device.SerialNumber.Valid {
-				deviceNames = append(deviceNames, device.SerialNumber.String)
+			} else if device.DeviceUID != "" {
+				deviceNames = append(deviceNames, device.DeviceUID)
 			} else {
 				deviceNames = append(deviceNames, device.DeviceID)
 			}
@@ -2668,8 +2668,8 @@ func (s *unitService) DeleteBed(ctx context.Context, req DeleteBedRequest) (*Del
 		for _, device := range boundDevices {
 			if device.DeviceName != "" {
 				deviceNames = append(deviceNames, device.DeviceName)
-			} else if device.SerialNumber.Valid {
-				deviceNames = append(deviceNames, device.SerialNumber.String)
+			} else if device.DeviceUID != "" {
+				deviceNames = append(deviceNames, device.DeviceUID)
 			} else {
 				deviceNames = append(deviceNames, device.DeviceID)
 			}

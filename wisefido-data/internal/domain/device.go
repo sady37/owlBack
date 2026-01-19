@@ -13,7 +13,7 @@ type Device struct {
 	TenantID   string `db:"tenant_id"` // NOT NULL
 
 	// 关联 device_store
-	DeviceStoreID sql.NullString `db:"device_store_id"` // nullable
+	DeviceUID string `db:"device_uid"` // NOT NULL, REFERENCES device_store(device_uid)
 
 	// 物理属性（从 device_store 表获取，只读）
 	DeviceType  sql.NullString `db:"device_type"`  // from device_store.device_type
@@ -24,9 +24,7 @@ type Device struct {
 	FirmwareVersion sql.NullString `db:"firmware_version"` // from device_store.firmware_version
 
 	// 标识/资产
-	DeviceName   string         `db:"device_name"`   // NOT NULL
-	SerialNumber sql.NullString `db:"serial_number"` // nullable
-	UID          sql.NullString `db:"uid"`           // nullable
+	DeviceName string `db:"device_name"` // NOT NULL
 
 	// 位置绑定（互斥）
 	BoundRoomID sql.NullString `db:"bound_room_id"` // nullable
@@ -57,9 +55,7 @@ func (d *Device) ToJSON() map[string]any {
 		"business_access":    d.BusinessAccess,
 		"monitoring_enabled": d.MonitoringEnabled,
 	}
-	if d.DeviceStoreID.Valid {
-		m["device_store_id"] = d.DeviceStoreID.String
-	}
+	m["device_uid"] = d.DeviceUID
 	// 物理属性（从 device_store 获取）
 	if d.DeviceType.Valid {
 		m["device_type"] = d.DeviceType.String
@@ -78,12 +74,6 @@ func (d *Device) ToJSON() map[string]any {
 	}
 	if d.FirmwareVersion.Valid {
 		m["firmware_version"] = d.FirmwareVersion.String
-	}
-	if d.SerialNumber.Valid {
-		m["serial_number"] = d.SerialNumber.String
-	}
-	if d.UID.Valid {
-		m["uid"] = d.UID.String
 	}
 	if d.BoundRoomID.Valid {
 		m["bound_room_id"] = d.BoundRoomID.String

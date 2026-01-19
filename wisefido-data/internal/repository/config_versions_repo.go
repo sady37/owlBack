@@ -28,13 +28,15 @@ type ConfigVersionsRepository interface {
 	// 自动设置valid_from，将旧版本的valid_to设置为当前时间
 	CreateConfigVersion(ctx context.Context, tenantID string, configVersion *domain.ConfigVersion) (string, error)
 
+	// CreateConfigVersionWithUser 创建新版本（支持传入 created_by 用户信息）
+	// 自动设置valid_from，将旧版本的valid_to设置为当前时间
+	// createdBy 为可选参数，如果为空字符串则忽略
+	CreateConfigVersionWithUser(ctx context.Context, tenantID string, configVersion *domain.ConfigVersion, createdBy string) (string, error)
+
 	// UpdateConfigVersion 更新配置版本
 	// Deprecated: 使用 UpdateConfigVersionFields 替代，支持区分"不更新"、"更新"、"删除"三种状态
 	UpdateConfigVersion(ctx context.Context, tenantID, versionID string, configVersion *domain.ConfigVersion) error
 
-	// UpdateConfigVersionFields 更新配置版本（使用更新模型）
-	// 支持区分"不更新"、"更新"、"删除"三种状态
-	UpdateConfigVersionFields(ctx context.Context, tenantID, versionID string, update *domain.ConfigVersionUpdate) error
 
 	// DeleteConfigVersion 删除配置版本
 	DeleteConfigVersion(ctx context.Context, tenantID, versionID string) error

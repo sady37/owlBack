@@ -121,12 +121,10 @@ func (b Bed) ToJSON() map[string]any {
 type Device struct {
 	DeviceID          string         `json:"device_id"`
 	TenantID          string         `json:"tenant_id"`
-	DeviceStoreID     sql.NullString `json:"-"`
+	DeviceUID         string         `json:"device_uid"`
 	DeviceName        string         `json:"device_name"`
 	DeviceModel       sql.NullString `json:"-"`
 	DeviceType        sql.NullString `json:"-"`
-	SerialNumber      sql.NullString `json:"-"`
-	UID               sql.NullString `json:"-"`
 	IMEI              sql.NullString `json:"-"`
 	CommMode          sql.NullString `json:"-"`
 	FirmwareVersion   sql.NullString `json:"-"`
@@ -144,25 +142,17 @@ func (d Device) ToJSON() map[string]any {
 	m := map[string]any{
 		"device_id":          d.DeviceID,
 		"tenant_id":          d.TenantID,
+		"device_uid":         d.DeviceUID,
 		"device_name":        d.DeviceName,
 		"status":             d.Status,
 		"business_access":    d.BusinessAccess,
 		"monitoring_enabled": d.MonitoringEnabled,
-	}
-	if d.DeviceStoreID.Valid {
-		m["device_store_id"] = d.DeviceStoreID.String
 	}
 	if d.DeviceModel.Valid {
 		m["device_model"] = d.DeviceModel.String
 	}
 	if d.DeviceType.Valid {
 		m["device_type"] = d.DeviceType.String
-	}
-	if d.SerialNumber.Valid {
-		m["serial_number"] = d.SerialNumber.String
-	}
-	if d.UID.Valid {
-		m["uid"] = d.UID.String
 	}
 	if d.IMEI.Valid {
 		m["imei"] = d.IMEI.String
@@ -208,11 +198,10 @@ type DevicesRepo interface {
 // --- Device Store ---
 
 type DeviceStore struct {
-	DeviceStoreID            string         `json:"device_store_id"`
+	DeviceUID                string         `json:"device_uid"`
 	DeviceType               string         `json:"device_type"`
 	DeviceModel              sql.NullString `json:"-"`
-	SerialNumber             sql.NullString `json:"-"`
-	UID                      sql.NullString `json:"-"`
+	MAC                      sql.NullString `json:"-"`
 	IMEI                     sql.NullString `json:"-"`
 	CommMode                 sql.NullString `json:"-"`
 	MCUModel                 sql.NullString `json:"-"`
@@ -228,19 +217,16 @@ type DeviceStore struct {
 
 func (d DeviceStore) ToJSON() map[string]any {
 	m := map[string]any{
-		"device_store_id": d.DeviceStoreID,
-		"device_type":     d.DeviceType,
-		"tenant_id":       d.TenantID,
-		"allow_access":    d.AllowAccess,
+		"device_uid":    d.DeviceUID,
+		"device_type":   d.DeviceType,
+		"tenant_id":     d.TenantID,
+		"allow_access": d.AllowAccess,
 	}
 	if d.DeviceModel.Valid {
 		m["device_model"] = d.DeviceModel.String
 	}
-	if d.SerialNumber.Valid {
-		m["serial_number"] = d.SerialNumber.String
-	}
-	if d.UID.Valid {
-		m["uid"] = d.UID.String
+	if d.MAC.Valid {
+		m["mac"] = d.MAC.String
 	}
 	if d.IMEI.Valid {
 		m["imei"] = d.IMEI.String
@@ -274,9 +260,9 @@ func (d DeviceStore) ToJSON() map[string]any {
 
 type DeviceStoreRepo interface {
 	ListDeviceStores(ctx context.Context, filters map[string]any) (items []DeviceStore, total int, err error)
-	GetDeviceStore(ctx context.Context, deviceStoreID string) (*DeviceStore, error)
+	GetDeviceStore(ctx context.Context, deviceUID string) (*DeviceStore, error)
 	CreateDeviceStore(ctx context.Context, payload map[string]any) (string, error)
 	BatchUpdateDeviceStores(ctx context.Context, updates []map[string]any) error
-	DeleteDeviceStore(ctx context.Context, deviceStoreID string) error
+	DeleteDeviceStore(ctx context.Context, deviceUID string) error
 	ImportDeviceStores(ctx context.Context, items []map[string]any) (int, []map[string]any, []map[string]any, error)
 }

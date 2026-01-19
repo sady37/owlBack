@@ -297,7 +297,7 @@ func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Re
 	}
 
 	// 获取设备信息（需要 device_code）
-	// 通过 device_id 查询 devices 表获取 device_code（serial_number 或 uid）
+	// 通过 device_id 查询 devices 表获取 device_code（device_uid）
 	deviceCode, err := h.getDeviceCode(ctx, tenantID, deviceID)
 	if err != nil {
 		h.logger.Error("Failed to get device code",
@@ -334,14 +334,14 @@ func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 }
 
-// getDeviceCode 通过 device_id 获取 device_code（serial_number 或 uid）
+// getDeviceCode 通过 device_id 获取 device_code（device_uid）
 func (h *SleepaceReportHandler) getDeviceCode(ctx context.Context, tenantID, deviceID string) (string, error) {
 	if h.db == nil {
 		return "", fmt.Errorf("database connection not available")
 	}
 
 	query := `
-		SELECT COALESCE(serial_number, uid, '') as device_code
+		SELECT device_uid
 		FROM devices
 		WHERE tenant_id = $1::uuid
 		  AND device_id = $2::uuid
@@ -357,7 +357,7 @@ func (h *SleepaceReportHandler) getDeviceCode(ctx context.Context, tenantID, dev
 		return "", fmt.Errorf("failed to get device code: %w", err)
 	}
 	if deviceCode == "" {
-		return "", fmt.Errorf("device code not found (serial_number and uid are both empty)")
+		return "", fmt.Errorf("device code not found (device_uid is empty)")
 	}
 	return deviceCode, nil
 }

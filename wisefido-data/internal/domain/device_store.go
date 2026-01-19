@@ -8,25 +8,28 @@ import (
 // 基于实际DB表结构：device_store表的所有字段
 type DeviceStore struct {
 	// 主键
-	DeviceStoreID string `db:"device_store_id"`
+	DeviceID string `db:"device_id"` // PRIMARY KEY (UUID)
+
+	// 设备唯一标识（用于首次连接匹配和查询）
+	DeviceUID  string         `db:"device_uid"`  // UNIQUE, 用于设备识别和查找
+	DeviceCode sql.NullString `db:"device_code"` // nullable, sleepace 平台设备编码
 
 	// 设备类型（必填）
 	DeviceType  string         `db:"device_type"`  // NOT NULL
 	DeviceModel sql.NullString `db:"device_model"` // nullable
 
-	// 序列号/UID/IMEI
-	SerialNumber sql.NullString `db:"serial_number"` // nullable
-	UID          sql.NullString `db:"uid"`           // nullable
-	IMEI         sql.NullString `db:"imei"`          // nullable
+	// MAC/IMEI
+	MAC  sql.NullString `db:"mac"`  // nullable, mac address for wifi devices
+	IMEI sql.NullString `db:"imei"` // nullable, 4G device IMEI
 
 	// 物理属性
 	CommMode sql.NullString `db:"comm_mode"` // nullable
 	MCUModel sql.NullString `db:"mcu_model"` // nullable
 
 	// 固件版本
-	FirmwareVersion          sql.NullString `db:"firmware_version"`           // nullable
+	FirmwareVersion          sql.NullString `db:"firmware_version"`            // nullable
 	OTATargetFirmwareVersion sql.NullString `db:"ota_target_firmware_version"` // nullable
-	OTATargetMCUModel        sql.NullString `db:"ota_target_mcu_model"`       // nullable
+	OTATargetMCUModel        sql.NullString `db:"ota_target_mcu_model"`        // nullable
 
 	// 租户分配
 	TenantID string `db:"tenant_id"` // NOT NULL, default '00000000-0000-0000-0000-000000000000'
@@ -36,7 +39,7 @@ type DeviceStore struct {
 	AllocateTime sql.NullTime `db:"allocate_time"` // nullable
 
 	// 系统级访问权限
-	AllowAccess bool `db:"allow_access"` // NOT NULL, default true
+	AllowAccess bool `db:"allow_access"` // NOT NULL, default false
 
 	// 关联租户名称（查询时JOIN获取，不存储在device_store表）
 	TenantName sql.NullString `db:"tenant_name"` // 仅用于查询结果
@@ -45,19 +48,20 @@ type DeviceStore struct {
 // ToJSON 转换为JSON格式（用于HTTP响应）
 func (d *DeviceStore) ToJSON() map[string]any {
 	m := map[string]any{
-		"device_store_id": d.DeviceStoreID,
-		"device_type":     d.DeviceType,
-		"tenant_id":       d.TenantID,
-		"allow_access":    d.AllowAccess,
+		"device_id":    d.DeviceID,
+		"device_uid":   d.DeviceUID,
+		"device_type":  d.DeviceType,
+		"tenant_id":    d.TenantID,
+		"allow_access": d.AllowAccess,
+	}
+	if d.DeviceCode.Valid {
+		m["device_code"] = d.DeviceCode.String
 	}
 	if d.DeviceModel.Valid {
 		m["device_model"] = d.DeviceModel.String
 	}
-	if d.SerialNumber.Valid {
-		m["serial_number"] = d.SerialNumber.String
-	}
-	if d.UID.Valid {
-		m["uid"] = d.UID.String
+	if d.MAC.Valid {
+		m["mac"] = d.MAC.String
 	}
 	if d.IMEI.Valid {
 		m["imei"] = d.IMEI.String
@@ -88,5 +92,3 @@ func (d *DeviceStore) ToJSON() map[string]any {
 	}
 	return m
 }
-
-

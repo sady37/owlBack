@@ -70,10 +70,8 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		switch filters.SearchType {
 		case "device_name":
 			col = "d.device_name"
-		case "serial_number":
-			col = "d.serial_number"
-		case "uid":
-			col = "d.uid"
+		case "device_uid":
+			col = "d.device_uid"
 		}
 		where = append(where, fmt.Sprintf("%s ILIKE $%d", col, argN))
 		args = append(args, "%"+filters.SearchKeyword+"%")
@@ -83,7 +81,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 	queryCount := `
 		SELECT COUNT(*)
 		FROM devices d
-		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE ` + strings.Join(where, " AND ")
 	var total int
 	if err := r.db.QueryRowContext(ctx, queryCount, args...).Scan(&total); err != nil {
@@ -106,10 +104,8 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		SELECT
 			d.device_id::text,
 			d.tenant_id::text,
-			d.device_store_id,
+			d.device_uid,
 			d.device_name,
-			d.serial_number,
-			d.uid,
 			d.bound_room_id,
 			d.bound_bed_id,
 			d.status,
@@ -132,7 +128,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND u.tenant_id = d.tenant_id LIMIT 1)
 			) as unit_id
 		FROM devices d
-		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY d.device_name
 		LIMIT $` + fmt.Sprintf("%d", limitPos) + ` OFFSET $` + fmt.Sprintf("%d", offsetPos)
@@ -149,10 +145,8 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		if err := rows.Scan(
 			&d.DeviceID,
 			&d.TenantID,
-			&d.DeviceStoreID,
+			&d.DeviceUID,
 			&d.DeviceName,
-			&d.SerialNumber,
-			&d.UID,
 			&d.BoundRoomID,
 			&d.BoundBedID,
 			&d.Status,
@@ -177,14 +171,17 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 
 // GetDevice 查询单个设备
 func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, deviceID string) (*domain.Device, error) {
+	// 验证 deviceID 不能是 "undefined" 或 "null"
+	if deviceID == "" || deviceID == "undefined" || deviceID == "null" {
+		return nil, fmt.Errorf("device_id is required and must be a valid UUID")
+	}
+	
 	q := `
 		SELECT
 			d.device_id::text,
 			d.tenant_id::text,
-			d.device_store_id,
+			d.device_uid,
 			d.device_name,
-			d.serial_number,
-			d.uid,
 			d.bound_room_id,
 			d.bound_bed_id,
 			d.status,
@@ -207,17 +204,15 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND u.tenant_id = d.tenant_id LIMIT 1)
 			) as unit_id
 		FROM devices d
-		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE d.tenant_id = $1 AND d.device_id = $2
 	`
 	var d domain.Device
 	if err := r.db.QueryRowContext(ctx, q, tenantID, deviceID).Scan(
 		&d.DeviceID,
 		&d.TenantID,
-		&d.DeviceStoreID,
+		&d.DeviceUID,
 		&d.DeviceName,
-		&d.SerialNumber,
-		&d.UID,
 		&d.BoundRoomID,
 		&d.BoundBedID,
 		&d.Status,
@@ -258,23 +253,22 @@ func (r *PostgresDevicesRepository) CreateDevice(ctx context.Context, tenantID s
 	}
 	defer tx.Rollback()
 
-	// 1. 验证device_store_id
-	if !device.DeviceStoreID.Valid || device.DeviceStoreID.String == "" {
-		return "", fmt.Errorf("device_store_id is required")
+	// 1. 验证device_uid
+	if device.DeviceUID == "" {
+		return "", fmt.Errorf("device_uid is required")
 	}
-	deviceStoreID := device.DeviceStoreID.String
+	deviceUID := device.DeviceUID
 
 	// 2. 查询device_store，验证是否存在且已分配给该tenant
 	var dsTenantID sql.NullString
-	var dsSerialNumber, dsUID sql.NullString
 	err = tx.QueryRowContext(ctx, `
-		SELECT tenant_id, serial_number, uid
+		SELECT tenant_id
 		FROM device_store
-		WHERE device_store_id = $1
-	`, deviceStoreID).Scan(&dsTenantID, &dsSerialNumber, &dsUID)
+		WHERE device_uid = $1
+	`, deviceUID).Scan(&dsTenantID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("device_store not found: device_store_id=%s", deviceStoreID)
+			return "", fmt.Errorf("device_store not found: device_uid=%s", deviceUID)
 		}
 		return "", fmt.Errorf("failed to query device_store: %w", err)
 	}
@@ -282,15 +276,10 @@ func (r *PostgresDevicesRepository) CreateDevice(ctx context.Context, tenantID s
 	// 验证租户一致性
 	unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
 	if !dsTenantID.Valid || dsTenantID.String == unallocatedTenantID {
-		return "", fmt.Errorf("device_store not allocated to tenant: device_store_id=%s (device must be allocated before checkout)", deviceStoreID)
+		return "", fmt.Errorf("device_store not allocated to tenant: device_uid=%s (device must be allocated before checkout)", deviceUID)
 	}
 	if dsTenantID.String != tenantID {
-		return "", fmt.Errorf("device_store belongs to different tenant: device_store_id=%s (expected %s, got %s)", deviceStoreID, tenantID, dsTenantID.String)
-	}
-
-	// 3. 验证serial_number和uid至少填一个（从device_store获取）
-	if !dsSerialNumber.Valid && !dsUID.Valid {
-		return "", fmt.Errorf("device_store has no serial_number or uid: device_store_id=%s", deviceStoreID)
+		return "", fmt.Errorf("device_store belongs to different tenant: device_uid=%s (expected %s, got %s)", deviceUID, tenantID, dsTenantID.String)
 	}
 
 	// 4. 验证位置绑定（如果提供）
@@ -349,26 +338,19 @@ func (r *PostgresDevicesRepository) CreateDevice(ctx context.Context, tenantID s
 		return "", fmt.Errorf("cannot bind to both room and bed: bound_room_id=%s, bound_bed_id=%s (mutually exclusive)", boundRoomID, boundBedID)
 	}
 
-	// 5. 生成device_name（如果未提供，从device_store生成）
+	// 5. 生成device_name（如果未提供，使用device_uid）
 	deviceName := device.DeviceName
 	if deviceName == "" {
-		if dsSerialNumber.Valid && dsSerialNumber.String != "" {
-			deviceName = dsSerialNumber.String
-		} else if dsUID.Valid && dsUID.String != "" {
-			deviceName = dsUID.String
-		} else {
-			deviceName = "Device-" + deviceStoreID[:8]
-		}
+		deviceName = "Device-" + deviceUID
 	}
 
 	// 6. 插入devices记录
 	insertQuery := `
 		INSERT INTO devices (
-			tenant_id, device_store_id, device_name,
-			serial_number, uid,
+			tenant_id, device_uid, device_name,
 			bound_room_id, bound_bed_id,
 			status, business_access, monitoring_enabled
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING device_id::text
 	`
 
@@ -396,10 +378,8 @@ func (r *PostgresDevicesRepository) CreateDevice(ctx context.Context, tenantID s
 
 	err = tx.QueryRowContext(ctx, insertQuery,
 		tenantID,
-		deviceStoreID,
+		deviceUID,
 		deviceName,
-		dsSerialNumber,
-		dsUID,
 		boundRoomIDVal,
 		boundBedIDVal,
 		status,
@@ -469,25 +449,7 @@ func (r *PostgresDevicesRepository) UpdateDevice(ctx context.Context, tenantID, 
 		}
 	}
 
-	// 3. 验证device_store_id的租户一致性（如果更新）
-	if device.DeviceStoreID.Valid && device.DeviceStoreID.String != "" {
-		var dsTenantID sql.NullString
-		if err := tx.QueryRowContext(ctx,
-			"SELECT tenant_id FROM device_store WHERE device_store_id = $1",
-			device.DeviceStoreID.String,
-		).Scan(&dsTenantID); err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("device_store not found: device_store_id=%s", device.DeviceStoreID.String)
-			}
-			return fmt.Errorf("failed to validate device_store_id: %w", err)
-		}
-		unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
-		if dsTenantID.Valid && dsTenantID.String != unallocatedTenantID && dsTenantID.String != tenantID {
-			return fmt.Errorf("device_store_id %s is assigned to a different tenant (expected %s, got %s)", device.DeviceStoreID.String, tenantID, dsTenantID.String)
-		}
-	}
-
-	// 4. 执行UPDATE（动态构建）
+	// 3. 执行UPDATE（动态构建）
 	set := []string{}
 	args := []any{tenantID, deviceID}
 	argN := 3
@@ -533,13 +495,6 @@ func (r *PostgresDevicesRepository) UpdateDevice(ctx context.Context, tenantID, 
 	} else {
 		// Valid = false means null was explicitly set in payload
 		set = append(set, "bound_bed_id = NULL")
-	}
-	if device.DeviceStoreID.Valid {
-		if device.DeviceStoreID.String != "" {
-			add("device_store_id", device.DeviceStoreID.String)
-		} else {
-			set = append(set, "device_store_id = NULL")
-		}
 	}
 	if device.Metadata.Valid {
 		set = append(set, fmt.Sprintf("metadata = $%d::jsonb", argN))
@@ -608,25 +563,7 @@ func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, t
 		}
 	}
 
-	// 3. 验证device_store_id的租户一致性（如果更新）
-	if device.DeviceStoreID.Valid && device.DeviceStoreID.String != "" {
-		var dsTenantID sql.NullString
-		if err := tx.QueryRowContext(ctx,
-			"SELECT tenant_id FROM device_store WHERE device_store_id = $1",
-			device.DeviceStoreID.String,
-		).Scan(&dsTenantID); err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("device_store not found: device_store_id=%s", device.DeviceStoreID.String)
-			}
-			return fmt.Errorf("failed to validate device_store_id: %w", err)
-		}
-		unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
-		if dsTenantID.Valid && dsTenantID.String != unallocatedTenantID && dsTenantID.String != tenantID {
-			return fmt.Errorf("device_store_id %s is assigned to a different tenant (expected %s, got %s)", device.DeviceStoreID.String, tenantID, dsTenantID.String)
-		}
-	}
-
-	// 4. 执行UPDATE（动态构建）
+	// 3. 执行UPDATE（动态构建）
 	set := []string{}
 	args := []any{tenantID, deviceID}
 	argN := 3
@@ -690,14 +627,6 @@ func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, t
 	if willSetRoomID && willSetBedID {
 		return fmt.Errorf("cannot bind to both room and bed: bound_room_id=%s, bound_bed_id=%s (mutually exclusive per device binding rules in 17_devices.sql)", finalRoomID, finalBedID)
 	}
-
-	if device.DeviceStoreID.Valid {
-		if device.DeviceStoreID.String != "" {
-			add("device_store_id", device.DeviceStoreID.String)
-		} else {
-			set = append(set, "device_store_id = NULL")
-		}
-	}
 	if device.Metadata.Valid {
 		set = append(set, fmt.Sprintf("metadata = $%d::jsonb", argN))
 		args = append(args, device.Metadata.String)
@@ -714,199 +643,6 @@ func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, t
 	return tx.Commit()
 }
 
-// UpdateDeviceFields 更新设备（使用更新模型）
-func (r *PostgresDevicesRepository) UpdateDeviceFields(ctx context.Context, tenantID, deviceID string, update *domain.DeviceUpdate) error {
-	if tenantID == "" || deviceID == "" {
-		return fmt.Errorf("tenant_id and device_id are required")
-	}
-	if update == nil {
-		return fmt.Errorf("update is required")
-	}
-
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	// 1. 验证 bound_room_id（如果更新）
-	if update.BoundRoomID != nil && update.BoundRoomID.Action == domain.UpdateActionUpdate && update.BoundRoomID.Value != "" {
-		var unitTenantID string
-		if err := tx.QueryRowContext(ctx,
-			"SELECT u.tenant_id::text FROM rooms r JOIN units u ON r.unit_id = u.unit_id WHERE r.room_id = $1",
-			update.BoundRoomID.Value,
-		).Scan(&unitTenantID); err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("room not found: room_id=%s", update.BoundRoomID.Value)
-			}
-			return fmt.Errorf("failed to validate bound_room_id: %w", err)
-		}
-		if unitTenantID != tenantID {
-			return fmt.Errorf("room not found: room_id=%s (room's unit belongs to tenant %s, expected %s)", update.BoundRoomID.Value, unitTenantID, tenantID)
-		}
-	}
-
-	// 2. 验证 bound_bed_id（如果更新）
-	if update.BoundBedID != nil && update.BoundBedID.Action == domain.UpdateActionUpdate && update.BoundBedID.Value != "" {
-		var unitTenantID string
-		if err := tx.QueryRowContext(ctx,
-			"SELECT u.tenant_id::text FROM beds b JOIN rooms r ON b.room_id = r.room_id JOIN units u ON r.unit_id = u.unit_id WHERE b.bed_id = $1",
-			update.BoundBedID.Value,
-		).Scan(&unitTenantID); err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("bed not found: bed_id=%s", update.BoundBedID.Value)
-			}
-			return fmt.Errorf("failed to validate bound_bed_id: %w", err)
-		}
-		if unitTenantID != tenantID {
-			return fmt.Errorf("bed not found: bed_id=%s (bed's room's unit belongs to tenant %s, expected %s)", update.BoundBedID.Value, unitTenantID, tenantID)
-		}
-	}
-
-	// 3. 验证 device_store_id 的租户一致性（如果更新）
-	if update.DeviceStoreID != nil && update.DeviceStoreID.Action == domain.UpdateActionUpdate && update.DeviceStoreID.Value != "" {
-		var dsTenantID sql.NullString
-		if err := tx.QueryRowContext(ctx,
-			"SELECT tenant_id FROM device_store WHERE device_store_id = $1",
-			update.DeviceStoreID.Value,
-		).Scan(&dsTenantID); err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("device_store not found: device_store_id=%s", update.DeviceStoreID.Value)
-			}
-			return fmt.Errorf("failed to validate device_store_id: %w", err)
-		}
-		unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
-		if dsTenantID.Valid && dsTenantID.String != unallocatedTenantID && dsTenantID.String != tenantID {
-			return fmt.Errorf("device_store_id %s is assigned to a different tenant (expected %s, got %s)", update.DeviceStoreID.Value, tenantID, dsTenantID.String)
-		}
-	}
-
-	// 4. 执行 UPDATE（动态构建）
-	set := []string{}
-	args := []any{tenantID, deviceID}
-	argN := 3
-
-	// Helper function to add update part
-	addUpdate := func(col string, val any) {
-		set = append(set, fmt.Sprintf("%s = $%d", col, argN))
-		args = append(args, val)
-		argN++
-	}
-
-	// Handle DeviceName (NOT NULL)
-	if update.DeviceName != nil {
-		switch update.DeviceName.Action {
-		case domain.UpdateActionUpdate:
-			if update.DeviceName.Value == "" {
-				return fmt.Errorf("device_name cannot be empty (NOT NULL constraint)")
-			}
-			addUpdate("device_name", update.DeviceName.Value)
-		case domain.UpdateActionDelete:
-			return fmt.Errorf("device_name cannot be deleted (NOT NULL constraint)")
-		case domain.UpdateActionKeep:
-			// Do nothing
-		}
-	}
-
-	// Handle nullable string fields
-	nullableStringFields := map[string]*domain.UpdateString{
-		"device_store_id": update.DeviceStoreID,
-		"serial_number":   update.SerialNumber,
-		"uid":             update.UID,
-		"bound_room_id":   update.BoundRoomID,
-		"bound_bed_id":    update.BoundBedID,
-	}
-
-	for col, updateField := range nullableStringFields {
-		if updateField != nil {
-			switch updateField.Action {
-			case domain.UpdateActionUpdate:
-				if updateField.Value == "" {
-					set = append(set, fmt.Sprintf("%s = NULL", col))
-				} else {
-					addUpdate(col, updateField.Value)
-				}
-			case domain.UpdateActionDelete:
-				set = append(set, fmt.Sprintf("%s = NULL", col))
-			case domain.UpdateActionKeep:
-				// Do nothing
-			}
-		}
-	}
-
-	// Handle Status (NOT NULL)
-	if update.Status != nil {
-		switch update.Status.Action {
-		case domain.UpdateActionUpdate:
-			if update.Status.Value == "" {
-				return fmt.Errorf("status cannot be empty (NOT NULL constraint)")
-			}
-			addUpdate("status", update.Status.Value)
-		case domain.UpdateActionDelete:
-			return fmt.Errorf("status cannot be deleted (NOT NULL constraint)")
-		case domain.UpdateActionKeep:
-			// Do nothing
-		}
-	}
-
-	// Handle BusinessAccess (NOT NULL)
-	if update.BusinessAccess != nil {
-		switch update.BusinessAccess.Action {
-		case domain.UpdateActionUpdate:
-			if update.BusinessAccess.Value == "" {
-				return fmt.Errorf("business_access cannot be empty (NOT NULL constraint)")
-			}
-			addUpdate("business_access", update.BusinessAccess.Value)
-		case domain.UpdateActionDelete:
-			return fmt.Errorf("business_access cannot be deleted (NOT NULL constraint)")
-		case domain.UpdateActionKeep:
-			// Do nothing
-		}
-	}
-
-	// Handle MonitoringEnabled (NOT NULL)
-	if update.MonitoringEnabled != nil {
-		switch update.MonitoringEnabled.Action {
-		case domain.UpdateActionUpdate:
-			addUpdate("monitoring_enabled", update.MonitoringEnabled.Value)
-		case domain.UpdateActionDelete:
-			return fmt.Errorf("monitoring_enabled cannot be deleted (NOT NULL constraint)")
-		case domain.UpdateActionKeep:
-			// Do nothing
-		}
-	}
-
-	// Handle Metadata (JSONB, nullable)
-	if update.Metadata != nil {
-		switch update.Metadata.Action {
-		case domain.UpdateActionUpdate:
-			if len(update.Metadata.Value) > 0 {
-				set = append(set, fmt.Sprintf("metadata = $%d::jsonb", argN))
-				args = append(args, string(update.Metadata.Value))
-				argN++
-			} else {
-				set = append(set, "metadata = NULL")
-			}
-		case domain.UpdateActionDelete:
-			set = append(set, "metadata = NULL")
-		case domain.UpdateActionKeep:
-			// Do nothing
-		}
-	}
-
-	if len(set) == 0 {
-		return nil
-	}
-
-	q := "UPDATE devices SET " + strings.Join(set, ", ") + " WHERE tenant_id = $1 AND device_id = $2"
-	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
-		return fmt.Errorf("failed to update device: %w", err)
-	}
-
-	return tx.Commit()
-}
 
 // DeleteDevice 删除设备与位置的绑定关系（设备退回）
 // 验证：检查设备是否已使用（is_device_used()），如果已使用，只能软删除（DisableDevice）
@@ -971,7 +707,7 @@ func (r *PostgresDevicesRepository) GetDeviceRelations(ctx context.Context, tena
 		SELECT 
 			d.device_id,
 			d.device_name,
-			COALESCE(d.serial_number, '') as device_internal_code,
+			COALESCE(d.device_uid, '') as device_internal_code,
 			CASE 
 				WHEN ds.device_type = 'Sleepad' THEN 0
 				WHEN ds.device_type = 'Radar' THEN 1
@@ -985,7 +721,7 @@ func (r *PostgresDevicesRepository) GetDeviceRelations(ctx context.Context, tena
 				ELSE 0
 			END as address_type
 		FROM devices d
-		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
 		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
 		LEFT JOIN rooms r ON (d.bound_room_id = r.room_id AND d.tenant_id = r.tenant_id) 
 			OR (b.room_id = r.room_id AND b.tenant_id = r.tenant_id)
@@ -1089,10 +825,8 @@ func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Conte
 		SELECT
 			d.device_id::text,
 			d.tenant_id::text,
-			d.device_store_id,
+			d.device_uid,
 			d.device_name,
-			d.serial_number,
-			d.uid,
 			d.bound_room_id,
 			d.bound_bed_id,
 			d.status,
@@ -1100,7 +834,7 @@ func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Conte
 			d.monitoring_enabled,
 			d.metadata
 		FROM devices d
-		WHERE (d.serial_number = $1 OR d.uid = $1)
+		WHERE d.device_uid = $1
 		LIMIT 1
 	`
 
@@ -1108,10 +842,8 @@ func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Conte
 	err := r.db.QueryRowContext(ctx, deviceQuery, identifier).Scan(
 		&d.DeviceID,
 		&d.TenantID,
-		&d.DeviceStoreID,
+		&d.DeviceUID,
 		&d.DeviceName,
-		&d.SerialNumber,
-		&d.UID,
 		&d.BoundRoomID,
 		&d.BoundBedID,
 		&d.Status,
@@ -1132,26 +864,21 @@ func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Conte
 	unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
 	deviceStoreQuery := `
 		SELECT
-			device_store_id::text,
+			device_uid,
 			device_type,
-			serial_number,
-			uid,
 			tenant_id::text,
 			allow_access
 		FROM device_store
-		WHERE (serial_number = $1 OR uid = $1)
+		WHERE device_uid = $1
 		LIMIT 1
 	`
 
-	var dsDeviceStoreID, dsDeviceType, dsTenantID string
-	var dsSerialNumber, dsUID sql.NullString
+	var dsDeviceUID, dsDeviceType, dsTenantID string
 	var dsAllowAccess bool
 
 	err = r.db.QueryRowContext(ctx, deviceStoreQuery, identifier).Scan(
-		&dsDeviceStoreID,
+		&dsDeviceUID,
 		&dsDeviceType,
-		&dsSerialNumber,
-		&dsUID,
 		&dsTenantID,
 		&dsAllowAccess,
 	)
@@ -1172,22 +899,13 @@ func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Conte
 	// 3. 检查设备是否已分配给租户
 	if dsTenantID == unallocatedTenantID {
 		logWarn("Device connection rejected: not allocated",
-			zap.String("device_store_id", dsDeviceStoreID),
+			zap.String("device_uid", dsDeviceUID),
 			zap.String("reason", "device_not_allocated"),
 		)
 		return nil, fmt.Errorf("device not allocated to tenant")
 	}
 
-	// 4. 验证serial_number和uid至少填一个
-	if (!dsSerialNumber.Valid || dsSerialNumber.String == "") && (!dsUID.Valid || dsUID.String == "") {
-		logWarn("Device connection rejected: missing identifier",
-			zap.String("device_store_id", dsDeviceStoreID),
-			zap.String("identifier", identifier),
-		)
-		return nil, fmt.Errorf("device must have at least one identifier: serial_number or uid")
-	}
-
-	// 5. 创建设备记录
+	// 4. 创建设备记录
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
@@ -1198,34 +916,25 @@ func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Conte
 		}
 	}()
 
-	deviceName := dsDeviceType
-	if dsSerialNumber.Valid && dsSerialNumber.String != "" {
-		deviceName = dsDeviceType + "-" + dsSerialNumber.String
-	} else if dsUID.Valid && dsUID.String != "" {
-		deviceName = dsDeviceType + "-" + dsUID.String
-	}
+	deviceName := dsDeviceType + "-" + dsDeviceUID
 
 	insertQuery := `
 		INSERT INTO devices (
 			tenant_id,
-			device_store_id,
+			device_uid,
 			device_name,
-			serial_number,
-			uid,
 			status,
 			business_access,
 			monitoring_enabled
-		) VALUES ($1, $2, $3, $4, $5, 'online', 'pending', FALSE)
+		) VALUES ($1, $2, $3, 'online', 'pending', FALSE)
 		RETURNING device_id::text
 	`
 
 	var newDeviceID string
 	err = tx.QueryRowContext(ctx, insertQuery,
 		dsTenantID,
-		dsDeviceStoreID,
+		dsDeviceUID,
 		deviceName,
-		dsSerialNumber,
-		dsUID,
 	).Scan(&newDeviceID)
 
 	if err != nil {
@@ -1237,7 +946,7 @@ func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Conte
 	}
 
 	logInfo("Device auto-created from device_store",
-		zap.String("device_store_id", dsDeviceStoreID),
+		zap.String("device_uid", dsDeviceUID),
 		zap.String("device_id", newDeviceID),
 		zap.String("tenant_id", dsTenantID),
 		zap.String("device_type", dsDeviceType),
@@ -1356,4 +1065,254 @@ func (r *PostgresDevicesRepository) GetDevicesByBedIDs(ctx context.Context, tena
 		result[bedID] = devices
 	}
 	return result, rows.Err()
+}
+
+// GetDeviceLocationInfo 获取设备的完整位置信息
+func (r *PostgresDevicesRepository) GetDeviceLocationInfo(ctx context.Context, tenantID, deviceID string) (*DeviceLocationInfo, error) {
+	if tenantID == "" || deviceID == "" {
+		return nil, fmt.Errorf("tenant_id and device_id are required")
+	}
+
+	// 查询设备及其完整的位置信息
+	query := `
+		SELECT 
+			d.device_id::text,
+			d.tenant_id::text,
+			d.bound_room_id,
+			d.bound_bed_id,
+			-- 通过 bed 查询位置信息
+			b.bed_id,
+			b.bed_name,
+			r.room_id,
+			r.room_name,
+			u.unit_id,
+			u.unit_name,
+			u.building_id,
+			u.branch_id,
+			u.floor,
+			bld.building_name,
+			br.branch_name
+		FROM devices d
+		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
+		LEFT JOIN rooms r ON (
+			(d.bound_room_id = r.room_id AND d.tenant_id = r.tenant_id) OR
+			(b.room_id = r.room_id AND b.tenant_id = r.tenant_id)
+		)
+		LEFT JOIN units u ON r.unit_id = u.unit_id AND r.tenant_id = u.tenant_id
+		LEFT JOIN buildings bld ON u.building_id = bld.building_id AND u.tenant_id = bld.tenant_id
+		LEFT JOIN branches br ON u.branch_id = br.branch_id AND u.tenant_id = br.tenant_id
+		WHERE d.tenant_id = $1 AND d.device_id = $2
+			AND d.status != 'disabled'
+		LIMIT 1
+	`
+
+	var (
+		deviceIDStr, tenantIDStr string
+		boundRoomID, boundBedID  sql.NullString
+		bedID, bedName           sql.NullString
+		roomID, roomName         sql.NullString
+		unitID, unitName         sql.NullString
+		buildingID, branchID     sql.NullString
+		floor                    sql.NullString
+		buildingName, branchName sql.NullString
+	)
+
+	err := r.db.QueryRowContext(ctx, query, tenantID, deviceID).Scan(
+		&deviceIDStr,
+		&tenantIDStr,
+		&boundRoomID,
+		&boundBedID,
+		&bedID,
+		&bedName,
+		&roomID,
+		&roomName,
+		&unitID,
+		&unitName,
+		&buildingID,
+		&branchID,
+		&floor,
+		&buildingName,
+		&branchName,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("device not found: tenant_id=%s, device_id=%s", tenantID, deviceID)
+		}
+		return nil, fmt.Errorf("failed to query device location: %w", err)
+	}
+
+	// 构建位置信息
+	locationInfo := &DeviceLocationInfo{
+		DeviceID: deviceIDStr,
+		TenantID: tenantIDStr,
+	}
+
+	// 设置位置字段（如果存在）
+	if branchID.Valid {
+		branchIDStr := branchID.String
+		locationInfo.BranchID = &branchIDStr
+	}
+	if branchName.Valid && branchName.String != "" && branchName.String != "-" {
+		branchNameStr := branchName.String
+		locationInfo.BranchName = &branchNameStr
+	}
+	if buildingID.Valid {
+		buildingIDStr := buildingID.String
+		locationInfo.BuildingID = &buildingIDStr
+	}
+	if buildingName.Valid && buildingName.String != "" && buildingName.String != "-" {
+		buildingNameStr := buildingName.String
+		locationInfo.BuildingName = &buildingNameStr
+	}
+	if unitID.Valid {
+		unitIDStr := unitID.String
+		locationInfo.UnitID = &unitIDStr
+	}
+	if unitName.Valid && unitName.String != "" {
+		unitNameStr := unitName.String
+		locationInfo.UnitName = &unitNameStr
+	}
+	if roomID.Valid {
+		roomIDStr := roomID.String
+		locationInfo.RoomID = &roomIDStr
+	}
+	if roomName.Valid && roomName.String != "" {
+		roomNameStr := roomName.String
+		locationInfo.RoomName = &roomNameStr
+	}
+	if bedID.Valid {
+		bedIDStr := bedID.String
+		locationInfo.BedID = &bedIDStr
+	}
+	if bedName.Valid && bedName.String != "" {
+		bedNameStr := bedName.String
+		locationInfo.BedName = &bedNameStr
+	}
+
+	return locationInfo, nil
+}
+
+// GetDeviceLocationInfoByIdentifier 通过设备标识符（device_uid）获取位置信息
+func (r *PostgresDevicesRepository) GetDeviceLocationInfoByIdentifier(ctx context.Context, identifier string) (*DeviceLocationInfo, error) {
+	if identifier == "" {
+		return nil, fmt.Errorf("identifier is required")
+	}
+
+	// 查询设备及其完整的位置信息
+	query := `
+		SELECT 
+			d.device_id::text,
+			d.tenant_id::text,
+			d.bound_room_id,
+			d.bound_bed_id,
+			-- 通过 bed 查询位置信息
+			b.bed_id,
+			b.bed_name,
+			r.room_id,
+			r.room_name,
+			u.unit_id,
+			u.unit_name,
+			u.building_id,
+			u.branch_id,
+			u.floor,
+			bld.building_name,
+			br.branch_name
+		FROM devices d
+		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
+		LEFT JOIN rooms r ON (
+			(d.bound_room_id = r.room_id AND d.tenant_id = r.tenant_id) OR
+			(b.room_id = r.room_id AND b.tenant_id = r.tenant_id)
+		)
+		LEFT JOIN units u ON r.unit_id = u.unit_id AND r.tenant_id = u.tenant_id
+		LEFT JOIN buildings bld ON u.building_id = bld.building_id AND u.tenant_id = bld.tenant_id
+		LEFT JOIN branches br ON u.branch_id = br.branch_id AND u.tenant_id = br.tenant_id
+		WHERE d.device_uid = $1
+			AND d.status != 'disabled'
+		LIMIT 1
+	`
+
+	var (
+		deviceIDStr, tenantIDStr string
+		boundRoomID, boundBedID  sql.NullString
+		bedID, bedName           sql.NullString
+		roomID, roomName         sql.NullString
+		unitID, unitName         sql.NullString
+		buildingID, branchID     sql.NullString
+		floor                    sql.NullString
+		buildingName, branchName sql.NullString
+	)
+
+	err := r.db.QueryRowContext(ctx, query, identifier).Scan(
+		&deviceIDStr,
+		&tenantIDStr,
+		&boundRoomID,
+		&boundBedID,
+		&bedID,
+		&bedName,
+		&roomID,
+		&roomName,
+		&unitID,
+		&unitName,
+		&buildingID,
+		&branchID,
+		&floor,
+		&buildingName,
+		&branchName,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("device not found: identifier=%s", identifier)
+		}
+		return nil, fmt.Errorf("failed to query device location: %w", err)
+	}
+
+	// 构建位置信息
+	locationInfo := &DeviceLocationInfo{
+		DeviceID: deviceIDStr,
+		TenantID: tenantIDStr,
+	}
+
+	// 设置位置字段（如果存在）
+	if branchID.Valid {
+		branchIDStr := branchID.String
+		locationInfo.BranchID = &branchIDStr
+	}
+	if branchName.Valid && branchName.String != "" && branchName.String != "-" {
+		branchNameStr := branchName.String
+		locationInfo.BranchName = &branchNameStr
+	}
+	if buildingID.Valid {
+		buildingIDStr := buildingID.String
+		locationInfo.BuildingID = &buildingIDStr
+	}
+	if buildingName.Valid && buildingName.String != "" && buildingName.String != "-" {
+		buildingNameStr := buildingName.String
+		locationInfo.BuildingName = &buildingNameStr
+	}
+	if unitID.Valid {
+		unitIDStr := unitID.String
+		locationInfo.UnitID = &unitIDStr
+	}
+	if unitName.Valid && unitName.String != "" {
+		unitNameStr := unitName.String
+		locationInfo.UnitName = &unitNameStr
+	}
+	if roomID.Valid {
+		roomIDStr := roomID.String
+		locationInfo.RoomID = &roomIDStr
+	}
+	if roomName.Valid && roomName.String != "" {
+		roomNameStr := roomName.String
+		locationInfo.RoomName = &roomNameStr
+	}
+	if bedID.Valid {
+		bedIDStr := bedID.String
+		locationInfo.BedID = &bedIDStr
+	}
+	if bedName.Valid && bedName.String != "" {
+		bedNameStr := bedName.String
+		locationInfo.BedName = &bedNameStr
+	}
+
+	return locationInfo, nil
 }

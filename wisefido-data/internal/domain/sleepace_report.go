@@ -6,7 +6,7 @@ type SleepaceReport struct {
 	ReportID    string `json:"report_id"`    // UUID
 	TenantID    string `json:"tenant_id"`   // UUID
 	DeviceID    string `json:"device_id"`    // UUID（如果为空，可通过 DeviceCode 匹配 devices 表获取）
-	DeviceCode  string `json:"device_code"`  // 设备编码（来自厂家，等价于 devices.serial_number 或 devices.uid）
+	DeviceCode  string `json:"device_code"`  // 设备编码（来自厂家，等价于 devices.device_uid）
 	
 	// 报告基本信息
 	RecordCount int    `json:"record_count"` // 记录数量

@@ -1,4 +1,4 @@
-#!/bin/bash
+修!/bin/bash
 
 # IoT 时序数据服务启动脚本
 # 
@@ -133,9 +133,9 @@ export REDIS_DB=0
 export HTTP_ADDR=:8083
 
 # Stream 配置 - 设备级别 streams
-export STREAM_RADAR_MONITOR=radar:monitor:stream
-export STREAM_RADAR_STAT=radar:stat:stream
-export STREAM_RADAR_EVENT=radar:event:stream
+export STREAM_RADAR_MONITOR=iot:monitor:stream
+export STREAM_RADAR_STAT=iot:stat:stream
+export STREAM_RADAR_EVENT=iot:event:stream
 export STREAM_RADAR_ALARM=radar:alarm:stream
 export STREAM_SLEEPACE_MONITOR=sleepace:monitor:stream
 export STREAM_SLEEPACE_EVENT=sleepace:event:stream
@@ -156,9 +156,9 @@ echo -e "${BLUE}📊 Configuration:${NC}"
 echo "  🔌 HTTP Port: 8083"
 echo "  🗄️  Database: $DB_HOST:$DB_PORT/$DB_NAME"
 echo "  📡 Redis: $REDIS_ADDR"
-echo "  📨 Radar Monitor: $STREAM_RADAR_MONITOR"
-echo "  📨 Radar Stat: $STREAM_RADAR_STAT"
-echo "  📨 Radar Event: $STREAM_RADAR_EVENT"
+echo "  📨 IoT Monitor: $STREAM_IOT_MONITOR"
+echo "  📨 IoT Stat: $STREAM_IOT_STAT"
+echo "  📨 IoT Event: $STREAM_IOT_EVENT"
 echo "  📨 Radar Alarm: $STREAM_RADAR_ALARM"
 echo "  📨 Sleepace Monitor: $STREAM_SLEEPACE_MONITOR"
 echo "  📨 Sleepace Event: $STREAM_SLEEPACE_EVENT"

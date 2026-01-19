@@ -55,7 +55,7 @@ func (r *IoTTimeSeriesRepository) GetLatestByDeviceID(tenantID, deviceID string,
 			COALESCE(ds.device_type, '') as device_type
 		FROM iot_timeseries its
 		LEFT JOIN devices d ON its.device_id = d.device_id
-		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE its.device_id = $1 AND its.tenant_id = $2
 		ORDER BY its.timestamp DESC
 		LIMIT $3
@@ -222,7 +222,7 @@ func (r *IoTTimeSeriesRepository) GetLatestByDeviceIDs(tenantID string, deviceID
 			ROW_NUMBER() OVER (PARTITION BY its.device_id ORDER BY its.timestamp DESC) as rn
 		FROM iot_timeseries its
 		LEFT JOIN devices d ON its.device_id = d.device_id
-		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE its.device_id = ANY($1) AND its.tenant_id = $2
 		`
 
@@ -363,7 +363,7 @@ func (r *IoTTimeSeriesRepository) GetDeviceType(tenantID, deviceID string) (stri
 	query := `
 		SELECT ds.device_type
 		FROM devices d
-		INNER JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		INNER JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE d.device_id = $1 AND d.tenant_id = $2
 	`
 

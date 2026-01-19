@@ -25,7 +25,7 @@ func NewEvent2Evaluator(evaluator *Evaluator) *Event2Evaluator {
 func (e *Event2Evaluator) Evaluate(tenantID string, card repository.CardInfo, realtimeData *models.RealtimeData) ([]models.AlarmEvent, error) {
 	// TODO: 实现完整的事件2逻辑
 	// 当前返回空列表，待后续实现
-	
+
 	// 检查条件：
 	// 1. 必须是 ActiveBed 卡片
 	if card.CardType != "ActiveBed" {
@@ -49,8 +49,8 @@ func (e *Event2Evaluator) Evaluate(tenantID string, card repository.CardInfo, re
 	return nil, nil
 }
 
-// checkRadarOnBed 检查床上是否绑定了 Radar 设备
-func (e *Event2Evaluator) checkRadarOnBed(ctx context.Context, card repository.CardInfo) (bool, error) {
+// checkRadarInBed 检查床上是否绑定了 Radar 设备
+func (e *Event2Evaluator) checkRadarInBed(ctx context.Context, card repository.CardInfo) (bool, error) {
 	// 获取卡片绑定的设备
 	devices, err := e.evaluator.cardRepo.GetCardDevices(card.CardID)
 	if err != nil {
@@ -69,4 +69,3 @@ func (e *Event2Evaluator) checkRadarOnBed(ctx context.Context, card repository.C
 
 	return false, nil
 }
-
