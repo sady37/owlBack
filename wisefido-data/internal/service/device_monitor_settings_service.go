@@ -107,7 +107,7 @@ type UpdateDeviceMonitorSettingsResponse struct {
 // ============================================
 
 // buildDeviceAlarmItemsFromCloudOrDefault 从 alarm_cloud 或 DefaultAlarmSetting 构建设备的 AlarmItem 数组
-// deviceType: 数据库中的 device_type（如 "sleepad", "radar"），直接使用 device_store.device_type
+// deviceType: 数据库中的 device_type（如 "Sleepad", "radar"），直接使用 device_store.device_type
 func (s *deviceMonitorSettingsService) buildDeviceAlarmItemsFromCloudOrDefault(ctx context.Context, tenantID, deviceType string) ([]alarm.AlarmItem, error) {
 	// 标准化 device_type（统一转换为小写）
 	deviceTypeLower := strings.ToLower(deviceType)
@@ -117,7 +117,7 @@ func (s *deviceMonitorSettingsService) buildDeviceAlarmItemsFromCloudOrDefault(c
 	isRadar := deviceTypeLower == "radar"
 
 	if !isSleepad && !isRadar {
-		return nil, fmt.Errorf("invalid device_type: %s (must be sleepace/sleepad or radar)", deviceType)
+		return nil, fmt.Errorf("invalid device_type: %s (must be Sleepad/sleepace/sleepad or radar)", deviceType)
 	}
 
 	// 1. 尝试从 alarm_cloud 获取配置
@@ -279,7 +279,7 @@ func (s *deviceMonitorSettingsService) convertMonitorConfigToAlarmItems(monitorC
 	} else if isRadar {
 		defaultItems = alarm.DefaultAlarmSetting.Radar
 	} else {
-		return nil, fmt.Errorf("invalid device_type: %s (must be sleepace/sleepad or radar)", deviceType)
+		return nil, fmt.Errorf("invalid device_type: %s (must be Sleepad/sleepace/sleepad or radar)", deviceType)
 	}
 
 	// 从 monitor_config 构建映射
@@ -347,7 +347,7 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 
 	// 验证设备类型匹配（安全性检查：防止恶意修改 URL 参数）
 	// req.DeviceType 是前端传入的 "sleepace" 或 "radar"
-	// device.DeviceType 是从 devices 表 JOIN device_store 获取的 device_type（如 "sleepad", "radar"）
+	// device.DeviceType 是从 devices 表 JOIN device_store 获取的 device_type（如 "Sleepad", "radar"）
 	if !device.DeviceType.Valid {
 		return nil, fmt.Errorf("device has no device_type")
 	}
@@ -517,7 +517,7 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(ctx context.C
 
 	// 验证设备类型匹配（安全性检查：防止恶意修改 URL 参数）
 	// req.DeviceType 是前端传入的 "sleepace" 或 "radar"
-	// device.DeviceType 是从 devices 表 JOIN device_store 获取的 device_type（如 "sleepad", "radar"）
+	// device.DeviceType 是从 devices 表 JOIN device_store 获取的 device_type（如 "Sleepad", "radar"）
 	if !device.DeviceType.Valid {
 		return nil, fmt.Errorf("device has no device_type")
 	}
@@ -608,34 +608,44 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(ctx context.C
 			}
 		}
 
-		// 处理 monitor_config：如果 existingAlarmDevice 不存在，从 existingAlarmItems 构建
-		var monitorConfig map[string]interface{}
-		if existingAlarmDevice != nil && len(existingAlarmDevice.MonitorConfig) > 0 {
-			// 解析现有的 monitor_config
-			if err := json.Unmarshal(existingAlarmDevice.MonitorConfig, &monitorConfig); err != nil {
-				monitorConfig = make(map[string]interface{})
+		// 保存前端修改的 []AlarmItem（即 monitor_config 中的内容）
+		// 前端修改的是 DefaultAlarmSetting 中的 Radar 或 Sleepad []AlarmItem
+		// 这些数据保存在 monitor_config 中，需要保存到 config_versions
+		// 使用 existingAlarmItems（已在第 538-555 行从 monitor_config 转换，或从 alarm_cloud/默认值构建）
+		alarmItems := existingAlarmItems
+
+		// 处理 vendor_config：从 existingAlarmDevice 获取
+		var vendorConfig map[string]interface{}
+		if existingAlarmDevice != nil && len(existingAlarmDevice.VendorConfig) > 0 {
+			if err := json.Unmarshal(existingAlarmDevice.VendorConfig, &vendorConfig); err != nil {
+				vendorConfig = make(map[string]interface{})
 			}
 		} else {
-			// 如果不存在，从 existingAlarmItems 转换为 monitor_config
-			monitorConfigBytes, err := s.convertAlarmItemsToMonitorConfig(existingAlarmItems)
-			if err == nil && len(monitorConfigBytes) > 0 {
-				if err := json.Unmarshal(monitorConfigBytes, &monitorConfig); err != nil {
-					monitorConfig = make(map[string]interface{})
-				}
-			} else {
-				monitorConfig = make(map[string]interface{})
-			}
+			vendorConfig = make(map[string]interface{})
 		}
 
-		// 构建完整的配置数据
+		// 处理 metadata：从 existingAlarmDevice 获取
+		var metadata map[string]interface{}
+		if existingAlarmDevice != nil && len(existingAlarmDevice.Metadata) > 0 {
+			if err := json.Unmarshal(existingAlarmDevice.Metadata, &metadata); err != nil {
+				metadata = make(map[string]interface{})
+			}
+		} else {
+			metadata = make(map[string]interface{})
+		}
+
+		// 构建完整的配置数据：保存所有字段
+		// 包括 alarm_cloud 的完整配置和 alarm_device 的完整配置（前端修改的 []AlarmItem 在 monitor_config 中）
 		configData := map[string]interface{}{
-			// alarm_cloud 配置
+			// alarm_cloud 配置（完整保存）
 			"TenantResetTime":          alarmCloudConfig.TenantResetTime,
 			"common_alarm":             alarmCloudConfig.CommonAlarm,
 			"AlarmSetting":             alarmCloudConfig.AlarmSetting,
 			"CloudVitalAlarmThreshold": alarmCloudConfig.CloudVitalAlarmThreshold,
-			// 设备特定的 monitor_config
-			"monitor_config": monitorConfig,
+			// alarm_device 的全部字段（前端修改的 []AlarmItem 保存在 monitor_config 中）
+			"alarm_items":   alarmItems, // 前端修改的 []AlarmItem（Radar 或 Sleepad）
+			"vendor_config": vendorConfig,
+			"metadata":      metadata,
 		}
 		configDataJSON, err := json.Marshal(configData)
 		if err != nil {
@@ -745,10 +755,40 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(ctx context.C
 
 	// 发布配置变更通知
 	if s.configNotifier != nil {
-		if err := s.configNotifier.NotifyAlarmDeviceUpdated(ctx, req.TenantID, req.DeviceID); err != nil {
+		// 获取 device_uid、device_code 和 device_type（radar 服务需要）
+		deviceUID := ""
+		if device.DeviceUID != "" {
+			deviceUID = device.DeviceUID
+		}
+
+		deviceCode := ""
+		if device.DeviceCode.Valid && device.DeviceCode.String != "" {
+			deviceCode = device.DeviceCode.String
+		}
+
+		// 获取设备类型（转换为标准格式）
+		deviceType := ""
+		if device.DeviceType.Valid {
+			deviceTypeStr := device.DeviceType.String
+			// 转换为标准格式：Sleepad/sleepad/sleepace/sleeppad -> "Sleepad", radar -> "Radar"
+			switch strings.ToLower(deviceTypeStr) {
+			case "Sleepad", "sleepad", "sleepace", "sleeppad":
+				deviceType = "Sleepad"
+			case "radar":
+				deviceType = "Radar"
+			default:
+				deviceType = deviceTypeStr
+			}
+		}
+
+		// 位置信息可选，可为空（当前不传递，后续如需可添加获取逻辑）
+		if err := s.configNotifier.NotifyAlarmDeviceUpdated(ctx, req.TenantID, req.DeviceID, deviceUID, deviceCode, deviceType, nil); err != nil {
 			s.logger.Warn("Failed to notify config change, but database update succeeded",
 				zap.String("tenant_id", req.TenantID),
 				zap.String("device_id", req.DeviceID),
+				zap.String("device_uid", deviceUID),
+				zap.String("device_code", deviceCode),
+				zap.String("device_type", deviceType),
 				zap.Error(err),
 			)
 		}

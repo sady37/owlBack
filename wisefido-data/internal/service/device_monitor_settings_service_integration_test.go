@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 package service
@@ -8,8 +9,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/google/uuid"
 	"wisefido-data/internal/repository"
+
+	"github.com/google/uuid"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -40,9 +42,9 @@ func createTestTenantForDeviceMonitorSettings(t *testing.T, db *sql.DB) string {
 func createTestDeviceStoreForDeviceMonitorSettings(t *testing.T, db *sql.DB, tenantID, deviceType string) string {
 	deviceStoreID := uuid.New().String()
 	_, err := db.Exec(
-		`INSERT INTO device_store (device_store_id, tenant_id, device_type, serial_number, uid)
+		`INSERT INTO device_store (device_id, tenant_id, device_type, serial_number, uid)
 		 VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT (device_store_id) DO UPDATE SET tenant_id = EXCLUDED.tenant_id, device_type = EXCLUDED.device_type`,
+		 ON CONFLICT (device_id) DO UPDATE SET tenant_id = EXCLUDED.tenant_id, device_type = EXCLUDED.device_type`,
 		deviceStoreID, tenantID, deviceType, "SN-"+deviceStoreID[:8], "UID-"+deviceStoreID[:8],
 	)
 	require.NoError(t, err)
@@ -52,9 +54,9 @@ func createTestDeviceStoreForDeviceMonitorSettings(t *testing.T, db *sql.DB, ten
 // createTestDeviceForDeviceMonitorSettings 创建测试设备
 func createTestDeviceForDeviceMonitorSettings(t *testing.T, db *sql.DB, tenantID, deviceStoreID, deviceID, deviceName string) string {
 	_, err := db.Exec(
-		`INSERT INTO devices (device_id, tenant_id, device_store_id, device_name, status, business_access, monitoring_enabled)
+		`INSERT INTO devices (device_id, tenant_id, device_id, device_name, status, business_access, monitoring_enabled)
 		 VALUES ($1, $2, $3, $4, 'online', 'approved', true)
-		 ON CONFLICT (device_id) DO UPDATE SET tenant_id = EXCLUDED.tenant_id, device_store_id = EXCLUDED.device_store_id, device_name = EXCLUDED.device_name`,
+		 ON CONFLICT (device_id) DO UPDATE SET tenant_id = EXCLUDED.tenant_id, device_id = EXCLUDED.device_id, device_name = EXCLUDED.device_name`,
 		deviceID, tenantID, deviceStoreID, deviceName,
 	)
 	require.NoError(t, err)
@@ -396,16 +398,16 @@ func TestDeviceMonitorSettingsService_UpdateDeviceMonitorSettings_Sleepace_Succe
 		DeviceID:   deviceID,
 		DeviceType: "sleepace",
 		Settings: map[string]interface{}{
-			"left_bed_start_hour":        22,
-			"left_bed_start_minute":      0,
-			"left_bed_end_hour":          6,
-			"left_bed_end_minute":        30,
-			"left_bed_duration":          300,
-			"left_bed_alarm_level":       "WARNING",
-			"min_heart_rate":             60,
-			"max_heart_rate":             100,
-			"heart_rate_slow_duration":   60,
-			"heart_rate_fast_duration":   60,
+			"left_bed_start_hour":         22,
+			"left_bed_start_minute":       0,
+			"left_bed_end_hour":           6,
+			"left_bed_end_minute":         30,
+			"left_bed_duration":           300,
+			"left_bed_alarm_level":        "WARNING",
+			"min_heart_rate":              60,
+			"max_heart_rate":              100,
+			"heart_rate_slow_duration":    60,
+			"heart_rate_fast_duration":    60,
 			"heart_rate_slow_alarm_level": "EMERGENCY",
 			"heart_rate_fast_alarm_level": "EMERGENCY",
 		},
@@ -464,7 +466,7 @@ func TestDeviceMonitorSettingsService_UpdateDeviceMonitorSettings_Radar_Success(
 		DeviceType: "radar",
 		Settings: map[string]interface{}{
 			"suspected_fall_duration": 5,
-			"fall_alarm_level":       "EMERGENCY",
+			"fall_alarm_level":        "EMERGENCY",
 		},
 	}
 
@@ -604,4 +606,3 @@ func TestDeviceMonitorSettingsService_UpdateDeviceMonitorSettings_DeviceTypeMism
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "device type mismatch")
 }
-

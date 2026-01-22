@@ -1,14 +1,17 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -27,6 +30,11 @@ func (a *AdminAPI) getDeviceStores(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to list device stores: %v", err)))
 		return
+	}
+
+	// 填充设备在线状态（从 Redis 读取）
+	if a.RedisClient != nil {
+		fillDeviceStoreOnlineStatus(r.Context(), a.RedisClient, items)
 	}
 
 	out := make([]any, 0, len(items))
@@ -188,7 +196,9 @@ func (a *AdminAPI) importDeviceStores(w http.ResponseWriter, r *http.Request) {
 	headerToFieldMap := map[string]string{
 		"Device Type":                 "device_type",
 		"Device Model":                "device_model",
+		"Device Code":                 "device_code",
 		"Device UID":                  "device_uid",
+		"UID":                         "device_uid",
 		"MAC":                         "mac",
 		"IMEI":                        "imei",
 		"Comm Mode":                   "comm_mode",
@@ -306,6 +316,9 @@ func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
 	if v, ok := payload["device_uid"].(string); ok && v != "" {
 		ds.DeviceUID = v
 	}
+	if v, ok := payload["device_code"].(string); ok && v != "" {
+		ds.DeviceCode = sql.NullString{String: v, Valid: true}
+	}
 	if v, ok := payload["device_model"].(string); ok && v != "" {
 		ds.DeviceModel = sql.NullString{String: v, Valid: true}
 	}
@@ -338,12 +351,63 @@ func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
 			ds.OTATargetMCUModel = sql.NullString{Valid: false}
 		}
 	}
-	if v, ok := payload["tenant_id"].(string); ok {
-		ds.TenantID = v
+	// tenant_id: support string or null (to clear/unallocate)
+	if v, ok := payload["tenant_id"]; ok {
+		if v == nil {
+			// null means unallocate (set to trash tenant)
+			ds.TenantID = "00000000-0000-0000-0000-000000000000"
+		} else if str, ok := v.(string); ok {
+			ds.TenantID = str
+		}
 	}
 	if v, ok := payload["allow_access"].(bool); ok {
 		ds.AllowAccess = v
 	}
 
 	return ds
+}
+
+// fillDeviceStoreOnlineStatus 从 Redis 批量读取设备在线状态并填充到设备库存列表
+// 从 config stream 消费的状态存储在 Redis Hash 中：device:online_status:{device_uid}
+// 如果 Redis 中没有状态，默认设置为 "offline"
+func fillDeviceStoreOnlineStatus(ctx context.Context, redisClient *redis.Client, stores []*domain.DeviceStore) {
+	if len(stores) == 0 {
+		return
+	}
+
+	// 构建 Redis keys（使用 Hash 存储，key 为 device:online_status:{device_uid}，field 为 "status"）
+	keys := make([]string, 0, len(stores))
+	deviceUIDToStore := make(map[string]*domain.DeviceStore)
+	for _, store := range stores {
+		if store.DeviceUID != "" {
+			key := "device:online_status:" + store.DeviceUID
+			keys = append(keys, key)
+			deviceUIDToStore[store.DeviceUID] = store
+		}
+	}
+
+	if len(keys) == 0 {
+		return
+	}
+
+	// 批量从 Redis Hash 读取状态
+	for _, key := range keys {
+		deviceUID := strings.TrimPrefix(key, "device:online_status:")
+		if store, exists := deviceUIDToStore[deviceUID]; exists {
+			status, err := redisClient.HGet(ctx, key, "status").Result()
+			if err == nil && status != "" {
+				store.OnlineStatus = status
+			} else {
+				// Redis 中没有状态（可能已过期或从未设置），默认设置为 "offline"
+				store.OnlineStatus = "offline"
+			}
+		}
+	}
+
+	// 对于没有在 Redis 中找到状态的设备，也设置为 "offline"
+	for _, store := range stores {
+		if store.OnlineStatus == "" {
+			store.OnlineStatus = "offline"
+		}
+	}
 }

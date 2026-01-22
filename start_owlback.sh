@@ -8,7 +8,7 @@
 # - wisefido-card-aggregator: 数据聚合（从 PostgreSQL + Redis 聚合卡片数据并缓存到 Redis）
 #   注意：卡片创建/更新现在由 wisefido-data 通过 wisefido-card-manage API 处理，aggregator 主要用于数据聚合
 # - wisefido-card-manage: 卡片管理服务（提供 HTTP API 用于创建/更新卡片，端口 8082）
-# - wisefido-iot-timeseries: 数据消费服务（从 Redis Streams 消费数据，存储到 TimescaleDB）
+# - wisefido-iot: 数据消费服务（从 Redis Streams 消费数据，存储到 TimescaleDB）
 # - wisefido-ai: AI 智能推理服务（高级推理、访客识别、巡房优化）
 #
 # 注意：设备接入服务（wisefido-sleepace, wisefido-radar）不包含在此脚本中
@@ -31,7 +31,7 @@ mkdir -p "$LOG_DIR"
 DATA_LOG="$LOG_DIR/wisefido-data.log"
 AGGREGATOR_LOG="$LOG_DIR/wisefido-card-aggregator.log"
 CARD_MANAGE_LOG="$LOG_DIR/wisefido-card-manage.log"
-IOT_TIMESERIES_LOG="$LOG_DIR/wisefido-iot-timeseries.log"
+IOT_LOG="$LOG_DIR/wisefido-iot.log"
 AI_LOG="$LOG_DIR/wisefido-ai.log"
 COMBINED_LOG="$LOG_DIR/combined.log"
 
@@ -50,7 +50,7 @@ fi
 check_running_services() {
     local data_running=false
     local aggregator_running=false
-    local iot_timeseries_running=false
+    local iot_running=false
     local ai_running=false
     
     # 检查 wisefido-data
@@ -73,11 +73,11 @@ check_running_services() {
         card_manage_running=true
     fi
     
-    # 检查 wisefido-iot-timeseries
-    if pgrep -f "go run.*wisefido-iot-timeseries" > /dev/null 2>&1 || \
-       pgrep -f "wisefido-iot-timeseries" > /dev/null 2>&1 || \
+    # 检查 wisefido-iot
+    if pgrep -f "go run.*wisefido-iot" > /dev/null 2>&1 || \
+       pgrep -f "wisefido-iot" > /dev/null 2>&1 || \
        (command -v lsof &> /dev/null && lsof -ti :8083 > /dev/null 2>&1); then
-        iot_timeseries_running=true
+        iot_running=true
     fi
     
     # 检查 wisefido-ai
@@ -87,7 +87,7 @@ check_running_services() {
     fi
     
     if [ "$data_running" = true ] || [ "$aggregator_running" = true ] || \
-       [ "$iot_timeseries_running" = true ] || [ "$ai_running" = true ]; then
+       [ "$card_manage_running" = true ] || [ "$iot_running" = true ] || [ "$ai_running" = true ]; then
         echo -e "${YELLOW}Warning: Services are already running${NC}"
         if [ "$data_running" = true ]; then
             echo -e "${YELLOW}  - wisefido-data is running${NC}"
@@ -95,8 +95,11 @@ check_running_services() {
         if [ "$aggregator_running" = true ]; then
             echo -e "${YELLOW}  - wisefido-card-aggregator is running${NC}"
         fi
-        if [ "$iot_timeseries_running" = true ]; then
-            echo -e "${YELLOW}  - wisefido-iot-timeseries is running${NC}"
+        if [ "$card_manage_running" = true ]; then
+            echo -e "${YELLOW}  - wisefido-card-manage is running${NC}"
+        fi
+        if [ "$iot_running" = true ]; then
+            echo -e "${YELLOW}  - wisefido-iot is running${NC}"
         fi
         if [ "$ai_running" = true ]; then
             echo -e "${YELLOW}  - wisefido-ai is running${NC}"
@@ -113,11 +116,13 @@ check_running_services() {
             # 停止现有服务
             pkill -f "go run.*wisefido-data" 2>/dev/null || true
             pkill -f "go run.*wisefido-card-aggregator" 2>/dev/null || true
-            pkill -f "go run.*wisefido-iot-timeseries" 2>/dev/null || true
+            pkill -f "go run.*wisefido-card-manage" 2>/dev/null || true
+            pkill -f "go run.*wisefido-iot" 2>/dev/null || true
             pkill -f "go run.*wisefido-ai" 2>/dev/null || true
             pkill -f "wisefido-data" 2>/dev/null || true
             pkill -f "wisefido-card-aggregator" 2>/dev/null || true
-            pkill -f "wisefido-iot-timeseries" 2>/dev/null || true
+            pkill -f "wisefido-card-manage" 2>/dev/null || true
+            pkill -f "wisefido-iot" 2>/dev/null || true
             pkill -f "wisefido-ai" 2>/dev/null || true
             if command -v lsof &> /dev/null; then
                 PORT_PIDS=$(lsof -ti :8080 2>/dev/null || true)
@@ -129,11 +134,20 @@ check_running_services() {
                         fi
                     fi
                 done
+                PORT_PIDS=$(lsof -ti :8082 2>/dev/null || true)
+                for pid in $PORT_PIDS; do
+                    if [ -n "$pid" ]; then
+                        CWD=$(lsof -p "$pid" 2>/dev/null | grep cwd | awk '{print $NF}' || true)
+                        if echo "$CWD" | grep -q "wisefido-card-manage"; then
+                            kill -9 "$pid" 2>/dev/null || true
+                        fi
+                    fi
+                done
                 PORT_PIDS=$(lsof -ti :8083 2>/dev/null || true)
                 for pid in $PORT_PIDS; do
                     if [ -n "$pid" ]; then
                         CWD=$(lsof -p "$pid" 2>/dev/null | grep cwd | awk '{print $NF}' || true)
-                        if echo "$CWD" | grep -q "wisefido-iot-timeseries"; then
+                        if echo "$CWD" | grep -q "wisefido-iot"; then
                             kill -9 "$pid" 2>/dev/null || true
                         fi
                     fi
@@ -182,9 +196,34 @@ check_port() {
 # 注意：wisefido-card-aggregator 和 wisefido-ai 不需要端口，它们是纯后台服务
 check_port 8080 "wisefido-data"
 check_port 8082 "wisefido-card-manage"
-check_port 8083 "wisefido-iot-timeseries"
+check_port 8083 "wisefido-iot"
 
-# 设置默认环境变量
+# 加载统一配置文件
+# 获取脚本所在目录（owlBack 根目录）
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="${SCRIPT_DIR}/.env"
+
+if [ -f "$ENV_FILE" ]; then
+    echo -e "${BLUE}Loading configuration from: $ENV_FILE${NC}"
+    set -a  # 自动导出所有变量
+    source "$ENV_FILE"
+    set +a  # 关闭自动导出
+else
+    echo -e "${YELLOW}Warning: .env file not found, using default values${NC}"
+    # 设置默认环境变量（如果 .env 不存在）
+    export DB_HOST="${DB_HOST:-127.0.0.1}"
+    export DB_PORT="${DB_PORT:-5433}"
+    export DB_USER="${DB_USER:-postgres}"
+    export DB_PASSWORD="${DB_PASSWORD:-postgres}"
+    export DB_NAME="${DB_NAME:-owlrd}"
+    export DB_SSLMODE="${DB_SSLMODE:-disable}"
+    export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
+    export REDIS_PASSWORD="${REDIS_PASSWORD:-TeLunSu-36kr}"
+    export MQTT_BROKER="${MQTT_BROKER:-127.0.0.1}"
+    export MQTT_PORT="${MQTT_PORT:-1883}"
+fi
+
+# 设置默认值（如果环境变量未设置）
 export DB_HOST="${DB_HOST:-127.0.0.1}"
 export DB_PORT="${DB_PORT:-5433}"
 export DB_USER="${DB_USER:-postgres}"
@@ -194,33 +233,20 @@ export DB_SSLMODE="${DB_SSLMODE:-disable}"
 
 # 使用 127.0.0.1 而不是 localhost 以避免 IPv6 解析问题
 export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
-export REDIS_PASSWORD=TeLunSu-36kr
+export REDIS_PASSWORD="${REDIS_PASSWORD:-TeLunSu-36kr}"
 
-# wisefido-card-aggregator 配置
-# 注意：卡片创建/更新现在由 wisefido-data 直接处理（同步调用）
-# wisefido-card-aggregator 主要用于数据聚合（从 PostgreSQL + Redis 聚合数据并缓存）
+# MQTT配置
+export MQTT_BROKER="${MQTT_BROKER:-127.0.0.1}"
+export MQTT_PORT="${MQTT_PORT:-1883}"
+
+# wisefido-card-aggregator 配置（如果未从 .env 加载）
 export TENANT_ID="${TENANT_ID:-bb045e6b-7bc2-4e59-af2e-d8b1adc77f2c}"
-# 卡片创建轮询模式配置（作为保底机制）
-# 注意：由于 wisefido-data 已经直接处理卡片更新，这里只是保底机制
-# 如果设置为 "polling"：
-#   - 如果 CARD_POLLING_INTERVAL >= 86400 (24小时)，会自动使用定时任务（每天8点执行）
-#   - 如果 CARD_POLLING_INTERVAL < 86400，使用固定间隔轮询
-# 如果设置为 "events"，wisefido-card-aggregator 会监听 Redis Streams 事件（当前未使用）
 export CARD_TRIGGER_MODE="${CARD_TRIGGER_MODE:-polling}"
-# 轮询间隔（秒）：默认 86400 秒（24 小时）
-# 当 >= 86400 时，会自动使用每天8点的定时任务（而不是固定间隔）
-# 当 < 86400 时，使用固定间隔轮询
-export CARD_POLLING_INTERVAL="${CARD_POLLING_INTERVAL:-86400}"  # 24 小时（自动切换为每天8点执行）
-# 数据聚合配置（wisefido-card-aggregator 的主要功能）
-# CARD_AGGREGATION_ENABLED: 是否启用数据聚合（从 PostgreSQL + Redis 聚合并缓存到 Redis）
-export CARD_AGGREGATION_ENABLED="${CARD_AGGREGATION_ENABLED:-true}"  # 启用数据聚合
-# CARD_AGGREGATION_INTERVAL: 数据聚合间隔（秒），默认 2 秒
-# 功能：每 2 秒聚合一次所有卡片数据（从 PostgreSQL + Redis 读取，组装成完整的 VitalFocusCard 对象，缓存到 Redis）
-# 原因：心率呼吸数据每 2 秒更新一次（前端 mockRadarData.ts），聚合间隔应匹配数据更新频率
-# 启动时：服务启动时会立即执行一次全量聚合（在 startDataAggregation 函数中）
-export CARD_AGGREGATION_INTERVAL="${CARD_AGGREGATION_INTERVAL:-2}"  # 每 2 秒聚合一次（匹配心率呼吸数据更新频率）
+export CARD_POLLING_INTERVAL="${CARD_POLLING_INTERVAL:-86400}"
+export CARD_AGGREGATION_ENABLED="${CARD_AGGREGATION_ENABLED:-true}"
+export CARD_AGGREGATION_INTERVAL="${CARD_AGGREGATION_INTERVAL:-2}"
 
-# 日志配置
+# 日志配置（如果未从 .env 加载）
 export LOG_LEVEL="${LOG_LEVEL:-info}"
 export LOG_FORMAT="${LOG_FORMAT:-json}"
 
@@ -229,6 +255,7 @@ echo -e "${BLUE}Configuration:${NC}"
 echo "  DB_HOST: $DB_HOST"
 echo "  DB_NAME: $DB_NAME"
 echo "  REDIS_ADDR: $REDIS_ADDR"
+echo "  MQTT_BROKER: $MQTT_BROKER:$MQTT_PORT"
 echo "  TENANT_ID: $TENANT_ID"
 echo "  CARD_TRIGGER_MODE: $CARD_TRIGGER_MODE (card creation now handled by wisefido-data, this is backup)"
 if [ "$CARD_POLLING_INTERVAL" -ge 86400 ]; then
@@ -251,15 +278,25 @@ echo -e "${BLUE}Log files:${NC}"
 echo "  wisefido-data: $DATA_LOG"
 echo "  wisefido-card-aggregator: $AGGREGATOR_LOG"
 echo "  wisefido-card-manage: $CARD_MANAGE_LOG"
-echo "  wisefido-iot-timeseries: $IOT_TIMESERIES_LOG"
+echo "  wisefido-iot: $IOT_LOG"
 echo "  wisefido-ai: $AI_LOG"
 echo "  combined: $COMBINED_LOG"
 echo ""
 
+# 启动依赖服务（PostgreSQL, Redis, MQTT）
+echo -e "${BLUE}Starting dependency services (PostgreSQL, Redis, MQTT)...${NC}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "${SCRIPT_DIR}/docker-compose.yml" ]; then
+    cd "$SCRIPT_DIR"
+    docker-compose up -d postgresql redis mqtt 2>&1 | grep -v "is up-to-date" || true
+    echo -e "${GREEN}Dependency services started${NC}"
+    echo ""
+fi
+
 # 清理旧日志（可选）
 if [ "$1" == "--clean" ]; then
     echo -e "${YELLOW}Cleaning old log files...${NC}"
-    rm -f "$DATA_LOG" "$AGGREGATOR_LOG" "$IOT_TIMESERIES_LOG" "$AI_LOG" "$COMBINED_LOG"
+    rm -f "$DATA_LOG" "$AGGREGATOR_LOG" "$IOT_LOG" "$AI_LOG" "$COMBINED_LOG"
 fi
 
 # 函数：清理后台进程
@@ -269,7 +306,7 @@ cleanup() {
     pkill -f "go run.*wisefido-data" || true
     pkill -f "go run.*wisefido-card-aggregator" || true
     pkill -f "go run.*wisefido-card-manage" || true
-    pkill -f "go run.*wisefido-iot-timeseries" || true
+    pkill -f "go run.*wisefido-iot" || true
     pkill -f "go run.*wisefido-ai" || true
     pkill -f "wisefido-data" || true
     pkill -f "wisefido-card-aggregator" || true
@@ -333,19 +370,8 @@ sleep 2
 echo -e "${GREEN}[3/5] Starting wisefido-card-manage service...${NC}"
 echo -e "${BLUE}  Function: Card management API (create/update cards)${NC}"
 cd "$OWLBACK_DIR/wisefido-card-manage"
-# 设置环境变量
+# 设置环境变量（如果未从 .env 加载）
 export CARD_MANAGE_PORT="${CARD_MANAGE_PORT:-8082}"
-export TENANT_ID="${TENANT_ID:-bb045e6b-7bc2-4e59-af2e-d8b1adc77f2c}"
-export DB_HOST="${DB_HOST:-localhost}"
-export DB_PORT="${DB_PORT:-5433}"
-export DB_USER="${DB_USER:-postgres}"
-export DB_PASSWORD="${DB_PASSWORD:-postgres}"
-export DB_NAME="${DB_NAME:-owlrd}"
-export DB_SSLMODE="${DB_SSLMODE:-disable}"
-export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
-export REDIS_PASSWORD="${REDIS_PASSWORD:-}"
-export LOG_LEVEL="${LOG_LEVEL:-info}"
-export LOG_FORMAT="${LOG_FORMAT:-json}"
 # 直接输出到终端，同时使用 tee 写入日志文件
 go run cmd/wisefido-card-manage/main.go 2>&1 | tee "$CARD_MANAGE_LOG" &
 CARD_MANAGE_PID=$!
@@ -355,52 +381,38 @@ echo "  Log: $CARD_MANAGE_LOG (also displayed in terminal)"
 # 等待一下确保服务启动
 sleep 2
 
-# 启动 wisefido-iot-timeseries 服务
+# 启动 wisefido-iot 服务
 # 功能：从 Redis Streams 消费数据，存储到 TimescaleDB
-echo -e "${GREEN}[3/4] Starting wisefido-iot-timeseries service...${NC}"
+echo -e "${GREEN}[3/4] Starting wisefido-iot service...${NC}"
 echo -e "${BLUE}  Function: Consume data from Redis Streams → TimescaleDB${NC}"
-cd "$OWLBACK_DIR/wisefido-iot-timeseries"
-# 设置环境变量（与 start-iot-timeseries.sh 保持一致）
-export HTTP_ADDR=:8083
-export DB_HOST="${DB_HOST:-127.0.0.1}"
-export DB_PORT="${DB_PORT:-5433}"
-export DB_USER="${DB_USER:-postgres}"
-export DB_PASSWORD="${DB_PASSWORD:-postgres}"
-export DB_NAME="${DB_NAME:-owlrd}"
-export DB_SSLMODE="${DB_SSLMODE:-disable}"
-export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
-export REDIS_PASSWORD="${REDIS_PASSWORD:-TeLunSu-36kr}"
-export REDIS_DB=0
+cd "$OWLBACK_DIR/wisefido-iot"
+# 设置环境变量（如果未从 .env 加载）
+export HTTP_ADDR="${HTTP_ADDR:-:8083}"
+export REDIS_DB="${REDIS_DB:-0}"
 # Stream 配置 - 统一 IoT streams（所有设备类型）
-# 根据 RADAR_REDIS_STREAM_FORMAT_STANDARD.md 标准
-# 所有设备类型使用统一的 iot: 前缀
-# 注意：统一使用 "stat"，Redis Stream 名称是 iot:stat:stream
-export STREAM_IOT_MONITOR=${STREAM_IOT_MONITOR:-iot:monitor:stream}
-export STREAM_IOT_STAT=${STREAM_IOT_STAT:-iot:stat:stream}
-export STREAM_IOT_EVENT=${STREAM_IOT_EVENT:-iot:event:stream}
-export STREAM_IOT_ALARM=${STREAM_IOT_ALARM:-iot:alarm:stream}
-export STREAM_IOT_AUTH=${STREAM_IOT_AUTH:-iot:auth:stream}
+export STREAM_IOT_MONITOR="${STREAM_IOT_MONITOR:-iot:monitor:stream}"
+export STREAM_IOT_STAT="${STREAM_IOT_STAT:-iot:stat:stream}"
+export STREAM_IOT_EVENT="${STREAM_IOT_EVENT:-iot:event:stream}"
+export STREAM_IOT_ALARM="${STREAM_IOT_ALARM:-iot:alarm:stream}"
+export STREAM_IOT_AUTH="${STREAM_IOT_AUTH:-iot:auth:stream}"
 # 兼容性配置（旧名称，指向统一的 stream）
-export STREAM_RADAR_MONITOR=${STREAM_RADAR_MONITOR:-iot:monitor:stream}
-export STREAM_RADAR_STAT=${STREAM_RADAR_STAT:-iot:stat:stream}
-export STREAM_RADAR_EVENT=${STREAM_RADAR_EVENT:-iot:event:stream}
-export STREAM_RADAR_ALARM=${STREAM_RADAR_ALARM:-iot:alarm:stream}
-export STREAM_RADAR_AUTH=${STREAM_RADAR_AUTH:-iot:auth:stream}
-export STREAM_SLEEPACE_MONITOR=${STREAM_SLEEPACE_MONITOR:-iot:monitor:stream}
-export STREAM_SLEEPACE_STAT=${STREAM_SLEEPACE_STAT:-iot:stat:stream}
-export STREAM_SLEEPACE_EVENT=${STREAM_SLEEPACE_EVENT:-iot:event:stream}
-export STREAM_SLEEPACE_ALARM=${STREAM_SLEEPACE_ALARM:-iot:alarm:stream}
-export STREAM_SLEEPACE_AUTH=${STREAM_SLEEPACE_AUTH:-iot:auth:stream}
-# 注意：不再使用 iot:data:stream
-export CONSUMER_GROUP=iot-timeseries-group
-export CONSUMER_NAME=iot-timeseries-1
-export LOG_LEVEL="${LOG_LEVEL:-info}"
-export LOG_FORMAT="${LOG_FORMAT:-json}"
+export STREAM_RADAR_MONITOR="${STREAM_RADAR_MONITOR:-iot:monitor:stream}"
+export STREAM_RADAR_STAT="${STREAM_RADAR_STAT:-iot:stat:stream}"
+export STREAM_RADAR_EVENT="${STREAM_RADAR_EVENT:-iot:event:stream}"
+export STREAM_RADAR_ALARM="${STREAM_RADAR_ALARM:-iot:alarm:stream}"
+export STREAM_RADAR_AUTH="${STREAM_RADAR_AUTH:-iot:auth:stream}"
+export STREAM_SLEEPACE_MONITOR="${STREAM_SLEEPACE_MONITOR:-iot:monitor:stream}"
+export STREAM_SLEEPACE_STAT="${STREAM_SLEEPACE_STAT:-iot:stat:stream}"
+export STREAM_SLEEPACE_EVENT="${STREAM_SLEEPACE_EVENT:-iot:event:stream}"
+export STREAM_SLEEPACE_ALARM="${STREAM_SLEEPACE_ALARM:-iot:alarm:stream}"
+export STREAM_SLEEPACE_AUTH="${STREAM_SLEEPACE_AUTH:-iot:auth:stream}"
+export CONSUMER_GROUP="${CONSUMER_GROUP:-iot-timeseries-group}"
+export CONSUMER_NAME="${CONSUMER_NAME:-iot-timeseries-1}"
 # 直接输出到终端，同时使用 tee 写入日志文件
-go run cmd/wisefido-iot-timeseries/main.go 2>&1 | tee "$IOT_TIMESERIES_LOG" &
-IOT_TIMESERIES_PID=$!
-echo "  PID: $IOT_TIMESERIES_PID"
-echo "  Log: $IOT_TIMESERIES_LOG (also displayed in terminal)"
+go run cmd/wisefido-iot/main.go 2>&1 | tee "$IOT_LOG" &
+IOT_PID=$!
+echo "  PID: $IOT_PID"
+echo "  Log: $IOT_LOG (also displayed in terminal)"
 
 # 等待一下确保服务启动
 sleep 2
@@ -410,19 +422,8 @@ sleep 2
 echo -e "${GREEN}[5/5] Starting wisefido-ai service...${NC}"
 echo -e "${BLUE}  Function: AI inference (advanced reasoning, visitor detection, patrol optimization)${NC}"
 cd "$OWLBACK_DIR/wisefido-ai"
-# 设置环境变量（与 start-test.sh 保持一致）
-export TENANT_ID="${TENANT_ID:-bb045e6b-7bc2-4e59-af2e-d8b1adc77f2c}"
-export DB_HOST="${DB_HOST:-127.0.0.1}"
-export DB_PORT="${DB_PORT:-5433}"
-export DB_USER="${DB_USER:-postgres}"
-export DB_PASSWORD="${DB_PASSWORD:-postgres}"
-export DB_NAME="${DB_NAME:-owlrd}"
-export DB_SSLMODE="${DB_SSLMODE:-disable}"
-export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
-export REDIS_PASSWORD="${REDIS_PASSWORD:-TeLunSu-36kr}"
-export REDIS_DB=0
-export LOG_LEVEL="${LOG_LEVEL:-info}"
-export LOG_FORMAT="${LOG_FORMAT:-json}"
+# 设置环境变量（如果未从 .env 加载）
+export REDIS_DB="${REDIS_DB:-0}"
 # 直接输出到终端，同时使用 tee 写入日志文件
 go run cmd/wisefido-ai/main.go 2>&1 | tee "$AI_LOG" &
 AI_PID=$!
@@ -452,9 +453,9 @@ cleanup() {
         echo "  Stopping wisefido-card-aggregator (PID: $AGGREGATOR_PID)"
         kill $AGGREGATOR_PID 2>/dev/null || true
     fi
-    if [ -n "$IOT_TIMESERIES_PID" ] && ps -p $IOT_TIMESERIES_PID > /dev/null 2>&1; then
-        echo "  Stopping wisefido-iot-timeseries (PID: $IOT_TIMESERIES_PID)"
-        kill $IOT_TIMESERIES_PID 2>/dev/null || true
+    if [ -n "$IOT_PID" ] && ps -p $IOT_PID > /dev/null 2>&1; then
+        echo "  Stopping wisefido-iot (PID: $IOT_PID)"
+        kill $IOT_PID 2>/dev/null || true
     fi
     if [ -n "$AI_PID" ] && ps -p $AI_PID > /dev/null 2>&1; then
         echo "  Stopping wisefido-ai (PID: $AI_PID)"
@@ -466,7 +467,7 @@ cleanup() {
     pkill -f "go run.*wisefido-data" 2>/dev/null || true
     pkill -f "go run.*wisefido-card-aggregator" 2>/dev/null || true
     pkill -f "go run.*wisefido-card-manage" 2>/dev/null || true
-    pkill -f "go run.*wisefido-iot-timeseries" 2>/dev/null || true
+    pkill -f "go run.*wisefido-iot" 2>/dev/null || true
     pkill -f "go run.*wisefido-ai" 2>/dev/null || true
     echo -e "${GREEN}Cleanup completed${NC}"
 }
@@ -477,7 +478,7 @@ trap cleanup EXIT INT TERM
 # 检查服务是否正常运行
 DATA_FAILED=false
 AGGREGATOR_FAILED=false
-IOT_TIMESERIES_FAILED=false
+IOT_FAILED=false
 AI_FAILED=false
 
 if ! ps -p $DATA_PID > /dev/null 2>&1; then
@@ -494,18 +495,26 @@ if ! ps -p $AGGREGATOR_PID > /dev/null 2>&1; then
     AGGREGATOR_FAILED=true
 fi
 
-if ! ps -p $CARD_MANAGE_PID > /dev/null 2>&1; then
+# 检查 wisefido-card-manage 是否在运行（使用 pgrep 和端口检查，因为 $! 可能捕获的是 tee 进程）
+CARD_MANAGE_RUNNING=false
+if pgrep -f "go run.*wisefido-card-manage" > /dev/null 2>&1 || \
+   pgrep -f "wisefido-card-manage" > /dev/null 2>&1 || \
+   (command -v lsof &> /dev/null && lsof -ti :8082 > /dev/null 2>&1); then
+    CARD_MANAGE_RUNNING=true
+fi
+
+if [ "$CARD_MANAGE_RUNNING" = false ]; then
     echo -e "${RED}Error: wisefido-card-manage service failed to start${NC}"
     echo "Check log: $CARD_MANAGE_LOG"
     tail -20 "$CARD_MANAGE_LOG"
     CARD_MANAGE_FAILED=true
 fi
 
-if ! ps -p $IOT_TIMESERIES_PID > /dev/null 2>&1; then
-    echo -e "${RED}Error: wisefido-iot-timeseries service failed to start${NC}"
-    echo "Check log: $IOT_TIMESERIES_LOG"
-    tail -20 "$IOT_TIMESERIES_LOG"
-    IOT_TIMESERIES_FAILED=true
+if ! ps -p $IOT_PID > /dev/null 2>&1; then
+    echo -e "${RED}Error: wisefido-iot service failed to start${NC}"
+    echo "Check log: $IOT_LOG"
+    tail -20 "$IOT_LOG"
+    IOT_FAILED=true
 fi
 
 if ! ps -p $AI_PID > /dev/null 2>&1; then
@@ -519,11 +528,11 @@ fi
 FAILED_COUNT=0
 [ "$DATA_FAILED" = true ] && FAILED_COUNT=$((FAILED_COUNT + 1))
 [ "$AGGREGATOR_FAILED" = true ] && FAILED_COUNT=$((FAILED_COUNT + 1))
-[ "$IOT_TIMESERIES_FAILED" = true ] && FAILED_COUNT=$((FAILED_COUNT + 1))
+[ "$IOT_FAILED" = true ] && FAILED_COUNT=$((FAILED_COUNT + 1))
 [ "$AI_FAILED" = true ] && FAILED_COUNT=$((FAILED_COUNT + 1))
 
 # 如果所有服务都失败，退出
-if [ $FAILED_COUNT -eq 4 ]; then
+if [ $FAILED_COUNT -eq 5 ]; then
     echo -e "${RED}All services failed to start. Exiting.${NC}"
     exit 1
 fi
@@ -547,9 +556,9 @@ if [ "$CARD_MANAGE_FAILED" = true ]; then
     echo ""
 fi
 
-if [ "$IOT_TIMESERIES_FAILED" = true ]; then
-    echo -e "${YELLOW}Warning: wisefido-iot-timeseries failed, but continuing with other services${NC}"
-    echo "  You can check the log: $IOT_TIMESERIES_LOG"
+if [ "$IOT_FAILED" = true ]; then
+    echo -e "${YELLOW}Warning: wisefido-iot failed, but continuing with other services${NC}"
+    echo "  You can check the log: $IOT_LOG"
     echo ""
 fi
 
@@ -564,7 +573,7 @@ echo ""
 echo -e "${BLUE}Logs are being displayed in this terminal and saved to:${NC}"
 echo "  - $DATA_LOG"
 echo "  - $AGGREGATOR_LOG"
-echo "  - $IOT_TIMESERIES_LOG"
+echo "  - $IOT_LOG"
 echo "  - $AI_LOG"
 echo ""
 echo -e "${YELLOW}Note: Device access services (wisefido-sleepace, wisefido-radar) are not started by this script${NC}"
@@ -575,11 +584,14 @@ echo ""
 
 # 等待进程（这样 Ctrl+C 可以正确捕获并停止服务）
 # 只等待成功启动的进程
+# 注意：由于使用了管道和 tee，$! 可能捕获的是 tee 进程的 PID
+# 所以这里使用 pgrep 来查找实际的进程，而不是直接使用 $PID
 WAIT_PIDS=""
 [ "$DATA_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $DATA_PID"
 [ "$AGGREGATOR_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $AGGREGATOR_PID"
+# CARD_MANAGE_PID 可能不准确（是 tee 进程），但 pgrep 会找到实际进程
 [ "$CARD_MANAGE_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $CARD_MANAGE_PID"
-[ "$IOT_TIMESERIES_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $IOT_TIMESERIES_PID"
+[ "$IOT_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $IOT_PID"
 [ "$AI_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $AI_PID"
 
 if [ -n "$WAIT_PIDS" ]; then

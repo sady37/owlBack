@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 package service
@@ -37,9 +38,9 @@ func createTestTenantForDevice(t *testing.T, db *sql.DB) string {
 func createTestDeviceStoreForDevice(t *testing.T, db *sql.DB, tenantID string) string {
 	deviceStoreID := "00000000-0000-0000-0000-000000000997"
 	_, err := db.Exec(
-		`INSERT INTO device_store (device_store_id, tenant_id, device_type, serial_number, uid)
+		`INSERT INTO device_store (device_id, tenant_id, device_type, serial_number, uid)
 		 VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT (device_store_id) DO UPDATE SET tenant_id = EXCLUDED.tenant_id, device_type = EXCLUDED.device_type, serial_number = EXCLUDED.serial_number, uid = EXCLUDED.uid`,
+		 ON CONFLICT (device_id) DO UPDATE SET tenant_id = EXCLUDED.tenant_id, device_type = EXCLUDED.device_type, serial_number = EXCLUDED.serial_number, uid = EXCLUDED.uid`,
 		deviceStoreID, tenantID, "Radar", "TEST-SERIAL-001", "TEST-UID-001",
 	)
 	if err != nil {
@@ -52,11 +53,11 @@ func createTestDeviceStoreForDevice(t *testing.T, db *sql.DB, tenantID string) s
 func createTestDeviceForDevice(t *testing.T, db *sql.DB, tenantID, deviceStoreID string) string {
 	deviceID := "00000000-0000-0000-0000-000000000997"
 	_, err := db.Exec(
-		`INSERT INTO devices (device_id, tenant_id, device_store_id, device_name, serial_number, uid, status, business_access, monitoring_enabled)
+		`INSERT INTO devices (device_id, tenant_id, device_id, device_name, serial_number, uid, status, business_access, monitoring_enabled)
 		 VALUES ($1, $2, $3, $4, $5, $6, 'online', 'approved', true)
 		 ON CONFLICT (device_id) DO UPDATE SET
 		   tenant_id = EXCLUDED.tenant_id,
-		   device_store_id = EXCLUDED.device_store_id,
+		   device_id = EXCLUDED.device_id,
 		   device_name = EXCLUDED.device_name,
 		   serial_number = EXCLUDED.serial_number,
 		   uid = EXCLUDED.uid,
@@ -536,4 +537,3 @@ func TestDeviceService_ListDevices_StatusCommaSeparated(t *testing.T) {
 		t.Fatal("ListDevices returned nil response")
 	}
 }
-

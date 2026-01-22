@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 	"wisefido-data/internal/config"
+	"wisefido-data/internal/consumer"
 	"wisefido-data/internal/domain"
 	httpapi "wisefido-data/internal/http"
 	"wisefido-data/internal/notifier"
@@ -65,7 +66,7 @@ func main() {
 	// Stub depends on tenantsRepo + authStore (used by /auth/api/v1/institutions/search + /auth/api/v1/login)
 	stub := httpapi.NewStubHandler(nil, authStore, nil)
 	// Always register admin routes; if DB is not available, AdminAPI will fall back to stub (no 404).
-	admin := httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger)
+	admin := httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, redisClient)
 	if cfg.DBEnabled {
 		if d, err := database.NewPostgresDB(&cfg.Database); err == nil {
 			db = d
@@ -128,7 +129,7 @@ func main() {
 		// For now, pass nil to StubHandler since it's mainly used for fallback
 		stub = httpapi.NewStubHandler(nil, authStore, db)
 		stub.SetLogger(logger) // Set logger for user login logging
-		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, deviceStoreRepo, tenantResolver, stub, logger)
+		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, deviceStoreRepo, tenantResolver, stub, logger, redisClient)
 
 		// 创建 Role 和 RolePermission Service 和 Handler
 		roleRepo := repository.NewPostgresRolesRepository(db)
@@ -171,9 +172,24 @@ func main() {
 
 		// 创建 Device Service 和 Handler
 		devicesRepo.SetLogger(logger) // 确保 logger 已设置（用于设备连接日志）
-		deviceService := service.NewDeviceService(devicesRepo, cardManageClient, iotTimeSeriesClient, logger)
+		deviceService := service.NewDeviceService(devicesRepo, cardManageClient, iotTimeSeriesClient, redisClient, logger)
 		deviceHandler := httpapi.NewDeviceHandler(deviceService, logger)
 		router.RegisterDeviceRoutes(deviceHandler)
+
+		// 创建 Config Stream 消费者（订阅 config:device_status:stream，更新设备在线状态）
+		configStreamConsumer := consumer.NewConfigStreamConsumer(
+			redisClient,
+			logger,
+			"wisefido-data-config-consumer-group",
+			"wisefido-data-config-consumer-1",
+			10, // batch size
+		)
+		go func() {
+			// 使用 context.Background()，因为这是一个长期运行的 goroutine
+			if err := configStreamConsumer.Start(context.Background()); err != nil {
+				logger.Error("Config stream consumer stopped with error", zap.Error(err))
+			}
+		}()
 
 		// 创建 DeviceStore Handler（直接使用 Repository，不需要 Service 层）
 		deviceStoreHandler := httpapi.NewDeviceStoreHandler(deviceStoreRepo, logger)
@@ -371,7 +387,7 @@ func main() {
 		// Devices 仍可先保持 stub（后续需要再补内存设备库）
 		// 注意：MemoryUnitsRepo 尚未实现新的 UnitsRepository 接口，暂时传递 nil
 		// AdminAPI 会回退到 stub handler
-		admin = httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger)
+		admin = httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, redisClient)
 	}
 	router.RegisterAdminUnitDeviceRoutes(admin)
 	// 如果 DB 启用，传入 BranchesRepository 以便创建 tenant 时自动创建默认 branch

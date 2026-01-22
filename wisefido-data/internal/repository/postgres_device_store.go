@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lib/pq"
 	"wisefido-data/internal/domain"
+
+	"github.com/lib/pq"
 )
 
 // PostgresDeviceStoreRepository 设备库存Repository实现（强类型）
@@ -28,7 +29,7 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 
 	// Search filter
 	if filters.Search != "" {
-		where = append(where, fmt.Sprintf("(ds.device_uid ILIKE $%d OR ds.mac ILIKE $%d OR ds.imei ILIKE $%d)", argN, argN, argN))
+		where = append(where, fmt.Sprintf("(ds.device_code ILIKE $%d OR ds.device_uid ILIKE $%d OR ds.mac ILIKE $%d OR ds.imei ILIKE $%d)", argN, argN, argN, argN))
 		args = append(args, "%"+filters.Search+"%")
 		argN++
 	}
@@ -274,9 +275,20 @@ func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, d
 }
 
 // BatchUpdateDeviceStores 批量更新设备库存
+// 迁移规则：只能从其他租户迁移到 system/trash，或从 system/trash 迁移到其他租户
+// 防止直接从租户A迁移到租户B导致数据泄漏
 func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Context, updates []*domain.DeviceStore) error {
 	if len(updates) == 0 {
 		return nil
+	}
+
+	// 常量定义
+	systemTenantID := "00000000-0000-0000-0000-000000000001"
+	trashTenantID := "00000000-0000-0000-0000-000000000000"
+
+	// 判断是否为 system 或 trash 租户
+	isSystemOrTrash := func(tenantID string) bool {
+		return tenantID == systemTenantID || tenantID == trashTenantID
 	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -291,65 +303,122 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 		}
 		deviceUID := update.DeviceUID
 
+		// 如果更新 tenant_id，需要验证迁移规则（仅校验，不写库）
+		var tenantChanged bool
+		var migrateFromSystemOrTrash bool
+		if update.TenantID != "" {
+			var currentTenantID string
+			err := tx.QueryRowContext(ctx, `SELECT tenant_id::text FROM device_store WHERE device_uid = $1`, deviceUID).Scan(&currentTenantID)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					return fmt.Errorf("device_store not found: device_uid=%s", deviceUID)
+				}
+				return fmt.Errorf("failed to query current tenant_id: %w", err)
+			}
+			if currentTenantID != update.TenantID {
+				tenantChanged = true
+				currentIs := isSystemOrTrash(currentTenantID)
+				newIs := isSystemOrTrash(update.TenantID)
+				if !currentIs && !newIs {
+					name1, name2 := tenantNamesOrIDs(ctx, tx, currentTenantID, update.TenantID)
+					return fmt.Errorf("cannot migrate device directly from tenant %s to tenant %s: must migrate via system/trash tenant first", name1, name2)
+				}
+				migrateFromSystemOrTrash = currentIs && !newIs
+			}
+		}
+
 		setParts := []string{}
 		args := []any{}
 		argN := 1
-
-		// tenant_id
 		if update.TenantID != "" {
 			setParts = append(setParts, fmt.Sprintf("tenant_id = $%d", argN))
 			args = append(args, update.TenantID)
 			argN++
 		}
-
-		// device_code
 		if update.DeviceCode.Valid {
 			setParts = append(setParts, fmt.Sprintf("device_code = $%d", argN))
 			args = append(args, update.DeviceCode.String)
 			argN++
 		}
-
-		// ota_target_firmware_version
 		if update.OTATargetFirmwareVersion.Valid {
 			setParts = append(setParts, fmt.Sprintf("ota_target_firmware_version = $%d", argN))
 			args = append(args, update.OTATargetFirmwareVersion.String)
 			argN++
 		}
-
-		// ota_target_mcu_model
 		if update.OTATargetMCUModel.Valid {
 			setParts = append(setParts, fmt.Sprintf("ota_target_mcu_model = $%d", argN))
 			args = append(args, update.OTATargetMCUModel.String)
 			argN++
 		}
-
-		// allow_access
 		setParts = append(setParts, fmt.Sprintf("allow_access = $%d", argN))
 		args = append(args, update.AllowAccess)
 		argN++
-
-		// Update allocate_time when tenant_id is set
 		if update.TenantID != "" && update.TenantID != "00000000-0000-0000-0000-000000000000" {
 			setParts = append(setParts, "allocate_time = CASE WHEN allocate_time IS NULL THEN CURRENT_TIMESTAMP ELSE allocate_time END")
 		}
-
 		if len(setParts) == 0 {
 			continue
 		}
 
-		query := fmt.Sprintf(`
-			UPDATE device_store
-			SET %s
-			WHERE device_uid = $%d
-		`, strings.Join(setParts, ", "), argN)
-		args = append(args, deviceUID)
-
-		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		// 先更新 device_store，满足触发器 validate_device_store_tenant（devices.tenant_id 须与 device_store.tenant_id 一致）
+		query := fmt.Sprintf(`UPDATE device_store SET %s WHERE device_uid = $%d`, strings.Join(setParts, ", "), argN)
+		argsDs := append([]any{}, args...)
+		argsDs = append(argsDs, deviceUID)
+		if _, err := tx.ExecContext(ctx, query, argsDs...); err != nil {
 			return err
+		}
+
+		// 再同步 devices：tenant_id + business_access='rejected' + monitoring_enabled=FALSE
+		if tenantChanged {
+			_, err := tx.ExecContext(ctx, `
+				UPDATE devices
+				SET tenant_id = $1, business_access = 'rejected', monitoring_enabled = FALSE
+				WHERE device_id IN (SELECT device_id FROM device_store WHERE device_uid = $2)
+			`, update.TenantID, deviceUID)
+			if err != nil {
+				return fmt.Errorf("failed to update devices table: %w", err)
+			}
+			if migrateFromSystemOrTrash {
+				_, err = tx.ExecContext(ctx, `
+					INSERT INTO devices (device_id, device_uid, tenant_id, device_name, status, business_access, monitoring_enabled)
+					SELECT ds.device_id, ds.device_uid, $1, COALESCE(NULLIF(TRIM(ds.device_uid), ''), NULLIF(TRIM(COALESCE(ds.device_code, '')), ''), 'device'), 'offline', 'rejected', FALSE
+					FROM device_store ds
+					WHERE ds.device_uid = $2
+					  AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.device_id = ds.device_id)
+				`, update.TenantID, deviceUID)
+				if err != nil {
+					return fmt.Errorf("failed to create devices row on migrate: %w", err)
+				}
+			}
 		}
 	}
 
 	return tx.Commit()
+}
+
+// tenantNamesOrIDs 查询 tenants 表取 tenant_name，若不存在则返回 tenant_id
+func tenantNamesOrIDs(ctx context.Context, tx *sql.Tx, id1, id2 string) (string, string) {
+	rows, err := tx.QueryContext(ctx, `SELECT tenant_id::text, tenant_name FROM tenants WHERE tenant_id IN ($1, $2)`, id1, id2)
+	if err != nil {
+		return id1, id2
+	}
+	defer rows.Close()
+	m := make(map[string]string)
+	for rows.Next() {
+		var tid, tname string
+		if err := rows.Scan(&tid, &tname); err != nil {
+			continue
+		}
+		m[tid] = tname
+	}
+	n1, n2 := id1, id2
+	if s, ok := m[id1]; ok && s != "" {
+		n1 = s
+	}
+	if s, ok := m[id2]; ok && s != "" {
+		n2 = s
+	}
+	return n1, n2
 }
 
 // DeleteDeviceStore 删除设备库存
@@ -495,4 +564,3 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 
 // Helper function to convert sql.NullString to any (already defined in postgres_units.go)
 // Using the same function from postgres_units.go
-

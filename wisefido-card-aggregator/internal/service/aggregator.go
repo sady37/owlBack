@@ -178,15 +178,10 @@ func (s *AggregatorService) startDataAggregation(ctx context.Context) {
 	}
 }
 
-// aggregateAllCards 聚合所有卡片的数据
+// aggregateAllCards 聚合所有卡片的数据（不分租户）
 func (s *AggregatorService) aggregateAllCards(ctx context.Context) error {
-	tenantID := s.config.Aggregator.TenantID
-	if tenantID == "" {
-		return fmt.Errorf("tenant_id is required")
-	}
-
-	// 获取所有卡片
-	cards, err := s.cardRepo.GetAllCards(tenantID)
+	// 获取所有租户的所有卡片
+	cards, err := s.cardRepo.GetAllCards("")
 	if err != nil {
 		return fmt.Errorf("failed to get all cards: %w", err)
 	}
@@ -203,11 +198,12 @@ func (s *AggregatorService) aggregateAllCards(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		default:
-			// 聚合单个卡片
-			vitalCard, err := s.dataAggregator.AggregateCard(ctx, tenantID, card.CardID)
+			// 聚合单个卡片（使用卡片自己的 tenant_id）
+			vitalCard, err := s.dataAggregator.AggregateCard(ctx, card.TenantID, card.CardID)
 			if err != nil {
 				s.logger.Error("Failed to aggregate card",
 					zap.String("card_id", card.CardID),
+					zap.String("tenant_id", card.TenantID),
 					zap.Error(err),
 				)
 				errorCount++
@@ -218,6 +214,7 @@ func (s *AggregatorService) aggregateAllCards(ctx context.Context) error {
 			if err := s.cacheManager.UpdateFullCardCache(ctx, card.CardID, vitalCard); err != nil {
 				s.logger.Error("Failed to update full card cache",
 					zap.String("card_id", card.CardID),
+					zap.String("tenant_id", card.TenantID),
 					zap.Error(err),
 				)
 				errorCount++
@@ -231,7 +228,6 @@ func (s *AggregatorService) aggregateAllCards(ctx context.Context) error {
 	s.logger.Debug("Completed aggregating cards",
 		zap.Int("success_count", successCount),
 		zap.Int("error_count", errorCount),
-		zap.Int("total_count", len(cards)),
 	)
 
 	return nil

@@ -76,16 +76,16 @@ type StreamsConfig struct {
 // AlarmConfig 报警服务配置
 type AlarmConfig struct {
 	RuleBased struct {
-		Enabled       bool
-		CheckInterval time.Duration
+		Enabled        bool
+		CheckInterval  time.Duration
 		ConfigCacheTTL time.Duration
 	}
 	AI struct {
-		Enabled            bool
-		ModelPath          string
-		CheckInterval      time.Duration
-		HistoryWindow      time.Duration
-		InspectionInterval time.Duration
+		Enabled             bool
+		ModelPath           string
+		CheckInterval       time.Duration
+		HistoryWindow       time.Duration
+		InspectionInterval  time.Duration
 		InspectionBatchSize int
 		ConfidenceThreshold float64
 	}
@@ -93,8 +93,12 @@ type AlarmConfig struct {
 
 // GetDatabaseDSN 获取数据库连接字符串
 func (c *DatabaseConfig) GetDSN() string {
+	sslMode := c.SSLMode
+	if sslMode == "" {
+		sslMode = "disable"
+	}
 	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		c.Host, c.Port, c.User, c.Password, c.Database, c.SSLMode)
+		c.Host, c.Port, c.User, c.Password, c.Database, sslMode)
 }
 
 // LoadFromEnv 从环境变量加载配置
@@ -114,8 +118,12 @@ func (c *DatabaseConfig) LoadFromEnv(prefix string) {
 	if database := os.Getenv(prefix + "_DATABASE"); database != "" {
 		c.Database = database
 	}
-	if sslMode := os.Getenv(prefix + "_SSLMODE"); sslMode != "" {
+	sslMode := os.Getenv(prefix + "_SSLMODE")
+	if sslMode != "" {
 		c.SSLMode = sslMode
+	}
+	if c.SSLMode == "" {
+		c.SSLMode = "disable"
 	}
 }
 

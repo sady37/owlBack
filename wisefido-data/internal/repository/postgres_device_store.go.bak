@@ -78,7 +78,7 @@ func (r *PostgresDeviceStoreRepo) ListDeviceStores(ctx context.Context, filters 
 	// Query data
 	query := `
 		SELECT
-			ds.device_store_id::text,
+			ds.device_id::text,
 			ds.device_type,
 			ds.device_model,
 			ds.serial_number,
@@ -138,7 +138,7 @@ func (r *PostgresDeviceStoreRepo) ListDeviceStores(ctx context.Context, filters 
 func (r *PostgresDeviceStoreRepo) GetDeviceStore(ctx context.Context, deviceStoreID string) (*DeviceStore, error) {
 	query := `
 		SELECT
-			ds.device_store_id::text,
+			ds.device_id::text,
 			ds.device_type,
 			ds.device_model,
 			ds.serial_number,
@@ -156,7 +156,7 @@ func (r *PostgresDeviceStoreRepo) GetDeviceStore(ctx context.Context, deviceStor
 			ds.allocate_time
 		FROM device_store ds
 		LEFT JOIN tenants t ON ds.tenant_id = t.tenant_id
-		WHERE ds.device_store_id = $1
+		WHERE ds.device_id = $1
 	`
 
 	var d DeviceStore
@@ -180,7 +180,7 @@ func (r *PostgresDeviceStoreRepo) GetDeviceStore(ctx context.Context, deviceStor
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("device_store not found: device_store_id=%s", deviceStoreID)
+			return nil, fmt.Errorf("device_store not found: device_id=%s", deviceStoreID)
 		}
 		return nil, err
 	}
@@ -206,7 +206,7 @@ func (r *PostgresDeviceStoreRepo) CreateDeviceStore(ctx context.Context, payload
 	// 2. 检查是否已存在（serial_number或uid重复）
 	var existingID string
 	checkQuery := `
-		SELECT device_store_id::text
+		SELECT device_id::text
 		FROM device_store
 		WHERE (serial_number = $1 AND serial_number IS NOT NULL)
 		   OR (uid = $2 AND uid IS NOT NULL)
@@ -214,7 +214,7 @@ func (r *PostgresDeviceStoreRepo) CreateDeviceStore(ctx context.Context, payload
 	`
 	err := r.db.QueryRowContext(ctx, checkQuery, serialNumber, uid).Scan(&existingID)
 	if err == nil {
-		return "", fmt.Errorf("device already exists: device_store_id=%s (serial_number=%s, uid=%s)", existingID, serialNumber, uid)
+		return "", fmt.Errorf("device already exists: device_id=%s (serial_number=%s, uid=%s)", existingID, serialNumber, uid)
 	} else if err != sql.ErrNoRows {
 		return "", fmt.Errorf("failed to check existing device: %w", err)
 	}
@@ -254,7 +254,7 @@ func (r *PostgresDeviceStoreRepo) CreateDeviceStore(ctx context.Context, payload
 			comm_mode, mcu_model, firmware_version,
 			tenant_id, allow_access
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		RETURNING device_store_id::text
+		RETURNING device_id::text
 	`
 
 	args := []any{
@@ -294,7 +294,7 @@ func (r *PostgresDeviceStoreRepo) BatchUpdateDeviceStores(ctx context.Context, u
 	defer tx.Rollback()
 
 	for _, update := range updates {
-		deviceStoreID, ok := update["device_store_id"].(string)
+		deviceStoreID, ok := update["device_id"].(string)
 		if !ok || deviceStoreID == "" {
 			continue
 		}
@@ -360,7 +360,7 @@ func (r *PostgresDeviceStoreRepo) BatchUpdateDeviceStores(ctx context.Context, u
 		query := fmt.Sprintf(`
 			UPDATE device_store
 			SET %s
-			WHERE device_store_id = $%d
+			WHERE device_id = $%d
 		`, strings.Join(setParts, ", "), argN)
 		args = append(args, deviceStoreID)
 
@@ -440,7 +440,7 @@ func (r *PostgresDeviceStoreRepo) ImportDeviceStores(ctx context.Context, items 
 		// Check if device already exists
 		var existingID string
 		checkQuery := `
-			SELECT device_store_id::text
+			SELECT device_id::text
 			FROM device_store
 			WHERE (serial_number = $1 AND serial_number IS NOT NULL)
 			   OR (uid = $2 AND uid IS NOT NULL)
@@ -542,10 +542,10 @@ func (r *PostgresDeviceStoreRepo) DeleteDeviceStore(ctx context.Context, deviceS
 
 	// 1. 检查设备是否存在
 	var tenantID sql.NullString
-	err = tx.QueryRowContext(ctx, "SELECT tenant_id FROM device_store WHERE device_store_id = $1", deviceStoreID).Scan(&tenantID)
+	err = tx.QueryRowContext(ctx, "SELECT tenant_id FROM device_store WHERE device_id = $1", deviceStoreID).Scan(&tenantID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return fmt.Errorf("device_store not found: device_store_id=%s", deviceStoreID)
+			return fmt.Errorf("device_store not found: device_id=%s", deviceStoreID)
 		}
 		return fmt.Errorf("failed to query device_store: %w", err)
 	}
@@ -558,7 +558,7 @@ func (r *PostgresDeviceStoreRepo) DeleteDeviceStore(ctx context.Context, deviceS
 
 	// 3. 检查是否已出库到devices表
 	var deviceCount int
-	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM devices WHERE device_store_id = $1", deviceStoreID).Scan(&deviceCount)
+	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM devices WHERE device_id = $1", deviceStoreID).Scan(&deviceCount)
 	if err != nil {
 		return fmt.Errorf("failed to check devices: %w", err)
 	}
@@ -567,7 +567,7 @@ func (r *PostgresDeviceStoreRepo) DeleteDeviceStore(ctx context.Context, deviceS
 	}
 
 	// 4. 删除设备库存
-	_, err = tx.ExecContext(ctx, "DELETE FROM device_store WHERE device_store_id = $1", deviceStoreID)
+	_, err = tx.ExecContext(ctx, "DELETE FROM device_store WHERE device_id = $1", deviceStoreID)
 	if err != nil {
 		return fmt.Errorf("failed to delete device_store: %w", err)
 	}

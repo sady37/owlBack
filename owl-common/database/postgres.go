@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"owl-common/config"
 	
 	_ "github.com/lib/pq"
@@ -11,6 +12,7 @@ import (
 // NewPostgresDB 创建PostgreSQL数据库连接
 func NewPostgresDB(cfg *config.DatabaseConfig) (*sql.DB, error) {
 	dsn := cfg.GetDSN()
+	log.Printf("Database DSN: host=%s port=%d user=%s dbname=%s sslmode=%s", cfg.Host, cfg.Port, cfg.User, cfg.Database, cfg.SSLMode)
 	
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {

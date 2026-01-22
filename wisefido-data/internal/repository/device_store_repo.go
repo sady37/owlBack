@@ -29,7 +29,7 @@ type DeviceStoreRepository interface {
 type DeviceStoreFilters struct {
 	TenantID   string // 租户ID过滤
 	DeviceType string // 设备类型过滤
-	Search     string // 搜索（device_uid, imei）
+	Search     string // 搜索（device_code, device_uid, mac, imei）
 }
 
 

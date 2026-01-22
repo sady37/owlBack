@@ -25,7 +25,7 @@ func TestPostgresDevicesRepo_ListDevices(t *testing.T) {
 	mock.ExpectQuery(`SELECT\s+d.device_id::text`).
 		WithArgs("tenant-1", 20, 0).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"device_id", "tenant_id", "device_store_id", "device_name", "device_model", "device_type",
+			"device_id", "tenant_id", "device_id", "device_name", "device_model", "device_type",
 			"serial_number", "uid", "imei", "comm_mode", "firmware_version", "mcu_model",
 			"status", "business_access", "monitoring_enabled", "unit_id", "bound_room_id", "bound_bed_id", "metadata",
 		}).AddRow(

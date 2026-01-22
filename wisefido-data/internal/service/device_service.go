@@ -9,6 +9,7 @@ import (
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
+	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
 
@@ -31,15 +32,17 @@ type deviceService struct {
 	devicesRepo         repository.DevicesRepository
 	cardManageClient    *CardManageClient    // 用于调用 wisefido-card-manage API
 	iotTimeSeriesClient *IoTTimeSeriesClient // 用于调用 wisefido-iot-timeseries 内部 API
+	redisClient         *redis.Client        // Redis客户端，用于读取设备在线状态
 	logger              *zap.Logger
 }
 
 // NewDeviceService 创建 DeviceService 实例
-func NewDeviceService(devicesRepo repository.DevicesRepository, cardManageClient *CardManageClient, iotTimeSeriesClient *IoTTimeSeriesClient, logger *zap.Logger) DeviceService {
+func NewDeviceService(devicesRepo repository.DevicesRepository, cardManageClient *CardManageClient, iotTimeSeriesClient *IoTTimeSeriesClient, redisClient *redis.Client, logger *zap.Logger) DeviceService {
 	return &deviceService{
 		devicesRepo:         devicesRepo,
 		cardManageClient:    cardManageClient,
 		iotTimeSeriesClient: iotTimeSeriesClient,
+		redisClient:         redisClient,
 		logger:              logger,
 	}
 }
@@ -109,13 +112,63 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 			zap.Bool("is_system_admin", req.IsSystemAdmin),
 			zap.Error(err),
 		)
-		return nil, fmt.Errorf("failed to list devices")
+		return nil, fmt.Errorf("failed to list devices: %w", err)
+	}
+
+	// 6. 从 Redis 读取设备在线状态并填充到 items（从 config stream 消费的状态）
+	if s.redisClient != nil && len(items) > 0 {
+		s.fillDeviceOnlineStatus(ctx, items)
 	}
 
 	return &ListDevicesResponse{
 		Items: items,
 		Total: total,
 	}, nil
+}
+
+// fillDeviceOnlineStatus 从 Redis 批量读取设备在线状态并填充到设备列表
+// 从 config stream 消费的状态存储在 Redis Hash 中：device:online_status:{device_uid}
+// 如果 Redis 中没有状态，默认设置为 "offline"
+func (s *deviceService) fillDeviceOnlineStatus(ctx context.Context, devices []*domain.Device) {
+	if len(devices) == 0 {
+		return
+	}
+
+	// 构建 Redis keys（使用 Hash 存储，key 为 device:online_status:{device_uid}，field 为 "status"）
+	keys := make([]string, 0, len(devices))
+	deviceUIDToDevice := make(map[string]*domain.Device)
+	for _, device := range devices {
+		if device.DeviceUID != "" {
+			key := "device:online_status:" + device.DeviceUID
+			keys = append(keys, key)
+			deviceUIDToDevice[device.DeviceUID] = device
+		}
+	}
+
+	if len(keys) == 0 {
+		return
+	}
+
+	// 批量从 Redis Hash 读取状态
+	for _, key := range keys {
+		deviceUID := strings.TrimPrefix(key, "device:online_status:")
+		if device, exists := deviceUIDToDevice[deviceUID]; exists {
+			status, err := s.redisClient.HGet(ctx, key, "status").Result()
+			if err == nil && status != "" {
+				device.OnlineStatus = status
+			} else {
+				// Redis 中没有状态（可能已过期或从未设置），默认设置为 "offline"
+				device.OnlineStatus = "offline"
+			}
+		}
+	}
+
+	// 对于没有在 Redis 中找到状态的设备，也设置为 "offline"
+	for _, device := range devices {
+		if device.OnlineStatus == "" {
+			device.OnlineStatus = "offline"
+		}
+	}
 }
 
 // GetDeviceRequest 查询设备详情请求
@@ -164,13 +217,13 @@ func (s *deviceService) GetDevice(ctx context.Context, req GetDeviceRequest) (*G
 
 // UpdateDeviceRequest 更新设备请求
 type UpdateDeviceRequest struct {
-	TenantID        string         // 必填
-	DeviceID        string         // 必填
-	Device          *domain.Device // 设备信息（部分更新）
-	UpdateBoundRoomID bool         // 是否更新 bound_room_id（即使为 null）
-	UpdateBoundBedID  bool         // 是否更新 bound_bed_id（即使为 null）
+	TenantID          string         // 必填
+	DeviceID          string         // 必填
+	Device            *domain.Device // 设备信息（部分更新）
+	UpdateBoundRoomID bool           // 是否更新 bound_room_id（即使为 null）
+	UpdateBoundBedID  bool           // 是否更新 bound_bed_id（即使为 null）
 	// 标记哪些字段在 payload 中（用于部分更新）
-	UpdateBusinessAccess  bool // 是否更新 business_access
+	UpdateBusinessAccess    bool // 是否更新 business_access
 	UpdateMonitoringEnabled bool // 是否更新 monitoring_enabled
 }
 
@@ -288,7 +341,9 @@ type DeleteDeviceResponse struct {
 	Success bool // 删除成功
 }
 
-// DeleteDevice 删除设备（软删除）
+// DeleteDevice 删除设备（软删除：移至 Trash 租户）
+// 功能：将设备移至 Trash 租户，设置 business_access='rejected', monitoring_enabled=FALSE
+// 流程：先执行数据库事务（保证原子性），事务提交成功后再通知 card_manager
 func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceRequest) (*DeleteDeviceResponse, error) {
 	// 1. 参数验证
 	if req.TenantID == "" {
@@ -298,15 +353,49 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 		return nil, fmt.Errorf("device_id is required")
 	}
 
-	// 2. 调用 Repository（软删除）
-	if err := s.devicesRepo.DisableDevice(ctx, req.TenantID, req.DeviceID); err != nil {
+	// 2. 获取设备信息（删除前获取 unit_id，用于后续通知 card_manager）
+	var unitID string
+	device, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
+	if err == nil && device != nil && device.UnitID.Valid && device.UnitID.String != "" {
+		unitID = device.UnitID.String
+	}
+
+	// 3. 调用 Repository（硬删除：在事务中删除 devices 记录，更新 device_store tenant_id）
+	// 先执行数据库操作，保证事务的原子性
+	if err := s.devicesRepo.DeleteDevice(ctx, req.TenantID, req.DeviceID); err != nil {
 		s.logger.Error("DeleteDevice failed",
 			zap.String("tenant_id", req.TenantID),
 			zap.String("device_id", req.DeviceID),
 			zap.Error(err),
 		)
-		return nil, fmt.Errorf("failed to delete device")
+		return nil, fmt.Errorf("failed to delete device: %w", err)
 	}
+
+	// 4. 数据库事务提交成功后，通知 card_manager 更新卡片（基于 unit_id，不需要 device 记录）
+	// 注意：CreateCardsForUnit 只需要 tenant_id 和 unit_id，不需要 device 记录，所以删除后再调用也没问题
+	if s.cardManageClient != nil && unitID != "" {
+		if err := s.cardManageClient.CreateCardsForUnit(ctx, req.TenantID, unitID); err != nil {
+			s.logger.Warn("Failed to update cards after device deletion, but device deletion succeeded",
+				zap.Error(err),
+				zap.String("tenant_id", req.TenantID),
+				zap.String("device_id", req.DeviceID),
+				zap.String("unit_id", unitID),
+			)
+			// 不返回错误，只记录警告（卡片更新失败不影响设备删除，数据库状态已一致）
+		} else {
+			s.logger.Info("Updated cards after device deletion",
+				zap.String("tenant_id", req.TenantID),
+				zap.String("device_id", req.DeviceID),
+				zap.String("unit_id", unitID),
+			)
+		}
+	}
+
+	s.logger.Info("Device deleted successfully",
+		zap.String("tenant_id", req.TenantID),
+		zap.String("device_id", req.DeviceID),
+		zap.String("unit_id", unitID),
+	)
 
 	return &DeleteDeviceResponse{
 		Success: true,
@@ -382,4 +471,3 @@ func (s *deviceService) GetDeviceRelations(ctx context.Context, req GetDeviceRel
 		Residents:          residents,
 	}, nil
 }
-

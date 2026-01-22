@@ -13,7 +13,7 @@ import (
 )
 
 // IoTTimeSeriesClient IoT 时序数据服务客户端
-// 用于调用 wisefido-iot-timeseries 内部 API（如清除位置信息缓存）
+// 用于调用 wisefido-iot 内部 API（如清除位置信息缓存）
 type IoTTimeSeriesClient struct {
 	apiBaseURL string
 	httpClient *http.Client
@@ -43,13 +43,13 @@ type InvalidateLocationCacheResponse struct {
 }
 
 // InvalidateLocationCache 清除设备位置信息缓存
-// 调用 wisefido-iot-timeseries 内部 API: POST /internal/api/v1/iot-timeseries/cache/invalidate
+// 调用 wisefido-iot 内部 API: POST /internal/api/v1/iot/cache/invalidate
 func (c *IoTTimeSeriesClient) InvalidateLocationCache(ctx context.Context, deviceID string) error {
 	if deviceID == "" {
 		return fmt.Errorf("device_id is required")
 	}
 
-	url := fmt.Sprintf("%s/internal/api/v1/iot-timeseries/cache/invalidate", c.apiBaseURL)
+	url := fmt.Sprintf("%s/internal/api/v1/iot/cache/invalidate", c.apiBaseURL)
 
 	reqBody := InvalidateLocationCacheRequest{
 		DeviceID: deviceID,

@@ -31,23 +31,16 @@ func (r *PostgresDevicesRepository) SetLogger(logger *zap.Logger) {
 
 // ListDevices 查询设备列表
 // 功能：支持多种过滤条件和分页，自动过滤status='disabled'的设备
-// SystemAdmin 可以查看所有租户的设备（当 filters.IsSystemAdmin = true 时，不限制 tenant_id）
+// 严格限制：所有用户（包括 SystemAdmin）只能查看本 tenant 的设备
 func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID string, filters DeviceFilters, page, size int) ([]*domain.Device, int, error) {
 	if tenantID == "" {
 		return []*domain.Device{}, 0, nil
 	}
 
-	// SystemAdmin 查看所有设备时，不限制 tenant_id
-	where := []string{"d.status <> 'disabled'"}
-	args := []any{}
-	argN := 1
-
-	if !filters.IsSystemAdmin {
-		// 普通租户：限制 tenant_id
-		where = append(where, "d.tenant_id = $1")
-		args = append(args, tenantID)
-		argN = 2
-	}
+	// 始终按 tenant_id 过滤，所有用户（包括 SystemAdmin）只能查看本 tenant 的设备
+	where := []string{"d.tenant_id = $1"}
+	args := []any{tenantID}
+	argN := 2
 
 	// status IN (...)
 	if len(filters.Status) > 0 {
@@ -70,6 +63,8 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		switch filters.SearchType {
 		case "device_name":
 			col = "d.device_name"
+		case "device_code":
+			col = "ds.device_code"
 		case "device_uid":
 			col = "d.device_uid"
 		}
@@ -104,7 +99,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		SELECT
 			d.device_id::text,
 			d.tenant_id::text,
-			d.device_uid,
+			COALESCE(d.device_uid, '') AS device_uid,
 			d.device_name,
 			d.bound_room_id,
 			d.bound_bed_id,
@@ -114,6 +109,8 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 			d.metadata,
 			ds.device_type,
 			ds.device_model,
+			ds.device_code,
+			ds.mac,
 			ds.imei,
 			ds.comm_mode,
 			ds.mcu_model,
@@ -155,6 +152,8 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 			&d.Metadata,
 			&d.DeviceType,
 			&d.DeviceModel,
+			&d.DeviceCode,
+			&d.MAC,
 			&d.IMEI,
 			&d.CommMode,
 			&d.MCUModel,
@@ -175,7 +174,7 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 	if deviceID == "" || deviceID == "undefined" || deviceID == "null" {
 		return nil, fmt.Errorf("device_id is required and must be a valid UUID")
 	}
-	
+
 	q := `
 		SELECT
 			d.device_id::text,
@@ -190,6 +189,8 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 			d.metadata,
 			ds.device_type,
 			ds.device_model,
+			ds.device_code,
+			ds.mac,
 			ds.imei,
 			ds.comm_mode,
 			ds.mcu_model,
@@ -221,6 +222,8 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 		&d.Metadata,
 		&d.DeviceType,
 		&d.DeviceModel,
+		&d.DeviceCode,
+		&d.MAC,
 		&d.IMEI,
 		&d.CommMode,
 		&d.MCUModel,
@@ -338,10 +341,15 @@ func (r *PostgresDevicesRepository) CreateDevice(ctx context.Context, tenantID s
 		return "", fmt.Errorf("cannot bind to both room and bed: bound_room_id=%s, bound_bed_id=%s (mutually exclusive)", boundRoomID, boundBedID)
 	}
 
-	// 5. 生成device_name（如果未提供，使用device_uid）
+	// 5. 生成device_name（如果未提供，使用device_uid的最后4位）
 	deviceName := device.DeviceName
 	if deviceName == "" {
-		deviceName = "Device-" + deviceUID
+		// 获取 device_uid 的最后4位
+		uidSuffix := deviceUID
+		if len(deviceUID) > 4 {
+			uidSuffix = deviceUID[len(deviceUID)-4:]
+		}
+		deviceName = "Device-" + uidSuffix
 	}
 
 	// 6. 插入devices记录
@@ -643,9 +651,9 @@ func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, t
 	return tx.Commit()
 }
 
-
-// DeleteDevice 删除设备与位置的绑定关系（设备退回）
-// 验证：检查设备是否已使用（is_device_used()），如果已使用，只能软删除（DisableDevice）
+// DeleteDevice 删除设备（软删除：移至 Trash 租户）
+// 功能：将设备移至 Trash 租户（00000000-0000-0000-0000-000000000000），设置 business_access='rejected', monitoring_enabled=FALSE
+// 同时更新 device_store 和 devices 的 tenant_id 为 Trash 租户
 func (r *PostgresDevicesRepository) DeleteDevice(ctx context.Context, tenantID, deviceID string) error {
 	// 1. 检查设备是否存在
 	var deviceExists bool
@@ -659,24 +667,44 @@ func (r *PostgresDevicesRepository) DeleteDevice(ctx context.Context, tenantID, 
 		return fmt.Errorf("device not found: tenant_id=%s, device_id=%s", tenantID, deviceID)
 	}
 
-	// 2. 检查设备是否已使用（调用is_device_used()函数）
-	var isUsed bool
-	err = r.db.QueryRowContext(ctx, `SELECT is_device_used($1)`, deviceID).Scan(&isUsed)
+	// 2. 使用事务保证原子性
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to check if device is used: %w", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Trash 租户 ID
+	trashTenantID := "00000000-0000-0000-0000-000000000000"
+
+	// 2.1. 更新 device_store 的 tenant_id 为 Trash 租户
+	_, err = tx.ExecContext(ctx, `
+		UPDATE device_store
+		SET tenant_id = $1
+		WHERE device_id = $2
+	`, trashTenantID, deviceID)
+	if err != nil {
+		return fmt.Errorf("failed to update device_store tenant_id: %w", err)
 	}
 
-	if isUsed {
-		return fmt.Errorf("cannot delete device: device has reported data (use DisableDevice for soft delete): device_id=%s", deviceID)
+	// 2.2. 更新 devices：移至 Trash 租户，设置 business_access='rejected', monitoring_enabled=FALSE, status='disabled'
+	_, err = tx.ExecContext(ctx, `
+		UPDATE devices
+		SET tenant_id = $1,
+		    business_access = 'rejected',
+		    monitoring_enabled = FALSE,
+		    status = 'disabled',
+		    bound_room_id = NULL,
+		    bound_bed_id = NULL
+		WHERE tenant_id = $2 AND device_id = $3
+	`, trashTenantID, tenantID, deviceID)
+	if err != nil {
+		return fmt.Errorf("failed to update device to trash: %w", err)
 	}
 
-	// 3. 物理删除设备记录
-	_, err = r.db.ExecContext(ctx, `
-		DELETE FROM devices
-		WHERE tenant_id = $1 AND device_id = $2
-	`, tenantID, deviceID)
-	if err != nil {
-		return fmt.Errorf("failed to delete device: %w", err)
+	// 提交事务
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil
@@ -684,10 +712,15 @@ func (r *PostgresDevicesRepository) DeleteDevice(ctx context.Context, tenantID, 
 
 // DisableDevice 软删除设备
 // 功能：设置status='disabled', business_access='rejected', monitoring_enabled=FALSE
+// 同时解绑位置关系（bound_room_id, bound_bed_id），释放设备资源
 func (r *PostgresDevicesRepository) DisableDevice(ctx context.Context, tenantID, deviceID string) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE devices
-		SET status='disabled', business_access='rejected', monitoring_enabled=FALSE
+		SET status='disabled', 
+		    business_access='rejected', 
+		    monitoring_enabled=FALSE,
+		    bound_room_id=NULL,
+		    bound_bed_id=NULL
 		WHERE tenant_id=$1 AND device_id=$2
 	`, tenantID, deviceID)
 	return err
@@ -1102,7 +1135,6 @@ func (r *PostgresDevicesRepository) GetDeviceLocationInfo(ctx context.Context, t
 		LEFT JOIN buildings bld ON u.building_id = bld.building_id AND u.tenant_id = bld.tenant_id
 		LEFT JOIN branches br ON u.branch_id = br.branch_id AND u.tenant_id = br.tenant_id
 		WHERE d.tenant_id = $1 AND d.device_id = $2
-			AND d.status != 'disabled'
 		LIMIT 1
 	`
 
@@ -1227,7 +1259,6 @@ func (r *PostgresDevicesRepository) GetDeviceLocationInfoByIdentifier(ctx contex
 		LEFT JOIN buildings bld ON u.building_id = bld.building_id AND u.tenant_id = bld.tenant_id
 		LEFT JOIN branches br ON u.branch_id = br.branch_id AND u.tenant_id = br.tenant_id
 		WHERE d.device_uid = $1
-			AND d.status != 'disabled'
 		LIMIT 1
 	`
 

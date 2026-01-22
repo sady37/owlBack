@@ -16,58 +16,45 @@ type CardInfoForFusion struct {
 
 // GetCardByDeviceID 根据设备ID获取关联的卡片（用于数据融合）
 // 
-// 查询逻辑：
-// 1. 如果设备绑定到 bed（bound_bed_id IS NOT NULL）：
-//    - 查询 ActiveBed 类型的卡片（cards.bed_id = bound_bed_id）
-// 2. 如果设备绑定到 room（bound_room_id IS NOT NULL）且未绑床：
-//    - 通过 room.unit_id 查询 Location 类型的卡片（cards.unit_id = room.unit_id）
+// 查询逻辑（简化）：
+// 1. 获取设备的 unit_id：
+//    - 如果设备绑定到 bed，通过 bed.room_id -> room.unit_id 获取
+//    - 如果设备绑定到 room，通过 room.unit_id 获取
+// 2. 查找 cards 表中 unit_id 匹配的卡片（card.unit_id = device.unit_id）
+// 3. 检查该 card 的 devices JSONB 字段中是否包含该 device_id
 func (r *CardRepository) GetCardByDeviceID(tenantID, deviceID string) (*CardInfoForFusion, error) {
 	query := `
-		WITH device_info AS (
+		WITH device_unit AS (
+			-- 获取设备对应的 unit_id
 			SELECT 
 				d.device_id,
 				d.tenant_id,
-				d.bound_bed_id,
-				d.bound_room_id
+				COALESCE(
+					-- 如果绑定到 bed，通过 bed -> room -> unit 获取 unit_id
+					(SELECT r.unit_id FROM beds b 
+					 INNER JOIN rooms r ON r.room_id = b.room_id 
+					 WHERE b.bed_id = d.bound_bed_id AND b.tenant_id = d.tenant_id),
+					-- 如果绑定到 room，直接获取 room.unit_id
+					(SELECT r.unit_id FROM rooms r 
+					 WHERE r.room_id = d.bound_room_id AND r.tenant_id = d.tenant_id)
+				) AS unit_id
 			FROM devices d
 			WHERE d.device_id = $1 AND d.tenant_id = $2
-		),
-		bed_card AS (
-			-- 场景 1：设备绑定到床，查询 ActiveBed 卡片
-			SELECT 
-				c.card_id,
-				c.tenant_id,
-				c.card_type,
-				c.bed_id,
-				c.unit_id
-			FROM cards c
-			INNER JOIN device_info di ON c.bed_id = di.bound_bed_id AND c.tenant_id = di.tenant_id
-			WHERE di.bound_bed_id IS NOT NULL
-			  AND c.card_type = 'ActiveBed'
-			LIMIT 1
-		),
-		room_card AS (
-			-- 场景 2：设备绑定到房间，通过 room.unit_id 查询 Location 卡片
-			SELECT 
-				c.card_id,
-				c.tenant_id,
-				c.card_type,
-				c.bed_id,
-				c.unit_id
-			FROM cards c
-			INNER JOIN device_info di ON c.unit_id = (
-				SELECT r.unit_id FROM rooms r WHERE r.room_id = di.bound_room_id AND r.tenant_id = di.tenant_id
-			) AND c.tenant_id = di.tenant_id
-			WHERE di.bound_room_id IS NOT NULL
-			  AND di.bound_bed_id IS NULL
-			  AND c.card_type = 'Location'
-			LIMIT 1
 		)
-		SELECT card_id, tenant_id, card_type, bed_id, unit_id
-		FROM bed_card
-		UNION ALL
-		SELECT card_id, tenant_id, card_type, bed_id, unit_id
-		FROM room_card
+		SELECT 
+			c.card_id,
+			c.tenant_id,
+			c.card_type,
+			c.bed_id,
+			c.unit_id
+		FROM cards c
+		INNER JOIN device_unit du ON c.unit_id = du.unit_id AND c.tenant_id = du.tenant_id
+		WHERE EXISTS (
+			-- 检查 card 的 devices JSONB 字段中是否包含该 device_id
+			SELECT 1
+			FROM jsonb_array_elements(c.devices) AS device
+			WHERE (device->>'device_id')::uuid = $1::uuid
+		)
 		LIMIT 1
 	`
 	

@@ -193,7 +193,7 @@ s.Logger.Warn("User login failed: invalid credentials",
 
 ```go
 logWarn("Device connection rejected: not allocated",
-    zap.String("device_store_id", dsDeviceStoreID),
+    zap.String("device_id", dsDeviceStoreID),
     zap.String("serial_number", serialNum),
     zap.String("uid", uid),
     zap.String("tenant_id", dsTenantID),  // 如果可用

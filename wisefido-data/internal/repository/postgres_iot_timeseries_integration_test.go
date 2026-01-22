@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 package repository
@@ -233,9 +234,9 @@ func createTestDevice(t *testing.T, db *sql.DB, tenantID string) string {
 	// 先创建 device_store
 	deviceStoreID := "00000000-0000-0000-0000-000000000099"
 	_, err := db.Exec(
-		`INSERT INTO device_store (device_store_id, tenant_id, device_type, device_model, serial_number, allow_access)
+		`INSERT INTO device_store (device_id, tenant_id, device_type, device_model, serial_number, allow_access)
 		 VALUES ($1, $2, $3, $4, $5, true)
-		 ON CONFLICT (device_store_id) DO UPDATE SET device_type = EXCLUDED.device_type`,
+		 ON CONFLICT (device_id) DO UPDATE SET device_type = EXCLUDED.device_type`,
 		deviceStoreID, tenantID, "Radar", "Radar-001", "TEST-SN-001",
 	)
 	if err != nil {
@@ -245,7 +246,7 @@ func createTestDevice(t *testing.T, db *sql.DB, tenantID string) string {
 	// 创建 device
 	deviceID := "00000000-0000-0000-0000-000000000100"
 	_, err = db.Exec(
-		`INSERT INTO devices (device_id, tenant_id, device_store_id, device_name, serial_number, uid, status)
+		`INSERT INTO devices (device_id, tenant_id, device_id, device_name, serial_number, uid, status)
 		 VALUES ($1, $2, $3, $4, $5, $6, 'online')
 		 ON CONFLICT (device_id) DO UPDATE SET serial_number = EXCLUDED.serial_number`,
 		deviceID, tenantID, deviceStoreID, "Test Device", "TEST-SN-001", "TEST-UID-001",
@@ -317,4 +318,3 @@ func insertTestIoTTimeSeriesWithLocation(t *testing.T, db *sql.DB, tenantID, dev
 
 	return id
 }
-

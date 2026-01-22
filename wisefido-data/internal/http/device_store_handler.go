@@ -30,6 +30,14 @@ func NewDeviceStoreHandler(deviceStoreRepo repository.DeviceStoreRepository, log
 
 // ServeHTTP 实现 http.Handler 接口
 func (h *DeviceStoreHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 权限检查：只允许 SystemAdmin 或 SystemOperator 访问设备库存管理
+	userRole := r.Header.Get("X-User-Role")
+	if userRole != "SystemAdmin" && userRole != "SystemOperator" {
+		h.logger.Warn("DeviceStore access denied", zap.String("user_role", userRole), zap.String("path", r.URL.Path))
+		writeJSON(w, http.StatusOK, Fail("permission denied: only SystemAdmin and SystemOperator can access device store"))
+		return
+	}
+
 	// 路由分发
 	switch {
 	case r.URL.Path == "/admin/api/v1/device-store" && r.Method == http.MethodGet:
@@ -48,6 +56,7 @@ func (h *DeviceStoreHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListDeviceStores 查询设备库存列表
+// tenant_id 为可选过滤；不传时不过滤租户。SystemAdmin / SystemOperator 无 tenant 限制，可不传以查看全部。
 func (h *DeviceStoreHandler) ListDeviceStores(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -239,7 +248,9 @@ func (h *DeviceStoreHandler) ImportDeviceStores(w http.ResponseWriter, r *http.R
 	headerToFieldMap := map[string]string{
 		"Device Type":                 "device_type",
 		"Device Model":                "device_model",
+		"Device Code":                 "device_code",
 		"Device UID":                   "device_uid",
+		"UID":                         "device_uid",
 		"MAC":                          "mac",
 		"IMEI":                        "imei",
 		"Comm Mode":                   "comm_mode",

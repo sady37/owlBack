@@ -4,8 +4,49 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 )
+
+// SNOMEDMapping SNOMED 映射结构
+type SNOMEDMapping struct {
+	SNOMEDCode    *string `json:"snomed_code"`
+	SNOMEDDisplay string  `json:"snomed_display"`
+	Category      string  `json:"category"`
+	DisplayEn     string  `json:"display_en"`
+}
+
+// FieldConversion 字段转换规则
+type FieldConversion struct {
+	FieldPath      string                   `json:"field_path"`
+	FieldType      string                   `json:"field_type"`               // "enum", "bit_field", "numeric", "base64_array", "array"
+	BytePosition   *int                     `json:"byte_position,omitempty"`  // 单字节位置
+	BytePositions  []int                    `json:"byte_positions,omitempty"` // 多字节位置
+	ByteOrder      string                   `json:"byte_order,omitempty"`     // "big_endian" 或 "little_endian"
+	BitPosition    *string                  `json:"bit_position,omitempty"`   // 如 "7:6", "1:0"
+	UnitConversion *UnitConversion          `json:"unit_conversion,omitempty"`
+	Mappings       map[string]SNOMEDMapping `json:"mappings,omitempty"`
+	// 数组类型相关字段
+	ArrayItemType     string `json:"array_item_type,omitempty"`    // "coordinate_pair", "area_definition"
+	Format            string `json:"format,omitempty"`             // 格式字符串，如 "{x1, y1; x2, y2, x3, y3, x4, y4}"
+	CoordinateIndices []int  `json:"coordinate_indices,omitempty"` // 坐标值的索引（用于 declare_area，跳过 area-id 和 area-type）
+}
+
+// UnitConversion 单位转换规则
+type UnitConversion struct {
+	Formula      string `json:"formula,omitempty"`       // 单向转换公式，如 "value * 10", "value * 100"
+	ReadFormula  string `json:"read_formula,omitempty"`  // 双向转换：读取公式（设备 → Server）
+	WriteFormula string `json:"write_formula,omitempty"` // 双向转换：写入公式（Server → 设备）
+	FromUnit     string `json:"from_unit"`               // 如 "dm", "m", "10秒单位"
+	ToUnit       string `json:"to_unit"`                // 如 "cm", "秒"
+	Direction    string `json:"direction,omitempty"`     // "unidirectional" 或 "bidirectional"
+	ApplyTo      string `json:"apply_to,omitempty"`      // "all_coordinates" 或 "coordinate_values_only"（用于数组类型）
+}
+
+// splitFieldPath 分割字段路径
+func splitFieldPath(path string) []string {
+	return strings.Split(path, ".")
+}
 
 //go:embed config/sleepace_convert_table.json
 var sleepaceConvertTableFS embed.FS

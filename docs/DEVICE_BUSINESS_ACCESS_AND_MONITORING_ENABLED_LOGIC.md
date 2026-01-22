@@ -59,7 +59,7 @@ if businessAccess == "" {
 
 ```sql
 INSERT INTO devices (
-    tenant_id, device_store_id, device_name,
+    tenant_id, device_id, device_name,
     serial_number, uid,
     status, business_access, monitoring_enabled
 ) VALUES ($1, $2, $3, $4, $5, 'online', 'pending', FALSE)

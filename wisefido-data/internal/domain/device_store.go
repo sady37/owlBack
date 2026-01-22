@@ -43,6 +43,9 @@ type DeviceStore struct {
 
 	// 关联租户名称（查询时JOIN获取，不存储在device_store表）
 	TenantName sql.NullString `db:"tenant_name"` // 仅用于查询结果
+
+	// 实时在线状态（从 Redis 读取，不存储到数据库）
+	OnlineStatus string `db:"-"` // 实时在线状态（online/offline/unsubscribed），从 Redis 读取
 }
 
 // ToJSON 转换为JSON格式（用于HTTP响应）
@@ -89,6 +92,11 @@ func (d *DeviceStore) ToJSON() map[string]any {
 	}
 	if d.AllocateTime.Valid {
 		m["allocate_time"] = d.AllocateTime.Time.Format("2006-01-02 15:04:05")
+	}
+	if d.OnlineStatus != "" {
+		m["online_status"] = d.OnlineStatus
+	} else {
+		m["online_status"] = "offline"
 	}
 	return m
 }

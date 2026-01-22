@@ -756,18 +756,8 @@ func (s *alarmCloudService) UpdateAlarmCloudConfig(ctx context.Context, req Upda
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	// 6. 发布配置变更通知
-	if hasChanges && s.configNotifier != nil {
-		if err := s.configNotifier.NotifyAlarmCloudUpdated(ctx, req.TenantID); err != nil {
-			s.logger.Warn("Failed to notify config change, but database update succeeded",
-				zap.String("tenant_id", req.TenantID),
-				zap.Error(err),
-			)
-			// 通知失败不影响数据库保存，只记录警告
-		}
-	}
-
-	// 7. 返回更新后的配置
+	// 5. 返回更新后的配置
+	// 注意：alarm_cloud 配置变更不再发布事件（已废弃，不影响已初始化的设备）
 	return s.GetAlarmCloudConfig(ctx, GetAlarmCloudConfigRequest{
 		TenantID: req.TenantID,
 		UserID:   req.UserID,

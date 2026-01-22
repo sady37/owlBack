@@ -9,16 +9,16 @@ ON CONFLICT (tenant_id) DO UPDATE SET
   status = EXCLUDED.status;
 
 -- 创建设备库存（注意：device_store 表可能没有 status 字段）
-INSERT INTO device_store (device_store_id, tenant_id, device_type, serial_number, uid)
+INSERT INTO device_store (device_id, tenant_id, device_type, serial_number, uid)
 VALUES ('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000002', 'Radar', 'TEST-SERIAL-001', 'TEST-UID-001')
-ON CONFLICT (device_store_id) DO UPDATE SET
+ON CONFLICT (device_id) DO UPDATE SET
   tenant_id = EXCLUDED.tenant_id,
   device_type = EXCLUDED.device_type,
   serial_number = EXCLUDED.serial_number,
   uid = EXCLUDED.uid;
 
 -- 创建设备
-INSERT INTO devices (device_id, tenant_id, device_store_id, device_name, serial_number, uid, status, business_access, monitoring_enabled)
+INSERT INTO devices (device_id, tenant_id, device_id, device_name, serial_number, uid, status, business_access, monitoring_enabled)
 VALUES (
   '00000000-0000-0000-0000-000000000002',
   '00000000-0000-0000-0000-000000000002',
@@ -32,7 +32,7 @@ VALUES (
 )
 ON CONFLICT (device_id) DO UPDATE SET
   tenant_id = EXCLUDED.tenant_id,
-  device_store_id = EXCLUDED.device_store_id,
+  device_id = EXCLUDED.device_id,
   device_name = EXCLUDED.device_name,
   serial_number = EXCLUDED.serial_number,
   uid = EXCLUDED.uid,

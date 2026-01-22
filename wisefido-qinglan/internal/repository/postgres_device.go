@@ -1,0 +1,1123 @@
+package repository
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"sync"
+
+	"owl-common/alarm"
+	"wisefido-qinglan/internal/domain"
+)
+
+// PostgresDeviceRepository 设备Repository的PostgreSQL实现
+type PostgresDeviceRepository struct {
+	db              *sql.DB
+	enablementCache *sync.Map // 报警使能配置缓存 (key: "tenant_id:device_uid", value: []alarm.AlarmEnablementItem)
+}
+
+// NewPostgresDeviceRepository 创建PostgreSQL设备Repository
+func NewPostgresDeviceRepository(db *sql.DB) *PostgresDeviceRepository {
+	return &PostgresDeviceRepository{
+		db:              db,
+		enablementCache: &sync.Map{},
+	}
+}
+
+// 确保实现了接口
+var _ DeviceRepository = (*PostgresDeviceRepository)(nil)
+
+// GetDeviceByUID 根据设备UID获取设备信息
+func (r *PostgresDeviceRepository) GetDeviceByUID(ctx context.Context, uid string) (*domain.Device, error) {
+	query := `
+		SELECT 
+			d.device_id, d.device_uid, d.tenant_id, d.device_name,
+			d.bound_room_id, d.bound_bed_id, d.status, d.business_access,
+			d.monitoring_enabled, d.metadata,
+			ds.device_type, ds.device_model, ds.imei, ds.comm_mode,
+			ds.mcu_model, ds.firmware_version
+		FROM devices d
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
+		WHERE d.device_uid = $1 AND d.status != 'disabled'
+	`
+
+	row := r.db.QueryRowContext(ctx, query, uid)
+
+	var device domain.Device
+	var boundRoomID, boundBedID sql.NullString
+	var metadata sql.NullString
+	var deviceType, deviceModel, imei, commMode, mcuModel, firmwareVersion sql.NullString
+
+	err := row.Scan(
+		&device.DeviceID,
+		&device.DeviceUID,
+		&device.TenantID,
+		&device.DeviceName,
+		&boundRoomID,
+		&boundBedID,
+		&device.Status,
+		&device.BusinessAccess,
+		&device.MonitoringEnabled,
+		&metadata,
+		&deviceType,
+		&deviceModel,
+		&imei,
+		&commMode,
+		&mcuModel,
+		&firmwareVersion,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("device not found: %s", uid)
+		}
+		return nil, fmt.Errorf("failed to query device: %w", err)
+	}
+
+	if boundRoomID.Valid {
+		device.BoundRoomID = boundRoomID
+	}
+	if boundBedID.Valid {
+		device.BoundBedID = boundBedID
+	}
+	if metadata.Valid {
+		device.Metadata = metadata
+	}
+	if deviceType.Valid {
+		device.DeviceType = deviceType
+	}
+	if deviceModel.Valid {
+		device.DeviceModel = deviceModel
+	}
+	if imei.Valid {
+		device.IMEI = imei
+	}
+	if commMode.Valid {
+		device.CommMode = commMode
+	}
+	if mcuModel.Valid {
+		device.MCUModel = mcuModel
+	}
+	if firmwareVersion.Valid {
+		device.FirmwareVersion = firmwareVersion
+	}
+
+	return &device, nil
+}
+
+// GetDeviceLocationInfo 获取设备位置信息
+func (r *PostgresDeviceRepository) GetDeviceLocationInfo(ctx context.Context, uid string) (*domain.DeviceLocationInfo, error) {
+	query := `
+		SELECT 
+			d.device_id, d.device_uid, d.tenant_id, d.device_name,
+			d.bound_room_id, d.bound_bed_id, d.status, d.business_access,
+			d.monitoring_enabled,
+			ds.device_type, ds.device_model, ds.imei, ds.mac, ds.comm_mode,
+			ds.mcu_model, ds.firmware_version,
+			b.branch_id, b.branch_name,
+			bu.building_id, bu.building_name,
+			u.unit_id, u.unit_name,
+			r.room_id, r.room_name,
+			bd.bed_id, bd.bed_name
+		FROM devices d
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
+		LEFT JOIN rooms r ON d.bound_room_id = r.room_id
+		LEFT JOIN beds bd ON d.bound_bed_id = bd.bed_id
+		LEFT JOIN rooms r_bed ON bd.room_id = r_bed.room_id
+		LEFT JOIN units u ON COALESCE(r.unit_id, r_bed.unit_id) = u.unit_id
+		LEFT JOIN buildings bu ON u.building_id = bu.building_id
+		LEFT JOIN branches b ON bu.branch_id = b.branch_id
+		WHERE d.device_uid = $1 AND d.status != 'disabled'
+	`
+
+	row := r.db.QueryRowContext(ctx, query, uid)
+
+	var info domain.DeviceLocationInfo
+	var boundRoomID, boundBedID sql.NullString
+	var deviceType, deviceModel, imei, mac, commMode, mcuModel, firmwareVersion sql.NullString
+	var branchID, branchName, buildingID, buildingName sql.NullString
+	var unitID, unitName, roomID, roomName, bedID, bedName sql.NullString
+
+	err := row.Scan(
+		&info.DeviceID,
+		&info.DeviceUID,
+		&info.TenantID,
+		&info.DeviceName,
+		&boundRoomID,
+		&boundBedID,
+		&info.Status,
+		&info.BusinessAccess,
+		&info.MonitoringEnabled,
+		&deviceType,
+		&deviceModel,
+		&imei,
+		&mac,
+		&commMode,
+		&mcuModel,
+		&firmwareVersion,
+		&branchID,
+		&branchName,
+		&buildingID,
+		&buildingName,
+		&unitID,
+		&unitName,
+		&roomID,
+		&roomName,
+		&bedID,
+		&bedName,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// 设备存在但没有位置信息，返回基本设备信息
+			device, err := r.GetDeviceByUID(ctx, uid)
+			if err != nil {
+				return nil, err
+			}
+
+			return &domain.DeviceLocationInfo{
+				DeviceID:          device.DeviceID,
+				DeviceUID:         device.DeviceUID,
+				TenantID:          device.TenantID,
+				DeviceName:        device.DeviceName,
+				Status:            device.Status,
+				BusinessAccess:    device.BusinessAccess,
+				MonitoringEnabled: device.MonitoringEnabled,
+				BoundRoomID:       device.BoundRoomID,
+				BoundBedID:        device.BoundBedID,
+				DeviceType:        device.DeviceType,
+				DeviceModel:       device.DeviceModel,
+				IMEI:              device.IMEI,
+				CommMode:          device.CommMode,
+				MCUModel:          device.MCUModel,
+				FirmwareVersion:   device.FirmwareVersion,
+			}, nil
+		}
+		return nil, fmt.Errorf("failed to query device location info: %w", err)
+	}
+
+	// 设置可空字段
+	if boundRoomID.Valid {
+		info.BoundRoomID = boundRoomID
+	}
+	if boundBedID.Valid {
+		info.BoundBedID = boundBedID
+	}
+	if deviceType.Valid {
+		info.DeviceType = deviceType
+	}
+	if deviceModel.Valid {
+		info.DeviceModel = deviceModel
+	}
+	if imei.Valid {
+		info.IMEI = imei
+	}
+	if mac.Valid {
+		info.MAC = mac
+	}
+	if commMode.Valid {
+		info.CommMode = commMode
+	}
+	if mcuModel.Valid {
+		info.MCUModel = mcuModel
+	}
+	if firmwareVersion.Valid {
+		info.FirmwareVersion = firmwareVersion
+	}
+	if branchID.Valid {
+		info.BranchID = branchID
+	}
+	if branchName.Valid {
+		info.BranchName = branchName
+	}
+	if buildingID.Valid {
+		info.BuildingID = buildingID
+	}
+	if buildingName.Valid {
+		info.BuildingName = buildingName
+	}
+	if unitID.Valid {
+		info.UnitID = unitID
+	}
+	if unitName.Valid {
+		info.UnitName = unitName
+	}
+	if roomID.Valid {
+		info.RoomID = roomID
+	}
+	if roomName.Valid {
+		info.RoomName = roomName
+	}
+	if bedID.Valid {
+		info.BedID = bedID
+	}
+	if bedName.Valid {
+		info.BedName = bedName
+	}
+
+	return &info, nil
+}
+
+// UpdateDeviceStatus 更新设备状态
+func (r *PostgresDeviceRepository) UpdateDeviceStatus(ctx context.Context, uid, status string) error {
+	query := `
+		UPDATE devices 
+		SET status = $1
+		WHERE device_uid = $2 AND status != 'disabled'
+	`
+
+	result, err := r.db.ExecContext(ctx, query, status, uid)
+	if err != nil {
+		return fmt.Errorf("failed to update device status: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("device not found or is disabled: %s", uid)
+	}
+
+	return nil
+}
+
+// UpdateDeviceMonitoring 更新设备监控状态
+func (r *PostgresDeviceRepository) UpdateDeviceMonitoring(ctx context.Context, uid string, enabled bool) error {
+	query := `
+		UPDATE devices 
+		SET monitoring_enabled = $1
+		WHERE device_uid = $2 AND status != 'disabled'
+	`
+
+	result, err := r.db.ExecContext(ctx, query, enabled, uid)
+	if err != nil {
+		return fmt.Errorf("failed to update device monitoring: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("device not found or is disabled: %s", uid)
+	}
+
+	return nil
+}
+
+// GetDeviceProperties 获取设备属性（从metadata字段解析）
+func (r *PostgresDeviceRepository) GetDeviceProperties(ctx context.Context, uid string, keys []string) (map[string]interface{}, error) {
+	query := `
+		SELECT metadata
+		FROM devices
+		WHERE device_uid = $1 AND status != 'disabled'
+	`
+
+	row := r.db.QueryRowContext(ctx, query, uid)
+
+	var metadata sql.NullString
+	err := row.Scan(&metadata)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("device not found: %s", uid)
+		}
+		return nil, fmt.Errorf("failed to query device metadata: %w", err)
+	}
+
+	if !metadata.Valid {
+		return make(map[string]interface{}), nil
+	}
+
+	// 解析JSON metadata
+	var metadataMap map[string]interface{}
+	if err := json.Unmarshal([]byte(metadata.String), &metadataMap); err != nil {
+		return nil, fmt.Errorf("failed to parse device metadata: %w", err)
+	}
+
+	// 如果指定了keys，只返回指定的属性
+	if len(keys) > 0 {
+		result := make(map[string]interface{})
+		for _, key := range keys {
+			if value, ok := metadataMap[key]; ok {
+				result[key] = value
+			}
+		}
+		return result, nil
+	}
+
+	return metadataMap, nil
+}
+
+// SetDeviceProperties 设置设备属性（更新metadata字段）
+func (r *PostgresDeviceRepository) SetDeviceProperties(ctx context.Context, uid string, properties map[string]interface{}) error {
+	// 获取当前metadata
+	currentMetadata, err := r.GetDeviceProperties(ctx, uid, []string{})
+	if err != nil {
+		return err
+	}
+
+	// 合并属性
+	for key, value := range properties {
+		currentMetadata[key] = value
+	}
+
+	// 序列化为JSON
+	metadataJSON, err := json.Marshal(currentMetadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	query := `
+		UPDATE devices 
+		SET metadata = $1
+		WHERE device_uid = $2 AND status != 'disabled'
+	`
+
+	result, err := r.db.ExecContext(ctx, query, string(metadataJSON), uid)
+	if err != nil {
+		return fmt.Errorf("failed to set device properties: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("device not found or is disabled: %s", uid)
+	}
+
+	return nil
+}
+
+// GetDevicesByTenant 根据租户获取设备列表
+func (r *PostgresDeviceRepository) GetDevicesByTenant(ctx context.Context, tenantID string) ([]*domain.Device, error) {
+	query := `
+		SELECT 
+			d.device_id, d.device_uid, d.tenant_id, d.device_name,
+			d.bound_room_id, d.bound_bed_id, d.status, d.business_access,
+			d.monitoring_enabled, d.metadata,
+			ds.device_type, ds.device_model, ds.imei, ds.comm_mode,
+			ds.mcu_model, ds.firmware_version
+		FROM devices d
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
+		WHERE d.tenant_id = $1 AND d.status != 'disabled'
+		ORDER BY d.device_name
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query devices: %w", err)
+	}
+	defer rows.Close()
+
+	var devices []*domain.Device
+	for rows.Next() {
+		var device domain.Device
+		var boundRoomID, boundBedID sql.NullString
+		var metadata sql.NullString
+		var deviceType, deviceModel, imei, commMode, mcuModel, firmwareVersion sql.NullString
+
+		err := rows.Scan(
+			&device.DeviceID,
+			&device.DeviceUID,
+			&device.TenantID,
+			&device.DeviceName,
+			&boundRoomID,
+			&boundBedID,
+			&device.Status,
+			&device.BusinessAccess,
+			&device.MonitoringEnabled,
+			&metadata,
+			&deviceType,
+			&deviceModel,
+			&imei,
+			&commMode,
+			&mcuModel,
+			&firmwareVersion,
+		)
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan device row: %w", err)
+		}
+
+		if boundRoomID.Valid {
+			device.BoundRoomID = boundRoomID
+		}
+		if boundBedID.Valid {
+			device.BoundBedID = boundBedID
+		}
+		if metadata.Valid {
+			device.Metadata = metadata
+		}
+		if deviceType.Valid {
+			device.DeviceType = deviceType
+		}
+		if deviceModel.Valid {
+			device.DeviceModel = deviceModel
+		}
+		if imei.Valid {
+			device.IMEI = imei
+		}
+		if commMode.Valid {
+			device.CommMode = commMode
+		}
+		if mcuModel.Valid {
+			device.MCUModel = mcuModel
+		}
+		if firmwareVersion.Valid {
+			device.FirmwareVersion = firmwareVersion
+		}
+
+		devices = append(devices, &device)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating device rows: %w", err)
+	}
+
+	return devices, nil
+}
+
+// CreateDevice 创建设备
+func (r *PostgresDeviceRepository) CreateDevice(ctx context.Context, device *domain.Device) error {
+	// 检查device_store中是否存在该设备
+	checkQuery := `
+		SELECT device_id, tenant_id, allow_access
+		FROM device_store
+		WHERE device_uid = $1
+	`
+
+	var storeDeviceID, storeTenantID string
+	var allowAccess bool
+	err := r.db.QueryRowContext(ctx, checkQuery, device.DeviceUID).Scan(&storeDeviceID, &storeTenantID, &allowAccess)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("device not found in device_store: %s", device.DeviceUID)
+		}
+		return fmt.Errorf("failed to check device_store: %w", err)
+	}
+
+	// 验证租户匹配
+	if storeTenantID != device.TenantID {
+		return fmt.Errorf("device belongs to different tenant: %s", storeTenantID)
+	}
+
+	// 验证系统级权限
+	if !allowAccess {
+		return fmt.Errorf("device not allowed to access system")
+	}
+
+	// 插入设备记录
+	// 初始化时：business_access='pending', status='offline'（因为此时仍是拒绝状态）
+	query := `
+		INSERT INTO devices (
+			device_id, device_uid, tenant_id, device_name,
+			bound_room_id, bound_bed_id, status, business_access,
+			monitoring_enabled, metadata
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`
+
+	var boundRoomID, boundBedID interface{}
+	if device.BoundRoomID.Valid {
+		boundRoomID = device.BoundRoomID.String
+	} else {
+		boundRoomID = nil
+	}
+
+	if device.BoundBedID.Valid {
+		boundBedID = device.BoundBedID.String
+	} else {
+		boundBedID = nil
+	}
+
+	var metadata interface{}
+	if device.Metadata.Valid {
+		metadata = device.Metadata.String
+	} else {
+		metadata = nil
+	}
+
+	// 初始化时设置默认值：status='offline', business_access='pending'
+	status := device.Status
+	if status == "" {
+		status = "offline"
+	}
+	businessAccess := device.BusinessAccess
+	if businessAccess == "" {
+		businessAccess = "pending"
+	}
+
+	_, err = r.db.ExecContext(ctx, query,
+		storeDeviceID, // device_id 使用 device_store 的 device_id
+		device.DeviceUID,
+		device.TenantID,
+		device.DeviceName,
+		boundRoomID,
+		boundBedID,
+		status,
+		businessAccess,
+		device.MonitoringEnabled,
+		metadata,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to create device: %w", err)
+	}
+
+	// 更新 device 的 DeviceID
+	device.DeviceID = storeDeviceID
+
+	return nil
+}
+
+// UpdateDevice 更新设备信息
+func (r *PostgresDeviceRepository) UpdateDevice(ctx context.Context, device *domain.Device) error {
+	// 构建动态更新语句
+	updates := []string{}
+	args := []interface{}{}
+	argIdx := 1
+
+	// 检查哪些字段需要更新
+	if device.DeviceName != "" {
+		updates = append(updates, fmt.Sprintf("device_name = $%d", argIdx))
+		args = append(args, device.DeviceName)
+		argIdx++
+	}
+
+	if device.BoundRoomID.Valid {
+		updates = append(updates, fmt.Sprintf("bound_room_id = $%d", argIdx))
+		args = append(args, device.BoundRoomID.String)
+		argIdx++
+	} else {
+		// 明确设置为 NULL
+		updates = append(updates, "bound_room_id = NULL")
+	}
+
+	if device.BoundBedID.Valid {
+		updates = append(updates, fmt.Sprintf("bound_bed_id = $%d", argIdx))
+		args = append(args, device.BoundBedID.String)
+		argIdx++
+	} else {
+		// 明确设置为 NULL
+		updates = append(updates, "bound_bed_id = NULL")
+	}
+
+	if device.Status != "" {
+		updates = append(updates, fmt.Sprintf("status = $%d", argIdx))
+		args = append(args, device.Status)
+		argIdx++
+	}
+
+	if device.BusinessAccess != "" {
+		updates = append(updates, fmt.Sprintf("business_access = $%d", argIdx))
+		args = append(args, device.BusinessAccess)
+		argIdx++
+	}
+
+	updates = append(updates, fmt.Sprintf("monitoring_enabled = $%d", argIdx))
+	args = append(args, device.MonitoringEnabled)
+	argIdx++
+
+	if device.Metadata.Valid {
+		updates = append(updates, fmt.Sprintf("metadata = $%d", argIdx))
+		args = append(args, device.Metadata.String)
+		argIdx++
+	} else {
+		// 明确设置为 NULL
+		updates = append(updates, "metadata = NULL")
+	}
+
+	if len(updates) == 0 {
+		return nil // 没有需要更新的字段
+	}
+
+	// 添加 WHERE 条件
+	args = append(args, device.DeviceUID)
+	whereClause := fmt.Sprintf("WHERE device_uid = $%d AND status != 'disabled'", argIdx)
+
+	query := fmt.Sprintf(`
+		UPDATE devices 
+		SET %s
+		%s
+	`, strings.Join(updates, ", "), whereClause)
+
+	result, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update device: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("device not found or is disabled: %s", device.DeviceUID)
+	}
+
+	return nil
+}
+
+// DeleteDevice 删除设备（软删除）
+func (r *PostgresDeviceRepository) DeleteDevice(ctx context.Context, uid string) error {
+	query := `
+		UPDATE devices 
+		SET status = 'disabled'
+		WHERE device_uid = $1
+	`
+
+	result, err := r.db.ExecContext(ctx, query, uid)
+	if err != nil {
+		return fmt.Errorf("failed to delete device: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("device not found: %s", uid)
+	}
+
+	return nil
+}
+
+// SearchDevices 搜索设备
+func (r *PostgresDeviceRepository) SearchDevices(ctx context.Context, criteria map[string]interface{}) ([]*domain.Device, error) {
+	// 构建基础查询
+	query := `
+		SELECT 
+			d.device_id, d.device_uid, d.tenant_id, d.device_name,
+			d.bound_room_id, d.bound_bed_id, d.status, d.business_access,
+			d.monitoring_enabled, d.metadata,
+			ds.device_type, ds.device_model, ds.imei, ds.comm_mode,
+			ds.mcu_model, ds.firmware_version
+		FROM devices d
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
+		WHERE d.status != 'disabled'
+	`
+
+	whereClauses := []string{}
+	args := []interface{}{}
+	argIdx := 1
+
+	// 处理搜索条件
+	if tenantID, ok := criteria["tenant_id"].(string); ok && tenantID != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("d.tenant_id = $%d", argIdx))
+		args = append(args, tenantID)
+		argIdx++
+	}
+
+	if status, ok := criteria["status"].(string); ok && status != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("d.status = $%d", argIdx))
+		args = append(args, status)
+		argIdx++
+	}
+
+	if businessAccess, ok := criteria["business_access"].(string); ok && businessAccess != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("d.business_access = $%d", argIdx))
+		args = append(args, businessAccess)
+		argIdx++
+	}
+
+	if monitoringEnabled, ok := criteria["monitoring_enabled"].(bool); ok {
+		whereClauses = append(whereClauses, fmt.Sprintf("d.monitoring_enabled = $%d", argIdx))
+		args = append(args, monitoringEnabled)
+		argIdx++
+	}
+
+	if deviceType, ok := criteria["device_type"].(string); ok && deviceType != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("ds.device_type = $%d", argIdx))
+		args = append(args, deviceType)
+		argIdx++
+	}
+
+	if searchKeyword, ok := criteria["search_keyword"].(string); ok && searchKeyword != "" {
+		searchType, _ := criteria["search_type"].(string)
+		switch searchType {
+		case "device_name":
+			whereClauses = append(whereClauses, fmt.Sprintf("d.device_name ILIKE $%d", argIdx))
+		case "device_uid":
+			whereClauses = append(whereClauses, fmt.Sprintf("d.device_uid ILIKE $%d", argIdx))
+		default:
+			whereClauses = append(whereClauses, fmt.Sprintf("(d.device_name ILIKE $%d OR d.device_uid ILIKE $%d)", argIdx, argIdx))
+		}
+		args = append(args, "%"+searchKeyword+"%")
+		argIdx++
+	}
+
+	// 添加 WHERE 子句
+	if len(whereClauses) > 0 {
+		query += " AND " + strings.Join(whereClauses, " AND ")
+	}
+
+	// 添加排序
+	query += " ORDER BY d.device_name"
+
+	// 执行查询
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search devices: %w", err)
+	}
+	defer rows.Close()
+
+	var devices []*domain.Device
+	for rows.Next() {
+		var device domain.Device
+		var boundRoomID, boundBedID sql.NullString
+		var metadata sql.NullString
+		var deviceType, deviceModel, imei, commMode, mcuModel, firmwareVersion sql.NullString
+
+		err := rows.Scan(
+			&device.DeviceID,
+			&device.DeviceUID,
+			&device.TenantID,
+			&device.DeviceName,
+			&boundRoomID,
+			&boundBedID,
+			&device.Status,
+			&device.BusinessAccess,
+			&device.MonitoringEnabled,
+			&metadata,
+			&deviceType,
+			&deviceModel,
+			&imei,
+			&commMode,
+			&mcuModel,
+			&firmwareVersion,
+		)
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan device row: %w", err)
+		}
+
+		if boundRoomID.Valid {
+			device.BoundRoomID = boundRoomID
+		}
+		if boundBedID.Valid {
+			device.BoundBedID = boundBedID
+		}
+		if metadata.Valid {
+			device.Metadata = metadata
+		}
+		if deviceType.Valid {
+			device.DeviceType = deviceType
+		}
+		if deviceModel.Valid {
+			device.DeviceModel = deviceModel
+		}
+		if imei.Valid {
+			device.IMEI = imei
+		}
+		if commMode.Valid {
+			device.CommMode = commMode
+		}
+		if mcuModel.Valid {
+			device.MCUModel = mcuModel
+		}
+		if firmwareVersion.Valid {
+			device.FirmwareVersion = firmwareVersion
+		}
+
+		devices = append(devices, &device)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating device rows: %w", err)
+	}
+
+	return devices, nil
+}
+
+// CountDevicesByStatus 按状态统计设备数量
+func (r *PostgresDeviceRepository) CountDevicesByStatus(ctx context.Context, tenantID string) (map[string]int, error) {
+	query := `
+		SELECT status, COUNT(*) as count
+		FROM devices
+		WHERE tenant_id = $1 AND status != 'disabled'
+		GROUP BY status
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count devices by status: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var status string
+		var count int
+
+		err := rows.Scan(&status, &count)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan count row: %w", err)
+		}
+
+		counts[status] = count
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating count rows: %w", err)
+	}
+
+	return counts, nil
+}
+
+// GetDeviceStoreInfoAndLocation 根据设备UID获取 device_store 信息和位置信息（用于认证）
+// 一次性查询 device_store 和 devices 表（LEFT JOIN），获取所有信息包括位置信息
+func (r *PostgresDeviceRepository) GetDeviceStoreInfoAndLocation(ctx context.Context, deviceUID string) (*DeviceStoreInfo, *domain.DeviceLocationInfo, error) {
+	// 一次性查询 device_store 和 devices 表，包括位置信息
+	query := `
+		SELECT 
+			ds.device_id, ds.device_uid, ds.device_type, ds.device_model,
+			ds.mac, ds.imei, ds.comm_mode, ds.mcu_model, ds.firmware_version,
+			ds.tenant_id, ds.allow_access,
+			d.device_id AS d_device_id, d.device_uid AS d_device_uid, d.tenant_id AS d_tenant_id,
+			d.device_name, d.bound_room_id, d.bound_bed_id, d.status, d.business_access,
+			d.monitoring_enabled,
+			b.branch_id, b.branch_name,
+			bu.building_id, bu.building_name,
+			u.unit_id, u.unit_name,
+			r.room_id, r.room_name,
+			bd.bed_id, bd.bed_name
+		FROM device_store ds
+		LEFT JOIN devices d ON ds.device_id = d.device_id AND d.status != 'disabled'
+		LEFT JOIN rooms r ON d.bound_room_id = r.room_id
+		LEFT JOIN beds bd ON d.bound_bed_id = bd.bed_id
+		LEFT JOIN rooms r_bed ON bd.room_id = r_bed.room_id
+		LEFT JOIN units u ON COALESCE(r.unit_id, r_bed.unit_id) = u.unit_id
+		LEFT JOIN buildings bu ON u.building_id = bu.building_id
+		LEFT JOIN branches b ON bu.branch_id = b.branch_id
+		WHERE ds.device_uid = $1
+		LIMIT 1
+	`
+
+	row := r.db.QueryRowContext(ctx, query, deviceUID)
+
+	var ds DeviceStoreInfo
+	var deviceModel, mac, imei, commMode, mcuModel, firmwareVersion sql.NullString
+	var dDeviceID, dDeviceUID, dTenantID, deviceName sql.NullString
+	var boundRoomID, boundBedID sql.NullString
+	var status, businessAccess sql.NullString
+	var monitoringEnabled sql.NullBool
+	var branchID, branchName, buildingID, buildingName sql.NullString
+	var unitID, unitName, roomID, roomName, bedID, bedName sql.NullString
+
+	err := row.Scan(
+		&ds.DeviceID, &ds.DeviceUID, &ds.DeviceType, &deviceModel,
+		&mac, &imei, &commMode, &mcuModel, &firmwareVersion,
+		&ds.TenantID, &ds.AllowAccess,
+		&dDeviceID, &dDeviceUID, &dTenantID, &deviceName,
+		&boundRoomID, &boundBedID, &status, &businessAccess,
+		&monitoringEnabled,
+		&branchID, &branchName,
+		&buildingID, &buildingName,
+		&unitID, &unitName,
+		&roomID, &roomName,
+		&bedID, &bedName,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// device_store 中没有记录，返回错误，由调用者处理插入
+			return nil, nil, fmt.Errorf("device not found in device_store")
+		}
+		return nil, nil, fmt.Errorf("failed to query device: %w", err)
+	}
+
+	// 设置 device_store 的可空字段
+	ds.DeviceModel = deviceModel
+	ds.MAC = mac
+	ds.IMEI = imei
+	ds.CommMode = commMode
+	ds.MCUModel = mcuModel
+	ds.FirmwareVersion = firmwareVersion
+
+	// 构建位置信息
+	// 注意：即使 devices 表中没有记录，也要使用 device_store 的 device_id 构建 locationInfo
+	// 因为 device_id 始终来自 device_store
+	locationInfo := &domain.DeviceLocationInfo{
+		DeviceID:        ds.DeviceID, // 使用 device_store 的 device_id（权威来源）
+		DeviceUID:       ds.DeviceUID,
+		TenantID:        ds.TenantID,
+		DeviceType:      sql.NullString{String: ds.DeviceType, Valid: true},
+		DeviceModel:     deviceModel,
+		IMEI:            imei,
+		MAC:             mac,
+		CommMode:        commMode,
+		MCUModel:        mcuModel,
+		FirmwareVersion: firmwareVersion,
+		BoundRoomID:     boundRoomID,
+		BoundBedID:      boundBedID,
+		BranchID:        branchID,
+		BranchName:      branchName,
+		BuildingID:      buildingID,
+		BuildingName:    buildingName,
+		UnitID:          unitID,
+		UnitName:        unitName,
+		RoomID:          roomID,
+		RoomName:        roomName,
+		BedID:           bedID,
+		BedName:         bedName,
+		// 设置默认值，避免空字符串
+		DeviceName:        "",
+		Status:            "offline",
+		BusinessAccess:    "pending",
+		MonitoringEnabled: false,
+	}
+
+	// 如果 devices 表中有记录，使用 devices 表的字段覆盖
+	if dDeviceID.Valid {
+		locationInfo.DeviceID = dDeviceID.String // devices 表的 device_id 应该与 device_store 的 device_id 相同
+		locationInfo.DeviceUID = dDeviceUID.String
+		locationInfo.TenantID = dTenantID.String
+		if deviceName.Valid {
+			locationInfo.DeviceName = deviceName.String
+		}
+		if status.Valid {
+			locationInfo.Status = status.String
+		}
+		if businessAccess.Valid {
+			locationInfo.BusinessAccess = businessAccess.String
+		}
+		locationInfo.MonitoringEnabled = monitoringEnabled.Bool
+	}
+
+	return &ds, locationInfo, nil
+}
+
+// GetAlarmEnablement 获取设备的报警使能配置
+// 从 alarm_device.monitor_config.alarms 中解析报警项，返回 []AlarmEnablementItem
+// 先查缓存，缓存未命中再查数据库并存入缓存
+func (r *PostgresDeviceRepository) GetAlarmEnablement(ctx context.Context, tenantID, deviceUID string) ([]alarm.AlarmEnablementItem, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	if deviceUID == "" {
+		return nil, fmt.Errorf("device_uid is required")
+	}
+
+	// 先查缓存
+	cacheKey := fmt.Sprintf("%s:%s", tenantID, deviceUID)
+	if cached, ok := r.enablementCache.Load(cacheKey); ok {
+		if enablementMap, ok := cached.([]alarm.AlarmEnablementItem); ok {
+			return enablementMap, nil
+		}
+	}
+
+	// 缓存未命中，查询数据库
+	query := `
+		SELECT ad.monitor_config
+		FROM alarm_device ad
+		INNER JOIN devices d ON ad.device_id = d.device_id
+		WHERE d.tenant_id = $1 AND d.device_uid = $2
+		LIMIT 1
+	`
+
+	var monitorConfigJSON sql.NullString
+	err := r.db.QueryRowContext(ctx, query, tenantID, deviceUID).Scan(&monitorConfigJSON)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// 没有配置，返回空列表并缓存
+			emptyEnablement := []alarm.AlarmEnablementItem{}
+			r.enablementCache.Store(cacheKey, emptyEnablement)
+			return emptyEnablement, nil
+		}
+		return nil, fmt.Errorf("failed to query alarm enablement: %w", err)
+	}
+
+	if !monitorConfigJSON.Valid || monitorConfigJSON.String == "" {
+		// 空配置，返回空列表并缓存
+		emptyEnablement := []alarm.AlarmEnablementItem{}
+		r.enablementCache.Store(cacheKey, emptyEnablement)
+		return emptyEnablement, nil
+	}
+
+	var monitorConfig map[string]interface{}
+	if err := json.Unmarshal([]byte(monitorConfigJSON.String), &monitorConfig); err != nil {
+		return nil, fmt.Errorf("failed to parse monitor_config: %w", err)
+	}
+
+	alarmsMap, ok := monitorConfig["alarms"].(map[string]interface{})
+	if !ok {
+		// 没有alarms配置，返回空列表并缓存
+		emptyEnablement := []alarm.AlarmEnablementItem{}
+		r.enablementCache.Store(cacheKey, emptyEnablement)
+		return emptyEnablement, nil
+	}
+
+	// 转换为 AlarmItem 列表
+	var alarmItems []alarm.AlarmItem
+	for alarmType, alarmConfig := range alarmsMap {
+		configMap, ok := alarmConfig.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		item := alarm.AlarmItem{
+			AlarmType:      alarmType,
+			AlarmParams:    make(map[string]interface{}),
+			DisplaySetting: 0,
+		}
+
+		// 解析 is_enabled
+		if isEnabled, ok := configMap["is_enabled"].(float64); ok {
+			enabled := int(isEnabled)
+			item.IsEnabled = &enabled
+		} else if isEnabled, ok := configMap["is_enabled"].(int); ok {
+			enabled := isEnabled
+			item.IsEnabled = &enabled
+		}
+
+		// 解析 alarm_level
+		if level, ok := configMap["alarm_level"].(string); ok {
+			item.AlarmLevel = &level
+		}
+
+		// 解析 alarm_params
+		if params, ok := configMap["alarm_params"].(map[string]interface{}); ok {
+			item.AlarmParams = params
+		}
+
+		// 解析 display_setting
+		if displaySetting, ok := configMap["display_setting"].(float64); ok {
+			item.DisplaySetting = int(displaySetting)
+		} else if displaySetting, ok := configMap["display_setting"].(int); ok {
+			item.DisplaySetting = displaySetting
+		}
+
+		alarmItems = append(alarmItems, item)
+	}
+
+	// 使用 GetAlarmEnablementMap 转换为 AlarmEnablementItem 列表
+	// 设备类型为 "radar"（qinglan 是雷达设备）
+	enablementMap := alarm.GetAlarmEnablementMap("radar", alarmItems)
+
+	// 存入缓存
+	r.enablementCache.Store(cacheKey, enablementMap)
+
+	return enablementMap, nil
+}
+
+// ClearAlarmEnablementCache 清除指定设备的报警使能配置缓存
+func (r *PostgresDeviceRepository) ClearAlarmEnablementCache(tenantID, deviceUID string) {
+	if tenantID == "" || deviceUID == "" {
+		return
+	}
+	cacheKey := fmt.Sprintf("%s:%s", tenantID, deviceUID)
+	r.enablementCache.Delete(cacheKey)
+}
+
+// PreloadAlarmEnablement 预加载指定设备的报警使能配置到缓存
+func (r *PostgresDeviceRepository) PreloadAlarmEnablement(ctx context.Context, tenantID, deviceUID string) error {
+	_, err := r.GetAlarmEnablement(ctx, tenantID, deviceUID)
+	return err
+}

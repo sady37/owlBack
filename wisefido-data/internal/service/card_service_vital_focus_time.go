@@ -295,7 +295,7 @@ func (s *cardService) getLastBedStatusFromDevices(
 		if err := rows.Scan(&deviceID, &deviceType); err != nil {
 			continue
 		}
-		// 支持多种命名：Sleepace, Sleepad, SleepPad, sleepad 等
+		// 支持多种命名：Sleepace, Sleepad, SleepPad, sleepad 等（统一转换为 Sleepad）
 		if deviceType == "Radar" {
 			radarDeviceID = deviceID
 		} else {

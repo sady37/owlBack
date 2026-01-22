@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 	"wisefido-card-aggregator/internal/alarm"
 	"wisefido-card-aggregator/internal/config"
@@ -204,26 +205,56 @@ func (c *IoTStreamConsumer) consumeStream(ctx context.Context, stream string) er
 
 // processMessage 处理单条消息
 func (c *IoTStreamConsumer) processMessage(ctx context.Context, msg rediscommon.StreamMessage) error {
-	// 解析消息数据（直接从设备 streams 读取）
-	var dataStr string
-	if val, ok := msg.Values["data"]; ok {
-		if str, ok := val.(string); ok {
-			dataStr = str
+	// 解析数据：支持两种格式
+	// 1. 展开格式（推荐）：字段直接展开在 msg.Values 中（device_id, device_uid, timestamp, topic_type, category, data_value, ...）
+	// 2. 包装格式（兼容）：字段包装在 msg.Values["data"] 中（JSON 字符串）
+	var streamData map[string]interface{}
+
+	// 优先尝试展开格式（直接使用 msg.Values）
+	if len(msg.Values) > 0 {
+		// 检查是否有 "data" 字段（包装格式）
+		if dataStr, ok := msg.Values["data"].(string); ok {
+			// 包装格式：从 "data" 字段解析 JSON
+			if err := json.Unmarshal([]byte(dataStr), &streamData); err != nil {
+				c.logger.Error("Failed to parse message data from 'data' field",
+					zap.String("stream_id", msg.ID),
+					zap.Error(err),
+				)
+				return fmt.Errorf("failed to unmarshal data from 'data' field: %w", err)
+			}
 		} else {
-			return fmt.Errorf("invalid data format in message")
+			// 展开格式：直接使用 msg.Values（需要转换类型）
+			// Redis Stream 返回的值都是字符串（由 PublishToStream 转换）
+			streamData = make(map[string]interface{})
+			for k, v := range msg.Values {
+				if strVal, ok := v.(string); ok {
+					// 尝试解析 JSON 字符串（如 data_value 可能是 JSON 对象）
+					if k == "data_value" {
+						var jsonVal map[string]interface{}
+						if err := json.Unmarshal([]byte(strVal), &jsonVal); err == nil {
+							streamData[k] = jsonVal
+						} else {
+							// 如果不是 JSON，保持原字符串
+							streamData[k] = strVal
+						}
+					} else if k == "timestamp" {
+						// timestamp 可能是 int64 字符串，尝试转换
+						if ts, err := strconv.ParseInt(strVal, 10, 64); err == nil {
+							streamData[k] = ts
+						} else {
+							streamData[k] = strVal
+						}
+					} else {
+						streamData[k] = strVal
+					}
+				} else {
+					// 非字符串类型直接使用（理论上不应该出现，但兼容处理）
+					streamData[k] = v
+				}
+			}
 		}
 	} else {
-		return fmt.Errorf("missing data field in message")
-	}
-	
-	// 解析 JSON - 设备 streams 的格式包含 device_id, tenant_id, device_type, topic_type, timestamp, data_value 等
-	var streamData map[string]interface{}
-	if err := json.Unmarshal([]byte(dataStr), &streamData); err != nil {
-		c.logger.Error("Failed to parse message data",
-			zap.String("stream_id", msg.ID),
-			zap.Error(err),
-		)
-		return fmt.Errorf("failed to unmarshal message data: %w", err)
+		return fmt.Errorf("invalid data format: empty message values")
 	}
 	
 	// 提取必要字段

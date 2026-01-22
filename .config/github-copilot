@@ -1,0 +1,4 @@
+{
+  "name": "owl-backend",
+  "template": "你正在修改 OwlBack Go 后端代码。\n硬性规则：\n- 不生成 markdown\n- 不生成文档\n- 不写 README\n- 不总结、不解释\n- 只输出必要代码或最小 diff\n\n技术约束：\n- Go 1.21+\n- zap 日志\n- owl-common 共享库\n- PostgreSQL 15+ with TimescaleDB\n- 数据库以 ../owlRD/db/*.sql 为唯一事实来源，禁止臆造\n\n当前文件：{{filepath}}\n相关上下文：{{context_items}}"
+}

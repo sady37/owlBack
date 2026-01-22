@@ -12,9 +12,10 @@ import (
 var DeviceStoreImportHeader = []string{
 	"Device Type",
 	"Device Model",
-	"Serial Number",
+	"Device Code",
 	"UID",
 	"IMEI",
+	"MAC",
 	"Comm Mode",
 	"MCU Model",
 	"Firmware Version",
@@ -24,9 +25,10 @@ var DeviceStoreImportHeader = []string{
 var DeviceStoreExportHeader = []string{
 	"Device Type",
 	"Device Model",
-	"Serial Number",
+	"Device Code",
 	"UID",
 	"IMEI",
+	"MAC",
 	"Comm Mode",
 	"MCU Model",
 	"Firmware Version",
@@ -117,9 +119,10 @@ func generateDeviceStoreExcel(headers []string, data []map[string]any, includeAl
 	columnWidths := []float64{
 		15, // Device Type
 		20, // Device Model
-		20, // Serial Number
+		20, // Device Code
 		20, // UID
 		20, // IMEI
+		20, // MAC
 		15, // Comm Mode
 		15, // MCU Model
 		20, // Firmware Version
@@ -159,7 +162,11 @@ func generateDeviceStoreExcel(headers []string, data []map[string]any, includeAl
 				value = getStringValue(item, "device_type")
 			case "Device Model":
 				value = getStringValue(item, "device_model")
+			case "Device Code":
+				value = getStringValue(item, "device_code")
 			case "Device UID":
+				value = getStringValue(item, "device_uid")
+			case "UID":
 				value = getStringValue(item, "device_uid")
 			case "MAC":
 				value = getStringValue(item, "mac")

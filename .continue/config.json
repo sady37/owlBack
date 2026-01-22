@@ -1,0 +1,21 @@
+{
+  "contextProviderPrompts": [
+    {
+      "name": "owl-backend",
+      "template": "这是OwlBack Go后端项目：\n- Go 1.21+\n- 使用zap日志\n- 使用owl-common共享库\n- PostgreSQL 15+ with TimescaleDB\n- 数据库schema参考：../owlRD/db/*.sql\n- 业务规则参考：../owlRD/docs/\n- 参考实现：../wisefido-backend/\n当前文件：{{filepath}}\n相关上下文：{{context_items}}"
+    }
+  ],
+  "allowAnonymousTelemetry": true,
+  "experimental": {
+    "disableIndexing": false
+  },
+  "allowAgentNotifications": true,
+  "allowMultipleManualTraces": true,
+  "customCommands": [
+    {
+      "name": "dbmodel",
+      "prompt": "根据owlRD/db中的SQL文件生成Go结构体和CRUD代码。需要：\n1. 使用gorm标签\n2. 添加JSON标签\n3. 实现基本的CRUD方法\n4. 添加输入验证\n5. 参考wisefido-backend中的模式",
+      "description": "从SQL生成Go模型"
+    }
+  ]
+}

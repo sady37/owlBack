@@ -100,18 +100,20 @@ func (f *SensorFusion) FuseCardData(tenantID, cardID, cardType string) (*models.
 
 	// 2. 过滤设备类型和绑定关系：只查询 Radar 和 Sleepace 设备（其他设备不参与融合）
 	// 融合规则：
-	// - ActiveBed 卡片：只融合绑定到同一床上的设备（bed_id 有效且相同）
-	//   - 如果 bed_id 有效，则所有 bed_id 相同的设备都是绑在同一床上的，应该融合
-	//   - 如果 bed_id 为 NULL，则不参与融合（未绑床的设备）
+	// - ActiveBed 卡片：
+	//   - 融合绑定到同一床上的设备（bed_id 有效且相同）
+	//   - 同时融合未绑床的设备（bed_id 为 NULL，绑定到 room 的设备）
+	//   - 场景 A（门牌下只有 1 个 ActiveBed）：ActiveBed 卡片包含床上的设备和未绑床的设备，都应融合
 	// - Location 卡片：融合所有设备（因为它们都是未绑床的设备，bed_id 为 NULL）
 	var fusionDeviceIDs []string
 	var bedIDForFusion *string // 用于 ActiveBed 卡片，记录第一个有效 bed_id
 
 	for _, device := range devices {
 		deviceType := device.DeviceType
-		if deviceType == "Radar" || deviceType == "Sleepace" || deviceType == "SleepPad" {
+		// 支持 Radar、Sleepace、SleepPad 设备类型（Sleepad 是 SleepPad 的别名）
+		if deviceType == "Radar" || deviceType == "Sleepace" || deviceType == "SleepPad" || deviceType == "Sleepad" {
 			if cardType == "ActiveBed" {
-				// ActiveBed 卡片：只融合绑定到同一床上的设备
+				// ActiveBed 卡片：融合绑定到同一床上的设备，以及未绑床的设备
 				if device.BoundBedID != nil && *device.BoundBedID != "" {
 					// 如果这是第一个有效 bed_id，记录它
 					if bedIDForFusion == nil {
@@ -121,8 +123,10 @@ func (f *SensorFusion) FuseCardData(tenantID, cardID, cardType string) (*models.
 					if bedIDForFusion != nil && *device.BoundBedID == *bedIDForFusion {
 						fusionDeviceIDs = append(fusionDeviceIDs, device.DeviceID)
 					}
+				} else {
+					// bed_id 为 NULL 的设备（未绑床，绑定到 room）也参与融合
+					fusionDeviceIDs = append(fusionDeviceIDs, device.DeviceID)
 				}
-				// bed_id 为 NULL 的设备不参与融合（未绑床的设备）
 			} else {
 				// Location 卡片：融合所有设备（因为它们都是未绑床的设备，bed_id 为 NULL）
 				fusionDeviceIDs = append(fusionDeviceIDs, device.DeviceID)
@@ -136,7 +140,8 @@ func (f *SensorFusion) FuseCardData(tenantID, cardID, cardType string) (*models.
 
 	// 3. 批量获取 Radar 和 Sleepace 设备的最新数据（优化 N+1 查询）
 	// 使用批量查询（每个设备获取最新1条数据）
-	deviceDataMap, err := f.iotRepo.GetLatestByDeviceIDs(tenantID, fusionDeviceIDs, 1)
+	// card_aggregator 不分 tenant_id，传入 "*" 查询所有租户的数据
+	deviceDataMap, err := f.iotRepo.GetLatestByDeviceIDs("*", fusionDeviceIDs, 1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get latest data for devices: %w", err)
 	}

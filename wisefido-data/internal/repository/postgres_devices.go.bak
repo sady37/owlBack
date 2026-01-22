@@ -77,7 +77,7 @@ func (r *PostgresDevicesRepo) ListDevices(ctx context.Context, tenantID string, 
 	queryCount := `
 		SELECT COUNT(*)
 		FROM devices d
-		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE ` + strings.Join(where, " AND ")
 	var total int
 	if err := r.db.QueryRowContext(ctx, queryCount, args...).Scan(&total); err != nil {
@@ -102,7 +102,7 @@ func (r *PostgresDevicesRepo) ListDevices(ctx context.Context, tenantID string, 
 		SELECT
 			d.device_id::text,
 			d.tenant_id::text,
-			CASE WHEN d.device_store_id IS NULL THEN NULL ELSE d.device_store_id::text END as device_store_id,
+			CASE WHEN d.device_id IS NULL THEN NULL ELSE d.device_id::text END as device_id,
 			d.device_name,
 			ds.device_model,
 			ds.device_type,
@@ -120,7 +120,7 @@ func (r *PostgresDevicesRepo) ListDevices(ctx context.Context, tenantID string, 
 			CASE WHEN d.bound_bed_id  IS NULL THEN NULL ELSE d.bound_bed_id::text  END as bound_bed_id,
 			CASE WHEN d.metadata IS NULL THEN NULL ELSE d.metadata::text END as metadata
 		FROM devices d
-		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
 		LEFT JOIN rooms r1 ON d.bound_room_id = r1.room_id
 		LEFT JOIN beds  b  ON d.bound_bed_id  = b.bed_id
 		LEFT JOIN rooms r2 ON b.room_id = r2.room_id
@@ -171,7 +171,7 @@ func (r *PostgresDevicesRepo) GetDevice(ctx context.Context, tenantID, deviceID 
 		SELECT
 			d.device_id::text,
 			d.tenant_id::text,
-			CASE WHEN d.device_store_id IS NULL THEN NULL ELSE d.device_store_id::text END as device_store_id,
+			CASE WHEN d.device_id IS NULL THEN NULL ELSE d.device_id::text END as device_id,
 			d.device_name,
 			ds.device_model,
 			ds.device_type,
@@ -189,7 +189,7 @@ func (r *PostgresDevicesRepo) GetDevice(ctx context.Context, tenantID, deviceID 
 			CASE WHEN d.bound_bed_id  IS NULL THEN NULL ELSE d.bound_bed_id::text  END as bound_bed_id,
 			CASE WHEN d.metadata IS NULL THEN NULL ELSE d.metadata::text END as metadata
 		FROM devices d
-		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
 		LEFT JOIN rooms r1 ON d.bound_room_id = r1.room_id
 		LEFT JOIN beds  b  ON d.bound_bed_id  = b.bed_id
 		LEFT JOIN rooms r2 ON b.room_id = r2.room_id
@@ -238,9 +238,9 @@ func (r *PostgresDevicesRepo) CreateDevice(ctx context.Context, tenantID string,
 	defer tx.Rollback()
 
 	// 1. 验证device_store_id
-	deviceStoreID, ok := payload["device_store_id"].(string)
+	deviceStoreID, ok := payload["device_id"].(string)
 	if !ok || deviceStoreID == "" {
-		return "", fmt.Errorf("device_store_id is required")
+		return "", fmt.Errorf("device_id is required")
 	}
 
 	// 2. 查询device_store，验证是否存在且已分配给该tenant
@@ -249,11 +249,11 @@ func (r *PostgresDevicesRepo) CreateDevice(ctx context.Context, tenantID string,
 	err = tx.QueryRowContext(ctx, `
 		SELECT tenant_id, serial_number, uid
 		FROM device_store
-		WHERE device_store_id = $1
+		WHERE device_id = $1
 	`, deviceStoreID).Scan(&dsTenantID, &dsSerialNumber, &dsUID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("device_store not found: device_store_id=%s", deviceStoreID)
+			return "", fmt.Errorf("device_store not found: device_id=%s", deviceStoreID)
 		}
 		return "", fmt.Errorf("failed to query device_store: %w", err)
 	}
@@ -261,15 +261,15 @@ func (r *PostgresDevicesRepo) CreateDevice(ctx context.Context, tenantID string,
 	// 验证租户一致性
 	unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
 	if !dsTenantID.Valid || dsTenantID.String == unallocatedTenantID {
-		return "", fmt.Errorf("device_store not allocated to tenant: device_store_id=%s (device must be allocated before checkout)", deviceStoreID)
+		return "", fmt.Errorf("device_store not allocated to tenant: device_id=%s (device must be allocated before checkout)", deviceStoreID)
 	}
 	if dsTenantID.String != tenantID {
-		return "", fmt.Errorf("device_store belongs to different tenant: device_store_id=%s (expected %s, got %s)", deviceStoreID, tenantID, dsTenantID.String)
+		return "", fmt.Errorf("device_store belongs to different tenant: device_id=%s (expected %s, got %s)", deviceStoreID, tenantID, dsTenantID.String)
 	}
 
 	// 3. 验证serial_number和uid至少填一个（从device_store获取）
 	if !dsSerialNumber.Valid && !dsUID.Valid {
-		return "", fmt.Errorf("device_store has no serial_number or uid: device_store_id=%s", deviceStoreID)
+		return "", fmt.Errorf("device_store has no serial_number or uid: device_id=%s", deviceStoreID)
 	}
 
 	// 4. 验证位置绑定（如果提供）
@@ -338,7 +338,7 @@ func (r *PostgresDevicesRepo) CreateDevice(ctx context.Context, tenantID string,
 	// 6. 插入devices记录
 	insertQuery := `
 		INSERT INTO devices (
-			tenant_id, device_store_id, device_name,
+			tenant_id, device_id, device_name,
 			serial_number, uid,
 			bound_room_id, bound_bed_id,
 			status, business_access, monitoring_enabled
@@ -437,22 +437,22 @@ func (r *PostgresDevicesRepo) UpdateDevice(ctx context.Context, tenantID, device
 	}
 
 	// 3. 验证device_store_id的租户一致性（如果更新）- 替代trigger_validate_device_store_tenant
-	if v, ok := payload["device_store_id"]; ok {
+	if v, ok := payload["device_id"]; ok {
 		if deviceStoreID, ok := v.(string); ok && deviceStoreID != "" {
 			var dsTenantID sql.NullString
 			if err := tx.QueryRowContext(ctx,
-				"SELECT tenant_id FROM device_store WHERE device_store_id = $1",
+				"SELECT tenant_id FROM device_store WHERE device_id = $1",
 				deviceStoreID,
 			).Scan(&dsTenantID); err != nil {
 				if err == sql.ErrNoRows {
-					return fmt.Errorf("device_store not found: device_store_id=%s", deviceStoreID)
+					return fmt.Errorf("device_store not found: device_id=%s", deviceStoreID)
 				}
-				return fmt.Errorf("failed to validate device_store_id: %w", err)
+				return fmt.Errorf("failed to validate device_id: %w", err)
 			}
 			// 如果device_store已分配给租户，验证租户一致性
 			unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
 			if dsTenantID.Valid && dsTenantID.String != unallocatedTenantID && dsTenantID.String != tenantID {
-				return fmt.Errorf("device_store_id %s is assigned to a different tenant (expected %s, got %s)", deviceStoreID, tenantID, dsTenantID.String)
+				return fmt.Errorf("device_id %s is assigned to a different tenant (expected %s, got %s)", deviceStoreID, tenantID, dsTenantID.String)
 			}
 		}
 	}
@@ -484,8 +484,8 @@ func (r *PostgresDevicesRepo) UpdateDevice(ctx context.Context, tenantID, device
 	if v, ok := payload["bound_bed_id"]; ok {
 		add("bound_bed_id", v)
 	}
-	if v, ok := payload["device_store_id"]; ok {
-		add("device_store_id", v)
+	if v, ok := payload["device_id"]; ok {
+		add("device_id", v)
 	}
 
 	if len(set) == 0 {
@@ -572,7 +572,7 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 		SELECT
 			d.device_id::text,
 			d.tenant_id::text,
-			CASE WHEN d.device_store_id IS NULL THEN NULL ELSE d.device_store_id::text END as device_store_id,
+			CASE WHEN d.device_id IS NULL THEN NULL ELSE d.device_id::text END as device_id,
 			d.device_name,
 			ds.device_model,
 			ds.device_type,
@@ -590,7 +590,7 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 			CASE WHEN d.bound_bed_id  IS NULL THEN NULL ELSE d.bound_bed_id::text  END as bound_bed_id,
 			CASE WHEN d.metadata IS NULL THEN NULL ELSE d.metadata::text END as metadata
 		FROM devices d
-		LEFT JOIN device_store ds ON d.device_store_id = ds.device_store_id
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE (d.serial_number = $1 OR d.uid = $1)
 		LIMIT 1
 	`
@@ -632,7 +632,7 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 	unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
 	deviceStoreQuery := `
 		SELECT
-			device_store_id::text,
+			device_id::text,
 			device_type,
 			device_model,
 			serial_number,
@@ -701,7 +701,7 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 			uid = dsUID.String
 		}
 		logWarn("Device connection rejected: not allocated",
-			zap.String("device_store_id", dsDeviceStoreID),
+			zap.String("device_id", dsDeviceStoreID),
 			zap.String("serial_number", serialNum),
 			zap.String("uid", uid),
 			zap.String("reason", "device_not_allocated"),
@@ -713,7 +713,7 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 	// 4. 验证serial_number和uid至少填一个 - 替代trigger_validate_device_identifier
 	if (!dsSerialNumber.Valid || dsSerialNumber.String == "") && (!dsUID.Valid || dsUID.String == "") {
 		logWarn("Device connection rejected: missing identifier",
-			zap.String("device_store_id", dsDeviceStoreID),
+			zap.String("device_id", dsDeviceStoreID),
 			zap.String("identifier", identifier),
 			zap.String("mqtt_topic", mqttTopic),
 			zap.String("reason", "missing_serial_number_and_uid"),
@@ -726,7 +726,7 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		logWarn("Device connection failed: transaction error",
-			zap.String("device_store_id", dsDeviceStoreID),
+			zap.String("device_id", dsDeviceStoreID),
 			zap.String("identifier", identifier),
 			zap.String("mqtt_topic", mqttTopic),
 			zap.String("reason", "transaction_error"),
@@ -752,7 +752,7 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 	insertQuery := `
 		INSERT INTO devices (
 			tenant_id,
-			device_store_id,
+			device_id,
 			device_name,
 			serial_number,
 			uid,
@@ -774,7 +774,7 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 
 	if err != nil {
 		logWarn("Device connection failed: failed to create device record",
-			zap.String("device_store_id", dsDeviceStoreID),
+			zap.String("device_id", dsDeviceStoreID),
 			zap.String("tenant_id", dsTenantID),
 			zap.String("identifier", identifier),
 			zap.String("mqtt_topic", mqttTopic),
@@ -786,7 +786,7 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 
 	if err = tx.Commit(); err != nil {
 		logWarn("Device connection failed: transaction commit error",
-			zap.String("device_store_id", dsDeviceStoreID),
+			zap.String("device_id", dsDeviceStoreID),
 			zap.String("device_id", newDeviceID),
 			zap.String("tenant_id", dsTenantID),
 			zap.String("identifier", identifier),
@@ -807,7 +807,7 @@ func (r *PostgresDevicesRepo) GetOrCreateDeviceFromStore(ctx context.Context, id
 		uid = dsUID.String
 	}
 	logInfo("Device auto-created from device_store",
-		zap.String("device_store_id", dsDeviceStoreID),
+		zap.String("device_id", dsDeviceStoreID),
 		zap.String("device_id", newDeviceID),
 		zap.String("tenant_id", dsTenantID),
 		zap.String("serial_number", serialNum),

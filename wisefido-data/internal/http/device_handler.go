@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"database/sql"
 	"net/http"
 	"strings"
 
+	"wisefido-data/internal/domain"
 	"wisefido-data/internal/service"
 
 	"go.uber.org/zap"
@@ -106,32 +108,12 @@ func (h *DeviceHandler) GetDeviceRelations(w http.ResponseWriter, r *http.Reques
 }
 
 // ListDevices 查询设备列表
+// 严格限制：仅能查询本人 tenant 的设备。tenant_id 来自 X-Tenant-Id header（或 SystemAdmin 回退 System），禁止 query 覆盖。
 func (h *DeviceHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// 1. 参数解析和验证
-	// SystemAdmin 可以查看所有租户的设备，如果 tenant_id 未指定或为 System 租户，允许查询所有设备
-	userRole := r.Header.Get("X-User-Role")
-	isSystemAdmin := strings.EqualFold(userRole, "SystemAdmin")
-
-	var tenantID string
-	var ok bool
-
-	// 如果 URL 参数中明确指定了 tenant_id，使用它
-	if tid := r.URL.Query().Get("tenant_id"); tid != "" && tid != "null" {
-		tenantID = tid
-		ok = true
-	} else if tid := r.Header.Get("X-Tenant-Id"); tid != "" && tid != "null" {
-		tenantID = tid
-		ok = true
-	} else if isSystemAdmin {
-		// SystemAdmin 如果没有指定 tenant_id，使用 System 租户 ID（但查询时会显示所有设备）
-		tenantID = SystemTenantID()
-		ok = true
-	}
-
+	tenantID, ok := h.tenantIDFromReq(w, r)
 	if !ok {
-		writeJSON(w, http.StatusOK, Fail("tenant_id is required"))
 		return
 	}
 
@@ -146,10 +128,10 @@ func (h *DeviceHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
 	size := parseInt(r.URL.Query().Get("size"), 20)
 
 	// 2. 调用 Service
-	// SystemAdmin 且 tenant_id 为 System 租户时，传递特殊标记以查询所有设备
+	// 严格限制：所有用户（包括 SystemAdmin）只能查看/编辑本 tenant 的设备
 	req := service.ListDevicesRequest{
 		TenantID:       tenantID,
-		IsSystemAdmin:  isSystemAdmin && tenantID == SystemTenantID(), // SystemAdmin 查看所有设备
+		IsSystemAdmin:  false, // 始终按 tenant 过滤，SystemAdmin 也只能查看 System tenant 的设备
 		Status:         statuses,
 		BusinessAccess: r.URL.Query().Get("business_access"),
 		DeviceType:     r.URL.Query().Get("device_type"),
@@ -270,9 +252,9 @@ func (h *DeviceHandler) UpdateDevice(w http.ResponseWriter, r *http.Request) {
 		Device:   device,
 		// 传递 payload 信息，让 Repository 层知道哪些字段需要更新
 		// 如果字段在 payload 中（即使为 null），就更新它
-		UpdateBoundRoomID:      hasBoundRoomID,
-		UpdateBoundBedID:       hasBoundBedID,
-		UpdateBusinessAccess:   hasBusinessAccess,
+		UpdateBoundRoomID:       hasBoundRoomID,
+		UpdateBoundBedID:        hasBoundBedID,
+		UpdateBusinessAccess:    hasBusinessAccess,
 		UpdateMonitoringEnabled: hasMonitoringEnabled,
 	}
 
@@ -320,16 +302,14 @@ func (h *DeviceHandler) DeleteDevice(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": resp.Success}))
 }
 
-// tenantIDFromReq 从请求中获取 tenant_id（复用 AdminAPI 的逻辑）
+// tenantIDFromReq 从请求中获取 tenant_id（用于 Device API）
+// 重要：Device 页面查询必须限于用户自己的 tenant_id，禁止通过 query 覆盖。
+// 仅使用 X-Tenant-Id header；SystemAdmin 无 header 时回退到 System 租户。
+// 不使用 URL query 的 tenant_id，防止越权查看其他租户设备。
 func (h *DeviceHandler) tenantIDFromReq(w http.ResponseWriter, r *http.Request) (string, bool) {
-	if tid := r.URL.Query().Get("tenant_id"); tid != "" {
-		return tid, true
-	}
-	// Prefer tenant header (owlFront axios injects it for all requests after login)
 	if tid := r.Header.Get("X-Tenant-Id"); tid != "" && tid != "null" {
 		return tid, true
 	}
-	// Convenience: SystemAdmin without tenant header falls back to System tenant
 	if strings.EqualFold(r.Header.Get("X-User-Role"), "SystemAdmin") {
 		return SystemTenantID(), true
 	}
@@ -337,4 +317,60 @@ func (h *DeviceHandler) tenantIDFromReq(w http.ResponseWriter, r *http.Request) 
 	return "", false
 }
 
-// payloadToDevice 函数已在 admin_units_devices_impl.go 中定义，直接使用
+// payloadToDevice 将map[string]any转换为domain.Device
+func payloadToDevice(payload map[string]any) *domain.Device {
+	device := &domain.Device{}
+
+	if v, ok := payload["device_name"].(string); ok {
+		device.DeviceName = v
+	}
+	if v, ok := payload["device_uid"].(string); ok && v != "" {
+		device.DeviceUID = v
+	}
+	// Handle bound_room_id: support both string and null values
+	if val, exists := payload["bound_room_id"]; exists {
+		if val == nil {
+			// Explicit null value - set to NULL in database
+			device.BoundRoomID = sql.NullString{Valid: false}
+		} else if v, ok := val.(string); ok {
+			if v != "" {
+				device.BoundRoomID = sql.NullString{String: v, Valid: true}
+			} else {
+				device.BoundRoomID = sql.NullString{Valid: false}
+			}
+		}
+	}
+	// Handle bound_bed_id: support both string and null values
+	if val, exists := payload["bound_bed_id"]; exists {
+		if val == nil {
+			// Explicit null value - set to NULL in database
+			device.BoundBedID = sql.NullString{Valid: false}
+		} else if v, ok := val.(string); ok {
+			if v != "" {
+				device.BoundBedID = sql.NullString{String: v, Valid: true}
+			} else {
+				device.BoundBedID = sql.NullString{Valid: false}
+			}
+		}
+	}
+	if v, ok := payload["status"].(string); ok {
+		device.Status = v
+	}
+	// Handle business_access: must check if field exists in payload to distinguish between "not provided" and "empty string"
+	if val, exists := payload["business_access"]; exists {
+		if v, ok := val.(string); ok {
+			device.BusinessAccess = v // Allow empty string to be set (for validation purposes)
+		}
+	}
+	// Handle monitoring_enabled: must check if field exists in payload
+	if val, exists := payload["monitoring_enabled"]; exists {
+		if v, ok := val.(bool); ok {
+			device.MonitoringEnabled = v
+		}
+	}
+	if v, ok := payload["metadata"].(string); ok && v != "" {
+		device.Metadata = sql.NullString{String: v, Valid: true}
+	}
+
+	return device
+}

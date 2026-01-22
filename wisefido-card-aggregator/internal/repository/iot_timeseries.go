@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"wisefido-card-aggregator/internal/models"
 
+	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -29,39 +30,81 @@ func NewIoTTimeSeriesRepository(db *sql.DB, logger *zap.Logger) *IoTTimeSeriesRe
 //   - deviceID: 设备 ID
 //   - limit: 返回记录数限制
 func (r *IoTTimeSeriesRepository) GetLatestByDeviceID(tenantID, deviceID string, limit int) ([]*models.IoTTimeSeries, error) {
-	query := `
-		SELECT 
-			its.id,
-			its.tenant_id,
-			its.device_id,
-			its.timestamp,
-			its.heart_rate,
-			its.heart_rate_code,
-			its.heart_rate_display,
-			its.respiratory_rate,
-			its.respiratory_rate_code,
-			its.respiratory_rate_display,
-			its.posture_snomed_code,
-			its.posture_display,
-			its.tracking_id,
-			its.bed_status_snomed_code,
-			its.bed_status_display,
-			its.sleep_state_snomed_code,
-			its.sleep_state_display,
-			its.radar_pos_x,
-			its.radar_pos_y,
-			its.radar_pos_z,
-			its.area_id,
-			COALESCE(ds.device_type, '') as device_type
-		FROM iot_timeseries its
-		LEFT JOIN devices d ON its.device_id = d.device_id
-		LEFT JOIN device_store ds ON d.device_id = ds.device_id
-		WHERE its.device_id = $1 AND its.tenant_id = $2
-		ORDER BY its.timestamp DESC
-		LIMIT $3
-	`
+	// tenant_id 存储在 data_values JSONB 字段中
+	var query string
+	var args []interface{}
+	
+	if tenantID == "*" {
+		// 查询所有租户的数据
+		query = `
+			SELECT 
+				its.id,
+				its.data_values->>'tenant_id' as tenant_id,
+				its.device_id,
+				its.timestamp,
+				its.data_values->'data_value'->>'heart_rate' as heart_rate,
+				its.data_values->'data_value'->>'heart_rate_code' as heart_rate_code,
+				its.data_values->'data_value'->>'heart_rate_display' as heart_rate_display,
+				its.data_values->'data_value'->>'respiratory_rate' as respiratory_rate,
+				its.data_values->'data_value'->>'respiratory_rate_code' as respiratory_rate_code,
+				its.data_values->'data_value'->>'respiratory_rate_display' as respiratory_rate_display,
+				its.data_values->'data_value'->>'pose_snomed_code' as posture_snomed_code,
+				its.data_values->'data_value'->>'pose_snomed_display' as posture_display,
+				its.data_values->'data_value'->>'target_id' as tracking_id,
+				its.data_values->'data_value'->>'bed_status_snomed_code' as bed_status_snomed_code,
+				its.data_values->'data_value'->>'bed_status_display' as bed_status_display,
+				its.data_values->'data_value'->>'sleep_state_snomed_code' as sleep_state_snomed_code,
+				its.data_values->'data_value'->>'sleep_state_display' as sleep_state_display,
+				its.data_values->'data_value'->>'position_x' as radar_pos_x,
+				its.data_values->'data_value'->>'position_y' as radar_pos_y,
+				its.data_values->'data_value'->>'position_z' as radar_pos_z,
+				its.data_values->'data_value'->>'area_id' as area_id,
+				COALESCE(ds.device_type, '') as device_type
+			FROM iot_timeseries its
+			LEFT JOIN devices d ON its.device_id = d.device_id
+			LEFT JOIN device_store ds ON d.device_id = ds.device_id
+			WHERE its.device_id = $1
+			ORDER BY its.timestamp DESC
+			LIMIT $2
+		`
+		args = []interface{}{deviceID, limit}
+	} else {
+		// 查询指定租户的数据
+		query = `
+			SELECT 
+				its.id,
+				its.data_values->>'tenant_id' as tenant_id,
+				its.device_id,
+				its.timestamp,
+				its.data_values->'data_value'->>'heart_rate' as heart_rate,
+				its.data_values->'data_value'->>'heart_rate_code' as heart_rate_code,
+				its.data_values->'data_value'->>'heart_rate_display' as heart_rate_display,
+				its.data_values->'data_value'->>'respiratory_rate' as respiratory_rate,
+				its.data_values->'data_value'->>'respiratory_rate_code' as respiratory_rate_code,
+				its.data_values->'data_value'->>'respiratory_rate_display' as respiratory_rate_display,
+				its.data_values->'data_value'->>'pose_snomed_code' as posture_snomed_code,
+				its.data_values->'data_value'->>'pose_snomed_display' as posture_display,
+				its.data_values->'data_value'->>'target_id' as tracking_id,
+				its.data_values->'data_value'->>'bed_status_snomed_code' as bed_status_snomed_code,
+				its.data_values->'data_value'->>'bed_status_display' as bed_status_display,
+				its.data_values->'data_value'->>'sleep_state_snomed_code' as sleep_state_snomed_code,
+				its.data_values->'data_value'->>'sleep_state_display' as sleep_state_display,
+				its.data_values->'data_value'->>'position_x' as radar_pos_x,
+				its.data_values->'data_value'->>'position_y' as radar_pos_y,
+				its.data_values->'data_value'->>'position_z' as radar_pos_z,
+				its.data_values->'data_value'->>'area_id' as area_id,
+				COALESCE(ds.device_type, '') as device_type
+			FROM iot_timeseries its
+			LEFT JOIN devices d ON its.device_id = d.device_id
+			LEFT JOIN device_store ds ON d.device_id = ds.device_id
+			WHERE its.device_id = $1 AND its.data_values->>'tenant_id' = $2
+			ORDER BY its.timestamp DESC
+			LIMIT $3
+		`
+		args = []interface{}{deviceID, tenantID, limit}
+	}
 
-	rows, err := r.db.Query(query, deviceID, tenantID, limit)
+	rows, err := r.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query iot_timeseries: %w", err)
 	}
@@ -186,47 +229,71 @@ func (r *IoTTimeSeriesRepository) GetLatestByDeviceID(tenantID, deviceID string,
 // GetLatestByDeviceIDs 批量获取多个设备的最新时序数据（优化 N+1 查询）
 //
 // 参数:
-//   - tenantID: 租户 ID（用于数据隔离）
+//   - tenantID: 租户 ID（用于数据隔离）。如果为 "*"，则查询所有租户的数据
 //   - deviceIDs: 设备 ID 列表
 //   - limit: 每个设备返回的记录数限制
+//
+// 查询逻辑：
+//   1. 如果 tenantID 为 "*"：直接用 deviceID 在 iot_timeseries 中查找（device_id 已经唯一标识设备）
+//   2. 如果 tenantID 有值：先验证 deviceID 是否属于该 tenant_id，然后查询
 func (r *IoTTimeSeriesRepository) GetLatestByDeviceIDs(tenantID string, deviceIDs []string, limit int) (map[string][]*models.IoTTimeSeries, error) {
 	if len(deviceIDs) == 0 {
 		return make(map[string][]*models.IoTTimeSeries), nil
 	}
 
-	// 构建 IN 子句
+	// 如果 tenantID 不为 "*"，先验证设备是否属于该租户
+	if tenantID != "*" {
+		// 查询这些设备是否属于指定租户
+		checkQuery := `
+			SELECT COUNT(*) 
+			FROM devices 
+			WHERE device_id = ANY($1::uuid[]) AND tenant_id = $2
+		`
+		var count int
+		err := r.db.QueryRow(checkQuery, pq.Array(deviceIDs), tenantID).Scan(&count)
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify device tenant: %w", err)
+		}
+		if count != len(deviceIDs) {
+			return nil, fmt.Errorf("some devices do not belong to tenant: %s", tenantID)
+		}
+	}
+
+	// 直接用 deviceID 查询，不再需要 tenant_id 过滤（device_id 已经唯一标识设备）
 	query := `
 		SELECT 
 			its.id,
-			its.tenant_id,
+			its.data_values->>'tenant_id' as tenant_id,
 			its.device_id,
 			its.timestamp,
-			its.heart_rate,
-			its.heart_rate_code,
-			its.heart_rate_display,
-			its.respiratory_rate,
-			its.respiratory_rate_code,
-			its.respiratory_rate_display,
-			its.posture_snomed_code,
-			its.posture_display,
-			its.tracking_id,
-			its.bed_status_snomed_code,
-			its.bed_status_display,
-			its.sleep_state_snomed_code,
-			its.sleep_state_display,
-			its.radar_pos_x,
-			its.radar_pos_y,
-			its.radar_pos_z,
-			its.area_id,
+			its.data_values->'data_value'->>'heart_rate' as heart_rate,
+			its.data_values->'data_value'->>'heart_rate_code' as heart_rate_code,
+			its.data_values->'data_value'->>'heart_rate_display' as heart_rate_display,
+			its.data_values->'data_value'->>'respiratory_rate' as respiratory_rate,
+			its.data_values->'data_value'->>'respiratory_rate_code' as respiratory_rate_code,
+			its.data_values->'data_value'->>'respiratory_rate_display' as respiratory_rate_display,
+			its.data_values->'data_value'->>'pose_snomed_code' as posture_snomed_code,
+			its.data_values->'data_value'->>'pose_snomed_display' as posture_display,
+			its.data_values->'data_value'->>'target_id' as tracking_id,
+			its.data_values->'data_value'->>'bed_status_snomed_code' as bed_status_snomed_code,
+			its.data_values->'data_value'->>'bed_status_display' as bed_status_display,
+			its.data_values->'data_value'->>'sleep_state_snomed_code' as sleep_state_snomed_code,
+			its.data_values->'data_value'->>'sleep_state_display' as sleep_state_display,
+			its.data_values->'data_value'->>'position_x' as radar_pos_x,
+			its.data_values->'data_value'->>'position_y' as radar_pos_y,
+			its.data_values->'data_value'->>'position_z' as radar_pos_z,
+			its.data_values->'data_value'->>'area_id' as area_id,
 			COALESCE(ds.device_type, '') as device_type,
 			ROW_NUMBER() OVER (PARTITION BY its.device_id ORDER BY its.timestamp DESC) as rn
 		FROM iot_timeseries its
 		LEFT JOIN devices d ON its.device_id = d.device_id
 		LEFT JOIN device_store ds ON d.device_id = ds.device_id
-		WHERE its.device_id = ANY($1) AND its.tenant_id = $2
+		WHERE its.device_id = ANY($1::uuid[])
 		`
+	args := []interface{}{pq.Array(deviceIDs)}
 
-	rows, err := r.db.Query(query, deviceIDs, tenantID)
+	rows, err := r.db.Query(query, args...)
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to query iot_timeseries: %w", err)
 	}

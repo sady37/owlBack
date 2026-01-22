@@ -1,0 +1,2 @@
+time="2026-01-22T11:40:34-07:00" level=warning msg="/Users/sady3721/project/owlBack/docker-compose.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+device_id,device_uid,device_code,device_type,device_model,mac,imei,comm_mode,mcu_model,firmware_version,tenant_id,import_date,allocate_time,ota_target_firmware_version,ota_target_mcu_model,allow_access

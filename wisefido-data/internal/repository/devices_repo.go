@@ -71,7 +71,7 @@ type DeviceFilters struct {
 	Status         []string // 设备状态过滤（online, offline, error）
 	BusinessAccess string   // 业务访问权限（pending, approved, rejected）
 	DeviceType     string   // 设备类型
-	SearchType     string   // 搜索类型（device_name, device_uid）
+	SearchType     string   // 搜索类型（device_name, device_code, device_uid）
 	SearchKeyword  string   // 搜索关键词
 }
 

@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 package repository
@@ -27,9 +28,9 @@ func createTestTenantAndDeviceForAlarmDevice(t *testing.T, db *sql.DB) (string, 
 	// 创建测试device_store
 	deviceStoreID := "00000000-0000-0000-0000-000000000990"
 	_, err = db.Exec(
-		`INSERT INTO device_store (device_store_id, tenant_id, device_type, device_model, serial_number, allow_access)
+		`INSERT INTO device_store (device_id, tenant_id, device_type, device_model, serial_number, allow_access)
 		 VALUES ($1, $2, $3, $4, $5, true)
-		 ON CONFLICT (device_store_id) DO UPDATE SET device_type = EXCLUDED.device_type`,
+		 ON CONFLICT (device_id) DO UPDATE SET device_type = EXCLUDED.device_type`,
 		deviceStoreID, tenantID, "Radar", "Radar-001", "TEST-SN-001",
 	)
 	if err != nil {
@@ -39,7 +40,7 @@ func createTestTenantAndDeviceForAlarmDevice(t *testing.T, db *sql.DB) (string, 
 	// 创建测试device
 	deviceID := "00000000-0000-0000-0000-000000000989"
 	_, err = db.Exec(
-		`INSERT INTO devices (device_id, tenant_id, device_store_id, device_name, status)
+		`INSERT INTO devices (device_id, tenant_id, device_id, device_name, status)
 		 VALUES ($1, $2, $3, $4, 'active')
 		 ON CONFLICT (device_id) DO UPDATE SET device_name = EXCLUDED.device_name`,
 		deviceID, tenantID, deviceStoreID, "Test Device 001",
@@ -79,8 +80,8 @@ func TestPostgresAlarmDeviceRepository_GetAlarmDevice(t *testing.T) {
 	// 先创建一个alarm_device
 	monitorConfig := json.RawMessage(`{"alarms": {"Fall": {"level": "EMERGENCY", "enabled": true}}}`)
 	alarmDevice := &domain.AlarmDevice{
-		DeviceID:     deviceID,
-		TenantID:     tenantID,
+		DeviceID:      deviceID,
+		TenantID:      tenantID,
 		MonitorConfig: monitorConfig,
 	}
 
@@ -122,8 +123,8 @@ func TestPostgresAlarmDeviceRepository_UpsertAlarmDevice(t *testing.T) {
 	monitorConfig := json.RawMessage(`{"alarms": {"Fall": {"level": "EMERGENCY", "enabled": true}}}`)
 	vendorConfig := json.RawMessage(`{"heart_rate": {"typical_range": [55, 95]}}`)
 	alarmDevice := &domain.AlarmDevice{
-		DeviceID:     deviceID,
-		TenantID:     tenantID,
+		DeviceID:      deviceID,
+		TenantID:      tenantID,
 		MonitorConfig: monitorConfig,
 		VendorConfig:  vendorConfig,
 	}
@@ -181,8 +182,8 @@ func TestPostgresAlarmDeviceRepository_DeleteAlarmDevice(t *testing.T) {
 	// 先创建一个alarm_device
 	monitorConfig := json.RawMessage(`{"alarms": {"Fall": {"level": "EMERGENCY", "enabled": true}}}`)
 	alarmDevice := &domain.AlarmDevice{
-		DeviceID:     deviceID,
-		TenantID:     tenantID,
+		DeviceID:      deviceID,
+		TenantID:      tenantID,
 		MonitorConfig: monitorConfig,
 	}
 
@@ -219,9 +220,9 @@ func TestPostgresAlarmDeviceRepository_ListAlarmDevices(t *testing.T) {
 	// 创建第二个device
 	deviceStoreID := "00000000-0000-0000-0000-000000000988"
 	_, err := db.Exec(
-		`INSERT INTO device_store (device_store_id, tenant_id, device_type, device_model, serial_number, allow_access)
+		`INSERT INTO device_store (device_id, tenant_id, device_type, device_model, serial_number, allow_access)
 		 VALUES ($1, $2, $3, $4, $5, true)
-		 ON CONFLICT (device_store_id) DO UPDATE SET device_type = EXCLUDED.device_type`,
+		 ON CONFLICT (device_id) DO UPDATE SET device_type = EXCLUDED.device_type`,
 		deviceStoreID, tenantID, "SleepPad", "SleepPad-001", "TEST-SN-002",
 	)
 	if err != nil {
@@ -230,7 +231,7 @@ func TestPostgresAlarmDeviceRepository_ListAlarmDevices(t *testing.T) {
 
 	deviceID2 := "00000000-0000-0000-0000-000000000987"
 	_, err = db.Exec(
-		`INSERT INTO devices (device_id, tenant_id, device_store_id, device_name, status)
+		`INSERT INTO devices (device_id, tenant_id, device_id, device_name, status)
 		 VALUES ($1, $2, $3, $4, 'active')
 		 ON CONFLICT (device_id) DO UPDATE SET device_name = EXCLUDED.device_name`,
 		deviceID2, tenantID, deviceStoreID, "Test Device 002",
@@ -245,8 +246,8 @@ func TestPostgresAlarmDeviceRepository_ListAlarmDevices(t *testing.T) {
 	// 创建两个alarm_device
 	monitorConfig1 := json.RawMessage(`{"alarms": {"Fall": {"level": "EMERGENCY", "enabled": true}}}`)
 	alarmDevice1 := &domain.AlarmDevice{
-		DeviceID:     deviceID1,
-		TenantID:     tenantID,
+		DeviceID:      deviceID1,
+		TenantID:      tenantID,
 		MonitorConfig: monitorConfig1,
 	}
 	err = repo.UpsertAlarmDevice(ctx, tenantID, deviceID1, alarmDevice1)
@@ -256,8 +257,8 @@ func TestPostgresAlarmDeviceRepository_ListAlarmDevices(t *testing.T) {
 
 	monitorConfig2 := json.RawMessage(`{"alarms": {"SleepPad_LeftBed": {"level": "WARNING", "enabled": true}}}`)
 	alarmDevice2 := &domain.AlarmDevice{
-		DeviceID:     deviceID2,
-		TenantID:     tenantID,
+		DeviceID:      deviceID2,
+		TenantID:      tenantID,
 		MonitorConfig: monitorConfig2,
 	}
 	err = repo.UpsertAlarmDevice(ctx, tenantID, deviceID2, alarmDevice2)
@@ -292,4 +293,3 @@ func TestPostgresAlarmDeviceRepository_ListAlarmDevices(t *testing.T) {
 
 	t.Logf("✅ ListAlarmDevices test passed: total=%d", total)
 }
-

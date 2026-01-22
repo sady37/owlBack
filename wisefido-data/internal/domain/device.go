@@ -18,6 +18,8 @@ type Device struct {
 	// 物理属性（从 device_store 表获取，只读）
 	DeviceType  sql.NullString `db:"device_type"`  // from device_store.device_type
 	DeviceModel sql.NullString `db:"device_model"` // from device_store.device_model
+	DeviceCode  sql.NullString `db:"device_code"`  // from device_store.device_code
+	MAC         sql.NullString `db:"mac"`          // from device_store.mac
 	IMEI        sql.NullString `db:"imei"`         // from device_store.imei
 	CommMode    sql.NullString `db:"comm_mode"`    // from device_store.comm_mode
 	MCUModel    sql.NullString `db:"mcu_model"`    // from device_store.mcu_model
@@ -37,7 +39,8 @@ type Device struct {
 	UnitID sql.NullString `db:"unit_id"`   // 计算字段：通过 room_id 或 bed_id 查询得到
 
 	// 状态/维护
-	Status            string `db:"status"`              // NOT NULL, default 'offline'
+	Status            string `db:"status"`              // NOT NULL, default 'offline' (数据库状态：Enabled/Disabled/Error，用于软删除)
+	OnlineStatus      string `db:"-"`                   // 实时在线状态（online/offline/unsubscribed），从 Redis 读取，不存储到数据库
 	BusinessAccess    string `db:"business_access"`      // NOT NULL, default 'pending'
 	MonitoringEnabled bool   `db:"monitoring_enabled"`  // NOT NULL, default false
 
@@ -51,7 +54,8 @@ func (d *Device) ToJSON() map[string]any {
 		"device_id":          d.DeviceID,
 		"tenant_id":          d.TenantID,
 		"device_name":        d.DeviceName,
-		"status":             d.Status,
+		"status":             d.Status,        // 数据库状态（Enabled/Disabled/Error）
+		"online_status":      d.OnlineStatus,  // 实时在线状态（online/offline/unsubscribed）
 		"business_access":    d.BusinessAccess,
 		"monitoring_enabled": d.MonitoringEnabled,
 	}
@@ -62,6 +66,12 @@ func (d *Device) ToJSON() map[string]any {
 	}
 	if d.DeviceModel.Valid {
 		m["device_model"] = d.DeviceModel.String
+	}
+	if d.DeviceCode.Valid {
+		m["device_code"] = d.DeviceCode.String
+	}
+	if d.MAC.Valid {
+		m["mac"] = d.MAC.String
 	}
 	if d.IMEI.Valid {
 		m["imei"] = d.IMEI.String

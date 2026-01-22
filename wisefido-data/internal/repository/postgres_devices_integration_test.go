@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 package repository
@@ -9,8 +10,8 @@ import (
 
 	"wisefido-data/internal/domain"
 
-	"owl-common/database"
 	"owl-common/config"
+	"owl-common/database"
 )
 
 // 获取测试数据库连接
@@ -128,12 +129,12 @@ func TestPostgresDeviceStoreRepo_CreateDeviceStore(t *testing.T) {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
 	if deviceStoreID == "" {
-		t.Fatal("CreateDeviceStore returned empty device_store_id")
+		t.Fatal("CreateDeviceStore returned empty device_id")
 	}
-	t.Logf("Created device_store_id: %s", deviceStoreID)
+	t.Logf("Created device_id: %s", deviceStoreID)
 
 	// 清理
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID)
 
 	// 验证：查询创建的设备
 	deviceStore, err = repo.GetDeviceStore(ctx, deviceStoreID)
@@ -171,7 +172,7 @@ func TestPostgresDeviceStoreRepo_GetDeviceStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID)
 
 	// 测试：查询设备
 	deviceStore, err = repo.GetDeviceStore(ctx, deviceStoreID)
@@ -179,7 +180,7 @@ func TestPostgresDeviceStoreRepo_GetDeviceStore(t *testing.T) {
 		t.Fatalf("GetDeviceStore failed: %v", err)
 	}
 	if deviceStore.DeviceStoreID != deviceStoreID {
-		t.Errorf("Expected device_store_id=%s, got %s", deviceStoreID, deviceStore.DeviceStoreID)
+		t.Errorf("Expected device_id=%s, got %s", deviceStoreID, deviceStore.DeviceStoreID)
 	}
 	if deviceStore.DeviceType != "Radar" {
 		t.Errorf("Expected device_type=Radar, got %s", deviceStore.DeviceType)
@@ -248,7 +249,7 @@ func TestPostgresDeviceStoreRepo_DeleteDeviceStore_WithAllocation(t *testing.T) 
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID)
 
 	// 测试：尝试删除已分配的设备（应该失败）
 	err = repo.DeleteDeviceStore(ctx, deviceStoreID)
@@ -287,7 +288,7 @@ func TestPostgresDevicesRepo_CreateDevice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID)
 
 	// 测试：创建设备（出库操作）
 	device := &domain.Device{
@@ -352,7 +353,7 @@ func TestPostgresDevicesRepo_CreateDevice_WithRoomBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID)
 
 	// 测试：创建设备并绑定到room
 	device := &domain.Device{
@@ -402,7 +403,7 @@ func TestPostgresDevicesRepo_DeleteDevice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID)
 
 	// 创建设备
 	device := &domain.Device{
@@ -452,7 +453,7 @@ func TestPostgresDevicesRepo_CreateDevice_UnallocatedDeviceStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID)
 
 	// 测试：尝试从未分配的device_store创建设备（应该失败）
 	device := &domain.Device{
@@ -496,7 +497,7 @@ func TestPostgresDevicesRepo_ListDevices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID)
 
 	// 创建设备
 	device := &domain.Device{
@@ -563,7 +564,7 @@ func TestPostgresDevicesRepo_UpdateDevice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID)
 
 	// 创建设备
 	device := &domain.Device{
@@ -628,7 +629,7 @@ func TestPostgresDevicesRepo_DisableDevice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID)
 
 	// 创建设备
 	device := &domain.Device{
@@ -700,7 +701,7 @@ func TestPostgresDevicesRepo_GetOrCreateDeviceFromStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID)
 
 	// 测试：首次连接时自动创建设备
 	device, err := repo.GetOrCreateDeviceFromStore(ctx, "TEST-SN-AUTO-001", "test/mqtt/topic")
@@ -714,7 +715,7 @@ func TestPostgresDevicesRepo_GetOrCreateDeviceFromStore(t *testing.T) {
 
 	// 验证：设备已创建
 	if !device.DeviceStoreID.Valid || device.DeviceStoreID.String != deviceStoreID {
-		t.Errorf("Expected device_store_id=%s, got %v", deviceStoreID, device.DeviceStoreID)
+		t.Errorf("Expected device_id=%s, got %v", deviceStoreID, device.DeviceStoreID)
 	}
 	if device.Status != "online" {
 		t.Errorf("Expected status=online, got %s", device.Status)
@@ -771,13 +772,13 @@ func TestPostgresDevicesRepo_GetDevice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID)
 
 	// 创建设备
 	device := &domain.Device{
-		DeviceStoreID: sql.NullString{String: deviceStoreID, Valid: true},
-		DeviceName:    "Test Device Get 001",
-		Status:        "online",
+		DeviceStoreID:  sql.NullString{String: deviceStoreID, Valid: true},
+		DeviceName:     "Test Device Get 001",
+		Status:         "online",
 		BusinessAccess: "approved",
 	}
 	deviceID, err := repo.CreateDevice(ctx, tenantID, device)
@@ -807,7 +808,7 @@ func TestPostgresDevicesRepo_GetDevice(t *testing.T) {
 		t.Errorf("Expected business_access=approved, got %s", device.BusinessAccess)
 	}
 	if !device.DeviceStoreID.Valid || device.DeviceStoreID.String != deviceStoreID {
-		t.Errorf("Expected device_store_id=%s, got %v", deviceStoreID, device.DeviceStoreID)
+		t.Errorf("Expected device_id=%s, got %v", deviceStoreID, device.DeviceStoreID)
 	}
 
 	// 测试2：查询不存在的设备（应该返回错误）
@@ -831,7 +832,7 @@ func TestPostgresDevicesRepo_GetDevice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore (other tenant) failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, otherDeviceStoreID)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, otherDeviceStoreID)
 
 	otherDevice := &domain.Device{
 		DeviceStoreID: sql.NullString{String: otherDeviceStoreID, Valid: true},
@@ -888,7 +889,7 @@ func TestPostgresDeviceStoreRepo_ListDeviceStores(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID1)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID1)
 
 	deviceStore2 := &domain.DeviceStore{
 		DeviceType:   "SleepPad",
@@ -901,7 +902,7 @@ func TestPostgresDeviceStoreRepo_ListDeviceStores(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID2)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID2)
 
 	// 测试：查询设备库存列表
 	filters := DeviceStoreFilters{}
@@ -975,7 +976,7 @@ func TestPostgresDeviceStoreRepo_BatchUpdateDeviceStores(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID1)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID1)
 
 	deviceStore2 := &domain.DeviceStore{
 		DeviceType:   "SleepPad",
@@ -988,7 +989,7 @@ func TestPostgresDeviceStoreRepo_BatchUpdateDeviceStores(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeviceStore failed: %v", err)
 	}
-	defer db.Exec(`DELETE FROM device_store WHERE device_store_id = $1`, deviceStoreID2)
+	defer db.Exec(`DELETE FROM device_store WHERE device_id = $1`, deviceStoreID2)
 
 	// 测试：批量更新设备库存
 	updates := []*domain.DeviceStore{
@@ -1104,4 +1105,3 @@ func TestPostgresDeviceStoreRepo_ImportDeviceStores(t *testing.T) {
 		}
 	}
 }
-
