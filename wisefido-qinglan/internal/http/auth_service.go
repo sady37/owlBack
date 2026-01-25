@@ -185,23 +185,23 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 	log.Printf("✅ Auth success for device %s, publishing success response", req.UID)
 	s.publishAuthResponseSuccess(ctx, req.UID, device, locationInfo, mqttConfig)
 
-	// 8. 认证成功后立即订阅设备的 MQTT 主题（不使用通配符，仅订阅该设备的主题）
-	// 这样可以确保设备连接 MQTT 后，wisefido-qinglan 能够立即收到设备发布的消息
+	// 8. 认证成功后仅开启周期性订阅（不立即订阅MQTT主题，因为启动时已订阅）
+	// 创建订阅记录，让周期性订阅机制来处理monitor订阅命令
 	if s.subscriptionManager != nil {
-		if err := s.subscriptionManager.SubscribeDevice(ctx, req.UID, device.DeviceID); err != nil {
-			s.logger.Warn("Failed to subscribe device MQTT topics after authentication",
+		if err := s.subscriptionManager.EnablePeriodicSubscription(ctx, req.UID, device.DeviceID); err != nil {
+			s.logger.Warn("Failed to enable periodic subscription after authentication",
 				zap.String("uid", req.UID),
 				zap.String("device_id", device.DeviceID),
 				zap.Error(err),
 			)
-			log.Printf("⚠️ Failed to subscribe MQTT topics for device %s after authentication: %v", req.UID, err)
+			log.Printf("⚠️ Failed to enable periodic subscription for device %s after authentication: %v", req.UID, err)
 			// 不返回错误，认证仍然成功，订阅失败不影响认证结果
 		} else {
-			s.logger.Info("Subscribed device MQTT topics after authentication",
+			s.logger.Info("Enabled periodic subscription after authentication",
 				zap.String("uid", req.UID),
 				zap.String("device_id", device.DeviceID),
 			)
-			log.Printf("✅ Subscribed MQTT topics for device %s after authentication", req.UID)
+			log.Printf("✅ Enabled periodic subscription for device %s after authentication", req.UID)
 		}
 	}
 

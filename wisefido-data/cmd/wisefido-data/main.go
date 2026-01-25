@@ -195,9 +195,15 @@ func main() {
 		deviceStoreHandler := httpapi.NewDeviceStoreHandler(deviceStoreRepo, logger)
 		router.RegisterDeviceStoreRoutes(deviceStoreHandler)
 
-		// 创建 Radar Service 和 Handler（调用 wisefido-radar 内部 API）
-		radarService := service.NewRadarService(cfg, devicesRepo, logger)
-		radarHandler := httpapi.NewRadarHandler(radarService, stub, logger)
+		// 创建 QinglanClient（调用 wisefido-qinglan HTTP API，统一与设备通信）
+		qinglanClient := service.NewQinglanClient(cfg.Qinglan.APIBaseURL, logger)
+
+		// 创建 CardsRepository（供 RadarInstall 查卡片设备，以及后续 CardService 使用）
+		cardsRepo := repository.NewPostgresCardsRepository(db)
+
+		// 创建 Radar Install Service 和 Handler（通过 wisefido-qinglan 与设备通信）
+		radarInstall := service.NewRadarInstall(cfg, devicesRepo, cardsRepo, configVersionsRepo, qinglanClient, logger)
+		radarHandler := httpapi.NewRadarHandler(radarInstall, stub, logger)
 		router.RegisterRadarRoutes(radarHandler)
 
 		// 创建 Unit Service  and Handler
@@ -287,7 +293,26 @@ func main() {
 			)
 		}
 
-		deviceMonitorSettingsHandler := httpapi.NewDeviceMonitorSettingsHandler(deviceMonitorSettingsService, logger)
+		// 设置 QinglanClient 到 DeviceMonitorSettingsService（用于下发雷达监控设置：工作模式、跌倒/呼吸心率参数）
+		if svc, ok := deviceMonitorSettingsService.(interface {
+			SetQinglanClient(client *service.QinglanClient)
+		}); ok {
+			svc.SetQinglanClient(qinglanClient)
+			logger.Info("Qinglan client set for device monitor settings service")
+		} else {
+			logger.Warn("DeviceMonitorSettingsService does not support SetQinglanClient")
+		}
+
+		deviceMonitorSettingsHandler := httpapi.NewDeviceMonitorSettingsHandler(
+			deviceMonitorSettingsService,
+			usersRepo,        // 用于安全验证：验证 user_id 和 tenant_id 一致性
+			userBranchesRepo, // 用于安全验证：验证 branch_id 与 user_id 一致性
+			devicesRepo,      // 用于安全验证：验证 device_id 与 tenant_id 一致性
+			unitsRepo,        // 用于安全验证：获取设备的 branch_id
+			redisClient,      // 用于安全验证：检查设备在线状态
+			db,               // 用于安全验证：数据库查询
+			logger,
+		)
 		router.RegisterDeviceMonitorSettingsRoutes(deviceMonitorSettingsHandler)
 
 		// 创建 AlarmEvent Service 和 Handler
@@ -312,8 +337,7 @@ func main() {
 		sleepaceReportHandler := httpapi.NewSleepaceReportHandler(sleepaceReportService, db, logger)
 		router.RegisterSleepaceReportRoutes(sleepaceReportHandler)
 
-		// 创建 Card Service 和 Handler
-		cardsRepo := repository.NewPostgresCardsRepository(db)
+		// 创建 Card Service 和 Handler（cardsRepo 已在 Radar 之前创建）
 		cardService := service.NewCardService(
 			cardsRepo,
 			residentsRepo,

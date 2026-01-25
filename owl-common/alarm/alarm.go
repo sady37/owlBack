@@ -215,6 +215,13 @@ const ExampleDefaultAlarmSettingJSON = `{
 		"display_setting": 3
 	  },
 	  {
+		"alarm_type": "Radar_BedSitUp",
+		"is_enabled": 0,
+		"alarm_level": "WARNING",
+		"alarm_params": {},
+		"display_setting": 0
+	  },	  
+	  {
 		"alarm_type": "Radar_ApneaHypopnea",
 		"is_enabled": 0,
 		"alarm_level": null,
@@ -870,6 +877,13 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
+			AlarmType:  RadarBedSitUp,
+			IsEnabled:  intPtr(IsEnabledOn),
+			AlarmLevel: strPtr(AlarmLevelWarn),
+			AlarmParams: map[string]interface{}{},
+			DisplaySetting: 0,
+		},
+		{
 			AlarmType:  RadarApneaHypopnea,
 			IsEnabled:  intPtr(IsEnabledOff),
 			AlarmLevel: nil,
@@ -978,7 +992,7 @@ func intPtr(i int) *int { return &i }
 
 // GetRadarAlarmTypes 获取 Radar 设备的报警类型列表
 func GetRadarAlarmTypes() []string {
-	return []string{AlarmTypeOfflineAlarm, AlarmTypeDeviceFailure, RadarFall, RadarSuspectedFall, RadarSittingOnGround, RadarApneaHypopnea, RadarAbnormalHeartRate, RadarAbnormalRespiratoryRate, RadarVitalsWeak, RadarLeftBed, RadarInBed, RadarLeftBedTooLong, RadarBedSitUp, RadarStay, RadarNoActivity24h, RadarWarningArea, RadarSignalPoor, RadarAngleException}
+	return []string{AlarmTypeOfflineAlarm, AlarmTypeDeviceFailure, RadarFall, RadarSuspectedFall, RadarSittingOnGround, RadarApneaHypopnea, RadarAbnormalHeartRate, RadarAbnormalRespiratoryRate, RadarVitalsWeak, RadarLeftBed, RadarInBed, RadarLeftBedTooLong, RadarBedSitUp, RadarStay, RadarNoActivity24h, RadarWarningArea, RadarSignalPoor, RadarAngleException, RadarMonitoringMode, RadarNapTime, RadarResetTime, RadarPostureDetection}
 }
 
 // GetSleepPadAlarmTypes 获取 SleepPad 设备的报警类型列表

@@ -1121,3 +1121,38 @@ func (r *PostgresDeviceRepository) PreloadAlarmEnablement(ctx context.Context, t
 	_, err := r.GetAlarmEnablement(ctx, tenantID, deviceUID)
 	return err
 }
+
+// GetAllAccessibleDevices 获取所有可访问的设备（用于启动时主动订阅）
+// 条件：device_store.allow_access = TRUE 且 devices.business_access = 'approved' 或 'enable'
+// 如果 devices 表中没有记录，也允许（d.business_access IS NULL）
+func (r *PostgresDeviceRepository) GetAllAccessibleDevices(ctx context.Context) ([]string, error) {
+	query := `
+		SELECT DISTINCT ds.device_uid
+		FROM device_store ds
+		LEFT JOIN devices d ON ds.device_id = d.device_id AND d.status != 'disabled'
+		WHERE ds.allow_access = TRUE
+		  AND (d.business_access = 'approved' OR d.business_access = 'enable' OR d.business_access IS NULL)
+		ORDER BY ds.device_uid
+	`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query accessible devices: %w", err)
+	}
+	defer rows.Close()
+
+	var deviceUIDs []string
+	for rows.Next() {
+		var deviceUID string
+		if err := rows.Scan(&deviceUID); err != nil {
+			return nil, fmt.Errorf("failed to scan device_uid: %w", err)
+		}
+		deviceUIDs = append(deviceUIDs, deviceUID)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating device rows: %w", err)
+	}
+
+	return deviceUIDs, nil
+}

@@ -26,6 +26,7 @@ type Config struct {
 	Sleepace      SleepaceConfig      `yaml:"sleepace"`
 	MQTT          MQTTConfig          `yaml:"mqtt"`
 	Radar         RadarConfig         `yaml:"radar"`
+	Qinglan       QinglanConfig       `yaml:"qinglan"`
 	CardManage    CardManageConfig    `yaml:"card_manage"`
 	IoTTimeSeries IoTTimeSeriesConfig `yaml:"iot_timeseries"`
 }
@@ -52,6 +53,11 @@ type MQTTConfig struct {
 // RadarConfig Radar 服务配置（用于调用 wisefido-radar 内部 API）
 type RadarConfig struct {
 	InternalAPIBaseURL string `yaml:"internal_api_base_url"` // wisefido-radar 内部 API 地址（如 "http://localhost:8443"）
+}
+
+// QinglanConfig 清澜雷达 MQTT 网关配置（用于下发雷达属性：工作模式、跌倒/呼吸心率参数等）
+type QinglanConfig struct {
+	APIBaseURL string `yaml:"api_base_url"` // wisefido-qinglan HTTP API 地址（如 "http://localhost:8081"）
 }
 
 // CardManageConfig 卡片管理服务配置（用于调用 wisefido-card-manage API）
@@ -101,6 +107,9 @@ func Load() *Config {
 
 	// Radar 服务配置（用于调用 wisefido-radar 内部 API）
 	cfg.Radar.InternalAPIBaseURL = getEnv("RADAR_INTERNAL_API_BASE_URL", "http://localhost:8443")
+
+	// Qinglan 服务配置（用于下发雷达监控设置：工作模式、跌倒/呼吸心率参数，不重启）
+	cfg.Qinglan.APIBaseURL = getEnv("QINGLAN_API_BASE_URL", "http://localhost:8081")
 
 	// CardManage 服务配置（用于调用 wisefido-card-manage API）
 	cfg.CardManage.APIBaseURL = getEnv("CARD_MANAGE_API_BASE_URL", "http://localhost:8082")

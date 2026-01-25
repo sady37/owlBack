@@ -77,4 +77,8 @@ type DeviceRepository interface {
 
 	// PreloadAlarmEnablement 预加载指定设备的报警使能配置到缓存
 	PreloadAlarmEnablement(ctx context.Context, tenantID, deviceUID string) error
+
+	// GetAllAccessibleDevices 获取所有可访问的设备（用于启动时主动订阅）
+	// 条件：device_store.allow_access = TRUE 且 devices.business_access = 'approved'
+	GetAllAccessibleDevices(ctx context.Context) ([]string, error)
 }

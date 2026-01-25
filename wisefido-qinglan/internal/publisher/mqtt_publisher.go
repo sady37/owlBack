@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"time"
 
 	"wisefido-qinglan/internal/config"
 	"wisefido-qinglan/internal/mqtt"
@@ -33,9 +32,11 @@ func (p *MQTTPublisher) GetDeviceProperties(ctx context.Context, uid string, key
 	command := map[string]interface{}{
 		"cmd":       "read",
 		"requestId": generateRequestID(),
-		"data": map[string]interface{}{
+	}
+	if len(keys) > 0 {
+		command["data"] = map[string]interface{}{
 			"key": keys,
-		},
+		}
 	}
 	
 	// 构建主题
@@ -105,12 +106,20 @@ func (p *MQTTPublisher) SubscribeRealtimeData(ctx context.Context, uid string, c
 	// 构建主题
 	topic := p.mqttClient.BuildCommandTopic("monitor", uid)
 	
+	// 记录发送的订阅命令格式
+	commandJSON, _ := json.Marshal(command)
+	log.Printf("📤 Monitor Subscription: sending to device %s", uid)
+	log.Printf("   MQTT Topic: %s", topic)
+	log.Printf("   MQTT Payload (JSON): %s", string(commandJSON))
+	log.Printf("   MQTT Format: {\"cmd\":\"subscription\",\"data\":{\"content\":\"%s\",\"duration\":%d}} (使用cmd/data外层结构 ✅)", contentStr, duration)
+	
 	// 发送命令
 	if err := p.publish(topic, command); err != nil {
+		log.Printf("❌ Monitor Subscription: failed to publish to device %s, topic: %s, error: %v", uid, topic, err)
 		return fmt.Errorf("failed to publish monitor subscription command: %w", err)
 	}
 	
-	log.Printf("Monitor subscription command sent to %s", uid)
+	log.Printf("✅ Monitor subscription command sent successfully to %s", uid)
 	return nil
 }
 
@@ -164,12 +173,10 @@ func (p *MQTTPublisher) publish(topic string, data interface{}) error {
 	if err := p.mqttClient.Publish(topic, 1, false, payload); err != nil {
 		return fmt.Errorf("failed to publish to topic %s: %w", topic, err)
 	}
-	
-	log.Printf("Published to topic %s: %s", topic, string(payload))
 	return nil
 }
 
-// generateRequestID 生成请求ID
+// generateRequestID 生成请求ID（统一使用固定值）
 func generateRequestID() string {
-	return fmt.Sprintf("req_%d", time.Now().UnixNano())
+	return "sadibaiubd123"
 }

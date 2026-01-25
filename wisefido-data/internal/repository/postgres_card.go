@@ -123,11 +123,13 @@ func (r *PostgresCardRepository) GetUnitInfo(tenantID, unitID string) (*card.Uni
 	return &unit, nil
 }
 
-// GetDevicesByBed gets all devices with monitoring_enabled = TRUE bound to the specified bed
+// GetDevicesByBed gets all devices with monitoring_enabled = TRUE bound to the specified bed.
+// 写 cards.devices 时需含 device_uid：从 devices 表选 d.device_uid 填入 DeviceInfo，供 ConvertDevicesToJSON 写入 JSON。
 func (r *PostgresCardRepository) GetDevicesByBed(tenantID, bedID string) ([]card.DeviceInfo, error) {
 	query := `
 		SELECT 
 			d.device_id,
+			COALESCE(d.device_uid, '') AS device_uid,
 			d.device_name,
 			ds.device_type,
 			ds.device_model,
@@ -161,6 +163,7 @@ func (r *PostgresCardRepository) GetDevicesByBed(tenantID, bedID string) ([]card
 
 		if err := rows.Scan(
 			&device.DeviceID,
+			&device.DeviceUID,
 			&device.DeviceName,
 			&device.DeviceType,
 			&device.DeviceModel,
@@ -193,11 +196,13 @@ func (r *PostgresCardRepository) GetDevicesByBed(tenantID, bedID string) ([]card
 	return devices, nil
 }
 
-// GetUnboundDevicesByUnit gets all devices with monitoring_enabled = TRUE that are bound to a room in the specified unit but not bound to any bed
+// GetUnboundDevicesByUnit gets all devices with monitoring_enabled = TRUE that are bound to a room in the specified unit but not bound to any bed.
+// 写 cards.devices 时需含 device_uid：从 devices 表选 d.device_uid 填入 DeviceInfo，供 ConvertDevicesToJSON 写入 JSON。
 func (r *PostgresCardRepository) GetUnboundDevicesByUnit(tenantID, unitID string) ([]card.DeviceInfo, error) {
 	query := `
 		SELECT 
 			d.device_id,
+			COALESCE(d.device_uid, '') AS device_uid,
 			d.device_name,
 			ds.device_type,
 			ds.device_model,
@@ -233,6 +238,7 @@ func (r *PostgresCardRepository) GetUnboundDevicesByUnit(tenantID, unitID string
 
 		if err := rows.Scan(
 			&device.DeviceID,
+			&device.DeviceUID,
 			&device.DeviceName,
 			&device.DeviceType,
 			&device.DeviceModel,

@@ -535,31 +535,42 @@ func (s *cardService) aggregateSingleCard(
 						deviceModel = device.DeviceModel.String
 					}
 
-					// 使用数据库中的完整信息
+					deviceCode := ""
+					if device.DeviceCode.Valid {
+						deviceCode = device.DeviceCode.String
+					}
+					if deviceCode == "" {
+						deviceCode = device.DeviceUID // device_code 仅 Sleepace 有，Radar 无；接口处空则用 device_uid
+					}
+					// 使用数据库中的完整信息（含 device_uid、device_code，与 vue 对齐）
 					item.Devices = append(item.Devices, domain.CardDevice{
-						DeviceID:    device.DeviceID, // device_id (UUID, 主键)
-						UID:         device.DeviceUID, // device_uid 作为唯一标识
+						DeviceID:    device.DeviceID,
+						UID:         device.DeviceUID,
+						DeviceUID:   device.DeviceUID,
+						DeviceCode:  deviceCode,
 						DeviceName:  device.DeviceName,
-						DeviceType:  deviceTypeNum, // 数字类型（1 或 2）
+						DeviceType:  deviceTypeNum,
 						DeviceModel: deviceModel,
 						Status:      device.Status,
 					})
 				} else {
 					// 如果数据库中没有，使用 JSONB 中的数据
-					// deviceUID 已在上面定义（第495-501行）
 					status, _ := deviceObj["status"].(string)
-					// 尝试从 JSONB 中获取 device_id，如果没有则使用 device_uid
+					deviceCode, _ := deviceObj["device_code"].(string)
+					if deviceCode == "" {
+						deviceCode = deviceUID // device_code 仅 Sleepace 有，Radar 无；接口处空则用 device_uid
+					}
 					deviceIDFromJSON, _ := deviceObj["device_id"].(string)
 					if deviceIDFromJSON == "" {
-						// 如果没有 device_id，尝试通过 device_uid 查询 devices 表获取 device_id
-						// 注意：这里暂时使用 device_uid 作为 device_id（向后兼容）
 						deviceIDFromJSON = deviceUID
 					}
 					item.Devices = append(item.Devices, domain.CardDevice{
-						DeviceID:    deviceIDFromJSON, // device_id (UUID, 主键)
-						UID:         deviceUID,        // device_uid 作为唯一标识
+						DeviceID:    deviceIDFromJSON,
+						UID:         deviceUID,
+						DeviceUID:   deviceUID,
+						DeviceCode:  deviceCode,
 						DeviceName:  deviceName,
-						DeviceType:  deviceTypeNum, // 数字类型（1 或 2）
+						DeviceType:  deviceTypeNum,
 						DeviceModel: deviceModel,
 						Status:      status,
 					})

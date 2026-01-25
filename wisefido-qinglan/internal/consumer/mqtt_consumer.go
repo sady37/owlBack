@@ -68,16 +68,63 @@ func NewMQTTConsumer(
 }
 
 // Start 启动消费者
-// 改为不订阅任何主题，等待设备认证成功后动态订阅
+// 启动时主动订阅所有符合条件的设备（allow_access=TRUE 且 business_access='approved'）
 func (c *MQTTConsumer) Start(ctx context.Context) error {
-	log.Println("Starting MQTT consumer (no wildcard subscriptions)...")
+	log.Println("Starting MQTT consumer...")
 
 	// 启动连接监控goroutine，检测重连后重新订阅已认证设备
 	go c.monitorConnection(ctx)
 
-	log.Println("MQTT consumer started (waiting for device authentication to subscribe)")
+	// 启动时主动订阅所有符合条件的设备
+	go c.subscribeAllAccessibleDevices(ctx)
+
+	log.Println("MQTT consumer started")
 
 	return nil
+}
+
+// subscribeAllAccessibleDevices 订阅所有可访问的设备
+func (c *MQTTConsumer) subscribeAllAccessibleDevices(ctx context.Context) {
+	// 等待MQTT连接建立
+	maxWaitTime := 30 * time.Second
+	waitInterval := 500 * time.Millisecond
+	var waited time.Duration
+
+	for !c.mqttClient.IsConnected() && waited < maxWaitTime {
+		time.Sleep(waitInterval)
+		waited += waitInterval
+	}
+
+	if !c.mqttClient.IsConnected() {
+		log.Printf("⚠️ MQTT client not connected after %v, skipping initial device subscription", maxWaitTime)
+		return
+	}
+
+	// 查询所有可访问的设备
+	deviceUIDs, err := c.deviceRepo.GetAllAccessibleDevices(ctx)
+	if err != nil {
+		log.Printf("❌ Failed to get accessible devices: %v", err)
+		return
+	}
+
+	if len(deviceUIDs) == 0 {
+		log.Println("No accessible devices found, skipping subscription")
+		return
+	}
+
+	log.Printf("Found %d accessible devices, subscribing to their topics...", len(deviceUIDs))
+
+	// 订阅所有设备的主题
+	successCount := 0
+	for _, deviceUID := range deviceUIDs {
+		if err := c.SubscribeDeviceTopics(deviceUID); err != nil {
+			log.Printf("❌ Failed to subscribe to device %s: %v", deviceUID, err)
+		} else {
+			successCount++
+		}
+	}
+
+	log.Printf("✅ Subscribed to %d/%d accessible devices", successCount, len(deviceUIDs))
 }
 
 // monitorConnection 监控MQTT连接状态，重连后重新订阅
@@ -151,11 +198,12 @@ func (c *MQTTConsumer) SubscribeDeviceTopics(deviceUID string) error {
 	}
 
 	log.Printf("📋 Attempting to subscribe to %d topics for device %s", len(topics), deviceUID)
+	log.Printf("   Topics to subscribe: %v", topics)
 
 	subscribedCount := 0
 	skippedCount := 0
 
-	// 订阅所有主题
+	// 订阅所有主题（使用具体设备主题，不使用通配符）
 	for _, topic := range topics {
 		if _, alreadySubscribed := c.subscribedTopics[topic]; alreadySubscribed {
 			log.Printf("⏭️  Topic %s already subscribed, skipping", topic)
@@ -163,6 +211,7 @@ func (c *MQTTConsumer) SubscribeDeviceTopics(deviceUID string) error {
 			continue
 		}
 
+		log.Printf("🔔 Subscribing to specific device topic (not wildcard): %s", topic)
 		if err := c.mqttClient.Subscribe(topic, c.handleMessage); err != nil {
 			log.Printf("❌ Failed to subscribe to topic %s: %v", topic, err)
 			return fmt.Errorf("failed to subscribe to topic %s: %w", topic, err)
@@ -175,6 +224,35 @@ func (c *MQTTConsumer) SubscribeDeviceTopics(deviceUID string) error {
 
 	log.Printf("📊 Subscribed to %d topics (skipped %d already subscribed) for device %s", subscribedCount, skippedCount, deviceUID)
 	return nil
+}
+
+// IsDeviceTopicsSubscribed 检查设备的6个主题是否都已订阅
+func (c *MQTTConsumer) IsDeviceTopicsSubscribed(deviceUID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	cfg := c.config.MQTT.RadarDeviceMQTT
+	prefix := cfg.Prefix
+	productID := cfg.ProductID
+
+	// 构建设备的6个主题
+	topics := []string{
+		buildDeviceTopic(prefix, productID, "prop", deviceUID),
+		buildDeviceTopic(prefix, productID, "monitor", deviceUID),
+		buildDeviceTopic(prefix, productID, "func", deviceUID),
+		buildDeviceTopic(prefix, productID, "stat", deviceUID),
+		buildDeviceTopic(prefix, productID, "event", deviceUID),
+		buildDeviceTopic(prefix, productID, "alarm", deviceUID),
+	}
+
+	// 检查所有主题是否都已订阅
+	for _, topic := range topics {
+		if _, subscribed := c.subscribedTopics[topic]; !subscribed {
+			return false
+		}
+	}
+
+	return true
 }
 
 // UnsubscribeDeviceTopics 取消订阅指定设备的6个主题
@@ -506,8 +584,8 @@ func (c *MQTTConsumer) publishDecodedData(
 				log.Printf("Failed to publish %s data to stream: %v", topicType, err)
 				return err
 			}
-			// 输出 stream 发布日志（stat, event, auth）
-			if topicType == "stat" || topicType == "event" || topicType == "auth" {
+			// 输出 stream 发布日志（auth, alarm, event）
+			if topicType == "auth" || topicType == "alarm" || topicType == "event" {
 				log.Printf("Published %s data to stream %s (stream_id: %s) for device %s", topicType, streamName, streamID, device.DeviceUID)
 			}
 			return nil
@@ -534,11 +612,9 @@ func (c *MQTTConsumer) publishDecodedData(
 			return err
 		}
 
-		// 输出 stream 发布日志（stat, event, auth）
-		if topicType == "stat" || topicType == "event" || topicType == "auth" {
+		// 输出 stream 发布日志（auth, alarm, event）
+		if topicType == "auth" || topicType == "alarm" || topicType == "event" {
 			log.Printf("Published %s data to stream %s (stream_id: %s) for device %s", topicType, streamName, streamID, device.DeviceUID)
-		} else {
-			log.Printf("Published %s data (single event) for device %s to stream %s", topicType, device.DeviceUID, streamName)
 		}
 		return nil
 	}
@@ -569,8 +645,8 @@ func (c *MQTTConsumer) publishDecodedData(
 			log.Printf("Failed to publish %s data to stream: %v", topicType, err)
 			return err
 		}
-		// 输出 stream 发布日志（stat, event, auth）
-		if topicType == "stat" || topicType == "event" || topicType == "auth" {
+		// 输出 stream 发布日志（auth, alarm, event）
+		if topicType == "auth" || topicType == "alarm" || topicType == "event" {
 			log.Printf("Published %s data to stream %s (stream_id: %s) for device %s", topicType, streamName, streamID, device.DeviceUID)
 		}
 		return nil
@@ -602,34 +678,112 @@ func (c *MQTTConsumer) publishDecodedData(
 			continue
 		}
 
-		// 输出 stream 发布日志（stat, event, auth）
-		if topicType == "stat" || topicType == "event" || topicType == "auth" {
+		// 输出 stream 发布日志（auth, alarm, event）
+		if topicType == "auth" || topicType == "alarm" || topicType == "event" {
 			log.Printf("Published %s data item %d to stream %s (stream_id: %s) for device %s", topicType, i+1, streamName, streamID, device.DeviceUID)
 		}
 	}
 
-	// 输出 stream 发布日志（stat, event, auth）
-	if topicType == "stat" || topicType == "event" || topicType == "auth" {
+	// 输出 stream 发布日志（auth, alarm, event）
+	if topicType == "auth" || topicType == "alarm" || topicType == "event" {
 		log.Printf("Published %d %s data items to stream %s for device %s", len(itemsToSend), topicType, streamName, device.DeviceUID)
-	} else {
-		log.Printf("Published %d %s data items for device %s to stream %s", len(itemsToSend), topicType, device.DeviceUID, streamName)
 	}
 	return nil
 }
 
-// handlePropertyMessage 处理属性响应消息
+// handlePropertyMessage 处理属性响应消息（/prop/.../post）
+// 实时交互通过 HTTP API 对外提供：客户端调 GET/PUT /api/v1/radar/devices/{uid}/properties 时，
+// RadarService 发 MQTT 到 /prop/.../get 并轮询 Redis；设备在 /prop/.../post 回包后，此处提取
+// requestId 并存 Redis，RadarService 方能取到响应并返回给 HTTP 调用方。
 func (c *MQTTConsumer) handlePropertyMessage(uid string, message map[string]interface{}) error {
-	log.Printf("Handling property message for device %s", uid)
+	log.Printf("📥 Handling property message for device %s", uid)
+	log.Printf("   Message content: %+v", message)
 
-	// 这里可以添加属性消息的处理逻辑
-	// 例如：更新设备属性缓存，触发相关事件等
+	// 提取 requestId（支持多种字段名）
+	var requestID string
+	if id, ok := message["requestId"].(string); ok && id != "" {
+		requestID = id
+		log.Printf("   Found requestId (requestId): %q (length: %d)", requestID, len(requestID))
+	} else if id, ok := message["request_id"].(string); ok && id != "" {
+		requestID = id
+		log.Printf("   Found requestId (request_id): %q (length: %d)", requestID, len(requestID))
+	} else if id, ok := message["requestID"].(string); ok && id != "" {
+		requestID = id
+		log.Printf("   Found requestId (requestID): %q (length: %d)", requestID, len(requestID))
+	} else {
+		log.Printf("   No requestId found in message")
+	}
+
+	// 有 requestId 即命令响应：存 Redis 供 HTTP API（RadarService.waitForResponse）获取后返回客户端
+	if requestID != "" {
+		ctx := context.Background()
+		log.Printf("💾 Storing property response for requestId [%s] (length: %d) from device %s", requestID, len(requestID), uid)
+		log.Printf("   Full requestId value: %q", requestID)
+		
+		// 检查是否是模式修改的响应
+		if data, ok := message["data"].(map[string]interface{}); ok {
+			if mode, ok := data["radar_func_ctrl"]; ok {
+				log.Printf("🔄 MODE CHANGE RESPONSE: Device %s confirmed radar_func_ctrl = %v", uid, mode)
+				modeDesc := map[interface{}]string{
+					3:  "轨迹模式",
+					7:  "呼吸心率模式",
+					11: "轨迹+呼吸心率模式",
+					15: "轨迹+呼吸心率+跌倒模式",
+				}
+				if desc, exists := modeDesc[mode]; exists {
+					log.Printf("   ✅ Mode successfully changed to: %s", desc)
+				}
+			}
+		}
+		
+		// 检查响应码
+		if code, ok := message["code"].(float64); ok {
+			if code == 200 {
+				log.Printf("   ✅ Device response code: 200 (success)")
+			} else {
+				log.Printf("   ⚠️ Device response code: %.0f (not 200)", code)
+			}
+		}
+		
+		if err := c.streamPublisher.StoreCommandResponse(ctx, requestID, message); err != nil {
+			log.Printf("❌ Failed to store property response for requestId %s: %v", requestID, err)
+			// 不返回错误，继续处理
+		} else {
+			log.Printf("✅ Stored property response for requestId [%s] (length: %d) from device %s", requestID, len(requestID), uid)
+			log.Printf("   Redis key: cmd:response:%s", requestID)
+		}
+	} else {
+		// 没有 requestId，可能是设备主动上报的属性变化
+		log.Printf("⚠️ Property message from device %s has no requestId, treating as property update notification", uid)
+		log.Printf("   Available message keys: %v", getMapKeys(message))
+		// 这里可以添加属性更新处理逻辑，例如更新设备属性缓存
+	}
 
 	return nil
 }
 
+// getMapKeys 获取map的所有键（用于调试）
+func getMapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // handleMonitorMessage 处理实时数据消息
 func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]interface{}) error {
-	log.Printf("Handling monitor message for device %s", uid)
+	// log.Printf("📥 Handling monitor message for device %s", uid)
+	// log.Printf("   Monitor message content: %+v", message)
+	
+	// 检查是否是订阅确认（通常订阅成功后设备会立即推送数据，这本身就是确认）
+	// 如果消息中包含订阅相关的字段，记录日志
+	// if cmd, ok := message["cmd"].(string); ok {
+	// 	log.Printf("   Monitor message cmd field: %s", cmd)
+	// }
+	// if code, ok := message["code"].(float64); ok {
+	// 	log.Printf("   Monitor message code: %.0f", code)
+	// }
 
 	// 从 Auth 缓存获取设备信息（包含位置信息）
 	ctx := context.Background()
@@ -644,7 +798,7 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 
 		// 如果仍然为 nil，说明设备不在 device_store 中
 		if device == nil {
-			log.Printf("Device %s not found in device_store, skipping monitor message", uid)
+			// log.Printf("Device %s not found in device_store, skipping monitor message", uid)
 			return nil
 		}
 	}
@@ -652,7 +806,7 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 	// 调用 RadarDecoder 进行协议层面的解码
 	dataValue, err := decode.RadarDecoder(message, "monitor")
 	if err != nil {
-		log.Printf("Failed to decode monitor data for device %s: %v", uid, err)
+		// log.Printf("Failed to decode monitor data for device %s: %v", uid, err)
 		// 解码失败时，使用原始消息（降级处理）
 		dataValue = message
 	}
@@ -662,12 +816,37 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 	return c.publishDecodedData(ctx, device, locationInfo, "monitor", "", dataValue, message)
 }
 
-// handleFunctionMessage 处理功能响应消息
+// handleFunctionMessage 处理功能响应消息（/func/.../post）
+// 实时交互通过 HTTP API 对外提供：客户端调 POST /api/v1/radar/devices/{uid}/function 时，
+// RadarService 发 MQTT 到 /func/.../get 并轮询 Redis；设备在 /func/.../post 回包后，此处提取
+// requestId 并存 Redis，RadarService 方能取到响应并返回给 HTTP 调用方。
 func (c *MQTTConsumer) handleFunctionMessage(uid string, message map[string]interface{}) error {
 	log.Printf("Handling function message for device %s", uid)
 
-	// 这里可以添加功能响应消息的处理逻辑
-	// 例如：更新命令执行状态，触发回调等
+	// 提取 requestId（支持多种字段名）
+	var requestID string
+	if id, ok := message["requestId"].(string); ok && id != "" {
+		requestID = id
+	} else if id, ok := message["request_id"].(string); ok && id != "" {
+		requestID = id
+	} else if id, ok := message["requestID"].(string); ok && id != "" {
+		requestID = id
+	}
+
+	// 有 requestId 即命令响应：存 Redis 供 HTTP API（RadarService.waitForResponse）获取后返回客户端
+	if requestID != "" {
+		ctx := context.Background()
+		if err := c.streamPublisher.StoreCommandResponse(ctx, requestID, message); err != nil {
+			log.Printf("Failed to store function response for requestId %s: %v", requestID, err)
+			// 不返回错误，继续处理
+		} else {
+			log.Printf("Stored function response for requestId %s from device %s", requestID, uid)
+		}
+	} else {
+		// 没有 requestId，可能是设备主动上报的功能状态
+		log.Printf("Function message from device %s has no requestId, treating as function status notification", uid)
+		// 这里可以添加功能状态更新处理逻辑
+	}
 
 	return nil
 }
@@ -694,8 +873,6 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 			return nil
 		}
 	}
-
-	log.Printf("Device %s found: DeviceID=%s, TenantID=%s, DeviceType=%s", uid, device.DeviceID, device.TenantID, device.DeviceType.String)
 
 	// 调用 RadarDecoder 进行协议层面的解码
 	dataValue, err := decode.RadarDecoder(message, "stat")

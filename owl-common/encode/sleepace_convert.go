@@ -6,15 +6,12 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"owl-common/snomed"
 )
 
-// SNOMEDMapping SNOMED 映射结构
-type SNOMEDMapping struct {
-	SNOMEDCode    *string `json:"snomed_code"`
-	SNOMEDDisplay string  `json:"snomed_display"`
-	Category      string  `json:"category"`
-	DisplayEn     string  `json:"display_en"`
-}
+// SNOMEDMapping 已迁移到 owl-common/snomed，保留别名以保持向后兼容
+type SNOMEDMapping = snomed.SNOMEDMapping
 
 // FieldConversion 字段转换规则
 type FieldConversion struct {
@@ -25,7 +22,7 @@ type FieldConversion struct {
 	ByteOrder      string                   `json:"byte_order,omitempty"`     // "big_endian" 或 "little_endian"
 	BitPosition    *string                  `json:"bit_position,omitempty"`   // 如 "7:6", "1:0"
 	UnitConversion *UnitConversion          `json:"unit_conversion,omitempty"`
-	Mappings       map[string]SNOMEDMapping `json:"mappings,omitempty"`
+	Mappings       map[string]snomed.SNOMEDMapping `json:"mappings,omitempty"`
 	// 数组类型相关字段
 	ArrayItemType     string `json:"array_item_type,omitempty"`    // "coordinate_pair", "area_definition"
 	Format            string `json:"format,omitempty"`             // 格式字符串，如 "{x1, y1; x2, y2, x3, y3, x4, y4}"

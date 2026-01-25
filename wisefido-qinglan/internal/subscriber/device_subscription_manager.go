@@ -374,6 +374,118 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 	return nil
 }
 
+// EnablePeriodicSubscription 开启周期性订阅（认证成功后调用）
+// 检查是否已订阅MQTT主题：已订阅则仅记录，否则开启订阅
+func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Context, deviceUID, deviceID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 检查是否已在订阅管理器中存在记录
+	sub, exists := m.subscriptions[deviceUID]
+	if exists {
+		// 已存在订阅记录，仅更新信息
+		sub.mu.Lock()
+		sub.DeviceID = deviceID
+		sub.LastSeen = time.Now()
+		sub.mu.Unlock()
+		log.Printf("Device %s already has subscription record, updating subscription info only", deviceUID)
+		m.logger.Info("Device subscription record updated",
+			zap.String("device_uid", deviceUID),
+			zap.String("device_id", deviceID),
+		)
+		return nil
+	}
+
+	// 检查是否已订阅MQTT主题
+	isMQTTSubscribed := false
+	if m.mqttConsumer != nil {
+		isMQTTSubscribed = m.mqttConsumer.IsDeviceTopicsSubscribed(deviceUID)
+	}
+
+	// 如果未订阅MQTT主题，则订阅
+	if !isMQTTSubscribed {
+		if m.mqttConsumer != nil {
+			log.Printf("Device %s MQTT topics not subscribed, subscribing now...", deviceUID)
+			if err := m.mqttConsumer.SubscribeDeviceTopics(deviceUID); err != nil {
+				m.logger.Warn("Failed to subscribe device MQTT topics",
+					zap.String("device_uid", deviceUID),
+					zap.Error(err),
+				)
+				log.Printf("⚠️ Failed to subscribe MQTT topics for device %s: %v", deviceUID, err)
+				// 继续创建订阅记录，即使订阅失败
+			} else {
+				m.logger.Info("Subscribed device MQTT topics",
+					zap.String("device_uid", deviceUID),
+				)
+				log.Printf("✅ Subscribed MQTT topics for device %s", deviceUID)
+			}
+		}
+	} else {
+		log.Printf("Device %s MQTT topics already subscribed, skipping subscription", deviceUID)
+		m.logger.Info("Device MQTT topics already subscribed, skipping",
+			zap.String("device_uid", deviceUID),
+		)
+	}
+
+	// 构建主题字符串（用于记录）
+	propTopic := m.mqttClient.BuildTopic("prop", deviceUID)
+	monitorTopic := m.mqttClient.BuildTopic("monitor", deviceUID)
+	funcTopic := m.mqttClient.BuildTopic("func", deviceUID)
+	statTopic := m.mqttClient.BuildTopic("stat", deviceUID)
+	eventTopic := m.mqttClient.BuildTopic("event", deviceUID)
+	alarmTopic := m.mqttClient.BuildTopic("alarm", deviceUID)
+
+	// 创建订阅记录
+	now := time.Now()
+	sub = &DeviceSubscription{
+		DeviceUID:      deviceUID,
+		DeviceID:       deviceID,
+		PropTopic:      propTopic,
+		MonitorTopic:   monitorTopic,
+		FuncTopic:      funcTopic,
+		StatTopic:      statTopic,
+		EventTopic:     eventTopic,
+		AlarmTopic:     alarmTopic,
+		MonitorSubTime: now,
+		LastSeen:       time.Time{}, // 初始化为零值，表示还没有收到设备消息
+		Status:         "online",    // 初始状态为online
+	}
+	m.subscriptions[deviceUID] = sub
+
+	m.logger.Info("Periodic subscription enabled, sending monitor command",
+		zap.String("device_uid", deviceUID),
+		zap.String("device_id", deviceID),
+		zap.Bool("mqtt_already_subscribed", isMQTTSubscribed),
+		zap.Time("monitor_sub_time", now),
+		zap.Int("duration", m.defaultDuration),
+		zap.Int("content", m.defaultContent),
+	)
+	log.Printf("✅ Periodic subscription enabled for %s (device_id: %s, MQTT already subscribed: %v). Sending monitor command.", deviceUID, deviceID, isMQTTSubscribed)
+
+	// 发送 monitor 订阅命令（设备已经收到认证响应，应该很快会连接 MQTT）
+	// 使用 goroutine 异步发送，避免阻塞认证流程
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := m.mqttPublisher.SubscribeRealtimeData(ctx, deviceUID, m.defaultContent, m.defaultDuration); err != nil {
+			m.logger.Warn("Failed to send monitor subscription command after enabling periodic subscription",
+				zap.String("device_uid", deviceUID),
+				zap.String("device_id", deviceID),
+				zap.Error(err),
+			)
+			log.Printf("⚠️ Failed to send monitor subscription command to device %s: %v", deviceUID, err)
+		} else {
+			m.logger.Info("Sent monitor subscription command after enabling periodic subscription",
+				zap.String("device_uid", deviceUID),
+				zap.String("device_id", deviceID),
+			)
+			log.Printf("✅ Sent monitor subscription command to device %s", deviceUID)
+		}
+	}()
+
+	return nil
+}
+
 // UpdateLastSeen 更新设备最后收到消息的时间（MQTT consumer收到消息时调用）
 // 如果设备还没有发送monitor订阅命令，在收到第一条消息时自动发送
 func (m *DeviceSubscriptionManager) UpdateLastSeen(deviceUID string) {
@@ -680,7 +792,7 @@ func (m *DeviceSubscriptionManager) unsubscribeDevice(deviceUID string) {
 		m.unsubscribedDueToTimeout[deviceUID] = struct{}{}
 		m.mu.Unlock()
 
-		// 4. 触发取消订阅事件
+		// 3. 触发取消订阅事件
 		m.triggerUnsubscribeEvent(deviceUID)
 	} else {
 		sub.mu.Unlock()
@@ -746,13 +858,6 @@ func (m *DeviceSubscriptionManager) publishDeviceOnlineStatusToConfigStream(ctx 
 			zap.String("status", onlineStatus),
 			zap.Error(err),
 		)
-	} else {
-		m.logger.Info("Published device online status to config stream",
-			zap.String("device_uid", deviceUID),
-			zap.String("status", onlineStatus),
-			zap.String("stream", streamName),
-		)
-		log.Printf("✅ Published device online status to config stream: device=%s, status=%s, stream=%s", deviceUID, onlineStatus, streamName)
 	}
 }
 

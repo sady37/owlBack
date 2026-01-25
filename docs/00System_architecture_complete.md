@@ -250,7 +250,7 @@ wisefido-iot-timeseries (数据存储服务)
     ▼
 wisefido-card-aggregator (卡片数据聚合服务，2秒聚合一次)
     │
-    ├─ 直接消费 iot:data:stream（事件驱动）
+    ├─ 直接消费 iot:monitor/stat/event/alarm:stream（事件驱动）
     ├─ 检测设备直接报警 (Fall, SuspectedFall, OfflineAlarm 等)
     │   └─→ PostgreSQL (alarm_events - 设备报警)
     ├─ 根据 device_id 查询 cards 表

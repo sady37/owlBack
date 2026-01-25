@@ -23,6 +23,8 @@ type UnitInfo struct {
 // DeviceInfo device information
 type DeviceInfo struct {
 	DeviceID          string
+	DeviceUID         string  // devices.device_uid，与 cards.devices JSON、card-overview 对齐
+	DeviceCode        string  // device_store.device_code，与 card-overview 对齐
 	DeviceName        string
 	DeviceType        string
 	DeviceModel       string

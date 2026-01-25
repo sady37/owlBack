@@ -96,12 +96,13 @@ type CardOverviewItem struct {
 // CardDevice 卡片关联的设备信息
 type CardDevice struct {
 	DeviceID    string      `json:"device_id"` // device_id (UUID, 主键)
-	UID         string      `json:"uid"`       // device_uid，作为设备唯一标识（代表原来的 device_serial, uid）
+	UID         string      `json:"uid"`       // 兼容旧字段，与 device_uid 同义
+	DeviceUID   string      `json:"device_uid,omitempty"`   // 设备唯一标识，与 vue CardOverviewDevice 对齐
+	DeviceCode  string      `json:"device_code,omitempty"`  // 设备编码：Sleepace 有 device_code，Radar 无；接口处空则回退为 device_uid（每设备均有）
 	DeviceName  string      `json:"device_name"`
 	DeviceType  interface{} `json:"device_type"` // 数字（1=sleepace, 2=radar）或字符串（向后兼容）
 	DeviceModel string      `json:"device_model,omitempty"`
 	Status      string      `json:"status,omitempty"` // "online" | "offline" | "error" | "disabled"
-	// 可以根据需要添加更多字段
 }
 
 // CardResident 卡片关联的住户信息

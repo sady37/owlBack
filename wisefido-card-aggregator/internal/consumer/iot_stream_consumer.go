@@ -290,16 +290,31 @@ func (c *IoTStreamConsumer) processMessage(ctx context.Context, msg rediscommon.
 		return nil // 设备可能未绑定到卡片，忽略
 	}
 	
-	// 2. 融合卡片的所有设备数据
-	realtimeData, err := c.fusion.FuseCardData(cardInfo.TenantID, cardInfo.CardID, cardInfo.CardType)
+	// 2. 从stream消息中提取设备数据并更新缓存
+	// 注意：现在MQTT网关直接发送到 iot:*:stream，不再经过DB，直接从事件中提取数据
+	deviceData := c.extractDeviceDataFromStream(streamData, deviceID, tenantID, deviceType, topicType)
+	if deviceData != nil {
+		// 更新设备数据缓存（用于融合）
+		if err := c.updateDeviceDataCache(ctx, cardInfo.CardID, deviceID, deviceData); err != nil {
+			c.logger.Warn("Failed to update device data cache",
+				zap.String("card_id", cardInfo.CardID),
+				zap.String("device_id", deviceID),
+				zap.Error(err),
+			)
+		}
+	}
+	
+	// 3. 从缓存融合卡片的所有设备数据（不再从DB读取）
+	realtimeData, err := c.fuseCardDataFromCache(ctx, cardInfo.TenantID, cardInfo.CardID, cardInfo.CardType)
 	if err != nil {
-		c.logger.Error("Failed to fuse card data",
+		c.logger.Error("Failed to fuse card data from cache",
 			zap.String("card_id", cardInfo.CardID),
 			zap.String("device_id", deviceID),
 			zap.String("tenant_id", tenantID),
 			zap.Error(err),
 		)
-		return fmt.Errorf("failed to fuse card data: %w", err)
+		// 如果融合失败，继续处理报警，但不更新实时数据缓存
+		realtimeData = nil
 	}
 	
 	// 3. 检测设备直接报警（从 topic_type 和 data_value 中提取）
@@ -377,5 +392,494 @@ func (c *IoTStreamConsumer) processMessage(ctx context.Context, msg rediscommon.
 	)
 	
 	return nil
+}
+
+// extractDeviceDataFromStream 从stream消息中提取设备数据
+func (c *IoTStreamConsumer) extractDeviceDataFromStream(
+	streamData map[string]interface{},
+	deviceID, tenantID, deviceType, topicType string,
+) *models.IoTTimeSeries {
+	// 提取时间戳
+	var timestamp time.Time
+	if ts, ok := streamData["timestamp"].(int64); ok {
+		timestamp = time.Unix(ts, 0)
+	} else if tsStr, ok := streamData["timestamp"].(string); ok {
+		if ts, err := strconv.ParseInt(tsStr, 10, 64); err == nil {
+			timestamp = time.Unix(ts, 0)
+		} else {
+			timestamp = time.Now()
+		}
+	} else {
+		timestamp = time.Now()
+	}
+
+	data := &models.IoTTimeSeries{
+		ID:         fmt.Sprintf("%s_%d", deviceID, timestamp.Unix()),
+		TenantID:   tenantID,
+		DeviceID:   deviceID,
+		DeviceType: deviceType,
+		Timestamp:  timestamp,
+	}
+
+	// 从 data_value 中提取数据
+	// 注意：data_value 在 Redis Stream 中是 JSON 字符串，需要先解析
+	var dataValue map[string]interface{}
+	
+	// 先尝试从 streamData 中获取 data_value（可能是字符串或已解析的对象）
+	if dataValueStr, ok := streamData["data_value"].(string); ok {
+		// data_value 是 JSON 字符串，需要解析
+		if err := json.Unmarshal([]byte(dataValueStr), &dataValue); err != nil {
+			// 解析失败，尝试解析为数组
+			var dataValueArray []interface{}
+			if err2 := json.Unmarshal([]byte(dataValueStr), &dataValueArray); err2 == nil && len(dataValueArray) > 0 {
+				if firstItem, ok := dataValueArray[0].(map[string]interface{}); ok {
+					dataValue = firstItem
+				}
+			}
+		}
+	} else if dataValueMap, ok := streamData["data_value"].(map[string]interface{}); ok {
+		// data_value 已经是 map（已解析）
+		dataValue = dataValueMap
+	} else if dataValueArray, ok := streamData["data_value"].([]interface{}); ok && len(dataValueArray) > 0 {
+		// data_value 是数组（已解析）
+		if firstItem, ok := dataValueArray[0].(map[string]interface{}); ok {
+			dataValue = firstItem
+		}
+	}
+
+	if dataValue != nil {
+		// 根据 category 区分数据类型
+		category, _ := dataValue["category"].(string)
+		
+		// Monitor track 数据（category="track"）
+		if category == "track" {
+			// 提取姿态数据（pose 是 SNOMED 映射后的字符串，如 "lying", "sitting", "standing"）
+			if pose, ok := dataValue["pose"].(string); ok {
+				data.PostureSNOMEDCode = &pose
+				data.PostureDisplay = &pose // SNOMED 映射后的值直接作为 display
+			}
+			// 提取 tracking_id（使用 target_id）
+			if targetID, ok := dataValue["target_id"].(float64); ok {
+				targetIDStr := fmt.Sprintf("%.0f", targetID)
+				data.TrackingID = &targetIDStr
+			}
+			// 提取位置数据
+			if posX, ok := dataValue["position_x"].(float64); ok {
+				posXInt := int(posX)
+				data.PositionX = &posXInt
+			}
+			if posY, ok := dataValue["position_y"].(float64); ok {
+				posYInt := int(posY)
+				data.PositionY = &posYInt
+			}
+			if posZ, ok := dataValue["position_z"].(float64); ok {
+				posZInt := int(posZ)
+				data.Height = &posZInt // position_z 作为高度
+			}
+			if areaID, ok := dataValue["area_id"].(float64); ok {
+				areaIDInt := int(areaID)
+				data.AreaID = &areaIDInt
+			}
+		}
+		
+		// Monitor vital 数据（category="vital"）
+		if category == "vital" {
+			// 提取生命体征
+			if hr, ok := dataValue["heart_rate"].(float64); ok {
+				hrInt := int(hr)
+				data.HeartRate = &hrInt
+			}
+			if rr, ok := dataValue["respiratory_rate"].(float64); ok {
+				rrInt := int(rr)
+				data.RespiratoryRate = &rrInt
+			}
+			// 提取睡眠状态（sleep_status 是 SNOMED 映射后的字符串）
+			if sleepStatus, ok := dataValue["sleep_status"].(string); ok {
+				data.SleepStateSNOMEDCode = &sleepStatus
+			}
+		}
+		
+		// Stat sleep 数据（category="sleep"）
+		if category == "sleep" {
+			// 提取生命体征
+			if hr, ok := dataValue["heart_rate"].(float64); ok {
+				hrInt := int(hr)
+				data.HeartRate = &hrInt
+			}
+			if rr, ok := dataValue["respiratory_rate"].(float64); ok {
+				rrInt := int(rr)
+				data.RespiratoryRate = &rrInt
+			}
+			// 提取睡眠状态（sleep_state 是 SNOMED 映射后的字符串）
+			if sleepState, ok := dataValue["sleep_state"].(string); ok {
+				data.SleepStateSNOMEDCode = &sleepState
+			}
+		}
+		
+		// Event/Alarm 数据（category="enter2out" 等）
+		if category == "enter2out" {
+			// 提取床状态（event 字段，SNOMED 映射后的值，如 "left_bed", "enter_bed"）
+			if event, ok := dataValue["event"].(string); ok {
+				// 根据 event 值判断床状态
+				if event == "left_bed" || event == "LEFT_BED" {
+					bedStatus := "LEFT_BED"
+					data.BedStatusSNOMEDCode = &bedStatus
+				} else if event == "enter_bed" || event == "ENTER_BED" {
+					bedStatus := "ENTER_BED"
+					data.BedStatusSNOMEDCode = &bedStatus
+				}
+			}
+		}
+	}
+
+	return data
+}
+
+// updateDeviceDataCache 更新设备数据缓存（Redis）
+// key: vital-focus:card:{card_id}:device:{device_id}:data
+func (c *IoTStreamConsumer) updateDeviceDataCache(
+	ctx context.Context,
+	cardID, deviceID string,
+	deviceData *models.IoTTimeSeries,
+) error {
+	key := fmt.Sprintf("vital-focus:card:%s:device:%s:data", cardID, deviceID)
+	
+	dataJSON, err := json.Marshal(deviceData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal device data: %w", err)
+	}
+
+	// 设置TTL为30秒（设备数据缓存）
+	if err := c.redisClient.Set(ctx, key, dataJSON, 30*time.Second).Err(); err != nil {
+		return fmt.Errorf("failed to set device data cache: %w", err)
+	}
+
+	return nil
+}
+
+// fuseCardDataFromCache 从缓存融合卡片的所有设备数据（不再从DB读取）
+func (c *IoTStreamConsumer) fuseCardDataFromCache(
+	ctx context.Context,
+	tenantID, cardID, cardType string,
+) (*models.RealtimeData, error) {
+	// 1. 获取卡片关联的所有设备
+	devices, err := c.cardRepo.GetCardDevices(cardID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get card devices: %w", err)
+	}
+
+	if len(devices) == 0 {
+		return nil, fmt.Errorf("no devices found for card: %s", cardID)
+	}
+
+	// 2. 从缓存中读取所有设备的最新数据
+	var sleepaceData []*models.IoTTimeSeries
+	var radarData []*models.IoTTimeSeries
+	var maxTimestamp time.Time
+
+	for _, device := range devices {
+		deviceType := device.DeviceType
+		if deviceType != "Radar" && deviceType != "Sleepace" && deviceType != "SleepPad" && deviceType != "Sleepad" {
+			continue
+		}
+
+		// 从缓存读取设备数据
+		key := fmt.Sprintf("vital-focus:card:%s:device:%s:data", cardID, device.DeviceID)
+		val, err := c.redisClient.Get(ctx, key).Result()
+		if err != nil {
+			// 缓存未命中，跳过该设备
+			continue
+		}
+
+		var deviceData models.IoTTimeSeries
+		if err := json.Unmarshal([]byte(val), &deviceData); err != nil {
+			c.logger.Warn("Failed to unmarshal device data from cache",
+				zap.String("device_id", device.DeviceID),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		// 更新最大时间戳
+		if deviceData.Timestamp.After(maxTimestamp) {
+			maxTimestamp = deviceData.Timestamp
+		}
+
+		// 分类数据
+		if deviceType == "Sleepace" || deviceType == "SleepPad" || deviceType == "Sleepad" {
+			sleepaceData = append(sleepaceData, &deviceData)
+		} else if deviceType == "Radar" {
+			radarData = append(radarData, &deviceData)
+		}
+	}
+
+	// 3. 融合数据
+	resultTimestamp := time.Now().Unix()
+	if !maxTimestamp.IsZero() {
+		resultTimestamp = maxTimestamp.Unix()
+	}
+
+	result := &models.RealtimeData{
+		Timestamp: resultTimestamp,
+		Postures:  []models.Posture{},
+	}
+
+	// 判断是否需要融合
+	needFusion := len(sleepaceData) > 0 && len(radarData) > 0
+
+	if needFusion {
+		// 融合 HR/RR（优先 Sleepace）
+		c.fuseVitalSignsFromCache(sleepaceData, radarData, result)
+		c.fuseBedAndSleepStatusFromCache(sleepaceData, radarData, result)
+	} else {
+		// 直接使用设备数据
+		if len(sleepaceData) > 0 {
+			c.useSingleDeviceDataFromCache(sleepaceData[0], result)
+		}
+		if len(radarData) > 0 {
+			c.useRadarDeviceDataFromCache(radarData[0], result)
+		}
+	}
+
+	// 处理姿态数据（直接使用 Radar 数据）
+	c.useRadarPosturesFromCache(radarData, result)
+
+	return result, nil
+}
+
+// fuseVitalSignsFromCache 融合生命体征（HR/RR）
+func (c *IoTStreamConsumer) fuseVitalSignsFromCache(
+	sleepaceData []*models.IoTTimeSeries,
+	radarData []*models.IoTTimeSeries,
+	result *models.RealtimeData,
+) {
+	// 优先使用 Sleepace 数据
+	if len(sleepaceData) > 0 {
+		for _, data := range sleepaceData {
+			if data.HeartRate != nil {
+				result.Heart = data.HeartRate
+				result.HeartSource = "Sleepace"
+				timestamp := data.Timestamp.Unix()
+				result.HeartTimestamp = &timestamp
+				break
+			}
+		}
+		for _, data := range sleepaceData {
+			if data.RespiratoryRate != nil {
+				result.Breath = data.RespiratoryRate
+				result.BreathSource = "Sleepace"
+				timestamp := data.Timestamp.Unix()
+				result.BreathTimestamp = &timestamp
+				break
+			}
+		}
+	}
+
+	// 如果 Sleepace 没有数据，使用 Radar 数据
+	if result.Heart == nil && len(radarData) > 0 {
+		for _, data := range radarData {
+			if data.HeartRate != nil {
+				result.Heart = data.HeartRate
+				result.HeartSource = "Radar"
+				timestamp := data.Timestamp.Unix()
+				result.HeartTimestamp = &timestamp
+				break
+			}
+		}
+	}
+	if result.Breath == nil && len(radarData) > 0 {
+		for _, data := range radarData {
+			if data.RespiratoryRate != nil {
+				result.Breath = data.RespiratoryRate
+				result.BreathSource = "Radar"
+				timestamp := data.Timestamp.Unix()
+				result.BreathTimestamp = &timestamp
+				break
+			}
+		}
+	}
+}
+
+// fuseBedAndSleepStatusFromCache 融合床状态和睡眠状态
+func (c *IoTStreamConsumer) fuseBedAndSleepStatusFromCache(
+	sleepaceData []*models.IoTTimeSeries,
+	radarData []*models.IoTTimeSeries,
+	result *models.RealtimeData,
+) {
+	// 优先使用 Sleepace 数据
+	if len(sleepaceData) > 0 {
+		for _, data := range sleepaceData {
+			if data.BedStatusSNOMEDCode != nil {
+				result.BedStatus = data.BedStatusSNOMEDCode
+				result.BedStatusSource = "Sleepace"
+				timestamp := data.Timestamp.Unix()
+				result.BedStatusTimestamp = &timestamp
+				break
+			}
+		}
+		for _, data := range sleepaceData {
+			if data.SleepStateSNOMEDCode != nil {
+				result.SleepStage = data.SleepStateSNOMEDCode
+				result.SleepStageSource = "Sleepace"
+				timestamp := data.Timestamp.Unix()
+				result.SleepStageTimestamp = &timestamp
+				break
+			}
+		}
+	}
+
+	// 如果 Sleepace 没有数据，使用 Radar 数据
+	if result.BedStatus == nil && len(radarData) > 0 {
+		for _, data := range radarData {
+			if data.BedStatusSNOMEDCode != nil {
+				result.BedStatus = data.BedStatusSNOMEDCode
+				result.BedStatusSource = "Radar"
+				timestamp := data.Timestamp.Unix()
+				result.BedStatusTimestamp = &timestamp
+				break
+			}
+		}
+	}
+	if result.SleepStage == nil && len(radarData) > 0 {
+		for _, data := range radarData {
+			if data.SleepStateSNOMEDCode != nil {
+				result.SleepStage = data.SleepStateSNOMEDCode
+				result.SleepStageSource = "Radar"
+				timestamp := data.Timestamp.Unix()
+				result.SleepStageTimestamp = &timestamp
+				break
+			}
+		}
+	}
+}
+
+// useSingleDeviceDataFromCache 使用单个 Sleepace 设备的数据
+func (c *IoTStreamConsumer) useSingleDeviceDataFromCache(
+	data *models.IoTTimeSeries,
+	result *models.RealtimeData,
+) {
+	if data.HeartRate != nil {
+		result.Heart = data.HeartRate
+		result.HeartSource = "Sleepace"
+		timestamp := data.Timestamp.Unix()
+		result.HeartTimestamp = &timestamp
+	}
+	if data.RespiratoryRate != nil {
+		result.Breath = data.RespiratoryRate
+		result.BreathSource = "Sleepace"
+		timestamp := data.Timestamp.Unix()
+		result.BreathTimestamp = &timestamp
+	}
+	if data.BedStatusSNOMEDCode != nil {
+		result.BedStatus = data.BedStatusSNOMEDCode
+		result.BedStatusSource = "Sleepace"
+		timestamp := data.Timestamp.Unix()
+		result.BedStatusTimestamp = &timestamp
+	}
+	if data.SleepStateSNOMEDCode != nil {
+		result.SleepStage = data.SleepStateSNOMEDCode
+		result.SleepStageSource = "Sleepace"
+		timestamp := data.Timestamp.Unix()
+		result.SleepStageTimestamp = &timestamp
+	}
+}
+
+// useRadarDeviceDataFromCache 使用单个 Radar 设备的数据
+func (c *IoTStreamConsumer) useRadarDeviceDataFromCache(
+	data *models.IoTTimeSeries,
+	result *models.RealtimeData,
+) {
+	if data.HeartRate != nil {
+		result.Heart = data.HeartRate
+		result.HeartSource = "Radar"
+		timestamp := data.Timestamp.Unix()
+		result.HeartTimestamp = &timestamp
+	}
+	if data.RespiratoryRate != nil {
+		result.Breath = data.RespiratoryRate
+		result.BreathSource = "Radar"
+		timestamp := data.Timestamp.Unix()
+		result.BreathTimestamp = &timestamp
+	}
+	if data.BedStatusSNOMEDCode != nil {
+		result.BedStatus = data.BedStatusSNOMEDCode
+		result.BedStatusSource = "Radar"
+		timestamp := data.Timestamp.Unix()
+		result.BedStatusTimestamp = &timestamp
+	}
+	if data.SleepStateSNOMEDCode != nil {
+		result.SleepStage = data.SleepStateSNOMEDCode
+		result.SleepStageSource = "Radar"
+		timestamp := data.Timestamp.Unix()
+		result.SleepStageTimestamp = &timestamp
+	}
+}
+
+// useRadarPosturesFromCache 使用 Radar 设备的姿态数据
+func (c *IoTStreamConsumer) useRadarPosturesFromCache(
+	radarData []*models.IoTTimeSeries,
+	result *models.RealtimeData,
+) {
+	trackingMap := make(map[string]struct {
+		posture   *models.Posture
+		timestamp time.Time
+	})
+
+	for _, data := range radarData {
+		if data.TrackingID != nil && data.PostureSNOMEDCode != nil {
+			trackingID := *data.TrackingID
+
+			posture := &models.Posture{
+				TrackingID:     trackingID,
+				PostureCode:    *data.PostureSNOMEDCode,
+				PostureDisplay: "",
+			}
+
+			if data.PostureDisplay != nil {
+				posture.PostureDisplay = *data.PostureDisplay
+			}
+
+			if data.PositionX != nil {
+				posture.PositionX = data.PositionX
+			}
+			if data.PositionY != nil {
+				posture.PositionY = data.PositionY
+			}
+			if data.Height != nil {
+				posture.Height = data.Height
+			}
+			if data.AreaID != nil {
+				posture.AreaID = data.AreaID
+			}
+
+			// 如果该 tracking_id 已存在，比较时间戳，使用更新的数据
+			if existing, ok := trackingMap[trackingID]; ok {
+				if data.Timestamp.After(existing.timestamp) {
+					trackingMap[trackingID] = struct {
+						posture   *models.Posture
+						timestamp time.Time
+					}{
+						posture:   posture,
+						timestamp: data.Timestamp,
+					}
+				}
+			} else {
+				trackingMap[trackingID] = struct {
+					posture   *models.Posture
+					timestamp time.Time
+				}{
+					posture:   posture,
+					timestamp: data.Timestamp,
+				}
+			}
+		}
+	}
+
+	// 转换为列表
+	for _, entry := range trackingMap {
+		result.Postures = append(result.Postures, *entry.posture)
+	}
+
+	result.PersonCount = len(result.Postures)
 }
 

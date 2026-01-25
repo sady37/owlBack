@@ -17,6 +17,9 @@ export DB_NAME="${DB_NAME:-owlrd}"
 export REDIS_ADDR="${REDIS_ADDR:-localhost:6379}"
 export LOG_LEVEL="${LOG_LEVEL:-info}"
 
+# Qinglan 服务配置（用于下发雷达监控设置：工作模式、跌倒/呼吸心率参数）
+export QINGLAN_API_BASE_URL="${QINGLAN_API_BASE_URL:-http://localhost:8081}"
+
 echo "配置:"
 echo "  HTTP_ADDR: $HTTP_ADDR"
 echo "  DB_ENABLED: $DB_ENABLED"
@@ -24,6 +27,7 @@ echo "  DB_HOST: $DB_HOST"
 echo "  DB_PORT: $DB_PORT"
 echo "  DB_NAME: $DB_NAME"
 echo "  REDIS_ADDR: $REDIS_ADDR"
+echo "  QINGLAN_API_BASE_URL: $QINGLAN_API_BASE_URL"
 echo ""
 
 # 检查数据库连接（如果启用）

@@ -91,6 +91,19 @@ func (h *APIHandler) SetDeviceProperties(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	
+	// 记录 HTTP API 接收到的请求格式（发给 client-qinglan 的格式）
+	requestJSON, _ := json.Marshal(request)
+	log.Printf("📥 HTTP API SetDeviceProperties: received from client-qinglan")
+	log.Printf("   Device UID: %s", uid)
+	log.Printf("   HTTP Request Body: %s", string(requestJSON))
+	log.Printf("   HTTP Request Format: {\"properties\": {\"key1\": \"value1\", \"key2\": \"value2\", ...}}")
+	
+	// 检查是否是模式修改（radar_func_ctrl）
+	if mode, ok := request.Properties["radar_func_ctrl"]; ok {
+		log.Printf("🔄 MODE CHANGE DETECTED: radar_func_ctrl = %v", mode)
+		log.Printf("   Mode values: 3=轨迹, 7=呼吸心率, 11=轨迹+呼吸心率, 15=轨迹+呼吸心率+跌倒")
+	}
+	
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	

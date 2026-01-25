@@ -128,6 +128,8 @@ func (r *CardRepository) GetDevicesByBed(tenantID, bedID string) ([]card.DeviceI
 	query := `
 		SELECT 
 			d.device_id,
+			COALESCE(d.device_uid, ''),
+			COALESCE(ds.device_code, ''),
 			d.device_name,
 			ds.device_type,
 			ds.device_model,
@@ -161,6 +163,8 @@ func (r *CardRepository) GetDevicesByBed(tenantID, bedID string) ([]card.DeviceI
 
 		if err := rows.Scan(
 			&device.DeviceID,
+			&device.DeviceUID,
+			&device.DeviceCode,
 			&device.DeviceName,
 			&device.DeviceType,
 			&device.DeviceModel,
@@ -198,6 +202,8 @@ func (r *CardRepository) GetUnboundDevicesByUnit(tenantID, unitID string) ([]car
 	query := `
 		SELECT 
 			d.device_id,
+			COALESCE(d.device_uid, ''),
+			COALESCE(ds.device_code, ''),
 			d.device_name,
 			ds.device_type,
 			ds.device_model,
@@ -233,6 +239,8 @@ func (r *CardRepository) GetUnboundDevicesByUnit(tenantID, unitID string) ([]car
 
 		if err := rows.Scan(
 			&device.DeviceID,
+			&device.DeviceUID,
+			&device.DeviceCode,
 			&device.DeviceName,
 			&device.DeviceType,
 			&device.DeviceModel,
@@ -644,7 +652,8 @@ func (r *CardRepository) CreateCard(
 	return cardID, nil
 }
 
-// DeviceJSON device JSON format (for cards.devices JSONB field)
+// DeviceJSON device JSON format (for cards.devices JSONB field).
+// 写 cards.devices 时需含 device_uid：DeviceJSON 加该字段，或组装 DeviceInfo 的查询（GetDevicesByBed、GetUnboundDevicesByUnit）从 devices 表选 d.device_uid 填入。
 type DeviceJSON struct {
 	DeviceID    string  `json:"device_id"`
 	DeviceName  string  `json:"device_name"`

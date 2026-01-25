@@ -196,16 +196,29 @@ echo ""
 echo -e "${GREEN}🚀 Starting wisefido-qinglan service...${NC}"
 echo ""
 
+# 设置日志文件路径
 LOG_FILE="${QINGLAN_LOG_FILE:-/tmp/wisefido_qinglan.log}"
 LOG_DIR=$(dirname "$LOG_FILE")
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 
+echo -e "${BLUE}📝 Log Configuration:${NC}"
+echo "  📄 Log File: $LOG_FILE"
+echo "  📁 Log Directory: $LOG_DIR"
+echo ""
+
+# 写入启动信息到日志文件
 echo "==========================================" >> "$LOG_FILE"
 echo "wisefido-qinglan service starting at $(date)" >> "$LOG_FILE"
+echo "Log file: $LOG_FILE" >> "$LOG_FILE"
 echo "==========================================" >> "$LOG_FILE"
 
+# 同时输出到控制台和日志文件
 if [ -t 1 ]; then
+    echo -e "${GREEN}✅ Logging to: $LOG_FILE${NC}"
+    echo -e "${GREEN}✅ Output will be displayed in terminal and saved to log file${NC}"
+    echo ""
     go run cmd/wisefido-qinglan/main.go 2>&1 | tee -a "$LOG_FILE"
 else
-    go run cmd/wisefido-qinglan/main.go 2>&1
+    echo "Logging to: $LOG_FILE" >&2
+    go run cmd/wisefido-qinglan/main.go 2>&1 | tee -a "$LOG_FILE"
 fi

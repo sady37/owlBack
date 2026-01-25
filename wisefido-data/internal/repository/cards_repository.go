@@ -12,10 +12,23 @@ import (
 	"github.com/lib/pq"
 )
 
+// CardDeviceItem 卡片上的设备项，供 vue-radar 画布 Bind 使用。device_code：Sleepace 有、Radar 无，空则回退 device_uid。
+type CardDeviceItem struct {
+	DeviceID   string `json:"device_id"`
+	DeviceType string `json:"device_type"`
+	DeviceUID  string `json:"device_uid"`
+	DeviceCode string `json:"device_code"`
+	DeviceName string `json:"device_name"`
+}
+
 // CardsRepository 卡片Repository接口
 type CardsRepository interface {
 	// ListCards 查询卡片列表（返回所有可见的卡片，不分页）
 	ListCards(ctx context.Context, req ListCardsRequest) ([]*domain.CardWithUnitInfo, error)
+	// GetCardDevices 获取卡片上所有设备（cards.devices JSONB），供 radar-trajectory 画布 Bind 使用
+	GetCardDevices(ctx context.Context, tenantID, cardID string) ([]CardDeviceItem, error)
+	// GetCardIDByDeviceID 根据 device_id 查找其所属卡片的 card_id（devices JSONB 中某元素 device_id 匹配）
+	GetCardIDByDeviceID(ctx context.Context, tenantID, deviceID string) (string, error)
 }
 
 // ListCardsRequest 查询卡片列表请求
@@ -336,6 +349,79 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 	}
 
 	return results, nil
+}
+
+// GetCardDevices 获取卡片上所有设备（cards.devices JSONB），供 radar-trajectory 画布 Bind 使用。
+// 从每个元素 m 读 device_uid、uid；若 JSON 无则 DeviceUID 为空，不做降级。写 cards.devices 时从 devices 表选 d.device_uid 填入。
+func (r *PostgresCardsRepository) GetCardDevices(ctx context.Context, tenantID, cardID string) ([]CardDeviceItem, error) {
+	if tenantID == "" || cardID == "" {
+		return nil, nil
+	}
+	q := `SELECT devices FROM cards WHERE card_id = $1 AND tenant_id = $2`
+	var raw json.RawMessage
+	if err := r.db.QueryRowContext(ctx, q, cardID, tenantID).Scan(&raw); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("card not found: %s", cardID)
+		}
+		return nil, fmt.Errorf("get card devices: %w", err)
+	}
+	var arr []map[string]interface{}
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return nil, fmt.Errorf("parse card devices JSON: %w", err)
+	}
+	out := make([]CardDeviceItem, 0, len(arr))
+	for _, m := range arr {
+		uid, _ := m["device_uid"].(string)
+		if uid == "" {
+			uid, _ = m["uid"].(string)
+		}
+		name, _ := m["device_name"].(string)
+		code, _ := m["device_code"].(string)
+		if code == "" {
+			code = uid // device_code 仅 Sleepace 有，Radar 无；空则用 device_uid
+		}
+		did, _ := m["device_id"].(string)
+		if did == "" {
+			did = uid
+		}
+		dtype := ""
+		switch v := m["device_type"].(type) {
+		case float64:
+			if v == 1 {
+				dtype = "Sleepad"
+			} else if v == 2 {
+				dtype = "Radar"
+			}
+		case string:
+			dtype = v
+		}
+		out = append(out, CardDeviceItem{DeviceID: did, DeviceType: dtype, DeviceUID: uid, DeviceCode: code, DeviceName: name})
+	}
+	return out, nil
+}
+
+// GetCardIDByDeviceID 根据 device_id 查找其所属卡片的 card_id
+func (r *PostgresCardsRepository) GetCardIDByDeviceID(ctx context.Context, tenantID, deviceID string) (string, error) {
+	if tenantID == "" || deviceID == "" {
+		return "", fmt.Errorf("tenant_id and device_id are required")
+	}
+	q := `
+		SELECT card_id::text FROM cards
+		WHERE tenant_id = $1
+		  AND EXISTS (
+		    SELECT 1 FROM jsonb_array_elements(devices) AS elem
+		    WHERE elem->>'device_id' = $2 OR elem->>'device_uid' = $2 OR elem->>'uid' = $2
+		  )
+		LIMIT 1
+	`
+	var cardID string
+	if err := r.db.QueryRowContext(ctx, q, tenantID, deviceID).Scan(&cardID); err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("card not found for device_id: %s", deviceID)
+		}
+		return "", fmt.Errorf("get card by device_id: %w", err)
+	}
+	return cardID, nil
 }
 
 // 确保实现了接口

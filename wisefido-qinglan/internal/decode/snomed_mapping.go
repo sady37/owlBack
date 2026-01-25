@@ -11,6 +11,7 @@ package decode
 // - 字段名保持不变：{fieldName}
 // - 字段值使用 display_en（如果有映射且 display_en 不为空），否则使用原始值
 // - 不添加额外的 SNOMED 相关字段（_snomed_code, _snomed_display, _category, _display_en）
+// 注意：SNOMEDMapping 已统一到 owl-common/snomed，此处使用本地别名
 func applySNOMedMappingInternal(encoded map[string]interface{}, fieldName, fieldPath string, rawValue interface{}, getMappingFunc func(string, interface{}) (*SNOMEDMapping, error)) {
 	// 获取 SNOMED 映射
 	mapping, err := getMappingFunc(fieldPath, rawValue)

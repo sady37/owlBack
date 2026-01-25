@@ -151,6 +151,14 @@ func (r *Router) RegisterAdminTenantRoutes(h *TenantsHandler) {
 
 // RegisterRadarRoutes 注册 Radar 设备 API 路由（v1.0 兼容）
 func (r *Router) RegisterRadarRoutes(h *RadarHandler) {
+	// GET /radar-device/api/v1/radar-device/card/:cardId/devices 卡片上所有设备，供 vue-radar 画布 Bind 使用
+	r.Handle("/radar-device/api/v1/radar-device/card/", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet || !strings.HasSuffix(req.URL.Path, "/devices") {
+			http.NotFound(w, req)
+			return
+		}
+		h.GetCardDevices(w, req)
+	})
 	// GET /radar-device/api/v1/radar-device/device/:id/realtime
 	r.Handle("/radar-device/api/v1/radar-device/device/", func(w http.ResponseWriter, req *http.Request) {
 		path := req.URL.Path
@@ -160,6 +168,18 @@ func (r *Router) RegisterRadarRoutes(h *RadarHandler) {
 			h.GetOriginalProperties(w, req)
 		} else if strings.HasSuffix(path, "/config") && req.Method == http.MethodPut {
 			h.UpdateConfig(w, req)
+		} else if strings.HasSuffix(path, "/control") && req.Method == http.MethodPost {
+			h.Control(w, req)
+		} else if strings.HasSuffix(path, "/card-devices") && req.Method == http.MethodGet {
+			h.GetCardDevicesByDeviceID(w, req)
+		} else {
+			http.NotFound(w, req)
+		}
+	})
+	// PUT /radar-device/api/v1/radar-device/room/:roomId/layout 保存房间布局到 config_versions
+	r.Handle("/radar-device/api/v1/radar-device/room/", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method == http.MethodPut && strings.HasSuffix(req.URL.Path, "/layout") {
+			h.PutRoomLayout(w, req)
 		} else {
 			http.NotFound(w, req)
 		}

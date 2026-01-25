@@ -4,12 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
+	"wisefido-data/internal/domain"
 	"wisefido-data/internal/models"
 	"wisefido-data/internal/repository"
+	"wisefido-data/internal/store"
 
 	"github.com/lib/pq"
 	"go.uber.org/zap"
@@ -106,28 +109,52 @@ func (s *cardService) ListVitalFocusCards(ctx context.Context, req ListVitalFocu
 			return nil, fmt.Errorf("failed to get card IDs for resident: %w", err)
 		}
 
-		// 步骤 5：从 Redis full cache 读取完整数据
+		// 步骤 5：从 Redis full cache 读取完整数据，如果 miss 则从 DB 构建基础卡片
 		allCards := make([]models.VitalFocusCard, 0, len(cardIDs))
+		missedCardIDs := make([]string, 0)
+		
 		for _, cardID := range cardIDs {
 			key := "vital-focus:card:" + cardID + ":full"
 			raw, err := s.kv.Get(ctx, key)
 			if err != nil {
-				s.logger.Warn("Failed to get card from Redis, skipping",
-					zap.String("card_id", cardID),
-					zap.Error(err),
-				)
+				if errors.Is(err, store.ErrMiss) {
+					s.logger.Debug("Redis cache miss for card, will fallback to DB",
+						zap.String("card_id", cardID),
+					)
+					missedCardIDs = append(missedCardIDs, cardID)
+				} else {
+					s.logger.Warn("Failed to get card from Redis, will fallback to DB",
+						zap.String("card_id", cardID),
+						zap.Error(err),
+					)
+					missedCardIDs = append(missedCardIDs, cardID)
+				}
 				continue
 			}
 
 			card, ok := decodeAndNormalizeFullCard(raw)
 			if !ok {
-				s.logger.Warn("Failed to decode and normalize card from Redis, skipping",
+				s.logger.Warn("Failed to decode and normalize card from Redis, will fallback to DB",
 					zap.String("card_id", cardID),
 				)
+				missedCardIDs = append(missedCardIDs, cardID)
 				continue
 			}
 
 			allCards = append(allCards, card)
+		}
+
+		// 步骤 5.5：对 cache miss 的卡片，从 DB 构建基础 VitalFocusCard
+		if len(missedCardIDs) > 0 {
+			dbCards, err := s.buildVitalFocusCardsFromDB(ctx, validatedTenantID, missedCardIDs)
+			if err != nil {
+				s.logger.Warn("Failed to build cards from DB for cache miss, some cards may be missing",
+					zap.Error(err),
+					zap.Int("missed_count", len(missedCardIDs)),
+				)
+			} else {
+				allCards = append(allCards, dbCards...)
+			}
 		}
 
 		// 步骤 6：排序（按 card_name）
@@ -180,24 +207,35 @@ func (s *cardService) ListVitalFocusCards(ctx context.Context, req ListVitalFocu
 		return nil, fmt.Errorf("failed to get card IDs for staff: %w", err)
 	}
 
-	// 步骤 5：从 Redis full cache 读取完整数据
+	// 步骤 5：从 Redis full cache 读取完整数据，如果 miss 则从 DB 构建基础卡片
 	allCards := make([]models.VitalFocusCard, 0, len(cardIDs))
+	missedCardIDs := make([]string, 0)
+	
 	for _, cardID := range cardIDs {
 		key := "vital-focus:card:" + cardID + ":full"
 		raw, err := s.kv.Get(ctx, key)
 		if err != nil {
-			s.logger.Warn("Failed to get card from Redis, skipping",
-				zap.String("card_id", cardID),
-				zap.Error(err),
-			)
+			if errors.Is(err, store.ErrMiss) {
+				s.logger.Debug("Redis cache miss for card, will fallback to DB",
+					zap.String("card_id", cardID),
+				)
+				missedCardIDs = append(missedCardIDs, cardID)
+			} else {
+				s.logger.Warn("Failed to get card from Redis, will fallback to DB",
+					zap.String("card_id", cardID),
+					zap.Error(err),
+				)
+				missedCardIDs = append(missedCardIDs, cardID)
+			}
 			continue
 		}
 
 		card, ok := decodeAndNormalizeFullCard(raw)
 		if !ok {
-			s.logger.Warn("Failed to decode and normalize card from Redis, skipping",
+			s.logger.Warn("Failed to decode and normalize card from Redis, will fallback to DB",
 				zap.String("card_id", cardID),
 			)
+			missedCardIDs = append(missedCardIDs, cardID)
 			continue
 		}
 
@@ -211,6 +249,19 @@ func (s *cardService) ListVitalFocusCards(ctx context.Context, req ListVitalFocu
 		}
 
 		allCards = append(allCards, card)
+	}
+
+	// 步骤 5.5：对 cache miss 的卡片，从 DB 构建基础 VitalFocusCard
+	if len(missedCardIDs) > 0 {
+		dbCards, err := s.buildVitalFocusCardsFromDB(ctx, validatedTenantID, missedCardIDs)
+		if err != nil {
+			s.logger.Warn("Failed to build cards from DB for cache miss, some cards may be missing",
+				zap.Error(err),
+				zap.Int("missed_count", len(missedCardIDs)),
+			)
+		} else {
+			allCards = append(allCards, dbCards...)
+		}
 	}
 
 	// 步骤 6：排序（按 card_name）
@@ -387,11 +438,16 @@ func (s *cardService) GetVitalFocusCard(ctx context.Context, req GetVitalFocusCa
 	key := "vital-focus:card:" + req.CardID + ":full"
 	raw, err := s.kv.Get(ctx, key)
 	if err != nil {
-		s.logger.Warn("Failed to get card from Redis, returning partial data if available",
-			zap.String("card_id", req.CardID),
-			zap.Error(err),
-		)
-		// 如果 Redis 中没有数据，可以考虑返回从 DB 获取的基础卡片信息，但目前设计是返回完整 VitalFocusCard
+		if errors.Is(err, store.ErrMiss) {
+			s.logger.Debug("Redis cache miss for card",
+				zap.String("card_id", req.CardID),
+			)
+		} else {
+			s.logger.Warn("Failed to get card from Redis",
+				zap.String("card_id", req.CardID),
+				zap.Error(err),
+			)
+		}
 		return nil, fmt.Errorf("failed to retrieve real-time data for card: %w", err)
 	}
 
@@ -1177,4 +1233,211 @@ func (s *cardService) SaveVitalFocusPreferences(ctx context.Context, req SaveVit
 	)
 
 	return nil
+}
+
+// buildVitalFocusCardsFromDB 从数据库构建基础的 VitalFocusCard（当 Redis cache miss 时使用）
+// 返回基础的卡片信息，实时数据字段（如报警统计、设备状态等）为空或使用默认值
+func (s *cardService) buildVitalFocusCardsFromDB(ctx context.Context, tenantID string, cardIDs []string) ([]models.VitalFocusCard, error) {
+	if len(cardIDs) == 0 {
+		return []models.VitalFocusCard{}, nil
+	}
+
+	// 批量从 DB 查询卡片基础信息（使用 SQL IN 查询）
+	query := `
+		SELECT 
+			c.card_id::text,
+			c.tenant_id::text,
+			c.card_type,
+			c.bed_id::text,
+			c.unit_id::text,
+			c.card_name,
+			c.card_address,
+			c.resident_id::text,
+			c.devices,
+			c.residents,
+			c.unhandled_alarm_0,
+			c.unhandled_alarm_1,
+			c.unhandled_alarm_2,
+			c.unhandled_alarm_3,
+			c.unhandled_alarm_4,
+			c.icon_alarm_level,
+			c.pop_alarm_emerge
+		FROM cards c
+		WHERE c.tenant_id = $1 AND c.card_id = ANY($2::uuid[])
+	`
+	rows, err := s.db.QueryContext(ctx, query, tenantID, pq.Array(cardIDs))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query cards from DB: %w", err)
+	}
+	defer rows.Close()
+
+	var cards []*domain.CardWithUnitInfo
+	for rows.Next() {
+		var card domain.CardWithUnitInfo
+		var bedID, unitID, residentID sql.NullString
+		var devicesJSON, residentsJSON json.RawMessage
+
+		err := rows.Scan(
+			&card.Card.CardID,
+			&card.Card.TenantID,
+			&card.Card.CardType,
+			&bedID,
+			&unitID,
+			&card.Card.CardName,
+			&card.Card.CardAddress,
+			&residentID,
+			&devicesJSON,
+			&residentsJSON,
+			&card.Card.UnhandledAlarm0,
+			&card.Card.UnhandledAlarm1,
+			&card.Card.UnhandledAlarm2,
+			&card.Card.UnhandledAlarm3,
+			&card.Card.UnhandledAlarm4,
+			&card.Card.IconAlarmLevel,
+			&card.Card.PopAlarmEmerge,
+		)
+		if err != nil {
+			s.logger.Warn("Failed to scan card row, skipping",
+				zap.Error(err),
+			)
+			continue
+		}
+
+		if bedID.Valid {
+			card.Card.BedID = bedID
+		}
+		if unitID.Valid {
+			card.Card.UnitID = unitID
+		}
+		if residentID.Valid {
+			card.Card.ResidentID = residentID
+		}
+		card.Card.Devices = devicesJSON
+		card.Card.Residents = residentsJSON
+
+		cards = append(cards, &card)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate card rows: %w", err)
+	}
+
+	// 构建基础的 VitalFocusCard
+	result := make([]models.VitalFocusCard, 0, len(cards))
+	for _, card := range cards {
+		vitalCard := models.VitalFocusCard{
+			CardID:     card.Card.CardID,
+			TenantID:   card.Card.TenantID,
+			CardType:   card.Card.CardType,
+			CardName:   card.Card.CardName,
+			CardAddress: card.Card.CardAddress,
+			Residents:  []models.CardResident{},
+			Devices:    []models.CardDevice{},
+		}
+
+		// 规范化 card_type（数据库使用 'Location'，API 返回 'Unit'）
+		if vitalCard.CardType == "Location" {
+			vitalCard.CardType = "Unit"
+		}
+
+		// 设置 BedID/LocationID
+		if card.Card.BedID.Valid {
+			vitalCard.BedID = card.Card.BedID.String
+		}
+		if card.Card.UnitID.Valid {
+			vitalCard.LocationID = card.Card.UnitID.String
+		}
+		if card.Card.ResidentID.Valid {
+			vitalCard.PrimaryResidentID = card.Card.ResidentID.String
+		}
+
+		// 从 card 表获取报警统计（作为基础值）
+		if card.Card.UnhandledAlarm0 > 0 {
+			vitalCard.UnhandledAlarm0 = &card.Card.UnhandledAlarm0
+		}
+		if card.Card.UnhandledAlarm1 > 0 {
+			vitalCard.UnhandledAlarm1 = &card.Card.UnhandledAlarm1
+		}
+		if card.Card.UnhandledAlarm2 > 0 {
+			vitalCard.UnhandledAlarm2 = &card.Card.UnhandledAlarm2
+		}
+		if card.Card.UnhandledAlarm3 > 0 {
+			vitalCard.UnhandledAlarm3 = &card.Card.UnhandledAlarm3
+		}
+		if card.Card.UnhandledAlarm4 > 0 {
+			vitalCard.UnhandledAlarm4 = &card.Card.UnhandledAlarm4
+		}
+		if card.Card.IconAlarmLevel > 0 {
+			vitalCard.IconAlarmLevel = &card.Card.IconAlarmLevel
+		}
+		if card.Card.PopAlarmEmerge > 0 {
+			vitalCard.PopAlarmEmerge = &card.Card.PopAlarmEmerge
+		}
+
+		// 解析 devices JSONB
+		var devicesFromCard []map[string]interface{}
+		if err := json.Unmarshal(card.Card.Devices, &devicesFromCard); err == nil {
+			for _, deviceObj := range devicesFromCard {
+				deviceUID, _ := deviceObj["device_uid"].(string)
+				if deviceUID == "" {
+					deviceUID, _ = deviceObj["uid"].(string)
+				}
+				if deviceUID == "" {
+					deviceUID, _ = deviceObj["device_id"].(string)
+				}
+				deviceName, _ := deviceObj["device_name"].(string)
+				deviceTypeStr, _ := deviceObj["device_type"].(string)
+				deviceModel, _ := deviceObj["device_model"].(string)
+
+				if deviceUID != "" {
+					var deviceTypeNum interface{} = nil
+					if deviceTypeStr != "" {
+						deviceTypeLower := strings.ToLower(deviceTypeStr)
+						if deviceTypeLower == "sleepace" || deviceTypeLower == "sleepad" || deviceTypeLower == "sleeppad" {
+							deviceTypeNum = 1
+						} else if deviceTypeLower == "radar" {
+							deviceTypeNum = 2
+						}
+					}
+
+					deviceID, _ := deviceObj["device_id"].(string)
+					if deviceID == "" {
+						deviceID = deviceUID
+					}
+
+					vitalCard.Devices = append(vitalCard.Devices, models.CardDevice{
+						DeviceID:    deviceID,
+						DeviceName:  deviceName,
+						DeviceType:  deviceTypeNum,
+						DeviceModel: deviceModel,
+					})
+				}
+			}
+		}
+		vitalCard.DeviceCount = len(vitalCard.Devices)
+
+		// 解析 residents JSONB
+		var residentsFromCard []map[string]interface{}
+		if card.Card.ResidentID.Valid {
+			// ActiveBed: 使用 resident_id 字段
+			vitalCard.Residents = append(vitalCard.Residents, models.CardResident{
+				ResidentID: card.Card.ResidentID.String,
+			})
+		} else if err := json.Unmarshal(card.Card.Residents, &residentsFromCard); err == nil {
+			for _, residentObj := range residentsFromCard {
+				residentID, _ := residentObj["resident_id"].(string)
+				nickname, _ := residentObj["nickname"].(string)
+				if residentID != "" {
+					vitalCard.Residents = append(vitalCard.Residents, models.CardResident{
+						ResidentID: residentID,
+						Nickname:   nickname,
+					})
+				}
+			}
+		}
+		vitalCard.ResidentCount = len(vitalCard.Residents)
+
+		result = append(result, vitalCard)
+	}
+
+	return result, nil
 }
