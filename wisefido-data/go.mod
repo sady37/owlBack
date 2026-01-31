@@ -11,6 +11,7 @@ require (
 	github.com/xuri/excelize/v2 v2.10.0
 	go.uber.org/zap v1.26.0
 	owl-common v0.0.0
+	wisefido-qinglan v0.0.0
 )
 
 require (
@@ -33,3 +34,5 @@ require (
 replace owl-common => ../owl-common
 
 replace wisefido-ai => ../wisefido-ai
+
+replace wisefido-qinglan => ../wisefido-qinglan

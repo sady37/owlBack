@@ -1,4 +1,4 @@
-修!/bin/bash
+#!/bin/bash
 
 # IoT 时序数据服务启动脚本
 # 
@@ -136,11 +136,10 @@ export HTTP_ADDR=:8083
 export STREAM_RADAR_MONITOR=iot:monitor:stream
 export STREAM_RADAR_STAT=iot:stat:stream
 export STREAM_RADAR_EVENT=iot:event:stream
-export STREAM_RADAR_ALARM=radar:alarm:stream
+export STREAM_IOT_ALARM=iot:alarm:stream
 export STREAM_SLEEPACE_MONITOR=sleepace:monitor:stream
 export STREAM_SLEEPACE_EVENT=sleepace:event:stream
-export STREAM_SLEEPACE_ALARM=sleepace:alarm:stream
-# 注意：Sleepace 没有 stat 数据，不再发布到 iot:data:stream
+# 注意：Sleepace 没有 stat 数据；报警流 Radar/Sleepad 统一 iot:alarm:stream，wisefido-iot 消费 STREAM_IOT_ALARM
 
 # 消费者配置
 export CONSUMER_GROUP=iot-timeseries-group
@@ -159,10 +158,9 @@ echo "  📡 Redis: $REDIS_ADDR"
 echo "  📨 IoT Monitor: $STREAM_IOT_MONITOR"
 echo "  📨 IoT Stat: $STREAM_IOT_STAT"
 echo "  📨 IoT Event: $STREAM_IOT_EVENT"
-echo "  📨 Radar Alarm: $STREAM_RADAR_ALARM"
+echo "  📨 IoT Alarm: $STREAM_IOT_ALARM"
 echo "  📨 Sleepace Monitor: $STREAM_SLEEPACE_MONITOR"
 echo "  📨 Sleepace Event: $STREAM_SLEEPACE_EVENT"
-echo "  📨 Sleepace Alarm: $STREAM_SLEEPACE_ALARM"
 echo "  👥 Consumer Group: $CONSUMER_GROUP"
 echo "  👤 Consumer Name: $CONSUMER_NAME"
 echo ""

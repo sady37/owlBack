@@ -208,7 +208,7 @@ func (r *IoTTimeSeriesRepository) GetLatestByDeviceID(tenantID, deviceID string,
 		}
 		if posZ.Valid {
 			z := int(posZ.Int64)
-			item.Height = &z
+			item.PositionZ = &z
 		}
 		if areaID.Valid {
 			a := int(areaID.Int64)
@@ -404,7 +404,7 @@ func (r *IoTTimeSeriesRepository) GetLatestByDeviceIDs(tenantID string, deviceID
 		}
 		if posZ.Valid {
 			z := int(posZ.Int64)
-			item.Height = &z
+			item.PositionZ = &z
 		}
 		if areaID.Valid {
 			a := int(areaID.Int64)

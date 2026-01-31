@@ -46,7 +46,7 @@
 | **`10`** | **疑似床上坐起** | **`225698008`** | **"Sitting up in bed"** | **`activity`** | **"Sitting up in bed:suspected"** | **✅ 已修正** |
 | **`11`** | **确认床上坐起** | **`225698008`** | **"Sitting up in bed"** | **`activity`** | **"Sitting up in bed:confirmed"** | **✅ 已修正** |
 
-**映射位置**：`owlBack/owl-common/encode/config/radar_convert_table.json` → `monitor.track.pose`
+**映射位置**：`owlBack/wisefido-qinglan/internal/decode/config/radar_convert_table.json` → `monitor.track.pose`
 
 ## 四、Radar event 值映射表
 
@@ -61,7 +61,7 @@
 | `6` | 离开床 | `248570008` | "Not in bed" | `activity` | "Left bed" | `event.LEFT_BED` |
 
 **映射位置**：
-- `monitor.track.event` → `owlBack/owl-common/encode/config/radar_convert_table.json`
+- `monitor.track.event` → `owlBack/wisefido-qinglan/internal/decode/config/radar_convert_table.json`
 - `event.*` → `owlRD/db/24_snomed_mapping.sql`
 
 ## 五、Sleepace bedStatus 映射表
@@ -127,7 +127,7 @@
 
 | 映射类型 | 文件路径 | 说明 |
 |---------|---------|------|
-| Radar pose/event | `owlBack/owl-common/encode/config/radar_convert_table.json` | Radar 设备字段映射 |
+| Radar pose/event | `owlBack/wisefido-qinglan/internal/decode/config/radar_convert_table.json` | Radar 设备字段映射 |
 | Sleepace 字段 | `owlBack/owl-common/encode/config/sleepace_convert_table.json` | Sleepace 设备字段映射 |
 | 通用事件 | `owlRD/db/24_snomed_mapping.sql` | 数据库 SNOMED 映射表 |
 

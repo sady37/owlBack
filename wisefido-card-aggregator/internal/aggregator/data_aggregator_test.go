@@ -75,14 +75,11 @@ func TestDataAggregator_AggregateCard_MergesDBAndCaches(t *testing.T) {
 		WithArgs(cardID).
 		WillReturnRows(sqlmock.NewRows([]string{"residents"}).AddRow(residentsBytes))
 
-	// 4) fake redis realtime + alarms
+	// 4) fake redis realtime + alarms（按源：sleepad 提供 heart/breath，merge 算 display）
 	realtime := map[string]any{
-		"heart":        70,
-		"breath":       18,
-		"heart_source": "Sleepace",
-		"breath_source": "Sleepace",
-		"person_count":  1,
-		"timestamp":     1700000000,
+		"sleepad":      map[string]any{"heart": 70, "breath": 18},
+		"person_count": 1,
+		"timestamp":    1700000000,
 	}
 	rtBytes, _ := json.Marshal(realtime)
 	require.NoError(t, kv.Set(context.Background(), "vital-focus:card:card-1:realtime", string(rtBytes), 0))

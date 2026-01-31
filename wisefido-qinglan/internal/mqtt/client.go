@@ -2,11 +2,10 @@ package mqtt
 
 import (
 	"fmt"
-	"log"
 
-	"wisefido-qinglan/internal/config"
-	mqttcommon "owl-common/mqtt"
 	commonconfig "owl-common/config"
+	mqttcommon "owl-common/mqtt"
+	"wisefido-qinglan/internal/config"
 )
 
 // Client MQTT客户端封装
@@ -93,7 +92,7 @@ type MessageHandler func(topic string, payload []byte) error
 // DefaultMessageHandler 默认消息处理器
 func DefaultMessageHandler(handler MessageHandler) mqttcommon.MessageHandler {
 	return func(topic string, payload []byte) error {
-		log.Printf("Received MQTT message on topic: %s", topic)
+		// log.Printf("Received MQTT message on topic: %s", topic) // 已关闭，减少刷屏
 		return handler(topic, payload)
 	}
 }

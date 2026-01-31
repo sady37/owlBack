@@ -33,10 +33,10 @@ type Posture struct {
 	PostureCode    string `json:"posture_code"`    // SNOMED 编码
 	PostureDisplay string `json:"posture_display"` // 显示名称
 
-	// 位置和高度数据（来自 Radar，单位：厘米）
-	PositionX *int `json:"position_x,omitempty"` // radar_pos_x
-	PositionY *int `json:"position_y,omitempty"` // radar_pos_y
-	Height    *int `json:"height,omitempty"`     // radar_pos_z（高度）
+	// 位置数据（来自 Radar，单位：厘米；原样透传 position_z）
+	PositionX *int `json:"position_x,omitempty"`
+	PositionY *int `json:"position_y,omitempty"`
+	PositionZ *int `json:"position_z,omitempty"`
 
 	// 区域ID（来自 Radar）
 	AreaID *int `json:"area_id,omitempty"` // area_id（床区域ID）

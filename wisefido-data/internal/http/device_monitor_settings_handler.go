@@ -254,7 +254,7 @@ func (h *DeviceMonitorSettingsHandler) UpdateDeviceMonitorSettings(w http.Respon
 	}
 
 	// 使用已验证的 sessionUserID（不能使用 payload 中的 user_id）
-	success, noChange, err := h.deviceMonitorSettingsService.UpdateDeviceMonitorSettings(ctx, tenantID, deviceID, deviceType, sessionUserID, alarmItems, nil)
+	result, err := h.deviceMonitorSettingsService.UpdateDeviceMonitorSettings(ctx, tenantID, deviceID, deviceType, sessionUserID, alarmItems, nil)
 	if err != nil {
 		h.logger.Error("UpdateDeviceMonitorSettings failed",
 			zap.String("tenant_id", tenantID),
@@ -266,19 +266,51 @@ func (h *DeviceMonitorSettingsHandler) UpdateDeviceMonitorSettings(w http.Respon
 		return
 	}
 
-	// 如果配置无变化，返回 "no Change"
-	if noChange {
-		writeJSON(w, http.StatusOK, Ok(map[string]interface{}{
-			"success":   true,
-			"no_change": true,
-			"message":   "no Change",
-		}))
-		return
+	// 根据设备类型处理返回结果
+	if deviceType == "radar" {
+		// Radar 设备返回 UpdateRadarResult
+		if radarResult, ok := result.(*service.UpdateRadarResult); ok {
+			// 如果配置无变化
+			if radarResult.NoChange {
+				writeJSON(w, http.StatusOK, Ok(map[string]interface{}{
+					"success":        true,
+					"no_change":      true,
+					"message":        "no Change",
+					"device_write":   false,
+					"database_write": false,
+				}))
+				return
+			}
+
+			// 构建失败项列表（转换为前端格式）
+			failedItems := make([]map[string]interface{}, len(radarResult.FailedAlarmTypes))
+			for i, item := range radarResult.FailedAlarmTypes {
+				failedItems[i] = map[string]interface{}{
+					"alarm_type":   item.AlarmType,
+					"is_enabled":   item.IsEnabled,
+					"alarm_level":  item.AlarmLevel,
+					"alarm_params": item.AlarmParams,
+				}
+			}
+
+			writeJSON(w, http.StatusOK, Ok(map[string]interface{}{
+				"success":        radarResult.DeviceWriteSuccess && radarResult.DBWriteSuccess,
+				"device_write":   radarResult.DeviceWriteSuccess,
+				"database_write": radarResult.DBWriteSuccess,
+				"failed_items":   failedItems, // 失败的项，vue 需要更新为旧值
+			}))
+			return
+		}
+	} else {
+		// Sleepace 设备返回 map
+		if sleepaceResult, ok := result.(map[string]interface{}); ok {
+			writeJSON(w, http.StatusOK, Ok(sleepaceResult))
+			return
+		}
 	}
 
-	writeJSON(w, http.StatusOK, Ok(map[string]interface{}{
-		"success": success,
-	}))
+	// 未知的返回类型
+	writeJSON(w, http.StatusOK, Fail("unknown result type"))
 }
 
 // GetDefaultDeviceMonitorSettings 获取默认设备监控配置
@@ -447,15 +479,9 @@ func getBranchIDs(branches []*domain.UserBranch) []string {
 	return ids
 }
 
-// verifyDeviceOnline 验证设备是否在线（从 Redis 读取在线状态）
+// verifyDeviceOnline 验证设备是否在线（通过 wisefido-qinglan HTTP API 实时查询）
 // 仅允许设置在线的设备
 func (h *DeviceMonitorSettingsHandler) verifyDeviceOnline(ctx context.Context, tenantID, deviceID string) error {
-	if h.redisClient == nil {
-		// 如果 Redis 客户端未配置，跳过在线状态检查（向后兼容）
-		h.logger.Warn("Redis client not configured, skipping online status check")
-		return nil
-	}
-
 	// 获取设备信息
 	device, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceID)
 	if err != nil {
@@ -470,27 +496,14 @@ func (h *DeviceMonitorSettingsHandler) verifyDeviceOnline(ctx context.Context, t
 		return nil
 	}
 
-	// 从 Redis 读取设备在线状态
-	key := "device:online_status:" + device.DeviceUID
-	status, err := h.redisClient.HGet(ctx, key, "status").Result()
-	if err != nil {
-		// Redis 中没有状态（redis.Nil 表示 key 不存在或已过期）
-		// 可能的原因：
-		// 1. config_stream_consumer 没有正确处理消息
-		// 2. Redis Hash 已过期（5分钟过期时间）
-		// 3. wisefido-qinglan 没有发布设备状态到 stream
-		h.logger.Warn("Failed to get device online status from Redis, treating as offline",
+	// 通过 wisefido-qinglan HTTP API 实时查询设备在线状态
+	if err := h.deviceMonitorSettingsService.CheckDeviceOnlineStatus(ctx, device.DeviceUID); err != nil {
+		h.logger.Warn("Device is not online",
 			zap.String("device_id", deviceID),
 			zap.String("device_uid", device.DeviceUID),
-			zap.String("redis_key", key),
 			zap.Error(err),
-			zap.String("note", "Device status may not be updated by config_stream_consumer, or Redis key expired (5min TTL)"),
 		)
-		return fmt.Errorf("device is offline (status not found in Redis)")
-	}
-
-	if status != "online" {
-		return fmt.Errorf("device is offline (status: %s)", status)
+		return err
 	}
 
 	return nil

@@ -328,6 +328,10 @@ func buildAlarmCloudConfigFromDomain(alarmCloud *domain.AlarmCloud) (*alarm.Alar
 
 	// 处理 SleepPad：使用 DefaultAlarmSetting 作为基础，更新 alarm_level
 	for _, item := range alarm.DefaultAlarmSetting.Sleepad {
+		// 过滤掉 DisplayNone 的项，只保留 DisplayAlarmCloud 或 DisplayAlarmCloudAndDevice 的项
+		if item.DisplaySetting == alarm.DisplayNone {
+			continue
+		}
 		newItem := item // 复制基础配置
 		if sleepPadMap, ok := deviceAlarmsMap["SleepPad"]; ok {
 			if level, exists := sleepPadMap[item.AlarmType]; exists {
@@ -348,6 +352,10 @@ func buildAlarmCloudConfigFromDomain(alarmCloud *domain.AlarmCloud) (*alarm.Alar
 
 	// 处理 Radar：使用 DefaultAlarmSetting 作为基础，更新 alarm_level
 	for _, item := range alarm.DefaultAlarmSetting.Radar {
+		// 过滤掉 DisplayNone 的项，只保留 DisplayAlarmCloud 或 DisplayAlarmCloudAndDevice 的项
+		if item.DisplaySetting == alarm.DisplayNone {
+			continue
+		}
 		newItem := item // 复制基础配置
 		if radarMap, ok := deviceAlarmsMap["Radar"]; ok {
 			if level, exists := radarMap[item.AlarmType]; exists {
@@ -469,9 +477,12 @@ func buildDefaultAlarmCloudConfig(tenantID string) (*domain.AlarmCloud, error) {
 	// 处理 SleepPad 报警
 	sleepPadAlarms := make(map[string]string)
 	for _, item := range defaultSetting.Sleepad {
-		// 只包含启用的且有报警级别的项
+		// 只包含启用的、有报警级别的、且 DisplaySetting 包含 alarm_cloud 的项
 		if item.IsEnabled != nil && *item.IsEnabled == alarm.IsEnabledOn && item.AlarmLevel != nil {
-			sleepPadAlarms[item.AlarmType] = *item.AlarmLevel
+			// 过滤掉 DisplayNone 的项，只保留 DisplayAlarmCloud 或 DisplayAlarmCloudAndDevice
+			if item.DisplaySetting == alarm.DisplayAlarmCloud || item.DisplaySetting == alarm.DisplayAlarmCloudAndDevice {
+				sleepPadAlarms[item.AlarmType] = *item.AlarmLevel
+			}
 		}
 	}
 	if len(sleepPadAlarms) > 0 {
@@ -481,9 +492,12 @@ func buildDefaultAlarmCloudConfig(tenantID string) (*domain.AlarmCloud, error) {
 	// 处理 Radar 报警
 	radarAlarms := make(map[string]string)
 	for _, item := range defaultSetting.Radar {
-		// 只包含启用的且有报警级别的项
+		// 只包含启用的、有报警级别的、且 DisplaySetting 包含 alarm_cloud 的项
 		if item.IsEnabled != nil && *item.IsEnabled == alarm.IsEnabledOn && item.AlarmLevel != nil {
-			radarAlarms[item.AlarmType] = *item.AlarmLevel
+			// 过滤掉 DisplayNone 的项，只保留 DisplayAlarmCloud 或 DisplayAlarmCloudAndDevice
+			if item.DisplaySetting == alarm.DisplayAlarmCloud || item.DisplaySetting == alarm.DisplayAlarmCloudAndDevice {
+				radarAlarms[item.AlarmType] = *item.AlarmLevel
+			}
 		}
 	}
 	if len(radarAlarms) > 0 {

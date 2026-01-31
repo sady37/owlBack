@@ -134,11 +134,11 @@ func checkHeightDrop(
 	state *consumer.Event1State,
 	posture *models.Posture,
 ) (bool, float64) {
-	if state.LyingHeight == nil || posture.Height == nil {
+	if state.LyingHeight == nil || posture.PositionZ == nil {
 		return false, 0
 	}
 
-	currentHeight := float64(*posture.Height)
+	currentHeight := float64(*posture.PositionZ)
 	lyingHeight := *state.LyingHeight
 
 	// 高度降低判断条件：

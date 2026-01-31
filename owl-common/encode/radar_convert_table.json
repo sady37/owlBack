@@ -1,0 +1,1037 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2026-01-05T00:00:00Z",
+  "description": "Radar 设备字段到 SNOMED 标准格式的转换表",
+  "conversions": {
+    "monitor": {
+      "track": {
+        "pose": {
+          "field_path": "monitor.track.pose",
+          "field_type": "enum",
+          "unit_conversion": null,
+          "mappings": {
+            "0": {
+              "snomed_code": null,
+              "snomed_display": "Initialization",
+              "category": "activity",
+              "display_en": "Initialization"
+            },
+            "1": {
+              "snomed_code": "129006008",
+              "snomed_display": "Walking",
+              "category": "activity",
+              "display_en": "Walking"
+            },
+            "2": {
+              "snomed_code": "129839007",
+              "snomed_display": "SuspectedFall",
+              "category": "safety",
+              "display_en": "SuspectedFall"
+            },
+            "3": {
+              "snomed_code": "402120000",
+              "snomed_display": "Sitting",
+              "category": "activity",
+              "display_en": "Sitting"
+            },
+            "4": {
+              "snomed_code": "383370001",
+              "snomed_display": "Standing",
+              "category": "activity",
+              "display_en": "Standing"
+            },
+            "5": {
+              "snomed_code": "161898004",
+              "snomed_display": "Fall",
+              "category": "safety",
+              "display_en": "Fall"
+            },
+            "6": {
+              "snomed_code": "109030009",
+              "snomed_display": "Lying",
+              "category": "activity",
+              "display_en": "Lying"
+            },
+            "7": {
+              "snomed_code": "129839007",
+              "snomed_display": "SuspectedSittingOnGround",
+              "category": "safety",
+              "display_en": "SuspectedSittingOnGround"
+            },
+            "8": {
+              "snomed_code": "161898004",
+              "snomed_display": "SittingOnGround",
+              "category": "safety",
+              "display_en": "SittingOnGround"
+            },
+            "9": {
+              "snomed_code": "225698008",
+              "snomed_display": "BedSitUp",
+              "category": "activity",
+              "display_en": "BedSitUp"
+            },
+            "10": {
+              "snomed_code": "225698008",
+              "snomed_display": "SuspectedBedSitUp",
+              "category": "activity",
+              "display_en": "SuspectedBedSitUp"
+            },
+            "11": {
+              "snomed_code": "225698008",
+              "snomed_display": "BedSitUp",
+              "category": "activity",
+              "display_en": "BedSitUp"
+            }
+          }
+        },
+        "event": {
+          "field_path": "monitor.track.event",
+          "field_type": "enum",
+          "unit_conversion": null,
+          "mappings": {
+            "0": {
+              "snomed_code": null,
+              "snomed_display": "No event",
+              "category": "activity",
+              "display_en": "no event"
+            },
+            "1": {
+              "snomed_code": null,
+              "snomed_display": "Enter room",
+              "category": "activity",
+              "display_en": "enter room"
+            },
+            "2": {
+              "snomed_code": null,
+              "snomed_display": "Leave room",
+              "category": "activity",
+              "display_en": "leave room"
+            },
+            "3": {
+              "snomed_code": null,
+              "snomed_display": "Enter area",
+              "category": "activity",
+              "display_en": "enter area"
+            },
+            "4": {
+              "snomed_code": null,
+              "snomed_display": "Leave area",
+              "category": "activity",
+              "display_en": "leave area"
+            }
+          }
+        },
+        "position_x": {
+          "field_path": "monitor.track.position_x",
+          "field_type": "numeric",
+          "byte_position": 1,
+          "unit_conversion": {
+            "formula": "value * 10",
+            "from_unit": "dm",
+            "to_unit": "cm"
+          },
+          "mappings": null
+        },
+        "position_y": {
+          "field_path": "monitor.track.position_y",
+          "field_type": "numeric",
+          "byte_position": 2,
+          "unit_conversion": {
+            "formula": "value * 10",
+            "from_unit": "dm",
+            "to_unit": "cm"
+          },
+          "mappings": null
+        },
+        "position_z": {
+          "field_path": "monitor.track.position_z",
+          "field_type": "numeric",
+          "byte_position": 3,
+          "unit_conversion": null,
+          "mappings": null
+        },
+        "remaining_time": {
+          "field_path": "monitor.track.remaining_time",
+          "field_type": "numeric",
+          "byte_position": 12,
+          "unit_conversion": null,
+          "mappings": null
+        },
+        "target_id": {
+          "field_path": "monitor.track.target_id",
+          "field_type": "numeric",
+          "byte_position": 0,
+          "unit_conversion": null,
+          "mappings": null
+        },
+        "area_id": {
+          "field_path": "monitor.track.area_id",
+          "field_type": "numeric",
+          "byte_position": 15,
+          "unit_conversion": null,
+          "mappings": null
+        }
+      },
+      "bh": {
+        "breath_rate": {
+          "field_path": "monitor.bh.breath_rate",
+          "field_type": "numeric",
+          "byte_position": 1,
+          "unit_conversion": null,
+          "mappings": null
+        },
+        "heart_rate": {
+          "field_path": "monitor.bh.heart_rate",
+          "field_type": "numeric",
+          "byte_position": 2,
+          "unit_conversion": null,
+          "mappings": null
+        },
+        "sleep_status": {
+          "field_path": "monitor.bh.sleep_status",
+          "field_type": "bit_field",
+          "byte_position": 13,
+          "bit_position": "7:6",
+          "unit_conversion": null,
+          "mappings": {
+            "00": {
+              "snomed_code": null,
+              "snomed_display": "Sleep state undefined",
+              "category": "activity",
+              "display_en": "Sleep state undefined"
+            },
+            "01": {
+              "snomed_code": "248232005",
+              "snomed_display": "Light sleep",
+              "category": "activity",
+              "display_en": "light sleep"
+            },
+            "10": {
+              "snomed_code": "248233000",
+              "snomed_display": "Deep sleep",
+              "category": "activity",
+              "display_en": "deep sleep"
+            },
+            "11": {
+              "snomed_code": "248220002",
+              "snomed_display": "Awake",
+              "category": "activity",
+              "display_en": "awake"
+            }
+          }
+        },
+        "stability": {
+          "field_path": "monitor.bh.stability",
+          "field_type": "bit_field",
+          "byte_position": 14,
+          "bit_position": "1:0",
+          "unit_conversion": null,
+          "mappings": {
+            "00": {
+              "snomed_code": null,
+              "snomed_display": "Stability undefined",
+              "category": "vital-signs",
+              "display_en": "stability undefined"
+            },
+            "01": {
+              "snomed_code": null,
+              "snomed_display": "Large movement",
+              "category": "vital-signs",
+              "display_en": "large movement"
+            },
+            "10": {
+              "snomed_code": null,
+              "snomed_display": "Small movement",
+              "category": "vital-signs",
+              "display_en": "small movement"
+            },
+            "11": {
+              "snomed_code": null,
+              "snomed_display": "No interference",
+              "category": "vital-signs",
+              "display_en": "no interference"
+            }
+          }
+        }
+      }
+    },
+    "stat": {
+      "sleep": {
+        "base64_structure": {
+          "field_path": "stat.sleep.base64_structure",
+          "field_type": "base64_array",
+          "array_length": 16,
+          "description": "base64 编码的 16 字节数组",
+          "byte_definitions": [
+            {
+              "byte": 0,
+              "name": "identifier",
+              "type": "integer",
+              "description": "固定为 0xff，表示为睡眠统计",
+              "unit_conversion": null
+            },
+            {
+              "byte": 1,
+              "name": "realtime_breath_rate",
+              "type": "integer",
+              "description": "实时呼吸值，单位：次/分钟",
+              "unit_conversion": null
+            },
+            {
+              "byte": 2,
+              "name": "realtime_heart_rate",
+              "type": "integer",
+              "description": "实时心率值，单位：次/分钟",
+              "unit_conversion": null
+            },
+            {
+              "bytes": [3, 4],
+              "name": "sleep_stat_info_1",
+              "type": "reserved",
+              "description": "睡眠统计信息（未公开）",
+              "unit_conversion": null
+            },
+            {
+              "byte": 5,
+              "name": "avg_breath_rate",
+              "type": "integer",
+              "description": "分钟级平均呼吸，单位：次/分钟",
+              "unit_conversion": null
+            },
+            {
+              "byte": 6,
+              "name": "avg_heart_rate",
+              "type": "integer",
+              "description": "分钟级平均心率，单位：次/分钟",
+              "unit_conversion": null
+            },
+            {
+              "bytes": [7, 12],
+              "name": "sleep_stat_info_2",
+              "type": "reserved",
+              "description": "睡眠统计信息（未公开）",
+              "unit_conversion": null
+            },
+            {
+              "byte": 13,
+              "name": "hr_breath_event",
+              "type": "bit_field",
+              "description": "呼吸心率事件（位字段）",
+              "bit_fields": [
+                {
+                  "bits": [0, 1],
+                  "name": "breath_state",
+                  "field_path": "stat.sleep.hr_breath_event.breath_state",
+                  "mappings": {
+                    "00": {
+                      "snomed_code": null,
+                      "snomed_display": "Breath rate normal",
+                      "category": "vital-signs",
+                      "display_en": "breath rate normal"
+                    },
+                    "01": {
+                      "snomed_code": null,
+                      "snomed_display": "Breath rate low",
+                      "category": "vital-signs",
+                      "display_en": "Breath rate low"
+                    },
+                    "10": {
+                      "snomed_code": null,
+                      "snomed_display": "Breath rate high",
+                      "category": "vital-signs",
+                      "display_en": "breath rate high"
+                    },
+                    "11": {
+                      "snomed_code": "67905006",
+                      "snomed_display": "Apnea",
+                      "category": "clinical",
+                      "display_en": "Apnea"
+                    }
+                  }
+                },
+                {
+                  "bits": [2, 3],
+                  "name": "heart_state",
+                  "field_path": "stat.sleep.hr_breath_event.heart_state",
+                  "mappings": {
+                    "00": {
+                      "snomed_code": null,
+                      "snomed_display": "Heart rate normal",
+                      "category": "vital-signs",
+                      "display_en": "heart rate normal"
+                    },
+                    "01": {
+                      "snomed_code": null,
+                      "snomed_display": "Heart rate low",
+                      "category": "vital-signs",
+                      "display_en": "heart rate low"
+                    },
+                    "10": {
+                      "snomed_code": null,
+                      "snomed_display": "Heart rate high",
+                      "category": "vital-signs",
+                      "display_en": "Heart rate high"
+                    },
+                    "11": {
+                      "snomed_code": null,
+                      "snomed_display": "Heart rate undefined",
+                      "category": "vital-signs",
+                      "display_en": "heart rate undefined"
+                    }
+                  }
+                },
+                {
+                  "bits": [4, 5],
+                  "name": "vital_signs_state",
+                  "field_path": "stat.sleep.hr_breath_event.vital_signs_state",
+                  "mappings": {
+                    "00": {
+                      "snomed_code": null,
+                      "snomed_display": "Vital signs normal",
+                      "category": "vital-signs",
+                      "display_en": "Vital signs normal"
+                    },
+                    "01": {
+                      "snomed_code": null,
+                      "snomed_display": "Vital signs undefined",
+                      "category": "vital-signs",
+                      "display_en": "vital signs undefined"
+                    },
+                    "10": {
+                      "snomed_code": null,
+                      "snomed_display": "Vital signs undefined",
+                      "category": "vital-signs",
+                      "display_en": "vital signs undefined"
+                    },
+                    "11": {
+                      "snomed_code": null,
+                      "snomed_display": "Vital signs weak",
+                      "category": "vital-signs",
+                      "display_en": "vital signs weak"
+                    }
+                  }
+                },
+                {
+                  "bits": [6, 7],
+                  "name": "sleep_state",
+                  "field_path": "stat.sleep.hr_breath_event.sleep_state",
+                  "mappings": {
+                    "00": {
+                      "snomed_code": null,
+                      "snomed_display": "Sleep state undefined",
+                      "category": "activity",
+                      "display_en": "Sleep state undefined"
+                    },
+                    "01": {
+                      "snomed_code": "248232005",
+                      "snomed_display": "Light sleep",
+                      "category": "activity",
+                      "display_en": "light sleep"
+                    },
+                    "10": {
+                      "snomed_code": "248233000",
+                      "snomed_display": "Deep sleep",
+                      "category": "activity",
+                      "display_en": "deep sleep"
+                    },
+                    "11": {
+                      "snomed_code": "248220002",
+                      "snomed_display": "Awake",
+                      "category": "activity",
+                      "display_en": "awake"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "bytes": [14, 15],
+              "name": "sleep_stat_info_3",
+              "type": "reserved",
+              "description": "睡眠统计信息（未公开）",
+              "unit_conversion": null
+            }
+          ]
+        },
+        "realtime_breath_rate": {
+          "field_path": "stat.sleep.realtime_breath_rate",
+          "field_type": "numeric",
+          "byte_position": 1,
+          "unit_conversion": null,
+          "mappings": null
+        },
+        "realtime_heart_rate": {
+          "field_path": "stat.sleep.realtime_heart_rate",
+          "field_type": "numeric",
+          "byte_position": 2,
+          "unit_conversion": null,
+          "mappings": null
+        },
+        "avg_breath_rate": {
+          "field_path": "stat.sleep.avg_breath_rate",
+          "field_type": "numeric",
+          "byte_position": 5,
+          "unit_conversion": null,
+          "mappings": null
+        },
+        "avg_heart_rate": {
+          "field_path": "stat.sleep.avg_heart_rate",
+          "field_type": "numeric",
+          "byte_position": 6,
+          "unit_conversion": null,
+          "mappings": null
+        },
+        "hr_breath_event": {
+          "breath_state": {
+            "field_path": "stat.sleep.hr_breath_event.breath_state",
+            "field_type": "bit_field",
+            "byte_position": 13,
+            "bit_position": "1:0",
+            "unit_conversion": null,
+            "mappings": {
+              "00": {
+                "snomed_code": null,
+                "snomed_display": "Breath rate normal",
+                "category": "vital-signs",
+                "display_en": "breath rate normal"
+              },
+              "01": {
+                "snomed_code": null,
+                "snomed_display": "Breath rate low",
+                "category": "vital-signs",
+                "display_en": "Breath rate low"
+              },
+              "10": {
+                "snomed_code": null,
+                "snomed_display": "Breath rate high",
+                "category": "vital-signs",
+                "display_en": "breath rate high"
+              },
+              "11": {
+                "snomed_code": "67905006",
+                "snomed_display": "Apnea",
+                "category": "clinical",
+                "display_en": "Apnea"
+              }
+            }
+          },
+          "heart_state": {
+            "field_path": "stat.sleep.hr_breath_event.heart_state",
+            "field_type": "bit_field",
+            "byte_position": 13,
+            "bit_position": "3:2",
+            "unit_conversion": null,
+            "mappings": {
+              "00": {
+                "snomed_code": null,
+                "snomed_display": "Heart rate normal",
+                "category": "vital-signs",
+                "display_en": "heart rate normal"
+              },
+              "01": {
+                "snomed_code": null,
+                "snomed_display": "Heart rate low",
+                "category": "vital-signs",
+                "display_en": "heart rate low"
+              },
+              "10": {
+                "snomed_code": null,
+                "snomed_display": "Heart rate high",
+                "category": "vital-signs",
+                "display_en": "Heart rate high"
+              },
+              "11": {
+                "snomed_code": null,
+                "snomed_display": "Heart rate undefined",
+                "category": "vital-signs",
+                "display_en": "heart rate undefined"
+              }
+            }
+          },
+          "vital_signs_state": {
+            "field_path": "stat.sleep.hr_breath_event.vital_signs_state",
+            "field_type": "bit_field",
+            "byte_position": 13,
+            "bit_position": "5:4",
+            "unit_conversion": null,
+            "mappings": {
+              "00": {
+                "snomed_code": null,
+                "snomed_display": "Vital signs normal",
+                "category": "vital-signs",
+                "display_en": "Vital signs normal"
+              },
+              "01": {
+                "snomed_code": null,
+                "snomed_display": "Vital signs undefined",
+                "category": "vital-signs",
+                "display_en": "vital signs undefined"
+              },
+              "10": {
+                "snomed_code": null,
+                "snomed_display": "Vital signs undefined",
+                "category": "vital-signs",
+                "display_en": "vital signs undefined"
+              },
+              "11": {
+                "snomed_code": null,
+                "snomed_display": "Vital signs weak",
+                "category": "vital-signs",
+                "display_en": "vital signs weak"
+              }
+            }
+          },
+          "sleep_state": {
+            "field_path": "stat.sleep.hr_breath_event.sleep_state",
+            "field_type": "bit_field",
+            "byte_position": 13,
+            "bit_position": "7:6",
+            "unit_conversion": null,
+            "mappings": {
+              "00": {
+                "snomed_code": null,
+                "snomed_display": "Sleep state undefined",
+                "category": "activity",
+                "display_en": "Sleep state undefined"
+              },
+              "01": {
+                "snomed_code": "248232005",
+                "snomed_display": "Light sleep",
+                "category": "activity",
+                "display_en": "light sleep"
+              },
+              "10": {
+                "snomed_code": "248233000",
+                "snomed_display": "Deep sleep",
+                "category": "activity",
+                "display_en": "deep sleep"
+              },
+              "11": {
+                "snomed_code": "248220002",
+                "snomed_display": "Awake",
+                "category": "activity",
+                "display_en": "awake"
+              }
+            }
+          }
+        }
+      },
+      "track": {
+        "base64_structure": {
+          "field_path": "stat.track.base64_structure",
+          "field_type": "base64_array",
+          "array_length": 16,
+          "description": "base64 编码的 16 字节数组",
+          "byte_definitions": [
+            {
+              "byte": 0,
+              "name": "version",
+              "type": "integer",
+              "description": "版本标识符，当前取值 1 或 2",
+              "unit_conversion": null
+            },
+            {
+              "byte": 1,
+              "name": "people_count",
+              "type": "integer",
+              "description": "当前上报时刻雷达检测到的人数，取值 0-8",
+              "unit_conversion": null
+            },
+            {
+              "bytes": [2, 3],
+              "name": "walk_distance",
+              "type": "integer",
+              "byte_order": "big_endian",
+              "description": "过去一分钟统计的行走距离",
+              "unit_conversion": {
+                "formula": "value * 100",
+                "from_unit": "m",
+                "to_unit": "cm"
+              }
+            },
+            {
+              "byte": 4,
+              "name": "walk_duration",
+              "type": "integer",
+              "description": "过去一分钟统计的行走时间，单位：秒",
+              "unit_conversion": null
+            },
+            {
+              "byte": 5,
+              "name": "sit_duration",
+              "type": "integer",
+              "description": "静坐时长（未开放使用）",
+              "unit_conversion": null
+            },
+            {
+              "byte": 6,
+              "name": "lie_duration",
+              "type": "integer",
+              "description": "过去一分钟统计的躺卧时长，单位：秒",
+              "unit_conversion": null
+            },
+            {
+              "byte": 7,
+              "name": "stand_duration",
+              "type": "integer",
+              "description": "过去一分钟统计的站立时长，单位：秒",
+              "unit_conversion": null
+            },
+            {
+              "byte": 8,
+              "name": "multi_person_duration",
+              "type": "integer",
+              "description": "过去一分钟统计的有多人存在的时间，单位：秒",
+              "unit_conversion": null
+            },
+            {
+              "bytes": [9, 15],
+              "name": "reserved",
+              "type": "reserved",
+              "description": "未开放使用",
+              "unit_conversion": null
+            }
+          ]
+        },
+        "version": {
+          "field_path": "stat.track.version",
+          "field_type": "numeric",
+          "byte_position": 0,
+          "unit_conversion": null,
+          "mappings": null
+        },
+        "people_count": {
+          "field_path": "stat.track.people_count",
+          "field_type": "numeric",
+          "byte_position": 1,
+          "unit_conversion": null,
+          "mappings": null
+        },
+        "walk_distance": {
+          "field_path": "stat.track.walk_distance",
+          "field_type": "numeric",
+          "byte_positions": [2, 3],
+          "byte_order": "big_endian",
+          "unit_conversion": {
+            "formula": "value * 100",
+            "from_unit": "m",
+            "to_unit": "cm"
+          },
+          "mappings": null
+        },
+        "walk_duration": {
+          "field_path": "stat.track.walk_duration",
+          "field_type": "numeric",
+          "byte_position": 4,
+          "unit_conversion": null,
+          "mappings": null
+        },
+        "lie_duration": {
+          "field_path": "stat.track.lie_duration",
+          "field_type": "numeric",
+          "byte_position": 6,
+          "unit_conversion": null,
+          "mappings": null
+        },
+        "stand_duration": {
+          "field_path": "stat.track.stand_duration",
+          "field_type": "numeric",
+          "byte_position": 7,
+          "unit_conversion": null,
+          "mappings": null
+        },
+        "multi_person_duration": {
+          "field_path": "stat.track.multi_person_duration",
+          "field_type": "numeric",
+          "byte_position": 8,
+          "unit_conversion": null,
+          "mappings": null
+        }
+      }
+    },
+    "event": {
+      "enter_leave": {
+        "event": {
+          "field_path": "event.enter_leave.event",
+          "field_type": "enum",
+          "unit_conversion": null,
+          "mappings": {
+            "1": {
+              "snomed_code": null,
+              "snomed_display": "Enter room",
+              "category": "activity",
+              "display_en": "enter room"
+            },
+            "2": {
+              "snomed_code": null,
+              "snomed_display": "Leave room",
+              "category": "activity",
+              "display_en": "leave room"
+            },
+            "3": {
+              "snomed_code": null,
+              "snomed_display": "Enter area",
+              "category": "activity",
+              "display_en": "enter area"
+            },
+            "4": {
+              "snomed_code": null,
+              "snomed_display": "Leave area",
+              "category": "activity",
+              "display_en": "leave area"
+            },
+            "5": {
+              "snomed_code": "248569007",
+              "snomed_display": "in bed",
+              "category": "activity",
+              "display_en": "Enter bed"
+            },
+            "6": {
+              "snomed_code": "248570008",
+              "snomed_display": "not in bed",
+              "category": "activity",
+              "display_en": "left bed"
+            }
+          }
+        }
+      },
+      "pose_change": {
+        "pose": {
+          "field_path": "event.pose_change.pose",
+          "field_type": "enum",
+          "unit_conversion": null,
+          "mappings": {
+            "0": {
+              "snomed_code": null,
+              "snomed_display": "Initialization",
+              "category": "activity",
+              "display_en": "Initialization"
+            },
+            "1": {
+              "snomed_code": "129006008",
+              "snomed_display": "Walking",
+              "category": "activity",
+              "display_en": "Walking"
+            },
+            "2": {
+              "snomed_code": "129839007",
+              "snomed_display": "SuspectedFall",
+              "category": "safety",
+              "display_en": "SuspectedFall"
+            },
+            "3": {
+              "snomed_code": "402120000",
+              "snomed_display": "Sitting",
+              "category": "activity",
+              "display_en": "Sitting"
+            },
+            "4": {
+              "snomed_code": "383370001",
+              "snomed_display": "Standing",
+              "category": "activity",
+              "display_en": "Standing"
+            },
+            "5": {
+              "snomed_code": "161898004",
+              "snomed_display": "Fall",
+              "category": "safety",
+              "display_en": "Fall"
+            },
+            "6": {
+              "snomed_code": "109030009",
+              "snomed_display": "Lying",
+              "category": "activity",
+              "display_en": "Lying"
+            },
+            "7": {
+              "snomed_code": "129839007",
+              "snomed_display": "SuspectedSittingOnGround",
+              "category": "safety",
+              "display_en": "SuspectedSittingOnGround"
+            },
+            "8": {
+              "snomed_code": "161898004",
+              "snomed_display": "SittingOnGround",
+              "category": "safety",
+              "display_en": "SittingOnGround"
+            },
+            "9": {
+              "snomed_code": "225698008",
+              "snomed_display": "BedSitUp",
+              "category": "activity",
+              "display_en": "BedSitUp"
+            },
+            "10": {
+              "snomed_code": "225698008",
+              "snomed_display": "SuspectedBedSitUp",
+              "category": "activity",
+              "display_en": "SuspectedBedSitUp"
+            },
+            "11": {
+              "snomed_code": "225698008",
+              "snomed_display": "BedSitUp",
+              "category": "activity",
+              "display_en": "BedSitUp"
+            }
+          }
+        }
+      },
+      "number_people": {
+        "number_people": {
+          "field_path": "event.number_people.number_people",
+          "field_type": "numeric",
+          "unit_conversion": null,
+          "mappings": null,
+          "description": "监测区域内的人数"
+        }
+      }
+    },
+    "config": {
+      "radar_install_height": {
+        "field_path": "config.radar_install_height",
+        "field_type": "numeric",
+        "unit_conversion": {
+          "read_formula": "value * 10",
+          "write_formula": "value / 10",
+          "from_unit": "dm",
+          "to_unit": "cm",
+          "direction": "bidirectional"
+        },
+        "mappings": null,
+        "description": "安装高度，取值范围：15-33 分米（顶装默认值：28，侧装默认值：15），Server 端统一使用厘米"
+      },
+      "rectangle": {
+        "field_path": "config.rectangle",
+        "field_type": "array",
+        "array_item_type": "coordinate_pair",
+        "format": "{x1, y1; x2, y2; x3, y3; x4, y4}",
+        "unit_conversion": {
+          "read_formula": "value * 10",
+          "write_formula": "value / 10",
+          "from_unit": "dm",
+          "to_unit": "cm",
+          "direction": "bidirectional",
+          "apply_to": "all_coordinates"
+        },
+        "mappings": null,
+        "description": "检测边界，4 个顶点坐标，单位为分米，Server 端统一使用厘米"
+      },
+      "declare_area": {
+        "field_path": "config.declare_area",
+        "field_type": "array",
+        "array_item_type": "area_definition",
+        "format": "{area-id, area-type, x1, y1; x2, y2, x3, y3, x4, y4}",
+        "unit_conversion": {
+          "read_formula": "value * 10",
+          "write_formula": "value / 10",
+          "from_unit": "dm",
+          "to_unit": "cm",
+          "direction": "bidirectional",
+          "apply_to": "coordinate_values_only",
+          "coordinate_indices": [2, 3, 4, 5, 6, 7, 8, 9]
+        },
+        "mappings": null,
+        "description": "设置区域，格式：{area-id, area-type, x1, y1; x2, y2, x3, y3, x4, y4}，坐标单位为分米，Server 端统一使用厘米。注意：area-id 和 area-type 不参与转换"
+      },
+      "fall_param": {
+        "base64_structure": {
+          "field_path": "config.fall_param.base64_structure",
+          "field_type": "base64_array",
+          "array_length": 16,
+          "description": "base64 编码的 16 字节数组",
+          "byte_definitions": [
+            {
+              "bytes": [0, 2],
+              "name": "reserved_1",
+              "type": "reserved",
+              "description": "保留未使用",
+              "unit_conversion": null
+            },
+            {
+              "byte": 3,
+              "name": "fall_alarm_duration",
+              "type": "integer",
+              "description": "跌倒告警时间",
+              "unit_conversion": {
+                "read_formula": "value * 10",
+                "write_formula": "value / 10",
+                "from_unit": "10秒单位",
+                "to_unit": "秒",
+                "direction": "bidirectional"
+              }
+            },
+            {
+              "byte": 4,
+              "name": "function_switch",
+              "type": "bit_field",
+              "description": "功能开关",
+              "bit_fields": [
+                {
+                  "bit": 0,
+                  "name": "sitting_alarm_enabled",
+                  "description": "坐地告警开关 (1=打开)"
+                },
+                {
+                  "bit": 1,
+                  "name": "posture_detection_enabled",
+                  "description": "姿态检测开关 (1=打开)"
+                },
+                {
+                  "bit": 2,
+                  "name": "bed_sit_up_alarm_enabled",
+                  "description": "床上坐起告警开关 (1=打开，需 202501 固件)"
+                }
+              ]
+            },
+            {
+              "byte": 5,
+              "name": "sitting_alarm_duration",
+              "type": "integer",
+              "description": "坐地告警时间",
+              "unit_conversion": {
+                "read_formula": "value * 10",
+                "write_formula": "value / 10",
+                "from_unit": "10秒单位",
+                "to_unit": "秒",
+                "direction": "bidirectional"
+              }
+            },
+            {
+              "bytes": [6, 15],
+              "name": "reserved_2",
+              "type": "reserved",
+              "description": "保留未使用",
+              "unit_conversion": null
+            }
+          ]
+        },
+        "fall_alarm_duration": {
+          "field_path": "config.fall_param.fall_alarm_duration",
+          "field_type": "numeric",
+          "byte_position": 3,
+          "unit_conversion": {
+            "read_formula": "value * 10",
+            "write_formula": "value / 10",
+            "from_unit": "10秒单位",
+            "to_unit": "秒",
+            "direction": "bidirectional"
+          },
+          "mappings": null
+        },
+        "sitting_alarm_duration": {
+          "field_path": "config.fall_param.sitting_alarm_duration",
+          "field_type": "numeric",
+          "byte_position": 5,
+          "unit_conversion": {
+            "read_formula": "value * 10",
+            "write_formula": "value / 10",
+            "from_unit": "10秒单位",
+            "to_unit": "秒",
+            "direction": "bidirectional"
+          },
+          "mappings": null
+        }
+      }
+    }
+  }
+}

@@ -250,164 +250,96 @@ func (f *SensorFusion) FuseCardData(tenantID, cardID, cardType string) (*models.
 	return result, nil
 }
 
-// useSingleDeviceData 使用单个 Sleepace 设备的数据（不需要融合的情况）
+// useSingleDeviceData 使用单个 Sleepace 设备的数据，按源写入 sleepad
 func (f *SensorFusion) useSingleDeviceData(data *models.IoTTimeSeries, result *models.RealtimeData) {
-	if data.HeartRate != nil {
-		result.Heart = data.HeartRate
-		result.HeartSource = "Sleepace"
-		timestamp := data.Timestamp.Unix()
-		result.HeartTimestamp = &timestamp
-	}
-	if data.RespiratoryRate != nil {
-		result.Breath = data.RespiratoryRate
-		result.BreathSource = "Sleepace"
-		timestamp := data.Timestamp.Unix()
-		result.BreathTimestamp = &timestamp
-	}
-	if data.BedStatusSNOMEDCode != nil {
-		result.BedStatus = data.BedStatusSNOMEDCode
-		result.BedStatusSource = "Sleepace"
-		timestamp := data.Timestamp.Unix()
-		result.BedStatusTimestamp = &timestamp
-	}
-	if data.SleepStateSNOMEDCode != nil {
-		result.SleepStage = data.SleepStateSNOMEDCode
-		result.SleepStageSource = "Sleepace"
-		timestamp := data.Timestamp.Unix()
-		result.SleepStageTimestamp = &timestamp
+	result.Sleepad = &models.VitalSource{
+		Heart:       data.HeartRate,
+		Breath:      data.RespiratoryRate,
+		BedStatus:   data.BedStatusSNOMEDCode,
+		SleepStatus: data.SleepStateSNOMEDCode,
 	}
 }
 
-// useRadarDeviceData 使用单个 Radar 设备的数据（不需要融合的情况）
+// useRadarDeviceData 使用单个 Radar 设备的数据，按源写入 radar
 func (f *SensorFusion) useRadarDeviceData(data *models.IoTTimeSeries, result *models.RealtimeData) {
-	if data.HeartRate != nil {
-		result.Heart = data.HeartRate
-		result.HeartSource = "Radar"
-		timestamp := data.Timestamp.Unix()
-		result.HeartTimestamp = &timestamp
-	}
-	if data.RespiratoryRate != nil {
-		result.Breath = data.RespiratoryRate
-		result.BreathSource = "Radar"
-		timestamp := data.Timestamp.Unix()
-		result.BreathTimestamp = &timestamp
-	}
-	if data.BedStatusSNOMEDCode != nil {
-		result.BedStatus = data.BedStatusSNOMEDCode
-		result.BedStatusSource = "Radar"
-		timestamp := data.Timestamp.Unix()
-		result.BedStatusTimestamp = &timestamp
-	}
-	if data.SleepStateSNOMEDCode != nil {
-		result.SleepStage = data.SleepStateSNOMEDCode
-		result.SleepStageSource = "Radar"
-		timestamp := data.Timestamp.Unix()
-		result.SleepStageTimestamp = &timestamp
+	result.Radar = &models.VitalSource{
+		Heart:       data.HeartRate,
+		Breath:      data.RespiratoryRate,
+		BedStatus:   data.BedStatusSNOMEDCode,
+		SleepStatus: data.SleepStateSNOMEDCode,
 	}
 }
 
-// fuseVitalSigns 融合生命体征（HR/RR）
-// 规则：优先 Sleepace，无数据则 Radar
+// fuseVitalSigns 按源写入 HR/RR 到 radar / sleepad（不再融合）
 func (f *SensorFusion) fuseVitalSigns(
 	sleepaceData []*models.IoTTimeSeries,
 	radarData []*models.IoTTimeSeries,
 	result *models.RealtimeData,
 ) {
-	// 优先使用 Sleepace 数据
+	if len(radarData) > 0 {
+		v := &models.VitalSource{}
+		for _, d := range radarData {
+			if d.HeartRate != nil {
+				v.Heart = d.HeartRate
+				break
+			}
+		}
+		for _, d := range radarData {
+			if d.RespiratoryRate != nil {
+				v.Breath = d.RespiratoryRate
+				break
+			}
+		}
+		result.Radar = v
+	}
 	if len(sleepaceData) > 0 {
-		for _, data := range sleepaceData {
-			if data.HeartRate != nil {
-				result.Heart = data.HeartRate
-				result.HeartSource = "Sleepace"
-				timestamp := data.Timestamp.Unix()
-				result.HeartTimestamp = &timestamp
+		v := &models.VitalSource{}
+		for _, d := range sleepaceData {
+			if d.HeartRate != nil {
+				v.Heart = d.HeartRate
 				break
 			}
 		}
-		for _, data := range sleepaceData {
-			if data.RespiratoryRate != nil {
-				result.Breath = data.RespiratoryRate
-				result.BreathSource = "Sleepace"
-				timestamp := data.Timestamp.Unix()
-				result.BreathTimestamp = &timestamp
+		for _, d := range sleepaceData {
+			if d.RespiratoryRate != nil {
+				v.Breath = d.RespiratoryRate
 				break
 			}
 		}
-	}
-
-	// 如果 Sleepace 没有数据，使用 Radar 数据
-	if result.Heart == nil && len(radarData) > 0 {
-		for _, data := range radarData {
-			if data.HeartRate != nil {
-				result.Heart = data.HeartRate
-				result.HeartSource = "Radar"
-				timestamp := data.Timestamp.Unix()
-				result.HeartTimestamp = &timestamp
-				break
-			}
-		}
-	}
-	if result.Breath == nil && len(radarData) > 0 {
-		for _, data := range radarData {
-			if data.RespiratoryRate != nil {
-				result.Breath = data.RespiratoryRate
-				result.BreathSource = "Radar"
-				timestamp := data.Timestamp.Unix()
-				result.BreathTimestamp = &timestamp
-				break
-			}
-		}
+		result.Sleepad = v
 	}
 }
 
-// fuseBedAndSleepStatus 融合床状态和睡眠状态
-// 规则：优先 Sleepace
+// fuseBedAndSleepStatus 按源写入床状态、睡眠状态到 radar / sleepad
 func (f *SensorFusion) fuseBedAndSleepStatus(
 	sleepaceData []*models.IoTTimeSeries,
 	radarData []*models.IoTTimeSeries,
 	result *models.RealtimeData,
 ) {
-	// 优先使用 Sleepace 数据
-	if len(sleepaceData) > 0 {
-		for _, data := range sleepaceData {
-			if data.BedStatusSNOMEDCode != nil {
-				result.BedStatus = data.BedStatusSNOMEDCode
-				result.BedStatusSource = "Sleepace"
-				timestamp := data.Timestamp.Unix()
-				result.BedStatusTimestamp = &timestamp
+	if result.Radar != nil && len(radarData) > 0 {
+		for _, d := range radarData {
+			if d.BedStatusSNOMEDCode != nil {
+				result.Radar.BedStatus = d.BedStatusSNOMEDCode
 				break
 			}
 		}
-		for _, data := range sleepaceData {
-			if data.SleepStateSNOMEDCode != nil {
-				result.SleepStage = data.SleepStateSNOMEDCode
-				result.SleepStageSource = "Sleepace"
-				timestamp := data.Timestamp.Unix()
-				result.SleepStageTimestamp = &timestamp
+		for _, d := range radarData {
+			if d.SleepStateSNOMEDCode != nil {
+				result.Radar.SleepStatus = d.SleepStateSNOMEDCode
 				break
 			}
 		}
 	}
-
-	// 如果 Sleepace 没有数据，使用 Radar 数据（如果有）
-	if result.BedStatus == nil && len(radarData) > 0 {
-		for _, data := range radarData {
-			if data.BedStatusSNOMEDCode != nil {
-				result.BedStatus = data.BedStatusSNOMEDCode
-				result.BedStatusSource = "Radar"
-				timestamp := data.Timestamp.Unix()
-				result.BedStatusTimestamp = &timestamp
+	if result.Sleepad != nil && len(sleepaceData) > 0 {
+		for _, d := range sleepaceData {
+			if d.BedStatusSNOMEDCode != nil {
+				result.Sleepad.BedStatus = d.BedStatusSNOMEDCode
 				break
 			}
 		}
-	}
-	if result.SleepStage == nil && len(radarData) > 0 {
-		for _, data := range radarData {
-			if data.SleepStateSNOMEDCode != nil {
-				result.SleepStage = data.SleepStateSNOMEDCode
-				result.SleepStageSource = "Radar"
-				timestamp := data.Timestamp.Unix()
-				result.SleepStageTimestamp = &timestamp
+		for _, d := range sleepaceData {
+			if d.SleepStateSNOMEDCode != nil {
+				result.Sleepad.SleepStatus = d.SleepStateSNOMEDCode
 				break
 			}
 		}
@@ -450,8 +382,8 @@ func (f *SensorFusion) useRadarPostures(
 			if data.PositionY != nil {
 				posture.PositionY = data.PositionY
 			}
-			if data.Height != nil {
-				posture.Height = data.Height
+			if data.PositionZ != nil {
+				posture.PositionZ = data.PositionZ
 			}
 			if data.AreaID != nil {
 				posture.AreaID = data.AreaID

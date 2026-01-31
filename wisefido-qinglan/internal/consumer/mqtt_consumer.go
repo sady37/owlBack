@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"owl-common/alarm"
+	"owl-common/radar"
 	"wisefido-qinglan/internal/config"
 	"wisefido-qinglan/internal/decode"
 	"wisefido-qinglan/internal/domain"
@@ -23,6 +24,9 @@ import (
 // DeviceLastSeenUpdater 设备最后收到消息时间更新器接口
 type DeviceLastSeenUpdater interface {
 	UpdateLastSeen(deviceUID string)
+	UpdateLastSeenByType(deviceUID, topicType string)
+	// PublishOnlineForConnectedDevices 对已在列表且在线的设备发布上线通知（由 mqtt 启动 1 分钟后检查队列后调用）
+	PublishOnlineForConnectedDevices(ctx context.Context, deviceUIDs []string)
 }
 
 // MQTTConsumer MQTT消费者
@@ -78,9 +82,48 @@ func (c *MQTTConsumer) Start(ctx context.Context) error {
 	// 启动时主动订阅所有符合条件的设备
 	go c.subscribeAllAccessibleDevices(ctx)
 
+	// 启动 1 分钟后检查 MQTT 队列（subscribedTopics），检查所有 func 主题对应的设备，对接入的发布上线通知
+	go c.publishOnlineForConnectedAfterStartup(ctx)
+
 	log.Println("MQTT consumer started")
 
 	return nil
+}
+
+// publishOnlineForConnectedAfterStartup 启动 1 分钟后，从已订阅主题（MQTT 队列）中取所有 func 主题对应的设备 UID，通知订阅管理器对已接入的发布上线
+func (c *MQTTConsumer) publishOnlineForConnectedAfterStartup(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(1 * time.Minute):
+	}
+	c.mu.RLock()
+	topics := make([]string, 0, len(c.subscribedTopics))
+	for topic := range c.subscribedTopics {
+		topics = append(topics, topic)
+	}
+	c.mu.RUnlock()
+	uidSet := make(map[string]struct{})
+	for _, topic := range topics {
+		if c.extractTopicType(topic) != "func" {
+			continue
+		}
+		uid, err := c.extractUIDFromTopic(topic)
+		if err != nil {
+			continue
+		}
+		uidSet[uid] = struct{}{}
+	}
+	uids := make([]string, 0, len(uidSet))
+	for uid := range uidSet {
+		uids = append(uids, uid)
+	}
+	if len(uids) == 0 {
+		return
+	}
+	if c.subscriptionManager != nil {
+		c.subscriptionManager.PublishOnlineForConnectedDevices(ctx, uids)
+	}
 }
 
 // subscribeAllAccessibleDevices 订阅所有可访问的设备
@@ -112,9 +155,9 @@ func (c *MQTTConsumer) subscribeAllAccessibleDevices(ctx context.Context) {
 		return
 	}
 
-	log.Printf("Found %d accessible devices, subscribing to their topics...", len(deviceUIDs))
+	// 打印被允许的设备列表（不打印每条订阅信息）；启动即监听所有允许设备，1 分钟内有 MQTT 则置 online，超时则 offline 并取消订阅
+	log.Printf("Allowed devices (%d): %v", len(deviceUIDs), deviceUIDs)
 
-	// 订阅所有设备的主题
 	successCount := 0
 	for _, deviceUID := range deviceUIDs {
 		if err := c.SubscribeDeviceTopics(deviceUID); err != nil {
@@ -124,7 +167,7 @@ func (c *MQTTConsumer) subscribeAllAccessibleDevices(ctx context.Context) {
 		}
 	}
 
-	log.Printf("✅ Subscribed to %d/%d accessible devices", successCount, len(deviceUIDs))
+	log.Printf("Subscribed to topics for %d/%d allowed devices", successCount, len(deviceUIDs))
 }
 
 // monitorConnection 监控MQTT连接状态，重连后重新订阅
@@ -132,7 +175,8 @@ func (c *MQTTConsumer) monitorConnection(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	var wasConnected bool
+	// 初始化为当前连接状态，避免启动后第一次 tick 误判为“重连”而重复 resubscribe
+	wasConnected := c.mqttClient.IsConnected()
 	for {
 		select {
 		case <-ctx.Done():
@@ -140,7 +184,7 @@ func (c *MQTTConsumer) monitorConnection(ctx context.Context) {
 		case <-ticker.C:
 			isConnected := c.mqttClient.IsConnected()
 
-			// 检测从断开到重连的状态变化
+			// 仅当从断开变为已连接时才 resubscribe（真实重连）
 			if !wasConnected && isConnected {
 				log.Println("MQTT client reconnected, resubscribing to topics...")
 				c.resubscribeTopics()
@@ -163,20 +207,15 @@ func (c *MQTTConsumer) resubscribeTopics() {
 	for _, topic := range topics {
 		if err := c.mqttClient.Subscribe(topic, c.handleMessage); err != nil {
 			log.Printf("Failed to resubscribe to topic %s: %v", topic, err)
-		} else {
-			log.Printf("✅ Resubscribed to device topic: %s", topic)
 		}
 	}
-	log.Printf("Resubscribed to %d device topics", len(topics))
+	log.Printf("Resubscribed to %d device topics (reconnected)", len(topics))
 }
 
-// SubscribeDeviceTopics 订阅指定设备的6个主题
+// SubscribeDeviceTopics 订阅指定设备的 6 个主题（不打印每条订阅，由调用方打印允许设备列表）
 func (c *MQTTConsumer) SubscribeDeviceTopics(deviceUID string) error {
-	log.Printf("🔍 SubscribeDeviceTopics called for device %s", deviceUID)
-
-	// 检查 MQTT 连接状态
 	if !c.mqttClient.IsConnected() {
-		log.Printf("❌ MQTT client is not connected, cannot subscribe to device topics for %s", deviceUID)
+		log.Printf("❌ MQTT client not connected, cannot subscribe for %s", deviceUID)
 		return fmt.Errorf("MQTT client is not connected, cannot subscribe to device topics for %s", deviceUID)
 	}
 
@@ -187,7 +226,6 @@ func (c *MQTTConsumer) SubscribeDeviceTopics(deviceUID string) error {
 	prefix := cfg.Prefix
 	productID := cfg.ProductID
 
-	// 构建设备的6个主题
 	topics := []string{
 		buildDeviceTopic(prefix, productID, "prop", deviceUID),
 		buildDeviceTopic(prefix, productID, "monitor", deviceUID),
@@ -197,32 +235,16 @@ func (c *MQTTConsumer) SubscribeDeviceTopics(deviceUID string) error {
 		buildDeviceTopic(prefix, productID, "alarm", deviceUID),
 	}
 
-	log.Printf("📋 Attempting to subscribe to %d topics for device %s", len(topics), deviceUID)
-	log.Printf("   Topics to subscribe: %v", topics)
-
-	subscribedCount := 0
-	skippedCount := 0
-
-	// 订阅所有主题（使用具体设备主题，不使用通配符）
 	for _, topic := range topics {
 		if _, alreadySubscribed := c.subscribedTopics[topic]; alreadySubscribed {
-			log.Printf("⏭️  Topic %s already subscribed, skipping", topic)
-			skippedCount++
 			continue
 		}
-
-		log.Printf("🔔 Subscribing to specific device topic (not wildcard): %s", topic)
 		if err := c.mqttClient.Subscribe(topic, c.handleMessage); err != nil {
 			log.Printf("❌ Failed to subscribe to topic %s: %v", topic, err)
 			return fmt.Errorf("failed to subscribe to topic %s: %w", topic, err)
 		}
-
 		c.subscribedTopics[topic] = struct{}{}
-		subscribedCount++
-		log.Printf("✅ Subscribed to device topic: %s", topic)
 	}
-
-	log.Printf("📊 Subscribed to %d topics (skipped %d already subscribed) for device %s", subscribedCount, skippedCount, deviceUID)
 	return nil
 }
 
@@ -341,10 +363,17 @@ func (c *MQTTConsumer) buildTopics() []string {
 	return topics
 }
 
-// handleMessage 处理MQTT消息
+// Radar MQTT 主题约定（与本 consumer 的关系）：
+//
+//   - /prefix/.../post：设备上报，本 consumer 订阅并处理。handleMessage 按 type(prop/monitor/func/stat/event/alarm) 分发。
+//   - /prefix/prop/.../get、/prefix/func/.../get：我们下发命令的主题，本 consumer 不订阅、不接收。
+//     谁在发：internal/service/radar_service.go — GetDeviceProperties/SetDeviceProperties 发布到 prop/get，
+//     CallDeviceFunction 发布到 func/get；设备收到后回复到 .../post，由本 consumer 的 handlePropertyMessage、handleFunctionMessage 处理并存 Redis。
+//
+// handleMessage 处理 MQTT 消息（仅 .../post）
 // 注意：现在只订阅已认证设备的主题，未认证设备无法发送消息到服务端
 func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
-	log.Printf("Received MQTT message on topic: %s", topic)
+	// log.Printf("Received MQTT message on topic: %s", topic) // 已关闭，减少刷屏
 
 	// 解析主题，提取设备UID
 	uid, err := c.extractUIDFromTopic(topic)
@@ -366,12 +395,6 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 		return nil
 	}
 
-	// 更新设备最后收到消息的时间
-	// 参考wisefido-radar的实现：UpdateLastSeen会检测首次连接并自动发送monitor订阅命令
-	if c.subscriptionManager != nil {
-		c.subscriptionManager.UpdateLastSeen(uid)
-	}
-
 	// 解析消息体
 	var message map[string]interface{}
 	if err := json.Unmarshal(payload, &message); err != nil {
@@ -381,6 +404,15 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 
 	// 根据主题类型处理消息
 	topicType := c.extractTopicType(topic)
+
+	// 更新设备最后收到消息的时间（根据消息类型）
+	// 参考wisefido-radar的实现：UpdateLastSeenByType会检测首次连接并自动发送monitor订阅命令
+	if c.subscriptionManager != nil {
+		// 只更新 monitor/stat/event/alarm 类型的消息时间戳
+		if topicType == "monitor" || topicType == "stat" || topicType == "event" || topicType == "alarm" {
+			c.subscriptionManager.UpdateLastSeenByType(uid, topicType)
+		}
+	}
 	switch topicType {
 	case "prop":
 		return c.handlePropertyMessage(uid, message)
@@ -646,7 +678,7 @@ func (c *MQTTConsumer) publishDecodedData(
 			return err
 		}
 		// 输出 stream 发布日志（auth, alarm, event）
-		if topicType == "auth" || topicType == "alarm" || topicType == "event" {
+		if topicType == "auth" || topicType == "alarm" || topicType == "event" || topicType == "monitor" {
 			log.Printf("Published %s data to stream %s (stream_id: %s) for device %s", topicType, streamName, streamID, device.DeviceUID)
 		}
 		return nil
@@ -691,72 +723,62 @@ func (c *MQTTConsumer) publishDecodedData(
 	return nil
 }
 
-// handlePropertyMessage 处理属性响应消息（/prop/.../post）
-// 实时交互通过 HTTP API 对外提供：客户端调 GET/PUT /api/v1/radar/devices/{uid}/properties 时，
-// RadarService 发 MQTT 到 /prop/.../get 并轮询 Redis；设备在 /prop/.../post 回包后，此处提取
-// requestId 并存 Redis，RadarService 方能取到响应并返回给 HTTP 调用方。
+// handlePropertyMessage 处理属性响应消息（/prop/.../post）：读/写回包共用，根据 cmd 区分日志
 func (c *MQTTConsumer) handlePropertyMessage(uid string, message map[string]interface{}) error {
-	log.Printf("📥 Handling property message for device %s", uid)
-	log.Printf("   Message content: %+v", message)
-
-	// 提取 requestId（支持多种字段名）
-	var requestID string
+	requestIDRaw := ""
 	if id, ok := message["requestId"].(string); ok && id != "" {
-		requestID = id
-		log.Printf("   Found requestId (requestId): %q (length: %d)", requestID, len(requestID))
+		requestIDRaw = id
 	} else if id, ok := message["request_id"].(string); ok && id != "" {
-		requestID = id
-		log.Printf("   Found requestId (request_id): %q (length: %d)", requestID, len(requestID))
+		requestIDRaw = id
 	} else if id, ok := message["requestID"].(string); ok && id != "" {
-		requestID = id
-		log.Printf("   Found requestId (requestID): %q (length: %d)", requestID, len(requestID))
-	} else {
-		log.Printf("   No requestId found in message")
+		requestIDRaw = id
+	}
+	cmd, _ := message["cmd"].(string)
+	logLabel := "SetDeviceProperties"
+	if cmd == "read" {
+		logLabel = "GetDeviceProperties"
+	}
+	log.Printf("%s receive MQTT (device raw): device=%s, requestId=%s, msg=%+v", logLabel, uid, requestIDRaw, message)
+
+	decoded, err := decode.RadarDecoder(message, "prop")
+	if err != nil || decoded == nil {
+		decoded = message
+	}
+	var payload map[string]interface{}
+	if resp, ok := decoded.(*radar.PropResponse); ok {
+		payload = map[string]interface{}{"request_id": resp.RequestID, "data": resp.Data}
+	} else if m, ok := decoded.(map[string]interface{}); ok {
+		payload = m
+	}
+	if payload == nil {
+		payload = message
+	}
+	// 透传设备 code/msg，否则 RadarService.waitForResponse 从 Redis 取出的 response 无 code，会被当成 0 误报失败
+	if _, has := payload["code"]; !has && message["code"] != nil {
+		payload["code"] = message["code"]
+	}
+	if _, has := payload["msg"]; !has && message["msg"] != nil {
+		payload["msg"] = message["msg"]
 	}
 
-	// 有 requestId 即命令响应：存 Redis 供 HTTP API（RadarService.waitForResponse）获取后返回客户端
+	requestID := ""
+	if id, ok := payload["request_id"].(string); ok && id != "" {
+		requestID = id
+	} else if id, ok := payload["requestId"].(string); ok && id != "" {
+		requestID = id
+	} else if id, ok := payload["requestID"].(string); ok && id != "" {
+		requestID = id
+	}
+
 	if requestID != "" {
 		ctx := context.Background()
-		log.Printf("💾 Storing property response for requestId [%s] (length: %d) from device %s", requestID, len(requestID), uid)
-		log.Printf("   Full requestId value: %q", requestID)
-		
-		// 检查是否是模式修改的响应
-		if data, ok := message["data"].(map[string]interface{}); ok {
-			if mode, ok := data["radar_func_ctrl"]; ok {
-				log.Printf("🔄 MODE CHANGE RESPONSE: Device %s confirmed radar_func_ctrl = %v", uid, mode)
-				modeDesc := map[interface{}]string{
-					3:  "轨迹模式",
-					7:  "呼吸心率模式",
-					11: "轨迹+呼吸心率模式",
-					15: "轨迹+呼吸心率+跌倒模式",
-				}
-				if desc, exists := modeDesc[mode]; exists {
-					log.Printf("   ✅ Mode successfully changed to: %s", desc)
-				}
-			}
-		}
-		
-		// 检查响应码
-		if code, ok := message["code"].(float64); ok {
-			if code == 200 {
-				log.Printf("   ✅ Device response code: 200 (success)")
-			} else {
-				log.Printf("   ⚠️ Device response code: %.0f (not 200)", code)
-			}
-		}
-		
-		if err := c.streamPublisher.StoreCommandResponse(ctx, requestID, message); err != nil {
-			log.Printf("❌ Failed to store property response for requestId %s: %v", requestID, err)
-			// 不返回错误，继续处理
+		if err := c.streamPublisher.StoreCommandResponse(ctx, requestID, payload); err != nil {
+			log.Printf("❌ %s store Redis: requestId=%s: %v", logLabel, requestID, err)
 		} else {
-			log.Printf("✅ Stored property response for requestId [%s] (length: %d) from device %s", requestID, len(requestID), uid)
-			log.Printf("   Redis key: cmd:response:%s", requestID)
+			log.Printf("✅ %s send Redis: device=%s, requestId=%s, payload=%+v", logLabel, uid, requestID, payload)
 		}
 	} else {
-		// 没有 requestId，可能是设备主动上报的属性变化
-		log.Printf("⚠️ Property message from device %s has no requestId, treating as property update notification", uid)
-		log.Printf("   Available message keys: %v", getMapKeys(message))
-		// 这里可以添加属性更新处理逻辑，例如更新设备属性缓存
+		log.Printf("⚠️ %s: no requestId, device=%s", logLabel, uid)
 	}
 
 	return nil
@@ -773,18 +795,6 @@ func getMapKeys(m map[string]interface{}) []string {
 
 // handleMonitorMessage 处理实时数据消息
 func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]interface{}) error {
-	// log.Printf("📥 Handling monitor message for device %s", uid)
-	// log.Printf("   Monitor message content: %+v", message)
-	
-	// 检查是否是订阅确认（通常订阅成功后设备会立即推送数据，这本身就是确认）
-	// 如果消息中包含订阅相关的字段，记录日志
-	// if cmd, ok := message["cmd"].(string); ok {
-	// 	log.Printf("   Monitor message cmd field: %s", cmd)
-	// }
-	// if code, ok := message["code"].(float64); ok {
-	// 	log.Printf("   Monitor message code: %.0f", code)
-	// }
-
 	// 从 Auth 缓存获取设备信息（包含位置信息）
 	ctx := context.Background()
 	device, locationInfo := c.getDeviceFromCache(ctx, uid)
@@ -853,8 +863,6 @@ func (c *MQTTConsumer) handleFunctionMessage(uid string, message map[string]inte
 
 // handleStatMessage 处理统计数据消息
 func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interface{}) error {
-	log.Printf("Handling stat message for device %s", uid)
-
 	// 从 Auth 缓存获取设备信息（包含位置信息）
 	ctx := context.Background()
 	device, locationInfo := c.getDeviceFromCache(ctx, uid)
@@ -965,7 +973,7 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 
 // handleEventMessage 处理事件消息
 func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interface{}) error {
-	log.Printf("Handling event message for device %s", uid)
+
 
 	// 从 Auth 缓存获取设备信息（包含位置信息）
 	ctx := context.Background()
@@ -986,12 +994,16 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 		}
 	}
 
-	log.Printf("Device %s found: DeviceID=%s, TenantID=%s, DeviceType=%s", uid, device.DeviceID, device.TenantID, device.DeviceType.String)
+	//log.Printf("Device %s found: DeviceID=%s, TenantID=%s, DeviceType=%s", uid, device.DeviceID, device.TenantID, device.DeviceType.String)
+
+	// 调试：记录原始消息结构
+	//log.Printf("[EVENT_RAW_DEBUG] device=%s raw message keys: %v", uid, getMapKeys(message))
+	log.Printf("[EVENT_RAW_DEBUG] device=%s raw message: %+v", uid, message)
 
 	// 调用 RadarDecoder 进行协议层面的解码
 	dataValue, err := decode.RadarDecoder(message, "event")
 	if err != nil {
-		log.Printf("Failed to decode event data for device %s: %v", uid, err)
+		log.Printf("[EVENT_DECODE_ERROR] Failed to decode event data for device %s: %v", uid, err)
 		// 解码失败时，使用原始消息（降级处理）
 		dataValue = message
 	}
@@ -1012,6 +1024,13 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 		eventObj = make(map[string]interface{})
 	}
 
+	// 调试：记录解码后的 eventObj 结构
+	if len(eventObj) > 0 {
+		//log.Printf("[EVENT_DEBUG] decoded eventObj keys: %v", getMapKeys(eventObj))
+		log.Printf("[EVENT_DEBUG] decoded eventObj: event_type=%v, pose=%v, pose_raw=%v, category=%v",
+			eventObj["event_type"], eventObj["pose"], eventObj["pose_raw"], eventObj["category"])
+	}
+
 	// 获取报警使能配置
 	enablementItems, err := c.deviceRepo.GetAlarmEnablement(ctx, device.TenantID, device.DeviceUID)
 	if err != nil {
@@ -1023,10 +1042,12 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 	// 判断是否应该转换为 alarm
 	// 直接使用 ExtractNumericCodesFromEvent 和 GetAlarmEnabledMapByNumericCodes
 	shouldConvertToAlarm := false
+	var numericCodes []string
+	var enabledMap map[string]int
 	if len(eventObj) > 0 && len(enablementItems) > 0 {
-		numericCodes := alarm.ExtractNumericCodesFromEvent(eventObj)
+		numericCodes = alarm.ExtractNumericCodesFromEvent(eventObj)
 		if len(numericCodes) > 0 {
-			enabledMap := alarm.GetAlarmEnabledMapByNumericCodes(numericCodes, enablementItems)
+			enabledMap = alarm.GetAlarmEnabledMapByNumericCodes(numericCodes, enablementItems)
 			// 如果任一数字组合对应的报警启用，则转换为 alarm
 			for _, enabled := range enabledMap {
 				if enabled == 1 {
@@ -1037,13 +1058,21 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 		}
 	}
 
+	// 记录详细的 event 处理日志
+	eventType, _ := eventObj["event_type"].(string)
+	pose, _ := eventObj["pose"]
+	areaType, _ := eventObj["area_type"]
+	log.Printf("[EVENT_HANDLER] device=%s event_type=%s pose=%v area_type=%v numeric_codes=%v enabled_map=%v should_convert=%v enablement_count=%d",
+		uid, eventType, pose, areaType, numericCodes, enabledMap, shouldConvertToAlarm, len(enablementItems))
+
 	if shouldConvertToAlarm {
 		// 转换为 alarm，发布到 alarm stream
-		log.Printf("Event message for device %s should be converted to alarm", uid)
+		log.Printf("[EVENT_TO_ALARM] device=%s event_type=%s pose=%v area_type=%v converted to alarm stream", uid, eventType, pose, areaType)
 		return c.publishDecodedData(ctx, device, locationInfo, "alarm", "event", dataValue, message)
 	}
 
 	// 保持原 topic，发布到 event stream
+	log.Printf("[EVENT_STREAM] device=%s event_type=%s pose=%v area_type=%v published to event stream (not converted to alarm)", uid, eventType, pose, areaType)
 	return c.publishDecodedData(ctx, device, locationInfo, "event", "event", dataValue, message)
 }
 
@@ -1075,9 +1104,25 @@ func (c *MQTTConsumer) handleAlarmMessage(uid string, message map[string]interfa
 	// 调用 RadarDecoder 进行协议层面的解码
 	dataValue, err := decode.RadarDecoder(message, "alarm")
 	if err != nil {
-		log.Printf("Failed to decode alarm data for device %s: %v", uid, err)
+		log.Printf("[ALARM_HANDLER] Failed to decode alarm data for device %s: %v", uid, err)
 		// 解码失败时，使用原始消息（降级处理）
 		dataValue = message
+	}
+
+	// 提取关键字段用于日志
+	var eventType, pose, areaType interface{}
+	if dataValueMap, ok := dataValue.(map[string]interface{}); ok {
+		eventType, _ = dataValueMap["event_type"]
+		pose, _ = dataValueMap["pose"]
+		areaType, _ = dataValueMap["area_type"]
+	}
+
+	// 记录详细的 alarm 处理日志
+	log.Printf("[ALARM_HANDLER] device=%s event_type=%v pose=%v area_type=%v published to alarm stream", uid, eventType, pose, areaType)
+
+	// 调试：记录解码后的 dataValue 结构
+	if dataValueMap, ok := dataValue.(map[string]interface{}); ok {
+		log.Printf("[ALARM_DEBUG] decoded dataValue keys: %v", getMapKeys(dataValueMap))
 	}
 
 	// 发布解码后的数据

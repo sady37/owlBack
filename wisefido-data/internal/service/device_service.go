@@ -9,7 +9,6 @@ import (
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
-	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
 
@@ -32,17 +31,17 @@ type deviceService struct {
 	devicesRepo         repository.DevicesRepository
 	cardManageClient    *CardManageClient    // 用于调用 wisefido-card-manage API
 	iotTimeSeriesClient *IoTTimeSeriesClient // 用于调用 wisefido-iot-timeseries 内部 API
-	redisClient         *redis.Client        // Redis客户端，用于读取设备在线状态
+	qinglanClient       *QinglanClient      // 用于调用 wisefido-qinglan API 查询设备状态
 	logger              *zap.Logger
 }
 
 // NewDeviceService 创建 DeviceService 实例
-func NewDeviceService(devicesRepo repository.DevicesRepository, cardManageClient *CardManageClient, iotTimeSeriesClient *IoTTimeSeriesClient, redisClient *redis.Client, logger *zap.Logger) DeviceService {
+func NewDeviceService(devicesRepo repository.DevicesRepository, cardManageClient *CardManageClient, iotTimeSeriesClient *IoTTimeSeriesClient, qinglanClient *QinglanClient, logger *zap.Logger) DeviceService {
 	return &deviceService{
 		devicesRepo:         devicesRepo,
 		cardManageClient:    cardManageClient,
 		iotTimeSeriesClient: iotTimeSeriesClient,
-		redisClient:         redisClient,
+		qinglanClient:       qinglanClient,
 		logger:              logger,
 	}
 }
@@ -115,9 +114,16 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 		return nil, fmt.Errorf("failed to list devices: %w", err)
 	}
 
-	// 6. 从 Redis 读取设备在线状态并填充到 items（从 config stream 消费的状态）
-	if s.redisClient != nil && len(items) > 0 {
+	// 6. 通过 wisefido-qinglan HTTP API 查询设备在线状态并填充到 items
+	if s.qinglanClient != nil && len(items) > 0 {
 		s.fillDeviceOnlineStatus(ctx, items)
+	} else if s.qinglanClient == nil {
+		// qinglanClient 为 nil，所有设备默认设置为 "offline"
+		for _, device := range items {
+			if device.OnlineStatus == "" {
+				device.OnlineStatus = "offline"
+			}
+		}
 	}
 
 	return &ListDevicesResponse{
@@ -126,47 +132,72 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 	}, nil
 }
 
-// fillDeviceOnlineStatus 从 Redis 批量读取设备在线状态并填充到设备列表
-// 从 config stream 消费的状态存储在 Redis Hash 中：device:online_status:{device_uid}
-// 如果 Redis 中没有状态，默认设置为 "offline"
+// fillDeviceOnlineStatus 通过 wisefido-qinglan HTTP API 批量查询设备在线状态并填充到设备列表
+// 使用并发查询提高性能
 func (s *deviceService) fillDeviceOnlineStatus(ctx context.Context, devices []*domain.Device) {
 	if len(devices) == 0 {
 		return
 	}
 
-	// 构建 Redis keys（使用 Hash 存储，key 为 device:online_status:{device_uid}，field 为 "status"）
-	keys := make([]string, 0, len(devices))
-	deviceUIDToDevice := make(map[string]*domain.Device)
+	// 过滤出有 device_uid 的设备
+	devicesWithUID := make([]*domain.Device, 0, len(devices))
 	for _, device := range devices {
 		if device.DeviceUID != "" {
-			key := "device:online_status:" + device.DeviceUID
-			keys = append(keys, key)
-			deviceUIDToDevice[device.DeviceUID] = device
+			devicesWithUID = append(devicesWithUID, device)
 		}
 	}
 
-	if len(keys) == 0 {
-		return
-	}
-
-	// 批量从 Redis Hash 读取状态
-	for _, key := range keys {
-		deviceUID := strings.TrimPrefix(key, "device:online_status:")
-		if device, exists := deviceUIDToDevice[deviceUID]; exists {
-			status, err := s.redisClient.HGet(ctx, key, "status").Result()
-			if err == nil && status != "" {
-				device.OnlineStatus = status
-			} else {
-				// Redis 中没有状态（可能已过期或从未设置），默认设置为 "offline"
+	if len(devicesWithUID) == 0 {
+		// 没有 device_uid 的设备，默认设置为 "offline"
+		for _, device := range devices {
+			if device.OnlineStatus == "" {
 				device.OnlineStatus = "offline"
 			}
 		}
+		return
 	}
 
-	// 对于没有在 Redis 中找到状态的设备，也设置为 "offline"
+	// 并发查询设备状态
+	type statusResult struct {
+		deviceUID string
+		status    string
+		err       error
+	}
+	results := make(chan statusResult, len(devicesWithUID))
+
+	// 启动 goroutine 并发查询
+	for _, device := range devicesWithUID {
+		go func(d *domain.Device) {
+			status, err := s.qinglanClient.GetDeviceStatus(ctx, d.DeviceUID)
+			if err != nil {
+				// 查询失败，默认设置为 "offline"
+				results <- statusResult{deviceUID: d.DeviceUID, status: "offline", err: err}
+			} else {
+				results <- statusResult{deviceUID: d.DeviceUID, status: status, err: nil}
+			}
+		}(device)
+	}
+
+	// 收集结果
+	deviceUIDToStatus := make(map[string]string)
+	for i := 0; i < len(devicesWithUID); i++ {
+		result := <-results
+		deviceUIDToStatus[result.deviceUID] = result.status
+	}
+
+	// 填充状态到设备列表
 	for _, device := range devices {
-		if device.OnlineStatus == "" {
-			device.OnlineStatus = "offline"
+		if device.DeviceUID != "" {
+			if status, exists := deviceUIDToStatus[device.DeviceUID]; exists {
+				device.OnlineStatus = status
+			} else {
+				device.OnlineStatus = "offline"
+			}
+		} else {
+			// 没有 device_uid 的设备，默认设置为 "offline"
+			if device.OnlineStatus == "" {
+				device.OnlineStatus = "offline"
+			}
 		}
 	}
 }

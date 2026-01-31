@@ -160,19 +160,37 @@ func (r *Router) RegisterRadarRoutes(h *RadarHandler) {
 		h.GetCardDevices(w, req)
 	})
 	// GET /radar-device/api/v1/radar-device/device/:id/realtime
+	// GET /radar-device/api/v1/radar-device/device/:id/stream (SSE)
 	r.Handle("/radar-device/api/v1/radar-device/device/", func(w http.ResponseWriter, req *http.Request) {
 		path := req.URL.Path
-		if strings.HasSuffix(path, "/realtime") && req.Method == http.MethodGet {
-			h.GetRealtimeData(w, req)
+		// 添加路由级别的日志（用于调试 SSE 连接问题）
+		// 注意：匹配顺序很重要，更具体的路径应该先匹配
+		if strings.HasSuffix(path, "/stream") && req.Method == http.MethodGet {
+			r.logger.Info("[RADAR_ROUTER] SSE stream request received",
+				zap.String("path", path),
+				zap.String("method", req.Method),
+				zap.String("remote_addr", req.RemoteAddr))
+			h.SubscribeRealtimeStream(w, req)
+		} else if strings.HasSuffix(path, "/card-devices") && req.Method == http.MethodGet {
+			h.GetCardDevicesByDeviceID(w, req)
 		} else if strings.HasSuffix(path, "/original-properties") && req.Method == http.MethodGet {
 			h.GetOriginalProperties(w, req)
+		} else if strings.HasSuffix(path, "/status") && req.Method == http.MethodGet {
+			h.GetDeviceStatus(w, req)
+		} else if strings.HasSuffix(path, "/realtime") && req.Method == http.MethodGet {
+			h.GetRealtimeData(w, req)
 		} else if strings.HasSuffix(path, "/config") && req.Method == http.MethodPut {
 			h.UpdateConfig(w, req)
 		} else if strings.HasSuffix(path, "/control") && req.Method == http.MethodPost {
 			h.Control(w, req)
-		} else if strings.HasSuffix(path, "/card-devices") && req.Method == http.MethodGet {
-			h.GetCardDevicesByDeviceID(w, req)
+		} else if strings.HasSuffix(path, "/bind") && req.Method == http.MethodPost {
+			h.BindDevice(w, req)
+		} else if strings.HasSuffix(path, "/unbind") && req.Method == http.MethodPost {
+			h.UnbindDevice(w, req)
 		} else {
+			r.logger.Debug("[RADAR_ROUTER] No matching route",
+				zap.String("path", path),
+				zap.String("method", req.Method))
 			http.NotFound(w, req)
 		}
 	})

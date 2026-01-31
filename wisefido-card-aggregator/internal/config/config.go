@@ -19,22 +19,22 @@ type Config struct {
 		// 数据聚合配置
 		Aggregation struct {
 			Enabled  bool // 是否启用数据聚合功能
-			Interval int  // 聚合间隔（秒），默认 2 秒（匹配心率呼吸数据更新频率）
+			Interval int  // 聚合间隔（秒），默认 1 秒；前端轮询间隔可独立配置
 		}
 
 		// IoT Stream 配置（直接订阅设备级别的 streams）
 		IoTStream struct {
 			Enabled bool // 是否启用 IoT Stream 消费（事件驱动）
 			// Radar 设备 streams
-			RadarMonitor string // radar:monitor:stream
-			RadarStat    string // radar:stat:stream
-			RadarEvent   string // radar:event:stream
-			RadarAlarm   string // radar:alarm:stream
+			RadarMonitor string // iot:monitor:stream
+			RadarStat    string // iot:stat:stream
+			RadarEvent   string // iot:event:stream
 			// Sleepace 设备 streams
 			SleepaceMonitor string // sleepace:monitor:stream
 			SleepaceEvent   string // sleepace:event:stream
-			SleepaceAlarm   string // sleepace:alarm:stream
 			// 注意：Sleepace 没有 stat 数据
+			// 报警流：Radar / Sleepad 统一写 iot:alarm:stream，card-aggregator 只消费此单一流
+			Alarm string // iot:alarm:stream
 			ConsumerGroup string // 消费者组名称
 			ConsumerName  string // 消费者名称
 			BatchSize     int64  // 批量处理大小
@@ -78,11 +78,11 @@ func Load() (*Config, error) {
 
 	// 数据聚合配置
 	cfg.Aggregator.Aggregation.Enabled = getEnv("CARD_AGGREGATION_ENABLED", "true") == "true"
-	aggIntervalStr := getEnv("CARD_AGGREGATION_INTERVAL", "2")
+	aggIntervalStr := getEnv("CARD_AGGREGATION_INTERVAL", "1")
 	if v, err := strconv.Atoi(aggIntervalStr); err == nil && v > 0 {
 		cfg.Aggregator.Aggregation.Interval = v
 	} else {
-		cfg.Aggregator.Aggregation.Interval = 2 // 默认 2 秒聚合一次（匹配心率呼吸数据更新频率）
+		cfg.Aggregator.Aggregation.Interval = 1 // 默认 1 秒聚合一次
 	}
 
 	// IoT Stream 配置 - 设备级别 streams
@@ -90,10 +90,9 @@ func Load() (*Config, error) {
 	cfg.Aggregator.IoTStream.RadarMonitor = getEnv("CARD_STREAM_RADAR_MONITOR", "iot:monitor:stream")
 	cfg.Aggregator.IoTStream.RadarStat = getEnv("CARD_STREAM_RADAR_STAT", "iot:stat:stream")
 	cfg.Aggregator.IoTStream.RadarEvent = getEnv("CARD_STREAM_RADAR_EVENT", "iot:event:stream")
-	cfg.Aggregator.IoTStream.RadarAlarm = getEnv("CARD_STREAM_RADAR_ALARM", "radar:alarm:stream")
 	cfg.Aggregator.IoTStream.SleepaceMonitor = getEnv("CARD_STREAM_SLEEPACE_MONITOR", "sleepace:monitor:stream")
 	cfg.Aggregator.IoTStream.SleepaceEvent = getEnv("CARD_STREAM_SLEEPACE_EVENT", "sleepace:event:stream")
-	cfg.Aggregator.IoTStream.SleepaceAlarm = getEnv("CARD_STREAM_SLEEPACE_ALARM", "sleepace:alarm:stream")
+	cfg.Aggregator.IoTStream.Alarm = getEnv("CARD_STREAM_ALARM", "iot:alarm:stream")
 	cfg.Aggregator.IoTStream.ConsumerGroup = getEnv("CARD_IOT_CONSUMER_GROUP", "card-aggregator-iot-group")
 	cfg.Aggregator.IoTStream.ConsumerName = getEnv("CARD_IOT_CONSUMER_NAME", "card-aggregator-iot-1")
 	batchSizeStr := getEnv("CARD_IOT_BATCH_SIZE", "10")

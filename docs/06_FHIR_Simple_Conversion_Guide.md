@@ -62,47 +62,19 @@
 |                    | `SuspectedFall`                    | Radar     | 可疑跌倒                           | WARNING          |
 |                    | `Stay`                             | Radar     | 滞留（卫生间/浴室）                  | WARNING          |
 |                    | `NoActivity24h`                    | Radar     | 24小时无人                         | EMERGENCY        |
-| **`clinical`**     | `Radar_ApneaHypopnea`              | Radar     | 呼吸暂停                           | DISABLE        |
-|                    | `Radar_AbnormalHeartRate`          | Radar     | 心率异常（心动过速/心动过缓）         | EMERGENCY        |
-|                    | `Radar_AbnormalRespiratoryRate`    | Radar     | 呼吸频率异常（呼吸急促/呼吸缓慢）      | EMERGENCY        |
+| **`clinical`**     | `ApneaHypopnea`                    | 所有设备   | 呼吸暂停                           | DISABLE        |
+|                    | `AbnormalHeartRate`                | 所有设备   | 心率异常（心动过速/心动过缓）         | EMERGENCY        |
+|                    | `AbnormalRespiratoryRate`          | 所有设备   | 呼吸频率异常（呼吸急促/呼吸缓慢）      | EMERGENCY        |
 |                    | `VitalsWeak`                       | Radar     | 生命体征微弱                        | WARNING          |
-|                    | `SleepPad_ApneaHypopnea`           | SleepPad  | 呼吸暂停                           | EMERGENCY        |
-|                    | `SleepPad_AbnormalHeartRate`       | SleepPad  | 心率异常（心动过速/心动过缓）          | EMERGENCY        |
-|                    | `SleepPad_AbnormalRespiratoryRate` | SleepPad  | 呼吸频率异常（呼吸急促/呼吸缓慢）      | EMERGENCY        |
-| **`behavioral`**   | `Radar_LeftBed`                    | Radar     | 离床                              | WARNING          |
-|                    | `SleepPad_LeftBed`                 | SleepPad  | 离床                              | WARNING          |
-|                    | `SleepPad_SitUp`                   | SleepPad  | 床上坐起                           | WARNING          |
-|                    | `SleepPad_AbnormalBodyMovement`    | SleepPad  | 异常体动（超2H未翻身/2H无体动）       | WARNING          |
-|                    | `SleepPad_InBed`                   | SleepPad  | 上床（取决于住户service_level）     | DISABLE          |
+| **`behavioral`**   | `LeftBed`                          | 所有设备   | 离床                              | WARNING          |
+|                    | `BedSitUp`                         | SleepPad  | 床上坐起                           | WARNING          |
+|                    | `AbnormalBodyMovement`             | SleepPad  | 异常体动（超2H未翻身/2H无体动）       | WARNING          |
+|                    | `InBed`                            | SleepPad  | 上床（取决于住户service_level）     | DISABLE          |
 | **`device`**       | `OfflineAlarm`                     | 所有设备   | 设备离线                           | WARNING          |
 |                    | `LowBattery`                       | 所有设备   | 低电量                             | WARNING          |
 |                    | `DeviceFailure`                    | 所有设备   | 设备故障                           | EMERGENCY        |
 |                    | `AngleException`                   | Radar     | 角度异常                           | WARNING          |
 
-#### 按设备类型分类
-
-| FHIR Category      | 报警项                              | 设备类型   | 说明                              | 默认 DangerLevel |
-|:-------------------|:-----------------------------------|:----------|:----------------------------------|:-----------------|
-| **`safety`**       | `Fall`                             | Radar     | 跌倒                              | EMERGENCY        |
-|                    | `SuspectedFall`                    | Radar     | 可疑跌倒                           | WARNING          |
-|                    | `Stay`                             | Radar     | 滞留（卫生间/浴室）                  | WARNING          |
-| **`clinical`**     | `Radar_ApneaHypopnea`              | Radar     | 呼吸暂停                           | DISABLE        |
-|                    | `Radar_AbnormalHeartRate`          | Radar     | 心率异常（心动过速/心动过缓）         | EMERGENCY        |
-|                    | `Radar_AbnormalRespiratoryRate`    | Radar     | 呼吸频率异常（呼吸急促/呼吸缓慢）      | EMERGENCY        |
-|                    | `VitalsWeak`                       | Radar     | 生命体征微弱                        | WARNING          |
-|                    | `SleepPad_ApneaHypopnea`           | SleepPad  | 呼吸暂停                           | EMERGENCY        |
-|                    | `SleepPad_AbnormalHeartRate`       | SleepPad  | 心率异常（心动过速/心动过缓）          | EMERGENCY        |
-|                    | `SleepPad_AbnormalRespiratoryRate` | SleepPad  | 呼吸频率异常（呼吸急促/呼吸缓慢）      | EMERGENCY        |
-|                    | `SleepPad_AbnormalBodyMovement`    | SleepPad  | 异常体动（超2H未翻身/2H无体动）       | WARNING          |
-| **`behavioral`**   | `Radar_LeftBed`                    | Radar     | 离床                              | WARNING          |
-|                    | `SleepPad_LeftBed`                 | SleepPad  | 离床                              | WARNING          |
-|                    | `SleepPad_SitUp`                   | SleepPad  | 床上坐起                           | WARNING          |
-|                    | `SleepPad_InBed`                   | SleepPad  | 上床（取决于住户service_level）     | DISABLE          |
-|                    | `NoActivity24h`                    | Radar     | 24小时无人                         | EMERGENCY        |//但本质是行为缺失。
-| **`device`**       | `OfflineAlarm`                     | 所有设备   | 设备离线                           | WARNING          |
-|                    | `LowBattery`                       | 所有设备   | 低电量                             | WARNING          |
-|                    | `DeviceFailure`                    | 所有设备   | 设备故障                           | EMERGENCY        |
-|                    | `AngleException`                   | Radar     | 角度异常                           | WARNING          |
 
 **分类说明**：
 - **`safety`**: 直接威胁生命安全的事件（跌倒、可疑跌倒、）

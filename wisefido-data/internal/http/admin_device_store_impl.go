@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
+	"wisefido-data/internal/service"
 
-	"github.com/go-redis/redis/v8"
 	"github.com/xuri/excelize/v2"
+	"go.uber.org/zap"
 )
 
 // -------- Device Store impl --------
@@ -32,9 +32,16 @@ func (a *AdminAPI) getDeviceStores(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 填充设备在线状态（从 Redis 读取）
-	if a.RedisClient != nil {
-		fillDeviceStoreOnlineStatus(r.Context(), a.RedisClient, items)
+	// 通过 wisefido-qinglan HTTP API 查询设备在线状态并填充
+	if a.QinglanClient != nil {
+		fillDeviceStoreOnlineStatus(r.Context(), a.QinglanClient, items, a.Log)
+	} else {
+		// qinglanClient 为 nil，所有设备默认设置为 "offline"
+		for _, store := range items {
+			if store.OnlineStatus == "" {
+				store.OnlineStatus = "offline"
+			}
+		}
 	}
 
 	out := make([]any, 0, len(items))
@@ -367,47 +374,72 @@ func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
 	return ds
 }
 
-// fillDeviceStoreOnlineStatus 从 Redis 批量读取设备在线状态并填充到设备库存列表
-// 从 config stream 消费的状态存储在 Redis Hash 中：device:online_status:{device_uid}
-// 如果 Redis 中没有状态，默认设置为 "offline"
-func fillDeviceStoreOnlineStatus(ctx context.Context, redisClient *redis.Client, stores []*domain.DeviceStore) {
+// fillDeviceStoreOnlineStatus 通过 wisefido-qinglan HTTP API 批量查询设备在线状态并填充到设备库存列表
+// 使用并发查询提高性能
+func fillDeviceStoreOnlineStatus(ctx context.Context, qinglanClient *service.QinglanClient, stores []*domain.DeviceStore, logger *zap.Logger) {
 	if len(stores) == 0 {
 		return
 	}
 
-	// 构建 Redis keys（使用 Hash 存储，key 为 device:online_status:{device_uid}，field 为 "status"）
-	keys := make([]string, 0, len(stores))
-	deviceUIDToStore := make(map[string]*domain.DeviceStore)
+	// 过滤出有 device_uid 的设备
+	storesWithUID := make([]*domain.DeviceStore, 0, len(stores))
 	for _, store := range stores {
 		if store.DeviceUID != "" {
-			key := "device:online_status:" + store.DeviceUID
-			keys = append(keys, key)
-			deviceUIDToStore[store.DeviceUID] = store
+			storesWithUID = append(storesWithUID, store)
 		}
 	}
 
-	if len(keys) == 0 {
-		return
-	}
-
-	// 批量从 Redis Hash 读取状态
-	for _, key := range keys {
-		deviceUID := strings.TrimPrefix(key, "device:online_status:")
-		if store, exists := deviceUIDToStore[deviceUID]; exists {
-			status, err := redisClient.HGet(ctx, key, "status").Result()
-			if err == nil && status != "" {
-				store.OnlineStatus = status
-			} else {
-				// Redis 中没有状态（可能已过期或从未设置），默认设置为 "offline"
+	if len(storesWithUID) == 0 {
+		// 没有 device_uid 的设备，默认设置为 "offline"
+		for _, store := range stores {
+			if store.OnlineStatus == "" {
 				store.OnlineStatus = "offline"
 			}
 		}
+		return
 	}
 
-	// 对于没有在 Redis 中找到状态的设备，也设置为 "offline"
+	// 并发查询设备状态
+	type statusResult struct {
+		deviceUID string
+		status    string
+		err       error
+	}
+	results := make(chan statusResult, len(storesWithUID))
+
+	// 启动 goroutine 并发查询
+	for _, store := range storesWithUID {
+		go func(s *domain.DeviceStore) {
+			status, err := qinglanClient.GetDeviceStatus(ctx, s.DeviceUID)
+			if err != nil {
+				// 查询失败，默认设置为 "offline"
+				results <- statusResult{deviceUID: s.DeviceUID, status: "offline", err: err}
+			} else {
+				results <- statusResult{deviceUID: s.DeviceUID, status: status, err: nil}
+			}
+		}(store)
+	}
+
+	// 收集结果
+	deviceUIDToStatus := make(map[string]string)
+	for i := 0; i < len(storesWithUID); i++ {
+		result := <-results
+		deviceUIDToStatus[result.deviceUID] = result.status
+	}
+
+	// 填充状态到设备库存列表
 	for _, store := range stores {
-		if store.OnlineStatus == "" {
-			store.OnlineStatus = "offline"
+		if store.DeviceUID != "" {
+			if status, exists := deviceUIDToStatus[store.DeviceUID]; exists {
+				store.OnlineStatus = status
+			} else {
+				store.OnlineStatus = "offline"
+			}
+		} else {
+			// 没有 device_uid 的设备，默认设置为 "offline"
+			if store.OnlineStatus == "" {
+				store.OnlineStatus = "offline"
+			}
 		}
 	}
 }

@@ -187,7 +187,7 @@
 | `position_y` | int | Y 坐标（厘米），原始单位为分米，取值范围-127~127，已转换为厘米 | track 字节 2，dm→cm 转换 |
 | `position_z` | int | Z 坐标（厘米），原始单位就是厘米，取值范围 0-255 | track 字节 3 |
 | `remaining_time` | int | 剩余时间（秒，0-60，仅在自动测量边界时使用） | track 字节 12 |
-| `pose` | string | 姿态（display_en 值）。映射：0→"Initialization"，1→"Walking"，2→"FallSuspected"，3→"Sitting position"，4→"Standing position"，5→"Fall"，6→"Lying position"，7→"SitGroundSuspected"，8→"SitGround"，9→"Sitting up in bed"，10→"Sitting up in bed:Suspected"，11→"Sitting up in bed" | track 字节 13，SNOMED 映射 |
+| `pose` | string | 姿态（display_en 值）。映射：0→"Initialization"，1→"Walking"，2→"SuspectedFall"，3→"Sitting position"，4→"Standing position"，5→"Fall"，6→"Lying position"，7→"SuspectedSittingOnGround"，8→"SittingOnGround"，9→"Sitting up in bed"，10→"SuspectedBedSitUp"，11→"Sitting up in bed" | track 字节 13，SNOMED 映射 |
 | `event` | int/string | 事件（display_en 值）。映射：0=无事件="No event"，1=进入房间="Enter room"，2=离开房间="Leave room"，3=进入区域="Enter area"，4=离开区域="Leave area" | track 字节 14 |
 | `area_id` | int | 区域 ID。在字节 14（event）内容为 3 或 4 时，此字段标识人员进出的区域 ID | track 字节 15 |
 | `raw_original` | string | 可选，原始 track base64 字符串（16 字节 * N，N 为人数） | 原始数据 |
@@ -425,12 +425,12 @@
 - `track_id`: 人员轨迹 ID（数值）
 - `pose`: 姿态类型（字符串，display_en 值）
   - "Walking" (SNOMED code: 129006008, SNOMED display: "Walking", display_en: "Walking") - 对应原始值 1（行走）
-  - "FallSuspected" (SNOMED code: 129839007, SNOMED display: "At risk for falls", display_en: "FallSuspected") - 对应原始值 2（疑似跌倒）
+  - "SuspectedFall" (SNOMED code: 129839007, SNOMED display: SuspectedFall", display_en: "SuspectedFall") - 对应原始值 2（疑似跌倒）
   - "Fall" (SNOMED code: 161898004, SNOMED display: "Fall", display_en: "Fall") - 对应原始值 5（确认跌倒）
-  - "SitGroundSuspected" (SNOMED code: 129839007, SNOMED display: "At risk for falls", display_en: "At risk for falls") - 对应原始值 7（疑似坐地）
-  - "SitGround" (SNOMED code: 161898004, SNOMED display: "Fall", display_en: "Fall") - 对应原始值 8（确认坐地）
-  - "Sitting up in bed:Suspected" (SNOMED code: 225698008, SNOMED display: "Sitting up in bed", display_en: "Sitting up in bed:Suspected") - 对应原始值 10（疑似床上坐起）
-  - "Sitting up in bed" (SNOMED code: 225698008, SNOMED display: "Sitting up in bed", display_en: "Sitting up in bed") - 对应原始值 11（确认床上坐起）
+  - "SuspectedSittingOnGround" (SNOMED code: 129839007, SNOMED display: "SuspectedSittingOnGround", display_en: "SuspectedSittingOnGround") - 对应原始值 7（疑似坐地）
+  - "SittingOnGround" (SNOMED code: 161898004, SNOMED display: "SittingOnGround", display_en: "SittingOnGround") - 对应原始值 8（确认坐地）
+  - "SuspectedBedSitUp" (SNOMED code: 225698008, SNOMED display: "SuspectedBedSitUp", display_en: "SuspectedBedSitUp") - 对应原始值 10（疑似床上坐起）
+  - "BedSitUp" (SNOMED code: 225698008, SNOMED display: "SuspectedBedSitUp", display_en: "BedSitUp") - 对应原始值 11（确认床上坐起）
   - 其他 = 其他姿态 (根据具体值映射，若有 SNOMED 映射则使用 SNOMED display，否则使用 display_en)
 
 ### 5.4 type=3（人数变化事件）
@@ -530,6 +530,13 @@
   - "signal_poor" = 信号差（对应原始值 0，触发）
   - "signal_recovery" = 信号恢复（对应原始值 1，恢复）
 - `device_uid`: 设备 ID（字符串，系统内部 UUID）
+**信号差说明**：
+- 雷达网络信号超过正常阈值范围时产生
+- **阈值**：`<=-88` 即偏弱（触发 signal_poor）
+- **正常范围**：
+  - Wifi: -88~-20
+  - 4G: 11~31
+- **固件版本**：2024年3月份版本后
 
 ### 5.7 type=8（倾角异常事件）
 
@@ -557,6 +564,9 @@
 }
 ```
 
+
+
+
 **字段说明**：
 - `data_value`: 数组，包含倾角异常事件信息
 - `category`: 固定为 "angle_abnormal"（event_type: 1=Enter2out, 2=pose, 3=number-people, 5=isOnline, 7=signal_poor, 8=angle_abnormal, 9=other）
@@ -564,6 +574,19 @@
   - "angle_abnormal" = 倾角异常（对应原始值 0，触发）
   - "angle_recovery" = 倾角恢复（对应原始值 1，恢复）
 - `device_uid`: 设备 ID（字符串，系统内部 UUID）
+**倾角异常说明**：
+- 雷达倾角低于阈值时产生
+- **雷达倾角格式**：`X:Y:Z:V` 四个值
+  - `V`：雷达角度是否已出厂校准
+    - `0` = 未校准
+    - `1` = 已校准
+  - `XYZ`：雷达与空间XYZ三个轴的夹角
+- **安装要求**：
+  - **顶装**：X和Y应在±10°以内
+  - **侧装**：X应在±10°以内，Y应在-60°到-90°之间（墙面夹角30°以内）
+- **注意**：只有HC2系列支持倾角测量，TK2系列不支持
+- **固件版本**：2024年3月份版本后
+
 
 ### 5.8 type=9（其他告警）
 
@@ -627,7 +650,7 @@
 
 ### 6.1 跌倒告警（从 type=2 姿态变化事件中抽取）
 
-当 `pose` 为 "Fall" 或 "FallSuspected" 时，且跌倒告警 enable。
+当 `pose` 为 "Fall" 或 "SuspectedFall" 时，且跌倒告警 enable。
 
 ```json
 {
@@ -658,7 +681,7 @@
 - `category`: 固定为 "fall_alarm"
 - `pose`: 姿态类型（字符串）
   - "Fall" = 确认跌倒（对应原始值 5）
-  - "FallSuspected" = 疑似跌倒（对应原始值 2）
+  - "SuspectedFall" = 疑似跌倒（对应原始值 2）
 - `track_id`: 人员轨迹 ID（数值）
 - `device_uid`: 设备 ID（字符串，系统内部 UUID）
 
@@ -724,6 +747,13 @@
 对于radar, log可能如下，但其它厂家设备可能没有这些version信息
 
 ### 7.2 认证响应格式（服务器端返回）
+
+**响应码说明**（设备响应中的 `code` 字段）：
+- `200` - 成功
+- `500` - 失败
+- `777` - 设备离线
+- `778` - 该设备不适用该模式
+
 
 ```json
 {

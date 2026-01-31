@@ -66,7 +66,7 @@ func main() {
 	// Stub depends on tenantsRepo + authStore (used by /auth/api/v1/institutions/search + /auth/api/v1/login)
 	stub := httpapi.NewStubHandler(nil, authStore, nil)
 	// Always register admin routes; if DB is not available, AdminAPI will fall back to stub (no 404).
-	admin := httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, redisClient)
+		admin := httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, nil)
 	if cfg.DBEnabled {
 		if d, err := database.NewPostgresDB(&cfg.Database); err == nil {
 			db = d
@@ -129,7 +129,11 @@ func main() {
 		// For now, pass nil to StubHandler since it's mainly used for fallback
 		stub = httpapi.NewStubHandler(nil, authStore, db)
 		stub.SetLogger(logger) // Set logger for user login logging
-		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, deviceStoreRepo, tenantResolver, stub, logger, redisClient)
+		
+		// 创建 QinglanClient（调用 wisefido-qinglan HTTP API，统一与设备通信）
+		qinglanClient := service.NewQinglanClient(cfg.Qinglan.APIBaseURL, logger)
+		
+		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, deviceStoreRepo, tenantResolver, stub, logger, qinglanClient)
 
 		// 创建 Role 和 RolePermission Service 和 Handler
 		roleRepo := repository.NewPostgresRolesRepository(db)
@@ -170,9 +174,9 @@ func main() {
 		// 创建 IoTTimeSeriesClient（用于调用 wisefido-iot-timeseries 内部 API）
 		iotTimeSeriesClient := service.NewIoTTimeSeriesClient(cfg.IoTTimeSeries.InternalAPIBaseURL, logger)
 
-		// 创建 Device Service 和 Handler
+		// 创建 Device Service 和 Handler（qinglanClient 已在上面创建）
 		devicesRepo.SetLogger(logger) // 确保 logger 已设置（用于设备连接日志）
-		deviceService := service.NewDeviceService(devicesRepo, cardManageClient, iotTimeSeriesClient, redisClient, logger)
+		deviceService := service.NewDeviceService(devicesRepo, cardManageClient, iotTimeSeriesClient, qinglanClient, logger)
 		deviceHandler := httpapi.NewDeviceHandler(deviceService, logger)
 		router.RegisterDeviceRoutes(deviceHandler)
 
@@ -192,18 +196,15 @@ func main() {
 		}()
 
 		// 创建 DeviceStore Handler（直接使用 Repository，不需要 Service 层）
-		deviceStoreHandler := httpapi.NewDeviceStoreHandler(deviceStoreRepo, logger)
+		deviceStoreHandler := httpapi.NewDeviceStoreHandler(deviceStoreRepo, qinglanClient, logger)
 		router.RegisterDeviceStoreRoutes(deviceStoreHandler)
-
-		// 创建 QinglanClient（调用 wisefido-qinglan HTTP API，统一与设备通信）
-		qinglanClient := service.NewQinglanClient(cfg.Qinglan.APIBaseURL, logger)
 
 		// 创建 CardsRepository（供 RadarInstall 查卡片设备，以及后续 CardService 使用）
 		cardsRepo := repository.NewPostgresCardsRepository(db)
 
 		// 创建 Radar Install Service 和 Handler（通过 wisefido-qinglan 与设备通信）
 		radarInstall := service.NewRadarInstall(cfg, devicesRepo, cardsRepo, configVersionsRepo, qinglanClient, logger)
-		radarHandler := httpapi.NewRadarHandler(radarInstall, stub, logger)
+		radarHandler := httpapi.NewRadarHandler(radarInstall, stub, kv, redisClient, logger)
 		router.RegisterRadarRoutes(radarHandler)
 
 		// 创建 Unit Service  and Handler
@@ -309,7 +310,7 @@ func main() {
 			userBranchesRepo, // 用于安全验证：验证 branch_id 与 user_id 一致性
 			devicesRepo,      // 用于安全验证：验证 device_id 与 tenant_id 一致性
 			unitsRepo,        // 用于安全验证：获取设备的 branch_id
-			redisClient,      // 用于安全验证：检查设备在线状态
+			redisClient,      // 保留字段（已不再使用，改为通过 HTTP API 查询设备状态）
 			db,               // 用于安全验证：数据库查询
 			logger,
 		)
@@ -411,7 +412,7 @@ func main() {
 		// Devices 仍可先保持 stub（后续需要再补内存设备库）
 		// 注意：MemoryUnitsRepo 尚未实现新的 UnitsRepository 接口，暂时传递 nil
 		// AdminAPI 会回退到 stub handler
-		admin = httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, redisClient)
+		admin = httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, nil)
 	}
 	router.RegisterAdminUnitDeviceRoutes(admin)
 	// 如果 DB 启用，传入 BranchesRepository 以便创建 tenant 时自动创建默认 branch

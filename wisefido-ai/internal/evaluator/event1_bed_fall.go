@@ -244,8 +244,8 @@ func (e *Event1Evaluator) getOrInitState(
 	if found && currentPosture != nil && currentPosture.PostureCode == "248218002" {
 		// 记录 lying 状态
 		state.LyingTime = &now
-		if currentPosture.Height != nil {
-			height := float64(*currentPosture.Height)
+		if currentPosture.PositionZ != nil {
+			height := float64(*currentPosture.PositionZ)
 			state.LyingHeight = &height
 		}
 		if currentPosture.PositionX != nil && currentPosture.PositionY != nil {
@@ -370,7 +370,7 @@ func (e *Event1Evaluator) triggerSuspectedFallAlarm(
 		"card_id":        card.CardID,
 		"track_id":       state.TrackID,
 		"trigger_point":  "height_dropped",
-		"current_height": posture.Height,
+		"current_height": posture.PositionZ,
 		"lying_height":   state.LyingHeight,
 		"left_bed_time":  state.LeftBedTime,
 	}

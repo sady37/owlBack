@@ -8,6 +8,7 @@ import (
 
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
+	"wisefido-data/internal/service"
 
 	"github.com/xuri/excelize/v2"
 	"go.uber.org/zap"
@@ -17,13 +18,15 @@ import (
 // 注意：根据架构设计，DeviceStore 不需要 Service 层（业务逻辑简单），直接使用 Repository
 type DeviceStoreHandler struct {
 	deviceStoreRepo repository.DeviceStoreRepository
+	qinglanClient   *service.QinglanClient // 用于查询设备在线状态
 	logger          *zap.Logger
 }
 
 // NewDeviceStoreHandler 创建设备库存管理 Handler
-func NewDeviceStoreHandler(deviceStoreRepo repository.DeviceStoreRepository, logger *zap.Logger) *DeviceStoreHandler {
+func NewDeviceStoreHandler(deviceStoreRepo repository.DeviceStoreRepository, qinglanClient *service.QinglanClient, logger *zap.Logger) *DeviceStoreHandler {
 	return &DeviceStoreHandler{
 		deviceStoreRepo: deviceStoreRepo,
+		qinglanClient:   qinglanClient,
 		logger:          logger,
 	}
 }
@@ -73,6 +76,18 @@ func (h *DeviceStoreHandler) ListDeviceStores(w http.ResponseWriter, r *http.Req
 		h.logger.Error("ListDeviceStores failed", zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to list device stores: %v", err)))
 		return
+	}
+
+	// 通过 wisefido-qinglan HTTP API 查询设备在线状态并填充
+	if h.qinglanClient != nil {
+		fillDeviceStoreOnlineStatus(ctx, h.qinglanClient, items, h.logger)
+	} else {
+		// qinglanClient 为 nil，所有设备默认设置为 "offline"
+		for _, store := range items {
+			if store.OnlineStatus == "" {
+				store.OnlineStatus = "offline"
+			}
+		}
 	}
 
 	out := make([]any, 0, len(items))

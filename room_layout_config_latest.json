@@ -1,0 +1,76 @@
+{
+  "radar": {
+    "radar_1769306203566": "791fc634-69de-4987-b7eb-803c17e545a5"
+  },
+  "params": null,
+  "objects": [
+    {
+      "id": "radar_1769306203566",
+      "name": "Radar-D523",
+      "angle": 0,
+      "device": {
+        "iot": {
+          "radar": {
+            "hfov": 140,
+            "vfov": 120,
+            "areas": [],
+            "ip_port": "10.0.0.30:8443",
+            "baseline": {
+              "areas": [],
+              "height": 170,
+              "boundary": {
+                "leftH": 300,
+                "rearV": 400,
+                "frontV": 0,
+                "rightH": 300
+              },
+              "queriedAt": "2026-01-25T02:43:21.653Z",
+              "workModel": "vital",
+              "installModel": "wall"
+            },
+            "boundary": {
+              "leftH": 300,
+              "rearV": 200,
+              "frontV": 200,
+              "rightH": 300
+            },
+            "wifi_rssi": "-51",
+            "workModel": "vital",
+            "showSignal": false,
+            "installModel": "ceiling",
+            "showBoundary": true,
+            "signalRadius": 400
+          },
+          "deviceId": "791fc634-69de-4987-b7eb-803c17e545a5",
+          "isOnline": true,
+          "communication": "wifi",
+          "statusMessage": "Radar Areas: 0 objects"
+        },
+        "type": "Radar",
+        "category": "iot",
+        "isObstacle": false,
+        "isInteractive": true
+      },
+      "visual": {
+        "color": "#2196F3",
+        "transparent": false
+      },
+      "geometry": {
+        "data": {
+          "x": -10,
+          "y": 280,
+          "z": 300
+        },
+        "type": "point"
+      },
+      "typeName": "Radar",
+      "device_id": "791fc634-69de-4987-b7eb-803c17e545a5",
+      "interactive": {
+        "locked": false,
+        "selected": true
+      },
+      "bindedDeviceId": "791fc634-69de-4987-b7eb-803c17e545a5"
+    }
+  ],
+  "timestamp": "2026-01-25T02:43:29.722Z"
+}

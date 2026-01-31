@@ -25,14 +25,17 @@ type DeviceSubscriptionManager interface {
 	SubscribeDevice(ctx context.Context, deviceUID, deviceID string) error
 	EnablePeriodicSubscription(ctx context.Context, deviceUID, deviceID string) error
 	ClearForceUnsubscribed(deviceUID string)
+	GetDeviceOnlineStatus(deviceUID string) string
+	GetDeviceOnlineStatusByDeviceID(ctx context.Context, deviceID string) (string, error)
 }
 
 // Server HTTP服务器
 type Server struct {
-	config       *commonconfig.HTTPConfig
-	radarService *service.RadarService
-	authService  *AuthService
-	server       *http.Server
+	config             *commonconfig.HTTPConfig
+	radarService       *service.RadarService
+	authService        *AuthService
+	subscriptionManager DeviceSubscriptionManager
+	server             *http.Server
 }
 
 // NewServer 创建HTTP服务器
@@ -48,9 +51,10 @@ func NewServer(
 ) *Server {
 	authService := NewAuthService(appConfig, db, deviceRepo, redisClient, logger, subscriptionManager)
 	return &Server{
-		config:       cfg,
-		radarService: radarService,
-		authService:  authService,
+		config:             cfg,
+		radarService:       radarService,
+		authService:        authService,
+		subscriptionManager: subscriptionManager,
 	}
 }
 
@@ -58,8 +62,8 @@ func NewServer(
 func (s *Server) Start() error {
 	router := mux.NewRouter()
 	
-	// 创建API处理器
-	apiHandler := NewAPIHandler(s.radarService)
+	// 创建API处理器（传入 subscriptionManager 用于设备状态查询）
+	apiHandler := NewAPIHandler(s.radarService, s.subscriptionManager)
 	apiHandler.RegisterRoutes(router)
 	
 	// 注意：auth 路由已移至独立的 HTTPS 服务器，此处不再注册

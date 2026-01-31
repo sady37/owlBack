@@ -53,3 +53,5 @@ func parseFloat(value interface{}) (float64, error) {
 		return 0, fmt.Errorf("cannot convert %T to float64", value)
 	}
 }
+
+

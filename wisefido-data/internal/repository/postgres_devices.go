@@ -239,6 +239,76 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 	return &d, nil
 }
 
+// GetDeviceByUID 根据 device_uid 和 tenant_id 获取设备信息
+func (r *PostgresDevicesRepository) GetDeviceByUID(ctx context.Context, tenantID, deviceUID string) (*domain.Device, error) {
+	if deviceUID == "" {
+		return nil, fmt.Errorf("device_uid is required")
+	}
+
+	q := `
+		SELECT
+			d.device_id::text,
+			d.tenant_id::text,
+			d.device_uid,
+			d.device_name,
+			d.bound_room_id,
+			d.bound_bed_id,
+			d.status,
+			d.business_access,
+			d.monitoring_enabled,
+			d.metadata,
+			ds.device_type,
+			ds.device_model,
+			ds.device_code,
+			ds.mac,
+			ds.imei,
+			ds.comm_mode,
+			ds.mcu_model,
+			ds.firmware_version,
+			-- 位置信息（通过 JOIN 查询得到，用于返回给前端）
+			COALESCE(
+				d.bound_room_id,
+				(SELECT r.room_id FROM rooms r JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND r.tenant_id = d.tenant_id LIMIT 1)
+			) as room_id,
+			COALESCE(
+				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id WHERE r.room_id = d.bound_room_id AND u.tenant_id = d.tenant_id LIMIT 1),
+				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND u.tenant_id = d.tenant_id LIMIT 1)
+			) as unit_id
+		FROM devices d
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
+		WHERE d.tenant_id = $1 AND d.device_uid = $2
+	`
+	var d domain.Device
+	if err := r.db.QueryRowContext(ctx, q, tenantID, deviceUID).Scan(
+		&d.DeviceID,
+		&d.TenantID,
+		&d.DeviceUID,
+		&d.DeviceName,
+		&d.BoundRoomID,
+		&d.BoundBedID,
+		&d.Status,
+		&d.BusinessAccess,
+		&d.MonitoringEnabled,
+		&d.Metadata,
+		&d.DeviceType,
+		&d.DeviceModel,
+		&d.DeviceCode,
+		&d.MAC,
+		&d.IMEI,
+		&d.CommMode,
+		&d.MCUModel,
+		&d.FirmwareVersion,
+		&d.RoomID,
+		&d.UnitID,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("device not found: tenant_id=%s, device_uid=%s", tenantID, deviceUID)
+		}
+		return nil, err
+	}
+	return &d, nil
+}
+
 // CreateDevice 手动创建设备与位置的绑定关系（出库操作）
 // 替代触发器：trigger_validate_device_bed_tenant, trigger_validate_device_store_tenant
 // 功能：系统管理员从device_store出库，创建设备与位置的绑定关系

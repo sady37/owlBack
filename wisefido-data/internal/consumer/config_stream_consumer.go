@@ -14,7 +14,10 @@ import (
 	"go.uber.org/zap"
 )
 
-// ConfigStreamConsumer Config Stream 消费者（消费 config:device_status:stream）
+// ConfigStreamConsumer Config Stream 消费者
+//
+// wisefido-data 仅订阅：config:device_status:stream（设备在线状态）。
+// wisefido-data 不订阅 iot:monitor/stat/event/alarm 等；消费 iot stream 的是 wisefido-card-aggregator 的 iot_stream_consumer。
 type ConfigStreamConsumer struct {
 	redisClient   *redis.Client
 	logger        *zap.Logger
@@ -110,13 +113,13 @@ func (c *ConfigStreamConsumer) consumeStream(ctx context.Context, stream string)
 		return fmt.Errorf("failed to read from stream: %w", err)
 	}
 
-	// 处理消息
-	if len(messages) > 0 {
-		c.logger.Info("Received config stream messages",
-			zap.Int("count", len(messages)),
-			zap.String("stream", stream),
-		)
-	}
+	// 处理消息（redis: config 日志已关闭，减少 /tmp/wisefido-data.log 刷屏）
+	// if len(messages) > 0 {
+	// 	c.logger.Info("Received config stream messages",
+	// 		zap.Int("count", len(messages)),
+	// 		zap.String("stream", stream),
+	// 	)
+	// }
 	for _, msg := range messages {
 		if err := c.processMessage(ctx, msg); err != nil {
 			c.logger.Error("Failed to process config message",
@@ -237,21 +240,36 @@ func (c *ConfigStreamConsumer) processMessage(ctx context.Context, msg rediscomm
 	}
 
 	// 将设备在线状态存储到 Redis Hash（供 ListDevices 读取）
+	// 仅当状态实际变更时 HSet 并打 Info 日志；未变更时只续期 TTL，减少刷屏
 	key := "device:online_status:" + deviceUID
-	err := c.redisClient.HSet(ctx, key, "status", category).Err()
-	if err != nil {
-		c.logger.Warn("Failed to store device online status in Redis",
+	cur, err := c.redisClient.HGet(ctx, key, "status").Result()
+	if err != nil && err != redis.Nil {
+		c.logger.Warn("Failed to get current device online status from Redis",
 			zap.String("device_uid", deviceUID),
-			zap.String("status", category),
 			zap.Error(err),
 		)
-	} else {
-		// 设置过期时间（5分钟），如果设备长时间无消息，状态会自动过期
-		c.redisClient.Expire(ctx, key, 300*time.Second)
-		c.logger.Info("Stored device online status in Redis",
+	}
+	changed := (err == redis.Nil) || (cur != category)
+	if changed {
+		if err := c.redisClient.HSet(ctx, key, "status", category).Err(); err != nil {
+			c.logger.Warn("Failed to store device online status in Redis",
+				zap.String("device_uid", deviceUID),
+				zap.String("status", category),
+				zap.Error(err),
+			)
+		} else {
+			c.logger.Info("Stored device online status in Redis",
+				zap.String("device_uid", deviceUID),
+				zap.String("status", category),
+				zap.String("redis_key", key),
+			)
+		}
+	}
+	// 设置/续期过期时间（5 分钟），设备长期无消息时自动过期
+	if err := c.redisClient.Expire(ctx, key, 300*time.Second).Err(); err != nil {
+		c.logger.Warn("Failed to set TTL for device online status key",
 			zap.String("device_uid", deviceUID),
-			zap.String("status", category),
-			zap.String("redis_key", key),
+			zap.Error(err),
 		)
 	}
 

@@ -8,17 +8,19 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 	"wisefido-data/internal/config"
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
+	"wisefido-qinglan/encode"
 
 	"go.uber.org/zap"
 )
 
 // RadarInstall Radar 安装配置服务
-// 通过 wisefido-qinglan 与设备通信，提供雷达设备安装配置接口（v1.0 API 兼容）
-// 画布 layout 可从 config_versions(config_type=room_layout, entity_id=room_id) 读取，LaySave 时回写
+// 雷达设备的查询与设置仅通过 qinglan_client（PUT/GET wisefido-qinglan /api/v1/radar/devices/{uid}/properties 等），无其他设备路径。
+// 画布 layout 从 config_versions(config_type=room_layout, entity_id=room_id) 读写。
 type RadarInstall struct {
 	config            *config.Config
 	devicesRepo       repository.DevicesRepository
@@ -26,6 +28,10 @@ type RadarInstall struct {
 	configVersionsRepo repository.ConfigVersionsRepository
 	qinglanClient     *QinglanClient
 	logger            *zap.Logger
+	// 订阅管理器：记录哪些设备需要订阅（device_id -> bool）
+	// 当设备被 bind 时，标记为需要订阅；unbind 时，移除订阅标记
+	subscribedDevices map[string]bool
+	subscribedMutex   sync.RWMutex // 保护 subscribedDevices 的并发访问
 }
 
 // NewRadarInstall 创建 Radar 安装配置服务
@@ -37,6 +43,7 @@ func NewRadarInstall(cfg *config.Config, devicesRepo repository.DevicesRepositor
 		configVersionsRepo: configVersionsRepo,
 		qinglanClient:     qinglanClient,
 		logger:            logger,
+		subscribedDevices: make(map[string]bool),
 	}
 }
 
@@ -141,15 +148,33 @@ func (s *RadarInstall) GetDeviceUID(ctx context.Context, tenantID, deviceID stri
 	return device.DeviceUID, nil
 }
 
+// GetDeviceByUID 根据 device_uid 和 tenant_id 获取设备信息
+// 用于从 device_uid 转换为 device_id（用于订阅检查等场景）
+func (s *RadarInstall) GetDeviceByUID(ctx context.Context, tenantID, deviceUID string) (*domain.Device, error) {
+	if s.devicesRepo == nil {
+		return nil, fmt.Errorf("devices repository not available")
+	}
+	return s.devicesRepo.GetDeviceByUID(ctx, tenantID, deviceUID)
+}
+
+// GetDeviceStatus 获取设备在线状态
+// 通过 wisefido-qinglan: GET /api/v1/radar/devices/{uid}/status
+func (s *RadarInstall) GetDeviceStatus(ctx context.Context, deviceUID string) (string, error) {
+	if s.qinglanClient == nil {
+		return "", fmt.Errorf("qinglan client not available")
+	}
+	return s.qinglanClient.GetDeviceStatus(ctx, deviceUID)
+}
+
 // GetDeviceProperties 读取设备属性
 // 通过 wisefido-qinglan: GET /api/v1/radar/devices/{uid}/properties
 func (s *RadarInstall) GetDeviceProperties(ctx context.Context, uid string, keys []string) (map[string]interface{}, error) {
 	return s.qinglanClient.GetDeviceProperties(ctx, uid, keys)
 }
 
-// SetDeviceProperties 设置设备属性
+// SetDeviceProperties 设置设备属性，返回设备响应码（200=成功）和错误
 // 通过 wisefido-qinglan: PUT /api/v1/radar/devices/{uid}/properties
-func (s *RadarInstall) SetDeviceProperties(ctx context.Context, uid string, properties map[string]interface{}) error {
+func (s *RadarInstall) SetDeviceProperties(ctx context.Context, uid string, properties map[string]interface{}) (deviceCode int, err error) {
 	return s.qinglanClient.SetDeviceProperties(ctx, uid, properties)
 }
 
@@ -179,6 +204,10 @@ func (s *RadarInstall) GetOriginalProperties(ctx context.Context, tenantID, devi
 	if err != nil {
 		return "", err
 	}
+	// 返回前对 ssid_password 脱敏：冒号后部分改为 *******（SSID:password 中的 password）
+	if v, ok := properties["ssid_password"]; ok && v != nil {
+		properties["ssid_password"] = encode.MaskSsidPassword(encode.ToStr(v))
+	}
 
 	// 3. 转换为 JSON 字符串
 	jsonBytes, err := json.Marshal(properties)
@@ -196,19 +225,127 @@ func (s *RadarInstall) GetOriginalPropertiesFromDB(ctx context.Context, tenantID
 }
 
 // UpdateConfig 更新设备配置。
-// config 与 radarMqttConfig 输出对齐：dm（画布 cm/10），install_model 0/1/2 或 "ceiling"/"wall"/"corn"，
-// boundary_left/right/front/rear，可选 area_{i}_id/type/x1..y4；经 V1ConfigToRadarDeviceProps 转成
+// config 与 radarMqttConfig 输出对齐：dm（画布 cm/10），install_model 统一 0/1/2，
+// boundary_left/right/front/rear，可选 area_{i}_id/type/x1..y4；经 encode.EncodeV1ConfigToDeviceProps 转成
 // radar_install_style、rectangle、declare_area 等后通过 qinglan 写入（安装/边界/区域可能触发重启）。
-func (s *RadarInstall) UpdateConfig(ctx context.Context, tenantID, deviceID string, config map[string]interface{}) error {
+// 返回设备响应码（200=成功）和错误，供 HTTP 层透传 device_code 给前端。
+func (s *RadarInstall) UpdateConfig(ctx context.Context, tenantID, deviceID string, config map[string]interface{}) (deviceCode int, err error) {
 	// 1. 获取设备 UID
 	uid, err := s.GetDeviceUID(ctx, tenantID, deviceID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	// 2. 转换配置格式（v1.0 格式 → Radar 设备属性格式）
-	properties := V1ConfigToRadarDeviceProps(config)
+	properties := encode.EncodeV1ConfigToDeviceProps(config)
+	encodeLogFields := []zap.Field{zap.String("device_id", deviceID), zap.Int("config_keys", len(config)), zap.Int("properties_keys", len(properties))}
+	if v := properties["declare_area"]; v != nil {
+		if s, ok := v.(string); ok {
+			encodeLogFields = append(encodeLogFields, zap.String("declare_area", s))
+		} else {
+			encodeLogFields = append(encodeLogFields, zap.Any("declare_area", v))
+		}
+	}
+	s.logger.Info("UpdateConfig: encode result", encodeLogFields...)
+	if len(properties) == 0 {
+		return 0, fmt.Errorf("config produced no device properties (check request body has install_model/height/rectangle/declare_area)")
+	}
 
-	// 3. 设置设备属性
+	// 便于 MQTT 排查：下发 rectangle 时打日志，可与 /prop/productId/uid/get 及设备 /post 回包对照
+	if v, ok := properties["rectangle"]; ok {
+		s.logger.Info("UpdateConfig: rectangle to device", zap.String("uid", uid), zap.Any("rectangle", v))
+	}
+
+	// 3. 设置设备属性，透传设备响应码给发起端
 	return s.SetDeviceProperties(ctx, uid, properties)
+}
+
+// BindDevice 绑定设备（通知需要订阅该设备的数据）
+// 当 vue-radar 画布中 bind 设备时调用
+func (s *RadarInstall) BindDevice(ctx context.Context, tenantID, deviceID string) error {
+	// 验证设备是否存在且为雷达类型
+	device, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
+	if err != nil {
+		return fmt.Errorf("设备不存在: %w", err)
+	}
+	if !device.DeviceType.Valid || !strings.EqualFold(device.DeviceType.String, "radar") {
+		return fmt.Errorf("该设备不是雷达类型，无法订阅")
+	}
+	
+	// 标记为需要订阅（加锁保护）
+	s.subscribedMutex.Lock()
+	s.subscribedDevices[deviceID] = true
+	s.subscribedMutex.Unlock()
+	
+	s.logger.Info("[RADAR_BIND] device bound, subscription enabled",
+		zap.String("device_id", deviceID),
+		zap.String("tenant_id", tenantID))
+	return nil
+}
+
+// UnbindDevice 解绑设备（取消订阅该设备的数据）
+// 当 vue-radar 画布中 unbind 设备时调用
+func (s *RadarInstall) UnbindDevice(ctx context.Context, tenantID, deviceID string) error {
+	// 移除订阅标记（加锁保护）
+	s.subscribedMutex.Lock()
+	delete(s.subscribedDevices, deviceID)
+	s.subscribedMutex.Unlock()
+	
+	s.logger.Info("Device unbound, subscription disabled", zap.String("device_id", deviceID), zap.String("tenant_id", tenantID))
+	return nil
+}
+
+// IsDeviceSubscribed 检查设备是否需要订阅
+func (s *RadarInstall) IsDeviceSubscribed(deviceID string) bool {
+	s.subscribedMutex.RLock()
+	defer s.subscribedMutex.RUnlock()
+	return s.subscribedDevices[deviceID]
+}
+
+// InitializeSubscriptionsFromLayout 从 layout 配置初始化订阅
+// 解析 layout 中的 objects，找出所有已绑定的雷达设备，自动订阅
+func (s *RadarInstall) InitializeSubscriptionsFromLayout(ctx context.Context, tenantID string, layoutConfig json.RawMessage) error {
+	if len(layoutConfig) == 0 {
+		return nil
+	}
+	
+	var layout struct {
+		Objects []struct {
+			TypeName      string `json:"typeName"`
+			BindedDeviceID string `json:"bindedDeviceId,omitempty"`
+			DeviceID      string `json:"device_id,omitempty"`
+		} `json:"objects"`
+	}
+	
+	if err := json.Unmarshal(layoutConfig, &layout); err != nil {
+		s.logger.Warn("Failed to parse layout config for subscription initialization", zap.Error(err))
+		return nil // 不阻塞初始化流程
+	}
+	
+	// 找出所有已绑定的雷达设备
+	for _, obj := range layout.Objects {
+		if obj.TypeName == "Radar" {
+			deviceID := obj.BindedDeviceID
+			if deviceID == "" {
+				deviceID = obj.DeviceID
+			}
+			if deviceID != "" {
+				// 自动订阅
+				if err := s.BindDevice(ctx, tenantID, deviceID); err != nil {
+					s.logger.Warn("Failed to subscribe device from layout", 
+						zap.String("device_id", deviceID), 
+						zap.Error(err))
+					// 继续处理其他设备，不中断
+				}
+			}
+		}
+	}
+	
+	s.subscribedMutex.RLock()
+	count := len(s.subscribedDevices)
+	s.subscribedMutex.RUnlock()
+	
+	s.logger.Info("[RADAR_INIT] initialized subscriptions from layout", 
+		zap.Int("subscribed_count", count))
+	return nil
 }

@@ -11,6 +11,7 @@ type DevicesRepository interface {
 	// 查询
 	ListDevices(ctx context.Context, tenantID string, filters DeviceFilters, page, size int) ([]*domain.Device, int, error)
 	GetDevice(ctx context.Context, tenantID, deviceID string) (*domain.Device, error)
+	GetDeviceByUID(ctx context.Context, tenantID, deviceUID string) (*domain.Device, error)
 	GetDeviceRelations(ctx context.Context, tenantID, deviceID string) (*DeviceRelations, error)
 
 	// 创建（手动创建设备绑定）

@@ -559,6 +559,20 @@ func (s *cardService) getAssignedResidentIDs(ctx context.Context, tenantID, user
 	return residentIDs, nil
 }
 
+// defaultAlarmScopeForRole 按角色返回默认 alarm_scope（与 07_users.sql 注释一致，为空表示使用角色默认）
+func defaultAlarmScopeForRole(role string) string {
+	switch role {
+	case "SystemAdmin", "Admin", "IT":
+		return "ALL"
+	case "Manager":
+		return "BRANCH"
+	case "Nurse", "Caregiver":
+		return "ASSIGNED_ONLY"
+	default:
+		return "ASSIGNED_ONLY"
+	}
+}
+
 // validateUserSecurity 安全验证 - 根据 X-User-Id 查询数据库，验证 tenant_id, role 是否一致
 // 如果不一致，返回错误（中断会话）
 // 返回：validatedTenantID, validatedUserID, validatedUserRole, validatedBranchIDs, validatedAlarmScope, error
@@ -604,16 +618,17 @@ func (s *cardService) validateUserSecurity(
 			}
 			return "", "", "", nil, "", fmt.Errorf("failed to get user: %w", err)
 		}
-		// 安全要求：alarm_scope 必须明确设置，不能为 NULL
+		// alarm_scope 未设置时，按角色默认（与 07_users.sql 注释一致）
 		if !alarmScope.Valid || alarmScope.String == "" {
-			s.logger.Error("Security violation: alarm_scope is NULL or empty, access denied",
+			validatedAlarmScope = defaultAlarmScopeForRole(actualUserRole)
+			s.logger.Debug("alarm_scope not set for staff, using role default",
 				zap.String("user_id", req.CurrentUserID),
 				zap.String("role", actualUserRole),
-				zap.String("tenant_id", actualTenantID),
+				zap.String("alarm_scope", validatedAlarmScope),
 			)
-			return "", "", "", nil, "", fmt.Errorf("security violation: alarm_scope is not set for user")
+		} else {
+			validatedAlarmScope = alarmScope.String
 		}
-		validatedAlarmScope = alarmScope.String
 
 		// 从 user_branches 表查询用户的所有绑定院区 branch_id 列表
 		rows, err := s.db.QueryContext(ctx,

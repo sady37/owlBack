@@ -5,7 +5,9 @@
 #
 # 架构说明：
 # - wisefido-data: 数据管理 API + 卡片创建/更新（通过 HTTP API 调用 wisefido-card-manage）
+#   仅订阅 config:device_status:stream（设备在线状态）；不订阅 iot:monitor/stat 等，由 card-aggregator 的 iot_stream_consumer 消费
 # - wisefido-card-aggregator: 数据聚合（从 PostgreSQL + Redis 聚合卡片数据并缓存到 Redis）
+#   iot_stream_consumer 消费 iot:monitor/stat/event/alarm，写 realtime；定时聚合写 vital-focus:card:*:full
 #   注意：卡片创建/更新现在由 wisefido-data 通过 wisefido-card-manage API 处理，aggregator 主要用于数据聚合
 # - wisefido-card-manage: 卡片管理服务（提供 HTTP API 用于创建/更新卡片，端口 8082）
 # - wisefido-iot: 数据消费服务（从 Redis Streams 消费数据，存储到 TimescaleDB）

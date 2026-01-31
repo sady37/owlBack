@@ -12,6 +12,8 @@ import (
 )
 
 // CacheManager Redis 缓存管理器（用于数据聚合）
+//
+// 输出 key、value 的 JSON 与 TTL 定义见：docs/OUTPUT_FORMAT.md
 type CacheManager struct {
 	config *config.Config
 	kv     KVStore

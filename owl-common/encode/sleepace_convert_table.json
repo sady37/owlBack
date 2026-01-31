@@ -1,0 +1,172 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2026-01-05T00:00:00Z",
+  "description": "Sleepace 设备字段到 SNOMED 标准格式的转换表",
+  "conversions": {
+    "realtime": {
+      "bedStatus": {
+        "field_path": "realtime.bedStatus",
+        "field_type": "enum",
+        "unit_conversion": null,
+        "mappings": {
+          "0": {
+            "snomed_code": "248569007",
+            "snomed_display": "in bed",
+            "category": "activity",
+            "display_en": "in bed"
+          },
+          "1": {
+            "snomed_code": "248570008",
+            "snomed_display": "not in bed",
+            "category": "activity",
+            "display_en": "left bed"
+          }
+        }
+      },
+      "sitUp": {
+        "field_path": "realtime.sitUp",
+        "field_type": "enum",
+        "unit_conversion": null,
+        "mappings": {
+          "0": {
+            "snomed_code": "109030009",
+            "snomed_display": "Lying position",
+            "category": "activity",
+            "display_en": "lying position"
+          },
+          "1": {
+            "snomed_code": "225698008",
+            "snomed_display": "Sitting up in bed",
+            "category": "activity",
+            "display_en": "sitting up in bed"
+          }
+        }
+      },
+      "breath": {
+        "field_path": "realtime.breath",
+        "field_type": "numeric",
+        "unit_conversion": null,
+        "mappings": null,
+        "description": "呼吸率，单位：次/分钟，category: vital-signs（数值本身不需要 SNOMED，但数据流的 category 应为 vital-signs）"
+      },
+      "heart": {
+        "field_path": "realtime.heart",
+        "field_type": "numeric",
+        "unit_conversion": null,
+        "mappings": null,
+        "description": "心率，单位：次/分钟，category: vital-signs（数值本身不需要 SNOMED，但数据流的 category 应为 vital-signs）"
+      }
+    },
+    "sleepStage": {
+      "sleepStage": {
+        "field_path": "sleepStage.sleepStage",
+        "field_type": "enum",
+        "unit_conversion": null,
+        "mappings": {
+          "0": {
+            "snomed_code": "248220002",
+            "snomed_display": "Awake",
+            "category": "activity",
+            "display_en": "awake"
+          },
+          "1": {
+            "snomed_code": "248232005",
+            "snomed_display": "Light sleep",
+            "category": "activity",
+            "display_en": "light sleep"
+          },
+          "2": {
+            "snomed_code": "248233000",
+            "snomed_display": "Deep sleep",
+            "category": "activity",
+            "display_en": "deep sleep"
+          },
+          "3": {
+            "snomed_code": "248234006",
+            "snomed_display": "REM sleep",
+            "category": "activity",
+            "display_en": "rem sleep"
+          }
+        }
+      }
+    },
+    "connectionStatus": {
+      "connectionStatus": {
+        "field_path": "connectionStatus.connectionStatus",
+        "field_type": "enum",
+        "unit_conversion": null,
+        "mappings": {
+          "0": {
+            "snomed_code": null,
+            "snomed_display": "Offline",
+            "category": "device",
+            "display_en": "Offline"
+          },
+          "1": {
+            "snomed_code": "706689003",
+            "snomed_display": "Online",
+            "category": "device",
+            "display_en": "online"
+          }
+        }
+      }
+    },
+    "alarmNotify": {
+      "type": {
+        "field_path": "alarmNotify.type",
+        "field_type": "enum",
+        "unit_conversion": null,
+        "mappings": {
+          "LeftBed": {
+            "snomed_code": "248570008",
+            "snomed_display": "not in bed",
+            "category": "behavioral",
+            "display_en": "left bed"
+          },
+          "SitUp": {
+            "snomed_code": "225698008",
+            "snomed_display": "Sitting up in bed",
+            "category": "behavioral",
+            "display_en": "Sit up"
+          },
+          "ApneaHypopnea": {
+            "snomed_code": "67905006",
+            "snomed_display": "Apnea",
+            "category": "clinical",
+            "display_en": "apnea"
+          },
+          "AbnormalHeartRate": {
+            "snomed_code": null,
+            "snomed_display": "Abnormal heart rate",
+            "category": "clinical",
+            "display_en": "abnormal heart rate"
+          },
+          "AbnormalRespiratoryRate": {
+            "snomed_code": null,
+            "snomed_display": "Abnormal respiratory rate",
+            "category": "clinical",
+            "display_en": "abnormal respiratory rate"
+          },
+          "OfflineAlarm": {
+            "snomed_code": "397942008",
+            "snomed_display": "Device offline",
+            "category": "device",
+            "display_en": "device offline"
+          },
+          "LowBattery": {
+            "snomed_code": "703507001",
+            "snomed_display": "Low battery",
+            "category": "device",
+            "display_en": "Low battery"
+          },
+          "DeviceFailure": {
+            "snomed_code": null,
+            "snomed_display": "Device failure",
+            "category": "device",
+            "display_en": "device failure"
+          }
+        }
+      }
+    }
+  }
+}

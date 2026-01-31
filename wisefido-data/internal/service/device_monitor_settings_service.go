@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/notifier"
 	"wisefido-data/internal/repository"
+	"wisefido-qinglan/decode"
 
 	"go.uber.org/zap"
 )
@@ -27,10 +29,15 @@ type DeviceMonitorSettingsService interface {
 
 	// 更新设备监控配置（根据设备类型更新 Sleepace 或 Radar 配置）
 	// progressCallback: 进度回调函数，用于推送进度更新（可选，如果为 nil 则不推送进度）
-	UpdateDeviceMonitorSettings(ctx context.Context, tenantID, deviceID, deviceType, userID string, alarmItems []alarm.AlarmItem, progressCallback ProgressCallback) (bool, bool, error)
+	// 对于 radar 设备，返回 UpdateRadarResult；对于 sleepace 设备，返回 (success, noChange, error)
+	UpdateDeviceMonitorSettings(ctx context.Context, tenantID, deviceID, deviceType, userID string, alarmItems []alarm.AlarmItem, progressCallback ProgressCallback) (interface{}, error)
 
 	// 获取默认配置（硬编码阈值，Alarm Level 优先从当前租户的 alarm_cloud 读取）
 	GetDefaultDeviceMonitorSettings(ctx context.Context, tenantID string, deviceType string) ([]alarm.AlarmItem, error)
+
+	// 检查设备在线状态（通过 wisefido-qinglan HTTP API 实时查询）
+	// 返回 nil 表示设备在线，否则返回错误
+	CheckDeviceOnlineStatus(ctx context.Context, deviceUID string) error
 }
 
 // deviceMonitorSettingsService 实现
@@ -42,7 +49,7 @@ type deviceMonitorSettingsService struct {
 	deviceStoreRepo    repository.DeviceStoreRepository
 	sleepaceClient     *SleepaceClient          // Sleepace 硬件 API 客户端（可选）
 	configNotifier     *notifier.ConfigNotifier // 配置变更通知器
-	qinglanClient      *QinglanClient           // 下发雷达属性（工作模式、跌倒/呼吸心率），不重启
+	qinglanClient      *QinglanClient           // 雷达设备仅经此客户端：查询状态/属性、下发属性（工作模式、跌倒/呼吸心率）
 	db                 *sql.DB                  // 用于事务操作
 	logger             *zap.Logger
 }
@@ -81,12 +88,40 @@ func (s *deviceMonitorSettingsService) SetQinglanClient(client *QinglanClient) {
 	s.qinglanClient = client
 }
 
+// CheckDeviceOnlineStatus 检查设备在线状态（通过 wisefido-qinglan HTTP API 实时查询）
+// 返回 nil 表示设备在线，否则返回错误
+func (s *deviceMonitorSettingsService) CheckDeviceOnlineStatus(ctx context.Context, deviceUID string) error {
+	if s.qinglanClient == nil {
+		return fmt.Errorf("qinglan client not initialized")
+	}
+
+	if deviceUID == "" {
+		return fmt.Errorf("device_uid is required")
+	}
+
+	status, err := s.qinglanClient.GetDeviceStatus(ctx, deviceUID)
+	if err != nil {
+		s.logger.Warn("Failed to get device status from wisefido-qinglan",
+			zap.String("device_uid", deviceUID),
+			zap.Error(err),
+		)
+		return fmt.Errorf("failed to query device status: %w", err)
+	}
+
+	if status != "online" {
+		return fmt.Errorf("device is offline (status: %s)", status)
+	}
+
+	return nil
+}
+
 // ============================================
 // Service 方法实现
 // ============================================
 
 // buildDeviceAlarmItemsFromCloudOrDefault 从 alarm_cloud 或 DefaultAlarmSetting 构建设备的 AlarmItem 数组
 // deviceType: 数据库中的 device_type（如 "Sleepad", "radar"），直接使用 device_store.device_type
+// 逻辑：总是使用 alarm.go 中的默认值，但如果 alarm_cloud 存在，用 alarm_cloud 的 alarm_level 覆盖
 func (s *deviceMonitorSettingsService) buildDeviceAlarmItemsFromCloudOrDefault(ctx context.Context, tenantID, deviceType string) ([]alarm.AlarmItem, error) {
 	// 标准化 device_type
 	normalizedType := s.normalizeDeviceType(deviceType)
@@ -94,103 +129,140 @@ func (s *deviceMonitorSettingsService) buildDeviceAlarmItemsFromCloudOrDefault(c
 		return nil, fmt.Errorf("invalid device_type: %s (must be Sleepad/sleepace/sleepad or radar)", deviceType)
 	}
 
-	// 1. 尝试从 alarm_cloud 获取配置
-	alarmCloudConfig, err := s.getAlarmCloudConfig(ctx, tenantID)
-	if err == nil && alarmCloudConfig != nil {
-		// 从 alarm_cloud 获取对应设备类型的 AlarmItems
-		if normalizedType == "sleepad" {
-			return alarmCloudConfig.AlarmSetting.Sleepad, nil
-		} else if normalizedType == "radar" {
-			return alarmCloudConfig.AlarmSetting.Radar, nil
-		}
-	}
+	// 1. 总是从 alarm.go 获取所有默认项（包括 DisplayAlarmDevice 的项）
+	defaultItems := alarm.GetDefaultAlarmItems(deviceType)
+	s.logger.Info("buildDeviceAlarmItemsFromCloudOrDefault: starting",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_type", deviceType),
+		zap.Int("default_items_count", len(defaultItems)),
+	)
 
-	// 2. 如果 alarm_cloud 不存在，使用 DefaultAlarmSetting（通过 owl-common 函数）
-	return alarm.GetDefaultAlarmItems(deviceType), nil
-}
-
-// getAlarmCloudConfig 获取 alarm_cloud 配置（简化版本，不进行权限检查）
-func (s *deviceMonitorSettingsService) getAlarmCloudConfig(ctx context.Context, tenantID string) (*alarm.AlarmCloudConfig, error) {
+	// 2. 尝试从 alarm_cloud 获取 alarm_level 覆盖
 	alarmCloud, err := s.alarmCloudRepo.GetAlarmCloud(ctx, tenantID)
 	if err != nil {
-		return nil, err
+		// alarm_cloud 不存在，直接返回默认值
+		s.logger.Info("buildDeviceAlarmItemsFromCloudOrDefault: alarm_cloud not found, returning defaults",
+			zap.String("tenant_id", tenantID),
+			zap.Error(err),
+		)
+		return defaultItems, nil
 	}
 
-	// 从 domain.AlarmCloud 构建 alarm.AlarmCloudConfig
-	// 这里简化处理，直接使用 buildAlarmCloudConfigFromDomain 的逻辑
-	config := &alarm.AlarmCloudConfig{
-		TenantResetTime: alarm.DefaultTenantResetTime,
-		CommonAlarm: alarm.CommonAlarm{
-			OfflineAlarm:  alarm.DefaultOfflineAlarm,
-			LowBattery:    alarm.DefaultLowBattery,
-			DeviceFailure: alarm.DefaultDeviceFailure,
-		},
-		AlarmSetting: struct {
-			Sleepad []alarm.AlarmItem `json:"sleepad,omitempty"`
-			Radar   []alarm.AlarmItem `json:"radar,omitempty"`
-		}{
-			Sleepad: make([]alarm.AlarmItem, 0),
-			Radar:   make([]alarm.AlarmItem, 0),
-		},
-		CloudVitalAlarmThreshold: alarm.DefaultCloudVitalAlarmThreshold,
-	}
-
-	// 设置 CommonAlarm
-	if alarmCloud.OfflineAlarm != "" {
-		config.CommonAlarm.OfflineAlarm = alarmCloud.OfflineAlarm
-	}
-	if alarmCloud.LowBattery != "" {
-		config.CommonAlarm.LowBattery = alarmCloud.LowBattery
-	}
-	if alarmCloud.DeviceFailure != "" {
-		config.CommonAlarm.DeviceFailure = alarmCloud.DeviceFailure
-	}
-
-	// 解析 device_alarms
-	var deviceAlarmsMap map[string]map[string]string
+	// 3. 解析 device_alarms，用 alarm_cloud 的 alarm_level 覆盖默认值
+	deviceAlarmsMap := make(map[string]map[string]string)
 	if len(alarmCloud.DeviceAlarms) > 0 {
 		if err := json.Unmarshal(alarmCloud.DeviceAlarms, &deviceAlarmsMap); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal device_alarms: %w", err)
+			// 解析失败，返回默认值
+			s.logger.Warn("buildDeviceAlarmItemsFromCloudOrDefault: failed to parse device_alarms, returning defaults",
+				zap.String("tenant_id", tenantID),
+				zap.Error(err),
+			)
+			return defaultItems, nil
 		}
+		s.logger.Info("buildDeviceAlarmItemsFromCloudOrDefault: parsed device_alarms",
+			zap.String("tenant_id", tenantID),
+			zap.Any("device_alarms_map", deviceAlarmsMap),
+		)
+	} else {
+		s.logger.Info("buildDeviceAlarmItemsFromCloudOrDefault: device_alarms is empty, returning defaults",
+			zap.String("tenant_id", tenantID),
+		)
+		return defaultItems, nil
 	}
 
-	// 处理 SleepPad
-	for _, item := range alarm.GetDefaultAlarmItemsSleepPad() {
+	// 4. 确定设备类型在 alarm_cloud 中的 key
+	deviceTypeKey := ""
+	if normalizedType == "sleepad" {
+		deviceTypeKey = "SleepPad"
+	} else if normalizedType == "radar" {
+		deviceTypeKey = "Radar"
+	}
+
+	// 5. 遍历默认项，用 alarm_cloud 的 alarm_level 覆盖
+	result := make([]alarm.AlarmItem, 0, len(defaultItems))
+	for _, item := range defaultItems {
+		// 深拷贝 item，避免修改原始默认值
 		newItem := item
-		if sleepPadMap, ok := deviceAlarmsMap["SleepPad"]; ok {
-			if level, exists := sleepPadMap[item.AlarmType]; exists {
-				newItem.AlarmLevel = &level
-				if level == "DISABLE" || level == "DISABLED" {
-					enabled := alarm.IsEnabledOff
-					newItem.IsEnabled = &enabled
+		// 深拷贝指针字段
+		if item.AlarmLevel != nil {
+			levelCopy := *item.AlarmLevel
+			newItem.AlarmLevel = &levelCopy
+		}
+		if item.IsEnabled != nil {
+			enabledCopy := *item.IsEnabled
+			newItem.IsEnabled = &enabledCopy
+		}
+		// 深拷贝 AlarmParams map
+		if item.AlarmParams != nil {
+			newParams := make(map[string]interface{})
+			for k, v := range item.AlarmParams {
+				newParams[k] = v
+			}
+			newItem.AlarmParams = newParams
+		}
+
+		// 如果 alarm_cloud 中存在该项，用 alarm_cloud 的 alarm_level 覆盖
+		if deviceTypeKey != "" {
+			if typeMap, ok := deviceAlarmsMap[deviceTypeKey]; ok {
+				if level, exists := typeMap[item.AlarmType]; exists {
+					// 用 alarm_cloud 的 alarm_level 覆盖
+					// 去除可能的空格和引号
+					level = strings.TrimSpace(level)
+					level = strings.Trim(level, `"`)
+					newItem.AlarmLevel = &level
+					// 转换为大写进行比较，避免大小写问题
+					levelUpper := strings.ToUpper(level)
+					if levelUpper == "DISABLE" || levelUpper == "DISABLED" {
+						enabled := alarm.IsEnabledOff
+						newItem.IsEnabled = &enabled
+						s.logger.Debug("Setting alarm item to disabled from alarm_cloud",
+							zap.String("alarm_type", item.AlarmType),
+							zap.String("level", level),
+							zap.String("level_upper", levelUpper),
+						)
+					} else {
+						// 任何其他值（EMERG, WARNING, ERR, ERROR等）都设置为 enabled
+						enabled := alarm.IsEnabledOn
+						newItem.IsEnabled = &enabled
+						s.logger.Debug("Setting alarm item to enabled from alarm_cloud",
+							zap.String("alarm_type", item.AlarmType),
+							zap.String("level", level),
+							zap.String("level_upper", levelUpper),
+							zap.Int("is_enabled", enabled),
+						)
+					}
 				} else {
-					enabled := alarm.IsEnabledOn
-					newItem.IsEnabled = &enabled
+					// alarm_cloud 中不存在该项，保持默认值
+					s.logger.Debug("Alarm item not found in alarm_cloud, keeping default",
+						zap.String("alarm_type", item.AlarmType),
+						zap.Any("default_is_enabled", item.IsEnabled),
+					)
 				}
 			}
 		}
-		config.AlarmSetting.Sleepad = append(config.AlarmSetting.Sleepad, newItem)
+		result = append(result, newItem)
 	}
 
-	// 处理 Radar
-	for _, item := range alarm.GetDefaultAlarmItemsRadar() {
-		newItem := item
-		if radarMap, ok := deviceAlarmsMap["Radar"]; ok {
-			if level, exists := radarMap[item.AlarmType]; exists {
-				newItem.AlarmLevel = &level
-				if level == "DISABLE" || level == "DISABLED" {
-					enabled := alarm.IsEnabledOff
-					newItem.IsEnabled = &enabled
-				} else {
-					enabled := alarm.IsEnabledOn
-					newItem.IsEnabled = &enabled
-				}
-			}
+	// 统计 enabled/disabled 数量
+	enabledCount := 0
+	disabledCount := 0
+	for _, item := range result {
+		if item.IsEnabled != nil && *item.IsEnabled == alarm.IsEnabledOn {
+			enabledCount++
+		} else {
+			disabledCount++
 		}
-		config.AlarmSetting.Radar = append(config.AlarmSetting.Radar, newItem)
 	}
 
-	return config, nil
+	s.logger.Info("buildDeviceAlarmItemsFromCloudOrDefault: completed",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_type", deviceType),
+		zap.Int("total_items", len(result)),
+		zap.Int("enabled_count", enabledCount),
+		zap.Int("disabled_count", disabledCount),
+	)
+
+	return result, nil
 }
 
 // convertAlarmItemsToMonitorConfig 将 AlarmItem 数组转换为 monitor_config JSONB 格式
@@ -292,7 +364,7 @@ func (s *deviceMonitorSettingsService) convertMonitorConfigToAlarmItems(monitorC
 	return result, nil
 }
 
-// GetDeviceMonitorSettings 获取设备监控配置（简化版本）
+// GetDeviceMonitorSettings 获取设备监控配置（优化版本：立即返回baseline，异步更新设备值）
 func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Context, tenantID, deviceID, deviceType string) ([]alarm.AlarmItem, error) {
 	// 参数验证
 	if tenantID == "" {
@@ -322,458 +394,715 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 		return nil, fmt.Errorf("device type mismatch: expected %s (from request), got %s (from device_store)", deviceType, device.DeviceType.String)
 	}
 
-	// 对于 Sleepace 设备，优先从硬件读取配置（参考 v1.0 实现）
-	// 如果硬件读取失败（设备离线或网络问题），则从数据库读取配置
-	// 注意：仅当 Device Type = Sleepad 且 Device Model = BM8701-2 时才使用 Sleepace 硬件配置
-	// TODO: 暂时注释掉硬件读取功能，后续需要时再启用
-	// 如果启用，使用 GetSleepaceSettingsFromHardware(ctx, s.sleepaceClient, device, deviceID)
-	/*
-		if deviceType == "sleepace" && s.sleepaceClient != nil {
-			// 检查设备型号是否为 BM8701-2（Sleepace 厂家）
-			deviceTypeStr := ""
-			deviceModel := ""
-			if device.DeviceType.Valid {
-				deviceTypeStr = device.DeviceType.String
-			}
-			if device.DeviceModel.Valid {
-				deviceModel = device.DeviceModel.String
-			}
-			// 仅当 Device Type = Sleepad 且 Device Model = BM8701-2 时才从硬件读取
-			if strings.EqualFold(deviceTypeStr, "sleepad") && deviceModel == "BM8701-2" {
-				alarmItems, err := GetSleepaceSettingsFromHardware(ctx, s.sleepaceClient, device, deviceID)
-				if err != nil {
-					s.logger.Warn("Failed to get settings from hardware, falling back to database",
-						zap.String("tenant_id", tenantID),
-						zap.String("device_id", deviceID),
-						zap.String("device_status", device.Status),
-						zap.Error(err),
-					)
-					// 如果硬件读取失败，继续从数据库读取
-				} else {
-					// 成功从硬件读取，直接返回
-					return alarmItems, nil
-				}
-			} else {
-				// 设备型号不是 BM8701-2，跳过硬件读取，从数据库读取
-				s.logger.Info("Device model is not BM8701-2, skipping hardware read",
-					zap.String("device_id", deviceID),
-					zap.String("device_type", deviceTypeStr),
-					zap.String("device_model", deviceModel),
-				)
-			}
-		}
-	*/
-
-	// 1. 获取设备的监控配置（从数据库）
+	// 1. 获取baseline配置（从数据库或默认值）
+	s.logger.Info("[GET_SETTINGS] Querying database for alarm_device (baseline)",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_id", deviceID),
+		zap.String("device_type", deviceType),
+	)
 	alarmDevice, err := s.alarmDeviceRepo.GetAlarmDevice(ctx, tenantID, deviceID)
+	baselineAlarmItems := []alarm.AlarmItem{}
+	dbExists := false
 	if err != nil {
-		// 如果配置不存在，返回错误（用户需要先使用 GetDefaultDeviceMonitorSettings 获取默认配置，然后在此基础上修改）
-		return nil, fmt.Errorf("device monitor settings not found, please use GetDefaultDeviceMonitorSettings first: %w", err)
+		// 检查是否是"未找到"错误
+		isNotFound := err == sql.ErrNoRows ||
+			strings.Contains(err.Error(), "no rows in result set") ||
+			strings.Contains(err.Error(), "not found")
+
+		if !isNotFound {
+			// 其他错误直接返回
+			s.logger.Error("[GET_SETTINGS] Database query failed",
+				zap.String("tenant_id", tenantID),
+				zap.String("device_id", deviceID),
+				zap.String("device_type", deviceType),
+				zap.Error(err),
+			)
+			return nil, fmt.Errorf("failed to get alarm device: %w", err)
+		}
+		// 数据库不存在，使用默认配置作为baseline
+		baselineAlarmItems, err = s.buildDeviceAlarmItemsFromCloudOrDefault(ctx, tenantID, deviceType)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build default alarm items: %w", err)
+		}
+		s.logger.Info("[GET_SETTINGS] Database query: NOT FOUND (using default as baseline)",
+			zap.String("tenant_id", tenantID),
+			zap.String("device_id", deviceID),
+			zap.String("device_type", deviceType),
+		)
+	} else {
+		// 数据库存在，转换为 AlarmItem 数组作为baseline
+		baselineAlarmItems, err = s.convertMonitorConfigToAlarmItems(alarmDevice.MonitorConfig, deviceType)
+		if err != nil {
+			s.logger.Error("[GET_SETTINGS] Database query: SUCCESS but conversion failed",
+				zap.String("tenant_id", tenantID),
+				zap.String("device_id", deviceID),
+				zap.String("device_type", deviceType),
+				zap.Error(err),
+			)
+			return nil, fmt.Errorf("failed to convert monitor config to alarm items: %w", err)
+		}
+		dbExists = true
+		s.logger.Info("[GET_SETTINGS] Database query: SUCCESS (baseline ready)",
+			zap.String("tenant_id", tenantID),
+			zap.String("device_id", deviceID),
+			zap.String("device_type", deviceType),
+			zap.Int("alarm_items_count", len(baselineAlarmItems)),
+		)
 	}
 
-	// 2. 如果配置存在，转换为 AlarmItem 数组
-	// 直接使用 deviceType（前端已经知道是 radar 还是 sleepace）
-	alarmItems, err := s.convertMonitorConfigToAlarmItems(alarmDevice.MonitorConfig, deviceType)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert monitor config to alarm items: %w", err)
+	// 2. 立即返回baseline给前端（不等待设备查询）
+	s.logger.Info("[GET_SETTINGS] Returning baseline immediately",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_id", deviceID),
+		zap.String("device_type", deviceType),
+		zap.Bool("db_exists", dbExists),
+	)
+
+	// 3. 对于雷达设备，异步查询设备并更新数据库（不阻塞返回）
+	if deviceType == "radar" && s.qinglanClient != nil && device.DeviceUID != "" {
+		// 使用goroutine异步执行设备查询和数据库更新
+		go s.syncDeviceValuesToDB(context.Background(), tenantID, deviceID, device.DeviceUID, deviceType, baselineAlarmItems, dbExists)
 	}
 
-	return alarmItems, nil
+	return baselineAlarmItems, nil
 }
 
-// UpdateDeviceMonitorSettings 更新设备监控配置（简化版本，使用事务）
-func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(ctx context.Context, tenantID, deviceID, deviceType, userID string, alarmItems []alarm.AlarmItem, progressCallback ProgressCallback) (success bool, noChange bool, err error) {
+// UpdateDeviceMonitorSettings 更新设备监控配置（路由函数，根据设备类型调用对应的实现）
+func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(ctx context.Context, tenantID, deviceID, deviceType, userID string, alarmItems []alarm.AlarmItem, progressCallback ProgressCallback) (interface{}, error) {
 	// 参数验证
 	if tenantID == "" {
-		return false, false, fmt.Errorf("tenant_id is required")
+		return nil, fmt.Errorf("tenant_id is required")
 	}
 	if deviceID == "" {
-		return false, false, fmt.Errorf("device_id is required")
+		return nil, fmt.Errorf("device_id is required")
 	}
 	if deviceType != "sleepace" && deviceType != "radar" {
-		return false, false, fmt.Errorf("invalid device_type: %s (must be 'sleepace' or 'radar')", deviceType)
+		return nil, fmt.Errorf("invalid device_type: %s (must be 'sleepace' or 'radar')", deviceType)
 	}
 	if alarmItems == nil || len(alarmItems) == 0 {
-		return false, false, fmt.Errorf("alarm_items is required")
+		return nil, fmt.Errorf("alarm_items is required")
 	}
 
+	// 根据设备类型调用对应的实现
+	if deviceType == "radar" {
+		return s.UpdateRadarMonitorSettings(ctx, tenantID, deviceID, userID, alarmItems, progressCallback)
+	} else if deviceType == "sleepace" {
+		success, noChange, err := s.UpdateSleepadMonitorSettings(ctx, tenantID, deviceID, userID, alarmItems, progressCallback)
+		return map[string]interface{}{
+			"success":      success,
+			"no_change":    noChange,
+			"device_write": success,
+			"db_write":     success,
+		}, err
+	}
+	return nil, fmt.Errorf("unsupported device_type: %s", deviceType)
+}
+
+// UpdateRadarMonitorSettings 更新 Radar 设备监控配置
+// 返回：设备执行结果、DB 执行结果、失败项列表、是否有变化、错误
+func (s *deviceMonitorSettingsService) UpdateRadarMonitorSettings(ctx context.Context, tenantID, deviceID, userID string, alarmItems []alarm.AlarmItem, progressCallback ProgressCallback) (*UpdateRadarResult, error) {
+	deviceType := "radar"
+	
+	result := &UpdateRadarResult{
+		DeviceWriteSuccess: false,
+		DBWriteSuccess:     false,
+		FailedAlarmTypes:   []alarm.AlarmItem{},
+		NoChange:           false,
+	}
+
+	// 验证设备存在
+	device, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
+	if err != nil {
+		return result, fmt.Errorf("failed to get device: %w", err)
+	}
+
+	// 验证设备类型匹配
+	if !device.DeviceType.Valid {
+		return result, fmt.Errorf("device has no device_type")
+	}
+	if !s.isDeviceTypeMatch(deviceType, device.DeviceType.String) {
+		return result, fmt.Errorf("device type mismatch: expected %s (from request), got %s (from device_store)", deviceType, device.DeviceType.String)
+	}
+
+	// 获取现有配置
+	existingAlarmItems, err := s.getExistingAlarmItems(ctx, tenantID, deviceID, deviceType)
+	if err != nil {
+		return result, err
+	}
+
+	// Radar 设备需要写入的 AlarmType
+	deviceWriteAlarmTypes := map[string]bool{
+		alarm.MonitoringMode:          true,
+		alarm.Fall:                    true,
+		alarm.PostureDetection:        true,
+		alarm.BedSitUp:                true,
+		alarm.SittingOnGround:         true,
+		alarm.AbnormalRespiratoryRate: true,
+		alarm.AbnormalHeartRate:       true,
+		alarm.VitalsWeak:              true,
+	}
+	// Radar 设备会返回的 AlarmType（从设备属性解码得到）
+	deviceReturnAlarmTypes := map[string]bool{
+		alarm.MonitoringMode:          true, // 从 radar_func_ctrl 返回
+		alarm.Fall:                    true, // 从 fall_param 返回
+		alarm.PostureDetection:        true, // 从 fall_param 返回
+		alarm.BedSitUp:                true, // 从 fall_param 返回（bit 2）
+		alarm.SittingOnGround:         true, // 从 fall_param 返回
+		alarm.AbnormalRespiratoryRate: true, // 从 heart_breath_param 返回
+		alarm.AbnormalHeartRate:       true, // 从 heart_breath_param 返回
+		alarm.VitalsWeak:              true, // 从 heart_breath_param 返回
+	}
+
+	_, noChange, hasDeviceWriteChanges, err := s.compareAndLogChanges(ctx, tenantID, deviceID, deviceType, existingAlarmItems, alarmItems, deviceWriteAlarmTypes, deviceReturnAlarmTypes)
+	if err != nil {
+		return result, err
+	}
+	if noChange {
+		result.NoChange = true
+		return result, nil
+	}
+
+	// 如果有需要写入设备的变化，调用 radarWrite 写入设备
+	if hasDeviceWriteChanges {
+		writeResult, writeErr := s.radarWrite(ctx, device.DeviceUID, alarmItems, progressCallback)
+		if writeErr != nil {
+			// 写入失败，只留log，不更新DB，并把log发给前端
+			s.logger.Error("[RADAR_WRITE] Failed to write to device",
+				zap.String("tenant_id", tenantID),
+				zap.String("device_id", deviceID),
+				zap.String("device_uid", device.DeviceUID),
+				zap.Error(writeErr),
+			)
+			
+			// 收集失败的 alarm_type，使用旧值
+			if writeResult != nil {
+				for _, item := range alarmItems {
+					if status, ok := writeResult.Results[item.AlarmType]; ok && status == "Fail" {
+						// 从 existingAlarmItems 中找到对应的旧值
+						for _, existingItem := range existingAlarmItems {
+							if existingItem.AlarmType == item.AlarmType {
+								result.FailedAlarmTypes = append(result.FailedAlarmTypes, existingItem)
+								break
+							}
+						}
+					}
+				}
+			}
+			
+			result.DeviceWriteSuccess = false
+			result.DBWriteSuccess = false
+			return result, nil
+		}
+		
+		// 写入成功，检查是否有失败的项
+		result.DeviceWriteSuccess = true
+		finalAlarmItems := make([]alarm.AlarmItem, len(alarmItems))
+		copy(finalAlarmItems, alarmItems)
+		
+		// 对于失败的项，使用旧值替换
+		if writeResult != nil {
+			for i, item := range finalAlarmItems {
+				if status, ok := writeResult.Results[item.AlarmType]; ok && status == "Fail" {
+					// 从 existingAlarmItems 中找到对应的旧值
+					for _, existingItem := range existingAlarmItems {
+						if existingItem.AlarmType == item.AlarmType {
+							finalAlarmItems[i] = existingItem
+							result.FailedAlarmTypes = append(result.FailedAlarmTypes, existingItem)
+							s.logger.Warn("[RADAR_WRITE] Alarm type write failed, using old value",
+								zap.String("alarm_type", item.AlarmType),
+								zap.String("tenant_id", tenantID),
+								zap.String("device_id", deviceID),
+							)
+							break
+						}
+					}
+				}
+			}
+		}
+		
+		// 更新数据库（使用最终的值，失败项已替换为旧值）
+		dbErr := s.updateAlarmDeviceDB(ctx, tenantID, deviceID, userID, finalAlarmItems)
+		if dbErr != nil {
+			s.logger.Error("[RADAR_WRITE] Failed to update database",
+				zap.String("tenant_id", tenantID),
+				zap.String("device_id", deviceID),
+				zap.Error(dbErr),
+			)
+			result.DBWriteSuccess = false
+			return result, fmt.Errorf("failed to update database: %w", dbErr)
+		}
+		
+		result.DBWriteSuccess = true
+		s.logger.Info("[RADAR_WRITE] Device and database update successful",
+			zap.String("tenant_id", tenantID),
+			zap.String("device_id", deviceID),
+			zap.String("device_uid", device.DeviceUID),
+			zap.Int("failed_count", len(result.FailedAlarmTypes)),
+		)
+	}
+
+	return result, nil
+}
+
+// UpdateSleepadMonitorSettings 更新 Sleepad 设备监控配置
+func (s *deviceMonitorSettingsService) UpdateSleepadMonitorSettings(ctx context.Context, tenantID, deviceID, userID string, alarmItems []alarm.AlarmItem, progressCallback ProgressCallback) (success bool, noChange bool, err error) {
+	deviceType := "sleepace"
+	
 	// 验证设备存在
 	device, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
 	if err != nil {
 		return false, false, fmt.Errorf("failed to get device: %w", err)
 	}
 
-	// 验证设备类型匹配（安全性检查：防止恶意修改 URL 参数）
-	// deviceType 是前端传入的 "sleepace" 或 "radar"
-	// device.DeviceType 是从 devices 表 JOIN device_store 获取的 device_type（如 "Sleepad", "radar"）
+	// 验证设备类型匹配
 	if !device.DeviceType.Valid {
 		return false, false, fmt.Errorf("device has no device_type")
 	}
-
 	if !s.isDeviceTypeMatch(deviceType, device.DeviceType.String) {
 		return false, false, fmt.Errorf("device type mismatch: expected %s (from request), got %s (from device_store)", deviceType, device.DeviceType.String)
 	}
 
-	// 1. 获取现有配置（必须存在，否则返回错误）
+	// 获取现有配置
+	existingAlarmItems, err := s.getExistingAlarmItems(ctx, tenantID, deviceID, deviceType)
+	if err != nil {
+		return false, false, err
+	}
+
+	// Sleepad 设备需要写入的 AlarmType（TODO: 根据实际需求定义）
+	deviceWriteAlarmTypes := map[string]bool{
+		alarm.MonitoringMode:          true,
+		alarm.Fall:                    true,
+		alarm.PostureDetection:        true,
+		alarm.BedSitUp:                true,
+		alarm.SittingOnGround:         true,
+		alarm.AbnormalRespiratoryRate: true,
+		alarm.AbnormalHeartRate:       true,
+		alarm.VitalsWeak:              true,
+	}
+	// Sleepad 设备会返回的 AlarmType（TODO: 根据实际 sleepad 设备返回项定义）
+	deviceReturnAlarmTypes := map[string]bool{
+		// Sleepad 设备返回的项与 radar 不同，需要根据实际硬件返回定义
+		// 目前先使用空 map，后续根据实际需求补充
+	}
+
+	_, noChange, _, err = s.compareAndLogChanges(ctx, tenantID, deviceID, deviceType, existingAlarmItems, alarmItems, deviceWriteAlarmTypes, deviceReturnAlarmTypes)
+	return true, noChange, err
+}
+
+// getExistingAlarmItems 获取现有配置（如果不存在，使用默认配置创建）
+func (s *deviceMonitorSettingsService) getExistingAlarmItems(ctx context.Context, tenantID, deviceID, deviceType string) ([]alarm.AlarmItem, error) {
 	existingAlarmDevice, err := s.alarmDeviceRepo.GetAlarmDevice(ctx, tenantID, deviceID)
 	if err != nil {
-		// 如果配置不存在，返回错误（用户需要先使用 GetDefaultDeviceMonitorSettings 获取默认配置，然后在此基础上修改）
-		return false, false, fmt.Errorf("device monitor settings not found, please use GetDefaultDeviceMonitorSettings first: %w", err)
-	}
+		// 检查是否是"未找到"错误
+		isNotFound := err == sql.ErrNoRows ||
+			strings.Contains(err.Error(), "no rows in result set") ||
+			strings.Contains(err.Error(), "not found")
 
+		if isNotFound {
+			// 如果配置不存在，使用默认配置
+			s.logger.Info("Alarm device not found, using default settings",
+				zap.String("tenant_id", tenantID),
+				zap.String("device_id", deviceID),
+				zap.String("device_type", deviceType),
+			)
+			existingAlarmItems, err := s.buildDeviceAlarmItemsFromCloudOrDefault(ctx, tenantID, deviceType)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build default alarm items: %w", err)
+			}
+			return existingAlarmItems, nil
+		}
+		// 其他错误直接返回
+		return nil, fmt.Errorf("failed to get alarm device: %w", err)
+	}
+	
 	// 转换为 AlarmItem 数组
-	// 直接使用 deviceType（前端已经知道是 radar 还是 sleepace）
 	existingAlarmItems, err := s.convertMonitorConfigToAlarmItems(existingAlarmDevice.MonitorConfig, deviceType)
 	if err != nil {
-		return false, false, fmt.Errorf("failed to convert existing monitor config: %w", err)
+		return nil, fmt.Errorf("failed to convert existing monitor config: %w", err)
+	}
+	return existingAlarmItems, nil
+}
+
+// compareAndLogChanges 比对配置变化并记录日志（通用比对逻辑）
+// 返回：success, noChange, hasDeviceWriteChanges, error
+func (s *deviceMonitorSettingsService) compareAndLogChanges(ctx context.Context, tenantID, deviceID, deviceType string, existingAlarmItems, alarmItems []alarm.AlarmItem, deviceWriteAlarmTypes, deviceReturnAlarmTypes map[string]bool) (success bool, noChange bool, hasDeviceWriteChanges bool, err error) {
+	// 构建现有配置的索引（按 AlarmType）
+	existingMap := make(map[string]alarm.AlarmItem)
+	for _, item := range existingAlarmItems {
+		if item.AlarmType != "" {
+			existingMap[item.AlarmType] = item
+		}
 	}
 
-	// 2. 比对配置是否有变化（逐项比对，避免 JSON 序列化问题）
-	changedAlarmTypes := s.getChangedAlarmTypes(existingAlarmItems, alarmItems)
+	// 构建新配置的索引（按 AlarmType）
+	newMap := make(map[string]alarm.AlarmItem)
+	for _, item := range alarmItems {
+		if item.AlarmType != "" {
+			newMap[item.AlarmType] = item
+		}
+	}
+
+	// 逐项比对，记录变化项及是否需要发送给设备
+	// 对于设备返回的项，单独记录与前端不同的项
+	changedItems := make([]struct {
+		AlarmType           string
+		Changed             bool
+		NeedDeviceWrite     bool
+		IsDeviceReturn      bool // 是否为设备返回的项（radar 或 sleepad）
+		ComparisonResult    AlarmItemComparisonResult // 详细的比对结果
+		ExistingValue       interface{}
+		NewValue            interface{}
+	}, 0)
+
+	// 检查新配置中的每个 AlarmItem
+	for alarmType, newItem := range newMap {
+		existingItem, exists := existingMap[alarmType]
+		isChanged := false
+		var existingValue, newValue interface{}
+		var comparisonResult AlarmItemComparisonResult
+
+		if !exists {
+			// 新配置中有现有配置没有的 AlarmType，认为有变化
+			isChanged = true
+			newValue = newItem
+			existingValue = nil
+			// 新项，所有字段都视为变化
+			comparisonResult = AlarmItemComparisonResult{
+				AlarmParamsChanged: true,
+				IsEnabledChanged:   true,
+				AlarmLevelChanged:  true,
+				HasAnyChange:       true,
+			}
+		} else {
+			// 比对每个字段：alarm_params, isEnabled, alarm_level
+			comparisonResult = s.compareAlarmItem(existingItem, newItem)
+			if comparisonResult.HasAnyChange {
+				isChanged = true
+				existingValue = existingItem
+				newValue = newItem
+			}
+		}
+
+		if isChanged {
+			needDeviceWrite := deviceWriteAlarmTypes[alarmType]
+			isDeviceReturn := deviceReturnAlarmTypes[alarmType]
+
+			changedItems = append(changedItems, struct {
+				AlarmType           string
+				Changed             bool
+				NeedDeviceWrite     bool
+				IsDeviceReturn      bool
+				ComparisonResult    AlarmItemComparisonResult
+				ExistingValue       interface{}
+				NewValue            interface{}
+			}{
+				AlarmType:        alarmType,
+				Changed:          true,
+				NeedDeviceWrite:  needDeviceWrite,
+				IsDeviceReturn:   isDeviceReturn,
+				ComparisonResult: comparisonResult,
+				ExistingValue:    existingValue,
+				NewValue:         newValue,
+			})
+
+			// 如果是设备返回的项，且与前端不同，单独记录
+			if isDeviceReturn {
+				s.logger.Info("[SAVE_SETTINGS] Device return item differs from frontend",
+					zap.String("device_type", deviceType),
+					zap.String("alarm_type", alarmType),
+					zap.Bool("alarm_params_changed", comparisonResult.AlarmParamsChanged),
+					zap.Bool("is_enabled_changed", comparisonResult.IsEnabledChanged),
+					zap.Bool("alarm_level_changed", comparisonResult.AlarmLevelChanged),
+					zap.Any("existing_value", existingValue),
+					zap.Any("new_value", newValue),
+				)
+			}
+		}
+	}
+
+	// 检查是否有现有配置中有但新配置中没有的 AlarmType
+	for alarmType, existingItem := range existingMap {
+		if _, exists := newMap[alarmType]; !exists {
+			needDeviceWrite := deviceWriteAlarmTypes[alarmType]
+			isDeviceReturn := deviceReturnAlarmTypes[alarmType]
+			
+			changedItems = append(changedItems, struct {
+				AlarmType           string
+				Changed             bool
+				NeedDeviceWrite     bool
+				IsDeviceReturn      bool
+				ComparisonResult    AlarmItemComparisonResult
+				ExistingValue       interface{}
+				NewValue            interface{}
+			}{
+				AlarmType:        alarmType,
+				Changed:          true,
+				NeedDeviceWrite:  needDeviceWrite,
+				IsDeviceReturn:   isDeviceReturn,
+				ComparisonResult: AlarmItemComparisonResult{
+					AlarmParamsChanged: true,
+					IsEnabledChanged:   true,
+					AlarmLevelChanged:  true,
+					HasAnyChange:       true,
+				},
+				ExistingValue: existingItem,
+				NewValue:      nil,
+			})
+		}
+	}
+
+	// 提取变化的 AlarmType 列表（用于后续处理）
+	changedAlarmTypes := make([]string, 0, len(changedItems))
+	for _, item := range changedItems {
+		if item.Changed {
+			changedAlarmTypes = append(changedAlarmTypes, item.AlarmType)
+			if item.NeedDeviceWrite {
+				hasDeviceWriteChanges = true
+			}
+		}
+	}
 
 	// 2.1. 如果配置无变化，直接返回 "no Change"
-	if len(changedAlarmTypes) == 0 {
+	if len(changedItems) == 0 {
 		s.logger.Info("Device monitor settings unchanged, skipping update",
 			zap.String("tenant_id", tenantID),
 			zap.String("device_id", deviceID),
 			zap.String("device_type", deviceType),
 		)
-		return true, true, nil
+		return true, true, false, nil
 	}
 
-	// 2.2. 检查变化的项是否包含需要写入设备的项
-	// 需要写入设备的 AlarmType：
-	// - Radar_MonitoringMode (工作模式)
-	// - Radar_Fall (跌倒告警时间，影响 fall_param 字节 3)
-	// - Radar_PostureDetection (姿态检测，影响 fall_param 字节 4 bit1)
-	// - Radar_BedSitUp (床上坐起，影响 fall_param 字节 4 bit2)
-	// - Radar_SittingOnGround (坐地告警，影响 fall_param 字节 4 bit0 和字节 5)
-	// - Radar_AbnormalRespiratoryRate (呼吸异常，影响 heart_breath_param)
-	// - Radar_AbnormalHeartRate (心率异常，影响 heart_breath_param)
-	// - Radar_VitalsWeak (生命体征微弱，影响 heart_breath_param)
-	deviceWriteAlarmTypes := map[string]bool{
-		alarm.RadarMonitoringMode:          true,
-		alarm.RadarFall:                    true,
-		alarm.RadarPostureDetection:        true,
-		alarm.RadarBedSitUp:                true,
-		alarm.RadarSittingOnGround:         true,
-		alarm.RadarAbnormalRespiratoryRate: true,
-		alarm.RadarAbnormalHeartRate:       true,
-		alarm.RadarVitalsWeak:              true,
-	}
-
-	hasDeviceWriteChanges := false
-	for _, alarmType := range changedAlarmTypes {
-		if deviceWriteAlarmTypes[alarmType] {
-			hasDeviceWriteChanges = true
-			break
+	// 记录比对结果
+	changedItemsForLog := make([]map[string]interface{}, 0, len(changedItems))
+	var deviceReturnDiffItems []map[string]interface{} // 单独列出设备返回项与前端不同的项
+	
+	for _, item := range changedItems {
+		itemLog := map[string]interface{}{
+			"alarm_type":        item.AlarmType,
+			"changed":           item.Changed,
+			"need_device_write": item.NeedDeviceWrite,
+			"alarm_params_changed": item.ComparisonResult.AlarmParamsChanged,
+			"is_enabled_changed":   item.ComparisonResult.IsEnabledChanged,
+			"alarm_level_changed":  item.ComparisonResult.AlarmLevelChanged,
+		}
+		changedItemsForLog = append(changedItemsForLog, itemLog)
+		
+		// 如果是设备返回的项，且与前端不同，单独列出
+		if item.IsDeviceReturn {
+			deviceReturnDiffItems = append(deviceReturnDiffItems, itemLog)
 		}
 	}
 
-	// 调试日志：检查设备写入条件
-	s.logger.Info("Checking device write conditions",
+	s.logger.Info("[SAVE_SETTINGS] Comparison completed - all changed items identified",
 		zap.String("tenant_id", tenantID),
 		zap.String("device_id", deviceID),
 		zap.String("device_type", deviceType),
-		zap.Bool("is_radar", deviceType == "radar"),
-		zap.Bool("qinglan_client_not_nil", s.qinglanClient != nil),
-		zap.String("device_uid", device.DeviceUID),
-		zap.Bool("has_device_uid", device.DeviceUID != ""),
+		zap.Int("total_changed_items", len(changedItems)),
 		zap.Bool("has_device_write_changes", hasDeviceWriteChanges),
-		zap.Strings("changed_alarm_types", changedAlarmTypes),
+		zap.Any("changed_items", changedItemsForLog),
 	)
 
-	// 3. 对于雷达设备，先写入设备（工作模式、跌倒参数、呼吸心率参数）
-	// 如果写入设备成功，再写入DB；如果部分失败，读取设备实际值后写入DB
-	// 注意：设备写入设置8秒超时，避免前端10秒超时导致整个请求失败
-	var finalAlarmItems []alarm.AlarmItem = alarmItems
-	if deviceType == "radar" && s.qinglanClient != nil && device.DeviceUID != "" && hasDeviceWriteChanges {
-		s.logger.Info("Entering device write logic, converting alarm items to device properties",
+	// 单独列出设备返回项与前端不同的项
+	if len(deviceReturnDiffItems) > 0 {
+		s.logger.Info("[SAVE_SETTINGS] Device return items differ from frontend - listed separately",
 			zap.String("tenant_id", tenantID),
 			zap.String("device_id", deviceID),
-			zap.String("device_uid", device.DeviceUID),
+			zap.String("device_type", deviceType),
+			zap.Int("device_return_diff_count", len(deviceReturnDiffItems)),
+			zap.Any("device_return_diff_items", deviceReturnDiffItems),
 		)
-
-		deviceProps, err := AlarmItemsToRadarDeviceProps(alarmItems)
-		if err != nil {
-			return false, false, fmt.Errorf("failed to convert alarm items to device properties: %w", err)
-		}
-
-		s.logger.Info("Device properties converted",
-			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
-			zap.Int("device_props_count", len(deviceProps)),
-			zap.Any("device_props", deviceProps),
-		)
-
-		// 如果有需要写入设备的属性，先写入设备
-		if len(deviceProps) > 0 {
-			s.logger.Info("Calling qinglan_client.SetDeviceProperties",
-				zap.String("tenant_id", tenantID),
-				zap.String("device_id", deviceID),
-				zap.String("device_uid", device.DeviceUID),
-				zap.Any("device_props", deviceProps),
-			)
-			
-			// 为设备写入设置5秒超时，确保在前端10秒超时之前完成或快速失败
-			deviceWriteCtx, deviceWriteCancel := context.WithTimeout(ctx, 5*time.Second)
-			defer deviceWriteCancel()
-
-			writeErr := s.qinglanClient.SetDeviceProperties(deviceWriteCtx, device.DeviceUID, deviceProps)
-			if writeErr != nil {
-				// 写入设备失败（包括超时），记录警告但继续使用前端传入的值
-				// 不尝试读取设备值，避免再次超时导致整个请求失败
-				s.logger.Warn("Failed to write radar device properties, using request values",
-					zap.String("tenant_id", tenantID),
-					zap.String("device_id", deviceID),
-					zap.String("device_uid", device.DeviceUID),
-					zap.Error(writeErr),
-					zap.String("note", "Device write failed, but will continue with request values to avoid timeout"),
-				)
-				// 继续使用前端传入的值 (finalAlarmItems = alarmItems)
-			} else {
-				// 写入设备成功，使用前端传入的值
-				s.logger.Info("Successfully wrote radar device properties",
-					zap.String("tenant_id", tenantID),
-					zap.String("device_id", deviceID),
-					zap.String("device_uid", device.DeviceUID),
-				)
-			}
-		}
 	}
 
-	// 4. 将最终 AlarmItem 数组转换为 monitor_config JSONB
-	monitorConfigJSON, err := s.convertAlarmItemsToMonitorConfig(finalAlarmItems)
+	// 3. 暂时停止：只完成比对，不执行设备写入和数据库更新
+	// TODO: 后续步骤：
+	//   - 根据比对结果，决定需要发送给设备的属性
+	//   - 写入设备
+	//   - 更新数据库
+	//   - 保存 config_versions
+
+	s.logger.Info("[SAVE_SETTINGS] Comparison step completed - stopping here (device write and DB update logic cleared)",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_id", deviceID),
+		zap.String("device_type", deviceType),
+		zap.Strings("changed_alarm_types", changedAlarmTypes),
+		zap.Bool("has_device_write_changes", hasDeviceWriteChanges),
+	)
+
+	// 暂时返回成功，但不执行实际更新
+	return true, false, hasDeviceWriteChanges, nil
+}
+
+// RadarWriteResult 雷达写入结果，包含每个 alarm_type 的执行结果
+type RadarWriteResult struct {
+	Results map[string]string // key: alarm_type, value: "200" 或 "Fail"
+}
+
+// UpdateRadarResult 更新雷达配置的结果
+type UpdateRadarResult struct {
+	DeviceWriteSuccess bool                // 设备写入是否成功
+	DBWriteSuccess     bool                // 数据库写入是否成功
+	FailedAlarmTypes   []alarm.AlarmItem   // 失败的 alarm_type 列表（使用旧值）
+	NoChange           bool                // 是否有变化
+}
+
+// radarWrite 向 qinglan_client 发送写入完整的指令（工作模式、跌倒和呼吸心率参数设置）
+// 直接传递 _alarm_items_json，wisefido-qinglan 会自动构建 fall_param 和 heart_breath_param
+// qinglan_client 会自动分组、排序和时间间隔（100ms）
+// 返回每个 alarm_type 的执行结果：200 成功，Fail 失败
+func (s *deviceMonitorSettingsService) radarWrite(ctx context.Context, deviceUID string, alarmItems []alarm.AlarmItem, progressCallback ProgressCallback) (*RadarWriteResult, error) {
+	if s.qinglanClient == nil {
+		return nil, fmt.Errorf("qinglan client is not initialized")
+	}
+
+	if deviceUID == "" {
+		return nil, fmt.Errorf("device_uid is required")
+	}
+
+	if len(alarmItems) == 0 {
+		return nil, fmt.Errorf("alarm_items is empty")
+	}
+
+	// 将 AlarmItems 序列化为 JSON 字符串
+	alarmItemsJSON, err := json.Marshal(alarmItems)
 	if err != nil {
-		return false, false, fmt.Errorf("failed to convert alarm items to monitor config: %w", err)
+		return nil, fmt.Errorf("failed to marshal alarm items to JSON: %w", err)
 	}
 
-	// 5. 使用事务保证原子性：要么全部成功，要么全部失败
+	// 直接传递 _alarm_items_json，wisefido-qinglan 会自动处理
+	// wisefido-qinglan 会从 _alarm_items_json 构建：
+	//   - radar_func_ctrl (从 MonitoringMode)
+	//   - fall_param (从 Fall, SittingOnGround, PostureDetection 等)
+	//   - heart_breath_param (从 AbnormalHeartRate, AbnormalRespiratoryRate, VitalsWeak)
+	properties := map[string]interface{}{
+		"_alarm_items_json": string(alarmItemsJSON),
+	}
+
+	s.logger.Info("[RADAR_WRITE] Sending alarm items to device",
+		zap.String("device_uid", deviceUID),
+		zap.Int("alarm_items_count", len(alarmItems)),
+		zap.String("alarm_items_json_length", fmt.Sprintf("%d bytes", len(alarmItemsJSON))),
+	)
+
+	// 通知前端开始写入
+	if progressCallback != nil {
+		progressCallback(10, "开始写入设备配置...")
+	}
+
+	// 调用 qinglan_client.SetDeviceProperties 写入设备
+	// qinglan_client 会自动分组、排序和时间间隔（100ms）
+	// wisefido-qinglan 会从 _alarm_items_json 构建设备属性
+	_, err = s.qinglanClient.SetDeviceProperties(ctx, deviceUID, properties)
+	
+	// 构建每个 alarm_type 的执行结果
+	result := &RadarWriteResult{
+		Results: make(map[string]string),
+	}
+	
+	if err != nil {
+		s.logger.Error("[RADAR_WRITE] Failed to write device properties",
+			zap.String("device_uid", deviceUID),
+			zap.Int("alarm_items_count", len(alarmItems)),
+			zap.Error(err),
+		)
+		// 所有 alarm_type 标记为失败
+		for _, item := range alarmItems {
+			result.Results[item.AlarmType] = "Fail"
+		}
+		// 通知前端写入失败
+		if progressCallback != nil {
+			progressCallback(0, fmt.Sprintf("设备配置写入失败: %v", err))
+		}
+		return result, fmt.Errorf("failed to write device properties: %w", err)
+	}
+
+	s.logger.Info("[RADAR_WRITE] Successfully wrote device properties",
+		zap.String("device_uid", deviceUID),
+		zap.Int("alarm_items_count", len(alarmItems)),
+	)
+	
+	// 所有 alarm_type 标记为成功
+	for _, item := range alarmItems {
+		result.Results[item.AlarmType] = "200"
+	}
+
+	// 通知前端写入成功
+	if progressCallback != nil {
+		progressCallback(50, "设备配置写入成功")
+	}
+
+	return result, nil
+}
+
+// updateAlarmDeviceDB 更新 alarm_device 表和 config_version
+func (s *deviceMonitorSettingsService) updateAlarmDeviceDB(ctx context.Context, tenantID, deviceID, userID string, alarmItems []alarm.AlarmItem) error {
+	// 转换为 monitor_config JSON
+	monitorConfigJSON, err := s.convertAlarmItemsToMonitorConfig(alarmItems)
+	if err != nil {
+		return fmt.Errorf("failed to convert alarm items to monitor config: %w", err)
+	}
+
+	// 构建 AlarmDevice 对象
+	alarmDevice := &domain.AlarmDevice{
+		DeviceID:     deviceID,
+		TenantID:     tenantID,
+		MonitorConfig: monitorConfigJSON,
+	}
+
+	// 使用事务更新 alarm_device 和 config_version
 	if s.db == nil {
-		return false, false, fmt.Errorf("database connection is required for transaction")
+		return fmt.Errorf("database connection is not available")
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, false, fmt.Errorf("failed to begin transaction: %w", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback() // 确保在函数返回时回滚（如果未提交）
+	defer tx.Rollback()
 
-	// 4.1. 如果有变化，先保存旧配置到 config_versions（在事务中）
-	// 保存完整配置：包括 alarm_cloud 配置和设备特定的 monitor_config
-	if len(changedAlarmTypes) > 0 && s.configVersionsRepo != nil {
-		// 获取 alarm_cloud 配置（用于合并生成完整配置）
-		alarmCloudConfig, err := s.getAlarmCloudConfig(ctx, tenantID)
-		if err != nil {
-			// 如果获取失败，构建默认配置
-			alarmCloudConfig = &alarm.AlarmCloudConfig{
-				TenantResetTime: alarm.DefaultTenantResetTime,
-				CommonAlarm: alarm.CommonAlarm{
-					OfflineAlarm:  alarm.DefaultOfflineAlarm,
-					LowBattery:    alarm.DefaultLowBattery,
-					DeviceFailure: alarm.DefaultDeviceFailure,
-				},
-				AlarmSetting: struct {
-					Sleepad []alarm.AlarmItem `json:"sleepad,omitempty"`
-					Radar   []alarm.AlarmItem `json:"radar,omitempty"`
-				}{
-					Sleepad: alarm.GetDefaultAlarmItemsSleepPad(),
-					Radar:   alarm.GetDefaultAlarmItemsRadar(),
-				},
-				CloudVitalAlarmThreshold: alarm.DefaultCloudVitalAlarmThreshold,
-			}
-		}
+	// 更新 alarm_device
+	if err := s.alarmDeviceRepo.UpsertAlarmDevice(ctx, tenantID, deviceID, alarmDevice); err != nil {
+		return fmt.Errorf("failed to upsert alarm device: %w", err)
+	}
 
-		// 保存前端修改的 []AlarmItem（即 monitor_config 中的内容）
-		// 前端修改的是 DefaultAlarmSetting 中的 Radar 或 Sleepad []AlarmItem
-		// 这些数据保存在 monitor_config 中，需要保存到 config_versions
-		// 使用 existingAlarmItems（已在第 538-555 行从 monitor_config 转换，或从 alarm_cloud/默认值构建）
-		alarmItems := existingAlarmItems
-
-		// 处理 vendor_config：从 existingAlarmDevice 获取
-		var vendorConfig map[string]interface{}
-		if existingAlarmDevice != nil && len(existingAlarmDevice.VendorConfig) > 0 {
-			if err := json.Unmarshal(existingAlarmDevice.VendorConfig, &vendorConfig); err != nil {
-				vendorConfig = make(map[string]interface{})
-			}
-		} else {
-			vendorConfig = make(map[string]interface{})
-		}
-
-		// 处理 metadata：从 existingAlarmDevice 获取
-		var metadata map[string]interface{}
-		if existingAlarmDevice != nil && len(existingAlarmDevice.Metadata) > 0 {
-			if err := json.Unmarshal(existingAlarmDevice.Metadata, &metadata); err != nil {
-				metadata = make(map[string]interface{})
-			}
-		} else {
-			metadata = make(map[string]interface{})
-		}
-
-		// 构建完整的配置数据：保存所有字段
-		// 包括 alarm_cloud 的完整配置和 alarm_device 的完整配置（前端修改的 []AlarmItem 在 monitor_config 中）
-		configData := map[string]interface{}{
-			// alarm_cloud 配置（完整保存）
-			"TenantResetTime":          alarmCloudConfig.TenantResetTime,
-			"common_alarm":             alarmCloudConfig.CommonAlarm,
-			"AlarmSetting":             alarmCloudConfig.AlarmSetting,
-			"CloudVitalAlarmThreshold": alarmCloudConfig.CloudVitalAlarmThreshold,
-			// alarm_device 的全部字段（前端修改的 []AlarmItem 保存在 monitor_config 中）
-			"alarm_items":   alarmItems, // 前端修改的 []AlarmItem（Radar 或 Sleepad）
-			"vendor_config": vendorConfig,
-			"metadata":      metadata,
-		}
-		configDataJSON, err := json.Marshal(configData)
-		if err != nil {
-			return false, false, fmt.Errorf("failed to marshal config_data for config_version: %w", err)
-		}
-
-		configVersion := &domain.ConfigVersion{
-			ConfigType:      "alarm_device",
-			EntityID:        deviceID, // alarm_device 的 entity_id 就是 device_id
-			CurrentEntityID: deviceID,
-			ConfigData:      json.RawMessage(configDataJSON),
-			ValidFrom:       time.Now().UTC(),
-		}
+	// 创建 config_version 记录（用于审计）
+	if s.configVersionsRepo != nil {
+		now := time.Now()
+		var createdBy *string
 		if userID != "" {
-			configVersion.CreatedBy = &userID
+			createdBy = &userID
 		}
-
-		// 在事务中执行 config_versions 的插入
-		// 将旧版本的valid_to设置为当前时间
-		updateOldQuery := `
-			UPDATE config_versions
-			SET valid_to = $4
-			WHERE tenant_id = $1 
-				AND config_type = $2 
-				AND entity_id = $3
-				AND (valid_to IS NULL OR valid_to > $4)
-		`
-		_, err = tx.ExecContext(ctx, updateOldQuery, tenantID, configVersion.ConfigType, configVersion.EntityID, configVersion.ValidFrom)
-		if err != nil {
-			return false, false, fmt.Errorf("failed to update old config versions: %w", err)
+		configVersion := &domain.ConfigVersion{
+			TenantID:      tenantID,
+			EntityID:      deviceID, // device_id 作为 entity_id
+			CurrentEntityID: deviceID,
+			ConfigType:    "alarm_device", // 使用 alarm_device 作为配置类型
+			ConfigData:    monitorConfigJSON,
+			ValidFrom:     now,
+			ValidTo:       nil, // NULL 表示当前仍生效
+			CreatedBy:     createdBy,
+			ChangeReason:  "Update device monitor settings",
 		}
-
-		// 创建新版本
-		insertQuery := `
-			INSERT INTO config_versions (
-				tenant_id,
-				config_type,
-				entity_id,
-				current_entity_id,
-				config_data,
-				valid_from,
-				valid_to,
-				created_by
-			) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
-			RETURNING version_id::text
-		`
-
-		var currentEntityID interface{}
-		if configVersion.CurrentEntityID != "" {
-			currentEntityID = configVersion.CurrentEntityID
-		}
-
-		var validTo interface{}
-		if configVersion.ValidTo != nil {
-			validTo = *configVersion.ValidTo
-		}
-
-		var createdBy interface{}
-		if configVersion.CreatedBy != nil && *configVersion.CreatedBy != "" {
-			createdBy = *configVersion.CreatedBy
-		}
-
-		var versionID string
-		err = tx.QueryRowContext(ctx, insertQuery, tenantID, configVersion.ConfigType, configVersion.EntityID,
-			currentEntityID, string(configVersion.ConfigData), configVersion.ValidFrom, validTo, createdBy).Scan(&versionID)
-		if err != nil {
-			return false, false, fmt.Errorf("failed to create config version: %w", err)
-		}
-	}
-
-	// 4.2. 更新 alarm_device（在事务中）
-	upsertQuery := `
-		INSERT INTO alarm_device (
-			device_id,
-			tenant_id,
-			monitor_config,
-			updated_at,
-			updated_by
-		) VALUES ($1, $2, $3::jsonb, $4, $5)
-		ON CONFLICT (device_id) DO UPDATE SET
-			tenant_id = EXCLUDED.tenant_id,
-			monitor_config = EXCLUDED.monitor_config,
-			updated_at = EXCLUDED.updated_at,
-			updated_by = EXCLUDED.updated_by
-	`
-
-	var updatedBy interface{}
-	if userID != "" {
-		updatedBy = userID
-	}
-
-	_, err = tx.ExecContext(ctx, upsertQuery, deviceID, tenantID, string(monitorConfigJSON), time.Now().UTC(), updatedBy)
-	if err != nil {
-		return false, false, fmt.Errorf("failed to update alarm device: %w", err)
-	}
-
-	// 提交事务
-	if err := tx.Commit(); err != nil {
-		return false, false, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	s.logger.Info("Device monitor settings updated",
-		zap.String("tenant_id", tenantID),
-		zap.String("device_id", deviceID),
-		zap.String("device_type", deviceType),
-	)
-
-	// 发布配置变更通知
-	if s.configNotifier != nil {
-		// 获取 device_uid、device_code 和 device_type（radar 服务需要）
-		deviceUID := ""
-		if device.DeviceUID != "" {
-			deviceUID = device.DeviceUID
-		}
-
-		deviceCode := ""
-		if device.DeviceCode.Valid && device.DeviceCode.String != "" {
-			deviceCode = device.DeviceCode.String
-		}
-		if deviceCode == "" {
-			deviceCode = device.DeviceUID // device_code 仅 Sleepace 有，Radar 无；空则用 device_uid
-		}
-
-		// 获取设备类型（转换为标准格式）
-		notifyDeviceType := ""
-		if device.DeviceType.Valid {
-			deviceTypeStr := device.DeviceType.String
-			// 转换为标准格式：Sleepad/sleepad/sleepace/sleeppad -> "Sleepad", radar -> "Radar"
-			switch strings.ToLower(deviceTypeStr) {
-			case "Sleepad", "sleepad", "sleepace", "sleeppad":
-				notifyDeviceType = "Sleepad"
-			case "radar":
-				notifyDeviceType = "Radar"
-			default:
-				notifyDeviceType = deviceTypeStr
-			}
-		}
-
-		// 位置信息可选，可为空（当前不传递，后续如需可添加获取逻辑）
-		if err := s.configNotifier.NotifyAlarmDeviceUpdated(ctx, tenantID, deviceID, deviceUID, deviceCode, notifyDeviceType, nil); err != nil {
-			s.logger.Warn("Failed to notify config change, but database update succeeded",
+		if _, err := s.configVersionsRepo.CreateConfigVersion(ctx, tenantID, configVersion); err != nil {
+			s.logger.Warn("[UPDATE_DB] Failed to create config version",
 				zap.String("tenant_id", tenantID),
 				zap.String("device_id", deviceID),
-				zap.String("device_uid", deviceUID),
-				zap.String("device_code", deviceCode),
-				zap.String("device_type", notifyDeviceType),
 				zap.Error(err),
 			)
+			// 不返回错误，因为 config_version 只是审计记录
 		}
 	}
 
-	return true, false, nil
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	s.logger.Info("[UPDATE_DB] Successfully updated alarm_device and config_version",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_id", deviceID),
+		zap.String("user_id", userID),
+	)
+
+	return nil
 }
 
 // ============================================
@@ -792,92 +1121,38 @@ func (s *deviceMonitorSettingsService) normalizeDeviceType(deviceType string) st
 	return ""
 }
 
-// isDeviceTypeMatch 判断两个设备类型是否匹配（支持多种变体）
-func (s *deviceMonitorSettingsService) isDeviceTypeMatch(type1, type2 string) bool {
-	normalized1 := s.normalizeDeviceType(type1)
-	normalized2 := s.normalizeDeviceType(type2)
-	return normalized1 != "" && normalized1 == normalized2
+// AlarmItemComparisonResult 比对结果，记录每个字段是否有变化
+type AlarmItemComparisonResult struct {
+	AlarmParamsChanged bool
+	IsEnabledChanged   bool
+	AlarmLevelChanged  bool
+	HasAnyChange       bool
 }
 
-// getChangedAlarmTypes 逐项比对两个 AlarmItem 数组，返回有变化的 AlarmType 列表
-func (s *deviceMonitorSettingsService) getChangedAlarmTypes(existing, new []alarm.AlarmItem) []string {
-	changedTypes := make(map[string]bool)
+// compareAlarmItem 比对两个 AlarmItem，返回详细的比对结果
+// 对每个 alarm_type 进行3个比较：alarm_params, isEnabled, alarm_level
+func (s *deviceMonitorSettingsService) compareAlarmItem(existing, new alarm.AlarmItem) AlarmItemComparisonResult {
+	result := AlarmItemComparisonResult{}
 
-	// 构建现有配置的索引（按 AlarmType）
-	existingMap := make(map[string]alarm.AlarmItem)
-	for _, item := range existing {
-		if item.AlarmType != "" {
-			existingMap[item.AlarmType] = item
-		}
-	}
+	// 1. 比对 AlarmParams
+	result.AlarmParamsChanged = !s.compareAlarmParams(existing.AlarmParams, new.AlarmParams)
 
-	// 构建新配置的索引（按 AlarmType）
-	newMap := make(map[string]alarm.AlarmItem)
-	for _, item := range new {
-		if item.AlarmType != "" {
-			newMap[item.AlarmType] = item
-		}
-	}
+	// 2. 比对 IsEnabled（指针比较）
+	result.IsEnabledChanged = !compareIntPtr(existing.IsEnabled, new.IsEnabled)
 
-	// 检查新配置中的每个 AlarmItem
-	for alarmType, newItem := range newMap {
-		existingItem, exists := existingMap[alarmType]
-		if !exists {
-			// 新配置中有现有配置没有的 AlarmType，认为有变化
-			changedTypes[alarmType] = true
-			continue
-		}
+	// 3. 比对 AlarmLevel（指针比较）
+	result.AlarmLevelChanged = !compareStringPtr(existing.AlarmLevel, new.AlarmLevel)
 
-		// 比对每个字段
-		if !s.compareAlarmItem(existingItem, newItem) {
-			changedTypes[alarmType] = true
-		}
-	}
-
-	// 检查是否有现有配置中有但新配置中没有的 AlarmType
-	for alarmType := range existingMap {
-		if _, exists := newMap[alarmType]; !exists {
-			changedTypes[alarmType] = true
-		}
-	}
-
-	// 转换为列表
-	result := make([]string, 0, len(changedTypes))
-	for alarmType := range changedTypes {
-		result = append(result, alarmType)
-	}
+	// 是否有任何变化
+	result.HasAnyChange = result.AlarmParamsChanged || result.IsEnabledChanged || result.AlarmLevelChanged
 
 	return result
 }
 
-// compareAlarmItem 比对两个 AlarmItem 是否完全相同
-func (s *deviceMonitorSettingsService) compareAlarmItem(existing, new alarm.AlarmItem) bool {
-	// 比对 AlarmType
-	if existing.AlarmType != new.AlarmType {
-		return false
-	}
-
-	// 比对 IsEnabled（指针比较）
-	if !compareIntPtr(existing.IsEnabled, new.IsEnabled) {
-		return false
-	}
-
-	// 比对 AlarmLevel（指针比较）
-	if !compareStringPtr(existing.AlarmLevel, new.AlarmLevel) {
-		return false
-	}
-
-	// 比对 DisplaySetting
-	if existing.DisplaySetting != new.DisplaySetting {
-		return false
-	}
-
-	// 比对 AlarmParams（map 深度比对）
-	if !s.compareAlarmParams(existing.AlarmParams, new.AlarmParams) {
-		return false
-	}
-
-	return true
+// compareAlarmItemSimple 比对两个 AlarmItem 是否完全相同（向后兼容）
+func (s *deviceMonitorSettingsService) compareAlarmItemSimple(existing, new alarm.AlarmItem) bool {
+	result := s.compareAlarmItem(existing, new)
+	return !result.HasAnyChange
 }
 
 // compareAlarmParams 比对两个 AlarmParams map 是否完全相同
@@ -913,133 +1188,152 @@ func (s *deviceMonitorSettingsService) compareAlarmParams(existing, new map[stri
 	return true
 }
 
-// compareValues 比对两个值是否相同（支持基本类型）
-func (s *deviceMonitorSettingsService) compareValues(v1, v2 interface{}) bool {
-	// 如果类型不同，尝试转换为相同类型后比对
-	switch val1 := v1.(type) {
-	case int:
-		switch val2 := v2.(type) {
-		case int:
-			return val1 == val2
-		case int64:
-			return int64(val1) == val2
-		case float64:
-			return float64(val1) == val2
-		default:
-			return false
+// compareValues 深度比对两个值是否相同
+// 支持字符串 "8" 与数字 8 的比较（radar 硬件可能返回字符串）
+func (s *deviceMonitorSettingsService) compareValues(existing, new interface{}) bool {
+	// 如果类型相同，直接比较
+	if existing == nil && new == nil {
+		return true
+	}
+	if existing == nil || new == nil {
+		return false
+	}
+
+	// 尝试转换为相同类型后比较
+	existingVal := s.normalizeValue(existing)
+	newVal := s.normalizeValue(new)
+
+	// 如果都是数字类型，直接比较
+	if existingNum, ok1 := existingVal.(float64); ok1 {
+		if newNum, ok2 := newVal.(float64); ok2 {
+			return existingNum == newNum
 		}
-	case int64:
-		switch val2 := v2.(type) {
-		case int:
-			return val1 == int64(val2)
-		case int64:
-			return val1 == val2
-		case float64:
-			return float64(val1) == val2
-		default:
-			return false
+	}
+
+	// 如果都是字符串，直接比较
+	if existingStr, ok1 := existingVal.(string); ok1 {
+		if newStr, ok2 := newVal.(string); ok2 {
+			return existingStr == newStr
 		}
-	case float64:
-		switch val2 := v2.(type) {
-		case int:
-			return val1 == float64(val2)
-		case int64:
-			return val1 == float64(val2)
-		case float64:
-			return val1 == val2
-		default:
-			return false
-		}
+	}
+
+	// 其他情况使用 JSON 序列化比对
+	existingJSON, _ := json.Marshal(existing)
+	newJSON, _ := json.Marshal(new)
+	return string(existingJSON) == string(newJSON)
+}
+
+// normalizeValue 将值标准化为可比较的类型
+// 处理字符串 "8" 与数字 8 的情况
+func (s *deviceMonitorSettingsService) normalizeValue(v interface{}) interface{} {
+	if v == nil {
+		return nil
+	}
+
+	switch val := v.(type) {
 	case string:
-		val2, ok := v2.(string)
-		return ok && val1 == val2
-	case bool:
-		val2, ok := v2.(bool)
-		return ok && val1 == val2
-	case nil:
-		return v2 == nil
+		// 尝试将字符串转换为数字
+		if intVal, err := strconv.Atoi(val); err == nil {
+			return float64(intVal)
+		}
+		if floatVal, err := strconv.ParseFloat(val, 64); err == nil {
+			return floatVal
+		}
+		return val
+	case int:
+		return float64(val)
+	case int32:
+		return float64(val)
+	case int64:
+		return float64(val)
+	case float32:
+		return float64(val)
+	case float64:
+		return val
 	default:
-		// 对于其他类型（如 map、slice），使用简单的相等比较
-		return v1 == v2
+		return v
 	}
 }
 
-// compareIntPtr 比对两个 int 指针是否相同
-func compareIntPtr(p1, p2 *int) bool {
-	if p1 == nil && p2 == nil {
+// compareIntPtr 比对两个 *int 是否相同
+func compareIntPtr(a, b *int) bool {
+	if a == nil && b == nil {
 		return true
 	}
-	if p1 == nil || p2 == nil {
+	if a == nil || b == nil {
 		return false
 	}
-	return *p1 == *p2
+	return *a == *b
 }
 
-// compareStringPtr 比对两个 string 指针是否相同
-func compareStringPtr(p1, p2 *string) bool {
-	if p1 == nil && p2 == nil {
+// compareStringPtr 比对两个 *string 是否相同
+func compareStringPtr(a, b *string) bool {
+	if a == nil && b == nil {
 		return true
 	}
-	if p1 == nil || p2 == nil {
+	if a == nil || b == nil {
 		return false
 	}
-	return *p1 == *p2
+	return *a == *b
 }
 
-// validateSettings 验证配置参数
-func (s *deviceMonitorSettingsService) validateSettings(deviceType string, settings map[string]interface{}) error {
-	// 验证报警级别
-	validLevels := map[string]bool{
-		"disabled":      true, // 前端发送的格式（小写）
-		"DISABLED":      true, // 大写格式（兼容）
-		"EMERGENCY":     true,
-		"WARNING":       true,
-		"ERROR":         true,
-		"INFORMATIONAL": true,
-		// 前端发送的格式：'0' = EMERGENCY, '4' = WARNING
-		"0": true,
-		"4": true,
-	}
+// getChangedAlarmTypes 逐项比对两个 AlarmItem 数组，返回有变化的 AlarmType 列表
+func (s *deviceMonitorSettingsService) getChangedAlarmTypes(existing, new []alarm.AlarmItem) []string {
+	changedTypes := make(map[string]bool)
 
-	for key, value := range settings {
-		if strings.HasSuffix(key, "_alarm_level") {
-			// 跳过 fall_alarm_level 和 posture_detection_alarm_level，它们作为阈值（enabled）而不是 alarm_level
-			if key == "fall_alarm_level" || key == "posture_detection_alarm_level" {
-				// 只验证，不转换（前端已统一使用 AlarmItem 格式）
-				if level, ok := value.(string); ok {
-					if !validLevels[level] {
-						return fmt.Errorf("invalid alarm level '%s' for field '%s'", level, key)
-					}
-				}
-				continue
-			}
-
-			if level, ok := value.(string); ok {
-				// 转换前端格式到后端格式
-				convertedLevel := level
-				if level == "0" {
-					convertedLevel = "EMERGENCY"
-				} else if level == "4" {
-					convertedLevel = "WARNING"
-				} else if strings.EqualFold(level, "disabled") || strings.EqualFold(level, "DISABLED") {
-					// 统一转换为 "DISABLED"（大写）
-					convertedLevel = "DISABLED"
-				}
-
-				if !validLevels[level] {
-					return fmt.Errorf("invalid alarm level '%s' for field '%s'", level, key)
-				}
-
-				// 更新设置中的值为转换后的格式
-				settings[key] = convertedLevel
-			}
+	// 构建现有配置的索引（按 AlarmType）
+	existingMap := make(map[string]alarm.AlarmItem)
+	for _, item := range existing {
+		if item.AlarmType != "" {
+			existingMap[item.AlarmType] = item
 		}
 	}
 
-	// 验证数值范围（如果需要）
-	// 例如：心率范围、呼吸率范围等
+	// 构建新配置的索引（按 AlarmType）
+	newMap := make(map[string]alarm.AlarmItem)
+	for _, item := range new {
+		if item.AlarmType != "" {
+			newMap[item.AlarmType] = item
+		}
+	}
 
-	return nil
+	// 检查新配置中的每个 AlarmItem
+	for alarmType, newItem := range newMap {
+		existingItem, exists := existingMap[alarmType]
+		if !exists {
+			// 新配置中有现有配置没有的 AlarmType，认为有变化
+			changedTypes[alarmType] = true
+			continue
+		}
+
+		// 比对每个字段：alarm_params, isEnabled, alarm_level
+		comparisonResult := s.compareAlarmItem(existingItem, newItem)
+		if comparisonResult.HasAnyChange {
+			changedTypes[alarmType] = true
+		}
+	}
+
+	// 检查是否有现有配置中有但新配置中没有的 AlarmType
+	for alarmType := range existingMap {
+		if _, exists := newMap[alarmType]; !exists {
+			changedTypes[alarmType] = true
+		}
+	}
+
+	// 转换为列表
+	result := make([]string, 0, len(changedTypes))
+	for alarmType := range changedTypes {
+		result = append(result, alarmType)
+	}
+
+	return result
+}
+
+// isDeviceTypeMatch 判断两个设备类型是否匹配（支持多种变体）
+func (s *deviceMonitorSettingsService) isDeviceTypeMatch(type1, type2 string) bool {
+	normalized1 := s.normalizeDeviceType(type1)
+	normalized2 := s.normalizeDeviceType(type2)
+	return normalized1 != "" && normalized1 == normalized2
 }
 
 // getDeviceType 已废弃：不再需要单独查询 device_store
@@ -1071,398 +1365,278 @@ func (s *deviceMonitorSettingsService) GetDefaultDeviceMonitorSettings(ctx conte
 	return alarmItems, nil
 }
 
-// getAlarmLevelFromCloud 从 alarm_cloud 获取报警级别并填充到 settings
-// 优先从当前租户的 alarm_cloud 读取，如果没有则使用硬编码值（不回退到 System 租户）
-func (s *deviceMonitorSettingsService) getAlarmLevelFromCloud(ctx context.Context, tenantID, deviceType string, settings map[string]interface{}) error {
-	// 获取当前租户的 alarm_cloud 配置
-	alarmCloud, err := s.alarmCloudRepo.GetAlarmCloud(ctx, tenantID)
+// syncDeviceValuesToDB 异步查询设备并更新数据库（只更新alarm_params或enabled，updated_by=null，不更新config_version）
+func (s *deviceMonitorSettingsService) syncDeviceValuesToDB(ctx context.Context, tenantID, deviceID, deviceUID, deviceType string, baselineAlarmItems []alarm.AlarmItem, dbExists bool) {
+	s.logger.Info("[SYNC_DEVICE] Starting async device query and DB sync",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_id", deviceID),
+		zap.String("device_uid", deviceUID),
+		zap.String("device_type", deviceType),
+	)
+
+	// 先检查设备在线状态，只有 online 才查询设备属性
+	if err := s.CheckDeviceOnlineStatus(ctx, deviceUID); err != nil {
+		s.logger.Info("[SYNC_DEVICE] Device is not online, skipping device query",
+			zap.String("tenant_id", tenantID),
+			zap.String("device_id", deviceID),
+			zap.String("device_uid", deviceUID),
+			zap.String("device_type", deviceType),
+			zap.Error(err),
+		)
+		return
+	}
+
+	// 创建独立的超时context（5秒超时，避免长时间阻塞）
+	deviceReadCtx, deviceReadCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer deviceReadCancel()
+
+	// 读取设备属性（工作模式、跌倒参数、呼吸心率参数）
+	deviceProps, deviceErr := s.qinglanClient.GetDeviceProperties(deviceReadCtx, deviceUID, []string{
+		"radar_func_ctrl",    // 工作模式
+		"fall_param",         // 跌倒参数
+		"heart_breath_param", // 呼吸心率参数
+	})
+
+	// 检查是否超时或取消
+	if deviceErr != nil {
+		if deviceReadCtx.Err() == context.DeadlineExceeded {
+			s.logger.Warn("[SYNC_DEVICE] Device query: TIMEOUT (5s)",
+				zap.String("tenant_id", tenantID),
+				zap.String("device_id", deviceID),
+				zap.String("device_uid", deviceUID),
+			)
+		} else if deviceReadCtx.Err() == context.Canceled {
+			s.logger.Warn("[SYNC_DEVICE] Device query: CANCELED",
+				zap.String("tenant_id", tenantID),
+				zap.String("device_id", deviceID),
+				zap.String("device_uid", deviceUID),
+			)
+		} else {
+			s.logger.Warn("[SYNC_DEVICE] Device query: FAILED",
+				zap.String("tenant_id", tenantID),
+				zap.String("device_id", deviceID),
+				zap.String("device_uid", deviceUID),
+				zap.Error(deviceErr),
+			)
+		}
+		return
+	}
+
+	if deviceProps == nil || len(deviceProps) == 0 {
+		s.logger.Info("[SYNC_DEVICE] Device query: SUCCESS but no properties returned",
+			zap.String("tenant_id", tenantID),
+			zap.String("device_id", deviceID),
+			zap.String("device_uid", deviceUID),
+		)
+		return
+	}
+
+	s.logger.Info("[SYNC_DEVICE] Device query: SUCCESS",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_id", deviceID),
+		zap.String("device_uid", deviceUID),
+		zap.Int("props_count", len(deviceProps)),
+	)
+
+	// 将设备属性解码为 AlarmItem（基于baseline）
+	deviceAlarmItems, decodeErr := decode.DecodeDevicePropsToAlarmItems(baselineAlarmItems, deviceProps)
+	if decodeErr != nil {
+		s.logger.Warn("[SYNC_DEVICE] Failed to decode device properties to alarm items",
+			zap.String("tenant_id", tenantID),
+			zap.String("device_id", deviceID),
+			zap.String("device_uid", deviceUID),
+			zap.Error(decodeErr),
+		)
+		return
+	}
+
+	// 比对设备值和baseline值，找出需要更新的项
+	// 只更新设备相关的项（alarm_params或enabled），其他项保持baseline值
+	changedTypes := s.getChangedAlarmTypes(baselineAlarmItems, deviceAlarmItems)
+	if len(changedTypes) == 0 {
+		s.logger.Debug("[SYNC_DEVICE] Device values match baseline, no sync needed",
+			zap.String("tenant_id", tenantID),
+			zap.String("device_id", deviceID),
+			zap.String("device_uid", deviceUID),
+		)
+		return
+	}
+
+	s.logger.Info("[SYNC_DEVICE] Device values differ from baseline, syncing to database",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_id", deviceID),
+		zap.String("device_uid", deviceUID),
+		zap.Strings("changed_types", changedTypes),
+	)
+
+	// 部分更新数据库：只更新alarm_params或enabled，不更新config_version
+	if err := s.updateAlarmDevicePartial(ctx, tenantID, deviceID, baselineAlarmItems, deviceAlarmItems); err != nil {
+		s.logger.Warn("[SYNC_DEVICE] Failed to update database with device values",
+			zap.String("tenant_id", tenantID),
+			zap.String("device_id", deviceID),
+			zap.String("device_uid", deviceUID),
+			zap.Error(err),
+		)
+		return
+	}
+
+	s.logger.Info("[SYNC_DEVICE] Successfully synced device values to database",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_id", deviceID),
+		zap.String("device_uid", deviceUID),
+		zap.Strings("changed_types", changedTypes),
+	)
+}
+
+// updateAlarmDevicePartial 部分更新alarm_device表（只更新alarm_params或enabled，updated_by=null，不更新config_version）
+func (s *deviceMonitorSettingsService) updateAlarmDevicePartial(ctx context.Context, tenantID, deviceID string, baselineAlarmItems, deviceAlarmItems []alarm.AlarmItem) error {
+	if s.db == nil {
+		return fmt.Errorf("database connection is not available")
+	}
+
+	// 构建baseline和device的索引
+	baselineMap := make(map[string]alarm.AlarmItem)
+	for _, item := range baselineAlarmItems {
+		if item.AlarmType != "" {
+			baselineMap[item.AlarmType] = item
+		}
+	}
+
+	deviceMap := make(map[string]alarm.AlarmItem)
+	for _, item := range deviceAlarmItems {
+		if item.AlarmType != "" {
+			deviceMap[item.AlarmType] = item
+		}
+	}
+
+	// 读取现有的monitor_config
+	alarmDevice, err := s.alarmDeviceRepo.GetAlarmDevice(ctx, tenantID, deviceID)
 	if err != nil {
-		// 如果租户配置不存在，直接返回（使用硬编码值，已经在 settings 中）
+		// 如果不存在，创建新记录
+		monitorConfigJSON, err := s.convertAlarmItemsToMonitorConfig(deviceAlarmItems)
+		if err != nil {
+			return fmt.Errorf("failed to convert device alarm items to monitor config: %w", err)
+		}
+
+		tx, txErr := s.db.BeginTx(ctx, nil)
+		if txErr != nil {
+			return fmt.Errorf("failed to begin transaction: %w", txErr)
+		}
+		defer tx.Rollback()
+
+		insertQuery := `
+			INSERT INTO alarm_device (
+				device_id,
+				tenant_id,
+				monitor_config,
+				updated_at,
+				updated_by
+			) VALUES ($1, $2, $3::jsonb, $4, $5)
+		`
+		_, execErr := tx.ExecContext(ctx, insertQuery, deviceID, tenantID, string(monitorConfigJSON), time.Now().UTC(), nil)
+		if execErr != nil {
+			return fmt.Errorf("failed to insert alarm device: %w", execErr)
+		}
+
+		if commitErr := tx.Commit(); commitErr != nil {
+			return fmt.Errorf("failed to commit transaction: %w", commitErr)
+		}
+
 		return nil
 	}
 
-	// 解析 device_alarms JSONB
-	var deviceAlarms map[string]map[string]interface{}
-	if len(alarmCloud.DeviceAlarms) > 0 {
-		if err := json.Unmarshal(alarmCloud.DeviceAlarms, &deviceAlarms); err != nil {
-			return fmt.Errorf("failed to parse device_alarms: %w", err)
+	// 解析现有的monitor_config
+	var monitorConfig map[string]interface{}
+	if len(alarmDevice.MonitorConfig) > 0 {
+		if err := json.Unmarshal(alarmDevice.MonitorConfig, &monitorConfig); err != nil {
+			return fmt.Errorf("failed to unmarshal existing monitor config: %w", err)
 		}
 	} else {
-		return nil // 没有 device_alarms 配置，使用硬编码值
+		monitorConfig = make(map[string]interface{})
 	}
 
-	// 获取设备类型的报警配置
-	deviceTypeKey := ""
-	if deviceType == "sleepace" {
-		deviceTypeKey = "SleepPad"
-	} else if deviceType == "radar" {
-		deviceTypeKey = "Radar"
-	} else {
-		return nil // 未知设备类型
-	}
-
-	deviceAlarmsConfig, ok := deviceAlarms[deviceTypeKey]
+	// 获取alarms对象
+	alarms, ok := monitorConfig["alarms"].(map[string]interface{})
 	if !ok {
-		return nil // 没有该设备类型的配置，使用硬编码值
+		alarms = make(map[string]interface{})
+		monitorConfig["alarms"] = alarms
 	}
 
-	// 映射关系：alarm_cloud 的报警类型 -> settings 的字段名
-	alarmTypeMapping := s.getAlarmTypeMapping(deviceType)
+	// 只更新设备相关的项（alarm_params或enabled）
+	// 如果设备返回了alarm_params，更新alarm_params；如果没有，只更新enabled
+	for alarmType, deviceItem := range deviceMap {
+		baselineItem, exists := baselineMap[alarmType]
+		if !exists {
+			continue // 跳过baseline中没有的项
+		}
 
-	// 填充默认报警级别（覆盖硬编码值）
-	for alarmType, defaultLevel := range deviceAlarmsConfig {
-		if levelStr, ok := defaultLevel.(string); ok {
-			// 转换 DangerLevel 到 AlarmLevel
-			alarmLevel := s.convertDangerLevelToAlarmLevel(levelStr)
+		// 检查是否有变化
+		comparisonResult := s.compareAlarmItem(baselineItem, deviceItem)
+		if !comparisonResult.HasAnyChange {
+			continue // 没有变化，跳过
+		}
 
-			// 查找对应的 settings 字段
-			fieldNames, ok := alarmTypeMapping[alarmType]
-			if !ok {
-				continue // 未知的报警类型
-			}
+		// 获取或创建该alarm_type的配置
+		alarmConfig, ok := alarms[alarmType].(map[string]interface{})
+		if !ok {
+			alarmConfig = make(map[string]interface{})
+			alarms[alarmType] = alarmConfig
+		}
 
-			for _, fieldName := range fieldNames {
-				// 特殊处理：fallFlag 是 boolean，不是 alarm_level
-				if fieldName == "fallFlag" {
-					// fallFlag: "0" (EMERGENCY) 或 "disabled" -> boolean
-					settings[fieldName] = alarmLevel != "disabled" && alarmLevel != ""
-				} else {
-					// 其他字段：直接使用 alarm_level 字符串
-					settings[fieldName] = alarmLevel
-				}
-			}
+		// 更新alarm_params（如果设备返回了alarm_params）
+		if comparisonResult.AlarmParamsChanged && deviceItem.AlarmParams != nil && len(deviceItem.AlarmParams) > 0 {
+			alarmConfig["threshold"] = deviceItem.AlarmParams
+		}
+
+		// 更新enabled（如果设备返回了enabled）
+		if comparisonResult.IsEnabledChanged && deviceItem.IsEnabled != nil {
+			alarmConfig["enabled"] = *deviceItem.IsEnabled == alarm.IsEnabledOn
+		}
+
+		// 保持level不变（不更新alarm_level）
+		if _, ok := alarmConfig["level"]; !ok && baselineItem.AlarmLevel != nil {
+			alarmConfig["level"] = *baselineItem.AlarmLevel
 		}
 	}
 
-	return nil
-}
-
-// mergeResetTimeFromCloud 从 alarm_cloud.metadata 合并 reset_time 到 settings
-// 配置优先级：设备配置（已存在） > alarm_cloud.metadata（租户统一） > 默认值（已在 settings 中）
-// 如果设备配置中已有 reset_time 相关字段，则不覆盖
-func (s *deviceMonitorSettingsService) mergeResetTimeFromCloud(ctx context.Context, tenantID, deviceType string, settings map[string]interface{}) error {
-	// 获取当前租户的 alarm_cloud 配置
-	alarmCloud, err := s.alarmCloudRepo.GetAlarmCloud(ctx, tenantID)
+	// 序列化更新后的monitor_config
+	updatedMonitorConfigJSON, err := json.Marshal(monitorConfig)
 	if err != nil {
-		// 如果租户配置不存在，直接返回（使用 settings 中已有的值）
-		return nil
+		return fmt.Errorf("failed to marshal updated monitor config: %w", err)
 	}
 
-	// 解析 metadata JSONB
-	if len(alarmCloud.Metadata) == 0 {
-		return nil // 没有 metadata 配置，使用 settings 中已有的值
+	// 使用事务更新数据库（只更新monitor_config，不更新config_version）
+	tx, txErr := s.db.BeginTx(ctx, nil)
+	if txErr != nil {
+		return fmt.Errorf("failed to begin transaction: %w", txErr)
+	}
+	defer tx.Rollback()
+
+	upsertQuery := `
+		INSERT INTO alarm_device (
+			device_id,
+			tenant_id,
+			monitor_config,
+			updated_at,
+			updated_by
+		) VALUES ($1, $2, $3::jsonb, $4, $5)
+		ON CONFLICT (device_id) DO UPDATE SET
+			monitor_config = EXCLUDED.monitor_config,
+			updated_at = EXCLUDED.updated_at,
+			updated_by = EXCLUDED.updated_by
+	`
+	// updated_by设置为NULL（表示系统自动同步）
+	_, execErr := tx.ExecContext(ctx, upsertQuery, deviceID, tenantID, string(updatedMonitorConfigJSON), time.Now().UTC(), nil)
+	if execErr != nil {
+		return fmt.Errorf("failed to update alarm device: %w", execErr)
 	}
 
-	var metadata alarm.TenantResetTime
-	if err := json.Unmarshal(alarmCloud.Metadata, &metadata); err != nil {
-		return fmt.Errorf("failed to parse metadata: %w", err)
-	}
+	// 注意：不更新config_version（不创建审计记录）
+	// 因为这是系统自动同步，不是用户操作
 
-	if deviceType == "sleepace" {
-		// Sleepace: left_bed_start_hour, left_bed_start_minute, left_bed_end_hour, left_bed_end_minute
-		// 如果设备配置中没有这些值，从 alarm_cloud.metadata.reset_time 填充
-		_, hasStartHour := settings["left_bed_start_hour"]
-		_, hasStartMinute := settings["left_bed_start_minute"]
-		_, hasEndHour := settings["left_bed_end_hour"]
-		_, hasEndMinute := settings["left_bed_end_minute"]
-
-		if !hasStartHour || !hasStartMinute || !hasEndHour || !hasEndMinute {
-			// 解析 reset_time
-			if metadata.ResetTime.InBedTime != "" {
-				inBedHour, inBedMinute, err := alarm.ParseTimeString(metadata.ResetTime.InBedTime)
-				if err == nil {
-					if !hasStartHour {
-						settings["left_bed_start_hour"] = inBedHour
-					}
-					if !hasStartMinute {
-						settings["left_bed_start_minute"] = inBedMinute
-					}
-				}
-			}
-			if metadata.ResetTime.OutBedTime != "" {
-				outBedHour, outBedMinute, err := alarm.ParseTimeString(metadata.ResetTime.OutBedTime)
-				if err == nil {
-					if !hasEndHour {
-						settings["left_bed_end_hour"] = outBedHour
-					}
-					if !hasEndMinute {
-						settings["left_bed_end_minute"] = outBedMinute
-					}
-				}
-			}
-		}
-	} else if deviceType == "radar" {
-		// Radar: leave_detection_start_hour, leave_detection_start_minute, leave_detection_end_hour, leave_detection_end_minute
-		// 如果设备配置中没有这些值，从 alarm_cloud.metadata.reset_time 填充
-		_, hasStartHour := settings["leave_detection_start_hour"]
-		_, hasStartMinute := settings["leave_detection_start_minute"]
-		_, hasEndHour := settings["leave_detection_end_hour"]
-		_, hasEndMinute := settings["leave_detection_end_minute"]
-
-		if !hasStartHour || !hasStartMinute || !hasEndHour || !hasEndMinute {
-			// 解析 reset_time
-			if metadata.ResetTime.InBedTime != "" {
-				inBedHour, inBedMinute, err := alarm.ParseTimeString(metadata.ResetTime.InBedTime)
-				if err == nil {
-					if !hasStartHour {
-						settings["leave_detection_start_hour"] = inBedHour
-					}
-					if !hasStartMinute {
-						settings["leave_detection_start_minute"] = inBedMinute
-					}
-				}
-			}
-			if metadata.ResetTime.OutBedTime != "" {
-				outBedHour, outBedMinute, err := alarm.ParseTimeString(metadata.ResetTime.OutBedTime)
-				if err == nil {
-					if !hasEndHour {
-						settings["leave_detection_end_hour"] = outBedHour
-					}
-					if !hasEndMinute {
-						settings["leave_detection_end_minute"] = outBedMinute
-					}
-				}
-			}
-		}
+	if commitErr := tx.Commit(); commitErr != nil {
+		return fmt.Errorf("failed to commit transaction: %w", commitErr)
 	}
 
 	return nil
-}
-
-// mergeThresholdFromCloud 从 alarm_cloud 合并阈值到 settings
-// 配置优先级：设备配置（已存在） > alarm_cloud（租户统一） > 默认值（已在 settings 中）
-// 如果设备配置中已有阈值字段，则不覆盖
-// 从 AlarmCloudConfig 中获取：
-// 1. Heart Rate / Respiratory Rate 阈值：从 CloudVitalAlarmThreshold.Conditions 获取
-// 2. VitalSignsWeak 参数：从 AlarmSetting.Radar 中 Radar_VitalsWeak 的 alarm_params 获取
-func (s *deviceMonitorSettingsService) mergeThresholdFromCloud(ctx context.Context, tenantID, deviceType string, settings map[string]interface{}) error {
-	// 获取当前租户的 alarm_cloud 配置
-	alarmCloud, err := s.alarmCloudRepo.GetAlarmCloud(ctx, tenantID)
-	if err != nil {
-		// 如果租户配置不存在，直接返回（使用 settings 中已有的值）
-		return nil
-	}
-
-	// 解析 conditions JSONB 获取 CloudVitalAlarmThreshold
-	var threshold alarm.CloudVitalAlarmThreshold
-	if len(alarmCloud.Conditions) > 0 {
-		if err := json.Unmarshal(alarmCloud.Conditions, &threshold); err != nil {
-			return fmt.Errorf("failed to parse conditions: %w", err)
-		}
-	}
-
-	// 解析 device_alarms JSONB 获取 AlarmSetting
-	var deviceAlarms map[string]map[string]interface{}
-	if len(alarmCloud.DeviceAlarms) > 0 {
-		if err := json.Unmarshal(alarmCloud.DeviceAlarms, &deviceAlarms); err != nil {
-			return fmt.Errorf("failed to parse device_alarms: %w", err)
-		}
-	}
-
-	// 从 conditions.Conditions 获取 Heart Rate 和 Respiratory Rate 阈值
-	if threshold.Conditions != nil {
-		// Heart Rate: 从 Normal ranges[0] 获取 min/max
-		if threshold.Conditions.HeartRate != nil && threshold.Conditions.HeartRate.Normal != nil {
-			if len(threshold.Conditions.HeartRate.Normal.Ranges) > 0 {
-				hrRange := threshold.Conditions.HeartRate.Normal.Ranges[0]
-				hrMin := 0
-				hrMax := 0
-				if hrRange.Min != nil {
-					hrMin = *hrRange.Min
-				}
-				if hrRange.Max != nil {
-					hrMax = *hrRange.Max
-				}
-
-				if deviceType == "sleepace" {
-					if _, exists := settings["min_heart_rate"]; !exists && hrMin > 0 {
-						settings["min_heart_rate"] = hrMin
-					}
-					if _, exists := settings["max_heart_rate"]; !exists && hrMax > 0 {
-						settings["max_heart_rate"] = hrMax
-					}
-				} else if deviceType == "radar" {
-					if _, exists := settings["lower_heart_rate"]; !exists && hrMin > 0 {
-						settings["lower_heart_rate"] = hrMin
-					}
-					if _, exists := settings["upper_heart_rate"]; !exists && hrMax > 0 {
-						settings["upper_heart_rate"] = hrMax
-					}
-				}
-			}
-		}
-
-		// Respiratory Rate: 从 Normal ranges[0] 获取 min/max
-		if threshold.Conditions.RespiratoryRate != nil && threshold.Conditions.RespiratoryRate.Normal != nil {
-			if len(threshold.Conditions.RespiratoryRate.Normal.Ranges) > 0 {
-				rrRange := threshold.Conditions.RespiratoryRate.Normal.Ranges[0]
-				rrMin := 0
-				rrMax := 0
-				if rrRange.Min != nil {
-					rrMin = *rrRange.Min
-				}
-				if rrRange.Max != nil {
-					rrMax = *rrRange.Max
-				}
-
-				if deviceType == "sleepace" {
-					if _, exists := settings["min_breath_rate"]; !exists && rrMin > 0 {
-						settings["min_breath_rate"] = rrMin
-					}
-					if _, exists := settings["max_breath_rate"]; !exists && rrMax > 0 {
-						settings["max_breath_rate"] = rrMax
-					}
-				} else if deviceType == "radar" {
-					if _, exists := settings["lower_breath_rate"]; !exists && rrMin > 0 {
-						settings["lower_breath_rate"] = rrMin
-					}
-					if _, exists := settings["upper_breath_rate"]; !exists && rrMax > 0 {
-						settings["upper_breath_rate"] = rrMax
-					}
-				}
-			}
-		}
-	}
-
-	// 从 AlarmSetting.Radar 中 Radar_VitalsWeak 的 alarm_params 获取 weak_vital 参数
-	// 需要从 device_alarms 构建完整的 AlarmSetting，然后查找 Radar_VitalsWeak
-	if deviceAlarms != nil {
-		radarAlarms, ok := deviceAlarms["Radar"]
-		if ok {
-			// 从 DefaultAlarmSetting 构建完整的 AlarmSetting，查找 Radar_VitalsWeak
-			for _, item := range alarm.GetDefaultAlarmItemsRadar() {
-				if item.AlarmType == alarm.RadarVitalsWeak {
-					// 检查 device_alarms 中是否有该报警项的配置
-					if _, exists := radarAlarms[item.AlarmType]; exists {
-						// 如果存在配置，使用 DefaultAlarmSetting 中的 alarm_params
-						if item.AlarmParams != nil {
-							if durationMin, ok := item.AlarmParams["duration_min"].(int); ok {
-								if _, exists := settings["weak_vital_duration"]; !exists && durationMin > 0 {
-									settings["weak_vital_duration"] = durationMin
-								}
-							} else if durationMin, ok := item.AlarmParams["duration_min"].(float64); ok {
-								if _, exists := settings["weak_vital_duration"]; !exists && int(durationMin) > 0 {
-									settings["weak_vital_duration"] = int(durationMin)
-								}
-							}
-							if sensitivity, ok := item.AlarmParams["sensitivity"].(int); ok {
-								if _, exists := settings["weak_vital_sensitivity"]; !exists && sensitivity > 0 {
-									settings["weak_vital_sensitivity"] = sensitivity
-								}
-							} else if sensitivity, ok := item.AlarmParams["sensitivity"].(float64); ok {
-								if _, exists := settings["weak_vital_sensitivity"]; !exists && int(sensitivity) > 0 {
-									settings["weak_vital_sensitivity"] = int(sensitivity)
-								}
-							}
-						}
-					}
-					break
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
-// getAlarmTypeMapping 获取报警类型到 settings 字段名的映射
-func (s *deviceMonitorSettingsService) getAlarmTypeMapping(deviceType string) map[string][]string {
-	if deviceType == "sleepace" {
-		return map[string][]string{
-			"SleepPad_LeftBed":                 {"left_bed_alarm_level"},
-			"SleepPad_AbnormalHeartRate":       {"heart_rate_slow_alarm_level", "heart_rate_fast_alarm_level"},
-			"SleepPad_AbnormalRespiratoryRate": {"breath_rate_slow_alarm_level", "breath_rate_fast_alarm_level"},
-			"SleepPad_ApneaHypopnea":           {"breath_pause_alarm_level"},
-			"Fall":                             {"fallFlag"}, // Sensor fall: boolean (not alarm_level)
-			"SleepPad_AbnormalBodyMovement":    {"body_move_alarm_level", "nobody_move_alarm_level", "no_turn_over_alarm_level"},
-			"SleepPad_SitUp":                   {"situp_alarm_level"},
-			"SleepPad_InBed":                   {"onbed_alarm_level"},
-		}
-	} else if deviceType == "radar" {
-		return map[string][]string{
-			"Fall":                          {"fall_alarm_level"},
-			"SuspectedFall":                 {"fall_alarm_level"},
-			"Radar_LeftBed":                 {"leave_alarm_level"},
-			"Radar_AbnormalHeartRate":       {"heart_rate_slow_alarm_level", "heart_rate_fast_alarm_level"},
-			"Radar_AbnormalRespiratoryRate": {"breath_rate_slow_alarm_level", "breath_rate_fast_alarm_level"},
-			"Radar_ApneaHypopnea":           {"breath_pause_alarm_level"},
-			"VitalsWeak":                    {"weak_vital_alarm_level"},
-			"Stay":                          {"stay_alarm_level"},
-			"NoActivity24h":                 {"inactivity_alarm_level"},
-			// AngleException 不映射到 posture_detection_enabled
-			// posture_detection_enabled 是独立的 boolean 开关，不属于 alarm_level
-			// AngleException 只影响 sitting_on_ground_alarm_level（如果存在）
-			"SittingOnGround": {"sitting_on_ground_alarm_level"},
-		}
-	}
-	return map[string][]string{}
-}
-
-// convertDangerLevelToAlarmLevel 转换 DangerLevel 到 AlarmLevel
-func (s *deviceMonitorSettingsService) convertDangerLevelToAlarmLevel(dangerLevel string) string {
-	mapping := map[string]string{
-		"DISABLE":       "disabled",
-		"EMERGENCY":     "0",
-		"WARNING":       "4",
-		"ERROR":         "3",
-		"CRITICAL":      "2",
-		"ALERT":         "1",
-		"INFORMATIONAL": "5",
-	}
-	if level, ok := mapping[dangerLevel]; ok {
-		return level
-	}
-	return "disabled"
-}
-
-// convertAlarmLevelToFrontendFormat 将数据库中的 alarm_level 格式转换为前端格式
-// 数据库存储：'EMERGENCY', 'WARNING', 'DISABLED'
-// 前端期望：'0', '4', 'disabled'（小写）
-func (s *deviceMonitorSettingsService) convertAlarmLevelToFrontendFormat(level string) string {
-	mapping := map[string]string{
-		"EMERGENCY":     "0",
-		"WARNING":       "4",
-		"ERROR":         "3",
-		"CRITICAL":      "2",
-		"ALERT":         "1",
-		"INFORMATIONAL": "5",
-		"DISABLED":      "disabled", // 数据库存储大写，转换为前端小写
-		"DISABLE":       "disabled",
-		"disabled":      "disabled", // 兼容小写（如果数据库中有）
-		// 如果已经是前端格式，直接返回
-		"0": "0",
-		"4": "4",
-	}
-	if converted, ok := mapping[level]; ok {
-		return converted
-	}
-	// 未知格式，默认返回 disabled
-	return "disabled"
-}
-
-// isDisabled 检查 alarm level 是否为 disabled（不区分大小写）
-func (s *deviceMonitorSettingsService) isDisabled(level string) bool {
-	return level == "" || strings.EqualFold(level, "disabled") || strings.EqualFold(level, "DISABLED")
-}
-
-// applyDeviceDefaults 应用设备特定默认值
-func (s *deviceMonitorSettingsService) applyDeviceDefaults(deviceType string, settings map[string]interface{}) {
-	if deviceType == "radar" {
-		// 雷达默认值
-		if val, exists := settings["radar_function_mode"]; !exists || val == nil || val == 0 {
-			settings["radar_function_mode"] = 15 // Full Function
-		}
-		if val, exists := settings["leave_detection_start_hour"]; !exists || val == nil || val == 0 {
-			settings["leave_detection_start_hour"] = 21 // 9:00 PM
-		}
-		if val, exists := settings["leave_detection_start_minute"]; !exists || val == nil {
-			settings["leave_detection_start_minute"] = 0
-		}
-		if val, exists := settings["leave_detection_end_hour"]; !exists || val == nil || val == 0 {
-			settings["leave_detection_end_hour"] = 8 // 8:00 AM
-		}
-		if val, exists := settings["leave_detection_end_minute"]; !exists || val == nil {
-			settings["leave_detection_end_minute"] = 0
-		}
-	}
 }

@@ -1068,17 +1068,30 @@ func (r *PostgresDeviceRepository) GetAlarmEnablement(ctx context.Context, tenan
 			DisplaySetting: 0,
 		}
 
-		// 解析 is_enabled
+		// 解析 is_enabled 或 enabled（兼容两种字段名）
+		var enabled *int
 		if isEnabled, ok := configMap["is_enabled"].(float64); ok {
-			enabled := int(isEnabled)
-			item.IsEnabled = &enabled
+			enabledVal := int(isEnabled)
+			enabled = &enabledVal
 		} else if isEnabled, ok := configMap["is_enabled"].(int); ok {
-			enabled := isEnabled
-			item.IsEnabled = &enabled
+			enabled = &isEnabled
+		} else if enabledBool, ok := configMap["enabled"].(bool); ok {
+			// 兼容 enabled 字段（布尔值）
+			enabledVal := 0
+			if enabledBool {
+				enabledVal = 1
+			}
+			enabled = &enabledVal
+		}
+		if enabled != nil {
+			item.IsEnabled = enabled
 		}
 
-		// 解析 alarm_level
+		// 解析 alarm_level 或 level（兼容两种字段名）
 		if level, ok := configMap["alarm_level"].(string); ok {
+			item.AlarmLevel = &level
+		} else if level, ok := configMap["level"].(string); ok {
+			// 兼容 level 字段
 			item.AlarmLevel = &level
 		}
 

@@ -24,10 +24,10 @@ type IoTTimeSeries struct {
 	PostureDisplay    *string `json:"posture_display"`
 	TrackingID        *string `json:"tracking_id"` // Radar 设备的 tracking_id
 
-	// 位置和高度数据（Radar设备，单位：厘米）
-	PositionX *int `json:"position_x,omitempty"` // radar_pos_x
-	PositionY *int `json:"position_y,omitempty"` // radar_pos_y
-	Height    *int `json:"height,omitempty"`     // radar_pos_z（高度）
+	// 位置数据（Radar 设备，单位：厘米；原样透传，不转换）
+	PositionX *int `json:"position_x,omitempty"` // 轨迹字节 2，分米×10→厘米
+	PositionY *int `json:"position_y,omitempty"` // 轨迹字节 3，分米×10→厘米
+	PositionZ *int `json:"position_z,omitempty"` // 轨迹字节 4，厘米 0-255
 
 	// 区域ID（Radar设备）
 	AreaID *int `json:"area_id,omitempty"` // area_id（床区域ID）
@@ -44,30 +44,26 @@ type IoTTimeSeries struct {
 	DeviceType string `json:"device_type"` // "Radar" 或 "Sleepace"
 }
 
-// RealtimeData 融合后的实时数据（写入 Redis）
-type RealtimeData struct {
-	// 生命体征
-	Heart           *int   `json:"heart"`                      // 融合后的心率
-	Breath          *int   `json:"breath"`                     // 融合后的呼吸率
-	HeartSource     string `json:"heart_source"`               // 数据来源："Sleepace" 或 "Radar"
-	BreathSource    string `json:"breath_source"`              // 数据来源："Sleepace" 或 "Radar"
-	HeartTimestamp  *int64 `json:"heart_timestamp,omitempty"`  // 心率数据的时间戳
-	BreathTimestamp *int64 `json:"breath_timestamp,omitempty"` // 呼吸率数据的时间戳
+// VitalSource 按源存储的生命体征与睡眠状态（Radar / Sleepad 分源，display 由 card/vue 计算）
+type VitalSource struct {
+	Heart       *int    `json:"heart,omitempty"`        // 心率
+	Breath      *int    `json:"breath,omitempty"`       // 呼吸率
+	SleepStatus *string `json:"sleep_status,omitempty"`  // 睡眠状态 SNOMED
+	BedStatus   *string `json:"bed_status,omitempty"`    // 床状态 SNOMED
+}
 
-	// 睡眠状态
-	SleepStage          *string `json:"sleep_stage"`                     // SNOMED 编码
-	BedStatus           *string `json:"bed_status"`                      // SNOMED 编码
-	SleepStageSource    string  `json:"sleep_stage_source,omitempty"`    // 睡眠状态数据来源
-	BedStatusSource     string  `json:"bed_status_source,omitempty"`     // 床状态数据来源
-	SleepStageTimestamp *int64  `json:"sleep_stage_timestamp,omitempty"` // 睡眠状态数据的时间戳
-	BedStatusTimestamp  *int64  `json:"bed_status_timestamp,omitempty"`  // 床状态数据的时间戳
+// RealtimeData 按源存储的实时数据（写入 Redis）：radar / sleepad 分源，display 由 card/vue 或 mergeRealtimeData 计算
+type RealtimeData struct {
+	// 按源存储（不再融合 Heart/Breath/HeartSource/BreathSource）
+	Radar  *VitalSource `json:"radar,omitempty"`  // Radar 源：heart, breath, sleep_status, bed_status
+	Sleepad *VitalSource `json:"sleepad,omitempty"` // Sleepad 源：heart, breath, sleep_status, bed_status
 
 	// 姿态数据（来自 Radar）
 	PersonCount int       `json:"person_count"` // 人数（tracking_id 数量）
 	Postures    []Posture `json:"postures"`     // 姿态列表
 
 	// 时间戳
-	Timestamp int64 `json:"timestamp"` // Unix 时间戳（融合结果的时间戳，使用数据中的最大时间戳）
+	Timestamp int64 `json:"timestamp"` // Unix 时间戳（使用数据中的最大时间戳）
 }
 
 // Posture 姿态数据
@@ -76,10 +72,10 @@ type Posture struct {
 	PostureCode    string `json:"posture_code"`    // SNOMED 编码
 	PostureDisplay string `json:"posture_display"` // 显示名称
 
-	// 位置和高度数据（来自 Radar，单位：厘米）
-	PositionX *int `json:"position_x,omitempty"` // radar_pos_x
-	PositionY *int `json:"position_y,omitempty"` // radar_pos_y
-	Height    *int `json:"height,omitempty"`     // radar_pos_z（高度）
+	// 位置数据（来自 Radar，单位：厘米；原样透传 position_z）
+	PositionX *int `json:"position_x,omitempty"`
+	PositionY *int `json:"position_y,omitempty"`
+	PositionZ *int `json:"position_z,omitempty"`
 
 	// 区域ID（来自 Radar）
 	AreaID *int `json:"area_id,omitempty"` // area_id（床区域ID）

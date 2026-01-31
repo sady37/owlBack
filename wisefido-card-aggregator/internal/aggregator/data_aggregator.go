@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"wisefido-card-aggregator/internal/config"
+	"wisefido-card-aggregator/internal/converter"
 	"wisefido-card-aggregator/internal/models"
 	"wisefido-card-aggregator/internal/repository"
 
@@ -144,8 +145,8 @@ func (a *DataAggregator) AggregateCard(ctx context.Context, tenantID, cardID str
 	return vitalCard, nil
 }
 
-// getRealtimeData 从 Redis 读取实时数据
-func (a *DataAggregator) getRealtimeData(ctx context.Context, cardID string) (*RealtimeData, error) {
+// getRealtimeData 从 Redis 读取实时数据（按源结构 radar / sleepad）
+func (a *DataAggregator) getRealtimeData(ctx context.Context, cardID string) (*models.RealtimeData, error) {
 	key := fmt.Sprintf("vital-focus:card:%s:realtime", cardID)
 
 	val, err := a.kv.Get(ctx, key)
@@ -156,7 +157,7 @@ func (a *DataAggregator) getRealtimeData(ctx context.Context, cardID string) (*R
 		return nil, fmt.Errorf("failed to get realtime data: %w", err)
 	}
 
-	var realtimeData RealtimeData
+	var realtimeData models.RealtimeData
 	if err := json.Unmarshal([]byte(val), &realtimeData); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal realtime data: %w", err)
 	}
@@ -184,63 +185,75 @@ func (a *DataAggregator) getAlarmData(ctx context.Context, cardID string) ([]Ala
 	return alarms, nil
 }
 
-// mergeRealtimeData 合并实时数据到 VitalFocusCard
-func (a *DataAggregator) mergeRealtimeData(vitalCard *models.VitalFocusCard, realtimeData *RealtimeData) {
-	// 生命体征
-	vitalCard.Heart = realtimeData.Heart
-	vitalCard.Breath = realtimeData.Breath
-	vitalCard.HeartSource = convertSource(realtimeData.HeartSource)
-	vitalCard.BreathSource = convertSource(realtimeData.BreathSource)
+// mergeRealtimeData 从 radar/sleepad 按源计算 display 后写入 VitalFocusCard
+//
+// HR / RR / sleep 独立选源、独立优先级：
+// - 无新值则保持旧值，直到 device 缓存 TTL 超时（在 updateDeviceDataCache 按字段 merge 实现）。
+// - 若本周期内仅一个源有该字段，用该源更新。
+// - 若本周期内 Sleepad 与 Radar 都有该字段，按优先级用 Sleepad（RR_sleepad、HR_sleepad、sleep_sleepad）。
+func (a *DataAggregator) mergeRealtimeData(vitalCard *models.VitalFocusCard, realtimeData *models.RealtimeData) {
+	// 生命体征：HR、RR 各自独立，Sleepad 优先
+	var heart, breath *int
+	var heartSource, breathSource string
+	if realtimeData.Sleepad != nil && realtimeData.Sleepad.Heart != nil {
+		heart = realtimeData.Sleepad.Heart
+		heartSource = "Sleepace"
+	} else if realtimeData.Radar != nil && realtimeData.Radar.Heart != nil {
+		heart = realtimeData.Radar.Heart
+		heartSource = "Radar"
+	}
+	if realtimeData.Sleepad != nil && realtimeData.Sleepad.Breath != nil {
+		breath = realtimeData.Sleepad.Breath
+		breathSource = "Sleepace"
+	} else if realtimeData.Radar != nil && realtimeData.Radar.Breath != nil {
+		breath = realtimeData.Radar.Breath
+		breathSource = "Radar"
+	}
+	vitalCard.Heart = heart
+	vitalCard.Breath = breath
+	vitalCard.HeartSource = convertSource(heartSource)
+	vitalCard.BreathSource = convertSource(breathSource)
 
-	// 睡眠状态
-	if realtimeData.SleepStage != nil {
-		// 转换 SNOMED 编码为数字（1=awake, 2=light sleep, 4=deep sleep）
-		sleepStage := convertSleepStage(*realtimeData.SleepStage)
-		vitalCard.SleepStage = &sleepStage
-		vitalCard.SleepStateSNOMEDCode = realtimeData.SleepStage
-		vitalCard.SleepStateDisplay = getSleepStateDisplay(*realtimeData.SleepStage)
+	// 睡眠状态：独立选源，Sleepad 优先
+	var sleepStage *string
+	if realtimeData.Sleepad != nil && realtimeData.Sleepad.SleepStatus != nil {
+		sleepStage = realtimeData.Sleepad.SleepStatus
+	} else if realtimeData.Radar != nil && realtimeData.Radar.SleepStatus != nil {
+		sleepStage = realtimeData.Radar.SleepStatus
+	}
+	if sleepStage != nil {
+		s := converter.SleepStage(*sleepStage)
+		vitalCard.SleepStage = &s
+		vitalCard.SleepStateSNOMEDCode = sleepStage
+		vitalCard.SleepStateDisplay = converter.SleepStateDisplay(*sleepStage)
 	}
 
-	// 床状态
-	if realtimeData.BedStatus != nil {
-		bedStatus := convertBedStatus(*realtimeData.BedStatus)
-		vitalCard.BedStatus = &bedStatus
+	// 床状态 display：sleepad.bed_status ?? radar.bed_status
+	var bedStatus *string
+	if realtimeData.Sleepad != nil && realtimeData.Sleepad.BedStatus != nil {
+		bedStatus = realtimeData.Sleepad.BedStatus
+	} else if realtimeData.Radar != nil && realtimeData.Radar.BedStatus != nil {
+		bedStatus = realtimeData.Radar.BedStatus
+	}
+	if bedStatus != nil {
+		b := converter.BedStatus(*bedStatus)
+		vitalCard.BedStatus = &b
 	}
 
-	// 姿态数据（Location 卡片）
+	// 姿态数据（即可以是 Location 卡片，也可以是 ActiveBed）
 	vitalCard.PersonCount = intPtr(realtimeData.PersonCount)
 	if len(realtimeData.Postures) > 0 {
 		postures := make([]int, 0, len(realtimeData.Postures))
 		for _, posture := range realtimeData.Postures {
-			postureCode := convertPostureCode(posture.PostureCode)
-			if postureCode > 0 {
-				postures = append(postures, postureCode)
+			stage := converter.PostureStage(posture.PostureCode)
+			if stage > 0 {
+				postures = append(postures, stage)
 			}
 		}
 		if len(postures) > 0 {
 			vitalCard.Postures = postures
 		}
 	}
-}
-
-// RealtimeData 实时数据结构
-type RealtimeData struct {
-	Heart        *int      `json:"heart"`
-	Breath       *int      `json:"breath"`
-	HeartSource  string    `json:"heart_source"`
-	BreathSource string    `json:"breath_source"`
-	SleepStage   *string   `json:"sleep_stage"`
-	BedStatus    *string   `json:"bed_status"`
-	PersonCount  int       `json:"person_count"`
-	Postures     []Posture `json:"postures"`
-	Timestamp    int64     `json:"timestamp"`
-}
-
-// Posture 姿态数据
-type Posture struct {
-	TrackingID     string `json:"tracking_id"`
-	PostureCode    string `json:"posture_code"`
-	PostureDisplay string `json:"posture_display"`
 }
 
 // AlarmEvent 报警事件（与 wisefido-ai 保持一致）
@@ -322,69 +335,6 @@ func convertSource(source string) *string {
 		return strPtr("r")
 	default:
 		return strPtr("-")
-	}
-}
-
-func convertSleepStage(snomedCode string) int {
-	// SNOMED 编码转换为数字：1=awake, 2=light sleep, 4=deep sleep
-	// TODO: 根据实际的 SNOMED 编码映射表转换
-	// 这里先做简单映射
-	switch snomedCode {
-	case "248218005": // Awake
-		return 1
-	case "248220003": // Light sleep
-		return 2
-	case "248221004": // Deep sleep
-		return 4
-	default:
-		return 0
-	}
-}
-
-func getSleepStateDisplay(snomedCode string) *string {
-	switch snomedCode {
-	case "248218005":
-		return strPtr("Awake")
-	case "248220003":
-		return strPtr("Light sleep")
-	case "248221004":
-		return strPtr("Deep sleep")
-	default:
-		return nil
-	}
-}
-
-func convertBedStatus(bedStatus string) int {
-	// SNOMED 编码转换为数字：0=in bed, 1=out of bed
-	switch bedStatus {
-	case "on_bed", "ENTER_BED":
-		return 0
-	case "off_bed", "LEFT_BED":
-		return 1
-	default:
-		return 0
-	}
-}
-
-func convertPostureCode(snomedCode string) int {
-	// SNOMED 编码转换为数字：1=walk, 2=suspected-fall, 3=sitting, 4=stand, 5=fall, 6=lying
-	// TODO: 根据实际的 SNOMED 编码映射表转换
-	// 这里先做简单映射
-	switch snomedCode {
-	case "walk":
-		return 1
-	case "suspected-fall":
-		return 2
-	case "sitting":
-		return 3
-	case "stand":
-		return 4
-	case "fall":
-		return 5
-	case "lying":
-		return 6
-	default:
-		return 0
 	}
 }
 

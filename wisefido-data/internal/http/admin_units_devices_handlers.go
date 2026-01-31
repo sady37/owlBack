@@ -3,30 +3,30 @@ package httpapi
 import (
 	"net/http"
 	"wisefido-data/internal/repository"
+	"wisefido-data/internal/service"
 
-	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
 
 type AdminAPI struct {
-	Units       repository.UnitsRepository
-	Devices     repository.DevicesRepository
-	DeviceStore repository.DeviceStoreRepository
-	Tenant      repository.TenantResolver
-	Stub        *StubHandler
-	Log         *zap.Logger
-	RedisClient *redis.Client
+	Units        repository.UnitsRepository
+	Devices      repository.DevicesRepository
+	DeviceStore  repository.DeviceStoreRepository
+	Tenant       repository.TenantResolver
+	Stub         *StubHandler
+	Log          *zap.Logger
+	QinglanClient *service.QinglanClient // 用于调用 wisefido-qinglan API 查询设备状态
 }
 
-func NewAdminAPI(units repository.UnitsRepository, devices repository.DevicesRepository, deviceStore repository.DeviceStoreRepository, tenant repository.TenantResolver, stub *StubHandler, log *zap.Logger, redisClient *redis.Client) *AdminAPI {
+func NewAdminAPI(units repository.UnitsRepository, devices repository.DevicesRepository, deviceStore repository.DeviceStoreRepository, tenant repository.TenantResolver, stub *StubHandler, log *zap.Logger, qinglanClient *service.QinglanClient) *AdminAPI {
 	return &AdminAPI{
-		Units:       units,
-		Devices:     devices,
-		DeviceStore: deviceStore,
-		Tenant:      tenant,
-		Stub:        stub,
-		Log:         log,
-		RedisClient: redisClient,
+		Units:        units,
+		Devices:      devices,
+		DeviceStore:  deviceStore,
+		Tenant:       tenant,
+		Stub:         stub,
+		Log:          log,
+		QinglanClient: qinglanClient,
 	}
 }
 

@@ -112,7 +112,6 @@
 │   │   ├── common.go
 │   │   ├── config
 │   │   │   ├── 06_FHIR_Simple_Conversion_Guide.md
-│   │   │   ├── radar_convert_table.json
 │   │   │   ├── Radar_HTTPS_MQTT_Protocol_Formatted.md
 │   │   │   ├── RADAR_SNOMED_CATEGORY_MAPPING.md
 │   │   │   ├── README_RADAR_CONVERT.md
