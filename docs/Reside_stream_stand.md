@@ -12,125 +12,83 @@
 
 ## 二、标准格式结构
 
-  所有数据都遵循以下标准格式（字段顺序：`device_id` → `device_uid` → `device_type` → `tenant_id` → `timestamp` → `topic_type` → `category` → `data_value` → 位置信息）：
+  所有数据都遵循以下标准格式（顶层字段顺序：`device_id` → `device_type` → `card_id` → `tenant_id` → `timestamp` → `topic_type` → `category` → `data_value`）。**位置信息（addressInfo）不再出现在流中**，需要时由消费方按 `card_id` 查询 Card 获取。
 
   ```json
   {
     "device_id": "uuid-ddd",
-    "device_uid": "E598A2ACD523",
     "device_type": "Radar",
+    "card_id": "uuid-ccc",
     "tenant_id": "uuid-yyy",
     "timestamp": 1234567890,
     "topic_type": "monitor",
-    "category": "track",   //取自data_value.category
-    "data_value": {
-      "category": "track"
-      // 按 category 分组的数据
-    },
-    "branch_id": null,
-    "building_id": null,
-    "unit_id": null,
-    "room_id": "uuid-rrr",
-    "bed_id": "uuid-bbb"
+    "category": "track2.vital1",
+    "data_value": [
+      {
+        "category": "track",
+        "target_id": 1,
+        "position_x": 150,
+        "position_y": 200,
+        "position_z": 50,
+        "remaining_time": 30,
+        "pose": "Walking",
+        "event": 0,
+        "area_id": 1,
+        "raw_original": "base64_string"
+      },
+      {
+        "category": "track",
+        "target_id": 2,
+        "position_x": 100,
+        "position_y": 180,
+        "position_z": 50,
+        "remaining_time": 0,
+        "pose": "Lying position",
+        "event": 0,
+        "area_id": 1
+      },
+      {
+        "category": "vital",
+        "vital_flag": 0,
+        "respiratory_rate": 14,
+        "heart_rate": 72,
+        "sleep_status": "Sleep state undefined",
+        "stability": "11",
+        "raw_original": "base64_string"
+      }
+    ]
   }
   ```
 
-**字段说明**：
-- **必需字段**（按标准顺序）：
-  - `device_id`: 设备 ID（UUID格式），系统内部唯一标识符
-  - `device_uid`: 设备唯一标识符（字符串），如 "E598A2ACD523"
-  - `device_type`: 设备类型（字符串），如 "Radar"
-  - `tenant_id`: 租户 ID（字符串），服务端添加
-  - `timestamp`: 时间戳（整数），服务端添加
-  - `topic_type`: 主题类型（字符串），值为 `'monitor'`, `'stat'`, `'event'`, `'alarm'`  `'auth'`
-  - `data_value`: JSON 对象或数组，包含按 category 分组的数据（`category` 字段在 `data_value` 内部）
-- **可选字段**（设备绑定信息，未绑定时为空或不存在，放在最后）：
-  - `branch_id`: 分支 ID（字符串），通过 unit 关联
-  - `building_id`: 建筑 ID（字符串），通过 unit 关联
-  - `unit_id`: 单元 ID（字符串），设备绑定到 unit 时
-  - `room_id`: 房间 ID（字符串），设备绑定到 room 时
-  - `bed_id`: 床位 ID（字符串），设备绑定到 bed 时
+**顶层字段说明**（按标准顺序）：
+- `device_id`: 设备 ID（UUID 格式），系统内部唯一标识符
+- `device_type`: 设备类型（字符串），如 "Radar"、"Sleepace"
+- `card_id`: 卡片 ID（字符串），未绑卡可空或省略
+- `tenant_id`: 租户 ID（字符串），服务端添加
+- `timestamp`: 时间戳（整数），服务端添加
+- `topic_type`: 主题类型（字符串），值为 `monitor`、`stat`、`event`、`alarm`、`auth`
+- `category`: 数据类别（字符串），多类用 `.` 拼接，如 "track2.vital1" 表示 2 条 track、1 条 vital
+- `data_value`: **JSON 数组**，每项为一条数据，项内含 `category` 字段；单条时也为单元素数组
 
-**字段顺序说明**：
-字段按照以下顺序排列：`device_id` → `device_uid` → `device_type` → `tenant_id` → `timestamp` → `topic_type` → `category` → `data_value` → 位置信息。此顺序符合访问频率和逻辑分组，便于查询和维护。
-
-**关于 `category` 字段的说明**：
-- **`category` 字段位置**：`category` 字段保留在 `data_value` 内部，同时提取到顶层，方便订阅者判读
+**关于 `data_value` 与 `category`**：
+- `data_value` 统一为**数组**，每项为一条观测/事件，项内必含 `category` 字段，与顶层 `category` 的 N 对应（如 track2 即数组中有 2 个 category 为 "track" 的项）。
+- 顶层 `category` 便于订阅者判读与过滤，无需解析数组即可知本条消息包含的类别及条数。
 
 ## 三、Monitor 数据格式（实时数据）
 
-### 3.1 标准格式
+### 3.1 标准格式（data_value 为数组）
 
 ```json
 {
   "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
   "device_type": "Radar",
+  "card_id": "uuid-ccc",
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
   "topic_type": "monitor",
-  "category": "track",
-  "data_value": {
-    "category": "track",
-    "target_id": 1,
-    "position_x": 150,
-    "position_y": 200,
-    "position_z": 50,
-    "remaining_time": 30,
-    "pose": "Walking",
-    "event": 0,
-    "area_id": 1,
-    "raw_original": "base64_string"  // 可选，原始 track base64 字符串（16 字节 * N，N 为人数）
-  },
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
-}
-```
-
-### 3.2 包含 vital 数据（呼吸心率）
-```json
-{
-  "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
-  "device_type": "Radar",
-  "tenant_id": "TENANT001",
-  "timestamp": 1234567890,
-  "topic_type": "monitor",
-  "category": "vital",
+  "category": "track2.vital1",
   "data_value": [
-        {
-      "category": "vital",
-      "vital_flag": 0,
-      "respiratory_rate": 14,
-      "heart_rate": 72,
-      "sleep_status": "Sleep state undefined",
-      "stability": "11",
-      "raw_original": "base64_string"  // 可选，原始 bh base64 字符串
-    }
-  ],
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
-}
-```
-
-### 3.3 mqtt同时包含 多条track 或 vital 或数据, 分开
-
-```json
-{
-  "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
-  "device_type": "Radar",
-  "tenant_id": "TENANT001",
-  "timestamp": 1234567890,
-  "topic_type": "monitor",
-  "category": "track&vital",   //如果同时有track和vital，用track&vital
-  "data_value": {
+    {
       "category": "track",
       "target_id": 1,
       "position_x": 150,
@@ -140,39 +98,30 @@
       "pose": "Walking",
       "event": 0,
       "area_id": 1,
-      "raw_original": "base64_string"  // 可选，原始 track base64 字符串（16 字节 * N，N 为人数）
+      "raw_original": "base64_string"
     },
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
-}
-```
-
-```json
-{
-  "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
-  "device_type": "Radar",
-  "tenant_id": "TENANT001",
-  "timestamp": 1234567890,
-  "topic_type": "monitor",
-  "category": "vital",   
-  "data_value": {
+    {
+      "category": "track",
+      "target_id": 2,
+      "position_x": 150,
+      "position_y": 200,
+      "position_z": 50,
+      "remaining_time": 30,
+      "pose": "Walking",
+      "event": 0,
+      "area_id": 1,
+      "raw_original": "base64_string"
+    },
+    {
       "category": "vital",
       "vital_flag": 0,
       "respiratory_rate": 14,
       "heart_rate": 72,
       "sleep_status": "Sleep state undefined",
       "stability": "11",
-      "raw_original": "base64_string"  // 可选，原始 bh base64 字符串
-    },
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
+      "raw_original": "base64_string"
+    }
+  ]
 }
 ```
 
@@ -210,30 +159,27 @@
 ```json
 {
   "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
   "device_type": "Radar",
+  "card_id": "uuid-ccc",
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
   "topic_type": "stat",
-   "category": "sleep",  
-  "data_value": {
-    "category": "sleep",
-    "sleep_flag": 255,
-    "respiratory_rate": 14,
-    "heart_rate": 72,
-    "avg_respiratory_rate": 15,
-    "avg_heart_rate": 70,
-    "breath_state": "Breath rate normal",
-    "heart_state": "Heart rate normal",
-    "vital_signs_state": "Vital signs normal",
-    "sleep_state": "Light sleep",
-    "raw_original": "base64_string"  // 可选，原始 sleep base64 字符串
-  },
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
+  "category": "sleep",
+  "data_value": [
+    {
+      "category": "sleep",
+      "sleep_flag": 255,
+      "respiratory_rate": 14,
+      "heart_rate": 72,
+      "avg_respiratory_rate": 15,
+      "avg_heart_rate": 70,
+      "breath_state": "Breath rate normal",
+      "heart_state": "Heart rate normal",
+      "vital_signs_state": "Vital signs normal",
+      "sleep_state": "Light sleep",
+      "raw_original": "base64_string"
+    }
+  ]
 }
 ```
 
@@ -242,13 +188,14 @@
 ```json
 {
   "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
   "device_type": "Radar",
+  "card_id": "uuid-ccc",
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
   "topic_type": "stat",
-  "category": "track",           // //如果同时有track和vital，用track&vital
-  "data_value":   {
+  "category": "track",
+  "data_value": [
+    {
       "category": "track",
       "version": 2,
       "people_count": 1,
@@ -257,13 +204,9 @@
       "lie_duration": 1800,
       "stand_duration": 120,
       "multi_person_duration": 0,
-      "raw_original": "base64_string"  // 可选，原始 track base64 字符串（统计数据的 track 部分）
-    },
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
+      "raw_original": "base64_string"
+    }
+  ]
 }
 ```
 
@@ -299,14 +242,21 @@
 | - | - | **备注**：14-15 为睡眠统计信息，睡眠算法未公开，本字段信息不公开，**不解码** ||
 | `raw_original` | string | 可选，原始 sleep base64 字符串 | 原始数据 |
 
-### 4.4 其他字段（保留在 data_value 顶层或单独对象）
+### 4.4 其他字段（data_value 为数组，原始 base64 放在项内 raw_original）
 
 ```json
 {
-  "data_value": {
-    "sleep": "base64_string",  // 原始 sleep base64 字符串（保留）
-    "track": "base64_string"   // 原始 track base64 字符串（如果有）
-  }
+  "device_id": "uuid-ddd",
+  "device_type": "Radar",
+  "card_id": "uuid-ccc",
+  "tenant_id": "TENANT001",
+  "timestamp": 1234567890,
+  "topic_type": "stat",
+  "category": "sleep.track",
+  "data_value": [
+    { "category": "sleep", "raw_original": "base64_string" },
+    { "category": "track", "raw_original": "base64_string" }
+  ]
 }
 ```
 
@@ -316,64 +266,51 @@
 
 ### 5.1 标准格式结构
 
-所有 Event 数据都遵循以下标准格式：
+所有 Event 数据都遵循以下标准格式（顶层无 addressInfo，位置信息需时按 card_id 查 Card）：
 
 ```json
 {
   "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
   "device_type": "Radar",
-  "tenant_id": "TENANT001",
-  "timestamp": 1234567890,
-  "topic_type": "event",
-  "category": "enter2out",  
-  "data_value": [
-    {
-      "category": "enter2out",  // event_type: 1=Enter2out, 2=pose, 3=number-people
-      "track_id": 1,
-      "event": "Enter room",
-      "area_type": "Bed"
-    }
-  ],
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
-}
-```
-
-**字段说明**：
-- **顶层元数据字段**（按标准顺序）：
-  - `device_uid`, `device_type`, `tenant_id`, `timestamp`, `topic_type`: 元数据字段
-  - `data_value`: 事件内容（包含 `category` 字段，根据 category 不同而不同）
-- **位置信息字段**（可选，放在最后）：
-  - `branch_id`, `building_id`, `unit_id`, `room_id`, `bed_id`: 设备绑定信息
-
-### 5.2 type=1（进出事件）
-
-```json
-{
-  "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
-  "device_type": "Radar",
+  "card_id": "uuid-ccc",
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
   "topic_type": "event",
   "category": "enter2out",
   "data_value": [
     {
-      "category": "enter2out",  // event_type: 1=Enter2out, 2=pose, 3=number-people, 5=isOnline, 7=signal_poor, 8=angle_abnormal, 9=other
+      "category": "enter2out",
       "track_id": 1,
-      "event": "Enter room",    // display_en 值（如果有 SNOMED 映射则使用 SNOMED display，否则使用 display_en）
-      "area_type": "Bed"        // display_en 值（area_type 为标识符，无 SNOMED 映射）
+      "event": "Enter room",
+      "area_type": "Bed"
     }
-  ],
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
+  ]
+}
+```
+
+**字段说明**：
+- **顶层字段**：`device_id`, `device_type`, `card_id`, `tenant_id`, `timestamp`, `topic_type`, `category`, `data_value`（见二、标准格式结构）
+- `data_value`: 数组，每项包含 `category` 及该类别对应字段
+
+### 5.2 type=1（进出事件）
+
+```json
+{
+  "device_id": "uuid-ddd",
+  "device_type": "Radar",
+  "card_id": "uuid-ccc",
+  "tenant_id": "TENANT001",
+  "timestamp": 1234567890,
+  "topic_type": "event",
+  "category": "enter2out",
+  "data_value": [
+    {
+      "category": "enter2out",
+      "track_id": 1,
+      "event": "Enter room",
+      "area_type": "Bed"
+    }
+  ]
 }
 ```
 
@@ -398,24 +335,19 @@
 ```json
 {
   "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
   "device_type": "Radar",
+  "card_id": "uuid-ccc",
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
   "topic_type": "event",
   "category": "pose",
   "data_value": [
     {
-      "category": "pose",  // event_type: 1=Enter2out, 2=pose, 3=number-people, 5=isOnline, 7=signal_poor, 8=angle_abnormal, 9=other
+      "category": "pose",
       "track_id": 1,
-      "pose": "Fall"       // display_en 值（如果有 SNOMED 映射则使用 SNOMED display，否则使用 display_en）
+      "pose": "Fall"
     }
-  ],
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
+  ]
 }
 ```
 
@@ -438,23 +370,18 @@
 ```json
 {
   "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
   "device_type": "Radar",
+  "card_id": "uuid-ccc",
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
   "topic_type": "event",
   "category": "number-people",
   "data_value": [
     {
-      "category": "number-people",  // event_type: 1=Enter2out, 2=pose, 3=number-people, 5=isOnline, 7=signal_poor, 8=angle_abnormal, 9=other
-      "number_people": 1            // 人数（数值）
+      "category": "number-people",
+      "number_people": 1
     }
-  ],
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
+  ]
 }
 ```
 
@@ -468,58 +395,46 @@
 ```json
 {
   "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
   "device_type": "Radar",
+  "card_id": "uuid-ccc",
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
   "topic_type": "event",
-  "category": "isOnline", 
+  "category": "isOnline",
   "data_value": [
     {
-      "category": "isOnline",  // event_type: 1=Enter2out, 2=pose, 3=number-people, 5=isOnline, 7=signal_poor, 8=angle_abnormal, 9=other
-      "device_status": "offline",  // "0=online"  "1=offline"
+      "category": "isOnline",
+      "device_status": "offline",
       "device_uid": "E598A2ACD523"
     }
-  ],
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
+  ]
 }
 ```
 
 **字段说明**：
 - `data_value`: 数组，包含设备在线状态事件信息
-- `category`: 固定为 "isOnline"（event_type: 1=Enter2out, 2=pose, 3=number-people, 5=isOnline, 7=signal_poor, 8=angle_abnormal, 9=other）
-- `device_status`: 设备在线状态（字符串）
-  - "online" = 在线（对应原始值 0）
-  - "offline" = 离线（对应原始值 1）
-- `device_uid`: 设备 ID（字符串，系统内部 UUID）
+- `category`: 固定为 "isOnline"
+- `device_status`: 设备在线状态（字符串），"online" / "offline"
+- `device_uid`: 需要时放在 data_value 项内（字符串）
 
 ### 5.6 type=7（信号差事件）
 
 ```json
 {
   "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
   "device_type": "Radar",
+  "card_id": "uuid-ccc",
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
   "topic_type": "event",
-  "category": "signal_poor", 
+  "category": "signal_poor",
   "data_value": [
     {
-      "category": "signal_poor",  // event_type: 1=Enter2out, 2=pose, 3=number-people, 5=isOnline, 7=signal_poor, 8=angle_abnormal, 9=other
-      "recovery": "signal_recovery",  // 0="signal_poor" 1="signal_recovery"
+      "category": "signal_poor",
+      "recovery": "signal_recovery",
       "device_uid": "E598A2ACD523"
     }
-  ],
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
+  ]
 }
 ```
 
@@ -529,7 +444,8 @@
 - `recovery`: 恢复状态（字符串）
   - "signal_poor" = 信号差（对应原始值 0，触发）
   - "signal_recovery" = 信号恢复（对应原始值 1，恢复）
-- `device_uid`: 设备 ID（字符串，系统内部 UUID）
+- `device_uid`: 需要时放在 data_value 项内
+
 **信号差说明**：
 - 雷达网络信号超过正常阈值范围时产生
 - **阈值**：`<=-88` 即偏弱（触发 signal_poor）
@@ -543,37 +459,28 @@
 ```json
 {
   "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
   "device_type": "Radar",
+  "card_id": "uuid-ccc",
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
   "topic_type": "event",
-  "category": "angle_abnormal",  
+  "category": "angle_abnormal",
   "data_value": [
     {
-      "category": "angle_abnormal",  // event_type: 1=Enter2out, 2=pose, 3=number-people, 5=isOnline, 7=signal_poor, 8=angle_abnormal, 9=other
-      "recovery": "angle_recovery",  // 0="angle_abnormal"=倾角异常 "1=angle_recovery"
+      "category": "angle_abnormal",
+      "recovery": "angle_recovery",
       "device_uid": "E598A2ACD523"
     }
-  ],
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
+  ]
 }
 ```
 
-
-
-
 **字段说明**：
 - `data_value`: 数组，包含倾角异常事件信息
-- `category`: 固定为 "angle_abnormal"（event_type: 1=Enter2out, 2=pose, 3=number-people, 5=isOnline, 7=signal_poor, 8=angle_abnormal, 9=other）
-- `recovery`: 恢复状态（字符串）
-  - "angle_abnormal" = 倾角异常（对应原始值 0，触发）
-  - "angle_recovery" = 倾角恢复（对应原始值 1，恢复）
-- `device_uid`: 设备 ID（字符串，系统内部 UUID）
+- `category`: 固定为 "angle_abnormal"
+- `recovery`: 恢复状态（字符串），"angle_abnormal" / "angle_recovery"
+- `device_uid`: 需要时放在 data_value 项内
+
 **倾角异常说明**：
 - 雷达倾角低于阈值时产生
 - **雷达倾角格式**：`X:Y:Z:V` 四个值
@@ -593,42 +500,27 @@
 ```json
 {
   "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
   "device_type": "Radar",
+  "card_id": "uuid-ccc",
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
   "topic_type": "event",
-  "category": "other",  
+  "category": "other",
   "data_value": [
     {
-      "category": "other",  // event_type: 1=Enter2out, 2=pose, 3=number-people, 5=isOnline, 7=signal_poor, 8=angle_abnormal, 9=other
-      "alarmType": "2",     // 告警类型（字符串）
+      "category": "other",
+      "alarmType": "2",
       "device_uid": "E598A2ACD523"
     }
-  ],
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
+  ]
 }
 ```
 
 **字段说明**：
 - `data_value`: 数组，包含其他告警事件信息
-- `category`: 固定为 "other"（event_type: 1=Enter2out, 2=pose, 3=number-people, 5=isOnline, 7=signal_poor, 8=angle_abnormal, 9=other）
-- `alarmType`: 告警类型（字符串）
-  - "1" = 离床未归（display_en: "Left bed not returned"）
-  - "2" = 滞留（display_en: "Stay"）
-  - "3" = 长时间无人活动（display_en: "No activity for long time"）
-  - "4" = 坐地告警（display_en: "Sitting on ground alarm"）
-  - "5" = 床上坐起告警（display_en: "Sitting up in bed alarm"）
-  - "6" = 空（未开放使用）
-  - "7" = 空（未开放使用）
-  - "8" = 按钮SOS告警（display_en: "Button SOS alarm"，未开放使用）
-  - "9" = 拉绳SOS告警（display_en: "Rope SOS alarm"，未开放使用）
-  - "10" = 呼救SOS告警（display_en: "Call for help SOS alarm"，未开放使用）
-- `device_uid`: 设备 ID（字符串，系统内部 UUID）
+- `category`: 固定为 "other"
+- `alarmType`: 告警类型（字符串），"1"=离床未归, "2"=滞留, "3"=长时间无人活动, "4"=坐地告警, "5"=床上坐起告警 等
+- `device_uid`: 需要时放在 data_value 项内
 
 ### 5.9 事件类型汇总
 
@@ -642,9 +534,63 @@
 | 8 | 倾角异常事件 | "angle_abnormal" | 数组 | 包含 `recovery`, `device_uid` |
 | 9 | 其他告警 | "other" | 数组 | 包含 `alarmType`, `device_uid` |
 
+### 5.10 BedState 事件
+
+由 Wisefido-AI 触发，card_agg 汇总为卡片动态数据。
+
+```json
+{
+  "device_id": "uuid-ddd",
+  "device_type": "Radar",
+  "card_id": "uuid-ccc",
+  "tenant_id": "TENANT001",
+  "timestamp": 1234567890,
+  "topic_type": "event",
+  "category": "BedState",
+  "data_value": [
+    {
+      "category": "BedState",
+      "bed_id": "uuid-bbb",
+      "CurrentState": "in_bed",
+      "StateSince": 1234567890
+    }
+  ]
+}
+```
+
+
+### 5.11 RoomState 事件
+
+由 Wisefido-AI 触发，card_agg 汇总为卡片动态数据。
+
+```json
+{
+  "device_id": "uuid-ddd",
+  "device_type": "AI",
+  "card_id": "uuid-ccc",
+  "tenant_id": "TENANT001",
+  "timestamp": 1234567890,
+  "topic_type": "event",
+  "category": "RoomState",
+  "data_value": [
+    {
+      "category": "RoomState",
+      "room_id": "uuid-rrr",
+      "room_name": "101",
+      "PeopleCount": 1,
+      "StayTime": 5,
+      "StateSince": 1234567890
+    }
+  ]
+}
+```
+
+
+
 ## 六、Alarm 数据格式（告警数据）
 
 **说明**：告警数据从事件（Event）和统计（Stat）数据中抽取，当满足告警使能条件时生成告警事件。将topic改为 alarm
+top    "category": "alarmLevel.alarmType"
 
 以下个为例，alarm_device中，fall 报警设置为启用
 
@@ -655,65 +601,55 @@
 ```json
 {
   "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",    
   "device_type": "Radar",
+  "card_id": "uuid-ccc",
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
-  "topic_type": "alarm",     //由even改为alarm
-  "category": "pose",
+  "topic_type": "alarm",
+  "category": "alarmLevel.pose",   // alarmLevel.alarmType
   "data_value": [
     {
-      "category": "pose",  // event_type: 1=Enter2out, 2=pose, 3=number-people, 5=isOnline, 7=signal_poor, 8=angle_abnormal, 9=other
+      "category": "pose",
       "track_id": 1,
-      "pose": "Fall"       // display_en 值（如果有 SNOMED 映射则使用 SNOMED display，否则使用 display_en）
+      "pose": "Fall"
     }
-  ],
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
+  ]
 }
 ```
 
 **字段说明**：
 - `data_value`: 数组，包含跌倒告警信息
-- `category`: 固定为 "fall_alarm"
-- `pose`: 姿态类型（字符串）
-  - "Fall" = 确认跌倒（对应原始值 5）
-  - "SuspectedFall" = 疑似跌倒（对应原始值 2）
+--`category`: alarmLevel.alarmCode
+- `category`: 固定为 "pose"
+- `pose`: 姿态类型（字符串），"Fall" / "SuspectedFall"
 - `track_id`: 人员轨迹 ID（数值）
-- `device_uid`: 设备 ID（字符串，系统内部 UUID）
 
-### 6.3 从统计Sta（统计数据） 
+### 6.3 从统计 Stat（统计数据）
 
 ```json
 {
   "device_id": "uuid-ddd",
-  "device_uid": "E598A2ACD523",
   "device_type": "Radar",
+  "card_id": "uuid-ccc",
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
   "topic_type": "alarm",
-   "category": "sleep",  
-  "data_value": {
-    "category": "sleep",
-    "sleep_flag": 255,
-    "respiratory_rate": 14,
-    "heart_rate": 72,
-    "avg_respiratory_rate": 15,
-    "avg_heart_rate": 70,
-    "breath_state": "Breath rate normal",
-    "heart_state": "Heart rate normal",
-    "vital_signs_state": "Vital signs normal",
-    "sleep_state": "Light sleep",
-    "raw_original": "base64_string"  // 可选，原始 sleep base64 字符串
-  },
-  "branch_id": null,
-  "building_id": null,
-  "unit_id": null,
-  "room_id": "uuid-rrr",
-  "bed_id": "uuid-bbb"
+  "category": "sleep",
+  "data_value": [
+    {
+      "category": "sleep",
+      "sleep_flag": 255,
+      "respiratory_rate": 14,
+      "heart_rate": 72,
+      "avg_respiratory_rate": 15,
+      "avg_heart_rate": 70,
+      "breath_state": "Breath rate normal",
+      "heart_state": "Heart rate normal",
+      "vital_signs_state": "Vital signs normal",
+      "sleep_state": "Light sleep",
+      "raw_original": "base64_string"
+    }
+  ]
 }
 ```
 
@@ -832,13 +768,10 @@
 - `topic_type = "alarm"` → `topic_type = "alarm"`
 
 ### 8.2 data_value 结构
-- **Monitor**: 
-  - 单人：`data_value` 是对象，包含 track 和 vital 数据（如果都有，则用数组）
-  - 多人：`data_value` 是数组，每个元素是一个 track 对象，vital 单独一个对象
-- **Stat**: 
-  - `data_value` 是对象或数组（如果同时有 track 和 sleep 统计，则用数组）
-- **Event/Alarm**: 
-  - `data_value` 保持原始结构（包含 type 和 data 字段）
+- **统一为数组**：所有 topic_type（monitor、stat、event、alarm）的 `data_value` 均为 **JSON 数组**，每项为一条数据，项内必含 `category` 字段；单条时也为单元素数组。
+- **Monitor**：数组项为 track 或 vital 等，每项含 `category` 及对应字段。
+- **Stat**：数组项为 sleep、track 等统计对象，每项含 `category` 及对应字段。
+- **Event/Alarm**：数组项为事件/告警对象，每项含 `category` 及对应字段。
 
 ### 8.3 category 分组
 - **"track"**: 轨迹相关数据（position_x, position_y, position_z, target_id, area_id, remaining_time, pose, event）
@@ -853,50 +786,26 @@
 - **"other"**: 其他告警（alarmType, device_uid）
 - **告警 category**: "fall_alarm", "device_offline", "signal_poor_alarm", "angle_abnormal_alarm", "vital_signs_weak" 等
 
-## 十、字段顺序调整说明
+## 十、字段顺序与约定说明
 
-### 9.1 调整原因
+### 10.1 顶层字段顺序
 
-文档中所有 JSON 示例的字段顺序已统一调整为：`device_uid` → `device_type` → `tenant_id` → `timestamp` → `topic_type` → `data_value` → 位置信息。
+文档中 iot:\*:stream 顶层字段顺序统一为：`device_id` → `device_type` → `card_id` → `tenant_id` → `timestamp` → `topic_type` → `category` → `data_value`。**不包含** `device_uid`、位置信息（addressInfo）；需要时由消费方按 `card_id` 查询 Card 获取。
 
-**调整原因**：
+**逻辑分组**：
+- **设备与卡**：`device_id`, `device_type`, `card_id`（未绑卡可空）
+- **租户与时间**：`tenant_id`, `timestamp`
+- **类型与内容**：`topic_type`, `category`, `data_value`（数组，项内含 `category`）
 
-1. **符合实际代码实现**：
-   - wisefido-radar 的 `mqtt_consumer.go` 中已按照此顺序构建 `encodedData`
-   - `category` 字段已从 `data_value` 中提取到顶层，便于查询和过滤
-   - 确保文档与实际代码实现保持一致，避免混淆
+### 10.2 data_value 与 addressInfo
 
-2. **逻辑分组清晰**：
-   - **设备标识**：`device_uid`, `device_type`（设备基本信息）
-   - **租户信息**：`tenant_id`（多租户隔离）
-   - **时间信息**：`timestamp`（数据时间戳）
-   - **数据类型**：`topic_type`（数据分类）
-   - **数据内容**：`data_value`（实际数据，包含 `category` 字段）
-   - **位置信息**：`branch_id`, `building_id`, `unit_id`, `room_id`, `bed_id`（可选位置信息）
+- **data_value**：统一为 **JSON 数组**，每项含 `category` 及该类别对应字段；单条时为单元素数组。
+- **位置信息**：流中不再携带 `branch_id`, `building_id`, `unit_id`, `room_id`, `bed_id`；需用时按 `card_id` 向 wisefido-data 查询 Card 静态结构。
 
-3. **查询优化**：
-   - 将最常用的查询字段（`device_uid`, `tenant_id`, `timestamp`, `topic_type`, `category`）放在前面
-   - `category` 提取到顶层后，放在 `topic_type` 之后，便于按类别过滤
-   - 位置信息放在最后，因为通常通过关联表查询，较少直接使用
+### 10.3 本次调整内容
 
-4. **维护一致性**：
-   - 与 `STREAM_DB_FORMAT_DIFF.md` 保持一致
-   - 与 `18_iot_timeseries.sql` 中的注释保持一致
-   - 确保整个系统的文档和代码都遵循相同的字段顺序规范
-
-### 9.2 调整内容
-
-本次调整更新了以下部分：
-- ✅ 二、标准格式结构：更新字段顺序说明，`category` 保留在 `data_value` 内部
-- ✅ 三、Monitor 数据格式：更新所有示例的字段顺序，去掉顶层 `category`（3.1, 3.2, 3.3）
-- ✅ 四、Stat 数据格式：更新所有示例的字段顺序，去掉顶层 `category`（4.1, 4.2）
-- ✅ 五、Event 数据格式：更新所有示例的字段顺序，去掉顶层 `category`（5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8）
-- ✅ 六、Alarm 数据格式：更新所有示例的字段顺序，去掉顶层 `category`（6.1, 6.2, 6.3, 6.4, 6.5）
-- ✅ 八、实现说明：更新 category 分组说明
-
-### 9.3 影响范围
-
-- **代码层面**：无需修改，代码已按新顺序实现
-- **数据库层面**：无需修改，JSONB 字段顺序不影响查询
-- **文档层面**：已统一更新，确保文档准确性
-- **查询层面**：字段顺序不影响 JSONB 查询性能，但遵循统一顺序有助于代码可读性和维护性
+- ✅ 二、标准格式结构：顶层仅保留 device_id, device_type, card_id, tenant_id, timestamp, topic_type, category, data_value；data_value 为数组；去掉 addressInfo
+- ✅ 三、Monitor：data_value 改为数组，顶层去掉 device_uid 与 addressInfo
+- ✅ 四、Stat：data_value 改为数组，顶层去掉 addressInfo
+- ✅ 五、Event / 六、Alarm：顶层去掉 device_uid 与 addressInfo，data_value 保持数组
+- ✅ 八、实现说明：data_value 统一为数组；category 分组说明

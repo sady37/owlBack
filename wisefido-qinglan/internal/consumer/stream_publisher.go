@@ -43,118 +43,66 @@ func (p *StreamPublisher) PublishToStream(ctx context.Context, streamName string
 	return streamID, nil
 }
 
-// BuildEncodedData 构建包含完整位置信息的输出数据
-// 使用 owl-common/redis 中的 IoTStreamMessage 类型定义
-// 注意：device_id 始终来自 device_store，即使设备还没有在 devices 表中创建记录
+// BuildEncodedData 构建 iot:*:stream 输出数据（顶层无 addressInfo，data_value 为数组）
+// cardID 未绑卡可传空；dataValue 为数组，每项含 category 及对应字段。
 func (p *StreamPublisher) BuildEncodedData(
 	device *domain.Device,
 	locationInfo *domain.DeviceLocationInfo,
+	cardID string,
 	topicType, category string,
-	data map[string]interface{},
+	dataValue []interface{},
 ) map[string]interface{} {
-	// 优先使用 locationInfo 中的 device_id（来自 device_store，权威来源）
-	// 如果 locationInfo 为 nil，使用 device 中的 device_id
-	var deviceID, deviceUID, tenantID string
+	var deviceID, tenantID string
 	var deviceType string = "Radar"
 
 	if locationInfo != nil {
 		deviceID = locationInfo.DeviceID
-		deviceUID = locationInfo.DeviceUID
 		tenantID = locationInfo.TenantID
 		if locationInfo.DeviceType.Valid {
 			deviceType = locationInfo.DeviceType.String
 		}
 	} else if device != nil {
 		deviceID = device.DeviceID
-		deviceUID = device.DeviceUID
 		tenantID = device.TenantID
 		if device.DeviceType.Valid {
 			deviceType = device.DeviceType.String
 		}
 	} else {
-		// 如果 device 和 locationInfo 都为 nil，无法构建数据
-		// 这不应该发生，但为了安全起见，返回空 map
 		return map[string]interface{}{
 			"error": "device and locationInfo are both nil",
 		}
 	}
 
-	// 转换位置信息（只在 event/alarm 中包含）
-	var locInfo *rediscommon.LocationInfo
-	if (topicType == "event" || topicType == "alarm") && locationInfo != nil {
-		locInfo = &rediscommon.LocationInfo{}
-		if locationInfo.BranchID.Valid && locationInfo.BranchID.String != "" {
-			locInfo.BranchID = &locationInfo.BranchID.String
-		}
-		if locationInfo.BuildingID.Valid && locationInfo.BuildingID.String != "" {
-			locInfo.BuildingID = &locationInfo.BuildingID.String
-		}
-		if locationInfo.UnitID.Valid && locationInfo.UnitID.String != "" {
-			locInfo.UnitID = &locationInfo.UnitID.String
-		}
-		if locationInfo.RoomID.Valid && locationInfo.RoomID.String != "" {
-			locInfo.RoomID = &locationInfo.RoomID.String
-		}
-		if locationInfo.BedID.Valid && locationInfo.BedID.String != "" {
-			locInfo.BedID = &locationInfo.BedID.String
-		}
-	}
-
-	// 使用 owl-common/redis 中的统一构建函数
 	msg := rediscommon.BuildIoTStreamMessage(
 		deviceID,
-		deviceUID,
 		deviceType,
+		cardID,
 		tenantID,
 		time.Now().Unix(),
 		topicType,
 		category,
-		data,
-		locInfo,
+		dataValue,
 	)
-
-	// 转换为 map（用于发布到 Redis Stream）
 	return iotStreamMessageToMap(msg)
 }
 
 // iotStreamMessageToMap 将 IoTStreamMessage 转换为 map（用于发布到 Redis Stream）
-// 字段顺序与 IoTStreamMessage 定义一致：device_id, device_uid, device_type, tenant_id, timestamp, topic_type, category, data_value, LocationInfo
+// 顶层顺序：device_id, device_type, card_id, tenant_id, timestamp, topic_type, category, data_value（无 addressInfo）
 func iotStreamMessageToMap(msg rediscommon.IoTStreamMessage) map[string]interface{} {
-	// 序列化 data_value 为 JSON 字符串（PublishToStream 需要字符串值）
 	dataValueJSON, _ := json.Marshal(msg.DataValue)
-
 	result := make(map[string]interface{})
-
-	// 按定义顺序添加字段
 	if msg.DeviceID != "" {
 		result["device_id"] = msg.DeviceID
 	}
-	result["device_uid"] = msg.DeviceUID
 	result["device_type"] = msg.DeviceType
+	if msg.CardID != "" {
+		result["card_id"] = msg.CardID
+	}
 	result["tenant_id"] = msg.TenantID
 	result["timestamp"] = fmt.Sprintf("%d", msg.Timestamp)
 	result["topic_type"] = msg.TopicType
 	result["category"] = msg.Category
 	result["data_value"] = string(dataValueJSON)
-
-	// 位置信息字段（可选，只在 event/alarm 中包含）
-	// 只有当指针不为 nil 且值不为空字符串时才添加（与 omitempty 行为一致）
-	if msg.BranchID != nil && *msg.BranchID != "" {
-		result["branch_id"] = *msg.BranchID
-	}
-	if msg.BuildingID != nil && *msg.BuildingID != "" {
-		result["building_id"] = *msg.BuildingID
-	}
-	if msg.UnitID != nil && *msg.UnitID != "" {
-		result["unit_id"] = *msg.UnitID
-	}
-	if msg.RoomID != nil && *msg.RoomID != "" {
-		result["room_id"] = *msg.RoomID
-	}
-	if msg.BedID != nil && *msg.BedID != "" {
-		result["bed_id"] = *msg.BedID
-	}
-
 	return result
 }
 

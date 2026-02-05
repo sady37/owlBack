@@ -71,8 +71,15 @@ func (s *RolePermissionService) ListPermissions(ctx context.Context, req ListPer
 		PermissionType: s.permissionTypeToDB(strings.TrimSpace(req.PermissionType)),
 	}
 
+	// 系统角色（SystemAdmin、SystemOperator）的权限在系统租户下，前端用用户 tenant_id 请求时需查系统租户
+	queryTenantID := req.TenantID
+	if req.TenantID != nil && *req.TenantID != "" && (filter.RoleCode == "SystemAdmin" || filter.RoleCode == "SystemOperator") {
+		sysT := SystemTenantID
+		queryTenantID = &sysT
+	}
+
 	// 查询权限列表
-	permissions, total, err := s.permRepo.ListPermissions(ctx, req.TenantID, filter, req.Page, req.Size)
+	permissions, total, err := s.permRepo.ListPermissions(ctx, queryTenantID, filter, req.Page, req.Size)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list permissions: %w", err)
 	}

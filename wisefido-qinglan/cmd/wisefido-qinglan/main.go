@@ -90,6 +90,10 @@ func main() {
 	log.Println("Creating Redis Stream publisher...")
 	streamPublisher := consumer.NewStreamPublisher(redisClient, cfg)
 
+	// 创建卡片映射服务（用于维护 deviceID:cardID 映射）
+	log.Println("Creating card mapping service...")
+	cardMappingSvc := service.NewCardMappingService(redisClient, logger)
+
 	// 先创建MQTT消费者（不启动，用于获取messageHandler）
 	log.Println("Creating MQTT consumer...")
 	mqttConsumer, err := consumer.NewMQTTConsumer(
@@ -122,6 +126,24 @@ func main() {
 
 	// 设置subscriptionManager到mqttConsumer（用于UpdateLastSeen）
 	mqttConsumer.SetSubscriptionManager(subscriptionManager)
+
+	// 创建配置变更订阅器（订阅 config:device_status:stream 和 config:card:stream）
+	log.Println("Creating config change subscriber...")
+	configSubscriber := subscriber.NewConfigSubscriber(
+		redisClient,
+		cfg,
+		logger,
+		deviceRepo,
+		nil, // deviceCache 暂时设为 nil，后面可优化
+		cardMappingSvc,
+	)
+
+	// 启动配置变更订阅器
+	log.Println("Starting config change subscriber...")
+	if err := configSubscriber.Start(ctx); err != nil {
+		log.Fatalf("Failed to start config change subscriber: %v", err)
+	}
+	defer configSubscriber.Stop()
 
 	// 创建服务
 	log.Println("Creating radar service...")

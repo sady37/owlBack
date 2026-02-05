@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"wisefido-qinglan/internal/decode"
+	"wisefido-qinglan/internal/domain"
 	"wisefido-qinglan/internal/service"
 
 	"github.com/gorilla/mux"
@@ -20,6 +21,7 @@ import (
 type DeviceStatusManager interface {
 	GetDeviceOnlineStatus(deviceUID string) string
 	GetDeviceOnlineStatusByDeviceID(ctx context.Context, deviceID string) (string, error)
+	GetAllDeviceStatuses(tenantID string) []domain.DeviceStatusItem
 }
 
 // APIHandler HTTP API处理器
@@ -40,6 +42,8 @@ func NewAPIHandler(radarService *service.RadarService, deviceStatusManager Devic
 func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	// 设备管理API
 	deviceRouter := router.PathPrefix("/api/v1/radar/devices").Subrouter()
+	// 批量 status 必须在 /{uid}/status 之前注册，否则 "status" 会被当作 uid
+	deviceRouter.HandleFunc("/status", h.GetDevicesStatus).Methods("GET")
 	deviceRouter.HandleFunc("/{uid}/properties", h.GetDeviceProperties).Methods("GET")
 	deviceRouter.HandleFunc("/{uid}/properties", h.SetDeviceProperties).Methods("PUT")
 	deviceRouter.HandleFunc("/{uid}/subscribe", h.SubscribeRealtimeData).Methods("POST")
@@ -243,6 +247,23 @@ func (h *APIHandler) GetDeviceLocationInfo(w http.ResponseWriter, r *http.Reques
 	h.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"data":    locationInfo,
+	})
+}
+
+// GetDevicesStatus 批量获取设备在线状态
+// GET /api/v1/radar/devices/status
+// 查询参数：tenant_id（可选）- 按租户过滤，为空则返回所有
+func (h *APIHandler) GetDevicesStatus(w http.ResponseWriter, r *http.Request) {
+	if h.deviceStatusManager == nil {
+		h.sendError(w, http.StatusInternalServerError, "Device status manager not available")
+		return
+	}
+	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	items := h.deviceStatusManager.GetAllDeviceStatuses(tenantID)
+	h.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"data":    items,
+		"count":   len(items),
 	})
 }
 

@@ -14,8 +14,14 @@ import (
 
 	"wisefido-data/internal/repository"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
+
+// LoginSessionWriter 登录会话写入接口（由 AuthMiddleware 的 SessionStore 实现）
+type LoginSessionWriter interface {
+	StoreSession(ctx context.Context, token, userID, tenantID, userType, role string, ttl time.Duration) error
+}
 
 // AuthService 认证授权服务接口
 type AuthService interface {
@@ -60,21 +66,32 @@ type resetTokenData struct {
 
 // authService 实现
 type authService struct {
-	authRepo    repository.AuthRepository
-	tenantsRepo repository.TenantsRepository
-	db          *sql.DB // 用于验证码和重置密码功能（需要直接查询数据库）
-	logger      *zap.Logger
-	codeStore   *verificationCodeStore
-	tokenStore  *resetTokenStore
+	authRepo      repository.AuthRepository
+	tenantsRepo   repository.TenantsRepository
+	db            *sql.DB // 用于验证码和重置密码功能（需要直接查询数据库）
+	logger        *zap.Logger
+	codeStore     *verificationCodeStore
+	tokenStore    *resetTokenStore
+	sessionWriter LoginSessionWriter // 可选，设置后 Login 会写入会话并返回真实 token
 }
 
 // NewAuthService 创建 AuthService 实例
 func NewAuthService(authRepo repository.AuthRepository, tenantsRepo repository.TenantsRepository, db *sql.DB, logger *zap.Logger) AuthService {
+	return newAuthService(authRepo, tenantsRepo, db, logger, nil)
+}
+
+// NewAuthServiceWithSessionStore 创建带会话存储的 AuthService（用于认证中间件）
+func NewAuthServiceWithSessionStore(authRepo repository.AuthRepository, tenantsRepo repository.TenantsRepository, db *sql.DB, logger *zap.Logger, sessionWriter LoginSessionWriter) AuthService {
+	return newAuthService(authRepo, tenantsRepo, db, logger, sessionWriter)
+}
+
+func newAuthService(authRepo repository.AuthRepository, tenantsRepo repository.TenantsRepository, db *sql.DB, logger *zap.Logger, sessionWriter LoginSessionWriter) *authService {
 	return &authService{
-		authRepo:    authRepo,
-		tenantsRepo: tenantsRepo,
-		db:          db,
-		logger:      logger,
+		authRepo:      authRepo,
+		tenantsRepo:   tenantsRepo,
+		db:            db,
+		logger:        logger,
+		sessionWriter: sessionWriter,
 		codeStore: &verificationCodeStore{
 			codes: make(map[string]verificationCodeData),
 		},
@@ -96,20 +113,20 @@ type LoginRequest struct {
 
 // LoginResponse 登录响应
 type LoginResponse struct {
-	AccessToken  string   `json:"accessToken"`         // 访问令牌（占位符）
-	RefreshToken string   `json:"refreshToken"`        // 刷新令牌（占位符）
-	UserID       string   `json:"userId"`              // 用户 ID
-	UserAccount  string   `json:"user_account"`        // 用户账号
-	UserType     string   `json:"userType"`            // 用户类型
-	Role         string   `json:"role"`                // 角色
-	NickName     string   `json:"nickName"`            // 昵称
-	TenantID     string   `json:"tenant_id"`           // 租户 ID
-	TenantName   string   `json:"tenant_name"`         // 租户名称
-	Domain       string   `json:"domain"`              // 域名
-	BranchID     string   `json:"branch_id,omitempty"` // 主院区 ID（从 user_branches 获取主院区，前端使用 ID 调用服务）
-	BranchTag    string   `json:"branchTag,omitempty"` // 主院区名称（用于显示，前端使用 ID 调用服务）
+	AccessToken  string   `json:"accessToken"`          // 访问令牌（占位符）
+	RefreshToken string   `json:"refreshToken"`         // 刷新令牌（占位符）
+	UserID       string   `json:"userId"`               // 用户 ID
+	UserAccount  string   `json:"user_account"`         // 用户账号
+	UserType     string   `json:"userType"`             // 用户类型
+	Role         string   `json:"role"`                 // 角色
+	NickName     string   `json:"nickName"`             // 昵称
+	TenantID     string   `json:"tenant_id"`            // 租户 ID
+	TenantName   string   `json:"tenant_name"`          // 租户名称
+	Domain       string   `json:"domain"`               // 域名
+	BranchID     string   `json:"branch_id,omitempty"`  // 主院区 ID（从 user_branches 获取主院区，前端使用 ID 调用服务）
+	BranchTag    string   `json:"branchTag,omitempty"`  // 主院区名称（用于显示，前端使用 ID 调用服务）
 	BranchIDs    []string `json:"branch_ids,omitempty"` // 所有关联的院区 ID 列表（从 user_branches 表查询，用于权限检查和前端选择）
-	HomePath     string   `json:"homePath"`            // 首页路径
+	HomePath     string   `json:"homePath"`             // 首页路径
 }
 
 // Login 用户登录
@@ -373,10 +390,25 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 		zap.Time("login_time", time.Now()),
 	)
 
-	// 7. 构建响应
+	// 7. 构建响应（SystemOperator 默认首页为设备库，仍可访问 overview 仅看空列表）
+	homePath := "/monitoring/overview"
+	if role == "SystemOperator" {
+		homePath = "/admin/device-store"
+	}
+	accessToken := "stub-access-token"
+	refreshToken := "stub-refresh-token"
+	if s.sessionWriter != nil {
+		accessToken = uuid.New().String()
+		refreshToken = uuid.New().String()
+		sessionTTL := 24 * time.Hour
+		if err := s.sessionWriter.StoreSession(ctx, accessToken, userID, tenantID, normalizedUserType, role, sessionTTL); err != nil {
+			s.logger.Warn("Failed to store login session", zap.String("user_id", userID), zap.Error(err))
+			return nil, fmt.Errorf("login session failed")
+		}
+	}
 	resp := &LoginResponse{
-		AccessToken:  "stub-access-token",
-		RefreshToken: "stub-refresh-token",
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
 		UserID:       userID,
 		UserAccount:  userAccount,
 		UserType:     normalizedUserType,
@@ -388,7 +420,7 @@ func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 		BranchID:     branchID,
 		BranchTag:    branchTag,
 		BranchIDs:    branchIDs,
-		HomePath:     "/monitoring/overview",
+		HomePath:     homePath,
 	}
 
 	return resp, nil

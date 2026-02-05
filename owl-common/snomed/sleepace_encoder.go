@@ -1,5 +1,10 @@
 package snomed
 
+import (
+	"fmt"
+	"strconv"
+)
+
 // SleepaceEncode 编码 Sleepace 数据
 // data: 包含 device_id, tenant_id, device_type, data_key, timestamp 和原始数据字段
 // dataKey: 数据类型 ("realtime", "sleepStage", "connectionStatus", "alarmNotify")
@@ -128,4 +133,46 @@ func encodeSleepaceAlarmNotify(data, encoded map[string]interface{}) (map[string
 	return encoded, nil
 }
 
-// applySleepaceSNOMedMapping 已在 snomed_mapping.go 中定义
+// copyOtherFields 复制源map中除excludeFields外的所有字段到目标map
+func copyOtherFields(src, dst map[string]interface{}, excludeFields []string) {
+	excludeMap := make(map[string]bool)
+	for _, field := range excludeFields {
+		excludeMap[field] = true
+	}
+
+	for key, value := range src {
+		if !excludeMap[key] {
+			dst[key] = value
+		}
+	}
+}
+
+// applySleepaceSNOMedMapping 应用 Sleepace SNOMED 映射
+func applySleepaceSNOMedMapping(encoded map[string]interface{}, fieldName, fieldPath string, rawValue interface{}) {
+	mapping, err := GetSleepaceMappingByFieldPath(fieldPath, rawValue)
+	if err != nil || mapping == nil {
+		encoded[fieldName] = rawValue
+		return
+	}
+	if mapping.DisplayEn != "" {
+		encoded[fieldName] = mapping.DisplayEn
+	} else {
+		encoded[fieldName] = rawValue
+	}
+}
+
+// parseInt 将 interface{} 安全地解析为整数
+func parseInt(value interface{}) (int, error) {
+	switch v := value.(type) {
+	case int:
+		return v, nil
+	case int64:
+		return int(v), nil
+	case float64:
+		return int(v), nil
+	case string:
+		return strconv.Atoi(v)
+	default:
+		return 0, fmt.Errorf("cannot parse %T to int", value)
+	}
+}

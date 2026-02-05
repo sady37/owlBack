@@ -27,42 +27,36 @@ type Config struct {
 	MQTT          MQTTConfig          `yaml:"mqtt"`
 	Radar         RadarConfig         `yaml:"radar"`
 	Qinglan       QinglanConfig       `yaml:"qinglan"`
-	CardManage    CardManageConfig    `yaml:"card_manage"`
 	IoTTimeSeries IoTTimeSeriesConfig `yaml:"iot_timeseries"`
+}
+
+// QinglanConfig wisefido-qinglan HTTP API 配置（雷达设备交互）
+type QinglanConfig struct {
+	APIBaseURL string `yaml:"api_base_url"`
 }
 
 // SleepaceConfig Sleepace 厂家服务配置
 type SleepaceConfig struct {
 	HttpAddress string `yaml:"http_address"` // Sleepace 厂家服务地址
-	AppID       string `yaml:"app_id"`      // App ID
-	ChannelID   string `yaml:"channel_id"`  // Channel ID
-	SecretKey   string `yaml:"secret_key"`  // Secret Key
-	Timezone    int    `yaml:"timezone"`    // 时区偏移（秒）
+	AppID       string `yaml:"app_id"`       // App ID
+	ChannelID   string `yaml:"channel_id"`   // Channel ID
+	SecretKey   string `yaml:"secret_key"`   // Secret Key
+	Timezone    int    `yaml:"timezone"`     // 时区偏移（秒）
 }
 
 // MQTTConfig MQTT 配置（用于触发报告下载）
 type MQTTConfig struct {
-	Enabled  bool   `yaml:"enabled"`  // 是否启用 MQTT 触发下载（默认 false）
-	Broker   string `yaml:"broker"`   // MQTT Broker 地址（如 "tcp://localhost:1883"）
+	Enabled  bool   `yaml:"enabled"`   // 是否启用 MQTT 触发下载（默认 false）
+	Broker   string `yaml:"broker"`    // MQTT Broker 地址（如 "tcp://localhost:1883"）
 	ClientID string `yaml:"client_id"` // 客户端 ID
-	Username string `yaml:"username"` // 用户名（可选）
-	Password string `yaml:"password"` // 密码（可选）
-	Topic    string `yaml:"topic"`    // 订阅的主题（如 "sleepace-57136"）
+	Username string `yaml:"username"`  // 用户名（可选）
+	Password string `yaml:"password"`  // 密码（可选）
+	Topic    string `yaml:"topic"`     // 订阅的主题（如 "sleepace-57136"）
 }
 
 // RadarConfig Radar 服务配置（用于调用 wisefido-radar 内部 API）
 type RadarConfig struct {
 	InternalAPIBaseURL string `yaml:"internal_api_base_url"` // wisefido-radar 内部 API 地址（如 "http://localhost:8443"）
-}
-
-// QinglanConfig 清澜雷达 MQTT 网关配置（用于下发雷达属性：工作模式、跌倒/呼吸心率参数等）
-type QinglanConfig struct {
-	APIBaseURL string `yaml:"api_base_url"` // wisefido-qinglan HTTP API 地址（如 "http://localhost:8081"）
-}
-
-// CardManageConfig 卡片管理服务配置（用于调用 wisefido-card-manage API）
-type CardManageConfig struct {
-	APIBaseURL string `yaml:"api_base_url"` // wisefido-card-manage API 地址（如 "http://localhost:8082"）
 }
 
 // IoTTimeSeriesConfig IoT 时序数据服务配置（用于调用 wisefido-iot-timeseries 内部 API）
@@ -108,11 +102,8 @@ func Load() *Config {
 	// Radar 服务配置（用于调用 wisefido-radar 内部 API）
 	cfg.Radar.InternalAPIBaseURL = getEnv("RADAR_INTERNAL_API_BASE_URL", "http://localhost:8443")
 
-	// Qinglan 服务配置（用于下发雷达监控设置：工作模式、跌倒/呼吸心率参数，不重启）
-	cfg.Qinglan.APIBaseURL = getEnv("QINGLAN_API_BASE_URL", "http://localhost:8081")
-
-	// CardManage 服务配置（用于调用 wisefido-card-manage API）
-	cfg.CardManage.APIBaseURL = getEnv("CARD_MANAGE_API_BASE_URL", "http://localhost:8082")
+	// Qinglan 服务配置（用于调用 wisefido-qinglan HTTP API，雷达设备交互）
+	cfg.Qinglan.APIBaseURL = getEnv("QINGLAN_API_BASE_URL", "")
 
 	// IoTTimeSeries 服务配置（用于调用 wisefido-iot-timeseries 内部 API）
 	cfg.IoTTimeSeries.InternalAPIBaseURL = getEnv("IOT_TIMESERIES_INTERNAL_API_BASE_URL", "http://localhost:8083")

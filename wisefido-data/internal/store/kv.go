@@ -13,6 +13,7 @@ var ErrMiss = errors.New("cache miss")
 type KV interface {
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key string, value string, ttl time.Duration) error
+	Del(ctx context.Context, keys ...string) error
 	ScanKeys(ctx context.Context, pattern string) ([]string, error)
 }
 
@@ -37,6 +38,13 @@ func (r *RedisKV) Set(ctx context.Context, key string, value string, ttl time.Du
 	return r.c.Set(ctx, key, value, ttl).Err()
 }
 
+func (r *RedisKV) Del(ctx context.Context, keys ...string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	return r.c.Del(ctx, keys...).Err()
+}
+
 func (r *RedisKV) ScanKeys(ctx context.Context, pattern string) ([]string, error) {
 	var keys []string
 	var cursor uint64
@@ -53,5 +61,3 @@ func (r *RedisKV) ScanKeys(ctx context.Context, pattern string) ([]string, error
 	}
 	return keys, nil
 }
-
-

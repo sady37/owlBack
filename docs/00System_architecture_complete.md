@@ -535,3 +535,29 @@ iot:alarm:stream  Maxtime:2H    事件触发
 3.Device事件      card_aggagator立即报警，写alarm_event表，card_aggagator可自动恢复
 4.其它人为事件     card_aggagator立即报警，写alarm_event表  可AI 恢复，必须人工处理      
 
+
+
+1. 实际发送方式：固定信息 vs 实时信息
+固定信息（基础信息）
+来源：cards 表、card_info 仓储
+内容：CardID、TenantID、CardType、BedID、UnitID（Location 卡片）、CardName、CardAddress、Residents、Devices、报警统计等
+更新：随配置 / 住户 / 设备变更更新（事件驱动或 DB 变更）
+实时信息
+来源 1：vital-focus:card:{card_id}:realtime
+IoT stream consumer 消费 iot:monitor/stat/event/alarm 写入
+内容：heart、breath、sleep_stage、bed_status、person_count、postures
+来源 2：vital-focus:card:{card_id}:alarms
+wisefido-ai 写入
+来源 3：设备状态存储（device_status:stream）
+写入 Devices[].Status
+发送方式
+HTTP API：GET /data/api/v1/data/vital-focus/cards、GET .../card/{id}
+返回内容：一次 HTTP 请求返回合并后的完整卡片（固定信息 + 实时 + 报警）
+缓存：card-aggregator 定时聚合（默认约 1 秒）将合并结果写入 vital-focus:card:{card_id}:full，wisefido-data 从该 key 读出后通过 HTTP 返回
+前端：通过轮询该 HTTP API 获取完整卡片数据，不是固定信息和实时信息分别推送
+数据流概览
+cards 表 + card_info ─┐
+realtime (Redis)      ├── DataAggregator 聚合 ─→ vital-focus:card:{id}:full ─→ HTTP API ─→ 前端
+alarms (Redis)        ─┘
+device status        ─┘
+cards 表 + card_info ─┐realtime (Redis)      ├── DataAggregator 聚合 ─→ vital-focus:card:{id}:full ─→ HTTP API ─→ 前端alarms (Redis)        ─┘device status        

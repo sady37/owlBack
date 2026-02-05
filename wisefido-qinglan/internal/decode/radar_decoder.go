@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"owl-common/alarm"
+	consts "owl-common/const"
 	"owl-common/radar"
 	//"owl-common/utils"
 )
@@ -70,7 +71,7 @@ func decodeRadarProp(data map[string]interface{}) (interface{}, error) {
 	return resp, nil
 }
 
-// normalizePropData 将设备 prop data 转为规范 key 与单位（与 radar.Key* 一致，单位 cm）。
+// normalizePropData 将设备 prop data 转为规范 key 与单位（与 consts.Key* 一致，单位 cm）。
 // 设备 key → 规范 key：radar_install_height(dm)→install_height(cm), radar_install_style→install_model,
 // radar_func_ctrl→work_model, rectangle(dm)→rectangle(cm), ssid_password→wifi_ssid+wifi_password；其余透传。
 func normalizePropData(data map[string]interface{}) map[string]interface{} {
@@ -82,33 +83,33 @@ func normalizePropData(data map[string]interface{}) map[string]interface{} {
 		switch k {
 		case "radar_install_height":
 			if n, ok := propNum(v); ok {
-				out[radar.KeyInstallHeight] = n * 10 // dm → cm
+				out[consts.KeyInstallHeight] = n * 10 // dm → cm
 			}
 		case "radar_install_style":
 			if n, ok := propNum(v); ok {
-				out[radar.KeyInstallModel] = n // 0/1/2
+				out[consts.KeyInstallModel] = n // 0/1/2
 			}
 		case "radar_func_ctrl":
 			if n, ok := propNum(v); ok {
-				out[radar.KeyWorkModel] = n // 3/7/11/15
+				out[consts.KeyWorkModel] = n // 3/7/11/15
 			}
 		case "rectangle":
 			if s, ok := v.(string); ok && s != "" {
 				if cm := rectangleDMToCM(s); cm != "" {
-					out[radar.KeyRectangle] = cm
+					out[consts.KeyRectangle] = cm
 				} else {
-					out[radar.KeyRectangle] = s
+					out[consts.KeyRectangle] = s
 				}
 			}
 		case "declare_area":
 			if s, ok := v.(string); ok && s != "" {
 				if cm := declareAreaDMToCM(s); cm != "" {
-					out[radar.KeyDeclareArea] = cm
+					out[consts.KeyDeclareArea] = cm
 				} else {
-					out[radar.KeyDeclareArea] = v
+					out[consts.KeyDeclareArea] = v
 				}
 			} else {
-				out[radar.KeyDeclareArea] = v
+				out[consts.KeyDeclareArea] = v
 			}
 		case "fall_param", "heart_breath_param":
 			out[k] = v // base64 透传，下游用 DecodeFallParam/DecodeHeartBreathParam
@@ -117,10 +118,10 @@ func normalizePropData(data map[string]interface{}) map[string]interface{} {
 		case "ssid_password":
 			if s, ok := v.(string); ok && s != "" {
 				if idx := strings.Index(s, ":"); idx >= 0 {
-					out[radar.KeyWifiSsid] = strings.TrimSpace(s[:idx])
-					out[radar.KeyWifiPassword] = strings.TrimSpace(s[idx+1:])
+					out[consts.KeyWifiSsid] = strings.TrimSpace(s[:idx])
+					out[consts.KeyWifiPassword] = strings.TrimSpace(s[idx+1:])
 				} else {
-					out[radar.KeyWifiSsid] = s
+					out[consts.KeyWifiSsid] = s
 				}
 			}
 		default:
@@ -944,7 +945,7 @@ func DecodeDevicePropsToAlarmItems(items []alarm.AlarmItem, deviceProps map[stri
 	copy(result, items)
 
 	// 支持规范 key work_model 与设备 key radar_func_ctrl（prop 解码后为 work_model）
-	workModeRaw, _ := deviceProps[radar.KeyWorkModel]
+	workModeRaw, _ := deviceProps[consts.KeyWorkModel]
 	if workModeRaw == nil {
 		workModeRaw = deviceProps["radar_func_ctrl"]
 	}

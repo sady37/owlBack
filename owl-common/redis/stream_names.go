@@ -17,23 +17,23 @@ var (
 	// 根据架构文档配置MaxTime（RetentionSeconds）
 	StreamMonitor = StreamDefinition{
 		Name:             "iot:monitor:stream",
-		MaxLen:           1000,        // 可根据实际需求调整
-		RetentionSeconds: 30,          // 30秒（架构要求：Maxtime: 30秒）
+		MaxLen:           1000, // 可根据实际需求调整
+		RetentionSeconds: 30,   // 30秒（架构要求：Maxtime: 30秒）
 	}
 	StreamStat = StreamDefinition{
 		Name:             "iot:stat:stream",
-		MaxLen:           1000,        // 可根据实际需求调整
-		RetentionSeconds: 300,         // 5分钟（架构要求：Maxtime: 5min，仅Radar支持，1分钟/次）
+		MaxLen:           1000, // 可根据实际需求调整
+		RetentionSeconds: 300,  // 5分钟（架构要求：Maxtime: 5min，仅Radar支持，1分钟/次）
 	}
 	StreamEvent = StreamDefinition{
 		Name:             "iot:event:stream",
-		MaxLen:           500,         // event数量有限，减小MaxLen
-		RetentionSeconds: 86400,       // 24小时（架构要求：Maxtime: 24H）
+		MaxLen:           500,   // event数量有限，减小MaxLen
+		RetentionSeconds: 86400, // 24小时（架构要求：Maxtime: 24H）
 	}
 	StreamAlarm = StreamDefinition{
 		Name:             "iot:alarm:stream",
-		MaxLen:           500,         // alarm数量有限，减小MaxLen
-		RetentionSeconds: 86400,       // 24小时（Maxtime: 24H，事件触发）
+		MaxLen:           500,   // alarm数量有限，减小MaxLen
+		RetentionSeconds: 86400, // 24小时（Maxtime: 24H，事件触发）
 	}
 	StreamAuth = StreamDefinition{
 		Name:             "iot:auth:stream",
@@ -44,6 +44,18 @@ var (
 		Name:             "iot:other:stream",
 		MaxLen:           1000,
 		RetentionSeconds: 86400,
+	}
+	// ⭐ 新增：卡片动态数据流
+	StreamIoTCard = StreamDefinition{
+		Name:             "iot:card:stream",
+		MaxLen:           1000,
+		RetentionSeconds: 86400, // 24小时
+	}
+	// ⭐ 新增：设备状态流（从 config:device_status:stream 改为 iot:deviceStatus:stream）
+	StreamIoTDeviceStatus = StreamDefinition{
+		Name:             "iot:deviceStatus:stream",
+		MaxLen:           1000,
+		RetentionSeconds: 0, // 不限制保留时间
 	}
 
 	// 配置变更流（config:*:stream）
@@ -57,7 +69,25 @@ var (
 		MaxLen:           1000,
 		RetentionSeconds: 0, // 不限制保留时间
 	}
-	// 设备在线状态流（统一使用 config:device_status:stream）
+	// ⭐ 新增：设备报警设置变更流
+	StreamConfigDeviceAlarmSetting = StreamDefinition{
+		Name:             "config:device.alarm.setting:stream",
+		MaxLen:           1000,
+		RetentionSeconds: 0, // 不限制保留时间
+	}
+	// ⭐ 新增：报警处理流
+	StreamConfigAlarmProcess = StreamDefinition{
+		Name:             "config:alarm.process:stream",
+		MaxLen:           1000,
+		RetentionSeconds: 0, // 不限制保留时间
+	}
+	// ⭐ 新增：卡片配置变更流
+	StreamConfigCard = StreamDefinition{
+		Name:             "config:card:stream",
+		MaxLen:           2000,
+		RetentionSeconds: 0, // 不限制保留时间
+	}
+	// 已过时：设备在线状态流（保留以兼容旧代码，实际使用 StreamIoTDeviceStatus）
 	StreamConfigDeviceStatus = StreamDefinition{
 		Name:             "config:device_status:stream",
 		MaxLen:           1000,

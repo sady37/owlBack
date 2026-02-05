@@ -29,17 +29,17 @@ type DeviceService interface {
 // deviceService 实现
 type deviceService struct {
 	devicesRepo         repository.DevicesRepository
-	cardManageClient    *CardManageClient    // 用于调用 wisefido-card-manage API
-	iotTimeSeriesClient *IoTTimeSeriesClient // 用于调用 wisefido-iot-timeseries 内部 API
-	qinglanClient       *QinglanClient      // 用于调用 wisefido-qinglan API 查询设备状态
+	cardSync            *CardSyncService // 设备/单元变更后同步卡片（Redis + config.card.*）
+	iotTimeSeriesClient *IoTTimeSeriesClient
+	qinglanClient       *QinglanClient
 	logger              *zap.Logger
 }
 
 // NewDeviceService 创建 DeviceService 实例
-func NewDeviceService(devicesRepo repository.DevicesRepository, cardManageClient *CardManageClient, iotTimeSeriesClient *IoTTimeSeriesClient, qinglanClient *QinglanClient, logger *zap.Logger) DeviceService {
+func NewDeviceService(devicesRepo repository.DevicesRepository, cardSync *CardSyncService, iotTimeSeriesClient *IoTTimeSeriesClient, qinglanClient *QinglanClient, logger *zap.Logger) DeviceService {
 	return &deviceService{
 		devicesRepo:         devicesRepo,
-		cardManageClient:    cardManageClient,
+		cardSync:            cardSync,
 		iotTimeSeriesClient: iotTimeSeriesClient,
 		qinglanClient:       qinglanClient,
 		logger:              logger,
@@ -279,11 +279,9 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 	// 2. 获取旧设备信息（用于比较 monitoring_enabled 是否变化）
 	var oldDevice *domain.Device
 	var monitoringEnabledChanged bool
-	if s.cardManageClient != nil {
-		oldDevice, _ = s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
-		if oldDevice != nil && req.Device.MonitoringEnabled != oldDevice.MonitoringEnabled {
-			monitoringEnabledChanged = true
-		}
+	oldDevice, _ = s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
+	if oldDevice != nil && req.Device.MonitoringEnabled != oldDevice.MonitoringEnabled {
+		monitoringEnabledChanged = true
 	}
 
 	// 3. 业务规则验证
@@ -321,36 +319,16 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 			}
 		}
 
-		// 5.2 调用 wisefido-card-manage API 更新卡片（同步调用）
-		if s.cardManageClient != nil {
-			// 获取更新后的设备信息以获取unit_id
+		// 5.2 同步该单元卡片（Redis + config.card.*）
+		if s.cardSync != nil {
 			newDevice, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
 			if err != nil {
-				s.logger.Warn("Failed to get updated device for card update",
-					zap.Error(err),
-					zap.String("tenant_id", req.TenantID),
-					zap.String("device_id", req.DeviceID),
-				)
+				s.logger.Warn("Failed to get updated device for card sync", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID))
 			} else if newDevice != nil && newDevice.UnitID.Valid && newDevice.UnitID.String != "" {
-				// 调用 wisefido-card-manage API 更新卡片（同步）
-				if err := s.cardManageClient.CreateCardsForUnit(ctx, req.TenantID, newDevice.UnitID.String); err != nil {
-					s.logger.Warn("Failed to update cards after device change",
-						zap.Error(err),
-						zap.String("tenant_id", req.TenantID),
-						zap.String("device_id", req.DeviceID),
-						zap.String("unit_id", newDevice.UnitID.String),
-						zap.Bool("binding_changed", req.UpdateBoundRoomID || req.UpdateBoundBedID),
-						zap.Bool("monitoring_enabled_changed", monitoringEnabledChanged),
-					)
-					// 不返回错误，只记录警告（卡片更新失败不影响设备更新）
+				if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, newDevice.UnitID.String); err != nil {
+					s.logger.Warn("Failed to sync cards after device change", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", newDevice.UnitID.String))
 				} else {
-					s.logger.Info("Updated cards after device change",
-						zap.String("tenant_id", req.TenantID),
-						zap.String("device_id", req.DeviceID),
-						zap.String("unit_id", newDevice.UnitID.String),
-						zap.Bool("binding_changed", req.UpdateBoundRoomID || req.UpdateBoundBedID),
-						zap.Bool("monitoring_enabled_changed", monitoringEnabledChanged),
-					)
+					s.logger.Info("Synced cards after device change", zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", newDevice.UnitID.String))
 				}
 			}
 		}
@@ -402,23 +380,11 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 		return nil, fmt.Errorf("failed to delete device: %w", err)
 	}
 
-	// 4. 数据库事务提交成功后，通知 card_manager 更新卡片（基于 unit_id，不需要 device 记录）
-	// 注意：CreateCardsForUnit 只需要 tenant_id 和 unit_id，不需要 device 记录，所以删除后再调用也没问题
-	if s.cardManageClient != nil && unitID != "" {
-		if err := s.cardManageClient.CreateCardsForUnit(ctx, req.TenantID, unitID); err != nil {
-			s.logger.Warn("Failed to update cards after device deletion, but device deletion succeeded",
-				zap.Error(err),
-				zap.String("tenant_id", req.TenantID),
-				zap.String("device_id", req.DeviceID),
-				zap.String("unit_id", unitID),
-			)
-			// 不返回错误，只记录警告（卡片更新失败不影响设备删除，数据库状态已一致）
+	if s.cardSync != nil && unitID != "" {
+		if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, unitID); err != nil {
+			s.logger.Warn("Failed to sync cards after device deletion", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", unitID))
 		} else {
-			s.logger.Info("Updated cards after device deletion",
-				zap.String("tenant_id", req.TenantID),
-				zap.String("device_id", req.DeviceID),
-				zap.String("unit_id", unitID),
-			)
+			s.logger.Info("Synced cards after device deletion", zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", unitID))
 		}
 	}
 

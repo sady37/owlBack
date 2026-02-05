@@ -49,6 +49,7 @@ type deviceMonitorSettingsService struct {
 	deviceStoreRepo    repository.DeviceStoreRepository
 	sleepaceClient     *SleepaceClient          // Sleepace 硬件 API 客户端（可选）
 	configNotifier     *notifier.ConfigNotifier // 配置变更通知器
+	configPublisher    ConfigPublisher          // 配置消息发布器
 	qinglanClient      *QinglanClient           // 雷达设备仅经此客户端：查询状态/属性、下发属性（工作模式、跌倒/呼吸心率）
 	db                 *sql.DB                  // 用于事务操作
 	logger             *zap.Logger
@@ -63,6 +64,7 @@ func NewDeviceMonitorSettingsService(
 	deviceStoreRepo repository.DeviceStoreRepository,
 	db *sql.DB,
 	configNotifier *notifier.ConfigNotifier,
+	configPublisher ConfigPublisher,
 	logger *zap.Logger,
 ) DeviceMonitorSettingsService {
 	return &deviceMonitorSettingsService{
@@ -74,6 +76,7 @@ func NewDeviceMonitorSettingsService(
 		db:                 db,
 		sleepaceClient:     nil, // 通过 SetSleepaceClient 延迟设置
 		configNotifier:     configNotifier,
+		configPublisher:    configPublisher,
 		logger:             logger,
 	}
 }
@@ -502,7 +505,7 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(ctx context.C
 // 返回：设备执行结果、DB 执行结果、失败项列表、是否有变化、错误
 func (s *deviceMonitorSettingsService) UpdateRadarMonitorSettings(ctx context.Context, tenantID, deviceID, userID string, alarmItems []alarm.AlarmItem, progressCallback ProgressCallback) (*UpdateRadarResult, error) {
 	deviceType := "radar"
-	
+
 	result := &UpdateRadarResult{
 		DeviceWriteSuccess: false,
 		DBWriteSuccess:     false,
@@ -573,7 +576,7 @@ func (s *deviceMonitorSettingsService) UpdateRadarMonitorSettings(ctx context.Co
 				zap.String("device_uid", device.DeviceUID),
 				zap.Error(writeErr),
 			)
-			
+
 			// 收集失败的 alarm_type，使用旧值
 			if writeResult != nil {
 				for _, item := range alarmItems {
@@ -588,17 +591,17 @@ func (s *deviceMonitorSettingsService) UpdateRadarMonitorSettings(ctx context.Co
 					}
 				}
 			}
-			
+
 			result.DeviceWriteSuccess = false
 			result.DBWriteSuccess = false
 			return result, nil
 		}
-		
+
 		// 写入成功，检查是否有失败的项
 		result.DeviceWriteSuccess = true
 		finalAlarmItems := make([]alarm.AlarmItem, len(alarmItems))
 		copy(finalAlarmItems, alarmItems)
-		
+
 		// 对于失败的项，使用旧值替换
 		if writeResult != nil {
 			for i, item := range finalAlarmItems {
@@ -619,7 +622,7 @@ func (s *deviceMonitorSettingsService) UpdateRadarMonitorSettings(ctx context.Co
 				}
 			}
 		}
-		
+
 		// 更新数据库（使用最终的值，失败项已替换为旧值）
 		dbErr := s.updateAlarmDeviceDB(ctx, tenantID, deviceID, userID, finalAlarmItems)
 		if dbErr != nil {
@@ -631,7 +634,7 @@ func (s *deviceMonitorSettingsService) UpdateRadarMonitorSettings(ctx context.Co
 			result.DBWriteSuccess = false
 			return result, fmt.Errorf("failed to update database: %w", dbErr)
 		}
-		
+
 		result.DBWriteSuccess = true
 		s.logger.Info("[RADAR_WRITE] Device and database update successful",
 			zap.String("tenant_id", tenantID),
@@ -647,7 +650,7 @@ func (s *deviceMonitorSettingsService) UpdateRadarMonitorSettings(ctx context.Co
 // UpdateSleepadMonitorSettings 更新 Sleepad 设备监控配置
 func (s *deviceMonitorSettingsService) UpdateSleepadMonitorSettings(ctx context.Context, tenantID, deviceID, userID string, alarmItems []alarm.AlarmItem, progressCallback ProgressCallback) (success bool, noChange bool, err error) {
 	deviceType := "sleepace"
-	
+
 	// 验证设备存在
 	device, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
 	if err != nil {
@@ -714,7 +717,7 @@ func (s *deviceMonitorSettingsService) getExistingAlarmItems(ctx context.Context
 		// 其他错误直接返回
 		return nil, fmt.Errorf("failed to get alarm device: %w", err)
 	}
-	
+
 	// 转换为 AlarmItem 数组
 	existingAlarmItems, err := s.convertMonitorConfigToAlarmItems(existingAlarmDevice.MonitorConfig, deviceType)
 	if err != nil {
@@ -745,13 +748,13 @@ func (s *deviceMonitorSettingsService) compareAndLogChanges(ctx context.Context,
 	// 逐项比对，记录变化项及是否需要发送给设备
 	// 对于设备返回的项，单独记录与前端不同的项
 	changedItems := make([]struct {
-		AlarmType           string
-		Changed             bool
-		NeedDeviceWrite     bool
-		IsDeviceReturn      bool // 是否为设备返回的项（radar 或 sleepad）
-		ComparisonResult    AlarmItemComparisonResult // 详细的比对结果
-		ExistingValue       interface{}
-		NewValue            interface{}
+		AlarmType        string
+		Changed          bool
+		NeedDeviceWrite  bool
+		IsDeviceReturn   bool                      // 是否为设备返回的项（radar 或 sleepad）
+		ComparisonResult AlarmItemComparisonResult // 详细的比对结果
+		ExistingValue    interface{}
+		NewValue         interface{}
 	}, 0)
 
 	// 检查新配置中的每个 AlarmItem
@@ -788,13 +791,13 @@ func (s *deviceMonitorSettingsService) compareAndLogChanges(ctx context.Context,
 			isDeviceReturn := deviceReturnAlarmTypes[alarmType]
 
 			changedItems = append(changedItems, struct {
-				AlarmType           string
-				Changed             bool
-				NeedDeviceWrite     bool
-				IsDeviceReturn      bool
-				ComparisonResult    AlarmItemComparisonResult
-				ExistingValue       interface{}
-				NewValue            interface{}
+				AlarmType        string
+				Changed          bool
+				NeedDeviceWrite  bool
+				IsDeviceReturn   bool
+				ComparisonResult AlarmItemComparisonResult
+				ExistingValue    interface{}
+				NewValue         interface{}
 			}{
 				AlarmType:        alarmType,
 				Changed:          true,
@@ -825,20 +828,20 @@ func (s *deviceMonitorSettingsService) compareAndLogChanges(ctx context.Context,
 		if _, exists := newMap[alarmType]; !exists {
 			needDeviceWrite := deviceWriteAlarmTypes[alarmType]
 			isDeviceReturn := deviceReturnAlarmTypes[alarmType]
-			
+
 			changedItems = append(changedItems, struct {
-				AlarmType           string
-				Changed             bool
-				NeedDeviceWrite     bool
-				IsDeviceReturn      bool
-				ComparisonResult    AlarmItemComparisonResult
-				ExistingValue       interface{}
-				NewValue            interface{}
+				AlarmType        string
+				Changed          bool
+				NeedDeviceWrite  bool
+				IsDeviceReturn   bool
+				ComparisonResult AlarmItemComparisonResult
+				ExistingValue    interface{}
+				NewValue         interface{}
 			}{
-				AlarmType:        alarmType,
-				Changed:          true,
-				NeedDeviceWrite:  needDeviceWrite,
-				IsDeviceReturn:   isDeviceReturn,
+				AlarmType:       alarmType,
+				Changed:         true,
+				NeedDeviceWrite: needDeviceWrite,
+				IsDeviceReturn:  isDeviceReturn,
 				ComparisonResult: AlarmItemComparisonResult{
 					AlarmParamsChanged: true,
 					IsEnabledChanged:   true,
@@ -875,18 +878,18 @@ func (s *deviceMonitorSettingsService) compareAndLogChanges(ctx context.Context,
 	// 记录比对结果
 	changedItemsForLog := make([]map[string]interface{}, 0, len(changedItems))
 	var deviceReturnDiffItems []map[string]interface{} // 单独列出设备返回项与前端不同的项
-	
+
 	for _, item := range changedItems {
 		itemLog := map[string]interface{}{
-			"alarm_type":        item.AlarmType,
-			"changed":           item.Changed,
-			"need_device_write": item.NeedDeviceWrite,
+			"alarm_type":           item.AlarmType,
+			"changed":              item.Changed,
+			"need_device_write":    item.NeedDeviceWrite,
 			"alarm_params_changed": item.ComparisonResult.AlarmParamsChanged,
 			"is_enabled_changed":   item.ComparisonResult.IsEnabledChanged,
 			"alarm_level_changed":  item.ComparisonResult.AlarmLevelChanged,
 		}
 		changedItemsForLog = append(changedItemsForLog, itemLog)
-		
+
 		// 如果是设备返回的项，且与前端不同，单独列出
 		if item.IsDeviceReturn {
 			deviceReturnDiffItems = append(deviceReturnDiffItems, itemLog)
@@ -939,10 +942,10 @@ type RadarWriteResult struct {
 
 // UpdateRadarResult 更新雷达配置的结果
 type UpdateRadarResult struct {
-	DeviceWriteSuccess bool                // 设备写入是否成功
-	DBWriteSuccess     bool                // 数据库写入是否成功
-	FailedAlarmTypes   []alarm.AlarmItem   // 失败的 alarm_type 列表（使用旧值）
-	NoChange           bool                // 是否有变化
+	DeviceWriteSuccess bool              // 设备写入是否成功
+	DBWriteSuccess     bool              // 数据库写入是否成功
+	FailedAlarmTypes   []alarm.AlarmItem // 失败的 alarm_type 列表（使用旧值）
+	NoChange           bool              // 是否有变化
 }
 
 // radarWrite 向 qinglan_client 发送写入完整的指令（工作模式、跌倒和呼吸心率参数设置）
@@ -992,12 +995,12 @@ func (s *deviceMonitorSettingsService) radarWrite(ctx context.Context, deviceUID
 	// qinglan_client 会自动分组、排序和时间间隔（100ms）
 	// wisefido-qinglan 会从 _alarm_items_json 构建设备属性
 	_, err = s.qinglanClient.SetDeviceProperties(ctx, deviceUID, properties)
-	
+
 	// 构建每个 alarm_type 的执行结果
 	result := &RadarWriteResult{
 		Results: make(map[string]string),
 	}
-	
+
 	if err != nil {
 		s.logger.Error("[RADAR_WRITE] Failed to write device properties",
 			zap.String("device_uid", deviceUID),
@@ -1019,7 +1022,7 @@ func (s *deviceMonitorSettingsService) radarWrite(ctx context.Context, deviceUID
 		zap.String("device_uid", deviceUID),
 		zap.Int("alarm_items_count", len(alarmItems)),
 	)
-	
+
 	// 所有 alarm_type 标记为成功
 	for _, item := range alarmItems {
 		result.Results[item.AlarmType] = "200"
@@ -1043,8 +1046,8 @@ func (s *deviceMonitorSettingsService) updateAlarmDeviceDB(ctx context.Context, 
 
 	// 构建 AlarmDevice 对象
 	alarmDevice := &domain.AlarmDevice{
-		DeviceID:     deviceID,
-		TenantID:     tenantID,
+		DeviceID:      deviceID,
+		TenantID:      tenantID,
 		MonitorConfig: monitorConfigJSON,
 	}
 
@@ -1072,15 +1075,15 @@ func (s *deviceMonitorSettingsService) updateAlarmDeviceDB(ctx context.Context, 
 			createdBy = &userID
 		}
 		configVersion := &domain.ConfigVersion{
-			TenantID:      tenantID,
-			EntityID:      deviceID, // device_id 作为 entity_id
+			TenantID:        tenantID,
+			EntityID:        deviceID, // device_id 作为 entity_id
 			CurrentEntityID: deviceID,
-			ConfigType:    "alarm_device", // 使用 alarm_device 作为配置类型
-			ConfigData:    monitorConfigJSON,
-			ValidFrom:     now,
-			ValidTo:       nil, // NULL 表示当前仍生效
-			CreatedBy:     createdBy,
-			ChangeReason:  "Update device monitor settings",
+			ConfigType:      "alarm_device", // 使用 alarm_device 作为配置类型
+			ConfigData:      monitorConfigJSON,
+			ValidFrom:       now,
+			ValidTo:         nil, // NULL 表示当前仍生效
+			CreatedBy:       createdBy,
+			ChangeReason:    "Update device monitor settings",
 		}
 		if _, err := s.configVersionsRepo.CreateConfigVersion(ctx, tenantID, configVersion); err != nil {
 			s.logger.Warn("[UPDATE_DB] Failed to create config version",
@@ -1101,6 +1104,52 @@ func (s *deviceMonitorSettingsService) updateAlarmDeviceDB(ctx context.Context, 
 		zap.String("device_id", deviceID),
 		zap.String("user_id", userID),
 	)
+
+	// 异步发送设备告警配置变更消息到 config:device.alarm.setting:stream
+	go func() {
+		publishCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		// 获取设备 UID（用于消费端识别设备）
+		device, err := s.devicesRepo.GetDevice(publishCtx, tenantID, deviceID)
+		if err != nil {
+			s.logger.Warn("Failed to get device UID for publishing alarm setting message",
+				zap.String("device_id", deviceID),
+				zap.Error(err),
+			)
+			return
+		}
+
+		deviceUID := device.DeviceUID
+		if deviceUID == "" {
+			s.logger.Warn("Device UID is empty, cannot publish alarm setting message",
+				zap.String("device_id", deviceID),
+			)
+			return
+		}
+
+		// 构建 settingData（包含所有告警配置）
+		settingData := map[string]interface{}{
+			"monitor_config": monitorConfigJSON,
+			"updated_at":     time.Now().Unix(),
+		}
+
+		// 发送消息
+		if err := s.configPublisher.PublishDeviceAlarmSettingMessage(
+			publishCtx,
+			tenantID,
+			deviceID,
+			deviceUID,
+			"updated", // settingType
+			settingData,
+		); err != nil {
+			s.logger.Warn("Failed to publish device alarm setting message",
+				zap.String("device_id", deviceID),
+				zap.String("device_uid", deviceUID),
+				zap.Error(err),
+			)
+		}
+	}()
 
 	return nil
 }

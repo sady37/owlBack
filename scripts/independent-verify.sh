@@ -35,7 +35,7 @@ cd /Users/sady3721/project/owlBack
 
 # 1. 代码格式检查
 echo "1. 代码格式检查 (go fmt)..."
-$GO_CMD fmt ./wisefido-radar/... ./wisefido-sleepace/... ./wisefido-iot-timeseries/... ./wisefido-card-aggregator/... ./wisefido-card-manage/... ./wisefido-ai/... ./wisefido-data/... > /dev/null 2>&1
+$GO_CMD fmt ./wisefido-radar/... ./wisefido-sleepace/... ./wisefido-iot-timeseries/... ./wisefido-card-aggregator/... ./wisefido-ai/... ./wisefido-data/... > /dev/null 2>&1
 echo -e "${GREEN}✅ 代码格式正确${NC}"
 
 # 2. 代码规范检查
@@ -50,7 +50,7 @@ fi
 # 3. 编译检查
 echo ""
 echo "3. 编译检查..."
-services=("wisefido-radar" "wisefido-sleepace" "wisefido-data-transformer" "wisefido-card-aggregator" "wisefido-card-manage")
+services=("wisefido-radar" "wisefido-sleepace" "wisefido-data-transformer" "wisefido-card-aggregator")
 failed=0
 
 for service in "${services[@]}"; do

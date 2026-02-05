@@ -8,11 +8,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-redis/redis/v8"
+
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
+	commoncard "owl-common/card"
+	rediscommon "owl-common/redis"
+
 	"go.uber.org/zap"
 )
+
+// ConfigPublisher 配置发布器接口
+type ConfigPublisher interface {
+	PublishAlarmProcessMessage(ctx context.Context, tenantID, cardID, deviceID, alarmLevel, alarmType, processType string, alarmTimestamp int64) error
+	PublishDeviceAlarmSettingMessage(ctx context.Context, tenantID, deviceID, deviceUID, settingType string, settingData map[string]interface{}) error
+}
 
 // AlarmEventService 报警事件服务接口
 type AlarmEventService interface {
@@ -30,6 +41,8 @@ type alarmEventService struct {
 	unitsRepo       repository.UnitsRepository
 	usersRepo       repository.UsersRepository
 	db              *sql.DB // 用于查询卡片信息（临时方案）
+	redisClient     *redis.Client
+	configPublisher ConfigPublisher
 	logger          *zap.Logger
 }
 
@@ -40,6 +53,8 @@ func NewAlarmEventService(
 	unitsRepo repository.UnitsRepository,
 	usersRepo repository.UsersRepository,
 	db *sql.DB,
+	redisClient *redis.Client,
+	configPublisher ConfigPublisher,
 	logger *zap.Logger,
 ) AlarmEventService {
 	return &alarmEventService{
@@ -48,6 +63,8 @@ func NewAlarmEventService(
 		unitsRepo:       unitsRepo,
 		usersRepo:       usersRepo,
 		db:              db,
+		redisClient:     redisClient,
+		configPublisher: configPublisher,
 		logger:          logger,
 	}
 }
@@ -170,8 +187,14 @@ type HandleAlarmEventRequest struct {
 }
 
 // HandleAlarmEventResponse 处理报警事件响应
+// 仅包含前端显示 + cardagg 更新显示需要的字段
 type HandleAlarmEventResponse struct {
-	Success bool `json:"success"` // 是否成功
+	Success        bool   `json:"success"`                   // 处理是否成功
+	CardID         string `json:"card_id,omitempty"`         // 卡片ID（cardagg用来找RealtimeData）
+	DeviceID       string `json:"device_id,omitempty"`       // 设备ID
+	AlarmLevel     string `json:"alarm_level,omitempty"`     // 报警级别（更新计数）
+	AlarmType      string `json:"alarm_type,omitempty"`      // 报警类型（清理NowAlarm）
+	AlarmTimestamp int64  `json:"alarm_timestamp,omitempty"` // 报警触发时间戳（防止旧数据覆盖）
 }
 
 // ============================================
@@ -765,7 +788,40 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 		}
 	}
 
-	return &HandleAlarmEventResponse{Success: true}, nil
+	// 构建响应：包含前端和cardagg都需要的信息
+	response := &HandleAlarmEventResponse{
+		Success:        true,
+		CardID:         cardID,
+		DeviceID:       event.DeviceID,
+		AlarmLevel:     event.AlarmLevel,
+		AlarmType:      event.EventType, // 使用 EventType 作为 AlarmType
+		AlarmTimestamp: event.TriggeredAt.Unix(),
+	}
+
+	// 异步发布 alarmProcess 消息到 config:alarm.process:stream（供cardagg消费）
+	go func() {
+		pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := s.configPublisher.PublishAlarmProcessMessage(
+			pubCtx,
+			req.TenantID,
+			cardID,
+			event.DeviceID,
+			event.AlarmLevel,
+			event.EventType,
+			rediscommon.AlarmProcessActionAck, // 使用常量：ack（用户已确认报警）
+			event.TriggeredAt.Unix(),
+		); err != nil {
+			s.logger.Warn("Failed to publish alarm process message",
+				zap.String("event_id", req.EventID),
+				zap.String("card_id", cardID),
+				zap.Error(err),
+			)
+		}
+	}()
+
+	return response, nil
 }
 
 // ============================================
@@ -1704,8 +1760,58 @@ func (s *alarmEventService) getUnitIDsByResidentIDs(ctx context.Context, tenantI
 	return unitIDs, nil
 }
 
-// getCardIDByDeviceID 通过 device_id 查询 card_id
+// getCardIDByDeviceID 通过 device_id 查询 card_id（从Redis缓存获取）
 func (s *alarmEventService) getCardIDByDeviceID(ctx context.Context, tenantID, deviceID string) (string, error) {
+	// 扫描所有静态卡片缓存 vital-focus:card:*:static
+	const staticKeyPrefix = "vital-focus:card:"
+	const staticKeySuffix = ":static"
+
+	// 使用redis scan扫描key
+	var keys []string
+	iter := s.redisClient.Scan(ctx, 0, staticKeyPrefix+"*"+staticKeySuffix, 0).Iterator()
+	for iter.Next(ctx) {
+		keys = append(keys, iter.Val())
+	}
+	if err := iter.Err(); err != nil {
+		s.logger.Warn("scan redis keys failed", zap.Error(err))
+		// fallback to DB查询
+		return s.getCardIDByDeviceIDFromDB(ctx, tenantID, deviceID)
+	}
+
+	// 遍历所有卡片缓存查找device_id
+	for _, key := range keys {
+		raw, err := s.redisClient.Get(ctx, key).Result()
+		if err != nil {
+			if err == redis.Nil {
+				continue
+			}
+			continue
+		}
+
+		var card commoncard.VitalFocusCardInfo
+		if err := json.Unmarshal([]byte(raw), &card); err != nil {
+			continue
+		}
+
+		// 检查tenant
+		if card.TenantID != tenantID {
+			continue
+		}
+
+		// 遍历devices查找匹配的deviceID
+		for _, dev := range card.Devices {
+			if dev.DeviceID == deviceID {
+				return card.CardID, nil
+			}
+		}
+	}
+
+	// 缓存miss，fallback to DB
+	return s.getCardIDByDeviceIDFromDB(ctx, tenantID, deviceID)
+}
+
+// getCardIDByDeviceIDFromDB 从数据库查询 card_id（fallback）
+func (s *alarmEventService) getCardIDByDeviceIDFromDB(ctx context.Context, tenantID, deviceID string) (string, error) {
 	query := `
 		SELECT card_id::text
 		FROM cards
@@ -1830,24 +1936,24 @@ func (s *alarmEventService) updateCardAlarmCounts(ctx context.Context, tenantID,
 		FROM cards
 		WHERE tenant_id = $1 AND card_id = $2
 	`
-	
+
 	var devicesJSON []byte
 	err := s.db.QueryRowContext(ctx, query, tenantID, cardID).Scan(&devicesJSON)
 	if err != nil {
 		return fmt.Errorf("failed to get card devices: %w", err)
 	}
-	
+
 	// 2. 解析 devices JSONB，提取 device_id 列表
 	var devices []map[string]interface{}
 	if err := json.Unmarshal(devicesJSON, &devices); err != nil {
 		return fmt.Errorf("failed to unmarshal devices JSON: %w", err)
 	}
-	
+
 	if len(devices) == 0 {
 		// 没有设备，将所有计数设为 0
 		return s.updateCardAlarmCountsToZero(ctx, tenantID, cardID)
 	}
-	
+
 	// 提取 device_id 列表
 	deviceIDs := make([]string, 0, len(devices))
 	for _, device := range devices {
@@ -1855,12 +1961,12 @@ func (s *alarmEventService) updateCardAlarmCounts(ctx context.Context, tenantID,
 			deviceIDs = append(deviceIDs, deviceID)
 		}
 	}
-	
+
 	if len(deviceIDs) == 0 {
 		// 没有有效的 device_id，将所有计数设为 0
 		return s.updateCardAlarmCountsToZero(ctx, tenantID, cardID)
 	}
-	
+
 	// 3. 统计这些设备的未处理报警（alarm_status = 'active'）
 	// 按 alarm_level 分组统计（映射到 0-4）
 	// 构建 IN 查询的占位符
@@ -1871,7 +1977,7 @@ func (s *alarmEventService) updateCardAlarmCounts(ctx context.Context, tenantID,
 		placeholders[i] = fmt.Sprintf("$%d", i+2)
 		args[i+1] = deviceID
 	}
-	
+
 	countQuery := fmt.Sprintf(`
 		SELECT 
 			COUNT(*) FILTER (WHERE alarm_level IN ('0', 'EMERG')) as count_0,
@@ -1886,7 +1992,7 @@ func (s *alarmEventService) updateCardAlarmCounts(ctx context.Context, tenantID,
 		  AND alarm_level IN ('0', '1', '2', '3', '4', 'EMERG', 'ALERT', 'CRIT', 'ERR', 'WARNING')
 		  AND (metadata->>'deleted_at' IS NULL)
 	`, strings.Join(placeholders, ", "))
-	
+
 	var count0, count1, count2, count3, count4 int
 	err = s.db.QueryRowContext(ctx, countQuery, args...).Scan(
 		&count0, &count1, &count2, &count3, &count4,
@@ -1894,7 +2000,7 @@ func (s *alarmEventService) updateCardAlarmCounts(ctx context.Context, tenantID,
 	if err != nil {
 		return fmt.Errorf("failed to count alarm events: %w", err)
 	}
-	
+
 	// 4. 更新 cards 表的 unhandled_alarm_0 到 unhandled_alarm_4 字段
 	updateQuery := `
 		UPDATE cards
@@ -1906,12 +2012,12 @@ func (s *alarmEventService) updateCardAlarmCounts(ctx context.Context, tenantID,
 			unhandled_alarm_4 = $7
 		WHERE tenant_id = $1 AND card_id = $2
 	`
-	
+
 	_, err = s.db.ExecContext(ctx, updateQuery, tenantID, cardID, count0, count1, count2, count3, count4)
 	if err != nil {
 		return fmt.Errorf("failed to update card alarm counts: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -1927,11 +2033,11 @@ func (s *alarmEventService) updateCardAlarmCountsToZero(ctx context.Context, ten
 			unhandled_alarm_4 = 0
 		WHERE tenant_id = $1 AND card_id = $2
 	`
-	
+
 	_, err := s.db.ExecContext(ctx, updateQuery, tenantID, cardID)
 	if err != nil {
 		return fmt.Errorf("failed to update card alarm counts to zero: %w", err)
 	}
-	
+
 	return nil
 }

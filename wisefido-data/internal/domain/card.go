@@ -23,6 +23,7 @@ type Card struct {
 	// 显示信息
 	CardName    string `db:"card_name"`    // VARCHAR(255), NOT NULL
 	CardAddress string `db:"card_address"` // VARCHAR(255), NOT NULL
+	Timezone    string `db:"timezone"`     // IANA，如 "America/Los_Angeles"
 
 	// 主要住户（ActiveBed 卡片有值，Unit 卡片可能为 NULL）
 	ResidentID sql.NullString `db:"resident_id"` // UUID, nullable

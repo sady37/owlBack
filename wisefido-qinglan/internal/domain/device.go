@@ -78,6 +78,15 @@ type DeviceLocationInfo struct {
 	FirmwareVersion sql.NullString `db:"firmware_version"`
 }
 
+// DeviceStatusItem 设备在线状态项（用于批量查询 API）
+// device_id 与 device_uid 均保留，前端可能持其一查询，结构保持一致
+type DeviceStatusItem struct {
+	DeviceUID string `json:"device_uid"`
+	DeviceID  string `json:"device_id"`
+	TenantID  string `json:"tenant_id"`
+	Status    string `json:"status"` // "online", "offline", "unsubscribed"
+}
+
 // DeviceWithLocation 带位置信息的设备结构
 // 用于 Auth 缓存和消息处理
 type DeviceWithLocation struct {

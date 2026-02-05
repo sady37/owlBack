@@ -12,6 +12,7 @@ import (
 
 	"wisefido-qinglan/internal/config"
 	"wisefido-qinglan/internal/consumer"
+	"wisefido-qinglan/internal/domain"
 	"wisefido-qinglan/internal/mqtt"
 	"wisefido-qinglan/internal/publisher"
 	"wisefido-qinglan/internal/repository"
@@ -233,6 +234,9 @@ func (m *DeviceSubscriptionManager) restoreAuthenticatedDeviceSubscriptions(ctx 
 				}
 			}
 
+			// 发布到 config:device_status:stream（wisefido-data 订阅）
+			m.triggerStatusChange(uid, "", "online")
+
 			m.logger.Info("Restored subscription record for device (monitor on first message)",
 				zap.String("device_uid", uid),
 				zap.String("device_id", id),
@@ -444,6 +448,8 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 
 	// auth 成功后，立即发布 online event 到 alarm stream 并加入 online 列表
 	go m.publishDeviceOnlineStatusEvent(context.Background(), deviceUID, deviceID, "online")
+	// 发布到 config:device_status:stream（wisefido-data 订阅，用于 device:online_status Redis）
+	m.triggerStatusChange(deviceUID, "", "online")
 
 	// 不在此处更新 DB 为 online；收到第一笔数据时在 UpdateLastSeen 中更新
 
@@ -641,6 +647,8 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 
 	// auth 成功后，立即发布 online event 到 alarm stream 并加入 online 列表
 	go m.publishDeviceOnlineStatusEvent(context.Background(), deviceUID, deviceID, "online")
+	// 发布到 config:device_status:stream（wisefido-data 订阅，用于 device:online_status Redis）
+	m.triggerStatusChange(deviceUID, "", "online")
 
 	m.logger.Info("Periodic subscription enabled, sending monitor command",
 		zap.String("device_uid", deviceUID),
@@ -777,7 +785,7 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 	if oldLastSeen.IsZero() {
 		log.Printf("Device %s first MQTT message received (type: %s), sending monitor subscription command and publishing online event", deviceUID, topicType)
 
-		// 发布 online event 到 alarm stream
+		// 发布 online event 到 alarm stream 和 config stream
 		m.mu.RLock()
 		sub, exists := m.subscriptionsByUID[deviceUID]
 		m.mu.RUnlock()
@@ -788,6 +796,7 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 			if deviceID != "" {
 				go m.publishDeviceOnlineStatusEvent(context.Background(), deviceUID, deviceID, "online")
 			}
+			m.triggerStatusChange(deviceUID, "", "online")
 		}
 
 		// 发送 monitor 订阅命令
@@ -948,6 +957,7 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 		if deviceID != "" {
 			m.subscriptionsByID[deviceID] = sub
 		}
+		m.triggerStatusChange(deviceUID, "", "online")
 		m.logger.Info("Created subscription record for device on first message",
 			zap.String("device_uid", deviceUID),
 			zap.String("device_id", deviceID),
@@ -1213,15 +1223,9 @@ func (m *DeviceSubscriptionManager) publishDeviceOnlineStatusEvent(ctx context.C
 		return
 	}
 
-	// 检查是否有 addressInfo（至少要有 TenantID）
 	sub.mu.RLock()
 	tenantID := sub.TenantID
 	deviceType := sub.DeviceType
-	branchID := sub.BranchID
-	buildingID := sub.BuildingID
-	unitID := sub.UnitID
-	roomID := sub.RoomID
-	bedID := sub.BedID
 	sub.mu.RUnlock()
 
 	// 如果没有 addressInfo（TenantID 为空），不查询数据库，直接返回
@@ -1256,7 +1260,11 @@ func (m *DeviceSubscriptionManager) publishDeviceOnlineStatusEvent(ctx context.C
 	}
 
 	// 序列化 data_value 为 JSON 字符串
-	dataValueJSON, err := json.Marshal(dataValueArray)
+	dataValueSlice := make([]interface{}, len(dataValueArray))
+	for i, m := range dataValueArray {
+		dataValueSlice[i] = m
+	}
+	dataValueJSON, err := json.Marshal(dataValueSlice)
 	if err != nil {
 		m.logger.Warn("Failed to marshal data_value for device online status event",
 			zap.String("device_uid", deviceUID),
@@ -1266,77 +1274,33 @@ func (m *DeviceSubscriptionManager) publishDeviceOnlineStatusEvent(ctx context.C
 		return
 	}
 
-	// 构建位置信息（从内存中获取）
-	var locInfo *rediscommon.LocationInfo
-	if branchID != nil || buildingID != nil || unitID != nil || roomID != nil || bedID != nil {
-		locInfo = &rediscommon.LocationInfo{}
-		if branchID != nil && *branchID != "" {
-			locInfo.BranchID = branchID
-		}
-		if buildingID != nil && *buildingID != "" {
-			locInfo.BuildingID = buildingID
-		}
-		if unitID != nil && *unitID != "" {
-			locInfo.UnitID = unitID
-		}
-		if roomID != nil && *roomID != "" {
-			locInfo.RoomID = roomID
-		}
-		if bedID != nil && *bedID != "" {
-			locInfo.BedID = bedID
-		}
-	}
+	topicType := "alarm"
+	streamName := rediscommon.StreamAlarm.Name
 
-	// 统一发送到 alarm stream（无论 online/offline）
-	// 原因：同一件事（设备状态变化），且 Alarm 事件较少，易于后端过滤
-	// 方便订阅方处理，只需订阅一个 stream
-	var topicType string
-	var streamName string
-	topicType = "alarm"
-	streamName = rediscommon.StreamAlarm.Name
-
-	// 使用 BuildIoTStreamMessage 构建事件消息
+	// 使用 BuildIoTStreamMessage 构建事件消息（顶层无 addressInfo，card_id 未绑卡可空）
 	msg := rediscommon.BuildIoTStreamMessage(
 		deviceID,
-		deviceUID,
 		deviceType,
+		"", // cardID：此处未查卡，后续可按 device_id 查 Card 填充
 		tenantID,
 		time.Now().Unix(),
-		topicType, // "event" 或 "alarm"
-		category,  // "OfflineAlarm" 或 "isOnline"
-		map[string]interface{}{"data_value": dataValueArray}, // dataValue (作为 map，包含 data_value 数组)
-		locInfo,
+		topicType,
+		category,
+		dataValueSlice,
 	)
 
-	// 转换为 map（按照 iotStreamMessageToMap 的逻辑）
+	// 转换为 map（顶层：device_id, device_type, card_id, tenant_id, timestamp, topic_type, category, data_value）
 	eventData := make(map[string]interface{})
 	eventData["device_id"] = msg.DeviceID
-	eventData["device_uid"] = msg.DeviceUID
 	eventData["device_type"] = msg.DeviceType
+	if msg.CardID != "" {
+		eventData["card_id"] = msg.CardID
+	}
 	eventData["tenant_id"] = msg.TenantID
 	eventData["timestamp"] = fmt.Sprintf("%d", msg.Timestamp)
 	eventData["topic_type"] = msg.TopicType
 	eventData["category"] = msg.Category
-	eventData["data_value"] = string(dataValueJSON) // 序列化为 JSON 字符串
-
-	// 位置信息字段（可选）
-	if locInfo != nil {
-		if locInfo.BranchID != nil && *locInfo.BranchID != "" {
-			eventData["branch_id"] = *locInfo.BranchID
-		}
-		if locInfo.BuildingID != nil && *locInfo.BuildingID != "" {
-			eventData["building_id"] = *locInfo.BuildingID
-		}
-		if locInfo.UnitID != nil && *locInfo.UnitID != "" {
-			eventData["unit_id"] = *locInfo.UnitID
-		}
-		if locInfo.RoomID != nil && *locInfo.RoomID != "" {
-			eventData["room_id"] = *locInfo.RoomID
-		}
-		if locInfo.BedID != nil && *locInfo.BedID != "" {
-			eventData["bed_id"] = *locInfo.BedID
-		}
-	}
+	eventData["data_value"] = string(dataValueJSON)
 
 	// 发布到对应的 stream
 	_, err = m.streamPublisher.PublishToStream(ctx, streamName, eventData)
@@ -1651,4 +1615,43 @@ func (m *DeviceSubscriptionManager) GetDeviceOnlineStatusByDeviceID(ctx context.
 	}
 
 	return m.GetDeviceOnlineStatus(deviceUID), nil
+}
+
+// GetAllDeviceStatuses 批量获取设备在线状态
+// tenantID 为空：返回内存中所有设备；否则按 tenant_id 过滤
+func (m *DeviceSubscriptionManager) GetAllDeviceStatuses(tenantID string) []domain.DeviceStatusItem {
+	m.mu.RLock()
+	subs := make([]*DeviceSubscription, 0, len(m.subscriptionsByUID))
+	for _, sub := range m.subscriptionsByUID {
+		subs = append(subs, sub)
+	}
+	unsubMap := make(map[string]struct{})
+	for u := range m.unsubscribedDueToTimeout {
+		unsubMap[u] = struct{}{}
+	}
+	m.mu.RUnlock()
+
+	result := make([]domain.DeviceStatusItem, 0, len(subs))
+	for _, sub := range subs {
+		sub.mu.RLock()
+		subTenantID := sub.TenantID
+		deviceUID := sub.DeviceUID
+		deviceID := sub.DeviceID
+		status := sub.Status
+		sub.mu.RUnlock()
+
+		if tenantID != "" && subTenantID != tenantID {
+			continue
+		}
+		if _, unsub := unsubMap[deviceUID]; unsub {
+			status = "unsubscribed"
+		}
+		result = append(result, domain.DeviceStatusItem{
+			DeviceUID: deviceUID,
+			DeviceID:  deviceID,
+			TenantID:  subTenantID,
+			Status:    status,
+		})
+	}
+	return result
 }

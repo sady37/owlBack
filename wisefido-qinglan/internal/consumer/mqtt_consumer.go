@@ -610,7 +610,7 @@ func (c *MQTTConsumer) publishDecodedData(
 		default:
 			// 其他类型，降级处理：使用原始消息
 			log.Printf("Unexpected dataValue type for %s message: %T, using original message", topicType, dataValue)
-			encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, topicType, category, originalMessage)
+			encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, "", topicType, category, []interface{}{originalMessage})
 			streamID, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
 			if err != nil {
 				log.Printf("Failed to publish %s data to stream: %v", topicType, err)
@@ -637,7 +637,7 @@ func (c *MQTTConsumer) publishDecodedData(
 		}
 
 		// 直接发送单个对象
-		encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, topicType, eventCategory, eventObj)
+		encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, "", topicType, eventCategory, []interface{}{eventObj})
 		streamID, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
 		if err != nil {
 			log.Printf("Failed to publish %s data to stream: %v", topicType, err)
@@ -671,7 +671,7 @@ func (c *MQTTConsumer) publishDecodedData(
 	default:
 		// 其他类型，降级处理：使用原始消息
 		log.Printf("Unexpected dataValue type for %s message: %T, using original message", topicType, dataValue)
-		encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, topicType, category, originalMessage)
+		encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, "", topicType, category, []interface{}{originalMessage})
 		streamID, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
 		if err != nil {
 			log.Printf("Failed to publish %s data to stream: %v", topicType, err)
@@ -699,9 +699,8 @@ func (c *MQTTConsumer) publishDecodedData(
 			itemCategory = cat
 		}
 
-		// 构建单个对象的 encodedData
-		// 注意：itemMap 中的 category 字段会被保留在 data_value 中
-		encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, topicType, itemCategory, itemMap)
+		// 构建单个对象的 encodedData（data_value 为单元素数组）
+		encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, "", topicType, itemCategory, []interface{}{itemMap})
 
 		// 发布到 Redis Stream
 		streamID, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
@@ -794,8 +793,9 @@ func getMapKeys(m map[string]interface{}) []string {
 }
 
 // handleMonitorMessage 处理实时数据消息
+// 方案 B：一条 MQTT decode 一次，发一条 stream。data_value 为数组，一条一组 [{category,...},...]；
+// sleep 归于 vital；顶层 category 为 trackN.vitalN（仅一种时为 trackN 或 vitalN），N 为该类条数。
 func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]interface{}) error {
-	// 从 Auth 缓存获取设备信息（包含位置信息）
 	ctx := context.Background()
 	device, locationInfo := c.getDeviceFromCache(ctx, uid)
 	if device == nil {
@@ -821,9 +821,65 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 		dataValue = message
 	}
 
-	// 发布解码后的数据
-	// 注意：publishDecodedData 会使用数据项自己的 category（track, vital）作为顶层 category
-	return c.publishDecodedData(ctx, device, locationInfo, "monitor", "", dataValue, message)
+	var items []map[string]interface{}
+	switch v := dataValue.(type) {
+	case []interface{}:
+		for _, item := range v {
+			if m, ok := item.(map[string]interface{}); ok {
+				items = append(items, m)
+			}
+		}
+	case []map[string]interface{}:
+		items = v
+	case map[string]interface{}:
+		items = []map[string]interface{}{v}
+	default:
+		encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, "", "monitor", "", []interface{}{message})
+		streamName := c.streamPublisher.GetOutputStreamName("monitor")
+		_, _ = c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
+		return nil
+	}
+
+	if len(items) == 0 {
+		return nil
+	}
+
+	nTrack, nVital := 0, 0
+	for _, m := range items {
+		cat, _ := m["category"].(string)
+		if cat == "sleep" {
+			cat = "vital"
+			m["category"] = "vital"
+		}
+		switch cat {
+		case "track":
+			nTrack++
+		case "vital":
+			nVital++
+		}
+	}
+
+	var topCategory string
+	if nTrack > 0 && nVital > 0 {
+		topCategory = fmt.Sprintf("track%d.vital%d", nTrack, nVital)
+	} else if nTrack > 0 {
+		topCategory = fmt.Sprintf("track%d", nTrack)
+	} else if nVital > 0 {
+		topCategory = fmt.Sprintf("vital%d", nVital)
+	}
+
+	// data_value：数组，每项自带 category
+	dvSlice := make([]interface{}, len(items))
+	for i, m := range items {
+		dvSlice[i] = m
+	}
+	encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, "", "monitor", topCategory, dvSlice)
+	streamName := c.streamPublisher.GetOutputStreamName("monitor")
+	if _, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData); err != nil {
+		log.Printf("Failed to publish monitor to stream: %v", err)
+		return err
+	}
+	return nil
 }
 
 // handleFunctionMessage 处理功能响应消息（/func/.../post）
@@ -949,12 +1005,23 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 
 	// 使用 GetAlarmEnabledMapByNumericCodes 直接获取使能表
 	shouldConvertToAlarm := false
+	var alarmLevel, alarmType string
 	if len(allNumericCodes) > 0 && len(enablementItems) > 0 {
 		enabledMap := alarm.GetAlarmEnabledMapByNumericCodes(allNumericCodes, enablementItems)
 		// 如果任一数字组合对应的报警启用，则转换为 alarm
-		for _, enabled := range enabledMap {
+		for numCode, enabled := range enabledMap {
 			if enabled == 1 {
 				shouldConvertToAlarm = true
+				// 从 enablementItems 中查找对应的 AlarmType 和 AlarmLevel
+				for _, item := range enablementItems {
+					if item.IsEnabled == 1 {
+						// 简单匹配：使用第一个启用的报警项的 level 和 type
+						alarmLevel = item.AlarmLevel
+						alarmType = item.AlarmType
+						_ = numCode // 使用 numCode 避免 unused 警告
+						break
+					}
+				}
 				break
 			}
 		}
@@ -962,8 +1029,10 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 
 	if shouldConvertToAlarm {
 		// 转换为 alarm，发布到 alarm stream
-		log.Printf("Stat message for device %s should be converted to alarm", uid)
-		return c.publishDecodedData(ctx, device, locationInfo, "alarm", "", dataValue, message)
+		// category 格式："AlarmLevel.AlarmType"（例如 "EMERG.Fall"）
+		alarmCategory := fmt.Sprintf("%s.%s", alarmLevel, alarmType)
+		log.Printf("Stat message for device %s should be converted to alarm (category=%s)", uid, alarmCategory)
+		return c.publishDecodedData(ctx, device, locationInfo, "alarm", alarmCategory, dataValue, message)
 	}
 
 	// 保持原 topic，发布到 stat stream
@@ -973,7 +1042,6 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 
 // handleEventMessage 处理事件消息
 func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interface{}) error {
-
 
 	// 从 Auth 缓存获取设备信息（包含位置信息）
 	ctx := context.Background()
@@ -1044,14 +1112,25 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 	shouldConvertToAlarm := false
 	var numericCodes []string
 	var enabledMap map[string]int
+	var alarmLevel, alarmType string
 	if len(eventObj) > 0 && len(enablementItems) > 0 {
 		numericCodes = alarm.ExtractNumericCodesFromEvent(eventObj)
 		if len(numericCodes) > 0 {
 			enabledMap = alarm.GetAlarmEnabledMapByNumericCodes(numericCodes, enablementItems)
 			// 如果任一数字组合对应的报警启用，则转换为 alarm
-			for _, enabled := range enabledMap {
+			for numCode, enabled := range enabledMap {
 				if enabled == 1 {
 					shouldConvertToAlarm = true
+					// 从 enablementItems 中查找对应的 AlarmType 和 AlarmLevel
+					for _, item := range enablementItems {
+						if item.IsEnabled == 1 {
+							// 简单匹配：使用第一个启用的报警项的 level 和 type
+							alarmLevel = item.AlarmLevel
+							alarmType = item.AlarmType
+							_ = numCode // 使用 numCode 避免 unused 警告
+							break
+						}
+					}
 					break
 				}
 			}
@@ -1067,8 +1146,10 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 
 	if shouldConvertToAlarm {
 		// 转换为 alarm，发布到 alarm stream
-		log.Printf("[EVENT_TO_ALARM] device=%s event_type=%s pose=%v area_type=%v converted to alarm stream", uid, eventType, pose, areaType)
-		return c.publishDecodedData(ctx, device, locationInfo, "alarm", "event", dataValue, message)
+		// category 格式："AlarmLevel.AlarmType"（例如 "EMERG.Fall"）
+		alarmCategory := fmt.Sprintf("%s.%s", alarmLevel, alarmType)
+		log.Printf("[EVENT_TO_ALARM] device=%s event_type=%s pose=%v area_type=%v converted to alarm stream (category=%s)", uid, eventType, pose, areaType, alarmCategory)
+		return c.publishDecodedData(ctx, device, locationInfo, "alarm", alarmCategory, dataValue, message)
 	}
 
 	// 保持原 topic，发布到 event stream

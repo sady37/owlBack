@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
@@ -9,23 +10,28 @@ import (
 	"go.uber.org/zap"
 )
 
+// CardOverviewProvider 卡片概览服务接口
+type CardOverviewProvider interface {
+	GetCardOverview(ctx context.Context, req service.GetCardOverviewRequest) (*service.GetCardOverviewResponse, error)
+}
+
 // CardOverviewHandler 卡片概览 Handler
 type CardOverviewHandler struct {
-	base        *StubHandler
-	cardService service.CardService
-	logger      *zap.Logger
+	base   *StubHandler
+	svc    CardOverviewProvider
+	logger *zap.Logger
 }
 
 // NewCardOverviewHandler 创建卡片概览 Handler
 func NewCardOverviewHandler(
 	base *StubHandler,
-	cardService service.CardService,
+	svc CardOverviewProvider,
 	logger *zap.Logger,
 ) *CardOverviewHandler {
 	return &CardOverviewHandler{
-		base:        base,
-		cardService: cardService,
-		logger:      logger,
+		base:   base,
+		svc:    svc,
+		logger: logger,
 	}
 }
 
@@ -81,9 +87,9 @@ func (h *CardOverviewHandler) GetCardOverview(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	sort := r.URL.Query().Get("sort")
-	if sort == "" {
-		sort = "card_name"
+	sortVal := r.URL.Query().Get("sort")
+	if sortVal == "" {
+		sortVal = "card_name"
 	}
 
 	direction := r.URL.Query().Get("direction")
@@ -91,13 +97,29 @@ func (h *CardOverviewHandler) GetCardOverview(w http.ResponseWriter, r *http.Req
 		direction = "asc"
 	}
 
+	page := 1
+	if p := r.URL.Query().Get("page"); p != "" {
+		if v, err := strconv.Atoi(p); err == nil && v > 0 {
+			page = v
+		}
+	}
+	pageSize := 20
+	if ps := r.URL.Query().Get("pageSize"); ps != "" {
+		if v, err := strconv.Atoi(ps); err == nil && v > 0 && v <= 20 {
+			pageSize = v
+		}
+	} else if ps := r.URL.Query().Get("size"); ps != "" {
+		if v, err := strconv.Atoi(ps); err == nil && v > 0 && v <= 20 {
+			pageSize = v
+		}
+	}
+
 	// 3. 获取用户信息（从 HTTP Header）
 	currentUserID := r.Header.Get("X-User-Id")
 	currentUserType := r.Header.Get("X-User-Type")
 	currentUserRole := r.Header.Get("X-User-Role")
 
-	// 调试日志：记录接收到的用户信息
-	h.logger.Info("GetCardOverview request",
+	h.logger.Debug("GetCardOverview request",
 		zap.String("tenant_id", tenantID),
 		zap.String("current_user_id", currentUserID),
 		zap.String("current_user_type", currentUserType),
@@ -106,22 +128,38 @@ func (h *CardOverviewHandler) GetCardOverview(w http.ResponseWriter, r *http.Req
 
 	// 4. 构建请求
 	req := service.GetCardOverviewRequest{
-		TenantID:          tenantID,
-		CardID:            cardID,
-		Search:            search,
-		CardType:          cardType,
-		UnitType:          unitType,
-		IsPublicSpace:     isPublicSpace,
-		IsSharedUnit: isSharedUnit,
-		Sort:              sort,
-		Direction:         direction,
-		CurrentUserID:     currentUserID,
-		CurrentUserType:   currentUserType,
-		CurrentUserRole:   currentUserRole,
+		TenantID:        tenantID,
+		CardID:          cardID,
+		Search:          search,
+		CardType:        cardType,
+		UnitType:        unitType,
+		IsPublicSpace:   isPublicSpace,
+		IsSharedUnit:    isSharedUnit,
+		Sort:            sortVal,
+		Direction:       direction,
+		Page:            page,
+		PageSize:        pageSize,
+		CurrentUserID:   currentUserID,
+		CurrentUserType: currentUserType,
+		CurrentUserRole: currentUserRole,
 	}
 
-	// 5. 调用 Service
-	resp, err := h.cardService.GetCardOverview(r.Context(), req)
+	// 5. 调用 Service（svc 为 nil 时返回空列表）
+	if h.svc == nil {
+		directionNum := 0
+		if req.Direction == "desc" {
+			directionNum = 1
+		}
+		writeJSON(w, http.StatusOK, Ok(map[string]any{
+			"items": []any{},
+			"pagination": map[string]any{
+				"total": 0, "page": 1, "size": 20, "count": 0,
+				"sort": req.Sort, "direction": directionNum,
+			},
+		}))
+		return
+	}
+	resp, err := h.svc.GetCardOverview(r.Context(), req)
 	if err != nil {
 		h.logger.Error("Failed to get card overview",
 			zap.Error(err),
@@ -131,23 +169,25 @@ func (h *CardOverviewHandler) GetCardOverview(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// 6. 返回响应（所有可见的卡片）
-	// 注意：前端期望 pagination 包含更多字段，但后端不处理分页，只返回 total
-	directionNum := 0 // 0=asc, 1=desc
+	h.logger.Info("GetCardOverview response",
+		zap.String("tenant_id", tenantID),
+		zap.Int("total", resp.Total),
+		zap.String("current_user_role", currentUserRole),
+	)
+
+	directionNum := 0
 	if direction == "desc" {
 		directionNum = 1
 	}
 	writeJSON(w, http.StatusOK, Ok(map[string]any{
 		"items": resp.Items,
 		"pagination": map[string]any{
-			"total": resp.Total, // 总数（前端用于分页）
-			// 以下字段由前端控制，后端不处理，但为了兼容性可以返回默认值
-			"page":      1,
-			"size":      10,
+			"total":     resp.Total,
+			"page":      resp.Page,
+			"size":      resp.Size,
 			"count":     resp.Total,
-			"sort":      sort,
-			"direction": directionNum, // 前端使用数字：0=asc, 1=desc
+			"sort":      req.Sort,
+			"direction": directionNum,
 		},
 	}))
 }
-

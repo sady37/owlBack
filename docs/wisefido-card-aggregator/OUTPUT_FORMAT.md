@@ -12,8 +12,8 @@
 |----------|--------|-----|------|
 | `vital-focus:card:{card_id}:realtime` | iot_stream_consumer → CacheManager | 10s | 按源实时数据（radar/sleepad） |
 | `vital-focus:card:{card_id}:full` | DataAggregator → CacheManager | 10s | 聚合后的完整卡片，供 API 返回 |
-| `vital-focus:card:{card_id}:device:{device_id}:data` | iot_stream_consumer | 6s | 单设备原始时序，用于 fuse 出 realtime；TTL=2s×3=6s，与 HR/RR 2s 对齐，容错约 3 次漏报 |
-| `vital-focus:card:{card_id}:alarms` | **wisefido-ai**（非 card-aggregator） | — | 报警列表；card-aggregator 仅**读取**，合并进 full |
+| `vital-focus:card:{card_id}:device:{device_id}:data` | iot_stream_consumer | 6s | 单设备原始时序，用于 fuse 出 realtime |
+| — | alarm_events 表 | — | 报警列表；DataAggregator 从 alarm_events 查询（iot:alarm:stream 消费后写入，wisefido-ai 也经此流） |
 
 ---
 

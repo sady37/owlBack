@@ -5,17 +5,21 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"owl-common/card"
+	"wisefido-data/internal/domain"
 
 	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
-// PostgresCardRepository implements card.RepositoryInterface
+// PostgresCardRepository implements card.RepositoryInterface；写 DB，并记录 affected 供 config 通知
 type PostgresCardRepository struct {
-	db     *sql.DB
-	logger *zap.Logger
+	db         *sql.DB
+	logger     *zap.Logger
+	recorded   []domain.CardSyncAffected
+	recordedMu sync.Mutex
 }
 
 // NewPostgresCardRepository creates a new card repository
@@ -26,10 +30,140 @@ func NewPostgresCardRepository(db *sql.DB, logger *zap.Logger) *PostgresCardRepo
 	}
 }
 
+// ClearRecorded 清空本次同步记录（CreateCardsForUnit 前调用）
+func (r *PostgresCardRepository) ClearRecorded() {
+	r.recordedMu.Lock()
+	defer r.recordedMu.Unlock()
+	r.recorded = nil
+}
+
+// GetRecordedAndClear 返回本次同步的 created/updated/deleted 并清空
+func (r *PostgresCardRepository) GetRecordedAndClear() []domain.CardSyncAffected {
+	r.recordedMu.Lock()
+	defer r.recordedMu.Unlock()
+	out := r.recorded
+	r.recorded = nil
+	return out
+}
+
+func (r *PostgresCardRepository) appendRecorded(op, tenantID, cardID, unitID string) {
+	r.recordedMu.Lock()
+	defer r.recordedMu.Unlock()
+	r.recorded = append(r.recorded, domain.CardSyncAffected{TenantID: tenantID, CardID: cardID, UnitID: unitID, Op: op})
+}
+
+// CardForNotify 供 config.card.* 通知用（从 DB 读）
+type CardForNotify struct {
+	TenantID    string
+	CardID      string
+	UnitID      string
+	DevicesJSON []byte
+}
+
+// CardRowForCache 单卡行+unit 信息，用于生成 VitalFocusCardInfo 静态缓存
+type CardRowForCache struct {
+	CardID         string
+	TenantID       string
+	CardType       string
+	BedID          *string
+	UnitID         string
+	CardName       string
+	CardAddress    string
+	Timezone       string
+	ResidentID     *string
+	DevicesJSON    []byte
+	ResidentsJSON  []byte
+	BranchID       string
+	BranchName     string
+	IconAlarmLevel int
+	PopAlarmEmerge int
+}
+
+// GetCardRowForCache 从 DB 取单卡+unit（branch_id、branch_name、icon_alarm_level、pop_alarm_emerge），用于写 VitalFocusCardInfo 静态缓存
+func (r *PostgresCardRepository) GetCardRowForCache(ctx context.Context, tenantID, cardID string) (*CardRowForCache, error) {
+	query := `
+		SELECT c.card_id, c.tenant_id, c.card_type, c.bed_id, c.unit_id, c.card_name, c.card_address,
+		       COALESCE(c.timezone, 'UTC'), c.resident_id, c.devices, c.residents,
+		       COALESCE(u.branch_id::text, '') as branch_id,
+		       COALESCE(b.branch_name, '') as branch_name,
+		       COALESCE(c.icon_alarm_level, 3), COALESCE(c.pop_alarm_emerge, 0)
+		FROM cards c
+		LEFT JOIN units u ON c.unit_id = u.unit_id AND c.tenant_id = u.tenant_id
+		LEFT JOIN branches b ON u.branch_id = b.branch_id
+		WHERE c.tenant_id = $1 AND c.card_id = $2
+	`
+	var row CardRowForCache
+	var bedID, residentID sql.NullString
+	err := r.db.QueryRowContext(ctx, query, tenantID, cardID).Scan(
+		&row.CardID, &row.TenantID, &row.CardType, &bedID, &row.UnitID, &row.CardName, &row.CardAddress,
+		&row.Timezone, &residentID, &row.DevicesJSON, &row.ResidentsJSON, &row.BranchID, &row.BranchName,
+		&row.IconAlarmLevel, &row.PopAlarmEmerge,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if bedID.Valid {
+		row.BedID = &bedID.String
+	}
+	if residentID.Valid {
+		row.ResidentID = &residentID.String
+	}
+	return &row, nil
+}
+
+// GetBranchIDByUnit 查询 unit 的 branch_id（供 card 变更时失效 user:cards 缓存）
+func (r *PostgresCardRepository) GetBranchIDByUnit(ctx context.Context, tenantID, unitID string) (string, error) {
+	if tenantID == "" || unitID == "" {
+		return "", nil
+	}
+	var branchID sql.NullString
+	err := r.db.QueryRowContext(ctx,
+		`SELECT branch_id::text FROM units WHERE tenant_id = $1 AND unit_id = $2`,
+		tenantID, unitID,
+	).Scan(&branchID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	if branchID.Valid && branchID.String != "" {
+		return branchID.String, nil
+	}
+	return "", nil
+}
+
+// GetCardByID 从 DB 按 card_id 取卡片（供 emitCardChange 取 deviceIDs）
+func (r *PostgresCardRepository) GetCardByID(ctx context.Context, tenantID, cardID string) (*CardForNotify, error) {
+	query := `
+		SELECT tenant_id, card_id, unit_id, devices
+		FROM cards
+		WHERE tenant_id = $1 AND card_id = $2
+	`
+	var tenantIDOut, cardIDOut, unitID string
+	var devicesJSON []byte
+	err := r.db.QueryRowContext(ctx, query, tenantID, cardID).Scan(&tenantIDOut, &cardIDOut, &unitID, &devicesJSON)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &CardForNotify{
+		TenantID:    tenantIDOut,
+		CardID:      cardIDOut,
+		UnitID:      unitID,
+		DevicesJSON: devicesJSON,
+	}, nil
+}
+
 // GetActiveBedsByUnit gets all ActiveBeds under the specified unit
 // ActiveBed condition: 床上有 monitoring_enabled = TRUE 的设备即可
 // 注意：bed_type 字段已删除，改为动态查询设备绑定状态
-func (r *PostgresCardRepository) GetActiveBedsByUnit(tenantID, unitID string) ([]card.ActiveBedInfo, error) {
+func (r *PostgresCardRepository) GetActiveBedsByUnit(tenantID, unitID string) ([]card.ActiveBedRow, error) {
 	query := `
 		SELECT DISTINCT
 			b.bed_id,
@@ -57,11 +191,11 @@ func (r *PostgresCardRepository) GetActiveBedsByUnit(tenantID, unitID string) ([
 	}
 	defer rows.Close()
 
-	var beds []card.ActiveBedInfo
+	var beds []card.ActiveBedRow
 	for rows.Next() {
-		var bed card.ActiveBedInfo
+		var bed card.ActiveBedRow
 		var residentID sql.NullString
-		var bedName sql.NullString // bed_name is selected but not used in ActiveBedInfo
+		var bedName sql.NullString
 
 		if err := rows.Scan(
 			&bed.BedID,
@@ -69,7 +203,7 @@ func (r *PostgresCardRepository) GetActiveBedsByUnit(tenantID, unitID string) ([
 			&bed.BoundDeviceCount,
 			&residentID,
 			&bed.RoomID,
-			&bedName, // Scan bed_name even though it's not used
+			&bedName,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan bed: %w", err)
 		}
@@ -90,13 +224,13 @@ func (r *PostgresCardRepository) GetUnitInfo(tenantID, unitID string) (*card.Uni
 		SELECT 
 			u.unit_id,
 			u.unit_name,
-			COALESCE(b.branch_name, '') as branch_name,
+			COALESCE(u.branch_id::text, '') as branch_id,
 			COALESCE(bld.building_name, '') as building,
 			u.is_public,
 			u.is_shared_unit,
-			u.unit_type
+			u.unit_type,
+			COALESCE(u.timezone, 'UTC') as timezone
 		FROM units u
-		LEFT JOIN branches b ON u.branch_id = b.branch_id
 		LEFT JOIN buildings bld ON u.building_id = bld.building_id
 		WHERE u.tenant_id = $1 AND u.unit_id = $2
 	`
@@ -106,11 +240,12 @@ func (r *PostgresCardRepository) GetUnitInfo(tenantID, unitID string) (*card.Uni
 	err := r.db.QueryRow(query, tenantID, unitID).Scan(
 		&unit.UnitID,
 		&unit.UnitName,
-		&unit.BranchName,
+		&unit.BranchID,
 		&unit.Building,
 		&unit.IsPublic,
 		&unit.IsSharedUnit,
 		&unit.UnitType,
+		&unit.Timezone,
 	)
 
 	if err != nil {
@@ -417,6 +552,7 @@ func (r *PostgresCardRepository) GetCardsByUnit(tenantID, unitID string) ([]card
 			unit_id,
 			card_name,
 			card_address,
+			COALESCE(timezone, 'UTC'),
 			resident_id,
 			devices,
 			residents
@@ -445,6 +581,7 @@ func (r *PostgresCardRepository) GetCardsByUnit(tenantID, unitID string) ([]card
 			&cardItem.UnitID,
 			&cardItem.CardName,
 			&cardItem.CardAddress,
+			&cardItem.Timezone,
 			&residentID,
 			&devicesJSON,
 			&residentsJSON,
@@ -501,17 +638,30 @@ func (r *PostgresCardRepository) DeleteCard(tenantID, cardID string) error {
 
 // DeleteCardsByUnit deletes all cards under the specified unit (for recreation)
 func (r *PostgresCardRepository) DeleteCardsByUnit(tenantID, unitID string) error {
-	query := `
-		DELETE FROM cards
-		WHERE tenant_id = $1
-		  AND unit_id = $2
-	`
-
-	_, err := r.db.Exec(query, tenantID, unitID)
+	rows, err := r.db.Query(`SELECT card_id FROM cards WHERE tenant_id = $1 AND unit_id = $2`, tenantID, unitID)
+	if err != nil {
+		return fmt.Errorf("failed to list cards: %w", err)
+	}
+	var cardIDs []string
+	for rows.Next() {
+		var cid string
+		if err := rows.Scan(&cid); err != nil {
+			rows.Close()
+			return err
+		}
+		cardIDs = append(cardIDs, cid)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, cid := range cardIDs {
+		r.appendRecorded("deleted", tenantID, cid, unitID)
+	}
+	_, err = r.db.Exec(`DELETE FROM cards WHERE tenant_id = $1 AND unit_id = $2`, tenantID, unitID)
 	if err != nil {
 		return fmt.Errorf("failed to delete cards: %w", err)
 	}
-
 	return nil
 }
 
@@ -538,10 +688,13 @@ func (r *PostgresCardRepository) CountCardsByTenant(tenantID string) (int, error
 func (r *PostgresCardRepository) UpdateCard(
 	tenantID, cardID string,
 	cardType string,
-	bedID *string, unitID, cardName, cardAddress string,
+	bedID *string, unitID, cardName, cardAddress, timezone string,
 	residentID *string,
 	devicesJSON, residentsJSON []byte,
 ) error {
+	if timezone == "" {
+		timezone = "UTC"
+	}
 	query := `
 		UPDATE cards
 		SET
@@ -550,9 +703,10 @@ func (r *PostgresCardRepository) UpdateCard(
 			unit_id = $5,
 			card_name = $6,
 			card_address = $7,
-			resident_id = $8,
-			devices = $9,
-			residents = $10
+			timezone = $8,
+			resident_id = $9,
+			devices = $10,
+			residents = $11
 		WHERE tenant_id = $1
 		  AND card_id = $2
 	`
@@ -566,6 +720,7 @@ func (r *PostgresCardRepository) UpdateCard(
 		unitID,
 		cardName,
 		cardAddress,
+		timezone,
 		residentID,
 		devicesJSON,
 		residentsJSON,
@@ -582,7 +737,7 @@ func (r *PostgresCardRepository) UpdateCard(
 	if rowsAffected == 0 {
 		return fmt.Errorf("card not found: %s", cardID)
 	}
-
+	r.appendRecorded("updated", tenantID, cardID, unitID)
 	return nil
 }
 
@@ -610,10 +765,14 @@ func (r *PostgresCardRepository) CreateCard(
 	unitID string,
 	cardName string,
 	cardAddress string,
+	timezone string,
 	residentID *string,
 	devicesJSON []byte,
 	residentsJSON []byte,
 ) (string, error) {
+	if timezone == "" {
+		timezone = "UTC"
+	}
 	query := `
 		INSERT INTO cards (
 			tenant_id,
@@ -622,10 +781,11 @@ func (r *PostgresCardRepository) CreateCard(
 			unit_id,
 			card_name,
 			card_address,
+			timezone,
 			resident_id,
 			devices,
 			residents
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING card_id
 	`
 
@@ -638,6 +798,7 @@ func (r *PostgresCardRepository) CreateCard(
 		unitID,
 		cardName,
 		cardAddress,
+		timezone,
 		residentID,
 		devicesJSON,
 		residentsJSON,
@@ -646,7 +807,7 @@ func (r *PostgresCardRepository) CreateCard(
 	if err != nil {
 		return "", fmt.Errorf("failed to create card: %w", err)
 	}
-
+	r.appendRecorded("created", tenantID, cardID, unitID)
 	return cardID, nil
 }
 

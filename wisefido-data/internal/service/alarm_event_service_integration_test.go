@@ -147,7 +147,7 @@ func TestAlarmEventService_ListAlarmEvents_Success(t *testing.T) {
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	usersRepo := repository.NewPostgresUsersRepository(db)
-	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, getTestLoggerForAlarmEvent())
+	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, nil, getTestLoggerForAlarmEvent())
 
 	// 测试查询所有报警事件
 	req := ListAlarmEventsRequest{
@@ -241,7 +241,7 @@ func TestAlarmEventService_ListAlarmEvents_WithStatusFilter(t *testing.T) {
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	usersRepo := repository.NewPostgresUsersRepository(db)
-	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, getTestLoggerForAlarmEvent())
+	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, nil, getTestLoggerForAlarmEvent())
 
 	// 测试查询 active 状态的报警事件
 	req := ListAlarmEventsRequest{
@@ -315,7 +315,7 @@ func TestAlarmEventService_ListAlarmEvents_WithTimeRange(t *testing.T) {
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	usersRepo := repository.NewPostgresUsersRepository(db)
-	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, getTestLoggerForAlarmEvent())
+	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, nil, getTestLoggerForAlarmEvent())
 
 	// 测试查询最近 1 小时内的报警事件
 	oneHourAgo := time.Now().Add(-1 * time.Hour).Unix()
@@ -381,7 +381,7 @@ func TestAlarmEventService_ListAlarmEvents_WithEventTypeFilter(t *testing.T) {
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	usersRepo := repository.NewPostgresUsersRepository(db)
-	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, getTestLoggerForAlarmEvent())
+	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, nil, getTestLoggerForAlarmEvent())
 
 	// 测试查询特定事件类型
 	req := ListAlarmEventsRequest{
@@ -449,7 +449,7 @@ func TestAlarmEventService_HandleAlarmEvent_Acknowledge(t *testing.T) {
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	usersRepo := repository.NewPostgresUsersRepository(db)
-	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, getTestLoggerForAlarmEvent())
+	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, nil, getTestLoggerForAlarmEvent())
 
 	// 测试确认报警事件
 	req := HandleAlarmEventRequest{
@@ -511,7 +511,7 @@ func TestAlarmEventService_HandleAlarmEvent_Resolve(t *testing.T) {
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	usersRepo := repository.NewPostgresUsersRepository(db)
-	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, getTestLoggerForAlarmEvent())
+	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, nil, getTestLoggerForAlarmEvent())
 
 	// 测试解决报警事件
 	req := HandleAlarmEventRequest{
@@ -575,7 +575,7 @@ func TestAlarmEventService_HandleAlarmEvent_InvalidStatus(t *testing.T) {
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	usersRepo := repository.NewPostgresUsersRepository(db)
-	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, getTestLoggerForAlarmEvent())
+	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, nil, getTestLoggerForAlarmEvent())
 
 	// 测试无效状态
 	req := HandleAlarmEventRequest{
@@ -617,7 +617,7 @@ func TestAlarmEventService_HandleAlarmEvent_ResolveWithoutHandleType(t *testing.
 	devicesRepo := repository.NewPostgresDevicesRepository(db)
 	unitsRepo := repository.NewPostgresUnitsRepository(db)
 	usersRepo := repository.NewPostgresUsersRepository(db)
-	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, getTestLoggerForAlarmEvent())
+	alarmEventService := NewAlarmEventService(alarmEventsRepo, devicesRepo, unitsRepo, usersRepo, db, nil, getTestLoggerForAlarmEvent())
 
 	// 测试解决报警事件但缺少 handle_type
 	req := HandleAlarmEventRequest{

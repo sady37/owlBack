@@ -1,4 +1,13 @@
 {
+  "models": [
+    {
+      "title": "DeepSeek Coder",
+      "provider": "openai",
+      "model": "deepseek-coder",
+      "apiBase": "https://api.deepseek.com",
+      "apiKey": "sk-2bbb762717e14d0592ecfaee1b964e8e"
+    }
+  ],
   "contextProviderPrompts": [
     {
       "name": "owl-backend",
@@ -6,9 +15,6 @@
     }
   ],
   "allowAnonymousTelemetry": true,
-  "experimental": {
-    "disableIndexing": false
-  },
   "allowAgentNotifications": true,
   "allowMultipleManualTraces": true,
   "customCommands": [
@@ -17,5 +23,13 @@
       "prompt": "根据owlRD/db中的SQL文件生成Go结构体和CRUD代码。需要：\n1. 使用gorm标签\n2. 添加JSON标签\n3. 实现基本的CRUD方法\n4. 添加输入验证\n5. 参考wisefido-backend中的模式",
       "description": "从SQL生成Go模型"
     }
-  ]
+  ],
+  // === 新增的关键配置 ===
+  "allowFileAccess": true,
+  "workspaceFolders": [
+    "/Users/sady3721/project/owlBack",
+    "/Users/sady3721/project/owlRD",
+    "/Users/sady3721/project/wisefido-backend"
+  ],
+  "disableIndexing": true
 }

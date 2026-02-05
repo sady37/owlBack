@@ -39,13 +39,13 @@ const (
 
 // ========== ProcessType 常量定义 ==========
 const (
-	ProcessTypeImmediate           = "immediate"            // 立即触发
-	ProcessTypeTimeBased          = "time_based"          // 基于时间阈值
-	ProcessTypeStateBased         = "state_based"          // 基于状态变化
-	ProcessTypeActivityMonitoring = "activity_monitoring"  // 活动监控
+	ProcessTypeImmediate            = "immediate"              // 立即触发
+	ProcessTypeTimeBased            = "time_based"             // 基于时间阈值
+	ProcessTypeStateBased           = "state_based"            // 基于状态变化
+	ProcessTypeActivityMonitoring   = "activity_monitoring"    // 活动监控
 	ProcessTypeConditionalTimeBased = "conditional_time_based" // 条件时间型
-	ProcessTypeBedStateChange     = "bed_state_change"    // 床位状态变化
-	ProcessTypeRoomStateChange    = "room_state_change"   // 房间状态变化
+	ProcessTypeBedStateChange       = "bed_state_change"       // 床位状态变化
+	ProcessTypeRoomStateChange      = "room_state_change"      // 房间状态变化
 )
 
 // ExampleDefaultAlarmSettingJSON 完整的 DefaultAlarmSetting 示例 JSON，便于检查 json.Marshal(DefaultAlarmSetting) 是否正常
@@ -361,33 +361,32 @@ const (
 	AlarmTypeUnknown        = "Unknown"
 
 	// 通用报警类型（不区分设备，设备类型通过 device_type 字段区分）
-	ApneaHypopnea           = "ApneaHypopnea"
-	AbnormalHeartRate       = "AbnormalHeartRate"
-	AbnormalRespiratoryRate = "AbnormalRespiratoryRate"
-	LeftBed                 = "LeftBed"
-	LeftBedTooLong          = "LeftBedTooLong"
-	AbnormalBodyMovement    = "AbnormalBodyMovement"
-	NoBodyMove              = "NoBodyMove"
-	NoTurnOver              = "NoTurnOver"
-	ResetTime               = "ResetTime"
-	NapTime                 = "NapTime"
-	SensorDetached          = "SensorDetached"
-	Fall                    = "Fall"
-	SuspectedFall           = "SuspectedFall"
-	SittingOnGround         = "SittingOnGround"
+	ApneaHypopnea            = "ApneaHypopnea"
+	AbnormalHeartRate        = "AbnormalHeartRate"
+	AbnormalRespiratoryRate  = "AbnormalRespiratoryRate"
+	LeftBed                  = "LeftBed"
+	LeftBedTooLong           = "LeftBedTooLong"
+	AbnormalBodyMovement     = "AbnormalBodyMovement"
+	NoBodyMove               = "NoBodyMove"
+	NoTurnOver               = "NoTurnOver"
+	ResetTime                = "ResetTime"
+	NapTime                  = "NapTime"
+	SensorDetached           = "SensorDetached"
+	Fall                     = "Fall"
+	SuspectedFall            = "SuspectedFall"
+	SittingOnGround          = "SittingOnGround"
 	SuspectedSittingOnGround = "SuspectedSittingOnGround"
-	BedSitUp                = "BedSitUp"
-	SuspectedBedSitUp       = "SuspectedBedSitUp"
-	VitalsWeak              = "VitalsWeak"
-	InBed                   = "InBed"
-	Stay                    = "Stay"
-	NoActivity24h           = "NoActivity24h"
-	WarningArea             = "WarningArea"
-	SignalPoor              = "SignalPoor"
-	AngleException          = "AngleException"
-	MonitoringMode          = "MonitoringMode"
-	PostureDetection        = "PostureDetection"
-
+	BedSitUp                 = "BedSitUp"
+	SuspectedBedSitUp        = "SuspectedBedSitUp"
+	VitalsWeak               = "VitalsWeak"
+	InBed                    = "InBed"
+	Stay                     = "Stay"
+	NoActivity24h            = "NoActivity24h"
+	WarningArea              = "WarningArea"
+	SignalPoor               = "SignalPoor"
+	AngleException           = "AngleException"
+	MonitoringMode           = "MonitoringMode"
+	PostureDetection         = "PostureDetection"
 )
 
 // ========== 配置结构：alarm_type + is_enabled(0/1) + alarm_level + alarm_params + display_setting ==========
@@ -889,10 +888,10 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
-			AlarmType:  BedSitUp,
-			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelWarn),
-			AlarmParams: map[string]interface{}{},
+			AlarmType:      BedSitUp,
+			IsEnabled:      intPtr(IsEnabledOn),
+			AlarmLevel:     strPtr(AlarmLevelWarn),
+			AlarmParams:    map[string]interface{}{},
 			DisplaySetting: DisplayNone,
 		},
 		{
@@ -1065,123 +1064,6 @@ func ParseTimeString(timeStr string) (hour, minute int, err error) {
 	return hour, minute, nil
 }
 
-// GetAlarmEnablementMapRadar 获取 Radar 设备的报警使能配置表
-// 只返回 IsEnabled 和 AlarmLevel 都不为空的项
-// LeftBed 与 LeftBedTooLong 统一设为 LeftBed（LeftBedTooLong 仅限 reset 期间）
-// 注意：此函数已被注释，因为使用硬编码的 DefaultAlarmSetting，而不是从 alarm_cloud 配置中获取
-// 报警使能配置应该从 alarm_cloud.device_alarms 动态获取，而不是硬编码
-/*
-func GetAlarmEnablementMapRadar() AlarmEnablementMapRadar {
-	enablement := make(AlarmEnablementMapRadar)
-	var leftBedTooLongEnabled *int
-
-	// 先遍历，收集 LeftBedTooLong 的配置（作为后备）
-	// 同时处理其他所有项
-	for _, item := range DefaultAlarmSetting.Radar {
-		// 只处理 IsEnabled 和 AlarmLevel 都不为空的项
-		if item.IsEnabled == nil || item.AlarmLevel == nil {
-			continue
-		}
-
-		if item.AlarmType == LeftBedTooLong {
-			// 保存 LeftBedTooLong 的配置作为后备
-			leftBedTooLongEnabled = item.IsEnabled
-			continue
-		}
-
-		// 处理其他项（包括 LeftBed）
-		enablement[item.AlarmType] = *item.IsEnabled
-	}
-
-	// 如果 LeftBed 不存在但 LeftBedTooLong 存在，使用 LeftBedTooLong 的配置
-	if leftBedTooLongEnabled != nil {
-		if _, exists := enablement[RadarLeftBed]; !exists {
-			enablement[RadarLeftBed] = *leftBedTooLongEnabled
-		}
-	}
-
-	return enablement
-}
-*/
-
-// ShouldEnableEnter2OutEventForAlarm 判断是否需要启用 event type=1（进出事件）监听以生成报警
-// 参数：alarmType - 报警类型（如 RadarStay, NoActivity24h, RadarWarningArea, Radar_InBed, Radar_LeftBedTooLong）
-// 返回：是否需要启用进出事件监听
-// 简化逻辑：如果启用了以下任一报警类型，所有 event type=1（进出事件）都转为 alarm
-// - RadarStay（滞留）
-// - NoActivity24h（长时间无人活动）
-// - RadarWarningArea（警告区域）
-// - Radar_InBed/Radar_LeftBedTooLong（进床/离床）
-// 注意：此函数已被注释，因为使用硬编码的逻辑，应该基于 alarm_cloud 配置动态判断
-/*
-func ShouldEnableEnter2OutEventForAlarm(alarmType string) bool {
-	switch alarmType {
-	case RadarStay, NoActivity24h, RadarWarningArea, RadarInBed, LeftBedTooLong:
-		return true
-	default:
-		return false
-	}
-}
-*/
-
-// ShouldEnablePoseEventForAlarm 判断是否需要启用 event type=2（姿态变化事件）监听以生成报警
-// 参数：alarmType - 报警类型（如 RadarFall, RadarSittingOnGround, RadarBedSitUp）
-// 返回：是否需要启用姿态变化事件监听
-// 简化逻辑：如果启用了以下任一报警类型，所有 event type=2（姿态变化事件）都转为 alarm
-// - RadarFall（跌倒）
-// - RadarSittingOnGround（坐地）
-// - RadarBedSitUp（床上坐起）
-// 注意：此函数已被注释，因为使用硬编码的逻辑，应该基于 alarm_cloud 配置动态判断
-/*
-func ShouldEnablePoseEventForAlarm(alarmType string) bool {
-	switch alarmType {
-	case RadarFall, SuspectedFall, RadarSittingOnGround, RadarSuspectedSittingOnGround, RadarBedSitUp, RadarSuspectedBedSitUp:
-		return true
-	default:
-		return false
-	}
-}
-*/
-
-// GetAlarmEnablementMapSleepad 获取 Sleepad 设备的报警使能配置表
-// 只返回 IsEnabled 和 AlarmLevel 都不为空的项
-// LeftBed 与 LeftBedTooLong 统一设为 LeftBed（LeftBedTooLong 仅限 reset 期间）
-// 注意：此函数已被注释，因为使用硬编码的 DefaultAlarmSetting，而不是从 alarm_cloud 配置中获取
-// 报警使能配置应该从 alarm_cloud.device_alarms 动态获取，而不是硬编码
-/*
-func GetAlarmEnablementMapSleepad() AlarmEnablementMapSleepad {
-	enablement := make(AlarmEnablementMapSleepad)
-	var leftBedTooLongEnabled *int
-
-	// 先遍历，收集 LeftBedTooLong 的配置（作为后备）
-	// 同时处理其他所有项
-	for _, item := range DefaultAlarmSetting.Sleepad {
-		// 只处理 IsEnabled 和 AlarmLevel 都不为空的项
-		if item.IsEnabled == nil || item.AlarmLevel == nil {
-			continue
-		}
-
-		if item.AlarmType == LeftBedTooLong {
-			// 保存 LeftBedTooLong 的配置作为后备
-			leftBedTooLongEnabled = item.IsEnabled
-			continue
-		}
-
-		// 处理其他项（包括 LeftBed）
-		enablement[item.AlarmType] = *item.IsEnabled
-	}
-
-	// 如果 LeftBed 不存在但 LeftBedTooLong 存在，使用 LeftBedTooLong 的配置
-	if leftBedTooLongEnabled != nil {
-		if _, exists := enablement[LeftBed]; !exists {
-			enablement[LeftBed] = *leftBedTooLongEnabled
-		}
-	}
-
-	return enablement
-}
-*/
-
 // GetAlarmEnablementMap 获取设备的报警使能配置表
 // 参数：deviceType - 设备类型（"Sleepad"/"sleepace"/"sleepad" 或 "radar"）
 // 参数：alarmItems - 报警项列表（从 alarm_cloud.device_alarms 获取，如果为 nil 则使用 DefaultAlarmSetting）
@@ -1234,7 +1116,7 @@ var MQTTToAlarmTypeMapSleepace = map[string]string{
 	"alarmNoBodymove":      NoBodyMove,
 	"alarmNoTurnOver":      NoTurnOver,
 	"alarmBedSitup":        BedSitUp,
-	"alarmInBed":           InBed,   //En 在床多用InBed
+	"alarmInBed":           InBed, //En 在床多用InBed
 	"alarmSensorFall":      SensorDetached,
 	"offLine":              "", // 离线报警由通用报警处理，不映射到具体 alarm_type
 }
@@ -1250,12 +1132,12 @@ var MQTTToAlarmTypeMapRadar = map[string]string{
 	"event_type_1_area_6":            WarningArea, // 进入区域+Area_type=6
 	"event_type_1_left_bed_too_long": LeftBedTooLong,
 	// Event type=2 (姿态变化)
-	"event_type_2_pose_5":  Fall,                    // 5-确认跌倒
-	"event_type_2_pose_2":  SuspectedFall,           // 2-疑似跌倒
+	"event_type_2_pose_5":  Fall,                     // 5-确认跌倒
+	"event_type_2_pose_2":  SuspectedFall,            // 2-疑似跌倒
 	"event_type_2_pose_7":  SuspectedSittingOnGround, // 7-疑似坐地
-	"event_type_2_pose_8":  SittingOnGround,         // 8-确认坐地
-	"event_type_2_pose_10": SuspectedBedSitUp,       // 10-疑似床上坐起
-	"event_type_2_pose_11": BedSitUp,                // 11-确认床上坐起
+	"event_type_2_pose_8":  SittingOnGround,          // 8-确认坐地
+	"event_type_2_pose_10": SuspectedBedSitUp,        // 10-疑似床上坐起
+	"event_type_2_pose_11": BedSitUp,                 // 11-确认床上坐起
 	// Event type=7
 	"event_type_7_signal_poor": SignalPoor, // 信号差事件
 	// Event type=8
@@ -1464,7 +1346,7 @@ var NumericCodeToAlarmTypeMap = map[string][]string{
 	"116": {WarningArea},                    // eventType=1, event=1, area_type=6 (进入警告区域)
 	// Event type=2 (姿态变化)
 	"25":  {Fall},            // eventType=2, pose=5 (确认跌倒)
-	"22":  {Fall},   // eventType=2, pose=2 (疑似跌倒)
+	"22":  {Fall},            // eventType=2, pose=2 (疑似跌倒)
 	"27":  {SittingOnGround}, // eventType=2, pose=7 (疑似坐地)
 	"28":  {SittingOnGround}, // eventType=2, pose=8 (确认坐地)
 	"210": {BedSitUp},        // eventType=2, pose=10 (疑似床上坐起)
@@ -1626,32 +1508,32 @@ func reverseMapPoseFromSNOMED(displayEn string) string {
 	// SNOMED 映射表（从文档 Reside_stream_stand.md 和 radar_convert_table.json）
 	// 注意：这里使用 display_en 值进行反向映射
 	poseMap := map[string]string{
-		"Initialization":     "0",
-		"Walking":            "1",
-		"SuspectedFall":      "2",
-		"Sitting":            "3",
-		"Standing":           "4",
-		"Fall":               "5",
-		"Lying":              "6",
+		"Initialization":           "0",
+		"Walking":                  "1",
+		"SuspectedFall":            "2",
+		"Sitting":                  "3",
+		"Standing":                 "4",
+		"Fall":                     "5",
+		"Lying":                    "6",
 		"SuspectedSittingOnGround": "7",
-		"SittingOnGround":           "8",
-		"BedSitUp":           "9",  // pose 9 和 11 都是 BedSitUp，优先使用 pose 9
-		"SuspectedBedSitUp":  "10",
+		"SittingOnGround":          "8",
+		"BedSitUp":                 "9", // pose 9 和 11 都是 BedSitUp，优先使用 pose 9
+		"SuspectedBedSitUp":        "10",
 		// 注意：pose 11 也是 "BedSitUp"，但由于无法区分，优先映射到 pose 9
 	}
-	
+
 	// 精确匹配
 	if pose, ok := poseMap[displayEn]; ok {
 		return pose
 	}
-	
+
 	// 不区分大小写的匹配
 	for key, pose := range poseMap {
 		if strings.EqualFold(key, displayEn) {
 			return pose
 		}
 	}
-	
+
 	// 如果无法映射，返回空字符串（ExtractNumericCodesFromEvent 会跳过）
 	return ""
 }
@@ -1749,362 +1631,360 @@ type RadarEventStatToAlarmMapping struct {
 	Description string // 规则说明，便于维护与文档
 }
 
-
-
 // ========== 完整的 Radar Event/Stat 到 Alarm 映射表 ==========
 var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 	// ========== 即时触发型报警（已在 qinglan 转换为 alarm）==========
 	{
-		TopicType:    "alarm",
-		Category:     "Fall",
-		AlarmType:    Fall,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Confirmed fall alarm",
+		TopicType:   "alarm",
+		Category:    "Fall",
+		AlarmType:   Fall,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Confirmed fall alarm",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "SuspectedFall",
-		AlarmType:    SuspectedFall,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Suspected fall alarm",
+		TopicType:   "alarm",
+		Category:    "SuspectedFall",
+		AlarmType:   SuspectedFall,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Suspected fall alarm",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "SittingOnGround",
-		AlarmType:    SittingOnGround,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Confirmed sitting on ground alarm",
+		TopicType:   "alarm",
+		Category:    "SittingOnGround",
+		AlarmType:   SittingOnGround,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Confirmed sitting on ground alarm",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "SuspectedSittingOnGround",
-		AlarmType:    SuspectedSittingOnGround,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Suspected sitting on ground alarm",
+		TopicType:   "alarm",
+		Category:    "SuspectedSittingOnGround",
+		AlarmType:   SuspectedSittingOnGround,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Suspected sitting on ground alarm",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "BedSitUp",
-		AlarmType:    BedSitUp,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Confirmed bed sit-up alarm",
+		TopicType:   "alarm",
+		Category:    "BedSitUp",
+		AlarmType:   BedSitUp,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Confirmed bed sit-up alarm",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "SuspectedBedSitUp",
-		AlarmType:    SuspectedBedSitUp,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Suspected bed sit-up alarm",
+		TopicType:   "alarm",
+		Category:    "SuspectedBedSitUp",
+		AlarmType:   SuspectedBedSitUp,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Suspected bed sit-up alarm",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "WarningArea",
-		AlarmType:    WarningArea,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Enter warning area alarm",
+		TopicType:   "alarm",
+		Category:    "WarningArea",
+		AlarmType:   WarningArea,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Enter warning area alarm",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "SignalPoor",
-		AlarmType:    SignalPoor,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Radar signal poor alarm",
+		TopicType:   "alarm",
+		Category:    "SignalPoor",
+		AlarmType:   SignalPoor,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Radar signal poor alarm",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "AngleException",
-		AlarmType:    AngleException,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Radar angle exception alarm",
+		TopicType:   "alarm",
+		Category:    "AngleException",
+		AlarmType:   AngleException,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Radar angle exception alarm",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "OfflineAlarm",
-		AlarmType:    AlarmTypeOfflineAlarm,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Device offline alarm",
+		TopicType:   "alarm",
+		Category:    "OfflineAlarm",
+		AlarmType:   AlarmTypeOfflineAlarm,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Device offline alarm",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "Stay",
-		AlarmType:    Stay,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Stay alarm (evaluated in qinglan)",
+		TopicType:   "alarm",
+		Category:    "Stay",
+		AlarmType:   Stay,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Stay alarm (evaluated in qinglan)",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "NoActivity24h",
-		AlarmType:    NoActivity24h,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "24h no activity alarm (evaluated in qinglan)",
+		TopicType:   "alarm",
+		Category:    "NoActivity24h",
+		AlarmType:   NoActivity24h,
+		ProcessType: ProcessTypeImmediate,
+		Description: "24h no activity alarm (evaluated in qinglan)",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "VitalsWeak",
-		AlarmType:    VitalsWeak,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Weak vitals alarm",
+		TopicType:   "alarm",
+		Category:    "VitalsWeak",
+		AlarmType:   VitalsWeak,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Weak vitals alarm",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "LeftBed",
-		AlarmType:    LeftBed,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Left bed alarm (evaluated in qinglan)",
+		TopicType:   "alarm",
+		Category:    "LeftBed",
+		AlarmType:   LeftBed,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Left bed alarm (evaluated in qinglan)",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "LeftBedTooLong",
-		AlarmType:    LeftBedTooLong,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Left bed too long alarm (evaluated in qinglan)",
+		TopicType:   "alarm",
+		Category:    "LeftBedTooLong",
+		AlarmType:   LeftBedTooLong,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Left bed too long alarm (evaluated in qinglan)",
 	},
 	{
-		TopicType:    "alarm",
-		Category:     "InBed",
-		AlarmType:    InBed,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "In bed alarm (evaluated in qinglan)",
+		TopicType:   "alarm",
+		Category:    "InBed",
+		AlarmType:   InBed,
+		ProcessType: ProcessTypeImmediate,
+		Description: "In bed alarm (evaluated in qinglan)",
 	},
 
 	// ========== 设备在线状态事件 ==========
 	{
-		TopicType:    "alarm",
-		Category:     "isOnline",
-		AlarmType:    AlarmTypeDeviceRecovery,
-		ProcessType:  ProcessTypeStateBased,
-		Description:  "Device recovered online, update device state",
+		TopicType:   "alarm",
+		Category:    "isOnline",
+		AlarmType:   AlarmTypeDeviceRecovery,
+		ProcessType: ProcessTypeStateBased,
+		Description: "Device recovered online, update device state",
 	},
 
 	// ========== Event Stream 中的事件 ==========
 	// Event type=1 (进出事件)
 	{
-		TopicType:    "event",
-		Category:     "enter2out",
-		EventType:    intPtr(1),
-		AreaType:     intPtr(6), // 警告区域
-		AlarmType:    WarningArea,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Enter warning area event",
+		TopicType:   "event",
+		Category:    "enter2out",
+		EventType:   intPtr(1),
+		AreaType:    intPtr(6), // 警告区域
+		AlarmType:   WarningArea,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Enter warning area event",
 	},
 	{
-		TopicType:    "event",
-		Category:     "enter2out",
-		EventType:    intPtr(1),
-		AreaType:     intPtr(2), // 普通床
-		ProcessType:  ProcessTypeBedStateChange,
-		AlarmType:    "",
-		Description:  "Bed area enter/exit, update bed state",
+		TopicType:   "event",
+		Category:    "enter2out",
+		EventType:   intPtr(1),
+		AreaType:    intPtr(2), // 普通床
+		ProcessType: ProcessTypeBedStateChange,
+		AlarmType:   "",
+		Description: "Bed area enter/exit, update bed state",
 	},
 	{
-		TopicType:    "event",
-		Category:     "enter2out",
-		EventType:    intPtr(1),
-		AreaType:     intPtr(5), // 监护床
-		ProcessType:  ProcessTypeBedStateChange,
-		AlarmType:    "",
-		Description:  "Monitor bed enter/exit, update bed state",
+		TopicType:   "event",
+		Category:    "enter2out",
+		EventType:   intPtr(1),
+		AreaType:    intPtr(5), // 监护床
+		ProcessType: ProcessTypeBedStateChange,
+		AlarmType:   "",
+		Description: "Monitor bed enter/exit, update bed state",
 	},
 	{
-		TopicType:    "event",
-		Category:     "enter2out",
-		EventType:    intPtr(1),
-		AreaType:     intPtr(4), // 房间
-		ProcessType:  ProcessTypeRoomStateChange,
-		AlarmType:    "",
-		Description:  "Room enter/exit, update room state",
+		TopicType:   "event",
+		Category:    "enter2out",
+		EventType:   intPtr(1),
+		AreaType:    intPtr(4), // 房间
+		ProcessType: ProcessTypeRoomStateChange,
+		AlarmType:   "",
+		Description: "Room enter/exit, update room state",
 	},
 
 	// Event type=2 (姿态变化) - 时间相关处理
 	{
-		TopicType:    "event",
-		Category:     "pose",
-		EventType:    intPtr(2),
-		Pose:         intPtr(2), // 疑似跌倒
-		AlarmType:    SuspectedFall,
-		ProcessType:  ProcessTypeTimeBased,
-		DurationSec:  intPtr(60),
-		UpgradeTo:    strPtr(Fall),
-		Description:  "Suspected fall, upgrade to confirmed fall after 60s",
+		TopicType:   "event",
+		Category:    "pose",
+		EventType:   intPtr(2),
+		Pose:        intPtr(2), // 疑似跌倒
+		AlarmType:   SuspectedFall,
+		ProcessType: ProcessTypeTimeBased,
+		DurationSec: intPtr(60),
+		UpgradeTo:   strPtr(Fall),
+		Description: "Suspected fall, upgrade to confirmed fall after 60s",
 	},
 	{
-		TopicType:    "event",
-		Category:     "pose",
-		EventType:    intPtr(2),
-		Pose:         intPtr(7), // 疑似坐地
-		AlarmType:    SuspectedSittingOnGround,
-		ProcessType:  ProcessTypeTimeBased,
-		DurationSec:  intPtr(60),
-		UpgradeTo:    strPtr(SittingOnGround),
-		Description:  "Suspected sitting on ground, upgrade after 60s",
+		TopicType:   "event",
+		Category:    "pose",
+		EventType:   intPtr(2),
+		Pose:        intPtr(7), // 疑似坐地
+		AlarmType:   SuspectedSittingOnGround,
+		ProcessType: ProcessTypeTimeBased,
+		DurationSec: intPtr(60),
+		UpgradeTo:   strPtr(SittingOnGround),
+		Description: "Suspected sitting on ground, upgrade after 60s",
 	},
 	{
-		TopicType:    "event",
-		Category:     "pose",
-		EventType:    intPtr(2),
-		Pose:         intPtr(10), // 疑似床上坐起
-		AlarmType:    SuspectedBedSitUp,
-		ProcessType:  ProcessTypeTimeBased,
-		DurationSec:  intPtr(60),
-		UpgradeTo:    strPtr(BedSitUp),
-		Description:  "Suspected bed sit-up, upgrade after 60s",
+		TopicType:   "event",
+		Category:    "pose",
+		EventType:   intPtr(2),
+		Pose:        intPtr(10), // 疑似床上坐起
+		AlarmType:   SuspectedBedSitUp,
+		ProcessType: ProcessTypeTimeBased,
+		DurationSec: intPtr(60),
+		UpgradeTo:   strPtr(BedSitUp),
+		Description: "Suspected bed sit-up, upgrade after 60s",
 	},
 	// Event type=2 (姿态变化) - 即时触发
 	{
-		TopicType:    "event",
-		Category:     "pose",
-		EventType:    intPtr(2),
-		Pose:         intPtr(5), // 确认跌倒
-		AlarmType:    Fall,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Confirmed fall event",
+		TopicType:   "event",
+		Category:    "pose",
+		EventType:   intPtr(2),
+		Pose:        intPtr(5), // 确认跌倒
+		AlarmType:   Fall,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Confirmed fall event",
 	},
 	{
-		TopicType:    "event",
-		Category:     "pose",
-		EventType:    intPtr(2),
-		Pose:         intPtr(8), // 确认坐地
-		AlarmType:    SittingOnGround,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Confirmed sitting on ground event",
+		TopicType:   "event",
+		Category:    "pose",
+		EventType:   intPtr(2),
+		Pose:        intPtr(8), // 确认坐地
+		AlarmType:   SittingOnGround,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Confirmed sitting on ground event",
 	},
 	{
-		TopicType:    "event",
-		Category:     "pose",
-		EventType:    intPtr(2),
-		Pose:         intPtr(11), // 确认床上坐起
-		AlarmType:    BedSitUp,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Confirmed bed sit-up event",
+		TopicType:   "event",
+		Category:    "pose",
+		EventType:   intPtr(2),
+		Pose:        intPtr(11), // 确认床上坐起
+		AlarmType:   BedSitUp,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Confirmed bed sit-up event",
 	},
 
 	// Event type=3 (number-people) - 人数变化
 	{
-		TopicType:    "event",
-		Category:     "number-people",
-		EventType:    intPtr(3),
-		ProcessType:  ProcessTypeActivityMonitoring,
-		AlarmType:    "",
-		Description:  "Number of people change, for activity monitoring",
+		TopicType:   "event",
+		Category:    "number-people",
+		EventType:   intPtr(3),
+		ProcessType: ProcessTypeActivityMonitoring,
+		AlarmType:   "",
+		Description: "Number of people change, for activity monitoring",
 	},
 
 	// Event type=7 (信号差)
 	{
-		TopicType:    "event",
-		Category:     "signal",
-		EventType:    intPtr(7),
-		AlarmType:    SignalPoor,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Signal poor event",
+		TopicType:   "event",
+		Category:    "signal",
+		EventType:   intPtr(7),
+		AlarmType:   SignalPoor,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Signal poor event",
 	},
 
 	// Event type=8 (倾角异常)
 	{
-		TopicType:    "event",
-		Category:     "angle",
-		EventType:    intPtr(8),
-		AlarmType:    AngleException,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Angle exception event",
+		TopicType:   "event",
+		Category:    "angle",
+		EventType:   intPtr(8),
+		AlarmType:   AngleException,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Angle exception event",
 	},
 
 	// ========== Stat Stream 中的统计 ==========
 	// 睡眠统计相关
 	{
-		TopicType:    "stat",
-		Category:     "sleep",
-		StatType:     strPtr("sleep"),
-		StatCode:     strPtr("breath_01"),
-		AlarmType:    AbnormalRespiratoryRate,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Low respiratory rate stat",
+		TopicType:   "stat",
+		Category:    "sleep",
+		StatType:    strPtr("sleep"),
+		StatCode:    strPtr("breath_01"),
+		AlarmType:   AbnormalRespiratoryRate,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Low respiratory rate stat",
 	},
 	{
-		TopicType:    "stat",
-		Category:     "sleep",
-		StatType:     strPtr("sleep"),
-		StatCode:     strPtr("breath_10"),
-		AlarmType:    AbnormalRespiratoryRate,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "High respiratory rate stat",
+		TopicType:   "stat",
+		Category:    "sleep",
+		StatType:    strPtr("sleep"),
+		StatCode:    strPtr("breath_10"),
+		AlarmType:   AbnormalRespiratoryRate,
+		ProcessType: ProcessTypeImmediate,
+		Description: "High respiratory rate stat",
 	},
 	{
-		TopicType:    "stat",
-		Category:     "sleep",
-		StatType:     strPtr("sleep"),
-		StatCode:     strPtr("breath_11"),
-		AlarmType:    ApneaHypopnea,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Apnea/hypopnea stat",
+		TopicType:   "stat",
+		Category:    "sleep",
+		StatType:    strPtr("sleep"),
+		StatCode:    strPtr("breath_11"),
+		AlarmType:   ApneaHypopnea,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Apnea/hypopnea stat",
 	},
 	{
-		TopicType:    "stat",
-		Category:     "sleep",
-		StatType:     strPtr("sleep"),
-		StatCode:     strPtr("heart_01"),
-		AlarmType:    AbnormalHeartRate,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Low heart rate stat",
+		TopicType:   "stat",
+		Category:    "sleep",
+		StatType:    strPtr("sleep"),
+		StatCode:    strPtr("heart_01"),
+		AlarmType:   AbnormalHeartRate,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Low heart rate stat",
 	},
 	{
-		TopicType:    "stat",
-		Category:     "sleep",
-		StatType:     strPtr("sleep"),
-		StatCode:     strPtr("heart_10"),
-		AlarmType:    AbnormalHeartRate,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "High heart rate stat",
+		TopicType:   "stat",
+		Category:    "sleep",
+		StatType:    strPtr("sleep"),
+		StatCode:    strPtr("heart_10"),
+		AlarmType:   AbnormalHeartRate,
+		ProcessType: ProcessTypeImmediate,
+		Description: "High heart rate stat",
 	},
 	{
-		TopicType:    "stat",
-		Category:     "sleep",
-		StatType:     strPtr("sleep"),
-		StatCode:     strPtr("vitals_11"),
-		AlarmType:    VitalsWeak,
-		ProcessType:  ProcessTypeImmediate,
-		Description:  "Weak vitals stat",
+		TopicType:   "stat",
+		Category:    "sleep",
+		StatType:    strPtr("sleep"),
+		StatCode:    strPtr("vitals_11"),
+		AlarmType:   VitalsWeak,
+		ProcessType: ProcessTypeImmediate,
+		Description: "Weak vitals stat",
 	},
 	{
-		TopicType:    "stat",
-		Category:     "sleep",
-		StatType:     strPtr("sleep"),
-		StatCode:     strPtr("stay"),
-		AlarmType:    Stay,
-		ProcessType:  ProcessTypeTimeBased,
-		DurationSec:  intPtr(45 * 60), // 45分钟
-		Description:  "Stay stat, trigger after 45min",
+		TopicType:   "stat",
+		Category:    "sleep",
+		StatType:    strPtr("sleep"),
+		StatCode:    strPtr("stay"),
+		AlarmType:   Stay,
+		ProcessType: ProcessTypeTimeBased,
+		DurationSec: intPtr(45 * 60), // 45分钟
+		Description: "Stay stat, trigger after 45min",
 	},
 	{
-		TopicType:    "stat",
-		Category:     "sleep",
-		StatType:     strPtr("sleep"),
-		StatCode:     strPtr("no_activity"),
-		AlarmType:    NoActivity24h,
-		ProcessType:  ProcessTypeTimeBased,
-		DurationSec:  intPtr(24 * 60 * 60), // 24小时
-		Description:  "No activity stat, trigger after 24h",
+		TopicType:   "stat",
+		Category:    "sleep",
+		StatType:    strPtr("sleep"),
+		StatCode:    strPtr("no_activity"),
+		AlarmType:   NoActivity24h,
+		ProcessType: ProcessTypeTimeBased,
+		DurationSec: intPtr(24 * 60 * 60), // 24小时
+		Description: "No activity stat, trigger after 24h",
 	},
 
 	// ========== Monitor Stream 中的监控数据 ==========
 	// 呼吸率监控
 	{
-		TopicType:    "monitor",
-		Category:     "vital",
-		StatType:     strPtr("respiratory_rate"),
-		AlarmType:    AbnormalRespiratoryRate,
-		ProcessType:  ProcessTypeTimeBased,
-		DurationSec:  intPtr(60), // 持续1分钟异常
-		Description:  "Respiratory rate abnormal monitor",
+		TopicType:   "monitor",
+		Category:    "vital",
+		StatType:    strPtr("respiratory_rate"),
+		AlarmType:   AbnormalRespiratoryRate,
+		ProcessType: ProcessTypeTimeBased,
+		DurationSec: intPtr(60), // 持续1分钟异常
+		Description: "Respiratory rate abnormal monitor",
 	},
 	// 心率监控
 	{
-		TopicType:    "monitor",
-		Category:     "vital",
-		StatType:     strPtr("heart_rate"),
-		AlarmType:    AbnormalHeartRate,
-		ProcessType:  ProcessTypeTimeBased,
-		DurationSec:  intPtr(60), // 持续1分钟异常
-		Description:  "Heart rate abnormal monitor",
+		TopicType:   "monitor",
+		Category:    "vital",
+		StatType:    strPtr("heart_rate"),
+		AlarmType:   AbnormalHeartRate,
+		ProcessType: ProcessTypeTimeBased,
+		DurationSec: intPtr(60), // 持续1分钟异常
+		Description: "Heart rate abnormal monitor",
 	},
 }
 
@@ -2117,6 +1997,7 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 //   - pose: pose 字段值（可为 nil）
 //   - statType: stat 类型（可为 nil）
 //   - statCode: stat 代码（可为 nil）
+//
 // 返回：匹配的映射规则列表（可能有多个匹配，按优先级返回第一个）
 func MatchRadarEventStatToAlarm(
 	topicType, category string,

@@ -10,16 +10,18 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"wisefido-data/internal/cache"
+	cardcreator "wisefido-data/internal/card"
 	"wisefido-data/internal/config"
-	"wisefido-data/internal/consumer"
 	"wisefido-data/internal/domain"
 	httpapi "wisefido-data/internal/http"
 	"wisefido-data/internal/notifier"
+	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/service"
 	"wisefido-data/internal/store"
 
-	"owl-common/card"
 	"owl-common/database"
 	logpkg "owl-common/logger"
 
@@ -46,10 +48,6 @@ func main() {
 	})
 	kv := store.NewRedisKV(redisClient)
 
-	vital := httpapi.NewVitalFocusHandler(kv, logger)
-	router := httpapi.NewRouter(logger)
-	router.RegisterVitalFocusRoutes(vital)
-
 	// Tenants management (platform-level)
 	var tenantsRepo repository.TenantsRepository
 	authStore := httpapi.NewAuthStore()
@@ -62,11 +60,20 @@ func main() {
 	// Optional DB-backed admin APIs (units/rooms/beds/devices)
 	var db *sql.DB
 	var cardRepo *repository.PostgresCardRepository
-	var cardCreator *card.CardCreator
+	var cardCreator *cardcreator.CardCreator
+	var cardSyncService *service.CardSyncService
+	var devicesRepo *repository.PostgresDevicesRepository
+	var unitsRepo *repository.PostgresUnitsRepository
+	var deviceStoreRepo *repository.PostgresDeviceStoreRepository
+	var residentsRepo *repository.PostgresResidentsRepository
+	var branchesRepo *repository.PostgresBranchesRepository
+	var userCardsCache *cache.UserCardsCache
+	var usersRepo *repository.PostgresUsersRepository
+	var tenantResolver *repository.PostgresTenantResolver
 	// Stub depends on tenantsRepo + authStore (used by /auth/api/v1/institutions/search + /auth/api/v1/login)
 	stub := httpapi.NewStubHandler(nil, authStore, nil)
 	// Always register admin routes; if DB is not available, AdminAPI will fall back to stub (no 404).
-		admin := httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, nil)
+	admin := httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, nil)
 	if cfg.DBEnabled {
 		if d, err := database.NewPostgresDB(&cfg.Database); err == nil {
 			db = d
@@ -75,10 +82,79 @@ func main() {
 			logger.Warn("DB enabled but connection failed, falling back to stub", zap.Error(err))
 		}
 	}
-	if db != nil {
-		// 如果数据库可用，设置 DB 连接（用于保存 preferences）
-		vital.SetDB(db)
 
+	if db != nil {
+		// DB可用时创建完整功能的服务
+		unitsRepo = repository.NewPostgresUnitsRepository(db)
+		devicesRepo = repository.NewPostgresDevicesRepository(db)
+		devicesRepo.SetLogger(logger) // Set logger for device connection logging
+		deviceStoreRepo = repository.NewPostgresDeviceStoreRepository(db)
+		tenantResolver = repository.NewPostgresTenantResolver(db)
+		tenantsRepo = repository.NewPostgresTenantsRepository(db)
+		// Note: StubHandler still uses TenantsRepo (old interface), but we need TenantsRepository for AuthService
+		// For now, pass nil to StubHandler since it's mainly used for fallback
+		stub = httpapi.NewStubHandler(nil, authStore, db)
+		stub.SetLogger(logger) // Set logger for user login logging
+		var qinglanClient *service.QinglanClient
+		if cfg.Qinglan.APIBaseURL != "" {
+			qinglanClient = service.NewQinglanClient(cfg.Qinglan.APIBaseURL, logger)
+		}
+		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, deviceStoreRepo, tenantResolver, stub, logger, qinglanClient)
+
+		// 创建 Role 和 RolePermission Service（仅创建，不保留变量）
+		roleRepo := repository.NewPostgresRolesRepository(db)
+		rolePermRepo := repository.NewPostgresRolePermissionsRepository(db)
+		usersRepo = repository.NewPostgresUsersRepository(db)
+		_ = service.NewRoleService(roleRepo, usersRepo, logger)
+		_ = service.NewRolePermissionService(rolePermRepo, logger)
+
+		// tags - 已删除（tags 表不存在）
+
+		// 创建配置变更通知器
+		configNotifier := notifier.NewConfigNotifier(redisClient, logger)
+
+		// 卡片同步：写 DB，发 config.card.*，可选写 VitalFocusCard 静态缓存
+		cardRepo = repository.NewPostgresCardRepository(db, logger)
+		cardSyncService = service.NewCardSyncService(cardRepo, configNotifier, logger)
+
+		// 创建 Card Creator（用于启动时全量更新），现在可以使用已创建的 cardRepo
+		cardCreator = cardcreator.NewCardCreator(cardRepo, logger)
+		vitalCache := cache.NewVitalFocusStaticCache(redisClient, cardRepo, logger)
+		cardSyncService.SetVitalFocusStaticCache(vitalCache)
+		userCardsCache = cache.NewUserCardsCache(kv, logger)
+		cardSyncService.SetUserCardsCache(userCardsCache)
+
+		// 创建 Unit Service
+		branchesRepo = repository.NewPostgresBranchesRepository(db)
+		// 注意：residentsRepo 和 devicesRepo 需要在 UnitService 之前创建
+		residentsRepo = repository.NewPostgresResidentsRepository(db)
+		// 使用已创建的 devicesRepo，避免重新创建导致 logger 丢失
+		_ = service.NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, cardSyncService, logger)
+
+	} else {
+		// DB不可用时使用简化的处理器
+	}
+
+	router := httpapi.NewRouter(logger)
+
+	if db != nil {
+		// 创建卡片实时数据处理器并注册路由
+		allowedProvider := service.NewAllowedCardIDsProvider(kv, usersRepo, residentsRepo, db, logger)
+		cardStaticSvc := service.NewCardStaticService(kv, unitsRepo, allowedProvider, userCardsCache, residentsRepo, logger)
+		cardRealtimeSvc := service.NewCardRealtimeService(kv, allowedProvider, logger)
+
+		cardRealtimeHandler := httpapi.NewCardRealtimeHandler(cardRealtimeSvc, cardStaticSvc, logger)
+		router.RegisterCardRealtimeRoutes(cardRealtimeHandler)
+
+		// 创建 VitalFocusHandler（前端 Monitor API）
+		vitalFocusHandler := httpapi.NewVitalFocusHandler(logger)
+		vitalFocusHandler.SetCardService(cardStaticSvc)
+		vitalFocusHandler.SetRealtimeService(cardRealtimeSvc)
+		vitalFocusHandler.SetUsersRepo(usersRepo) // 用于会话验证
+		router.RegisterVitalFocusRoutes(vitalFocusHandler)
+	}
+
+	if db != nil {
 		// DB bootstrap: ensure System tenant + sysadmin exist in DB for UI pages that query users/roles.
 		// Login still uses AuthStore hashes, but keeping DB in sync makes admin pages behave as expected.
 		if os.Getenv("SEED_SYSADMIN") != "false" {
@@ -119,20 +195,9 @@ func main() {
 			}
 		}
 
-		unitsRepo := repository.NewPostgresUnitsRepository(db)
-		devicesRepo := repository.NewPostgresDevicesRepository(db)
-		devicesRepo.SetLogger(logger) // Set logger for device connection logging
-		deviceStoreRepo := repository.NewPostgresDeviceStoreRepository(db)
-		tenantResolver := repository.NewPostgresTenantResolver(db)
-		tenantsRepo = repository.NewPostgresTenantsRepository(db)
-		// Note: StubHandler still uses TenantsRepo (old interface), but we need TenantsRepository for AuthService
-		// For now, pass nil to StubHandler since it's mainly used for fallback
-		stub = httpapi.NewStubHandler(nil, authStore, db)
-		stub.SetLogger(logger) // Set logger for user login logging
-		
 		// 创建 QinglanClient（调用 wisefido-qinglan HTTP API，统一与设备通信）
 		qinglanClient := service.NewQinglanClient(cfg.Qinglan.APIBaseURL, logger)
-		
+
 		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, deviceStoreRepo, tenantResolver, stub, logger, qinglanClient)
 
 		// 创建 Role 和 RolePermission Service 和 Handler
@@ -151,6 +216,9 @@ func main() {
 		// 创建配置变更通知器
 		configNotifier := notifier.NewConfigNotifier(redisClient, logger)
 
+		// 创建 Card Creator（用于启动时全量更新，保留向后兼容）
+		cardCreator = cardcreator.NewCardCreator(cardRepo, logger)
+
 		// 创建 AlarmCloud Service 和 Handler
 		alarmCloudRepo := repository.NewPostgresAlarmCloudRepository(db)
 		configVersionsRepo := repository.NewPostgresConfigVersionsRepository(db)
@@ -164,36 +232,17 @@ func main() {
 		authHandler := httpapi.NewAuthHandler(authService, logger)
 		router.RegisterAuthRoutes(authHandler)
 
-		// 创建 Card Repository 和 Card Creator（用于启动时全量更新，保留向后兼容）
+		// 创建 Card Repository（用于启动时全量更新，保留向后兼容）
 		cardRepo = repository.NewPostgresCardRepository(db, logger)
-		cardCreator = card.NewCardCreator(cardRepo, logger)
-
-		// 创建 CardManageClient（用于调用 wisefido-card-manage API）
-		cardManageClient := service.NewCardManageClient(cfg.CardManage.APIBaseURL, logger)
 
 		// 创建 IoTTimeSeriesClient（用于调用 wisefido-iot-timeseries 内部 API）
 		iotTimeSeriesClient := service.NewIoTTimeSeriesClient(cfg.IoTTimeSeries.InternalAPIBaseURL, logger)
 
 		// 创建 Device Service 和 Handler（qinglanClient 已在上面创建）
 		devicesRepo.SetLogger(logger) // 确保 logger 已设置（用于设备连接日志）
-		deviceService := service.NewDeviceService(devicesRepo, cardManageClient, iotTimeSeriesClient, qinglanClient, logger)
+		deviceService := service.NewDeviceService(devicesRepo, cardSyncService, iotTimeSeriesClient, qinglanClient, logger)
 		deviceHandler := httpapi.NewDeviceHandler(deviceService, logger)
 		router.RegisterDeviceRoutes(deviceHandler)
-
-		// 创建 Config Stream 消费者（订阅 config:device_status:stream，更新设备在线状态）
-		configStreamConsumer := consumer.NewConfigStreamConsumer(
-			redisClient,
-			logger,
-			"wisefido-data-config-consumer-group",
-			"wisefido-data-config-consumer-1",
-			10, // batch size
-		)
-		go func() {
-			// 使用 context.Background()，因为这是一个长期运行的 goroutine
-			if err := configStreamConsumer.Start(context.Background()); err != nil {
-				logger.Error("Config stream consumer stopped with error", zap.Error(err))
-			}
-		}()
 
 		// 创建 DeviceStore Handler（直接使用 Repository，不需要 Service 层）
 		deviceStoreHandler := httpapi.NewDeviceStoreHandler(deviceStoreRepo, qinglanClient, logger)
@@ -206,16 +255,6 @@ func main() {
 		radarInstall := service.NewRadarInstall(cfg, devicesRepo, cardsRepo, configVersionsRepo, qinglanClient, logger)
 		radarHandler := httpapi.NewRadarHandler(radarInstall, stub, kv, redisClient, logger)
 		router.RegisterRadarRoutes(radarHandler)
-
-		// 创建 Unit Service  and Handler
-		branchesRepo := repository.NewPostgresBranchesRepository(db)
-		// 注意：residentsRepo 和 devicesRepo 需要在 UnitService 之前创建
-		residentsRepo := repository.NewPostgresResidentsRepository(db)
-		devicesRepo = repository.NewPostgresDevicesRepository(db)
-		devicesRepo.SetLogger(logger) // Set logger for device connection logging
-		unitService := service.NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, cardManageClient, logger)
-		unitHandler := httpapi.NewUnitHandler(unitService, logger)
-		router.RegisterUnitRoutes(unitHandler)
 
 		// 创建 Branch Service 和 Handler
 		branchService := service.NewBranchService(branchesRepo, db, logger)
@@ -230,6 +269,9 @@ func main() {
 		userHandler := httpapi.NewUserHandler(userService, db, logger)
 		router.RegisterUsersRoutes(userHandler)
 
+		// 创建 ConfigPublisher（用于发送所有 config:* 消息）
+		configPublisher := publisher.NewConfigPublisher(redisClient, logger)
+
 		// 创建 DeviceMonitorSettings Service 和 Handler
 		alarmDeviceRepo := repository.NewPostgresAlarmDeviceRepository(db)
 		// 使用已创建的 alarmCloudRepo、configVersionsRepo（在 AlarmCloud Service 创建时已创建）
@@ -242,6 +284,7 @@ func main() {
 			deviceStoreRepo,
 			db, // 添加 db 参数用于事务操作
 			configNotifier,
+			configPublisher,
 			logger,
 		)
 
@@ -324,6 +367,8 @@ func main() {
 			unitsRepo,
 			usersRepo,
 			db,
+			redisClient,
+			configPublisher,
 			logger,
 		)
 		alarmEventHandler := httpapi.NewAlarmEventHandler(alarmEventService, logger)
@@ -331,28 +376,12 @@ func main() {
 
 		// 创建 Resident Service 和 Handler
 		residentsRepo = repository.NewPostgresResidentsRepository(db)
-		residentService := service.NewResidentService(residentsRepo, db, cardManageClient, logger)
+		residentService := service.NewResidentService(residentsRepo, db, cardSyncService, logger)
 		residentHandler := httpapi.NewResidentHandler(residentService, db, logger)
 		router.RegisterResidentRoutes(residentHandler)
 
 		sleepaceReportHandler := httpapi.NewSleepaceReportHandler(sleepaceReportService, db, logger)
 		router.RegisterSleepaceReportRoutes(sleepaceReportHandler)
-
-		// 创建 Card Service 和 Handler（cardsRepo 已在 Radar 之前创建）
-		cardService := service.NewCardService(
-			cardsRepo,
-			residentsRepo,
-			devicesRepo,
-			usersRepo,
-			kv, // 添加 kv 参数，用于读取 Redis full cache
-			db,
-			logger,
-		)
-		cardOverviewHandler := httpapi.NewCardOverviewHandler(stub, cardService, logger)
-		router.RegisterCardOverviewRoutes(cardOverviewHandler)
-
-		// 设置 cardService 到 VitalFocusHandler（用于权限过滤）
-		vital.SetCardService(cardService)
 
 		// TODO: MQTT 触发下载功能（默认禁用）
 		// 参考：wisefido-backend/wisefido-sleepace/modules/borker.go
@@ -514,7 +543,7 @@ func main() {
 								totalStats.DeletedCount += stats.DeletedCount
 								totalStats.CreatedCount += stats.CreatedCount
 								totalStats.UpdatedCount += stats.UpdatedCount
-								totalStats.UnchangedCount += stats.UnchangedCount
+								totalStats.UnchangedCount += stats.UpdatedCount
 							}
 						}
 					}

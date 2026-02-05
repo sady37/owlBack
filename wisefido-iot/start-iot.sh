@@ -149,6 +149,11 @@ export CONSUMER_NAME=iot-timeseries-1
 export LOG_LEVEL=info
 export LOG_FORMAT=json
 
+# 日志目录（与 start_owlback.sh 统一）
+LOG_DIR="${LOG_DIR:-/tmp/owlBack_logs}"
+mkdir -p "$LOG_DIR"
+LOG_FILE="${IOT_LOG_FILE:-$LOG_DIR/wisefido-iot.log}"
+
 # 显示配置信息
 echo ""
 echo -e "${BLUE}📊 Configuration:${NC}"
@@ -168,5 +173,11 @@ echo ""
 # 启动服务
 echo -e "${GREEN}🚀 Starting wisefido-iot service...${NC}"
 echo ""
+echo -e "${BLUE}📝 Log: $LOG_FILE${NC}"
+echo ""
 
-go run cmd/wisefido-iot/main.go
+if [ -t 1 ]; then
+    go run cmd/wisefido-iot/main.go 2>&1 | tee -a "$LOG_FILE"
+else
+    go run cmd/wisefido-iot/main.go 2>&1 | tee -a "$LOG_FILE"
+fi

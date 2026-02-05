@@ -44,18 +44,18 @@ type ResidentService interface {
 // residentService 实现
 type residentService struct {
 	residentsRepo repository.ResidentsRepository
-	db            *sql.DB            // 用于复杂查询（JOIN、权限过滤）
-	cardManageClient *CardManageClient // 用于调用 wisefido-card-manage API
-	logger           *zap.Logger
+	db            *sql.DB
+	cardSync      *CardSyncService
+	logger        *zap.Logger
 }
 
 // NewResidentService 创建 ResidentService 实例
-func NewResidentService(residentsRepo repository.ResidentsRepository, db *sql.DB, cardManageClient *CardManageClient, logger *zap.Logger) ResidentService {
+func NewResidentService(residentsRepo repository.ResidentsRepository, db *sql.DB, cardSync *CardSyncService, logger *zap.Logger) ResidentService {
 	return &residentService{
-		residentsRepo:    residentsRepo,
-		db:               db,
-		cardManageClient: cardManageClient,
-		logger:           logger,
+		residentsRepo: residentsRepo,
+		db:            db,
+		cardSync:      cardSync,
+		logger:        logger,
 	}
 }
 
@@ -1335,7 +1335,7 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 	).Scan(&userListRaw, &groupListRaw)
 	if err == nil {
 		caregivers = &ResidentCaregiverDTO{}
-		
+
 		// 解析 group_list JSONB array -> []string
 		if groupListRaw.Valid && groupListRaw.String != "" && groupListRaw.String != "null" {
 			var groupList []string
@@ -1343,7 +1343,7 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 				caregivers.GroupList = groupList
 			}
 		}
-		
+
 		// 解析 user_list JSONB array -> []string，然后查询完整的用户信息
 		if userListRaw.Valid && userListRaw.String != "" && userListRaw.String != "null" {
 			var userIDs []string
@@ -2331,11 +2331,11 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 		if req.InherentAttributes.PhoneHash != nil && req.InherentAttributes.PhoneHash.Action == domain.UpdateActionUpdate {
 			// 只有在 phone 不是占位符时，才设置 phoneHashToCheck
 			// 如果 phone 是占位符 "xxx-xxx-xxxx"，即使提供了 hash，也不应该检查唯一性（因为 hash 已存在但值未保存）
-			if req.InherentAttributes.Phone != nil && req.InherentAttributes.Phone.Action == domain.UpdateActionUpdate && 
+			if req.InherentAttributes.Phone != nil && req.InherentAttributes.Phone.Action == domain.UpdateActionUpdate &&
 				req.InherentAttributes.Phone.Value == "xxx-xxx-xxxx" {
 				// 占位符：不设置 phoneHashToCheck，避免触发唯一性检查
 				phoneHashToCheck = nil
-			} else if req.InherentAttributes.Phone == nil || req.InherentAttributes.Phone.Action != domain.UpdateActionUpdate || 
+			} else if req.InherentAttributes.Phone == nil || req.InherentAttributes.Phone.Action != domain.UpdateActionUpdate ||
 				(req.InherentAttributes.Phone.Value != "" && req.InherentAttributes.Phone.Value != "xxx-xxx-xxxx") {
 				phoneHashToCheck = req.InherentAttributes.PhoneHash.Value
 			}
@@ -2343,11 +2343,11 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 		if req.InherentAttributes.EmailHash != nil && req.InherentAttributes.EmailHash.Action == domain.UpdateActionUpdate {
 			// 只有在 email 不是占位符时，才设置 emailHashToCheck
 			// 如果 email 是占位符 "***@***"，即使提供了 hash，也不应该检查唯一性（因为 hash 已存在但值未保存）
-			if req.InherentAttributes.Email != nil && req.InherentAttributes.Email.Action == domain.UpdateActionUpdate && 
+			if req.InherentAttributes.Email != nil && req.InherentAttributes.Email.Action == domain.UpdateActionUpdate &&
 				req.InherentAttributes.Email.Value == "***@***" {
 				// 占位符：不设置 emailHashToCheck，避免触发唯一性检查
 				emailHashToCheck = nil
-			} else if req.InherentAttributes.Email == nil || req.InherentAttributes.Email.Action != domain.UpdateActionUpdate || 
+			} else if req.InherentAttributes.Email == nil || req.InherentAttributes.Email.Action != domain.UpdateActionUpdate ||
 				(req.InherentAttributes.Email.Value != "" && req.InherentAttributes.Email.Value != "***@***") {
 				emailHashToCheck = req.InherentAttributes.EmailHash.Value
 			}
@@ -2609,30 +2609,15 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 				)
 				// 不失败整个操作，只记录警告
 			} else {
-				// 5.1 更新成功后，调用 wisefido-card-manage API 更新卡片（同步调用）
-				if s.cardManageClient != nil {
-					// 获取更新后的 resident 信息以确定 unit_id
+				if s.cardSync != nil {
 					updatedResident, err := s.residentsRepo.GetResident(ctx, req.TenantID, req.ResidentID)
 					if err != nil {
-						s.logger.Warn("Failed to get updated resident for card update",
-							zap.Error(err),
-							zap.String("tenant_id", req.TenantID),
-							zap.String("resident_id", req.ResidentID),
-						)
+						s.logger.Warn("Failed to get updated resident for card sync", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID))
 					} else if updatedResident != nil && updatedResident.UnitID != "" {
-						if err := s.cardManageClient.CreateCardsForUnit(ctx, req.TenantID, updatedResident.UnitID); err != nil {
-							s.logger.Warn("Failed to update cards after resident caregivers change",
-								zap.Error(err),
-								zap.String("tenant_id", req.TenantID),
-								zap.String("resident_id", req.ResidentID),
-								zap.String("unit_id", updatedResident.UnitID),
-							)
+						if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, updatedResident.UnitID); err != nil {
+							s.logger.Warn("Failed to sync cards after resident caregivers change", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID), zap.String("unit_id", updatedResident.UnitID))
 						} else {
-							s.logger.Info("Updated cards after resident caregivers change",
-								zap.String("tenant_id", req.TenantID),
-								zap.String("resident_id", req.ResidentID),
-								zap.String("unit_id", updatedResident.UnitID),
-							)
+							s.logger.Info("Synced cards after resident caregivers change", zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID), zap.String("unit_id", updatedResident.UnitID))
 						}
 					}
 				}
@@ -2640,30 +2625,15 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 		}
 	}
 
-	// 6. 更新成功后，调用 wisefido-card-manage API 更新卡片（同步调用）
-	if s.cardManageClient != nil {
-		// 获取更新后的 resident 信息以确定 unit_id
+	if s.cardSync != nil {
 		updatedResident, err := s.residentsRepo.GetResident(ctx, req.TenantID, req.ResidentID)
 		if err != nil {
-			s.logger.Warn("Failed to get updated resident for card update",
-				zap.Error(err),
-				zap.String("tenant_id", req.TenantID),
-				zap.String("resident_id", req.ResidentID),
-			)
+			s.logger.Warn("Failed to get updated resident for card sync", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID))
 		} else if updatedResident != nil && updatedResident.UnitID != "" {
-			if err := s.cardManageClient.CreateCardsForUnit(ctx, req.TenantID, updatedResident.UnitID); err != nil {
-				s.logger.Warn("Failed to update cards after resident change",
-					zap.Error(err),
-					zap.String("tenant_id", req.TenantID),
-					zap.String("resident_id", req.ResidentID),
-					zap.String("unit_id", updatedResident.UnitID),
-				)
+			if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, updatedResident.UnitID); err != nil {
+				s.logger.Warn("Failed to sync cards after resident change", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID), zap.String("unit_id", updatedResident.UnitID))
 			} else {
-				s.logger.Info("Updated cards after resident change",
-					zap.String("tenant_id", req.TenantID),
-					zap.String("resident_id", req.ResidentID),
-					zap.String("unit_id", updatedResident.UnitID),
-				)
+				s.logger.Info("Synced cards after resident change", zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID), zap.String("unit_id", updatedResident.UnitID))
 			}
 		}
 	}

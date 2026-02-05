@@ -102,15 +102,19 @@ func PublishJSONToStream(ctx context.Context, client *redis.Client, stream strin
 	}, maxLen, retentionSeconds)
 }
 
-// ReadFromStream 从 Redis Streams 读取消息
+// ReadFromStream 从 Redis Streams 读取消息（默认 block 5 秒）
 func ReadFromStream(ctx context.Context, client *redis.Client, stream string, consumerGroup string, consumer string, count int64) ([]StreamMessage, error) {
-	// 使用 XREADGROUP 命令读取消息
+	return ReadFromStreamWithBlock(ctx, client, stream, consumerGroup, consumer, count, 5*time.Second)
+}
+
+// ReadFromStreamWithBlock 从 Redis Streams 读取消息，可指定 block 时长
+func ReadFromStreamWithBlock(ctx context.Context, client *redis.Client, stream string, consumerGroup string, consumer string, count int64, block time.Duration) ([]StreamMessage, error) {
 	streams, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    consumerGroup,
 		Consumer: consumer,
 		Streams:  []string{stream, ">"},
 		Count:    count,
-		Block:    time.Second * 5, // 阻塞 5 秒
+		Block:    block,
 	}).Result()
 
 	if err != nil {

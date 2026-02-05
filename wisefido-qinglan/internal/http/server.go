@@ -11,6 +11,7 @@ import (
 
 	commonconfig "owl-common/config"
 	"wisefido-qinglan/internal/config"
+	"wisefido-qinglan/internal/domain"
 	"wisefido-qinglan/internal/models"
 	"wisefido-qinglan/internal/repository"
 	"wisefido-qinglan/internal/service"
@@ -27,6 +28,7 @@ type DeviceSubscriptionManager interface {
 	ClearForceUnsubscribed(deviceUID string)
 	GetDeviceOnlineStatus(deviceUID string) string
 	GetDeviceOnlineStatusByDeviceID(ctx context.Context, deviceID string) (string, error)
+	GetAllDeviceStatuses(tenantID string) []domain.DeviceStatusItem
 }
 
 // Server HTTP服务器
