@@ -2,7 +2,6 @@ package consumer
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -21,6 +20,16 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
+const (
+	// DeviceTypeRadar 设备类型常量（wisefido-qinglan网关的所有设备都是Radar）
+	DeviceTypeRadar = "Radar"
+)
+
+// CardIDProvider 定义获取设备卡片映射信息的接口
+type CardIDProvider interface {
+	GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*repository.CardDeviceInfo, error)
+}
+
 // DeviceLastSeenUpdater 设备最后收到消息时间更新器接口
 type DeviceLastSeenUpdater interface {
 	UpdateLastSeen(deviceUID string)
@@ -35,6 +44,7 @@ type MQTTConsumer struct {
 	mqttClient          *mqtt.Client
 	redisClient         *redis.Client
 	deviceRepo          repository.DeviceRepository
+	cardMappingService  CardIDProvider // CardIDProvider用于获取deviceUID对应的cardID
 	streamPublisher     *StreamPublisher
 	subscriptionManager DeviceLastSeenUpdater // 设备最后收到消息时间更新器接口
 	subscribedTopics    map[string]struct{}   // 保存已订阅的设备主题（key: topic, value: struct{}）
@@ -57,6 +67,7 @@ func NewMQTTConsumer(
 	mqttClient *mqtt.Client,
 	redisClient *redis.Client,
 	deviceRepo repository.DeviceRepository,
+	cardMappingService CardIDProvider,
 	streamPublisher *StreamPublisher,
 	subscriptionManager DeviceLastSeenUpdater,
 ) (*MQTTConsumer, error) {
@@ -65,6 +76,7 @@ func NewMQTTConsumer(
 		mqttClient:          mqttClient,
 		redisClient:         redisClient,
 		deviceRepo:          deviceRepo,
+		cardMappingService:  cardMappingService,
 		streamPublisher:     streamPublisher,
 		subscriptionManager: subscriptionManager,
 		subscribedTopics:    make(map[string]struct{}),
@@ -382,18 +394,22 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 		return nil // 不返回错误，继续处理其他消息
 	}
 
-	// 检查设备是否已认证（allow_access=TRUE）
-	// 这是安全机制：只有已认证的设备才能处理消息，防止未认证设备攻击
-	ctx := context.Background()
-	deviceStoreInfo, _, err := c.deviceRepo.GetDeviceStoreInfoAndLocation(ctx, uid)
-	if err != nil {
-		log.Printf("Device %s not found in device_store, skipping message (device not authenticated)", uid)
+	// 快速安全滤清：仅从缓存检查 allow_access（mqtt中只查cache）
+	// 缓存由 auth_service 维护，Device的认证结果写入缓存
+	cached, ok := domain.AllowAccessCache.Load(uid)
+	if !ok {
+		// 缓存中不存在，说明设备未被认证
+		log.Printf("Device %s not in cache, rejecting message (device not authenticated)", uid)
 		return nil
 	}
-	if deviceStoreInfo == nil || !deviceStoreInfo.AllowAccess {
-		log.Printf("Device %s not authenticated (allow_access=FALSE), skipping message", uid)
+
+	// 检查缓存值
+	if allowedBool, ok := cached.(bool); !ok || !allowedBool {
+		// 类型转换失败 或 缓存中明确记录该设备不被授权
+		log.Printf("Device %s blocked by cache: allow_access=FALSE", uid)
 		return nil
 	}
+	// 缓存中存在且为 true，设备已认证，继续处理
 
 	// 解析消息体
 	var message map[string]interface{}
@@ -465,126 +481,26 @@ func (c *MQTTConsumer) extractTopicType(topic string) string {
 	return "unknown"
 }
 
-// getDeviceFromCache 从 Auth 缓存中获取设备信息（包含位置信息）
-// 如果缓存中没有，则查询数据库（降级处理）
-// 使用 GetDeviceStoreInfoAndLocation 一次性获取设备和位置信息，与 Auth 流程保持一致
-func (c *MQTTConsumer) getDeviceFromCache(ctx context.Context, uid string) (*domain.Device, *domain.DeviceLocationInfo) {
-	// 1. 尝试从 Auth 缓存获取（使用 domain.DeviceCache）
-	if cached, ok := domain.DeviceCache.Load(uid); ok {
-		if deviceWithLocation, ok := cached.(*domain.DeviceWithLocation); ok {
-			// 如果缓存中有设备信息，直接返回
-			if deviceWithLocation.Device != nil {
-				return deviceWithLocation.Device, deviceWithLocation.LocationInfo
-			}
-			// 如果只有位置信息，尝试从位置信息构建设备对象
-			if deviceWithLocation.LocationInfo != nil {
-				device := buildDeviceFromLocationInfo(deviceWithLocation.LocationInfo)
-				if device != nil {
-					// 更新缓存
-					deviceWithLocation.Device = device
-					domain.DeviceCache.Store(uid, deviceWithLocation)
-					return device, deviceWithLocation.LocationInfo
-				}
-				// 即使构建设备失败，也返回位置信息
-				return nil, deviceWithLocation.LocationInfo
-			}
-		}
-	}
-
-	// 2. 缓存中没有，使用 GetDeviceStoreInfoAndLocation 一次性查询（与 Auth 流程一致）
-	// 这个方法一次性获取 device_store 和 devices 表的信息，包括位置信息
-	// 注意：device_id 始终来自 device_store，即使设备还没有在 devices 表中创建记录
-	deviceStoreInfo, locationInfo, err := c.deviceRepo.GetDeviceStoreInfoAndLocation(ctx, uid)
-	if err != nil {
-		// 输出错误日志，便于诊断问题
-		log.Printf("Failed to get device info for %s from database: %v", uid, err)
-		return nil, nil
-	}
-
-	// 3. 从位置信息构建设备对象（DeviceLocationInfo 包含了 domain.Device 的所有字段）
-	// 注意：即使 devices 表中没有记录，locationInfo 也会包含 device_store 的 device_id
-	var device *domain.Device
-	if locationInfo != nil {
-		device = buildDeviceFromLocationInfo(locationInfo)
-		if device == nil {
-			log.Printf("Failed to build device from locationInfo for %s (DeviceID: %s)", uid, locationInfo.DeviceID)
-		}
-	} else if deviceStoreInfo != nil {
-		// 如果 locationInfo 为 nil（不应该发生，因为我们已经修复了 GetDeviceStoreInfoAndLocation），
-		// 至少使用 device_store 信息构建设备对象
-		log.Printf("locationInfo is nil but deviceStoreInfo exists for %s, building from deviceStoreInfo", uid)
-		device = &domain.Device{
-			DeviceID:   deviceStoreInfo.DeviceID,
-			DeviceUID:  deviceStoreInfo.DeviceUID,
-			TenantID:   deviceStoreInfo.TenantID,
-			DeviceType: sql.NullString{String: deviceStoreInfo.DeviceType, Valid: true},
-		}
-		locationInfo = &domain.DeviceLocationInfo{
-			DeviceID:   deviceStoreInfo.DeviceID,
-			DeviceUID:  deviceStoreInfo.DeviceUID,
-			TenantID:   deviceStoreInfo.TenantID,
-			DeviceType: sql.NullString{String: deviceStoreInfo.DeviceType, Valid: true},
-		}
-	} else {
-		log.Printf("Both locationInfo and deviceStoreInfo are nil for %s", uid)
-	}
-
-	// 4. 更新缓存
-	if locationInfo != nil {
-		deviceWithLocation := &domain.DeviceWithLocation{
-			Device:       device,
-			LocationInfo: locationInfo,
-		}
-		domain.DeviceCache.Store(uid, deviceWithLocation)
-	}
-
-	return device, locationInfo
-}
-
-// buildDeviceFromLocationInfo 从 DeviceLocationInfo 构建 domain.Device
-// DeviceLocationInfo 已经包含了 domain.Device 的所有字段
-func buildDeviceFromLocationInfo(locationInfo *domain.DeviceLocationInfo) *domain.Device {
-	if locationInfo == nil {
-		log.Printf("buildDeviceFromLocationInfo: locationInfo is nil")
-		return nil
-	}
-	if locationInfo.DeviceID == "" {
-		log.Printf("buildDeviceFromLocationInfo: DeviceID is empty for device_uid: %s", locationInfo.DeviceUID)
-		return nil
-	}
-
-	return &domain.Device{
-		DeviceID:          locationInfo.DeviceID,
-		DeviceUID:         locationInfo.DeviceUID,
-		TenantID:          locationInfo.TenantID,
-		DeviceName:        locationInfo.DeviceName,
-		BoundRoomID:       locationInfo.BoundRoomID,
-		BoundBedID:        locationInfo.BoundBedID,
-		Status:            locationInfo.Status,
-		BusinessAccess:    locationInfo.BusinessAccess,
-		MonitoringEnabled: locationInfo.MonitoringEnabled,
-		DeviceType:        locationInfo.DeviceType,
-		DeviceModel:       locationInfo.DeviceModel,
-		IMEI:              locationInfo.IMEI,
-		CommMode:          locationInfo.CommMode,
-		MCUModel:          locationInfo.MCUModel,
-		FirmwareVersion:   locationInfo.FirmwareVersion,
-	}
-}
-
 // publishDecodedData 发布解码后的数据到 Redis Stream
 // 一条 base64 消息解码后是一个对象，不是数组
 // - monitor/stat: 如果返回数组（多个数据项），则分开发送每个数据项
 // - event/alarm: 一条消息只包含一个事件，直接发送单个对象（不是数组）
+// 注意：cardID为空时仍继续处理（无接收端），但输出警告日志
 func (c *MQTTConsumer) publishDecodedData(
 	ctx context.Context,
-	device *domain.Device,
-	locationInfo *domain.DeviceLocationInfo,
+	cardID string,
+	tenantID string,
+	deviceID string,
 	topicType string,
 	category string,
 	dataValue interface{},
 	originalMessage map[string]interface{},
 ) error {
+	// cardID为空时输出警告日志，但仍继续处理
+	if cardID == "" {
+		log.Printf("⚠️ Device has no cardID, but still publishing %s message. deviceID=%s, tenantID=%s", topicType, deviceID, tenantID)
+	}
+
 	streamName := c.streamPublisher.GetOutputStreamName(topicType)
 
 	// event 和 alarm 类型：一条消息只包含一个事件，直接发送单个对象
@@ -610,7 +526,7 @@ func (c *MQTTConsumer) publishDecodedData(
 		default:
 			// 其他类型，降级处理：使用原始消息
 			log.Printf("Unexpected dataValue type for %s message: %T, using original message", topicType, dataValue)
-			encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, "", topicType, category, []interface{}{originalMessage})
+			encodedData := c.streamPublisher.BuildEncodedData(cardID, tenantID, deviceID, topicType, category, []interface{}{originalMessage})
 			streamID, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
 			if err != nil {
 				log.Printf("Failed to publish %s data to stream: %v", topicType, err)
@@ -618,7 +534,7 @@ func (c *MQTTConsumer) publishDecodedData(
 			}
 			// 输出 stream 发布日志（auth, alarm, event）
 			if topicType == "auth" || topicType == "alarm" || topicType == "event" {
-				log.Printf("Published %s data to stream %s (stream_id: %s) for device %s", topicType, streamName, streamID, device.DeviceUID)
+				log.Printf("Published %s data to stream %s (stream_id: %s) for cardID %s", topicType, streamName, streamID, cardID)
 			}
 			return nil
 		}
@@ -637,7 +553,7 @@ func (c *MQTTConsumer) publishDecodedData(
 		}
 
 		// 直接发送单个对象
-		encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, "", topicType, eventCategory, []interface{}{eventObj})
+		encodedData := c.streamPublisher.BuildEncodedData(cardID, tenantID, deviceID, topicType, eventCategory, []interface{}{eventObj})
 		streamID, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
 		if err != nil {
 			log.Printf("Failed to publish %s data to stream: %v", topicType, err)
@@ -646,7 +562,7 @@ func (c *MQTTConsumer) publishDecodedData(
 
 		// 输出 stream 发布日志（auth, alarm, event）
 		if topicType == "auth" || topicType == "alarm" || topicType == "event" {
-			log.Printf("Published %s data to stream %s (stream_id: %s) for device %s", topicType, streamName, streamID, device.DeviceUID)
+			log.Printf("Published %s data to stream %s (stream_id: %s) for cardID %s", topicType, streamName, streamID, cardID)
 		}
 		return nil
 	}
@@ -671,7 +587,7 @@ func (c *MQTTConsumer) publishDecodedData(
 	default:
 		// 其他类型，降级处理：使用原始消息
 		log.Printf("Unexpected dataValue type for %s message: %T, using original message", topicType, dataValue)
-		encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, "", topicType, category, []interface{}{originalMessage})
+		encodedData := c.streamPublisher.BuildEncodedData(cardID, tenantID, deviceID, topicType, category, []interface{}{originalMessage})
 		streamID, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
 		if err != nil {
 			log.Printf("Failed to publish %s data to stream: %v", topicType, err)
@@ -679,7 +595,7 @@ func (c *MQTTConsumer) publishDecodedData(
 		}
 		// 输出 stream 发布日志（auth, alarm, event）
 		if topicType == "auth" || topicType == "alarm" || topicType == "event" || topicType == "monitor" {
-			log.Printf("Published %s data to stream %s (stream_id: %s) for device %s", topicType, streamName, streamID, device.DeviceUID)
+			log.Printf("Published %s data to stream %s (stream_id: %s) for cardID %s", topicType, streamName, streamID, cardID)
 		}
 		return nil
 	}
@@ -700,7 +616,7 @@ func (c *MQTTConsumer) publishDecodedData(
 		}
 
 		// 构建单个对象的 encodedData（data_value 为单元素数组）
-		encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, "", topicType, itemCategory, []interface{}{itemMap})
+		encodedData := c.streamPublisher.BuildEncodedData(cardID, tenantID, deviceID, topicType, itemCategory, []interface{}{itemMap})
 
 		// 发布到 Redis Stream
 		streamID, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
@@ -711,13 +627,13 @@ func (c *MQTTConsumer) publishDecodedData(
 
 		// 输出 stream 发布日志（auth, alarm, event）
 		if topicType == "auth" || topicType == "alarm" || topicType == "event" {
-			log.Printf("Published %s data item %d to stream %s (stream_id: %s) for device %s", topicType, i+1, streamName, streamID, device.DeviceUID)
+			log.Printf("Published %s data item %d to stream %s (stream_id: %s) for deviceID %s", topicType, i+1, streamName, streamID, deviceID)
 		}
 	}
 
 	// 输出 stream 发布日志（auth, alarm, event）
 	if topicType == "auth" || topicType == "alarm" || topicType == "event" {
-		log.Printf("Published %d %s data items to stream %s for device %s", len(itemsToSend), topicType, streamName, device.DeviceUID)
+		log.Printf("Published %d %s data items to stream %s for deviceID %s", len(itemsToSend), topicType, streamName, deviceID)
 	}
 	return nil
 }
@@ -797,21 +713,25 @@ func getMapKeys(m map[string]interface{}) []string {
 // sleep 归于 vital；顶层 category 为 trackN.vitalN（仅一种时为 trackN 或 vitalN），N 为该类条数。
 func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]interface{}) error {
 	ctx := context.Background()
-	device, locationInfo := c.getDeviceFromCache(ctx, uid)
-	if device == nil {
-		// 如果 device 为 nil，但 locationInfo 可能不为 nil（包含 device_store 的 device_id）
-		// 尝试使用 locationInfo 构建设备对象
-		if locationInfo != nil && locationInfo.DeviceID != "" {
-			log.Printf("Device object is nil but locationInfo exists, building device from locationInfo for %s", uid)
-			device = buildDeviceFromLocationInfo(locationInfo)
-		}
 
-		// 如果仍然为 nil，说明设备不在 device_store 中
-		if device == nil {
-			// log.Printf("Device %s not found in device_store, skipping monitor message", uid)
-			return nil
-		}
+	// 使用 CardMappingService 获取 cardID 和其他设备映射信息
+	cardDeviceInfo, err := c.cardMappingService.GetCardIDByDeviceUID(ctx, uid)
+	if err != nil {
+		log.Printf("Failed to get cardID for device %s: %v", uid, err)
+		// cardID 获取失败，不能处理该设备消息
+		return nil
 	}
+
+	// cardDeviceInfo 不能为 nil，否则无法处理
+	if cardDeviceInfo == nil {
+		log.Printf("Device %s not found in card mapping, skipping monitor message", uid)
+		return nil
+	}
+
+	var cardID, tenantID, deviceID string
+	cardID = cardDeviceInfo.CardID
+	tenantID = cardDeviceInfo.TenantID
+	deviceID = cardDeviceInfo.DeviceID
 
 	// 调用 RadarDecoder 进行协议层面的解码
 	dataValue, err := decode.RadarDecoder(message, "monitor")
@@ -834,10 +754,7 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 	case map[string]interface{}:
 		items = []map[string]interface{}{v}
 	default:
-		encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, "", "monitor", "", []interface{}{message})
-		streamName := c.streamPublisher.GetOutputStreamName("monitor")
-		_, _ = c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
-		return nil
+		return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "monitor", "", []interface{}{message}, message)
 	}
 
 	if len(items) == 0 {
@@ -873,13 +790,7 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 	for i, m := range items {
 		dvSlice[i] = m
 	}
-	encodedData := c.streamPublisher.BuildEncodedData(device, locationInfo, "", "monitor", topCategory, dvSlice)
-	streamName := c.streamPublisher.GetOutputStreamName("monitor")
-	if _, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData); err != nil {
-		log.Printf("Failed to publish monitor to stream: %v", err)
-		return err
-	}
-	return nil
+	return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "monitor", topCategory, dvSlice, message)
 }
 
 // handleFunctionMessage 处理功能响应消息（/func/.../post）
@@ -919,23 +830,20 @@ func (c *MQTTConsumer) handleFunctionMessage(uid string, message map[string]inte
 
 // handleStatMessage 处理统计数据消息
 func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interface{}) error {
-	// 从 Auth 缓存获取设备信息（包含位置信息）
 	ctx := context.Background()
-	device, locationInfo := c.getDeviceFromCache(ctx, uid)
-	if device == nil {
-		// 如果 device 为 nil，但 locationInfo 可能不为 nil（包含 device_store 的 device_id）
-		// 尝试使用 locationInfo 构建设备对象
-		if locationInfo != nil && locationInfo.DeviceID != "" {
-			log.Printf("Device object is nil but locationInfo exists, building device from locationInfo for %s (DeviceID: %s)", uid, locationInfo.DeviceID)
-			device = buildDeviceFromLocationInfo(locationInfo)
-		}
 
-		// 如果仍然为 nil，说明设备不在 device_store 中
-		// 安全机制：未认证的设备不能接收消息，防止攻击
-		if device == nil {
-			log.Printf("Device %s not found in device_store, skipping stat message (device not authenticated). Check if device exists in device_store table.", uid)
-			return nil
-		}
+	// 使用 CardMappingService 获取 cardID 和其他设备映射信息
+	cardDeviceInfo, err := c.cardMappingService.GetCardIDByDeviceUID(ctx, uid)
+	if err != nil {
+		log.Printf("Failed to get cardID for device %s: %v", uid, err)
+		// cardID 获取失败，不能处理该设备消息
+		return nil
+	}
+
+	// cardDeviceInfo 不能为 nil，否则无法处理
+	if cardDeviceInfo == nil {
+		log.Printf("Device %s not found in card mapping, skipping stat message (device not authenticated)", uid)
+		return nil
 	}
 
 	// 调用 RadarDecoder 进行协议层面的解码
@@ -948,18 +856,18 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 
 	// 获取报警使能配置（如果设备已认证且有tenant_id）
 	var enablementItems []alarm.AlarmEnablementItem
-	if device.TenantID != "" && device.DeviceUID != "" {
+	if cardDeviceInfo.TenantID != "" && cardDeviceInfo.DeviceUID != "" {
 		var err error
-		enablementItems, err = c.deviceRepo.GetAlarmEnablement(ctx, device.TenantID, device.DeviceUID)
+		enablementItems, err = c.deviceRepo.GetAlarmEnablement(ctx, cardDeviceInfo.TenantID, cardDeviceInfo.DeviceUID)
 		if err != nil {
 			log.Printf("Failed to get alarm enablement for device %s: %v", uid, err)
 			// 如果获取失败，继续发布到 stat stream（降级处理）
-			return c.publishDecodedData(ctx, device, locationInfo, "stat", "", dataValue, message)
+			return c.publishDecodedData(ctx, cardDeviceInfo.CardID, cardDeviceInfo.TenantID, cardDeviceInfo.DeviceID, "stat", "", dataValue, message)
 		}
 	} else {
 		// 设备未认证，没有tenant_id，直接发布到stat stream
 		log.Printf("Device %s not authenticated yet (no tenant_id), publishing stat message directly", uid)
-		return c.publishDecodedData(ctx, device, locationInfo, "stat", "", dataValue, message)
+		return c.publishDecodedData(ctx, cardDeviceInfo.CardID, cardDeviceInfo.TenantID, cardDeviceInfo.DeviceID, "stat", "", dataValue, message)
 	}
 
 	// stat 消息可能包含多个数据项（track, sleep 等），需要逐个检查
@@ -978,7 +886,7 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 		itemsToCheck = []map[string]interface{}{v}
 	default:
 		// 其他类型，直接发布到 stat stream
-		return c.publishDecodedData(ctx, device, locationInfo, "stat", "", dataValue, message)
+		return c.publishDecodedData(ctx, cardDeviceInfo.CardID, cardDeviceInfo.TenantID, cardDeviceInfo.DeviceID, "stat", "", dataValue, message)
 	}
 
 	// 收集所有 numeric codes，然后使用 GetAlarmEnabledMapByNumericCodes 检查
@@ -1029,40 +937,38 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 
 	if shouldConvertToAlarm {
 		// 转换为 alarm，发布到 alarm stream
-		// category 格式："AlarmLevel.AlarmType"（例如 "EMERG.Fall"）
 		alarmCategory := fmt.Sprintf("%s.%s", alarmLevel, alarmType)
 		log.Printf("Stat message for device %s should be converted to alarm (category=%s)", uid, alarmCategory)
-		return c.publishDecodedData(ctx, device, locationInfo, "alarm", alarmCategory, dataValue, message)
+		return c.publishDecodedData(ctx, cardDeviceInfo.CardID, cardDeviceInfo.TenantID, cardDeviceInfo.DeviceID, "alarm", alarmCategory, dataValue, message)
 	}
 
-	// 保持原 topic，发布到 stat stream
-	// 注意：publishDecodedData 会使用数据项自己的 category（track, sleep）作为顶层 category
-	return c.publishDecodedData(ctx, device, locationInfo, "stat", "", dataValue, message)
+	// 常规 stat 流，直接发布
+	return c.publishDecodedData(ctx, cardDeviceInfo.CardID, cardDeviceInfo.TenantID, cardDeviceInfo.DeviceID, "stat", "", dataValue, message)
 }
 
 // handleEventMessage 处理事件消息
 func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interface{}) error {
 
-	// 从 Auth 缓存获取设备信息（包含位置信息）
 	ctx := context.Background()
-	device, locationInfo := c.getDeviceFromCache(ctx, uid)
-	if device == nil {
-		// 如果 device 为 nil，但 locationInfo 可能不为 nil（包含 device_store 的 device_id）
-		// 尝试使用 locationInfo 构建设备对象
-		if locationInfo != nil && locationInfo.DeviceID != "" {
-			log.Printf("Device object is nil but locationInfo exists, building device from locationInfo for %s", uid)
-			device = buildDeviceFromLocationInfo(locationInfo)
-		}
 
-		// 如果仍然为 nil，说明设备不在 device_store 中
-		// 安全机制：未认证的设备不能接收消息，防止攻击
-		if device == nil {
-			log.Printf("Device %s not found in device_store, skipping event message (device not authenticated). Check if device exists in device_store table.", uid)
-			return nil
-		}
+	// 使用 CardMappingService 获取 cardID 和其他设备映射信息
+	cardDeviceInfo, err := c.cardMappingService.GetCardIDByDeviceUID(ctx, uid)
+	if err != nil {
+		log.Printf("Failed to get cardID for device %s: %v", uid, err)
+		// cardID 获取失败，不能处理该设备消息
+		return nil
 	}
 
-	//log.Printf("Device %s found: DeviceID=%s, TenantID=%s, DeviceType=%s", uid, device.DeviceID, device.TenantID, device.DeviceType.String)
+	// cardDeviceInfo 不能为 nil，否则无法处理
+	if cardDeviceInfo == nil {
+		log.Printf("Device %s not found in card mapping, skipping event message (device not authenticated)", uid)
+		return nil
+	}
+
+	var cardID, tenantID, deviceID string
+	cardID = cardDeviceInfo.CardID
+	tenantID = cardDeviceInfo.TenantID
+	deviceID = cardDeviceInfo.DeviceID
 
 	// 调试：记录原始消息结构
 	//log.Printf("[EVENT_RAW_DEBUG] device=%s raw message keys: %v", uid, getMapKeys(message))
@@ -1100,11 +1006,11 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 	}
 
 	// 获取报警使能配置
-	enablementItems, err := c.deviceRepo.GetAlarmEnablement(ctx, device.TenantID, device.DeviceUID)
+	enablementItems, err := c.deviceRepo.GetAlarmEnablement(ctx, tenantID, uid)
 	if err != nil {
 		log.Printf("Failed to get alarm enablement for device %s: %v", uid, err)
 		// 如果获取失败，继续发布到 event stream（降级处理）
-		return c.publishDecodedData(ctx, device, locationInfo, "event", "event", dataValue, message)
+		return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "event", "event", dataValue, message)
 	}
 
 	// 判断是否应该转换为 alarm
@@ -1149,38 +1055,38 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 		// category 格式："AlarmLevel.AlarmType"（例如 "EMERG.Fall"）
 		alarmCategory := fmt.Sprintf("%s.%s", alarmLevel, alarmType)
 		log.Printf("[EVENT_TO_ALARM] device=%s event_type=%s pose=%v area_type=%v converted to alarm stream (category=%s)", uid, eventType, pose, areaType, alarmCategory)
-		return c.publishDecodedData(ctx, device, locationInfo, "alarm", alarmCategory, dataValue, message)
+		return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "alarm", alarmCategory, dataValue, message)
 	}
 
 	// 保持原 topic，发布到 event stream
 	log.Printf("[EVENT_STREAM] device=%s event_type=%s pose=%v area_type=%v published to event stream (not converted to alarm)", uid, eventType, pose, areaType)
-	return c.publishDecodedData(ctx, device, locationInfo, "event", "event", dataValue, message)
+	return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "event", "event", dataValue, message)
 }
 
 // handleAlarmMessage 处理告警消息
 func (c *MQTTConsumer) handleAlarmMessage(uid string, message map[string]interface{}) error {
 	log.Printf("Handling alarm message for device %s", uid)
 
-	// 从 Auth 缓存获取设备信息（包含位置信息）
 	ctx := context.Background()
-	device, locationInfo := c.getDeviceFromCache(ctx, uid)
-	if device == nil {
-		// 如果 device 为 nil，但 locationInfo 可能不为 nil（包含 device_store 的 device_id）
-		// 尝试使用 locationInfo 构建设备对象
-		if locationInfo != nil && locationInfo.DeviceID != "" {
-			log.Printf("Device object is nil but locationInfo exists, building device from locationInfo for %s", uid)
-			device = buildDeviceFromLocationInfo(locationInfo)
-		}
 
-		// 如果仍然为 nil，说明设备不在 device_store 中
-		// 安全机制：未认证的设备不能接收消息，防止攻击
-		if device == nil {
-			log.Printf("Device %s not found in device_store, skipping alarm message (device not authenticated). Check if device exists in device_store table.", uid)
-			return nil
-		}
+	// 使用 CardMappingService 获取 cardID 和其他设备映射信息
+	cardDeviceInfo, err := c.cardMappingService.GetCardIDByDeviceUID(ctx, uid)
+	if err != nil {
+		log.Printf("Failed to get cardID for device %s: %v", uid, err)
+		// cardID 获取失败，不能处理该设备消息
+		return nil
 	}
 
-	log.Printf("Device %s found: DeviceID=%s, TenantID=%s, DeviceType=%s", uid, device.DeviceID, device.TenantID, device.DeviceType.String)
+	// cardDeviceInfo 不能为 nil，否则无法处理
+	if cardDeviceInfo == nil {
+		log.Printf("Device %s not found in card mapping, skipping alarm message (device not authenticated)", uid)
+		return nil
+	}
+
+	var cardID, tenantID, deviceID string
+	cardID = cardDeviceInfo.CardID
+	tenantID = cardDeviceInfo.TenantID
+	deviceID = cardDeviceInfo.DeviceID
 
 	// 调用 RadarDecoder 进行协议层面的解码
 	dataValue, err := decode.RadarDecoder(message, "alarm")
@@ -1208,5 +1114,5 @@ func (c *MQTTConsumer) handleAlarmMessage(uid string, message map[string]interfa
 
 	// 发布解码后的数据
 	// 注意：publishDecodedData 会使用数据项自己的 category（enter2out, pose 等）作为顶层 category
-	return c.publishDecodedData(ctx, device, locationInfo, "alarm", "", dataValue, message)
+	return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "alarm", "", dataValue, message)
 }

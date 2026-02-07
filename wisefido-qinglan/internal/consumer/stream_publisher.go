@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"wisefido-qinglan/internal/config"
-	"wisefido-qinglan/internal/domain"
 
 	rediscommon "owl-common/redis"
 
@@ -46,36 +45,15 @@ func (p *StreamPublisher) PublishToStream(ctx context.Context, streamName string
 // BuildEncodedData 构建 iot:*:stream 输出数据（顶层无 addressInfo，data_value 为数组）
 // cardID 未绑卡可传空；dataValue 为数组，每项含 category 及对应字段。
 func (p *StreamPublisher) BuildEncodedData(
-	device *domain.Device,
-	locationInfo *domain.DeviceLocationInfo,
 	cardID string,
+	tenantID string,
+	deviceID string,
 	topicType, category string,
 	dataValue []interface{},
 ) map[string]interface{} {
-	var deviceID, tenantID string
-	var deviceType string = "Radar"
-
-	if locationInfo != nil {
-		deviceID = locationInfo.DeviceID
-		tenantID = locationInfo.TenantID
-		if locationInfo.DeviceType.Valid {
-			deviceType = locationInfo.DeviceType.String
-		}
-	} else if device != nil {
-		deviceID = device.DeviceID
-		tenantID = device.TenantID
-		if device.DeviceType.Valid {
-			deviceType = device.DeviceType.String
-		}
-	} else {
-		return map[string]interface{}{
-			"error": "device and locationInfo are both nil",
-		}
-	}
-
 	msg := rediscommon.BuildIoTStreamMessage(
 		deviceID,
-		deviceType,
+		DeviceTypeRadar, // wisefido-qinglan网关的所有设备都是Radar（常量在mqtt_consumer.go中定义）
 		cardID,
 		tenantID,
 		time.Now().Unix(),
@@ -120,6 +98,34 @@ func (p *StreamPublisher) GetOutputStreamName(topicType string) string {
 	default:
 		return rediscommon.StreamOther.Name
 	}
+}
+
+// PublishDeviceStatus 发布设备状态到 iot:deviceStatus:stream
+// isOnline: true=在线(1), false=离线(0)
+func (p *StreamPublisher) PublishDeviceStatus(
+    ctx context.Context,
+    deviceID, deviceType, tenantID string,
+    isOnline bool,
+) error {
+    // 状态值：0=offline, 1=online
+    statusValue := 0
+    if isOnline {
+        statusValue = 1
+    }
+
+    msg := rediscommon.BuildDeviceStatusMessage(
+        deviceID,
+        deviceType,
+        "", // cardID
+        tenantID,
+        time.Now().Unix(),
+        []int{statusValue},
+    )
+
+    eventData := iotStreamMessageToMap(msg)
+
+    _, err := p.PublishToStream(ctx, rediscommon.StreamIoTDeviceStatus.Name, eventData)
+    return err
 }
 
 // GetOutputStreamConfig 获取输出流配置

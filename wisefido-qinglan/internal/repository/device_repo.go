@@ -4,24 +4,24 @@ import (
 	"context"
 	"database/sql"
 
-	"wisefido-qinglan/internal/domain"
 	"owl-common/alarm"
+	"wisefido-qinglan/internal/domain"
 )
 
 // DeviceStoreInfo 设备库存信息（用于认证）
 // 对应 device_store 表的完整结构
 type DeviceStoreInfo struct {
-	DeviceID        string         // UUID, PRIMARY KEY
-	DeviceUID       string         // VARCHAR(50), UNIQUE
-	DeviceType      string         // VARCHAR(50), NOT NULL
+	DeviceID        string // UUID, PRIMARY KEY
+	DeviceUID       string // VARCHAR(50), UNIQUE
+	DeviceType      string // VARCHAR(50), NOT NULL
 	DeviceModel     sql.NullString
 	MAC             sql.NullString
 	IMEI            sql.NullString
 	CommMode        sql.NullString
 	MCUModel        sql.NullString
 	FirmwareVersion sql.NullString
-	TenantID        string         // UUID, NOT NULL
-	AllowAccess     bool           // BOOLEAN, NOT NULL DEFAULT FALSE
+	TenantID        string // UUID, NOT NULL
+	AllowAccess     bool   // BOOLEAN, NOT NULL DEFAULT FALSE
 }
 
 // DeviceRepository 设备仓库接口
@@ -29,9 +29,6 @@ type DeviceStoreInfo struct {
 type DeviceRepository interface {
 	// GetDeviceByUID 根据设备UID获取设备信息
 	GetDeviceByUID(ctx context.Context, uid string) (*domain.Device, error)
-
-	// GetDeviceLocationInfo 获取设备位置信息
-	GetDeviceLocationInfo(ctx context.Context, uid string) (*domain.DeviceLocationInfo, error)
 
 	// GetDevicesByTenant 根据租户获取设备列表
 	GetDevicesByTenant(ctx context.Context, tenantID string) ([]*domain.Device, error)
@@ -63,9 +60,12 @@ type DeviceRepository interface {
 	// CountDevicesByStatus 按状态统计设备数量
 	CountDevicesByStatus(ctx context.Context, tenantID string) (map[string]int, error)
 
-	// GetDeviceStoreInfoAndLocation 根据设备UID获取 device_store 信息和位置信息（用于认证）
-	// 一次性查询 device_store 和 devices 表（LEFT JOIN），获取所有信息包括位置信息
-	GetDeviceStoreInfoAndLocation(ctx context.Context, deviceUID string) (*DeviceStoreInfo, *domain.DeviceLocationInfo, error)
+	// GetDeviceStoreInfoAndLocation 根据设备UID获取 device_store 信息（用于认证）
+	GetDeviceStoreInfoAndLocation(ctx context.Context, deviceUID string) (*DeviceStoreInfo, error)
+
+	// GetDeviceStoreByDeviceID 根据设备ID获取 device_store 信息（用于 device_store 变化信号处理）
+	// 返回 DeviceStoreInfo 包含 device_uid 和 allow_access
+	GetDeviceStoreByDeviceID(ctx context.Context, deviceID string) (*DeviceStoreInfo, error)
 
 	// GetAlarmEnablement 获取设备的报警使能配置
 	// 从 alarm_device.monitor_config.alarms 中解析报警项，返回 []AlarmEnablementItem

@@ -43,8 +43,6 @@ func NewAuthService(cfg *config.Config, db *sql.DB, deviceRepo repository.Device
 	}
 }
 
-// AuthenticateDevice 认证设备并返回 MQTT 配置，同时发布认证事件到 Redis Stream
-// 参考 radar-ql-v3/simple-https.py 的实现逻辑
 func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRequest, remoteAddr string) (*models.AuthResponse, error) {
 	// 输出到标准输出，确保总是可见
 	log.Printf("=== Auth Request === Device UID: %s, Type: %d, MCU_HW: %s, Radar_HW: %s, RemoteAddr: %s",
@@ -61,8 +59,8 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 	// 1. 发布认证请求到 Redis Stream（总是执行，即使用户不存在）
 	s.publishAuthRequest(ctx, req, remoteAddr)
 
-	// 2. 验证设备合法性并查询设备位置和硬件信息
-	device, locationInfo, err := s.validateDeviceAndGetLocation(ctx, req.UID)
+	// 2. 验证设备合法性
+	device, err := s.validateDeviceAndGetLocation(ctx, req.UID)
 	if err != nil {
 		// 如果 device_store 中没有记录，创建新记录（pending 状态）
 		if err.Error() == "device not found in device_store" {
@@ -86,7 +84,6 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 			}
 
 			// 新创建的设备已分配给系统租户（000...001），allow_access = FALSE，需要管理员处理
-			locationInfo = &domain.DeviceLocationInfo{}
 			s.logger.Info("Device created in device_store (pending approval, assigned to system tenant)",
 				zap.String("uid", req.UID),
 				zap.String("device_id", device.DeviceID),
@@ -147,23 +144,10 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 		// 不返回错误，继续认证流程
 	}
 
-	// 4. 缓存设备位置和硬件信息供后续使用
-	if locationInfo != nil {
-		deviceWithLocation := &domain.DeviceWithLocation{
-			Device:       nil, // auth时可能还没有devices记录
-			LocationInfo: locationInfo,
-		}
-		s.deviceCache.Store(req.UID, deviceWithLocation)
-		s.logger.Debug("Cached device location info for auth",
-			zap.String("uid", req.UID),
-			zap.Bool("has_location", locationInfo != nil),
-		)
-	}
+	// 4. 生成 MQTT 连接配置
+	mqttConfig := s.generateMQTTConfig(req.UID)
 
-	// 5. 生成 MQTT 连接配置
-	mqttConfig := s.generateMQTTConfig(req.UID, device)
-
-	// 6. 构建响应
+	// 5. 构建响应
 	response := &models.AuthResponse{
 		Msg:  "Operation success",
 		Code: 200,
@@ -181,11 +165,11 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 		zap.Int("mqtt_port", mqttConfig.Port),
 	)
 
-	// 7. 发布认证成功事件到 Redis Stream（使用位置信息）
+	// 6. 发布认证成功事件到 Redis Stream
 	log.Printf("✅ Auth success for device %s, publishing success response", req.UID)
-	s.publishAuthResponseSuccess(ctx, req.UID, device, locationInfo, mqttConfig)
+	s.publishAuthResponseSuccess(ctx, req.UID, device, mqttConfig)
 
-	// 8. 认证成功后仅开启周期性订阅（不立即订阅MQTT主题，因为启动时已订阅）
+	// 7. 认证成功后仅开启周期性订阅（不立即订阅MQTT主题，因为启动时已订阅）
 	// 创建订阅记录，让周期性订阅机制来处理monitor订阅命令
 	if s.subscriptionManager != nil {
 		if err := s.subscriptionManager.EnablePeriodicSubscription(ctx, req.UID, device.DeviceID); err != nil {
@@ -208,19 +192,19 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 	return response, nil
 }
 
-// validateDeviceAndGetLocation 验证设备合法性并获取位置信息
+// validateDeviceAndGetLocation 验证设备合法性
 // 通过 repository 层获取设备信息，符合分层架构
-func (s *AuthService) validateDeviceAndGetLocation(ctx context.Context, deviceUID string) (*DeviceStoreInfo, *domain.DeviceLocationInfo, error) {
-	// 通过 repository 层获取 device_store 信息和位置信息
-	ds, locationInfo, err := s.deviceRepo.GetDeviceStoreInfoAndLocation(ctx, deviceUID)
+func (s *AuthService) validateDeviceAndGetLocation(ctx context.Context, deviceUID string) (*DeviceStoreInfo, error) {
+	// 通过 repository 层获取 device_store 信息
+	ds, err := s.deviceRepo.GetDeviceStoreInfoAndLocation(ctx, deviceUID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// 验证设备合法性
 	// 1. 检查设备访问权限：allow_access 必须为 True，否则拒绝认证
 	if !ds.AllowAccess {
-		return nil, nil, fmt.Errorf("deny")
+		return nil, fmt.Errorf("deny")
 	}
 
 	// 2. 检查设备是否已分配给租户
@@ -231,14 +215,14 @@ func (s *AuthService) validateDeviceAndGetLocation(ctx context.Context, deviceUI
 
 	if ds.TenantID == systemTenantID {
 		// 分配给系统租户，表示 pending 状态，需要管理员处理
-		return nil, nil, fmt.Errorf("device pending approval (assigned to system tenant)")
+		return nil, fmt.Errorf("device pending approval (assigned to system tenant)")
 	}
 
 	if ds.TenantID == unallocatedTenantID {
-		return nil, nil, fmt.Errorf("device not allocated to tenant")
+		return nil, fmt.Errorf("device not allocated to tenant")
 	}
 
-	return ds, locationInfo, nil
+	return ds, nil
 }
 
 // DeviceStoreInfo 设备库存信息（用于认证）
@@ -298,7 +282,7 @@ func (s *AuthService) createDeviceStoreRecord(ctx context.Context, uid string, r
 
 // generateMQTTConfig 生成 MQTT 连接配置
 // 参考 radar-ql-v3/simple-https.py 的响应格式
-func (s *AuthService) generateMQTTConfig(uid string, device *DeviceStoreInfo) *models.MQTTConfig {
+func (s *AuthService) generateMQTTConfig(uid string) *models.MQTTConfig {
 	cfg := s.config.MQTT.RadarDeviceMQTT
 
 	// 检查服务器地址是否为本地回环地址（设备无法连接）
@@ -332,7 +316,7 @@ func (s *AuthService) generateMQTTConfig(uid string, device *DeviceStoreInfo) *m
 
 // buildAuthRequestFromHTTPRequest 从 HTTP 请求构建认证请求信息
 func buildAuthRequestFromHTTPRequest(
-	uid string,
+	deviceUID string,
 	deviceType int,
 	mcuHW string,
 	mcuSW string,
@@ -438,7 +422,6 @@ func (s *AuthService) publishAuthResponseSuccess(
 	ctx context.Context,
 	uid string,
 	device *DeviceStoreInfo,
-	locationInfo *domain.DeviceLocationInfo,
 	mqttConfig *models.MQTTConfig,
 ) {
 	// 构建认证响应消息（使用 owl-common/redis 中的统一格式）

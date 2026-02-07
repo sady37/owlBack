@@ -12,7 +12,6 @@ import (
 	"owl-common/alarm"
 
 	"wisefido-data/internal/domain"
-	"wisefido-data/internal/notifier"
 	"wisefido-data/internal/repository"
 	"wisefido-qinglan/decode"
 
@@ -47,11 +46,10 @@ type deviceMonitorSettingsService struct {
 	configVersionsRepo repository.ConfigVersionsRepository // 配置版本仓库（用于审计）
 	devicesRepo        repository.DevicesRepository
 	deviceStoreRepo    repository.DeviceStoreRepository
-	sleepaceClient     *SleepaceClient          // Sleepace 硬件 API 客户端（可选）
-	configNotifier     *notifier.ConfigNotifier // 配置变更通知器
-	configPublisher    ConfigPublisher          // 配置消息发布器
-	qinglanClient      *QinglanClient           // 雷达设备仅经此客户端：查询状态/属性、下发属性（工作模式、跌倒/呼吸心率）
-	db                 *sql.DB                  // 用于事务操作
+	sleepaceClient     *SleepaceClient // Sleepace 硬件 API 客户端（可选）
+	configPublisher    ConfigPublisher // 配置消息发布器
+	qinglanClient      *QinglanClient  // 雷达设备仅经此客户端：查询状态/属性、下发属性（工作模式、跌倒/呼吸心率）
+	db                 *sql.DB         // 用于事务操作
 	logger             *zap.Logger
 }
 
@@ -63,7 +61,6 @@ func NewDeviceMonitorSettingsService(
 	devicesRepo repository.DevicesRepository,
 	deviceStoreRepo repository.DeviceStoreRepository,
 	db *sql.DB,
-	configNotifier *notifier.ConfigNotifier,
 	configPublisher ConfigPublisher,
 	logger *zap.Logger,
 ) DeviceMonitorSettingsService {
@@ -75,7 +72,6 @@ func NewDeviceMonitorSettingsService(
 		deviceStoreRepo:    deviceStoreRepo,
 		db:                 db,
 		sleepaceClient:     nil, // 通过 SetSleepaceClient 延迟设置
-		configNotifier:     configNotifier,
 		configPublisher:    configPublisher,
 		logger:             logger,
 	}
@@ -1128,14 +1124,11 @@ func (s *deviceMonitorSettingsService) updateAlarmDeviceDB(ctx context.Context, 
 			return
 		}
 
-		// 构建 settingData（包含所有告警配置）
-		settingData := map[string]interface{}{
-			"monitor_config": monitorConfigJSON,
-			"updated_at":     time.Now().Unix(),
-		}
+		// 构建 settingData（留空，wisefido-qinglan 从数据库直接查询报警使能配置）
+		settingData := map[string]interface{}{}
 
 		// 发送消息
-		if err := s.configPublisher.PublishDeviceAlarmSettingMessage(
+		if err := s.configPublisher.PublishAlarmDeviceMessage(
 			publishCtx,
 			tenantID,
 			deviceID,

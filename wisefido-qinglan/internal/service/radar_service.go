@@ -422,16 +422,6 @@ func (s *RadarService) GetDeviceInfo(ctx context.Context, deviceUID string) (*do
 	return device, nil
 }
 
-// GetDeviceLocationInfo 获取设备位置信息
-func (s *RadarService) GetDeviceLocationInfo(ctx context.Context, deviceUID string) (*domain.DeviceLocationInfo, error) {
-	locationInfo, err := s.deviceRepo.GetDeviceLocationInfo(ctx, deviceUID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get device location info: %w", err)
-	}
-
-	return locationInfo, nil
-}
-
 // GetDevicesByTenant 根据租户获取设备列表
 func (s *RadarService) GetDevicesByTenant(ctx context.Context, tenantID string) ([]*domain.Device, error) {
 	devices, err := s.deviceRepo.GetDevicesByTenant(ctx, tenantID)

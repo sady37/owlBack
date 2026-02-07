@@ -75,9 +75,10 @@ func main() {
 	}
 	defer database.Close(db)
 
-	// 创建设备仓库
-	log.Println("Creating device repository...")
+	// 创建Repository
+	log.Println("Creating repositories...")
 	deviceRepo := repository.NewPostgresDeviceRepository(db)
+	cardRepo := repository.NewPostgresCardRepository(db)
 
 	// 创建 logger
 	logger, err := zap.NewProduction()
@@ -92,7 +93,7 @@ func main() {
 
 	// 创建卡片映射服务（用于维护 deviceID:cardID 映射）
 	log.Println("Creating card mapping service...")
-	cardMappingSvc := service.NewCardMappingService(redisClient, logger)
+	cardMappingSvc := service.NewCardMappingService(redisClient, cardRepo, logger)
 
 	// 先创建MQTT消费者（不启动，用于获取messageHandler）
 	log.Println("Creating MQTT consumer...")
@@ -101,8 +102,9 @@ func main() {
 		mqttClient,
 		redisClient,
 		deviceRepo,
+		cardMappingSvc, // 卡片映射服务
 		streamPublisher,
-		nil, // 先传nil，后面再设置
+		nil, // 先传nil，后面再设置subscriptionManager
 	)
 	if err != nil {
 		log.Fatalf("Failed to create MQTT consumer: %v", err)
@@ -118,8 +120,7 @@ func main() {
 		mqttConsumer.GetMessageHandler(), // 传入MQTT consumer的messageHandler
 	)
 
-	// 设置 Redis 客户端和 Stream 发布器（用于发布设备在线状态到 config stream）
-	subscriptionManager.SetRedisClient(redisClient)
+	// 设置 Stream 发布器（用于发布设备在线状态到 alarm stream）
 	subscriptionManager.SetStreamPublisher(streamPublisher)
 	// 设置 MQTT 消费者（用于订阅/取消订阅设备主题，认证后订阅 6 个主题收 monitor/stat/event 等）
 	subscriptionManager.SetMQTTConsumer(mqttConsumer)
@@ -127,7 +128,7 @@ func main() {
 	// 设置subscriptionManager到mqttConsumer（用于UpdateLastSeen）
 	mqttConsumer.SetSubscriptionManager(subscriptionManager)
 
-	// 创建配置变更订阅器（订阅 config:device_status:stream 和 config:card:stream）
+	// 创建配置变更订阅器（订阅 config:alarmDevice:stream、config:card:stream 和 config:alarmProcess:stream）
 	log.Println("Creating config change subscriber...")
 	configSubscriber := subscriber.NewConfigSubscriber(
 		redisClient,

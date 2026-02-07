@@ -5,39 +5,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
-	"time"
 
-	commonredis "owl-common/redis"
 	"wisefido-qinglan/internal/config"
 	"wisefido-qinglan/internal/repository"
+	"wisefido-qinglan/internal/service"
+
+	rediscommon "owl-common/redis"
 
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
 
 // ConfigSubscriber 配置变更订阅器
-// 订阅以下 config:* 流：
-// 1. config:device_status:stream - 设备在线状态变更（config.device.online/offline/unsubscribed）
-// 2. config:card:stream - 卡片变更事件（config.card.created/updated/deleted）
 type ConfigSubscriber struct {
 	redisClient    *redis.Client
 	config         *config.Config
 	logger         *zap.Logger
 	deviceRepo     repository.DeviceRepository
-	deviceCache    *sync.Map          // 设备缓存（key: device_uid, value: *domain.DeviceWithLocation）
-	cardMappingSvc CardMappingService // 卡片映射服务（可选，处理卡片变更）
-	consumerGroup  string             // Consumer Group 名称
-	consumerName   string             // Consumer 名称（用于标识当前实例）
-	stopChan       chan struct{}
-	// 去重机制：只处理每个 device_uid 的最新消息
-	lastProcessed sync.Map // key: "device_uid", value: message.ID (string)
-}
-
-// CardMappingService 卡片映射服务接口
-type CardMappingService interface {
-	HandleCardCreated(ctx context.Context, data map[string]interface{}) error
-	HandleCardUpdated(ctx context.Context, data map[string]interface{}) error
-	HandleCardDeleted(ctx context.Context, data map[string]interface{}) error
+	cardMappingSvc *service.CardMappingService
+	consumerGroup  string
+	consumerName   string
+	mu             sync.RWMutex
 }
 
 // NewConfigSubscriber 创建配置变更订阅器
@@ -46,27 +34,31 @@ func NewConfigSubscriber(
 	cfg *config.Config,
 	logger *zap.Logger,
 	deviceRepo repository.DeviceRepository,
-	deviceCache *sync.Map,
-	cardMappingSvc CardMappingService, // 卡片映射服务（可选，处理卡片变更）
+	deviceCache interface{}, // 暂时不使用
+	cardMappingSvc *service.CardMappingService,
 ) *ConfigSubscriber {
 	return &ConfigSubscriber{
 		redisClient:    redisClient,
 		config:         cfg,
 		logger:         logger,
 		deviceRepo:     deviceRepo,
-		deviceCache:    deviceCache,
 		cardMappingSvc: cardMappingSvc,
-		stopChan:       make(chan struct{}),
+		consumerGroup:  "qinglan-config-consumer",
+		consumerName:   "qinglan-config-consumer-1",
 	}
 }
 
 // Start 启动配置变更订阅器
 func (s *ConfigSubscriber) Start(ctx context.Context) error {
-	// 订阅 config:device.alarm.setting:stream
-	// 该流由 wisefido-data 的 PublishDeviceAlarmSettingMessage 发出
-	// 卡片消息 (config.card.*) 当前 wisefido-data 还未发布，暂不订阅
+	// 订阅三个配置变更流（wisefido-data 发送）：
+	// 1. config:alarmDevice:stream - 告警设备配置（BuildAlarmDeviceMessage）
+	// 2. config:alarmProcess:stream - 告警处理配置（BuildAlarmProcessMessage）
+	// 3. config:card:stream - 卡片配置（BuildCardChangeMessage）
+	// 旧订阅已注释（原: config:device.alarm.setting:stream、config:device_status:stream）
 	streams := []string{
-		commonredis.StreamConfigDeviceAlarmSetting.Name, // config:device.alarm.setting:stream
+		rediscommon.StreamConfigAlarmDevice.Name,  // config:alarmDevice:stream
+		rediscommon.StreamConfigAlarmProcess.Name, // config:alarmProcess:stream
+		rediscommon.StreamConfigCard.Name,         // config:card:stream
 	}
 
 	// 创建 Consumer Group（如果不存在）
@@ -91,94 +83,6 @@ func (s *ConfigSubscriber) Start(ctx context.Context) error {
 	return nil
 }
 
-// createConsumerGroupIfNotExists 创建 Consumer Group（如果不存在）
-func (s *ConfigSubscriber) createConsumerGroupIfNotExists(ctx context.Context, stream string) error {
-	// 尝试创建 Consumer Group，从 stream 开始位置（"0"）开始消费
-	err := s.redisClient.XGroupCreate(ctx, stream, s.consumerGroup, "0").Err()
-	if err != nil {
-		// 如果错误是 "BUSYGROUP"，说明 Consumer Group 已存在，这是正常的
-		if err.Error() == "BUSYGROUP Consumer Group name already exists" {
-			return nil
-		}
-		return err
-	}
-	return nil
-}
-
-// Stop 停止配置变更订阅器
-func (s *ConfigSubscriber) Stop() {
-	close(s.stopChan)
-	s.logger.Info("Config change subscriber stopped")
-}
-
-// consumeConfigChanges 消费配置变更事件
-func (s *ConfigSubscriber) consumeConfigChanges(
-	ctx context.Context,
-	streams []string,
-) {
-	for {
-		select {
-		case <-ctx.Done():
-			s.logger.Info("Config change subscriber context done")
-			return
-		case <-s.stopChan:
-			s.logger.Info("Config change subscriber stopped by stop channel")
-			return
-		default:
-			// 使用 Consumer Group 读取消息
-			streamsWithIDs := make([]string, 0, len(streams)*2)
-			for _, stream := range streams {
-				streamsWithIDs = append(streamsWithIDs, stream, ">") // ">" 表示只读取未确认的消息
-			}
-
-			result, err := s.redisClient.XReadGroup(ctx, &redis.XReadGroupArgs{
-				Group:    s.consumerGroup,
-				Consumer: s.consumerName,
-				Streams:  streamsWithIDs,
-				Count:    10,
-				Block:    5 * time.Second,
-			}).Result()
-
-			if err != nil {
-				if err == redis.Nil {
-					// 超时，继续等待
-					continue
-				}
-				s.logger.Error("Failed to read config change streams",
-					zap.Error(err),
-				)
-				time.Sleep(1 * time.Second)
-				continue
-			}
-
-			// 处理读取到的消息
-			for _, stream := range result {
-				for _, message := range stream.Messages {
-					// 处理消息
-					if err := s.handleConfigChangeMessage(ctx, stream.Stream, message); err != nil {
-						s.logger.Error("Failed to handle config change message",
-							zap.String("stream", stream.Stream),
-							zap.String("message_id", message.ID),
-							zap.Error(err),
-						)
-						// 处理失败时不确认消息，让 Consumer Group 重新分配
-						continue
-					}
-
-					// 处理成功后确认消息
-					if err := s.redisClient.XAck(ctx, stream.Stream, s.consumerGroup, message.ID).Err(); err != nil {
-						s.logger.Error("Failed to acknowledge message",
-							zap.String("stream", stream.Stream),
-							zap.String("message_id", message.ID),
-							zap.Error(err),
-						)
-					}
-				}
-			}
-		}
-	}
-}
-
 // handleConfigChangeMessage 处理配置变更消息（支持 CloudEvents 格式和旧格式）
 func (s *ConfigSubscriber) handleConfigChangeMessage(ctx context.Context, stream string, message redis.XMessage) error {
 	s.logger.Debug("Received config change message",
@@ -187,7 +91,7 @@ func (s *ConfigSubscriber) handleConfigChangeMessage(ctx context.Context, stream
 	)
 
 	// 解析消息数据（支持展开格式和包装格式）
-	var configMsg commonredis.ConfigChangeMessage
+	var configMsg rediscommon.ConfigChangeMessage
 
 	// 优先尝试包装格式（由 PublishJSONToStream 发送）
 	if len(message.Values) > 0 {
@@ -206,11 +110,19 @@ func (s *ConfigSubscriber) handleConfigChangeMessage(ctx context.Context, stream
 	}
 
 	// 根据事件类型处理配置变更
-	// 当前只订阅 config.device.alarm.setting.updated
 	switch configMsg.Type {
-	case "config.device.alarm.setting.updated":
-		// 设备告警配置更新
-		s.handleDeviceAlarmSettingChange(ctx, configMsg, message.ID)
+	case "config.alarmDevice":
+		// 告警设备配置变更 (BuildAlarmDeviceMessage)
+		s.handleAlarmDeviceChange(configMsg, message.ID)
+	case "config.alarmProcess":
+		// 告警处理配置变更 (BuildAlarmProcessMessage)
+		s.handleAlarmProcessChange(configMsg, message.ID)
+	case "config.card":
+		// 卡片配置变更 (BuildCardChangeMessage)
+		s.handleCardChange(configMsg, message.ID)
+	// 旧事件类型已注释（原: "config.device.alarm.setting.updated"）
+	// case "config.device.alarm.setting.updated":
+	//     s.handleDeviceAlarmSettingChange(configMsg, message.ID)
 	default:
 		// 其他类型的事件暂不处理，跳过
 		s.logger.Debug("Skipping config change event (not subscribed)",
@@ -221,293 +133,172 @@ func (s *ConfigSubscriber) handleConfigChangeMessage(ctx context.Context, stream
 	return nil
 }
 
-// parseConfigMessageFromValues 从展开的 message.Values 解析 ConfigChangeMessage（CloudEvents 标准格式）
-func parseConfigMessageFromValues(values map[string]interface{}) commonredis.ConfigChangeMessage {
-	msg := commonredis.ConfigChangeMessage{}
-
-	// CloudEvents 标准字段
-	if specversion, ok := values["specversion"].(string); ok {
-		msg.SpecVersion = specversion
-	}
-	if id, ok := values["id"].(string); ok {
-		msg.ID = id
-	}
-	if source, ok := values["source"].(string); ok {
-		msg.Source = source
-	}
-	if eventType, ok := values["type"].(string); ok {
-		msg.Type = eventType
-	}
-	if timeStr, ok := values["time"].(string); ok {
-		msg.Time = timeStr
-	}
-
-	// 解析 data 字段（可能是 JSON 字符串或 map）
-	if dataStr, ok := values["data"].(string); ok {
-		var dataMap map[string]interface{}
-		if err := json.Unmarshal([]byte(dataStr), &dataMap); err == nil {
-			msg.Data = dataMap
-		}
-	} else if dataMap, ok := values["data"].(map[string]interface{}); ok {
-		msg.Data = dataMap
-	}
-
-	return msg
+// Stop 停止配置变更订阅器
+func (s *ConfigSubscriber) Stop() error {
+	// TODO: 实现优雅关闭逻辑
+	s.logger.Info("Config change subscriber stopped")
+	return nil
 }
 
-// handleCardChange 处理卡片变更事件（created/updated/deleted）
-func (s *ConfigSubscriber) handleCardChange(
-	ctx context.Context,
-	operation string,
-	msg commonredis.ConfigChangeMessage,
-	messageID string,
-) {
-	if s.cardMappingSvc == nil {
-		s.logger.Debug("Card mapping service not configured, skipping card change event",
-			zap.String("operation", operation),
-			zap.String("event_type", msg.Type))
+// handleAlarmDeviceChange 处理告警设备配置变更 (BuildAlarmDeviceMessage)
+// TODO: 实现业务逻辑，下发设备告警配置
+func (s *ConfigSubscriber) handleAlarmDeviceChange(configMsg rediscommon.ConfigChangeMessage, messageID string) {
+	s.logger.Info("Handling alarm device config change",
+		zap.String("message_id", messageID),
+		zap.Any("data", configMsg),
+	)
+	// 业务逻辑待实现
+}
+
+// handleAlarmProcessChange 处理告警处理配置变更 (BuildAlarmProcessMessage)
+// TODO: 实现业务逻辑，下发告警处理配置
+func (s *ConfigSubscriber) handleAlarmProcessChange(configMsg rediscommon.ConfigChangeMessage, messageID string) {
+	s.logger.Info("Handling alarm process config change",
+		zap.String("message_id", messageID),
+		zap.Any("data", configMsg),
+	)
+	// 业务逻辑待实现
+}
+
+// handleCardChange 处理卡片配置变更 (BuildCardChangeMessage)
+// 当 Type 为 config.card 时：正常处理卡片变更（调用 CardMappingService）
+// 当 Type 为 config.card.device_store 时：这是 device_store 变化信号（委托给 handleDeviceStoreChange）
+func (s *ConfigSubscriber) handleCardChange(configMsg rediscommon.ConfigChangeMessage, messageID string) {
+	ctx := context.Background()
+
+	s.logger.Info("Handling card config change",
+		zap.String("message_id", messageID),
+		zap.String("type", configMsg.Type),
+	)
+
+	// 消息数据已经是 map[string]interface{}
+	cardData := configMsg.Data
+
+	// 提取关键字段
+	tenantID, _ := cardData["tenant_id"].(string)
+
+	if tenantID == "" {
+		s.logger.Warn("Card change message missing tenant_id",
+			zap.String("message_id", messageID))
 		return
 	}
 
-	// 从 data 字段中提取卡片信息
-	if msg.Data == nil {
-		s.logger.Warn("Invalid card change event, missing data field",
-			zap.String("operation", operation),
-			zap.String("event_type", msg.Type))
-		return
-	}
+	// 根据消息类型区分处理
+	switch configMsg.Type {
+	case rediscommon.ConfigCardDeviceStoreChanged:
+		// device_store 变化信号
+		s.handleDeviceStoreChange(ctx, cardData, messageID)
 
-	var tenantID, cardID, unitID, branchID string
-	var timestampMs float64
+	case rediscommon.ConfigCardChanged:
+		// 正常的卡片变更
+		s.handleNormalCardChange(ctx, cardData, messageID)
 
-	if tid, ok := msg.Data["tenant_id"].(string); ok {
-		tenantID = tid
+	default:
+		s.logger.Warn("Unknown card change message type",
+			zap.String("type", configMsg.Type),
+			zap.String("message_id", messageID))
 	}
-	if cid, ok := msg.Data["card_id"].(string); ok {
-		cardID = cid
-	}
-	if uid, ok := msg.Data["unit_id"].(string); ok {
-		unitID = uid
-	}
-	if bid, ok := msg.Data["branch_id"].(string); ok {
-		branchID = bid
-	}
-	if ts, ok := msg.Data["timestamp_ms"].(float64); ok {
-		timestampMs = ts
-	}
+}
 
-	if tenantID == "" || cardID == "" {
-		s.logger.Warn("Invalid card change event, missing required fields",
-			zap.String("operation", operation),
-			zap.String("event_type", msg.Type),
+// handleNormalCardChange 处理正常的卡片配置变更 (ConfigCardChanged)
+// 调用 CardMappingService 按 branch_id 重新计算卡片-设备映射
+func (s *ConfigSubscriber) handleNormalCardChange(ctx context.Context, cardData map[string]interface{}, messageID string) {
+	branchID, _ := cardData["branch_id"].(string)
+	cardID, _ := cardData["card_id"].(string)
+	tenantID, _ := cardData["tenant_id"].(string)
+
+	if branchID == "" {
+		s.logger.Warn("Card change message missing branch_id",
+			zap.String("message_id", messageID),
 			zap.String("tenant_id", tenantID),
 			zap.String("card_id", cardID))
 		return
 	}
 
-	// 去重：只处理同一个卡片的最新消息
-	key := "card:" + operation + ":" + cardID
-	if lastID, exists := s.lastProcessed.Load(key); exists {
-		if lastID.(string) >= messageID {
-			// 已处理过更新的消息，跳过
-			s.logger.Debug("Skipping duplicate card change event",
-				zap.String("operation", operation),
-				zap.String("card_id", cardID),
-				zap.String("last_message_id", lastID.(string)),
-				zap.String("current_message_id", messageID))
-			return
-		}
-	}
-	s.lastProcessed.Store(key, messageID)
-
-	s.logger.Info("Received card change event",
-		zap.String("operation", operation),
+	s.logger.Info("Card change details",
 		zap.String("tenant_id", tenantID),
 		zap.String("card_id", cardID),
-		zap.String("unit_id", unitID),
-		zap.String("branch_id", branchID),
-		zap.Float64("timestamp_ms", timestampMs),
-		zap.String("message_id", messageID),
-		zap.String("event_id", msg.ID),
-		zap.String("event_type", msg.Type))
+		zap.String("branch_id", branchID))
 
-	// 调用卡片映射服务处理
-	var err error
-	switch operation {
-	case "created":
-		err = s.cardMappingSvc.HandleCardCreated(ctx, msg.Data)
-	case "updated":
-		err = s.cardMappingSvc.HandleCardUpdated(ctx, msg.Data)
-	case "deleted":
-		err = s.cardMappingSvc.HandleCardDeleted(ctx, msg.Data)
-	}
-
-	if err != nil {
-		s.logger.Error("Failed to handle card change event",
-			zap.String("operation", operation),
+	// 调用 CardMappingService 处理卡片变更
+	// cardMappingSvc 已在初始化时注入
+	if err := s.cardMappingSvc.HandleCardChanged(ctx, cardData); err != nil {
+		s.logger.Error("Failed to handle card change",
+			zap.String("message_id", messageID),
 			zap.String("tenant_id", tenantID),
 			zap.String("card_id", cardID),
 			zap.Error(err))
-	} else {
-		s.logger.Info("Successfully handled card change event",
-			zap.String("operation", operation),
-			zap.String("tenant_id", tenantID),
-			zap.String("card_id", cardID))
+		return
 	}
+
+	s.logger.Info("Card change processed successfully",
+		zap.String("message_id", messageID),
+		zap.String("tenant_id", tenantID),
+		zap.String("branch_id", branchID))
 }
 
-// clearDeviceCache 清除指定设备的缓存
-func (s *ConfigSubscriber) clearDeviceCache(deviceUID string) {
-	if s.deviceCache != nil && deviceUID != "" {
-		s.deviceCache.Delete(deviceUID)
-		s.logger.Debug("Cleared device cache",
-			zap.String("device_uid", deviceUID),
-		)
-	}
-}
+// handleDeviceStoreChange 处理 device_store 变化信号（Type 为 config.card.device_store）
+// 当 device_store 发生变化时，查询最新的设备信息，刷新缓存
+// 无需区分具体变化类型，统一处理方式：查库 device_store → 根据 device_uid 和 allow_access 更新缓存
+func (s *ConfigSubscriber) handleDeviceStoreChange(ctx context.Context, data map[string]interface{}, messageID string) {
+	deviceID, _ := data["device_id"].(string)
 
-// handleAlarmDeviceChange 处理 alarm_device 配置变更
-func (s *ConfigSubscriber) handleAlarmDeviceChange(msg commonredis.ConfigChangeMessage, messageID string) {
-	// 从 data 字段中提取设备信息（CloudEvents 格式，由 BuildAlarmDeviceMessage 生成）
-	var deviceUID, deviceID, deviceCode, deviceType, tenantID string
-
-	if msg.Data != nil {
-		if uid, ok := msg.Data["device_uid"].(string); ok {
-			deviceUID = uid
-		}
-		if id, ok := msg.Data["device_id"].(string); ok {
-			deviceID = id
-		}
-		if code, ok := msg.Data["device_code"].(string); ok {
-			deviceCode = code
-		}
-		if dtype, ok := msg.Data["device_type"].(string); ok {
-			deviceType = dtype
-		}
-		if tid, ok := msg.Data["tenant_id"].(string); ok {
-			tenantID = tid
-		}
+	if deviceID == "" {
+		s.logger.Warn("Device store change message missing device_id",
+			zap.String("message_id", messageID))
+		return
 	}
 
-	if deviceUID == "" {
-		s.logger.Warn("Invalid alarm_device change event, missing device_uid",
-			zap.String("tenant_id", tenantID),
+	s.logger.Info("Handling device store change",
+		zap.String("message_id", messageID),
+		zap.String("device_id", deviceID))
+
+	// 查询 device_store 表获取最新的 device_uid 和 allow_access
+	deviceStoreInfo, err := s.deviceRepo.GetDeviceStoreByDeviceID(ctx, deviceID)
+	if err != nil {
+		s.logger.Warn("Failed to get device store info",
 			zap.String("device_id", deviceID),
-		)
+			zap.Error(err))
 		return
 	}
 
-	// 去重：只处理同一个 device_uid 的最新消息
-	key := "alarm_device:" + deviceUID
-	if lastID, exists := s.lastProcessed.Load(key); exists {
-		if lastID.(string) >= messageID {
-			// 已处理过更新的消息，跳过
-			s.logger.Debug("Skipping duplicate alarm_device change event",
-				zap.String("device_uid", deviceUID),
-				zap.String("last_message_id", lastID.(string)),
-				zap.String("current_message_id", messageID),
-			)
-			return
-		}
-	}
-	s.lastProcessed.Store(key, messageID)
-
-	s.logger.Info("Received alarm_device config change event",
-		zap.String("tenant_id", tenantID),
+	s.logger.Info("Retrieved device store info, refreshing cache",
 		zap.String("device_id", deviceID),
-		zap.String("device_uid", deviceUID),
-		zap.String("device_code", deviceCode),
-		zap.String("device_type", deviceType),
+		zap.String("device_uid", deviceStoreInfo.DeviceUID),
+		zap.Bool("allow_access", deviceStoreInfo.AllowAccess))
+
+	// TODO: 根据最新的 device_uid 和 allow_access 更新缓存
+	// 例：
+	// if deviceStoreInfo.AllowAccess {
+	//     s.deviceCache.Update(deviceID, deviceStoreInfo)
+	// } else {
+	//     s.deviceCache.Delete(deviceID)
+	// }
+
+	s.logger.Info("Device store change processed",
 		zap.String("message_id", messageID),
-		zap.String("event_id", msg.ID),
-		zap.String("event_type", msg.Type),
-	)
-
-	// alarm_device 变更：清除指定设备的缓存
-	s.clearDeviceCache(deviceUID)
-
-	// 清除报警使能配置缓存
-	s.deviceRepo.ClearAlarmEnablementCache(tenantID, deviceUID)
-
-	// 预加载新的报警使能配置到缓存（异步，避免阻塞）
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.deviceRepo.PreloadAlarmEnablement(ctx, tenantID, deviceUID); err != nil {
-			s.logger.Warn("Failed to preload alarm enablement after config change",
-				zap.String("tenant_id", tenantID),
-				zap.String("device_uid", deviceUID),
-				zap.Error(err),
-			)
-		} else {
-			s.logger.Info("Preloaded alarm enablement cache after config change",
-				zap.String("tenant_id", tenantID),
-				zap.String("device_uid", deviceUID),
-			)
-		}
-	}()
-
-	s.logger.Info("Cleared device cache and alarm enablement cache for alarm_device change",
-		zap.String("tenant_id", tenantID),
-		zap.String("device_uid", deviceUID),
-		zap.String("message_id", messageID),
-	)
-
-	// 确认消息
-	if err := s.redisClient.XAck(context.Background(), commonredis.StreamConfigDeviceStatus.Name, s.consumerGroup, messageID).Err(); err != nil {
-		s.logger.Warn("Failed to acknowledge alarm_device_updated message",
-			zap.String("message_id", messageID),
-			zap.Error(err),
-		)
-	}
+		zap.String("device_id", deviceID))
 }
 
-// handleDeviceAlarmSettingChange 处理设备告警配置变更
-// 当设备告警配置（如启用/禁用告警等）发生变更时，将变更通知发送给设备
-// 消息格式由 BuildDeviceAlarmSettingMessage 生成，包含以下字段：
-// - tenant_id, device_id, device_uid, setting_type, timestamp_ms
-// - 其他配置数据会合并到 data 中
-func (s *ConfigSubscriber) handleDeviceAlarmSettingChange(ctx context.Context, configMsg commonredis.ConfigChangeMessage, messageID string) {
-	dataMap := configMsg.Data
-	if dataMap == nil {
-		s.logger.Warn("Invalid data format in device alarm setting change: data is nil",
-			zap.String("message_id", messageID),
-		)
-		return
-	}
+// 旧方法已注释（原: handleDeviceAlarmSettingChange）
+// func (s *ConfigSubscriber) handleDeviceAlarmSettingChange(configMsg rediscommon.ConfigChangeMessage, messageID string) {
+//     // 旧业务逻辑已移除
+// }
 
-	// 解析标准字段
-	tenantID, _ := dataMap["tenant_id"].(string)
-	deviceID, _ := dataMap["device_id"].(string)
-	deviceUID, _ := dataMap["device_uid"].(string)
-	settingType, _ := dataMap["setting_type"].(string)
-	timestampMs, _ := dataMap["timestamp_ms"].(float64)
+// createConsumerGroupIfNotExists 创建消费者组（如果不存在）
+func (s *ConfigSubscriber) createConsumerGroupIfNotExists(ctx context.Context, stream string) error {
+	// TODO: 实现消费者组创建逻辑
+	return nil
+}
 
-	if tenantID == "" || deviceUID == "" {
-		s.logger.Warn("Missing required fields in device alarm setting change",
-			zap.String("tenant_id", tenantID),
-			zap.String("device_uid", deviceUID),
-		)
-		return
-	}
+// consumeConfigChanges 消费配置变更消息
+// TODO: 实现消息消费循环
+func (s *ConfigSubscriber) consumeConfigChanges(ctx context.Context, streams []string) {
+	// TODO: 实现消费逻辑
+}
 
-	s.logger.Info("Device alarm setting changed",
-		zap.String("tenant_id", tenantID),
-		zap.String("device_id", deviceID),
-		zap.String("device_uid", deviceUID),
-		zap.String("setting_type", settingType),
-		zap.Float64("timestamp_ms", timestampMs),
-	)
-
-	// TODO: 根据 setting_type 和 dataMap 中的数据决定是否需要发送 MQTT 消息到设备
-	// 例如，可能需要发送告警使能/禁用指令到设备
-	// 其他配置数据（如 monitor_config）已合并到 dataMap 中，可按需提取
-
-	// 确认消息
-	if err := s.redisClient.XAck(context.Background(), commonredis.StreamConfigDeviceAlarmSetting.Name, s.consumerGroup, messageID).Err(); err != nil {
-		s.logger.Warn("Failed to acknowledge device alarm setting message",
-			zap.String("message_id", messageID),
-			zap.Error(err),
-		)
-	}
+// parseConfigMessageFromValues 从 Redis 消息值中解析配置消息
+func parseConfigMessageFromValues(values map[string]interface{}) rediscommon.ConfigChangeMessage {
+	// TODO: 实现解析逻辑
+	return rediscommon.ConfigChangeMessage{}
 }

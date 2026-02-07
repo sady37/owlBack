@@ -58,26 +58,15 @@ var (
 		RetentionSeconds: 0, // 不限制保留时间
 	}
 
-	// 配置变更流（config:*:stream）
-	StreamConfigAlarmCloud = StreamDefinition{
-		Name:             "config:alarm_cloud:stream",
-		MaxLen:           1000,
-		RetentionSeconds: 0, // 不限制保留时间
-	}
+    //⭐ 新增：设备告警设置变更流
 	StreamConfigAlarmDevice = StreamDefinition{
-		Name:             "config:alarm_device:stream",
-		MaxLen:           1000,
-		RetentionSeconds: 0, // 不限制保留时间
-	}
-	// ⭐ 新增：设备报警设置变更流
-	StreamConfigDeviceAlarmSetting = StreamDefinition{
-		Name:             "config:device.alarm.setting:stream",
+		Name:             "config:alarmDevice:stream",
 		MaxLen:           1000,
 		RetentionSeconds: 0, // 不限制保留时间
 	}
 	// ⭐ 新增：报警处理流
 	StreamConfigAlarmProcess = StreamDefinition{
-		Name:             "config:alarm.process:stream",
+		Name:             "config:alarmProcess:stream",    // 重命名
 		MaxLen:           1000,
 		RetentionSeconds: 0, // 不限制保留时间
 	}
@@ -88,11 +77,11 @@ var (
 		RetentionSeconds: 0, // 不限制保留时间
 	}
 	// 已过时：设备在线状态流（保留以兼容旧代码，实际使用 StreamIoTDeviceStatus）
-	StreamConfigDeviceStatus = StreamDefinition{
-		Name:             "config:device_status:stream",
-		MaxLen:           1000,
-		RetentionSeconds: 0, // 不限制保留时间
-	}
+	//StreamConfigDeviceStatus = StreamDefinition{
+	//	Name:             "config:device_status:stream",
+	//	MaxLen:           1000,
+	//	RetentionSeconds: 0, // 不限制保留时间
+	//}
 )
 
 // GetStreamConfig 获取 stream 配置（支持从配置覆盖）

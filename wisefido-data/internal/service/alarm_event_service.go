@@ -22,7 +22,7 @@ import (
 // ConfigPublisher 配置发布器接口
 type ConfigPublisher interface {
 	PublishAlarmProcessMessage(ctx context.Context, tenantID, cardID, deviceID, alarmLevel, alarmType, processType string, alarmTimestamp int64) error
-	PublishDeviceAlarmSettingMessage(ctx context.Context, tenantID, deviceID, deviceUID, settingType string, settingData map[string]interface{}) error
+	PublishAlarmDeviceMessage(ctx context.Context, tenantID, deviceID, deviceUID, settingType string, settingData map[string]interface{}) error
 }
 
 // AlarmEventService 报警事件服务接口
@@ -772,7 +772,15 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 
 	// 更新相关卡片的报警计数（因为报警状态已改变）
 	cardID, err := s.getCardIDByDeviceID(ctx, req.TenantID, event.DeviceID)
-	if err == nil && cardID != "" {
+	if err != nil {
+		s.logger.Warn("Failed to get card ID for alarm event, will publish with empty card_id",
+			zap.String("device_id", event.DeviceID),
+			zap.String("event_id", req.EventID),
+			zap.Error(err),
+		)
+		// 继续处理，cardID 为空
+		cardID = ""
+	} else if cardID != "" {
 		if err := s.updateCardAlarmCounts(ctx, req.TenantID, cardID); err != nil {
 			s.logger.Warn("Failed to update card alarm counts after handling alarm",
 				zap.String("card_id", cardID),
@@ -798,7 +806,7 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 		AlarmTimestamp: event.TriggeredAt.Unix(),
 	}
 
-	// 异步发布 alarmProcess 消息到 config:alarm.process:stream（供cardagg消费）
+	// 异步发布 alarmProcess 消息到 config:alarmProcess:stream（供cardagg消费）
 	go func() {
 		pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

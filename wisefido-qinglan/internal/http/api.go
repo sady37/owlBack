@@ -49,7 +49,6 @@ func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	deviceRouter.HandleFunc("/{uid}/subscribe", h.SubscribeRealtimeData).Methods("POST")
 	deviceRouter.HandleFunc("/{uid}/function", h.CallDeviceFunction).Methods("POST")
 	deviceRouter.HandleFunc("/{uid}/info", h.GetDeviceInfo).Methods("GET")
-	deviceRouter.HandleFunc("/{uid}/location", h.GetDeviceLocationInfo).Methods("GET")
 	deviceRouter.HandleFunc("/{uid}/status", h.GetDeviceStatus).Methods("GET")
 
 	// 租户设备列表
@@ -227,26 +226,6 @@ func (h *APIHandler) GetDeviceInfo(w http.ResponseWriter, r *http.Request) {
 	h.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"data":    device,
-	})
-}
-
-// GetDeviceLocationInfo 获取设备位置信息
-func (h *APIHandler) GetDeviceLocationInfo(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	uid := vars["uid"]
-
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	locationInfo, err := h.radarService.GetDeviceLocationInfo(ctx, uid)
-	if err != nil {
-		h.sendError(w, http.StatusNotFound, fmt.Sprintf("Device location not found: %v", err))
-		return
-	}
-
-	h.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"data":    locationInfo,
 	})
 }
 

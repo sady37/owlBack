@@ -114,7 +114,30 @@ func (r *PostgresCardRepository) GetCardRowForCache(ctx context.Context, tenantI
 	return &row, nil
 }
 
-// GetBranchIDByUnit 查询 unit 的 branch_id（供 card 变更时失效 user:cards 缓存）
+// GetBranchIDByCard 查询 card 的 branch_id（直接从 cards 表，性能最佳）
+// 优先使用此方法而非 GetBranchIDByUnit
+func (r *PostgresCardRepository) GetBranchIDByCard(ctx context.Context, tenantID, cardID string) (string, error) {
+	if tenantID == "" || cardID == "" {
+		return "", nil
+	}
+	var branchID sql.NullString
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COALESCE(branch_id::text, '') FROM cards WHERE tenant_id = $1 AND card_id = $2`,
+		tenantID, cardID,
+	).Scan(&branchID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	if branchID.Valid && branchID.String != "" {
+		return branchID.String, nil
+	}
+	return "", nil
+}
+
+// GetBranchIDByUnit 查询 unit 的 branch_id（供卡片创建前用，已创建的卡片应用 GetBranchIDByCard）
 func (r *PostgresCardRepository) GetBranchIDByUnit(ctx context.Context, tenantID, unitID string) (string, error) {
 	if tenantID == "" || unitID == "" {
 		return "", nil
@@ -695,18 +718,36 @@ func (r *PostgresCardRepository) UpdateCard(
 	if timezone == "" {
 		timezone = "UTC"
 	}
+
+	// Get branch_id from units table (for denormalization)
+	var branchID *string
+	if unitID != "" {
+		var bid sql.NullString
+		err := r.db.QueryRow(
+			`SELECT branch_id::text FROM units WHERE tenant_id = $1 AND unit_id = $2`,
+			tenantID, unitID,
+		).Scan(&bid)
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("failed to get branch_id from unit: %w", err)
+		}
+		if bid.Valid && bid.String != "" {
+			branchID = &bid.String
+		}
+	}
+
 	query := `
 		UPDATE cards
 		SET
-			card_type = $3,
-			bed_id = $4,
-			unit_id = $5,
-			card_name = $6,
-			card_address = $7,
-			timezone = $8,
-			resident_id = $9,
-			devices = $10,
-			residents = $11
+			branch_id = $3,
+			card_type = $4,
+			bed_id = $5,
+			unit_id = $6,
+			card_name = $7,
+			card_address = $8,
+			timezone = $9,
+			resident_id = $10,
+			devices = $11,
+			residents = $12
 		WHERE tenant_id = $1
 		  AND card_id = $2
 	`
@@ -715,6 +756,7 @@ func (r *PostgresCardRepository) UpdateCard(
 		query,
 		tenantID,
 		cardID,
+		branchID,
 		cardType,
 		bedID,
 		unitID,
@@ -746,6 +788,7 @@ func (r *PostgresCardRepository) UpdateCard(
 // Fields to insert:
 // - Required fields: tenant_id, card_type, bed_id/unit_id, card_name, card_address, devices, residents
 // - Optional fields: resident_id (primary resident for ActiveBed cards)
+// - Derived field: branch_id (from units.branch_id via unitID)
 //
 // Fields using default values (not inserted):
 // - unhandled_alarm_0 ~ unhandled_alarm_4 (unhandled alarm statistics, default 0)
@@ -773,9 +816,27 @@ func (r *PostgresCardRepository) CreateCard(
 	if timezone == "" {
 		timezone = "UTC"
 	}
+
+	// Get branch_id from units table (for denormalization)
+	var branchID *string
+	if unitID != "" {
+		var bid sql.NullString
+		err := r.db.QueryRow(
+			`SELECT branch_id::text FROM units WHERE tenant_id = $1 AND unit_id = $2`,
+			tenantID, unitID,
+		).Scan(&bid)
+		if err != nil && err != sql.ErrNoRows {
+			return "", fmt.Errorf("failed to get branch_id from unit: %w", err)
+		}
+		if bid.Valid && bid.String != "" {
+			branchID = &bid.String
+		}
+	}
+
 	query := `
 		INSERT INTO cards (
 			tenant_id,
+			branch_id,
 			card_type,
 			bed_id,
 			unit_id,
@@ -785,7 +846,7 @@ func (r *PostgresCardRepository) CreateCard(
 			resident_id,
 			devices,
 			residents
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING card_id
 	`
 
@@ -793,6 +854,7 @@ func (r *PostgresCardRepository) CreateCard(
 	err := r.db.QueryRow(
 		query,
 		tenantID,
+		branchID,
 		cardType,
 		bedID,
 		unitID,

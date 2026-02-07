@@ -7,7 +7,10 @@ import (
 	"strings"
 
 	"wisefido-data/internal/domain"
+	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
+
+	rediscommon "owl-common/redis"
 
 	"go.uber.org/zap"
 )
@@ -30,6 +33,7 @@ type DeviceService interface {
 type deviceService struct {
 	devicesRepo         repository.DevicesRepository
 	cardSync            *CardSyncService // 设备/单元变更后同步卡片（Redis + config.card.*）
+	configPublisher     *publisher.ConfigPublisher
 	iotTimeSeriesClient *IoTTimeSeriesClient
 	qinglanClient       *QinglanClient
 	logger              *zap.Logger
@@ -40,6 +44,18 @@ func NewDeviceService(devicesRepo repository.DevicesRepository, cardSync *CardSy
 	return &deviceService{
 		devicesRepo:         devicesRepo,
 		cardSync:            cardSync,
+		iotTimeSeriesClient: iotTimeSeriesClient,
+		qinglanClient:       qinglanClient,
+		logger:              logger,
+	}
+}
+
+// NewDeviceServiceWithPublisher 创建 DeviceService 实例（包含 ConfigPublisher 用于发送 device_store 变化信号）
+func NewDeviceServiceWithPublisher(devicesRepo repository.DevicesRepository, cardSync *CardSyncService, configPublisher *publisher.ConfigPublisher, iotTimeSeriesClient *IoTTimeSeriesClient, qinglanClient *QinglanClient, logger *zap.Logger) DeviceService {
+	return &deviceService{
+		devicesRepo:         devicesRepo,
+		cardSync:            cardSync,
+		configPublisher:     configPublisher,
 		iotTimeSeriesClient: iotTimeSeriesClient,
 		qinglanClient:       qinglanClient,
 		logger:              logger,
@@ -332,6 +348,20 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 				}
 			}
 		}
+
+		// 5.3 如果 monitoring_enabled 变化，发送 device_store 变化信号
+		if monitoringEnabledChanged && s.configPublisher != nil {
+			extraData := map[string]interface{}{
+				"device_id":   req.DeviceID,
+				"change_type": "device_updated",
+			}
+			if err := s.configPublisher.PublishCardChangeMessageWithExtraAndType(ctx, req.TenantID, "", "", "", rediscommon.ConfigCardDeviceStoreChanged, extraData); err != nil {
+				s.logger.Warn("Failed to publish device_store change signal for monitoring status update",
+					zap.String("device_id", req.DeviceID),
+					zap.Error(err),
+				)
+			}
+		}
 	}
 
 	return &UpdateDeviceResponse{
@@ -385,6 +415,20 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 			s.logger.Warn("Failed to sync cards after device deletion", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", unitID))
 		} else {
 			s.logger.Info("Synced cards after device deletion", zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", unitID))
+		}
+	}
+
+	// 发送 device_store 变化信号（device_deleted）
+	if s.configPublisher != nil {
+		extraData := map[string]interface{}{
+			"device_id":   req.DeviceID,
+			"change_type": "device_deleted",
+		}
+		if err := s.configPublisher.PublishCardChangeMessageWithExtraAndType(ctx, req.TenantID, "", unitID, "", rediscommon.ConfigCardDeviceStoreChanged, extraData); err != nil {
+			s.logger.Warn("Failed to publish device_store change signal for device deletion",
+				zap.String("device_id", req.DeviceID),
+				zap.Error(err),
+			)
 		}
 	}
 

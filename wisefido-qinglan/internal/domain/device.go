@@ -38,6 +38,7 @@ type Device struct {
 	FirmwareVersion sql.NullString `db:"firmware_version"` // from device_store
 }
 
+/*
 // DeviceLocationInfo 设备位置信息领域模型
 // 包含完整的地址层级信息和设备规格信息
 type DeviceLocationInfo struct {
@@ -78,6 +79,16 @@ type DeviceLocationInfo struct {
 	FirmwareVersion sql.NullString `db:"firmware_version"`
 }
 
+// DeviceWithLocation 带位置信息的设备结构
+// 用于 Auth 缓存和消息处理
+type DeviceWithLocation struct {
+	Device       *Device
+	LocationInfo *DeviceLocationInfo
+}
+
+
+*/
+
 // DeviceStatusItem 设备在线状态项（用于批量查询 API）
 // device_id 与 device_uid 均保留，前端可能持其一查询，结构保持一致
 type DeviceStatusItem struct {
@@ -87,17 +98,17 @@ type DeviceStatusItem struct {
 	Status    string `json:"status"` // "online", "offline", "unsubscribed"
 }
 
-// DeviceWithLocation 带位置信息的设备结构
-// 用于 Auth 缓存和消息处理
-type DeviceWithLocation struct {
-	Device       *Device
-	LocationInfo *DeviceLocationInfo
-}
+
 
 var (
 	// DeviceCache 设备缓存（key: uid, value: *DeviceWithLocation）
 	// 在 Auth 时填充，供 MQTT Consumer 使用，避免重复查询数据库
 	DeviceCache = &sync.Map{}
+
+	// AllowAccessCache 设备认证状态缓存（key: uid, value: bool）
+	// true = 设备已认证允许访问，false = 设备未认证或认证失败
+	// 由 auth_service 维护，mqtt_consumer 仅查询此缓存以决定是否处理消息
+	AllowAccessCache = &sync.Map{}
 )
 
 // ToJSON 转换为JSON格式（用于HTTP响应）

@@ -74,7 +74,7 @@ func main() {
 		return eventAlarmHandler.Handle(c, msg)
 	})
 
-	// 启动 config:alarm.process 消费 goroutine（处理 alarmProcess 消息）
+	// 启动 config:alarmProcess 消费 goroutine（处理 alarmProcess 消息）
 	go subscribeStream(ctx, logger, redisClient, rediscommon.StreamConfigAlarmProcess.Name, "cardagg-group", "consumer-config-alarm", func(c context.Context, msg rediscommon.StreamMessage) error {
 		return alarmProcessHandler.Handle(c, msg)
 	})

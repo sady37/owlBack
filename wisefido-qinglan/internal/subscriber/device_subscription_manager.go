@@ -3,7 +3,6 @@ package subscriber
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -16,8 +15,6 @@ import (
 	"wisefido-qinglan/internal/mqtt"
 	"wisefido-qinglan/internal/publisher"
 	"wisefido-qinglan/internal/repository"
-
-	rediscommon "owl-common/redis"
 
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -41,17 +38,11 @@ type DeviceSubscription struct {
 	LastAlarmTime               time.Time // 最后收到 alarm 消息的时间
 	LastOnlineStatusPublishTime time.Time // 上次向 config stream 发布 online 的时间，用于节流
 	Status                      string    // online/offline/unsubscribed
-	// Location info (addressInfo) - stored during subscription initialization
-	TenantID             string
-	DeviceCode           string
-	DeviceType           string
-	BranchID             *string
-	BuildingID           *string
-	UnitID               *string
-	RoomID               *string
-	BedID                *string
-	onlineStatusStopChan chan struct{} // 用于停止周期性 online 状态发布的定时器
-	mu                   sync.RWMutex
+	TenantID                    string
+	DeviceCode                  string
+	DeviceType                  string
+	onlineStatusStopChan        chan struct{} // 用于停止周期性 online 状态发布的定时器
+	mu                          sync.RWMutex
 }
 
 // MessageHandler MQTT消息处理器接口
@@ -234,8 +225,12 @@ func (m *DeviceSubscriptionManager) restoreAuthenticatedDeviceSubscriptions(ctx 
 				}
 			}
 
-			// 发布到 config:device_status:stream（wisefido-data 订阅）
-			m.triggerStatusChange(uid, "", "online")
+			// 记录设备恢复状态
+			m.logger.Info("Device status changed",
+				zap.String("device_uid", uid),
+				zap.String("old_status", ""),
+				zap.String("new_status", "online"),
+			)
 
 			m.logger.Info("Restored subscription record for device (monitor on first message)",
 				zap.String("device_uid", uid),
@@ -364,51 +359,20 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 	eventTopic := m.mqttClient.BuildTopic("event", deviceUID)
 	alarmTopic := m.mqttClient.BuildTopic("alarm", deviceUID)
 
-	// 查询设备 location info (addressInfo) 用于后续 alarm/event 消息
-	// 使用 GetDeviceLocationInfo 方法，通过 device_uid 查询
-	locationInfo, err := m.deviceRepo.GetDeviceLocationInfo(ctx, deviceUID)
-	if err != nil {
-		m.logger.Warn("Failed to get device location info during subscription",
-			zap.String("device_uid", deviceUID),
-			zap.Error(err),
-		)
-		// 查询失败时返回错误，不创建订阅记录
-		return fmt.Errorf("failed to get device location info: %w", err)
-	}
-
-	// 从 locationInfo 中提取字段
-	tenantID := locationInfo.TenantID
-	deviceCode := "" // GetDeviceLocationInfo 不返回 device_code，需要从 device_store 查询
+	// 查询 device_type 和 tenant_id
 	deviceType := ""
-	if locationInfo.DeviceType.Valid {
-		deviceType = locationInfo.DeviceType.String
-	}
-	var branchID, buildingID, unitID, roomID, bedID *string
-	if locationInfo.BranchID.Valid {
-		branchID = &locationInfo.BranchID.String
-	}
-	if locationInfo.BuildingID.Valid {
-		buildingID = &locationInfo.BuildingID.String
-	}
-	if locationInfo.UnitID.Valid {
-		unitID = &locationInfo.UnitID.String
-	}
-	if locationInfo.RoomID.Valid {
-		roomID = &locationInfo.RoomID.String
-	}
-	if locationInfo.BedID.Valid {
-		bedID = &locationInfo.BedID.String
-	}
-
-	// 查询 device_code（GetDeviceLocationInfo 不返回 device_code）
-	deviceCodeQuery := `SELECT device_code FROM device_store WHERE device_uid = $1 AND allow_access = TRUE AND device_type = 'Radar' LIMIT 1`
-	err = m.db.QueryRowContext(ctx, deviceCodeQuery, deviceUID).Scan(&deviceCode)
+	tenantID := ""
+	deviceStoreInfo, err := m.deviceRepo.GetDeviceStoreInfoAndLocation(ctx, deviceUID)
 	if err != nil {
-		m.logger.Warn("Failed to get device_code, using empty string",
+		m.logger.Warn("Failed to get device store info during subscription",
 			zap.String("device_uid", deviceUID),
 			zap.Error(err),
 		)
-		deviceCode = ""
+		return fmt.Errorf("failed to get device store info: %w", err)
+	}
+	if deviceStoreInfo != nil {
+		deviceType = deviceStoreInfo.DeviceType
+		tenantID = deviceStoreInfo.TenantID
 	}
 
 	// 创建或更新订阅记录
@@ -430,15 +394,9 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 		LastEventTime:   time.Time{}, // 初始化为零值
 		LastAlarmTime:   time.Time{}, // 初始化为零值
 		Status:          "online",    // 初始状态为online
-		// Location info (addressInfo)
-		TenantID:   tenantID,
-		DeviceCode: deviceCode,
+		TenantID:        tenantID,
+
 		DeviceType: deviceType,
-		BranchID:   branchID,
-		BuildingID: buildingID,
-		UnitID:     unitID,
-		RoomID:     roomID,
-		BedID:      bedID,
 	}
 	// 同时存储到两个 map
 	m.subscriptionsByUID[deviceUID] = sub
@@ -446,10 +404,14 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 		m.subscriptionsByID[deviceID] = sub
 	}
 
-	// auth 成功后，立即发布 online event 到 alarm stream 并加入 online 列表
-	go m.publishDeviceOnlineStatusEvent(context.Background(), deviceUID, deviceID, "online")
-	// 发布到 config:device_status:stream（wisefido-data 订阅，用于 device:online_status Redis）
-	m.triggerStatusChange(deviceUID, "", "online")
+	// auth 成功后，立即发布 online event 到 deviceStatus stream
+	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, true)
+	// 记录订阅状态
+	m.logger.Info("Device status changed",
+		zap.String("device_uid", deviceUID),
+		zap.String("old_status", ""),
+		zap.String("new_status", "online"),
+	)
 
 	// 不在此处更新 DB 为 online；收到第一笔数据时在 UpdateLastSeen 中更新
 
@@ -549,51 +511,20 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 		)
 	}
 
-	// 查询设备 location info (addressInfo) 用于后续 alarm/event 消息
-	// 使用 GetDeviceLocationInfo 方法，通过 device_uid 查询
-	locationInfo, err := m.deviceRepo.GetDeviceLocationInfo(ctx, deviceUID)
-	if err != nil {
-		m.logger.Warn("Failed to get device location info during periodic subscription",
-			zap.String("device_uid", deviceUID),
-			zap.Error(err),
-		)
-		// 查询失败时返回错误，不创建订阅记录
-		return fmt.Errorf("failed to get device location info: %w", err)
-	}
-
-	// 从 locationInfo 中提取字段
-	tenantID := locationInfo.TenantID
-	deviceCode := "" // GetDeviceLocationInfo 不返回 device_code，需要从 device_store 查询
+	// 查询 device_type 和 tenant_id
 	deviceType := ""
-	if locationInfo.DeviceType.Valid {
-		deviceType = locationInfo.DeviceType.String
-	}
-	var branchID, buildingID, unitID, roomID, bedID *string
-	if locationInfo.BranchID.Valid {
-		branchID = &locationInfo.BranchID.String
-	}
-	if locationInfo.BuildingID.Valid {
-		buildingID = &locationInfo.BuildingID.String
-	}
-	if locationInfo.UnitID.Valid {
-		unitID = &locationInfo.UnitID.String
-	}
-	if locationInfo.RoomID.Valid {
-		roomID = &locationInfo.RoomID.String
-	}
-	if locationInfo.BedID.Valid {
-		bedID = &locationInfo.BedID.String
-	}
-
-	// 查询 device_code（GetDeviceLocationInfo 不返回 device_code）
-	deviceCodeQuery := `SELECT device_code FROM device_store WHERE device_uid = $1 AND allow_access = TRUE AND device_type = 'Radar' LIMIT 1`
-	err = m.db.QueryRowContext(ctx, deviceCodeQuery, deviceUID).Scan(&deviceCode)
+	tenantID := ""
+	deviceStoreInfo, err := m.deviceRepo.GetDeviceStoreInfoAndLocation(ctx, deviceUID)
 	if err != nil {
-		m.logger.Warn("Failed to get device_code, using empty string",
+		m.logger.Warn("Failed to get device store info during periodic subscription",
 			zap.String("device_uid", deviceUID),
 			zap.Error(err),
 		)
-		deviceCode = ""
+		return fmt.Errorf("failed to get device store info: %w", err)
+	}
+	if deviceStoreInfo != nil {
+		deviceType = deviceStoreInfo.DeviceType
+		tenantID = deviceStoreInfo.TenantID
 	}
 
 	// 构建主题字符串（用于记录）
@@ -623,32 +554,18 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 		LastAlarmTime:   time.Time{}, // 初始化为零值
 		Status:          "online",    // 初始状态为online
 		TenantID:        tenantID,
-		DeviceCode:      deviceCode,
-		DeviceType:      deviceType,
-	}
 
-	// 设置 location info（如果存在）
-	if branchID != nil {
-		sub.BranchID = branchID
-	}
-	if buildingID != nil {
-		sub.BuildingID = buildingID
-	}
-	if unitID != nil {
-		sub.UnitID = unitID
-	}
-	if roomID != nil {
-		sub.RoomID = roomID
-	}
-	if bedID != nil {
-		sub.BedID = bedID
+		DeviceType: deviceType,
 	}
 	m.subscriptionsByUID[deviceUID] = sub
 
-	// auth 成功后，立即发布 online event 到 alarm stream 并加入 online 列表
-	go m.publishDeviceOnlineStatusEvent(context.Background(), deviceUID, deviceID, "online")
-	// 发布到 config:device_status:stream（wisefido-data 订阅，用于 device:online_status Redis）
-	m.triggerStatusChange(deviceUID, "", "online")
+	// auth 成功后，立即发布 online event 到 deviceStatus stream
+	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, true)
+	// 记录周期订阅状态
+	m.logger.Info("Device subscription created (periodic)",
+		zap.String("device_uid", deviceUID),
+		zap.String("status", "online"),
+	)
 
 	m.logger.Info("Periodic subscription enabled, sending monitor command",
 		zap.String("device_uid", deviceUID),
@@ -749,17 +666,19 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 			sub.mu.Unlock()
 
 			log.Printf("✅ Device %s recovered from offline to online (received %s message)", deviceUID, topicType)
-			m.logger.Info("Device recovered from offline to online",
+			m.logger.Info("Device status changed",
 				zap.String("device_uid", deviceUID),
-				zap.String("message_type", topicType),
+				zap.String("old_status", "offline"),
+				zap.String("new_status", "online"),
 			)
-			m.triggerStatusChange(deviceUID, "offline", "online")
 
-			// 发送 online 事件到 event stream（按照 Reside_stream_stand.md 格式）
+			// 发送 online 事件到 deviceStatus stream（按照 Reside_stream_stand.md 格式）
 			sub.mu.RLock()
 			deviceID := sub.DeviceID
+			deviceType := sub.DeviceType
+			tenantID := sub.TenantID
 			sub.mu.RUnlock()
-			go m.publishDeviceOnlineStatusEvent(context.Background(), deviceUID, deviceID, "online")
+			go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, true)
 		} else {
 			// 超过180秒，应该已经被取消订阅了，这里不应该发生
 			sub.mu.Unlock()
@@ -792,11 +711,16 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 		if exists {
 			sub.mu.RLock()
 			deviceID := sub.DeviceID
+			deviceType := sub.DeviceType
+			tenantID := sub.TenantID
 			sub.mu.RUnlock()
 			if deviceID != "" {
-				go m.publishDeviceOnlineStatusEvent(context.Background(), deviceUID, deviceID, "online")
+				go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, true)
 			}
-			m.triggerStatusChange(deviceUID, "", "online")
+			m.logger.Info("Device subscription created (first message)",
+				zap.String("device_uid", deviceUID),
+				zap.String("status", "online"),
+			)
 		}
 
 		// 发送 monitor 订阅命令
@@ -850,81 +774,25 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 		}
 	}
 
-	// 如果设备不在订阅列表中，创建订阅记录（包含 location info）
+	// 如果设备不在订阅列表中，创建订阅记录
 	m.mu.Lock()
 	_, exists := m.subscriptionsByUID[deviceUID]
 	if !exists {
-		// 查询设备 location info (addressInfo) 用于后续 alarm/event 消息
-		locationInfo, err := m.deviceRepo.GetDeviceLocationInfo(ctx, deviceUID)
-		if err != nil {
-			m.logger.Warn("Failed to get device location info on first message, creating subscription without location info",
-				zap.String("device_uid", deviceUID),
-				zap.Error(err),
-			)
-			// 即使查询失败，也创建订阅记录（但没有 location info）
-			now := time.Now()
-			sub := &DeviceSubscription{
-				DeviceUID:       deviceUID,
-				DeviceID:        deviceID,
-				PropTopic:       m.mqttClient.BuildTopic("prop", deviceUID),
-				MonitorTopic:    m.mqttClient.BuildTopic("monitor", deviceUID),
-				FuncTopic:       m.mqttClient.BuildTopic("func", deviceUID),
-				StatTopic:       m.mqttClient.BuildTopic("stat", deviceUID),
-				EventTopic:      m.mqttClient.BuildTopic("event", deviceUID),
-				AlarmTopic:      m.mqttClient.BuildTopic("alarm", deviceUID),
-				MonitorSubTime:  now,
-				LastSeen:        time.Time{}, // 初始化为零值
-				LastMonitorTime: time.Time{}, // 初始化为零值
-				LastStatTime:    time.Time{}, // 初始化为零值
-				LastEventTime:   time.Time{}, // 初始化为零值
-				LastAlarmTime:   time.Time{}, // 初始化为零值
-				Status:          "online",    // 初始状态为online
-			}
-			// 同时存储到两个 map
-			m.subscriptionsByUID[deviceUID] = sub
-			if deviceID != "" {
-				m.subscriptionsByID[deviceID] = sub
-			}
-			m.mu.Unlock()
-			return
-		}
-
-		// 从 locationInfo 中提取字段
-		tenantID := locationInfo.TenantID
-		deviceCode := "" // GetDeviceLocationInfo 不返回 device_code，需要从 device_store 查询
+		// 查询 device_type 和 tenant_id
 		deviceType := ""
-		if locationInfo.DeviceType.Valid {
-			deviceType = locationInfo.DeviceType.String
-		}
-		var branchID, buildingID, unitID, roomID, bedID *string
-		if locationInfo.BranchID.Valid {
-			branchID = &locationInfo.BranchID.String
-		}
-		if locationInfo.BuildingID.Valid {
-			buildingID = &locationInfo.BuildingID.String
-		}
-		if locationInfo.UnitID.Valid {
-			unitID = &locationInfo.UnitID.String
-		}
-		if locationInfo.RoomID.Valid {
-			roomID = &locationInfo.RoomID.String
-		}
-		if locationInfo.BedID.Valid {
-			bedID = &locationInfo.BedID.String
-		}
-
-		// 查询 device_code（GetDeviceLocationInfo 不返回 device_code）
-		deviceCodeQuery := `SELECT device_code FROM device_store WHERE device_uid = $1 AND allow_access = TRUE AND device_type = 'Radar' LIMIT 1`
-		err = m.db.QueryRowContext(ctx, deviceCodeQuery, deviceUID).Scan(&deviceCode)
+		tenantID := ""
+		deviceStoreInfo, err := m.deviceRepo.GetDeviceStoreInfoAndLocation(ctx, deviceUID)
 		if err != nil {
-			m.logger.Warn("Failed to get device_code on first message, using empty string",
+			m.logger.Warn("Failed to get device store info on first message, creating subscription without device info",
 				zap.String("device_uid", deviceUID),
 				zap.Error(err),
 			)
-			deviceCode = ""
+			// 即使查询失败，也创建订阅记录（但没有 device info）
+		} else if deviceStoreInfo != nil {
+			deviceType = deviceStoreInfo.DeviceType
+			tenantID = deviceStoreInfo.TenantID
 		}
 
-		// 创建订阅记录（包含 location info）
 		now := time.Now()
 		sub := &DeviceSubscription{
 			DeviceUID:       deviceUID,
@@ -942,22 +810,19 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 			LastEventTime:   time.Time{}, // 初始化为零值
 			LastAlarmTime:   time.Time{}, // 初始化为零值
 			Status:          "online",    // 初始状态为online
-			// Location info (addressInfo)
-			TenantID:   tenantID,
-			DeviceCode: deviceCode,
+			TenantID:        tenantID,
+
 			DeviceType: deviceType,
-			BranchID:   branchID,
-			BuildingID: buildingID,
-			UnitID:     unitID,
-			RoomID:     roomID,
-			BedID:      bedID,
 		}
 		// 同时存储到两个 map
 		m.subscriptionsByUID[deviceUID] = sub
 		if deviceID != "" {
 			m.subscriptionsByID[deviceID] = sub
 		}
-		m.triggerStatusChange(deviceUID, "", "online")
+		m.logger.Info("Device subscription created",
+			zap.String("device_uid", deviceUID),
+			zap.String("status", "online"),
+		)
 		m.logger.Info("Created subscription record for device on first message",
 			zap.String("device_uid", deviceUID),
 			zap.String("device_id", deviceID),
@@ -1115,15 +980,19 @@ func (m *DeviceSubscriptionManager) checkDeviceHeartbeat(ctx context.Context) {
 				m.markDeviceOffline(deviceUID, now)
 			} else {
 				// online 状态：检查是否需要周期性发布 online（每2分钟一次）
-				sub.mu.Lock()
-				lastPub := sub.LastOnlineStatusPublishTime
-				sub.mu.Unlock()
-				if now.Sub(lastPub) >= 2*time.Minute {
+				// 旧逻辑已注释（原: 发布到 config:device_status:stream）
+				// 新设计中，设备在线状态管理由 ConfigSubscriber 处理
+				/*
 					sub.mu.Lock()
-					sub.LastOnlineStatusPublishTime = now
+					lastPub := sub.LastOnlineStatusPublishTime
 					sub.mu.Unlock()
-					m.publishDeviceOnlineStatusToConfigStream(ctx, deviceUID, "online")
-				}
+					if now.Sub(lastPub) >= 2*time.Minute {
+						sub.mu.Lock()
+						sub.LastOnlineStatusPublishTime = now
+						sub.mu.Unlock()
+						m.publishDeviceOnlineStatusToConfigStream(ctx, deviceUID, "online")
+					}
+				*/
 			}
 
 		case "offline":
@@ -1154,18 +1023,19 @@ func (m *DeviceSubscriptionManager) markDeviceOffline(deviceUID string, _ time.T
 	if sub.Status == "online" {
 		sub.Status = "offline"
 		deviceID := sub.DeviceID
+		deviceType := sub.DeviceType
+		tenantID := sub.TenantID
 		sub.mu.Unlock()
 
 		log.Printf("⚠️ Device %s marked as offline (all message types timeout > 90s)", deviceUID)
-		m.logger.Info("Device marked as offline (all message types timeout > 90s)",
+		m.logger.Info("Device status changed",
 			zap.String("device_uid", deviceUID),
+			zap.String("old_status", "online"),
+			zap.String("new_status", "offline"),
 		)
 
-		// 触发offline事件，发布到 config stream
-		m.triggerStatusChange(deviceUID, "online", "offline")
-
-		// 发送 offline 事件到 alarm stream（offline 是告警）
-		go m.publishDeviceOnlineStatusEvent(context.Background(), deviceUID, deviceID, "offline")
+		// 发送 offline 事件到 deviceStatus stream（offline 是状态变更）
+		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, false)
 	} else {
 		sub.mu.Unlock()
 	}
@@ -1182,144 +1052,18 @@ func (m *DeviceSubscriptionManager) PublishOnlineForConnectedDevices(ctx context
 			continue
 		}
 		sub.mu.RLock()
-		status, deviceID := sub.Status, sub.DeviceID
+		status, deviceID, deviceType, tenantID := sub.Status, sub.DeviceID, sub.DeviceType, sub.TenantID
 		sub.mu.RUnlock()
 		if status != "online" {
 			continue
 		}
-		go m.publishDeviceOnlineStatusEvent(context.Background(), deviceUID, deviceID, "online")
+		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, true)
 		published++
 	}
 	m.logger.Info("Published online notification for connected devices after startup",
 		zap.Int("published", published),
 		zap.Int("requested", len(deviceUIDs)),
 	)
-}
-
-// publishDeviceOnlineStatusEvent 发送设备在线状态事件
-// 无论 online/offline，统一发送到 alarm stream
-// 格式：topic_type="alarm", category="isOnline" 或 "OfflineAlarm", data_value=[{"category":"isOnline|OfflineAlarm","device_status":"online|offline","device_uid":"xxx"}]
-// deviceStatus: "online" 或 "offline"（字符串，按照 Reside_stream_stand.md 规范）
-// 注意：只使用内存中的 addressInfo，如果没有则不查询数据库，直接返回
-func (m *DeviceSubscriptionManager) publishDeviceOnlineStatusEvent(ctx context.Context, deviceUID, deviceID, deviceStatus string) {
-	if m.streamPublisher == nil {
-		m.logger.Warn("StreamPublisher not set, skipping device online status event publish",
-			zap.String("device_uid", deviceUID),
-			zap.String("device_status", deviceStatus),
-		)
-		return
-	}
-
-	// 从内存中的 DeviceSubscription 获取 location info (addressInfo)
-	m.mu.RLock()
-	sub, exists := m.subscriptionsByUID[deviceUID]
-	m.mu.RUnlock()
-
-	if !exists {
-		m.logger.Warn("Device subscription not found in memory, skipping device online status event",
-			zap.String("device_uid", deviceUID),
-			zap.String("device_status", deviceStatus),
-		)
-		return
-	}
-
-	sub.mu.RLock()
-	tenantID := sub.TenantID
-	deviceType := sub.DeviceType
-	sub.mu.RUnlock()
-
-	// 如果没有 addressInfo（TenantID 为空），不查询数据库，直接返回
-	if tenantID == "" {
-		m.logger.Warn("Device addressInfo not found in memory, skipping device online status event",
-			zap.String("device_uid", deviceUID),
-			zap.String("device_status", deviceStatus),
-		)
-		return
-	}
-
-	// 如果 tenant_id 为空字符串，使用默认值
-	if tenantID == "" {
-		tenantID = "00000000-0000-0000-0000-000000000000"
-	}
-
-	// 构建 data_value（按照 Reside_stream_stand.md 格式）
-	// device_status 使用字符串 "online" 或 "offline"（对应原始值 0=online, 1=offline）
-	// offline 时直接使用 "OfflineAlarm" 作为 category，online 时使用 "isOnline"
-	var category string
-	if deviceStatus == "offline" {
-		category = "OfflineAlarm"
-	} else {
-		category = "isOnline"
-	}
-	dataValueArray := []map[string]interface{}{
-		{
-			"category":      category,
-			"device_status": deviceStatus, // "online" 或 "offline"（字符串）
-			"device_uid":    deviceUID,
-		},
-	}
-
-	// 序列化 data_value 为 JSON 字符串
-	dataValueSlice := make([]interface{}, len(dataValueArray))
-	for i, m := range dataValueArray {
-		dataValueSlice[i] = m
-	}
-	dataValueJSON, err := json.Marshal(dataValueSlice)
-	if err != nil {
-		m.logger.Warn("Failed to marshal data_value for device online status event",
-			zap.String("device_uid", deviceUID),
-			zap.String("device_status", deviceStatus),
-			zap.Error(err),
-		)
-		return
-	}
-
-	topicType := "alarm"
-	streamName := rediscommon.StreamAlarm.Name
-
-	// 使用 BuildIoTStreamMessage 构建事件消息（顶层无 addressInfo，card_id 未绑卡可空）
-	msg := rediscommon.BuildIoTStreamMessage(
-		deviceID,
-		deviceType,
-		"", // cardID：此处未查卡，后续可按 device_id 查 Card 填充
-		tenantID,
-		time.Now().Unix(),
-		topicType,
-		category,
-		dataValueSlice,
-	)
-
-	// 转换为 map（顶层：device_id, device_type, card_id, tenant_id, timestamp, topic_type, category, data_value）
-	eventData := make(map[string]interface{})
-	eventData["device_id"] = msg.DeviceID
-	eventData["device_type"] = msg.DeviceType
-	if msg.CardID != "" {
-		eventData["card_id"] = msg.CardID
-	}
-	eventData["tenant_id"] = msg.TenantID
-	eventData["timestamp"] = fmt.Sprintf("%d", msg.Timestamp)
-	eventData["topic_type"] = msg.TopicType
-	eventData["category"] = msg.Category
-	eventData["data_value"] = string(dataValueJSON)
-
-	// 发布到对应的 stream
-	_, err = m.streamPublisher.PublishToStream(ctx, streamName, eventData)
-	if err != nil {
-		m.logger.Warn("Failed to publish device online status event",
-			zap.String("device_uid", deviceUID),
-			zap.String("device_status", deviceStatus),
-			zap.String("stream", streamName),
-			zap.Error(err),
-		)
-	} else {
-		m.logger.Info("Published device online status event",
-			zap.String("device_uid", deviceUID),
-			zap.String("device_status", deviceStatus),
-			zap.String("stream", streamName),
-			zap.String("topic_type", topicType),
-		)
-		log.Printf("✅ Published device %s status event (%s) to %s stream", deviceUID, deviceStatus, streamName)
-	}
 }
 
 // unsubscribeDevice 第二阶段：取消订阅设备
@@ -1339,12 +1083,11 @@ func (m *DeviceSubscriptionManager) unsubscribeDevice(deviceUID string) {
 		sub.mu.Unlock()
 
 		log.Printf("🚫 Device %s unsubscribed (180s no messages)", deviceUID)
-		m.logger.Info("Device unsubscribed (180s no messages)",
+		m.logger.Info("Device status changed",
 			zap.String("device_uid", deviceUID),
+			zap.String("old_status", "offline"),
+			zap.String("new_status", "unsubscribed"),
 		)
-
-		// 1. 发送 unsubscribed 事件到 config stream
-		m.triggerStatusChange(deviceUID, "offline", "unsubscribed")
 
 		// 2. 取消MQTT订阅
 		if m.mqttConsumer != nil {
@@ -1365,101 +1108,9 @@ func (m *DeviceSubscriptionManager) unsubscribeDevice(deviceUID string) {
 		}
 		m.unsubscribedDueToTimeout[deviceUID] = struct{}{}
 		m.mu.Unlock()
-
-		// 4. 触发取消订阅事件（用于其他模块通知）
-		m.triggerUnsubscribeEvent(deviceUID)
 	} else {
 		sub.mu.Unlock()
 	}
-}
-
-// triggerStatusChange 触发状态变更事件
-func (m *DeviceSubscriptionManager) triggerStatusChange(deviceUID, oldStatus, newStatus string) {
-	m.logger.Info("Device status changed",
-		zap.String("device_uid", deviceUID),
-		zap.String("old_status", oldStatus),
-		zap.String("new_status", newStatus),
-	)
-
-	// 发布设备在线状态到 config stream
-	m.publishDeviceOnlineStatusToConfigStream(context.Background(), deviceUID, newStatus)
-}
-
-// publishDeviceOnlineStatusToConfigStream 发布设备在线状态到 config stream
-// 使用统一的 config:device_status:stream 格式，Category 直接使用 online/offline/unsubscribed
-func (m *DeviceSubscriptionManager) publishDeviceOnlineStatusToConfigStream(ctx context.Context, deviceUID, onlineStatus string) {
-	if m.streamPublisher == nil {
-		m.logger.Warn("StreamPublisher not set, skipping device online status publish",
-			zap.String("device_uid", deviceUID),
-		)
-		return
-	}
-
-	// 查询设备信息（device_id, tenant_id, device_code, device_type）
-	// 注意：只处理 Radar 设备
-	var deviceID, tenantID, deviceCode, deviceType string
-	query := `SELECT ds.device_id::text, COALESCE(d.tenant_id::text, '00000000-0000-0000-0000-000000000000'), COALESCE(ds.device_code, ''), COALESCE(ds.device_type, 'Radar')
-			  FROM device_store ds
-			  LEFT JOIN devices d ON ds.device_id = d.device_id
-			  WHERE ds.device_uid = $1 AND ds.allow_access = TRUE AND ds.device_type = 'Radar'
-			  LIMIT 1`
-	err := m.db.QueryRowContext(ctx, query, deviceUID).Scan(&deviceID, &tenantID, &deviceCode, &deviceType)
-	if err != nil {
-		m.logger.Warn("Failed to get device info for online status publish",
-			zap.String("device_uid", deviceUID),
-			zap.Error(err),
-		)
-		return
-	}
-
-	// 如果 tenant_id 为空，使用默认值
-	if tenantID == "" {
-		tenantID = "00000000-0000-0000-0000-000000000000"
-	}
-
-	// 构建 ConfigChangeMessage
-	msg := rediscommon.BuildDeviceOnlineStatusMessage("wisefido-qinglan", tenantID, deviceID, deviceUID, deviceCode, deviceType, onlineStatus)
-
-	// 转换为 map（用于发布到 Redis Stream）
-	data := configChangeMessageToMap(msg)
-
-	// 发布到 config:device_status:stream
-	streamName := rediscommon.StreamConfigDeviceStatus.Name
-	_, err = m.streamPublisher.PublishToStream(ctx, streamName, data)
-	if err != nil {
-		m.logger.Warn("Failed to publish device online status to config stream",
-			zap.String("device_uid", deviceUID),
-			zap.String("status", onlineStatus),
-			zap.Error(err),
-		)
-	}
-}
-
-// configChangeMessageToMap 将 ConfigChangeMessage 转换为 map（用于发布到 Redis Stream）
-// 使用 CloudEvents 标准格式
-func configChangeMessageToMap(msg rediscommon.ConfigChangeMessage) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	// CloudEvents 标准字段
-	result["specversion"] = msg.SpecVersion
-	result["id"] = msg.ID
-	result["source"] = msg.Source
-	result["type"] = msg.Type
-	result["time"] = msg.Time
-
-	// data 为 JSON 字符串
-	dataJSON, _ := json.Marshal(msg.Data)
-	result["data"] = string(dataJSON)
-
-	return result
-}
-
-// triggerUnsubscribeEvent 触发取消订阅事件
-func (m *DeviceSubscriptionManager) triggerUnsubscribeEvent(deviceUID string) {
-	m.logger.Info("Device unsubscribed event",
-		zap.String("device_uid", deviceUID),
-	)
-	// 可以在这里添加其他取消订阅处理逻辑，如通知其他模块
 }
 
 // subscriptionRenewal 订阅续期goroutine（定期重新订阅monitor主题）

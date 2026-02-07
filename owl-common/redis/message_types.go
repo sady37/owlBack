@@ -1,7 +1,6 @@
 package redis
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -51,81 +50,38 @@ type ConfigChangeMessage struct {
 	Data        map[string]interface{} `json:"data"`        // 事件数据（业务数据）
 }
 
-// BuildAlarmCloudMessage 构建 alarm_cloud 配置变更消息（CloudEvents 标准格式）
-
-// BuildAlarmDeviceMessage 构建 alarm_device 配置变更消息（位置信息可选，可为空，CloudEvents 标准格式）
-func BuildAlarmDeviceMessage(source, tenantID, deviceID, deviceUID, deviceCode, deviceType string, locationInfo *LocationInfo) ConfigChangeMessage {
-	now := time.Now()
-	eventID := uuid.New().String()
-
-	data := map[string]interface{}{
-		"tenant_id":   tenantID,
-		"device_id":   deviceID,
-		"device_uid":  deviceUID,
-		"device_code": deviceCode,
-		"device_type": deviceType,
+// BuildDeviceStatusMessage 构建设备状态消息（发送到 iot:deviceStatus:stream）
+// 支持多个设备状态：online/offline、信号质量、传感器状态等
+// statuses: 设备状态数组（如 []int{consts.StatusOnline, consts.StatusSignalPoor}）
+func BuildDeviceStatusMessage(deviceID, deviceType, cardID, tenantID string, timestamp int64, statuses []int) IoTStreamMessage {
+	dataValue := []interface{}{
+		map[string]interface{}{
+			"category": "deviceStatus",
+			"statuses": statuses,
+		},
 	}
 
-	// 位置信息可选，如果提供则添加到 data
-	if locationInfo != nil {
-		if locationInfo.BranchID != nil {
-			data["branch_id"] = *locationInfo.BranchID
-		}
-		if locationInfo.BuildingID != nil {
-			data["building_id"] = *locationInfo.BuildingID
-		}
-		if locationInfo.UnitID != nil {
-			data["unit_id"] = *locationInfo.UnitID
-		}
-		if locationInfo.RoomID != nil {
-			data["room_id"] = *locationInfo.RoomID
-		}
-		if locationInfo.BedID != nil {
-			data["bed_id"] = *locationInfo.BedID
-		}
-	}
-
-	return ConfigChangeMessage{
-		SpecVersion: "1.0",
-		ID:          eventID,
-		Source:      source,
-		Type:        "config.alarm.device.updated", // 事件类型：{domain}.{category}.{action}
-		Time:        now.UTC().Format(time.RFC3339),
-		Data:        data,
+	return IoTStreamMessage{
+		DeviceID:   deviceID,
+		DeviceType: deviceType,
+		CardID:     cardID,
+		TenantID:   tenantID,
+		Timestamp:  timestamp,
+		TopicType:  "status",
+		Category:   "deviceStatus",
+		DataValue:  dataValue,
 	}
 }
 
-// BuildDeviceOnlineStatusMessage 构建设备在线状态消息（CloudEvents 标准格式）
-// onlineStatus: online/offline/unsubscribed
-func BuildDeviceOnlineStatusMessage(source, tenantID, deviceID, deviceUID, deviceCode, deviceType, onlineStatus string) ConfigChangeMessage {
-	now := time.Now()
-	eventID := uuid.New().String()
-
-	data := map[string]interface{}{
-		"tenant_id":   tenantID,
-		"device_id":   deviceID,
-		"device_uid":  deviceUID,
-		"device_code": deviceCode,
-		"device_type": deviceType,
-		"status":      onlineStatus, // 状态值
-	}
-
-	// 构建事件类型：config.device.{status}
-	eventType := fmt.Sprintf("config.device.%s", onlineStatus)
-
-	return ConfigChangeMessage{
-		SpecVersion: "1.0",
-		ID:          eventID,
-		Source:      source,
-		Type:        eventType, // 事件类型：config.device.online/offline/unsubscribed
-		Time:        now.UTC().Format(time.RFC3339),
-		Data:        data,
-	}
-}
+// Config device alarm setting 事件类型：设备告警配置变更
+const (
+	ConfigDeviceAlarmSettingUpdated = "config.alarmDevice"
+)
 
 // Config alarm process 事件类型：告警处理状态变更
 const (
-	ConfigAlarmProcessAck = "config.alarm.process.ack"
+	ConfigAlarmProcess    = "config.alarmProcess"
+	ConfigAlarmProcessAck = "config.alarm.process.ack" // 已弃用，改用 ConfigAlarmProcess
 )
 
 // Alarm process actions 告警处理 action 类型
@@ -133,110 +89,12 @@ const (
 	AlarmProcessActionAck = "ack" // 用户已确认报警
 )
 
-// Config device alarm setting 事件类型：设备告警配置变更
-const (
-	ConfigDeviceAlarmSettingUpdated = "config.device.alarm.setting.updated"
-)
-
-// Config card 事件类型：卡片创建/更新/删除后由 wisefido-data 发出，供网关、card-agg、wisefido-ai 刷新
-const (
-	ConfigCardCreated = "config.card.created"
-	ConfigCardUpdated = "config.card.updated"
-	ConfigCardDeleted = "config.card.deleted"
-)
-
-// DeviceItemForMessage 消息中包含的device信息（轻量级）
-type DeviceItemForMessage struct {
-	DeviceID   string      `json:"device_id"`
-	DeviceUID  string      `json:"device_uid"`
-	DeviceCode string      `json:"device_code,omitempty"`
-	DeviceName string      `json:"device_name,omitempty"`
-	DeviceType interface{} `json:"device_type,omitempty"`
-}
-
-// BuildCardCreatedMessage 构建 config.card.created 消息
-// devices: 卡片关联的设备完整信息
-// branchID: 院区ID
-func BuildCardCreatedMessage(source, tenantID, cardID, unitID, branchID string, devices []DeviceItemForMessage) ConfigChangeMessage {
-	return buildCardChangeMessage(source, ConfigCardCreated, tenantID, cardID, unitID, branchID, devices)
-}
-
-// BuildCardUpdatedMessage 构建 config.card.updated 消息
-// devices: 卡片关联的设备完整信息
-// branchID: 院区ID
-func BuildCardUpdatedMessage(source, tenantID, cardID, unitID, branchID string, devices []DeviceItemForMessage) ConfigChangeMessage {
-	return buildCardChangeMessage(source, ConfigCardUpdated, tenantID, cardID, unitID, branchID, devices)
-}
-
-// BuildCardDeletedMessage 构建 config.card.deleted 消息
-func BuildCardDeletedMessage(source, tenantID, cardID, unitID, branchID string) ConfigChangeMessage {
-	return buildCardChangeMessage(source, ConfigCardDeleted, tenantID, cardID, unitID, branchID, nil)
-}
-
-func buildCardChangeMessage(source, eventType, tenantID, cardID, unitID, branchID string, devices []DeviceItemForMessage) ConfigChangeMessage {
-	now := time.Now()
-	data := map[string]interface{}{
-		"tenant_id":    tenantID,
-		"card_id":      cardID,
-		"unit_id":      unitID,
-		"branch_id":    branchID,
-		"timestamp_ms": now.UnixMilli(),
-	}
-	if len(devices) > 0 {
-		data["devices"] = devices
-	}
-	return ConfigChangeMessage{
-		SpecVersion: "1.0",
-		ID:          uuid.New().String(),
-		Source:      source,
-		Type:        eventType,
-		Time:        now.UTC().Format(time.RFC3339),
-		Data:        data,
-	}
-}
-
-// BuildAlarmProcessMessage 构建报警处理消息（供cardagg更新显示）
-// cardID: 卡片ID（用于cardagg找到最新数据）
-// deviceID: 设备ID
-// alarmLevel: 报警级别（EMERG, ALERT, CRIT, ERR, WARNING, NOTICE 等）
-// alarmType: 报警类型（Fall, RadarAbnormalHeartRate 等）
-// alarmTimestamp: 报警触发时间戳（秒级，用于比较防止旧数据覆盖）
-// processType: 报警处理类型（acknowledged、resolved 等）
-func BuildAlarmProcessMessage(
-	source, tenantID, cardID, deviceID, alarmLevel, alarmType, processType string,
-	alarmTimestamp int64,
-) ConfigChangeMessage {
-	now := time.Now()
-
-	// 最小化数据：仅包含cardagg更新显示需要的字段
-	data := map[string]interface{}{
-		"tenant_id":       tenantID,
-		"card_id":         cardID,
-		"device_id":       deviceID,
-		"alarm_level":     alarmLevel,
-		"alarm_type":      alarmType,
-		"alarm_timestamp": alarmTimestamp, // 报警触发时间，用于比较是否是同一个报警
-	}
-
-	// 构建事件类型：config.alarm.process.{processType}
-	eventType := fmt.Sprintf("config.alarm.process.%s", processType)
-
-	return ConfigChangeMessage{
-		SpecVersion: "1.0",
-		ID:          uuid.New().String(),
-		Source:      source,
-		Type:        eventType, // 事件类型：config.alarm.process.acknowledged/resolved 等
-		Time:        now.UTC().Format(time.RFC3339),
-		Data:        data,
-	}
-}
-
-// BuildDeviceAlarmSettingMessage 构建设备告警配置变更消息
+// BuildAlarmDeviceMessage 构建设备告警配置变更消息（对应 config:alarmDevice:stream）
 // deviceID: 设备ID
 // deviceUID: 设备UID
 // settingType: 配置类型（如 "enabled", "threshold_updated" 等）
 // settingData: 配置数据（如启用状态、阈值等）
-func BuildDeviceAlarmSettingMessage(
+func BuildAlarmDeviceMessage(
 	source, tenantID, deviceID, deviceUID, settingType string,
 	settingData map[string]interface{},
 ) ConfigChangeMessage {
@@ -259,7 +117,108 @@ func BuildDeviceAlarmSettingMessage(
 		SpecVersion: "1.0",
 		ID:          uuid.New().String(),
 		Source:      source,
-		Type:        ConfigDeviceAlarmSettingUpdated,
+		Type:        ConfigDeviceAlarmSettingUpdated, // 事件类型
+		Time:        now.UTC().Format(time.RFC3339),
+		Data:        data,
+	}
+}
+
+// BuildAlarmProcessMessage 构建报警处理消息（发送到 config:alarmProcess:stream，供cardagg消费以更新显示）
+// cardID: 卡片ID（用于cardagg找到最新数据）
+// deviceID: 设备ID
+// alarmLevel: 报警级别（EMERG, ALERT, CRIT, ERR, WARNING, NOTICE 等）
+// alarmType: 报警类型（Fall, RadarAbnormalHeartRate 等）
+// alarmTimestamp: 报警触发时间戳（秒级，用于比较防止旧数据覆盖）
+// processType: 报警处理类型（acknowledged、resolved 等）
+func BuildAlarmProcessMessage(
+	source, tenantID, cardID, deviceID, alarmLevel, alarmType, processType string,
+	alarmTimestamp int64,
+) ConfigChangeMessage {
+	now := time.Now()
+
+	// 最小化数据：仅包含cardagg更新显示需要的字段
+	data := map[string]interface{}{
+		"tenant_id":       tenantID,
+		"card_id":         cardID,
+		"device_id":       deviceID,
+		"alarm_level":     alarmLevel,
+		"alarm_type":      alarmType,
+		"alarm_timestamp": alarmTimestamp, // 报警触发时间，用于比较是否是同一个报警
+		"process_type":    processType,    // 报警处理类型在 data 中
+	}
+
+	return ConfigChangeMessage{
+		SpecVersion: "1.0",
+		ID:          uuid.New().String(),
+		Source:      source,
+		Type:        ConfigAlarmProcess, // 事件类型
+		Time:        now.UTC().Format(time.RFC3339),
+		Data:        data,
+	}
+}
+
+// Config card 事件类型：卡片变化通知
+const (
+	ConfigCardChanged           = "config.card"
+	ConfigCardDeviceStoreChanged = "config.card.device_store" // device_store 变化信号
+)
+
+// DeviceItemForMessage 消息中包含的device信息（轻量级）
+type DeviceItemForMessage struct {
+	DeviceID   string      `json:"device_id"`
+	DeviceUID  string      `json:"device_uid"`
+	DeviceCode string      `json:"device_code,omitempty"`
+	DeviceName string      `json:"device_name,omitempty"`
+	DeviceType interface{} `json:"device_type,omitempty"`
+}
+
+// BuildCardChangeMessage 构建卡片变化通知消息
+// 消费者收到消息后根据 branch_id 全量查询卡片，自动同步
+func BuildCardChangeMessage(source, tenantID, cardID, unitID, branchID string) ConfigChangeMessage {
+	return BuildCardChangeMessageWithExtra(source, tenantID, cardID, unitID, branchID, nil)
+}
+
+// BuildCardChangeMessageWithExtra 构建卡片变化通知消息（支持额外字段）
+// 用于处理 card 变化导致的卡片变更（messageType 默认为 ConfigCardChanged）
+// 若要处理 device_store 变化，使用 BuildCardChangeMessageWithExtraAndType 并指定 messageType 为 ConfigCardDeviceStoreChanged
+//
+// extraData: 额外字段（如果为 nil 则不添加）
+func BuildCardChangeMessageWithExtra(source, tenantID, cardID, unitID, branchID string, extraData map[string]interface{}) ConfigChangeMessage {
+	return BuildCardChangeMessageWithExtraAndType(source, tenantID, cardID, unitID, branchID, ConfigCardChanged, extraData)
+}
+
+// BuildCardChangeMessageWithExtraAndType 构建卡片变化通知消息（支持额外字段和自定义消息类型）
+// 用于处理 device_store 变化导致的卡片变更或其他配置变化
+// messageType: 消息类型，如 ConfigCardChanged（"config.card"）或 ConfigCardDeviceStoreChanged（"config.card.device_store"）
+// 当处理 device_store 变化时，card_id 应为空，extraData 可包含：
+//   - device_id: 受影响的设备ID
+//   - change_type: 变化类型 (device_updated 或 device_deleted)
+func BuildCardChangeMessageWithExtraAndType(source, tenantID, cardID, unitID, branchID, messageType string, extraData map[string]interface{}) ConfigChangeMessage {
+	if messageType == "" {
+		messageType = ConfigCardChanged
+	}
+
+	now := time.Now()
+	data := map[string]interface{}{
+		"tenant_id":    tenantID,
+		"card_id":      cardID,
+		"branch_id":    branchID,
+		"unit_id":      unitID,
+		"timestamp_ms": now.UnixMilli(),
+	}
+
+	// 合并额外字段
+	if extraData != nil {
+		for k, v := range extraData {
+			data[k] = v
+		}
+	}
+
+	return ConfigChangeMessage{
+		SpecVersion: "1.0",
+		ID:          uuid.New().String(),
+		Source:      source,
+		Type:        messageType,
 		Time:        now.UTC().Format(time.RFC3339),
 		Data:        data,
 	}
@@ -386,4 +345,13 @@ func BuildIoTStreamMessage(
 		Category:   category,
 		DataValue:  dataValue,
 	}
+}
+
+// CardChangeData 卡片变更事件数据（config:card:stream 中的数据）
+type CardChangeData struct {
+	TenantID    string `json:"tenant_id"`
+	CardID      string `json:"card_id"`
+	BranchID    string `json:"branch_id"`
+	UnitID      string `json:"unit_id"`
+	TimestampMs int64  `json:"timestamp_ms"`
 }

@@ -11,7 +11,6 @@ import (
 	"owl-common/alarm"
 
 	"wisefido-data/internal/domain"
-	"wisefido-data/internal/notifier"
 	"wisefido-data/internal/repository"
 
 	"go.uber.org/zap"
@@ -87,7 +86,6 @@ type alarmCloudService struct {
 	alarmCloudRepo     repository.AlarmCloudRepository
 	configVersionsRepo repository.ConfigVersionsRepository // 配置版本仓库（用于审计）
 	db                 *sql.DB                             // 用于权限检查
-	configNotifier     *notifier.ConfigNotifier            // 配置变更通知器
 	logger             *zap.Logger
 }
 
@@ -96,14 +94,12 @@ func NewAlarmCloudService(
 	alarmCloudRepo repository.AlarmCloudRepository,
 	configVersionsRepo repository.ConfigVersionsRepository,
 	db *sql.DB,
-	configNotifier *notifier.ConfigNotifier,
 	logger *zap.Logger,
 ) AlarmCloudService {
 	return &alarmCloudService{
 		alarmCloudRepo:     alarmCloudRepo,
 		configVersionsRepo: configVersionsRepo,
 		db:                 db,
-		configNotifier:     configNotifier,
 		logger:             logger,
 	}
 }

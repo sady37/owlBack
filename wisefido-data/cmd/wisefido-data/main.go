@@ -16,7 +16,6 @@ import (
 	"wisefido-data/internal/config"
 	"wisefido-data/internal/domain"
 	httpapi "wisefido-data/internal/http"
-	"wisefido-data/internal/notifier"
 	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/service"
@@ -70,6 +69,7 @@ func main() {
 	var userCardsCache *cache.UserCardsCache
 	var usersRepo *repository.PostgresUsersRepository
 	var tenantResolver *repository.PostgresTenantResolver
+	var sleepaceReportService service.SleepaceReportService
 	// Stub depends on tenantsRepo + authStore (used by /auth/api/v1/institutions/search + /auth/api/v1/login)
 	stub := httpapi.NewStubHandler(nil, authStore, nil)
 	// Always register admin routes; if DB is not available, AdminAPI will fall back to stub (no 404).
@@ -107,29 +107,6 @@ func main() {
 		usersRepo = repository.NewPostgresUsersRepository(db)
 		_ = service.NewRoleService(roleRepo, usersRepo, logger)
 		_ = service.NewRolePermissionService(rolePermRepo, logger)
-
-		// tags - 已删除（tags 表不存在）
-
-		// 创建配置变更通知器
-		configNotifier := notifier.NewConfigNotifier(redisClient, logger)
-
-		// 卡片同步：写 DB，发 config.card.*，可选写 VitalFocusCard 静态缓存
-		cardRepo = repository.NewPostgresCardRepository(db, logger)
-		cardSyncService = service.NewCardSyncService(cardRepo, configNotifier, logger)
-
-		// 创建 Card Creator（用于启动时全量更新），现在可以使用已创建的 cardRepo
-		cardCreator = cardcreator.NewCardCreator(cardRepo, logger)
-		vitalCache := cache.NewVitalFocusStaticCache(redisClient, cardRepo, logger)
-		cardSyncService.SetVitalFocusStaticCache(vitalCache)
-		userCardsCache = cache.NewUserCardsCache(kv, logger)
-		cardSyncService.SetUserCardsCache(userCardsCache)
-
-		// 创建 Unit Service
-		branchesRepo = repository.NewPostgresBranchesRepository(db)
-		// 注意：residentsRepo 和 devicesRepo 需要在 UnitService 之前创建
-		residentsRepo = repository.NewPostgresResidentsRepository(db)
-		// 使用已创建的 devicesRepo，避免重新创建导致 logger 丢失
-		_ = service.NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, cardSyncService, logger)
 
 	} else {
 		// DB不可用时使用简化的处理器
@@ -211,18 +188,13 @@ func main() {
 		router.RegisterRolesRoutes(rolesHandler)
 		router.RegisterRolePermissionsRoutes(rolePermHandler)
 
-		// tags - 已删除（tags 表不存在）
-
-		// 创建配置变更通知器
-		configNotifier := notifier.NewConfigNotifier(redisClient, logger)
-
 		// 创建 Card Creator（用于启动时全量更新，保留向后兼容）
 		cardCreator = cardcreator.NewCardCreator(cardRepo, logger)
 
 		// 创建 AlarmCloud Service 和 Handler
 		alarmCloudRepo := repository.NewPostgresAlarmCloudRepository(db)
 		configVersionsRepo := repository.NewPostgresConfigVersionsRepository(db)
-		alarmCloudService := service.NewAlarmCloudService(alarmCloudRepo, configVersionsRepo, db, configNotifier, logger)
+		alarmCloudService := service.NewAlarmCloudService(alarmCloudRepo, configVersionsRepo, db, logger)
 		alarmCloudHandler := httpapi.NewAlarmCloudHandler(alarmCloudService, logger)
 		router.RegisterAlarmCloudRoutes(alarmCloudHandler)
 
@@ -275,7 +247,7 @@ func main() {
 		// 创建 DeviceMonitorSettings Service 和 Handler
 		alarmDeviceRepo := repository.NewPostgresAlarmDeviceRepository(db)
 		// 使用已创建的 alarmCloudRepo、configVersionsRepo（在 AlarmCloud Service 创建时已创建）
-		// 使用已创建的 configNotifier（在 AlarmCloud Service 创建时已创建）
+		// 使用已创建的 configPublisher（在上面创建）
 		deviceMonitorSettingsService := service.NewDeviceMonitorSettingsService(
 			alarmDeviceRepo,
 			alarmCloudRepo,
@@ -283,16 +255,10 @@ func main() {
 			devicesRepo,
 			deviceStoreRepo,
 			db, // 添加 db 参数用于事务操作
-			configNotifier,
 			configPublisher,
 			logger,
 		)
 
-		// SleepaceReportService
-		sleepaceReportsRepo := repository.NewPostgresSleepaceReportsRepository(db)
-		sleepaceReportService := service.NewSleepaceReportService(sleepaceReportsRepo, db, logger)
-
-		// 初始化 Sleepace 客户端（如果配置了 Sleepace 服务）
 		var sleepaceClient *service.SleepaceClient
 		if cfg.Sleepace.HttpAddress != "" && cfg.Sleepace.AppID != "" && cfg.Sleepace.SecretKey != "" {
 			sleepaceClient = service.NewSleepaceClient(
@@ -373,6 +339,10 @@ func main() {
 		)
 		alarmEventHandler := httpapi.NewAlarmEventHandler(alarmEventService, logger)
 		router.RegisterAlarmEventRoutes(alarmEventHandler)
+
+		// 创建 Sleepace Report Service 和 Handler
+		sleepaceReportsRepo := repository.NewPostgresSleepaceReportsRepository(db)
+		sleepaceReportService = service.NewSleepaceReportService(sleepaceReportsRepo, db, logger)
 
 		// 创建 Resident Service 和 Handler
 		residentsRepo = repository.NewPostgresResidentsRepository(db)

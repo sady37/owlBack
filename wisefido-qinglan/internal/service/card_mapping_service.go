@@ -4,265 +4,232 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sync"
 	"time"
+
+	commonRedis "owl-common/redis"
+	"wisefido-qinglan/internal/repository"
 
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
 
-// CardMappingService 管理 deviceID:cardID 的映射
-// 订阅 config:card:stream 中的 config.card.created/updated/deleted 事件
-// 维护以下映射：
-// 1. Redis: device:card:mapping -> {deviceID: cardID, ...}（便于所有 qinglan 实例访问）
-// 2. 本地内存缓存: 快速访问
+// CardMappingService 管理 deviceUID → 完整映射信息的查询服务
+// 订阅 config:card:stream 中的 config.card 事件
+// 维护以下 Redis 结构：
+//  1. owl:cache:branch:{branchID} → Hash
+//     Field: deviceUID (MQTT 标准字段)
+//     Value: CardDeviceInfo 的 JSON 序列化
+//  2. owl:lookup:device:{deviceUID} → String
+//     Value: branchID（用于第一步快速查询）
+//
+// 查询流程（两步）：
+// Step 1: GET owl:lookup:device:{deviceUID} → 获取 branchID
+// Step 2: HGET owl:cache:branch:{branchID} {deviceUID} → 获取完整的 CardDeviceInfo
 type CardMappingService struct {
 	redisClient *redis.Client
+	cardRepo    repository.CardRepository
 	logger      *zap.Logger
-
-	// 本地缓存：key 为 tenantID:deviceID，value 为 cardID
-	// 格式：tenant1:device1 -> cardID1
-	localCache *sync.Map
-
-	// 缓存锁，用于防止并发更新冲突
-	cacheLock *sync.RWMutex
-}
-
-// DeviceItemForMessage 卡片中的设备信息
-type DeviceItemForMessage struct {
-	DeviceID   string      `json:"device_id"`
-	DeviceUID  string      `json:"device_uid"`
-	DeviceCode string      `json:"device_code,omitempty"`
-	DeviceName string      `json:"device_name,omitempty"`
-	DeviceType interface{} `json:"device_type,omitempty"`
-}
-
-// CardChangeData 卡片变更消息中的数据
-type CardChangeData struct {
-	TenantID  string                 `json:"tenant_id"`
-	CardID    string                 `json:"card_id"`
-	UnitID    string                 `json:"unit_id"`
-	BranchID  string                 `json:"branch_id"`
-	Timestamp int64                  `json:"timestamp_ms"`
-	Devices   []DeviceItemForMessage `json:"devices,omitempty"`
 }
 
 // NewCardMappingService 创建卡片映射服务
-func NewCardMappingService(redisClient *redis.Client, logger *zap.Logger) *CardMappingService {
+func NewCardMappingService(redisClient *redis.Client, cardRepo repository.CardRepository, logger *zap.Logger) *CardMappingService {
 	return &CardMappingService{
 		redisClient: redisClient,
+		cardRepo:    cardRepo,
 		logger:      logger,
-		localCache:  &sync.Map{},
-		cacheLock:   &sync.RWMutex{},
 	}
 }
 
-// GetCardIDByDeviceID 通过 deviceID 获取 cardID（优先查本地缓存，然后查 Redis）
-func (s *CardMappingService) GetCardIDByDeviceID(ctx context.Context, tenantID, deviceID string) (string, error) {
-	if tenantID == "" || deviceID == "" {
-		return "", fmt.Errorf("tenant_id and device_id are required")
+// GetCardIDByDeviceUID 通过 deviceUID 获取完整映射信息
+// 两步查询（仅需 deviceUID，无需 tenantID）：
+// Step 1: GET owl:lookup:device:{deviceUID} → 获取 branchID
+// Step 2: HGET owl:cache:branch:{branchID} {deviceUID} → 获取完整的 CardDeviceInfo
+// 如果缓存缺失，返回错误（需要在消费层触发 ReloadBranchCache 回填）
+func (s *CardMappingService) GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*repository.CardDeviceInfo, error) {
+	if deviceUID == "" {
+		return nil, fmt.Errorf("device_uid is required")
 	}
 
-	key := s.getLocalCacheKey(tenantID, deviceID)
-
-	// 1. 优先查本地缓存
-	if cardID, ok := s.localCache.Load(key); ok {
-		s.logger.Debug("Found card ID in local cache",
-			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
-			zap.String("card_id", cardID.(string)))
-		return cardID.(string), nil
-	}
-
-	// 2. 查 Redis 缓存
-	redisKey := s.getRedisKey(tenantID)
-	mapping, err := s.redisClient.HGetAll(ctx, redisKey).Result()
+	// Step 1: 查询 branchID
+	lookupKey := fmt.Sprintf("owl:lookup:device:%s", deviceUID)
+	branchID, err := s.redisClient.Get(ctx, lookupKey).Result()
 	if err != nil && err != redis.Nil {
-		s.logger.Warn("Failed to query Redis for device:card mapping",
-			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+		s.logger.Warn("Failed to query Redis lookup key",
+			zap.String("device_uid", deviceUID),
 			zap.Error(err))
-		// 不返回错误，继续尝试本地缓存
+		return nil, fmt.Errorf("failed to query Redis lookup: %w", err)
 	}
 
-	if len(mapping) > 0 {
-		// 将 Redis 中的映射加载到本地缓存
-		for devID, cardID := range mapping {
-			localKey := s.getLocalCacheKey(tenantID, devID)
-			s.localCache.Store(localKey, cardID)
-		}
-
-		if cardID, ok := mapping[deviceID]; ok {
-			s.logger.Debug("Found card ID in Redis cache",
-				zap.String("tenant_id", tenantID),
-				zap.String("device_id", deviceID),
-				zap.String("card_id", cardID))
-			return cardID, nil
-		}
+	if branchID == "" {
+		return nil, fmt.Errorf("device_uid not found in cache: %s", deviceUID)
 	}
 
-	// 3. 本地缓存和 Redis 都没有找到
-	return "", fmt.Errorf("card ID not found for device %s", deviceID)
+	// Step 2: 从分支缓存获取完整信息
+	cacheKey := fmt.Sprintf("owl:cache:branch:%s", branchID)
+	jsonValue, err := s.redisClient.HGet(ctx, cacheKey, deviceUID).Result()
+	if err != nil && err != redis.Nil {
+		s.logger.Warn("Failed to query Redis branch cache",
+			zap.String("branch_id", branchID),
+			zap.String("device_uid", deviceUID),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to query Redis cache: %w", err)
+	}
+
+	if jsonValue == "" {
+		return nil, fmt.Errorf("device_uid not found in branch cache: %s", deviceUID)
+	}
+
+	// 反序列化 JSON
+	var cdi repository.CardDeviceInfo
+	if err := json.Unmarshal([]byte(jsonValue), &cdi); err != nil {
+		s.logger.Warn("Failed to unmarshal CardDeviceInfo",
+			zap.String("device_uid", deviceUID),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to unmarshal CardDeviceInfo: %w", err)
+	}
+
+	s.logger.Debug("Found CardDeviceInfo in Redis",
+		zap.String("device_uid", deviceUID),
+		zap.String("device_id", cdi.DeviceID),
+		zap.String("card_id", cdi.CardID),
+		zap.String("branch_id", cdi.BranchID),
+		zap.String("tenant_id", cdi.TenantID))
+
+	return &cdi, nil
 }
 
-// HandleCardCreated 处理卡片创建事件
-func (s *CardMappingService) HandleCardCreated(ctx context.Context, data map[string]interface{}) error {
-	cardData := &CardChangeData{}
+// HandleCardChanged 处理卡片配置变更事件（统一入口）
+// 支持创建、更新、删除三种操作
+// 策略：失效该租户分支的缓存并重建（卡片更新频率低，避免脏数据）
+func (s *CardMappingService) HandleCardChanged(ctx context.Context, data map[string]interface{}) error {
+	cardData := &commonRedis.CardChangeData{}
 	if err := s.parseCardChangeData(data, cardData); err != nil {
-		return fmt.Errorf("failed to parse card created data: %w", err)
+		return fmt.Errorf("failed to parse card change data: %w", err)
 	}
 
-	s.logger.Info("Handling card created event",
+	s.logger.Info("Handling card change event",
 		zap.String("tenant_id", cardData.TenantID),
 		zap.String("card_id", cardData.CardID),
-		zap.Int("device_count", len(cardData.Devices)))
+		zap.String("branch_id", cardData.BranchID))
 
-	return s.updateDeviceCardMapping(ctx, cardData.TenantID, cardData.CardID, cardData.Devices, "created")
+	// 重建该租户分支的缓存
+	return s.ReloadBranchCache(ctx, cardData.TenantID, cardData.BranchID)
 }
 
-// HandleCardUpdated 处理卡片更新事件
-func (s *CardMappingService) HandleCardUpdated(ctx context.Context, data map[string]interface{}) error {
-	cardData := &CardChangeData{}
-	if err := s.parseCardChangeData(data, cardData); err != nil {
-		return fmt.Errorf("failed to parse card updated data: %w", err)
+// ReloadBranchCache 失效该租户分支缓存并重建（卡片更新频率低，避免脏数据）
+// 清理策略：
+// 1. 查询 Redis 中该分支的旧设备列表（用于清理孤立的全局索引）
+// 2. Repository 查询 DB：该租户该分支的所有设备-卡片映射
+// 3. Service Pipeline：
+//   - 删除旧的分支 Hash 缓存
+//   - 删除旧设备的全局查找索引（避免孤立指针）
+//   - 写入新数据到 cache 和 lookup
+func (s *CardMappingService) ReloadBranchCache(ctx context.Context, tenantID string, branchID string) error {
+	if tenantID == "" || branchID == "" {
+		return fmt.Errorf("tenant_id and branch_id are required")
 	}
 
-	s.logger.Info("Handling card updated event",
-		zap.String("tenant_id", cardData.TenantID),
-		zap.String("card_id", cardData.CardID),
-		zap.Int("device_count", len(cardData.Devices)))
-
-	// 更新前，先清除旧的映射（如果设备有变化）
-	// 这里先清除所有旧映射，然后重新建立
-	s.clearOldCardMapping(ctx, cardData.TenantID, cardData.CardID)
-
-	return s.updateDeviceCardMapping(ctx, cardData.TenantID, cardData.CardID, cardData.Devices, "updated")
-}
-
-// HandleCardDeleted 处理卡片删除事件
-func (s *CardMappingService) HandleCardDeleted(ctx context.Context, data map[string]interface{}) error {
-	cardData := &CardChangeData{}
-	if err := s.parseCardChangeData(data, cardData); err != nil {
-		return fmt.Errorf("failed to parse card deleted data: %w", err)
+	if s.cardRepo == nil {
+		return fmt.Errorf("card repository not set")
 	}
 
-	s.logger.Info("Handling card deleted event",
-		zap.String("tenant_id", cardData.TenantID),
-		zap.String("card_id", cardData.CardID))
+	s.logger.Info("Reloading branch cache",
+		zap.String("tenant_id", tenantID),
+		zap.String("branch_id", branchID))
 
-	return s.clearOldCardMapping(ctx, cardData.TenantID, cardData.CardID)
-}
+	branchKey := fmt.Sprintf("owl:cache:branch:%s", branchID)
 
-// updateDeviceCardMapping 更新 deviceID:cardID 映射
-func (s *CardMappingService) updateDeviceCardMapping(
-	ctx context.Context,
-	tenantID, cardID string,
-	devices []DeviceItemForMessage,
-	operation string,
-) error {
-	if len(devices) == 0 {
-		s.logger.Debug("No devices to map for card",
-			zap.String("card_id", cardID),
-			zap.String("operation", operation))
-		return nil
+	// 1. 获取旧的设备 UID 列表（用于清理全局索引）
+	oldDeviceUIDs, err := s.redisClient.HKeys(ctx, branchKey).Result()
+	if err != nil && err != redis.Nil {
+		s.logger.Warn("Failed to get old device UIDs for cleanup",
+			zap.String("branch_id", branchID),
+			zap.Error(err))
+		// 不中断流程，继续重建缓存
 	}
 
-	s.cacheLock.Lock()
-	defer s.cacheLock.Unlock()
+	// 2. Repository 层：查询该租户该分支的所有设备-卡片映射
+	mappingRecords, err := s.cardRepo.GetDeviceCardMappingsByBranch(ctx, tenantID, branchID)
+	if err != nil {
+		s.logger.Error("Failed to query cards and devices from repository",
+			zap.String("tenant_id", tenantID),
+			zap.String("branch_id", branchID),
+			zap.Error(err))
+		return fmt.Errorf("failed to query card-device mapping by branch: %w", err)
+	}
 
-	// 构建本次更新的 deviceID 列表
-	updatedDeviceIDs := make([]string, 0, len(devices))
+	s.logger.Debug("Queried devices from DB",
+		zap.String("tenant_id", tenantID),
+		zap.String("branch_id", branchID),
+		zap.Int("device_count", len(mappingRecords)))
 
-	// 更新 Redis 映射
-	redisKey := s.getRedisKey(tenantID)
-	for _, device := range devices {
-		if device.DeviceID == "" {
+	// 3. Service 层：准备 Redis Pipeline
+	pipe := s.redisClient.Pipeline()
+
+	// 3.1 清除旧的分支 Hash 记录
+	pipe.Del(ctx, branchKey)
+
+	// 3.2 清理旧设备的全局查找索引（避免孤立指针）
+	// 只清理从该分支移除的设备，保留新设备的索引
+	newDeviceUIDs := make(map[string]bool)
+	for _, device := range mappingRecords {
+		newDeviceUIDs[device.DeviceUID] = true
+	}
+
+	for _, oldUID := range oldDeviceUIDs {
+		if !newDeviceUIDs[oldUID] {
+			// 这个设备已从分支删除，清理它的全局索引
+			lookupKey := fmt.Sprintf("owl:lookup:device:%s", oldUID)
+			pipe.Del(ctx, lookupKey)
+			s.logger.Debug("Cleaning up orphaned lookup index",
+				zap.String("device_uid", oldUID),
+				zap.String("branch_id", branchID))
+		}
+	}
+
+	// 3.3 批量写入新数据
+	for _, device := range mappingRecords {
+		// 序列化为 JSON
+		jsonData, err := json.Marshal(device)
+		if err != nil {
+			s.logger.Warn("Failed to marshal CardDeviceInfo",
+				zap.String("device_uid", device.DeviceUID),
+				zap.Error(err))
 			continue
 		}
-		updatedDeviceIDs = append(updatedDeviceIDs, device.DeviceID)
 
-		// 更新本地缓存
-		localKey := s.getLocalCacheKey(tenantID, device.DeviceID)
-		s.localCache.Store(localKey, cardID)
+		// Pipeline 操作：写入分支缓存
+		// Key: owl:cache:branch:{branch_id}, Field: {device_uid}, Value: JSON
+		pipe.HSet(ctx, branchKey, device.DeviceUID, jsonData)
 
-		// 更新 Redis（使用 HSet）
-		if err := s.redisClient.HSet(ctx, redisKey, device.DeviceID, cardID).Err(); err != nil {
-			s.logger.Error("Failed to update Redis device:card mapping",
-				zap.String("tenant_id", tenantID),
-				zap.String("device_id", device.DeviceID),
-				zap.String("card_id", cardID),
-				zap.Error(err))
-			// 继续处理其他设备
-		}
+		// Pipeline 操作：写入/更新全局查找索引
+		// Key: owl:lookup:device:{device_uid}, Value: {branch_id}
+		// 设置 TTL 为 24 小时，防止长期孤立
+		lookupKey := fmt.Sprintf("owl:lookup:device:%s", device.DeviceUID)
+		pipe.Set(ctx, lookupKey, branchID, 24*time.Hour)
 	}
 
-	// 设置 Redis key 的过期时间（24 小时）
-	if err := s.redisClient.Expire(ctx, redisKey, 24*time.Hour).Err(); err != nil {
-		s.logger.Warn("Failed to set expiration for Redis device:card mapping",
+	// 4. 执行 Pipeline
+	_, err = pipe.Exec(ctx)
+	if err != nil {
+		s.logger.Error("Failed to execute Redis pipeline",
 			zap.String("tenant_id", tenantID),
+			zap.String("branch_id", branchID),
 			zap.Error(err))
+		return fmt.Errorf("failed to execute Redis pipeline: %w", err)
 	}
 
-	s.logger.Info("Updated device:card mappings",
+	s.logger.Info("Successfully updated cache for branch",
 		zap.String("tenant_id", tenantID),
-		zap.String("card_id", cardID),
-		zap.Strings("device_ids", updatedDeviceIDs),
-		zap.String("operation", operation))
-
-	return nil
-}
-
-// clearOldCardMapping 清除卡片的旧映射
-// 通过查询 Redis 找到该卡片关联的所有 deviceID，然后删除它们的映射
-func (s *CardMappingService) clearOldCardMapping(ctx context.Context, tenantID, cardID string) error {
-	s.cacheLock.Lock()
-	defer s.cacheLock.Unlock()
-
-	redisKey := s.getRedisKey(tenantID)
-
-	// 从 Redis 中查询所有映射
-	mapping, err := s.redisClient.HGetAll(ctx, redisKey).Result()
-	if err != nil && err != redis.Nil {
-		s.logger.Warn("Failed to query Redis for device:card mapping when clearing",
-			zap.String("tenant_id", tenantID),
-			zap.String("card_id", cardID),
-			zap.Error(err))
-		// 即使查询失败，也继续清除本地缓存
-	}
-
-	// 找到属于该卡片的所有 deviceID，并删除
-	deletedDeviceIDs := make([]string, 0)
-	for deviceID, cID := range mapping {
-		if cID == cardID {
-			// 从本地缓存删除
-			localKey := s.getLocalCacheKey(tenantID, deviceID)
-			s.localCache.Delete(localKey)
-
-			// 从 Redis 删除
-			if err := s.redisClient.HDel(ctx, redisKey, deviceID).Err(); err != nil {
-				s.logger.Warn("Failed to delete Redis device:card mapping",
-					zap.String("tenant_id", tenantID),
-					zap.String("device_id", deviceID),
-					zap.String("card_id", cardID),
-					zap.Error(err))
-			}
-			deletedDeviceIDs = append(deletedDeviceIDs, deviceID)
-		}
-	}
-
-	if len(deletedDeviceIDs) > 0 {
-		s.logger.Info("Cleared old device:card mappings",
-			zap.String("tenant_id", tenantID),
-			zap.String("card_id", cardID),
-			zap.Strings("deleted_device_ids", deletedDeviceIDs))
-	}
+		zap.String("branch_id", branchID),
+		zap.Int("device_count", len(mappingRecords)),
+		zap.Int("orphaned_lookups_cleaned", len(oldDeviceUIDs)-len(mappingRecords)))
 
 	return nil
 }
 
 // parseCardChangeData 解析卡片变更数据
-func (s *CardMappingService) parseCardChangeData(data map[string]interface{}, cardData *CardChangeData) error {
-	// 使用 JSON 转换确保类型正确
+func (s *CardMappingService) parseCardChangeData(data map[string]interface{}, cardData *commonRedis.CardChangeData) error {
 	jsonBytes, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("failed to marshal card change data: %w", err)
@@ -277,14 +244,4 @@ func (s *CardMappingService) parseCardChangeData(data map[string]interface{}, ca
 	}
 
 	return nil
-}
-
-// getLocalCacheKey 获取本地缓存键
-func (s *CardMappingService) getLocalCacheKey(tenantID, deviceID string) string {
-	return tenantID + ":" + deviceID
-}
-
-// getRedisKey 获取 Redis 键
-func (s *CardMappingService) getRedisKey(tenantID string) string {
-	return "device:card:mapping:" + tenantID
 }
