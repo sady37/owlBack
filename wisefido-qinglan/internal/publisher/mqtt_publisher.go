@@ -57,7 +57,6 @@ func (p *MQTTPublisher) GetDeviceProperties(ctx context.Context, uid string, key
 		"request_id": command["requestId"],
 	}, nil
 }
-
 // SetDeviceProperties 设置设备属性
 func (p *MQTTPublisher) SetDeviceProperties(ctx context.Context, uid string, properties map[string]interface{}) error {
 	log.Printf("Setting device properties for %s: %v", uid, properties)

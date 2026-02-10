@@ -172,9 +172,13 @@ func (h *ResidentHandler) ListResidents(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
-	currentUserType := r.Header.Get("X-User-Type")
-	currentUserRole := r.Header.Get("X-User-Role")
+	// 从 context 获取可信会话（由 AuthMiddleware 注入）
+	currentUserID, _, currentUserType, currentUserRole, ok := service.MustSession(ctx)
+	if !ok {
+		h.logger.Warn("missing session in context for ListResidents")
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
 
 	// 获取查询参数
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
@@ -412,9 +416,13 @@ func (h *ResidentHandler) GetResident(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
-	currentUserType := r.Header.Get("X-User-Type")
-	currentUserRole := r.Header.Get("X-User-Role")
+	// 从 context 获取可信会话（由 AuthMiddleware 注入）
+	currentUserID, _, currentUserType, currentUserRole, ok := service.GetSessionFromContext(ctx)
+	if !ok {
+		h.logger.Warn("missing session in context for GetResident")
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
 
 	// 获取查询参数
 	includePHI := r.URL.Query().Get("include_phi") == "true"
@@ -744,11 +752,11 @@ func (h *ResidentHandler) GetResident(w http.ResponseWriter, r *http.Request, re
 			userList := make([]map[string]any, 0, len(resp.Caregivers.UserList))
 			for _, user := range resp.Caregivers.UserList {
 				userMap := map[string]any{
-					"user_id":       user.UserID,
-					"user_account":  user.UserAccount,
-					"nickname":      user.Nickname,
-					"role":          user.Role,
-					"status":        user.Status,
+					"user_id":      user.UserID,
+					"user_account": user.UserAccount,
+					"nickname":     user.Nickname,
+					"role":         user.Role,
+					"status":       user.Status,
 				}
 				userList = append(userList, userMap)
 			}
@@ -767,204 +775,6 @@ func (h *ResidentHandler) GetResident(w http.ResponseWriter, r *http.Request, re
 // ============================================
 
 func (h *ResidentHandler) CreateResident(w http.ResponseWriter, r *http.Request) {
-	// 原有实现已注释，使用新的实现（见下方）
-	/*
-	ctx := r.Context()
-
-	tenantID, ok := h.base.tenantIDFromReq(w, r)
-	if !ok {
-		return
-	}
-
-	currentUserID := r.Header.Get("X-User-Id")
-	currentUserType := r.Header.Get("X-User-Type")
-	currentUserRole := r.Header.Get("X-User-Role")
-
-	// 权限检查（需要 C 权限）
-	// 注意：resident_contacts 不能登录系统，所以 currentUserType 永远不会是 "family"
-	// 保留此检查是为了向后兼容，但实际上只会是 "resident" 或 "staff"
-	if currentUserType != "resident" && currentUserType != "family" && currentUserRole != "" && h.db != nil {
-		hasCPermission := false
-		err := h.db.QueryRowContext(ctx,
-			`SELECT EXISTS(
-				SELECT 1 FROM role_permissions
-				WHERE tenant_id = $1 AND role_code = $2 AND resource_type = 'residents' AND permission_type = 'C'
-			)`,
-			SystemTenantID(), currentUserRole,
-		).Scan(&hasCPermission)
-		if err != nil || !hasCPermission {
-			writeJSON(w, http.StatusOK, Fail("permission denied: no create permission for residents"))
-			return
-		}
-	}
-
-	// 解析请求体
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
-		return
-	}
-
-	// 权限检查结果
-	// Service 层会自己查询用户的 branch_id（通过 user_branches 表），这里不需要传递 UserBranchTag
-	var permCheck *service.PermissionCheckResult
-	if currentUserRole != "" && h.db != nil {
-		perm, err := GetResourcePermission(h.db, ctx, currentUserRole, "residents", "C")
-		if err == nil {
-			permCheck = &service.PermissionCheckResult{
-				AssignedOnly: perm.AssignedOnly,
-				BranchOnly:   perm.BranchOnly,
-			}
-		}
-	}
-
-	// 构建请求
-	req := service.CreateResidentRequest{
-		TenantID:        tenantID,
-		CurrentUserID:   currentUserID,
-		CurrentUserRole: currentUserRole,
-		PermissionCheck: permCheck,
-	}
-
-	// 提取必填字段
-	if residentAccount, ok := payload["resident_account"].(string); ok {
-		req.ResidentAccount = strings.TrimSpace(residentAccount)
-	}
-	if nickname, ok := payload["nickname"].(string); ok {
-		req.Nickname = strings.TrimSpace(nickname)
-	}
-	if password, ok := payload["password"].(string); ok {
-		req.Password = password
-	}
-	if status, ok := payload["status"].(string); ok {
-		req.Status = status
-	}
-	if serviceLevel, ok := payload["service_level"].(string); ok {
-		req.ServiceLevel = serviceLevel
-	}
-	if unitID, ok := payload["unit_id"].(string); ok {
-		req.UnitID = unitID
-	}
-	if familyTag, ok := payload["family_tag"].(string); ok {
-		req.FamilyTag = familyTag
-	}
-	if isAccessEnabled, ok := payload["is_access_enabled"].(bool); ok {
-		req.IsAccessEnabled = isAccessEnabled
-	}
-	if note, ok := payload["note"].(string); ok {
-		req.Note = note
-	}
-	if phoneHash, ok := payload["phone_hash"].(string); ok {
-		req.PhoneHash = phoneHash
-	}
-	if emailHash, ok := payload["email_hash"].(string); ok {
-		req.EmailHash = emailHash
-	}
-
-	// 处理 admission_date
-	if admDate, ok := payload["admission_date"].(string); ok && admDate != "" {
-		if t, err := time.Parse("2006-01-02", admDate); err == nil {
-			ts := t.Unix()
-			req.AdmissionDate = &ts
-		}
-	}
-
-	// 处理 PHI 数据
-	if phiData, ok := payload["phi"].(map[string]any); ok {
-		phi := &service.CreateResidentPHIRequest{}
-		if firstName, ok := phiData["first_name"].(string); ok {
-			phi.FirstName = firstName
-		}
-		if lastName, ok := phiData["last_name"].(string); ok {
-			phi.LastName = lastName
-		}
-		if gender, ok := phiData["gender"].(string); ok {
-			phi.Gender = gender
-		}
-		if dob, ok := phiData["date_of_birth"].(string); ok && dob != "" {
-			if t, err := time.Parse("2006-01-02", dob); err == nil {
-				ts := t.Unix()
-				phi.DateOfBirth = &ts
-			}
-		}
-		if residentPhone, ok := phiData["resident_phone"].(string); ok {
-			phi.ResidentPhone = residentPhone
-		}
-		if residentEmail, ok := phiData["resident_email"].(string); ok {
-			phi.ResidentEmail = residentEmail
-		}
-		if savePhone, ok := phiData["save_phone"].(bool); ok {
-			phi.SavePhone = savePhone
-		}
-		if saveEmail, ok := phiData["save_email"].(bool); ok {
-			phi.SaveEmail = saveEmail
-		}
-		// ... 其他 PHI 字段
-		req.PHI = phi
-	}
-
-	// 处理联系人数据
-	if contacts, ok := payload["contacts"].([]any); ok {
-		req.Contacts = make([]*service.CreateResidentContactRequest, 0, len(contacts))
-		for _, contactRaw := range contacts {
-			if contact, ok := contactRaw.(map[string]any); ok {
-				contactReq := &service.CreateResidentContactRequest{}
-				if slot, ok := contact["slot"].(string); ok {
-					contactReq.Slot = slot
-				}
-				if isEnabled, ok := contact["is_enabled"].(bool); ok {
-					contactReq.IsEnabled = isEnabled
-				}
-				if relationship, ok := contact["relationship"].(string); ok {
-					contactReq.Relationship = relationship
-				}
-				if contactFirstName, ok := contact["contact_first_name"].(string); ok {
-					contactReq.ContactFirstName = contactFirstName
-				}
-				if contactLastName, ok := contact["contact_last_name"].(string); ok {
-					contactReq.ContactLastName = contactLastName
-				}
-				if contactPhone, ok := contact["contact_phone"].(string); ok {
-					contactReq.ContactPhone = contactPhone
-				}
-				if contactEmail, ok := contact["contact_email"].(string); ok {
-					contactReq.ContactEmail = contactEmail
-				}
-				if receiveSMS, ok := contact["receive_sms"].(bool); ok {
-					contactReq.ReceiveSMS = receiveSMS
-				}
-				if receiveEmail, ok := contact["receive_email"].(bool); ok {
-					contactReq.ReceiveEmail = receiveEmail
-				}
-				if phoneHash, ok := contact["phone_hash"].(string); ok {
-					contactReq.PhoneHash = phoneHash
-				}
-				if emailHash, ok := contact["email_hash"].(string); ok {
-					contactReq.EmailHash = emailHash
-				}
-				if contactFamilyTag, ok := contact["contact_family_tag"].(string); ok {
-					contactReq.ContactFamilyTag = contactFamilyTag
-				}
-				req.Contacts = append(req.Contacts, contactReq)
-			}
-		}
-	}
-
-	resp, err := h.residentService.CreateResident(ctx, req)
-				if err != nil {
-					h.logger.Error("CreateResident failed",
-						zap.String("tenant_id", tenantID),
-						zap.Error(err),
-					)
-					writeJSON(w, http.StatusOK, Fail(err.Error()))
-					return
-				}
-
-				writeJSON(w, http.StatusOK, Ok(map[string]any{
-					"resident_id": resp.ResidentID,
-				}))
-	*/
-
 	// ========== 新实现开始 ==========
 	ctx := r.Context()
 
@@ -1172,8 +982,11 @@ func (h *ResidentHandler) UpdateResident(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
-	currentUserRole := r.Header.Get("X-User-Role")
+	currentUserID, _, _, currentUserRole, ok := service.MustSession(ctx)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
 
 	// 解析请求体
 	var payload map[string]any
@@ -1248,7 +1061,7 @@ func (h *ResidentHandler) UpdateResident(w http.ResponseWriter, r *http.Request,
 		} else if str, ok := val.(string); ok {
 			if str == "" {
 				inherentAttrs.DischargeDate = &domain.UpdateTime{Action: domain.UpdateActionDelete, Value: nil}
-		} else {
+			} else {
 				if t, err := time.Parse("2006-01-02", str); err == nil {
 					inherentAttrs.DischargeDate = &domain.UpdateTime{Action: domain.UpdateActionUpdate, Value: &t}
 				}
@@ -1741,9 +1554,11 @@ func (h *ResidentHandler) UpdateResidentPHI(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
-	currentUserType := r.Header.Get("X-User-Type")
-	currentUserRole := r.Header.Get("X-User-Role")
+	currentUserID, _, currentUserType, currentUserRole, ok := service.MustSession(ctx)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
 
 	// Permission check: Resident/Family cannot update PHI
 	// 注意：resident_contacts 不能登录系统，所以 currentUserType 永远不会是 "family"
@@ -2097,9 +1912,11 @@ func (h *ResidentHandler) DeleteResident(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
-	currentUserType := r.Header.Get("X-User-Type")
-	currentUserRole := r.Header.Get("X-User-Role")
+	currentUserID, _, currentUserType, currentUserRole, ok := service.MustSession(ctx)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
 
 	// 权限检查结果（Service 层会自己查询用户信息和验证权限，这里只传递权限配置）
 	var permCheck *service.PermissionCheckResult
@@ -2108,8 +1925,8 @@ func (h *ResidentHandler) DeleteResident(w http.ResponseWriter, r *http.Request,
 		if err == nil {
 			// Service 层会自己查询用户的 branch_id，这里不需要传递 UserBranchTag
 			permCheck = &service.PermissionCheckResult{
-				AssignedOnly:  perm.AssignedOnly,
-				BranchOnly:    perm.BranchOnly,
+				AssignedOnly: perm.AssignedOnly,
+				BranchOnly:   perm.BranchOnly,
 			}
 		}
 	}
@@ -2171,8 +1988,8 @@ func (h *ResidentHandler) ResetResidentPassword(w http.ResponseWriter, r *http.R
 		if err == nil {
 			// Service 层会自己查询用户的 branch_id，这里不需要传递 UserBranchTag
 			permCheck = &service.PermissionCheckResult{
-				AssignedOnly:  perm.AssignedOnly,
-				BranchOnly:    perm.BranchOnly,
+				AssignedOnly: perm.AssignedOnly,
+				BranchOnly:   perm.BranchOnly,
 			}
 		}
 	}
@@ -2204,7 +2021,6 @@ func (h *ResidentHandler) ResetResidentPassword(w http.ResponseWriter, r *http.R
 	}))
 }
 
-
 // ============================================
 // GetResidentAccountSettings 获取住户/联系人账户设置
 // ============================================
@@ -2218,14 +2034,11 @@ func (h *ResidentHandler) GetResidentAccountSettings(w http.ResponseWriter, r *h
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
-	if currentUserID == "" {
-		writeJSON(w, http.StatusOK, Fail("user ID is required"))
+	currentUserID, _, currentUserType, currentUserRole, ok := service.MustSession(ctx)
+	if !ok || currentUserID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
 		return
 	}
-
-	currentUserType := r.Header.Get("X-User-Type")
-	currentUserRole := r.Header.Get("X-User-Role")
 
 	req := service.GetResidentAccountSettingsRequest{
 		TenantID:        tenantID,
@@ -2291,14 +2104,11 @@ func (h *ResidentHandler) UpdateResidentAccountSettings(w http.ResponseWriter, r
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
-	if currentUserID == "" {
-		writeJSON(w, http.StatusOK, Fail("user ID is required"))
+	currentUserID, _, currentUserType, currentUserRole, ok := service.MustSession(ctx)
+	if !ok || currentUserID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
 		return
 	}
-
-	currentUserType := r.Header.Get("X-User-Type")
-	currentUserRole := r.Header.Get("X-User-Role")
 
 	var payload map[string]any
 	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
@@ -2374,9 +2184,11 @@ func (h *ResidentHandler) UpdateResidentContact(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
-	currentUserType := r.Header.Get("X-User-Type")
-	currentUserRole := r.Header.Get("X-User-Role")
+	currentUserID, _, currentUserType, currentUserRole, ok := service.MustSession(ctx)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
 
 	// 解析请求体
 	var payload map[string]any
@@ -2456,7 +2268,7 @@ func (h *ResidentHandler) UpdateResidentContact(w http.ResponseWriter, r *http.R
 		req.ContactEmail = &emptyStr
 	}
 	// contact_email 字段不存在 → nil（不更新）
-	
+
 	// 处理 contact_phone_hash（用于搜索）：支持 string 和 null
 	if phoneHash, ok := payload["contact_phone_hash"].(string); ok && phoneHash != "" {
 		req.PhoneHash = &phoneHash // 有效的 hash hex 字符串
@@ -2466,7 +2278,7 @@ func (h *ResidentHandler) UpdateResidentContact(w http.ResponseWriter, r *http.R
 		req.PhoneHash = &emptyStr
 	}
 	// contact_phone_hash 字段不存在 → nil（不更新）
-	
+
 	// 处理 contact_email_hash（用于搜索）：支持 string 和 null
 	if emailHash, ok := payload["contact_email_hash"].(string); ok && emailHash != "" {
 		req.EmailHash = &emailHash // 有效的 hash hex 字符串
@@ -2476,7 +2288,7 @@ func (h *ResidentHandler) UpdateResidentContact(w http.ResponseWriter, r *http.R
 		req.EmailHash = &emptyStr
 	}
 	// contact_email_hash 字段不存在 → nil（不更新）
-	
+
 	if receiveSMS, ok := payload["receive_sms"].(bool); ok {
 		req.ReceiveSMS = &receiveSMS
 	}

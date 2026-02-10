@@ -1391,13 +1391,13 @@ func (s *alarmEventService) getDeviceIDsFromCardsForResident(ctx context.Context
 			SELECT devices
 			FROM cards
 			WHERE tenant_id = $1
-			  AND card_type = 'ActiveBed'
+			  AND card_type = 'ActiveBedCard'
 			  AND bed_id = $2
 			LIMIT 1
 		`
 		args = []interface{}{tenantID, bedID.String}
 	} else {
-		// 非 shareUnit: 查找该 unit 下的所有 card（ActiveBed 和 Location）
+		// 非 shareUnit: 查找该 unit 下的所有 card（ActiveBedCard 和 UnitCard）
 		if !unitID.Valid {
 			return []string{}, nil
 		}
@@ -1406,12 +1406,12 @@ func (s *alarmEventService) getDeviceIDsFromCardsForResident(ctx context.Context
 			FROM cards
 			WHERE tenant_id = $1
 			  AND (
-				(card_type = 'ActiveBed' AND bed_id IN (
+				(card_type = 'ActiveBedCard' AND bed_id IN (
 					SELECT bed_id FROM beds WHERE room_id IN (
 						SELECT room_id FROM rooms WHERE unit_id = $2
 					)
 				))
-				OR (card_type = 'Location' AND unit_id = $2)
+				OR (card_type = 'UnitCard' AND unit_id = $2)
 			  )
 		`
 		args = []interface{}{tenantID, unitID.String}
@@ -1624,14 +1624,14 @@ func (s *alarmEventService) getDeviceIDsFromCardsByUnitIDs(ctx context.Context, 
 		args[i+1] = unitID
 	}
 
-	// 查询这些 unit 下的所有 card（ActiveBed 和 Location）
+	// 查询这些 unit 下的所有 card（ActiveBedCard 和 UnitCard）
 	query := fmt.Sprintf(`
 		SELECT devices
 		FROM cards
 		WHERE tenant_id = $1
 		  AND (
-			-- Location card: 直接通过 unit_id 匹配
-			(card_type = 'Location' AND unit_id::text IN (%s))
+			-- UnitCard : 直接通过 unit_id 匹配
+			(card_type = 'UnitCard' AND unit_id::text IN (%s))
 			-- ActiveBed card: 通过 bed → room → unit 匹配
 			OR (card_type = 'ActiveBed' AND bed_id IN (
 				SELECT bed_id FROM beds WHERE room_id IN (
@@ -1843,9 +1843,9 @@ func (s *alarmEventService) getCardUnitType(ctx context.Context, tenantID, cardI
 	query := `
 		SELECT 
 			CASE 
-				WHEN c.card_type = 'ActiveBed' AND c.bed_id IS NOT NULL THEN
+				WHEN c.card_type = 'ActiveBedCard' AND c.bed_id IS NOT NULL THEN
 					COALESCE(u.unit_type, 'Home')
-				WHEN c.card_type = 'Location' AND c.unit_id IS NOT NULL THEN
+				WHEN c.card_type = 'UnitCard' AND c.unit_id IS NOT NULL THEN
 					COALESCE(u.unit_type, 'Home')
 				ELSE 'Home'
 			END as unit_type

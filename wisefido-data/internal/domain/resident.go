@@ -21,6 +21,9 @@ type Resident struct {
 	// 昵称（用于匿名化展示和查询）
 	Nickname string `db:"nickname"` // VARCHAR(100), NOT NULL, UNIQUE(tenant_id, nickname)
 
+	// 姓氏（可选，用于前端展示）
+	LastName string `db:"last_name"` // VARCHAR(100), nullable
+
 	// 日期
 	AdmissionDate *time.Time `db:"admission_date"` // DATE, NOT NULL
 	DischargeDate *time.Time `db:"discharge_date"` // DATE, nullable（仅在discharged/transferred状态时有值）

@@ -31,7 +31,7 @@ type CardMappingService struct {
 	logger      *zap.Logger
 }
 
-// NewCardMappingService 创建卡片映射服务
+// NewCardMappingService 构造 CardMappingService
 func NewCardMappingService(redisClient *redis.Client, cardRepo repository.CardRepository, logger *zap.Logger) *CardMappingService {
 	return &CardMappingService{
 		redisClient: redisClient,
@@ -40,192 +40,280 @@ func NewCardMappingService(redisClient *redis.Client, cardRepo repository.CardRe
 	}
 }
 
-// GetCardIDByDeviceUID 通过 deviceUID 获取完整映射信息
-// 两步查询（仅需 deviceUID，无需 tenantID）：
-// Step 1: GET owl:lookup:device:{deviceUID} → 获取 branchID
-// Step 2: HGET owl:cache:branch:{branchID} {deviceUID} → 获取完整的 CardDeviceInfo
-// 如果缓存缺失，返回错误（需要在消费层触发 ReloadBranchCache 回填）
-func (s *CardMappingService) GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*repository.CardDeviceInfo, error) {
-	if deviceUID == "" {
-		return nil, fmt.Errorf("device_uid is required")
+// ClearBranchCache 彻底清理该分支的所有缓存记录
+func (s *CardMappingService) ClearBranchCache(ctx context.Context, branchID string) error {
+	branchKey := fmt.Sprintf("owl:cache:branch:%s", branchID)
+
+	s.logger.Info("Clearing branch cache",
+		zap.String("branch_id", branchID),
+		zap.String("branch_key", branchKey))
+
+	// 1. 找出该分支下目前关联的所有设备 UID，用于清理全局 lookup 索引
+	oldDeviceUIDs, err := s.redisClient.HKeys(ctx, branchKey).Result()
+	if err != nil && err != redis.Nil {
+		s.logger.Warn("Failed to fetch old device UIDs during clear", zap.Error(err))
 	}
 
-	// Step 1: 查询 branchID
+	pipe := s.redisClient.Pipeline()
+
+	// 2. 删除分支 Hash 本体
+	pipe.Del(ctx, branchKey)
+
+	// 3. 批量删除全局 Lookup 索引
+	for _, uid := range oldDeviceUIDs {
+		pipe.Del(ctx, fmt.Sprintf("owl:lookup:device:%s", uid))
+	}
+
+	_, err = pipe.Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to execute clear pipeline: %w", err)
+	}
+
+	return nil
+}
+
+// updateBranchCacheInRedis 负责将分组后的数据批量写入 Redis
+func (s *CardMappingService) updateBranchCacheInRedis(ctx context.Context, branchID string, mappingRecords []repository.CardDeviceInfo) error {
+	if len(mappingRecords) == 0 {
+		return nil
+	}
+
+	branchKey := fmt.Sprintf("owl:cache:branch:%s", branchID)
+
+	// Log summary before writing to Redis
+	s.logger.Info("Updating branch cache in Redis",
+		zap.String("branch_id", branchID),
+		zap.Int("records", len(mappingRecords)),
+		zap.String("branch_key", branchKey))
+
+	pipe := s.redisClient.Pipeline()
+
+	for _, info := range mappingRecords {
+		jsonData, _ := json.Marshal(info)
+
+		// debug log each mapping about to be written
+		s.logger.Debug("Preparing to write mapping to Redis",
+			zap.String("branch_id", branchID),
+			zap.String("device_uid", info.DeviceUID),
+			zap.String("card_id", info.CardID))
+
+		// 写入分支 Hash
+		pipe.HSet(ctx, branchKey, info.DeviceUID, jsonData)
+
+		// 写入全局 Lookup 索引 (24h TTL)
+		lookupKey := fmt.Sprintf("owl:lookup:device:%s", info.DeviceUID)
+		pipe.Set(ctx, lookupKey, branchID, 24*time.Hour)
+	}
+
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		s.logger.Warn("Failed to execute Redis pipeline for branch cache",
+			zap.String("branch_id", branchID),
+			zap.Error(err))
+	} else {
+		s.logger.Info("Branch cache updated in Redis",
+			zap.String("branch_id", branchID),
+			zap.Int("written", len(mappingRecords)))
+	}
+
+	if err != nil {
+		return err
+	}
+
+	// Verification: read back and ensure mappings and lookup exist and match
+	var failed []repository.CardDeviceInfo
+	for _, info := range mappingRecords {
+		// verify HGET
+		jsonValue, gerr := s.redisClient.HGet(ctx, branchKey, info.DeviceUID).Result()
+		if gerr != nil && gerr != redis.Nil {
+			s.logger.Warn("Verification HGET failed",
+				zap.String("branch_id", branchID),
+				zap.String("device_uid", info.DeviceUID),
+				zap.Error(gerr))
+			failed = append(failed, info)
+			continue
+		}
+		if jsonValue == "" {
+			s.logger.Warn("Verification: branch hash missing field",
+				zap.String("branch_id", branchID),
+				zap.String("device_uid", info.DeviceUID))
+			failed = append(failed, info)
+			continue
+		}
+		var cdi repository.CardDeviceInfo
+		if uerr := json.Unmarshal([]byte(jsonValue), &cdi); uerr != nil {
+			s.logger.Warn("Verification: failed to unmarshal stored CardDeviceInfo",
+				zap.String("device_uid", info.DeviceUID), zap.Error(uerr))
+			failed = append(failed, info)
+			continue
+		}
+		if cdi.CardID != info.CardID || cdi.DeviceUID != info.DeviceUID {
+			s.logger.Warn("Verification: stored CardDeviceInfo mismatch",
+				zap.String("device_uid", info.DeviceUID),
+				zap.String("expected_card_id", info.CardID),
+				zap.String("stored_card_id", cdi.CardID))
+			failed = append(failed, info)
+			continue
+		}
+
+		// verify lookup key
+		lookupKey := fmt.Sprintf("owl:lookup:device:%s", info.DeviceUID)
+		lk, lerr := s.redisClient.Get(ctx, lookupKey).Result()
+		if lerr != nil && lerr != redis.Nil {
+			s.logger.Warn("Verification GET failed",
+				zap.String("lookup_key", lookupKey),
+				zap.Error(lerr))
+			failed = append(failed, info)
+			continue
+		}
+		if lk != branchID {
+			s.logger.Warn("Verification: lookup value mismatch",
+				zap.String("lookup_key", lookupKey),
+				zap.String("expected_branch", branchID),
+				zap.String("stored_branch", lk))
+			failed = append(failed, info)
+			continue
+		}
+	}
+
+	if len(failed) > 0 {
+		s.logger.Info("Retrying failed mappings after verification",
+			zap.String("branch_id", branchID), zap.Int("failed_count", len(failed)))
+		pipe2 := s.redisClient.Pipeline()
+		for _, info := range failed {
+			jsonData, _ := json.Marshal(info)
+			pipe2.HSet(ctx, branchKey, info.DeviceUID, jsonData)
+			lookupKey := fmt.Sprintf("owl:lookup:device:%s", info.DeviceUID)
+			pipe2.Set(ctx, lookupKey, branchID, 24*time.Hour)
+		}
+		_, err2 := pipe2.Exec(ctx)
+		if err2 != nil {
+			s.logger.Error("Retry pipeline failed",
+				zap.String("branch_id", branchID), zap.Error(err2))
+			return err2
+		}
+		s.logger.Info("Retry succeeded for failed mappings",
+			zap.String("branch_id", branchID), zap.Int("recovered", len(failed)))
+	}
+
+	return nil
+}
+
+// InitializeAllBranchCaches 启动时初始化所有分支的卡片映射缓存
+func (s *CardMappingService) InitializeAllBranchCaches(ctx context.Context) error {
+	s.logger.Info("Initializing card mapping caches for all branches at startup...")
+
+	// 1. 获取全量映射关系（一次性查出所有分支的所有设备）
+	deviceMappings, err := s.cardRepo.GetDeviceCardMappings(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get device list: %w", err)
+	}
+
+	// 2. 在内存中按 branchID 分组
+	// key: branchID, value: 设备信息列表
+	branchGroups := make(map[string][]repository.CardDeviceInfo)
+	for _, mapping := range deviceMappings {
+		info := repository.CardDeviceInfo{
+			DeviceUID: mapping.DeviceUID,
+			TenantID:  mapping.TenantID,
+			BranchID:  mapping.BranchID,
+			DeviceID:  mapping.DeviceID,
+			CardID:    mapping.CardID,
+		}
+		branchGroups[mapping.BranchID] = append(branchGroups[mapping.BranchID], info)
+	}
+
+	s.logger.Info("Grouping completed", zap.Int("branch_count", len(branchGroups)))
+
+	successCount := 0
+	failureCount := 0
+
+	// 3. 遍历分组，执行 清理 + 写入
+	for bID, records := range branchGroups {
+		// 3.1 清理旧缓存（确保不会留下脏的 lookup 索引）
+		if err := s.ClearBranchCache(ctx, bID); err != nil {
+			s.logger.Warn("Failed to clear cache for branch", zap.String("branch_id", bID), zap.Error(err))
+		}
+
+		// 3.2 写入新缓存
+		if err := s.updateBranchCacheInRedis(ctx, bID, records); err != nil {
+			s.logger.Error("Failed to update cache for branch", zap.String("branch_id", bID), zap.Error(err))
+			failureCount++
+		} else {
+			successCount++
+		}
+	}
+
+	s.logger.Info("Initialization completed",
+		zap.Int("success_branches", successCount),
+		zap.Int("failure_branches", failureCount))
+
+	return nil
+}
+
+// GetCardIDByDeviceUID 通过 deviceUID 查询 CardDeviceInfo（先查 lookup，然后查分支 hash）
+func (s *CardMappingService) GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*repository.CardDeviceInfo, error) {
+	// Step 1: lookup branch
 	lookupKey := fmt.Sprintf("owl:lookup:device:%s", deviceUID)
 	branchID, err := s.redisClient.Get(ctx, lookupKey).Result()
 	if err != nil && err != redis.Nil {
-		s.logger.Warn("Failed to query Redis lookup key",
-			zap.String("device_uid", deviceUID),
-			zap.Error(err))
-		return nil, fmt.Errorf("failed to query Redis lookup: %w", err)
+		s.logger.Warn("Failed to GET lookup key", zap.String("lookup_key", lookupKey), zap.Error(err))
+		return nil, fmt.Errorf("failed to query lookup key: %w", err)
 	}
-
 	if branchID == "" {
 		return nil, fmt.Errorf("device_uid not found in cache: %s", deviceUID)
 	}
 
-	// Step 2: 从分支缓存获取完整信息
+	// Step 2: HGET branch hash
 	cacheKey := fmt.Sprintf("owl:cache:branch:%s", branchID)
 	jsonValue, err := s.redisClient.HGet(ctx, cacheKey, deviceUID).Result()
 	if err != nil && err != redis.Nil {
-		s.logger.Warn("Failed to query Redis branch cache",
-			zap.String("branch_id", branchID),
-			zap.String("device_uid", deviceUID),
-			zap.Error(err))
-		return nil, fmt.Errorf("failed to query Redis cache: %w", err)
+		s.logger.Warn("Failed to HGET branch cache", zap.String("branch_key", cacheKey), zap.String("device_uid", deviceUID), zap.Error(err))
+		return nil, fmt.Errorf("failed to query branch cache: %w", err)
 	}
-
 	if jsonValue == "" {
 		return nil, fmt.Errorf("device_uid not found in branch cache: %s", deviceUID)
 	}
 
-	// 反序列化 JSON
 	var cdi repository.CardDeviceInfo
 	if err := json.Unmarshal([]byte(jsonValue), &cdi); err != nil {
-		s.logger.Warn("Failed to unmarshal CardDeviceInfo",
-			zap.String("device_uid", deviceUID),
-			zap.Error(err))
+		s.logger.Warn("Failed to unmarshal CardDeviceInfo", zap.String("device_uid", deviceUID), zap.Error(err))
 		return nil, fmt.Errorf("failed to unmarshal CardDeviceInfo: %w", err)
 	}
-
-	s.logger.Debug("Found CardDeviceInfo in Redis",
-		zap.String("device_uid", deviceUID),
-		zap.String("device_id", cdi.DeviceID),
-		zap.String("card_id", cdi.CardID),
-		zap.String("branch_id", cdi.BranchID),
-		zap.String("tenant_id", cdi.TenantID))
-
 	return &cdi, nil
 }
 
-// HandleCardChanged 处理卡片配置变更事件（统一入口）
-// 支持创建、更新、删除三种操作
-// 策略：失效该租户分支的缓存并重建（卡片更新频率低，避免脏数据）
 func (s *CardMappingService) HandleCardChanged(ctx context.Context, data map[string]interface{}) error {
+	s.logger.Info("HandleCardChanged invoked")
 	cardData := &commonRedis.CardChangeData{}
 	if err := s.parseCardChangeData(data, cardData); err != nil {
-		return fmt.Errorf("failed to parse card change data: %w", err)
+		return err
 	}
 
-	s.logger.Info("Handling card change event",
+	// 1. 清理受影响的分支
+	if err := s.ClearBranchCache(ctx, cardData.BranchID); err != nil {
+		return err
+	}
+
+	// 2. 精准查询该分支最新数据
+	mappingRecords, err := s.cardRepo.GetDeviceCardMappingsByBranch(ctx, cardData.TenantID, cardData.BranchID)
+	if err != nil {
+		return err
+	}
+
+	// Log DB return for diagnostics
+	s.logger.Info("Fetched branch card mappings from DB",
 		zap.String("tenant_id", cardData.TenantID),
-		zap.String("card_id", cardData.CardID),
-		zap.String("branch_id", cardData.BranchID))
+		zap.String("branch_id", cardData.BranchID),
+		zap.Int("mappings_count", len(mappingRecords)))
 
-	// 重建该租户分支的缓存
-	return s.ReloadBranchCache(ctx, cardData.TenantID, cardData.BranchID)
-}
-
-// ReloadBranchCache 失效该租户分支缓存并重建（卡片更新频率低，避免脏数据）
-// 清理策略：
-// 1. 查询 Redis 中该分支的旧设备列表（用于清理孤立的全局索引）
-// 2. Repository 查询 DB：该租户该分支的所有设备-卡片映射
-// 3. Service Pipeline：
-//   - 删除旧的分支 Hash 缓存
-//   - 删除旧设备的全局查找索引（避免孤立指针）
-//   - 写入新数据到 cache 和 lookup
-func (s *CardMappingService) ReloadBranchCache(ctx context.Context, tenantID string, branchID string) error {
-	if tenantID == "" || branchID == "" {
-		return fmt.Errorf("tenant_id and branch_id are required")
+	// 3. 转换为切片并写入
+	var list []repository.CardDeviceInfo
+	for _, v := range mappingRecords {
+		list = append(list, v)
 	}
 
-	if s.cardRepo == nil {
-		return fmt.Errorf("card repository not set")
-	}
-
-	s.logger.Info("Reloading branch cache",
-		zap.String("tenant_id", tenantID),
-		zap.String("branch_id", branchID))
-
-	branchKey := fmt.Sprintf("owl:cache:branch:%s", branchID)
-
-	// 1. 获取旧的设备 UID 列表（用于清理全局索引）
-	oldDeviceUIDs, err := s.redisClient.HKeys(ctx, branchKey).Result()
-	if err != nil && err != redis.Nil {
-		s.logger.Warn("Failed to get old device UIDs for cleanup",
-			zap.String("branch_id", branchID),
-			zap.Error(err))
-		// 不中断流程，继续重建缓存
-	}
-
-	// 2. Repository 层：查询该租户该分支的所有设备-卡片映射
-	mappingRecords, err := s.cardRepo.GetDeviceCardMappingsByBranch(ctx, tenantID, branchID)
-	if err != nil {
-		s.logger.Error("Failed to query cards and devices from repository",
-			zap.String("tenant_id", tenantID),
-			zap.String("branch_id", branchID),
-			zap.Error(err))
-		return fmt.Errorf("failed to query card-device mapping by branch: %w", err)
-	}
-
-	s.logger.Debug("Queried devices from DB",
-		zap.String("tenant_id", tenantID),
-		zap.String("branch_id", branchID),
-		zap.Int("device_count", len(mappingRecords)))
-
-	// 3. Service 层：准备 Redis Pipeline
-	pipe := s.redisClient.Pipeline()
-
-	// 3.1 清除旧的分支 Hash 记录
-	pipe.Del(ctx, branchKey)
-
-	// 3.2 清理旧设备的全局查找索引（避免孤立指针）
-	// 只清理从该分支移除的设备，保留新设备的索引
-	newDeviceUIDs := make(map[string]bool)
-	for _, device := range mappingRecords {
-		newDeviceUIDs[device.DeviceUID] = true
-	}
-
-	for _, oldUID := range oldDeviceUIDs {
-		if !newDeviceUIDs[oldUID] {
-			// 这个设备已从分支删除，清理它的全局索引
-			lookupKey := fmt.Sprintf("owl:lookup:device:%s", oldUID)
-			pipe.Del(ctx, lookupKey)
-			s.logger.Debug("Cleaning up orphaned lookup index",
-				zap.String("device_uid", oldUID),
-				zap.String("branch_id", branchID))
-		}
-	}
-
-	// 3.3 批量写入新数据
-	for _, device := range mappingRecords {
-		// 序列化为 JSON
-		jsonData, err := json.Marshal(device)
-		if err != nil {
-			s.logger.Warn("Failed to marshal CardDeviceInfo",
-				zap.String("device_uid", device.DeviceUID),
-				zap.Error(err))
-			continue
-		}
-
-		// Pipeline 操作：写入分支缓存
-		// Key: owl:cache:branch:{branch_id}, Field: {device_uid}, Value: JSON
-		pipe.HSet(ctx, branchKey, device.DeviceUID, jsonData)
-
-		// Pipeline 操作：写入/更新全局查找索引
-		// Key: owl:lookup:device:{device_uid}, Value: {branch_id}
-		// 设置 TTL 为 24 小时，防止长期孤立
-		lookupKey := fmt.Sprintf("owl:lookup:device:%s", device.DeviceUID)
-		pipe.Set(ctx, lookupKey, branchID, 24*time.Hour)
-	}
-
-	// 4. 执行 Pipeline
-	_, err = pipe.Exec(ctx)
-	if err != nil {
-		s.logger.Error("Failed to execute Redis pipeline",
-			zap.String("tenant_id", tenantID),
-			zap.String("branch_id", branchID),
-			zap.Error(err))
-		return fmt.Errorf("failed to execute Redis pipeline: %w", err)
-	}
-
-	s.logger.Info("Successfully updated cache for branch",
-		zap.String("tenant_id", tenantID),
-		zap.String("branch_id", branchID),
-		zap.Int("device_count", len(mappingRecords)),
-		zap.Int("orphaned_lookups_cleaned", len(oldDeviceUIDs)-len(mappingRecords)))
-
-	return nil
+	return s.updateBranchCacheInRedis(ctx, cardData.BranchID, list)
 }
 
 // parseCardChangeData 解析卡片变更数据

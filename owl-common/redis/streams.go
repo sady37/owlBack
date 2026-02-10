@@ -138,6 +138,43 @@ func ReadFromStreamWithBlock(ctx context.Context, client *redis.Client, stream s
 	return messages, nil
 }
 
+// ReadFromMultipleStreamsWithBlock 从多个 stream 读取消息（支持 XREADGROUP）
+func ReadFromMultipleStreamsWithBlock(ctx context.Context, client *redis.Client, streamNames []string, consumerGroup string, consumer string, count int64, block time.Duration) ([]StreamMessage, error) {
+	// 构建 Streams 参数：[stream1, >, stream2, >, ...]
+	streamArgs := make([]string, 0, len(streamNames)*2)
+	for _, streamName := range streamNames {
+		streamArgs = append(streamArgs, streamName, ">")
+	}
+
+	streams, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group:    consumerGroup,
+		Consumer: consumer,
+		Streams:  streamArgs,
+		Count:    count,
+		Block:    block,
+	}).Result()
+
+	if err != nil {
+		if err == redis.Nil {
+			return []StreamMessage{}, nil
+		}
+		return nil, err
+	}
+
+	var messages []StreamMessage
+	for _, stream := range streams {
+		for _, msg := range stream.Messages {
+			messages = append(messages, StreamMessage{
+				Stream: stream.Stream,
+				ID:     msg.ID,
+				Values: msg.Values,
+			})
+		}
+	}
+
+	return messages, nil
+}
+
 // CreateConsumerGroup 创建消费者组
 func CreateConsumerGroup(ctx context.Context, client *redis.Client, stream string, groupName string) error {
 	// 尝试创建消费者组，如果已存在则忽略错误

@@ -1,8 +1,8 @@
 package card
 
 import (
-	"encoding/json"
-	"fmt"
+	//"encoding/json"
+	//"fmt"
 	"strconv"
 )
 
@@ -28,6 +28,7 @@ type DeviceJSON struct {
 	UnitID      string  `json:"unit_id"`
 }
 
+/*
 // ConvertDevicesToJSON converts device list to JSON（含 device_uid、device_code，与 card-overview、GetCardDevices 对齐）
 func ConvertDevicesToJSON(devices []DeviceInfo) ([]byte, error) {
 	var deviceJSONs []DeviceJSON
@@ -44,10 +45,9 @@ func ConvertDevicesToJSON(devices []DeviceInfo) ([]byte, error) {
 			DeviceType:  deviceTypeStr,
 			DeviceModel: device.DeviceModel,
 			BedID:       device.BoundBedID,
-			BedName:     device.BedName,
+
 			RoomID:      device.BoundRoomID,
-			RoomName:    device.RoomName,
-			UnitID:      device.UnitID,
+
 		})
 	}
 	return json.Marshal(deviceJSONs)
@@ -64,6 +64,7 @@ func ConvertResidentsToJSON(residents []ResidentInfo) ([]byte, error) {
 	}
 	return json.Marshal(residentJSONs)
 }
+*/
 
 func poseStringToInt(pose string) int {
 	if pose == "" {

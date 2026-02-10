@@ -8,7 +8,7 @@ import (
 
 	_ "github.com/lib/pq"
 	"wisefido-data/internal/config"
-	httpapi "wisefido-data/internal/http"
+	"wisefido-data/internal/http"
 )
 
 func main() {

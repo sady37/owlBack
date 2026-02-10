@@ -78,7 +78,7 @@ func main() {
 	}
 
 	// 创建静态和实时服务
-	var vital *httpapi.VitalFocusHandler
+	var vital *httpapi.MonitorHandler
 	
 	if db != nil {
 		// DB可用时创建完整功能的服务
@@ -150,17 +150,19 @@ func main() {
 		cardStaticSvc := service.NewCardStaticService(kv, unitsRepo, allowedProvider, queryPerm, targetRes, userCardsCache, residentsRepo, logger)
 		cardRealtimeSvc := service.NewCardRealtimeService(kv, allowedProvider, logger)
 
-		vital = httpapi.NewVitalFocusHandler(kv, logger, cardStaticSvc, cardRealtimeSvc)
+		vital = httpapi.NewMonitorHandler(logger)
+		vital.SetCardService(cardStaticSvc)
+		vital.SetRealtimeService(cardRealtimeSvc)
 		vital.SetDB(db)
-		
-		router.RegisterVitalFocusRoutes(vital)
+
+		router.RegisterMonitorRoutes(vital)
 	} else {
 		// DB不可用时使用简化的处理器
-		vital = httpapi.NewVitalFocusHandler(kv, logger, nil, nil)
-		
+		vital = httpapi.NewMonitorHandler(logger)
+
 		// 创建路由
 		router := httpapi.NewRouter(logger)
-		router.RegisterVitalFocusRoutes(vital)
+		router.RegisterMonitorRoutes(vital)
 	}
 
 	// Tenants management (platform-level)

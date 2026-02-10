@@ -36,7 +36,7 @@ type ListCardsRequest struct {
 	TenantID      string
 	CardID        string // 可选：查询单个卡片
 	Search        string // 搜索关键词
-	CardType      string // "ActiveBed" | "Unit"
+	CardType      string // "ActiveBedCard" | "UnitCard"
 	UnitType      string // "Home" | "Facility"
 	IsPublicSpace *bool
 	IsSharedUnit  *bool
@@ -122,11 +122,11 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 	if req.PermissionFilter != nil && len(req.PermissionFilter.AssignedResidentIDs) > 0 {
 		// 使用 ANY 数组匹配，逻辑更清晰
 		query.WriteString(` AND (
-			-- ActiveBed 卡片：直接匹配 resident_id
-			(c.card_type = 'ActiveBed' AND c.resident_id = ANY($` + fmt.Sprintf("%d", argIdx) + `::uuid[]))
+			-- ActiveBedCard 卡片：直接匹配 resident_id
+			(c.card_type = 'ActiveBedCard' AND c.resident_id = ANY($` + fmt.Sprintf("%d", argIdx) + `::uuid[]))
 			OR
-			-- Location 卡片：检查 residents JSONB 数组是否包含任何分配的 resident_id
-			(c.card_type = 'Location' 
+			-- UnitCard 卡片：检查 residents JSONB 数组是否包含任何分配的 resident_id
+			(c.card_type = 'UnitCard' 
 				AND (u.is_public = FALSE AND u.is_shared_unit = FALSE)
 				AND (
 					-- 第一个住户匹配
@@ -196,11 +196,11 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 	// Resident/Family 权限过滤
 	if req.PermissionFilter != nil && req.PermissionFilter.UserID != "" {
 		query.WriteString(` AND (
-			-- ActiveBed 卡片：直接匹配 resident_id
-			(c.card_type = 'ActiveBed' AND c.resident_id::text = $` + fmt.Sprintf("%d", argIdx) + `)
+			-- ActiveBedCard 卡片：直接匹配 resident_id
+			(c.card_type = 'ActiveBedCard' AND c.resident_id::text = $` + fmt.Sprintf("%d", argIdx) + `)
 			OR
-			-- Unit 卡片（数据库中使用 'Location'）：检查权限
-			(c.card_type = 'Location' 
+			-- Unit 卡片（数据库中使用 'UnitCard'）：检查权限
+			(c.card_type = 'UnitCard' 
 				-- 不是 share unit
 				AND (u.is_public = FALSE AND u.is_shared_unit = FALSE)
 				-- 是第一个住户或第二个住户（且第二个住户允许）

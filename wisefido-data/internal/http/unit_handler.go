@@ -422,10 +422,10 @@ func (h *UnitHandler) ListUnitsWithFullHierarchy(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// 获取 user_id：从 header 获取（用于权限过滤，Service 层会从 user_branches 表查询用户的 branch_id）
-	currentUserID := r.Header.Get("X-User-Id")
-	if currentUserID == "" {
-		writeJSON(w, http.StatusOK, Fail("user ID is required for permission validation"))
+	// 获取 user_id：从已验证的会话中读取（由 AuthMiddleware 注入到 context）
+	currentUserID, _, _, _, ok := service.MustSession(ctx)
+	if !ok || currentUserID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
 		return
 	}
 

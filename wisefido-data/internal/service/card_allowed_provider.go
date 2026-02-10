@@ -3,10 +3,8 @@ package service
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
-	"errors"
+	"fmt"
 
-	commoncard "owl-common/card"
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/store"
 
@@ -14,14 +12,46 @@ import (
 	"go.uber.org/zap"
 )
 
+// CardList 统一返回结构，按 branch 分组
+type CardList struct {
+	UserID        string              `json:"user_id"`
+	TenantID      string              `json:"tenant_id"`
+	CardsByBranch map[string][]string `json:"cards_by_branch"` // branchID → card_id[]（无 branch 用 "_"）
+}
+
+// AllCardIDs 展平所有 branch 下的 card_id
+func (cl *CardList) AllCardIDs() []string {
+	var ids []string
+	for _, cids := range cl.CardsByBranch {
+		ids = append(ids, cids...)
+	}
+	return ids
+}
+
+// BranchIDs 返回去重的 branch_id 列表（不含 "_"）
+func (cl *CardList) BranchIDs() []string {
+	var out []string
+	for bid := range cl.CardsByBranch {
+		if bid != "_" {
+			out = append(out, bid)
+		}
+	}
+	return out
+}
+
 // AllowedCardIDsProviderImpl 实现 AllowedCardIDsProvider
-// 借鉴 vital_focus_service 的 filterCardsForResident / filterCardsForStaff
 type AllowedCardIDsProviderImpl struct {
 	kv            store.KV
 	usersRepo     repository.UsersRepository
 	residentsRepo repository.ResidentsRepository
 	db            *sql.DB
+	cardRepo      *repository.PostgresCardRepository
 	logger        *zap.Logger
+}
+
+// AllowedCardIDsProvider 对外接口
+type AllowedCardIDsProvider interface {
+	GetCardList(ctx context.Context, tenantID, userID, userType string) (*CardList, error)
 }
 
 // NewAllowedCardIDsProvider 创建实现
@@ -30,6 +60,7 @@ func NewAllowedCardIDsProvider(
 	usersRepo repository.UsersRepository,
 	residentsRepo repository.ResidentsRepository,
 	db *sql.DB,
+	cardRepo *repository.PostgresCardRepository,
 	logger *zap.Logger,
 ) *AllowedCardIDsProviderImpl {
 	return &AllowedCardIDsProviderImpl{
@@ -37,231 +68,261 @@ func NewAllowedCardIDsProvider(
 		usersRepo:     usersRepo,
 		residentsRepo: residentsRepo,
 		db:            db,
+		cardRepo:      cardRepo,
 		logger:        logger,
 	}
 }
 
-// GetAllowedCardIDsByBranches 返回按 branch 分组的卡片 ID，用于 Redis 缓存 {tenantID}:{branchID}:{userID}
-// branchID 为空时用 "_" 表示
-func (p *AllowedCardIDsProviderImpl) GetAllowedCardIDsByBranches(ctx context.Context, tenantID, userID, userType, userRole string) (map[string][]string, error) {
-	filtered, err := p.getFilteredCards(ctx, tenantID, userID, userType, userRole)
+// GetAllowedCardIDsByBranches 返回按 branch 分组的卡片 ID
+func (p *AllowedCardIDsProviderImpl) GetAllowedCardIDsByBranches(ctx context.Context, tenantID, userID, userType string) (map[string][]string, error) {
+	cl, err := p.GetCardList(ctx, tenantID, userID, userType)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string][]string)
-	for _, c := range filtered {
-		if c.CardID == "" {
-			continue
-		}
-		branchID := c.BranchID
-		if branchID == "" {
-			branchID = "_"
-		}
-		out[branchID] = append(out[branchID], c.CardID)
+	if cl == nil {
+		return make(map[string][]string), nil
 	}
-	return out, nil
+	return cl.CardsByBranch, nil
 }
 
-func (p *AllowedCardIDsProviderImpl) getFilteredCards(ctx context.Context, tenantID, userID, userType, userRole string) ([]commoncard.VitalFocusCardInfo, error) {
-	keys, err := p.kv.ScanKeys(ctx, staticKeyPrefix+"*"+staticKeySuffix)
-	if err != nil {
-		return nil, err
-	}
-	cards := make([]commoncard.VitalFocusCardInfo, 0, len(keys))
-	for _, key := range keys {
-		raw, err := p.kv.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, store.ErrMiss) {
-				continue
-			}
-			continue
-		}
-		var card commoncard.VitalFocusCardInfo
-		if json.Unmarshal([]byte(raw), &card) != nil {
-			continue
-		}
-		if tenantID != "" && tenantID != "*" && card.TenantID != tenantID {
-			continue
-		}
-		cards = append(cards, card)
-	}
-	var filtered []commoncard.VitalFocusCardInfo
+// GetCardList 统一入口，返回 *CardList
+// alarm_scope 和 role 从 DB (usersRepo.GetUser) 获取，不需外部传入
+func (p *AllowedCardIDsProviderImpl) GetCardList(ctx context.Context, tenantID, userID, userType string) (*CardList, error) {
 	if userType == "resident" {
-		filtered, err = p.filterCardsForResident(ctx, userID, tenantID, cards)
-	} else {
-		filtered, err = p.filterCardsForStaff(ctx, userID, tenantID, cards)
+		return p.filterCardsForResident(ctx, userID, tenantID)
 	}
-	if err != nil {
-		return nil, err
-	}
-	return filtered, nil
+	return p.filterCardsForStaff(ctx, userID, tenantID)
 }
 
-// GetAllowedCardIDs 返回用户有权查看的卡片 ID 列表（扁平）
-func (p *AllowedCardIDsProviderImpl) GetAllowedCardIDs(ctx context.Context, tenantID, userID, userType, userRole string) ([]string, error) {
-	filtered, err := p.getFilteredCards(ctx, tenantID, userID, userType, userRole)
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(filtered))
-	for _, c := range filtered {
-		if c.CardID != "" {
-			ids = append(ids, c.CardID)
-		}
-	}
-	return ids, nil
-}
 
-// filterCardsForResident Resident 本身在 card 内，按 card 内容直接过滤
-func (p *AllowedCardIDsProviderImpl) filterCardsForResident(ctx context.Context, residentID, tenantID string, cards []commoncard.VitalFocusCardInfo) ([]commoncard.VitalFocusCardInfo, error) {
+// filterCardsForResident 按 resident→unit→card 过滤，返回 *CardList
+func (p *AllowedCardIDsProviderImpl) filterCardsForResident(ctx context.Context, residentID, tenantID string) (*CardList, error) {
 	resident, err := p.residentsRepo.GetResident(ctx, tenantID, residentID)
 	if err != nil {
 		return nil, err
 	}
-	filtered := make([]commoncard.VitalFocusCardInfo, 0)
-	for _, card := range cards {
-		if card.CardType == "ActiveBed" {
-			if card.BedID != nil && *card.BedID == resident.BedID {
-				if card.PrimaryResidentID != nil && *card.PrimaryResidentID == residentID {
-					filtered = append(filtered, card)
-					continue
-				}
-			}
-		}
-		if card.CardType == "Location" {
-			if card.UnitID != "" && card.UnitID == resident.UnitID {
-				for _, r := range card.Residents {
-					if r.ResidentID == residentID {
-						filtered = append(filtered, card)
-						break
-					}
-				}
-			}
-		}
+	if resident.UnitID == "" {
+		return nil, nil
 	}
-	return filtered, nil
+
+	unitInfo, err := p.cardRepo.GetUnitInfo(tenantID, resident.UnitID)
+	if err != nil {
+		p.logger.Warn("filterCardsForResident GetUnitInfo failed", zap.String("unit_id", resident.UnitID), zap.Error(err))
+		return nil, nil
+	}
+
+	// unit_type=home → 该 unit 下全部 card
+	if unitInfo.UnitType == "home" {
+		return p.cardIDsByUnit(ctx, tenantID, resident.UnitID, residentID)
+	}
+
+	// unit_type=facility + is_public → nil
+	if unitInfo.IsPublic {
+		return nil, nil
+	}
+
+	// facility + not public + not shared → 该 unit 下全部 card
+	if !unitInfo.IsSharedUnit {
+		return p.cardIDsByUnit(ctx, tenantID, resident.UnitID, residentID)
+	}
+
+	// facility + not public + shared → ActiveBedCard only
+	return p.ActiveBedcardIDsByUnitShared(ctx, tenantID, resident.UnitID, residentID)
 }
 
-// filterCardsForStaff 使用 users.alarm_scope
-// 入参 cards 已在 GetAllowedCardIDs 中按 tenantID 过滤，仅含本租户卡片
-// ALL=本 tenant 内全部, ASSIGNED_ONLY=仅分配的住户/单元, BRANCH=仅所在院区
-func (p *AllowedCardIDsProviderImpl) filterCardsForStaff(ctx context.Context, userID, tenantID string, cards []commoncard.VitalFocusCardInfo) ([]commoncard.VitalFocusCardInfo, error) {
-	if p.db == nil {
-		return cards, nil
-	}
-	user, err := p.usersRepo.GetUser(ctx, tenantID, userID)
+// cardIDsByUnit 查该 unit 下所有 card，返回 *CardList
+func (p *AllowedCardIDsProviderImpl) cardIDsByUnit(ctx context.Context, tenantID, unitID, userID string) (*CardList, error) {
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT card_id::text, COALESCE(branch_id::text, '_') FROM cards WHERE tenant_id = $1 AND unit_id = $2`,
+		tenantID, unitID,
+	)
 	if err != nil {
 		return nil, err
 	}
-	if user.Role == "Admin" {
-		return cards, nil
+	defer rows.Close()
+	byBranch := make(map[string][]string)
+	for rows.Next() {
+		var cardID, branchID string
+		if rows.Scan(&cardID, &branchID) == nil {
+			if branchID == "" {
+				branchID = "_"
+			}
+			byBranch[branchID] = append(byBranch[branchID], cardID)
+		}
 	}
+	return &CardList{UserID: userID, TenantID: tenantID, CardsByBranch: byBranch}, nil
+}
+
+// ActiveBedcardIDsByUnitShared shared unit：只返回 ActiveBedCard 且 residents JSONB 含 residentID，返回 *CardList
+func (p *AllowedCardIDsProviderImpl) ActiveBedcardIDsByUnitShared(ctx context.Context, tenantID, unitID, residentID string) (*CardList, error) {
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT card_id::text, COALESCE(branch_id::text, '_') FROM cards
+		 WHERE tenant_id = $1 AND unit_id = $2
+		   AND card_type = 'ActiveBedCard'
+		   AND EXISTS (
+		     SELECT 1 FROM jsonb_array_elements(residents) elem
+		     WHERE elem->>'resident_id' = $3
+		   )`,
+		tenantID, unitID, residentID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byBranch := make(map[string][]string)
+	for rows.Next() {
+		var cardID, branchID string
+		if rows.Scan(&cardID, &branchID) == nil {
+			if branchID == "" {
+				branchID = "_"
+			}
+			byBranch[branchID] = append(byBranch[branchID], cardID)
+		}
+	}
+	return &CardList{UserID: residentID, TenantID: tenantID, CardsByBranch: byBranch}, nil
+}
+
+// filterCardsForStaff 按 users.alarm_scope 直接查 DB，返回 *CardList
+// ALL / Admin = 该 tenant 全部卡片
+// ASSIGNED_ONLY = 仅分配的住户关联卡片
+// BRANCH = 仅所在院区的卡片
+func (p *AllowedCardIDsProviderImpl) filterCardsForStaff(ctx context.Context, userID, tenantID string) (*CardList, error) {
+	if p.db == nil {
+		return nil, fmt.Errorf("db is nil")
+	}
+	user, err := p.usersRepo.GetUser(ctx, tenantID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("GetUser: %w", err)
+	}
+
 	scope := ""
 	if user.AlarmScope.Valid && user.AlarmScope.String != "" {
 		scope = user.AlarmScope.String
 	}
+	if user.Role == "Admin" || scope == "ALL" {
+		return p.filterTenantCards(ctx, tenantID, userID)
+	}
 	switch scope {
-	case "ALL":
-		return cards, nil // cards 已限于本 tenant
 	case "ASSIGNED_ONLY":
-		return p.filterByAssignedOnly(ctx, tenantID, userID, cards)
+		return p.filterByAssignedOnly(ctx, tenantID, userID)
 	case "BRANCH":
-		return p.filterByBranchOnly(ctx, tenantID, userID, cards)
+		return p.filterByBranchOnly(ctx, tenantID, userID)
 	default:
 		return nil, nil
 	}
 }
 
-func (p *AllowedCardIDsProviderImpl) filterByAssignedOnly(ctx context.Context, tenantID, userID string, cards []commoncard.VitalFocusCardInfo) ([]commoncard.VitalFocusCardInfo, error) {
+// filterTenantCards 查该 tenant 全部卡片，按 branch 分组返回 *CardList
+func (p *AllowedCardIDsProviderImpl) filterTenantCards(ctx context.Context, tenantID, userID string) (*CardList, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT resident_id FROM resident_caregivers WHERE tenant_id = $1 AND caregiver_id = $2`,
-		tenantID, userID,
+		`SELECT card_id::text, COALESCE(branch_id::text, '_') FROM cards WHERE tenant_id = $1`,
+		tenantID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("filterTenantCards: %w", err)
 	}
-	var assignedResidentIDs []string
+	defer rows.Close()
+
+	byBranch := make(map[string][]string)
 	for rows.Next() {
-		var rid string
-		if rows.Scan(&rid) == nil {
-			assignedResidentIDs = append(assignedResidentIDs, rid)
+		var cardID, branchID string
+		if err := rows.Scan(&cardID, &branchID); err != nil {
+			return nil, fmt.Errorf("filterTenantCards scan: %w", err)
 		}
-	}
-	rows.Close()
-	if len(assignedResidentIDs) == 0 {
-		return nil, nil
-	}
-	rows, err = p.db.QueryContext(ctx,
-		`SELECT DISTINCT r.unit_id FROM residents r WHERE r.tenant_id = $1 AND r.resident_id = ANY($2) AND r.unit_id IS NOT NULL`,
-		tenantID, pq.Array(assignedResidentIDs),
-	)
-	if err != nil {
-		return nil, err
-	}
-	ridMap := make(map[string]bool)
-	for _, id := range assignedResidentIDs {
-		ridMap[id] = true
-	}
-	locMap := make(map[string]bool)
-	for rows.Next() {
-		var loc string
-		if rows.Scan(&loc) == nil && loc != "" {
-			locMap[loc] = true
+		if branchID == "" {
+			branchID = "_"
 		}
+		byBranch[branchID] = append(byBranch[branchID], cardID)
 	}
-	rows.Close()
-	filtered := make([]commoncard.VitalFocusCardInfo, 0)
-	for _, card := range cards {
-		if card.CardType == "ActiveBed" && card.PrimaryResidentID != nil && ridMap[*card.PrimaryResidentID] {
-			filtered = append(filtered, card)
-			continue
-		}
-		if card.CardType == "Location" && card.UnitID != "" && locMap[card.UnitID] {
-			filtered = append(filtered, card)
-		}
-	}
-	return filtered, nil
+	return &CardList{UserID: userID, TenantID: tenantID, CardsByBranch: byBranch}, nil
 }
 
-func (p *AllowedCardIDsProviderImpl) filterByBranchOnly(ctx context.Context, tenantID, userID string, cards []commoncard.VitalFocusCardInfo) ([]commoncard.VitalFocusCardInfo, error) {
+
+// filterByBranchOnly BRANCH scope：
+// cards 表已有 branch_id 冗余字段，直接 JOIN user_branches 一次查出
+func (p *AllowedCardIDsProviderImpl) filterByBranchOnly(ctx context.Context, tenantID, userID string) (*CardList, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT branch_id::text FROM user_branches WHERE tenant_id = $1 AND user_id::text = $2`,
+		`SELECT c.card_id::text, COALESCE(c.branch_id::text, '_')
+		 FROM cards c
+		 JOIN user_branches ub ON c.branch_id = ub.branch_id AND ub.tenant_id = c.tenant_id
+		 WHERE c.tenant_id = $1 AND ub.user_id = $2::uuid`,
 		tenantID, userID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("filterByBranchOnly: %w", err)
 	}
-	var branchIDs []string
+	defer rows.Close()
+
+	byBranch := make(map[string][]string)
 	for rows.Next() {
-		var bid sql.NullString
-		if rows.Scan(&bid) == nil && bid.Valid && bid.String != "" {
-			branchIDs = append(branchIDs, bid.String)
+		var cardID, branchID string
+		if err := rows.Scan(&cardID, &branchID); err != nil {
+			return nil, fmt.Errorf("filterByBranchOnly scan: %w", err)
 		}
+		if branchID == "" {
+			branchID = "_"
+		}
+		byBranch[branchID] = append(byBranch[branchID], cardID)
 	}
-	rows.Close()
-	if len(branchIDs) == 0 {
-		return nil, nil
-	}
-	rows, err = p.db.QueryContext(ctx,
-		`SELECT unit_id::text FROM units WHERE tenant_id = $1 AND branch_id = ANY($2::uuid[])`,
-		tenantID, pq.Array(branchIDs),
+	return &CardList{UserID: userID, TenantID: tenantID, CardsByBranch: byBranch}, nil
+}
+
+// filterByAssignedOnly ASSIGNED_ONLY scope：
+// 1. 查 resident_caregivers 得到该 staff 负责的 resident_id[]
+// 2. 查 cards 中 resident_id = ANY(assigned) 的 ActiveBedCard
+//    + cards 中 residents JSONB 包含 assigned resident 的 UnitCard
+// 直接返回 *CardList
+func (p *AllowedCardIDsProviderImpl) filterByAssignedOnly(ctx context.Context, tenantID, userID string) (*CardList, error) {
+	// Step1: 该 staff 负责的 resident_id[]
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT resident_id::text FROM resident_caregivers WHERE tenant_id = $1 AND caregiver_id = $2`,
+		tenantID, userID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("filterByAssignedOnly caregivers: %w", err)
 	}
-	unitMap := make(map[string]bool)
+	defer rows.Close()
+	var rids []string
 	for rows.Next() {
-		var uid sql.NullString
-		if rows.Scan(&uid) == nil && uid.Valid && uid.String != "" {
-			unitMap[uid.String] = true
+		var rid string
+		if rows.Scan(&rid) == nil && rid != "" {
+			rids = append(rids, rid)
 		}
 	}
-	rows.Close()
-	filtered := make([]commoncard.VitalFocusCardInfo, 0)
-	for _, card := range cards {
-		if card.UnitID != "" && unitMap[card.UnitID] {
-			filtered = append(filtered, card)
-		}
+	if len(rids) == 0 {
+		return &CardList{UserID: userID, TenantID: tenantID, CardsByBranch: make(map[string][]string)}, nil
 	}
-	return filtered, nil
+
+	// Step2: ActiveBedCard（resident_id 直接匹配）+ UnitCard（residents JSONB 包含）
+	rows2, err := p.db.QueryContext(ctx,
+		`SELECT card_id::text, COALESCE(branch_id::text, '_')
+		 FROM cards
+		 WHERE tenant_id = $1
+		   AND (
+		     (card_type = 'ActiveBedCard' AND resident_id = ANY($2::uuid[]))
+		     OR
+		     (card_type = 'UnitCard' AND EXISTS (
+		       SELECT 1 FROM jsonb_array_elements(residents) r
+		       WHERE r->>'resident_id' = ANY($3::text[])
+		     ))
+		   )`,
+		tenantID, pq.Array(rids), pq.Array(rids),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("filterByAssignedOnly cards: %w", err)
+	}
+	defer rows2.Close()
+
+	byBranch := make(map[string][]string)
+	for rows2.Next() {
+		var cardID, branchID string
+		if err := rows2.Scan(&cardID, &branchID); err != nil {
+			return nil, fmt.Errorf("filterByAssignedOnly scan: %w", err)
+		}
+		if branchID == "" {
+			branchID = "_"
+		}
+		byBranch[branchID] = append(byBranch[branchID], cardID)
+	}
+	return &CardList{UserID: userID, TenantID: tenantID, CardsByBranch: byBranch}, nil
 }

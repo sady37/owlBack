@@ -28,7 +28,7 @@ func (e *Event2Evaluator) Evaluate(tenantID string, card repository.CardInfo, re
 
 	// 检查条件：
 	// 1. 必须是 ActiveBed 卡片
-	if card.CardType != "ActiveBed" {
+	if card.CardType != "ActiveBedCard" {
 		return nil, nil
 	}
 

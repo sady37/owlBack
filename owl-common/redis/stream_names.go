@@ -76,12 +76,23 @@ var (
 		MaxLen:           2000,
 		RetentionSeconds: 0, // 不限制保留时间
 	}
-	// 已过时：设备在线状态流（保留以兼容旧代码，实际使用 StreamIoTDeviceStatus）
-	//StreamConfigDeviceStatus = StreamDefinition{
-	//	Name:             "config:device_status:stream",
-	//	MaxLen:           1000,
-	//	RetentionSeconds: 0, // 不限制保留时间
-	//}
+	// ⭐ 新增：卡片实时数据流（wisefido-data消费，6Hz更新）
+	// 来源：wisefido-qinglan → cardagg去重处理(分离track/vital) → 此流
+	// 用途：前端实时显示 track/vital 数据
+	StreamCardRealTime = StreamDefinition{
+		Name:             "card:realtime:stream",
+		MaxLen:           5000,
+		RetentionSeconds: 6, // 6秒（处理延迟和重复消费, 确保实时性）
+	}
+	// ⭐ 新增：卡片状态流（BedStatus, RoomStatus, ActiveAlarms, DeviceStatus）
+	// 来源：wisefido-AI 或 cardagg处理后
+	// 用途：前端显示床位/房间状态、告警信息、设备状态等
+	StreamCardStatus = StreamDefinition{
+		Name:             "card:status:stream",
+		MaxLen:           2000,
+		RetentionSeconds: 43200, // 12小时（长生命周期数据，告警保持）
+	}
+
 )
 
 // GetStreamConfig 获取 stream 配置（支持从配置覆盖）

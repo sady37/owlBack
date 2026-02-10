@@ -3,7 +3,7 @@
 # IoT 时序数据服务启动脚本
 # 
 # 职责：
-# 1. 检查端口冲突（8083: HTTP 服务）
+# 1. 检查端口冲突（8085: HTTP 服务）
 # 2. 检查依赖服务状态（PostgreSQL, Redis）- 仅检查，不启动
 # 3. 设置环境变量
 # 4. 启动 wisefido-iot 服务
@@ -67,6 +67,10 @@ check_port() {
     fi
 }
 
+# 检查端口冲突
+echo "🔍 Checking for port conflicts..."
+check_port 8085 "HTTP Server"
+
 # 检查依赖服务状态（仅检查，不启动）
 check_dependencies() {
     echo ""
@@ -97,10 +101,6 @@ check_dependencies() {
     return 0
 }
 
-# 检查端口冲突
-echo "🔍 Checking for port conflicts..."
-check_port 8083 "HTTP Server"
-
 # 检查依赖服务
 if ! check_dependencies; then
     echo ""
@@ -129,16 +129,13 @@ export REDIS_ADDR=127.0.0.1:6379
 export REDIS_PASSWORD=TeLunSu-36kr
 export REDIS_DB=0
 
-# HTTP 配置
-export HTTP_ADDR=:8083
-
 # Stream 配置 - 设备级别 streams
 export STREAM_RADAR_MONITOR=iot:monitor:stream
 export STREAM_RADAR_STAT=iot:stat:stream
 export STREAM_RADAR_EVENT=iot:event:stream
 export STREAM_IOT_ALARM=iot:alarm:stream
-export STREAM_SLEEPACE_MONITOR=sleepace:monitor:stream
-export STREAM_SLEEPACE_EVENT=sleepace:event:stream
+//export STREAM_SLEEPACE_MONITOR=sleepace:monitor:stream
+//export STREAM_SLEEPACE_EVENT=sleepace:event:stream
 # 注意：Sleepace 没有 stat 数据；报警流 Radar/Sleepad 统一 iot:alarm:stream，wisefido-iot 消费 STREAM_IOT_ALARM
 
 # 消费者配置
@@ -154,10 +151,13 @@ LOG_DIR="${LOG_DIR:-/tmp/owlBack_logs}"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${IOT_LOG_FILE:-$LOG_DIR/wisefido-iot.log}"
 
+# HTTP 配置
+export HTTP_ADDR=:8085
+
 # 显示配置信息
 echo ""
 echo -e "${BLUE}📊 Configuration:${NC}"
-echo "  🔌 HTTP Port: 8083"
+echo "  🔌 HTTP Port: 8085"
 echo "  🗄️  Database: $DB_HOST:$DB_PORT/$DB_NAME"
 echo "  📡 Redis: $REDIS_ADDR"
 echo "  📨 IoT Monitor: $STREAM_IOT_MONITOR"

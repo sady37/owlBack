@@ -18,6 +18,13 @@ import (
 	"go.uber.org/zap"
 )
 
+// GeneratePasswordHash 生成密码哈希（用于测试用户和密码初始化）
+// 格式：SHA256(password) - 无盐，与数据库现有格式相同
+func GeneratePasswordHash(password string) string {
+	hash := sha256.Sum256([]byte(password))
+	return hex.EncodeToString(hash[:])
+}
+
 // LoginSessionWriter 登录会话写入接口（由 AuthMiddleware 的 SessionStore 实现）
 type LoginSessionWriter interface {
 	StoreSession(ctx context.Context, token, userID, tenantID, userType, role string, ttl time.Duration) error
@@ -489,9 +496,18 @@ func (s *authService) SearchInstitutions(ctx context.Context, req SearchInstitut
 	// 4. 机构信息补充
 	institutions := make([]Institution, 0, len(matches))
 	for _, match := range matches {
+		// Defensive: tenantsRepo may be nil in some runtime configurations
+		if s.tenantsRepo == nil {
+			institutions = append(institutions, Institution{
+				ID:          match.TenantID,
+				AccountType: match.AccountType,
+			})
+			continue
+		}
+
 		tenant, err := s.tenantsRepo.GetTenant(ctx, match.TenantID)
 		if err != nil {
-			// If tenant not found, still return tenant_id with accountType
+			// If tenant not found or repo error, still return tenant_id with accountType
 			institutions = append(institutions, Institution{
 				ID:          match.TenantID,
 				AccountType: match.AccountType,

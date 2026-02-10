@@ -5,61 +5,42 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"wisefido-data/internal/card"
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
 
+	"owl-common/card"
 	rediscommon "owl-common/redis"
 
 	"go.uber.org/zap"
 )
 
-// VitalFocusStaticCacheWriter 写 VitalFocusCard 静态缓存（可选）
-type VitalFocusStaticCacheWriter interface {
-	WriteCardStatic(ctx context.Context, tenantID, cardID string) error
-	DeleteCardStatic(ctx context.Context, cardID string) error
-}
-
-// UserCardsCacheInvalidator 用户卡片缓存失效（可选）
-type UserCardsCacheInvalidator interface {
-	InvalidateByTenantBranch(ctx context.Context, tenantID, branchID string) error
-}
-
-// CardSyncService 卡片同步服务：只依赖 DB card repo + publisher；写 DB 后发 config，并写 VitalFocusCard 静态缓存
+// CardSyncService 卡片同步服务：写 DB 后发 config + 通知 realtime
 type CardSyncService struct {
-	cardRepo       *repository.PostgresCardRepository
-	creator        *card.CardCreator
-	publisher      *publisher.ConfigPublisher
-	vitalCache     VitalFocusStaticCacheWriter // 可选：发 config 后写静态缓存供前端快速返回
-	userCardsCache UserCardsCacheInvalidator   // 可选：card 变更时失效 user:cards 缓存
-	logger         *zap.Logger
+	cardRepo  *repository.PostgresCardRepository
+	creator   *CardCreateService
+	publisher *publisher.ConfigPublisher
+	realtime  *CardRealtimeService
+	logger    *zap.Logger
 }
 
-// NewCardSyncService 创建卡片同步服务（仅 DB card repo + publisher）
+// NewCardSyncService 创建卡片同步服务
 func NewCardSyncService(
 	cardRepo *repository.PostgresCardRepository,
 	publisher *publisher.ConfigPublisher,
+	realtime *CardRealtimeService,
 	logger *zap.Logger,
 ) *CardSyncService {
-	creator := card.NewCardCreator(cardRepo, logger)
+	creator := NewCardCreateService(cardRepo, logger)
 	return &CardSyncService{
 		cardRepo:  cardRepo,
 		creator:   creator,
 		publisher: publisher,
+		realtime:  realtime,
 		logger:    logger,
 	}
 }
 
-// SetVitalFocusStaticCache 设置 VitalFocusCard 静态缓存写入器（可选）
-func (s *CardSyncService) SetVitalFocusStaticCache(c VitalFocusStaticCacheWriter) {
-	s.vitalCache = c
-}
-
-// SetUserCardsCache 设置用户卡片缓存失效器（可选），card 变更时调用 InvalidateByTenantBranch
-func (s *CardSyncService) SetUserCardsCache(c UserCardsCacheInvalidator) {
-	s.userCardsCache = c
-}
 
 // CreateCardsForUnit 为指定单元创建/更新卡片（写 DB），同步后发送 config.card.*，并写 VitalFocusCard 静态缓存
 func (s *CardSyncService) CreateCardsForUnit(ctx context.Context, tenantID, unitID string) (*card.CardUpdateStats, error) {
@@ -110,6 +91,15 @@ func (s *CardSyncService) CreateAllCards(ctx context.Context, tenantID string) e
 		return fmt.Errorf("tenant_id is required")
 	}
 
+	// 清理所有现有卡片记录（全局清理），避免漏删除
+	if err := s.ClearAllCards(); err != nil {
+		s.logger.Error("Failed to clear all cards before sync",
+			zap.String("tenant_id", tenantID),
+			zap.Error(err),
+		)
+		return fmt.Errorf("failed to clear all cards: %w", err)
+	}
+
 	unitIDs, err := s.cardRepo.GetAllUnits(tenantID)
 	if err != nil {
 		return fmt.Errorf("failed to get all units: %w", err)
@@ -150,6 +140,11 @@ func (s *CardSyncService) CreateAllCards(ctx context.Context, tenantID string) e
 	return nil
 }
 
+// ClearAllCards 清理全局所有卡片记录（删除所有租户的卡片）
+func (s *CardSyncService) ClearAllCards() error {
+	return s.cardRepo.ClearAllCards()
+}
+
 func (s *CardSyncService) emitCardChange(ctx context.Context, a domain.CardSyncAffected) error {
 	// 获取 branch_id（从 cards 表直接查询，性能最佳）
 	branchID := ""
@@ -162,35 +157,16 @@ func (s *CardSyncService) emitCardChange(ctx context.Context, a domain.CardSyncA
 		}
 	}
 
-	// Step 1: 写静态缓存（DB 已写完，直接写缓存）
-	if s.vitalCache != nil {
-		if err := s.vitalCache.WriteCardStatic(ctx, a.TenantID, a.CardID); err != nil {
-			s.logger.Warn("Failed to write card static cache",
-				zap.String("card_id", a.CardID),
-				zap.Error(err),
-			)
-			// 不中断流程，缓存写入失败不阻止
-		}
-	}
-
-	// Step 2: 发送消息到 config:card:stream（缓存已准备好）
-	// 消费者收到消息后根据 branch_id 全量查询卡片，自动同步 create/update/delete
+	// Step 1: 发送消息到 config:card:stream
 	if err := s.publisher.PublishCardChangeMessage(ctx, a.TenantID, a.CardID, a.UnitID, branchID); err != nil {
 		return err
 	}
 
-	// Step 3: 失效动态缓存（按 tenant+branch）
-	if s.userCardsCache != nil && a.UnitID != "" {
-		invalidateBranchID := branchID
-		if invalidateBranchID == "" {
-			invalidateBranchID = "_"
-		}
-		if err := s.userCardsCache.InvalidateByTenantBranch(ctx, a.TenantID, invalidateBranchID); err == nil {
-			s.logger.Debug("invalidate user cards cache", zap.String("tenant_id", a.TenantID), zap.String("branch_id", invalidateBranchID))
-		} else {
-			s.logger.Warn("invalidate user cards cache failed", zap.String("tenant_id", a.TenantID), zap.String("branch_id", invalidateBranchID), zap.Error(err))
-		}
+	// Step 2: 通知 realtime 更新受影响用户的 CardList
+	if s.realtime != nil && branchID != "" {
+		s.realtime.UpdateByBranch(ctx, a.TenantID, branchID)
 	}
+
 	return nil
 }
 

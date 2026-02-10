@@ -242,6 +242,47 @@ func (r *PostgresDeviceRepository) SetDeviceProperties(ctx context.Context, uid 
 	return nil
 }
 
+// GetAllDeviceStoreInfo 获取所有device_store记录（用于启动时初始化设备缓存）
+func (r *PostgresDeviceRepository) GetAllDeviceStoreInfo(ctx context.Context) ([]*DeviceStoreInfo, error) {
+	query := `
+		SELECT device_id, device_uid, device_type, device_model, mac, imei, comm_mode, mcu_model, firmware_version, tenant_id, allow_access
+		FROM device_store
+	`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query device_store: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*DeviceStoreInfo
+	for rows.Next() {
+		var d DeviceStoreInfo
+		var deviceModel, mac, imei, commMode, mcuModel, firmwareVersion sql.NullString
+		var allowAccess bool
+
+		if err := rows.Scan(&d.DeviceID, &d.DeviceUID, &d.DeviceType, &deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion, &d.TenantID, &allowAccess); err != nil {
+			return nil, fmt.Errorf("failed to scan device_store row: %w", err)
+		}
+
+		d.DeviceModel = deviceModel
+		d.MAC = mac
+		d.IMEI = imei
+		d.CommMode = commMode
+		d.MCUModel = mcuModel
+		d.FirmwareVersion = firmwareVersion
+		d.AllowAccess = allowAccess
+
+		results = append(results, &d)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("device_store rows iteration error: %w", err)
+	}
+
+	return results, nil
+}
+
 // GetDevicesByTenant 根据租户获取设备列表
 func (r *PostgresDeviceRepository) GetDevicesByTenant(ctx context.Context, tenantID string) ([]*domain.Device, error) {
 	query := `

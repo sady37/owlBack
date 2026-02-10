@@ -107,7 +107,7 @@ export RADAR_INTERNAL_API_BASE_URL="${RADAR_INTERNAL_API_BASE_URL:-http://localh
 export CARD_MANAGE_API_BASE_URL="${CARD_MANAGE_API_BASE_URL:-http://localhost:8082}"
 
 # IoTTimeSeries 服务配置（用于调用 wisefido-iot-timeseries 内部 API）
-export IOT_TIMESERIES_INTERNAL_API_BASE_URL="${IOT_TIMESERIES_INTERNAL_API_BASE_URL:-http://localhost:8083}"
+export IOT_TIMESERIES_INTERNAL_API_BASE_URL="${IOT_TIMESERIES_INTERNAL_API_BASE_URL:-http://localhost:8085}"
 
 echo ""
 echo -e "${BLUE}📊 Configuration:${NC}"

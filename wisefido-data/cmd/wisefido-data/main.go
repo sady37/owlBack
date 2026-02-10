@@ -11,8 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"wisefido-data/internal/cache"
-	cardcreator "wisefido-data/internal/card"
 	"wisefido-data/internal/config"
 	"wisefido-data/internal/domain"
 	httpapi "wisefido-data/internal/http"
@@ -20,9 +18,11 @@ import (
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/service"
 	"wisefido-data/internal/store"
+	"wisefido-data/internal/subscriber"
 
 	"owl-common/database"
 	logpkg "owl-common/logger"
+	rediscommon "owl-common/redis"
 
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -59,14 +59,14 @@ func main() {
 	// Optional DB-backed admin APIs (units/rooms/beds/devices)
 	var db *sql.DB
 	var cardRepo *repository.PostgresCardRepository
-	var cardCreator *cardcreator.CardCreator
+	var cardRealtimeSvc *service.CardRealtimeService
 	var cardSyncService *service.CardSyncService
 	var devicesRepo *repository.PostgresDevicesRepository
 	var unitsRepo *repository.PostgresUnitsRepository
 	var deviceStoreRepo *repository.PostgresDeviceStoreRepository
 	var residentsRepo *repository.PostgresResidentsRepository
 	var branchesRepo *repository.PostgresBranchesRepository
-	var userCardsCache *cache.UserCardsCache
+
 	var usersRepo *repository.PostgresUsersRepository
 	var tenantResolver *repository.PostgresTenantResolver
 	var sleepaceReportService service.SleepaceReportService
@@ -114,21 +114,31 @@ func main() {
 
 	router := httpapi.NewRouter(logger)
 
+	var cardStaticSvc *service.CardStaticService
+	var dataStreamSubscriber *subscriber.DataStreamSubscriber
+	var sessionStore *httpapi.MemSessionStore // 创建会话存储（用于 authService 和 authMiddleware）
+
+	// 初始化会话存储（无论 db 是否存在都需要）
+	sessionStore = httpapi.NewMemSessionStore()
+
 	if db != nil {
 		// 创建卡片实时数据处理器并注册路由
-		allowedProvider := service.NewAllowedCardIDsProvider(kv, usersRepo, residentsRepo, db, logger)
-		cardStaticSvc := service.NewCardStaticService(kv, unitsRepo, allowedProvider, userCardsCache, residentsRepo, logger)
-		cardRealtimeSvc := service.NewCardRealtimeService(kv, allowedProvider, logger)
+		residentsRepo = repository.NewPostgresResidentsRepository(db)
+		cardRepo := repository.NewPostgresCardRepository(db, logger)
+		allowedProvider := service.NewAllowedCardIDsProvider(kv, usersRepo, residentsRepo, db, cardRepo, logger)
+		cardRealtimeSvc = service.NewCardRealtimeService(kv, allowedProvider, logger, nil)
+		cardStaticSvc = service.NewCardStaticService(db, allowedProvider, cardRealtimeSvc, logger)
 
 		cardRealtimeHandler := httpapi.NewCardRealtimeHandler(cardRealtimeSvc, cardStaticSvc, logger)
 		router.RegisterCardRealtimeRoutes(cardRealtimeHandler)
 
-		// 创建 VitalFocusHandler（前端 Monitor API）
-		vitalFocusHandler := httpapi.NewVitalFocusHandler(logger)
-		vitalFocusHandler.SetCardService(cardStaticSvc)
-		vitalFocusHandler.SetRealtimeService(cardRealtimeSvc)
-		vitalFocusHandler.SetUsersRepo(usersRepo) // 用于会话验证
-		router.RegisterVitalFocusRoutes(vitalFocusHandler)
+		// 创建 MontitorHandler（前端 Monitor API）
+		MontitorHandler := httpapi.NewMonitorHandler(logger)
+		MontitorHandler.SetCardService(cardStaticSvc)
+		MontitorHandler.SetRealtimeService(cardRealtimeSvc)
+		router.RegisterMonitorRoutes(MontitorHandler)
+
+
 	}
 
 	if db != nil {
@@ -149,9 +159,10 @@ func main() {
 			)
 
 			// 2) Ensure sysadmin user exists in DB (so "User Management" in System tenant isn't empty)
-			// password_hash should only depend on password itself (independent of account/phone/email)
+			// Use simple password hash (no salt) for compatibility with existing DB format
+			// password_hash = SHA256(password) - no salt, matches existing database format
 			ah, _ := hex.DecodeString(httpapi.HashAccount("sysadmin"))
-			aph, _ := hex.DecodeString(httpapi.HashPassword("ChangeMe123!"))
+			aph, _ := hex.DecodeString(service.GeneratePasswordHash("ChangeMe123!"))
 			if len(ah) > 0 && len(aph) > 0 {
 				_, _ = db.Exec(
 					`INSERT INTO users (tenant_id, user_account, user_account_hash, password_hash, nickname, role, status)
@@ -188,8 +199,8 @@ func main() {
 		router.RegisterRolesRoutes(rolesHandler)
 		router.RegisterRolePermissionsRoutes(rolePermHandler)
 
-		// 创建 Card Creator（用于启动时全量更新，保留向后兼容）
-		cardCreator = cardcreator.NewCardCreator(cardRepo, logger)
+		// 创建 Card Repository（DB card 数据操作）
+		cardRepo = repository.NewPostgresCardRepository(db, logger)
 
 		// 创建 AlarmCloud Service 和 Handler
 		alarmCloudRepo := repository.NewPostgresAlarmCloudRepository(db)
@@ -200,19 +211,19 @@ func main() {
 
 		// 创建 Auth Service 和 Handler
 		authRepo := repository.NewPostgresAuthRepository(db)
-		authService := service.NewAuthService(authRepo, tenantsRepo, db, logger)
+
+		// 使用 sessionStore 创建 authService（这样 Login 会返回真实的 UUID token 而不是 stub）
+		authService := service.NewAuthServiceWithSessionStore(authRepo, tenantsRepo, db, logger, sessionStore)
 		authHandler := httpapi.NewAuthHandler(authService, logger)
+
+		// 关联会话存储到 authHandler（供 middleware 读取会话）
+		authHandler.SetSessionStore(sessionStore)
+
 		router.RegisterAuthRoutes(authHandler)
-
-		// 创建 Card Repository（用于启动时全量更新，保留向后兼容）
-		cardRepo = repository.NewPostgresCardRepository(db, logger)
-
-		// 创建 IoTTimeSeriesClient（用于调用 wisefido-iot-timeseries 内部 API）
-		iotTimeSeriesClient := service.NewIoTTimeSeriesClient(cfg.IoTTimeSeries.InternalAPIBaseURL, logger)
 
 		// 创建 Device Service 和 Handler（qinglanClient 已在上面创建）
 		devicesRepo.SetLogger(logger) // 确保 logger 已设置（用于设备连接日志）
-		deviceService := service.NewDeviceService(devicesRepo, cardSyncService, iotTimeSeriesClient, qinglanClient, logger)
+		deviceService := service.NewDeviceService(devicesRepo, cardSyncService, qinglanClient, logger)
 		deviceHandler := httpapi.NewDeviceHandler(deviceService, logger)
 		router.RegisterDeviceRoutes(deviceHandler)
 
@@ -223,15 +234,50 @@ func main() {
 		// 创建 CardsRepository（供 RadarInstall 查卡片设备，以及后续 CardService 使用）
 		cardsRepo := repository.NewPostgresCardsRepository(db)
 
+		// 创建数据流订阅器（订阅 card:realtime:stream, card:status:stream, iot:deviceStatus:stream）
+		dataStreamSubscriber = subscriber.NewDataStreamSubscriber(redisClient, logger)
+		initCtx := context.Background()
+		if err := dataStreamSubscriber.Start(initCtx); err != nil {
+			logger.Warn("Failed to start data stream subscriber", zap.Error(err))
+		}
+		if cardRealtimeSvc != nil {
+			cardRealtimeSvc.SetSSEDependencies(dataStreamSubscriber)
+
+			// 桥接 subscriber.CardStatusEvent → service.StatusEvent，激活 fan-out 通路
+			statusBridgeCh := make(chan service.StatusEvent, 64)
+			cardRealtimeSvc.SetStatusEventChan(statusBridgeCh)
+			go func() {
+				for ev := range dataStreamSubscriber.GetCardStatusEventChan() {
+					select {
+					case statusBridgeCh <- service.StatusEvent{CardID: ev.CardID, Data: ev.Data}:
+					default:
+						// drop if service channel full to avoid blocking subscriber
+					}
+				}
+			}()
+			cardRealtimeSvc.StartStatusFanout(initCtx)
+		}
+
+		// 启动数据流消费协程 (稍后在ctx定义后启动)
+		// go subscribeDataStream(ctx, logger, redisClient, dataStreamSubscriber)
+
 		// 创建 Radar Install Service 和 Handler（通过 wisefido-qinglan 与设备通信）
 		radarInstall := service.NewRadarInstall(cfg, devicesRepo, cardsRepo, configVersionsRepo, qinglanClient, logger)
 		radarHandler := httpapi.NewRadarHandler(radarInstall, stub, kv, redisClient, logger)
+		// 将 dataStreamSubscriber 传给 RadarHandler（供 SSE 推送使用）
+		radarHandler.SetDataStreamSubscriber(dataStreamSubscriber)
 		router.RegisterRadarRoutes(radarHandler)
 
 		// 创建 Branch Service 和 Handler
+		branchesRepo = repository.NewPostgresBranchesRepository(db)
 		branchService := service.NewBranchService(branchesRepo, db, logger)
 		branchesHandler := httpapi.NewBranchesHandler(branchService, db, logger)
 		router.RegisterBranchesRoutes(branchesHandler)
+
+		// 创建 Unit Service 和 Handler
+		unitService := service.NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, cardSyncService, logger)
+		unitHandler := httpapi.NewUnitHandler(unitService, logger)
+		router.RegisterUnitRoutes(unitHandler)
 
 		// 创建 User Service 和 Handler
 		// usersRepo 已在上面创建 RoleService 时声明，这里直接使用
@@ -243,6 +289,9 @@ func main() {
 
 		// 创建 ConfigPublisher（用于发送所有 config:* 消息）
 		configPublisher := publisher.NewConfigPublisher(redisClient, logger)
+
+		// 创建 CardSyncService
+		cardSyncService = service.NewCardSyncService(cardRepo, configPublisher, cardRealtimeSvc, logger)
 
 		// 创建 DeviceMonitorSettings Service 和 Handler
 		alarmDeviceRepo := repository.NewPostgresAlarmDeviceRepository(db)
@@ -345,7 +394,7 @@ func main() {
 		sleepaceReportService = service.NewSleepaceReportService(sleepaceReportsRepo, db, logger)
 
 		// 创建 Resident Service 和 Handler
-		residentsRepo = repository.NewPostgresResidentsRepository(db)
+		// residentsRepo 已在上面创建 CardStaticService 时声明，这里直接使用
 		residentService := service.NewResidentService(residentsRepo, db, cardSyncService, logger)
 		residentHandler := httpapi.NewResidentHandler(residentService, db, logger)
 		router.RegisterResidentRoutes(residentHandler)
@@ -435,13 +484,33 @@ func main() {
 		router.RegisterDoctorRoutes(doctor)
 	}
 
-	srv := service.NewServer(cfg.HTTP.Addr, router, logger)
+	// 初始化认证中间件
+	// AuthMiddleware 从 Authorization header 提取 Bearer token，
+	// 查询 sessionStore 获取用户信息，然后注入到请求 header（X-User-Id, X-Tenant-Id, X-User-Type, X-User-Role）
+	authMiddlewareEnabled := os.Getenv("AUTH_MIDDLEWARE_ENABLED") != "false" // 默认启用
+	authMiddleware := httpapi.NewAuthMiddleware(httpapi.AuthMiddlewareConfig{
+		Store:   sessionStore,
+		Skipped: httpapi.DefaultSkippedPaths,
+		Logger:  logger,
+		Enabled: authMiddlewareEnabled,
+	})
+
+	// 将 router 通过 authMiddleware 包装，使所有路由（非跳过清单）都需要有效的 token
+	wrappedHandler := authMiddleware.Wrap(router)
+
+	// 创建  HTTP 服务器
+	srv := service.NewServer(cfg.HTTP.Addr, wrappedHandler, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 启动时全量检查并更新卡片（如果 DB 和 cardCreator 可用）
-	if db != nil && cardCreator != nil {
+	// 启动数据流消费协程（在ctx定义后）
+	if dataStreamSubscriber != nil {
+		go subscribeDataStream(ctx, logger, redisClient, dataStreamSubscriber)
+	}
+
+	// 启动时全量检查并更新卡片（如果 DB 和 cardSyncService 可用）
+	if db != nil && cardSyncService != nil {
 		go func() {
 			// 延迟启动，等待服务完全初始化
 			time.Sleep(2 * time.Second)
@@ -498,7 +567,7 @@ func main() {
 						logger.Info("Card check interrupted by context cancellation")
 						return
 					default:
-						stats, err := cardCreator.CreateCardsForUnit(tenant.TenantID, unitID)
+						stats, err := cardSyncService.CreateCardsForUnit(ctx, tenant.TenantID, unitID)
 						if err != nil {
 							logger.Error("Failed to create cards for unit",
 								zap.String("tenant_id", tenant.TenantID),
@@ -588,5 +657,87 @@ func main() {
 	_ = redisClient.Close()
 	if db != nil {
 		_ = db.Close()
+	}
+}
+
+// subscribeDataStream 订阅数据流（card:realtime:stream, card:status:stream）
+func subscribeDataStream(ctx context.Context, logger *zap.Logger, redisClient *redis.Client, dataStreamSubscriber *subscriber.DataStreamSubscriber) {
+	streams := []string{
+		"card:realtime:stream",
+		"card:status:stream",
+	}
+
+	consumerGroup := "wisefido-data-consumer"
+	consumerName := "wisefido-data-consumer-1"
+
+	logger.Info("Starting data stream consumer",
+		zap.Strings("streams", streams),
+		zap.String("consumer_group", consumerGroup),
+	)
+
+	// 为每个流创建消费者组
+	for _, streamName := range streams {
+		if err := rediscommon.CreateConsumerGroup(ctx, redisClient, streamName, consumerGroup); err != nil {
+			logger.Warn("Failed to create consumer group",
+				zap.String("stream", streamName),
+				zap.String("consumer_group", consumerGroup),
+				zap.Error(err),
+			)
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info("Data stream consumer stopped")
+			return
+		default:
+			// 使用 XREADGROUP 从 Consumer Group 读取消息
+			msgs, err := rediscommon.ReadFromMultipleStreamsWithBlock(ctx, redisClient, streams, consumerGroup, consumerName, 10, 2*time.Second)
+			if err != nil {
+				logger.Debug("Failed to read from data streams",
+					zap.Error(err),
+				)
+				continue
+			}
+
+			for _, msg := range msgs {
+				var handlerErr error
+
+				// 转换 StreamMessage 为 redis.XMessage
+				xMsg := redis.XMessage{
+					ID:     msg.ID,
+					Values: msg.Values,
+				}
+
+				switch msg.Stream {
+				case "card:realtime:stream":
+					handlerErr = dataStreamSubscriber.HandleCardRealtimeMessage(ctx, xMsg)
+				case "card:status:stream":
+					handlerErr = dataStreamSubscriber.HandleCardStatusMessage(ctx, xMsg)
+				default:
+					logger.Warn("Unknown stream",
+						zap.String("stream", msg.Stream),
+					)
+				}
+
+				if handlerErr != nil {
+					logger.Error("Failed to handle message",
+						zap.String("stream", msg.Stream),
+						zap.String("message_id", msg.ID),
+						zap.Error(handlerErr),
+					)
+				}
+
+				// 处理完消息后确认
+				if err := redisClient.XAck(ctx, msg.Stream, consumerGroup, msg.ID).Err(); err != nil {
+					logger.Warn("Failed to acknowledge message",
+						zap.String("stream", msg.Stream),
+						zap.String("message_id", msg.ID),
+						zap.Error(err),
+					)
+				}
+			}
+		}
 	}
 }

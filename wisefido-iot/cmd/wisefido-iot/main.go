@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,7 +13,6 @@ import (
 
 	"wisefido-iot/internal/config"
 	"wisefido-iot/internal/consumer"
-	httphandler "wisefido-iot/internal/http"
 	"wisefido-iot/internal/publisher"
 	"wisefido-iot/internal/repository"
 
@@ -82,28 +80,6 @@ func main() {
 		logger,
 	)
 
-	// 初始化 HTTP Handler（用于内部 API，如清除位置信息缓存）
-	httpHandler := httphandler.NewHandler(iotRepo, logger)
-
-	// 启动 HTTP 服务器（用于内部 API）
-	httpAddr := getEnv("HTTP_ADDR", ":8083")
-	mux := http.NewServeMux()
-	mux.HandleFunc("/internal/api/v1/iot/cache/invalidate", httpHandler.InvalidateLocationCache)
-
-	httpServer := &http.Server{
-		Addr:    httpAddr,
-		Handler: mux,
-	}
-
-	go func() {
-		logger.Info("Starting HTTP server for internal API",
-			zap.String("addr", httpAddr),
-		)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("Failed to start HTTP server", zap.Error(err))
-		}
-	}()
-
 	// 启动服务
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -125,17 +101,6 @@ func main() {
 	// 优雅关闭
 	cancel()
 
-	// 关闭 HTTP 服务器
-	if err := httpServer.Shutdown(context.Background()); err != nil {
-		logger.Warn("Failed to shutdown HTTP server", zap.Error(err))
-	}
-
 	logger.Info("Service stopped")
 }
 
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}

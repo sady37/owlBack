@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"wisefido-data/internal/service"
 
@@ -11,8 +12,9 @@ import (
 
 // AuthHandler 认证授权 Handler
 type AuthHandler struct {
-	authService service.AuthService
-	logger      *zap.Logger
+	authService  service.AuthService
+	sessionStore SessionStore // 存储 session 信息（token → user info）
+	logger       *zap.Logger
 }
 
 // NewAuthHandler 创建认证授权 Handler
@@ -21,6 +23,11 @@ func NewAuthHandler(authService service.AuthService, logger *zap.Logger) *AuthHa
 		authService: authService,
 		logger:      logger,
 	}
+}
+
+// SetSessionStore 设置会话存储（供主入口调用）
+func (h *AuthHandler) SetSessionStore(store SessionStore) {
+	h.sessionStore = store
 }
 
 // ServeHTTP 实现 http.Handler 接口
@@ -136,6 +143,19 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 将 session 信息存储到 sessionStore（登录成功后）
+	// accessToken 由前端保存，AuthMiddleware 在请求时从 Authorization header 提取
+	if h.sessionStore != nil && resp.AccessToken != "" {
+		sessionData := SessionData{
+			UserID:   resp.UserID,
+			TenantID: resp.TenantID,
+			UserType: resp.UserType,
+			Role:     resp.Role,
+		}
+		// 使用 accessToken 作为 session key，24h TTL
+		_ = h.sessionStore.Set(ctx, resp.AccessToken, sessionData, 24*time.Hour)
+	}
+
 	// 3. 构建响应（对齐 owlFront LoginResult）
 	result := map[string]any{
 		"accessToken":  resp.AccessToken,
@@ -161,6 +181,14 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) SearchInstitutions(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// 添加日志记录请求详情
+	h.logger.Info("SearchInstitutions request received",
+		zap.String("method", r.Method),
+		zap.String("remote_addr", r.RemoteAddr),
+		zap.String("user_agent", r.UserAgent()),
+		zap.String("authorization_header", r.Header.Get("Authorization")),
+	)
+
 	// 1. 参数解析（从 Query 参数获取）
 	accountHash := strings.TrimSpace(r.URL.Query().Get("accountHash"))
 	passwordHash := strings.TrimSpace(r.URL.Query().Get("passwordHash"))
@@ -168,6 +196,12 @@ func (h *AuthHandler) SearchInstitutions(w http.ResponseWriter, r *http.Request)
 	if userType == "" {
 		userType = "staff"
 	}
+
+	h.logger.Info("SearchInstitutions parsed params",
+		zap.String("accountHash", maskString(accountHash)),
+		zap.String("passwordHash", maskString(passwordHash)),
+		zap.String("userType", userType),
+	)
 
 	// 2. 调用 Service
 	req := service.SearchInstitutionsRequest{
@@ -196,6 +230,10 @@ func (h *AuthHandler) SearchInstitutions(w http.ResponseWriter, r *http.Request)
 		}
 		items = append(items, item)
 	}
+
+	h.logger.Info("SearchInstitutions completed",
+		zap.Int("result_count", len(items)),
+	)
 
 	writeJSON(w, http.StatusOK, Ok(items))
 }
@@ -309,14 +347,12 @@ func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) VerifyPIN(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-
 	// 1. 参数解析
 	var payload map[string]any
 	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 		writeJSON(w, http.StatusOK, Fail("invalid body"))
 		return
 	}
-
 
 	pinHash, _ := payload["pin_hash"].(string)
 	if pinHash == "" {
@@ -330,7 +366,6 @@ func (h *AuthHandler) VerifyPIN(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, Fail("user not authenticated"))
 		return
 	}
-
 
 	// 3. 调用 Service
 	req := service.VerifyPINRequest{
@@ -347,4 +382,12 @@ func (h *AuthHandler) VerifyPIN(w http.ResponseWriter, r *http.Request) {
 
 	// 4. 返回响应
 	writeJSON(w, http.StatusOK, Ok(resp))
+}
+
+// maskString 用于隐藏敏感信息的日志输出
+func maskString(s string) string {
+	if len(s) <= 4 {
+		return "***"
+	}
+	return s[:4] + "***"
 }

@@ -46,13 +46,13 @@ type DeviceRepository interface {
 	SetDeviceProperties(ctx context.Context, uid string, properties map[string]interface{}) error
 
 	// CreateDevice 创建设备
-	CreateDevice(ctx context.Context, device *domain.Device) error
+	//CreateDevice(ctx context.Context, device *domain.Device) error
 
 	// UpdateDevice 更新设备信息
 	UpdateDevice(ctx context.Context, device *domain.Device) error
 
 	// DeleteDevice 删除设备（软删除）
-	DeleteDevice(ctx context.Context, uid string) error
+	//DeleteDevice(ctx context.Context, uid string) error
 
 	// SearchDevices 搜索设备
 	SearchDevices(ctx context.Context, criteria map[string]interface{}) ([]*domain.Device, error)
@@ -81,4 +81,9 @@ type DeviceRepository interface {
 	// GetAllAccessibleDevices 获取所有可访问的设备（用于启动时主动订阅）
 	// 条件：device_store.allow_access = TRUE 且 devices.business_access = 'approved'
 	GetAllAccessibleDevices(ctx context.Context) ([]string, error)
+
+	// GetAllDeviceStoreInfo 获取所有device_store记录（用于启动时初始化设备缓存）
+	// 返回所有设备的device_uid和allow_access状态
+	GetAllDeviceStoreInfo(ctx context.Context) ([]*DeviceStoreInfo, error)
+
 }

@@ -357,7 +357,7 @@ func (c *EventConsumer) handleBED_LEFT_Event(
 // 返回 true 表示满足前置条件，可以继续处理
 func (c *EventConsumer) checkPrerequisites(card repository.CardInfo) bool {
 	// 1. 检查必须是 ActiveBed 卡片
-	if card.CardType != "ActiveBed" {
+	if card.CardType != "ActiveBedCard" {
 		return false
 	}
 

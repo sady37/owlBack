@@ -106,7 +106,7 @@ func Load() *Config {
 	cfg.Qinglan.APIBaseURL = getEnv("QINGLAN_API_BASE_URL", "")
 
 	// IoTTimeSeries 服务配置（用于调用 wisefido-iot-timeseries 内部 API）
-	cfg.IoTTimeSeries.InternalAPIBaseURL = getEnv("IOT_TIMESERIES_INTERNAL_API_BASE_URL", "http://localhost:8083")
+	cfg.IoTTimeSeries.InternalAPIBaseURL = getEnv("IOT_TIMESERIES_INTERNAL_API_BASE_URL", "http://localhost:8085")
 
 	return cfg
 }

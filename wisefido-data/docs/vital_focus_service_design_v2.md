@@ -153,8 +153,9 @@ func (s *VitalFocusService) filterCardsForResident(
 ```
 
 **权限规则**：
-1. **ActiveBed 卡片**：`card_type == "ActiveBed"` 且 `bed_id == resident.bed_id` 且 `primary_resident_id == resident_id`
-2. **Location 卡片**：`card_type == "Location"` 且 `location_id == resident.location_id` 且住户在 `card.residents` 中
+1. **ActiveBedCard 卡片**：`card_type == "ActiveBedCard"` 且 `bed_id == resident.bed_id` 且 `primary_resident_id == resident_id`
+
+ 2. **UnitCard 卡片**：`card_type == "UnitCard"` 且 `location_id == resident.location_id` 且住户在 `card.residents` 中
 
 ### 3. hasCardPermission
 

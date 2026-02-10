@@ -172,7 +172,7 @@ func (e *Event1Evaluator) Evaluate(tenantID string, card repository.CardInfo, re
 // checkPrerequisites 检查前置条件
 func (e *Event1Evaluator) checkPrerequisites(card repository.CardInfo, realtimeData *models.RealtimeData) bool {
 	// 1. 必须是 ActiveBed 卡片
-	if card.CardType != "ActiveBed" {
+	if card.CardType != "ActiveBedCard" {
 		return false
 	}
 

@@ -2,6 +2,7 @@ package mqtt
 
 import (
 	"fmt"
+	"strings"
 
 	commonconfig "owl-common/config"
 	mqttcommon "owl-common/mqtt"
@@ -16,9 +17,21 @@ type Client struct {
 
 // NewClient 创建MQTT客户端
 func NewClient(cfg *config.MQTTConfig) (*Client, error) {
+	var brokerURL string
+	
+	// 检查Broker URL是否已经包含了协议前缀
+	broker := cfg.Broker
+	if strings.HasPrefix(broker, "tcp://") || strings.HasPrefix(broker, "ssl://") || strings.HasPrefix(broker, "mqtts://") {
+		// 如果已经有协议前缀，则直接使用
+		brokerURL = broker
+	} else {
+		// 否则添加协议前缀
+		brokerURL = fmt.Sprintf("tcp://%s:%d", broker, cfg.Port)
+	}
+
 	// 转换配置格式
 	mqttCfg := &commonconfig.MQTTConfig{
-		Broker:   fmt.Sprintf("tcp://%s:%d", cfg.Broker, cfg.Port),
+		Broker:   brokerURL,
 		ClientID: cfg.ClientID,
 		Username: cfg.Username,
 		Password: cfg.Password,

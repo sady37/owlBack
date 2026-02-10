@@ -7,16 +7,25 @@ import (
 	"time"
 
 	"wisefido-qinglan/internal/config"
+	"wisefido-qinglan/internal/repository"
 
 	rediscommon "owl-common/redis"
 
 	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 )
+
+// CardMappingService 定义卡片映射服务接口（避免导入循环）
+type CardMappingService interface {
+	GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*repository.CardDeviceInfo, error)
+}
 
 // StreamPublisher Redis Stream发布器
 type StreamPublisher struct {
-	redisClient *redis.Client
-	config      *config.Config
+	redisClient    *redis.Client
+	config         *config.Config
+	cardMappingSvc CardMappingService
+	logger         *zap.Logger
 }
 
 // NewStreamPublisher 创建Stream发布器
@@ -25,6 +34,16 @@ func NewStreamPublisher(redisClient *redis.Client, cfg *config.Config) *StreamPu
 		redisClient: redisClient,
 		config:      cfg,
 	}
+}
+
+// SetCardMappingService 设置卡片映射服务（用于查询 deviceUID → cardID）
+func (p *StreamPublisher) SetCardMappingService(cardMappingSvc CardMappingService) {
+	p.cardMappingSvc = cardMappingSvc
+}
+
+// SetLogger 设置 logger
+func (p *StreamPublisher) SetLogger(logger *zap.Logger) {
+	p.logger = logger
 }
 
 // PublishToStream 发布数据到Redis Stream
@@ -101,31 +120,50 @@ func (p *StreamPublisher) GetOutputStreamName(topicType string) string {
 }
 
 // PublishDeviceStatus 发布设备状态到 iot:deviceStatus:stream
-// isOnline: true=在线(1), false=离线(0)
+// deviceUID: 设备UID（用于查询关联的 cardID）
+// statuses: 设备状态 map[string]int，支持字段：
+//   - online: 0=离线, 1=在线
+//   - angle_abnormal: 0=正常, 1=异常
+//   - signal_poor: 0=正常, 1=信号差
+//   - detached: 0=正常, 1=脱落
+//   - device_failure: 0=正常, 1=故障
 func (p *StreamPublisher) PublishDeviceStatus(
-    ctx context.Context,
-    deviceID, deviceType, tenantID string,
-    isOnline bool,
+	ctx context.Context,
+	deviceID, deviceType, tenantID, deviceUID string,
+	statuses map[string]int,
 ) error {
-    // 状态值：0=offline, 1=online
-    statusValue := 0
-    if isOnline {
-        statusValue = 1
-    }
+	// 查询 cardID（如果提供了 cardMappingSvc）
+	cardID := ""
+	if p.cardMappingSvc != nil && deviceUID != "" {
+		if cdi, err := p.cardMappingSvc.GetCardIDByDeviceUID(ctx, deviceUID); err == nil && cdi != nil {
+			cardID = cdi.CardID
+			if p.logger != nil {
+				p.logger.Debug("Found cardID for device",
+					zap.String("device_uid", deviceUID),
+					zap.String("card_id", cardID),
+					zap.String("device_id", deviceID))
+			}
+		} else if p.logger != nil {
+			p.logger.Debug("Unable to find cardID for device",
+				zap.String("device_uid", deviceUID),
+				zap.String("device_id", deviceID),
+				zap.Error(err))
+		}
+	}
 
-    msg := rediscommon.BuildDeviceStatusMessage(
-        deviceID,
-        deviceType,
-        "", // cardID
-        tenantID,
-        time.Now().Unix(),
-        []int{statusValue},
-    )
+	msg := rediscommon.BuildDeviceStatusMessage(
+		deviceID,
+		deviceType,
+		cardID, // 填充查询到的 cardID
+		tenantID,
+		time.Now().Unix(),
+		statuses,
+	)
 
-    eventData := iotStreamMessageToMap(msg)
+	eventData := iotStreamMessageToMap(msg)
 
-    _, err := p.PublishToStream(ctx, rediscommon.StreamIoTDeviceStatus.Name, eventData)
-    return err
+	_, err := p.PublishToStream(ctx, rediscommon.StreamIoTDeviceStatus.Name, eventData)
+	return err
 }
 
 // GetOutputStreamConfig 获取输出流配置

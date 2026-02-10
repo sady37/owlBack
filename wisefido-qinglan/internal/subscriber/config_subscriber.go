@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"wisefido-qinglan/internal/config"
 	"wisefido-qinglan/internal/repository"
@@ -23,6 +24,7 @@ type ConfigSubscriber struct {
 	logger         *zap.Logger
 	deviceRepo     repository.DeviceRepository
 	cardMappingSvc *service.CardMappingService
+	deviceCache    interface{} // 设备缓存（sync.Map），用于缓存设备认证信息
 	consumerGroup  string
 	consumerName   string
 	mu             sync.RWMutex
@@ -34,7 +36,7 @@ func NewConfigSubscriber(
 	cfg *config.Config,
 	logger *zap.Logger,
 	deviceRepo repository.DeviceRepository,
-	deviceCache interface{}, // 暂时不使用
+	deviceCache interface{}, // 设备缓存（sync.Map），用于缓存设备认证信息
 	cardMappingSvc *service.CardMappingService,
 ) *ConfigSubscriber {
 	return &ConfigSubscriber{
@@ -42,6 +44,7 @@ func NewConfigSubscriber(
 		config:         cfg,
 		logger:         logger,
 		deviceRepo:     deviceRepo,
+		deviceCache:    deviceCache,
 		cardMappingSvc: cardMappingSvc,
 		consumerGroup:  "qinglan-config-consumer",
 		consumerName:   "qinglan-config-consumer-1",
@@ -50,15 +53,12 @@ func NewConfigSubscriber(
 
 // Start 启动配置变更订阅器
 func (s *ConfigSubscriber) Start(ctx context.Context) error {
-	// 订阅三个配置变更流（wisefido-data 发送）：
+	// 订阅配置变更流（wisefido-data 发送）：
 	// 1. config:alarmDevice:stream - 告警设备配置（BuildAlarmDeviceMessage）
-	// 2. config:alarmProcess:stream - 告警处理配置（BuildAlarmProcessMessage）
-	// 3. config:card:stream - 卡片配置（BuildCardChangeMessage）
-	// 旧订阅已注释（原: config:device.alarm.setting:stream、config:device_status:stream）
+	// 2. config:card:stream - 卡片配置（BuildCardChangeMessage）
 	streams := []string{
-		rediscommon.StreamConfigAlarmDevice.Name,  // config:alarmDevice:stream
-		rediscommon.StreamConfigAlarmProcess.Name, // config:alarmProcess:stream
-		rediscommon.StreamConfigCard.Name,         // config:card:stream
+		rediscommon.StreamConfigAlarmDevice.Name, // config:alarmDevice:stream
+		rediscommon.StreamConfigCard.Name,        // config:card:stream
 	}
 
 	// 创建 Consumer Group（如果不存在）
@@ -77,14 +77,14 @@ func (s *ConfigSubscriber) Start(ctx context.Context) error {
 		zap.String("consumer_name", s.consumerName),
 	)
 
-	// 启动消费协程
-	go s.consumeConfigChanges(ctx, streams)
+	// 注意：消费协程现在由 main.go 的 subscribeConfigStream 函数启动
+	// 这里仅做消费者组的初始化
 
 	return nil
 }
 
-// handleConfigChangeMessage 处理配置变更消息（支持 CloudEvents 格式和旧格式）
-func (s *ConfigSubscriber) handleConfigChangeMessage(ctx context.Context, stream string, message redis.XMessage) error {
+// HandleConfigChangeMessage 处理配置变更消息（支持 CloudEvents 格式和旧格式）
+func (s *ConfigSubscriber) HandleConfigChangeMessage(ctx context.Context, stream string, message redis.XMessage) error {
 	s.logger.Debug("Received config change message",
 		zap.String("stream", stream),
 		zap.String("message_id", message.ID),
@@ -114,9 +114,6 @@ func (s *ConfigSubscriber) handleConfigChangeMessage(ctx context.Context, stream
 	case "config.alarmDevice":
 		// 告警设备配置变更 (BuildAlarmDeviceMessage)
 		s.handleAlarmDeviceChange(configMsg, message.ID)
-	case "config.alarmProcess":
-		// 告警处理配置变更 (BuildAlarmProcessMessage)
-		s.handleAlarmProcessChange(configMsg, message.ID)
 	case "config.card":
 		// 卡片配置变更 (BuildCardChangeMessage)
 		s.handleCardChange(configMsg, message.ID)
@@ -141,23 +138,68 @@ func (s *ConfigSubscriber) Stop() error {
 }
 
 // handleAlarmDeviceChange 处理告警设备配置变更 (BuildAlarmDeviceMessage)
-// TODO: 实现业务逻辑，下发设备告警配置
+// 清除对应设备的报警使能配置缓存，使下次查询重新加载最新配置
 func (s *ConfigSubscriber) handleAlarmDeviceChange(configMsg rediscommon.ConfigChangeMessage, messageID string) {
+	tenantID, _ := configMsg.Data["tenant_id"].(string)
+	deviceUID, _ := configMsg.Data["device_uid"].(string)
+	settingType, _ := configMsg.Data["setting_type"].(string)
+
+	if tenantID == "" || deviceUID == "" {
+		s.logger.Warn("Alarm device change message missing tenant_id or device_uid",
+			zap.String("message_id", messageID),
+			zap.String("tenant_id", tenantID),
+			zap.String("device_uid", deviceUID))
+		return
+	}
+
+	// 检查消息时间戳，防止过时消息覆盖新配置
+	// 允许最大时间差 5 秒（包括网络延迟和时钟偏差）
+	var messageTimestampMs int64
+	if ts, ok := configMsg.Data["timestamp_ms"].(float64); ok {
+		messageTimestampMs = int64(ts)
+	} else if ts, ok := configMsg.Data["timestamp_ms"].(int64); ok {
+		messageTimestampMs = ts
+	}
+
+	if messageTimestampMs > 0 {
+		currentTimeMs := time.Now().UnixMilli()
+		timeDiffMs := currentTimeMs - messageTimestampMs
+		const maxAllowedDelayMs = 5000 // 5 秒
+
+		if timeDiffMs > maxAllowedDelayMs {
+			s.logger.Warn("Discarding stale alarm device config message (too old)",
+				zap.String("message_id", messageID),
+				zap.String("tenant_id", tenantID),
+				zap.String("device_uid", deviceUID),
+				zap.Int64("time_diff_ms", timeDiffMs),
+				zap.Int64("max_allowed_ms", maxAllowedDelayMs))
+			return
+		}
+
+		if timeDiffMs < -5000 { // 消息时间戳在未来
+			s.logger.Warn("Discarding alarm device config message with future timestamp",
+				zap.String("message_id", messageID),
+				zap.String("tenant_id", tenantID),
+				zap.String("device_uid", deviceUID),
+				zap.Int64("time_diff_ms", timeDiffMs))
+			return
+		}
+	}
+
 	s.logger.Info("Handling alarm device config change",
 		zap.String("message_id", messageID),
-		zap.Any("data", configMsg),
-	)
-	// 业务逻辑待实现
-}
+		zap.String("tenant_id", tenantID),
+		zap.String("device_uid", deviceUID),
+		zap.String("setting_type", settingType))
 
-// handleAlarmProcessChange 处理告警处理配置变更 (BuildAlarmProcessMessage)
-// TODO: 实现业务逻辑，下发告警处理配置
-func (s *ConfigSubscriber) handleAlarmProcessChange(configMsg rediscommon.ConfigChangeMessage, messageID string) {
-	s.logger.Info("Handling alarm process config change",
+	// 清除对应设备的报警使能配置缓存
+	// 这样下次 mqtt_consumer 查询该设备的使能配置时，会从 PG 重新加载最新数据
+	s.deviceRepo.ClearAlarmEnablementCache(tenantID, deviceUID)
+
+	s.logger.Info("Alarm device cache cleared",
 		zap.String("message_id", messageID),
-		zap.Any("data", configMsg),
-	)
-	// 业务逻辑待实现
+		zap.String("tenant_id", tenantID),
+		zap.String("device_uid", deviceUID))
 }
 
 // handleCardChange 处理卡片配置变更 (BuildCardChangeMessage)
@@ -165,6 +207,38 @@ func (s *ConfigSubscriber) handleAlarmProcessChange(configMsg rediscommon.Config
 // 当 Type 为 config.card.device_store 时：这是 device_store 变化信号（委托给 handleDeviceStoreChange）
 func (s *ConfigSubscriber) handleCardChange(configMsg rediscommon.ConfigChangeMessage, messageID string) {
 	ctx := context.Background()
+
+	// 检查消息时间戳，防止过时消息覆盖新配置
+	// 允许最大时间差 5 秒（包括网络延迟和时钟偏差）
+	var messageTimestampMs int64
+	if ts, ok := configMsg.Data["timestamp_ms"].(float64); ok {
+		messageTimestampMs = int64(ts)
+	} else if ts, ok := configMsg.Data["timestamp_ms"].(int64); ok {
+		messageTimestampMs = ts
+	}
+
+	if messageTimestampMs > 0 {
+		currentTimeMs := time.Now().UnixMilli()
+		timeDiffMs := currentTimeMs - messageTimestampMs
+		const maxAllowedDelayMs = 5000 // 5 秒
+
+		if timeDiffMs > maxAllowedDelayMs {
+			s.logger.Warn("Discarding stale card config message (too old)",
+				zap.String("message_id", messageID),
+				zap.String("type", configMsg.Type),
+				zap.Int64("time_diff_ms", timeDiffMs),
+				zap.Int64("max_allowed_ms", maxAllowedDelayMs))
+			return
+		}
+
+		if timeDiffMs < -5000 { // 消息时间戳在未来
+			s.logger.Warn("Discarding card config message with future timestamp",
+				zap.String("message_id", messageID),
+				zap.String("type", configMsg.Type),
+				zap.Int64("time_diff_ms", timeDiffMs))
+			return
+		}
+	}
 
 	s.logger.Info("Handling card config change",
 		zap.String("message_id", messageID),
@@ -267,13 +341,25 @@ func (s *ConfigSubscriber) handleDeviceStoreChange(ctx context.Context, data map
 		zap.String("device_uid", deviceStoreInfo.DeviceUID),
 		zap.Bool("allow_access", deviceStoreInfo.AllowAccess))
 
-	// TODO: 根据最新的 device_uid 和 allow_access 更新缓存
-	// 例：
-	// if deviceStoreInfo.AllowAccess {
-	//     s.deviceCache.Update(deviceID, deviceStoreInfo)
-	// } else {
-	//     s.deviceCache.Delete(deviceID)
-	// }
+	// 根据最新的 allow_access 更新缓存
+	// DeviceCache: key=device_uid, value=*DeviceWithLocation
+	// AllowAccessCache: key=device_uid, value=bool
+	if s.deviceCache != nil {
+		if deviceStoreCache, ok := s.deviceCache.(*sync.Map); ok {
+			if deviceStoreInfo.AllowAccess {
+				// 允许访问：保留缓存中的设备信息
+				s.logger.Debug("Device allowed, keeping cache",
+					zap.String("device_uid", deviceStoreInfo.DeviceUID),
+					zap.String("device_id", deviceID))
+			} else {
+				// 禁止访问：从缓存中删除设备
+				deviceStoreCache.Delete(deviceStoreInfo.DeviceUID)
+				s.logger.Info("Device denied access, removed from cache",
+					zap.String("device_uid", deviceStoreInfo.DeviceUID),
+					zap.String("device_id", deviceID))
+			}
+		}
+	}
 
 	s.logger.Info("Device store change processed",
 		zap.String("message_id", messageID),

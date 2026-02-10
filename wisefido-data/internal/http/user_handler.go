@@ -126,9 +126,9 @@ func (h *UserHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
-	if currentUserID == "" {
-		writeJSON(w, http.StatusOK, Fail("user ID is required"))
+	currentUserID, _, _, _, ok := service.MustSession(ctx)
+	if !ok || currentUserID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
 		return
 	}
 
@@ -222,9 +222,9 @@ func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request, userID str
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
-	if currentUserID == "" {
-		writeJSON(w, http.StatusOK, Fail("user ID is required"))
+	currentUserID, _, _, _, ok := service.MustSession(ctx)
+	if !ok || currentUserID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
 		return
 	}
 
@@ -389,7 +389,11 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
+	currentUserID, _, _, _, ok := service.MustSession(ctx)
+	if !ok || currentUserID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
 	if currentUserID == "" {
 		writeJSON(w, http.StatusOK, Fail("user ID is required"))
 		return
@@ -529,7 +533,11 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request, userID 
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
+	currentUserID, _, _, _, ok := service.MustSession(ctx)
+	if !ok || currentUserID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
 	if currentUserID == "" {
 		writeJSON(w, http.StatusOK, Fail("user ID is required"))
 		return
@@ -698,7 +706,11 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request, userID 
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
+	currentUserID, _, _, _, ok := service.MustSession(ctx)
+	if !ok || currentUserID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
 	if currentUserID == "" {
 		writeJSON(w, http.StatusOK, Fail("user ID is required"))
 		return
@@ -745,7 +757,11 @@ func (h *UserHandler) ResetPassword(w http.ResponseWriter, r *http.Request, user
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
+	currentUserID, _, _, _, ok := service.MustSession(ctx)
+	if !ok || currentUserID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
 	if currentUserID == "" {
 		writeJSON(w, http.StatusOK, Fail("user ID is required"))
 		return
@@ -796,7 +812,11 @@ func (h *UserHandler) ResetPIN(w http.ResponseWriter, r *http.Request, userID st
 		return
 	}
 
-	currentUserID := r.Header.Get("X-User-Id")
+	currentUserID, _, _, _, ok := service.MustSession(ctx)
+	if !ok || currentUserID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
 	if currentUserID == "" {
 		writeJSON(w, http.StatusOK, Fail("user ID is required"))
 		return

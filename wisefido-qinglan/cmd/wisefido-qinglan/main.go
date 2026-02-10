@@ -10,6 +10,7 @@ import (
 
 	"wisefido-qinglan/internal/config"
 	"wisefido-qinglan/internal/consumer"
+	"wisefido-qinglan/internal/domain"
 	"wisefido-qinglan/internal/http"
 	"wisefido-qinglan/internal/mqtt"
 	"wisefido-qinglan/internal/repository"
@@ -95,6 +96,10 @@ func main() {
 	log.Println("Creating card mapping service...")
 	cardMappingSvc := service.NewCardMappingService(redisClient, cardRepo, logger)
 
+	// 设置 cardMappingSvc 到 streamPublisher
+	streamPublisher.SetCardMappingService(cardMappingSvc)
+	streamPublisher.SetLogger(logger)
+
 	// 先创建MQTT消费者（不启动，用于获取messageHandler）
 	log.Println("Creating MQTT consumer...")
 	mqttConsumer, err := consumer.NewMQTTConsumer(
@@ -135,16 +140,57 @@ func main() {
 		cfg,
 		logger,
 		deviceRepo,
-		nil, // deviceCache 暂时设为 nil，后面可优化
+		domain.DeviceCache, // 传递设备缓存供 device_store 变化信号使用
 		cardMappingSvc,
 	)
 
-	// 启动配置变更订阅器
-	log.Println("Starting config change subscriber...")
-	if err := configSubscriber.Start(ctx); err != nil {
-		log.Fatalf("Failed to start config change subscriber: %v", err)
+	// 创建 Consumer Groups 用于配置变更订阅
+	log.Println("Creating consumer groups for config streams...")
+	configStreams := []string{
+		rediscommon.StreamConfigAlarmDevice.Name, // config:alarmDevice:stream
+		rediscommon.StreamConfigCard.Name,        // config:card:stream
+	}
+	for _, stream := range configStreams {
+		if err := rediscommon.CreateConsumerGroup(ctx, redisClient, stream, "qinglan-config-consumer"); err != nil {
+			logger.Warn("Failed to create consumer group for stream",
+				zap.String("stream", stream),
+				zap.Error(err))
+		}
+	}
+
+	// 启动配置变更订阅器（参考cardagg模式：为每个stream启动独立goroutine）
+	log.Println("Starting config change subscribers for each stream...")
+	for _, stream := range configStreams {
+		go subscribeConfigStream(ctx, logger, redisClient, stream, "qinglan-config-consumer", configSubscriber)
 	}
 	defer configSubscriber.Stop()
+
+	// 启动时初始化缓存（在ConfigSubscriber启动之后）
+	log.Println("Initializing device and card mapping caches at startup...")
+
+	// 1. 初始化 device_store 缓存（deviceUID → allow_access）
+	log.Println("Loading device_store data into cache...")
+	allDevices, err := deviceRepo.GetAllDeviceStoreInfo(ctx)
+	if err != nil {
+		log.Fatalf("Failed to load device_store data: %v", err)
+	}
+	deviceCacheCount := 0
+	for _, device := range allDevices {
+		// 仅缓存允许访问的设备 UID（白名单），避免因为未命中缓存而拒绝认证
+		if device.AllowAccess {
+			domain.AllowAccessCache.Store(device.DeviceUID, true)
+			deviceCacheCount++
+		}
+	}
+	log.Printf("✅ Loaded %d device records into cache", deviceCacheCount)
+
+	// 2. 初始化 cardMapping 缓存（deviceUID → cardID）
+	log.Println("Initializing card mapping caches for all branches...")
+	if err := cardMappingSvc.InitializeAllBranchCaches(ctx); err != nil {
+		log.Printf("⚠️ Failed to initialize some card mapping caches: %v", err)
+		// 不终止启动，缓存可以通过动态消息填充
+	}
+	log.Printf("✅ Card mapping caches initialized successfully")
 
 	// 创建服务
 	log.Println("Creating radar service...")
@@ -158,6 +204,9 @@ func main() {
 	if err := radarService.Start(ctx); err != nil {
 		log.Fatalf("Failed to start radar service: %v", err)
 	}
+
+	// 设置 RadarService 到订阅管理器（用于健康检查时读取设备属性）
+	subscriptionManager.SetRadarService(radarService)
 
 	// 启动设备订阅管理器
 	log.Println("Starting device subscription manager...")
@@ -230,4 +279,69 @@ func main() {
 	}
 
 	log.Println("Service stopped gracefully")
+}
+
+// subscribeConfigStream 订阅单个配置变更Stream（参考cardagg模式）
+func subscribeConfigStream(ctx context.Context, logger *zap.Logger, redisClient *redis.Client,
+	stream string, groupName string, configSubscriber *subscriber.ConfigSubscriber) {
+
+	logger.Info("Starting config stream subscriber",
+		zap.String("stream", stream),
+		zap.String("consumer_group", groupName))
+
+	backoffDuration := time.Second
+	maxBackoff := 30 * time.Second
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info("Config stream subscriber stopped", zap.String("stream", stream))
+			return
+		default:
+		}
+
+		// 读取消息
+		msgs, err := rediscommon.ReadFromStreamWithBlock(
+			ctx, redisClient, stream, groupName, "qinglan-config-consumer-1", 10, 5*time.Second)
+		if err != nil {
+			logger.Debug("Read config stream failed",
+				zap.String("stream", stream),
+				zap.Error(err))
+			time.Sleep(backoffDuration)
+			backoffDuration *= 2
+			if backoffDuration > maxBackoff {
+				backoffDuration = maxBackoff
+			}
+			continue
+		}
+
+		// 如果读到消息，重置退避时间
+		if len(msgs) > 0 {
+			backoffDuration = time.Second
+		}
+
+		// 处理每条消息
+		for _, msg := range msgs {
+			// 转换为redis.XMessage格式
+			xMsg := redis.XMessage{
+				ID:     msg.ID,
+				Values: msg.Values,
+			}
+
+			if err := configSubscriber.HandleConfigChangeMessage(ctx, stream, xMsg); err != nil {
+				logger.Error("Failed to handle config change message",
+					zap.String("stream", stream),
+					zap.String("message_id", msg.ID),
+					zap.Error(err))
+			}
+
+			// ACK消息
+			if err := redisClient.XAck(ctx, stream, groupName, msg.ID).Err(); err != nil {
+				logger.Warn("Failed to acknowledge config message",
+					zap.String("stream", stream),
+					zap.String("message_id", msg.ID),
+					zap.Error(err))
+			}
+		}
+	}
 }

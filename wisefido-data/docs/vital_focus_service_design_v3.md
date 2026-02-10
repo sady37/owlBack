@@ -117,7 +117,7 @@ type VitalFocusCard struct {
 	LocationID      *string  `json:"location_id,omitempty"`
 	CardName        string   `json:"card_name"`
 	CardAddress     string   `json:"card_address"`
-	PrimaryResidentID *string `json:"primary_resident_id,omitempty"`
+
 	
 	// 住户和设备（来自 cards.residents 和 cards.devices JSONB）
 	Residents       []CardResident `json:"residents"`

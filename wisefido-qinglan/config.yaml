@@ -10,11 +10,20 @@ mqtt:
   username: ""
   password: ""
   client_id: "wisefido-qinglan"
+
   
   # 雷达设备MQTT主题配置
   radar_device_mqtt:
-    prefix: ""  # 主题前缀，如果为空则使用 /{type}/{productId}/{uid}/post 格式
-    product_id: "radar"  # 产品ID
+    server: "10.0.0.30"
+    port: 1883
+    protocol: 1
+    account: "wfiot"
+    password: "tt@wf@2025"
+    prefix: ""
+    product_id: 88
+    timeout: 30
+    keepalive: 60
+    client_id_prefix: "radar"
   
   # 订阅主题
   topics:
@@ -36,7 +45,7 @@ redis:
 
 database:
   host: "localhost"
-  port: 5432
+  port: 5433
   user: "postgres"
   password: "password"
   dbname: "owlrd"

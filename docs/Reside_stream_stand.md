@@ -400,11 +400,11 @@
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
   "topic_type": "event",
-  "category": "isOnline",
+  "category": "deviceStatus",
   "data_value": [
     {
-      "category": "isOnline",
-      "device_status": "offline",
+      "category": "deviceStatus",
+      "online": 1,
       "device_uid": "E598A2ACD523"
     }
   ]
@@ -413,8 +413,8 @@
 
 **字段说明**：
 - `data_value`: 数组，包含设备在线状态事件信息
-- `category`: 固定为 "isOnline"
-- `device_status`: 设备在线状态（字符串），"online" / "offline"
+- `category`: 固定为 "deviceStatus"
+- `device_status`: 设备在线状态（字符串），"online 1" / "offline 0"
 - `device_uid`: 需要时放在 data_value 项内（字符串）
 
 ### 5.6 type=7（信号差事件）
@@ -427,11 +427,11 @@
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
   "topic_type": "event",
-  "category": "signal_poor",
+  "category": "deviceStatus",
   "data_value": [
     {
-      "category": "signal_poor",
-      "recovery": "signal_recovery",
+      "category": "deviceStatus",
+      "signal_pool": "0",
       "device_uid": "E598A2ACD523"
     }
   ]
@@ -443,7 +443,7 @@
 - `category`: 固定为 "signal_poor"（event_type: 1=Enter2out, 2=pose, 3=number-people, 5=isOnline, 7=signal_poor, 8=angle_abnormal, 9=other）
 - `recovery`: 恢复状态（字符串）
   - "signal_poor" = 信号差（对应原始值 0，触发）
-  - "signal_recovery" = 信号恢复（对应原始值 1，恢复）
+  - "signal_recovery" = 信号恢复（对应原始值 1，恢复） 这是清L 硬件发出的
 - `device_uid`: 需要时放在 data_value 项内
 
 **信号差说明**：

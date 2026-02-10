@@ -51,9 +51,16 @@ type ConfigChangeMessage struct {
 }
 
 // BuildDeviceStatusMessage 构建设备状态消息（发送到 iot:deviceStatus:stream）
-// 支持多个设备状态：online/offline、信号质量、传感器状态等
-// statuses: 设备状态数组（如 []int{consts.StatusOnline, consts.StatusSignalPoor}）
-func BuildDeviceStatusMessage(deviceID, deviceType, cardID, tenantID string, timestamp int64, statuses []int) IoTStreamMessage {
+// statuses: 设备状态 JSON（map[string]int，其中 0=异常/离线, 1=正常/在线）
+// 支持字段（使用 const.StatusField* 常量）：
+//   - online: 0=离线, 1=在线
+//   - angle_abnormal: 0=正常, 1=倾角异常
+//   - signal_poor: 0=正常, 1=信号差
+//   - detached: 0=正常, 1=传感器脱落
+//   - device_failure: 0=正常, 1=设备故障
+//
+// 例：map[string]int{"online": 1, "signal_poor": 1} 一般有故障时才会上报，正常状态可不包含或值为 0 但online=1 状态建议始终上报以便监控设备在线率,
+func BuildDeviceStatusMessage(deviceID, deviceType, cardID, tenantID string, timestamp int64, statuses map[string]int) IoTStreamMessage {
 	dataValue := []interface{}{
 		map[string]interface{}{
 			"category": "deviceStatus",
@@ -159,7 +166,7 @@ func BuildAlarmProcessMessage(
 
 // Config card 事件类型：卡片变化通知
 const (
-	ConfigCardChanged           = "config.card"
+	ConfigCardChanged            = "config.card"
 	ConfigCardDeviceStoreChanged = "config.card.device_store" // device_store 变化信号
 )
 

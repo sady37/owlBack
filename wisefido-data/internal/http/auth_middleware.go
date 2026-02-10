@@ -1,10 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
 	"go.uber.org/zap"
+
+	"wisefido-data/internal/service"
 )
 
 // SkippedPath 返回 true 表示该路径跳过认证
@@ -65,6 +68,11 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 			return
 		}
 		token := extractBearerToken(r)
+		// SSE 连接时，EventSource 无法发送 Authorization header，
+		// 允许从查询参数 ?token=xxx 中提取（仅用于 SSE）
+		if token == "" && strings.Contains(r.URL.Path, "/stream") {
+			token = r.URL.Query().Get("token")
+		}
 		if token == "" {
 			writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
 			return
@@ -74,11 +82,19 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, Fail("invalid or expired token"))
 			return
 		}
-		// 注入可信值，覆盖客户端 header
+		// 注入可信 header，覆盖客户端提供的值
 		r.Header.Set("X-User-Id", session.UserID)
 		r.Header.Set("X-Tenant-Id", session.TenantID)
 		r.Header.Set("X-User-Type", session.UserType)
 		r.Header.Set("X-User-Role", session.Role)
+
+		// 同时把可信值注入到 request context，便于 service 层直接读取
+		ctx := context.WithValue(r.Context(), service.ContextKeyUserID, session.UserID)
+		ctx = context.WithValue(ctx, service.ContextKeyTenantID, session.TenantID)
+		ctx = context.WithValue(ctx, service.ContextKeyUserType, session.UserType)
+		ctx = context.WithValue(ctx, service.ContextKeyUserRole, session.Role)
+		r = r.WithContext(ctx)
+
 		next.ServeHTTP(w, r)
 	})
 }

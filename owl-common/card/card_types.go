@@ -1,24 +1,45 @@
 package card
 
-import (
-	consts "owl-common/const"
-)
+// ========== ID-Name 标识符结构体（避免重复定义）==========
 
-// -------------- 静态数据：同一张 card 必属同一 unit/branch，unit/branch 在 card 层只存一份。
-// ActiveBedInfo 床的静态信息（仅房间与住户，不重复 unit/branch）
-type ActiveBedInfo struct {
-	BedID      string  `json:"bed_id"`
-	RoomID     string  `json:"room_id"`
-	ResidentID *string `json:"resident_id,omitempty"`
+// BedIdentifier 床标识符（ID-Name对）
+type BedIdentifier struct {
+	BedID   string `json:"bed_id"`
+	BedName string `json:"bed_name,omitempty"` // 床名称
 }
 
-// ActiveBedRow 用于 repository/creator：需 BedID 做 GetDevicesByBed/GetResidentByBed
+// RoomIdentifier 房间标识符（ID-Name对）
+type RoomIdentifier struct {
+	RoomID   string `json:"room_id"`
+	RoomName string `json:"room_name,omitempty"` // 房间名称
+}
+
+// UnitIdentifier 单元标识符（ID-Name对）
+type UnitIdentifier struct {
+	UnitID   string `json:"unit_id"`
+	UnitName string `json:"unit_name,omitempty"` // 单元名称
+}
+
+// BranchIdentifier 院区标识符（ID-Name对）
+type BranchIdentifier struct {
+	BranchID   string `json:"branch_id"`
+	BranchName string `json:"branch_name"` // 院区名称
+}
+
+type DeviceIdentifier struct {
+	DeviceID   string `json:"device_id"`
+	DeviceName string `json:"device_name,omitempty"` // 设备名称
+}
+
+// ========== 静态数据结构体 ==========
+
+// ActiveBedRow 活跃床位信息（用于卡片创建）
+// 包含床位标识、名称和关联的住户信息
 type ActiveBedRow struct {
-	UnitID           string  `json:"unit_id"`
-	BoundDeviceCount int     `json:"BoundDevcieCount"`
-	BedID            string  `json:"bed_id"`
-	RoomID           string  `json:"room_id"`
-	ResidentID       *string `json:"resident_id,omitempty"`
+	BedID      string  `json:"bed_id"`                // 床位 ID
+	BedName    string  `json:"bed_name"`              // 床位名称
+	RoomName   string  `json:"room_name"`             // 房间名称
+	ResidentID *string `json:"resident_id,omitempty"` // 住户 ID（可为空）
 }
 
 // UnitInfo Unit information
@@ -26,10 +47,11 @@ type UnitInfo struct {
 	UnitID       string
 	UnitName     string
 	BranchID     string
+	BranchName   string // 院区名称
 	Building     string
-	IsPublic     bool // 对应数据库字段 is_public
-	IsSharedUnit bool // 对应数据库字段 is_shared_unit
-	UnitType     string
+	IsPublic     bool   // 对应数据库字段 is_public
+	IsSharedUnit bool   // 对应数据库字段 is_shared_unit
+	UnitType     string //"facility" | "home"
 	Timezone     string // IANA, e.g. "America/Los_Angeles"
 }
 
@@ -41,11 +63,9 @@ type DeviceInfo struct {
 	DeviceName        string
 	DeviceType        any // 数字 1/2 或字符串，JSON 兼容
 	DeviceModel       string
+	UnitID            string // 所属unit
 	BoundBedID        *string
-	BedName           *string // Bed name (if bound to bed)
 	BoundRoomID       *string // Room ID where device is bound (if bound to room)
-	RoomName          *string // Room name (if bound to room)
-	UnitID            string
 	MonitoringEnabled bool
 	Status            string // "online" | "offline" | "error" | "disabled"（API 动态）
 }
@@ -67,26 +87,30 @@ type ResidentInfo struct {
 	Nickname         string            `json:"nickname,omitempty"`
 	ServiceLevel     string            `json:"service_level,omitempty"`
 	ServiceLevelInfo *ServiceLevelInfo `json:"service_level_info,omitempty"`
-	UnitID           *string
-	BedID            *string
+	BedID            *string           `json:"bed_id,omitempty"`
 }
 
 // VitalFocusCardInfo 卡片静态+动态；同一张 card 必属同一 unit、branch，以下仅存一份。
 type VitalFocusCardInfo struct {
 	// 基础信息（来自 cards 表）
 	CardID            string  `json:"card_id"`
-	TenantID          string  `json:"tenant_id"`
-	CardType          string  `json:"card_type"` // "ActiveBed" 或 "Location"
+	CardType          string  `json:"card_type"` // "ActiveBedCard" 或 "UnitCard"
 	CardName          string  `json:"card_name"`
 	CardAddress       string  `json:"card_address"`
-	PrimaryResidentID *string `json:"primary_resident_id,omitempty"` // ActiveBed 卡片的主住户
+
 
 	// 同一 card 必属同一 unit/branch，只存一份
-	BedID      *string `json:"bed_id,omitempty"`      // 仅 ActiveBed 有值，Location 为空
-	UnitID     string  `json:"unit_id,omitempty"`     // 单元 ID
+	TenantID          string  `json:"tenant_id"`
 	BranchID   string  `json:"branch_id,omitempty"`   // 院区 ID（来自 unit）
 	BranchName string  `json:"branch_name,omitempty"` // 院区名（来自 unit）
+	UnitID     string  `json:"unit_id,omitempty"`     // 单元 ID
+	UnitName   string  `json:"unit_name,omitempty"`   // 单元名（来自 unit）	
 	Timezone   string  `json:"timezone,omitempty"`    // IANA，如 America/Los_Angeles
+
+	// 一个卡片可能关联多个房间
+	Rooms []RoomIdentifier `json:"rooms,omitempty"` // 房间列表（可能有多个房间）
+	BedID      *string `json:"bed_id,omitempty"`      // 仅 ActiveBedCard 有值，UnitCard 为空
+	BedName    *string `json:"bed_name,omitempty"`    // 床名称（仅 ActiveBedCard 有值，UnitCard 为空）
 
 	// 住户和设备（来自 cards.residents 和 cards.devices JSONB）
 	Residents []ResidentInfo `json:"residents"`
@@ -100,26 +124,35 @@ type VitalFocusCardInfo struct {
 //-------------- 动态数据：仅 card_id 作为索引，不含其它静态数据。
 // 从 iot:*:stream 获取实时数据，供前端读取。
 
-// VitalSimplified vital 简化格式（monitor vital 直接转换，用于缓存/显示）
-// Timestamp 为本条 MQTT 时间，用于与后续消息比较是否更新。
-type VitalSimplified struct {
-	DeviceID        string  `json:"device_id"`
-	Timestamp       int64   `json:"timestamp"` // 本条 MQTT 时间戳
-	RespiratoryRate *int    `json:"respiratory_rate,omitempty"`
-	HeartRate       *int    `json:"heart_rate,omitempty"`
-	SleepStatus     *string `json:"sleep_status,omitempty"`
-	Stability       *string `json:"stability,omitempty"`
+// DeviceTrack 设备轨迹数据（track 数据，更新频率 1Hz）
+type DeviceTrack struct {
+	DeviceID   string        `json:"device_id"`   // 设备ID
+	DeviceType string        `json:"device_type"` // "Radar" | "SleepPad"
+	Timestamp  int64         `json:"timestamp"`   // 设备时间戳
+	Category   string        `json:"category"`    // "track2" 等
+	DataValue  []interface{} `json:"data_value"`  // track 数据数组，保持原始格式
 }
 
-// 设备检测的人数
-type DevicePosture struct {
-	DeviceID  string `json:"device_id"`
-	Timestamp int64  `json:"timestamp"` // 本次 MQTT 时间戳
-	Postures  []int  `json:"postures"`  // 姿态列表，每设备/人一个，值 0-11
+// DeviceVital 设备生命体征数据（vital 数据，更新频率 2Hz）
+type DeviceVital struct {
+	DeviceID   string        `json:"device_id"`   // 设备ID
+	DeviceType string        `json:"device_type"` // "Radar" | "SleepPad"
+	Timestamp  int64         `json:"timestamp"`   // 设备时间戳
+	Category   string        `json:"category"`    // "vital1" 等
+	DataValue  []interface{} `json:"data_value"`  // vital 数据数组，保持原始格式
+}
+
+// DeviceStatus 设备状态信息
+type DeviceStatus struct {
+	DeviceID   string         `json:"device_id"`          // 设备 ID
+	DeviceType string         `json:"device_type"`        // "Radar" | "SleepPad" 等
+	Timestamp  int64          `json:"timestamp"`          // 最后一次更新时间戳（Unix毫秒）
+	Statuses   map[string]int `json:"statuses,omitempty"` // 设备状态 map
 }
 
 type BedState struct {
-	BedID        string `json:"bed_id,omitempty"`          // 床 ID
+	BedID        string `json:"bed_id,omitempty"`        // 床 ID
+	BedName      string `json:"bed_name,omitempty"`      // 床名称
 	CurrentState string `json:"current_state,omitempty"` // "in_bed" | "out_of_bed"
 	Timestamp    int64  `json:"timestamp,omitempty"`     // 最后一次更新时间戳（Unix毫秒）
 }
@@ -134,74 +167,63 @@ type RoomState struct {
 
 // ActiveAlarmState 活跃报警状态
 type ActiveAlarmState struct {
-	EMERG    int    `json:"emerg,omitempty"`     // 未处理 EMERG 数量
-	ALERT    int    `json:"alert,omitempty"`     // 未处理 ALERT 数量
-	CRIT     int    `json:"crit,omitempty"`      // 未处理 CRIT 数量
-	ERR      int    `json:"err,omitempty"`       // 未处理 ERR 数量
-	WARNING  int    `json:"warning,omitempty"`   // 未处理 WARNING 数量
-	NOTICE   int    `json:"notice,omitempty"`    // 未处理 NOTICE 数量
-	NowAlarm string `json:"now_alarm,omitempty"` // 当前最高级别报警，格式 "AlarmLevel.AlarmType"，如 "EMERG.Fall"
-	// Timestamp 最后一次更新时间（用于防止旧数据覆盖新数据）
-	Timestamp int64 `json:"timestamp,omitempty"`
-}
-
-type ActveAlarms struct {
-	Timestamp     int64  `json:"timestamp,omitempty"`            // 最后一次更新时间（防止旧数据覆盖新数据）
-	activeEMERG   int    `json:"emerg,omitempty"`                // 未处理数量
-	activeALERT   int    `json:"alert,omitempty"`                // 未处理数量
-	activeCRIT    int    `json:"crit,omitempty"`                 // 未处理数量
-	activeERR     int    `json:"err,omitempty"`                  // 未处理数量
-	activeWARNING int    `json:"warning,omitempty"`              // 未处理数量
-	activeNOTICE  int    `json:"notice,omitempty"`               // 未处理数量
+	Timestamp     int64  `json:"timestamp,omitempty"` // 最后一次更新时间（防止旧数据覆盖新数据）
+	ActiveEmerg   int    `json:"emerg,omitempty"`     // 未处理数量
+	ActiveAlert   int    `json:"alert,omitempty"`     // 未处理数量
+	ActiveCrit    int    `json:"crit,omitempty"`      // 未处理数量
+	ActiveErr     int    `json:"err,omitempty"`       // 未处理数量
+	ActiveWarning int    `json:"warning,omitempty"`
 	NowAlarm      string `json:"alarmLevel.alarmType,omitempty"` // 当前未处理的最高级别报警，可选项,防止低级别报警刷掉高级别报警。
 }
 
-// RealtimeData 动态数据（写入 Redis）；仅 card_id 作为索引，不含其它静态数据。
-type RealtimeData struct {
-	CardID    string `json:"card_id"`
-	Timestamp int64  `json:"timestamp"`
+// CardRealTime 卡片实时数据快照（Redis缓存格式）
+// 用于 vital-focus:card:{card_id}:realtime
+// 包含设备轨迹和生命体征数据，高频更新（TTL较短）
+type CardRealTime struct {
+	CardID    string        `json:"card_id"`
+	Timestamp int64         `json:"timestamp"`
+	TrackData []interface{} `json:"track_data,omitempty"` // track 数据，1Hz 更新（保存为通用格式）
+	VitalData []interface{} `json:"vital_data,omitempty"` // vital 数据，2Hz 更新（保存为通用格式）
+}
 
-	//{[deviceID,deviceTimestamp,respiratoryRate,heartRate,sleepStatus,stability], ...}
-	Vital []VitalSimplified `json:"vital,omitempty"` // 生命体征按设备
-
-	// Postures: 设备姿态数组（值 0-11，与 consts.Pose* 一致）；长度即该设备人数
-	// 数组格式，每个元素自带 device_id 和 timestamp
-	// JSON: [{"device_id":"device_id_1","timestamp":1234567890,"postures":[0,5,9]},{"device_id":"device_id_2","timestamp":1234567890,"postures":[6]}]
-	Postures []DevicePosture `json:"postures,omitempty"`
-	// DeviceStatus: device_id -> 状态数组（使用 consts.DeviceStatus 整型，避免 string 大小写）
-	// 值见 consts.StatusOnline/StatusOffline/StatusSignalPoor 等；JSON 为数字数组，如 {"device_id_1": [1,5], "device_id_2": [0]}
-	DeviceStatus map[string][]consts.DeviceStatus `json:"device_status,omitempty"`
-	BedState     *BedState                        `json:"bed_state,omitempty"`     // 床状态，可选项（UnitCard 可能没有）
-	RoomState    *RoomState                       `json:"room_state,omitempty"`    // 房间状态，可选项（LocationCard 可能没有）
-	ActiveAlarms *ActiveAlarmState                `json:"active_alarms,omitempty"` // 活跃报警：未处理数量 + 最高级别报警
+// CardStatus 卡片状态快照（Redis缓存格式）
+// 用于 vital-focus:card:{card_id}:status
+// 包含长期保存的状态信息，TTL较长
+type CardStatus struct {
+	CardID       string                   `json:"card_id"`
+	Timestamp    int64                    `json:"timestamp"`
+	DeviceStatus map[string]*DeviceStatus `json:"device_status,omitempty"` // 按设备ID索引的设备状态 map
+	BedState     *BedState                `json:"bed_state,omitempty"`     // 床状态（UnitCard 可能没有）
+	RoomState    *RoomState               `json:"room_state,omitempty"`    // 房间状态（UnitCard 可能没有）
+	ActiveAlarms *ActiveAlarmState        `json:"active_alarms,omitempty"` // 活跃报警：未处理数量 + 最高级别
 }
 
 // ----
-// CardWithContent card with devices and residents JSONB content (for comparison)
+// CardWithContent card with devices and residents as structured data (for comparison)
 type CardWithContent struct {
-	CardID        string
-	CardType      string
-	BedID         *string
-	UnitID        string
-	CardName      string
-	CardAddress   string
-	Timezone      string
-	ResidentID    *string
-	DevicesJSON   []byte
-	ResidentsJSON []byte
+	CardID      string
+	CardType    string
+	BedID       *string
+	UnitID      string
+	CardName    string
+	CardAddress string
+	Timezone    string
+	ResidentID  *string
+	Devices     []DeviceInfo   `json:"devices,omitempty"`
+	Residents   []ResidentInfo `json:"residents,omitempty"`
 }
 
-// ExpectedCard represents an expected card (for comparison, without card_id)
+// ExpectedCard represents an expected card as structured data (for comparison, without card_id)
 type ExpectedCard struct {
-	CardType      string
-	BedID         *string
-	UnitID        string
-	CardName      string
-	CardAddress   string
-	Timezone      string
-	ResidentID    *string
-	DevicesJSON   []byte
-	ResidentsJSON []byte
+	CardType    string
+	BedID       *string
+	UnitID      string
+	CardName    string
+	CardAddress string
+	Timezone    string
+	ResidentID  *string
+	Devices     []DeviceInfo   `json:"devices,omitempty"`
+	Residents   []ResidentInfo `json:"residents,omitempty"`
 }
 
 // CardUpdateStats statistics for card updates
@@ -211,17 +233,4 @@ type CardUpdateStats struct {
 	CreatedCount   int // Number of cards created
 	UpdatedCount   int // Number of cards updated (deleted + created)
 	UnchangedCount int // Number of cards that remained unchanged
-}
-
-// CardIndexItem 卡片简化信息（用于列表页）
-// 包含前端显示卡片列表所需的最少信息
-type CardIndexItem struct {
-	CardID            string   `json:"card_id"`
-	CardName          string   `json:"card_name"`
-	CardAddress       string   `json:"card_address"`
-	BranchID          string   `json:"branch_id"`
-	IconAlarmLevel    int      `json:"icon_alarm_level,omitempty"`
-	PopAlarmEmerge    int      `json:"pop_alarm_emerge,omitempty"`
-	DeviceIDs         []string `json:"device_ids,omitempty"`
-	PrimaryResidentID *string  `json:"primary_resident_id,omitempty"`
 }

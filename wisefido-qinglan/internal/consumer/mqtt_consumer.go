@@ -398,16 +398,28 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 	// 缓存由 auth_service 维护，Device的认证结果写入缓存
 	cached, ok := domain.AllowAccessCache.Load(uid)
 	if !ok {
-		// 缓存中不存在，说明设备未被认证
-		log.Printf("Device %s not in cache, rejecting message (device not authenticated)", uid)
-		return nil
-	}
-
-	// 检查缓存值
-	if allowedBool, ok := cached.(bool); !ok || !allowedBool {
-		// 类型转换失败 或 缓存中明确记录该设备不被授权
-		log.Printf("Device %s blocked by cache: allow_access=FALSE", uid)
-		return nil
+		// 缓存未命中：回退到数据库查询 device_store（避免因为短期缓存缺失导致拒绝）
+		ds, err := c.deviceRepo.GetDeviceStoreInfoAndLocation(context.Background(), uid)
+		if err != nil {
+			log.Printf("Device %s not in cache, rejecting message (device not authenticated): db lookup failed: %v", uid, err)
+			// 为避免频繁DB命中，短期内缓存为 false
+			domain.AllowAccessCache.Store(uid, false)
+			return nil
+		}
+		if !ds.AllowAccess {
+			log.Printf("Device %s blocked by device_store: allow_access=FALSE", uid)
+			domain.AllowAccessCache.Store(uid, false)
+			return nil
+		}
+		// 设备在 device_store 中允许，写入缓存并继续处理
+		domain.AllowAccessCache.Store(uid, true)
+	} else {
+		// 检查缓存值
+		if allowedBool, ok := cached.(bool); !ok || !allowedBool {
+			// 类型转换失败 或 缓存中明确记录该设备不被授权
+			log.Printf("Device %s blocked by cache: allow_access=FALSE", uid)
+			return nil
+		}
 	}
 	// 缓存中存在且为 true，设备已认证，继续处理
 

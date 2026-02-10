@@ -1596,9 +1596,9 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 			passwordHash = ph
 		}
 	}
-	// 如果没有提供 password_hash，生成默认密码的 hash
+	// 如果没有提供 password_hash，生成默认密码的 hash（无盐，简单方式）
 	if len(passwordHash) == 0 {
-		passwordHashHex := HashPassword("ChangeMe123!") // 默认密码
+		passwordHashHex := GeneratePasswordHash("ChangeMe123!") // 默认密码，无盐
 		ph, err := hex.DecodeString(passwordHashHex)
 		if err == nil && len(ph) > 0 {
 			passwordHash = ph

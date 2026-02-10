@@ -432,6 +432,20 @@ const (
 	AlarmLevelIntCancel  = 8 // Cancel: 取消/恢复（如设备上线、报警恢复）
 )
 
+// AlarmLevelPriority 报警级别字符串到优先级数字的映射
+// 数字越小优先级越高，防止低级别报警覆盖高级别报警
+var AlarmLevelPriority = map[string]int{
+	"EMERG":   AlarmLevelIntEmerg,
+	"ALERT":   AlarmLevelIntAlert,
+	"CRIT":    AlarmLevelIntCrit,
+	"ERR":     AlarmLevelIntErr,
+	"WARNING": AlarmLevelIntWarning,
+	"NOTICE":  AlarmLevelIntNotice,
+	"INFO":    AlarmLevelIntInfo,
+	"DEBUG":   AlarmLevelIntDebug,
+	"CANCEL":  AlarmLevelIntCancel, // 无报警时的默认值（最低优先级）
+}
+
 // ========== Types (类型) ==========
 
 // CloudVitalAlarmThreshold 生理指标阈值配置

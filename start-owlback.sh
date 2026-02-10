@@ -5,7 +5,7 @@
 #
 # 架构说明：
 # - wisefido-data: 数据管理 API + 卡片创建/更新（Redis 缓存 + config.card.*）
-# - wisefido-card-aggregator: 数据聚合（从 PostgreSQL + Redis 聚合卡片数据并缓存到 Redis）
+# - wisefido-cardagg: 数据聚合（从 PostgreSQL + Redis 聚合卡片数据并缓存到 Redis）
 # - wisefido-iot: 数据消费服务（从 Redis Streams 消费数据，存储到 TimescaleDB）
 # - wisefido-ai: AI 智能推理服务（高级推理、访客识别、巡房优化）
 #
@@ -27,7 +27,8 @@ mkdir -p "$LOG_DIR"
 
 # 日志文件
 DATA_LOG="$LOG_DIR/wisefido-data.log"
-AGGREGATOR_LOG="$LOG_DIR/wisefido-card-aggregator.log"
+AGGREGATOR_LOG="$LOG_DIR/wisefido-cardagg.log"
+QINGLAN_LOG="$LOG_DIR/wisefido-qinglan.log"
 IOT_LOG="$LOG_DIR/wisefido-iot.log"
 AI_LOG="$LOG_DIR/wisefido-ai.log"
 COMBINED_LOG="$LOG_DIR/combined.log"
@@ -47,6 +48,7 @@ fi
 check_running_services() {
     local data_running=false
     local aggregator_running=false
+    local qinglan_running=false
     local iot_running=false
     local ai_running=false
     
@@ -57,16 +59,22 @@ check_running_services() {
         data_running=true
     fi
     
-    # 检查 wisefido-card-aggregator
-    if pgrep -f "go run.*wisefido-card-aggregator" > /dev/null 2>&1 || \
-       pgrep -f "wisefido-card-aggregator" > /dev/null 2>&1; then
+    # 检查 wisefido-cardagg
+    if pgrep -f "go run.*wisefido-cardagg" > /dev/null 2>&1 || \
+       pgrep -f "wisefido-cardagg" > /dev/null 2>&1; then
         aggregator_running=true
+    fi
+    
+    # 检查 wisefido-qinglan
+    if pgrep -f "go run.*wisefido-qinglan" > /dev/null 2>&1 || \
+       pgrep -f "wisefido-qinglan" > /dev/null 2>&1 || \
+       (command -v lsof &> /dev/null && lsof -ti :8081 > /dev/null 2>&1); then
+        qinglan_running=true
     fi
     
     # 检查 wisefido-iot
     if pgrep -f "go run.*wisefido-iot" > /dev/null 2>&1 || \
-       pgrep -f "wisefido-iot" > /dev/null 2>&1 || \
-       (command -v lsof &> /dev/null && lsof -ti :8083 > /dev/null 2>&1); then
+       pgrep -f "wisefido-iot" > /dev/null 2>&1; then
         iot_running=true
     fi
     
@@ -77,13 +85,16 @@ check_running_services() {
     fi
     
     if [ "$data_running" = true ] || [ "$aggregator_running" = true ] || \
-       [ "$card_manage_running" = true ] || [ "$iot_running" = true ] || [ "$ai_running" = true ]; then
+       [ "$qinglan_running" = true ] || [ "$iot_running" = true ] || [ "$ai_running" = true ]; then
         echo -e "${YELLOW}Warning: Services are already running${NC}"
         if [ "$data_running" = true ]; then
             echo -e "${YELLOW}  - wisefido-data is running${NC}"
         fi
         if [ "$aggregator_running" = true ]; then
-            echo -e "${YELLOW}  - wisefido-card-aggregator is running${NC}"
+            echo -e "${YELLOW}  - wisefido-cardagg is running${NC}"
+        fi
+        if [ "$qinglan_running" = true ]; then
+            echo -e "${YELLOW}  - wisefido-qinglan is running${NC}"
         fi
         if [ "$iot_running" = true ]; then
             echo -e "${YELLOW}  - wisefido-iot is running${NC}"
@@ -102,11 +113,13 @@ check_running_services() {
             echo -e "${YELLOW}Stopping existing services...${NC}"
             # 停止现有服务
             pkill -f "go run.*wisefido-data" 2>/dev/null || true
-            pkill -f "go run.*wisefido-card-aggregator" 2>/dev/null || true
+            pkill -f "go run.*wisefido-cardagg" 2>/dev/null || true
+            pkill -f "go run.*wisefido-qinglan" 2>/dev/null || true
             pkill -f "go run.*wisefido-iot" 2>/dev/null || true
             pkill -f "go run.*wisefido-ai" 2>/dev/null || true
             pkill -f "wisefido-data" 2>/dev/null || true
-            pkill -f "wisefido-card-aggregator" 2>/dev/null || true
+            pkill -f "wisefido-cardagg" 2>/dev/null || true
+            pkill -f "wisefido-qinglan" 2>/dev/null || true
             pkill -f "wisefido-iot" 2>/dev/null || true
             pkill -f "wisefido-ai" 2>/dev/null || true
             if command -v lsof &> /dev/null; then
@@ -178,9 +191,10 @@ check_port() {
 }
 
 # 检查端口
-# 注意：wisefido-card-aggregator 和 wisefido-ai 不需要端口，它们是纯后台服务
+# 注意：wisefido-cardagg 和 wisefido-ai 不需要端口，它们是纯后台服务
 check_port 8080 "wisefido-data"
-check_port 8083 "wisefido-iot"
+check_port 8081 "wisefido-qinglan"
+check_port 8085 "wisefido-iot"
 
 # 加载统一配置文件
 # 获取脚本所在目录（owlBack 根目录）
@@ -223,7 +237,7 @@ export REDIS_PASSWORD="${REDIS_PASSWORD:-TeLunSu-36kr}"
 export MQTT_BROKER="${MQTT_BROKER:-127.0.0.1}"
 export MQTT_PORT="${MQTT_PORT:-1883}"
 
-# wisefido-card-aggregator 配置（如果未从 .env 加载）
+# wisefido-cardagg 配置（如果没有从 .env 加载）
 export TENANT_ID="${TENANT_ID:-bb045e6b-7bc2-4e59-af2e-d8b1adc77f2c}"
 export CARD_TRIGGER_MODE="${CARD_TRIGGER_MODE:-polling}"
 export CARD_POLLING_INTERVAL="${CARD_POLLING_INTERVAL:-86400}"
@@ -253,13 +267,14 @@ echo "  LOG_LEVEL: $LOG_LEVEL"
 echo ""
 echo -e "${BLUE}Service startup behavior:${NC}"
 echo "  - wisefido-data: Full card check/update on startup (after 2s delay, in main.go)"
-echo "  - wisefido-card-aggregator:"
+echo "  - wisefido-cardagg:"
 echo "    * Full card creation on startup (in startPollingMode)"
 echo "    * Data aggregation on startup + every ${CARD_AGGREGATION_INTERVAL}s (in startDataAggregation)"
 echo ""
 echo -e "${BLUE}Log files:${NC}"
 echo "  wisefido-data: $DATA_LOG"
-echo "  wisefido-card-aggregator: $AGGREGATOR_LOG"
+echo "  wisefido-cardagg: $AGGREGATOR_LOG"
+echo "  wisefido-qinglan: $QINGLAN_LOG"
 echo "  wisefido-iot: $IOT_LOG"
 echo "  wisefido-ai: $AI_LOG"
 echo "  combined: $COMBINED_LOG"
@@ -286,11 +301,11 @@ cleanup() {
     echo ""
     echo -e "${YELLOW}Shutting down services...${NC}"
     pkill -f "go run.*wisefido-data" || true
-    pkill -f "go run.*wisefido-card-aggregator" || true
+    pkill -f "go run.*wisefido-cardagg" || true
     pkill -f "go run.*wisefido-iot" || true
     pkill -f "go run.*wisefido-ai" || true
     pkill -f "wisefido-data" || true
-    pkill -f "wisefido-card-aggregator" || true
+    pkill -f "wisefido-cardagg" || true
     pkill -f "wisefido-iot-timeseries" || true
     pkill -f "wisefido-ai" || true
     echo -e "${GREEN}Services stopped${NC}"
@@ -310,16 +325,24 @@ if [ ! -d "$OWLBACK_DIR/wisefido-data" ]; then
     exit 1
 fi
 
-if [ ! -d "$OWLBACK_DIR/wisefido-card-aggregator" ]; then
-    echo -e "${RED}Error: wisefido-card-aggregator directory not found at $OWLBACK_DIR/wisefido-card-aggregator${NC}"
+if [ ! -d "$OWLBACK_DIR/wisefido-cardagg" ]; then
+    echo -e "${RED}Error: wisefido-cardagg directory not found at $OWLBACK_DIR/wisefido-cardagg${NC}"
+    exit 1
+fi
+
+if [ ! -d "$OWLBACK_DIR/wisefido-qinglan" ]; then
+    echo -e "${RED}Error: wisefido-qinglan directory not found at $OWLBACK_DIR/wisefido-qinglan${NC}"
     exit 1
 fi
 
 # 启动 wisefido-data 服务
 # 功能：数据管理 API + 卡片创建/更新（直接同步调用 CardCreator）
-echo -e "${GREEN}[1/4] Starting wisefido-data service...${NC}"
+echo -e "${GREEN}[1/5] Starting wisefido-data service...${NC}"
 echo -e "${BLUE}  Function: Data management API + Card creation/update (direct sync)${NC}"
 cd "$OWLBACK_DIR/wisefido-data"
+# 设置环境变量，包括Qinglan服务地址
+export HTTP_ADDR="${HTTP_ADDR:-:8080}"
+export QINGLAN_API_BASE_URL="${QINGLAN_API_BASE_URL:-http://localhost:8081}"
 # 直接输出到终端，同时使用 tee 写入日志文件
 go run cmd/wisefido-data/main.go 2>&1 | tee "$DATA_LOG" &
 DATA_PID=$!
@@ -329,15 +352,15 @@ echo "  Log: $DATA_LOG (also displayed in terminal)"
 # 等待一下确保服务启动
 sleep 2
 
-# 启动 wisefido-card-aggregator 服务
+# 启动 wisefido-cardagg 服务
 # 功能：数据聚合（从 PostgreSQL + Redis 聚合卡片数据并缓存）
 # 注意：卡片创建/更新现在由 wisefido-data 直接处理，aggregator 主要用于数据聚合
-echo -e "${GREEN}[2/4] Starting wisefido-card-aggregator service...${NC}"
+echo -e "${GREEN}[2/5] Starting wisefido-cardagg service...${NC}"
 echo -e "${BLUE}  Function: Data aggregation (PostgreSQL + Redis → full card cache)${NC}"
 echo -e "${YELLOW}  Note: Card creation/update is now handled by wisefido-data${NC}"
-cd "$OWLBACK_DIR/wisefido-card-aggregator"
+cd "$OWLBACK_DIR/wisefido-cardagg"
 # 直接输出到终端，同时使用 tee 写入日志文件
-go run cmd/wisefido-card-aggregator/main.go 2>&1 | tee "$AGGREGATOR_LOG" &
+go run main.go 2>&1 | tee "$AGGREGATOR_LOG" &
 AGGREGATOR_PID=$!
 echo "  PID: $AGGREGATOR_PID"
 echo "  Log: $AGGREGATOR_LOG (also displayed in terminal)"
@@ -345,13 +368,31 @@ echo "  Log: $AGGREGATOR_LOG (also displayed in terminal)"
 # 等待一下确保服务启动
 sleep 2
 
+# 启动 wisefido-qinglan 服务
+# 功能：设备接入与HTTPS认证 + MQTT消息路由（设备房间消费集成）
+echo -e "${GREEN}[3/5] Starting wisefido-qinglan service...${NC}"
+echo -e "${BLUE}  Function: Device access + MQTT message routing (internal control)${NC}"
+cd "$OWLBACK_DIR/wisefido-qinglan"
+# 设置一些关键环境变量（简化配置）
+export HTTP_HOST="${HTTP_HOST:-0.0.0.0}"
+export HTTP_PORT="${HTTP_PORT:-8081}"
+export QINGLAN_HTTPS_PORT="${QINGLAN_HTTPS_PORT:-8443}"
+# 直接输出到终端，同时使用 tee 写入日志文件
+go run cmd/wisefido-qinglan/main.go 2>&1 | tee "$QINGLAN_LOG" &
+QINGLAN_PID=$!
+echo "  PID: $QINGLAN_PID"
+echo "  Log: $QINGLAN_LOG (also displayed in terminal)"
+
+# 等待一下确保服务启动
+sleep 2
+
 # 启动 wisefido-iot 服务
 # 功能：从 Redis Streams 消费数据，存储到 TimescaleDB
-echo -e "${GREEN}[3/4] Starting wisefido-iot service...${NC}"
+echo -e "${GREEN}[4/5] Starting wisefido-iot service...${NC}"
 echo -e "${BLUE}  Function: Consume data from Redis Streams → TimescaleDB${NC}"
 cd "$OWLBACK_DIR/wisefido-iot"
 # 设置环境变量（如果未从 .env 加载）
-export HTTP_ADDR="${HTTP_ADDR:-:8083}"
+export HTTP_ADDR="${HTTP_ADDR:-:8085}"
 export REDIS_DB="${REDIS_DB:-0}"
 # Stream 配置 - 统一 IoT streams（所有设备类型）
 export STREAM_IOT_MONITOR="${STREAM_IOT_MONITOR:-iot:monitor:stream}"
@@ -414,8 +455,12 @@ cleanup() {
         kill $DATA_PID 2>/dev/null || true
     fi
     if [ -n "$AGGREGATOR_PID" ] && ps -p $AGGREGATOR_PID > /dev/null 2>&1; then
-        echo "  Stopping wisefido-card-aggregator (PID: $AGGREGATOR_PID)"
+        echo "  Stopping wisefido-cardagg (PID: $AGGREGATOR_PID)"
         kill $AGGREGATOR_PID 2>/dev/null || true
+    fi
+    if [ -n "$QINGLAN_PID" ] && ps -p $QINGLAN_PID > /dev/null 2>&1; then
+        echo "  Stopping wisefido-qinglan (PID: $QINGLAN_PID)"
+        kill $QINGLAN_PID 2>/dev/null || true
     fi
     if [ -n "$IOT_PID" ] && ps -p $IOT_PID > /dev/null 2>&1; then
         echo "  Stopping wisefido-iot (PID: $IOT_PID)"
@@ -429,7 +474,8 @@ cleanup() {
     sleep 2
     # 强制杀死仍在运行的进程
     pkill -f "go run.*wisefido-data" 2>/dev/null || true
-    pkill -f "go run.*wisefido-card-aggregator" 2>/dev/null || true
+    pkill -f "go run.*wisefido-cardagg" 2>/dev/null || true
+    pkill -f "go run.*wisefido-qinglan" 2>/dev/null || true
     pkill -f "go run.*wisefido-iot" 2>/dev/null || true
     pkill -f "go run.*wisefido-ai" 2>/dev/null || true
     echo -e "${GREEN}Cleanup completed${NC}"
@@ -441,6 +487,7 @@ trap cleanup EXIT INT TERM
 # 检查服务是否正常运行
 DATA_FAILED=false
 AGGREGATOR_FAILED=false
+QINGLAN_FAILED=false
 IOT_FAILED=false
 AI_FAILED=false
 
@@ -452,10 +499,17 @@ if ! ps -p $DATA_PID > /dev/null 2>&1; then
 fi
 
 if ! ps -p $AGGREGATOR_PID > /dev/null 2>&1; then
-    echo -e "${RED}Error: wisefido-card-aggregator service failed to start${NC}"
+    echo -e "${RED}Error: wisefido-cardagg service failed to start${NC}"
     echo "Check log: $AGGREGATOR_LOG"
     tail -20 "$AGGREGATOR_LOG"
     AGGREGATOR_FAILED=true
+fi
+
+if ! ps -p $QINGLAN_PID > /dev/null 2>&1; then
+    echo -e "${RED}Error: wisefido-qinglan service failed to start${NC}"
+    echo "Check log: $QINGLAN_LOG"
+    tail -20 "$QINGLAN_LOG"
+    QINGLAN_FAILED=true
 fi
 
 if ! ps -p $IOT_PID > /dev/null 2>&1; then
@@ -476,11 +530,12 @@ fi
 FAILED_COUNT=0
 [ "$DATA_FAILED" = true ] && FAILED_COUNT=$((FAILED_COUNT + 1))
 [ "$AGGREGATOR_FAILED" = true ] && FAILED_COUNT=$((FAILED_COUNT + 1))
+[ "$QINGLAN_FAILED" = true ] && FAILED_COUNT=$((FAILED_COUNT + 1))
 [ "$IOT_FAILED" = true ] && FAILED_COUNT=$((FAILED_COUNT + 1))
 [ "$AI_FAILED" = true ] && FAILED_COUNT=$((FAILED_COUNT + 1))
 
 # 如果所有服务都失败，退出
-if [ $FAILED_COUNT -eq 4 ]; then
+if [ $FAILED_COUNT -eq 5 ]; then
     echo -e "${RED}All services failed to start. Exiting.${NC}"
     exit 1
 fi
@@ -493,8 +548,14 @@ if [ "$DATA_FAILED" = true ]; then
 fi
 
 if [ "$AGGREGATOR_FAILED" = true ]; then
-    echo -e "${YELLOW}Warning: wisefido-card-aggregator failed, but continuing with other services${NC}"
+    echo -e "${YELLOW}Warning: wisefido-cardagg failed, but continuing with other services${NC}"
     echo "  You can check the log: $AGGREGATOR_LOG"
+    echo ""
+fi
+
+if [ "$QINGLAN_FAILED" = true ]; then
+    echo -e "${YELLOW}Warning: wisefido-qinglan failed, but continuing with other services${NC}"
+    echo "  You can check the log: $QINGLAN_LOG"
     echo ""
 fi
 
@@ -515,6 +576,7 @@ echo ""
 echo -e "${BLUE}Logs are being displayed in this terminal and saved to:${NC}"
 echo "  - $DATA_LOG"
 echo "  - $AGGREGATOR_LOG"
+echo "  - $QINGLAN_LOG"
 echo "  - $IOT_LOG"
 echo "  - $AI_LOG"
 echo ""
@@ -531,6 +593,7 @@ echo ""
 WAIT_PIDS=""
 [ "$DATA_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $DATA_PID"
 [ "$AGGREGATOR_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $AGGREGATOR_PID"
+[ "$QINGLAN_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $QINGLAN_PID"
 [ "$IOT_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $IOT_PID"
 [ "$AI_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $AI_PID"
 

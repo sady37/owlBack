@@ -14,18 +14,18 @@ type Card struct {
 	TenantID string `db:"tenant_id"` // UUID, NOT NULL
 
 	// 卡片类型
-	CardType string `db:"card_type"` // VARCHAR(20), NOT NULL, 'ActiveBed' | 'Unit' (原 Location)
+	CardType string `db:"card_type"` // VARCHAR(20), NOT NULL, 'ActiveBedCard' | 'UnitCard'
 
 	// 绑定目标（取决于 card_type）
-	BedID  sql.NullString `db:"bed_id"`  // UUID, nullable (ActiveBed 卡片)
-	UnitID sql.NullString `db:"unit_id"` // UUID, nullable (Unit 卡片)
+	BedID  sql.NullString `db:"bed_id"`  // UUID, nullable (ActiveBedCard 卡片)
+	UnitID sql.NullString `db:"unit_id"` // UUID, nullable (UnitCard 卡片)
 
 	// 显示信息
 	CardName    string `db:"card_name"`    // VARCHAR(255), NOT NULL
 	CardAddress string `db:"card_address"` // VARCHAR(255), NOT NULL
 	Timezone    string `db:"timezone"`     // IANA，如 "America/Los_Angeles"
 
-	// 主要住户（ActiveBed 卡片有值，Unit 卡片可能为 NULL）
+	// 主要住户（ActiveBedCard
 	ResidentID sql.NullString `db:"resident_id"` // UUID, nullable
 
 	// 预计算的关联（应用层维护）
@@ -56,7 +56,7 @@ type CardOverviewItem struct {
 	// 基础信息
 	CardID      string  `json:"card_id"`
 	TenantID    string  `json:"tenant_id"`
-	CardType    string  `json:"card_type"` // "ActiveBed" | "Unit"
+	CardType    string  `json:"card_type"` // "ActiveBedCard" | "UnitCard"
 	BedID       *string `json:"bed_id,omitempty"`
 	UnitID      *string `json:"unit_id,omitempty"`
 	CardName    string  `json:"card_name"`
@@ -85,8 +85,8 @@ type CardOverviewItem struct {
 	ResidentAccess bool `json:"resident_access"` // 是否允许住户访问
 
 	// 护理人员相关（可选，如果实现）
-	CaregiverGroups []string        `json:"caregiver_groups,omitempty"`
-	Caregivers      []CardCaregiver `json:"caregivers,omitempty"`
+	CaregiverGroups []CaregiverGroup `json:"caregiver_groups,omitempty"`
+	Caregivers      []CardCaregiver  `json:"caregivers,omitempty"`
 
 	// 计数字段（用于快速显示）
 	DeviceCount    int `json:"device_count"`
@@ -109,9 +109,9 @@ type CardDevice struct {
 // CardResident 卡片关联的住户信息
 type CardResident struct {
 	ResidentID   string `json:"resident_id"`
+	LastName     string `json:"last_name,omitempty"`  // 住户姓氏（从residents表获取）
 	Nickname     string `json:"nickname"`
 	ServiceLevel string `json:"service_level,omitempty"`
-	// 可以根据需要添加更多字段
 }
 
 // CardCaregiver 卡片关联的护理人员信息
@@ -121,4 +121,10 @@ type CardCaregiver struct {
 	UserAccount   string `json:"user_account"`
 	UserRole      string `json:"user_role"`
 	UserBranchTag string `json:"user_branch_tag,omitempty"`
+}
+
+// CaregiverGroup 护理人员组信息（从resident_caregiver_groups表获取）
+type CaregiverGroup struct {
+	GroupID   string `json:"group_id"`
+	GroupName string `json:"group_name"`
 }

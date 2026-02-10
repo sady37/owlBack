@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"wisefido-cardagg/internal/service"
 
@@ -65,6 +66,18 @@ func (h *AlarmProcessHandler) Handle(ctx context.Context, msg interface{}) error
 		return nil
 	}
 
+	// MQTT 级别的时间过滤：丢弃超过 30 秒的旧消息
+	now := time.Now().Unix()
+	msgAge := now - alarmData.AlarmTimestamp
+	if msgAge > 30 {
+		h.logger.Warn("Ignoring stale alarm process message",
+			zap.String("card_id", alarmData.CardID),
+			zap.String("alarm_level", alarmData.AlarmLevel),
+			zap.Int64("message_age_seconds", msgAge),
+			zap.Int64("alarm_timestamp", alarmData.AlarmTimestamp))
+		return nil
+	}
+
 	// 验证必填字段
 	if alarmData.CardID == "" {
 		h.logger.Warn("Missing card_id in alarm process message")
@@ -80,6 +93,7 @@ func (h *AlarmProcessHandler) Handle(ctx context.Context, msg interface{}) error
 	return h.service.HandleAlarmProcessMessage(
 		ctx,
 		alarmData.CardID,
+		alarmData.TenantID,
 		alarmData.AlarmLevel,
 		alarmData.AlarmType,
 		alarmData.AlarmTimestamp,

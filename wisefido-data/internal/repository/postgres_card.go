@@ -14,7 +14,36 @@ import (
 	"go.uber.org/zap"
 )
 
-// PostgresCardRepository implements card.RepositoryInterface；写 DB，并记录 affected 供 config 通知
+// RepositoryInterface 卡片仓储接口（建卡/同步用），由 PostgresCardRepository 实现
+type RepositoryInterface interface {
+	GetUnitInfo(tenantID, unitID string) (*card.UnitInfo, error)
+	GetActiveBedsByUnit(tenantID, unitID string) ([]card.ActiveBedRow, error)
+	GetDevicesByBed(tenantID, bedID string) ([]card.DeviceInfo, error)
+	GetUnboundDevicesByUnit(tenantID, unitID string) ([]card.DeviceInfo, error)
+	GetResidentByBed(tenantID, bedID string) (*card.ResidentInfo, error)
+	GetResidentsByUnit(tenantID, unitID string) ([]card.ResidentInfo, error)
+	GetCardsByUnit(tenantID, unitID string) ([]card.CardWithContent, error)
+	DeleteCard(tenantID, cardID string) error
+	DeleteCardsByUnit(tenantID, unitID string) error
+	CreateCard(
+		tenantID, cardType string,
+		bedID *string, unitID, cardName, cardAddress, timezone string,
+		residentID *string,
+		devices []card.DeviceInfo, residents []card.ResidentInfo,
+	) (string, error)
+	GetAllUnits(tenantID string) ([]string, error)
+	GetUnitIDByBedID(tenantID, bedID string) (string, error)
+	CountCardsByTenant(tenantID string) (int, error)
+	UpdateCard(
+		tenantID, cardID string,
+		cardType string,
+		bedID *string, unitID, cardName, cardAddress, timezone string,
+		residentID *string,
+		devices []card.DeviceInfo, residents []card.ResidentInfo,
+	) error
+}
+
+// PostgresCardRepository implements RepositoryInterface；写 DB，并记录 affected 供 config 通知
 type PostgresCardRepository struct {
 	db         *sql.DB
 	logger     *zap.Logger
@@ -52,21 +81,18 @@ func (r *PostgresCardRepository) appendRecorded(op, tenantID, cardID, unitID str
 	r.recorded = append(r.recorded, domain.CardSyncAffected{TenantID: tenantID, CardID: cardID, UnitID: unitID, Op: op})
 }
 
-// CardForNotify 供 config.card.* 通知用（从 DB 读）
-type CardForNotify struct {
-	TenantID    string
-	CardID      string
-	UnitID      string
-	DevicesJSON []byte
-}
-
-// CardRowForCache 单卡行+unit 信息，用于生成 VitalFocusCardInfo 静态缓存
+// CardRowForCache 卡片+单元信息（用于生成 VitalFocusCardInfo 静态缓存）
 type CardRowForCache struct {
 	CardID         string
 	TenantID       string
 	CardType       string
 	BedID          *string
+	BedName        *string // ✅ 新增
+	RoomID         *string // ✅ 新增
+	RoomName       *string // ✅ 新增
 	UnitID         string
+	UnitName       string // ✅ 新增
+	Building       string // ✅ 新增
 	CardName       string
 	CardAddress    string
 	Timezone       string
@@ -79,6 +105,131 @@ type CardRowForCache struct {
 	PopAlarmEmerge int
 }
 
+// convertDevicesToJSON 将设备列表转换为 JSONB 格式
+func convertDevicesToJSON(devices []card.DeviceInfo) ([]byte, error) {
+	if len(devices) == 0 {
+		return []byte("[]"), nil
+	}
+
+	type DeviceJSON struct {
+		DeviceID    string  `json:"device_id"`
+		DeviceUID   string  `json:"device_uid,omitempty"`
+		DeviceCode  string  `json:"device_code,omitempty"`
+		DeviceName  string  `json:"device_name"`
+		DeviceType  string  `json:"device_type"`
+		DeviceModel string  `json:"device_model"`
+		BedID       *string `json:"bed_id,omitempty"`
+		BedName     *string `json:"bed_name,omitempty"`
+		RoomID      *string `json:"room_id,omitempty"`
+		RoomName    *string `json:"room_name,omitempty"`
+		UnitID      string  `json:"unit_id"`
+	}
+
+	var deviceJSONs []DeviceJSON
+	for _, device := range devices {
+		deviceJSONs = append(deviceJSONs, DeviceJSON{
+			DeviceID:    device.DeviceID,
+			DeviceUID:   device.DeviceUID,
+			DeviceName:  device.DeviceName,
+			DeviceType:  fmt.Sprint(device.DeviceType), // 兼容数字和字符串类型
+			DeviceModel: device.DeviceModel,
+			BedID:       device.BoundBedID,
+			RoomID:      device.BoundRoomID,
+			UnitID:      device.UnitID,
+		})
+	}
+
+	return json.Marshal(deviceJSONs)
+}
+
+// convertResidentsToJSON 将住户列表转换为 JSONB 格式
+func convertResidentsToJSON(residents []card.ResidentInfo) ([]byte, error) {
+	if len(residents) == 0 {
+		return []byte("[]"), nil
+	}
+
+	type ResidentJSON struct {
+		ResidentID string `json:"resident_id"`
+		Nickname   string `json:"nickname"`
+	}
+
+	var residentJSONs []ResidentJSON
+	for _, resident := range residents {
+		residentJSONs = append(residentJSONs, ResidentJSON{
+			ResidentID: resident.ResidentID,
+			Nickname:   resident.Nickname,
+		})
+	}
+
+	return json.Marshal(residentJSONs)
+}
+
+// deserializeDevices 从 JSON 反序列化设备列表
+func deserializeDevices(data []byte) ([]card.DeviceInfo, error) {
+	if len(data) == 0 || string(data) == "[]" {
+		return []card.DeviceInfo{}, nil
+	}
+
+	type DeviceJSON struct {
+		DeviceID    string  `json:"device_id"`
+		DeviceUID   string  `json:"device_uid,omitempty"`
+		DeviceCode  string  `json:"device_code,omitempty"`
+		DeviceName  string  `json:"device_name"`
+		DeviceType  any     `json:"device_type"`
+		DeviceModel string  `json:"device_model"`
+		BedID       *string `json:"bed_id,omitempty"`
+		RoomID      *string `json:"room_id,omitempty"`
+		UnitID      string  `json:"unit_id"`
+	}
+
+	var deviceJSONs []DeviceJSON
+	if err := json.Unmarshal(data, &deviceJSONs); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal devices: %w", err)
+	}
+
+	devices := make([]card.DeviceInfo, 0, len(deviceJSONs))
+	for _, dj := range deviceJSONs {
+		devices = append(devices, card.DeviceInfo{
+			DeviceID:    dj.DeviceID,
+			DeviceUID:   dj.DeviceUID,
+			DeviceCode:  dj.DeviceCode,
+			DeviceName:  dj.DeviceName,
+			DeviceType:  dj.DeviceType,
+			DeviceModel: dj.DeviceModel,
+			BoundBedID:  dj.BedID,
+			BoundRoomID: dj.RoomID,
+			UnitID:      dj.UnitID,
+		})
+	}
+	return devices, nil
+}
+
+// deserializeResidents 从 JSON 反序列化住户列表
+func deserializeResidents(data []byte) ([]card.ResidentInfo, error) {
+	if len(data) == 0 || string(data) == "[]" {
+		return []card.ResidentInfo{}, nil
+	}
+
+	type ResidentJSON struct {
+		ResidentID string `json:"resident_id"`
+		Nickname   string `json:"nickname"`
+	}
+
+	var residentJSONs []ResidentJSON
+	if err := json.Unmarshal(data, &residentJSONs); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal residents: %w", err)
+	}
+
+	residents := make([]card.ResidentInfo, 0, len(residentJSONs))
+	for _, rj := range residentJSONs {
+		residents = append(residents, card.ResidentInfo{
+			ResidentID: rj.ResidentID,
+			Nickname:   rj.Nickname,
+		})
+	}
+	return residents, nil
+}
+
 // GetCardRowForCache 从 DB 取单卡+unit（branch_id、branch_name、icon_alarm_level、pop_alarm_emerge），用于写 VitalFocusCardInfo 静态缓存
 func (r *PostgresCardRepository) GetCardRowForCache(ctx context.Context, tenantID, cardID string) (*CardRowForCache, error) {
 	query := `
@@ -86,18 +237,26 @@ func (r *PostgresCardRepository) GetCardRowForCache(ctx context.Context, tenantI
 		       COALESCE(c.timezone, 'UTC'), c.resident_id, c.devices, c.residents,
 		       COALESCE(u.branch_id::text, '') as branch_id,
 		       COALESCE(b.branch_name, '') as branch_name,
-		       COALESCE(c.icon_alarm_level, 3), COALESCE(c.pop_alarm_emerge, 0)
+		       COALESCE(u.unit_name, '') as unit_name,
+			COALESCE(bld.building_name, '') as building,
+		       COALESCE(c.icon_alarm_level, 3), COALESCE(c.pop_alarm_emerge, 0),
+		       COALESCE(bed.bed_name, ''), COALESCE(room.room_id::text, ''), COALESCE(room.room_name, '')
 		FROM cards c
 		LEFT JOIN units u ON c.unit_id = u.unit_id AND c.tenant_id = u.tenant_id
 		LEFT JOIN branches b ON u.branch_id = b.branch_id
+		LEFT JOIN buildings bld ON u.building_id = bld.building_id
+		LEFT JOIN beds bed ON c.bed_id = bed.bed_id AND c.tenant_id = bed.tenant_id
+		LEFT JOIN rooms room ON bed.room_id = room.room_id AND c.tenant_id = room.tenant_id
 		WHERE c.tenant_id = $1 AND c.card_id = $2
 	`
 	var row CardRowForCache
-	var bedID, residentID sql.NullString
+	var bedID, residentID, bedName, roomID, roomName sql.NullString
 	err := r.db.QueryRowContext(ctx, query, tenantID, cardID).Scan(
 		&row.CardID, &row.TenantID, &row.CardType, &bedID, &row.UnitID, &row.CardName, &row.CardAddress,
 		&row.Timezone, &residentID, &row.DevicesJSON, &row.ResidentsJSON, &row.BranchID, &row.BranchName,
+		&row.UnitName, &row.Building,
 		&row.IconAlarmLevel, &row.PopAlarmEmerge,
+		&bedName, &roomID, &roomName,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -107,6 +266,15 @@ func (r *PostgresCardRepository) GetCardRowForCache(ctx context.Context, tenantI
 	}
 	if bedID.Valid {
 		row.BedID = &bedID.String
+	}
+	if bedName.Valid {
+		row.BedName = &bedName.String
+	}
+	if roomID.Valid {
+		row.RoomID = &roomID.String
+	}
+	if roomName.Valid {
+		row.RoomName = &roomName.String
 	}
 	if residentID.Valid {
 		row.ResidentID = &residentID.String
@@ -159,76 +327,50 @@ func (r *PostgresCardRepository) GetBranchIDByUnit(ctx context.Context, tenantID
 	return "", nil
 }
 
-// GetCardByID 从 DB 按 card_id 取卡片（供 emitCardChange 取 deviceIDs）
-func (r *PostgresCardRepository) GetCardByID(ctx context.Context, tenantID, cardID string) (*CardForNotify, error) {
-	query := `
-		SELECT tenant_id, card_id, unit_id, devices
-		FROM cards
-		WHERE tenant_id = $1 AND card_id = $2
-	`
-	var tenantIDOut, cardIDOut, unitID string
-	var devicesJSON []byte
-	err := r.db.QueryRowContext(ctx, query, tenantID, cardID).Scan(&tenantIDOut, &cardIDOut, &unitID, &devicesJSON)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &CardForNotify{
-		TenantID:    tenantIDOut,
-		CardID:      cardIDOut,
-		UnitID:      unitID,
-		DevicesJSON: devicesJSON,
-	}, nil
-}
-
-// GetActiveBedsByUnit gets all ActiveBeds under the specified unit
-// ActiveBed condition: 床上有 monitoring_enabled = TRUE 的设备即可
-// 注意：bed_type 字段已删除，改为动态查询设备绑定状态
+// GetActiveBedsByUnit 获取单元下所有活跃床位（床上有启用监控的设备）
 func (r *PostgresCardRepository) GetActiveBedsByUnit(tenantID, unitID string) ([]card.ActiveBedRow, error) {
 	query := `
-		SELECT DISTINCT
+		SELECT
 			b.bed_id,
-			r.unit_id,
-			COUNT(DISTINCT d.device_id)::int AS bound_device_count,
-			r2.resident_id,
-			b.room_id,
-			b.bed_name
+			COALESCE(b.bed_name, '') as bed_name,
+			COALESCE(rm.room_name, '') as room_name,
+			MAX(r2.resident_id::text) as resident_id
 		FROM beds b
-		INNER JOIN rooms r ON b.room_id = r.room_id
-		INNER JOIN devices d ON d.bound_bed_id = b.bed_id
+		INNER JOIN rooms rm ON b.room_id = rm.room_id AND b.tenant_id = rm.tenant_id
+		INNER JOIN devices d ON d.bound_bed_id = b.bed_id AND b.tenant_id = d.tenant_id
 		LEFT JOIN residents r2 ON r2.bed_id = b.bed_id AND r2.tenant_id = $1
 		WHERE b.tenant_id = $1
-		  AND r.unit_id = $2
+		  AND rm.unit_id = $2
 		  AND d.monitoring_enabled = TRUE
 		  AND d.status <> 'disabled'
-		GROUP BY b.bed_id, r.unit_id, r2.resident_id, b.room_id, b.bed_name
+		GROUP BY b.bed_id, b.bed_name, rm.room_name
 		HAVING COUNT(DISTINCT d.device_id) > 0
-		ORDER BY b.bed_name
+		ORDER BY bed_name ASC, b.bed_id ASC
 	`
 
 	rows, err := r.db.Query(query, tenantID, unitID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query active beds: %w", err)
+		return nil, fmt.Errorf("query active beds: %w", err)
 	}
 	defer rows.Close()
 
 	var beds []card.ActiveBedRow
 	for rows.Next() {
-		var bed card.ActiveBedRow
+		var bedID, bedName, roomName string
 		var residentID sql.NullString
-		var bedName sql.NullString
 
-		if err := rows.Scan(
-			&bed.BedID,
-			&bed.UnitID,
-			&bed.BoundDeviceCount,
-			&residentID,
-			&bed.RoomID,
-			&bedName,
-		); err != nil {
-			return nil, fmt.Errorf("failed to scan bed: %w", err)
+		if err := rows.Scan(&bedID, &bedName, &roomName, &residentID); err != nil {
+			return nil, fmt.Errorf("scan bed: %w", err)
+		}
+
+		bed := card.ActiveBedRow{
+			BedID:   bedID,
+			BedName: bedName,
+		}
+
+		// RoomName 存储到结构体中（供卡片生成使用）
+		if roomName != "" {
+			bed.RoomName = roomName
 		}
 
 		if residentID.Valid {
@@ -247,13 +389,14 @@ func (r *PostgresCardRepository) GetUnitInfo(tenantID, unitID string) (*card.Uni
 		SELECT 
 			u.unit_id,
 			u.unit_name,
-			COALESCE(u.branch_id::text, '') as branch_id,
+			COALESCE(b.branch_name, '') as branch_name,
 			COALESCE(bld.building_name, '') as building,
 			u.is_public,
 			u.is_shared_unit,
 			u.unit_type,
 			COALESCE(u.timezone, 'UTC') as timezone
 		FROM units u
+		LEFT JOIN branches b ON u.branch_id = b.branch_id
 		LEFT JOIN buildings bld ON u.building_id = bld.building_id
 		WHERE u.tenant_id = $1 AND u.unit_id = $2
 	`
@@ -263,7 +406,7 @@ func (r *PostgresCardRepository) GetUnitInfo(tenantID, unitID string) (*card.Uni
 	err := r.db.QueryRow(query, tenantID, unitID).Scan(
 		&unit.UnitID,
 		&unit.UnitName,
-		&unit.BranchID,
+		&unit.BranchName,
 		&unit.Building,
 		&unit.IsPublic,
 		&unit.IsSharedUnit,
@@ -292,16 +435,12 @@ func (r *PostgresCardRepository) GetDevicesByBed(tenantID, bedID string) ([]card
 			ds.device_type,
 			ds.device_model,
 			d.bound_bed_id,
-			b.bed_name,
 			d.bound_room_id,
-			r.room_name,
-			u.unit_id,
+			COALESCE(r.unit_id, (SELECT unit_id FROM beds WHERE bed_id = d.bound_bed_id AND tenant_id = $1 LIMIT 1)) as unit_id,
 			d.monitoring_enabled
 		FROM devices d
 		JOIN device_store ds ON d.device_uid = ds.device_uid
-		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
-		LEFT JOIN rooms r ON b.room_id = r.room_id AND b.tenant_id = r.tenant_id
-		LEFT JOIN units u ON r.unit_id = u.unit_id AND r.tenant_id = u.tenant_id
+		LEFT JOIN rooms r ON d.bound_room_id = r.room_id AND d.tenant_id = r.tenant_id
 		WHERE d.tenant_id = $1
 		  AND d.bound_bed_id = $2
 		  AND d.monitoring_enabled = TRUE
@@ -317,7 +456,7 @@ func (r *PostgresCardRepository) GetDevicesByBed(tenantID, bedID string) ([]card
 	var devices []card.DeviceInfo
 	for rows.Next() {
 		var device card.DeviceInfo
-		var boundBedID, bedName, boundRoomID, roomName sql.NullString
+		var boundBedID, boundRoomID, unitID sql.NullString
 
 		if err := rows.Scan(
 			&device.DeviceID,
@@ -326,10 +465,8 @@ func (r *PostgresCardRepository) GetDevicesByBed(tenantID, bedID string) ([]card
 			&device.DeviceType,
 			&device.DeviceModel,
 			&boundBedID,
-			&bedName,
 			&boundRoomID,
-			&roomName,
-			&device.UnitID,
+			&unitID,
 			&device.MonitoringEnabled,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan device: %w", err)
@@ -338,21 +475,25 @@ func (r *PostgresCardRepository) GetDevicesByBed(tenantID, bedID string) ([]card
 		if boundBedID.Valid {
 			device.BoundBedID = &boundBedID.String
 		}
-		if bedName.Valid {
-			device.BedName = &bedName.String
-		}
 		if boundRoomID.Valid {
 			device.BoundRoomID = &boundRoomID.String
 		}
-		if roomName.Valid {
-			device.RoomName = &roomName.String
+		if unitID.Valid {
+			device.UnitID = unitID.String
 		}
 
 		devices = append(devices, device)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate devices: %w", err)
+	}
+
 	return devices, nil
 }
+
+// GetUnboundDevicesByUnit gets all devices with monitoring_enabled = TRUE bound to a room in the specified unit
+// (not bound to any bed)
 
 // GetUnboundDevicesByUnit gets all devices with monitoring_enabled = TRUE that are bound to a room in the specified unit but not bound to any bed.
 // 写 cards.devices 时需含 device_uid：从 devices 表选 d.device_uid 填入 DeviceInfo，供 ConvertDevicesToJSON 写入 JSON。
@@ -365,16 +506,13 @@ func (r *PostgresCardRepository) GetUnboundDevicesByUnit(tenantID, unitID string
 			ds.device_type,
 			ds.device_model,
 			d.bound_bed_id,
-			b.bed_name,
 			d.bound_room_id,
-			r.room_name,
 			u.unit_id,
 			d.monitoring_enabled
 		FROM devices d
 		JOIN device_store ds ON d.device_uid = ds.device_uid
 		LEFT JOIN rooms r ON d.bound_room_id = r.room_id AND d.tenant_id = r.tenant_id
 		LEFT JOIN units u ON r.unit_id = u.unit_id AND r.tenant_id = u.tenant_id
-		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND d.tenant_id = b.tenant_id
 		WHERE d.tenant_id = $1
 		  AND u.unit_id = $2
 		  AND d.bound_room_id IS NOT NULL
@@ -392,7 +530,7 @@ func (r *PostgresCardRepository) GetUnboundDevicesByUnit(tenantID, unitID string
 	var devices []card.DeviceInfo
 	for rows.Next() {
 		var device card.DeviceInfo
-		var boundBedID, bedName, boundRoomID, roomName sql.NullString
+		var boundBedID, boundRoomID, unitIDFromQuery sql.NullString
 
 		if err := rows.Scan(
 			&device.DeviceID,
@@ -401,10 +539,8 @@ func (r *PostgresCardRepository) GetUnboundDevicesByUnit(tenantID, unitID string
 			&device.DeviceType,
 			&device.DeviceModel,
 			&boundBedID,
-			&bedName,
 			&boundRoomID,
-			&roomName,
-			&device.UnitID,
+			&unitIDFromQuery,
 			&device.MonitoringEnabled,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan device: %w", err)
@@ -413,14 +549,11 @@ func (r *PostgresCardRepository) GetUnboundDevicesByUnit(tenantID, unitID string
 		if boundBedID.Valid {
 			device.BoundBedID = &boundBedID.String
 		}
-		if bedName.Valid {
-			device.BedName = &bedName.String
-		}
 		if boundRoomID.Valid {
 			device.BoundRoomID = &boundRoomID.String
 		}
-		if roomName.Valid {
-			device.RoomName = &roomName.String
+		if unitIDFromQuery.Valid {
+			device.UnitID = unitIDFromQuery.String
 		}
 
 		devices = append(devices, device)
@@ -435,7 +568,6 @@ func (r *PostgresCardRepository) GetResidentByBed(tenantID, bedID string) (*card
 		SELECT 
 			r.resident_id,
 			r.nickname,
-			r.unit_id,
 			r.bed_id
 		FROM residents r
 		WHERE r.tenant_id = $1
@@ -444,12 +576,11 @@ func (r *PostgresCardRepository) GetResidentByBed(tenantID, bedID string) (*card
 	`
 
 	var resident card.ResidentInfo
-	var unitID, residentBedID sql.NullString
+	var residentBedID sql.NullString
 
 	err := r.db.QueryRow(query, tenantID, bedID).Scan(
 		&resident.ResidentID,
 		&resident.Nickname,
-		&unitID,
 		&residentBedID,
 	)
 
@@ -460,9 +591,6 @@ func (r *PostgresCardRepository) GetResidentByBed(tenantID, bedID string) (*card
 		return nil, fmt.Errorf("failed to query resident: %w", err)
 	}
 
-	if unitID.Valid {
-		resident.UnitID = &unitID.String
-	}
 	if residentBedID.Valid {
 		resident.BedID = &residentBedID.String
 	}
@@ -476,7 +604,6 @@ func (r *PostgresCardRepository) GetResidentsByUnit(tenantID, unitID string) ([]
 		SELECT 
 			r.resident_id,
 			r.nickname,
-			r.unit_id,
 			r.bed_id
 		FROM residents r
 		WHERE r.tenant_id = $1
@@ -493,20 +620,16 @@ func (r *PostgresCardRepository) GetResidentsByUnit(tenantID, unitID string) ([]
 	var residents []card.ResidentInfo
 	for rows.Next() {
 		var resident card.ResidentInfo
-		var unitID, bedID sql.NullString
+		var bedID sql.NullString
 
 		if err := rows.Scan(
 			&resident.ResidentID,
 			&resident.Nickname,
-			&unitID,
 			&bedID,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan resident: %w", err)
 		}
 
-		if unitID.Valid {
-			resident.UnitID = &unitID.String
-		}
 		if bedID.Valid {
 			resident.BedID = &bedID.String
 		}
@@ -595,7 +718,7 @@ func (r *PostgresCardRepository) GetCardsByUnit(tenantID, unitID string) ([]card
 	for rows.Next() {
 		var cardItem card.CardWithContent
 		var bedID, residentID sql.NullString
-		var devicesJSON, residentsJSON json.RawMessage
+		var devicesJSON, residentsJSON []byte
 
 		err := rows.Scan(
 			&cardItem.CardID,
@@ -620,9 +743,18 @@ func (r *PostgresCardRepository) GetCardsByUnit(tenantID, unitID string) ([]card
 			cardItem.ResidentID = &residentID.String
 		}
 
-		// Store raw JSON for comparison
-		cardItem.DevicesJSON = devicesJSON
-		cardItem.ResidentsJSON = residentsJSON
+		// Deserialize JSON to structured data
+		devices, err := deserializeDevices(devicesJSON)
+		if err != nil {
+			return nil, fmt.Errorf("failed to deserialize devices for card %s: %w", cardItem.CardID, err)
+		}
+		residents, err := deserializeResidents(residentsJSON)
+		if err != nil {
+			return nil, fmt.Errorf("failed to deserialize residents for card %s: %w", cardItem.CardID, err)
+		}
+
+		cardItem.Devices = devices
+		cardItem.Residents = residents
 
 		cards = append(cards, cardItem)
 	}
@@ -634,28 +766,35 @@ func (r *PostgresCardRepository) GetCardsByUnit(tenantID, unitID string) ([]card
 	return cards, nil
 }
 
-// DeleteCard deletes a single card by card_id
+// DeleteCard 删除卡片
 func (r *PostgresCardRepository) DeleteCard(tenantID, cardID string) error {
-	query := `
-		DELETE FROM cards
-		WHERE tenant_id = $1
-		  AND card_id = $2
-	`
-
-	result, err := r.db.Exec(query, tenantID, cardID)
+	_, err := r.db.Exec("DELETE FROM cards WHERE tenant_id = $1 AND card_id = $2", tenantID, cardID)
 	if err != nil {
-		return fmt.Errorf("failed to delete card: %w", err)
+		return fmt.Errorf("delete card: %w", err)
 	}
+	
+	// 记录受影响的卡片
+	r.recordedMu.Lock()
+	r.recorded = append(r.recorded, domain.CardSyncAffected{TenantID: tenantID, CardID: cardID, UnitID: "", Op: "delete"})
+	r.recordedMu.Unlock()
+	
+	return nil
+}
 
-	rowsAffected, err := result.RowsAffected()
+// ClearAllCards 清理全局所有卡片记录（删除所有租户的卡片）
+func (r *PostgresCardRepository) ClearAllCards() error {
+	result, err := r.db.Exec("DELETE FROM cards")
 	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
+		return fmt.Errorf("clear all cards: %w", err)
 	}
-
-	if rowsAffected == 0 {
-		return fmt.Errorf("card not found: %s", cardID)
-	}
-
+	
+	rowsAffected, _ := result.RowsAffected()
+	r.logger.Info("Cleared all cards globally",
+		zap.Int64("rows_affected", rowsAffected),
+	)
+	
+	// 清空记录器，避免影响后续操作
+	r.ClearRecorded()
 	return nil
 }
 
@@ -713,10 +852,20 @@ func (r *PostgresCardRepository) UpdateCard(
 	cardType string,
 	bedID *string, unitID, cardName, cardAddress, timezone string,
 	residentID *string,
-	devicesJSON, residentsJSON []byte,
+	devices []card.DeviceInfo, residents []card.ResidentInfo,
 ) error {
 	if timezone == "" {
 		timezone = "UTC"
+	}
+
+	// 将结构化数据转换为 JSON
+	devicesJSON, err := convertDevicesToJSON(devices)
+	if err != nil {
+		return fmt.Errorf("failed to convert devices to JSON: %w", err)
+	}
+	residentsJSON, err := convertResidentsToJSON(residents)
+	if err != nil {
+		return fmt.Errorf("failed to convert residents to JSON: %w", err)
 	}
 
 	// Get branch_id from units table (for denormalization)
@@ -779,6 +928,11 @@ func (r *PostgresCardRepository) UpdateCard(
 	if rowsAffected == 0 {
 		return fmt.Errorf("card not found: %s", cardID)
 	}
+	// 同步 unhandled_alarm 计数（从 alarm_events 按 device_id 统计）
+	if err := r.UpdateCardAlarmCounts(context.Background(), tenantID, cardID); err != nil {
+		r.logger.Warn("UpdateCard: failed to update alarm counts",
+			zap.String("card_id", cardID), zap.Error(err))
+	}
 	r.appendRecorded("updated", tenantID, cardID, unitID)
 	return nil
 }
@@ -796,25 +950,35 @@ func (r *PostgresCardRepository) UpdateCard(
 // - pop_alarm_emerge (popup alarm level threshold, default 0)
 //
 // Constraint checks:
-// - ActiveBed: bed_id IS NOT NULL, unit_id can be NULL (redundant)
-// - Location: unit_id IS NOT NULL, bed_id must be NULL
+// - ActiveBedCard: bed_id IS NOT NULL, unit_id can be NULL (redundant)
+// - UnitCard: unit_id IS NOT NULL, bed_id must be NULL
 //
 // Note: Alarm routing configuration (routing_alarm_user_ids, routing_alarm_tags) has been removed.
 // Cards only handle alarm level display, not alarm routing.
 func (r *PostgresCardRepository) CreateCard(
 	tenantID string,
-	cardType string, // "ActiveBed" or "Location"
+	cardType string, // "ActiveBedCard" or "UnitCard"
 	bedID *string,
 	unitID string,
 	cardName string,
 	cardAddress string,
 	timezone string,
 	residentID *string,
-	devicesJSON []byte,
-	residentsJSON []byte,
+	devices []card.DeviceInfo,
+	residents []card.ResidentInfo,
 ) (string, error) {
 	if timezone == "" {
 		timezone = "UTC"
+	}
+
+	// 将结构化数据转换为 JSON
+	devicesJSON, err := convertDevicesToJSON(devices)
+	if err != nil {
+		return "", fmt.Errorf("failed to convert devices to JSON: %w", err)
+	}
+	residentsJSON, err := convertResidentsToJSON(residents)
+	if err != nil {
+		return "", fmt.Errorf("failed to convert residents to JSON: %w", err)
 	}
 
 	// Get branch_id from units table (for denormalization)
@@ -851,7 +1015,7 @@ func (r *PostgresCardRepository) CreateCard(
 	`
 
 	var cardID string
-	err := r.db.QueryRow(
+	err = r.db.QueryRow(
 		query,
 		tenantID,
 		branchID,
@@ -868,6 +1032,11 @@ func (r *PostgresCardRepository) CreateCard(
 
 	if err != nil {
 		return "", fmt.Errorf("failed to create card: %w", err)
+	}
+	// 同步 unhandled_alarm 计数（从 alarm_events 按 device_id 统计）
+	if err := r.UpdateCardAlarmCounts(context.Background(), tenantID, cardID); err != nil {
+		r.logger.Warn("CreateCard: failed to update alarm counts",
+			zap.String("card_id", cardID), zap.Error(err))
 	}
 	r.appendRecorded("created", tenantID, cardID, unitID)
 	return cardID, nil

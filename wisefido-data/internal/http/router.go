@@ -108,20 +108,75 @@ func (r *Router) RegisterAdminTenantRoutes(h *TenantsHandler) {
 	r.Handle("/admin/api/v1/tenants/", h.ServeHTTP)
 }
 
-// RegisterRadarRoutes 注册 Radar 设备 API 路由（v1.0 兼容）
+// RegisterRadarRoutes 注册 Radar 设备 API 路由（所有端点均受 AuthMiddleware 保护）
 func (r *Router) RegisterRadarRoutes(h *RadarHandler) {
-	// GET /radar-device/api/v1/radar-device/device/:id/realtime
+	// 卡片设备列表：GET /radar-device/api/v1/radar-device/card/{cardId}/devices
+	r.Handle("/radar-device/api/v1/radar-device/card/", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		path := req.URL.Path
+		if strings.HasSuffix(path, "/devices") {
+			h.GetCardDevices(w, req)
+			return
+		}
+		http.NotFound(w, req)
+	})
+
+	// 设备路由（多个端点）
 	r.Handle("/radar-device/api/v1/radar-device/device/", func(w http.ResponseWriter, req *http.Request) {
 		path := req.URL.Path
-		if strings.HasSuffix(path, "/realtime") && req.Method == http.MethodGet {
-			h.GetRealtimeData(w, req)
-		} else if strings.HasSuffix(path, "/original-properties") && req.Method == http.MethodGet {
-			h.GetOriginalProperties(w, req)
-		} else if strings.HasSuffix(path, "/config") && req.Method == http.MethodPut {
-			h.UpdateConfig(w, req)
-		} else {
-			http.NotFound(w, req)
+		// GET /radar-device/api/v1/radar-device/device/{deviceId}/card-devices
+		if strings.HasSuffix(path, "/card-devices") && req.Method == http.MethodGet {
+			h.GetCardDevicesByDeviceID(w, req)
+			return
 		}
+		// GET /radar-device/api/v1/radar-device/device/{deviceId}/stream (SSE)
+		if strings.HasSuffix(path, "/stream") && req.Method == http.MethodGet {
+			h.SubscribeRealtimeStream(w, req)
+			return
+		}
+		// GET /radar-device/api/v1/radar-device/device/{deviceId}/original-properties
+		if strings.HasSuffix(path, "/original-properties") && req.Method == http.MethodGet {
+			h.GetOriginalProperties(w, req)
+			return
+		}
+		// PUT /radar-device/api/v1/radar-device/device/{deviceId}/config
+		if strings.HasSuffix(path, "/config") && req.Method == http.MethodPut {
+			h.UpdateConfig(w, req)
+			return
+		}
+		// POST /radar-device/api/v1/radar-device/device/{deviceId}/bind
+		if strings.HasSuffix(path, "/bind") && req.Method == http.MethodPost {
+			h.BindDevice(w, req)
+			return
+		}
+		// POST /radar-device/api/v1/radar-device/device/{deviceId}/unbind
+		if strings.HasSuffix(path, "/unbind") && req.Method == http.MethodPost {
+			h.UnbindDevice(w, req)
+			return
+		}
+		// POST /radar-device/api/v1/radar-device/device/{deviceId}/control
+		if strings.HasSuffix(path, "/control") && req.Method == http.MethodPost {
+			h.Control(w, req)
+			return
+		}
+		http.NotFound(w, req)
+	})
+
+	// 房间布局：PUT /radar-device/api/v1/radar-device/room/{roomId}/layout
+	r.Handle("/radar-device/api/v1/radar-device/room/", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPut {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		path := req.URL.Path
+		if strings.HasSuffix(path, "/layout") {
+			h.PutRoomLayout(w, req)
+			return
+		}
+		http.NotFound(w, req)
 	})
 }
 
@@ -255,16 +310,6 @@ func (r *Router) RegisterSleepaceReportRoutes(h *SleepaceReportHandler) {
 }
 
 // RegisterCardOverviewRoutes 注册卡片概览相关路由
-func (r *Router) RegisterCardOverviewRoutes(c *CardOverviewHandler) {
-	// list cards - 使用CardOverviewHandler的GetCardOverview方法
-	r.Handle("/data/api/v1/data/vital-focus/cards", func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		c.GetCardOverview(w, req)
-	})
-}
 
 // CardRealtimeHandler 专门处理卡片实时数据的处理器
 type CardRealtimeHandler struct {
@@ -287,35 +332,31 @@ func (h *CardRealtimeHandler) PullRealtimeData(w http.ResponseWriter, req *http.
 	// 从请求中提取数据
 	ctx := req.Context()
 
-	// 解析请求体
+	// 解析请求体：cards_by_branch（branchID → cardIDs）
 	var body struct {
-		CardIDs []string `json:"card_ids"`
+		CardsByBranch map[string][]string `json:"cards_by_branch"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 		h.logger.Error("Failed to decode pull realtime request", zap.Error(err))
 		writeJSON(w, http.StatusBadRequest, Fail("Invalid request body"))
 		return
 	}
+	if body.CardsByBranch == nil {
+		body.CardsByBranch = map[string][]string{}
+	}
 
-	// 提取认证头
 	tenantID := req.Header.Get("X-Tenant-Id")
 	userID := req.Header.Get("X-User-Id")
-	userType := req.Header.Get("X-User-Type")
-	userRole := req.Header.Get("X-User-Role")
-
-	if tenantID == "" || userID == "" || userType == "" || userRole == "" {
+	if tenantID == "" || userID == "" {
 		h.logger.Error("Missing required authentication headers")
 		writeJSON(w, http.StatusUnauthorized, Fail("Missing required authentication headers"))
 		return
 	}
 
-	// 构建服务请求并调用
 	serviceReq := service.GetCardRealtimeRequest{
-		TenantID: tenantID,
-		UserID:   userID,
-		UserType: userType,
-		UserRole: userRole,
-		CardIDs:  body.CardIDs,
+		TenantID:      tenantID,
+		UserID:        userID,
+		CardsByBranch: body.CardsByBranch,
 	}
 
 	resp, err := h.realtimeSvc.GetCardRealtime(ctx, serviceReq)
@@ -341,7 +382,7 @@ func (r *Router) RegisterCardRealtimeRoutes(h *CardRealtimeHandler) {
 }
 
 // RegisterVitalFocusRoutes 注册 VitalFocus 前端 API 路由
-func (r *Router) RegisterVitalFocusRoutes(h *VitalFocusHandler) {
+func (r *Router) RegisterMonitorRoutes(h *MonitorHandler) {
 	// GET /data/api/v1/data/vital-focus/cards - 获取卡片列表
 	r.Handle("/data/api/v1/data/vital-focus/cards", func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet {
@@ -362,15 +403,16 @@ func (r *Router) RegisterVitalFocusRoutes(h *VitalFocusHandler) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		h.GetCardInfo(w, req, id)
-	})
-
-	// POST /data/api/v1/data/vital-focus/pull-realtime - 获取实时数据
-	r.Handle("/data/api/v1/data/vital-focus/pull-realtime", func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+		// 检查是否是 stream 路由
+		if strings.HasSuffix(id, "/stream") {
+			cardID := strings.TrimSuffix(id, "/stream")
+			if cardID == "" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			h.SubscribeRealtimeStream(w, req, cardID)
 			return
 		}
-		h.GetCardRealtime(w, req)
+		h.GetCardInfo(w, req, id)
 	})
 }

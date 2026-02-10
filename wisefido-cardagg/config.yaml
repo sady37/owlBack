@@ -1,0 +1,25 @@
+# wisefido-cardagg 配置文件
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "postgres"
+  password: ""
+  database: "owl"
+  sslmode: "disable"
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+logging:
+  level: "info"
+  format: "text"
+  output: "stdout"
+  filepath: "/var/log/wisefido-cardagg.log"
+
+streams:
+  default:
+    max_len: 1000
+    retention_seconds: 86400  # 24小时

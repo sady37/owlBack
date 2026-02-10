@@ -243,7 +243,7 @@ func main() {
 
 		if len(assignedResidentIDs) > 0 {
 			condition := fmt.Sprintf(
-				`(c.card_type = 'ActiveBed' AND c.resident_id = ANY($%d::uuid[]))`,
+				`(c.card_type = 'ActiveBedCard' AND c.resident_id = ANY($%d::uuid[]))`,
 				argIdx,
 			)
 			conditions = append(conditions, condition)

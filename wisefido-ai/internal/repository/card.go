@@ -28,7 +28,7 @@ func NewCardRepository(db *sql.DB, logger *zap.Logger) *CardRepository {
 type CardInfo struct {
 	CardID   string
 	TenantID string
-	CardType string // "ActiveBed" 或 "Location"
+	CardType string // "ActiveBedCard" 或 "UnitCard"
 	BedID    *string
 	UnitID   string
 	CardName string

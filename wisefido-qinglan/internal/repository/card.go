@@ -17,10 +17,12 @@ type CardRepository interface {
 	// GetDeviceCardMappings 获取指定租户的所有设备-卡片映射
 	// 返回完整对象列表：[]{DeviceID, DeviceUID, CardID, BranchID, TenantID}
 	// 用于构建 Redis Hash：field=deviceUID, value=deviceID:cardID:branchID:tenantID
-	GetDeviceCardMappings(ctx context.Context, tenantID string) ([]CardDeviceInfo, error)
+	GetDeviceCardMappings(ctx context.Context) ([]CardDeviceInfo, error)
 
 	// GetDeviceCardMappingsByBranch 获取指定租户指定分支的设备-卡片映射（租户隔离）
 	// tenantID 和 branchID 都是必填的
 	// 返回完整对象列表：[]{DeviceID, DeviceUID, CardID, BranchID, TenantID}
 	GetDeviceCardMappingsByBranch(ctx context.Context, tenantID string, branchID string) ([]CardDeviceInfo, error)
+
+
 }

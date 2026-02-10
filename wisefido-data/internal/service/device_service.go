@@ -31,34 +31,31 @@ type DeviceService interface {
 
 // deviceService 实现
 type deviceService struct {
-	devicesRepo         repository.DevicesRepository
-	cardSync            *CardSyncService // 设备/单元变更后同步卡片（Redis + config.card.*）
-	configPublisher     *publisher.ConfigPublisher
-	iotTimeSeriesClient *IoTTimeSeriesClient
-	qinglanClient       *QinglanClient
-	logger              *zap.Logger
+	devicesRepo     repository.DevicesRepository
+	cardSync        *CardSyncService // 设备/单元变更后同步卡片（Redis + config.card.*）
+	configPublisher *publisher.ConfigPublisher
+	qinglanClient   *QinglanClient
+	logger          *zap.Logger
 }
 
 // NewDeviceService 创建 DeviceService 实例
-func NewDeviceService(devicesRepo repository.DevicesRepository, cardSync *CardSyncService, iotTimeSeriesClient *IoTTimeSeriesClient, qinglanClient *QinglanClient, logger *zap.Logger) DeviceService {
+func NewDeviceService(devicesRepo repository.DevicesRepository, cardSync *CardSyncService, qinglanClient *QinglanClient, logger *zap.Logger) DeviceService {
 	return &deviceService{
-		devicesRepo:         devicesRepo,
-		cardSync:            cardSync,
-		iotTimeSeriesClient: iotTimeSeriesClient,
-		qinglanClient:       qinglanClient,
-		logger:              logger,
+		devicesRepo:   devicesRepo,
+		cardSync:      cardSync,
+		qinglanClient: qinglanClient,
+		logger:        logger,
 	}
 }
 
 // NewDeviceServiceWithPublisher 创建 DeviceService 实例（包含 ConfigPublisher 用于发送 device_store 变化信号）
-func NewDeviceServiceWithPublisher(devicesRepo repository.DevicesRepository, cardSync *CardSyncService, configPublisher *publisher.ConfigPublisher, iotTimeSeriesClient *IoTTimeSeriesClient, qinglanClient *QinglanClient, logger *zap.Logger) DeviceService {
+func NewDeviceServiceWithPublisher(devicesRepo repository.DevicesRepository, cardSync *CardSyncService, configPublisher *publisher.ConfigPublisher, qinglanClient *QinglanClient, logger *zap.Logger) DeviceService {
 	return &deviceService{
-		devicesRepo:         devicesRepo,
-		cardSync:            cardSync,
-		configPublisher:     configPublisher,
-		iotTimeSeriesClient: iotTimeSeriesClient,
-		qinglanClient:       qinglanClient,
-		logger:              logger,
+		devicesRepo:     devicesRepo,
+		cardSync:        cardSync,
+		configPublisher: configPublisher,
+		qinglanClient:   qinglanClient,
+		logger:          logger,
 	}
 }
 
@@ -314,54 +311,25 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 		return nil, fmt.Errorf("failed to update device")
 	}
 
-	// 5. 如果绑定关系变化或 monitoring_enabled 变化，触发相关服务更新
-	if req.UpdateBoundRoomID || req.UpdateBoundBedID || monitoringEnabledChanged {
-		// 5.1 如果设备绑定关系变化，清除 wisefido-iot-timeseries 的位置信息缓存
-		if s.iotTimeSeriesClient != nil && (req.UpdateBoundRoomID || req.UpdateBoundBedID) {
-			if err := s.iotTimeSeriesClient.InvalidateLocationCache(ctx, req.DeviceID); err != nil {
-				s.logger.Warn("Failed to invalidate location cache after device binding change",
-					zap.Error(err),
-					zap.String("tenant_id", req.TenantID),
-					zap.String("device_id", req.DeviceID),
-					zap.Bool("binding_changed", req.UpdateBoundRoomID || req.UpdateBoundBedID),
-				)
-				// 不返回错误，只记录警告（缓存清除失败不影响设备更新）
-			} else {
-				s.logger.Info("Invalidated location cache after device binding change",
-					zap.String("tenant_id", req.TenantID),
-					zap.String("device_id", req.DeviceID),
-					zap.Bool("binding_changed", req.UpdateBoundRoomID || req.UpdateBoundBedID),
-				)
-			}
-		}
+	// 5. 仅在 monitoring_enabled 变化时触发相关服务更新
+	if monitoringEnabledChanged {
+		// ...existing code...
 
-		// 5.2 同步该单元卡片（Redis + config.card.*）
-		if s.cardSync != nil {
+		// 仅在 monitoringEnabledChanged 时触发卡片同步
+		if monitoringEnabledChanged && s.cardSync != nil {
 			newDevice, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
 			if err != nil {
 				s.logger.Warn("Failed to get updated device for card sync", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID))
 			} else if newDevice != nil && newDevice.UnitID.Valid && newDevice.UnitID.String != "" {
 				if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, newDevice.UnitID.String); err != nil {
-					s.logger.Warn("Failed to sync cards after device change", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", newDevice.UnitID.String))
+					s.logger.Warn("Failed to sync cards after monitoring status change", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", newDevice.UnitID.String))
 				} else {
-					s.logger.Info("Synced cards after device change", zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", newDevice.UnitID.String))
+					s.logger.Info("Synced cards after monitoring status change", zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", newDevice.UnitID.String))
 				}
 			}
 		}
 
-		// 5.3 如果 monitoring_enabled 变化，发送 device_store 变化信号
-		if monitoringEnabledChanged && s.configPublisher != nil {
-			extraData := map[string]interface{}{
-				"device_id":   req.DeviceID,
-				"change_type": "device_updated",
-			}
-			if err := s.configPublisher.PublishCardChangeMessageWithExtraAndType(ctx, req.TenantID, "", "", "", rediscommon.ConfigCardDeviceStoreChanged, extraData); err != nil {
-				s.logger.Warn("Failed to publish device_store change signal for monitoring status update",
-					zap.String("device_id", req.DeviceID),
-					zap.Error(err),
-				)
-			}
-		}
+		// ...existing code...
 	}
 
 	return &UpdateDeviceResponse{

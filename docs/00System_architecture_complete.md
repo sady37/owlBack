@@ -560,4 +560,21 @@ cards 表 + card_info ─┐
 realtime (Redis)      ├── DataAggregator 聚合 ─→ vital-focus:card:{id}:full ─→ HTTP API ─→ 前端
 alarms (Redis)        ─┘
 device status        ─┘
-cards 表 + card_info ─┐realtime (Redis)      ├── DataAggregator 聚合 ─→ vital-focus:card:{id}:full ─→ HTTP API ─→ 前端alarms (Redis)        ─┘device status        
+cards 表 + card_info ─┐realtime (Redis)      ├── DataAggregator 聚合 ─→ vital-focus:card:{id}:full ─→ HTTP API ─→ 前端alarms (Redis)        ─┘device status       
+
+
+Redis Stream
+   ↓ (XREADGROUP)
+DataStreamSubscriber
+   ├─ cardRealtimeCache[cardID] → 带 Version 的 map[string]interface{}
+   ├─ cardStatusCache[cardID]  → 带 Version 的 map[string]interface{}
+   ├─ dirtySet                 → 标记哪些 card 有更新（用于 batch 推送优化）
+   ├─ cardStatusEventChan      → 即时推送 status 事件（如 alarm）
+   └─ cardRealtimeUpdated      → 实时数据变更通知（当前未在 SSE 中直接使用）
+   ↓
+CardRealtimeService（SSE 层）
+   ├─ StartStatusFanout() 消费 cardStatusEventChan → fan-out 到各 SSE 连接
+   ├─ SubscribeCardsStream()：
+   │    ├─ 连接建立 → 发送 snapshot（当前缓存最新值）
+   │    ├─ 定时 ticker（如 2s）→ 只推送 version 变化的 realtime 数据（dirty push）
+   │    └─ 同时监听 per-connection statusCh → 即时推送 status 事件（不等 ticker）

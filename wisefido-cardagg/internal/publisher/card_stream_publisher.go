@@ -23,57 +23,106 @@ func NewCardStreamPublisher(redisClient *redis.Client, logger *zap.Logger) *Card
 	}
 }
 
-// PublishCardRealtime publishes aggregated card data to iot:card:stream
-func (p *CardStreamPublisher) PublishCardRealtime(ctx context.Context, tenantID, cardID string, realtimeData *card.RealtimeData) {
-	if realtimeData == nil {
-		p.logger.Warn("cannot publish nil realtimeData", zap.String("card_id", cardID))
+// PublishCardRealTime publishes card realtime data (TrackData/VitalData) to card:realtime:stream
+// TTL: 6 seconds (high frequency updates)
+func (p *CardStreamPublisher) PublishCardRealTime(ctx context.Context, tenantID, cardID string, rtData *card.CardRealTime) {
+	if rtData == nil {
+		p.logger.Warn("cannot publish nil CardRealTime", zap.String("card_id", cardID))
 		return
 	}
 
-	message := p.buildCardStreamMessage(realtimeData)
-	streamKey := fmt.Sprintf("iot:%s:stream", tenantID)
+	message := p.buildCardRealTimeMessage(rtData)
+	streamKey := fmt.Sprintf("iot:%s:card:realtime:stream", tenantID)
 
-	streamID, err := rediscommon.PublishJSONToStream(ctx, p.redisClient, streamKey, message, 1000, 0)
+	streamID, err := rediscommon.PublishJSONToStream(ctx, p.redisClient, streamKey, message, 5000, 6)
 	if err != nil {
-		p.logger.Error("failed to publish card data to stream",
+		p.logger.Error("failed to publish card realtime data",
 			zap.String("stream_key", streamKey),
 			zap.String("card_id", cardID),
 			zap.Error(err))
 		return
 	}
 
-	p.logger.Debug("published card data to stream",
+	p.logger.Debug("published card realtime data",
 		zap.String("stream_key", streamKey),
 		zap.String("card_id", cardID),
 		zap.String("stream_id", streamID))
 }
 
-// buildCardStreamMessage constructs the message for iot:card:stream
-func (p *CardStreamPublisher) buildCardStreamMessage(realtimeData *card.RealtimeData) map[string]interface{} {
+// PublishCardStatus publishes card status data (BedState/RoomState/DeviceStatus/ActiveAlarms) to card:status:stream
+// TTL: 12 hours (low frequency updates, long retention)
+func (p *CardStreamPublisher) PublishCardStatus(ctx context.Context, tenantID, cardID string, statusData *card.CardStatus) {
+	if statusData == nil {
+		p.logger.Warn("cannot publish nil CardStatus", zap.String("card_id", cardID))
+		return
+	}
+
+	message := p.buildCardStatusMessage(statusData)
+	streamKey := fmt.Sprintf("iot:%s:card:status:stream", tenantID)
+
+	streamID, err := rediscommon.PublishJSONToStream(ctx, p.redisClient, streamKey, message, 2000, 43200)
+	if err != nil {
+		p.logger.Error("failed to publish card status data",
+			zap.String("stream_key", streamKey),
+			zap.String("card_id", cardID),
+			zap.Error(err))
+		return
+	}
+
+	p.logger.Debug("published card status data",
+		zap.String("stream_key", streamKey),
+		zap.String("card_id", cardID),
+		zap.String("stream_id", streamID))
+}
+
+// buildCardRealTimeMessage constructs the message for card:realtime:stream
+func (p *CardStreamPublisher) buildCardRealTimeMessage(rtData *card.CardRealTime) map[string]interface{} {
 	message := map[string]interface{}{
-		"topic_type": "card",
-		"card_id":    realtimeData.CardID,
-		"timestamp":  realtimeData.Timestamp,
+		"card_id":   rtData.CardID,
+		"timestamp": rtData.Timestamp,
 		"data": map[string]interface{}{
-			"bed_state":  realtimeData.BedState,
-			"room_state": realtimeData.RoomState,
-			"vital":      realtimeData.Vital,
-			"postures":   realtimeData.Postures,
+			"track_data": rtData.TrackData,
+			"vital_data": rtData.VitalData,
+		},
+	}
+	return message
+}
+
+// buildCardStatusMessage constructs the message for card:status:stream
+func (p *CardStreamPublisher) buildCardStatusMessage(statusData *card.CardStatus) map[string]interface{} {
+	message := map[string]interface{}{
+		"card_id":   statusData.CardID,
+		"timestamp": statusData.Timestamp,
+		"data": map[string]interface{}{
+			"bed_state":  statusData.BedState,
+			"room_state": statusData.RoomState,
 		},
 	}
 
 	// Add alarm data if available
-	if realtimeData.ActiveAlarms != nil {
+	if statusData.ActiveAlarms != nil {
 		message["alarms"] = map[string]interface{}{
-			"EMERG":     realtimeData.ActiveAlarms.EMERG,
-			"ALERT":     realtimeData.ActiveAlarms.ALERT,
-			"CRIT":      realtimeData.ActiveAlarms.CRIT,
-			"ERR":       realtimeData.ActiveAlarms.ERR,
-			"WARNING":   realtimeData.ActiveAlarms.WARNING,
-			"NOTICE":    realtimeData.ActiveAlarms.NOTICE,
-			"now_alarm": realtimeData.ActiveAlarms.NowAlarm,
+			"ActiveEmerg":   statusData.ActiveAlarms.ActiveEmerg,
+			"ActiveAlert":   statusData.ActiveAlarms.ActiveAlert,
+			"ActiveCrit":    statusData.ActiveAlarms.ActiveCrit,
+			"ActiveErr":     statusData.ActiveAlarms.ActiveErr,
+			"ActiveWarning": statusData.ActiveAlarms.ActiveWarning,
+			"NowAlarm":      statusData.ActiveAlarms.NowAlarm,
 		}
 	}
+
+	// DeviceStatus is now handled by wisefido-data directly
+	// (subscribe from iot:DeviceStatus stream and push to frontend)
+	// Keep DeviceStatus empty in CardStatus to avoid duplication
+	// if statusData.DeviceStatus != nil && len(statusData.DeviceStatus) > 0 {
+	// 	// Marshal DeviceStatus map to JSON for proper serialization
+	// 	if devStatusJSON, err := json.Marshal(statusData.DeviceStatus); err == nil {
+	// 		var devStatusMap map[string]interface{}
+	// 		if err := json.Unmarshal(devStatusJSON, &devStatusMap); err == nil {
+	// 			message["device_status"] = devStatusMap
+	// 		}
+	// 	}
+	// }
 
 	return message
 }

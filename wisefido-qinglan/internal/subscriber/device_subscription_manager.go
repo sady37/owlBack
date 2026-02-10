@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	constDevice "owl-common/const"
 	"wisefido-qinglan/internal/config"
 	"wisefido-qinglan/internal/consumer"
 	"wisefido-qinglan/internal/domain"
@@ -48,6 +49,11 @@ type DeviceSubscription struct {
 // MessageHandler MQTT消息处理器接口
 type MessageHandler func(topic string, payload []byte) error
 
+// RadarService 雷达服务接口，用于读取设备属性
+type RadarService interface {
+	GetDeviceProperties(ctx context.Context, deviceUID string, keys []string) (map[string]interface{}, error)
+}
+
 // DeviceSubscriptionManager 设备订阅管理器
 type DeviceSubscriptionManager struct {
 	config                   *config.Config
@@ -71,6 +77,7 @@ type DeviceSubscriptionManager struct {
 	defaultDuration          int           // 默认订阅时长（秒），默认 3600
 	stopChan                 chan struct{}
 	wg                       sync.WaitGroup
+	radarService             RadarService // 雷达服务，用于健康检查时读取设备属性
 }
 
 // NewDeviceSubscriptionManager 创建设备订阅管理器
@@ -118,6 +125,11 @@ func (m *DeviceSubscriptionManager) SetMQTTConsumer(mqttConsumer *consumer.MQTTC
 	m.mqttConsumer = mqttConsumer
 }
 
+// SetRadarService 设置雷达服务（用于健康检查时读取设备属性）
+func (m *DeviceSubscriptionManager) SetRadarService(radarService RadarService) {
+	m.radarService = radarService
+}
+
 // Start 启动订阅管理器
 func (m *DeviceSubscriptionManager) Start(ctx context.Context) error {
 	log.Println("Starting device subscription manager...")
@@ -137,6 +149,10 @@ func (m *DeviceSubscriptionManager) Start(ctx context.Context) error {
 	// 启动订阅续期goroutine
 	m.wg.Add(1)
 	go m.subscriptionRenewal(ctx)
+
+	// 启动设备健康检查goroutine（每10分钟检查一次）
+	m.wg.Add(1)
+	go m.healthCheckMonitor(ctx)
 
 	// 启动 1 分钟后检查 MQTT 队列、所有 func 并发布上线：由 mqtt_consumer.publishOnlineForConnectedAfterStartup 统一处理
 
@@ -405,7 +421,9 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 	}
 
 	// auth 成功后，立即发布 online event 到 deviceStatus stream
-	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, true)
+	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
+		constDevice.StatusFieldOnline: 1,
+	})
 	// 记录订阅状态
 	m.logger.Info("Device status changed",
 		zap.String("device_uid", deviceUID),
@@ -560,7 +578,9 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 	m.subscriptionsByUID[deviceUID] = sub
 
 	// auth 成功后，立即发布 online event 到 deviceStatus stream
-	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, true)
+	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
+		constDevice.StatusFieldOnline: 1,
+	})
 	// 记录周期订阅状态
 	m.logger.Info("Device subscription created (periodic)",
 		zap.String("device_uid", deviceUID),
@@ -678,7 +698,9 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 			deviceType := sub.DeviceType
 			tenantID := sub.TenantID
 			sub.mu.RUnlock()
-			go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, true)
+			go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, deviceUID, map[string]int{
+				constDevice.StatusFieldOnline: 1,
+			})
 		} else {
 			// 超过180秒，应该已经被取消订阅了，这里不应该发生
 			sub.mu.Unlock()
@@ -715,7 +737,9 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 			tenantID := sub.TenantID
 			sub.mu.RUnlock()
 			if deviceID != "" {
-				go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, true)
+				go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, deviceUID, map[string]int{
+					constDevice.StatusFieldOnline: 1,
+				})
 			}
 			m.logger.Info("Device subscription created (first message)",
 				zap.String("device_uid", deviceUID),
@@ -1035,7 +1059,9 @@ func (m *DeviceSubscriptionManager) markDeviceOffline(deviceUID string, _ time.T
 		)
 
 		// 发送 offline 事件到 deviceStatus stream（offline 是状态变更）
-		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, false)
+		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, sub.DeviceUID, map[string]int{
+			constDevice.StatusFieldOnline: 0,
+		})
 	} else {
 		sub.mu.Unlock()
 	}
@@ -1057,7 +1083,9 @@ func (m *DeviceSubscriptionManager) PublishOnlineForConnectedDevices(ctx context
 		if status != "online" {
 			continue
 		}
-		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, true)
+		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, deviceUID, map[string]int{
+			constDevice.StatusFieldOnline: 1,
+		})
 		published++
 	}
 	m.logger.Info("Published online notification for connected devices after startup",

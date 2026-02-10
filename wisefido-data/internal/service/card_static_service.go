@@ -2,365 +2,275 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"sort"
-	"strings"
 
 	commoncard "owl-common/card"
-	"wisefido-data/internal/repository"
-	"wisefido-data/internal/store"
+	"wisefido-data/internal/models"
 
+	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
-const staticKeyPrefix = "vital-focus:card:"
-const staticKeySuffix = ":static"
-
-// AllowedCardIDsProvider 提供用户有权查看的卡片 ID 列表
-type AllowedCardIDsProvider interface {
-	GetAllowedCardIDs(ctx context.Context, tenantID, userID, userType, userRole string) ([]string, error)
-	// GetAllowedCardIDsByBranches 按 branch 分组返回，用于 Redis 缓存
-	GetAllowedCardIDsByBranches(ctx context.Context, tenantID, userID, userType, userRole string) (map[string][]string, error)
-}
-
-// ListVitalFocusCardInfoRequest 后端专用：静态卡片列表，不对前端开放，不作安全检查
-// 仅限本机内部调用（handler 需根据 IsRequestFromLocalhost 限制入口）
-type ListVitalFocusCardInfoRequest struct {
-	TenantID string // 必填；"*" 表示查询所有租户，不按 tenant 筛选
-	BranchID string // 可选
-	UnitID   string // 可选
-	CardID   string // 可选，限制为特定卡片ID
-}
-
-// UserCardsCacheProvider 可选：用户卡片缓存，nil 时不使用缓存
-type UserCardsCacheProvider interface {
-	Get(ctx context.Context, tenantID, userID string, branchIDs []string) ([]string, error)
-	Set(ctx context.Context, tenantID, userID string, byBranch map[string][]string) error
-	GetBranchIDsFromIndex(ctx context.Context, tenantID, userID string) ([]string, error)
-}
-
 // CardStaticService 静态卡片服务
+// login 时查一次 DB，返回 VitalFocusCardInfo 列表，并推 cardList 给 realtime
 type CardStaticService struct {
-	kv             store.KV
-	unitsRepo      repository.UnitsRepository
-	perm           AllowedCardIDsProvider         // 权限校验
-	userCardsCache UserCardsCacheProvider         // 可选，nil 时直接计算
-	residentsRepo  repository.ResidentsRepository // 用于查询 resident_caregivers 等表
-	logger         *zap.Logger
+	db              *sql.DB
+	allowedProvider AllowedCardIDsProvider
+	realtime        *CardRealtimeService
+	logger          *zap.Logger
 }
 
-// NewCardStaticService 创建静态卡片服务；userCardsCache 可选，nil 时不使用缓存
+// NewCardStaticService 创建静态卡片服务
 func NewCardStaticService(
-	kv store.KV,
-	unitsRepo repository.UnitsRepository,
-	perm AllowedCardIDsProvider,
-	userCardsCache UserCardsCacheProvider,
-	residentsRepo repository.ResidentsRepository,
+	db *sql.DB,
+	allowedProvider AllowedCardIDsProvider,
+	realtime *CardRealtimeService,
 	logger *zap.Logger,
 ) *CardStaticService {
-	return &CardStaticService{kv: kv, unitsRepo: unitsRepo, perm: perm, userCardsCache: userCardsCache, residentsRepo: residentsRepo, logger: logger}
+	return &CardStaticService{
+		db:              db,
+		allowedProvider: allowedProvider,
+		realtime:        realtime,
+		logger:          logger,
+	}
 }
 
-// ListVitalFocusCardInfo 后端专用：从 cache 获取静态卡片列表，仅按 tenant/branch/unit 过滤，不做用户权限校验
-func (s *CardStaticService) ListVitalFocusCardInfo(ctx context.Context, req ListVitalFocusCardInfoRequest) ([]commoncard.VitalFocusCardInfo, error) {
-	if req.TenantID == "" {
-		return nil, fmt.Errorf("tenant_id is required")
-	}
-	return s.listCardsWithFilter(ctx, req, nil)
-}
-
-// ListCards 获取当前用户有权查看的卡片简化列表
-// branchIDs 为空时返回所有可访问的卡片，不为空时只返回指定 branch 下的卡片
-func (s *CardStaticService) ListCards(ctx context.Context, tenantID, userID, userRole string, branchIDs []string) ([]commoncard.CardIndexItem, error) {
-	if tenantID == "" || userID == "" {
-		return nil, fmt.Errorf("tenant_id, user_id are required")
-	}
-	if s.perm == nil {
-		return nil, fmt.Errorf("permission provider not configured")
+// GetCardList 获取卡片列表（满足 cardServiceInterface）
+// 1. context 取 userType
+// 2. allowedProvider.GetCardList → card_id[]
+// 3. SQL JOIN 查出 VitalFocusCardInfo
+// 4. 推 cardList 给 realtime
+// 5. 分页返回
+func (s *CardStaticService) GetCardList(ctx context.Context, tenantID, userID, userRole string, branchIDs []string, page, pageSize int) ([]commoncard.VitalFocusCardInfo, *models.BackendPagination, error) {
+	// 1. 从 context 取 userType
+	_, _, userType, _, _ := GetSessionFromContext(ctx)
+	if userType == "" {
+		userType = "staff"
 	}
 
-	// 获取用户有权访问的所有 card IDs
-	allowedIDs, err := s.perm.GetAllowedCardIDs(ctx, tenantID, userID, "staff", userRole)
+	// 2. 获取允许的 CardList（按 branch 分组）
+	cardList, err := s.allowedProvider.GetCardList(ctx, tenantID, userID, userType)
 	if err != nil {
-		return nil, fmt.Errorf("get allowed card IDs: %w", err)
+		return nil, nil, fmt.Errorf("get allowed card list: %w", err)
+	}
+	allCardIDs := cardList.AllCardIDs()
+	if len(allCardIDs) == 0 {
+		return nil, &models.BackendPagination{Page: page, Size: pageSize, Count: 0}, nil
 	}
 
-	if len(allowedIDs) == 0 {
-		return []commoncard.CardIndexItem{}, nil
+	// 3. 推 cardList 给 realtime（更新允许清单）
+	if s.realtime != nil {
+		s.realtime.UpdateCardList(cardList, userType)
 	}
 
-	allowedSet := make(map[string]bool, len(allowedIDs))
-	for _, id := range allowedIDs {
+	// 4. SQL JOIN 查询，带 branchIDs 过滤 + 分页
+	cards, total, err := s.queryCardsByIDs(ctx, allCardIDs, branchIDs, page, pageSize)
+	if err != nil {
+		return nil, nil, fmt.Errorf("query cards: %w", err)
+	}
+
+	pagination := &models.BackendPagination{
+		Page:  page,
+		Size:  pageSize,
+		Count: total,
+	}
+
+	s.logger.Info("GetCardList",
+		zap.String("user_id", userID),
+		zap.String("tenant_id", tenantID),
+		zap.Int("allowed", len(allCardIDs)),
+		zap.Int("total", total),
+		zap.Int("returned", len(cards)),
+	)
+
+	return cards, pagination, nil
+}
+
+// GetCardInfo 获取单张卡片详情（权限内）
+func (s *CardStaticService) GetCardInfo(ctx context.Context, tenantID, userID, cardID string) (*commoncard.VitalFocusCardInfo, error) {
+	_, _, userType, _, _ := GetSessionFromContext(ctx)
+	if userType == "" {
+		userType = "staff"
+	}
+	cardList, err := s.allowedProvider.GetCardList(ctx, tenantID, userID, userType)
+	if err != nil {
+		return nil, fmt.Errorf("get allowed card list: %w", err)
+	}
+	allowed := make(map[string]bool)
+	for _, id := range cardList.AllCardIDs() {
+		allowed[id] = true
+	}
+	if !allowed[cardID] {
+		return nil, fmt.Errorf("card not found or no permission")
+	}
+	cards, _, err := s.queryCardsByIDs(ctx, []string{cardID}, nil, 1, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(cards) == 0 {
+		return nil, fmt.Errorf("card not found")
+	}
+	return &cards[0], nil
+}
+
+// GetCardsByCardIDs 根据 cardID 列表直接查询 VitalFocusCardInfo（无分页）
+// 用于前端收到 card_change 事件后，按 add/update 的 cardID 拉取静态数据
+// 权限校验：用 realtime 已存储的 CardList，不重查 DB
+func (s *CardStaticService) GetCardsByCardIDs(ctx context.Context, tenantID, userID string, cardIDs []string) ([]commoncard.VitalFocusCardInfo, error) {
+	if len(cardIDs) == 0 {
+		return nil, nil
+	}
+
+	// 权限校验：从 realtime 取已存储的 CardList
+	stored := s.realtime.getCardList(tenantID, userID)
+	if stored == nil {
+		return nil, fmt.Errorf("no stored card list, please call GetCardList first")
+	}
+	allowedSet := make(map[string]bool)
+	for _, id := range stored.AllCardIDs() {
 		allowedSet[id] = true
 	}
 
-	// 构建 branch filter
-	var branchFilter map[string]bool
+	var validIDs []string
+	for _, id := range cardIDs {
+		if allowedSet[id] {
+			validIDs = append(validIDs, id)
+		}
+	}
+	if len(validIDs) == 0 {
+		return nil, nil
+	}
+
+	cards, _, err := s.queryCardsByIDs(ctx, validIDs, nil, 1, len(validIDs))
+	if err != nil {
+		return nil, err
+	}
+	return cards, nil
+}
+
+// queryCardsByIDs 用 card_id[] 做联合查询，直接组装 VitalFocusCardInfo
+func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []string, branchIDs []string, page, pageSize int) ([]commoncard.VitalFocusCardInfo, int, error) {
+	// 构建查询
+	query := `
+		SELECT
+			c.card_id::text, c.tenant_id::text, c.card_type, c.card_name, c.card_address,
+			c.bed_id::text, c.unit_id::text, c.timezone,
+			c.devices, c.residents,
+			COALESCE(c.icon_alarm_level, 3), COALESCE(c.pop_alarm_emerge, 0),
+			COALESCE(u.branch_id::text, '')   AS branch_id,
+			COALESCE(b.branch_name, '')       AS branch_name,
+			COALESCE(u.unit_name, '')         AS unit_name,
+			COALESCE(bed.bed_name, '')        AS bed_name,
+			COALESCE(room.room_id::text, '')  AS room_id,
+			COALESCE(room.room_name, '')      AS room_name,
+			COUNT(*) OVER()                   AS total_count
+		FROM cards c
+		LEFT JOIN units u    ON c.unit_id = u.unit_id
+		LEFT JOIN branches b ON u.branch_id = b.branch_id
+		LEFT JOIN beds bed   ON c.bed_id = bed.bed_id
+		LEFT JOIN rooms room ON bed.room_id = room.room_id
+		WHERE c.card_id = ANY($1::uuid[])
+	`
+	args := []any{pq.Array(cardIDs)}
+	argIdx := 2
+
 	if len(branchIDs) > 0 {
-		branchFilter = make(map[string]bool, len(branchIDs))
-		for _, bid := range branchIDs {
-			branchFilter[bid] = true
-		}
+		query += fmt.Sprintf(` AND u.branch_id = ANY($%d::uuid[])`, argIdx)
+		args = append(args, pq.Array(branchIDs))
+		argIdx++
 	}
 
-	// 从 Redis 扫描所有卡片
-	keys, err := s.kv.ScanKeys(ctx, staticKeyPrefix+"*"+staticKeySuffix)
+	query += ` ORDER BY c.card_address ASC`
+
+	offset := (page - 1) * pageSize
+	query += fmt.Sprintf(` LIMIT $%d OFFSET $%d`, argIdx, argIdx+1)
+	args = append(args, pageSize, offset)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("scan static cache keys: %w", err)
+		return nil, 0, fmt.Errorf("query cards: %w", err)
 	}
+	defer rows.Close()
 
-	items := make([]commoncard.CardIndexItem, 0, len(keys))
-	for _, key := range keys {
-		cardID := extractCardIDFromStaticKey(key)
-		if cardID == "" || !allowedSet[cardID] {
-			continue
+	var cards []commoncard.VitalFocusCardInfo
+	var totalCount int
+
+	for rows.Next() {
+		var (
+			cardID, tenantID, cardType, cardName, cardAddress string
+			bedID, unitID, timezone                           sql.NullString
+			devicesJSON, residentsJSON                        []byte
+			iconAlarmLevel, popAlarmEmerge                    int
+			branchID, branchName, unitName                    string
+			bedName, roomID, roomName                         string
+		)
+
+		if err := rows.Scan(
+			&cardID, &tenantID, &cardType, &cardName, &cardAddress,
+			&bedID, &unitID, &timezone,
+			&devicesJSON, &residentsJSON,
+			&iconAlarmLevel, &popAlarmEmerge,
+			&branchID, &branchName, &unitName,
+			&bedName, &roomID, &roomName,
+			&totalCount,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan card row: %w", err)
 		}
 
-		raw, err := s.kv.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, store.ErrMiss) {
-				continue
-			}
-			s.logger.Warn("get static cache failed", zap.String("key", key), zap.Error(err))
-			continue
+		card := commoncard.VitalFocusCardInfo{
+			CardID:      cardID,
+			TenantID:    tenantID,
+			CardType:    cardType,
+			CardName:    cardName,
+			CardAddress: cardAddress,
+			BranchID:    branchID,
+			BranchName:  branchName,
+			Timezone:    timezone.String,
 		}
 
-		var card commoncard.VitalFocusCardInfo
-		if err := json.Unmarshal([]byte(raw), &card); err != nil {
-			s.logger.Debug("unmarshal static card failed", zap.String("key", key), zap.Error(err))
-			continue
+		if unitID.Valid {
+			card.UnitID = unitID.String
+			card.UnitName = unitName
 		}
-
-		// 按 tenant 过滤
-		if card.TenantID != tenantID {
-			continue
-		}
-
-		// 按 branch 过滤
-		if branchFilter != nil && !branchFilter[card.BranchID] {
-			continue
-		}
-
-		// 转换为 CardIndexItem
-		deviceIDs := extractDeviceIDs(card.Devices)
-		item := commoncard.CardIndexItem{
-			CardID:            card.CardID,
-			CardName:          card.CardName,
-			CardAddress:       card.CardAddress,
-			BranchID:          card.BranchID,
-			IconAlarmLevel:    derefInt(card.IconAlarmLevel),
-			PopAlarmEmerge:    derefInt(card.PopAlarmEmerge),
-			DeviceIDs:         deviceIDs,
-			PrimaryResidentID: card.PrimaryResidentID,
-		}
-		items = append(items, item)
-	}
-
-	return items, nil
-}
-
-// GetCardInfo 获取单个卡片的完整详情（用户需有权限）
-func (s *CardStaticService) GetCardInfo(ctx context.Context, tenantID, userID, userRole, cardID string) (*commoncard.VitalFocusCardInfo, error) {
-	if tenantID == "" || userID == "" || cardID == "" {
-		return nil, fmt.Errorf("tenant_id, user_id, card_id are required")
-	}
-	if s.perm == nil {
-		return nil, fmt.Errorf("permission provider not configured")
-	}
-
-	// 检查用户权限
-	allowedIDs, err := s.perm.GetAllowedCardIDs(ctx, tenantID, userID, "staff", userRole)
-	if err != nil {
-		return nil, fmt.Errorf("get allowed card IDs: %w", err)
-	}
-
-	allowed := false
-	for _, id := range allowedIDs {
-		if id == cardID {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		return nil, fmt.Errorf("user does not have permission to access this card")
-	}
-
-	// 从 Redis 读取卡片详情
-	key := staticKeyPrefix + cardID + staticKeySuffix
-	raw, err := s.kv.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, store.ErrMiss) {
-			return nil, fmt.Errorf("card not found")
-		}
-		return nil, fmt.Errorf("get card from cache: %w", err)
-	}
-
-	var card commoncard.VitalFocusCardInfo
-	if err := json.Unmarshal([]byte(raw), &card); err != nil {
-		return nil, fmt.Errorf("unmarshal card: %w", err)
-	}
-
-	// 再次验证 tenant
-	if card.TenantID != tenantID {
-		return nil, fmt.Errorf("card tenant mismatch")
-	}
-
-	return &card, nil
-}
-
-// getAllowedCardIDsWithCache 优先读缓存，miss 时重算并写入
-func (s *CardStaticService) getAllowedCardIDsWithCache(ctx context.Context, tenantID, userID, userType, userRole string) ([]string, error) {
-	if s.userCardsCache == nil {
-		return s.perm.GetAllowedCardIDs(ctx, tenantID, userID, userType, userRole)
-	}
-	branchIDs, err := s.userCardsCache.GetBranchIDsFromIndex(ctx, tenantID, userID)
-	if err != nil {
-		return nil, err
-	}
-	if len(branchIDs) == 0 {
-		// index miss：重算并写入
-		byBranch, err := s.perm.GetAllowedCardIDsByBranches(ctx, tenantID, userID, userType, userRole)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.userCardsCache.Set(ctx, tenantID, userID, byBranch); err != nil {
-			s.logger.Warn("set user cards cache failed", zap.String("user_id", userID), zap.Error(err))
-		}
-		return s.perm.GetAllowedCardIDs(ctx, tenantID, userID, userType, userRole)
-	}
-	ids, err := s.userCardsCache.Get(ctx, tenantID, userID, branchIDs)
-	if err != nil {
-		return nil, err
-	}
-	if ids == nil {
-		// 任一 branch miss：重算并写入
-		byBranch, err := s.perm.GetAllowedCardIDsByBranches(ctx, tenantID, userID, userType, userRole)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.userCardsCache.Set(ctx, tenantID, userID, byBranch); err != nil {
-			s.logger.Warn("set user cards cache failed", zap.String("user_id", userID), zap.Error(err))
-		}
-		return s.perm.GetAllowedCardIDs(ctx, tenantID, userID, userType, userRole)
-	}
-	return ids, nil
-}
-
-func idsToSet(ids []string) map[string]bool {
-	m := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		m[id] = true
-	}
-	return m
-}
-
-// listCardsWithFilter 内部方法：按 tenant/branch/unit 过滤，并按 allowedCardIDs 过滤（nil 表示不过滤）
-func (s *CardStaticService) listCardsWithFilter(ctx context.Context, req ListVitalFocusCardInfoRequest, allowedCardIDs map[string]bool) ([]commoncard.VitalFocusCardInfo, error) {
-	var unitIDsInBranch map[string]bool
-	// Branch 过滤需具体 tenant；TenantID="*" 时跳过（units 表按 tenant 隔离）
-	if req.BranchID != "" && req.TenantID != "*" && s.unitsRepo != nil {
-		units, _, err := s.unitsRepo.ListUnits(ctx, req.TenantID, repository.UnitFilters{BranchID: req.BranchID}, 1, 5000)
-		if err != nil {
-			return nil, fmt.Errorf("list units by branch: %w", err)
-		}
-		unitIDsInBranch = make(map[string]bool, len(units))
-		for _, u := range units {
-			if u != nil && u.UnitID != "" {
-				unitIDsInBranch[u.UnitID] = true
+		if bedID.Valid {
+			card.BedID = &bedID.String
+			if bedName != "" {
+				card.BedName = &bedName
 			}
 		}
-	}
-	keys, err := s.kv.ScanKeys(ctx, staticKeyPrefix+"*"+staticKeySuffix)
-	if err != nil {
-		return nil, fmt.Errorf("scan static cache keys: %w", err)
-	}
-	out := make([]commoncard.VitalFocusCardInfo, 0, len(keys))
-	for _, key := range keys {
-		cardID := extractCardIDFromStaticKey(key)
-		if cardID == "" {
-			continue
+		if roomID != "" {
+			card.Rooms = []commoncard.RoomIdentifier{{RoomID: roomID, RoomName: roomName}}
+		}
+		if iconAlarmLevel > 0 {
+			card.IconAlarmLevel = &iconAlarmLevel
+		}
+		if popAlarmEmerge > 0 {
+			card.PopAlarmEmerge = &popAlarmEmerge
 		}
 
-		// 按 CardID 过滤
-		if req.CardID != "" && cardID != req.CardID {
-			continue
-		}
-
-		raw, err := s.kv.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, store.ErrMiss) {
-				continue
+		// 展开 devices JSONB
+		if len(devicesJSON) > 0 {
+			var devices []commoncard.DeviceInfo
+			if json.Unmarshal(devicesJSON, &devices) == nil {
+				card.Devices = devices
 			}
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-				return nil, err
+		}
+		// 展开 residents JSONB
+		if len(residentsJSON) > 0 {
+			var residents []commoncard.ResidentInfo
+			if json.Unmarshal(residentsJSON, &residents) == nil {
+				card.Residents = residents
 			}
-			s.logger.Warn("get static cache failed", zap.String("key", key), zap.Error(err))
-			continue
 		}
-		var card commoncard.VitalFocusCardInfo
-		if err := json.Unmarshal([]byte(raw), &card); err != nil {
-			s.logger.Debug("unmarshal static card failed", zap.String("key", key), zap.Error(err))
-			continue
-		}
-		if req.TenantID != "*" && card.TenantID != req.TenantID {
-			continue
-		}
-		if req.UnitID != "" && card.UnitID != req.UnitID {
-			continue
-		}
-		if len(unitIDsInBranch) > 0 && !unitIDsInBranch[card.UnitID] {
-			continue
-		}
-		if allowedCardIDs != nil && !allowedCardIDs[card.CardID] {
-			continue
-		}
-		out = append(out, card)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CardID < out[j].CardID })
-	return out, nil
-}
 
-func extractCardIDFromStaticKey(key string) string {
-	if !strings.HasPrefix(key, staticKeyPrefix) || !strings.HasSuffix(key, staticKeySuffix) {
-		return ""
+		cards = append(cards, card)
 	}
-	return key[len(staticKeyPrefix) : len(key)-len(staticKeySuffix)]
-}
 
-// extractDeviceIDs 从 DeviceInfo 数组提取 device_id 列表
-func extractDeviceIDs(devices []commoncard.DeviceInfo) []string {
-	if len(devices) == 0 {
-		return nil
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate rows: %w", err)
 	}
-	ids := make([]string, 0, len(devices))
-	for _, d := range devices {
-		if d.DeviceID != "" {
-			ids = append(ids, d.DeviceID)
-		}
-	}
-	return ids
-}
 
-// derefInt 将 *int 转换为 int，nil 时返回 0
-func derefInt(p *int) int {
-	if p == nil {
-		return 0
-	}
-	return *p
-}
-
-// normPage 规范化分页参数（保留以支持其他地方的使用）
-func normPage(page, pageSize int) (int, int) {
-	if page <= 0 {
-		page = 1
-	}
-	if pageSize <= 0 {
-		pageSize = 30
-	}
-	if pageSize > 30 {
-		pageSize = 30
-	}
-	return page, pageSize
+	return cards, totalCount, nil
 }

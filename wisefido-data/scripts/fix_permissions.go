@@ -127,9 +127,15 @@ func main() {
 		FROM cards
 		WHERE tenant_id = $1
 		  AND (
-			(card_type = 'ActiveBed' AND resident_id::text = $2)
+			(card_type = 'ActiveBedCard' AND resident_id::text = $2)
 			OR
 			(card_type = 'Location' AND (
+				(residents->0->>'resident_id')::text = $2
+				OR
+				(jsonb_array_length(residents) >= 2 AND (residents->1->>'resident_id')::text = $2)
+			))
+			OR
+			(card_type = 'UnitCard' AND (
 				(residents->0->>'resident_id')::text = $2
 				OR
 				(jsonb_array_length(residents) >= 2 AND (residents->1->>'resident_id')::text = $2)
