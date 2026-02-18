@@ -252,7 +252,7 @@ func decodeRadarMonitor(data map[string]interface{}) (interface{}, error) {
 	if trackBase64 != "" {
 		trackDataList, err := decodeMonitorTrackFromBase64(trackBase64)
 		if err == nil {
-			for i, trackData := range trackDataList {
+			for _, trackData := range trackDataList {
 				trackObj := map[string]interface{}{
 					"category":       "track",
 					"target_id":      trackData.TargetID,
@@ -262,11 +262,11 @@ func decodeRadarMonitor(data map[string]interface{}) (interface{}, error) {
 					"remaining_time": trackData.RemainingTime,
 					"area_id":        trackData.AreaID,
 				}
-				trackObj["pose"] = trackData.Pose
-				trackObj["event"] = trackData.Event
-				if i == len(trackDataList)-1 {
-					trackObj["raw_original"] = trackBase64
-				}
+			trackObj["pose"] = trackData.Pose
+			trackObj["event"] = trackData.Event
+			// if i == len(trackDataList)-1 {
+			// 	trackObj["raw_original"] = trackBase64
+			// }
 				dataValue = append(dataValue, trackObj)
 				log.Printf("[MONITOR_TRACK] target_id=%d position_x=%d position_y=%d position_z=%d remaining_time=%d area_id=%d pose=%d event=%d",
 					trackData.TargetID, trackData.PositionX, trackData.PositionY, trackData.PositionZ,
@@ -295,12 +295,13 @@ func decodeRadarMonitor(data map[string]interface{}) (interface{}, error) {
 				"vital_flag":       vitalData.VitalFlag,
 				"respiratory_rate": vitalData.RespiratoryRate,
 				"heart_rate":       vitalData.HeartRate,
-				"raw_original":     bhBase64,
+				// "raw_original":     bhBase64,
 			}
 			vitalObj["sleep_status"] = vitalData.SleepStatus
 			vitalObj["stability"] = vitalData.Stability
 			dataValue = append(dataValue, vitalObj)
-		}
+			log.Printf("[MONITOR_VITAL] vital_flag=%d heart_rate=%d respiratory_rate=%d sleep_status=%d stability=%d",
+				vitalData.VitalFlag, vitalData.HeartRate, vitalData.RespiratoryRate, vitalData.SleepStatus, vitalData.Stability)		}
 	}
 
 	if len(dataValue) == 0 {
@@ -356,7 +357,7 @@ func decodeRadarStat(data map[string]interface{}) (interface{}, error) {
 				"lie_duration":          trackData.LieDuration,
 				"stand_duration":        trackData.StandDuration,
 				"multi_person_duration": trackData.MultiPersonDuration,
-				"raw_original":          trackBase64,
+				// "raw_original":          trackBase64,
 			}
 			dataValue = append(dataValue, trackObj)
 		}
@@ -417,7 +418,7 @@ func decodeRadarStat(data map[string]interface{}) (interface{}, error) {
 				"heart_rate":           sleepData.HeartRate,
 				"avg_respiratory_rate": sleepData.AvgRespiratoryRate,
 				"avg_heart_rate":       sleepData.AvgHeartRate,
-				"raw_original":         sleepBase64,
+				// "raw_original":         sleepBase64,
 			}
 			sleepObj["breath_state"] = sleepData.BreathStatus
 			sleepObj["heart_state"] = sleepData.HeartStatus
@@ -519,30 +520,70 @@ func buildEventObjectFromType(eventType int, eventMap map[string]interface{}) ma
 
 	switch eventType {
 	case 1:
-		// type=1: 进出事件 → category="enter2out"
-		eventObj["category"] = "enter2out"
+		// type=1: 进出事件
+		// event: 1=进入房间 2=离开房间 3=进入区域 4=离开区域 5=进入监护 6=退出监护
 		eventObj["event_type"] = "1"
 		if trackID, ok := eventMap["track-id"]; ok {
 			eventObj["track_id"] = trackID
 		} else if trackID, ok := eventMap["track_id"]; ok {
 			eventObj["track_id"] = trackID
 		}
+
+		eventVal := 0
 		if event, ok := eventMap["event"]; ok {
-			if eventInt, ok := event.(int); ok {
-				eventObj["event_raw"] = fmt.Sprintf("%d", eventInt)
-			} else if eventStr, ok := event.(string); ok {
-				eventObj["event_raw"] = eventStr
+			switch v := event.(type) {
+			case int:
+				eventVal = v
+			case float64:
+				eventVal = int(v)
+			case string:
+				fmt.Sscanf(v, "%d", &eventVal)
 			}
 			eventObj["event"] = event
+			eventObj["event_raw"] = fmt.Sprintf("%d", eventVal)
 		}
+
+		areaTypeVal := 0
 		if areaType, ok := eventMap["area_type"]; ok {
-			if areaTypeInt, ok := areaType.(int); ok {
-				eventObj["area_type_raw"] = fmt.Sprintf("%d", areaTypeInt)
-			} else if areaTypeStr, ok := areaType.(string); ok {
-				eventObj["area_type_raw"] = areaTypeStr
+			switch v := areaType.(type) {
+			case int:
+				areaTypeVal = v
+			case float64:
+				areaTypeVal = int(v)
+			case string:
+				fmt.Sscanf(v, "%d", &areaTypeVal)
 			}
 			eventObj["area_type"] = mapAreaType(areaType)
+			eventObj["area_type_raw"] = fmt.Sprintf("%d", areaTypeVal)
 		}
+
+		switch eventVal {
+		case 1:
+			eventObj["category"] = "InRoom"
+		case 2:
+			eventObj["category"] = "OutRoom"
+		case 3:
+			switch areaTypeVal {
+			case 6:
+				eventObj["category"] = "InWarnArea"
+			default:
+				eventObj["category"] = "InBed"
+			}
+		case 4:
+			switch areaTypeVal {
+			case 6:
+				eventObj["category"] = "OutWarnArea"
+			default:
+				eventObj["category"] = "OutBed"
+			}
+		case 5:
+			eventObj["category"] = "EnterMonitor"
+		case 6:
+			eventObj["category"] = "ExitMonitor"
+		default:
+			eventObj["category"] = "enter2out"
+		}
+
 		excludedKeys := map[string]bool{"track-id": true, "track_id": true, "event": true, "area_type": true}
 		for k, v := range eventMap {
 			if _, exists := eventObj[k]; !exists && !excludedKeys[k] {
@@ -585,78 +626,69 @@ func buildEventObjectFromType(eventType int, eventMap map[string]interface{}) ma
 			}
 		}
 	case 5:
-		eventObj["category"] = "isOnline"
+		// OfflineAlarm: StatusFieldValue="1"(离线) / "0"(在线)
+		// isOnline 原始值：0=在线, 非0=离线 → 翻转为 offline 语义
+		eventObj["category"] = "OfflineAlarm"
+		eventObj["event_type"] = "5"
+		eventObj["StatusFieldValue"] = "0" // 默认在线
 		if isOnline, ok := eventMap["isOnline"]; ok {
-			if isOnlineInt, ok := isOnline.(int); ok {
-				if isOnlineInt == 0 {
-					eventObj["device_status"] = "online"
-				} else {
-					eventObj["device_status"] = "offline"
+			switch v := isOnline.(type) {
+			case int:
+				if v != 0 {
+					eventObj["StatusFieldValue"] = "1" // isOnline≠0 → 离线
 				}
-			} else if isOnlineStr, ok := isOnline.(string); ok {
-				if isOnlineStr == "0" {
-					eventObj["device_status"] = "online"
-				} else {
-					eventObj["device_status"] = "offline"
+			case string:
+				if v != "0" {
+					eventObj["StatusFieldValue"] = "1"
 				}
-			} else {
-				eventObj["isOnline"] = isOnline
 			}
 		}
-		excludedKeys := map[string]bool{"isOnline": true}
 		for k, v := range eventMap {
-			if k != "category" && !excludedKeys[k] {
+			if k != "category" && k != "isOnline" {
 				eventObj[k] = v
 			}
 		}
 	case 7:
-		eventObj["category"] = "signal_poor"
+		// SignalPoor: StatusFieldValue="1"(异常) / "0"(恢复)
+		eventObj["category"] = "SignalPoor"
+		eventObj["event_type"] = "7"
+		eventObj["StatusFieldValue"] = "1" // 默认异常
 		if recovery, ok := eventMap["recovery"]; ok {
-			if recoveryInt, ok := recovery.(int); ok {
-				if recoveryInt == 0 {
-					eventObj["recovery"] = "signal_poor"
-				} else {
-					eventObj["recovery"] = "signal_recovery"
+			switch v := recovery.(type) {
+			case int:
+				if v != 0 {
+					eventObj["StatusFieldValue"] = "0" // recovery=非0 → 恢复
 				}
-			} else if recoveryStr, ok := recovery.(string); ok {
-				if recoveryStr == "0" {
-					eventObj["recovery"] = "signal_poor"
-				} else {
-					eventObj["recovery"] = "signal_recovery"
+			case string:
+				if v != "0" {
+					eventObj["StatusFieldValue"] = "0"
 				}
-			} else {
-				eventObj["recovery"] = recovery
 			}
 		}
-		excludedKeys := map[string]bool{"recovery": true}
 		for k, v := range eventMap {
-			if k != "category" && !excludedKeys[k] {
+			if k != "category" && k != "recovery" {
 				eventObj[k] = v
 			}
 		}
 	case 8:
-		eventObj["category"] = "angle_abnormal"
+		// AngleException: StatusFieldValue="1"(异常) / "0"(恢复)
+		eventObj["category"] = "AngleException"
 		eventObj["event_type"] = "8"
+		eventObj["StatusFieldValue"] = "1" // 默认异常
 		if recovery, ok := eventMap["recovery"]; ok {
-			if recoveryInt, ok := recovery.(int); ok {
-				if recoveryInt == 0 {
-					eventObj["recovery"] = "angle_abnormal"
-				} else {
-					eventObj["recovery"] = "angle_recovery"
+			switch v := recovery.(type) {
+			case int:
+				if v != 0 {
+					eventObj["StatusFieldValue"] = "0"
 				}
-			} else if recoveryStr, ok := recovery.(string); ok {
-				if recoveryStr == "0" {
-					eventObj["recovery"] = "angle_abnormal"
-				} else {
-					eventObj["recovery"] = "angle_recovery"
+			case string:
+				if v != "0" {
+					eventObj["StatusFieldValue"] = "0"
 				}
-			} else {
-				eventObj["recovery"] = recovery
 			}
 		}
-		excludedKeys := map[string]bool{"recovery": true}
 		for k, v := range eventMap {
-			if k != "category" && !excludedKeys[k] {
+			if k != "category" && k != "recovery" {
 				eventObj[k] = v
 			}
 		}

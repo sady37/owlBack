@@ -1,7 +1,7 @@
 package domain
 
-// SleepaceReport Sleepace 睡眠报告领域模型
-// 参考：wisefido-backend/wisefido-sleepace/models/report.go
+// SleepadReport Sleepad 睡眠报告领域模型
+// 参考：wisefido-backend/wisefido-Sleepad/models/report.go
 type SleepaceReport struct {
 	ReportID    string `json:"report_id"`    // UUID
 	TenantID    string `json:"tenant_id"`   // UUID

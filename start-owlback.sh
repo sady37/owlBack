@@ -44,64 +44,20 @@ if ! command -v go &> /dev/null; then
     exit 1
 fi
 
-# 检查是否有服务正在运行
+# 检查是否有服务正在运行（只看端口）
 check_running_services() {
-    local data_running=false
-    local aggregator_running=false
-    local qinglan_running=false
-    local iot_running=false
-    local ai_running=false
-    
-    # 检查 wisefido-data
-    if pgrep -f "go run.*wisefido-data" > /dev/null 2>&1 || \
-       pgrep -f "wisefido-data" > /dev/null 2>&1 || \
-       (command -v lsof &> /dev/null && lsof -ti :8080 > /dev/null 2>&1); then
-        data_running=true
-    fi
-    
-    # 检查 wisefido-cardagg
-    if pgrep -f "go run.*wisefido-cardagg" > /dev/null 2>&1 || \
-       pgrep -f "wisefido-cardagg" > /dev/null 2>&1; then
-        aggregator_running=true
-    fi
-    
-    # 检查 wisefido-qinglan
-    if pgrep -f "go run.*wisefido-qinglan" > /dev/null 2>&1 || \
-       pgrep -f "wisefido-qinglan" > /dev/null 2>&1 || \
-       (command -v lsof &> /dev/null && lsof -ti :8081 > /dev/null 2>&1); then
-        qinglan_running=true
-    fi
-    
-    # 检查 wisefido-iot
-    if pgrep -f "go run.*wisefido-iot" > /dev/null 2>&1 || \
-       pgrep -f "wisefido-iot" > /dev/null 2>&1; then
-        iot_running=true
-    fi
-    
-    # 检查 wisefido-ai
-    if pgrep -f "go run.*wisefido-ai" > /dev/null 2>&1 || \
-       pgrep -f "wisefido-ai" > /dev/null 2>&1; then
-        ai_running=true
-    fi
-    
-    if [ "$data_running" = true ] || [ "$aggregator_running" = true ] || \
-       [ "$qinglan_running" = true ] || [ "$iot_running" = true ] || [ "$ai_running" = true ]; then
+    local any_running=false
+    local running_names=()
+
+    if lsof -ti :8080 >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-data(:8080)"); fi
+    if lsof -ti :8081 >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-qinglan(:8081)"); fi
+    if lsof -ti :8083 >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-iot(:8083)"); fi
+    if pgrep -f "wisefido-cardagg" >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-cardagg"); fi
+    if pgrep -f "wisefido-ai" >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-ai"); fi
+
+    if [ "$any_running" = true ]; then
         echo -e "${YELLOW}Warning: Services are already running${NC}"
-        if [ "$data_running" = true ]; then
-            echo -e "${YELLOW}  - wisefido-data is running${NC}"
-        fi
-        if [ "$aggregator_running" = true ]; then
-            echo -e "${YELLOW}  - wisefido-cardagg is running${NC}"
-        fi
-        if [ "$qinglan_running" = true ]; then
-            echo -e "${YELLOW}  - wisefido-qinglan is running${NC}"
-        fi
-        if [ "$iot_running" = true ]; then
-            echo -e "${YELLOW}  - wisefido-iot is running${NC}"
-        fi
-        if [ "$ai_running" = true ]; then
-            echo -e "${YELLOW}  - wisefido-ai is running${NC}"
-        fi
+        for n in "${running_names[@]}"; do echo -e "${YELLOW}  - $n${NC}"; done
         echo ""
         echo -e "${BLUE}Options:${NC}"
         echo "  1) Stop existing services and restart"
@@ -111,47 +67,7 @@ check_running_services() {
         echo ""
         if [[ $REPLY =~ ^[1]$ ]]; then
             echo -e "${YELLOW}Stopping existing services...${NC}"
-            # 停止现有服务
-            pkill -f "go run.*wisefido-data" 2>/dev/null || true
-            pkill -f "go run.*wisefido-cardagg" 2>/dev/null || true
-            pkill -f "go run.*wisefido-qinglan" 2>/dev/null || true
-            pkill -f "go run.*wisefido-iot" 2>/dev/null || true
-            pkill -f "go run.*wisefido-ai" 2>/dev/null || true
-            pkill -f "wisefido-data" 2>/dev/null || true
-            pkill -f "wisefido-cardagg" 2>/dev/null || true
-            pkill -f "wisefido-qinglan" 2>/dev/null || true
-            pkill -f "wisefido-iot" 2>/dev/null || true
-            pkill -f "wisefido-ai" 2>/dev/null || true
-            if command -v lsof &> /dev/null; then
-                PORT_PIDS=$(lsof -ti :8080 2>/dev/null || true)
-                for pid in $PORT_PIDS; do
-                    if [ -n "$pid" ]; then
-                        CWD=$(lsof -p "$pid" 2>/dev/null | grep cwd | awk '{print $NF}' || true)
-                        if echo "$CWD" | grep -q "wisefido-data"; then
-                            kill -9 "$pid" 2>/dev/null || true
-                        fi
-                    fi
-                done
-                PORT_PIDS=$(lsof -ti :8083 2>/dev/null || true)
-                for pid in $PORT_PIDS; do
-                    if [ -n "$pid" ]; then
-                        CWD=$(lsof -p "$pid" 2>/dev/null | grep cwd | awk '{print $NF}' || true)
-                        if echo "$CWD" | grep -q "wisefido-iot"; then
-                            kill -9 "$pid" 2>/dev/null || true
-                        fi
-                    fi
-                done
-                PORT_PIDS=$(lsof -ti :8083 2>/dev/null || true)
-                for pid in $PORT_PIDS; do
-                    if [ -n "$pid" ]; then
-                        CWD=$(lsof -p "$pid" 2>/dev/null | grep cwd | awk '{print $NF}' || true)
-                        if echo "$CWD" | grep -q "wisefido-iot"; then
-                            kill -9 "$pid" 2>/dev/null || true
-                        fi
-                    fi
-                done
-            fi
-            sleep 2
+            bash "$SCRIPT_DIR/stop-owlback.sh"
             echo -e "${GREEN}Existing services stopped${NC}"
             echo ""
         else

@@ -2,10 +2,14 @@ package evaluator
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"wisefido-ai/internal/config"
 	"wisefido-ai/internal/consumer"
 	"wisefido-ai/internal/models"
 	"wisefido-ai/internal/repository"
+
+	commoncard "owl-common/card"
 
 	"go.uber.org/zap"
 )
@@ -13,6 +17,7 @@ import (
 // Evaluator 报警评估器（实现 consumer.Evaluator 接口）
 type Evaluator struct {
 	config            *config.Config
+	db                *sql.DB
 	stateManager      *consumer.StateManager
 	cardRepo          *repository.CardRepository
 	deviceRepo        *repository.DeviceRepository
@@ -34,6 +39,7 @@ type Evaluator struct {
 // NewEvaluator 创建评估器
 func NewEvaluator(
 	cfg *config.Config,
+	db *sql.DB,
 	stateManager *consumer.StateManager,
 	cardRepo *repository.CardRepository,
 	deviceRepo *repository.DeviceRepository,
@@ -47,6 +53,7 @@ func NewEvaluator(
 ) *Evaluator {
 	e := &Evaluator{
 		config:            cfg,
+		db:                db,
 		stateManager:      stateManager,
 		cardRepo:          cardRepo,
 		deviceRepo:        deviceRepo,
@@ -100,43 +107,59 @@ func (e *Evaluator) Evaluate(tenantID string, card repository.CardInfo, realtime
 	// 注意：事件4（雷达检测到人突然消失）已移除
 	// 设备直接报警由 wisefido-card-aggregator 处理
 
-	// 写入报警事件到 PostgreSQL
+	// 写入报警事件到 PostgreSQL（通过 owl-common 原子操作：INSERT alarm + UPDATE card counts）
+	// AI 使用虚拟 device_id，findCardIDByDevice 查不到；
+	// 必须在 metadata 中注入 card_id，供后续 UpdateAlarmAndUpdateCard fallback 使用。
 	ctx := context.Background()
-	alarmCreated := false
-	for _, alarm := range alarms {
-		if err := e.alarmEventsRepo.CreateAlarmEvent(ctx, tenantID, &alarm); err != nil {
-			e.logger.Error("Failed to create alarm event",
-				zap.String("event_id", alarm.EventID),
+	for i, alarm := range alarms {
+		metadata := ensureMetadataCardID(alarm.Metadata, card.CardID)
+		params := commoncard.AlarmInsertParams{
+			TenantID:    alarm.TenantID,
+			DeviceID:    alarm.DeviceID,
+			EventType:   alarm.EventType,
+			Category:    alarm.Category,
+			AlarmLevel:  alarm.AlarmLevel,
+			TriggeredAt: alarm.TriggeredAt,
+			TriggerData: alarm.TriggerData,
+			Metadata:    metadata,
+		}
+		result, _, err := commoncard.InsertAlarmAndUpdateCard(ctx, e.db, card.CardID, params)
+		if err != nil {
+			e.logger.Error("Failed to insert alarm and update card",
 				zap.String("event_type", alarm.EventType),
+				zap.String("card_id", card.CardID),
 				zap.Error(err),
 			)
-			// 继续处理其他报警，不中断
-		} else {
-			alarmCreated = true
-			e.logger.Info("Alarm event created",
-				zap.String("event_id", alarm.EventID),
-				zap.String("event_type", alarm.EventType),
-				zap.String("alarm_level", alarm.AlarmLevel),
-				zap.String("card_id", card.CardID),
-			)
+			continue
 		}
-	}
-
-	// 如果有报警创建成功，更新卡片的报警计数
-	if alarmCreated {
-		if err := e.cardRepo.UpdateCardAlarmCounts(ctx, tenantID, card.CardID); err != nil {
-			e.logger.Warn("Failed to update card alarm counts",
-				zap.String("card_id", card.CardID),
-				zap.String("tenant_id", tenantID),
-				zap.Error(err),
-			)
-			// 不返回错误，报警已创建成功
-		} else {
-			e.logger.Debug("Updated card alarm counts",
-				zap.String("card_id", card.CardID),
-			)
-		}
+		alarms[i].EventID = result.EventID
+		e.logger.Info("Alarm event created and card updated",
+			zap.String("event_id", result.EventID),
+			zap.String("event_type", alarm.EventType),
+			zap.String("alarm_level", alarm.AlarmLevel),
+			zap.String("card_id", card.CardID),
+		)
 	}
 
 	return alarms, nil
+}
+
+// ensureMetadataCardID 确保 metadata 中包含 card_id（AI 虚拟设备 fallback 必需）
+func ensureMetadataCardID(raw json.RawMessage, cardID string) json.RawMessage {
+	if cardID == "" {
+		return raw
+	}
+	m := map[string]interface{}{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &m)
+	}
+	if _, ok := m["card_id"]; ok {
+		return raw
+	}
+	m["card_id"] = cardID
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return out
 }

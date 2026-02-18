@@ -53,24 +53,6 @@ func (s *StubHandler) AdminServiceLevels(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, Fail("database not available"))
 }
 
-func (s *StubHandler) AdminCardOverview(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/admin/api/v1/card-overview" || r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-	// 对齐 GetCardOverviewResult
-	writeJSON(w, http.StatusOK, Ok(map[string]any{
-		"items": []any{},
-		"pagination": map[string]any{
-			"size":      10,
-			"page":      1,
-			"count":     0,
-			"total":     0,
-			"sort":      "",
-			"direction": 0,
-		},
-	}))
-}
 func (s *StubHandler) SettingsMonitor(w http.ResponseWriter, r *http.Request) {
 	// /settings/api/v1/monitor/sleepace/:deviceId
 	// /settings/api/v1/monitor/radar/:deviceId

@@ -27,17 +27,14 @@ func NewMonitorHandler(svc *service.MonitorService, logger *zap.Logger) *Monitor
 
 // Handle 处理 monitor 消息
 func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
-	// 从 Redis Stream message 中解析 IoTStreamMessage
 	iotMsg := &redis.IoTStreamMessage{}
 
-	// 构建一个新的 map，用于 JSON 编码和解码
 	streamMsg, ok := msg.(map[string]interface{})
 	if !ok {
 		h.logger.Warn("Invalid message type", zap.Any("type", msg))
 		return nil
 	}
 
-	// JSON 编码和解码，这样可以正确处理嵌套结构
 	jsonBytes, err := json.Marshal(streamMsg)
 	if err != nil {
 		h.logger.Warn("Failed to marshal stream message", zap.Error(err))
@@ -50,7 +47,6 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 	}
 
 	// MQTT 级别的时间过滤：丢弃超过 30 秒的旧消息
-	// 防止处理延迟消息导致数据混乱
 	now := time.Now().Unix()
 	msgAge := now - iotMsg.Timestamp
 	if msgAge > 30 {
@@ -62,6 +58,5 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 		return nil
 	}
 
-	// 调用 service 处理
 	return h.service.ProcessMonitor(ctx, iotMsg)
 }

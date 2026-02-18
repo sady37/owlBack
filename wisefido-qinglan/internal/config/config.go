@@ -254,8 +254,11 @@ func LoadFromEnv() (*Config, error) {
 	cfg.MQTT.RadarDeviceMQTT.Keepalive = parseInt(getEnv("RADAR_MQTT_KEEPALIVE", "60"), 60)
 	cfg.MQTT.RadarDeviceMQTT.ClientIDPrefix = getEnv("RADAR_MQTT_CLIENT_ID_PREFIX", "radar")
 
-	// HTTP配置
+	// HTTP配置（优先使用 QINGLAN_PORT，避免与 wisefido-data 的 HTTP_PORT 冲突）
 	cfg.HTTP.LoadFromEnv("HTTP")
+	if qp := getEnv("QINGLAN_PORT", ""); qp != "" {
+		cfg.HTTP.Port = parseInt(qp, cfg.HTTP.Port)
+	}
 
 	// HTTPS配置（用于设备认证）
 	// 优先使用 owl-common 的共享证书（如果存在）

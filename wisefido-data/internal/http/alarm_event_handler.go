@@ -333,9 +333,9 @@ func (h *AlarmEventHandler) HandleAlarmEvent(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// 转换为旧 Handler 格式（对齐旧响应）
 	writeJSON(w, http.StatusOK, Ok(map[string]any{
-		"success": resp.Success,
+		"success":  resp.Success,
+		"event_id": eventID,
 	}))
 }
 

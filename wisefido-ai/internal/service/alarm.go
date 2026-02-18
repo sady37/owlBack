@@ -79,6 +79,7 @@ func NewAlarmService(cfg *config.Config, logger *zap.Logger, tenantID string) (*
 	// 5. 创建 Evaluator 层
 	eval := evaluator.NewEvaluator(
 		cfg,
+		db,
 		stateManager,
 		cardRepo,
 		deviceRepo,

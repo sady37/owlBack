@@ -39,6 +39,11 @@ type Card struct {
 	UnhandledAlarm3 int `db:"unhandled_alarm_3"` // INTEGER, NOT NULL, DEFAULT 0
 	UnhandledAlarm4 int `db:"unhandled_alarm_4"` // INTEGER, NOT NULL, DEFAULT 0
 
+	// 当前弹出报警（应用层维护）
+	PopAlarmLevel       string       `db:"pop_alarm_level"`        // VARCHAR(20), 'EMERG','ALERT' etc
+	PopAlarmType        string       `db:"pop_alarm_type"`         // VARCHAR(50), 'Fall','AbnormalHeartRate' etc
+	PopAlarmEventId sql.NullString `db:"pop_alarm_event_id"` // UUID, nullable
+
 	// UI 告警阈值
 	IconAlarmLevel int `db:"icon_alarm_level"` // INTEGER, NOT NULL, DEFAULT 3
 	PopAlarmEmerge int `db:"pop_alarm_emerge"` // INTEGER, NOT NULL, DEFAULT 0

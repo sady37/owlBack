@@ -59,6 +59,16 @@ func NewAuthMiddleware(cfg AuthMiddlewareConfig) *AuthMiddleware {
 // Wrap 包装 handler，在调用前校验 token 并注入 header
 func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// CORS: 允许前端开发服务器跨域访问（SSE 直连后端时需要）
+		// 注意：EventSource 不支持 withCredentials，所以不设 Credentials header
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type")
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
 		if !m.enabled {
 			next.ServeHTTP(w, r)
 			return

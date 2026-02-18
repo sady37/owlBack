@@ -183,8 +183,17 @@ func (s *deviceService) fillDeviceOnlineStatus(ctx context.Context, devices []*d
 		go func(d *domain.Device) {
 			status, err := s.qinglanClient.GetDeviceStatus(ctx, d.DeviceUID)
 			if err != nil {
-				// 查询失败，默认设置为 "offline"
-				results <- statusResult{deviceUID: d.DeviceUID, status: "offline", err: err}
+				// 查询失败，根据错误类型决定状态
+				// 如果是连接被拒绝或网络错误，表示无法确定设备状态，应设为"unknown"
+				statusValue := "offline"
+				if strings.Contains(err.Error(), "connection refused") || 
+				   strings.Contains(err.Error(), "timeout") || 
+				   strings.Contains(err.Error(), "network") ||
+				   strings.Contains(err.Error(), "no route to host") ||
+				   strings.Contains(err.Error(), "connection reset by peer") {
+					statusValue = "unknown"
+				}
+				results <- statusResult{deviceUID: d.DeviceUID, status: statusValue, err: err}
 			} else {
 				results <- statusResult{deviceUID: d.DeviceUID, status: status, err: nil}
 			}

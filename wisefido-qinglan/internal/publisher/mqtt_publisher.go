@@ -110,7 +110,7 @@ func (p *MQTTPublisher) SubscribeRealtimeData(ctx context.Context, uid string, c
 	log.Printf("📤 Monitor Subscription: sending to device %s", uid)
 	log.Printf("   MQTT Topic: %s", topic)
 	log.Printf("   MQTT Payload (JSON): %s", string(commandJSON))
-	log.Printf("   MQTT Format: {\"cmd\":\"subscription\",\"data\":{\"content\":\"%s\",\"duration\":%d}} (使用cmd/data外层结构 ✅)", contentStr, duration)
+	log.Printf("   MQTT Format: {\"cmd\":\"subscription\",\"data\":{\"content\":\"%s\",\"duration\":%d}} (使用cmd/data topleve ✅)", contentStr, duration)
 	
 	// 发送命令
 	if err := p.publish(topic, command); err != nil {

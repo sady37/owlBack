@@ -695,7 +695,7 @@ func subscribeDataStream(ctx context.Context, logger *zap.Logger, redisClient *r
 			// 使用 XREADGROUP 从 Consumer Group 读取消息
 			msgs, err := rediscommon.ReadFromMultipleStreamsWithBlock(ctx, redisClient, streams, consumerGroup, consumerName, 10, 2*time.Second)
 			if err != nil {
-				logger.Debug("Failed to read from data streams",
+				logger.Warn("[SUB] Failed to read from data streams",
 					zap.Error(err),
 				)
 				continue

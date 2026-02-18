@@ -66,7 +66,7 @@ func (r *RedisCache) GetCardStatus(ctx context.Context, cardID string) (*card.Ca
 // GetRealtimeData 获取卡片完整数据（合并monitor和status）
 // 仅用于内部或系统初始化，前端应分别调用GetCardRealTime和GetCardStatus
 // SetCardRealTime 设置卡片realtime数据（TrackData/VitalData）
-// 对应 StreamCardRealTime，5秒TTL，每秒更新
+// 对应 StreamCardRealTime，300秒TTL，每秒更新
 func (r *RedisCache) SetCardRealTime(ctx context.Context, data *card.CardRealTime, ttl time.Duration) error {
 	key := fmt.Sprintf("vital-focus:card:%s:realtime", data.CardID)
 

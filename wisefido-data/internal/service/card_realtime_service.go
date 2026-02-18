@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
+
 	"sync"
 	"time"
 	"unsafe"
@@ -28,6 +28,7 @@ type RealtimeDataProvider interface {
 	GetCardRealtimeData(cardID string) map[string]interface{}
 	GetCardRealtimeVersion(cardID string) uint64
 	GetCardStatusData(cardID string) map[string]interface{}
+	GetCardStatusVersion(cardID string) uint64
 }
 
 const realtimeKeyPrefix = "vital-focus:card:"
@@ -40,12 +41,34 @@ type CardChange struct {
 	Op     string `json:"op"` // "add" / "update" / "delete"
 }
 
+// SSEEventType SSE 推送事件类型
+const (
+	SSEEventStatus     = 1 // card_status（报警/设备状态/事件状态）
+	SSEEventCardChange = 2 // card_change（卡片增删）
+)
+
+// SSEEvent 统一 SSE 推送事件
+type SSEEvent struct {
+	Type    int          // SSEEventStatus / SSEEventCardChange
+	Status  *StatusEvent // Type=1 时有值
+	Changes []CardChange // Type=2 时有值
+}
+
+// sseInitData 前端 POST /cards/stream/init 传入的初始化数据
+type sseInitData struct {
+	WatchIDs []string
+	ViewIDs  []string
+}
+
 // sseConn 一个 SSE 连接的注册信息
 type sseConn struct {
-	userKey  string             // "tenantID:userID"
-	cardIDs  map[string]bool    // 该连接订阅的 cardID 集合
-	statusCh chan StatusEvent   // per-connection status 事件推送 channel
-	changeCh chan []CardChange  // per-connection 卡片增删事件推送 channel
+	userKey   string           // "tenantID:userID"
+	tenantID  string
+	userID    string
+	watchIDs  map[string]bool  // 全部订阅卡（fan-out 范围），init 后填充
+	viewIDsCh chan []string     // 切页时接收新 viewIDs
+	eventCh   chan SSEEvent     // 统一事件推送 channel
+	initCh    chan sseInitData  // 首次 init 数据（watchIDs + viewIDs）
 }
 
 // CardRealtimeService 卡片实时数据服务
@@ -64,10 +87,10 @@ type CardRealtimeService struct {
 
 	// SSE 连接注册表（fan-out 用）
 	connMu    sync.RWMutex
-	sseConns  map[string]*sseConn  // connID → sseConn
-	cardIndex map[string][]string  // cardID → []connID（反向索引）
-	userIndex map[string][]string  // userKey → []connID（按用户路由 card_change）
-	connSeq   uint64               // 自增连接 ID
+	sseConns  map[string]*sseConn // connID → sseConn
+	cardIndex map[string][]string // cardID → []connID（反向索引）
+	userIndex map[string][]string // userKey → []connID（按用户路由 card_change）
+	connSeq   uint64              // 自增连接 ID
 
 	// status 事件输入 channel（由 main.go 桥接 subscriber.CardStatusEvent → StatusEvent）
 	statusEventCh <-chan StatusEvent
@@ -100,8 +123,8 @@ func (s *CardRealtimeService) SetStatusEventChan(ch <-chan StatusEvent) {
 	s.statusEventCh = ch
 }
 
-// registerSSE 注册 SSE 连接，返回 connID、statusCh、changeCh
-func (s *CardRealtimeService) registerSSE(cardIDs []string, tenantID, userID string) (string, <-chan StatusEvent, <-chan []CardChange) {
+// registerSSE 建立 SSE 连接（不注册 fan-out，等 InitSSE 后再注册）
+func (s *CardRealtimeService) registerSSE(tenantID, userID string) (string, <-chan SSEEvent, <-chan []string, <-chan sseInitData) {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
 
@@ -109,22 +132,38 @@ func (s *CardRealtimeService) registerSSE(cardIDs []string, tenantID, userID str
 	connID := fmt.Sprintf("sse-%d", s.connSeq)
 	userKey := tenantID + ":" + userID
 
-	cardSet := make(map[string]bool, len(cardIDs))
-	for _, id := range cardIDs {
-		cardSet[id] = true
-	}
-	statusCh := make(chan StatusEvent, 8)
-	changeCh := make(chan []CardChange, 4)
-	s.sseConns[connID] = &sseConn{userKey: userKey, cardIDs: cardSet, statusCh: statusCh, changeCh: changeCh}
-
-	// cardID 反向索引
-	for _, cardID := range cardIDs {
-		s.cardIndex[cardID] = append(s.cardIndex[cardID], connID)
+	eventCh := make(chan SSEEvent, 12)
+	viewIDsCh := make(chan []string, 2)
+	initCh := make(chan sseInitData, 1)
+	s.sseConns[connID] = &sseConn{
+		userKey:   userKey,
+		tenantID:  tenantID,
+		userID:    userID,
+		watchIDs:  nil, // init 后填充
+		viewIDsCh: viewIDsCh,
+		eventCh:   eventCh,
+		initCh:    initCh,
 	}
 	// userKey 反向索引
 	s.userIndex[userKey] = append(s.userIndex[userKey], connID)
 
-	return connID, statusCh, changeCh
+	return connID, eventCh, viewIDsCh, initCh
+}
+
+// activateSSE 在 InitSSE 后注册 fan-out 索引（需持有 connMu.Lock）
+func (s *CardRealtimeService) activateSSE(connID string, watchIDs []string) {
+	conn, ok := s.sseConns[connID]
+	if !ok {
+		return
+	}
+	watchSet := make(map[string]bool, len(watchIDs))
+	for _, id := range watchIDs {
+		watchSet[id] = true
+	}
+	conn.watchIDs = watchSet
+	for _, cardID := range watchIDs {
+		s.cardIndex[cardID] = append(s.cardIndex[cardID], connID)
+	}
 }
 
 // unregisterSSE 注销 SSE 连接
@@ -137,7 +176,7 @@ func (s *CardRealtimeService) unregisterSSE(connID string) {
 		return
 	}
 	// 清理 cardID 反向索引
-	for cardID := range conn.cardIDs {
+	for cardID := range conn.watchIDs {
 		conns := s.cardIndex[cardID]
 		filtered := conns[:0]
 		for _, c := range conns {
@@ -166,8 +205,7 @@ func (s *CardRealtimeService) unregisterSSE(connID string) {
 			s.userIndex[conn.userKey] = filtered
 		}
 	}
-	close(conn.statusCh)
-	close(conn.changeCh)
+	close(conn.eventCh)
 	delete(s.sseConns, connID)
 }
 
@@ -189,12 +227,17 @@ func (s *CardRealtimeService) StartStatusFanout(ctx context.Context) {
 				}
 				s.connMu.RLock()
 				connIDs := s.cardIndex[evt.CardID]
+				s.logger.Info("[FANOUT] status event",
+					zap.String("card_id", evt.CardID),
+					zap.Int("conn_count", len(connIDs)))
 				for _, connID := range connIDs {
 					if conn, exists := s.sseConns[connID]; exists {
 						select {
-						case conn.statusCh <- evt:
+						case conn.eventCh <- SSEEvent{Type: SSEEventStatus, Status: &evt}:
 						default:
-							// per-connection channel 满，丢弃（避免阻塞 fan-out）
+							s.logger.Warn("[FANOUT] eventCh full, dropped status",
+								zap.String("conn_id", connID),
+								zap.String("card_id", evt.CardID))
 						}
 					}
 				}
@@ -310,17 +353,10 @@ func (s *CardRealtimeService) fanOutCardChanges(userKey string, changes []CardCh
 	for _, connID := range connIDs {
 		if conn, ok := s.sseConns[connID]; ok {
 			select {
-			case conn.changeCh <- changes:
+			case conn.eventCh <- SSEEvent{Type: SSEEventCardChange, Changes: changes}:
 			default:
-				// channel 满，丢弃旧的再写入
-				select {
-				case <-conn.changeCh:
-				default:
-				}
-				select {
-				case conn.changeCh <- changes:
-				default:
-				}
+				s.logger.Warn("[FANOUT] eventCh full, dropped card_change",
+					zap.String("conn_id", connID))
 			}
 		}
 	}
@@ -387,10 +423,10 @@ type GetCardRealtimeRequest struct {
 
 // GetCardRealtimeResponse 拉取实时数据响应
 type GetCardRealtimeResponse struct {
-	Data            map[string]json.RawMessage `json:"data"`                        // card_id -> realtime JSON
-	SkippedCardIDs  []string                   `json:"skipped_card_ids"`            // 被跳过
-	RefreshCardList bool                       `json:"refresh_card_list"`           // 建议前端重新调 GetCardList
-	CardChanges     []CardChange               `json:"card_changes,omitempty"`      // pending add/update/delete
+	Data            map[string]json.RawMessage `json:"data"`                   // card_id -> realtime JSON
+	SkippedCardIDs  []string                   `json:"skipped_card_ids"`       // 被跳过
+	RefreshCardList bool                       `json:"refresh_card_list"`      // 建议前端重新调 GetCardList
+	CardChanges     []CardChange               `json:"card_changes,omitempty"` // pending add/update/delete
 }
 
 // GetCardRealtime 从 Redis 拉取指定 card 的实时数据
@@ -468,12 +504,13 @@ func (s *CardRealtimeService) GetCardRealtime(ctx context.Context, req GetCardRe
 }
 
 // SubscribeRealtimeStream 建立 SSE 流：心跳 + 0.5Hz 从 streamProvider 缓存取 realtime/status（不订阅 Redis）
+
 func (s *CardRealtimeService) SubscribeRealtimeStream(ctx context.Context, w http.ResponseWriter, cardID, tenantID, userID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// CORS 由 AuthMiddleware 统一处理
 
 	if s.streamProvider == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -497,32 +534,24 @@ func (s *CardRealtimeService) SubscribeRealtimeStream(ctx context.Context, w htt
 		zap.String("tenant_id", tenantID),
 		zap.String("user_id", userID))
 
-	tickerHeart := time.NewTicker(30 * time.Second)
-	defer tickerHeart.Stop()
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tickerHeart.C:
-				io.WriteString(w, ": heartbeat\n\n")
-				flusher.Flush()
-			}
-		}
-	}()
-
 	var lastRealtimeRef unsafe.Pointer
 	var lastStatusRef unsafe.Pointer
 	var lastPushMu sync.Mutex
 	var messageCounter int64
 
-	tickerData := time.NewTicker(250 * time.Millisecond)
+	// 心跳 + 数据推送都在同一个 goroutine，避免并发写 ResponseWriter
+	tickerHeart := time.NewTicker(30 * time.Second)
+	defer tickerHeart.Stop()
+	tickerData := time.NewTicker(1000 * time.Millisecond)
 	defer tickerData.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			s.logger.Info("SSE connection closed", zap.String("card_id", cardID), zap.String("tenant_id", tenantID))
 			return
+		case <-tickerHeart.C:
+			io.WriteString(w, ": heartbeat\n\n")
+			flusher.Flush()
 		case <-tickerData.C:
 			// 实时数据：从 DataStreamSubscriber 缓存取
 			cachedRealtime := s.streamProvider.GetCardRealtimeData(cardID)
@@ -569,16 +598,14 @@ func (s *CardRealtimeService) SubscribeRealtimeStream(ctx context.Context, w htt
 	}
 }
 
-// SubscribeCardsStream 多卡 SSE 流：前端传入 cardIDs + interval（秒）
-// interval=1 → 1Hz，interval=2 → 0.5Hz
-// 每次 tick 遍历 cardIDs，从 streamProvider 缓存取 realtime，组装 map[cardID]data 一次推送
-// 权限校验：对比 stored CardList，过滤非法 cardID
-func (s *CardRealtimeService) SubscribeCardsStream(ctx context.Context, w http.ResponseWriter, cardIDs []string, interval int, tenantID, userID string) {
+// SubscribeCardsStream 多卡 SSE 流
+// URL 只传 token + interval，连接建立后前端 POST /init 传 watchIDs + viewIDs
+// 切页时通过 POST /view 动态更新 viewIDs，无需重连 SSE
+func (s *CardRealtimeService) SubscribeCardsStream(ctx context.Context, w http.ResponseWriter, interval int, tenantID, userID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	if s.streamProvider == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -599,79 +626,78 @@ func (s *CardRealtimeService) SubscribeCardsStream(ctx context.Context, w http.R
 		interval = 10
 	}
 
-	// 权限校验：取 stored CardList，构建 allowed set
-	stored := s.getCardList(tenantID, userID)
-	allowedSet := make(map[string]bool)
-	if stored != nil {
-		for _, ids := range stored.CardsByBranch {
-			for _, id := range ids {
-				allowedSet[id] = true
-			}
-		}
-	}
-	// 过滤出有权限的 cardIDs
-	var validIDs []string
-	for _, id := range cardIDs {
-		if id != "" && allowedSet[id] {
-			validIDs = append(validIDs, id)
-		}
-	}
-	if len(validIDs) > maxPullRealtimeCards {
-		validIDs = validIDs[:maxPullRealtimeCards]
-	}
+	// 注册 SSE 连接（尚未注册 fan-out，等 InitSSE）
+	connID, eventCh, viewIDsCh, initCh := s.registerSSE(tenantID, userID)
+	defer s.unregisterSSE(connID)
 
 	connData, _ := json.Marshal(map[string]interface{}{
-		"card_count": len(validIDs),
-		"interval":   interval,
-		"status":     "connected",
+		"conn_id":  connID,
+		"interval": interval,
+		"status":   "connected",
 	})
 	io.WriteString(w, ": SSE connection established\n")
 	io.WriteString(w, "event: connected\ndata: "+string(connData)+"\n\n")
 	flusher.Flush()
 
-	// 注册 SSE 连接（fan-out 用）
-	connID, statusCh, changeCh := s.registerSSE(validIDs, tenantID, userID)
-	defer s.unregisterSSE(connID)
-
-	s.logger.Info("SubscribeCardsStream connected",
+	s.logger.Info("SubscribeCardsStream connected, waiting init",
 		zap.String("conn_id", connID),
 		zap.String("tenant_id", tenantID),
 		zap.String("user_id", userID),
-		zap.Int("card_count", len(validIDs)),
 		zap.Int("interval", interval))
 
-	// --- Snapshot：连接建立后立即推送当前缓存的最新数据 ---
-	lastVersions := make(map[string]uint64, len(validIDs))
-	snapshot := make(map[string]interface{}, len(validIDs))
-	for _, cardID := range validIDs {
-		if data := s.streamProvider.GetCardRealtimeData(cardID); data != nil {
-			snapshot[cardID] = data
-			lastVersions[cardID] = s.streamProvider.GetCardRealtimeVersion(cardID)
+	// === 阶段 1：等待前端 POST /init 提交 watchIDs + viewIDs ===
+	var initData sseInitData
+	// 等 init 期间仍处理心跳和断连
+	tickerWait := time.NewTicker(30 * time.Second)
+	defer tickerWait.Stop()
+	initTimeout := time.After(60 * time.Second)
+waitInit:
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-initTimeout:
+			io.WriteString(w, "event: error\ndata: {\"error\":\"init timeout\"}\n\n")
+			flusher.Flush()
+			return
+		case <-tickerWait.C:
+			io.WriteString(w, ": heartbeat\n\n")
+			flusher.Flush()
+		case initData = <-initCh:
+			break waitInit
 		}
 	}
-	if len(snapshot) > 0 {
-		jsonSnap, _ := json.Marshal(snapshot)
-		io.WriteString(w, "data: "+string(jsonSnap)+"\n\n")
-		flusher.Flush()
-	}
+	tickerWait.Stop()
 
-	// 心跳
+	watchIDs := initData.WatchIDs
+	viewIDs := initData.ViewIDs
+
+	// 通知前端 init 完成
+	initAck, _ := json.Marshal(map[string]interface{}{
+		"conn_id":     connID,
+		"watch_count": len(watchIDs),
+		"view_count":  len(viewIDs),
+		"status":      "ready",
+	})
+	io.WriteString(w, "event: ready\ndata: "+string(initAck)+"\n\n")
+	flusher.Flush()
+
+	s.logger.Info("SubscribeCardsStream initialized",
+		zap.String("conn_id", connID),
+		zap.Int("watch_count", len(watchIDs)),
+		zap.Int("view_count", len(viewIDs)))
+
+	// === 阶段 2：推送 snapshot ===
+	lastVersions := make(map[string]uint64, len(watchIDs))
+	s.pushRealtimeSnapshot(w, flusher, connID, viewIDs, lastVersions)
+	s.pushStatusSnapshot(w, flusher, connID, watchIDs)
+
+	// === 阶段 3：持续推送 ===
 	tickerHeart := time.NewTicker(30 * time.Second)
 	defer tickerHeart.Stop()
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tickerHeart.C:
-				io.WriteString(w, ": heartbeat\n\n")
-				flusher.Flush()
-			}
-		}
-	}()
-
 	tickerData := time.NewTicker(time.Duration(interval) * time.Second)
 	defer tickerData.Stop()
+	currentViewIDs := viewIDs
 	for {
 		select {
 		case <-ctx.Done():
@@ -681,17 +707,32 @@ func (s *CardRealtimeService) SubscribeCardsStream(ctx context.Context, w http.R
 				zap.String("user_id", userID))
 			return
 
+		case <-tickerHeart.C:
+			io.WriteString(w, ": heartbeat\n\n")
+			flusher.Flush()
+
+		case newViewIDs := <-viewIDsCh:
+			currentViewIDs = newViewIDs
+			s.pushRealtimeSnapshot(w, flusher, connID, currentViewIDs, lastVersions)
+			s.logger.Info("[SSE] view updated",
+				zap.String("conn_id", connID),
+				zap.Int("new_view_count", len(currentViewIDs)))
+
 		case <-tickerData.C:
-			// 定时推送：仅推送 version 有变化的 realtime 数据（dirty push）
 			payload := make(map[string]interface{})
-			for _, cardID := range validIDs {
+			for _, cardID := range currentViewIDs {
 				curVer := s.streamProvider.GetCardRealtimeVersion(cardID)
-				if curVer > lastVersions[cardID] {
-					if data := s.streamProvider.GetCardRealtimeData(cardID); data != nil {
-						payload[cardID] = data
-						lastVersions[cardID] = curVer
-					}
+				if curVer <= lastVersions[cardID] {
+					continue
 				}
+				data := s.streamProvider.GetCardRealtimeData(cardID)
+				if data == nil {
+					continue
+				}
+				if rm, ok := toMap(data); ok {
+					payload[cardID] = rm
+				}
+				lastVersions[cardID] = curVer
 			}
 			if len(payload) == 0 {
 				continue
@@ -700,69 +741,301 @@ func (s *CardRealtimeService) SubscribeCardsStream(ctx context.Context, w http.R
 			if err != nil {
 				continue
 			}
+			s.logger.Info("[SSE-PUSH] ticker realtime",
+				zap.String("conn_id", connID),
+				zap.Int("cards", len(payload)),
+				zap.Int("bytes", len(jsonData)),
+				zap.String("data_preview", truncStr(string(jsonData), 300)))
 			io.WriteString(w, "data: "+string(jsonData)+"\n\n")
 			flusher.Flush()
 
-		case evt, ok := <-statusCh:
-			// status 事件即时推送（不等 ticker）
+		case sseEvt, ok := <-eventCh:
 			if !ok {
 				continue
 			}
-			statusMsg := buildCardStatusMessage(evt.CardID, evt.Data)
+			switch sseEvt.Type {
+		case SSEEventStatus:
+			if sseEvt.Status == nil {
+				continue
+			}
+			statusMsg := buildCardStatusMessage(sseEvt.Status.CardID, sseEvt.Status.Data)
 			if statusMsg == nil {
+				s.logger.Warn("[SSE-PUSH] buildCardStatusMessage returned nil",
+					zap.String("conn_id", connID),
+					zap.String("card_id", sseEvt.Status.CardID))
 				continue
 			}
 			jsonData, err := json.Marshal(statusMsg)
 			if err != nil {
+				s.logger.Warn("[SSE-PUSH] marshal card_status failed",
+					zap.String("conn_id", connID),
+					zap.Error(err))
 				continue
 			}
+			s.logger.Info("[SSE-PUSH] card_status event",
+				zap.String("conn_id", connID),
+				zap.String("card_id", sseEvt.Status.CardID),
+				zap.Int("bytes", len(jsonData)))
 			io.WriteString(w, "event: card_status\ndata: "+string(jsonData)+"\n\n")
 			flusher.Flush()
-
-		case changes, ok := <-changeCh:
-			// 卡片增删事件即时推送
-			if !ok {
-				continue
+			case SSEEventCardChange:
+				jsonData, err := json.Marshal(sseEvt.Changes)
+				if err != nil {
+					continue
+				}
+				io.WriteString(w, "event: card_change\ndata: "+string(jsonData)+"\n\n")
+				flusher.Flush()
 			}
-			jsonData, err := json.Marshal(changes)
-			if err != nil {
-				continue
-			}
-			io.WriteString(w, "event: card_change\ndata: "+string(jsonData)+"\n\n")
-			flusher.Flush()
 		}
 	}
 }
 
-// buildCardStatusMessage 将缓存中的 status（DataStreamSubscriber 存的是 stream message.Values）转为 SSE 的 card_status 格式
+// buildCardStatusMessage 将 card:status:stream 的消息转为 SSE card_status 事件
+// raw 是 DataStreamSubscriber 缓存的 stream message.Values（PublishJSONToStream 包装：{data: "<CardStatus JSON>", timestamp: "..."}）
+// 输出：直接透传 CardStatus 快照 + card_id，前端按快照字段处理
 func buildCardStatusMessage(cardID string, raw map[string]interface{}) map[string]interface{} {
-	var dataValue map[string]interface{}
+	if len(raw) == 0 {
+		return nil
+	}
+	var cardStatus map[string]interface{}
 	if dataStr, ok := raw["data"].(string); ok {
-		_ = json.Unmarshal([]byte(dataStr), &dataValue)
+		_ = json.Unmarshal([]byte(dataStr), &cardStatus)
 	} else if dataMap, ok := raw["data"].(map[string]interface{}); ok {
-		dataValue = dataMap
+		cardStatus = copyMapShallow(dataMap)
+	} else {
+		cardStatus = copyMapShallow(raw)
 	}
-	if dataValue == nil {
-		dataValue = make(map[string]interface{})
+	if cardStatus == nil {
+		return nil
 	}
-	eventType := "unknown"
-	if et, ok := dataValue["event_type"].(string); ok {
-		eventType = et
+	cardStatus["card_id"] = cardID
+	return cardStatus
+}
+
+func copyMapShallow(src map[string]interface{}) map[string]interface{} {
+	dst := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		dst[k] = v
 	}
-	var timestamp int64
-	if tsStr, ok := raw["timestamp"].(string); ok {
-		if ts, err := strconv.ParseInt(tsStr, 10, 64); err == nil {
-			timestamp = ts
+	return dst
+}
+
+// toMap 将任意类型转为 map[string]interface{}
+func toMap(raw interface{}) (map[string]interface{}, bool) {
+	switch v := raw.(type) {
+	case map[string]interface{}:
+		return v, true
+	default:
+		b, err := json.Marshal(raw)
+		if err != nil {
+			return nil, false
+		}
+		var m map[string]interface{}
+		if err := json.Unmarshal(b, &m); err != nil {
+			return nil, false
+		}
+		return m, true
+	}
+}
+
+// pushRealtimeSnapshot 推送 viewIDs 的 CardRealTime 快照（data: 事件）
+func (s *CardRealtimeService) pushRealtimeSnapshot(w http.ResponseWriter, flusher http.Flusher, connID string, viewIDs []string, lastVersions map[string]uint64) {
+	snapshot := make(map[string]interface{}, len(viewIDs))
+	for _, cardID := range viewIDs {
+		data := s.streamProvider.GetCardRealtimeData(cardID)
+		ver := s.streamProvider.GetCardRealtimeVersion(cardID)
+		if data != nil {
+			if rm, ok := toMap(data); ok {
+				snapshot[cardID] = rm
+			}
+			lastVersions[cardID] = ver
 		}
 	}
-	if timestamp == 0 {
-		if tsVal, ok := dataValue["timestamp"]; ok {
-			if ts, ok := tsVal.(float64); ok {
-				timestamp = int64(ts)
+	if len(snapshot) > 0 {
+		jsonSnap, _ := json.Marshal(snapshot)
+		s.logger.Info("[SSE-PUSH] realtime snapshot",
+			zap.String("conn_id", connID),
+			zap.Int("cards", len(snapshot)),
+			zap.Int("bytes", len(jsonSnap)),
+			zap.String("data_preview", truncStr(string(jsonSnap), 300)))
+		io.WriteString(w, "data: "+string(jsonSnap)+"\n\n")
+		flusher.Flush()
+	}
+}
+
+// pushStatusSnapshot 推送 watchIDs 的 CardStatus 快照（event: card_status 逐卡透传）
+// 优先从 subscriber 缓存读，缓存 miss 的批量 MGet Redis fallback
+func (s *CardRealtimeService) pushStatusSnapshot(w http.ResponseWriter, flusher http.Flusher, connID string, watchIDs []string) {
+	statusMap := make(map[string]map[string]interface{}, len(watchIDs))
+	var missIDs []string
+
+	for _, cardID := range watchIDs {
+		data := s.streamProvider.GetCardStatusData(cardID)
+		if data != nil {
+			statusMap[cardID] = data
+		} else {
+			missIDs = append(missIDs, cardID)
+		}
+	}
+
+	if len(missIDs) > 0 {
+		batch := s.loadCardStatusBatch(missIDs)
+		for id, data := range batch {
+			statusMap[id] = data
+		}
+	}
+
+	count := 0
+	for _, cardID := range watchIDs {
+		data := statusMap[cardID]
+		if data == nil {
+			continue
+		}
+		statusMsg := buildCardStatusMessage(cardID, data)
+		if statusMsg == nil {
+			continue
+		}
+		jsonData, err := json.Marshal(statusMsg)
+		if err != nil {
+			continue
+		}
+		io.WriteString(w, "event: card_status\ndata: "+string(jsonData)+"\n\n")
+		count++
+	}
+	if count > 0 {
+		flusher.Flush()
+		s.logger.Info("[SSE-PUSH] status snapshot",
+			zap.String("conn_id", connID),
+			zap.Int("cards", count),
+			zap.Int("from_cache", count-len(missIDs)),
+			zap.Int("from_redis", len(missIDs)))
+	}
+}
+
+// loadCardStatusFromRedis 批量从 Redis key 读取 CardStatus（缓存 miss 时 fallback）
+func (s *CardRealtimeService) loadCardStatusBatch(cardIDs []string) map[string]map[string]interface{} {
+	if len(cardIDs) == 0 {
+		return nil
+	}
+	keys := make([]string, len(cardIDs))
+	for i, id := range cardIDs {
+		keys[i] = "vital-focus:card:" + id + ":status"
+	}
+	vals, err := s.kv.MGet(context.Background(), keys)
+	if err != nil {
+		s.logger.Warn("loadCardStatusBatch MGet failed", zap.Error(err))
+		return nil
+	}
+	result := make(map[string]map[string]interface{}, len(cardIDs))
+	for i, val := range vals {
+		if val == "" {
+			continue
+		}
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(val), &data); err != nil {
+			continue
+		}
+		result[cardIDs[i]] = data
+	}
+	return result
+}
+
+// GetCardStatus 从 Redis 读取单张卡片的 CardStatus（供 REST 轮询）
+func (s *CardRealtimeService) GetCardStatus(ctx context.Context, cardID string) (map[string]interface{}, error) {
+	key := "vital-focus:card:" + cardID + ":status"
+	val, err := s.kv.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if val == "" {
+		return nil, nil
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(val), &data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// InitSSE 初始化 SSE 连接的 watchIDs + viewIDs（连接建立后前端 POST 调用）
+func (s *CardRealtimeService) InitSSE(connID string, watchIDs, viewIDs []string) error {
+	s.connMu.RLock()
+	conn, ok := s.sseConns[connID]
+	s.connMu.RUnlock()
+	if !ok {
+		return fmt.Errorf("SSE connection %s not found", connID)
+	}
+	if conn.watchIDs != nil {
+		return fmt.Errorf("SSE connection %s already initialized", connID)
+	}
+
+	// 权限校验
+	stored := s.getCardList(conn.tenantID, conn.userID)
+	allowedSet := make(map[string]bool)
+	if stored != nil {
+		for _, ids := range stored.CardsByBranch {
+			for _, id := range ids {
+				allowedSet[id] = true
 			}
 		}
 	}
-	return map[string]interface{}{
-		"card_id": cardID, "event_type": eventType, "timestamp": timestamp, "data_value": dataValue,
+	var filteredWatch []string
+	for _, id := range watchIDs {
+		if id != "" && allowedSet[id] {
+			filteredWatch = append(filteredWatch, id)
+		}
 	}
+
+	// 注册 fan-out
+	s.connMu.Lock()
+	s.activateSSE(connID, filteredWatch)
+	s.connMu.Unlock()
+
+	// 过滤 viewIDs（必须是 watchIDs 的子集）
+	watchSet := conn.watchIDs
+	var filteredView []string
+	for _, id := range viewIDs {
+		if id != "" && watchSet[id] {
+			filteredView = append(filteredView, id)
+		}
+	}
+
+	// 通知 SSE goroutine 开始推送
+	select {
+	case conn.initCh <- sseInitData{WatchIDs: filteredWatch, ViewIDs: filteredView}:
+	default:
+	}
+	return nil
+}
+
+// UpdateSSEView 更新 SSE 连接的 viewIDs（切页时调用）
+func (s *CardRealtimeService) UpdateSSEView(connID string, newViewIDs []string) error {
+	s.connMu.RLock()
+	conn, ok := s.sseConns[connID]
+	s.connMu.RUnlock()
+	if !ok {
+		return fmt.Errorf("SSE connection %s not found", connID)
+	}
+	// 过滤：newViewIDs 必须是 watchIDs 的子集
+	var filtered []string
+	for _, id := range newViewIDs {
+		if conn.watchIDs[id] {
+			filtered = append(filtered, id)
+		}
+	}
+	select {
+	case conn.viewIDsCh <- filtered:
+	default:
+		s.logger.Warn("[SSE] viewIDsCh full, dropping update",
+			zap.String("conn_id", connID))
+	}
+	return nil
+}
+
+// truncStr 截断字符串（日志用）
+func truncStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

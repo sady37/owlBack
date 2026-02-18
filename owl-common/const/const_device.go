@@ -126,13 +126,13 @@ func (s DeviceStatusSlice) Contains(d DeviceStatus) bool {
 }
 
 // 设备状态 JSON 字段名（map[string]int 的 key）
-// 值为 0=正常/在线, 1=异常/故障/离线
+// 统一语义：1=异常, 0=正常（零值即健康）
 const (
-	StatusFieldOnline        = "online"         // 0=离线, 1=在线
+	StatusFieldOffline       = "offline"        // 1=离线, 0=在线
 	StatusFieldAngleAbnormal = "angle_abnormal" // 1=异常, 0=正常
 	StatusFieldSignalPoor    = "signal_poor"    // 1=信号差, 0=正常
-	StatusFieldDetached      = "detached"       // 1=脱落, 0=正常
-	StatusFieldDeviceFailure = "device_failure" // 1=故障, 0=正常
+	StatusFieldDetached      = "SensorDetached" // 1=脱落, 0=正常
+	StatusFieldDeviceFailure = "device_failure"  // 1=故障, 0=正常
 )
 
 // PoseNumToDisplay track pose 数值 (0-11) → display_en 字符串

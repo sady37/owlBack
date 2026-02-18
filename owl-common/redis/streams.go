@@ -140,10 +140,14 @@ func ReadFromStreamWithBlock(ctx context.Context, client *redis.Client, stream s
 
 // ReadFromMultipleStreamsWithBlock 从多个 stream 读取消息（支持 XREADGROUP）
 func ReadFromMultipleStreamsWithBlock(ctx context.Context, client *redis.Client, streamNames []string, consumerGroup string, consumer string, count int64, block time.Duration) ([]StreamMessage, error) {
-	// 构建 Streams 参数：[stream1, >, stream2, >, ...]
+	// 构建 Streams 参数：[stream1, stream2, ..., >, >, ...]
+	// go-redis XReadGroup 要求先列所有 stream 名，再列对应的 ID
 	streamArgs := make([]string, 0, len(streamNames)*2)
 	for _, streamName := range streamNames {
-		streamArgs = append(streamArgs, streamName, ">")
+		streamArgs = append(streamArgs, streamName)
+	}
+	for range streamNames {
+		streamArgs = append(streamArgs, ">")
 	}
 
 	streams, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{

@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"wisefido-ai/internal/models"
 	"wisefido-ai/internal/repository"
+
+	commoncard "owl-common/card"
 
 	"go.uber.org/zap"
 )
@@ -17,16 +20,19 @@ import (
 // 4. 事务管理（跨 Repository 的事务）
 // 5. 权限检查（如需要）
 type AlarmEventService struct {
+	db              *sql.DB
 	alarmEventsRepo *repository.AlarmEventsRepository
 	logger          *zap.Logger
 }
 
 // NewAlarmEventService 创建报警事件服务
 func NewAlarmEventService(
+	db *sql.DB,
 	alarmEventsRepo *repository.AlarmEventsRepository,
 	logger *zap.Logger,
 ) *AlarmEventService {
 	return &AlarmEventService{
+		db:              db,
 		alarmEventsRepo: alarmEventsRepo,
 		logger:          logger,
 	}
@@ -166,8 +172,11 @@ func (s *AlarmEventService) AcknowledgeAlarmEvent(
 		return fmt.Errorf("can only acknowledge active alarms, current status: %s", event.AlarmStatus)
 	}
 
-	// 调用 Repository
-	if err := s.alarmEventsRepo.AcknowledgeAlarmEvent(ctx, tenantID, eventID, handlerID); err != nil {
+	// 通过 owl-common 原子操作：UPDATE alarm + UPDATE card counts
+	if _, err := commoncard.UpdateAlarmAndUpdateCard(ctx, s.db, "", tenantID, eventID, commoncard.AlarmUpdateParams{
+		AlarmStatus: "acked",
+		Handler:     handlerID,
+	}); err != nil {
 		s.logger.Error("Failed to acknowledge alarm event",
 			zap.String("tenant_id", tenantID),
 			zap.String("event_id", eventID),
@@ -177,7 +186,7 @@ func (s *AlarmEventService) AcknowledgeAlarmEvent(
 		return fmt.Errorf("failed to acknowledge alarm event: %w", err)
 	}
 
-	s.logger.Info("Alarm event acknowledged",
+	s.logger.Info("Alarm event acked",
 		zap.String("tenant_id", tenantID),
 		zap.String("event_id", eventID),
 		zap.String("handler_id", handlerID),
@@ -191,7 +200,7 @@ func (s *AlarmEventService) AcknowledgeAlarmEvent(
 // - tenant_id 和 event_id 必填
 // - operation 必填（如 'verified_and_processed', 'false_alarm'）
 // - handler_id 必填（操作人）
-// - 只能更新状态为 'active' 或 'acknowledged' 的报警
+// - 只能更新状态为 'active' 或 'acked' 的报警
 // - 自动设置 hand_time 为当前时间
 func (s *AlarmEventService) UpdateAlarmEventOperation(
 	ctx context.Context,
@@ -214,11 +223,11 @@ func (s *AlarmEventService) UpdateAlarmEventOperation(
 
 	// 验证 operation 值
 	validOperations := []string{
-		"verified_and_processed",
+		"verified",
+		"verified_and_processed", // 兼容旧数据
 		"false_alarm",
-		"resolved",
-		"escalated",
-		"cancelled",
+		"test",
+		"auto_resolved",
 	}
 	isValid := false
 	for _, validOp := range validOperations {
@@ -237,13 +246,18 @@ func (s *AlarmEventService) UpdateAlarmEventOperation(
 		return fmt.Errorf("failed to get alarm event: %w", err)
 	}
 
-	// 业务规则：只能更新状态为 'active' 或 'acknowledged' 的报警
-	if event.AlarmStatus != "active" && event.AlarmStatus != "acknowledged" {
-		return fmt.Errorf("can only update operation for active or acknowledged alarms, current status: %s", event.AlarmStatus)
+	// 业务规则：只能更新状态为 'active' 或 'acked' 的报警
+	if event.AlarmStatus != "active" && event.AlarmStatus != "acked" {
+		return fmt.Errorf("can only update operation for active or acked alarms, current status: %s", event.AlarmStatus)
 	}
 
-	// 调用 Repository
-	if err := s.alarmEventsRepo.UpdateAlarmEventOperation(ctx, tenantID, eventID, operation, handlerID, notes); err != nil {
+	// 通过 owl-common 原子操作：UPDATE alarm + UPDATE card counts
+	if _, err := commoncard.UpdateAlarmAndUpdateCard(ctx, s.db, "", tenantID, eventID, commoncard.AlarmUpdateParams{
+		AlarmStatus: "resolved",
+		Handler:     handlerID,
+		Operation:   operation,
+		Notes:       notes,
+	}); err != nil {
 		s.logger.Error("Failed to update alarm event operation",
 			zap.String("tenant_id", tenantID),
 			zap.String("event_id", eventID),
@@ -300,16 +314,27 @@ func (s *AlarmEventService) CreateAlarmEvent(
 		event.AlarmStatus = "active" // 默认状态
 	}
 
-	// 调用 Repository
-	if err := s.alarmEventsRepo.CreateAlarmEvent(ctx, tenantID, event); err != nil {
+	// 通过 owl-common 原子操作：INSERT alarm + UPDATE card counts
+	params := commoncard.AlarmInsertParams{
+		TenantID:    event.TenantID,
+		DeviceID:    event.DeviceID,
+		EventType:   event.EventType,
+		Category:    event.Category,
+		AlarmLevel:  event.AlarmLevel,
+		TriggeredAt: event.TriggeredAt,
+		TriggerData: event.TriggerData,
+		Metadata:    event.Metadata,
+	}
+	result, _, err := commoncard.InsertAlarmAndUpdateCard(ctx, s.db, "", params)
+	if err != nil {
 		s.logger.Error("Failed to create alarm event",
 			zap.String("tenant_id", tenantID),
-			zap.String("event_id", event.EventID),
 			zap.String("event_type", event.EventType),
 			zap.Error(err),
 		)
 		return fmt.Errorf("failed to create alarm event: %w", err)
 	}
+	event.EventID = result.EventID
 
 	s.logger.Info("Alarm event created",
 		zap.String("tenant_id", tenantID),
@@ -375,38 +400,12 @@ func (s *AlarmEventService) UpdateAlarmEvent(
 	return nil
 }
 
-// DeleteAlarmEvent 删除报警事件（软删除）
-// 业务规则：
-// - tenant_id 和 event_id 必填
-// - 软删除（设置 metadata->>'deleted_at'）
+// DeleteAlarmEvent 已禁用（医疗系统禁止删除报警事件）
 func (s *AlarmEventService) DeleteAlarmEvent(
 	ctx context.Context,
 	tenantID, eventID string,
 ) error {
-	// 业务规则验证
-	if tenantID == "" {
-		return fmt.Errorf("tenant_id is required")
-	}
-	if eventID == "" {
-		return fmt.Errorf("event_id is required")
-	}
-
-	// 调用 Repository
-	if err := s.alarmEventsRepo.DeleteAlarmEvent(ctx, tenantID, eventID); err != nil {
-		s.logger.Error("Failed to delete alarm event",
-			zap.String("tenant_id", tenantID),
-			zap.String("event_id", eventID),
-			zap.Error(err),
-		)
-		return fmt.Errorf("failed to delete alarm event: %w", err)
-	}
-
-	s.logger.Info("Alarm event deleted",
-		zap.String("tenant_id", tenantID),
-		zap.String("event_id", eventID),
-	)
-
-	return nil
+	return fmt.Errorf("alarm event deletion is prohibited in medical systems")
 }
 
 // ============================================

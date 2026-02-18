@@ -59,9 +59,9 @@ func (h *DeviceMonitorSettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.
 	path := r.URL.Path
 
 	// 检查是否是获取默认设置的请求
-	if strings.HasPrefix(path, "/settings/api/v1/monitor/default/sleepace") {
+	if strings.HasPrefix(path, "/settings/api/v1/monitor/default/sleepad") {
 		if r.Method == http.MethodGet {
-			h.GetDefaultDeviceMonitorSettings(w, r, "sleepace")
+			h.GetDefaultDeviceMonitorSettings(w, r, "sleepad")
 			return
 		}
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -80,9 +80,9 @@ func (h *DeviceMonitorSettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.
 	var deviceType string
 	var deviceID string
 
-	if strings.HasPrefix(path, "/settings/api/v1/monitor/sleepace/") {
-		deviceType = "sleepace"
-		deviceID = strings.TrimPrefix(path, "/settings/api/v1/monitor/sleepace/")
+	if strings.HasPrefix(path, "/settings/api/v1/monitor/sleepad/") {
+		deviceType = "sleepad"
+		deviceID = strings.TrimPrefix(path, "/settings/api/v1/monitor/sleepad/")
 	} else if strings.HasPrefix(path, "/settings/api/v1/monitor/radar/") {
 		deviceType = "radar"
 		deviceID = strings.TrimPrefix(path, "/settings/api/v1/monitor/radar/")
@@ -510,20 +510,15 @@ func (h *DeviceMonitorSettingsHandler) verifyDeviceOnline(ctx context.Context, t
 }
 
 // verifyAlarmTypesForDevice 验证 AlarmItems 中的 AlarmType 是否属于该设备类型
-// Radar -> Qinglan or Sleepad -> Sleepace
 func (h *DeviceMonitorSettingsHandler) verifyAlarmTypesForDevice(deviceType string, alarmItems []alarm.AlarmItem) error {
-	// 标准化 device_type（统一转换为小写，支持 "Radar"/"radar", "Sleepad"/"sleepace" 等变体）
 	normalizedType := strings.ToLower(deviceType)
-	if normalizedType == "sleepad" {
-		normalizedType = "sleepace" // 统一 Sleepad -> sleepace
-	}
 
 	// 获取该设备类型支持的 AlarmType 列表
 	var allowedTypes []string
 	switch normalizedType {
 	case "radar":
 		allowedTypes = alarm.GetRadarAlarmTypes()
-	case "sleepace":
+	case "sleepad":
 		allowedTypes = alarm.GetSleepPadAlarmTypes()
 	default:
 		return fmt.Errorf("unsupported device type: %s (normalized: %s)", deviceType, normalizedType)

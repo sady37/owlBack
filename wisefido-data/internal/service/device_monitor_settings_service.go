@@ -125,7 +125,7 @@ func (s *deviceMonitorSettingsService) buildDeviceAlarmItemsFromCloudOrDefault(c
 	// 标准化 device_type
 	normalizedType := s.normalizeDeviceType(deviceType)
 	if normalizedType == "" {
-		return nil, fmt.Errorf("invalid device_type: %s (must be Sleepad/sleepace/sleepad or radar)", deviceType)
+		return nil, fmt.Errorf("invalid device_type: %s (must be 'sleepad' or 'radar')", deviceType)
 	}
 
 	// 1. 总是从 alarm.go 获取所有默认项（包括 DisplayAlarmDevice 的项）
@@ -310,7 +310,7 @@ func (s *deviceMonitorSettingsService) convertMonitorConfigToAlarmItems(monitorC
 	// 获取默认 AlarmItems（根据 device_store.device_type 直接判断）
 	normalizedType := s.normalizeDeviceType(deviceType)
 	if normalizedType == "" {
-		return nil, fmt.Errorf("invalid device_type: %s (must be Sleepad/sleepace/sleepad or radar)", deviceType)
+		return nil, fmt.Errorf("invalid device_type: %s (must be 'sleepad' or 'radar')", deviceType)
 	}
 
 	// 使用 owl-common 函数获取默认配置
@@ -372,8 +372,8 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 	if deviceID == "" || deviceID == "undefined" || deviceID == "null" {
 		return nil, fmt.Errorf("device_id is required and must be a valid UUID")
 	}
-	if deviceType != "sleepace" && deviceType != "radar" {
-		return nil, fmt.Errorf("invalid device_type: %s (must be 'sleepace' or 'radar')", deviceType)
+	if deviceType != "sleepad" && deviceType != "radar" {
+		return nil, fmt.Errorf("invalid device_type: %s (must be 'sleepad' or 'radar')", deviceType)
 	}
 
 	// 验证设备存在
@@ -383,8 +383,8 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 	}
 
 	// 验证设备类型匹配（安全性检查：防止恶意修改 URL 参数）
-	// deviceType 是前端传入的 "sleepace" 或 "radar"
-	// device.DeviceType 是从 devices 表 JOIN device_store 获取的 device_type（如 "Sleepad", "radar"）
+	// deviceType 是前端传入的 "sleepad" 或 "radar"
+	// device.DeviceType 是从 devices 表 JOIN device_store 获取的 device_type（如 "Sleepad", "Radar"）
 	if !device.DeviceType.Valid {
 		return nil, fmt.Errorf("device has no device_type")
 	}
@@ -475,8 +475,8 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(ctx context.C
 	if deviceID == "" {
 		return nil, fmt.Errorf("device_id is required")
 	}
-	if deviceType != "sleepace" && deviceType != "radar" {
-		return nil, fmt.Errorf("invalid device_type: %s (must be 'sleepace' or 'radar')", deviceType)
+	if deviceType != "sleepad" && deviceType != "radar" {
+		return nil, fmt.Errorf("invalid device_type: %s (must be 'sleepad' or 'radar')", deviceType)
 	}
 	if alarmItems == nil || len(alarmItems) == 0 {
 		return nil, fmt.Errorf("alarm_items is required")
@@ -485,7 +485,7 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(ctx context.C
 	// 根据设备类型调用对应的实现
 	if deviceType == "radar" {
 		return s.UpdateRadarMonitorSettings(ctx, tenantID, deviceID, userID, alarmItems, progressCallback)
-	} else if deviceType == "sleepace" {
+	} else if deviceType == "sleepad" {
 		success, noChange, err := s.UpdateSleepadMonitorSettings(ctx, tenantID, deviceID, userID, alarmItems, progressCallback)
 		return map[string]interface{}{
 			"success":      success,
@@ -645,7 +645,7 @@ func (s *deviceMonitorSettingsService) UpdateRadarMonitorSettings(ctx context.Co
 
 // UpdateSleepadMonitorSettings 更新 Sleepad 设备监控配置
 func (s *deviceMonitorSettingsService) UpdateSleepadMonitorSettings(ctx context.Context, tenantID, deviceID, userID string, alarmItems []alarm.AlarmItem, progressCallback ProgressCallback) (success bool, noChange bool, err error) {
-	deviceType := "sleepace"
+	deviceType := "sleepad"
 
 	// 验证设备存在
 	device, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
@@ -1153,14 +1153,14 @@ func (s *deviceMonitorSettingsService) updateAlarmDeviceDB(ctx context.Context, 
 
 // normalizeDeviceType 标准化设备类型，返回 "sleepad" 或 "radar"，无效返回空字符串
 func (s *deviceMonitorSettingsService) normalizeDeviceType(deviceType string) string {
-	deviceTypeLower := strings.ToLower(deviceType)
-	if deviceTypeLower == "sleepace" || deviceTypeLower == "sleepad" || deviceTypeLower == "sleeppad" {
+	switch strings.ToLower(deviceType) {
+	case "sleepad":
 		return "sleepad"
-	}
-	if deviceTypeLower == "radar" {
+	case "radar":
 		return "radar"
+	default:
+		return ""
 	}
-	return ""
 }
 
 // AlarmItemComparisonResult 比对结果，记录每个字段是否有变化
@@ -1393,8 +1393,8 @@ func (s *deviceMonitorSettingsService) getDeviceType(ctx context.Context, device
 // 阈值：硬编码（与 System 租户模板设备的值相同）
 // Alarm Level：优先从当前租户的 alarm_cloud 读取，如果没有则使用硬编码值（与 AlarmCloud.vue 中的默认值相同）
 func (s *deviceMonitorSettingsService) GetDefaultDeviceMonitorSettings(ctx context.Context, tenantID string, deviceType string) ([]alarm.AlarmItem, error) {
-	if deviceType != "sleepace" && deviceType != "radar" {
-		return nil, fmt.Errorf("invalid device_type: %s (must be 'sleepace' or 'radar')", deviceType)
+	if deviceType != "sleepad" && deviceType != "radar" {
+		return nil, fmt.Errorf("invalid device_type: %s (must be 'sleepad' or 'radar')", deviceType)
 	}
 
 	// 从 alarm_cloud 或 DefaultAlarmSetting 获取默认配置

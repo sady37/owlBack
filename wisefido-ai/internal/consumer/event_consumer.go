@@ -46,15 +46,10 @@ func NewEventConsumer(
 
 // Start 启动事件消费者（订阅 Redis Streams）
 func (c *EventConsumer) Start(ctx context.Context, evaluator Evaluator) error {
-	// 订阅所有设备的 streams（主要关注 event 和 alarm streams）
+	// 订阅统一 streams（event 和 alarm）
 	streams := []string{
-		// Radar 设备 streams（主要关注 event 和 alarm）
-		c.config.Alarm.IoTStream.RadarEvent,
-		c.config.Alarm.IoTStream.RadarAlarm,
-		// Sleepace 设备 streams（主要关注 event 和 alarm）
-		c.config.Alarm.IoTStream.SleepaceEvent,
-		c.config.Alarm.IoTStream.SleepaceAlarm,
-		// 注意：monitor 和 stat streams 不处理，因为 wisefido-ai 主要处理事件
+		c.config.Alarm.IoTStream.Event,
+		c.config.Alarm.IoTStream.Alarm,
 	}
 
 	consumerGroup := c.config.Alarm.IoTStream.ConsumerGroup
@@ -85,31 +80,19 @@ func (c *EventConsumer) Start(ctx context.Context, evaluator Evaluator) error {
 			c.logger.Info("Event consumer stopped")
 			return nil
 		default:
-			// 并行消费所有 streams
-			radarEventErr := c.consumeStream(ctx, c.config.Alarm.IoTStream.RadarEvent, consumerGroup, consumerName, evaluator)
-			radarAlarmErr := c.consumeStream(ctx, c.config.Alarm.IoTStream.RadarAlarm, consumerGroup, consumerName, evaluator)
-			sleepaceEventErr := c.consumeStream(ctx, c.config.Alarm.IoTStream.SleepaceEvent, consumerGroup, consumerName, evaluator)
-			sleepaceAlarmErr := c.consumeStream(ctx, c.config.Alarm.IoTStream.SleepaceAlarm, consumerGroup, consumerName, evaluator)
+			// 消费 event 和 alarm streams
+			eventErr := c.consumeStream(ctx, c.config.Alarm.IoTStream.Event, consumerGroup, consumerName, evaluator)
+			alarmErr := c.consumeStream(ctx, c.config.Alarm.IoTStream.Alarm, consumerGroup, consumerName, evaluator)
 
-			// 如果所有流都出错，等待后重试
-			if radarEventErr != nil && radarAlarmErr != nil && sleepaceEventErr != nil && sleepaceAlarmErr != nil {
-				c.logger.Error("Failed to consume all streams",
-					zap.Error(radarEventErr),
-				)
+			if eventErr != nil && alarmErr != nil {
+				c.logger.Error("Failed to consume all streams", zap.Error(eventErr))
 				time.Sleep(time.Second)
 			} else {
-				// 记录单个流的错误（但不中断）
-				if radarEventErr != nil {
-					c.logger.Error("Failed to consume radar event stream", zap.Error(radarEventErr))
+				if eventErr != nil {
+					c.logger.Error("Failed to consume event stream", zap.Error(eventErr))
 				}
-				if radarAlarmErr != nil {
-					c.logger.Error("Failed to consume radar alarm stream", zap.Error(radarAlarmErr))
-				}
-				if sleepaceEventErr != nil {
-					c.logger.Error("Failed to consume sleepace event stream", zap.Error(sleepaceEventErr))
-				}
-				if sleepaceAlarmErr != nil {
-					c.logger.Error("Failed to consume sleepace alarm stream", zap.Error(sleepaceAlarmErr))
+				if alarmErr != nil {
+					c.logger.Error("Failed to consume alarm stream", zap.Error(alarmErr))
 				}
 			}
 		}

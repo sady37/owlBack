@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -13,7 +14,6 @@ import (
 	"wisefido-cardagg/internal/publisher"
 	"wisefido-cardagg/internal/repository"
 
-	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -36,82 +36,130 @@ func NewEventAlarmService(repo repository.CacheRepository, cardPublisher *publis
 	}
 }
 
-// HandleAlarmProcessMessage 处理报警处理消息（来自 config:alarm.process:stream）
-// 当报警被确认或解决时，更新卡片的 ActiveAlarms 状态
-// 参数 data 包含：alarm_level, alarm_type, alarm_timestamp
-// 【核心】：优先从数据库查询精确计数，确保幂等性和准确性
-func (s *EventAlarmService) HandleAlarmProcessMessage(ctx context.Context, cardID, tenantID, alarmLevel, alarmType string, alarmTimestamp int64) error {
-	// 1. 优先从数据库查询精确的报警计数
-	var dbAlarmCounts *card.ActiveAlarmState
-	if s.db != nil {
-		var err error
-		dbAlarmCounts, err = s.getCardAlarmCountsFromDB(ctx, tenantID, cardID)
-		if err != nil {
-			s.logger.Warn("Failed to query alarm counts from DB, falling back to Redis cache",
-				zap.String("card_id", cardID),
-				zap.Error(err))
-			// 降级到 Redis 缓存
-		}
-	}
-
-	// 2. 如果 DB 查询失败或 DB 为空，使用 Redis 缓存
-	if dbAlarmCounts == nil {
-		cardStatus, err := s.cacheRepo.GetCardStatus(ctx, cardID)
-		if err != nil {
-			s.logger.Warn("Failed to get card status for alarm process",
-				zap.String("card_id", cardID),
-				zap.Error(err))
-			return nil
-		}
-
-		if cardStatus == nil || cardStatus.ActiveAlarms == nil {
-			s.logger.Debug("No alarm data found (Redis cache)",
-				zap.String("card_id", cardID),
-				zap.String("alarm_level", alarmLevel))
-			return nil
-		}
-
-		dbAlarmCounts = cardStatus.ActiveAlarms
-	}
-
-	// 3. 【幂等性检查】：验证该级别的计数 > 0，确保该报警真实存在
-	currentCount := s.getAlarmCountFromState(dbAlarmCounts, alarmLevel)
-	if currentCount <= 0 {
-		s.logger.Info("Alarm already processed or does not exist (count <= 0), skipping decrement",
-			zap.String("card_id", cardID),
-			zap.String("alarm_level", alarmLevel),
-			zap.Int("current_count", currentCount))
+// SyncAllCardsAlarmState 启动时从 DB 同步所有 card 的 alarm_state 到 Redis
+// 防止 Redis 缓存与 DB 不一致（如之前消息被丢弃导致 Redis 未更新）
+func (s *EventAlarmService) SyncAllCardsAlarmState(ctx context.Context) error {
+	if s.db == nil {
+		s.logger.Warn("DB not available, skipping alarm state sync")
 		return nil
 	}
 
-	// 4. 从数据库查询的计数减 1，更新到 Redis
-	// 先从 Redis 获取完整的 CardStatus
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT card_id, tenant_id,
+		       unhandled_alarm_0, unhandled_alarm_1, unhandled_alarm_2,
+		       unhandled_alarm_3, unhandled_alarm_4,
+		       pop_alarm_level, pop_alarm_type, pop_alarm_event_id
+		FROM cards
+	`)
+	if err != nil {
+		return fmt.Errorf("query cards: %w", err)
+	}
+	defer rows.Close()
+
+	synced := 0
+	for rows.Next() {
+		var cardID, tenantID string
+		var state card.CardAlarmState
+		var popEventId sql.NullString
+		if err := rows.Scan(&cardID, &tenantID,
+			&state.UnhandledAlarm0, &state.UnhandledAlarm1, &state.UnhandledAlarm2,
+			&state.UnhandledAlarm3, &state.UnhandledAlarm4,
+			&state.PopAlarmLevel, &state.PopAlarmType, &popEventId,
+		); err != nil {
+			s.logger.Warn("Scan card row failed", zap.Error(err))
+			continue
+		}
+		if popEventId.Valid {
+			state.PopAlarmEventId = popEventId.String
+		}
+
+		alarmState := state.ToAlarmState()
+
+		cardStatus, _ := s.cacheRepo.GetCardStatus(ctx, cardID)
+		if cardStatus == nil {
+			cardStatus = &card.CardStatus{
+				CardID:    cardID,
+				Timestamp: time.Now().Unix(),
+			}
+		}
+
+		cardStatus.AlarmState = alarmState
+		cardStatus.UpdateType = "AlarmState"
+
+		if err := s.cacheRepo.SetCardStatus(ctx, cardStatus); err != nil {
+			s.logger.Warn("Sync card alarm state to Redis failed",
+				zap.String("card_id", cardID), zap.Error(err))
+			continue
+		}
+
+		if s.cardPublisher != nil {
+			go s.cardPublisher.PublishCardStatus(ctx, tenantID, cardID, cardStatus)
+		}
+
+		synced++
+	}
+
+	s.logger.Info("Synced all cards alarm state from DB to Redis",
+		zap.Int("synced_count", synced))
+	return nil
+}
+
+// HandleAlarmProcessMessage 处理报警处理消息（来自 config:alarmProcess:stream）
+// 直接用消息中的字段更新 Redis AlarmState，无需查 DB
+// alarmLevel: "EMERG"/"ALERT"/"CRIT"/"ERR"/"WARNING"
+// alarmType: "Fall"/"AbnormalHeartRate" 等
+// eventID: 被处理的 alarm_events.event_id
+// alarmTimestamp: hand_time（秒）
+func (s *EventAlarmService) HandleAlarmProcessMessage(ctx context.Context, cardID, tenantID, alarmLevel, alarmType, eventID string, alarmTimestamp int64) error {
+	// 获取当前 Redis CardStatus
 	cardStatus, err := s.cacheRepo.GetCardStatus(ctx, cardID)
 	if err != nil || cardStatus == nil {
 		cardStatus = &card.CardStatus{
-			CardID:       cardID,
-			Timestamp:    time.Now().Unix(),
-			ActiveAlarms: dbAlarmCounts,
+			CardID:    cardID,
+			Timestamp: time.Now().Unix(),
 		}
-	} else {
-		// 用 DB 查询的准确计数覆盖 Redis 中的计数
-		cardStatus.ActiveAlarms = dbAlarmCounts
 	}
 
-	// 5. 减少对应级别的计数
-	s.decrementAlarmCountInStatus(cardStatus, alarmLevel)
+	alarmState := cardStatus.AlarmState
 
-	// 6. 检查是否需要清空 NowAlarm
-	if s.shouldClearNowAlarmInStatus(cardStatus, alarmLevel, alarmType, alarmTimestamp) {
-		cardStatus.ActiveAlarms.NowAlarm = ""
-		s.logger.Info("NowAlarm cleared",
-			zap.String("card_id", cardID),
-			zap.String("alarm_level", alarmLevel),
-			zap.String("alarm_type", alarmType),
-			zap.Int64("alarm_timestamp", alarmTimestamp))
+	// 按 alarmLevel 递减对应计数
+	switch alarmLevel {
+	case "EMERG", "0":
+		if alarmState.ActiveEmerg > 0 {
+			alarmState.ActiveEmerg--
+		}
+	case "ALERT", "1":
+		if alarmState.ActiveAlert > 0 {
+			alarmState.ActiveAlert--
+		}
+	case "CRIT", "2":
+		if alarmState.ActiveCrit > 0 {
+			alarmState.ActiveCrit--
+		}
+	case "ERR", "3":
+		if alarmState.ActiveErr > 0 {
+			alarmState.ActiveErr--
+		}
+	case "WARNING", "4":
+		if alarmState.ActiveWarning > 0 {
+			alarmState.ActiveWarning--
+		}
 	}
 
-	// 7. 更新状态数据到 Redis（12 小时 TTL）
+	// 如果处理的是当前弹出报警，清除 pop_alarm
+	if eventID != "" && eventID == alarmState.EventID {
+		alarmState.PopAlarm = ""
+		alarmState.EventID = ""
+	}
+
+	now := time.Now()
+	alarmState.UpdatedAt = now.UnixMilli()
+
+	cardStatus.AlarmState = alarmState
+	cardStatus.UpdateType = "AlarmState"
+	cardStatus.Timestamp = now.Unix()
+	cardStatus.Message = nil // 清除旧的 alarm message
+
 	if err := s.cacheRepo.SetCardStatus(ctx, cardStatus); err != nil {
 		s.logger.Warn("Failed to set card status after alarm process",
 			zap.String("card_id", cardID),
@@ -119,189 +167,20 @@ func (s *EventAlarmService) HandleAlarmProcessMessage(ctx context.Context, cardI
 		return err
 	}
 
-	s.logger.Info("Alarm process message handled",
+	// 推送 card:cardStatus:stream，供 wisefido-data data-subscriber 取出放入 cache，为客户 SSE 提供数据
+	if s.cardPublisher != nil {
+		go s.cardPublisher.PublishCardStatus(ctx, tenantID, cardID, cardStatus)
+	}
+
+	s.logger.Info("Alarm process → Redis update + card:cardStatus:stream",
 		zap.String("card_id", cardID),
+		zap.String("event_id", eventID),
 		zap.String("alarm_level", alarmLevel),
-		zap.String("alarm_type", alarmType))
+		zap.String("alarm_type", alarmType),
+		zap.String("pop_alarm", alarmState.PopAlarm),
+		zap.Int("active_emerg", alarmState.ActiveEmerg))
 
 	return nil
-}
-
-// getAlarmCountFromState 从 ActiveAlarmState 中获取指定级别的计数
-func (s *EventAlarmService) getAlarmCountFromState(state *card.ActiveAlarmState, alarmLevel string) int {
-	if state == nil {
-		return 0
-	}
-
-	switch alarmLevel {
-	case "EMERG":
-		return state.ActiveEmerg
-	case "ALERT":
-		return state.ActiveAlert
-	case "CRIT":
-		return state.ActiveCrit
-	case "ERR":
-		return state.ActiveErr
-	case "WARNING":
-		return state.ActiveWarning
-	default:
-		return 0
-	}
-}
-
-// decrementAlarmCountInStatus 减少 CardStatus 中指定级别的报警计数（确保 >= 0）
-func (s *EventAlarmService) decrementAlarmCountInStatus(cardStatus *card.CardStatus, alarmLevel string) {
-	if cardStatus == nil || cardStatus.ActiveAlarms == nil {
-		return
-	}
-
-	switch alarmLevel {
-	case "EMERG":
-		if cardStatus.ActiveAlarms.ActiveEmerg > 0 {
-			cardStatus.ActiveAlarms.ActiveEmerg--
-		}
-	case "ALERT":
-		if cardStatus.ActiveAlarms.ActiveAlert > 0 {
-			cardStatus.ActiveAlarms.ActiveAlert--
-		}
-	case "CRIT":
-		if cardStatus.ActiveAlarms.ActiveCrit > 0 {
-			cardStatus.ActiveAlarms.ActiveCrit--
-		}
-	case "ERR":
-		if cardStatus.ActiveAlarms.ActiveErr > 0 {
-			cardStatus.ActiveAlarms.ActiveErr--
-		}
-	case "WARNING":
-		if cardStatus.ActiveAlarms.ActiveWarning > 0 {
-			cardStatus.ActiveAlarms.ActiveWarning--
-		}
-	}
-
-	s.logger.Debug("Alarm count decremented in status",
-		zap.String("alarm_level", alarmLevel),
-		zap.Int("emerg", cardStatus.ActiveAlarms.ActiveEmerg),
-		zap.Int("alert", cardStatus.ActiveAlarms.ActiveAlert),
-		zap.Int("crit", cardStatus.ActiveAlarms.ActiveCrit),
-		zap.Int("err", cardStatus.ActiveAlarms.ActiveErr),
-		zap.Int("warning", cardStatus.ActiveAlarms.ActiveWarning))
-}
-
-// getCardAlarmCountsFromDB 从数据库查询卡片的精确报警计数
-// 查询 alarm_events 中 status='active' 的记录，按 alarm_level 统计
-func (s *EventAlarmService) getCardAlarmCountsFromDB(ctx context.Context, tenantID, cardID string) (*card.ActiveAlarmState, error) {
-	if s.db == nil {
-		return nil, nil // DB 为空，返回 nil，使用 Redis 缓存
-	}
-
-	// 1. 查询卡片关联的所有 device_id（从 cards.devices JSONB 中提取）
-	query := `
-		SELECT devices
-		FROM cards
-		WHERE card_id = $1 AND tenant_id = $2
-		LIMIT 1
-	`
-
-	var devicesJSON sql.NullString
-	err := s.db.QueryRowContext(ctx, query, cardID, tenantID).Scan(&devicesJSON)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			s.logger.Debug("Card not found in database", zap.String("card_id", cardID))
-			return &card.ActiveAlarmState{}, nil
-		}
-		s.logger.Warn("Failed to query card devices", zap.String("card_id", cardID), zap.Error(err))
-		return nil, err
-	}
-
-	if !devicesJSON.Valid || devicesJSON.String == "" {
-		s.logger.Debug("Card has no devices", zap.String("card_id", cardID))
-		return &card.ActiveAlarmState{}, nil
-	}
-
-	// 2. 解析 devices JSON
-	var devices []map[string]interface{}
-	if err := json.Unmarshal([]byte(devicesJSON.String), &devices); err != nil {
-		s.logger.Warn("Failed to unmarshal devices JSON", zap.String("card_id", cardID), zap.Error(err))
-		return &card.ActiveAlarmState{}, nil
-	}
-
-	// 3. 提取 device_id 列表
-	deviceIDs := make([]string, 0, len(devices))
-	for _, device := range devices {
-		if deviceID, ok := device["device_id"].(string); ok && deviceID != "" {
-			deviceIDs = append(deviceIDs, deviceID)
-		}
-	}
-
-	if len(deviceIDs) == 0 {
-		s.logger.Debug("Card has no valid device IDs", zap.String("card_id", cardID))
-		return &card.ActiveAlarmState{}, nil
-	}
-
-	// 4. 统计该卡片关联的所有设备的未处理报警（alarm_status = 'active'）
-	// 按 alarm_level 分组统计
-	countQuery := `
-		SELECT 
-			COUNT(*) FILTER (WHERE alarm_level IN ('0', 'EMERG')) as count_0,
-			COUNT(*) FILTER (WHERE alarm_level IN ('1', 'ALERT')) as count_1,
-			COUNT(*) FILTER (WHERE alarm_level IN ('2', 'CRIT')) as count_2,
-			COUNT(*) FILTER (WHERE alarm_level IN ('3', 'ERR')) as count_3,
-			COUNT(*) FILTER (WHERE alarm_level IN ('4', 'WARNING')) as count_4,
-    	FROM alarm_events
-		WHERE tenant_id = $1
-		  AND device_id = ANY($2::uuid[])
-		  AND alarm_status = 'active'
-		  AND (metadata->>'deleted_at' IS NULL)
-	`
-
-	var count0, count1, count2, count3, count4, count5 int
-	err = s.db.QueryRowContext(ctx, countQuery, tenantID, pq.Array(deviceIDs)).Scan(
-		&count0, &count1, &count2, &count3, &count4, &count5,
-	)
-	if err != nil {
-		s.logger.Warn("Failed to count alarm events from DB", zap.String("card_id", cardID), zap.Error(err))
-		return nil, err
-	}
-
-	return &card.ActiveAlarmState{
-		ActiveEmerg:   count0,
-		ActiveAlert:   count1,
-		ActiveCrit:    count2,
-		ActiveErr:     count3,
-		ActiveWarning: count4,
-	}, nil
-}
-
-// shouldClearNowAlarmInStatus 判断 CardStatus 中是否应该清空 NowAlarm
-// 条件：alarmType, alarmLevel, alarmTimestamp 与当前 NowAlarm 一致
-func (s *EventAlarmService) shouldClearNowAlarmInStatus(cardStatus *card.CardStatus, alarmLevel, alarmType string, alarmTimestamp int64) bool {
-	if cardStatus == nil || cardStatus.ActiveAlarms == nil || cardStatus.ActiveAlarms.NowAlarm == "" {
-		return false
-	}
-
-	// NowAlarm 格式为 "AlarmLevel.AlarmType"，如 "EMERG.Fall"
-	parts := strings.Split(cardStatus.ActiveAlarms.NowAlarm, ".")
-	if len(parts) < 1 {
-		return false
-	}
-
-	nowAlarmLevel := parts[0]
-
-	// 检查级别是否相同
-	if nowAlarmLevel != alarmLevel {
-		return false
-	}
-
-	// 检查时间戳是否相同（精确匹配，防止清空其他报警）
-	if cardStatus.ActiveAlarms.Timestamp != alarmTimestamp {
-		s.logger.Debug("NowAlarm timestamp mismatch in status, not clearing",
-			zap.String("now_alarm", cardStatus.ActiveAlarms.NowAlarm),
-			zap.Int64("existing_ts", cardStatus.ActiveAlarms.Timestamp),
-			zap.Int64("new_ts", alarmTimestamp))
-		return false
-	}
-
-	return true
 }
 
 // HandleMessage 处理 event/alarm 消息
@@ -358,6 +237,7 @@ func (s *EventAlarmService) handleEvent(ctx context.Context, msg *redis.IoTStrea
 	}
 
 	// 遍历 data_value 数组处理每条事件
+	handled := false
 	for _, item := range msg.DataValue {
 		dataItem, ok := item.(map[string]interface{})
 		if !ok {
@@ -365,23 +245,33 @@ func (s *EventAlarmService) handleEvent(ctx context.Context, msg *redis.IoTStrea
 			continue
 		}
 
-		// 提取 category
 		category, _ := dataItem["category"].(string)
 
-		// 根据 category 分类处理
 		switch category {
+		// device 直接发出的进出事件
+		case "InBed", "OutBed", "EnterMonitor", "ExitMonitor":
+			s.handleDeviceBedStateEvent(ctx, msg, dataItem, cardStatus)
+			handled = true
+			continue
 		case "BedState":
 			s.handleBedStateEvent(ctx, msg, dataItem, cardStatus)
+			handled = true
 		case "RoomState":
 			s.handleRoomStateEvent(ctx, msg, dataItem, cardStatus)
+			handled = true
 		default:
-			s.logger.Debug("Unknown event category",
+			s.logger.Debug("Unknown event category, skipping",
 				zap.String("category", category),
 				zap.String("card_id", msg.CardID))
 		}
 	}
 
+	if !handled {
+		return nil
+	}
+
 	// 更新状态数据到 Redis（TTL 12H）
+	cardStatus.UpdateType = "EventState"
 	if msg.Timestamp > cardStatus.Timestamp {
 		cardStatus.Timestamp = msg.Timestamp
 	}
@@ -405,42 +295,106 @@ func (s *EventAlarmService) handleEvent(ctx context.Context, msg *redis.IoTStrea
 }
 
 // handleAlarm 处理 alarm 类消息
-// DataValue 为数组，每项为报警对象，项内含 category 字段
+// qinglan 发布格式：msg.Category = "AlarmLevel.AlarmType"（如 "WARNING.Stay", "EMERG.Fall"）
+// 流程：解析 → INSERT alarm_events + UPDATE cards（事务）→ 写 Redis → 推送 card:cardStatus:stream
 func (s *EventAlarmService) handleAlarm(ctx context.Context, msg *redis.IoTStreamMessage) error {
-	// 获取或创建 CardStatus
-	cardStatus, err := s.cacheRepo.GetCardStatus(ctx, msg.CardID)
+	// 从 msg.Category 解析 alarm_level 和 alarm_type
+	alarmLevel := ""
+	alarmType := ""
+	if parts := strings.SplitN(msg.Category, ".", 2); len(parts) >= 1 {
+		alarmLevel = parts[0]
+		if len(parts) >= 2 {
+			alarmType = parts[1]
+		}
+	}
+
+	if alarmLevel == "" {
+		s.logger.Warn("Alarm message missing alarm_level in category",
+			zap.String("card_id", msg.CardID),
+			zap.String("category", msg.Category))
+		return nil
+	}
+
+	s.logger.Info("handleAlarm: parsed",
+		zap.String("card_id", msg.CardID),
+		zap.String("alarm_level", alarmLevel),
+		zap.String("alarm_type", alarmType),
+		zap.Int64("timestamp", msg.Timestamp))
+
+	// 【设备自恢复检测】
+	// 1. alarmType == "DeviceRecovery" → 全量 auto-resolve
+	// 2. StatusFieldValue == "0" → 该 alarmType 的恢复事件
+	// 3. 兼容旧格式：data_value[0].recovery 以 "_recovery" 结尾
+	if alarmType == "DeviceRecovery" {
+		return s.handleDeviceRecoveryAlarm(ctx, msg, nil)
+	}
+	if isRecovery, recoveryAlarmType := s.checkRecoveryFromDataValue(msg, alarmType); isRecovery {
+		return s.handleDeviceRecoveryAlarm(ctx, msg, []string{recoveryAlarmType})
+	}
+
+	// 构建 trigger_data（整个 iot:alarm:stream 消息，便于追溯）
+	triggerData, _ := json.Marshal(msg)
+
+	// 确定 FHIR category（从 data_value[0].category 取，为空时按 alarmType 推断）
+	fhirCategory := ""
+	if len(msg.DataValue) > 0 {
+		if item, ok := msg.DataValue[0].(map[string]interface{}); ok {
+			fhirCategory, _ = item["category"].(string)
+		}
+	}
+	if fhirCategory == "" {
+		fhirCategory = alarm.GetFHIRCategory(alarmType)
+	}
+
+	// 【核心】INSERT alarm_events + UPDATE cards（事务）
+	if s.db == nil {
+		s.logger.Warn("DB not available, alarm not persisted",
+			zap.String("card_id", msg.CardID))
+		return nil
+	}
+
+	triggeredAt := time.Unix(msg.Timestamp, 0)
+	_, dbState, err := card.InsertAlarmAndUpdateCard(ctx, s.db, msg.CardID, card.AlarmInsertParams{
+		TenantID:    msg.TenantID,
+		DeviceID:    msg.DeviceID,
+		EventType:   alarmType,
+		Category:    fhirCategory,
+		AlarmLevel:  alarmLevel,
+		TriggeredAt: triggeredAt,
+		TriggerData: triggerData,
+	})
 	if err != nil {
-		s.logger.Warn("Failed to get card status", zap.Error(err))
+		s.logger.Warn("InsertAlarmAndUpdateCard failed",
+			zap.String("card_id", msg.CardID),
+			zap.Error(err))
+		return err
+	}
+
+	// 构建 AlarmState 从 DB 结果
+	alarmState := dbState.ToAlarmState()
+
+	// 获取或创建 CardStatus → 写 Redis
+	cardStatus, err := s.cacheRepo.GetCardStatus(ctx, msg.CardID)
+	if err != nil || cardStatus == nil {
 		cardStatus = &card.CardStatus{
 			CardID:    msg.CardID,
 			Timestamp: msg.Timestamp,
 		}
 	}
 
-	if cardStatus == nil {
-		cardStatus = &card.CardStatus{
-			CardID:    msg.CardID,
-			Timestamp: msg.Timestamp,
-		}
+	cardStatus.AlarmState = alarmState
+	cardStatus.UpdateType = "AlarmState"
+	cardStatus.Message = map[string]interface{}{
+		"device_id":   msg.DeviceID,
+		"device_type": msg.DeviceType,
+		"card_id":     msg.CardID,
+		"tenant_id":   msg.TenantID,
+		"timestamp":   msg.Timestamp,
+		"topic_type":  msg.TopicType,
+		"category":    msg.Category,
+		"data_value":  msg.DataValue,
 	}
 
-	// 遍历 data_value 数组处理每条报警
-	for _, item := range msg.DataValue {
-		dataItem, ok := item.(map[string]interface{})
-		if !ok {
-			s.logger.Debug("Invalid alarm data item type", zap.Any("item", item))
-			continue
-		}
-
-		// 提取报警字段（不需要知道具体的报警类型）
-		alarmLevel, _ := dataItem["alarm_level"].(string)
-		alarmTimestamp, _ := dataItem["timestamp"].(float64)
-
-		// 统一处理：更新 ActiveAlarms（时间戳 + 级别双重检查）
-		s.updateActiveAlarmInStatus(cardStatus, alarmLevel, int64(alarmTimestamp))
-	}
-
-	// 更新状态数据到 Redis（TTL 12H）
 	if msg.Timestamp > cardStatus.Timestamp {
 		cardStatus.Timestamp = msg.Timestamp
 	}
@@ -449,199 +403,243 @@ func (s *EventAlarmService) handleAlarm(ctx context.Context, msg *redis.IoTStrea
 		return err
 	}
 
-	// 异步发布到 card:status:stream（非阻塞）
+	// 异步发布到 card:status:stream
 	if s.cardPublisher != nil {
 		go s.cardPublisher.PublishCardStatus(ctx, msg.TenantID, msg.CardID, cardStatus)
 	}
 
-	s.logger.Info("Alarm message processed",
+	s.logger.Info("Alarm → DB + Redis + card:cardStatus:stream",
+		zap.String("card_id", msg.CardID),
+		zap.String("alarm_level", alarmLevel),
+		zap.String("alarm_type", alarmType),
+		zap.String("pop_alarm", cardStatus.AlarmState.PopAlarm),
+		zap.Int64("triggered_at", msg.Timestamp))
+
+	return nil
+}
+
+// checkRecoveryFromDataValue 检查设备恢复事件
+// 优先检查 StatusFieldValue=="0"（新格式），兼容 recovery 含 "_recovery"（旧格式）
+func (s *EventAlarmService) checkRecoveryFromDataValue(msg *redis.IoTStreamMessage, alarmType string) (bool, string) {
+	if len(msg.DataValue) == 0 {
+		return false, ""
+	}
+	item, ok := msg.DataValue[0].(map[string]interface{})
+	if !ok {
+		return false, ""
+	}
+	// 新格式：StatusFieldValue == "0" 表示恢复
+	if sfv, ok := item["StatusFieldValue"].(string); ok && sfv == "0" {
+		return true, alarmType
+	}
+	// 旧格式兼容
+	if recovery, ok := item["recovery"].(string); ok && strings.HasSuffix(recovery, "_recovery") {
+		return true, alarmType
+	}
+	return false, ""
+}
+
+// handleDeviceRecoveryAlarm 处理设备恢复报警
+// resolveTypes == nil → resolve 所有设备级报警（DeviceRecovery 场景）
+// resolveTypes != nil → 只 resolve 指定的报警类型（如 SignalPoor recovery）
+func (s *EventAlarmService) handleDeviceRecoveryAlarm(ctx context.Context, msg *redis.IoTStreamMessage, resolveTypes []string) error {
+	if s.db == nil {
+		s.logger.Warn("DB not available for device recovery",
+			zap.String("card_id", msg.CardID))
+		return nil
+	}
+
+	dbState, result, err := card.AutoResolveDeviceAlarms(ctx, s.db, msg.CardID, msg.TenantID, msg.DeviceID, resolveTypes)
+	if err != nil {
+		s.logger.Warn("AutoResolveDeviceAlarms failed",
+			zap.String("card_id", msg.CardID),
+			zap.String("device_id", msg.DeviceID),
+			zap.Error(err))
+		return err
+	}
+
+	if result.ResolvedCount == 0 {
+		s.logger.Info("Device recovery: no active alarms to resolve",
+			zap.String("card_id", msg.CardID),
+			zap.String("device_id", msg.DeviceID),
+			zap.Any("resolve_types", resolveTypes))
+		return nil
+	}
+
+	alarmState := dbState.ToAlarmState()
+
+	// 更新 Redis + 推送
+	cardStatus, err := s.cacheRepo.GetCardStatus(ctx, msg.CardID)
+	if err != nil || cardStatus == nil {
+		cardStatus = &card.CardStatus{
+			CardID:    msg.CardID,
+			Timestamp: msg.Timestamp,
+		}
+	}
+
+	cardStatus.AlarmState = alarmState
+	cardStatus.UpdateType = "AlarmState"
+	if msg.Timestamp > cardStatus.Timestamp {
+		cardStatus.Timestamp = msg.Timestamp
+	}
+	if err := s.cacheRepo.SetCardStatus(ctx, cardStatus); err != nil {
+		s.logger.Warn("Failed to set card status after device recovery",
+			zap.String("card_id", msg.CardID),
+			zap.Error(err))
+		return err
+	}
+
+	if s.cardPublisher != nil {
+		go s.cardPublisher.PublishCardStatus(ctx, msg.TenantID, msg.CardID, cardStatus)
+	}
+
+	s.logger.Info("Device recovery → auto-resolved alarms",
 		zap.String("card_id", msg.CardID),
 		zap.String("device_id", msg.DeviceID),
-		zap.String("category", msg.Category),
-		zap.Int("data_count", len(msg.DataValue)))
+		zap.Int("resolved_count", result.ResolvedCount),
+		zap.String("top_event_id", result.TopEventId),
+		zap.Any("resolve_types", resolveTypes),
+		zap.String("pop_alarm", alarmState.PopAlarm))
 
 	return nil
 }
 
 // ========== Event 类别处理 ==========
 
-// handleBedStateEvent 处理 BedState 事件
-// dataItem 包含 {"category": "BedState", "bed_id": "uuid-bbb", "CurrentState": "in_bed", "StateSince": 1234567890}
-// 检查：初始状态为空 → 直接填充；有值 → 检查 Timestamp > 原记录才更新
+// handleDeviceBedStateEvent 处理 device 直接发出的进出事件（InBed/OutBed/EnterMonitor/ExitMonitor）
+// event_alarm_handler 已做时效检查，这里直接填充
+func (s *EventAlarmService) handleDeviceBedStateEvent(ctx context.Context, msg *redis.IoTStreamMessage, dataItem map[string]interface{}, cardStatus *card.CardStatus) {
+	currentState, _ := dataItem["category"].(string)
+	now := time.Now().Unix()
+
+	if cardStatus.Timestamp > msg.Timestamp {
+		return
+	}
+
+	durationSec := now - msg.Timestamp
+	if durationSec < 0 {
+		durationSec = 0
+	}
+
+	cardStatus.EventState = &card.EventState{
+		UpdatedAt:    msg.Timestamp,
+		Category:     "BedState",
+		CurrentState: currentState,
+		StateValue: "Duration",
+		StartTime:    msg.Timestamp,
+		DurationSec:  int(durationSec),
+	}
+	cardStatus.UpdateType = "EventState"
+
+	s.logger.Info("DeviceBedState updated",
+		zap.String("card_id", msg.CardID),
+		zap.String("current_state", currentState),
+		zap.Int64("msg_timestamp", msg.Timestamp),
+		zap.Int64("duration_sec", durationSec))
+}
+
 func (s *EventAlarmService) handleBedStateEvent(ctx context.Context, msg *redis.IoTStreamMessage, dataItem map[string]interface{}, cardStatus *card.CardStatus) {
-	bedID, _ := dataItem["bed_id"].(string)
 	currentState, _ := dataItem["CurrentState"].(string)
 	stateSince, _ := dataItem["StateSince"].(float64)
+	startTime := int64(stateSince)
+	if startTime == 0 {
+		startTime = msg.Timestamp
+	}
 
 	s.logger.Info("Handling BedState event",
 		zap.String("card_id", msg.CardID),
-		zap.String("bed_id", bedID),
 		zap.String("current_state", currentState),
-		zap.Int64("state_since", int64(stateSince)))
+		zap.Int64("start_time", startTime),
+		zap.Int64("msg_timestamp", msg.Timestamp))
 
-	// 检查初始状态是否为空
-	if cardStatus.BedState == nil {
-		// 初始状态为空，直接填充
-		cardStatus.BedState = &card.BedState{
-			BedID:        bedID,
-			CurrentState: currentState,
-			Timestamp:    int64(stateSince),
-		}
-		s.logger.Info("BedState initialized",
-			zap.String("bed_id", bedID),
-			zap.String("current_state", currentState))
+	now := msg.Timestamp
+	if startTime > now {
+		startTime = now
+	}
+
+	// 时序检查：EventState 存在时，只有 StartTime 更新才覆盖
+	if cardStatus.EventState != nil && startTime <= cardStatus.EventState.StartTime {
+		s.logger.Debug("BedState not updated: timestamp not newer",
+			zap.Int64("new_ts", startTime),
+			zap.Int64("existing_ts", cardStatus.EventState.StartTime))
 		return
 	}
 
-	// 【设备级时序检查】只有在 5s 窗口内才进行检查和更新
-	// msg.Timestamp + 5s > cardStatus.Timestamp 已在 handler 层检查通过
-	// 现在检查设备级别的时间戳
-	if stateSince <= float64(cardStatus.BedState.Timestamp) {
-		s.logger.Debug("BedState not updated: device timestamp not newer",
-			zap.Float64("new_ts", stateSince),
-			zap.Int64("existing_ts", cardStatus.BedState.Timestamp))
-		return
+	durationSec := now - startTime
+	if durationSec < 0 {
+		s.logger.Warn("Calculated negative duration, setting to 0",
+			zap.String("card_id", msg.CardID),
+			zap.Int64("duration_sec", durationSec))
+		durationSec = 0
 	}
 
-	// 有值且时间戳更新，直接更新
-	cardStatus.BedState.BedID = bedID
-	cardStatus.BedState.CurrentState = currentState
-	cardStatus.BedState.Timestamp = int64(stateSince)
-	s.logger.Info("BedState updated",
-		zap.String("bed_id", bedID),
+	cardStatus.EventState = &card.EventState{
+		UpdatedAt:    now,
+		Category:     "BedState",
+		CurrentState: currentState,
+		StartTime:    startTime,
+		DurationSec:  int(durationSec),
+	}
+	cardStatus.UpdateType = "EventState"
+
+	s.logger.Info("EventState updated (BedState)",
 		zap.String("current_state", currentState),
-		zap.Int64("state_since", int64(stateSince)))
+		zap.Int64("start_time", startTime),
+		zap.Int64("duration_sec", durationSec))
 }
 
-// handleRoomStateEvent 处理 RoomState 事件
-// dataItem 包含 {"category": "RoomState", "room_id": "uuid-rrr", "room_name": "101", "PeopleCount": 1, "StayTime": 5, "StateSince": 1234567890}
-// 检查：初始状态为空 → 直接填充；有值 → 检查 Timestamp > 原记录才更新
+// handleRoomStateEvent 处理 RoomState 事件 → 写入 EventState
 func (s *EventAlarmService) handleRoomStateEvent(ctx context.Context, msg *redis.IoTStreamMessage, dataItem map[string]interface{}, cardStatus *card.CardStatus) {
-	roomID, _ := dataItem["room_id"].(string)
-	roomName, _ := dataItem["room_name"].(string)
 	peopleCount, _ := dataItem["PeopleCount"].(float64)
 	stayTime, _ := dataItem["StayTime"].(float64)
 	stateSince, _ := dataItem["StateSince"].(float64)
+	startTime := int64(stateSince)
+	if startTime == 0 {
+		startTime = msg.Timestamp
+	}
 
 	s.logger.Info("Handling RoomState event",
 		zap.String("card_id", msg.CardID),
-		zap.String("room_id", roomID),
-		zap.String("room_name", roomName),
 		zap.Int("people_count", int(peopleCount)),
-		zap.Int("stay_time", int(stayTime)),
-		zap.Int64("state_since", int64(stateSince)))
+		zap.Int64("start_time", startTime),
+		zap.Int64("msg_timestamp", msg.Timestamp))
 
-	// 检查初始状态是否为空
-	if cardStatus.RoomState == nil {
-		// 初始状态为空，直接填充
-		cardStatus.RoomState = &card.RoomState{
-			RoomID:      roomID,
-			RoomName:    roomName,
-			PeopleCount: int(peopleCount),
-			StayTime:    int(stayTime),
-			Timestamp:   int64(stateSince),
-		}
-		s.logger.Info("RoomState initialized",
-			zap.String("room_id", roomID),
-			zap.String("room_name", roomName),
-			zap.Int("people_count", int(peopleCount)))
+	now := msg.Timestamp
+	if startTime > now {
+		startTime = now
+	}
+
+	// 时序检查
+	if cardStatus.EventState != nil && startTime <= cardStatus.EventState.StartTime {
+		s.logger.Debug("RoomState not updated: timestamp not newer",
+			zap.Int64("new_ts", startTime),
+			zap.Int64("existing_ts", cardStatus.EventState.StartTime))
 		return
 	}
 
-	// 【设备级时序检查】只有在 5s 窗口内才进行检查和更新
-	// msg.Timestamp + 5s > cardStatus.Timestamp 已在 handler 层检查通过
-	// 现在检查设备级别的时间戳
-	if stateSince <= float64(cardStatus.RoomState.Timestamp) {
-		s.logger.Debug("RoomState not updated: device timestamp not newer",
-			zap.Float64("new_ts", stateSince),
-			zap.Int64("existing_ts", cardStatus.RoomState.Timestamp))
-		return
+	durationSec := int64(stayTime) * 60 // StayTime 是分钟，转秒
+	if durationSec < 0 {
+		s.logger.Warn("Calculated negative duration from StayTime, setting to 0",
+			zap.String("card_id", msg.CardID),
+			zap.Float64("stay_time", stayTime))
+		durationSec = 0
 	}
 
-	// 有值且时间戳更新，直接更新
-	cardStatus.RoomState.RoomID = roomID
-	cardStatus.RoomState.RoomName = roomName
-	cardStatus.RoomState.PeopleCount = int(peopleCount)
-	cardStatus.RoomState.StayTime = int(stayTime)
-	cardStatus.RoomState.Timestamp = int64(stateSince)
-	s.logger.Info("RoomState updated",
-		zap.String("room_id", roomID),
-		zap.String("room_name", roomName),
+	now = msg.Timestamp
+	cardStatus.EventState = &card.EventState{
+		UpdatedAt:    now,
+		Category:     "RoomState",
+		CurrentState: fmt.Sprintf("%d_people", int(peopleCount)),
+		StateValue:   fmt.Sprintf("%d", int(peopleCount)),
+		StartTime:    startTime,
+		DurationSec:  int(durationSec),
+	}
+	cardStatus.UpdateType = "EventState"
+
+	s.logger.Info("EventState updated (RoomState)",
 		zap.Int("people_count", int(peopleCount)),
-		zap.Int64("state_since", int64(stateSince)))
-}
-
-// ========== Alarm 类别处理 ==========
-
-// updateActiveAlarmInStatus 更新 CardStatus 中的 ActiveAlarms：双重比对策略
-// 比对 1：timestamp 比较（防止旧数据覆盖新数据）
-// 比对 2：alarm_level 比较（防止低级别报警覆盖高级别报警）
-func (s *EventAlarmService) updateActiveAlarmInStatus(cardStatus *card.CardStatus, alarmLevel string, alarmTimestamp int64) {
-	if cardStatus == nil {
-		return
-	}
-
-	// 初始化 ActiveAlarms（如果为空）
-	if cardStatus.ActiveAlarms == nil {
-		cardStatus.ActiveAlarms = &card.ActiveAlarmState{
-			Timestamp: alarmTimestamp,
-		}
-	}
-
-	// 【比对 1】检查 timestamp：只有 alarm.timestamp > existing.timestamp 才更新
-	if alarmTimestamp <= cardStatus.ActiveAlarms.Timestamp {
-		s.logger.Debug("Active alarm not updated in status: timestamp not newer",
-			zap.Int64("new_ts", alarmTimestamp),
-			zap.Int64("existing_ts", cardStatus.ActiveAlarms.Timestamp),
-			zap.String("alarm_level", alarmLevel))
-		return
-	}
-
-	// 【比对 2】检查 alarm_level：防止低级别报警覆盖高级别报警
-	highestLevelStr := ""
-	if cardStatus.ActiveAlarms.NowAlarm != "" {
-		parts := splitAlarmCategory(cardStatus.ActiveAlarms.NowAlarm)
-		if len(parts) >= 1 {
-			highestLevelStr = parts[0]
-		}
-	}
-
-	newPriority := alarm.AlarmLevelPriority[alarmLevel]
-	existingPriority := alarm.AlarmLevelPriority[highestLevelStr]
-
-	if highestLevelStr != "" && newPriority > existingPriority {
-		s.logger.Debug("Active alarm not updated in status: lower alarm level",
-			zap.String("new_level", alarmLevel),
-			zap.String("existing_level", highestLevelStr),
-			zap.Int("new_priority", newPriority),
-			zap.Int("existing_priority", existingPriority))
-		return
-	}
-
-	// ✓ 通过双重比对，更新 timestamp、计数和 NowAlarm
-	cardStatus.ActiveAlarms.Timestamp = alarmTimestamp
-
-	// 更新对应级别的计数（增加 1）
-	switch alarmLevel {
-	case "EMERG":
-		cardStatus.ActiveAlarms.ActiveEmerg++
-	case "ALERT":
-		cardStatus.ActiveAlarms.ActiveAlert++
-	case "CRIT":
-		cardStatus.ActiveAlarms.ActiveCrit++
-	case "ERR":
-		cardStatus.ActiveAlarms.ActiveErr++
-	case "WARNING":
-		cardStatus.ActiveAlarms.ActiveWarning++
-	}
-
-	// 更新 NowAlarm（保留当前最高级别的报警）
-	cardStatus.ActiveAlarms.NowAlarm = alarmLevel + ".Alarm"
-
-	s.logger.Info("Active alarm updated in status",
-		zap.String("alarm_level", alarmLevel),
-		zap.Int64("timestamp", alarmTimestamp),
-		zap.String("now_alarm", cardStatus.ActiveAlarms.NowAlarm))
+		zap.Int64("start_time", startTime),
+		zap.Int64("duration_sec", durationSec))
 }
 
 // handleDeviceStatus 处理设备状态消息 (来自 iot:DeviceStatus:stream)
@@ -704,6 +702,7 @@ func (s *EventAlarmService) handleDeviceStatus(ctx context.Context, msg *redis.I
 
 	// 按设备 ID 存储设备状态
 	cardStatus.DeviceStatus[msg.DeviceID] = devStatus
+	cardStatus.UpdateType = "DeviceStatus"
 
 	// 【只在真正更新时，才更新 CardStatus 的时间戳】
 	cardStatus.Timestamp = msg.Timestamp
@@ -771,13 +770,4 @@ func (s *EventAlarmService) convertToDeviceStatus(msg *redis.IoTStreamMessage) *
 		Timestamp:  msg.Timestamp,
 		Statuses:   statuses,
 	}
-}
-
-// ========== 辅助函数 ===========
-
-// splitAlarmCategory 分割 "AlarmLevel.AlarmType" 格式
-func splitAlarmCategory(category string) []string {
-	// 使用 "." 分割，返回 [AlarmLevel, AlarmType]
-	parts := strings.Split(category, ".")
-	return parts
 }

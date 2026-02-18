@@ -31,19 +31,13 @@ type Config struct {
 			BatchSize int // 批量评估卡片数量，默认 10
 		}
 
-		// IoT Stream 配置（直接订阅设备级别的 streams）
+		// IoT Stream 配置（统一 streams，不区分设备类型）
 		IoTStream struct {
-			Enabled bool // 是否启用 IoT Stream 消费（事件驱动）
-			// Radar 设备 streams
-			RadarMonitor string // radar:monitor:stream
-			RadarStat    string // radar:stat:stream
-			RadarEvent   string // radar:event:stream
-			RadarAlarm   string // radar:alarm:stream
-			// Sleepace 设备 streams
-			SleepaceMonitor string // sleepace:monitor:stream
-			SleepaceEvent   string // sleepace:event:stream
-			SleepaceAlarm   string // sleepace:alarm:stream
-			// 注意：Sleepace 没有 stat 数据
+			Enabled       bool   // 是否启用 IoT Stream 消费（事件驱动）
+			Monitor       string // iot:monitor:stream
+			Stat          string // iot:stat:stream
+			Event         string // iot:event:stream
+			Alarm         string // iot:alarm:stream
 			ConsumerGroup string // 消费者组名称
 			ConsumerName  string // 消费者名称
 			BatchSize     int64  // 批量处理大小
@@ -94,13 +88,10 @@ func Load() (*Config, error) {
 
 	// IoT Stream 配置 - 设备级别 streams
 	cfg.Alarm.IoTStream.Enabled = getEnv("AI_IOT_STREAM_ENABLED", "true") == "true"
-	cfg.Alarm.IoTStream.RadarMonitor = getEnv("AI_STREAM_RADAR_MONITOR", "iot:monitor:stream")
-	cfg.Alarm.IoTStream.RadarStat = getEnv("AI_STREAM_RADAR_STAT", "iot:stat:stream")
-	cfg.Alarm.IoTStream.RadarEvent = getEnv("AI_STREAM_RADAR_EVENT", "radar:event:stream")
-	cfg.Alarm.IoTStream.RadarAlarm = getEnv("AI_STREAM_RADAR_ALARM", "radar:alarm:stream")
-	cfg.Alarm.IoTStream.SleepaceMonitor = getEnv("AI_STREAM_SLEEPACE_MONITOR", "sleepace:monitor:stream")
-	cfg.Alarm.IoTStream.SleepaceEvent = getEnv("AI_STREAM_SLEEPACE_EVENT", "sleepace:event:stream")
-	cfg.Alarm.IoTStream.SleepaceAlarm = getEnv("AI_STREAM_SLEEPACE_ALARM", "sleepace:alarm:stream")
+	cfg.Alarm.IoTStream.Monitor = getEnv("AI_STREAM_MONITOR", "iot:monitor:stream")
+	cfg.Alarm.IoTStream.Stat = getEnv("AI_STREAM_STAT", "iot:stat:stream")
+	cfg.Alarm.IoTStream.Event = getEnv("AI_STREAM_EVENT", "iot:event:stream")
+	cfg.Alarm.IoTStream.Alarm = getEnv("AI_STREAM_ALARM", "iot:alarm:stream")
 	cfg.Alarm.IoTStream.ConsumerGroup = getEnv("AI_IOT_CONSUMER_GROUP", "wisefido-alarm-events")
 	cfg.Alarm.IoTStream.ConsumerName = getEnv("AI_IOT_CONSUMER_NAME", "alarm-consumer-1")
 	batchSizeStr := getEnv("AI_IOT_BATCH_SIZE", "10")

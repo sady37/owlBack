@@ -14,7 +14,7 @@ type AlarmEvent struct {
 	EventType        string          `json:"event_type" db:"event_type"`
 	Category         string          `json:"category" db:"category"` // safety, clinical, behavioral, device
 	AlarmLevel       string          `json:"alarm_level" db:"alarm_level"` // ALERT, CRIT, WARNING, etc.
-	AlarmStatus      string          `json:"alarm_status" db:"alarm_status"` // active, acknowledged
+	AlarmStatus      string          `json:"alarm_status" db:"alarm_status"` // active, acked, resolved, auto_resolved, expired
 	TriggeredAt      time.Time       `json:"triggered_at" db:"triggered_at"`
 	HandTime         *time.Time       `json:"hand_time,omitempty" db:"hand_time"`
 	IoTTimeSeriesID  *int64           `json:"iot_timeseries_id,omitempty" db:"iot_timeseries_id"`

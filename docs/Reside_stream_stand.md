@@ -400,6 +400,26 @@
   "tenant_id": "TENANT001",
   "timestamp": 1234567890,
   "topic_type": "event",
+  "category": "deviceStatus",   //StatusFieldOnline 。。。预定义的const
+  "data_value": [
+    {
+      "category": "online",    // //StatusFieldtype 。。。预定义的const
+      "StatusFieldValue": "1",       //StatusFieldValue   string ,防止有一些其它字符串
+      "device_uid": "E598A2ACD523"
+    }
+  ]
+}
+```
+
+
+```json
+{
+  "device_id": "uuid-ddd",
+  "device_type": "Radar",
+  "card_id": "uuid-ccc",
+  "tenant_id": "TENANT001",
+  "timestamp": 1234567890,
+  "topic_type": "event",
   "category": "deviceStatus",
   "data_value": [
     {

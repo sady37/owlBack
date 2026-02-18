@@ -585,6 +585,8 @@ func (h *ResidentHandler) GetResident(w http.ResponseWriter, r *http.Request, re
 		}
 		if resp.PHI.LastName != nil {
 			phi["last_name"] = *resp.PHI.LastName
+			// 同时在顶层设置 last_name，前端期望它在顶层
+			item["last_name"] = *resp.PHI.LastName
 		}
 		if resp.PHI.Gender != nil {
 			phi["gender"] = *resp.PHI.Gender

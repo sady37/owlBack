@@ -27,8 +27,10 @@ func NewMonitorHandler(logger *zap.Logger) *MonitorHandler {
 }
 
 type cardServiceInterface interface {
-	GetCardList(ctx context.Context, tenantID, userID, userRole string, branchIDs []string, page, pageSize int) ([]commoncard.VitalFocusCardInfo, *models.BackendPagination, error)
-	GetCardInfo(ctx context.Context, tenantID, userID, cardID string) (*commoncard.VitalFocusCardInfo, error)
+	GetCardList(ctx context.Context, tenantID, userID, userRole string, branchIDs []string, page, pageSize int) ([]commoncard.CardStatic, *models.BackendPagination, error)
+	GetCardInfo(ctx context.Context, tenantID, userID, cardID string) (*commoncard.CardStatic, error)
+	GetCardsByCardIDs(ctx context.Context, tenantID, userID string, cardIDs []string) ([]commoncard.CardStatic, error)
+	GetCardCaregivers(ctx context.Context, residentIDs []string) ([]string, []commoncard.CaregiverInfo, error)
 }
 
 func (h *MonitorHandler) SetCardService(cardService cardServiceInterface) {
@@ -37,7 +39,11 @@ func (h *MonitorHandler) SetCardService(cardService cardServiceInterface) {
 
 type realtimeServiceInterface interface {
 	GetCardRealtime(ctx context.Context, req service.GetCardRealtimeRequest) (*service.GetCardRealtimeResponse, error)
+	GetCardStatus(ctx context.Context, cardID string) (map[string]interface{}, error)
 	SubscribeRealtimeStream(ctx context.Context, w http.ResponseWriter, cardID, tenantID, userID string)
+	SubscribeCardsStream(ctx context.Context, w http.ResponseWriter, interval int, tenantID, userID string)
+	InitSSE(connID string, watchIDs, viewIDs []string) error
+	UpdateSSEView(connID string, newViewIDs []string) error
 }
 
 func (h *MonitorHandler) SetRealtimeService(realtime realtimeServiceInterface) {
@@ -63,8 +69,8 @@ func (h *MonitorHandler) GetCards(w http.ResponseWriter, r *http.Request) {
 	if ps := r.URL.Query().Get("pageSize"); ps != "" {
 		if v, err := strconv.Atoi(ps); err == nil && v > 0 {
 			pageSize = v
-			if pageSize > 100 {
-				pageSize = 100
+			if pageSize > 500 {
+				pageSize = 500
 			}
 		}
 	}
@@ -76,6 +82,12 @@ func (h *MonitorHandler) GetCards(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, Fail("card service not available"))
 		return
 	}
+	h.logger.Info("[API] GetCards request",
+		zap.String("user_id", currentUserID),
+		zap.String("tenant_id", tenantID),
+		zap.String("role", claimedUserRole),
+		zap.Int("page", page),
+		zap.Int("pageSize", pageSize))
 	cards, pagination, err := h.cardService.GetCardList(ctx, tenantID, currentUserID, claimedUserRole, branchIDs, page, pageSize)
 	if err != nil {
 		h.logger.Error("GetCardList failed", zap.String("user_id", currentUserID), zap.Error(err))
@@ -85,6 +97,14 @@ func (h *MonitorHandler) GetCards(w http.ResponseWriter, r *http.Request) {
 	if pagination == nil {
 		pagination = &models.BackendPagination{}
 	}
+	// 打印返回的 card_id 列表
+	cardIDs := make([]string, len(cards))
+	for i, c := range cards {
+		cardIDs[i] = c.CardID
+	}
+	h.logger.Info("[API] GetCards response",
+		zap.Int("count", len(cards)),
+		zap.Strings("card_ids", cardIDs))
 	writeJSON(w, http.StatusOK, Ok(map[string]interface{}{
 		"items":      cards,
 		"pagination": pagination,
@@ -103,12 +123,89 @@ func (h *MonitorHandler) GetCardInfo(w http.ResponseWriter, r *http.Request, car
 		writeJSON(w, http.StatusOK, Fail("card service not available"))
 		return
 	}
+	h.logger.Info("[API] GetCardInfo request",
+		zap.String("user_id", currentUserID),
+		zap.String("card_id", cardID))
 	card, err := h.cardService.GetCardInfo(ctx, tenantID, currentUserID, cardID)
 	if err != nil {
+		h.logger.Error("[API] GetCardInfo failed", zap.String("card_id", cardID), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
+	h.logger.Info("[API] GetCardInfo response",
+		zap.String("card_id", cardID),
+		zap.Bool("found", card != nil))
 	writeJSON(w, http.StatusOK, Ok(card))
+}
+
+// GET /data/api/v1/data/vital-focus/card/{id}/status
+func (h *MonitorHandler) GetCardStatus(w http.ResponseWriter, r *http.Request, cardID string) {
+	ctx := r.Context()
+	_, tenantID, _, _, ok := service.MustSession(ctx)
+	if !ok || tenantID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
+	if h.realtime == nil {
+		writeJSON(w, http.StatusOK, Fail("realtime service not available"))
+		return
+	}
+	data, err := h.realtime.GetCardStatus(ctx, cardID)
+	if err != nil {
+		h.logger.Warn("[API] GetCardStatus redis read failed",
+			zap.String("card_id", cardID), zap.Error(err))
+		writeJSON(w, http.StatusOK, Ok(map[string]interface{}(nil)))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(data))
+}
+
+// GET /data/api/v1/data/vital-focus/card/{id}/caregivers
+func (h *MonitorHandler) GetCardCaregivers(w http.ResponseWriter, r *http.Request, cardID string) {
+	ctx := r.Context()
+	currentUserID, tenantID, userType, role, ok := service.MustSession(ctx)
+	if !ok || currentUserID == "" || tenantID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
+	if h.cardService == nil {
+		writeJSON(w, http.StatusOK, Fail("card service not available"))
+		return
+	}
+	// 先取卡片确认权限并获取 resident IDs
+	card, err := h.cardService.GetCardInfo(ctx, tenantID, currentUserID, cardID)
+	if err != nil || card == nil {
+		writeJSON(w, http.StatusOK, Fail("card not found or no permission"))
+		return
+	}
+	// facility 下只允许 staff（Admin/Manager/Caregiver/Nurse）查看
+	if card.Unit != nil && card.Unit.UnitType == "facility" {
+		if userType == "resident" {
+			writeJSON(w, http.StatusForbidden, Fail("no permission"))
+			return
+		}
+		allowed := map[string]bool{"Admin": true, "Manager": true, "Caregiver": true, "Nurse": true}
+		if !allowed[role] {
+			writeJSON(w, http.StatusForbidden, Fail("no permission"))
+			return
+		}
+	}
+	residentIDs := make([]string, 0, len(card.Residents))
+	for _, r := range card.Residents {
+		if r.ResidentID != "" {
+			residentIDs = append(residentIDs, r.ResidentID)
+		}
+	}
+	groups, caregivers, err := h.cardService.GetCardCaregivers(ctx, residentIDs)
+	if err != nil {
+		h.logger.Error("[API] GetCardCaregivers failed", zap.String("card_id", cardID), zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]any{
+		"caregiver_groups": groups,
+		"caregivers":       caregivers,
+	}))
 }
 
 // GetCardRealtime 拉取实时数据
@@ -180,6 +277,167 @@ func (h *MonitorHandler) GetCardRealtime(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, Ok(resp))
+}
+
+// POST /data/api/v1/data/vital-focus/cards-by-ids
+// 前端收到 card_change 后按 cardID 拉静态数据
+func (h *MonitorHandler) GetCardsByCardIDs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	currentUserID, tenantID, _, _, ok := service.MustSession(ctx)
+	if !ok || currentUserID == "" || tenantID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
+	if h.cardService == nil {
+		writeJSON(w, http.StatusOK, Fail("card service not available"))
+		return
+	}
+
+	var body struct {
+		CardIDs []string `json:"card_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, Fail("invalid request body"))
+		return
+	}
+	if len(body.CardIDs) == 0 {
+		writeJSON(w, http.StatusOK, Ok([]commoncard.CardStatic{}))
+		return
+	}
+
+	h.logger.Info("[API] GetCardsByCardIDs request",
+		zap.String("user_id", currentUserID),
+		zap.Strings("card_ids", body.CardIDs))
+	cards, err := h.cardService.GetCardsByCardIDs(ctx, tenantID, currentUserID, body.CardIDs)
+	if err != nil {
+		h.logger.Error("[API] GetCardsByCardIDs failed", zap.String("user_id", currentUserID), zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	if cards == nil {
+		cards = []commoncard.CardStatic{}
+	}
+	retIDs := make([]string, len(cards))
+	for i, c := range cards {
+		retIDs[i] = c.CardID
+	}
+	h.logger.Info("[API] GetCardsByCardIDs response",
+		zap.Int("requested", len(body.CardIDs)),
+		zap.Int("returned", len(cards)),
+		zap.Strings("returned_ids", retIDs))
+	writeJSON(w, http.StatusOK, Ok(cards))
+}
+
+// GET /data/api/v1/data/vital-focus/cards/stream?card_ids=a,b,c&view_ids=a,b&interval=2
+// Overview 多卡 SSE：GET 只传 token + interval，连接后前端 POST /init 传 watchIDs + viewIDs
+func (h *MonitorHandler) SubscribeCardsStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	currentUserID, tenantID, _, _, ok := service.MustSession(r.Context())
+	if !ok || currentUserID == "" || tenantID == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if h.realtime == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
+	interval := 2
+	if v := r.URL.Query().Get("interval"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			interval = n
+		}
+	}
+
+	h.realtime.SubscribeCardsStream(r.Context(), w, interval, tenantID, currentUserID)
+}
+
+// POST /data/api/v1/data/vital-focus/cards/stream/init
+// SSE 连接建立后，前端提交 watchIDs + viewIDs 初始化订阅
+func (h *MonitorHandler) InitSSE(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	currentUserID, tenantID, _, _, ok := service.MustSession(r.Context())
+	if !ok || currentUserID == "" || tenantID == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if h.realtime == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
+	var body struct {
+		ConnID   string   `json:"conn_id"`
+		WatchIDs []string `json:"watch_ids"`
+		ViewIDs  []string `json:"view_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, Fail("invalid request body"))
+		return
+	}
+	if body.ConnID == "" {
+		writeJSON(w, http.StatusBadRequest, Fail("conn_id required"))
+		return
+	}
+	if len(body.WatchIDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, Fail("watch_ids required"))
+		return
+	}
+
+	_ = currentUserID
+	_ = tenantID
+
+	if err := h.realtime.InitSSE(body.ConnID, body.WatchIDs, body.ViewIDs); err != nil {
+		writeJSON(w, http.StatusBadRequest, Fail(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]interface{}{"status": "initialized"}))
+}
+
+// POST /data/api/v1/data/vital-focus/cards/stream/view
+// 切页时更新 SSE 连接的 viewIDs，无需重连
+func (h *MonitorHandler) UpdateSSEView(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	currentUserID, tenantID, _, _, ok := service.MustSession(r.Context())
+	if !ok || currentUserID == "" || tenantID == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if h.realtime == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
+	var body struct {
+		ConnID  string   `json:"conn_id"`
+		ViewIDs []string `json:"view_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, Fail("invalid request body"))
+		return
+	}
+	if body.ConnID == "" {
+		writeJSON(w, http.StatusBadRequest, Fail("conn_id required"))
+		return
+	}
+
+	_ = currentUserID
+	_ = tenantID
+
+	if err := h.realtime.UpdateSSEView(body.ConnID, body.ViewIDs); err != nil {
+		writeJSON(w, http.StatusNotFound, Fail(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]interface{}{"status": "updated", "view_count": len(body.ViewIDs)}))
 }
 
 // SubscribeRealtimeStream 转发到 CardRealtimeService.SubscribeRealtimeStream（SSE 由 Service 负责）

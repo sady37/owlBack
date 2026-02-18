@@ -9,7 +9,6 @@ import (
 	"syscall"
 	"time"
 
-	"owl-common/card"
 	rediscommon "owl-common/redis"
 	"wisefido-cardagg/internal/config"
 	"wisefido-cardagg/internal/consumer"
@@ -20,6 +19,7 @@ import (
 	redislib "github.com/go-redis/redis/v8"
 	_ "github.com/lib/pq"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func main() {
@@ -30,7 +30,10 @@ func main() {
 	}
 
 	// 初始化日志
-	logger, err := zap.NewProduction()
+	zapCfg := zap.NewProductionConfig()
+	zapCfg.EncoderConfig.TimeKey = "timestamp"
+	zapCfg.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("15:04:05.000")
+	logger, err := zapCfg.Build()
 	if err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
@@ -87,13 +90,17 @@ func main() {
 
 	// 初始化各层组件
 	cacheRepo := repository.NewRedisCache(redisClient)
-	monitorSvc := service.NewMonitorService(cacheRepo, logger)
-	monitorHandler := consumer.NewMonitorHandler(monitorSvc, logger)
-
 	cardPublisher := publisher.NewCardStreamPublisher(redisClient, logger)
+	monitorSvc := service.NewMonitorService(cacheRepo, cardPublisher, logger)
+	monitorHandler := consumer.NewMonitorHandler(monitorSvc, logger)
 	eventAlarmSvc := service.NewEventAlarmService(cacheRepo, cardPublisher, db, logger)
 	eventAlarmHandler := consumer.NewEventAlarmHandler(eventAlarmSvc, logger)
 	alarmProcessHandler := consumer.NewAlarmProcessHandler(eventAlarmSvc, logger)
+
+	// 启动时从 DB 同步所有 card 的 alarm_state 到 Redis
+	if err := eventAlarmSvc.SyncAllCardsAlarmState(ctx); err != nil {
+		logger.Warn("Failed to sync cards alarm state on startup", zap.Error(err))
+	}
 
 	streams := []string{
 		"iot:monitor:stream",
@@ -112,37 +119,30 @@ func main() {
 	}
 
 	// 启动 monitor 消费 goroutine
+	// 注意：msg.Values 全是 string（Redis Stream 特性），ConvertRedisValues 做 string→native 转换
 	go subscribeStream(ctx, logger, redisClient, "iot:monitor:stream", "cardagg-group", "consumer-monitor", func(c context.Context, msg rediscommon.StreamMessage) error {
-		return monitorHandler.Handle(c, msg)
+		return monitorHandler.Handle(c, consumer.ConvertRedisValues(msg.Values))
 	})
 
 	// 启动 event 消费 goroutine
 	go subscribeStream(ctx, logger, redisClient, "iot:event:stream", "cardagg-group", "consumer-event", func(c context.Context, msg rediscommon.StreamMessage) error {
-		return eventAlarmHandler.Handle(c, msg)
+		return eventAlarmHandler.Handle(c, consumer.ConvertRedisValues(msg.Values))
 	})
 
 	// 启动 alarm 消费 goroutine
 	go subscribeStream(ctx, logger, redisClient, "iot:alarm:stream", "cardagg-group", "consumer-alarm", func(c context.Context, msg rediscommon.StreamMessage) error {
-		return eventAlarmHandler.Handle(c, msg)
+		return eventAlarmHandler.Handle(c, consumer.ConvertRedisValues(msg.Values))
 	})
 
 	// 启动 deviceStatus 消费 goroutine（处理设备在线/离线等状态变化）
 	go subscribeStream(ctx, logger, redisClient, rediscommon.StreamIoTDeviceStatus.Name, "cardagg-group", "consumer-device-status", func(c context.Context, msg rediscommon.StreamMessage) error {
-		return eventAlarmHandler.Handle(c, msg)
+		return eventAlarmHandler.Handle(c, consumer.ConvertRedisValues(msg.Values))
 	})
 
 	// 启动 config:alarmProcess 消费 goroutine（处理 alarmProcess 消息）
 	go subscribeStream(ctx, logger, redisClient, rediscommon.StreamConfigAlarmProcess.Name, "cardagg-group", "consumer-config-alarm", func(c context.Context, msg rediscommon.StreamMessage) error {
-		return alarmProcessHandler.Handle(c, msg)
+		return alarmProcessHandler.Handle(c, consumer.ConvertRedisValues(msg.Values))
 	})
-
-	// 从数据库初始化报警计数到 Redis（可选，需要数据库连接）
-	if db != nil {
-		if err := initializeAlarmCounts(ctx, db, cacheRepo, logger); err != nil {
-			logger.Warn("Failed to initialize alarm counts from database", zap.Error(err))
-			// 继续运行，计数可能不准确但不阻塞启动
-		}
-	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -181,74 +181,3 @@ func subscribeStream(ctx context.Context, logger *zap.Logger, redisClient *redis
 	}
 }
 
-// initializeAlarmCounts 从数据库读取卡片的报警计数，初始化到 Redis
-// 查询 cards 表的 unhandled_alarm_0~4 字段，构建 ActiveAlarmState 写入 Redis
-func initializeAlarmCounts(ctx context.Context, db *sql.DB, cacheRepo repository.CacheRepository, logger *zap.Logger) error {
-	logger.Info("Starting to initialize alarm counts from database")
-
-	// 查询所有卡片及其报警计数
-	query := `
-		SELECT card_id, unhandled_alarm_0, unhandled_alarm_1, unhandled_alarm_2, unhandled_alarm_3, unhandled_alarm_4
-		FROM cards
-		WHERE unhandled_alarm_0 > 0 OR unhandled_alarm_1 > 0 OR unhandled_alarm_2 > 0 OR unhandled_alarm_3 > 0 OR unhandled_alarm_4 > 0
-		LIMIT 1000
-	`
-
-	rows, err := db.QueryContext(ctx, query)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	count := 0
-	for rows.Next() {
-		var cardID string
-		var count0, count1, count2, count3, count4 int
-		if err := rows.Scan(&cardID, &count0, &count1, &count2, &count3, &count4); err != nil {
-			logger.Warn("Failed to scan card alarm count", zap.Error(err))
-			continue
-		}
-
-		// 构建 ActiveAlarmState
-		   activeAlarms := &card.ActiveAlarmState{
-			   ActiveEmerg:   count0,
-			   ActiveAlert:   count1,
-			   ActiveCrit:    count2,
-			   ActiveErr:     count3,
-			   ActiveWarning: count4,
-			   // NOTICE 字段从数据库中没有对应列，保持默认值 0
-		   }
-
-		// 从现有 CardStatus 读取，仅更新 ActiveAlarms 部分
-		cardStatus, err := cacheRepo.GetCardStatus(ctx, cardID)
-		if err != nil || cardStatus == nil {
-			// 如果不存在，创建新的
-			cardStatus = &card.CardStatus{
-				CardID: cardID,
-			}
-		}
-
-		// 仅在有报警时更新，设置时间戳（当前时间）
-		if count0 > 0 || count1 > 0 || count2 > 0 || count3 > 0 || count4 > 0 {
-			activeAlarms.Timestamp = time.Now().Unix() * 1000 // 毫秒时间戳
-			cardStatus.ActiveAlarms = activeAlarms
-
-			// 写入 Redis（TTL 12H）
-			if err := cacheRepo.SetCardStatus(ctx, cardStatus); err != nil {
-				logger.Warn("Failed to set card status for alarm initialization",
-					zap.String("card_id", cardID),
-					zap.Error(err))
-				continue
-			}
-
-			count++
-		}
-	}
-
-	if err := rows.Err(); err != nil {
-		logger.Warn("Error reading rows", zap.Error(err))
-	}
-
-	logger.Info("Alarm count initialization completed", zap.Int("cards_initialized", count))
-	return nil
-}

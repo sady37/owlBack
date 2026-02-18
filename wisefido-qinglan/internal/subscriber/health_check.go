@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"owl-common/alarm"
 	constDevice "owl-common/const"
 
 	"go.uber.org/zap"
@@ -133,7 +134,7 @@ func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, devic
 
 	// 发布设备状态（无论是否异常，只要已验证就发布）
 	statuses := map[string]int{
-		constDevice.StatusFieldOnline: 1, // 设备在线
+		constDevice.StatusFieldOffline: 0, // 0=在线（语义：1=异常/离线, 0=正常/在线）
 	}
 
 	// 如果有异常，添加异常标志
@@ -247,4 +248,75 @@ func absFloat(x float64) float64 {
 		return -x
 	}
 	return x
+}
+
+
+// publishDeviceAlarmAuto 自动查使能表后发布设备报警（供 device_subscription_manager 调用）
+func (m *DeviceSubscriptionManager) publishDeviceAlarmAuto(ctx context.Context, tenantID, deviceID, deviceUID, alarmType, statusFieldValue string) {
+	if tenantID == "" || m.streamPublisher == nil {
+		return
+	}
+	enablementItems, err := m.deviceRepo.GetAlarmEnablement(ctx, tenantID, deviceUID)
+	if err != nil {
+		m.logger.Warn("Failed to get alarm enablement",
+			zap.String("device_uid", deviceUID),
+			zap.Error(err))
+		return
+	}
+	m.publishDeviceAlarm(ctx, tenantID, deviceID, deviceUID, alarmType, statusFieldValue, enablementItems)
+}
+
+
+// publishDeviceAlarm 发布设备报警到 iot:alarm:stream（统一格式）
+// alarmType: "SignalPoor", "AngleException" 等
+// statusFieldValue: "1"=异常, "0"=恢复
+// enablementItems: 使能表，用于查找 alarm_level
+func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tenantID, deviceID, deviceUID, alarmType, statusFieldValue string, enablementItems []alarm.AlarmEnablementItem) {
+	if m.streamPublisher == nil {
+		return
+	}
+
+	// 从使能表查找该 alarmType 是否启用及其 alarm_level
+	var alarmLevel string
+	enabled := false
+	for _, item := range enablementItems {
+		if item.AlarmType == alarmType && item.IsEnabled == 1 {
+			enabled = true
+			alarmLevel = item.AlarmLevel
+			break
+		}
+	}
+	if !enabled {
+		return
+	}
+
+	// 统一格式: category = "LEVEL.AlarmType", data_value[0] = {category, StatusFieldValue, device_uid}
+	alarmCategory := alarmLevel + "." + alarmType
+	dataValue := []interface{}{
+		map[string]interface{}{
+			"category":         alarm.GetFHIRCategory(alarmType),
+			"StatusFieldValue": statusFieldValue,
+			"device_uid":       deviceUID,
+		},
+	}
+	encodedData := m.streamPublisher.BuildEncodedData(
+		"", // cardID 由 cardagg 通过 device_id 查找
+		tenantID,
+		deviceID,
+		"alarm",
+		alarmCategory,
+		dataValue,
+	)
+	streamName := m.streamPublisher.GetOutputStreamName("alarm")
+	if _, err := m.streamPublisher.PublishToStream(ctx, streamName, encodedData); err != nil {		
+		m.logger.Warn("Failed to publish device alarm from health check",
+			zap.String("alarm_type", alarmType),
+			zap.String("device_id", deviceID),
+			zap.Error(err))
+	} else {
+		m.logger.Info("Health check → iot:alarm:stream",
+			zap.String("device_id", deviceID),
+			zap.String("alarm_category", alarmCategory),
+			zap.String("status_field_value", statusFieldValue))
+	}
 }

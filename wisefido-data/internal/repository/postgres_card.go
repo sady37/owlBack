@@ -10,7 +10,6 @@ import (
 	"owl-common/card"
 	"wisefido-data/internal/domain"
 
-	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -81,7 +80,7 @@ func (r *PostgresCardRepository) appendRecorded(op, tenantID, cardID, unitID str
 	r.recorded = append(r.recorded, domain.CardSyncAffected{TenantID: tenantID, CardID: cardID, UnitID: unitID, Op: op})
 }
 
-// CardRowForCache 卡片+单元信息（用于生成 VitalFocusCardInfo 静态缓存）
+// CardRowForCache 卡片+单元信息（用于生成 CardStatic 静态缓存）
 type CardRowForCache struct {
 	CardID         string
 	TenantID       string
@@ -189,12 +188,21 @@ func deserializeDevices(data []byte) ([]card.DeviceInfo, error) {
 
 	devices := make([]card.DeviceInfo, 0, len(deviceJSONs))
 	for _, dj := range deviceJSONs {
+		var deviceType string
+		switch v := dj.DeviceType.(type) {
+		case string:
+			deviceType = v
+		case float64:
+			deviceType = fmt.Sprintf("%.0f", v)
+		default:
+			deviceType = fmt.Sprint(v)
+		}
 		devices = append(devices, card.DeviceInfo{
 			DeviceID:    dj.DeviceID,
 			DeviceUID:   dj.DeviceUID,
 			DeviceCode:  dj.DeviceCode,
 			DeviceName:  dj.DeviceName,
-			DeviceType:  dj.DeviceType,
+			DeviceType:  deviceType,
 			DeviceModel: dj.DeviceModel,
 			BoundBedID:  dj.BedID,
 			BoundRoomID: dj.RoomID,
@@ -230,7 +238,7 @@ func deserializeResidents(data []byte) ([]card.ResidentInfo, error) {
 	return residents, nil
 }
 
-// GetCardRowForCache 从 DB 取单卡+unit（branch_id、branch_name、icon_alarm_level、pop_alarm_emerge），用于写 VitalFocusCardInfo 静态缓存
+// GetCardRowForCache 从 DB 取单卡+unit（branch_id、branch_name、icon_alarm_level、pop_alarm_emerge），用于写 CardStatic 静态缓存
 func (r *PostgresCardRepository) GetCardRowForCache(ctx context.Context, tenantID, cardID string) (*CardRowForCache, error) {
 	query := `
 		SELECT c.card_id, c.tenant_id, c.card_type, c.bed_id, c.unit_id, c.card_name, c.card_address,
@@ -567,9 +575,11 @@ func (r *PostgresCardRepository) GetResidentByBed(tenantID, bedID string) (*card
 	query := `
 		SELECT 
 			r.resident_id,
+			COALESCE(rp.last_name, '') as last_name,
 			r.nickname,
 			r.bed_id
 		FROM residents r
+		LEFT JOIN resident_phi rp ON rp.resident_id = r.resident_id AND rp.tenant_id = r.tenant_id
 		WHERE r.tenant_id = $1
 		  AND r.bed_id = $2
 		LIMIT 1
@@ -577,9 +587,11 @@ func (r *PostgresCardRepository) GetResidentByBed(tenantID, bedID string) (*card
 
 	var resident card.ResidentInfo
 	var residentBedID sql.NullString
+	var lastName string
 
 	err := r.db.QueryRow(query, tenantID, bedID).Scan(
 		&resident.ResidentID,
+		&lastName,
 		&resident.Nickname,
 		&residentBedID,
 	)
@@ -590,6 +602,8 @@ func (r *PostgresCardRepository) GetResidentByBed(tenantID, bedID string) (*card
 		}
 		return nil, fmt.Errorf("failed to query resident: %w", err)
 	}
+
+	resident.LastName = lastName
 
 	if residentBedID.Valid {
 		resident.BedID = &residentBedID.String
@@ -603,9 +617,11 @@ func (r *PostgresCardRepository) GetResidentsByUnit(tenantID, unitID string) ([]
 	query := `
 		SELECT 
 			r.resident_id,
+			COALESCE(rp.last_name, '') as last_name,
 			r.nickname,
 			r.bed_id
 		FROM residents r
+		LEFT JOIN resident_phi rp ON rp.resident_id = r.resident_id AND rp.tenant_id = r.tenant_id
 		WHERE r.tenant_id = $1
 		  AND r.unit_id = $2
 		ORDER BY r.nickname
@@ -621,14 +637,18 @@ func (r *PostgresCardRepository) GetResidentsByUnit(tenantID, unitID string) ([]
 	for rows.Next() {
 		var resident card.ResidentInfo
 		var bedID sql.NullString
+		var lastName string
 
 		if err := rows.Scan(
 			&resident.ResidentID,
+			&lastName,
 			&resident.Nickname,
 			&bedID,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan resident: %w", err)
 		}
+
+		resident.LastName = lastName
 
 		if bedID.Valid {
 			resident.BedID = &bedID.String
@@ -767,17 +787,28 @@ func (r *PostgresCardRepository) GetCardsByUnit(tenantID, unitID string) ([]card
 }
 
 // DeleteCard 删除卡片
+// 删除前将卡片关联设备的 active/acked 报警标记为 expired（metadata.expired_reason = "card_delete"）
 func (r *PostgresCardRepository) DeleteCard(tenantID, cardID string) error {
+	// 1. 获取卡片设备列表，expire 其报警
+	deviceIDs := r.getCardDeviceIDList(cardID)
+	if len(deviceIDs) > 0 {
+		if err := card.ExpireAlarmsByDeviceIDs(context.Background(), r.db, tenantID, deviceIDs, "card_delete"); err != nil {
+			r.logger.Warn("DeleteCard: failed to expire alarms",
+				zap.String("card_id", cardID), zap.Error(err))
+		}
+	}
+
+	// 2. 删除卡片
 	_, err := r.db.Exec("DELETE FROM cards WHERE tenant_id = $1 AND card_id = $2", tenantID, cardID)
 	if err != nil {
 		return fmt.Errorf("delete card: %w", err)
 	}
-	
+
 	// 记录受影响的卡片
 	r.recordedMu.Lock()
 	r.recorded = append(r.recorded, domain.CardSyncAffected{TenantID: tenantID, CardID: cardID, UnitID: "", Op: "delete"})
 	r.recordedMu.Unlock()
-	
+
 	return nil
 }
 
@@ -847,6 +878,8 @@ func (r *PostgresCardRepository) CountCardsByTenant(tenantID string) (int, error
 // UpdateCard updates an existing card by card_id
 // Updates all fields except card_id, tenant_id, and alarm statistics
 // This preserves card_id to avoid frontend cache invalidation
+//
+// 移除的设备的 active/acked 报警会被标记为 expired（metadata.expired_reason = "card_update"）
 func (r *PostgresCardRepository) UpdateCard(
 	tenantID, cardID string,
 	cardType string,
@@ -858,7 +891,10 @@ func (r *PostgresCardRepository) UpdateCard(
 		timezone = "UTC"
 	}
 
-	// 将结构化数据转换为 JSON
+	// 1. 查询旧设备列表（用于比较移除的设备）
+	oldDeviceIDs := r.getCardDeviceIDList(cardID)
+
+	// 2. 将结构化数据转换为 JSON
 	devicesJSON, err := convertDevicesToJSON(devices)
 	if err != nil {
 		return fmt.Errorf("failed to convert devices to JSON: %w", err)
@@ -928,33 +964,35 @@ func (r *PostgresCardRepository) UpdateCard(
 	if rowsAffected == 0 {
 		return fmt.Errorf("card not found: %s", cardID)
 	}
-	// 同步 unhandled_alarm 计数（从 alarm_events 按 device_id 统计）
-	if err := r.UpdateCardAlarmCounts(context.Background(), tenantID, cardID); err != nil {
-		r.logger.Warn("UpdateCard: failed to update alarm counts",
+
+	// 3. 找出被移除的设备，expire 其报警
+	newDeviceSet := make(map[string]bool, len(devices))
+	for _, d := range devices {
+		newDeviceSet[d.DeviceID] = true
+	}
+	var removedIDs []string
+	for _, id := range oldDeviceIDs {
+		if !newDeviceSet[id] {
+			removedIDs = append(removedIDs, id)
+		}
+	}
+	if len(removedIDs) > 0 {
+		if err := card.ExpireAlarmsByDeviceIDs(context.Background(), r.db, tenantID, removedIDs, "card_update"); err != nil {
+			r.logger.Warn("UpdateCard: failed to expire alarms for removed devices",
+				zap.String("card_id", cardID), zap.Error(err))
+		}
+	}
+
+	// 4. owl-common 重算报警计数（devices 可能变更）
+	if _, err := card.RecalcCardAlarmState(context.Background(), r.db, cardID, tenantID); err != nil {
+		r.logger.Warn("UpdateCard: failed to recalc alarm counts",
 			zap.String("card_id", cardID), zap.Error(err))
 	}
 	r.appendRecorded("updated", tenantID, cardID, unitID)
 	return nil
 }
 
-// CreateCard creates a card
-//
-// Fields to insert:
-// - Required fields: tenant_id, card_type, bed_id/unit_id, card_name, card_address, devices, residents
-// - Optional fields: resident_id (primary resident for ActiveBed cards)
-// - Derived field: branch_id (from units.branch_id via unitID)
-//
-// Fields using default values (not inserted):
-// - unhandled_alarm_0 ~ unhandled_alarm_4 (unhandled alarm statistics, default 0)
-// - icon_alarm_level (icon alarm level threshold, default 3)
-// - pop_alarm_emerge (popup alarm level threshold, default 0)
-//
-// Constraint checks:
-// - ActiveBedCard: bed_id IS NOT NULL, unit_id can be NULL (redundant)
-// - UnitCard: unit_id IS NOT NULL, bed_id must be NULL
-//
-// Note: Alarm routing configuration (routing_alarm_user_ids, routing_alarm_tags) has been removed.
-// Cards only handle alarm level display, not alarm routing.
+// CreateCard creates a card and initializes alarm counts via owl-common
 func (r *PostgresCardRepository) CreateCard(
 	tenantID string,
 	cardType string, // "ActiveBedCard" or "UnitCard"
@@ -1033,170 +1071,33 @@ func (r *PostgresCardRepository) CreateCard(
 	if err != nil {
 		return "", fmt.Errorf("failed to create card: %w", err)
 	}
-	// 同步 unhandled_alarm 计数（从 alarm_events 按 device_id 统计）
-	if err := r.UpdateCardAlarmCounts(context.Background(), tenantID, cardID); err != nil {
-		r.logger.Warn("CreateCard: failed to update alarm counts",
+	// owl-common 初始化报警计数（统计 active alarms + pop_alarm）
+	if _, err := card.InitializeCardAlarmCounts(context.Background(), r.db, cardID, tenantID); err != nil {
+		r.logger.Warn("CreateCard: failed to initialize alarm counts",
 			zap.String("card_id", cardID), zap.Error(err))
 	}
 	r.appendRecorded("created", tenantID, cardID, unitID)
 	return cardID, nil
 }
 
-// UpdateCardAlarmCounts 更新卡片的未处理报警计数
-// 通过 card_id 找到该卡片关联的所有 device_id（从 cards.devices JSONB 中提取）
-// 统计这些设备的未处理报警（alarm_status = 'active' 且 alarm_level IN ('0'-'4', 'EMERG', 'ALERT', 'CRIT', 'ERR', 'WARNING')）
-// 按 alarm_level 分组统计（映射到 0-4），更新 cards 表的 unhandled_alarm_0 到 unhandled_alarm_4 字段
-func (r *PostgresCardRepository) UpdateCardAlarmCounts(ctx context.Context, tenantID, cardID string) error {
-	// 1. 查询卡片关联的所有 device_id（从 cards.devices JSONB 中提取）
-	query := `
-		SELECT devices
-		FROM cards
-		WHERE tenant_id = $1 AND card_id = $2
-	`
-
+// getCardDeviceIDList 从 cards.devices JSONB 提取 device_id 列表（内部用）
+func (r *PostgresCardRepository) getCardDeviceIDList(cardID string) []string {
 	var devicesJSON []byte
-	err := r.db.QueryRowContext(ctx, query, tenantID, cardID).Scan(&devicesJSON)
-	if err != nil {
-		return fmt.Errorf("failed to get card devices: %w", err)
+	err := r.db.QueryRow(`SELECT devices FROM cards WHERE card_id = $1`, cardID).Scan(&devicesJSON)
+	if err != nil || len(devicesJSON) == 0 {
+		return nil
 	}
-
-	// 2. 解析 devices JSONB，提取 device_id 列表
 	var devices []map[string]interface{}
 	if err := json.Unmarshal(devicesJSON, &devices); err != nil {
-		return fmt.Errorf("failed to unmarshal devices JSON: %w", err)
+		return nil
 	}
-
-	if len(devices) == 0 {
-		// 没有设备，将所有计数设为 0
-		return r.updateCardAlarmCountsToZero(ctx, tenantID, cardID)
-	}
-
-	// 提取 device_id 列表
-	deviceIDs := make([]string, 0, len(devices))
-	for _, device := range devices {
-		if deviceID, ok := device["device_id"].(string); ok && deviceID != "" {
-			deviceIDs = append(deviceIDs, deviceID)
+	ids := make([]string, 0, len(devices))
+	for _, d := range devices {
+		if did, ok := d["device_id"].(string); ok && did != "" {
+			ids = append(ids, did)
 		}
 	}
-
-	if len(deviceIDs) == 0 {
-		// 没有有效的 device_id，将所有计数设为 0
-		return r.updateCardAlarmCountsToZero(ctx, tenantID, cardID)
-	}
-
-	// 3. 统计这些设备的未处理报警（alarm_status = 'active'）
-	// 按 alarm_level 分组统计（映射到 0-4）
-	// 注意：alarm_level 可能是数字格式（'0', '1', '2', '3', '4'）或文本格式（'EMERG', 'ALERT', 'CRIT', 'ERR', 'WARNING'）
-	countQuery := `
-		SELECT 
-			COUNT(*) FILTER (WHERE alarm_level IN ('0', 'EMERG')) as count_0,
-			COUNT(*) FILTER (WHERE alarm_level IN ('1', 'ALERT')) as count_1,
-			COUNT(*) FILTER (WHERE alarm_level IN ('2', 'CRIT')) as count_2,
-			COUNT(*) FILTER (WHERE alarm_level IN ('3', 'ERR')) as count_3,
-			COUNT(*) FILTER (WHERE alarm_level IN ('4', 'WARNING')) as count_4
-		FROM alarm_events
-		WHERE tenant_id = $1
-		  AND device_id = ANY($2::uuid[])
-		  AND alarm_status = 'active'
-		  AND alarm_level IN ('0', '1', '2', '3', '4', 'EMERG', 'ALERT', 'CRIT', 'ERR', 'WARNING')
-		  AND (metadata->>'deleted_at' IS NULL)
-	`
-
-	var count0, count1, count2, count3, count4 int
-	err = r.db.QueryRowContext(ctx, countQuery, tenantID, pq.Array(deviceIDs)).Scan(
-		&count0, &count1, &count2, &count3, &count4,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to count alarm events: %w", err)
-	}
-
-	// 4. 更新 cards 表的 unhandled_alarm_0 到 unhandled_alarm_4 字段
-	updateQuery := `
-		UPDATE cards
-		SET 
-			unhandled_alarm_0 = $3,
-			unhandled_alarm_1 = $4,
-			unhandled_alarm_2 = $5,
-			unhandled_alarm_3 = $6,
-			unhandled_alarm_4 = $7
-		WHERE tenant_id = $1 AND card_id = $2
-	`
-
-	_, err = r.db.ExecContext(ctx, updateQuery, tenantID, cardID, count0, count1, count2, count3, count4)
-	if err != nil {
-		return fmt.Errorf("failed to update card alarm counts: %w", err)
-	}
-
-	return nil
-}
-
-// updateCardAlarmCountsToZero 将卡片的报警计数全部设为 0
-func (r *PostgresCardRepository) updateCardAlarmCountsToZero(ctx context.Context, tenantID, cardID string) error {
-	updateQuery := `
-		UPDATE cards
-		SET 
-			unhandled_alarm_0 = 0,
-			unhandled_alarm_1 = 0,
-			unhandled_alarm_2 = 0,
-			unhandled_alarm_3 = 0,
-			unhandled_alarm_4 = 0
-		WHERE tenant_id = $1 AND card_id = $2
-	`
-
-	_, err := r.db.ExecContext(ctx, updateQuery, tenantID, cardID)
-	if err != nil {
-		return fmt.Errorf("failed to update card alarm counts to zero: %w", err)
-	}
-
-	return nil
-}
-
-// UpdateAllCardsAlarmCounts 批量更新所有卡片的报警计数（用于服务启动和定时任务）
-func (r *PostgresCardRepository) UpdateAllCardsAlarmCounts(ctx context.Context, tenantID string) error {
-	// 获取所有卡片 ID
-	query := `SELECT card_id FROM cards WHERE tenant_id = $1`
-
-	rows, err := r.db.QueryContext(ctx, query, tenantID)
-	if err != nil {
-		return fmt.Errorf("failed to get all card IDs: %w", err)
-	}
-	defer rows.Close()
-
-	var cardIDs []string
-	for rows.Next() {
-		var cardID string
-		if err := rows.Scan(&cardID); err != nil {
-			return fmt.Errorf("failed to scan card ID: %w", err)
-		}
-		cardIDs = append(cardIDs, cardID)
-	}
-
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("error iterating card IDs: %w", err)
-	}
-
-	// 批量更新每个卡片的报警计数
-	successCount := 0
-	errorCount := 0
-	for _, cardID := range cardIDs {
-		if err := r.UpdateCardAlarmCounts(ctx, tenantID, cardID); err != nil {
-			r.logger.Warn("Failed to update alarm counts for card",
-				zap.String("card_id", cardID),
-				zap.Error(err),
-			)
-			errorCount++
-		} else {
-			successCount++
-		}
-	}
-
-	r.logger.Info("Completed updating alarm counts for all cards",
-		zap.Int("total", len(cardIDs)),
-		zap.Int("success", successCount),
-		zap.Int("error", errorCount),
-	)
-
-	return nil
+	return ids
 }
 
 // ConvertDevicesToJSON and ConvertResidentsToJSON are in owl-common/card/utils.go

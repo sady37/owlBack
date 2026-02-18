@@ -100,27 +100,38 @@ func (s *DataStreamSubscriber) Start(ctx context.Context) error {
 }
 
 // HandleCardRealtimeMessage 处理卡片实时数据消息
+// stream 格式：PublishJSONToStream 包装 → { data: "<CardRealTime JSON>", timestamp: ... }
+// 解析 data JSON string 后得到平铺的 CardRealTime 字段（card_id, timestamp, track_data, vital_data）
 func (s *DataStreamSubscriber) HandleCardRealtimeMessage(ctx context.Context, message redis.XMessage) error {
-	s.logger.Debug("Received card realtime message",
-		zap.String("message_id", message.ID),
-	)
+	//s.logger.Info("[SUB] received card realtime message",
+	//	zap.String("message_id", message.ID),
+	//)
 
-	// 解析消息（支持 PublishJSONToStream 的包装格式）
+	// 解析消息（PublishJSONToStream 的包装格式：data 字段为 JSON string）
 	var msgData map[string]interface{}
 	if dataStr, ok := message.Values["data"].(string); ok {
+		s.logger.Info("[SUB] parsing data field",
+			zap.String("message_id", message.ID),
+			zap.Int("data_len", len(dataStr)),
+			zap.String("data_prefix", dataStr[:min(len(dataStr), 120)]),
+		)
 		if err := json.Unmarshal([]byte(dataStr), &msgData); err != nil {
 			return fmt.Errorf("failed to parse card realtime data: %w", err)
 		}
+	} else {
+		s.logger.Warn("[SUB] no 'data' string field in message",
+			zap.String("message_id", message.ID),
+			zap.Any("values_keys", mapKeys(message.Values)),
+		)
 	}
-
-	cardID, _ := message.Values["card_id"].(string)
-	if cardID == "" {
-		return fmt.Errorf("card_id not found in message")
-	}
-
-	// 缓存最新数据（带版本号），存解析后的 msgData 避免 data 字段嵌套
 	if msgData == nil {
 		msgData = message.Values
+	}
+
+	// card_id 在 parsed JSON 内（CardRealTime struct 序列化）
+	cardID, _ := msgData["card_id"].(string)
+	if cardID == "" {
+		return fmt.Errorf("card_id not found in message, keys=%v", mapKeys(msgData))
 	}
 	s.cacheMu.Lock()
 	if existing, ok := s.cardRealtimeCache[cardID]; ok {
@@ -141,36 +152,38 @@ func (s *DataStreamSubscriber) HandleCardRealtimeMessage(ctx context.Context, me
 		}
 	}
 
-	s.logger.Debug("Cached card realtime data",
-		zap.String("card_id", cardID),
-		zap.String("message_id", message.ID),
-	)
+	//s.logger.Info("[SUB] cached card realtime data",
+	//	zap.String("card_id", cardID),
+	//	zap.String("message_id", message.ID),
+	//	zap.Int("cache_size", len(s.cardRealtimeCache)),
+	//)
 
 	return nil
 }
 
 // HandleCardStatusMessage 处理卡片状态数据消息
+// stream 格式：PublishJSONToStream 包装 → { data: "<CardStatus JSON>", timestamp: ... }
+// 解析 data JSON string 后得到平铺的 CardStatus 字段（card_id, timestamp, bed_state, room_state, ...）
 func (s *DataStreamSubscriber) HandleCardStatusMessage(ctx context.Context, message redis.XMessage) error {
-	s.logger.Debug("Received card status message",
+	s.logger.Info("[SUB] received card status message",
 		zap.String("message_id", message.ID),
 	)
 
-	// 解析消息
+	// 解析消息（PublishJSONToStream 的包装格式：data 字段为 JSON string）
 	var msgData map[string]interface{}
 	if dataStr, ok := message.Values["data"].(string); ok {
 		if err := json.Unmarshal([]byte(dataStr), &msgData); err != nil {
 			return fmt.Errorf("failed to parse card status data: %w", err)
 		}
 	}
-
-	cardID, _ := message.Values["card_id"].(string)
-	if cardID == "" {
-		return fmt.Errorf("card_id not found in message")
-	}
-
-	// 缓存最新数据（带版本号），存解析后的 msgData 避免 data 字段嵌套
 	if msgData == nil {
 		msgData = message.Values
+	}
+
+	// card_id 在 parsed JSON 内（CardStatus struct 序列化）
+	cardID, _ := msgData["card_id"].(string)
+	if cardID == "" {
+		return fmt.Errorf("card_id not found in message")
 	}
 	s.cacheMu.Lock()
 	if existing, ok := s.cardStatusCache[cardID]; ok {
@@ -185,15 +198,16 @@ func (s *DataStreamSubscriber) HandleCardStatusMessage(ctx context.Context, mess
 
 	// 状态事件通知（含 alarm），保留 channel 推送
 	select {
-	case s.cardStatusEventChan <- CardStatusEvent{CardID: cardID, Data: msgData}:
+	case s.cardStatusEventChan <- CardStatusEvent{CardID: cardID, Data: deepCopyMap(msgData)}:
 	default:
 		s.logger.Debug("Card status event channel full, dropping notification",
 			zap.String("card_id", cardID))
 	}
 
-	s.logger.Debug("Cached card status data",
+	s.logger.Info("[SUB] cached card status data",
 		zap.String("card_id", cardID),
 		zap.String("message_id", message.ID),
+		zap.Int("cache_size", len(s.cardStatusCache)),
 	)
 
 	return nil
@@ -204,9 +218,35 @@ func (s *DataStreamSubscriber) GetCardRealtimeData(cardID string) map[string]int
 	s.cacheMu.RLock()
 	defer s.cacheMu.RUnlock()
 	if cached, ok := s.cardRealtimeCache[cardID]; ok {
-		return cached.Data
+		return deepCopyMap(cached.Data)
 	}
 	return nil
+}
+
+func deepCopyMap(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		switch val := v.(type) {
+		case map[string]interface{}:
+			dst[k] = deepCopyMap(val)
+		case []interface{}:
+			cp := make([]interface{}, len(val))
+			for i, item := range val {
+				if m, ok := item.(map[string]interface{}); ok {
+					cp[i] = deepCopyMap(m)
+				} else {
+					cp[i] = item
+				}
+			}
+			dst[k] = cp
+		default:
+			dst[k] = v
+		}
+	}
+	return dst
 }
 
 // GetCardRealtimeVersion 获取缓存的卡片实时数据版本号（0 表示无数据）
@@ -275,6 +315,21 @@ func (s *DataStreamSubscriber) ConsumeDirty() map[string]struct{} {
 func (s *DataStreamSubscriber) Stop() error {
 	s.logger.Info("Data stream subscriber stopped")
 	return nil
+}
+
+func mapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // createConsumerGroupIfNotExistsWithName 创建 Consumer Group（指定 groupName，如果不存在）

@@ -371,7 +371,7 @@ const (
 	NoTurnOver               = "NoTurnOver"
 	ResetTime                = "ResetTime"
 	NapTime                  = "NapTime"
-	SensorDetached           = "SensorDetached"
+
 	Fall                     = "Fall"
 	SuspectedFall            = "SuspectedFall"
 	SittingOnGround          = "SittingOnGround"
@@ -383,11 +383,72 @@ const (
 	Stay                     = "Stay"
 	NoActivity24h            = "NoActivity24h"
 	WarningArea              = "WarningArea"
-	SignalPoor               = "SignalPoor"
-	AngleException           = "AngleException"
 	MonitoringMode           = "MonitoringMode"
 	PostureDetection         = "PostureDetection"
+	SignalPoor               = "SignalPoor"
+	AngleException           = "AngleException"
+	SensorDetached           = "SensorDetached"
 )
+
+// ========== FHIR Category 映射（alarm_events.category 列） ==========
+// DB CHECK 约束只允许: "safety", "clinical", "behavioral", "device"
+
+const (
+	FHIRCategorySafety     = "safety"
+	FHIRCategoryClinical   = "clinical"
+	FHIRCategoryBehavioral = "behavioral"
+	FHIRCategoryDevice     = "device"
+)
+
+// AlarmTypeToFHIRCategory 根据 alarmType 返回 FHIR category
+// 新增 alarm type 时在此维护
+var AlarmTypeToFHIRCategory = map[string]string{
+	// safety: 跌倒、坐地、离床、警告区域等人身安全类
+	Fall:                     FHIRCategorySafety,
+	SuspectedFall:            FHIRCategorySafety,
+	SittingOnGround:          FHIRCategorySafety,
+	SuspectedSittingOnGround: FHIRCategorySafety,
+	LeftBedTooLong:           FHIRCategorySafety,		
+	Stay:                   FHIRCategorySafety,
+	NoActivity24h:          FHIRCategorySafety,	
+
+
+	// clinical: 生命体征异常
+	AbnormalHeartRate:       FHIRCategoryClinical,
+	AbnormalRespiratoryRate: FHIRCategoryClinical,
+	ApneaHypopnea:          FHIRCategoryClinical,
+	VitalsWeak:             FHIRCategoryClinical,
+	NoBodyMove:             FHIRCategoryClinical,
+	AbnormalBodyMovement:   FHIRCategoryClinical,
+
+	// behavioral: 行为/作息类
+	InBed:          		FHIRCategoryBehavioral,
+	LeftBed:                FHIRCategoryBehavioral,
+	BedSitUp:               FHIRCategoryBehavioral,
+	SuspectedBedSitUp:      FHIRCategoryBehavioral,
+	NoTurnOver:             FHIRCategoryBehavioral,
+	WarningArea:            FHIRCategoryBehavioral,
+
+
+
+
+	// device: 设备自身状态
+	AlarmTypeOfflineAlarm:  FHIRCategoryDevice,
+	AlarmTypeDeviceFailure: FHIRCategoryDevice,
+	AlarmTypeDeviceRecovery: FHIRCategoryDevice,
+	SignalPoor:             FHIRCategoryDevice,
+	AngleException:         FHIRCategoryDevice,
+	SensorDetached: 	    FHIRCategoryDevice,
+	
+}
+
+// GetFHIRCategory 获取 alarmType 对应的 FHIR category，未匹配返回 "safety"
+func GetFHIRCategory(alarmType string) string {
+	if cat, ok := AlarmTypeToFHIRCategory[alarmType]; ok {
+		return cat
+	}
+	return FHIRCategorySafety
+}
 
 // ========== 配置结构：alarm_type + is_enabled(0/1) + alarm_level + alarm_params + display_setting ==========
 
@@ -1001,7 +1062,7 @@ var DefaultAlarmSetting = struct {
 
 // 注意：设备上报的报警类型到报警级别的映射应该从 alarm_cloud 配置中动态获取，而不是硬编码
 // 报警级别应该由 alarm_cloud.device_alarms 中的配置决定，每个租户可以有不同的配置
-// 因此不再提供 DeviceAlarmLevelMapSleepace 和 DeviceAlarmLevelMapRadar 硬编码映射表
+// 因此不再提供 DeviceAlarmLevelMapSleepad 和 DeviceAlarmLevelMapRadar 硬编码映射表
 // 如果需要获取报警级别，应该：
 // 1. 从 alarm_cloud.device_alarms[device_type][alarm_type] 获取配置的 alarm_level
 // 2. 如果配置不存在，使用 DefaultAlarmSetting 中的默认值
@@ -1032,7 +1093,7 @@ func GetSupportedAlarmTypes(deviceType string) []string {
 	switch deviceType {
 	case "radar":
 		return GetRadarAlarmTypes()
-	case "Sleepad", "sleepad", "sleepace":
+	case "Sleepad", "sleepad":
 		return GetSleepPadAlarmTypes()
 	default:
 		return []string{AlarmTypeOfflineAlarm, AlarmTypeDeviceFailure}
@@ -1051,7 +1112,7 @@ func GetDefaultAlarmItemsRadar() []AlarmItem { return DefaultAlarmSetting.Radar 
 // GetDefaultAlarmItems 根据设备类型获取默认报警项列表
 func GetDefaultAlarmItems(deviceType string) []AlarmItem {
 	switch deviceType {
-	case "Sleepad", "sleepace", "sleepad":
+	case "Sleepad",  "sleepad":
 		return GetDefaultAlarmItemsSleepPad()
 	case "radar":
 		return GetDefaultAlarmItemsRadar()
@@ -1079,7 +1140,7 @@ func ParseTimeString(timeStr string) (hour, minute int, err error) {
 }
 
 // GetAlarmEnablementMap 获取设备的报警使能配置表
-// 参数：deviceType - 设备类型（"Sleepad"/"sleepace"/"sleepad" 或 "radar"）
+// 参数：deviceType - 设备类型（"Sleepad"/"Sleepad"/"sleepad" 或 "radar"）
 // 参数：alarmItems - 报警项列表（从 alarm_cloud.device_alarms 获取，如果为 nil 则使用 DefaultAlarmSetting）
 // 返回：[]AlarmEnablementItem，只包含 isEnabled=1 且 alarm_level 不为空的项
 // 用于过滤决定是否将事件发布到 iot:alarm:stream
@@ -1087,7 +1148,7 @@ func GetAlarmEnablementMap(deviceType string, alarmItems []AlarmItem) []AlarmEna
 	// 如果 alarmItems 为 nil，使用默认配置
 	if alarmItems == nil {
 		switch deviceType {
-		case "Sleepad", "sleepace", "sleepad":
+		case "Sleepad", "sleepad":
 			alarmItems = DefaultAlarmSetting.Sleepad
 		case "radar":
 			alarmItems = DefaultAlarmSetting.Radar
@@ -1116,10 +1177,10 @@ func GetAlarmEnablementMap(deviceType string, alarmItems []AlarmItem) []AlarmEna
 	return result
 }
 
-// MQTTToAlarmTypeMapSleepace Sleepace MQTT 消息到 alarm_type 的映射表
+// MQTTToAlarmTypeMapSleepad Sleepad MQTT 消息到 alarm_type 的映射表
 // 基于文档 radar-Qinlan-code-v3.0.md (598-610)
 // 注意：报警类型已统一，不再区分设备前缀，设备类型通过 device_type 字段区分
-var MQTTToAlarmTypeMapSleepace = map[string]string{
+var MQTTToAlarmTypeMapSleepad = map[string]string{
 	"alarmLeftBed":         LeftBed, // 或 LeftBedTooLong（根据上下文判断）
 	"alarmHeartRateFast":   AbnormalHeartRate,
 	"alarmHeartRateSlow":   AbnormalHeartRate,
@@ -1167,11 +1228,11 @@ var MQTTToAlarmTypeMapRadar = map[string]string{
 	"stat_sleep_no_activity": NoActivity24h,           // 长时间无人活动
 }
 
-// ConvertMQTTToAlarmTypeSleepace 将 Sleepace MQTT 消息转换为 alarm_type
+// ConvertMQTTToAlarmTypeSleepad 将 Sleepad MQTT 消息转换为 alarm_type
 // 参数：mqttKey - MQTT 消息中的键（如 "alarmLeftBed", "alarmHeartRateFast" 等）
 // 返回：对应的 alarm_type，如果未找到则返回空字符串
-func ConvertMQTTToAlarmTypeSleepace(mqttKey string) string {
-	if alarmType, ok := MQTTToAlarmTypeMapSleepace[mqttKey]; ok {
+func ConvertMQTTToAlarmTypeSleepad(mqttKey string) string {
+	if alarmType, ok := MQTTToAlarmTypeMapSleepad[mqttKey]; ok {
 		return alarmType
 	}
 	return ""
@@ -1245,7 +1306,7 @@ func ConvertMQTTToAlarmTypeRadar(eventType, areaType, pose, statType, statAlarmT
 }
 
 // ShouldEnableEventForAlarm 判断 MQTT 事件是否应该转换为报警
-// 参数：deviceType - 设备类型（"Sleepad"/"sleepace"/"sleepad" 或 "radar"）
+// 参数：deviceType - 设备类型（"Sleepad"/"Sleepad"/"sleepad" 或 "radar"）
 // 参数：alarmType - 报警类型（通过 ConvertMQTTToAlarmType* 函数转换得到）
 // 参数：enablementMap - 报警使能配置表（通过 GetAlarmEnablementMap 函数获取）
 // 返回：是否应该转换为报警（true=转换为 alarm topic，false=保持原 topic）
@@ -1287,13 +1348,10 @@ var AlarmTypeToNumericCodeMap = map[string][]AlarmNumericCode{
 		{EventType: 1, Event: 4, AreaType: 2, Source: "event"}, // 普通床离床
 		{EventType: 1, Event: 4, AreaType: 5, Source: "event"}, // 监护床离床
 	},
-	LeftBedTooLong: {
-		{EventType: 1, Event: 4, AreaType: 2, Source: "event"}, // 普通床离床过长
-		{EventType: 1, Event: 4, AreaType: 5, Source: "event"}, // 监护床离床过长
-	},
+	// LeftBedTooLong: 由 AI 层判断，不在 device event 层触发
 	InBed: {
-		{EventType: 1, Event: 4, AreaType: 2, Source: "event"}, // 普通床在床
-		{EventType: 1, Event: 4, AreaType: 5, Source: "event"}, // 监护床在床
+		{EventType: 1, Event: 3, AreaType: 2, Source: "event"}, // 普通床上床（event=3 进入区域）
+		{EventType: 1, Event: 3, AreaType: 5, Source: "event"}, // 监护床上床（event=3 进入区域）
 	},
 	WarningArea: {
 		{EventType: 1, Event: 1, AreaType: 6, Source: "event"}, // 进入警告区域
@@ -1353,11 +1411,13 @@ func GetNumericCodesForAlarmType(alarmType string) []AlarmNumericCode {
 // 格式：数字组合字符串 -> 报警类型列表
 var NumericCodeToAlarmTypeMap = map[string][]string{
 	// Event type=1 (进出事件)
-	// "142" 和 "145" 可能对应多个报警类型，需要根据event值（4=离床, 3=在床等）进一步判断
-	// 这里先列出所有可能的组合，实际使用时需要结合event字段判断
-	"142": {LeftBed, LeftBedTooLong, InBed}, // eventType=1, event=4, area_type=2 (普通床：离床/离床过长/在床)
-	"145": {LeftBed, LeftBedTooLong, InBed}, // eventType=1, event=4, area_type=5 (监护床：离床/离床过长/在床)
-	"116": {WarningArea},                    // eventType=1, event=1, area_type=6 (进入警告区域)
+	// event=4 离床, event=3 上床, 分开映射
+	"142": {LeftBed},      // eventType=1, event=4, area_type=2 (普通床离床)
+	"145": {LeftBed},      // eventType=1, event=4, area_type=5 (监护床离床)
+	"132": {InBed},        // eventType=1, event=3, area_type=2 (普通床上床)
+	"135": {InBed},        // eventType=1, event=3, area_type=5 (监护床上床)
+	"116": {WarningArea},  // eventType=1, event=1, area_type=6 (进入警告区域)
+	// LeftBedTooLong: 由 AI 层判断，不在 device event 层触发
 	// Event type=2 (姿态变化)
 	"25":  {Fall},            // eventType=2, pose=5 (确认跌倒)
 	"22":  {Fall},            // eventType=2, pose=2 (疑似跌倒)
@@ -1365,7 +1425,8 @@ var NumericCodeToAlarmTypeMap = map[string][]string{
 	"28":  {SittingOnGround}, // eventType=2, pose=8 (确认坐地)
 	"210": {BedSitUp},        // eventType=2, pose=10 (疑似床上坐起)
 	"211": {BedSitUp},        // eventType=2, pose=11 (确认床上坐起)
-	// Event type=7, 8
+	// Event type=5, 7, 8
+	"5": {AlarmTypeOfflineAlarm}, // eventType=5 (离线)
 	"7": {SignalPoor},     // eventType=7 (信号差)
 	"8": {AngleException}, // eventType=8 (倾角异常)
 	// Statistics (sleep) - 4组状态分别映射
@@ -1501,6 +1562,11 @@ func ExtractNumericCodesFromEvent(eventData map[string]interface{}) []string {
 			code := fmt.Sprintf("%s%s", eventType, pose)
 			codes = append(codes, code)
 		}
+	}
+
+	// Event type=5 (离线/在线)
+	if eventType == "5" {
+		codes = append(codes, "5")
 	}
 
 	// Event type=7 (信号差)

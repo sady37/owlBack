@@ -60,11 +60,6 @@ func (r *Router) RegisterStubRoutes(s *StubHandler) {
 
 	r.Handle("/admin/api/v1/service-levels", s.AdminServiceLevels)
 
-	// card-overview - 已迁移到 CardOverviewHandler，不再使用 StubHandler.AdminCardOverview
-	// 新路由在 RegisterCardOverviewRoutes 中注册（需要数据库连接）
-	// 如果数据库未启用，这些路由将不可用（返回 404）
-	// r.Handle("/admin/api/v1/card-overview", s.AdminCardOverview)
-
 	// addresses - 已被 units 替换，前端未使用，已移除
 	// 数据库中没有 addresses 表，地址管理已迁移到 units 表
 	// 如果前端需要，应使用 /admin/api/v1/units API
@@ -283,10 +278,10 @@ func (r *Router) RegisterUsersRoutes(h *UserHandler) {
 
 // RegisterDeviceMonitorSettingsRoutes 注册设备监控配置路由
 func (r *Router) RegisterDeviceMonitorSettingsRoutes(h *DeviceMonitorSettingsHandler) {
-	r.Handle("/settings/api/v1/monitor/sleepace/", h.ServeHTTP)
+	r.Handle("/settings/api/v1/monitor/sleepad/", h.ServeHTTP)
 	r.Handle("/settings/api/v1/monitor/radar/", h.ServeHTTP)
 	// 注册默认设置路由
-	r.Handle("/settings/api/v1/monitor/default/sleepace", h.ServeHTTP)
+	r.Handle("/settings/api/v1/monitor/default/sleepad", h.ServeHTTP)
 	r.Handle("/settings/api/v1/monitor/default/radar", h.ServeHTTP)
 }
 
@@ -392,27 +387,59 @@ func (r *Router) RegisterMonitorRoutes(h *MonitorHandler) {
 		h.GetCards(w, req)
 	})
 
+	// POST /data/api/v1/data/vital-focus/cards-by-ids - 按 cardID 拉静态数据
+	r.Handle("/data/api/v1/data/vital-focus/cards-by-ids", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		h.GetCardsByCardIDs(w, req)
+	})
+
+	// GET /data/api/v1/data/vital-focus/cards/stream - Overview 多卡 SSE
+	r.Handle("/data/api/v1/data/vital-focus/cards/stream", func(w http.ResponseWriter, req *http.Request) {
+		h.SubscribeCardsStream(w, req)
+	})
+
+	// POST /data/api/v1/data/vital-focus/cards/stream/init - SSE 初始化（传 watchIDs + viewIDs）
+	r.Handle("/data/api/v1/data/vital-focus/cards/stream/init", func(w http.ResponseWriter, req *http.Request) {
+		h.InitSSE(w, req)
+	})
+
+	// POST /data/api/v1/data/vital-focus/cards/stream/view - 切页更新 viewIDs
+	r.Handle("/data/api/v1/data/vital-focus/cards/stream/view", func(w http.ResponseWriter, req *http.Request) {
+		h.UpdateSSEView(w, req)
+	})
+
 	// GET /data/api/v1/data/vital-focus/card/{id} - 获取卡片详情
 	r.Handle("/data/api/v1/data/vital-focus/card/", func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		id := strings.TrimPrefix(req.URL.Path, "/data/api/v1/data/vital-focus/card/")
-		if id == "" || strings.Contains(id, "/") {
+		rest := strings.TrimPrefix(req.URL.Path, "/data/api/v1/data/vital-focus/card/")
+		if rest == "" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		// 检查是否是 stream 路由
-		if strings.HasSuffix(id, "/stream") {
-			cardID := strings.TrimSuffix(id, "/stream")
-			if cardID == "" {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			h.SubscribeRealtimeStream(w, req, cardID)
-			return
+		// rest 格式: {id} | {id}/stream | {id}/caregivers
+		parts := strings.SplitN(rest, "/", 2)
+		cardID := parts[0]
+		suffix := ""
+		if len(parts) == 2 {
+			suffix = parts[1]
 		}
-		h.GetCardInfo(w, req, id)
+		switch suffix {
+		case "stream":
+			h.SubscribeRealtimeStream(w, req, cardID)
+		case "caregivers":
+			h.GetCardCaregivers(w, req, cardID)
+		case "status":
+			h.GetCardStatus(w, req, cardID)
+		case "":
+			h.GetCardInfo(w, req, cardID)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
 	})
 }

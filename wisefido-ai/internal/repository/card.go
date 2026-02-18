@@ -1,12 +1,10 @@
 package repository
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 
-	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -226,110 +224,3 @@ type DeviceInfo struct {
 	UnitID      string  `json:"unit_id"`             // 设备绑定的单元ID
 }
 
-// UpdateCardAlarmCounts 更新卡片的未处理报警计数
-// 通过 card_id 找到该卡片关联的所有 device_id（从 cards.devices JSONB 中提取）
-// 统计这些设备的未处理报警（alarm_status = 'active' 且 alarm_level IN ('0'-'4', 'EMERG', 'ALERT', 'CRIT', 'ERR', 'WARNING')）
-// 按 alarm_level 分组统计（映射到 0-4），更新 cards 表的 unhandled_alarm_0 到 unhandled_alarm_4 字段
-func (r *CardRepository) UpdateCardAlarmCounts(ctx context.Context, tenantID, cardID string) error {
-	// 1. 查询卡片关联的所有 device_id（从 cards.devices JSONB 中提取）
-	query := `
-		SELECT devices
-		FROM cards
-		WHERE tenant_id = $1 AND card_id = $2
-	`
-	
-	var devicesJSON []byte
-	err := r.db.QueryRowContext(ctx, query, tenantID, cardID).Scan(&devicesJSON)
-	if err != nil {
-		return fmt.Errorf("failed to get card devices: %w", err)
-	}
-	
-	// 2. 解析 devices JSONB，提取 device_id 列表
-	var devices []map[string]interface{}
-	if err := json.Unmarshal(devicesJSON, &devices); err != nil {
-		return fmt.Errorf("failed to unmarshal devices JSON: %w", err)
-	}
-	
-	if len(devices) == 0 {
-		// 没有设备，将所有计数设为 0
-		return r.updateCardAlarmCountsToZero(ctx, tenantID, cardID)
-	}
-	
-	// 提取 device_id 列表
-	deviceIDs := make([]string, 0, len(devices))
-	for _, device := range devices {
-		if deviceID, ok := device["device_id"].(string); ok && deviceID != "" {
-			deviceIDs = append(deviceIDs, deviceID)
-		}
-	}
-	
-	if len(deviceIDs) == 0 {
-		// 没有有效的 device_id，将所有计数设为 0
-		return r.updateCardAlarmCountsToZero(ctx, tenantID, cardID)
-	}
-	
-	// 3. 统计这些设备的未处理报警（alarm_status = 'active'）
-	// 按 alarm_level 分组统计（映射到 0-4）
-	countQuery := `
-		SELECT 
-			COUNT(*) FILTER (WHERE alarm_level IN ('0', 'EMERG')) as count_0,
-			COUNT(*) FILTER (WHERE alarm_level IN ('1', 'ALERT')) as count_1,
-			COUNT(*) FILTER (WHERE alarm_level IN ('2', 'CRIT')) as count_2,
-			COUNT(*) FILTER (WHERE alarm_level IN ('3', 'ERR')) as count_3,
-			COUNT(*) FILTER (WHERE alarm_level IN ('4', 'WARNING')) as count_4
-		FROM alarm_events
-		WHERE tenant_id = $1
-		  AND device_id = ANY($2::uuid[])
-		  AND alarm_status = 'active'
-		  AND alarm_level IN ('0', '1', '2', '3', '4', 'EMERG', 'ALERT', 'CRIT', 'ERR', 'WARNING')
-		  AND (metadata->>'deleted_at' IS NULL)
-	`
-	
-	var count0, count1, count2, count3, count4 int
-	err = r.db.QueryRowContext(ctx, countQuery, tenantID, pq.Array(deviceIDs)).Scan(
-		&count0, &count1, &count2, &count3, &count4,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to count alarm events: %w", err)
-	}
-	
-	// 4. 更新 cards 表的 unhandled_alarm_0 到 unhandled_alarm_4 字段
-	updateQuery := `
-		UPDATE cards
-		SET 
-			unhandled_alarm_0 = $3,
-			unhandled_alarm_1 = $4,
-			unhandled_alarm_2 = $5,
-			unhandled_alarm_3 = $6,
-			unhandled_alarm_4 = $7
-		WHERE tenant_id = $1 AND card_id = $2
-	`
-	
-	_, err = r.db.ExecContext(ctx, updateQuery, tenantID, cardID, count0, count1, count2, count3, count4)
-	if err != nil {
-		return fmt.Errorf("failed to update card alarm counts: %w", err)
-	}
-	
-	return nil
-}
-
-// updateCardAlarmCountsToZero 将卡片的报警计数全部设为 0
-func (r *CardRepository) updateCardAlarmCountsToZero(ctx context.Context, tenantID, cardID string) error {
-	updateQuery := `
-		UPDATE cards
-		SET 
-			unhandled_alarm_0 = 0,
-			unhandled_alarm_1 = 0,
-			unhandled_alarm_2 = 0,
-			unhandled_alarm_3 = 0,
-			unhandled_alarm_4 = 0
-		WHERE tenant_id = $1 AND card_id = $2
-	`
-	
-	_, err := r.db.ExecContext(ctx, updateQuery, tenantID, cardID)
-	if err != nil {
-		return fmt.Errorf("failed to update card alarm counts to zero: %w", err)
-	}
-	
-	return nil
-}

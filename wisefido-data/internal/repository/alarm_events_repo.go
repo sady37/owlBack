@@ -7,7 +7,7 @@ import (
 )
 
 // AlarmEventsRepository 报警事件Repository接口
-// 注意：与 wisefido-ai 的 Repository 接口保持一致，但使用 wisefido-data 的 domain 模型
+// 写操作（Create/Ack/Resolve）已迁移至 owl-common/card，此处仅保留查询方法
 type AlarmEventsRepository interface {
 	// 查询报警事件列表（支持复杂过滤和跨表 JOIN）
 	// 注意：此方法需要支持跨表 JOIN 查询关联数据（设备、卡片、住户、地址信息）
@@ -16,22 +16,8 @@ type AlarmEventsRepository interface {
 	// 获取单个报警事件
 	GetAlarmEvent(ctx context.Context, tenantID, eventID string) (*domain.AlarmEvent, error)
 
-	// 创建报警事件（用于 wisefido-ai 服务写入报警）
-	CreateAlarmEvent(ctx context.Context, tenantID string, event *domain.AlarmEvent) error
-
-	// 确认报警（更新状态为 acknowledged）
-	AcknowledgeAlarmEvent(ctx context.Context, tenantID, eventID, handlerID string) error
-
-	// 更新操作结果（verified_and_processed, false_alarm, test）
-	UpdateAlarmEventOperation(ctx context.Context, tenantID, eventID, operation, handlerID string, notes *string) error
-
 	// 更新报警事件（部分更新）
-	// Deprecated: 使用 UpdateAlarmEventFields 替代，支持区分"不更新"、"更新"、"删除"三种状态
 	UpdateAlarmEvent(ctx context.Context, tenantID, eventID string, updates map[string]interface{}) error
-
-
-	// 软删除报警事件（通过 metadata 标记删除时间）
-	DeleteAlarmEvent(ctx context.Context, tenantID, eventID string) error
 
 	// 获取最近的报警事件（用于去重检查）
 	GetRecentAlarmEvent(ctx context.Context, tenantID, deviceID, eventType string, withinMinutes int) (*domain.AlarmEvent, error)
@@ -66,7 +52,7 @@ type AlarmEventFilters struct {
 	AlarmLevels []string // 报警级别列表（IN 查询）
 
 	// 状态过滤
-	AlarmStatus *string   // 报警状态（active, acknowledged）
+	AlarmStatus *string   // 报警状态（active, acked, resolved, auto_resolved, expired）
 	AlarmStatuses []string // 报警状态列表（IN 查询）
 
 	// 操作结果过滤

@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"wisefido-data/internal/domain"
-
-	"github.com/google/uuid"
 )
 
 // PostgresAlarmEventsRepository 报警事件Repository实现
@@ -456,158 +454,6 @@ func (r *PostgresAlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenan
 	return &event, nil
 }
 
-// CreateAlarmEvent 创建报警事件（需验证 tenant_id）
-func (r *PostgresAlarmEventsRepository) CreateAlarmEvent(ctx context.Context, tenantID string, event *domain.AlarmEvent) error {
-	if tenantID == "" {
-		return fmt.Errorf("tenant_id is required")
-	}
-	if event == nil {
-		return fmt.Errorf("event is required")
-	}
-	if event.TenantID != tenantID {
-		return fmt.Errorf("event.tenant_id must match tenant_id parameter")
-	}
-
-	// 设置默认值
-	if event.EventID == "" {
-		event.EventID = uuid.New().String()
-	}
-	if event.AlarmStatus == "" {
-		event.AlarmStatus = "active"
-	}
-	if event.TriggeredAt.IsZero() {
-		event.TriggeredAt = time.Now()
-	}
-	if event.CreatedAt.IsZero() {
-		event.CreatedAt = time.Now()
-	}
-	if event.UpdatedAt.IsZero() {
-		event.UpdatedAt = time.Now()
-	}
-	if len(event.TriggerData) == 0 {
-		event.TriggerData = json.RawMessage("{}")
-	}
-	if len(event.NotifiedUsers) == 0 {
-		event.NotifiedUsers = json.RawMessage("[]")
-	}
-	if len(event.Metadata) == 0 {
-		event.Metadata = json.RawMessage("{}")
-	}
-
-	query := `
-		INSERT INTO alarm_events (
-			event_id,
-			tenant_id,
-			device_id,
-			event_type,
-			category,
-			alarm_level,
-			alarm_status,
-			triggered_at,
-			hand_time,
-			iot_timeseries_id,
-			trigger_data,
-			handler,
-			operation,
-			notes,
-			notified_users,
-			metadata,
-			created_at,
-			updated_at
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
-		)
-	`
-
-	_, err := r.db.ExecContext(ctx,
-		query,
-		event.EventID,
-		event.TenantID,
-		event.DeviceID,
-		event.EventType,
-		event.Category,
-		event.AlarmLevel,
-		event.AlarmStatus,
-		event.TriggeredAt,
-		event.HandTime,
-		event.IoTTimeSeriesID,
-		event.TriggerData,
-		event.Handler,
-		event.Operation,
-		event.Notes,
-		event.NotifiedUsers,
-		event.Metadata,
-		event.CreatedAt,
-		event.UpdatedAt,
-	)
-
-	if err != nil {
-		return fmt.Errorf("failed to create alarm event: %w", err)
-	}
-
-	return nil
-}
-
-// AcknowledgeAlarmEvent 确认报警（更新状态为 acknowledged，设置 hand_time 和 handler）
-func (r *PostgresAlarmEventsRepository) AcknowledgeAlarmEvent(ctx context.Context, tenantID, eventID, handlerID string) error {
-	if tenantID == "" {
-		return fmt.Errorf("tenant_id is required")
-	}
-	if eventID == "" {
-		return fmt.Errorf("event_id is required")
-	}
-	if handlerID == "" {
-		return fmt.Errorf("handler_id is required")
-	}
-
-	updates := map[string]interface{}{
-		"alarm_status": "acknowledged",
-		"hand_time":    time.Now(),
-		"handler":      handlerID,
-	}
-
-	return r.UpdateAlarmEvent(ctx, tenantID, eventID, updates)
-}
-
-// UpdateAlarmEventOperation 更新操作结果（verified_and_processed, false_alarm, test）
-func (r *PostgresAlarmEventsRepository) UpdateAlarmEventOperation(ctx context.Context, tenantID, eventID, operation, handlerID string, notes *string) error {
-	if tenantID == "" {
-		return fmt.Errorf("tenant_id is required")
-	}
-	if eventID == "" {
-		return fmt.Errorf("event_id is required")
-	}
-	if operation == "" {
-		return fmt.Errorf("operation is required")
-	}
-
-	// 验证 operation 值
-	validOperations := map[string]bool{
-		"verified_and_processed": true,
-		"false_alarm":            true,
-		"test":                   true,
-		"auto_relieved":          true,
-	}
-	if !validOperations[operation] {
-		return fmt.Errorf("invalid operation: %s", operation)
-	}
-
-	updates := map[string]interface{}{
-		"operation": operation,
-	}
-
-	if handlerID != "" {
-		updates["handler"] = handlerID
-		updates["hand_time"] = time.Now()
-	}
-
-	if notes != nil {
-		updates["notes"] = *notes
-	}
-
-	return r.UpdateAlarmEvent(ctx, tenantID, eventID, updates)
-}
-
 // UpdateAlarmEvent 更新报警事件（需验证 tenant_id，支持部分更新）
 func (r *PostgresAlarmEventsRepository) UpdateAlarmEvent(ctx context.Context, tenantID, eventID string, updates map[string]interface{}) error {
 	if tenantID == "" {
@@ -676,75 +522,6 @@ func (r *PostgresAlarmEventsRepository) UpdateAlarmEvent(ctx context.Context, te
 	return nil
 }
 
-// DeleteAlarmEvent 软删除报警事件（需验证 tenant_id）
-// 使用 metadata 字段标记删除时间
-func (r *PostgresAlarmEventsRepository) DeleteAlarmEvent(ctx context.Context, tenantID, eventID string) error {
-	if tenantID == "" {
-		return fmt.Errorf("tenant_id is required")
-	}
-	if eventID == "" {
-		return fmt.Errorf("event_id is required")
-	}
-
-	// 先获取当前的 metadata
-	var currentMetadata []byte
-	err := r.db.QueryRowContext(ctx,
-		`SELECT metadata FROM alarm_events WHERE event_id = $1 AND tenant_id = $2`,
-		eventID, tenantID,
-	).Scan(&currentMetadata)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("alarm event not found: event_id=%s, tenant_id=%s", eventID, tenantID)
-		}
-		return fmt.Errorf("failed to get alarm event metadata: %w", err)
-	}
-
-	// 解析 metadata
-	var metadata map[string]interface{}
-	if len(currentMetadata) > 0 {
-		if err := json.Unmarshal(currentMetadata, &metadata); err != nil {
-			metadata = make(map[string]interface{})
-		}
-	} else {
-		metadata = make(map[string]interface{})
-	}
-
-	// 设置 deleted_at
-	metadata["deleted_at"] = time.Now().Format(time.RFC3339)
-
-	// 序列化 metadata
-	metadataJSON, err := json.Marshal(metadata)
-	if err != nil {
-		return fmt.Errorf("failed to marshal metadata: %w", err)
-	}
-
-	// 更新记录
-	query := `
-		UPDATE alarm_events
-		SET metadata = $1,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE event_id = $2
-		  AND tenant_id = $3
-		  AND (metadata->>'deleted_at' IS NULL)
-	`
-
-	result, err := r.db.ExecContext(ctx, query, metadataJSON, eventID, tenantID)
-	if err != nil {
-		return fmt.Errorf("failed to delete alarm event: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return fmt.Errorf("alarm event not found or already deleted: event_id=%s, tenant_id=%s", eventID, tenantID)
-	}
-
-	return nil
-}
-
 // GetRecentAlarmEvent 获取最近的报警事件（用于去重检查，改进版）
 // 检查最近 N 分钟内是否已有相同类型的报警
 func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context, tenantID, deviceID, eventType string, withinMinutes int) (*domain.AlarmEvent, error) {
@@ -766,6 +543,7 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 			event_id::text,
 			tenant_id::text,
 			device_id::text,
+			card_id::text,
 			event_type,
 			category,
 			alarm_level,
@@ -793,6 +571,7 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 	`
 
 	var event domain.AlarmEvent
+	var cardID sql.NullString
 	var handTimePtr sql.NullTime
 	var iotTimeSeriesID sql.NullInt64
 	var handler, operation, notes sql.NullString
@@ -802,6 +581,7 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 		&event.EventID,
 		&event.TenantID,
 		&event.DeviceID,
+		&cardID,
 		&event.EventType,
 		&event.Category,
 		&event.AlarmLevel,
@@ -827,6 +607,9 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 	}
 
 	// 处理可空字段
+	if cardID.Valid {
+		event.CardID = &cardID.String
+	}
 	if handTimePtr.Valid {
 		event.HandTime = &handTimePtr.Time
 	}

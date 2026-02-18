@@ -29,7 +29,7 @@ func NewConfigPublisher(redisClient *redis.Client, logger *zap.Logger) *ConfigPu
 // 供 cardagg 消费用于更新告警显示
 func (p *ConfigPublisher) PublishAlarmProcessMessage(
 	ctx context.Context,
-	tenantID, cardID, deviceID, alarmLevel, alarmType, processType string,
+	tenantID, cardID, deviceID, alarmLevel, alarmType, processType, eventID string,
 	alarmTimestamp int64,
 ) error {
 	// 构建报警处理消息
@@ -41,6 +41,7 @@ func (p *ConfigPublisher) PublishAlarmProcessMessage(
 		alarmLevel,
 		alarmType,
 		processType, // 如 "ack"
+		eventID,
 		alarmTimestamp,
 	)
 

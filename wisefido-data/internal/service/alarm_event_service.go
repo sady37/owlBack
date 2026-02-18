@@ -21,7 +21,7 @@ import (
 
 // ConfigPublisher 配置发布器接口
 type ConfigPublisher interface {
-	PublishAlarmProcessMessage(ctx context.Context, tenantID, cardID, deviceID, alarmLevel, alarmType, processType string, alarmTimestamp int64) error
+	PublishAlarmProcessMessage(ctx context.Context, tenantID, cardID, deviceID, alarmLevel, alarmType, processType, eventID string, alarmTimestamp int64) error
 	PublishAlarmDeviceMessage(ctx context.Context, tenantID, deviceID, deviceUID, settingType string, settingData map[string]interface{}) error
 }
 
@@ -130,7 +130,7 @@ type AlarmEventDTO struct {
 	EventType   string `json:"event_type"`   // 事件类型
 	Category    string `json:"category"`     // 类别（safety, clinical, behavioral, device）
 	AlarmLevel  string `json:"alarm_level"`  // 报警级别
-	AlarmStatus string `json:"alarm_status"` // 报警状态（'active', 'acknowledged', 'resolved'）
+	AlarmStatus string `json:"alarm_status"` // 报警状态（'active','acked','resolved','auto_resolved','expired'）
 	TriggeredAt int64  `json:"triggered_at"` // timestamp（触发时间）
 
 	// 处理信息
@@ -181,7 +181,7 @@ type HandleAlarmEventRequest struct {
 	CurrentUserRole string // 当前用户角色（用于权限检查）
 
 	// 处理参数
-	AlarmStatus string // 'acknowledged' | 'resolved' - 目标状态
+	AlarmStatus string // 'acked' | 'resolved' - 目标状态
 	HandleType  string // 'verified' | 'false_alarm' | 'test' - 处理类型（仅 resolved 时需要）
 	Remarks     string // 备注（可选）
 }
@@ -190,11 +190,12 @@ type HandleAlarmEventRequest struct {
 // 仅包含前端显示 + cardagg 更新显示需要的字段
 type HandleAlarmEventResponse struct {
 	Success        bool   `json:"success"`                   // 处理是否成功
-	CardID         string `json:"card_id,omitempty"`         // 卡片ID（cardagg用来找RealtimeData）
+	EventID        string `json:"event_id,omitempty"`        // 报警事件ID
+	CardID         string `json:"card_id,omitempty"`         // 卡片ID
 	DeviceID       string `json:"device_id,omitempty"`       // 设备ID
-	AlarmLevel     string `json:"alarm_level,omitempty"`     // 报警级别（更新计数）
-	AlarmType      string `json:"alarm_type,omitempty"`      // 报警类型（清理NowAlarm）
-	AlarmTimestamp int64  `json:"alarm_timestamp,omitempty"` // 报警触发时间戳（防止旧数据覆盖）
+	AlarmLevel     string `json:"alarm_level,omitempty"`     // 报警级别
+	AlarmType      string `json:"alarm_type,omitempty"`      // 报警类型
+	AlarmTimestamp int64  `json:"alarm_timestamp,omitempty"` // 处理时间(hand_time)
 }
 
 // ============================================
@@ -232,12 +233,16 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 	if req.Status == "active" {
 		status := "active"
 		filters.AlarmStatus = &status
+	} else if req.Status == "acked" {
+		status := "acked"
+		filters.AlarmStatus = &status
 	} else if req.Status == "resolved" {
-		// resolved 状态包括 acknowledged 和已设置 operation 的
-		statuses := []string{"acknowledged"}
+		// resolved 包含人工处理和系统自动解除
+		statuses := []string{"resolved", "auto_resolved"}
 		filters.AlarmStatuses = statuses
-		// 注意：resolved 实际上是通过 operation 不为 NULL 来判断的
-		// 这里先使用 acknowledged，后续可以根据实际需求调整
+	} else if req.Status == "expired" {
+		status := "expired"
+		filters.AlarmStatus = &status
 	}
 
 	// 时间范围过滤
@@ -686,11 +691,11 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 	if req.CurrentUserRole == "" {
 		return nil, fmt.Errorf("current_user_role is required")
 	}
-	if req.AlarmStatus != "acknowledged" && req.AlarmStatus != "resolved" {
-		return nil, fmt.Errorf("invalid alarm_status: %s (must be 'acknowledged' or 'resolved')", req.AlarmStatus)
+	if req.AlarmStatus != "acked" && req.AlarmStatus != "resolved" {
+		return nil, fmt.Errorf("invalid alarm_status: %s (must be 'acked' or 'resolved')", req.AlarmStatus)
 	}
-	if req.AlarmStatus == "resolved" && req.HandleType == "" {
-		return nil, fmt.Errorf("handle_type is required when alarm_status is 'resolved'")
+	if req.HandleType == "" {
+		return nil, fmt.Errorf("handle_type is required")
 	}
 
 	// 查询报警事件
@@ -710,58 +715,46 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 		return nil, fmt.Errorf("permission denied: %w", err)
 	}
 
-	// 状态转换验证
-	if req.AlarmStatus == "acknowledged" {
-		// 确认报警：只能从 active 状态转换
-		if event.AlarmStatus != "active" {
-			return nil, fmt.Errorf("can only acknowledge active alarms, current status: %s", event.AlarmStatus)
-		}
-		// 调用 Repository
-		err = s.alarmEventsRepo.AcknowledgeAlarmEvent(ctx, req.TenantID, req.EventID, req.CurrentUserID)
-		if err != nil {
-			s.logger.Error("Failed to acknowledge alarm event",
-				zap.String("tenant_id", req.TenantID),
-				zap.String("event_id", req.EventID),
-				zap.String("handler_id", req.CurrentUserID),
-				zap.Error(err),
-			)
-			return nil, fmt.Errorf("failed to acknowledge alarm event: %w", err)
-		}
-	} else if req.AlarmStatus == "resolved" {
-		// 解决报警：可以从 active 或 acknowledged 状态转换
-		if event.AlarmStatus != "active" && event.AlarmStatus != "acknowledged" {
-			return nil, fmt.Errorf("can only resolve active or acknowledged alarms, current status: %s", event.AlarmStatus)
-		}
-
-		// 映射 handle_type 到 operation
-		operation := mapHandleTypeToOperation(req.HandleType)
-		if operation == "" {
-			return nil, fmt.Errorf("invalid handle_type: %s", req.HandleType)
-		}
-
-		// 更新状态为 resolved（通过设置 operation）
-		var notes *string
-		if req.Remarks != "" {
-			notes = &req.Remarks
-		}
-
-		// 先更新 operation
-		err = s.alarmEventsRepo.UpdateAlarmEventOperation(ctx, req.TenantID, req.EventID, operation, req.CurrentUserID, notes)
-		if err != nil {
-			s.logger.Error("Failed to update alarm event operation",
-				zap.String("tenant_id", req.TenantID),
-				zap.String("event_id", req.EventID),
-				zap.String("operation", operation),
-				zap.String("handler_id", req.CurrentUserID),
-				zap.Error(err),
-			)
-			return nil, fmt.Errorf("failed to update alarm event operation: %w", err)
-		}
-
-		// 更新状态为 resolved（如果 operation 已设置，状态可以保持 acknowledged 或设置为 resolved）
-		// 注意：根据业务规则，resolved 状态可能不需要单独设置，只需要设置 operation
-		// 这里先不更新状态，保持 acknowledged
+	// 查 cardID（后续事务需要）
+	cardID, err := s.getCardIDByDeviceID(ctx, req.TenantID, event.DeviceID)
+	if err != nil {
+		s.logger.Warn("Failed to get card ID for alarm event, will publish with empty card_id",
+			zap.String("device_id", event.DeviceID),
+			zap.String("event_id", req.EventID),
+			zap.Error(err),
+		)
+		cardID = ""
 	}
+
+	// 原子操作：更新 alarm_events + cards（单事务，owl-common 内部自动查找 cardID）
+	if event.AlarmStatus != "active" && event.AlarmStatus != "acked" {
+		return nil, fmt.Errorf("can only handle active or acked alarms, current status: %s", event.AlarmStatus)
+	}
+	operation := mapHandleTypeToOperation(req.HandleType)
+	if operation == "" {
+		return nil, fmt.Errorf("invalid handle_type: %s", req.HandleType)
+	}
+	var notes *string
+	if req.Remarks != "" {
+		notes = &req.Remarks
+	}
+	cardState, err := commoncard.UpdateAlarmAndUpdateCard(ctx, s.db, cardID, req.TenantID, req.EventID, commoncard.AlarmUpdateParams{
+		AlarmStatus: req.AlarmStatus,
+		Handler:     req.CurrentUserID,
+		Operation:   operation,
+		Notes:       notes,
+	})
+	if err != nil {
+		s.logger.Error("Failed to handle alarm event",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("event_id", req.EventID),
+			zap.String("alarm_status", req.AlarmStatus),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to handle alarm event: %w", err)
+	}
+
+	handTime := cardState.HandTime
 
 	s.logger.Info("Alarm event handled",
 		zap.String("tenant_id", req.TenantID),
@@ -770,40 +763,15 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 		zap.String("handler_id", req.CurrentUserID),
 	)
 
-	// 更新相关卡片的报警计数（因为报警状态已改变）
-	cardID, err := s.getCardIDByDeviceID(ctx, req.TenantID, event.DeviceID)
-	if err != nil {
-		s.logger.Warn("Failed to get card ID for alarm event, will publish with empty card_id",
-			zap.String("device_id", event.DeviceID),
-			zap.String("event_id", req.EventID),
-			zap.Error(err),
-		)
-		// 继续处理，cardID 为空
-		cardID = ""
-	} else if cardID != "" {
-		if err := s.updateCardAlarmCounts(ctx, req.TenantID, cardID); err != nil {
-			s.logger.Warn("Failed to update card alarm counts after handling alarm",
-				zap.String("card_id", cardID),
-				zap.String("event_id", req.EventID),
-				zap.Error(err),
-			)
-			// 不返回错误，报警处理已成功
-		} else {
-			s.logger.Debug("Updated card alarm counts after handling alarm",
-				zap.String("card_id", cardID),
-				zap.String("event_id", req.EventID),
-			)
-		}
-	}
-
 	// 构建响应：包含前端和cardagg都需要的信息
 	response := &HandleAlarmEventResponse{
 		Success:        true,
+		EventID:        req.EventID,
 		CardID:         cardID,
 		DeviceID:       event.DeviceID,
 		AlarmLevel:     event.AlarmLevel,
-		AlarmType:      event.EventType, // 使用 EventType 作为 AlarmType
-		AlarmTimestamp: event.TriggeredAt.Unix(),
+		AlarmType:      event.EventType,
+		AlarmTimestamp: handTime.Unix(),
 	}
 
 	// 异步发布 alarmProcess 消息到 config:alarmProcess:stream（供cardagg消费）
@@ -818,8 +786,9 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 			event.DeviceID,
 			event.AlarmLevel,
 			event.EventType,
-			rediscommon.AlarmProcessActionAck, // 使用常量：ack（用户已确认报警）
-			event.TriggeredAt.Unix(),
+			rediscommon.AlarmProcessActionAck,
+			req.EventID,
+			handTime.Unix(),
 		); err != nil {
 			s.logger.Warn("Failed to publish alarm process message",
 				zap.String("event_id", req.EventID),
@@ -907,97 +876,208 @@ func (s *alarmEventService) convertAlarmEventToDTO(ctx context.Context, tenantID
 }
 
 // enrichAlarmEventDTO 丰富 AlarmEventDTO 的关联数据
+// 优先从 metadata.snapshot 回填，缺失字段再 live 查询
 func (s *alarmEventService) enrichAlarmEventDTO(ctx context.Context, tenantID string, event *domain.AlarmEvent, dto *AlarmEventDTO) error {
-	// 查询设备信息
-	device, err := s.devicesRepo.GetDevice(ctx, tenantID, event.DeviceID)
-	if err == nil {
-		if device.DeviceName != "" {
-			dto.DeviceName = &device.DeviceName
+	// ── 1. snapshot 优先回填所有关联字段 ──
+	snapshotHasResident := s.enrichFromSnapshot(dto)
+
+	// ── 2. live 补全 snapshot 中没有的字段 ──
+	var device *domain.Device
+	if dto.DeviceName == nil {
+		d, err := s.devicesRepo.GetDevice(ctx, tenantID, event.DeviceID)
+		if err == nil {
+			device = d
+			if d.DeviceName != "" {
+				dto.DeviceName = &d.DeviceName
+			}
 		}
-	} else {
-		// 如果查询设备失败，继续处理其他关联数据
-		device = nil
 	}
 
-	// 查询卡片信息（通过 device_id）
-	cardID, err := s.getCardIDByDeviceID(ctx, tenantID, event.DeviceID)
-	if err == nil && cardID != "" {
-		dto.CardID = &cardID
+	if dto.CardID == nil {
+		if cardID, err := s.getCardIDByDeviceID(ctx, tenantID, event.DeviceID); err == nil && cardID != "" {
+			dto.CardID = &cardID
+		}
 	}
 
-	// 查询地址信息（通过 device → bed/room → unit）
-	if device != nil {
-		var unitID string
-		if device.BoundBedID.Valid {
-			// 通过 bed 查询 unit
-			bedID := device.BoundBedID.String
-			unitID, err = s.getUnitIDByBedID(ctx, tenantID, bedID)
-		} else if device.BoundRoomID.Valid {
-			// 通过 room 查询 unit
-			roomID := device.BoundRoomID.String
-			unitID, err = s.getUnitIDByRoomID(ctx, tenantID, roomID)
+	// 地址链缺失时 live 查询
+	if dto.UnitID == nil {
+		if device == nil {
+			device, _ = s.devicesRepo.GetDevice(ctx, tenantID, event.DeviceID)
 		}
-
-		if err == nil && unitID != "" {
-			dto.UnitID = &unitID
-			unit, err := s.unitsRepo.GetUnit(ctx, tenantID, unitID)
-			if err == nil {
-				if unit.UnitName != "" {
-					dto.UnitName = &unit.UnitName
-				}
-				// 设置 branch_id 和 branch_name
-				if unit.BranchID.Valid && unit.BranchID.String != "" {
-					dto.BranchID = &unit.BranchID.String
-					// 查询 branch_name
-					if unit.BranchName.Valid && unit.BranchName.String != "" {
+		if device != nil {
+			var unitID string
+			var err error
+			if device.BoundBedID.Valid {
+				unitID, err = s.getUnitIDByBedID(ctx, tenantID, device.BoundBedID.String)
+			} else if device.BoundRoomID.Valid {
+				unitID, err = s.getUnitIDByRoomID(ctx, tenantID, device.BoundRoomID.String)
+			}
+			if err == nil && unitID != "" {
+				dto.UnitID = &unitID
+				if unit, err := s.unitsRepo.GetUnit(ctx, tenantID, unitID); err == nil {
+					if dto.UnitName == nil && unit.UnitName != "" {
+						dto.UnitName = &unit.UnitName
+					}
+					if dto.BranchID == nil && unit.BranchID.Valid && unit.BranchID.String != "" {
+						dto.BranchID = &unit.BranchID.String
+					}
+					if dto.BranchName == nil && unit.BranchName.Valid && unit.BranchName.String != "" {
 						dto.BranchName = &unit.BranchName.String
 					}
-				}
-				// 设置 building_name（从 unit.BuildingName 获取）
-				if unit.BuildingName.Valid && unit.BuildingName.String != "" {
-					dto.BuildingName = &unit.BuildingName.String
-					// 注意：building_id 需要从 buildings 表查询，暂时不设置
-				}
-				// 设置 floor（从 string "1F" 转换为 number 1）
-				if unit.Floor.Valid && unit.Floor.String != "" {
-					// 提取数字部分（如 "1F" -> 1, "2F" -> 2）
-					floorStr := unit.Floor.String
-					// 移除 "F" 后缀并提取数字
-					floorNum := 0
-					if len(floorStr) > 0 {
-						// 尝试解析数字（支持 "1F", "1", "2F" 等格式）
-						var n int
-						if _, err := fmt.Sscanf(floorStr, "%d", &n); err == nil {
-							floorNum = n
-						} else if len(floorStr) > 1 && floorStr[len(floorStr)-1] == 'F' {
-							// 处理 "1F" 格式
-							if _, err := fmt.Sscanf(floorStr[:len(floorStr)-1], "%d", &n); err == nil {
-								floorNum = n
-							}
-						}
+					if dto.BuildingName == nil && unit.BuildingName.Valid && unit.BuildingName.String != "" {
+						dto.BuildingName = &unit.BuildingName.String
 					}
-					if floorNum > 0 {
-						dto.Floor = &floorNum
+					if dto.Floor == nil && unit.Floor.Valid && unit.Floor.String != "" {
+						var n int
+						if _, err := fmt.Sscanf(unit.Floor.String, "%d", &n); err == nil && n > 0 {
+							dto.Floor = &n
+						}
 					}
 				}
 			}
-		}
-
-		// 设置 room_id 和 bed_id
-		if device.BoundRoomID.Valid {
-			roomID := device.BoundRoomID.String
-			dto.RoomID = &roomID
-		}
-		if device.BoundBedID.Valid {
-			bedID := device.BoundBedID.String
-			dto.BedID = &bedID
+			if dto.RoomID == nil && device.BoundRoomID.Valid {
+				rid := device.BoundRoomID.String
+				dto.RoomID = &rid
+			}
+			if dto.BedID == nil && device.BoundBedID.Valid {
+				bid := device.BoundBedID.String
+				dto.BedID = &bid
+			}
 		}
 	}
 
-	// 查询住户信息（通过 device → bed → resident）
-	// 注意：需要扩展 ResidentsRepository 或直接查询
+	// ── 3. resident：snapshot 已有则跳过，否则 fallback live 查询 ──
+	if !snapshotHasResident {
+		if device == nil {
+			device, _ = s.devicesRepo.GetDevice(ctx, tenantID, event.DeviceID)
+		}
+		s.enrichResidentInfo(ctx, tenantID, device, dto)
+	}
 
 	return nil
+}
+
+// enrichFromSnapshot 优先从 metadata.snapshot 回填 DTO 所有关联字段
+// 返回 true 表示 snapshot 中有 resident 信息，无需 fallback
+func (s *alarmEventService) enrichFromSnapshot(dto *AlarmEventDTO) bool {
+	if dto.Metadata == nil {
+		return false
+	}
+	snapRaw, ok := dto.Metadata["snapshot"]
+	if !ok {
+		return false
+	}
+	snap, ok := snapRaw.(map[string]interface{})
+	if !ok {
+		return false
+	}
+
+	setIfNil := func(dst **string, key string) {
+		if *dst == nil {
+			if v, _ := snap[key].(string); v != "" {
+				*dst = &v
+			}
+		}
+	}
+	setIfNil(&dto.DeviceName, "device_name")
+	setIfNil(&dto.CardID, "card_id")
+	setIfNil(&dto.BranchID, "branch_id")
+	setIfNil(&dto.BranchName, "branch_name")
+	setIfNil(&dto.BuildingName, "building_name")
+	setIfNil(&dto.UnitID, "unit_id")
+	setIfNil(&dto.UnitName, "unit_name")
+	setIfNil(&dto.RoomID, "room_id")
+	setIfNil(&dto.RoomName, "room_name")
+	setIfNil(&dto.BedID, "bed_id")
+	setIfNil(&dto.BedName, "bed_name")
+	setIfNil(&dto.ResidentID, "resident_id")
+	setIfNil(&dto.ResidentName, "resident_name")
+
+	// floor: string → int
+	if dto.Floor == nil {
+		if floorStr, _ := snap["floor"].(string); floorStr != "" {
+			var n int
+			if _, err := fmt.Sscanf(floorStr, "%d", &n); err == nil && n > 0 {
+				dto.Floor = &n
+			}
+		}
+	}
+
+	// snapshot 中有 resident 则不需要 fallback
+	if rid, _ := snap["resident_id"].(string); rid != "" {
+		return true
+	}
+	return false
+}
+
+// enrichResidentInfo 根据 metadata.snapshot 或当前设备绑定关系查找住户
+// 优先级：metadata.snapshot > 当前绑定 fallback
+func (s *alarmEventService) enrichResidentInfo(ctx context.Context, tenantID string, device *domain.Device, dto *AlarmEventDTO) {
+	// ── 优先从 snapshot 读取全部关联字段 ──
+	if s.enrichFromSnapshot(dto) {
+		return
+	}
+
+	// ── Fallback：按当前绑定关系查找 resident ──
+	if s.db == nil || device == nil {
+		return
+	}
+
+	var residentID, nickname string
+
+	// Case 1: device 绑定了 bed → 查 bed 上的 resident
+	if device.BoundBedID.Valid && device.BoundBedID.String != "" {
+		err := s.db.QueryRowContext(ctx, `
+			SELECT r.resident_id::text, r.nickname
+			FROM residents r
+			WHERE r.tenant_id = $1 AND r.bed_id = $2
+			ORDER BY r.created_at ASC LIMIT 1
+		`, tenantID, device.BoundBedID.String).Scan(&residentID, &nickname)
+		if err == nil {
+			dto.ResidentID = &residentID
+			dto.ResidentName = &nickname
+			return
+		}
+	}
+
+	// Case 2: 无 bed 绑定 → 通过 unit 查找
+	unitID := ""
+	if dto.UnitID != nil {
+		unitID = *dto.UnitID
+	}
+	if unitID == "" {
+		return
+	}
+
+	var unitType string
+	var isPublic, isSharedUnit bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT unit_type, is_public, is_shared_unit FROM units
+		WHERE tenant_id = $1 AND unit_id = $2
+	`, tenantID, unitID).Scan(&unitType, &isPublic, &isSharedUnit)
+	if err != nil {
+		return
+	}
+
+	canResolve := false
+	if strings.EqualFold(unitType, "home") {
+		canResolve = true
+	} else if strings.EqualFold(unitType, "facility") && !isPublic && !isSharedUnit {
+		canResolve = true
+	}
+	if !canResolve {
+		return
+	}
+
+	err = s.db.QueryRowContext(ctx, `
+		SELECT r.resident_id::text, r.nickname FROM residents r
+		WHERE r.tenant_id = $1 AND r.unit_id = $2
+		ORDER BY r.created_at ASC LIMIT 1
+	`, tenantID, unitID).Scan(&residentID, &nickname)
+	if err == nil {
+		dto.ResidentID = &residentID
+		dto.ResidentName = &nickname
+	}
 }
 
 // checkHandlePermission 检查处理报警的权限
@@ -1025,15 +1105,16 @@ func (s *alarmEventService) checkHandlePermission(ctx context.Context, tenantID,
 		return nil
 	}
 
-	// 3. Facility 类型卡片：只有 Nurse 或 Caregiver 可以处理
-	if unitType == "Facility" {
-		if userRole != "Nurse" && userRole != "Caregiver" {
-			return fmt.Errorf("only Nurse or Caregiver can handle alarms for Facility cards")
+	// 3. Facility 类型卡片：只有 Admin/Manager/Nurse/Caregiver 可以处理
+	if strings.EqualFold(unitType, "facility") {
+		allowed := map[string]bool{"Admin": true, "Manager": true, "Nurse": true, "Caregiver": true}
+		if !allowed[userRole] {
+			return fmt.Errorf("permission denied: only staff with Admin/Manager/Nurse/Caregiver role can handle alarms for Facility cards")
 		}
 	}
 
 	// 4. Home 类型卡片：检查 assigned_only 和 branch_only 权限
-	if unitType == "Home" {
+	if strings.EqualFold(unitType, "home") {
 		// 通过 device_id 获取关联的住户信息
 		residentInfo, err := s.getResidentByDeviceID(ctx, tenantID, deviceID)
 		if err != nil {
@@ -1768,58 +1849,8 @@ func (s *alarmEventService) getUnitIDsByResidentIDs(ctx context.Context, tenantI
 	return unitIDs, nil
 }
 
-// getCardIDByDeviceID 通过 device_id 查询 card_id（从Redis缓存获取）
+// getCardIDByDeviceID 通过 device_id 查询 card_id（直接查 DB）
 func (s *alarmEventService) getCardIDByDeviceID(ctx context.Context, tenantID, deviceID string) (string, error) {
-	// 扫描所有静态卡片缓存 vital-focus:card:*:static
-	const staticKeyPrefix = "vital-focus:card:"
-	const staticKeySuffix = ":static"
-
-	// 使用redis scan扫描key
-	var keys []string
-	iter := s.redisClient.Scan(ctx, 0, staticKeyPrefix+"*"+staticKeySuffix, 0).Iterator()
-	for iter.Next(ctx) {
-		keys = append(keys, iter.Val())
-	}
-	if err := iter.Err(); err != nil {
-		s.logger.Warn("scan redis keys failed", zap.Error(err))
-		// fallback to DB查询
-		return s.getCardIDByDeviceIDFromDB(ctx, tenantID, deviceID)
-	}
-
-	// 遍历所有卡片缓存查找device_id
-	for _, key := range keys {
-		raw, err := s.redisClient.Get(ctx, key).Result()
-		if err != nil {
-			if err == redis.Nil {
-				continue
-			}
-			continue
-		}
-
-		var card commoncard.VitalFocusCardInfo
-		if err := json.Unmarshal([]byte(raw), &card); err != nil {
-			continue
-		}
-
-		// 检查tenant
-		if card.TenantID != tenantID {
-			continue
-		}
-
-		// 遍历devices查找匹配的deviceID
-		for _, dev := range card.Devices {
-			if dev.DeviceID == deviceID {
-				return card.CardID, nil
-			}
-		}
-	}
-
-	// 缓存miss，fallback to DB
-	return s.getCardIDByDeviceIDFromDB(ctx, tenantID, deviceID)
-}
-
-// getCardIDByDeviceIDFromDB 从数据库查询 card_id（fallback）
-func (s *alarmEventService) getCardIDByDeviceIDFromDB(ctx context.Context, tenantID, deviceID string) (string, error) {
 	query := `
 		SELECT card_id::text
 		FROM cards
@@ -1827,14 +1858,12 @@ func (s *alarmEventService) getCardIDByDeviceIDFromDB(ctx context.Context, tenan
 		  AND devices @> $2::jsonb
 		LIMIT 1
 	`
-
 	deviceJSON := fmt.Sprintf(`[{"device_id":"%s"}]`, deviceID)
 	var cardID string
 	err := s.db.QueryRowContext(ctx, query, tenantID, deviceJSON).Scan(&cardID)
 	if err != nil {
 		return "", fmt.Errorf("failed to get card by device_id: %w", err)
 	}
-
 	return cardID, nil
 }
 
@@ -1908,7 +1937,7 @@ func (s *alarmEventService) getUnitIDByRoomID(ctx context.Context, tenantID, roo
 func mapHandleTypeToOperation(handleType string) string {
 	switch handleType {
 	case "verified":
-		return "verified_and_processed"
+		return "verified"
 	case "false_alarm":
 		return "false_alarm"
 	case "test":
@@ -1921,7 +1950,7 @@ func mapHandleTypeToOperation(handleType string) string {
 // mapOperationToHandleType 映射 operation 到 handle_type
 func mapOperationToHandleType(operation string) string {
 	switch operation {
-	case "verified_and_processed":
+	case "verified", "verified_and_processed":
 		return "verified"
 	case "false_alarm":
 		return "false_alarm"
@@ -1930,122 +1959,4 @@ func mapOperationToHandleType(operation string) string {
 	default:
 		return ""
 	}
-}
-
-// updateCardAlarmCounts 更新卡片的未处理报警计数
-func (s *alarmEventService) updateCardAlarmCounts(ctx context.Context, tenantID, cardID string) error {
-	if s.db == nil {
-		return fmt.Errorf("database connection not available")
-	}
-
-	// 1. 查询卡片关联的所有 device_id（从 cards.devices JSONB 中提取）
-	query := `
-		SELECT devices
-		FROM cards
-		WHERE tenant_id = $1 AND card_id = $2
-	`
-
-	var devicesJSON []byte
-	err := s.db.QueryRowContext(ctx, query, tenantID, cardID).Scan(&devicesJSON)
-	if err != nil {
-		return fmt.Errorf("failed to get card devices: %w", err)
-	}
-
-	// 2. 解析 devices JSONB，提取 device_id 列表
-	var devices []map[string]interface{}
-	if err := json.Unmarshal(devicesJSON, &devices); err != nil {
-		return fmt.Errorf("failed to unmarshal devices JSON: %w", err)
-	}
-
-	if len(devices) == 0 {
-		// 没有设备，将所有计数设为 0
-		return s.updateCardAlarmCountsToZero(ctx, tenantID, cardID)
-	}
-
-	// 提取 device_id 列表
-	deviceIDs := make([]string, 0, len(devices))
-	for _, device := range devices {
-		if deviceID, ok := device["device_id"].(string); ok && deviceID != "" {
-			deviceIDs = append(deviceIDs, deviceID)
-		}
-	}
-
-	if len(deviceIDs) == 0 {
-		// 没有有效的 device_id，将所有计数设为 0
-		return s.updateCardAlarmCountsToZero(ctx, tenantID, cardID)
-	}
-
-	// 3. 统计这些设备的未处理报警（alarm_status = 'active'）
-	// 按 alarm_level 分组统计（映射到 0-4）
-	// 构建 IN 查询的占位符
-	placeholders := make([]string, len(deviceIDs))
-	args := make([]interface{}, len(deviceIDs)+1)
-	args[0] = tenantID
-	for i, deviceID := range deviceIDs {
-		placeholders[i] = fmt.Sprintf("$%d", i+2)
-		args[i+1] = deviceID
-	}
-
-	countQuery := fmt.Sprintf(`
-		SELECT 
-			COUNT(*) FILTER (WHERE alarm_level IN ('0', 'EMERG')) as count_0,
-			COUNT(*) FILTER (WHERE alarm_level IN ('1', 'ALERT')) as count_1,
-			COUNT(*) FILTER (WHERE alarm_level IN ('2', 'CRIT')) as count_2,
-			COUNT(*) FILTER (WHERE alarm_level IN ('3', 'ERR')) as count_3,
-			COUNT(*) FILTER (WHERE alarm_level IN ('4', 'WARNING')) as count_4
-		FROM alarm_events
-		WHERE tenant_id = $1
-		  AND device_id::text IN (%s)
-		  AND alarm_status = 'active'
-		  AND alarm_level IN ('0', '1', '2', '3', '4', 'EMERG', 'ALERT', 'CRIT', 'ERR', 'WARNING')
-		  AND (metadata->>'deleted_at' IS NULL)
-	`, strings.Join(placeholders, ", "))
-
-	var count0, count1, count2, count3, count4 int
-	err = s.db.QueryRowContext(ctx, countQuery, args...).Scan(
-		&count0, &count1, &count2, &count3, &count4,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to count alarm events: %w", err)
-	}
-
-	// 4. 更新 cards 表的 unhandled_alarm_0 到 unhandled_alarm_4 字段
-	updateQuery := `
-		UPDATE cards
-		SET 
-			unhandled_alarm_0 = $3,
-			unhandled_alarm_1 = $4,
-			unhandled_alarm_2 = $5,
-			unhandled_alarm_3 = $6,
-			unhandled_alarm_4 = $7
-		WHERE tenant_id = $1 AND card_id = $2
-	`
-
-	_, err = s.db.ExecContext(ctx, updateQuery, tenantID, cardID, count0, count1, count2, count3, count4)
-	if err != nil {
-		return fmt.Errorf("failed to update card alarm counts: %w", err)
-	}
-
-	return nil
-}
-
-// updateCardAlarmCountsToZero 将卡片的报警计数全部设为 0
-func (s *alarmEventService) updateCardAlarmCountsToZero(ctx context.Context, tenantID, cardID string) error {
-	updateQuery := `
-		UPDATE cards
-		SET 
-			unhandled_alarm_0 = 0,
-			unhandled_alarm_1 = 0,
-			unhandled_alarm_2 = 0,
-			unhandled_alarm_3 = 0,
-			unhandled_alarm_4 = 0
-		WHERE tenant_id = $1 AND card_id = $2
-	`
-
-	_, err := s.db.ExecContext(ctx, updateQuery, tenantID, cardID)
-	if err != nil {
-		return fmt.Errorf("failed to update card alarm counts to zero: %w", err)
-	}
-
-	return nil
 }

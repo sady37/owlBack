@@ -41,6 +41,16 @@ func (p *StreamPublisher) SetCardMappingService(cardMappingSvc CardMappingServic
 	p.cardMappingSvc = cardMappingSvc
 }
 
+// GetCardID 获取设备的 cardID
+func (p *StreamPublisher) GetCardID(ctx context.Context, deviceUID string) string {
+	if p.cardMappingSvc != nil && deviceUID != "" {
+		if cdi, err := p.cardMappingSvc.GetCardIDByDeviceUID(ctx, deviceUID); err == nil && cdi != nil {
+			return cdi.CardID
+		}
+	}
+	return ""
+}
+
 // SetLogger 设置 logger
 func (p *StreamPublisher) SetLogger(logger *zap.Logger) {
 	p.logger = logger

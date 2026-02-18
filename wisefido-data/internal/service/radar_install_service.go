@@ -236,8 +236,8 @@ func (s *RadarInstall) UpdateConfig(ctx context.Context, tenantID, deviceID stri
 		return 0, err
 	}
 
-	// 2. 转换配置格式（v1.0 格式 → Radar 设备属性格式）
-	properties := encode.EncodeV1ConfigToDeviceProps(config)
+	// 2. 前端已完成格式转换（cm→dm、boundary→rectangle 等），此处透传
+	properties := config
 	encodeLogFields := []zap.Field{zap.String("device_id", deviceID), zap.Int("config_keys", len(config)), zap.Int("properties_keys", len(properties))}
 	if v := properties["declare_area"]; v != nil {
 		if s, ok := v.(string); ok {

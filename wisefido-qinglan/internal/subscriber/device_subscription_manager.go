@@ -75,6 +75,7 @@ type DeviceSubscriptionManager struct {
 	monitorMaxAge            time.Duration // monitor订阅最大时长（1小时）
 	defaultContent           int           // 默认订阅内容：0-同时订阅，1-轨迹，2-呼吸心率
 	defaultDuration          int           // 默认订阅时长（秒），默认 3600
+	prevHealth               map[string]DeviceHealthStatus // health_check 前一次状态，用于检测 1→0 恢复
 	stopChan                 chan struct{}
 	wg                       sync.WaitGroup
 	radarService             RadarService // 雷达服务，用于健康检查时读取设备属性
@@ -106,6 +107,7 @@ func NewDeviceSubscriptionManager(
 		monitorMaxAge:            1 * time.Hour,
 		defaultContent:           0,    // 0-同时订阅（轨迹和呼吸心率）
 		defaultDuration:          3600, // 默认1小时
+		prevHealth:               make(map[string]DeviceHealthStatus),
 		stopChan:                 make(chan struct{}),
 	}
 }
@@ -422,8 +424,10 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 
 	// auth 成功后，立即发布 online event 到 deviceStatus stream
 	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
-		constDevice.StatusFieldOnline: 1,
+		constDevice.StatusFieldOffline: 0,
 	})
+	// 上线 → OfflineAlarm 恢复
+	go m.publishDeviceAlarmAuto(context.Background(), tenantID, deviceID, deviceUID, "OfflineAlarm", "0")
 	// 记录订阅状态
 	m.logger.Info("Device status changed",
 		zap.String("device_uid", deviceUID),
@@ -475,11 +479,17 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 	// 检查是否已在订阅管理器中存在记录
 	sub, exists := m.subscriptionsByUID[deviceUID]
 	if exists {
-		// 已存在订阅记录，仅更新信息
+		// 已存在订阅记录：更新信息，重置 LastSeen（设备连上 MQTT 发第一条消息时自动触发 monitor 订阅）
 		sub.mu.Lock()
 		oldDeviceID := sub.DeviceID
 		sub.DeviceID = deviceID
-		sub.LastSeen = time.Now()
+		sub.Status = "online"
+		sub.MonitorSubTime = time.Now()
+		sub.LastSeen = time.Time{}
+		sub.LastMonitorTime = time.Time{}
+		sub.LastStatTime = time.Time{}
+		sub.LastEventTime = time.Time{}
+		sub.LastAlarmTime = time.Time{}
 		sub.mu.Unlock()
 		// 更新 subscriptionsByID（如果 deviceID 变化）
 		if deviceID != "" && deviceID != oldDeviceID {
@@ -490,11 +500,21 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 			}
 			m.mu.Unlock()
 		}
-		log.Printf("Device %s already has subscription record, updating subscription info only", deviceUID)
-		m.logger.Info("Device subscription record updated",
+		log.Printf("Device %s re-authenticated, LastSeen reset, sending monitor with retry", deviceUID)
+		m.logger.Info("Device subscription record updated, LastSeen reset",
 			zap.String("device_uid", deviceUID),
 			zap.String("device_id", deviceID),
 		)
+
+		// 重新发布 online 状态
+		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
+			constDevice.StatusFieldOffline: 0,
+		})
+		go m.publishDeviceAlarmAuto(context.Background(), sub.TenantID, deviceID, deviceUID, "OfflineAlarm", "0")
+
+		// 延迟重试发送 monitor 订阅命令
+		go m.sendMonitorWithRetry(deviceUID, deviceID)
+
 		return nil
 	}
 
@@ -579,8 +599,10 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 
 	// auth 成功后，立即发布 online event 到 deviceStatus stream
 	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
-		constDevice.StatusFieldOnline: 1,
+		constDevice.StatusFieldOffline: 0,
 	})
+	// 上线 → OfflineAlarm 恢复
+	go m.publishDeviceAlarmAuto(context.Background(), tenantID, deviceID, deviceUID, "OfflineAlarm", "0")
 	// 记录周期订阅状态
 	m.logger.Info("Device subscription created (periodic)",
 		zap.String("device_uid", deviceUID),
@@ -597,28 +619,44 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 	)
 	log.Printf("✅ Periodic subscription enabled for %s (device_id: %s, MQTT already subscribed: %v). Sending monitor command.", deviceUID, deviceID, isMQTTSubscribed)
 
-	// 发送 monitor 订阅命令（设备已经收到认证响应，应该很快会连接 MQTT）
-	// 使用 goroutine 异步发送，避免阻塞认证流程
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := m.mqttPublisher.SubscribeRealtimeData(ctx, deviceUID, m.defaultContent, m.defaultDuration); err != nil {
-			m.logger.Warn("Failed to send monitor subscription command after enabling periodic subscription",
-				zap.String("device_uid", deviceUID),
-				zap.String("device_id", deviceID),
-				zap.Error(err),
-			)
-			log.Printf("⚠️ Failed to send monitor subscription command to device %s: %v", deviceUID, err)
-		} else {
-			m.logger.Info("Sent monitor subscription command after enabling periodic subscription",
-				zap.String("device_uid", deviceUID),
-				zap.String("device_id", deviceID),
-			)
-			log.Printf("✅ Sent monitor subscription command to device %s", deviceUID)
-		}
-	}()
+	// 延迟重试发送 monitor 订阅命令：设备 auth 后需要时间连接 MQTT，立即发会丢失
+	go m.sendMonitorWithRetry(deviceUID, deviceID)
 
 	return nil
+}
+
+// sendMonitorWithRetry auth 后延迟重试发送 monitor 订阅命令
+// 设备需要时间连接 MQTT，立即发 QoS0 会丢失；在 3s、6s、12s 后重试，收到 monitor 数据则停止
+func (m *DeviceSubscriptionManager) sendMonitorWithRetry(deviceUID, deviceID string) {
+	delays := []time.Duration{3 * time.Second, 6 * time.Second, 12 * time.Second}
+	for i, delay := range delays {
+		time.Sleep(delay)
+
+		// 检查设备是否已经在发 monitor 数据（LastMonitorTime 非零 = 收到过 monitor 消息）
+		m.mu.RLock()
+		sub, exists := m.subscriptionsByUID[deviceUID]
+		m.mu.RUnlock()
+		if !exists {
+			log.Printf("⚠️ sendMonitorWithRetry: device %s no longer in subscription map, abort", deviceUID)
+			return
+		}
+		sub.mu.RLock()
+		hasMonitorData := !sub.LastMonitorTime.IsZero()
+		sub.mu.RUnlock()
+		if hasMonitorData {
+			log.Printf("✅ sendMonitorWithRetry: device %s already sending monitor data, no more retries", deviceUID)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := m.mqttPublisher.SubscribeRealtimeData(ctx, deviceUID, m.defaultContent, m.defaultDuration)
+		cancel()
+		if err != nil {
+			log.Printf("⚠️ sendMonitorWithRetry[%d]: device %s failed: %v", i, deviceUID, err)
+		} else {
+			log.Printf("✅ sendMonitorWithRetry[%d]: monitor command sent to %s (retry after %v)", i, deviceUID, delay)
+		}
+	}
 }
 
 // UpdateLastSeen 更新设备最后收到消息的时间（MQTT consumer收到消息时调用）
@@ -699,7 +737,7 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 			tenantID := sub.TenantID
 			sub.mu.RUnlock()
 			go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, deviceUID, map[string]int{
-				constDevice.StatusFieldOnline: 1,
+				constDevice.StatusFieldOffline: 0,
 			})
 		} else {
 			// 超过180秒，应该已经被取消订阅了，这里不应该发生
@@ -738,7 +776,7 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 			sub.mu.RUnlock()
 			if deviceID != "" {
 				go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, deviceUID, map[string]int{
-					constDevice.StatusFieldOnline: 1,
+					constDevice.StatusFieldOffline: 0,
 				})
 			}
 			m.logger.Info("Device subscription created (first message)",
@@ -1060,8 +1098,10 @@ func (m *DeviceSubscriptionManager) markDeviceOffline(deviceUID string, _ time.T
 
 		// 发送 offline 事件到 deviceStatus stream（offline 是状态变更）
 		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, sub.DeviceUID, map[string]int{
-			constDevice.StatusFieldOnline: 0,
+			constDevice.StatusFieldOffline: 1,
 		})
+		// 发送 OfflineAlarm 到 iot:alarm:stream
+		go m.publishDeviceAlarmAuto(context.Background(), tenantID, deviceID, sub.DeviceUID, "OfflineAlarm", "1")
 	} else {
 		sub.mu.Unlock()
 	}
@@ -1084,7 +1124,7 @@ func (m *DeviceSubscriptionManager) PublishOnlineForConnectedDevices(ctx context
 			continue
 		}
 		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, deviceUID, map[string]int{
-			constDevice.StatusFieldOnline: 1,
+			constDevice.StatusFieldOffline: 0,
 		})
 		published++
 	}

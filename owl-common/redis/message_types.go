@@ -59,7 +59,7 @@ type ConfigChangeMessage struct {
 //   - detached: 0=正常, 1=传感器脱落
 //   - device_failure: 0=正常, 1=设备故障
 //
-// 例：map[string]int{"online": 1, "signal_poor": 1} 一般有故障时才会上报，正常状态可不包含或值为 0 但online=1 状态建议始终上报以便监控设备在线率,
+// 例：map[string]int{"offline": 0, "signal_poor": 1} 统一语义 1=异常 0=正常; offline=0 建议始终上报以便监控设备在线率
 func BuildDeviceStatusMessage(deviceID, deviceType, cardID, tenantID string, timestamp int64, statuses map[string]int) IoTStreamMessage {
 	dataValue := []interface{}{
 		map[string]interface{}{
@@ -89,6 +89,15 @@ const (
 const (
 	ConfigAlarmProcess    = "config.alarmProcess"
 	ConfigAlarmProcessAck = "config.alarm.process.ack" // 已弃用，改用 ConfigAlarmProcess
+)
+
+// AlarmStatus 报警状态常量（对应 alarm_events.alarm_status）
+const (
+	AlarmStatusActive       = "active"        // 新报警，无人响应（唯一计入 unhandled 计数的状态）
+	AlarmStatusAcked        = "acked"         // 人已确认
+	AlarmStatusResolved     = "resolved"      // 人工处理完毕
+	AlarmStatusAutoResolved = "auto_resolved" // 系统自动解除（设备恢复、可疑报警条件消失等）
+	AlarmStatusExpired      = "expired"       // 超时未处理
 )
 
 // Alarm process actions 告警处理 action 类型
@@ -136,9 +145,9 @@ func BuildAlarmDeviceMessage(
 // alarmLevel: 报警级别（EMERG, ALERT, CRIT, ERR, WARNING, NOTICE 等）
 // alarmType: 报警类型（Fall, RadarAbnormalHeartRate 等）
 // alarmTimestamp: 报警触发时间戳（秒级，用于比较防止旧数据覆盖）
-// processType: 报警处理类型（acknowledged、resolved 等）
+// processType: 报警处理类型（acked、resolved、auto_resolved 等）
 func BuildAlarmProcessMessage(
-	source, tenantID, cardID, deviceID, alarmLevel, alarmType, processType string,
+	source, tenantID, cardID, deviceID, alarmLevel, alarmType, processType, eventID string,
 	alarmTimestamp int64,
 ) ConfigChangeMessage {
 	now := time.Now()
@@ -150,8 +159,9 @@ func BuildAlarmProcessMessage(
 		"device_id":       deviceID,
 		"alarm_level":     alarmLevel,
 		"alarm_type":      alarmType,
-		"alarm_timestamp": alarmTimestamp, // 报警触发时间，用于比较是否是同一个报警
+		"alarm_timestamp": alarmTimestamp, // 处理时间(hand_time)，用于staleness过滤
 		"process_type":    processType,    // 报警处理类型在 data 中
+		"event_id":        eventID,        // 报警事件ID
 	}
 
 	return ConfigChangeMessage{
