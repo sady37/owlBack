@@ -273,9 +273,14 @@ func (p *AllowedCardIDsProviderImpl) filterByBranchOnly(ctx context.Context, ten
 //    + cards 中 residents JSONB 包含 assigned resident 的 UnitCard
 // 直接返回 *CardList
 func (p *AllowedCardIDsProviderImpl) filterByAssignedOnly(ctx context.Context, tenantID, userID string) (*CardList, error) {
-	// Step1: 该 staff 负责的 resident_id[]
+	// Step1: 该 staff 负责的 resident_id[]（user_list JSONB 数组包含该 userID）
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT resident_id::text FROM resident_caregivers WHERE tenant_id = $1 AND caregiver_id = $2`,
+		`SELECT resident_id::text FROM resident_caregivers
+		 WHERE tenant_id = $1
+		   AND user_list IS NOT NULL
+		   AND EXISTS (
+		     SELECT 1 FROM jsonb_array_elements_text(user_list) elem WHERE elem = $2
+		   )`,
 		tenantID, userID,
 	)
 	if err != nil {
