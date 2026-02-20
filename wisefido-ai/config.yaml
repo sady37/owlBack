@@ -1,0 +1,39 @@
+# wisefido-ai 配置文件
+
+database:
+  host: "localhost"
+  port: 5433
+  user: "postgres"
+  password: "postgres"
+  database: "owlrd"
+  sslmode: "disable"
+
+redis:
+  addr: "localhost:6379"
+  password: "TeLunSu-36kr"
+  db: 0
+
+alarm:
+  cache:
+    realtime_key_prefix: "vital-focus:card:"
+    realtime_suffix: ":realtime"
+    alarm_key_prefix: "vital-focus:card:"
+    alarm_suffix: ":alarms"
+    alarm_ttl: 30
+    state_key_prefix: "alarm:state:"
+  poll_interval: 10
+  evaluation:
+    batch_size: 10
+  iot_stream:
+    enabled: true
+    monitor: "iot:monitor:stream"
+    stat: "iot:stat:stream"
+    event: "iot:event:stream"
+    alarm: "iot:alarm:stream"
+    consumer_group: "wisefido-alarm-events"
+    consumer_name: "alarm-consumer-1"
+    batch_size: 10
+
+logging:
+  level: "info"
+  format: "json"

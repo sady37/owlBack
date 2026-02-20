@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	constDevice "owl-common/const"
+	"owl-common/radar"
 	"wisefido-qinglan/internal/config"
 	"wisefido-qinglan/internal/consumer"
 	"wisefido-qinglan/internal/domain"
@@ -424,7 +424,7 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 
 	// auth 成功后，立即发布 online event 到 deviceStatus stream
 	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
-		constDevice.StatusFieldOffline: 0,
+		radar.StatusFieldOffline: 0,
 	})
 	// 上线 → OfflineAlarm 恢复
 	go m.publishDeviceAlarmAuto(context.Background(), tenantID, deviceID, deviceUID, "OfflineAlarm", "0")
@@ -508,7 +508,7 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 
 		// 重新发布 online 状态
 		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
-			constDevice.StatusFieldOffline: 0,
+			radar.StatusFieldOffline: 0,
 		})
 		go m.publishDeviceAlarmAuto(context.Background(), sub.TenantID, deviceID, deviceUID, "OfflineAlarm", "0")
 
@@ -599,7 +599,7 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 
 	// auth 成功后，立即发布 online event 到 deviceStatus stream
 	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
-		constDevice.StatusFieldOffline: 0,
+		radar.StatusFieldOffline: 0,
 	})
 	// 上线 → OfflineAlarm 恢复
 	go m.publishDeviceAlarmAuto(context.Background(), tenantID, deviceID, deviceUID, "OfflineAlarm", "0")
@@ -737,7 +737,7 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 			tenantID := sub.TenantID
 			sub.mu.RUnlock()
 			go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, deviceUID, map[string]int{
-				constDevice.StatusFieldOffline: 0,
+				radar.StatusFieldOffline: 0,
 			})
 		} else {
 			// 超过180秒，应该已经被取消订阅了，这里不应该发生
@@ -776,7 +776,7 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 			sub.mu.RUnlock()
 			if deviceID != "" {
 				go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, deviceUID, map[string]int{
-					constDevice.StatusFieldOffline: 0,
+					radar.StatusFieldOffline: 0,
 				})
 			}
 			m.logger.Info("Device subscription created (first message)",
@@ -1098,7 +1098,7 @@ func (m *DeviceSubscriptionManager) markDeviceOffline(deviceUID string, _ time.T
 
 		// 发送 offline 事件到 deviceStatus stream（offline 是状态变更）
 		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, sub.DeviceUID, map[string]int{
-			constDevice.StatusFieldOffline: 1,
+			radar.StatusFieldOffline: 1,
 		})
 		// 发送 OfflineAlarm 到 iot:alarm:stream
 		go m.publishDeviceAlarmAuto(context.Background(), tenantID, deviceID, sub.DeviceUID, "OfflineAlarm", "1")
@@ -1124,7 +1124,7 @@ func (m *DeviceSubscriptionManager) PublishOnlineForConnectedDevices(ctx context
 			continue
 		}
 		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, deviceUID, map[string]int{
-			constDevice.StatusFieldOffline: 0,
+			radar.StatusFieldOffline: 0,
 		})
 		published++
 	}

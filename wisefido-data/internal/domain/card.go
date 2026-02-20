@@ -40,13 +40,13 @@ type Card struct {
 	UnhandledAlarm4 int `db:"unhandled_alarm_4"` // INTEGER, NOT NULL, DEFAULT 0
 
 	// 当前弹出报警（应用层维护）
-	PopAlarmLevel       string       `db:"pop_alarm_level"`        // VARCHAR(20), 'EMERG','ALERT' etc
-	PopAlarmType        string       `db:"pop_alarm_type"`         // VARCHAR(50), 'Fall','AbnormalHeartRate' etc
+	PopAlarmLevel   string         `db:"pop_alarm_level"`    // VARCHAR(20), 'EMERG','ALERT' etc
+	PopAlarmType    string         `db:"pop_alarm_type"`     // VARCHAR(50), 'Fall','HeartRateAlert' etc
 	PopAlarmEventId sql.NullString `db:"pop_alarm_event_id"` // UUID, nullable
 
 	// UI 告警阈值
-	IconAlarmLevel int `db:"icon_alarm_level"` // INTEGER, NOT NULL, DEFAULT 3
-	PopAlarmEmerge int `db:"pop_alarm_emerge"` // INTEGER, NOT NULL, DEFAULT 0
+	IconAlarmLevel   int `db:"icon_alarm_level"`   // INTEGER, NOT NULL, DEFAULT 2 (<=2红色: EMERG/ALERT/CRITICAL)
+	PopAlarm int `db:"pop_alarm"` // INTEGER, NOT NULL, DEFAULT 2 (<=2弹出: EMERG/ALERT/CRITICAL)
 }
 
 // CardWithUnitInfo 卡片及其关联的 Unit 信息（用于 Repository 层返回）
@@ -78,13 +78,13 @@ type CardOverviewItem struct {
 	Residents []CardResident `json:"residents"`
 
 	// 告警信息
-	UnhandledAlarm0 int `json:"unhandled_alarm_0"`
-	UnhandledAlarm1 int `json:"unhandled_alarm_1"`
-	UnhandledAlarm2 int `json:"unhandled_alarm_2"`
-	UnhandledAlarm3 int `json:"unhandled_alarm_3"`
-	UnhandledAlarm4 int `json:"unhandled_alarm_4"`
-	IconAlarmLevel  int `json:"icon_alarm_level"`
-	PopAlarmEmerge  int `json:"pop_alarm_emerge"`
+	UnhandledAlarm0  int `json:"unhandled_alarm_0"`
+	UnhandledAlarm1  int `json:"unhandled_alarm_1"`
+	UnhandledAlarm2  int `json:"unhandled_alarm_2"`
+	UnhandledAlarm3  int `json:"unhandled_alarm_3"`
+	UnhandledAlarm4  int `json:"unhandled_alarm_4"`
+	IconAlarmLevel   int `json:"icon_alarm_level"`
+	PopAlarm int `json:"pop_alarm"`
 
 	// 权限相关
 	ResidentAccess bool `json:"resident_access"` // 是否允许住户访问
@@ -101,10 +101,10 @@ type CardOverviewItem struct {
 
 // CardDevice 卡片关联的设备信息
 type CardDevice struct {
-	DeviceID    string      `json:"device_id"` // device_id (UUID, 主键)
-	UID         string      `json:"uid"`       // 兼容旧字段，与 device_uid 同义
-	DeviceUID   string      `json:"device_uid,omitempty"`   // 设备唯一标识，与 vue CardOverviewDevice 对齐
-	DeviceCode  string      `json:"device_code,omitempty"`  // 设备编码：Sleepace 有 device_code，Radar 无；接口处空则回退为 device_uid（每设备均有）
+	DeviceID    string      `json:"device_id"`             // device_id (UUID, 主键)
+	UID         string      `json:"uid"`                   // 兼容旧字段，与 device_uid 同义
+	DeviceUID   string      `json:"device_uid,omitempty"`  // 设备唯一标识，与 vue CardOverviewDevice 对齐
+	DeviceCode  string      `json:"device_code,omitempty"` // 设备编码：Sleepace 有 device_code，Radar 无；接口处空则回退为 device_uid（每设备均有）
 	DeviceName  string      `json:"device_name"`
 	DeviceType  interface{} `json:"device_type"` // 数字（1=sleepace, 2=radar）或字符串（向后兼容）
 	DeviceModel string      `json:"device_model,omitempty"`
@@ -114,7 +114,7 @@ type CardDevice struct {
 // CardResident 卡片关联的住户信息
 type CardResident struct {
 	ResidentID   string `json:"resident_id"`
-	LastName     string `json:"last_name,omitempty"`  // 住户姓氏（从residents表获取）
+	LastName     string `json:"last_name,omitempty"` // 住户姓氏（从residents表获取）
 	Nickname     string `json:"nickname"`
 	ServiceLevel string `json:"service_level,omitempty"`
 }

@@ -40,13 +40,13 @@ http:
 
 redis:
   address: "localhost:6379"
-  password: ""
+  password: "TeLunSu-36kr"
   db: 0
 
 database:
   host: "localhost"
   port: 5433
   user: "postgres"
-  password: "password"
+  password: "postgres"
   dbname: "owlrd"
   sslmode: "disable"

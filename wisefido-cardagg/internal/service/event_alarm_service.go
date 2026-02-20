@@ -106,8 +106,8 @@ func (s *EventAlarmService) SyncAllCardsAlarmState(ctx context.Context) error {
 
 // HandleAlarmProcessMessage 处理报警处理消息（来自 config:alarmProcess:stream）
 // 直接用消息中的字段更新 Redis AlarmState，无需查 DB
-// alarmLevel: "EMERG"/"ALERT"/"CRIT"/"ERR"/"WARNING"
-// alarmType: "Fall"/"AbnormalHeartRate" 等
+// alarmLevel: "EMERG"/"ALERT"/"CRITICAL"/"ERROR"/"WARNING" (兼容旧值 "CRIT"/"ERR")
+// alarmType: "Fall"/"HeartRateAlert" 等
 // eventID: 被处理的 alarm_events.event_id
 // alarmTimestamp: hand_time（秒）
 func (s *EventAlarmService) HandleAlarmProcessMessage(ctx context.Context, cardID, tenantID, alarmLevel, alarmType, eventID string, alarmTimestamp int64) error {
@@ -132,11 +132,11 @@ func (s *EventAlarmService) HandleAlarmProcessMessage(ctx context.Context, cardI
 		if alarmState.ActiveAlert > 0 {
 			alarmState.ActiveAlert--
 		}
-	case "CRIT", "2":
+	case "CRIT", "CRITICAL", "2":
 		if alarmState.ActiveCrit > 0 {
 			alarmState.ActiveCrit--
 		}
-	case "ERR", "3":
+	case "ERR", "ERROR", "3":
 		if alarmState.ActiveErr > 0 {
 			alarmState.ActiveErr--
 		}
@@ -178,7 +178,7 @@ func (s *EventAlarmService) HandleAlarmProcessMessage(ctx context.Context, cardI
 		zap.String("alarm_level", alarmLevel),
 		zap.String("alarm_type", alarmType),
 		zap.String("pop_alarm", alarmState.PopAlarm),
-		zap.Int("active_emerg", alarmState.ActiveEmerg))
+		zap.Int("active_crit", alarmState.ActiveCrit))
 
 	return nil
 }
@@ -295,21 +295,38 @@ func (s *EventAlarmService) handleEvent(ctx context.Context, msg *redis.IoTStrea
 }
 
 // handleAlarm 处理 alarm 类消息
-// qinglan 发布格式：msg.Category = "AlarmLevel.AlarmType"（如 "WARNING.Stay", "EMERG.Fall"）
+// 支持三种 category 格式：
+//  1. "LEVEL.TYPE"           — handleEventMessage 转换的 alarm（如 "CRIT.Fall"）
+//  2. "TYPE"                 — handleAlarmMessage 透传（如 "Fall"）
+//  3. "TYPE.High" / "TYPE.Low" — 带方向后缀（如 "HeartRateAlert.High"）
+//
 // 流程：解析 → INSERT alarm_events + UPDATE cards（事务）→ 写 Redis → 推送 card:cardStatus:stream
 func (s *EventAlarmService) handleAlarm(ctx context.Context, msg *redis.IoTStreamMessage) error {
 	// 从 msg.Category 解析 alarm_level 和 alarm_type
 	alarmLevel := ""
 	alarmType := ""
-	if parts := strings.SplitN(msg.Category, ".", 2); len(parts) >= 1 {
-		alarmLevel = parts[0]
-		if len(parts) >= 2 {
+	if parts := strings.SplitN(msg.Category, ".", 2); len(parts) == 2 {
+		if alarm.IsAlarmLevel(parts[0]) {
+			alarmLevel = parts[0]
 			alarmType = parts[1]
+		} else {
+			// "TYPE.High" / "TYPE.Low" — 带方向后缀
+			alarmType = parts[0]
+			alarmLevel = alarm.GetDefaultAlarmLevel(alarmType)
 		}
+	} else if msg.Category != "" {
+		alarmType = msg.Category
+		alarmLevel = alarm.GetDefaultAlarmLevel(alarmType)
+	}
+	if alarmLevel == "" && alarmType != "" {
+		s.logger.Warn("Alarm type not found in default config, dropping",
+			zap.String("card_id", msg.CardID),
+			zap.String("category", msg.Category))
+		return nil
 	}
 
-	if alarmLevel == "" {
-		s.logger.Warn("Alarm message missing alarm_level in category",
+	if alarmLevel == "" || alarmType == "" {
+		s.logger.Warn("Alarm message missing alarm_level or alarm_type",
 			zap.String("card_id", msg.CardID),
 			zap.String("category", msg.Category))
 		return nil
@@ -322,9 +339,6 @@ func (s *EventAlarmService) handleAlarm(ctx context.Context, msg *redis.IoTStrea
 		zap.Int64("timestamp", msg.Timestamp))
 
 	// 【设备自恢复检测】
-	// 1. alarmType == "DeviceRecovery" → 全量 auto-resolve
-	// 2. StatusFieldValue == "0" → 该 alarmType 的恢复事件
-	// 3. 兼容旧格式：data_value[0].recovery 以 "_recovery" 结尾
 	if alarmType == "DeviceRecovery" {
 		return s.handleDeviceRecoveryAlarm(ctx, msg, nil)
 	}
@@ -332,19 +346,10 @@ func (s *EventAlarmService) handleAlarm(ctx context.Context, msg *redis.IoTStrea
 		return s.handleDeviceRecoveryAlarm(ctx, msg, []string{recoveryAlarmType})
 	}
 
-	// 构建 trigger_data（整个 iot:alarm:stream 消息，便于追溯）
 	triggerData, _ := json.Marshal(msg)
 
-	// 确定 FHIR category（从 data_value[0].category 取，为空时按 alarmType 推断）
-	fhirCategory := ""
-	if len(msg.DataValue) > 0 {
-		if item, ok := msg.DataValue[0].(map[string]interface{}); ok {
-			fhirCategory, _ = item["category"].(string)
-		}
-	}
-	if fhirCategory == "" {
-		fhirCategory = alarm.GetFHIRCategory(alarmType)
-	}
+	// FHIR category 统一在此确定（保存 alarm_events 时使用）
+	fhirCategory := alarm.GetFHIRCategory(alarmType)
 
 	// 【核心】INSERT alarm_events + UPDATE cards（事务）
 	if s.db == nil {
@@ -525,7 +530,7 @@ func (s *EventAlarmService) handleDeviceBedStateEvent(ctx context.Context, msg *
 		UpdatedAt:    msg.Timestamp,
 		Category:     "BedState",
 		CurrentState: currentState,
-		StateValue: "Duration",
+		StateValue:   "Duration",
 		StartTime:    msg.Timestamp,
 		DurationSec:  int(durationSec),
 	}
@@ -698,10 +703,14 @@ func (s *EventAlarmService) handleDeviceStatus(ctx context.Context, msg *redis.I
 				zap.Int64("existing_ts", existingDevStatus.Timestamp))
 			return nil
 		}
+		// merge: 将新消息的 statuses 合入已有的，避免不同来源的部分状态互相覆盖
+		for k, v := range devStatus.Statuses {
+			existingDevStatus.Statuses[k] = v
+		}
+		existingDevStatus.Timestamp = devStatus.Timestamp
+	} else {
+		cardStatus.DeviceStatus[msg.DeviceID] = devStatus
 	}
-
-	// 按设备 ID 存储设备状态
-	cardStatus.DeviceStatus[msg.DeviceID] = devStatus
 	cardStatus.UpdateType = "DeviceStatus"
 
 	// 【只在真正更新时，才更新 CardStatus 的时间戳】

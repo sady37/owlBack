@@ -71,7 +71,7 @@ func GetSleepaceSettingsFromHardware(ctx context.Context, client *SleepaceClient
 	}
 	if leftBedFlag, ok := hardwareSettings["leftBedFlag"].(float64); ok {
 		if leftBedFlag == 1 {
-			settings["left_bed_alarm_level"] = "0" // EMERG (默认)
+			settings["left_bed_alarm_level"] = "2" // CRIT (默认)
 		} else {
 			settings["left_bed_alarm_level"] = "disabled"
 		}
@@ -92,14 +92,14 @@ func GetSleepaceSettingsFromHardware(ctx context.Context, client *SleepaceClient
 	}
 	if heartRateSlowFlag, ok := hardwareSettings["heartRateSlowFlag"].(float64); ok {
 		if heartRateSlowFlag == 1 {
-			settings["heart_rate_slow_alarm_level"] = "0" // EMERG (默认)
+			settings["heart_rate_slow_alarm_level"] = "2" // CRIT (默认)
 		} else {
 			settings["heart_rate_slow_alarm_level"] = "disabled"
 		}
 	}
 	if heartRateFastFlag, ok := hardwareSettings["heartRateFastFlag"].(float64); ok {
 		if heartRateFastFlag == 1 {
-			settings["heart_rate_fast_alarm_level"] = "0" // EMERG (默认)
+			settings["heart_rate_fast_alarm_level"] = "2" // CRIT (默认)
 		} else {
 			settings["heart_rate_fast_alarm_level"] = "disabled"
 		}
@@ -120,14 +120,14 @@ func GetSleepaceSettingsFromHardware(ctx context.Context, client *SleepaceClient
 	}
 	if breathRateSlowFlag, ok := hardwareSettings["breathRateSlowFlag"].(float64); ok {
 		if breathRateSlowFlag == 1 {
-			settings["breath_rate_slow_alarm_level"] = "0" // EMERG (默认)
+			settings["breath_rate_slow_alarm_level"] = "2" // CRIT (默认)
 		} else {
 			settings["breath_rate_slow_alarm_level"] = "disabled"
 		}
 	}
 	if breathRateFastFlag, ok := hardwareSettings["breathRateFastFlag"].(float64); ok {
 		if breathRateFastFlag == 1 {
-			settings["breath_rate_fast_alarm_level"] = "0" // EMERG (默认)
+			settings["breath_rate_fast_alarm_level"] = "2" // CRIT (默认)
 		} else {
 			settings["breath_rate_fast_alarm_level"] = "disabled"
 		}
@@ -139,7 +139,7 @@ func GetSleepaceSettingsFromHardware(ctx context.Context, client *SleepaceClient
 	}
 	if breathPauseFlag, ok := hardwareSettings["breathPauseFlag"].(float64); ok {
 		if breathPauseFlag == 1 {
-			settings["breath_pause_alarm_level"] = "0" // EMERG (默认)
+			settings["breath_pause_alarm_level"] = "2" // CRIT (默认)
 		} else {
 			settings["breath_pause_alarm_level"] = "disabled"
 		}
@@ -151,7 +151,7 @@ func GetSleepaceSettingsFromHardware(ctx context.Context, client *SleepaceClient
 	}
 	if bodyMoveFlag, ok := hardwareSettings["bodyMoveFlag"].(float64); ok {
 		if bodyMoveFlag == 1 {
-			settings["body_move_alarm_level"] = "0" // EMERG (默认)
+			settings["body_move_alarm_level"] = "2" // CRIT (默认)
 		} else {
 			settings["body_move_alarm_level"] = "disabled"
 		}
@@ -163,7 +163,7 @@ func GetSleepaceSettingsFromHardware(ctx context.Context, client *SleepaceClient
 	}
 	if nobodyMoveFlag, ok := hardwareSettings["nobodyMoveFlag"].(float64); ok {
 		if nobodyMoveFlag == 1 {
-			settings["nobody_move_alarm_level"] = "0" // EMERG (默认)
+			settings["nobody_move_alarm_level"] = "2" // CRIT (默认)
 		} else {
 			settings["nobody_move_alarm_level"] = "disabled"
 		}
@@ -175,7 +175,7 @@ func GetSleepaceSettingsFromHardware(ctx context.Context, client *SleepaceClient
 	}
 	if noTurnOverFlag, ok := hardwareSettings["noTurnOverFlag"].(float64); ok {
 		if noTurnOverFlag == 1 {
-			settings["no_turn_over_alarm_level"] = "0" // EMERG (默认)
+			settings["no_turn_over_alarm_level"] = "2" // CRIT (默认)
 		} else {
 			settings["no_turn_over_alarm_level"] = "disabled"
 		}
@@ -184,7 +184,7 @@ func GetSleepaceSettingsFromHardware(ctx context.Context, client *SleepaceClient
 	// 坐起配置
 	if situpFlag, ok := hardwareSettings["situpFlag"].(float64); ok {
 		if situpFlag == 1 {
-			settings["situp_alarm_level"] = "0" // EMERG (默认)
+			settings["situp_alarm_level"] = "2" // CRIT (默认)
 		} else {
 			settings["situp_alarm_level"] = "disabled"
 		}
@@ -196,7 +196,7 @@ func GetSleepaceSettingsFromHardware(ctx context.Context, client *SleepaceClient
 	}
 	if onbedFlag, ok := hardwareSettings["onbedFlag"].(float64); ok {
 		if onbedFlag == 1 {
-			settings["onbed_alarm_level"] = "0" // EMERG (默认)
+			settings["onbed_alarm_level"] = "2" // CRIT (默认)
 		} else {
 			settings["onbed_alarm_level"] = "disabled"
 		}

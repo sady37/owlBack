@@ -2,13 +2,14 @@ package subscriber
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
 	"time"
 
 	"owl-common/alarm"
-	constDevice "owl-common/const"
+	"owl-common/radar"
 
 	"go.uber.org/zap"
 )
@@ -103,60 +104,45 @@ func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, devic
 
 	// 解析属性值
 	health := &DeviceHealthStatus{
-		WifiRSSI:     -120, // 默认值（最坏情况）
 		AcceleraRaw:  "",
 		InstallStyle: 0,
 	}
 
-	// 提取 wifi_rssi
+	// 提取 wifi_rssi（JSON 解析后可能为 float64）
 	if wifiVal, ok := props["wifi_rssi"]; ok {
-		if wifiInt, ok := wifiVal.(int); ok {
-			health.WifiRSSI = wifiInt
-		}
+		health.WifiRSSI = toIntFromInterface(wifiVal)
 	}
 
-	// 提取 accelera
 	if accVal, ok := props["accelera"]; ok {
-		if accStr, ok := accVal.(string); ok {
-			health.AcceleraRaw = accStr
+		switch v := accVal.(type) {
+		case string:
+			health.AcceleraRaw = v
+		default:
+			health.AcceleraRaw = fmt.Sprintf("%v", accVal)
 		}
 	}
 
-	// 提取 radar_install_style
-	if styleVal, ok := props["radar_install_style"]; ok {
-		if styleInt, ok := styleVal.(int); ok {
-			health.InstallStyle = styleInt
-		}
+	// 提取 radar_install_style（JSON 解析后可能为 float64）
+	if styleVal, ok := props["install_model"]; ok {
+		health.InstallStyle = toIntFromInterface(styleVal)
+	} else if styleVal, ok := props["radar_install_style"]; ok {
+		health.InstallStyle = toIntFromInterface(styleVal)
 	}
 
 	// 验证和计算状态
 	m.validateDeviceHealth(health, deviceUID)
 
 	// 发布设备状态（无论是否异常，只要已验证就发布）
+	// 始终发送所有状态字段（0=正常，1=异常），避免部分覆盖导致字段丢失
 	statuses := map[string]int{
-		constDevice.StatusFieldOffline: 0, // 0=在线（语义：1=异常/离线, 0=正常/在线）
+		radar.StatusFieldOffline:       0,
+		radar.StatusFieldSignalPoor:    health.SignalPoor,
+		radar.StatusFieldAngleAbnormal: health.AngleAbnormal,
 	}
 
-	// 如果有异常，添加异常标志
-	if health.SignalPoor == 1 {
-		statuses[constDevice.StatusFieldSignalPoor] = 1
-		log.Printf("⚠️ Device %s signal poor detected: wifi_rssi=%d dBm",
-			deviceUID, health.WifiRSSI)
-	}
-
-	if health.AngleAbnormal == 1 {
-		statuses[constDevice.StatusFieldAngleAbnormal] = 1
-		log.Printf("⚠️ Device %s angle abnormal detected",
-			deviceUID)
-	}
-
-	// 发布状态到stream
 	if health.SignalPoor == 1 || health.AngleAbnormal == 1 {
-		m.logger.Warn("Device health issue detected",
-			zap.String("device_uid", deviceUID),
-			zap.Int("signal_poor", health.SignalPoor),
-			zap.Int("angle_abnormal", health.AngleAbnormal),
-		)
+		log.Printf("⚠️ Device %s health: signal_poor=%d(rssi=%d) angle_abnormal=%d",
+			deviceUID, health.SignalPoor, health.WifiRSSI, health.AngleAbnormal)
 	}
 
 	go m.streamPublisher.PublishDeviceStatus(ctx, deviceID, deviceType, tenantID, deviceUID, statuses)
@@ -167,19 +153,13 @@ func (m *DeviceSubscriptionManager) validateDeviceHealth(health *DeviceHealthSta
 	health.SignalPoor = 0
 	health.AngleAbnormal = 0
 
-	// 1. 验证 wifi_rssi
-	// 正常范围: -88 ~ -20 dBm
-	// <= -88 或 > -20 为异常
-	if health.WifiRSSI <= -88 || health.WifiRSSI > -20 {
+	if health.WifiRSSI <= -88 {
 		health.SignalPoor = 1
-		m.logger.Debug("Device signal poor",
-			zap.String("device_uid", deviceUID),
-			zap.Int("wifi_rssi", health.WifiRSSI),
-		)
 	}
 
-	// 2. 验证 accelera（倾角）
 	x, y, z, calibrated := m.parseAccelerator(health.AcceleraRaw)
+	log.Printf("[HEALTH_DEBUG] device=%s accelera=%q install_style=%d x=%.2f y=%.2f calibrated=%v",
+		deviceUID, health.AcceleraRaw, health.InstallStyle, x, y, calibrated)
 	if !calibrated {
 		// V == 0，未校准
 		health.AngleAbnormal = 1
@@ -250,6 +230,18 @@ func absFloat(x float64) float64 {
 	return x
 }
 
+// toIntFromInterface 将 interface{} 转为 int（兼容 JSON 解析后的 float64）
+func toIntFromInterface(v interface{}) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case float64:
+		return int(n)
+	case int64:
+		return int(n)
+	}
+	return 0
+}
 
 // publishDeviceAlarmAuto 自动查使能表后发布设备报警（供 device_subscription_manager 调用）
 func (m *DeviceSubscriptionManager) publishDeviceAlarmAuto(ctx context.Context, tenantID, deviceID, deviceUID, alarmType, statusFieldValue string) {
@@ -265,7 +257,6 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarmAuto(ctx context.Context, 
 	}
 	m.publishDeviceAlarm(ctx, tenantID, deviceID, deviceUID, alarmType, statusFieldValue, enablementItems)
 }
-
 
 // publishDeviceAlarm 发布设备报警到 iot:alarm:stream（统一格式）
 // alarmType: "SignalPoor", "AngleException" 等
@@ -290,15 +281,27 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 		return
 	}
 
-	// 统一格式: category = "LEVEL.AlarmType", data_value[0] = {category, StatusFieldValue, device_uid}
 	alarmCategory := alarmLevel + "." + alarmType
-	dataValue := []interface{}{
-		map[string]interface{}{
-			"category":         alarm.GetFHIRCategory(alarmType),
-			"StatusFieldValue": statusFieldValue,
-			"device_uid":       deviceUID,
-		},
+
+	// 构造 EventResult，与 decoder 输出格式一致
+	statusType := ""
+	switch alarmType {
+	case alarm.AlarmTypeOfflineAlarm:
+		statusType = radar.StatusFieldOffline
+	case alarm.SignalPoor:
+		statusType = radar.StatusFieldSignalPoor
+	case alarm.AngleException:
+		statusType = radar.StatusFieldAngleAbnormal
 	}
+	trackMap := map[string]interface{}{
+		"data_category": alarmType,
+		"fhir_category": alarm.GetFHIRCategory(alarmType),
+		"event_type":    0,
+		"status_type":   statusType,
+		"status_value":  statusFieldValue,
+
+	}
+	dataValue := []interface{}{trackMap}
 	encodedData := m.streamPublisher.BuildEncodedData(
 		"", // cardID 由 cardagg 通过 device_id 查找
 		tenantID,
@@ -308,7 +311,7 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 		dataValue,
 	)
 	streamName := m.streamPublisher.GetOutputStreamName("alarm")
-	if _, err := m.streamPublisher.PublishToStream(ctx, streamName, encodedData); err != nil {		
+	if _, err := m.streamPublisher.PublishToStream(ctx, streamName, encodedData); err != nil {
 		m.logger.Warn("Failed to publish device alarm from health check",
 			zap.String("alarm_type", alarmType),
 			zap.String("device_id", deviceID),

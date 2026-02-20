@@ -1,0 +1,23 @@
+# wisefido-data 配置文件
+
+http:
+  addr: ":8080"
+
+db_enabled: true
+
+database:
+  host: "localhost"
+  port: 5433
+  user: "postgres"
+  password: "postgres"
+  database: "owlrd"
+  sslmode: "disable"
+
+redis:
+  addr: "localhost:6379"
+  password: "TeLunSu-36kr"
+  db: 0
+
+logging:
+  level: "info"
+  format: "json"

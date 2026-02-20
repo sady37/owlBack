@@ -143,7 +143,7 @@ func BuildAlarmDeviceMessage(
 // cardID: 卡片ID（用于cardagg找到最新数据）
 // deviceID: 设备ID
 // alarmLevel: 报警级别（EMERG, ALERT, CRIT, ERR, WARNING, NOTICE 等）
-// alarmType: 报警类型（Fall, RadarAbnormalHeartRate 等）
+// alarmType: 报警类型（Fall, HeartRateAlert 等）
 // alarmTimestamp: 报警触发时间戳（秒级，用于比较防止旧数据覆盖）
 // processType: 报警处理类型（acked、resolved、auto_resolved 等）
 func BuildAlarmProcessMessage(

@@ -278,9 +278,8 @@ func (s *CardRealtimeService) RemoveCardList(tenantID, userID string) {
 }
 
 // UpdateByBranch 某 branch 卡片变更后调用
-// Step1: 扫 userCardLists 找含该 branchID 的用户，重查 CardList
+// 扫同一 tenant 的所有在线用户，重查 CardList（用户可能新增了对该 branch 的可见卡片）
 func (s *CardRealtimeService) UpdateByBranch(ctx context.Context, tenantID, branchID string) {
-	// 找受影响的用户（CardsByBranch 含该 branchID）
 	type affected struct {
 		userID   string
 		userType string
@@ -291,9 +290,6 @@ func (s *CardRealtimeService) UpdateByBranch(ctx context.Context, tenantID, bran
 	s.mu.RLock()
 	for userKey, cl := range s.userCardLists {
 		if cl.TenantID != tenantID {
-			continue
-		}
-		if _, ok := cl.CardsByBranch[branchID]; !ok {
 			continue
 		}
 		userType, ok := s.userTypes[userKey]

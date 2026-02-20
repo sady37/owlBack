@@ -433,6 +433,10 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 	// 根据主题类型处理消息
 	topicType := c.extractTopicType(topic)
 
+	if topicType == "event" || topicType == "alarm" || topicType == "stat" {
+		log.Printf("[MQTT_RAW] topic=%s uid=%s payload=%s", topic, uid, string(payload))
+	}
+
 	// 更新设备最后收到消息的时间（根据消息类型）
 	// 参考wisefido-radar的实现：UpdateLastSeenByType会检测首次连接并自动发送monitor订阅命令
 	if c.subscriptionManager != nil {
@@ -800,352 +804,215 @@ func (c *MQTTConsumer) handleFunctionMessage(uid string, message map[string]inte
 	return nil
 }
 
-// handleStatMessage 处理统计数据消息
+// resolveDevice 公共：获取 cardMapping + enabledMap，stat/event/alarm handler 共用
+func (c *MQTTConsumer) resolveDevice(ctx context.Context, uid string) (
+	cardID, tenantID, deviceID string,
+	enabledMap map[string]alarm.AlarmEnablementItem,
+	err error,
+) {
+	cardDeviceInfo, err := c.cardMappingService.GetCardIDByDeviceUID(ctx, uid)
+	if err != nil {
+		return "", "", "", nil, fmt.Errorf("cardMapping failed: %w", err)
+	}
+	if cardDeviceInfo == nil {
+		return "", "", "", nil, fmt.Errorf("device not found in card mapping")
+	}
+	cardID = cardDeviceInfo.CardID
+	tenantID = cardDeviceInfo.TenantID
+	deviceID = cardDeviceInfo.DeviceID
+
+	enabledMap = make(map[string]alarm.AlarmEnablementItem)
+	if tenantID != "" {
+		items, err := c.deviceRepo.GetAlarmEnablement(ctx, tenantID, uid)
+		if err != nil {
+			log.Printf("Failed to get alarm enablement for device %s: %v", uid, err)
+		} else {
+			for _, item := range items {
+				if item.IsEnabled == 1 {
+					enabledMap[item.AlarmType] = item
+				}
+			}
+		}
+	}
+	return cardID, tenantID, deviceID, enabledMap, nil
+}
+
+// handleStatMessage 处理统计数据消息（track×1 + sleep×1）
 func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interface{}) error {
 	ctx := context.Background()
 
-	// 使用 CardMappingService 获取 cardID 和其他设备映射信息
-	cardDeviceInfo, err := c.cardMappingService.GetCardIDByDeviceUID(ctx, uid)
+	cardID, tenantID, deviceID, enabledMap, err := c.resolveDevice(ctx, uid)
 	if err != nil {
-		log.Printf("Failed to get cardID for device %s: %v", uid, err)
-		// cardID 获取失败，不能处理该设备消息
+		log.Printf("[STAT_HANDLER] device=%s: %v", uid, err)
 		return nil
 	}
 
-	// cardDeviceInfo 不能为 nil，否则无法处理
-	if cardDeviceInfo == nil {
-		log.Printf("Device %s not found in card mapping, skipping stat message (device not authenticated)", uid)
-		return nil
-	}
-
-	// 调用 RadarDecoder 进行协议层面的解码
 	dataValue, err := decode.RadarDecoder(message, "stat")
 	if err != nil {
-		log.Printf("Failed to decode stat data for device %s: %v", uid, err)
-		// 解码失败时，使用原始消息（降级处理）
-		dataValue = message
+		log.Printf("[STAT_HANDLER] decode failed for device %s: %v", uid, err)
+		return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "stat", "", message, message)
 	}
+	log.Printf("[DECODE_STAT_DEBUG] device=%s decoded=%v", uid, dataValue)
 
-	// 获取报警使能配置（如果设备已认证且有tenant_id）
-	var enablementItems []alarm.AlarmEnablementItem
-	if cardDeviceInfo.TenantID != "" && cardDeviceInfo.DeviceUID != "" {
-		var err error
-		enablementItems, err = c.deviceRepo.GetAlarmEnablement(ctx, cardDeviceInfo.TenantID, cardDeviceInfo.DeviceUID)
-		if err != nil {
-			log.Printf("Failed to get alarm enablement for device %s: %v", uid, err)
-			// 如果获取失败，继续发布到 stat stream（降级处理）
-			return c.publishDecodedData(ctx, cardDeviceInfo.CardID, cardDeviceInfo.TenantID, cardDeviceInfo.DeviceID, "stat", "", dataValue, message)
+	// sleep 里的 stat_numeric_codes 检查是否需要转 alarm
+	for _, code := range extractStatNumericCodes(dataValue) {
+		alarmType, ok := alarm.LookupStatCode(code)
+		if !ok {
+			continue
 		}
-	} else {
-		// 设备未认证，没有tenant_id，直接发布到stat stream
-		log.Printf("Device %s not authenticated yet (no tenant_id), publishing stat message directly", uid)
-		return c.publishDecodedData(ctx, cardDeviceInfo.CardID, cardDeviceInfo.TenantID, cardDeviceInfo.DeviceID, "stat", "", dataValue, message)
+		if item, ok := enabledMap[alarmType]; ok {
+			cat := fmt.Sprintf("%s.%s", item.AlarmLevel, item.AlarmType)
+			log.Printf("[STAT_TO_ALARM] device=%s code=%s → alarm (%s)", uid, code, cat)
+			return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "alarm", cat, dataValue, message)
+		}
 	}
 
-	// stat 消息可能包含多个数据项（track, sleep 等），需要逐个检查
-	// 如果任一数据项应该转换为 alarm，则整个消息转换为 alarm
-	var itemsToCheck []map[string]interface{}
+	return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "stat", "", dataValue, message)
+}
+
+// extractStatNumericCodes 从 stat 解码结果提取 sleep 的 numeric codes
+func extractStatNumericCodes(dataValue interface{}) []string {
+	var items []map[string]interface{}
 	switch v := dataValue.(type) {
 	case []interface{}:
-		for _, item := range v {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				itemsToCheck = append(itemsToCheck, itemMap)
+		for _, elem := range v {
+			if m, ok := elem.(map[string]interface{}); ok {
+				items = append(items, m)
 			}
 		}
-	case []map[string]interface{}:
-		itemsToCheck = v
 	case map[string]interface{}:
-		itemsToCheck = []map[string]interface{}{v}
-	default:
-		// 其他类型，直接发布到 stat stream
-		return c.publishDecodedData(ctx, cardDeviceInfo.CardID, cardDeviceInfo.TenantID, cardDeviceInfo.DeviceID, "stat", "", dataValue, message)
+		items = []map[string]interface{}{v}
 	}
-
-	// 计算 topCategory（与 handleMonitorMessage 同逻辑）
-	nTrack, nVital := 0, 0
-	for _, m := range itemsToCheck {
-		cat, _ := m["category"].(string)
-		if cat == "sleep" {
-			cat = "vital"
-		}
-		switch cat {
-		case "track":
-			nTrack++
-		case "vital":
-			nVital++
-		}
-	}
-	var topCategory string
-	if nTrack > 0 && nVital > 0 {
-		topCategory = fmt.Sprintf("track%d.vital%d", nTrack, nVital)
-	} else if nTrack > 0 {
-		topCategory = fmt.Sprintf("track%d", nTrack)
-	} else if nVital > 0 {
-		topCategory = fmt.Sprintf("vital%d", nVital)
-	}
-
-	// 收集所有 numeric codes，然后使用 GetAlarmEnabledMapByNumericCodes 检查
-	var allNumericCodes []string
-	for _, itemMap := range itemsToCheck {
-		// 优先使用 decoder 已生成的 stat_numeric_codes
-		// 注意：decoder生成的是 []string，但在 map[string]interface{} 中可能是 []string 或 []interface{}
-		if numericCodes, ok := itemMap["stat_numeric_codes"].([]string); ok {
-			// 直接是 []string 类型（decoder直接设置）
-			allNumericCodes = append(allNumericCodes, numericCodes...)
-		} else if numericCodes, ok := itemMap["stat_numeric_codes"].([]interface{}); ok {
-			// []interface{} 类型（JSON序列化/反序列化后）
-			for _, code := range numericCodes {
-				if codeStr, ok := code.(string); ok {
-					allNumericCodes = append(allNumericCodes, codeStr)
+	var codes []string
+	for _, m := range items {
+		if nc, ok := m["stat_numeric_codes"].([]string); ok {
+			codes = append(codes, nc...)
+		} else if nc, ok := m["stat_numeric_codes"].([]interface{}); ok {
+			for _, c := range nc {
+				if s, ok := c.(string); ok {
+					codes = append(codes, s)
 				}
 			}
-		} else {
-			// 如果没有 stat_numeric_codes，使用 ExtractNumericCodesFromStat 提取
-			codes := alarm.ExtractNumericCodesFromStat(itemMap)
-			allNumericCodes = append(allNumericCodes, codes...)
 		}
 	}
-
-	// 使用 GetAlarmEnabledMapByNumericCodes 直接获取使能表
-	shouldConvertToAlarm := false
-	var alarmLevel, alarmType string
-	if len(allNumericCodes) > 0 && len(enablementItems) > 0 {
-		enabledMap := alarm.GetAlarmEnabledMapByNumericCodes(allNumericCodes, enablementItems)
-		// 如果任一数字组合对应的报警启用，则转换为 alarm
-		for numCode, enabled := range enabledMap {
-			if enabled == 1 {
-				shouldConvertToAlarm = true
-				// 从 enablementItems 中查找对应的 AlarmType 和 AlarmLevel
-				for _, item := range enablementItems {
-					if item.IsEnabled == 1 {
-						// 简单匹配：使用第一个启用的报警项的 level 和 type
-						alarmLevel = item.AlarmLevel
-						alarmType = item.AlarmType
-						_ = numCode // 使用 numCode 避免 unused 警告
-						break
-					}
-				}
-				break
-			}
-		}
-	}
-
-	if shouldConvertToAlarm {
-		// 转换为 alarm，发布到 alarm stream
-		alarmCategory := fmt.Sprintf("%s.%s", alarmLevel, alarmType)
-		log.Printf("Stat message for device %s should be converted to alarm (category=%s)", uid, alarmCategory)
-		return c.publishDecodedData(ctx, cardDeviceInfo.CardID, cardDeviceInfo.TenantID, cardDeviceInfo.DeviceID, "alarm", alarmCategory, dataValue, message)
-	}
-
-	// 常规 stat 流，直接发布
-	return c.publishDecodedData(ctx, cardDeviceInfo.CardID, cardDeviceInfo.TenantID, cardDeviceInfo.DeviceID, "stat", topCategory, dataValue, message)
+	return codes
 }
 
 // handleEventMessage 处理事件消息
+// decoder 返回 []interface{}（每条独立 track），逐条判断 alarm/event 分流发布
 func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interface{}) error {
-
 	ctx := context.Background()
 
-	// 使用 CardMappingService 获取 cardID 和其他设备映射信息
-	cardDeviceInfo, err := c.cardMappingService.GetCardIDByDeviceUID(ctx, uid)
+	cardID, tenantID, deviceID, enabledMap, err := c.resolveDevice(ctx, uid)
 	if err != nil {
-		log.Printf("Failed to get cardID for device %s: %v", uid, err)
-		// cardID 获取失败，不能处理该设备消息
+		log.Printf("[EVENT_HANDLER] device=%s: %v", uid, err)
 		return nil
 	}
 
-	// cardDeviceInfo 不能为 nil，否则无法处理
-	if cardDeviceInfo == nil {
-		log.Printf("Device %s not found in card mapping, skipping event message (device not authenticated)", uid)
-		return nil
-	}
-
-	var cardID, tenantID, deviceID string
-	cardID = cardDeviceInfo.CardID
-	tenantID = cardDeviceInfo.TenantID
-	deviceID = cardDeviceInfo.DeviceID
-
-	// 调试：记录原始消息结构
-	//log.Printf("[EVENT_RAW_DEBUG] device=%s raw message keys: %v", uid, getMapKeys(message))
-	log.Printf("[EVENT_RAW_DEBUG] device=%s raw message: %+v", uid, message)
-
-	// 调用 RadarDecoder 进行协议层面的解码
 	dataValue, err := decode.RadarDecoder(message, "event")
 	if err != nil {
-		log.Printf("[EVENT_DECODE_ERROR] Failed to decode event data for device %s: %v", uid, err)
-		// 解码失败时，使用原始消息（降级处理）
-		dataValue = message
+		log.Printf("[EVENT_DECODE_ERROR] device=%s: %v", uid, err)
+		return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "event", "", message, message)
 	}
 
-	// 检查是否应该转换为 alarm
-	// dataValue 应该是单个对象（map[string]interface{}）
-	var eventObj map[string]interface{}
-	switch v := dataValue.(type) {
-	case map[string]interface{}:
-		eventObj = v
-	case []interface{}:
-		if len(v) > 0 {
-			if itemMap, ok := v[0].(map[string]interface{}); ok {
-				eventObj = itemMap
-			}
+	tracks, ok := dataValue.([]interface{})
+	if !ok || len(tracks) == 0 {
+		log.Printf("[EVENT_HANDLER] device=%s no tracks decoded, type=%T", uid, dataValue)
+		return nil
+	}
+
+	var lastErr error
+	for _, track := range tracks {
+		dataCat := eventDataCategory(track)
+		if dataCat == "" {
+			continue
 		}
-	default:
-		eventObj = make(map[string]interface{})
-	}
-
-	// 调试：记录解码后的 eventObj 结构
-	if len(eventObj) > 0 {
-		//log.Printf("[EVENT_DEBUG] decoded eventObj keys: %v", getMapKeys(eventObj))
-		log.Printf("[EVENT_DEBUG] decoded eventObj: event_type=%v, pose=%v, pose_raw=%v, category=%v",
-			eventObj["event_type"], eventObj["pose"], eventObj["pose_raw"], eventObj["category"])
-	}
-
-	// 获取报警使能配置
-	enablementItems, err := c.deviceRepo.GetAlarmEnablement(ctx, tenantID, uid)
-	if err != nil {
-		log.Printf("Failed to get alarm enablement for device %s: %v", uid, err)
-		// 如果获取失败，继续发布到 event stream（降级处理）
-		return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "event", "event", dataValue, message)
-	}
-
-	// 判断是否应该转换为 alarm
-	// 直接使用 ExtractNumericCodesFromEvent 和 GetAlarmEnabledMapByNumericCodes
-	shouldConvertToAlarm := false
-	var numericCodes []string
-	var enabledMap map[string]int
-	var alarmLevel, alarmType string
-	if len(eventObj) > 0 && len(enablementItems) > 0 {
-		numericCodes = alarm.ExtractNumericCodesFromEvent(eventObj)
-		if len(numericCodes) > 0 {
-			enabledMap = alarm.GetAlarmEnabledMapByNumericCodes(numericCodes, enablementItems)
-			// 如果任一数字组合对应的报警启用，则转换为 alarm
-			for numCode, enabled := range enabledMap {
-				if enabled == 1 {
-					shouldConvertToAlarm = true
-					// 精确匹配：通过 numCode → alarmTypes → enablementItem 找到对应的 level/type
-					matchedAlarmTypes := alarm.GetAlarmTypesFromNumericCode(numCode)
-					for _, mat := range matchedAlarmTypes {
-						for _, item := range enablementItems {
-							if item.AlarmType == mat && item.IsEnabled == 1 {
-								alarmLevel = item.AlarmLevel
-								alarmType = item.AlarmType
-								break
-							}
-						}
-						if alarmType != "" {
-							break
-						}
-					}
-					break
-				}
+		if item, ok := enabledMap[dataCat]; ok {
+			cat := fmt.Sprintf("%s.%s", item.AlarmLevel, item.AlarmType)
+			log.Printf("[EVENT_TO_ALARM] device=%s → alarm (%s)", uid, cat)
+			if err := c.publishSingleTrack(ctx, cardID, tenantID, deviceID, "alarm", cat, track); err != nil {
+				lastErr = err
+			}
+		} else {
+			if err := c.publishSingleTrack(ctx, cardID, tenantID, deviceID, "event", dataCat, track); err != nil {
+				lastErr = err
 			}
 		}
 	}
-
-	// 记录详细的 event 处理日志
-	eventType, _ := eventObj["event_type"].(string)
-	pose, _ := eventObj["pose"]
-	areaType, _ := eventObj["area_type"]
-	log.Printf("[EVENT_HANDLER] device=%s event_type=%s pose=%v area_type=%v numeric_codes=%v enabled_map=%v should_convert=%v enablement_count=%d",
-		uid, eventType, pose, areaType, numericCodes, enabledMap, shouldConvertToAlarm, len(enablementItems))
-
-	// 顶层 FHIR category 从 decode 的 DataValue.category 推断，不覆盖 data_value 本身
-	fhirCat := ""
-	if dvMap, ok := dataValue.(map[string]interface{}); ok {
-		fhirCat = inferEventFHIRCategory(alarmType, numericCodes, dvMap)
-	}
-
-	if shouldConvertToAlarm {
-		alarmCategory := fmt.Sprintf("%s.%s", alarmLevel, alarmType)
-		log.Printf("[EVENT_TO_ALARM] device=%s event_type=%s pose=%v area_type=%v converted to alarm stream (category=%s)", uid, eventType, pose, areaType, alarmCategory)
-		return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "alarm", alarmCategory, dataValue, message)
-	}
-
-	// 顶层 category 用 FHIR 分类，data_value 保持 decode 原始输出
-	log.Printf("[EVENT_STREAM] device=%s event_type=%s pose=%v area_type=%v fhir_category=%s published to event stream", uid, eventType, pose, areaType, fhirCat)
-	return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "event", fhirCat, dataValue, message)
+	return lastErr
 }
 
 // handleAlarmMessage 处理告警消息
+// 雷达 /alarm/ topic 已由固件判定为报警，逐 track 拆分发布到 alarm stream
 func (c *MQTTConsumer) handleAlarmMessage(uid string, message map[string]interface{}) error {
-	log.Printf("Handling alarm message for device %s", uid)
-
 	ctx := context.Background()
 
-	// 使用 CardMappingService 获取 cardID 和其他设备映射信息
-	cardDeviceInfo, err := c.cardMappingService.GetCardIDByDeviceUID(ctx, uid)
+	cardID, tenantID, deviceID, _, err := c.resolveDevice(ctx, uid)
 	if err != nil {
-		log.Printf("Failed to get cardID for device %s: %v", uid, err)
-		// cardID 获取失败，不能处理该设备消息
+		log.Printf("[ALARM_HANDLER] device=%s: %v", uid, err)
 		return nil
 	}
 
-	// cardDeviceInfo 不能为 nil，否则无法处理
-	if cardDeviceInfo == nil {
-		log.Printf("Device %s not found in card mapping, skipping alarm message (device not authenticated)", uid)
-		return nil
-	}
-
-	var cardID, tenantID, deviceID string
-	cardID = cardDeviceInfo.CardID
-	tenantID = cardDeviceInfo.TenantID
-	deviceID = cardDeviceInfo.DeviceID
-
-	// 调用 RadarDecoder 进行协议层面的解码
 	dataValue, err := decode.RadarDecoder(message, "alarm")
 	if err != nil {
-		log.Printf("[ALARM_HANDLER] Failed to decode alarm data for device %s: %v", uid, err)
-		// 解码失败时，使用原始消息（降级处理）
-		dataValue = message
+		log.Printf("[ALARM_HANDLER] decode failed for device %s: %v", uid, err)
+		return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "alarm", "", message, message)
 	}
 
-	// 提取关键字段用于日志
-	var eventType, pose, areaType interface{}
-	if dataValueMap, ok := dataValue.(map[string]interface{}); ok {
-		eventType, _ = dataValueMap["event_type"]
-		pose, _ = dataValueMap["pose"]
-		areaType, _ = dataValueMap["area_type"]
+	tracks, ok := dataValue.([]interface{})
+	if !ok || len(tracks) == 0 {
+		log.Printf("[ALARM_HANDLER] device=%s no tracks decoded, type=%T", uid, dataValue)
+		return nil
 	}
 
-	// 记录详细的 alarm 处理日志
-	log.Printf("[ALARM_HANDLER] device=%s event_type=%v pose=%v area_type=%v published to alarm stream", uid, eventType, pose, areaType)
-
-	// 调试：记录解码后的 dataValue 结构
-	if dataValueMap, ok := dataValue.(map[string]interface{}); ok {
-		log.Printf("[ALARM_DEBUG] decoded dataValue keys: %v", getMapKeys(dataValueMap))
-	}
-
-	// 发布解码后的数据
-	// 注意：publishDecodedData 会使用数据项自己的 category（enter2out, pose 等）作为顶层 category
-	return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "alarm", "", dataValue, message)
-}
-
-// inferEventFHIRCategory 推断事件的 FHIR category
-// 优先级：1) 使能表匹配到的 alarmType  2) numericCodes 对应的 alarmType  3) 解码器原始 category 推断
-func inferEventFHIRCategory(alarmType string, numericCodes []string, eventObj map[string]interface{}) string {
-	// 1) 使能表已匹配到 alarmType（alarm 路径）
-	if alarmType != "" {
-		return alarm.GetFHIRCategory(alarmType)
-	}
-
-	// 2) numericCodes 有值但未启用报警，仍可推断分类
-	for _, code := range numericCodes {
-		types := alarm.GetAlarmTypesFromNumericCode(code)
-		if len(types) > 0 {
-			return alarm.GetFHIRCategory(types[0])
+	var lastErr error
+	for _, track := range tracks {
+		dataCat := eventDataCategory(track)
+		cat := buildAlarmCategory(dataCat)
+		if err := c.publishSingleTrack(ctx, cardID, tenantID, deviceID, "alarm", cat, track); err != nil {
+			lastErr = err
 		}
 	}
+	return lastErr
+}
 
-	// 3) 兜底：从解码器原始 category 推断
-	rawCat, _ := eventObj["category"].(string)
-	switch rawCat {
-	case "pose", "enter2out":
-		return alarm.FHIRCategorySafety
-	case "number-people":
-		return alarm.FHIRCategoryBehavioral
-	case "SignalPoor":
-		return alarm.FHIRCategoryDevice
-	default:
-		return alarm.FHIRCategorySafety
+// publishSingleTrack 将单条 track 发布到 Redis Stream（一条 track = 一条 stream 消息）
+func (c *MQTTConsumer) publishSingleTrack(ctx context.Context, cardID, tenantID, deviceID, topicType, category string, trackData interface{}) error {
+	if cardID == "" {
+		log.Printf("⚠️ Device has no cardID, but still publishing %s message. deviceID=%s", topicType, deviceID)
 	}
+	trackMap, ok := trackData.(map[string]interface{})
+	if !ok {
+		log.Printf("[PUBLISH_SINGLE_TRACK] unexpected track type: %T", trackData)
+		return nil
+	}
+	trackMap["category"] = category
+	streamName := c.streamPublisher.GetOutputStreamName(topicType)
+	encodedData := c.streamPublisher.BuildEncodedData(cardID, tenantID, deviceID, topicType, category, []interface{}{trackMap})
+	streamID, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
+	if err != nil {
+		log.Printf("Failed to publish %s track to stream: %v", topicType, err)
+		return err
+	}
+	log.Printf("Published %s track to %s (id: %s) cardID=%s category=%s", topicType, streamName, streamID, cardID, category)
+	return nil
+}
+
+// eventDataCategory 从 event map 提取 data_category
+func eventDataCategory(track interface{}) string {
+	if m, ok := track.(map[string]interface{}); ok {
+		if dc, ok := m["data_category"].(string); ok {
+			return dc
+		}
+	}
+	return ""
+}
+
+// buildAlarmCategory 为 /alarm/ topic 的 track 构建 "LEVEL.TYPE" category
+func buildAlarmCategory(dataCategory string) string {
+	level := alarm.GetDefaultAlarmLevel(dataCategory)
+	if level != "" {
+		return fmt.Sprintf("%s.%s", level, dataCategory)
+	}
+	return dataCategory
 }

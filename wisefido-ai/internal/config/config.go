@@ -1,92 +1,157 @@
 package config
 
 import (
+	"log"
 	"os"
 	"owl-common/config"
 	"strconv"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Config 报警服务配置
 type Config struct {
-	Database config.DatabaseConfig
-	Redis    config.RedisConfig
+	Database config.DatabaseConfig `yaml:"database"`
+	Redis    config.RedisConfig    `yaml:"redis"`
 
-	// 报警服务特定配置
 	Alarm struct {
-		// Redis 缓存配置
 		Cache struct {
-			RealtimeKeyPrefix string // 实时数据缓存键前缀，如 "vital-focus:card:"
-			RealtimeSuffix    string // 实时数据缓存键后缀，如 ":realtime"
-			AlarmKeyPrefix    string // 报警数据缓存键前缀，如 "vital-focus:card:"
-			AlarmSuffix       string // 报警数据缓存键后缀，如 ":alarms"
-			AlarmTTL          int    // 报警数据 TTL（秒），默认 30秒
-			StateKeyPrefix    string // 报警状态缓存键前缀，如 "alarm:state:"
-		}
-
-		// 轮询配置（如果使用轮询方式）
-		PollInterval int // 轮询间隔（秒），默认 10秒
-
-		// 评估配置
-		Evaluation struct {
-			BatchSize int // 批量评估卡片数量，默认 10
-		}
-
-		// IoT Stream 配置（统一 streams，不区分设备类型）
+			RealtimeKeyPrefix string `yaml:"realtime_key_prefix"`
+			RealtimeSuffix    string `yaml:"realtime_suffix"`
+			AlarmKeyPrefix    string `yaml:"alarm_key_prefix"`
+			AlarmSuffix       string `yaml:"alarm_suffix"`
+			AlarmTTL          int    `yaml:"alarm_ttl"`
+			StateKeyPrefix    string `yaml:"state_key_prefix"`
+		} `yaml:"cache"`
+		PollInterval int `yaml:"poll_interval"`
+		Evaluation   struct {
+			BatchSize int `yaml:"batch_size"`
+		} `yaml:"evaluation"`
 		IoTStream struct {
-			Enabled       bool   // 是否启用 IoT Stream 消费（事件驱动）
-			Monitor       string // iot:monitor:stream
-			Stat          string // iot:stat:stream
-			Event         string // iot:event:stream
-			Alarm         string // iot:alarm:stream
-			ConsumerGroup string // 消费者组名称
-			ConsumerName  string // 消费者名称
-			BatchSize     int64  // 批量处理大小
-		}
-	}
+			Enabled       bool   `yaml:"enabled"`
+			Monitor       string `yaml:"monitor"`
+			Stat          string `yaml:"stat"`
+			Event         string `yaml:"event"`
+			Alarm         string `yaml:"alarm"`
+			ConsumerGroup string `yaml:"consumer_group"`
+			ConsumerName  string `yaml:"consumer_name"`
+			BatchSize     int64  `yaml:"batch_size"`
+		} `yaml:"iot_stream"`
+	} `yaml:"alarm"`
 
 	Log struct {
-		Level  string
-		Format string
-	}
+		Level  string `yaml:"level"`
+		Format string `yaml:"format"`
+	} `yaml:"logging"`
 }
 
 // Load 加载配置
 func Load() (*Config, error) {
-	cfg := &Config{}
+	configPath := "config.yaml"
+	if path := os.Getenv("CONFIG_PATH"); path != "" {
+		configPath = path
+	}
 
-	// 从环境变量加载（默认值）
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		log.Printf("(info) config file not found, using environment variables: %v", err)
+		return LoadFromEnv()
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		log.Printf("(warn) failed to parse config file, falling back to env: %v", err)
+		return LoadFromEnv()
+	}
+
+	cfg.setDefaults()
+	return &cfg, nil
+}
+
+func (c *Config) setDefaults() {
+	if c.Database.SSLMode == "" {
+		c.Database.SSLMode = "disable"
+	}
+	if c.Alarm.Cache.RealtimeKeyPrefix == "" {
+		c.Alarm.Cache.RealtimeKeyPrefix = "vital-focus:card:"
+	}
+	if c.Alarm.Cache.RealtimeSuffix == "" {
+		c.Alarm.Cache.RealtimeSuffix = ":realtime"
+	}
+	if c.Alarm.Cache.AlarmKeyPrefix == "" {
+		c.Alarm.Cache.AlarmKeyPrefix = "vital-focus:card:"
+	}
+	if c.Alarm.Cache.AlarmSuffix == "" {
+		c.Alarm.Cache.AlarmSuffix = ":alarms"
+	}
+	if c.Alarm.Cache.AlarmTTL == 0 {
+		c.Alarm.Cache.AlarmTTL = 30
+	}
+	if c.Alarm.Cache.StateKeyPrefix == "" {
+		c.Alarm.Cache.StateKeyPrefix = "alarm:state:"
+	}
+	if c.Alarm.PollInterval == 0 {
+		c.Alarm.PollInterval = 10
+	}
+	if c.Alarm.Evaluation.BatchSize == 0 {
+		c.Alarm.Evaluation.BatchSize = 10
+	}
+	if c.Alarm.IoTStream.Monitor == "" {
+		c.Alarm.IoTStream.Monitor = "iot:monitor:stream"
+	}
+	if c.Alarm.IoTStream.Stat == "" {
+		c.Alarm.IoTStream.Stat = "iot:stat:stream"
+	}
+	if c.Alarm.IoTStream.Event == "" {
+		c.Alarm.IoTStream.Event = "iot:event:stream"
+	}
+	if c.Alarm.IoTStream.Alarm == "" {
+		c.Alarm.IoTStream.Alarm = "iot:alarm:stream"
+	}
+	if c.Alarm.IoTStream.ConsumerGroup == "" {
+		c.Alarm.IoTStream.ConsumerGroup = "wisefido-alarm-events"
+	}
+	if c.Alarm.IoTStream.ConsumerName == "" {
+		c.Alarm.IoTStream.ConsumerName = "alarm-consumer-1"
+	}
+	if c.Alarm.IoTStream.BatchSize == 0 {
+		c.Alarm.IoTStream.BatchSize = 10
+	}
+	if c.Log.Level == "" {
+		c.Log.Level = "info"
+	}
+	if c.Log.Format == "" {
+		c.Log.Format = "json"
+	}
+}
+
+func LoadFromEnv() (*Config, error) {
+	cfg := &Config{}
 	cfg.Database.Host = getEnv("DB_HOST", "localhost")
-	// 默认端口使用环境变量，如果没有则使用 5433（与 start_owlback.sh 保持一致）
 	if portStr := getEnv("DB_PORT", ""); portStr != "" {
 		if port, err := strconv.Atoi(portStr); err == nil && port > 0 {
 			cfg.Database.Port = port
 		} else {
-			cfg.Database.Port = 5433 // 默认使用 5433（与 start_owlback.sh 保持一致）
+			cfg.Database.Port = 5433
 		}
 	} else {
-		cfg.Database.Port = 5433 // 默认使用 5433（与 start_owlback.sh 保持一致）
+		cfg.Database.Port = 5433
 	}
 	cfg.Database.User = getEnv("DB_USER", "postgres")
-	cfg.Database.Password = getEnv("DB_PASSWORD", "postgres")
+	cfg.Database.Password = getEnv("DB_PASSWORD", "")
 	cfg.Database.Database = getEnv("DB_NAME", "owlrd")
 	cfg.Database.SSLMode = getEnv("DB_SSLMODE", "disable")
-
 	cfg.Redis.Addr = getEnv("REDIS_ADDR", "localhost:6379")
 	cfg.Redis.Password = getEnv("REDIS_PASSWORD", "")
 	cfg.Redis.DB = 0
-
-	// 报警服务配置
 	cfg.Alarm.Cache.RealtimeKeyPrefix = getEnv("CACHE_REALTIME_PREFIX", "vital-focus:card:")
 	cfg.Alarm.Cache.RealtimeSuffix = ":realtime"
 	cfg.Alarm.Cache.AlarmKeyPrefix = getEnv("CACHE_ALARM_PREFIX", "vital-focus:card:")
 	cfg.Alarm.Cache.AlarmSuffix = ":alarms"
-	cfg.Alarm.Cache.AlarmTTL = 30 // 30秒
+	cfg.Alarm.Cache.AlarmTTL = 30
 	cfg.Alarm.Cache.StateKeyPrefix = getEnv("CACHE_STATE_PREFIX", "alarm:state:")
-
-	cfg.Alarm.PollInterval = 10 // 10秒轮询一次
+	cfg.Alarm.PollInterval = 10
 	cfg.Alarm.Evaluation.BatchSize = 10
-
-	// IoT Stream 配置 - 设备级别 streams
 	cfg.Alarm.IoTStream.Enabled = getEnv("AI_IOT_STREAM_ENABLED", "true") == "true"
 	cfg.Alarm.IoTStream.Monitor = getEnv("AI_STREAM_MONITOR", "iot:monitor:stream")
 	cfg.Alarm.IoTStream.Stat = getEnv("AI_STREAM_STAT", "iot:stat:stream")
@@ -100,10 +165,8 @@ func Load() (*Config, error) {
 	} else {
 		cfg.Alarm.IoTStream.BatchSize = 10
 	}
-
 	cfg.Log.Level = getEnv("LOG_LEVEL", "info")
 	cfg.Log.Format = getEnv("LOG_FORMAT", "json")
-
 	return cfg, nil
 }
 

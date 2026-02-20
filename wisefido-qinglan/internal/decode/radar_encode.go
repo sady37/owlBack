@@ -83,7 +83,7 @@ func EncodeHeartBreathParam(items []alarm.AlarmItem) (string, error) {
 	weakDuration := 10
 	weakSensitivity := 35
 
-	if it, ok := m[alarm.AbnormalRespiratoryRate]; ok && it.AlarmParams != nil {
+	if it, ok := m[alarm.RespRateAlert]; ok && it.AlarmParams != nil {
 		if v, ok := it.AlarmParams["max"]; ok {
 			upperBreath = extractIntValue(v)
 		}
@@ -91,7 +91,7 @@ func EncodeHeartBreathParam(items []alarm.AlarmItem) (string, error) {
 			lowerBreath = extractIntValue(v)
 		}
 	}
-	if it, ok := m[alarm.AbnormalHeartRate]; ok && it.AlarmParams != nil {
+	if it, ok := m[alarm.HeartRateAlert]; ok && it.AlarmParams != nil {
 		if v, ok := it.AlarmParams["max"]; ok {
 			upperHeart = extractIntValue(v)
 		}
@@ -99,7 +99,7 @@ func EncodeHeartBreathParam(items []alarm.AlarmItem) (string, error) {
 			lowerHeart = extractIntValue(v)
 		}
 	}
-	if it, ok := m[alarm.VitalsWeak]; ok && it.AlarmParams != nil {
+	if it, ok := m[alarm.WeakBiometricSignal]; ok && it.AlarmParams != nil {
 		// duration_min（分钟）直接使用，设备协议 byte 5 也是分钟单位
 		if v, ok := it.AlarmParams["duration_min"]; ok {
 			weakDuration = extractIntValue(v)

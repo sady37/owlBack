@@ -397,7 +397,7 @@ func buildAlarmCloudConfigFromDomain(alarmCloud *domain.AlarmCloud) (*alarm.Alar
 // buildDomainAlarmCloudFromConfig 从 alarm.AlarmCloudConfig 构建 domain.AlarmCloud
 func buildDomainAlarmCloudFromConfig(tenantID string, config *alarm.AlarmCloudConfig) (*domain.AlarmCloud, error) {
 	// 1. 构建 device_alarms JSONB
-	// 格式：{ "Radar": { "Radar_Fall": "EMERG", ... }, "SleepPad": { "SleepPad_LeftBed": "WARNING", ... } }
+	// 格式：{ "Radar": { "Radar_Fall": "CRITICAL", ... }, "SleepPad": { "SleepPad_LeftBed": "WARNING", ... } }
 	deviceAlarms := make(map[string]map[string]string)
 
 	// 处理 SleepPad 报警
@@ -467,7 +467,7 @@ func buildDefaultAlarmCloudConfig(tenantID string) (*domain.AlarmCloud, error) {
 	defaultSetting := alarm.DefaultAlarmSetting
 
 	// 1. 构建 device_alarms JSONB
-	// 格式：{ "Radar": { "Radar_Fall": "EMERG", ... }, "SleepPad": { "SleepPad_LeftBed": "WARNING", ... } }
+	// 格式：{ "Radar": { "Radar_Fall": "CRITICAL", ... }, "SleepPad": { "SleepPad_LeftBed": "WARNING", ... } }
 	deviceAlarms := make(map[string]map[string]string)
 
 	// 处理 SleepPad 报警

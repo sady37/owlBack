@@ -2150,35 +2150,31 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 			return nil, fmt.Errorf("access denied: user role is not Manager")
 		}
 
-		// 查询 2：获取用户的主 branch_name（通过 user_branches 表 JOIN branches 表）
-		var userBranchName sql.NullString
-		err = s.db.QueryRowContext(ctx,
-			`SELECT COALESCE(b.branch_name, '') as branch_name
-			 FROM user_branches ub
-			 LEFT JOIN branches b ON b.branch_id = ub.branch_id
-			 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2
-			 ORDER BY COALESCE(b.branch_name, '') ASC
-			 LIMIT 1`,
+		// 查询用户的所有 branch_id
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT ub.branch_id::text FROM user_branches ub
+			 WHERE ub.tenant_id = $1 AND ub.user_id::text = $2`,
 			req.TenantID, req.CurrentUserID,
-		).Scan(&userBranchName)
+		)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				// 用户没有主 branch，branch_name 为空字符串
-				userBranchName = sql.NullString{Valid: true, String: ""}
-			} else {
-				return nil, fmt.Errorf("failed to get user branch info: %w", err)
+			return nil, fmt.Errorf("failed to get user branches: %w", err)
+		}
+		defer rows.Close()
+		var userBranchIDs []string
+		for rows.Next() {
+			var bid string
+			if err := rows.Scan(&bid); err == nil {
+				userBranchIDs = append(userBranchIDs, bid)
 			}
 		}
 
-		// 查询 3：目标 resident 的 branch_name（从 residents.branch_id JOIN branches 表获取）
-		var targetBranchName sql.NullString
+		// 查询目标 resident 的 branch_id
+		var targetBranchID sql.NullString
 		err = s.db.QueryRowContext(ctx,
-			`SELECT COALESCE(b.branch_name, '') as branch_name
-			 FROM residents r
-			 LEFT JOIN branches b ON b.branch_id = r.branch_id
-			 WHERE r.tenant_id = $1 AND r.resident_id::text = $2`,
+			`SELECT branch_id::text FROM residents
+			 WHERE tenant_id = $1 AND resident_id::text = $2`,
 			req.TenantID, req.ResidentID,
-		).Scan(&targetBranchName)
+		).Scan(&targetBranchID)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return nil, fmt.Errorf("resident not found")
@@ -2186,20 +2182,23 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 			return nil, fmt.Errorf("failed to get resident info: %w", err)
 		}
 
-		// 如果两者的 branchName 均为 ""，视为相同
-		userBranch := ""
-		if userBranchName.Valid && userBranchName.String != "" {
-			userBranch = userBranchName.String
+		// 用户无 branch 限制时（无 user_branches 记录）允许更新
+		if len(userBranchIDs) > 0 {
+			targetBranch := ""
+			if targetBranchID.Valid {
+				targetBranch = targetBranchID.String
+			}
+			found := false
+			for _, bid := range userBranchIDs {
+				if bid == targetBranch {
+					found = true
+					break
+				}
+			}
+			if !found && targetBranch != "" {
+				return nil, fmt.Errorf("permission denied: can only update residents in same branch")
+			}
 		}
-		targetBranch := ""
-		if targetBranchName.Valid && targetBranchName.String != "" {
-			targetBranch = targetBranchName.String
-		}
-
-		if userBranch != targetBranch {
-			return nil, fmt.Errorf("permission denied: can only update residents in same branch")
-		}
-		// 允许更新
 	} else if req.CurrentUserRole == "Nurse" || req.CurrentUserRole == "Caregiver" {
 		// Caregiver/Nurse: 首先检查是否有 U 权限，其次检查护理关系
 		// 检查 U 权限
@@ -2747,26 +2746,37 @@ func (s *residentService) DeleteResident(ctx context.Context, req DeleteResident
 			return nil, fmt.Errorf("failed to get resident branch_id: %w", err)
 		}
 
-		// 获取用户的主院区 branch_id
-		var userBranchID sql.NullString
-		err = s.db.QueryRowContext(ctx,
-			`SELECT ub.branch_id::text 
-			 FROM user_branches ub
-			 LEFT JOIN branches b ON b.branch_id = ub.branch_id
-			 WHERE ub.user_id::text = $1
-			 ORDER BY COALESCE(b.branch_name, '') ASC
-			 LIMIT 1`,
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT branch_id::text FROM user_branches WHERE user_id::text = $1`,
 			req.CurrentUserID,
-		).Scan(&userBranchID)
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get user branches: %w", err)
+		}
+		defer rows.Close()
+		var userBranchIDs []string
+		for rows.Next() {
+			var bid string
+			if err := rows.Scan(&bid); err == nil {
+				userBranchIDs = append(userBranchIDs, bid)
+			}
+		}
 
-		// 验证 branch_id 匹配
-		if userBranchID.Valid {
-			// 用户有 branch_id，住户必须有相同的 branch_id
-			if !residentBranchID.Valid || residentBranchID.String != userBranchID.String {
+		if len(userBranchIDs) > 0 {
+			if !residentBranchID.Valid {
+				return nil, fmt.Errorf("permission denied: can only delete residents in the same branch")
+			}
+			found := false
+			for _, bid := range userBranchIDs {
+				if bid == residentBranchID.String {
+					found = true
+					break
+				}
+			}
+			if !found {
 				return nil, fmt.Errorf("permission denied: can only delete residents in the same branch")
 			}
 		} else {
-			// 用户没有 branch_id，只能删除没有 branch_id 的住户
 			if residentBranchID.Valid {
 				return nil, fmt.Errorf("permission denied: can only delete residents without branch_id")
 			}
@@ -2909,26 +2919,37 @@ func (s *residentService) ResetResidentPassword(ctx context.Context, req ResetRe
 				return nil, fmt.Errorf("failed to get resident branch_id: %w", err)
 			}
 
-			// 获取用户的第一个院区 branch_id
-			var userBranchID sql.NullString
-			err = s.db.QueryRowContext(ctx,
-				`SELECT ub.branch_id::text 
-				 FROM user_branches ub
-				 LEFT JOIN branches b ON b.branch_id = ub.branch_id
-				 WHERE ub.user_id::text = $1
-				 ORDER BY COALESCE(b.branch_name, '') ASC
-				 LIMIT 1`,
+			rows, err := s.db.QueryContext(ctx,
+				`SELECT branch_id::text FROM user_branches WHERE user_id::text = $1`,
 				req.CurrentUserID,
-			).Scan(&userBranchID)
+			)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get user branches: %w", err)
+			}
+			defer rows.Close()
+			var userBranchIDs []string
+			for rows.Next() {
+				var bid string
+				if err := rows.Scan(&bid); err == nil {
+					userBranchIDs = append(userBranchIDs, bid)
+				}
+			}
 
-			// 验证 branch_id 匹配
-			if userBranchID.Valid {
-				// 用户有 branch_id，住户必须有相同的 branch_id
-				if !residentBranchID.Valid || residentBranchID.String != userBranchID.String {
+			if len(userBranchIDs) > 0 {
+				if !residentBranchID.Valid {
+					return nil, fmt.Errorf("permission denied: can only reset password for residents in the same branch")
+				}
+				found := false
+				for _, bid := range userBranchIDs {
+					if bid == residentBranchID.String {
+						found = true
+						break
+					}
+				}
+				if !found {
 					return nil, fmt.Errorf("permission denied: can only reset password for residents in the same branch")
 				}
 			} else {
-				// 用户没有 branch_id，只能重置没有 branch_id 的住户的密码
 				if residentBranchID.Valid {
 					return nil, fmt.Errorf("permission denied: can only reset password for residents without branch_id")
 				}

@@ -17,9 +17,9 @@ import (
 type AlarmInsertParams struct {
 	TenantID    string
 	DeviceID    string
-	EventType   string // "Fall", "AbnormalHeartRate" etc
+	EventType   string // "Fall", "HeartRateAlert" etc
 	Category    string // "safety", "clinical", "behavioral", "device"
-	AlarmLevel  string // "EMERG", "ALERT", "CRIT", "ERR", "WARNING"
+	AlarmLevel  string // "EMERG", "ALERT", "CRITICAL", "ERROR", "WARNING"
 	TriggeredAt time.Time
 	TriggerData json.RawMessage // JSONB
 	Metadata    json.RawMessage // JSONB

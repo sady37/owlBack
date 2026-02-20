@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"owl-common/alarm"
-	consts "owl-common/const"
 	"owl-common/radar"
 	//"owl-common/utils"
 )
@@ -71,7 +70,7 @@ func decodeRadarProp(data map[string]interface{}) (interface{}, error) {
 	return resp, nil
 }
 
-// normalizePropData 将设备 prop data 转为规范 key 与单位（与 consts.Key* 一致，单位 cm）。
+// normalizePropData 将设备 prop data 转为规范 key 与单位（与 radar.Key* 一致，单位 cm）。
 // 设备 key → 规范 key：radar_install_height(dm)→install_height(cm), radar_install_style→install_model,
 // radar_func_ctrl→work_model, rectangle(dm)→rectangle(cm), ssid_password→wifi_ssid+wifi_password；其余透传。
 func normalizePropData(data map[string]interface{}) map[string]interface{} {
@@ -83,33 +82,33 @@ func normalizePropData(data map[string]interface{}) map[string]interface{} {
 		switch k {
 		case "radar_install_height":
 			if n, ok := propNum(v); ok {
-				out[consts.KeyInstallHeight] = n * 10 // dm → cm
+				out[radar.KeyInstallHeight] = n * 10 // dm → cm
 			}
 		case "radar_install_style":
 			if n, ok := propNum(v); ok {
-				out[consts.KeyInstallModel] = n // 0/1/2
+				out[radar.KeyInstallModel] = n // 0/1/2
 			}
 		case "radar_func_ctrl":
 			if n, ok := propNum(v); ok {
-				out[consts.KeyWorkModel] = n // 3/7/11/15
+				out[radar.KeyWorkModel] = n // 3track/7fall/11sleep/15func
 			}
 		case "rectangle":
 			if s, ok := v.(string); ok && s != "" {
 				if cm := rectangleDMToCM(s); cm != "" {
-					out[consts.KeyRectangle] = cm
+					out[radar.KeyRectangle] = cm
 				} else {
-					out[consts.KeyRectangle] = s
+					out[radar.KeyRectangle] = s
 				}
 			}
 		case "declare_area":
 			if s, ok := v.(string); ok && s != "" {
 				if cm := declareAreaDMToCM(s); cm != "" {
-					out[consts.KeyDeclareArea] = cm
+					out[radar.KeyDeclareArea] = cm
 				} else {
-					out[consts.KeyDeclareArea] = v
+					out[radar.KeyDeclareArea] = v
 				}
 			} else {
-				out[consts.KeyDeclareArea] = v
+				out[radar.KeyDeclareArea] = v
 			}
 		case "fall_param", "heart_breath_param":
 			out[k] = v // base64 透传，下游用 DecodeFallParam/DecodeHeartBreathParam
@@ -118,10 +117,10 @@ func normalizePropData(data map[string]interface{}) map[string]interface{} {
 		case "ssid_password":
 			if s, ok := v.(string); ok && s != "" {
 				if idx := strings.Index(s, ":"); idx >= 0 {
-					out[consts.KeyWifiSsid] = strings.TrimSpace(s[:idx])
-					out[consts.KeyWifiPassword] = strings.TrimSpace(s[idx+1:])
+					out[radar.KeyWifiSsid] = strings.TrimSpace(s[:idx])
+					out[radar.KeyWifiPassword] = strings.TrimSpace(s[idx+1:])
 				} else {
-					out[consts.KeyWifiSsid] = s
+					out[radar.KeyWifiSsid] = s
 				}
 			}
 		default:
@@ -262,11 +261,11 @@ func decodeRadarMonitor(data map[string]interface{}) (interface{}, error) {
 					"remaining_time": trackData.RemainingTime,
 					"area_id":        trackData.AreaID,
 				}
-			trackObj["pose"] = trackData.Pose
-			trackObj["event"] = trackData.Event
-			// if i == len(trackDataList)-1 {
-			// 	trackObj["raw_original"] = trackBase64
-			// }
+				trackObj["pose"] = trackData.Pose
+				trackObj["event"] = trackData.Event
+				// if i == len(trackDataList)-1 {
+				// 	trackObj["raw_original"] = trackBase64
+				// }
 				dataValue = append(dataValue, trackObj)
 				log.Printf("[MONITOR_TRACK] target_id=%d position_x=%d position_y=%d position_z=%d remaining_time=%d area_id=%d pose=%d event=%d",
 					trackData.TargetID, trackData.PositionX, trackData.PositionY, trackData.PositionZ,
@@ -301,7 +300,8 @@ func decodeRadarMonitor(data map[string]interface{}) (interface{}, error) {
 			vitalObj["stability"] = vitalData.Stability
 			dataValue = append(dataValue, vitalObj)
 			log.Printf("[MONITOR_VITAL] vital_flag=%d heart_rate=%d respiratory_rate=%d sleep_status=%d stability=%d",
-				vitalData.VitalFlag, vitalData.HeartRate, vitalData.RespiratoryRate, vitalData.SleepStatus, vitalData.Stability)		}
+				vitalData.VitalFlag, vitalData.HeartRate, vitalData.RespiratoryRate, vitalData.SleepStatus, vitalData.Stability)
+		}
 	}
 
 	if len(dataValue) == 0 {
@@ -333,6 +333,33 @@ func toFloat64(v interface{}) (float64, bool) {
 
 // decodeRadarStat 解码统计数据（单位：长度 m/cm，时长 秒/分/小时；walk_distance 保持 m，各 duration 整型秒）
 // 协议 3.6：data.data.track / data.data.sleep 为 base64；无 base64 时兼容顶层 version/people_count 等。
+/*
+[
+  {
+    "category": "track",
+    "version": 1,
+    "people_count": 1,
+    "walk_distance": 12.5,
+    "walk_duration": 300,
+    "lie_duration": 600,
+    "stand_duration": 100,
+    "multi_person_duration": 0
+  },
+  {
+    "category": "sleep",
+    "sleep_flag": 1,
+    "respiratory_rate": 16,
+    "heart_rate": 72,
+    "avg_respiratory_rate": 15,
+    "avg_heart_rate": 70,
+    "breath_state": 0,
+    "heart_state": 0,
+    "vital_signs_state": 0,
+    "sleep_state": 2,
+    "stat_numeric_codes": ["sleep_breath_01", "sleep_vitals_11"]   //hr,rr,vital
+  }
+]
+*/
 func decodeRadarStat(data map[string]interface{}) (interface{}, error) {
 	var dataValue []map[string]interface{}
 
@@ -425,12 +452,11 @@ func decodeRadarStat(data map[string]interface{}) (interface{}, error) {
 			sleepObj["vital_signs_state"] = sleepData.VitalSignsStatus
 			sleepObj["sleep_state"] = sleepData.SleepStatus
 
-			// 分别提取4组状态（bit 1:0, bit 3:2, bit 5:4, bit 7:6）
-			// 用于生成数字组合，便于在 device_monitor 中查找配置
-			breathState := sleepData.BreathStatus & 0x03         // bit 1:0: 呼吸状态 (00=正常, 01=过低, 10=过高, 11=暂停)
-			heartState := sleepData.HeartStatus & 0x03           // bit 3:2: 心率状态 (00=正常, 01=过低, 10=过高, 11=未定义)
-			vitalSignsState := sleepData.VitalSignsStatus & 0x03 // bit 5:4: 生命体征 (00=正常, 01=未定义, 02=未定义, 11=弱)
-			// sleepState := sleepData.SleepStatus & 0x03     // bit 7:6: 睡眠状态 (00=未定义, 01=浅睡, 10=深睡, 11=清醒) - 通常不是报警
+			// byte13 的 4 组 2-bit 状态（protocol.go StatSleepData 已按 bit 拆分）
+			breathState := sleepData.BreathStatus & 0x03         // bit[1:0] 呼吸: 00=正常 01=过低 10=过高 11=暂停
+			heartState := sleepData.HeartStatus & 0x03           // bit[3:2] 心率: 00=正常 01=过低 10=过高 11=未定义
+			vitalSignsState := sleepData.VitalSignsStatus & 0x03 // bit[5:4] 生命体征: 00=正常 01=未定义 10=未定义 11=弱
+			sleepState := sleepData.SleepStatus & 0x03           // bit[7:6] 睡眠: 00=未定义 01=浅睡 10=深睡 11=清醒
 
 			// 生成数字组合字段（用于查找 device_monitor 配置）
 			// 格式：sleep_{type}_{state}，例如 "sleep_breath_01", "sleep_heart_10", "sleep_vitals_11"
@@ -446,6 +472,9 @@ func decodeRadarStat(data map[string]interface{}) (interface{}, error) {
 			if vitalSignsState == 3 { // 11=生命体征弱
 				sleepObj["stat_numeric_code_vitals"] = "sleep_vitals_11"
 				numericCodes = append(numericCodes, "sleep_vitals_11")
+			}
+			if sleepState != 0 { // 01=浅睡 10=深睡 11=清醒
+				sleepObj["stat_numeric_code_sleep"] = fmt.Sprintf("sleep_sleep_%02d", sleepState)
 			}
 			// 保留所有数字组合（可能同时有多个异常）
 			if len(numericCodes) > 0 {
@@ -466,304 +495,176 @@ func decodeRadarStat(data map[string]interface{}) (interface{}, error) {
 
 // decodeRadarEvent 解码事件数据
 // 协议参考：docs/Radar_MQTT_v3.0.md 3.5 事件告警上报
-// type=1 进出事件 data 为数组；type=2 姿态变化 data 为数组；type=3 人数变化 data 为对象 {"number-people": N}
-func decodeRadarEvent(data map[string]interface{}) (interface{}, error) {
-	// 系统1格式：事件类型：1-进出事件，2-姿态变化事件，3-人数变化事件，5-设备在线状态，7-信号差，8-倾角异常，9-其他告警
-	// eventType 从顶层 data["type"] 获取（兼容 int 与 string 如 "3"）
-	eventType := 0
-	if v, ok := data["type"].(int); ok {
-		eventType = v
-	} else if v, ok := data["type"].(float64); ok {
-		eventType = int(v)
-	} else if s, ok := data["type"].(string); ok {
-		fmt.Sscanf(s, "%d", &eventType)
-	}
-
-	// 调试：记录原始数据
-	//log.Printf("[DECODE_EVENT_DEBUG] raw data keys: %v", utils.GetMapKeys(data))
+// type=1 进出事件 data 为数组（多 track）；type=2 姿态变化 data 为数组（多 track）
+// type=3 人数变化 data 为对象；type=5/7/8 设备状态 data 为对象
+// 返回 []interface{}，每个元素为一条 track/item 的 map[string]interface{}
+/*
+items 是 []interface{}，每个元素是一个 map[string]interface{}。
+举例，type=1 有 2 条 track：
+[
+  {"data_category": "InBed", "fhir_category": "behavioral"，"event_type": 1, "track_id": 0, "event": 3, "area_type": 2},
+  {"data_category": "LeftBed", "fhir_category": "behavioral"，"event_type": 1, "track_id": 1, "event": 4, "area_type": 2 }
+  {"data_category": "Fall", "fhir_category": "safety"，"event_type": 2, "track_id": 0, "pose": 5},
+  {"data_category": "Walking", "fhir_category": "behavioral"，"event_type": 2, "track_id": 1, "pose": 1, },
+  { "data_category": "Sitting", "fhir_category": "behavioral"，"event_type": 2, "track_id": 2, "pose": 3}
+  {"data_category": "OfflineAlarm", "fhir_category": "device","event_type": 5, "StatusFieldValue": "1"}
+]
+*/
+func decodeRadarEvent(data map[string]interface{}) ([]interface{}, error) {
+	eventType := toInt(data["type"])
 	log.Printf("[DECODE_EVENT_DEBUG] raw data: type=%v, data=%v", eventType, data["data"])
 
-	// 处理 data 字段（一条消息只有一个事件）
-	var eventObj map[string]interface{}
-	if dataField, ok := data["data"]; ok {
-		// data 可能是单个对象
-		if dataMap, ok := dataField.(map[string]interface{}); ok {
-			eventObj = buildEventObjectFromType(eventType, dataMap)
-		} else if dataArray, ok := dataField.([]interface{}); ok && len(dataArray) > 0 {
-			// type 1/2/5/7/8/9 的 data 可能为数组（Reside_stream_stand 5.9），取首元素
-			if eventMap, ok := dataArray[0].(map[string]interface{}); ok {
-				eventObj = buildEventObjectFromType(eventType, eventMap)
-			}
-		}
-	} else {
-		// 如果没有 data 字段，直接使用顶层数据
-		// 注意：对于 number_people 事件，设备可能直接发送 number_people 字段在顶层
-		eventObj = buildEventObjectFromType(eventType, data)
+	var items []interface{}
+
+	dataField, hasData := data["data"]
+	if !hasData {
+		dataField = data
 	}
-
-	// 返回单个对象（不是数组）
-	if len(eventObj) == 0 {
-		return map[string]interface{}{}, nil
-	}
-	return eventObj, nil
-}
-
-// decodeRadarAlarm 解码告警数据（与 event 相同）
-func decodeRadarAlarm(data map[string]interface{}) (interface{}, error) {
-	return decodeRadarEvent(data)
-}
-
-// buildEventObjectFromType 根据 eventType 构建事件对象
-// eventType 从顶层 data["type"] 获取，eventMap 是 data["data"] 中的单个事件对象
-func buildEventObjectFromType(eventType int, eventMap map[string]interface{}) map[string]interface{} {
-	eventObj := make(map[string]interface{})
 
 	switch eventType {
 	case 1:
-		// type=1: 进出事件
-		// event: 1=进入房间 2=离开房间 3=进入区域 4=离开区域 5=进入监护 6=退出监护
-		eventObj["event_type"] = "1"
-		if trackID, ok := eventMap["track-id"]; ok {
-			eventObj["track_id"] = trackID
-		} else if trackID, ok := eventMap["track_id"]; ok {
-			eventObj["track_id"] = trackID
-		}
-
-		eventVal := 0
-		if event, ok := eventMap["event"]; ok {
-			switch v := event.(type) {
-			case int:
-				eventVal = v
-			case float64:
-				eventVal = int(v)
-			case string:
-				fmt.Sscanf(v, "%d", &eventVal)
-			}
-			eventObj["event"] = event
-			eventObj["event_raw"] = fmt.Sprintf("%d", eventVal)
-		}
-
-		areaTypeVal := 0
-		if areaType, ok := eventMap["area_type"]; ok {
-			switch v := areaType.(type) {
-			case int:
-				areaTypeVal = v
-			case float64:
-				areaTypeVal = int(v)
-			case string:
-				fmt.Sscanf(v, "%d", &areaTypeVal)
-			}
-			eventObj["area_type"] = mapAreaType(areaType)
-			eventObj["area_type_raw"] = fmt.Sprintf("%d", areaTypeVal)
-		}
-
-		switch eventVal {
-		case 1:
-			eventObj["category"] = "InRoom"
-		case 2:
-			eventObj["category"] = "OutRoom"
-		case 3:
-			switch areaTypeVal {
-			case 6:
-				eventObj["category"] = "InWarnArea"
-			default:
-				eventObj["category"] = "InBed"
-			}
-		case 4:
-			switch areaTypeVal {
-			case 6:
-				eventObj["category"] = "OutWarnArea"
-			default:
-				eventObj["category"] = "OutBed"
-			}
-		case 5:
-			eventObj["category"] = "EnterMonitor"
-		case 6:
-			eventObj["category"] = "ExitMonitor"
-		default:
-			eventObj["category"] = "enter2out"
-		}
-
-		excludedKeys := map[string]bool{"track-id": true, "track_id": true, "event": true, "area_type": true}
-		for k, v := range eventMap {
-			if _, exists := eventObj[k]; !exists && !excludedKeys[k] {
-				eventObj[k] = v
+		if arr, ok := dataField.([]interface{}); ok {
+			for _, elem := range arr {
+				if m, ok := elem.(map[string]interface{}); ok {
+					items = append(items, buildEnter2OutTrack(m))
+				}
 			}
 		}
 	case 2:
-		eventObj["category"] = "pose"
-		eventObj["event_type"] = "2"
-		if trackID, ok := eventMap["track-id"]; ok {
-			eventObj["track_id"] = trackID
-		} else if trackID, ok := eventMap["track_id"]; ok {
-			eventObj["track_id"] = trackID
-		}
-		if pose, ok := eventMap["pose"]; ok {
-			setPoseRaw(eventObj, pose)
-			eventObj["pose"] = pose
-		}
-		excludedKeys := map[string]bool{"track-id": true, "track_id": true, "pose": true}
-		for k, v := range eventMap {
-			if _, exists := eventObj[k]; !exists && !excludedKeys[k] {
-				eventObj[k] = v
+		if arr, ok := dataField.([]interface{}); ok {
+			for _, elem := range arr {
+				if m, ok := elem.(map[string]interface{}); ok {
+					items = append(items, buildPoseTrack(m))
+				}
 			}
 		}
 	case 3:
-		// type=3 + data["number-people"]：表示当前人数（当前检测到的人数）
-		eventObj["category"] = "number-people"
-		eventObj["event_type"] = "3"
-		if numberPeople, ok := eventMap["number-people"]; ok {
-			eventObj["number_people"] = numberPeople
-		} else if numberPeople, ok := eventMap["number_people"]; ok {
-			eventObj["number_people"] = numberPeople
-		} else if numberPeople, ok := eventMap["numberPeople"]; ok {
-			eventObj["number_people"] = numberPeople
+		if m, ok := dataField.(map[string]interface{}); ok {
+			items = append(items, buildPeopleNumber(m))
 		}
-		excludedKeys := map[string]bool{"number-people": true, "number_people": true, "numberPeople": true}
-		for k, v := range eventMap {
-			if _, exists := eventObj[k]; !exists && !excludedKeys[k] {
-				eventObj[k] = v
-			}
+	case 5, 7, 8:
+		if m, ok := dataField.(map[string]interface{}); ok {
+			items = append(items, buildStatus(eventType, m))
 		}
+	}
+
+	return items, nil
+}
+
+// decodeRadarAlarm 解码告警数据（与 event 相同）
+func decodeRadarAlarm(data map[string]interface{}) ([]interface{}, error) {
+	return decodeRadarEvent(data)
+}
+
+// buildEnter2OutTrack type=1 进出事件
+func buildEnter2OutTrack(m map[string]interface{}) map[string]interface{} {
+	event := toInt(m["event"])
+	areaType := toInt(m["area_type"])
+	dataCategory, _ := alarm.LookupEnter2Out(event, areaType)
+	fhirCategory := alarm.GetFHIRCategory(dataCategory)
+
+	return map[string]interface{}{
+		"data_category": dataCategory,
+		"fhir_category": fhirCategory,		
+		"event_type":    1,
+		"track_id":      toInt(m["track-id"]),
+		"event":         event,
+		"area_type":     areaType,
+
+	}
+}
+
+// buildPoseTrack type=2 姿态事件
+func buildPoseTrack(m map[string]interface{}) map[string]interface{} {
+	pose := toInt(m["pose"])
+	dataCategory, _ := alarm.LookupPose(pose)
+	fhirCategory := alarm.GetFHIRCategory(dataCategory)
+
+	return map[string]interface{}{
+		"data_category": dataCategory,
+		"fhir_category": fhirCategory,
+		"event_type":    2,
+		"track_id":      toInt(m["track-id"]),
+		"pose":          pose,
+	}
+}
+
+// buildPeopleNumber type=3 人数统计
+func buildPeopleNumber(m map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"data_category": alarm.NumberPeopleCategory,
+		"fhir_category": alarm.FHIRCategoryBehavioral,
+		"event_type":    3,
+		"number_people": toInt(m["number-people"]),
+	}
+}
+
+// buildStatus type=5/7/8 设备状态事件
+func buildStatus(eventType int, m map[string]interface{}) map[string]interface{} {
+	var dataCategory, statusType, statusValue string
+	switch eventType {
 	case 5:
-		// OfflineAlarm: StatusFieldValue="1"(离线) / "0"(在线)
-		// isOnline 原始值：0=在线, 非0=离线 → 翻转为 offline 语义
-		eventObj["category"] = "OfflineAlarm"
-		eventObj["event_type"] = "5"
-		eventObj["StatusFieldValue"] = "0" // 默认在线
-		if isOnline, ok := eventMap["isOnline"]; ok {
-			switch v := isOnline.(type) {
-			case int:
-				if v != 0 {
-					eventObj["StatusFieldValue"] = "1" // isOnline≠0 → 离线
-				}
-			case string:
-				if v != "0" {
-					eventObj["StatusFieldValue"] = "1"
-				}
-			}
-		}
-		for k, v := range eventMap {
-			if k != "category" && k != "isOnline" {
-				eventObj[k] = v
-			}
+		dataCategory = alarm.AlarmTypeOfflineAlarm
+		statusType = radar.StatusFieldOffline
+		statusValue = "0"
+		if toInt(m["isOnline"]) != 0 {
+			statusValue = "1"
 		}
 	case 7:
-		// SignalPoor: StatusFieldValue="1"(异常) / "0"(恢复)
-		eventObj["category"] = "SignalPoor"
-		eventObj["event_type"] = "7"
-		eventObj["StatusFieldValue"] = "1" // 默认异常
-		if recovery, ok := eventMap["recovery"]; ok {
-			switch v := recovery.(type) {
-			case int:
-				if v != 0 {
-					eventObj["StatusFieldValue"] = "0" // recovery=非0 → 恢复
-				}
-			case string:
-				if v != "0" {
-					eventObj["StatusFieldValue"] = "0"
-				}
-			}
-		}
-		for k, v := range eventMap {
-			if k != "category" && k != "recovery" {
-				eventObj[k] = v
-			}
+		dataCategory = alarm.SignalPoor
+		statusType = radar.StatusFieldSignalPoor
+		statusValue = "1"
+		if toInt(m["recovery"]) != 0 {
+			statusValue = "0"
 		}
 	case 8:
-		// AngleException: StatusFieldValue="1"(异常) / "0"(恢复)
-		eventObj["category"] = "AngleException"
-		eventObj["event_type"] = "8"
-		eventObj["StatusFieldValue"] = "1" // 默认异常
-		if recovery, ok := eventMap["recovery"]; ok {
-			switch v := recovery.(type) {
-			case int:
-				if v != 0 {
-					eventObj["StatusFieldValue"] = "0"
-				}
-			case string:
-				if v != "0" {
-					eventObj["StatusFieldValue"] = "0"
-				}
-			}
-		}
-		for k, v := range eventMap {
-			if k != "category" && k != "recovery" {
-				eventObj[k] = v
-			}
-		}
-	case 9:
-		eventObj["category"] = "other"
-		for k, v := range eventMap {
-			if k != "category" {
-				eventObj[k] = v
-			}
-		}
-	default:
-		// 未知类型：从数据推断 event_type（兼容 type 缺失或为 string 的情况）
-		if pose, hasPose := eventMap["pose"]; hasPose {
-			eventObj["category"] = "pose"
-			eventObj["event_type"] = "2"
-			setPoseRaw(eventObj, pose)
-			eventObj["pose"] = pose
-		} else if numberPeople, hasNumberPeople := eventMap["number-people"]; hasNumberPeople {
-			eventObj["category"] = "number-people"
-			eventObj["event_type"] = "3"
-			eventObj["number_people"] = numberPeople
-		} else if numberPeople, hasNumberPeople := eventMap["number_people"]; hasNumberPeople {
-			eventObj["category"] = "number-people"
-			eventObj["event_type"] = "3"
-			eventObj["number_people"] = numberPeople
-		} else if numberPeople, hasNumberPeople := eventMap["numberPeople"]; hasNumberPeople {
-			eventObj["category"] = "number-people"
-			eventObj["event_type"] = "3"
-			eventObj["number_people"] = numberPeople
-		} else {
-			for k, v := range eventMap {
-				if k != "type" && k != "event_type" {
-					eventObj[k] = v
-				}
-			}
-			if len(eventObj) > 0 {
-				eventObj["category"] = "unknown"
-			}
+		dataCategory = alarm.AngleException
+		statusType = radar.StatusFieldAngleAbnormal
+		statusValue = "1"
+		if toInt(m["recovery"]) != 0 {
+			statusValue = "0"
 		}
 	}
 
-	if len(eventObj) > 1 { // 至少有 category 和其他字段
-		return eventObj
+	return map[string]interface{}{
+		"data_category": dataCategory,
+		"fhir_category": alarm.GetFHIRCategory(dataCategory),
+		"event_type":    eventType,
+		"status_type":   statusType,
+		"status_value":  statusValue,
 	}
-	return make(map[string]interface{})
 }
 
-// setPoseRaw 将 pose 原始值写入 eventObj["pose_raw"]，供 ExtractNumericCodesFromEvent 生成 numeric code（如 "22"）
-// MQTT 侧多为字符串如 "2"；兼容 int/float64（Go json 或个别网关）
-func setPoseRaw(eventObj map[string]interface{}, pose interface{}) {
-	switch v := pose.(type) {
+// toInt 从 interface{} 提取 int 值（兼容 int / float64 / string），无法解析返回 0
+func toInt(v interface{}) int {
+	switch val := v.(type) {
 	case int:
-		eventObj["pose_raw"] = fmt.Sprintf("%d", v)
+		return val
 	case float64:
-		eventObj["pose_raw"] = fmt.Sprintf("%.0f", v)
+		return int(val)
 	case string:
-		eventObj["pose_raw"] = v
+		var n int
+		fmt.Sscanf(val, "%d", &n)
+		return n
 	}
+	return 0
 }
 
-// mapAreaType 映射 area_type
-func mapAreaType(areaType interface{}) interface{} {
-	if areaTypeInt, ok := areaType.(int); ok {
-		switch areaTypeInt {
-		case 2:
-			return "Bed"
-		case 5:
-			return "Monitoring bed"
-		case 6:
-			return "Sensor area"
-		default:
-			return areaType
-		}
+// mapAreaType 映射 area_type 数值到可读字符串
+// 2=Bed 4=Door 5=MonitorBed 6=SensingArea
+func mapAreaType(areaType int) string {
+	switch areaType {
+	case 2:
+		return "Bed"
+	case 4:
+		return "Door"
+	case 5:
+		return "MonitorBed"
+	case 6:
+		return "SensingArea"
+	default:
+		return fmt.Sprintf("%d", areaType)
 	}
-	return areaType
 }
 
 // decodeMonitorTrackFromBase64 解码 monitor track，与 radar.MonitorTrackData 布局一致
@@ -940,13 +841,13 @@ func decodeHeartBreathParamFromBase64(heartBreathParamBase64 string) (*radar.Hea
 		return nil, nil
 	}
 	out := &radar.HeartBreathParamData{
-		RespRateMax:      int(data[0]),
-		HeartRateMax:     int(data[1]),
-		RespRateMin:      int(data[2]),
-		HeartRateMin:     int(data[3]),
-		ContinuousDetect: int(data[4]),
-		VitalsWeakDurMin: int(data[5]),
-		VitalsWeakSens:   int(data[6]),
+		RespRateMax:               int(data[0]),
+		HeartRateMax:              int(data[1]),
+		RespRateMin:               int(data[2]),
+		HeartRateMin:              int(data[3]),
+		ContinuousDetect:          int(data[4]),
+		WeakBiometricSignalDurMin: int(data[5]),
+		WeakBiometricSignalSens:   int(data[6]),
 	}
 	if len(data) >= 16 {
 		copy(out.Reserved_7_15[:], data[7:16])
@@ -961,12 +862,12 @@ func DecodeHeartBreathParam(heartBreathParamBase64 string) (map[string]interface
 		return nil, err
 	}
 	result := make(map[string]interface{})
-	result[alarm.AbnormalRespiratoryRate+".max"] = p.RespRateMax
-	result[alarm.AbnormalHeartRate+".max"] = p.HeartRateMax
-	result[alarm.AbnormalRespiratoryRate+".min"] = p.RespRateMin
-	result[alarm.AbnormalHeartRate+".min"] = p.HeartRateMin
-	result[alarm.VitalsWeak+".duration_min"] = p.VitalsWeakDurMin
-	result[alarm.VitalsWeak+".sensitivity"] = p.VitalsWeakSens
+	result[alarm.RespRateAlert+".max"] = p.RespRateMax
+	result[alarm.HeartRateAlert+".max"] = p.HeartRateMax
+	result[alarm.RespRateAlert+".min"] = p.RespRateMin
+	result[alarm.HeartRateAlert+".min"] = p.HeartRateMin
+	result[alarm.WeakBiometricSignal+".duration_min"] = p.WeakBiometricSignalDurMin
+	result[alarm.WeakBiometricSignal+".sensitivity"] = p.WeakBiometricSignalSens
 	return result, nil
 }
 
@@ -977,7 +878,7 @@ func DecodeDevicePropsToAlarmItems(items []alarm.AlarmItem, deviceProps map[stri
 	copy(result, items)
 
 	// 支持规范 key work_model 与设备 key radar_func_ctrl（prop 解码后为 work_model）
-	workModeRaw, _ := deviceProps[consts.KeyWorkModel]
+	workModeRaw, _ := deviceProps[radar.KeyWorkModel]
 	if workModeRaw == nil {
 		workModeRaw = deviceProps["radar_func_ctrl"]
 	}
@@ -1053,14 +954,14 @@ func DecodeDevicePropsToAlarmItems(items []alarm.AlarmItem, deviceProps map[stri
 				}
 			}
 		} else {
-			disableAlarmItem(&result, alarm.AbnormalHeartRate)
-			disableAlarmItem(&result, alarm.AbnormalRespiratoryRate)
-			disableAlarmItem(&result, alarm.VitalsWeak)
+			disableAlarmItem(&result, alarm.HeartRateAlert)
+			disableAlarmItem(&result, alarm.RespRateAlert)
+			disableAlarmItem(&result, alarm.WeakBiometricSignal)
 		}
 	} else {
-		disableAlarmItem(&result, alarm.AbnormalHeartRate)
-		disableAlarmItem(&result, alarm.AbnormalRespiratoryRate)
-		disableAlarmItem(&result, alarm.VitalsWeak)
+		disableAlarmItem(&result, alarm.HeartRateAlert)
+		disableAlarmItem(&result, alarm.RespRateAlert)
+		disableAlarmItem(&result, alarm.WeakBiometricSignal)
 	}
 
 	return result, nil

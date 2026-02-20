@@ -151,7 +151,7 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 			c.card_id::text, c.tenant_id::text, c.card_type, c.card_name, c.card_address,
 			c.bed_id::text, c.unit_id::text, c.timezone,
 			c.devices, c.residents,
-			COALESCE(c.icon_alarm_level, 3), COALESCE(c.pop_alarm_emerge, 0),
+			COALESCE(c.icon_alarm_level, 2), COALESCE(c.pop_alarm, 2),
 			COALESCE(u.branch_id::text, '')       AS branch_id,
 			COALESCE(b.branch_name, '')           AS branch_name,
 			COALESCE(u.unit_name, '')             AS unit_name,
@@ -200,7 +200,7 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 			cardID, tenantID, cardType, cardName, cardAddress string
 			bedID, unitID, timezone                           sql.NullString
 			devicesJSON, residentsJSON                        []byte
-			iconAlarmLevel, popAlarmEmerge                    int
+			iconAlarmLevel, popAlarm                          int
 			branchID, branchName, unitName                    string
 			building, unitType                                string
 			isPublic, isSharedUnit                            bool
@@ -211,7 +211,7 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 			&cardID, &tenantID, &cardType, &cardName, &cardAddress,
 			&bedID, &unitID, &timezone,
 			&devicesJSON, &residentsJSON,
-			&iconAlarmLevel, &popAlarmEmerge,
+			&iconAlarmLevel, &popAlarm,
 			&branchID, &branchName, &unitName,
 			&building, &isPublic, &isSharedUnit, &unitType,
 			&bedName, &roomID, &roomName,
@@ -253,8 +253,8 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 		if iconAlarmLevel > 0 {
 			card.IconAlarmLevel = &iconAlarmLevel
 		}
-		if popAlarmEmerge > 0 {
-			card.PopAlarmEmerge = &popAlarmEmerge
+		if popAlarm > 0 {
+			card.PopAlarm = &popAlarm
 		}
 
 		// 展开 devices JSONB

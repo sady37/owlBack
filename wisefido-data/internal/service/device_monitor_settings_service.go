@@ -531,25 +531,25 @@ func (s *deviceMonitorSettingsService) UpdateRadarMonitorSettings(ctx context.Co
 
 	// Radar 设备需要写入的 AlarmType
 	deviceWriteAlarmTypes := map[string]bool{
-		alarm.MonitoringMode:          true,
-		alarm.Fall:                    true,
-		alarm.PostureDetection:        true,
-		alarm.BedSitUp:                true,
-		alarm.SittingOnGround:         true,
-		alarm.AbnormalRespiratoryRate: true,
-		alarm.AbnormalHeartRate:       true,
-		alarm.VitalsWeak:              true,
+		alarm.MonitoringMode:       true,
+		alarm.Fall:                 true,
+		alarm.PostureDetection:     true,
+		alarm.BedSitUp:             true,
+		alarm.SittingOnGround:      true,
+		alarm.HeartRateAlert:       true,
+		alarm.RespRateAlert:        true,
+		alarm.WeakBiometricSignal: true,
 	}
 	// Radar 设备会返回的 AlarmType（从设备属性解码得到）
 	deviceReturnAlarmTypes := map[string]bool{
-		alarm.MonitoringMode:          true, // 从 radar_func_ctrl 返回
-		alarm.Fall:                    true, // 从 fall_param 返回
-		alarm.PostureDetection:        true, // 从 fall_param 返回
-		alarm.BedSitUp:                true, // 从 fall_param 返回（bit 2）
-		alarm.SittingOnGround:         true, // 从 fall_param 返回
-		alarm.AbnormalRespiratoryRate: true, // 从 heart_breath_param 返回
-		alarm.AbnormalHeartRate:       true, // 从 heart_breath_param 返回
-		alarm.VitalsWeak:              true, // 从 heart_breath_param 返回
+		alarm.MonitoringMode:       true,
+		alarm.Fall:                 true,
+		alarm.PostureDetection:     true,
+		alarm.BedSitUp:             true,
+		alarm.SittingOnGround:      true,
+		alarm.HeartRateAlert:       true,
+		alarm.RespRateAlert:        true,
+		alarm.WeakBiometricSignal: true,
 	}
 
 	_, noChange, hasDeviceWriteChanges, err := s.compareAndLogChanges(ctx, tenantID, deviceID, deviceType, existingAlarmItems, alarmItems, deviceWriteAlarmTypes, deviceReturnAlarmTypes)
@@ -674,9 +674,9 @@ func (s *deviceMonitorSettingsService) UpdateSleepadMonitorSettings(ctx context.
 		alarm.PostureDetection:        true,
 		alarm.BedSitUp:                true,
 		alarm.SittingOnGround:         true,
-		alarm.AbnormalRespiratoryRate: true,
-		alarm.AbnormalHeartRate:       true,
-		alarm.VitalsWeak:              true,
+		alarm.RespRateAlert:        true,
+		alarm.HeartRateAlert:       true,
+		alarm.WeakBiometricSignal:              true,
 	}
 	// Sleepad 设备会返回的 AlarmType（TODO: 根据实际 sleepad 设备返回项定义）
 	deviceReturnAlarmTypes := map[string]bool{
@@ -971,7 +971,7 @@ func (s *deviceMonitorSettingsService) radarWrite(ctx context.Context, deviceUID
 	// wisefido-qinglan 会从 _alarm_items_json 构建：
 	//   - radar_func_ctrl (从 MonitoringMode)
 	//   - fall_param (从 Fall, SittingOnGround, PostureDetection 等)
-	//   - heart_breath_param (从 AbnormalHeartRate, AbnormalRespiratoryRate, VitalsWeak)
+	//   - heart_breath_param (从 HeartRateAlert, RespRateAlert, WeakBiometricSignal)
 	properties := map[string]interface{}{
 		"_alarm_items_json": string(alarmItemsJSON),
 	}

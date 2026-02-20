@@ -546,11 +546,11 @@ func (h *DeviceMonitorSettingsHandler) verifyAlarmTypesForDevice(deviceType stri
 // validateAlarmItemParams 验证参数值范围（阈值合理性）
 // 注意：此函数仅验证参数范围，不设置默认值。默认值由 AlarmItem 设置。
 // 雷达：呼吸心率参数范围验证
-// Radar_AbnormalRespiratoryRate:
+// RespRateAlert:
 //   - max (upper breath): [10, 100]
 //   - min (lower breath): [1, 20]
 //   - 验证 min < max
-// Radar_AbnormalHeartRate:
+// HeartRateAlert:
 //   - max (upper heart): [10, 255]
 //   - min (lower heart): [1, 100]
 //   - 验证 min < max
@@ -569,18 +569,18 @@ func (h *DeviceMonitorSettingsHandler) validateAlarmItemParams(deviceType string
 	}
 
 	// 验证雷达呼吸心率参数
-	// Radar_AbnormalRespiratoryRate: max (upper breath), min (lower breath)
-	if item, ok := itemMap["Radar_AbnormalRespiratoryRate"]; ok && item.AlarmParams != nil {
+	// RespRateAlert: max (upper breath), min (lower breath)
+	if item, ok := itemMap["RespRateAlert"]; ok && item.AlarmParams != nil {
 		if max, ok := item.AlarmParams["max"]; ok {
 			upperBreath := getIntValue(max)
 			if upperBreath < 10 || upperBreath > 100 {
-				return fmt.Errorf("Radar_AbnormalRespiratoryRate.max must be in range [10, 100], got %d", upperBreath)
+				return fmt.Errorf("RespRateAlert.max must be in range [10, 100], got %d", upperBreath)
 			}
 		}
 		if min, ok := item.AlarmParams["min"]; ok {
 			lowerBreath := getIntValue(min)
 			if lowerBreath < 1 || lowerBreath > 20 {
-				return fmt.Errorf("Radar_AbnormalRespiratoryRate.min must be in range [1, 20], got %d", lowerBreath)
+				return fmt.Errorf("RespRateAlert.min must be in range [1, 20], got %d", lowerBreath)
 			}
 		}
 		// 验证 min < max
@@ -589,24 +589,24 @@ func (h *DeviceMonitorSettingsHandler) validateAlarmItemParams(deviceType string
 				upperBreath := getIntValue(max)
 				lowerBreath := getIntValue(min)
 				if lowerBreath >= upperBreath {
-					return fmt.Errorf("Radar_AbnormalRespiratoryRate: min (%d) must be less than max (%d)", lowerBreath, upperBreath)
+					return fmt.Errorf("RespRateAlert: min (%d) must be less than max (%d)", lowerBreath, upperBreath)
 				}
 			}
 		}
 	}
 
-	// Radar_AbnormalHeartRate: max (upper heart), min (lower heart)
-	if item, ok := itemMap["Radar_AbnormalHeartRate"]; ok && item.AlarmParams != nil {
+	// HeartRateAlert: max (upper heart), min (lower heart)
+	if item, ok := itemMap["HeartRateAlert"]; ok && item.AlarmParams != nil {
 		if max, ok := item.AlarmParams["max"]; ok {
 			upperHeart := getIntValue(max)
 			if upperHeart < 10 || upperHeart > 255 {
-				return fmt.Errorf("Radar_AbnormalHeartRate.max must be in range [10, 255], got %d", upperHeart)
+				return fmt.Errorf("HeartRateAlert.max must be in range [10, 255], got %d", upperHeart)
 			}
 		}
 		if min, ok := item.AlarmParams["min"]; ok {
 			lowerHeart := getIntValue(min)
 			if lowerHeart < 1 || lowerHeart > 100 {
-				return fmt.Errorf("Radar_AbnormalHeartRate.min must be in range [1, 100], got %d", lowerHeart)
+				return fmt.Errorf("HeartRateAlert.min must be in range [1, 100], got %d", lowerHeart)
 			}
 		}
 		// 验证 min < max
@@ -615,7 +615,7 @@ func (h *DeviceMonitorSettingsHandler) validateAlarmItemParams(deviceType string
 				upperHeart := getIntValue(max)
 				lowerHeart := getIntValue(min)
 				if lowerHeart >= upperHeart {
-					return fmt.Errorf("Radar_AbnormalHeartRate: min (%d) must be less than max (%d)", lowerHeart, upperHeart)
+					return fmt.Errorf("HeartRateAlert: min (%d) must be less than max (%d)", lowerHeart, upperHeart)
 				}
 			}
 		}

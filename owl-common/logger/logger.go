@@ -1,9 +1,11 @@
 package logger
 
 import (
+	"os"
+	"time"
+
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"os"
 )
 
 // NewLogger 创建新的Logger实例
@@ -35,7 +37,7 @@ func NewLogger(level string, format string, serviceName string) (*zap.Logger, er
 		config = zap.NewProductionConfig()
 	config.Level = zap.NewAtomicLevelAt(zapLevel)
 	config.EncoderConfig.TimeKey = "timestamp"
-	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	config.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout(time.TimeOnly + ".000")
 		// 输出到标准输出（便于Docker和日志收集器捕获）
 		config.OutputPaths = []string{"stdout"}
 		config.ErrorOutputPaths = []string{"stderr"}

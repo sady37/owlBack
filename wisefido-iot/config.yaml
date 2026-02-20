@@ -1,0 +1,29 @@
+# wisefido-iot 配置文件
+
+database:
+  host: "localhost"
+  port: 5433
+  user: "postgres"
+  password: "postgres"
+  database: "owlrd"
+  sslmode: "disable"
+
+redis:
+  addr: "localhost:6379"
+  password: "TeLunSu-36kr"
+  db: 0
+
+streams:
+  monitor: "iot:monitor:stream"
+  stat: "iot:stat:stream"
+  event: "iot:event:stream"
+  alarm: "iot:alarm:stream"
+  auth: "iot:auth:stream"
+
+consumer_group: "iot-timeseries-group"
+consumer_name: "iot-timeseries-1"
+batch_size: 10
+
+logging:
+  level: "info"
+  format: "json"

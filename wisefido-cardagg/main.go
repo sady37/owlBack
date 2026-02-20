@@ -24,7 +24,7 @@ import (
 
 func main() {
 	// 加载配置
-	cfg, err := config.LoadFromEnv()
+	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}

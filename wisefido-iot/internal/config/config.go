@@ -1,61 +1,114 @@
 package config
 
 import (
+	"log"
 	"os"
 	"owl-common/config"
 	"strconv"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Config IoT 时序数据服务配置
 type Config struct {
-	Database config.DatabaseConfig
-	Redis    config.RedisConfig
+	Database config.DatabaseConfig `yaml:"database"`
+	Redis    config.RedisConfig    `yaml:"redis"`
 
-	// IoT 时序数据服务特定配置
 	Streams struct {
-		// 统一 IoT streams（所有设备类型）
-		Monitor string // iot:monitor:stream - 所有设备的实时数据
-		Stat    string // iot:stat:stream    - 所有设备的统计数据
-		Event   string // iot:event:stream   - 所有设备的事件数据
-		Alarm   string // iot:alarm:stream   - 所有设备的告警数据
-		Auth    string // iot:auth:stream    - 所有设备的认证数据
-	}
-	ConsumerGroup string // 消费者组名称
-	ConsumerName  string // 消费者名称
-	BatchSize     int64  // 批量处理大小
+		Monitor string `yaml:"monitor"`
+		Stat    string `yaml:"stat"`
+		Event   string `yaml:"event"`
+		Alarm   string `yaml:"alarm"`
+		Auth    string `yaml:"auth"`
+	} `yaml:"streams"`
+	ConsumerGroup string `yaml:"consumer_group"`
+	ConsumerName  string `yaml:"consumer_name"`
+	BatchSize     int64  `yaml:"batch_size"`
 
 	Log struct {
-		Level  string
-		Format string
-	}
+		Level  string `yaml:"level"`
+		Format string `yaml:"format"`
+	} `yaml:"logging"`
 }
 
 // Load 加载配置
 func Load() (*Config, error) {
-	cfg := &Config{}
+	configPath := "config.yaml"
+	if path := os.Getenv("CONFIG_PATH"); path != "" {
+		configPath = path
+	}
 
-	// 从环境变量加载（默认值）
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		log.Printf("(info) config file not found, using environment variables: %v", err)
+		return LoadFromEnv()
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		log.Printf("(warn) failed to parse config file, falling back to env: %v", err)
+		return LoadFromEnv()
+	}
+
+	cfg.setDefaults()
+	return &cfg, nil
+}
+
+func (c *Config) setDefaults() {
+	if c.Database.SSLMode == "" {
+		c.Database.SSLMode = "disable"
+	}
+	if c.Streams.Monitor == "" {
+		c.Streams.Monitor = "iot:monitor:stream"
+	}
+	if c.Streams.Stat == "" {
+		c.Streams.Stat = "iot:stat:stream"
+	}
+	if c.Streams.Event == "" {
+		c.Streams.Event = "iot:event:stream"
+	}
+	if c.Streams.Alarm == "" {
+		c.Streams.Alarm = "iot:alarm:stream"
+	}
+	if c.Streams.Auth == "" {
+		c.Streams.Auth = "iot:auth:stream"
+	}
+	if c.ConsumerGroup == "" {
+		c.ConsumerGroup = "iot-timeseries-group"
+	}
+	if c.ConsumerName == "" {
+		c.ConsumerName = "iot-timeseries-1"
+	}
+	if c.BatchSize == 0 {
+		c.BatchSize = 10
+	}
+	if c.Log.Level == "" {
+		c.Log.Level = "info"
+	}
+	if c.Log.Format == "" {
+		c.Log.Format = "json"
+	}
+}
+
+func LoadFromEnv() (*Config, error) {
+	cfg := &Config{}
 	cfg.Database.Host = getEnv("DB_HOST", "localhost")
-	// 默认端口使用环境变量，如果没有则使用 5433（与 start_owlback.sh 保持一致）
 	if portStr := getEnv("DB_PORT", ""); portStr != "" {
 		if port, err := strconv.Atoi(portStr); err == nil && port > 0 {
 			cfg.Database.Port = port
 		} else {
-			cfg.Database.Port = 5433 // 默认使用 5433（与 start_owlback.sh 保持一致）
+			cfg.Database.Port = 5433
 		}
 	} else {
-		cfg.Database.Port = 5433 // 默认使用 5433（与 start_owlback.sh 保持一致）
+		cfg.Database.Port = 5433
 	}
 	cfg.Database.User = getEnv("DB_USER", "postgres")
-	cfg.Database.Password = getEnv("DB_PASSWORD", "postgres")
+	cfg.Database.Password = getEnv("DB_PASSWORD", "")
 	cfg.Database.Database = getEnv("DB_NAME", "owlrd")
 	cfg.Database.SSLMode = getEnv("DB_SSLMODE", "disable")
-
 	cfg.Redis.Addr = getEnv("REDIS_ADDR", "localhost:6379")
 	cfg.Redis.Password = getEnv("REDIS_PASSWORD", "")
 	cfg.Redis.DB = 0
-
-	// IoT 时序数据服务配置 - 统一 IoT streams
 	cfg.Streams.Monitor = getEnv("STREAM_IOT_MONITOR", "iot:monitor:stream")
 	cfg.Streams.Stat = getEnv("STREAM_IOT_STAT", "iot:stat:stream")
 	cfg.Streams.Event = getEnv("STREAM_IOT_EVENT", "iot:event:stream")
@@ -64,10 +117,8 @@ func Load() (*Config, error) {
 	cfg.ConsumerGroup = getEnv("CONSUMER_GROUP", "iot-timeseries-group")
 	cfg.ConsumerName = getEnv("CONSUMER_NAME", "iot-timeseries-1")
 	cfg.BatchSize = 10
-
 	cfg.Log.Level = getEnv("LOG_LEVEL", "info")
 	cfg.Log.Format = getEnv("LOG_FORMAT", "json")
-
 	return cfg, nil
 }
 

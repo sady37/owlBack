@@ -12,8 +12,8 @@ import (
 const (
 	AlarmLevelEmerg  = "EMERG"
 	AlarmLevelAlert  = "ALERT"
-	AlarmLevelCrit   = "CRIT"
-	AlarmLevelErr    = "ERR"
+	AlarmLevelCrit   = "CRITICAL"
+	AlarmLevelErr    = "ERROR"
 	AlarmLevelWarn   = "WARNING"
 	AlarmLevelNotice = "NOTICE"
 	AlarmLevelInfo   = "INFO"
@@ -29,7 +29,7 @@ const (
 	DefaultDeviceFailure = AlarmLevelErr  // 设备故障报警默认级别
 )
 
-// Cloud Vital Alarm Threshold default values (生理指标阈值默认值)
+// Vital Sign Alert Thresholds default values (生理指标阈值默认值)
 const (
 	DefaultRespiratoryRateMin = 8  // 呼吸率nomal最小值默认值
 	DefaultRespiratoryRateMax = 24 // 呼吸率nomal最大值默认值
@@ -48,310 +48,6 @@ const (
 	ProcessTypeRoomStateChange      = "room_state_change"      // 房间状态变化
 )
 
-// ExampleDefaultAlarmSettingJSON 完整的 DefaultAlarmSetting 示例 JSON，便于检查 json.Marshal(DefaultAlarmSetting) 是否正常
-// is_enabled: 0=关闭 1=开启 | alarm_level: nil=无报警级别 | alarm_params: nil=无参数 | display_setting: 显示设置
-const ExampleDefaultAlarmSettingJSON = `{
-	"sleepad": [
-	  {
-		"alarm_type": "ResetTime",
-		"is_enabled": 1,
-		"alarm_level": null,
-		"alarm_params": {
-		  "InBedTime": "21:30",
-		  "OutBedTime": "07:30"
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "NapTime",
-		"is_enabled": 1,
-		"alarm_level": null,
-		"alarm_params": {
-		  "InBedTime": "13:00",
-		  "OutBedTime": "14:00"
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "ApneaHypopnea",
-		"is_enabled": 1,
-		"alarm_level": "EMERG",
-		"alarm_params": {
-		  "duration_sec": 60
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "AbnormalHeartRate",
-		"is_enabled": 1,
-		"alarm_level": "EMERG",
-		"alarm_params": {
-		  "min": 50,
-		  "max": 100,
-		  "slow_duration_sec": 120,
-		  "fast_duration_sec": 120
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "AbnormalRespiratoryRate",
-		"is_enabled": 1,
-		"alarm_level": "EMERG",
-		"alarm_params": {
-		  "min": 8,
-		  "max": 24,
-		  "slow_duration_sec": 120,
-		  "fast_duration_sec": 120
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "LeftBed",
-		"is_enabled": 1,
-		"alarm_level": "WARNING",
-		"alarm_params": {
-		   "duration_sec": 8
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "LeftBedTooLong",
-		"is_enabled": 1,
-		"alarm_level": "WARNING",
-		"alarm_params": {
-		  "leave_minutes": 45
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "InBed",
-		"is_enabled": 0,
-		"alarm_level": "WARNING",
-		"alarm_params": {
-		  "duration_min": 5
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "BedSitUp",
-		"is_enabled": 1,
-		"alarm_level": "WARNING",
-		"alarm_params": {},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "AbnormalBodyMovement",
-		"is_enabled": 1,
-		"alarm_level": "WARNING",
-		"alarm_params": {
-		  "duration_min": 10
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "NoBodyMove",
-		"is_enabled": 1,
-		"alarm_level": "WARNING",
-		"alarm_params": {
-		  "duration_min": 60
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "NoTurnOver",
-		"is_enabled": 1,
-		"alarm_level": "WARNING",
-		"alarm_params": {
-		  "duration_min": 120
-		},
-		"display_setting": 3
-	  },
-	{
-		"alarm_type": "SensorDetached",
-		"is_enabled": 1,
-		"alarm_level": "ERR",
-		"alarm_params": {
-		  "duration_min": 120
-		},
-		"display_setting": 3
-	  }	  
-	],
-	"radar": [
-	  {
-		"alarm_type": "ResetTime",
-		"is_enabled": 1,
-		"alarm_level": null,
-		"alarm_params": {
-		  "InBedTime": "21:30",
-		  "OutBedTime": "07:30"
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "NapTime",
-		"is_enabled": 1,
-		"alarm_level": null,
-		"alarm_params": {
-		  "InBedTime": "13:00",
-		  "OutBedTime": "14:00"
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "MonitoringMode",
-		"is_enabled": 1,
-		"alarm_level": null,
-		"alarm_params": {
-		  "mode": 15
-		},
-		"display_setting": 2
-	  },
-	  {
-		"alarm_type": "PostureDetection",
-		"is_enabled": 1,
-		"alarm_level": null,
-		"alarm_params": {},
-		"display_setting": 2
-	  },
-	  {
-		"alarm_type": "Fall",
-		"is_enabled": 1,
-		"alarm_level": "EMERG",
-				"alarm_params": {
-		  "duration_sec": 60
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "SuspectedFall",
-		"is_enabled": 1,
-		"alarm_level": "WARNING",
-		"alarm_params": {},
-		"display_setting": 0  
-	  },
-	  {
-		"alarm_type": "SuspectedSittingOnGround",
-		"is_enabled": 1,
-		"alarm_level": "WARNING",
-		"alarm_params": {
-		  "duration_sec": 90
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "SittingOnGround",
-		"is_enabled": 1,
-		"alarm_level": "WARNING",
-		"alarm_params": {
-		  "duration_sec": 90
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "SuspectedBedSitUp",
-		"is_enabled": 0,
-		"alarm_level": "WARNING",
-		"alarm_params": {},
-		"display_setting": 0
-	  },
-	  {
-		"alarm_type": "BedSitUp",
-		"is_enabled": 0,
-		"alarm_level": "WARNING",
-		"alarm_params": {},
-		"display_setting": 0
-	  },	  
-	  {
-		"alarm_type": "ApneaHypopnea",
-		"is_enabled": 0,
-		"alarm_level": null,
-		"alarm_params": {
-		  "apnea_60s_min_events": 4,
-		  "apnea_120min_min_events": 7
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "AbnormalHeartRate",
-		"is_enabled": 1,
-		"alarm_level": "EMERG",
-		"alarm_params": {
-		  "min": 50,
-		  "max": 95
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "AbnormalRespiratoryRate",
-		"is_enabled": 1,
-		"alarm_level": "EMERG",
-		"alarm_params": {
-		  "min": 8,
-		  "max": 24
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "VitalsWeak",
-		"is_enabled": 1,
-		"alarm_level": "EMERG",
-		"alarm_params": {
-		  "duration_min": 10,
-		  "sensitivity": 35
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "LeftBed",
-		"is_enabled": 1,
-		"alarm_level": "WARNING",
-		"alarm_params": {
-		  "duration_sec": 8
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "LeftBedTooLong",
-		"is_enabled": 1,
-		"alarm_level": "WARNING",
-		"alarm_params": {
-		  "leave_minutes": 45
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "Stay",
-		"is_enabled": 1,
-		"alarm_level": "WARNING",
-		"alarm_params": {
-		  "duration_min": 45
-		},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "NoActivity24h",
-		"is_enabled": 1,
-		"alarm_level": "WARNING",
-		"alarm_params": {},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "SignalPoor",
-		"is_enabled": 0,
-		"alarm_level": "WARNING",
-		"alarm_params": {},
-		"display_setting": 3
-	  },
-	  {
-		"alarm_type": "AngleException",
-		"is_enabled": 1,
-		"alarm_level": "WARNING",
-		"alarm_params": {},
-		"display_setting": 3
-	  }
-	]
-  }`
-
 // ========== 报警类型 ==========
 
 const (
@@ -362,8 +58,10 @@ const (
 
 	// 通用报警类型（不区分设备，设备类型通过 device_type 字段区分）
 	ApneaHypopnea            = "ApneaHypopnea"
-	AbnormalHeartRate        = "AbnormalHeartRate"
-	AbnormalRespiratoryRate  = "AbnormalRespiratoryRate"
+	HeartRateAlert           = "HeartRateAlert"
+	RespRateAlert            = "RespRateAlert"
+	HeartRateNormal          = "HeartRateNormal"
+	RespiratoryRateNormal    = "RespiratoryRateNormal"
 	LeftBed                  = "LeftBed"
 	LeftBedTooLong           = "LeftBedTooLong"
 	AbnormalBodyMovement     = "AbnormalBodyMovement"
@@ -378,17 +76,47 @@ const (
 	SuspectedSittingOnGround = "SuspectedSittingOnGround"
 	BedSitUp                 = "BedSitUp"
 	SuspectedBedSitUp        = "SuspectedBedSitUp"
-	VitalsWeak               = "VitalsWeak"
+	WeakBiometricSignal      = "WeakBiometricSignal"
 	InBed                    = "InBed"
 	Stay                     = "Stay"
 	NoActivity24h            = "NoActivity24h"
 	WarningArea              = "WarningArea"
+	EnterRoom                = "EnterRoom"
+	ExitRoom                 = "ExitRoom"
+	EnterSensingArea         = "EnterSensingArea"
+	ExitSensingArea          = "ExitSensingArea"
+	EnterMonitor             = "EnterMonitor"
+	ExitMonitor              = "ExitMonitor"
 	MonitoringMode           = "MonitoringMode"
 	PostureDetection         = "PostureDetection"
+	Initialization           = "Initialization"
+	Walking                  = "Walking"
+	Sitting                  = "Sitting"
+	Standing                 = "Standing"
+	Lying                    = "Lying"
 	SignalPoor               = "SignalPoor"
 	AngleException           = "AngleException"
 	SensorDetached           = "SensorDetached"
 )
+
+// 方向后缀：与 AlarmType 组合使用，如 HeartRateAlert.High
+const (
+	DirHigh = ".High"
+	DirLow  = ".Low"
+)
+
+// SplitAlarmQualifier 拆分带方向后缀的报警类型
+// "HeartRateAlert.High" → ("HeartRateAlert", "High")
+// "Fall" → ("Fall", "")
+func SplitAlarmQualifier(qualified string) (baseType, qualifier string) {
+	if i := strings.LastIndex(qualified, "."); i > 0 {
+		q := qualified[i+1:]
+		if q == "High" || q == "Low" {
+			return qualified[:i], q
+		}
+	}
+	return qualified, ""
+}
 
 // ========== FHIR Category 映射（alarm_events.category 列） ==========
 // DB CHECK 约束只允许: "safety", "clinical", "behavioral", "device"
@@ -414,32 +142,42 @@ var AlarmTypeToFHIRCategory = map[string]string{
 
 
 	// clinical: 生命体征异常
-	AbnormalHeartRate:       FHIRCategoryClinical,
-	AbnormalRespiratoryRate: FHIRCategoryClinical,
-	ApneaHypopnea:          FHIRCategoryClinical,
-	VitalsWeak:             FHIRCategoryClinical,
-	NoBodyMove:             FHIRCategoryClinical,
-	AbnormalBodyMovement:   FHIRCategoryClinical,
+	HeartRateAlert:        FHIRCategoryClinical,
+	RespRateAlert:         FHIRCategoryClinical,
+	ApneaHypopnea:         FHIRCategoryClinical,
+	WeakBiometricSignal:  FHIRCategoryClinical,
+	NoBodyMove:            FHIRCategoryClinical,     //为老人2H翻身
+	AbnormalBodyMovement:  FHIRCategoryClinical,
 
 	// behavioral: 行为/作息类
-	InBed:          		FHIRCategoryBehavioral,
+	InBed:                  FHIRCategoryBehavioral,
 	LeftBed:                FHIRCategoryBehavioral,
 	BedSitUp:               FHIRCategoryBehavioral,
 	SuspectedBedSitUp:      FHIRCategoryBehavioral,
 	NoTurnOver:             FHIRCategoryBehavioral,
 	WarningArea:            FHIRCategoryBehavioral,
 
-
+	EnterRoom:              FHIRCategoryBehavioral,
+	ExitRoom:               FHIRCategoryBehavioral,
+	EnterSensingArea:       FHIRCategoryBehavioral,
+	ExitSensingArea:        FHIRCategoryBehavioral,
+	Initialization:         FHIRCategoryBehavioral,
+	Walking:                FHIRCategoryBehavioral,
+	Sitting:                FHIRCategoryBehavioral,
+	Standing:               FHIRCategoryBehavioral,
+	Lying:                  FHIRCategoryBehavioral,
+	EnterMonitor:           FHIRCategoryBehavioral,
+	ExitMonitor:            FHIRCategoryBehavioral,
 
 
 	// device: 设备自身状态
-	AlarmTypeOfflineAlarm:  FHIRCategoryDevice,
-	AlarmTypeDeviceFailure: FHIRCategoryDevice,
+	AlarmTypeOfflineAlarm:   FHIRCategoryDevice,
+	AlarmTypeDeviceFailure:  FHIRCategoryDevice,
 	AlarmTypeDeviceRecovery: FHIRCategoryDevice,
-	SignalPoor:             FHIRCategoryDevice,
-	AngleException:         FHIRCategoryDevice,
-	SensorDetached: 	    FHIRCategoryDevice,
-	
+	SignalPoor:              FHIRCategoryDevice,
+	AngleException:          FHIRCategoryDevice,
+	SensorDetached:          FHIRCategoryDevice,
+
 }
 
 // GetFHIRCategory 获取 alarmType 对应的 FHIR category，未匹配返回 "safety"
@@ -493,18 +231,26 @@ const (
 	AlarmLevelIntCancel  = 8 // Cancel: 取消/恢复（如设备上线、报警恢复）
 )
 
+// IsAlarmLevel 判断字符串是否为已知报警级别
+func IsAlarmLevel(s string) bool {
+	_, ok := AlarmLevelPriority[s]
+	return ok
+}
+
 // AlarmLevelPriority 报警级别字符串到优先级数字的映射
 // 数字越小优先级越高，防止低级别报警覆盖高级别报警
 var AlarmLevelPriority = map[string]int{
-	"EMERG":   AlarmLevelIntEmerg,
-	"ALERT":   AlarmLevelIntAlert,
-	"CRIT":    AlarmLevelIntCrit,
-	"ERR":     AlarmLevelIntErr,
-	"WARNING": AlarmLevelIntWarning,
-	"NOTICE":  AlarmLevelIntNotice,
-	"INFO":    AlarmLevelIntInfo,
-	"DEBUG":   AlarmLevelIntDebug,
-	"CANCEL":  AlarmLevelIntCancel, // 无报警时的默认值（最低优先级）
+	"EMERG":    AlarmLevelIntEmerg,
+	"ALERT":    AlarmLevelIntAlert,
+	"CRITICAL": AlarmLevelIntCrit,
+	"CRIT":     AlarmLevelIntCrit,
+	"ERROR":    AlarmLevelIntErr,
+	"ERR":      AlarmLevelIntErr,
+	"WARNING":  AlarmLevelIntWarning,
+	"NOTICE":   AlarmLevelIntNotice,
+	"INFO":     AlarmLevelIntInfo,
+	"DEBUG":    AlarmLevelIntDebug,
+	"CANCEL":   AlarmLevelIntCancel,
 }
 
 // ========== Types (类型) ==========
@@ -512,24 +258,24 @@ var AlarmLevelPriority = map[string]int{
 // CloudVitalAlarmThreshold 生理指标阈值配置
 // 存储在 alarm_cloud 表的 conditions JSONB 字段中
 // 用于定义生理指标类报警的阈值范围
-// 包含完整的 EMERGENCY/WARNING/Normal ranges
+// 包含完整的 CRITICAL/WARNING/Normal ranges
 type CloudVitalAlarmThreshold struct {
-	// 完整的 conditions 结构（包含 EMERGENCY/WARNING/Normal ranges）
-	// Heart Rate: EMERGENCY (0-44, 116+), WARNING (45-54, 96-109), Normal (55-95)
-	// Respiratory Rate: EMERGENCY (0-7, 25+),  Normal (8-24)
+	// 完整的 conditions 结构（包含 CRITICAL/WARNING/Normal ranges）
+	// Heart Rate: CRITICAL (0-44, 116+), WARNING (45-54, 96-109), Normal (55-95)
+	// Respiratory Rate: CRITICAL (0-7, 25+),  Normal (8-24)
 	Conditions *VitalAlarmConditions `json:"conditions,omitempty"`
 }
 
 // VitalAlarmConditions 完整的生理指标报警条件（包含所有级别的 ranges）
 type VitalAlarmConditions struct {
 	HeartRate *struct {
-		EMERGENCY *struct {
+		CRITICAL *struct {
 			Ranges []struct {
 				Min *int `json:"min,omitempty"`
 				Max *int `json:"max,omitempty"`
 			} `json:"ranges,omitempty"`
 			DurationSec int `json:"duration_sec,omitempty"`
-		} `json:"EMERGENCY,omitempty"`
+		} `json:"CRITICAL,omitempty"`
 		WARNING *struct {
 			Ranges []struct {
 				Min *int `json:"min,omitempty"`
@@ -546,13 +292,13 @@ type VitalAlarmConditions struct {
 		} `json:"Normal,omitempty"`
 	} `json:"heart_rate,omitempty"`
 	RespiratoryRate *struct {
-		EMERGENCY *struct {
+		CRITICAL *struct {
 			Ranges []struct {
 				Min *int `json:"min,omitempty"`
 				Max *int `json:"max,omitempty"`
 			} `json:"ranges,omitempty"`
 			DurationSec int `json:"duration_sec,omitempty"`
-		} `json:"EMERGENCY,omitempty"`
+		} `json:"CRITICAL,omitempty"`
 		// WARNING: 已简化，不包含 WARNING 级别
 		Normal *struct {
 			Ranges []struct {
@@ -635,13 +381,13 @@ type AlarmEnablementItem struct {
 var DefaultCloudVitalAlarmThreshold = CloudVitalAlarmThreshold{
 	Conditions: &VitalAlarmConditions{
 		HeartRate: &struct {
-			EMERGENCY *struct {
+			CRITICAL *struct {
 				Ranges []struct {
 					Min *int `json:"min,omitempty"`
 					Max *int `json:"max,omitempty"`
 				} `json:"ranges,omitempty"`
 				DurationSec int `json:"duration_sec,omitempty"`
-			} `json:"EMERGENCY,omitempty"`
+			} `json:"CRITICAL,omitempty"`
 			WARNING *struct {
 				Ranges []struct {
 					Min *int `json:"min,omitempty"`
@@ -657,7 +403,7 @@ var DefaultCloudVitalAlarmThreshold = CloudVitalAlarmThreshold{
 				DurationSec int `json:"duration_sec,omitempty"`
 			} `json:"Normal,omitempty"`
 		}{
-			EMERGENCY: &struct {
+			CRITICAL: &struct {
 				Ranges []struct {
 					Min *int `json:"min,omitempty"`
 					Max *int `json:"max,omitempty"`
@@ -706,13 +452,13 @@ var DefaultCloudVitalAlarmThreshold = CloudVitalAlarmThreshold{
 			},
 		},
 		RespiratoryRate: &struct {
-			EMERGENCY *struct {
+			CRITICAL *struct {
 				Ranges []struct {
 					Min *int `json:"min,omitempty"`
 					Max *int `json:"max,omitempty"`
 				} `json:"ranges,omitempty"`
 				DurationSec int `json:"duration_sec,omitempty"`
-			} `json:"EMERGENCY,omitempty"`
+			} `json:"CRITICAL,omitempty"`
 			// WARNING: 已简化，不包含 WARNING 级别
 			Normal *struct {
 				Ranges []struct {
@@ -722,7 +468,7 @@ var DefaultCloudVitalAlarmThreshold = CloudVitalAlarmThreshold{
 				DurationSec int `json:"duration_sec,omitempty"`
 			} `json:"Normal,omitempty"`
 		}{
-			EMERGENCY: &struct {
+			CRITICAL: &struct {
 				Ranges []struct {
 					Min *int `json:"min,omitempty"`
 					Max *int `json:"max,omitempty"`
@@ -797,27 +543,18 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
-			AlarmType:  SensorDetached,
-			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelErr),
-			AlarmParams: map[string]interface{}{
-				"duration_min": 120,
-			},
-			DisplaySetting: DisplayAlarmCloudAndDevice,
-		},
-		{
 			AlarmType:  ApneaHypopnea,
 			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelEmerg),
+			AlarmLevel: strPtr(AlarmLevelCrit),
 			AlarmParams: map[string]interface{}{
 				ParamDurationSec: 30,
 			},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
-			AlarmType:  AbnormalHeartRate,
+			AlarmType:  HeartRateAlert,
 			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelEmerg),
+			AlarmLevel: strPtr(AlarmLevelCrit),
 			AlarmParams: map[string]interface{}{
 				ParamMin:            50,
 				ParamMax:            100,
@@ -827,9 +564,9 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
-			AlarmType:  AbnormalRespiratoryRate,
+			AlarmType:  RespRateAlert,
 			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelEmerg),
+			AlarmLevel: strPtr(AlarmLevelCrit),
 			AlarmParams: map[string]interface{}{
 				ParamMin:            8,
 				ParamMax:            24,
@@ -863,7 +600,7 @@ var DefaultAlarmSetting = struct {
 			AlarmParams: map[string]interface{}{
 				ParamDurationMin: 5,
 			},
-			DisplaySetting: DisplayAlarmCloudAndDevice,
+			DisplaySetting: DisplayNone,
 		},
 		{
 			AlarmType:      BedSitUp,
@@ -896,6 +633,15 @@ var DefaultAlarmSetting = struct {
 			AlarmLevel: strPtr(AlarmLevelWarn),
 			AlarmParams: map[string]interface{}{
 				ParamDurationMin: 120,
+			},
+			DisplaySetting: DisplayAlarmCloudAndDevice,
+		},
+		{
+			AlarmType:  SensorDetached,
+			IsEnabled:  intPtr(IsEnabledOn),
+			AlarmLevel: strPtr(AlarmLevelErr),
+			AlarmParams: map[string]interface{}{
+				"duration_min": 120,
 			},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
@@ -935,12 +681,12 @@ var DefaultAlarmSetting = struct {
 			IsEnabled:      intPtr(IsEnabledOn),
 			AlarmLevel:     nil,
 			AlarmParams:    map[string]interface{}{},
-			DisplaySetting: DisplayAlarmDevice,
+			DisplaySetting: DisplayNone,
 		},
 		{
 			AlarmType:  Fall,
 			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelEmerg),
+			AlarmLevel: strPtr(AlarmLevelCrit),
 			AlarmParams: map[string]interface{}{
 				ParamDurationSec: 60,
 			},
@@ -948,7 +694,7 @@ var DefaultAlarmSetting = struct {
 		},
 		{
 			AlarmType:      SuspectedFall,
-			IsEnabled:      intPtr(IsEnabledOn),
+			IsEnabled:      intPtr(IsEnabledOff),
 			AlarmLevel:     strPtr(AlarmLevelWarn),
 			AlarmParams:    map[string]interface{}{},
 			DisplaySetting: DisplayNone,
@@ -977,12 +723,12 @@ var DefaultAlarmSetting = struct {
 				"apnea_60s_min_events":    4,
 				"apnea_120min_min_events": 7,
 			},
-			DisplaySetting: DisplayAlarmCloudAndDevice,
+			DisplaySetting: DisplayNone,
 		},
 		{
-			AlarmType:  AbnormalHeartRate,
+			AlarmType:  HeartRateAlert,
 			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelEmerg),
+			AlarmLevel: strPtr(AlarmLevelCrit),
 			AlarmParams: map[string]interface{}{
 				ParamMin: 50,
 				ParamMax: 95,
@@ -990,9 +736,9 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
-			AlarmType:  AbnormalRespiratoryRate,
+			AlarmType:  RespRateAlert,
 			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelEmerg),
+			AlarmLevel: strPtr(AlarmLevelCrit),
 			AlarmParams: map[string]interface{}{
 				ParamMin: 8,
 				ParamMax: 24,
@@ -1000,9 +746,9 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
-			AlarmType:  VitalsWeak,
+			AlarmType:  WeakBiometricSignal,
 			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelEmerg),
+			AlarmLevel: strPtr(AlarmLevelCrit),
 			AlarmParams: map[string]interface{}{
 				ParamDurationMin: 10,
 				ParamSensitivity: 35,
@@ -1045,7 +791,7 @@ var DefaultAlarmSetting = struct {
 		},
 		{
 			AlarmType:      SignalPoor,
-			IsEnabled:      intPtr(IsEnabledOff),
+			IsEnabled:      intPtr(IsEnabledOn),
 			AlarmLevel:     strPtr(AlarmLevelWarn),
 			AlarmParams:    map[string]interface{}{},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
@@ -1079,13 +825,13 @@ func intPtr(i int) *int { return &i }
 // GetRadarAlarmTypes 获取 Radar 设备的报警类型列表
 // 注意：报警类型已统一，不再区分设备前缀，设备类型通过 device_type 字段区分
 func GetRadarAlarmTypes() []string {
-	return []string{AlarmTypeOfflineAlarm, AlarmTypeDeviceFailure, Fall, SuspectedFall, SittingOnGround, SuspectedSittingOnGround, SuspectedBedSitUp, ApneaHypopnea, AbnormalHeartRate, AbnormalRespiratoryRate, VitalsWeak, LeftBed, InBed, LeftBedTooLong, BedSitUp, Stay, NoActivity24h, WarningArea, SignalPoor, AngleException, MonitoringMode, NapTime, ResetTime, PostureDetection}
+	return []string{AlarmTypeOfflineAlarm, AlarmTypeDeviceFailure, Fall, SuspectedFall, SittingOnGround, SuspectedSittingOnGround, SuspectedBedSitUp, ApneaHypopnea, HeartRateAlert, RespRateAlert, WeakBiometricSignal, LeftBed, LeftBedTooLong, BedSitUp, Stay, NoActivity24h, SignalPoor, AngleException, MonitoringMode, NapTime, ResetTime, PostureDetection}
 }
 
 // GetSleepPadAlarmTypes 获取 SleepPad 设备的报警类型列表
 // 注意：报警类型已统一，不再区分设备前缀，设备类型通过 device_type 字段区分
 func GetSleepPadAlarmTypes() []string {
-	return []string{AlarmTypeOfflineAlarm, AlarmTypeDeviceFailure, SensorDetached, ApneaHypopnea, AbnormalHeartRate, AbnormalRespiratoryRate, LeftBed, LeftBedTooLong, InBed, BedSitUp, AbnormalBodyMovement, NoBodyMove, NoTurnOver}
+	return []string{AlarmTypeOfflineAlarm, AlarmTypeDeviceFailure, SensorDetached, ApneaHypopnea, HeartRateAlert, RespRateAlert, LeftBed, LeftBedTooLong, BedSitUp, AbnormalBodyMovement, NoBodyMove, NoTurnOver}
 }
 
 // GetSupportedAlarmTypes 根据设备类型获取支持的报警类型列表
@@ -1108,6 +854,19 @@ func GetDefaultAlarmItemsSleepPad() []AlarmItem { return DefaultAlarmSetting.Sle
 
 // GetDefaultAlarmItemsRadar 获取 Radar 设备的默认报警项列表
 func GetDefaultAlarmItemsRadar() []AlarmItem { return DefaultAlarmSetting.Radar }
+
+// GetDefaultAlarmLevel 从 DefaultAlarmSetting 查找 alarmType 的默认 alarm_level
+// 遍历 Radar + Sleepad 所有默认项，返回首个匹配且 is_enabled=1 的 alarm_level
+// 未找到返回 ""
+func GetDefaultAlarmLevel(alarmType string) string {
+	all := append(DefaultAlarmSetting.Radar, DefaultAlarmSetting.Sleepad...)
+	for _, item := range all {
+		if item.AlarmType == alarmType && item.IsEnabled != nil && *item.IsEnabled == 1 && item.AlarmLevel != nil {
+			return *item.AlarmLevel
+		}
+	}
+	return ""
+}
 
 // GetDefaultAlarmItems 根据设备类型获取默认报警项列表
 func GetDefaultAlarmItems(deviceType string) []AlarmItem {
@@ -1182,10 +941,10 @@ func GetAlarmEnablementMap(deviceType string, alarmItems []AlarmItem) []AlarmEna
 // 注意：报警类型已统一，不再区分设备前缀，设备类型通过 device_type 字段区分
 var MQTTToAlarmTypeMapSleepad = map[string]string{
 	"alarmLeftBed":         LeftBed, // 或 LeftBedTooLong（根据上下文判断）
-	"alarmHeartRateFast":   AbnormalHeartRate,
-	"alarmHeartRateSlow":   AbnormalHeartRate,
-	"alarmBreathRateFast":  AbnormalRespiratoryRate,
-	"alarmBreathRateSlow":  AbnormalRespiratoryRate,
+	"alarmHeartRateFast":   HeartRateAlert + DirHigh,
+	"alarmHeartRateSlow":   HeartRateAlert + DirLow,
+	"alarmBreathRateFast":  RespRateAlert + DirHigh,
+	"alarmBreathRateSlow":  RespRateAlert + DirLow,
 	"alarmBreathRatePause": ApneaHypopnea,
 	"alarmBodymove":        AbnormalBodyMovement,
 	"alarmNoBodymove":      NoBodyMove,
@@ -1196,37 +955,153 @@ var MQTTToAlarmTypeMapSleepad = map[string]string{
 	"offLine":              "", // 离线报警由通用报警处理，不映射到具体 alarm_type
 }
 
-// MQTTToAlarmTypeMapRadar Radar MQTT 消息到 alarm_type 的映射表
-// 基于文档 radar-Qinlan-code-v3.0.md (612-636)
-// 注意：需要根据 event_type, area_type, pose 等字段进行判断
-// 注意：报警类型已统一，不再区分设备前缀，设备类型通过 device_type 字段区分
-var MQTTToAlarmTypeMapRadar = map[string]string{
-	// Event type=1 (进出事件)
-	"event_type_1_room":              Stay,        // 进出房间
-	"event_type_1_area_2_or_5":       InBed,       // 进出区域+Area_type={2||5}
-	"event_type_1_area_6":            WarningArea, // 进入区域+Area_type=6
-	"event_type_1_left_bed_too_long": LeftBedTooLong,
-	// Event type=2 (姿态变化)
-	"event_type_2_pose_5":  Fall,                     // 5-确认跌倒
-	"event_type_2_pose_2":  SuspectedFall,            // 2-疑似跌倒
-	"event_type_2_pose_7":  SuspectedSittingOnGround, // 7-疑似坐地
-	"event_type_2_pose_8":  SittingOnGround,          // 8-确认坐地
-	"event_type_2_pose_10": SuspectedBedSitUp,        // 10-疑似床上坐起
-	"event_type_2_pose_11": BedSitUp,                 // 11-确认床上坐起
-	// Event type=7
-	"event_type_7_signal_poor": SignalPoor, // 信号差事件
-	// Event type=8
-	"event_type_8_angle_abnormal": AngleException, // 倾角异常事件
-	// Statistics (sleep)
-	"stat_sleep_breath_01":   AbnormalRespiratoryRate, // 01: 呼吸过低
-	"stat_sleep_breath_10":   AbnormalRespiratoryRate, // 10: 呼吸过高
-	"stat_sleep_heart_01":    AbnormalHeartRate,       // 01: 心率过低
-	"stat_sleep_heart_10":    AbnormalHeartRate,       // 10: 心率过高
-	"stat_sleep_breath_11":   ApneaHypopnea,           // 11: 呼吸暂停
-	"stat_sleep_vitals_11":   VitalsWeak,              // 11: 生命体征弱
-	"stat_sleep_stay":        Stay,                    // 滞留
-	"stat_sleep_no_activity": NoActivity24h,           // 长时间无人活动
+// ========== Radar Event numeric_code → AlarmType 映射（event/alarm topic） ==========
+// 一条 MQTT event 可包含多个 track，每个 track 生成一个 numeric_code，查此表获取 AlarmType。
+// 多 track 时取 Priority 最小（最高优先级）的作为顶层 category。
+
+// ========== Radar Event 映射表（event/alarm topic） ==========
+// 直接使用协议结构化字段（protocol.go）查表，不拼字符串。
+// 映射表只负责 protocol → AlarmType，是否报警由业务层（enablement 配置）决定。
+
+// Enter2OutMap type=1 进出事件：[event][area_type] → AlarmType
+// 报警映射独立于 protocol.go，直接使用协议数值。
+// event: 1=进房 2=离房 3=进区域 4=离区域 5=进入监护 6=退出监护
+// area_type: 2=床 4=门 5=监护床 6=感应区
+var Enter2OutMap = map[int]map[int]string{
+	1: { // EventInRoom
+		4: EnterRoom, // AreaTypeDoor
+	},
+	2: { // EventOutRoom
+		4: ExitRoom, // AreaTypeDoor
+	},
+	3: { // EventInArea
+		2: InBed,            // AreaTypeBed
+		6: EnterSensingArea, // AreaTypeSensing
+	},
+	4: { // EventOutArea
+		2: LeftBed,          // AreaTypeBed
+		6: ExitSensingArea,  // AreaTypeSensing
+	},
+	5: { // EventEnterMonitor
+		5: EnterMonitor, // AreaTypeMonitorBed
+	},
+	6: { // EventExitMonitor
+		5: ExitMonitor, // AreaTypeMonitorBed
+	},
 }
+
+// NumberPeopleCategory type=3 人数变化的 data_category
+const NumberPeopleCategory = "number-people"
+
+// PoseMap type=2 姿态变化：[pose] → AlarmType
+// 报警映射独立于 protocol.go 的 PoseNumToDisplay（显示用途），
+// 此处根据业务语义映射：厂家 pose=2(SuspectedFall) 在 event topic 发出时
+// 已经过固件内部等待，应直接映射为 Fall alarm。
+var PoseMap = map[int]string{
+	0:  Initialization,
+	1:  Walking,
+	2:  Fall,                    // 厂家 SuspectedFall → 我方 Fall
+	3:  Sitting,
+	4:  Standing,
+	5:  Fall,
+	6:  Lying,
+	7:  SittingOnGround,
+	8:  SittingOnGround,
+	9:  BedSitUp,
+	10: BedSitUp,               // BedSitUpConfirm → BedSitUp
+	11: BedSitUp,
+}
+
+// DeviceEventMap type=5/7/8 设备状态：[eventType] → AlarmType
+var DeviceEventMap = map[int]string{
+	5: AlarmTypeOfflineAlarm, // 设备离线
+	7: SignalPoor,            // 信号差
+	8: AngleException,        // 倾角异常
+}
+
+// ========== Radar Stat numeric_code → AlarmType 映射（stat topic） ==========
+// stat 每分钟 1 条（sleep + track），无多 track 问题，用简单 string→string。
+// key 格式: "sleep_" + type + "_" + state（2-bit 二进制），如 "sleep_breath_01"
+
+// StatSleepMap stat sleep base64 解码后的 numeric_code → AlarmType
+// key 格式: "sleep_{type}_{state}"，state 为 byte13 的 2-bit 二进制
+var StatSleepMap = map[string]string{
+	// byte13 bit[1:0] 呼吸: 00=正常 01=过低 10=过高 11=暂停
+	"sleep_breath_00": RespiratoryRateNormal,
+	"sleep_breath_01": RespRateAlert + DirLow,
+	"sleep_breath_10": RespRateAlert + DirHigh,
+	"sleep_breath_11": ApneaHypopnea,
+	// byte13 bit[3:2] 心率: 00=正常 01=过低 10=过高 11=未定义
+	"sleep_heart_00": HeartRateNormal,
+	"sleep_heart_01": HeartRateAlert + DirLow,
+	"sleep_heart_10": HeartRateAlert + DirHigh,
+	// byte13 bit[5:4] 生命体征: 00=正常 01=未定义 10=未定义 11=弱
+	"sleep_vitals_11": WeakBiometricSignal,
+}
+
+// StatTrackMap stat track base64 解码后的行为统计 → AlarmType
+// key 格式: "track_{type}"
+var StatTrackMap = map[string]string{
+	"track_stay":        Stay,
+	"track_no_activity": NoActivity24h,
+}
+
+// StatCodeMap 合并 StatSleepMap + StatTrackMap（兼容旧接口）
+var StatCodeMap = func() map[string]string {
+	m := make(map[string]string, len(StatSleepMap)+len(StatTrackMap))
+	for k, v := range StatSleepMap {
+		m[k] = v
+	}
+	for k, v := range StatTrackMap {
+		m[k] = v
+	}
+	return m
+}()
+
+// ========== 结构化查表函数 ==========
+
+// LookupEnter2Out type=1 查表：(event, areaType) → AlarmType
+func LookupEnter2Out(event, areaType int) (string, bool) {
+	if areas, ok := Enter2OutMap[event]; ok {
+		if alarmType, ok := areas[areaType]; ok {
+			return alarmType, true
+		}
+	}
+	return "", false
+}
+
+// LookupPose type=2 查表：pose → AlarmType
+func LookupPose(pose int) (string, bool) {
+	alarmType, ok := PoseMap[pose]
+	return alarmType, ok
+}
+
+// LookupDeviceEvent type=5/7/8 查表：eventType → AlarmType
+func LookupDeviceEvent(eventType int) (string, bool) {
+	alarmType, ok := DeviceEventMap[eventType]
+	return alarmType, ok
+}
+
+// MQTTToAlarmTypeMapRadar 兼容旧接口：从三个结构化 map 生成 string→string
+// 供 numericCodeToAlarmTypeMap init() 使用，后续逐步迁移到直接使用 Lookup 函数
+var MQTTToAlarmTypeMapRadar = func() map[string]string {
+	m := make(map[string]string)
+	for event, areas := range Enter2OutMap {
+		for area, alarmType := range areas {
+			m[fmt.Sprintf("1%d%d", event, area)] = alarmType
+		}
+	}
+	for pose, alarmType := range PoseMap {
+		m[fmt.Sprintf("2%d", pose)] = alarmType
+	}
+	for eventType, alarmType := range DeviceEventMap {
+		m[fmt.Sprintf("%d", eventType)] = alarmType
+	}
+	for code, alarmType := range StatCodeMap {
+		m[code] = alarmType
+	}
+	return m
+}()
 
 // ConvertMQTTToAlarmTypeSleepad 将 Sleepad MQTT 消息转换为 alarm_type
 // 参数：mqttKey - MQTT 消息中的键（如 "alarmLeftBed", "alarmHeartRateFast" 等）
@@ -1238,218 +1113,43 @@ func ConvertMQTTToAlarmTypeSleepad(mqttKey string) string {
 	return ""
 }
 
-// ConvertMQTTToAlarmTypeRadar 将 Radar MQTT 消息转换为 alarm_type
-// 参数：eventType - event_type 字段值（1=进出事件, 2=姿态变化, 7=信号差, 8=倾角异常）
-// 参数：areaType - area_type 字段值（用于 event_type=1）
-// 参数：pose - pose 字段值（用于 event_type=2）
-// 参数：statType - statistics 类型（用于 sleep 统计）
-// 参数：statAlarmType - statistics 中的 alarm_type 字段值
-// 返回：对应的 alarm_type，如果未找到则返回空字符串
-func ConvertMQTTToAlarmTypeRadar(eventType, areaType, pose, statType, statAlarmType string) string {
-	// Event type=1 (进出事件)
-	if eventType == "1" {
-		if areaType == "6" {
-			return WarningArea
-		}
-		if areaType == "2" || areaType == "5" {
-			// 注意：RadarInBed 和 LeftBedTooLong 需要根据具体业务逻辑判断
-			// 这里先返回 RadarInBed，实际使用时可能需要根据其他字段（如 duration）判断
-			return InBed
-		}
-		// 进出房间
-		return Stay
-	}
+// numericCodeToAlarmTypeMap 从 MQTTToAlarmTypeMapRadar 自动生成的反向映射
+// key=numeric code, value=去掉方向后缀的 base alarm type 列表
+var numericCodeToAlarmTypeMap map[string][]string
 
-	// Event type=2 (姿态变化)
-	if eventType == "2" {
-		switch pose {
-		case "5":
-			return Fall
-		case "2":
-			return SuspectedFall
-		case "7":
-			return SuspectedSittingOnGround
-		case "8":
-			return SittingOnGround
-		case "10":
-			return SuspectedBedSitUp
-		case "11":
-			return BedSitUp
+func init() {
+	numericCodeToAlarmTypeMap = make(map[string][]string)
+	for code, qualified := range MQTTToAlarmTypeMapRadar {
+		baseType, _ := SplitAlarmQualifier(qualified)
+		if baseType == "" {
+			continue
+		}
+		existing := numericCodeToAlarmTypeMap[code]
+		found := false
+		for _, t := range existing {
+			if t == baseType {
+				found = true
+				break
+			}
+		}
+		if !found {
+			numericCodeToAlarmTypeMap[code] = append(existing, baseType)
 		}
 	}
-
-	// Event type=7 (信号差)
-	if eventType == "7" {
-		return SignalPoor
-	}
-
-	// Event type=8 (倾角异常)
-	if eventType == "8" {
-		return AngleException
-	}
-
-	// Statistics (sleep)
-	if statType == "sleep" {
-		switch statAlarmType {
-		case "01": // 呼吸过低或心率过低
-			// 需要根据具体字段判断是呼吸还是心率
-			// 这里假设有额外的字段来区分，实际使用时需要根据 MQTT 消息结构调整
-			return AbnormalRespiratoryRate // 或 AbnormalHeartRate
-		case "10": // 呼吸过高或心率过高
-			return AbnormalRespiratoryRate // 或 AbnormalHeartRate
-		case "11": // 呼吸暂停或生命体征弱
-			return ApneaHypopnea // 或 VitalsWeak
-		}
-	}
-
-	return ""
 }
 
-// ShouldEnableEventForAlarm 判断 MQTT 事件是否应该转换为报警
-// 参数：deviceType - 设备类型（"Sleepad"/"Sleepad"/"sleepad" 或 "radar"）
-// 参数：alarmType - 报警类型（通过 ConvertMQTTToAlarmType* 函数转换得到）
-// 参数：enablementMap - 报警使能配置表（通过 GetAlarmEnablementMap 函数获取）
-// 返回：是否应该转换为报警（true=转换为 alarm topic，false=保持原 topic）
-func ShouldEnableEventForAlarm(deviceType, alarmType string, enablementMap []AlarmEnablementItem) bool {
-	if alarmType == "" {
-		return false
-	}
-
-	// 在 enablementMap 中查找对应的 alarm_type
-	for _, item := range enablementMap {
-		if item.AlarmType == alarmType {
-			// 找到匹配项，且 isEnabled=1，alarm_level 不为空，应该转换为报警
-			return true
-		}
-	}
-
-	return false
+// LookupStatCode 查询 StatCodeMap，返回 AlarmType 和是否命中
+func LookupStatCode(numericCode string) (string, bool) {
+	alarmType, ok := StatCodeMap[numericCode]
+	return alarmType, ok
 }
 
-// AlarmTypeToNumericCode 报警类型到数字组合的映射
-// 用于将标准报警项转换为数字组合，便于在 device_monitor 中查找配置
-// 格式：event 类型使用 eventType+event+area_type，statistics 类型使用不同的编码
-type AlarmNumericCode struct {
-	EventType int    // 事件类型 (1=进出事件, 2=姿态变化, 7=信号差, 8=倾角异常)
-	Event     int    // 事件值 (用于 event_type=1, 如 event=4 表示离床)
-	AreaType  int    // 区域类型 (用于 event_type=1, 2=普通床, 5=监护床)
-	Pose      int    // 姿态值 (用于 event_type=2)
-	StatType  string // 统计类型 (用于 statistics, 如 "sleep")
-	StatCode  string // 统计代码 (用于 statistics, 如 "01", "10", "11")
-	Source    string // 数据源: "event" 或 "statistics" 或 "both"
-}
-
-// AlarmTypeToNumericCodeMap 报警类型到数字组合的映射表
-// 注意：event 和 statistics 分别转换，因为有些在event，有些在statistics，有些同时在两个里（如fall）
-// 注意：报警类型已统一，不再区分设备前缀，设备类型通过 device_type 字段区分
-var AlarmTypeToNumericCodeMap = map[string][]AlarmNumericCode{
-	// Event 类型报警
-	LeftBed: {
-		{EventType: 1, Event: 4, AreaType: 2, Source: "event"}, // 普通床离床
-		{EventType: 1, Event: 4, AreaType: 5, Source: "event"}, // 监护床离床
-	},
-	// LeftBedTooLong: 由 AI 层判断，不在 device event 层触发
-	InBed: {
-		{EventType: 1, Event: 3, AreaType: 2, Source: "event"}, // 普通床上床（event=3 进入区域）
-		{EventType: 1, Event: 3, AreaType: 5, Source: "event"}, // 监护床上床（event=3 进入区域）
-	},
-	WarningArea: {
-		{EventType: 1, Event: 1, AreaType: 6, Source: "event"}, // 进入警告区域
-	},
-	Fall: {
-		{EventType: 2, Pose: 5, Source: "event"}, // 确认跌倒（event）
-	},
-	SuspectedFall: {
-		{EventType: 2, Pose: 2, Source: "event"}, // 疑似跌倒（event）
-	},
-	SittingOnGround: {
-		{EventType: 2, Pose: 8, Source: "event"}, // 确认坐地
-	},
-	BedSitUp: {
-		{EventType: 2, Pose: 11, Source: "event"}, // 确认床上坐起
-	},
-	SignalPoor: {
-		{EventType: 7, Source: "event"}, // 信号差
-	},
-	AngleException: {
-		{EventType: 8, Source: "event"}, // 倾角异常
-	},
-	// Statistics 类型报警（4组状态分别映射）
-	// bit 1 & bit 0: 呼吸状态 (00=正常, 01=过低, 10=过高, 11=暂停)
-	AbnormalRespiratoryRate: {
-		{StatType: "sleep", StatCode: "breath_01", Source: "statistics"}, // 呼吸过低
-		{StatType: "sleep", StatCode: "breath_10", Source: "statistics"}, // 呼吸过高
-	},
-	ApneaHypopnea: {
-		{StatType: "sleep", StatCode: "breath_11", Source: "statistics"}, // 呼吸暂停
-	},
-	// bit 3 & bit 2: 心率状态 (00=正常, 01=过低, 10=过高, 11=未定义)
-	AbnormalHeartRate: {
-		{StatType: "sleep", StatCode: "heart_01", Source: "statistics"}, // 心率过低
-		{StatType: "sleep", StatCode: "heart_10", Source: "statistics"}, // 心率过高
-	},
-	// bit 5 & bit 4: 生命体征情况 (00=正常, 01=未定义, 02=未定义, 11=生命体征弱)
-	VitalsWeak: {
-		{StatType: "sleep", StatCode: "vitals_11", Source: "statistics"}, // 生命体征弱
-	},
-	// bit 7 & bit 6: 睡眠状态 (00=未定义, 01=浅睡, 10=深睡, 11=清醒) - 通常不是报警
-}
-
-// GetNumericCodesForAlarmType 获取报警类型对应的所有数字组合
-// 参数：alarmType - 报警类型（如 RadarLeftBed, RadarFall）
-// 返回：数字组合列表，可能包含多个组合（如 LeftBed 对应普通床和监护床）
-func GetNumericCodesForAlarmType(alarmType string) []AlarmNumericCode {
-	if codes, ok := AlarmTypeToNumericCodeMap[alarmType]; ok {
-		return codes
-	}
-	return []AlarmNumericCode{}
-}
-
-// NumericCodeToAlarmTypeMap 数字组合到报警类型的反向映射表
-// 用于根据数字组合（如"142"）直接查找对应的报警类型列表
-// 注意：同一个数字组合可能对应多个报警类型（如"142"对应 LeftBed/LeftBedTooLong/InBed），需要根据event值区分
-// 格式：数字组合字符串 -> 报警类型列表
-var NumericCodeToAlarmTypeMap = map[string][]string{
-	// Event type=1 (进出事件)
-	// event=4 离床, event=3 上床, 分开映射
-	"142": {LeftBed},      // eventType=1, event=4, area_type=2 (普通床离床)
-	"145": {LeftBed},      // eventType=1, event=4, area_type=5 (监护床离床)
-	"132": {InBed},        // eventType=1, event=3, area_type=2 (普通床上床)
-	"135": {InBed},        // eventType=1, event=3, area_type=5 (监护床上床)
-	"116": {WarningArea},  // eventType=1, event=1, area_type=6 (进入警告区域)
-	// LeftBedTooLong: 由 AI 层判断，不在 device event 层触发
-	// Event type=2 (姿态变化)
-	"25":  {Fall},            // eventType=2, pose=5 (确认跌倒)
-	"22":  {Fall},            // eventType=2, pose=2 (疑似跌倒)
-	"27":  {SittingOnGround}, // eventType=2, pose=7 (疑似坐地)
-	"28":  {SittingOnGround}, // eventType=2, pose=8 (确认坐地)
-	"210": {BedSitUp},        // eventType=2, pose=10 (疑似床上坐起)
-	"211": {BedSitUp},        // eventType=2, pose=11 (确认床上坐起)
-	// Event type=5, 7, 8
-	"5": {AlarmTypeOfflineAlarm}, // eventType=5 (离线)
-	"7": {SignalPoor},     // eventType=7 (信号差)
-	"8": {AngleException}, // eventType=8 (倾角异常)
-	// Statistics (sleep) - 4组状态分别映射
-	// bit 1 & bit 0: 呼吸状态
-	"sleep_breath_01": {AbnormalRespiratoryRate}, // 呼吸过低
-	"sleep_breath_10": {AbnormalRespiratoryRate}, // 呼吸过高
-	"sleep_breath_11": {ApneaHypopnea},           // 呼吸暂停
-	// bit 3 & bit 2: 心率状态
-	"sleep_heart_01": {AbnormalHeartRate}, // 心率过低
-	"sleep_heart_10": {AbnormalHeartRate}, // 心率过高
-	// bit 5 & bit 4: 生命体征情况
-	"sleep_vitals_11": {VitalsWeak}, // 生命体征弱
-	// bit 7 & bit 6: 睡眠状态 (00/01/10/11) - 通常不是报警，不映射
-}
-
-// GetAlarmTypesFromNumericCode 根据数字组合获取所有可能的报警类型
-// 参数：numericCode - 数字组合字符串（如"142", "25", "210"）
-// 返回：对应的报警类型列表，如果未找到则返回空列表
+// GetAlarmTypesFromNumericCode 根据数字组合获取对应的报警类型列表
 func GetAlarmTypesFromNumericCode(numericCode string) []string {
-	if alarmTypes, ok := NumericCodeToAlarmTypeMap[numericCode]; ok {
-		return alarmTypes
+	if types, ok := numericCodeToAlarmTypeMap[numericCode]; ok {
+		return types
 	}
-	return []string{}
+	return nil
 }
 
 // CheckAlarmEnabledByNumericCode 根据数字组合检查报警是否启用
@@ -1712,6 +1412,23 @@ type RadarEventStatToAlarmMapping struct {
 }
 
 // ========== 完整的 Radar Event/Stat 到 Alarm 映射表 ==========
+/*
+TopicType — MQTT topic 分类："event"/"stat"/"monitor"/"alarm"
+Category — 消息的 category 字段，如 "sleep"、"vital"
+EventType — event_type 数值（1=进出、2=姿态）
+AreaType — 区域类型（2=普通床、6=警告区）
+Pose — 姿态值（5=跌倒）
+StatType — stat/monitor 的数据子类型，如 "heart_rate"、"sleep"。用来区分同一个 Category="vital" 下的不同指标，匹配时和传入消息的 stat_type 字段比对
+StatCode — stat 具体编码（"breath_01"）
+映射结果（匹配后怎么处理）：
+AlarmType — 触发哪个报警常量
+ProcessType — Immediate（立即触发）还是 TimeBased（持续超时才触发）
+DurationSec — TimeBased 时的持续时间阈值（60 = 异常持续60秒才报）
+UpgradeTo — 升级目标（如疑似跌倒持续60秒升级为确认跌倒）
+Description — 纯注释性质，给开发者看的，不给 UI 用。UI 用的是 AlarmTypeDisplayName 那张表。
+*/
+
+
 var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 	// ========== 即时触发型报警（已在 qinglan 转换为 alarm）==========
 	{
@@ -1800,8 +1517,8 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 	},
 	{
 		TopicType:   "alarm",
-		Category:    "VitalsWeak",
-		AlarmType:   VitalsWeak,
+		Category:    "WeakBiometricSignal",
+		AlarmType:   WeakBiometricSignal,
 		ProcessType: ProcessTypeImmediate,
 		Description: "Weak vitals alarm",
 	},
@@ -1975,7 +1692,7 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 		Category:    "sleep",
 		StatType:    strPtr("sleep"),
 		StatCode:    strPtr("breath_01"),
-		AlarmType:   AbnormalRespiratoryRate,
+		AlarmType:   RespRateAlert,
 		ProcessType: ProcessTypeImmediate,
 		Description: "Low respiratory rate stat",
 	},
@@ -1984,7 +1701,7 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 		Category:    "sleep",
 		StatType:    strPtr("sleep"),
 		StatCode:    strPtr("breath_10"),
-		AlarmType:   AbnormalRespiratoryRate,
+		AlarmType:   RespRateAlert,
 		ProcessType: ProcessTypeImmediate,
 		Description: "High respiratory rate stat",
 	},
@@ -2002,7 +1719,7 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 		Category:    "sleep",
 		StatType:    strPtr("sleep"),
 		StatCode:    strPtr("heart_01"),
-		AlarmType:   AbnormalHeartRate,
+		AlarmType:   HeartRateAlert,
 		ProcessType: ProcessTypeImmediate,
 		Description: "Low heart rate stat",
 	},
@@ -2011,7 +1728,7 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 		Category:    "sleep",
 		StatType:    strPtr("sleep"),
 		StatCode:    strPtr("heart_10"),
-		AlarmType:   AbnormalHeartRate,
+		AlarmType:   HeartRateAlert,
 		ProcessType: ProcessTypeImmediate,
 		Description: "High heart rate stat",
 	},
@@ -2020,7 +1737,7 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 		Category:    "sleep",
 		StatType:    strPtr("sleep"),
 		StatCode:    strPtr("vitals_11"),
-		AlarmType:   VitalsWeak,
+		AlarmType:   WeakBiometricSignal,
 		ProcessType: ProcessTypeImmediate,
 		Description: "Weak vitals stat",
 	},
@@ -2046,27 +1763,27 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 	},
 
 	// ========== Monitor Stream 中的监控数据 ==========
-	// 呼吸率监控
 	{
 		TopicType:   "monitor",
 		Category:    "vital",
 		StatType:    strPtr("respiratory_rate"),
-		AlarmType:   AbnormalRespiratoryRate,
+		AlarmType:   RespRateAlert,
 		ProcessType: ProcessTypeTimeBased,
-		DurationSec: intPtr(60), // 持续1分钟异常
-		Description: "Respiratory rate abnormal monitor",
+		DurationSec: intPtr(60),
+		Description: "Respiratory rate monitor",
 	},
-	// 心率监控
 	{
 		TopicType:   "monitor",
 		Category:    "vital",
 		StatType:    strPtr("heart_rate"),
-		AlarmType:   AbnormalHeartRate,
+		AlarmType:   HeartRateAlert,
 		ProcessType: ProcessTypeTimeBased,
-		DurationSec: intPtr(60), // 持续1分钟异常
-		Description: "Heart rate abnormal monitor",
+		DurationSec: intPtr(60),
+		Description: "Heart rate monitor",
 	},
 }
+
+
 
 // MatchRadarEventStatToAlarm 匹配 Radar Event/Stat 到 Alarm_Type
 // 参数：
@@ -2134,4 +1851,89 @@ func GetAlarmTypeFromRadarEventStat(
 		return matches[0].AlarmType
 	}
 	return ""
+}
+
+// ========== UI 层报警归类 ==========
+// 将细分报警类型归类到 UI 展示组，便于前端分组显示
+// 未在此映射中的类型，UI 组名等于自身
+
+var AlarmTypeUIGroup = map[string]string{
+	SuspectedFall:            Fall,
+	SuspectedSittingOnGround: SittingOnGround,
+	SuspectedBedSitUp:        BedSitUp,
+	HeartRateAlert + DirHigh: HeartRateAlert,
+	HeartRateAlert + DirLow:  HeartRateAlert,
+	RespRateAlert + DirHigh:  RespRateAlert,
+	RespRateAlert + DirLow:   RespRateAlert,
+}
+
+func GetAlarmUIGroup(alarmType string) string {
+	if group, ok := AlarmTypeUIGroup[alarmType]; ok {
+		return group
+	}
+	if base, q := SplitAlarmQualifier(alarmType); q != "" {
+		return base
+	}
+	return alarmType
+}
+
+// AlarmTypeDisplayName UI 展示用的友好名称（规避 FDA / 医疗设备措辞风险）
+var AlarmTypeDisplayName = map[string]string{
+	// 设备状态
+	AlarmTypeOfflineAlarm:   "Device Offline",
+	AlarmTypeDeviceFailure:  "Device Fault",
+	AlarmTypeDeviceRecovery: "Device Restored",
+
+	// 呼吸 / 心率
+	ApneaHypopnea:        "Apnea/Hypopnea Event",
+	HeartRateAlert:       "Heart Rate Alert",
+	RespRateAlert:        "Resp. Rate Alert",
+	HeartRateNormal:      "Heart Rate Normal",
+	RespiratoryRateNormal: "Resp. Rate Normal",
+
+	// 床位
+	InBed:          "In Bed",
+	LeftBed:        "Bed Exit",
+	LeftBedTooLong: "Extended Bed Exit",
+
+	// 跌倒
+	Fall:                     "Fall Alert",
+	SuspectedFall:            "Potential Fall",
+	SittingOnGround:          "On Floor Alert",
+	SuspectedSittingOnGround: "Potential On Floor Alert",
+
+	// 姿态 / 活动
+	BedSitUp:             "Bed Sit-up",
+	SuspectedBedSitUp:    "Potential Bed Sit-up",
+	AbnormalBodyMovement: "Excessive Movement",
+	NoBodyMove:           "No Movement",
+	NoTurnOver:           "No Turn-over",
+	PostureDetection:     "Posture Update",
+
+	// 信号 / 维护
+	WeakBiometricSignal: "Weak Biometric Signal",
+	SignalPoor:          "Weak Signal",
+	AngleException:      "Device Tilted",
+	SensorDetached:      "Sensor Detached",
+
+	// 区域 / 模式
+	Stay:             "Prolonged Stay",
+	NoActivity24h:    "No Activity (24h)",
+	WarningArea:      "Warning Area",
+	EnterRoom:        "Room Entry",
+	ExitRoom:         "Room Exit",
+	EnterSensingArea: "Entered Sensing Area",
+	ExitSensingArea:  "Exited Sensing Area",
+	EnterMonitor:     "Monitoring Started",
+	ExitMonitor:      "Monitoring Ended",
+	MonitoringMode:   "Monitoring Mode",
+	ResetTime:        "Reset Time",
+	NapTime:          "Nap Time",
+}
+
+func GetAlarmDisplayName(alarmType string) string {
+	if name, ok := AlarmTypeDisplayName[alarmType]; ok {
+		return name
+	}
+	return alarmType
 }

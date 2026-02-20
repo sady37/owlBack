@@ -82,26 +82,26 @@ func (r *PostgresCardRepository) appendRecorded(op, tenantID, cardID, unitID str
 
 // CardRowForCache 卡片+单元信息（用于生成 CardStatic 静态缓存）
 type CardRowForCache struct {
-	CardID         string
-	TenantID       string
-	CardType       string
-	BedID          *string
-	BedName        *string // ✅ 新增
-	RoomID         *string // ✅ 新增
-	RoomName       *string // ✅ 新增
-	UnitID         string
-	UnitName       string // ✅ 新增
-	Building       string // ✅ 新增
-	CardName       string
-	CardAddress    string
-	Timezone       string
-	ResidentID     *string
-	DevicesJSON    []byte
-	ResidentsJSON  []byte
-	BranchID       string
-	BranchName     string
-	IconAlarmLevel int
-	PopAlarmEmerge int
+	CardID           string
+	TenantID         string
+	CardType         string
+	BedID            *string
+	BedName          *string // ✅ 新增
+	RoomID           *string // ✅ 新增
+	RoomName         *string // ✅ 新增
+	UnitID           string
+	UnitName         string // ✅ 新增
+	Building         string // ✅ 新增
+	CardName         string
+	CardAddress      string
+	Timezone         string
+	ResidentID       *string
+	DevicesJSON      []byte
+	ResidentsJSON    []byte
+	BranchID         string
+	BranchName       string
+	IconAlarmLevel   int
+	PopAlarm int
 }
 
 // convertDevicesToJSON 将设备列表转换为 JSONB 格式
@@ -238,7 +238,7 @@ func deserializeResidents(data []byte) ([]card.ResidentInfo, error) {
 	return residents, nil
 }
 
-// GetCardRowForCache 从 DB 取单卡+unit（branch_id、branch_name、icon_alarm_level、pop_alarm_emerge），用于写 CardStatic 静态缓存
+// GetCardRowForCache 从 DB 取单卡+unit（branch_id、branch_name、icon_alarm_level、pop_alarm），用于写 CardStatic 静态缓存
 func (r *PostgresCardRepository) GetCardRowForCache(ctx context.Context, tenantID, cardID string) (*CardRowForCache, error) {
 	query := `
 		SELECT c.card_id, c.tenant_id, c.card_type, c.bed_id, c.unit_id, c.card_name, c.card_address,
@@ -247,7 +247,7 @@ func (r *PostgresCardRepository) GetCardRowForCache(ctx context.Context, tenantI
 		       COALESCE(b.branch_name, '') as branch_name,
 		       COALESCE(u.unit_name, '') as unit_name,
 			COALESCE(bld.building_name, '') as building,
-		       COALESCE(c.icon_alarm_level, 3), COALESCE(c.pop_alarm_emerge, 0),
+		       COALESCE(c.icon_alarm_level, 2), COALESCE(c.pop_alarm, 2),
 		       COALESCE(bed.bed_name, ''), COALESCE(room.room_id::text, ''), COALESCE(room.room_name, '')
 		FROM cards c
 		LEFT JOIN units u ON c.unit_id = u.unit_id AND c.tenant_id = u.tenant_id
@@ -263,7 +263,7 @@ func (r *PostgresCardRepository) GetCardRowForCache(ctx context.Context, tenantI
 		&row.CardID, &row.TenantID, &row.CardType, &bedID, &row.UnitID, &row.CardName, &row.CardAddress,
 		&row.Timezone, &residentID, &row.DevicesJSON, &row.ResidentsJSON, &row.BranchID, &row.BranchName,
 		&row.UnitName, &row.Building,
-		&row.IconAlarmLevel, &row.PopAlarmEmerge,
+		&row.IconAlarmLevel, &row.PopAlarm,
 		&bedName, &roomID, &roomName,
 	)
 	if err != nil {
@@ -818,12 +818,12 @@ func (r *PostgresCardRepository) ClearAllCards() error {
 	if err != nil {
 		return fmt.Errorf("clear all cards: %w", err)
 	}
-	
+
 	rowsAffected, _ := result.RowsAffected()
 	r.logger.Info("Cleared all cards globally",
 		zap.Int64("rows_affected", rowsAffected),
 	)
-	
+
 	// 清空记录器，避免影响后续操作
 	r.ClearRecorded()
 	return nil
