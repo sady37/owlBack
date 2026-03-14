@@ -20,6 +20,7 @@ import (
 	"wisefido-data/internal/store"
 	"wisefido-data/internal/subscriber"
 
+	"owl-common/card"
 	"owl-common/database"
 	logpkg "owl-common/logger"
 	rediscommon "owl-common/redis"
@@ -73,7 +74,7 @@ func main() {
 	// Stub depends on tenantsRepo + authStore (used by /auth/api/v1/institutions/search + /auth/api/v1/login)
 	stub := httpapi.NewStubHandler(nil, authStore, nil)
 	// Always register admin routes; if DB is not available, AdminAPI will fall back to stub (no 404).
-	admin := httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, nil)
+	admin := httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, nil, nil, nil)
 	if cfg.DBEnabled {
 		if d, err := database.NewPostgresDB(&cfg.Database); err == nil {
 			db = d
@@ -99,7 +100,7 @@ func main() {
 		if cfg.Qinglan.APIBaseURL != "" {
 			qinglanClient = service.NewQinglanClient(cfg.Qinglan.APIBaseURL, logger)
 		}
-		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, deviceStoreRepo, tenantResolver, stub, logger, qinglanClient)
+		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, deviceStoreRepo, tenantResolver, stub, logger, qinglanClient, card.NewReader(redisClient), db)
 
 		// 创建 Role 和 RolePermission Service（仅创建，不保留变量）
 		roleRepo := repository.NewPostgresRolesRepository(db)
@@ -186,7 +187,7 @@ func main() {
 		// 创建 QinglanClient（调用 wisefido-qinglan HTTP API，统一与设备通信）
 		qinglanClient := service.NewQinglanClient(cfg.Qinglan.APIBaseURL, logger)
 
-		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, deviceStoreRepo, tenantResolver, stub, logger, qinglanClient)
+		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, deviceStoreRepo, tenantResolver, stub, logger, qinglanClient, card.NewReader(redisClient), db)
 
 		// 创建 Role 和 RolePermission Service 和 Handler
 		roleRepo := repository.NewPostgresRolesRepository(db)
@@ -223,18 +224,18 @@ func main() {
 
 		// 创建 Device Service 和 Handler（qinglanClient 已在上面创建）
 		devicesRepo.SetLogger(logger) // 确保 logger 已设置（用于设备连接日志）
-		deviceService := service.NewDeviceService(devicesRepo, cardSyncService, qinglanClient, logger)
+		deviceService := service.NewDeviceService(devicesRepo, cardSyncService, qinglanClient, card.NewReader(redisClient), db, logger)
 		deviceHandler := httpapi.NewDeviceHandler(deviceService, logger)
 		router.RegisterDeviceRoutes(deviceHandler)
 
-		// 创建 DeviceStore Handler（直接使用 Repository，不需要 Service 层）
-		deviceStoreHandler := httpapi.NewDeviceStoreHandler(deviceStoreRepo, qinglanClient, logger)
+		// 创建 DeviceStore Handler（直接使用 Repository，在线状态与 device_service 一致：优先 cardagg Redis）
+		deviceStoreHandler := httpapi.NewDeviceStoreHandler(deviceStoreRepo, card.NewReader(redisClient), db, logger)
 		router.RegisterDeviceStoreRoutes(deviceStoreHandler)
 
 		// 创建 CardsRepository（供 RadarInstall 查卡片设备，以及后续 CardService 使用）
 		cardsRepo := repository.NewPostgresCardsRepository(db)
 
-		// 创建数据流订阅器（订阅 card:realtime:stream, card:status:stream, iot:deviceStatus:stream）
+		// 创建数据流订阅器（订阅 card:realtime:stream, card:status:stream；设备状态在 iot:event:stream）
 		dataStreamSubscriber = subscriber.NewDataStreamSubscriber(redisClient, logger)
 		initCtx := context.Background()
 		if err := dataStreamSubscriber.Start(initCtx); err != nil {
@@ -242,6 +243,7 @@ func main() {
 		}
 		if cardRealtimeSvc != nil {
 			cardRealtimeSvc.SetSSEDependencies(dataStreamSubscriber)
+			cardRealtimeSvc.SetGetCardStatusDeps(card.NewReader(redisClient), db)
 
 			// 桥接 subscriber.CardStatusEvent → service.StatusEvent，激活 fan-out 通路
 			statusBridgeCh := make(chan service.StatusEvent, 64)
@@ -262,7 +264,7 @@ func main() {
 		// go subscribeDataStream(ctx, logger, redisClient, dataStreamSubscriber)
 
 		// 创建 Radar Install Service 和 Handler（通过 wisefido-qinglan 与设备通信）
-		radarInstall := service.NewRadarInstall(cfg, devicesRepo, cardsRepo, configVersionsRepo, qinglanClient, logger)
+		radarInstall := service.NewRadarInstall(cfg, devicesRepo, cardsRepo, configVersionsRepo, unitsRepo, qinglanClient, logger)
 		radarHandler := httpapi.NewRadarHandler(radarInstall, stub, kv, redisClient, logger)
 		// 将 dataStreamSubscriber 传给 RadarHandler（供 SSE 推送使用）
 		radarHandler.SetDataStreamSubscriber(dataStreamSubscriber)
@@ -352,6 +354,29 @@ func main() {
 			)
 		}
 
+		// 设置 SleepaceGatewayClient 到 DeviceMonitorSettingsService；DeviceStore 绑定逻辑由 DeviceStoreService 负责
+		var sleepaceGateway *service.SleepaceGatewayClient
+		if cfg.SleepaceGateway.APIBaseURL != "" {
+			sleepaceGateway = service.NewSleepaceGatewayClient(cfg.SleepaceGateway.APIBaseURL, logger)
+			if svc, ok := deviceMonitorSettingsService.(interface {
+				SetSleepaceGatewayClient(client *service.SleepaceGatewayClient)
+			}); ok {
+				svc.SetSleepaceGatewayClient(sleepaceGateway)
+			}
+			if err := sleepaceGateway.Ping(context.Background()); err != nil {
+				logger.Warn("Sleepace gateway unreachable at startup (sleepace-service/wisefido-sleepace may be down)",
+					zap.String("api_base_url", cfg.SleepaceGateway.APIBaseURL),
+					zap.Error(err))
+			} else {
+				logger.Info("Sleepace gateway connected",
+					zap.String("api_base_url", cfg.SleepaceGateway.APIBaseURL))
+			}
+		} else {
+			logger.Warn("Sleepace gateway client not initialized (SLEEPACE_GATEWAY_API_BASE_URL not set)")
+		}
+		deviceStoreService := service.NewDeviceStoreService(deviceStoreRepo, devicesRepo, unitsRepo, sleepaceGateway, logger)
+		deviceStoreHandler.SetDeviceStoreService(deviceStoreService)
+
 		// 设置 QinglanClient 到 DeviceMonitorSettingsService（用于下发雷达监控设置：工作模式、跌倒/呼吸心率参数）
 		if svc, ok := deviceMonitorSettingsService.(interface {
 			SetQinglanClient(client *service.QinglanClient)
@@ -368,8 +393,9 @@ func main() {
 			userBranchesRepo, // 用于安全验证：验证 branch_id 与 user_id 一致性
 			devicesRepo,      // 用于安全验证：验证 device_id 与 tenant_id 一致性
 			unitsRepo,        // 用于安全验证：获取设备的 branch_id
-			redisClient,      // 保留字段（已不再使用，改为通过 HTTP API 查询设备状态）
-			db,               // 用于安全验证：数据库查询
+			redisClient,
+			db,
+			card.NewReader(redisClient), // 设备在线状态（走 device_store/cardagg，不依赖 card）
 			logger,
 		)
 		router.RegisterDeviceMonitorSettingsRoutes(deviceMonitorSettingsHandler)
@@ -401,6 +427,12 @@ func main() {
 
 		sleepaceReportHandler := httpapi.NewSleepaceReportHandler(sleepaceReportService, db, logger)
 		router.RegisterSleepaceReportRoutes(sleepaceReportHandler)
+
+		// Rounds（Automatic Rounds 完成落库与审计列表）
+		roundsRepo := repository.NewPostgresRoundsRepository(db)
+		roundsService := service.NewRoundsService(roundsRepo, logger)
+		roundsHandler := httpapi.NewRoundsHandler(roundsService, logger)
+		router.RegisterRoundsRoutes(roundsHandler)
 
 		// TODO: MQTT 触发下载功能（默认禁用）
 		// 参考：wisefido-backend/wisefido-sleepace/modules/borker.go
@@ -460,7 +492,7 @@ func main() {
 		// Devices 仍可先保持 stub（后续需要再补内存设备库）
 		// 注意：MemoryUnitsRepo 尚未实现新的 UnitsRepository 接口，暂时传递 nil
 		// AdminAPI 会回退到 stub handler
-		admin = httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, nil)
+		admin = httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, nil, nil, nil)
 	}
 	router.RegisterAdminUnitDeviceRoutes(admin)
 	// 如果 DB 启用，传入 BranchesRepository 以便创建 tenant 时自动创建默认 branch
@@ -516,6 +548,12 @@ func main() {
 			time.Sleep(2 * time.Second)
 
 			logger.Info("Starting full card check/update on service startup")
+
+			// 初始化以当前 unit 为准重建卡片，不基于库里已有卡（重启后 unit 可能已变化）
+			if err := cardSyncService.ClearAllCards(ctx); err != nil {
+				logger.Warn("Failed to clear all cards before sync", zap.Error(err))
+				return
+			}
 
 			// 获取所有活跃租户
 			tenants, _, err := tenantsRepo.ListTenants(ctx, repository.TenantFilters{
@@ -587,6 +625,15 @@ func main() {
 						}
 					}
 				}
+			}
+
+			// 启动时按 alarm_events 重算并写回 cards（unhandled_alarm_*、pop_alarm_*），与 alarm_events 一致
+			// 在 CreateCardsForUnit 之后执行，直接调用内部 CardSyncService
+			recalcOk, recalcFail, err := cardSyncService.RecalcAllCardsAlarmState(ctx, db)
+			if err != nil {
+				logger.Warn("Failed to recalc all cards alarm state", zap.Error(err))
+			} else {
+				logger.Info("Cards alarm state recalc on startup", zap.Int("ok", recalcOk), zap.Int("fail", recalcFail))
 			}
 
 			// 输出统计信息到 stdout 和日志
@@ -675,9 +722,10 @@ func subscribeDataStream(ctx context.Context, logger *zap.Logger, redisClient *r
 		zap.String("consumer_group", consumerGroup),
 	)
 
-	// 为每个流创建消费者组
+	// 为每个流创建消费者组（已存在则 BUSYGROUP，视为正常）
 	for _, streamName := range streams {
-		if err := rediscommon.CreateConsumerGroup(ctx, redisClient, streamName, consumerGroup); err != nil {
+		if err := rediscommon.CreateConsumerGroup(ctx, redisClient, streamName, consumerGroup); err != nil &&
+			err.Error() != "BUSYGROUP Consumer Group name already exists" {
 			logger.Warn("Failed to create consumer group",
 				zap.String("stream", streamName),
 				zap.String("consumer_group", consumerGroup),

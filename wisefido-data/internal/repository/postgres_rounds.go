@@ -37,14 +37,19 @@ func (r *PostgresRoundsRepository) GetRound(ctx context.Context, tenantID, round
 			unit_id::text,
 			executor_id::text,
 			round_time,
+			started_at,
+			items_checked::text,
 			notes,
 			status
 		FROM rounds
 		WHERE tenant_id = $1 AND round_id = $2
 	`
+	// If columns started_at/items_checked do not exist yet, run owlRD/db/add_rounds_audit_columns.sql first.
 
 	var round domain.Round
 	var unitID, notes sql.NullString
+	var startedAt sql.NullTime
+	var itemsChecked sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, tenantID, roundID).Scan(
 		&round.RoundID,
@@ -53,6 +58,8 @@ func (r *PostgresRoundsRepository) GetRound(ctx context.Context, tenantID, round
 		&unitID,
 		&round.ExecutorID,
 		&round.RoundTime,
+		&startedAt,
+		&itemsChecked,
 		&notes,
 		&round.Status,
 	)
@@ -68,6 +75,12 @@ func (r *PostgresRoundsRepository) GetRound(ctx context.Context, tenantID, round
 	}
 	if notes.Valid {
 		round.Notes = notes.String
+	}
+	if startedAt.Valid {
+		round.StartedAt = &startedAt.Time
+	}
+	if itemsChecked.Valid && itemsChecked.String != "" {
+		round.ItemsChecked = []byte(itemsChecked.String)
 	}
 
 	return &round, nil
@@ -144,6 +157,8 @@ func (r *PostgresRoundsRepository) ListRounds(ctx context.Context, tenantID stri
 			unit_id::text,
 			executor_id::text,
 			round_time,
+			started_at,
+			items_checked::text,
 			notes,
 			status
 		FROM rounds
@@ -161,6 +176,8 @@ func (r *PostgresRoundsRepository) ListRounds(ctx context.Context, tenantID stri
 	for rows.Next() {
 		var round domain.Round
 		var unitID, notes sql.NullString
+		var startedAt sql.NullTime
+		var itemsChecked sql.NullString
 
 		if err := rows.Scan(
 			&round.RoundID,
@@ -169,6 +186,8 @@ func (r *PostgresRoundsRepository) ListRounds(ctx context.Context, tenantID stri
 			&unitID,
 			&round.ExecutorID,
 			&round.RoundTime,
+			&startedAt,
+			&itemsChecked,
 			&notes,
 			&round.Status,
 		); err != nil {
@@ -180,6 +199,12 @@ func (r *PostgresRoundsRepository) ListRounds(ctx context.Context, tenantID stri
 		}
 		if notes.Valid {
 			round.Notes = notes.String
+		}
+		if startedAt.Valid {
+			round.StartedAt = &startedAt.Time
+		}
+		if itemsChecked.Valid && itemsChecked.String != "" {
+			round.ItemsChecked = []byte(itemsChecked.String)
 		}
 
 		rounds = append(rounds, &round)
@@ -217,9 +242,11 @@ func (r *PostgresRoundsRepository) CreateRound(ctx context.Context, tenantID str
 			unit_id,
 			executor_id,
 			round_time,
+			started_at,
+			items_checked,
 			notes,
 			status
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING round_id::text
 	`
 
@@ -230,10 +257,18 @@ func (r *PostgresRoundsRepository) CreateRound(ctx context.Context, tenantID str
 	if round.Notes != "" {
 		notes = round.Notes
 	}
+	var startedAt interface{}
+	if round.StartedAt != nil {
+		startedAt = *round.StartedAt
+	}
+	var itemsChecked interface{}
+	if len(round.ItemsChecked) > 0 {
+		itemsChecked = string(round.ItemsChecked)
+	}
 
 	var roundID string
 	err := r.db.QueryRowContext(ctx, query, tenantID, round.RoundType, unitID, round.ExecutorID,
-		round.RoundTime, notes, round.Status).Scan(&roundID)
+		round.RoundTime, startedAt, itemsChecked, notes, round.Status).Scan(&roundID)
 	if err != nil {
 		return "", fmt.Errorf("failed to create round: %w", err)
 	}
@@ -254,8 +289,10 @@ func (r *PostgresRoundsRepository) UpdateRound(ctx context.Context, tenantID, ro
 			unit_id = $4,
 			executor_id = $5,
 			round_time = $6,
-			notes = $7,
-			status = $8
+			started_at = $7,
+			items_checked = $8,
+			notes = $9,
+			status = $10
 		WHERE tenant_id = $1 AND round_id = $2
 	`
 
@@ -266,9 +303,17 @@ func (r *PostgresRoundsRepository) UpdateRound(ctx context.Context, tenantID, ro
 	if round.Notes != "" {
 		notes = round.Notes
 	}
+	var startedAt interface{}
+	if round.StartedAt != nil {
+		startedAt = *round.StartedAt
+	}
+	var itemsChecked interface{}
+	if len(round.ItemsChecked) > 0 {
+		itemsChecked = string(round.ItemsChecked)
+	}
 
 	result, err := r.db.ExecContext(ctx, query, tenantID, roundID, round.RoundType, unitID,
-		round.ExecutorID, round.RoundTime, notes, round.Status)
+		round.ExecutorID, round.RoundTime, startedAt, itemsChecked, notes, round.Status)
 	if err != nil {
 		return fmt.Errorf("failed to update round: %w", err)
 	}

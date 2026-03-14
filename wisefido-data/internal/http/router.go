@@ -443,3 +443,9 @@ func (r *Router) RegisterMonitorRoutes(h *MonitorHandler) {
 		}
 	})
 }
+
+// RegisterRoundsRoutes 注册巡房记录 API（POST/GET /data/api/v1/data/vital-focus/rounds）
+func (r *Router) RegisterRoundsRoutes(roundsHandler *RoundsHandler) {
+	r.Handle("/data/api/v1/data/vital-focus/rounds", roundsHandler.ServeHTTP)
+	r.Handle("/data/api/v1/data/vital-focus/rounds/", roundsHandler.ServeHTTP)
+}
