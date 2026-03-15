@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
-	"wisefido-qinglan/internal/config"
-	"wisefido-qinglan/internal/repository"
-
+	"owl-common/card"
 	rediscommon "owl-common/redis"
+	"wisefido-qinglan/internal/config"
 
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -17,7 +17,7 @@ import (
 
 // CardMappingService 定义卡片映射服务接口（避免导入循环）
 type CardMappingService interface {
-	GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*repository.CardDeviceInfo, error)
+	GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*card.DeviceCardMapping, error)
 }
 
 // StreamPublisher Redis Stream发布器
@@ -51,6 +51,96 @@ func (p *StreamPublisher) GetCardID(ctx context.Context, deviceUID string) strin
 	return ""
 }
 
+// Resolve translates device_uid → full identity tuple for stream message header.
+func (p *StreamPublisher) Resolve(ctx context.Context, deviceUID string) (tenantID, branchID, unitID, cardID, did string) {
+	if p.cardMappingSvc == nil {
+		return "", "", "", "", deviceUID
+	}
+	info, err := p.cardMappingSvc.GetCardIDByDeviceUID(ctx, deviceUID)
+	if err != nil || info == nil {
+		if p.logger != nil {
+			p.logger.Debug("card lookup miss", zap.String("device_uid", deviceUID), zap.Error(err))
+		}
+		return "", "", "", deviceUID, deviceUID
+	}
+	return info.TenantID, info.BranchID, info.UnitID, info.CardID, info.DeviceID
+}
+
+// PublishMonitor sends a redis.StreamMessage to iot:monitor:stream.
+func (p *StreamPublisher) PublishMonitor(ctx context.Context, msg *rediscommon.IoTStreamMessage) error {
+	return p.publishObservation(ctx, rediscommon.StreamMonitor, msg)
+}
+
+// PublishStat sends a redis.StreamMessage to iot:stat:stream.
+func (p *StreamPublisher) PublishStat(ctx context.Context, msg *rediscommon.IoTStreamMessage) error {
+	return p.publishObservation(ctx, rediscommon.StreamStat, msg)
+}
+
+// PublishEvent sends a redis.StreamMessage to iot:event:stream.
+func (p *StreamPublisher) PublishEvent(ctx context.Context, msg *rediscommon.IoTStreamMessage) error {
+	return p.publishObservation(ctx, rediscommon.StreamEvent, msg)
+}
+
+// PublishAlarm sends a redis.StreamMessage to iot:alarm:stream.
+func (p *StreamPublisher) PublishAlarm(ctx context.Context, msg *rediscommon.IoTStreamMessage) error {
+	return p.publishObservation(ctx, rediscommon.StreamAlarm, msg)
+}
+
+// streamLabelFrom 生成日志用 stream 标签 iot:xxx:yyy，xxx=event/alarm/monitor，yyy=category
+func streamLabelFrom(streamName string, msg *rediscommon.IoTStreamMessage) string {
+	parts := strings.SplitN(streamName, ":", 3)
+	xxx := "stream"
+	if len(parts) >= 2 {
+		xxx = parts[1]
+	}
+	yyy := msg.Category
+	if yyy == "" && len(msg.DataValue) > 0 {
+		if m, ok := msg.DataValue[0].(map[string]interface{}); ok {
+			if v, ok := m["dataCategory"].(string); ok && v != "" {
+				yyy = v
+			}
+		}
+	}
+	if yyy == "" {
+		yyy = "stream"
+	}
+	return "iot:" + xxx + ":" + yyy
+}
+
+func (p *StreamPublisher) publishObservation(ctx context.Context, stream rediscommon.StreamDefinition, msg *rediscommon.IoTStreamMessage) error {
+	if msg.Timestamp == 0 {
+		msg.Timestamp = time.Now().UnixMilli()
+	}
+	// 从 stream 名推导 topic_type（iot:monitor:stream -> monitor）
+	if msg.TopicType == "" && len(stream.Name) > 0 {
+		parts := strings.SplitN(stream.Name, ":", 3)
+		if len(parts) >= 2 {
+			msg.TopicType = parts[1]
+		}
+	}
+	data := msg.ToStreamMap()
+	if p.logger != nil {
+		// 日志格式 iot:xxx:yyy，xxx=event/alarm/monitor，yyy=category
+		streamLabel := streamLabelFrom(stream.Name, msg)
+		payload, _ := json.Marshal(msg.DataValue)
+		p.logger.Info("publish to redis",
+			zap.String("stream", streamLabel),
+			zap.String("cid", msg.CardID),
+			zap.String("device_uid", msg.DeviceUID),
+			zap.Int64("ts", msg.Timestamp),
+			zap.ByteString("event", payload))
+	}
+	maxLen, retention := p.config.GetStreamConfig(stream.Name)
+	_, err := rediscommon.PublishToStream(ctx, p.redisClient, stream.Name, data, maxLen, retention)
+	if err != nil && p.logger != nil {
+		p.logger.Error("publish observation failed",
+			zap.String("stream", stream.Name),
+			zap.String("device_uid", msg.DeviceUID),
+			zap.Error(err))
+	}
+	return err
+}
+
 // SetLogger 设置 logger
 func (p *StreamPublisher) SetLogger(logger *zap.Logger) {
 	p.logger = logger
@@ -71,7 +161,7 @@ func (p *StreamPublisher) PublishToStream(ctx context.Context, streamName string
 	return streamID, nil
 }
 
-// BuildEncodedData 构建 iot:*:stream 输出数据（顶层无 addressInfo，data_value 为数组）
+// BuildEncodedData 构建 iot:*:stream 输出数据（顶层无 addressInfo，键 dataValue 为数组）
 // cardID 未绑卡可传空；dataValue 为数组，每项含 category 及对应字段。
 func (p *StreamPublisher) BuildEncodedData(
 	cardID string,
@@ -94,7 +184,7 @@ func (p *StreamPublisher) BuildEncodedData(
 }
 
 // iotStreamMessageToMap 将 IoTStreamMessage 转换为 map（用于发布到 Redis Stream）
-// 顶层顺序：device_id, device_type, card_id, tenant_id, timestamp, topic_type, category, data_value（无 addressInfo）
+// 顶层顺序：device_id, device_type, card_id, tenant_id, timestamp, topic_type, category, dataValue（无 addressInfo）
 func iotStreamMessageToMap(msg rediscommon.IoTStreamMessage) map[string]interface{} {
 	dataValueJSON, _ := json.Marshal(msg.DataValue)
 	result := make(map[string]interface{})
@@ -109,7 +199,7 @@ func iotStreamMessageToMap(msg rediscommon.IoTStreamMessage) map[string]interfac
 	result["timestamp"] = fmt.Sprintf("%d", msg.Timestamp)
 	result["topic_type"] = msg.TopicType
 	result["category"] = msg.Category
-	result["data_value"] = string(dataValueJSON)
+	result[rediscommon.DataValueKey] = string(dataValueJSON)
 	return result
 }
 
@@ -129,7 +219,7 @@ func (p *StreamPublisher) GetOutputStreamName(topicType string) string {
 	}
 }
 
-// PublishDeviceStatus 发布设备状态到 iot:deviceStatus:stream
+// PublishDeviceStatus 发布设备状态到 iot:event:stream（device 属于 event）
 // deviceUID: 设备UID（用于查询关联的 cardID）
 // statuses: 设备状态 map[string]int，支持字段：
 //   - online: 0=离线, 1=在线
@@ -172,7 +262,7 @@ func (p *StreamPublisher) PublishDeviceStatus(
 
 	eventData := iotStreamMessageToMap(msg)
 
-	_, err := p.PublishToStream(ctx, rediscommon.StreamIoTDeviceStatus.Name, eventData)
+	_, err := p.PublishToStream(ctx, rediscommon.StreamEvent.Name, eventData)
 	return err
 }
 

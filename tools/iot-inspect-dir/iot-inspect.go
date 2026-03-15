@@ -22,7 +22,7 @@ func main() {
 	var (
 		source    = flag.String("source", "redis", "数据源: redis 或 db")
 		stream    = flag.String("stream", "", "Redis Stream 名称 (仅当 source=redis 时使用，支持 iot:*:stream，如果未指定则根据 topic-type 自动设置)")
-		count     = flag.Int64("count", 1, "读取的消息数量 (仅当 source=redis 时使用)")
+		count     = flag.Int64("count", 1, "读取的消息数量 (source=redis 时取 stream 最新 N 条，可加大以看更多历史)")
 		topicType = flag.String("topic-type", "", "topic_type: monitor, stat, event, alarm (当 source=redis 时自动设置 stream，当 source=db 时作为过滤条件)")
 		deviceID  = flag.String("device-id", "", "设备ID (仅当 source=db 时使用，可选)")
 		limit     = flag.Int("limit", 1, "读取的记录数量 (仅当 source=db 时使用)")
@@ -161,7 +161,7 @@ type DatabaseRecord struct {
 	BedID      *string
 }
 
-// ReadFromRedisStream 从 Redis Stream 读取数据
+// ReadFromRedisStream 从 Redis Stream 读取数据（XREVRANGE 最新优先，所以 count=5 即 stream 里最新的 5 条）
 func ReadFromRedisStream(ctx context.Context, redisClient *redis.Client, streamName string, count int64) ([]StreamMessage, error) {
 	messages, err := redisClient.XRevRangeN(ctx, streamName, "+", "-", count).Result()
 	if err != nil {
@@ -178,22 +178,18 @@ func ReadFromRedisStream(ctx context.Context, redisClient *redis.Client, streamN
 		for key, value := range msg.Values {
 			// 处理字符串值
 			if strValue, ok := value.(string); ok {
-				// 如果值是 JSON 字符串（如 data_value），尝试解析
-				if key == "data_value" {
-					// 只有当 data_value 非空时才尝试解析 JSON
+				// 如果值是 JSON 字符串（键名规范：dataValue），尝试解析
+				if key == "dataValue" {
 					if strValue != "" {
 						var jsonData map[string]interface{}
 						if err := json.Unmarshal([]byte(strValue), &jsonData); err == nil {
-							// 将解析后的 JSON 数据合并到 data 中
 							for k, v := range jsonData {
 								data[k] = v
 							}
 						} else {
-							// 如果解析失败，保留原始字符串
 							data[key] = strValue
 						}
 					}
-					// 如果 data_value 为空，不添加到 data 中（stat 心跳消息通常没有 data_value）
 				} else {
 					data[key] = strValue
 				}
@@ -392,7 +388,7 @@ func printStreamMessage(msg StreamMessage, streamName string) {
 		for key := range msg.Data {
 			if key != "device_id" && key != "device_uid" && key != "device_type" &&
 				key != "tenant_id" && key != "timestamp" && key != "topic_type" &&
-				key != "category" && key != "data_value" {
+				key != "category" && key != "dataValue" {
 				hasData = true
 				break
 			}
@@ -457,8 +453,14 @@ func printDBRecords(records []DatabaseRecord) {
 		fmt.Println()
 
 		fmt.Println("Data Values (JSON):")
-		dataJSON, _ := json.MarshalIndent(record.DataValues, "", "  ")
-		fmt.Println(string(dataJSON))
+		// data_values 存的是整条流消息（iotHead + dataValue），上面已打印 head，此处只打印 dataValue 避免重复
+		if dv, ok := record.DataValues["dataValue"]; ok {
+			dataJSON, _ := json.MarshalIndent(dv, "", "  ")
+			fmt.Println(string(dataJSON))
+		} else {
+			dataJSON, _ := json.MarshalIndent(record.DataValues, "", "  ")
+			fmt.Println(string(dataJSON))
+		}
 	}
 
 	fmt.Println()

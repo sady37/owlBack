@@ -1182,7 +1182,7 @@ func (s *unitService) ListUnitsWithFullHierarchy(ctx context.Context, req ListUn
 	// fmt.Printf("==========================================\n\n")
 
 	// 3. 查询 units（不分页，返回所有匹配的 units）
-	units, total, err := s.unitsRepo.ListUnits(ctx, req.TenantID, filters, 1, 10000)
+	units, total, err := s.unitsRepo.ListUnits(ctx, req.TenantID, filters, 1, 1000)
 	if err != nil {
 		s.logger.Error("ListUnitsWithFullHierarchy: ListUnits failed",
 			zap.String("tenant_id", req.TenantID),
@@ -1794,13 +1794,11 @@ func (s *unitService) DeleteUnit(ctx context.Context, req DeleteUnitRequest) (*D
 		}
 	}
 
-	// 3.3 检查 devices（通过 bound_room_id 或 bound_bed_id 间接关联到 unit）
-	// 查询所有 rooms 的 room_id
+	// 3.3 检查 devices：仅允许删除「无设备绑定」的 unit。过滤语义：绑定到该 unit 下任意 room 或 bed 的设备（原逻辑为拉全量再按 roomIDs/bedIDs 过滤，现改为 repo 按 bound_room_id/bound_bed_id 查询，业务一致）
 	roomIDs := make([]string, 0, len(rooms))
 	for _, room := range rooms {
 		roomIDs = append(roomIDs, room.RoomID)
 	}
-	// 查询所有 beds 的 bed_id
 	bedIDs := make([]string, 0)
 	for _, room := range rooms {
 		beds, err := s.unitsRepo.ListBeds(ctx, req.TenantID, room.RoomID, "")
@@ -1812,9 +1810,7 @@ func (s *unitService) DeleteUnit(ctx context.Context, req DeleteUnitRequest) (*D
 		}
 	}
 
-	// 查询绑定到这些 rooms 或 beds 的 devices
-	deviceFilters := repository.DeviceFilters{}
-	allDevices, _, err := s.devicesRepo.ListDevices(ctx, req.TenantID, deviceFilters, 1, 10000)
+	unitDevices, err := s.devicesRepo.GetDevicesBoundToRoomsOrBeds(ctx, req.TenantID, roomIDs, bedIDs)
 	if err != nil {
 		s.logger.Error("DeleteUnit: failed to check devices",
 			zap.String("tenant_id", req.TenantID),
@@ -1822,29 +1818,6 @@ func (s *unitService) DeleteUnit(ctx context.Context, req DeleteUnitRequest) (*D
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to check devices: %w", err)
-	}
-
-	// 过滤出绑定到该 unit 的 devices
-	unitDevices := make([]*domain.Device, 0)
-	for _, device := range allDevices {
-		// 检查是否绑定到该 unit 下的 room
-		if device.BoundRoomID.Valid {
-			for _, roomID := range roomIDs {
-				if device.BoundRoomID.String == roomID {
-					unitDevices = append(unitDevices, device)
-					break
-				}
-			}
-		}
-		// 检查是否绑定到该 unit 下的 bed
-		if device.BoundBedID.Valid {
-			for _, bedID := range bedIDs {
-				if device.BoundBedID.String == bedID {
-					unitDevices = append(unitDevices, device)
-					break
-				}
-			}
-		}
 	}
 
 	if len(unitDevices) > 0 {
@@ -2171,11 +2144,7 @@ func (s *unitService) DeleteRoom(ctx context.Context, req DeleteRoomRequest) (*D
 	}
 
 	// 3.2 检查 devices（通过 bound_room_id 关联到 room）
-	// 注意：DeviceFilters 没有 BoundRoomID 字段，需要直接查询数据库
-	// 这里我们需要通过 devicesRepo 的内部方法或直接查询，但为了保持架构清晰，
-	// 我们可以通过 ListDevices 获取所有设备，然后过滤 bound_room_id
-	// 或者，我们可以添加一个专门的查询方法，但为了简化，先使用 ListDevices 然后过滤
-	allDevices, _, err := s.devicesRepo.ListDevices(ctx, req.TenantID, repository.DeviceFilters{}, 1, 10000)
+	boundDevices, err := s.devicesRepo.GetDevicesBoundToRoom(ctx, req.TenantID, req.RoomID)
 	if err != nil {
 		s.logger.Error("DeleteRoom: failed to check devices",
 			zap.String("tenant_id", req.TenantID),
@@ -2183,13 +2152,6 @@ func (s *unitService) DeleteRoom(ctx context.Context, req DeleteRoomRequest) (*D
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to check devices: %w", err)
-	}
-	// 过滤出绑定到该 room 的 devices
-	boundDevices := make([]*domain.Device, 0)
-	for _, device := range allDevices {
-		if device.BoundRoomID.Valid && device.BoundRoomID.String == req.RoomID {
-			boundDevices = append(boundDevices, device)
-		}
 	}
 	if len(boundDevices) > 0 {
 		deviceNames := make([]string, 0, len(boundDevices))
@@ -2535,7 +2497,7 @@ func (s *unitService) DeleteBed(ctx context.Context, req DeleteBedRequest) (*Del
 	var errorDetails []string
 
 	// 3.1 检查 devices（通过 bound_bed_id 关联到 bed）
-	allDevices, _, err := s.devicesRepo.ListDevices(ctx, req.TenantID, repository.DeviceFilters{}, 1, 10000)
+	boundDevices, err := s.devicesRepo.GetDevicesBoundToBed(ctx, req.TenantID, req.BedID)
 	if err != nil {
 		s.logger.Error("DeleteBed: failed to check devices",
 			zap.String("tenant_id", req.TenantID),
@@ -2543,13 +2505,6 @@ func (s *unitService) DeleteBed(ctx context.Context, req DeleteBedRequest) (*Del
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to check devices: %w", err)
-	}
-	// 过滤出绑定到该 bed 的 devices
-	boundDevices := make([]*domain.Device, 0)
-	for _, device := range allDevices {
-		if device.BoundBedID.Valid && device.BoundBedID.String == req.BedID {
-			boundDevices = append(boundDevices, device)
-		}
 	}
 	if len(boundDevices) > 0 {
 		deviceNames := make([]string, 0, len(boundDevices))

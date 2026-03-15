@@ -1028,8 +1028,9 @@ func (h *UserHandler) UpdateAccountSettings(w http.ResponseWriter, r *http.Reque
 	}
 	// 如果字段不存在（ok == false），req.PhoneHash 保持为 nil，表示不更新 hash
 
-	// 检查是否有任何更新
-	if req.PasswordHash == nil && req.PinHash == nil && req.Email == nil && req.Phone == nil {
+	// 检查是否有任何更新（含 email_hash / phone_hash）
+	if req.PasswordHash == nil && req.PinHash == nil && req.Email == nil && req.Phone == nil &&
+		req.EmailHash == nil && req.PhoneHash == nil {
 		writeJSON(w, http.StatusOK, Fail("no fields to update"))
 		return
 	}

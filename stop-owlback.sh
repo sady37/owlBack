@@ -87,13 +87,14 @@ stop_service() {
     printf "  [✓] %s stopped\n" "$name"
 }
 
-stop_service "wisefido-data"           "8080" "$LOG_DIR/wisefido-data.log"    "wisefido-data"
-stop_service "wisefido-cardagg"        ""     "$LOG_DIR/wisefido-cardagg.log" "wisefido-cardagg"
-stop_service "wisefido-qinglan"        "8081" "$LOG_DIR/wisefido-qinglan.log" "wisefido-qinglan"
-stop_service "wisefido-iot-timeseries" "8083" "$LOG_DIR/wisefido-iot.log"     "wisefido-iot-timeseries" "wisefido-iot"
-stop_service "wisefido-ai"             ""     "$LOG_DIR/wisefido-ai.log"      "wisefido-ai"
+stop_service "wisefido-data"           "8080" "$LOG_DIR/wisefido-data.log"      "wisefido-data"
+stop_service "wisefido-cardagg"        ""     "$LOG_DIR/wisefido-cardagg.log"   "wisefido-cardagg"
+stop_service "wisefido-qinglan"        "8081" "$LOG_DIR/wisefido-qinglan.log"   "wisefido-qinglan"
+stop_service "wisefido-sleepace"       "8083" "$LOG_DIR/wisefido-sleepace.log"  "wisefido-sleepace"
+stop_service "wisefido-iot-timeseries" "8085" "$LOG_DIR/wisefido-iot.log"       "wisefido-iot-timeseries" "wisefido-iot"
+stop_service "wisefido-ai"             ""     "$LOG_DIR/wisefido-ai.log"        "wisefido-ai"
 
 printf "\n========================================\n"
 printf "[✓] Done\n"
 printf "========================================\n"
-printf "\nNote: Device access services (wisefido-sleepace) are not stopped by this script\n"
+printf "\nNote: wisefido-radar is not stopped by this script\n"

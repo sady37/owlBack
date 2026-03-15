@@ -54,11 +54,9 @@ func NewConfigSubscriber(
 // Start 启动配置变更订阅器
 func (s *ConfigSubscriber) Start(ctx context.Context) error {
 	// 订阅配置变更流（wisefido-data 发送）：
-	// 1. config:alarmDevice:stream - 告警设备配置（BuildAlarmDeviceMessage）
-	// 2. config:card:stream - 卡片配置（BuildCardChangeMessage）
+	// config:card:stream - 卡片配置（BuildCardChangeMessage）
 	streams := []string{
-		rediscommon.StreamConfigAlarmDevice.Name, // config:alarmDevice:stream
-		rediscommon.StreamConfigCard.Name,        // config:card:stream
+		rediscommon.StreamConfigCard.Name, // config:card:stream
 	}
 
 	// 创建 Consumer Group（如果不存在）
@@ -111,17 +109,9 @@ func (s *ConfigSubscriber) HandleConfigChangeMessage(ctx context.Context, stream
 
 	// 根据事件类型处理配置变更
 	switch configMsg.Type {
-	case "config.alarmDevice":
-		// 告警设备配置变更 (BuildAlarmDeviceMessage)
-		s.handleAlarmDeviceChange(configMsg, message.ID)
 	case "config.card":
-		// 卡片配置变更 (BuildCardChangeMessage)
 		s.handleCardChange(configMsg, message.ID)
-	// 旧事件类型已注释（原: "config.device.alarm.setting.updated"）
-	// case "config.device.alarm.setting.updated":
-	//     s.handleDeviceAlarmSettingChange(configMsg, message.ID)
 	default:
-		// 其他类型的事件暂不处理，跳过
 		s.logger.Debug("Skipping config change event (not subscribed)",
 			zap.String("event_type", configMsg.Type),
 		)
@@ -137,70 +127,8 @@ func (s *ConfigSubscriber) Stop() error {
 	return nil
 }
 
-// handleAlarmDeviceChange 处理告警设备配置变更 (BuildAlarmDeviceMessage)
-// 清除对应设备的报警使能配置缓存，使下次查询重新加载最新配置
-func (s *ConfigSubscriber) handleAlarmDeviceChange(configMsg rediscommon.ConfigChangeMessage, messageID string) {
-	tenantID, _ := configMsg.Data["tenant_id"].(string)
-	deviceUID, _ := configMsg.Data["device_uid"].(string)
-	settingType, _ := configMsg.Data["setting_type"].(string)
-
-	if tenantID == "" || deviceUID == "" {
-		s.logger.Warn("Alarm device change message missing tenant_id or device_uid",
-			zap.String("message_id", messageID),
-			zap.String("tenant_id", tenantID),
-			zap.String("device_uid", deviceUID))
-		return
-	}
-
-	// 检查消息时间戳，防止过时消息覆盖新配置
-	// 允许最大时间差 5 秒（包括网络延迟和时钟偏差）
-	var messageTimestampMs int64
-	if ts, ok := configMsg.Data["timestamp_ms"].(float64); ok {
-		messageTimestampMs = int64(ts)
-	} else if ts, ok := configMsg.Data["timestamp_ms"].(int64); ok {
-		messageTimestampMs = ts
-	}
-
-	if messageTimestampMs > 0 {
-		currentTimeMs := time.Now().UnixMilli()
-		timeDiffMs := currentTimeMs - messageTimestampMs
-		const maxAllowedDelayMs = 5000 // 5 秒
-
-		if timeDiffMs > maxAllowedDelayMs {
-			s.logger.Warn("Discarding stale alarm device config message (too old)",
-				zap.String("message_id", messageID),
-				zap.String("tenant_id", tenantID),
-				zap.String("device_uid", deviceUID),
-				zap.Int64("time_diff_ms", timeDiffMs),
-				zap.Int64("max_allowed_ms", maxAllowedDelayMs))
-			return
-		}
-
-		if timeDiffMs < -5000 { // 消息时间戳在未来
-			s.logger.Warn("Discarding alarm device config message with future timestamp",
-				zap.String("message_id", messageID),
-				zap.String("tenant_id", tenantID),
-				zap.String("device_uid", deviceUID),
-				zap.Int64("time_diff_ms", timeDiffMs))
-			return
-		}
-	}
-
-	s.logger.Info("Handling alarm device config change",
-		zap.String("message_id", messageID),
-		zap.String("tenant_id", tenantID),
-		zap.String("device_uid", deviceUID),
-		zap.String("setting_type", settingType))
-
-	// 清除对应设备的报警使能配置缓存
-	// 这样下次 mqtt_consumer 查询该设备的使能配置时，会从 PG 重新加载最新数据
-	s.deviceRepo.ClearAlarmEnablementCache(tenantID, deviceUID)
-
-	s.logger.Info("Alarm device cache cleared",
-		zap.String("message_id", messageID),
-		zap.String("tenant_id", tenantID),
-		zap.String("device_uid", deviceUID))
-}
+// DEPRECATED: handleAlarmDeviceChange — alarm 使能缓存已不需要，报警由 cardagg 处理。
+// func (s *ConfigSubscriber) handleAlarmDeviceChange(...) { ... }
 
 // handleCardChange 处理卡片配置变更 (BuildCardChangeMessage)
 // 当 Type 为 config.card 时：正常处理卡片变更（调用 CardMappingService）
@@ -275,40 +203,17 @@ func (s *ConfigSubscriber) handleCardChange(configMsg rediscommon.ConfigChangeMe
 }
 
 // handleNormalCardChange 处理正常的卡片配置变更 (ConfigCardChanged)
-// 调用 CardMappingService 按 branch_id 重新计算卡片-设备映射
-func (s *ConfigSubscriber) handleNormalCardChange(ctx context.Context, cardData map[string]interface{}, messageID string) {
-	branchID, _ := cardData["branch_id"].(string)
+// card 变动时绑定的 room/bed 也可能变，通过 InvalidateByCardID 使该 card 下所有 device 的 DeviceCardMapping 缓存失效，下次解析时重新查库。
+func (s *ConfigSubscriber) handleNormalCardChange(_ context.Context, cardData map[string]interface{}, messageID string) {
 	cardID, _ := cardData["card_id"].(string)
-	tenantID, _ := cardData["tenant_id"].(string)
-
-	if branchID == "" {
-		s.logger.Warn("Card change message missing branch_id",
-			zap.String("message_id", messageID),
-			zap.String("tenant_id", tenantID),
-			zap.String("card_id", cardID))
-		return
+	if cardID != "" {
+		s.cardMappingSvc.InvalidateByCardID(cardID)
+	} else {
+		s.cardMappingSvc.InvalidateCache()
 	}
-
-	s.logger.Info("Card change details",
-		zap.String("tenant_id", tenantID),
-		zap.String("card_id", cardID),
-		zap.String("branch_id", branchID))
-
-	// 调用 CardMappingService 处理卡片变更
-	// cardMappingSvc 已在初始化时注入
-	if err := s.cardMappingSvc.HandleCardChanged(ctx, cardData); err != nil {
-		s.logger.Error("Failed to handle card change",
-			zap.String("message_id", messageID),
-			zap.String("tenant_id", tenantID),
-			zap.String("card_id", cardID),
-			zap.Error(err))
-		return
-	}
-
-	s.logger.Info("Card change processed successfully",
+	s.logger.Info("Card change processed",
 		zap.String("message_id", messageID),
-		zap.String("tenant_id", tenantID),
-		zap.String("branch_id", branchID))
+		zap.String("card_id", cardID))
 }
 
 // handleDeviceStoreChange 处理 device_store 变化信号（Type 为 config.card.device_store）
@@ -340,6 +245,9 @@ func (s *ConfigSubscriber) handleDeviceStoreChange(ctx context.Context, data map
 		zap.String("device_id", deviceID),
 		zap.String("device_uid", deviceStoreInfo.DeviceUID),
 		zap.Bool("allow_access", deviceStoreInfo.AllowAccess))
+
+	// 设备绑定 room/bed 可能已变，同步失效该 device 的 DeviceCardMapping 缓存，下次解析时重新查库+boundResolver
+	s.cardMappingSvc.InvalidateByDeviceUID(deviceStoreInfo.DeviceUID)
 
 	// 根据最新的 allow_access 更新缓存
 	// DeviceCache: key=device_uid, value=*DeviceWithLocation

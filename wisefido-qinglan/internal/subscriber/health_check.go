@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"owl-common/alarm"
-	"owl-common/radar"
+	"owl-common/observation"
+	"owl-common/redis"
 
 	"go.uber.org/zap"
 )
@@ -132,20 +133,15 @@ func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, devic
 	// 验证和计算状态
 	m.validateDeviceHealth(health, deviceUID)
 
-	// 发布设备状态（无论是否异常，只要已验证就发布）
-	// 始终发送所有状态字段（0=正常，1=异常），避免部分覆盖导致字段丢失
-	statuses := map[string]int{
-		radar.StatusFieldOffline:       0,
-		radar.StatusFieldSignalPoor:    health.SignalPoor,
-		radar.StatusFieldAngleAbnormal: health.AngleAbnormal,
-	}
-
 	if health.SignalPoor == 1 || health.AngleAbnormal == 1 {
 		log.Printf("⚠️ Device %s health: signal_poor=%d(rssi=%d) angle_abnormal=%d",
 			deviceUID, health.SignalPoor, health.WifiRSSI, health.AngleAbnormal)
 	}
 
-	go m.streamPublisher.PublishDeviceStatus(ctx, deviceID, deviceType, tenantID, deviceUID, statuses)
+	// 按 iot:alarm:stream 标准格式：每个 status 一条 alarm，category/eventName 用 dataCategoryFromFieldAndValue 的准确值
+	m.publishDeviceAlarm(ctx, deviceUID, observation.FieldOffline, 0) // DeviceRecover
+	m.publishDeviceAlarm(ctx, deviceUID, observation.FieldSignalPoor, health.SignalPoor)
+	m.publishDeviceAlarm(ctx, deviceUID, observation.FieldAngleAbnormal, health.AngleAbnormal)
 }
 
 // validateDeviceHealth 验证设备健康状态，计算 SignalPoor 和 AngleAbnormal
@@ -243,83 +239,85 @@ func toIntFromInterface(v interface{}) int {
 	return 0
 }
 
-// publishDeviceAlarmAuto 自动查使能表后发布设备报警（供 device_subscription_manager 调用）
-func (m *DeviceSubscriptionManager) publishDeviceAlarmAuto(ctx context.Context, tenantID, deviceID, deviceUID, alarmType, statusFieldValue string) {
-	if tenantID == "" || m.streamPublisher == nil {
-		return
-	}
-	enablementItems, err := m.deviceRepo.GetAlarmEnablement(ctx, tenantID, deviceUID)
-	if err != nil {
-		m.logger.Warn("Failed to get alarm enablement",
-			zap.String("device_uid", deviceUID),
-			zap.Error(err))
-		return
-	}
-	m.publishDeviceAlarm(ctx, tenantID, deviceID, deviceUID, alarmType, statusFieldValue, enablementItems)
-}
-
-// publishDeviceAlarm 发布设备报警到 iot:alarm:stream（统一格式）
-// alarmType: "SignalPoor", "AngleException" 等
-// statusFieldValue: "1"=异常, "0"=恢复
-// enablementItems: 使能表，用于查找 alarm_level
-func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tenantID, deviceID, deviceUID, alarmType, statusFieldValue string, enablementItems []alarm.AlarmEnablementItem) {
+// publishDeviceAlarm 发布设备类：离线/恢复、SensorDetached/恢复 → iot:alarm:stream（直接影响报警）；信号差、倾角 → iot:event:stream（按使能落库）。
+// fieldKey：observation 字段（FieldOffline/FieldSignalPoor/FieldAngleAbnormal/FieldDetached）。
+func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, deviceUID, fieldKey string, value int) {
 	if m.streamPublisher == nil {
 		return
 	}
-
-	// 从使能表查找该 alarmType 是否启用及其 alarm_level
-	var alarmLevel string
-	enabled := false
-	for _, item := range enablementItems {
-		if item.AlarmType == alarmType && item.IsEnabled == 1 {
-			enabled = true
-			alarmLevel = item.AlarmLevel
-			break
-		}
-	}
-	if !enabled {
+	eventName := dataCategoryFromFieldAndValue(fieldKey, value)
+	if eventName == "" {
 		return
 	}
-
-	alarmCategory := alarmLevel + "." + alarmType
-
-	// 构造 EventResult，与 decoder 输出格式一致
-	statusType := ""
-	switch alarmType {
-	case alarm.AlarmTypeOfflineAlarm:
-		statusType = radar.StatusFieldOffline
-	case alarm.SignalPoor:
-		statusType = radar.StatusFieldSignalPoor
-	case alarm.AngleException:
-		statusType = radar.StatusFieldAngleAbnormal
+	tid, _, _, cid, did := m.streamPublisher.Resolve(ctx, deviceUID)
+	ts := time.Now().UnixMilli()
+	eventStatus := "start"
+	if value == 0 {
+		eventStatus = "end"
 	}
-	trackMap := map[string]interface{}{
-		"data_category": alarmType,
-		"fhir_category": alarm.GetFHIRCategory(alarmType),
-		"event_type":    0,
-		"status_type":   statusType,
-		"status_value":  statusFieldValue,
-
+	item := observation.EventItem{
+		DataCategory: eventName,
+		EventName:    eventName,
+		EventSince:   ts,
+		EventStatus:  eventStatus,
+		TrackID:      observation.TrackDevice,
+		EventValue:   int64(value),
 	}
-	dataValue := []interface{}{trackMap}
-	encodedData := m.streamPublisher.BuildEncodedData(
-		"", // cardID 由 cardagg 通过 device_id 查找
-		tenantID,
-		deviceID,
-		"alarm",
-		alarmCategory,
-		dataValue,
-	)
-	streamName := m.streamPublisher.GetOutputStreamName("alarm")
-	if _, err := m.streamPublisher.PublishToStream(ctx, streamName, encodedData); err != nil {
-		m.logger.Warn("Failed to publish device alarm from health check",
-			zap.String("alarm_type", alarmType),
-			zap.String("device_id", deviceID),
-			zap.Error(err))
+	data, err := observation.EventItemToDataMap(&item)
+	if err != nil {
+		m.logger.Warn("EventItemToDataMap failed", zap.String("device_uid", deviceUID), zap.Error(err))
+		return
+	}
+	if data == nil {
+		data = make(map[string]interface{})
+	}
+	data[fieldKey] = value
+	directAlarm := eventName == alarm.AlarmTypeOffline || eventName == alarm.AlarmTypeOfflineRecover ||
+		eventName == alarm.SensorDetached || eventName == alarm.SensorDetachedRecover
+	topicType := "event"
+	if directAlarm {
+		topicType = "alarm"
+	}
+	msg := redis.NewSingleItemMessage(tid, cid, deviceUID, did, "Radar", ts, topicType, eventName, data)
+	if directAlarm {
+		if err := m.streamPublisher.PublishAlarm(ctx, msg); err != nil {
+			m.logger.Warn("Failed to publish device alarm", zap.String("event_name", eventName), zap.String("device_uid", deviceUID), zap.Error(err))
+		} else {
+			m.logger.Info("Published device alarm → iot:alarm:stream", zap.String("device_uid", deviceUID), zap.String("event_name", eventName), zap.String("field", fieldKey), zap.Int("value", value))
+		}
 	} else {
-		m.logger.Info("Health check → iot:alarm:stream",
-			zap.String("device_id", deviceID),
-			zap.String("alarm_category", alarmCategory),
-			zap.String("status_field_value", statusFieldValue))
+		if err := m.streamPublisher.PublishEvent(ctx, msg); err != nil {
+			m.logger.Warn("Failed to publish device event", zap.String("event_name", eventName), zap.String("device_uid", deviceUID), zap.Error(err))
+		} else {
+			m.logger.Info("Published device event → iot:event:stream", zap.String("device_uid", deviceUID), zap.String("event_name", eventName), zap.String("field", fieldKey), zap.Int("value", value))
+		}
+	}
+}
+
+// dataCategoryFromFieldAndValue 根据 observation 字段与取值推导 event_name/dataCategory（0=恢复，1=告警）。
+func dataCategoryFromFieldAndValue(fieldKey string, value int) string {
+	switch fieldKey {
+	case observation.FieldOffline:
+		if value == 0 {
+			return alarm.AlarmTypeOfflineRecover
+		}
+		return alarm.AlarmTypeOffline
+	case observation.FieldSignalPoor:
+		if value == 0 {
+			return alarm.SingalPoorRecover
+		}
+		return alarm.SignalPoor
+	case observation.FieldAngleAbnormal:
+		if value == 0 {
+			return alarm.AngleExceptionRecover
+		}
+		return alarm.AngleException
+	case observation.FieldDetached:
+		if value == 0 {
+			return alarm.SensorDetachedRecover
+		}
+		return alarm.SensorDetached
+	default:
+		return ""
 	}
 }

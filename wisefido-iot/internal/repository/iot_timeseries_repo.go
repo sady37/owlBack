@@ -1,12 +1,14 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	"go.uber.org/zap"
+	rediscommon "owl-common/redis"
 )
 
 // IoTTimeSeriesRepository IoT 时序数据仓库
@@ -30,7 +32,16 @@ func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, er
 	// 1. 提取基本字段
 	deviceID, _ := data["device_id"].(string)
 	if deviceID == "" {
-		return 0, fmt.Errorf("missing required field: device_id")
+		// 流消息可能只带 device_uid（如 Sleepad 未入 device_store 时 device_id 为空），用 device_uid 反查 device_id
+		if uid, ok := data["device_uid"].(string); ok && uid != "" && r.db != nil {
+			if id, err := r.resolveDeviceIDByUID(uid); err == nil && id != "" {
+				deviceID = id
+				data["device_id"] = id
+			}
+		}
+		if deviceID == "" {
+			return 0, fmt.Errorf("missing required field: device_id")
+		}
 	}
 
 	// 3. 提取 timestamp
@@ -81,9 +92,10 @@ func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, er
 
 	if cat, ok := data["category"].(string); ok && cat != "" {
 		category = &cat
-	} else if dataValue, ok := data["data_value"].(map[string]interface{}); ok {
-		// 从 data_value 中提取 category
-		if cat, ok := dataValue["category"].(string); ok && cat != "" {
+	} else if dataValue, ok := data[rediscommon.DataValueKey].(map[string]interface{}); ok {
+		if cat, ok := dataValue["dataCategory"].(string); ok && cat != "" {
+			category = &cat
+		} else if cat, ok := dataValue["category"].(string); ok && cat != "" {
 			category = &cat
 		}
 	}
@@ -174,6 +186,16 @@ func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, er
 	)
 
 	return id, nil
+}
+
+// resolveDeviceIDByUID 用 device_uid 查 devices 表得到 device_id（UUID），供 Insert 在 device_id 为空时补全。
+func (r *IoTTimeSeriesRepository) resolveDeviceIDByUID(deviceUID string) (string, error) {
+	var deviceID string
+	err := r.db.QueryRowContext(context.Background(), `SELECT device_id::text FROM devices WHERE device_uid = $1 LIMIT 1`, deviceUID).Scan(&deviceID)
+	if err != nil {
+		return "", err
+	}
+	return deviceID, nil
 }
 
 // GetDeviceLocation 获取设备位置信息（unit_id, room_id）

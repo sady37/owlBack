@@ -9,7 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"owl-common/radar"
+	"owl-common/alarm"
+	"owl-common/observation"
+	rediscommon "owl-common/redis"
 	"wisefido-qinglan/internal/config"
 	"wisefido-qinglan/internal/consumer"
 	"wisefido-qinglan/internal/domain"
@@ -71,7 +73,7 @@ type DeviceSubscriptionManager struct {
 	unsubscribedDueToTimeout map[string]struct{}            // 90s 超时后强制取消订阅，需重认证
 	mu                       sync.RWMutex
 	checkInterval            time.Duration // 检查间隔（30秒）
-	offlineTimeout           time.Duration // 离线超时（90秒）
+	// offlineTimeout removed — 离线检测交由 cardagg
 	monitorMaxAge            time.Duration // monitor订阅最大时长（1小时）
 	defaultContent           int           // 默认订阅内容：0-同时订阅，1-轨迹，2-呼吸心率
 	defaultDuration          int           // 默认订阅时长（秒），默认 3600
@@ -103,7 +105,7 @@ func NewDeviceSubscriptionManager(
 		subscriptionsByID:        make(map[string]*DeviceSubscription),
 		unsubscribedDueToTimeout: make(map[string]struct{}),
 		checkInterval:            90 * time.Second, // 每90秒检查一次
-		offlineTimeout:           90 * time.Second,
+		// offlineTimeout removed
 		monitorMaxAge:            1 * time.Hour,
 		defaultContent:           0,    // 0-同时订阅（轨迹和呼吸心率）
 		defaultDuration:          3600, // 默认1小时
@@ -380,7 +382,7 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 	// 查询 device_type 和 tenant_id
 	deviceType := ""
 	tenantID := ""
-	deviceStoreInfo, err := m.deviceRepo.GetDeviceStoreInfoAndLocation(ctx, deviceUID)
+	deviceStoreInfo, err := m.deviceRepo.GetDeviceStoreInfo(ctx, deviceUID)
 	if err != nil {
 		m.logger.Warn("Failed to get device store info during subscription",
 			zap.String("device_uid", deviceUID),
@@ -424,10 +426,10 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 
 	// auth 成功后，立即发布 online event 到 deviceStatus stream
 	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
-		radar.StatusFieldOffline: 0,
+		observation.FieldOffline: 0,
 	})
-	// 上线 → OfflineAlarm 恢复
-	go m.publishDeviceAlarmAuto(context.Background(), tenantID, deviceID, deviceUID, "OfflineAlarm", "0")
+	// 上线 → 根据 offline=0 推导 category=DeviceRecover
+	go m.publishDeviceAlarm(context.Background(), deviceUID, observation.FieldOffline, 0)
 	// 记录订阅状态
 	m.logger.Info("Device status changed",
 		zap.String("device_uid", deviceUID),
@@ -508,9 +510,9 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 
 		// 重新发布 online 状态
 		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
-			radar.StatusFieldOffline: 0,
+			observation.FieldOffline: 0,
 		})
-		go m.publishDeviceAlarmAuto(context.Background(), sub.TenantID, deviceID, deviceUID, "OfflineAlarm", "0")
+		go m.publishDeviceAlarm(context.Background(), deviceUID, observation.FieldOffline, 0)
 
 		// 延迟重试发送 monitor 订阅命令
 		go m.sendMonitorWithRetry(deviceUID, deviceID)
@@ -552,7 +554,7 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 	// 查询 device_type 和 tenant_id
 	deviceType := ""
 	tenantID := ""
-	deviceStoreInfo, err := m.deviceRepo.GetDeviceStoreInfoAndLocation(ctx, deviceUID)
+	deviceStoreInfo, err := m.deviceRepo.GetDeviceStoreInfo(ctx, deviceUID)
 	if err != nil {
 		m.logger.Warn("Failed to get device store info during periodic subscription",
 			zap.String("device_uid", deviceUID),
@@ -599,10 +601,10 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 
 	// auth 成功后，立即发布 online event 到 deviceStatus stream
 	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
-		radar.StatusFieldOffline: 0,
+		observation.FieldOffline: 0,
 	})
-	// 上线 → OfflineAlarm 恢复
-	go m.publishDeviceAlarmAuto(context.Background(), tenantID, deviceID, deviceUID, "OfflineAlarm", "0")
+	// 上线 → 根据 offline=0 推导 category=DeviceRecover
+	go m.publishDeviceAlarm(context.Background(), deviceUID, observation.FieldOffline, 0)
 	// 记录周期订阅状态
 	m.logger.Info("Device subscription created (periodic)",
 		zap.String("device_uid", deviceUID),
@@ -714,47 +716,14 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 	}
 	sub.LastSeen = newLastSeen
 
-	// 状态恢复逻辑
 	switch oldStatus {
-	case "offline":
-		// offline状态收到任何MQTT消息，如果now - oldLastSeen不超过180秒，恢复为online
-		timeSinceLastSeen := now.Sub(oldLastSeen)
-		if timeSinceLastSeen <= 180*time.Second {
-			sub.Status = "online"
-			sub.mu.Unlock()
-
-			log.Printf("✅ Device %s recovered from offline to online (received %s message)", deviceUID, topicType)
-			m.logger.Info("Device status changed",
-				zap.String("device_uid", deviceUID),
-				zap.String("old_status", "offline"),
-				zap.String("new_status", "online"),
-			)
-
-			// 发送 online 事件到 deviceStatus stream（按照 Reside_stream_stand.md 格式）
-			sub.mu.RLock()
-			deviceID := sub.DeviceID
-			deviceType := sub.DeviceType
-			tenantID := sub.TenantID
-			sub.mu.RUnlock()
-			go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, deviceUID, map[string]int{
-				radar.StatusFieldOffline: 0,
-			})
-		} else {
-			// 超过180秒，应该已经被取消订阅了，这里不应该发生
-			sub.mu.Unlock()
-		}
-
 	case "unsubscribed":
-		// 已取消订阅的设备收到任何MQTT消息，需要重新认证
 		sub.mu.Unlock()
-		log.Printf("⚠️ Unsubscribed device %s received MQTT message (type: %s), requires re-authentication", deviceUID, topicType)
 		m.logger.Warn("Unsubscribed device received MQTT message, requires re-authentication",
 			zap.String("device_uid", deviceUID),
 			zap.String("message_type", topicType),
 		)
-
 	default:
-		// online 状态：不再在这里触发周期性发布，由独立的定时器 goroutine 处理
 		sub.mu.Unlock()
 	}
 
@@ -776,8 +745,15 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 			sub.mu.RUnlock()
 			if deviceID != "" {
 				go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, deviceUID, map[string]int{
-					radar.StatusFieldOffline: 0,
+					observation.FieldOffline: 0,
 				})
+				// 与 Sleepace connectionStatus 一致：首条 MQTT 后发 iot:alarm:stream OfflineRecover，cardagg 据此更新 device_status
+				go func() {
+					ctx := context.Background()
+					data := map[string]interface{}{alarm.FieldEventStatus: "start"}
+					msg := rediscommon.NewSingleItemMessage(tenantID, "", deviceUID, deviceID, deviceType, time.Now().UnixMilli(), "alarm", alarm.AlarmTypeOfflineRecover, data)
+					_ = m.streamPublisher.PublishAlarm(ctx, msg)
+				}()
 			}
 			m.logger.Info("Device subscription created (first message)",
 				zap.String("device_uid", deviceUID),
@@ -843,7 +819,7 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 		// 查询 device_type 和 tenant_id
 		deviceType := ""
 		tenantID := ""
-		deviceStoreInfo, err := m.deviceRepo.GetDeviceStoreInfoAndLocation(ctx, deviceUID)
+		deviceStoreInfo, err := m.deviceRepo.GetDeviceStoreInfo(ctx, deviceUID)
 		if err != nil {
 			m.logger.Warn("Failed to get device store info on first message, creating subscription without device info",
 				zap.String("device_uid", deviceUID),
@@ -1000,112 +976,24 @@ func (m *DeviceSubscriptionManager) checkDeviceHeartbeat(ctx context.Context) {
 			continue
 		}
 
-		// 检查4种消息类型是否都超过90秒
-		timeSinceMonitor := time.Duration(0)
-		timeSinceStat := time.Duration(0)
-		timeSinceEvent := time.Duration(0)
-		timeSinceAlarm := time.Duration(0)
-
-		if !lastMonitorTime.IsZero() {
-			timeSinceMonitor = now.Sub(lastMonitorTime)
-		} else {
-			timeSinceMonitor = 999 * time.Hour // 未收到过消息，视为超时
-		}
-		if !lastStatTime.IsZero() {
-			timeSinceStat = now.Sub(lastStatTime)
-		} else {
-			timeSinceStat = 999 * time.Hour
-		}
-		if !lastEventTime.IsZero() {
-			timeSinceEvent = now.Sub(lastEventTime)
-		} else {
-			timeSinceEvent = 999 * time.Hour
-		}
-		if !lastAlarmTime.IsZero() {
-			timeSinceAlarm = now.Sub(lastAlarmTime)
-		} else {
-			timeSinceAlarm = 999 * time.Hour
-		}
-
-		// 检查是否所有消息类型都超过90秒
-		allTimeout := timeSinceMonitor > 90*time.Second &&
-			timeSinceStat > 90*time.Second &&
-			timeSinceEvent > 90*time.Second &&
-			timeSinceAlarm > 90*time.Second
-
 		timeSinceLastSeen := now.Sub(lastSeen)
 
 		switch status {
 		case "online":
-			// 阶段1：所有消息类型（monitor/stat/event/alarm）都超过90秒 → 标记offline
-			if allTimeout {
-				m.markDeviceOffline(deviceUID, now)
-			} else {
-				// online 状态：检查是否需要周期性发布 online（每2分钟一次）
-				// 旧逻辑已注释（原: 发布到 config:device_status:stream）
-				// 新设计中，设备在线状态管理由 ConfigSubscriber 处理
-				/*
-					sub.mu.Lock()
-					lastPub := sub.LastOnlineStatusPublishTime
-					sub.mu.Unlock()
-					if now.Sub(lastPub) >= 2*time.Minute {
-						sub.mu.Lock()
-						sub.LastOnlineStatusPublishTime = now
-						sub.mu.Unlock()
-						m.publishDeviceOnlineStatusToConfigStream(ctx, deviceUID, "online")
-					}
-				*/
-			}
-
-		case "offline":
-			// 阶段2：180秒无任何消息 → 取消订阅
+			// 180秒无任何消息 → 直接取消 MQTT 订阅（资源清理）
+			// 离线判定交由 cardagg 统一处理
 			if timeSinceLastSeen > 180*time.Second {
 				m.unsubscribeDevice(deviceUID)
 			}
 
 		case "unsubscribed":
-			// 阶段3：已取消订阅的设备，保持状态
-			// 需要重新认证才能恢复
+			// 已取消订阅，需要重新认证才能恢复
 		}
 	}
 }
 
-// markDeviceOffline 第一阶段：标记设备为offline
-// 当 monitor/stat/event/alarm 最新消息均超过90秒时调用
-func (m *DeviceSubscriptionManager) markDeviceOffline(deviceUID string, _ time.Time) {
-	m.mu.Lock()
-	sub, exists := m.subscriptionsByUID[deviceUID]
-	m.mu.Unlock()
-
-	if !exists {
-		return
-	}
-
-	sub.mu.Lock()
-	if sub.Status == "online" {
-		sub.Status = "offline"
-		deviceID := sub.DeviceID
-		deviceType := sub.DeviceType
-		tenantID := sub.TenantID
-		sub.mu.Unlock()
-
-		log.Printf("⚠️ Device %s marked as offline (all message types timeout > 90s)", deviceUID)
-		m.logger.Info("Device status changed",
-			zap.String("device_uid", deviceUID),
-			zap.String("old_status", "online"),
-			zap.String("new_status", "offline"),
-		)
-
-		// 发送 offline 事件到 deviceStatus stream（offline 是状态变更）
-		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, sub.DeviceUID, map[string]int{
-			radar.StatusFieldOffline: 1,
-		})
-		// 发送 OfflineAlarm 到 iot:alarm:stream
-		go m.publishDeviceAlarmAuto(context.Background(), tenantID, deviceID, sub.DeviceUID, "OfflineAlarm", "1")
-	} else {
-		sub.mu.Unlock()
-	}
-}
+// DEPRECATED: markDeviceOffline — 离线检测已交由 cardagg 统一处理。
+// func (m *DeviceSubscriptionManager) markDeviceOffline(deviceUID string, _ time.Time) { ... }
 
 // PublishOnlineForConnectedDevices 对 deviceUIDs 中已在列表且状态为 online 的设备发布上线通知（由 mqtt_consumer 启动 1 分钟后检查队列后调用）
 func (m *DeviceSubscriptionManager) PublishOnlineForConnectedDevices(ctx context.Context, deviceUIDs []string) {
@@ -1124,7 +1012,7 @@ func (m *DeviceSubscriptionManager) PublishOnlineForConnectedDevices(ctx context
 			continue
 		}
 		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, deviceUID, map[string]int{
-			radar.StatusFieldOffline: 0,
+			observation.FieldOffline: 0,
 		})
 		published++
 	}

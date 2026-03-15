@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -138,7 +139,6 @@ func main() {
 		MontitorHandler.SetCardService(cardStaticSvc)
 		MontitorHandler.SetRealtimeService(cardRealtimeSvc)
 		router.RegisterMonitorRoutes(MontitorHandler)
-
 
 	}
 
@@ -743,6 +743,14 @@ func subscribeDataStream(ctx context.Context, logger *zap.Logger, redisClient *r
 			// 使用 XREADGROUP 从 Consumer Group 读取消息
 			msgs, err := rediscommon.ReadFromMultipleStreamsWithBlock(ctx, redisClient, streams, consumerGroup, consumerName, 10, 2*time.Second)
 			if err != nil {
+				errStr := err.Error()
+				if strings.Contains(errStr, "NOGROUP") || strings.Contains(errStr, "no such key") {
+					for _, streamName := range streams {
+						if createErr := rediscommon.CreateConsumerGroup(ctx, redisClient, streamName, consumerGroup); createErr != nil && createErr.Error() != "BUSYGROUP Consumer Group name already exists" {
+							logger.Warn("[SUB] Recreate consumer group after stream missing", zap.String("stream", streamName), zap.Error(createErr))
+						}
+					}
+				}
 				logger.Warn("[SUB] Failed to read from data streams",
 					zap.Error(err),
 				)

@@ -2,16 +2,17 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-
 	"sync"
 	"time"
 	"unsafe"
 
+	"owl-common/card"
 	"wisefido-data/internal/store"
 
 	"go.uber.org/zap"
@@ -23,12 +24,13 @@ type StatusEvent struct {
 	Data   map[string]interface{}
 }
 
-// RealtimeDataProvider 供 SSE 使用，仅从 DataStreamSubscriber 缓存读取（不直接订阅 Redis）
+// RealtimeDataProvider 供 SSE 使用，从 DataStreamSubscriber 缓存 + Redis Hash 读取
 type RealtimeDataProvider interface {
 	GetCardRealtimeData(cardID string) map[string]interface{}
 	GetCardRealtimeVersion(cardID string) uint64
 	GetCardStatusData(cardID string) map[string]interface{}
 	GetCardStatusVersion(cardID string) uint64
+	ReadCardStateSnapshot(ctx context.Context, cardID string) map[string]interface{}
 }
 
 const realtimeKeyPrefix = "vital-focus:card:"
@@ -62,13 +64,13 @@ type sseInitData struct {
 
 // sseConn 一个 SSE 连接的注册信息
 type sseConn struct {
-	userKey   string           // "tenantID:userID"
+	userKey   string // "tenantID:userID"
 	tenantID  string
 	userID    string
 	watchIDs  map[string]bool  // 全部订阅卡（fan-out 范围），init 后填充
-	viewIDsCh chan []string     // 切页时接收新 viewIDs
-	eventCh   chan SSEEvent     // 统一事件推送 channel
-	initCh    chan sseInitData  // 首次 init 数据（watchIDs + viewIDs）
+	viewIDsCh chan []string    // 切页时接收新 viewIDs
+	eventCh   chan SSEEvent    // 统一事件推送 channel
+	initCh    chan sseInitData // 首次 init 数据（watchIDs + viewIDs）
 }
 
 // CardRealtimeService 卡片实时数据服务
@@ -94,6 +96,10 @@ type CardRealtimeService struct {
 
 	// status 事件输入 channel（由 main.go 桥接 subscriber.CardStatusEvent → StatusEvent）
 	statusEventCh <-chan StatusEvent
+
+	// GetCardStatus 用：device online 来自 card:state，alarm 来自 alarm_db
+	stateReader *card.Reader
+	db          *sql.DB
 }
 
 // NewCardRealtimeService 创建卡片实时数据服务
@@ -116,6 +122,12 @@ func NewCardRealtimeService(kv store.KV, allowedProvider AllowedCardIDsProvider,
 // SetSSEDependencies 延迟注入 SSE 依赖（仅从 DataStreamSubscriber 缓存读）
 func (s *CardRealtimeService) SetSSEDependencies(streamProvider RealtimeDataProvider) {
 	s.streamProvider = streamProvider
+}
+
+// SetGetCardStatusDeps 注入 GetCardStatus 用依赖：device online 用 card:state，alarm 用 alarm_db
+func (s *CardRealtimeService) SetGetCardStatusDeps(stateReader *card.Reader, db *sql.DB) {
+	s.stateReader = stateReader
+	s.db = db
 }
 
 // SetStatusEventChan 注入 status 事件 channel（由 main.go 桥接 subscriber → service）
@@ -570,7 +582,6 @@ func (s *CardRealtimeService) SubscribeRealtimeStream(ctx context.Context, w htt
 				}
 			}
 
-			// 状态数据：从 DataStreamSubscriber 缓存取（与 realtime 同一订阅源，不另开 Redis 订阅）
 			cachedStatus := s.streamProvider.GetCardStatusData(cardID)
 			if cachedStatus != nil {
 				lastPushMu.Lock()
@@ -578,13 +589,10 @@ func (s *CardRealtimeService) SubscribeRealtimeStream(ctx context.Context, w htt
 				if ref != lastStatusRef {
 					lastStatusRef = ref
 					lastPushMu.Unlock()
-					statusMsg := buildCardStatusMessage(cardID, cachedStatus)
-					if statusMsg != nil {
-						jsonData, err := json.Marshal(statusMsg)
-						if err == nil {
-							io.WriteString(w, "event: card_status\ndata: "+string(jsonData)+"\n\n")
-							flusher.Flush()
-						}
+					jsonData, err := json.Marshal(cachedStatus)
+					if err == nil {
+						io.WriteString(w, "event: card_status\ndata: "+string(jsonData)+"\n\n")
+						flusher.Flush()
 					}
 				} else {
 					lastPushMu.Unlock()
@@ -668,12 +676,13 @@ waitInit:
 	watchIDs := initData.WatchIDs
 	viewIDs := initData.ViewIDs
 
-	// 通知前端 init 完成
+	// 通知前端 init 完成；带 server_ts 供前端时钟同步（毫秒）
 	initAck, _ := json.Marshal(map[string]interface{}{
 		"conn_id":     connID,
 		"watch_count": len(watchIDs),
 		"view_count":  len(viewIDs),
 		"status":      "ready",
+		"server_ts":   time.Now().UnixMilli(),
 	})
 	io.WriteString(w, "event: ready\ndata: "+string(initAck)+"\n\n")
 	flusher.Flush()
@@ -750,30 +759,26 @@ waitInit:
 				continue
 			}
 			switch sseEvt.Type {
-		case SSEEventStatus:
-			if sseEvt.Status == nil {
-				continue
-			}
-			statusMsg := buildCardStatusMessage(sseEvt.Status.CardID, sseEvt.Status.Data)
-			if statusMsg == nil {
-				s.logger.Warn("[SSE-PUSH] buildCardStatusMessage returned nil",
+			case SSEEventStatus:
+				if sseEvt.Status == nil || len(sseEvt.Status.Data) == 0 {
+					continue
+				}
+				// device_status 已由 cardagg 以 device_id 为 key 写入，直接下发；附加 server_ts 供前端时钟同步（毫秒）
+				sendData := make(map[string]interface{}, len(sseEvt.Status.Data)+1)
+				for k, v := range sseEvt.Status.Data {
+					sendData[k] = v
+				}
+				sendData["server_ts"] = time.Now().UnixMilli()
+				jsonData, err := json.Marshal(sendData)
+				if err != nil {
+					continue
+				}
+				s.logger.Info("[SSE-PUSH] card_status event",
 					zap.String("conn_id", connID),
-					zap.String("card_id", sseEvt.Status.CardID))
-				continue
-			}
-			jsonData, err := json.Marshal(statusMsg)
-			if err != nil {
-				s.logger.Warn("[SSE-PUSH] marshal card_status failed",
-					zap.String("conn_id", connID),
-					zap.Error(err))
-				continue
-			}
-			s.logger.Info("[SSE-PUSH] card_status event",
-				zap.String("conn_id", connID),
-				zap.String("card_id", sseEvt.Status.CardID),
-				zap.Int("bytes", len(jsonData)))
-			io.WriteString(w, "event: card_status\ndata: "+string(jsonData)+"\n\n")
-			flusher.Flush()
+					zap.String("card_id", sseEvt.Status.CardID),
+					zap.Int("bytes", len(jsonData)))
+				io.WriteString(w, "event: card_status\ndata: "+string(jsonData)+"\n\n")
+				flusher.Flush()
 			case SSEEventCardChange:
 				jsonData, err := json.Marshal(sseEvt.Changes)
 				if err != nil {
@@ -784,36 +789,6 @@ waitInit:
 			}
 		}
 	}
-}
-
-// buildCardStatusMessage 将 card:status:stream 的消息转为 SSE card_status 事件
-// raw 是 DataStreamSubscriber 缓存的 stream message.Values（PublishJSONToStream 包装：{data: "<CardStatus JSON>", timestamp: "..."}）
-// 输出：直接透传 CardStatus 快照 + card_id，前端按快照字段处理
-func buildCardStatusMessage(cardID string, raw map[string]interface{}) map[string]interface{} {
-	if len(raw) == 0 {
-		return nil
-	}
-	var cardStatus map[string]interface{}
-	if dataStr, ok := raw["data"].(string); ok {
-		_ = json.Unmarshal([]byte(dataStr), &cardStatus)
-	} else if dataMap, ok := raw["data"].(map[string]interface{}); ok {
-		cardStatus = copyMapShallow(dataMap)
-	} else {
-		cardStatus = copyMapShallow(raw)
-	}
-	if cardStatus == nil {
-		return nil
-	}
-	cardStatus["card_id"] = cardID
-	return cardStatus
-}
-
-func copyMapShallow(src map[string]interface{}) map[string]interface{} {
-	dst := make(map[string]interface{}, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
 }
 
 // toMap 将任意类型转为 map[string]interface{}
@@ -859,39 +834,28 @@ func (s *CardRealtimeService) pushRealtimeSnapshot(w http.ResponseWriter, flushe
 	}
 }
 
-// pushStatusSnapshot 推送 watchIDs 的 CardStatus 快照（event: card_status 逐卡透传）
-// 优先从 subscriber 缓存读，缓存 miss 的批量 MGet Redis fallback
+// pushStatusSnapshot 首次 init 后推送所有 watchIDs 的全量 card:state 快照（从 Redis 读）
+// 推送格式：card_id + 具体 Data（target/room_state/bed_state/alarm_state/device_status/message）+ server_ts
 func (s *CardRealtimeService) pushStatusSnapshot(w http.ResponseWriter, flusher http.Flusher, connID string, watchIDs []string) {
-	statusMap := make(map[string]map[string]interface{}, len(watchIDs))
-	var missIDs []string
-
-	for _, cardID := range watchIDs {
-		data := s.streamProvider.GetCardStatusData(cardID)
-		if data != nil {
-			statusMap[cardID] = data
-		} else {
-			missIDs = append(missIDs, cardID)
-		}
-	}
-
-	if len(missIDs) > 0 {
-		batch := s.loadCardStatusBatch(missIDs)
-		for id, data := range batch {
-			statusMap[id] = data
-		}
-	}
-
+	ctx := context.Background()
 	count := 0
+	serverTs := time.Now().UnixMilli()
+	// CardStatus 各字段 key，与 card_types.go 一致，便于前端按 key 合并
+	dataKeys := []string{"target", "room_state", "bathroom_state", "bed_state", "alarm_state", "device_status", "message"}
 	for _, cardID := range watchIDs {
-		data := statusMap[cardID]
+		data := s.streamProvider.ReadCardStateSnapshot(ctx, cardID)
 		if data == nil {
 			continue
 		}
-		statusMsg := buildCardStatusMessage(cardID, data)
-		if statusMsg == nil {
-			continue
+		payload := make(map[string]interface{}, len(dataKeys)+2)
+		payload["card_id"] = cardID
+		for _, k := range dataKeys {
+			if v, ok := data[k]; ok && v != nil {
+				payload[k] = v
+			}
 		}
-		jsonData, err := json.Marshal(statusMsg)
+		payload["server_ts"] = serverTs
+		jsonData, err := json.Marshal(payload)
 		if err != nil {
 			continue
 		}
@@ -902,45 +866,22 @@ func (s *CardRealtimeService) pushStatusSnapshot(w http.ResponseWriter, flusher 
 		flusher.Flush()
 		s.logger.Info("[SSE-PUSH] status snapshot",
 			zap.String("conn_id", connID),
-			zap.Int("cards", count),
-			zap.Int("from_cache", count-len(missIDs)),
-			zap.Int("from_redis", len(missIDs)))
+			zap.Int("cards", count))
 	}
 }
 
-// loadCardStatusFromRedis 批量从 Redis key 读取 CardStatus（缓存 miss 时 fallback）
-func (s *CardRealtimeService) loadCardStatusBatch(cardIDs []string) map[string]map[string]interface{} {
-	if len(cardIDs) == 0 {
-		return nil
-	}
-	keys := make([]string, len(cardIDs))
-	for i, id := range cardIDs {
-		keys[i] = "vital-focus:card:" + id + ":status"
-	}
-	vals, err := s.kv.MGet(context.Background(), keys)
-	if err != nil {
-		s.logger.Warn("loadCardStatusBatch MGet failed", zap.Error(err))
-		return nil
-	}
-	result := make(map[string]map[string]interface{}, len(cardIDs))
-	for i, val := range vals {
-		if val == "" {
-			continue
-		}
-		var data map[string]interface{}
-		if err := json.Unmarshal([]byte(val), &data); err != nil {
-			continue
-		}
-		result[cardIDs[i]] = data
-	}
-	return result
-}
-
-// GetCardStatus 从 Redis 读取单张卡片的 CardStatus（供 REST 轮询）
+// GetCardStatus Detail 页每 30 秒查询：device online 复用 FillDeviceOnlineStatusFromCardagg，alarm 用 alarm_db
 func (s *CardRealtimeService) GetCardStatus(ctx context.Context, cardID string) (map[string]interface{}, error) {
+	if s.stateReader != nil && s.db != nil {
+		return s.getCardStatusFromQuery(ctx, cardID)
+	}
+	// 无依赖时回退老 key
 	key := "vital-focus:card:" + cardID + ":status"
 	val, err := s.kv.Get(ctx, key)
 	if err != nil {
+		if errors.Is(err, store.ErrMiss) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	if val == "" {
@@ -951,6 +892,94 @@ func (s *CardRealtimeService) GetCardStatus(ctx context.Context, cardID string) 
 		return nil, err
 	}
 	return data, nil
+}
+
+func (s *CardRealtimeService) getCardStatusFromQuery(ctx context.Context, cardID string) (map[string]interface{}, error) {
+	nowMs := time.Now().UnixMilli()
+	var out map[string]interface{}
+	// 以 cardagg 全量 CardStatus 为基准：targets/room_state/bathroom_state/bed_state/message 来自 Redis，不再动；仅下面对 device_status / alarm_state 覆盖
+	if s.stateReader != nil {
+		status, err := s.stateReader.ReadCardStatus(ctx, cardID)
+		if err == nil && status != nil {
+			out = cardStatusToMap(status)
+		}
+	}
+	if out == nil {
+		out = map[string]interface{}{"card_id": cardID}
+	}
+	out["timestamp"] = nowMs
+
+	// 仅覆盖 device_status：DB 设备列表 + cardagg 在线状态
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT j->>'device_id' AS device_id, COALESCE(ds.device_type, '') AS device_type
+		FROM cards c,
+		     jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS j
+		     LEFT JOIN device_store ds ON ds.device_id = (j->>'device_id')::uuid
+		WHERE c.card_id = $1
+	`, cardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var devices []struct{ deviceID, deviceType string }
+	var deviceIDs []string
+	for rows.Next() {
+		var deviceID, deviceType string
+		if err := rows.Scan(&deviceID, &deviceType); err != nil || deviceID == "" {
+			continue
+		}
+		devices = append(devices, struct{ deviceID, deviceType string }{deviceID, deviceType})
+		deviceIDs = append(deviceIDs, deviceID)
+	}
+	onlineMap := FillDeviceOnlineStatusFromCardagg(ctx, s.stateReader, s.db, deviceIDs, s.logger)
+	deviceStatus := make(map[string]interface{})
+	for _, d := range devices {
+		offlineNum := 1
+		if onlineMap[d.deviceID] == "online" {
+			offlineNum = 0
+		}
+		deviceStatus[d.deviceID] = map[string]interface{}{
+			"device_id":   d.deviceID,
+			"device_type": d.deviceType,
+			"updated_at":  nowMs,
+			"offline":     offlineNum,
+		}
+	}
+	out["device_status"] = deviceStatus
+
+	// 覆盖 alarm_state：DB 完整 AlarmState（与 CardStatus.AlarmState 对齐）
+	if cardState, err := card.QueryCardAlarmState(ctx, s.db, cardID); err != nil {
+		s.logger.Warn("GetCardStatus QueryCardAlarmState", zap.String("card_id", cardID), zap.Error(err))
+	} else if cardState != nil {
+		if as := cardState.ToAlarmState(); as != nil {
+			out["alarm_state"] = cardAlarmStateToMap(as)
+		}
+	}
+	return out, nil
+}
+
+func cardStatusToMap(st *card.CardStatus) map[string]interface{} {
+	if st == nil {
+		return nil
+	}
+	b, _ := json.Marshal(st)
+	var m map[string]interface{}
+	if json.Unmarshal(b, &m) != nil {
+		return map[string]interface{}{"card_id": st.CardID}
+	}
+	return m
+}
+
+func cardAlarmStateToMap(as *card.AlarmState) map[string]interface{} {
+	if as == nil {
+		return nil
+	}
+	b, _ := json.Marshal(as)
+	var m map[string]interface{}
+	if json.Unmarshal(b, &m) != nil {
+		return nil
+	}
+	return m
 }
 
 // InitSSE 初始化 SSE 连接的 watchIDs + viewIDs（连接建立后前端 POST 调用）

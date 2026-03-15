@@ -1,18 +1,17 @@
 package httpapi
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/service"
 
 	"github.com/xuri/excelize/v2"
-	"go.uber.org/zap"
 )
 
 // -------- Device Store impl --------
@@ -25,22 +24,24 @@ func (a *AdminAPI) getDeviceStores(w http.ResponseWriter, r *http.Request) {
 	}
 	page := parseInt(r.URL.Query().Get("page"), 1)
 	size := parseInt(r.URL.Query().Get("size"), 100)
+	sort := strings.TrimSpace(r.URL.Query().Get("sort"))
+	direction := strings.TrimSpace(r.URL.Query().Get("direction"))
+	if direction != "desc" {
+		direction = "asc"
+	}
 
-	items, total, err := a.DeviceStore.ListDeviceStores(r.Context(), filters, page, size)
+	items, total, err := a.DeviceStore.ListDeviceStores(r.Context(), filters, page, size, sort, direction)
 	if err != nil {
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to list device stores: %v", err)))
 		return
 	}
 
-	// 通过 wisefido-qinglan HTTP API 查询设备在线状态并填充
-	if a.QinglanClient != nil {
-		fillDeviceStoreOnlineStatus(r.Context(), a.QinglanClient, items, a.Log)
-	} else {
-		// qinglanClient 为 nil，所有设备默认设置为 "offline"
-		for _, store := range items {
-			if store.OnlineStatus == "" {
-				store.OnlineStatus = "offline"
-			}
+	// 在线状态：只从 cardagg 读取（与 device_service.fillDeviceOnlineStatus 一致）
+	onlineMap := service.FillDeviceOnlineStatusFromCardagg(r.Context(), a.StateReader, a.DB, deviceStoreDeviceIDs(items), a.Log)
+	for _, s := range items {
+		s.OnlineStatus = onlineMap[s.DeviceID]
+		if s.OnlineStatus == "" {
+			s.OnlineStatus = "offline"
 		}
 	}
 
@@ -113,7 +114,7 @@ func (a *AdminAPI) exportDeviceStores(w http.ResponseWriter, r *http.Request) {
 		DeviceType: r.URL.Query().Get("device_type"),
 	}
 
-	items, _, err := a.DeviceStore.ListDeviceStores(r.Context(), filters, 1, 10000)
+	items, _, err := a.DeviceStore.ListDeviceStores(r.Context(), filters, 1, 1000, "", "asc")
 	if err != nil {
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to list device stores: %v", err)))
 		return
@@ -256,7 +257,7 @@ func (a *AdminAPI) importDeviceStores(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Import using repository
-	successCount, skipped, errors, err := a.DeviceStore.ImportDeviceStores(r.Context(), items)
+	successCount, _, skipped, errors, err := a.DeviceStore.ImportDeviceStores(r.Context(), items)
 	if err != nil {
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to import: %v", err)))
 		return
@@ -329,6 +330,7 @@ func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
 	if v, ok := payload["device_model"].(string); ok && v != "" {
 		ds.DeviceModel = sql.NullString{String: v, Valid: true}
 	}
+	// device_name 不通过导入/API 设置，由 devices 表同步
 	if v, ok := payload["mac"].(string); ok && v != "" {
 		ds.MAC = sql.NullString{String: v, Valid: true}
 	}
@@ -374,72 +376,3 @@ func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
 	return ds
 }
 
-// fillDeviceStoreOnlineStatus 通过 wisefido-qinglan HTTP API 批量查询设备在线状态并填充到设备库存列表
-// 使用并发查询提高性能
-func fillDeviceStoreOnlineStatus(ctx context.Context, qinglanClient *service.QinglanClient, stores []*domain.DeviceStore, logger *zap.Logger) {
-	if len(stores) == 0 {
-		return
-	}
-
-	// 过滤出有 device_uid 的设备
-	storesWithUID := make([]*domain.DeviceStore, 0, len(stores))
-	for _, store := range stores {
-		if store.DeviceUID != "" {
-			storesWithUID = append(storesWithUID, store)
-		}
-	}
-
-	if len(storesWithUID) == 0 {
-		// 没有 device_uid 的设备，默认设置为 "offline"
-		for _, store := range stores {
-			if store.OnlineStatus == "" {
-				store.OnlineStatus = "offline"
-			}
-		}
-		return
-	}
-
-	// 并发查询设备状态
-	type statusResult struct {
-		deviceUID string
-		status    string
-		err       error
-	}
-	results := make(chan statusResult, len(storesWithUID))
-
-	// 启动 goroutine 并发查询
-	for _, store := range storesWithUID {
-		go func(s *domain.DeviceStore) {
-			status, err := qinglanClient.GetDeviceStatus(ctx, s.DeviceUID)
-			if err != nil {
-				// 查询失败，默认设置为 "offline"
-				results <- statusResult{deviceUID: s.DeviceUID, status: "offline", err: err}
-			} else {
-				results <- statusResult{deviceUID: s.DeviceUID, status: status, err: nil}
-			}
-		}(store)
-	}
-
-	// 收集结果
-	deviceUIDToStatus := make(map[string]string)
-	for i := 0; i < len(storesWithUID); i++ {
-		result := <-results
-		deviceUIDToStatus[result.deviceUID] = result.status
-	}
-
-	// 填充状态到设备库存列表
-	for _, store := range stores {
-		if store.DeviceUID != "" {
-			if status, exists := deviceUIDToStatus[store.DeviceUID]; exists {
-				store.OnlineStatus = status
-			} else {
-				store.OnlineStatus = "offline"
-			}
-		} else {
-			// 没有 device_uid 的设备，默认设置为 "offline"
-			if store.OnlineStatus == "" {
-				store.OnlineStatus = "offline"
-			}
-		}
-	}
-}

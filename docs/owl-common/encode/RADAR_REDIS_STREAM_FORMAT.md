@@ -59,7 +59,7 @@
   "position_x": 150,
   "position_y": 200,
   "position_z": 50,
-  "target_id": 1,
+  "track_id": 1,
   "area_id": 1,
   "remaining_time": 30,
   "pose": "Walking",

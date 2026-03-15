@@ -26,6 +26,21 @@ func NewAlarmEventHandler(alarmEventService service.AlarmEventService, logger *z
 	}
 }
 
+// parseArrayParam 从 query 解析数组：优先 key/altKey 多值，否则按逗号分割单值
+func parseArrayParam(q map[string][]string, key, altKey string) []string {
+	var out []string
+	for _, k := range []string{key, altKey} {
+		for _, v := range q[k] {
+			for _, part := range strings.Split(v, ",") {
+				if t := strings.TrimSpace(part); t != "" {
+					out = append(out, t)
+				}
+			}
+		}
+	}
+	return out
+}
+
 // ServeHTTP 实现 http.Handler 接口
 func (h *AlarmEventHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 路由分发
@@ -94,23 +109,20 @@ func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	// 搜索参数
+	// 搜索参数（前端传 branch_name）
 	resident := strings.TrimSpace(r.URL.Query().Get("resident"))
 	branchTag := strings.TrimSpace(r.URL.Query().Get("branch_tag"))
+	if branchTag == "" {
+		branchTag = strings.TrimSpace(r.URL.Query().Get("branch_name"))
+	}
 	unitName := strings.TrimSpace(r.URL.Query().Get("unit_name"))
 	deviceName := strings.TrimSpace(r.URL.Query().Get("device_name"))
 
-	// 过滤参数（多选）
-	var eventTypes, categories, alarmLevels []string
-	if eventTypesStr := strings.TrimSpace(r.URL.Query().Get("event_types")); eventTypesStr != "" {
-		eventTypes = strings.Split(eventTypesStr, ",")
-	}
-	if categoriesStr := strings.TrimSpace(r.URL.Query().Get("categories")); categoriesStr != "" {
-		categories = strings.Split(categoriesStr, ",")
-	}
-	if alarmLevelsStr := strings.TrimSpace(r.URL.Query().Get("alarm_levels")); alarmLevelsStr != "" {
-		alarmLevels = strings.Split(alarmLevelsStr, ",")
-	}
+	// 过滤参数（多选）：支持逗号分隔或重复键（axios 可能发 alarm_levels=3 或 alarm_levels[]=3）
+	q := r.URL.Query()
+	eventTypes := parseArrayParam(q, "event_types", "event_types[]")
+	categories := parseArrayParam(q, "categories", "categories[]")
+	alarmLevels := parseArrayParam(q, "alarm_levels", "alarm_levels[]")
 
 	// 关联过滤
 	cardID := strings.TrimSpace(r.URL.Query().Get("card_id"))

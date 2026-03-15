@@ -20,12 +20,13 @@ import (
 
 // RadarInstall Radar 安装配置服务
 // 雷达设备的查询与设置仅通过 qinglan_client（PUT/GET wisefido-qinglan /api/v1/radar/devices/{uid}/properties 等），无其他设备路径。
-// 画布 layout 从 config_versions(config_type=room_layout, entity_id=room_id) 读写。
+// 画布 layout 从 config_versions(config_type=room_layout, entity_id=room_id) 读写；无则回退到 rooms.layout_config。
 type RadarInstall struct {
 	config            *config.Config
 	devicesRepo       repository.DevicesRepository
 	cardsRepo         repository.CardsRepository
 	configVersionsRepo repository.ConfigVersionsRepository
+	unitsRepo         repository.UnitsRepository // 用于 layout 回退：config_versions 无数据时读 rooms.layout_config
 	qinglanClient     *QinglanClient
 	logger            *zap.Logger
 	// 订阅管理器：记录哪些设备需要订阅（device_id -> bool）
@@ -35,12 +36,13 @@ type RadarInstall struct {
 }
 
 // NewRadarInstall 创建 Radar 安装配置服务
-func NewRadarInstall(cfg *config.Config, devicesRepo repository.DevicesRepository, cardsRepo repository.CardsRepository, configVersionsRepo repository.ConfigVersionsRepository, qinglanClient *QinglanClient, logger *zap.Logger) *RadarInstall {
+func NewRadarInstall(cfg *config.Config, devicesRepo repository.DevicesRepository, cardsRepo repository.CardsRepository, configVersionsRepo repository.ConfigVersionsRepository, unitsRepo repository.UnitsRepository, qinglanClient *QinglanClient, logger *zap.Logger) *RadarInstall {
 	return &RadarInstall{
 		config:            cfg,
 		devicesRepo:       devicesRepo,
 		cardsRepo:         cardsRepo,
 		configVersionsRepo: configVersionsRepo,
+		unitsRepo:         unitsRepo,
 		qinglanClient:     qinglanClient,
 		logger:            logger,
 		subscribedDevices: make(map[string]bool),
@@ -56,7 +58,7 @@ func (s *RadarInstall) ListCardDevices(ctx context.Context, tenantID, cardID str
 }
 
 // ListCardDevicesByDeviceID 通过 device_id 查找所属卡片，返回 card_id、room_id、该卡设备列表及 room 的 layout 配置（初始化时一次返回，供画布 Bind 与加载 layout）
-// room_id 来自 devices.bound_room_id 或 beds.room_id；layout_config 来自 config_versions(config_type=room_layout, entity_id=room_id) 最新一条，无则 nil
+// room_id 来自 devices；layout_config 优先从 rooms.layout_config（当前布局），无则从 config_versions（历史）取最新一条。
 func (s *RadarInstall) ListCardDevicesByDeviceID(ctx context.Context, tenantID, deviceID string) (cardID, roomID string, devices []repository.CardDeviceItem, layoutConfig json.RawMessage, err error) {
 	if s.cardsRepo == nil {
 		return "", "", nil, nil, fmt.Errorf("cards repository not available")
@@ -76,14 +78,39 @@ func (s *RadarInstall) ListCardDevicesByDeviceID(ctx context.Context, tenantID, 
 			roomID = dev.RoomID.String
 		}
 	}
-	if roomID != "" && s.configVersionsRepo != nil {
-		cfg, _ := s.GetLayoutConfigByRoomID(ctx, tenantID, roomID)
-		layoutConfig = cfg
+	if roomID != "" {
+		layoutConfig = s.getCurrentLayoutByRoomID(ctx, tenantID, roomID)
 	}
 	return cardID, roomID, devices, layoutConfig, nil
 }
 
-// GetLayoutConfigByRoomID 按 room_id 查询 config_versions 中 config_type='room_layout', entity_id=room_id 的最新生效配置，返回 config_data；无则返回 nil,nil
+// getCurrentLayoutByRoomID 取房间当前布局：优先 rooms.layout_config，再回退 units.layout_config（统一楼层布局），最后 config_versions 最新一条（历史）。
+func (s *RadarInstall) getCurrentLayoutByRoomID(ctx context.Context, tenantID, roomID string) json.RawMessage {
+	if s.unitsRepo != nil {
+		room, err := s.unitsRepo.GetRoom(ctx, tenantID, roomID)
+		if err == nil {
+			if room.LayoutConfig.Valid && room.LayoutConfig.String != "" {
+				return json.RawMessage(room.LayoutConfig.String)
+			}
+			// 房间无独立布局时，回退到单元级布局（统一楼层布局）
+			if room.UnitID != "" {
+				unit, uErr := s.unitsRepo.GetUnit(ctx, tenantID, room.UnitID)
+				if uErr == nil && unit.LayoutConfig.Valid && unit.LayoutConfig.String != "" {
+					return json.RawMessage(unit.LayoutConfig.String)
+				}
+			}
+		}
+	}
+	if s.configVersionsRepo != nil {
+		cv, err := s.configVersionsRepo.GetConfigVersionAtTime(ctx, tenantID, "room_layout", roomID, time.Now())
+		if err == nil && len(cv.ConfigData) > 0 {
+			return cv.ConfigData
+		}
+	}
+	return nil
+}
+
+// GetLayoutConfigByRoomID 按 room_id 查询 config_versions 中 config_type='room_layout' 的最新生效配置（用于按时间取历史）；当前布局请用 getCurrentLayoutByRoomID / ListCardDevicesByDeviceID。
 func (s *RadarInstall) GetLayoutConfigByRoomID(ctx context.Context, tenantID, roomID string) (json.RawMessage, error) {
 	if s.configVersionsRepo == nil || roomID == "" {
 		return nil, nil
@@ -98,36 +125,50 @@ func (s *RadarInstall) GetLayoutConfigByRoomID(ctx context.Context, tenantID, ro
 	return cv.ConfigData, nil
 }
 
-// SaveRoomLayout 将 config 写入 config_versions（config_type=room_layout, entity_id=room_id）。
-// 比较后再保存：与当前最新 config_data 一致则不再插入；否则插入新版本（旧版本 valid_to 由 CreateConfigVersion 关闭）。
+// SaveRoomLayout 保存房间布局：更新 rooms.layout_config（当前布局），并写入 config_versions（历史版本）。
 func (s *RadarInstall) SaveRoomLayout(ctx context.Context, tenantID, roomID string, configData []byte) error {
-	if s.configVersionsRepo == nil || roomID == "" {
-		return fmt.Errorf("config_versions repo not available or room_id empty")
+	if roomID == "" {
+		return fmt.Errorf("room_id is required")
 	}
 	if len(configData) == 0 {
 		return fmt.Errorf("config_data is required")
 	}
 
-	cv, err := s.configVersionsRepo.GetConfigVersionAtTime(ctx, tenantID, "room_layout", roomID, time.Now())
-	if err == nil && len(cv.ConfigData) > 0 {
-		var a, b interface{}
-		if errA := json.Unmarshal(configData, &a); errA == nil {
-			if errB := json.Unmarshal(cv.ConfigData, &b); errB == nil && reflect.DeepEqual(a, b) {
-				s.logger.Debug("SaveRoomLayout: config unchanged, skip insert", zap.String("room_id", roomID))
-				return nil
+	// 1) 当前布局写入 rooms 表
+	if s.unitsRepo != nil {
+		room, _ := s.unitsRepo.GetRoom(ctx, tenantID, roomID)
+		if room != nil {
+			room.LayoutConfig = sql.NullString{String: string(configData), Valid: true}
+			if err := s.unitsRepo.UpdateRoom(ctx, tenantID, roomID, room); err != nil {
+				s.logger.Warn("SaveRoomLayout: update rooms.layout_config failed", zap.String("room_id", roomID), zap.Error(err))
 			}
 		}
 	}
 
-	cfg := &domain.ConfigVersion{
-		ConfigType:       "room_layout",
-		EntityID:         roomID,
-		CurrentEntityID:  roomID,
-		ConfigData:       configData,
-		ValidFrom:        time.Now(),
+	// 2) 历史版本写入 config_versions（与当前一致则跳过）
+	if s.configVersionsRepo != nil {
+		cv, err := s.configVersionsRepo.GetConfigVersionAtTime(ctx, tenantID, "room_layout", roomID, time.Now())
+		if err == nil && len(cv.ConfigData) > 0 {
+			var a, b interface{}
+			if errA := json.Unmarshal(configData, &a); errA == nil {
+				if errB := json.Unmarshal(cv.ConfigData, &b); errB == nil && reflect.DeepEqual(a, b) {
+					s.logger.Debug("SaveRoomLayout: config unchanged, skip config_versions insert", zap.String("room_id", roomID))
+					return nil
+				}
+			}
+		}
+		cfg := &domain.ConfigVersion{
+			ConfigType:       "room_layout",
+			EntityID:         roomID,
+			CurrentEntityID:  roomID,
+			ConfigData:       configData,
+			ValidFrom:        time.Now(),
+		}
+		if _, err := s.configVersionsRepo.CreateConfigVersion(ctx, tenantID, cfg); err != nil {
+			s.logger.Warn("SaveRoomLayout: create config_version failed", zap.String("room_id", roomID), zap.Error(err))
+		}
 	}
-	_, err = s.configVersionsRepo.CreateConfigVersion(ctx, tenantID, cfg)
-	return err
+	return nil
 }
 
 // GetDeviceUID 根据 device_id 和 tenant_id 获取设备 UID；设备不存在、未绑定或非雷达类型时返回明确错误

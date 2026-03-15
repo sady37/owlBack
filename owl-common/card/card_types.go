@@ -95,7 +95,7 @@ type UnitInfo struct {
 // DeviceInfo device information
 type DeviceInfo struct {
 	DeviceID          string  `json:"device_id"`
-	DeviceUID         string  `json:"device_uid"`  // devices.device_uid
+	DeviceUID         string  `json:"-"`           // devices.device_uid，内部用，不向前端暴露（HIPAA）
 	DeviceCode        string  `json:"device_code"` // device_store.device_code
 	DeviceName        string  `json:"device_name"`
 	DeviceType        string  `json:"device_type"` // 或字符串，JSON 兼容
@@ -167,129 +167,160 @@ type CaregiverInfo struct {
 	Role        string `json:"role,omitempty"`
 }
 
-//-------------- 动态数据：仅 card_id 作为索引，不含其它静态数据。
-// 从 iot:*:stream 获取实时数据，供前端读取。
-// DeviceRealTime 是纯观测层——设备说了什么，高频可丢，不做业务判断。
 
-// ========== data_value category 常量 ==========
+// ========== Realtime Monitor 聚合（card:realtime:stream） ==========
+//{ card_id, "<device_id>": { "<track_id>": {...}, ... } }
+/*
+card1:device1:{track0(有效值）,track1,track2..}
+card1:device2:{track1(有效值）}
+card2:device3:{track2(有效值）}
 
+type Track struct {
+	TrackID  int    `json:"track_id"`  // Radar 0-8, Sleepad 0=left
+	LogicID  string `json:"logic_id,omitempty"` // Card 分配的逻辑目标 ID
+	Ts       int64  `json:"ts"`
+
+	PositionX       *int   `json:"position_x,omitempty"`
+	PositionY       *int   `json:"position_y,omitempty"`
+	PositionZ       *int   `json:"position_z,omitempty"`
+	AreaType        string `json:"area_type,omitempty"`
+	TrackConfidence int    `json:"track_confidence,omitempty"`
+
+	Pose           int `json:"pose,omitempty"`
+	PoseConfidence int `json:"pose_confidence,omitempty"`
+
+	HeartRate        int     `json:"heart_rate,omitempty"`
+	RespiratoryRate  int     `json:"respiratory_rate,omitempty"`
+	BloodOxygen      int     `json:"blood_oxygen,omitempty"`
+	Temperature      float64 `json:"temperature,omitempty"`
+	VitalConfidence  int     `json:"vital_confidence,omitempty"`
+
+	// 周期≤5min 上报视为实时；Sleepad 持续更新，保留供后续使用
+	BedStatus int `json:"bed_status,omitempty"`
+
+	BodyMove         int `json:"body_move,omitempty"`
+	TurnOver         int `json:"turn_over,omitempty"`
+	SitUp            int `json:"sit_up,omitempty"`
+	MotionConfidence int `json:"motion_confidence,omitempty"`
+}
+*/
+
+// TrackFields 单条 track 的平铺字段 + "ts"（仅含有效字段）；与 observation.TrackID 约定一致，88 不入库
+type TrackFields map[string]interface{}
+
+// DeviceRealtimeTracks 单设备在 monitor 流中的格式：track_id（如 "0","9"）-> TrackFields
+// cardagg Flush 输出 device_uid -> 此类型，wisefido-data 原样缓存
+type DeviceRealtimeTracks map[string]TrackFields
+
+// CardRealTime 卡片实时数据（monitor 格式）
+// 发布到 Redis Stream: card:realtime:stream（type=monitor）
+// 缓存/下发：card_id -> { card_id, device_uid -> DeviceRealtimeTracks }
+type CardRealTime struct {
+	CardID    string                          `json:"card_id"`
+	Timestamp int64                           `json:"timestamp,omitempty"`
+	Devices   map[string]DeviceRealtimeTracks `json:"devices,omitempty"` // device_uid -> track_id -> fields+ts
+}
+
+// ========== Card Status (card:state / card:status:stream) ==========
+
+// DeviceStatus 单个设备在线状态（仅 offline；其它如 signal_poor 走告警）
+type DeviceStatus struct {
+	DeviceUID  string `json:"-"`                   // 内部/Redis 用，不向前端暴露（HIPAA）
+	DeviceID   string `json:"device_id"`            // 前端展示用
+	DeviceType string `json:"device_type"`          // "Radar" | "Sleepad"
+	UpdatedAt  int64  `json:"updated_at,omitempty"` // 最后更新时间（Unix 毫秒），与 TargetState/AlarmState 一致
+	Offline    int    `json:"offline"`              // 0=在线, 1=离线
+}
+
+// BedState 在/离床状态（护理者最核心的二元判断）
+// UpdatedAt/StartTime 未设置可为 0；仅 DurationSec 用 -1 表示未设置（0 秒为合法值）。
+const BedStateDurationNotSet int = -1 // DurationSec 未设置
+
+type BedState struct {
+	UpdatedAt        int64 `json:"updated_at,omitempty"`   // 本次状态变化时间（毫秒），未设置=0
+	BedStatus        int   `json:"bed_status"`             // 0=在床(in_bed), 1=离床(out_of_bed), 8=未改变
+	TrackNumber      int   `json:"track_number"`           // 在床轨迹数量（max=2, sleepad left=0,right=1）
+	StartTime        int64 `json:"start_time,omitempty"`   // 当前 BedStatus 开始时间（毫秒），未设置=0
+	DurationSec      int   `json:"duration_sec"`           // 事件发生时已持续秒数，未设置=-1
+	BedConfidence    int   `json:"bed_confidence"`    // 在床置信度 100 分制：60=雷达基准, 90=Sleepad 基准, 100=双设备（窗口内比较）相同
+	BedEvent         int   `json:"bed_event"`         // 8=无/保持不变, 0=InBed, 1=LeftBed（与事件一致，初始化用 8 避免混淆）
+	SleepStage       int   `json:"sleep_stage"`       // 睡眠阶段：0=初始, 1=清醒, 2=浅睡, 4=深睡, 8=未知
+	SleepConfidence  int   `json:"sleep_confidence"`  // 睡眠阶段置信度 100 分制：0=未知, 60=Radar, 90=Sleepad, 100=sleepad+radar 相同
+}
+
+// SleepStage 合法值
 const (
-	CategoryTrack  = "track"  // 轨迹数据（Radar）
-	CategoryVital  = "vital"  // 生理数据（Radar + Sleepad 共有）
-	CategoryMotion = "motion" // 动作数据（Sleepad: bodyMove, turnOver, sitUp）
-	CategoryStatus = "status" // 状态观测（Sleepad: bedStatus, initStatus）
-	CategoryDevice = "device" // 设备质量观测（signalQuality 等）
+	SleepStageInitial = 0 // 初始（未收到 sleepStage 事件前）
+	SleepStageAwake   = 1
+	SleepStageLight   = 2
+	SleepStageDeep    = 4
+	SleepStageUnknown = 8
 )
 
-// ========== 观测数据结构体（按 category 对应） ==========
-
-// TrackData 轨迹数据（category="track"）—— Radar
-type TrackData struct {
-	Category      string `json:"category"`                 // "track"
-	TargetID      int    `json:"target_id,omitempty"`      // 目标ID: 0-7=有人，88=无人
-	PositionX     int    `json:"position_x,omitempty"`     // X坐标（cm）
-	PositionY     int    `json:"position_y,omitempty"`     // Y坐标（cm）
-	PositionZ     int    `json:"position_z,omitempty"`     // Z坐标（cm）
-	RemainingTime int    `json:"remaining_time,omitempty"` // 剩余时间（秒）
-	AreaID        int    `json:"area_id,omitempty"`        // 区域ID
-	Pose          int    `json:"pose,omitempty"`           // 姿态数值（0-11，见 PoseNumToDisplay）
-	Event         int    `json:"event,omitempty"`          // 事件类型: 0=无, 1=进房, 2=离房, 3=进区, 4=离区
+// RoomState 房间空间层（不含卫生间）：人数、进出、站立、风险。Card 初始化时默认创建；非卫生间雷达 stat.track 更新。
+// HasRisk 由本房间数据各自计算。
+type RoomState struct {
+	UpdatedAt             int64          `json:"updated_at,omitempty"`
+	TotalPeople           int            `json:"total_people"`                       // 房间人数（各 room 雷达 track 相加，且不低于床上人数）
+	AreaPeople            map[string]int `json:"area_people,omitempty"`             // 各设备人数，key=deviceID，value=该雷达 NumberPeople；TotalPeople=sum(AreaPeople)，用于加减校正
+	LastEnterTime         int64          `json:"last_enter_time,omitempty"`         // 最近进入时间（毫秒）
+	LastExitTime          int64          `json:"last_exit_time,omitempty"`          // 最近离开时间（毫秒）
+	StandingContinuousMin int            `json:"standing_continuous_min,omitempty"` // 连续站立分钟数（多分钟 track 累计）
+	HasMulti              bool           `json:"has_multi"`
+	HasRisk               bool           `json:"has_risk"` // 本房间风险，各自计算
 }
 
-// VitalData 生理数据（category="vital"）—— Radar + Sleepad
-type VitalData struct {
-	Category        string `json:"category"`                   // "vital"
-	VitalFlag       int    `json:"vital_flag,omitempty"`       // 标识符: 固定为0表示实时呼吸心率
-	RespiratoryRate int    `json:"respiratory_rate,omitempty"` // 呼吸率（次/分钟）
-	HeartRate       int    `json:"heart_rate,omitempty"`       // 心率（次/分钟）
-	SleepStatus     int    `json:"sleep_status,omitempty"`     // 睡眠状态（0=未定义, 1=浅睡, 2=深睡, 3=清醒）
-	Stability       int    `json:"stability,omitempty"`        // 稳定性（0=未定义, 1=较大动作, 2=较小动作, 3=无干扰）
+// BathRoomState 卫生间空间层。仅当存在 isBathroomRadar（绑定 room 为 Bathroom）时创建/更新；由该雷达 stat.track 更新。
+// HasRisk 由卫生间数据各自计算。
+type BathRoomState struct {
+	DeviceUID              string `json:"-"`                   // 内部用，不向前端暴露（HIPAA）
+	DeviceID               string `json:"device_id,omitempty"` // 卫生间雷达 device_id，前端展示用
+	UpdatedAt              int64  `json:"updated_at,omitempty"`
+	TotalPeople            int    `json:"total_people"`     // 卫生间人数
+	LastEnterTime          int64  `json:"last_enter_time,omitempty"`
+	LastExitTime           int64  `json:"last_exit_time,omitempty"`
+	StaySec                int    `json:"stay_sec,omitempty"`                // 卫生间滞留时长（秒）
+	StandingContinuousMin  int    `json:"standing_continuous_min,omitempty"` // 连续站立分钟数
+	HasMulti               bool   `json:"has_multi"`
+	HasRisk                bool   `json:"has_risk"` // 卫生间风险，各自计算
 }
 
-// MotionData 动作数据（category="motion"）—— Sleepad
-type MotionData struct {
-	Category  string `json:"category"`             // "motion"
-	BodyMove  int    `json:"body_move,omitempty"`  // 体动 0/1
-	TurnOver  int    `json:"turn_over,omitempty"`  // 翻身 0/1
-	SitUp     int    `json:"sit_up,omitempty"`     // 坐起 0/1
-	LeftRight int    `json:"left_right,omitempty"` // 左右翻 0/1/2
+// TargetState 单 Target 汇总（老人维度）：活动与生理时间、弱信号。Pose/SleepStage/Area/PersonNumber 已移除（多源覆盖无意义，由报警/BedState/RoomState 表达）。
+type TargetState struct {
+	UpdatedAt           int64  `json:"updated_at,omitempty"`
+	TrackID             int    `json:"track_id"`             // track ID
+	LogicID             string `json:"logic_id,omitempty"`  // Logic 层 ID（track ID）
+	LastActiveTs        int64  `json:"last_active_ts,omitempty"`        // 最后活动时间（毫秒），最后生理指标时间（毫秒），state.track 行走距离>2米 & 行走时长>20秒 否则认为静止
+	WeakBiometricSignal int    `json:"weak_biometric_signal"`            // 信号弱风险度，可多维度相加（如 HH+RR），0=好 越高越差，累加+每天 7 点清空
+	VisitorStartTs       int64  `json:"VisitorStartTs,omitempty"`        // 当前访问时间 -1表示无
+	TodayMaxVisitorMin   int   `json:"TodayMaxVisitorMin,omitempty"`   // 今日访客持续的最长时间
+	HasVisitorToday      bool  `json:"HasVisitorToday,omitempty"`     // 今日访客标记
 }
 
-// StatusData 状态观测（category="status"）—— Sleepad
-type StatusData struct {
-	Category   string `json:"category"`              // "status"
-	BedStatus  int    `json:"bed_status,omitempty"`  // 在床状态 0=离床 1=在床
-	InitStatus int    `json:"init_status,omitempty"` // 初始化状态
-}
-
-// DeviceData 设备质量观测（category="device"）
-type DeviceData struct {
-	Category      string `json:"category"`                 // "device"
-	SignalQuality int    `json:"signal_quality,omitempty"` // 信号质量
-	Battery       int    `json:"battery,omitempty"`        // 电量百分比
-	SensorState   int    `json:"sensor_state,omitempty"`   // 传感器状态
-}
-
-// ========== 设备实时数据聚合 ==========
-
-// DeviceRealTime 单个设备的实时观测数据
-// Data 原样存储 qinglan 输出的 data_value（每项含 category 字段），cardagg 不分拣
-// 前端直接消费 device-first 结构，按 category 过滤取值
-type DeviceRealTime struct {
-	DeviceID   string                   `json:"device_id"`      // 设备ID
-	DeviceType string                   `json:"device_type"`    // "Radar" | "SleepPad"
-	Timestamp  int64                    `json:"timestamp"`      // 设备最后更新时间戳
-	Data       []map[string]interface{} `json:"data,omitempty"` // 原样存储，保留 category
-}
-
-// DeviceStatus 设备状态信息
-type DeviceStatus struct {
-	DeviceID   string         `json:"device_id"`          // 设备ID
-	DeviceType string         `json:"device_type"`        // "Radar" | "SleepPad" 等
-	Timestamp  int64          `json:"timestamp"`          // 最后一次更新时间戳（Unix毫秒）
-	Statuses   map[string]int `json:"statuses,omitempty"` // 设备状态 map, 0=正常/在线, 1=异常/离线
-}
-
-// EventState 事件状态摘要（统一替代 BedState/RoomState）
-// Category 区分事件类型，单个 EventState 表示卡片当前最新事件
-type EventState struct {
-	UpdatedAt    int64  `json:"updated_at,omitempty"`    // 消息处理时间（排序/去重）
-	Category     string `json:"category,omitempty"`      // "BedState" | "RoomState"
-	CurrentState string `json:"current_state,omitempty"` // "in_bed" | "out_of_bed" 等
-	StateValue   string `json:"state_value,omitempty"`   // string（people_count 等）
-	StartTime    int64  `json:"start_time,omitempty"`    // 事件开始时间
-	DurationSec  int    `json:"duration_sec,omitempty"`  // 初始秒数 = UpdatedAt - StartTime（前端在此基础上自增）
-}
-
-// AlarmState 报警状态摘要（与 cards 表 alarm 字段对齐）
+// AlarmState 告警摘要（与 cards 表 alarm 字段对齐）
 type AlarmState struct {
-	UpdatedAt     int64  `json:"updated_at,omitempty"`     // 最后更新时间
-	ActiveEmerg   int    `json:"active_emerg,omitempty"`   // 未处理数量 EMERGENCY
-	ActiveAlert   int    `json:"active_alert,omitempty"`   // 未处理数量 ALERT
-	ActiveCrit    int    `json:"active_crit,omitempty"`    // 未处理数量 CRITICAL
-	ActiveErr     int    `json:"active_err,omitempty"`     // 未处理数量 ERROR
-	ActiveWarning int    `json:"active_warning,omitempty"` // 未处理数量 WARNING
+	UpdatedAt     int64  `json:"updated_at,omitempty"`     // 状态最后更新时间（毫秒）
+	TriggeredAt   int64  `json:"triggered_at,omitempty"`   // pop 告警真实触发时间（alarm_events.triggered_at 毫秒），用于前端 Alarm Time 展示
+	ActiveEmerg   int    `json:"active_emerg"`   // EMERGENCY 未处理数
+	ActiveAlert   int    `json:"active_alert"`   // ALERT 未处理数
+	ActiveCrit    int    `json:"active_crit"`    // CRITICAL 未处理数
+	ActiveErr     int    `json:"active_err"`     // ERROR 未处理数
+	ActiveWarning int    `json:"active_warning"` // WARNING 未处理数
 	PopAlarm      string `json:"pop_alarm,omitempty"`      // 当前弹出报警 "EMERG.Fall"
-	EventID       string `json:"event_id,omitempty"`       // pop alarm 对应的 alarm_events.event_id
+	EventID       string `json:"event_id,omitempty"`       // pop_alarm 对应的 alarm_events.event_id
 }
 
-// CardRealTime 卡片实时数据（按设备聚合）
-// 存储在 Redis: vital-focus:card:{card_id}:realtime
-// 发布到 Redis Stream: card:realtime:stream
-type CardRealTime struct {
-	CardID    string                     `json:"card_id"`           // 卡片ID
-	Timestamp int64                      `json:"timestamp"`         // 最后更新时间戳
-	Devices   map[string]*DeviceRealTime `json:"devices,omitempty"` // 按设备ID索引的实时数据
-}
-
-// CardStatus 卡片状态数据（bed/room/alarms/device status）
-// 存储在 Redis Stream: card:status:stream
+// CardStatus 卡片状态数据
+// 写入 card:state:{card_id} Hash + 发布到 card:status:stream
+// 初始化：默认创建 RoomState；为雷达分配角色 isBathroomRadar（绑定 room=Bathroom）时创建/更新 BathRoomState。
+// 当前仅有一个 Target（老人维度），用 Target 单对象。
 type CardStatus struct {
-	CardID       string                   `json:"card_id"`                 // 卡片ID
-	Timestamp    int64                    `json:"timestamp"`               // 最后更新时间戳
-	UpdateType   string                   `json:"update_type,omitempty"`   // 更新类型: "DeviceStatus" | "EventState" | "AlarmState"
-	DeviceStatus map[string]*DeviceStatus `json:"device_status,omitempty"` // 按设备ID索引的设备状态 map
-	EventState   *EventState              `json:"event_state,omitempty"`   // 最新事件（替代 BedState/RoomState）
-	AlarmState   *AlarmState              `json:"alarm_state,omitempty"`   // 报警状态
-	Message      map[string]interface{}   `json:"message,omitempty"`       // 可选：完整原始消息内容
+	CardID        string                   `json:"card_id"`
+	Target        *TargetState             `json:"target,omitempty"`         // 单 Target（当前仅一个）
+	RoomState     *RoomState               `json:"room_state,omitempty"`     // 房间（不含卫生间），默认创建
+	BathRoomState *BathRoomState           `json:"bathroom_state,omitempty"` // 仅当有卫生间雷达时存在
+	BedState      *BedState                `json:"bed_state,omitempty"`
+	AlarmState    *AlarmState              `json:"alarm_state,omitempty"`
+	DeviceStatus  map[string]*DeviceStatus `json:"device_status,omitempty"`
+	Message       map[string]interface{}   `json:"message,omitempty"`
 }

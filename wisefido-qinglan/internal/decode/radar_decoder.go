@@ -7,8 +7,10 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"owl-common/alarm"
+	"owl-common/observation"
 	"owl-common/radar"
 	//"owl-common/utils"
 )
@@ -33,6 +35,8 @@ func RadarDecoder(data map[string]interface{}, topicType string) (interface{}, e
 		return []map[string]interface{}{}, nil
 	}
 }
+
+var monitorTrackLogCount uint64 // 每 10 条 MONITOR_TRACK 打一条日志
 
 // normalizeRequestID 归一化 request_id 字段（requestId/requestID/request_id → 统一 request_id，去重）
 func normalizeRequestID(data map[string]interface{}) map[string]interface{} {
@@ -253,8 +257,8 @@ func decodeRadarMonitor(data map[string]interface{}) (interface{}, error) {
 		if err == nil {
 			for _, trackData := range trackDataList {
 				trackObj := map[string]interface{}{
-					"category":       "track",
-					"target_id":      trackData.TargetID,
+					"dataCategory":   "track",
+					"track_id":       trackData.TrackID,
 					"position_x":     trackData.PositionX,
 					"position_y":     trackData.PositionY,
 					"position_z":     trackData.PositionZ,
@@ -263,13 +267,13 @@ func decodeRadarMonitor(data map[string]interface{}) (interface{}, error) {
 				}
 				trackObj["pose"] = trackData.Pose
 				trackObj["event"] = trackData.Event
-				// if i == len(trackDataList)-1 {
-				// 	trackObj["raw_original"] = trackBase64
-				// }
 				dataValue = append(dataValue, trackObj)
-				log.Printf("[MONITOR_TRACK] target_id=%d position_x=%d position_y=%d position_z=%d remaining_time=%d area_id=%d pose=%d event=%d",
-					trackData.TargetID, trackData.PositionX, trackData.PositionY, trackData.PositionZ,
-					trackData.RemainingTime, trackData.AreaID, trackData.Pose, trackData.Event)
+				n := atomic.AddUint64(&monitorTrackLogCount, 1)
+				if n%10 == 0 {
+					log.Printf("[MONITOR_TRACK] track_id=%d position_x=%d position_y=%d position_z=%d remaining_time=%d area_id=%d pose=%d event=%d (every 10, count=%d)",
+						trackData.TrackID, trackData.PositionX, trackData.PositionY, trackData.PositionZ,
+						trackData.RemainingTime, trackData.AreaID, trackData.Pose, trackData.Event, n)
+				}
 			}
 		} else {
 			log.Printf("[MONITOR_TRACK] decode error: %v, base64=%s", err, trackBase64)
@@ -290,7 +294,7 @@ func decodeRadarMonitor(data map[string]interface{}) (interface{}, error) {
 		vitalData, err := decodeMonitorVitalFromBase64(bhBase64)
 		if err == nil {
 			vitalObj := map[string]interface{}{
-				"category":         "vital",
+				"dataCategory":     "vital",
 				"vital_flag":       vitalData.VitalFlag,
 				"respiratory_rate": vitalData.RespiratoryRate,
 				"heart_rate":       vitalData.HeartRate,
@@ -336,7 +340,7 @@ func toFloat64(v interface{}) (float64, bool) {
 /*
 [
   {
-    "category": "track",
+    "dataCategory": "track",
     "version": 1,
     "people_count": 1,
     "walk_distance": 12.5,
@@ -346,7 +350,7 @@ func toFloat64(v interface{}) (float64, bool) {
     "multi_person_duration": 0
   },
   {
-    "category": "sleep",
+    "dataCategory": "sleep",
     "sleep_flag": 1,
     "respiratory_rate": 16,
     "heart_rate": 72,
@@ -363,7 +367,7 @@ func toFloat64(v interface{}) (float64, bool) {
 func decodeRadarStat(data map[string]interface{}) (interface{}, error) {
 	var dataValue []map[string]interface{}
 
-	// 1. 处理 track 统计数据：优先从 data.data.track base64 解码
+	// 1. 处理活动性统计（协议字段名 data.track，内容为 people_count/walk_distance 等，与 monitor 轨迹不同）：优先从 base64 解码
 	var trackBase64 string
 	if dataField, ok := data["data"].(map[string]interface{}); ok {
 		if track, ok := dataField["track"].(string); ok && track != "" {
@@ -372,11 +376,12 @@ func decodeRadarStat(data map[string]interface{}) (interface{}, error) {
 	} else if track, ok := data["track"].(string); ok && track != "" {
 		trackBase64 = track
 	}
+	// stat 协议里该 base64 块叫 "track"，但内容为老人活动性统计，与 monitor 的轨迹(track)语义不同，故 dataCategory 用 "activity"
 	if trackBase64 != "" {
 		trackData, err := decodeStatTrackFromBase64(trackBase64)
 		if err == nil {
 			trackObj := map[string]interface{}{
-				"category":              "track",
+				"dataCategory":          "activity",
 				"version":               trackData.Version,
 				"people_count":          trackData.PeopleCount,
 				"walk_distance":         trackData.WalkDistance,
@@ -391,7 +396,7 @@ func decodeRadarStat(data map[string]interface{}) (interface{}, error) {
 	}
 	// 无 base64 track 时兼容顶层字段
 	if len(dataValue) == 0 && data["version"] != nil {
-		trackObj := map[string]interface{}{"category": "track", "version": data["version"]}
+		trackObj := map[string]interface{}{"dataCategory": "activity", "version": data["version"]}
 		if peopleCount, ok := data["people_count"]; ok {
 			trackObj["people_count"] = peopleCount
 		}
@@ -439,7 +444,7 @@ func decodeRadarStat(data map[string]interface{}) (interface{}, error) {
 		sleepData, err := decodeStatSleepFromBase64(sleepBase64)
 		if err == nil {
 			sleepObj := map[string]interface{}{
-				"category":             "sleep",
+				"dataCategory":         "sleep",
 				"sleep_flag":           sleepData.SleepFlag,
 				"respiratory_rate":     sleepData.RespiratoryRate,
 				"heart_rate":           sleepData.HeartRate,
@@ -500,15 +505,20 @@ func decodeRadarStat(data map[string]interface{}) (interface{}, error) {
 // 返回 []interface{}，每个元素为一条 track/item 的 map[string]interface{}
 /*
 items 是 []interface{}，每个元素是一个 map[string]interface{}。
-举例，type=1 有 2 条 track：
+举例，type=1 有 2 条 track, type=2 有 1 条 track, type=5 有 1 条 status:
 [
-  {"data_category": "InBed", "fhir_category": "behavioral"，"event_type": 1, "track_id": 0, "event": 3, "area_type": 2},
-  {"data_category": "LeftBed", "fhir_category": "behavioral"，"event_type": 1, "track_id": 1, "event": 4, "area_type": 2 }
-  {"data_category": "Fall", "fhir_category": "safety"，"event_type": 2, "track_id": 0, "pose": 5},
-  {"data_category": "Walking", "fhir_category": "behavioral"，"event_type": 2, "track_id": 1, "pose": 1, },
-  { "data_category": "Sitting", "fhir_category": "behavioral"，"event_type": 2, "track_id": 2, "pose": 3}
-  {"data_category": "OfflineAlarm", "fhir_category": "device","event_type": 5, "StatusFieldValue": "1"}
+  {"event_name": "InBed", "event_type": 1, "track_id": 0, "event": 3, "area_type": 2},
+  {"event_name": "LeftBed", "event_type": 1, "track_id": 1, "event": 4, "area_type": 2},
+  {"event_name": "Fall", "event_type": 2, "track_id": 2, "pose": 5},
+  {"event_name": "Offline", "event_type": 5, "status_type": "...", "status_value": "1"}
 ]
+// event_name 全集（与 alarm.Enter2OutMap / PoseMap / NumberPeopleCategory / buildStatus 一致）：
+//   - event_type=1 进出: EnterRoom, ExitRoom, InBed, LeftBed, EnterSensingArea, ExitSensingArea, EnterMonitor, ExitMonitor
+//   - event_type=2 姿态: Initialization, Walking, Fall, Sitting, Standing, Lying, SittingOnGround, BedSitUp
+//   - event_type=3 人数: number-people
+//   - event_type=5: OfflineAlarm
+//   - event_type=7: SignalPoor
+//   - event_type=8: AngleException
 */
 func decodeRadarEvent(data map[string]interface{}) ([]interface{}, error) {
 	eventType := toInt(data["type"])
@@ -561,16 +571,12 @@ func buildEnter2OutTrack(m map[string]interface{}) map[string]interface{} {
 	event := toInt(m["event"])
 	areaType := toInt(m["area_type"])
 	dataCategory, _ := alarm.LookupEnter2Out(event, areaType)
-	fhirCategory := alarm.GetFHIRCategory(dataCategory)
-
 	return map[string]interface{}{
-		"data_category": dataCategory,
-		"fhir_category": fhirCategory,		
-		"event_type":    1,
-		"track_id":      toInt(m["track-id"]),
-		"event":         event,
-		"area_type":     areaType,
-
+		"event_name": dataCategory,
+		"event_type": 1,
+		"track_id":   toInt(m["track-id"]),
+		"event":      event,
+		"area_type":  areaType,
 	}
 }
 
@@ -578,24 +584,20 @@ func buildEnter2OutTrack(m map[string]interface{}) map[string]interface{} {
 func buildPoseTrack(m map[string]interface{}) map[string]interface{} {
 	pose := toInt(m["pose"])
 	dataCategory, _ := alarm.LookupPose(pose)
-	fhirCategory := alarm.GetFHIRCategory(dataCategory)
-
 	return map[string]interface{}{
-		"data_category": dataCategory,
-		"fhir_category": fhirCategory,
-		"event_type":    2,
-		"track_id":      toInt(m["track-id"]),
-		"pose":          pose,
+		"event_name": dataCategory,
+		"event_type": 2,
+		"track_id":   toInt(m["track-id"]),
+		"pose":       pose,
 	}
 }
 
-// buildPeopleNumber type=3 人数统计
+// buildPeopleNumber type=3 人数统计；event_name 用 alarm 定义，取值字段用 observation.FieldNumberPeople
 func buildPeopleNumber(m map[string]interface{}) map[string]interface{} {
 	return map[string]interface{}{
-		"data_category": alarm.NumberPeopleCategory,
-		"fhir_category": alarm.FHIRCategoryBehavioral,
-		"event_type":    3,
-		"number_people": toInt(m["number-people"]),
+		"event_name":  alarm.NumberPeople,
+		"event_type":  3,
+		observation.FieldNumberPeople: toInt(m["number_people"]),
 	}
 }
 
@@ -604,22 +606,22 @@ func buildStatus(eventType int, m map[string]interface{}) map[string]interface{}
 	var dataCategory, statusType, statusValue string
 	switch eventType {
 	case 5:
-		dataCategory = alarm.AlarmTypeOfflineAlarm
-		statusType = radar.StatusFieldOffline
+		dataCategory = alarm.AlarmTypeOffline
+		statusType = observation.FieldOffline
 		statusValue = "0"
 		if toInt(m["isOnline"]) != 0 {
 			statusValue = "1"
 		}
 	case 7:
 		dataCategory = alarm.SignalPoor
-		statusType = radar.StatusFieldSignalPoor
+		statusType = observation.FieldSignalPoor
 		statusValue = "1"
 		if toInt(m["recovery"]) != 0 {
 			statusValue = "0"
 		}
 	case 8:
 		dataCategory = alarm.AngleException
-		statusType = radar.StatusFieldAngleAbnormal
+		statusType = observation.FieldAngleAbnormal
 		statusValue = "1"
 		if toInt(m["recovery"]) != 0 {
 			statusValue = "0"
@@ -627,11 +629,10 @@ func buildStatus(eventType int, m map[string]interface{}) map[string]interface{}
 	}
 
 	return map[string]interface{}{
-		"data_category": dataCategory,
-		"fhir_category": alarm.GetFHIRCategory(dataCategory),
-		"event_type":    eventType,
-		"status_type":   statusType,
-		"status_value":  statusValue,
+		"event_name":   dataCategory,
+		"event_type":   eventType,
+		"status_type":  statusType,
+		"status_value": statusValue,
 	}
 }
 
@@ -686,7 +687,7 @@ func decodeMonitorTrackFromBase64(base64Track string) ([]radar.MonitorTrackData,
 			event = 0
 		}
 		results[i] = radar.MonitorTrackData{
-			TargetID:      int(seg[0]),
+			TrackID:       int(seg[0]),
 			PositionX:     int(int8(seg[1])) * 10, //dm to cm
 			PositionY:     int(int8(seg[2])) * 10, //dm to cm
 			PositionZ:     int(seg[3]),            //cm

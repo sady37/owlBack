@@ -26,15 +26,21 @@ type Config struct {
 		Level  string `yaml:"level"`
 		Format string `yaml:"format"`
 	} `yaml:"logging"`
-	Sleepace      SleepaceConfig      `yaml:"sleepace"`
-	MQTT          MQTTConfig          `yaml:"mqtt"`
-	Radar         RadarConfig         `yaml:"radar"`
-	Qinglan       QinglanConfig       `yaml:"qinglan"`
-	IoTTimeSeries IoTTimeSeriesConfig `yaml:"iot_timeseries"`
+	Sleepace        SleepaceConfig        `yaml:"sleepace"`
+	SleepaceGateway SleepaceGatewayConfig `yaml:"sleepace_gateway"`
+	MQTT            MQTTConfig            `yaml:"mqtt"`
+	Radar           RadarConfig           `yaml:"radar"`
+	Qinglan         QinglanConfig         `yaml:"qinglan"`
+	IoTTimeSeries   IoTTimeSeriesConfig   `yaml:"iot_timeseries"`
 }
 
 // QinglanConfig wisefido-qinglan HTTP API 配置（雷达设备交互）
 type QinglanConfig struct {
+	APIBaseURL string `yaml:"api_base_url"`
+}
+
+// SleepaceGatewayConfig wisefido-sleepace 网关配置（通过 wisefido-sleepace 下发硬件配置）
+type SleepaceGatewayConfig struct {
 	APIBaseURL string `yaml:"api_base_url"`
 }
 
@@ -123,6 +129,9 @@ func (c *Config) setDefaults() {
 	if c.IoTTimeSeries.InternalAPIBaseURL == "" {
 		c.IoTTimeSeries.InternalAPIBaseURL = "http://localhost:8085"
 	}
+	if c.SleepaceGateway.APIBaseURL == "" {
+		c.SleepaceGateway.APIBaseURL = "http://127.0.0.1:8083"
+	}
 }
 
 func LoadFromEnv() *Config {
@@ -152,7 +161,9 @@ func LoadFromEnv() *Config {
 	cfg.MQTT.Password = getEnv("MQTT_PASSWORD", "")
 	cfg.MQTT.Topic = getEnv("MQTT_TOPIC", "sleepace-57136")
 	cfg.Radar.InternalAPIBaseURL = getEnv("RADAR_INTERNAL_API_BASE_URL", "http://localhost:8443")
-	cfg.Qinglan.APIBaseURL = getEnv("QINGLAN_API_BASE_URL", "")
+	// 本机开发：wisefido-sleepace 默认 8083，与 sleepace-dev.yaml 一致；生产用 env 覆盖
+	cfg.SleepaceGateway.APIBaseURL = getEnv("SLEEPACE_GATEWAY_API_BASE_URL", "http://127.0.0.1:8083")
+	cfg.Qinglan.APIBaseURL = getEnv("QINGLAN_API_BASE_URL", "http://127.0.0.1:8081")
 	cfg.IoTTimeSeries.InternalAPIBaseURL = getEnv("IOT_TIMESERIES_INTERNAL_API_BASE_URL", "http://localhost:8085")
 	return cfg
 }

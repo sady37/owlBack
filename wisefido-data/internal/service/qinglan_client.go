@@ -22,8 +22,16 @@ type QinglanClient struct {
 	logger     *zap.Logger
 }
 
-// NewQinglanClient 创建 Qinglan 客户端
+const defaultQinglanBaseURL = "http://127.0.0.1:8081"
+
+// NewQinglanClient 创建 Qinglan 客户端。若 apiBaseURL 为空则使用 defaultQinglanBaseURL，避免 unsupported protocol scheme ""。
 func NewQinglanClient(apiBaseURL string, logger *zap.Logger) *QinglanClient {
+	if apiBaseURL == "" {
+		apiBaseURL = defaultQinglanBaseURL
+		if logger != nil {
+			logger.Info("QinglanClient: apiBaseURL empty, using default", zap.String("default", apiBaseURL))
+		}
+	}
 	return &QinglanClient{
 		apiBaseURL: apiBaseURL,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
@@ -78,7 +86,9 @@ func (c *QinglanClient) GetDeviceProperties(ctx context.Context, deviceUID strin
 	if !out.Success && out.Error != "" {
 		return nil, fmt.Errorf("qinglan API error: %s", out.Error)
 	}
-
+	if out.Data == nil {
+		return map[string]interface{}{}, nil
+	}
 	return out.Data, nil
 }
 

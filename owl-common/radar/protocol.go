@@ -10,7 +10,7 @@ import (
 // MonitorTrackData 实时轨迹单条，与 Radar_MQTT_v3.0 3.7.2 track 一致。16 字节×N，N 为人数。
 // 字节 0 目标 ID；1~3 轨迹坐标 x/y/z(分米,分米,厘米)；4-11 预留字段；12 剩余时间(秒)；13 人员姿态；14 人员事件；15 区域 ID
 type MonitorTrackData struct {
-	TargetID      int     `json:"target_id"`      // 0: 有人 0-7，无人 88
+	TrackID       int     `json:"track_id"`       // 0-8=人，88=无人
 	PositionX     int     `json:"position_x"`     // 1: x 分米
 	PositionY     int     `json:"position_y"`     // 2: y 分米
 	PositionZ     int     `json:"position_z"`     // 3: z 厘米
@@ -72,8 +72,8 @@ type EventEnter2OutData struct {
 	DataCategory string `json:"data_category"` // AlarmType，consumer 直接用
 	FHIRCategory string `json:"fhir_category"` // safety|clinical|behavioral|device
 	TrackID      int    `json:"track_id"`      // track-id：人员轨迹 ID 0-8
-	Event        int    `json:"event"`         // EventInRoom ~ EventExitMonitor
-	AreaType     int    `json:"area_type"`     // AreaTypeBed ~ AreaTypeSensing
+	Event        int    `json:"event"`         // 进出事件 1-6，见 observation 包
+	AreaType     int    `json:"area_type"`     // 区域类型 0-6，见 observation 包
 }
 
 // EventPoseData 3.5 姿态变化事件 type=2 单条 track
@@ -82,7 +82,7 @@ type EventPoseData struct {
 	DataCategory string `json:"data_category"` // AlarmType，consumer 直接用
 	FHIRCategory string `json:"fhir_category"` // safety|clinical|behavioral|device
 	TrackID      int    `json:"track_id"`
-	Pose         int    `json:"pose"` // 0-11，见 PoseNumToDisplay
+	Pose         int    `json:"pose"` // 0-11，见 observation.PoseNumToDisplay
 }
 
 // EventPeopleNumberData type=3 人数变化
@@ -96,9 +96,9 @@ type EventPeopleNumberData struct {
 // EventStatusData type=5/7/8 设备状态（离线/信号差/倾角异常）
 type EventStatusData struct {
 	EventType    int    `json:"event_type"`    // 5=在线状态 7=信号差 8=倾角异常
-	DataCategory string `json:"data_category"` // AlarmType: "OfflineAlarm"|"SignalPoor"|"AngleException"
+	DataCategory string `json:"data_category"` // AlarmType: "Offline"|"SignalPoor"|"AngleException"
 	FHIRCategory string `json:"fhir_category"` // "device"
-	StatusType   string `json:"status_type"`   // StatusField*: "offline"|"signal_poor"|"angle_abnormal"
+	StatusType   string `json:"status_type"`   // 状态字段名，见 observation.FieldOffline 等
 	StatusValue  string `json:"status_value"`  // "0"=正常 "1"=异常
 }
 
@@ -185,21 +185,11 @@ func (r *RectangleData) ToDMString() string {
 		r.X1/10, r.Y1/10, r.X2/10, r.Y2/10, r.X3/10, r.Y3/10, r.X4/10, r.Y4/10)
 }
 
-// DeclareAreaType 区域类型，与 3.4.3 一致（项目内统一用数字）
-const (
-	DeclareAreaInvalid    = 0 // 无效/删除
-	DeclareAreaCustom     = 1 // 自定义区域
-	DeclareAreaBed        = 2 // 床（中心在雷达下时系统自动改为 5）
-	DeclareAreaNoise      = 3 // 干扰区域
-	DeclareAreaDoor       = 4 // 门
-	DeclareAreaMonitorBed = 5 // 监护床
-)
-
 // DeclareAreaData 设置区域单条，与 3.4.3 一致。传输格式 {area-id, area-type, x1, y1; x2, y2, x3, y3, x4, y4}
-// AreaID 0-15；AreaType 0-5；顶点坐标单位 cm（规范），设备为 dm
+// AreaID 0-15；AreaType 0-5 见 observation.DeclareArea* 常量
 type DeclareAreaData struct {
 	AreaID   int `json:"area_id"`   // 0-15
-	AreaType int `json:"area_type"` // 0-5，见 DeclareArea* 常量
+	AreaType int `json:"area_type"` // 0-5，见 observation.DeclareArea* 常量
 	X1       int `json:"x1"`
 	Y1       int `json:"y1"`
 	X2       int `json:"x2"`
@@ -408,22 +398,6 @@ type DeclareAreaItem struct {
 	Y4   int    `json:"y4"`
 }
 
-// --- Pose 姿态数值（与协议 track 字节 13 一致）---
-const (
-	PoseInitialization         = 0
-	PoseWalking                = 1
-	PoseSuspectedFall          = 2
-	PoseSitting                = 3
-	PoseStanding               = 4
-	PoseFall                   = 5
-	PoseLying                  = 6
-	PoseSuspectedSittingGround = 7
-	PoseSittingGround          = 8
-	PoseBedSitUp               = 9
-	PoseSuspectedBedSitUp      = 10
-	PoseBedSitUpConfirm        = 11 // 11 同 9 均为 BedSitUp
-)
-
 // DeviceStatus 设备状态（协议单次上报值，与 Radar_MQTT 一致）
 type DeviceStatus int
 
@@ -438,76 +412,6 @@ func (s DeviceStatusSlice) Contains(d DeviceStatus) bool {
 		}
 	}
 	return false
-}
-
-// 设备状态 JSON 字段名（map[string]int 的 key）
-// 统一语义：1=异常, 0=正常（零值即健康）
-const (
-	StatusFieldOffline       = "offline"        // 1=离线, 0=在线
-	StatusFieldAngleAbnormal = "angle_abnormal" // 1=异常, 0=正常
-	StatusFieldSignalPoor    = "signal_poor"    // 1=信号差, 0=正常
-	StatusFieldDetached      = "SensorDetached" // 1=脱落, 0=正常
-	StatusFieldDeviceFailure = "device_failure" // 1=故障, 0=正常
-)
-
-// PoseNumToDisplay track pose 数值 (0-11) → display_en 字符串
-func PoseNumToDisplay(n int) string {
-	switch n {
-	case PoseInitialization:
-		return "Initialization"
-	case PoseWalking:
-		return "Walking"
-	case PoseSuspectedFall:
-		return "SuspectedFall"
-	case PoseSitting:
-		return "Sitting"
-	case PoseStanding:
-		return "Standing"
-	case PoseFall:
-		return "Fall"
-	case PoseLying:
-		return "Lying"
-	case PoseSuspectedSittingGround:
-		return "SuspectedSittingOnGround"
-	case PoseSittingGround:
-		return "SittingOnGround"
-	case PoseBedSitUp, PoseBedSitUpConfirm:
-		return "BedSitUp"
-	case PoseSuspectedBedSitUp:
-		return "SuspectedBedSitUp"
-	default:
-		return ""
-	}
-}
-
-// PoseDisplayToNum display_en 字符串 → pose 数值 (0-11)
-func PoseDisplayToNum(s string) (int, bool) {
-	switch s {
-	case "Initialization":
-		return 0, true
-	case "Walking":
-		return 1, true
-	case "SuspectedFall":
-		return 2, true
-	case "Sitting":
-		return 3, true
-	case "Standing":
-		return 4, true
-	case "Fall":
-		return 5, true
-	case "Lying":
-		return 6, true
-	case "SuspectedSittingOnGround":
-		return 7, true
-	case "SittingOnGround":
-		return 8, true
-	case "BedSitUp":
-		return 9, true
-	case "SuspectedBedSitUp":
-		return 10, true
-	default:
-		return 0, false
-	}
 }
 
 // --- 安装/工作模式 display ---
@@ -554,23 +458,4 @@ func WorkModelToDisplay(model int) string {
 	}
 }
 
-// Event 字段值（type=1 进出事件），与协议 3.5 一致
-const (
-	EventInRoom       = 1 // 进入房间
-	EventOutRoom      = 2 // 离开房间
-	EventInArea       = 3 // 进入区域
-	EventOutArea      = 4 // 离开区域
-	EventEnterMonitor = 5 // 进入监护模式
-	EventExitMonitor  = 6 // 退出监护模式
-)
-
-// AreaType 字段值（declare_area type），与协议 3.3 一致
-const (
-	AreaTypeNone       = 0 // 无效（删除区域）
-	AreaTypeCustom     = 1 // 自定义区域（装饰用，雷达不处理）
-	AreaTypeBed        = 2 // 床（进床/离床事件；中心点在雷达下方自动变为 5）
-	AreaTypeInterfer   = 3 // 干扰区域（屏蔽运动物体，如马桶冲水、风扇）
-	AreaTypeDoor       = 4 // 门（目标出现/消失产生进房/离房事件）
-	AreaTypeMonitorBed = 5 // 监护床（呼吸心率测量 + 睡眠报告）
-	AreaTypeSensing    = 6 // 感应区
-)
+// 进出事件与区域类型数值见 observation 包：EventInRoom/EventOutRoom/EventInArea/EventOutArea/EventEnterMonitor/EventExitMonitor，AreaType*，DeclareArea*。Pose 数值与 PoseNumToDisplay/PoseDisplayToNum 见 observation。

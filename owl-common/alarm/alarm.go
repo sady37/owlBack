@@ -8,25 +8,13 @@ import (
 
 // ========== Constants (常量) ==========
 
-// Alarm Level constants (报警级别常量)
-const (
-	AlarmLevelEmerg  = "EMERG"
-	AlarmLevelAlert  = "ALERT"
-	AlarmLevelCrit   = "CRITICAL"
-	AlarmLevelErr    = "ERROR"
-	AlarmLevelWarn   = "WARNING"
-	AlarmLevelNotice = "NOTICE"
-	AlarmLevelInfo   = "INFO"
-	AlarmLevelDebug  = "DEBUG"
-)
-
 // Common Alarm default values (通用报警默认值)
 // 这些是所有设备类型都支持的通用报警项，存储在 alarm_cloud 表的 OfflineAlarm, LowBattery, DeviceFailure 字段
 // 使用统一的报警级别常量，保持一致性
 const (
-	DefaultOfflineAlarm  = AlarmLevelErr  // 设备离线报警默认级别
-	DefaultLowBattery    = AlarmLevelWarn // 低电量报警默认级别
-	DefaultDeviceFailure = AlarmLevelErr  // 设备故障报警默认级别
+	DefaultOfflineAlarm  = AlarmLevelErr // 设备离线报警默认级别
+	DefaultLowBattery    = AlarmLevelErr // 低电量报警默认级别（设备类统一 ERROR，便于通过 color 区分）
+	DefaultDeviceFailure = AlarmLevelErr // 设备故障报警默认级别
 )
 
 // Vital Sign Alert Thresholds default values (生理指标阈值默认值)
@@ -35,6 +23,12 @@ const (
 	DefaultRespiratoryRateMax = 24 // 呼吸率nomal最大值默认值
 	DefaultHeartRateMin       = 50 // 心率正nomal小值默认值
 	DefaultHeartRateMax       = 95 // 心率nomal最大值默认值
+)
+
+// 事件 payload 字段名（iot:event:stream data 的 key，由 alarm 域定义）
+const (
+	FieldEventName   = "event_name"
+	FieldEventStatus = "event_status"
 )
 
 // ========== ProcessType 常量定义 ==========
@@ -46,29 +40,43 @@ const (
 	ProcessTypeConditionalTimeBased = "conditional_time_based" // 条件时间型
 	ProcessTypeBedStateChange       = "bed_state_change"       // 床位状态变化
 	ProcessTypeRoomStateChange      = "room_state_change"      // 房间状态变化
+	ProcessTypeDataCategory         = "data_category"          // 数据类别（仅路由，不直接产生报警：track/vital/sleep_stage/number-people/activity）
 )
 
 // ========== 报警类型 ==========
 
 const (
-	AlarmTypeOfflineAlarm   = "OfflineAlarm"
+	AlarmTypeOffline        = "Offline"
+	AlarmTypeOfflineRecover = "OfflineRecover"
 	AlarmTypeDeviceFailure  = "DeviceFailure"
-	AlarmTypeDeviceRecovery = "DeviceRecovery"
+	AlarmTypeDeviceRecover  = "DeviceRecover"
 	AlarmTypeUnknown        = "Unknown"
+	SignalPoor              = "SignalPoor"
+	SingalPoorRecover       = "SignalPoorRecover"
+	AngleException          = "AngleException"
+	AngleExceptionRecover   = "AngleExceptionRecover"
+	SensorDetached          = "SensorDetached"
+	SensorDetachedRecover   = "SensorDetachedRecover"
+	PressureSensor          = "pressureSensor" // Sleepad 压力传感器状态事件
 
 	// 通用报警类型（不区分设备，设备类型通过 device_type 字段区分）
-	ApneaHypopnea            = "ApneaHypopnea"
-	HeartRateAlert           = "HeartRateAlert"
-	RespRateAlert            = "RespRateAlert"
-	HeartRateNormal          = "HeartRateNormal"
-	RespiratoryRateNormal    = "RespiratoryRateNormal"
-	LeftBed                  = "LeftBed"
-	LeftBedTooLong           = "LeftBedTooLong"
-	AbnormalBodyMovement     = "AbnormalBodyMovement"
-	NoBodyMove               = "NoBodyMove"
-	NoTurnOver               = "NoTurnOver"
-	ResetTime                = "ResetTime"
-	NapTime                  = "NapTime"
+	ApneaHypopnea         = "ApneaHypopnea"
+	HeartRateAlert        = "HeartRateAlert"
+	HeartRateAlertHigh    = "HeartRateAlert.High"
+	HeartRateAlertLow     = "HeartRateAlert.Low"
+	RespRateAlert         = "RespRateAlert"
+	RespRateAlertHigh     = "RespRateAlert.High"
+	RespRateAlertLow      = "RespRateAlert.Low"
+	HeartRateNormal       = "HeartRateNormal"
+	RespiratoryRateNormal = "RespiratoryRateNormal"
+	LeftBed               = "LeftBed"
+	AbnormalBodyMovement  = "AbnormalBodyMovement"
+	NoBodyMove            = "NoBodyMove"
+	NoTurnOver            = "NoTurnOver"
+	ResetTime             = "ResetTime"
+	NapTime               = "NapTime"
+	SleepadSetting        = "SleepadSetting"
+	MaterialSetting       = "MaterialSetting"
 
 	Fall                     = "Fall"
 	SuspectedFall            = "SuspectedFall"
@@ -79,7 +87,7 @@ const (
 	WeakBiometricSignal      = "WeakBiometricSignal"
 	InBed                    = "InBed"
 	Stay                     = "Stay"
-	NoActivity24h            = "NoActivity24h"
+	NightAbsence             = "NightAbsence"
 	WarningArea              = "WarningArea"
 	EnterRoom                = "EnterRoom"
 	ExitRoom                 = "ExitRoom"
@@ -94,10 +102,108 @@ const (
 	Sitting                  = "Sitting"
 	Standing                 = "Standing"
 	Lying                    = "Lying"
-	SignalPoor               = "SignalPoor"
-	AngleException           = "AngleException"
-	SensorDetached           = "SensorDetached"
+
+	// 事件/数据类别名（event_name 或 data_category，与 gateway 一致）
+	NumberPeople = "number_people"
+	Sleep        = "sleep"
+	SleepStage   = "sleep-stage"
+	Track        = "track"
+	Activity     = "activity" // 老人活动性统计：walk_distance, walk_duration, lie_duration, stand_duration 等
 )
+
+// AlarmDef 单条报警/事件元数据，消费方通过 Key 查表获取完整配置（类似 observation.Registry）。
+type AlarmDef struct {
+	Key          string                 // 与 AlarmType 一致，全局唯一
+	ProcessType  string                 // ProcessTypeImmediate | ProcessTypeTimeBased | ...
+	DurationSec  int                    // 持续型阈值（秒），0=即时
+	UpgradeTo    string                 // 时间型升级目标 alarm_type
+	DefaultLevel string                 // 默认报警级别
+	AlarmParams  map[string]interface{} // 扩展参数，如 duration_sec、duration_min、min、max
+	Description  string                 // 规则说明
+	Display      string                 // UI 展示用友好名称（可选，空则用 Key）
+}
+
+// Registry 全量报警/事件注册表，Key = alarm_type。与 EventStatToAlarmMap 语义一致，便于按类型查元数据与 AlarmParams。
+var Registry = map[string]*AlarmDef{
+	Fall:                     {Key: Fall, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelEmerg, Description: "Confirmed fall", Display: "Fall Alert"},
+	SuspectedFall:            {Key: SuspectedFall, ProcessType: ProcessTypeTimeBased, DurationSec: 60, UpgradeTo: Fall, DefaultLevel: AlarmLevelAlert, AlarmParams: map[string]interface{}{ParamDurationSec: 60}, Description: "Suspected fall, upgrade after 60s", Display: "Potential Fall"},
+	SittingOnGround:          {Key: SittingOnGround, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, Description: "Sitting on ground", Display: "On Floor Alert"},
+	SuspectedSittingOnGround: {Key: SuspectedSittingOnGround, ProcessType: ProcessTypeTimeBased, DurationSec: 60, UpgradeTo: SittingOnGround, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 60}, Description: "Suspected sitting on ground", Display: "Potential On Floor Alert"},
+	BedSitUp:                 {Key: BedSitUp, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Bed sit-up", Display: "Bed Sit-up"},
+	SuspectedBedSitUp:        {Key: SuspectedBedSitUp, ProcessType: ProcessTypeTimeBased, DurationSec: 60, UpgradeTo: BedSitUp, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 60}, Description: "Suspected bed sit-up", Display: "Potential Bed Sit-up"},
+	WarningArea:              {Key: WarningArea, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, Description: "Warning area", Display: "Warning Area"},
+	SignalPoor:               {Key: SignalPoor, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Signal poor", Display: "Weak Signal"},
+	AngleException:           {Key: AngleException, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Angle exception", Display: "Device Tilted"},
+	AlarmTypeOffline:         {Key: AlarmTypeOffline, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Offline", Display: "Device Offline"},
+	AlarmTypeOfflineRecover:  {Key: AlarmTypeOfflineRecover, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Offline recovery", Display: "Device Restored"},
+	AlarmTypeDeviceFailure:   {Key: AlarmTypeDeviceFailure, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Device failure", Display: "Device Fault"},
+	AlarmTypeDeviceRecover:   {Key: AlarmTypeDeviceRecover, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Device recovery", Display: "Device Restored"},
+	AlarmTypeUnknown:         {Key: AlarmTypeUnknown, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Unknown alarm type"},
+	Stay:                     {Key: Stay, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 45 * 60}, Description: "Stay (e.g. 45min)", Display: "Prolonged Stay"},
+	NightAbsence:             {Key: NightAbsence, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, AlarmParams: map[string]interface{}{ParamDurationSec: 24 * 60 * 60}, Description: "24h no activity", Display: "No Activity (24h)"},
+	WeakBiometricSignal:      {Key: WeakBiometricSignal, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Weak vitals", Display: "Weak Biometric Signal"},
+	LeftBed:                  {Key: LeftBed, ProcessType: ProcessTypeTimeBased, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 0}, Description: "Left bed: duration_sec=0 immediate, >=30min timer", Display: "Bed Exit"},
+	InBed:                    {Key: InBed, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "In bed", Display: "In Bed"},
+	EnterRoom:                {Key: EnterRoom, ProcessType: ProcessTypeRoomStateChange, DefaultLevel: AlarmLevelNotice, Description: "Enter room", Display: "Room Entry"},
+	ExitRoom:                 {Key: ExitRoom, ProcessType: ProcessTypeRoomStateChange, DefaultLevel: AlarmLevelNotice, Description: "Exit room", Display: "Room Exit"},
+	EnterSensingArea:         {Key: EnterSensingArea, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Enter sensing area", Display: "Entered Sensing Area"},
+	ExitSensingArea:          {Key: ExitSensingArea, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Exit sensing area", Display: "Exited Sensing Area"},
+	EnterMonitor:             {Key: EnterMonitor, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Enter monitor", Display: "Monitoring Started"},
+	ExitMonitor:              {Key: ExitMonitor, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Exit monitor", Display: "Monitoring Ended"},
+	HeartRateAlert:           {Key: HeartRateAlert, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelCrit, Description: "Heart rate alert (base; gateway may send High/Low)", Display: "Heart Rate Alert"},
+	HeartRateAlertHigh:       {Key: HeartRateAlertHigh, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelCrit, Description: "Heart rate high", Display: "Heart Rate Alert"},
+	HeartRateAlertLow:        {Key: HeartRateAlertLow, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelCrit, Description: "Heart rate low", Display: "Heart Rate Alert"},
+	HeartRateNormal:          {Key: HeartRateNormal, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Heart rate normal (recovery)", Display: "Heart Rate Normal"},
+	RespRateAlert:            {Key: RespRateAlert, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelCrit, Description: "Resp rate alert (base; gateway may send High/Low)", Display: "Resp. Rate Alert"},
+	RespRateAlertHigh:        {Key: RespRateAlertHigh, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelCrit, Description: "Resp rate high", Display: "Resp. Rate Alert"},
+	RespRateAlertLow:         {Key: RespRateAlertLow, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelCrit, Description: "Resp rate low", Display: "Resp. Rate Alert"},
+	RespiratoryRateNormal:    {Key: RespiratoryRateNormal, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Respiratory rate normal (recovery)", Display: "Resp. Rate Normal"},
+	ApneaHypopnea:            {Key: ApneaHypopnea, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelCrit, Description: "Apnea/hypopnea", Display: "Apnea/Hypopnea Event"},
+	AbnormalBodyMovement:     {Key: AbnormalBodyMovement, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Abnormal body movement", Display: "Excessive Movement"},
+	NoBodyMove:               {Key: NoBodyMove, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "No body move", Display: "No Movement"},
+	NoTurnOver:               {Key: NoTurnOver, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "No turn over", Display: "No Turn-over"},
+	SensorDetached:           {Key: SensorDetached, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Sensor detached", Display: "Sensor Detached"},
+	PressureSensor:           {Key: PressureSensor, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Pressure sensor status (Sleepad)", Display: "Pressure Sensor"},
+
+	// 数据类别（radar stat / gateway 拆出的 category，仅用于路由；具体报警由子逻辑或 EventStatToAlarmMap 产生）
+	Track:        {Key: Track, ProcessType: ProcessTypeDataCategory, Description: "Track data category; pose/enter2out → Fall, Stay, LeftBed, etc."},
+	Sleep:        {Key: Sleep, ProcessType: ProcessTypeDataCategory, Description: "Vital data category; threshold → HeartRateAlert*, RespRateAlert*, ApneaHypopnea"},
+	SleepStage:   {Key: SleepStage, ProcessType: ProcessTypeDataCategory, Description: "Sleep stage data category"},
+	NumberPeople: {Key: NumberPeople, ProcessType: ProcessTypeDataCategory, Description: "Number_people data category; enter/exit room"},
+	Activity:     {Key: Activity, ProcessType: ProcessTypeDataCategory, Description: "Activity data category; 老人活动性统计 walk_distance, walk_duration, lie_duration, stand_duration"},
+}
+
+// LookupAlarm 按 alarm_type 查 Registry，未找到返回 nil
+func LookupAlarm(alarmType string) *AlarmDef {
+	return Registry[alarmType]
+}
+
+// GetAlarmParams 按 alarmType 返回 Registry 中该类型的 AlarmParams（duration_sec、min、max 等）的副本，未找到或无参数返回 nil。
+func GetAlarmParams(alarmType string) map[string]interface{} {
+	def := LookupAlarm(alarmType)
+	if def == nil || def.AlarmParams == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(def.AlarmParams))
+	for k, v := range def.AlarmParams {
+		out[k] = v
+	}
+	return out
+}
+
+// HeartRate WARNING 区间常量（与 DefaultCloudVitalAlarmThreshold.HeartRate.WARNING.Ranges 一致）
+const (
+	HRWARNING1Min = 45
+	HRWARNING1Max = 54
+	HRWARNING2Min = 96
+	HRWARNING2Max = 109
+)
+
+// IsHRInWARNINGRange 判断心率是否落在 HR WARNING 区间内（45–54、96–109）。
+func IsHRInWARNINGRange(hr int) bool {
+	return (hr >= HRWARNING1Min && hr <= HRWARNING1Max) ||
+		(hr >= HRWARNING2Min && hr <= HRWARNING2Max)
+}
 
 // 方向后缀：与 AlarmType 组合使用，如 HeartRateAlert.High
 const (
@@ -136,48 +242,53 @@ var AlarmTypeToFHIRCategory = map[string]string{
 	SuspectedFall:            FHIRCategorySafety,
 	SittingOnGround:          FHIRCategorySafety,
 	SuspectedSittingOnGround: FHIRCategorySafety,
-	LeftBedTooLong:           FHIRCategorySafety,		
-	Stay:                   FHIRCategorySafety,
-	NoActivity24h:          FHIRCategorySafety,	
-
+	Stay:                     FHIRCategorySafety,
+	NightAbsence:             FHIRCategorySafety,
 
 	// clinical: 生命体征异常
-	HeartRateAlert:        FHIRCategoryClinical,
-	RespRateAlert:         FHIRCategoryClinical,
-	ApneaHypopnea:         FHIRCategoryClinical,
+	HeartRateAlert:       FHIRCategoryClinical,
+	HeartRateAlertHigh:   FHIRCategoryClinical,
+	HeartRateAlertLow:    FHIRCategoryClinical,
+	RespRateAlert:        FHIRCategoryClinical,
+	RespRateAlertHigh:    FHIRCategoryClinical,
+	RespRateAlertLow:     FHIRCategoryClinical,
+	ApneaHypopnea:        FHIRCategoryClinical,
 	WeakBiometricSignal:  FHIRCategoryClinical,
-	NoBodyMove:            FHIRCategoryClinical,     //为老人2H翻身
-	AbnormalBodyMovement:  FHIRCategoryClinical,
+	NoBodyMove:           FHIRCategoryClinical, //为老人2H翻身
+	AbnormalBodyMovement: FHIRCategoryClinical,
 
 	// behavioral: 行为/作息类
-	InBed:                  FHIRCategoryBehavioral,
-	LeftBed:                FHIRCategoryBehavioral,
-	BedSitUp:               FHIRCategoryBehavioral,
-	SuspectedBedSitUp:      FHIRCategoryBehavioral,
-	NoTurnOver:             FHIRCategoryBehavioral,
-	WarningArea:            FHIRCategoryBehavioral,
+	InBed:             FHIRCategoryBehavioral,
+	LeftBed:           FHIRCategoryBehavioral,
+	BedSitUp:          FHIRCategoryBehavioral,
+	SuspectedBedSitUp: FHIRCategoryBehavioral,
+	NoTurnOver:        FHIRCategoryBehavioral,
+	WarningArea:       FHIRCategoryBehavioral,
 
-	EnterRoom:              FHIRCategoryBehavioral,
-	ExitRoom:               FHIRCategoryBehavioral,
-	EnterSensingArea:       FHIRCategoryBehavioral,
-	ExitSensingArea:        FHIRCategoryBehavioral,
-	Initialization:         FHIRCategoryBehavioral,
-	Walking:                FHIRCategoryBehavioral,
-	Sitting:                FHIRCategoryBehavioral,
-	Standing:               FHIRCategoryBehavioral,
-	Lying:                  FHIRCategoryBehavioral,
-	EnterMonitor:           FHIRCategoryBehavioral,
-	ExitMonitor:            FHIRCategoryBehavioral,
-
+	EnterRoom:        FHIRCategoryBehavioral,
+	ExitRoom:         FHIRCategoryBehavioral,
+	EnterSensingArea: FHIRCategoryBehavioral,
+	ExitSensingArea:  FHIRCategoryBehavioral,
+	Initialization:   FHIRCategoryBehavioral,
+	Walking:          FHIRCategoryBehavioral,
+	Sitting:          FHIRCategoryBehavioral,
+	Standing:         FHIRCategoryBehavioral,
+	Lying:            FHIRCategoryBehavioral,
+	EnterMonitor:     FHIRCategoryBehavioral,
+	ExitMonitor:      FHIRCategoryBehavioral,
 
 	// device: 设备自身状态
-	AlarmTypeOfflineAlarm:   FHIRCategoryDevice,
+	AlarmTypeOffline:        FHIRCategoryDevice,
+	AlarmTypeOfflineRecover: FHIRCategoryDevice,
 	AlarmTypeDeviceFailure:  FHIRCategoryDevice,
-	AlarmTypeDeviceRecovery: FHIRCategoryDevice,
+	AlarmTypeDeviceRecover:  FHIRCategoryDevice,
 	SignalPoor:              FHIRCategoryDevice,
+	SingalPoorRecover:       FHIRCategoryDevice,
 	AngleException:          FHIRCategoryDevice,
+	AngleExceptionRecover:   FHIRCategoryDevice,
 	SensorDetached:          FHIRCategoryDevice,
-
+	SensorDetachedRecover:   FHIRCategoryDevice,
+	PressureSensor:          FHIRCategoryDevice,
 }
 
 // GetFHIRCategory 获取 alarmType 对应的 FHIR category，未匹配返回 "safety"
@@ -217,40 +328,47 @@ const (
 	MonitoringModeFullFunction    = 15 // Full Function
 )
 
-// 报警级别数值定义（参考 TDPv2-1122.md）
-// 0=EMERG, 1=ALERT, 2=CRIT, 3=ERR, 4=WARNING, 5=NOTICE, 6=INFO, 7=DEBUG, 8=Cancel/恢复
+// 报警级别：字符串常量（event_level/alarm_level）+ 优先级数值（0-8，越小越优先，参考 TDPv2-1122.md）
 const (
-	AlarmLevelIntEmerg   = 0 // EMERG: 紧急：系统不可用
-	AlarmLevelIntAlert   = 1 // ALERT: 警报：必须立即采取行动（如跌倒、心率/呼吸率严重异常持续≥1分钟）
-	AlarmLevelIntCrit    = 2 // CRIT: 严重：严重情况（如心率/呼吸率严重异常持续≥1分钟）
-	AlarmLevelIntErr     = 3 // ERR: 错误：错误条件（如设备故障、传感器断线、角度错误）
-	AlarmLevelIntWarning = 4 // WARNING: 警告：警告信息（如可疑跌倒、心率/呼吸率中度异常持续≥5分钟）
-	AlarmLevelIntNotice  = 5 // NOTICE: 通知：正常但重要的事件（如配置指令下发）
-	AlarmLevelIntInfo    = 6 // INFO: 信息：一般信息性消息（如设备上线、状态变化）
-	AlarmLevelIntDebug   = 7 // DEBUG: 调试：调试信息
-	AlarmLevelIntCancel  = 8 // Cancel: 取消/恢复（如设备上线、报警恢复）
+	AlarmLevelEmerg  = "EMERG"
+	AlarmLevelAlert  = "ALERT"
+	AlarmLevelCrit   = "CRITICAL"
+	AlarmLevelErr    = "ERROR"
+	AlarmLevelWarn   = "WARNING"
+	AlarmLevelNotice = "NOTICE"
+	AlarmLevelInfo   = "INFO"
+	AlarmLevelDebug  = "DEBUG"
+	AlarmLevelCancel = "CANCEL"
+
+	AlarmLevelIntEmerg   = 0
+	AlarmLevelIntAlert   = 1
+	AlarmLevelIntCrit    = 2
+	AlarmLevelIntErr     = 3
+	AlarmLevelIntWarning = 4
+	AlarmLevelIntNotice  = 5
+	AlarmLevelIntInfo    = 6
+	AlarmLevelIntDebug   = 7
+	AlarmLevelIntCancel  = 8
 )
 
-// IsAlarmLevel 判断字符串是否为已知报警级别
+// AlarmLevelPriority 级别字符串→优先级数字，由上方常量推导；别名 CRIT/ERR/CANCEL
+var AlarmLevelPriority = map[string]int{
+	AlarmLevelEmerg:  AlarmLevelIntEmerg,
+	AlarmLevelAlert:  AlarmLevelIntAlert,
+	AlarmLevelCrit:   AlarmLevelIntCrit,
+	"CRIT":           AlarmLevelIntCrit,
+	AlarmLevelErr:    AlarmLevelIntErr,
+	"ERR":            AlarmLevelIntErr,
+	AlarmLevelWarn:   AlarmLevelIntWarning,
+	AlarmLevelNotice: AlarmLevelIntNotice,
+	AlarmLevelInfo:   AlarmLevelIntInfo,
+	AlarmLevelDebug:  AlarmLevelIntDebug,
+	"CANCEL":         AlarmLevelIntCancel,
+}
+
 func IsAlarmLevel(s string) bool {
 	_, ok := AlarmLevelPriority[s]
 	return ok
-}
-
-// AlarmLevelPriority 报警级别字符串到优先级数字的映射
-// 数字越小优先级越高，防止低级别报警覆盖高级别报警
-var AlarmLevelPriority = map[string]int{
-	"EMERG":    AlarmLevelIntEmerg,
-	"ALERT":    AlarmLevelIntAlert,
-	"CRITICAL": AlarmLevelIntCrit,
-	"CRIT":     AlarmLevelIntCrit,
-	"ERROR":    AlarmLevelIntErr,
-	"ERR":      AlarmLevelIntErr,
-	"WARNING":  AlarmLevelIntWarning,
-	"NOTICE":   AlarmLevelIntNotice,
-	"INFO":     AlarmLevelIntInfo,
-	"DEBUG":    AlarmLevelIntDebug,
-	"CANCEL":   AlarmLevelIntCancel,
 }
 
 // ========== Types (类型) ==========
@@ -360,11 +478,11 @@ type AlarmItem struct {
 
 // AlarmEnablementMapRadar Radar 设备的报警使能配置表：map[alarm_type]0/1 (0=禁用 1=启用)
 // 注意：此类型已废弃，建议使用 AlarmEnablementItem
-type AlarmEnablementMapRadar map[string]int
+//type AlarmEnablementMapRadar map[string]int
 
 // AlarmEnablementMapSleepad Sleepad 设备的报警使能配置表：map[alarm_type]0/1 (0=禁用 1=启用)
 // 注意：此类型已废弃，建议使用 AlarmEnablementItem
-type AlarmEnablementMapSleepad map[string]int
+//type AlarmEnablementMapSleepad map[string]int
 
 // AlarmEnablementItem 报警使能配置项
 // 用于 GetAlarmEnablementMap 函数的返回值
@@ -543,13 +661,31 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
-			AlarmType:  ApneaHypopnea,
+			AlarmType:  SleepadSetting,
 			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelCrit),
+			AlarmLevel: nil,
 			AlarmParams: map[string]interface{}{
-				ParamDurationSec: 30,
+				"SensorNumber":         0,                // //  单人Single 0，two 1   (左=0, 右=1)
+				"realtime_interval":    2,                //测量间隔2秒/ 4G 30sec  1-254
+				"Bed_Exit_Sensitivity": 1,                // 0:Low(15-20s) 1:Medium(5-8s) 2:High(3-5s)
+				"report_upload_type":   0,                //0 24H 1=自动结束
+				"report_upload_time":   8,                //AM8出报告
+				"Empty_Bed_Monitor":    0,                // 0:report 1:no report
+				"light_mode":           0,                // 0:开启 1:关闭
+				"timezone":             "America/Denver", // 未绑定 unit 时手动选取时区
 			},
-			DisplaySetting: DisplayAlarmCloudAndDevice,
+			DisplaySetting: DisplayNone, // 设备配置项，不在报警列表中显示
+		},
+		{
+			AlarmType:  MaterialSetting,
+			IsEnabled:  intPtr(IsEnabledOff),
+			AlarmLevel: nil,
+			AlarmParams: map[string]interface{}{
+				"material_type": 1,  //床垫材质 (material): select (1、海绵Foam，2、弹簧Spring 3、乳胶Latex，4、气垫 Air Mattress 5、其他 other)
+				"thickness":     2,  //床垫厚度 (thickness): 厚度值1-3(1:5-10cm / 2-4"，2:1-20cm / 4-8"，3:21-30cm / 8-12")
+				"bedhight":      60, //床的高度，为以后雷达测量准备 Bed Hight:  60cm/24"
+			},
+			DisplaySetting: DisplayNone,
 		},
 		{
 			AlarmType:  HeartRateAlert,
@@ -576,24 +712,31 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
+			AlarmType:  ApneaHypopnea,
+			IsEnabled:  intPtr(IsEnabledOn),
+			AlarmLevel: strPtr(AlarmLevelCrit),
+			AlarmParams: map[string]interface{}{
+				ParamDurationSec: 30,
+			},
+			DisplaySetting: DisplayAlarmCloudAndDevice,
+		},
+		{ // NightAbsence(Sleepad): 9PM-7AM 床上无人；实际由早上7点（或 RestTime 结束后）查 IoT 统计得出
+			AlarmType:      NightAbsence,
+			IsEnabled:      intPtr(IsEnabledOn),
+			AlarmLevel:     strPtr(AlarmLevelWarn),
+			AlarmParams:    map[string]interface{}{},
+			DisplaySetting: DisplayAlarmCloudAndDevice,
+		},
+		{ // RestTime 期间，上床5分钟后，启用离床检测：0立即， 30min,45min,1h,1h30h,2h
 			AlarmType:  LeftBed,
 			IsEnabled:  intPtr(IsEnabledOn),
 			AlarmLevel: strPtr(AlarmLevelWarn),
 			AlarmParams: map[string]interface{}{
-				ParamDurationSec: 8,
+				ParamDurationSec: 2700,
 			},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
-		{
-			AlarmType:  LeftBedTooLong,
-			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelWarn),
-			AlarmParams: map[string]interface{}{
-				"leave_minutes": 45,
-			},
-			DisplaySetting: DisplayAlarmCloudAndDevice,
-		},
-		{
+		{ // InBed: 实时在床（如上床、在床满5分钟）。9PM-7AM 床上有没有由 NightAbsence 在 7 点查 IoT 统计判断
 			AlarmType:  InBed,
 			IsEnabled:  intPtr(IsEnabledOff),
 			AlarmLevel: strPtr(AlarmLevelWarn),
@@ -614,7 +757,7 @@ var DefaultAlarmSetting = struct {
 			IsEnabled:  intPtr(IsEnabledOn),
 			AlarmLevel: strPtr(AlarmLevelWarn),
 			AlarmParams: map[string]interface{}{
-				ParamDurationMin: 10,
+				ParamDurationMin: 10, //频繁体动时长和无体动时长需要修改改为实时数据上报间隔的倍数
 			},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
@@ -623,7 +766,7 @@ var DefaultAlarmSetting = struct {
 			IsEnabled:  intPtr(IsEnabledOn),
 			AlarmLevel: strPtr(AlarmLevelWarn),
 			AlarmParams: map[string]interface{}{
-				ParamDurationMin: 45,
+				ParamDurationMin: 45, //频繁体动时长和无体动时长需要修改改为实时数据上报间隔的倍数
 			},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
@@ -643,7 +786,7 @@ var DefaultAlarmSetting = struct {
 			AlarmParams: map[string]interface{}{
 				"duration_min": 120,
 			},
-			DisplaySetting: DisplayAlarmCloudAndDevice,
+			DisplaySetting: DisplayAlarmCloud,
 		},
 	},
 	Radar: []AlarmItem{
@@ -675,6 +818,46 @@ var DefaultAlarmSetting = struct {
 				"mode": 15,
 			},
 			DisplaySetting: DisplayAlarmDevice,
+		},
+		{
+			AlarmType:  HeartRateAlert,
+			IsEnabled:  intPtr(IsEnabledOn),
+			AlarmLevel: strPtr(AlarmLevelCrit),
+			AlarmParams: map[string]interface{}{
+				ParamMin: 50,
+				ParamMax: 95,
+			},
+			DisplaySetting: DisplayAlarmCloudAndDevice,
+		},
+		{
+			AlarmType:  RespRateAlert,
+			IsEnabled:  intPtr(IsEnabledOn),
+			AlarmLevel: strPtr(AlarmLevelCrit),
+			AlarmParams: map[string]interface{}{
+				ParamMin: 8,
+				ParamMax: 24,
+			},
+			DisplaySetting: DisplayAlarmCloudAndDevice,
+		},
+		{
+			AlarmType:  ApneaHypopnea,
+			IsEnabled:  intPtr(IsEnabledOff),
+			AlarmLevel: strPtr(AlarmLevelWarn),
+			AlarmParams: map[string]interface{}{
+				"apnea_60s_min_events":    2, //15sec无呼呼=呼吸暂停event, ≥2次报警
+				"apnea_120sec_min_events": 4, //`120s内呼吸暂停≥4次报警
+			},
+			DisplaySetting: DisplayAlarmCloudAndDevice,
+		},
+		{
+			AlarmType:  WeakBiometricSignal,
+			IsEnabled:  intPtr(IsEnabledOn),
+			AlarmLevel: strPtr(AlarmLevelCrit),
+			AlarmParams: map[string]interface{}{
+				ParamDurationMin: 10,
+				ParamSensitivity: 35,
+			},
+			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
 			AlarmType:      PostureDetection,
@@ -716,61 +899,19 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayNone,
 		},
 		{
-			AlarmType:  ApneaHypopnea,
-			IsEnabled:  intPtr(IsEnabledOff),
-			AlarmLevel: strPtr(AlarmLevelWarn),
-			AlarmParams: map[string]interface{}{
-				"apnea_60s_min_events":    4,
-				"apnea_120min_min_events": 7,
-			},
-			DisplaySetting: DisplayNone,
-		},
-		{
-			AlarmType:  HeartRateAlert,
-			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelCrit),
-			AlarmParams: map[string]interface{}{
-				ParamMin: 50,
-				ParamMax: 95,
-			},
-			DisplaySetting: DisplayAlarmCloudAndDevice,
-		},
-		{
-			AlarmType:  RespRateAlert,
-			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelCrit),
-			AlarmParams: map[string]interface{}{
-				ParamMin: 8,
-				ParamMax: 24,
-			},
-			DisplaySetting: DisplayAlarmCloudAndDevice,
-		},
-		{
-			AlarmType:  WeakBiometricSignal,
-			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelCrit),
-			AlarmParams: map[string]interface{}{
-				ParamDurationMin: 10,
-				ParamSensitivity: 35,
-			},
-			DisplaySetting: DisplayAlarmCloudAndDevice,
-		},
-		{
 			AlarmType:  LeftBed,
 			IsEnabled:  intPtr(IsEnabledOn),
 			AlarmLevel: strPtr(AlarmLevelWarn),
 			AlarmParams: map[string]interface{}{
-				ParamDurationSec: 8,
+				ParamDurationSec: 2700,
 			},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
-			AlarmType:  LeftBedTooLong,
-			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelWarn),
-			AlarmParams: map[string]interface{}{
-				"leave_minutes": 45,
-			},
+			AlarmType:      NightAbsence,
+			IsEnabled:      intPtr(IsEnabledOn),
+			AlarmLevel:     strPtr(AlarmLevelWarn),
+			AlarmParams:    map[string]interface{}{},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
@@ -783,25 +924,18 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
-			AlarmType:      NoActivity24h,
-			IsEnabled:      intPtr(IsEnabledOn),
-			AlarmLevel:     strPtr(AlarmLevelWarn),
-			AlarmParams:    map[string]interface{}{},
-			DisplaySetting: DisplayAlarmCloudAndDevice,
-		},
-		{
 			AlarmType:      SignalPoor,
 			IsEnabled:      intPtr(IsEnabledOn),
-			AlarmLevel:     strPtr(AlarmLevelWarn),
+			AlarmLevel:     strPtr(AlarmLevelErr),
 			AlarmParams:    map[string]interface{}{},
-			DisplaySetting: DisplayAlarmCloudAndDevice,
+			DisplaySetting: DisplayAlarmCloud,
 		},
 		{
 			AlarmType:      AngleException,
 			IsEnabled:      intPtr(IsEnabledOn),
-			AlarmLevel:     strPtr(AlarmLevelWarn),
+			AlarmLevel:     strPtr(AlarmLevelErr),
 			AlarmParams:    map[string]interface{}{},
-			DisplaySetting: DisplayAlarmCloudAndDevice,
+			DisplaySetting: DisplayAlarmCloud,
 		},
 	},
 }
@@ -825,13 +959,13 @@ func intPtr(i int) *int { return &i }
 // GetRadarAlarmTypes 获取 Radar 设备的报警类型列表
 // 注意：报警类型已统一，不再区分设备前缀，设备类型通过 device_type 字段区分
 func GetRadarAlarmTypes() []string {
-	return []string{AlarmTypeOfflineAlarm, AlarmTypeDeviceFailure, Fall, SuspectedFall, SittingOnGround, SuspectedSittingOnGround, SuspectedBedSitUp, ApneaHypopnea, HeartRateAlert, RespRateAlert, WeakBiometricSignal, LeftBed, LeftBedTooLong, BedSitUp, Stay, NoActivity24h, SignalPoor, AngleException, MonitoringMode, NapTime, ResetTime, PostureDetection}
+	return []string{AlarmTypeOffline, AlarmTypeDeviceFailure, Fall, SuspectedFall, SittingOnGround, SuspectedSittingOnGround, SuspectedBedSitUp, ApneaHypopnea, HeartRateAlert, RespRateAlert, WeakBiometricSignal, LeftBed, BedSitUp, Stay, NightAbsence, SignalPoor, AngleException, MonitoringMode, NapTime, ResetTime, PostureDetection}
 }
 
 // GetSleepPadAlarmTypes 获取 SleepPad 设备的报警类型列表
 // 注意：报警类型已统一，不再区分设备前缀，设备类型通过 device_type 字段区分
 func GetSleepPadAlarmTypes() []string {
-	return []string{AlarmTypeOfflineAlarm, AlarmTypeDeviceFailure, SensorDetached, ApneaHypopnea, HeartRateAlert, RespRateAlert, LeftBed, LeftBedTooLong, BedSitUp, AbnormalBodyMovement, NoBodyMove, NoTurnOver}
+	return []string{AlarmTypeOffline, AlarmTypeDeviceFailure, SensorDetached, ApneaHypopnea, HeartRateAlert, RespRateAlert, LeftBed, BedSitUp, InBed, NightAbsence, AbnormalBodyMovement, NoBodyMove, NoTurnOver, ResetTime, NapTime, SleepadSetting, MaterialSetting}
 }
 
 // GetSupportedAlarmTypes 根据设备类型获取支持的报警类型列表
@@ -842,7 +976,7 @@ func GetSupportedAlarmTypes(deviceType string) []string {
 	case "Sleepad", "sleepad":
 		return GetSleepPadAlarmTypes()
 	default:
-		return []string{AlarmTypeOfflineAlarm, AlarmTypeDeviceFailure}
+		return []string{AlarmTypeOffline, AlarmTypeDeviceFailure}
 	}
 }
 
@@ -871,9 +1005,9 @@ func GetDefaultAlarmLevel(alarmType string) string {
 // GetDefaultAlarmItems 根据设备类型获取默认报警项列表
 func GetDefaultAlarmItems(deviceType string) []AlarmItem {
 	switch deviceType {
-	case "Sleepad",  "sleepad":
+	case "Sleepad", "sleepad":
 		return GetDefaultAlarmItemsSleepPad()
-	case "radar":
+	case "Radar", "radar":
 		return GetDefaultAlarmItemsRadar()
 	default:
 		return nil
@@ -940,7 +1074,7 @@ func GetAlarmEnablementMap(deviceType string, alarmItems []AlarmItem) []AlarmEna
 // 基于文档 radar-Qinlan-code-v3.0.md (598-610)
 // 注意：报警类型已统一，不再区分设备前缀，设备类型通过 device_type 字段区分
 var MQTTToAlarmTypeMapSleepad = map[string]string{
-	"alarmLeftBed":         LeftBed, // 或 LeftBedTooLong（根据上下文判断）
+	"alarmLeftBed":         LeftBed,
 	"alarmHeartRateFast":   HeartRateAlert + DirHigh,
 	"alarmHeartRateSlow":   HeartRateAlert + DirLow,
 	"alarmBreathRateFast":  RespRateAlert + DirHigh,
@@ -950,9 +1084,11 @@ var MQTTToAlarmTypeMapSleepad = map[string]string{
 	"alarmNoBodymove":      NoBodyMove,
 	"alarmNoTurnOver":      NoTurnOver,
 	"alarmBedSitup":        BedSitUp,
-	"alarmInBed":           InBed, //En 在床多用InBed
+	"alarmSitup":           BedSitUp, // 疑似坐起，与 alarmBedSitup 同义
+	"alarmInBed":           InBed,
+	"alarmOnBed":           InBed, // 在床报警，与 alarmInBed 同义
 	"alarmSensorFall":      SensorDetached,
-	"offLine":              "", // 离线报警由通用报警处理，不映射到具体 alarm_type
+	"offLine":              AlarmTypeOffline,
 }
 
 // ========== Radar Event numeric_code → AlarmType 映射（event/alarm topic） ==========
@@ -975,12 +1111,14 @@ var Enter2OutMap = map[int]map[int]string{
 		4: ExitRoom, // AreaTypeDoor
 	},
 	3: { // EventInArea
-		2: InBed,            // AreaTypeBed
+		2: InBed, // AreaTypeBed
+		5: InBed,
 		6: EnterSensingArea, // AreaTypeSensing
 	},
 	4: { // EventOutArea
-		2: LeftBed,          // AreaTypeBed
-		6: ExitSensingArea,  // AreaTypeSensing
+		2: LeftBed, // AreaTypeBed
+		5: LeftBed,
+		6: ExitSensingArea, // AreaTypeSensing
 	},
 	5: { // EventEnterMonitor
 		5: EnterMonitor, // AreaTypeMonitorBed
@@ -990,9 +1128,6 @@ var Enter2OutMap = map[int]map[int]string{
 	},
 }
 
-// NumberPeopleCategory type=3 人数变化的 data_category
-const NumberPeopleCategory = "number-people"
-
 // PoseMap type=2 姿态变化：[pose] → AlarmType
 // 报警映射独立于 protocol.go 的 PoseNumToDisplay（显示用途），
 // 此处根据业务语义映射：厂家 pose=2(SuspectedFall) 在 event topic 发出时
@@ -1000,7 +1135,7 @@ const NumberPeopleCategory = "number-people"
 var PoseMap = map[int]string{
 	0:  Initialization,
 	1:  Walking,
-	2:  Fall,                    // 厂家 SuspectedFall → 我方 Fall
+	2:  Fall, // 厂家 SuspectedFall → 我方 Fall
 	3:  Sitting,
 	4:  Standing,
 	5:  Fall,
@@ -1008,15 +1143,15 @@ var PoseMap = map[int]string{
 	7:  SittingOnGround,
 	8:  SittingOnGround,
 	9:  BedSitUp,
-	10: BedSitUp,               // BedSitUpConfirm → BedSitUp
+	10: BedSitUp, // BedSitUpConfirm → BedSitUp
 	11: BedSitUp,
 }
 
 // DeviceEventMap type=5/7/8 设备状态：[eventType] → AlarmType
 var DeviceEventMap = map[int]string{
-	5: AlarmTypeOfflineAlarm, // 设备离线
-	7: SignalPoor,            // 信号差
-	8: AngleException,        // 倾角异常
+	5: AlarmTypeOffline, // 设备离线
+	7: SignalPoor,       // 信号差
+	8: AngleException,   // 倾角异常
 }
 
 // ========== Radar Stat numeric_code → AlarmType 映射（stat topic） ==========
@@ -1043,7 +1178,7 @@ var StatSleepMap = map[string]string{
 // key 格式: "track_{type}"
 var StatTrackMap = map[string]string{
 	"track_stay":        Stay,
-	"track_no_activity": NoActivity24h,
+	"track_no_activity": NightAbsence,
 }
 
 // StatCodeMap 合并 StatSleepMap + StatTrackMap（兼容旧接口）
@@ -1224,6 +1359,7 @@ func ExtractNumericCodesFromEvent(eventData map[string]interface{}) []string {
 			eventValue = fmt.Sprintf("%d", eventRawInt)
 		} else if eventDisplay, ok := eventData["event"].(string); ok {
 			// 如果没有 event_raw，从 display_en 反向查找原始值（与 radar_convert_table 全小写一致，不区分大小写）
+			// 5=进入监护模式(EnterMonitor) 6=退出监护模式(ExitMonitor)
 			switch strings.ToLower(strings.TrimSpace(eventDisplay)) {
 			case "enter room":
 				eventValue = "1"
@@ -1233,9 +1369,17 @@ func ExtractNumericCodesFromEvent(eventData map[string]interface{}) []string {
 				eventValue = "3"
 			case "leave area":
 				eventValue = "4"
+			case "enter monitor":
+				eventValue = "5"
+			case "exit monitor":
+				eventValue = "6"
 			}
 		}
 
+		// 5/6 为监护模式，缺省 area_type 用 5（监护床）以便生成 code
+		if (eventValue == "5" || eventValue == "6") && areaType == "" {
+			areaType = "5"
+		}
 		// 生成数字组合：eventType + event + areaType
 		if eventValue != "" && areaType != "" {
 			code := fmt.Sprintf("%s%s%s", eventType, eventValue, areaType)
@@ -1282,42 +1426,6 @@ func ExtractNumericCodesFromEvent(eventData map[string]interface{}) []string {
 	return codes
 }
 
-// reverseMapPoseFromSNOMED 将 SNOMED display_en 字符串反向映射回数字 pose 值
-// 用于 ExtractNumericCodesFromEvent 中处理 SNOMED 映射后的 pose 字符串
-func reverseMapPoseFromSNOMED(displayEn string) string {
-	// SNOMED 映射表（从文档 Reside_stream_stand.md 和 radar_convert_table.json）
-	// 注意：这里使用 display_en 值进行反向映射
-	poseMap := map[string]string{
-		"Initialization":           "0",
-		"Walking":                  "1",
-		"SuspectedFall":            "2",
-		"Sitting":                  "3",
-		"Standing":                 "4",
-		"Fall":                     "5",
-		"Lying":                    "6",
-		"SuspectedSittingOnGround": "7",
-		"SittingOnGround":          "8",
-		"BedSitUp":                 "9", // pose 9 和 11 都是 BedSitUp，优先使用 pose 9
-		"SuspectedBedSitUp":        "10",
-		// 注意：pose 11 也是 "BedSitUp"，但由于无法区分，优先映射到 pose 9
-	}
-
-	// 精确匹配
-	if pose, ok := poseMap[displayEn]; ok {
-		return pose
-	}
-
-	// 不区分大小写的匹配
-	for key, pose := range poseMap {
-		if strings.EqualFold(key, displayEn) {
-			return pose
-		}
-	}
-
-	// 如果无法映射，返回空字符串（ExtractNumericCodesFromEvent 会跳过）
-	return ""
-}
-
 // ExtractNumericCodesFromStat 从 stat 数据中提取数字组合
 // 参数：statData - 解码后的统计数据（map[string]interface{}）
 // 返回：数字组合列表，例如：["sleep_breath_01", "sleep_heart_10", "sleep_vitals_11"]
@@ -1334,9 +1442,14 @@ func ExtractNumericCodesFromStat(statData map[string]interface{}) []string {
 		return codes
 	}
 
-	// 如果没有 stat_numeric_codes，从各个字段提取
-	// sleep 类型
-	if category, _ := statData["category"].(string); category == "sleep" {
+	// 如果没有 stat_numeric_codes，从各个字段提取（dataCategory 优先，兼容 category）
+	var category string
+	if c, _ := statData["dataCategory"].(string); c != "" {
+		category = c
+	} else if c, _ := statData["category"].(string); c != "" {
+		category = c
+	}
+	if category == "sleep" {
 		// 检查是否有 stat_numeric_code_breath
 		if breathCode, ok := statData["stat_numeric_code_breath"].(string); ok && breathCode != "" {
 			codes = append(codes, breathCode)
@@ -1386,11 +1499,11 @@ func ShouldConvertToAlarm(dataValue map[string]interface{}, topicType string, en
 	return false
 }
 
-// ========== Radar Event/Stat 到 Alarm_Type 映射表 ==========
+// ========== Event/Stat 到 Alarm_Type 映射表（多厂家共用） ==========
 
-// RadarEventStatToAlarmMapping Radar Event/Stat 到 Alarm_Type 的映射规则
-// 用于 card-aggregator 处理所有 event/stat 到 alarm_type 的映射
-type RadarEventStatToAlarmMapping struct {
+// EventStatToAlarmMapping Event/Stat 到 Alarm_Type 的映射规则
+// 用于 card-aggregator 处理 event/stat 到 alarm_type 的映射（Radar 等厂家共用）
+type EventStatToAlarmMapping struct {
 	// 匹配条件
 	TopicType string  // "event" | "stat" | "monitor" | "alarm"
 	Category  string  // category 字段值（如 "enter2out", "track", "sleep", "Fall", "SuspectedFall"）
@@ -1407,6 +1520,9 @@ type RadarEventStatToAlarmMapping struct {
 	// 时间相关参数（仅 ProcessType=ProcessTypeTimeBased 时使用）
 	DurationSec *int    // 持续时间阈值（秒），如 60 表示持续60秒后触发
 	UpgradeTo   *string // 升级目标 alarm_type（如 SuspectedFall 持续60秒升级为 Fall）
+
+	// AlarmParams 扩展参数，与 Registry[AlarmType].AlarmParams 一致或本条规则覆盖（如 duration_sec、min、max）
+	AlarmParams map[string]interface{}
 
 	Description string // 规则说明，便于维护与文档
 }
@@ -1425,11 +1541,10 @@ AlarmType — 触发哪个报警常量
 ProcessType — Immediate（立即触发）还是 TimeBased（持续超时才触发）
 DurationSec — TimeBased 时的持续时间阈值（60 = 异常持续60秒才报）
 UpgradeTo — 升级目标（如疑似跌倒持续60秒升级为确认跌倒）
-Description — 纯注释性质，给开发者看的，不给 UI 用。UI 用的是 AlarmTypeDisplayName 那张表。
+Description — 纯注释性质，给开发者看的。UI 展示用 Registry[AlarmType].Display。
 */
 
-
-var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
+var EventStatToAlarmMap = []EventStatToAlarmMapping{
 	// ========== 即时触发型报警（已在 qinglan 转换为 alarm）==========
 	{
 		TopicType:   "alarm",
@@ -1496,8 +1611,8 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 	},
 	{
 		TopicType:   "alarm",
-		Category:    "OfflineAlarm",
-		AlarmType:   AlarmTypeOfflineAlarm,
+		Category:    "Offline",
+		AlarmType:   AlarmTypeOffline,
 		ProcessType: ProcessTypeImmediate,
 		Description: "Device offline alarm",
 	},
@@ -1510,8 +1625,8 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 	},
 	{
 		TopicType:   "alarm",
-		Category:    "NoActivity24h",
-		AlarmType:   NoActivity24h,
+		Category:    "NightAbsence",
+		AlarmType:   NightAbsence,
 		ProcessType: ProcessTypeImmediate,
 		Description: "24h no activity alarm (evaluated in qinglan)",
 	},
@@ -1526,15 +1641,8 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 		TopicType:   "alarm",
 		Category:    "LeftBed",
 		AlarmType:   LeftBed,
-		ProcessType: ProcessTypeImmediate,
-		Description: "Left bed alarm (evaluated in qinglan)",
-	},
-	{
-		TopicType:   "alarm",
-		Category:    "LeftBedTooLong",
-		AlarmType:   LeftBedTooLong,
-		ProcessType: ProcessTypeImmediate,
-		Description: "Left bed too long alarm (evaluated in qinglan)",
+		ProcessType: ProcessTypeTimeBased,
+		Description: "Left bed alarm: duration_sec=0 immediate, >=30min timer",
 	},
 	{
 		TopicType:   "alarm",
@@ -1547,8 +1655,8 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 	// ========== 设备在线状态事件 ==========
 	{
 		TopicType:   "alarm",
-		Category:    "isOnline",
-		AlarmType:   AlarmTypeDeviceRecovery,
+		Category:    "OfflineRecover",
+		AlarmType:   AlarmTypeOfflineRecover,
 		ProcessType: ProcessTypeStateBased,
 		Description: "Device recovered online, update device state",
 	},
@@ -1602,6 +1710,7 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 		ProcessType: ProcessTypeTimeBased,
 		DurationSec: intPtr(60),
 		UpgradeTo:   strPtr(Fall),
+		AlarmParams: map[string]interface{}{ParamDurationSec: 60},
 		Description: "Suspected fall, upgrade to confirmed fall after 60s",
 	},
 	{
@@ -1613,6 +1722,7 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 		ProcessType: ProcessTypeTimeBased,
 		DurationSec: intPtr(60),
 		UpgradeTo:   strPtr(SittingOnGround),
+		AlarmParams: map[string]interface{}{ParamDurationSec: 60},
 		Description: "Suspected sitting on ground, upgrade after 60s",
 	},
 	{
@@ -1624,6 +1734,7 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 		ProcessType: ProcessTypeTimeBased,
 		DurationSec: intPtr(60),
 		UpgradeTo:   strPtr(BedSitUp),
+		AlarmParams: map[string]interface{}{ParamDurationSec: 60},
 		Description: "Suspected bed sit-up, upgrade after 60s",
 	},
 	// Event type=2 (姿态变化) - 即时触发
@@ -1749,6 +1860,7 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 		AlarmType:   Stay,
 		ProcessType: ProcessTypeTimeBased,
 		DurationSec: intPtr(45 * 60), // 45分钟
+		AlarmParams: map[string]interface{}{ParamDurationSec: 45 * 60},
 		Description: "Stay stat, trigger after 45min",
 	},
 	{
@@ -1756,9 +1868,10 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 		Category:    "sleep",
 		StatType:    strPtr("sleep"),
 		StatCode:    strPtr("no_activity"),
-		AlarmType:   NoActivity24h,
+		AlarmType:   NightAbsence,
 		ProcessType: ProcessTypeTimeBased,
 		DurationSec: intPtr(24 * 60 * 60), // 24小时
+		AlarmParams: map[string]interface{}{ParamDurationSec: 24 * 60 * 60},
 		Description: "No activity stat, trigger after 24h",
 	},
 
@@ -1770,6 +1883,7 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 		AlarmType:   RespRateAlert,
 		ProcessType: ProcessTypeTimeBased,
 		DurationSec: intPtr(60),
+		AlarmParams: map[string]interface{}{ParamDurationSec: 60},
 		Description: "Respiratory rate monitor",
 	},
 	{
@@ -1779,11 +1893,10 @@ var RadarEventStatToAlarmMap = []RadarEventStatToAlarmMapping{
 		AlarmType:   HeartRateAlert,
 		ProcessType: ProcessTypeTimeBased,
 		DurationSec: intPtr(60),
+		AlarmParams: map[string]interface{}{ParamDurationSec: 60},
 		Description: "Heart rate monitor",
 	},
 }
-
-
 
 // MatchRadarEventStatToAlarm 匹配 Radar Event/Stat 到 Alarm_Type
 // 参数：
@@ -1800,10 +1913,10 @@ func MatchRadarEventStatToAlarm(
 	topicType, category string,
 	eventType, areaType, pose *int,
 	statType, statCode *string,
-) []RadarEventStatToAlarmMapping {
-	var matches []RadarEventStatToAlarmMapping
+) []EventStatToAlarmMapping {
+	var matches []EventStatToAlarmMapping
 
-	for _, mapping := range RadarEventStatToAlarmMap {
+	for _, mapping := range EventStatToAlarmMap {
 		// 匹配 topic_type
 		if mapping.TopicType != "" && mapping.TopicType != topicType {
 			continue
@@ -1839,7 +1952,7 @@ func MatchRadarEventStatToAlarm(
 	return matches
 }
 
-// GetAlarmTypeFromRadarEventStat 根据 Radar Event/Stat 获取对应的 Alarm_Type
+// GetAlarmTypeFromRadarEventStat 根据 Event/Stat 获取对应的 Alarm_Type（Radar 等厂家共用）
 // 返回第一个匹配的 alarm_type，如果未找到则返回空字符串
 func GetAlarmTypeFromRadarEventStat(
 	topicType, category string,
@@ -1877,63 +1990,46 @@ func GetAlarmUIGroup(alarmType string) string {
 	return alarmType
 }
 
-// AlarmTypeDisplayName UI 展示用的友好名称（规避 FDA / 医疗设备措辞风险）
-var AlarmTypeDisplayName = map[string]string{
-	// 设备状态
-	AlarmTypeOfflineAlarm:   "Device Offline",
-	AlarmTypeDeviceFailure:  "Device Fault",
-	AlarmTypeDeviceRecovery: "Device Restored",
-
-	// 呼吸 / 心率
-	ApneaHypopnea:        "Apnea/Hypopnea Event",
-	HeartRateAlert:       "Heart Rate Alert",
-	RespRateAlert:        "Resp. Rate Alert",
-	HeartRateNormal:      "Heart Rate Normal",
-	RespiratoryRateNormal: "Resp. Rate Normal",
-
-	// 床位
-	InBed:          "In Bed",
-	LeftBed:        "Bed Exit",
-	LeftBedTooLong: "Extended Bed Exit",
-
-	// 跌倒
-	Fall:                     "Fall Alert",
-	SuspectedFall:            "Potential Fall",
-	SittingOnGround:          "On Floor Alert",
-	SuspectedSittingOnGround: "Potential On Floor Alert",
-
-	// 姿态 / 活动
-	BedSitUp:             "Bed Sit-up",
-	SuspectedBedSitUp:    "Potential Bed Sit-up",
-	AbnormalBodyMovement: "Excessive Movement",
-	NoBodyMove:           "No Movement",
-	NoTurnOver:           "No Turn-over",
-	PostureDetection:     "Posture Update",
-
-	// 信号 / 维护
-	WeakBiometricSignal: "Weak Biometric Signal",
-	SignalPoor:          "Weak Signal",
-	AngleException:      "Device Tilted",
-	SensorDetached:      "Sensor Detached",
-
-	// 区域 / 模式
-	Stay:             "Prolonged Stay",
-	NoActivity24h:    "No Activity (24h)",
-	WarningArea:      "Warning Area",
-	EnterRoom:        "Room Entry",
-	ExitRoom:         "Room Exit",
-	EnterSensingArea: "Entered Sensing Area",
-	ExitSensingArea:  "Exited Sensing Area",
-	EnterMonitor:     "Monitoring Started",
-	ExitMonitor:      "Monitoring Ended",
-	MonitoringMode:   "Monitoring Mode",
-	ResetTime:        "Reset Time",
-	NapTime:          "Nap Time",
-}
-
+// GetAlarmDisplayName 返回 alarm_type 的 UI 展示名，无则返回 alarmType 自身
 func GetAlarmDisplayName(alarmType string) string {
-	if name, ok := AlarmTypeDisplayName[alarmType]; ok {
-		return name
+	if def := LookupAlarm(alarmType); def != nil && def.Display != "" {
+		return def.Display
 	}
 	return alarmType
 }
+
+/*
+心率呼吸率模式获取（BM8701-2专用
+http(s)://domain{:port}/sleepace/heartModeGet
+参数
+{
+token:{
+appId:’’,<<与消息队列的账号相同>>
+secureKey:’’,<<与消息队列的密码相同>>
+},
+data:{
+deviceId:<<设备ID>>
+}
+}
+
+status	int	状态码，0表示成功，其他失败，详见状态码
+msg	string	失败原因
+mode	int	0：模式0(默认)，心率/呼吸率 计算不出时，保留之前的值不变或者加一定的波动
+1：模式，心率/呼吸率计算不出，上报无效值 255
+
+状态码	描述
+-1	未登录或未认证
+0	成功
+1	设备离线
+2	服务器错误
+3	超时
+4	设备未绑定
+5	设备不存在
+8	操作命令不存在
+9	参数错误
+10	device not belong your channel
+该设备不在你的渠道下
+11	认证错误
+
+
+*/

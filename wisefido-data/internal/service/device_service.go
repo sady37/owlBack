@@ -10,8 +10,10 @@ import (
 	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
 
+	"owl-common/card"
 	rediscommon "owl-common/redis"
 
+	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -32,23 +34,25 @@ type DeviceService interface {
 // deviceService 实现
 type deviceService struct {
 	devicesRepo     repository.DevicesRepository
-	cardSync        *CardSyncService // 设备/单元变更后同步卡片（Redis + config.card.*）
+	cardSync        *CardSyncService
 	configPublisher *publisher.ConfigPublisher
 	qinglanClient   *QinglanClient
+	stateReader     *card.Reader
+	db              *sql.DB
 	logger          *zap.Logger
 }
 
-// NewDeviceService 创建 DeviceService 实例
-func NewDeviceService(devicesRepo repository.DevicesRepository, cardSync *CardSyncService, qinglanClient *QinglanClient, logger *zap.Logger) DeviceService {
+func NewDeviceService(devicesRepo repository.DevicesRepository, cardSync *CardSyncService, qinglanClient *QinglanClient, stateReader *card.Reader, db *sql.DB, logger *zap.Logger) DeviceService {
 	return &deviceService{
 		devicesRepo:   devicesRepo,
 		cardSync:      cardSync,
 		qinglanClient: qinglanClient,
+		stateReader:   stateReader,
+		db:            db,
 		logger:        logger,
 	}
 }
 
-// NewDeviceServiceWithPublisher 创建 DeviceService 实例（包含 ConfigPublisher 用于发送 device_store 变化信号）
 func NewDeviceServiceWithPublisher(devicesRepo repository.DevicesRepository, cardSync *CardSyncService, configPublisher *publisher.ConfigPublisher, qinglanClient *QinglanClient, logger *zap.Logger) DeviceService {
 	return &deviceService{
 		devicesRepo:     devicesRepo,
@@ -70,6 +74,8 @@ type ListDevicesRequest struct {
 	SearchKeyword  string   // 可选：搜索关键词
 	Page           int      // 可选，默认 1
 	Size           int      // 可选，默认 20
+	Sort           string   // 可选：排序字段（device_name, device_type, device_model, device_uid, ...）
+	Direction      string   // 可选：asc / desc，默认 asc
 }
 
 // ListDevicesResponse 查询设备列表响应
@@ -115,9 +121,13 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 		size = 20
 	}
 
-	// 5. 调用 Repository
-	// SystemAdmin 查看所有设备时，tenantID 会被忽略
-	items, total, err := s.devicesRepo.ListDevices(ctx, req.TenantID, filters, page, size)
+	// 5. 调用 Repository（sort/direction 用于全部数据排序后分页）
+	sort := strings.TrimSpace(req.Sort)
+	direction := strings.TrimSpace(req.Direction)
+	if direction != "desc" {
+		direction = "asc"
+	}
+	items, total, err := s.devicesRepo.ListDevices(ctx, req.TenantID, filters, page, size, sort, direction)
 	if err != nil {
 		s.logger.Error("ListDevices failed",
 			zap.String("tenant_id", req.TenantID),
@@ -127,16 +137,8 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 		return nil, fmt.Errorf("failed to list devices: %w", err)
 	}
 
-	// 6. 通过 wisefido-qinglan HTTP API 查询设备在线状态并填充到 items
-	if s.qinglanClient != nil && len(items) > 0 {
+	if len(items) > 0 {
 		s.fillDeviceOnlineStatus(ctx, items)
-	} else if s.qinglanClient == nil {
-		// qinglanClient 为 nil，所有设备默认设置为 "offline"
-		for _, device := range items {
-			if device.OnlineStatus == "" {
-				device.OnlineStatus = "offline"
-			}
-		}
 	}
 
 	return &ListDevicesResponse{
@@ -145,80 +147,102 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 	}, nil
 }
 
-// fillDeviceOnlineStatus 通过 wisefido-qinglan HTTP API 批量查询设备在线状态并填充到设备列表
-// 使用并发查询提高性能
+// FillDeviceOnlineStatusFromCardagg 只从 cardagg 读在线状态，返回 device_id -> "online"|"offline"。供 fillDeviceOnlineStatus 与 device_store 共用。
+// 约定：前后台统一用 device_id (UUID)。有 card 时 Redis Hash key = card_id；无 card 时 = device_id。device_status 内层 map 的 key 仅用 device_id。
+func FillDeviceOnlineStatusFromCardagg(ctx context.Context, stateReader *card.Reader, db *sql.DB, deviceIDs []string, logger *zap.Logger) map[string]string {
+	out := make(map[string]string, len(deviceIDs))
+	for _, id := range deviceIDs {
+		if id != "" {
+			out[id] = "offline"
+		}
+	}
+	if stateReader == nil || db == nil || len(deviceIDs) == 0 {
+		return out
+	}
+	ids := make([]string, 0, len(deviceIDs))
+	for _, id := range deviceIDs {
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return out
+	}
+	// 先查 card_id：cards.devices 下按 device_id 匹配，一个 card_id 下可有多个 device
+	deviceIDToCardID := make(map[string]string)
+	rows, err := db.QueryContext(ctx, `
+		SELECT c.card_id, j->>'device_id' AS device_id
+		FROM cards c, jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS j
+		WHERE (j->>'device_id') = ANY($1)`, pq.Array(ids))
+	if err != nil {
+		if logger != nil {
+			logger.Warn("FillDeviceOnlineStatusFromCardagg: device_id→card_id query failed", zap.Error(err))
+		}
+		return out
+	}
+	for rows.Next() {
+		var cid, did string
+		if rows.Scan(&cid, &did) == nil && did != "" {
+			deviceIDToCardID[did] = cid
+		}
+	}
+	rows.Close()
+
+	cardIDSet := make(map[string]struct{})
+	for _, id := range ids {
+		key := deviceIDToCardID[id]
+		if key == "" {
+			key = id
+		}
+		cardIDSet[key] = struct{}{}
+	}
+	cardIDs := make([]string, 0, len(cardIDSet))
+	for k := range cardIDSet {
+		cardIDs = append(cardIDs, k)
+	}
+	devStatusBatch, err := stateReader.ReadDeviceStatusBatch(ctx, cardIDs)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("FillDeviceOnlineStatusFromCardagg: ReadDeviceStatusBatch failed", zap.Error(err))
+		}
+		return out
+	}
+	for _, id := range ids {
+		cardID := deviceIDToCardID[id]
+		if cardID == "" {
+			cardID = id
+		}
+		cardStatus := devStatusBatch[cardID]
+		if cardStatus == nil {
+			continue
+		}
+		ds := cardStatus[id]
+		if ds != nil && ds.Offline == 0 {
+			out[id] = "online"
+		}
+	}
+	return out
+}
+
+// fillDeviceOnlineStatus 只从 cardagg 读在线状态，使用 FillDeviceOnlineStatusFromCardagg。
 func (s *deviceService) fillDeviceOnlineStatus(ctx context.Context, devices []*domain.Device) {
-	if len(devices) == 0 {
+	for _, d := range devices {
+		d.OnlineStatus = "offline"
+	}
+	if s.stateReader == nil || s.db == nil {
 		return
 	}
-
-	// 过滤出有 device_uid 的设备
-	devicesWithUID := make([]*domain.Device, 0, len(devices))
-	for _, device := range devices {
-		if device.DeviceUID != "" {
-			devicesWithUID = append(devicesWithUID, device)
+	ids := make([]string, 0, len(devices))
+	for _, d := range devices {
+		if d.DeviceID != "" {
+			ids = append(ids, d.DeviceID)
 		}
 	}
-
-	if len(devicesWithUID) == 0 {
-		// 没有 device_uid 的设备，默认设置为 "offline"
-		for _, device := range devices {
-			if device.OnlineStatus == "" {
-				device.OnlineStatus = "offline"
-			}
-		}
-		return
-	}
-
-	// 并发查询设备状态
-	type statusResult struct {
-		deviceUID string
-		status    string
-		err       error
-	}
-	results := make(chan statusResult, len(devicesWithUID))
-
-	// 启动 goroutine 并发查询
-	for _, device := range devicesWithUID {
-		go func(d *domain.Device) {
-			status, err := s.qinglanClient.GetDeviceStatus(ctx, d.DeviceUID)
-			if err != nil {
-				// 查询失败，根据错误类型决定状态
-				// 如果是连接被拒绝或网络错误，表示无法确定设备状态，应设为"unknown"
-				statusValue := "offline"
-				if strings.Contains(err.Error(), "connection refused") || 
-				   strings.Contains(err.Error(), "timeout") || 
-				   strings.Contains(err.Error(), "network") ||
-				   strings.Contains(err.Error(), "no route to host") ||
-				   strings.Contains(err.Error(), "connection reset by peer") {
-					statusValue = "unknown"
-				}
-				results <- statusResult{deviceUID: d.DeviceUID, status: statusValue, err: err}
-			} else {
-				results <- statusResult{deviceUID: d.DeviceUID, status: status, err: nil}
-			}
-		}(device)
-	}
-
-	// 收集结果
-	deviceUIDToStatus := make(map[string]string)
-	for i := 0; i < len(devicesWithUID); i++ {
-		result := <-results
-		deviceUIDToStatus[result.deviceUID] = result.status
-	}
-
-	// 填充状态到设备列表
-	for _, device := range devices {
-		if device.DeviceUID != "" {
-			if status, exists := deviceUIDToStatus[device.DeviceUID]; exists {
-				device.OnlineStatus = status
-			} else {
-				device.OnlineStatus = "offline"
-			}
-		} else {
-			// 没有 device_uid 的设备，默认设置为 "offline"
-			if device.OnlineStatus == "" {
-				device.OnlineStatus = "offline"
+	m := FillDeviceOnlineStatusFromCardagg(ctx, s.stateReader, s.db, ids, s.logger)
+	for _, d := range devices {
+		if d.DeviceID != "" {
+			if m[d.DeviceID] == "online" {
+				d.OnlineStatus = "online"
 			}
 		}
 	}

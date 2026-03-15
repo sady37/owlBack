@@ -2155,8 +2155,9 @@ func (h *ResidentHandler) UpdateResidentAccountSettings(w http.ResponseWriter, r
 		req.SavePhone = &savePhone
 	}
 
-	// 检查是否有任何更新
-	if req.PasswordHash == nil && req.Email == nil && req.Phone == nil {
+	// 检查是否有任何更新（含 email_hash / phone_hash / save_email / save_phone）
+	if req.PasswordHash == nil && req.Email == nil && req.Phone == nil &&
+		req.EmailHash == nil && req.PhoneHash == nil && req.SaveEmail == nil && req.SavePhone == nil {
 		writeJSON(w, http.StatusOK, Fail("no fields to update"))
 		return
 	}

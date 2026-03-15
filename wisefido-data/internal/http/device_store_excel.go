@@ -8,7 +8,7 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-// DeviceStoreImportHeader 导入模板表头（只包含物理属性和固件版本）
+// DeviceStoreImportHeader 导入模板表头（device_name 由 devices 表同步，不导入）
 var DeviceStoreImportHeader = []string{
 	"Device Type",
 	"Device Model",
@@ -19,6 +19,7 @@ var DeviceStoreImportHeader = []string{
 	"Comm Mode",
 	"MCU Model",
 	"Firmware Version",
+	"Allow Access",
 }
 
 // DeviceStoreExportHeader 导出表头（包含所有字段）
@@ -128,7 +129,7 @@ func generateDeviceStoreExcel(headers []string, data []map[string]any, includeAl
 		20, // Firmware Version
 		25, // OTA Target Firmware Version (if included)
 		20, // OTA Target MCU Model (if included)
-		38, // Tenant ID (if included)
+		38, // Tenant Name (if included)
 		15, // Allow Access (if included)
 		20, // Import Date (if included)
 		20, // Allocate Time (if included)

@@ -9,11 +9,10 @@ import (
 	"syscall"
 	"time"
 
+	"owl-common/card"
 	rediscommon "owl-common/redis"
 	"wisefido-cardagg/internal/config"
 	"wisefido-cardagg/internal/consumer"
-	"wisefido-cardagg/internal/publisher"
-	"wisefido-cardagg/internal/repository"
 	"wisefido-cardagg/internal/service"
 
 	redislib "github.com/go-redis/redis/v8"
@@ -23,28 +22,25 @@ import (
 )
 
 func main() {
-	// 加载配置
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		log.Fatalf("load config: %v", err)
 	}
 
-	// 初始化日志
 	zapCfg := zap.NewProductionConfig()
 	zapCfg.EncoderConfig.TimeKey = "timestamp"
 	zapCfg.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("15:04:05.000")
 	logger, err := zapCfg.Build()
 	if err != nil {
-		log.Fatalf("Failed to initialize logger: %v", err)
+		log.Fatalf("init logger: %v", err)
 	}
 	defer logger.Sync()
 
-	logger.Info("Starting wisefido-cardagg service",
-		zap.String("redis_addr", cfg.Redis.Addr),
-		zap.String("db_host", cfg.DB.Host),
-		zap.Int("db_port", cfg.DB.Port))
+	logger.Info("starting wisefido-cardagg",
+		zap.String("redis", cfg.Redis.Addr),
+		zap.String("db_host", cfg.DB.Host))
 
-	// 连接 Redis
+	// Redis
 	redisClient := redislib.NewClient(&redislib.Options{
 		Addr:     cfg.Redis.Addr,
 		Password: cfg.Redis.Password,
@@ -52,132 +48,169 @@ func main() {
 	})
 	defer redisClient.Close()
 
-	// 用于短期操作（连接测试）的临时 context
 	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := redisClient.Ping(pingCtx).Err(); err != nil {
 		pingCancel()
-		logger.Fatal("Redis connection failed", zap.Error(err))
+		logger.Fatal("redis ping failed", zap.Error(err))
 	}
 	pingCancel()
-	logger.Info("Redis connected")
 
-	// 用于长期运行（流订阅）的 context，只在收到关闭信号时才取消
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 连接 PostgreSQL（可选）
+	// PostgreSQL
 	var db *sql.DB
-	dbURL := cfg.GetDatabaseURL()
-	if dbURL != "" {
+	if dbURL := cfg.GetDatabaseURL(); dbURL != "" {
 		if d, err := sql.Open("postgres", dbURL); err == nil {
 			db = d
 			defer db.Close()
 			dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := db.PingContext(dbCtx); err == nil {
-				logger.Info("PostgreSQL connected",
-					zap.String("host", cfg.DB.Host),
-					zap.Int("port", cfg.DB.Port),
-					zap.String("database", cfg.DB.Database))
-			} else {
-				logger.Warn("PostgreSQL connection failed", zap.Error(err))
+			if err := db.PingContext(dbCtx); err != nil {
+				logger.Warn("db ping failed", zap.Error(err))
 				db = nil
 			}
 			dbCancel()
-		} else {
-			logger.Warn("Failed to open PostgreSQL connection", zap.Error(err))
 		}
 	}
 
-	// 初始化各层组件
-	cacheRepo := repository.NewRedisCache(redisClient)
-	cardPublisher := publisher.NewCardStreamPublisher(redisClient, logger)
-	monitorSvc := service.NewMonitorService(cacheRepo, cardPublisher, logger)
-	monitorHandler := consumer.NewMonitorHandler(monitorSvc, logger)
-	eventAlarmSvc := service.NewEventAlarmService(cacheRepo, cardPublisher, db, logger)
-	eventAlarmHandler := consumer.NewEventAlarmHandler(eventAlarmSvc, logger)
-	alarmProcessHandler := consumer.NewAlarmProcessHandler(eventAlarmSvc, logger)
+	// card Writer / Reader
+	writer := card.NewWriter(redisClient, rediscommon.StreamCardStatus.MaxLen, rediscommon.StreamCardRealTime.MaxLen)
+	reader := card.NewReader(redisClient)
 
-	// 启动时从 DB 同步所有 card 的 alarm_state 到 Redis
-	if err := eventAlarmSvc.SyncAllCardsAlarmState(ctx); err != nil {
-		logger.Warn("Failed to sync cards alarm state on startup", zap.Error(err))
+	// Services
+	stateSvc := service.NewStateService(writer, reader, logger)
+	monitorBuf := service.NewMonitorBuffer()
+	metaCache := service.NewDeviceMetaCache(db, logger)
+	enablementCache := service.NewAlarmEnablementCache(db, metaCache, logger)
+	alarmSvc := service.NewAlarmService(writer, reader, db, enablementCache, logger)
+	alarmSvc.SetRedisPending(&redisPendingAdapter{client: redisClient})
+
+	// Sync alarm state from DB on startup
+	if err := alarmSvc.SyncAllCardsAlarmState(ctx); err != nil {
+		logger.Warn("alarm sync failed", zap.Error(err))
 	}
 
-	streams := []string{
-		"iot:monitor:stream",
-		"iot:event:stream",
-		"iot:alarm:stream",
-		rediscommon.StreamIoTDeviceStatus.Name,
-		rediscommon.StreamConfigAlarmProcess.Name,
-	}
+	resolver := service.NewDeviceCardResolver(db)
+	monitorHandler := consumer.NewMonitorHandler(monitorBuf, writer, metaCache, resolver, logger)
+	go monitorHandler.RunLoop(ctx)
+	go runDeriveLoop(ctx, monitorBuf, stateSvc, metaCache, reader, alarmSvc, logger)
+	eventHandler := consumer.NewEventHandler(stateSvc, alarmSvc, monitorBuf, metaCache, enablementCache, resolver, logger)
+	alarmHandler := consumer.NewAlarmHandler(alarmSvc, stateSvc, monitorBuf, metaCache, resolver, logger)
+	alarmProcessHandler := consumer.NewAlarmProcessHandler(alarmSvc, logger)
+	cardChangeHandler := consumer.NewCardChangeHandler(alarmSvc, stateSvc, metaCache, enablementCache, resolver, logger)
+	alarmDeviceHandler := consumer.NewAlarmDeviceHandler(enablementCache, logger)
 
-	logger.Info("Subscribing to streams", zap.Strings("streams", streams))
-
-	for _, stream := range streams {
-		if err := rediscommon.CreateConsumerGroup(ctx, redisClient, stream, "cardagg-group"); err != nil {
-			logger.Warn("Create consumer group failed", zap.String("stream", stream), zap.Error(err))
-		}
-	}
-
-	// 启动 monitor 消费 goroutine
-	// 注意：msg.Values 全是 string（Redis Stream 特性），ConvertRedisValues 做 string→native 转换
-	go subscribeStream(ctx, logger, redisClient, "iot:monitor:stream", "cardagg-group", "consumer-monitor", func(c context.Context, msg rediscommon.StreamMessage) error {
-		return monitorHandler.Handle(c, consumer.ConvertRedisValues(msg.Values))
+	consumer.SubscribeAll(ctx, logger, redisClient, consumer.Handlers{
+		Monitor:      consumer.NewIotPreparedHandler(resolver, stateSvc, metaCache, monitorHandler),
+		Event:        consumer.NewIotPreparedHandler(resolver, stateSvc, metaCache, eventHandler),
+		Alarm:        consumer.NewIotPreparedHandler(resolver, stateSvc, metaCache, alarmHandler),
+		AlarmProcess: alarmProcessHandler,
+		CardChange:   cardChangeHandler,
+		AlarmDevice:  alarmDeviceHandler,
 	})
 
-	// 启动 event 消费 goroutine
-	go subscribeStream(ctx, logger, redisClient, "iot:event:stream", "cardagg-group", "consumer-event", func(c context.Context, msg rediscommon.StreamMessage) error {
-		return eventAlarmHandler.Handle(c, consumer.ConvertRedisValues(msg.Values))
-	})
+	go runPendingAlarmScan(ctx, alarmSvc, logger)
 
-	// 启动 alarm 消费 goroutine
-	go subscribeStream(ctx, logger, redisClient, "iot:alarm:stream", "cardagg-group", "consumer-alarm", func(c context.Context, msg rediscommon.StreamMessage) error {
-		return eventAlarmHandler.Handle(c, consumer.ConvertRedisValues(msg.Values))
-	})
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
 
-	// 启动 deviceStatus 消费 goroutine（处理设备在线/离线等状态变化）
-	go subscribeStream(ctx, logger, redisClient, rediscommon.StreamIoTDeviceStatus.Name, "cardagg-group", "consumer-device-status", func(c context.Context, msg rediscommon.StreamMessage) error {
-		return eventAlarmHandler.Handle(c, consumer.ConvertRedisValues(msg.Values))
-	})
-
-	// 启动 config:alarmProcess 消费 goroutine（处理 alarmProcess 消息）
-	go subscribeStream(ctx, logger, redisClient, rediscommon.StreamConfigAlarmProcess.Name, "cardagg-group", "consumer-config-alarm", func(c context.Context, msg rediscommon.StreamMessage) error {
-		return alarmProcessHandler.Handle(c, consumer.ConvertRedisValues(msg.Values))
-	})
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
-
-	logger.Info("Shutting down")
+	logger.Info("shutting down")
 	cancel()
 }
 
-func subscribeStream(ctx context.Context, logger *zap.Logger, redisClient *redislib.Client, stream string, group string, consumer string, handler func(context.Context, rediscommon.StreamMessage) error) {
-	logger.Info("Starting subscriber", zap.String("stream", stream), zap.String("consumer", consumer))
+func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *service.StateService, metaCache *service.DeviceMetaCache, reader *card.Reader, alarmSvc *service.AlarmService, logger *zap.Logger) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	prevOnline := make(map[string]bool)
+	prevTargets := make(map[string]*card.TargetState)
+	tick := 0
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		default:
+		case <-ticker.C:
+		}
+		tick++
+		nowMs := time.Now().UnixMilli()
+		snapshots := buf.Flush(nowMs)
+		shouldDerive := service.IsDeriveTick(tick)
+		currOnline := make(map[string]bool)
+		for _, cid := range buf.ActiveCardIDs() {
+			currOnline[cid] = true
 		}
 
-		msgs, err := rediscommon.ReadFromStreamWithBlock(ctx, redisClient, stream, group, consumer, 10, 2*time.Second)
-		if err != nil {
-			logger.Warn("Read stream failed", zap.String("stream", stream), zap.Error(err))
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		for _, m := range msgs {
-			if err := handler(ctx, m); err != nil {
-				logger.Warn("Handler error", zap.String("stream", stream), zap.Error(err))
+		for _, snap := range snapshots {
+			if shouldDerive {
+				meta := metaCache.GetOrLoad(ctx, snap.CardID)
+				prev := prevTargets[snap.CardID]
+				status, err := state.DeriveAndWriteState(ctx, snap, meta, prev, buf)
+				if err != nil {
+					logger.Warn("derive state", zap.String("cid", snap.CardID), zap.Error(err))
+				}
+				if status != nil && status.Target != nil {
+					prevTargets[snap.CardID] = status.Target
+				}
+				state.DeriveBedStateFromRealtime(ctx, snap, meta)
 			}
+		}
+		if shouldDerive {
+			snappedCards := make(map[string]bool, len(snapshots))
+			for _, s := range snapshots {
+				snappedCards[s.CardID] = true
+			}
+			activeDevs := buf.ActiveDevicesByCard()
+			for cid := range activeDevs {
+				if snappedCards[cid] {
+					continue
+				}
+				meta := metaCache.GetOrLoad(ctx, cid)
+				_ = state.DeriveDeviceOnlineOnly(ctx, cid, meta, buf)
+			}
+		}
+		for cid := range prevOnline {
+			if !currOnline[cid] {
+				meta := metaCache.GetOrLoad(ctx, cid)
+				if meta != nil && len(meta.Devices) > 0 {
+					buf.ClearCard(cid, meta.Devices)
+				}
+				state.SetCardOffline(ctx, cid)
+				delete(prevTargets, cid)
+				logger.Info("card offline", zap.String("cid", cid))
+			}
+		}
+		prevOnline = currOnline
+	}
+}
 
-			if err := redisClient.XAck(ctx, stream, group, m.ID).Err(); err != nil {
-				logger.Warn("ACK failed", zap.String("stream", stream), zap.String("id", m.ID), zap.Error(err))
+type redisPendingAdapter struct {
+	client *redislib.Client
+}
+
+func (a *redisPendingAdapter) HGetAll(ctx context.Context, key string) (map[string]string, error) {
+	return a.client.HGetAll(ctx, key).Result()
+}
+
+func (a *redisPendingAdapter) HSet(ctx context.Context, key string, values ...interface{}) error {
+	return a.client.HSet(ctx, key, values...).Err()
+}
+
+func (a *redisPendingAdapter) HDel(ctx context.Context, key string, fields ...string) error {
+	return a.client.HDel(ctx, key, fields...).Err()
+}
+
+func runPendingAlarmScan(ctx context.Context, alarmSvc *service.AlarmService, logger *zap.Logger) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := alarmSvc.ScanPendingAlarms(ctx); err != nil {
+				logger.Warn("scan pending alarms", zap.Error(err))
 			}
 		}
 	}
 }
-

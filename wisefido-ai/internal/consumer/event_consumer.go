@@ -158,21 +158,23 @@ func (c *EventConsumer) processMessage(ctx context.Context, msg rediscommon.Stre
 		return nil // 跳过无效消息
 	}
 
-	// 从 data_value 中提取事件类型
+	// 从 dataValue 中提取事件类型（键名规范：dataValue）
 	var eventType string
 	if topicType == "event" || topicType == "alarm" {
-		// 从 data_value 中提取事件类型
-		if dataValue, ok := streamData["data_value"].(map[string]interface{}); ok {
-			// 尝试从 data_value 中提取事件类型
-			if category, ok := dataValue["category"].(string); ok {
+		payload := streamData[rediscommon.DataValueKey]
+		if dataValue, ok := payload.(map[string]interface{}); ok {
+			if category, ok := dataValue["dataCategory"].(string); ok && category != "" {
+				eventType = category
+			} else if category, ok := dataValue["category"].(string); ok {
 				eventType = category
 			} else if evt, ok := dataValue["event"].(string); ok {
 				eventType = evt
 			}
-		} else if dataValueArray, ok := streamData["data_value"].([]interface{}); ok && len(dataValueArray) > 0 {
-			// data_value 可能是数组
+		} else if dataValueArray, ok := payload.([]interface{}); ok && len(dataValueArray) > 0 {
 			if firstItem, ok := dataValueArray[0].(map[string]interface{}); ok {
-				if category, ok := firstItem["category"].(string); ok {
+				if category, ok := firstItem["dataCategory"].(string); ok && category != "" {
+					eventType = category
+				} else if category, ok := firstItem["category"].(string); ok {
 					eventType = category
 				} else if evt, ok := firstItem["event"].(string); ok {
 					eventType = evt

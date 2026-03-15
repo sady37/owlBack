@@ -126,6 +126,11 @@ func (h *DeviceHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
 
 	page := parseInt(r.URL.Query().Get("page"), 1)
 	size := parseInt(r.URL.Query().Get("size"), 20)
+	sort := strings.TrimSpace(r.URL.Query().Get("sort"))
+	direction := strings.TrimSpace(r.URL.Query().Get("direction"))
+	if direction != "desc" {
+		direction = "asc"
+	}
 
 	// 2. 调用 Service
 	// 严格限制：所有用户（包括 SystemAdmin）只能查看/编辑本 tenant 的设备
@@ -139,6 +144,8 @@ func (h *DeviceHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
 		SearchKeyword:  r.URL.Query().Get("search_keyword"),
 		Page:           page,
 		Size:           size,
+		Sort:           sort,
+		Direction:      direction,
 	}
 
 	resp, err := h.deviceService.ListDevices(ctx, req)

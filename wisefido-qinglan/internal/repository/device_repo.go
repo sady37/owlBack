@@ -11,9 +11,10 @@ import (
 // DeviceStoreInfo 设备库存信息（用于认证）
 // 对应 device_store 表的完整结构
 type DeviceStoreInfo struct {
-	DeviceID        string // UUID, PRIMARY KEY
-	DeviceUID       string // VARCHAR(50), UNIQUE
-	DeviceType      string // VARCHAR(50), NOT NULL
+	DeviceID        string         // UUID, PRIMARY KEY
+	DeviceUID       string         // VARCHAR(50), UNIQUE
+	DeviceCode      sql.NullString // device_store.device_code
+	DeviceType      string         // VARCHAR(50), NOT NULL
 	DeviceModel     sql.NullString
 	MAC             sql.NullString
 	IMEI            sql.NullString
@@ -60,8 +61,8 @@ type DeviceRepository interface {
 	// CountDevicesByStatus 按状态统计设备数量
 	CountDevicesByStatus(ctx context.Context, tenantID string) (map[string]int, error)
 
-	// GetDeviceStoreInfoAndLocation 根据设备UID获取 device_store 信息（用于认证）
-	GetDeviceStoreInfoAndLocation(ctx context.Context, deviceUID string) (*DeviceStoreInfo, error)
+	// GetDeviceStoreInfo 根据设备UID获取 device_store 信息（含 device_code）
+	GetDeviceStoreInfo(ctx context.Context, deviceUID string) (*DeviceStoreInfo, error)
 
 	// GetDeviceStoreByDeviceID 根据设备ID获取 device_store 信息（用于 device_store 变化信号处理）
 	// 返回 DeviceStoreInfo 包含 device_uid 和 allow_access
@@ -85,5 +86,4 @@ type DeviceRepository interface {
 	// GetAllDeviceStoreInfo 获取所有device_store记录（用于启动时初始化设备缓存）
 	// 返回所有设备的device_uid和allow_access状态
 	GetAllDeviceStoreInfo(ctx context.Context) ([]*DeviceStoreInfo, error)
-
 }

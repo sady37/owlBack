@@ -157,8 +157,8 @@
           "unit_conversion": null,
           "mappings": null
         },
-        "target_id": {
-          "field_path": "monitor.track.target_id",
+        "track_id": {
+          "field_path": "monitor.track.track_id",
           "field_type": "numeric",
           "byte_position": 0,
           "unit_conversion": null,

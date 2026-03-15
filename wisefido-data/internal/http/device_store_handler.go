@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
+	"owl-common/card"
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/service"
@@ -14,21 +17,28 @@ import (
 	"go.uber.org/zap"
 )
 
-// DeviceStoreHandler 设备库存管理 Handler
-// 注意：根据架构设计，DeviceStore 不需要 Service 层（业务逻辑简单），直接使用 Repository
+// DeviceStoreHandler 设备库存管理 Handler。业务逻辑在 DeviceStoreService，Handler 只做请求解析与响应。
 type DeviceStoreHandler struct {
 	deviceStoreRepo repository.DeviceStoreRepository
-	qinglanClient   *service.QinglanClient // 用于查询设备在线状态
+	deviceStoreSvc  *service.DeviceStoreService // Sleepace 绑定/InitialAll 等
+	stateReader     *card.Reader
+	db              *sql.DB
 	logger          *zap.Logger
 }
 
 // NewDeviceStoreHandler 创建设备库存管理 Handler
-func NewDeviceStoreHandler(deviceStoreRepo repository.DeviceStoreRepository, qinglanClient *service.QinglanClient, logger *zap.Logger) *DeviceStoreHandler {
+func NewDeviceStoreHandler(deviceStoreRepo repository.DeviceStoreRepository, stateReader *card.Reader, db *sql.DB, logger *zap.Logger) *DeviceStoreHandler {
 	return &DeviceStoreHandler{
 		deviceStoreRepo: deviceStoreRepo,
-		qinglanClient:   qinglanClient,
+		stateReader:     stateReader,
+		db:              db,
 		logger:          logger,
 	}
+}
+
+// SetDeviceStoreService 注入设备库存 Service（Sleepace 绑定、InitialAll 等）
+func (h *DeviceStoreHandler) SetDeviceStoreService(svc *service.DeviceStoreService) {
+	h.deviceStoreSvc = svc
 }
 
 // ServeHTTP 实现 http.Handler 接口
@@ -53,6 +63,22 @@ func (h *DeviceStoreHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.GetImportTemplate(w, r)
 	case r.URL.Path == "/admin/api/v1/device-store/export" && r.Method == http.MethodGet:
 		h.ExportDeviceStores(w, r)
+	case r.URL.Path == "/admin/api/v1/device-store/sync-sleepace-bind" && r.Method == http.MethodPost:
+		h.SyncSleepaceBind(w, r)
+	case r.URL.Path == "/admin/api/v1/device-store/initial-all-sleepad" && r.Method == http.MethodPost:
+		h.InitialAllSleepad(w, r)
+	case r.URL.Path == "/admin/api/v1/device-store/bind-sleepad" && r.Method == http.MethodPost:
+		h.BindSleepadOne(w, r)
+	case r.URL.Path == "/admin/api/v1/device-store/unbind-sleepad" && r.Method == http.MethodPost:
+		h.UnbindSleepadOne(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/api/v1/device-store/") && r.Method == http.MethodDelete:
+		deviceUID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/device-store/")
+		deviceUID = strings.Trim(deviceUID, "/")
+		if deviceUID == "" {
+			writeJSON(w, http.StatusOK, Fail("device_uid is required"))
+			return
+		}
+		h.DeleteDeviceStore(w, r, deviceUID)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -70,23 +96,25 @@ func (h *DeviceStoreHandler) ListDeviceStores(w http.ResponseWriter, r *http.Req
 	}
 	page := parseInt(r.URL.Query().Get("page"), 1)
 	size := parseInt(r.URL.Query().Get("size"), 100)
+	sort := strings.TrimSpace(r.URL.Query().Get("sort"))
+	direction := strings.TrimSpace(r.URL.Query().Get("direction"))
+	if direction != "desc" {
+		direction = "asc"
+	}
 
-	items, total, err := h.deviceStoreRepo.ListDeviceStores(ctx, filters, page, size)
+	items, total, err := h.deviceStoreRepo.ListDeviceStores(ctx, filters, page, size, sort, direction)
 	if err != nil {
 		h.logger.Error("ListDeviceStores failed", zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to list device stores: %v", err)))
 		return
 	}
 
-	// 通过 wisefido-qinglan HTTP API 查询设备在线状态并填充
-	if h.qinglanClient != nil {
-		fillDeviceStoreOnlineStatus(ctx, h.qinglanClient, items, h.logger)
-	} else {
-		// qinglanClient 为 nil，所有设备默认设置为 "offline"
-		for _, store := range items {
-			if store.OnlineStatus == "" {
-				store.OnlineStatus = "offline"
-			}
+	// 在线状态：只从 cardagg 读取（与 device_service.fillDeviceOnlineStatus 一致）
+	onlineMap := service.FillDeviceOnlineStatusFromCardagg(ctx, h.stateReader, h.db, deviceStoreDeviceIDs(items), h.logger)
+	for _, s := range items {
+		s.OnlineStatus = onlineMap[s.DeviceID]
+		if s.OnlineStatus == "" {
+			s.OnlineStatus = "offline"
 		}
 	}
 
@@ -99,6 +127,16 @@ func (h *DeviceStoreHandler) ListDeviceStores(w http.ResponseWriter, r *http.Req
 		"items": out,
 		"total": total,
 	}))
+}
+
+func deviceStoreDeviceIDs(stores []*domain.DeviceStore) []string {
+	ids := make([]string, 0, len(stores))
+	for _, s := range stores {
+		if s.DeviceID != "" {
+			ids = append(ids, s.DeviceID)
+		}
+	}
+	return ids
 }
 
 // BatchUpdateDeviceStores 批量更新设备库存
@@ -168,11 +206,18 @@ func (h *DeviceStoreHandler) ExportDeviceStores(w http.ResponseWriter, r *http.R
 		DeviceType: r.URL.Query().Get("device_type"),
 	}
 
-	items, _, err := h.deviceStoreRepo.ListDeviceStores(ctx, filters, 1, 10000)
+	items, _, err := h.deviceStoreRepo.ListDeviceStores(ctx, filters, 1, 1000, "", "asc")
 	if err != nil {
 		h.logger.Error("ListDeviceStores failed for export", zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to list device stores: %v", err)))
 		return
+	}
+	onlineMap := service.FillDeviceOnlineStatusFromCardagg(ctx, h.stateReader, h.db, deviceStoreDeviceIDs(items), h.logger)
+	for _, s := range items {
+		s.OnlineStatus = onlineMap[s.DeviceID]
+		if s.OnlineStatus == "" {
+			s.OnlineStatus = "offline"
+		}
 	}
 
 	// Convert to map format for Excel generation
@@ -264,9 +309,9 @@ func (h *DeviceStoreHandler) ImportDeviceStores(w http.ResponseWriter, r *http.R
 		"Device Type":                 "device_type",
 		"Device Model":                "device_model",
 		"Device Code":                 "device_code",
-		"Device UID":                   "device_uid",
+		"Device UID":                  "device_uid",
 		"UID":                         "device_uid",
-		"MAC":                          "mac",
+		"MAC":                         "mac",
 		"IMEI":                        "imei",
 		"Comm Mode":                   "comm_mode",
 		"MCU Model":                   "mcu_model",
@@ -316,11 +361,15 @@ func (h *DeviceStoreHandler) ImportDeviceStores(w http.ResponseWriter, r *http.R
 	}
 
 	// Import using repository
-	successCount, skipped, errors, err := h.deviceStoreRepo.ImportDeviceStores(ctx, items)
+	successCount, inserted, skipped, errors, err := h.deviceStoreRepo.ImportDeviceStores(ctx, items)
 	if err != nil {
 		h.logger.Error("ImportDeviceStores failed", zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to import: %v", err)))
 		return
+	}
+
+	if h.deviceStoreSvc != nil && len(inserted) > 0 {
+		h.deviceStoreSvc.PostImportSleepadBind(ctx, inserted)
 	}
 
 	// Convert errors and skipped to JSON format
@@ -342,6 +391,91 @@ func (h *DeviceStoreHandler) ImportDeviceStores(w http.ResponseWriter, r *http.R
 		"errors":        errorsJSON,
 		"skipped":       skippedJSON,
 	}))
+}
+
+// SyncSleepaceBind 先查 bindInfo，仅对未绑定的 Sleepad 执行绑定。逻辑在 DeviceStoreService。
+func (h *DeviceStoreHandler) SyncSleepaceBind(w http.ResponseWriter, r *http.Request) {
+	if h.deviceStoreSvc == nil {
+		writeJSON(w, http.StatusOK, Fail("sleepace gateway not configured"))
+		return
+	}
+	res, err := h.deviceStoreSvc.SyncSleepaceBind(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]any{
+		"synced": res.Synced, "skipped": res.Skipped, "failed": res.Failed, "errors": res.Errors,
+	}))
+}
+
+// InitialAllSleepad 1) 查询、回写 2) 未绑定单独绑定。逻辑在 DeviceStoreService。
+func (h *DeviceStoreHandler) InitialAllSleepad(w http.ResponseWriter, r *http.Request) {
+	if h.deviceStoreSvc == nil {
+		writeJSON(w, http.StatusOK, Fail("sleepace gateway not configured"))
+		return
+	}
+	res, err := h.deviceStoreSvc.InitialAllSleepad(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]any{
+		"synced": res.Synced, "failed": res.Failed, "no_data": res.NoData, "no_data_list": res.NoDataList,
+		"no_data_bound": res.NoDataBound, "no_data_bind_failed": res.NoDataBindFailed,
+		"errors": res.Errors, "success_details": res.SuccessDetails,
+	}))
+}
+
+// BindSleepadOne 单条 Sleepad 绑定。逻辑在 DeviceStoreService。
+func (h *DeviceStoreHandler) BindSleepadOne(w http.ResponseWriter, r *http.Request) {
+	if h.deviceStoreSvc == nil {
+		writeJSON(w, http.StatusOK, Fail("sleepace gateway not configured"))
+		return
+	}
+	var body struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceID == "" {
+		writeJSON(w, http.StatusOK, Fail("device_id required"))
+		return
+	}
+	if err := h.deviceStoreSvc.BindSleepadOne(r.Context(), body.DeviceID); err != nil {
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
+}
+
+// UnbindSleepadOne 单条 Sleepad 解绑。逻辑在 DeviceStoreService。
+func (h *DeviceStoreHandler) UnbindSleepadOne(w http.ResponseWriter, r *http.Request) {
+	if h.deviceStoreSvc == nil {
+		writeJSON(w, http.StatusOK, Fail("sleepace gateway not configured"))
+		return
+	}
+	var body struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceID == "" {
+		writeJSON(w, http.StatusOK, Fail("device_id required"))
+		return
+	}
+	if err := h.deviceStoreSvc.UnbindSleepadOne(r.Context(), body.DeviceID); err != nil {
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
+}
+
+// DeleteDeviceStore 删除设备库存（仅允许未分配且未出库的记录）
+func (h *DeviceStoreHandler) DeleteDeviceStore(w http.ResponseWriter, r *http.Request, deviceUID string) {
+	ctx := r.Context()
+	if err := h.deviceStoreRepo.DeleteDeviceStore(ctx, deviceUID); err != nil {
+		h.logger.Warn("DeleteDeviceStore failed", zap.String("device_uid", deviceUID), zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 }
 
 // payloadToDeviceStore 函数已在 admin_device_store_impl.go 中定义，直接使用

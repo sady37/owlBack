@@ -12,11 +12,10 @@ type ResidentJSON struct {
 	Nickname   string `json:"nickname"`
 }
 
-// DeviceJSON device JSON format (for cards.devices JSONB field).
-// 写 cards.devices 时：DeviceJSON 需含 device_uid；组装 DeviceInfo 的查询（如 GetDevicesByBed、GetUnboundDevicesByUnit）从 devices 表选 d.device_uid 填入。
+// DeviceJSON device JSON format (for cards.devices JSONB field). 存库用，含 device_uid 供内部解析；前端展示用 DeviceInfo（device_uid 已 omit）。
 type DeviceJSON struct {
 	DeviceID    string  `json:"device_id"`
-	DeviceUID   string  `json:"device_uid,omitempty"`  // 与 card-overview、GetCardDevices 对齐
+	DeviceUID   string  `json:"device_uid,omitempty"` // 存库/内部用，API 返回设备列表用 DeviceInfo 不暴露
 	DeviceCode  string  `json:"device_code,omitempty"` // 与 card-overview、GetCardDevices 对齐
 	DeviceName  string  `json:"device_name"`
 	DeviceType  string  `json:"device_type"`

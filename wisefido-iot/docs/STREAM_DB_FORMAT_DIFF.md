@@ -15,7 +15,7 @@ wisefido-radar 发布到 Redis Stream 的数据格式（参考 `RADAR_REDIS_STRE
   "topic_type": "monitor",
   "data_value": {
     "category": "track",
-    "target_id": 1,
+    "track_id": 1,
     "position_x": 150,
     "position_y": 200,
     "position_z": 50,
@@ -177,7 +177,7 @@ func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, er
   "topic_type": "monitor",
   "data_value": {
     "category": "track",
-    "target_id": 1,
+    "track_id": 1,
     "position_x": 150,
     "position_y": 200,
     "position_z": 50,
@@ -341,7 +341,7 @@ if dataValue, ok := data["data_value"]; ok {
   "topic_type": "monitor",
   "data_value": {
     "category": "track",
-    "target_id": 1,
+    "track_id": 1,
     "position_x": 150,
     "position_y": 200,
     "position_z": 50,

@@ -202,6 +202,40 @@ type HandleAlarmEventResponse struct {
 // Service 方法实现
 // ============================================
 
+// 前端传数字 "0"-"7"，DB 存字符串 EMERG/ALERT/CRITICAL/ERROR/WARNING/NOTICE/INFO/DEBUG
+var alarmLevelNumToStr = map[string]string{
+	"0": "EMERG", "1": "ALERT", "2": "CRITICAL", "3": "ERROR", "4": "WARNING",
+	"5": "NOTICE", "6": "INFO", "7": "DEBUG",
+}
+
+func normalizeAlarmLevelsForFilter(levels []string) []string {
+	out := make([]string, 0, len(levels))
+	seen := make(map[string]struct{})
+	for _, v := range levels {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		var add string
+		if s, ok := alarmLevelNumToStr[v]; ok {
+			add = s
+		} else {
+			add = v
+		}
+		if add == "CRIT" {
+			add = "CRITICAL"
+		}
+		if add == "ERR" {
+			add = "ERROR"
+		}
+		if _, ok := seen[add]; !ok {
+			seen[add] = struct{}{}
+			out = append(out, add)
+		}
+	}
+	return out
+}
+
 // ListAlarmEvents 查询报警事件列表
 func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEventsRequest) (*ListAlarmEventsResponse, error) {
 	// 参数验证
@@ -237,8 +271,8 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 		status := "acked"
 		filters.AlarmStatus = &status
 	} else if req.Status == "resolved" {
-		// resolved 包含人工处理和系统自动解除
-		statuses := []string{"resolved", "auto_resolved"}
+		// resolved 包含：人工处理(acked)、人工解除(resolved)、系统自动解除(auto_resolved)，便于“已处理”列表展示
+		statuses := []string{"resolved", "auto_resolved", "acked"}
 		filters.AlarmStatuses = statuses
 	} else if req.Status == "expired" {
 		status := "expired"
@@ -267,19 +301,13 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 
 	// 过滤参数（多选）
 	if len(req.EventTypes) > 0 {
-		// 注意：Repository 层目前只支持单个 EventType，需要扩展支持 EventTypes 数组
-		// 暂时使用第一个
-		if len(req.EventTypes) == 1 {
-			filters.EventType = &req.EventTypes[0]
-		}
+		filters.EventTypes = req.EventTypes
 	}
 	if len(req.Categories) > 0 {
-		if len(req.Categories) == 1 {
-			filters.Category = &req.Categories[0]
-		}
+		filters.Categories = req.Categories
 	}
 	if len(req.AlarmLevels) > 0 {
-		filters.AlarmLevels = req.AlarmLevels
+		filters.AlarmLevels = normalizeAlarmLevelsForFilter(req.AlarmLevels)
 	}
 
 	// 关联过滤
@@ -738,11 +766,17 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 	if req.Remarks != "" {
 		notes = &req.Remarks
 	}
+	resolveSnapshot, _ := json.Marshal(map[string]interface{}{
+		"handler":      req.CurrentUserID,
+		"operation":   operation,
+		"handle_type": req.HandleType,
+	})
 	cardState, err := commoncard.UpdateAlarmAndUpdateCard(ctx, s.db, cardID, req.TenantID, req.EventID, commoncard.AlarmUpdateParams{
-		AlarmStatus: req.AlarmStatus,
-		Handler:     req.CurrentUserID,
-		Operation:   operation,
-		Notes:       notes,
+		AlarmStatus:     req.AlarmStatus,
+		Handler:         req.CurrentUserID,
+		Operation:       operation,
+		Notes:           notes,
+		ResolveSnapshot: resolveSnapshot,
 	})
 	if err != nil {
 		s.logger.Error("Failed to handle alarm event",

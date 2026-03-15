@@ -11,12 +11,15 @@ type DeviceStore struct {
 	DeviceID string `db:"device_id"` // PRIMARY KEY (UUID)
 
 	// 设备唯一标识（用于首次连接匹配和查询）
-	DeviceUID  string         `db:"device_uid"`  // UNIQUE, 用于设备识别和查找
-	DeviceCode sql.NullString `db:"device_code"` // nullable, sleepace 平台设备编码
+	DeviceUID  string         `db:"device_uid"`  // UNIQUE; 对应 Sleepace deviceName，如 BM87224601903
+	DeviceCode sql.NullString `db:"device_code"` // nullable; 对应 Sleepace device_id（平台侧 ID），如 1ua3erivl9pv1；绑定时传此值给 Sleepace
 
 	// 设备类型（必填）
 	DeviceType  string         `db:"device_type"`  // NOT NULL
 	DeviceModel sql.NullString `db:"device_model"` // nullable
+
+	// 设备显示名称（可选，导入/分配时若为空则默认 DeviceModel 或 DeviceType + - + UID 后4位，如 Radar-0523）
+	DeviceName sql.NullString `db:"device_name"` // nullable
 
 	// MAC/IMEI
 	MAC  sql.NullString `db:"mac"`  // nullable, mac address for wifi devices
@@ -62,6 +65,9 @@ func (d *DeviceStore) ToJSON() map[string]any {
 	}
 	if d.DeviceModel.Valid {
 		m["device_model"] = d.DeviceModel.String
+	}
+	if d.DeviceName.Valid && d.DeviceName.String != "" {
+		m["device_name"] = d.DeviceName.String
 	}
 	if d.MAC.Valid {
 		m["mac"] = d.MAC.String

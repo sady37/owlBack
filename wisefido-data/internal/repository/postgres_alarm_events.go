@@ -68,10 +68,28 @@ func (r *PostgresAlarmEventsRepository) buildWhereClause(tenantID string, filter
 		*args = append(*args, *filters.EventType)
 		*argN++
 	}
+	if len(filters.EventTypes) > 0 {
+		placeholders := make([]string, len(filters.EventTypes))
+		for i := range filters.EventTypes {
+			placeholders[i] = fmt.Sprintf("$%d", *argN)
+			*args = append(*args, filters.EventTypes[i])
+			*argN++
+		}
+		where = append(where, fmt.Sprintf("ae.event_type IN (%s)", strings.Join(placeholders, ", ")))
+	}
 	if filters.Category != nil {
 		where = append(where, fmt.Sprintf("ae.category = $%d", *argN))
 		*args = append(*args, *filters.Category)
 		*argN++
+	}
+	if len(filters.Categories) > 0 {
+		placeholders := make([]string, len(filters.Categories))
+		for i := range filters.Categories {
+			placeholders[i] = fmt.Sprintf("$%d", *argN)
+			*args = append(*args, filters.Categories[i])
+			*argN++
+		}
+		where = append(where, fmt.Sprintf("ae.category IN (%s)", strings.Join(placeholders, ", ")))
 	}
 	if filters.AlarmLevel != nil {
 		where = append(where, fmt.Sprintf("ae.alarm_level = $%d", *argN))

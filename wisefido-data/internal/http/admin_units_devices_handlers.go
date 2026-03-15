@@ -1,7 +1,10 @@
 package httpapi
 
 import (
+	"database/sql"
 	"net/http"
+
+	"owl-common/card"
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/service"
 
@@ -15,10 +18,12 @@ type AdminAPI struct {
 	Tenant       repository.TenantResolver
 	Stub         *StubHandler
 	Log          *zap.Logger
-	QinglanClient *service.QinglanClient // 用于调用 wisefido-qinglan API 查询设备状态
+	QinglanClient *service.QinglanClient
+	StateReader  *card.Reader // 设备在线状态只从 cardagg 读
+	DB           *sql.DB
 }
 
-func NewAdminAPI(units repository.UnitsRepository, devices repository.DevicesRepository, deviceStore repository.DeviceStoreRepository, tenant repository.TenantResolver, stub *StubHandler, log *zap.Logger, qinglanClient *service.QinglanClient) *AdminAPI {
+func NewAdminAPI(units repository.UnitsRepository, devices repository.DevicesRepository, deviceStore repository.DeviceStoreRepository, tenant repository.TenantResolver, stub *StubHandler, log *zap.Logger, qinglanClient *service.QinglanClient, stateReader *card.Reader, db *sql.DB) *AdminAPI {
 	return &AdminAPI{
 		Units:        units,
 		Devices:      devices,
@@ -27,6 +32,8 @@ func NewAdminAPI(units repository.UnitsRepository, devices repository.DevicesRep
 		Stub:         stub,
 		Log:          log,
 		QinglanClient: qinglanClient,
+		StateReader:  stateReader,
+		DB:           db,
 	}
 }
 

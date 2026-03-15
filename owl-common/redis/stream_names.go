@@ -11,7 +11,7 @@ type StreamDefinition struct {
 	RetentionSeconds int
 }
 
-// Stream 定义常量
+// Stream 定义常量（名称为本 var 唯一出处）
 var (
 	// 设备数据流（iot:*:stream）
 	// 根据架构文档配置MaxTime（RetentionSeconds）
@@ -45,20 +45,13 @@ var (
 		MaxLen:           1000,
 		RetentionSeconds: 86400,
 	}
-	// ⭐ 新增：卡片动态数据流
+	// 新增：卡片动态数据流
 	StreamIoTCard = StreamDefinition{
 		Name:             "iot:card:stream",
 		MaxLen:           1000,
 		RetentionSeconds: 86400, // 24小时
 	}
-	// ⭐ 新增：设备状态流（从 config:device_status:stream 改为 iot:deviceStatus:stream）
-	StreamIoTDeviceStatus = StreamDefinition{
-		Name:             "iot:deviceStatus:stream",
-		MaxLen:           1000,
-		RetentionSeconds: 0, // 不限制保留时间
-	}
-
-    //⭐ 新增：设备告警设置变更流
+	//  设备告警设置变更流
 	StreamConfigAlarmDevice = StreamDefinition{
 		Name:             "config:alarmDevice:stream",
 		MaxLen:           1000,
@@ -70,13 +63,13 @@ var (
 		MaxLen:           1000,
 		RetentionSeconds: 0, // 不限制保留时间
 	}
-	// ⭐ 新增：卡片配置变更流
+	//  新增：卡片配置变更流
 	StreamConfigCard = StreamDefinition{
 		Name:             "config:card:stream",
 		MaxLen:           2000,
 		RetentionSeconds: 0, // 不限制保留时间
 	}
-	// ⭐ 新增：卡片实时数据流（wisefido-data消费，6Hz更新）
+	//  新增：卡片实时数据流（wisefido-data消费，6Hz更新）
 	// 来源：wisefido-qinglan → cardagg去重处理(分离track/vital) → 此流
 	// 用途：前端实时显示 track/vital 数据
 	StreamCardRealTime = StreamDefinition{
@@ -84,7 +77,7 @@ var (
 		MaxLen:           5000,
 		RetentionSeconds: 6, // 6秒（处理延迟和重复消费, 确保实时性）
 	}
-	// ⭐ 新增：卡片状态流（BedStatus, RoomStatus, ActiveAlarms, DeviceStatus）
+	//  新增：卡片状态流（BedStatus, RoomStatus, ActiveAlarms, DeviceStatus）
 	// 来源：wisefido-AI 或 cardagg处理后
 	// 用途：前端显示床位/房间状态、告警信息、设备状态等
 	StreamCardStatus = StreamDefinition{
@@ -93,6 +86,12 @@ var (
 		RetentionSeconds: 43200, // 12小时（长生命周期数据，告警保持）
 	}
 
+	// Deprecated: StreamCardUpdate replaced by StreamCardRealTime + StreamCardStatus.
+	StreamCardUpdate = StreamDefinition{
+		Name:             "card:update:stream",
+		MaxLen:           5000,
+		RetentionSeconds: 30,
+	}
 )
 
 // GetStreamConfig 获取 stream 配置（支持从配置覆盖）

@@ -33,28 +33,31 @@ type AlarmInsertResult struct {
 
 // AlarmUpdateParams UPDATE alarm_events 所需参数
 type AlarmUpdateParams struct {
-	AlarmStatus   string          // required: "acked", "resolved", "auto_resolved", "expired"
-	Handler       string          // required: handler user/device ID
-	Operation     string          // optional: "verified", "false_alarm", "test", "auto_resolved"
-	Notes         *string         // optional
-	NotifiedUsers json.RawMessage // optional (nil = don't update)
-	Metadata      json.RawMessage // optional (nil = don't update)
+	AlarmStatus     string          // required: "acked", "resolved", "auto_resolved", "expired"
+	Handler         string          // required: handler user/device ID
+	Operation       string          // optional: "verified", "false_alarm", "test", "auto_resolved"
+	Notes           *string         // optional
+	NotifiedUsers   json.RawMessage // optional (nil = don't update)
+	Metadata        json.RawMessage // optional (nil = don't update)
+	ResolveSnapshot json.RawMessage // optional: 追加到 trigger_data.resolve_snapshot，不覆盖原有触发快照
 }
 
 // CardAlarmState 从 cards 表读取的报警状态（用于构建 AlarmState）
 type CardAlarmState struct {
-	UnhandledAlarm0 int
-	UnhandledAlarm1 int
-	UnhandledAlarm2 int
-	UnhandledAlarm3 int
-	UnhandledAlarm4 int
-	PopAlarmLevel   string
-	PopAlarmType    string
-	PopAlarmEventId string    // pop alarm 对应的 alarm_events.event_id
-	HandTime        time.Time // UpdateAlarmAndUpdateCard 回填的实际 hand_time
+	UnhandledAlarm0   int
+	UnhandledAlarm1   int
+	UnhandledAlarm2   int
+	UnhandledAlarm3   int
+	UnhandledAlarm4   int
+	PopAlarmLevel     string
+	PopAlarmType      string
+	PopAlarmEventId   string    // pop alarm 对应的 alarm_events.event_id
+	PopTriggeredAtMs  int64     // pop 告警的 triggered_at（毫秒），来自 alarm_events，用于前端 Alarm Time
+	HandTime          time.Time // UpdateAlarmAndUpdateCard 回填的实际 hand_time
 }
 
 // ToAlarmState 转换为 AlarmState（用于 Redis/SSE）
+// UpdatedAt 用当前时间；有 pop 时 TriggeredAt 用 alarm_events.triggered_at，前端用其展示 Alarm Time，避免主动拉 cardStatus 时变成“当前时间”
 func (c *CardAlarmState) ToAlarmState() *AlarmState {
 	s := &AlarmState{
 		UpdatedAt:     time.Now().UnixMilli(),
@@ -67,6 +70,9 @@ func (c *CardAlarmState) ToAlarmState() *AlarmState {
 	if c.PopAlarmLevel != "" {
 		s.PopAlarm = c.PopAlarmLevel + "." + c.PopAlarmType
 		s.EventID = c.PopAlarmEventId
+		if c.PopTriggeredAtMs > 0 {
+			s.TriggeredAt = c.PopTriggeredAtMs
+		}
 	}
 	return s
 }
@@ -143,40 +149,47 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 	}
 
 	state := &CardAlarmState{
-		UnhandledAlarm0: counts[0],
-		UnhandledAlarm1: counts[1],
-		UnhandledAlarm2: counts[2],
-		UnhandledAlarm3: counts[3],
-		UnhandledAlarm4: counts[4],
-		PopAlarmLevel:   popLevel,
-		PopAlarmType:    popType,
-		PopAlarmEventId: popEventId,
+		UnhandledAlarm0:  counts[0],
+		UnhandledAlarm1:  counts[1],
+		UnhandledAlarm2:  counts[2],
+		UnhandledAlarm3:  counts[3],
+		UnhandledAlarm4:  counts[4],
+		PopAlarmLevel:    popLevel,
+		PopAlarmType:     popType,
+		PopAlarmEventId:  popEventId,
+		PopTriggeredAtMs: params.TriggeredAt.UnixMilli(),
 	}
 
 	return &AlarmInsertResult{EventID: eventID, TriggeredAt: params.TriggeredAt}, state, nil
 }
 
 // QueryCardAlarmState 直接查 DB 获取 card 的报警状态（供 cardagg HandleAlarmProcessMessage 使用）
+// 若有 pop_alarm，顺带查 alarm_events.triggered_at 填 PopTriggeredAtMs，避免前端用 updated_at 当 Alarm Time 显示成“当前”
 func QueryCardAlarmState(ctx context.Context, db *sql.DB, cardID string) (*CardAlarmState, error) {
 	if cardID == "" {
 		return nil, fmt.Errorf("cardID is required")
 	}
 	var state CardAlarmState
 	var popEventId sql.NullString
+	var popTriggeredAtMs sql.NullInt64
 	err := db.QueryRowContext(ctx, `
-		SELECT unhandled_alarm_0, unhandled_alarm_1, unhandled_alarm_2, unhandled_alarm_3, unhandled_alarm_4,
-		       pop_alarm_level, pop_alarm_type, pop_alarm_event_id
-		FROM cards WHERE card_id = $1
+		SELECT c.unhandled_alarm_0, c.unhandled_alarm_1, c.unhandled_alarm_2, c.unhandled_alarm_3, c.unhandled_alarm_4,
+		       c.pop_alarm_level, c.pop_alarm_type, c.pop_alarm_event_id,
+		       (SELECT (EXTRACT(EPOCH FROM ae.triggered_at) * 1000)::bigint FROM alarm_events ae WHERE ae.event_id = c.pop_alarm_event_id LIMIT 1)
+		FROM cards c WHERE c.card_id = $1
 	`, cardID).Scan(
 		&state.UnhandledAlarm0, &state.UnhandledAlarm1, &state.UnhandledAlarm2,
 		&state.UnhandledAlarm3, &state.UnhandledAlarm4,
-		&state.PopAlarmLevel, &state.PopAlarmType, &popEventId,
+		&state.PopAlarmLevel, &state.PopAlarmType, &popEventId, &popTriggeredAtMs,
 	)
 	if err != nil {
 		return nil, err
 	}
 	if popEventId.Valid {
 		state.PopAlarmEventId = popEventId.String
+	}
+	if popTriggeredAtMs.Valid && popTriggeredAtMs.Int64 > 0 {
+		state.PopTriggeredAtMs = popTriggeredAtMs.Int64
 	}
 	return &state, nil
 }
@@ -237,6 +250,12 @@ func UpdateAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID, tenantID,
 	if params.Metadata != nil {
 		q += fmt.Sprintf(", metadata = $%d", argIdx)
 		args = append(args, params.Metadata)
+		argIdx++
+	}
+	// 追加 resolve_snapshot 到 trigger_data，不覆盖原有触发快照
+	if len(params.ResolveSnapshot) > 0 {
+		q += fmt.Sprintf(", trigger_data = COALESCE(trigger_data, '{}'::jsonb) || jsonb_build_object('resolve_snapshot', $%d::jsonb)", argIdx)
+		args = append(args, params.ResolveSnapshot)
 		argIdx++
 	}
 	q += fmt.Sprintf(" WHERE event_id = $%d AND tenant_id = $%d RETURNING hand_time", argIdx, argIdx+1)
@@ -644,9 +663,10 @@ func extractMetadataCardID(metadata json.RawMessage) string {
 	return ""
 }
 
-// DeviceSelfRecoveryAlarmTypes 设备恢复时需自动解除的报警类型
+// DeviceSelfRecoveryAlarmTypes 设备恢复时需自动解除的报警类型。
+// Elder care 策略：仅设备类可自动恢复；非设备类（生理/行为/安全）必须人工确认恢复，不在此列表。
 var DeviceSelfRecoveryAlarmTypes = []string{
-	"OfflineAlarm", "DeviceFailure", "AngleException", "SignalPoor", "SensorDetached",
+	"Offline", "DeviceFailure", "AngleException", "SignalPoor", "SensorDetached",
 }
 
 // AutoResolveResult 设备自恢复的返回结果
@@ -656,7 +676,8 @@ type AutoResolveResult struct {
 	TopAlarmLevel string // 最新那条的 alarm_level
 }
 
-// AutoResolveDeviceAlarms 设备恢复时，自动解除该设备的 active 报警
+// AutoResolveDeviceAlarms 设备恢复时，自动解除该设备的 active 报警。
+// 仅用于设备类（Offline/DeviceFailure/SensorDetached/SignalPoor/AngleException）；生理类/行为类报警不调用，须人工恢复。
 // alarmTypes == nil → resolve 所有 DeviceSelfRecoveryAlarmTypes
 // alarmTypes != nil → 只 resolve 指定的类型（如 []string{"SignalPoor"}）
 //
@@ -733,14 +754,15 @@ func AutoResolveDeviceAlarms(ctx context.Context, db *sql.DB, cardID, tenantID, 
 		return nil, nil, fmt.Errorf("find top resolved alarm: %w", err)
 	}
 
-	// 2. batch UPDATE: active → auto_resolved
+	// 2. batch UPDATE: active → auto_resolved，trigger_data 追加 resolve_snapshot 不覆盖原触发快照
 	_, err = tx.ExecContext(ctx, `
 		UPDATE alarm_events
 		SET alarm_status = 'auto_resolved',
 		    handler = 'system:device_recovery',
 		    hand_time = CURRENT_TIMESTAMP,
 		    updated_at = CURRENT_TIMESTAMP,
-		    operation = 'auto_resolved'
+		    operation = 'auto_resolved',
+		    trigger_data = COALESCE(trigger_data, '{}'::jsonb) || '{"resolve_snapshot":{"operation":"auto_resolved","handler":"system:device_recovery"}}'::jsonb
 		WHERE device_id = $1
 		  AND tenant_id = $2
 		  AND alarm_status = 'active'
@@ -934,7 +956,7 @@ func snapshotBindingToMetadata(ctx context.Context, tx *sql.Tx, tenantID, device
 			return tx.QueryRowContext(ctx, `
 				SELECT resident_id::text, nickname FROM residents
 				WHERE tenant_id = $1 AND bed_id = $2
-				ORDER BY created_at ASC LIMIT 1
+				ORDER BY resident_id ASC LIMIT 1
 			`, tenantID, boundBedID.String).Scan(&residentID, &residentName)
 		})
 	}
@@ -947,13 +969,13 @@ func snapshotBindingToMetadata(ctx context.Context, tx *sql.Tx, tenantID, device
 			canResolve = true
 		}
 		if canResolve {
-			safeQuery("resident_by_unit", func() error {
-				return tx.QueryRowContext(ctx, `
-					SELECT resident_id::text, nickname FROM residents
-					WHERE tenant_id = $1 AND unit_id = $2
-					ORDER BY created_at ASC LIMIT 1
-				`, tenantID, unitID.String).Scan(&residentID, &residentName)
-			})
+		safeQuery("resident_by_unit", func() error {
+			return tx.QueryRowContext(ctx, `
+				SELECT resident_id::text, nickname FROM residents
+				WHERE tenant_id = $1 AND unit_id = $2
+				ORDER BY resident_id ASC LIMIT 1
+			`, tenantID, unitID.String).Scan(&residentID, &residentName)
+		})
 		}
 	}
 
@@ -996,4 +1018,103 @@ func snapshotBindingToMetadata(ctx context.Context, tx *sql.Tx, tenantID, device
 		return metadata
 	}
 	return out
+}
+
+// ActiveAlarmRow represents a single active alarm record from alarm_events.
+type ActiveAlarmRow struct {
+	EventID     string
+	EventType   string
+	AlarmLevel  string
+	DeviceID    string
+	TriggeredAt int64
+}
+
+// AlarmWithCardInfo extends ActiveAlarmRow with the owning card_id.
+type AlarmWithCardInfo struct {
+	CardID string
+	ActiveAlarmRow
+}
+
+// GetActiveAlarmsByCardID queries active alarms for a specific card.
+// Joins through cards.devices JSONB to resolve device_ids belonging to the card.
+func GetActiveAlarmsByCardID(ctx context.Context, db *sql.DB, cardID string) ([]ActiveAlarmRow, error) {
+	if cardID == "" {
+		return nil, nil
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT ae.event_id, ae.event_type, ae.alarm_level, ae.device_id::text,
+		       EXTRACT(EPOCH FROM ae.triggered_at)::bigint
+		FROM alarm_events ae
+		WHERE ae.device_id::text IN (
+			SELECT jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) ->> 'device_id'
+			FROM cards c WHERE c.card_id = $1
+		)
+		AND ae.alarm_status = 'active'
+		AND (ae.metadata->>'deleted_at' IS NULL)
+		ORDER BY ae.triggered_at DESC
+	`, cardID)
+	if err != nil {
+		return nil, fmt.Errorf("get active alarms for card %s: %w", cardID, err)
+	}
+	defer rows.Close()
+
+	var result []ActiveAlarmRow
+	for rows.Next() {
+		var a ActiveAlarmRow
+		if err := rows.Scan(&a.EventID, &a.EventType, &a.AlarmLevel, &a.DeviceID, &a.TriggeredAt); err != nil {
+			return nil, fmt.Errorf("scan alarm row: %w", err)
+		}
+		result = append(result, a)
+	}
+	return result, rows.Err()
+}
+
+// ListAllActiveAlarms queries all active alarms across all cards.
+// Joins cards.devices JSONB → alarm_events to resolve card ownership.
+// If tenantID is empty, returns alarms for all tenants.
+func ListAllActiveAlarms(ctx context.Context, db *sql.DB, tenantID string) ([]AlarmWithCardInfo, error) {
+	var query string
+	var args []interface{}
+
+	if tenantID != "" {
+		query = `
+			SELECT c.card_id, ae.event_id, ae.event_type, ae.alarm_level, ae.device_id::text,
+			       EXTRACT(EPOCH FROM ae.triggered_at)::bigint
+			FROM cards c
+			CROSS JOIN LATERAL jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS d
+			JOIN alarm_events ae ON ae.device_id::text = d->>'device_id'
+			WHERE ae.alarm_status = 'active'
+			AND ae.tenant_id = $1
+			AND (ae.metadata->>'deleted_at' IS NULL)
+			ORDER BY ae.triggered_at DESC
+		`
+		args = []interface{}{tenantID}
+	} else {
+		query = `
+			SELECT c.card_id, ae.event_id, ae.event_type, ae.alarm_level, ae.device_id::text,
+			       EXTRACT(EPOCH FROM ae.triggered_at)::bigint
+			FROM cards c
+			CROSS JOIN LATERAL jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS d
+			JOIN alarm_events ae ON ae.device_id::text = d->>'device_id'
+			WHERE ae.alarm_status = 'active'
+			AND (ae.metadata->>'deleted_at' IS NULL)
+			ORDER BY ae.triggered_at DESC
+		`
+	}
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list all active alarms: %w", err)
+	}
+	defer rows.Close()
+
+	var result []AlarmWithCardInfo
+	for rows.Next() {
+		var a AlarmWithCardInfo
+		if err := rows.Scan(&a.CardID, &a.EventID, &a.EventType, &a.AlarmLevel, &a.DeviceID, &a.TriggeredAt); err != nil {
+			return nil, fmt.Errorf("scan alarm row: %w", err)
+		}
+		result = append(result, a)
+	}
+	return result, rows.Err()
 }

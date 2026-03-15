@@ -29,10 +29,36 @@ func (r *PostgresDevicesRepository) SetLogger(logger *zap.Logger) {
 	r.logger = logger
 }
 
+// orderByClause 白名单排序字段，防止 SQL 注入；direction 仅允许 asc/desc
+func orderByClause(sort, direction string) string {
+	dir := "ASC"
+	if strings.ToUpper(strings.TrimSpace(direction)) == "DESC" {
+		dir = "DESC"
+	}
+	col := strings.TrimSpace(strings.ToLower(sort))
+	switch col {
+	case "device_uid":
+		return "d.device_uid " + dir
+	case "device_type":
+		return "ds.device_type " + dir
+	case "device_model":
+		return "ds.device_model " + dir
+	case "status":
+		return "d.status " + dir
+	case "business_access":
+		return "d.business_access " + dir
+	case "device_id":
+		return "d.device_id " + dir
+	case "device_name":
+	default:
+	}
+	return "d.device_name " + dir
+}
+
 // ListDevices 查询设备列表
-// 功能：支持多种过滤条件和分页，自动过滤status='disabled'的设备
+// 功能：支持多种过滤条件和分页，自动过滤status='disabled'的设备；sort/direction 为全部数据排序后分页
 // 严格限制：所有用户（包括 SystemAdmin）只能查看本 tenant 的设备
-func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID string, filters DeviceFilters, page, size int) ([]*domain.Device, int, error) {
+func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID string, filters DeviceFilters, page, size int, sort, direction string) ([]*domain.Device, int, error) {
 	if tenantID == "" {
 		return []*domain.Device{}, 0, nil
 	}
@@ -127,7 +153,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		FROM devices d
 		LEFT JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE ` + strings.Join(where, " AND ") + `
-		ORDER BY d.device_name
+		ORDER BY ` + orderByClause(sort, direction) + `
 		LIMIT $` + fmt.Sprintf("%d", limitPos) + ` OFFSET $` + fmt.Sprintf("%d", offsetPos)
 
 	rows, err := r.db.QueryContext(ctx, q, argsList...)
@@ -309,6 +335,86 @@ func (r *PostgresDevicesRepository) GetDeviceByUID(ctx context.Context, tenantID
 	return &d, nil
 }
 
+// GetDevicesBoundToRoom 查询绑定到指定 room 的设备（仅 id/name，用于删除前检查）
+func (r *PostgresDevicesRepository) GetDevicesBoundToRoom(ctx context.Context, tenantID, roomID string) ([]*domain.Device, error) {
+	if tenantID == "" || roomID == "" {
+		return nil, nil
+	}
+	q := `SELECT device_id::text, device_name FROM devices WHERE tenant_id = $1 AND bound_room_id = $2`
+	rows, err := r.db.QueryContext(ctx, q, tenantID, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.Device
+	for rows.Next() {
+		d := &domain.Device{}
+		if err := rows.Scan(&d.DeviceID, &d.DeviceName); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// GetDevicesBoundToBed 查询绑定到指定 bed 的设备（仅 id/name，用于删除前检查）
+func (r *PostgresDevicesRepository) GetDevicesBoundToBed(ctx context.Context, tenantID, bedID string) ([]*domain.Device, error) {
+	if tenantID == "" || bedID == "" {
+		return nil, nil
+	}
+	q := `SELECT device_id::text, device_name FROM devices WHERE tenant_id = $1 AND bound_bed_id = $2`
+	rows, err := r.db.QueryContext(ctx, q, tenantID, bedID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.Device
+	for rows.Next() {
+		d := &domain.Device{}
+		if err := rows.Scan(&d.DeviceID, &d.DeviceName); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// GetDevicesBoundToRoomsOrBeds 查询绑定到给定 room 或 bed 的设备（仅 id/name，用于 DeleteUnit 前检查）
+func (r *PostgresDevicesRepository) GetDevicesBoundToRoomsOrBeds(ctx context.Context, tenantID string, roomIDs, bedIDs []string) ([]*domain.Device, error) {
+	if tenantID == "" || (len(roomIDs) == 0 && len(bedIDs) == 0) {
+		return nil, nil
+	}
+	var conds []string
+	var args []any
+	args = append(args, tenantID)
+	argN := 2
+	if len(roomIDs) > 0 {
+		conds = append(conds, fmt.Sprintf("bound_room_id = ANY($%d)", argN))
+		args = append(args, pq.Array(roomIDs))
+		argN++
+	}
+	if len(bedIDs) > 0 {
+		conds = append(conds, fmt.Sprintf("bound_bed_id = ANY($%d)", argN))
+		args = append(args, pq.Array(bedIDs))
+	}
+	where := "tenant_id = $1 AND (" + strings.Join(conds, " OR ") + ")"
+	q := `SELECT device_id::text, device_name FROM devices WHERE ` + where
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.Device
+	for rows.Next() {
+		d := &domain.Device{}
+		if err := rows.Scan(&d.DeviceID, &d.DeviceName); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // CreateDevice 手动创建设备与位置的绑定关系（出库操作）
 // 替代触发器：trigger_validate_device_bed_tenant, trigger_validate_device_store_tenant
 // 功能：系统管理员从device_store出库，创建设备与位置的绑定关系
@@ -411,15 +517,18 @@ func (r *PostgresDevicesRepository) CreateDevice(ctx context.Context, tenantID s
 		return "", fmt.Errorf("cannot bind to both room and bed: bound_room_id=%s, bound_bed_id=%s (mutually exclusive)", boundRoomID, boundBedID)
 	}
 
-	// 5. 生成device_name（如果未提供，使用device_uid的最后4位）
+	// 5. 生成device_name（如果未提供）：DeviceType_last4(device_uid)
 	deviceName := device.DeviceName
 	if deviceName == "" {
-		// 获取 device_uid 的最后4位
 		uidSuffix := deviceUID
 		if len(deviceUID) > 4 {
 			uidSuffix = deviceUID[len(deviceUID)-4:]
 		}
-		deviceName = "Device-" + uidSuffix
+		typePrefix := "Device"
+		if device.DeviceType.Valid && device.DeviceType.String != "" {
+			typePrefix = device.DeviceType.String
+		}
+		deviceName = typePrefix + "_" + uidSuffix
 	}
 
 	// 6. 插入devices记录
@@ -1019,7 +1128,15 @@ func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Conte
 		}
 	}()
 
-	deviceName := dsDeviceType + "-" + dsDeviceUID
+	uidSuffix := dsDeviceUID
+	if len(dsDeviceUID) > 4 {
+		uidSuffix = dsDeviceUID[len(dsDeviceUID)-4:]
+	}
+	typePrefix := dsDeviceType
+	if typePrefix == "" {
+		typePrefix = "Device"
+	}
+	deviceName := typePrefix + "_" + uidSuffix
 
 	insertQuery := `
 		INSERT INTO devices (

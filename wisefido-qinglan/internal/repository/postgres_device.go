@@ -245,7 +245,7 @@ func (r *PostgresDeviceRepository) SetDeviceProperties(ctx context.Context, uid 
 // GetAllDeviceStoreInfo 获取所有device_store记录（用于启动时初始化设备缓存）
 func (r *PostgresDeviceRepository) GetAllDeviceStoreInfo(ctx context.Context) ([]*DeviceStoreInfo, error) {
 	query := `
-		SELECT device_id, device_uid, device_type, device_model, mac, imei, comm_mode, mcu_model, firmware_version, tenant_id, allow_access
+		SELECT device_id, device_uid, device_code, device_type, device_model, mac, imei, comm_mode, mcu_model, firmware_version, tenant_id, allow_access
 		FROM device_store
 	`
 
@@ -259,12 +259,14 @@ func (r *PostgresDeviceRepository) GetAllDeviceStoreInfo(ctx context.Context) ([
 	for rows.Next() {
 		var d DeviceStoreInfo
 		var deviceModel, mac, imei, commMode, mcuModel, firmwareVersion sql.NullString
+		var deviceCode sql.NullString
 		var allowAccess bool
 
-		if err := rows.Scan(&d.DeviceID, &d.DeviceUID, &d.DeviceType, &deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion, &d.TenantID, &allowAccess); err != nil {
+		if err := rows.Scan(&d.DeviceID, &d.DeviceUID, &deviceCode, &d.DeviceType, &deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion, &d.TenantID, &allowAccess); err != nil {
 			return nil, fmt.Errorf("failed to scan device_store row: %w", err)
 		}
 
+		d.DeviceCode = deviceCode
 		d.DeviceModel = deviceModel
 		d.MAC = mac
 		d.IMEI = imei
@@ -759,12 +761,11 @@ func (r *PostgresDeviceRepository) CountDevicesByStatus(ctx context.Context, ten
 	return counts, nil
 }
 
-// GetDeviceStoreInfoAndLocation 根据设备UID获取 device_store 信息（用于认证）
-func (r *PostgresDeviceRepository) GetDeviceStoreInfoAndLocation(ctx context.Context, deviceUID string) (*DeviceStoreInfo, error) {
-	// 查询 device_store 表获取设备认证所需的基本信息
+// GetDeviceStoreInfo 根据设备UID获取 device_store 信息（含 device_code）
+func (r *PostgresDeviceRepository) GetDeviceStoreInfo(ctx context.Context, deviceUID string) (*DeviceStoreInfo, error) {
 	query := `
 		SELECT 
-			device_id, device_uid, device_type, device_model,
+			device_id, device_uid, device_code, device_type, device_model,
 			mac, imei, comm_mode, mcu_model, firmware_version,
 			tenant_id, allow_access
 		FROM device_store
@@ -776,22 +777,22 @@ func (r *PostgresDeviceRepository) GetDeviceStoreInfoAndLocation(ctx context.Con
 
 	var ds DeviceStoreInfo
 	var deviceModel, mac, imei, commMode, mcuModel, firmwareVersion sql.NullString
+	var deviceCode sql.NullString
 
 	err := row.Scan(
-		&ds.DeviceID, &ds.DeviceUID, &ds.DeviceType, &deviceModel,
+		&ds.DeviceID, &ds.DeviceUID, &deviceCode, &ds.DeviceType, &deviceModel,
 		&mac, &imei, &commMode, &mcuModel, &firmwareVersion,
 		&ds.TenantID, &ds.AllowAccess,
 	)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			// device_store 中没有记录，返回错误，由调用者处理插入
 			return nil, fmt.Errorf("device not found in device_store")
 		}
 		return nil, fmt.Errorf("failed to query device: %w", err)
 	}
 
-	// 设置 device_store 的可空字段
+	ds.DeviceCode = deviceCode
 	ds.DeviceModel = deviceModel
 	ds.MAC = mac
 	ds.IMEI = imei
@@ -808,10 +809,9 @@ func (r *PostgresDeviceRepository) GetDeviceStoreByDeviceID(ctx context.Context,
 		return nil, fmt.Errorf("device_id is required")
 	}
 
-	// 查询 device_store 表获取设备的 device_uid 和权限信息
 	query := `
 		SELECT 
-			device_id, device_uid, device_type, device_model,
+			device_id, device_uid, device_code, device_type, device_model,
 			mac, imei, comm_mode, mcu_model, firmware_version,
 			tenant_id, allow_access
 		FROM device_store
@@ -823,9 +823,10 @@ func (r *PostgresDeviceRepository) GetDeviceStoreByDeviceID(ctx context.Context,
 
 	var ds DeviceStoreInfo
 	var deviceModel, mac, imei, commMode, mcuModel, firmwareVersion sql.NullString
+	var deviceCode sql.NullString
 
 	err := row.Scan(
-		&ds.DeviceID, &ds.DeviceUID, &ds.DeviceType, &deviceModel,
+		&ds.DeviceID, &ds.DeviceUID, &deviceCode, &ds.DeviceType, &deviceModel,
 		&mac, &imei, &commMode, &mcuModel, &firmwareVersion,
 		&ds.TenantID, &ds.AllowAccess,
 	)
@@ -837,7 +838,7 @@ func (r *PostgresDeviceRepository) GetDeviceStoreByDeviceID(ctx context.Context,
 		return nil, fmt.Errorf("failed to query device: %w", err)
 	}
 
-	// 设置 device_store 的可空字段
+	ds.DeviceCode = deviceCode
 	ds.DeviceModel = deviceModel
 	ds.MAC = mac
 	ds.IMEI = imei
@@ -847,6 +848,7 @@ func (r *PostgresDeviceRepository) GetDeviceStoreByDeviceID(ctx context.Context,
 
 	return &ds, nil
 }
+
 // 从 alarm_device.monitor_config.alarms 中解析报警项，返回 []AlarmEnablementItem
 // 先查缓存，缓存未命中再查数据库并存入缓存
 func (r *PostgresDeviceRepository) GetAlarmEnablement(ctx context.Context, tenantID, deviceUID string) ([]alarm.AlarmEnablementItem, error) {

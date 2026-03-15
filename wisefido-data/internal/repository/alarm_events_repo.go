@@ -46,10 +46,12 @@ type AlarmEventFilters struct {
 	DeviceIDs    []string  // 设备ID列表（IN 查询）
 
 	// 事件类型和级别过滤
-	EventType  *string   // 事件类型
-	Category   *string   // 分类（safety, clinical, behavioral, device）
-	AlarmLevel *string   // 报警级别
-	AlarmLevels []string // 报警级别列表（IN 查询）
+	EventType   *string   // 事件类型（单选）
+	EventTypes  []string  // 事件类型列表（IN 查询）
+	Category    *string   // 分类（单选）
+	Categories  []string  // 分类列表（IN 查询）
+	AlarmLevel  *string   // 报警级别（单选）
+	AlarmLevels []string  // 报警级别列表（IN 查询）
 
 	// 状态过滤
 	AlarmStatus *string   // 报警状态（active, acked, resolved, auto_resolved, expired）

@@ -85,9 +85,9 @@ func encodeSleepaceRealtime(data, encoded map[string]interface{}) (map[string]in
 	return encoded, nil
 }
 
-// encodeSleepaceSleepStage 编码睡眠阶段数据
+// encodeSleepaceSleepStage 编码睡眠阶段数据（用于 SNOMED/报告等，与 realtime 统一码 1/2/4/8 不同）
 func encodeSleepaceSleepStage(data, encoded map[string]interface{}) (map[string]interface{}, error) {
-	// sleepStage: 0=清醒, 1=浅睡眠, 2=深睡眠, 3=REM睡眠 - 需要 SNOMED 映射
+	// realtime 已统一为 1=awake,2=light,4=deep,8=unknown
 	if sleepStage, ok := data["sleepStage"]; ok {
 		applySleepaceSNOMedMapping(encoded, "sleepStage", "sleepStage.sleepStage", sleepStage)
 	}

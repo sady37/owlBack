@@ -9,7 +9,7 @@ import (
 // 使用强类型领域模型，不使用map[string]any
 type DevicesRepository interface {
 	// 查询
-	ListDevices(ctx context.Context, tenantID string, filters DeviceFilters, page, size int) ([]*domain.Device, int, error)
+	ListDevices(ctx context.Context, tenantID string, filters DeviceFilters, page, size int, sort string, direction string) ([]*domain.Device, int, error)
 	GetDevice(ctx context.Context, tenantID, deviceID string) (*domain.Device, error)
 	GetDeviceByUID(ctx context.Context, tenantID, deviceUID string) (*domain.Device, error)
 	GetDeviceRelations(ctx context.Context, tenantID, deviceID string) (*DeviceRelations, error)
@@ -35,9 +35,13 @@ type DevicesRepository interface {
 	GetOrCreateDeviceFromStore(ctx context.Context, identifier string, mqttTopic string) (*domain.Device, error)
 
 	// 批量查询（用于 ListUnitsWithFullHierarchy）
-	// DeviceInfo 用于返回设备的 ID 和 Name
 	GetDevicesByRoomIDs(ctx context.Context, tenantID string, roomIDs []string) (map[string][]DeviceInfo, error)
 	GetDevicesByBedIDs(ctx context.Context, tenantID string, bedIDs []string) (map[string][]DeviceInfo, error)
+
+	// 按绑定关系查询（用于 DeleteUnit/DeleteRoom/DeleteBed 前检查）
+	GetDevicesBoundToRoom(ctx context.Context, tenantID, roomID string) ([]*domain.Device, error)
+	GetDevicesBoundToBed(ctx context.Context, tenantID, bedID string) ([]*domain.Device, error)
+	GetDevicesBoundToRoomsOrBeds(ctx context.Context, tenantID string, roomIDs, bedIDs []string) ([]*domain.Device, error)
 }
 
 // DeviceInfo 用于返回设备的 ID 和 Name（用于 ListUnitsWithFullHierarchy）

@@ -10,7 +10,10 @@ import (
 	"time"
 
 	"owl-common/alarm"
+	"owl-common/card"
+	"owl-common/observation"
 	"owl-common/radar"
+	rediscommon "owl-common/redis"
 	"wisefido-qinglan/internal/config"
 	"wisefido-qinglan/internal/decode"
 	"wisefido-qinglan/internal/domain"
@@ -27,7 +30,7 @@ const (
 
 // CardIDProvider 定义获取设备卡片映射信息的接口
 type CardIDProvider interface {
-	GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*repository.CardDeviceInfo, error)
+	GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*card.DeviceCardMapping, error)
 }
 
 // DeviceLastSeenUpdater 设备最后收到消息时间更新器接口
@@ -102,7 +105,7 @@ func (c *MQTTConsumer) Start(ctx context.Context) error {
 	return nil
 }
 
-// publishOnlineForConnectedAfterStartup 启动 1 分钟后，从已订阅主题（MQTT 队列）中取所有 func 主题对应的设备 UID，通知订阅管理器对已接入的发布上线
+// publishOnlineForConnectedAfterStartup 启动 1 分钟后，从已订阅主题（MQTT 队列）中取所有 func 主题对应的设备 UID，按统一 IoTHead 发 topic=alarm、category=OfflineRecover 到 iot:alarm:stream，由 cardagg 更新 cardstatus.device_status
 func (c *MQTTConsumer) publishOnlineForConnectedAfterStartup(ctx context.Context) {
 	select {
 	case <-ctx.Done():
@@ -126,16 +129,25 @@ func (c *MQTTConsumer) publishOnlineForConnectedAfterStartup(ctx context.Context
 		}
 		uidSet[uid] = struct{}{}
 	}
-	uids := make([]string, 0, len(uidSet))
-	for uid := range uidSet {
-		uids = append(uids, uid)
-	}
-	if len(uids) == 0 {
+	if len(uidSet) == 0 {
 		return
 	}
-	if c.subscriptionManager != nil {
-		c.subscriptionManager.PublishOnlineForConnectedDevices(ctx, uids)
+	ts := time.Now().UnixMilli()
+	for uid := range uidSet {
+		tid, _, _, cid, did := c.streamPublisher.Resolve(ctx, uid) // tenantID, branchID, unitID, cardID, deviceID
+		cid = ""
+		data := map[string]interface{}{alarm.FieldEventStatus: "start"}
+		msg := rediscommon.NewSingleItemMessage(tid, cid, uid, did, DeviceTypeRadar, ts, "alarm", alarm.AlarmTypeOfflineRecover, data)
+		_ = c.streamPublisher.PublishAlarm(ctx, msg)
 	}
+	// 已由上方 iot:alarm:stream OfflineRecover 由 cardagg 更新 device_status，不再走 event 流
+	// if c.subscriptionManager != nil {
+	// 	uids := make([]string, 0, len(uidSet))
+	// 	for uid := range uidSet {
+	// 		uids = append(uids, uid)
+	// 	}
+	// 	c.subscriptionManager.PublishOnlineForConnectedDevices(ctx, uids)
+	// }
 }
 
 // subscribeAllAccessibleDevices 订阅所有可访问的设备
@@ -399,7 +411,7 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 	cached, ok := domain.AllowAccessCache.Load(uid)
 	if !ok {
 		// 缓存未命中：回退到数据库查询 device_store（避免因为短期缓存缺失导致拒绝）
-		ds, err := c.deviceRepo.GetDeviceStoreInfoAndLocation(context.Background(), uid)
+		ds, err := c.deviceRepo.GetDeviceStoreInfo(context.Background(), uid)
 		if err != nil {
 			log.Printf("Device %s not in cache, rejecting message (device not authenticated): db lookup failed: %v", uid, err)
 			// 为避免频繁DB命中，短期内缓存为 false
@@ -433,9 +445,9 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 	// 根据主题类型处理消息
 	topicType := c.extractTopicType(topic)
 
-	if topicType == "event" || topicType == "alarm" || topicType == "stat" {
-		log.Printf("[MQTT_RAW] topic=%s uid=%s payload=%s", topic, uid, string(payload))
-	}
+	// if topicType == "event" || topicType == "alarm" || topicType == "stat" {
+	// 	log.Printf("[MQTT_RAW] topic=%s uid=%s payload=%s", topic, uid, string(payload))
+	// }
 
 	// 更新设备最后收到消息的时间（根据消息类型）
 	// 参考wisefido-radar的实现：UpdateLastSeenByType会检测首次连接并自动发送monitor订阅命令
@@ -454,10 +466,8 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 		return c.handleFunctionMessage(uid, message)
 	case "stat":
 		return c.handleStatMessage(uid, message)
-	case "event":
+	case "event", "alarm":
 		return c.handleEventMessage(uid, message)
-	case "alarm":
-		return c.handleAlarmMessage(uid, message)
 	default:
 		log.Printf("Unknown topic type: %s", topicType)
 		return nil
@@ -497,119 +507,14 @@ func (c *MQTTConsumer) extractTopicType(topic string) string {
 	return "unknown"
 }
 
-// publishDecodedData 发布解码后的数据到 Redis Stream
-// 一条 base64 消息解码后是一个对象，不是数组
-// - monitor/stat: 如果返回数组（多个数据项），则分开发送每个数据项
-// - event/alarm: 一条消息只包含一个事件，直接发送单个对象（不是数组）
-// 注意：cardID为空时仍继续处理（无接收端），但输出警告日志
+// DEPRECATED: publishDecodedData — 已被 observation.Message 模式替代，monitor/stat/event 均已迁移。
+// 保留备查，待确认无遗漏后删除。
+/*
 func (c *MQTTConsumer) publishDecodedData(
-	ctx context.Context,
-	cardID string,
-	tenantID string,
-	deviceID string,
-	topicType string,
-	category string,
-	dataValue interface{},
-	originalMessage map[string]interface{},
-) error {
-	// cardID为空时输出警告日志，但仍继续处理
-	if cardID == "" {
-		log.Printf("⚠️ Device has no cardID, but still publishing %s message. deviceID=%s, tenantID=%s", topicType, deviceID, tenantID)
-	}
-
-	streamName := c.streamPublisher.GetOutputStreamName(topicType)
-
-	// event 和 alarm 类型：一条消息只包含一个事件，直接发送单个对象
-	if topicType == "event" || topicType == "alarm" {
-		// 将 dataValue 转换为单个对象
-		var eventObj map[string]interface{}
-		switch v := dataValue.(type) {
-		case map[string]interface{}:
-			// dataValue 是单个对象（正常情况）
-			eventObj = v
-		case []map[string]interface{}:
-			// 兼容处理：如果是数组，只取第一个（实际不应该出现）
-			if len(v) > 0 {
-				eventObj = v[0]
-			}
-		case []interface{}:
-			// 兼容处理：如果是数组，只取第一个（实际不应该出现）
-			if len(v) > 0 {
-				if itemMap, ok := v[0].(map[string]interface{}); ok {
-					eventObj = itemMap
-				}
-			}
-		default:
-			// 其他类型，降级处理：使用原始消息
-			log.Printf("Unexpected dataValue type for %s message: %T, using original message", topicType, dataValue)
-			encodedData := c.streamPublisher.BuildEncodedData(cardID, tenantID, deviceID, topicType, category, []interface{}{originalMessage})
-			streamID, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
-			if err != nil {
-				log.Printf("Failed to publish %s data to stream: %v", topicType, err)
-				return err
-			}
-			// 输出 stream 发布日志（auth, alarm, event）
-			if topicType == "auth" || topicType == "alarm" || topicType == "event" {
-				log.Printf("Published %s data to stream %s (stream_id: %s) for cardID %s", topicType, streamName, streamID, cardID)
-			}
-			return nil
-		}
-
-		// 如果没有事件对象，跳过
-		if len(eventObj) == 0 {
-			log.Printf("No event data to publish for %s message", topicType)
-			return nil
-		}
-
-		// 确定顶层 category：
-		// - 调用方传入非空 category（FHIR 分类或 alarm category）→ 直接使用
-		// - 否则 fallback 到 eventObj 自己的 category
-		eventCategory := category
-		if eventCategory == "" {
-			if cat, ok := eventObj["category"].(string); ok && cat != "" {
-				eventCategory = cat
-			}
-		}
-
-		// 直接发送单个对象
-		encodedData := c.streamPublisher.BuildEncodedData(cardID, tenantID, deviceID, topicType, eventCategory, []interface{}{eventObj})
-		streamID, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
-		if err != nil {
-			log.Printf("Failed to publish %s data to stream: %v", topicType, err)
-			return err
-		}
-
-		// 输出 stream 发布日志（auth, alarm, event）
-		if topicType == "auth" || topicType == "alarm" || topicType == "event" {
-			log.Printf("Published %s data to stream %s (stream_id: %s) for cardID %s", topicType, streamName, streamID, cardID)
-		}
-		return nil
-	}
-
-	// 一条 MQTT = 一条 stream 消息，整条发送（同一时刻的数据不拆分）
-	// category 已由调用方计算好（如 "track2.vital1"）
-	var dvSlice []interface{}
-	switch v := dataValue.(type) {
-	case []interface{}:
-		dvSlice = v
-	case []map[string]interface{}:
-		for _, m := range v {
-			dvSlice = append(dvSlice, m)
-		}
-	case map[string]interface{}:
-		dvSlice = []interface{}{v}
-	default:
-		dvSlice = []interface{}{originalMessage}
-	}
-
-	if len(dvSlice) == 0 {
-		return nil
-	}
-
-	encodedData := c.streamPublisher.BuildEncodedData(cardID, tenantID, deviceID, topicType, category, dvSlice)
-	_, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
-	return err
-}
+	ctx context.Context, cardID, tenantID, deviceID, topicType, category string,
+	dataValue interface{}, originalMessage map[string]interface{},
+) error { ... }
+*/
 
 // handlePropertyMessage 处理属性响应消息（/prop/.../post）：读/写回包共用，根据 cmd 区分日志
 func (c *MQTTConsumer) handlePropertyMessage(uid string, message map[string]interface{}) error {
@@ -672,45 +577,61 @@ func (c *MQTTConsumer) handlePropertyMessage(uid string, message map[string]inte
 	return nil
 }
 
-// getMapKeys 获取map的所有键（用于调试）
-func getMapKeys(m map[string]interface{}) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+// handleFunctionMessage 处理功能响应消息（/func/.../post）
+// 实时交互通过 HTTP API 对外提供：客户端调 POST /api/v1/radar/devices/{uid}/function 时，
+// RadarService 发 MQTT 到 /func/.../get 并轮询 Redis；设备在 /func/.../post 回包后，此处提取
+// requestId 并存 Redis，RadarService 方能取到响应并返回给 HTTP 调用方。
+func (c *MQTTConsumer) handleFunctionMessage(uid string, message map[string]interface{}) error {
+	log.Printf("Handling function message for device %s", uid)
+	var requestID string
+	if id, ok := message["requestId"].(string); ok && id != "" {
+		requestID = id
+	} else if id, ok := message["request_id"].(string); ok && id != "" {
+		requestID = id
+	} else if id, ok := message["requestID"].(string); ok && id != "" {
+		requestID = id
 	}
-	return keys
+	if requestID != "" {
+		ctx := context.Background()
+		if err := c.streamPublisher.StoreCommandResponse(ctx, requestID, message); err != nil {
+			log.Printf("Failed to store function response for requestId %s: %v", requestID, err)
+		} else {
+			log.Printf("Stored function response for requestId %s from device %s", requestID, uid)
+		}
+	} else {
+		log.Printf("Function message from device %s has no requestId, treating as function status notification", uid)
+	}
+	return nil
 }
 
-// handleMonitorMessage 处理实时数据消息
-// 方案 B：一条 MQTT decode 一次，发一条 stream。data_value 为数组，一条一组 [{category,...},...]；
-// sleep 归于 vital；顶层 category 为 trackN.vitalN（仅一种时为 trackN 或 vitalN），N 为该类条数。
+// resolveDeviceIdentity 统一解析 device_uid → (tid, bid, unitID, cid, did, bedID, roomID)。monitor/stat/event 共用。
+// ok=false 表示无 device_store 或 DeviceID 为空，调用方应直接 return。
+func (c *MQTTConsumer) resolveDeviceIdentity(ctx context.Context, uid string) (tid, bid, unitID, cid, did, bedID, roomID string, ok bool) {
+	ds, err := c.deviceRepo.GetDeviceStoreInfo(ctx, uid)
+	if err != nil || ds == nil || ds.DeviceID == "" {
+		return "", "", "", "", "", "", "", false
+	}
+	tid = ds.TenantID
+	did = ds.DeviceID
+	if info, err := c.cardMappingService.GetCardIDByDeviceUID(ctx, uid); err == nil && info != nil {
+		bid, unitID, cid = info.BranchID, info.UnitID, info.CardID
+		bedID, roomID = info.BedID, info.RoomID
+	}
+	return tid, bid, unitID, cid, did, bedID, roomID, true
+}
+
+// handleMonitorMessage 处理实时数据消息 (target 模式)
+// 解码后经 TargetMergeVital 合并/拆分，每条发到 iot:monitor:stream，category 均为 track（与 field/type 一致）。
+// 流使用 device_uid；无 device_store 记录不发。
 func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]interface{}) error {
 	ctx := context.Background()
-
-	// 使用 CardMappingService 获取 cardID 和其他设备映射信息
-	cardDeviceInfo, err := c.cardMappingService.GetCardIDByDeviceUID(ctx, uid)
-	if err != nil {
-		log.Printf("Failed to get cardID for device %s: %v", uid, err)
-		// cardID 获取失败，不能处理该设备消息
+	tid, bid, unitID, cid, did, bedID, roomID, ok := c.resolveDeviceIdentity(ctx, uid)
+	if !ok {
 		return nil
 	}
-
-	// cardDeviceInfo 不能为 nil，否则无法处理
-	if cardDeviceInfo == nil {
-		log.Printf("Device %s not found in card mapping, skipping monitor message", uid)
-		return nil
-	}
-
-	var cardID, tenantID, deviceID string
-	cardID = cardDeviceInfo.CardID
-	tenantID = cardDeviceInfo.TenantID
-	deviceID = cardDeviceInfo.DeviceID
-
-	// 调用 RadarDecoder 进行协议层面的解码
+	cid = "" // gateway 不填 card_id，由 cardagg 解析
 	dataValue, err := decode.RadarDecoder(message, "monitor")
 	if err != nil {
-		// log.Printf("Failed to decode monitor data for device %s: %v", uid, err)
-		// 解码失败时，使用原始消息（降级处理）
 		dataValue = message
 	}
 
@@ -727,292 +648,478 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 	case map[string]interface{}:
 		items = []map[string]interface{}{v}
 	default:
-		return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "monitor", "", []interface{}{message}, message)
+		return nil
 	}
 
 	if len(items) == 0 {
 		return nil
 	}
 
-	nTrack, nVital := 0, 0
-	for _, m := range items {
-		cat, _ := m["category"].(string)
-		if cat == "sleep" {
-			cat = "vital"
-			m["category"] = "vital"
-		}
-		switch cat {
-		case "track":
-			nTrack++
-		case "vital":
-			nVital++
-		}
-	}
-
-	var topCategory string
-	if nTrack > 0 && nVital > 0 {
-		topCategory = fmt.Sprintf("track%d.vital%d", nTrack, nVital)
-	} else if nTrack > 0 {
-		topCategory = fmt.Sprintf("track%d", nTrack)
-	} else if nVital > 0 {
-		topCategory = fmt.Sprintf("vital%d", nVital)
-	}
-
-	// 整条发送（所有 track/vital 合并在一条 stream 消息中，避免 cardagg 按设备替换时丢失多目标）
-	dvSlice := make([]interface{}, len(items))
-	for i, m := range items {
-		dvSlice[i] = m
-	}
-	streamName := c.streamPublisher.GetOutputStreamName("monitor")
-	encodedData := c.streamPublisher.BuildEncodedData(cardID, tenantID, deviceID, "monitor", topCategory, dvSlice)
-	_, err = c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
-	return err
-}
-
-// handleFunctionMessage 处理功能响应消息（/func/.../post）
-// 实时交互通过 HTTP API 对外提供：客户端调 POST /api/v1/radar/devices/{uid}/function 时，
-// RadarService 发 MQTT 到 /func/.../get 并轮询 Redis；设备在 /func/.../post 回包后，此处提取
-// requestId 并存 Redis，RadarService 方能取到响应并返回给 HTTP 调用方。
-func (c *MQTTConsumer) handleFunctionMessage(uid string, message map[string]interface{}) error {
-	log.Printf("Handling function message for device %s", uid)
-
-	// 提取 requestId（支持多种字段名）
-	var requestID string
-	if id, ok := message["requestId"].(string); ok && id != "" {
-		requestID = id
-	} else if id, ok := message["request_id"].(string); ok && id != "" {
-		requestID = id
-	} else if id, ok := message["requestID"].(string); ok && id != "" {
-		requestID = id
-	}
-
-	// 有 requestId 即命令响应：存 Redis 供 HTTP API（RadarService.waitForResponse）获取后返回客户端
-	if requestID != "" {
-		ctx := context.Background()
-		if err := c.streamPublisher.StoreCommandResponse(ctx, requestID, message); err != nil {
-			log.Printf("Failed to store function response for requestId %s: %v", requestID, err)
-			// 不返回错误，继续处理
-		} else {
-			log.Printf("Stored function response for requestId %s from device %s", requestID, uid)
-		}
-	} else {
-		// 没有 requestId，可能是设备主动上报的功能状态
-		log.Printf("Function message from device %s has no requestId, treating as function status notification", uid)
-		// 这里可以添加功能状态更新处理逻辑
-	}
-
-	return nil
-}
-
-// resolveDevice 公共：获取 cardMapping + enabledMap，stat/event/alarm handler 共用
-func (c *MQTTConsumer) resolveDevice(ctx context.Context, uid string) (
-	cardID, tenantID, deviceID string,
-	enabledMap map[string]alarm.AlarmEnablementItem,
-	err error,
-) {
-	cardDeviceInfo, err := c.cardMappingService.GetCardIDByDeviceUID(ctx, uid)
-	if err != nil {
-		return "", "", "", nil, fmt.Errorf("cardMapping failed: %w", err)
-	}
-	if cardDeviceInfo == nil {
-		return "", "", "", nil, fmt.Errorf("device not found in card mapping")
-	}
-	cardID = cardDeviceInfo.CardID
-	tenantID = cardDeviceInfo.TenantID
-	deviceID = cardDeviceInfo.DeviceID
-
-	enabledMap = make(map[string]alarm.AlarmEnablementItem)
-	if tenantID != "" {
-		items, err := c.deviceRepo.GetAlarmEnablement(ctx, tenantID, uid)
-		if err != nil {
-			log.Printf("Failed to get alarm enablement for device %s: %v", uid, err)
-		} else {
-			for _, item := range items {
-				if item.IsEnabled == 1 {
-					enabledMap[item.AlarmType] = item
-				}
-			}
-		}
-	}
-	return cardID, tenantID, deviceID, enabledMap, nil
-}
-
-// handleStatMessage 处理统计数据消息（track×1 + sleep×1）
-func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interface{}) error {
-	ctx := context.Background()
-
-	cardID, tenantID, deviceID, enabledMap, err := c.resolveDevice(ctx, uid)
-	if err != nil {
-		log.Printf("[STAT_HANDLER] device=%s: %v", uid, err)
-		return nil
-	}
-
-	dataValue, err := decode.RadarDecoder(message, "stat")
-	if err != nil {
-		log.Printf("[STAT_HANDLER] decode failed for device %s: %v", uid, err)
-		return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "stat", "", message, message)
-	}
-	log.Printf("[DECODE_STAT_DEBUG] device=%s decoded=%v", uid, dataValue)
-
-	// sleep 里的 stat_numeric_codes 检查是否需要转 alarm
-	for _, code := range extractStatNumericCodes(dataValue) {
-		alarmType, ok := alarm.LookupStatCode(code)
-		if !ok {
-			continue
-		}
-		if item, ok := enabledMap[alarmType]; ok {
-			cat := fmt.Sprintf("%s.%s", item.AlarmLevel, item.AlarmType)
-			log.Printf("[STAT_TO_ALARM] device=%s code=%s → alarm (%s)", uid, code, cat)
-			return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "alarm", cat, dataValue, message)
-		}
-	}
-
-	return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "stat", "", dataValue, message)
-}
-
-// extractStatNumericCodes 从 stat 解码结果提取 sleep 的 numeric codes
-func extractStatNumericCodes(dataValue interface{}) []string {
-	var items []map[string]interface{}
-	switch v := dataValue.(type) {
-	case []interface{}:
-		for _, elem := range v {
-			if m, ok := elem.(map[string]interface{}); ok {
-				items = append(items, m)
-			}
-		}
-	case map[string]interface{}:
-		items = []map[string]interface{}{v}
-	}
-	var codes []string
-	for _, m := range items {
-		if nc, ok := m["stat_numeric_codes"].([]string); ok {
-			codes = append(codes, nc...)
-		} else if nc, ok := m["stat_numeric_codes"].([]interface{}); ok {
-			for _, c := range nc {
-				if s, ok := c.(string); ok {
-					codes = append(codes, s)
-				}
-			}
-		}
-	}
-	return codes
-}
-
-// handleEventMessage 处理事件消息
-// decoder 返回 []interface{}（每条独立 track），逐条判断 alarm/event 分流发布
-func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interface{}) error {
-	ctx := context.Background()
-
-	cardID, tenantID, deviceID, enabledMap, err := c.resolveDevice(ctx, uid)
-	if err != nil {
-		log.Printf("[EVENT_HANDLER] device=%s: %v", uid, err)
-		return nil
-	}
-
-	dataValue, err := decode.RadarDecoder(message, "event")
-	if err != nil {
-		log.Printf("[EVENT_DECODE_ERROR] device=%s: %v", uid, err)
-		return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "event", "", message, message)
-	}
-
-	tracks, ok := dataValue.([]interface{})
-	if !ok || len(tracks) == 0 {
-		log.Printf("[EVENT_HANDLER] device=%s no tracks decoded, type=%T", uid, dataValue)
-		return nil
-	}
-
+	ts := time.Now().UnixMilli()
+	msgs := TargetMergeVital(items, ts, tid, bid, unitID, cid, uid, did, bedID, roomID)
 	var lastErr error
-	for _, track := range tracks {
-		dataCat := eventDataCategory(track)
-		if dataCat == "" {
-			continue
-		}
-		if item, ok := enabledMap[dataCat]; ok {
-			cat := fmt.Sprintf("%s.%s", item.AlarmLevel, item.AlarmType)
-			log.Printf("[EVENT_TO_ALARM] device=%s → alarm (%s)", uid, cat)
-			if err := c.publishSingleTrack(ctx, cardID, tenantID, deviceID, "alarm", cat, track); err != nil {
-				lastErr = err
-			}
-		} else {
-			if err := c.publishSingleTrack(ctx, cardID, tenantID, deviceID, "event", dataCat, track); err != nil {
-				lastErr = err
-			}
-		}
-	}
-	return lastErr
-}
-
-// handleAlarmMessage 处理告警消息
-// 雷达 /alarm/ topic 已由固件判定为报警，逐 track 拆分发布到 alarm stream
-func (c *MQTTConsumer) handleAlarmMessage(uid string, message map[string]interface{}) error {
-	ctx := context.Background()
-
-	cardID, tenantID, deviceID, _, err := c.resolveDevice(ctx, uid)
-	if err != nil {
-		log.Printf("[ALARM_HANDLER] device=%s: %v", uid, err)
-		return nil
-	}
-
-	dataValue, err := decode.RadarDecoder(message, "alarm")
-	if err != nil {
-		log.Printf("[ALARM_HANDLER] decode failed for device %s: %v", uid, err)
-		return c.publishDecodedData(ctx, cardID, tenantID, deviceID, "alarm", "", message, message)
-	}
-
-	tracks, ok := dataValue.([]interface{})
-	if !ok || len(tracks) == 0 {
-		log.Printf("[ALARM_HANDLER] device=%s no tracks decoded, type=%T", uid, dataValue)
-		return nil
-	}
-
-	var lastErr error
-	for _, track := range tracks {
-		dataCat := eventDataCategory(track)
-		cat := buildAlarmCategory(dataCat)
-		if err := c.publishSingleTrack(ctx, cardID, tenantID, deviceID, "alarm", cat, track); err != nil {
+	for _, msg := range msgs {
+		if err := c.streamPublisher.PublishMonitor(ctx, msg); err != nil {
+			log.Printf("Failed to publish monitor for device %s: %v", uid, err)
 			lastErr = err
 		}
 	}
 	return lastErr
 }
 
-// publishSingleTrack 将单条 track 发布到 Redis Stream（一条 track = 一条 stream 消息）
-func (c *MQTTConsumer) publishSingleTrack(ctx context.Context, cardID, tenantID, deviceID, topicType, category string, trackData interface{}) error {
-	if cardID == "" {
-		log.Printf("⚠️ Device has no cardID, but still publishing %s message. deviceID=%s", topicType, deviceID)
-	}
-	trackMap, ok := trackData.(map[string]interface{})
-	if !ok {
-		log.Printf("[PUBLISH_SINGLE_TRACK] unexpected track type: %T", trackData)
-		return nil
-	}
-	trackMap["category"] = category
-	streamName := c.streamPublisher.GetOutputStreamName(topicType)
-	encodedData := c.streamPublisher.BuildEncodedData(cardID, tenantID, deviceID, topicType, category, []interface{}{trackMap})
-	streamID, err := c.streamPublisher.PublishToStream(ctx, streamName, encodedData)
-	if err != nil {
-		log.Printf("Failed to publish %s track to stream: %v", topicType, err)
-		return err
-	}
-	log.Printf("Published %s track to %s (id: %s) cardID=%s category=%s", topicType, streamName, streamID, cardID, category)
-	return nil
-}
-
-// eventDataCategory 从 event map 提取 data_category
-func eventDataCategory(track interface{}) string {
-	if m, ok := track.(map[string]interface{}); ok {
-		if dc, ok := m["data_category"].(string); ok {
-			return dc
+// TargetMergeVital 根据 decode 结果合并 vital：仅当本条 MQTT 内「在 Bed 区域」的 track 恰有 1 个时合并到该 track，否则 vital 单独成条 track_id=9。
+// 入参 deviceUID 为流用设备标识；deviceID 写入包头；bedID/roomID 用于 vital 单独成条时的 area_id。返回每条 category 均为 track。
+func TargetMergeVital(
+	items []map[string]interface{},
+	ts int64,
+	tid, bid, unitID, cid, deviceUID, deviceID, bedID, roomID string,
+) []*rediscommon.IoTStreamMessage {
+	var tracks []map[string]interface{}
+	var vitals []map[string]interface{}
+	for _, m := range items {
+		cat, _ := m["category"].(string)
+		if cat == "" {
+			cat, _ = m["dataCategory"].(string) // decode 输出为 dataCategory
+		}
+		switch cat {
+		case "track":
+			tracks = append(tracks, m)
+		case "vital":
+			vitals = append(vitals, m)
 		}
 	}
-	return ""
+
+	areaID := bedID
+	if areaID == "" {
+		areaID = roomID
+	}
+
+	var oneTrack, oneVital map[string]interface{}
+	if len(tracks) == 1 && len(vitals) == 1 {
+		oneTrack, oneVital = tracks[0], vitals[0]
+	}
+
+	var out []*rediscommon.IoTStreamMessage
+	if oneTrack != nil && oneVital != nil {
+		data := radarTrackToData(oneTrack)
+		mergeRadarVital(data, oneVital)
+		out = append(out, rediscommon.NewSingleItemMessage(tid, cid, deviceUID, deviceID, DeviceTypeRadar, ts, "monitor", observation.CategoryTrack, data))
+	} else {
+		for _, tr := range tracks {
+			data := radarTrackToData(tr)
+			if len(tracks) > 1 {
+				data[observation.FieldTrackCount] = len(tracks)
+			}
+			out = append(out, rediscommon.NewSingleItemMessage(tid, cid, deviceUID, deviceID, DeviceTypeRadar, ts, "monitor", observation.CategoryTrack, data))
+		}
+		for _, v := range vitals {
+			data := map[string]any{
+				observation.FieldTrackID: observation.TrackUnknownPerson,
+			}
+			if areaID != "" {
+				data[observation.FieldAreaID] = areaID
+			}
+			mergeRadarVital(data, v)
+			out = append(out, rediscommon.NewSingleItemMessage(tid, cid, deviceUID, deviceID, DeviceTypeRadar, ts, "monitor", observation.CategoryTrack, data))
+		}
+	}
+	return out
 }
 
-// buildAlarmCategory 为 /alarm/ topic 的 track 构建 "LEVEL.TYPE" category
-func buildAlarmCategory(dataCategory string) string {
-	level := alarm.GetDefaultAlarmLevel(dataCategory)
-	if level != "" {
-		return fmt.Sprintf("%s.%s", level, dataCategory)
+// radarTrackToData converts a decoded radar track item to observation standard field map.
+func radarTrackToData(tr map[string]interface{}) map[string]any {
+	t := observation.Track{}
+	if v, ok := tr[observation.FieldTrackID]; ok {
+		t.TrackID = asInt(v)
 	}
-	return dataCategory
+	if v, ok := tr["position_x"]; ok {
+		px := asInt(v)
+		t.PositionX = &px
+	}
+	if v, ok := tr["position_y"]; ok {
+		py := asInt(v)
+		t.PositionY = &py
+	}
+	if v, ok := tr["position_z"]; ok {
+		pz := asInt(v)
+		t.PositionZ = &pz
+	}
+	if v, ok := tr["pose"]; ok {
+		t.Pose = asInt(v)
+	}
+	if v, ok := tr["event"]; ok {
+		t.Event = asInt(v)
+	}
+	data := t.ToFieldMap()
+	if v, ok := tr["remaining_time"]; ok {
+		data[observation.FieldRemainingTime] = asInt(v)
+	}
+	if v, ok := tr["area_id"]; ok {
+		data[observation.FieldAreaID] = asInt(v)
+	}
+	// 雷达无 signal_quality，轨迹置信度固定 60
+	data[observation.FieldTrackConfidence] = 60
+	return data
 }
+
+// mergeRadarVital merges decoded radar vital fields into the observation data map.
+func mergeRadarVital(data map[string]any, vital map[string]interface{}) {
+	if hr, ok := vital["heart_rate"]; ok {
+		if v := asInt(hr); v > 0 {
+			data[observation.FieldHeartRate] = v
+		}
+	}
+	if rr, ok := vital["respiratory_rate"]; ok {
+		if v := asInt(rr); v > 0 {
+			data[observation.FieldRespiratoryRate] = v
+		}
+	}
+	if st, ok := vital["stability"]; ok {
+		switch asInt(st) {
+		case 3: // 11 无干扰
+			data[observation.FieldVitalConfidence] = 60 //vitalConfidence 60*N/3
+		case 2: // 10 较小动作
+			data[observation.FieldVitalConfidence] = 40 //2*20=40
+		case 1: // 01 较大动作
+			data[observation.FieldVitalConfidence] = 20
+		}
+	}
+	if ss, ok := vital["sleep_status"]; ok {
+		data[observation.FieldSleepStage] = radarSleepStageToSleepad(asInt(ss))
+	}
+	if _, set := data[observation.FieldVitalConfidence]; !set {
+		data[observation.FieldVitalConfidence] = 60
+	}
+}
+
+// radarSleepStageToSleepad 将雷达 sleep_status(0=unknown,1=lightSleep,2=deepSleep,3=awake) 转为 observation 统一值：1=清醒, 2=浅睡, 4=深睡, 8=未知。
+func radarSleepStageToSleepad(radar int) int {
+	switch radar {
+	case 3:
+		return 1 // awake
+	case 1:
+		return 2 // light
+	case 2:
+		return 4 // deep
+	case 0:
+		return 8 // unknown
+	default:
+		return 8
+	}
+}
+
+func asInt(v interface{}) int {
+	switch val := v.(type) {
+	case int:
+		return val
+	case float64:
+		return int(val)
+	case int64:
+		return int(val)
+	}
+	return 0
+}
+
+// handleStatMessage 处理统计数据消息（activity×1 + sleep×1）。
+//   - stat track (activity) → iot:event:stream, category=activity（状态汇总：people_count, walk_distance 等）
+//   - stat sleep            → iot:monitor:stream, category=track（track 格式：hr, rr, sleep_stage, weak_biometric_signal）
+func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interface{}) error {
+	ctx := context.Background()
+	tid, bid, unitID, cid, did, _, _, ok := c.resolveDeviceIdentity(ctx, uid)
+	if !ok {
+		return nil
+	}
+	cid = "" // gateway 不填 card_id，由 cardagg 解析
+	dataValue, err := decode.RadarDecoder(message, "stat")
+	if err != nil {
+		log.Printf("[STAT_HANDLER] decode failed for device %s: %v", uid, err)
+		return nil
+	}
+
+	var items []map[string]interface{}
+	switch v := dataValue.(type) {
+	case []interface{}:
+		for _, item := range v {
+			if m, ok := item.(map[string]interface{}); ok {
+				items = append(items, m)
+			}
+		}
+	case []map[string]interface{}:
+		items = v
+	case map[string]interface{}:
+		items = []map[string]interface{}{v}
+	default:
+		return nil
+	}
+
+	ts := time.Now().UnixMilli()
+	var lastErr error
+
+	for _, m := range items {
+		cat, _ := m["dataCategory"].(string)
+		if cat == "" {
+			cat, _ = m["category"].(string)
+		}
+		switch cat {
+		case observation.FieldActivity:
+			if err := c.publishStatActivity(ctx, tid, bid, unitID, cid, uid, did, ts, m); err != nil {
+				lastErr = err
+			}
+		case observation.CategorySleep:
+			if err := c.publishStatSleep(ctx, tid, bid, unitID, cid, uid, did, ts, m); err != nil {
+				lastErr = err
+			}
+		}
+	}
+	return lastErr
+}
+
+// publishStatActivity 发布老人活动性状态汇总到 iot:event:stream，payload 符合 EventItem 格式，activity 字段平铺。
+func (c *MQTTConsumer) publishStatActivity(ctx context.Context, tid, bid, unitID, cid, deviceUID, deviceID string, ts int64, m map[string]interface{}) error {
+	item := observation.EventItem{
+		DataCategory: observation.FieldActivity,
+		EventName:    observation.FieldActivity,
+		EventSince:   ts,
+		EventStatus:  "instant",
+		TrackID:      observation.TrackUnknownPerson,
+	}
+	data, err := observation.EventItemToDataMap(&item)
+	if err != nil {
+		return err
+	}
+	if data == nil {
+		data = make(map[string]interface{})
+	}
+	if v, ok := m["people_count"]; ok {
+		data[observation.FieldTrackCount] = asInt(v)
+	}
+	if v, ok := m["walk_distance"]; ok {
+		data[observation.FieldWalkDistance] = asInt(v)
+	}
+	if v, ok := m["walk_duration"]; ok {
+		data[observation.FieldWalkDuration] = asInt(v)
+	}
+	if v, ok := m["lie_duration"]; ok {
+		data[observation.FieldLieDuration] = asInt(v)
+	}
+	if v, ok := m["stand_duration"]; ok {
+		data[observation.FieldStandDuration] = asInt(v)
+	}
+	if v, ok := m["multi_person_duration"]; ok {
+		data[observation.FieldMultiPersonDuration] = asInt(v)
+	}
+	msg := rediscommon.NewSingleItemMessage(tid, cid, deviceUID, deviceID, DeviceTypeRadar, ts, "event", observation.FieldActivity, data)
+	return c.streamPublisher.PublishEvent(ctx, msg)
+}
+
+// publishStatSleep 雷达 state.sleep 异常：按 monitor 阀值已明确判定，发 iot:alarm:stream；三者都正常发 event sleep。
+// breath: 00=正常 01→RespRateAlertHigh 10→RespRateAlertLow 11→ApneaHypopnea
+// heart: 00=正常 01→HeartRateAlertLow 10→HeartRateAlertHigh 11=未定义不告警
+// vital_signs: 00=正常 11→WeakBiometricSignal
+func (c *MQTTConsumer) publishStatSleep(ctx context.Context, tid, bid, unitID, cid, deviceUID, deviceID string, ts int64, m map[string]interface{}) error {
+	breathState := asInt(m["breath_state"]) & 0x03
+	heartState := asInt(m["heart_state"]) & 0x03
+	vitalSignsState := asInt(m["vital_signs_state"]) & 0x03
+
+	publishAlarm := func(category string, eventValue int64, eventReason string, rawDecode map[string]interface{}) error {
+		payloadJSON, _ := json.Marshal(rawDecode)
+		item := observation.EventItem{
+			DataCategory: category,
+			EventName:    category,
+			EventSince:   ts,
+			EventStatus:  "instant",
+			EventValue:   eventValue,
+			EventReason:  eventReason,
+			EventPayload: string(payloadJSON),
+			TrackID:      observation.TrackUnknownPerson,
+		}
+		alarmData, _ := observation.EventItemToDataMap(&item)
+		if alarmData == nil {
+			alarmData = make(map[string]interface{})
+		}
+		alarmMsg := rediscommon.NewSingleItemMessage(tid, cid, deviceUID, deviceID, DeviceTypeRadar, ts, "alarm", category, alarmData)
+		return c.streamPublisher.PublishAlarm(ctx, alarmMsg)
+	}
+
+	if breathState != 0 {
+		ev := int64(asInt(m["respiratory_rate"]))
+		if ev == 0 {
+			ev = int64(asInt(m["avg_respiratory_rate"]))
+		}
+		avgBreathe := asInt(m["avg_respiratory_rate"])
+		reason := fmt.Sprintf("avgBreathe=%d", avgBreathe)
+		switch breathState {
+		case 1:
+			_ = publishAlarm(alarm.RespRateAlertHigh, ev, reason, m)
+		case 2:
+			_ = publishAlarm(alarm.RespRateAlertLow, ev, reason, m)
+		case 3:
+			_ = publishAlarm(alarm.ApneaHypopnea, ev, reason, m)
+		}
+	}
+	if heartState == 1 {
+		hr := int64(asInt(m["heart_rate"]))
+		if hr == 0 {
+			hr = int64(asInt(m["avg_heart_rate"]))
+		}
+		avgHeart := asInt(m["avg_heart_rate"])
+		_ = publishAlarm(alarm.HeartRateAlertLow, hr, fmt.Sprintf("avgHeart=%d", avgHeart), m)
+	} else if heartState == 2 {
+		hr := int64(asInt(m["heart_rate"]))
+		if hr == 0 {
+			hr = int64(asInt(m["avg_heart_rate"]))
+		}
+		avgHeart := asInt(m["avg_heart_rate"])
+		_ = publishAlarm(alarm.HeartRateAlertHigh, hr, fmt.Sprintf("avgHeart=%d", avgHeart), m)
+	}
+	if vitalSignsState == 3 {
+		_ = publishAlarm(alarm.WeakBiometricSignal, int64(vitalSignsState)*20, alarm.WeakBiometricSignal, m)
+	}
+
+	if breathState != 0 || heartState != 0 || vitalSignsState == 3 {
+		return nil
+	}
+	data := make(map[string]interface{}, len(m)+4)
+	for k, v := range m {
+		data[k] = v
+	}
+	data["event_name"] = alarm.SleepStage
+	data["event_since"] = ts
+	data["event_status"] = "instant"
+	data["track_id"] = observation.TrackUnknownPerson
+	cat := alarm.SleepStage // 与 Sleepad sleepStage 统一为 sleep-stage
+	msg := rediscommon.NewSingleItemMessage(tid, cid, deviceUID, deviceID, DeviceTypeRadar, ts, "event", cat, data)
+	return c.streamPublisher.PublishEvent(ctx, msg)
+}
+
+// handleEventMessage 处理事件/告警消息（event + alarm topic 统一入口），payload 符合 EventItem 格式。
+// decoder 输出 event_name（如 InBed、Fall）；consumer 用其值作 category 注入 dataCategory，用于业务路由。
+// 按 event_type 分配 track_id：type=1/2 人、type=3 TrackSpace、type=5/7/8 TrackDevice。流使用 device_uid。
+func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interface{}) error {
+	ctx := context.Background()
+	tid, _, _, cid, did, _, _, ok := c.resolveDeviceIdentity(ctx, uid)
+	if !ok {
+		return nil
+	}
+	cid = "" // gateway 不填 card_id，由 cardagg 解析
+	dataValue, err := decode.RadarDecoder(message, "event")
+	if err != nil {
+		log.Printf("[EVENT_DECODE_ERROR] device=%s: %v", uid, err)
+		return nil
+	}
+
+	var items []map[string]interface{}
+	switch v := dataValue.(type) {
+	case []interface{}:
+		for _, item := range v {
+			if m, ok := item.(map[string]interface{}); ok {
+				items = append(items, m)
+			}
+		}
+	case map[string]interface{}:
+		items = []map[string]interface{}{v}
+	default:
+		return nil
+	}
+
+	ts := time.Now().UnixMilli()
+	var lastErr error
+
+	for _, m := range items {
+		eventName, _ := m["event_name"].(string)
+		if eventName == "" {
+			eventName, _ = m["data_category"].(string)
+		}
+		if eventName == "" {
+			continue
+		}
+		eventType := asInt(m["event_type"])
+
+		item := observation.EventItem{
+			DataCategory: eventName,
+			EventName:    eventName,
+			EventSince:   ts,
+			EventStatus:  "start",
+		}
+		switch eventType {
+		case 1:
+			item.TrackID = asInt(m["track_id"])
+		case 2:
+			item.TrackID = asInt(m["track_id"])
+		case 3:
+			item.TrackID = observation.TrackSpace
+		case 5, 7, 8:
+			item.TrackID = observation.TrackDevice
+		default:
+			continue
+		}
+		data, err := observation.EventItemToDataMap(&item)
+		if err != nil {
+			continue
+		}
+		if data == nil {
+			data = make(map[string]interface{})
+		}
+		switch eventType {
+		case 1:
+			// area_type 写入 data，供下游区分区域（床区/感应区等）
+
+		case 2:
+			// Fall/SittingOnGround 走 alarm cardagg event_handler 按使能落库
+			alarmCat := ""
+			switch eventName {
+			case alarm.Fall, alarm.SuspectedFall:
+				alarmCat = alarm.Fall
+			case alarm.SittingOnGround, alarm.SuspectedSittingOnGround:
+				alarmCat = alarm.SittingOnGround
+			}
+			if alarmCat != "" {
+				payloadJSON, _ := json.Marshal(m)
+				alarmItem := observation.EventItem{
+					DataCategory: alarmCat,
+					EventName:    alarmCat,
+					EventSince:   ts,
+					EventStatus:  "start",
+					EventPayload: string(payloadJSON),
+					TrackID:      asInt(m["track_id"]),
+				}
+				alarmData, _ := observation.EventItemToDataMap(&alarmItem)
+				if alarmData == nil {
+					alarmData = make(map[string]interface{})
+				}
+				evMsg := rediscommon.NewSingleItemMessage(tid, cid, uid, did, DeviceTypeRadar, ts, "alarm", alarmCat, alarmData)
+				if err := c.streamPublisher.PublishAlarm(ctx, evMsg); err != nil {
+					log.Printf("[EVENT_HANDLER] event publish failed device=%s cat=%s: %v", uid, alarmCat, err)
+					lastErr = err
+				}
+				continue
+			}
+			if v, ok := m["pose"]; ok {
+				data[observation.FieldPose] = asInt(v)
+			}
+		case 3:
+			if v, ok := m[observation.FieldNumberPeople]; ok {
+				data[observation.FieldNumberPeople] = asInt(v)
+			}
+		case 5, 7, 8:
+			if v, ok := m["status_type"]; ok {
+				if s, ok := v.(string); ok {
+					data[s] = asInt(m["status_value"])
+				}
+			}
+		}
+
+		msg := rediscommon.NewSingleItemMessage(tid, cid, uid, did, DeviceTypeRadar, ts, "event", eventName, data)
+		if err := c.streamPublisher.PublishEvent(ctx, msg); err != nil {
+			log.Printf("[EVENT_HANDLER] publish failed device=%s cat=%s: %v", uid, eventName, err)
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+// DEPRECATED: publishSingleTrack — 已被 observation.Message 模式替代。
+// func (c *MQTTConsumer) publishSingleTrack(...) error { ... }
+
+// DEPRECATED: eventDataCategory — 已被 handleEventMessage 内联替代。
+// func eventDataCategory(track interface{}) string { ... }

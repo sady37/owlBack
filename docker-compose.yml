@@ -1,9 +1,9 @@
 version: '3.8'
-
 services:
   postgresql:
     image: timescale/timescaledb:latest-pg15
     container_name: owl-postgresql
+    command: ["postgres", "-c", "max_locks_per_transaction=256"]
     environment:
       POSTGRES_DB: owlrd
       POSTGRES_USER: postgres
@@ -45,7 +45,7 @@ services:
       - ./mqtt/data:/mosquitto/data
       - ./mqtt/log:/mosquitto/log
     healthcheck:
-      test: ["CMD", "mosquitto_sub", "-h", "localhost", "-t", "test", "-C", "1"]
+      test: ["CMD", "nc", "-z", "localhost", "1883"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -92,7 +92,46 @@ services:
       retries: 5
       start_period: 10s
 
+  sleepace-mysql:
+    image: mysql:5.7
+    container_name: sleepace-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=mysql
+    ports:
+      - "3306:3306"
+    volumes:
+      - sleepace_mysql_data:/var/lib/mysql
+      - ../sleepace/sql:/docker-entrypoint-initdb.d  # 添加SQL初始化脚本
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  sleepace-service:
+    build:
+      context: ../sleepace
+      dockerfile: Dockerfile
+    container_name: sleepace-service
+    ports:
+      - "8090:8090"
+      - "28070:28070"
+      - "29010:29010"   
+      #29010 device inital port  28070 device tcp long connect  8090 httpAPI
+    volumes:
+      - ../sleepace/sleepace-service/log:/var/wisefido/sleepace/sleepace-service/log
+    depends_on:
+      sleepace-mysql:
+        condition: service_healthy
+      mqtt:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+    driver: local
+  sleepace_mysql_data:
+    driver: local
   redis_data:
-
+    driver: local

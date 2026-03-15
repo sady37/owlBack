@@ -29,9 +29,10 @@ func NewLogger(level string, format string, serviceName string) (*zap.Logger, er
 	
 	var config zap.Config
 	if format == "console" {
-		// 使用开发模式配置（控制台输出）
+		// 使用开发模式配置（控制台输出），不输出 stack 多行
 		config = zap.NewDevelopmentConfig()
 		config.Level = zap.NewAtomicLevelAt(zapLevel)
+		config.DisableStacktrace = true
 	} else {
 		// 使用生产模式配置（JSON输出）
 		config = zap.NewProductionConfig()

@@ -394,9 +394,17 @@ func (h *MonitorHandler) InitSSE(w http.ResponseWriter, r *http.Request) {
 	_ = tenantID
 
 	if err := h.realtime.InitSSE(body.ConnID, body.WatchIDs, body.ViewIDs); err != nil {
+		h.logger.Warn("[SSE] init failed",
+			zap.String("conn_id", body.ConnID),
+			zap.Int("watch_ids", len(body.WatchIDs)),
+			zap.Error(err))
 		writeJSON(w, http.StatusBadRequest, Fail(err.Error()))
 		return
 	}
+	h.logger.Info("[SSE] init ok",
+		zap.String("conn_id", body.ConnID),
+		zap.Int("watch_ids", len(body.WatchIDs)),
+		zap.Int("view_ids", len(body.ViewIDs)))
 	writeJSON(w, http.StatusOK, Ok(map[string]interface{}{"status": "initialized"}))
 }
 

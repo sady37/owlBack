@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -84,6 +85,29 @@ func (s *CardSyncService) CreateCardsForUnit(ctx context.Context, tenantID, unit
 	return stats, nil
 }
 
+// RecalcAllCardsAlarmState 启动时按 alarm_events 重算并写回所有 cards（unhandled_alarm_*、pop_alarm_*），与 alarm_events 一致
+func (s *CardSyncService) RecalcAllCardsAlarmState(ctx context.Context, db *sql.DB) (ok, fail int, err error) {
+	rows, err := db.QueryContext(ctx, `SELECT card_id, tenant_id FROM cards`)
+	if err != nil {
+		return 0, 0, fmt.Errorf("query cards: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, tid string
+		if err := rows.Scan(&cid, &tid); err != nil {
+			fail++
+			continue
+		}
+		if _, err := card.RecalcCardAlarmState(ctx, db, cid, tid); err != nil {
+			s.logger.Debug("RecalcCardAlarmState", zap.String("card_id", cid), zap.Error(err))
+			fail++
+		} else {
+			ok++
+		}
+	}
+	return ok, fail, rows.Err()
+}
+
 // CreateAllCards 为所有单元创建/更新卡片（启动时调用，参考 card-manage CreateAllCards）
 func (s *CardSyncService) CreateAllCards(ctx context.Context, tenantID string) error {
 	if tenantID == "" {
@@ -92,7 +116,7 @@ func (s *CardSyncService) CreateAllCards(ctx context.Context, tenantID string) e
 	}
 
 	// 清理所有现有卡片记录（全局清理），避免漏删除
-	if err := s.ClearAllCards(); err != nil {
+	if err := s.ClearAllCards(ctx); err != nil {
 		s.logger.Error("Failed to clear all cards before sync",
 			zap.String("tenant_id", tenantID),
 			zap.Error(err),
@@ -140,8 +164,17 @@ func (s *CardSyncService) CreateAllCards(ctx context.Context, tenantID string) e
 	return nil
 }
 
-// ClearAllCards 清理全局所有卡片记录（删除所有租户的卡片）
-func (s *CardSyncService) ClearAllCards() error {
+// ClearAllCards 清理全局所有卡片记录（删除前对每张卡推送 config:card:stream deleted，供 cardagg 清缓存）
+func (s *CardSyncService) ClearAllCards(ctx context.Context) error {
+	affected, err := s.cardRepo.ListAllCardsForClear(ctx)
+	if err != nil {
+		return err
+	}
+	for _, a := range affected {
+		if err := s.emitCardChange(ctx, a); err != nil {
+			s.logger.Warn("emit card deleted before clear failed", zap.String("card_id", a.CardID), zap.Error(err))
+		}
+	}
 	return s.cardRepo.ClearAllCards()
 }
 
@@ -157,8 +190,10 @@ func (s *CardSyncService) emitCardChange(ctx context.Context, a domain.CardSyncA
 		}
 	}
 
-	// Step 1: 发送消息到 config:card:stream
-	if err := s.publisher.PublishCardChangeMessage(ctx, a.TenantID, a.CardID, a.UnitID, branchID); err != nil {
+	// Step 1: 发送消息到 config:card:stream（携带 op: created/updated/deleted）
+	if err := s.publisher.PublishCardChangeMessageWithExtra(ctx, a.TenantID, a.CardID, a.UnitID, branchID, map[string]interface{}{
+		"op": a.Op,
+	}); err != nil {
 		return err
 	}
 

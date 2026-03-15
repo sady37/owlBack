@@ -4,235 +4,190 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"owl-common/alarm"
 
 	"wisefido-data/internal/domain"
 )
 
-// GetSleepaceSettingsFromHardware 从硬件读取 Sleepace 设备配置（参考 v1.0 实现）
-// 参考：wisefido-backend/wisefido-sleepace/modules/sleepace_service.go::GetDeviceMonitorSettings
-func GetSleepaceSettingsFromHardware(ctx context.Context, client *SleepaceClient, device *domain.Device, deviceID string) ([]alarm.AlarmItem, error) {
-	if client == nil {
-		return nil, fmt.Errorf("sleepace client is nil")
+// ConvertHardwareResponseToAlarmItems converts sleepad cloud API camelCase response
+// to []alarm.AlarmItem. Only populates IsEnabled (from flags) and AlarmParams (from thresholds).
+// AlarmLevel is NOT set here — the hardware only knows on/off, not the level.
+// Caller must merge AlarmLevel from DB.
+func ConvertHardwareResponseToAlarmItems(hw map[string]interface{}) []alarm.AlarmItem {
+	defaults := alarm.GetDefaultAlarmItems("sleepad")
+	if defaults == nil {
+		return nil
 	}
 
-	// 调用 Sleepace API 从硬件读取配置
-	request := SleepaceRequest{
-		Token: client.token,
-		Data: map[string]any{
-			"userId": deviceID,
-		},
+	reverseParamKeys := make(map[string]map[string]string)
+	for at, pm := range alarmTypeParamMapping {
+		rev := make(map[string]string)
+		for generic, flat := range pm {
+			rev[flat] = generic
+		}
+		reverseParamKeys[at] = rev
 	}
 
-	var response SleepaceResponse
-	resp, err := client.httpClient.R().
-		SetBody(request).
-		SetResult(&response).
-		Post("/sleepace/getalarmnotifyconfig")
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to call Sleepace API: %w", err)
+	camelToFlat := map[string]string{
+		"leftBedStartHour": "left_bed_start_hour", "leftBedStartMinute": "left_bed_start_minute",
+		"leftBedEndHour": "left_bed_end_hour", "leftBedEndMinute": "left_bed_end_minute",
+		"leftBedDuration": "left_bed_duration", "leftBedFlag": "left_bed_alarm_level",
+		"minHeartRate": "min_heart_rate", "maxHeartRate": "max_heart_rate",
+		"heartRateSlowDuration": "heart_rate_slow_duration", "heartRateFastDuration": "heart_rate_fast_duration",
+		"heartRateSlowFlag": "heart_rate_slow_alarm_level", "heartRateFastFlag": "heart_rate_fast_alarm_level",
+		"minBreathRate": "min_breath_rate", "maxBreathRate": "max_breath_rate",
+		"breathRateSlowDuration": "breath_rate_slow_duration", "breathRateFastDuration": "breath_rate_fast_duration",
+		"breathRateSlowFlag": "breath_rate_slow_alarm_level", "breathRateFastFlag": "breath_rate_fast_alarm_level",
+		"breathPauseDuration": "breath_pause_duration", "breathPauseFlag": "breath_pause_alarm_level",
+		"bodyMoveDuration": "body_move_duration", "bodyMoveFlag": "body_move_alarm_level",
+		"nobodyMoveDuration": "nobody_move_duration", "nobodyMoveFlag": "nobody_move_alarm_level",
+		"noTurnOverDuration": "no_turn_over_duration", "noTurnOverFlag": "no_turn_over_alarm_level",
+		"situpFlag": "situp_alarm_level",
+		"onbedDuration": "onbed_duration", "onbedFlag": "onbed_alarm_level",
 	}
 
-	if resp.StatusCode() != 200 {
-		return nil, fmt.Errorf("Sleepace API returned status code: %d", resp.StatusCode())
-	}
-
-	if response.Status != 0 {
-		return nil, fmt.Errorf("Sleepace API error: %s (status: %d)", response.Msg, response.Status)
-	}
-
-	// 解析硬件返回的配置
-	// 参考 v1.0: models.SleepaceMonitorSettings 结构
-	var hardwareSettings map[string]interface{}
-	if err := json.Unmarshal(response.Data, &hardwareSettings); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal hardware settings: %w", err)
-	}
-
-	// 将硬件返回的配置转换为 flat 结构（与前端期望的格式一致）
-	settings := make(map[string]interface{})
-
-	// 离床时间配置
-	if leftBedStartHour, ok := hardwareSettings["leftBedStartHour"].(float64); ok {
-		settings["left_bed_start_hour"] = int(leftBedStartHour)
-	}
-	if leftBedStartMinute, ok := hardwareSettings["leftBedStartMinute"].(float64); ok {
-		settings["left_bed_start_minute"] = int(leftBedStartMinute)
-	}
-	if leftBedEndHour, ok := hardwareSettings["leftBedEndHour"].(float64); ok {
-		settings["left_bed_end_hour"] = int(leftBedEndHour)
-	}
-	if leftBedEndMinute, ok := hardwareSettings["leftBedEndMinute"].(float64); ok {
-		settings["left_bed_end_minute"] = int(leftBedEndMinute)
-	}
-	if leftBedDuration, ok := hardwareSettings["leftBedDuration"].(float64); ok {
-		settings["left_bed_duration"] = int(leftBedDuration)
-	}
-	if leftBedFlag, ok := hardwareSettings["leftBedFlag"].(float64); ok {
-		if leftBedFlag == 1 {
-			settings["left_bed_alarm_level"] = "2" // CRIT (默认)
+	flat := make(map[string]interface{})
+	for camel, snake := range camelToFlat {
+		v, ok := hw[camel]
+		if !ok {
+			continue
+		}
+		if isFlag(snake) {
+			flat[snake] = toFloat(v) == 1
 		} else {
-			settings["left_bed_alarm_level"] = "disabled"
+			flat[snake] = toInt(v)
 		}
 	}
 
-	// 心率配置
-	if minHeartRate, ok := hardwareSettings["minHeartRate"].(float64); ok {
-		settings["min_heart_rate"] = int(minHeartRate)
-	}
-	if maxHeartRate, ok := hardwareSettings["maxHeartRate"].(float64); ok {
-		settings["max_heart_rate"] = int(maxHeartRate)
-	}
-	if heartRateSlowDuration, ok := hardwareSettings["heartRateSlowDuration"].(float64); ok {
-		settings["heart_rate_slow_duration"] = int(heartRateSlowDuration)
-	}
-	if heartRateFastDuration, ok := hardwareSettings["heartRateFastDuration"].(float64); ok {
-		settings["heart_rate_fast_duration"] = int(heartRateFastDuration)
-	}
-	if heartRateSlowFlag, ok := hardwareSettings["heartRateSlowFlag"].(float64); ok {
-		if heartRateSlowFlag == 1 {
-			settings["heart_rate_slow_alarm_level"] = "2" // CRIT (默认)
-		} else {
-			settings["heart_rate_slow_alarm_level"] = "disabled"
-		}
-	}
-	if heartRateFastFlag, ok := hardwareSettings["heartRateFastFlag"].(float64); ok {
-		if heartRateFastFlag == 1 {
-			settings["heart_rate_fast_alarm_level"] = "2" // CRIT (默认)
-		} else {
-			settings["heart_rate_fast_alarm_level"] = "disabled"
-		}
-	}
+	result := make([]alarm.AlarmItem, 0, len(defaults))
+	for _, item := range defaults {
+		out := item
+		// AlarmLevel is intentionally left as default — must be merged from DB
 
-	// 呼吸率配置
-	if minBreathRate, ok := hardwareSettings["minBreathRate"].(float64); ok {
-		settings["min_breath_rate"] = int(minBreathRate)
-	}
-	if maxBreathRate, ok := hardwareSettings["maxBreathRate"].(float64); ok {
-		settings["max_breath_rate"] = int(maxBreathRate)
-	}
-	if breathRateSlowDuration, ok := hardwareSettings["breathRateSlowDuration"].(float64); ok {
-		settings["breath_rate_slow_duration"] = int(breathRateSlowDuration)
-	}
-	if breathRateFastDuration, ok := hardwareSettings["breathRateFastDuration"].(float64); ok {
-		settings["breath_rate_fast_duration"] = int(breathRateFastDuration)
-	}
-	if breathRateSlowFlag, ok := hardwareSettings["breathRateSlowFlag"].(float64); ok {
-		if breathRateSlowFlag == 1 {
-			settings["breath_rate_slow_alarm_level"] = "2" // CRIT (默认)
-		} else {
-			settings["breath_rate_slow_alarm_level"] = "disabled"
+		if levelKeys, ok := alarmTypeToSleepaceLevelKeys[item.AlarmType]; ok {
+			anyEnabled := false
+			for _, lk := range levelKeys {
+				if enabled, exists := flat[lk]; exists {
+					if b, ok := enabled.(bool); ok && b {
+						anyEnabled = true
+					}
+				}
+			}
+			if anyEnabled {
+				on := alarm.IsEnabledOn
+				out.IsEnabled = &on
+			} else {
+				off := alarm.IsEnabledOff
+				out.IsEnabled = &off
+			}
 		}
-	}
-	if breathRateFastFlag, ok := hardwareSettings["breathRateFastFlag"].(float64); ok {
-		if breathRateFastFlag == 1 {
-			settings["breath_rate_fast_alarm_level"] = "2" // CRIT (默认)
-		} else {
-			settings["breath_rate_fast_alarm_level"] = "disabled"
+
+		if rev, ok := reverseParamKeys[item.AlarmType]; ok {
+			params := make(map[string]interface{})
+			for flatKey, genericKey := range rev {
+				if v, exists := flat[flatKey]; exists {
+					params[genericKey] = v
+				}
+			}
+			if len(params) > 0 {
+				out.AlarmParams = params
+			}
 		}
-	}
 
-	// 呼吸暂停配置
-	if breathPauseDuration, ok := hardwareSettings["breathPauseDuration"].(float64); ok {
-		settings["breath_pause_duration"] = int(breathPauseDuration)
+		result = append(result, out)
 	}
-	if breathPauseFlag, ok := hardwareSettings["breathPauseFlag"].(float64); ok {
-		if breathPauseFlag == 1 {
-			settings["breath_pause_alarm_level"] = "2" // CRIT (默认)
-		} else {
-			settings["breath_pause_alarm_level"] = "disabled"
-		}
-	}
-
-	// 身体移动配置
-	if bodyMoveDuration, ok := hardwareSettings["bodyMoveDuration"].(float64); ok {
-		settings["body_move_duration"] = int(bodyMoveDuration)
-	}
-	if bodyMoveFlag, ok := hardwareSettings["bodyMoveFlag"].(float64); ok {
-		if bodyMoveFlag == 1 {
-			settings["body_move_alarm_level"] = "2" // CRIT (默认)
-		} else {
-			settings["body_move_alarm_level"] = "disabled"
-		}
-	}
-
-	// 无身体移动配置
-	if nobodyMoveDuration, ok := hardwareSettings["nobodyMoveDuration"].(float64); ok {
-		settings["nobody_move_duration"] = int(nobodyMoveDuration)
-	}
-	if nobodyMoveFlag, ok := hardwareSettings["nobodyMoveFlag"].(float64); ok {
-		if nobodyMoveFlag == 1 {
-			settings["nobody_move_alarm_level"] = "2" // CRIT (默认)
-		} else {
-			settings["nobody_move_alarm_level"] = "disabled"
-		}
-	}
-
-	// 无翻身配置
-	if noTurnOverDuration, ok := hardwareSettings["noTurnOverDuration"].(float64); ok {
-		settings["no_turn_over_duration"] = int(noTurnOverDuration)
-	}
-	if noTurnOverFlag, ok := hardwareSettings["noTurnOverFlag"].(float64); ok {
-		if noTurnOverFlag == 1 {
-			settings["no_turn_over_alarm_level"] = "2" // CRIT (默认)
-		} else {
-			settings["no_turn_over_alarm_level"] = "disabled"
-		}
-	}
-
-	// 坐起配置
-	if situpFlag, ok := hardwareSettings["situpFlag"].(float64); ok {
-		if situpFlag == 1 {
-			settings["situp_alarm_level"] = "2" // CRIT (默认)
-		} else {
-			settings["situp_alarm_level"] = "disabled"
-		}
-	}
-
-	// 在床配置
-	if onbedDuration, ok := hardwareSettings["onbedDuration"].(float64); ok {
-		settings["onbed_duration"] = int(onbedDuration)
-	}
-	if onbedFlag, ok := hardwareSettings["onbedFlag"].(float64); ok {
-		if onbedFlag == 1 {
-			settings["onbed_alarm_level"] = "2" // CRIT (默认)
-		} else {
-			settings["onbed_alarm_level"] = "disabled"
-		}
-	}
-
-	// 传感器跌落配置：返回 fallFlag (boolean)
-	if fallFlag, ok := hardwareSettings["fallFlag"].(float64); ok {
-		settings["fallFlag"] = fallFlag == 1
-	} else {
-		settings["fallFlag"] = false
-	}
-
-	// 转换为 AlarmItem 数组（简化处理，返回空数组）
-	// 注意：硬件读取功能暂时不使用，如果需要可以后续实现转换逻辑
-	alarmItems := make([]alarm.AlarmItem, 0)
-
-	return alarmItems, nil
+	return result
 }
 
-// UpdateSleepaceSettingsToHardware 将配置同步到 Sleepace 硬件（参考 v1.0 实现）
-// 参考：wisefido-backend/wisefido-sleepace/modules/sleepace_service.go::SetDeviceMonitorSettings
+// MergeAlarmLevelFromDB takes hardware-sourced items (IsEnabled + AlarmParams)
+// and fills in AlarmLevel from DB items. Hardware IsEnabled/AlarmParams take priority.
+func MergeAlarmLevelFromDB(hwItems, dbItems []alarm.AlarmItem) []alarm.AlarmItem {
+	dbMap := make(map[string]alarm.AlarmItem, len(dbItems))
+	for _, item := range dbItems {
+		dbMap[item.AlarmType] = item
+	}
+
+	result := make([]alarm.AlarmItem, 0, len(hwItems))
+	for _, hw := range hwItems {
+		if db, ok := dbMap[hw.AlarmType]; ok && db.AlarmLevel != nil {
+			hw.AlarmLevel = db.AlarmLevel
+		}
+		result = append(result, hw)
+	}
+	return result
+}
+
+// MergeHardwareIntoBaseline overlays hardware IsEnabled and AlarmParams onto baseline (DB or defaults).
+// AlarmLevel and other fields stay from baseline. Use for display: show DB values first, overlay Sleepace switch/threshold only.
+func MergeHardwareIntoBaseline(baseline, hwItems []alarm.AlarmItem) []alarm.AlarmItem {
+	hwMap := make(map[string]alarm.AlarmItem, len(hwItems))
+	for _, item := range hwItems {
+		if item.AlarmType != "" {
+			hwMap[item.AlarmType] = item
+		}
+	}
+	result := make([]alarm.AlarmItem, 0, len(baseline))
+	for _, b := range baseline {
+		out := b
+		if hw, ok := hwMap[b.AlarmType]; ok {
+			if hw.IsEnabled != nil {
+				out.IsEnabled = hw.IsEnabled
+			}
+			if hw.AlarmParams != nil && len(hw.AlarmParams) > 0 {
+				out.AlarmParams = hw.AlarmParams
+			}
+		}
+		result = append(result, out)
+	}
+	return result
+}
+
+func isFlag(snake string) bool {
+	l := len(snake)
+	return l > 12 && snake[l-12:] == "_alarm_level"
+}
+
+func toFloat(v interface{}) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case json.Number:
+		f, _ := n.Float64()
+		return f
+	}
+	return 0
+}
+
+func toInt(v interface{}) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	}
+	return 0
+}
+
+// UpdateSleepaceSettingsToHardware pushes alarm settings to sleepad hardware directly.
 func UpdateSleepaceSettingsToHardware(ctx context.Context, client *SleepaceClient, device *domain.Device, deviceID string, settings map[string]interface{}) error {
 	if client == nil {
-		return fmt.Errorf("sleepace client is nil")
+		return fmt.Errorf("sleepad client is nil")
 	}
 
-	// 获取设备代码（deviceCode），使用 device_uid
-	if device.DeviceUID == "" {
-		return fmt.Errorf("device has no device_uid")
+	if !device.DeviceCode.Valid || device.DeviceCode.String == "" {
+		return fmt.Errorf("device has no device_code")
 	}
-	deviceCode := device.DeviceUID
+	deviceCode := device.DeviceCode.String
 
-	// 将 flat settings 转换为 SleepaceMonitorSettings 格式（用于硬件 API）
-	hardwareSettings := ConvertFlatSettingsToSleepaceFormat(deviceID, deviceCode, settings)
+	hardwareSettings := ConvertFlatSettingsToSleepaceFormat(deviceCode, device.DeviceID, settings)
 
-	// 调用 Sleepace API 同步到硬件
 	request := struct {
 		Token *SleepaceToken         `json:"token"`
 		Data  map[string]interface{} `json:"data"`
@@ -248,26 +203,25 @@ func UpdateSleepaceSettingsToHardware(ctx context.Context, client *SleepaceClien
 		Post("/sleepace/updatealarmnotifyconfig")
 
 	if err != nil {
-		return fmt.Errorf("failed to call Sleepace API: %w", err)
+		return fmt.Errorf("sleepad API call failed: %w", err)
 	}
 
 	if resp.StatusCode() != 200 {
-		return fmt.Errorf("Sleepace API returned status code: %d", resp.StatusCode())
+		return fmt.Errorf("sleepad API returned status code: %d", resp.StatusCode())
 	}
 
 	if response.Status != 0 {
-		return fmt.Errorf("Sleepace API error: %s (status: %d)", response.Msg, response.Status)
+		return fmt.Errorf("sleepad API error: %s (status: %d)", response.Msg, response.Status)
 	}
 
 	return nil
 }
 
-// ConvertFlatSettingsToSleepaceFormat 将 flat settings 转换为 SleepaceMonitorSettings 格式（用于硬件 API）
-// 参考：wisefido-backend/wisefido-sleepace/models/settings.go::SleepaceMonitorSettings
-func ConvertFlatSettingsToSleepaceFormat(deviceID, deviceCode string, settings map[string]interface{}) map[string]interface{} {
+// ConvertFlatSettingsToSleepaceFormat converts flat snake_case settings to sleepad hardware API format.
+// userId 用 device_id (UUID)，厂家接受合作方用户唯一标识为任意字符串；deviceId 用 device_code。
+func ConvertFlatSettingsToSleepaceFormat(deviceCode, deviceID string, settings map[string]interface{}) map[string]interface{} {
 	hardwareSettings := make(map[string]interface{})
 
-	// 基本字段
 	hardwareSettings["userId"] = deviceID
 	hardwareSettings["deviceId"] = deviceCode
 
@@ -360,19 +314,40 @@ func ConvertFlatSettingsToSleepaceFormat(deviceID, deviceCode string, settings m
 		}
 	}
 
-	// 呼吸率配置
+	// 呼吸率配置：范围 9–30 来自 Sleepace API 报错 "minBreathRate should be between 9 and 30 (status: 9)"，对接文档未写具体区间
+	const breathRateLo, breathRateHi = 9, 30
 	if minBreathRate, ok := settings["min_breath_rate"]; ok {
+		var v int
+		hasVal := false
 		if rate, ok := minBreathRate.(float64); ok {
-			hardwareSettings["minBreathRate"] = int(rate)
+			v, hasVal = int(rate), true
 		} else if rate, ok := minBreathRate.(int); ok {
-			hardwareSettings["minBreathRate"] = rate
+			v, hasVal = rate, true
+		}
+		if hasVal {
+			if v < breathRateLo {
+				v = breathRateLo
+			} else if v > breathRateHi {
+				v = breathRateHi
+			}
+			hardwareSettings["minBreathRate"] = v
 		}
 	}
 	if maxBreathRate, ok := settings["max_breath_rate"]; ok {
+		var v int
+		hasVal := false
 		if rate, ok := maxBreathRate.(float64); ok {
-			hardwareSettings["maxBreathRate"] = int(rate)
+			v, hasVal = int(rate), true
 		} else if rate, ok := maxBreathRate.(int); ok {
-			hardwareSettings["maxBreathRate"] = rate
+			v, hasVal = rate, true
+		}
+		if hasVal {
+			if v < breathRateLo {
+				v = breathRateLo
+			} else if v > breathRateHi {
+				v = breathRateHi
+			}
+			hardwareSettings["maxBreathRate"] = v
 		}
 	}
 	if breathRateSlowDuration, ok := settings["breath_rate_slow_duration"]; ok {
@@ -503,4 +478,94 @@ func ConvertFlatSettingsToSleepaceFormat(deviceID, deviceCode string, settings m
 	}
 
 	return hardwareSettings
+}
+
+// alarmTypeToSleepaceLevelKeys AlarmType → 对应的 Sleepace flat level key(s)
+// 仅包含 Sleepace 设备支持的报警项；NightAbsence/SensorDetached/ResetTime/NapTime 等不在此处，不写入设备
+// 单个 AlarmType 可能对应多个 level key（如 HeartRateAlert → slow + fast）
+var alarmTypeToSleepaceLevelKeys = map[string][]string{
+	alarm.LeftBed:               {"left_bed_alarm_level"},
+	alarm.HeartRateAlert:        {"heart_rate_slow_alarm_level", "heart_rate_fast_alarm_level"},
+	alarm.RespRateAlert:         {"breath_rate_slow_alarm_level", "breath_rate_fast_alarm_level"},
+	alarm.ApneaHypopnea:         {"breath_pause_alarm_level"},
+	alarm.AbnormalBodyMovement:  {"body_move_alarm_level"},
+	alarm.NoBodyMove:            {"nobody_move_alarm_level"},
+	alarm.NoTurnOver:            {"no_turn_over_alarm_level"},
+	alarm.BedSitUp:              {"situp_alarm_level"},
+	alarm.InBed:                 {"onbed_alarm_level"},
+}
+
+// alarmTypeParamMapping AlarmType → (generic param key → sleepace flat key)
+var alarmTypeParamMapping = map[string]map[string]string{
+	alarm.HeartRateAlert: {
+		"min":              "min_heart_rate",
+		"max":              "max_heart_rate",
+		"slow_duration_sec": "heart_rate_slow_duration",
+		"fast_duration_sec": "heart_rate_fast_duration",
+	},
+	alarm.RespRateAlert: {
+		"min":              "min_breath_rate",
+		"max":              "max_breath_rate",
+		"slow_duration_sec": "breath_rate_slow_duration",
+		"fast_duration_sec": "breath_rate_fast_duration",
+	},
+	alarm.LeftBed: {
+		"duration_sec": "left_bed_duration",
+	},
+	alarm.ApneaHypopnea: {
+		"duration_sec": "breath_pause_duration",
+	},
+	alarm.AbnormalBodyMovement: {
+		"duration_min": "body_move_duration",
+	},
+	alarm.NoBodyMove: {
+		"duration_min": "nobody_move_duration",
+	},
+	alarm.NoTurnOver: {
+		"duration_min": "no_turn_over_duration",
+	},
+	alarm.InBed: {
+		"duration_min": "onbed_duration",
+	},
+}
+
+// ConvertAlarmItemsToSleepaceConfig converts AlarmItem[] to sleepad cloud API format.
+// userId 用 device_id (UUID)，deviceId 用 device_code。
+// resetTime 为租户作息（alarm_cloud.metadata），非 nil 且存在 LeftBed 时写入 left_bed_start/end 下发设备。
+func ConvertAlarmItemsToSleepaceConfig(deviceCode, deviceID string, alarmItems []alarm.AlarmItem, resetTime *alarm.ResetTimeParams) map[string]interface{} {
+	flat := make(map[string]interface{})
+
+	for _, item := range alarmItems {
+		levelVal := "disabled"
+		if item.IsEnabled != nil && *item.IsEnabled == alarm.IsEnabledOn && item.AlarmLevel != nil && *item.AlarmLevel != "" {
+			levelVal = *item.AlarmLevel
+		}
+
+		if levelKeys, ok := alarmTypeToSleepaceLevelKeys[item.AlarmType]; ok {
+			for _, k := range levelKeys {
+				flat[k] = levelVal
+			}
+		}
+
+		if paramMap, ok := alarmTypeParamMapping[item.AlarmType]; ok {
+			for genericKey, flatKey := range paramMap {
+				if v, exists := item.AlarmParams[genericKey]; exists {
+					flat[flatKey] = v
+				}
+			}
+		}
+	}
+
+	if resetTime != nil && resetTime.InBedTime != "" && resetTime.OutBedTime != "" {
+		if inBed, err := time.Parse("15:04", resetTime.InBedTime); err == nil {
+			flat["left_bed_start_hour"] = inBed.Hour()
+			flat["left_bed_start_minute"] = inBed.Minute()
+		}
+		if outBed, err := time.Parse("15:04", resetTime.OutBedTime); err == nil {
+			flat["left_bed_end_hour"] = outBed.Hour()
+			flat["left_bed_end_minute"] = outBed.Minute()
+		}
+	}
+
+	return ConvertFlatSettingsToSleepaceFormat(deviceCode, deviceID, flat)
 }

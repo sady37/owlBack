@@ -192,13 +192,12 @@ func (c *StreamConsumer) processMessage(ctx context.Context, streamName string, 
 			data = make(map[string]interface{})
 			for k, v := range msg.Values {
 				if strVal, ok := v.(string); ok {
-					// 尝试解析 JSON 字符串（如 data_value 可能是 JSON 对象）
-					if k == "data_value" {
-						var jsonVal map[string]interface{}
+					// 尝试解析 JSON 字符串（键名规范：dataValue）
+					if k == rediscommon.DataValueKey {
+						var jsonVal interface{}
 						if err := json.Unmarshal([]byte(strVal), &jsonVal); err == nil {
 							data[k] = jsonVal
 						} else {
-							// 如果不是 JSON，保持原字符串
 							data[k] = strVal
 						}
 					} else if k == "timestamp" {

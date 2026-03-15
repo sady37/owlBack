@@ -1,9 +1,10 @@
 #!/bin/bash
 # 清空 Docker PostgreSQL 中指定表的记录
-# 表：config_versions, iot_timeseries, alarm_cloud, alarm_device
+# 表：config_versions, iot_timeseries, alarm_cloud, alarm_device, alarm_events
+# 若出现 out of shared memory：需先重启 postgres 容器使 max_locks_per_transaction=256 生效（见 docker-compose.yml）
 
 echo "正在清空 Docker PostgreSQL 中的表记录..."
-echo "表：config_versions, iot_timeseries, alarm_cloud, alarm_device"
+echo "表：config_versions, iot_timeseries(DROP+重建), alarm_cloud, alarm_device, alarm_events"
 echo ""
 
 # 执行 SQL 脚本

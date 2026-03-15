@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-redis/redis/v8"
 	"owl-common/alarm"
+	"owl-common/card"
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/service"
@@ -28,6 +29,7 @@ type DeviceMonitorSettingsHandler struct {
 	unitsRepo                    repository.UnitsRepository
 	redisClient                  *redis.Client
 	db                           *sql.DB
+	stateReader                  *card.Reader // 设备在线状态（走 device_store/cardagg，不依赖 card）
 }
 
 // NewDeviceMonitorSettingsHandler 创建设备监控配置 Handler
@@ -39,6 +41,7 @@ func NewDeviceMonitorSettingsHandler(
 	unitsRepo repository.UnitsRepository,
 	redisClient *redis.Client,
 	db *sql.DB,
+	stateReader *card.Reader,
 	logger *zap.Logger,
 ) *DeviceMonitorSettingsHandler {
 	return &DeviceMonitorSettingsHandler{
@@ -51,6 +54,7 @@ func NewDeviceMonitorSettingsHandler(
 		unitsRepo:                    unitsRepo,
 		redisClient:                  redisClient,
 		db:                           db,
+		stateReader:                 stateReader,
 	}
 }
 
@@ -73,6 +77,26 @@ func (h *DeviceMonitorSettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.
 			return
 		}
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	// GET .../sleepad/:id/status 或 .../radar/:id/status：设备在线状态（走 device_store/cardagg，不依赖 card）
+	if strings.HasSuffix(path, "/status") && r.Method == http.MethodGet {
+		pathNoSuffix := path[:len(path)-7]
+		var dt string
+		var id string
+		if strings.HasPrefix(pathNoSuffix, "/settings/api/v1/monitor/sleepad/") {
+			dt = "sleepad"
+			id = strings.TrimPrefix(pathNoSuffix, "/settings/api/v1/monitor/sleepad/")
+		} else if strings.HasPrefix(pathNoSuffix, "/settings/api/v1/monitor/radar/") {
+			dt = "radar"
+			id = strings.TrimPrefix(pathNoSuffix, "/settings/api/v1/monitor/radar/")
+		}
+		if id != "" && !strings.Contains(id, "/") && id != "undefined" && id != "null" {
+			h.GetDeviceOnlineStatus(w, r, dt, id)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
@@ -108,6 +132,27 @@ func (h *DeviceMonitorSettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.
 	}
 }
 
+// GetDeviceOnlineStatus 返回设备在线状态（走 device_store/cardagg，不依赖 card；后期可直接从 device 进入配置）
+func (h *DeviceMonitorSettingsHandler) GetDeviceOnlineStatus(w http.ResponseWriter, r *http.Request, deviceType, deviceID string) {
+	ctx := r.Context()
+	tenantID, ok := h.base.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+	if _, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceID); err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	status := "offline"
+	if h.stateReader != nil && h.db != nil {
+		m := service.FillDeviceOnlineStatusFromCardagg(ctx, h.stateReader, h.db, []string{deviceID}, h.logger)
+		if m[deviceID] == "online" {
+			status = "online"
+		}
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]string{"online_status": status}))
+}
+
 // GetDeviceMonitorSettings 获取设备监控配置
 func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseWriter, r *http.Request, deviceType, deviceID string) {
 	ctx := r.Context()
@@ -129,7 +174,47 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseW
 		return
 	}
 
-	writeJSON(w, http.StatusOK, Ok(alarmItems))
+	deviceUID := ""
+	deviceName := ""
+	timezone := ""
+	if dev, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceID); err == nil {
+		deviceUID = dev.DeviceUID
+		deviceName = dev.DeviceName
+		if dev.UnitID.Valid && dev.UnitID.String != "" {
+			if u, err := h.unitsRepo.GetUnit(ctx, tenantID, dev.UnitID.String); err == nil && u.Timezone != "" {
+				timezone = u.Timezone
+			}
+		}
+	}
+	if timezone == "" {
+		for _, it := range alarmItems {
+			if it.AlarmType == alarm.SleepadSetting && it.AlarmParams != nil {
+				if tz, ok := it.AlarmParams["timezone"].(string); ok && tz != "" {
+					timezone = tz
+					break
+				}
+			}
+		}
+	}
+	if timezone == "" {
+		timezone = "America/Denver"
+	}
+
+	onlineStatus := "offline"
+	if h.stateReader != nil && h.db != nil {
+		m := service.FillDeviceOnlineStatusFromCardagg(ctx, h.stateReader, h.db, []string{deviceID}, h.logger)
+		if m[deviceID] == "online" {
+			onlineStatus = "online"
+		}
+	}
+
+	writeJSON(w, http.StatusOK, Ok(map[string]interface{}{
+		"alarm_items":   alarmItems,
+		"online_status": onlineStatus,
+		"device_uid":    deviceUID,
+		"device_name":   deviceName,
+		"timezone":      timezone,
+	}))
 }
 
 // UpdateDeviceMonitorSettings 更新设备监控配置
@@ -184,15 +269,17 @@ func (h *DeviceMonitorSettingsHandler) UpdateDeviceMonitorSettings(w http.Respon
 		return
 	}
 
-	// 4.1. 设备验证增强：仅允许设置在线的设备
-	if err := h.verifyDeviceOnline(ctx, tenantID, deviceID); err != nil {
-		h.logger.Warn("Security check failed: device is offline",
-			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
-			zap.Error(err),
-		)
-		writeJSON(w, http.StatusOK, Fail("device must be online to update settings"))
-		return
+	// 4.1. 设备验证增强：仅 Radar 通过 wisefido-qinglan 查在线；Sleepad 走 Sleepace 网关，不在此做在线校验
+	if strings.ToLower(deviceType) == "radar" {
+		if err := h.verifyDeviceOnline(ctx, tenantID, deviceID); err != nil {
+			h.logger.Warn("Security check failed: device is offline",
+				zap.String("tenant_id", tenantID),
+				zap.String("device_id", deviceID),
+				zap.Error(err),
+			)
+			writeJSON(w, http.StatusOK, Fail("device must be online to update settings"))
+			return
+		}
 	}
 
 	// 5. 安全验证：验证 branch_id 与 user_id/device_id 一致性

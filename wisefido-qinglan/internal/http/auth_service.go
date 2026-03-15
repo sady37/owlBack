@@ -196,7 +196,7 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 // 通过 repository 层获取设备信息，符合分层架构
 func (s *AuthService) validateDeviceAndGetLocation(ctx context.Context, deviceUID string) (*DeviceStoreInfo, error) {
 	// 通过 repository 层获取 device_store 信息
-	ds, err := s.deviceRepo.GetDeviceStoreInfoAndLocation(ctx, deviceUID)
+	ds, err := s.deviceRepo.GetDeviceStoreInfo(ctx, deviceUID)
 	if err != nil {
 		return nil, err
 	}
@@ -865,7 +865,7 @@ func authMessageToMap(msg commonredis.AuthMessage, deviceID sql.NullString) map[
 		actualDeviceID = msg.DeviceID
 	}
 
-	// 序列化 data_value 为 JSON 字符串（PublishToStream 需要字符串值）
+	// 序列化 dataValue 为 JSON 字符串（PublishToStream 需要字符串值）
 	dataValueJSON, _ := json.Marshal(msg.DataValue)
 
 	result := make(map[string]interface{})
@@ -881,7 +881,7 @@ func authMessageToMap(msg commonredis.AuthMessage, deviceID sql.NullString) map[
 	result["timestamp"] = fmt.Sprintf("%d", msg.Timestamp)
 	result["topic_type"] = msg.TopicType
 	result["category"] = msg.Category
-	result["data_value"] = string(dataValueJSON)
+	result[commonredis.DataValueKey] = string(dataValueJSON)
 
 	return result
 }

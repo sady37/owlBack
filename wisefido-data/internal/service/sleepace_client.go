@@ -61,12 +61,12 @@ func NewSleepaceClient(baseURL, appID, secretKey string, logger *zap.Logger) *Sl
 }
 
 // Get24HourDailyWithMaxReport 获取 24 小时每日报告（最大报告）
-// 参考：wisefido-backend/wisefido-sleepace/modules/sleepace_service.go::DownloadReport
+// deviceCode = device_store.device_code（Sleepace 加密设备ID），同时作为 Sleepace API 的 userId
 func (c *SleepaceClient) Get24HourDailyWithMaxReport(deviceID, deviceCode string, startTime, endTime int64) ([]json.RawMessage, error) {
 	request := SleepaceRequest{
 		Token: c.token,
 		Data: map[string]any{
-			"userId":    deviceID,
+			"userId":    deviceCode,
 			"startTime": startTime,
 			"endTime":   endTime,
 		},

@@ -21,8 +21,33 @@ func NewPostgresDeviceStoreRepository(db *sql.DB) *PostgresDeviceStoreRepository
 	return &PostgresDeviceStoreRepository{db: db}
 }
 
-// ListDeviceStores 查询设备库存列表
-func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, filters DeviceStoreFilters, page, size int) ([]*domain.DeviceStore, int, error) {
+// orderByClauseDeviceStore 白名单排序字段，防止 SQL 注入
+func orderByClauseDeviceStore(sort, direction string) string {
+	dir := "ASC"
+	if strings.TrimSpace(strings.ToUpper(direction)) == "DESC" {
+		dir = "DESC"
+	}
+	col := strings.TrimSpace(strings.ToLower(sort))
+	switch col {
+	case "device_uid", "device_code":
+		return "ds." + col + " " + dir
+	case "device_type", "device_model", "device_name", "mac", "imei", "comm_mode", "mcu_model", "firmware_version":
+		return "ds." + col + " " + dir
+	case "ota_target_firmware_version", "ota_target_mcu_model":
+		return "ds." + col + " " + dir
+	case "tenant_id", "allow_access", "import_date", "allocate_time":
+		return "ds." + col + " " + dir
+	case "tenant_name":
+		return "t.tenant_name " + dir
+	case "device_id":
+		return "ds.device_id " + dir
+	default:
+		return "ds.import_date DESC, ds.device_type, ds.device_uid"
+	}
+}
+
+// ListDeviceStores 查询设备库存列表；sort/direction 为全量排序后分页
+func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, filters DeviceStoreFilters, page, size int, sort, direction string) ([]*domain.DeviceStore, int, error) {
 	where := []string{}
 	args := []any{}
 	argN := 1
@@ -86,6 +111,7 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 			ds.device_code,
 			ds.device_type,
 			ds.device_model,
+			ds.device_name,
 			ds.mac,
 			ds.imei,
 			ds.comm_mode,
@@ -101,7 +127,7 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 		FROM device_store ds
 		LEFT JOIN tenants t ON ds.tenant_id = t.tenant_id
 		` + whereClause + `
-		ORDER BY ds.import_date DESC, ds.device_type, ds.device_uid
+		ORDER BY ` + orderByClauseDeviceStore(sort, direction) + `
 		LIMIT $` + fmt.Sprintf("%d", limitPos) + ` OFFSET $` + fmt.Sprintf("%d", offsetPos)
 
 	rows, err := r.db.QueryContext(ctx, query, argsList...)
@@ -120,6 +146,7 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 			&deviceCode,
 			&d.DeviceType,
 			&d.DeviceModel,
+			&d.DeviceName,
 			&d.MAC,
 			&d.IMEI,
 			&d.CommMode,
@@ -152,6 +179,7 @@ func (r *PostgresDeviceStoreRepository) GetDeviceStore(ctx context.Context, devi
 			ds.device_code,
 			ds.device_type,
 			ds.device_model,
+			ds.device_name,
 			ds.mac,
 			ds.imei,
 			ds.comm_mode,
@@ -177,6 +205,7 @@ func (r *PostgresDeviceStoreRepository) GetDeviceStore(ctx context.Context, devi
 		&deviceCode,
 		&d.DeviceType,
 		&d.DeviceModel,
+		&d.DeviceName,
 		&d.MAC,
 		&d.IMEI,
 		&d.CommMode,
@@ -193,6 +222,66 @@ func (r *PostgresDeviceStoreRepository) GetDeviceStore(ctx context.Context, devi
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device_store not found: device_uid=%s", deviceUID)
+		}
+		return nil, err
+	}
+	if deviceCode.Valid {
+		d.DeviceCode = deviceCode
+	}
+	return &d, nil
+}
+
+// GetDeviceStoreByDeviceID 按 device_id (UUID) 查询单条设备库存
+func (r *PostgresDeviceStoreRepository) GetDeviceStoreByDeviceID(ctx context.Context, deviceID string) (*domain.DeviceStore, error) {
+	query := `
+		SELECT
+			ds.device_id::text,
+			ds.device_uid,
+			ds.device_code,
+			ds.device_type,
+			ds.device_model,
+			ds.device_name,
+			ds.mac,
+			ds.imei,
+			ds.comm_mode,
+			ds.mcu_model,
+			ds.firmware_version,
+			ds.ota_target_firmware_version,
+			ds.ota_target_mcu_model,
+			ds.tenant_id::text,
+			COALESCE(t.tenant_name, '') as tenant_name,
+			ds.allow_access,
+			ds.import_date,
+			ds.allocate_time
+		FROM device_store ds
+		LEFT JOIN tenants t ON ds.tenant_id = t.tenant_id
+		WHERE ds.device_id = $1::uuid
+	`
+	var d domain.DeviceStore
+	var deviceCode sql.NullString
+	err := r.db.QueryRowContext(ctx, query, deviceID).Scan(
+		&d.DeviceID,
+		&d.DeviceUID,
+		&deviceCode,
+		&d.DeviceType,
+		&d.DeviceModel,
+		&d.DeviceName,
+		&d.MAC,
+		&d.IMEI,
+		&d.CommMode,
+		&d.MCUModel,
+		&d.FirmwareVersion,
+		&d.OTATargetFirmwareVersion,
+		&d.OTATargetMCUModel,
+		&d.TenantID,
+		&d.TenantName,
+		&d.AllowAccess,
+		&d.ImportDate,
+		&d.AllocateTime,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
 		}
 		return nil, err
 	}
@@ -241,10 +330,10 @@ func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, d
 	// 注意：device_id 是主键，由数据库自动生成（gen_random_uuid()），不需要在 INSERT 中指定
 	insertQuery := `
 		INSERT INTO device_store (
-			device_uid, device_code, device_type, device_model, mac, imei,
+			device_uid, device_code, device_type, device_model, device_name, mac, imei,
 			comm_mode, mcu_model, firmware_version,
 			tenant_id, allow_access
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING device_id::text
 	`
 
@@ -253,6 +342,7 @@ func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, d
 		nullStringToAny(deviceStore.DeviceCode),
 		deviceStore.DeviceType,
 		nullStringToAny(deviceStore.DeviceModel),
+		nullStringToAny(deviceStore.DeviceName),
 		nullStringToAny(deviceStore.MAC),
 		nullStringToAny(deviceStore.IMEI),
 		nullStringToAny(deviceStore.CommMode),
@@ -330,6 +420,17 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 		setParts := []string{}
 		args := []any{}
 		argN := 1
+		if update.DeviceType != "" {
+			setParts = append(setParts, fmt.Sprintf("device_type = $%d", argN))
+			args = append(args, update.DeviceType)
+			argN++
+		}
+		if update.DeviceModel.Valid {
+			setParts = append(setParts, fmt.Sprintf("device_model = $%d", argN))
+			args = append(args, nullStringToAny(update.DeviceModel))
+			argN++
+		}
+		// device_name 不由 device_store 更新，由 devices 表同步
 		if update.TenantID != "" {
 			setParts = append(setParts, fmt.Sprintf("tenant_id = $%d", argN))
 			args = append(args, update.TenantID)
@@ -381,7 +482,9 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 			if migrateFromSystemOrTrash {
 				_, err = tx.ExecContext(ctx, `
 					INSERT INTO devices (device_id, device_uid, tenant_id, device_name, status, business_access, monitoring_enabled)
-					SELECT ds.device_id, ds.device_uid, $1, COALESCE(NULLIF(TRIM(ds.device_uid), ''), NULLIF(TRIM(COALESCE(ds.device_code, '')), ''), 'device'), 'offline', 'rejected', FALSE
+					SELECT ds.device_id, ds.device_uid, $1,
+						COALESCE(NULLIF(TRIM(ds.device_type), ''), 'Device') || '_' || RIGHT(ds.device_uid, 4),
+						'offline', 'rejected', FALSE
 					FROM device_store ds
 					WHERE ds.device_uid = $2
 					  AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.device_id = ds.device_id)
@@ -421,66 +524,53 @@ func tenantNamesOrIDs(ctx context.Context, tx *sql.Tx, id1, id2 string) (string,
 	return n1, n2
 }
 
-// DeleteDeviceStore 删除设备库存
+// trashTenantID 未分配/回收租户 ID，仅当 device_store.tenant_id = trash 时允许删除。
+const trashTenantID = "00000000-0000-0000-0000-000000000000"
+
+// DeleteDeviceStore 删除设备库存。仅允许 tenant_id = trash 的记录；需先手动将设备迁回 trash 再删。
 func (r *PostgresDeviceStoreRepository) DeleteDeviceStore(ctx context.Context, deviceUID string) error {
-	// 1. 检查设备是否已分配给租户
 	var tenantID string
-	err := r.db.QueryRowContext(ctx, `
-		SELECT tenant_id::text
-		FROM device_store
-		WHERE device_uid = $1
-	`, deviceUID).Scan(&tenantID)
+	err := r.db.QueryRowContext(ctx, `SELECT tenant_id::text FROM device_store WHERE device_uid = $1`, deviceUID).Scan(&tenantID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("device_store not found: device_uid=%s", deviceUID)
 		}
 		return fmt.Errorf("failed to query device_store: %w", err)
 	}
-
-	unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
-	if tenantID != unallocatedTenantID {
-		return fmt.Errorf("cannot delete device_store: device is allocated to tenant %s (must unallocate first)", tenantID)
+	if tenantID != trashTenantID {
+		return fmt.Errorf("cannot delete: device must be in trash tenant first (current tenant_id=%s)", tenantID)
 	}
-
-	// 2. 检查设备是否已出库（devices表中有记录）
-	var deviceCount int
-	err = r.db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM devices
-		WHERE device_uid = $1
-	`, deviceUID).Scan(&deviceCount)
-	if err != nil {
-		return fmt.Errorf("failed to check devices: %w", err)
-	}
-	if deviceCount > 0 {
-		return fmt.Errorf("cannot delete device_store: device has been checked out (devices table has %d records)", deviceCount)
-	}
-
-	// 3. 删除设备库存记录
-	_, err = r.db.ExecContext(ctx, `
-		DELETE FROM device_store
-		WHERE device_uid = $1
-	`, deviceUID)
-	if err != nil {
-		return fmt.Errorf("failed to delete device_store: %w", err)
-	}
-
-	return nil
-}
-
-// ImportDeviceStores 批量导入设备库存
-func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, items []*domain.DeviceStore) (int, []*domain.DeviceStore, []*domain.DeviceStore, error) {
-	if len(items) == 0 {
-		return 0, nil, nil, nil
-	}
-
-	var successCount int
-	var errors []*domain.DeviceStore
-	var skipped []*domain.DeviceStore
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, nil, nil, err
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx, `DELETE FROM devices WHERE device_uid = $1`, deviceUID)
+	if err != nil {
+		return fmt.Errorf("failed to delete devices: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM device_store WHERE device_uid = $1`, deviceUID)
+	if err != nil {
+		return fmt.Errorf("failed to delete device_store: %w", err)
+	}
+	return tx.Commit()
+}
+
+// ImportDeviceStores 批量导入设备库存；返回成功数、新插入行(含 device_id)、跳过、失败。
+func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, items []*domain.DeviceStore) (successCount int, inserted []*domain.DeviceStore, skipped []*domain.DeviceStore, errors []*domain.DeviceStore, err error) {
+	if len(items) == 0 {
+		return 0, nil, nil, nil, nil
+	}
+
+	var errs []*domain.DeviceStore
+	var sk []*domain.DeviceStore
+	var ins []*domain.DeviceStore
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, nil, nil, nil, err
 	}
 	defer tx.Rollback()
 
@@ -489,54 +579,46 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 			continue
 		}
 
-		// Validate required fields
 		if item.DeviceType == "" {
-			errors = append(errors, item)
+			errs = append(errs, item)
 			continue
 		}
 		if item.DeviceUID == "" {
-			errors = append(errors, item)
+			errs = append(errs, item)
 			continue
 		}
 
-		// Check if device already exists
 		var existingUID string
-		checkQuery := `
-			SELECT device_uid
-			FROM device_store
-			WHERE device_uid = $1
-			LIMIT 1
-		`
+		checkQuery := `SELECT device_uid FROM device_store WHERE device_uid = $1 LIMIT 1`
 		err := tx.QueryRowContext(ctx, checkQuery, item.DeviceUID).Scan(&existingUID)
 		if err == nil {
-			skipped = append(skipped, item)
+			sk = append(sk, item)
 			continue
-		} else if err != sql.ErrNoRows {
-			errors = append(errors, item)
+		}
+		if err != sql.ErrNoRows {
+			errs = append(errs, item)
 			continue
 		}
 
-		// Get tenant_id (use default if not provided)
 		tenantID := item.TenantID
 		if tenantID == "" {
-			tenantID = "00000000-0000-0000-0000-000000000000"
+			tenantID = "00000000-0000-0000-0000-000000000001" // system 租户
 		}
 
-		// Insert new device
-		// 注意：device_id 是主键，由数据库自动生成（gen_random_uuid()），不需要在 INSERT 中指定
 		insertQuery := `
 			INSERT INTO device_store (
-				device_uid, device_code, device_type, device_model, mac, imei,
+				device_uid, device_code, device_type, device_model, device_name, mac, imei,
 				comm_mode, mcu_model, firmware_version,
 				tenant_id, allow_access
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			RETURNING device_id::text
 		`
-
 		args := []any{
 			item.DeviceUID,
 			nullStringToAny(item.DeviceCode),
 			item.DeviceType,
 			nullStringToAny(item.DeviceModel),
+			nullStringToAny(item.DeviceName),
 			nullStringToAny(item.MAC),
 			nullStringToAny(item.IMEI),
 			nullStringToAny(item.CommMode),
@@ -546,20 +628,40 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 			item.AllowAccess,
 		}
 
-		_, err = tx.ExecContext(ctx, insertQuery, args...)
+		var deviceID string
+		err = tx.QueryRowContext(ctx, insertQuery, args...).Scan(&deviceID)
 		if err != nil {
-			errors = append(errors, item)
+			errs = append(errs, item)
 			continue
 		}
 
 		successCount++
+		ins = append(ins, &domain.DeviceStore{
+			DeviceID:   deviceID,
+			DeviceUID:  item.DeviceUID,
+			DeviceType: item.DeviceType,
+			DeviceCode: item.DeviceCode,
+			TenantID:   tenantID,
+		})
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, nil, nil, err
+		return 0, nil, nil, nil, err
 	}
 
-	return successCount, skipped, errors, nil
+	return successCount, ins, sk, errs, nil
+}
+
+// UpdateDeviceCode 更新 device_code。device_code 仅来自厂家导入文件；绑定/initialize 不提供可写回的值。
+func (r *PostgresDeviceStoreRepository) UpdateDeviceCode(ctx context.Context, deviceID, deviceCode string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE device_store SET device_code = $1 WHERE device_id = $2`, deviceCode, deviceID)
+	return err
+}
+
+// UpdateFirmwareVersion 仅更新 firmware_version（InitialAll 调 bindInfo 后按返回的 deviceVersion 写回）。
+func (r *PostgresDeviceStoreRepository) UpdateFirmwareVersion(ctx context.Context, deviceID, firmwareVersion string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE device_store SET firmware_version = $1 WHERE device_id = $2`, firmwareVersion, deviceID)
+	return err
 }
 
 // Helper function to convert sql.NullString to any (already defined in postgres_units.go)
