@@ -1,0 +1,73 @@
+# 19:22:21 时 MQTT 上的 Sensor Detached (deviceSenSor)
+# 1) Docker MQTT (owl-mqtt) 的 mosquitto.log 有收到/转发记录
+# 2) payload 与 sleepace-service 发布时日志一致（broker 不记 payload，内容以发布端为准）
+
+=== 1) Docker MQTT  broker 记录 (mqtt/log/mosquitto.log)，时间戳 1773019341 ===
+1773019341: Received PUBLISH from sleepace_protocols_dev_write_1772607789838 (d0, q0, r0, m0, 'sleepace-57136', ... (100 bytes))
+1773019341: Sending PUBLISH to auto-C2F79B65-BB0D-DE5E-FEDC-DA3C84F8F589 (d0, q0, r0, m0, 'sleepace-57136', ... (100 bytes))
+1773019341: Sending PUBLISH to auto-705DB7E6-860E-F939-4D47-23322FAE888A (d0, q0, r0, m0, 'sleepace-57136', ... (100 bytes))
+1773019341: Sending PUBLISH to wisefido-sleepace-2 (d0, q0, r0, m0, 'sleepace-57136', ... (100 bytes))
+
+=== 2) 该条 MQTT 报文 payload（100 字节，与上对应；来自 sleepace-service 发布时日志）===
+{"dataKey":"deviceSenSor","timeStamp":1773019341,"data":{"leftRight":0,"status":1},"deviceId":"1ua3erivl9pv1"}
+
+=== 3) sleepace-service 同条记录（ProducerAdapter 发到 MQTT 时）===
+2026-03-09 01:22:21,830  INFO (ProducerAdapter.java:65) - [{"dataKey":"deviceSenSor","timeStamp":1773019341,"data":{"leftRight":0,"status":1},"deviceId":"1ua3erivl9pv1"}]
+
+--- 以后从 Docker MQTT 查某时刻的 sleepace 报文 ---
+grep "<时间戳>" owlBack/mqtt/log/mosquitto.log | grep sleepace-57136
+# 时间戳为 Unix 秒，如 1773019341。payload 需对照 sleepace-service 日志（broker 不存 body）。
+
+status	int	0: 脱落
+1: 已经插上
+
+
+例子：
+[{
+dataKey:” deviceSenSor”,
+deviceId:<<设备Id>>,
+data:{
+status：<<离床传感器状态0,脱落，1、已经插上>>
+}
+}]
+
+设备监测垫初始化事件
+
+
+睡眠状态事件
+用于上报用户睡眠状态（清醒、浅睡、深睡），事件产生的时机：
+1. 当用户睡眠状态发生改变时；
+2) 设备重新联网时，也会上报一次用户当前的睡眠状态。
+dataKey
+sleepStage
+消息内容
+
+[
+{
+dataKey:”sleepStage”,
+deviceId:<<设备Id>>,
+data:{
+		leftRight:<<单人设备值为0；双人设备表示左右侧(0/1),具体对应关系以实际产品为准>>,
+sleepStage:<<睡眠状态>>
+},
+timeStamp: <<数据发布时间>>
+},
+{
+dataKey:”sleepStage”,
+deviceId:<<设备Id>>,
+data:{
+leftRight:<<单人设备值为0；双人设备表示左右侧(0/1),具体对应关系以实际产品为准>>,
+sleepStage:<<睡眠状态>>
+},
+timeStamp: <<数据发布时间>>
+},
+....
+] 
+字段	类型	描述
+sleepStage	int	1: 清醒
+2: 浅睡
+4: 深睡
+8：
+情况一：sitUp、bedStatus/inbedStatus、sleepStage都为8时，说明算法在初始化；
+情况二：sleepStage为8，sitUp、bedStatus/inbedStatus不全为8，说明当前状态未发生改变，保持前一个有效状态的值
+其他：无效

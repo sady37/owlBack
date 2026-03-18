@@ -1,0 +1,40 @@
+# owlBack 命名与流约定（AI 必遵）
+
+## 1. dataValue 与 DataValue（易错）
+
+- **流/JSON 键名**：一律 **camelCase `dataValue`**。禁止使用 `data_value`（snake_case）作为 iot:*:stream 顶层键。
+- **读写流时**：用常量 `redis.DataValueKey` 或 `rediscommon.DataValueKey`（owl-common/redis），不要手写 `"dataValue"` / `"data_value"`。
+- **Go 结构体字段**：导出字段 PascalCase，如 `DataValue`；json tag 与流一致：`json:"dataValue"`。
+
+## 2. 变量语义（禁止混用）
+
+- **`DataValue`**：仅指结构体字段，类型 `[]interface{}`（或 Auth 的 `map[string]interface{}`），表示“整列 payload”。
+- **`dataValue`**：仅指“数组/列表”形态的 payload（如 `[]interface{}`、`[]map[string]interface{}`），或函数参数名，不用于“单条 map”。
+- **单条 payload（map）**：从 `m.DataValue` 取首项时，必须用 `redis.FirstDataValue(m.DataValue)`，**结果变量名用 `data`**，类型 `map[string]interface{}`。
+  - 正确：`data := redis.FirstDataValue(m.DataValue)`，后续用 `data` 表示单条。
+  - 错误：用 `dataValue` 表示“首项 map”，会与“整列”混淆。
+
+## 3. 流顶层键名
+
+- iot:*:stream 顶层：`device_id`, `device_type`, `card_id`, `tenant_id`, `timestamp`, `topic_type`, `category` 为 **snake_case**；**仅 dataValue 为 camelCase**，且用 `DataValueKey` 常量。
+- dataValue 内部“数据类别”键：**camelCase `dataCategory`**，用常量 `redis.DataCategoryKey`。
+
+## 4. 流名称
+
+- 流名称唯一出处：**owl-common/redis/stream_names.go**（如 `StreamMonitor.Name`、`StreamEvent.Name`）。禁止在其它包写死 `"iot:monitor:stream"` 等字符串。
+
+## 5. 数据库/JSONB
+
+- 表列名：**snake_case**（如 `data_values` JSONB）。与“流键 dataValue”区分：流键 camelCase，列名 snake_case。
+
+## 6. Category 命名（禁止用 flag 表示数据类别）
+
+- 表示「数据类别」的变量/常量一律用 **category** 相关命名（如 `category`、`categoryTarget`、`categoryInBed`），禁止用 `flag*`（如 flagTarget、flagInBed）。
+- 注释里描述「消息的类别」时用 **category** 或 **dataCategory**，不用 Flags/flag。
+
+## 7. 小结（复制到 prompt 也可）
+
+- 流键：`dataValue`（camelCase），用 `redis.DataValueKey`。
+- 单条 map：`data := redis.FirstDataValue(m.DataValue)`，变量名 `data`。
+- 整列：结构体字段 `DataValue` 或变量 `dataValue`（数组），不要用 `dataValue` 表示单条 map。
+- 数据类别：用 category/categoryXxx，不用 flag/flags。

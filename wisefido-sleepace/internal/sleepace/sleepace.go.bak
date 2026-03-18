@@ -1,5 +1,0 @@
-package sleepace
-
-func InitRelationship() {
-	// TODO: implement
-}

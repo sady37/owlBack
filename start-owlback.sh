@@ -20,6 +20,8 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# 脚本所在目录（先定义，供 check_running_services 里 stop-owlback.sh 使用）
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # 日志目录
 LOG_DIR="${LOG_DIR:-/tmp/owlBack_logs}"
 mkdir -p "$LOG_DIR"
@@ -255,9 +257,11 @@ if [ ! -d "$OWLBACK_DIR/wisefido-qinglan" ]; then
     exit 1
 fi
 
+# wisefido-sleepace 可选：目录不存在则跳过（如 Alitest 未拉取或不需要 Sleepad 网关）
+SLEEPACE_DIR_MISSING=false
 if [ ! -d "$OWLBACK_DIR/wisefido-sleepace" ]; then
-    echo -e "${RED}Error: wisefido-sleepace directory not found at $OWLBACK_DIR/wisefido-sleepace${NC}"
-    exit 1
+    echo -e "${YELLOW}Warning: wisefido-sleepace directory not found at $OWLBACK_DIR/wisefido-sleepace, skipping${NC}"
+    SLEEPACE_DIR_MISSING=true
 fi
 
 # 启动 wisefido-data 服务
@@ -314,15 +318,20 @@ echo "  Log: $QINGLAN_LOG (also displayed in terminal)"
 # 等待一下确保服务启动
 sleep 2
 
-# 启动 wisefido-sleepace 服务
+# 启动 wisefido-sleepace 服务（目录存在时）
 # 功能：Sleepad 设备网关（MQTT 消费 + HTTP 透传代理）
-echo -e "${GREEN}[4/6] Starting wisefido-sleepace service...${NC}"
-echo -e "${BLUE}  Function: Sleepad device gateway (MQTT consumer + HTTP proxy)${NC}"
-cd "$OWLBACK_DIR/wisefido-sleepace"
-MQTT_CLIENT_ID=wisefido-sleepace-2 go run cmd/wisefido-sleepace/main.go -env dev 2>&1 | tee "$SLEEPACE_LOG" &
-SLEEPACE_PID=$!
-echo "  PID: $SLEEPACE_PID"
-echo "  Log: $SLEEPACE_LOG (also displayed in terminal)"
+if [ "$SLEEPACE_DIR_MISSING" != "true" ]; then
+  echo -e "${GREEN}[4/6] Starting wisefido-sleepace service...${NC}"
+  echo -e "${BLUE}  Function: Sleepad device gateway (MQTT consumer + HTTP proxy)${NC}"
+  cd "$OWLBACK_DIR/wisefido-sleepace"
+  MQTT_CLIENT_ID=wisefido-sleepace-2 go run cmd/wisefido-sleepace/main.go -env dev 2>&1 | tee "$SLEEPACE_LOG" &
+  SLEEPACE_PID=$!
+  echo "  PID: $SLEEPACE_PID"
+  echo "  Log: $SLEEPACE_LOG (also displayed in terminal)"
+else
+  echo -e "${YELLOW}[4/6] Skipping wisefido-sleepace (directory not found)${NC}"
+  SLEEPACE_PID=""
+fi
 
 # 等待一下确保服务启动
 sleep 2
@@ -459,7 +468,7 @@ if ! ps -p $QINGLAN_PID > /dev/null 2>&1; then
     QINGLAN_FAILED=true
 fi
 
-if ! ps -p $SLEEPACE_PID > /dev/null 2>&1; then
+if [ -n "$SLEEPACE_PID" ] && ! ps -p $SLEEPACE_PID > /dev/null 2>&1; then
     echo -e "${RED}Error: wisefido-sleepace service failed to start${NC}"
     echo "Check log: $SLEEPACE_LOG"
     tail -20 "$SLEEPACE_LOG"
@@ -554,7 +563,7 @@ WAIT_PIDS=""
 [ "$DATA_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $DATA_PID"
 [ "$AGGREGATOR_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $AGGREGATOR_PID"
 [ "$QINGLAN_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $QINGLAN_PID"
-[ "$SLEEPACE_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $SLEEPACE_PID"
+[ "$SLEEPACE_FAILED" = false ] && [ -n "$SLEEPACE_PID" ] && WAIT_PIDS="$WAIT_PIDS $SLEEPACE_PID"
 [ "$IOT_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $IOT_PID"
 [ "$AI_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $AI_PID"
 
