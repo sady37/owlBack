@@ -29,6 +29,8 @@ type Config struct {
 		Level  string `yaml:"level"`
 		Format string `yaml:"format"`
 	} `yaml:"logging"`
+
+	HTTPAddr string `yaml:"http_addr"`
 }
 
 // Load 加载配置
@@ -82,6 +84,9 @@ func (c *Config) setDefaults() {
 	if c.BatchSize == 0 {
 		c.BatchSize = 10
 	}
+	if c.HTTPAddr == "" {
+		c.HTTPAddr = ":8085"
+	}
 	if c.Log.Level == "" {
 		c.Log.Level = "info"
 	}
@@ -117,6 +122,7 @@ func LoadFromEnv() (*Config, error) {
 	cfg.ConsumerGroup = getEnv("CONSUMER_GROUP", "iot-timeseries-group")
 	cfg.ConsumerName = getEnv("CONSUMER_NAME", "iot-timeseries-1")
 	cfg.BatchSize = 10
+	cfg.HTTPAddr = getEnv("HTTP_ADDR", ":8085")
 	cfg.Log.Level = getEnv("LOG_LEVEL", "info")
 	cfg.Log.Format = getEnv("LOG_FORMAT", "json")
 	return cfg, nil

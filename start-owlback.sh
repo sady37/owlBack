@@ -324,7 +324,7 @@ if [ "$SLEEPACE_DIR_MISSING" != "true" ]; then
   echo -e "${GREEN}[4/6] Starting wisefido-sleepace service...${NC}"
   echo -e "${BLUE}  Function: Sleepad device gateway (MQTT consumer + HTTP proxy)${NC}"
   cd "$OWLBACK_DIR/wisefido-sleepace"
-  MQTT_BROKER="${MQTT_BROKER:-127.0.0.1}:${MQTT_PORT:-1883}" MQTT_CLIENT_ID=wisefido-sleepace-2 go run cmd/wisefido-sleepace/main.go -env dev 2>&1 | tee "$SLEEPACE_LOG" &
+  MQTT_CLIENT_ID=wisefido-sleepace-2 go run cmd/wisefido-sleepace/main.go -env dev 2>&1 | tee "$SLEEPACE_LOG" &
   SLEEPACE_PID=$!
   echo "  PID: $SLEEPACE_PID"
   echo "  Log: $SLEEPACE_LOG (also displayed in terminal)"
