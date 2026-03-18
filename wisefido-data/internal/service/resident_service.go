@@ -830,7 +830,7 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 		}
 
 		// BranchOnly 过滤（通过 residents.branch_id 匹配用户的 branch_id）
-		// 注意：NULL、""、"-" 在 branch 表中都表示空院区
+		// 注意：NULL、""、"default" 在 branch 表中都表示空院区/默认院区
 		if req.PermissionCheck != nil && req.PermissionCheck.BranchOnly && req.CurrentUserID != "" {
 			userBranchIDs, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
 			if err != nil {
@@ -838,13 +838,13 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 			}
 
 			if !hasBranches {
-				// 用户没有关联任何院区：可以访问所有 NULL 院区的住户
-				// NULL 院区包括：branch_id IS NULL，或 branch_name IS NULL，或 branch_name = ''，或 branch_name = '-'
+				// 用户没有关联任何院区：可以访问所有 NULL/默认院区的住户
+				// NULL/默认院区：branch_id IS NULL，或 branch_name IS NULL，或 ''，或 'default'
 				q += ` AND (
 					r.branch_id IS NULL 
 					OR br.branch_name IS NULL 
 					OR br.branch_name = '' 
-					OR br.branch_name = '-'
+					OR br.branch_name = 'default'
 				)`
 			} else if len(userBranchIDs) == 1 {
 				// 用户只属于一个院区：只查看该院区的住户
@@ -1101,7 +1101,7 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 			}
 
 			// BranchOnly 权限检查（通过 residents.branch_id 匹配用户的 branch_id）
-			// 注意：NULL、""、"-" 在 branch 表中都表示空院区
+			// 注意：NULL、""、"default" 在 branch 表中都表示空院区/默认院区
 			if req.PermissionCheck.BranchOnly && s.db != nil && req.CurrentUserID != "" {
 				// 查询目标住户的 branch_id 和 branch_name
 				var residentBranchID sql.NullString
@@ -1120,11 +1120,11 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 					return nil, fmt.Errorf("failed to get resident branch info: %w", err)
 				}
 
-				// 判断住户是否属于空院区（NULL、""、"-"）
+				// 判断住户是否属于空院区/默认院区（NULL、""、"default"）
 				isNullBranch := !residentBranchID.Valid ||
 					!residentBranchName.Valid ||
 					residentBranchName.String == "" ||
-					residentBranchName.String == "-"
+					residentBranchName.String == "default"
 
 				// 查询用户所属的 branch_id 列表
 				userBranchIDs, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
@@ -1134,9 +1134,9 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 
 				// 权限检查
 				if !hasBranches {
-					// 用户没有关联任何院区：只能查看空院区的住户（NULL、""、"-"）
+					// 用户没有关联任何院区：只能查看空院区/默认院区的住户（NULL、""、"default"）
 					if !isNullBranch {
-						return nil, fmt.Errorf("permission denied: can only view residents with null branch (null, '', or '-')")
+						return nil, fmt.Errorf("permission denied: can only view residents with null/default branch (null, '', or 'default')")
 					}
 				} else {
 					// 用户有关联院区：只能查看关联院区的住户（不能查看空院区的住户）
@@ -1655,9 +1655,16 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 		if !unitExists {
 			return nil, fmt.Errorf("unit not found")
 		}
+		// VIP 单元创建时也必须带 room_id，避免下游业务因缺少 room 失败
+		var isPublic, isShared bool
+		if err := s.db.QueryRowContext(ctx, `SELECT is_public, is_shared_unit FROM units WHERE tenant_id = $1 AND unit_id = $2`, req.TenantID, unitID).Scan(&isPublic, &isShared); err == nil && !isPublic && !isShared {
+			if req.UnitRelation.RoomID == "" {
+				return nil, fmt.Errorf("VIP unit requires room_id")
+			}
+		}
 
 		// BranchOnly 权限检查（使用 branch_id）
-		// 注意：NULL、""、"-" 在 branch 表中都表示空院区
+		// 注意：NULL、""、"default" 在 branch 表中都表示空院区/默认院区
 		if req.PermissionCheck != nil && req.PermissionCheck.BranchOnly && req.CurrentUserID != "" {
 			// 查询 unit 的 branch_id 和 branch_name
 			var unitBranchID sql.NullString
@@ -1673,11 +1680,11 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 				return nil, fmt.Errorf("failed to check unit branch info: %w", err)
 			}
 
-			// 判断 unit 是否属于空院区（NULL、""、"-"）
+			// 判断 unit 是否属于空院区/默认院区（NULL、""、"default"）
 			isNullBranch := !unitBranchID.Valid ||
 				!unitBranchName.Valid ||
 				unitBranchName.String == "" ||
-				unitBranchName.String == "-"
+				unitBranchName.String == "default"
 
 			// 查询用户所属的 branch_id 列表
 			userBranchIDs, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
@@ -1687,9 +1694,9 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 
 			// 权限检查
 			if !hasBranches {
-				// 用户没有关联任何院区：只能创建空院区的住户（NULL、""、"-"）
+				// 用户没有关联任何院区：只能创建空院区/默认院区的住户（NULL、""、"default"）
 				if !isNullBranch {
-					return nil, fmt.Errorf("permission denied: can only create residents with null branch (null, '', or '-')")
+					return nil, fmt.Errorf("permission denied: can only create residents with null/default branch (null, '', or 'default')")
 				}
 			} else {
 				// 用户有关联院区：只能创建关联院区的住户（不能创建空院区的住户）
@@ -1750,17 +1757,23 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 			}
 
 			if !hasBranches || len(userBranches) == 0 {
-				// Manager 没有关联任何院区：只能设置 NULL、""、"-" 的 branch_id
+				// Manager 没有关联任何院区：只能设置 NULL、""、"default" 的 branch_id
 				if req.InherentAttributes.BranchID != "" {
 					return nil, fmt.Errorf("permission denied: Manager without branches can only set null branch_id")
 				}
 			} else {
-				// Manager 有关联院区：只能设置自己 branch 的 branch_id
+				// Manager 有关联院区：只能设置自己 branch 的 branch_id；与 default 互迁不要求拥有 default
 				allowed := false
 				for _, userBranch := range userBranches {
 					if userBranch.BranchID == req.InherentAttributes.BranchID {
 						allowed = true
 						break
+					}
+				}
+				if !allowed && s.db != nil {
+					var defaultBranchID string
+					if err := s.db.QueryRowContext(ctx, `SELECT branch_id::text FROM branches WHERE tenant_id = $1 AND branch_name = $2`, req.TenantID, domain.DefaultBranchName).Scan(&defaultBranchID); err == nil && defaultBranchID != "" && req.InherentAttributes.BranchID == defaultBranchID {
+						allowed = true
 					}
 				}
 				if !allowed {
@@ -2195,6 +2208,13 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 					break
 				}
 			}
+			// 与 default branch 互迁不要求用户拥有 default 权限，避免每个 manager 都要挂两个 branch
+			if !found && targetBranch != "" && s.db != nil {
+				var defaultBranchID string
+				if err := s.db.QueryRowContext(ctx, `SELECT branch_id::text FROM branches WHERE tenant_id = $1 AND branch_name = $2`, req.TenantID, domain.DefaultBranchName).Scan(&defaultBranchID); err == nil && defaultBranchID != "" && targetBranch == defaultBranchID {
+					found = true
+				}
+			}
 			if !found && targetBranch != "" {
 				return nil, fmt.Errorf("permission denied: can only update residents in same branch")
 			}
@@ -2271,6 +2291,7 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 	}
 
 	// 3. 处理 InherentAttributes（residents 表字段 + PHI + Contacts）
+	var branchChangedAndUnbound bool // 本请求中因迁院区已解绑 unit/room/bed，后续不再应用 UnitRelation 以免写回旧绑定
 	if req.InherentAttributes != nil {
 		// 3.1 构建 residents 表字段更新
 		residentUpdate := &domain.ResidentUpdate{}
@@ -2302,6 +2323,31 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 		residentUpdate.AdmissionDate = req.InherentAttributes.AdmissionDate
 		residentUpdate.DischargeDate = req.InherentAttributes.DischargeDate
 		residentUpdate.BranchID = req.InherentAttributes.BranchID
+		// 迁院区时解除原 unit/room/bed 绑定：新 branch 与当前 resident 的 branch 不同则清空；或新 branch 为 default 且当前 unit 属于其他院区也清空（修 r3 已在 default 但仍有旧 unit 的情况）
+		if req.InherentAttributes.BranchID != nil && req.InherentAttributes.BranchID.Action == domain.UpdateActionUpdate {
+			newBranchID := strings.TrimSpace(req.InherentAttributes.BranchID.Value)
+			curBranchID := strings.TrimSpace(existingResident.BranchID)
+			shouldUnbind := false
+			if newBranchID != curBranchID && existingResident.UnitID != "" {
+				shouldUnbind = true
+			} else if newBranchID != "" && existingResident.UnitID != "" && s.db != nil {
+				var defaultBranchID string
+				err := s.db.QueryRowContext(ctx, `SELECT branch_id::text FROM branches WHERE tenant_id = $1 AND branch_name = $2`, req.TenantID, domain.DefaultBranchName).Scan(&defaultBranchID)
+				if err == nil && newBranchID == defaultBranchID {
+					var unitBranchID sql.NullString
+					err2 := s.db.QueryRowContext(ctx, `SELECT branch_id::text FROM units WHERE tenant_id = $1 AND unit_id = $2`, req.TenantID, existingResident.UnitID).Scan(&unitBranchID)
+					if err2 == nil && (!unitBranchID.Valid || unitBranchID.String != defaultBranchID) {
+						shouldUnbind = true
+					}
+				}
+			}
+			if shouldUnbind {
+				residentUpdate.UnitID = &domain.UpdateString{Action: domain.UpdateActionDelete}
+				residentUpdate.RoomID = &domain.UpdateString{Action: domain.UpdateActionDelete}
+				residentUpdate.BedID = &domain.UpdateString{Action: domain.UpdateActionDelete}
+				branchChangedAndUnbound = true
+			}
+		}
 		residentUpdate.IsAccessEnabled = req.InherentAttributes.IsAccessEnabled
 		residentUpdate.Note = req.InherentAttributes.Note
 		residentUpdate.Phone = req.InherentAttributes.Phone
@@ -2548,7 +2594,8 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 	}
 
 	// 4. 处理 UnitRelation（unit_id, room_id, bed_id）
-	if req.UnitRelation != nil {
+	// 若本请求中已因迁院区解绑，不再应用 UnitRelation，避免把旧 unit 写回
+	if req.UnitRelation != nil && !branchChangedAndUnbound {
 		residentUpdate := &domain.ResidentUpdate{}
 
 		residentUpdate.UnitID = req.UnitRelation.UnitID
@@ -2575,6 +2622,25 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 					return nil, fmt.Errorf("room_id requires unit_id")
 				}
 			}
+			// Public/VIP/Share 绑定规则：Public、VIP 必须 room；Share 必须 bed
+			if residentUpdate.UnitID != nil && residentUpdate.UnitID.Action == domain.UpdateActionUpdate && residentUpdate.UnitID.Value != "" && s.db != nil {
+				var isPublic, isShared bool
+				err := s.db.QueryRowContext(ctx, `SELECT is_public, is_shared_unit FROM units WHERE tenant_id = $1 AND unit_id = $2`, req.TenantID, residentUpdate.UnitID.Value).Scan(&isPublic, &isShared)
+				if err == nil {
+					if isShared {
+						// Share：必须指定到床
+						hasBed := residentUpdate.BedID != nil && residentUpdate.BedID.Action == domain.UpdateActionUpdate && residentUpdate.BedID.Value != ""
+						if !hasBed {
+							return nil, fmt.Errorf("Share unit requires bed_id")
+						}
+					} else {
+						// Public、VIP：必须指定 room
+						if residentUpdate.RoomID == nil || residentUpdate.RoomID.Action != domain.UpdateActionUpdate || residentUpdate.RoomID.Value == "" {
+							return nil, fmt.Errorf("unit requires room_id")
+						}
+					}
+				}
+			}
 
 			// 调用 UpdateResidentFields
 			if err := s.residentsRepo.UpdateResidentFields(ctx, req.TenantID, req.ResidentID, residentUpdate); err != nil {
@@ -2589,7 +2655,20 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 	}
 
 	// 5. 处理 CaregiverRelation（user_list, group_list）
-	if req.CaregiverRelation != nil {
+	// 若本请求中已因迁院区解绑，清空 caregiver/caregiver-group，且不再应用请求中的 CaregiverRelation
+	if branchChangedAndUnbound {
+		caregiverUpdate := &domain.ResidentCaregiverUpdate{
+			UserList:  &domain.UpdateJSON{Action: domain.UpdateActionDelete},
+			GroupList: &domain.UpdateJSON{Action: domain.UpdateActionDelete},
+		}
+		if err := s.residentsRepo.UpsertResidentCaregiverFields(ctx, req.TenantID, req.ResidentID, caregiverUpdate); err != nil {
+			s.logger.Warn("UpsertResidentCaregiverFields (clear on branch change) failed",
+				zap.String("tenant_id", req.TenantID),
+				zap.String("resident_id", req.ResidentID),
+				zap.Error(err),
+			)
+		}
+	} else if req.CaregiverRelation != nil {
 		caregiverUpdate := &domain.ResidentCaregiverUpdate{}
 
 		caregiverUpdate.UserList = req.CaregiverRelation.UserList

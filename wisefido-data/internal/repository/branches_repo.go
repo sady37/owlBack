@@ -28,7 +28,7 @@ type BranchesRepository interface {
 
 	// CreateBranch 创建院区
 	// 注意：
-	//   - 如果 branch_name 为空，自动设置为 '-'
+	//   - 如果 branch_name 为空，自动设置为 DefaultBranchName（见 domain.DefaultBranchName）
 	//   - 唯一性约束：同一租户内 branch_name 唯一
 	//   - created_at 和 updated_at 由数据库自动设置
 	CreateBranch(ctx context.Context, tenantID string, branch *domain.Branch) (string, error)

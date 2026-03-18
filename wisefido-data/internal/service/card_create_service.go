@@ -397,11 +397,11 @@ func (c *CardCreateService) calculateUnitCardName(
 }
 
 // calculateCardAddress calculates card address: BranchName + "-" + building + "-" + unit_name
-// Skips empty values or default "-"
+// Skips empty values or default branch name "default" (excluded from address parts when meaningless)
 func (c *CardCreateService) calculateCardAddress(unitInfo *commoncard.UnitInfo) string {
 	var parts []string
 
-	if unitInfo.BranchName != "" && unitInfo.BranchName != "-" {
+	if unitInfo.BranchName != "" && unitInfo.BranchName != "default" {
 		parts = append(parts, unitInfo.BranchName)
 	}
 	if unitInfo.Building != "" && unitInfo.Building != "-" {

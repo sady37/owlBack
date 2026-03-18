@@ -742,7 +742,7 @@ func (s *userService) ListUsers(ctx context.Context, req ListUsersRequest) (*Lis
 				}
 			}
 		} else {
-			// 用户没有关联任何院区：只能查看 branch_name 为 NULL、"" 或 '-' 的用户（都视为空院区）
+			// 用户没有关联任何院区：只能查看 branch_name 为 NULL、"" 或 'default' 的用户（都视为空院区/默认院区）
 			filters.BranchNameNull = true
 		}
 	}

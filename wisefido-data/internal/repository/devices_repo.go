@@ -42,6 +42,18 @@ type DevicesRepository interface {
 	GetDevicesBoundToRoom(ctx context.Context, tenantID, roomID string) ([]*domain.Device, error)
 	GetDevicesBoundToBed(ctx context.Context, tenantID, bedID string) ([]*domain.Device, error)
 	GetDevicesBoundToRoomsOrBeds(ctx context.Context, tenantID string, roomIDs, bedIDs []string) ([]*domain.Device, error)
+
+	// GetRoomBoundDeviceTypeLetters 返回绑定到 room 的设备类型字母（R=Radar, S=Sleepad），供前端 RoomName(R) 展示
+	GetRoomBoundDeviceTypeLetters(ctx context.Context, tenantID, roomID string) ([]string, error)
+
+	// GetDevicesBoundToBedsWithDetails 返回多个 bed 上绑定的设备类型字母及 monitor 状态，供 resident 弹窗 Bed(R,S) 展示
+	GetDevicesBoundToBedsWithDetails(ctx context.Context, tenantID string, bedIDs []string) (map[string][]DeviceTypeDetail, error)
+}
+
+// DeviceTypeDetail 设备类型字母与 monitor 状态（R=Radar, S=Sleepad；Green=on, Red=off）
+type DeviceTypeDetail struct {
+	Letter           string
+	MonitoringEnabled bool
 }
 
 // DeviceInfo 用于返回设备的 ID 和 Name（用于 ListUnitsWithFullHierarchy）

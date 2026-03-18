@@ -24,6 +24,7 @@ type UnitService interface {
 
 	// Unit 管理
 	ListUnits(ctx context.Context, req ListUnitsRequest) (*ListUnitsResponse, error)
+	ListUnitsWithAvailability(ctx context.Context, req ListUnitsRequest) (*ListUnitsWithAvailabilityResponse, error)
 	ListUnitsWithFullHierarchy(ctx context.Context, req ListUnitsWithFullHierarchyRequest) (*ListUnitsWithFullHierarchyResponse, error)
 	GetUnit(ctx context.Context, req GetUnitRequest) (*GetUnitResponse, error)
 	CreateUnit(ctx context.Context, req CreateUnitRequest) (*CreateUnitResponse, error)
@@ -33,6 +34,7 @@ type UnitService interface {
 	// Room 管理
 	ListRooms(ctx context.Context, req ListRoomsRequest) (*ListRoomsResponse, error)
 	ListRoomsWithBeds(ctx context.Context, req ListRoomsWithBedsRequest) (*ListRoomsWithBedsResponse, error)
+	ListRoomsByBranch(ctx context.Context, req ListRoomsByBranchRequest) (*ListRoomsByBranchResponse, error)
 	GetRoom(ctx context.Context, req GetRoomRequest) (*GetRoomResponse, error)
 	CreateRoom(ctx context.Context, req CreateRoomRequest) (*CreateRoomResponse, error)
 	UpdateRoom(ctx context.Context, req UpdateRoomRequest) (*UpdateRoomResponse, error)
@@ -40,6 +42,7 @@ type UnitService interface {
 
 	// Bed 管理
 	ListBeds(ctx context.Context, req ListBedsRequest) (*ListBedsResponse, error)
+	ListBedsWithDetails(ctx context.Context, req ListBedsWithDetailsRequest) (*ListBedsWithDetailsResponse, error)
 	GetBed(ctx context.Context, req GetBedRequest) (*GetBedResponse, error)
 	CreateBed(ctx context.Context, req CreateBedRequest) (*CreateBedResponse, error)
 	UpdateBed(ctx context.Context, req UpdateBedRequest) (*UpdateBedResponse, error)
@@ -505,11 +508,25 @@ type ListUnitsRequest struct {
 	Search     *string // 可选（nil 表示未提供，模糊搜索 unit_name, unit_number）
 	Page       int     // 可选，默认 1
 	Size       int     // 可选，默认 100
+	// ResidentID: 住户绑定时传入（可为空表示新住户），VIP 单元仅返回未被其他住户占用的
+	ResidentID *string
 }
 
 type ListUnitsResponse struct {
 	Items []*domain.Unit `json:"items"`
 	Total int            `json:"total"`
+}
+
+// UnitWithAvailability 带 has_available_bed、is_bound 的 unit（供前端 (full) 灰行红字、橙/绿）
+type UnitWithAvailability struct {
+	*domain.Unit
+	HasAvailableBed bool `json:"has_available_bed"`
+	IsBound         bool `json:"is_bound"`
+}
+
+type ListUnitsWithAvailabilityResponse struct {
+	Items []*UnitWithAvailability `json:"items"`
+	Total int                     `json:"total"`
 }
 
 // ListUnitsWithFullHierarchyRequest 查询 Units 及其完整层级结构的请求
@@ -635,13 +652,42 @@ type ListRoomsResponse struct {
 type ListRoomsWithBedsRequest struct {
 	TenantID      string // 必填
 	UnitID        string // 必填
+	ResidentID    string // 可选，住户绑定时传当前 resident_id，只返回可用床位
 	CurrentUserID string // 可选（保留字段，用于日志记录，不再用于权限验证）
 	BranchID      string // 可选（保留字段，不再使用）
 	Search        string // 可选（按 room_name 模糊搜索）
 }
 
+// BedWithDeviceDetails 床位及其绑定的设备（字母 + monitor 状态），供前端 bed 行展示
+type BedWithDeviceDetails struct {
+	Bed     *domain.Bed
+	Devices []BedDeviceDetail // R=Radar, S=Sleepad；monitoring_enabled 供颜色展示
+}
+
+// RoomWithBedsItem 房间及其床位，含 room 级设备类型字母、每 bed 的绑定设备及 monitor 状态
+type RoomWithBedsItem struct {
+	Room        *domain.Room
+	Beds        []*BedWithDeviceDetails
+	DeviceTypes []string // room 级：R=Radar, S=Sleepad，供 RoomName(R) 展示
+}
+
 type ListRoomsWithBedsResponse struct {
-	Items []*repository.RoomWithBeds `json:"items"`
+	Items []*RoomWithBedsItem `json:"items"`
+}
+
+type ListRoomsByBranchRequest struct {
+	TenantID string // 必填
+	BranchID string // 必填
+}
+
+// RoomWithAvailabilityItem 供 resident 选 unit 弹窗：含 device_types（R=Radar, S=Sleepad）供 RoomName(R) 展示
+type RoomWithAvailabilityItem struct {
+	*repository.RoomWithAvailability
+	DeviceTypes []string
+}
+
+type ListRoomsByBranchResponse struct {
+	Items []*RoomWithAvailabilityItem `json:"items"`
 }
 
 type GetRoomRequest struct {
@@ -697,15 +743,39 @@ type DeleteRoomResponse struct {
 // ============================================
 
 type ListBedsRequest struct {
-	TenantID      string // 必填
-	RoomID        string // 必填
-	CurrentUserID string // 可选（保留字段，用于日志记录，不再用于权限验证）
-	BranchID      string // 可选（保留字段，不再使用）
-	Search        string // 可选（按 bed_name 模糊搜索）
+	TenantID      string  // 必填
+	RoomID        string  // 必填
+	ResidentID    *string // 可选，住户绑定时传当前 resident_id，只返回可用床位；nil=返回全部
+	CurrentUserID string  // 可选（保留字段，用于日志记录，不再用于权限验证）
+	BranchID      string  // 可选（保留字段，不再使用）
+	Search        string  // 可选（按 bed_name 模糊搜索）
 }
 
 type ListBedsResponse struct {
 	Items []*domain.Bed `json:"items"`
+}
+
+type ListBedsWithDetailsRequest struct {
+	TenantID   string  // 必填
+	RoomID     string  // 必填
+	ResidentID *string // 可选，传则只返回可用床位
+	Search     string
+}
+
+type BedDeviceDetail struct {
+	Letter            string `json:"letter"`
+	MonitoringEnabled bool   `json:"monitoring_enabled"`
+}
+
+type BedWithDetailsItem struct {
+	BedID     string             `json:"bed_id"`
+	BedName   string             `json:"bed_name"`
+	ResidentID *string           `json:"resident_id,omitempty"`
+	Devices   []BedDeviceDetail  `json:"devices"`
+}
+
+type ListBedsWithDetailsResponse struct {
+	Items []*BedWithDetailsItem `json:"items"`
 }
 
 type GetBedRequest struct {
@@ -776,16 +846,13 @@ func (s *unitService) ListBuildings(ctx context.Context, req ListBuildingsReques
 	var branchNameForQuery string
 
 	if req.BranchID != "" {
-		// 优先使用 BranchID
 		branchID = sql.NullString{String: req.BranchID, Valid: true}
-		// 如果提供了 BranchID，不需要 branch_name（Repository 层会直接使用 branch_id 过滤）
 		branchNameForQuery = ""
 	} else if req.BranchName != "" {
 		// 向后兼容：使用 BranchName
-		// Vue 层已经 trim 空格，这里处理空字符串自动转换为 "-"
 		branchNameTrimmed := strings.TrimSpace(req.BranchName)
 		if branchNameTrimmed == "" {
-			branchNameTrimmed = "-"
+			branchNameTrimmed = domain.DefaultBranchName
 		}
 		branchNameForQuery = branchNameTrimmed
 	} else {
@@ -1029,12 +1096,10 @@ func (s *unitService) ListUnits(ctx context.Context, req ListUnitsRequest) (*Lis
 	}
 
 	// 2. 构建过滤器
-	// 优先使用 BranchID，如果提供则忽略 BranchName
-	// 空字符串视为 null（nil → ""，用于 Repository 层转换为 IS NULL）
+	// 优先使用 BranchID，如果提供则忽略 BranchName；先选 branch，再列该 branch 下可用的 units
 	branchID := stringValueOrEmpty(req.BranchID)
 	branchName := ""
 	if branchID == "" {
-		// 如果 BranchID 未提供，则使用 BranchName（向后兼容）
 		branchName = stringValueOrEmpty(req.BranchName)
 	}
 
@@ -1057,6 +1122,7 @@ func (s *unitService) ListUnits(ctx context.Context, req ListUnitsRequest) (*Lis
 		UnitName:   stringValueOrEmpty(req.UnitName),
 		UnitType:   stringValueOrEmpty(req.UnitType),
 		Search:     stringValueOrEmpty(req.Search),
+		ResidentID: req.ResidentID,
 	}
 
 	// 3. 分页参数（与旧 Handler 逻辑对齐：默认 page=1, size=100）
@@ -1084,6 +1150,35 @@ func (s *unitService) ListUnits(ctx context.Context, req ListUnitsRequest) (*Lis
 		Items: items,
 		Total: total,
 	}, nil
+}
+
+// ListUnitsWithAvailability 查询 Units 并附带 has_available_bed、is_bound（供前端 (full) 灰行红字、橙/绿）
+func (s *unitService) ListUnitsWithAvailability(ctx context.Context, req ListUnitsRequest) (*ListUnitsWithAvailabilityResponse, error) {
+	resp, err := s.ListUnits(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.Items) == 0 {
+		return &ListUnitsWithAvailabilityResponse{Items: nil, Total: resp.Total}, nil
+	}
+	unitIDs := make([]string, 0, len(resp.Items))
+	for _, u := range resp.Items {
+		unitIDs = append(unitIDs, u.UnitID)
+	}
+	hasAvail, isBound, err := s.unitsRepo.GetUnitAvailability(ctx, req.TenantID, unitIDs)
+	if err != nil {
+		s.logger.Error("GetUnitAvailability failed", zap.String("tenant_id", req.TenantID), zap.Error(err))
+		return nil, fmt.Errorf("failed to get unit availability: %w", err)
+	}
+	out := make([]*UnitWithAvailability, 0, len(resp.Items))
+	for _, u := range resp.Items {
+		out = append(out, &UnitWithAvailability{
+			Unit:            u,
+			HasAvailableBed: hasAvail[u.UnitID],
+			IsBound:         isBound[u.UnitID],
+		})
+	}
+	return &ListUnitsWithAvailabilityResponse{Items: out, Total: resp.Total}, nil
 }
 
 // ListUnitsWithFullHierarchy 查询 Units 及其完整的层级结构（Rooms, Beds, Devices）
@@ -1426,12 +1521,12 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 		branchID = sql.NullString{String: req.BranchID, Valid: true}
 	} else if req.BranchName != "" {
 		// 向后兼容：通过 BranchName 查找 BranchID
-		// Vue 层已经 trim 空格，这里处理空字符串自动转换为 "-"
+		// Vue 层已经 trim 空格，这里处理空字符串自动转换为默认院区名
 		branchNameTrimmed := strings.TrimSpace(req.BranchName)
 		if branchNameTrimmed == "" {
-			branchNameTrimmed = "-"
+			branchNameTrimmed = domain.DefaultBranchName
 		}
-		if branchNameTrimmed != "-" {
+		if branchNameTrimmed != domain.DefaultBranchName {
 			branch, err := s.branchesRepo.GetBranchByName(ctx, req.TenantID, branchNameTrimmed)
 			if err != nil {
 				if err == sql.ErrNoRows {
@@ -1441,7 +1536,7 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 			}
 			branchID = sql.NullString{String: branch.BranchID, Valid: true}
 		}
-		// 如果 branchNameTrimmed == "-"，不设置 branchID（保持 NULL），表示默认 branch
+		// 若为默认院区名则不设置 branchID（保持 NULL），与“未指定院区”一致
 	}
 
 	// 3. 处理 building_id：可选，可以为空（支持 home care 等无 building 的场景）
@@ -1932,7 +2027,7 @@ func (s *unitService) ListRoomsWithBeds(ctx context.Context, req ListRoomsWithBe
 
 	// 3. 调用 Repository（传递搜索参数）
 	search := strings.TrimSpace(req.Search)
-	items, err := s.unitsRepo.ListRoomsWithBeds(ctx, req.TenantID, req.UnitID, search)
+	items, err := s.unitsRepo.ListRoomsWithBeds(ctx, req.TenantID, req.UnitID, search, strings.TrimSpace(req.ResidentID))
 	if err != nil {
 		s.logger.Error("ListRoomsWithBeds failed",
 			zap.String("tenant_id", req.TenantID),
@@ -1943,9 +2038,72 @@ func (s *unitService) ListRoomsWithBeds(ctx context.Context, req ListRoomsWithBe
 		return nil, fmt.Errorf("failed to list rooms with beds: %w", err)
 	}
 
+	// 4. 汇总所有 bed_id，查询每个 bed 绑定的设备及 monitor 状态
+	allBedIDs := make([]string, 0)
+	for _, rwb := range items {
+		for _, b := range rwb.Beds {
+			allBedIDs = append(allBedIDs, b.BedID)
+		}
+	}
+	bedDevDetails, _ := s.devicesRepo.GetDevicesBoundToBedsWithDetails(ctx, req.TenantID, allBedIDs)
+	if bedDevDetails == nil {
+		bedDevDetails = make(map[string][]repository.DeviceTypeDetail)
+	}
+
+	// 5. 为每个 room 查 room 级设备字母，并组装每 bed 的 devices（letter + monitoring_enabled）
+	out := make([]*RoomWithBedsItem, 0, len(items))
+	for _, rwb := range items {
+		letters, _ := s.devicesRepo.GetRoomBoundDeviceTypeLetters(ctx, req.TenantID, rwb.Room.RoomID)
+		if letters == nil {
+			letters = []string{}
+		}
+		bedsWithDev := make([]*BedWithDeviceDetails, 0, len(rwb.Beds))
+		for _, b := range rwb.Beds {
+			devs := bedDevDetails[b.BedID]
+			dd := make([]BedDeviceDetail, 0, len(devs))
+			for _, d := range devs {
+				dd = append(dd, BedDeviceDetail{Letter: d.Letter, MonitoringEnabled: d.MonitoringEnabled})
+			}
+			bedsWithDev = append(bedsWithDev, &BedWithDeviceDetails{Bed: b, Devices: dd})
+		}
+		out = append(out, &RoomWithBedsItem{
+			Room:        rwb.Room,
+			Beds:        bedsWithDev,
+			DeviceTypes: letters,
+		})
+	}
+
 	return &ListRoomsWithBedsResponse{
-		Items: items,
+		Items: out,
 	}, nil
+}
+
+// ListRoomsByBranch 按 branch 列出所有 room（带 is_full、is_bound、facility_type，供前端 (full) 灰行红字、橙/绿）
+func (s *unitService) ListRoomsByBranch(ctx context.Context, req ListRoomsByBranchRequest) (*ListRoomsByBranchResponse, error) {
+	if req.TenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	if req.BranchID == "" {
+		return nil, fmt.Errorf("branch_id is required")
+	}
+	items, err := s.unitsRepo.ListRoomsByBranch(ctx, req.TenantID, req.BranchID)
+	if err != nil {
+		s.logger.Error("ListRoomsByBranch failed",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("branch_id", req.BranchID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to list rooms by branch: %w", err)
+	}
+	out := make([]*RoomWithAvailabilityItem, 0, len(items))
+	for _, it := range items {
+		letters, _ := s.devicesRepo.GetRoomBoundDeviceTypeLetters(ctx, req.TenantID, it.RoomID)
+		if letters == nil {
+			letters = []string{}
+		}
+		out = append(out, &RoomWithAvailabilityItem{RoomWithAvailability: it, DeviceTypes: letters})
+	}
+	return &ListRoomsByBranchResponse{Items: out}, nil
 }
 
 // GetRoom 获取单个房间详情
@@ -2091,6 +2249,7 @@ func (s *unitService) UpdateRoom(ctx context.Context, req UpdateRoomRequest) (*U
 }
 
 // DeleteRoom 删除房间
+// 规则：删除物理关联（room）前，Service 层必须确保没有业务关联（设备绑定 bound_room_id、住户绑定 room_id）；否则禁止删除。
 func (s *unitService) DeleteRoom(ctx context.Context, req DeleteRoomRequest) (*DeleteRoomResponse, error) {
 	// 1. 参数验证
 	if req.TenantID == "" {
@@ -2122,10 +2281,10 @@ func (s *unitService) DeleteRoom(ctx context.Context, req DeleteRoomRequest) (*D
 		return nil, err
 	}
 
-	// 3. 检查关联数据：beds、devices
+	// 3. 业务关联检查：无设备绑定、无住户绑定方可删除物理关联（room）
 	var errorDetails []string
 
-	// 3.1 检查 beds
+	// 3.1 物理子节点：存在 beds 须先删 bed，再删 room
 	beds, err := s.unitsRepo.ListBeds(ctx, req.TenantID, req.RoomID, "")
 	if err != nil {
 		s.logger.Error("DeleteRoom: failed to check beds",
@@ -2143,7 +2302,7 @@ func (s *unitService) DeleteRoom(ctx context.Context, req DeleteRoomRequest) (*D
 		errorDetails = append(errorDetails, fmt.Sprintf("beds: %s", strings.Join(bedNames, ", ")))
 	}
 
-	// 3.2 检查 devices（通过 bound_room_id 关联到 room）
+	// 3.2 业务关联：设备绑定到该 room（bound_room_id）
 	boundDevices, err := s.devicesRepo.GetDevicesBoundToRoom(ctx, req.TenantID, req.RoomID)
 	if err != nil {
 		s.logger.Error("DeleteRoom: failed to check devices",
@@ -2165,6 +2324,29 @@ func (s *unitService) DeleteRoom(ctx context.Context, req DeleteRoomRequest) (*D
 			}
 		}
 		errorDetails = append(errorDetails, fmt.Sprintf("devices: %s", strings.Join(deviceNames, ", ")))
+	}
+
+	// 3.3 业务关联：住户绑定到该 room（residents.room_id）
+	residentFilters := repository.ResidentFilters{RoomID: req.RoomID}
+	residents, _, err := s.residentsRepo.ListResidents(ctx, req.TenantID, residentFilters, 1, 10000)
+	if err != nil {
+		s.logger.Error("DeleteRoom: failed to check residents",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("room_id", req.RoomID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to check residents: %w", err)
+	}
+	if len(residents) > 0 {
+		residentNames := make([]string, 0, len(residents))
+		for _, r := range residents {
+			if r.Nickname != "" {
+				residentNames = append(residentNames, r.Nickname)
+			} else {
+				residentNames = append(residentNames, r.ResidentID)
+			}
+		}
+		errorDetails = append(errorDetails, fmt.Sprintf("residents: %s", strings.Join(residentNames, ", ")))
 	}
 
 	// 4. 如果有关联数据，禁止删除并返回详细错误信息
@@ -2236,9 +2418,14 @@ func (s *unitService) ListBeds(ctx context.Context, req ListBedsRequest) (*ListB
 		return nil, fmt.Errorf("failed to get room: %w", err)
 	}
 
-	// 3. 调用 Repository（传递搜索参数）
+	// 3. 住户绑定时传 ResidentID 则只返回可用床位，否则返回全部
 	search := strings.TrimSpace(req.Search)
-	items, err := s.unitsRepo.ListBeds(ctx, req.TenantID, req.RoomID, search)
+	var items []*domain.Bed
+	if req.ResidentID != nil {
+		items, err = s.unitsRepo.ListAvailableBeds(ctx, req.TenantID, req.RoomID, search, strings.TrimSpace(*req.ResidentID))
+	} else {
+		items, err = s.unitsRepo.ListBeds(ctx, req.TenantID, req.RoomID, search)
+	}
 	if err != nil {
 		s.logger.Error("ListBeds failed",
 			zap.String("tenant_id", req.TenantID),
@@ -2252,6 +2439,56 @@ func (s *unitService) ListBeds(ctx context.Context, req ListBedsRequest) (*ListB
 	return &ListBedsResponse{
 		Items: items,
 	}, nil
+}
+
+// ListBedsWithDetails 返回床位列表（含 resident_id、设备类型及 monitor 状态），供 resident 弹窗 bed 状态色与 R/S 展示
+func (s *unitService) ListBedsWithDetails(ctx context.Context, req ListBedsWithDetailsRequest) (*ListBedsWithDetailsResponse, error) {
+	if req.TenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	if req.RoomID == "" {
+		return nil, fmt.Errorf("room_id is required")
+	}
+	_, err := s.unitsRepo.GetRoom(ctx, req.TenantID, req.RoomID)
+	if err != nil {
+		if err == sql.ErrNoRows || strings.Contains(err.Error(), "not found") {
+			return nil, fmt.Errorf("room not found: room_id=%s", req.RoomID)
+		}
+		return nil, fmt.Errorf("failed to get room: %w", err)
+	}
+	search := strings.TrimSpace(req.Search)
+	withResident, err := s.unitsRepo.ListBedsWithResident(ctx, req.TenantID, req.RoomID, search)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list beds: %w", err)
+	}
+	s.logger.Info("ListBedsWithDetails",
+		zap.String("tenant_id", req.TenantID),
+		zap.String("room_id", req.RoomID),
+		zap.Int("beds_count", len(withResident)))
+	// 不做可用性过滤，仅返回 bed 客观信息：是否绑人(resident_id)、是否绑设备及设备 monitor on/off
+	bedIDs := make([]string, 0, len(withResident))
+	for _, b := range withResident {
+		bedIDs = append(bedIDs, b.Bed.BedID)
+	}
+	devDetails, err := s.devicesRepo.GetDevicesBoundToBedsWithDetails(ctx, req.TenantID, bedIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get device details for beds: %w", err)
+	}
+	items := make([]*BedWithDetailsItem, 0, len(withResident))
+	for _, b := range withResident {
+		devs := devDetails[b.Bed.BedID]
+		dd := make([]BedDeviceDetail, 0, len(devs))
+		for _, d := range devs {
+			dd = append(dd, BedDeviceDetail{Letter: d.Letter, MonitoringEnabled: d.MonitoringEnabled})
+		}
+		items = append(items, &BedWithDetailsItem{
+			BedID:      b.Bed.BedID,
+			BedName:    b.Bed.BedName,
+			ResidentID: b.ResidentID,
+			Devices:    dd,
+		})
+	}
+	return &ListBedsWithDetailsResponse{Items: items}, nil
 }
 
 // GetBed 获取单个床位详情
@@ -2434,8 +2671,7 @@ func (s *unitService) UpdateBed(ctx context.Context, req UpdateBedRequest) (*Upd
 }
 
 // DeleteBed 删除床位
-// 注意：如果用户已经在编辑 unit，说明已经通过了权限验证（unit 的 branch_id 在用户的 branch_id 列表中）
-// 因此在同一个 unit 下删除 bed 时，不需要再次验证权限，只需要验证 bed 是否存在即可
+// 规则：删除物理关联（bed）前，Service 层必须确保没有业务关联（设备绑定 bound_bed_id、住户绑定 bed_id）；否则禁止删除。
 func (s *unitService) DeleteBed(ctx context.Context, req DeleteBedRequest) (*DeleteBedResponse, error) {
 	// 1. 参数验证
 	if req.TenantID == "" {
@@ -2493,10 +2729,10 @@ func (s *unitService) DeleteBed(ctx context.Context, req DeleteBedRequest) (*Del
 	// 此处仅保留 bed/room/unit 存在性检查
 	_ = unit // Mark unit as used to avoid linter warning
 
-	// 3. 检查关联数据：devices、residents
+	// 3. 业务关联检查：无设备绑定、无住户绑定方可删除物理关联（bed）
 	var errorDetails []string
 
-	// 3.1 检查 devices（通过 bound_bed_id 关联到 bed）
+	// 3.1 业务关联：设备绑定到该 bed（bound_bed_id）
 	boundDevices, err := s.devicesRepo.GetDevicesBoundToBed(ctx, req.TenantID, req.BedID)
 	if err != nil {
 		s.logger.Error("DeleteBed: failed to check devices",
@@ -2520,11 +2756,11 @@ func (s *unitService) DeleteBed(ctx context.Context, req DeleteBedRequest) (*Del
 		errorDetails = append(errorDetails, fmt.Sprintf("devices: %s", strings.Join(deviceNames, ", ")))
 	}
 
-	// 3.2 检查 residents（通过 bed_id 关联到 bed）
+	// 3.2 业务关联：住户绑定到该 bed（residents.bed_id）
 	residentFilters := repository.ResidentFilters{
 		BedID: req.BedID,
 	}
-	residents, _, err := s.residentsRepo.ListResidents(ctx, req.TenantID, residentFilters, 1, 1000)
+	residents, _, err := s.residentsRepo.ListResidents(ctx, req.TenantID, residentFilters, 1, 10000)
 	if err != nil {
 		s.logger.Error("DeleteBed: failed to check residents",
 			zap.String("tenant_id", req.TenantID),

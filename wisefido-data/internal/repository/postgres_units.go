@@ -42,7 +42,7 @@ func (r *PostgresUnitsRepository) ListBuildings(ctx context.Context, tenantID st
 		argIdx++
 	} else if branchName != "" {
 		// 向后兼容：如果提供了 branchName，通过 JOIN branches 表查找
-		where += " AND COALESCE(br.branch_name, '-') = $" + fmt.Sprintf("%d", argIdx)
+		where += " AND COALESCE(br.branch_name, 'default') = $" + fmt.Sprintf("%d", argIdx)
 		args = append(args, branchName)
 		argIdx++
 	}
@@ -61,7 +61,7 @@ func (r *PostgresUnitsRepository) ListBuildings(ctx context.Context, tenantID st
 		LEFT JOIN branches br ON br.branch_id = b.branch_id
 		WHERE ` + where + `
 		  AND NOT (b.branch_id IS NULL AND b.building_name = '-')
-		ORDER BY COALESCE(br.branch_name, '-'), b.building_name
+		ORDER BY COALESCE(br.branch_name, 'default'), b.building_name
 	`
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -388,6 +388,21 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 		argN++
 	}
 
+	// 住户绑定时：VIP 单元仅返回未被其他住户占用的（unit/room/bed 任一被占即视为不可选）
+	if filters.ResidentID != nil {
+		rid := *filters.ResidentID
+		where = append(where, fmt.Sprintf(`(u.is_public = true OR u.is_shared_unit = true OR NOT EXISTS (
+			SELECT 1 FROM residents res
+			WHERE res.tenant_id = u.tenant_id AND res.resident_id IS DISTINCT FROM $%d
+			AND (res.unit_id = u.unit_id
+				OR res.room_id IN (SELECT room_id FROM rooms WHERE tenant_id = u.tenant_id AND unit_id = u.unit_id)
+				OR res.bed_id IN (SELECT bed_id FROM beds b2 JOIN rooms rm ON rm.room_id = b2.room_id AND rm.tenant_id = u.tenant_id WHERE rm.unit_id = u.unit_id)
+			)
+		))`, argN))
+		args = append(args, rid)
+		argN++
+	}
+
 	// 构建 FROM 子句：总是 JOIN branches 和 buildings 表以获取 branch_name 和 building_name（domain模型要求）
 	fromClause := "FROM units u"
 	fromClause += " LEFT JOIN branches b ON b.branch_id = u.branch_id"
@@ -554,7 +569,7 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 
 	// 处理 branch_id：如果提供了 BranchName，需要通过 branches 表查找 branch_id
 	var branchIDSQL sql.NullString
-	if unit.BranchName.Valid && unit.BranchName.String != "" && unit.BranchName.String != "-" {
+	if unit.BranchName.Valid && unit.BranchName.String != "" && unit.BranchName.String != "default" {
 		// 通过 branch_name 查找 branch_id
 		var branchID string
 		err := r.db.QueryRowContext(ctx,
@@ -813,7 +828,7 @@ func (r *PostgresUnitsRepository) UpdateUnit(ctx context.Context, tenantID, unit
 
 	// 处理 branch_id：如果提供了 BranchName，需要通过 branches 表查找 branch_id
 	var branchIDSQL sql.NullString
-	if unit.BranchName.Valid && unit.BranchName.String != "" && unit.BranchName.String != "-" {
+	if unit.BranchName.Valid && unit.BranchName.String != "" && unit.BranchName.String != "default" {
 		// 通过 branch_name 查找 branch_id
 		var branchID string
 		err := r.db.QueryRowContext(ctx,
@@ -1056,31 +1071,25 @@ func (r *PostgresUnitsRepository) ListRooms(ctx context.Context, tenantID, unitI
 	return rooms, rows.Err()
 }
 
-// ListRoomsWithBeds: 查询 rooms 及其 beds
-// 替代触发器：无（仅查询）
-// 参数说明：
-//   - search: 可选，按 room_name 模糊搜索（如果为空则不搜索）
-func (r *PostgresUnitsRepository) ListRoomsWithBeds(ctx context.Context, tenantID, unitID string, search string) ([]*RoomWithBeds, error) {
+// ListRoomsWithBeds: 查询 unit 下全部 rooms 及每 room 下全部 beds，不做住户相关过滤；bed 状态由前端/业务层统一展示
+func (r *PostgresUnitsRepository) ListRoomsWithBeds(ctx context.Context, tenantID, unitID, search, residentID string) ([]*RoomWithBeds, error) {
 	if tenantID == "" || unitID == "" {
 		return []*RoomWithBeds{}, nil
 	}
+	_ = residentID // 不再按住户过滤，保留参数兼容调用方
 
-	// 查询 rooms（传递搜索参数）
 	rooms, err := r.ListRooms(ctx, tenantID, unitID, search)
 	if err != nil {
 		return nil, err
 	}
-
 	if len(rooms) == 0 {
 		return []*RoomWithBeds{}, nil
 	}
 
-	// 查询 beds
 	roomIDs := make([]string, len(rooms))
 	for i, room := range rooms {
 		roomIDs[i] = room.RoomID
 	}
-
 	in := make([]string, len(roomIDs))
 	args := make([]any, 0, len(roomIDs)+1)
 	args = append(args, tenantID)
@@ -1102,7 +1111,7 @@ func (r *PostgresUnitsRepository) ListRoomsWithBeds(ctx context.Context, tenantI
 		LEFT JOIN rooms r ON r.room_id = b.room_id
 		WHERE b.tenant_id = $1 AND b.room_id IN (` + strings.Join(in, ",") + `)
 		ORDER BY b.bed_name
-	`
+		`
 	brows, err := r.db.QueryContext(ctx, qBeds, args...)
 	if err != nil {
 		return nil, err
@@ -1149,6 +1158,106 @@ func (r *PostgresUnitsRepository) ListRoomsWithBeds(ctx context.Context, tenantI
 	return out, nil
 }
 
+// ListRoomsByBranch: 按 branch 列出所有 room，带 unit 信息与 is_full、is_bound（供前端 (full) 红字灰行、橙/绿）
+func (r *PostgresUnitsRepository) ListRoomsByBranch(ctx context.Context, tenantID, branchID string) ([]*RoomWithAvailability, error) {
+	if tenantID == "" || branchID == "" {
+		return nil, nil
+	}
+	q := `
+		SELECT 
+			r.room_id::text,
+			r.tenant_id::text,
+			r.unit_id::text,
+			COALESCE(u.unit_name, '') AS unit_name,
+			COALESCE(b.building_name, '') AS building_name,
+			COALESCE(u.floor, '') AS floor,
+			r.room_name,
+			COALESCE(u.unit_type, '') AS unit_type,
+			CASE WHEN u.is_public THEN 'Public' WHEN u.is_shared_unit THEN 'Share' ELSE 'VIP' END AS facility_type,
+			(CASE WHEN EXISTS (SELECT 1 FROM beds b WHERE b.tenant_id = r.tenant_id AND b.room_id = r.room_id) THEN
+				NOT EXISTS (SELECT 1 FROM beds b WHERE b.tenant_id = r.tenant_id AND b.room_id = r.room_id
+					AND NOT EXISTS (SELECT 1 FROM residents res WHERE res.tenant_id = b.tenant_id AND res.bed_id = b.bed_id))
+			ELSE FALSE END) AS is_full,
+			(EXISTS (SELECT 1 FROM residents res WHERE res.tenant_id = r.tenant_id AND res.room_id = r.room_id)
+			 OR EXISTS (SELECT 1 FROM residents res INNER JOIN beds b ON b.tenant_id = res.tenant_id AND b.bed_id = res.bed_id AND b.room_id = r.room_id WHERE res.tenant_id = r.tenant_id)) AS is_bound
+		FROM rooms r
+		INNER JOIN units u ON u.unit_id = r.unit_id AND u.tenant_id = r.tenant_id
+		LEFT JOIN buildings b ON b.building_id = u.building_id AND b.tenant_id = u.tenant_id
+		WHERE r.tenant_id = $1 AND u.branch_id = $2
+		ORDER BY COALESCE(b.building_name, ''), COALESCE(u.floor, ''), u.unit_name, r.room_name
+	`
+	rows, err := r.db.QueryContext(ctx, q, tenantID, branchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*RoomWithAvailability
+	for rows.Next() {
+		var item RoomWithAvailability
+		if err := rows.Scan(&item.RoomID, &item.TenantID, &item.UnitID, &item.UnitName, &item.BuildingName, &item.Floor, &item.RoomName, &item.UnitType, &item.FacilityType, &item.IsFull, &item.IsBound); err != nil {
+			return nil, err
+		}
+		out = append(out, &item)
+	}
+	return out, rows.Err()
+}
+
+// GetUnitAvailability: 批量查询 unit 的 has_available_bed、is_bound
+func (r *PostgresUnitsRepository) GetUnitAvailability(ctx context.Context, tenantID string, unitIDs []string) (hasAvailableBed, isBound map[string]bool, err error) {
+	hasAvailableBed = make(map[string]bool)
+	isBound = make(map[string]bool)
+	if tenantID == "" || len(unitIDs) == 0 {
+		return hasAvailableBed, isBound, nil
+	}
+	ph := make([]string, len(unitIDs))
+	args := []any{tenantID}
+	for i := range unitIDs {
+		ph[i] = fmt.Sprintf("$%d", i+2)
+		args = append(args, unitIDs[i])
+	}
+	inClause := strings.Join(ph, ",")
+	// has_available_bed: unit 下存在至少一张未被占用的 bed
+	qAvail := `
+		SELECT DISTINCT u.unit_id::text FROM units u
+		INNER JOIN rooms rm ON rm.unit_id = u.unit_id AND rm.tenant_id = u.tenant_id
+		INNER JOIN beds b ON b.room_id = rm.room_id AND b.tenant_id = u.tenant_id
+		WHERE u.tenant_id = $1 AND u.unit_id IN (` + inClause + `)
+		AND NOT EXISTS (SELECT 1 FROM residents res WHERE res.tenant_id = b.tenant_id AND res.bed_id = b.bed_id)
+	`
+	rowsAvail, err := r.db.QueryContext(ctx, qAvail, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	for rowsAvail.Next() {
+		var id string
+		if _ = rowsAvail.Scan(&id); id != "" {
+			hasAvailableBed[id] = true
+		}
+	}
+	rowsAvail.Close()
+	// is_bound: 有住户绑定了该 unit（unit_id / 该 unit 下 room / 该 unit 下 bed）
+	qBound := `
+		SELECT DISTINCT u.unit_id::text FROM units u
+		INNER JOIN residents res ON res.tenant_id = u.tenant_id
+		AND (res.unit_id = u.unit_id
+		     OR res.room_id IN (SELECT room_id FROM rooms WHERE unit_id = u.unit_id AND tenant_id = u.tenant_id)
+		     OR res.bed_id IN (SELECT b.bed_id FROM beds b INNER JOIN rooms r ON r.room_id = b.room_id AND r.unit_id = u.unit_id AND r.tenant_id = u.tenant_id WHERE b.tenant_id = u.tenant_id))
+		WHERE u.tenant_id = $1 AND u.unit_id IN (` + inClause + `)
+	`
+	rowsBound, err := r.db.QueryContext(ctx, qBound, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	for rowsBound.Next() {
+		var id string
+		if _ = rowsBound.Scan(&id); id != "" {
+			isBound[id] = true
+		}
+	}
+	rowsBound.Close()
+	return hasAvailableBed, isBound, nil
+}
+
 // GetRoom: 获取单个 room
 // 替代触发器：无（仅查询）
 func (r *PostgresUnitsRepository) GetRoom(ctx context.Context, tenantID, roomID string) (*domain.Room, error) {
@@ -1166,7 +1275,7 @@ func (r *PostgresUnitsRepository) GetRoom(ctx context.Context, tenantID, roomID 
 			r.room_name,
 			CASE WHEN r.layout_config IS NULL THEN NULL ELSE r.layout_config::text END as layout_config
 		FROM rooms r
-		LEFT JOIN units u ON u.unit_id = r.unit_id
+		LEFT JOIN units u ON u.unit_id = r.unit_id AND u.tenant_id = r.tenant_id
 		WHERE r.tenant_id = $1 AND r.room_id = $2
 	`
 	var room domain.Room
@@ -1296,9 +1405,8 @@ func (r *PostgresUnitsRepository) DeleteRoom(ctx context.Context, tenantID, room
 // Bed 操作
 // ============================================
 
-// ListBeds: 查询 beds 列表
-// 替代触发器：无（仅查询）
-func (r *PostgresUnitsRepository) ListBeds(ctx context.Context, tenantID, roomID string, search string) ([]*domain.Bed, error) {
+// ListBeds: 查询 beds 列表（全部，不做可用性过滤）
+func (r *PostgresUnitsRepository) ListBeds(ctx context.Context, tenantID, roomID, search string) ([]*domain.Bed, error) {
 	if tenantID == "" || roomID == "" {
 		return []*domain.Bed{}, nil
 	}
@@ -1307,7 +1415,6 @@ func (r *PostgresUnitsRepository) ListBeds(ctx context.Context, tenantID, roomID
 	args := []any{tenantID, roomID}
 	argN := 3
 
-	// 添加搜索条件（如果提供）
 	if search != "" {
 		where = append(where, fmt.Sprintf("b.bed_name ILIKE $%d", argN))
 		args = append(args, "%"+search+"%")
@@ -1323,6 +1430,132 @@ func (r *PostgresUnitsRepository) ListBeds(ctx context.Context, tenantID, roomID
 			b.bed_name,
 			b.mattress_material,
 			b.mattress_thickness
+		FROM beds b
+		LEFT JOIN rooms r ON r.room_id = b.room_id
+		WHERE %s
+		ORDER BY b.bed_name
+	`, strings.Join(where, " AND "))
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	beds := make([]*domain.Bed, 0)
+	for rows.Next() {
+		var bed domain.Bed
+		var roomName, mattressMaterial, mattressThickness sql.NullString
+		if err := rows.Scan(
+			&bed.BedID,
+			&bed.TenantID,
+			&bed.RoomID,
+			&roomName,
+			&bed.BedName,
+			&mattressMaterial,
+			&mattressThickness,
+		); err != nil {
+			return nil, err
+		}
+		bed.RoomName = roomName
+		bed.MattressMaterial = mattressMaterial
+		bed.MattressThickness = mattressThickness
+		beds = append(beds, &bed)
+	}
+	return beds, rows.Err()
+}
+
+// ListBedsWithResident 返回 room 下全部 bed 及 resident_id
+func (r *PostgresUnitsRepository) ListBedsWithResident(ctx context.Context, tenantID, roomID, search string) ([]*BedWithResident, error) {
+	if tenantID == "" || roomID == "" {
+		return []*BedWithResident{}, nil
+	}
+	where := []string{"b.tenant_id = $1", "b.room_id = $2"}
+	args := []any{tenantID, roomID}
+	argN := 3
+	if search != "" {
+		where = append(where, fmt.Sprintf("b.bed_name ILIKE $%d", argN))
+		args = append(args, "%"+search+"%")
+		argN++
+	}
+	q := fmt.Sprintf(`
+		SELECT b.bed_id::text, b.tenant_id::text, b.room_id::text, r.room_name, b.bed_name, b.mattress_material, b.mattress_thickness, res.resident_id::text
+		FROM beds b
+		LEFT JOIN rooms r ON r.room_id = b.room_id
+		LEFT JOIN residents res ON res.bed_id = b.bed_id AND res.tenant_id = b.tenant_id
+		WHERE %s
+		ORDER BY b.bed_name
+	`, strings.Join(where, " AND "))
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*BedWithResident
+	for rows.Next() {
+		var bed domain.Bed
+		var roomName, mattressMaterial, mattressThickness sql.NullString
+		var residentID sql.NullString
+		if err := rows.Scan(
+			&bed.BedID,
+			&bed.TenantID,
+			&bed.RoomID,
+			&roomName,
+			&bed.BedName,
+			&mattressMaterial,
+			&mattressThickness,
+			&residentID,
+		); err != nil {
+			return nil, err
+		}
+		bed.RoomName = roomName
+		bed.MattressMaterial = mattressMaterial
+		bed.MattressThickness = mattressThickness
+		item := &BedWithResident{Bed: &bed}
+		if residentID.Valid && residentID.String != "" {
+			item.ResidentID = &residentID.String
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// ListAvailableBeds: 仅返回可用床位（未被占用或仅被 residentID 占用）；VIP 规则：room 被其他住户占用则该 room 下 bed 也不可用
+func (r *PostgresUnitsRepository) ListAvailableBeds(ctx context.Context, tenantID, roomID, search, residentID string) ([]*domain.Bed, error) {
+	if tenantID == "" || roomID == "" {
+		return []*domain.Bed{}, nil
+	}
+
+	where := []string{"b.tenant_id = $1", "b.room_id = $2"}
+	args := []any{tenantID, roomID}
+	argN := 3
+
+	// bed 未被占用或仅被当前住户占用
+	if residentID == "" {
+		where = append(where, `NOT EXISTS (SELECT 1 FROM residents res WHERE res.tenant_id = b.tenant_id AND res.bed_id = b.bed_id)`)
+	} else {
+		where = append(where, fmt.Sprintf(`(NOT EXISTS (SELECT 1 FROM residents res WHERE res.tenant_id = b.tenant_id AND res.bed_id = b.bed_id) OR EXISTS (SELECT 1 FROM residents res WHERE res.tenant_id = b.tenant_id AND res.bed_id = b.bed_id AND res.resident_id = $%d))`, argN))
+		args = append(args, residentID)
+		argN++
+	}
+
+	// VIP 规则：room 被其他住户占用则不可选，该 room 下 bed 也不显示
+	if residentID == "" {
+		where = append(where, `NOT EXISTS (SELECT 1 FROM residents res WHERE res.tenant_id = b.tenant_id AND res.room_id = b.room_id)`)
+	} else {
+		where = append(where, fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM residents res WHERE res.tenant_id = b.tenant_id AND res.room_id = b.room_id AND res.resident_id IS NOT NULL AND res.resident_id != $%d)`, argN))
+		args = append(args, residentID)
+		argN++
+	}
+
+	if search != "" {
+		where = append(where, fmt.Sprintf("b.bed_name ILIKE $%d", argN))
+		args = append(args, "%"+search+"%")
+		argN++
+	}
+
+	q := fmt.Sprintf(`
+		SELECT b.bed_id::text, b.tenant_id::text, b.room_id::text, r.room_name, b.bed_name, b.mattress_material, b.mattress_thickness
 		FROM beds b
 		LEFT JOIN rooms r ON r.room_id = b.room_id
 		WHERE %s

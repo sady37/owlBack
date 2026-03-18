@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	"wisefido-data/internal/domain"
@@ -141,11 +142,12 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 			ds.comm_mode,
 			ds.mcu_model,
 			ds.firmware_version,
-			-- 位置信息（通过 JOIN 查询得到，用于返回给前端）
-			COALESCE(
-				d.bound_room_id,
-				(SELECT r.room_id FROM rooms r JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND r.tenant_id = d.tenant_id LIMIT 1)
-			) as room_id,
+			-- 位置信息：仅当 room 仍存在且属于某 unit 时返回，避免显示“unit 下已无 room”的孤立绑定
+			(CASE
+				WHEN d.bound_room_id IS NOT NULL AND EXISTS (SELECT 1 FROM rooms r JOIN units u ON r.unit_id = u.unit_id WHERE r.room_id = d.bound_room_id AND r.tenant_id = d.tenant_id) THEN d.bound_room_id
+				WHEN d.bound_bed_id IS NOT NULL AND EXISTS (SELECT 1 FROM beds b JOIN rooms r ON b.room_id = r.room_id JOIN units u ON r.unit_id = u.unit_id WHERE b.bed_id = d.bound_bed_id AND b.tenant_id = d.tenant_id) THEN (SELECT r.room_id FROM rooms r JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND r.tenant_id = d.tenant_id LIMIT 1)
+				ELSE NULL
+			END) as room_id,
 			COALESCE(
 				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id WHERE r.room_id = d.bound_room_id AND u.tenant_id = d.tenant_id LIMIT 1),
 				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND u.tenant_id = d.tenant_id LIMIT 1)
@@ -221,11 +223,12 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 			ds.comm_mode,
 			ds.mcu_model,
 			ds.firmware_version,
-			-- 位置信息（通过 JOIN 查询得到，用于返回给前端）
-			COALESCE(
-				d.bound_room_id,
-				(SELECT r.room_id FROM rooms r JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND r.tenant_id = d.tenant_id LIMIT 1)
-			) as room_id,
+			-- 位置信息：仅当 room 仍存在且属于某 unit 时返回
+			(CASE
+				WHEN d.bound_room_id IS NOT NULL AND EXISTS (SELECT 1 FROM rooms r JOIN units u ON r.unit_id = u.unit_id WHERE r.room_id = d.bound_room_id AND r.tenant_id = d.tenant_id) THEN d.bound_room_id
+				WHEN d.bound_bed_id IS NOT NULL AND EXISTS (SELECT 1 FROM beds b JOIN rooms r ON b.room_id = r.room_id JOIN units u ON r.unit_id = u.unit_id WHERE b.bed_id = d.bound_bed_id AND b.tenant_id = d.tenant_id) THEN (SELECT r.room_id FROM rooms r JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND r.tenant_id = d.tenant_id LIMIT 1)
+				ELSE NULL
+			END) as room_id,
 			COALESCE(
 				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id WHERE r.room_id = d.bound_room_id AND u.tenant_id = d.tenant_id LIMIT 1),
 				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND u.tenant_id = d.tenant_id LIMIT 1)
@@ -291,11 +294,12 @@ func (r *PostgresDevicesRepository) GetDeviceByUID(ctx context.Context, tenantID
 			ds.comm_mode,
 			ds.mcu_model,
 			ds.firmware_version,
-			-- 位置信息（通过 JOIN 查询得到，用于返回给前端）
-			COALESCE(
-				d.bound_room_id,
-				(SELECT r.room_id FROM rooms r JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND r.tenant_id = d.tenant_id LIMIT 1)
-			) as room_id,
+			-- 位置信息：仅当 room 仍存在且属于某 unit 时返回
+			(CASE
+				WHEN d.bound_room_id IS NOT NULL AND EXISTS (SELECT 1 FROM rooms r JOIN units u ON r.unit_id = u.unit_id WHERE r.room_id = d.bound_room_id AND r.tenant_id = d.tenant_id) THEN d.bound_room_id
+				WHEN d.bound_bed_id IS NOT NULL AND EXISTS (SELECT 1 FROM beds b JOIN rooms r ON b.room_id = r.room_id JOIN units u ON r.unit_id = u.unit_id WHERE b.bed_id = d.bound_bed_id AND b.tenant_id = d.tenant_id) THEN (SELECT r.room_id FROM rooms r JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND r.tenant_id = d.tenant_id LIMIT 1)
+				ELSE NULL
+			END) as room_id,
 			COALESCE(
 				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id WHERE r.room_id = d.bound_room_id AND u.tenant_id = d.tenant_id LIMIT 1),
 				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND u.tenant_id = d.tenant_id LIMIT 1)
@@ -353,6 +357,80 @@ func (r *PostgresDevicesRepository) GetDevicesBoundToRoom(ctx context.Context, t
 			return nil, err
 		}
 		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// GetRoomBoundDeviceTypeLetters 返回绑定到 room 的设备类型字母（R=Radar, S=Sleepad），供前端 RoomName(R) 展示
+func (r *PostgresDevicesRepository) GetRoomBoundDeviceTypeLetters(ctx context.Context, tenantID, roomID string) ([]string, error) {
+	if tenantID == "" || roomID == "" {
+		return nil, nil
+	}
+	q := `SELECT DISTINCT COALESCE(ds.device_type, '') FROM devices d
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
+		WHERE d.tenant_id = $1 AND d.bound_room_id = $2 AND COALESCE(ds.device_type, '') != ''`
+	rows, err := r.db.QueryContext(ctx, q, tenantID, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	letterSet := make(map[string]struct{})
+	for rows.Next() {
+		var dt string
+		if err := rows.Scan(&dt); err != nil {
+			return nil, err
+		}
+		dt = strings.TrimSpace(strings.ToLower(dt))
+		switch dt {
+		case "radar":
+			letterSet["R"] = struct{}{}
+		case "sleepad", "sleeppad":
+			letterSet["S"] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(letterSet))
+	for k := range letterSet {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// GetDevicesBoundToBedsWithDetails 返回多个 bed 上绑定的设备类型字母及 monitor 状态
+func (r *PostgresDevicesRepository) GetDevicesBoundToBedsWithDetails(ctx context.Context, tenantID string, bedIDs []string) (map[string][]DeviceTypeDetail, error) {
+	out := make(map[string][]DeviceTypeDetail)
+	if tenantID == "" || len(bedIDs) == 0 {
+		return out, nil
+	}
+	q := `SELECT d.bound_bed_id, COALESCE(ds.device_type, ''), d.monitoring_enabled
+		FROM devices d
+		LEFT JOIN device_store ds ON d.device_id = ds.device_id
+		WHERE d.tenant_id = $1 AND d.bound_bed_id = ANY($2) AND d.bound_bed_id IS NOT NULL`
+	rows, err := r.db.QueryContext(ctx, q, tenantID, pq.Array(bedIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var bedID, dt string
+		var mon bool
+		if err := rows.Scan(&bedID, &dt, &mon); err != nil {
+			return nil, err
+		}
+		dt = strings.TrimSpace(strings.ToLower(dt))
+		var letter string
+		switch dt {
+		case "radar":
+			letter = "R"
+		case "sleepad", "sleeppad":
+			letter = "S"
+		default:
+			continue
+		}
+		out[bedID] = append(out[bedID], DeviceTypeDetail{Letter: letter, MonitoringEnabled: mon})
 	}
 	return out, rows.Err()
 }
@@ -1371,7 +1449,7 @@ func (r *PostgresDevicesRepository) GetDeviceLocationInfo(ctx context.Context, t
 		branchIDStr := branchID.String
 		locationInfo.BranchID = &branchIDStr
 	}
-	if branchName.Valid && branchName.String != "" && branchName.String != "-" {
+	if branchName.Valid && branchName.String != "" && branchName.String != "default" {
 		branchNameStr := branchName.String
 		locationInfo.BranchName = &branchNameStr
 	}
@@ -1495,7 +1573,7 @@ func (r *PostgresDevicesRepository) GetDeviceLocationInfoByIdentifier(ctx contex
 		branchIDStr := branchID.String
 		locationInfo.BranchID = &branchIDStr
 	}
-	if branchName.Valid && branchName.String != "" && branchName.String != "-" {
+	if branchName.Valid && branchName.String != "" && branchName.String != "default" {
 		branchNameStr := branchName.String
 		locationInfo.BranchName = &branchNameStr
 	}

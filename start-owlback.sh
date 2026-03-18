@@ -302,6 +302,9 @@ cd "$OWLBACK_DIR/wisefido-qinglan"
 export HTTP_HOST="${HTTP_HOST:-0.0.0.0}"
 export HTTP_PORT="${HTTP_PORT:-8081}"
 export QINGLAN_HTTPS_PORT="${QINGLAN_HTTPS_PORT:-8443}"
+# .env 中 RADAR_HTTPS_* 会传给 qinglan 作为 QINGLAN_HTTPS_*（未设则用 qinglan 默认 owl-common 证书）
+export QINGLAN_HTTPS_CERT_FILE="${QINGLAN_HTTPS_CERT_FILE:-$RADAR_HTTPS_CERT_FILE}"
+export QINGLAN_HTTPS_KEY_FILE="${QINGLAN_HTTPS_KEY_FILE:-$RADAR_HTTPS_KEY_FILE}"
 # 直接输出到终端，同时使用 tee 写入日志文件
 go run cmd/wisefido-qinglan/main.go 2>&1 | tee "$QINGLAN_LOG" &
 QINGLAN_PID=$!

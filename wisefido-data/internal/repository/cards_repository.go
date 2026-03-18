@@ -231,7 +231,7 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 		userBranchTag := req.PermissionFilter.UserBranchTag
 		if *userBranchTag == "" {
 			// 用户 branch_tag 为 NULL：只能查看 unit.branch_name 为 NULL 的卡片
-			query.WriteString(` AND (br.branch_name IS NULL OR br.branch_name = '-') `)
+			query.WriteString(` AND (br.branch_name IS NULL OR br.branch_name = 'default') `)
 		} else {
 			query.WriteString(` AND br.branch_name = $` + fmt.Sprintf("%d", argIdx) + ` `)
 			args = append(args, *userBranchTag)

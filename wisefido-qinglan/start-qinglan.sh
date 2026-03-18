@@ -125,7 +125,10 @@ export HTTP_PORT=8081
 # HTTPS 服务器配置（用于设备认证）
 export QINGLAN_HTTPS_PORT="${QINGLAN_HTTPS_PORT:-8443}"
 
-# 证书文件配置（使用 owl-common 的共享证书）
+# 证书统一使用 owl-common 下的 server.crt / server.key：
+#   - 本脚本：Qinglan HTTPS 设备认证使用 owl-common 证书
+#   - MQTT broker（mqtt/config）：建议与 owl-common 一致，可将 mosquitto 配置为使用 owl-common 证书，或把 owl-common 生成的证书复制到 mqtt/config
+# 生成证书：在 owl-common 目录执行 ../wisefido-qinglan/generate-cert.sh
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COMMON_DIR="$(cd "$SCRIPT_DIR/../owl-common" && pwd)"
 CERT_DIR="${QINGLAN_CERT_DIR:-$COMMON_DIR}"

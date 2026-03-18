@@ -96,8 +96,8 @@ func main() {
 	httpapi.ApplyBranchFilter(&query, &args, userBranchTag, "u", true)
 	fmt.Printf("Query: %s\n", query)
 	fmt.Printf("Args: %v\n", args)
-	fmt.Printf("Expected: WHERE (u.branch_tag IS NULL OR u.branch_tag = '-')\n")
-	expectedQuery := "SELECT * FROM residents r LEFT JOIN units u ON u.unit_id = r.unit_id WHERE (u.branch_tag IS NULL OR u.branch_tag = '-')"
+	fmt.Printf("Expected: WHERE (u.branch_tag IS NULL OR u.branch_tag = 'default')\n")
+	expectedQuery := "SELECT * FROM residents r LEFT JOIN units u ON u.unit_id = r.unit_id WHERE (u.branch_tag IS NULL OR u.branch_tag = 'default')"
 	if len(args) == 0 && query == expectedQuery {
 		fmt.Println("✅ Test 4 PASSED")
 	} else {

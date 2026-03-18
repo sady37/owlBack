@@ -134,10 +134,11 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			
-			// 自动创建默认 branch（branch_name = "-"）
+			// 自动创建默认 branch（branch_name = "default"）
 			if h.BranchesRepo != nil {
 				defaultBranch := &domain.Branch{
-					BranchName: "-",
+					BranchName:    domain.DefaultBranchName,
+					Description:   sql.NullString{String: domain.DefaultBranchDescription, Valid: true},
 				}
 				_, err = h.BranchesRepo.CreateBranch(r.Context(), tenantID, defaultBranch)
 				if err != nil {

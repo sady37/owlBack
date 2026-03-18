@@ -37,7 +37,7 @@ type UserFilters struct {
 	Role           string
 	Status         string
 	BranchName     string   // 精确匹配 branch_name（单院区场景）
-	BranchNameNull bool     // 如果为 true，匹配 branch_name IS NULL OR branch_name = '' OR branch_name = '-'（null、""、"-" 都视为空院区）
+	BranchNameNull bool     // 如果为 true，匹配 branch_name IS NULL OR branch_name = '' OR branch_name = 'default'（null、""、"default" 都视为空院区/默认院区）
 	BranchIDs      []string // 多个 branch_id 的 IN 查询（支持 1 对多关系）
 	Tag            string   // 查询包含指定tag的用户
 	Search         string   // 模糊搜索：支持user_account, nickname, email, phone

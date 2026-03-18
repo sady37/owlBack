@@ -46,6 +46,8 @@ func (h *UnitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.DeleteBuilding(w, r)
 
 	// Units
+	case r.URL.Path == "/admin/api/v1/units/with-availability" && r.Method == http.MethodGet:
+		h.ListUnitsWithAvailability(w, r)
 	case r.URL.Path == "/admin/api/v1/units" && r.Method == http.MethodGet:
 		h.ListUnits(w, r)
 	case r.URL.Path == "/admin/api/v1/units/with-hierarchy" && r.Method == http.MethodGet:
@@ -60,6 +62,8 @@ func (h *UnitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.DeleteUnit(w, r)
 
 	// Rooms
+	case r.URL.Path == "/admin/api/v1/rooms/by-branch" && r.Method == http.MethodGet:
+		h.ListRoomsByBranch(w, r)
 	case r.URL.Path == "/admin/api/v1/rooms" && r.Method == http.MethodGet:
 		h.ListRoomsWithBeds(w, r)
 	case r.URL.Path == "/admin/api/v1/rooms" && r.Method == http.MethodPost:
@@ -72,6 +76,8 @@ func (h *UnitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Beds
 	case r.URL.Path == "/admin/api/v1/beds" && r.Method == http.MethodGet:
 		h.ListBeds(w, r)
+	case r.URL.Path == "/admin/api/v1/beds-with-details" && r.Method == http.MethodGet:
+		h.ListBedsWithDetails(w, r)
 	case r.URL.Path == "/admin/api/v1/beds" && r.Method == http.MethodPost:
 		h.CreateBed(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api/v1/beds/") && r.Method == http.MethodPut:
@@ -378,10 +384,13 @@ func (h *UnitHandler) ListUnits(w http.ResponseWriter, r *http.Request) {
 		buildingName = r.URL.Query().Get("building")
 	}
 
+	residentIDParam := r.URL.Query().Get("resident_id")
+	var residentIDPtr *string
+	if r.URL.Query().Has("resident_id") {
+		residentIDPtr = &residentIDParam
+	}
 	req := service.ListUnitsRequest{
-		TenantID: tenantID,
-		// branch_id: 优先使用 branch_id，如果提供则忽略 branch_name
-		// 如果 query 参数不存在或为空字符串，设置为 nil（表示匹配 NULL）
+		TenantID:   tenantID,
 		BranchID:   stringPtrOrNil(branchID),
 		BranchName: stringPtrOrNil(branchName),
 		BuildingID: stringPtrOrNil(buildingID),
@@ -392,6 +401,7 @@ func (h *UnitHandler) ListUnits(w http.ResponseWriter, r *http.Request) {
 		Search:     stringPtrOrNil(r.URL.Query().Get("search")),
 		Page:       parseInt(r.URL.Query().Get("page"), 1),
 		Size:       parseInt(r.URL.Query().Get("size"), 100),
+		ResidentID: residentIDPtr,
 	}
 
 	resp, err := h.unitService.ListUnits(ctx, req)
@@ -407,6 +417,61 @@ func (h *UnitHandler) ListUnits(w http.ResponseWriter, r *http.Request) {
 		out = append(out, unitToJSON(u))
 	}
 
+	writeJSON(w, http.StatusOK, Ok(map[string]any{
+		"items": out,
+		"total": resp.Total,
+	}))
+}
+
+// ListUnitsWithAvailability 查询 Units 并返回 has_available_bed、is_bound（供前端 (full) 灰行红字、橙/绿）
+func (h *UnitHandler) ListUnitsWithAvailability(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantID, ok := h.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+	branchID := r.URL.Query().Get("branch_id")
+	branchName := ""
+	if branchID == "" {
+		branchName = r.URL.Query().Get("branch_name")
+	}
+	buildingID := r.URL.Query().Get("building_id")
+	buildingName := ""
+	if buildingID == "" {
+		buildingName = r.URL.Query().Get("building")
+	}
+	residentIDParam := r.URL.Query().Get("resident_id")
+	var residentIDPtr *string
+	if r.URL.Query().Has("resident_id") {
+		residentIDPtr = &residentIDParam
+	}
+	req := service.ListUnitsRequest{
+		TenantID:   tenantID,
+		BranchID:   stringPtrOrNil(branchID),
+		BranchName: stringPtrOrNil(branchName),
+		BuildingID: stringPtrOrNil(buildingID),
+		Building:   stringPtrOrNil(buildingName),
+		Floor:      stringPtrOrNil(r.URL.Query().Get("floor")),
+		UnitName:   stringPtrOrNil(r.URL.Query().Get("unit_name")),
+		UnitType:   stringPtrOrNil(r.URL.Query().Get("unit_type")),
+		Search:     stringPtrOrNil(r.URL.Query().Get("search")),
+		Page:       parseInt(r.URL.Query().Get("page"), 1),
+		Size:       parseInt(r.URL.Query().Get("size"), 100),
+		ResidentID: residentIDPtr,
+	}
+	resp, err := h.unitService.ListUnitsWithAvailability(ctx, req)
+	if err != nil {
+		h.logger.Error("ListUnitsWithAvailability failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	out := make([]any, 0, len(resp.Items))
+	for _, u := range resp.Items {
+		m := unitToJSON(u.Unit)
+		m["has_available_bed"] = u.HasAvailableBed
+		m["is_bound"] = u.IsBound
+		out = append(out, m)
+	}
 	writeJSON(w, http.StatusOK, Ok(map[string]any{
 		"items": out,
 		"total": resp.Total,
@@ -728,17 +793,18 @@ func (h *UnitHandler) ListRoomsWithBeds(w http.ResponseWriter, r *http.Request) 
 	// 获取 user_id：从 header 获取（可选，用于日志记录）
 	currentUserID := r.Header.Get("X-User-Id")
 
-	// 获取可选参数：search（用于搜索）
 	search := r.URL.Query().Get("search")
 	if search == "null" {
 		search = ""
 	}
+	residentID := strings.TrimSpace(r.URL.Query().Get("resident_id"))
 
 	req := service.ListRoomsWithBedsRequest{
 		TenantID:      tenantID,
 		UnitID:        unitID,
-		CurrentUserID: currentUserID, // 可选，用于日志记录
-		BranchID:      "",            // 不再使用
+		ResidentID:    residentID,
+		CurrentUserID: currentUserID,
+		BranchID:      "",
 		Search:        search,
 	}
 
@@ -749,12 +815,54 @@ func (h *UnitHandler) ListRoomsWithBeds(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 转换响应格式（与旧 Handler 一致）
+	// 转换响应格式（与旧 Handler 一致），含 device_types 供前端 RoomName(R) 展示
 	out := make([]any, 0, len(resp.Items))
-	for _, rwb := range resp.Items {
-		out = append(out, roomWithBedsToJSON(rwb))
+	for _, item := range resp.Items {
+		out = append(out, roomWithBedsItemToJSON(item))
 	}
 
+	writeJSON(w, http.StatusOK, Ok(out))
+}
+
+// ListRoomsByBranch 按 branch 列出所有 room（带 is_full、is_bound、facility_type）
+func (h *UnitHandler) ListRoomsByBranch(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantID, ok := h.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+	branchID := strings.TrimSpace(r.URL.Query().Get("branch_id"))
+	if branchID == "" {
+		writeJSON(w, http.StatusOK, Fail("branch_id is required"))
+		return
+	}
+	req := service.ListRoomsByBranchRequest{TenantID: tenantID, BranchID: branchID}
+	resp, err := h.unitService.ListRoomsByBranch(ctx, req)
+	if err != nil {
+		h.logger.Error("ListRoomsByBranch failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	out := make([]any, 0, len(resp.Items))
+	for _, item := range resp.Items {
+		m := map[string]any{
+			"room_id":        item.RoomID,
+			"tenant_id":      item.TenantID,
+			"unit_id":        item.UnitID,
+			"unit_name":      item.UnitName,
+			"building_name":  item.BuildingName,
+			"floor":          item.Floor,
+			"room_name":      item.RoomName,
+			"unit_type":      item.UnitType,
+			"facility_type":  item.FacilityType,
+			"is_full":        item.IsFull,
+			"is_bound":       item.IsBound,
+		}
+		if len(item.DeviceTypes) > 0 {
+			m["device_types"] = item.DeviceTypes
+		}
+		out = append(out, m)
+	}
 	writeJSON(w, http.StatusOK, Ok(out))
 }
 
@@ -956,17 +1064,22 @@ func (h *UnitHandler) ListBeds(w http.ResponseWriter, r *http.Request) {
 	// 获取 user_id：从 header 获取（可选，用于日志记录）
 	currentUserID := r.Header.Get("X-User-Id")
 
-	// 获取可选参数：search（用于搜索）
 	search := r.URL.Query().Get("search")
 	if search == "null" {
 		search = ""
+	}
+	var residentIDPtr *string
+	if r.URL.Query().Has("resident_id") {
+		v := strings.TrimSpace(r.URL.Query().Get("resident_id"))
+		residentIDPtr = &v
 	}
 
 	req := service.ListBedsRequest{
 		TenantID:      tenantID,
 		RoomID:        roomID,
-		CurrentUserID: currentUserID, // 可选，用于日志记录
-		BranchID:      "",            // 不再使用
+		ResidentID:    residentIDPtr,
+		CurrentUserID: currentUserID,
+		BranchID:      "",
 		Search:        search,
 	}
 
@@ -983,6 +1096,50 @@ func (h *UnitHandler) ListBeds(w http.ResponseWriter, r *http.Request) {
 		out = append(out, bedToJSON(b))
 	}
 
+	writeJSON(w, http.StatusOK, Ok(out))
+}
+
+// ListBedsWithDetails 返回床位列表（含 resident_id、设备类型及 monitor 状态）
+func (h *UnitHandler) ListBedsWithDetails(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantID, ok := h.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+	roomID := r.URL.Query().Get("room_id")
+	if roomID == "" {
+		writeJSON(w, http.StatusOK, Fail("room_id is required"))
+		return
+	}
+	search := r.URL.Query().Get("search")
+	if search == "null" {
+		search = ""
+	}
+	var residentIDPtr *string
+	if r.URL.Query().Has("resident_id") {
+		v := strings.TrimSpace(r.URL.Query().Get("resident_id"))
+		residentIDPtr = &v
+	}
+	req := service.ListBedsWithDetailsRequest{
+		TenantID:   tenantID,
+		RoomID:     roomID,
+		ResidentID: residentIDPtr,
+		Search:     search,
+	}
+	resp, err := h.unitService.ListBedsWithDetails(ctx, req)
+	if err != nil {
+		h.logger.Error("ListBedsWithDetails failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	out := make([]any, 0, len(resp.Items))
+	for _, it := range resp.Items {
+		m := map[string]any{"bed_id": it.BedID, "bed_name": it.BedName, "devices": it.Devices}
+		if it.ResidentID != nil {
+			m["resident_id"] = *it.ResidentID
+		}
+		out = append(out, m)
+	}
 	writeJSON(w, http.StatusOK, Ok(out))
 }
 
@@ -1373,6 +1530,26 @@ func roomWithBedsToJSON(rwb *repository.RoomWithBeds) map[string]any {
 		beds = append(beds, bedToJSON(bed))
 	}
 	m["beds"] = beds
+	return m
+}
+
+// roomWithBedsItemToJSON 转换 RoomWithBedsItem 为 JSON，含 room 级 device_types、每 bed 的 devices（letter + monitoring_enabled）
+func roomWithBedsItemToJSON(item *service.RoomWithBedsItem) map[string]any {
+	m := roomToJSON(item.Room)
+	beds := make([]any, 0, len(item.Beds))
+	for _, bwd := range item.Beds {
+		bm := bedToJSON(bwd.Bed)
+		devs := make([]any, 0, len(bwd.Devices))
+		for _, d := range bwd.Devices {
+			devs = append(devs, map[string]any{"letter": d.Letter, "monitoring_enabled": d.MonitoringEnabled})
+		}
+		bm["devices"] = devs
+		beds = append(beds, bm)
+	}
+	m["beds"] = beds
+	if len(item.DeviceTypes) > 0 {
+		m["device_types"] = item.DeviceTypes
+	}
 	return m
 }
 

@@ -265,7 +265,8 @@ func (r *Router) RegisterUnitRoutes(h *UnitHandler) {
 	r.Handle("/admin/api/v1/rooms", h.ServeHTTP)
 	r.Handle("/admin/api/v1/rooms/", h.ServeHTTP)
 
-	// Beds
+	// Beds (beds-with-details 必须在 beds 之前注册，否则会被 beds 匹配)
+	r.Handle("/admin/api/v1/beds-with-details", h.ServeHTTP)
 	r.Handle("/admin/api/v1/beds", h.ServeHTTP)
 	r.Handle("/admin/api/v1/beds/", h.ServeHTTP)
 }

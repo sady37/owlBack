@@ -81,7 +81,7 @@ func GetResourcePermission(db *sql.DB, ctx context.Context,
 
 // ApplyBranchFilter 应用 branch 过滤条件到 SQL 查询
 // 实现空值匹配逻辑：
-//   - 当 userBranchTag IS NULL 时，匹配 units.branch_tag IS NULL OR units.branch_tag = '-'
+//   - 当 userBranchTag IS NULL 时，匹配 units.branch_tag IS NULL OR units.branch_tag = 'default'
 //   - 当 userBranchTag 有值时，匹配 units.branch_tag = userBranchTag
 //
 // 参数:
@@ -92,14 +92,14 @@ func GetResourcePermission(db *sql.DB, ctx context.Context,
 //   - isFirstCondition: 是否是第一个 WHERE 条件（true 时使用 WHERE，false 时使用 AND）
 //
 // 示例:
-//   - userBranchTag = NULL: WHERE (u.branch_tag IS NULL OR u.branch_tag = '-')
+//   - userBranchTag = NULL: WHERE (u.branch_tag IS NULL OR u.branch_tag = 'default')
 //   - userBranchTag = "BranchA": WHERE u.branch_tag = $1
 func ApplyBranchFilter(query *string, args *[]any, userBranchTag sql.NullString,
 	tableAlias string, isFirstCondition bool) {
 
 	if !userBranchTag.Valid || userBranchTag.String == "" {
-		// 用户 branch_tag 为 NULL：只能管理 branch_tag 为 NULL 或 '-' 的资源
-		condition := fmt.Sprintf(`(%s.branch_tag IS NULL OR %s.branch_tag = '-')`, tableAlias, tableAlias)
+		// 用户 branch_tag 为 NULL：只能管理 branch_tag 为 NULL 或 'default' 的资源
+		condition := fmt.Sprintf(`(%s.branch_tag IS NULL OR %s.branch_tag = 'default')`, tableAlias, tableAlias)
 		if isFirstCondition {
 			*query += ` WHERE ` + condition
 		} else {

@@ -423,10 +423,13 @@ func (s *BranchService) UpdateBranch(ctx context.Context, req UpdateBranchReques
 
 	// 处理删除
 	if req.Delete != nil && *req.Delete {
-		// 获取 branch 以获取 tenant_id
+		// 获取 branch 以获取 tenant_id 并校验是否为默认院区
 		branch, err := s.branchesRepo.GetBranch(ctx, "", req.BranchID)
 		if err != nil {
 			return fmt.Errorf("branch not found: %w", err)
+		}
+		if branch.BranchName == domain.DefaultBranchName {
+			return fmt.Errorf("cannot delete default branch (branch_name=%s)", domain.DefaultBranchName)
 		}
 		return s.branchesRepo.DeleteBranch(ctx, branch.TenantID, req.BranchID)
 	}

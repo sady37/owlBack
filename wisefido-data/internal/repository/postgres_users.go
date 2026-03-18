@@ -490,7 +490,7 @@ func (r *PostgresUsersRepository) ListUsers(ctx context.Context, tenantID string
 	}
 	if filters.BranchNameNull {
 		// 匹配没有主院区或主院区名称为 NULL、""、"-"（都视为空院区）
-		where = append(where, "(ub.user_id IS NULL OR b.branch_name IS NULL OR b.branch_name = '' OR b.branch_name = '-')")
+		where = append(where, "(ub.user_id IS NULL OR b.branch_name IS NULL OR b.branch_name = '' OR b.branch_name = 'default')")
 	} else if len(filters.BranchIDs) > 0 {
 		// 支持多个 branch_id 的 IN 查询（1 对多关系）
 		// 使用 EXISTS 子查询，检查用户是否关联了任何一个指定的 branch_id
