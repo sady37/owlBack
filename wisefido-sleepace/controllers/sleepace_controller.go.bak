@@ -1,0 +1,307 @@
+package controllers
+
+import (
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"wisefido.com/common/utils"
+	"wisefido.com/wisefido-sleepace/internal/config"
+	"wisefido.com/wisefido-sleepace/models"
+	"wisefido.com/wisefido-sleepace/modules"
+)
+
+func InitializeDevice(ctx *gin.Context) {
+	var req models.DeviceData
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, err.Error(), nil, http.StatusBadRequest)
+		return
+	}
+	utils.Logger.Infof("req: %+v", req)
+	if err := modules.InitializeDevice(&req); err != nil {
+		utils.ResponseErrorJson(ctx, err)
+		return
+	}
+	utils.ResponseSuccessJson(ctx, nil)
+}
+
+func UninitializeDevice(ctx *gin.Context) {
+	code := ctx.Param("code")
+	if code == "" {
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	if err := modules.UninitializeDevice(code); err != nil {
+		utils.ResponseErrorJson(ctx, err)
+		return
+	}
+	utils.ResponseSuccessJson(ctx, nil)
+}
+
+func GetSleepReports(ctx *gin.Context) {
+	id := ctx.Param("id")
+	idInt, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		utils.Logger.Error("request param error")
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	startDate := utils.Atoi(ctx.Query("startDate"), 0)
+	endDate := utils.Atoi(ctx.Query("endDate"), 0)
+	if startDate == 0 || endDate == 0 {
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	page := utils.GeneratePaginationFromRequest(ctx, config.Cfg.Database.DefaultSize)
+	deviceId := utils.LongId(idInt)
+	response, err := modules.GetDailyReports(deviceId, startDate, endDate, page)
+	if err == nil {
+		utils.ResponseSuccessJsonWithPagination(ctx, response, page)
+	} else {
+		utils.ResponseErrorJson(ctx, err)
+	}
+}
+
+func GetSleepReportDetail(ctx *gin.Context) {
+	id := ctx.Param("id")
+	idInt, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		utils.Logger.Error("request param error")
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	date := utils.Atoi(ctx.Query("date"), 0)
+	if date == 0 {
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	deviceId := utils.LongId(idInt)
+	response, err := modules.GetDailyReportDetail(deviceId, date)
+	if err != nil {
+		utils.ResponseErrorJson(ctx, err)
+	} else {
+		utils.ResponseSuccessJson(ctx, response)
+	}
+}
+
+func GetSleepReportDates(ctx *gin.Context) {
+	id := ctx.Param("id")
+	idInt, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		utils.Logger.Error("request param error")
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	deviceId := utils.LongId(idInt)
+	response, err := modules.GetDailyReportsValidDates(deviceId)
+	if err != nil {
+		utils.ResponseErrorJson(ctx, err)
+	} else {
+		utils.ResponseSuccessJson(ctx, response)
+	}
+}
+
+func GetHistorySleepReports(ctx *gin.Context) {
+	id := ctx.Param("id")
+	idInt, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		utils.Logger.Error("request param error")
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	startTime := utils.Atoi64(ctx.Query("startTime"), 0)
+	endTime := utils.Atoi64(ctx.Query("endTime"), 0)
+	if startTime == 0 || endTime == 0 {
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	deviceId := utils.LongId(idInt)
+	err = modules.GetHistoryDailyReport(deviceId, startTime, endTime)
+	if err != nil {
+		utils.ResponseErrorJson(ctx, err)
+	} else {
+		utils.ResponseSuccessJson(ctx, nil)
+	}
+}
+
+func GetAlarmRecords(ctx *gin.Context) {
+	id := ctx.Param("id")
+	idInt, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		utils.Logger.Error("request param error")
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	startTime := utils.Atoi64(ctx.Query("startTime"), 0)
+	if startTime == 0 {
+		start := time.Now().AddDate(0, 0, -6)
+		startTime = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, start.Location()).Unix()
+	}
+	utils.Logger.Debugf("startTime: %d", startTime)
+	endTime := utils.Atoi64(ctx.Query("endTime"), 0)
+	if endTime == 0 {
+		end := time.Now()
+		endTime = time.Date(end.Year(), end.Month(), end.Day(), 23, 59, 59, 0, end.Location()).Unix()
+	}
+	if endTime-startTime > 7*24*60*60 {
+		startTime = endTime - 7*24*60*60
+	}
+	utils.Logger.Debugf("endTime: %d", endTime)
+	deviceId := utils.LongId(idInt)
+	status := utils.Atoi(ctx.Query("status"), -1)
+	if status == 0 || status == 1 {
+		response, err := modules.GetAlarmRecordsByStatus(deviceId, status, startTime, endTime)
+		if err != nil {
+			utils.ResponseErrorJson(ctx, err)
+		} else {
+			utils.ResponseSuccessJson(ctx, response)
+		}
+		return
+	}
+	response, err := modules.GetAlarmRecords(deviceId, startTime, endTime)
+	if err != nil {
+		utils.ResponseErrorJson(ctx, err)
+	} else {
+		utils.ResponseSuccessJson(ctx, response)
+	}
+}
+
+func GetDeviceStatuses(ctx *gin.Context) {
+	id := ctx.Param("id")
+	if id == "" {
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	statuses, timestamp, err := modules.GetDeviceTotalStatus(id)
+	if err != nil {
+		utils.ResponseErrorJson(ctx, err)
+	} else {
+		utils.ResponseSuccessJson(ctx, gin.H{
+			"statuses":  statuses,
+			"timestamp": timestamp,
+		})
+	}
+}
+
+func GetDevicesStatuses(ctx *gin.Context) {
+	statuses, timestamp, err := modules.GetDevicesTotalStatus()
+	if err != nil {
+		utils.Logger.Error(err)
+		utils.ResponseErrorJson(ctx, err)
+	} else {
+		utils.ResponseSuccessJson(ctx, gin.H{
+			"statuses":  statuses,
+			"timestamp": timestamp,
+		})
+	}
+}
+
+func GetDeviceMonitorSettings(ctx *gin.Context) {
+	id := ctx.Param("id")
+	idInt, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		utils.Logger.Error("request param error")
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	deviceId := utils.LongId(idInt)
+	settings, err := modules.GetDeviceMonitorSettings(deviceId)
+	if err != nil {
+		utils.ResponseErrorJson(ctx, err)
+	} else {
+		utils.ResponseSuccessJson(ctx, settings)
+	}
+}
+
+func PutDeviceMonitorSettings(ctx *gin.Context) {
+	id := ctx.Param("id")
+	idInt, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		utils.Logger.Error("request param error")
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	deviceId := utils.LongId(idInt)
+	var req models.SleepaceMonitorSettings
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, err.Error(), nil, http.StatusBadRequest)
+		return
+	}
+	userId := utils.LongId(ctx.GetInt64(utils.USER_ID))
+	if err := modules.SetDeviceMonitorSettings(userId, deviceId, &req); err != nil {
+		utils.ResponseErrorJson(ctx, err)
+	} else {
+		utils.ResponseSuccessJson(ctx, nil)
+	}
+}
+
+func PutDeviceBedParameters(ctx *gin.Context) {
+	code := ctx.Param("code")
+	if code == "" {
+		utils.Logger.Error("request param error")
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	req := modules.SleepaceBedParameters{}
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, err.Error(), nil, http.StatusBadRequest)
+		return
+	}
+	if err := modules.SetDeviceBedParameters(code, &req); err != nil {
+		utils.ResponseErrorJson(ctx, err)
+	} else {
+		utils.ResponseSuccessJson(ctx, nil)
+	}
+}
+
+func PutDeviceLeavingMode(ctx *gin.Context) {
+	id := ctx.Param("id")
+	idInt := utils.Atoi64(id, 0)
+	if idInt == 0 {
+		utils.Logger.Error("request param error")
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	code := ctx.Param("code")
+	if code == "" {
+		utils.Logger.Error("request param error")
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	req := struct {
+		Mode int `json:"mode"`
+	}{}
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, err.Error(), nil, http.StatusBadRequest)
+		return
+	}
+	if err := modules.SetDeviceLeavingMode(utils.LongId(idInt), code, req.Mode); err != nil {
+		utils.ResponseErrorJson(ctx, err)
+	} else {
+		utils.ResponseSuccessJson(ctx, nil)
+	}
+}
+
+func GetDeviceLeavingMode(ctx *gin.Context) {
+	id := ctx.Param("id")
+	idInt := utils.Atoi64(id, 0)
+	if idInt == 0 {
+		utils.Logger.Error("request param error")
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	code := ctx.Param("code")
+	if code == "" {
+		utils.Logger.Error("request param error")
+		utils.ResponseFailedJson(ctx, utils.ERRCODE_REQUEST_PARAM_ERROR, utils.ERRMSG_REQUEST_PARAM_ERROR, nil, http.StatusBadRequest)
+		return
+	}
+	settings, err := modules.GetDeviceLeavingMode(utils.LongId(idInt), code)
+	if err != nil {
+		utils.ResponseErrorJson(ctx, err)
+	} else {
+		utils.ResponseSuccessJson(ctx, settings)
+	}
+}

@@ -127,7 +127,7 @@ else
     echo -e "${YELLOW}Warning: .env file not found, using default values${NC}"
     # 设置默认环境变量（如果 .env 不存在）
     export DB_HOST="${DB_HOST:-127.0.0.1}"
-    export DB_PORT="${DB_PORT:-5433}"
+    export DB_PORT="${DB_PORT:-5432}"
     export DB_USER="${DB_USER:-postgres}"
     export DB_PASSWORD="${DB_PASSWORD:-postgres}"
     export DB_NAME="${DB_NAME:-owlrd}"
@@ -140,7 +140,7 @@ fi
 
 # 设置默认值（如果环境变量未设置）
 export DB_HOST="${DB_HOST:-127.0.0.1}"
-export DB_PORT="${DB_PORT:-5433}"
+export DB_PORT="${DB_PORT:-5432}"
 export DB_USER="${DB_USER:-postgres}"
 export DB_PASSWORD="${DB_PASSWORD:-postgres}"
 export DB_NAME="${DB_NAME:-owlrd}"
@@ -203,7 +203,7 @@ echo -e "${BLUE}Starting dependency services (PostgreSQL, Redis, MQTT)...${NC}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -f "${SCRIPT_DIR}/docker-compose.yml" ]; then
     cd "$SCRIPT_DIR"
-    docker-compose up -d postgresql redis mqtt 2>&1 | grep -v "is up-to-date" || true
+    docker-compose up -d postgresql redis mqtt sleepace-mysql sleepace-service 2>&1 | grep -v "is up-to-date" || true
     echo -e "${GREEN}Dependency services started${NC}"
     echo ""
 fi

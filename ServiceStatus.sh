@@ -42,7 +42,7 @@ check_process "wisefido-ai" "wisefido-ai"
 
 echo ""
 echo "=== Infrastructure ==="
-check_port 5433 "PostgreSQL"
+check_port 5432 "PostgreSQL"
 check_port 6379 "Redis"
 check_port 1883 "MQTT"
 

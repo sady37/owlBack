@@ -76,12 +76,12 @@ check_dependencies() {
     echo ""
     echo "🔍 Checking dependencies..."
     
-    # 检查 PostgreSQL（端口 5433，与 start_owlback.sh 保持一致）
+    # 检查 PostgreSQL（端口 5432，与 start_owlback.sh 保持一致）
     if command -v nc > /dev/null 2>&1; then
-        if nc -zv 127.0.0.1 5433 > /dev/null 2>&1; then
-            echo -e "${GREEN}✅ PostgreSQL (127.0.0.1:5433) is accessible${NC}"
+        if nc -zv 127.0.0.1 5432 > /dev/null 2>&1; then
+            echo -e "${GREEN}✅ PostgreSQL (127.0.0.1:5432) is accessible${NC}"
         else
-            echo -e "${RED}❌ PostgreSQL (127.0.0.1:5433) is not accessible${NC}"
+            echo -e "${RED}❌ PostgreSQL (127.0.0.1:5432) is not accessible${NC}"
             echo "  Please start it: docker-compose up -d postgresql"
             return 1
         fi
@@ -116,9 +116,9 @@ fi
 echo ""
 echo "📋 Setting environment variables..."
 
-# 数据库配置（使用 127.0.0.1 避免 IPv6 问题，端口 5433 与 start_owlback.sh 保持一致）
+# 数据库配置（使用 127.0.0.1 避免 IPv6 问题，端口 5432 与 start_owlback.sh 保持一致）
 export DB_HOST=127.0.0.1
-export DB_PORT=5433
+export DB_PORT=5432
 export DB_USER=postgres
 export DB_PASSWORD=postgres
 export DB_NAME=owlrd

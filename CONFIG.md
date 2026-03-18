@@ -46,7 +46,7 @@ cd wisefido-radar
 
 ### 数据库配置
 - `DB_HOST` - 数据库主机地址
-- `DB_PORT` - 数据库端口（默认 5433）
+- `DB_PORT` - 数据库端口（默认 5432）
 - `DB_USER` - 数据库用户名
 - `DB_PASSWORD` - 数据库密码
 - `DB_NAME` - 数据库名称

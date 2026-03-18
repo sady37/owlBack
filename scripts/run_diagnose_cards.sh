@@ -37,7 +37,7 @@ run_psql() {
     echo "Load env: source $OWLBACK_DIR/load_env.sh"
     [[ -f "$OWLBACK_DIR/.env" ]] && set -a && source "$OWLBACK_DIR/.env" && set +a
     export PGPASSWORD="${DB_PASSWORD:-postgres}"
-    psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5433}" -U "${DB_USER:-postgres}" -d "${DB_NAME:-owlrd}" \
+    psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_USER:-postgres}" -d "${DB_NAME:-owlrd}" \
       -v ON_ERROR_STOP=1 -f "$RUN_FILE"
   fi
 }

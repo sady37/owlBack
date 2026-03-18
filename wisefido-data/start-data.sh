@@ -42,8 +42,8 @@ check_and_start_dependencies() {
     DOCKER_COMPOSE_FILE="${SCRIPT_DIR}/../docker-compose.yml"
     
     if command -v nc > /dev/null 2>&1; then
-        if ! nc -zv 127.0.0.1 5433 > /dev/null 2>&1; then
-            echo -e "${RED}❌ PostgreSQL (127.0.0.1:5433) is not accessible${NC}"
+        if ! nc -zv 127.0.0.1 5432 > /dev/null 2>&1; then
+            echo -e "${RED}❌ PostgreSQL (127.0.0.1:5432) is not accessible${NC}"
             return 1
         fi
         if ! nc -zv 127.0.0.1 6379 > /dev/null 2>&1; then
@@ -69,7 +69,7 @@ export HTTP_ADDR="${HTTP_ADDR:-:8080}"
 
 export DB_ENABLED="${DB_ENABLED:-true}"
 export DB_HOST="${DB_HOST:-127.0.0.1}"
-export DB_PORT="${DB_PORT:-5433}"
+export DB_PORT="${DB_PORT:-5432}"
 export DB_USER="${DB_USER:-postgres}"
 export DB_PASSWORD="${DB_PASSWORD:-postgres}"
 export DB_NAME="${DB_NAME:-owlrd}"

@@ -1,0 +1,141 @@
+package main
+
+import (
+	"context"
+	"crypto/tls"
+	"flag"
+	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"wisefido.com/common/database"
+	"wisefido.com/common/utils"
+	"wisefido.com/wisefido-sleepace/internal/config"
+	"wisefido.com/wisefido-sleepace/models"
+	"wisefido.com/wisefido-sleepace/modules"
+	"wisefido.com/wisefido-sleepace/routes"
+)
+
+func initDatabase() error {
+	err := database.Initialize(
+		&config.Cfg.Database,
+		new(models.SleepaceConnectionStatus),
+		new(models.SleepaceSleepStage),
+		new(models.SleepaceAnalysis),
+		new(models.SleepaceDeviceSensorStatus),
+		new(models.SleepaceStressSensorStatus),
+		// new(models.SleepaceInBedStatus),
+		new(models.SleepaceRealtimeRecord),
+		new(models.SleepaceUpgradeProgress),
+		new(models.SleepaceAlarmNotify),
+		new(models.SleepaceMonitorSettings),
+		new(models.SleepaceReport),
+	)
+
+	return err
+}
+
+func initMqtt() (mqtt.Client, error) {
+	utils.Logger.Infof("mqtt config: clientId: %s, username: %s, password: %s, address: %s",
+		config.Cfg.Mqtt.ClientId,
+		config.Cfg.Mqtt.Username,
+		config.Cfg.Mqtt.Password,
+		config.Cfg.Mqtt.Address)
+	opts := mqtt.NewClientOptions().
+		SetClientID(config.Cfg.Mqtt.ClientId).
+		SetUsername(config.Cfg.Mqtt.Username).
+		SetPassword(config.Cfg.Mqtt.Password).
+		AddBroker(config.Cfg.Mqtt.Address).
+		SetAutoReconnect(true).
+		SetCleanSession(false).
+		SetConnectRetry(true).
+		SetConnectRetryInterval(5 * time.Second).
+		SetMaxReconnectInterval(2 * time.Minute).
+		SetKeepAlive(20 * time.Second).
+		SetOnConnectHandler(func(client mqtt.Client) {
+			utils.Logger.Infof("Connected to MQTT broker")
+		}).
+		SetConnectionLostHandler(func(client mqtt.Client, err error) {
+			utils.Logger.Infof("Disconnected from MQTT broker: %v", err)
+		}).
+		SetReconnectingHandler(func(client mqtt.Client, opts *mqtt.ClientOptions) {
+			utils.Logger.Infof("Reconnecting to MQTT broker")
+		}).
+		SetConnectionAttemptHandler(func(url *url.URL, tls *tls.Config) *tls.Config {
+			utils.Logger.Infof("Attempting to connect to MQTT broker")
+			return tls
+		})
+	c := mqtt.NewClient(opts)
+	if token := c.Connect(); token.Wait() && token.Error() != nil {
+		return nil, token.Error()
+	}
+
+	c.Subscribe(config.Cfg.Mqtt.TopicId, 1, modules.MqttBroker)
+	return c, nil
+}
+
+func main() {
+
+	utils.InitializeSonyflake()
+
+	// Define a flag to accept the environment
+	env := flag.String("env", "dev", "Environment to run the service in (dev, prod, test)")
+	flag.Parse()
+
+	err := config.InitConfig(*env)
+	if err != nil {
+		return
+	}
+
+	// Set log level (for example, Debug level)
+	utils.InitializeLogger(&config.Cfg.Logger)
+	utils.Logger.Infof("config: %+v", config.Cfg)
+	// Connect to the database
+	err = initDatabase()
+
+	if err != nil {
+		utils.Logger.Fatalf("Could not connect to database: %v", err)
+		return
+	}
+
+	utils.InitRedis(&config.Cfg.Redis)
+	modules.InitBroker()
+	var client mqtt.Client
+	client, err = initMqtt()
+
+	if err != nil {
+		utils.Logger.Fatalf("Could not connect to mqtt: %v", err)
+		return
+	}
+	// Initialize Gin router
+	server := &http.Server{
+		Addr:    config.Cfg.Service.Ip + ":" + config.Cfg.Service.Port,
+		Handler: routes.GetHTTPServer(config.Cfg.Service.RunMode),
+	}
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			utils.Logger.Fatalf("Could not start the server: %v\n", err)
+		}
+	}()
+	// go func() {
+	// 	if err := routes.GetHTTPServer(config.Cfg.Service.RunMode).
+	// 		Run(config.Cfg.Service.Ip + ":" + config.Cfg.Service.Port); err != nil {
+	// 		utils.Logger.Fatalf("Could not start the server: %v\n", err)
+	// 	}
+	// }()
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+	<-stop
+	utils.Logger.Info("Shutting down server...")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		utils.Logger.Fatalf("Could not gracefully shutdown the server: %v\n", err)
+	}
+	modules.StopBroker()
+	client.Disconnect(250)
+}

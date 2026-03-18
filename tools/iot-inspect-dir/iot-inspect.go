@@ -55,7 +55,7 @@ func main() {
 	// 加载配置（从环境变量，与 wisefido-iot 服务配置一致）
 	dbConfig := &commonconfig.DatabaseConfig{
 		Host:     getEnv("DB_HOST", "localhost"),
-		Port:     getEnvInt("DB_PORT", 5433),
+		Port:     getEnvInt("DB_PORT", 5432),
 		User:     getEnv("DB_USER", "postgres"),
 		Password: getEnv("DB_PASSWORD", "postgres"),
 		Database: getEnv("DB_NAME", "owlrd"),

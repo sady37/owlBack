@@ -1,0 +1,52 @@
+package routes
+
+import (
+	"github.com/gin-gonic/gin"
+	"wisefido.com/common/auth"
+	"wisefido.com/common/utils"
+	"wisefido.com/wisefido-sleepace/controllers"
+)
+
+func v1(r *gin.Engine) {
+	v1 := r.Group("/wisefido/sleepace/api/v1/sleepace")
+
+	internal := v1.Group("/internal")
+	internal.POST("/item/initialization", auth.RequireLocalhost(), controllers.InitializeDevice)
+	internal.DELETE("/item/initialization/:code", auth.RequireLocalhost(), controllers.UninitializeDevice)
+	internal.PUT("/settings/bed-parameters/device/:code", controllers.PutDeviceBedParameters)
+
+	v1.Use(auth.AfterAuthMiddleware())
+	v1.GET("/reports/:id", controllers.GetSleepReports)
+	v1.GET("/reports/:id/detail", controllers.GetSleepReportDetail)
+	v1.GET("/reports/:id/dates", controllers.GetSleepReportDates)
+	v1.GET("/reports/:id/history", controllers.GetHistorySleepReports)
+	v1.GET("/records/alarm/:id", controllers.GetAlarmRecords)
+	v1.GET("/device/:id/statuses", controllers.GetDeviceStatuses)
+	v1.GET("/devices/statuses", controllers.GetDevicesStatuses)
+	v1.GET("/device/:id/settings/monitor", controllers.GetDeviceMonitorSettings)
+	v1.PUT("/device/:id/settings/monitor", controllers.PutDeviceMonitorSettings)
+	v1.PUT("/settings/bed-parameters/device/:code", controllers.PutDeviceBedParameters)
+	v1.PUT("/settings/leaving-mode/device/:id/:code", controllers.PutDeviceLeavingMode)
+	v1.GET("/settings/leaving-mode/device/:id/:code", controllers.GetDeviceLeavingMode)
+	// v1.POST("/item", controllers.CreateResident)
+	// v1.GET("/items", controllers.GetResidents)
+	// v1.GET("/items/binding", controllers.GetCanBindResidents)
+	// v1.GET("/:id", controllers.GetResident)
+	// v1.PUT("/:id", controllers.PutResident)
+	// v1.DELETE("/:id", controllers.DeleteResident)
+}
+
+func ginRunMode(mode ...string) string {
+	if len(mode) > 0 {
+		return mode[0]
+	}
+	return gin.ReleaseMode
+}
+
+func GetHTTPServer(mode ...string) *gin.Engine {
+	gin.SetMode(ginRunMode(mode...))
+	r := gin.Default()
+	r.Use(utils.ErrorHandler())
+	v1(r)
+	return r
+}

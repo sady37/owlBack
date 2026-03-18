@@ -139,7 +139,7 @@ func LoadFromEnv() *Config {
 	cfg.HTTP.Addr = getEnv("HTTP_ADDR", ":8080")
 	cfg.DBEnabled = getEnv("DB_ENABLED", "true") == "true"
 	cfg.Database.Host = getEnv("DB_HOST", "localhost")
-	cfg.Database.Port = parseInt(getEnv("DB_PORT", "5433"), 5433)
+	cfg.Database.Port = parseInt(getEnv("DB_PORT", "5432"), 5432)
 	cfg.Database.User = getEnv("DB_USER", "postgres")
 	cfg.Database.Password = getEnv("DB_PASSWORD", "")
 	cfg.Database.Database = getEnv("DB_NAME", "owlrd")

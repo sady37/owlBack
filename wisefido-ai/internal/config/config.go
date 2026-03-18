@@ -132,10 +132,10 @@ func LoadFromEnv() (*Config, error) {
 		if port, err := strconv.Atoi(portStr); err == nil && port > 0 {
 			cfg.Database.Port = port
 		} else {
-			cfg.Database.Port = 5433
+			cfg.Database.Port = 5432
 		}
 	} else {
-		cfg.Database.Port = 5433
+		cfg.Database.Port = 5432
 	}
 	cfg.Database.User = getEnv("DB_USER", "postgres")
 	cfg.Database.Password = getEnv("DB_PASSWORD", "")

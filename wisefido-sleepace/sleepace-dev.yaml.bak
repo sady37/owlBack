@@ -1,0 +1,48 @@
+# 备份原始 sleepace-dev.yaml
+# 时间：2026-02-20
+
+service:
+  ip: 
+  port: "9005"
+  domain:
+  mode: "debug"
+  name: "wisefido-sleepace"
+
+logger:
+  path: "/var/wisefido/backend/log/sleepace.log"
+  rotation_count: 10
+  level: debug
+
+database:
+  host: "localhost"
+  port: 3306
+  username: "root"
+  password: "env(MYSQL_PASSWORD)" # "exp(iPie)+1=0"
+  database: "wisefido"
+  default_size: 10
+  max_size: 100
+
+redis:
+  address: "localhost:6379"
+  password: "env(REDIS_AUTH)" # "liberty"
+  db: 1
+
+mqtt:
+  address: "mqtt://47.90.180.176:1883"
+  username: "wisefido"
+  password: "env(MQTT_PASSWORD)" # "vVYxo*.XCh-FjVC2VtrU"
+  client_id: "wisefido-sleepace-dev"
+  topic_id: "sleepace-57136"
+
+sleepace:
+  http_address: "http://47.90.180.176:8080"
+  app_id: "57136"
+  channel_id: "57136"
+  secret_key: "env(SLEEPACE_SECRET_KEY)" # NXDCGsX6MoYU
+  timezone: 28800 #8*60*60
+  realtime_interval: 10
+  leave_sensibility: 1
+  report_upload_type: 0
+  report_upload_time: 10
+
+services:

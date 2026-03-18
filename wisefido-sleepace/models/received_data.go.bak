@@ -1,0 +1,92 @@
+package models
+
+// SleepaceConnectionStatus represents device connection status records
+type SleepaceConnectionStatus struct {
+	Id              uint   `xorm:"pk autoincr"`
+	DeviceId        string `xorm:"index varchar(64)"`
+	TimeStamp       int64  `xorm:"index"`
+	ConnectionState int    `xorm:"notnull"`
+}
+
+// SleepaceRealtimeRecord represents realtime data records
+type SleepaceRealtimeRecord struct {
+	Id            uint   `xorm:"pk autoincr"`
+	DeviceId      string `xorm:"index varchar(64)"`
+	TimeStamp     int64  `xorm:"index"`
+	LeftRight     int    `xorm:"notnull"`
+	Breath        int    `xorm:"notnull"`
+	Heart         int    `xorm:"notnull"`
+	TurnOver      int    `xorm:"notnull"`
+	BodyMove      int    `xorm:"notnull"`
+	SitUp         int    `xorm:"notnull"`
+	InitStatus    int    `xorm:"notnull"`
+	BedStatus     int    `xorm:"notnull"`
+	SignalQuality int    `xorm:"notnull"`
+}
+
+// SleepaceInBedStatus represents in-bed status records
+// type SleepaceInBedStatus struct {
+// 	ID          uint   `xorm:"pk autoincr"`
+// 	DeviceId    string `xorm:"index varchar(64)"`
+// 	TimeStamp   int64  `xorm:"index"`
+// 	LeftRight   int    `xorm:"notnull"`
+// 	InbedStatus int    `xorm:"notnull"`
+// }
+
+// SleepaceSleepStage represents sleep stage records
+type SleepaceSleepStage struct {
+	Id         uint   `xorm:"pk autoincr"`
+	DeviceId   string `xorm:"index varchar(64)"`
+	TimeStamp  int64  `xorm:"index"`
+	LeftRight  int    `xorm:"notnull"`
+	SleepStage int    `xorm:"notnull"`
+}
+
+// SleepaceSensorStatus represents device sensor status records
+type SleepaceDeviceSensorStatus struct {
+	Id        uint   `xorm:"pk autoincr"`
+	DeviceId  string `xorm:"index varchar(64)"`
+	TimeStamp int64  `xorm:"index"`
+	Status    int    `xorm:"notnull"`
+	Type      string `xorm:"varchar(16) notnull"` // "device" or "pressure"
+}
+
+// SleepaceStressSensorStatus represents stress sensor status records
+type SleepaceStressSensorStatus struct {
+	Id        uint   `xorm:"pk autoincr"`
+	DeviceId  string `xorm:"index varchar(64)"`
+	TimeStamp int64  `xorm:"index"`
+	Status    int    `xorm:"notnull"`
+	Type      string `xorm:"varchar(16) notnull"` // "device" or "pressure"
+}
+
+// SleepaceAnalysis represents sleep analysis records
+type SleepaceAnalysis struct {
+	Id        uint   `xorm:"pk autoincr"`
+	DeviceId  string `xorm:"index varchar(64)"`
+	TimeStamp int64  `xorm:"index"`
+	UserId    string `xorm:"index varchar(64)"`
+	StartTime int64  `xorm:"index"`
+}
+
+// SleepaceUpgradeProgress represents device upgrade progress records
+type SleepaceUpgradeProgress struct {
+	Id        uint   `xorm:"pk autoincr"`
+	DeviceId  string `xorm:"index varchar(64)"`
+	TimeStamp int64  `xorm:"index"`
+	Length    int    `xorm:"notnull"`
+	Offset    int    `xorm:"notnull"`
+}
+
+// SleepaceAlarmNotify represents alarm notification records
+type SleepaceAlarmNotify struct {
+	Id            uint   `xorm:"pk autoincr"`
+	AlarmId       int64  `xorm:"index"`
+	DeviceId      string `xorm:"index varchar(64)"`
+	TimeStamp     int64  `xorm:"index"`
+	Type          string `xorm:"varchar(32) notnull"`
+	UserId        string `xorm:"index varchar(64)"`
+	Status        int    `xorm:"notnull"`
+	RelieveReason string `xorm:"varchar(255)"`
+	RelieveTime   int64  `xorm:"notnull"`
+}

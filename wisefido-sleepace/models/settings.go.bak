@@ -1,0 +1,76 @@
+package models
+
+import (
+	"wisefido.com/common/database"
+	"wisefido.com/common/utils"
+)
+
+type SleepaceMonitorSettings struct {
+	Id                     int          `json:"id" xorm:"pk autoincr"`
+	DeviceId               utils.LongId `json:"-" xorm:"notnull index"`
+	DeviceCode             string       `json:"deviceId" xorm:"varchar(64) notnull index"`
+	AddressId              utils.LongId `json:"addressId" xorm:"index"`
+	UserId                 string       `json:"userId" xorm:"-"`
+	LeftRight              int          `json:"leftRight"`
+	Heart                  int          `json:"heart"`
+	TurnOver               int          `json:"turnOver"`
+	BodyMove               int          `json:"bodyMove"`
+	SitUp                  int          `json:"sitUp"`
+	AlarmFlag              int          `json:"alarmFlag"`
+	FallFlag               int          `json:"fallFlag"`
+	FallDuration           int          `json:"fallDuration"`
+	LeftBedFlag            int          `json:"leftBedFlag"`
+	LastBedDuration        int          `json:"lastBedDuration"`
+	LeftBedDuration        int          `json:"leftBedDuration"`
+	LeftBedStartHour       int          `json:"leftBedStartHour"`
+	LeftBedStartMinute     int          `json:"leftBedStartMinute"`
+	LeftBedEndHour         int          `json:"leftBedEndHour"`
+	LeftBedEndMinute       int          `json:"leftBedEndMinute"`
+	HeartRateFastFlag      int          `json:"heartRateFastFlag"`
+	HeartRateFastDuration  int          `json:"heartRateFastDuration"`
+	MaxHeartRate           int          `json:"maxHeartRate"`
+	HeartRateSlowFlag      int          `json:"heartRateSlowFlag"`
+	HeartRateSlowDuration  int          `json:"heartRateSlowDuration"`
+	MinHeartRate           int          `json:"minHeartRate"`
+	BreathRateFastFlag     int          `json:"breathRateFastFlag"`
+	BreathRateFastDuration int          `json:"breathRateFastDuration"`
+	MaxBreathRate          int          `json:"maxBreathRate"`
+	BreathRateSlowFlag     int          `json:"breathRateSlowFlag"`
+	BreathRateSlowDuration int          `json:"breathRateSlowDuration"`
+	MinBreathRate          int          `json:"minBreathRate"`
+	BreathPauseFlag        int          `json:"breathPauseFlag"`
+	BreathPauseDuration    int          `json:"breathPauseDuration"`
+	BodyMoveFlag           int          `json:"bodyMoveFlag"`
+	BodyMoveDuration       int          `json:"bodyMoveDuration"`
+	NobodyMoveFlag         int          `json:"nobodyMoveFlag"`
+	NobodyMoveDuration     int          `json:"nobodyMoveDuration"`
+	NoTurnOverFlag         int          `json:"noTurnOverFlag"`
+	NoTurnOverDuration     int          `json:"noTurnOverDuration"`
+	SitupFlag              int          `json:"situpFlag"`
+	OnbedFlag              int          `json:"onbedFlag"`
+	OnbedDuration          int          `json:"onbedDuration"`
+	Timestamp              int64        `json:"timestamp"`
+	Timezone               int          `json:"timezone"`
+	Last                   int          `json:"last"`
+	Creater                utils.LongId `json:"creater"`
+}
+
+func SetDeviceMonitorSettings(settings *SleepaceMonitorSettings) error {
+	database.Engine.Table("sleepace_monitor_settings").MustCols("last").Update(&SleepaceMonitorSettings{Last: 0},
+		&SleepaceMonitorSettings{DeviceId: settings.DeviceId, DeviceCode: settings.DeviceCode, Last: 1})
+	settings.Last = 1
+	_, err := database.Engine.Table("sleepace_monitor_settings").Insert(settings)
+	return err
+}
+
+func GetDeviceMonitorSettings(deviceCode string) (*SleepaceMonitorSettings, error) {
+	device := SleepaceMonitorSettings{DeviceCode: deviceCode, Last: 1}
+	exist, err := database.Engine.Table("sleepace_monitor_settings").Get(&device)
+	if err != nil {
+		return nil, err
+	}
+	if !exist {
+		return nil, nil
+	}
+	return &device, err
+}

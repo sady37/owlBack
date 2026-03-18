@@ -1,0 +1,72 @@
+package models
+
+import "encoding/json"
+
+type ReceivedMessage struct {
+	DataKey   string          `json:"dataKey"`
+	TimeStamp int64           `json:"timeStamp"`
+	DeviceId  string          `json:"deviceId"`
+	Data      json.RawMessage `json:"data"`
+}
+
+type CommonData struct {
+	DeviceId  string `json:"deviceId"`
+	TimeStamp int64  `json:"timeStamp"`
+}
+
+type ConnectionStatusData struct {
+	CommonData
+	ConnectionStatus int `json:"connectionStatus"`
+}
+
+type RealtimeData struct {
+	CommonData
+	LeftRight     int `json:"leftRight"`
+	Breath        int `json:"breath"`
+	Heart         int `json:"heart"`
+	TurnOver      int `json:"turnOver"`
+	BodyMove      int `json:"bodyMove"`
+	SitUp         int `json:"sitUp"`
+	InitStatus    int `json:"initStatus"`
+	BedStatus     int `json:"bedStatus"`
+	SignalQuality int `json:"signalQuality"`
+}
+
+type InBedStatusData struct {
+	CommonData
+	LeftRight   int `json:"leftRight"`
+	InbedStatus int `json:"inbedStatus"`
+}
+
+type SleepStageData struct {
+	CommonData
+	LeftRight  int `json:"leftRight"`
+	SleepStage int `json:"sleepStage"`
+}
+
+type SensorData struct {
+	CommonData
+	Status int `json:"status"`
+}
+
+type AnalysisData struct {
+	CommonData
+	UserId    string `json:"userId"`
+	StartTime int64  `json:"startTime"`
+}
+
+type UpgradeProgressData struct {
+	CommonData
+	Length int `json:"length"`
+	Offset int `json:"offset"`
+}
+
+type AlarmNotifyData struct {
+	CommonData
+	Id            int64  `json:"id"`
+	Type          string `json:"type"`
+	UserId        string `json:"userId"`
+	Status        int    `json:"status"`
+	RelieveReason string `json:"relieveReason"`
+	RelieveTime   int64  `json:"relieveTime"`
+}

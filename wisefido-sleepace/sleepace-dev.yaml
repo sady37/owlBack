@@ -1,0 +1,45 @@
+service:
+  name: "wisefido-sleepace"
+
+log:
+  level: debug
+  format: console
+  output: stdout
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "postgres"
+  password: "postgres"
+  database: "owlrd"
+  sslmode: "disable"
+
+redis:
+  addr: "localhost:6379"
+  password: "TeLunSu-36kr"
+  db: 0
+
+# MQTT 与 sleepace 的 app_id/channel_id/topic_id 需一致：同一 channel 下设备即 API 的“用户”范围，getalarmnotifyconfig 等用 token.appId + data.userId 查找
+mqtt:
+  broker: "tcp://localhost:1883"
+  client_id: "wisefido-sleepace-2"
+  username: "wfiot"
+  password: "tt@wf@2025"
+  topic_id: "sleepace-57136"
+
+# 需与 sleepace-service/classes/config.properties 一致：appId、secretKey 相同；topic_id 与 auto.realtime.businessId 一致
+# 报警配不上：多为 sleepace-service 内无 userId=device_code 的用户，需在 service 侧 bind/设备接入时以 device_code 作为合作方用户唯一标识
+sleepace:
+  http_address: "http://localhost:8090"
+  app_id: "57136"       # 与 config.properties appId、topic_id 数字一致
+  channel_id: "57136"
+  secret_key: "NXDCGsX6MoYU"
+  timezone: -25200
+  realtime_interval: 10
+  leave_sensibility: 1
+  report_upload_type: 0
+  report_upload_time: 10
+
+http:
+  host: ""
+  port: 8083

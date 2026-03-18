@@ -1,0 +1,579 @@
+package modules
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/go-redis/redis/v8"
+	"github.com/go-resty/resty/v2"
+	"wisefido.com/common/commonmodels"
+	"wisefido.com/common/database"
+	"wisefido.com/common/utils"
+	"wisefido.com/wisefido-sleepace/internal/config"
+	"wisefido.com/wisefido-sleepace/models"
+)
+
+type Message struct {
+	Topic   string
+	Payload []byte
+}
+
+var messageQueue chan *Message
+var cancel context.CancelFunc
+var wg sync.WaitGroup
+var wokerCount = 10
+
+var (
+	deviceClient *resty.Client
+	deviceOnce   sync.Once
+	dataClient   *resty.Client
+	dataOnce     sync.Once
+)
+
+func initializeDeviceClient() {
+	deviceOnce.Do(func() {
+		deviceClient = resty.New().
+			SetBaseURL(config.Cfg.Services.Device).
+			SetTimeout(5*time.Second).
+			SetRetryCount(3).
+			SetRetryWaitTime(time.Second).
+			SetRetryMaxWaitTime(5*time.Second).
+			SetHeader("Content-Type", "application/json").
+			SetHeader("Accept", "application/json").SetDebug(true)
+	})
+}
+
+func initializeDataClient() {
+	dataOnce.Do(func() {
+		dataClient = resty.New().
+			SetBaseURL(config.Cfg.Services.Data).
+			SetTimeout(5*time.Second).
+			SetRetryCount(3).
+			SetRetryWaitTime(time.Second).
+			SetRetryMaxWaitTime(5*time.Second).
+			SetHeader("Content-Type", "application/json").
+			SetHeader("Accept", "application/json").SetDebug(true)
+	})
+}
+
+func InitBroker() {
+	messageQueue = make(chan *Message, 1000)
+	var ctx context.Context
+	ctx, cancel = context.WithCancel(context.Background())
+	for i := 0; i < wokerCount; i++ {
+		wg.Add(1)
+		go worker(ctx, &wg, messageQueue)
+	}
+}
+
+func MqttBroker(client mqtt.Client, msg mqtt.Message) {
+	messageQueue <- &Message{
+		Topic:   msg.Topic(),
+		Payload: msg.Payload(),
+	}
+}
+
+func StopBroker() {
+	cancel()
+	wg.Wait()
+}
+
+func worker(ctx context.Context, wg *sync.WaitGroup, queue <-chan *Message) {
+	defer wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-queue:
+			handleMessage(msg)
+		}
+	}
+}
+
+func handleMessage(msg *Message) {
+	utils.Logger.Tracef("Received message: %s from topic: %s", msg.Payload, msg.Topic)
+	p := make([]*models.ReceivedMessage, 0)
+	err := json.Unmarshal(msg.Payload, &p)
+	if err != nil {
+		utils.Logger.Errorf("Error unmarshaling message: %v", err)
+		return
+	}
+	for _, v := range p {
+		updateActiveDevicesCatch(v.DeviceId)
+		switch v.DataKey {
+		case "connectionStatus":
+			data := models.ConnectionStatusData{
+				CommonData: models.CommonData{DeviceId: v.DeviceId,
+					TimeStamp: v.TimeStamp},
+			}
+			err := json.Unmarshal(v.Data, &data)
+			if err != nil {
+				utils.Logger.Errorf("Error unmarshaling message: %v", err)
+				continue
+			}
+			handleConnectionEvent(&data)
+		case "realtime":
+			data := models.RealtimeData{
+				CommonData: models.CommonData{DeviceId: v.DeviceId,
+					TimeStamp: v.TimeStamp},
+			}
+			err := json.Unmarshal(v.Data, &data)
+			if err != nil {
+				utils.Logger.Errorf("Error unmarshaling message: %v", err)
+				continue
+			}
+			handleRealtimeData(&data)
+		case "inBedStatus":
+			data := models.InBedStatusData{
+				CommonData: models.CommonData{DeviceId: v.DeviceId,
+					TimeStamp: v.TimeStamp},
+			}
+			err := json.Unmarshal(v.Data, &data)
+			if err != nil {
+				utils.Logger.Errorf("Error unmarshaling message: %v", err)
+				continue
+			}
+			// handleInbedStatusEvent(&data)
+		case "sleepStage":
+			data := models.SleepStageData{
+				CommonData: models.CommonData{DeviceId: v.DeviceId,
+					TimeStamp: v.TimeStamp},
+			}
+			err := json.Unmarshal(v.Data, &data)
+			if err != nil {
+				utils.Logger.Errorf("Error unmarshaling message: %v", err)
+				continue
+			}
+			handleSleepStageEvent(&data)
+		case "deviceSenSor", "pressureSenSor":
+			data := models.SensorData{
+				CommonData: models.CommonData{DeviceId: v.DeviceId,
+					TimeStamp: v.TimeStamp},
+			}
+			err := json.Unmarshal(v.Data, &data)
+			if err != nil {
+				utils.Logger.Errorf("Error unmarshaling message: %v", err)
+				continue
+			}
+			if v.DataKey == "deviceSenSor" {
+				handleDeviceSensorEvent(&data)
+			} else {
+				handlePressureSensorEvent(&data)
+			}
+		case "analysis":
+			data := models.AnalysisData{
+				CommonData: models.CommonData{DeviceId: v.DeviceId,
+					TimeStamp: v.TimeStamp},
+			}
+			err := json.Unmarshal(v.Data, &data)
+			if err != nil {
+				utils.Logger.Errorf("Error unmarshaling message: %v", err)
+				continue
+			}
+			handleAnalysisEvent(&data)
+		case "upgradeProgress":
+			data := models.UpgradeProgressData{
+				CommonData: models.CommonData{DeviceId: v.DeviceId,
+					TimeStamp: v.TimeStamp},
+			}
+			err := json.Unmarshal(v.Data, &data)
+			if err != nil {
+				utils.Logger.Errorf("Error unmarshaling message: %v", err)
+				continue
+			}
+			handleUpgradeProgress(&data)
+		case "alarmNotify":
+			data := models.AlarmNotifyData{
+				CommonData: models.CommonData{DeviceId: v.DeviceId,
+					TimeStamp: v.TimeStamp},
+			}
+			err := json.Unmarshal(v.Data, &data)
+			if err != nil {
+				utils.Logger.Errorf("Error unmarshaling message: %v", err)
+				continue
+			}
+			handleAlarmNotify(&data)
+		}
+	}
+}
+
+func handleConnectionEvent(data *models.ConnectionStatusData) error {
+	utils.Logger.Infof("Received connection event: %+v", data)
+	record := &models.SleepaceConnectionStatus{
+		DeviceId:        data.DeviceId,
+		TimeStamp:       data.TimeStamp,
+		ConnectionState: data.ConnectionStatus,
+	}
+	_, err := database.Engine.Insert(record)
+	if err != nil {
+		return err
+	}
+	setDeviceStatus(data.DeviceId, "connection", data.ConnectionStatus, data.TimeStamp)
+	if data.ConnectionStatus == 0 {
+		device, err := models.GetDeviceByCode(data.DeviceId)
+		if err != nil {
+			utils.Logger.Errorf("get device by code error: %s", err)
+			return err
+		}
+		if device == nil {
+			return errors.New("device not found")
+		}
+		alarm := &models.AlarmNotifyData{
+			CommonData: models.CommonData{
+				DeviceId:  data.DeviceId,
+				TimeStamp: data.TimeStamp,
+			},
+			Id:     time.Now().Unix(),
+			Type:   "alarmOffline",
+			Status: utils.ALARM_STATUS_PENDING,
+			UserId: device.Id.String(),
+		}
+		processAlarmNotify(alarm)
+	} else {
+		alarm, err := getPendingAlarmRecord(data.DeviceId, utils.ALARM_TYPE_OFFLINE)
+		if err != nil {
+			utils.Logger.Errorf("get pending alarm record error: %s", err)
+			return err
+		}
+		if alarm == nil {
+			return nil
+		}
+		alarmUpdate := commonmodels.DeviceAlarm{
+			Status:       utils.ALARM_STATUS_RESOLVED,
+			HandleStatus: utils.ALARM_HANDLE_STATUS_AUTO,
+			HandleTime:   data.TimeStamp,
+		}
+		_, err = database.Engine.Update(&alarmUpdate, &commonmodels.DeviceAlarm{Id: alarm.Id})
+		if err != nil {
+			utils.Logger.Errorf("update alarm record error: %s", err)
+			return err
+		}
+	}
+	return err
+}
+
+func getPendingAlarmRecord(deviceCode string, alarmType int) (*commonmodels.DeviceAlarm, error) {
+	var record commonmodels.DeviceAlarm
+	exists, err := database.Engine.Where("device_code = ? AND alarm_type = ? AND status = 0", deviceCode, alarmType).Desc("id").Limit(1).Get(&record)
+	if !exists {
+		return nil, nil
+	}
+	return &record, err
+}
+
+func handleRealtimeData(data *models.RealtimeData) error {
+	utils.Logger.Tracef("Received realtime data: %+v", data)
+	record := &models.SleepaceRealtimeRecord{
+		DeviceId:      data.DeviceId,
+		TimeStamp:     data.TimeStamp,
+		LeftRight:     data.LeftRight,
+		Breath:        data.Breath,
+		Heart:         data.Heart,
+		TurnOver:      data.TurnOver,
+		BodyMove:      data.BodyMove,
+		SitUp:         data.SitUp,
+		InitStatus:    data.InitStatus,
+		BedStatus:     data.BedStatus,
+		SignalQuality: data.SignalQuality,
+	}
+	_, err := database.Engine.Insert(record)
+	if err != nil {
+		utils.Logger.Errorf("Error inserting realtime data: %v", err)
+		return err
+	}
+	err = setDeviceStatuses(data.DeviceId, map[string]string{
+		"breath":        strconv.Itoa(data.Breath),
+		"heart":         strconv.Itoa(data.Heart),
+		"turnOver":      strconv.Itoa(data.TurnOver),
+		"bodyMove":      strconv.Itoa(data.BodyMove),
+		"sitUp":         strconv.Itoa(data.SitUp),
+		"initStatus":    strconv.Itoa(data.InitStatus),
+		"bedStatus":     strconv.Itoa(data.BedStatus),
+		"signalQuality": strconv.Itoa(data.SignalQuality),
+		"connection":    "1",
+	}, data.TimeStamp)
+	return err
+}
+
+// func handleInbedStatusEvent(data *models.InBedStatusData) error {
+// 	utils.Logger.Infof("Received inbed status: %+v", data)
+// 	record := &models.SleepaceInBedStatus{
+// 		DeviceId:    data.DeviceId,
+// 		TimeStamp:   data.TimeStamp,
+// 		LeftRight:   data.LeftRight,
+// 		InbedStatus: data.InbedStatus,
+// 	}
+// 	_, err := database.Engine.Insert(record)
+// 	return err
+// }
+
+func handleSleepStageEvent(data *models.SleepStageData) error {
+	utils.Logger.Infof("Received sleep stage: %+v", data)
+	record := &models.SleepaceSleepStage{
+		DeviceId:   data.DeviceId,
+		TimeStamp:  data.TimeStamp,
+		LeftRight:  data.LeftRight,
+		SleepStage: data.SleepStage,
+	}
+	_, err := database.Engine.Insert(record)
+	if err != nil {
+		return err
+	}
+	err = setDeviceStatus(data.DeviceId, "sleepStage", data.SleepStage, data.TimeStamp)
+	return err
+}
+
+func handleDeviceSensorEvent(data *models.SensorData) error {
+	utils.Logger.Infof("Received device sensor: %+v", data)
+	record := &models.SleepaceDeviceSensorStatus{
+		DeviceId:  data.DeviceId,
+		TimeStamp: data.TimeStamp,
+		Status:    data.Status,
+		Type:      "device",
+	}
+	_, err := database.Engine.Insert(record)
+	return err
+}
+
+func handlePressureSensorEvent(data *models.SensorData) error {
+	utils.Logger.Infof("Received pressure sensor: %+v", data)
+	record := &models.SleepaceStressSensorStatus{
+		DeviceId:  data.DeviceId,
+		TimeStamp: data.TimeStamp,
+		Status:    data.Status,
+		Type:      "pressure",
+	}
+	_, err := database.Engine.Insert(record)
+	return err
+}
+
+func handleAnalysisEvent(data *models.AnalysisData) error {
+	utils.Logger.Infof("Received analysis data: %+v", data)
+	record := &models.SleepaceAnalysis{
+		DeviceId:  data.DeviceId,
+		TimeStamp: data.TimeStamp,
+		UserId:    data.UserId,
+		StartTime: data.StartTime,
+	}
+	database.Engine.Insert(record)
+	return DownloadReport(utils.LongId(utils.Atoi64(data.UserId, 0)), data.DeviceId, data.StartTime+1, data.TimeStamp)
+}
+
+func handleUpgradeProgress(data *models.UpgradeProgressData) error {
+	utils.Logger.Infof("Received upgrade progress: %+v", data)
+	record := &models.SleepaceUpgradeProgress{
+		DeviceId:  data.DeviceId,
+		TimeStamp: data.TimeStamp,
+		Length:    data.Length,
+		Offset:    data.Offset,
+	}
+	_, err := database.Engine.Insert(record)
+	return err
+}
+
+func handleAlarmNotify(data *models.AlarmNotifyData) error {
+	utils.Logger.Infof("Received alarm notify: %+v", data)
+	saveOriginalAlarmNotify(data)
+	err := processAlarmNotify(data)
+	return err
+}
+
+func saveOriginalAlarmNotify(data *models.AlarmNotifyData) error {
+	record := &models.SleepaceAlarmNotify{
+		AlarmId:       data.Id,
+		DeviceId:      data.DeviceId,
+		TimeStamp:     data.TimeStamp,
+		Type:          data.Type,
+		UserId:        data.UserId,
+		Status:        data.Status,
+		RelieveReason: data.RelieveReason,
+		RelieveTime:   data.RelieveTime,
+	}
+	_, err := database.Engine.Insert(record)
+	return err
+}
+
+func getDeviceRelations(deviceId utils.LongId) (*commonmodels.DeviceRelatedObjects, error) {
+	initializeDeviceClient()
+	response := struct {
+		Code    int                                `json:"code"`
+		Message string                             `json:"message"`
+		Result  *commonmodels.DeviceRelatedObjects `json:"result"`
+	}{}
+	r, err := deviceClient.R().SetResult(&response).Get(fmt.Sprintf("/device/internal/item/%s/relations", deviceId.String()))
+	if err != nil {
+		return nil, err
+	}
+	if r.StatusCode() != 200 {
+		return nil, errors.New(r.Status())
+	}
+	if response.Code != utils.CODE_SUCCESS {
+		return nil, errors.New(response.Message)
+	}
+	return response.Result, nil
+}
+
+func getAlarmNotificationSettings() (map[string]string, error) {
+	initializeDataClient()
+	response := struct {
+		Code    int               `json:"code"`
+		Message string            `json:"message"`
+		Result  map[string]string `json:"result"`
+	}{}
+	r, err := dataClient.R().SetResult(&response).Get("/data/internal/settings/alarm/notification")
+	if err != nil {
+		return nil, err
+	}
+	if r.StatusCode() != 200 {
+		return nil, errors.New(r.Status())
+	}
+	if response.Code != utils.CODE_SUCCESS {
+		return nil, errors.New(response.Message)
+	}
+	return response.Result, nil
+}
+
+func getAlarmLevel(alarmType int) int {
+	key := utils.GetSleepaceAlarmNotificationKey(alarmType)
+	if key == "" {
+		return 0
+	}
+	settings, err := getAlarmNotificationSettings()
+	if err != nil {
+		utils.Logger.Errorf("get alarm notification settings error: %s", err)
+		return 0
+	}
+	result := settings[key]
+	if result == "" {
+		return 0
+	}
+	return utils.Atoi(result, 0)
+}
+
+func processAlarmNotify(data *models.AlarmNotifyData) error {
+	if data.Status == 0 {
+		device, err := models.GetDeviceByCode(data.DeviceId)
+		if err != nil {
+			utils.Logger.Errorf("get device by code error: %s", err)
+			return err
+		}
+		if device == nil {
+			return errors.New("device not found")
+		}
+		relatedObjects, err := getDeviceRelations(device.Id)
+		if err != nil {
+			utils.Logger.Errorf("get device relations error: %s", err)
+			return err
+		}
+		residentIds := ""
+		residentNames := ""
+		residentGenders := ""
+		residentBirthdays := ""
+		for _, resident := range relatedObjects.Residents {
+			residentIds += fmt.Sprintf("%d|", resident.Id)
+			residentNames += fmt.Sprintf("%s|", resident.Name)
+			residentGenders += fmt.Sprintf("%d|", resident.Gender)
+			residentBirthdays += fmt.Sprintf("%d|", resident.Birthday)
+		}
+		residentIds = strings.TrimSuffix(residentIds, "|")
+		residentNames = strings.TrimSuffix(residentNames, "|")
+		residentGenders = strings.TrimSuffix(residentGenders, "|")
+		residentBirthdays = strings.TrimSuffix(residentBirthdays, "|")
+		alarm := commonmodels.DeviceAlarm{
+			AlarmId:            data.Id,
+			DeviceId:           utils.LongId(utils.Atoi64(data.UserId, 0)),
+			DeviceCode:         data.DeviceId,
+			DeviceInternalCode: relatedObjects.DeviceInternalCode,
+			DeviceType:         utils.DEVICE_TYPE_SLEEPACE_MONITOR,
+			DeviceName:         device.Name,
+			AddressId:          relatedObjects.AddressId,
+			AddressType:        relatedObjects.AddressType,
+			AddressName:        relatedObjects.AddressName,
+			ResidentIds:        residentIds,
+			ResidentNames:      residentNames,
+			ResidentGenders:    residentGenders,
+			ResidentBirthdays:  residentBirthdays,
+			AlarmType:          getAlarmTypeFromString(data.Type),
+			AlarmValue:         0,
+			Status:             utils.ALARM_STATUS_PENDING,
+			Timestamp:          data.TimeStamp,
+		}
+		timezone, err := GetDeviceTimezone(data.DeviceId)
+		if err != nil {
+			utils.Logger.Errorf("get device timezone error: %s", err)
+			return err
+		}
+		alarm.Timezone = timezone
+		alarm.Category = utils.GetAlarmCategory(alarm.AlarmType)
+		alarm.Severity = utils.GetAlarmSeverity(alarm.AlarmType)
+		alarm.Level = getAlarmLevel(alarm.AlarmType)
+		_, err = database.Engine.Insert(&alarm)
+		return err
+	} else {
+		alarm := commonmodels.DeviceAlarm{
+			Status:       utils.ALARM_STATUS_RESOLVED,
+			HandleStatus: utils.ALARM_HANDLE_STATUS_AUTO,
+			HandleDetail: data.RelieveReason,
+			HandleTime:   data.RelieveTime,
+		}
+		_, err := database.Engine.Update(&alarm, &commonmodels.DeviceAlarm{AlarmId: data.Id})
+		return err
+	}
+}
+
+func getAlarmTypeFromString(s string) int {
+	switch s {
+	case "alarmSensorFall":
+		return utils.ALARM_TYPE_SENSOR_FALL
+	case "alarmLeftBed":
+		return utils.ALARM_TYPE_LEFT_BED
+	case "alarmHeartRateFast":
+		return utils.ALARM_TYPE_HEART_RATE_FAST
+	case "alarmHeartRateSlow":
+		return utils.ALARM_TYPE_HEART_RATE_SLOW
+	case "alarmBreathRateFast":
+		return utils.ALARM_TYPE_BREATH_RATE_FAST
+	case "alarmBreathRateSlow":
+		return utils.ALARM_TYPE_BREATH_RATE_SLOW
+	case "alarmBreathRatePause":
+		return utils.ALARM_TYPE_BREATH_RATE_PAUSE
+	case "alarmBodyMove":
+		return utils.ALARM_TYPE_BODY_MOVE
+	case "alarmNoBodyMove":
+		return utils.ALARM_TYPE_NO_BODY_MOVE
+	case "alarmNoTurnOver":
+		return utils.ALARM_TYPE_NO_TURN_OVER
+	case "alarmSitup":
+		return utils.ALARM_TYPE_SIT_UP
+	case "alarmOnBed":
+		return utils.ALARM_TYPE_ON_BED
+	case "alarmOffline":
+		return utils.ALARM_TYPE_OFFLINE
+	default:
+		return utils.ALARM_TYPE_UNKNOWN
+	}
+}
+
+func updateActiveDevicesCatch(code string) error {
+	r, err := utils.GetRedisClient().HGet(context.Background(), utils.ACTIVE_DEVICES_KEY, code).Result()
+	if err == redis.Nil && r == "" {
+		utils.GetRedisClient().HSet(context.Background(), utils.ACTIVE_DEVICES_KEY, code, time.Now().Unix()).Result()
+		err = putDeviceService(fmt.Sprintf("/device/internal/prepared/%s/online", code), nil)
+		return err
+	}
+	_, err = utils.GetRedisClient().HSet(context.Background(), utils.ACTIVE_DEVICES_KEY, code, time.Now().Unix()).Result()
+	return err
+}
+
+func putDeviceService(path string, data any) error {
+	initializeDeviceClient()
+	_, err := deviceClient.R().SetBody(data).Put(path)
+	return err
+}

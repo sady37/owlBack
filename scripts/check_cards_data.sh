@@ -6,7 +6,7 @@
 set -e
 TENANT_ID="${1:-bb045e6b-7bc2-4e59-af2e-d8b1adc77f2c}"
 DB_HOST="${DB_HOST:-127.0.0.1}"
-DB_PORT="${DB_PORT:-5433}"
+DB_PORT="${DB_PORT:-5432}"
 
 echo "=== 1. DB: cards 表条数 (tenant_id=$TENANT_ID) ==="
 docker exec -i owl-postgresql psql -U postgres -d owlrd -t -c \
