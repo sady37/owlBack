@@ -152,14 +152,9 @@ export DB_SSLMODE="${DB_SSLMODE:-disable}"
 export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
 export REDIS_PASSWORD="${REDIS_PASSWORD:-TeLunSu-36kr}"
 
-# MQTT配置（wisefido-sleepace 需要 MQTT_BROKER 含端口，如 127.0.0.1:1883）
+# MQTT配置（qinglan 用 MQTT_BROKER+MQTT_PORT 拼接，sleepace 用 MQTT_BROKER 含端口，故全局只设 host，sleepace 启动行单独传 host:port）
+export MQTT_BROKER="${MQTT_BROKER:-127.0.0.1}"
 export MQTT_PORT="${MQTT_PORT:-1883}"
-MQTT_HOST="${MQTT_BROKER:-127.0.0.1}"
-if [[ "$MQTT_HOST" != *:* ]]; then
-  export MQTT_BROKER="${MQTT_HOST}:${MQTT_PORT}"
-else
-  export MQTT_BROKER="$MQTT_HOST"
-fi
 
 # wisefido-cardagg 配置（如果没有从 .env 加载）
 export TENANT_ID="${TENANT_ID:-bb045e6b-7bc2-4e59-af2e-d8b1adc77f2c}"
@@ -177,7 +172,7 @@ echo -e "${BLUE}Configuration:${NC}"
 echo "  DB_HOST: $DB_HOST"
 echo "  DB_NAME: $DB_NAME"
 echo "  REDIS_ADDR: $REDIS_ADDR"
-echo "  MQTT_BROKER: $MQTT_BROKER"
+echo "  MQTT_BROKER: $MQTT_BROKER:$MQTT_PORT"
 echo "  TENANT_ID: $TENANT_ID"
 echo "  CARD_TRIGGER_MODE: $CARD_TRIGGER_MODE (card creation now handled by wisefido-data, this is backup)"
 if [ "$CARD_POLLING_INTERVAL" -ge 86400 ]; then
@@ -329,7 +324,7 @@ if [ "$SLEEPACE_DIR_MISSING" != "true" ]; then
   echo -e "${GREEN}[4/6] Starting wisefido-sleepace service...${NC}"
   echo -e "${BLUE}  Function: Sleepad device gateway (MQTT consumer + HTTP proxy)${NC}"
   cd "$OWLBACK_DIR/wisefido-sleepace"
-  MQTT_CLIENT_ID=wisefido-sleepace-2 go run cmd/wisefido-sleepace/main.go -env dev 2>&1 | tee "$SLEEPACE_LOG" &
+  MQTT_BROKER="${MQTT_BROKER:-127.0.0.1}:${MQTT_PORT:-1883}" MQTT_CLIENT_ID=wisefido-sleepace-2 go run cmd/wisefido-sleepace/main.go -env dev 2>&1 | tee "$SLEEPACE_LOG" &
   SLEEPACE_PID=$!
   echo "  PID: $SLEEPACE_PID"
   echo "  Log: $SLEEPACE_LOG (also displayed in terminal)"
