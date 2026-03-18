@@ -12,7 +12,7 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../owlRD/db-init:/docker-entrypoint-initdb.d
+      - ../owlRD/db:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -51,6 +51,7 @@ services:
       retries: 5
 
   wisefido-data:
+    # 构建 context 为 owlBack 根目录，需含 owl-common、wisefido-qinglan、wisefido-ai；忽略规则见根目录 .dockerignore
     build:
       context: .
       dockerfile: ./wisefido-data/Dockerfile
