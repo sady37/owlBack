@@ -567,12 +567,17 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			c.logger.Error("unmarshal analysis", zap.Error(err))
 			return
 		}
+		// Sleepace userId 与 wisefido devices.device_id 一致；流与落库均以解析到的 deviceID 为准。
+		streamUserID := d.UserId
+		if deviceID != "" {
+			streamUserID = deviceID
+		}
 		payloadData := map[string]any{
 			"dataCategory": "analysis",
 			"event_name":   "analysis",
 			"event_since":  ts,
 			"event_status": "instant",
-			"user_id":      d.UserId,
+			"user_id":      streamUserID,
 			"start_time":   d.StartTime,
 		}
 		payloadJSON, _ := json.Marshal(payloadData)
@@ -592,10 +597,10 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			msg := redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, nowMs, "event", "analysis", out)
 			c.publisher.PublishEvent(ctx, msg)
 		}
-		if c.reportService != nil {
+		if c.reportService != nil && deviceID != "" {
 			go func() {
-				if err := c.reportService.DownloadAndSave(ctx, deviceCode, d.UserId, d.StartTime+1, m.TimeStamp); err != nil {
-					c.logger.Error("download report failed", zap.String("device_code", deviceCode), zap.Error(err))
+				if err := c.reportService.DownloadAndSave(ctx, deviceCode, deviceID, d.StartTime+1, m.TimeStamp); err != nil {
+					c.logger.Error("download report failed", zap.String("device_code", deviceCode), zap.String("device_id", deviceID), zap.Error(err))
 				}
 			}()
 		}

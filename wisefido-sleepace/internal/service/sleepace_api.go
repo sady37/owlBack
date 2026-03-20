@@ -162,6 +162,7 @@ func (a *SleepaceAPI) SetReportUploadTime(deviceCode string, uploadTime int) err
 }
 
 // GetDailyReport fetches report from sleepace-service for a given time range.
+// userID is Sleepace userId, same as wisefido devices.device_id (UUID string).
 // Returns raw JSON array of report objects.
 func (a *SleepaceAPI) GetDailyReport(userID string, startTime, endTime int64) ([]json.RawMessage, error) {
 	req := SleepaceRequest{

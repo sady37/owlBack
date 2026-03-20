@@ -23,7 +23,7 @@ func NewReportService(db *sql.DB, api *SleepaceAPI, card *CardMappingService, lo
 }
 
 // DownloadAndSave fetches the report from sleepace-service and upserts into sleepace_report.
-// mqttDeviceID is the MQTT deviceId (= device_store.device_code, e.g. "1ua3erivl9pv1").
+// mqttDeviceID is the MQTT deviceId (= device_store.device_code). userID is Sleepace API userId (= devices.device_id UUID).
 func (s *ReportService) DownloadAndSave(ctx context.Context, mqttDeviceID, userID string, startTime, endTime int64) error {
 	reports, err := s.api.GetDailyReport(userID, startTime, endTime)
 	if err != nil {
@@ -35,6 +35,21 @@ func (s *ReportService) DownloadAndSave(ctx context.Context, mqttDeviceID, userI
 		cardID = info.CardID
 		tenantID = info.TenantID
 		deviceID = info.DeviceID
+	} else {
+		s.logger.Warn("report skip: card lookup failed",
+			zap.String("mqtt_device_id", mqttDeviceID),
+			zap.String("api_user_id", userID),
+			zap.Error(err),
+		)
+		return nil
+	}
+	if tenantID == "" || deviceID == "" {
+		s.logger.Warn("report skip: empty tenant_id or device_id",
+			zap.String("mqtt_device_id", mqttDeviceID),
+			zap.String("tenant_id", tenantID),
+			zap.String("device_id", deviceID),
+		)
+		return nil
 	}
 
 	for i := len(reports) - 1; i >= 0; i-- {
@@ -76,28 +91,26 @@ func (s *ReportService) buildMetadata(ctx context.Context, deviceID, tenantID st
 	if deviceID == "" || s.db == nil {
 		return "{}"
 	}
-	// Snapshot binding information (like alarm_db.go snapshotBindingToMetadata)
+	// Anchor on devices.device_id only; location from bound_room_id (room-bound devices).
 	row := s.db.QueryRowContext(ctx, `
 		SELECT COALESCE(
 			jsonb_build_object(
 				'device_name', d.device_name,
-				'bed_name', COALESCE(b.bed_name, ''),
+				'bed_name', '',
 				'room_name', COALESCE(r.room_name, ''),
 				'unit_name', COALESCE(u.unit_name, ''),
 				'branch_name', COALESCE(br.branch_name, ''),
 				'building_name', COALESCE(bld.building_name, ''),
-				'resident_nickname', COALESCE(res.nickname, '')
+				'resident_nickname', ''
 			)::text,
 			'{}'
 		)
 		FROM devices d
-		LEFT JOIN beds b ON b.device_id = d.device_id
-		LEFT JOIN rooms r ON r.room_id = b.room_id
-		LEFT JOIN units u ON u.unit_id = r.unit_id
-		LEFT JOIN branches br ON br.branch_id = u.branch_id
-		LEFT JOIN buildings bld ON bld.building_id = br.building_id
-		LEFT JOIN residents res ON res.bed_id = b.bed_id AND res.tenant_id = d.tenant_id
-		WHERE d.device_id = $1 AND d.tenant_id = $2
+		LEFT JOIN rooms r ON r.room_id = d.bound_room_id AND r.tenant_id = d.tenant_id
+		LEFT JOIN units u ON u.unit_id = r.unit_id AND u.tenant_id = d.tenant_id
+		LEFT JOIN branches br ON br.branch_id = u.branch_id AND br.tenant_id = d.tenant_id
+		LEFT JOIN buildings bld ON bld.building_id = u.building_id AND bld.tenant_id = d.tenant_id
+		WHERE d.device_id = $1::uuid AND d.tenant_id = $2::uuid
 		LIMIT 1
 	`, deviceID, tenantID)
 	var meta string
