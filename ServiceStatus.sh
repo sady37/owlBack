@@ -12,7 +12,7 @@ check_port() {
     local name=$2
     local pid=""
     if command -v lsof &>/dev/null; then
-        pid=$(lsof -ti :$port 2>/dev/null | head -1)
+        pid=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -1)
     fi
     if [ -n "$pid" ]; then
         echo -e "  ${GREEN}[UP]${NC}   $name  port:$port  pid:$pid"

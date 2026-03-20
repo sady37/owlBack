@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 统一启动脚本：启动所有后台服务
-# 输出日志到统一文件，并显示在终端
+# 日志写入 owl/log 各文件；不用 | tee（否则 $! 是 tee，ps -p 与健康检查会误判）
 #
 # 架构说明：
 # - wisefido-data: 数据管理 API + 卡片创建/更新（Redis 缓存 + config.card.*）
@@ -23,9 +23,13 @@ NC='\033[0m' # No Color
 # 脚本所在目录（先定义，供 check_running_services 里 stop-owlback.sh 使用）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OWL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-# 日志统一放到 owl/log/
+# 默认 owl 根目录下 log/；Alitest 可 export LOG_DIR=/home/wisefido/owl/log
 LOG_DIR="${LOG_DIR:-$OWL_ROOT/log}"
 mkdir -p "$LOG_DIR"
+
+tcp_listen() {
+    command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$1" -sTCP:LISTEN -t >/dev/null 2>&1
+}
 
 # 日志文件
 DATA_LOG="$LOG_DIR/wisefido-data.log"
@@ -52,9 +56,9 @@ check_running_services() {
     local any_running=false
     local running_names=()
 
-    if lsof -ti :8080 >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-data(:8080)"); fi
-    if lsof -ti :8081 >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-qinglan(:8081)"); fi
-    if lsof -ti :8083 >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-sleepace(:8083)"); fi
+    if tcp_listen 8080; then any_running=true; running_names+=("wisefido-data(:8080)"); fi
+    if tcp_listen 8081; then any_running=true; running_names+=("wisefido-qinglan(:8081)"); fi
+    if tcp_listen 8083; then any_running=true; running_names+=("wisefido-sleepace(:8083)"); fi
     if pgrep -f "wisefido-cardagg" >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-cardagg"); fi
     if pgrep -f "wisefido-ai" >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-ai"); fi
 
@@ -94,7 +98,7 @@ check_port() {
         return 0
     fi
     
-    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+    if lsof -nP -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1; then
         echo -e "${YELLOW}Warning: Port $port is already in use${NC}"
         echo "  This may prevent $service_name from starting"
         echo "  To find the process using port $port, run:"
@@ -217,27 +221,6 @@ if [ "$1" == "--clean" ]; then
     rm -f "$DATA_LOG" "$AGGREGATOR_LOG" "$QINGLAN_LOG" "$SLEEPACE_LOG" "$IOT_LOG" "$AI_LOG" "$COMBINED_LOG"
 fi
 
-# 函数：清理后台进程
-cleanup() {
-    echo ""
-    echo -e "${YELLOW}Shutting down services...${NC}"
-    pkill -f "go run.*wisefido-data" || true
-    pkill -f "go run.*wisefido-cardagg" || true
-    pkill -f "go run.*wisefido-sleepace" || true
-    pkill -f "go run.*wisefido-iot" || true
-    pkill -f "go run.*wisefido-ai" || true
-    pkill -f "wisefido-data" || true
-    pkill -f "wisefido-cardagg" || true
-    pkill -f "wisefido-sleepace" || true
-    pkill -f "wisefido-iot-timeseries" || true
-    pkill -f "wisefido-ai" || true
-    echo -e "${GREEN}Services stopped${NC}"
-    exit 0
-}
-
-# 捕获退出信号
-trap cleanup SIGINT SIGTERM
-
 # 获取脚本所在目录（owlBack 根目录）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OWLBACK_DIR="$SCRIPT_DIR"
@@ -265,6 +248,9 @@ if [ ! -d "$OWLBACK_DIR/wisefido-sleepace" ]; then
     SLEEPACE_DIR_MISSING=true
 fi
 
+EXPECTED_SERVICES=6
+[ "$SLEEPACE_DIR_MISSING" = true ] && EXPECTED_SERVICES=5
+
 # 启动 wisefido-data 服务
 # 功能：数据管理 API + 卡片创建/更新（直接同步调用 CardCreator）
 echo -e "${GREEN}[1/6] Starting wisefido-data service...${NC}"
@@ -273,11 +259,11 @@ cd "$OWLBACK_DIR/wisefido-data"
 # 设置环境变量，包括Qinglan服务地址
 export HTTP_ADDR="${HTTP_ADDR:-:8080}"
 export QINGLAN_API_BASE_URL="${QINGLAN_API_BASE_URL:-http://localhost:8081}"
-# 直接输出到终端，同时使用 tee 写入日志文件
-go run cmd/wisefido-data/main.go 2>&1 | tee "$DATA_LOG" &
+: >"$DATA_LOG"
+go run cmd/wisefido-data/main.go >>"$DATA_LOG" 2>&1 &
 DATA_PID=$!
 echo "  PID: $DATA_PID"
-echo "  Log: $DATA_LOG (also displayed in terminal)"
+echo "  Log: $DATA_LOG  (tail -f \"$DATA_LOG\")"
 
 # 等待一下确保服务启动
 sleep 2
@@ -289,11 +275,11 @@ echo -e "${GREEN}[2/6] Starting wisefido-cardagg service...${NC}"
 echo -e "${BLUE}  Function: Data aggregation (PostgreSQL + Redis → full card cache)${NC}"
 echo -e "${YELLOW}  Note: Card creation/update is now handled by wisefido-data${NC}"
 cd "$OWLBACK_DIR/wisefido-cardagg"
-# 直接输出到终端，同时使用 tee 写入日志文件
-go run main.go 2>&1 | tee "$AGGREGATOR_LOG" &
+: >"$AGGREGATOR_LOG"
+go run main.go >>"$AGGREGATOR_LOG" 2>&1 &
 AGGREGATOR_PID=$!
 echo "  PID: $AGGREGATOR_PID"
-echo "  Log: $AGGREGATOR_LOG (also displayed in terminal)"
+echo "  Log: $AGGREGATOR_LOG  (tail -f \"$AGGREGATOR_LOG\")"
 
 # 等待一下确保服务启动
 sleep 2
@@ -310,11 +296,11 @@ export QINGLAN_HTTPS_PORT="${QINGLAN_HTTPS_PORT:-8443}"
 # .env 中 RADAR_HTTPS_* 会传给 qinglan 作为 QINGLAN_HTTPS_*（未设则用 qinglan 默认 owl-common 证书）
 export QINGLAN_HTTPS_CERT_FILE="${QINGLAN_HTTPS_CERT_FILE:-$RADAR_HTTPS_CERT_FILE}"
 export QINGLAN_HTTPS_KEY_FILE="${QINGLAN_HTTPS_KEY_FILE:-$RADAR_HTTPS_KEY_FILE}"
-# 直接输出到终端，同时使用 tee 写入日志文件
-go run cmd/wisefido-qinglan/main.go 2>&1 | tee "$QINGLAN_LOG" &
+: >"$QINGLAN_LOG"
+go run cmd/wisefido-qinglan/main.go >>"$QINGLAN_LOG" 2>&1 &
 QINGLAN_PID=$!
 echo "  PID: $QINGLAN_PID"
-echo "  Log: $QINGLAN_LOG (also displayed in terminal)"
+echo "  Log: $QINGLAN_LOG  (tail -f \"$QINGLAN_LOG\")"
 
 # 等待一下确保服务启动
 sleep 2
@@ -325,10 +311,11 @@ if [ "$SLEEPACE_DIR_MISSING" != "true" ]; then
   echo -e "${GREEN}[4/6] Starting wisefido-sleepace service...${NC}"
   echo -e "${BLUE}  Function: Sleepad device gateway (MQTT consumer + HTTP proxy)${NC}"
   cd "$OWLBACK_DIR/wisefido-sleepace"
-  MQTT_CLIENT_ID=wisefido-sleepace-2 go run cmd/wisefido-sleepace/main.go -env dev 2>&1 | tee "$SLEEPACE_LOG" &
+  : >"$SLEEPACE_LOG"
+  MQTT_CLIENT_ID=wisefido-sleepace-2 go run cmd/wisefido-sleepace/main.go -env dev >>"$SLEEPACE_LOG" 2>&1 &
   SLEEPACE_PID=$!
   echo "  PID: $SLEEPACE_PID"
-  echo "  Log: $SLEEPACE_LOG (also displayed in terminal)"
+  echo "  Log: $SLEEPACE_LOG  (tail -f \"$SLEEPACE_LOG\")"
 else
   echo -e "${YELLOW}[4/6] Skipping wisefido-sleepace (directory not found)${NC}"
   SLEEPACE_PID=""
@@ -364,11 +351,11 @@ export STREAM_SLEEPACE_ALARM="${STREAM_SLEEPACE_ALARM:-iot:alarm:stream}"
 export STREAM_SLEEPACE_AUTH="${STREAM_SLEEPACE_AUTH:-iot:auth:stream}"
 export CONSUMER_GROUP="${CONSUMER_GROUP:-iot-timeseries-group}"
 export CONSUMER_NAME="${CONSUMER_NAME:-iot-timeseries-1}"
-# 直接输出到终端，同时使用 tee 写入日志文件
-go run cmd/wisefido-iot/main.go 2>&1 | tee "$IOT_LOG" &
+: >"$IOT_LOG"
+go run cmd/wisefido-iot/main.go >>"$IOT_LOG" 2>&1 &
 IOT_PID=$!
 echo "  PID: $IOT_PID"
-echo "  Log: $IOT_LOG (also displayed in terminal)"
+echo "  Log: $IOT_LOG  (tail -f \"$IOT_LOG\")"
 
 # 等待一下确保服务启动
 sleep 2
@@ -380,18 +367,18 @@ echo -e "${BLUE}  Function: AI inference (advanced reasoning, visitor detection,
 cd "$OWLBACK_DIR/wisefido-ai"
 # 设置环境变量（如果未从 .env 加载）
 export REDIS_DB="${REDIS_DB:-0}"
-# 直接输出到终端，同时使用 tee 写入日志文件
-go run cmd/wisefido-ai/main.go 2>&1 | tee "$AI_LOG" &
+: >"$AI_LOG"
+go run cmd/wisefido-ai/main.go >>"$AI_LOG" 2>&1 &
 AI_PID=$!
 echo "  PID: $AI_PID"
-echo "  Log: $AI_LOG (also displayed in terminal)"
+echo "  Log: $AI_LOG  (tail -f \"$AI_LOG\")"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}All backend services are running${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo -e "${BLUE}Monitoring logs (Ctrl+C to stop)...${NC}"
+echo -e "${BLUE}Logs: tail -f \"$DATA_LOG\" …；Ctrl+C 停止所有服务${NC}"
 echo ""
 
 # 等待服务启动
@@ -401,29 +388,29 @@ sleep 3
 cleanup() {
     echo ""
     echo -e "${YELLOW}Cleaning up services...${NC}"
-    if [ -n "$DATA_PID" ] && ps -p $DATA_PID > /dev/null 2>&1; then
+    if [ -n "$DATA_PID" ] && ps -p "$DATA_PID" > /dev/null 2>&1; then
         echo "  Stopping wisefido-data (PID: $DATA_PID)"
-        kill $DATA_PID 2>/dev/null || true
+        kill "$DATA_PID" 2>/dev/null || true
     fi
-    if [ -n "$AGGREGATOR_PID" ] && ps -p $AGGREGATOR_PID > /dev/null 2>&1; then
+    if [ -n "$AGGREGATOR_PID" ] && ps -p "$AGGREGATOR_PID" > /dev/null 2>&1; then
         echo "  Stopping wisefido-cardagg (PID: $AGGREGATOR_PID)"
-        kill $AGGREGATOR_PID 2>/dev/null || true
+        kill "$AGGREGATOR_PID" 2>/dev/null || true
     fi
-    if [ -n "$QINGLAN_PID" ] && ps -p $QINGLAN_PID > /dev/null 2>&1; then
+    if [ -n "$QINGLAN_PID" ] && ps -p "$QINGLAN_PID" > /dev/null 2>&1; then
         echo "  Stopping wisefido-qinglan (PID: $QINGLAN_PID)"
-        kill $QINGLAN_PID 2>/dev/null || true
+        kill "$QINGLAN_PID" 2>/dev/null || true
     fi
-    if [ -n "$SLEEPACE_PID" ] && ps -p $SLEEPACE_PID > /dev/null 2>&1; then
+    if [ -n "$SLEEPACE_PID" ] && ps -p "$SLEEPACE_PID" > /dev/null 2>&1; then
         echo "  Stopping wisefido-sleepace (PID: $SLEEPACE_PID)"
-        kill $SLEEPACE_PID 2>/dev/null || true
+        kill "$SLEEPACE_PID" 2>/dev/null || true
     fi
-    if [ -n "$IOT_PID" ] && ps -p $IOT_PID > /dev/null 2>&1; then
+    if [ -n "$IOT_PID" ] && ps -p "$IOT_PID" > /dev/null 2>&1; then
         echo "  Stopping wisefido-iot (PID: $IOT_PID)"
-        kill $IOT_PID 2>/dev/null || true
+        kill "$IOT_PID" 2>/dev/null || true
     fi
-    if [ -n "$AI_PID" ] && ps -p $AI_PID > /dev/null 2>&1; then
+    if [ -n "$AI_PID" ] && ps -p "$AI_PID" > /dev/null 2>&1; then
         echo "  Stopping wisefido-ai (PID: $AI_PID)"
-        kill $AI_PID 2>/dev/null || true
+        kill "$AI_PID" 2>/dev/null || true
     fi
     # 等待进程退出
     sleep 2
@@ -448,42 +435,58 @@ SLEEPACE_FAILED=false
 IOT_FAILED=false
 AI_FAILED=false
 
-if ! ps -p $DATA_PID > /dev/null 2>&1; then
+if ps -p "$DATA_PID" >/dev/null 2>&1 || tcp_listen 8080; then
+    DATA_FAILED=false
+else
     echo -e "${RED}Error: wisefido-data service failed to start${NC}"
     echo "Check log: $DATA_LOG"
     tail -20 "$DATA_LOG"
     DATA_FAILED=true
 fi
 
-if ! ps -p $AGGREGATOR_PID > /dev/null 2>&1; then
+if ps -p "$AGGREGATOR_PID" >/dev/null 2>&1 || pgrep -f "wisefido-cardagg" >/dev/null 2>&1; then
+    AGGREGATOR_FAILED=false
+else
     echo -e "${RED}Error: wisefido-cardagg service failed to start${NC}"
     echo "Check log: $AGGREGATOR_LOG"
     tail -20 "$AGGREGATOR_LOG"
     AGGREGATOR_FAILED=true
 fi
 
-if ! ps -p $QINGLAN_PID > /dev/null 2>&1; then
+if ps -p "$QINGLAN_PID" >/dev/null 2>&1 || tcp_listen 8081; then
+    QINGLAN_FAILED=false
+else
     echo -e "${RED}Error: wisefido-qinglan service failed to start${NC}"
     echo "Check log: $QINGLAN_LOG"
     tail -20 "$QINGLAN_LOG"
     QINGLAN_FAILED=true
 fi
 
-if [ -n "$SLEEPACE_PID" ] && ! ps -p $SLEEPACE_PID > /dev/null 2>&1; then
-    echo -e "${RED}Error: wisefido-sleepace service failed to start${NC}"
-    echo "Check log: $SLEEPACE_LOG"
-    tail -20 "$SLEEPACE_LOG"
-    SLEEPACE_FAILED=true
+if [ -n "$SLEEPACE_PID" ]; then
+    if ps -p "$SLEEPACE_PID" >/dev/null 2>&1 || tcp_listen 8083; then
+        SLEEPACE_FAILED=false
+    else
+        echo -e "${RED}Error: wisefido-sleepace service failed to start${NC}"
+        echo "Check log: $SLEEPACE_LOG"
+        tail -20 "$SLEEPACE_LOG"
+        SLEEPACE_FAILED=true
+    fi
+else
+    SLEEPACE_FAILED=false
 fi
 
-if ! ps -p $IOT_PID > /dev/null 2>&1; then
+if ps -p "$IOT_PID" >/dev/null 2>&1 || tcp_listen 8085; then
+    IOT_FAILED=false
+else
     echo -e "${RED}Error: wisefido-iot service failed to start${NC}"
     echo "Check log: $IOT_LOG"
     tail -20 "$IOT_LOG"
     IOT_FAILED=true
 fi
 
-if ! ps -p $AI_PID > /dev/null 2>&1; then
+if ps -p "$AI_PID" >/dev/null 2>&1 || pgrep -f "wisefido-ai" >/dev/null 2>&1; then
+    AI_FAILED=false
+else
     echo -e "${RED}Error: wisefido-ai service failed to start${NC}"
     echo "Check log: $AI_LOG"
     tail -20 "$AI_LOG"
@@ -500,7 +503,7 @@ FAILED_COUNT=0
 [ "$AI_FAILED" = true ] && FAILED_COUNT=$((FAILED_COUNT + 1))
 
 # 如果所有服务都失败，退出
-if [ $FAILED_COUNT -eq 6 ]; then
+if [ "$FAILED_COUNT" -eq "$EXPECTED_SERVICES" ]; then
     echo -e "${RED}All services failed to start. Exiting.${NC}"
     exit 1
 fi
@@ -544,7 +547,7 @@ fi
 
 echo -e "${GREEN}Services started successfully!${NC}"
 echo ""
-echo -e "${BLUE}Logs are being displayed in this terminal and saved to:${NC}"
+echo -e "${BLUE}日志已写入下列文件（非终端回显），请 tail -f：${NC}"
 echo "  - $DATA_LOG"
 echo "  - $AGGREGATOR_LOG"
 echo "  - $QINGLAN_LOG"
@@ -556,10 +559,7 @@ echo ""
 echo -e "${YELLOW}Press Ctrl+C to stop all services${NC}"
 echo ""
 
-# 等待进程（这样 Ctrl+C 可以正确捕获并停止服务）
-# 只等待成功启动的进程
-# 注意：由于使用了管道和 tee，$! 可能捕获的是 tee 进程的 PID
-# 所以这里使用 pgrep 来查找实际的进程，而不是直接使用 $PID
+# 等待后台 go run 子进程（$! 即为 go）
 WAIT_PIDS=""
 [ "$DATA_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $DATA_PID"
 [ "$AGGREGATOR_FAILED" = false ] && WAIT_PIDS="$WAIT_PIDS $AGGREGATOR_PID"
