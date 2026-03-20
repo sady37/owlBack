@@ -22,8 +22,9 @@ NC='\033[0m' # No Color
 
 # 脚本所在目录（先定义，供 check_running_services 里 stop-owlback.sh 使用）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# 日志目录
-LOG_DIR="${LOG_DIR:-/tmp/owlBack_logs}"
+OWL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# 日志统一放到 owl/log/
+LOG_DIR="${LOG_DIR:-$OWL_ROOT/log}"
 mkdir -p "$LOG_DIR"
 
 # 日志文件
@@ -205,7 +206,7 @@ echo -e "${BLUE}Starting dependency services (PostgreSQL, Redis, MQTT)...${NC}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -f "${SCRIPT_DIR}/docker-compose.yml" ]; then
     cd "$SCRIPT_DIR"
-    docker-compose up -d postgresql redis mqtt sleepace-mysql sleepace-service 2>&1 | grep -v "is up-to-date" || true
+    docker-compose up -d postgresql redis mqtt sleepace-mysql 2>&1 | grep -v "is up-to-date" || true
     echo -e "${GREEN}Dependency services started${NC}"
     echo ""
 fi

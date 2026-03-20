@@ -233,37 +233,38 @@ func (c *SleepaceGatewayClient) UpdateAlarmConfig(ctx context.Context, sleepaceD
 }
 
 // SetRealtimeInterval pushes realtime data interval via wisefido-sleepace proxy.
-func (c *SleepaceGatewayClient) SetRealtimeInterval(ctx context.Context, deviceCode string, interval int) error {
+// userId = wisefido devices.device_id (UUID), deviceId = device_store.device_code.
+func (c *SleepaceGatewayClient) SetRealtimeInterval(ctx context.Context, deviceID, deviceCode string, interval int) error {
 	return c.postProxy(ctx, "/sleepace/device/updateconfig", map[string]interface{}{
-		"userId": deviceCode, "deviceId": deviceCode, "leftRight": 0, "interval": interval,
+		"userId": deviceID, "deviceId": deviceCode, "leftRight": 0, "interval": interval,
 	})
 }
 
 // SetLeaveSensibility pushes leave-bed sensitivity via wisefido-sleepace proxy.
-func (c *SleepaceGatewayClient) SetLeaveSensibility(ctx context.Context, deviceCode string, mode int) error {
+func (c *SleepaceGatewayClient) SetLeaveSensibility(ctx context.Context, deviceID, deviceCode string, mode int) error {
 	return c.postProxy(ctx, "/sleepace/device/updateAlgMode", map[string]interface{}{
-		"userId": deviceCode, "deviceId": deviceCode, "leftRight": 0, "mode": mode,
+		"userId": deviceID, "deviceId": deviceCode, "leftRight": 0, "mode": mode,
 	})
 }
 
 // SetBedParameters pushes mattress thickness/material via wisefido-sleepace proxy.
-func (c *SleepaceGatewayClient) SetBedParameters(ctx context.Context, deviceCode string, thickness, material int) error {
+func (c *SleepaceGatewayClient) SetBedParameters(ctx context.Context, deviceID, deviceCode string, thickness, material int) error {
 	return c.postProxy(ctx, "/sleepace/updateSetting", map[string]interface{}{
-		"deviceId": deviceCode, "leftRight": 0, "thickness": thickness, "material": material,
+		"userId": deviceID, "deviceId": deviceCode, "leftRight": 0, "thickness": thickness, "material": material,
 	})
 }
 
 // SetReportUploadType pushes report upload type via wisefido-sleepace proxy.
-func (c *SleepaceGatewayClient) SetReportUploadType(ctx context.Context, deviceCode string, uploadType int) error {
+func (c *SleepaceGatewayClient) SetReportUploadType(ctx context.Context, deviceID, deviceCode string, uploadType int) error {
 	return c.postProxy(ctx, "/sleepace/reportUploadType/set", map[string]interface{}{
-		"deviceId": deviceCode, "reportUploadType": uploadType,
+		"userId": deviceID, "deviceId": deviceCode, "reportUploadType": uploadType,
 	})
 }
 
 // SetReportUploadTime pushes report upload time via wisefido-sleepace proxy.
-func (c *SleepaceGatewayClient) SetReportUploadTime(ctx context.Context, deviceCode string, uploadTime int) error {
+func (c *SleepaceGatewayClient) SetReportUploadTime(ctx context.Context, deviceID, deviceCode string, uploadTime int) error {
 	return c.postProxy(ctx, "/sleepace/setReportUploadTime", map[string]interface{}{
-		"deviceId": deviceCode, "leftRight": 0, "reportUploadTime": uploadTime,
+		"userId": deviceID, "deviceId": deviceCode, "leftRight": 0, "reportUploadTime": uploadTime,
 	})
 }
 
@@ -306,9 +307,9 @@ func (c *SleepaceGatewayClient) postProxy(ctx context.Context, sleepacePath stri
 }
 
 // GetDeviceConfig 查询设备配置（语雀 getconfig），返回 realtimeDataInterval(秒)。用于加载时回填设备当前值。
-func (c *SleepaceGatewayClient) GetDeviceConfig(ctx context.Context, deviceCode string) (realtimeDataInterval int, err error) {
+func (c *SleepaceGatewayClient) GetDeviceConfig(ctx context.Context, deviceID, deviceCode string) (realtimeDataInterval int, err error) {
 	proxyURL := fmt.Sprintf("%s/api/v1/proxy/sleepace/device/getconfig", c.apiBaseURL)
-	payload := map[string]interface{}{"userId": deviceCode, "deviceId": deviceCode, "leftRight": 0}
+	payload := map[string]interface{}{"userId": deviceID, "deviceId": deviceCode, "leftRight": 0}
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return 0, fmt.Errorf("marshal getconfig: %w", err)
@@ -347,11 +348,11 @@ func (c *SleepaceGatewayClient) GetDeviceConfig(ctx context.Context, deviceCode 
 }
 
 // GetAlarmConfig queries current alarm config from sleepad hardware via proxy.
-// userId 用 device_id (UUID)，厂家合作方用户唯一标识可为任意字符串。
-func (c *SleepaceGatewayClient) GetAlarmConfig(ctx context.Context, deviceID string) (map[string]interface{}, error) {
+// userId = wisefido devices.device_id, deviceId = device_store.device_code.
+func (c *SleepaceGatewayClient) GetAlarmConfig(ctx context.Context, deviceID, deviceCode string) (map[string]interface{}, error) {
 	proxyURL := fmt.Sprintf("%s/api/v1/proxy/sleepace/getalarmnotifyconfig", c.apiBaseURL)
 
-	payload := map[string]interface{}{"userId": deviceID}
+	payload := map[string]interface{}{"userId": deviceID, "deviceId": deviceCode}
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)

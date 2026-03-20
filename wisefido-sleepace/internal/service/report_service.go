@@ -23,7 +23,8 @@ func NewReportService(db *sql.DB, api *SleepaceAPI, card *CardMappingService, lo
 }
 
 // DownloadAndSave fetches the report from sleepace-service and upserts into sleepace_report.
-// mqttDeviceID is the MQTT deviceId (= device_store.device_code, e.g. "1ua3erivl9pv1").
+// mqttDeviceID is the MQTT deviceId (= device_store.device_code).
+// userID is wisefido devices.device_id (UUID)，作为 Sleepace API 的 userId。
 func (s *ReportService) DownloadAndSave(ctx context.Context, mqttDeviceID, userID string, startTime, endTime int64) error {
 	reports, err := s.api.GetDailyReport(userID, startTime, endTime)
 	if err != nil {

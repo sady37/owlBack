@@ -218,7 +218,7 @@ func UpdateSleepaceSettingsToHardware(ctx context.Context, client *SleepaceClien
 }
 
 // ConvertFlatSettingsToSleepaceFormat converts flat snake_case settings to sleepad hardware API format.
-// userId 用 device_id (UUID)，厂家接受合作方用户唯一标识为任意字符串；deviceId 用 device_code。
+// userId = wisefido devices.device_id (UUID)，deviceId = device_store.device_code。
 func ConvertFlatSettingsToSleepaceFormat(deviceCode, deviceID string, settings map[string]interface{}) map[string]interface{} {
 	hardwareSettings := make(map[string]interface{})
 
@@ -530,7 +530,7 @@ var alarmTypeParamMapping = map[string]map[string]string{
 }
 
 // ConvertAlarmItemsToSleepaceConfig converts AlarmItem[] to sleepad cloud API format.
-// userId 用 device_id (UUID)，deviceId 用 device_code。
+// userId = wisefido devices.device_id，deviceId = device_store.device_code。
 // resetTime 为租户作息（alarm_cloud.metadata），非 nil 且存在 LeftBed 时写入 left_bed_start/end 下发设备。
 func ConvertAlarmItemsToSleepaceConfig(deviceCode, deviceID string, alarmItems []alarm.AlarmItem, resetTime *alarm.ResetTimeParams) map[string]interface{} {
 	flat := make(map[string]interface{})

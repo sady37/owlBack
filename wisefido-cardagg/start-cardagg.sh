@@ -49,7 +49,8 @@ echo -e "${GREEN}🚀 Starting wisefido-cardagg service...${NC}"
 echo ""
 
 # 日志目录（与 start_owlback.sh 统一）
-LOG_DIR="${LOG_DIR:-/tmp/owlBack_logs}"
+OWL_LOG="$(cd "$(dirname "${BASH_SOURCE[0]:-$0})/../.." && pwd)/log"
+LOG_DIR="${LOG_DIR:-$OWL_LOG}"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${CARDAGG_LOG_FILE:-$LOG_DIR/wisefido-cardagg.log}"
 

@@ -135,10 +135,10 @@ func (a *SleepaceAPI) SetLeaveSensibility(deviceCode, userID string, mode int) e
 	return nil
 }
 
-func (a *SleepaceAPI) SetReportUploadType(deviceCode string, uploadType int) error {
+func (a *SleepaceAPI) SetReportUploadType(deviceCode, userID string, uploadType int) error {
 	req := SleepaceRequest{
 		Token: a.token,
-		Data:  map[string]any{"deviceId": deviceCode, "reportUploadType": uploadType},
+		Data:  map[string]any{"userId": userID, "deviceId": deviceCode, "reportUploadType": uploadType},
 	}
 	resp := SleepaceResponse{}
 	a.client.R().SetBody(req).SetResult(&resp).Post("/sleepace/reportUploadType/set")
@@ -148,10 +148,10 @@ func (a *SleepaceAPI) SetReportUploadType(deviceCode string, uploadType int) err
 	return nil
 }
 
-func (a *SleepaceAPI) SetReportUploadTime(deviceCode string, uploadTime int) error {
+func (a *SleepaceAPI) SetReportUploadTime(deviceCode, userID string, uploadTime int) error {
 	req := SleepaceRequest{
 		Token: a.token,
-		Data:  map[string]any{"deviceId": deviceCode, "leftRight": 0, "reportUploadTime": uploadTime},
+		Data:  map[string]any{"userId": userID, "deviceId": deviceCode, "leftRight": 0, "reportUploadTime": uploadTime},
 	}
 	resp := SleepaceResponse{}
 	a.client.R().SetBody(req).SetResult(&resp).Post("/sleepace/setReportUploadTime")
@@ -180,8 +180,8 @@ func (a *SleepaceAPI) GetDailyReport(userID string, startTime, endTime int64) ([
 	return data, nil
 }
 
-func (a *SleepaceAPI) GetAlarmConfig(userID string) (json.RawMessage, error) {
-	req := SleepaceRequest{Token: a.token, Data: map[string]any{"userId": userID}}
+func (a *SleepaceAPI) GetAlarmConfig(userID, deviceCode string) (json.RawMessage, error) {
+	req := SleepaceRequest{Token: a.token, Data: map[string]any{"userId": userID, "deviceId": deviceCode}}
 	resp := SleepaceResponse{}
 	a.client.R().SetBody(req).SetResult(&resp).Post("/sleepace/getalarmnotifyconfig")
 	if resp.Status != 0 {
@@ -203,11 +203,11 @@ func (a *SleepaceAPI) UpdateAlarmConfig(data interface{}) error {
 	return nil
 }
 
-func (a *SleepaceAPI) SetBedParameters(deviceCode string, thickness, material int) error {
+func (a *SleepaceAPI) SetBedParameters(deviceCode, userID string, thickness, material int) error {
 	req := SleepaceRequest{
 		Token: a.token,
 		Data: map[string]any{
-			"deviceId": deviceCode, "leftRight": 0, "thickness": thickness, "material": material,
+			"userId": userID, "deviceId": deviceCode, "leftRight": 0, "thickness": thickness, "material": material,
 		},
 	}
 	resp := SleepaceResponse{}
@@ -311,11 +311,11 @@ func (a *SleepaceAPI) InitializeDeviceByCode(deviceCode, userID string, timezone
 	if err := a.SetLeaveSensibility(deviceCode, userID, a.cfg.LeaveSensibility); err != nil {
 		return deviceCode, err
 	}
-	if err := a.SetReportUploadType(deviceCode, a.cfg.ReportUploadType); err != nil {
+	if err := a.SetReportUploadType(deviceCode, userID, a.cfg.ReportUploadType); err != nil {
 		return deviceCode, err
 	}
 	if a.cfg.ReportUploadType == 0 {
-		if err := a.SetReportUploadTime(deviceCode, a.cfg.ReportUploadTime); err != nil {
+		if err := a.SetReportUploadTime(deviceCode, userID, a.cfg.ReportUploadTime); err != nil {
 			return deviceCode, err
 		}
 	}

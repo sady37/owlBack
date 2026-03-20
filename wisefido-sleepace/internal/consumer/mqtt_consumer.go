@@ -592,12 +592,12 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			msg := redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, nowMs, "event", "analysis", out)
 			c.publisher.PublishEvent(ctx, msg)
 		}
-		if c.reportService != nil {
-			go func() {
-				if err := c.reportService.DownloadAndSave(ctx, deviceCode, d.UserId, d.StartTime+1, m.TimeStamp); err != nil {
-					c.logger.Error("download report failed", zap.String("device_code", deviceCode), zap.Error(err))
+		if c.reportService != nil && deviceID != "" {
+			go func(dc, uid string, st, et int64) {
+				if err := c.reportService.DownloadAndSave(ctx, dc, uid, st, et); err != nil {
+					c.logger.Error("download report failed", zap.String("device_code", dc), zap.Error(err))
 				}
-			}()
+			}(deviceCode, deviceID, d.StartTime+1, m.TimeStamp)
 		}
 
 	case "upgradeProgress":
