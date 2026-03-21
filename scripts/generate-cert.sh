@@ -7,7 +7,7 @@
 set -e
 
 # 解析脚本所在目录（支持 bash scripts/generate-cert.sh 或 ./scripts/generate-cert.sh）
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0})" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 OWL_COMMON_DIR="$SCRIPT_DIR/../owl-common"
 [ -d "$OWL_COMMON_DIR" ] || mkdir -p "$OWL_COMMON_DIR"
 OWL_COMMON_DIR="$(cd "$OWL_COMMON_DIR" && pwd)"
