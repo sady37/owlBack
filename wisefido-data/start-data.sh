@@ -10,6 +10,16 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+kill_tree_sd() {
+    local pid="$1"
+    [ -z "$pid" ] && return
+    local c
+    for c in $(pgrep -P "$pid" 2>/dev/null || true); do
+        kill_tree_sd "$c"
+    done
+    kill -9 "$pid" 2>/dev/null || true
+}
+
 check_port() {
     local port=$1
     local service_name=$2
@@ -19,18 +29,21 @@ check_port() {
         return 0
     fi
     
-    if lsof -i :$port > /dev/null 2>&1; then
-        echo -e "${YELLOW}⚠️  Port $port ($service_name) is already in use${NC}"
-        local pids=$(lsof -ti :$port)
+    local pids
+    pids=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)
+    if [ -n "$pids" ]; then
+        echo -e "${YELLOW}⚠️  Port $port ($service_name) has LISTEN — killing PID tree: $pids${NC}"
+        for pid in $pids; do
+            kill_tree_sd "$pid"
+        done
+        sleep 1
+        pids=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)
         if [ -n "$pids" ]; then
-            echo -e "${YELLOW}Killing processes on port $port...${NC}"
-            for pid in $pids; do
-                kill -9 $pid 2>/dev/null
-            done
-            sleep 1
+            echo -e "${RED}❌ Port $port still LISTEN after kill: $pids${NC}"
+            exit 1
         fi
     else
-        echo -e "${GREEN}✅ Port $port ($service_name) is available${NC}"
+        echo -e "${GREEN}✅ Port $port ($service_name) is free (LISTEN)${NC}"
     fi
 }
 

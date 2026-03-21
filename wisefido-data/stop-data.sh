@@ -10,6 +10,16 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+kill_tree_data() {
+    local p="$1"
+    [ -z "$p" ] && return
+    local ch
+    for ch in $(pgrep -P "$p" 2>/dev/null || true); do
+        kill_tree_data "$ch"
+    done
+    kill -9 "$p" 2>/dev/null || true
+}
+
 echo "🔍 Looking for wisefido-data processes..."
 
 # 收集所有相关进程 PID（包括父进程和子进程）
@@ -55,7 +65,7 @@ if command -v lsof &> /dev/null; then
     fi
     
     # 仅 LISTEN，避免把连到 8080 的客户端（浏览器/Cursor）当成占用端口
-    PORT_PIDS=$(lsof -nP -tiTCP:$HTTP_PORT -sTCP:LISTEN 2>/dev/null || true)
+    PORT_PIDS=$(lsof -nP -iTCP:"$HTTP_PORT" -sTCP:LISTEN -t 2>/dev/null || true)
     if [ -n "$PORT_PIDS" ]; then
         for pid in $PORT_PIDS; do
             if [ -n "$pid" ]; then
@@ -111,8 +121,8 @@ else
         echo -e "${YELLOW}  Force killing remaining processes...${NC}"
         for pid in "${REMAINING[@]}"; do
             if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                echo -e "${RED}    Killing process $pid (KILL)...${NC}"
-                kill -9 "$pid" 2>/dev/null || true
+                echo -e "${RED}    Killing process tree $pid (KILL)...${NC}"
+                kill_tree_data "$pid"
             fi
         done
         sleep 1
@@ -136,22 +146,15 @@ if command -v lsof &> /dev/null; then
         HTTP_PORT="8080"
     fi
     
-    PORT_PIDS=$(lsof -nP -tiTCP:$HTTP_PORT -sTCP:LISTEN 2>/dev/null || true)
+    PORT_PIDS=$(lsof -nP -iTCP:"$HTTP_PORT" -sTCP:LISTEN -t 2>/dev/null || true)
     if [ -n "$PORT_PIDS" ]; then
         for pid in $PORT_PIDS; do
             if [ -n "$pid" ]; then
                 # 检查进程的工作目录是否是 wisefido-data
                 CWD=$(lsof -p "$pid" 2>/dev/null | grep cwd | awk '{print $NF}' || true)
                 if echo "$CWD" | grep -q "wisefido-data"; then
-                    echo -e "${YELLOW}  Force killing process $pid on port $HTTP_PORT...${NC}"
-                    kill -9 "$pid" 2>/dev/null || true
-                    # 也杀死子进程
-                    CHILD_PIDS=$(pgrep -P "$pid" 2>/dev/null || true)
-                    for child_pid in $CHILD_PIDS; do
-                        if [ -n "$child_pid" ]; then
-                            kill -9 "$child_pid" 2>/dev/null || true
-                        fi
-                    done
+                    echo -e "${YELLOW}  Force killing LISTEN tree on port $HTTP_PORT (pid $pid)...${NC}"
+                    kill_tree_data "$pid"
                 fi
             fi
         done
@@ -179,9 +182,9 @@ else
 fi
 echo "  Port $HTTP_PORT (HTTP):"
 if command -v lsof &> /dev/null; then
-    if lsof -nP -iTCP:$HTTP_PORT -sTCP:LISTEN > /dev/null 2>&1; then
+    if lsof -nP -iTCP:"$HTTP_PORT" -sTCP:LISTEN > /dev/null 2>&1; then
         echo -e "    ${RED}❌ Still in use (LISTEN)${NC}"
-        lsof -nP -iTCP:$HTTP_PORT -sTCP:LISTEN
+        lsof -nP -iTCP:"$HTTP_PORT" -sTCP:LISTEN
     else
         echo -e "    ${GREEN}✅ Free${NC}"
     fi

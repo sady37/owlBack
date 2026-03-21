@@ -31,6 +31,48 @@ tcp_listen() {
     command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$1" -sTCP:LISTEN -t >/dev/null 2>&1
 }
 
+# 仅杀 TCP LISTEN 占用者（与 stop-owlback 策略一致）
+START_SHELL_PID=$$
+START_SHELL_PPID=$PPID
+safe_kill_start() {
+    local pid="$1"
+    [ -z "$pid" ] && return
+    [ "$pid" = "$START_SHELL_PID" ] || [ "$pid" = "$START_SHELL_PPID" ] && return
+    kill -9 "$pid" 2>/dev/null || true
+}
+kill_tree_start() {
+    local pid="$1"
+    [ -z "$pid" ] && return
+    local c
+    for c in $(pgrep -P "$pid" 2>/dev/null || true); do
+        kill_tree_start "$c"
+    done
+    safe_kill_start "$pid"
+}
+free_listen_port() {
+    local port=$1
+    local service_name=$2
+    if ! command -v lsof &>/dev/null; then
+        echo -e "${YELLOW}Note: lsof not available, skip freeing port $port ($service_name)${NC}"
+        return 0
+    fi
+    local pids
+    pids=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)
+    if [ -z "$pids" ]; then
+        return 0
+    fi
+    echo -e "${YELLOW}Port $port ($service_name): LISTEN by PID(s) $pids — killing process tree...${NC}"
+    for pid in $pids; do
+        kill_tree_start "$pid"
+    done
+    sleep 1
+    pids=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)
+    if [ -n "$pids" ]; then
+        echo -e "${RED}Error: port $port still LISTEN after kill (PIDs: $pids)${NC}"
+        exit 1
+    fi
+}
+
 # 日志文件
 DATA_LOG="$LOG_DIR/wisefido-data.log"
 AGGREGATOR_LOG="$LOG_DIR/wisefido-cardagg.log"
@@ -87,38 +129,12 @@ check_running_services() {
 # 检查是否有服务正在运行
 check_running_services
 
-# 检查端口占用（可选，如果 lsof 不可用则跳过）
-check_port() {
-    local port=$1
-    local service_name=$2
-    
-    # 检查 lsof 是否可用
-    if ! command -v lsof &> /dev/null; then
-        echo -e "${YELLOW}Note: lsof not available, skipping port check for $service_name${NC}"
-        return 0
-    fi
-    
-    if lsof -nP -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1; then
-        echo -e "${YELLOW}Warning: Port $port is already in use${NC}"
-        echo "  This may prevent $service_name from starting"
-        echo "  To find the process using port $port, run:"
-        echo "    lsof -i :$port"
-        echo ""
-        read -p "Continue anyway? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo -e "${RED}Aborted by user${NC}"
-            exit 1
-        fi
-    fi
-}
-
-# 检查端口
-# 注意：wisefido-cardagg 和 wisefido-ai 不需要端口，它们是纯后台服务
-check_port 8080 "wisefido-data"
-check_port 8081 "wisefido-qinglan"
-check_port 8083 "wisefido-sleepace"
-check_port 8085 "wisefido-iot"
+# 启动前释放 LISTEN 端口（杀死占用进程树，避免僵尸 go run 占口）
+# 注意：wisefido-cardagg / wisefido-ai 无固定 HTTP 口，此处不处理
+free_listen_port 8080 "wisefido-data"
+free_listen_port 8081 "wisefido-qinglan"
+free_listen_port 8083 "wisefido-sleepace"
+free_listen_port 8085 "wisefido-iot"
 
 # 加载统一配置文件
 # 获取脚本所在目录（owlBack 根目录）

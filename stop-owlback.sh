@@ -42,9 +42,9 @@ stop_service() {
     printf "[*] Stopping %s...\n" "$name"
     local -A seen  # 去重
 
-    # 1) 端口找进程
+    # 1) 端口找进程（仅 LISTEN，避免误杀连到该端口的客户端）
     if [ -n "$port" ]; then
-        for pid in $(lsof -ti ":$port" 2>/dev/null || true); do
+        for pid in $(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true); do
             [ -z "$pid" ] && continue
             seen[$pid]=1
         done
@@ -77,10 +77,10 @@ stop_service() {
     done
     sleep 1
 
-    # 验证端口释放
-    if [ -n "$port" ] && lsof -ti ":$port" >/dev/null 2>&1; then
-        printf "  [!] port %s still occupied, force killing...\n" "$port"
-        for pid in $(lsof -ti ":$port" 2>/dev/null || true); do
+    # 验证端口释放（仍只看 LISTEN）
+    if [ -n "$port" ] && lsof -nP -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1; then
+        printf "  [!] port %s still LISTEN, force killing...\n" "$port"
+        for pid in $(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true); do
             safe_kill "$pid"
         done
         sleep 1

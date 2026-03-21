@@ -15,9 +15,9 @@ check_port() {
         pid=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -1)
     fi
     if [ -n "$pid" ]; then
-        echo -e "  ${GREEN}[UP]${NC}   $name  port:$port  pid:$pid"
+        echo -e "  ${GREEN}[UP]${NC}   $name  port:$port  pid:$pid  (LISTEN)"
     else
-        echo -e "  ${RED}[DOWN]${NC} $name  port:$port"
+        echo -e "  ${RED}[DOWN]${NC} $name  port:$port  (no LISTEN)"
     fi
 }
 
@@ -37,6 +37,7 @@ echo "=== OwlBack Services ==="
 check_port 8080 "wisefido-data"
 check_process "wisefido-cardagg" "wisefido-cardagg"
 check_port 8081 "wisefido-qinglan"
+check_port 8083 "wisefido-sleepace"
 check_port 8085 "wisefido-iot"
 check_process "wisefido-ai" "wisefido-ai"
 
