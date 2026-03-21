@@ -32,7 +32,7 @@ func main() {
 	defer db.Close()
 
 	// 读取 SQL 文件
-	sqlFile := filepath.Join("..", "..", "owlRD", "db", "26_sleepace_report.sql")
+	sqlFile := filepath.Join("..", "..", "owlRD", "db", "29_sleepace_report.sql")
 	sqlBytes, err := os.ReadFile(sqlFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to read SQL file: %v\n", err)

@@ -72,7 +72,7 @@ func (s *ReportService) DownloadAndSave(ctx context.Context, deviceID string, st
 
 		metadata := s.buildMetadata(ctx, resolvedDeviceID, tenantID)
 
-		if err := s.upsert(ctx, tenantID, resolvedDeviceID, deviceUID, cardID,
+		if err := s.upsert(ctx, tenantID, resolvedDeviceID, deviceCode, deviceUID, cardID,
 			parsed.Summary.RecordCount, parsed.Summary.StartTime, calculatedEndTime,
 			date, parsed.Summary.StopMode, parsed.Summary.TimeStep, parsed.Summary.Timezone,
 			sleepState, reportJSON, metadata); err != nil {
@@ -152,24 +152,26 @@ func (s *ReportService) buildMetadata(ctx context.Context, deviceID, tenantID st
 }
 
 func (s *ReportService) upsert(ctx context.Context,
-	tenantID, deviceID, deviceUID, cardID string,
+	tenantID, deviceID, deviceCode, deviceUID, cardID string,
 	recordCount int, startTime, endTime int64, date, stopMode, timeStep, timezone int,
 	sleepState, report, metadata string,
 ) error {
 	query := `
 		INSERT INTO sleepace_report (
-			tenant_id, device_id, device_uid, card_id,
+			tenant_id, device_id, device_code, device_uid, card_id,
 			record_count, start_time, end_time, date,
 			stop_mode, time_step, timezone,
 			sleep_state, report, metadata, updated_at
 		) VALUES (
-			NULLIF($1,'')::uuid, NULLIF($2,'')::uuid, $3, NULLIF($4,'')::uuid,
-			$5, $6, $7, $8,
-			$9, $10, $11,
-			$12, $13, $14::jsonb, NOW()
+			NULLIF($1,'')::uuid, NULLIF($2,'')::uuid, $3, $4, NULLIF($5,'')::uuid,
+			$6, $7, $8, $9,
+			$10, $11, $12,
+			$13, $14, $15::jsonb, NOW()
 		)
 		ON CONFLICT ON CONSTRAINT sleepace_report_unique
 		DO UPDATE SET
+			device_code  = EXCLUDED.device_code,
+			device_uid   = EXCLUDED.device_uid,
 			record_count = EXCLUDED.record_count,
 			start_time   = EXCLUDED.start_time,
 			end_time     = EXCLUDED.end_time,
@@ -183,7 +185,7 @@ func (s *ReportService) upsert(ctx context.Context,
 			updated_at   = NOW()
 	`
 	_, err := s.db.ExecContext(ctx, query,
-		tenantID, deviceID, deviceUID, cardID,
+		tenantID, deviceID, deviceCode, deviceUID, cardID,
 		recordCount, startTime, endTime, date,
 		stopMode, timeStep, timezone,
 		sleepState, report, metadata,
