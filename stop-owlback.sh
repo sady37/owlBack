@@ -14,10 +14,10 @@ printf "========================================\n"
 printf "Stopping OwlBack Services\n"
 printf "========================================\n\n"
 
-# 本机谁在 TCP port 上 LISTEN（lsof + ss，去重；go 子进程 cmdline 常无模块名，端口最准）
+# 本机谁在 TCP port 上 LISTEN（lsof + ss + fuser，去重；部分环境 lsof/ss 漏检时用 fuser）
 pids_listen_tcp_port() {
     local port="$1"
-    local p ssout
+    local p ssout fu
     {
         if command -v lsof >/dev/null 2>&1; then
             p=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)
@@ -26,8 +26,13 @@ pids_listen_tcp_port() {
         fi
         if command -v ss >/dev/null 2>&1; then
             ssout=$(ss -lntp "sport = :$port" 2>/dev/null || true)
-            [ -z "$ssout" ] && ssout=$(ss -lntp 2>/dev/null | grep ":$port" || true)
+            [ -z "$ssout" ] && ssout=$(ss -lntp 2>/dev/null | grep -E ":${port}([^0-9]|$)" || true)
             echo "$ssout" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p'
+        fi
+        if command -v fuser >/dev/null 2>&1; then
+            fu=$(fuser "${port}/tcp" 2>&1 || true)
+            # 典型输出 "8080/tcp:            359985 360001"
+            echo "$fu" | sed 's/.*:[[:space:]]*//' | tr -s ' ' '\n' | grep -E '^[0-9]+$'
         fi
     } | sort -u -n
 }
@@ -113,6 +118,27 @@ stop_service "wisefido-qinglan"        "8081" "$LOG_DIR/wisefido-qinglan.log"   
 stop_service "wisefido-sleepace"       "8083" "$LOG_DIR/wisefido-sleepace.log"  "wisefido-sleepace" "cmd/wisefido-sleepace/main.go"
 stop_service "wisefido-iot-timeseries" "8085" "$LOG_DIR/wisefido-iot.log"       "wisefido-iot-timeseries" "wisefido-iot" "cmd/wisefido-iot/main.go"
 stop_service "wisefido-ai"             ""     "$LOG_DIR/wisefido-ai.log"        "wisefido-ai" "cmd/wisefido-ai/main.go"
+
+# 再扫一轮约定端口（避免单服务阶段 lsof 与日志路径不一致导致漏杀）
+printf "\n[*] Sweep LISTEN on 8080 8081 8083 8085...\n"
+for port in 8080 8081 8083 8085; do
+    for pid in $(pids_listen_tcp_port "$port"); do
+        [ -z "$pid" ] && continue
+        printf "  kill_tree pid %s (:%s)\n" "$pid" "$port"
+        kill_tree "$pid"
+    done
+done
+sleep 1
+
+# 最后 fuser 强杀仍占用约定端口的进程（仅 OwlBack 常用口）
+if command -v fuser >/dev/null 2>&1; then
+    for port in 8080 8081 8083 8085; do
+        if fuser "${port}/tcp" >/dev/null 2>&1; then
+            printf "  fuser -k %s/tcp\n" "$port"
+            fuser -k "${port}/tcp" 2>/dev/null || true
+        fi
+    done
+fi
 
 printf "\n========================================\n"
 printf "[✓] Done\n"
