@@ -33,7 +33,8 @@ func (r *PostgresSleepaceReportsRepository) GetReport(ctx context.Context, tenan
 			report_id::text,
 			tenant_id::text,
 			device_id::text,
-			device_code,
+			COALESCE(device_code, '') AS device_code,
+			device_uid,
 			record_count,
 			start_time,
 			end_time,
@@ -57,6 +58,7 @@ func (r *PostgresSleepaceReportsRepository) GetReport(ctx context.Context, tenan
 		&report.TenantID,
 		&report.DeviceID,
 		&report.DeviceCode,
+		&report.DeviceUID,
 		&report.RecordCount,
 		&report.StartTime,
 		&report.EndTime,
@@ -115,7 +117,8 @@ func (r *PostgresSleepaceReportsRepository) ListReports(ctx context.Context, ten
 			report_id::text,
 			tenant_id::text,
 			device_id::text,
-			device_code,
+			COALESCE(device_code, '') AS device_code,
+			device_uid,
 			record_count,
 			start_time,
 			end_time,
@@ -150,6 +153,7 @@ func (r *PostgresSleepaceReportsRepository) ListReports(ctx context.Context, ten
 			&report.TenantID,
 			&report.DeviceID,
 			&report.DeviceCode,
+			&report.DeviceUID,
 			&report.RecordCount,
 			&report.StartTime,
 			&report.EndTime,
@@ -211,14 +215,47 @@ func (r *PostgresSleepaceReportsRepository) GetValidDates(ctx context.Context, t
 	return dates, nil
 }
 
-// GetDeviceIDByDeviceCode 根据 device_code 获取 device_id
-// device_code 等价于 devices.device_uid
-func (r *PostgresSleepaceReportsRepository) GetDeviceIDByDeviceCode(ctx context.Context, tenantID, deviceCode string) (string, error) {
-	if tenantID == "" || deviceCode == "" {
-		return "", fmt.Errorf("tenant_id and device_code are required")
+// GetValidDatesInRange 获取 [startDate,endDate] 内已有报告的日期
+func (r *PostgresSleepaceReportsRepository) GetValidDatesInRange(ctx context.Context, tenantID, deviceID string, startDate, endDate int) ([]int, error) {
+	if tenantID == "" || deviceID == "" || startDate == 0 || endDate == 0 {
+		return nil, fmt.Errorf("tenant_id, device_id, start_date and end_date are required")
+	}
+	if startDate > endDate {
+		return nil, fmt.Errorf("start_date must be <= end_date")
+	}
+	query := `
+		SELECT date
+		FROM sleepace_report
+		WHERE tenant_id = $1::uuid
+		  AND device_id = $2::uuid
+		  AND date >= $3
+		  AND date <= $4
+		ORDER BY date ASC
+	`
+	rows, err := r.db.QueryContext(ctx, query, tenantID, deviceID, startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get valid dates in range: %w", err)
+	}
+	defer rows.Close()
+	dates := make([]int, 0)
+	for rows.Next() {
+		var d int
+		if err := rows.Scan(&d); err != nil {
+			return nil, fmt.Errorf("failed to scan date: %w", err)
+		}
+		dates = append(dates, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate dates: %w", err)
+	}
+	return dates, nil
+}
+
+func (r *PostgresSleepaceReportsRepository) GetDeviceIDByDeviceUID(ctx context.Context, tenantID, deviceUID string) (string, error) {
+	if tenantID == "" || deviceUID == "" {
+		return "", fmt.Errorf("tenant_id and device_uid are required")
 	}
 
-	// 通过 device_uid 匹配 device_code
 	query := `
 		SELECT device_id::text
 		FROM devices
@@ -229,37 +266,34 @@ func (r *PostgresSleepaceReportsRepository) GetDeviceIDByDeviceCode(ctx context.
 	`
 
 	var deviceID string
-	err := r.db.QueryRowContext(ctx, query, tenantID, deviceCode).Scan(&deviceID)
+	err := r.db.QueryRowContext(ctx, query, tenantID, deviceUID).Scan(&deviceID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("device not found: device_code=%s (not found in devices.device_uid)", deviceCode)
+			return "", fmt.Errorf("device not found: device_uid=%s", deviceUID)
 		}
-		return "", fmt.Errorf("failed to get device_id by device_code: %w", err)
+		return "", fmt.Errorf("failed to get device_id by device_uid: %w", err)
 	}
 
 	return deviceID, nil
 }
 
-// SaveReport 保存或更新报告（如果已存在则更新，否则插入）
-// 注意：如果 report.DeviceID 为空，会尝试通过 device_code 匹配 devices 表来获取 device_id
 func (r *PostgresSleepaceReportsRepository) SaveReport(ctx context.Context, tenantID string, report *domain.SleepaceReport) error {
 	if tenantID == "" || report == nil {
 		return fmt.Errorf("tenant_id and report are required")
 	}
 
-	// 如果 device_id 为空，尝试通过 device_code 获取 device_id
 	deviceID := report.DeviceID
-	if deviceID == "" && report.DeviceCode != "" {
+	if deviceID == "" && report.DeviceUID != "" {
 		var err error
-		deviceID, err = r.GetDeviceIDByDeviceCode(ctx, tenantID, report.DeviceCode)
+		deviceID, err = r.GetDeviceIDByDeviceUID(ctx, tenantID, report.DeviceUID)
 		if err != nil {
-			return fmt.Errorf("failed to get device_id from device_code: %w", err)
+			return fmt.Errorf("failed to get device_id from device_uid: %w", err)
 		}
 		report.DeviceID = deviceID
 	}
 
 	if deviceID == "" {
-		return fmt.Errorf("device_id is required (either provide device_id or device_code)")
+		return fmt.Errorf("device_id is required (either provide device_id or device_uid)")
 	}
 
 	// 检查是否已存在
@@ -284,16 +318,17 @@ func (r *PostgresSleepaceReportsRepository) SaveReport(ctx context.Context, tena
 		// 更新
 		updateQuery := `
 			UPDATE sleepace_report
-			SET device_code = $4,
-				record_count = $5,
-				start_time = $6,
-				end_time = $7,
-				stop_mode = $8,
-				time_step = $9,
-				timezone = $10,
-				sleep_state = $11,
-				report = $12,
-				updated_at = $13
+			SET device_uid = $4,
+				device_code = $5,
+				record_count = $6,
+				start_time = $7,
+				end_time = $8,
+				stop_mode = $9,
+				time_step = $10,
+				timezone = $11,
+				sleep_state = $12,
+				report = $13,
+				updated_at = $14
 			WHERE tenant_id = $1::uuid
 			  AND device_id = $2::uuid
 			  AND date = $3
@@ -302,6 +337,7 @@ func (r *PostgresSleepaceReportsRepository) SaveReport(ctx context.Context, tena
 			tenantID,
 			deviceID,
 			report.Date,
+			report.DeviceUID,
 			report.DeviceCode,
 			report.RecordCount,
 			report.StartTime,
@@ -322,6 +358,7 @@ func (r *PostgresSleepaceReportsRepository) SaveReport(ctx context.Context, tena
 			INSERT INTO sleepace_report (
 				tenant_id,
 				device_id,
+				device_uid,
 				device_code,
 				record_count,
 				start_time,
@@ -348,13 +385,15 @@ func (r *PostgresSleepaceReportsRepository) SaveReport(ctx context.Context, tena
 				$11,
 				$12,
 				$13,
-				$14
+				$14,
+				$15
 			)
 			RETURNING report_id::text, EXTRACT(EPOCH FROM created_at)::bigint, EXTRACT(EPOCH FROM updated_at)::bigint
 		`
 		err = r.db.QueryRowContext(ctx, insertQuery,
 			tenantID,
 			deviceID,
+			report.DeviceUID,
 			report.DeviceCode,
 			report.RecordCount,
 			report.StartTime,

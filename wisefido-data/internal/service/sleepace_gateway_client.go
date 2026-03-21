@@ -10,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"wisefido-data/internal/domain"
+	"wisefido-data/internal/repository"
+
 	"go.uber.org/zap"
 )
 
@@ -29,9 +32,10 @@ func IANAToOffsetSeconds(iana string) int {
 // SleepaceGatewayClient proxies sleepad cloud API requests through wisefido-sleepace.
 // The proxy injects the auth token automatically; callers only provide the data payload.
 type SleepaceGatewayClient struct {
-	apiBaseURL string
-	httpClient *http.Client
-	logger     *zap.Logger
+	apiBaseURL  string
+	httpClient  *http.Client
+	logger      *zap.Logger
+	reportsRepo repository.SleepaceReportsRepository
 }
 
 func NewSleepaceGatewayClient(apiBaseURL string, logger *zap.Logger) *SleepaceGatewayClient {
@@ -40,6 +44,11 @@ func NewSleepaceGatewayClient(apiBaseURL string, logger *zap.Logger) *SleepaceGa
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		logger:     logger,
 	}
+}
+
+// SetSleepaceReportPersistence 注入 sleepace_report 写入；补缺/手动下载落库依赖此项。
+func (c *SleepaceGatewayClient) SetSleepaceReportPersistence(repo repository.SleepaceReportsRepository) {
+	c.reportsRepo = repo
 }
 
 // InitializeDevice 调用 Sleepace 绑定。仅需两参数，与 Sleepace API 一致：
@@ -77,7 +86,7 @@ func (c *SleepaceGatewayClient) InitializeDevice(ctx context.Context, deviceCode
 		}
 		errMsg := fmt.Sprintf("sleepace initialize status %d: %s", resp.StatusCode, bodyStr)
 		if strings.Contains(strings.ToLower(bodyStr), "device not found") {
-			errMsg += " (device must be online and connected via MQTT at least once before bind)"
+			errMsg += " (device not in sleepace-service imported device list)"
 		}
 		c.logger.Warn("sleepace initialize non-200", zap.String("device_code", deviceCode), zap.Int("status", resp.StatusCode), zap.String("body", bodyStr))
 		return "", fmt.Errorf("%s", errMsg)
@@ -99,7 +108,7 @@ func (c *SleepaceGatewayClient) InitializeDevice(ctx context.Context, deviceCode
 			msg = "unknown"
 		}
 		if strings.Contains(strings.ToLower(msg), "device not found") {
-			msg = "device not found in Sleepace (device must be online and connected via MQTT at least once before bind)"
+			msg = "device not found in Sleepace (not in sleepace-service imported device list)"
 		}
 		c.logger.Warn("sleepace initialize success=false", zap.String("device_code", deviceCode), zap.String("error", msg))
 		return "", fmt.Errorf("sleepace initialize failed: %s", msg)
@@ -172,7 +181,132 @@ func (c *SleepaceGatewayClient) GetBindInfo(ctx context.Context, userID string) 
 	return out.Status, out.Msg, out.Data, nil
 }
 
-// Ping 检查 wisefido-sleepace 网关是否可达（GET /health），启动时调用以便日志显示连接结果。
+// SetPushType 调用 sleepace-service（厂家）POST /sleepace/system/pushType/set，配置事件推送方式。
+// data 可含 pushType、pushUrl（HTTP 推送地址）、retryConf（推送失败重试）等；未设置时厂家侧默认一般为 MQTT。
+// 此处显式下发 pushType=MQTT、alarmDataType=array（与 wisefido-sleepace 内 SleepaceAPI 一致）；鉴权 token 由 wisefido-sleepace 代理注入。
+func (c *SleepaceGatewayClient) SetPushType(ctx context.Context) error {
+	return c.postProxy(ctx, "/sleepace/system/pushType/set", map[string]interface{}{
+		"pushType": "MQTT", "alarmDataType": "array",
+	})
+}
+
+// DownloadReportPersist 经 wisefido-sleepace 透明代理 POST /api/v1/proxy/sleepace/get24HourDailyWithMaxReport → sleepace-service，
+// 与 wisefido-sleepace SleepaceAPI 一致；sleepace.deviceID=devices.device_id（UUID）作厂家 data.userId。
+// deviceCode 不参与厂家该接口；落库写入 sleepace_report.device_code。
+func (c *SleepaceGatewayClient) DownloadReportPersist(ctx context.Context, tenantID, deviceID, deviceCode, deviceUID string, startTime, endTime int64) error {
+	if c.reportsRepo == nil {
+		return fmt.Errorf("sleepace report repo not set on gateway (SetSleepaceReportPersistence)")
+	}
+	reports, err := c.get24HourDailyWithMaxReportViaProxy(ctx, deviceID, startTime, endTime)
+	if err != nil {
+		return err
+	}
+	return c.persistVendorSleepaceReports(ctx, tenantID, deviceID, deviceCode, deviceUID, reports)
+}
+
+func (c *SleepaceGatewayClient) get24HourDailyWithMaxReportViaProxy(ctx context.Context, deviceID string, startTime, endTime int64) ([]json.RawMessage, error) {
+	if deviceID == "" {
+		return nil, fmt.Errorf("device_id required for get24HourDailyWithMaxReport")
+	}
+	proxyURL := fmt.Sprintf("%s/api/v1/proxy/sleepace/get24HourDailyWithMaxReport", c.apiBaseURL)
+	payload := map[string]interface{}{
+		"userId":    deviceID,
+		"startTime": startTime,
+		"endTime":   endTime,
+	}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal get24Hour request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, proxyURL, bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("create get24Hour request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get24Hour proxy request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("report download status %d: %s", resp.StatusCode, string(body))
+	}
+	var out struct {
+		Status int             `json:"status"`
+		Msg    string          `json:"msg"`
+		Data   json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("unmarshal get24Hour response: %w", err)
+	}
+	if out.Status != 0 {
+		return nil, fmt.Errorf("sleepad get24HourDailyWithMaxReport: %s (status %d)", out.Msg, out.Status)
+	}
+	if len(out.Data) == 0 || string(out.Data) == "null" {
+		return nil, nil
+	}
+	var reports []json.RawMessage
+	if err := json.Unmarshal(out.Data, &reports); err != nil {
+		return nil, fmt.Errorf("unmarshal get24Hour data array: %w", err)
+	}
+	return reports, nil
+}
+
+func vendorSleepaceReportDateUTC(sec int64) int {
+	tm := time.Unix(sec, 0).UTC()
+	return tm.Year()*10000 + int(tm.Month())*100 + tm.Day()
+}
+
+func (c *SleepaceGatewayClient) persistVendorSleepaceReports(ctx context.Context, tenantID, deviceID, deviceCode, deviceUID string, reports []json.RawMessage) error {
+	if len(reports) == 0 {
+		return nil
+	}
+	for i := len(reports) - 1; i >= 0; i-- {
+		raw := reports[i]
+		parsed := struct {
+			Summary struct {
+				RecordCount int   `json:"recordCount"`
+				StartTime   int64 `json:"startTime"`
+				StopMode    int   `json:"stopMode"`
+				TimeStep    int   `json:"timeStep"`
+				Timezone    int   `json:"timezone"`
+			} `json:"summary"`
+			Analysis struct {
+				SleepStateStr json.RawMessage `json:"sleepStateStr"`
+			} `json:"analysis"`
+		}{}
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			c.logger.Warn("parse vendor sleepace report", zap.Error(err))
+			continue
+		}
+		date := vendorSleepaceReportDateUTC(parsed.Summary.StartTime)
+		calculatedEnd := parsed.Summary.StartTime + int64(parsed.Summary.TimeStep)*int64(parsed.Summary.RecordCount)
+		sleepState := string(parsed.Analysis.SleepStateStr)
+		reportJSON := "[" + string(raw) + "]"
+		rep := &domain.SleepaceReport{
+			DeviceID:    deviceID,
+			DeviceCode:  deviceCode,
+			DeviceUID:   deviceUID,
+			RecordCount: parsed.Summary.RecordCount,
+			StartTime:   parsed.Summary.StartTime,
+			EndTime:     calculatedEnd,
+			Date:        date,
+			StopMode:    parsed.Summary.StopMode,
+			TimeStep:    parsed.Summary.TimeStep,
+			Timezone:    parsed.Summary.Timezone,
+			SleepState:  sleepState,
+			Report:      reportJSON,
+		}
+		if err := c.reportsRepo.SaveReport(ctx, tenantID, rep); err != nil {
+			c.logger.Warn("save vendor sleepace report",
+				zap.String("device_id", deviceID), zap.Int("date", date), zap.Error(err))
+		}
+	}
+	return nil
+}
+
+// Ping 检查 wisefido-sleepace 网关是否可达（GET /health）。
 func (c *SleepaceGatewayClient) Ping(ctx context.Context) error {
 	url := c.apiBaseURL + "/health"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

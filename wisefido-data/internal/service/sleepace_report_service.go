@@ -3,19 +3,24 @@ package service
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
-	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
 	"go.uber.org/zap"
 )
 
-// sleepaceClientInterface Sleepace 客户端接口（用于测试和扩展）
-type sleepaceClientInterface interface {
-	Get24HourDailyWithMaxReport(deviceID, deviceCode string, startTime, endTime int64) ([]json.RawMessage, error)
+// 厂家 Sleepace 与 wisefido 库表对应（HTTP/MQTT 报文）：
+//   sleepace.deviceId    ↔ device_store.device_code（空则 COALESCE 用 devices.device_uid）
+//   sleepace.userId      ↔ devices.device_id（UUID）
+//   sleepace.deviceName  ↔ devices.device_uid
+
+// sleepaceReportGateway 经 wisefido-sleepace 透明代理调厂家并本进程落库；测试可注入 mock。
+type sleepaceReportGateway interface {
+	// deviceID=devices.device_id；deviceCode=device_store.device_code（厂家 MQTT/API deviceId）；deviceUID=devices.device_uid。
+	DownloadReportPersist(ctx context.Context, tenantID, deviceID, deviceCode, deviceUID string, startTime, endTime int64) error
 }
 
 // SleepaceReportService Sleepace 睡眠报告服务接口
@@ -31,14 +36,19 @@ type SleepaceReportService interface {
 
 	// DownloadReport 从厂家服务下载报告并保存到数据库
 	DownloadReport(ctx context.Context, req DownloadReportRequest) error
+
+	// DownloadReportByDeviceCode 按厂家 data.deviceId（= device_store.device_code，可回落匹配 device_uid）拉取并入库
+	DownloadReportByDeviceCode(ctx context.Context, sleepaceDeviceID string, startTime, endTime int64) error
+	// DownloadReportByWisefidoDeviceID 按厂家 data.userId（= devices.device_id UUID）拉取并入库
+	DownloadReportByWisefidoDeviceID(ctx context.Context, deviceID string, startTime, endTime int64) error
 }
 
 // sleepaceReportService 实现
 type sleepaceReportService struct {
-	reportsRepo    repository.SleepaceReportsRepository
-	db             *sql.DB // 用于设备验证等复杂查询
-	sleepaceClient sleepaceClientInterface // Sleepace 厂家 API 客户端（使用接口，支持测试）
-	logger         *zap.Logger
+	reportsRepo   repository.SleepaceReportsRepository
+	db            *sql.DB               // 用于设备验证等复杂查询
+	reportGateway sleepaceReportGateway // *SleepaceGatewayClient
+	logger        *zap.Logger
 }
 
 // NewSleepaceReportService 创建 SleepaceReportService 实例
@@ -47,20 +57,19 @@ func NewSleepaceReportService(reportsRepo repository.SleepaceReportsRepository, 
 		reportsRepo: reportsRepo,
 		db:          db,
 		logger:      logger,
-		// sleepaceClient 需要通过 SetSleepaceClient 设置（延迟初始化）
+		// reportGateway 通过 SetSleepaceGatewayClient 设置
 	}
 }
 
-// SetSleepaceClient 设置 Sleepace 客户端（延迟初始化，避免循环依赖）
-func (s *sleepaceReportService) SetSleepaceClient(client *SleepaceClient) {
-	s.sleepaceClient = client
+// SetSleepaceGatewayClient 设置经 wisefido-sleepace 的网关客户端（延迟初始化，避免循环依赖）
+func (s *sleepaceReportService) SetSleepaceGatewayClient(gw *SleepaceGatewayClient) {
+	s.reportGateway = gw
 }
 
-// SetSleepaceClientForTest 设置 Sleepace 客户端接口（用于测试）
-func (s *sleepaceReportService) SetSleepaceClientForTest(client sleepaceClientInterface) {
-	s.sleepaceClient = client
+// SetSleepaceReportGatewayForTest 测试注入 mock
+func (s *sleepaceReportService) SetSleepaceReportGatewayForTest(g sleepaceReportGateway) {
+	s.reportGateway = g
 }
-
 
 // ============================================
 // Request/Response DTOs
@@ -86,13 +95,14 @@ type GetSleepaceReportsResponse struct {
 
 // SleepaceReportOutlineDTO 报告概要 DTO（列表项，不包含完整 report 字段）
 type SleepaceReportOutlineDTO struct {
-	ID          string `json:"id"`          // report_id
+	ID          string `json:"id"`         // report_id
 	DeviceID    string `json:"deviceId"`   // device_id
-	DeviceCode  string `json:"deviceCode"` // device_code
+	DeviceCode  string `json:"deviceCode"` // device_store.device_code（厂家 deviceId）
+	DeviceUID   string `json:"deviceUid"` // devices.device_uid
 	RecordCount int    `json:"recordCount"`
-	StartTime   int64  `json:"startTime"`  // Unix 时间戳（秒）
-	EndTime     int64  `json:"endTime"`    // Unix 时间戳（秒）
-	Date        int    `json:"date"`       // YYYYMMDD 格式
+	StartTime   int64  `json:"startTime"` // Unix 时间戳（秒）
+	EndTime     int64  `json:"endTime"`   // Unix 时间戳（秒）
+	Date        int    `json:"date"`      // YYYYMMDD 格式
 	StopMode    int    `json:"stopMode"`
 	TimeStep    int    `json:"timeStep"`
 	Timezone    int    `json:"timezone"`
@@ -108,13 +118,14 @@ type GetSleepaceReportDetailRequest struct {
 
 // GetSleepaceReportDetailResponse 获取报告详情响应
 type GetSleepaceReportDetailResponse struct {
-	ID          string `json:"id"`          // report_id
+	ID          string `json:"id"`         // report_id
 	DeviceID    string `json:"deviceId"`   // device_id
-	DeviceCode  string `json:"deviceCode"` // device_code
+	DeviceCode  string `json:"deviceCode"` // device_store.device_code（厂家 deviceId）
+	DeviceUID   string `json:"deviceUid"` // devices.device_uid
 	RecordCount int    `json:"recordCount"`
-	StartTime   int64  `json:"startTime"`  // Unix 时间戳（秒）
-	EndTime     int64  `json:"endTime"`    // Unix 时间戳（秒）
-	Date        int    `json:"date"`       // YYYYMMDD 格式
+	StartTime   int64  `json:"startTime"` // Unix 时间戳（秒）
+	EndTime     int64  `json:"endTime"`   // Unix 时间戳（秒）
+	Date        int    `json:"date"`      // YYYYMMDD 格式
 	StopMode    int    `json:"stopMode"`
 	TimeStep    int    `json:"timeStep"`
 	Timezone    int    `json:"timezone"`
@@ -132,13 +143,14 @@ type GetSleepaceReportDatesResponse struct {
 	Dates []int `json:"dates"` // 日期列表（YYYYMMDD 格式）
 }
 
-// DownloadReportRequest 下载报告请求
+// DownloadReportRequest 下载报告请求（字段与厂家 get24HourDailyWithMaxReport 对齐，见文件头注释）
 type DownloadReportRequest struct {
-	TenantID   string // 必填
-	DeviceID   string // 必填（设备 ID）
-	DeviceCode string // 必填（设备编码，对应 devices.device_uid）
-	StartTime  int64  // 开始时间（Unix 时间戳，秒）
-	EndTime    int64  // 结束时间（Unix 时间戳，秒）
+	TenantID         string // 必填
+	DeviceID         string // 必填 → 厂家 userId（devices.device_id UUID）
+	SleepaceDeviceID string // 必填 → 厂家 deviceId（device_store.device_code，空已 COALESCE device_uid）
+	DeviceUID        string // 必填 → 厂家 deviceName（devices.device_uid）
+	StartTime        int64  // 开始时间（Unix 时间戳，秒）
+	EndTime          int64  // 结束时间（Unix 时间戳，秒）
 }
 
 // ============================================
@@ -175,6 +187,19 @@ func (s *sleepaceReportService) GetSleepaceReports(ctx context.Context, req GetS
 		startDate = dateToInt(now.AddDate(0, 0, -30))
 	}
 
+	// 仅首页：对比日历区间内缺失日，向 wisefido-sleepace / 厂家拉取并落库后再列表
+	if page == 1 && s.reportGateway != nil {
+		if err := s.fillMissingSleepaceReportsFromVendor(ctx, req.TenantID, req.DeviceID, startDate, endDate); err != nil {
+			s.logger.Warn("fill missing sleepace reports from vendor failed",
+				zap.String("tenant_id", req.TenantID),
+				zap.String("device_id", req.DeviceID),
+				zap.Int("start_date", startDate),
+				zap.Int("end_date", endDate),
+				zap.Error(err),
+			)
+		}
+	}
+
 	// 查询报告列表
 	reports, total, err := s.reportsRepo.ListReports(ctx, req.TenantID, req.DeviceID, startDate, endDate, page, size)
 	if err != nil {
@@ -193,6 +218,7 @@ func (s *sleepaceReportService) GetSleepaceReports(ctx context.Context, req GetS
 			ID:          report.ReportID,
 			DeviceID:    report.DeviceID,
 			DeviceCode:  report.DeviceCode,
+			DeviceUID:   report.DeviceUID,
 			RecordCount: report.RecordCount,
 			StartTime:   report.StartTime,
 			EndTime:     report.EndTime,
@@ -203,6 +229,17 @@ func (s *sleepaceReportService) GetSleepaceReports(ctx context.Context, req GetS
 			SleepState:  report.SleepState,
 		})
 	}
+
+	s.logger.Info("GetSleepaceReports ok",
+		zap.String("tenant_id", req.TenantID),
+		zap.String("device_id", req.DeviceID),
+		zap.Int("start_date", startDate),
+		zap.Int("end_date", endDate),
+		zap.Int("page", page),
+		zap.Int("size", size),
+		zap.Int("returned", len(items)),
+		zap.Int("total", total),
+	)
 
 	return &GetSleepaceReportsResponse{
 		Items: items,
@@ -245,10 +282,20 @@ func (s *sleepaceReportService) GetSleepaceReportDetail(ctx context.Context, req
 		reportData = "[" + reportData + "]"
 	}
 
+	s.logger.Info("GetSleepaceReportDetail ok",
+		zap.String("tenant_id", req.TenantID),
+		zap.String("device_id", req.DeviceID),
+		zap.Int("date", req.Date),
+		zap.String("report_id", report.ReportID),
+		zap.Int("report_json_len", len(reportData)),
+		zap.Int("record_count", report.RecordCount),
+	)
+
 	return &GetSleepaceReportDetailResponse{
 		ID:          report.ReportID,
 		DeviceID:    report.DeviceID,
 		DeviceCode:  report.DeviceCode,
+		DeviceUID:   report.DeviceUID,
 		RecordCount: report.RecordCount,
 		StartTime:   report.StartTime,
 		EndTime:     report.EndTime,
@@ -287,108 +334,250 @@ func (s *sleepaceReportService) GetSleepaceReportDates(ctx context.Context, req 
 	}, nil
 }
 
-// DownloadReport 从厂家服务下载报告并保存到数据库
-// 参考：wisefido-backend/wisefido-sleepace/modules/sleepace_service.go::DownloadReport
+// DownloadReport 校验后经透明代理调厂家 get24HourDailyWithMaxReport，由本服务写入 sleepace_report。
 func (s *sleepaceReportService) DownloadReport(ctx context.Context, req DownloadReportRequest) error {
-	if req.TenantID == "" || req.DeviceID == "" || req.DeviceCode == "" {
-		return fmt.Errorf("tenant_id, device_id and device_code are required")
+	if req.TenantID == "" || req.DeviceID == "" || req.SleepaceDeviceID == "" || req.DeviceUID == "" {
+		return fmt.Errorf("tenant_id, device_id, sleepace_device_id and device_uid are required")
 	}
-
 	if req.StartTime == 0 || req.EndTime == 0 {
 		return fmt.Errorf("start_time and end_time are required")
 	}
-
-	// 获取客户端（支持接口，用于测试）
-	var client sleepaceClientInterface
-	if s.sleepaceClient != nil {
-		client = s.sleepaceClient
-	} else {
-		return fmt.Errorf("sleepace client not initialized")
+	if s.reportGateway == nil {
+		return fmt.Errorf("sleepace gateway client not initialized")
 	}
-
-	// 验证设备是否存在且属于该租户
 	if err := s.validateDevice(ctx, req.TenantID, req.DeviceID); err != nil {
 		return err
 	}
-
-	// 调用 Sleepace 厂家 API 获取报告
-	reports, err := client.Get24HourDailyWithMaxReport(req.DeviceID, req.DeviceCode, req.StartTime, req.EndTime)
-	if err != nil {
-		s.logger.Error("Failed to get reports from Sleepace API",
+	// req.DeviceID = devices.device_id（UUID），作厂家 data.userId；SleepaceDeviceID 仅校验用。
+	if err := s.reportGateway.DownloadReportPersist(ctx, req.TenantID, req.DeviceID, req.SleepaceDeviceID, req.DeviceUID, req.StartTime, req.EndTime); err != nil {
+		s.logger.Error("report download via gateway failed",
 			zap.String("tenant_id", req.TenantID),
 			zap.String("device_id", req.DeviceID),
-			zap.String("device_code", req.DeviceCode),
+			zap.String("device_uid", req.DeviceUID),
+			zap.String("sleepace_device_id", req.SleepaceDeviceID),
 			zap.Error(err),
 		)
-		return fmt.Errorf("failed to get reports from Sleepace API: %w", err)
+		return err
 	}
-
-	// 解析并保存每个报告
-	for i := len(reports) - 1; i >= 0; i-- {
-		reportData := reports[i]
-
-		// 解析报告数据
-		var report struct {
-			Summary struct {
-				RecordCount int   `json:"recordCount"`
-				StartTime   int64 `json:"startTime"`
-				StopMode    int   `json:"stopMode"`
-				TimeStep    int   `json:"timeStep"`
-				Timezone    int   `json:"timezone"`
-			} `json:"summary"`
-			Analysis struct {
-				SleepStateStr json.RawMessage `json:"sleepStateStr"`
-			} `json:"analysis"`
-		}
-
-		if err := json.Unmarshal(reportData, &report); err != nil {
-			s.logger.Error("Failed to unmarshal report data",
-				zap.Error(err),
-				zap.Int("index", i),
-			)
-			continue // 跳过无效的报告
-		}
-
-		// 转换为领域模型
-		domainReport := &domain.SleepaceReport{
-			DeviceID:    req.DeviceID,
-			DeviceCode:  req.DeviceCode,
-			RecordCount: report.Summary.RecordCount,
-			StartTime:   report.Summary.StartTime,
-			EndTime:     report.Summary.StartTime + int64(report.Summary.TimeStep)*int64(report.Summary.RecordCount),
-			Date:        timeToDate(report.Summary.StartTime),
-			StopMode:    report.Summary.StopMode,
-			TimeStep:    report.Summary.TimeStep,
-			Timezone:    report.Summary.Timezone,
-			SleepState:  string(report.Analysis.SleepStateStr),
-			Report:      "[" + string(reportData) + "]", // 确保 report 字段是 JSON 数组格式
-		}
-
-		// 保存到数据库
-		if err := s.reportsRepo.SaveReport(ctx, req.TenantID, domainReport); err != nil {
-			s.logger.Error("Failed to save report",
-				zap.String("tenant_id", req.TenantID),
-				zap.String("device_id", req.DeviceID),
-				zap.Int("date", domainReport.Date),
-				zap.Error(err),
-			)
-			// 继续处理其他报告，不中断整个流程
-			continue
-		}
-
-		s.logger.Info("Successfully saved report",
-			zap.String("tenant_id", req.TenantID),
-			zap.String("device_id", req.DeviceID),
-			zap.Int("date", domainReport.Date),
-		)
-	}
-
 	return nil
+}
+
+// DownloadReportByDeviceCode 按厂家 deviceId（优先 device_store.device_code，其次 uid）解析后拉取
+func (s *sleepaceReportService) DownloadReportByDeviceCode(ctx context.Context, sleepaceDeviceID string, startTime, endTime int64) error {
+	if sleepaceDeviceID == "" {
+		return fmt.Errorf("sleepace deviceId is required")
+	}
+	if startTime == 0 || endTime == 0 {
+		return fmt.Errorf("start_time and end_time are required")
+	}
+	tenantID, deviceID, sid, uid, err := s.lookupSleepaceReportIdentityBySleepaceDeviceID(ctx, sleepaceDeviceID)
+	if err != nil {
+		return err
+	}
+	return s.DownloadReport(ctx, DownloadReportRequest{
+		TenantID:         tenantID,
+		DeviceID:         deviceID,
+		SleepaceDeviceID: sid,
+		DeviceUID:        uid,
+		StartTime:        startTime,
+		EndTime:          endTime,
+	})
+}
+
+// DownloadReportByWisefidoDeviceID 按 devices.device_id（厂家 userId）拉取
+func (s *sleepaceReportService) DownloadReportByWisefidoDeviceID(ctx context.Context, deviceID string, startTime, endTime int64) error {
+	if deviceID == "" {
+		return fmt.Errorf("device_id is required")
+	}
+	if startTime == 0 || endTime == 0 {
+		return fmt.Errorf("start_time and end_time are required")
+	}
+	tenantID, devID, sid, uid, err := s.lookupSleepaceReportIdentityByDeviceID(ctx, deviceID)
+	if err != nil {
+		return err
+	}
+	return s.DownloadReport(ctx, DownloadReportRequest{
+		TenantID:         tenantID,
+		DeviceID:         devID,
+		SleepaceDeviceID: sid,
+		DeviceUID:        uid,
+		StartTime:        startTime,
+		EndTime:          endTime,
+	})
+}
+
+func (s *sleepaceReportService) lookupSleepaceReportIdentityByDeviceID(ctx context.Context, deviceID string) (tenantID, devID, sleepaceDeviceID, deviceUID string, err error) {
+	q := `
+		SELECT d.tenant_id::text, d.device_id::text,
+			COALESCE(NULLIF(TRIM(ds.device_code), ''), d.device_uid),
+			d.device_uid
+		FROM devices d
+		JOIN device_store ds ON ds.device_id = d.device_id
+		WHERE d.device_id = $1::uuid AND d.status <> 'disabled'
+		LIMIT 1
+	`
+	err = s.db.QueryRowContext(ctx, q, deviceID).Scan(&tenantID, &devID, &sleepaceDeviceID, &deviceUID)
+	if err == sql.ErrNoRows {
+		q2 := `
+			SELECT d.tenant_id::text, d.device_id::text, d.device_uid, d.device_uid
+			FROM devices d
+			WHERE d.device_id = $1::uuid AND d.status <> 'disabled'
+			LIMIT 1
+		`
+		err = s.db.QueryRowContext(ctx, q2, deviceID).Scan(&tenantID, &devID, &sleepaceDeviceID, &deviceUID)
+	}
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", "", "", "", fmt.Errorf("device not found: device_id=%s", deviceID)
+		}
+		return "", "", "", "", fmt.Errorf("lookup device: %w", err)
+	}
+	if sleepaceDeviceID == "" || deviceUID == "" {
+		return "", "", "", "", fmt.Errorf("device identifiers incomplete for device_id=%s", deviceID)
+	}
+	return tenantID, devID, sleepaceDeviceID, deviceUID, nil
+}
+
+func (s *sleepaceReportService) lookupSleepaceReportIdentityBySleepaceDeviceID(ctx context.Context, sleepaceDeviceID string) (tenantID, devID, sid, uid string, err error) {
+	q := `
+		SELECT d.tenant_id::text, d.device_id::text,
+			COALESCE(NULLIF(TRIM(ds.device_code), ''), d.device_uid),
+			d.device_uid
+		FROM devices d
+		JOIN device_store ds ON ds.device_id = d.device_id
+		WHERE d.status <> 'disabled'
+		  AND (
+			(NULLIF(TRIM(ds.device_code), '') IS NOT NULL AND TRIM(ds.device_code) = $1)
+			OR d.device_uid = $1
+			OR ds.device_uid = $1
+		  )
+		LIMIT 1
+	`
+	err = s.db.QueryRowContext(ctx, q, sleepaceDeviceID).Scan(&tenantID, &devID, &sid, &uid)
+	if err == sql.ErrNoRows {
+		q2 := `
+			SELECT d.tenant_id::text, d.device_id::text, d.device_uid, d.device_uid
+			FROM devices d
+			WHERE d.status <> 'disabled' AND d.device_uid = $1
+			LIMIT 1
+		`
+		err = s.db.QueryRowContext(ctx, q2, sleepaceDeviceID).Scan(&tenantID, &devID, &sid, &uid)
+	}
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", "", "", "", fmt.Errorf("device not found for sleepace deviceId=%s", sleepaceDeviceID)
+		}
+		return "", "", "", "", fmt.Errorf("lookup device: %w", err)
+	}
+	if sid == "" || uid == "" {
+		return "", "", "", "", fmt.Errorf("device identifiers incomplete for sleepace deviceId=%s", sleepaceDeviceID)
+	}
+	return tenantID, devID, sid, uid, nil
 }
 
 // ============================================
 // 辅助方法
 // ============================================
+
+func addOneDayYYYYMMDD(d int) int {
+	y := d / 10000
+	m := (d % 10000) / 100
+	day := d % 100
+	t := time.Date(y, time.Month(m), day, 0, 0, 0, 0, time.Local)
+	return dateToInt(t.AddDate(0, 0, 1))
+}
+
+func enumerateYYYYMMDDRange(startDate, endDate int) []int {
+	if startDate == 0 || endDate == 0 || startDate > endDate {
+		return nil
+	}
+	out := make([]int, 0)
+	for d := startDate; d <= endDate; d = addOneDayYYYYMMDD(d) {
+		out = append(out, d)
+	}
+	return out
+}
+
+func groupConsecutiveYYYYMMDD(dates []int) [][]int {
+	if len(dates) == 0 {
+		return nil
+	}
+	sort.Ints(dates)
+	uniq := make([]int, 0, len(dates))
+	for _, d := range dates {
+		if len(uniq) == 0 || d != uniq[len(uniq)-1] {
+			uniq = append(uniq, d)
+		}
+	}
+	runs := make([][]int, 0)
+	run := []int{uniq[0]}
+	for i := 1; i < len(uniq); i++ {
+		if addOneDayYYYYMMDD(uniq[i-1]) == uniq[i] {
+			run = append(run, uniq[i])
+		} else {
+			runs = append(runs, run)
+			run = []int{uniq[i]}
+		}
+	}
+	return append(runs, run)
+}
+
+func yyyymmddLocalStartUnix(d int) int64 {
+	y := d / 10000
+	m := (d % 10000) / 100
+	day := d % 100
+	t := time.Date(y, time.Month(m), day, 0, 0, 0, 0, time.Local)
+	return t.Unix()
+}
+
+func yyyymmddLocalEndUnix(d int) int64 {
+	y := d / 10000
+	m := (d % 10000) / 100
+	day := d % 100
+	t := time.Date(y, time.Month(m), day, 23, 59, 59, 0, time.Local)
+	return t.Unix()
+}
+
+// fillMissingSleepaceReportsFromVendor 区间内按日对比库表，缺失的连续段各调一次厂家拉取落库
+func (s *sleepaceReportService) fillMissingSleepaceReportsFromVendor(ctx context.Context, tenantID, deviceID string, startDate, endDate int) error {
+	existing, err := s.reportsRepo.GetValidDatesInRange(ctx, tenantID, deviceID, startDate, endDate)
+	if err != nil {
+		return fmt.Errorf("get valid dates in range: %w", err)
+	}
+	have := make(map[int]struct{}, len(existing))
+	for _, d := range existing {
+		have[d] = struct{}{}
+	}
+	expected := enumerateYYYYMMDDRange(startDate, endDate)
+	missing := make([]int, 0)
+	for _, d := range expected {
+		if _, ok := have[d]; !ok {
+			missing = append(missing, d)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	_, _, sid, uid, err := s.lookupSleepaceReportIdentityByDeviceID(ctx, deviceID)
+	if err != nil {
+		return fmt.Errorf("lookup sleepace identity: %w", err)
+	}
+	for _, run := range groupConsecutiveYYYYMMDD(missing) {
+		if len(run) == 0 {
+			continue
+		}
+		st := yyyymmddLocalStartUnix(run[0])
+		et := yyyymmddLocalEndUnix(run[len(run)-1])
+		if err := s.reportGateway.DownloadReportPersist(ctx, tenantID, deviceID, sid, uid, st, et); err != nil {
+			s.logger.Warn("sleepace vendor download for date gap failed",
+				zap.String("device_id", deviceID),
+				zap.Ints("date_run", run),
+				zap.Error(err),
+			)
+		}
+	}
+	return nil
+}
 
 // validateDevice 验证设备是否存在且属于该租户
 func (s *sleepaceReportService) validateDevice(ctx context.Context, tenantID, deviceID string) error {
@@ -421,4 +610,3 @@ func timeToDate(timestamp int64) int {
 	tm := time.Unix(timestamp, 0).UTC()
 	return tm.Year()*10000 + int(tm.Month())*100 + tm.Day()
 }
-

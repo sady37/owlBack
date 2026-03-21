@@ -310,51 +310,6 @@ func main() {
 			logger,
 		)
 
-		var sleepaceClient *service.SleepaceClient
-		if cfg.Sleepace.HttpAddress != "" && cfg.Sleepace.AppID != "" && cfg.Sleepace.SecretKey != "" {
-			sleepaceClient = service.NewSleepaceClient(
-				cfg.Sleepace.HttpAddress,
-				cfg.Sleepace.AppID,
-				cfg.Sleepace.SecretKey,
-				logger,
-			)
-
-			// 设置 pushType = MQTT（参考 v1.0: wisefido-backend/wisefido-sleepace/modules/sleepace_service.go::setPushType）
-			// 这是全局配置，只需要在服务启动时设置一次
-			if err := sleepaceClient.SetPushType(); err != nil {
-				logger.Warn("Failed to set Sleepace push type to MQTT (this may affect data reception)",
-					zap.Error(err),
-				)
-				// 不阻止服务启动，只记录警告
-			} else {
-				logger.Info("Sleepace push type set to MQTT successfully")
-			}
-
-			// 设置客户端到 SleepaceReportService（延迟初始化）
-			if svc, ok := sleepaceReportService.(interface {
-				SetSleepaceClient(client *service.SleepaceClient)
-			}); ok {
-				svc.SetSleepaceClient(sleepaceClient)
-			}
-			// 设置客户端到 DeviceMonitorSettingsService（用于从硬件读取配置）
-			if svc, ok := deviceMonitorSettingsService.(interface {
-				SetSleepaceClient(client *service.SleepaceClient)
-			}); ok {
-				svc.SetSleepaceClient(sleepaceClient)
-				logger.Info("Sleepace client set for device monitor settings service")
-			}
-			logger.Info("Sleepace client initialized",
-				zap.String("http_address", cfg.Sleepace.HttpAddress),
-				zap.String("app_id", cfg.Sleepace.AppID),
-			)
-		} else {
-			logger.Warn("Sleepace client not initialized (missing configuration)",
-				zap.String("http_address", cfg.Sleepace.HttpAddress),
-				zap.String("app_id", cfg.Sleepace.AppID),
-			)
-		}
-
-		// 设置 SleepaceGatewayClient 到 DeviceMonitorSettingsService；DeviceStore 绑定逻辑由 DeviceStoreService 负责
 		var sleepaceGateway *service.SleepaceGatewayClient
 		if cfg.SleepaceGateway.APIBaseURL != "" {
 			sleepaceGateway = service.NewSleepaceGatewayClient(cfg.SleepaceGateway.APIBaseURL, logger)
@@ -362,6 +317,11 @@ func main() {
 				SetSleepaceGatewayClient(client *service.SleepaceGatewayClient)
 			}); ok {
 				svc.SetSleepaceGatewayClient(sleepaceGateway)
+			}
+			if err := sleepaceGateway.SetPushType(context.Background()); err != nil {
+				logger.Warn("Failed to set sleepace-service pushType via gateway", zap.Error(err))
+			} else {
+				logger.Info("sleepace-service pushType set (via gateway)")
 			}
 			if err := sleepaceGateway.Ping(context.Background()); err != nil {
 				logger.Warn("Sleepace gateway unreachable at startup (sleepace-service/wisefido-sleepace may be down)",
@@ -418,6 +378,14 @@ func main() {
 		// 创建 Sleepace Report Service 和 Handler
 		sleepaceReportsRepo := repository.NewPostgresSleepaceReportsRepository(db)
 		sleepaceReportService = service.NewSleepaceReportService(sleepaceReportsRepo, db, logger)
+		if sleepaceGateway != nil {
+			sleepaceGateway.SetSleepaceReportPersistence(sleepaceReportsRepo)
+			if svc, ok := sleepaceReportService.(interface {
+				SetSleepaceGatewayClient(client *service.SleepaceGatewayClient)
+			}); ok {
+				svc.SetSleepaceGatewayClient(sleepaceGateway)
+			}
+		}
 
 		// 创建 Resident Service 和 Handler
 		// residentsRepo 已在上面创建 CardStaticService 时声明，这里直接使用
@@ -434,43 +402,7 @@ func main() {
 		roundsHandler := httpapi.NewRoundsHandler(roundsService, logger)
 		router.RegisterRoundsRoutes(roundsHandler)
 
-		// TODO: MQTT 触发下载功能（默认禁用）
-		// 参考：wisefido-backend/wisefido-sleepace/modules/borker.go
-		// 实现步骤：
-		// 1. 如果 cfg.MQTT.Enabled == true，初始化 MQTT 客户端
-		// 2. 创建 SleepaceMQTTBroker 实例
-		// 3. 订阅 MQTT 主题
-		// 4. 启动消息处理
-		//
-		// if cfg.MQTT.Enabled {
-		//     // 使用 owl-common/mqtt/client.go 创建 MQTT 客户端
-		//     mqttConfig := &commoncfg.MQTTConfig{
-		//         Broker:   cfg.MQTT.Broker,
-		//         ClientID: cfg.MQTT.ClientID,
-		//         Username: cfg.MQTT.Username,
-		//         Password: cfg.MQTT.Password,
-		//     }
-		//     mqttClient, err := mqttcommon.NewClient(mqttConfig, logger)
-		//     if err != nil {
-		//         logger.Error("Failed to create MQTT client", zap.Error(err))
-		//     } else {
-		//         // 创建 MQTT Broker
-		//         mqttBroker := mqtt.NewSleepaceMQTTBroker(sleepaceReportService, logger)
-		//         // 启动 MQTT Broker
-		//         if err := mqttBroker.Start(ctx, mqttClient); err != nil {
-		//             logger.Error("Failed to start MQTT broker", zap.Error(err))
-		//         } else {
-		//             logger.Info("MQTT broker started",
-		//                 zap.String("broker", cfg.MQTT.Broker),
-		//                 zap.String("topic", cfg.MQTT.Topic),
-		//             )
-		//             // 在服务停止时停止 MQTT Broker
-		//             defer mqttBroker.Stop(ctx, mqttClient)
-		//         }
-		//     }
-		// } else {
-		//     logger.Info("MQTT trigger download is disabled (set MQTT_ENABLED=true to enable)")
-		// }
+		// Sleepace MQTT 由 wisefido-sleepace 消费；本进程经 SleepaceGatewayClient 访问厂家 HTTP。
 	} else {
 		// DB 未就绪：使用内存 repo 支持联测（UnitList/Devices 等页面不再 404/不再因无 DB 失败）
 		// 注意：MemoryUnitsRepo 尚未实现新的 UnitsRepository 接口，暂时不使用

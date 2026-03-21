@@ -38,10 +38,10 @@ type SleepaceAPI struct {
 func NewSleepaceAPI(cfg *config.SleepaceConfig, logger *zap.Logger) *SleepaceAPI {
 	client := resty.New().
 		SetBaseURL(cfg.HTTPAddress).
-		SetTimeout(10 * time.Second).
+		SetTimeout(10*time.Second).
 		SetRetryCount(3).
 		SetRetryWaitTime(time.Second).
-		SetRetryMaxWaitTime(5 * time.Second).
+		SetRetryMaxWaitTime(5*time.Second).
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Accept", "application/json")
 
@@ -161,23 +161,35 @@ func (a *SleepaceAPI) SetReportUploadTime(deviceCode, userID string, uploadTime 
 	return nil
 }
 
-// GetDailyReport fetches report from sleepace-service for a given time range.
-// Returns raw JSON array of report objects.
-func (a *SleepaceAPI) GetDailyReport(userID string, startTime, endTime int64) ([]json.RawMessage, error) {
-	req := SleepaceRequest{
-		Token: a.token,
-		Data:  map[string]any{"userId": userID, "startTime": startTime, "endTime": endTime},
+// DailyMaxReportQuery 对应厂家 get24HourDailyWithMaxReport 的 data 段（键名 userId / startTime / endTime）。
+type DailyMaxReportQuery struct {
+	// UserID 即厂家 data.userId；取值必须是 devices.device_id（UUID），不是 device_uid、不是 device_store.device_code。
+	UserID    string
+	StartTime int64
+	EndTime   int64
+}
+
+// Get24HourDailyWithMaxReport 调用 sleepace-service POST /sleepace/get24HourDailyWithMaxReport。
+func (a *SleepaceAPI) Get24HourDailyWithMaxReport(q DailyMaxReportQuery) ([]json.RawMessage, error) {
+	if q.UserID == "" {
+		return nil, errors.New("DailyMaxReportQuery.UserID required (devices.device_id UUID → manufacturer data.userId)")
 	}
+	data := map[string]any{
+		"userId":    q.UserID,
+		"startTime": q.StartTime,
+		"endTime":   q.EndTime,
+	}
+	req := SleepaceRequest{Token: a.token, Data: data}
 	resp := SleepaceResponse{}
 	a.client.R().SetBody(req).SetResult(&resp).Post("/sleepace/get24HourDailyWithMaxReport")
 	if resp.Status != 0 {
 		return nil, errors.New(resp.Msg)
 	}
-	var data []json.RawMessage
-	if err := json.Unmarshal(resp.Data, &data); err != nil {
+	var out []json.RawMessage
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
 		return nil, err
 	}
-	return data, nil
+	return out, nil
 }
 
 func (a *SleepaceAPI) GetAlarmConfig(userID, deviceCode string) (json.RawMessage, error) {

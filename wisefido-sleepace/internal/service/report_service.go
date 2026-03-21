@@ -22,20 +22,29 @@ func NewReportService(db *sql.DB, api *SleepaceAPI, card *CardMappingService, lo
 	return &ReportService{db: db, api: api, card: card, logger: logger}
 }
 
-// DownloadAndSave fetches the report from sleepace-service and upserts into sleepace_report.
-// mqttDeviceID is the MQTT deviceId (= device_store.device_code).
-// userID is wisefido devices.device_id (UUID)，作为 Sleepace API 的 userId。
-func (s *ReportService) DownloadAndSave(ctx context.Context, mqttDeviceID, userID string, startTime, endTime int64) error {
-	reports, err := s.api.GetDailyReport(userID, startTime, endTime)
+// DownloadAndSave 从 sleepace-service 拉报告并 upsert sleepace_report。
+// deviceID = devices.device_id（UUID）；拉厂家接口时该值作为 data.userId。租户/卡片/hardware uid 均由此 device_id 查库。
+func (s *ReportService) DownloadAndSave(ctx context.Context, deviceID string, startTime, endTime int64) error {
+	tenantID, resolvedDeviceID, deviceUID, deviceCode, cardID, err := s.loadReportWriteContext(ctx, deviceID)
 	if err != nil {
-		return fmt.Errorf("fetch report: %w", err)
+		return err
 	}
 
-	cardID, tenantID, deviceID := "", "", ""
-	if info, err := s.card.GetCardInfo(ctx, mqttDeviceID); err == nil {
-		cardID = info.CardID
-		tenantID = info.TenantID
-		deviceID = info.DeviceID
+	s.logger.Debug("report write context",
+		zap.String("device_id", resolvedDeviceID),
+		zap.String("device_uid", deviceUID),
+		zap.String("device_code", deviceCode),
+		zap.String("card_id", cardID),
+	)
+
+	// 厂家 data.userId ← devices.device_id（UUID）
+	reports, err := s.api.Get24HourDailyWithMaxReport(DailyMaxReportQuery{
+		UserID:    resolvedDeviceID,
+		StartTime: startTime,
+		EndTime:   endTime,
+	})
+	if err != nil {
+		return fmt.Errorf("fetch report: %w", err)
 	}
 
 	for i := len(reports) - 1; i >= 0; i-- {
@@ -61,16 +70,51 @@ func (s *ReportService) DownloadAndSave(ctx context.Context, mqttDeviceID, userI
 		sleepState := string(parsed.Analysis.SleepStateStr)
 		reportJSON := "[" + string(reports[i]) + "]"
 
-		metadata := s.buildMetadata(ctx, deviceID, tenantID)
+		metadata := s.buildMetadata(ctx, resolvedDeviceID, tenantID)
 
-		if err := s.upsert(ctx, tenantID, deviceID, mqttDeviceID, cardID,
+		if err := s.upsert(ctx, tenantID, resolvedDeviceID, deviceUID, cardID,
 			parsed.Summary.RecordCount, parsed.Summary.StartTime, calculatedEndTime,
 			date, parsed.Summary.StopMode, parsed.Summary.TimeStep, parsed.Summary.Timezone,
 			sleepState, reportJSON, metadata); err != nil {
-			s.logger.Error("upsert report", zap.String("mqtt_device_id", mqttDeviceID), zap.Int("date", date), zap.Error(err))
+			s.logger.Error("upsert report", zap.String("device_id", resolvedDeviceID), zap.Int("date", date), zap.Error(err))
 		}
 	}
 	return nil
+}
+
+// loadReportWriteContext 按 devices.device_id（UUID）解析 Sleepad 写库所需上下文。
+// 返回：tenant_id、d.device_id、devices.device_uid、device_store.device_code（厂家平台 deviceId，可空）、card_id。
+func (s *ReportService) loadReportWriteContext(ctx context.Context, deviceID string) (
+	tenantID, resolvedDeviceID, deviceUID, deviceCode, cardID string, err error,
+) {
+	if s.db == nil {
+		return "", "", "", "", "", fmt.Errorf("database not available")
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT d.tenant_id::text,
+			d.device_id::text,
+			d.device_uid,
+			COALESCE(NULLIF(TRIM(ds.device_code), ''), ''),
+			COALESCE((
+				SELECT c.card_id::text FROM cards c
+				WHERE c.tenant_id = d.tenant_id
+				  AND c.devices @> jsonb_build_array(jsonb_build_object('device_id', d.device_id::text))
+				LIMIT 1
+			), '')
+		FROM devices d
+		LEFT JOIN device_store ds ON ds.device_id = d.device_id
+		WHERE d.device_id = $1::uuid AND d.status <> 'disabled'
+	`, deviceID)
+	if scanErr := row.Scan(&tenantID, &resolvedDeviceID, &deviceUID, &deviceCode, &cardID); scanErr != nil {
+		if scanErr == sql.ErrNoRows {
+			return "", "", "", "", "", fmt.Errorf("device not found: %s", deviceID)
+		}
+		return "", "", "", "", "", fmt.Errorf("load report context: %w", scanErr)
+	}
+	if tenantID == "" || resolvedDeviceID == "" || deviceUID == "" {
+		return "", "", "", "", "", fmt.Errorf("incomplete device row for %s", deviceID)
+	}
+	return tenantID, resolvedDeviceID, deviceUID, deviceCode, cardID, nil
 }
 
 func (s *ReportService) buildMetadata(ctx context.Context, deviceID, tenantID string) string {
@@ -110,13 +154,13 @@ func (s *ReportService) buildMetadata(ctx context.Context, deviceID, tenantID st
 }
 
 func (s *ReportService) upsert(ctx context.Context,
-	tenantID, deviceID, deviceCode, cardID string,
+	tenantID, deviceID, deviceUID, cardID string,
 	recordCount int, startTime, endTime int64, date, stopMode, timeStep, timezone int,
 	sleepState, report, metadata string,
 ) error {
 	query := `
 		INSERT INTO sleepace_report (
-			tenant_id, device_id, device_code, card_id,
+			tenant_id, device_id, device_uid, card_id,
 			record_count, start_time, end_time, date,
 			stop_mode, time_step, timezone,
 			sleep_state, report, metadata, updated_at
@@ -141,7 +185,7 @@ func (s *ReportService) upsert(ctx context.Context,
 			updated_at   = NOW()
 	`
 	_, err := s.db.ExecContext(ctx, query,
-		tenantID, deviceID, deviceCode, cardID,
+		tenantID, deviceID, deviceUID, cardID,
 		recordCount, startTime, endTime, date,
 		stopMode, timeStep, timezone,
 		sleepState, report, metadata,

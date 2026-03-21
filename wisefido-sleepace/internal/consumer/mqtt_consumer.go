@@ -593,11 +593,12 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			c.publisher.PublishEvent(ctx, msg)
 		}
 		if c.reportService != nil && deviceID != "" {
-			go func(dc, uid string, st, et int64) {
-				if err := c.reportService.DownloadAndSave(ctx, dc, uid, st, et); err != nil {
-					c.logger.Error("download report failed", zap.String("device_code", dc), zap.Error(err))
+			// 异步拉报告；形参在 go 启动前求值并拷贝，时间窗 = analysis.startTime+1 … 信封 timeStamp，did = devices.device_id
+			go func(start, end int64, did string) {
+				if err := c.reportService.DownloadAndSave(ctx, did, start, end); err != nil {
+					c.logger.Error("download report failed", zap.String("device_id", did), zap.Error(err))
 				}
-			}(deviceCode, deviceID, d.StartTime+1, m.TimeStamp)
+			}(d.StartTime+1, m.TimeStamp, deviceID)
 		}
 
 	case "upgradeProgress":

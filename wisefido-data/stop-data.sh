@@ -54,7 +54,8 @@ if command -v lsof &> /dev/null; then
         HTTP_PORT="8080"
     fi
     
-    PORT_PIDS=$(lsof -ti :$HTTP_PORT 2>/dev/null || true)
+    # 仅 LISTEN，避免把连到 8080 的客户端（浏览器/Cursor）当成占用端口
+    PORT_PIDS=$(lsof -nP -tiTCP:$HTTP_PORT -sTCP:LISTEN 2>/dev/null || true)
     if [ -n "$PORT_PIDS" ]; then
         for pid in $PORT_PIDS; do
             if [ -n "$pid" ]; then
@@ -135,7 +136,7 @@ if command -v lsof &> /dev/null; then
         HTTP_PORT="8080"
     fi
     
-    PORT_PIDS=$(lsof -ti :$HTTP_PORT 2>/dev/null || true)
+    PORT_PIDS=$(lsof -nP -tiTCP:$HTTP_PORT -sTCP:LISTEN 2>/dev/null || true)
     if [ -n "$PORT_PIDS" ]; then
         for pid in $PORT_PIDS; do
             if [ -n "$pid" ]; then
@@ -178,9 +179,9 @@ else
 fi
 echo "  Port $HTTP_PORT (HTTP):"
 if command -v lsof &> /dev/null; then
-    if lsof -i :$HTTP_PORT > /dev/null 2>&1; then
-        echo -e "    ${RED}❌ Still in use${NC}"
-        lsof -i :$HTTP_PORT
+    if lsof -nP -iTCP:$HTTP_PORT -sTCP:LISTEN > /dev/null 2>&1; then
+        echo -e "    ${RED}❌ Still in use (LISTEN)${NC}"
+        lsof -nP -iTCP:$HTTP_PORT -sTCP:LISTEN
     else
         echo -e "    ${GREEN}✅ Free${NC}"
     fi

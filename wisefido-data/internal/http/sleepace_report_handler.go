@@ -193,7 +193,7 @@ func (h *SleepaceReportHandler) GetSleepaceReportDetail(w http.ResponseWriter, r
 	result := map[string]any{
 		"id":          resp.ID,
 		"deviceId":    resp.DeviceID,
-		"deviceCode":  resp.DeviceCode,
+		"deviceUid":   resp.DeviceUID,
 		"recordCount": resp.RecordCount,
 		"startTime":   resp.StartTime,
 		"endTime":     resp.EndTime,
@@ -257,7 +257,7 @@ func (h *SleepaceReportHandler) GetSleepaceReportDates(w http.ResponseWriter, r 
 // 辅助方法
 // ============================================
 
-// DownloadReport 手动触发下载报告
+// DownloadReport 从厂家 get24HourDailyWithMaxReport 拉取并写入 sleepace_report（读权限即可）
 // POST /sleepace/api/v1/sleepace/reports/:id/download?startTime=1234567890&endTime=1234567890
 func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Request, deviceID string) {
 	ctx := r.Context()
@@ -270,7 +270,8 @@ func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Re
 	currentUserID := r.Header.Get("X-User-Id")
 	currentUserType := r.Header.Get("X-User-Type")
 	currentUserRole := r.Header.Get("X-User-Role")
-	if err := h.checkReportPermission(ctx, tenantID, deviceID, currentUserID, currentUserType, currentUserRole, "manage"); err != nil {
+	// 与列表/详情一致：能看报告即可触发从厂家拉取并入库（get24HourDailyWithMaxReport）
+	if err := h.checkReportPermission(ctx, tenantID, deviceID, currentUserID, currentUserType, currentUserRole, "read"); err != nil {
 		h.logger.Warn("DownloadReport permission denied",
 			zap.String("tenant_id", tenantID),
 			zap.String("device_id", deviceID),
@@ -296,25 +297,24 @@ func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// 获取设备信息（需要 device_code）
-	// 通过 device_id 查询 devices 表获取 device_code（device_uid）
-	deviceCode, err := h.getDeviceCode(ctx, tenantID, deviceID)
+	sleepaceDeviceID, deviceUID, err := h.getSleepaceDownloadIdentity(ctx, tenantID, deviceID)
 	if err != nil {
-		h.logger.Error("Failed to get device code",
+		h.logger.Error("Failed to resolve sleepace report identity",
 			zap.String("tenant_id", tenantID),
 			zap.String("device_id", deviceID),
 			zap.Error(err),
 		)
-		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to get device code: %v", err)))
+		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to resolve device: %v", err)))
 		return
 	}
 
 	req := service.DownloadReportRequest{
-		TenantID:   tenantID,
-		DeviceID:   deviceID,
-		DeviceCode: deviceCode,
-		StartTime:  startTime,
-		EndTime:    endTime,
+		TenantID:         tenantID,
+		DeviceID:         deviceID,
+		SleepaceDeviceID: sleepaceDeviceID,
+		DeviceUID:        deviceUID,
+		StartTime:        startTime,
+		EndTime:          endTime,
 	}
 
 	err = h.sleepaceReportService.DownloadReport(ctx, req)
@@ -322,7 +322,8 @@ func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Re
 		h.logger.Error("DownloadReport failed",
 			zap.String("tenant_id", tenantID),
 			zap.String("device_id", deviceID),
-			zap.String("device_code", deviceCode),
+			zap.String("sleepace_device_id", sleepaceDeviceID),
+			zap.String("device_uid", deviceUID),
 			zap.Int64("start_time", startTime),
 			zap.Int64("end_time", endTime),
 			zap.Error(err),
@@ -334,32 +335,40 @@ func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 }
 
-// getDeviceCode 通过 device_id 获取 device_code（device_uid）
-func (h *SleepaceReportHandler) getDeviceCode(ctx context.Context, tenantID, deviceID string) (string, error) {
+// getSleepaceDownloadIdentity 解析厂家 deviceId（device_store.device_code 优先）与 deviceName（devices.device_uid）
+func (h *SleepaceReportHandler) getSleepaceDownloadIdentity(ctx context.Context, tenantID, deviceID string) (sleepaceDeviceID, deviceUID string, err error) {
 	if h.db == nil {
-		return "", fmt.Errorf("database connection not available")
+		return "", "", fmt.Errorf("database connection not available")
 	}
-
-	query := `
-		SELECT device_uid
-		FROM devices
-		WHERE tenant_id = $1::uuid
-		  AND device_id = $2::uuid
-		  AND status <> 'disabled'
+	q := `
+		SELECT COALESCE(NULLIF(TRIM(ds.device_code), ''), d.device_uid), d.device_uid
+		FROM devices d
+		JOIN device_store ds ON ds.device_id = d.device_id
+		WHERE d.tenant_id = $1::uuid
+		  AND d.device_id = $2::uuid
+		  AND d.status <> 'disabled'
 		LIMIT 1
 	`
-	var deviceCode string
-	err := h.db.QueryRowContext(ctx, query, tenantID, deviceID).Scan(&deviceCode)
+	err = h.db.QueryRowContext(ctx, q, tenantID, deviceID).Scan(&sleepaceDeviceID, &deviceUID)
+	if err == sql.ErrNoRows {
+		q2 := `
+			SELECT d.device_uid, d.device_uid
+			FROM devices d
+			WHERE d.tenant_id = $1::uuid AND d.device_id = $2::uuid AND d.status <> 'disabled'
+			LIMIT 1
+		`
+		err = h.db.QueryRowContext(ctx, q2, tenantID, deviceID).Scan(&sleepaceDeviceID, &deviceUID)
+	}
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("device not found")
+			return "", "", fmt.Errorf("device not found")
 		}
-		return "", fmt.Errorf("failed to get device code: %w", err)
+		return "", "", fmt.Errorf("lookup device: %w", err)
 	}
-	if deviceCode == "" {
-		return "", fmt.Errorf("device code not found (device_uid is empty)")
+	if sleepaceDeviceID == "" || deviceUID == "" {
+		return "", "", fmt.Errorf("incomplete device identifiers")
 	}
-	return deviceCode, nil
+	return sleepaceDeviceID, deviceUID, nil
 }
 
 // extractDeviceIDFromPath 从路径中提取 device_id
