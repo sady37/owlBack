@@ -46,8 +46,7 @@ type deviceMonitorSettingsService struct {
 	configVersionsRepo repository.ConfigVersionsRepository // 配置版本仓库（用于审计）
 	devicesRepo        repository.DevicesRepository
 	deviceStoreRepo    repository.DeviceStoreRepository
-	sleepaceClient     *SleepaceClient        // Sleepace 厂家 API 客户端（报告下载、读取设置）
-	sleepaceGateway    *SleepaceGatewayClient // wisefido-sleepace 网关客户端（下发硬件配置）
+	sleepaceGateway    *SleepaceGatewayClient // wisefido-sleepace 网关（厂家 HTTP 代理 + 下发硬件配置）
 	configPublisher    ConfigPublisher        // 配置消息发布器
 	qinglanClient      *QinglanClient         // 雷达设备仅经此客户端：查询状态/属性、下发属性（工作模式、跌倒/呼吸心率）
 	db                 *sql.DB                // 用于事务操作
@@ -72,15 +71,9 @@ func NewDeviceMonitorSettingsService(
 		devicesRepo:        devicesRepo,
 		deviceStoreRepo:    deviceStoreRepo,
 		db:                 db,
-		sleepaceClient:     nil, // 通过 SetSleepaceClient 延迟设置
 		configPublisher:    configPublisher,
 		logger:             logger,
 	}
-}
-
-// SetSleepaceClient 设置 Sleepace 客户端（延迟初始化，避免循环依赖）
-func (s *deviceMonitorSettingsService) SetSleepaceClient(client *SleepaceClient) {
-	s.sleepaceClient = client
 }
 
 // SetSleepaceGatewayClient 设置 wisefido-sleepace 网关客户端（下发 Sleepace 硬件配置）
