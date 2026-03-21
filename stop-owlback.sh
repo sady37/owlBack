@@ -112,6 +112,15 @@ stop_service() {
     printf "  [✓] %s stopped\n" "$name"
 }
 
+# systemd 托管时仅 kill 进程会被 Restart= 立刻拉起，须先停 unit
+if command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet owlback 2>/dev/null; then
+        printf "[*] systemctl stop owlback (否则杀 PID 后会被拉起)\n"
+        systemctl stop owlback 2>/dev/null || true
+        sleep 2
+    fi
+fi
+
 stop_service "wisefido-data"           "8080" "$LOG_DIR/wisefido-data.log"      "wisefido-data" "cmd/wisefido-data/main.go"
 stop_service "wisefido-cardagg"        ""     "$LOG_DIR/wisefido-cardagg.log"   "wisefido-cardagg" "wisefido-cardagg/main.go"
 stop_service "wisefido-qinglan"        "8081" "$LOG_DIR/wisefido-qinglan.log"   "wisefido-qinglan" "cmd/wisefido-qinglan/main.go"

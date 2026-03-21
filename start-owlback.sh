@@ -31,6 +31,28 @@ tcp_listen() {
     command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$1" -sTCP:LISTEN -t >/dev/null 2>&1
 }
 
+# 与 stop-owlback.sh 一致：多源解析 LISTEN PID（避免仅 lsof 漏检）
+pids_listen_tcp_port_start() {
+    local port="$1"
+    local p ssout fu
+    {
+        if command -v lsof >/dev/null 2>&1; then
+            p=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)
+            [ -z "$p" ] && p=$(lsof -nP -i :"$port" -sTCP:LISTEN -t 2>/dev/null || true)
+            for x in $p; do printf '%s\n' "$x"; done
+        fi
+        if command -v ss >/dev/null 2>&1; then
+            ssout=$(ss -lntp "sport = :$port" 2>/dev/null || true)
+            [ -z "$ssout" ] && ssout=$(ss -lntp 2>/dev/null | grep -E ":${port}([^0-9]|$)" || true)
+            echo "$ssout" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p'
+        fi
+        if command -v fuser >/dev/null 2>&1; then
+            fu=$(fuser "${port}/tcp" 2>&1 || true)
+            echo "$fu" | sed 's/.*:[[:space:]]*//' | tr -s ' ' '\n' | grep -E '^[0-9]+$'
+        fi
+    } | sort -u -n
+}
+
 # 仅杀 TCP LISTEN 占用者（与 stop-owlback 策略一致）
 START_SHELL_PID=$$
 START_SHELL_PPID=$PPID
@@ -52,23 +74,29 @@ kill_tree_start() {
 free_listen_port() {
     local port=$1
     local service_name=$2
-    if ! command -v lsof &>/dev/null; then
-        echo -e "${YELLOW}Note: lsof not available, skip freeing port $port ($service_name)${NC}"
+    if ! command -v lsof >/dev/null 2>&1 && ! command -v ss >/dev/null 2>&1 && ! command -v fuser >/dev/null 2>&1; then
+        echo -e "${YELLOW}Note: lsof/ss/fuser unavailable, skip freeing port $port ($service_name)${NC}"
         return 0
     fi
     local pids
-    pids=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)
-    if [ -z "$pids" ]; then
+    pids=$(pids_listen_tcp_port_start "$port" | tr '\n' ' ')
+    if [ -z "$(echo "$pids" | tr -d '[:space:]')" ]; then
         return 0
     fi
-    echo -e "${YELLOW}Port $port ($service_name): LISTEN by PID(s) $pids — killing process tree...${NC}"
+    echo -e "${YELLOW}Port $port ($service_name): LISTEN — killing PID tree: $pids${NC}"
     for pid in $pids; do
-        kill_tree_start "$pid"
+        [ -n "$pid" ] && kill_tree_start "$pid"
     done
     sleep 1
-    pids=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)
-    if [ -n "$pids" ]; then
-        echo -e "${RED}Error: port $port still LISTEN after kill (PIDs: $pids)${NC}"
+    if [ -n "$(pids_listen_tcp_port_start "$port" | head -1)" ]; then
+        if command -v fuser >/dev/null 2>&1; then
+            echo -e "${YELLOW}Port $port still busy, fuser -k ${port}/tcp${NC}"
+            fuser -k "${port}/tcp" 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+    if [ -n "$(pids_listen_tcp_port_start "$port" | head -1)" ]; then
+        echo -e "${RED}Error: port $port still LISTEN after kill${NC}"
         exit 1
     fi
 }
@@ -93,7 +121,7 @@ if ! command -v go &> /dev/null; then
     exit 1
 fi
 
-# 检查是否有服务正在运行（只看端口）
+# 检查是否有服务仍在运行（端口 + 无固定口的进程）
 check_running_services() {
     local any_running=false
     local running_names=()
@@ -101,6 +129,7 @@ check_running_services() {
     if tcp_listen 8080; then any_running=true; running_names+=("wisefido-data(:8080)"); fi
     if tcp_listen 8081; then any_running=true; running_names+=("wisefido-qinglan(:8081)"); fi
     if tcp_listen 8083; then any_running=true; running_names+=("wisefido-sleepace(:8083)"); fi
+    if tcp_listen 8085; then any_running=true; running_names+=("wisefido-iot(:8085)"); fi
     if pgrep -f "wisefido-cardagg" >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-cardagg"); fi
     if pgrep -f "wisefido-ai" >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-ai"); fi
 
@@ -126,15 +155,28 @@ check_running_services() {
     fi
 }
 
-# 检查是否有服务正在运行
-check_running_services
-
-# 启动前释放 LISTEN 端口（杀死占用进程树，避免僵尸 go run 占口）
-# 注意：wisefido-cardagg / wisefido-ai 无固定 HTTP 口，此处不处理
+# 先清端口与典型 go run 残留，再询问是否仍有占用（避免「已 stop 仍提示已运行」）
 free_listen_port 8080 "wisefido-data"
 free_listen_port 8081 "wisefido-qinglan"
 free_listen_port 8083 "wisefido-sleepace"
 free_listen_port 8085 "wisefido-iot"
+if command -v pgrep >/dev/null 2>&1; then
+    for pid in $(pgrep -f "cmd/wisefido-ai/main.go" 2>/dev/null || true); do
+        [ -n "$pid" ] && kill_tree_start "$pid"
+    done
+    for pid in $(pgrep -f "wisefido-cardagg/main.go" 2>/dev/null || true); do
+        [ -n "$pid" ] && kill_tree_start "$pid"
+    done
+    for pid in $(pgrep -f "go run.*wisefido-ai" 2>/dev/null || true); do
+        [ -n "$pid" ] && kill_tree_start "$pid"
+    done
+    for pid in $(pgrep -f "go run.*wisefido-cardagg" 2>/dev/null || true); do
+        [ -n "$pid" ] && kill_tree_start "$pid"
+    done
+fi
+sleep 1
+
+check_running_services
 
 # 加载统一配置文件
 # 获取脚本所在目录（owlBack 根目录）

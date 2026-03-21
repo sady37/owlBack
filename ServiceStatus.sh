@@ -7,15 +7,44 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# 与 start-owlback / stop-owlback 一致：多源解析 LISTEN（避免仅 lsof 漏检或权限下看不到 PID）
+pids_listen_tcp_port_status() {
+    local port="$1"
+    local p ssout fu
+    {
+        if command -v lsof >/dev/null 2>&1; then
+            p=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)
+            [ -z "$p" ] && p=$(lsof -nP -i :"$port" -sTCP:LISTEN -t 2>/dev/null || true)
+            for x in $p; do printf '%s\n' "$x"; done
+        fi
+        if command -v ss >/dev/null 2>&1; then
+            ssout=$(ss -lntp "sport = :$port" 2>/dev/null || true)
+            [ -z "$ssout" ] && ssout=$(ss -lntp 2>/dev/null | grep -E ":${port}([^0-9]|$)" || true)
+            echo "$ssout" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p'
+        fi
+        if command -v fuser >/dev/null 2>&1; then
+            fu=$(fuser "${port}/tcp" 2>&1 || true)
+            echo "$fu" | sed 's/.*:[[:space:]]*//' | tr -s ' ' '\n' | grep -E '^[0-9]+$'
+        fi
+    } | sort -u -n
+}
+
+ss_listen_no_pid() {
+    local port="$1"
+    command -v ss >/dev/null 2>&1 || return 1
+    ss -lnt "sport = :$port" 2>/dev/null | grep -q LISTEN && return 0
+    ss -lnt 2>/dev/null | grep -E ":${port}([^0-9]|$)" | grep -q LISTEN
+}
+
 check_port() {
     local port=$1
     local name=$2
-    local pid=""
-    if command -v lsof &>/dev/null; then
-        pid=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -1)
-    fi
+    local pid
+    pid=$(pids_listen_tcp_port_status "$port" | head -1)
     if [ -n "$pid" ]; then
         echo -e "  ${GREEN}[UP]${NC}   $name  port:$port  pid:$pid  (LISTEN)"
+    elif ss_listen_no_pid "$port"; then
+        echo -e "  ${GREEN}[UP]${NC}   $name  port:$port  pid:?  (LISTEN, ss)"
     else
         echo -e "  ${RED}[DOWN]${NC} $name  port:$port  (no LISTEN)"
     fi
