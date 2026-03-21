@@ -47,4 +47,7 @@ docker-compose.override.yml
 .DS_Store
 Thumbs.db
 
+# Per-machine: MQTT persistence + TLS (each env keeps its own; not tracked)
 mqtt/data/mosquitto.db
+server.crt
+server.key
