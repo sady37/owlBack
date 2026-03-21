@@ -6,10 +6,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"wisefido-qinglan/internal/config"
@@ -20,6 +22,18 @@ import (
 	"github.com/gorilla/mux"
 	"go.uber.org/zap"
 )
+
+// tlsErrorFilter 过滤 TLS handshake error 刷屏（外网扫描不信任自签名证书）
+type tlsErrorFilter struct {
+	w io.Writer
+}
+
+func (f *tlsErrorFilter) Write(p []byte) (n int, err error) {
+	if strings.Contains(string(p), "TLS handshake error") {
+		return len(p), nil
+	}
+	return f.w.Write(p)
+}
 
 // HTTPSServer HTTPS 服务器（用于设备认证）
 // 参考 wisefido-radar/internal/http/server.go 的实现
@@ -97,6 +111,7 @@ func NewHTTPSServer(
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
+		ErrorLog:          log.New(&tlsErrorFilter{w: os.Stderr}, "", 0),
 	}
 
 	return &HTTPSServer{

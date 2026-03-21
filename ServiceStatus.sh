@@ -12,7 +12,7 @@ check_port() {
     local name=$2
     local pid=""
     if command -v lsof &>/dev/null; then
-        pid=$(lsof -ti :$port 2>/dev/null | head -1)
+        pid=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -1)
     fi
     if [ -n "$pid" ]; then
         echo -e "  ${GREEN}[UP]${NC}   $name  port:$port  pid:$pid"
@@ -44,8 +44,18 @@ echo ""
 echo "=== Infrastructure ==="
 check_port 5432 "PostgreSQL"
 check_port 6379 "Redis"
-check_port 1883 "MQTT"
+check_port 1883 "MQTT (mosquitto)"
+check_port 3306 "MySQL"
 
+echo ""
+echo "=== Sleepace (Java host, not Docker) ==="
+check_port 8090 "sleepace-service (Java)"
+check_process "wisefido-sleepace" "wisefido-sleepace (Go consumer)"
+
+echo ""
+echo "=== Log dir (owl/log) ==="
+OWL_LOG="${LOG_DIR:-$(cd "$(dirname "$0")/.." && pwd)/log}"
+[ -d "$OWL_LOG" ] && echo "  $OWL_LOG" || echo "  (not created yet)"
 echo ""
 echo "=== Frontend ==="
 check_port 3100 "owlFront (Vite)"

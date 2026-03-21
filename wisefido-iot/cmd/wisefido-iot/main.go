@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,6 +14,7 @@ import (
 
 	"wisefido-iot/internal/config"
 	"wisefido-iot/internal/consumer"
+	httphandler "wisefido-iot/internal/http"
 	"wisefido-iot/internal/publisher"
 	"wisefido-iot/internal/repository"
 
@@ -80,6 +82,17 @@ func main() {
 		logger,
 	)
 
+	// 启动 HTTP 服务（8085，供 wisefido-data 调 InvalidateLocationCache 等）
+	mux := http.NewServeMux()
+	mux.HandleFunc("/internal/api/v1/iot-timeseries/cache/invalidate", httphandler.NewHandler(iotRepo, logger).InvalidateLocationCache)
+	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: mux}
+	go func() {
+		logger.Info("HTTP server listening", zap.String("addr", cfg.HTTPAddr))
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Warn("HTTP server error", zap.Error(err))
+		}
+	}()
+
 	// 启动服务
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -100,7 +113,9 @@ func main() {
 
 	// 优雅关闭
 	cancel()
-
+	if err := srv.Shutdown(context.Background()); err != nil {
+		logger.Warn("HTTP server shutdown", zap.Error(err))
+	}
 	logger.Info("Service stopped")
 }
 

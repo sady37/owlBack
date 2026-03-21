@@ -4,7 +4,8 @@
 # 策略：1) 端口杀进程+子进程  2) 名称匹配兜底  3) 日志文件占用兜底
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG_DIR="${LOG_DIR:-/tmp/owlBack_logs}"
+OWL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOG_DIR="${LOG_DIR:-$OWL_ROOT/log}"
 SHELL_PID=$$
 SHELL_PPID=$PPID
 

@@ -92,7 +92,7 @@ REDIS_PASSWORD=""
 # 其他配置
 # ============================================
 # 日志目录
-LOG_DIR="/tmp/owlBack_logs"
+LOG_DIR="$(cd "$(dirname "$0")/.." && pwd)/log"
 
 # Tenant ID（用于 wisefido-card-aggregator）
 TENANT_ID="bb045e6b-7bc2-4e59-af2e-d8b1adc77f2c"

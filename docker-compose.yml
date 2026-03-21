@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   postgresql:
     image: timescale/timescaledb:latest-pg15
@@ -66,25 +65,8 @@ services:
       timeout: 5s
       retries: 5
 
-  sleepace-service:
-    build:
-      context: ../sleepace
-      dockerfile: Dockerfile
-    container_name: sleepace-service
-    ports:
-      - "8090:8090"
-      - "28070:28070"
-      - "29010:29010"   
-      #29010 device inital port  28070 device tcp long connect  8090 httpAPI
-    volumes:
-      - ../sleepace/sleepace-service/log:/var/wisefido/sleepace/sleepace-service/log
-    depends_on:
-      sleepace-mysql:
-        condition: service_healthy
-      mqtt:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+  # sleepace-service（Java Tomcat）不放进 Docker，在宿主机运行；仅 MySQL、MQTT 用 Docker
+  # 宿主机启动：cd ../sleepace/sleepace-service && ./bin/start.sh 等
 
 volumes:
   postgres_data:

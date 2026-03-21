@@ -10,8 +10,6 @@ import (
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/service"
-
-	"github.com/xuri/excelize/v2"
 )
 
 // -------- Device Store impl --------
@@ -145,38 +143,22 @@ func (a *AdminAPI) importDeviceStores(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	file, _, err := r.FormFile("file")
+	file, fileHdr, err := r.FormFile("file")
 	if err != nil {
 		writeJSON(w, http.StatusOK, Fail("file not found in request"))
 		return
 	}
 	defer file.Close()
 
-	// Read file content
 	fileBytes, err := io.ReadAll(file)
 	if err != nil {
 		writeJSON(w, http.StatusOK, Fail("failed to read file"))
 		return
 	}
 
-	// Parse Excel file
-	f, err := excelize.OpenReader(&bytesReader{data: fileBytes})
+	rows, err := loadDeviceStoreImportRows(fileBytes, fileHdr.Filename)
 	if err != nil {
-		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to parse Excel file: %v", err)))
-		return
-	}
-	defer f.Close()
-
-	// Read first sheet
-	sheetName := f.GetSheetName(0)
-	if sheetName == "" {
-		writeJSON(w, http.StatusOK, Fail("Excel file has no sheets"))
-		return
-	}
-
-	rows, err := f.GetRows(sheetName)
-	if err != nil {
-		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to read rows: %v", err)))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
 
@@ -193,68 +175,7 @@ func (a *AdminAPI) importDeviceStores(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse header row
-	headerRow := rows[0]
-	headerMap := make(map[string]int)
-	for i, h := range headerRow {
-		headerMap[h] = i
-	}
-
-	// Map Excel header names to database field names
-	headerToFieldMap := map[string]string{
-		"Device Type":                 "device_type",
-		"Device Model":                "device_model",
-		"Device Code":                 "device_code",
-		"Device UID":                  "device_uid",
-		"UID":                         "device_uid",
-		"MAC":                         "mac",
-		"IMEI":                        "imei",
-		"Comm Mode":                   "comm_mode",
-		"MCU Model":                   "mcu_model",
-		"Firmware Version":            "firmware_version",
-		"OTA Target Firmware Version": "ota_target_firmware_version",
-		"OTA Target MCU Model":        "ota_target_mcu_model",
-		"Tenant ID":                   "tenant_id",
-		"Tenant Name":                 "tenant_name",
-		"Allow Access":                "allow_access",
-		"Import Date":                 "import_date",
-		"Allocate Time":               "allocate_time",
-	}
-
-	// Parse data rows
-	items := make([]*domain.DeviceStore, 0, len(rows)-1)
-	for rowIdx := 1; rowIdx < len(rows); rowIdx++ {
-		row := rows[rowIdx]
-		itemMap := make(map[string]any)
-
-		for colName, colIdx := range headerMap {
-			if colIdx < len(row) && row[colIdx] != "" {
-				// Convert Excel header name to database field name
-				fieldName := headerToFieldMap[colName]
-				if fieldName == "" {
-					// If no mapping found, use the header name as-is (lowercase)
-					fieldName = colName
-				}
-
-				// Special handling for "Allow Access" field: convert "Yes"/"No" to boolean
-				if colName == "Allow Access" {
-					value := row[colIdx]
-					if value == "Yes" || value == "yes" || value == "TRUE" || value == "true" || value == "1" {
-						itemMap[fieldName] = true
-					} else {
-						itemMap[fieldName] = false
-					}
-				} else {
-					itemMap[fieldName] = row[colIdx]
-				}
-			}
-		}
-
-		if len(itemMap) > 0 {
-			item := payloadToDeviceStore(itemMap)
-			items = append(items, item)
-		}
-	}
+	items := parseDeviceStoreImportRowsToItems(rows)
 
 	// Import using repository
 	successCount, _, skipped, errors, err := a.DeviceStore.ImportDeviceStores(r.Context(), items)

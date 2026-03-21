@@ -1,0 +1,21 @@
+# OwlBack systemd 服务安装（Alitest / Linux）
+
+# 1. 复制 unit 到 systemd（需 root）
+sudo cp /home/wisefido/owl/owlBack/systemd/owlback.service /etc/systemd/system/
+
+# 2. 若用户或路径不是 wisefido / home/wisefido/owl，先改 unit 或后用 override
+# sudo systemctl edit owlback
+# 在 [Service] 下写：
+#   User=你的用户
+#   WorkingDirectory=/path/to/owl/owlBack
+#   ExecStart=/path/to/owl/owlBack/start-owlback.sh
+#   ExecStop=/path/to/owl/owlBack/stop-owlback.sh
+
+# 3. 重载并启用、启动
+sudo systemctl daemon-reload
+sudo systemctl enable owlback
+sudo systemctl start owlback
+sudo systemctl status owlback
+
+# 日志
+journalctl -u owlback -f

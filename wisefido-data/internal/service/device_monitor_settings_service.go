@@ -324,7 +324,7 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 			zap.String("device_id", deviceID),
 			zap.String("device_code", device.DeviceCode.String),
 		)
-		hwData, hwErr := s.sleepaceGateway.GetAlarmConfig(ctx, device.DeviceID)
+		hwData, hwErr := s.sleepaceGateway.GetAlarmConfig(ctx, device.DeviceID, device.DeviceCode.String)
 		if hwErr == nil && hwData != nil {
 			hwItems := ConvertHardwareResponseToAlarmItems(hwData)
 			if len(hwItems) > 0 {
@@ -340,7 +340,7 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 					go s.syncSleepadHardwareToDB(context.Background(), tenantID, deviceID, baseline, merged)
 				}
 				// 语雀 getconfig：回填设备当前 realtimeDataInterval
-				if interval, cfgErr := s.sleepaceGateway.GetDeviceConfig(ctx, device.DeviceCode.String); cfgErr == nil && interval > 0 {
+				if interval, cfgErr := s.sleepaceGateway.GetDeviceConfig(ctx, device.DeviceID, device.DeviceCode.String); cfgErr == nil && interval > 0 {
 					for i := range merged {
 						if merged[i].AlarmType == alarm.SleepadSetting && merged[i].AlarmParams != nil {
 							merged[i].AlarmParams["realtime_interval"] = interval
@@ -410,7 +410,7 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 
 	// Sleepad fallback：查询 getconfig 回填 realtime_interval
 	if deviceType == "sleepad" && s.sleepaceGateway != nil && device.DeviceCode.Valid && device.DeviceCode.String != "" {
-		if interval, err := s.sleepaceGateway.GetDeviceConfig(ctx, device.DeviceCode.String); err == nil && interval > 0 {
+		if interval, err := s.sleepaceGateway.GetDeviceConfig(ctx, device.DeviceID, device.DeviceCode.String); err == nil && interval > 0 {
 			for i := range baselineAlarmItems {
 				if baselineAlarmItems[i].AlarmType == alarm.SleepadSetting && baselineAlarmItems[i].AlarmParams != nil {
 					baselineAlarmItems[i].AlarmParams["realtime_interval"] = interval
@@ -443,12 +443,12 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(ctx context.C
 	if deviceType == "radar" {
 		return s.UpdateRadarMonitorSettings(ctx, tenantID, deviceID, userID, alarmItems, progressCallback)
 	} else if deviceType == "sleepad" {
-		success, noChange, err := s.UpdateSleepadMonitorSettings(ctx, tenantID, deviceID, userID, alarmItems, progressCallback)
+		deviceWrite, dbWrite, noChange, err := s.UpdateSleepadMonitorSettings(ctx, tenantID, deviceID, userID, alarmItems, progressCallback)
 		return map[string]interface{}{
-			"success":      success,
+			"success":      dbWrite,
 			"no_change":    noChange,
-			"device_write": success,
-			"db_write":     success,
+			"device_write": deviceWrite,
+			"db_write":     dbWrite,
 		}, err
 	}
 	return nil, fmt.Errorf("unsupported device_type: %s", deviceType)
@@ -603,23 +603,23 @@ func (s *deviceMonitorSettingsService) UpdateRadarMonitorSettings(ctx context.Co
 // UpdateSleepadMonitorSettings updates sleepad device monitor settings.
 // Flow: compare -> push to hardware (via sleepad gateway) -> write DB -> publish config:alarmDevice:stream
 // Same as Radar: gateway 未配置或设备写入失败则不允许保存，不入库。
-func (s *deviceMonitorSettingsService) UpdateSleepadMonitorSettings(ctx context.Context, tenantID, deviceID, userID string, alarmItems []alarm.AlarmItem, progressCallback ProgressCallback) (success bool, noChange bool, err error) {
+func (s *deviceMonitorSettingsService) UpdateSleepadMonitorSettings(ctx context.Context, tenantID, deviceID, userID string, alarmItems []alarm.AlarmItem, progressCallback ProgressCallback) (deviceWrite bool, dbWrite bool, noChange bool, err error) {
 	deviceType := "sleepad"
 
 	device, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
 	if err != nil {
-		return false, false, fmt.Errorf("failed to get device: %w", err)
+		return false, false, false, fmt.Errorf("failed to get device: %w", err)
 	}
 	if !device.DeviceType.Valid {
-		return false, false, fmt.Errorf("device has no device_type")
+		return false, false, false, fmt.Errorf("device has no device_type")
 	}
 	if !s.isDeviceTypeMatch(deviceType, device.DeviceType.String) {
-		return false, false, fmt.Errorf("device type mismatch: expected %s, got %s", deviceType, device.DeviceType.String)
+		return false, false, false, fmt.Errorf("device type mismatch: expected %s, got %s", deviceType, device.DeviceType.String)
 	}
 
 	existingAlarmItems, err := s.getExistingAlarmItems(ctx, tenantID, deviceID, deviceType)
 	if err != nil {
-		return false, false, err
+		return false, false, false, err
 	}
 
 	// Sleepad 仅向 Sleepace 设备写入其支持的报警类型（与 Radar 仅写设备支持的项一致）。
@@ -641,10 +641,10 @@ func (s *deviceMonitorSettingsService) UpdateSleepadMonitorSettings(ctx context.
 
 	_, noChange, hasDeviceWriteChanges, err := s.compareAndLogChanges(ctx, tenantID, deviceID, deviceType, existingAlarmItems, alarmItems, deviceWriteAlarmTypes, deviceReturnAlarmTypes)
 	if err != nil {
-		return false, false, err
+		return false, false, false, err
 	}
 	if noChange {
-		return true, true, nil
+		return true, true, true, nil
 	}
 
 	if progressCallback != nil {
@@ -654,10 +654,10 @@ func (s *deviceMonitorSettingsService) UpdateSleepadMonitorSettings(ctx context.
 	// 1. Push to hardware via sleepad gateway（与雷达一致：未配置则不允许保存）
 	if hasDeviceWriteChanges {
 		if s.sleepaceGateway == nil {
-			return false, false, fmt.Errorf("sleepad gateway client not configured")
+			return false, false, false, fmt.Errorf("sleepad gateway client not configured")
 		}
 		if !device.DeviceCode.Valid || device.DeviceCode.String == "" {
-			return false, false, fmt.Errorf("device has no device_code")
+			return false, false, false, fmt.Errorf("device has no device_code")
 		}
 
 		var resetTime *alarm.ResetTimeParams
@@ -694,15 +694,19 @@ func (s *deviceMonitorSettingsService) UpdateSleepadMonitorSettings(ctx context.
 				zap.String("device_code", device.DeviceCode.String),
 				zap.Error(err),
 			)
-			return false, false, fmt.Errorf("failed to write alarm config to hardware: %w", err)
+			return false, false, false, fmt.Errorf("failed to write alarm config to hardware: %w", err)
 		}
+		deviceWrite = true
 
 		s.logger.Info("[SLEEPAD_WRITE] hardware write succeeded",
 			zap.String("tenant_id", tenantID),
 			zap.String("device_id", deviceID),
 		)
 
-		s.pushDeviceSettings(ctx, device.DeviceCode.String, alarmItems)
+		s.pushDeviceSettings(ctx, device.DeviceID, device.DeviceCode.String, alarmItems)
+	} else {
+		// 没有需要下发硬件的变更，也视为设备写入阶段成功
+		deviceWrite = true
 	}
 
 	if progressCallback != nil {
@@ -716,8 +720,9 @@ func (s *deviceMonitorSettingsService) UpdateSleepadMonitorSettings(ctx context.
 			zap.String("device_id", deviceID),
 			zap.Error(err),
 		)
-		return false, false, fmt.Errorf("failed to update database: %w", err)
+		return deviceWrite, false, false, fmt.Errorf("failed to update database: %w", err)
 	}
+	dbWrite = true
 
 	if progressCallback != nil {
 		progressCallback(100, "config update completed")
@@ -729,13 +734,13 @@ func (s *deviceMonitorSettingsService) UpdateSleepadMonitorSettings(ctx context.
 		zap.String("device_uid", device.DeviceUID),
 	)
 
-	return true, false, nil
+	return deviceWrite, dbWrite, false, nil
 }
 
 // pushDeviceSettings pushes SleepadSetting / MaterialSetting params to hardware
 // via the sleepace gateway proxy (individual API calls per setting type).
-func (s *deviceMonitorSettingsService) pushDeviceSettings(ctx context.Context, deviceCode string, items []alarm.AlarmItem) {
-	if s.sleepaceGateway == nil || deviceCode == "" {
+func (s *deviceMonitorSettingsService) pushDeviceSettings(ctx context.Context, deviceID, deviceCode string, items []alarm.AlarmItem) {
+	if s.sleepaceGateway == nil || deviceID == "" || deviceCode == "" {
 		return
 	}
 	for _, item := range items {
@@ -749,7 +754,7 @@ func (s *deviceMonitorSettingsService) pushDeviceSettings(ctx context.Context, d
 			if !intervalOk || intervalV <= 0 {
 				intervalV = 2
 			}
-			if err := s.sleepaceGateway.SetRealtimeInterval(ctx, deviceCode, intervalV); err != nil {
+			if err := s.sleepaceGateway.SetRealtimeInterval(ctx, deviceID, deviceCode, intervalV); err != nil {
 				s.logger.Warn("[SLEEPAD_WRITE] push realtime_interval", zap.Error(err))
 			}
 			sensV, sensOk := toIntParam(p["Bed_Exit_Sensitivity"])
@@ -757,18 +762,18 @@ func (s *deviceMonitorSettingsService) pushDeviceSettings(ctx context.Context, d
 				sensV, sensOk = toIntParam(p["leave_sensibility"])
 			}
 			if sensOk {
-				if err := s.sleepaceGateway.SetLeaveSensibility(ctx, deviceCode, sensV); err != nil {
+				if err := s.sleepaceGateway.SetLeaveSensibility(ctx, deviceID, deviceCode, sensV); err != nil {
 					s.logger.Warn("[SLEEPAD_WRITE] push Bed_Exit_Sensitivity", zap.Error(err))
 				}
 			}
 			reportType, reportOk := toIntParam(p["report_upload_type"])
 			if reportOk {
-				if err := s.sleepaceGateway.SetReportUploadType(ctx, deviceCode, reportType); err != nil {
+				if err := s.sleepaceGateway.SetReportUploadType(ctx, deviceID, deviceCode, reportType); err != nil {
 					s.logger.Warn("[SLEEPAD_WRITE] push report_upload_type", zap.Error(err))
 				}
 				if reportType == 0 {
 					if t, ok := toIntParam(p["report_upload_time"]); ok {
-						if err := s.sleepaceGateway.SetReportUploadTime(ctx, deviceCode, t); err != nil {
+						if err := s.sleepaceGateway.SetReportUploadTime(ctx, deviceID, deviceCode, t); err != nil {
 							s.logger.Warn("[SLEEPAD_WRITE] push report_upload_time", zap.Error(err))
 						}
 					}
@@ -778,7 +783,7 @@ func (s *deviceMonitorSettingsService) pushDeviceSettings(ctx context.Context, d
 			thickness, _ := toIntParam(p["thickness"])
 			material, _ := toIntParam(p["material_type"])
 			if thickness > 0 || material > 0 {
-				if err := s.sleepaceGateway.SetBedParameters(ctx, deviceCode, thickness, material); err != nil {
+				if err := s.sleepaceGateway.SetBedParameters(ctx, deviceID, deviceCode, thickness, material); err != nil {
 					s.logger.Warn("[SLEEPAD_WRITE] push bed parameters", zap.Error(err))
 				}
 			}

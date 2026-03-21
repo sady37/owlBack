@@ -135,7 +135,8 @@ fi
 
 # 创建必要的目录
 echo -e "${BLUE}Creating necessary directories...${NC}"
-mkdir -p "${LOG_DIR:-/tmp/owlBack_logs}"
+OWL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+mkdir -p "${LOG_DIR:-$OWL_ROOT/log}"
 mkdir -p "${DEPLOY_PATH}/owlBack/mqtt/{config,data,log}"
 echo -e "${GREEN}Directories created${NC}"
 echo ""
@@ -191,7 +192,7 @@ echo "Docker version: $(docker --version 2>/dev/null || echo 'Not installed')"
 echo "Docker Compose version: $(docker-compose --version 2>/dev/null || docker compose version 2>/dev/null || echo 'Not installed')"
 echo ""
 echo "Deployment path: $DEPLOY_PATH"
-echo "Log directory: ${LOG_DIR:-/tmp/owlBack_logs}"
+echo "Log directory: ${LOG_DIR:-$OWL_ROOT/log}"
 echo ""
 
 echo -e "${GREEN}========================================${NC}"

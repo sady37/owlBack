@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	commonconfig "owl-common/config"
 
@@ -62,6 +63,13 @@ func Load(path string) (*Config, error) {
 func (c *MQTTConfig) loadFromEnv() {
 	if v := os.Getenv("MQTT_BROKER"); v != "" {
 		c.Broker = v
+		if !strings.Contains(c.Broker, ":") {
+			port := os.Getenv("MQTT_PORT")
+			if port == "" {
+				port = "1883"
+			}
+			c.Broker = c.Broker + ":" + port
+		}
 	}
 	if v := os.Getenv("MQTT_CLIENT_ID"); v != "" {
 		c.ClientID = v

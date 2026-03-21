@@ -45,7 +45,8 @@ done < <(pgrep -f "wisefido-cardagg" 2>/dev/null || true)
 
 # 方法3: 通过日志文件查找（如果 tee 占用日志文件）
 if command -v lsof &> /dev/null; then
-    LOG_DIR="${LOG_DIR:-/tmp/owlBack_logs}"
+    OWL_LOG="$(cd "$(dirname "${BASH_SOURCE[0]:-$0})/../.." && pwd)/log"
+    LOG_DIR="${LOG_DIR:-$OWL_LOG}"
     LOG_FILE="${CARDAGG_LOG_FILE:-$LOG_DIR/wisefido-cardagg.log}"
     
     if [ -f "$LOG_FILE" ]; then

@@ -21,9 +21,9 @@ if pgrep -f "wisefido-sleepace" > /dev/null 2>&1; then
 fi
 
 if command -v lsof &> /dev/null; then
-    if lsof -i :8083 > /dev/null 2>&1; then
-        echo -e "${YELLOW}Port 8083 is still in use, killing processes...${NC}"
-        pids=$(lsof -ti :8083)
+    if lsof -nP -iTCP:8083 -sTCP:LISTEN > /dev/null 2>&1; then
+        echo -e "${YELLOW}Port 8083 still has LISTEN, killing listener PIDs...${NC}"
+        pids=$(lsof -nP -tiTCP:8083 -sTCP:LISTEN 2>/dev/null || true)
         for pid in $pids; do
             kill -9 $pid 2>/dev/null
         done
@@ -45,9 +45,9 @@ fi
 echo ""
 echo "  Port 8083 (HTTP):"
 if command -v lsof &> /dev/null; then
-    if lsof -i :8083 > /dev/null 2>&1; then
-        echo -e "    ${RED}Still in use${NC}"
-        lsof -i :8083
+    if lsof -nP -iTCP:8083 -sTCP:LISTEN > /dev/null 2>&1; then
+        echo -e "    ${RED}Still in use (LISTEN)${NC}"
+        lsof -nP -iTCP:8083 -sTCP:LISTEN
     else
         echo -e "    ${GREEN}Free${NC}"
     fi

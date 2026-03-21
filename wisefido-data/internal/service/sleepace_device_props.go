@@ -44,7 +44,7 @@ func ConvertHardwareResponseToAlarmItems(hw map[string]interface{}) []alarm.Alar
 		"bodyMoveDuration": "body_move_duration", "bodyMoveFlag": "body_move_alarm_level",
 		"nobodyMoveDuration": "nobody_move_duration", "nobodyMoveFlag": "nobody_move_alarm_level",
 		"noTurnOverDuration": "no_turn_over_duration", "noTurnOverFlag": "no_turn_over_alarm_level",
-		"situpFlag": "situp_alarm_level",
+		"situpFlag":     "situp_alarm_level",
 		"onbedDuration": "onbed_duration", "onbedFlag": "onbed_alarm_level",
 	}
 
@@ -175,50 +175,21 @@ func toInt(v interface{}) int {
 	return 0
 }
 
-// UpdateSleepaceSettingsToHardware pushes alarm settings to sleepad hardware directly.
-func UpdateSleepaceSettingsToHardware(ctx context.Context, client *SleepaceClient, device *domain.Device, deviceID string, settings map[string]interface{}) error {
-	if client == nil {
-		return fmt.Errorf("sleepad client is nil")
+// UpdateSleepaceSettingsToHardware pushes alarm settings via wisefido-sleepace transparent proxy.
+func UpdateSleepaceSettingsToHardware(ctx context.Context, gateway *SleepaceGatewayClient, device *domain.Device, deviceID string, settings map[string]interface{}) error {
+	if gateway == nil {
+		return fmt.Errorf("sleepace gateway is nil")
 	}
-
 	if !device.DeviceCode.Valid || device.DeviceCode.String == "" {
 		return fmt.Errorf("device has no device_code")
 	}
 	deviceCode := device.DeviceCode.String
-
 	hardwareSettings := ConvertFlatSettingsToSleepaceFormat(deviceCode, device.DeviceID, settings)
-
-	request := struct {
-		Token *SleepaceToken         `json:"token"`
-		Data  map[string]interface{} `json:"data"`
-	}{
-		Token: client.token,
-		Data:  hardwareSettings,
-	}
-
-	var response SleepaceResponse
-	resp, err := client.httpClient.R().
-		SetBody(request).
-		SetResult(&response).
-		Post("/sleepace/updatealarmnotifyconfig")
-
-	if err != nil {
-		return fmt.Errorf("sleepad API call failed: %w", err)
-	}
-
-	if resp.StatusCode() != 200 {
-		return fmt.Errorf("sleepad API returned status code: %d", resp.StatusCode())
-	}
-
-	if response.Status != 0 {
-		return fmt.Errorf("sleepad API error: %s (status: %d)", response.Msg, response.Status)
-	}
-
-	return nil
+	return gateway.UpdateAlarmConfig(ctx, hardwareSettings)
 }
 
 // ConvertFlatSettingsToSleepaceFormat converts flat snake_case settings to sleepad hardware API format.
-// userId 用 device_id (UUID)，厂家接受合作方用户唯一标识为任意字符串；deviceId 用 device_code。
+// userId = wisefido devices.device_id (UUID)，deviceId = device_store.device_code。
 func ConvertFlatSettingsToSleepaceFormat(deviceCode, deviceID string, settings map[string]interface{}) map[string]interface{} {
 	hardwareSettings := make(map[string]interface{})
 
@@ -484,28 +455,28 @@ func ConvertFlatSettingsToSleepaceFormat(deviceCode, deviceID string, settings m
 // 仅包含 Sleepace 设备支持的报警项；NightAbsence/SensorDetached/ResetTime/NapTime 等不在此处，不写入设备
 // 单个 AlarmType 可能对应多个 level key（如 HeartRateAlert → slow + fast）
 var alarmTypeToSleepaceLevelKeys = map[string][]string{
-	alarm.LeftBed:               {"left_bed_alarm_level"},
-	alarm.HeartRateAlert:        {"heart_rate_slow_alarm_level", "heart_rate_fast_alarm_level"},
-	alarm.RespRateAlert:         {"breath_rate_slow_alarm_level", "breath_rate_fast_alarm_level"},
-	alarm.ApneaHypopnea:         {"breath_pause_alarm_level"},
-	alarm.AbnormalBodyMovement:  {"body_move_alarm_level"},
-	alarm.NoBodyMove:            {"nobody_move_alarm_level"},
-	alarm.NoTurnOver:            {"no_turn_over_alarm_level"},
-	alarm.BedSitUp:              {"situp_alarm_level"},
-	alarm.InBed:                 {"onbed_alarm_level"},
+	alarm.LeftBed:              {"left_bed_alarm_level"},
+	alarm.HeartRateAlert:       {"heart_rate_slow_alarm_level", "heart_rate_fast_alarm_level"},
+	alarm.RespRateAlert:        {"breath_rate_slow_alarm_level", "breath_rate_fast_alarm_level"},
+	alarm.ApneaHypopnea:        {"breath_pause_alarm_level"},
+	alarm.AbnormalBodyMovement: {"body_move_alarm_level"},
+	alarm.NoBodyMove:           {"nobody_move_alarm_level"},
+	alarm.NoTurnOver:           {"no_turn_over_alarm_level"},
+	alarm.BedSitUp:             {"situp_alarm_level"},
+	alarm.InBed:                {"onbed_alarm_level"},
 }
 
 // alarmTypeParamMapping AlarmType → (generic param key → sleepace flat key)
 var alarmTypeParamMapping = map[string]map[string]string{
 	alarm.HeartRateAlert: {
-		"min":              "min_heart_rate",
-		"max":              "max_heart_rate",
+		"min":               "min_heart_rate",
+		"max":               "max_heart_rate",
 		"slow_duration_sec": "heart_rate_slow_duration",
 		"fast_duration_sec": "heart_rate_fast_duration",
 	},
 	alarm.RespRateAlert: {
-		"min":              "min_breath_rate",
-		"max":              "max_breath_rate",
+		"min":               "min_breath_rate",
+		"max":               "max_breath_rate",
 		"slow_duration_sec": "breath_rate_slow_duration",
 		"fast_duration_sec": "breath_rate_fast_duration",
 	},
@@ -530,7 +501,7 @@ var alarmTypeParamMapping = map[string]map[string]string{
 }
 
 // ConvertAlarmItemsToSleepaceConfig converts AlarmItem[] to sleepad cloud API format.
-// userId 用 device_id (UUID)，deviceId 用 device_code。
+// userId = wisefido devices.device_id，deviceId = device_store.device_code。
 // resetTime 为租户作息（alarm_cloud.metadata），非 nil 且存在 LeftBed 时写入 left_bed_start/end 下发设备。
 func ConvertAlarmItemsToSleepaceConfig(deviceCode, deviceID string, alarmItems []alarm.AlarmItem, resetTime *alarm.ResetTimeParams) map[string]interface{} {
 	flat := make(map[string]interface{})

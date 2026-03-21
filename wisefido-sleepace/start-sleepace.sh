@@ -97,7 +97,8 @@ echo ""
 echo -e "${GREEN}Starting wisefido-sleepace service (env=${ENV})...${NC}"
 echo ""
 
-LOG_DIR="${LOG_DIR:-/tmp/owlBack_logs}"
+OWL_LOG="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." && pwd)/log"
+LOG_DIR="${LOG_DIR:-$OWL_LOG}"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${SLEEPACE_LOG_FILE:-$LOG_DIR/wisefido-sleepace.log}"
 

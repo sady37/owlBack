@@ -1,0 +1,22 @@
+[Unit]
+Description=OwlBack backend services (data, cardagg, qinglan, sleepace, iot, ai)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=wisefido
+Group=wisefido
+WorkingDirectory=/home/wisefido/owl/owlBack
+ExecStart=/home/wisefido/owl/owlBack/start-owlback.sh
+ExecStop=/home/wisefido/owl/owlBack/stop-owlback.sh
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=owlback
+# 若用户/路径不同，可复制到 /etc/systemd/system/ 后 systemctl edit owlback 覆盖
+
+[Install]
+WantedBy=multi-user.target
