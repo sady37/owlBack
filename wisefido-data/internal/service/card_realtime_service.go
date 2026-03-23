@@ -703,6 +703,7 @@ waitInit:
 	tickerData := time.NewTicker(time.Duration(interval) * time.Second)
 	defer tickerData.Stop()
 	currentViewIDs := viewIDs
+	sseRealtimeTickerLogCount := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -746,11 +747,14 @@ waitInit:
 			if err != nil {
 				continue
 			}
-			s.logger.Info("[SSE-PUSH] ticker realtime",
-				zap.String("conn_id", connID),
-				zap.Int("cards", len(payload)),
-				zap.Int("bytes", len(jsonData)),
-				zap.String("data_preview", truncStr(string(jsonData), 300)))
+			sseRealtimeTickerLogCount++
+			if sseRealtimeTickerLogCount%20 == 0 {
+				s.logger.Info("[SSE-PUSH] ticker realtime",
+					zap.String("conn_id", connID),
+					zap.Int("cards", len(payload)),
+					zap.Int("bytes", len(jsonData)),
+					zap.String("data_preview", truncStr(string(jsonData), 300)))
+			}
 			io.WriteString(w, "data: "+string(jsonData)+"\n\n")
 			flusher.Flush()
 

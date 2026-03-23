@@ -72,7 +72,7 @@ func (h *AlarmProcessHandler) Handle(ctx context.Context, msg interface{}) error
 		return nil
 	}
 
-	h.logger.Info("alarm process",
+	h.logger.Debug("alarm process",
 		zap.String("cid", d.CardID),
 		zap.String("level", d.AlarmLevel),
 		zap.String("type", d.AlarmType),

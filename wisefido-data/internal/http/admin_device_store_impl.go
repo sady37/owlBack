@@ -284,8 +284,7 @@ func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
 	// tenant_id: support string or null (to clear/unallocate)
 	if v, ok := payload["tenant_id"]; ok {
 		if v == nil {
-			// null means unallocate (set to trash tenant)
-			ds.TenantID = "00000000-0000-0000-0000-000000000000"
+			ds.TenantID = "00000000-0000-0000-0000-000000000002"
 		} else if str, ok := v.(string); ok {
 			ds.TenantID = str
 		}

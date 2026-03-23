@@ -2,7 +2,12 @@ services:
   postgresql:
     image: timescale/timescaledb:latest-pg15
     container_name: owl-postgresql
-    command: ["postgres", "-c", "max_locks_per_transaction=256"]
+    command:
+      - postgres
+      - -c
+      - max_locks_per_transaction=256
+      - -c
+      - log_min_messages=warning
     environment:
       POSTGRES_DB: owlrd
       POSTGRES_USER: postgres
@@ -17,20 +22,30 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
 
   redis:
     image: redis:7-alpine  
-    command: redis-server --requirepass TeLunSu-36kr
+    command: redis-server --requirepass TeLunSu-36kr --loglevel warning
     container_name: owl-redis
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "TeLunSu-36kr", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
 
   mqtt:
     image: eclipse-mosquitto:2.0
@@ -48,10 +63,16 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
 
   sleepace-mysql:
     image: mysql:5.7
     container_name: sleepace-mysql
+    command: --general-log=0
     environment:
       - MYSQL_ROOT_PASSWORD=mysql
     ports:
@@ -64,6 +85,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
 
   # sleepace-service（Java Tomcat）不放进 Docker，在宿主机运行；仅 MySQL、MQTT 用 Docker
   # 宿主机启动：cd ../sleepace/sleepace-service && ./bin/start.sh 等

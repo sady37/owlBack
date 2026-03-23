@@ -33,9 +33,12 @@ check_env() {
 
 echo -e "${BLUE}环境变量检查:${NC}"
 
-# 必需的环境变量
-export TENANT_ID=${TENANT_ID:-"bb045e6b-7bc2-4e59-af2e-d8b1adc77f2c"}
-check_env "TENANT_ID"
+# TENANT_ID 可选（不设也能起 wisefido-ai；建业务租户后再填）
+if [ -z "$TENANT_ID" ]; then
+    echo -e "${YELLOW}⚠${NC} TENANT_ID 未设置（可选）"
+else
+    check_env "TENANT_ID"
+fi
 
 # 数据库配置（使用默认值或环境变量）
 export DB_HOST=${DB_HOST:-"127.0.0.1"}

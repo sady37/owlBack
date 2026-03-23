@@ -123,7 +123,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "  2. wisefido-iot service may not be running\n")
 			if *topicType != "" {
 				fmt.Fprintf(os.Stderr, "  3. No data matches the topic_type filter\n")
-				fmt.Fprintf(os.Stderr, "  4. Table must have data_values (JSONB); owlRD 18_iot_timeseries has no raw_original\n")
+				fmt.Fprintf(os.Stderr, "  4. Table must have data_value (JSONB array); owlRD 18_iot_timeseries\n")
 			}
 			// 不退出，只是提示
 			fmt.Fprintf(os.Stderr, "\nTip: Use --source redis to check if data is in Redis Stream\n")
@@ -145,20 +145,21 @@ type StreamMessage struct {
 	Data      map[string]interface{}
 }
 
-// DatabaseRecord 数据库记录
+// DatabaseRecord 数据库记录（与 owlRD/db/18_iot_timeseries.sql 一致）
 type DatabaseRecord struct {
-	ID         int64
-	DeviceID   string
-	DeviceUID  *string
-	Timestamp  time.Time
-	TopicType  *string
-	Category   *string
-	DataValues map[string]interface{}
-	BranchID   *string
-	BuildingID *string
-	UnitID     *string
-	RoomID     *string
-	BedID      *string
+	ID           int64
+	TenantID     string
+	DeviceID     string
+	DeviceUID    *string
+	TimestampMs  int64
+	TopicType    *string
+	Category     *string
+	DataValue    interface{}
+	BranchName   *string
+	BuildingName *string
+	UnitName     *string
+	RoomName     *string
+	BedName      *string
 }
 
 // ReadFromRedisStream 从 Redis Stream 读取数据（XREVRANGE 最新优先，所以 count=5 即 stream 里最新的 5 条）
@@ -244,21 +245,21 @@ func ReadFromDatabase(ctx context.Context, dbConfig *commonconfig.DatabaseConfig
 	var args []interface{}
 	argIndex := 1
 
-	// 查询字段（与 owlRD 18_iot_timeseries、wisefido-iot 一致：data_values JSONB，无 raw_original）
 	baseQuery := `
 		SELECT 
 			id,
+			tenant_id::text,
 			device_id,
 			device_uid,
-			timestamp,
+			"timestamp",
 			topic_type,
 			category,
-			data_values,
-			branch_id,
-			building_id,
-			unit_id,
-			room_id,
-			bed_id
+			data_value,
+			branch_name,
+			building_name,
+			unit_name,
+			room_name,
+			bed_name
 		FROM iot_timeseries
 		WHERE 1=1
 	`
@@ -277,7 +278,7 @@ func ReadFromDatabase(ctx context.Context, dbConfig *commonconfig.DatabaseConfig
 		argIndex++
 	}
 
-	query += " ORDER BY timestamp DESC"
+	query += ` ORDER BY "timestamp" DESC`
 	query += fmt.Sprintf(" LIMIT $%d", argIndex)
 	args = append(args, limit)
 
@@ -290,57 +291,69 @@ func ReadFromDatabase(ctx context.Context, dbConfig *commonconfig.DatabaseConfig
 	var results []DatabaseRecord
 	for rows.Next() {
 		var record DatabaseRecord
-		var deviceID, deviceUID, topicTypeVal, categoryVal sql.NullString
-		var dataValuesJSON []byte
-		var branchID, buildingID, unitID, roomID, bedID sql.NullString
+		var tenantID, deviceID, deviceUID, topicTypeVal, categoryVal sql.NullString
+		var dataValueJSON []byte
+		var branchName, buildingName, unitName, roomName, bedName sql.NullString
 
 		if err := rows.Scan(
 			&record.ID,
+			&tenantID,
 			&deviceID,
 			&deviceUID,
-			&record.Timestamp,
+			&record.TimestampMs,
 			&topicTypeVal,
 			&categoryVal,
-			&dataValuesJSON,
-			&branchID,
-			&buildingID,
-			&unitID,
-			&roomID,
-			&bedID,
+			&dataValueJSON,
+			&branchName,
+			&buildingName,
+			&unitName,
+			&roomName,
+			&bedName,
 		); err != nil {
 			continue
 		}
 
+		if tenantID.Valid {
+			record.TenantID = tenantID.String
+		}
 		if deviceID.Valid {
 			record.DeviceID = deviceID.String
 		}
 		if deviceUID.Valid {
-			record.DeviceUID = &deviceUID.String
+			s := deviceUID.String
+			record.DeviceUID = &s
 		}
 		if topicTypeVal.Valid {
-			record.TopicType = &topicTypeVal.String
+			s := topicTypeVal.String
+			record.TopicType = &s
 		}
 		if categoryVal.Valid {
-			record.Category = &categoryVal.String
+			s := categoryVal.String
+			record.Category = &s
 		}
-		if branchID.Valid {
-			record.BranchID = &branchID.String
+		if branchName.Valid {
+			s := branchName.String
+			record.BranchName = &s
 		}
-		if buildingID.Valid {
-			record.BuildingID = &buildingID.String
+		if buildingName.Valid {
+			s := buildingName.String
+			record.BuildingName = &s
 		}
-		if unitID.Valid {
-			record.UnitID = &unitID.String
+		if unitName.Valid {
+			s := unitName.String
+			record.UnitName = &s
 		}
-		if roomID.Valid {
-			record.RoomID = &roomID.String
+		if roomName.Valid {
+			s := roomName.String
+			record.RoomName = &s
 		}
-		if bedID.Valid {
-			record.BedID = &bedID.String
+		if bedName.Valid {
+			s := bedName.String
+			record.BedName = &s
 		}
 
-		if err := json.Unmarshal(dataValuesJSON, &record.DataValues); err != nil {
-			record.DataValues = make(map[string]interface{})
+		if len(dataValueJSON) > 0 {
+			_ = json.Unmarshal(dataValueJSON, &record.DataValue)
 		}
 
 		results = append(results, record)
@@ -424,47 +437,44 @@ func printDBRecords(records []DatabaseRecord) {
 		}
 		fmt.Printf("--- Record %d ---\n", i+1)
 		fmt.Printf("ID: %d\n", record.ID)
+		if record.TenantID != "" {
+			fmt.Printf("Tenant ID: %s\n", record.TenantID)
+		}
 		fmt.Printf("Device ID: %s\n", record.DeviceID)
 		if record.DeviceUID != nil {
 			fmt.Printf("Device UID: %s\n", *record.DeviceUID)
 		}
-		fmt.Printf("Timestamp: %s\n", record.Timestamp.Format(time.RFC3339))
+		fmt.Printf("Timestamp (ms): %d\n", record.TimestampMs)
 		if record.TopicType != nil {
 			fmt.Printf("Topic Type: %s\n", *record.TopicType)
 		}
 		if record.Category != nil {
 			fmt.Printf("Category: %s\n", *record.Category)
 		}
-		if record.BranchID != nil {
-			fmt.Printf("Branch ID: %s\n", *record.BranchID)
+		if record.BranchName != nil {
+			fmt.Printf("Branch name: %s\n", *record.BranchName)
 		}
-		if record.BuildingID != nil {
-			fmt.Printf("Building ID: %s\n", *record.BuildingID)
+		if record.BuildingName != nil {
+			fmt.Printf("Building name: %s\n", *record.BuildingName)
 		}
-		if record.UnitID != nil {
-			fmt.Printf("Unit ID: %s\n", *record.UnitID)
+		if record.UnitName != nil {
+			fmt.Printf("Unit name: %s\n", *record.UnitName)
 		}
-		if record.RoomID != nil {
-			fmt.Printf("Room ID: %s\n", *record.RoomID)
+		if record.RoomName != nil {
+			fmt.Printf("Room name: %s\n", *record.RoomName)
 		}
-		if record.BedID != nil {
-			fmt.Printf("Bed ID: %s\n", *record.BedID)
+		if record.BedName != nil {
+			fmt.Printf("Bed name: %s\n", *record.BedName)
 		}
 		fmt.Println()
 
-		fmt.Println("Data Values (JSON):")
-		// data_values 存的是整条流消息（iotHead + dataValue），上面已打印 head，此处只打印 dataValue 避免重复
-		if dv, ok := record.DataValues["dataValue"]; ok {
-			dataJSON, _ := json.MarshalIndent(dv, "", "  ")
-			fmt.Println(string(dataJSON))
-		} else {
-			dataJSON, _ := json.MarshalIndent(record.DataValues, "", "  ")
-			fmt.Println(string(dataJSON))
-		}
+		fmt.Println("data_value (JSON):")
+		dataJSON, _ := json.MarshalIndent(record.DataValue, "", "  ")
+		fmt.Println(string(dataJSON))
 	}
 
 	fmt.Println()
-	fmt.Println("Note: Database stores converted standard values in data_values JSONB.")
+	fmt.Println("Note: Database stores data_value JSONB array (stream dataValue only).")
 	fmt.Println("To view raw stream data, use: --source redis --stream iot:<topic_type>:stream")
 }
 

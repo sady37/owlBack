@@ -343,7 +343,8 @@ type AuthMessage struct {
 	DataValue  map[string]interface{} `json:"dataValue"`
 }
 
-func BuildAuthRequestMessage(deviceUID, deviceType, remoteAddr string, deviceInfo map[string]interface{}) AuthMessage {
+// BuildAuthRequestMessage tenantID 须由 Device gateway 在查 device_store 后传入：在库则用该行 tenant_id，未入库则用平台 trash(000…000)。
+func BuildAuthRequestMessage(deviceUID, deviceType, tenantID, remoteAddr string, deviceInfo map[string]interface{}) AuthMessage {
 	now := time.Now().Unix()
 	dataValue := map[string]interface{}{
 		"category":    AuthCategoryRequest,
@@ -362,7 +363,7 @@ func BuildAuthRequestMessage(deviceUID, deviceType, remoteAddr string, deviceInf
 	return AuthMessage{
 		DeviceUID:  deviceUID,
 		DeviceType: deviceType,
-		TenantID:   "00000000-0000-0000-0000-000000000000",
+		TenantID:   tenantID,
 		Timestamp:  now,
 		TopicType:  AuthTopicType,
 		Category:   AuthCategoryRequest,

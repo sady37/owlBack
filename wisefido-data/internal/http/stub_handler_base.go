@@ -89,7 +89,6 @@ func (s *StubHandler) tenantIDFromReq(w http.ResponseWriter, r *http.Request) (s
 // SystemTenantID is the fixed platform tenant id used for SystemAdmin (dev bootstrap).
 func SystemTenantID() string {
 	// IMPORTANT:
-	// - Do NOT use 00000000-0000-0000-0000-000000000000 because owlRD uses it as a sentinel
-	//   meaning "unassigned" (e.g. device_store.tenant_id).
+	// - Do NOT use 00000000-0000-0000-0000-000000000000: owlRD 保留为 trash（device_store 回收待删）
 	return "00000000-0000-0000-0000-000000000001"
 }

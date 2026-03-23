@@ -219,8 +219,7 @@ export REDIS_PASSWORD="${REDIS_PASSWORD:-TeLunSu-36kr}"
 export MQTT_BROKER="${MQTT_BROKER:-127.0.0.1}"
 export MQTT_PORT="${MQTT_PORT:-1883}"
 
-# wisefido-cardagg 配置（如果没有从 .env 加载）
-export TENANT_ID="${TENANT_ID:-bb045e6b-7bc2-4e59-af2e-d8b1adc77f2c}"
+# wisefido-ai 可读 TENANT_ID（可选）；不设也能启动，管理员建业务租户后再填即可。不在此写默认 UUID。
 export CARD_TRIGGER_MODE="${CARD_TRIGGER_MODE:-polling}"
 export CARD_POLLING_INTERVAL="${CARD_POLLING_INTERVAL:-86400}"
 export CARD_AGGREGATION_ENABLED="${CARD_AGGREGATION_ENABLED:-true}"
@@ -236,7 +235,7 @@ echo "  DB_HOST: $DB_HOST"
 echo "  DB_NAME: $DB_NAME"
 echo "  REDIS_ADDR: $REDIS_ADDR"
 echo "  MQTT_BROKER: $MQTT_BROKER:$MQTT_PORT"
-echo "  TENANT_ID: $TENANT_ID"
+echo "  TENANT_ID: ${TENANT_ID:-<unset — 可选；建业务租户后填 wisefido-ai 轮询用>}"
 echo "  CARD_TRIGGER_MODE: $CARD_TRIGGER_MODE (card creation now handled by wisefido-data, this is backup)"
 if [ "$CARD_POLLING_INTERVAL" -ge 86400 ]; then
     echo "  CARD_POLLING_INTERVAL: $CARD_POLLING_INTERVAL seconds (auto-switched to daily 8:00 AM scheduled task)"
@@ -334,7 +333,7 @@ echo -e "${BLUE}  Function: Data aggregation (PostgreSQL + Redis → full card c
 echo -e "${YELLOW}  Note: Card creation/update is now handled by wisefido-data${NC}"
 cd "$OWLBACK_DIR/wisefido-cardagg"
 : >"$AGGREGATOR_LOG"
-go run main.go >>"$AGGREGATOR_LOG" 2>&1 &
+go run "$OWLBACK_DIR/wisefido-cardagg/main.go" >>"$AGGREGATOR_LOG" 2>&1 &
 AGGREGATOR_PID=$!
 echo "  PID: $AGGREGATOR_PID"
 echo "  Log: $AGGREGATOR_LOG  (tail -f \"$AGGREGATOR_LOG\")"

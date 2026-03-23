@@ -35,7 +35,7 @@ type DeviceStore struct {
 	OTATargetMCUModel        sql.NullString `db:"ota_target_mcu_model"`        // nullable
 
 	// 租户分配
-	TenantID string `db:"tenant_id"` // NOT NULL, default '00000000-0000-0000-0000-000000000000'
+	TenantID string `db:"tenant_id"` // NOT NULL default Unallocated 002; 000 trash 001 system
 
 	// 时间戳
 	ImportDate   sql.NullTime `db:"import_date"`   // NOT NULL, default CURRENT_TIMESTAMP

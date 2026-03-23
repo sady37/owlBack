@@ -28,10 +28,10 @@ func main() {
 	}
 	defer logger.Sync()
 
-	// 3. 获取租户ID（从环境变量或配置）
+	// 3. 业务租户 ID（可选；内置租户由建库脚本写入，与启动无关）
 	tenantID := os.Getenv("TENANT_ID")
 	if tenantID == "" {
-		logger.Fatal("TENANT_ID environment variable is required")
+		logger.Info("TENANT_ID unset — wisefido-ai starts; card polling uses no tenant until set in .env")
 	}
 
 	// 4. 创建服务

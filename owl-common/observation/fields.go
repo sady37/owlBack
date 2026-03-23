@@ -33,7 +33,7 @@ const (
 	FieldPositionY = "position_y"
 	FieldPositionZ = "position_z"
 
-	FieldTrackID             = "track_id" // 0-8=人, 9=未知人, 10=空间, 11=设备
+	FieldTrackID             = "track_id" // 0-8=人, 9=未知人, 10=空间, 11=设备,88=无人
 	FieldLogicID             = "logic_id" // Card 分配的逻辑目标 ID，cardagg 写入
 	FieldTrackCount          = "track_count"
 	FieldAreaID              = "area_id"

@@ -175,6 +175,13 @@ func (r *Router) RegisterRadarRoutes(h *RadarHandler) {
 	})
 }
 
+// RegisterPlaybackRoutes 历史回放（防扫库：见 service/track_playback_service.go ValidatePlaybackWindow）
+func (r *Router) RegisterPlaybackRoutes(h *PlaybackHandler) {
+	r.Handle("/api/radar/playback", h.PostRadarPlayback)
+	r.Handle("/api/vital/playback", h.PostVitalPlayback)
+	r.Handle("/api/radar/alarm-replay-context", h.PostAlarmReplayContext)
+}
+
 // RegisterAdminUnitDeviceRoutes：Unit/Room/Bed + Devices（地址类 + 设备类）
 // 注意：Unit/Room/Bed 路由已迁移到 UnitHandler（见 RegisterUnitRoutes）
 // 注意：Devices 路由已迁移到 DeviceHandler（见 RegisterDeviceRoutes）

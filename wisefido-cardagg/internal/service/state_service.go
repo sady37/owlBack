@@ -578,7 +578,7 @@ func (s *StateService) DeriveAndWriteState(
 		return nil, err
 	}
 
-	s.logger.Info("card:status derive",
+	s.logger.Debug("card:status derive",
 		zap.String("cid", snap.CardID),
 		zap.Bool("has_target", prevTarget != nil),
 		zap.Int("devices", len(deviceStatus)))
@@ -791,7 +791,7 @@ func (s *StateService) DeriveBedStateFromRealtime(ctx context.Context, snap Card
 				return
 			}
 			_ = s.ReconcileRoomStateFromBedState(ctx, snap.CardID)
-			s.logger.Info("derive bed_state=0 from realtime (Sleepad sumInBedConf>=350)", zap.String("cid", snap.CardID), zap.Int("sumInBedConf", sumInBedConf))
+			s.logger.Debug("derive bed_state=0 from realtime (Sleepad sumInBedConf>=350)", zap.String("cid", snap.CardID), zap.Int("sumInBedConf", sumInBedConf))
 			return
 		}
 		if sumInBedConf <= -DeriveBedStateThreshold {
@@ -817,7 +817,7 @@ func (s *StateService) DeriveBedStateFromRealtime(ctx context.Context, snap Card
 				return
 			}
 			_ = s.ReconcileRoomStateFromBedState(ctx, snap.CardID)
-			s.logger.Info("derive bed_state=1 from realtime (Sleepad sumInBedConf<=-350)", zap.String("cid", snap.CardID), zap.Int("sumInBedConf", sumInBedConf))
+			s.logger.Debug("derive bed_state=1 from realtime (Sleepad sumInBedConf<=-350)", zap.String("cid", snap.CardID), zap.Int("sumInBedConf", sumInBedConf))
 			return
 		}
 		delete(s.vitalDeriveRounds, snap.CardID)
@@ -845,7 +845,7 @@ func (s *StateService) DeriveBedStateFromRealtime(ctx context.Context, snap Card
 			return
 		}
 		_ = s.ReconcileRoomStateFromBedState(ctx, snap.CardID)
-		s.logger.Info("derive bed_state=0 from realtime (sum>350)", zap.String("cid", snap.CardID), zap.Int("sumConf", sumConf), zap.Int("n", n))
+		s.logger.Debug("derive bed_state=0 from realtime (sum>350)", zap.String("cid", snap.CardID), zap.Int("sumConf", sumConf), zap.Int("n", n))
 		return
 	}
 	if n >= VitalDeriveRoundsNeeded {
@@ -871,7 +871,7 @@ func (s *StateService) DeriveBedStateFromRealtime(ctx context.Context, snap Card
 			return
 		}
 		_ = s.ReconcileRoomStateFromBedState(ctx, snap.CardID)
-		s.logger.Info("derive bed_state=1 from realtime (5 rounds sum<=350)", zap.String("cid", snap.CardID), zap.Int("sumConf", sumConf))
+		s.logger.Debug("derive bed_state=1 from realtime (5 rounds sum<=350)", zap.String("cid", snap.CardID), zap.Int("sumConf", sumConf))
 		return
 	}
 	s.vitalDeriveMu.Unlock()

@@ -8,8 +8,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/google/uuid"
 	"wisefido-data/internal/domain"
+
+	"github.com/google/uuid"
 )
 
 // MemoryTenantsRepo supports admin tenants management when DB is disabled.
@@ -53,6 +54,30 @@ func (r *MemoryTenantsRepo) GetTenantByDomain(_ context.Context, domain string) 
 		}
 	}
 	return nil, fmt.Errorf("tenant not found")
+}
+
+// GetTenantIDByName 按 tenant_name 精确匹配（不区分大小写）
+func (r *MemoryTenantsRepo) GetTenantIDByName(_ context.Context, tenantName string) (string, error) {
+	want := strings.ToLower(strings.TrimSpace(tenantName))
+	if want == "" {
+		return "", fmt.Errorf("tenant_name is empty")
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var ids []string
+	for _, t := range r.tenants {
+		if strings.ToLower(strings.TrimSpace(t.TenantName)) == want {
+			ids = append(ids, t.TenantID)
+		}
+	}
+	switch len(ids) {
+	case 0:
+		return "", fmt.Errorf("tenant not found for name %q", tenantName)
+	case 1:
+		return ids[0], nil
+	default:
+		return "", fmt.Errorf("ambiguous tenant_name %q (%d rows)", tenantName, len(ids))
+	}
 }
 
 // ListTenants 查询租户列表（支持分页、过滤、搜索）

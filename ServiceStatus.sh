@@ -61,10 +61,24 @@ check_process() {
     fi
 }
 
+# wisefido-cardagg 由 start-owlback 用「go run main.go」或「go run .../wisefido-cardagg/main.go」启动，前者 cmdline 不含 wisefido-cardagg，需多模式匹配
+check_cardagg_process() {
+    local name="wisefido-cardagg"
+    local pid
+    pid=$(pgrep -f "wisefido-cardagg/main.go" 2>/dev/null | head -1)
+    [ -z "$pid" ] && pid=$(pgrep -f "wisefido-cardagg" 2>/dev/null | head -1)
+    [ -z "$pid" ] && pid=$(pgrep -f "go run main.go" 2>/dev/null | head -1)
+    if [ -n "$pid" ]; then
+        echo -e "  ${GREEN}[UP]${NC}   $name  pid:$pid"
+    else
+        echo -e "  ${RED}[DOWN]${NC} $name"
+    fi
+}
+
 echo ""
 echo "=== OwlBack Services ==="
 check_port 8080 "wisefido-data"
-check_process "wisefido-cardagg" "wisefido-cardagg"
+check_cardagg_process
 check_port 8081 "wisefido-qinglan"
 check_port 8083 "wisefido-sleepace (Go gateway)"
 check_port 8085 "wisefido-iot"

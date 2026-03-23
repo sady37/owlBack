@@ -1,10 +1,13 @@
 #!/bin/bash
 # 检查 cards 表是否有数据，以及 card-overview API 是否返回数据
-# 用法: ./scripts/check_cards_data.sh [tenant_id]
-# 默认 tenant_id 使用 card-manage 日志中的 bb045e6b-7bc2-4e59-af2e-d8b1adc77f2c
+# 用法: TENANT_ID=<uuid> ./scripts/check_cards_data.sh   或   ./scripts/check_cards_data.sh <uuid>
 
 set -e
-TENANT_ID="${1:-bb045e6b-7bc2-4e59-af2e-d8b1adc77f2c}"
+TENANT_ID="${1:-$TENANT_ID}"
+if [ -z "$TENANT_ID" ]; then
+  echo "缺少 tenant_id：export TENANT_ID=<uuid> 或传入第一个参数"
+  exit 1
+fi
 DB_HOST="${DB_HOST:-127.0.0.1}"
 DB_PORT="${DB_PORT:-5432}"
 

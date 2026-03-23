@@ -17,6 +17,9 @@ type TenantsRepository interface {
 	// 注意：domain有唯一索引，支持此查询
 	GetTenantByDomain(ctx context.Context, domain string) (*domain.Tenant, error)
 
+	// GetTenantIDByName 按 tenant_name 精确匹配（不区分大小写），唯一则返回 tenant_id
+	GetTenantIDByName(ctx context.Context, tenantName string) (string, error)
+
 	// ========== 查询（列表）==========
 	// ListTenants 查询租户列表（支持分页、过滤、搜索）
 	// 过滤条件：status（active/suspended/deleted）

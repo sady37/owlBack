@@ -174,8 +174,8 @@ func (c *StreamConsumer) consumeStream(ctx context.Context, streamName string) e
 // processMessage 处理单条消息
 func (c *StreamConsumer) processMessage(ctx context.Context, streamName string, msg rediscommon.StreamMessage) error {
 	// 解析数据：支持两种格式
-	// 1. 展开格式（推荐）：字段直接展开在 msg.Values 中（device_id, device_uid, timestamp, topic_type, category, data_value, ...）
-	// 2. 包装格式（兼容）：字段包装在 msg.Values["data"] 中（JSON 字符串）
+	// 1. 展开格式（推荐）：字段在 msg.Values（device_id, device_uid, tenant_id, timestamp, topic_type, category, dataValue, ...）
+	// 2. 包装格式（兼容）：整包在 msg.Values["data"]（JSON 字符串）
 	var data map[string]interface{}
 
 	// 优先尝试展开格式（直接使用 msg.Values）
@@ -220,11 +220,7 @@ func (c *StreamConsumer) processMessage(ctx context.Context, streamName string, 
 		return fmt.Errorf("invalid data format: empty message values")
 	}
 
-	// 写入 PostgreSQL（窄表结构：id, device_id, device_uid, timestamp, topic_type, category, data_values JSONB, ...）
-	// data_type 在 Insert 方法中根据 topic_type 自动映射（monitor, statistics, event, alarm）
-	// 所有 encode 后的数据存储在 data_values JSONB 中
-	// 注意：data 的字段顺序为：device_id → device_type → tenant_id → timestamp → topic_type → data_value → 位置信息
-	// category 字段保留在 data_value 内部，不提取到顶层，避免冗余
+	// 写入 PostgreSQL；tenant_id 须由 Device gateway 带齐，缺则 Insert 报错本处 skip
 	id, err := c.iotRepo.Insert(data)
 	if err != nil {
 		// 如果遇到 db 与 stream 不一致，记录并跳过（根据用户要求）

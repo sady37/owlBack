@@ -110,6 +110,40 @@ func (r *PostgresTenantsRepository) GetTenantByDomain(ctx context.Context, domai
 	return &tenant, nil
 }
 
+// GetTenantIDByName 按 tenant_name 精确匹配（trim + 不区分大小写），唯一则返回 tenant_id
+func (r *PostgresTenantsRepository) GetTenantIDByName(ctx context.Context, tenantName string) (string, error) {
+	name := strings.TrimSpace(tenantName)
+	if name == "" {
+		return "", fmt.Errorf("tenant_name is empty")
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT tenant_id::text FROM tenants
+		WHERE LOWER(TRIM(tenant_name)) = LOWER($1)`, name)
+	if err != nil {
+		return "", fmt.Errorf("lookup tenant by name: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return "", err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	switch len(ids) {
+	case 0:
+		return "", fmt.Errorf("tenant not found for name %q", name)
+	case 1:
+		return ids[0], nil
+	default:
+		return "", fmt.Errorf("ambiguous tenant_name %q (%d rows)", name, len(ids))
+	}
+}
+
 // ListTenants 查询租户列表（支持分页、过滤、搜索）
 func (r *PostgresTenantsRepository) ListTenants(ctx context.Context, filter TenantFilters, page, size int) ([]*domain.Tenant, int, error) {
 	if page <= 0 {

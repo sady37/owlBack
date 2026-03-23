@@ -21,6 +21,16 @@ func NewPostgresDeviceStoreRepository(db *sql.DB) *PostgresDeviceStoreRepository
 	return &PostgresDeviceStoreRepository{db: db}
 }
 
+const (
+	trashTenantID       = "00000000-0000-0000-0000-000000000000"
+	systemTenantID      = "00000000-0000-0000-0000-000000000001"
+	unallocatedTenantID = "00000000-0000-0000-0000-000000000002"
+)
+
+func isDeviceStorePivotTenant(tenantID string) bool {
+	return tenantID == trashTenantID || tenantID == systemTenantID || tenantID == unallocatedTenantID
+}
+
 // orderByClauseDeviceStore 白名单排序字段，防止 SQL 注入
 func orderByClauseDeviceStore(sort, direction string) string {
 	dir := "ASC"
@@ -320,10 +330,10 @@ func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, d
 		return "", fmt.Errorf("failed to check existing device: %w", err)
 	}
 
-	// 3. 处理tenant_id（如果未提供，使用默认值）
+	// 3. 处理 tenant_id（未提供则 Unallocated 002）
 	tenantID := deviceStore.TenantID
 	if tenantID == "" {
-		tenantID = "00000000-0000-0000-0000-000000000000"
+		tenantID = unallocatedTenantID
 	}
 
 	// 4. 插入新设备
@@ -365,20 +375,10 @@ func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, d
 }
 
 // BatchUpdateDeviceStores 批量更新设备库存
-// 迁移规则：只能从其他租户迁移到 system/trash，或从 system/trash 迁移到其他租户
-// 防止直接从租户A迁移到租户B导致数据泄漏
+// 迁移规则：须经由 pivot（system / trash / Unallocated）中转，禁止租户 A 直迁租户 B
 func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Context, updates []*domain.DeviceStore) error {
 	if len(updates) == 0 {
 		return nil
-	}
-
-	// 常量定义
-	systemTenantID := "00000000-0000-0000-0000-000000000001"
-	trashTenantID := "00000000-0000-0000-0000-000000000000"
-
-	// 判断是否为 system 或 trash 租户
-	isSystemOrTrash := func(tenantID string) bool {
-		return tenantID == systemTenantID || tenantID == trashTenantID
 	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -395,7 +395,7 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 
 		// 如果更新 tenant_id，需要验证迁移规则（仅校验，不写库）
 		var tenantChanged bool
-		var migrateFromSystemOrTrash bool
+		var migrateFromPivot bool
 		if update.TenantID != "" {
 			var currentTenantID string
 			err := tx.QueryRowContext(ctx, `SELECT tenant_id::text FROM device_store WHERE device_uid = $1`, deviceUID).Scan(&currentTenantID)
@@ -407,13 +407,13 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 			}
 			if currentTenantID != update.TenantID {
 				tenantChanged = true
-				currentIs := isSystemOrTrash(currentTenantID)
-				newIs := isSystemOrTrash(update.TenantID)
+				currentIs := isDeviceStorePivotTenant(currentTenantID)
+				newIs := isDeviceStorePivotTenant(update.TenantID)
 				if !currentIs && !newIs {
 					name1, name2 := tenantNamesOrIDs(ctx, tx, currentTenantID, update.TenantID)
-					return fmt.Errorf("cannot migrate device directly from tenant %s to tenant %s: must migrate via system/trash tenant first", name1, name2)
+					return fmt.Errorf("cannot migrate device directly from tenant %s to tenant %s: must migrate via system/trash/Unallocated tenant first", name1, name2)
 				}
-				migrateFromSystemOrTrash = currentIs && !newIs
+				migrateFromPivot = currentIs && !newIs
 			}
 		}
 
@@ -454,7 +454,7 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 		setParts = append(setParts, fmt.Sprintf("allow_access = $%d", argN))
 		args = append(args, update.AllowAccess)
 		argN++
-		if update.TenantID != "" && update.TenantID != "00000000-0000-0000-0000-000000000000" {
+		if update.TenantID != "" && update.TenantID != trashTenantID && update.TenantID != unallocatedTenantID {
 			setParts = append(setParts, "allocate_time = CASE WHEN allocate_time IS NULL THEN CURRENT_TIMESTAMP ELSE allocate_time END")
 		}
 		if len(setParts) == 0 {
@@ -479,7 +479,7 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 			if err != nil {
 				return fmt.Errorf("failed to update devices table: %w", err)
 			}
-			if migrateFromSystemOrTrash {
+			if migrateFromPivot {
 				_, err = tx.ExecContext(ctx, `
 					INSERT INTO devices (device_id, device_uid, tenant_id, device_name, status, business_access, monitoring_enabled)
 					SELECT ds.device_id, ds.device_uid, $1,
@@ -524,10 +524,7 @@ func tenantNamesOrIDs(ctx context.Context, tx *sql.Tx, id1, id2 string) (string,
 	return n1, n2
 }
 
-// trashTenantID 未分配/回收租户 ID，仅当 device_store.tenant_id = trash 时允许删除。
-const trashTenantID = "00000000-0000-0000-0000-000000000000"
-
-// DeleteDeviceStore 删除设备库存。仅允许 tenant_id = trash 的记录；需先手动将设备迁回 trash 再删。
+// DeleteDeviceStore 删除设备库存。仅允许 tenant_id = trash(000)；需先迁回 trash 再删。
 func (r *PostgresDeviceStoreRepository) DeleteDeviceStore(ctx context.Context, deviceUID string) error {
 	var tenantID string
 	err := r.db.QueryRowContext(ctx, `SELECT tenant_id::text FROM device_store WHERE device_uid = $1`, deviceUID).Scan(&tenantID)
@@ -602,7 +599,7 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 
 		tenantID := item.TenantID
 		if tenantID == "" {
-			tenantID = "00000000-0000-0000-0000-000000000001" // system 租户
+			tenantID = unallocatedTenantID
 		}
 
 		insertQuery := `

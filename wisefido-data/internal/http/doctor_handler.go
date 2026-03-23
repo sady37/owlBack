@@ -6,25 +6,30 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/pprof"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
+
+	"wisefido-data/internal/repository"
 )
 
 // DoctorHandler 诊断处理器
 type DoctorHandler struct {
 	db           *sql.DB
 	redisClient  *redis.Client
+	tenants      repository.TenantsRepository
 	logger       *zap.Logger
 	pprofEnabled bool
 }
 
 // NewDoctorHandler 创建诊断处理器
-func NewDoctorHandler(db *sql.DB, redisClient *redis.Client, logger *zap.Logger) *DoctorHandler {
+func NewDoctorHandler(db *sql.DB, redisClient *redis.Client, tenants repository.TenantsRepository, logger *zap.Logger) *DoctorHandler {
 	return &DoctorHandler{
 		db:          db,
 		redisClient: redisClient,
+		tenants:     tenants,
 		logger:      logger,
 	}
 }
@@ -135,6 +140,87 @@ func (d *DoctorHandler) Ready(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GetLatestIotTimeseries GET /doctor/iot-timeseries/latest?device_uid=... 需 X-Tenant-Id（UUID 或 tenant_name）
+func (d *DoctorHandler) GetLatestIotTimeseries(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if d.db == nil {
+		writeJSON(w, http.StatusOK, Fail("database not configured"))
+		return
+	}
+	deviceUID := strings.TrimSpace(r.URL.Query().Get("device_uid"))
+	if deviceUID == "" {
+		writeJSON(w, http.StatusOK, Fail("device_uid is required"))
+		return
+	}
+	tenantRaw := strings.TrimSpace(r.Header.Get("X-Tenant-Id"))
+	if tenantRaw == "" || tenantRaw == "null" {
+		writeJSON(w, http.StatusOK, Fail("tenant_id is required"))
+		return
+	}
+	tenantID, err := ResolveTenantIDFromHeader(r.Context(), d.tenants, tenantRaw)
+	if err != nil {
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	const q = `SELECT id, tenant_id::text, device_id::text, device_uid, "timestamp", topic_type, category, data_value,
+		branch_name, building_name, unit_name, room_name, bed_name
+		FROM iot_timeseries WHERE tenant_id = $1::uuid AND device_uid = $2 ORDER BY "timestamp" DESC LIMIT 1`
+	var (
+		id                           int64
+		tid, did, duid               sql.NullString
+		tsMs                         int64
+		topicType, category          sql.NullString
+		dataValue                    []byte
+		branchName, buildingName     sql.NullString
+		unitName, roomName, bedName  sql.NullString
+	)
+	err = d.db.QueryRowContext(r.Context(), q, tenantID, deviceUID).Scan(
+		&id, &tid, &did, &duid, &tsMs, &topicType, &category, &dataValue,
+		&branchName, &buildingName, &unitName, &roomName, &bedName,
+	)
+	if err == sql.ErrNoRows {
+		writeJSON(w, http.StatusOK, Fail("no row for tenant_id and device_uid"))
+		return
+	}
+	if err != nil {
+		d.logger.Warn("GetLatestIotTimeseries query failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail("query failed"))
+		return
+	}
+	var dv any
+	if len(dataValue) > 0 {
+		_ = json.Unmarshal(dataValue, &dv)
+	}
+	out := map[string]any{
+		"id":            id,
+		"tenant_id":     tid.String,
+		"device_uid":    nullStr(duid),
+		"timestamp":     tsMs,
+		"topic_type":    nullStr(topicType),
+		"category":      nullStr(category),
+		"data_value":    dv,
+		"branch_name":   nullStr(branchName),
+		"building_name": nullStr(buildingName),
+		"unit_name":     nullStr(unitName),
+		"room_name":     nullStr(roomName),
+		"bed_name":      nullStr(bedName),
+	}
+	if did.Valid {
+		out["device_id"] = did.String
+	}
+	writeJSON(w, http.StatusOK, Ok(out))
+}
+
+func nullStr(ns sql.NullString) string {
+	if !ns.Valid {
+		return ""
+	}
+	return ns.String
+}
+
 // RegisterDoctorRoutes 注册诊断路由
 func (r *Router) RegisterDoctorRoutes(doctor *DoctorHandler) {
 	// 健康检查
@@ -144,6 +230,8 @@ func (r *Router) RegisterDoctorRoutes(doctor *DoctorHandler) {
 	// 就绪检查
 	r.Handle("/ready", doctor.Ready)
 	r.Handle("/readyz", doctor.Ready)
+
+	r.Handle("/doctor/iot-timeseries/latest", doctor.GetLatestIotTimeseries)
 
 	// pprof 性能分析（如果启用）
 	if doctor.pprofEnabled {
@@ -160,4 +248,3 @@ func (r *Router) RegisterDoctorRoutes(doctor *DoctorHandler) {
 		r.HandleHandler("/debug/pprof/mutex", pprof.Handler("mutex"))
 	}
 }
-

@@ -18,6 +18,14 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	platformTrashTenantID       = "00000000-0000-0000-0000-000000000000"
+	platformSystemTenantID      = "00000000-0000-0000-0000-000000000001"
+	platformUnallocatedTenantID = "00000000-0000-0000-0000-000000000002"
+	// authFailureStreamTenantID 认证失败写 Auth Stream 的 tenant_id：设备可能在库，仅占位，不表示 device_store 已改为 Unallocated
+	authFailureStreamTenantID = platformUnallocatedTenantID
+)
+
 // AuthService 认证服务
 // 从 service 包移到此包以避免循环依赖
 type AuthService struct {
@@ -207,18 +215,13 @@ func (s *AuthService) validateDeviceAndGetLocation(ctx context.Context, deviceUI
 		return nil, fmt.Errorf("deny")
 	}
 
-	// 2. 检查设备是否已分配给租户
-	// 系统租户（000...001）表示 pending 状态，需要系统管理员处理
-	// 未分配租户（000...000）表示设备未分配
-	systemTenantID := "00000000-0000-0000-0000-000000000001"
-	unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
-
-	if ds.TenantID == systemTenantID {
-		// 分配给系统租户，表示 pending 状态，需要管理员处理
+	if ds.TenantID == platformTrashTenantID {
+		return nil, fmt.Errorf("device in trash tenant")
+	}
+	if ds.TenantID == platformSystemTenantID {
 		return nil, fmt.Errorf("device pending approval (assigned to system tenant)")
 	}
-
-	if ds.TenantID == unallocatedTenantID {
+	if ds.TenantID == platformUnallocatedTenantID {
 		return nil, fmt.Errorf("device not allocated to tenant")
 	}
 
@@ -252,11 +255,10 @@ func (s *AuthService) createDeviceStoreRecord(ctx context.Context, uid string, r
 		) RETURNING device_id, device_uid, device_type, tenant_id, allow_access
 	`
 
-	systemTenantID := "00000000-0000-0000-0000-000000000001"
 	var ds DeviceStoreInfo
 
 	err := s.db.QueryRowContext(ctx, query,
-		deviceID, uid, deviceType, systemTenantID, false,
+		deviceID, uid, deviceType, platformSystemTenantID, false,
 	).Scan(
 		&ds.DeviceID,
 		&ds.DeviceUID,
@@ -360,33 +362,27 @@ func (s *AuthService) publishAuthRequest(ctx context.Context, req *models.AuthRe
 		remoteAddr,
 	)
 
-	// 构建认证请求消息（使用 owl-common/redis 中的统一格式）
-	authRequest := commonredis.BuildAuthRequestMessage(req.UID, "Radar", remoteAddr, deviceInfo)
-
-	// 查询 device_store 表获取 device_id 和 tenant_id（设备可能还未在 devices 表中创建）
+	// 先查 device_store：在库用真实 tenant_id，未入库则 auth 流用 trash
+	resolvedTenantID := platformTrashTenantID
 	var deviceID sql.NullString
-	var tenantID sql.NullString
+	var storeTenantID sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 		SELECT device_id::text, tenant_id::text
 		FROM device_store
 		WHERE device_uid = $1
 		LIMIT 1
-	`, req.UID).Scan(&deviceID, &tenantID)
+	`, req.UID).Scan(&deviceID, &storeTenantID)
 	if err != nil && err != sql.ErrNoRows {
 		s.logger.Warn("Failed to query device_store for auth request",
 			zap.String("uid", req.UID),
 			zap.Error(err),
 		)
 	}
-
-	// 使用 device_store 中的 tenant_id（如果存在），否则使用默认值
-	actualTenantID := authRequest.TenantID // 默认值
-	if tenantID.Valid && tenantID.String != "" {
-		actualTenantID = tenantID.String
-		authRequest.TenantID = actualTenantID
+	if err == nil && storeTenantID.Valid && storeTenantID.String != "" {
+		resolvedTenantID = storeTenantID.String
 	}
 
-	// 设置 device_id（如果查询到）
+	authRequest := commonredis.BuildAuthRequestMessage(req.UID, "Radar", resolvedTenantID, remoteAddr, deviceInfo)
 	if deviceID.Valid {
 		authRequest.DeviceID = deviceID.String
 	}
@@ -486,12 +482,11 @@ func (s *AuthService) publishAuthResponseSuccess(
 
 // publishAuthResponseFailure 发布认证失败响应到 Redis Stream
 func (s *AuthService) publishAuthResponseFailure(ctx context.Context, uid string, errorMsg string, deviceID ...string) {
-	// 构建认证失败响应消息（使用 owl-common/redis 中的统一格式）
-	// 注意：auth 消息不包含位置信息（只在 event/alarm 中包含）
+	// 认证失败：设备仍可能在 device_store；Stream 上 tenant_id 用 Unallocated 占位，不表示库内 tenant 已改为 002。
 	authResponse := commonredis.BuildAuthResponseMessage(
 		uid,
 		"Radar",
-		"00000000-0000-0000-0000-000000000000", // 失败时使用默认值
+		authFailureStreamTenantID,
 		"failure",
 		"", // 失败时无 MQTT 服务器
 		0,  // 失败时无 MQTT 端口

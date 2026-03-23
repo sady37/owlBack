@@ -4,29 +4,69 @@
 -- 1. 清空 config_versions 表
 TRUNCATE TABLE config_versions CASCADE;
 
--- 2. iot_timeseries：删除并重建（与 owlRD/db/18_iot_timeseries.sql 一致，字段变更后重建更快）
+-- 2. iot_timeseries：删除并重建（与 owlRD/db/18_iot_timeseries.sql 一致）
 DROP TABLE IF EXISTS iot_timeseries CASCADE;
+
 CREATE TABLE iot_timeseries (
-    id          BIGSERIAL PRIMARY KEY,
-    device_id   UUID REFERENCES device_store(device_id) ON DELETE SET NULL,
-    device_uid  VARCHAR(50),
-    timestamp   TIMESTAMPTZ NOT NULL,
-    topic_type  VARCHAR(50),
-    category    VARCHAR(50),
-    data_values JSONB NOT NULL,
-    branch_id   VARCHAR(50),
-    building_id VARCHAR(50),
-    unit_id     VARCHAR(50),
-    room_id     VARCHAR(50),
-    bed_id      VARCHAR(50)
+    id            BIGSERIAL NOT NULL,
+
+    tenant_id     UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE RESTRICT,
+    device_id     UUID REFERENCES device_store(device_id) ON DELETE SET NULL,
+    device_uid    VARCHAR(50) NOT NULL,
+    device_type   VARCHAR(50),
+    card_id       VARCHAR(100),
+
+    "timestamp"   BIGINT NOT NULL,
+
+    topic_type    VARCHAR(50),
+    category      VARCHAR(50),
+
+    branch_name   VARCHAR(200),
+    building_name VARCHAR(200),
+    unit_name     VARCHAR(200),
+    room_name     VARCHAR(200),
+    bed_name      VARCHAR(200),
+
+    data_value    JSONB NOT NULL,
+
+    CONSTRAINT chk_data_value_array CHECK (jsonb_typeof(data_value) = 'array'),
+    CONSTRAINT iot_timeseries_pkey PRIMARY KEY (id, "timestamp")
 );
-CREATE INDEX IF NOT EXISTS idx_iot_timeseries_device_id_timestamp ON iot_timeseries(device_id, timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_iot_timeseries_device_uid_timestamp ON iot_timeseries(device_uid, timestamp DESC) WHERE device_uid IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_iot_timeseries_timestamp ON iot_timeseries(timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_iot_timeseries_topic_type_timestamp ON iot_timeseries(topic_type, timestamp DESC) WHERE topic_type IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_iot_timeseries_category_timestamp ON iot_timeseries(category, timestamp DESC) WHERE category IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_iot_timeseries_data_values_gin ON iot_timeseries USING GIN (data_values);
-SELECT create_hypertable('iot_timeseries', 'timestamp', if_not_exists => TRUE);
+
+CREATE INDEX IF NOT EXISTS idx_iot_timeseries_tenant_device_uid_ts
+    ON iot_timeseries(tenant_id, device_uid, "timestamp" DESC);
+
+CREATE INDEX IF NOT EXISTS idx_iot_timeseries_device_id_ts
+    ON iot_timeseries(device_id, "timestamp" DESC);
+
+CREATE INDEX IF NOT EXISTS idx_iot_timeseries_device_uid_ts
+    ON iot_timeseries(device_uid, "timestamp" DESC);
+
+CREATE INDEX IF NOT EXISTS idx_iot_timeseries_timestamp
+    ON iot_timeseries("timestamp" DESC);
+
+CREATE INDEX IF NOT EXISTS idx_iot_timeseries_topic_type_ts
+    ON iot_timeseries(topic_type, "timestamp" DESC)
+    WHERE topic_type IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_iot_timeseries_category_ts
+    ON iot_timeseries(category, "timestamp" DESC)
+    WHERE category IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_iot_timeseries_data_value_gin
+    ON iot_timeseries USING GIN (data_value);
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
+    PERFORM create_hypertable(
+      'iot_timeseries',
+      'timestamp',
+      chunk_time_interval => 86400000,
+      if_not_exists => TRUE
+    );
+  END IF;
+END $$;
 
 -- 3. 清空 alarm_cloud 表
 TRUNCATE TABLE alarm_cloud CASCADE;
@@ -34,7 +74,7 @@ TRUNCATE TABLE alarm_cloud CASCADE;
 -- 4. 清空 alarm_device 表
 TRUNCATE TABLE alarm_device CASCADE;
 
--- 5. 清空 alarm_events 表（用 DELETE，iot_timeseries.alarm_event_id 外键 ON DELETE SET NULL）
+-- 5. 清空 alarm_events 表
 DELETE FROM alarm_events;
 
 -- 6. 重置 cards 的报警计数与 pop，否则 QueryCardAlarmState 仍会返回旧值，前端 active_err 等不归零

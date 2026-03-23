@@ -68,7 +68,7 @@ func encodeAuthResponseSuccessExample() {
 	deviceID := "550e8400-e29b-41d4-a716-446655440000"
 	deviceUID := "E598A2ACD523"
 	deviceType := "Radar"
-	tenantID := "bb045e6b-7bc2-4e59-af2e-d8b1adc77f2c"
+	tenantID := "00000000-0000-0000-0000-000000000002" // 示例：Unallocated
 	authStatus := "success"
 	mqttServer := "10.0.0.100"
 	mqttPort := 8883
@@ -103,7 +103,7 @@ func encodeAuthResponseFailureExample() {
 	deviceID := "550e8400-e29b-41d4-a716-446655440000"
 	deviceUID := "E598A2ACD523"
 	deviceType := "Radar"
-	tenantID := "00000000-0000-0000-0000-000000000000" // 失败时可能仍使用默认值
+	tenantID := "00000000-0000-0000-0000-000000000002"
 	authStatus := "failure"
 	logInfo := "Device not found in device_store"
 

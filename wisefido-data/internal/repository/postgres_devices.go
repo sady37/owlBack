@@ -530,9 +530,7 @@ func (r *PostgresDevicesRepository) CreateDevice(ctx context.Context, tenantID s
 		return "", fmt.Errorf("failed to query device_store: %w", err)
 	}
 
-	// 验证租户一致性
-	unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
-	if !dsTenantID.Valid || dsTenantID.String == unallocatedTenantID {
+	if !dsTenantID.Valid || dsTenantID.String == unallocatedTenantID || dsTenantID.String == trashTenantID || dsTenantID.String == systemTenantID {
 		return "", fmt.Errorf("device_store not allocated to tenant: device_uid=%s (device must be allocated before checkout)", deviceUID)
 	}
 	if dsTenantID.String != tenantID {
@@ -908,8 +906,8 @@ func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, t
 	return tx.Commit()
 }
 
-// DeleteDevice 删除设备（软删除：移至 Trash 租户）
-// 功能：将设备移至 Trash 租户（00000000-0000-0000-0000-000000000000），设置 business_access='rejected', monitoring_enabled=FALSE
+// DeleteDevice 删除设备（软删除：移至 Trash 租户，使用包级 trashTenantID）
+// 功能：设置 business_access='rejected', monitoring_enabled=FALSE
 // 同时更新 device_store 和 devices 的 tenant_id 为 Trash 租户
 func (r *PostgresDevicesRepository) DeleteDevice(ctx context.Context, tenantID, deviceID string) error {
 	// 1. 检查设备是否存在
@@ -930,9 +928,6 @@ func (r *PostgresDevicesRepository) DeleteDevice(ctx context.Context, tenantID, 
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
-
-	// Trash 租户 ID
-	trashTenantID := "00000000-0000-0000-0000-000000000000"
 
 	// 2.1. 更新 device_store 的 tenant_id 为 Trash 租户
 	_, err = tx.ExecContext(ctx, `
@@ -1150,8 +1145,6 @@ func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Conte
 		return nil, fmt.Errorf("failed to query device: %w", err)
 	}
 
-	// 2. 从device_store表查询
-	unallocatedTenantID := "00000000-0000-0000-0000-000000000000"
 	deviceStoreQuery := `
 		SELECT
 			device_uid,
@@ -1186,11 +1179,11 @@ func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Conte
 		return nil, fmt.Errorf("failed to query device_store: %w", err)
 	}
 
-	// 3. 检查设备是否已分配给租户
-	if dsTenantID == unallocatedTenantID {
-		logWarn("Device connection rejected: not allocated",
+	if dsTenantID == unallocatedTenantID || dsTenantID == trashTenantID || dsTenantID == systemTenantID {
+		logWarn("Device connection rejected: not allocated or reserved tenant",
 			zap.String("device_uid", dsDeviceUID),
-			zap.String("reason", "device_not_allocated"),
+			zap.String("tenant_id", dsTenantID),
+			zap.String("reason", "device_not_customer_tenant"),
 		)
 		return nil, fmt.Errorf("device not allocated to tenant")
 	}

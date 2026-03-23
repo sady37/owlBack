@@ -270,6 +270,11 @@ func main() {
 		radarHandler.SetDataStreamSubscriber(dataStreamSubscriber)
 		router.RegisterRadarRoutes(radarHandler)
 
+		iotTSRepo := repository.NewPostgresIoTTimeSeriesRepository(db)
+		trackPlaybackSvc := service.NewTrackPlaybackService(devicesRepo, iotTSRepo, logger)
+		playbackHandler := httpapi.NewPlaybackHandler(trackPlaybackSvc, tenantsRepo, logger)
+		router.RegisterPlaybackRoutes(playbackHandler)
+
 		// 创建 Branch Service 和 Handler
 		branchesRepo = repository.NewPostgresBranchesRepository(db)
 		branchService := service.NewBranchService(branchesRepo, db, logger)
@@ -404,9 +409,7 @@ func main() {
 
 		// Sleepace MQTT 由 wisefido-sleepace 消费；本进程经 SleepaceGatewayClient 访问厂家 HTTP。
 	} else {
-		// DB 未就绪：使用内存 repo 支持联测（UnitList/Devices 等页面不再 404/不再因无 DB 失败）
-		// 注意：MemoryUnitsRepo 尚未实现新的 UnitsRepository 接口，暂时不使用
-		// unitsRepo := repository.NewMemoryUnitsRepo()
+		// DB 未就绪：内存租户 + auth，Admin 侧 units/devices 等为 nil（功能受限）
 		tenantsRepo = repository.NewMemoryTenantsRepo()
 		// Seed "System" tenant for SystemAdmin login in dev (matches httpapi.systemTenantID)
 		systemTenant := &domain.Tenant{
@@ -421,9 +424,7 @@ func main() {
 		// 注意：StubHandler 仍使用旧的 TenantsRepo 接口，需要适配器或更新
 		// 暂时传递 nil，StubHandler 会处理
 		stub = httpapi.NewStubHandler(nil, authStore, nil)
-		// Devices 仍可先保持 stub（后续需要再补内存设备库）
-		// 注意：MemoryUnitsRepo 尚未实现新的 UnitsRepository 接口，暂时传递 nil
-		// AdminAPI 会回退到 stub handler
+		// AdminAPI units/devices 等为 nil，回退 stub
 		admin = httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, nil, nil, nil)
 	}
 	router.RegisterAdminUnitDeviceRoutes(admin)
@@ -440,7 +441,7 @@ func main() {
 	// 注册 Doctor 路由（健康检查和诊断功能）
 	doctorEnabled := os.Getenv("DOCTOR_ENABLED")
 	if doctorEnabled != "false" {
-		doctor := httpapi.NewDoctorHandler(db, redisClient, logger)
+		doctor := httpapi.NewDoctorHandler(db, redisClient, tenantsRepo, logger)
 		// 启用 pprof（如果配置了）
 		if os.Getenv("DOCTOR_PPROF") == "true" {
 			doctor.EnablePprof(true)

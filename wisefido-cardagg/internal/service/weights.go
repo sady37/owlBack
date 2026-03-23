@@ -79,7 +79,7 @@ const (
 	WalkSecThreshold            = 10  // walk_duration >= 且 walk_distance >= 下值 → 更新 Target.LastActiveTs
 	WalkDistanceMetersThreshold = 2   // 米
 	StandingContinuousSec      = 55  // stand_duration >= 55 则累计 StandingContinuousMin，否则清零
-	StandingContinuousMin      = 5   // 累计 >= 5 分钟则设 StandingContinuousMin=5 并 push RoomState
+	StandingContinuousMin      = 8   // 累计达到此后封顶为 8 并 push RoomState/BathRoomState（与 Overview 黄/红 5/8 档一致）
 	MultiPersonDurationSec     = 30  // multi_person_duration >= 30 → HasMulti/访客逻辑
 	VisitorMinThreshold        = 10  // 访客停留 >= 10 分钟才计 HasVisitorToday
 )

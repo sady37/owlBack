@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -123,20 +124,21 @@ type StreamMessage struct {
 	Data      map[string]interface{}
 }
 
-// DatabaseRecord 数据库记录
+// DatabaseRecord 数据库记录（与 owlRD/db/18_iot_timeseries.sql 一致）
 type DatabaseRecord struct {
-	ID         int64
-	DeviceID   string
-	DeviceUID  *string
-	Timestamp  time.Time
-	TopicType  *string
-	Category   *string
-	DataValues map[string]interface{}
-	BranchID   *string
-	BuildingID *string
-	UnitID     *string
-	RoomID     *string
-	BedID      *string
+	ID           int64
+	TenantID     string
+	DeviceID     string
+	DeviceUID    *string
+	TimestampMs  int64
+	TopicType    *string
+	Category     *string
+	DataValue    interface{}
+	BranchName   *string
+	BuildingName *string
+	UnitName     *string
+	RoomName     *string
+	BedName      *string
 }
 
 // ReadFromRedisStream 从 Redis Stream 读取数据
@@ -206,17 +208,18 @@ func ReadFromDatabase(ctx context.Context, dbConfig *commonconfig.DatabaseConfig
 	query = `
 		SELECT 
 			id,
+			tenant_id::text,
 			device_id,
 			device_uid,
-			timestamp,
+			"timestamp",
 			topic_type,
 			category,
-			data_values,
-			branch_id,
-			building_id,
-			unit_id,
-			room_id,
-			bed_id
+			data_value,
+			branch_name,
+			building_name,
+			unit_name,
+			room_name,
+			bed_name
 		FROM iot_timeseries
 		WHERE 1=1
 	`
@@ -233,7 +236,7 @@ func ReadFromDatabase(ctx context.Context, dbConfig *commonconfig.DatabaseConfig
 		argIndex++
 	}
 
-	query += " ORDER BY timestamp DESC"
+	query += ` ORDER BY "timestamp" DESC`
 	query += fmt.Sprintf(" LIMIT $%d", argIndex)
 	args = append(args, limit)
 
@@ -246,37 +249,70 @@ func ReadFromDatabase(ctx context.Context, dbConfig *commonconfig.DatabaseConfig
 	var results []DatabaseRecord
 	for rows.Next() {
 		var record DatabaseRecord
-		var dataValuesJSON []byte
-		var deviceUID, topicTypeVal, category, branchID, buildingID, unitID, roomID, bedID *string
+		var tenantID, deviceID sql.NullString
+		var deviceUID, topicTypeVal, category sql.NullString
+		var dataValueJSON []byte
+		var branchName, buildingName, unitName, roomName, bedName sql.NullString
 
 		if err := rows.Scan(
 			&record.ID,
-			&record.DeviceID,
+			&tenantID,
+			&deviceID,
 			&deviceUID,
-			&record.Timestamp,
+			&record.TimestampMs,
 			&topicTypeVal,
 			&category,
-			&dataValuesJSON,
-			&branchID,
-			&buildingID,
-			&unitID,
-			&roomID,
-			&bedID,
+			&dataValueJSON,
+			&branchName,
+			&buildingName,
+			&unitName,
+			&roomName,
+			&bedName,
 		); err != nil {
 			continue
 		}
 
-		record.DeviceUID = deviceUID
-		record.TopicType = topicTypeVal
-		record.Category = category
-		record.BranchID = branchID
-		record.BuildingID = buildingID
-		record.UnitID = unitID
-		record.RoomID = roomID
-		record.BedID = bedID
+		if tenantID.Valid {
+			record.TenantID = tenantID.String
+		}
+		if deviceID.Valid {
+			record.DeviceID = deviceID.String
+		}
+		if deviceUID.Valid {
+			s := deviceUID.String
+			record.DeviceUID = &s
+		}
+		if topicTypeVal.Valid {
+			s := topicTypeVal.String
+			record.TopicType = &s
+		}
+		if category.Valid {
+			s := category.String
+			record.Category = &s
+		}
+		if branchName.Valid {
+			s := branchName.String
+			record.BranchName = &s
+		}
+		if buildingName.Valid {
+			s := buildingName.String
+			record.BuildingName = &s
+		}
+		if unitName.Valid {
+			s := unitName.String
+			record.UnitName = &s
+		}
+		if roomName.Valid {
+			s := roomName.String
+			record.RoomName = &s
+		}
+		if bedName.Valid {
+			s := bedName.String
+			record.BedName = &s
+		}
 
-		if err := json.Unmarshal(dataValuesJSON, &record.DataValues); err != nil {
-			record.DataValues = make(map[string]interface{})
+		if len(dataValueJSON) > 0 {
+			_ = json.Unmarshal(dataValueJSON, &record.DataValue)
 		}
 
 		results = append(results, record)
@@ -322,36 +358,39 @@ func printDBRecords(records []DatabaseRecord) {
 		}
 		fmt.Printf("--- Record %d ---\n", i+1)
 		fmt.Printf("ID: %d\n", record.ID)
+		if record.TenantID != "" {
+			fmt.Printf("Tenant ID: %s\n", record.TenantID)
+		}
 		fmt.Printf("Device ID: %s\n", record.DeviceID)
 		if record.DeviceUID != nil {
 			fmt.Printf("Device UID: %s\n", *record.DeviceUID)
 		}
-		fmt.Printf("Timestamp: %s\n", record.Timestamp.Format(time.RFC3339))
+		fmt.Printf("Timestamp (ms): %d\n", record.TimestampMs)
 		if record.TopicType != nil {
 			fmt.Printf("Topic Type: %s\n", *record.TopicType)
 		}
 		if record.Category != nil {
 			fmt.Printf("Category: %s\n", *record.Category)
 		}
-		if record.BranchID != nil {
-			fmt.Printf("Branch ID: %s\n", *record.BranchID)
+		if record.BranchName != nil {
+			fmt.Printf("Branch name: %s\n", *record.BranchName)
 		}
-		if record.BuildingID != nil {
-			fmt.Printf("Building ID: %s\n", *record.BuildingID)
+		if record.BuildingName != nil {
+			fmt.Printf("Building name: %s\n", *record.BuildingName)
 		}
-		if record.UnitID != nil {
-			fmt.Printf("Unit ID: %s\n", *record.UnitID)
+		if record.UnitName != nil {
+			fmt.Printf("Unit name: %s\n", *record.UnitName)
 		}
-		if record.RoomID != nil {
-			fmt.Printf("Room ID: %s\n", *record.RoomID)
+		if record.RoomName != nil {
+			fmt.Printf("Room name: %s\n", *record.RoomName)
 		}
-		if record.BedID != nil {
-			fmt.Printf("Bed ID: %s\n", *record.BedID)
+		if record.BedName != nil {
+			fmt.Printf("Bed name: %s\n", *record.BedName)
 		}
 		fmt.Println()
 
-		fmt.Println("Data Values (JSON):")
-		dataJSON, _ := json.MarshalIndent(record.DataValues, "", "  ")
+		fmt.Println("data_value (JSON):")
+		dataJSON, _ := json.MarshalIndent(record.DataValue, "", "  ")
 		fmt.Println(string(dataJSON))
 	}
 }

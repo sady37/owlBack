@@ -70,7 +70,6 @@ func publishRealtimeSnap(ctx context.Context, w *card.Writer, snap service.CardS
 	if err := w.PublishMonitor(ctx, snap.CardID, "", data); err != nil {
 		return err
 	}
-	//logger.Info("card:realtime publish", zap.String("cid", snap.CardID), zap.Int("devices", len(data)))
 	return nil
 }
 

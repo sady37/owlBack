@@ -52,12 +52,12 @@ func (s *AlarmService) CheckAH(ctx context.Context, deviceID string) bool {
 	if s.db == nil || deviceID == "" {
 		return false
 	}
-	since := time.Now().Add(-120 * time.Second)
+	sinceMs := time.Now().Add(-120 * time.Second).UnixMilli()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT timestamp, data_values FROM iot_timeseries
-		WHERE device_id = $1 AND timestamp >= $2 AND topic_type = 'monitor'
-		ORDER BY timestamp`,
-		deviceID, since)
+		SELECT its."timestamp", its.data_value FROM iot_timeseries its
+		WHERE its.device_id = $1::uuid AND its."timestamp" >= $2 AND its.topic_type = 'monitor'
+		ORDER BY its."timestamp"`,
+		deviceID, sinceMs)
 	if err != nil {
 		s.logger.Debug("CheckAH query", zap.String("device_id", deviceID), zap.Error(err))
 		return false
@@ -68,14 +68,16 @@ func (s *AlarmService) CheckAH(ctx context.Context, deviceID string) bool {
 		ts time.Time
 		rr int
 	}
+	since := time.Now().Add(-120 * time.Second)
 	var points []point
 	for rows.Next() {
-		var ts time.Time
-		var dataValuesJSON []byte
-		if err := rows.Scan(&ts, &dataValuesJSON); err != nil {
+		var tsMs int64
+		var dataValueJSON []byte
+		if err := rows.Scan(&tsMs, &dataValueJSON); err != nil {
 			continue
 		}
-		rr := parseRRFromDataValues(dataValuesJSON)
+		ts := time.UnixMilli(tsMs)
+		rr := parseRRFromDataValue(dataValueJSON)
 		points = append(points, point{ts: ts, rr: rr})
 	}
 	// 2 秒一发 RR；无 RR 或 RR<8 为坏周期，连续 8 个坏周期记 1 次 apnea
@@ -136,20 +138,13 @@ func (s *AlarmService) CheckAH(ctx context.Context, deviceID string) bool {
 	return false
 }
 
-// parseRRFromDataValues 从 data_values JSONB 取 data_value/dataValue 首项，按 observation.Track 解析，返回 RespiratoryRate；缺失或解析失败返回 0（视为坏周期）。
-func parseRRFromDataValues(dataValuesJSON []byte) int {
-	var m map[string]interface{}
-	if err := json.Unmarshal(dataValuesJSON, &m); err != nil {
+// parseRRFromDataValue 从 data_value JSONB 数组首项，按 observation.Track 解析 RespiratoryRate；失败返回 0。
+func parseRRFromDataValue(dataValueJSON []byte) int {
+	var arr []interface{}
+	if err := json.Unmarshal(dataValueJSON, &arr); err != nil || len(arr) == 0 {
 		return 0
 	}
-	dv, _ := m["data_value"].(interface{})
-	if dv == nil {
-		dv, _ = m["dataValue"].(interface{})
-	}
-	if arr, ok := dv.([]interface{}); ok && len(arr) > 0 {
-		dv = arr[0]
-	}
-	obj, ok := dv.(map[string]interface{})
+	obj, ok := arr[0].(map[string]interface{})
 	if !ok {
 		return 0
 	}

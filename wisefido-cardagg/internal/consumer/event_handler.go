@@ -35,7 +35,7 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		h.logger.Warn("event dropped (invalid type)", zap.String("type", fmt.Sprintf("%T", msg)))
 		return nil
 	}
-	h.logger.Info("event handler invoked", zap.Any("ts", raw["timestamp"]), zap.Any("cid", raw["card_id"]), zap.Any("did", raw["device_uid"]))
+	h.logger.Debug("event handler invoked", zap.Any("ts", raw["timestamp"]), zap.Any("cid", raw["card_id"]), zap.Any("did", raw["device_uid"]))
 
 	m, err := ParseMessage(raw)
 	if err != nil {
@@ -50,7 +50,7 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	// card_id / device_uid 已由 IotPreparedHandler 填充
 
 	if ageMs := time.Now().UnixMilli() - m.Timestamp; ageMs > 30_000 {
-		h.logger.Info("event dropped (stale)",
+		h.logger.Debug("event dropped (stale)",
 			zap.String("cid", m.CardID),
 			zap.String("did", m.DeviceUID),
 			zap.Int64("age_ms", ageMs),
@@ -64,7 +64,7 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		data = make(map[string]interface{})
 	}
 	dataJSON, _ := json.Marshal(data)
-	h.logger.Info("iot:event recv",
+	h.logger.Debug("iot:event recv",
 		zap.String("cid", m.CardID),
 		zap.String("did", m.DeviceUID),
 		zap.String("ts", time.UnixMilli(m.Timestamp).Format("15:04:05.000")),
@@ -166,7 +166,7 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		h.routeActivityEvent(ctx, m, data)
 
 	case alarm.PressureSensor:
-		h.logger.Info("pressureSensor event", zap.String("device_uid", m.DeviceUID), zap.String("category", evName))
+		h.logger.Debug("pressureSensor event", zap.String("device_uid", m.DeviceUID), zap.String("category", evName))
 
 	case alarm.SingalPoorRecover:
 		if alarmPayload != nil {
