@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -428,6 +429,119 @@ func (s *unitService) verifyBedPermission(ctx context.Context, tenantID, bedID s
 	}
 
 	return bed, room, unit, nil
+}
+
+// syncCardsForUnit 单元层级（unit/room/bed）或展示字段变化后刷新该 unit 下卡片（card_name、card_address 等）
+func (s *unitService) syncCardsForUnit(ctx context.Context, tenantID, unitID, reason string) {
+	if s.cardSync == nil || tenantID == "" || unitID == "" {
+		return
+	}
+	if _, err := s.cardSync.CreateCardsForUnit(ctx, tenantID, unitID); err != nil {
+		s.logger.Warn("Failed to sync cards after unit hierarchy change",
+			zap.Error(err),
+			zap.String("tenant_id", tenantID),
+			zap.String("unit_id", unitID),
+			zap.String("reason", reason),
+		)
+	} else {
+		s.logger.Info("Synced cards after unit hierarchy change",
+			zap.String("tenant_id", tenantID),
+			zap.String("unit_id", unitID),
+			zap.String("reason", reason),
+		)
+	}
+}
+
+// publicSyntheticResidentAccount public 单元占位住户账号：public + unit_id 字符串最后 3 位（小写）
+func publicSyntheticResidentAccount(unitID string) string {
+	uid := strings.TrimSpace(unitID)
+	if uid == "" {
+		return "public"
+	}
+	suf := uid
+	if len(suf) > 3 {
+		suf = suf[len(suf)-3:]
+	}
+	return "public" + strings.ToLower(suf)
+}
+
+// createPublicUnitSyntheticResident 公共空间单元创建时同步创建占位住户（nickname=unit_name，access 关闭）
+func (s *unitService) createPublicUnitSyntheticResident(ctx context.Context, tenantID, unitID string, unit *domain.Unit) error {
+	if s.residentsRepo == nil || unitID == "" || unit == nil {
+		return nil
+	}
+	acct := publicSyntheticResidentAccount(unitID)
+	accHashHex := HashAccount(acct)
+	accHash, err := hex.DecodeString(accHashHex)
+	if err != nil || len(accHash) == 0 {
+		return fmt.Errorf("decode account hash: %w", err)
+	}
+	pwHex := GeneratePasswordHash("ChangeMe123!")
+	pwHash, err := hex.DecodeString(pwHex)
+	if err != nil || len(pwHash) == 0 {
+		return fmt.Errorf("decode password hash: %w", err)
+	}
+	name := strings.TrimSpace(unit.UnitName)
+	if name == "" {
+		return fmt.Errorf("unit_name is empty")
+	}
+	res := &domain.Resident{
+		ResidentAccount:     acct,
+		ResidentAccountHash: accHash,
+		PasswordHash:        pwHash,
+		Nickname:            name,
+		Status:              "active",
+		Role:                "Resident",
+		IsAccessEnabled:     false,
+		UnitID:              unitID,
+	}
+	if unit.BranchID.Valid && unit.BranchID.String != "" {
+		res.BranchID = unit.BranchID.String
+	}
+	_, err = s.residentsRepo.CreateResident(ctx, tenantID, res)
+	if err != nil {
+		return err
+	}
+	s.logger.Info("Created synthetic resident for public unit",
+		zap.String("tenant_id", tenantID),
+		zap.String("unit_id", unitID),
+		zap.String("resident_account", acct),
+	)
+	return nil
+}
+
+// deletePublicUnitSyntheticResident 删除 public 单元前移除占位住户（账号与 create 规则一致）
+func (s *unitService) deletePublicUnitSyntheticResident(ctx context.Context, tenantID, unitID string) error {
+	if s.db == nil || s.residentsRepo == nil || unitID == "" {
+		return nil
+	}
+	acct := publicSyntheticResidentAccount(unitID)
+	var rid string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT resident_id::text FROM residents WHERE tenant_id = $1 AND unit_id = $2 AND resident_account = LOWER($3)`,
+		tenantID, unitID, acct,
+	).Scan(&rid)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("find synthetic public resident: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM resident_caregivers WHERE tenant_id = $1 AND resident_id = $2`,
+		tenantID, rid,
+	); err != nil {
+		return fmt.Errorf("clear resident_caregivers for synthetic public resident: %w", err)
+	}
+	if err := s.residentsRepo.DeleteResident(ctx, tenantID, rid); err != nil {
+		return fmt.Errorf("delete synthetic public resident: %w", err)
+	}
+	s.logger.Info("Deleted synthetic resident for public unit",
+		zap.String("tenant_id", tenantID),
+		zap.String("unit_id", unitID),
+		zap.String("resident_id", rid),
+	)
+	return nil
 }
 
 // ============================================
@@ -1622,7 +1736,24 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 		return nil, fmt.Errorf("failed to create unit: %w", err)
 	}
 
-	// 7. 构建响应
+	// 7. public 单元：同步创建占位住户（先于卡片同步，便于绑定）
+	if unit.IsPublic {
+		if err := s.createPublicUnitSyntheticResident(ctx, req.TenantID, unitID, unit); err != nil {
+			if delErr := s.unitsRepo.DeleteUnit(ctx, req.TenantID, unitID); delErr != nil {
+				s.logger.Error("CreateUnit: rollback unit after synthetic resident failed",
+					zap.String("tenant_id", req.TenantID),
+					zap.String("unit_id", unitID),
+					zap.Error(err),
+					zap.NamedError("rollback_err", delErr),
+				)
+			}
+			return nil, fmt.Errorf("failed to create synthetic resident for public unit: %w", err)
+		}
+	}
+
+	// 8. 构建响应
+	s.syncCardsForUnit(ctx, req.TenantID, unitID, "unit_create")
+
 	return &CreateUnitResponse{
 		UnitID: unitID,
 	}, nil
@@ -1786,13 +1917,7 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 		return nil, fmt.Errorf("failed to update unit: %w", err)
 	}
 
-	if s.cardSync != nil {
-		if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, req.UnitID); err != nil {
-			s.logger.Warn("Failed to sync cards after unit change", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("unit_id", req.UnitID))
-		} else {
-			s.logger.Info("Synced cards after unit change", zap.String("tenant_id", req.TenantID), zap.String("unit_id", req.UnitID))
-		}
-	}
+	s.syncCardsForUnit(ctx, req.TenantID, req.UnitID, "unit_update")
 
 	// 6. 构建响应
 	return &UpdateUnitResponse{
@@ -1821,6 +1946,12 @@ func (s *unitService) DeleteUnit(ctx context.Context, req DeleteUnitRequest) (*D
 	unit, err := s.verifyUnitPermission(ctx, req.TenantID, req.UnitID, branchIDs)
 	if err != nil {
 		return nil, err
+	}
+
+	if unit.IsPublic {
+		if err := s.deletePublicUnitSyntheticResident(ctx, req.TenantID, req.UnitID); err != nil {
+			return nil, err
+		}
 	}
 
 	// 3. 检查关联数据：residents、devices、rooms
@@ -2189,6 +2320,8 @@ func (s *unitService) CreateRoom(ctx context.Context, req CreateRoomRequest) (*C
 		return nil, fmt.Errorf("failed to create room: %w", err)
 	}
 
+	s.syncCardsForUnit(ctx, req.TenantID, req.UnitID, "room_create")
+
 	return &CreateRoomResponse{
 		RoomID: roomID,
 	}, nil
@@ -2242,6 +2375,8 @@ func (s *unitService) UpdateRoom(ctx context.Context, req UpdateRoomRequest) (*U
 		)
 		return nil, fmt.Errorf("failed to update room: %w", err)
 	}
+
+	s.syncCardsForUnit(ctx, req.TenantID, currentRoom.UnitID, "room_update")
 
 	return &UpdateRoomResponse{
 		Success: true,
@@ -2380,6 +2515,8 @@ func (s *unitService) DeleteRoom(ctx context.Context, req DeleteRoomRequest) (*D
 		)
 		return nil, fmt.Errorf("failed to delete room: %w", err)
 	}
+
+	s.syncCardsForUnit(ctx, req.TenantID, room.UnitID, "room_delete")
 
 	return &DeleteRoomResponse{
 		Success: true,
@@ -2548,7 +2685,7 @@ func (s *unitService) CreateBed(ctx context.Context, req CreateBedRequest) (*Cre
 
 	// 验证 room 是否存在（Repository 层会自动验证 tenant_id）
 	// 如果 room 不存在或不属于该 tenant，会返回错误
-	_, err := s.unitsRepo.GetRoom(ctx, req.TenantID, req.RoomID)
+	room, err := s.unitsRepo.GetRoom(ctx, req.TenantID, req.RoomID)
 	if err != nil {
 		if err == sql.ErrNoRows || strings.Contains(err.Error(), "not found") {
 			return nil, fmt.Errorf("room not found: room_id=%s (tenant validation failed or room does not exist)", req.RoomID)
@@ -2606,6 +2743,8 @@ func (s *unitService) CreateBed(ctx context.Context, req CreateBedRequest) (*Cre
 		return nil, fmt.Errorf("failed to create bed: %w", err)
 	}
 
+	s.syncCardsForUnit(ctx, req.TenantID, room.UnitID, "bed_create")
+
 	return &CreateBedResponse{
 		BedID: bedID,
 	}, nil
@@ -2628,7 +2767,7 @@ func (s *unitService) UpdateBed(ctx context.Context, req UpdateBedRequest) (*Upd
 		return nil, err
 	}
 
-	currentBed, _, _, err := s.verifyBedPermission(ctx, req.TenantID, req.BedID, branchIDs)
+	currentBed, _, unit, err := s.verifyBedPermission(ctx, req.TenantID, req.BedID, branchIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -2663,6 +2802,10 @@ func (s *unitService) UpdateBed(ctx context.Context, req UpdateBedRequest) (*Upd
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to update bed: %w", err)
+	}
+
+	if unit != nil {
+		s.syncCardsForUnit(ctx, req.TenantID, unit.UnitID, "bed_update")
 	}
 
 	return &UpdateBedResponse{
@@ -2818,6 +2961,8 @@ func (s *unitService) DeleteBed(ctx context.Context, req DeleteBedRequest) (*Del
 		)
 		return nil, fmt.Errorf("failed to delete bed: %w", err)
 	}
+
+	s.syncCardsForUnit(ctx, req.TenantID, room.UnitID, "bed_delete")
 
 	return &DeleteBedResponse{
 		Success: true,

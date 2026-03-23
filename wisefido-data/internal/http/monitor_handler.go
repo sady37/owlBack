@@ -66,7 +66,11 @@ func (h *MonitorHandler) GetCards(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	pageSize := 10
-	if ps := r.URL.Query().Get("pageSize"); ps != "" {
+	ps := r.URL.Query().Get("pageSize")
+	if ps == "" {
+		ps = r.URL.Query().Get("page_size")
+	}
+	if ps != "" {
 		if v, err := strconv.Atoi(ps); err == nil && v > 0 {
 			pageSize = v
 			if pageSize > 500 {

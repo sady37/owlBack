@@ -1520,10 +1520,22 @@ func (r *PostgresUnitsRepository) ListBedsWithResident(ctx context.Context, tena
 	return out, rows.Err()
 }
 
-// ListAvailableBeds: 仅返回可用床位（未被占用或仅被 residentID 占用）；VIP 规则：room 被其他住户占用则该 room 下 bed 也不可用
+// ListAvailableBeds: 仅返回可用床位（未被占用或仅被 residentID 占用）；VIP 规则：非 Share 时 room 被其他住户占用则整间不可选；Share 同房多床仅按 bed 占用判断
 func (r *PostgresUnitsRepository) ListAvailableBeds(ctx context.Context, tenantID, roomID, search, residentID string) ([]*domain.Bed, error) {
 	if tenantID == "" || roomID == "" {
 		return []*domain.Bed{}, nil
+	}
+
+	var isSharedUnit bool
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(u.is_shared_unit, false) FROM rooms r
+		INNER JOIN units u ON u.unit_id = r.unit_id AND u.tenant_id = r.tenant_id
+		WHERE r.tenant_id = $1 AND r.room_id = $2`, tenantID, roomID,
+	).Scan(&isSharedUnit); err != nil {
+		if err == sql.ErrNoRows {
+			return []*domain.Bed{}, nil
+		}
+		return nil, err
 	}
 
 	where := []string{"b.tenant_id = $1", "b.room_id = $2"}
@@ -1539,13 +1551,15 @@ func (r *PostgresUnitsRepository) ListAvailableBeds(ctx context.Context, tenantI
 		argN++
 	}
 
-	// VIP 规则：room 被其他住户占用则不可选，该 room 下 bed 也不显示
-	if residentID == "" {
-		where = append(where, `NOT EXISTS (SELECT 1 FROM residents res WHERE res.tenant_id = b.tenant_id AND res.room_id = b.room_id)`)
-	} else {
-		where = append(where, fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM residents res WHERE res.tenant_id = b.tenant_id AND res.room_id = b.room_id AND res.resident_id IS NOT NULL AND res.resident_id != $%d)`, argN))
-		args = append(args, residentID)
-		argN++
+	// VIP 规则：非 Share 时 room 被其他住户占用则不可选；Share 允许多住户同房不同床，不按 room 整间过滤
+	if !isSharedUnit {
+		if residentID == "" {
+			where = append(where, `NOT EXISTS (SELECT 1 FROM residents res WHERE res.tenant_id = b.tenant_id AND res.room_id = b.room_id)`)
+		} else {
+			where = append(where, fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM residents res WHERE res.tenant_id = b.tenant_id AND res.room_id = b.room_id AND res.resident_id IS NOT NULL AND res.resident_id != $%d)`, argN))
+			args = append(args, residentID)
+			argN++
+		}
 	}
 
 	if search != "" {

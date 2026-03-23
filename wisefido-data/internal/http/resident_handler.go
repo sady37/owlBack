@@ -254,6 +254,9 @@ func (h *ResidentHandler) ListResidents(w http.ResponseWriter, r *http.Request) 
 		if item.UnitName != nil {
 			itemMap["unit_name"] = *item.UnitName
 		}
+		if item.FacilityType != nil {
+			itemMap["facility_type"] = *item.FacilityType
+		}
 		if item.BranchID != nil {
 			itemMap["branch_id"] = *item.BranchID
 		}

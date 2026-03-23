@@ -235,12 +235,30 @@ type ResidentListItemDTO struct {
 	BranchID        *string `json:"branch_id,omitempty"`      // 从 residents.branch_id 获取
 	BranchName      *string `json:"branch_name,omitempty"`    // 从 branches.branch_name 获取（通过 residents.branch_id）
 	IsSharedUnit    *bool   `json:"is_shared_unit,omitempty"` // 从 units.is_shared_unit 获取（原 is_multi_person_room），未绑定 unit 时为 nil
+	FacilityType    *string `json:"facility_type,omitempty"`  // Share / Public / VIP（由 units.is_shared_unit + is_public 推导）
 	RoomID          *string `json:"room_id,omitempty"`
 	RoomName        *string `json:"room_name,omitempty"`
 	BedID           *string `json:"bed_id,omitempty"`
 	BedName         *string `json:"bed_name,omitempty"`
 	IsAccessEnabled bool    `json:"is_access_enabled"`
 	// Note: 列表不需要 Note 字段
+}
+
+// residentListFacilityType 列表用：Share（共享）/ Public（公共）/ VIP（独享）
+func residentListFacilityType(shared, public sql.NullBool) *string {
+	if !shared.Valid && !public.Valid {
+		return nil
+	}
+	if shared.Valid && shared.Bool {
+		s := "Share"
+		return &s
+	}
+	if public.Valid && public.Bool {
+		s := "Public"
+		return &s
+	}
+	s := "VIP"
+	return &s
 }
 
 // GetResidentRequest 获取住户详情请求
@@ -778,6 +796,7 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 	             u.unit_name,
 	             bld.building_name,
 	             u.is_shared_unit,
+	             u.is_public,
 	             br.branch_name,
 	             rm.room_name,
 	             b.bed_name,
@@ -924,7 +943,7 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 		var admissionDate, dischargeDate sql.NullTime
 		var unitID, roomID, bedID, branchID sql.NullString
 		var unitName, buildingName, branchName sql.NullString
-		var isSharedUnit sql.NullBool // 使用 sql.NullBool 处理 NULL 值（LEFT JOIN 可能导致 NULL）
+		var isSharedUnit, isPublicUnit sql.NullBool // LEFT JOIN units 时可能为 NULL
 		var roomName, bedName sql.NullString
 		var canViewStatus bool
 
@@ -934,7 +953,7 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 			&status, &serviceLevel, &admissionDate, &dischargeDate,
 			&unitID, &roomID, &bedID,
 			&branchID,
-			&unitName, &buildingName, &isSharedUnit,
+			&unitName, &buildingName, &isSharedUnit, &isPublicUnit,
 			&branchName,
 			&roomName, &bedName, &canViewStatus,
 			&residentAccountForSort, // 扫描排序字段（SELECT DISTINCT 要求 ORDER BY 字段必须在 SELECT 中）
@@ -959,6 +978,7 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 		if isSharedUnit.Valid {
 			item.IsSharedUnit = &isSharedUnit.Bool
 		}
+		item.FacilityType = residentListFacilityType(isSharedUnit, isPublicUnit)
 
 		if residentAccount.Valid {
 			item.ResidentAccount = &residentAccount.String
@@ -1006,7 +1026,7 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 	}
 
 	// 8. 查询总数（使用相同的 WHERE 条件，但不包含 JOIN 和分页）
-	countQuery := strings.Replace(q, "SELECT DISTINCT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,\n\t             r.status, r.service_level, r.admission_date, r.discharge_date,\n\t             r.unit_id::text, r.room_id::text, r.bed_id::text,\n\t             r.branch_id::text,\n\t             u.unit_name,\n\t             bld.building_name,\n\t             u.is_shared_unit,\n\t             br.branch_name,\n\t             rm.room_name,\n\t             b.bed_name,\n\t             r.is_access_enabled,\n\t             COALESCE(r.resident_account, '') as resident_account_for_sort,\n\t             r.resident_id::text as resident_id_for_sort\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN buildings bld ON bld.building_id = u.building_id\n	      LEFT JOIN rooms rm ON rm.room_id = r.room_id\n	      LEFT JOIN beds b ON b.bed_id = r.bed_id\n	      LEFT JOIN branches br ON br.branch_id = r.branch_id\n	      LEFT JOIN resident_phi rp ON rp.resident_id = r.resident_id AND rp.tenant_id = r.tenant_id\n	      LEFT JOIN resident_contacts rc ON rc.resident_id = r.resident_id AND rc.tenant_id = r.tenant_id", "SELECT COUNT(DISTINCT r.resident_id)\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN buildings bld ON bld.building_id = u.building_id\n	      LEFT JOIN branches br ON br.branch_id = r.branch_id\n	      LEFT JOIN resident_phi rp ON rp.resident_id = r.resident_id AND rp.tenant_id = r.tenant_id\n	      LEFT JOIN resident_contacts rc ON rc.resident_id = r.resident_id AND rc.tenant_id = r.tenant_id", 1)
+	countQuery := strings.Replace(q, "SELECT DISTINCT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,\n\t             r.status, r.service_level, r.admission_date, r.discharge_date,\n\t             r.unit_id::text, r.room_id::text, r.bed_id::text,\n\t             r.branch_id::text,\n\t             u.unit_name,\n\t             bld.building_name,\n\t             u.is_shared_unit,\n\t             u.is_public,\n\t             br.branch_name,\n\t             rm.room_name,\n\t             b.bed_name,\n\t             r.is_access_enabled,\n\t             COALESCE(r.resident_account, '') as resident_account_for_sort,\n\t             r.resident_id::text as resident_id_for_sort\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN buildings bld ON bld.building_id = u.building_id\n	      LEFT JOIN rooms rm ON rm.room_id = r.room_id\n	      LEFT JOIN beds b ON b.bed_id = r.bed_id\n	      LEFT JOIN branches br ON br.branch_id = r.branch_id\n	      LEFT JOIN resident_phi rp ON rp.resident_id = r.resident_id AND rp.tenant_id = r.tenant_id\n	      LEFT JOIN resident_contacts rc ON rc.resident_id = r.resident_id AND rc.tenant_id = r.tenant_id", "SELECT COUNT(DISTINCT r.resident_id)\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN buildings bld ON bld.building_id = u.building_id\n	      LEFT JOIN branches br ON br.branch_id = r.branch_id\n	      LEFT JOIN resident_phi rp ON rp.resident_id = r.resident_id AND rp.tenant_id = r.tenant_id\n	      LEFT JOIN resident_contacts rc ON rc.resident_id = r.resident_id AND rc.tenant_id = r.tenant_id", 1)
 	countQuery = strings.Replace(countQuery, " ORDER BY resident_account_for_sort ASC, resident_id_for_sort ASC", "", 1)
 	countQuery = strings.Replace(countQuery, " ORDER BY r.nickname ASC", "", 1)
 	countQuery = strings.Replace(countQuery, fmt.Sprintf(` LIMIT $%d OFFSET $%d`, argIdx, argIdx+1), "", 1)
@@ -2054,6 +2074,23 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 		}
 	}
 
+	if s.cardSync != nil && unitID != "" {
+		if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, unitID); err != nil {
+			s.logger.Warn("Failed to sync cards after resident create",
+				zap.Error(err),
+				zap.String("tenant_id", req.TenantID),
+				zap.String("resident_id", residentID),
+				zap.String("unit_id", unitID),
+			)
+		} else {
+			s.logger.Info("Synced cards after resident create",
+				zap.String("tenant_id", req.TenantID),
+				zap.String("resident_id", residentID),
+				zap.String("unit_id", unitID),
+			)
+		}
+	}
+
 	return &CreateResidentResponse{
 		ResidentID: residentID,
 	}, nil
@@ -2342,6 +2379,27 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 				}
 			}
 			if shouldUnbind {
+				residentUpdate.UnitID = &domain.UpdateString{Action: domain.UpdateActionDelete}
+				residentUpdate.RoomID = &domain.UpdateString{Action: domain.UpdateActionDelete}
+				residentUpdate.BedID = &domain.UpdateString{Action: domain.UpdateActionDelete}
+				branchChangedAndUnbound = true
+			}
+		}
+		// status=transferred：归默认院区（default，视为总部），由总部 Admin 再分配；覆盖请求中的 branch_id
+		if residentUpdate.Status != nil && residentUpdate.Status.Action == domain.UpdateActionUpdate && residentUpdate.Status.Value == "transferred" {
+			var defaultBranchID string
+			err := s.db.QueryRowContext(ctx,
+				`SELECT branch_id::text FROM branches WHERE tenant_id = $1 AND branch_name = $2`,
+				req.TenantID, domain.DefaultBranchName,
+			).Scan(&defaultBranchID)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					return nil, fmt.Errorf("default branch not found for tenant")
+				}
+				return nil, fmt.Errorf("resolve default branch: %w", err)
+			}
+			residentUpdate.BranchID = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: defaultBranchID}
+			if existingResident.UnitID != "" {
 				residentUpdate.UnitID = &domain.UpdateString{Action: domain.UpdateActionDelete}
 				residentUpdate.RoomID = &domain.UpdateString{Action: domain.UpdateActionDelete}
 				residentUpdate.BedID = &domain.UpdateString{Action: domain.UpdateActionDelete}
@@ -2707,11 +2765,25 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 		updatedResident, err := s.residentsRepo.GetResident(ctx, req.TenantID, req.ResidentID)
 		if err != nil {
 			s.logger.Warn("Failed to get updated resident for card sync", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID))
-		} else if updatedResident != nil && updatedResident.UnitID != "" {
-			if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, updatedResident.UnitID); err != nil {
-				s.logger.Warn("Failed to sync cards after resident change", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID), zap.String("unit_id", updatedResident.UnitID))
-			} else {
-				s.logger.Info("Synced cards after resident change", zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID), zap.String("unit_id", updatedResident.UnitID))
+		} else {
+			newUnit := ""
+			if updatedResident != nil {
+				newUnit = updatedResident.UnitID
+			}
+			seen := make(map[string]struct{})
+			for _, uid := range []string{existingResident.UnitID, newUnit} {
+				if uid == "" {
+					continue
+				}
+				if _, ok := seen[uid]; ok {
+					continue
+				}
+				seen[uid] = struct{}{}
+				if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, uid); err != nil {
+					s.logger.Warn("Failed to sync cards after resident change", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID), zap.String("unit_id", uid))
+				} else {
+					s.logger.Info("Synced cards after resident change", zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID), zap.String("unit_id", uid))
+				}
 			}
 		}
 	}
@@ -2862,6 +2934,14 @@ func (s *residentService) DeleteResident(ctx context.Context, req DeleteResident
 		}
 	}
 
+	var unitIDBeforeDelete string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(unit_id::text, '') FROM residents WHERE tenant_id = $1 AND resident_id::text = $2`,
+		tenantID, req.ResidentID,
+	).Scan(&unitIDBeforeDelete); err != nil {
+		unitIDBeforeDelete = ""
+	}
+
 	// ========== 5. 软删除：将 status 设置为 'discharged' ==========
 	residentUpdate := &domain.ResidentUpdate{
 		Status: &domain.UpdateString{
@@ -2878,6 +2958,23 @@ func (s *residentService) DeleteResident(ctx context.Context, req DeleteResident
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to delete resident: %w", err)
+	}
+
+	if s.cardSync != nil && unitIDBeforeDelete != "" {
+		if _, err := s.cardSync.CreateCardsForUnit(ctx, tenantID, unitIDBeforeDelete); err != nil {
+			s.logger.Warn("Failed to sync cards after resident delete",
+				zap.Error(err),
+				zap.String("tenant_id", tenantID),
+				zap.String("resident_id", req.ResidentID),
+				zap.String("unit_id", unitIDBeforeDelete),
+			)
+		} else {
+			s.logger.Info("Synced cards after resident delete",
+				zap.String("tenant_id", tenantID),
+				zap.String("resident_id", req.ResidentID),
+				zap.String("unit_id", unitIDBeforeDelete),
+			)
+		}
 	}
 
 	return &DeleteResidentResponse{Success: true}, nil

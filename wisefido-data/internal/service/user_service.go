@@ -2728,25 +2728,75 @@ func (s *userService) updateResidentsStatusForIndividual(ctx context.Context, te
 
 	// 使用 IN 查询批量更新
 	placeholders := make([]string, len(residentIDs))
-	args := make([]any, len(residentIDs)+2)
-	args[0] = tenantID
-	args[1] = newStatus
-	for i, residentID := range residentIDs {
-		placeholders[i] = fmt.Sprintf("$%d", i+3)
-		args[i+2] = residentID
-	}
-
-	updateQuery := fmt.Sprintf(`
+	var updateQuery string
+	var args []any
+	if newStatus == "transferred" {
+		var defaultBranchID string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT branch_id::text FROM branches WHERE tenant_id = $1 AND branch_name = $2`,
+			tenantID, domain.DefaultBranchName,
+		).Scan(&defaultBranchID); err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("default branch not found for tenant")
+			}
+			return fmt.Errorf("resolve default branch: %w", err)
+		}
+		args = make([]any, len(residentIDs)+3)
+		args[0] = tenantID
+		args[1] = newStatus
+		args[2] = defaultBranchID
+		for i, residentID := range residentIDs {
+			placeholders[i] = fmt.Sprintf("$%d", i+4)
+			args[i+3] = residentID
+		}
+		updateQuery = fmt.Sprintf(`
+		UPDATE residents
+		SET status = $2,
+		    branch_id = $3::uuid,
+		    unit_id = NULL,
+		    room_id = NULL,
+		    bed_id = NULL
+		WHERE tenant_id = $1
+		  AND resident_id::text IN (%s)
+		  AND status != $2
+	`, strings.Join(placeholders, ", "))
+	} else {
+		args = make([]any, len(residentIDs)+2)
+		args[0] = tenantID
+		args[1] = newStatus
+		for i, residentID := range residentIDs {
+			placeholders[i] = fmt.Sprintf("$%d", i+3)
+			args[i+2] = residentID
+		}
+		updateQuery = fmt.Sprintf(`
 		UPDATE residents
 		SET status = $2
 		WHERE tenant_id = $1
 		  AND resident_id::text IN (%s)
 		  AND status != $2
 	`, strings.Join(placeholders, ", "))
+	}
 
 	_, err = tx.ExecContext(ctx, updateQuery, args...)
 	if err != nil {
 		return fmt.Errorf("failed to update residents status: %w", err)
+	}
+
+	if newStatus == "transferred" && len(residentIDs) > 0 {
+		ph := make([]string, len(residentIDs))
+		delArgs := make([]any, len(residentIDs)+1)
+		delArgs[0] = tenantID
+		for i, rid := range residentIDs {
+			ph[i] = fmt.Sprintf("$%d", i+2)
+			delArgs[i+1] = rid
+		}
+		delQ := fmt.Sprintf(
+			`DELETE FROM resident_caregivers WHERE tenant_id = $1 AND resident_id::text IN (%s)`,
+			strings.Join(ph, ", "),
+		)
+		if _, err := tx.ExecContext(ctx, delQ, delArgs...); err != nil {
+			return fmt.Errorf("failed to clear resident_caregivers for transferred: %w", err)
+		}
 	}
 
 	// 4. 提交事务
