@@ -51,3 +51,5 @@ Thumbs.db
 mqtt/data/mosquitto.db
 server.crt
 server.key
+owl-common/server.crt
+owl-common/server.key

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"wisefido-data/internal/domain"
+	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
 
 	"go.uber.org/zap"
@@ -18,6 +19,7 @@ type DeviceStoreService struct {
 	devicesRepo     repository.DevicesRepository
 	unitsRepo       repository.UnitsRepository
 	sleepaceGateway *SleepaceGatewayClient
+	configPublisher *publisher.ConfigPublisher
 	logger          *zap.Logger
 }
 
@@ -36,6 +38,29 @@ func NewDeviceStoreService(
 		sleepaceGateway: sleepaceGateway,
 		logger:          logger,
 	}
+}
+
+func (s *DeviceStoreService) SetConfigPublisher(pub *publisher.ConfigPublisher) {
+	s.configPublisher = pub
+}
+
+// BatchUpdateDeviceStoresNotify 批量更新 device_store 成功后发 config.card.device_store。
+func (s *DeviceStoreService) BatchUpdateDeviceStoresNotify(ctx context.Context, updates []*domain.DeviceStore) error {
+	if err := s.deviceStoreRepo.BatchUpdateDeviceStores(ctx, updates); err != nil {
+		return err
+	}
+	NotifyDeviceStoreBatchAfterUpdate(ctx, s.deviceStoreRepo, s.configPublisher, updates, s.logger)
+	return nil
+}
+
+// ImportDeviceStoresNotify 导入成功后按插入行发 config.card.device_store。
+func (s *DeviceStoreService) ImportDeviceStoresNotify(ctx context.Context, items []*domain.DeviceStore) (successCount int, inserted []*domain.DeviceStore, skipped []*domain.DeviceStore, errors []*domain.DeviceStore, err error) {
+	successCount, inserted, skipped, errors, err = s.deviceStoreRepo.ImportDeviceStores(ctx, items)
+	if err != nil {
+		return
+	}
+	NotifyDeviceStoreFromStores(ctx, s.configPublisher, inserted, "device_store_imported", s.logger)
+	return
 }
 
 func (s *DeviceStoreService) getTimezoneForDevice(ctx context.Context, tenantID, deviceID string) int {

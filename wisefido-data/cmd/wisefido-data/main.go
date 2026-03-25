@@ -70,12 +70,11 @@ func main() {
 	var branchesRepo *repository.PostgresBranchesRepository
 
 	var usersRepo *repository.PostgresUsersRepository
-	var tenantResolver *repository.PostgresTenantResolver
 	var sleepaceReportService service.SleepaceReportService
 	// Stub depends on tenantsRepo + authStore (used by /auth/api/v1/institutions/search + /auth/api/v1/login)
 	stub := httpapi.NewStubHandler(nil, authStore, nil)
 	// Always register admin routes; if DB is not available, AdminAPI will fall back to stub (no 404).
-	admin := httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, nil, nil, nil)
+	admin := httpapi.NewAdminAPI(stub, logger)
 	if cfg.DBEnabled {
 		if d, err := database.NewPostgresDB(&cfg.Database); err == nil {
 			db = d
@@ -91,17 +90,12 @@ func main() {
 		devicesRepo = repository.NewPostgresDevicesRepository(db)
 		devicesRepo.SetLogger(logger) // Set logger for device connection logging
 		deviceStoreRepo = repository.NewPostgresDeviceStoreRepository(db)
-		tenantResolver = repository.NewPostgresTenantResolver(db)
 		tenantsRepo = repository.NewPostgresTenantsRepository(db)
 		// Note: StubHandler still uses TenantsRepo (old interface), but we need TenantsRepository for AuthService
 		// For now, pass nil to StubHandler since it's mainly used for fallback
 		stub = httpapi.NewStubHandler(nil, authStore, db)
 		stub.SetLogger(logger) // Set logger for user login logging
-		var qinglanClient *service.QinglanClient
-		if cfg.Qinglan.APIBaseURL != "" {
-			qinglanClient = service.NewQinglanClient(cfg.Qinglan.APIBaseURL, logger)
-		}
-		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, deviceStoreRepo, tenantResolver, stub, logger, qinglanClient, card.NewReader(redisClient), db)
+		admin = httpapi.NewAdminAPI(stub, logger)
 
 		// 创建 Role 和 RolePermission Service（仅创建，不保留变量）
 		roleRepo := repository.NewPostgresRolesRepository(db)
@@ -187,7 +181,7 @@ func main() {
 		// 创建 QinglanClient（调用 wisefido-qinglan HTTP API，统一与设备通信）
 		qinglanClient := service.NewQinglanClient(cfg.Qinglan.APIBaseURL, logger)
 
-		admin = httpapi.NewAdminAPI(unitsRepo, devicesRepo, deviceStoreRepo, tenantResolver, stub, logger, qinglanClient, card.NewReader(redisClient), db)
+		admin = httpapi.NewAdminAPI(stub, logger)
 
 		// 创建 Role 和 RolePermission Service 和 Handler
 		roleRepo := repository.NewPostgresRolesRepository(db)
@@ -296,6 +290,7 @@ func main() {
 
 		// 创建 ConfigPublisher（用于发送所有 config:* 消息）
 		configPublisher := publisher.NewConfigPublisher(redisClient, logger)
+		deviceService.SetConfigPublisher(configPublisher)
 
 		// 创建 CardSyncService
 		cardSyncService = service.NewCardSyncService(cardRepo, configPublisher, cardRealtimeSvc, logger)
@@ -340,6 +335,7 @@ func main() {
 			logger.Warn("Sleepace gateway client not initialized (SLEEPACE_GATEWAY_API_BASE_URL not set)")
 		}
 		deviceStoreService := service.NewDeviceStoreService(deviceStoreRepo, devicesRepo, unitsRepo, sleepaceGateway, logger)
+		deviceStoreService.SetConfigPublisher(configPublisher)
 		deviceStoreHandler.SetDeviceStoreService(deviceStoreService)
 
 		// 设置 QinglanClient 到 DeviceMonitorSettingsService（用于下发雷达监控设置：工作模式、跌倒/呼吸心率参数）
@@ -425,7 +421,7 @@ func main() {
 		// 暂时传递 nil，StubHandler 会处理
 		stub = httpapi.NewStubHandler(nil, authStore, nil)
 		// AdminAPI units/devices 等为 nil，回退 stub
-		admin = httpapi.NewAdminAPI(nil, nil, nil, nil, stub, logger, nil, nil, nil)
+		admin = httpapi.NewAdminAPI(stub, logger)
 	}
 	router.RegisterAdminUnitDeviceRoutes(admin)
 	// 如果 DB 启用，传入 BranchesRepository 以便创建 tenant 时自动创建默认 branch

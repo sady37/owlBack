@@ -17,6 +17,7 @@ import (
 	"wisefido-qinglan/internal/config"
 	"wisefido-qinglan/internal/models"
 	"wisefido-qinglan/internal/repository"
+	"wisefido-qinglan/internal/service"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/gorilla/mux"
@@ -53,8 +54,9 @@ func NewHTTPSServer(
 	redisClient *redis.Client,
 	logger *zap.Logger,
 	subscriptionManager DeviceSubscriptionManager,
+	cardMapping *service.CardMappingService,
 ) (*HTTPSServer, error) {
-	authService := NewAuthService(appConfig, db, deviceRepo, redisClient, logger, subscriptionManager)
+	authService := NewAuthService(appConfig, db, deviceRepo, redisClient, logger, subscriptionManager, cardMapping)
 
 	// 创建路由器，只注册 /auth 路由
 	router := mux.NewRouter()
@@ -153,15 +155,29 @@ type AuthHTTPSHandler struct {
 // handleAuth 处理设备认证请求
 func (h *AuthHTTPSHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Received HTTPS auth request from %s", r.RemoteAddr)
+	if h.logger != nil {
+		h.logger.Info("http auth request",
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.Path),
+			zap.String("remote_addr", r.RemoteAddr),
+			zap.String("x_forwarded_for", r.Header.Get("X-Forwarded-For")),
+		)
+	}
 
 	var req models.AuthRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("Failed to decode auth request body: %v", err)
+		if h.logger != nil {
+			h.logger.Warn("http auth decode failed", zap.Error(err))
+		}
 		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	log.Printf("Processing HTTPS auth request for device UID: %s", req.UID)
+	if h.logger != nil {
+		h.logger.Info("http auth body decoded", zap.String("uid", req.UID), zap.Int("type", req.Type))
+	}
 
 	ctx := r.Context()
 	remoteAddr := r.RemoteAddr
@@ -172,11 +188,21 @@ func (h *AuthHTTPSHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 	response, err := h.authService.AuthenticateDevice(ctx, &req, remoteAddr)
 	if err != nil {
 		log.Printf("Authentication failed for device %s: %v", req.UID, err)
+		if h.logger != nil {
+			h.logger.Error("http auth AuthenticateDevice error", zap.String("uid", req.UID), zap.Error(err))
+		}
 		http.Error(w, fmt.Sprintf("Authentication failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	log.Printf("HTTPS authentication completed for device %s, response code: %d", req.UID, response.Code)
+	if h.logger != nil {
+		h.logger.Info("http auth response",
+			zap.String("uid", req.UID),
+			zap.Int("code", response.Code),
+			zap.String("msg", response.Msg),
+		)
+	}
 	
 	// 将响应序列化为 JSON 并原封不动地打印到 log（用于检查真实发送的信息）
 	responseJSON, err := json.MarshalIndent(response, "", "  ")

@@ -136,6 +136,16 @@ func (r *MemoryTenantsRepo) CreateTenant(_ context.Context, tenant *domain.Tenan
 		tenant.Status = "active"
 	}
 
+	trimmed := strings.TrimSpace(tenant.TenantName)
+	if trimmed == "" {
+		return "", fmt.Errorf("tenant_name is required")
+	}
+	for _, t := range r.tenants {
+		if strings.EqualFold(strings.TrimSpace(t.TenantName), trimmed) {
+			return "", fmt.Errorf("tenant_name already exists: %q", trimmed)
+		}
+	}
+
 	// 检查 domain 唯一性
 	if tenant.Domain != "" {
 		for _, t := range r.tenants {
@@ -145,8 +155,8 @@ func (r *MemoryTenantsRepo) CreateTenant(_ context.Context, tenant *domain.Tenan
 		}
 	}
 
-	// 创建副本
 	result := *tenant
+	result.TenantName = trimmed
 	r.tenants[tenant.TenantID] = &result
 	return tenant.TenantID, nil
 }
@@ -172,7 +182,16 @@ func (r *MemoryTenantsRepo) UpdateTenant(_ context.Context, tenantID string, ten
 
 	// 更新字段
 	if tenant.TenantName != "" {
-		t.TenantName = tenant.TenantName
+		trimmed := strings.TrimSpace(tenant.TenantName)
+		if trimmed == "" {
+			return fmt.Errorf("tenant_name is empty after trim")
+		}
+		for id, existing := range r.tenants {
+			if id != tenantID && strings.EqualFold(strings.TrimSpace(existing.TenantName), trimmed) {
+				return fmt.Errorf("tenant_name already exists: %q", trimmed)
+			}
+		}
+		t.TenantName = trimmed
 	}
 	if tenant.Domain != "" {
 		t.Domain = tenant.Domain

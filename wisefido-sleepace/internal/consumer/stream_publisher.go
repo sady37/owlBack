@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"owl-common/card"
 	rediscommon "owl-common/redis"
 
 	"wisefido-sleepace/internal/config"
@@ -40,18 +41,22 @@ func (p *StreamPublisher) ResolveToDeviceUID(ctx context.Context, id string) str
 	return p.cardMappingSvc.ResolveToDeviceUID(ctx, id)
 }
 
-// Resolve 用 device key 查 device_store+cards，返回完整身份（与 DeviceCardMapping 一致）。
-// 入参可为 device_uid 或 device_code（MQTT 首次可能发 uid，后续可能发 code），GetCardInfo/LookupCard 内部统一解析；未命中时 deviceID/deviceCode/deviceType 为空。
-func (p *StreamPublisher) Resolve(ctx context.Context, deviceKey string) (tenantID, branchID, unitID, cardID, deviceID, outUID, deviceCode, deviceType string) {
+// Resolve 用 device key 查 device_store+cards，返回完整身份（DeviceBaseline），含 allow_access / business_access / monitoring_enabled。
+// 入参可为 device_uid 或 device_code（MQTT 首次可能发 uid，后续可能发 code），GetCardInfo/LookupCard 内部统一解析；未命中时 deviceID/deviceCode/deviceType 为空，业务访问为 BusinessAccessDefault（pending）。
+func (p *StreamPublisher) Resolve(ctx context.Context, deviceKey string) (
+	tenantID, branchID, unitID, cardID, deviceID, outUID, deviceCode, deviceType string,
+	allowAccess bool, businessAccess string, monitoringEnabled bool,
+) {
 	if p.cardMappingSvc == nil {
-		return "", "", "", "", "", deviceKey, "", ""
+		return "", "", "", "", "", deviceKey, "", "", false, card.BusinessAccessDefault, false
 	}
 	info, err := p.cardMappingSvc.GetCardInfo(ctx, deviceKey)
 	if err != nil {
 		p.logger.Debug("card lookup miss", zap.String("device_key", deviceKey), zap.Error(err))
-		return "", "", "", "", "", deviceKey, "", ""
+		return "", "", "", "", "", deviceKey, "", "", false, card.BusinessAccessDefault, false
 	}
-	return info.TenantID, info.BranchID, info.UnitID, info.CardID, info.DeviceID, info.DeviceUID, info.DeviceCode, info.DeviceType
+	return info.TenantID, info.BranchID, info.UnitID, info.CardID, info.DeviceID, info.DeviceUID, info.DeviceCode, info.DeviceType,
+		info.AllowAccess, info.BusinessAccess, info.MonitoringEnabled
 }
 
 // PublishMonitor sends an IoTStreamMessage to iot:monitor:stream.

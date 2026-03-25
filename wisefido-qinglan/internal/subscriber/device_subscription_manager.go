@@ -429,7 +429,7 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 		observation.FieldOffline: 0,
 	})
 	// 上线 → 根据 offline=0 推导 category=DeviceRecover
-	go m.publishDeviceAlarm(context.Background(), deviceUID, observation.FieldOffline, 0)
+	go m.publishDeviceAlarm(context.Background(), tenantID, deviceID, deviceUID, observation.FieldOffline, 0)
 	// 记录订阅状态
 	m.logger.Info("Device status changed",
 		zap.String("device_uid", deviceUID),
@@ -512,7 +512,7 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
 			observation.FieldOffline: 0,
 		})
-		go m.publishDeviceAlarm(context.Background(), deviceUID, observation.FieldOffline, 0)
+		go m.publishDeviceAlarm(context.Background(), sub.TenantID, deviceID, deviceUID, observation.FieldOffline, 0)
 
 		// 延迟重试发送 monitor 订阅命令
 		go m.sendMonitorWithRetry(deviceUID, deviceID)
@@ -604,7 +604,7 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 		observation.FieldOffline: 0,
 	})
 	// 上线 → 根据 offline=0 推导 category=DeviceRecover
-	go m.publishDeviceAlarm(context.Background(), deviceUID, observation.FieldOffline, 0)
+	go m.publishDeviceAlarm(context.Background(), sub.TenantID, deviceID, deviceUID, observation.FieldOffline, 0)
 	// 记录周期订阅状态
 	m.logger.Info("Device subscription created (periodic)",
 		zap.String("device_uid", deviceUID),

@@ -128,6 +128,11 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					tenant.Metadata = b
 				}
 			}
+			if strings.TrimSpace(tenant.TenantName) == "" {
+				writeJSON(w, http.StatusOK, Fail("tenant_name is required"))
+				return
+			}
+			tenant.TenantName = strings.TrimSpace(tenant.TenantName)
 			tenantID, err := h.Repo.CreateTenant(r.Context(), tenant)
 			if err != nil {
 				writeJSON(w, http.StatusOK, Fail("failed to create tenant"))
@@ -293,7 +298,12 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if v := getStringFromMap(payload, "tenant_type"); v != "" {
 				existing.TenantType = v
 			}
-			if v := getStringFromMap(payload, "tenant_name"); v != "" {
+			if _, ok := payload["tenant_name"]; ok {
+				v := strings.TrimSpace(getStringFromMap(payload, "tenant_name"))
+				if v == "" {
+					writeJSON(w, http.StatusOK, Fail("tenant_name cannot be empty"))
+					return
+				}
 				existing.TenantName = v
 			}
 			if _, ok := payload["domain"]; ok {

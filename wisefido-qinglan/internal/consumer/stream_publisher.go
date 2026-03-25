@@ -17,7 +17,8 @@ import (
 
 // CardMappingService 定义卡片映射服务接口（避免导入循环）
 type CardMappingService interface {
-	GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*card.DeviceCardMapping, error)
+	GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*card.DeviceBaseline, error)
+	BaselineFor(deviceUID string) (card.DeviceBaseline, bool)
 }
 
 // StreamPublisher Redis Stream发布器
@@ -49,21 +50,6 @@ func (p *StreamPublisher) GetCardID(ctx context.Context, deviceUID string) strin
 		}
 	}
 	return ""
-}
-
-// Resolve translates device_uid → full identity tuple for stream message header.
-func (p *StreamPublisher) Resolve(ctx context.Context, deviceUID string) (tenantID, branchID, unitID, cardID, did string) {
-	if p.cardMappingSvc == nil {
-		return "", "", "", "", deviceUID
-	}
-	info, err := p.cardMappingSvc.GetCardIDByDeviceUID(ctx, deviceUID)
-	if err != nil || info == nil {
-		if p.logger != nil {
-			p.logger.Debug("card lookup miss", zap.String("device_uid", deviceUID), zap.Error(err))
-		}
-		return "", "", "", deviceUID, deviceUID
-	}
-	return info.TenantID, info.BranchID, info.UnitID, info.CardID, info.DeviceID
 }
 
 // PublishMonitor sends a redis.StreamMessage to iot:monitor:stream.
@@ -119,7 +105,7 @@ func (p *StreamPublisher) publishObservation(ctx context.Context, stream redisco
 		}
 	}
 	data := msg.ToStreamMap()
-	if p.logger != nil {
+	if p.logger != nil && stream.Name != rediscommon.StreamMonitor.Name {
 		// 日志格式 iot:xxx:yyy，xxx=event/alarm/monitor，yyy=category
 		streamLabel := streamLabelFrom(stream.Name, msg)
 		payload, _ := json.Marshal(msg.DataValue)
@@ -186,21 +172,9 @@ func (p *StreamPublisher) BuildEncodedData(
 // iotStreamMessageToMap 将 IoTStreamMessage 转换为 map（用于发布到 Redis Stream）
 // 顶层顺序：device_id, device_type, card_id, tenant_id, timestamp, topic_type, category, dataValue（无 addressInfo）
 func iotStreamMessageToMap(msg rediscommon.IoTStreamMessage) map[string]interface{} {
-	dataValueJSON, _ := json.Marshal(msg.DataValue)
-	result := make(map[string]interface{})
-	if msg.DeviceID != "" {
-		result["device_id"] = msg.DeviceID
-	}
-	result["device_type"] = msg.DeviceType
-	if msg.CardID != "" {
-		result["card_id"] = msg.CardID
-	}
-	result["tenant_id"] = msg.TenantID
-	result["timestamp"] = fmt.Sprintf("%d", msg.Timestamp)
-	result["topic_type"] = msg.TopicType
-	result["category"] = msg.Category
-	result[rediscommon.DataValueKey] = string(dataValueJSON)
-	return result
+	// 统一复用 owl-common 的标准序列化，避免手写字段漏传（例如 device_uid）。
+	m := msg
+	return (&m).ToStreamMap()
 }
 
 // GetOutputStreamName 获取输出流名称
@@ -252,13 +226,14 @@ func (p *StreamPublisher) PublishDeviceStatus(
 	}
 
 	msg := rediscommon.BuildDeviceStatusMessage(
-		deviceID,
+		deviceUID,
 		deviceType,
 		cardID, // 填充查询到的 cardID
 		tenantID,
 		time.Now().Unix(),
 		statuses,
 	)
+	msg.DeviceID = deviceID
 
 	eventData := iotStreamMessageToMap(msg)
 

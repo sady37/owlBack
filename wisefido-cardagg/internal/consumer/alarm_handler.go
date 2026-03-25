@@ -204,6 +204,17 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		if m.DeviceUID != "" && m.CardID != "" && h.state != nil {
 			_ = h.state.SetDeviceOnline(ctx, m.CardID, m.DeviceID, m.DeviceUID, m.DeviceType, true)
 		}
+	// Sleepace connectionStatus 上线发 DeviceRecover（非 OfflineRecover）；与 monitor 无关，快速置在线。
+	case alarm.AlarmTypeDeviceRecover:
+		_ = h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.AlarmTypeDeviceFailure})
+		if enabled && level != "" {
+			if err := h.alarms.PersistAlarmAndPublish(ctx, payload, eventName, level); err != nil {
+				return err
+			}
+		}
+		if m.DeviceUID != "" && m.CardID != "" && h.state != nil {
+			_ = h.state.SetDeviceOnline(ctx, m.CardID, m.DeviceID, m.DeviceUID, m.DeviceType, true)
+		}
 	case alarm.SensorDetached:
 		if enabled && level != "" {
 			if err := h.alarms.PersistAlarmAndPublish(ctx, payload, eventName, level); err != nil {

@@ -84,6 +84,28 @@ func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, devic
 		zap.String("device_id", deviceID),
 	)
 
+	tid := strings.TrimSpace(tenantID)
+	did := strings.TrimSpace(deviceID)
+	if tid == "" || did == "" {
+		if m.deviceRepo == nil {
+			m.logger.Warn("health check skip stream publish: no deviceRepo", zap.String("device_uid", deviceUID))
+			return
+		}
+		ds, err := m.deviceRepo.GetDeviceStoreInfo(ctx, deviceUID)
+		if err != nil || ds == nil {
+			m.logger.Warn("health check skip stream publish: device_store lookup failed",
+				zap.String("device_uid", deviceUID), zap.Error(err))
+			return
+		}
+		tid = strings.TrimSpace(ds.TenantID)
+		did = strings.TrimSpace(ds.DeviceID)
+		if tid == "" || did == "" {
+			m.logger.Warn("health check skip stream publish: device_store missing tenant_id or device_id",
+				zap.String("device_uid", deviceUID))
+			return
+		}
+	}
+
 	// 检查 RadarService 是否已设置
 	if m.radarService == nil {
 		m.logger.Warn("RadarService not set, skipping health check",
@@ -139,9 +161,9 @@ func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, devic
 	}
 
 	// 按 iot:alarm:stream 标准格式：每个 status 一条 alarm，category/eventName 用 dataCategoryFromFieldAndValue 的准确值
-	m.publishDeviceAlarm(ctx, deviceUID, observation.FieldOffline, 0) // DeviceRecover
-	m.publishDeviceAlarm(ctx, deviceUID, observation.FieldSignalPoor, health.SignalPoor)
-	m.publishDeviceAlarm(ctx, deviceUID, observation.FieldAngleAbnormal, health.AngleAbnormal)
+	m.publishDeviceAlarm(ctx, tid, did, deviceUID, observation.FieldOffline, 0) // DeviceRecover
+	m.publishDeviceAlarm(ctx, tid, did, deviceUID, observation.FieldSignalPoor, health.SignalPoor)
+	m.publishDeviceAlarm(ctx, tid, did, deviceUID, observation.FieldAngleAbnormal, health.AngleAbnormal)
 }
 
 // validateDeviceHealth 验证设备健康状态，计算 SignalPoor 和 AngleAbnormal
@@ -240,16 +262,24 @@ func toIntFromInterface(v interface{}) int {
 }
 
 // publishDeviceAlarm 发布设备类：离线/恢复、SensorDetached/恢复 → iot:alarm:stream（直接影响报警）；信号差、倾角 → iot:event:stream（按使能落库）。
+// tenantID、deviceID（UUID）须由调用方从认证/订阅或 device_store 解析后传入；本函数不再查库。
 // fieldKey：observation 字段（FieldOffline/FieldSignalPoor/FieldAngleAbnormal/FieldDetached）。
-func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, deviceUID, fieldKey string, value int) {
+func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tenantID, deviceID, deviceUID, fieldKey string, value int) {
 	if m.streamPublisher == nil {
+		return
+	}
+	tid := strings.TrimSpace(tenantID)
+	did := strings.TrimSpace(deviceID)
+	if tid == "" || did == "" {
+		m.logger.Warn("skip publish device alarm: empty tenant_id or device_id",
+			zap.String("device_uid", deviceUID))
 		return
 	}
 	eventName := dataCategoryFromFieldAndValue(fieldKey, value)
 	if eventName == "" {
 		return
 	}
-	tid, _, _, cid, did := m.streamPublisher.Resolve(ctx, deviceUID)
+	cid := ""
 	ts := time.Now().UnixMilli()
 	eventStatus := "start"
 	if value == 0 {

@@ -15,14 +15,14 @@ var sleepadDeviceTypes = []string{"Sleepad", "SleepPad", "sleepad"}
 //
 // Two layers of in-memory cache:
 //   - codeToUID: device_code → device_uid (loaded at startup, refreshed on config event)
-//   - cardCache: device_uid → DeviceCardMapping (populated on first lookup, cleared on config event)
+//   - cardCache: device_uid → DeviceBaseline (populated on first lookup, cleared on config event)
 type CardMappingService struct {
 	cardDB *card.CardDB
 	logger *zap.Logger
 
 	mu        sync.RWMutex
-	codeToUID map[string]string                  // device_code → device_uid
-	cardCache map[string]*card.DeviceCardMapping // device_uid → full mapping
+	codeToUID map[string]string              // device_code → device_uid
+	cardCache map[string]*card.DeviceBaseline // device_uid → full identity
 }
 
 func NewCardMappingService(cardDB *card.CardDB, logger *zap.Logger) *CardMappingService {
@@ -30,7 +30,7 @@ func NewCardMappingService(cardDB *card.CardDB, logger *zap.Logger) *CardMapping
 		cardDB:    cardDB,
 		logger:    logger,
 		codeToUID: make(map[string]string),
-		cardCache: make(map[string]*card.DeviceCardMapping),
+		cardCache: make(map[string]*card.DeviceBaseline),
 	}
 }
 
@@ -50,7 +50,7 @@ func (s *CardMappingService) LoadCodeToUIDMap(ctx context.Context) error {
 // InvalidateCache clears both code→uid map and card cache, then reloads code→uid.
 func (s *CardMappingService) InvalidateCache(ctx context.Context) {
 	s.mu.Lock()
-	s.cardCache = make(map[string]*card.DeviceCardMapping)
+	s.cardCache = make(map[string]*card.DeviceBaseline)
 	s.mu.Unlock()
 
 	if err := s.LoadCodeToUIDMap(ctx); err != nil {
@@ -120,9 +120,9 @@ func (s *CardMappingService) ResolveToDeviceUID(ctx context.Context, id string) 
 	return uid
 }
 
-// GetCardInfo resolves MQTT deviceId → DeviceCardMapping.
+// GetCardInfo resolves MQTT deviceId → DeviceBaseline.
 // Uses in-memory cache; DB is only hit on first lookup per device_uid.
-func (s *CardMappingService) GetCardInfo(ctx context.Context, mqttDeviceID string) (*card.DeviceCardMapping, error) {
+func (s *CardMappingService) GetCardInfo(ctx context.Context, mqttDeviceID string) (*card.DeviceBaseline, error) {
 	s.mu.RLock()
 	uid := s.codeToUID[mqttDeviceID]
 	s.mu.RUnlock()
@@ -143,7 +143,10 @@ func (s *CardMappingService) GetCardInfo(ctx context.Context, mqttDeviceID strin
 	if err != nil {
 		info, err = s.cardDB.LookupDeviceOnly(ctx, key)
 		if err != nil {
-			return nil, err
+			info, err = s.cardDB.LookupDeviceStoreOnly(ctx, key)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 

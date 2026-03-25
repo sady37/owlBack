@@ -242,8 +242,20 @@ func (r *PostgresTenantsRepository) CreateTenant(ctx context.Context, tenant *do
 	if tenant == nil {
 		return "", fmt.Errorf("tenant is required")
 	}
-	if tenant.TenantName == "" {
+	trimmed := strings.TrimSpace(tenant.TenantName)
+	if trimmed == "" {
 		return "", fmt.Errorf("tenant_name is required")
+	}
+	var existingID string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT tenant_id::text FROM tenants WHERE LOWER(TRIM(tenant_name)) = LOWER($1) LIMIT 1`,
+		trimmed,
+	).Scan(&existingID)
+	if err == nil {
+		return "", fmt.Errorf("tenant_name already exists: %q", trimmed)
+	}
+	if err != sql.ErrNoRows {
+		return "", fmt.Errorf("check tenant_name: %w", err)
 	}
 
 	// 处理默认值
@@ -264,12 +276,12 @@ func (r *PostgresTenantsRepository) CreateTenant(ctx context.Context, tenant *do
 
 	// 处理可空字段（使用NULLIF将空字符串转为NULL）
 	var tenantID string
-	err := r.db.QueryRowContext(ctx,
+	err = r.db.QueryRowContext(ctx,
 		`INSERT INTO tenants (tenant_type, tenant_name, domain, email, phone, status, metadata)
 		 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6, $7::jsonb)
 		 RETURNING tenant_id::text`,
 		tenantType,
-		tenant.TenantName,
+		trimmed,
 		tenant.Domain,
 		tenant.Email,
 		tenant.Phone,
@@ -304,8 +316,23 @@ func (r *PostgresTenantsRepository) UpdateTenant(ctx context.Context, tenantID s
 	}
 
 	if tenant.TenantName != "" {
+		trimmed := strings.TrimSpace(tenant.TenantName)
+		if trimmed == "" {
+			return fmt.Errorf("tenant_name is empty after trim")
+		}
+		var conflictID string
+		err := r.db.QueryRowContext(ctx,
+			`SELECT tenant_id::text FROM tenants WHERE LOWER(TRIM(tenant_name)) = LOWER($1) AND tenant_id <> $2::uuid`,
+			trimmed, tenantID,
+		).Scan(&conflictID)
+		if err == nil {
+			return fmt.Errorf("tenant_name already exists: %q", trimmed)
+		}
+		if err != sql.ErrNoRows {
+			return fmt.Errorf("check tenant_name: %w", err)
+		}
 		updates = append(updates, fmt.Sprintf("tenant_name = $%d", argIdx))
-		args = append(args, tenant.TenantName)
+		args = append(args, trimmed)
 		argIdx++
 	}
 

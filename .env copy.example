@@ -50,6 +50,8 @@ HTTP_PORT=8080
 RADAR_HTTPS_PORT=8443
 RADAR_HTTPS_CERT_FILE=
 RADAR_HTTPS_KEY_FILE=
+# 认证响应 data.authUrl；不设则自动 https://{RADAR_MQTT_SERVER}:{RADAR_HTTPS_PORT}/prod-api/thirdmqtt/v2/auth/device
+# RADAR_AUTH_PUBLIC_URL=https://test.wisefido.com:8443/prod-api/thirdmqtt/v2/auth/device
 
 # ============================================
 # 日志配置

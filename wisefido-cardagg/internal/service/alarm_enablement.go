@@ -86,6 +86,21 @@ func (c *AlarmEnablementCache) Invalidate(deviceID string) {
 	delete(c.cache, deviceID)
 }
 
+// InvalidateDevices 批量失效告警使能缓存（同 unit 下多设备）。
+func (c *AlarmEnablementCache) InvalidateDevices(deviceIDs []string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, id := range deviceIDs {
+		if id == "" {
+			continue
+		}
+		delete(c.cache, id)
+	}
+}
+
 // loadDevice queries alarm_device from DB and builds the enablement map.
 func (c *AlarmEnablementCache) loadDevice(ctx context.Context, tenantID, deviceID string) {
 	if c.db == nil {

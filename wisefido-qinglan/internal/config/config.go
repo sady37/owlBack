@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	commonconfig "owl-common/config"
@@ -25,6 +26,8 @@ type Config struct {
 	Streams      commonconfig.StreamsConfig  `yaml:"streams"`
 	Subscription SubscriptionConfig          `yaml:"subscription"`
 	Alarm        commonconfig.AlarmConfig    `yaml:"alarm"`
+	// AuthPublicURL 设备 HTTPS 认证完整 URL（如 https://test.wisefido.com:8443/prod-api/thirdmqtt/v2/auth/device）；空则按 RADAR_MQTT_SERVER + HTTPS 端口拼接
+	AuthPublicURL string `yaml:"auth_public_url"`
 }
 
 // HTTPSConfig HTTPS 服务器配置（用于设备认证）
@@ -262,7 +265,12 @@ func LoadFromEnv() (*Config, error) {
 
 	// HTTPS配置（用于设备认证）
 	// 优先使用 owl-common 的共享证书（如果存在）
-	cfg.HTTPS.Port = parseInt(getEnv("QINGLAN_HTTPS_PORT", "8443"), 8443)
+	httpsPort := getEnv("QINGLAN_HTTPS_PORT", "")
+	if httpsPort == "" {
+		httpsPort = getEnv("RADAR_HTTPS_PORT", "8443")
+	}
+	cfg.HTTPS.Port = parseInt(httpsPort, 8443)
+	cfg.AuthPublicURL = strings.TrimSpace(getEnv("RADAR_AUTH_PUBLIC_URL", getEnv("QINGLAN_AUTH_PUBLIC_URL", "")))
 
 	// 如果未指定证书路径，尝试使用 owl-common 的证书
 	certFile := getEnv("QINGLAN_HTTPS_CERT_FILE", "")
@@ -310,4 +318,19 @@ func parseInt(s string, defaultValue int) int {
 		return defaultValue
 	}
 	return val
+}
+
+// DeviceAuthURL 认证成功响应里下发的 HTTPS 认证地址（默认 https://{RADAR_MQTT_SERVER}:{HTTPS 端口}/prod-api/thirdmqtt/v2/auth/device）。
+func (c *Config) DeviceAuthURL() string {
+	if c == nil {
+		return ""
+	}
+	if u := strings.TrimSpace(c.AuthPublicURL); u != "" {
+		return u
+	}
+	host := strings.TrimSpace(c.MQTT.RadarDeviceMQTT.Server)
+	if host == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://%s:%d/prod-api/thirdmqtt/v2/auth/device", host, c.HTTPS.Port)
 }

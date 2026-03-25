@@ -142,6 +142,69 @@ func (c *DeviceMetaCache) Remove(cardID string) {
 	c.mu.Unlock()
 }
 
+// InvalidateCardsInTenantUnit 将 tenant+unit 下所有卡片的 meta 标为需重载（config:card 同 unit 内多卡联动）。
+func (c *DeviceMetaCache) InvalidateCardsInTenantUnit(ctx context.Context, tenantID, unitID string) {
+	if c.db == nil || tenantID == "" || unitID == "" {
+		return
+	}
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT card_id::text FROM cards WHERE tenant_id = $1::uuid AND unit_id = $2::uuid`,
+		tenantID, unitID)
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Warn("InvalidateCardsInTenantUnit query failed",
+				zap.String("tenant_id", tenantID), zap.String("unit_id", unitID), zap.Error(err))
+		}
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid string
+		if err := rows.Scan(&cid); err != nil || cid == "" {
+			continue
+		}
+		c.Invalidate(cid)
+	}
+}
+
+// DeviceKeysInTenantUnit 返回该 unit 下所有卡 devices JSON 中的 device_id / device_uid（去重），供告警使能与 resolver 键失效。
+func DeviceKeysInTenantUnit(ctx context.Context, db *sql.DB, tenantID, unitID string) (deviceIDs []string, deviceUIDs []string) {
+	if db == nil || tenantID == "" || unitID == "" {
+		return nil, nil
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT DISTINCT j->>'device_id', j->>'device_uid'
+		FROM cards c, jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS j
+		WHERE c.tenant_id = $1::uuid AND c.unit_id = $2::uuid
+		  AND COALESCE(j->>'device_id', '') <> ''`,
+		tenantID, unitID)
+	if err != nil {
+		return nil, nil
+	}
+	defer rows.Close()
+	seenD := make(map[string]struct{})
+	seenU := make(map[string]struct{})
+	for rows.Next() {
+		var did, uid sql.NullString
+		if err := rows.Scan(&did, &uid); err != nil {
+			continue
+		}
+		if did.Valid && did.String != "" {
+			if _, ok := seenD[did.String]; !ok {
+				seenD[did.String] = struct{}{}
+				deviceIDs = append(deviceIDs, did.String)
+			}
+		}
+		if uid.Valid && uid.String != "" {
+			if _, ok := seenU[uid.String]; !ok {
+				seenU[uid.String] = struct{}{}
+				deviceUIDs = append(deviceUIDs, uid.String)
+			}
+		}
+	}
+	return deviceIDs, deviceUIDs
+}
+
 // GetDeviceMeta returns metadata for a specific device within a card (key = device_id).
 func (c *DeviceMetaCache) GetDeviceMeta(ctx context.Context, cardID, deviceID string) *DeviceMeta {
 	cm := c.GetOrLoad(ctx, cardID)

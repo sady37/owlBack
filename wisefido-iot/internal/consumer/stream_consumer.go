@@ -5,24 +5,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"wisefido-iot/internal/config"
 	"wisefido-iot/internal/publisher"
 	"wisefido-iot/internal/repository"
 
-	"go.uber.org/zap"
-	"github.com/go-redis/redis/v8"
 	rediscommon "owl-common/redis"
+
+	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 )
 
 // StreamConsumer Redis Streams 消费者
 type StreamConsumer struct {
-	config    *config.Config
+	config      *config.Config
 	redisClient *redis.Client
-	iotRepo   *repository.IoTTimeSeriesRepository
-	publisher *publisher.StreamPublisher
-	logger    *zap.Logger
+	iotRepo     *repository.IoTTimeSeriesRepository
+	publisher   *publisher.StreamPublisher
+	logger      *zap.Logger
 }
 
 // NewStreamConsumer 创建 Streams 消费者
@@ -89,7 +91,7 @@ func (c *StreamConsumer) Start(ctx context.Context) error {
 			errors := []error{
 				monitorErr, statErr, eventErr, alarmErr, authErr,
 			}
-			
+
 			// 如果所有流都出错，才进行退避
 			allFailed := true
 			for _, err := range errors {
@@ -161,6 +163,7 @@ func (c *StreamConsumer) consumeStream(ctx context.Context, streamName string) e
 		if err := c.processMessage(ctx, streamName, msg); err != nil {
 			c.logger.Error("Failed to process message",
 				zap.String("stream", streamName),
+				zap.String("device_uid", streamFieldStr(msg.Values, "device_uid")),
 				zap.String("message_id", msg.ID),
 				zap.Error(err),
 			)
@@ -169,6 +172,25 @@ func (c *StreamConsumer) consumeStream(ctx context.Context, streamName string) e
 	}
 
 	return nil
+}
+
+// streamFieldStr 从解析后的 map 取字段用于日志（兼容 string / 非 string）。
+func streamFieldStr(m map[string]interface{}, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch s := v.(type) {
+	case string:
+		return strings.TrimSpace(s)
+	case []byte:
+		return strings.TrimSpace(string(s))
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", s))
+	}
 }
 
 // processMessage 处理单条消息
@@ -224,22 +246,28 @@ func (c *StreamConsumer) processMessage(ctx context.Context, streamName string, 
 	id, err := c.iotRepo.Insert(data)
 	if err != nil {
 		// 如果遇到 db 与 stream 不一致，记录并跳过（根据用户要求）
-		deviceID, _ := data["device_id"].(string)
+		deviceID := streamFieldStr(data, "device_id")
 		c.logger.Warn("Failed to insert to iot_timeseries, skipping message",
 			zap.String("stream", streamName),
 			zap.String("device_id", deviceID),
+			zap.String("device_uid", streamFieldStr(data, "device_uid")),
+			zap.String("tenant_id", streamFieldStr(data, "tenant_id")),
+			zap.String("card_id", streamFieldStr(data, "card_id")),
+			zap.String("topic_type", streamFieldStr(data, "topic_type")),
+			zap.String("category", streamFieldStr(data, "category")),
 			zap.String("message_id", msg.ID),
 			zap.Error(err),
 		)
 		// 返回 nil 以跳过此消息，继续处理下一条
 		return nil
 	}
-	
+
 	// 提取 deviceID 用于日志
-	deviceID, _ := data["device_id"].(string)
+	deviceID := streamFieldStr(data, "device_id")
 	c.logger.Debug("Successfully inserted to iot_timeseries",
 		zap.String("stream", streamName),
 		zap.String("device_id", deviceID),
+		zap.String("device_uid", streamFieldStr(data, "device_uid")),
 		zap.Int64("iot_timeseries_id", id),
 	)
 

@@ -1,6 +1,16 @@
 #!/bin/bash
 
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# 与 start-owlback 一致：可从 owlBack/.env 继承 RADAR_* / QINGLAN_*（不覆盖脚本内随后显式 export 的 DB 等）
+ENV_FILE="$SCRIPT_DIR/../.env"
+if [ -f "$ENV_FILE" ]; then
+	set -a
+	# shellcheck source=/dev/null
+	source "$ENV_FILE"
+	set +a
+fi
 
 echo "🚀 Starting wisefido-qinglan service..."
 
@@ -38,7 +48,6 @@ check_and_start_dependencies() {
     echo ""
     echo "🔍 Checking dependencies..."
     
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     DOCKER_COMPOSE_FILE="${SCRIPT_DIR}/../docker-compose.yml"
     
     if command -v nc > /dev/null 2>&1; then
@@ -86,22 +95,22 @@ fi
 echo ""
 echo "📋 Setting environment variables..."
 
-export DB_HOST=127.0.0.1
-export DB_PORT=5432
-export DB_USER=postgres
-export DB_PASSWORD=postgres
-export DB_NAME=owlrd
-export DB_SSLMODE=disable
+export DB_HOST="${DB_HOST:-127.0.0.1}"
+export DB_PORT="${DB_PORT:-5432}"
+export DB_USER="${DB_USER:-postgres}"
+export DB_PASSWORD="${DB_PASSWORD:-postgres}"
+export DB_NAME="${DB_NAME:-owlrd}"
+export DB_SSLMODE="${DB_SSLMODE:-disable}"
 
-export REDIS_ADDR=127.0.0.1:6379
-export REDIS_PASSWORD=TeLunSu-36kr
-export REDIS_DB=0
+export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
+export REDIS_PASSWORD="${REDIS_PASSWORD:-TeLunSu-36kr}"
+export REDIS_DB="${REDIS_DB:-0}"
 
-export MQTT_BROKER=127.0.0.1
-export MQTT_PORT=1883
-export MQTT_CLIENT_ID=wisefido-qinglan
-export MQTT_USERNAME=
-export MQTT_PASSWORD=
+export MQTT_BROKER="${MQTT_BROKER:-127.0.0.1}"
+export MQTT_PORT="${MQTT_PORT:-1883}"
+export MQTT_CLIENT_ID="${MQTT_CLIENT_ID:-wisefido-qinglan}"
+export MQTT_USERNAME="${MQTT_USERNAME:-}"
+export MQTT_PASSWORD="${MQTT_PASSWORD:-}"
 
 export RADAR_MQTT_PREFIX=
 export RADAR_MQTT_PRODUCT_ID=88
@@ -119,17 +128,15 @@ export RADAR_MQTT_SERVER="${RADAR_MQTT_SERVER:-10.0.0.30}"
 export RADAR_MQTT_ACCOUNT="${RADAR_MQTT_ACCOUNT:-wfiot}"
 export RADAR_MQTT_PASSWORD="${RADAR_MQTT_PASSWORD:-}"
 
-export HTTP_HOST=0.0.0.0
-export HTTP_PORT=8081
+export HTTP_HOST="${HTTP_HOST:-0.0.0.0}"
+export HTTP_PORT="${HTTP_PORT:-${QINGLAN_PORT:-8081}}"
 
-# HTTPS 服务器配置（用于设备认证）
-export QINGLAN_HTTPS_PORT="${QINGLAN_HTTPS_PORT:-8443}"
+# HTTPS 服务器配置（用于设备认证；与 .env 中 RADAR_HTTPS_PORT 一致）
+export QINGLAN_HTTPS_PORT="${QINGLAN_HTTPS_PORT:-${RADAR_HTTPS_PORT:-8443}}"
 
-# 证书统一使用 owl-common 下的 server.crt / server.key：
-#   - 本脚本：Qinglan HTTPS 设备认证使用 owl-common 证书
-#   - MQTT broker（mqtt/config）：建议与 owl-common 一致，可将 mosquitto 配置为使用 owl-common 证书，或把 owl-common 生成的证书复制到 mqtt/config
-# 生成证书：在 owl-common 目录执行 ../wisefido-qinglan/generate-cert.sh
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# 证书：优先 .env 中 QINGLAN_HTTPS_* / RADAR_HTTPS_*，否则 owl-common/server.crt|key
+# 生产 Let’s Encrypt 覆盖 owl-common：sudo LE_DOMAIN=test.wisefido.com bash ../scripts/copy-letsencrypt-to-owl-common.sh
+# 开发自签：cd .. && bash scripts/generate-cert.sh
 COMMON_DIR="$(cd "$SCRIPT_DIR/../owl-common" && pwd)"
 CERT_DIR="${QINGLAN_CERT_DIR:-$COMMON_DIR}"
 
@@ -137,18 +144,76 @@ CERT_DIR="${QINGLAN_CERT_DIR:-$COMMON_DIR}"
 COMMON_CERT_FILE="$COMMON_DIR/server.crt"
 COMMON_KEY_FILE="$COMMON_DIR/server.key"
 
-# 如果 owl-common 的证书存在，使用它；否则使用环境变量或本地证书
-if [ -f "$COMMON_CERT_FILE" ] && [ -f "$COMMON_KEY_FILE" ]; then
-    CERT_FILE="$COMMON_CERT_FILE"
-    KEY_FILE="$COMMON_KEY_FILE"
-    echo -e "${GREEN}✅ Using owl-common shared certificates:${NC}"
-    echo "   Certificate: $CERT_FILE"
-    echo "   Key: $KEY_FILE"
-    echo ""
+# 启动前检查 HTTPS 证书有效期：若剩余天数 <= 阈值则自动从系统 Let's Encrypt 复制到 owl-common
+refresh_common_tls_cert_if_needed() {
+	local threshold_days now expiry_epoch remain_days
+	local cert_file copy_script le_domain
+	threshold_days="${TLS_CERT_REFRESH_THRESHOLD_DAYS:-5}"
+	cert_file="$COMMON_CERT_FILE"
+	copy_script="$SCRIPT_DIR/../scripts/copy-letsencrypt-to-owl-common.sh"
+	le_domain="${LE_DOMAIN:-${RADAR_MQTT_SERVER:-test.wisefido.com}}"
+
+	if ! [[ "$threshold_days" =~ ^[0-9]+$ ]]; then
+		threshold_days=5
+	fi
+
+	if [ ! -f "$copy_script" ]; then
+		echo -e "${YELLOW}⚠️  Cert refresh script not found: $copy_script${NC}"
+		return 0
+	fi
+
+	if [ ! -f "$cert_file" ]; then
+		echo -e "${YELLOW}⚠️  TLS cert missing, refreshing from Let's Encrypt: $le_domain${NC}"
+		LE_DOMAIN="$le_domain" bash "$copy_script" || echo -e "${YELLOW}⚠️  TLS cert refresh failed, continue startup${NC}"
+		return 0
+	fi
+
+	expiry_epoch="$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null | cut -d= -f2 | xargs -I{} date -d "{}" +%s 2>/dev/null || true)"
+	now="$(date +%s)"
+	if [ -z "$expiry_epoch" ]; then
+		echo -e "${YELLOW}⚠️  Cannot parse cert expiry: $cert_file${NC}"
+		return 0
+	fi
+	remain_days=$(( (expiry_epoch - now) / 86400 ))
+	echo "  🔎 TLS cert check: $cert_file, remaining ${remain_days} day(s), threshold ${threshold_days} day(s)"
+
+	if [ "$remain_days" -le "$threshold_days" ]; then
+		echo -e "${YELLOW}⚠️  TLS cert expires soon, refreshing from Let's Encrypt: $le_domain${NC}"
+		LE_DOMAIN="$le_domain" bash "$copy_script" || echo -e "${YELLOW}⚠️  TLS cert refresh failed, continue startup${NC}"
+	fi
+}
+
+refresh_common_tls_cert_if_needed
+
+use_env_pair() {
+	local c="$1" k="$2"
+	[ -n "$c" ] && [ -n "$k" ] && [ -f "$c" ] && [ -f "$k" ]
+}
+
+if use_env_pair "${QINGLAN_HTTPS_CERT_FILE:-}" "${QINGLAN_HTTPS_KEY_FILE:-}"; then
+	CERT_FILE="$QINGLAN_HTTPS_CERT_FILE"
+	KEY_FILE="$QINGLAN_HTTPS_KEY_FILE"
+	echo -e "${GREEN}✅ Using QINGLAN_HTTPS_* certificates:${NC}"
+	echo "   Certificate: $CERT_FILE"
+	echo "   Key: $KEY_FILE"
+	echo ""
+elif use_env_pair "${RADAR_HTTPS_CERT_FILE:-}" "${RADAR_HTTPS_KEY_FILE:-}"; then
+	CERT_FILE="$RADAR_HTTPS_CERT_FILE"
+	KEY_FILE="$RADAR_HTTPS_KEY_FILE"
+	echo -e "${GREEN}✅ Using RADAR_HTTPS_* certificates:${NC}"
+	echo "   Certificate: $CERT_FILE"
+	echo "   Key: $KEY_FILE"
+	echo ""
+elif [ -f "$COMMON_CERT_FILE" ] && [ -f "$COMMON_KEY_FILE" ]; then
+	CERT_FILE="$COMMON_CERT_FILE"
+	KEY_FILE="$COMMON_KEY_FILE"
+	echo -e "${GREEN}✅ Using owl-common shared certificates:${NC}"
+	echo "   Certificate: $CERT_FILE"
+	echo "   Key: $KEY_FILE"
+	echo ""
 else
-    # 回退到环境变量或本地证书
-    CERT_FILE="${QINGLAN_HTTPS_CERT_FILE:-$SCRIPT_DIR/server.crt}"
-    KEY_FILE="${QINGLAN_HTTPS_KEY_FILE:-$SCRIPT_DIR/server.key}"
+	CERT_FILE="${QINGLAN_HTTPS_CERT_FILE:-$SCRIPT_DIR/server.crt}"
+	KEY_FILE="${QINGLAN_HTTPS_KEY_FILE:-$SCRIPT_DIR/server.key}"
     
     # 转换为绝对路径
     CERT_FILE=$(cd "$(dirname "$CERT_FILE")" 2>/dev/null && pwd)/$(basename "$CERT_FILE") 2>/dev/null || echo "$CERT_FILE"
@@ -161,9 +226,7 @@ else
         echo "   Key: $KEY_FILE"
         echo ""
         echo -e "${YELLOW}💡 To generate self-signed certificates, run:${NC}"
-        echo "   cd $COMMON_DIR && ./generate-cert.sh"
-        echo "   (or)"
-        echo "   cd $SCRIPT_DIR && ./generate-cert.sh"
+        echo "   cd $SCRIPT_DIR/.. && bash scripts/generate-cert.sh"
         echo ""
         echo -e "${YELLOW}   Or set environment variables:${NC}"
         echo "   export QINGLAN_HTTPS_CERT_FILE=/path/to/server.crt"
@@ -192,8 +255,8 @@ echo "  🌐 HTTP Server (internal): $HTTP_HOST:$HTTP_PORT"
 echo "  🔒 HTTPS Server (auth): 0.0.0.0:$QINGLAN_HTTPS_PORT"
 echo "  🗄️  Database: $DB_HOST:$DB_PORT/$DB_NAME"
 echo "  📡 Redis: $REDIS_ADDR"
-  echo "  📨 MQTT Broker: $MQTT_BROKER:$MQTT_PORT"
-  echo "  📨 Device MQTT (returned to devices): ${RADAR_MQTT_SERVER:-127.0.0.1}:${RADAR_MQTT_PORT:-8883}, protocol=${RADAR_MQTT_PROTOCOL:-2}"
+echo "  📨 MQTT Broker: $MQTT_BROKER:$MQTT_PORT"
+echo "  📨 Device MQTT (returned to devices): ${RADAR_MQTT_SERVER:-127.0.0.1}:${RADAR_MQTT_PORT:-8883}, protocol=${RADAR_MQTT_PROTOCOL:-2}"
 echo ""
 
 echo -e "${GREEN}🚀 Starting wisefido-qinglan service...${NC}"
@@ -209,6 +272,9 @@ echo -e "${BLUE}📝 Log Configuration:${NC}"
 echo "  📄 Log File: $LOG_FILE"
 echo "  📁 Log Directory: $LOG_DIR"
 echo ""
+
+# 与 start-owlback.sh 一致：每次启动截断当前日志，再追加本次运行内容
+: >"$LOG_FILE"
 
 # 写入启动信息到日志文件
 echo "==========================================" >> "$LOG_FILE"

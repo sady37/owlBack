@@ -160,14 +160,18 @@ func (h *DeviceStoreHandler) BatchUpdateDeviceStores(w http.ResponseWriter, r *h
 			deviceUID, _ := m["device_uid"].(string)
 			data, _ := m["data"].(map[string]any)
 			if deviceUID != "" {
-				updateItem := payloadToDeviceStore(data)
+				updateItem := payloadToDeviceStorePatch(data)
 				updateItem.DeviceUID = deviceUID
 				updates = append(updates, updateItem)
 			}
 		}
 	}
 
-	if err := h.deviceStoreRepo.BatchUpdateDeviceStores(ctx, updates); err != nil {
+	if h.deviceStoreSvc == nil {
+		writeJSON(w, http.StatusOK, Fail("device store service not configured"))
+		return
+	}
+	if err := h.deviceStoreSvc.BatchUpdateDeviceStoresNotify(ctx, updates); err != nil {
 		h.logger.Error("BatchUpdateDeviceStores failed", zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to update device stores: %v", err)))
 		return
@@ -282,15 +286,18 @@ func (h *DeviceStoreHandler) ImportDeviceStores(w http.ResponseWriter, r *http.R
 
 	items := parseDeviceStoreImportRowsToItems(rows)
 
-	// Import using repository
-	successCount, inserted, skipped, errors, err := h.deviceStoreRepo.ImportDeviceStores(ctx, items)
+	if h.deviceStoreSvc == nil {
+		writeJSON(w, http.StatusOK, Fail("device store service not configured"))
+		return
+	}
+	successCount, inserted, skipped, errors, err := h.deviceStoreSvc.ImportDeviceStoresNotify(ctx, items)
 	if err != nil {
 		h.logger.Error("ImportDeviceStores failed", zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to import: %v", err)))
 		return
 	}
 
-	if h.deviceStoreSvc != nil && len(inserted) > 0 {
+	if len(inserted) > 0 {
 		h.deviceStoreSvc.PostImportSleepadBind(ctx, inserted)
 	}
 
@@ -399,6 +406,3 @@ func (h *DeviceStoreHandler) DeleteDeviceStore(w http.ResponseWriter, r *http.Re
 	}
 	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 }
-
-// payloadToDeviceStore 函数已在 admin_device_store_impl.go 中定义，直接使用
-

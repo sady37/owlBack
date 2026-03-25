@@ -104,7 +104,7 @@ func main() {
 	eventHandler := consumer.NewEventHandler(stateSvc, alarmSvc, monitorBuf, metaCache, enablementCache, resolver, logger)
 	alarmHandler := consumer.NewAlarmHandler(alarmSvc, stateSvc, monitorBuf, metaCache, resolver, logger)
 	alarmProcessHandler := consumer.NewAlarmProcessHandler(alarmSvc, logger)
-	cardChangeHandler := consumer.NewCardChangeHandler(alarmSvc, stateSvc, metaCache, enablementCache, resolver, logger)
+	cardChangeHandler := consumer.NewCardChangeHandler(alarmSvc, stateSvc, metaCache, enablementCache, resolver, db, logger)
 	alarmDeviceHandler := consumer.NewAlarmDeviceHandler(enablementCache, logger)
 
 	consumer.SubscribeAll(ctx, logger, redisClient, consumer.Handlers{

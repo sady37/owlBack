@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	"wisefido-data/internal/domain"
@@ -436,9 +437,9 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 			args = append(args, update.TenantID)
 			argN++
 		}
-		if update.DeviceCode.Valid {
+		if update.DeviceCodeSet {
 			setParts = append(setParts, fmt.Sprintf("device_code = $%d", argN))
-			args = append(args, update.DeviceCode.String)
+			args = append(args, nullStringToAny(update.DeviceCode))
 			argN++
 		}
 		if update.OTATargetFirmwareVersion.Valid {
@@ -451,9 +452,11 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 			args = append(args, update.OTATargetMCUModel.String)
 			argN++
 		}
-		setParts = append(setParts, fmt.Sprintf("allow_access = $%d", argN))
-		args = append(args, update.AllowAccess)
-		argN++
+		if update.AllowAccessSet {
+			setParts = append(setParts, fmt.Sprintf("allow_access = $%d", argN))
+			args = append(args, update.AllowAccess)
+			argN++
+		}
 		if update.TenantID != "" && update.TenantID != trashTenantID && update.TenantID != unallocatedTenantID {
 			setParts = append(setParts, "allocate_time = CASE WHEN allocate_time IS NULL THEN CURRENT_TIMESTAMP ELSE allocate_time END")
 		}
@@ -555,13 +558,52 @@ func (r *PostgresDeviceStoreRepository) DeleteDeviceStore(ctx context.Context, d
 	return tx.Commit()
 }
 
-// ImportDeviceStores 批量导入设备库存；返回成功数、新插入行(含 device_id)、跳过、失败。
+func deviceStoreNormUID(uid string) string {
+	return strings.TrimSpace(uid)
+}
+
+func deviceStoreNormCode(c sql.NullString) string {
+	if !c.Valid {
+		return ""
+	}
+	return strings.TrimSpace(c.String)
+}
+
+// ImportDeviceStores 批量导入设备库存；返回成功数、新插入或更新行(含 device_id)、跳过、失败。
+// 同一导入内相同 device_uid 多行时后者覆盖前者（cover）；库中已有该 uid 则 UPDATE，否则 INSERT。
 func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, items []*domain.DeviceStore) (successCount int, inserted []*domain.DeviceStore, skipped []*domain.DeviceStore, errors []*domain.DeviceStore, err error) {
 	if len(items) == 0 {
 		return 0, nil, nil, nil, nil
 	}
 
 	var errs []*domain.DeviceStore
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		if item.DeviceType == "" || deviceStoreNormUID(item.DeviceUID) == "" {
+			errs = append(errs, item)
+		}
+	}
+
+	// 后者覆盖前者：按 device_uid 只保留最后一行
+	lastByUID := make(map[string]*domain.DeviceStore)
+	for _, item := range items {
+		if item == nil || item.DeviceType == "" {
+			continue
+		}
+		normUID := deviceStoreNormUID(item.DeviceUID)
+		if normUID == "" {
+			continue
+		}
+		lastByUID[normUID] = item
+	}
+	keys := make([]string, 0, len(lastByUID))
+	for k := range lastByUID {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
 	var sk []*domain.DeviceStore
 	var ins []*domain.DeviceStore
 
@@ -571,48 +613,19 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 	}
 	defer tx.Rollback()
 
-	for _, item := range items {
-		if item == nil {
-			continue
-		}
-
-		if item.DeviceType == "" {
-			errs = append(errs, item)
-			continue
-		}
-		if item.DeviceUID == "" {
-			errs = append(errs, item)
-			continue
-		}
-
-		var existingUID string
-		checkQuery := `SELECT device_uid FROM device_store WHERE device_uid = $1 LIMIT 1`
-		err := tx.QueryRowContext(ctx, checkQuery, item.DeviceUID).Scan(&existingUID)
-		if err == nil {
-			sk = append(sk, item)
-			continue
-		}
-		if err != sql.ErrNoRows {
-			errs = append(errs, item)
-			continue
-		}
-
+	for _, k := range keys {
+		item := lastByUID[k]
+		normUID := k
+		normCode := deviceStoreNormCode(item.DeviceCode)
 		tenantID := item.TenantID
 		if tenantID == "" {
 			tenantID = unallocatedTenantID
 		}
+		codeForInsert := sql.NullString{String: normCode, Valid: normCode != ""}
 
-		insertQuery := `
-			INSERT INTO device_store (
-				device_uid, device_code, device_type, device_model, device_name, mac, imei,
-				comm_mode, mcu_model, firmware_version,
-				tenant_id, allow_access
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-			RETURNING device_id::text
-		`
 		args := []any{
-			item.DeviceUID,
-			nullStringToAny(item.DeviceCode),
+			normUID,
+			nullStringToAny(codeForInsert),
 			item.DeviceType,
 			nullStringToAny(item.DeviceModel),
 			nullStringToAny(item.DeviceName),
@@ -626,6 +639,51 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 		}
 
 		var deviceID string
+		err := tx.QueryRowContext(ctx, `SELECT device_id::text FROM device_store WHERE device_uid = $1`, normUID).Scan(&deviceID)
+		if err == nil {
+			updateQuery := `
+				UPDATE device_store SET
+					device_code = $2,
+					device_type = $3,
+					device_model = $4,
+					device_name = $5,
+					mac = $6,
+					imei = $7,
+					comm_mode = $8,
+					mcu_model = $9,
+					firmware_version = $10,
+					tenant_id = $11,
+					allow_access = $12
+				WHERE device_uid = $1
+			`
+			_, err = tx.ExecContext(ctx, updateQuery, args...)
+			if err != nil {
+				errs = append(errs, item)
+				continue
+			}
+			successCount++
+			ins = append(ins, &domain.DeviceStore{
+				DeviceID:   deviceID,
+				DeviceUID:  normUID,
+				DeviceType: item.DeviceType,
+				DeviceCode: codeForInsert,
+				TenantID:   tenantID,
+			})
+			continue
+		}
+		if err != sql.ErrNoRows {
+			errs = append(errs, item)
+			continue
+		}
+
+		insertQuery := `
+			INSERT INTO device_store (
+				device_uid, device_code, device_type, device_model, device_name, mac, imei,
+				comm_mode, mcu_model, firmware_version,
+				tenant_id, allow_access
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			RETURNING device_id::text
+		`
 		err = tx.QueryRowContext(ctx, insertQuery, args...).Scan(&deviceID)
 		if err != nil {
 			errs = append(errs, item)
@@ -635,9 +693,9 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 		successCount++
 		ins = append(ins, &domain.DeviceStore{
 			DeviceID:   deviceID,
-			DeviceUID:  item.DeviceUID,
+			DeviceUID:  normUID,
 			DeviceType: item.DeviceType,
-			DeviceCode: item.DeviceCode,
+			DeviceCode: codeForInsert,
 			TenantID:   tenantID,
 		})
 	}

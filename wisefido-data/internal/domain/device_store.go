@@ -44,6 +44,10 @@ type DeviceStore struct {
 	// 系统级访问权限
 	AllowAccess bool `db:"allow_access"` // NOT NULL, default false
 
+	// Batch PATCH：仅当为 true 时更新对应列（避免只改 device_code 时误把 allow_access 写成 false）
+	DeviceCodeSet  bool `db:"-" json:"-"`
+	AllowAccessSet bool `db:"-" json:"-"`
+
 	// 关联租户名称（查询时JOIN获取，不存储在device_store表）
 	TenantName sql.NullString `db:"tenant_name"` // 仅用于查询结果
 

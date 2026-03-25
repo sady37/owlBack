@@ -29,6 +29,8 @@ type DeviceService interface {
 
 	// 删除
 	DeleteDevice(ctx context.Context, req DeleteDeviceRequest) (*DeleteDeviceResponse, error)
+
+	SetConfigPublisher(pub *publisher.ConfigPublisher)
 }
 
 // deviceService 实现
@@ -61,6 +63,10 @@ func NewDeviceServiceWithPublisher(devicesRepo repository.DevicesRepository, car
 		qinglanClient:   qinglanClient,
 		logger:          logger,
 	}
+}
+
+func (s *deviceService) SetConfigPublisher(pub *publisher.ConfigPublisher) {
+	s.configPublisher = pub
 }
 
 // ListDevicesRequest 查询设备列表请求
@@ -342,6 +348,10 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to update device")
+	}
+
+	if req.UpdateBusinessAccess || req.UpdateMonitoringEnabled || req.UpdateBoundRoomID || req.UpdateBoundBedID {
+		PublishDeviceStoreConfigChange(ctx, s.configPublisher, req.TenantID, req.DeviceID, "devices_updated", s.logger)
 	}
 
 	// 5. monitoring_enabled 或 room/bed 绑定变化时，同步受影响 unit 的卡片（换绑需同步旧 unit + 新 unit）

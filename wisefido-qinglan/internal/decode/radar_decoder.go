@@ -7,7 +7,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"sync/atomic"
 
 	"owl-common/alarm"
 	"owl-common/observation"
@@ -35,8 +34,6 @@ func RadarDecoder(data map[string]interface{}, topicType string) (interface{}, e
 		return []map[string]interface{}{}, nil
 	}
 }
-
-var monitorTrackLogCount uint64 // 每 10 条 MONITOR_TRACK 打一条日志
 
 // normalizeRequestID 归一化 request_id 字段（requestId/requestID/request_id → 统一 request_id，去重）
 func normalizeRequestID(data map[string]interface{}) map[string]interface{} {
@@ -268,15 +265,7 @@ func decodeRadarMonitor(data map[string]interface{}) (interface{}, error) {
 				trackObj["pose"] = trackData.Pose
 				trackObj["event"] = trackData.Event
 				dataValue = append(dataValue, trackObj)
-				n := atomic.AddUint64(&monitorTrackLogCount, 1)
-				if n%10 == 0 {
-					log.Printf("[MONITOR_TRACK] track_id=%d position_x=%d position_y=%d position_z=%d remaining_time=%d area_id=%d pose=%d event=%d (every 10, count=%d)",
-						trackData.TrackID, trackData.PositionX, trackData.PositionY, trackData.PositionZ,
-						trackData.RemainingTime, trackData.AreaID, trackData.Pose, trackData.Event, n)
-				}
 			}
-		} else {
-			log.Printf("[MONITOR_TRACK] decode error: %v, base64=%s", err, trackBase64)
 		}
 	}
 
@@ -303,8 +292,6 @@ func decodeRadarMonitor(data map[string]interface{}) (interface{}, error) {
 			vitalObj["sleep_status"] = vitalData.SleepStatus
 			vitalObj["stability"] = vitalData.Stability
 			dataValue = append(dataValue, vitalObj)
-			log.Printf("[MONITOR_VITAL] vital_flag=%d heart_rate=%d respiratory_rate=%d sleep_status=%d stability=%d",
-				vitalData.VitalFlag, vitalData.HeartRate, vitalData.RespiratoryRate, vitalData.SleepStatus, vitalData.Stability)
 		}
 	}
 
@@ -595,8 +582,8 @@ func buildPoseTrack(m map[string]interface{}) map[string]interface{} {
 // buildPeopleNumber type=3 人数统计；event_name 用 alarm 定义，取值字段用 observation.FieldNumberPeople
 func buildPeopleNumber(m map[string]interface{}) map[string]interface{} {
 	return map[string]interface{}{
-		"event_name":  alarm.NumberPeople,
-		"event_type":  3,
+		"event_name":                  alarm.NumberPeople,
+		"event_type":                  3,
 		observation.FieldNumberPeople: toInt(m["number_people"]),
 	}
 }

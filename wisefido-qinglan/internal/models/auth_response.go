@@ -10,8 +10,9 @@ type AuthResponse struct {
 
 // AuthData 认证数据
 type AuthData struct {
-	UID  string      `json:"uid"`  // 设备序列号
-	MQTT *MQTTConfig `json:"mqtt"` // MQTT 连接配置
+	UID     string      `json:"uid"`                // 设备序列号
+	MQTT    *MQTTConfig `json:"mqtt"`               // MQTT 连接配置
+	AuthURL string      `json:"authUrl,omitempty"` // 下次 HTTPS 认证 URL（含 :8443）；固件可选读取
 }
 
 // MQTTConfig MQTT 连接配置

@@ -201,8 +201,7 @@ func (r *Router) RegisterAdminUnitDeviceRoutes(admin *AdminAPI) {
 	// r.Handle("/admin/api/v1/devices", admin.DevicesHandler)
 	// r.Handle("/admin/api/v1/devices/", admin.DevicesHandler)
 
-	// device-store 路由已迁移到独立的 DeviceStoreHandler（见 RegisterDeviceStoreRoutes）
-	// 保留 AdminAPI.DeviceStoreHandler 作为备用（向后兼容）
+	// device-store：RegisterDeviceStoreRoutes（DeviceStoreHandler）
 }
 
 // RegisterRolesRoutes 注册角色管理路由

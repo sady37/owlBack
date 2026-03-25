@@ -8,20 +8,8 @@ import (
 	"github.com/lib/pq"
 )
 
-// DeviceCardMapping is the identity tuple resolved from device key (DB 联合查询直接 Scan).
-// Used by all gateways to populate redis.IoTStreamMessage header and DB operations.
-type DeviceCardMapping struct {
-	DeviceUID  string // resolved hardware identifier (always populated)
-	TenantID   string
-	BranchID   string
-	UnitID     string
-	CardID     string
-	DeviceID   string // database device_id (UUID)
-	RoomID     string // device bound room_id (optional, gateway may fill)
-	BedID      string // device bound bed_id (optional, gateway may fill)
-	DeviceCode string // device_store.device_code (e.g. Sleepace MQTT deviceId)
-	DeviceType string // device_store.device_type (e.g. SleepPad, Radar)
-}
+// BusinessAccessDefault 无 devices 行、JOIN 未命中或查库失败时的默认业务访问；pending 与新建 devices 默认一致，非 approved 仍不放行业务数据。
+const BusinessAccessDefault = "pending"
 
 // CardDB wraps *sql.DB for card-related queries.
 // All gateways share this; callers never import "database/sql" directly.
@@ -75,10 +63,14 @@ func (c *CardDB) ResolveDevice(ctx context.Context, deviceKey string) (deviceUID
 	return
 }
 
-// LookupCard resolves a device key → full identity tuple (device_store + cards + devices).
+// LookupCard resolves a device key → DeviceBaseline (device_store + cards + devices).
 // deviceKey can be device_uid ("BM87...") or device_code ("1ua3erivl9pv1"); 入参用 code 时 WITH 子句先解析为 uid。
-func (c *CardDB) LookupCard(ctx context.Context, deviceKey string) (*DeviceCardMapping, error) {
-	var m DeviceCardMapping
+func (c *CardDB) LookupCard(ctx context.Context, deviceKey string) (*DeviceBaseline, error) {
+	m := DeviceBaseline{
+		AllowAccess:       false,
+		BusinessAccess:    BusinessAccessDefault,
+		MonitoringEnabled: false,
+	}
 	err := c.db.QueryRowContext(ctx, `
 		WITH resolved AS (
 			SELECT COALESCE(
@@ -89,13 +81,18 @@ func (c *CardDB) LookupCard(ctx context.Context, deviceKey string) (*DeviceCardM
 		SELECT d.device_uid, c.tenant_id, c.branch_id,
 		       COALESCE(c.unit_id::text, ''), c.card_id::text,
 		       COALESCE(d.device_id, ''),
+		       COALESCE(ds.allow_access, false),
+		       COALESCE(dev.business_access, 'pending'),
+		       COALESCE(dev.monitoring_enabled, false),
 		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, '')
 		FROM resolved r
 		LEFT JOIN device_store ds ON ds.device_uid = r.uid
 		, cards c, jsonb_to_recordset(c.devices) AS d(device_uid text, device_id text)
+		LEFT JOIN devices dev ON dev.device_id = NULLIF(TRIM(d.device_id), '')::uuid
 		WHERE d.device_uid = r.uid
 		LIMIT 1
-	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.BranchID, &m.UnitID, &m.CardID, &m.DeviceID, &m.DeviceCode, &m.DeviceType)
+	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.BranchID, &m.UnitID, &m.CardID, &m.DeviceID,
+		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not in cards: %s", deviceKey)
@@ -105,10 +102,109 @@ func (c *CardDB) LookupCard(ctx context.Context, deviceKey string) (*DeviceCardM
 	return &m, nil
 }
 
+// DeviceKeysInTenantUnit 返回 tenant+unit 下 cards.devices 里出现的 device_id / device_uid（去重），供按 unit 失效缓存。
+func (c *CardDB) DeviceKeysInTenantUnit(ctx context.Context, tenantID, unitID string) (deviceIDs, deviceUIDs []string) {
+	if c == nil || c.db == nil || tenantID == "" || unitID == "" {
+		return nil, nil
+	}
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT DISTINCT j->>'device_id', j->>'device_uid'
+		FROM cards c, jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS j
+		WHERE c.tenant_id = $1::uuid AND c.unit_id = $2::uuid
+		  AND COALESCE(j->>'device_id', '') <> ''`,
+		tenantID, unitID)
+	if err != nil {
+		return nil, nil
+	}
+	defer rows.Close()
+	seenD := make(map[string]struct{})
+	seenU := make(map[string]struct{})
+	for rows.Next() {
+		var did, uid sql.NullString
+		if err := rows.Scan(&did, &uid); err != nil {
+			continue
+		}
+		if did.Valid && did.String != "" {
+			if _, ok := seenD[did.String]; !ok {
+				seenD[did.String] = struct{}{}
+				deviceIDs = append(deviceIDs, did.String)
+			}
+		}
+		if uid.Valid && uid.String != "" {
+			if _, ok := seenU[uid.String]; !ok {
+				seenU[uid.String] = struct{}{}
+				deviceUIDs = append(deviceUIDs, uid.String)
+			}
+		}
+	}
+	return deviceIDs, deviceUIDs
+}
+
+// lookupMappingByDeviceInCardDevices 按 devices JSON 中 device_uid 或 device_id 命中卡（LookupCard 仅按解析后的 uid 匹配，此处补 device_id UUID 入参）。
+func (c *CardDB) lookupMappingByDeviceInCardDevices(ctx context.Context, deviceKey string) (*DeviceBaseline, error) {
+	if c == nil || c.db == nil || deviceKey == "" {
+		return nil, sql.ErrNoRows
+	}
+	m := DeviceBaseline{
+		AllowAccess:       false,
+		BusinessAccess:    BusinessAccessDefault,
+		MonitoringEnabled: false,
+	}
+	err := c.db.QueryRowContext(ctx, `
+		SELECT d.device_uid, c.tenant_id, c.branch_id,
+		       COALESCE(c.unit_id::text, ''), c.card_id::text,
+		       COALESCE(NULLIF(TRIM(d.device_id), ''), ''),
+		       COALESCE(ds.allow_access, false),
+		       COALESCE(dev.business_access, 'pending'),
+		       COALESCE(dev.monitoring_enabled, false),
+		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, '')
+		FROM cards c,
+		     jsonb_to_recordset(c.devices) AS d(device_uid text, device_id text)
+		LEFT JOIN device_store ds ON ds.device_uid = d.device_uid
+		   OR (NULLIF(TRIM(d.device_id), '') IS NOT NULL AND ds.device_id::text = NULLIF(TRIM(d.device_id), ''))
+		LEFT JOIN devices dev ON dev.device_id = NULLIF(TRIM(d.device_id), '')::uuid
+		WHERE (d.device_uid IS NOT NULL AND d.device_uid = $1)
+		   OR (NULLIF(TRIM(d.device_id), '') IS NOT NULL AND NULLIF(TRIM(d.device_id), '') = $1)
+		LIMIT 1
+	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.BranchID, &m.UnitID, &m.CardID, &m.DeviceID,
+		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, err
+		}
+		return nil, fmt.Errorf("lookup card by devices element: %w", err)
+	}
+	return &m, nil
+}
+
+// ResolveDeviceBaseline 统一构建路径：LookupCard → devices JSON 按 id/uid → LookupDeviceOnly → LookupDeviceStoreOnly；与网关/聚合侧缓存失效后的「再查库」一致。
+func (c *CardDB) ResolveDeviceBaseline(ctx context.Context, deviceKey string) (DeviceBaseline, bool) {
+	if c == nil || c.db == nil || deviceKey == "" {
+		return DeviceBaseline{}, false
+	}
+	if m, err := c.LookupCard(ctx, deviceKey); err == nil && m != nil && m.CardID != "" {
+		return *m, true
+	}
+	if m, err := c.lookupMappingByDeviceInCardDevices(ctx, deviceKey); err == nil && m != nil && m.CardID != "" {
+		return *m, true
+	}
+	if m, err := c.LookupDeviceOnly(ctx, deviceKey); err == nil && m != nil && m.DeviceID != "" {
+		return *m, true
+	}
+	if m, err := c.LookupDeviceStoreOnly(ctx, deviceKey); err == nil && m != nil && m.DeviceID != "" {
+		return *m, true
+	}
+	return DeviceBaseline{}, false
+}
+
 // LookupDeviceOnly resolves device key when no card exists (devices + device_store).
-// Returns DeviceCardMapping with CardID = DeviceID (virtual card).
-func (c *CardDB) LookupDeviceOnly(ctx context.Context, deviceKey string) (*DeviceCardMapping, error) {
-	var m DeviceCardMapping
+// Returns DeviceBaseline with CardID = DeviceID (virtual card).
+func (c *CardDB) LookupDeviceOnly(ctx context.Context, deviceKey string) (*DeviceBaseline, error) {
+	m := DeviceBaseline{
+		AllowAccess:       false,
+		BusinessAccess:    BusinessAccessDefault,
+		MonitoringEnabled: false,
+	}
 	err := c.db.QueryRowContext(ctx, `
 		WITH resolved AS (
 			SELECT COALESCE(
@@ -117,17 +213,56 @@ func (c *CardDB) LookupDeviceOnly(ctx context.Context, deviceKey string) (*Devic
 			) AS uid
 		)
 		SELECT d.device_uid, d.tenant_id, d.device_id,
+		       COALESCE(ds.allow_access, false),
+		       d.business_access,
+		       d.monitoring_enabled,
 		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, '')
 		FROM resolved r
 		JOIN devices d ON d.device_uid = r.uid
 		LEFT JOIN device_store ds ON ds.device_uid = r.uid
 		LIMIT 1
-	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.DeviceID, &m.DeviceCode, &m.DeviceType)
+	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.DeviceID,
+		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not in devices table: %s", deviceKey)
 		}
 		return nil, fmt.Errorf("lookup device: %w", err)
+	}
+	m.CardID = m.DeviceID
+	return &m, nil
+}
+
+// LookupDeviceStoreOnly 仅 device_store 有记录时使用：tenant_id / device_id 等均来自 device_store（未绑卡、无 devices 行时 LookupCard/LookupDeviceOnly 会失败）。
+func (c *CardDB) LookupDeviceStoreOnly(ctx context.Context, deviceKey string) (*DeviceBaseline, error) {
+	m := DeviceBaseline{
+		AllowAccess:       false,
+		BusinessAccess:    BusinessAccessDefault,
+		MonitoringEnabled: false,
+	}
+	err := c.db.QueryRowContext(ctx, `
+		WITH resolved AS (
+			SELECT COALESCE(
+				(SELECT device_uid FROM device_store WHERE device_code = $1 LIMIT 1),
+				$1
+			) AS uid
+		)
+		SELECT ds.device_uid, ds.tenant_id::text,
+		       COALESCE(ds.device_id::text, ''),
+		       COALESCE(ds.allow_access, false),
+		       'pending'::text,
+		       false,
+		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, '')
+		FROM resolved r
+		JOIN device_store ds ON ds.device_uid = r.uid
+		LIMIT 1
+	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.DeviceID,
+		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("device not in device_store: %s", deviceKey)
+		}
+		return nil, fmt.Errorf("lookup device_store only: %w", err)
 	}
 	m.CardID = m.DeviceID
 	return &m, nil

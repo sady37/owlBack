@@ -53,6 +53,8 @@ const (
 
 	// CategoryTrack iot:monitor:stream 消息的 category/data_category 值，表示 track 数据（与 field/type 一致）
 	CategoryTrack = "track"
+	// CategoryHeart monitor 流在 monitoring 关闭时仅作在线心跳（如 track_id=11），与真实轨迹区分
+	CategoryHeart = "heart"
 	// CategorySleep stat 解码的 sleep 块 data_category 值（睡眠/生命体征统计）
 	CategorySleep = "sleep"
 

@@ -139,7 +139,11 @@ func main() {
 	// 设置subscriptionManager到mqttConsumer（用于UpdateLastSeen）
 	mqttConsumer.SetSubscriptionManager(subscriptionManager)
 
-	// 不再订阅 config:card:stream，下游（cardagg、AI）自行维护 card 与缓存；qinglan 仅查库解析 identity（card DB + device_store）
+	configSub := subscriber.NewConfigSubscriber(redisClient, cfg, logger, deviceRepo, domain.DeviceCache, cardMappingSvc)
+	if err := configSub.Start(ctx); err != nil {
+		logger.Warn("config subscriber start", zap.Error(err))
+	}
+	go runConfigCardStreamReader(ctx, redisClient, logger, configSub)
 
 	// 启动时初始化缓存
 	log.Println("Initializing device and card mapping caches at startup...")
@@ -188,7 +192,7 @@ func main() {
 
 	// 启动HTTP服务器（用于内部控制/查询）
 	log.Println("Starting HTTP server (internal control/query)...")
-	httpServer := http.NewServer(&cfg.HTTP, radarService, cfg, db, deviceRepo, redisClient, logger, subscriptionManager)
+	httpServer := http.NewServer(&cfg.HTTP, radarService, cfg, db, deviceRepo, redisClient, logger, subscriptionManager, cardMappingSvc)
 	go func() {
 		if err := httpServer.Start(); err != nil {
 			log.Printf("HTTP server error: %v", err)
@@ -199,7 +203,7 @@ func main() {
 	var httpsServer *http.HTTPSServer
 	if cfg.HTTPS.Port > 0 {
 		log.Println("Starting HTTPS server (device authentication)...")
-		httpsServer, err = http.NewHTTPSServer(&cfg.HTTPS, cfg, db, deviceRepo, redisClient, logger, subscriptionManager)
+		httpsServer, err = http.NewHTTPSServer(&cfg.HTTPS, cfg, db, deviceRepo, redisClient, logger, subscriptionManager, cardMappingSvc)
 		if err != nil {
 			log.Fatalf("❌ Failed to create HTTPS server: %v (HTTPS server requires TLS certificates)", err)
 		}
@@ -250,5 +254,41 @@ func main() {
 	}
 
 	log.Println("Service stopped gracefully")
+}
+
+func runConfigCardStreamReader(ctx context.Context, redisClient *redis.Client, logger *zap.Logger, sub *subscriber.ConfigSubscriber) {
+	stream := rediscommon.StreamConfigCard.Name
+	lastID := "$"
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		res, err := redisClient.XRead(ctx, &redis.XReadArgs{
+			Streams: []string{stream, lastID},
+			Block:   5 * time.Second,
+			Count:   32,
+		}).Result()
+		if err != nil {
+			if err == redis.Nil {
+				continue
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			logger.Warn("config card stream XRead", zap.Error(err))
+			time.Sleep(time.Second)
+			continue
+		}
+		for _, st := range res {
+			for _, msg := range st.Messages {
+				if err := sub.HandleConfigChangeMessage(ctx, st.Stream, msg); err != nil {
+					logger.Warn("HandleConfigChangeMessage", zap.Error(err))
+				}
+				lastID = msg.ID
+			}
+		}
+	}
 }
 

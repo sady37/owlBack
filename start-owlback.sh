@@ -229,6 +229,53 @@ export CARD_AGGREGATION_INTERVAL="${CARD_AGGREGATION_INTERVAL:-2}"
 export LOG_LEVEL="${LOG_LEVEL:-info}"
 export LOG_FORMAT="${LOG_FORMAT:-json}"
 
+# 启动前检查 HTTPS 证书有效期：若剩余天数 <= 阈值则自动从系统 Let's Encrypt 复制
+refresh_qinglan_tls_cert_if_needed() {
+    local threshold_days now expiry_epoch remain_days
+    local cert_file copy_script le_domain
+    threshold_days="${TLS_CERT_REFRESH_THRESHOLD_DAYS:-5}"
+    cert_file="${RADAR_HTTPS_CERT_FILE:-$SCRIPT_DIR/owl-common/server.crt}"
+    copy_script="$SCRIPT_DIR/scripts/copy-letsencrypt-to-owl-common.sh"
+    le_domain="${LE_DOMAIN:-${RADAR_MQTT_SERVER:-test.wisefido.com}}"
+
+    if ! [[ "$threshold_days" =~ ^[0-9]+$ ]]; then
+        threshold_days=5
+    fi
+
+    if [ ! -f "$copy_script" ]; then
+        echo -e "${YELLOW}Warning: cert refresh script not found: $copy_script${NC}"
+        return 0
+    fi
+
+    if [ ! -f "$cert_file" ]; then
+        echo -e "${YELLOW}TLS cert not found, copying from Let's Encrypt for domain: $le_domain${NC}"
+        if LE_DOMAIN="$le_domain" bash "$copy_script"; then
+            echo -e "${GREEN}TLS cert copied successfully${NC}"
+        else
+            echo -e "${YELLOW}Warning: TLS cert copy failed, continue startup${NC}"
+        fi
+        return 0
+    fi
+
+    expiry_epoch="$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null | cut -d= -f2 | xargs -I{} date -d "{}" +%s 2>/dev/null || true)"
+    now="$(date +%s)"
+    if [ -z "$expiry_epoch" ]; then
+        echo -e "${YELLOW}Warning: cannot parse cert expiry: $cert_file${NC}"
+        return 0
+    fi
+    remain_days=$(( (expiry_epoch - now) / 86400 ))
+
+    echo "  TLS cert check: $cert_file, remaining ${remain_days} day(s), threshold ${threshold_days} day(s)"
+    if [ "$remain_days" -le "$threshold_days" ]; then
+        echo -e "${YELLOW}TLS cert expires soon, refreshing from Let's Encrypt (domain: $le_domain)...${NC}"
+        if LE_DOMAIN="$le_domain" bash "$copy_script"; then
+            echo -e "${GREEN}TLS cert refreshed successfully${NC}"
+        else
+            echo -e "${YELLOW}Warning: TLS cert refresh failed, continue startup${NC}"
+        fi
+    fi
+}
+
 # 显示配置
 echo -e "${BLUE}Configuration:${NC}"
 echo "  DB_HOST: $DB_HOST"
@@ -246,6 +293,8 @@ echo "  CARD_AGGREGATION_ENABLED: $CARD_AGGREGATION_ENABLED (main function: aggr
 echo "  CARD_AGGREGATION_INTERVAL: $CARD_AGGREGATION_INTERVAL seconds (aggregate every ${CARD_AGGREGATION_INTERVAL}s to match heart/breath rate update frequency, runs on startup)"
 echo "  LOG_LEVEL: $LOG_LEVEL"
 echo ""
+refresh_qinglan_tls_cert_if_needed
+
 echo -e "${BLUE}Service startup behavior:${NC}"
 echo "  - wisefido-data: Full card check/update on startup (after 2s delay, in main.go)"
 echo "  - wisefido-cardagg:"
@@ -349,7 +398,8 @@ cd "$OWLBACK_DIR/wisefido-qinglan"
 # 设置一些关键环境变量（简化配置）
 export HTTP_HOST="${HTTP_HOST:-0.0.0.0}"
 export HTTP_PORT="${HTTP_PORT:-8081}"
-export QINGLAN_HTTPS_PORT="${QINGLAN_HTTPS_PORT:-8443}"
+# HTTPS 认证端口：与 .env 中 RADAR_HTTPS_PORT 一致（默认 8443）
+export QINGLAN_HTTPS_PORT="${QINGLAN_HTTPS_PORT:-${RADAR_HTTPS_PORT:-8443}}"
 # .env 中 RADAR_HTTPS_* 会传给 qinglan 作为 QINGLAN_HTTPS_*（未设则用 qinglan 默认 owl-common 证书）
 export QINGLAN_HTTPS_CERT_FILE="${QINGLAN_HTTPS_CERT_FILE:-$RADAR_HTTPS_CERT_FILE}"
 export QINGLAN_HTTPS_KEY_FILE="${QINGLAN_HTTPS_KEY_FILE:-$RADAR_HTTPS_KEY_FILE}"

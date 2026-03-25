@@ -109,8 +109,10 @@ func (s *ConfigSubscriber) HandleConfigChangeMessage(ctx context.Context, stream
 
 	// 根据事件类型处理配置变更
 	switch configMsg.Type {
-	case "config.card":
+	case rediscommon.ConfigCardChanged:
 		s.handleCardChange(configMsg, message.ID)
+	case rediscommon.ConfigCardDeviceStoreChanged:
+		s.handleDeviceStoreChange(ctx, configMsg.Data, message.ID)
 	default:
 		s.logger.Debug("Skipping config change event (not subscribed)",
 			zap.String("event_type", configMsg.Type),
@@ -185,35 +187,27 @@ func (s *ConfigSubscriber) handleCardChange(configMsg rediscommon.ConfigChangeMe
 		return
 	}
 
-	// 根据消息类型区分处理
-	switch configMsg.Type {
-	case rediscommon.ConfigCardDeviceStoreChanged:
-		// device_store 变化信号
-		s.handleDeviceStoreChange(ctx, cardData, messageID)
-
-	case rediscommon.ConfigCardChanged:
-		// 正常的卡片变更
-		s.handleNormalCardChange(ctx, cardData, messageID)
-
-	default:
-		s.logger.Warn("Unknown card change message type",
-			zap.String("type", configMsg.Type),
-			zap.String("message_id", messageID))
-	}
+	s.handleNormalCardChange(ctx, cardData, messageID)
 }
 
 // handleNormalCardChange 处理正常的卡片配置变更 (ConfigCardChanged)
-// card 变动时绑定的 room/bed 也可能变，通过 InvalidateByCardID 使该 card 下所有 device 的 DeviceCardMapping 缓存失效，下次解析时重新查库。
-func (s *ConfigSubscriber) handleNormalCardChange(_ context.Context, cardData map[string]interface{}, messageID string) {
+// 有 tenant_id+unit_id 时按 unit 失效（含权限/business_access 等联动）；否则按 card_id；无则全量失效。
+func (s *ConfigSubscriber) handleNormalCardChange(ctx context.Context, cardData map[string]interface{}, messageID string) {
 	cardID, _ := cardData["card_id"].(string)
-	if cardID != "" {
+	tenantID, _ := cardData["tenant_id"].(string)
+	unitID, _ := cardData["unit_id"].(string)
+	if tenantID != "" && unitID != "" {
+		s.cardMappingSvc.InvalidateByTenantUnit(ctx, tenantID, unitID)
+	} else if cardID != "" {
 		s.cardMappingSvc.InvalidateByCardID(cardID)
 	} else {
 		s.cardMappingSvc.InvalidateCache()
 	}
 	s.logger.Info("Card change processed",
 		zap.String("message_id", messageID),
-		zap.String("card_id", cardID))
+		zap.String("card_id", cardID),
+		zap.String("tenant_id", tenantID),
+		zap.String("unit_id", unitID))
 }
 
 // handleDeviceStoreChange 处理 device_store 变化信号（Type 为 config.card.device_store）
@@ -246,8 +240,9 @@ func (s *ConfigSubscriber) handleDeviceStoreChange(ctx context.Context, data map
 		zap.String("device_uid", deviceStoreInfo.DeviceUID),
 		zap.Bool("allow_access", deviceStoreInfo.AllowAccess))
 
-	// 设备绑定 room/bed 可能已变，同步失效该 device 的 DeviceCardMapping 缓存，下次解析时重新查库+boundResolver
+	// 设备绑定 room/bed / devices 权限可能已变：清映射后立刻从 DB 重刷 baseline + AllowAccessCache
 	s.cardMappingSvc.InvalidateByDeviceUID(deviceStoreInfo.DeviceUID)
+	s.cardMappingSvc.RefreshBaseline(ctx, deviceStoreInfo.DeviceUID)
 
 	// 根据最新的 allow_access 更新缓存
 	// DeviceCache: key=device_uid, value=*DeviceWithLocation

@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"owl-common/alarm"
@@ -28,9 +29,47 @@ const (
 	DeviceTypeRadar = "Radar"
 )
 
+var monitorHandleLogCount uint64 // handleMonitorMessage 抽样日志（每 10 次）
+
+func businessAccessApproved(s string) bool {
+	switch s {
+	case "approved", "enable":
+		return true
+	default:
+		return false
+	}
+}
+
+// resolveIotPolicy 租户级：business_access 为 approved|enable 才向 iot:* 发 event/alarm/stat；monitor 流另需 monitoring_enabled。
+// tenantID 来自 devices.tenant_id，供写入 iot 流，避免仅 card 解析时 tenant 为空导致 wisefido-iot 缺 tenant_id。
+func (c *MQTTConsumer) resolveIotPolicy(ctx context.Context, deviceUID string) (canIoT, canMonitor bool, tenantID string) {
+	if c.cardMappingService != nil {
+		if b, ok := c.cardMappingService.BaselineFor(deviceUID); ok {
+			tenantID = strings.TrimSpace(b.TenantID)
+			if tenantID == "" {
+				return false, false, ""
+			}
+			if !businessAccessApproved(b.BusinessAccess) {
+				return false, false, tenantID
+			}
+			return true, b.MonitoringEnabled, tenantID
+		}
+	}
+	dev, err := c.deviceRepo.GetDeviceByUID(ctx, deviceUID)
+	if err != nil || dev == nil {
+		return false, false, ""
+	}
+	tenantID = strings.TrimSpace(dev.TenantID)
+	if !businessAccessApproved(dev.BusinessAccess) {
+		return false, false, tenantID
+	}
+	return true, dev.MonitoringEnabled, tenantID
+}
+
 // CardIDProvider 定义获取设备卡片映射信息的接口
 type CardIDProvider interface {
-	GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*card.DeviceCardMapping, error)
+	GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*card.DeviceBaseline, error)
+	BaselineFor(deviceUID string) (card.DeviceBaseline, bool)
 }
 
 // DeviceLastSeenUpdater 设备最后收到消息时间更新器接口
@@ -134,7 +173,17 @@ func (c *MQTTConsumer) publishOnlineForConnectedAfterStartup(ctx context.Context
 	}
 	ts := time.Now().UnixMilli()
 	for uid := range uidSet {
-		tid, _, _, cid, did := c.streamPublisher.Resolve(ctx, uid) // tenantID, branchID, unitID, cardID, deviceID
+		canIoT, _, policyTid := c.resolveIotPolicy(ctx, uid)
+		if !canIoT {
+			continue
+		}
+		tid, _, _, cid, did, _, _, ok := c.resolveDeviceIdentity(ctx, uid)
+		if !ok {
+			continue
+		}
+		if policyTid != "" {
+			tid = policyTid
+		}
 		cid = ""
 		data := map[string]interface{}{alarm.FieldEventStatus: "start"}
 		msg := rediscommon.NewSingleItemMessage(tid, cid, uid, did, DeviceTypeRadar, ts, "alarm", alarm.AlarmTypeOfflineRecover, data)
@@ -393,7 +442,30 @@ func (c *MQTTConsumer) buildTopics() []string {
 //   - /prefix/prop/.../get、/prefix/func/.../get：我们下发命令的主题，本 consumer 不订阅、不接收。
 //     谁在发：internal/service/radar_service.go — GetDeviceProperties/SetDeviceProperties 发布到 prop/get，
 //     CallDeviceFunction 发布到 func/get；设备收到后回复到 .../post，由本 consumer 的 handlePropertyMessage、handleFunctionMessage 处理并存 Redis。
-//
+func (c *MQTTConsumer) allowAccessFromCacheOrDB(uid string) bool {
+	cached, ok := domain.AllowAccessCache.Load(uid)
+	if !ok {
+		ds, err := c.deviceRepo.GetDeviceStoreInfo(context.Background(), uid)
+		if err != nil {
+			log.Printf("Device %s not in cache, rejecting message (device not authenticated): db lookup failed: %v", uid, err)
+			domain.AllowAccessCache.Store(uid, false)
+			return false
+		}
+		if !ds.AllowAccess {
+			log.Printf("Device %s blocked by device_store: allow_access=FALSE", uid)
+			domain.AllowAccessCache.Store(uid, false)
+			return false
+		}
+		domain.AllowAccessCache.Store(uid, true)
+		return true
+	}
+	if allowedBool, ok := cached.(bool); !ok || !allowedBool {
+		log.Printf("Device %s blocked by cache: allow_access=FALSE", uid)
+		return false
+	}
+	return true
+}
+
 // handleMessage 处理 MQTT 消息（仅 .../post）
 // 注意：现在只订阅已认证设备的主题，未认证设备无法发送消息到服务端
 func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
@@ -406,34 +478,19 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 		return nil // 不返回错误，继续处理其他消息
 	}
 
-	// 快速安全滤清：仅从缓存检查 allow_access（mqtt中只查cache）
-	// 缓存由 auth_service 维护，Device的认证结果写入缓存
-	cached, ok := domain.AllowAccessCache.Load(uid)
-	if !ok {
-		// 缓存未命中：回退到数据库查询 device_store（避免因为短期缓存缺失导致拒绝）
-		ds, err := c.deviceRepo.GetDeviceStoreInfo(context.Background(), uid)
-		if err != nil {
-			log.Printf("Device %s not in cache, rejecting message (device not authenticated): db lookup failed: %v", uid, err)
-			// 为避免频繁DB命中，短期内缓存为 false
-			domain.AllowAccessCache.Store(uid, false)
+	// 优先 DeviceBaseline 缓存（web auth / cardChange 后 RefreshBaseline）；未命中再走 AllowAccessCache / DB
+	if c.cardMappingService != nil {
+		if b, ok := c.cardMappingService.BaselineFor(uid); ok {
+			if !b.AllowAccess {
+				log.Printf("Device %s blocked by baseline cache: allow_access=FALSE", uid)
+				return nil
+			}
+		} else if !c.allowAccessFromCacheOrDB(uid) {
 			return nil
 		}
-		if !ds.AllowAccess {
-			log.Printf("Device %s blocked by device_store: allow_access=FALSE", uid)
-			domain.AllowAccessCache.Store(uid, false)
-			return nil
-		}
-		// 设备在 device_store 中允许，写入缓存并继续处理
-		domain.AllowAccessCache.Store(uid, true)
-	} else {
-		// 检查缓存值
-		if allowedBool, ok := cached.(bool); !ok || !allowedBool {
-			// 类型转换失败 或 缓存中明确记录该设备不被授权
-			log.Printf("Device %s blocked by cache: allow_access=FALSE", uid)
-			return nil
-		}
+	} else if !c.allowAccessFromCacheOrDB(uid) {
+		return nil
 	}
-	// 缓存中存在且为 true，设备已认证，继续处理
 
 	// 解析消息体
 	var message map[string]interface{}
@@ -611,8 +668,11 @@ func (c *MQTTConsumer) resolveDeviceIdentity(ctx context.Context, uid string) (t
 	if err != nil || ds == nil || ds.DeviceID == "" {
 		return "", "", "", "", "", "", "", false
 	}
-	tid = ds.TenantID
-	did = ds.DeviceID
+	tid = strings.TrimSpace(ds.TenantID)
+	did = strings.TrimSpace(ds.DeviceID)
+	if tid == "" {
+		return "", "", "", "", "", "", "", false
+	}
 	if info, err := c.cardMappingService.GetCardIDByDeviceUID(ctx, uid); err == nil && info != nil {
 		bid, unitID, cid = info.BranchID, info.UnitID, info.CardID
 		bedID, roomID = info.BedID, info.RoomID
@@ -620,14 +680,29 @@ func (c *MQTTConsumer) resolveDeviceIdentity(ctx context.Context, uid string) (t
 	return tid, bid, unitID, cid, did, bedID, roomID, true
 }
 
+// publishRadarMonitorHeartbeat monitoring 关闭时发单条 track_id=11（设备级），category=heart，供 cardagg MonitorBuffer 推导在线。
+func (c *MQTTConsumer) publishRadarMonitorHeartbeat(ctx context.Context, tid, cid, uid, did string, ts int64) error {
+	t := observation.Track{TrackID: observation.TrackDevice, TrackConfidence: 60}
+	data := t.ToFieldMap()
+	msg := rediscommon.NewSingleItemMessage(tid, cid, uid, did, DeviceTypeRadar, ts, "monitor", observation.CategoryHeart, data)
+	return c.streamPublisher.PublishMonitor(ctx, msg)
+}
+
 // handleMonitorMessage 处理实时数据消息 (target 模式)
 // 解码后经 TargetMergeVital 合并/拆分，每条发到 iot:monitor:stream，category 均为 track（与 field/type 一致）。
-// 流使用 device_uid；无 device_store 记录不发。
+// 流使用 device_uid；无 device_store 记录不发。租户级需 business_access；monitoring_enabled 关闭时仅发 track_id=11 心跳。
 func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]interface{}) error {
 	ctx := context.Background()
 	tid, bid, unitID, cid, did, bedID, roomID, ok := c.resolveDeviceIdentity(ctx, uid)
 	if !ok {
 		return nil
+	}
+	canIoT, canMonitor, policyTid := c.resolveIotPolicy(ctx, uid)
+	if !canIoT {
+		return nil
+	}
+	if policyTid != "" {
+		tid = policyTid
 	}
 	cid = "" // gateway 不填 card_id，由 cardagg 解析
 	dataValue, err := decode.RadarDecoder(message, "monitor")
@@ -651,20 +726,41 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 		return nil
 	}
 
+	if len(items) > 0 && canMonitor {
+		n := atomic.AddUint64(&monitorHandleLogCount, 1)
+		if n%10 == 0 {
+			var sample map[string]interface{}
+			for _, it := range items {
+				if dc, _ := it["dataCategory"].(string); dc == "track" {
+					sample = it
+					break
+				}
+			}
+			if sample != nil {
+				log.Printf("[MONITOR_TRACK] device_uid=%s track_id=%v position_x=%v position_y=%v position_z=%v remaining_time=%v area_id=%v pose=%v event=%v (every 10, count=%d)",
+					uid, sample["track_id"], sample["position_x"], sample["position_y"], sample["position_z"],
+					sample["remaining_time"], sample["area_id"], sample["pose"], sample["event"], n)
+			}
+		}
+	}
+
 	if len(items) == 0 {
 		return nil
 	}
 
 	ts := time.Now().UnixMilli()
-	msgs := TargetMergeVital(items, ts, tid, bid, unitID, cid, uid, did, bedID, roomID)
-	var lastErr error
-	for _, msg := range msgs {
-		if err := c.streamPublisher.PublishMonitor(ctx, msg); err != nil {
-			log.Printf("Failed to publish monitor for device %s: %v", uid, err)
-			lastErr = err
+	if canMonitor {
+		msgs := TargetMergeVital(items, ts, tid, bid, unitID, cid, uid, did, bedID, roomID)
+		var lastErr error
+		for _, msg := range msgs {
+			if err := c.streamPublisher.PublishMonitor(ctx, msg); err != nil {
+				log.Printf("Failed to publish monitor for device %s: %v", uid, err)
+				lastErr = err
+			}
 		}
+		return lastErr
 	}
-	return lastErr
+	return c.publishRadarMonitorHeartbeat(ctx, tid, cid, uid, did, ts)
 }
 
 // TargetMergeVital 根据 decode 结果合并 vital：仅当本条 MQTT 内「在 Bed 区域」的 track 恰有 1 个时合并到该 track，否则 vital 单独成条 track_id=9。
@@ -822,12 +918,19 @@ func asInt(v interface{}) int {
 
 // handleStatMessage 处理统计数据消息（activity×1 + sleep×1）。
 //   - stat track (activity) → iot:event:stream, category=activity（状态汇总：people_count, walk_distance 等）
-//   - stat sleep            → iot:monitor:stream, category=track（track 格式：hr, rr, sleep_stage, weak_biometric_signal）
+//   - stat sleep            → iot:alarm/event（见 publishStatSleep）
 func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interface{}) error {
 	ctx := context.Background()
 	tid, bid, unitID, cid, did, _, _, ok := c.resolveDeviceIdentity(ctx, uid)
 	if !ok {
 		return nil
+	}
+	canIoT, canMonitor, policyTid := c.resolveIotPolicy(ctx, uid)
+	if !canIoT {
+		return nil
+	}
+	if policyTid != "" {
+		tid = policyTid
 	}
 	cid = "" // gateway 不填 card_id，由 cardagg 解析
 	dataValue, err := decode.RadarDecoder(message, "stat")
@@ -869,6 +972,11 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 			if err := c.publishStatSleep(ctx, tid, bid, unitID, cid, uid, did, ts, m); err != nil {
 				lastErr = err
 			}
+		}
+	}
+	if canIoT && !canMonitor && len(items) > 0 {
+		if err := c.publishRadarMonitorHeartbeat(ctx, tid, cid, uid, did, ts); err != nil {
+			lastErr = err
 		}
 	}
 	return lastErr
@@ -1001,6 +1109,13 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 	if !ok {
 		return nil
 	}
+	canIoT, canMonitor, policyTid := c.resolveIotPolicy(ctx, uid)
+	if !canIoT {
+		return nil
+	}
+	if policyTid != "" {
+		tid = policyTid
+	}
 	cid = "" // gateway 不填 card_id，由 cardagg 解析
 	dataValue, err := decode.RadarDecoder(message, "event")
 	if err != nil {
@@ -1112,6 +1227,11 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 		msg := rediscommon.NewSingleItemMessage(tid, cid, uid, did, DeviceTypeRadar, ts, "event", eventName, data)
 		if err := c.streamPublisher.PublishEvent(ctx, msg); err != nil {
 			log.Printf("[EVENT_HANDLER] publish failed device=%s cat=%s: %v", uid, eventName, err)
+			lastErr = err
+		}
+	}
+	if canIoT && !canMonitor && len(items) > 0 {
+		if err := c.publishRadarMonitorHeartbeat(ctx, tid, cid, uid, did, ts); err != nil {
 			lastErr = err
 		}
 	}

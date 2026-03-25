@@ -44,7 +44,11 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	}
 
 	if m.DeviceUID == "" {
-		h.logger.Warn("event dropped (empty did)")
+		h.logger.Warn("event dropped (empty did)",
+			zap.String("device_uid", streamFieldStr(raw, "device_uid")),
+			zap.String("card_id", streamFieldStr(raw, "card_id")),
+			zap.String("tenant_id", streamFieldStr(raw, "tenant_id")),
+		)
 		return nil
 	}
 	// card_id / device_uid 已由 IotPreparedHandler 填充
@@ -398,6 +402,24 @@ func stringFromAny(v any) string {
 		return fmt.Sprintf("%.0f", x)
 	default:
 		return fmt.Sprintf("%v", x)
+	}
+}
+
+func streamFieldStr(m map[string]interface{}, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch s := v.(type) {
+	case string:
+		return strings.TrimSpace(s)
+	case []byte:
+		return strings.TrimSpace(string(s))
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", s))
 	}
 }
 

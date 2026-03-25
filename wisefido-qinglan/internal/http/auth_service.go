@@ -12,6 +12,7 @@ import (
 	"wisefido-qinglan/internal/domain"
 	"wisefido-qinglan/internal/models"
 	"wisefido-qinglan/internal/repository"
+	"wisefido-qinglan/internal/service"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
@@ -36,10 +37,11 @@ type AuthService struct {
 	logger              *zap.Logger
 	deviceCache         *sync.Map                 // 设备缓存（key: uid, value: *domain.DeviceWithLocation），使用 domain.DeviceCache
 	subscriptionManager DeviceSubscriptionManager // 设备订阅管理器接口
+	cardMapping         *service.CardMappingService
 }
 
 // NewAuthService 创建认证服务
-func NewAuthService(cfg *config.Config, db *sql.DB, deviceRepo repository.DeviceRepository, redisClient *redis.Client, logger *zap.Logger, subscriptionManager DeviceSubscriptionManager) *AuthService {
+func NewAuthService(cfg *config.Config, db *sql.DB, deviceRepo repository.DeviceRepository, redisClient *redis.Client, logger *zap.Logger, subscriptionManager DeviceSubscriptionManager, cardMapping *service.CardMappingService) *AuthService {
 	return &AuthService{
 		config:              cfg,
 		db:                  db,
@@ -48,6 +50,7 @@ func NewAuthService(cfg *config.Config, db *sql.DB, deviceRepo repository.Device
 		logger:              logger,
 		deviceCache:         domain.DeviceCache,
 		subscriptionManager: subscriptionManager,
+		cardMapping:         cardMapping,
 	}
 }
 
@@ -155,13 +158,15 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 	// 4. 生成 MQTT 连接配置
 	mqttConfig := s.generateMQTTConfig(req.UID)
 
-	// 5. 构建响应
+	// 5. 构建响应（authUrl 明确 8443 认证入口，供支持字段的固件使用）
+	authURL := s.config.DeviceAuthURL()
 	response := &models.AuthResponse{
 		Msg:  "Operation success",
 		Code: 200,
 		Data: &models.AuthData{
-			UID:  req.UID,
-			MQTT: mqttConfig,
+			UID:     req.UID,
+			MQTT:    mqttConfig,
+			AuthURL: authURL,
 		},
 	}
 
@@ -171,7 +176,12 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 		zap.String("device_type", device.DeviceType),
 		zap.String("mqtt_server", mqttConfig.Server),
 		zap.Int("mqtt_port", mqttConfig.Port),
+		zap.String("auth_url", authURL),
 	)
+
+	if s.cardMapping != nil {
+		s.cardMapping.RefreshBaseline(ctx, req.UID)
+	}
 
 	// 6. 发布认证成功事件到 Redis Stream
 	log.Printf("✅ Auth success for device %s, publishing success response", req.UID)
@@ -209,9 +219,9 @@ func (s *AuthService) validateDeviceAndGetLocation(ctx context.Context, deviceUI
 		return nil, err
 	}
 
-	// 验证设备合法性
-	// 1. 检查设备访问权限：allow_access 必须为 True，否则拒绝认证
+	// 1. 系统级接入：allow_access=FALSE 则拒绝认证（不发 MQTT 凭证）
 	if !ds.AllowAccess {
+		log.Printf("auth denied: allow_access=false device_uid=%s", deviceUID)
 		return nil, fmt.Errorf("deny")
 	}
 

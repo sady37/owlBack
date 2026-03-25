@@ -50,8 +50,9 @@ func NewServer(
 	redisClient *redis.Client,
 	logger *zap.Logger,
 	subscriptionManager DeviceSubscriptionManager,
+	cardMapping *service.CardMappingService,
 ) *Server {
-	authService := NewAuthService(appConfig, db, deviceRepo, redisClient, logger, subscriptionManager)
+	authService := NewAuthService(appConfig, db, deviceRepo, redisClient, logger, subscriptionManager, cardMapping)
 	return &Server{
 		config:             cfg,
 		radarService:       radarService,
