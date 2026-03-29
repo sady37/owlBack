@@ -7,30 +7,8 @@ import (
 	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
 
-	rediscommon "owl-common/redis"
-
 	"go.uber.org/zap"
 )
-
-// PublishDeviceStoreConfigChange 发送 config.card.device_store，供 qinglan 等按 device_id 刷新 baseline。
-func PublishDeviceStoreConfigChange(ctx context.Context, pub *publisher.ConfigPublisher, tenantID, deviceID, changeType string, log *zap.Logger) {
-	if pub == nil || deviceID == "" {
-		return
-	}
-	extra := map[string]interface{}{
-		"device_id":    deviceID,
-		"change_type":  changeType,
-	}
-	if err := pub.PublishCardChangeMessageWithExtraAndType(ctx, tenantID, "", "", "", rediscommon.ConfigCardDeviceStoreChanged, extra); err != nil {
-		if log != nil {
-			log.Warn("PublishDeviceStoreConfigChange failed",
-				zap.String("tenant_id", tenantID),
-				zap.String("device_id", deviceID),
-				zap.String("change_type", changeType),
-				zap.Error(err))
-		}
-	}
-}
 
 // NotifyDeviceStoreBatchAfterUpdate 在 BatchUpdateDeviceStores 成功后，按受影响的 device_id 各发一条（去重）。
 func NotifyDeviceStoreBatchAfterUpdate(ctx context.Context, repo repository.DeviceStoreRepository, pub *publisher.ConfigPublisher, updates []*domain.DeviceStore, log *zap.Logger) {
@@ -50,7 +28,12 @@ func NotifyDeviceStoreBatchAfterUpdate(ctx context.Context, repo repository.Devi
 			continue
 		}
 		seen[row.DeviceID] = struct{}{}
-		PublishDeviceStoreConfigChange(ctx, pub, row.TenantID, row.DeviceID, "device_store_updated", log)
+		if err := pub.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceID, "device_store_updated"); err != nil && log != nil {
+			log.Warn("PublishCardChangeForDevice failed",
+				zap.String("tenant_id", row.TenantID),
+				zap.String("device_id", row.DeviceID),
+				zap.Error(err))
+		}
 	}
 }
 
@@ -68,6 +51,12 @@ func NotifyDeviceStoreFromStores(ctx context.Context, pub *publisher.ConfigPubli
 			continue
 		}
 		seen[u.DeviceID] = struct{}{}
-		PublishDeviceStoreConfigChange(ctx, pub, u.TenantID, u.DeviceID, changeType, log)
+		if err := pub.PublishCardChangeForDevice(ctx, u.TenantID, u.DeviceID, changeType); err != nil && log != nil {
+			log.Warn("PublishCardChangeForDevice failed",
+				zap.String("tenant_id", u.TenantID),
+				zap.String("device_id", u.DeviceID),
+				zap.String("change_type", changeType),
+				zap.Error(err))
+		}
 	}
 }

@@ -201,8 +201,7 @@ const (
 	ConfigDeviceAlarmSettingUpdated = "config.alarmDevice"
 	ConfigAlarmProcess              = "config.alarmProcess"
 	ConfigAlarmProcessAck           = "config.alarm.process.ack" // 已弃用
-	ConfigCardChanged              = "config.card"
-	ConfigCardDeviceStoreChanged   = "config.card.device_store"
+	ConfigCardChanged = "config.card"
 )
 
 const (

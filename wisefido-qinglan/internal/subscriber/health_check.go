@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"owl-common/alarm"
+	"owl-common/card"
 	"owl-common/observation"
 	"owl-common/redis"
 
@@ -161,7 +162,7 @@ func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, devic
 	}
 
 	// 按 iot:alarm:stream 标准格式：每个 status 一条 alarm，category/eventName 用 dataCategoryFromFieldAndValue 的准确值
-	m.publishDeviceAlarm(ctx, tid, did, deviceUID, observation.FieldOffline, 0) // DeviceRecover
+	m.publishDeviceAlarm(ctx, tid, did, deviceUID, observation.FieldOffline, 0) // OfflineRecover
 	m.publishDeviceAlarm(ctx, tid, did, deviceUID, observation.FieldSignalPoor, health.SignalPoor)
 	m.publishDeviceAlarm(ctx, tid, did, deviceUID, observation.FieldAngleAbnormal, health.AngleAbnormal)
 }
@@ -279,7 +280,7 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 	if eventName == "" {
 		return
 	}
-	cid := ""
+	cid := card.StreamHeadCardID("", did)
 	ts := time.Now().UnixMilli()
 	eventStatus := "start"
 	if value == 0 {

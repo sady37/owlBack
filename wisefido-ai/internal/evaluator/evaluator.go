@@ -7,6 +7,7 @@ import (
 	"wisefido-ai/internal/config"
 	"wisefido-ai/internal/consumer"
 	"wisefido-ai/internal/models"
+	"wisefido-ai/internal/alarmpush"
 	"wisefido-ai/internal/repository"
 
 	commoncard "owl-common/card"
@@ -133,6 +134,7 @@ func (e *Evaluator) Evaluate(tenantID string, card repository.CardInfo, realtime
 			continue
 		}
 		alarms[i].EventID = result.EventID
+		alarmpush.NotifyWisefidoData(e.logger, alarm.TenantID, card.CardID, alarm.DeviceID, result.EventID, alarm.EventType, alarm.AlarmLevel)
 		e.logger.Info("Alarm event created and card updated",
 			zap.String("event_id", result.EventID),
 			zap.String("event_type", alarm.EventType),

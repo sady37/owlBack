@@ -293,6 +293,8 @@ func (s *deviceService) GetDevice(ctx context.Context, req GetDeviceRequest) (*G
 		return nil, fmt.Errorf("failed to get device")
 	}
 
+	s.fillDeviceOnlineStatus(ctx, []*domain.Device{device})
+
 	return &GetDeviceResponse{
 		Device: device,
 	}, nil
@@ -328,13 +330,9 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 		return nil, fmt.Errorf("device is required")
 	}
 
-	// 2. 获取旧设备信息（用于比较 monitoring_enabled 是否变化）
+	// 2. 取更新前设备（用于同步旧 unit 卡片）
 	var oldDevice *domain.Device
-	var monitoringEnabledChanged bool
 	oldDevice, _ = s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
-	if oldDevice != nil && req.Device.MonitoringEnabled != oldDevice.MonitoringEnabled {
-		monitoringEnabledChanged = true
-	}
 
 	// 3. 业务规则验证
 	// 注意：unit_id 验证在 Handler 层处理（因为 domain.Device 中没有 unit_id 字段）
@@ -350,57 +348,50 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 		return nil, fmt.Errorf("failed to update device")
 	}
 
-	if req.UpdateBusinessAccess || req.UpdateMonitoringEnabled || req.UpdateBoundRoomID || req.UpdateBoundBedID {
-		PublishDeviceStoreConfigChange(ctx, s.configPublisher, req.TenantID, req.DeviceID, "devices_updated", s.logger)
+	// 任意 devices 字段更新均发 config.card，供网关刷新 baseline / health
+	if s.configPublisher != nil {
+		if err := s.configPublisher.PublishCardChangeForDevice(ctx, req.TenantID, req.DeviceID, "devices_updated"); err != nil {
+			s.logger.Warn("PublishCardChangeForDevice failed",
+				zap.String("tenant_id", req.TenantID),
+				zap.String("device_id", req.DeviceID),
+				zap.Error(err))
+		}
 	}
 
-	// 5. monitoring_enabled 或 room/bed 绑定变化时，同步受影响 unit 的卡片（换绑需同步旧 unit + 新 unit）
+	// 5. 任意 devices 更新后同步受影响 unit 的卡片（旧 unit + 新 unit，换绑时两边都刷）
 	newDevice, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
 	if err != nil {
 		s.logger.Warn("Failed to get updated device for card sync", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID))
 	} else if s.cardSync != nil && newDevice != nil {
-		bindingChanged := false
-		if oldDevice != nil {
-			bindingChanged = !sqlNullStringEqual(oldDevice.BoundRoomID, newDevice.BoundRoomID) ||
-				!sqlNullStringEqual(oldDevice.BoundBedID, newDevice.BoundBedID)
-		} else if req.UpdateBoundRoomID || req.UpdateBoundBedID {
-			bindingChanged = true
+		seen := make(map[string]struct{})
+		syncUnit := func(unitID string) {
+			if unitID == "" {
+				return
+			}
+			if _, ok := seen[unitID]; ok {
+				return
+			}
+			seen[unitID] = struct{}{}
+			if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, unitID); err != nil {
+				s.logger.Warn("Failed to sync cards after device update",
+					zap.Error(err),
+					zap.String("tenant_id", req.TenantID),
+					zap.String("device_id", req.DeviceID),
+					zap.String("unit_id", unitID),
+				)
+			} else {
+				s.logger.Info("Synced cards after device update",
+					zap.String("tenant_id", req.TenantID),
+					zap.String("device_id", req.DeviceID),
+					zap.String("unit_id", unitID),
+				)
+			}
 		}
-		if monitoringEnabledChanged || bindingChanged {
-			seen := make(map[string]struct{})
-			syncUnit := func(unitID string) {
-				if unitID == "" {
-					return
-				}
-				if _, ok := seen[unitID]; ok {
-					return
-				}
-				seen[unitID] = struct{}{}
-				if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, unitID); err != nil {
-					s.logger.Warn("Failed to sync cards after device update",
-						zap.Error(err),
-						zap.String("tenant_id", req.TenantID),
-						zap.String("device_id", req.DeviceID),
-						zap.String("unit_id", unitID),
-						zap.Bool("binding_changed", bindingChanged),
-						zap.Bool("monitoring_changed", monitoringEnabledChanged),
-					)
-				} else {
-					s.logger.Info("Synced cards after device update",
-						zap.String("tenant_id", req.TenantID),
-						zap.String("device_id", req.DeviceID),
-						zap.String("unit_id", unitID),
-						zap.Bool("binding_changed", bindingChanged),
-						zap.Bool("monitoring_changed", monitoringEnabledChanged),
-					)
-				}
-			}
-			if oldDevice != nil && oldDevice.UnitID.Valid {
-				syncUnit(oldDevice.UnitID.String)
-			}
-			if newDevice.UnitID.Valid {
-				syncUnit(newDevice.UnitID.String)
-			}
+		if oldDevice != nil && oldDevice.UnitID.Valid {
+			syncUnit(oldDevice.UnitID.String)
+		}
+		if newDevice.UnitID.Valid {
+			syncUnit(newDevice.UnitID.String)
 		}
 	}
 
@@ -464,7 +455,7 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 			"device_id":   req.DeviceID,
 			"change_type": "device_deleted",
 		}
-		if err := s.configPublisher.PublishCardChangeMessageWithExtraAndType(ctx, req.TenantID, "", unitID, "", rediscommon.ConfigCardDeviceStoreChanged, extraData); err != nil {
+		if err := s.configPublisher.PublishCardChangeMessageWithExtraAndType(ctx, req.TenantID, "", unitID, "", rediscommon.ConfigCardChanged, extraData); err != nil {
 			s.logger.Warn("Failed to publish device_store change signal for device deletion",
 				zap.String("device_id", req.DeviceID),
 				zap.Error(err),
@@ -551,14 +542,4 @@ func (s *deviceService) GetDeviceRelations(ctx context.Context, req GetDeviceRel
 		AddressType:        relations.AddressType,
 		Residents:          residents,
 	}, nil
-}
-
-func sqlNullStringEqual(a, b sql.NullString) bool {
-	if a.Valid != b.Valid {
-		return false
-	}
-	if !a.Valid {
-		return true
-	}
-	return a.String == b.String
 }

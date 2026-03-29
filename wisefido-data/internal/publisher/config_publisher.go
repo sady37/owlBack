@@ -159,10 +159,20 @@ func (p *ConfigPublisher) PublishCardChangeMessageWithExtra(
 	return p.PublishCardChangeMessageWithExtraAndType(ctx, tenantID, cardID, unitID, branchID, rediscommon.ConfigCardChanged, extraData)
 }
 
-// PublishCardChangeMessageWithExtraAndType 发送卡片变更消息到 config:card:stream（支持额外字段和自定义消息类型）
-// 用于处理 device_store 变化导致的卡片变更或其他配置变化
-// messageType: 消息类型，如 ConfigCardChanged（"config.card"）或 ConfigCardDeviceStoreChanged（"config.card.device_store"）
-// 当处理 device_store 变化时，cardID 应为空，extraData 可包含：
+// PublishCardChangeForDevice 发送 config.card，data 含 device_id、change_type（devices / device_store 变更等与卡侧同步）。
+func (p *ConfigPublisher) PublishCardChangeForDevice(ctx context.Context, tenantID, deviceID, changeType string) error {
+	if p == nil || deviceID == "" {
+		return nil
+	}
+	extra := map[string]interface{}{
+		"device_id":   deviceID,
+		"change_type": changeType,
+	}
+	return p.PublishCardChangeMessageWithExtraAndType(ctx, tenantID, "", "", "", rediscommon.ConfigCardChanged, extra)
+}
+
+// PublishCardChangeMessageWithExtraAndType 发送卡片变更消息到 config:card:stream（支持额外字段和自定义 type 字段）
+// messageType 一般为 ConfigCardChanged；extraData 可含：
 //   - device_id: 受影响的设备ID
 //   - change_type: 变化类型 (device_updated 或 device_deleted)
 func (p *ConfigPublisher) PublishCardChangeMessageWithExtraAndType(

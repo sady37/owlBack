@@ -204,7 +204,7 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		if m.DeviceUID != "" && m.CardID != "" && h.state != nil {
 			_ = h.state.SetDeviceOnline(ctx, m.CardID, m.DeviceID, m.DeviceUID, m.DeviceType, true)
 		}
-	// Sleepace connectionStatus 上线发 DeviceRecover（非 OfflineRecover）；与 monitor 无关，快速置在线。
+	// DeviceRecover：其它故障恢复；连通性上线由 Sleepace/qinglan 发 OfflineRecover。
 	case alarm.AlarmTypeDeviceRecover:
 		_ = h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.AlarmTypeDeviceFailure})
 		if enabled && level != "" {

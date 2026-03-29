@@ -1,10 +1,14 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"owl-common/alarm"
@@ -244,7 +248,11 @@ func (s *AlarmService) PersistAlarmAndPublish(ctx context.Context, msg *redis.Io
 		return err
 	}
 	s.logger.Info("alarm inserted", zap.String("cid", msg.CardID), zap.String("event_id", result.EventID), zap.String("level", level), zap.String("type", eventName))
-	return s.writeAlarmState(ctx, msg.CardID, cardAlarmState)
+	if err := s.writeAlarmState(ctx, msg.CardID, cardAlarmState); err != nil {
+		return err
+	}
+	s.notifyAlarmPushAsync(msg.TenantID, msg.CardID, msg.DeviceID, result.EventID, eventName, level)
+	return nil
 }
 
 // PersistAlarmFromTrack 包头 + 当前 track 落库：EventType=eventName，TriggeredAt=track.Ts，TriggerData=track，Category=GetFHIRCategory(eventName)。alarm_status 由 InsertAlarmAndUpdateCard 写为 active。
@@ -272,7 +280,11 @@ func (s *AlarmService) PersistAlarmFromTrack(ctx context.Context, cardID, tenant
 		return err
 	}
 	s.logger.Info("alarm inserted", zap.String("cid", cardID), zap.String("event_id", result.EventID), zap.String("level", level), zap.String("type", eventName))
-	return s.writeAlarmState(ctx, cardID, cardAlarmState)
+	if err := s.writeAlarmState(ctx, cardID, cardAlarmState); err != nil {
+		return err
+	}
+	s.notifyAlarmPushAsync(tenantID, cardID, deviceID, result.EventID, eventName, level)
+	return nil
 }
 
 // PersistAlarmWithTriggerData 落库告警，TriggeredAt=triggeredAt，TriggerData=triggerData（如 source 标明 LeftBedFallActivity 产生）。triggerData 为 nil 时写 {}。
@@ -305,7 +317,11 @@ func (s *AlarmService) PersistAlarmWithTriggerData(ctx context.Context, cardID, 
 		return err
 	}
 	s.logger.Info("alarm inserted", zap.String("cid", cardID), zap.String("event_id", result.EventID), zap.String("level", level), zap.String("type", eventName))
-	return s.writeAlarmState(ctx, cardID, cardAlarmState)
+	if err := s.writeAlarmState(ctx, cardID, cardAlarmState); err != nil {
+		return err
+	}
+	s.notifyAlarmPushAsync(tenantID, cardID, deviceID, result.EventID, eventName, level)
+	return nil
 }
 
 // RecordDeviceFailure 落库 alarm_events 为 DeviceFailure 并写 Redis，供前端告警列表展示。triggerData 可为 nil，内部会包一层 reason。
@@ -337,7 +353,11 @@ func (s *AlarmService) RecordDeviceFailure(ctx context.Context, cardID, tenantID
 		return err
 	}
 	s.logger.Info("device_failure alarm inserted", zap.String("cid", cardID), zap.String("event_id", result.EventID), zap.String("reason", reason))
-	return s.writeAlarmState(ctx, cardID, cardAlarmState)
+	if err := s.writeAlarmState(ctx, cardID, cardAlarmState); err != nil {
+		return err
+	}
+	s.notifyAlarmPushAsync(tenantID, cardID, deviceID, result.EventID, eventName, level)
+	return nil
 }
 
 // pendingAlarmPayload 计时型待处理告警，存 Redis Hash 的 value（JSON）
@@ -619,7 +639,11 @@ func (s *AlarmService) ScanPendingAlarms(ctx context.Context) error {
 			continue
 		}
 		s.logger.Info("pending alarm fired", zap.String("cid", p.CardID), zap.String("event_id", result.EventID), zap.String("type", eventType))
-		_ = s.writeAlarmState(ctx, p.CardID, cardAlarmState)
+		if err := s.writeAlarmState(ctx, p.CardID, cardAlarmState); err != nil {
+			s.logger.Warn("write alarm state after pending", zap.String("cid", p.CardID), zap.Error(err))
+		} else {
+			s.notifyAlarmPushAsync(p.TenantID, p.CardID, p.DeviceID, result.EventID, eventType, p.AlarmLevel)
+		}
 		_ = s.redisPending.HDel(ctx, redisPendingAlarmKey, field)
 	}
 	return nil
@@ -720,6 +744,47 @@ func (s *AlarmService) writeAlarmState(ctx context.Context, cardID string, cas *
 	return PublishCardStatus(ctx, s.writer, cardID, PublishFields{
 		AlarmState: cas.ToAlarmState(),
 	})
+}
+
+// notifyAlarmPushAsync 在 cardStatus 发布成功后，异步通知 wisefido-data 走 APNs（仅 staff；与 wisefido-ai/alarmpush 同 URL）
+func (s *AlarmService) notifyAlarmPushAsync(tenantID, cardID, deviceID, eventID, eventType, alarmLevel string) {
+	base := strings.TrimSpace(os.Getenv("WISEFIDO_DATA_ALARM_PUSH_URL"))
+	sec := strings.TrimSpace(os.Getenv("INTERNAL_ALARM_PUSH_SECRET"))
+	if base == "" || sec == "" || tenantID == "" || cardID == "" {
+		return
+	}
+	base = strings.TrimRight(base, "/")
+	payload := map[string]string{
+		"tenant_id":   tenantID,
+		"card_id":     cardID,
+		"device_id":   deviceID,
+		"event_id":    eventID,
+		"event_type":  eventType,
+		"alarm_level": alarmLevel,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	go func() {
+		c, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(c, http.MethodPost, base+"/internal/v1/push/alarm", bytes.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Internal-Secret", sec)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			s.logger.Warn("alarm push to wisefido-data failed", zap.Error(err))
+			return
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			s.logger.Warn("alarm push to wisefido-data bad status", zap.Int("status", resp.StatusCode))
+		}
+	}()
 }
 
 // refreshAlarmStateFromDB re-queries alarm state from DB and writes to Hash.

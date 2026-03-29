@@ -57,15 +57,20 @@ type DeviceBaseline struct {
 	UpdatedAtMS int64 `json:"updated_at_ms,omitempty"`
 }
 
-// EffectiveCardID 未绑卡且 card_id 为空时返回 device_id；否则返回 card_id。
+// StreamHeadCardID 流包头 card_id：已绑卡用 card_id，未绑卡用 device_id（UUID），与 cardagg 未绑卡占位一致。
+func StreamHeadCardID(cardID, deviceID string) string {
+	if s := strings.TrimSpace(cardID); s != "" {
+		return s
+	}
+	return strings.TrimSpace(deviceID)
+}
+
+// EffectiveCardID 同 StreamHeadCardID（DeviceBaseline 上的便捷方法）。
 func (b *DeviceBaseline) EffectiveCardID() string {
 	if b == nil {
 		return ""
 	}
-	if s := strings.TrimSpace(b.CardID); s != "" {
-		return s
-	}
-	return strings.TrimSpace(b.DeviceID)
+	return StreamHeadCardID(b.CardID, b.DeviceID)
 }
 
 // SameRoomScopeKey 同房粗判：tenant|unit|room（unit 在 room 全局唯一时可传空 unit，由数据模型保证）。

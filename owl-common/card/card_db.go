@@ -46,6 +46,41 @@ func (c *CardDB) LoadCodeToUIDMap(ctx context.Context, deviceTypes []string) (ma
 	return m, rows.Err()
 }
 
+// ListSleepadBaselinesForHealth 列出 device_store 中已配置 device_code 的 Sleepad 类设备，联合 devices 取策略字段，供定时在线探测（与 MQTT 无关）。
+func (c *CardDB) ListSleepadBaselinesForHealth(ctx context.Context, deviceTypes []string) ([]DeviceBaseline, error) {
+	if c == nil || c.db == nil {
+		return nil, fmt.Errorf("card db nil")
+	}
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT ds.tenant_id::text,
+		       COALESCE(dev.device_id::text, ''),
+		       ds.device_uid,
+		       COALESCE(ds.allow_access, false),
+		       COALESCE(dev.business_access, 'pending'),
+		       COALESCE(dev.monitoring_enabled, false),
+		       COALESCE(ds.device_code, ''),
+		       COALESCE(ds.device_type, '')
+		FROM device_store ds
+		LEFT JOIN devices dev ON dev.device_uid = ds.device_uid
+		WHERE ds.device_type = ANY($1::text[])
+		  AND ds.device_code IS NOT NULL AND BTRIM(ds.device_code) <> ''
+	`, pq.Array(deviceTypes))
+	if err != nil {
+		return nil, fmt.Errorf("list sleepad baselines: %w", err)
+	}
+	defer rows.Close()
+	var out []DeviceBaseline
+	for rows.Next() {
+		var b DeviceBaseline
+		if err := rows.Scan(&b.TenantID, &b.DeviceID, &b.DeviceUID,
+			&b.AllowAccess, &b.BusinessAccess, &b.MonitoringEnabled, &b.DeviceCode, &b.DeviceType); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // ResolveDevice resolves a single device_uid or device_code → (device_uid, device_code).
 func (c *CardDB) ResolveDevice(ctx context.Context, deviceKey string) (deviceUID, deviceCode string, err error) {
 	err = c.db.QueryRowContext(ctx, `
@@ -113,6 +148,44 @@ func (c *CardDB) DeviceKeysInTenantUnit(ctx context.Context, tenantID, unitID st
 		WHERE c.tenant_id = $1::uuid AND c.unit_id = $2::uuid
 		  AND COALESCE(j->>'device_id', '') <> ''`,
 		tenantID, unitID)
+	if err != nil {
+		return nil, nil
+	}
+	defer rows.Close()
+	seenD := make(map[string]struct{})
+	seenU := make(map[string]struct{})
+	for rows.Next() {
+		var did, uid sql.NullString
+		if err := rows.Scan(&did, &uid); err != nil {
+			continue
+		}
+		if did.Valid && did.String != "" {
+			if _, ok := seenD[did.String]; !ok {
+				seenD[did.String] = struct{}{}
+				deviceIDs = append(deviceIDs, did.String)
+			}
+		}
+		if uid.Valid && uid.String != "" {
+			if _, ok := seenU[uid.String]; !ok {
+				seenU[uid.String] = struct{}{}
+				deviceUIDs = append(deviceUIDs, uid.String)
+			}
+		}
+	}
+	return deviceIDs, deviceUIDs
+}
+
+// DeviceKeysInCard 返回指定 card_id 下 cards.devices 中出现的 device_id / device_uid（去重）。
+func (c *CardDB) DeviceKeysInCard(ctx context.Context, cardID string) (deviceIDs, deviceUIDs []string) {
+	if c == nil || c.db == nil || cardID == "" {
+		return nil, nil
+	}
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT DISTINCT j->>'device_id', j->>'device_uid'
+		FROM cards c, jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS j
+		WHERE c.card_id = $1::uuid
+		  AND (COALESCE(j->>'device_id', '') <> '' OR COALESCE(j->>'device_uid', '') <> '')`,
+		cardID)
 	if err != nil {
 		return nil, nil
 	}

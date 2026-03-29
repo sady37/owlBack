@@ -3,6 +3,9 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"wisefido-sleepace/internal/config"
@@ -25,6 +28,35 @@ type SleepaceResponse struct {
 	Status int             `json:"status"`
 	Msg    string          `json:"msg"`
 	Data   json.RawMessage `json:"data"`
+}
+
+// ConnectionStatusData 厂家 /sleepace/connectioStatus 返回；connectionStatus 可能为数字或字符串。
+type ConnectionStatusData struct {
+	ConnectionStatus int
+}
+
+func (d *ConnectionStatusData) UnmarshalJSON(b []byte) error {
+	var aux struct {
+		V interface{} `json:"connectionStatus"`
+	}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	switch x := aux.V.(type) {
+	case nil:
+		return nil
+	case float64:
+		d.ConnectionStatus = int(x)
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(x))
+		if err != nil {
+			return err
+		}
+		d.ConnectionStatus = n
+	default:
+		return fmt.Errorf("connectionStatus: unexpected JSON type %T", x)
+	}
+	return nil
 }
 
 // SleepaceAPI is the HTTP client for communicating with sleepace-service (Java).
@@ -200,6 +232,29 @@ func (a *SleepaceAPI) GetAlarmConfig(userID, deviceCode string) (json.RawMessage
 		return nil, errors.New(resp.Msg)
 	}
 	return resp.Data, nil
+}
+
+// GetConnectionStatus 主动查询设备在线状态。
+// 注意：厂家接口路径为 /sleepace/connectioStatus（文档原样拼写）。
+// 入参 deviceCode=合作方 deviceId（即 device_store.device_code）。
+func (a *SleepaceAPI) GetConnectionStatus(deviceCode string) (int, error) {
+	req := SleepaceRequest{
+		Token: a.token,
+		Data:  map[string]any{"deviceId": deviceCode},
+	}
+	resp := SleepaceResponse{}
+	_, err := a.client.R().SetBody(req).SetResult(&resp).Post("/sleepace/connectioStatus")
+	if err != nil {
+		return 0, err
+	}
+	if resp.Status != 0 {
+		return 0, errors.New(resp.Msg)
+	}
+	var data ConnectionStatusData
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		return 0, err
+	}
+	return data.ConnectionStatus, nil
 }
 
 func (a *SleepaceAPI) UpdateAlarmConfig(data interface{}) error {

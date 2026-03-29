@@ -111,8 +111,6 @@ func (s *ConfigSubscriber) HandleConfigChangeMessage(ctx context.Context, stream
 	switch configMsg.Type {
 	case rediscommon.ConfigCardChanged:
 		s.handleCardChange(configMsg, message.ID)
-	case rediscommon.ConfigCardDeviceStoreChanged:
-		s.handleDeviceStoreChange(ctx, configMsg.Data, message.ID)
 	default:
 		s.logger.Debug("Skipping config change event (not subscribed)",
 			zap.String("event_type", configMsg.Type),
@@ -133,8 +131,6 @@ func (s *ConfigSubscriber) Stop() error {
 // func (s *ConfigSubscriber) handleAlarmDeviceChange(...) { ... }
 
 // handleCardChange 处理卡片配置变更 (BuildCardChangeMessage)
-// 当 Type 为 config.card 时：正常处理卡片变更（调用 CardMappingService）
-// 当 Type 为 config.card.device_store 时：这是 device_store 变化信号（委托给 handleDeviceStoreChange）
 func (s *ConfigSubscriber) handleCardChange(configMsg rediscommon.ConfigChangeMessage, messageID string) {
 	ctx := context.Background()
 
@@ -208,11 +204,14 @@ func (s *ConfigSubscriber) handleNormalCardChange(ctx context.Context, cardData 
 		zap.String("card_id", cardID),
 		zap.String("tenant_id", tenantID),
 		zap.String("unit_id", unitID))
+
+	// data 中带 device_id 时按设备刷新 baseline（device_store / devices 变更）。
+	if deviceID, _ := cardData["device_id"].(string); deviceID != "" {
+		s.handleDeviceStoreChange(ctx, cardData, messageID)
+	}
 }
 
-// handleDeviceStoreChange 处理 device_store 变化信号（Type 为 config.card.device_store）
-// 当 device_store 发生变化时，查询最新的设备信息，刷新缓存
-// 无需区分具体变化类型，统一处理方式：查库 device_store → 根据 device_uid 和 allow_access 更新缓存
+// handleDeviceStoreChange data.device_id 非空时：查库 device_store → 根据 device_uid 和 allow_access 更新缓存
 func (s *ConfigSubscriber) handleDeviceStoreChange(ctx context.Context, data map[string]interface{}, messageID string) {
 	deviceID, _ := data["device_id"].(string)
 

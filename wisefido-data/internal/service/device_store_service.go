@@ -44,7 +44,7 @@ func (s *DeviceStoreService) SetConfigPublisher(pub *publisher.ConfigPublisher) 
 	s.configPublisher = pub
 }
 
-// BatchUpdateDeviceStoresNotify 批量更新 device_store 成功后发 config.card.device_store。
+// BatchUpdateDeviceStoresNotify 批量更新 device_store 成功后发 config.card。
 func (s *DeviceStoreService) BatchUpdateDeviceStoresNotify(ctx context.Context, updates []*domain.DeviceStore) error {
 	if err := s.deviceStoreRepo.BatchUpdateDeviceStores(ctx, updates); err != nil {
 		return err
@@ -53,7 +53,7 @@ func (s *DeviceStoreService) BatchUpdateDeviceStoresNotify(ctx context.Context, 
 	return nil
 }
 
-// ImportDeviceStoresNotify 导入成功后按插入行发 config.card.device_store。
+// ImportDeviceStoresNotify 导入成功后按插入行发 config.card。
 func (s *DeviceStoreService) ImportDeviceStoresNotify(ctx context.Context, items []*domain.DeviceStore) (successCount int, inserted []*domain.DeviceStore, skipped []*domain.DeviceStore, errors []*domain.DeviceStore, err error) {
 	successCount, inserted, skipped, errors, err = s.deviceStoreRepo.ImportDeviceStores(ctx, items)
 	if err != nil {
@@ -217,6 +217,9 @@ func (s *DeviceStoreService) InitialAllSleepad(ctx context.Context) (*InitialAll
 			errMsgs = append(errMsgs, row.DeviceUID+": update firmware "+err.Error())
 			continue
 		}
+		if s.configPublisher != nil && row.DeviceID != "" {
+			_ = s.configPublisher.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceID, "device_store_firmware_updated")
+		}
 		synced++
 		successDetails = append(successDetails, map[string]any{
 			"device_uid": row.DeviceUID, "device_type": first.DeviceType, "firmware_version": fwVer,
@@ -251,7 +254,13 @@ func (s *DeviceStoreService) BindSleepadOne(ctx context.Context, deviceID string
 	}
 	tz := s.getTimezoneForDevice(ctx, ds.TenantID, ds.DeviceID)
 	_, initErr := s.sleepaceGateway.InitializeDevice(ctx, ds.DeviceCode.String, ds.DeviceID, &tz)
-	return initErr
+	if initErr != nil {
+		return initErr
+	}
+	if s.configPublisher != nil && ds.DeviceID != "" {
+		_ = s.configPublisher.PublishCardChangeForDevice(ctx, ds.TenantID, ds.DeviceID, "sleepad_bind")
+	}
+	return nil
 }
 
 // UnbindSleepadOne 单条 Sleepad 解绑：仅调用 Sleepace unbind(device_code)。不清空 device_code。
@@ -269,7 +278,34 @@ func (s *DeviceStoreService) UnbindSleepadOne(ctx context.Context, deviceID stri
 	if !ds.DeviceCode.Valid || ds.DeviceCode.String == "" {
 		return fmt.Errorf("device has no device_code, already unbound")
 	}
-	return s.sleepaceGateway.UnbindDevice(ctx, ds.DeviceCode.String)
+	if err := s.sleepaceGateway.UnbindDevice(ctx, ds.DeviceCode.String); err != nil {
+		return err
+	}
+	if s.configPublisher != nil && ds.DeviceID != "" {
+		_ = s.configPublisher.PublishCardChangeForDevice(ctx, ds.TenantID, ds.DeviceID, "sleepad_unbind")
+	}
+	return nil
+}
+
+// DeleteDeviceStoreAndNotify 删除 device_store 行并发送 config.card（device_store_deleted）。
+func (s *DeviceStoreService) DeleteDeviceStoreAndNotify(ctx context.Context, deviceUID string) error {
+	if deviceUID == "" {
+		return fmt.Errorf("device_uid required")
+	}
+	row, err := s.deviceStoreRepo.GetDeviceStore(ctx, deviceUID)
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return fmt.Errorf("device not found")
+	}
+	if err := s.deviceStoreRepo.DeleteDeviceStore(ctx, deviceUID); err != nil {
+		return err
+	}
+	if s.configPublisher != nil && row.DeviceID != "" {
+		_ = s.configPublisher.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceID, "device_store_deleted")
+	}
+	return nil
 }
 
 // PostImportSleepadBind 导入后对新插入的 Sleepad 调用 Sleepace initialize 绑定。device_code 来自厂家导入，不在此写回。

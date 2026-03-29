@@ -50,6 +50,8 @@ func orderByClause(sort, direction string) string {
 		return "d.business_access " + dir
 	case "device_id":
 		return "d.device_id " + dir
+	case "device_code":
+		return "ds.device_code " + dir
 	case "device_name":
 	default:
 	}
@@ -151,7 +153,25 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 			COALESCE(
 				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id WHERE r.room_id = d.bound_room_id AND u.tenant_id = d.tenant_id LIMIT 1),
 				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND u.tenant_id = d.tenant_id LIMIT 1)
-			) as unit_id
+			) as unit_id,
+			(
+				SELECT c.card_id::text
+				FROM cards c,
+					jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS j
+				WHERE (j->>'device_id') = d.device_id::text
+					AND c.tenant_id = d.tenant_id
+				LIMIT 1
+			) AS card_id,
+			(
+				SELECT u.unit_name
+				FROM units u
+				WHERE u.tenant_id = d.tenant_id
+					AND u.unit_id = COALESCE(
+						(SELECT u1.unit_id FROM units u1 JOIN rooms r ON u1.unit_id = r.unit_id WHERE r.room_id = d.bound_room_id AND u1.tenant_id = d.tenant_id LIMIT 1),
+						(SELECT u2.unit_id FROM units u2 JOIN rooms r ON u2.unit_id = r.unit_id JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND u2.tenant_id = d.tenant_id LIMIT 1)
+					)
+				LIMIT 1
+			) AS unit_name
 		FROM devices d
 		LEFT JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE ` + strings.Join(where, " AND ") + `
@@ -188,6 +208,8 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 			&d.FirmwareVersion,
 			&d.RoomID,
 			&d.UnitID,
+			&d.CardID,
+			&d.UnitName,
 		); err != nil {
 			return nil, 0, err
 		}

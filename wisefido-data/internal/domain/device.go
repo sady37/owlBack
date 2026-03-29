@@ -37,6 +37,8 @@ type Device struct {
 	// 如果绑定到 bed：room_id 通过 beds.room_id 查询, unit_id 通过 rooms.unit_id 查询
 	RoomID sql.NullString `db:"room_id"`   // 计算字段：COALESCE(bound_room_id, bed_room_id)
 	UnitID sql.NullString `db:"unit_id"`   // 计算字段：通过 room_id 或 bed_id 查询得到
+	CardID sql.NullString `db:"-"`         // 列表/详情：cards.devices 含该 device_id 时的 card_id
+	UnitName sql.NullString `db:"-"`       // 列表：units.unit_name（与 UnitID 对应）
 
 	// 状态/维护
 	Status            string `db:"status"`              // NOT NULL, default 'offline' (数据库状态：Enabled/Disabled/Error，用于软删除)
@@ -105,6 +107,16 @@ func (d *Device) ToJSON() map[string]any {
 		m["unit_id"] = d.UnitID.String
 	} else {
 		m["unit_id"] = nil
+	}
+	if d.CardID.Valid {
+		m["card_id"] = d.CardID.String
+	} else {
+		m["card_id"] = nil
+	}
+	if d.UnitName.Valid {
+		m["unit_name"] = d.UnitName.String
+	} else {
+		m["unit_name"] = nil
 	}
 	if d.Metadata.Valid {
 		// 尝试解析JSON，如果失败则返回字符串

@@ -20,7 +20,8 @@ func DefaultSkippedPaths(path string) bool {
 		path == "/auth/api/v1/institutions/search",
 		strings.HasPrefix(path, "/auth/api/v1/forgot-password/"),
 		path == "/auth/api/v1/verify-pin",
-		strings.HasPrefix(path, "/doctor"):
+		strings.HasPrefix(path, "/doctor"),
+		strings.HasPrefix(path, "/internal/"):
 		return true
 	}
 	return false

@@ -292,7 +292,7 @@ func (r *Router) RegisterDeviceMonitorSettingsRoutes(h *DeviceMonitorSettingsHan
 	r.Handle("/settings/api/v1/monitor/default/radar", h.ServeHTTP)
 }
 
-// RegisterAlarmEventRoutes 注册报警事件管理路由
+// RegisterAlarmEventRoutes 注册报警事件管理路由（网页端告警记录 Vue：owlFront /admin/api/v1/alarm-events）
 func (r *Router) RegisterAlarmEventRoutes(h *AlarmEventHandler) {
 	r.Handle("/admin/api/v1/alarm-events", h.ServeHTTP)
 	r.Handle("/admin/api/v1/alarm-events/", h.ServeHTTP)
@@ -455,4 +455,26 @@ func (r *Router) RegisterMonitorRoutes(h *MonitorHandler) {
 func (r *Router) RegisterRoundsRoutes(roundsHandler *RoundsHandler) {
 	r.Handle("/data/api/v1/data/vital-focus/rounds", roundsHandler.ServeHTTP)
 	r.Handle("/data/api/v1/data/vital-focus/rounds/", roundsHandler.ServeHTTP)
+}
+
+// RegisterAPNSRoutes 注册 iOS APNs 设备 Token 路由
+// POST   /auth/api/v1/devices/apns  → iOS App 登录后注册 token
+// DELETE /auth/api/v1/devices/apns  → iOS App 登出时注销 token
+func (r *Router) RegisterAPNSRoutes(h *APNSHandler) {
+	r.Handle("/auth/api/v1/devices/apns", func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case http.MethodPost:
+			h.RegisterDevice(w, req)
+		case http.MethodDelete:
+			h.UnregisterDevice(w, req)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+}
+
+
+// RegisterAlarmPushRoute cardagg → APNs：POST /internal/v1/push/alarm（X-Internal-Secret）
+func (r *Router) RegisterAlarmPushRoute(h *AlarmPushHandler) {
+	r.Handle("/internal/v1/push/alarm", h.ServeHTTP)
 }

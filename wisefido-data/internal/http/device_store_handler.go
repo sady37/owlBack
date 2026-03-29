@@ -399,7 +399,11 @@ func (h *DeviceStoreHandler) UnbindSleepadOne(w http.ResponseWriter, r *http.Req
 // DeleteDeviceStore 删除设备库存（仅允许未分配且未出库的记录）
 func (h *DeviceStoreHandler) DeleteDeviceStore(w http.ResponseWriter, r *http.Request, deviceUID string) {
 	ctx := r.Context()
-	if err := h.deviceStoreRepo.DeleteDeviceStore(ctx, deviceUID); err != nil {
+	if h.deviceStoreSvc == nil {
+		writeJSON(w, http.StatusOK, Fail("device store service not configured"))
+		return
+	}
+	if err := h.deviceStoreSvc.DeleteDeviceStoreAndNotify(ctx, deviceUID); err != nil {
 		h.logger.Warn("DeleteDeviceStore failed", zap.String("device_uid", deviceUID), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return

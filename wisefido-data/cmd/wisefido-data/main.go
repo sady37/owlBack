@@ -15,6 +15,7 @@ import (
 	"wisefido-data/internal/config"
 	"wisefido-data/internal/domain"
 	httpapi "wisefido-data/internal/http"
+	"wisefido-data/internal/notify"
 	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/service"
@@ -375,6 +376,19 @@ func main() {
 		)
 		alarmEventHandler := httpapi.NewAlarmEventHandler(alarmEventService, logger)
 		router.RegisterAlarmEventRoutes(alarmEventHandler)
+
+		var apnsSender *notify.APNSSender
+		if kid := strings.TrimSpace(os.Getenv("APNS_KEY_ID")); kid != "" {
+			s, err := notify.NewAPNSSender(kid, os.Getenv("APNS_TEAM_ID"), os.Getenv("APNS_BUNDLE_ID"), os.Getenv("APNS_P8_KEY"))
+			if err != nil {
+				logger.Warn("APNS sender init failed", zap.Error(err))
+			} else {
+				apnsSender = s
+			}
+		}
+		apnsDeviceSvc := service.NewAPNSDeviceService(db, apnsSender, logger)
+		router.RegisterAPNSRoutes(httpapi.NewAPNSHandler(apnsDeviceSvc, logger))
+		router.RegisterAlarmPushRoute(httpapi.NewAlarmPushHandler(db, apnsDeviceSvc, logger))
 
 		// 创建 Sleepace Report Service 和 Handler
 		sleepaceReportsRepo := repository.NewPostgresSleepaceReportsRepository(db)

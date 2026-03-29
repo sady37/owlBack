@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"wisefido-ai/internal/alarmpush"
 	"wisefido-ai/internal/models"
 	"wisefido-ai/internal/repository"
 
@@ -335,6 +336,10 @@ func (s *AlarmEventService) CreateAlarmEvent(
 		return fmt.Errorf("failed to create alarm event: %w", err)
 	}
 	event.EventID = result.EventID
+
+	if cid, err := alarmpush.LookupCardIDByDevice(ctx, s.db, event.DeviceID); err == nil && cid != "" {
+		alarmpush.NotifyWisefidoData(s.logger, tenantID, cid, event.DeviceID, result.EventID, event.EventType, event.AlarmLevel)
+	}
 
 	s.logger.Info("Alarm event created",
 		zap.String("tenant_id", tenantID),

@@ -3,7 +3,6 @@ package subscriber
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	rediscommon "owl-common/redis"
@@ -13,20 +12,19 @@ import (
 	"go.uber.org/zap"
 )
 
-// ConfigSubscriber subscribes to config:card:stream and refreshes local card mapping cache.
-// Note: wisefido-sleepace only reads from qinglan's Redis cache, so the "refresh" here
-// is just a log/notification — the actual cache is maintained by qinglan.
-// If we need local in-memory caching, we can extend this.
+// ConfigSubscriber 订阅 config:card:stream：失效 cardMapping 并触发 HealthCheck 探测。
 type ConfigSubscriber struct {
 	redisClient *redis.Client
 	cardMapping *service.CardMappingService
+	healthCheck *HealthCheck
 	logger      *zap.Logger
 }
 
-func NewConfigSubscriber(redisClient *redis.Client, cardMapping *service.CardMappingService, logger *zap.Logger) *ConfigSubscriber {
+func NewConfigSubscriber(redisClient *redis.Client, cardMapping *service.CardMappingService, healthCheck *HealthCheck, logger *zap.Logger) *ConfigSubscriber {
 	return &ConfigSubscriber{
 		redisClient: redisClient,
 		cardMapping: cardMapping,
+		healthCheck: healthCheck,
 		logger:      logger,
 	}
 }
@@ -41,34 +39,52 @@ func (s *ConfigSubscriber) HandleConfigMessage(ctx context.Context, stream strin
 		return nil
 	}
 
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(dataStr), &data); err != nil {
-		s.logger.Warn("unmarshal config message", zap.Error(err))
+	var configMsg rediscommon.ConfigChangeMessage
+	if err := json.Unmarshal([]byte(dataStr), &configMsg); err != nil {
+		s.logger.Warn("unmarshal config CloudEvent", zap.Error(err))
 		return nil
 	}
 
-	msgType, _ := msg.Values["type"].(string)
-	if msgType == "" {
-		if t, ok := data["type"]; ok {
-			msgType, _ = t.(string)
-		}
-	}
-
-	switch msgType {
+	switch configMsg.Type {
 	case rediscommon.ConfigCardChanged:
-		cardID, _ := data["card_id"].(string)
-		s.cardMapping.InvalidateCache(ctx)
-		s.logger.Info("card config changed, cache invalidated",
-			zap.String("card_id", cardID),
-			zap.String("branch_id", fmt.Sprint(data["branch_id"])))
+		s.handleCardLike(ctx, configMsg)
 	default:
-		s.logger.Debug("unhandled config message type", zap.String("type", msgType))
+		s.logger.Debug("skip config event type", zap.String("type", configMsg.Type))
 	}
-
 	return nil
 }
 
-// SubscribeLoop runs the blocking subscription loop for a single config stream.
+func (s *ConfigSubscriber) handleCardLike(ctx context.Context, configMsg rediscommon.ConfigChangeMessage) {
+	data := configMsg.Data
+	if data == nil {
+		return
+	}
+	tenantID, _ := data["tenant_id"].(string)
+	unitID, _ := data["unit_id"].(string)
+	cardID, _ := data["card_id"].(string)
+	deviceID, _ := data["device_id"].(string)
+
+	if tenantID != "" && unitID != "" {
+		s.cardMapping.InvalidateByTenantUnit(ctx, tenantID, unitID)
+	} else if cardID != "" {
+		s.cardMapping.InvalidateByCardID(cardID)
+	} else if deviceID != "" {
+		uid := s.cardMapping.ResolveToDeviceUID(ctx, deviceID)
+		if uid != "" {
+			s.cardMapping.InvalidateByDeviceUID(uid)
+		} else {
+			s.cardMapping.InvalidateCache(ctx)
+		}
+	} else {
+		s.cardMapping.InvalidateCache(ctx)
+	}
+
+	if s.healthCheck != nil {
+		s.healthCheck.ProbeAfterCardChange(ctx, tenantID, unitID, cardID, deviceID)
+	}
+}
+
+// SubscribeLoop 阻塞消费 config:card:stream。
 func SubscribeLoop(ctx context.Context, logger *zap.Logger, redisClient *redis.Client,
 	stream, groupName, consumerName string, sub *ConfigSubscriber) {
 

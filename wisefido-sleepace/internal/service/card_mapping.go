@@ -59,6 +59,51 @@ func (s *CardMappingService) InvalidateCache(ctx context.Context) {
 	s.logger.Info("card cache invalidated")
 }
 
+// InvalidateByDeviceUID 删除单设备在 cardCache 中的条目（device_uid 键）。
+func (s *CardMappingService) InvalidateByDeviceUID(deviceUID string) {
+	if deviceUID == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.cardCache, deviceUID)
+	s.mu.Unlock()
+}
+
+// InvalidateByTenantUnit 按 unit 失效该 unit 下 cards.devices 中出现的 device 键。
+func (s *CardMappingService) InvalidateByTenantUnit(ctx context.Context, tenantID, unitID string) {
+	if s.cardDB == nil || tenantID == "" || unitID == "" {
+		return
+	}
+	dids, uids := s.cardDB.DeviceKeysInTenantUnit(ctx, tenantID, unitID)
+	seen := make(map[string]struct{})
+	s.mu.Lock()
+	for _, id := range dids {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		s.evictLookupKeyLocked(id)
+	}
+	for _, id := range uids {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		s.evictLookupKeyLocked(id)
+	}
+	s.mu.Unlock()
+	if s.logger != nil {
+		s.logger.Info("card cache evicted for tenant unit",
+			zap.String("tenant_id", tenantID), zap.String("unit_id", unitID), zap.Int("keys", len(seen)))
+	}
+}
+
 // InvalidateByCardID removes cached entries belonging to a specific card.
 func (s *CardMappingService) InvalidateByCardID(cardID string) int {
 	s.mu.Lock()
@@ -74,6 +119,18 @@ func (s *CardMappingService) InvalidateByCardID(cardID string) int {
 		s.logger.Info("card cache entries evicted", zap.String("card_id", cardID), zap.Int("count", n))
 	}
 	return n
+}
+
+func (s *CardMappingService) evictLookupKeyLocked(key string) {
+	delete(s.cardCache, key)
+	for uid, m := range s.cardCache {
+		if m == nil {
+			continue
+		}
+		if m.DeviceID == key || m.DeviceUID == key {
+			delete(s.cardCache, uid)
+		}
+	}
 }
 
 // PutMapping adds a single device_code → device_uid entry to the in-memory map.
@@ -155,4 +212,39 @@ func (s *CardMappingService) GetCardInfo(ctx context.Context, mqttDeviceID strin
 	s.mu.Unlock()
 
 	return info, nil
+}
+
+// ResolveBaseline 与 CardDB.ResolveDeviceBaseline 一致，供 health_check 等按 device_id / device_uid 解析策略与 device_code。
+func (s *CardMappingService) ResolveBaseline(ctx context.Context, deviceKey string) (card.DeviceBaseline, bool) {
+	if s.cardDB == nil || deviceKey == "" {
+		return card.DeviceBaseline{}, false
+	}
+	return s.cardDB.ResolveDeviceBaseline(ctx, deviceKey)
+}
+
+// DeviceKeysInTenantUnit 透传 CardDB，供 config.card 按 unit 枚举设备。
+func (s *CardMappingService) DeviceKeysInTenantUnit(ctx context.Context, tenantID, unitID string) (deviceIDs, deviceUIDs []string) {
+	if s.cardDB == nil {
+		return nil, nil
+	}
+	return s.cardDB.DeviceKeysInTenantUnit(ctx, tenantID, unitID)
+}
+
+// DeviceKeysInCard 透传 CardDB，按 card_id 枚举 devices JSON 中的设备键。
+func (s *CardMappingService) DeviceKeysInCard(ctx context.Context, cardID string) (deviceIDs, deviceUIDs []string) {
+	if s.cardDB == nil {
+		return nil, nil
+	}
+	return s.cardDB.DeviceKeysInCard(ctx, cardID)
+}
+
+// ListSleepadBaselinesForHealth 定时全量探测用。
+func (s *CardMappingService) ListSleepadBaselinesForHealth(ctx context.Context, deviceTypes []string) ([]card.DeviceBaseline, error) {
+	if s.cardDB == nil {
+		return nil, nil
+	}
+	if len(deviceTypes) == 0 {
+		deviceTypes = sleepadDeviceTypes
+	}
+	return s.cardDB.ListSleepadBaselinesForHealth(ctx, deviceTypes)
 }

@@ -24,6 +24,7 @@ import (
 	"wisefido-sleepace/internal/consumer"
 	httpapi "wisefido-sleepace/internal/http"
 	"wisefido-sleepace/internal/service"
+	"wisefido-sleepace/internal/subscriber"
 )
 
 func main() {
@@ -85,6 +86,16 @@ func main() {
 	streamPub := consumer.NewStreamPublisher(redisClient, cfg, logger)
 	streamPub.SetCardMappingService(cardMapping)
 
+	healthCheck := subscriber.NewHealthCheck(cardMapping, sleepaceAPI, streamPub, statusTracker, logger)
+	go healthCheck.Run(ctx)
+
+	const sleepaceCardGroup = "wisefido-sleepace-card"
+	if err := rediscommon.CreateConsumerGroup(ctx, redisClient, rediscommon.StreamConfigCard.Name, sleepaceCardGroup); err != nil {
+		logger.Warn("create consumer group for config card stream", zap.Error(err))
+	}
+	cfgSub := subscriber.NewConfigSubscriber(redisClient, cardMapping, healthCheck, logger)
+	go subscriber.SubscribeLoop(ctx, logger, redisClient, rediscommon.StreamConfigCard.Name, sleepaceCardGroup, "sleepace-1", cfgSub)
+
 	// MQTT consumer（首次上连时同步 device_store 版本：cardDB + sleepaceAPI）
 	mqttConsumer := consumer.NewMQTTConsumer(streamPub, reportSvc, statusTracker, logger)
 	mqttConsumer.SetDeviceVersionSync(cardDB, sleepaceAPI)
@@ -98,8 +109,6 @@ func main() {
 	}
 	defer mqttClient.Disconnect(250)
 	logger.Info("mqtt connected", zap.String("broker", cfg.MQTT.Broker), zap.String("topic", cfg.MQTT.TopicID))
-
-	// 不再订阅 config:card:stream，下游自行维护 card；sleepace 仅查库解析 identity
 
 	// HTTP server (proxy + status APIs)
 	router := httpapi.NewRouter(&cfg.Sleepace, sleepaceAPI, cardMapping, statusTracker, logger)

@@ -184,7 +184,7 @@ func (c *MQTTConsumer) publishOnlineForConnectedAfterStartup(ctx context.Context
 		if policyTid != "" {
 			tid = policyTid
 		}
-		cid = ""
+		cid = card.StreamHeadCardID(cid, did)
 		data := map[string]interface{}{alarm.FieldEventStatus: "start"}
 		msg := rediscommon.NewSingleItemMessage(tid, cid, uid, did, DeviceTypeRadar, ts, "alarm", alarm.AlarmTypeOfflineRecover, data)
 		_ = c.streamPublisher.PublishAlarm(ctx, msg)
@@ -704,7 +704,7 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 	if policyTid != "" {
 		tid = policyTid
 	}
-	cid = "" // gateway 不填 card_id，由 cardagg 解析
+	cid = card.StreamHeadCardID(cid, did)
 	dataValue, err := decode.RadarDecoder(message, "monitor")
 	if err != nil {
 		dataValue = message

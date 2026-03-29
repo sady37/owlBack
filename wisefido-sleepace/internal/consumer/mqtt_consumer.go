@@ -219,10 +219,13 @@ func (c *MQTTConsumer) handleMessage(ctx context.Context, msg *rawMsg) {
 }
 
 // dispatch routes a single ReceivedMessage by constructing IoTStreamMessage and publishing to iot: streams.
-// 权限：allow_access 且 business_access 为 approved|enable 才发 event/alarm；monitor 流另需 monitoring_enabled。
+// 权限策略：
+// - allow_access 且 business_access 为 approved|enable => canIoT
+// - monitoring_enabled=TRUE => canMonitor
+// - monitor=off（canMonitor=false）时，仅保留连通性最小信号（connectionStatus 与 monitor 心跳），不发布生理/行为 event/alarm。
 // MQTT 的 deviceId 首次可能为 device_uid、后续可能为 device_code，统一传 Resolve(deviceKey) 由 DB 解析；三元组由 DeviceBaseline 带回。device_code 以 DB 为准，空则不兜底 MQTT 的 deviceId，便于暴露配置/数据问题。
 func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
-	tenantID, _, _, _, deviceID, deviceUID, deviceCode, deviceType, allowAccess, businessAccess, monitoringEnabled := c.publisher.Resolve(ctx, m.DeviceID)
+	tenantID, _, _, cardID, deviceID, deviceUID, deviceCode, deviceType, allowAccess, businessAccess, monitoringEnabled := c.publisher.Resolve(ctx, m.DeviceID)
 	canIoT := allowAccess && businessAccessApproved(businessAccess)
 	canMonitor := canIoT && monitoringEnabled
 	if deviceType == "" {
@@ -267,15 +270,17 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			c.logger.Debug("connectionStatus skip alarm (permission)", zap.String("device_uid", deviceUID), zap.Bool("allow_access", allowAccess), zap.String("business_access", businessAccess))
 		} else {
 			tsMs := toMillis(ts)
+			streamCID := card.StreamHeadCardID(cardID, deviceID)
 			var eventName string
 			var item observation.EventItem
 			if online {
-				eventName = alarm.AlarmTypeDeviceRecover
+				eventName = alarm.AlarmTypeOfflineRecover
 				item = observation.EventItem{
 					DataCategory: eventName,
 					EventName:    eventName,
 					EventSince:   tsMs,
-					EventStatus:  "start",
+					EventStatus:  "end",
+					EventValue:   0,
 					TrackID:      observation.TrackDevice,
 				}
 			} else {
@@ -285,21 +290,23 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 					EventName:    eventName,
 					EventSince:   tsMs,
 					EventStatus:  "start",
+					EventValue:   1,
 					TrackID:      observation.TrackDevice,
 				}
 			}
-			data, _ := observation.EventItemToDataMap(&item)
-			if data == nil {
-				data = make(map[string]any)
+			alarmData, _ := observation.EventItemToDataMap(&item)
+			if alarmData == nil {
+				alarmData = make(map[string]any)
 			}
-			data[observation.FieldEventName] = eventName
-			data[redis.DataCategoryKey] = eventName
-			if !online {
-				data[observation.FieldOffline] = 1
+			alarmData[observation.FieldEventName] = eventName
+			alarmData[redis.DataCategoryKey] = eventName
+			if online {
+				alarmData[observation.FieldOffline] = 0
+			} else {
+				alarmData[observation.FieldOffline] = 1
 			}
-			msg := redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, nowMs, "alarm", eventName, data)
-			err := c.publisher.PublishAlarm(ctx, msg)
-			if err != nil {
+			msg := redis.NewIoTStreamMessageWithData(tenantID, streamCID, deviceUID, deviceID, deviceType, nowMs, "alarm", eventName, alarmData)
+			if err := c.publisher.PublishAlarm(ctx, msg); err != nil {
 				c.logger.Warn("connectionStatus publish alarm failed", zap.String("device_uid", deviceUID), zap.Bool("online", online), zap.Error(err))
 			}
 		}
@@ -368,8 +375,9 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			_ = c.publisher.PublishMonitor(ctx, hbMsg)
 		}
 
-		// bedStatus 实为状态量：仅 0/1 参与；8=未变/初始化，不更新 lastBedStatus、不发事件
-		if d.InitStatus == 0 && d.BedStatus != sleepaceStatusInvalid {
+		// bedStatus 实为状态量：仅 monitor=on 时参与 InBed/LeftBed 事件；
+		// monitor=off 时仅保留上面的心跳（track_id=11, category=heart），不再发床态事件。
+		if canMonitor && d.InitStatus == 0 && d.BedStatus != sleepaceStatusInvalid {
 			key := deviceUID + ":" + strconv.Itoa(d.LeftRight)
 			c.lastBedStatusMu.Lock()
 			last := c.lastBedStatus[key]
@@ -408,6 +416,9 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 
 	// inBedStatus：0=未离床 1=离床；8=算法初始化或状态未变，保持前一有效值，不写 stream。
 	case "inBedStatus":
+		if !canMonitor {
+			return
+		}
 		var d InBedStatusData
 		if err := json.Unmarshal(m.Data, &d); err != nil {
 			c.logger.Error("unmarshal inBedStatus", zap.Error(err))
@@ -445,6 +456,9 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		}
 
 	case "sleepStage":
+		if !canMonitor {
+			return
+		}
 		if deviceID == "" {
 			return
 		}
@@ -594,6 +608,9 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		}
 
 	case "analysis":
+		if !canMonitor {
+			return
+		}
 		var d AnalysisData
 		if err := json.Unmarshal(m.Data, &d); err != nil {
 			c.logger.Error("unmarshal analysis", zap.Error(err))
@@ -688,7 +705,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		if deviceID == "" {
 			return
 		}
-		if !canIoT {
+		if !canMonitor {
 			return
 		}
 		var d AlarmNotifyData
