@@ -1,5 +1,15 @@
 # OwlBack 当前模块架构与快速接手建议
 
+- [OwlBack 当前模块架构与快速接手建议](#owlback-当前模块架构与快速接手建议)
+  - [1. 架构总览（当前代码主链路）](#1-架构总览当前代码主链路)
+  - [2. 模块职责](#2-模块职责)
+  - [3. 核心消息与数据流](#3-核心消息与数据流)
+    - [Redis数据流订阅](#redis数据流订阅)
+  - [4. 快速接手执行清单（建议顺序）](#4-快速接手执行清单建议顺序)
+  - [5. 接手后第一周建议产出](#5-接手后第一周建议产出)
+
+
+
 ## 1. 架构总览（当前代码主链路）
 
 ```mermaid
@@ -54,6 +64,17 @@ flowchart LR
   end
 ```
 
+当前项目规模（按 `git ls-files + wc -l` 统计）：
+
+- 仓库跟踪文件数：`2513`
+- 全仓总行数（含注释/空行/非代码文件）：`946,951`
+- Go 文件数：`313`
+- Go 总行数（含注释/空行）：`94,535`
+- Go 包目录数：`75`
+
+结论：这是一个**中等偏大**的 Go 后端项目。  
+如果你要“净代码行”（剔除注释和空行）的口径，我可以再给你补一版统计。
+
 ## 2. 模块职责
 
 - `wisefido-data`
@@ -92,6 +113,31 @@ flowchart LR
 - 配置下发闭环：
   - `wisefido-data` 更新配置 -> 发布 `config:alarmDevice:stream` / `config:alarmProcess:stream` / `config:card:stream`
   - `wisefido-cardagg` 消费后刷新告警状态、缓存、映射。
+
+### Redis数据流订阅
+
+按代码启动链路看，当前会订阅 Redis Stream 的进程是这 3 个：
+
+- `wisefido-cardagg`：启动时调用 `SubscribeAll`，消费 `iot:monitor:stream`、`iot:event:stream`、`iot:alarm:stream`、`config:alarmProcess:stream`、`config:card:stream`、`config:alarmDevice:stream`（group=`cardagg-group`）。见 [wisefido-cardagg/main.go#L110](/home/wenhe/Study/owl-sady/owlBack/wisefido-cardagg/main.go#L110)、[wisefido-cardagg/internal/consumer/stream_subscriber.go#L42](/home/wenhe/Study/owl-sady/owlBack/wisefido-cardagg/internal/consumer/stream_subscriber.go#L42)。
+- `wisefido-iot`：启动 `StreamConsumer`，消费 `iot:monitor:stream`、`iot:stat:stream`、`iot:event:stream`、`iot:alarm:stream`、`iot:auth:stream`。见 [wisefido-iot/cmd/wisefido-iot/main.go#L77](/home/wenhe/Study/owl-sady/owlBack/wisefido-iot/cmd/wisefido-iot/main.go#L77)、[wisefido-iot/internal/consumer/stream_consumer.go#L46](/home/wenhe/Study/owl-sady/owlBack/wisefido-iot/internal/consumer/stream_consumer.go#L46)。
+- `wisefido-data`：启动 `subscribeDataStream`，消费 `card:realtime:stream`、`card:status:stream`（group=`wisefido-data-consumer`）。见 [wisefido-data/cmd/wisefido-data/main.go#L474](/home/wenhe/Study/owl-sady/owlBack/wisefido-data/cmd/wisefido-data/main.go#L474)、[wisefido-data/cmd/wisefido-data/main.go#L644](/home/wenhe/Study/owl-sady/owlBack/wisefido-data/cmd/wisefido-data/main.go#L644)。
+
+补充：`wisefido-ai` 当前主流程是轮询缓存，不是 Redis Stream 订阅。见 [wisefido-ai/internal/service/alarm.go#L130](/home/wenhe/Study/owl-sady/owlBack/wisefido-ai/internal/service/alarm.go#L130)。`wisefido-qinglan`/`wisefido-sleepace` 主流程也明确“不再订阅 config:card:stream”。见 [wisefido-qinglan/cmd/wisefido-qinglan/main.go#L142](/home/wenhe/Study/owl-sady/owlBack/wisefido-qinglan/cmd/wisefido-qinglan/main.go#L142)、[wisefido-sleepace/cmd/wisefido-sleepace/main.go#L102](/home/wenhe/Study/owl-sady/owlBack/wisefido-sleepace/cmd/wisefido-sleepace/main.go#L102)。
+
+设备相关事件流（统一定义）主要有：
+
+- `iot:monitor:stream`
+- `iot:stat:stream`
+- `iot:event:stream`
+- `iot:alarm:stream`
+- `iot:auth:stream`
+- `iot:other:stream`
+- `iot:card:stream`
+- `config:alarmDevice:stream`（设备告警配置变更）
+- `config:card:stream`（含 `config.card.device_store` 设备绑定/访问变更事件）
+
+定义见 [owl-common/redis/stream_names.go#L18](/home/wenhe/Study/owl-sady/owlBack/owl-common/redis/stream_names.go#L18)、[owl-common/redis/message_types.go#L202](/home/wenhe/Study/owl-sady/owlBack/owl-common/redis/message_types.go#L202)。
+
 
 ## 4. 快速接手执行清单（建议顺序）
 
