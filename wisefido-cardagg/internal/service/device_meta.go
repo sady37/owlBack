@@ -228,6 +228,22 @@ func (c *DeviceMetaCache) GetDeviceMetaByUID(ctx context.Context, cardID, device
 	return nil
 }
 
+// ResolveDeviceID 仅返回业务主键 device_id（UUID）或空字符串。禁止将 device_uid 当作返回值；使能、告警、meta 查表均只用本函数结果。
+// 1）卡已加载且能按 device_uid 命中 meta → 返回该条 device_id。
+// 2）否则使用流 / IotPreparedHandler 已填的 device_id（未绑卡时常为 card_id 同 UUID）。
+// 3）无法得到 UUID 时返回 ""（勿用 UID 顶替）。
+func (c *DeviceMetaCache) ResolveDeviceID(ctx context.Context, cardID, deviceID, deviceUID string) string {
+	if cardID != "" && deviceUID != "" {
+		if dm := c.GetDeviceMetaByUID(ctx, cardID, deviceUID); dm != nil && dm.DeviceID != "" {
+			return dm.DeviceID
+		}
+	}
+	if deviceID != "" {
+		return deviceID
+	}
+	return ""
+}
+
 // UpdateStatus sets a runtime status key for a specific device (key = device_id).
 // Creates the card/device entry if needed (device may report before DB load).
 func (c *DeviceMetaCache) UpdateStatus(cardID, deviceID, key, value string) {

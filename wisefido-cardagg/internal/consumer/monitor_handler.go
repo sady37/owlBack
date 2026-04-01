@@ -88,10 +88,9 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 	if m.DeviceUID == "" {
 		return nil
 	}
-	// 前后台统一用 device_id (UUID) 为 key；IotPreparedHandler 未绑卡时会回填 device_id，此处仅无 device_id 时用 device_uid 兜底 buffer 写入
-	deviceKey := m.DeviceID
+	deviceKey := h.metaCache.ResolveDeviceID(ctx, m.CardID, m.DeviceID, m.DeviceUID)
 	if deviceKey == "" {
-		deviceKey = m.DeviceUID
+		return nil
 	}
 
 	nowMs := time.Now().UnixMilli()

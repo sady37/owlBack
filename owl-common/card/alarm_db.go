@@ -100,6 +100,7 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 
 	// 快照当前 device→unit/bed→resident 绑定关系到 metadata
 	params.Metadata = snapshotBindingToMetadata(ctx, tx, params.TenantID, params.DeviceID, params.Metadata)
+	params.AlarmLevel = alarm.NormalizeAlarmLevel(params.AlarmLevel)
 
 	// 1. INSERT alarm_events
 	var eventID string
@@ -394,6 +395,7 @@ func recalcAndUpdateCards(ctx context.Context, tx *sql.Tx, cardID, tenantID stri
 // 返回更新后的 5 个 counts
 func updateAlarmCount(ctx context.Context, tx *sql.Tx, cardID, alarmLevel string, delta int) ([5]int, error) {
 	var counts [5]int
+	alarmLevel = alarm.NormalizeAlarmLevel(alarmLevel)
 	idx, ok := alarm.AlarmLevelPriority[alarmLevel]
 	if !ok || idx < 0 || idx > 4 {
 		return counts, fmt.Errorf("invalid alarm level for count update: %s", alarmLevel)
@@ -418,6 +420,7 @@ func updateAlarmCount(ctx context.Context, tx *sql.Tx, cardID, alarmLevel string
 // alarmLevelToInt 将 alarm level 字符串转为优先级数字（数字越小优先级越高）
 // 未知 level 返回 99（最低优先级）
 func alarmLevelToInt(level string) int {
+	level = alarm.NormalizeAlarmLevel(level)
 	if p, ok := alarm.AlarmLevelPriority[level]; ok {
 		return p
 	}
@@ -554,6 +557,26 @@ func findCardIDByDevice(ctx context.Context, tx *sql.Tx, deviceID string) (strin
 	return cardID, nil
 }
 
+// LookupCardIDByDeviceID 用 device_id（UUID）查当前绑定的 card_id，供 pending 落库后写 Redis/stream。
+func LookupCardIDByDeviceID(ctx context.Context, db *sql.DB, deviceID string) (string, error) {
+	if deviceID == "" {
+		return "", fmt.Errorf("device_id is required")
+	}
+	var cardID string
+	err := db.QueryRowContext(ctx, `
+		SELECT card_id FROM cards
+		WHERE devices @> $1::jsonb
+		LIMIT 1
+	`, fmt.Sprintf(`[{"device_id":"%s"}]`, deviceID)).Scan(&cardID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("no card found for device %s", deviceID)
+		}
+		return "", err
+	}
+	return cardID, nil
+}
+
 // getCardDeviceIDs 从 cards.devices JSONB 中提取 device_id 列表
 func getCardDeviceIDs(ctx context.Context, tx *sql.Tx, cardID string) ([]string, error) {
 	var devicesJSON sql.NullString
@@ -587,8 +610,8 @@ func countActiveAlarms(ctx context.Context, tx *sql.Tx, tenantID string, deviceI
 		SELECT
 			COUNT(*) FILTER (WHERE alarm_level IN ('0', 'EMERG'))   AS c0,
 			COUNT(*) FILTER (WHERE alarm_level IN ('1', 'ALERT'))   AS c1,
-			COUNT(*) FILTER (WHERE alarm_level IN ('2', 'CRIT'))    AS c2,
-			COUNT(*) FILTER (WHERE alarm_level IN ('3', 'ERR'))     AS c3,
+			COUNT(*) FILTER (WHERE alarm_level IN ('2', 'CRITICAL'))    AS c2,
+			COUNT(*) FILTER (WHERE alarm_level IN ('3', 'ERROR'))     AS c3,
 			COUNT(*) FILTER (WHERE alarm_level IN ('4', 'WARNING')) AS c4
 		FROM alarm_events
 		WHERE tenant_id = $1
@@ -617,14 +640,14 @@ func findTopActiveAlarm(ctx context.Context, tx *sql.Tx, tenantID string, device
 		WHERE tenant_id = $1
 		  AND device_id = ANY($2::uuid[])
 		  AND alarm_status = 'active'
-		  AND alarm_level IN ('0', '1', '2', '3', '4', 'EMERG', 'ALERT', 'CRIT', 'ERR', 'WARNING')
+		  AND alarm_level IN ('0', '1', '2', '3', '4', 'EMERG', 'ALERT', 'CRITICAL', 'ERROR', 'WARNING')
 		  AND (metadata->>'deleted_at' IS NULL)
 		ORDER BY
 			CASE alarm_level
 				WHEN '0' THEN 0 WHEN 'EMERG' THEN 0
 				WHEN '1' THEN 1 WHEN 'ALERT' THEN 1
-				WHEN '2' THEN 2 WHEN 'CRIT' THEN 2
-				WHEN '3' THEN 3 WHEN 'ERR' THEN 3
+				WHEN '2' THEN 2 WHEN 'CRITICAL' THEN 2
+				WHEN '3' THEN 3 WHEN 'ERROR' THEN 3
 				WHEN '4' THEN 4 WHEN 'WARNING' THEN 4
 			END ASC,
 			triggered_at DESC

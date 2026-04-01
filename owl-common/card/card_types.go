@@ -153,7 +153,7 @@ type CardStatic struct {
 	Caregivers      []CaregiverInfo `json:"caregivers,omitempty"`       // 指定护理人员
 
 	// 报警显示控制（来自 cards 表，值=syslog级别阈值，<=该值的报警触发对应行为）
-	// 图标变红阈值：默认2 → EMERG(0)/ALERT(1)/CRITICAL(2)红色，ERR(3)/WARNING(4)橙色
+	// 图标变红阈值：默认2 → EMERG(0)/ALERT(1)/CRITICAL(2)红色，ERROR(3)/WARNING(4)橙色
 	IconAlarmLevel *int `json:"icon_alarm_level,omitempty"`
 	// 弹出报警阈值：默认2 → EMERG(0)/ALERT(1)/CRITICAL(2)弹出
 	PopAlarm *int `json:"pop_alarm,omitempty"`
@@ -279,8 +279,8 @@ type BathRoomState struct {
 	TotalPeople            int    `json:"total_people"`     // 卫生间人数
 	LastEnterTime          int64  `json:"last_enter_time,omitempty"`
 	LastExitTime           int64  `json:"last_exit_time,omitempty"`
-	StaySec                int    `json:"stay_sec,omitempty"`                // 卫生间滞留时长（秒）
-	StandingContinuousMin  int    `json:"standing_continuous_min,omitempty"` // 连续站立分钟数
+	StaySec                int    `json:"stay_sec,omitempty"` // 当前会话在卫生间内停留秒数（自 LastEnterTime 墙钟计，含站/坐/走动，非「仅站立」）
+	StandingContinuousMin  int    `json:"standing_continuous_min,omitempty"` // 雷达连续站立累计档（stand_duration≥阈值逐档+1，未满清零），与 StaySec 独立
 	HasMulti               bool   `json:"has_multi"`
 	HasRisk                bool   `json:"has_risk"` // 卫生间风险，各自计算
 }

@@ -13,6 +13,7 @@ import (
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
+	"owl-common/alarm"
 	commoncard "owl-common/card"
 	rediscommon "owl-common/redis"
 
@@ -222,12 +223,7 @@ func normalizeAlarmLevelsForFilter(levels []string) []string {
 		} else {
 			add = v
 		}
-		if add == "CRIT" {
-			add = "CRITICAL"
-		}
-		if add == "ERR" {
-			add = "ERROR"
-		}
+		add = alarm.NormalizeAlarmLevel(add)
 		if _, ok := seen[add]; !ok {
 			seen[add] = struct{}{}
 			out = append(out, add)

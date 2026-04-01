@@ -351,14 +351,12 @@ const (
 	AlarmLevelIntCancel  = 8
 )
 
-// AlarmLevelPriority 级别字符串→优先级数字，由上方常量推导；别名 CRIT/ERR/CANCEL
+// AlarmLevelPriority 级别字符串→优先级数字；入库与统计统一用全名（CRITICAL/ERROR），见 NormalizeAlarmLevel。
 var AlarmLevelPriority = map[string]int{
 	AlarmLevelEmerg:  AlarmLevelIntEmerg,
 	AlarmLevelAlert:  AlarmLevelIntAlert,
 	AlarmLevelCrit:   AlarmLevelIntCrit,
-	"CRIT":           AlarmLevelIntCrit,
 	AlarmLevelErr:    AlarmLevelIntErr,
-	"ERR":            AlarmLevelIntErr,
 	AlarmLevelWarn:   AlarmLevelIntWarning,
 	AlarmLevelNotice: AlarmLevelIntNotice,
 	AlarmLevelInfo:   AlarmLevelIntInfo,
@@ -366,8 +364,22 @@ var AlarmLevelPriority = map[string]int{
 	"CANCEL":         AlarmLevelIntCancel,
 }
 
+// NormalizeAlarmLevel 将历史别名 CRIT/ERR 规范为全名 CRITICAL/ERROR（与 AlarmLevelCrit/AlarmLevelErr 一致）。
+func NormalizeAlarmLevel(s string) string {
+	switch strings.TrimSpace(s) {
+	case "CRIT":
+		return AlarmLevelCrit
+	case "CRITIAL": // 历史拼写错误
+		return AlarmLevelCrit
+	case "ERR":
+		return AlarmLevelErr
+	default:
+		return s
+	}
+}
+
 func IsAlarmLevel(s string) bool {
-	_, ok := AlarmLevelPriority[s]
+	_, ok := AlarmLevelPriority[NormalizeAlarmLevel(s)]
 	return ok
 }
 

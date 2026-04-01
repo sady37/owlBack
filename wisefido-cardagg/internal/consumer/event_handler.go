@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"strings"
 	"time"
 
@@ -23,11 +24,19 @@ type EventHandler struct {
 	enablement *service.AlarmEnablementCache
 	resolver   *service.DeviceCardResolver
 	logger     *zap.Logger
+	stayWinMu  sync.RWMutex
+	stayWin    map[string]int64 // tenant:device -> window expire ts(ms)
 }
 
 func NewEventHandler(state *service.StateService, alarms *service.AlarmService, buffer *service.MonitorBuffer, metaCache *service.DeviceMetaCache, enablement *service.AlarmEnablementCache, resolver *service.DeviceCardResolver, logger *zap.Logger) *EventHandler {
-	return &EventHandler{state: state, alarms: alarms, buffer: buffer, metaCache: metaCache, enablement: enablement, resolver: resolver, logger: logger}
+	return &EventHandler{
+		state: state, alarms: alarms, buffer: buffer, metaCache: metaCache,
+		enablement: enablement, resolver: resolver, logger: logger,
+		stayWin: make(map[string]int64),
+	}
 }
+
+const stayWindowTTL = int64(90 * 1000) // 90s
 
 func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	raw, ok := msg.(map[string]interface{})
@@ -61,6 +70,14 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 			zap.String("ts", time.UnixMilli(m.Timestamp).Format("15:04:05.000")))
 		return nil
 	}
+	resolved := h.metaCache.ResolveDeviceID(ctx, m.CardID, m.DeviceID, m.DeviceUID)
+	if resolved == "" {
+		h.logger.Debug("event dropped (no device_id)",
+			zap.String("cid", m.CardID),
+			zap.String("device_uid", m.DeviceUID))
+		return nil
+	}
+	m.DeviceID = resolved
 
 	// radar/Sleepace 上游已按条拆分，dataValue 仅单条；取首项即可。
 	data := redis.FirstDataValue(m.DataValue)
@@ -88,15 +105,6 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 			DataValue:  []interface{}{data},
 		}
 		payload.DeviceID = m.DeviceID
-		if meta := h.metaCache.GetOrLoad(ctx, m.CardID); meta != nil {
-			dm := meta.Devices[m.DeviceID]
-			if dm == nil && m.DeviceUID != "" {
-				dm = h.metaCache.GetDeviceMetaByUID(ctx, m.CardID, m.DeviceUID)
-			}
-			if dm != nil {
-				payload.DeviceID = dm.DeviceID
-			}
-		}
 		alarmPayload = payload
 
 	}
@@ -126,7 +134,7 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 			trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.CardID)
 			written, _ := h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.InBed, deviceType, m.Timestamp, 0, trackOverride)
 			if written && alarmPayload != nil {
-				_ = h.alarms.RemovePendingAlarm(ctx, m.CardID, alarmPayload.DeviceID, alarm.LeftBed)
+				_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, alarmPayload.DeviceID, alarm.LeftBed)
 			}
 			_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
 		}
@@ -143,7 +151,7 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 					_ = h.alarms.PersistAlarmAndPublish(ctx, payload, alarm.LeftBed, level)
 				} else {
 					triggerData, _ := json.Marshal(redis.FirstDataValue(payload.DataValue))
-					_ = h.alarms.AddPendingAlarm(ctx, m.CardID, m.TenantID, payload.DeviceID, alarm.LeftBed, level, m.Timestamp, durationSec, "", triggerData)
+					_ = h.alarms.AddPendingAlarm(ctx, m.TenantID, payload.DeviceID, alarm.LeftBed, level, m.Timestamp, durationSec, "", triggerData)
 				}
 			}
 		}
@@ -182,21 +190,9 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		}
 
 	case alarm.SignalPoor:
-		if m.DeviceUID != "" {
-			if m.DeviceID != "" {
-				h.metaCache.UpdateStatus(m.CardID, m.DeviceID, "signal_poor", "1")
-			} else if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.CardID, m.DeviceUID); dm != nil {
-				h.metaCache.UpdateStatus(m.CardID, dm.DeviceID, "signal_poor", "1")
-			}
-		}
+		h.metaCache.UpdateStatus(m.CardID, m.DeviceID, "signal_poor", "1")
 	case alarm.AngleException:
-		if m.DeviceUID != "" {
-			if m.DeviceID != "" {
-				h.metaCache.UpdateStatus(m.CardID, m.DeviceID, "angle_abnormal", "1")
-			} else if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.CardID, m.DeviceUID); dm != nil {
-				h.metaCache.UpdateStatus(m.CardID, dm.DeviceID, "angle_abnormal", "1")
-			}
-		}
+		h.metaCache.UpdateStatus(m.CardID, m.DeviceID, "angle_abnormal", "1")
 
 	case alarm.WarningArea:
 		return nil
@@ -226,8 +222,13 @@ func (h *EventHandler) routeRoomStateEvent(ctx context.Context, m *redis.IoTStre
 		return
 	}
 	meta := h.metaCache.GetOrLoad(ctx, m.CardID)
-	if service.IsBathroomDevice(ctx, meta, m.DeviceUID, m.TenantID, h.enablement) {
-		_ = h.state.PublishBathRoomStateFromEvent(ctx, m.CardID, m.DeviceID, m.DeviceUID, kind, totalPeople, m.Timestamp)
+	deviceID := m.DeviceID
+	if service.IsBathroomDevice(ctx, meta, deviceID, m.TenantID, h.enablement) {
+		_ = h.state.PublishBathRoomStateFromEvent(ctx, m.CardID, deviceID, m.DeviceUID, kind, totalPeople, m.Timestamp)
+		// Stay 窗口仅由进出事件开关；pending 增删在 routeActivityEvent 按窗口+人数处理
+		if kind == service.RoomStateEventEnter || kind == service.RoomStateEventExit {
+			h.openStayWindow(m.TenantID, deviceID, time.Now().UnixMilli())
+		}
 	} else {
 		_ = h.state.PublishRoomStateFromEvent(ctx, m.CardID, m.DeviceUID, kind, totalPeople, m.Timestamp)
 	}
@@ -279,11 +280,7 @@ func (h *EventHandler) routeSleepStageEvent(ctx context.Context, m *redis.IoTStr
 				"card_state":     curr,
 				"monitor_buffer": monitorSnap,
 			})
-			deviceUUID := m.DeviceUID
-			if dm != nil {
-				deviceUUID = dm.DeviceID
-			}
-			_ = h.alarms.RecordDeviceFailure(ctx, m.CardID, m.TenantID, deviceUUID, reason, triggerData)
+			_ = h.alarms.RecordDeviceFailure(ctx, m.CardID, m.TenantID, m.DeviceID, reason, triggerData)
 			return
 		}
 	}
@@ -299,6 +296,23 @@ func (h *EventHandler) routeSleepStageEvent(ctx context.Context, m *redis.IoTStr
 }
 
 // routeActivityEvent Activity 事件：根据设备绑定地址（Bed/Bathroom/Room）更新 RoomState/BathRoomState 和 Target；卫生间且开启 Stay 时维护 alarm pending。
+/*
+1. 前置与解析（299–310）
+无 DeviceUID 或无 state 直接返回。从 data 取出行走距离/时长、站立时长、multi_person_duration 等，用 meta 判断当前设备是否卫生间 isBathroom。
+
+2. 状态与跌倒（312–330）
+调用 UpdateStateFromActivity：按绑定区域把本次 activity 合并进 Redis 里的 RoomState / BathRoomState（含站立累计、多人时长等），并可能触发推送。
+若 NeedBedFallCheck(card)，用站立/行走/轨迹等跑 LeftBedFallActivity，满足条件则落库 SuspectedFall 告警。
+
+3. Stay pending（332–352，仅卫生间）
+
+非卫生间：上面状态更新完就结束。
+是卫生间且租户对该设备开启了 alarm.Stay：再看 Stay 窗口（由 routeRoomStateEvent 里 Enter/Exit 打开的 90s）。
+窗口未开：直接 return，不加也不删 Stay pending。
+窗口开：读当前卡片的 BathRoomState.TotalPeople：== 1 则 AddStayPendingIfEnabled，否则 RemovePendingAlarm(Stay)。
+要点：activity 流负责改 bathroom 人数等状态；Stay pending 的增删只在「窗口仍有效」时根据当前已合并后的 total_people 做一次同步；multi_person_duration 仍传给 UpdateStateFromActivity，但不再单独用来算 Stay pending（那段已迁到「窗口 + total_people」）。
+*/
+
 func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStreamMessage, data map[string]interface{}) {
 	if m.DeviceUID == "" || h.state == nil {
 		return
@@ -309,19 +323,11 @@ func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStrea
 	multiPersonDuration := intFromAny(data[observation.FieldMultiPersonDuration])
 
 	meta := h.metaCache.GetOrLoad(ctx, m.CardID)
-	isBathroom := service.IsBathroomDevice(ctx, meta, m.DeviceUID, m.TenantID, h.enablement)
 	deviceID := m.DeviceID
-	if deviceID == "" && meta != nil {
-		if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.CardID, m.DeviceUID); dm != nil {
-			deviceID = dm.DeviceID
-		}
-	}
-	if deviceID == "" {
-		deviceID = m.DeviceUID
-	}
+	isBathroom := service.IsBathroomDevice(ctx, meta, deviceID, m.TenantID, h.enablement)
 
 	// 行走/站立/多人阈值见 service/weights.go（WalkSecThreshold、WalkDistanceMetersThreshold）
-	lastEnter, lastExit, _ := h.state.UpdateStateFromActivity(ctx, m.CardID, deviceID, m.DeviceUID, isBathroom, walkDuration, walkDistance, standDuration, multiPersonDuration, m.Timestamp)
+	_, _, _ = h.state.UpdateStateFromActivity(ctx, m.CardID, deviceID, m.DeviceUID, isBathroom, walkDuration, walkDistance, standDuration, multiPersonDuration, m.Timestamp)
 
 	if service.NeedBedFallCheck(m.CardID) {
 		trackCount := intFromAny(data[observation.FieldTrackCount])
@@ -340,7 +346,7 @@ func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStrea
 		}
 	}
 
-	// 仅卫生间设备且开启 Stay 时：多人>=30s 清除 pending；多人<=5s 且最近 1 分钟有进出则创建 pending
+	// 仅卫生间设备且开启 Stay 时：窗口内按 bathroom total_people 判定 pending；窗口外不新建也不取消。
 	if !isBathroom {
 		return
 	}
@@ -349,16 +355,44 @@ func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStrea
 		return
 	}
 	now := time.Now().UnixMilli()
-	const oneMinMs = 60 * 1000
-	if multiPersonDuration >= 30 {
-		_ = h.alarms.RemovePendingAlarm(ctx, m.CardID, deviceID, alarm.Stay)
+	if !h.isStayWindowOpen(m.TenantID, deviceID, now) {
 		return
 	}
-	if multiPersonDuration <= 5 {
-		if (lastExit > 0 && (now-lastExit) < oneMinMs) || (lastEnter > 0 && (now-lastEnter) < oneMinMs) {
-			_ = h.alarms.AddStayPendingIfEnabled(ctx, m.CardID, m.TenantID, deviceID, now)
-		}
+	curr, err := h.state.ReadCardStatus(ctx, m.CardID)
+	if err != nil || curr == nil || curr.BathRoomState == nil {
+		return
 	}
+	if curr.BathRoomState.TotalPeople == 1 {
+		_ = h.alarms.AddStayPendingIfEnabled(ctx, m.TenantID, deviceID, now)
+	} else {
+		_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, deviceID, alarm.Stay)
+	}
+}
+
+func stayWindowKey(tenantID, deviceID string) string { return tenantID + ":" + deviceID }
+
+func (h *EventHandler) openStayWindow(tenantID, deviceID string, nowMs int64) {
+	if tenantID == "" || deviceID == "" {
+		return
+	}
+	key := stayWindowKey(tenantID, deviceID)
+	h.stayWinMu.Lock()
+	h.stayWin[key] = nowMs + stayWindowTTL
+	h.stayWinMu.Unlock()
+}
+
+func (h *EventHandler) isStayWindowOpen(tenantID, deviceID string, nowMs int64) bool {
+	if tenantID == "" || deviceID == "" {
+		return false
+	}
+	key := stayWindowKey(tenantID, deviceID)
+	h.stayWinMu.RLock()
+	expireAt, ok := h.stayWin[key]
+	h.stayWinMu.RUnlock()
+	if !ok {
+		return false
+	}
+	return nowMs <= expireAt
 }
 
 // sleepStageSourceFromDeviceType 睡眠阶段置信度 100 分制：Sleepad=90，Radar=60，其它=0。

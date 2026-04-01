@@ -121,7 +121,7 @@ type MQTTConsumer struct {
 	lastBedStatusMu sync.Mutex
 	lastBedStatus   map[string]int // key = deviceUID+":"+leftRight, value 0 或 1
 
-	realtimeLogCount atomic.Uint64 // 每 10 条 realtime 打一条 Info 日志
+	realtimeLogCount atomic.Uint64 // 每 10 条全局 realtime 打一条 Info（含 bed_status/heart/breath/init_status）
 }
 
 type rawMsg struct {
@@ -366,7 +366,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			c.publisher.PublishMonitor(ctx, msg)
 			n := c.realtimeLogCount.Add(1)
 			if n%10 == 0 {
-				c.logger.Info("realtime received (every 10)", zap.Uint64("count", n), zap.String("device_uid", deviceUID), zap.String("device_id", deviceID), zap.Int("bed_status", d.BedStatus))
+				c.logger.Info("realtime received (every 10)", zap.Uint64("count", n), zap.String("device_uid", deviceUID), zap.String("device_id", deviceID), zap.Int("bed_status", d.BedStatus), zap.Int("heart", d.Heart), zap.Int("breath", d.Breath), zap.Int("init_status", d.InitStatus))
 			}
 		} else if canIoT {
 			hb := observation.Track{TrackID: observation.TrackDevice, TrackConfidence: sleepaceTrackPoseConf}

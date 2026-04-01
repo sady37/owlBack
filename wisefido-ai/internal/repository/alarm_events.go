@@ -786,7 +786,7 @@ func (r *AlarmEventsRepository) GetAlarmEventsByLevel(ctx context.Context, tenan
 func (r *AlarmEventsRepository) GetActiveAlarmEvents(ctx context.Context, tenantID string, filters AlarmEventFilters, page, size int) ([]*models.AlarmEvent, int, error) {
 	activeStatus := "active"
 	filters.AlarmStatus = &activeStatus
-	filters.AlarmLevels = []string{"0", "1", "2", "3", "4", "5", "EMERG", "ALERT", "CRITICAL", "CRIT", "ERROR", "ERR", "WARNING", "NOTICE"}
+	filters.AlarmLevels = []string{"0", "1", "2", "3", "4", "5", "EMERG", "ALERT", "CRITICAL", "ERROR", "WARNING", "NOTICE"}
 	return r.ListAlarmEvents(ctx, tenantID, filters, page, size)
 }
 

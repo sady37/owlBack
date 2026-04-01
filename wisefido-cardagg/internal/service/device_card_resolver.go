@@ -88,19 +88,20 @@ func (r *DeviceCardResolver) ResolveBaseline(ctx context.Context, deviceKey stri
 	return b, ok
 }
 
-// Resolve 用 deviceKey 解析 card_id 与 device_uid（兼容旧调用；语义来自 DeviceBaseline）。
-func (r *DeviceCardResolver) Resolve(ctx context.Context, deviceKey string) (cardID, deviceUID string, ok bool) {
+// Resolve 用 deviceKey 解析 card_id、device_id(UUID)、device_uid（语义来自 DeviceBaseline）。
+func (r *DeviceCardResolver) Resolve(ctx context.Context, deviceKey string) (cardID, deviceID, deviceUID string, ok bool) {
 	b, ok := r.ResolveBaseline(ctx, deviceKey)
 	if !ok {
-		return "", "", false
+		return "", "", "", false
 	}
 	cardID = strings.TrimSpace(b.CardID)
+	deviceID = strings.TrimSpace(b.DeviceID)
 	if cardID == "" {
-		cardID = strings.TrimSpace(b.DeviceID)
+		cardID = deviceID
 	}
 	deviceUID = strings.TrimSpace(b.DeviceUID)
 	if deviceUID == "" {
 		deviceUID = deviceKey
 	}
-	return cardID, deviceUID, true
+	return cardID, deviceID, deviceUID, true
 }

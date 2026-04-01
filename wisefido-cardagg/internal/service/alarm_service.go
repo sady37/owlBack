@@ -360,9 +360,9 @@ func (s *AlarmService) RecordDeviceFailure(ctx context.Context, cardID, tenantID
 	return nil
 }
 
-// pendingAlarmPayload 计时型待处理告警，存 Redis Hash 的 value（JSON）
+// pendingAlarmPayload 计时型待处理告警，存 Redis Hash 的 value（JSON）。
+// 不落 card_id：卡重建后 card_id 会变，落库时按 device_id 解析当前绑定卡。
 type pendingAlarmPayload struct {
-	CardID      string          `json:"card_id"`
 	TenantID    string          `json:"tenant_id"`
 	DeviceID    string          `json:"device_id"`
 	AlarmType   string          `json:"alarm_type"`
@@ -373,7 +373,13 @@ type pendingAlarmPayload struct {
 	TriggerData json.RawMessage `json:"trigger_data,omitempty"`
 }
 
-func pendingField(cardID, deviceID, alarmType string) string {
+// pendingField Redis Hash field：tenant_id:device_id:alarmType（设备维度，卡重建不影响 key）
+func pendingField(tenantID, deviceID, alarmType string) string {
+	return tenantID + ":" + deviceID + ":" + alarmType
+}
+
+// pendingFieldLegacy 旧版 field（card_id:device_id:alarmType），仅 RemovePendingAlarm 用于清理历史项
+func pendingFieldLegacy(cardID, deviceID, alarmType string) string {
 	return cardID + ":" + deviceID + ":" + alarmType
 }
 
@@ -542,20 +548,22 @@ func (s *AlarmService) TryAddLeftBedPendingAtTrigger(ctx context.Context, msg *r
 	if def.UpgradeTo != "" {
 		upgradeTo = def.UpgradeTo
 	}
-	if err := s.AddPendingAlarm(ctx, msg.CardID, msg.TenantID, msg.DeviceID, eventName, level, msg.Timestamp, durationSec, upgradeTo, triggerData); err != nil {
+	if err := s.AddPendingAlarm(ctx, msg.TenantID, msg.DeviceID, eventName, level, msg.Timestamp, durationSec, upgradeTo, triggerData); err != nil {
 		s.logger.Warn("add LeftBed pending at trigger", zap.String("cid", msg.CardID), zap.Error(err))
 		return false
 	}
 	return true
 }
 
-// AddPendingAlarm 写入 Redis Hash alarm:pending，field = cardID:deviceID:alarmType。
-func (s *AlarmService) AddPendingAlarm(ctx context.Context, cardID, tenantID, deviceID, alarmType, alarmLevel string, eventSinceMs int64, durationSec int, upgradeTo string, triggerData json.RawMessage) error {
+// AddPendingAlarm 写入 Redis Hash alarm:pending，field = tenant_id:device_id:alarmType。
+func (s *AlarmService) AddPendingAlarm(ctx context.Context, tenantID, deviceID, alarmType, alarmLevel string, eventSinceMs int64, durationSec int, upgradeTo string, triggerData json.RawMessage) error {
 	if s.redisPending == nil {
 		return nil
 	}
+	if tenantID == "" || deviceID == "" {
+		return nil
+	}
 	p := pendingAlarmPayload{
-		CardID:      cardID,
 		TenantID:    tenantID,
 		DeviceID:    deviceID,
 		AlarmType:   alarmType,
@@ -569,20 +577,33 @@ func (s *AlarmService) AddPendingAlarm(ctx context.Context, cardID, tenantID, de
 	if err != nil {
 		return err
 	}
-	return s.redisPending.HSet(ctx, redisPendingAlarmKey, pendingField(cardID, deviceID, alarmType), string(b))
+	return s.redisPending.HSet(ctx, redisPendingAlarmKey, pendingField(tenantID, deviceID, alarmType), string(b))
 }
 
-// RemovePendingAlarm 删除待处理项（如收到 event_status=end）。
-func (s *AlarmService) RemovePendingAlarm(ctx context.Context, cardID, deviceID, alarmType string) error {
+// RemovePendingAlarm 删除待处理项。会删新版 key；若 legacyCardID 非空同时删旧版 card_id:device_id:type，避免卡重建后删不掉。
+func (s *AlarmService) RemovePendingAlarm(ctx context.Context, tenantID, legacyCardID, deviceID, alarmType string) error {
 	if s.redisPending == nil {
 		return nil
 	}
-	return s.redisPending.HDel(ctx, redisPendingAlarmKey, pendingField(cardID, deviceID, alarmType))
+	if deviceID == "" || alarmType == "" {
+		return nil
+	}
+	var keys []string
+	if tenantID != "" {
+		keys = append(keys, pendingField(tenantID, deviceID, alarmType))
+	}
+	if legacyCardID != "" {
+		keys = append(keys, pendingFieldLegacy(legacyCardID, deviceID, alarmType))
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return s.redisPending.HDel(ctx, redisPendingAlarmKey, keys...)
 }
 
 // AddStayPendingIfEnabled 若该设备已开启 Stay 告警且配置了 duration_sec，则写入 alarm:pending，供 ScanPendingAlarms 到时落库。
-func (s *AlarmService) AddStayPendingIfEnabled(ctx context.Context, cardID, tenantID, deviceID string, eventSinceMs int64) error {
-	if s.redisPending == nil || deviceID == "" {
+func (s *AlarmService) AddStayPendingIfEnabled(ctx context.Context, tenantID, deviceID string, eventSinceMs int64) error {
+	if s.redisPending == nil || deviceID == "" || tenantID == "" {
 		return nil
 	}
 	ea, ok := s.enablement.IsEnabled(ctx, tenantID, deviceID, alarm.Stay)
@@ -598,7 +619,7 @@ func (s *AlarmService) AddStayPendingIfEnabled(ctx context.Context, cardID, tena
 	if level == "" && def != nil {
 		level = def.DefaultLevel
 	}
-	return s.AddPendingAlarm(ctx, cardID, tenantID, deviceID, alarm.Stay, level, eventSinceMs, durationSec, "", nil)
+	return s.AddPendingAlarm(ctx, tenantID, deviceID, alarm.Stay, level, eventSinceMs, durationSec, "", nil)
 }
 
 // ScanPendingAlarms 主程序每 5 分钟调用：若 now-EventSince>=DurationSec 则落库并发布 AlarmState，并删除该 pending。
@@ -616,6 +637,9 @@ func (s *AlarmService) ScanPendingAlarms(ctx context.Context) error {
 		if err := json.Unmarshal([]byte(val), &p); err != nil {
 			continue
 		}
+		if p.TenantID == "" || p.DeviceID == "" {
+			continue
+		}
 		durationMs := int64(p.DurationSec) * 1000
 		if nowMs-p.EventSince < durationMs {
 			continue
@@ -625,7 +649,8 @@ func (s *AlarmService) ScanPendingAlarms(ctx context.Context) error {
 			eventType = p.UpgradeTo
 		}
 		triggeredAt := time.Unix(0, p.EventSince*int64(time.Millisecond))
-		result, cardAlarmState, err := card.InsertAlarmAndUpdateCard(ctx, s.db, p.CardID, card.AlarmInsertParams{
+		// cardID 传空：事务内按 device_id 解析当前绑定卡，避免卡重建后 pending 内 card_id 失效
+		result, cardAlarmState, err := card.InsertAlarmAndUpdateCard(ctx, s.db, "", card.AlarmInsertParams{
 			TenantID:    p.TenantID,
 			DeviceID:    p.DeviceID,
 			EventType:   eventType,
@@ -635,14 +660,31 @@ func (s *AlarmService) ScanPendingAlarms(ctx context.Context) error {
 			TriggerData: p.TriggerData,
 		})
 		if err != nil {
-			s.logger.Warn("scan pending insert alarm failed", zap.String("cid", p.CardID), zap.String("field", field), zap.Error(err))
+			s.logger.Warn("scan pending insert alarm failed",
+				zap.String("tenant_id", p.TenantID),
+				zap.String("device_id", p.DeviceID),
+				zap.String("field", field),
+				zap.Error(err))
 			continue
 		}
-		s.logger.Info("pending alarm fired", zap.String("cid", p.CardID), zap.String("event_id", result.EventID), zap.String("type", eventType))
-		if err := s.writeAlarmState(ctx, p.CardID, cardAlarmState); err != nil {
-			s.logger.Warn("write alarm state after pending", zap.String("cid", p.CardID), zap.Error(err))
-		} else {
-			s.notifyAlarmPushAsync(p.TenantID, p.CardID, p.DeviceID, result.EventID, eventType, p.AlarmLevel)
+		resolvedCardID, lookupErr := card.LookupCardIDByDeviceID(ctx, s.db, p.DeviceID)
+		if lookupErr != nil {
+			s.logger.Warn("pending alarm fired: lookup card_id for stream",
+				zap.String("device_id", p.DeviceID),
+				zap.Error(lookupErr))
+			resolvedCardID = ""
+		}
+		s.logger.Info("pending alarm fired",
+			zap.String("cid", resolvedCardID),
+			zap.String("device_id", p.DeviceID),
+			zap.String("event_id", result.EventID),
+			zap.String("type", eventType))
+		if resolvedCardID != "" {
+			if err := s.writeAlarmState(ctx, resolvedCardID, cardAlarmState); err != nil {
+				s.logger.Warn("write alarm state after pending", zap.String("cid", resolvedCardID), zap.Error(err))
+			} else {
+				s.notifyAlarmPushAsync(p.TenantID, resolvedCardID, p.DeviceID, result.EventID, eventType, p.AlarmLevel)
+			}
 		}
 		_ = s.redisPending.HDel(ctx, redisPendingAlarmKey, field)
 	}

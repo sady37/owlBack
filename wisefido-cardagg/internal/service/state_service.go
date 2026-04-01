@@ -495,6 +495,9 @@ func (s *StateService) PublishBathRoomStateFromEvent(ctx context.Context, cardID
 			cur.HasRisk = false
 		}
 	}
+	if cur.TotalPeople == 0 {
+		cur.StaySec = 0
+	}
 	return PublishCardStatus(ctx, s.writer, cardID, PublishFields{BathRoomState: cur})
 }
 
@@ -1147,7 +1150,7 @@ func (s *StateService) SetCardOffline(ctx context.Context, cardID string) {
 	}
 }
 
-// objectRoom 统一 Room/BathRoom 的更新字段（不含 Stay；RoomState 无 Stay，BathRoomState.StaySec 由别处更新）。
+// objectRoom 统一 Room/BathRoom 的更新字段（RoomState 无 Stay；BathRoomState.StaySec 在写回后按 LastEnterTime 墙钟补算）。
 type objectRoom struct {
 	StandingContinuousMin int
 	HasMulti              bool
@@ -1264,7 +1267,7 @@ func (s *StateService) UpdateStateFromActivity(
 		}
 	}
 
-	// 写回 objectRoom → RoomState/BathRoomState（BathRoomState.StaySec 不在此更新，由别处维护）
+	// 写回 objectRoom → RoomState/BathRoomState；StaySec：有人且已记录进入时间则为 (now-LastEnter)/1s
 	if isBathroom && bathRoomState != nil {
 		bathRoomState.StandingContinuousMin = obj.StandingContinuousMin
 		bathRoomState.HasMulti = obj.HasMulti
@@ -1273,6 +1276,19 @@ func (s *StateService) UpdateStateFromActivity(
 		bathRoomState.LastEnterTime = obj.LastEnterTime
 		bathRoomState.LastExitTime = obj.LastExitTime
 		bathRoomState.UpdatedAt = obj.UpdatedAt
+		if bathRoomState.TotalPeople > 0 && bathRoomState.LastEnterTime > 0 {
+			sec := int((now - bathRoomState.LastEnterTime) / 1000)
+			if sec < 0 {
+				sec = 0
+			}
+			if bathRoomState.StaySec != sec {
+				bathRoomState.StaySec = sec
+				objectRoomPush = true
+			}
+		} else if bathRoomState.StaySec != 0 {
+			bathRoomState.StaySec = 0
+			objectRoomPush = true
+		}
 	} else if roomState != nil {
 		roomState.StandingContinuousMin = obj.StandingContinuousMin
 		roomState.HasMulti = obj.HasMulti

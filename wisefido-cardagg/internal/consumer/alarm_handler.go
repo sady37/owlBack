@@ -58,6 +58,12 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		h.logger.Debug("alarm dropped (stale)", zap.String("cid", m.CardID), zap.String("event", eventName))
 		return nil
 	}
+	resolved := h.metaCache.ResolveDeviceID(ctx, m.CardID, m.DeviceID, m.DeviceUID)
+	if resolved == "" {
+		h.logger.Debug("alarm dropped (no device_id)", zap.String("cid", m.CardID), zap.String("event", eventName), zap.String("device_uid", m.DeviceUID))
+		return nil
+	}
+	m.DeviceID = resolved
 	dt := strings.ToLower(m.DeviceType)
 	isSleepad := strings.Contains(dt, "sleepad") || strings.Contains(dt, "sleeppad")
 	isRadar := strings.Contains(dt, "radar")
@@ -76,15 +82,7 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		Category:   m.Category,
 		DataValue:  []interface{}{data},
 	}
-	if meta := h.metaCache.GetOrLoad(ctx, m.CardID); meta != nil {
-		dm := meta.Devices[m.DeviceID]
-		if dm == nil && m.DeviceUID != "" {
-			dm = h.metaCache.GetDeviceMetaByUID(ctx, m.CardID, m.DeviceUID)
-		}
-		if dm != nil {
-			payload.DeviceID = dm.DeviceID
-		}
-	}
+	payload.DeviceID = m.DeviceID
 	_, level, _, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, m.TenantID, payload.DeviceID, eventName)
 
 	switch eventName {
@@ -114,7 +112,7 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.CardID)
 			written, _ := h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.InBed, deviceType, m.Timestamp, 0, trackOverride)
 			if written {
-				_ = h.alarms.RemovePendingAlarm(ctx, m.CardID, payload.DeviceID, alarm.LeftBed)
+				_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, payload.DeviceID, alarm.LeftBed)
 			}
 			_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
 		}
@@ -189,11 +187,7 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			}
 		}
 		if m.DeviceUID != "" {
-			deviceKey := m.DeviceID
-			if deviceKey == "" {
-				deviceKey = m.DeviceUID
-			}
-			h.buffer.RemoveDevice(m.CardID, deviceKey)
+			h.buffer.RemoveDevice(m.CardID, m.DeviceID)
 			// device_status 下线时从 Redis 删除该设备（仅上线时置 Offline=0）
 			if m.CardID != "" && h.state != nil {
 				_ = h.state.SetDeviceOnline(ctx, m.CardID, m.DeviceID, m.DeviceUID, m.DeviceType, false)

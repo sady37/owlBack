@@ -54,12 +54,13 @@ func (h *IotPreparedHandler) Handle(ctx context.Context, msg interface{}) error 
 		if resolveKey == "" {
 			return h.inner.Handle(ctx, raw)
 		}
-		resolvedCardID, resolvedUID, found := h.resolver.Resolve(ctx, resolveKey)
+		resolvedCardID, resolvedDeviceID, resolvedUID, found := h.resolver.Resolve(ctx, resolveKey)
 		if found {
 			cardID = resolvedCardID
 			deviceUID = resolvedUID
-			// 未绑卡时 resolver 返回 card_id=device_id(UUID)，回填 device_id 供下游与 alarm_db 等使用
-			if deviceID == "" && service.IsUUID(cardID) {
+			if resolvedDeviceID != "" {
+				raw["device_id"] = resolvedDeviceID
+			} else if deviceID == "" && service.IsUUID(cardID) {
 				raw["device_id"] = cardID
 			}
 		} else {
@@ -68,7 +69,7 @@ func (h *IotPreparedHandler) Handle(ctx context.Context, msg interface{}) error 
 			if cardID == "" {
 				cardID = resolveKey
 			}
-			if deviceUID == "" {
+			if deviceUID == "" && resolveKey != "" && !service.IsUUID(resolveKey) {
 				deviceUID = resolveKey
 			}
 			unboundFallback = true

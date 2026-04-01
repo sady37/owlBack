@@ -1,5 +1,7 @@
 package observation
 
+import "owl-common/alarm"
+
 // FieldDef defines a single observation field — the atomic unit of the system.
 // All gateways translate manufacturer-specific data into these standard fields.
 type FieldDef struct {
@@ -130,16 +132,9 @@ var (
 	EnumPoseDisplay = []string{"Initialization", "Walking", "SuspectedFall", "Sitting", "Standing", "Fall", "Lying", "SuspectedSittingOnGround", "SittingOnGround", "BedSitUp", "SuspectedBedSitUp", "ConfirmedBedSitUp", "Running"}
 )
 
-// NormalizeEventLevel 将 CRIT/ERR 等别名转为标准值；级别常量以 owl-common/alarm 为准。
+// NormalizeEventLevel 将 CRIT/ERR 等别名转为标准全名；实现见 owl-common/alarm.NormalizeAlarmLevel。
 func NormalizeEventLevel(level string) string {
-	switch level {
-	case "CRIT":
-		return "CRITICAL"
-	case "ERR":
-		return "ERROR"
-	default:
-		return level
-	}
+	return alarm.NormalizeAlarmLevel(level)
 }
 
 // event_name 取值唯一定义在 owl-common/alarm 包，此处仅保留字段名 FieldEventName。
