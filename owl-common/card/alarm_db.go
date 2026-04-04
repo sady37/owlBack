@@ -149,6 +149,18 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 		return nil, nil, fmt.Errorf("commit: %w", err)
 	}
 
+	// PopTriggeredAtMs 必须与 pop 指向的 alarm_events 行一致；若 pop 未被本次插入顶替，不能用 params.TriggeredAt（否则会写成新告警时间而 pop 仍是旧事件）。
+	popTrigMs := params.TriggeredAt.UnixMilli()
+	if popEventId != "" && popEventId != eventID {
+		var ms sql.NullInt64
+		if err := db.QueryRowContext(ctx,
+			`SELECT (EXTRACT(EPOCH FROM triggered_at) * 1000)::bigint FROM alarm_events WHERE event_id = $1`,
+			popEventId,
+		).Scan(&ms); err == nil && ms.Valid && ms.Int64 > 0 {
+			popTrigMs = ms.Int64
+		}
+	}
+
 	state := &CardAlarmState{
 		UnhandledAlarm0:  counts[0],
 		UnhandledAlarm1:  counts[1],
@@ -158,7 +170,7 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 		PopAlarmLevel:    popLevel,
 		PopAlarmType:     popType,
 		PopAlarmEventId:  popEventId,
-		PopTriggeredAtMs: params.TriggeredAt.UnixMilli(),
+		PopTriggeredAtMs: popTrigMs,
 	}
 
 	return &AlarmInsertResult{EventID: eventID, TriggeredAt: params.TriggeredAt}, state, nil
