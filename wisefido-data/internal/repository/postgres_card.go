@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"owl-common/card"
@@ -74,10 +75,20 @@ func (r *PostgresCardRepository) GetRecordedAndClear() []domain.CardSyncAffected
 	return out
 }
 
-func (r *PostgresCardRepository) appendRecorded(op, tenantID, cardID, unitID string) {
+func (r *PostgresCardRepository) appendRecorded(op, tenantID, cardID, unitID string, affectedUIDs []string) {
 	r.recordedMu.Lock()
 	defer r.recordedMu.Unlock()
-	r.recorded = append(r.recorded, domain.CardSyncAffected{TenantID: tenantID, CardID: cardID, UnitID: unitID, Op: op})
+	var u []string
+	if len(affectedUIDs) > 0 {
+		u = dedupeNonEmptyStrings(affectedUIDs)
+	}
+	r.recorded = append(r.recorded, domain.CardSyncAffected{
+		TenantID:           tenantID,
+		CardID:             cardID,
+		UnitID:             unitID,
+		Op:                 op,
+		AffectedDeviceUIDs: u,
+	})
 }
 
 // CardRowForCache 卡片+单元信息（用于生成 CardStatic 静态缓存）
@@ -798,16 +809,17 @@ func (r *PostgresCardRepository) DeleteCard(tenantID, cardID string) error {
 		}
 	}
 
+	var unitIDStr string
+	_ = r.db.QueryRow(`SELECT unit_id::text FROM cards WHERE tenant_id = $1 AND card_id = $2`, tenantID, cardID).Scan(&unitIDStr)
+	uids := r.getCardDeviceUIDList(tenantID, cardID)
+
 	// 2. 删除卡片
 	_, err := r.db.Exec("DELETE FROM cards WHERE tenant_id = $1 AND card_id = $2", tenantID, cardID)
 	if err != nil {
 		return fmt.Errorf("delete card: %w", err)
 	}
 
-	// 记录受影响的卡片
-	r.recordedMu.Lock()
-	r.recorded = append(r.recorded, domain.CardSyncAffected{TenantID: tenantID, CardID: cardID, UnitID: "", Op: "delete"})
-	r.recordedMu.Unlock()
+	r.appendRecorded("delete", tenantID, cardID, unitIDStr, uids)
 
 	return nil
 }
@@ -868,7 +880,7 @@ func (r *PostgresCardRepository) DeleteCardsByUnit(tenantID, unitID string) erro
 		return err
 	}
 	for _, cid := range cardIDs {
-		r.appendRecorded("deleted", tenantID, cid, unitID)
+		r.appendRecorded("deleted", tenantID, cid, unitID, r.getCardDeviceUIDList(tenantID, cid))
 	}
 	_, err = r.db.Exec(`DELETE FROM cards WHERE tenant_id = $1 AND unit_id = $2`, tenantID, unitID)
 	if err != nil {
@@ -912,6 +924,7 @@ func (r *PostgresCardRepository) UpdateCard(
 
 	// 1. 查询旧设备列表（用于比较移除的设备）
 	oldDeviceIDs := r.getCardDeviceIDList(cardID)
+	oldDeviceUIDs := r.getCardDeviceUIDList(tenantID, cardID)
 
 	// 2. 将结构化数据转换为 JSON
 	devicesJSON, err := convertDevicesToJSON(devices)
@@ -1007,7 +1020,8 @@ func (r *PostgresCardRepository) UpdateCard(
 		r.logger.Warn("UpdateCard: failed to recalc alarm counts",
 			zap.String("card_id", cardID), zap.Error(err))
 	}
-	r.appendRecorded("updated", tenantID, cardID, unitID)
+	affectedUIDs := unionDeviceUIDSlices(oldDeviceUIDs, deviceUIDsFromDeviceInfos(devices))
+	r.appendRecorded("updated", tenantID, cardID, unitID, affectedUIDs)
 	return nil
 }
 
@@ -1095,7 +1109,7 @@ func (r *PostgresCardRepository) CreateCard(
 		r.logger.Warn("CreateCard: failed to initialize alarm counts",
 			zap.String("card_id", cardID), zap.Error(err))
 	}
-	r.appendRecorded("created", tenantID, cardID, unitID)
+	r.appendRecorded("created", tenantID, cardID, unitID, deviceUIDsFromDeviceInfos(devices))
 	return cardID, nil
 }
 
@@ -1117,6 +1131,91 @@ func (r *PostgresCardRepository) getCardDeviceIDList(cardID string) []string {
 		}
 	}
 	return ids
+}
+
+// GetDeviceUIDsForCard 从 cards.devices JSONB 提取 device_uid（供 config 消息补全 affected_device_uids）；须 tenant+card 双条件以符合多租户隔离。
+func (r *PostgresCardRepository) GetDeviceUIDsForCard(tenantID, cardID string) []string {
+	return dedupeNonEmptyStrings(r.getCardDeviceUIDList(tenantID, cardID))
+}
+
+func getCardDeviceUIDListFromJSON(devicesJSON []byte) []string {
+	if len(devicesJSON) == 0 {
+		return nil
+	}
+	var devices []map[string]interface{}
+	if err := json.Unmarshal(devicesJSON, &devices); err != nil {
+		return nil
+	}
+	uids := make([]string, 0, len(devices))
+	for _, d := range devices {
+		if uid, ok := d["device_uid"].(string); ok {
+			if s := strings.TrimSpace(uid); s != "" {
+				uids = append(uids, s)
+			}
+		}
+	}
+	return uids
+}
+
+func (r *PostgresCardRepository) getCardDeviceUIDList(tenantID, cardID string) []string {
+	if tenantID == "" || cardID == "" {
+		return nil
+	}
+	var devicesJSON []byte
+	err := r.db.QueryRow(
+		`SELECT devices FROM cards WHERE tenant_id = $1 AND card_id = $2`,
+		tenantID, cardID,
+	).Scan(&devicesJSON)
+	if err != nil || len(devicesJSON) == 0 {
+		return nil
+	}
+	return getCardDeviceUIDListFromJSON(devicesJSON)
+}
+
+func deviceUIDsFromDeviceInfos(devices []card.DeviceInfo) []string {
+	if len(devices) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(devices))
+	for _, d := range devices {
+		if s := strings.TrimSpace(d.DeviceUID); s != "" {
+			out = append(out, s)
+		}
+	}
+	return dedupeNonEmptyStrings(out)
+}
+
+func unionDeviceUIDSlices(a, b []string) []string {
+	if len(a) == 0 {
+		return dedupeNonEmptyStrings(b)
+	}
+	if len(b) == 0 {
+		return dedupeNonEmptyStrings(a)
+	}
+	return dedupeNonEmptyStrings(append(append([]string{}, a...), b...))
+}
+
+func dedupeNonEmptyStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ConvertDevicesToJSON and ConvertResidentsToJSON are in owl-common/card/utils.go

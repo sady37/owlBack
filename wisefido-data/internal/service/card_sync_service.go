@@ -190,10 +190,16 @@ func (s *CardSyncService) emitCardChange(ctx context.Context, a domain.CardSyncA
 		}
 	}
 
-	// Step 1: 发送消息到 config:card:stream（携带 op: created/updated/deleted）
-	if err := s.publisher.PublishCardChangeMessageWithExtra(ctx, a.TenantID, a.CardID, a.UnitID, branchID, map[string]interface{}{
-		"op": a.Op,
-	}); err != nil {
+	uids := a.AffectedDeviceUIDs
+	if len(uids) == 0 && a.TenantID != "" && a.CardID != "" {
+		uids = s.cardRepo.GetDeviceUIDsForCard(a.TenantID, a.CardID)
+	}
+	extra := map[string]interface{}{"op": a.Op}
+	if len(uids) > 0 {
+		extra["affected_device_uids"] = uids
+	}
+	// Step 1: 发送消息到 config:card:stream（携带 op + 可选 affected_device_uids）
+	if err := s.publisher.PublishCardChangeMessageWithExtra(ctx, a.TenantID, a.CardID, a.UnitID, branchID, extra); err != nil {
 		return err
 	}
 

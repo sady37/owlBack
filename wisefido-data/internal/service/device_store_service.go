@@ -218,7 +218,7 @@ func (s *DeviceStoreService) InitialAllSleepad(ctx context.Context) (*InitialAll
 			continue
 		}
 		if s.configPublisher != nil && row.DeviceID != "" {
-			_ = s.configPublisher.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceID, "device_store_firmware_updated")
+			_ = s.configPublisher.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceID, "device_store_firmware_updated", row.DeviceUID)
 		}
 		synced++
 		successDetails = append(successDetails, map[string]any{
@@ -258,7 +258,7 @@ func (s *DeviceStoreService) BindSleepadOne(ctx context.Context, deviceID string
 		return initErr
 	}
 	if s.configPublisher != nil && ds.DeviceID != "" {
-		_ = s.configPublisher.PublishCardChangeForDevice(ctx, ds.TenantID, ds.DeviceID, "sleepad_bind")
+		_ = s.configPublisher.PublishCardChangeForDevice(ctx, ds.TenantID, ds.DeviceID, "sleepad_bind", ds.DeviceUID)
 	}
 	return nil
 }
@@ -282,7 +282,7 @@ func (s *DeviceStoreService) UnbindSleepadOne(ctx context.Context, deviceID stri
 		return err
 	}
 	if s.configPublisher != nil && ds.DeviceID != "" {
-		_ = s.configPublisher.PublishCardChangeForDevice(ctx, ds.TenantID, ds.DeviceID, "sleepad_unbind")
+		_ = s.configPublisher.PublishCardChangeForDevice(ctx, ds.TenantID, ds.DeviceID, "sleepad_unbind", ds.DeviceUID)
 	}
 	return nil
 }
@@ -303,7 +303,7 @@ func (s *DeviceStoreService) DeleteDeviceStoreAndNotify(ctx context.Context, dev
 		return err
 	}
 	if s.configPublisher != nil && row.DeviceID != "" {
-		_ = s.configPublisher.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceID, "device_store_deleted")
+		_ = s.configPublisher.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceID, "device_store_deleted", row.DeviceUID)
 	}
 	return nil
 }

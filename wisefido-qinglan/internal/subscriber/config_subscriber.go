@@ -199,6 +199,14 @@ func (s *ConfigSubscriber) handleNormalCardChange(ctx context.Context, cardData 
 	} else {
 		s.cardMappingSvc.InvalidateCache()
 	}
+	// 消息同时带 tenant+unit+card_id 时，仅按 unit 枚举 DB 可能在删卡空窗期为 0；按 card_id 再清仍指向该卡的 baseline
+	if cardID != "" && tenantID != "" && unitID != "" {
+		s.cardMappingSvc.InvalidateByCardID(cardID)
+	}
+	for _, uid := range affectedDeviceUIDsFromCardData(cardData) {
+		s.cardMappingSvc.InvalidateByDeviceUID(uid)
+		s.cardMappingSvc.RefreshBaseline(ctx, uid)
+	}
 	s.logger.Info("Card change processed",
 		zap.String("message_id", messageID),
 		zap.String("card_id", cardID),
@@ -266,6 +274,30 @@ func (s *ConfigSubscriber) handleDeviceStoreChange(ctx context.Context, data map
 	s.logger.Info("Device store change processed",
 		zap.String("message_id", messageID),
 		zap.String("device_id", deviceID))
+}
+
+func affectedDeviceUIDsFromCardData(data map[string]interface{}) []string {
+	if data == nil {
+		return nil
+	}
+	raw, ok := data["affected_device_uids"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		return v
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, x := range v {
+			if s, ok := x.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 // 旧方法已注释（原: handleDeviceAlarmSettingChange）

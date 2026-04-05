@@ -78,6 +78,12 @@ func (s *ConfigSubscriber) handleCardLike(ctx context.Context, configMsg redisco
 	} else {
 		s.cardMapping.InvalidateCache(ctx)
 	}
+	if cardID != "" && tenantID != "" && unitID != "" {
+		s.cardMapping.InvalidateByCardID(cardID)
+	}
+	for _, uid := range affectedDeviceUIDsFromConfigData(data) {
+		s.cardMapping.InvalidateByDeviceUID(uid)
+	}
 
 	if s.healthCheck != nil {
 		s.healthCheck.ProbeAfterCardChange(ctx, tenantID, unitID, cardID, deviceID)
@@ -125,5 +131,29 @@ func SubscribeLoop(ctx context.Context, logger *zap.Logger, redisClient *redis.C
 			}
 			redisClient.XAck(ctx, stream, groupName, msg.ID)
 		}
+	}
+}
+
+func affectedDeviceUIDsFromConfigData(data map[string]interface{}) []string {
+	if data == nil {
+		return nil
+	}
+	raw, ok := data["affected_device_uids"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		return v
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, x := range v {
+			if s, ok := x.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }

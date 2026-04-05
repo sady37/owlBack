@@ -348,9 +348,19 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 		return nil, fmt.Errorf("failed to update device")
 	}
 
-	// 任意 devices 字段更新均发 config.card，供网关刷新 baseline / health
+	// 5. 任意 devices 更新后同步受影响 unit 的卡片（旧 unit + 新 unit，换绑时两边都刷）
+	newDevice, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
+	if err != nil {
+		s.logger.Warn("Failed to get updated device for card sync", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID))
+	}
+
+	// 任意 devices 字段更新均发 config.card，供网关刷新 baseline / health（在读到新行后带 device_uid）
 	if s.configPublisher != nil {
-		if err := s.configPublisher.PublishCardChangeForDevice(ctx, req.TenantID, req.DeviceID, "devices_updated"); err != nil {
+		var uid string
+		if newDevice != nil {
+			uid = newDevice.DeviceUID
+		}
+		if err := s.configPublisher.PublishCardChangeForDevice(ctx, req.TenantID, req.DeviceID, "devices_updated", uid); err != nil {
 			s.logger.Warn("PublishCardChangeForDevice failed",
 				zap.String("tenant_id", req.TenantID),
 				zap.String("device_id", req.DeviceID),
@@ -358,10 +368,8 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 		}
 	}
 
-	// 5. 任意 devices 更新后同步受影响 unit 的卡片（旧 unit + 新 unit，换绑时两边都刷）
-	newDevice, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
 	if err != nil {
-		s.logger.Warn("Failed to get updated device for card sync", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID))
+		// newDevice 已用于发布；card sync 跳过
 	} else if s.cardSync != nil && newDevice != nil {
 		seen := make(map[string]struct{})
 		syncUnit := func(unitID string) {
@@ -423,11 +431,14 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 		return nil, fmt.Errorf("device_id is required")
 	}
 
-	// 2. 获取设备信息（删除前获取 unit_id，用于后续通知 card_manager）
-	var unitID string
+	// 2. 获取设备信息（删除前获取 unit_id / device_uid，用于后续通知）
+	var unitID, deviceUID string
 	device, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
-	if err == nil && device != nil && device.UnitID.Valid && device.UnitID.String != "" {
-		unitID = device.UnitID.String
+	if err == nil && device != nil {
+		deviceUID = device.DeviceUID
+		if device.UnitID.Valid && device.UnitID.String != "" {
+			unitID = device.UnitID.String
+		}
 	}
 
 	// 3. 调用 Repository（硬删除：在事务中删除 devices 记录，更新 device_store tenant_id）
@@ -454,6 +465,9 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 		extraData := map[string]interface{}{
 			"device_id":   req.DeviceID,
 			"change_type": "device_deleted",
+		}
+		if deviceUID != "" {
+			extraData["affected_device_uids"] = []string{deviceUID}
 		}
 		if err := s.configPublisher.PublishCardChangeMessageWithExtraAndType(ctx, req.TenantID, "", unitID, "", rediscommon.ConfigCardChanged, extraData); err != nil {
 			s.logger.Warn("Failed to publish device_store change signal for device deletion",

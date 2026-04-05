@@ -28,7 +28,7 @@ func NotifyDeviceStoreBatchAfterUpdate(ctx context.Context, repo repository.Devi
 			continue
 		}
 		seen[row.DeviceID] = struct{}{}
-		if err := pub.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceID, "device_store_updated"); err != nil && log != nil {
+		if err := pub.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceID, "device_store_updated", row.DeviceUID); err != nil && log != nil {
 			log.Warn("PublishCardChangeForDevice failed",
 				zap.String("tenant_id", row.TenantID),
 				zap.String("device_id", row.DeviceID),
@@ -51,7 +51,7 @@ func NotifyDeviceStoreFromStores(ctx context.Context, pub *publisher.ConfigPubli
 			continue
 		}
 		seen[u.DeviceID] = struct{}{}
-		if err := pub.PublishCardChangeForDevice(ctx, u.TenantID, u.DeviceID, changeType); err != nil && log != nil {
+		if err := pub.PublishCardChangeForDevice(ctx, u.TenantID, u.DeviceID, changeType, u.DeviceUID); err != nil && log != nil {
 			log.Warn("PublishCardChangeForDevice failed",
 				zap.String("tenant_id", u.TenantID),
 				zap.String("device_id", u.DeviceID),

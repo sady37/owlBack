@@ -159,8 +159,8 @@ func (p *ConfigPublisher) PublishCardChangeMessageWithExtra(
 	return p.PublishCardChangeMessageWithExtraAndType(ctx, tenantID, cardID, unitID, branchID, rediscommon.ConfigCardChanged, extraData)
 }
 
-// PublishCardChangeForDevice 发送 config.card，data 含 device_id、change_type（devices / device_store 变更等与卡侧同步）。
-func (p *ConfigPublisher) PublishCardChangeForDevice(ctx context.Context, tenantID, deviceID, changeType string) error {
+// PublishCardChangeForDevice 发送 config.card，data 含 device_id、change_type；可选 deviceUIDs 写入 affected_device_uids 供网关精确失效。
+func (p *ConfigPublisher) PublishCardChangeForDevice(ctx context.Context, tenantID, deviceID, changeType string, deviceUIDs ...string) error {
 	if p == nil || deviceID == "" {
 		return nil
 	}
@@ -168,13 +168,38 @@ func (p *ConfigPublisher) PublishCardChangeForDevice(ctx context.Context, tenant
 		"device_id":   deviceID,
 		"change_type": changeType,
 	}
+	if u := compactDeviceUIDs(deviceUIDs); len(u) > 0 {
+		extra["affected_device_uids"] = u
+	}
 	return p.PublishCardChangeMessageWithExtraAndType(ctx, tenantID, "", "", "", rediscommon.ConfigCardChanged, extra)
+}
+
+func compactDeviceUIDs(uids []string) []string {
+	if len(uids) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(uids))
+	out := make([]string, 0, len(uids))
+	for _, s := range uids {
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // PublishCardChangeMessageWithExtraAndType 发送卡片变更消息到 config:card:stream（支持额外字段和自定义 type 字段）
 // messageType 一般为 ConfigCardChanged；extraData 可含：
-//   - device_id: 受影响的设备ID
-//   - change_type: 变化类型 (device_updated 或 device_deleted)
+//   - device_id / change_type
+//   - affected_device_uids: []string，网关按 UID 逐项失效 baseline
 func (p *ConfigPublisher) PublishCardChangeMessageWithExtraAndType(
 	ctx context.Context,
 	tenantID, cardID, unitID, branchID, messageType string,
