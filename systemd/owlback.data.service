@@ -1,0 +1,16 @@
+[Unit]
+Description=owlback — wisefido-data
+After=network.target
+
+[Service]
+Type=simple
+User=wisefido
+Group=wisefido
+WorkingDirectory=/home/wisefido/owl/owlBack
+ExecStart=/bin/bash /home/wisefido/owl/owlBack/scripts/systemd/owlback-run-service.sh wisefido-data
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=owlback-data
