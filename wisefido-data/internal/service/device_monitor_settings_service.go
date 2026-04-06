@@ -341,6 +341,7 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 						}
 					}
 				}
+				merged = s.overlaySleepadLightModeFromHardware(ctx, device.DeviceCode.String, merged)
 				return merged, nil
 			}
 		}
@@ -401,7 +402,7 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 		go s.syncDeviceValuesToDB(context.Background(), tenantID, deviceID, device.DeviceUID, deviceType, baselineAlarmItems, dbExists)
 	}
 
-	// Sleepad fallback：查询 getconfig 回填 realtime_interval
+	// Sleepad fallback：查询 getconfig 回填 realtime_interval；deviceLightConf/get 回填 light_mode
 	if deviceType == "sleepad" && s.sleepaceGateway != nil && device.DeviceCode.Valid && device.DeviceCode.String != "" {
 		if interval, err := s.sleepaceGateway.GetDeviceConfig(ctx, device.DeviceID, device.DeviceCode.String); err == nil && interval > 0 {
 			for i := range baselineAlarmItems {
@@ -411,6 +412,7 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 				}
 			}
 		}
+		baselineAlarmItems = s.overlaySleepadLightModeFromHardware(ctx, device.DeviceCode.String, baselineAlarmItems)
 	}
 
 	return baselineAlarmItems, nil
@@ -730,19 +732,48 @@ func (s *deviceMonitorSettingsService) UpdateSleepadMonitorSettings(ctx context.
 	return deviceWrite, dbWrite, false, nil
 }
 
+// overlaySleepadLightModeFromHardware 厂家 deviceLightConf/get 回填 light_mode（在线时以厂家为准；DB 仅在 get 失败或未查询时保留原样）。
+func (s *deviceMonitorSettingsService) overlaySleepadLightModeFromHardware(ctx context.Context, deviceCode string, items []alarm.AlarmItem) []alarm.AlarmItem {
+	if s.sleepaceGateway == nil || deviceCode == "" {
+		return items
+	}
+	mode, err := s.sleepaceGateway.GetDeviceLightConf(ctx, deviceCode)
+	if err != nil {
+		s.logger.Debug("[GET_SETTINGS] deviceLightConf/get skipped",
+			zap.String("device_code", deviceCode),
+			zap.Error(err),
+		)
+		return items
+	}
+	if mode != 0 && mode != 1 {
+		return items
+	}
+	for i := range items {
+		if items[i].AlarmType == alarm.SleepadSetting {
+			if items[i].AlarmParams == nil {
+				items[i].AlarmParams = make(map[string]interface{})
+			}
+			items[i].AlarmParams["light_mode"] = mode
+			break
+		}
+	}
+	return items
+}
+
 // pushDeviceSettings pushes SleepadSetting / MaterialSetting params to hardware
 // via the sleepace gateway proxy (individual API calls per setting type).
+// 仅用本次请求体中的 alarm_params，不以 DB 补全下发（DB 在厂家不可达时仅作展示缓存，见 Get 侧 overlay）。
 func (s *deviceMonitorSettingsService) pushDeviceSettings(ctx context.Context, deviceID, deviceCode string, items []alarm.AlarmItem) {
 	if s.sleepaceGateway == nil || deviceID == "" || deviceCode == "" {
 		return
 	}
 	for _, item := range items {
-		p := item.AlarmParams
-		if p == nil {
-			continue
-		}
 		switch item.AlarmType {
 		case alarm.SleepadSetting:
+			p := item.AlarmParams
+			if p == nil || len(p) == 0 {
+				continue
+			}
 			intervalV, intervalOk := toIntParam(p["realtime_interval"])
 			if !intervalOk || intervalV <= 0 {
 				intervalV = 2
@@ -772,7 +803,27 @@ func (s *deviceMonitorSettingsService) pushDeviceSettings(ctx context.Context, d
 					}
 				}
 			}
+			if lightV, lightOk := toIntParam(p["light_mode"]); lightOk {
+				if err := s.sleepaceGateway.SetDeviceLightConf(ctx, deviceCode, lightV); err != nil {
+					s.logger.Warn("[SLEEPAD_WRITE] deviceLightConf/set failed",
+						zap.String("device_id", deviceID),
+						zap.String("device_code", deviceCode),
+						zap.Int("light_mode", lightV),
+						zap.Error(err),
+					)
+				} else {
+					s.logger.Info("[SLEEPAD_WRITE] deviceLightConf/set ok",
+						zap.String("device_id", deviceID),
+						zap.String("device_code", deviceCode),
+						zap.Int("light_mode", lightV),
+					)
+				}
+			}
 		case alarm.MaterialSetting:
+			p := item.AlarmParams
+			if p == nil {
+				continue
+			}
 			thickness, _ := toIntParam(p["thickness"])
 			material, _ := toIntParam(p["material_type"])
 			if thickness > 0 || material > 0 {

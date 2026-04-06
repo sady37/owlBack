@@ -191,17 +191,18 @@ func (h *SleepaceReportHandler) GetSleepaceReportDetail(w http.ResponseWriter, r
 
 	// 转换为前端格式（兼容 v1.0）
 	result := map[string]any{
-		"id":          resp.ID,
-		"deviceId":    resp.DeviceID,
-		"deviceUid":   resp.DeviceUID,
-		"recordCount": resp.RecordCount,
-		"startTime":   resp.StartTime,
-		"endTime":     resp.EndTime,
-		"date":        resp.Date,
-		"stopMode":    resp.StopMode,
-		"timeStep":    resp.TimeStep,
-		"timezone":    resp.Timezone,
-		"report":      resp.Report,
+		"id":                       resp.ID,
+		"deviceId":                 resp.DeviceID,
+		"deviceUid":                resp.DeviceUID,
+		"recordCount":              resp.RecordCount,
+		"startTime":                resp.StartTime,
+		"endTime":                  resp.EndTime,
+		"date":                     resp.Date,
+		"stopMode":                 resp.StopMode,
+		"timeStep":                 resp.TimeStep,
+		"timezone":                 resp.Timezone,
+		"report":                   resp.Report,
+		"weeklySleepEfficiency": resp.WeeklySleepEfficiency,
 	}
 
 	writeJSON(w, http.StatusOK, Ok(result))

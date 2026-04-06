@@ -144,7 +144,7 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 			payload = &redis.IoTStreamMessage{CardID: m.CardID, TenantID: m.TenantID, DeviceID: m.DeviceID, DeviceUID: m.DeviceUID, DataValue: []interface{}{data}, Timestamp: m.Timestamp}
 		}
 		_, level, durationSec, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, m.TenantID, payload.DeviceID, alarm.LeftBed)
-		if enabled && level != "" && h.alarms.InRestTimeWindow(ctx, m.TenantID) && h.state != nil {
+		if enabled && level != "" && h.alarms.InRestTimeWindow(ctx, m.TenantID, m.CardID) && h.state != nil {
 			status, _ := h.state.ReadCardStatus(ctx, m.CardID)
 			if status != nil && status.BedState != nil && status.BedState.BedStatus == 0 && status.BedState.StartTime != 0 && (time.Now().UnixMilli()-status.BedState.StartTime) >= 5*60*1000 {
 				if durationSec == 0 {
@@ -224,7 +224,12 @@ func (h *EventHandler) routeRoomStateEvent(ctx context.Context, m *redis.IoTStre
 	meta := h.metaCache.GetOrLoad(ctx, m.CardID)
 	deviceID := m.DeviceID
 	if service.IsBathroomDevice(ctx, meta, deviceID, m.TenantID, h.enablement) {
-		_ = h.state.PublishBathRoomStateFromEvent(ctx, m.CardID, deviceID, m.DeviceUID, kind, totalPeople, m.Timestamp)
+		var dm *service.DeviceMeta
+		if meta != nil {
+			dm = meta.Devices[deviceID]
+		}
+		rid, rname := service.BathroomRoomFieldsFromDevice(dm)
+		_ = h.state.PublishBathRoomStateFromEvent(ctx, m.CardID, deviceID, m.DeviceUID, kind, totalPeople, m.Timestamp, rid, rname)
 		// Stay 窗口仅由进出事件开关；pending 增删在 routeActivityEvent 按窗口+人数处理
 		if kind == service.RoomStateEventEnter || kind == service.RoomStateEventExit {
 			h.openStayWindow(m.TenantID, deviceID, time.Now().UnixMilli())
@@ -325,9 +330,14 @@ func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStrea
 	meta := h.metaCache.GetOrLoad(ctx, m.CardID)
 	deviceID := m.DeviceID
 	isBathroom := service.IsBathroomDevice(ctx, meta, deviceID, m.TenantID, h.enablement)
+	var dm *service.DeviceMeta
+	if meta != nil {
+		dm = meta.Devices[deviceID]
+	}
+	rid, rname := service.BathroomRoomFieldsFromDevice(dm)
 
 	// 行走/站立/多人阈值见 service/weights.go（WalkSecThreshold、WalkDistanceMetersThreshold）
-	_, _, _ = h.state.UpdateStateFromActivity(ctx, m.CardID, deviceID, m.DeviceUID, isBathroom, walkDuration, walkDistance, standDuration, multiPersonDuration, m.Timestamp)
+	_, _, _ = h.state.UpdateStateFromActivity(ctx, m.CardID, deviceID, m.DeviceUID, isBathroom, walkDuration, walkDistance, standDuration, multiPersonDuration, m.Timestamp, rid, rname)
 
 	if service.NeedBedFallCheck(m.CardID) {
 		trackCount := intFromAny(data[observation.FieldTrackCount])

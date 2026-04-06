@@ -11,48 +11,47 @@ IoT 时序数据排障工具，用于查看 Redis Stream 和数据库中的数�
 #### 从 Redis Stream 读取数据
 
 ```bash
-# 进入工具目录
+# 进入工具目录（源码在 iot-inspect-dir/）
 cd owlBack/tools
 
 # 从 Redis Streams 读取最新的 monitor 数据
-go run iot-inspect.go --source redis --stream iot:monitor:stream --count 1
+go run ./iot-inspect-dir/ --source redis --stream iot:monitor:stream --count 1
 
 # 从 Redis Streams 读取最新的 stat 数据
-go run iot-inspect.go --source redis --stream iot:stat:stream --count 1
+go run ./iot-inspect-dir/ --source redis --stream iot:stat:stream --count 1
 
 # 从 Redis Streams 读取最新的 event 数据
-go run iot-inspect.go --source redis --stream iot:event:stream --count 1
+go run ./iot-inspect-dir/ --source redis --stream iot:event:stream --count 1
 
 # 从 Redis Streams 读取最新的 alarm 数据
-go run iot-inspect.go --source redis --stream iot:alarm:stream --count 1
+go run ./iot-inspect-dir/ --source redis --stream iot:alarm:stream --count 1
 
 # 读取多条数据
-go run iot-inspect.go --source redis --stream iot:monitor:stream --count 5
+go run ./iot-inspect-dir/ --source redis --stream iot:monitor:stream --count 5
 
-# 或使用编译后的二进制文件
-./iot-inspect --source redis --stream iot:monitor:stream --count 1
+# 或 go build -o iot-inspect ./iot-inspect-dir/ && ./iot-inspect ...
 ```
 
 #### 从数据库读取数据
 
 ```bash
 # 从数据库读取最新的 monitor 数据
-go run iot-inspect.go --source db --topic-type monitor --limit 1
+go run ./iot-inspect-dir/ --source db --topic-type monitor --limit 1
 
 # 从数据库读取最新的 stat 数据
-go run iot-inspect.go --source db --topic-type stat --limit 1
+go run ./iot-inspect-dir/ --source db --topic-type stat --limit 1
 
 # 从数据库读取最新的 event 数据
-go run iot-inspect.go --source db --topic-type event --limit 1
+go run ./iot-inspect-dir/ --source db --topic-type event --limit 1
 
 # 从数据库读取最新的 alarm 数据
-go run iot-inspect.go --source db --topic-type alarm --limit 1
+go run ./iot-inspect-dir/ --source db --topic-type alarm --limit 1
 
 # 从数据库读取所有类型的数据（不指定 topic-type）
-go run iot-inspect.go --source db --limit 10
+go run ./iot-inspect-dir/ --source db --limit 10
 
 # 按设备ID过滤
-go run iot-inspect.go --source db --device-id <device_id> --limit 5
+go run ./iot-inspect-dir/ --source db --device-id <device_id> --limit 5
 ```
 
 #### 环境变量配置
@@ -69,7 +68,7 @@ export REDIS_PASSWORD=TeLunSu-36kr  # 如果密码不同，需要设置此变量
 
 ```bash
 export DB_HOST=localhost
-export DB_PORT=5433
+export DB_PORT=5432
 export DB_USER=postgres
 export DB_PASSWORD=postgres
 export DB_NAME=owlrd

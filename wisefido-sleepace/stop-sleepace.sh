@@ -4,6 +4,15 @@ cd "$(dirname "$0")"
 
 echo "Stopping wisefido-sleepace service..."
 
+# 若由 systemd 模块托管，须先停 unit，否则 pkill 后 Restart= 会立刻拉起
+if command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet owlback.sleepace 2>/dev/null; then
+        echo "owlback.sleepace is active — stopping unit first..."
+        systemctl stop owlback.sleepace 2>/dev/null || true
+        sleep 1
+    fi
+fi
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'

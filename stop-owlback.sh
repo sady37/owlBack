@@ -119,6 +119,13 @@ if command -v systemctl >/dev/null 2>&1; then
         systemctl stop owlback 2>/dev/null || true
         sleep 2
     fi
+    for u in owlback.data owlback.cardagg owlback.qinglan owlback.sleepace owlback.iot owlback.ai; do
+        if systemctl is-active --quiet "$u" 2>/dev/null; then
+            printf "[*] systemctl stop %s\n" "$u"
+            systemctl stop "$u" 2>/dev/null || true
+        fi
+    done
+    sleep 1
 fi
 
 stop_service "wisefido-data"           "8080" "$LOG_DIR/wisefido-data.log"      "wisefido-data" "cmd/wisefido-data/main.go"

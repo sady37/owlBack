@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
 
+	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
 
 	"go.uber.org/zap"
@@ -118,18 +120,26 @@ type GetSleepaceReportDetailRequest struct {
 
 // GetSleepaceReportDetailResponse 获取报告详情响应
 type GetSleepaceReportDetailResponse struct {
-	ID          string `json:"id"`         // report_id
-	DeviceID    string `json:"deviceId"`   // device_id
-	DeviceCode  string `json:"deviceCode"` // device_store.device_code（厂家 deviceId）
-	DeviceUID   string `json:"deviceUid"` // devices.device_uid
-	RecordCount int    `json:"recordCount"`
-	StartTime   int64  `json:"startTime"` // Unix 时间戳（秒）
-	EndTime     int64  `json:"endTime"`   // Unix 时间戳（秒）
-	Date        int    `json:"date"`      // YYYYMMDD 格式
-	StopMode    int    `json:"stopMode"`
-	TimeStep    int    `json:"timeStep"`
-	Timezone    int    `json:"timezone"`
-	Report      string `json:"report"` // 完整报告数据（JSON 字符串）
+	ID                      string                       `json:"id"`         // report_id
+	DeviceID                string                       `json:"deviceId"`   // device_id
+	DeviceCode              string                       `json:"deviceCode"` // device_store.device_code（厂家 deviceId）
+	DeviceUID               string                       `json:"deviceUid"`  // devices.device_uid
+	RecordCount             int                          `json:"recordCount"`
+	StartTime               int64                        `json:"startTime"` // Unix 时间戳（秒）
+	EndTime                 int64                        `json:"endTime"`   // Unix 时间戳（秒）
+	Date                    int                          `json:"date"`      // YYYYMMDD 格式
+	StopMode                int                          `json:"stopMode"`
+	TimeStep                int                          `json:"timeStep"`
+	Timezone                int                          `json:"timezone"`
+	Report                string                   `json:"report"` // 完整报告数据（JSON 字符串）
+	WeeklySleepEfficiency WeeklySleepEfficiencyDTO `json:"weeklySleepEfficiency"`
+}
+
+// WeeklySleepEfficiencyDTO 本周与上周各 7 格（周一至周日）睡眠效率 seIndex（%）；无报告或解析失败为 null，由前端自行比对
+type WeeklySleepEfficiencyDTO struct {
+	WeekMonday int        `json:"weekMonday"` // 当日所在自然周的周一 YYYYMMDD（本地日历）
+	ThisWeek   []*float64 `json:"thisWeek"`   // 索引 0=周一 … 6=周日
+	LastWeek   []*float64 `json:"lastWeek"`   // 上一完整周，同上
 }
 
 // GetSleepaceReportDatesRequest 获取有效日期列表请求
@@ -276,11 +286,34 @@ func (s *sleepaceReportService) GetSleepaceReportDetail(ctx context.Context, req
 		return nil, fmt.Errorf("report not found for device %s on date %d", req.DeviceID, req.Date)
 	}
 
-	// 确保 report 字段以 '[' 开头（v1.0 兼容性）
-	reportData := report.Report
-	if len(reportData) > 0 && reportData[0] != '[' {
-		reportData = "[" + reportData + "]"
+	reportData := normalizeSleepaceReportArrayJSON(report.Report)
+
+	thisWeekMon := mondayOfWeekContainingYYYYMMDD(report.Date)
+	lastWeekMon := addDaysYYYYMMDD(thisWeekMon, -7)
+	thisWeekSun := addDaysYYYYMMDD(thisWeekMon, 6)
+
+	if s.reportGateway != nil {
+		if err := s.fillMissingSleepaceReportsFromVendor(ctx, req.TenantID, req.DeviceID, lastWeekMon, thisWeekSun); err != nil {
+			s.logger.Warn("fill missing sleepace reports for weekly efficiency failed",
+				zap.String("tenant_id", req.TenantID),
+				zap.String("device_id", req.DeviceID),
+				zap.Int("from", lastWeekMon),
+				zap.Int("to", thisWeekSun),
+				zap.Error(err),
+			)
+		}
 	}
+
+	rangeReports, err := s.reportsRepo.ListReportsAllInRange(ctx, req.TenantID, req.DeviceID, lastWeekMon, thisWeekSun)
+	if err != nil {
+		s.logger.Error("ListReportsAllInRange for weekly efficiency failed",
+			zap.String("tenant_id", req.TenantID),
+			zap.String("device_id", req.DeviceID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to load reports for weekly efficiency: %w", err)
+	}
+	weekly := buildWeeklySleepEfficiencyFromReports(rangeReports, thisWeekMon, lastWeekMon)
 
 	s.logger.Info("GetSleepaceReportDetail ok",
 		zap.String("tenant_id", req.TenantID),
@@ -292,18 +325,19 @@ func (s *sleepaceReportService) GetSleepaceReportDetail(ctx context.Context, req
 	)
 
 	return &GetSleepaceReportDetailResponse{
-		ID:          report.ReportID,
-		DeviceID:    report.DeviceID,
-		DeviceCode:  report.DeviceCode,
-		DeviceUID:   report.DeviceUID,
-		RecordCount: report.RecordCount,
-		StartTime:   report.StartTime,
-		EndTime:     report.EndTime,
-		Date:        report.Date,
-		StopMode:    report.StopMode,
-		TimeStep:    report.TimeStep,
-		Timezone:    report.Timezone,
-		Report:      reportData,
+		ID:                    report.ReportID,
+		DeviceID:              report.DeviceID,
+		DeviceCode:            report.DeviceCode,
+		DeviceUID:             report.DeviceUID,
+		RecordCount:           report.RecordCount,
+		StartTime:             report.StartTime,
+		EndTime:               report.EndTime,
+		Date:                  report.Date,
+		StopMode:              report.StopMode,
+		TimeStep:              report.TimeStep,
+		Timezone:              report.Timezone,
+		Report:                reportData,
+		WeeklySleepEfficiency: weekly,
 	}, nil
 }
 
@@ -332,6 +366,77 @@ func (s *sleepaceReportService) GetSleepaceReportDates(ctx context.Context, req 
 	return &GetSleepaceReportDatesResponse{
 		Dates: dates,
 	}, nil
+}
+
+func normalizeSleepaceReportArrayJSON(s string) string {
+	if len(s) > 0 && s[0] != '[' {
+		return "[" + s + "]"
+	}
+	return s
+}
+
+// mondayOfWeekContainingYYYYMMDD 返回包含 d 的那一周周一（本地时区，12:00 避免 DST 边界）
+func mondayOfWeekContainingYYYYMMDD(d int) int {
+	y := d / 10000
+	m := (d % 10000) / 100
+	day := d % 100
+	t := time.Date(y, time.Month(m), day, 12, 0, 0, 0, time.Local)
+	wd := t.Weekday() // Sunday=0, Monday=1, ...
+	offset := int((wd + 6) % 7)
+	return dateToInt(t.AddDate(0, 0, -offset))
+}
+
+func parseSleepEfficiencyFromSleepaceReportJSON(reportData string) (float64, bool) {
+	var arr []struct {
+		Analysis struct {
+			MaxReport struct {
+				SeIndex float64 `json:"seIndex"`
+			} `json:"maxReport"`
+		} `json:"analysis"`
+	}
+	if err := json.Unmarshal([]byte(reportData), &arr); err != nil || len(arr) == 0 {
+		return 0, false
+	}
+	return arr[0].Analysis.MaxReport.SeIndex, true
+}
+
+func addDaysYYYYMMDD(d int, deltaDays int) int {
+	y := d / 10000
+	m := (d % 10000) / 100
+	day := d % 100
+	t := time.Date(y, time.Month(m), day, 0, 0, 0, 0, time.Local)
+	return dateToInt(t.AddDate(0, 0, deltaDays))
+}
+
+func buildWeeklySleepEfficiencyFromReports(reports []*domain.SleepaceReport, thisWeekMon, lastWeekMon int) WeeklySleepEfficiencyDTO {
+	byDate := make(map[int]string, len(reports))
+	for _, r := range reports {
+		if r == nil {
+			continue
+		}
+		byDate[r.Date] = normalizeSleepaceReportArrayJSON(r.Report)
+	}
+	thisW := make([]*float64, 7)
+	lastW := make([]*float64, 7)
+	for i := 0; i < 7; i++ {
+		dThis := addDaysYYYYMMDD(thisWeekMon, i)
+		if raw, ok := byDate[dThis]; ok {
+			if v, ok2 := parseSleepEfficiencyFromSleepaceReportJSON(raw); ok2 {
+				thisW[i] = &v
+			}
+		}
+		dLast := addDaysYYYYMMDD(lastWeekMon, i)
+		if raw, ok := byDate[dLast]; ok {
+			if v, ok2 := parseSleepEfficiencyFromSleepaceReportJSON(raw); ok2 {
+				lastW[i] = &v
+			}
+		}
+	}
+	return WeeklySleepEfficiencyDTO{
+		WeekMonday: thisWeekMon,
+		ThisWeek:   thisW,
+		LastWeek:   lastW,
+	}
 }
 
 // DownloadReport 校验后经透明代理调厂家 get24HourDailyWithMaxReport，由本服务写入 sleepace_report。

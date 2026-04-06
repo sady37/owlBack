@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 	"unsafe"
@@ -17,6 +18,15 @@ import (
 
 	"go.uber.org/zap"
 )
+
+// sseHotPathLog：SSE 高频路径默认 Debug；设置 SSE_VERBOSE_LOG=true 时在 Info 级别可见（便于不改全局 level 排障）。
+func (s *CardRealtimeService) sseHotPathLog(msg string, fields ...zap.Field) {
+	if os.Getenv("SSE_VERBOSE_LOG") == "true" {
+		s.logger.Info(msg, fields...)
+		return
+	}
+	s.logger.Debug(msg, fields...)
+}
 
 // StatusEvent status 变更事件（service 包内定义，避免循环引用 subscriber 包）
 type StatusEvent struct {
@@ -64,13 +74,18 @@ type sseInitData struct {
 
 // sseConn 一个 SSE 连接的注册信息
 type sseConn struct {
-	userKey   string // "tenantID:userID"
-	tenantID  string
-	userID    string
-	watchIDs  map[string]bool  // 全部订阅卡（fan-out 范围），init 后填充
-	viewIDsCh chan []string    // 切页时接收新 viewIDs
-	eventCh   chan SSEEvent    // 统一事件推送 channel
-	initCh    chan sseInitData // 首次 init 数据（watchIDs + viewIDs）
+	userKey     string // "tenantID:userID"
+	tenantID    string
+	userID      string
+	clientIP    string
+	userAgent   string
+	connectedAt time.Time
+	cancel      context.CancelFunc // 同用户新开 SSE 时用于结束旧连接（勿在持有 connMu 时调用）
+	watchIDs    map[string]bool    // 全部订阅卡（fan-out 范围），init 后填充
+	viewIDsCh   chan []string      // 切页时接收新 viewIDs
+	watchIDsCh  chan []string      // card_change 后热更新 watchIDs，无需断 SSE
+	eventCh     chan SSEEvent      // 统一事件推送 channel
+	initCh      chan sseInitData   // 首次 init 数据（watchIDs + viewIDs）
 }
 
 // CardRealtimeService 卡片实时数据服务
@@ -135,31 +150,73 @@ func (s *CardRealtimeService) SetStatusEventChan(ch <-chan StatusEvent) {
 	s.statusEventCh = ch
 }
 
-// registerSSE 建立 SSE 连接（不注册 fan-out，等 InitSSE 后再注册）
-func (s *CardRealtimeService) registerSSE(tenantID, userID string) (string, <-chan SSEEvent, <-chan []string, <-chan sseInitData) {
+// sseSupersedePrevious：仅当 SSE_SINGLE_SSE_PER_USER=true 时，新开 SSE 会 cancel 同 tenant:user 下已有连接（治「僵尸长连接」）。默认 false：多标签、多网页、多设备可同时挂多条 SSE。
+func sseSupersedePrevious() bool {
+	return os.Getenv("SSE_SINGLE_SSE_PER_USER") == "true"
+}
+
+// registerSSE 建立 SSE 连接（不注册 fan-out，等 InitSSE 后再注册）。
+// 返回的 connCtx 由 WithCancel(parentCtx) 派生，用于替换旧连接时仅结束本路 goroutine。
+func (s *CardRealtimeService) registerSSE(parentCtx context.Context, tenantID, userID, clientIP, userAgent string) (connID string, connCtx context.Context, eventCh <-chan SSEEvent, viewIDsCh <-chan []string, watchIDsCh <-chan []string, initCh <-chan sseInitData) {
+	userKey := tenantID + ":" + userID
+	var superseded []string
+	if sseSupersedePrevious() {
+		s.connMu.Lock()
+		if ids := s.userIndex[userKey]; len(ids) > 0 {
+			superseded = append([]string(nil), ids...)
+		}
+		s.connMu.Unlock()
+		for _, oid := range superseded {
+			var fn context.CancelFunc
+			s.connMu.Lock()
+			if oc, ok := s.sseConns[oid]; ok && oc != nil && oc.cancel != nil {
+				fn = oc.cancel
+			}
+			s.connMu.Unlock()
+			if fn != nil {
+				fn()
+			}
+		}
+	}
+
+	connCtx, cancel := context.WithCancel(parentCtx)
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
 
 	s.connSeq++
-	connID := fmt.Sprintf("sse-%d", s.connSeq)
-	userKey := tenantID + ":" + userID
+	connID = fmt.Sprintf("sse-%d", s.connSeq)
+	now := time.Now()
 
-	eventCh := make(chan SSEEvent, 12)
-	viewIDsCh := make(chan []string, 2)
-	initCh := make(chan sseInitData, 1)
+	eventCh2 := make(chan SSEEvent, 12)
+	viewIDsCh2 := make(chan []string, 2)
+	watchIDsCh2 := make(chan []string, 2)
+	initCh2 := make(chan sseInitData, 1)
 	s.sseConns[connID] = &sseConn{
-		userKey:   userKey,
-		tenantID:  tenantID,
-		userID:    userID,
-		watchIDs:  nil, // init 后填充
-		viewIDsCh: viewIDsCh,
-		eventCh:   eventCh,
-		initCh:    initCh,
+		userKey:     userKey,
+		tenantID:    tenantID,
+		userID:      userID,
+		clientIP:    clientIP,
+		userAgent:   userAgent,
+		connectedAt: now,
+		cancel:      cancel,
+		watchIDs:    nil,
+		viewIDsCh:   viewIDsCh2,
+		watchIDsCh:  watchIDsCh2,
+		eventCh:     eventCh2,
+		initCh:      initCh2,
 	}
-	// userKey 反向索引
 	s.userIndex[userKey] = append(s.userIndex[userKey], connID)
 
-	return connID, eventCh, viewIDsCh, initCh
+	if len(superseded) > 0 {
+		s.logger.Info("SSE superseded previous connection(s) for same user",
+			zap.String("conn_id", connID),
+			zap.Strings("superseded_conn_ids", superseded),
+			zap.String("tenant_id", tenantID),
+			zap.String("user_id", userID),
+			zap.String("client_ip", clientIP))
+	}
+
+	return connID, connCtx, eventCh2, viewIDsCh2, watchIDsCh2, initCh2
 }
 
 // activateSSE 在 InitSSE 后注册 fan-out 索引（需持有 connMu.Lock）
@@ -217,6 +274,7 @@ func (s *CardRealtimeService) unregisterSSE(connID string) {
 			s.userIndex[conn.userKey] = filtered
 		}
 	}
+	conn.cancel = nil
 	close(conn.eventCh)
 	delete(s.sseConns, connID)
 }
@@ -239,7 +297,7 @@ func (s *CardRealtimeService) StartStatusFanout(ctx context.Context) {
 				}
 				s.connMu.RLock()
 				connIDs := s.cardIndex[evt.CardID]
-				s.logger.Info("[FANOUT] status event",
+				s.sseHotPathLog("[FANOUT] status event",
 					zap.String("card_id", evt.CardID),
 					zap.Int("conn_count", len(connIDs)))
 				for _, connID := range connIDs {
@@ -605,7 +663,7 @@ func (s *CardRealtimeService) SubscribeRealtimeStream(ctx context.Context, w htt
 // SubscribeCardsStream 多卡 SSE 流
 // URL 只传 token + interval，连接建立后前端 POST /init 传 watchIDs + viewIDs
 // 切页时通过 POST /view 动态更新 viewIDs，无需重连 SSE
-func (s *CardRealtimeService) SubscribeCardsStream(ctx context.Context, w http.ResponseWriter, interval int, tenantID, userID string) {
+func (s *CardRealtimeService) SubscribeCardsStream(ctx context.Context, w http.ResponseWriter, interval int, tenantID, userID, clientIP, userAgent string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -630,8 +688,8 @@ func (s *CardRealtimeService) SubscribeCardsStream(ctx context.Context, w http.R
 		interval = 10
 	}
 
-	// 注册 SSE 连接（尚未注册 fan-out，等 InitSSE）
-	connID, eventCh, viewIDsCh, initCh := s.registerSSE(tenantID, userID)
+	connID, streamCtx, eventCh, viewIDsCh, watchIDsCh, initCh := s.registerSSE(ctx, tenantID, userID, clientIP, userAgent)
+	sseOpenedAt := time.Now()
 	defer s.unregisterSSE(connID)
 
 	connData, _ := json.Marshal(map[string]interface{}{
@@ -647,6 +705,8 @@ func (s *CardRealtimeService) SubscribeCardsStream(ctx context.Context, w http.R
 		zap.String("conn_id", connID),
 		zap.String("tenant_id", tenantID),
 		zap.String("user_id", userID),
+		zap.String("client_ip", clientIP),
+		zap.String("user_agent", truncStr(userAgent, 240)),
 		zap.Int("interval", interval))
 
 	// === 阶段 1：等待前端 POST /init 提交 watchIDs + viewIDs ===
@@ -658,7 +718,7 @@ func (s *CardRealtimeService) SubscribeCardsStream(ctx context.Context, w http.R
 waitInit:
 	for {
 		select {
-		case <-ctx.Done():
+		case <-streamCtx.Done():
 			return
 		case <-initTimeout:
 			io.WriteString(w, "event: error\ndata: {\"error\":\"init timeout\"}\n\n")
@@ -703,14 +763,18 @@ waitInit:
 	tickerData := time.NewTicker(time.Duration(interval) * time.Second)
 	defer tickerData.Stop()
 	currentViewIDs := viewIDs
+	watchIDsLive := watchIDs
 	sseRealtimeTickerLogCount := 0
 	for {
 		select {
-		case <-ctx.Done():
+		case <-streamCtx.Done():
 			s.logger.Info("SubscribeCardsStream closed",
 				zap.String("conn_id", connID),
 				zap.String("tenant_id", tenantID),
-				zap.String("user_id", userID))
+				zap.String("user_id", userID),
+				zap.String("client_ip", clientIP),
+				zap.String("user_agent", truncStr(userAgent, 120)),
+				zap.Duration("uptime", time.Since(sseOpenedAt)))
 			return
 
 		case <-tickerHeart.C:
@@ -720,9 +784,41 @@ waitInit:
 		case newViewIDs := <-viewIDsCh:
 			currentViewIDs = newViewIDs
 			s.pushRealtimeSnapshot(w, flusher, connID, currentViewIDs, lastVersions)
-			s.logger.Info("[SSE] view updated",
+			s.sseHotPathLog("[SSE] view updated",
 				zap.String("conn_id", connID),
 				zap.Int("new_view_count", len(currentViewIDs)))
+
+		case newWatch := <-watchIDsCh:
+			watchIDsLive = newWatch
+			watchSet := make(map[string]bool, len(watchIDsLive))
+			for _, id := range watchIDsLive {
+				if id != "" {
+					watchSet[id] = true
+				}
+			}
+			prevView := append([]string(nil), currentViewIDs...)
+			var filteredView []string
+			for _, id := range prevView {
+				if watchSet[id] {
+					filteredView = append(filteredView, id)
+				}
+			}
+			currentViewIDs = filteredView
+			viewSet := make(map[string]bool, len(currentViewIDs))
+			for _, id := range currentViewIDs {
+				viewSet[id] = true
+			}
+			for id := range lastVersions {
+				if !viewSet[id] {
+					delete(lastVersions, id)
+				}
+			}
+			s.pushRealtimeSnapshot(w, flusher, connID, currentViewIDs, lastVersions)
+			s.pushStatusSnapshot(w, flusher, connID, watchIDsLive)
+			s.sseHotPathLog("[SSE] watch updated",
+				zap.String("conn_id", connID),
+				zap.Int("new_watch_count", len(watchIDsLive)),
+				zap.Int("view_count", len(currentViewIDs)))
 
 		case <-tickerData.C:
 			payload := make(map[string]interface{})
@@ -749,7 +845,7 @@ waitInit:
 			}
 			sseRealtimeTickerLogCount++
 			if sseRealtimeTickerLogCount%20 == 0 {
-				s.logger.Info("[SSE-PUSH] ticker realtime",
+				s.sseHotPathLog("[SSE-PUSH] ticker realtime",
 					zap.String("conn_id", connID),
 					zap.Int("cards", len(payload)),
 					zap.Int("bytes", len(jsonData)),
@@ -777,7 +873,7 @@ waitInit:
 				if err != nil {
 					continue
 				}
-				s.logger.Info("[SSE-PUSH] card_status event",
+				s.sseHotPathLog("[SSE-PUSH] card_status event",
 					zap.String("conn_id", connID),
 					zap.String("card_id", sseEvt.Status.CardID),
 					zap.Int("bytes", len(jsonData)))
@@ -828,7 +924,7 @@ func (s *CardRealtimeService) pushRealtimeSnapshot(w http.ResponseWriter, flushe
 	}
 	if len(snapshot) > 0 {
 		jsonSnap, _ := json.Marshal(snapshot)
-		s.logger.Info("[SSE-PUSH] realtime snapshot",
+		s.sseHotPathLog("[SSE-PUSH] realtime snapshot",
 			zap.String("conn_id", connID),
 			zap.Int("cards", len(snapshot)),
 			zap.Int("bytes", len(jsonSnap)),
@@ -868,7 +964,7 @@ func (s *CardRealtimeService) pushStatusSnapshot(w http.ResponseWriter, flusher 
 	}
 	if count > 0 {
 		flusher.Flush()
-		s.logger.Info("[SSE-PUSH] status snapshot",
+		s.sseHotPathLog("[SSE-PUSH] status snapshot",
 			zap.String("conn_id", connID),
 			zap.Int("cards", count))
 	}
@@ -1056,6 +1152,70 @@ func (s *CardRealtimeService) UpdateSSEView(connID string, newViewIDs []string) 
 	case conn.viewIDsCh <- filtered:
 	default:
 		s.logger.Warn("[SSE] viewIDsCh full, dropping update",
+			zap.String("conn_id", connID))
+	}
+	return nil
+}
+
+// UpdateSSEWatch 热更新 watchIDs（card_change 后无需重连；与 InitSSE 相同权限过滤 + cardIndex 维护）
+func (s *CardRealtimeService) UpdateSSEWatch(connID string, watchIDs []string) error {
+	s.connMu.Lock()
+	conn, ok := s.sseConns[connID]
+	if !ok || conn == nil || conn.watchIDs == nil {
+		s.connMu.Unlock()
+		return fmt.Errorf("SSE connection %s not ready", connID)
+	}
+
+	stored := s.getCardList(conn.tenantID, conn.userID)
+	allowedSet := make(map[string]bool)
+	if stored != nil {
+		for _, ids := range stored.CardsByBranch {
+			for _, id := range ids {
+				allowedSet[id] = true
+			}
+		}
+	}
+	var filteredWatch []string
+	for _, id := range watchIDs {
+		if id != "" && allowedSet[id] {
+			filteredWatch = append(filteredWatch, id)
+		}
+	}
+
+	oldSet := conn.watchIDs
+	newSet := make(map[string]bool, len(filteredWatch))
+	for _, id := range filteredWatch {
+		newSet[id] = true
+	}
+	for cardID := range oldSet {
+		if !newSet[cardID] {
+			conns := s.cardIndex[cardID]
+			filtered := conns[:0]
+			for _, c := range conns {
+				if c != connID {
+					filtered = append(filtered, c)
+				}
+			}
+			if len(filtered) == 0 {
+				delete(s.cardIndex, cardID)
+			} else {
+				s.cardIndex[cardID] = filtered
+			}
+		}
+	}
+	for cardID := range newSet {
+		if !oldSet[cardID] {
+			s.cardIndex[cardID] = append(s.cardIndex[cardID], connID)
+		}
+	}
+	conn.watchIDs = newSet
+	ch := conn.watchIDsCh
+	s.connMu.Unlock()
+
+	select {
+	case ch <- filteredWatch:
+	default:
+		s.logger.Warn("[SSE] watchIDsCh full, dropping watch update",
 			zap.String("conn_id", connID))
 	}
 	return nil

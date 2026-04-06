@@ -20,7 +20,11 @@ type DeviceMeta struct {
 	BoundBedID    string // may be empty
 	BoundRoomID   string // may be empty
 	BoundRoomName string // rooms.room_name, resolved via bound_room_id or bound_bed_id→beds→rooms
-	UnitID        string
+	// EffectiveRoomID BoundRoomID，若空则为 BoundBedID 解析出的 room_id；与 ClassifyRoomType(BoundRoomName) 一致使用。
+	EffectiveRoomID string
+	// BoundRoomHasBed 设备解析到的 room_id 在 tenant 内 beds 表中是否有记录；Stay 链仅对无床 room 开放（卫生间名除外）。
+	BoundRoomHasBed bool
+	UnitID          string
 	RuntimeStatus map[string]string // event-driven device status (e.g. left_init_status)
 }
 
@@ -113,6 +117,7 @@ func (c *DeviceMetaCache) GetOrLoad(ctx context.Context, cardID string) *CardMet
 				exDev.BoundBedID = dbDev.BoundBedID
 				exDev.BoundRoomID = dbDev.BoundRoomID
 				exDev.BoundRoomName = dbDev.BoundRoomName
+				exDev.BoundRoomHasBed = dbDev.BoundRoomHasBed
 				exDev.UnitID = dbDev.UnitID
 			} else {
 				existing.Devices[devID] = dbDev
@@ -360,12 +365,35 @@ func (c *DeviceMetaCache) loadFromDB(ctx context.Context, cardID string) *CardMe
 
 	// 批量解析 room_name：bound_room_id 直接查 rooms，bound_bed_id 走 beds→rooms
 	roomNames := c.resolveRoomNames(ctx, roomIDs, bedIDs)
+	bedToRoom := c.resolveBedToRoom(ctx, meta.TenantID, bedIDs)
+	roomIDSet := make(map[string]struct{})
+	for _, dm := range meta.Devices {
+		if dm.BoundRoomID != "" {
+			roomIDSet[dm.BoundRoomID] = struct{}{}
+		}
+		if dm.BoundBedID != "" {
+			if rid := bedToRoom[dm.BoundBedID]; rid != "" {
+				roomIDSet[rid] = struct{}{}
+			}
+		}
+	}
+	uniqRooms := make([]string, 0, len(roomIDSet))
+	for rid := range roomIDSet {
+		uniqRooms = append(uniqRooms, rid)
+	}
+	roomsWithBeds := c.resolveRoomsWithBeds(ctx, meta.TenantID, uniqRooms)
 	for _, dm := range meta.Devices {
 		if dm.BoundRoomID != "" {
 			dm.BoundRoomName = roomNames[dm.BoundRoomID]
 		} else if dm.BoundBedID != "" {
 			dm.BoundRoomName = roomNames[dm.BoundBedID]
 		}
+		effectiveRoom := dm.BoundRoomID
+		if effectiveRoom == "" {
+			effectiveRoom = bedToRoom[dm.BoundBedID]
+		}
+		dm.EffectiveRoomID = effectiveRoom
+		dm.BoundRoomHasBed = roomsWithBeds[effectiveRoom]
 	}
 
 	c.logger.Debug("loaded device meta",
@@ -418,6 +446,56 @@ func (c *DeviceMetaCache) resolveRoomNames(ctx context.Context, roomIDs, bedIDs 
 	}
 
 	return result
+}
+
+// resolveBedToRoom bed_id → room_id（tenant 内）。
+func (c *DeviceMetaCache) resolveBedToRoom(ctx context.Context, tenantID string, bedIDs []string) map[string]string {
+	result := make(map[string]string)
+	if c.db == nil || tenantID == "" || len(bedIDs) == 0 {
+		return result
+	}
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT b.bed_id::text, b.room_id::text FROM beds b WHERE b.tenant_id = $1 AND b.bed_id = ANY($2)`,
+		tenantID, pqUUIDs(bedIDs))
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Warn("resolve bed to room", zap.Error(err))
+		}
+		return result
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var bid, rid string
+		if rows.Scan(&bid, &rid) == nil && bid != "" && rid != "" {
+			result[bid] = rid
+		}
+	}
+	return result
+}
+
+// resolveRoomsWithBeds 返回 tenant 下该 room_id 是否至少存在一张床。
+func (c *DeviceMetaCache) resolveRoomsWithBeds(ctx context.Context, tenantID string, roomIDs []string) map[string]bool {
+	out := make(map[string]bool)
+	if c.db == nil || tenantID == "" || len(roomIDs) == 0 {
+		return out
+	}
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT DISTINCT b.room_id::text FROM beds b WHERE b.tenant_id = $1 AND b.room_id = ANY($2)`,
+		tenantID, pqUUIDs(roomIDs))
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Warn("resolve rooms with beds", zap.Error(err))
+		}
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rid string
+		if rows.Scan(&rid) == nil && rid != "" {
+			out[rid] = true
+		}
+	}
+	return out
 }
 
 // pqUUIDs 将 string slice 转为 pq.Array 兼容的格式。

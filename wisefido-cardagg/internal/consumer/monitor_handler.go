@@ -2,7 +2,9 @@ package consumer
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"owl-common/card"
@@ -104,27 +106,43 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 		return nil
 	}
 	trackID := resolveTrackID(fields)
-	// track_id=88 视为无效轨迹，用 key "88" 写入以便设备能标为在线，但 Flush 发布后前端只渲染 track 0-8，不会多出一个在雷达位置的人
-	if trackID == observation.TrackInvalid {
-		trackID = observation.TrackInvalid
-	}
 	h.buffer.Write(m.CardID, deviceKey, strconv.Itoa(trackID), fields, m.Timestamp)
 	return nil
 }
 
-// resolveTrackID 从 payload 取 track_id，无或非法则返回 DefaultTrackID 对应数值 0。
+// resolveTrackID 从 payload 取 track_id。缺省、类型无法解析或与 88 一样走无效桶，避免 string/缺字段误落 key "0" 与真人轨迹合并成双目标。
 func resolveTrackID(fields map[string]interface{}) int {
 	if fields == nil {
-		return 0
+		return observation.TrackInvalid
 	}
-	switch v := fields["track_id"].(type) {
+	v, ok := fields["track_id"]
+	if !ok || v == nil {
+		return observation.TrackInvalid
+	}
+	switch x := v.(type) {
 	case float64:
-		return int(v)
+		return int(x)
 	case int:
-		return v
+		return x
 	case int64:
-		return int(v)
+		return int(x)
+	case json.Number:
+		n, err := x.Int64()
+		if err != nil {
+			return observation.TrackInvalid
+		}
+		return int(n)
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return observation.TrackInvalid
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return observation.TrackInvalid
+		}
+		return n
 	default:
-		return 0
+		return observation.TrackInvalid
 	}
 }

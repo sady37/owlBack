@@ -1,5 +1,6 @@
 [Unit]
 Description=OwlBack backend services (data, cardagg, qinglan, sleepace, iot, ai)
+# 分模块: owlback.data / owlback.qinglan / … 见 owlback.*.service 与 install-modular-units.sh
 After=network.target docker.service
 Wants=docker.service
 

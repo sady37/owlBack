@@ -215,6 +215,75 @@ func (r *PostgresSleepaceReportsRepository) GetValidDates(ctx context.Context, t
 	return dates, nil
 }
 
+// ListReportsAllInRange 返回 [startDate,endDate] 内全部报告，按 date ASC
+func (r *PostgresSleepaceReportsRepository) ListReportsAllInRange(ctx context.Context, tenantID, deviceID string, startDate, endDate int) ([]*domain.SleepaceReport, error) {
+	if tenantID == "" || deviceID == "" || startDate == 0 || endDate == 0 {
+		return nil, fmt.Errorf("tenant_id, device_id, start_date and end_date are required")
+	}
+	if startDate > endDate {
+		return nil, fmt.Errorf("start_date must be <= end_date")
+	}
+	query := `
+		SELECT 
+			report_id::text,
+			tenant_id::text,
+			device_id::text,
+			COALESCE(device_code, '') AS device_code,
+			device_uid,
+			record_count,
+			start_time,
+			end_time,
+			date,
+			stop_mode,
+			time_step,
+			timezone,
+			COALESCE(sleep_state, '') as sleep_state,
+			COALESCE(report, '') as report,
+			EXTRACT(EPOCH FROM created_at)::bigint as created_at,
+			EXTRACT(EPOCH FROM updated_at)::bigint as updated_at
+		FROM sleepace_report
+		WHERE tenant_id = $1::uuid
+		  AND device_id = $2::uuid
+		  AND date >= $3
+		  AND date <= $4
+		ORDER BY date ASC
+	`
+	rows, err := r.db.QueryContext(ctx, query, tenantID, deviceID, startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list sleepace reports in range: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*domain.SleepaceReport, 0)
+	for rows.Next() {
+		var report domain.SleepaceReport
+		if err := rows.Scan(
+			&report.ReportID,
+			&report.TenantID,
+			&report.DeviceID,
+			&report.DeviceCode,
+			&report.DeviceUID,
+			&report.RecordCount,
+			&report.StartTime,
+			&report.EndTime,
+			&report.Date,
+			&report.StopMode,
+			&report.TimeStep,
+			&report.Timezone,
+			&report.SleepState,
+			&report.Report,
+			&report.CreatedAt,
+			&report.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan sleepace report: %w", err)
+		}
+		out = append(out, &report)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate sleepace reports: %w", err)
+	}
+	return out, nil
+}
+
 // GetValidDatesInRange 获取 [startDate,endDate] 内已有报告的日期
 func (r *PostgresSleepaceReportsRepository) GetValidDatesInRange(ctx context.Context, tenantID, deviceID string, startDate, endDate int) ([]int, error) {
 	if tenantID == "" || deviceID == "" || startDate == 0 || endDate == 0 {

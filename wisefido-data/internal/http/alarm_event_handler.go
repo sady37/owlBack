@@ -245,6 +245,9 @@ func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Reque
 		if item.AddressDisplay != nil {
 			itemMap["address_display"] = *item.AddressDisplay
 		}
+		if item.UnitTimezone != nil {
+			itemMap["unit_timezone"] = *item.UnitTimezone
+		}
 
 		// JSONB 字段
 		if item.TriggerData != nil {

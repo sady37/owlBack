@@ -272,9 +272,12 @@ type RoomState struct {
 
 // BathRoomState 卫生间空间层。仅当存在 isBathroomRadar（绑定 room 为 Bathroom）时创建/更新；由该雷达 stat.track 更新。
 // HasRisk 由卫生间数据各自计算。
+// RoomID/RoomName：绑定房间（bound_room_id 或由床解析出的 room_id）；供前端区分「真卫生间」与 Stay 走 BathRoomState 的无床房间。
 type BathRoomState struct {
 	DeviceUID              string `json:"-"`                   // 内部用，不向前端暴露（HIPAA）
 	DeviceID               string `json:"device_id,omitempty"` // 卫生间雷达 device_id，前端展示用
+	RoomID                 string `json:"room_id,omitempty"`   // 有效 room UUID（可选）
+	RoomName               string `json:"room_name,omitempty"` // rooms.room_name（可选，改名后以下次状态更新为准）
 	UpdatedAt              int64  `json:"updated_at,omitempty"`
 	TotalPeople            int    `json:"total_people"`     // 卫生间人数
 	LastEnterTime          int64  `json:"last_enter_time,omitempty"`

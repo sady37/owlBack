@@ -418,6 +418,11 @@ func (r *Router) RegisterMonitorRoutes(h *MonitorHandler) {
 		h.UpdateSSEView(w, req)
 	})
 
+	// POST /data/api/v1/data/vital-focus/cards/stream/watch - card_change 后热更新 watchIDs
+	r.Handle("/data/api/v1/data/vital-focus/cards/stream/watch", func(w http.ResponseWriter, req *http.Request) {
+		h.UpdateSSEWatch(w, req)
+	})
+
 	// GET /data/api/v1/data/vital-focus/card/{id} - 获取卡片详情
 	r.Handle("/data/api/v1/data/vital-focus/card/", func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet {
@@ -458,10 +463,10 @@ func (r *Router) RegisterRoundsRoutes(roundsHandler *RoundsHandler) {
 }
 
 // RegisterAPNSRoutes 注册 iOS APNs 设备 Token 路由
-// POST   /auth/api/v1/devices/apns  → iOS App 登录后注册 token
-// DELETE /auth/api/v1/devices/apns  → iOS App 登出时注销 token
+// POST   /data/api/v1/auth/devices/apns  — 登录后注册设备
+// DELETE /data/api/v1/auth/devices/apns  — 登出时注销设备
 func (r *Router) RegisterAPNSRoutes(h *APNSHandler) {
-	r.Handle("/auth/api/v1/devices/apns", func(w http.ResponseWriter, req *http.Request) {
+	r.Handle("/data/api/v1/auth/devices/apns", func(w http.ResponseWriter, req *http.Request) {
 		switch req.Method {
 		case http.MethodPost:
 			h.RegisterDevice(w, req)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 
@@ -509,7 +510,9 @@ items 是 []interface{}，每个元素是一个 map[string]interface{}。
 */
 func decodeRadarEvent(data map[string]interface{}) ([]interface{}, error) {
 	eventType := toInt(data["type"])
-	log.Printf("[DECODE_EVENT_DEBUG] raw data: type=%v, data=%v", eventType, data["data"])
+	if os.Getenv("QINGLAN_VERBOSE_LOG") == "true" {
+		log.Printf("[DECODE_EVENT_DEBUG] raw data: type=%v, data=%v", eventType, data["data"])
+	}
 
 	var items []interface{}
 

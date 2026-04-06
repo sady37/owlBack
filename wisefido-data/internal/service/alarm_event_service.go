@@ -165,6 +165,8 @@ type AlarmEventDTO struct {
 	BedID          *string `json:"bed_id,omitempty"`          // 床位ID（前端需要 ID 来选择对象）
 	BedName        *string `json:"bed_name,omitempty"`        // 床位名称（用于显示）
 	AddressDisplay *string `json:"address_display,omitempty"` // 格式化地址显示（"branch_name-building_name-floor-unit_name-room_name-bed_name"）
+	// 发生地/住户单元 IANA 时区（来自 units.timezone），供前端展示 triggered_at、handled_at 等
+	UnitTimezone *string `json:"unit_timezone,omitempty"`
 
 	// JSONB 字段（解析后返回）
 	TriggerData   map[string]interface{} `json:"trigger_data,omitempty"`   // 触发数据快照
@@ -948,6 +950,10 @@ func (s *alarmEventService) enrichAlarmEventDTO(ctx context.Context, tenantID st
 					if dto.UnitName == nil && unit.UnitName != "" {
 						dto.UnitName = &unit.UnitName
 					}
+					if dto.UnitTimezone == nil && strings.TrimSpace(unit.Timezone) != "" {
+						tz := strings.TrimSpace(unit.Timezone)
+						dto.UnitTimezone = &tz
+					}
 					if dto.BranchID == nil && unit.BranchID.Valid && unit.BranchID.String != "" {
 						dto.BranchID = &unit.BranchID.String
 					}
@@ -984,7 +990,25 @@ func (s *alarmEventService) enrichAlarmEventDTO(ctx context.Context, tenantID st
 		s.enrichResidentInfo(ctx, tenantID, device, dto)
 	}
 
+	s.ensureUnitTimezone(ctx, tenantID, dto)
+
 	return nil
+}
+
+// ensureUnitTimezone 补全 units.timezone（snapshot / 上面分支未写入时）
+func (s *alarmEventService) ensureUnitTimezone(ctx context.Context, tenantID string, dto *AlarmEventDTO) {
+	if dto.UnitTimezone != nil && strings.TrimSpace(*dto.UnitTimezone) != "" {
+		return
+	}
+	if dto.UnitID == nil || strings.TrimSpace(*dto.UnitID) == "" {
+		return
+	}
+	unit, err := s.unitsRepo.GetUnit(ctx, tenantID, strings.TrimSpace(*dto.UnitID))
+	if err != nil || unit == nil || strings.TrimSpace(unit.Timezone) == "" {
+		return
+	}
+	tz := strings.TrimSpace(unit.Timezone)
+	dto.UnitTimezone = &tz
 }
 
 // enrichFromSnapshot 优先从 metadata.snapshot 回填 DTO 所有关联字段
@@ -1016,6 +1040,7 @@ func (s *alarmEventService) enrichFromSnapshot(dto *AlarmEventDTO) bool {
 	setIfNil(&dto.BuildingName, "building_name")
 	setIfNil(&dto.UnitID, "unit_id")
 	setIfNil(&dto.UnitName, "unit_name")
+	setIfNil(&dto.UnitTimezone, "unit_timezone")
 	setIfNil(&dto.RoomID, "room_id")
 	setIfNil(&dto.RoomName, "room_name")
 	setIfNil(&dto.BedID, "bed_id")

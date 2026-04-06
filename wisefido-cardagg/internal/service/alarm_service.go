@@ -475,10 +475,36 @@ func isWithinResetTimeWindow(now time.Time, params *alarm.ResetTimeParams, timez
 	return t.After(inBedT) && t.Before(outBedT)
 }
 
-// InRestTimeWindow 当前时间是否在租户 ResetTime 休息窗口内，供 event_handler 等调用。
-func (s *AlarmService) InRestTimeWindow(ctx context.Context, tenantID string) bool {
+// getEffectiveTimezoneForCard 卡片/单元 IANA 时区，供 ResetTime 与本地 InBed/OutBed 对齐；查库失败或空则 America/Denver（与 unit 创建默认一致）。
+func (s *AlarmService) getEffectiveTimezoneForCard(ctx context.Context, cardID string) string {
+	const fallback = "America/Denver"
+	if s.db == nil || cardID == "" {
+		return fallback
+	}
+	var ctz, utz sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT NULLIF(TRIM(c.timezone), ''), NULLIF(TRIM(u.timezone), '')
+		FROM cards c
+		LEFT JOIN units u ON c.unit_id = u.unit_id AND c.tenant_id = u.tenant_id
+		WHERE c.card_id = $1
+	`, cardID).Scan(&ctz, &utz)
+	if err != nil {
+		return fallback
+	}
+	if ctz.Valid && ctz.String != "" {
+		return ctz.String
+	}
+	if utz.Valid && utz.String != "" {
+		return utz.String
+	}
+	return fallback
+}
+
+// InRestTimeWindow 当前时间是否在租户 ResetTime 休息窗口内（按 card 所在单元本地时钟），供 event_handler 等调用。
+func (s *AlarmService) InRestTimeWindow(ctx context.Context, tenantID, cardID string) bool {
 	params := s.getResetTimeParamsForTenant(ctx, tenantID)
-	return isWithinResetTimeWindow(time.Now(), params, "")
+	tz := s.getEffectiveTimezoneForCard(ctx, cardID)
+	return isWithinResetTimeWindow(time.Now(), params, tz)
 }
 
 // getResetTimeParamsForTenant 从 alarm_cloud.metadata 读取租户 TenantResetTime.ResetTime，无配置或解析失败返回 nil（视为在窗口内）。
@@ -520,7 +546,8 @@ func (s *AlarmService) TryAddLeftBedPendingAtTrigger(ctx context.Context, msg *r
 		return false
 	}
 	params := s.getResetTimeParamsForTenant(ctx, msg.TenantID)
-	if !isWithinResetTimeWindow(time.Now(), params, "") {
+	tz := s.getEffectiveTimezoneForCard(ctx, msg.CardID)
+	if !isWithinResetTimeWindow(time.Now(), params, tz) {
 		s.logger.Debug("LeftBed pending skip: outside ResetTimeParams", zap.String("cid", msg.CardID))
 		return false
 	}

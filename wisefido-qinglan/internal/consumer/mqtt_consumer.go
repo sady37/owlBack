@@ -588,7 +588,9 @@ func (c *MQTTConsumer) handlePropertyMessage(uid string, message map[string]inte
 	if cmd == "read" {
 		logLabel = "GetDeviceProperties"
 	}
-	log.Printf("%s receive MQTT (device raw): device=%s, requestId=%s, msg=%+v", logLabel, uid, requestIDRaw, message)
+	if isQinglanVerboseLog() {
+		log.Printf("%s receive MQTT (device raw): device=%s, requestId=%s, msg=%+v", logLabel, uid, requestIDRaw, message)
+	}
 
 	decoded, err := decode.RadarDecoder(message, "prop")
 	if err != nil || decoded == nil {
@@ -624,7 +626,7 @@ func (c *MQTTConsumer) handlePropertyMessage(uid string, message map[string]inte
 		ctx := context.Background()
 		if err := c.streamPublisher.StoreCommandResponse(ctx, requestID, payload); err != nil {
 			log.Printf("❌ %s store Redis: requestId=%s: %v", logLabel, requestID, err)
-		} else {
+		} else if isQinglanVerboseLog() {
 			log.Printf("✅ %s send Redis: device=%s, requestId=%s, payload=%+v", logLabel, uid, requestID, payload)
 		}
 	} else {
@@ -726,7 +728,7 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 		return nil
 	}
 
-	if len(items) > 0 && canMonitor {
+	if len(items) > 0 && canMonitor && isQinglanVerboseLog() {
 		n := atomic.AddUint64(&monitorHandleLogCount, 1)
 		if n%10 == 0 {
 			var sample map[string]interface{}

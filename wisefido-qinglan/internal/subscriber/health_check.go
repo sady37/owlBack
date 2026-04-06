@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"owl-common/card"
 	"owl-common/observation"
 	"owl-common/redis"
+	"wisefido-qinglan/internal/consumer"
 
 	"go.uber.org/zap"
 )
@@ -177,8 +179,10 @@ func (m *DeviceSubscriptionManager) validateDeviceHealth(health *DeviceHealthSta
 	}
 
 	x, y, z, calibrated := m.parseAccelerator(health.AcceleraRaw)
-	log.Printf("[HEALTH_DEBUG] device=%s accelera=%q install_style=%d x=%.2f y=%.2f calibrated=%v",
-		deviceUID, health.AcceleraRaw, health.InstallStyle, x, y, calibrated)
+	if os.Getenv("QINGLAN_VERBOSE_LOG") == "true" {
+		log.Printf("[HEALTH_DEBUG] device=%s accelera=%q install_style=%d x=%.2f y=%.2f calibrated=%v",
+			deviceUID, health.AcceleraRaw, health.InstallStyle, x, y, calibrated)
+	}
 	if !calibrated {
 		// V == 0，未校准
 		health.AngleAbnormal = 1
@@ -223,19 +227,18 @@ func (m *DeviceSubscriptionManager) parseAccelerator(accRaw string) (float64, fl
 	return x, y, z, calibrated
 }
 
-// validateAngle 根据安装方式验证角度是否在正常范围内
-// installStyle: 0=顶装, 1=侧装, 2=角装
+// validateAngle 根据安装方式验证角度是否在正常范围内（与厂家 checkAccelera 一致）
+// installStyle: 0=顶装, 1=侧装, 2=墙角
 // 返回: true=正常, false=异常
 func (m *DeviceSubscriptionManager) validateAngle(x, y float64, installStyle int) bool {
+	ax := absFloat(x)
 	switch installStyle {
-	case 0: // 顶装
-		// X和Y应在±10°以内
-		return absFloat(x) <= 10 && absFloat(y) <= 10
-
-	case 1, 2: // 侧装或角装
-		// X应在±10°以内，Y应在-60°到-90°之间
-		return absFloat(x) <= 10 && y >= -90 && y <= -60
-
+	case 0: // 顶装：水平，两轴 ±10°
+		return ax <= 10 && absFloat(y) <= 10
+	case 1: // 侧装：近乎垂直，|x|≤10 且 y < -60（y=-60 为异常）
+		return ax <= 10 && y < -60
+	case 2: // 墙角：45°~60° 倾角支架，|x|≤10 且 -60 ≤ y ≤ -45
+		return ax <= 10 && y >= -60 && y <= -45
 	default:
 		return false
 	}
@@ -314,13 +317,13 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 		if err := m.streamPublisher.PublishAlarm(ctx, msg); err != nil {
 			m.logger.Warn("Failed to publish device alarm", zap.String("event_name", eventName), zap.String("device_uid", deviceUID), zap.Error(err))
 		} else {
-			m.logger.Info("Published device alarm → iot:alarm:stream", zap.String("device_uid", deviceUID), zap.String("event_name", eventName), zap.String("field", fieldKey), zap.Int("value", value))
+			consumer.QinglanHotPathLog(m.logger, "Published device alarm → iot:alarm:stream", zap.String("device_uid", deviceUID), zap.String("event_name", eventName), zap.String("field", fieldKey), zap.Int("value", value))
 		}
 	} else {
 		if err := m.streamPublisher.PublishEvent(ctx, msg); err != nil {
 			m.logger.Warn("Failed to publish device event", zap.String("event_name", eventName), zap.String("device_uid", deviceUID), zap.Error(err))
 		} else {
-			m.logger.Info("Published device event → iot:event:stream", zap.String("device_uid", deviceUID), zap.String("event_name", eventName), zap.String("field", fieldKey), zap.Int("value", value))
+			consumer.QinglanHotPathLog(m.logger, "Published device event → iot:event:stream", zap.String("device_uid", deviceUID), zap.String("event_name", eventName), zap.String("field", fieldKey), zap.Int("value", value))
 		}
 	}
 }

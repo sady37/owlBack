@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -41,9 +42,10 @@ type realtimeServiceInterface interface {
 	GetCardRealtime(ctx context.Context, req service.GetCardRealtimeRequest) (*service.GetCardRealtimeResponse, error)
 	GetCardStatus(ctx context.Context, cardID string) (map[string]interface{}, error)
 	SubscribeRealtimeStream(ctx context.Context, w http.ResponseWriter, cardID, tenantID, userID string)
-	SubscribeCardsStream(ctx context.Context, w http.ResponseWriter, interval int, tenantID, userID string)
+	SubscribeCardsStream(ctx context.Context, w http.ResponseWriter, interval int, tenantID, userID, clientIP, userAgent string)
 	InitSSE(connID string, watchIDs, viewIDs []string) error
 	UpdateSSEView(connID string, newViewIDs []string) error
+	UpdateSSEWatch(connID string, watchIDs []string) error
 }
 
 func (h *MonitorHandler) SetRealtimeService(realtime realtimeServiceInterface) {
@@ -356,7 +358,21 @@ func (h *MonitorHandler) SubscribeCardsStream(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	h.realtime.SubscribeCardsStream(r.Context(), w, interval, tenantID, currentUserID)
+	h.realtime.SubscribeCardsStream(r.Context(), w, interval, tenantID, currentUserID, sseClientIP(r), r.UserAgent())
+}
+
+func sseClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		return strings.TrimSpace(strings.Split(xff, ",")[0])
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // POST /data/api/v1/data/vital-focus/cards/stream/init
@@ -450,6 +466,46 @@ func (h *MonitorHandler) UpdateSSEView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, Ok(map[string]interface{}{"status": "updated", "view_count": len(body.ViewIDs)}))
+}
+
+// POST /data/api/v1/data/vital-focus/cards/stream/watch
+// card_change 后更新 watchIDs，无需重连 SSE
+func (h *MonitorHandler) UpdateSSEWatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	currentUserID, tenantID, _, _, ok := service.MustSession(r.Context())
+	if !ok || currentUserID == "" || tenantID == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if h.realtime == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
+	var body struct {
+		ConnID   string   `json:"conn_id"`
+		WatchIDs []string `json:"watch_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, Fail("invalid request body"))
+		return
+	}
+	if body.ConnID == "" {
+		writeJSON(w, http.StatusBadRequest, Fail("conn_id required"))
+		return
+	}
+
+	_ = currentUserID
+	_ = tenantID
+
+	if err := h.realtime.UpdateSSEWatch(body.ConnID, body.WatchIDs); err != nil {
+		writeJSON(w, http.StatusNotFound, Fail(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]interface{}{"status": "updated", "watch_count": len(body.WatchIDs)}))
 }
 
 // SubscribeRealtimeStream 转发到 CardRealtimeService.SubscribeRealtimeStream（SSE 由 Service 负责）

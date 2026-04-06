@@ -402,6 +402,73 @@ func (c *SleepaceGatewayClient) SetReportUploadTime(ctx context.Context, deviceI
 	})
 }
 
+// SetDeviceLightConf pushes indicator light on/off (厂家 deviceLightConf/set: status 0=on 1=off).
+func (c *SleepaceGatewayClient) SetDeviceLightConf(ctx context.Context, deviceCode string, status int) error {
+	return c.postProxy(ctx, "/sleepace/deviceLightConf/set", map[string]interface{}{
+		"deviceId": deviceCode, "status": status,
+	})
+}
+
+// GetDeviceLightConf queries indicator light from hardware (deviceLightConf/get: data.status 0=on 1=off).
+func (c *SleepaceGatewayClient) GetDeviceLightConf(ctx context.Context, deviceCode string) (int, error) {
+	proxyURL := fmt.Sprintf("%s/api/v1/proxy/sleepace/deviceLightConf/get", c.apiBaseURL)
+	payload := map[string]interface{}{"deviceId": deviceCode}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return 0, fmt.Errorf("marshal deviceLightConf/get: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, proxyURL, bytes.NewReader(jsonData))
+	if err != nil {
+		return 0, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("deviceLightConf/get request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("deviceLightConf/get status %d: %s", resp.StatusCode, string(body))
+	}
+	var out struct {
+		Status int                    `json:"status"`
+		Msg    string                 `json:"msg"`
+		Data   map[string]interface{} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return 0, fmt.Errorf("unmarshal deviceLightConf/get: %w", err)
+	}
+	if out.Status != 0 {
+		return 0, fmt.Errorf("deviceLightConf/get API: %s (status %d)", out.Msg, out.Status)
+	}
+	if out.Data == nil {
+		return 0, fmt.Errorf("deviceLightConf/get: empty data")
+	}
+	raw, ok := out.Data["status"]
+	if !ok {
+		return 0, fmt.Errorf("deviceLightConf/get: no data.status")
+	}
+	mode, ok := jsonScalarToInt(raw)
+	if !ok || (mode != 0 && mode != 1) {
+		return 0, fmt.Errorf("deviceLightConf/get: invalid status %v", raw)
+	}
+	return mode, nil
+}
+
+func jsonScalarToInt(v interface{}) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
 func (c *SleepaceGatewayClient) postProxy(ctx context.Context, sleepacePath string, data map[string]interface{}) error {
 	proxyURL := fmt.Sprintf("%s/api/v1/proxy%s", c.apiBaseURL, sleepacePath)
 

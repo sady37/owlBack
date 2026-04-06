@@ -438,7 +438,8 @@ func sumAreaPeople(m map[string]int) int {
 }
 
 // PublishBathRoomStateFromEvent 卫生间设备 Enter/Exit/NumberPeople 事件更新 BathRoomState。匹配以 deviceID 为主，无则用 deviceUID（一卡一卫生间雷达）。
-func (s *StateService) PublishBathRoomStateFromEvent(ctx context.Context, cardID, deviceID, deviceUID string, kind RoomStateEventKind, totalPeople int, ts int64) error {
+// roomID/roomName 非空时写入或覆盖 BathRoomState（与 device 绑定房间一致）。
+func (s *StateService) PublishBathRoomStateFromEvent(ctx context.Context, cardID, deviceID, deviceUID string, kind RoomStateEventKind, totalPeople int, ts int64, roomID, roomName string) error {
 	if s.writer == nil || cardID == "" || (deviceID == "" && deviceUID == "") {
 		return nil
 	}
@@ -458,6 +459,12 @@ func (s *StateService) PublishBathRoomStateFromEvent(ctx context.Context, cardID
 		cur = &card.BathRoomState{DeviceID: deviceID, DeviceUID: deviceUID, UpdatedAt: ts, TotalPeople: 0, HasMulti: false, HasRisk: false}
 	} else {
 		cur.UpdatedAt = ts
+	}
+	if roomID != "" {
+		cur.RoomID = roomID
+	}
+	if roomName != "" {
+		cur.RoomName = roomName
 	}
 	if kind == RoomStateEventEnter {
 		cur.LastEnterTime = ts
@@ -604,13 +611,7 @@ func (s *StateService) InitCardRoomAndBathroomState(ctx context.Context, cardID 
 		RoomState: roomState,
 		BedState:  &card.BedState{UpdatedAt: now, BedStatus: BedStatusUnchanged, TrackNumber: 0},
 	}
-	var bathroomDeviceID string
-	for deviceID := range meta.Devices {
-		if IsBathroomDevice(ctx, meta, deviceID, "", enablement) {
-			bathroomDeviceID = deviceID
-			break
-		}
-	}
+	bathroomDeviceID := PickBathroomDeviceIDForInit(ctx, meta, meta.TenantID, enablement)
 	if bathroomDeviceID != "" {
 		dm := meta.Devices[bathroomDeviceID]
 		br := &card.BathRoomState{
@@ -623,6 +624,8 @@ func (s *StateService) InitCardRoomAndBathroomState(ctx context.Context, cardID 
 		}
 		if dm != nil {
 			br.DeviceUID = dm.DeviceUID
+			br.RoomID = dm.EffectiveRoomID
+			br.RoomName = dm.BoundRoomName
 		}
 		fields.BathRoomState = br
 	}
@@ -1170,6 +1173,7 @@ func (s *StateService) UpdateStateFromActivity(
 	isBathroom bool,
 	walkDuration, walkDistance, standDuration, multiPersonDuration int,
 	eventTs int64,
+	roomID, roomName string,
 ) (lastEnterTime, lastExitTime int64, err error) {
 	if s.writer == nil || s.reader == nil {
 		return 0, 0, nil
@@ -1185,15 +1189,22 @@ func (s *StateService) UpdateStateFromActivity(
 	if isBathroom {
 		if curr != nil && curr.BathRoomState != nil {
 			br := curr.BathRoomState
-			if (br.DeviceID != "" && br.DeviceID == deviceID) || (br.DeviceUID != "" && br.DeviceUID == deviceUID) {
-				bathRoomState = &card.BathRoomState{}
-				*bathRoomState = *br
+			match := (br.DeviceID != "" && br.DeviceID == deviceID) || (br.DeviceUID != "" && br.DeviceUID == deviceUID)
+			if !match {
+				return 0, 0, nil
 			}
-		}
-		if bathRoomState == nil {
+			bathRoomState = &card.BathRoomState{}
+			*bathRoomState = *br
+		} else {
 			bathRoomState = &card.BathRoomState{DeviceID: deviceID, DeviceUID: deviceUID, UpdatedAt: eventTs, TotalPeople: 0, HasMulti: false, HasRisk: false}
 		}
 		bathRoomState.UpdatedAt = eventTs
+		if roomID != "" {
+			bathRoomState.RoomID = roomID
+		}
+		if roomName != "" {
+			bathRoomState.RoomName = roomName
+		}
 	} else {
 		if curr != nil && curr.RoomState != nil {
 			roomState = &card.RoomState{}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -14,6 +15,23 @@ import (
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
+
+// QINGLAN_VERBOSE_LOG=true 时热路径用 Info / log.Printf；默认 Debug 或静默。
+func isQinglanVerboseLog() bool {
+	return os.Getenv("QINGLAN_VERBOSE_LOG") == "true"
+}
+
+// QinglanHotPathLog 供 subscriber 等包复用：默认 Debug，verbose 时 Info。
+func QinglanHotPathLog(logger *zap.Logger, msg string, fields ...zap.Field) {
+	if logger == nil {
+		return
+	}
+	if isQinglanVerboseLog() {
+		logger.Info(msg, fields...)
+		return
+	}
+	logger.Debug(msg, fields...)
+}
 
 // CardMappingService 定义卡片映射服务接口（避免导入循环）
 type CardMappingService interface {
@@ -106,10 +124,9 @@ func (p *StreamPublisher) publishObservation(ctx context.Context, stream redisco
 	}
 	data := msg.ToStreamMap()
 	if p.logger != nil && stream.Name != rediscommon.StreamMonitor.Name {
-		// 日志格式 iot:xxx:yyy，xxx=event/alarm/monitor，yyy=category
 		streamLabel := streamLabelFrom(stream.Name, msg)
 		payload, _ := json.Marshal(msg.DataValue)
-		p.logger.Info("publish to redis",
+		QinglanHotPathLog(p.logger, "publish to redis",
 			zap.String("stream", streamLabel),
 			zap.String("cid", msg.CardID),
 			zap.String("device_uid", msg.DeviceUID),

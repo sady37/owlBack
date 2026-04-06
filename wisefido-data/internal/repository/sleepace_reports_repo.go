@@ -20,6 +20,9 @@ type SleepaceReportsRepository interface {
 	// GetValidDates 获取设备的所有有效日期列表
 	GetValidDates(ctx context.Context, tenantID, deviceID string) ([]int, error)
 
+	// ListReportsAllInRange 区间内全部报告（无分页），按 date 升序
+	ListReportsAllInRange(ctx context.Context, tenantID, deviceID string, startDate, endDate int) ([]*domain.SleepaceReport, error)
+
 	// GetValidDatesInRange 获取区间内已有报告的日期（YYYYMMDD）
 	GetValidDatesInRange(ctx context.Context, tenantID, deviceID string, startDate, endDate int) ([]int, error)
 	
