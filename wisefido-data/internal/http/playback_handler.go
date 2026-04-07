@@ -150,7 +150,8 @@ func (h *PlaybackHandler) PostRadarPlayback(w http.ResponseWriter, r *http.Reque
 		zap.String("user_id", strings.TrimSpace(r.Header.Get("X-User-Id"))),
 	)
 
-	result, err := h.track.RadarTrackPlayback(r.Context(), tenantID, did, req.StartTime, req.EndTime)
+	userRole := strings.TrimSpace(r.Header.Get("X-User-Role"))
+	result, err := h.track.RadarTrackPlayback(r.Context(), tenantID, did, req.StartTime, req.EndTime, userRole)
 	if err != nil {
 		h.logReplayAudit("PostRadarPlayback", r, rk, src, reqTime, false, err)
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
@@ -210,7 +211,8 @@ func (h *PlaybackHandler) PostVitalPlayback(w http.ResponseWriter, r *http.Reque
 		zap.String("request_source", src),
 		zap.String("user_id", strings.TrimSpace(r.Header.Get("X-User-Id"))),
 	)
-	if err := service.ValidatePlaybackWindow(startT, endT, service.PlaybackKindVital); err != nil {
+	vitalRole := strings.TrimSpace(r.Header.Get("X-User-Role"))
+	if err := service.ValidatePlaybackWindow(startT, endT, service.PlaybackKindVital, service.PlaybackLookbackForRole(vitalRole)); err != nil {
 		h.logReplayAudit("PostVitalPlayback", r, rk, src, reqTime, false, err)
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return

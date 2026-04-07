@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"wisefido-data/internal/repository"
@@ -11,15 +12,42 @@ import (
 )
 
 // 与 owlFront WaveMonitor / QueryPanel 约定一致，在后端强制防止大时间窗扫库。
+// 最早可查起点按角色分层（与 X-User-Role 对齐）：管理层事故调查/合规可 30 天；一线护理 48 小时。
 const (
-	PlaybackLookbackWindow = 24 * time.Hour
-	PlaybackTrackMaxDur    = 15 * time.Minute
-	PlaybackVitalMaxDur    = 30 * time.Minute
-	playbackClockSkew      = 2 * time.Minute // end 略晚于服务端时钟时允许
+	PlaybackLookbackAdminTier  = 30 * 24 * time.Hour // 产品对外口径：Admin、Manager；不含 IT
+	PlaybackLookbackClinical   = 48 * time.Hour      // Nurse, Caregiver
+	PlaybackLookbackDefault    = 48 * time.Hour      // 未知角色、空角色、Resident 等：与临床档一致，严于 30 天
+	PlaybackLookbackWindow     = PlaybackLookbackDefault
+	PlaybackTrackMaxDur        = 15 * time.Minute
+	PlaybackVitalMaxDur        = 30 * time.Minute
+	playbackClockSkew          = 2 * time.Minute // end 略晚于服务端时钟时允许
 
 	playbackRawMaxRows = 3000
 	playbackPageSize   = 500
 )
+
+// PlaybackLookbackForRole 返回该角色允许的回溯时长（仅用于 ValidatePlaybackWindow 的 oldest 边界）。
+func PlaybackLookbackForRole(role string) time.Duration {
+	r := strings.ToLower(strings.TrimSpace(role))
+	switch r {
+	case "admin", "manager", "systemadmin", "systemoperator":
+		return PlaybackLookbackAdminTier
+	case "nurse", "caregiver":
+		return PlaybackLookbackClinical
+	default:
+		return PlaybackLookbackDefault
+	}
+}
+
+func formatPlaybackLookback(d time.Duration) string {
+	if d == PlaybackLookbackAdminTier {
+		return "30 days"
+	}
+	if d == PlaybackLookbackClinical { // same numeric value as PlaybackLookbackDefault
+		return "48 hours"
+	}
+	return d.String()
+}
 
 type PlaybackKind string
 
@@ -30,9 +58,9 @@ const (
 
 // ValidatePlaybackWindow 校验历史查询时间窗（track / vital 共用入口）。
 // - 仅允许查询「当前时刻」之前的数据（可容忍小幅时钟偏差）。
-// - 整段必须落在最近 PlaybackLookbackWindow 内，防止任意历史大扫库。
+// - 整段 start 不得早于 now-lookback（lookback 由角色决定），防止任意历史大扫库。
 // - 时长：track ≤15min，vital ≤30min（与 WaveMonitor 输入上限一致）。
-func ValidatePlaybackWindow(start, end time.Time, kind PlaybackKind) error {
+func ValidatePlaybackWindow(start, end time.Time, kind PlaybackKind, lookback time.Duration) error {
 	if end.Before(start) {
 		return fmt.Errorf("invalid range: end before start")
 	}
@@ -43,9 +71,9 @@ func ValidatePlaybackWindow(start, end time.Time, kind PlaybackKind) error {
 	if end.After(now.Add(playbackClockSkew)) {
 		return fmt.Errorf("end time must not be in the future")
 	}
-	oldest := now.Add(-PlaybackLookbackWindow)
+	oldest := now.Add(-lookback)
 	if start.Before(oldest) {
-		return fmt.Errorf("query range too old: only last %s is allowed", PlaybackLookbackWindow)
+		return fmt.Errorf("query range too old: only last %s is allowed for your role", formatPlaybackLookback(lookback))
 	}
 	if end.Sub(start) < time.Second {
 		return fmt.Errorf("range too short")
@@ -75,9 +103,11 @@ func NewTrackPlaybackService(devices repository.DevicesRepository, iot repositor
 }
 
 // RadarTrackPlayback 返回 result：{ layout, data }，其中 data.rows 为 IoT 原始行（data_value 与入库一致），data.pages 为每页 500 条。
-func (s *TrackPlaybackService) RadarTrackPlayback(ctx context.Context, tenantID, deviceID string, startMs, endMs int64) (map[string]interface{}, error) {
+// userRole 来自请求头 X-User-Role，用于 PlaybackLookbackForRole。
+func (s *TrackPlaybackService) RadarTrackPlayback(ctx context.Context, tenantID, deviceID string, startMs, endMs int64, userRole string) (map[string]interface{}, error) {
 	start := time.UnixMilli(startMs).UTC()
 	end := time.UnixMilli(endMs).UTC()
+	lb := PlaybackLookbackForRole(userRole)
 	s.log.Info("RadarTrackPlayback begin",
 		zap.String("tenant_id", tenantID),
 		zap.String("device_id", deviceID),
@@ -86,13 +116,16 @@ func (s *TrackPlaybackService) RadarTrackPlayback(ctx context.Context, tenantID,
 		zap.Time("start_utc", start),
 		zap.Time("end_utc", end),
 		zap.String("kind", string(PlaybackKindTrack)),
+		zap.String("user_role", strings.TrimSpace(userRole)),
+		zap.Duration("lookback", lb),
 	)
-	if err := ValidatePlaybackWindow(start, end, PlaybackKindTrack); err != nil {
+	if err := ValidatePlaybackWindow(start, end, PlaybackKindTrack, lb); err != nil {
 		s.log.Warn("RadarTrackPlayback window rejected by ValidatePlaybackWindow",
 			zap.Error(err),
 			zap.Time("start_utc", start),
 			zap.Time("end_utc", end),
-			zap.String("note", "Alarm/Event replay failed: lookback window exceeds 24 hours."),
+			zap.Duration("lookback", lb),
+			zap.String("note", "Replay start outside role-based lookback window."),
 		)
 		return nil, err
 	}

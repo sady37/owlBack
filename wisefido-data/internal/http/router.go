@@ -175,7 +175,7 @@ func (r *Router) RegisterRadarRoutes(h *RadarHandler) {
 	})
 }
 
-// RegisterPlaybackRoutes 历史回放（防扫库：见 service/track_playback_service.go ValidatePlaybackWindow）
+// RegisterPlaybackRoutes 历史回放（防扫库：ValidatePlaybackWindow + PlaybackLookbackForRole 按 X-User-Role）
 func (r *Router) RegisterPlaybackRoutes(h *PlaybackHandler) {
 	r.Handle("/api/radar/playback", h.PostRadarPlayback)
 	r.Handle("/api/vital/playback", h.PostVitalPlayback)
