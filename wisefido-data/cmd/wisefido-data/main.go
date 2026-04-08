@@ -386,7 +386,9 @@ func main() {
 				apnsSender = s
 			}
 		}
-		apnsDeviceSvc := service.NewAPNSDeviceService(db, apnsSender, logger)
+		apnsAllowed := service.NewAllowedCardIDsProvider(kv, usersRepo, residentsRepo, db, cardRepo, logger)
+		apnsPopCounter := service.NewStaffPopPendingCounter(db, apnsAllowed)
+		apnsDeviceSvc := service.NewAPNSDeviceService(db, apnsSender, logger, apnsPopCounter)
 		router.RegisterAPNSRoutes(httpapi.NewAPNSHandler(apnsDeviceSvc, logger))
 		router.RegisterAlarmPushRoute(httpapi.NewAlarmPushHandler(db, apnsDeviceSvc, logger))
 

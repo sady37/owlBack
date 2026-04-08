@@ -23,6 +23,52 @@ import (
    - IsBathroomDevice 决定事件进卫生间路径还是房间路径；Init 用 PickBathroomDeviceIDForInit 按「bathroom+Stay > Stay（无床）> 仅 bathroom」且 device_id 有序选定唯一 BathRoomState 绑定设备；Redis 已绑定时仅匹配该 device 的写才生效（见 UpdateStateFromActivity）。
 */
 
+/*
+
+## 条件编号（已去掉 A1）
+
+### 武装 Stay pending（开始计时 / `AddStayPending`）
+
+**S1** — **EnterRoom** 发生（作为本轮「进房会话」起点；若已有未清状态，见 **S4**）。
+
+**S2** — 自 **S1** 起 **150s 内**，至少收到 **>2 条** `activity`（Statistics），用于 **观测去抖**（约跨过 2 个 60s 周期）。
+
+**S3** — 同一 **150s 窗口内**，出现 **`number_people` > 0**（雷达确认「有人」；不区分 1/2 人，干扰下可能跳变）。
+
+**S4** — 若 **S1** 触发时仍存在 **未解除的 Stay pending**，则 **先删除再按 S1～S3 重新武装**（新一次进房重置会话）。
+
+**生效**：**S1 ∧ S2 ∧ S3** 均满足时执行 **`AddStayPending`**（或你们定义的「开始 45min 计时」）；**S4** 处理与旧 pending 的互斥。
+
+---
+
+### 解除 Stay pending（`RemovePendingAlarm` / 不再继续 Stay 计时链）
+
+**R1** — **ExitRoom** 发生（离开房间事件）。
+
+**R2** — 自 **R1** 起 **150s 内**，持续用 **`number_people`** 更新 **room 人数**（与现有 `AreaPeople` / `TotalPeople` 合并）。
+
+**R3** — 当 **room 人数 = 0**（`TotalPeople == 0` 或业务等价定义）时，**清空 Stay pending**。
+
+**说明**：**R2** 里 **Exit → 首条 `number` 往往早于下一条 `activity`**，解除优先以 **`number`→0** 为准；**activity** 用于辅助「窗口内观测稳定」，不必与 R3 强绑定。
+
+---
+
+## 逻辑说明（一句话）
+
+- **进**：**Enter** 只开「会话」；**150s 内** 既要有 **足够多条 activity**（稳），又要有 **`number>0`**（有人），才 **真正挂 Stay pending**；新 **Enter** 会 **清旧 pending 再新开**。  
+- **出**：**Exit** 后 **150s 内** 用 **`number` 把人数收到 **0****，再 **解除 pending**；比 **90s** 更适合「干扰下仍显示有人」导致 **解不掉** 的情况。
+
+---
+
+## 总结
+
+| 目的 | 做法 |
+|------|------|
+| 避免一进房就误挂 Stay | **S2 + S3** 同时满足才武装。 |
+| 避免干扰导致 Stay 一直挂 | **R1 + R2 + R3**，**150s** 给 **`number`→0** 时间。 |
+| 多次进出 | **S4** 新 Enter **重置** pending；**不**再要求「进房前无人」（原 A1 已去掉）。 |
+*/
+
 // SortedDeviceIDs 稳定排序 device_id，避免 map 遍历随机。
 func SortedDeviceIDs(meta *CardMeta) []string {
 	if meta == nil || len(meta.Devices) == 0 {

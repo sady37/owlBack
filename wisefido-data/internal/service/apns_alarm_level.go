@@ -1,25 +1,35 @@
 package service
 
 import (
+	"strconv"
 	"strings"
 
+	"owl-common/alarm"
 	"owl-common/observation"
 )
 
-// AlarmLevelStringToPushIndex 将 alarm_events.alarm_level 字符串映射为 APNs payload 用的 0..4
+// AlarmLevelStringToPushIndex 将 alarm_events.alarm_level 映射为 APNs payload 用的 0..4。
+// 与 owl-common/alarm.AlarmLevelInt* 一致：0=EMERG, 1=ALERT, 2=CRITICAL, 3=ERROR, 4=WARNING；
+// 库中亦存数字字符串 '0'..'4'（见 card/alarm_db 统计 SQL）。
 func AlarmLevelStringToPushIndex(level string) int {
-	switch strings.ToUpper(observation.NormalizeEventLevel(strings.TrimSpace(level))) {
-	case "EMERG":
-		return 0
-	case "ALERT":
-		return 1
-	case "CRITICAL":
-		return 2
-	case "ERROR":
-		return 3
-	case "WARNING", "WARN":
-		return 4
+	s := strings.TrimSpace(level)
+	if n, err := strconv.Atoi(s); err == nil {
+		if n >= alarm.AlarmLevelIntEmerg && n <= alarm.AlarmLevelIntWarning {
+			return n
+		}
+	}
+	switch strings.ToUpper(alarm.NormalizeAlarmLevel(observation.NormalizeEventLevel(s))) {
+	case alarm.AlarmLevelEmerg:
+		return alarm.AlarmLevelIntEmerg
+	case alarm.AlarmLevelAlert:
+		return alarm.AlarmLevelIntAlert
+	case alarm.AlarmLevelCrit:
+		return alarm.AlarmLevelIntCrit
+	case alarm.AlarmLevelErr:
+		return alarm.AlarmLevelIntErr
+	case alarm.AlarmLevelWarn, "WARN":
+		return alarm.AlarmLevelIntWarning
 	default:
-		return 4
+		return alarm.AlarmLevelIntWarning
 	}
 }

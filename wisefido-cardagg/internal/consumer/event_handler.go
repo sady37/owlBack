@@ -23,20 +23,18 @@ type EventHandler struct {
 	metaCache  *service.DeviceMetaCache
 	enablement *service.AlarmEnablementCache
 	resolver   *service.DeviceCardResolver
-	logger     *zap.Logger
-	stayWinMu  sync.RWMutex
-	stayWin    map[string]int64 // tenant:device -> window expire ts(ms)
+	logger      *zap.Logger
+	staySesMu   sync.Mutex
+	staySessions map[string]*staySession // tenant:device -> Stay 状态机
 }
 
 func NewEventHandler(state *service.StateService, alarms *service.AlarmService, buffer *service.MonitorBuffer, metaCache *service.DeviceMetaCache, enablement *service.AlarmEnablementCache, resolver *service.DeviceCardResolver, logger *zap.Logger) *EventHandler {
 	return &EventHandler{
 		state: state, alarms: alarms, buffer: buffer, metaCache: metaCache,
 		enablement: enablement, resolver: resolver, logger: logger,
-		stayWin: make(map[string]int64),
+		staySessions: make(map[string]*staySession),
 	}
 }
-
-const stayWindowTTL = int64(90 * 1000) // 90s
 
 func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	raw, ok := msg.(map[string]interface{})
@@ -230,9 +228,16 @@ func (h *EventHandler) routeRoomStateEvent(ctx context.Context, m *redis.IoTStre
 		}
 		rid, rname := service.BathroomRoomFieldsFromDevice(dm)
 		_ = h.state.PublishBathRoomStateFromEvent(ctx, m.CardID, deviceID, m.DeviceUID, kind, totalPeople, m.Timestamp, rid, rname)
-		// Stay 窗口仅由进出事件开关；pending 增删在 routeActivityEvent 按窗口+人数处理
-		if kind == service.RoomStateEventEnter || kind == service.RoomStateEventExit {
-			h.openStayWindow(m.TenantID, deviceID, time.Now().UnixMilli())
+		switch kind {
+		case service.RoomStateEventEnter:
+			h.stayOnEnter(ctx, m, deviceID)
+		case service.RoomStateEventExit:
+			h.stayOnExit(ctx, m, deviceID)
+		case service.RoomStateEventNumberPeople:
+			if totalPeople < 0 {
+				totalPeople = 0
+			}
+			h.stayOnNumberPeople(ctx, m, deviceID, totalPeople)
 		}
 	} else {
 		_ = h.state.PublishRoomStateFromEvent(ctx, m.CardID, m.DeviceUID, kind, totalPeople, m.Timestamp)
@@ -317,7 +322,7 @@ func (h *EventHandler) routeSleepStageEvent(ctx context.Context, m *redis.IoTStr
 窗口开：读当前卡片的 BathRoomState.TotalPeople：== 1 则 AddStayPendingIfEnabled，否则 RemovePendingAlarm(Stay)。
 要点：activity 流负责改 bathroom 人数等状态；Stay pending 的增删只在「窗口仍有效」时根据当前已合并后的 total_people 做一次同步；multi_person_duration 仍传给 UpdateStateFromActivity，但不再单独用来算 Stay pending（那段已迁到「窗口 + total_people」）。
 */
-
+// routeActivityEvent Activity 事件：根据设备绑定地址（Bed/Bathroom/Room）更新 RoomState/BathRoomState 和 Target；卫生间且开启 Stay 时由 stay_fsm 在 Enter 后 150s 武装窗内累计 activity，与 number 条件一起 AddStayPending。
 func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStreamMessage, data map[string]interface{}) {
 	if m.DeviceUID == "" || h.state == nil {
 		return
@@ -356,53 +361,9 @@ func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStrea
 		}
 	}
 
-	// 仅卫生间设备且开启 Stay 时：窗口内按 bathroom total_people 判定 pending；窗口外不新建也不取消。
-	if !isBathroom {
-		return
+	if isBathroom {
+		h.stayOnActivity(ctx, m, deviceID)
 	}
-	_, stayOn := h.enablement.IsEnabled(ctx, m.TenantID, deviceID, alarm.Stay)
-	if !stayOn {
-		return
-	}
-	now := time.Now().UnixMilli()
-	if !h.isStayWindowOpen(m.TenantID, deviceID, now) {
-		return
-	}
-	curr, err := h.state.ReadCardStatus(ctx, m.CardID)
-	if err != nil || curr == nil || curr.BathRoomState == nil {
-		return
-	}
-	if curr.BathRoomState.TotalPeople == 1 {
-		_ = h.alarms.AddStayPendingIfEnabled(ctx, m.TenantID, deviceID, now)
-	} else {
-		_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, deviceID, alarm.Stay)
-	}
-}
-
-func stayWindowKey(tenantID, deviceID string) string { return tenantID + ":" + deviceID }
-
-func (h *EventHandler) openStayWindow(tenantID, deviceID string, nowMs int64) {
-	if tenantID == "" || deviceID == "" {
-		return
-	}
-	key := stayWindowKey(tenantID, deviceID)
-	h.stayWinMu.Lock()
-	h.stayWin[key] = nowMs + stayWindowTTL
-	h.stayWinMu.Unlock()
-}
-
-func (h *EventHandler) isStayWindowOpen(tenantID, deviceID string, nowMs int64) bool {
-	if tenantID == "" || deviceID == "" {
-		return false
-	}
-	key := stayWindowKey(tenantID, deviceID)
-	h.stayWinMu.RLock()
-	expireAt, ok := h.stayWin[key]
-	h.stayWinMu.RUnlock()
-	if !ok {
-		return false
-	}
-	return nowMs <= expireAt
 }
 
 // sleepStageSourceFromDeviceType 睡眠阶段置信度 100 分制：Sleepad=90，Radar=60，其它=0。

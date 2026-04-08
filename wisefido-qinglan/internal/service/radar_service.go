@@ -142,6 +142,11 @@ func (s *RadarService) readOneBatch(ctx context.Context, deviceUID string, keys 
 		return nil, fmt.Errorf("failed to get response: %w", err)
 	}
 	if data, ok := response["data"].(map[string]interface{}); ok {
+		if b, err := json.Marshal(data); err == nil {
+			log.Printf("✅ GetDeviceProperties: device=%s, requestId=%s, data=%s", deviceUID, requestID, string(b))
+		} else {
+			log.Printf("✅ GetDeviceProperties: device=%s, requestId=%s, data=%+v", deviceUID, requestID, data)
+		}
 		return data, nil
 	}
 	return nil, fmt.Errorf("no property data in response")

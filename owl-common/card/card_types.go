@@ -286,6 +286,10 @@ type BathRoomState struct {
 	StandingContinuousMin  int    `json:"standing_continuous_min,omitempty"` // 雷达连续站立累计档（stand_duration≥阈值逐档+1，未满清零），与 StaySec 独立
 	HasMulti               bool   `json:"has_multi"`
 	HasRisk                bool   `json:"has_risk"` // 卫生间风险，各自计算
+	// StayFSM* 与 cardagg Stay 状态机同步（Enter 后武装 / Exit 后解除），供前端展示；权威逻辑在 cardagg 进程内。
+	StayFSMPhase       string `json:"stay_fsm_phase,omitempty"`         // idle | arm_window | resolve_window | armed
+	StayArmEnterAt     int64  `json:"stay_arm_enter_at,omitempty"`      // 武装窗锚点 Enter 时间 ms
+	StayResolveExitAt  int64  `json:"stay_resolve_exit_at,omitempty"`   // 解除窗锚点 Exit 时间 ms
 }
 
 // TargetState 单 Target 汇总（老人维度）：活动与生理时间、弱信号。Pose/SleepStage/Area/PersonNumber 已移除（多源覆盖无意义，由报警/BedState/RoomState 表达）。
@@ -309,8 +313,9 @@ type AlarmState struct {
 	ActiveCrit    int    `json:"active_crit"`    // CRITICAL 未处理数
 	ActiveErr     int    `json:"active_err"`     // ERROR 未处理数
 	ActiveWarning int    `json:"active_warning"` // WARNING 未处理数
-	PopAlarm      string `json:"pop_alarm,omitempty"`      // 当前弹出报警 "EMERG.Fall"
-	EventID       string `json:"event_id,omitempty"`       // pop_alarm 对应的 alarm_events.event_id
+	// 无 pop 时必须序列化为 "" 而非省略键，否则前端 SSE 合并会用 ?? 沿用旧 pop（多会话不同步）
+	PopAlarm string `json:"pop_alarm"` // 当前弹出报警 "EMERG.Fall"；空串表示无
+	EventID  string `json:"event_id"`  // pop 对应 alarm_events.event_id；空串表示无
 }
 
 // CardStatus 卡片状态数据

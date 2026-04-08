@@ -35,7 +35,7 @@ type APNSPayload struct {
 type APSDict struct {
 	Alert             APSAlert `json:"alert"`
 	Sound             string   `json:"sound,omitempty"`
-	Badge             *int     `json:"badge,omitempty"`
+	Badge             *int     `json:"badge,omitempty"` // 告警：与 cards.pop_alarm_* 待 pop 卡数对齐
 	ContentAvailable  int      `json:"content-available,omitempty"`
 	InterruptionLevel string   `json:"interruption-level,omitempty"` // "critical" | "time-sensitive"
 }

@@ -14,13 +14,15 @@ import (
 // APNSDeviceService iOS 设备 Token 管理 + 推送发送
 // DB 操作（apns_devices 表）+ 调用 notify.APNSSender
 type APNSDeviceService struct {
-	db     *sql.DB
-	sender *notify.APNSSender // nil = APNs 未配置，静默跳过（不影响启动）
-	logger *zap.Logger
+	db         *sql.DB
+	sender     *notify.APNSSender // nil = APNs 未配置，静默跳过（不影响启动）
+	logger     *zap.Logger
+	popCounter *StaffPopPendingCounter // nil 可选：不查库，aps.badge 恒按告警至少为 1
 }
 
-func NewAPNSDeviceService(db *sql.DB, sender *notify.APNSSender, logger *zap.Logger) *APNSDeviceService {
-	return &APNSDeviceService{db: db, sender: sender, logger: logger}
+// NewAPNSDeviceService popCounter 可传 nil（仅关闭待 pop 统计注入，不影响编译与其它逻辑）。
+func NewAPNSDeviceService(db *sql.DB, sender *notify.APNSSender, logger *zap.Logger, popCounter *StaffPopPendingCounter) *APNSDeviceService {
+	return &APNSDeviceService{db: db, sender: sender, logger: logger, popCounter: popCounter}
 }
 
 // Register 注册或更新 iOS 设备 token
@@ -83,11 +85,11 @@ func (s *APNSDeviceService) SendAlarmPush(ctx context.Context, n AlarmNotificati
 		return
 	}
 
-	type row struct{ token, env string }
+	type row struct{ token, env, userID string }
 	var devices []row
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT device_token, environment
+		SELECT device_token, environment, user_id
 		FROM   apns_devices
 		WHERE  tenant_id = $1
 		  AND  user_type = 'staff'
@@ -100,7 +102,7 @@ func (s *APNSDeviceService) SendAlarmPush(ctx context.Context, n AlarmNotificati
 	defer rows.Close()
 	for rows.Next() {
 		var d row
-		if err := rows.Scan(&d.token, &d.env); err == nil && d.token != "" {
+		if err := rows.Scan(&d.token, &d.env, &d.userID); err == nil && d.token != "" {
 			devices = append(devices, d)
 		}
 	}
@@ -108,12 +110,20 @@ func (s *APNSDeviceService) SendAlarmPush(ctx context.Context, n AlarmNotificati
 		return
 	}
 
-	payload := s.buildPayload(n)
-
 	for _, d := range devices {
-		go func(token, env string) {
+		go func(token, env, staffUserID string) {
 			sendCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
+			badge := 1
+			if s.popCounter != nil && staffUserID != "" {
+				nPop, err := s.popCounter.CountForStaff(sendCtx, n.TenantID, staffUserID)
+				if err != nil {
+					s.logger.Debug("[APNS] pop pending count failed", zap.Error(err))
+				} else if nPop > 0 {
+					badge = nPop
+				}
+			}
+			payload := s.buildPayload(n, badge)
 			err := s.sender.Send(sendCtx, token, env, payload)
 			if err == nil {
 				s.logger.Debug("[APNS] push sent",
@@ -128,17 +138,23 @@ func (s *APNSDeviceService) SendAlarmPush(ctx context.Context, n AlarmNotificati
 					zap.String("token_prefix", tokenPrefix(token)),
 					zap.Error(err))
 			}
-		}(d.token, d.env)
+		}(d.token, d.env, d.userID)
 	}
 }
 
 var alarmLevelLabel = [5]string{"EMERG", "ALERT", "CRITICAL", "ERROR", "WARNING"}
 
-func (s *APNSDeviceService) buildPayload(n AlarmNotification) notify.APNSPayload {
+// buildPayload aps.badge = 该 staff 可见「待 pop」卡数（与 alarm_state.pop_alarm+event_id 同源）；告警推送至少 1。
+// content-available=1 便于后台拉齐角标，不替代 alert。
+func (s *APNSDeviceService) buildPayload(n AlarmNotification, badge int) notify.APNSPayload {
 	label := "报警"
 	if n.AlarmLevel >= 0 && n.AlarmLevel <= 4 {
 		label = alarmLevelLabel[n.AlarmLevel]
 	}
+	if badge < 1 {
+		badge = 1
+	}
+	b := badge
 
 	p := notify.APNSPayload{
 		APS: notify.APSDict{
@@ -146,7 +162,9 @@ func (s *APNSDeviceService) buildPayload(n AlarmNotification) notify.APNSPayload
 				Title: fmt.Sprintf("[%s] %s", label, n.CardName),
 				Body:  n.EventType,
 			},
-			Sound: "default",
+			Sound:            "default",
+			Badge:            &b,
+			ContentAvailable: 1,
 		},
 		CardID:     n.CardID,
 		EventType:  n.EventType,

@@ -508,6 +508,33 @@ func (s *StateService) PublishBathRoomStateFromEvent(ctx context.Context, cardID
 	return PublishCardStatus(ctx, s.writer, cardID, PublishFields{BathRoomState: cur})
 }
 
+// PublishBathRoomStayFSM 仅合并 Stay 状态机展示字段到 BathRoomState（不改变人数与进出时间）。
+func (s *StateService) PublishBathRoomStayFSM(ctx context.Context, cardID, deviceID, deviceUID, phase string, armEnterAt, resolveExitAt int64) error {
+	if s.writer == nil || cardID == "" || (deviceID == "" && deviceUID == "") {
+		return nil
+	}
+	var cur *card.BathRoomState
+	if s.reader != nil {
+		if curr, err := s.reader.ReadCardStatus(ctx, cardID); err == nil && curr != nil && curr.BathRoomState != nil {
+			c := curr.BathRoomState
+			match := (c.DeviceID != "" && c.DeviceID == deviceID) || (c.DeviceUID != "" && c.DeviceUID == deviceUID)
+			if !match {
+				return nil
+			}
+			cur = &card.BathRoomState{}
+			*cur = *c
+		}
+	}
+	if cur == nil {
+		cur = &card.BathRoomState{DeviceID: deviceID, DeviceUID: deviceUID, UpdatedAt: time.Now().UnixMilli()}
+	}
+	cur.StayFSMPhase = phase
+	cur.StayArmEnterAt = armEnterAt
+	cur.StayResolveExitAt = resolveExitAt
+	cur.UpdatedAt = time.Now().UnixMilli()
+	return PublishCardStatus(ctx, s.writer, cardID, PublishFields{BathRoomState: cur})
+}
+
 // ResetRoomState 设备上线或 card 变更时，将该卡 RoomState 重置为空（卫生间卡用）。
 func (s *StateService) ResetRoomState(ctx context.Context, cardID string) error {
 	rs := &card.RoomState{UpdatedAt: time.Now().UnixMilli(), TotalPeople: 0, HasMulti: false, HasRisk: false}

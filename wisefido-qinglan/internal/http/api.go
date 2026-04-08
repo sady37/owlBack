@@ -82,7 +82,8 @@ func (h *APIHandler) GetDeviceProperties(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	log.Printf("🏁 [HTTP_API] GetDeviceProperties SUCCESS: uid=%s, keys=%v, properties_count=%d", uid, keys, len(properties))
+	dataJSON, _ := json.Marshal(properties)
+	log.Printf("🏁 [HTTP_API] GetDeviceProperties SUCCESS: uid=%s, keys=%v, properties_count=%d, data=%s", uid, keys, len(properties), string(dataJSON))
 	h.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"data":    properties,
@@ -129,6 +130,7 @@ func (h *APIHandler) SetDeviceProperties(w http.ResponseWriter, r *http.Request)
 		})
 		return
 	}
+	log.Printf("🏁 [HTTP_API] SetDeviceProperties SUCCESS: uid=%s, device_code=%d", uid, deviceCode)
 	h.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"success":     true,
 		"message":     "Device properties set successfully",
