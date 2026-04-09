@@ -11,7 +11,7 @@ flowchart LR
     MQ -->|Subscribe QoS=1| WS[wisefido-sleepace\nmain.go:148]
     WS -->|XADD| R1[iot:monitor:stream\niot:event:stream\niot:alarm:stream]
     R1 -->|XREADGROUP\ncardagg-group| CA[wisefido-cardagg]
-    CA -->|HSET + XADD| R2[card:state:{card_id} Hash\ncard:realtime:stream\ncard:status:stream]
+    CA -->|HSET + XADD| R2["card:state:{card_id}" Hash\ncard:realtime:stream\ncard:status:stream]
     R1 -->|XREADGROUP\niot-timeseries-group| IOT[wisefido-iot → PostgreSQL]
     R2 -->|XREADGROUP| DATA[wisefido-data HTTP API]
 ```
