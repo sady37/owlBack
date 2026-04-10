@@ -16,12 +16,13 @@ type CardChangeHandler struct {
 	metaCache    *service.DeviceMetaCache
 	enablement   *service.AlarmEnablementCache
 	resolver     *service.DeviceCardResolver
+	bedCoord     *service.BedEventCoordinator
 	db           *sql.DB
 	logger       *zap.Logger
 }
 
-func NewCardChangeHandler(alarms *service.AlarmService, stateService *service.StateService, metaCache *service.DeviceMetaCache, enablement *service.AlarmEnablementCache, resolver *service.DeviceCardResolver, db *sql.DB, logger *zap.Logger) *CardChangeHandler {
-	return &CardChangeHandler{alarms: alarms, stateService: stateService, metaCache: metaCache, enablement: enablement, resolver: resolver, db: db, logger: logger}
+func NewCardChangeHandler(alarms *service.AlarmService, stateService *service.StateService, metaCache *service.DeviceMetaCache, enablement *service.AlarmEnablementCache, resolver *service.DeviceCardResolver, bedCoord *service.BedEventCoordinator, db *sql.DB, logger *zap.Logger) *CardChangeHandler {
+	return &CardChangeHandler{alarms: alarms, stateService: stateService, metaCache: metaCache, enablement: enablement, resolver: resolver, bedCoord: bedCoord, db: db, logger: logger}
 }
 
 type cardChangeData struct {
@@ -60,6 +61,9 @@ func (h *CardChangeHandler) Handle(ctx context.Context, msg interface{}) error {
 	}
 
 	if d.Op == "deleted" || d.Op == "delete" {
+		if h.bedCoord != nil {
+			h.bedCoord.ClearCard(d.CardID)
+		}
 		h.metaCache.Remove(d.CardID)
 	} else {
 		h.metaCache.Invalidate(d.CardID)

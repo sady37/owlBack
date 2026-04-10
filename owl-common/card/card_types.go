@@ -167,7 +167,6 @@ type CaregiverInfo struct {
 	Role        string `json:"role,omitempty"`
 }
 
-
 // ========== Realtime Monitor 聚合（card:realtime:stream） ==========
 //{ card_id, "<device_id>": { "<track_id>": {...}, ... } }
 /*
@@ -225,7 +224,7 @@ type CardRealTime struct {
 
 // DeviceStatus 单个设备在线状态（仅 offline；其它如 signal_poor 走告警）
 type DeviceStatus struct {
-	DeviceUID  string `json:"-"`                   // 内部/Redis 用，不向前端暴露（HIPAA）
+	DeviceUID  string `json:"-"`                    // 内部/Redis 用，不向前端暴露（HIPAA）
 	DeviceID   string `json:"device_id"`            // 前端展示用
 	DeviceType string `json:"device_type"`          // "Radar" | "Sleepad"
 	UpdatedAt  int64  `json:"updated_at,omitempty"` // 最后更新时间（Unix 毫秒），与 TargetState/AlarmState 一致
@@ -237,15 +236,15 @@ type DeviceStatus struct {
 const BedStateDurationNotSet int = -1 // DurationSec 未设置
 
 type BedState struct {
-	UpdatedAt        int64 `json:"updated_at,omitempty"`   // 本次状态变化时间（毫秒），未设置=0
-	BedStatus        int   `json:"bed_status"`             // 0=在床(in_bed), 1=离床(out_of_bed), 8=未改变
-	TrackNumber      int   `json:"track_number"`           // 在床轨迹数量（max=2, sleepad left=0,right=1）
-	StartTime        int64 `json:"start_time,omitempty"`   // 当前 BedStatus 开始时间（毫秒），未设置=0
-	DurationSec      int   `json:"duration_sec"`           // 事件发生时已持续秒数，未设置=-1
-	BedConfidence    int   `json:"bed_confidence"`    // 在床置信度 100 分制：60=雷达基准, 90=Sleepad 基准, 100=双设备（窗口内比较）相同
-	BedEvent         int   `json:"bed_event"`         // 8=无/保持不变, 0=InBed, 1=LeftBed（与事件一致，初始化用 8 避免混淆）
-	SleepStage       int   `json:"sleep_stage"`       // 睡眠阶段：0=初始, 1=清醒, 2=浅睡, 4=深睡, 8=未知
-	SleepConfidence  int   `json:"sleep_confidence"`  // 睡眠阶段置信度 100 分制：0=未知, 60=Radar, 90=Sleepad, 100=sleepad+radar 相同
+	UpdatedAt       int64 `json:"updated_at,omitempty"` // 本次状态变化时间（毫秒），未设置=0
+	BedStatus       int   `json:"bed_status"`           // 0=在床(in_bed), 1=离床(out_of_bed), 8=未改变
+	TrackNumber     int   `json:"track_number"`         // 在床轨迹数量（max=2, sleepad left=0,right=1）
+	StartTime       int64 `json:"start_time,omitempty"` // 当前 BedStatus 开始时间（毫秒），未设置=0
+	DurationSec     int   `json:"duration_sec"`         // 事件发生时已持续秒数，未设置=-1
+	BedConfidence   int   `json:"bed_confidence"`       // 在床置信度 100 分制：60=雷达基准, 90=Sleepad 基准, 100=双设备（窗口内比较）相同
+	BedEvent        int   `json:"bed_event"`            // 8=无/保持不变, 0=InBed, 1=LeftBed（与事件一致，初始化用 8 避免混淆）
+	SleepStage      int   `json:"sleep_stage"`          // 睡眠阶段：0=初始, 1=清醒, 2=浅睡, 4=深睡, 8=未知
+	SleepConfidence int   `json:"sleep_confidence"`     // 睡眠阶段置信度 100 分制：0=未知, 60=Radar, 90=Sleepad, 100=sleepad+radar 相同
 }
 
 // SleepStage 合法值
@@ -261,7 +260,7 @@ const (
 // HasRisk 由本房间数据各自计算。
 type RoomState struct {
 	UpdatedAt             int64          `json:"updated_at,omitempty"`
-	TotalPeople           int            `json:"total_people"`                       // 房间人数（各 room 雷达 track 相加，且不低于床上人数）
+	TotalPeople           int            `json:"total_people"`                      // 房间人数（各 room 雷达 track 相加，且不低于床上人数）
 	AreaPeople            map[string]int `json:"area_people,omitempty"`             // 各设备人数，key=deviceID，value=该雷达 NumberPeople；TotalPeople=sum(AreaPeople)，用于加减校正
 	LastEnterTime         int64          `json:"last_enter_time,omitempty"`         // 最近进入时间（毫秒）
 	LastExitTime          int64          `json:"last_exit_time,omitempty"`          // 最近离开时间（毫秒）
@@ -274,45 +273,45 @@ type RoomState struct {
 // HasRisk 由卫生间数据各自计算。
 // RoomID/RoomName：绑定房间（bound_room_id 或由床解析出的 room_id）；供前端区分「真卫生间」与 Stay 走 BathRoomState 的无床房间。
 type BathRoomState struct {
-	DeviceUID              string `json:"-"`                   // 内部用，不向前端暴露（HIPAA）
-	DeviceID               string `json:"device_id,omitempty"` // 卫生间雷达 device_id，前端展示用
-	RoomID                 string `json:"room_id,omitempty"`   // 有效 room UUID（可选）
-	RoomName               string `json:"room_name,omitempty"` // rooms.room_name（可选，改名后以下次状态更新为准）
-	UpdatedAt              int64  `json:"updated_at,omitempty"`
-	TotalPeople            int    `json:"total_people"`     // 卫生间人数
-	LastEnterTime          int64  `json:"last_enter_time,omitempty"`
-	LastExitTime           int64  `json:"last_exit_time,omitempty"`
-	StaySec                int    `json:"stay_sec,omitempty"` // 当前会话在卫生间内停留秒数（自 LastEnterTime 墙钟计，含站/坐/走动，非「仅站立」）
-	StandingContinuousMin  int    `json:"standing_continuous_min,omitempty"` // 雷达连续站立累计档（stand_duration≥阈值逐档+1，未满清零），与 StaySec 独立
-	HasMulti               bool   `json:"has_multi"`
-	HasRisk                bool   `json:"has_risk"` // 卫生间风险，各自计算
+	DeviceUID             string `json:"-"`                   // 内部用，不向前端暴露（HIPAA）
+	DeviceID              string `json:"device_id,omitempty"` // 卫生间雷达 device_id，前端展示用
+	RoomID                string `json:"room_id,omitempty"`   // 有效 room UUID（可选）
+	RoomName              string `json:"room_name,omitempty"` // rooms.room_name（可选，改名后以下次状态更新为准）
+	UpdatedAt             int64  `json:"updated_at,omitempty"`
+	TotalPeople           int    `json:"total_people"` // 卫生间人数
+	LastEnterTime         int64  `json:"last_enter_time,omitempty"`
+	LastExitTime          int64  `json:"last_exit_time,omitempty"`
+	StaySec               int    `json:"stay_sec,omitempty"`                // 当前会话在卫生间内停留秒数（自 LastEnterTime 墙钟计，含站/坐/走动，非「仅站立」）
+	StandingContinuousMin int    `json:"standing_continuous_min,omitempty"` // 雷达连续站立累计档（stand_duration≥阈值逐档+1，未满清零），与 StaySec 独立
+	HasMulti              bool   `json:"has_multi"`
+	HasRisk               bool   `json:"has_risk"` // 卫生间风险，各自计算
 	// StayFSM* 与 cardagg Stay 状态机同步（Enter 后武装 / Exit 后解除），供前端展示；权威逻辑在 cardagg 进程内。
-	StayFSMPhase       string `json:"stay_fsm_phase,omitempty"`         // idle | arm_window | resolve_window | armed
-	StayArmEnterAt     int64  `json:"stay_arm_enter_at,omitempty"`      // 武装窗锚点 Enter 时间 ms
-	StayResolveExitAt  int64  `json:"stay_resolve_exit_at,omitempty"`   // 解除窗锚点 Exit 时间 ms
+	StayFSMPhase      string `json:"stay_fsm_phase,omitempty"`       // idle | arm_window | resolve_window | armed
+	StayArmEnterAt    int64  `json:"stay_arm_enter_at,omitempty"`    // 武装窗锚点 Enter 时间 ms
+	StayResolveExitAt int64  `json:"stay_resolve_exit_at,omitempty"` // 解除窗锚点 Exit 时间 ms
 }
 
 // TargetState 单 Target 汇总（老人维度）：活动与生理时间、弱信号。Pose/SleepStage/Area/PersonNumber 已移除（多源覆盖无意义，由报警/BedState/RoomState 表达）。
 type TargetState struct {
 	UpdatedAt           int64  `json:"updated_at,omitempty"`
-	TrackID             int    `json:"track_id"`             // track ID
-	LogicID             string `json:"logic_id,omitempty"`  // Logic 层 ID（track ID）
-	LastActiveTs        int64  `json:"last_active_ts,omitempty"`        // 最后活动时间（毫秒），最后生理指标时间（毫秒），state.track 行走距离>2米 & 行走时长>20秒 否则认为静止
-	WeakBiometricSignal int    `json:"weak_biometric_signal"`            // 信号弱风险度，可多维度相加（如 HH+RR），0=好 越高越差，累加+每天 7 点清空
-	VisitorStartTs       int64  `json:"VisitorStartTs,omitempty"`        // 当前访问时间 -1表示无
-	TodayMaxVisitorMin   int   `json:"TodayMaxVisitorMin,omitempty"`   // 今日访客持续的最长时间
-	HasVisitorToday      bool  `json:"HasVisitorToday,omitempty"`     // 今日访客标记
+	TrackID             int    `json:"track_id"`                     // track ID
+	LogicID             string `json:"logic_id,omitempty"`           // Logic 层 ID（track ID）
+	LastActiveTs        int64  `json:"last_active_ts,omitempty"`     // 最后活动时间（毫秒），与 cardagg weights：行走距离≥2米或 walk_duration≥约6秒 则刷新（OR，非生理指标）
+	WeakBiometricSignal int    `json:"weak_biometric_signal"`        // 信号弱风险度，可多维度相加（如 HH+RR），0=好 越高越差，累加+每天 7 点清空
+	VisitorStartTs      int64  `json:"VisitorStartTs,omitempty"`     // 当前访问时间 -1表示无
+	TodayMaxVisitorMin  int    `json:"TodayMaxVisitorMin,omitempty"` // 今日访客持续的最长时间
+	HasVisitorToday     bool   `json:"HasVisitorToday,omitempty"`    // 今日访客标记
 }
 
 // AlarmState 告警摘要（与 cards 表 alarm 字段对齐）
 type AlarmState struct {
-	UpdatedAt     int64  `json:"updated_at,omitempty"`     // 状态最后更新时间（毫秒）
-	TriggeredAt   int64  `json:"triggered_at,omitempty"`   // pop 告警真实触发时间（alarm_events.triggered_at 毫秒），用于前端 Alarm Time 展示
-	ActiveEmerg   int    `json:"active_emerg"`   // EMERGENCY 未处理数
-	ActiveAlert   int    `json:"active_alert"`   // ALERT 未处理数
-	ActiveCrit    int    `json:"active_crit"`    // CRITICAL 未处理数
-	ActiveErr     int    `json:"active_err"`     // ERROR 未处理数
-	ActiveWarning int    `json:"active_warning"` // WARNING 未处理数
+	UpdatedAt     int64 `json:"updated_at,omitempty"`   // 状态最后更新时间（毫秒）
+	TriggeredAt   int64 `json:"triggered_at,omitempty"` // pop 告警真实触发时间（alarm_events.triggered_at 毫秒），用于前端 Alarm Time 展示
+	ActiveEmerg   int   `json:"active_emerg"`           // EMERGENCY 未处理数
+	ActiveAlert   int   `json:"active_alert"`           // ALERT 未处理数
+	ActiveCrit    int   `json:"active_crit"`            // CRITICAL 未处理数
+	ActiveErr     int   `json:"active_err"`             // ERROR 未处理数
+	ActiveWarning int   `json:"active_warning"`         // WARNING 未处理数
 	// 无 pop 时必须序列化为 "" 而非省略键，否则前端 SSE 合并会用 ?? 沿用旧 pop（多会话不同步）
 	PopAlarm string `json:"pop_alarm"` // 当前弹出报警 "EMERG.Fall"；空串表示无
 	EventID  string `json:"event_id"`  // pop 对应 alarm_events.event_id；空串表示无

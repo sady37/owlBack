@@ -76,8 +76,8 @@ const (
 // ---- 4. Activity / UpdateStateFromActivity 阈值（Target、RoomState 写回条件） ----
 
 const (
-	WalkSecThreshold            = 10  // walk_duration >= 且 walk_distance >= 下值 → 更新 Target.LastActiveTs
-	WalkDistanceMetersThreshold = 2   // 米
+	WalkDistanceMetersThreshold = 2  // 米：≥ 或下方秒数满足其一即更新 Target.LastActiveTs（OR）
+	WalkSecThresholdOR          = 6  // 秒：walk_duration ≥（约 5～8s 档，可调）与距离 OR
 	StandingContinuousSec      = 55  // stand_duration >= 55 则累计 StandingContinuousMin，否则清零
 	StandingContinuousMin      = 8   // 累计达到此后封顶为 8 并 push RoomState/BathRoomState（与 Overview 黄/红 5/8 档一致）
 	MultiPersonDurationSec     = 30  // multi_person_duration >= 30 → HasMulti/访客逻辑
@@ -98,4 +98,8 @@ const (
 const (
 	VitalDeriveRoundsNeeded = 5   // bed_status!=0/1 时累计 N 轮 track 再判定
 	DeriveBedStateThreshold = 350 // 累加置信度 >= 判定在床，<= -350 判定离床（Sleepad）；否则 5 轮后按 sum 判离床
+	// BedEventPendingDeadlineMs Sleepad 床：与 monitor 不一致时最长等待对齐。vital 常 2～3s 一笔，需覆盖多帧再兜底。
+	BedEventPendingDeadlineMs = 10000
+	// LeftBedDeriveCooldownMs 离床事件落库后，禁止 Derive 从 BedStatus=1 纠回在床的冷却时间。
+	LeftBedDeriveCooldownMs = 20000
 )

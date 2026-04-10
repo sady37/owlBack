@@ -98,13 +98,14 @@ func main() {
 	}
 
 	resolver := service.NewDeviceCardResolver(db)
-	monitorHandler := consumer.NewMonitorHandler(monitorBuf, writer, metaCache, resolver, logger)
+	bedCoord := service.NewBedEventCoordinator()
+	monitorHandler := consumer.NewMonitorHandler(monitorBuf, writer, metaCache, resolver, bedCoord, stateSvc, alarmSvc, logger)
 	go monitorHandler.RunLoop(ctx)
-	go runDeriveLoop(ctx, monitorBuf, stateSvc, metaCache, reader, alarmSvc, logger)
-	eventHandler := consumer.NewEventHandler(stateSvc, alarmSvc, monitorBuf, metaCache, enablementCache, resolver, logger)
-	alarmHandler := consumer.NewAlarmHandler(alarmSvc, stateSvc, monitorBuf, metaCache, resolver, logger)
+	go runDeriveLoop(ctx, monitorBuf, stateSvc, metaCache, reader, alarmSvc, bedCoord, logger)
+	eventHandler := consumer.NewEventHandler(stateSvc, alarmSvc, monitorBuf, metaCache, enablementCache, resolver, bedCoord, logger)
+	alarmHandler := consumer.NewAlarmHandler(alarmSvc, stateSvc, monitorBuf, metaCache, resolver, bedCoord, logger)
 	alarmProcessHandler := consumer.NewAlarmProcessHandler(alarmSvc, logger)
-	cardChangeHandler := consumer.NewCardChangeHandler(alarmSvc, stateSvc, metaCache, enablementCache, resolver, db, logger)
+	cardChangeHandler := consumer.NewCardChangeHandler(alarmSvc, stateSvc, metaCache, enablementCache, resolver, bedCoord, db, logger)
 	alarmDeviceHandler := consumer.NewAlarmDeviceHandler(enablementCache, logger)
 
 	consumer.SubscribeAll(ctx, logger, redisClient, consumer.Handlers{
@@ -126,7 +127,7 @@ func main() {
 	cancel()
 }
 
-func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *service.StateService, metaCache *service.DeviceMetaCache, reader *card.Reader, alarmSvc *service.AlarmService, logger *zap.Logger) {
+func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *service.StateService, metaCache *service.DeviceMetaCache, reader *card.Reader, alarmSvc *service.AlarmService, bedCoord *service.BedEventCoordinator, logger *zap.Logger) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	prevOnline := make(map[string]bool)
@@ -140,6 +141,7 @@ func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *servi
 		case <-ticker.C:
 		}
 		tick++
+		bedCoord.Tick(ctx, state, alarmSvc, metaCache, buf, logger)
 		nowMs := time.Now().UnixMilli()
 		snapshots := buf.Flush(nowMs)
 		shouldDerive := service.IsDeriveTick(tick)
@@ -149,8 +151,8 @@ func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *servi
 		}
 
 		for _, snap := range snapshots {
+			meta := metaCache.GetOrLoad(ctx, snap.CardID)
 			if shouldDerive {
-				meta := metaCache.GetOrLoad(ctx, snap.CardID)
 				prev := prevTargets[snap.CardID]
 				status, err := state.DeriveAndWriteState(ctx, snap, meta, prev, buf)
 				if err != nil {
@@ -159,8 +161,8 @@ func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *servi
 				if status != nil && status.Target != nil {
 					prevTargets[snap.CardID] = status.Target
 				}
-				state.DeriveBedStateFromRealtime(ctx, snap, meta)
 			}
+			state.DeriveBedStateFromRealtime(ctx, snap, meta)
 		}
 		if shouldDerive {
 			snappedCards := make(map[string]bool, len(snapshots))

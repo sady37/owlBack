@@ -31,18 +31,38 @@ type StateService struct {
 
 	vitalDeriveMu     sync.Mutex
 	vitalDeriveRounds map[string]*vitalDeriveRounds // cardID -> N 轮累计（见 weights.VitalDeriveRoundsNeeded）N=5
+	// recoverInBedRounds BedStatus=1 时由 Sleepad 实时强信号累计，满阈纠回在床（与 vitalDeriveRounds 隔离）
+	recoverInBedRounds map[string]*vitalDeriveRounds
+	leftBedCooldownUntil map[string]int64 // cardID -> 冷却结束时间 ms，期内禁止 recover 纠回在床
 	preparedMu        sync.Mutex
 	preparedCards     map[string]struct{} // cardID 已执行过 EnsureCardStatePrepared
 }
 
 func NewStateService(writer *card.Writer, reader *card.Reader, logger *zap.Logger) *StateService {
 	return &StateService{
-		writer:            writer,
-		reader:            reader,
-		logger:            logger,
-		vitalDeriveRounds: make(map[string]*vitalDeriveRounds),
-		preparedCards:     make(map[string]struct{}),
+		writer:               writer,
+		reader:               reader,
+		logger:               logger,
+		vitalDeriveRounds:    make(map[string]*vitalDeriveRounds),
+		recoverInBedRounds:   make(map[string]*vitalDeriveRounds),
+		leftBedCooldownUntil: make(map[string]int64),
+		preparedCards:        make(map[string]struct{}),
 	}
+}
+
+// NoteLeftBedCooldown 离床落库后调用：在 LeftBedDeriveCooldownMs 内禁止 Derive 将 BedStatus=1 纠回在床。
+func (s *StateService) NoteLeftBedCooldown(cardID string) {
+	if s == nil || cardID == "" {
+		return
+	}
+	until := time.Now().UnixMilli() + LeftBedDeriveCooldownMs
+	s.vitalDeriveMu.Lock()
+	if s.leftBedCooldownUntil == nil {
+		s.leftBedCooldownUntil = make(map[string]int64)
+	}
+	s.leftBedCooldownUntil[cardID] = until
+	delete(s.recoverInBedRounds, cardID)
+	s.vitalDeriveMu.Unlock()
 }
 
 // BedConfidence 采用 100 分制：Sleepad 基准 90，Radar 基准 60。
@@ -328,7 +348,16 @@ func (s *StateService) publishBedStateLeftBed(ctx context.Context, cardID, devic
 	}
 	bedFromPrev(bs)
 	err = PublishCardStatus(ctx, s.writer, cardID, PublishFields{BedState: bs})
-	return err == nil, err
+	written = err == nil
+	if written {
+		// Sleepad 与 monitor 强一致：override==0 表示缓冲里已无在床轨，立即离床 → 不启 Derive 纠回在床冷却。
+		// 不一致经 pending 超时或非 Sleepad 路径（override nil）仍设冷却，抑制第二层误纠偏。
+		strongSleepadAligned := trackNumberOverride != nil && *trackNumberOverride == 0
+		if !strongSleepadAligned {
+			s.NoteLeftBedCooldown(cardID)
+		}
+	}
+	return written, err
 }
 
 const trackNumberMax = 2
@@ -767,16 +796,102 @@ func (s *StateService) DeriveBedStateFromRealtime(ctx context.Context, snap Card
 	if err != nil {
 		s.vitalDeriveMu.Lock()
 		delete(s.vitalDeriveRounds, snap.CardID)
+		delete(s.recoverInBedRounds, snap.CardID)
 		s.vitalDeriveMu.Unlock()
 		return
 	}
-	// 已确定为在床(0)或离床(1)则不再推导；nil / 8 / 其它则继续 N=5 轮（轮数、阈值见 weights.go VitalDeriveRoundsNeeded / DeriveBedStateThreshold）
-	if curr != nil && curr.BedState != nil && (curr.BedState.BedStatus == 0 || curr.BedState.BedStatus == 1) {
+
+	hasSleepadOnBed := false
+	for _, devID := range bedDevs {
+		if dm := meta.Devices[devID]; dm != nil {
+			t := strings.ToLower(dm.DeviceType)
+			if strings.Contains(t, "sleepad") || strings.Contains(t, "sleeppad") {
+				hasSleepadOnBed = true
+				break
+			}
+		}
+	}
+
+	// 在床(0)：清空累计
+	if curr != nil && curr.BedState != nil && curr.BedState.BedStatus == 0 {
 		s.vitalDeriveMu.Lock()
 		delete(s.vitalDeriveRounds, snap.CardID)
+		delete(s.recoverInBedRounds, snap.CardID)
 		s.vitalDeriveMu.Unlock()
 		return
 	}
+
+	// 离床(1)：Sleepad 床且非 LeftBed 冷却 → 用实时累计尝试纠回在床（与未定态推导隔离）
+	if curr != nil && curr.BedState != nil && curr.BedState.BedStatus == 1 {
+		nowMs := time.Now().UnixMilli()
+		s.vitalDeriveMu.Lock()
+		coolUntil := int64(0)
+		if s.leftBedCooldownUntil != nil {
+			coolUntil = s.leftBedCooldownUntil[snap.CardID]
+		}
+		inCooldown := nowMs < coolUntil
+		if !hasSleepadOnBed || inCooldown {
+			delete(s.vitalDeriveRounds, snap.CardID)
+			delete(s.recoverInBedRounds, snap.CardID)
+			s.vitalDeriveMu.Unlock()
+			return
+		}
+		inBedConf := sleepadInBedConfFromSnapshot(&snap, meta, bedDevs)
+		rv := s.recoverInBedRounds[snap.CardID]
+		if rv == nil {
+			rv = &vitalDeriveRounds{rounds: make([]vitalDeriveRound, 0, VitalDeriveRoundsNeeded)}
+			s.recoverInBedRounds[snap.CardID] = rv
+		}
+		rv.rounds = append(rv.rounds, vitalDeriveRound{inBedConf: inBedConf})
+		var sumRecover int
+		for _, r := range rv.rounds {
+			sumRecover += r.inBedConf
+		}
+		nr := len(rv.rounds)
+		if nr >= VitalDeriveRoundsNeeded {
+			if sumRecover >= DeriveBedStateThreshold {
+				delete(s.recoverInBedRounds, snap.CardID)
+				delete(s.vitalDeriveRounds, snap.CardID)
+				s.vitalDeriveMu.Unlock()
+				now := time.Now().UnixMilli()
+				bedConf := sumRecover / VitalDeriveRoundsNeeded
+				bs := &card.BedState{
+					UpdatedAt:     now,
+					BedStatus:     0,
+					TrackNumber:   1,
+					StartTime:     now,
+					DurationSec:   0,
+					BedEvent:      BedEventNone,
+					BedConfidence: bedConf,
+					SleepStage:    curr.BedState.SleepStage,
+					SleepConfidence: curr.BedState.SleepConfidence,
+				}
+				if err := PublishCardStatus(ctx, s.writer, snap.CardID, PublishFields{BedState: bs}); err != nil {
+					s.logger.Warn("recover in-bed from derive", zap.String("cid", snap.CardID), zap.Error(err))
+					return
+				}
+				_ = s.ReconcileRoomStateFromBedState(ctx, snap.CardID)
+				s.logger.Debug("derive recover bed_state=0 (Sleepad sumInBedConf)", zap.String("cid", snap.CardID), zap.Int("sum", sumRecover))
+				return
+			}
+			if sumRecover <= -DeriveBedStateThreshold {
+				delete(s.recoverInBedRounds, snap.CardID)
+				s.vitalDeriveMu.Unlock()
+				return
+			}
+			delete(s.recoverInBedRounds, snap.CardID)
+			s.vitalDeriveMu.Unlock()
+			return
+		}
+		s.vitalDeriveMu.Unlock()
+		return
+	}
+
+	s.vitalDeriveMu.Lock()
+	delete(s.recoverInBedRounds, snap.CardID)
+	s.vitalDeriveMu.Unlock()
+
+	// nil / 8 / 其它：继续 N=5 轮 vital 推导
 	roundConf := deriveConfidenceFromSnapshot(&snap, meta, bedDevs)
 	s.vitalDeriveMu.Lock()
 	v := s.vitalDeriveRounds[snap.CardID]
@@ -793,17 +908,7 @@ func (s *StateService) DeriveBedStateFromRealtime(ctx context.Context, snap Card
 	}
 	n := len(v.rounds)
 
-	hasSleepad := false
-	for _, devID := range bedDevs {
-		if dm := meta.Devices[devID]; dm != nil {
-			t := strings.ToLower(dm.DeviceType)
-			if strings.Contains(t, "sleepad") || strings.Contains(t, "sleeppad") {
-				hasSleepad = true
-				break
-			}
-		}
-	}
-	if hasSleepad && n >= VitalDeriveRoundsNeeded {
+	if hasSleepadOnBed && n >= VitalDeriveRoundsNeeded {
 		if sumInBedConf >= DeriveBedStateThreshold {
 			delete(s.vitalDeriveRounds, snap.CardID)
 			s.vitalDeriveMu.Unlock()
@@ -1192,7 +1297,7 @@ type objectRoom struct {
 }
 
 // UpdateStateFromActivity Activity 事件更新 RoomState/BathRoomState（站立、多人、Stay）和 Target（活动时间、访客）。
-// 行走/站立/多人/访客阈值见 weights.go（WalkSecThreshold、WalkDistanceMetersThreshold=2、StandingContinuousSec=10 等）。
+// 行走/站立/多人/访客阈值见 weights.go（WalkDistanceMetersThreshold、WalkSecThresholdOR、StandingContinuousSec 等）。
 // 使用 objectRoom 统一读写；仅当 ObjectRoomPush/ObjectTargetPush 为 true 时写回。返回 lastEnterTime, lastExitTime 供调用方做 Stay 计时告警。
 func (s *StateService) UpdateStateFromActivity(
 	ctx context.Context,
@@ -1277,8 +1382,8 @@ func (s *StateService) UpdateStateFromActivity(
 		target = &card.TargetState{TrackID: observation.TrackUnknownPerson, UpdatedAt: now, VisitorStartTs: -1}
 	}
 
-	// 1. 行走达标 → 更新 Target（阈值见 weights.WalkSecThreshold / WalkDistanceMetersThreshold）
-	if walkDuration >= WalkSecThreshold && walkDistance >= WalkDistanceMetersThreshold {
+	// 1. 行走达标 → 更新 Target（距离≥2m 或 时长≥WalkSecThresholdOR，见 weights）
+	if walkDistance >= WalkDistanceMetersThreshold || walkDuration >= WalkSecThresholdOR {
 		target.LastActiveTs = eventTs
 		target.UpdatedAt = now
 		objectTargetPush = true

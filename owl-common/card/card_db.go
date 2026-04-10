@@ -363,6 +363,76 @@ func InitializeCardAlarmCounts(ctx context.Context, db *sql.DB, cardID, tenantID
 	return state, nil
 }
 
+// RoomIdentifiersForCard 返回与卡片相关的全部房间：卡主床所在房（bed_id→beds→rooms）与 cards.devices JSONB 中各设备 BoundRoomID 的并集，名称来自 rooms 表。
+func (c *CardDB) RoomIdentifiersForCard(ctx context.Context, tenantID, cardID string) ([]RoomIdentifier, error) {
+	if c == nil || c.db == nil {
+		return nil, fmt.Errorf("card db nil")
+	}
+	if tenantID == "" || cardID == "" {
+		return nil, nil
+	}
+	var bedRoomID sql.NullString
+	var devicesJSON []byte
+	err := c.db.QueryRowContext(ctx, `
+		SELECT COALESCE(room.room_id::text, ''), c.devices
+		FROM cards c
+		LEFT JOIN beds bed ON c.bed_id = bed.bed_id AND c.tenant_id = bed.tenant_id
+		LEFT JOIN rooms room ON bed.room_id = room.room_id AND c.tenant_id = room.tenant_id
+		WHERE c.tenant_id = $1 AND c.card_id = $2
+	`, tenantID, cardID).Scan(&bedRoomID, &devicesJSON)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("room identifiers for card: %w", err)
+	}
+
+	seen := make(map[string]struct{})
+	var ids []string
+	if bedRoomID.Valid && bedRoomID.String != "" {
+		seen[bedRoomID.String] = struct{}{}
+		ids = append(ids, bedRoomID.String)
+	}
+	devices, err := ParseDevicesFromCardsJSONB(devicesJSON)
+	if err != nil {
+		return nil, fmt.Errorf("parse devices: %w", err)
+	}
+	for _, d := range devices {
+		if d.BoundRoomID == nil || *d.BoundRoomID == "" {
+			continue
+		}
+		rid := *d.BoundRoomID
+		if _, ok := seen[rid]; ok {
+			continue
+		}
+		seen[rid] = struct{}{}
+		ids = append(ids, rid)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT room_id::text, room_name FROM rooms
+		WHERE tenant_id = $1 AND room_id = ANY($2::uuid[])`,
+		tenantID, pq.Array(ids))
+	if err != nil {
+		return nil, fmt.Errorf("rooms by ids: %w", err)
+	}
+	defer rows.Close()
+	var out []RoomIdentifier
+	for rows.Next() {
+		var rid, rname string
+		if err := rows.Scan(&rid, &rname); err != nil {
+			continue
+		}
+		out = append(out, RoomIdentifier{RoomID: rid, RoomName: rname})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UpdateDeviceStoreReportedVersion 首次上连或设备上报版本时：用 device_uid 或 device_code 定位设备，若上报版本与 firmware_version 不一致则写入 ota_target_firmware_version，并更新 firmware_version 为上报值。
 func (c *CardDB) UpdateDeviceStoreReportedVersion(ctx context.Context, deviceKey, reportedVersion string) error {
 	if deviceKey == "" || reportedVersion == "" {

@@ -761,7 +761,7 @@ func (s *deviceMonitorSettingsService) overlaySleepadLightModeFromHardware(ctx c
 }
 
 // pushDeviceSettings pushes SleepadSetting / MaterialSetting params to hardware
-// via the sleepace gateway proxy (individual API calls per setting type).
+// via the sleepace gateway proxy (individual API calls per setting type,含 realtimeMode/set).
 // 仅用本次请求体中的 alarm_params，不以 DB 补全下发（DB 在厂家不可达时仅作展示缓存，见 Get 侧 overlay）。
 func (s *deviceMonitorSettingsService) pushDeviceSettings(ctx context.Context, deviceID, deviceCode string, items []alarm.AlarmItem) {
 	if s.sleepaceGateway == nil || deviceID == "" || deviceCode == "" {
@@ -788,6 +788,11 @@ func (s *deviceMonitorSettingsService) pushDeviceSettings(ctx context.Context, d
 			if sensOk {
 				if err := s.sleepaceGateway.SetLeaveSensibility(ctx, deviceID, deviceCode, sensV); err != nil {
 					s.logger.Warn("[SLEEPAD_WRITE] push Bed_Exit_Sensitivity", zap.Error(err))
+				}
+			}
+			if ebV, ebOk := toIntParam(p["Empty_Bed_Monitor"]); ebOk && (ebV == 0 || ebV == 1) {
+				if err := s.sleepaceGateway.SetRealtimeModeAfterLeave(ctx, deviceID, deviceCode, ebV); err != nil {
+					s.logger.Warn("[SLEEPAD_WRITE] push Empty_Bed_Monitor realtimeMode/set", zap.Error(err))
 				}
 			}
 			reportType, reportOk := toIntParam(p["report_upload_type"])

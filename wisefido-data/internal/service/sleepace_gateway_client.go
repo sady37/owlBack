@@ -381,6 +381,14 @@ func (c *SleepaceGatewayClient) SetLeaveSensibility(ctx context.Context, deviceI
 	})
 }
 
+// SetRealtimeModeAfterLeave sets 离床后实时数据上报 (语雀 /sleepace/realtimeMode/set；BM8701-2 等、固件≥v6.67)。
+// mode 与前端 Empty_Bed_Monitor 一致：0=上报 1=不上报。data 仅 deviceId+mode（与文档一致）。
+func (c *SleepaceGatewayClient) SetRealtimeModeAfterLeave(ctx context.Context, _, deviceCode string, mode int) error {
+	return c.postProxy(ctx, "/sleepace/realtimeMode/set", map[string]interface{}{
+		"deviceId": deviceCode, "mode": mode,
+	})
+}
+
 // SetBedParameters pushes mattress thickness/material via wisefido-sleepace proxy.
 func (c *SleepaceGatewayClient) SetBedParameters(ctx context.Context, deviceID, deviceCode string, thickness, material int) error {
 	return c.postProxy(ctx, "/sleepace/updateSetting", map[string]interface{}{

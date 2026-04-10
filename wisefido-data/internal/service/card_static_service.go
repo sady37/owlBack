@@ -247,9 +247,6 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 				card.BedName = &bedName
 			}
 		}
-		if roomID != "" {
-			card.Rooms = []commoncard.RoomIdentifier{{RoomID: roomID, RoomName: roomName}}
-		}
 		if iconAlarmLevel > 0 {
 			card.IconAlarmLevel = &iconAlarmLevel
 		}
@@ -257,10 +254,9 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 			card.PopAlarm = &popAlarm
 		}
 
-		// 展开 devices JSONB
+		// 展开 devices JSONB（与 cards 表存盘键 bed_id/room_id 对齐，勿直接 Unmarshal 到 DeviceInfo）
 		if len(devicesJSON) > 0 {
-			var devices []commoncard.DeviceInfo
-			if json.Unmarshal(devicesJSON, &devices) == nil {
+			if devices, err := commoncard.ParseDevicesFromCardsJSONB(devicesJSON); err == nil {
 				card.Devices = devices
 			}
 		}
@@ -269,6 +265,19 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 			var residents []commoncard.ResidentInfo
 			if json.Unmarshal(residentsJSON, &residents) == nil {
 				card.Residents = residents
+			}
+		}
+
+		cdb := commoncard.NewCardDB(s.db)
+		if rooms, err := cdb.RoomIdentifiersForCard(ctx, tenantID, cardID); err != nil {
+			s.logger.Warn("RoomIdentifiersForCard", zap.String("card_id", cardID), zap.Error(err))
+			if roomID != "" {
+				card.Rooms = []commoncard.RoomIdentifier{{RoomID: roomID, RoomName: roomName}}
+			}
+		} else {
+			card.Rooms = rooms
+			if len(card.Rooms) == 0 && roomID != "" {
+				card.Rooms = []commoncard.RoomIdentifier{{RoomID: roomID, RoomName: roomName}}
 			}
 		}
 

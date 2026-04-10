@@ -23,15 +23,16 @@ type EventHandler struct {
 	metaCache  *service.DeviceMetaCache
 	enablement *service.AlarmEnablementCache
 	resolver   *service.DeviceCardResolver
+	bedCoord   *service.BedEventCoordinator
 	logger      *zap.Logger
 	staySesMu   sync.Mutex
 	staySessions map[string]*staySession // tenant:device -> Stay 状态机
 }
 
-func NewEventHandler(state *service.StateService, alarms *service.AlarmService, buffer *service.MonitorBuffer, metaCache *service.DeviceMetaCache, enablement *service.AlarmEnablementCache, resolver *service.DeviceCardResolver, logger *zap.Logger) *EventHandler {
+func NewEventHandler(state *service.StateService, alarms *service.AlarmService, buffer *service.MonitorBuffer, metaCache *service.DeviceMetaCache, enablement *service.AlarmEnablementCache, resolver *service.DeviceCardResolver, bedCoord *service.BedEventCoordinator, logger *zap.Logger) *EventHandler {
 	return &EventHandler{
 		state: state, alarms: alarms, buffer: buffer, metaCache: metaCache,
-		enablement: enablement, resolver: resolver, logger: logger,
+		enablement: enablement, resolver: resolver, bedCoord: bedCoord, logger: logger,
 		staySessions: make(map[string]*staySession),
 	}
 }
@@ -129,12 +130,22 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 					deviceType = dm.DeviceType
 				}
 			}
-			trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.CardID)
-			written, _ := h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.InBed, deviceType, m.Timestamp, 0, trackOverride)
-			if written && alarmPayload != nil {
-				_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, alarmPayload.DeviceID, alarm.LeftBed)
+			skip := false
+			if h.bedCoord != nil {
+				skip, _ = h.bedCoord.InBed(ctx, h.state, h.alarms, h.metaCache, h.buffer, m.CardID, m.TenantID, m.DeviceID, m.DeviceUID, deviceType, m.Timestamp, func(wr bool) {
+					if wr && alarmPayload != nil {
+						_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, alarmPayload.DeviceID, alarm.LeftBed)
+					}
+				})
 			}
-			_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
+			if !skip {
+				trackOverride := sleepadTrackOverrideForInBed(ctx, h.metaCache, h.buffer, m.CardID)
+				written, _ := h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.InBed, deviceType, m.Timestamp, 0, trackOverride)
+				if written && alarmPayload != nil {
+					_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, alarmPayload.DeviceID, alarm.LeftBed)
+				}
+				_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
+			}
 		}
 	case alarm.LeftBed:
 		payload := alarmPayload
@@ -162,13 +173,27 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 					deviceType = dm.DeviceType
 				}
 			}
-			trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.CardID)
-			_, _ = h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
-			_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
-		}
-		if meta := h.metaCache.GetOrLoad(ctx, m.CardID); meta != nil {
-			if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
-				service.StartLeftBedFall(m.CardID, radarID)
+			skip, written := false, false
+			if h.bedCoord != nil {
+				skip, written = h.bedCoord.LeftBed(ctx, h.state, h.metaCache, h.buffer, m.CardID, m.TenantID, m.DeviceID, m.DeviceUID, deviceType, m.Timestamp, func() {
+					if meta := h.metaCache.GetOrLoad(ctx, m.CardID); meta != nil {
+						if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
+							service.StartLeftBedFall(m.CardID, radarID)
+						}
+					}
+				})
+			}
+			if !skip {
+				trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.CardID)
+				_, _ = h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
+				_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
+				if meta := h.metaCache.GetOrLoad(ctx, m.CardID); meta != nil {
+					if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
+						service.StartLeftBedFall(m.CardID, radarID)
+					}
+				}
+			} else if !written {
+				// pending：等 buffer 对齐或超时后再落离床与 StartLeftBedFall
 			}
 		}
 
@@ -341,7 +366,7 @@ func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStrea
 	}
 	rid, rname := service.BathroomRoomFieldsFromDevice(dm)
 
-	// 行走/站立/多人阈值见 service/weights.go（WalkSecThreshold、WalkDistanceMetersThreshold）
+	// 行走/站立/多人阈值见 service/weights.go（WalkDistanceMetersThreshold、WalkSecThresholdOR）
 	_, _, _ = h.state.UpdateStateFromActivity(ctx, m.CardID, deviceID, m.DeviceUID, isBathroom, walkDuration, walkDistance, standDuration, multiPersonDuration, m.Timestamp, rid, rname)
 
 	if service.NeedBedFallCheck(m.CardID) {
@@ -426,6 +451,16 @@ func streamFieldStr(m map[string]interface{}, key string) string {
 	default:
 		return strings.TrimSpace(fmt.Sprintf("%v", s))
 	}
+}
+
+// sleepadTrackOverrideForInBed 与 sleepadTrackOverride 相同，但若缓冲里尚无 Sleepad 在床轨（count==0），返回 nil。
+// 否则 InBed 会与 bedStatusFromTrackNumber(0) 组合被写成离床，且 DeriveBedStateFromRealtime 在 BedStatus==1 时不再推导，前端会一直离床。
+func sleepadTrackOverrideForInBed(ctx context.Context, metaCache *service.DeviceMetaCache, buffer *service.MonitorBuffer, cardID string) *int {
+	o := sleepadTrackOverride(ctx, metaCache, buffer, cardID)
+	if o != nil && *o == 0 {
+		return nil
+	}
+	return o
 }
 
 // sleepadTrackOverride 若该卡床绑含 Sleepad 则从 monitor buffer 快照统计在床轨数并返回，否则返回 nil。

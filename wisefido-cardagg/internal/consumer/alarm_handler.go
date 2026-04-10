@@ -26,12 +26,13 @@ type AlarmHandler struct {
 	buffer    *service.MonitorBuffer
 	metaCache *service.DeviceMetaCache
 	resolver  *service.DeviceCardResolver
+	bedCoord  *service.BedEventCoordinator
 	logger    *zap.Logger
 }
 
-func NewAlarmHandler(alarms *service.AlarmService, state *service.StateService, buffer *service.MonitorBuffer, metaCache *service.DeviceMetaCache, resolver *service.DeviceCardResolver, logger *zap.Logger) *AlarmHandler {
+func NewAlarmHandler(alarms *service.AlarmService, state *service.StateService, buffer *service.MonitorBuffer, metaCache *service.DeviceMetaCache, resolver *service.DeviceCardResolver, bedCoord *service.BedEventCoordinator, logger *zap.Logger) *AlarmHandler {
 	return &AlarmHandler{
-		alarms: alarms, state: state, buffer: buffer, metaCache: metaCache, resolver: resolver, logger: logger,
+		alarms: alarms, state: state, buffer: buffer, metaCache: metaCache, resolver: resolver, bedCoord: bedCoord, logger: logger,
 	}
 }
 
@@ -109,12 +110,22 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 					deviceType = dm.DeviceType
 				}
 			}
-			trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.CardID)
-			written, _ := h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.InBed, deviceType, m.Timestamp, 0, trackOverride)
-			if written {
-				_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, payload.DeviceID, alarm.LeftBed)
+			skip := false
+			if h.bedCoord != nil {
+				skip, _ = h.bedCoord.InBed(ctx, h.state, h.alarms, h.metaCache, h.buffer, m.CardID, m.TenantID, m.DeviceID, m.DeviceUID, deviceType, m.Timestamp, func(wr bool) {
+					if wr {
+						_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, payload.DeviceID, alarm.LeftBed)
+					}
+				})
 			}
-			_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
+			if !skip {
+				trackOverride := sleepadTrackOverrideForInBed(ctx, h.metaCache, h.buffer, m.CardID)
+				written, _ := h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.InBed, deviceType, m.Timestamp, 0, trackOverride)
+				if written {
+					_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, payload.DeviceID, alarm.LeftBed)
+				}
+				_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
+			}
 		}
 	case alarm.LeftBed:
 		if enabled && level != "" {
@@ -131,13 +142,25 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 					deviceType = dm.DeviceType
 				}
 			}
-			trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.CardID)
-			_, _ = h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
-			_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
-		}
-		if meta := h.metaCache.GetOrLoad(ctx, m.CardID); meta != nil {
-			if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
-				service.StartLeftBedFall(m.CardID, radarID)
+			skip := false
+			if h.bedCoord != nil {
+				skip, _ = h.bedCoord.LeftBed(ctx, h.state, h.metaCache, h.buffer, m.CardID, m.TenantID, m.DeviceID, m.DeviceUID, deviceType, m.Timestamp, func() {
+					if meta := h.metaCache.GetOrLoad(ctx, m.CardID); meta != nil {
+						if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
+							service.StartLeftBedFall(m.CardID, radarID)
+						}
+					}
+				})
+			}
+			if !skip {
+				trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.CardID)
+				_, _ = h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
+				_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
+				if meta := h.metaCache.GetOrLoad(ctx, m.CardID); meta != nil {
+					if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
+						service.StartLeftBedFall(m.CardID, radarID)
+					}
+				}
 			}
 		}
 

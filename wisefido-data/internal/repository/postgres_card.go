@@ -122,30 +122,35 @@ func convertDevicesToJSON(devices []card.DeviceInfo) ([]byte, error) {
 	}
 
 	type DeviceJSON struct {
-		DeviceID    string  `json:"device_id"`
-		DeviceUID   string  `json:"device_uid,omitempty"`
-		DeviceCode  string  `json:"device_code,omitempty"`
-		DeviceName  string  `json:"device_name"`
-		DeviceType  string  `json:"device_type"`
-		DeviceModel string  `json:"device_model"`
-		BedID       *string `json:"bed_id,omitempty"`
-		BedName     *string `json:"bed_name,omitempty"`
-		RoomID      *string `json:"room_id,omitempty"`
-		RoomName    *string `json:"room_name,omitempty"`
-		UnitID      string  `json:"unit_id"`
+		DeviceID            string  `json:"device_id"`
+		DeviceUID           string  `json:"device_uid,omitempty"`
+		DeviceCode          string  `json:"device_code,omitempty"`
+		DeviceName          string  `json:"device_name"`
+		DeviceType          string  `json:"device_type"`
+		DeviceModel         string  `json:"device_model"`
+		BedID               *string `json:"bed_id,omitempty"`
+		BedName             *string `json:"bed_name,omitempty"`
+		RoomID              *string `json:"room_id,omitempty"`
+		RoomName            *string `json:"room_name,omitempty"`
+		UnitID              string  `json:"unit_id"`
+		MonitoringEnabled bool    `json:"monitoring_enabled,omitempty"`
+		Status              string  `json:"status,omitempty"`
 	}
 
 	var deviceJSONs []DeviceJSON
 	for _, device := range devices {
 		deviceJSONs = append(deviceJSONs, DeviceJSON{
-			DeviceID:    device.DeviceID,
-			DeviceUID:   device.DeviceUID,
-			DeviceName:  device.DeviceName,
-			DeviceType:  fmt.Sprint(device.DeviceType), // 兼容数字和字符串类型
-			DeviceModel: device.DeviceModel,
-			BedID:       device.BoundBedID,
-			RoomID:      device.BoundRoomID,
-			UnitID:      device.UnitID,
+			DeviceID:            device.DeviceID,
+			DeviceUID:           device.DeviceUID,
+			DeviceCode:          device.DeviceCode,
+			DeviceName:          device.DeviceName,
+			DeviceType:          fmt.Sprint(device.DeviceType), // 兼容数字和字符串类型
+			DeviceModel:         device.DeviceModel,
+			BedID:               device.BoundBedID,
+			RoomID:              device.BoundRoomID,
+			UnitID:              device.UnitID,
+			MonitoringEnabled:   device.MonitoringEnabled,
+			Status:              device.Status,
 		})
 	}
 
@@ -174,53 +179,9 @@ func convertResidentsToJSON(residents []card.ResidentInfo) ([]byte, error) {
 	return json.Marshal(residentJSONs)
 }
 
-// deserializeDevices 从 JSON 反序列化设备列表
+// deserializeDevices 从 JSON 反序列化设备列表（与 owl-common/card.ParseDevicesFromCardsJSONB 一致）
 func deserializeDevices(data []byte) ([]card.DeviceInfo, error) {
-	if len(data) == 0 || string(data) == "[]" {
-		return []card.DeviceInfo{}, nil
-	}
-
-	type DeviceJSON struct {
-		DeviceID    string  `json:"device_id"`
-		DeviceUID   string  `json:"device_uid,omitempty"`
-		DeviceCode  string  `json:"device_code,omitempty"`
-		DeviceName  string  `json:"device_name"`
-		DeviceType  any     `json:"device_type"`
-		DeviceModel string  `json:"device_model"`
-		BedID       *string `json:"bed_id,omitempty"`
-		RoomID      *string `json:"room_id,omitempty"`
-		UnitID      string  `json:"unit_id"`
-	}
-
-	var deviceJSONs []DeviceJSON
-	if err := json.Unmarshal(data, &deviceJSONs); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal devices: %w", err)
-	}
-
-	devices := make([]card.DeviceInfo, 0, len(deviceJSONs))
-	for _, dj := range deviceJSONs {
-		var deviceType string
-		switch v := dj.DeviceType.(type) {
-		case string:
-			deviceType = v
-		case float64:
-			deviceType = fmt.Sprintf("%.0f", v)
-		default:
-			deviceType = fmt.Sprint(v)
-		}
-		devices = append(devices, card.DeviceInfo{
-			DeviceID:    dj.DeviceID,
-			DeviceUID:   dj.DeviceUID,
-			DeviceCode:  dj.DeviceCode,
-			DeviceName:  dj.DeviceName,
-			DeviceType:  deviceType,
-			DeviceModel: dj.DeviceModel,
-			BoundBedID:  dj.BedID,
-			BoundRoomID: dj.RoomID,
-			UnitID:      dj.UnitID,
-		})
-	}
-	return devices, nil
+	return card.ParseDevicesFromCardsJSONB(data)
 }
 
 // deserializeResidents 从 JSON 反序列化住户列表

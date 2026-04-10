@@ -272,12 +272,27 @@ func (c *DeviceMetaCache) UpdateStatus(cardID, deviceID, key, value string) {
 }
 
 type devicesJSONItem struct {
-	DeviceID   string  `json:"device_id"`
-	DeviceUID  string  `json:"device_uid"`
-	DeviceType string  `json:"device_type"`
-	BedID      *string `json:"bed_id"`
-	RoomID     *string `json:"room_id"`
-	UnitID     string  `json:"unit_id"`
+	DeviceID    string  `json:"device_id"`
+	DeviceUID   string  `json:"device_uid"`
+	DeviceType  string  `json:"device_type"`
+	BedID       *string `json:"bed_id"`
+	RoomID      *string `json:"room_id"`
+	BoundBedID  *string `json:"bound_bed_id"`
+	BoundRoomID *string `json:"bound_room_id"`
+	UnitID      string  `json:"unit_id"`
+}
+
+func coalesceNonEmptyPtr(a, b *string) *string {
+	if a != nil && *a != "" {
+		return a
+	}
+	if b != nil && *b != "" {
+		return b
+	}
+	if a != nil {
+		return a
+	}
+	return b
 }
 
 // IsUUID 判断是否为 UUID 格式（cards.card_id 为 UUID，未绑卡时会用 deviceKey 充 card_id，不应查库）
@@ -352,13 +367,15 @@ func (c *DeviceMetaCache) loadFromDB(ctx context.Context, cardID string) *CardMe
 			UnitID:        item.UnitID,
 			RuntimeStatus: make(map[string]string),
 		}
-		if item.BedID != nil {
-			dm.BoundBedID = *item.BedID
-			bedIDs = append(bedIDs, *item.BedID)
+		bedPtr := coalesceNonEmptyPtr(item.BedID, item.BoundBedID)
+		roomPtr := coalesceNonEmptyPtr(item.RoomID, item.BoundRoomID)
+		if bedPtr != nil {
+			dm.BoundBedID = *bedPtr
+			bedIDs = append(bedIDs, *bedPtr)
 		}
-		if item.RoomID != nil {
-			dm.BoundRoomID = *item.RoomID
-			roomIDs = append(roomIDs, *item.RoomID)
+		if roomPtr != nil {
+			dm.BoundRoomID = *roomPtr
+			roomIDs = append(roomIDs, *roomPtr)
 		}
 		meta.Devices[key] = dm
 	}
