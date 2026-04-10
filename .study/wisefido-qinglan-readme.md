@@ -15,12 +15,112 @@
 
 ## 架构设计
 
-### 数据流
+### 服务依赖总览
+
+| 依赖 | 类型 | 用途 |
+|------|------|------|
+| **PostgreSQL** (TimescaleDB, `owlrd`) | 基础设施 | 设备注册表、卡片映射查询 |
+| **Redis** (`:6379`) | 基础设施 | Redis Streams 数据发布 + 设备身份缓存 |
+| **MQTT Broker** (内部, `:1883`) | 基础设施 | 内部服务消息总线（mosquitto） |
+| **Radar Device MQTT** (外部, `10.0.0.30:1883`) | 外部设备 | 物理雷达设备原始数据接入 |
+| **wisefido-data** (HTTP `:8081`) | 服务调用方 | 调用 qinglan REST API 读写设备属性 |
+
+### 完整架构图
+
 ```
-雷达设备 → MQTT Broker → wisefido-qinglan → Redis Streams → 下游服务
-                                    ↓
-                              PostgreSQL 数据库
+  Physical Radar Devices
+  (10.0.0.30:1883 MQTT)
+         |
+         | raw MQTT messages
+         | /prop/{productId}/{uid}/post
+         | /monitor/{productId}/{uid}/post
+         | /stat /event /alarm /func
+         v
++---------------------------+
+|    wisefido-qinglan       |
+|  (Go service :8081)       |
+|                           |
+|  +-------------------+   |
+|  | MQTT Consumer     |   |
+|  | (DeviceSubMgr)    |   |
+|  +--------+----------+   |
+|           |               |
+|  +--------v----------+   |       +----------------+
+|  | Radar Decoder     |   |       |   PostgreSQL   |
+|  | (binary protocol) |   |<----->|  (owlrd DB)    |
+|  +--------+----------+   |       | devices table  |
+|           |               |       | cards table    |
+|  +--------v----------+   |       +----------------+
+|  | StreamPublisher   |   |
+|  | (Redis Streams)   |   |       +----------------+
+|  +--------+----------+   |       |     Redis      |
+|           |               |<----->|  (:6379)       |
+|  +--------v----------+   |       | device cache   |
+|  | ConfigSubscriber  |   |       +----------------+
+|  | (card config)     |   |
+|  +-------------------+   |
+|                           |
+|  +-------------------+   |
+|  | HTTP Server       |   |
+|  | REST API :8081    |   |
+|  +-------------------+   |
++----------+----------------+
+           |
+           | Redis Streams PUBLISH
+           |
+    +------+-------+-------+-------+-------+--------+
+    |              |       |       |       |        |
+    v              v       v       v       v        v
+iot:monitor  iot:stat  iot:event iot:alarm iot:auth iot:card
+  :stream      :stream   :stream   :stream  :stream  :stream
+    |              |       |       |       |
+    +-------+------+-------+-------+-------+
+            |
+     consumed by downstream services
+            |
+    +-------+-------+----------+
+    |               |          |
+    v               v          v
+wisefido-data  wisefido-     wisefido-
+               cardagg         ai
+
+   ^
+   | HTTP REST API calls
+   | GET/PUT /api/v1/radar/devices/{uid}/properties
+   |
+wisefido-data
+(radar_install_service)
+
+config:card:stream
+  (wisefido-data PUBLISH --> wisefido-qinglan CONSUME)
+  [card binding/unbinding config changes]
 ```
+
+### Redis Streams 说明
+
+**生产 (PUBLISH)**：
+
+| Stream | 数据内容 | 保留时间 |
+|--------|----------|----------|
+| `iot:monitor:stream` | 实时数据（轨迹、生命体征） | 30 秒 |
+| `iot:stat:stream` | 统计数据（睡眠统计，1分钟/次） | 5 分钟 |
+| `iot:event:stream` | 事件数据（进出、离床等） | 24 小时 |
+| `iot:alarm:stream` | 告警数据（跌倒、呼叫等） | 24 小时 |
+| `iot:auth:stream` | 设备认证事件 | 24 小时 |
+| `iot:card:stream` | 卡片 IoT 数据 | 24 小时 |
+
+**消费 (CONSUME)**：
+
+| Stream | 来源服务 | 用途 |
+|--------|----------|------|
+| `config:card:stream` | wisefido-data | 卡片绑定/解绑配置变更，触发设备订阅刷新 |
+
+### 关键设计说明
+
+- **双 MQTT 连接**：qinglan 同时维护两条 MQTT 连接——一条连接外部物理雷达设备（`10.0.0.30:1883`），一条连接内部 broker（`:1883`）
+- **qinglan 是雷达数据唯一入口**：所有下游服务（wisefido-data、cardagg、AI）通过 Redis Streams 消费，不直接接触雷达设备
+- **wisefido-data 双向依赖**：既通过 HTTP 调用 qinglan（设备属性读写），也通过 Redis Streams 消费 qinglan 产出的数据
+- **设备身份解析**：qinglan 查询 PostgreSQL 将 `device_uid` 解析为 `(tenant_id, branch_id, unit_id, card_id)`，并附加到每条 Stream 消息
 
 ### 支持的 MQTT 主题
 1. `/prop/{productId}/{uid}/post` - 属性响应
@@ -29,12 +129,6 @@
 4. `/stat/{productId}/{uid}/post` - 统计数据
 5. `/event/{productId}/{uid}/post` - 事件数据
 6. `/alarm/{productId}/{uid}/post` - 告警数据
-
-### Redis Streams
-- `iot:monitor:stream` - 实时数据（轨迹、生命体征）
-- `iot:stat:stream` - 统计数据（睡眠统计等）
-- `iot:event:stream` - 事件数据（进出事件等）
-- `iot:alarm:stream` - 告警数据（跌倒告警等）
 
 ## 快速开始
 
