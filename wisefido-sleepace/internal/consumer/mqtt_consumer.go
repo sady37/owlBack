@@ -368,7 +368,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		if canMonitor {
 			msg := redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, ts, "monitor", observation.CategoryTrack, data)
 			c.publisher.PublishMonitor(ctx, msg)
-			c.logger.Info("realtime received",
+			c.logger.Debug("realtime received",
 				zap.String("device_uid", deviceUID),
 				zap.String("device_id", deviceID),
 				zap.Int("bed_status", d.BedStatus),

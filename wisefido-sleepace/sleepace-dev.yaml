@@ -2,7 +2,7 @@ service:
   name: "wisefido-sleepace"
 
 log:
-  level: debug
+  level: info
   format: console
   output: stdout
 
