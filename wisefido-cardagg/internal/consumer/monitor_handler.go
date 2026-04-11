@@ -91,25 +91,59 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 		return nil
 	}
 
+	// #region agent log
+	dbg := strings.Contains(strings.ToLower(m.CardID), "d2ba029d") || m.DeviceUID == "BM87224700978" ||
+		strings.EqualFold(m.DeviceUID, "E598A2ACD523") || strings.EqualFold(m.DeviceUID, "E598A2ACD5F7") ||
+		strings.EqualFold(m.DeviceID, "E598A2ACD523") || strings.EqualFold(m.DeviceID, "E598A2ACD5F7")
+	if dbg {
+		agentDebugLog("H0", "monitor_handler.Handle:parsed", "monitor parsed", map[string]any{"cardID": m.CardID, "deviceID": m.DeviceID, "deviceUID": m.DeviceUID, "msgTs": m.Timestamp})
+	}
+	// #endregion
+
 	if m.DeviceUID == "" {
+		// #region agent log
+		if dbg {
+			agentDebugLog("H1", "monitor_handler.Handle:drop", "empty device_uid", map[string]any{"cardID": m.CardID})
+		}
+		// #endregion
 		return nil
 	}
 	deviceKey := h.metaCache.ResolveDeviceID(ctx, m.CardID, m.DeviceID, m.DeviceUID)
 	if deviceKey == "" {
+		// #region agent log
+		if dbg {
+			agentDebugLog("H1", "monitor_handler.Handle:drop", "ResolveDeviceID empty", map[string]any{"cardID": m.CardID, "deviceID": m.DeviceID, "deviceUID": m.DeviceUID})
+		}
+		// #endregion
 		return nil
 	}
 
 	nowMs := time.Now().UnixMilli()
 	age := nowMs - m.Timestamp
 	if age > MonitorFieldTTL {
+		// #region agent log
+		if dbg {
+			agentDebugLog("H2", "monitor_handler.Handle:drop", "stale timestamp", map[string]any{"ageMs": age, "limitMs": MonitorFieldTTL, "msgTs": m.Timestamp, "nowMs": nowMs})
+		}
+		// #endregion
 		return nil
 	}
 
 	fields := redis.FirstDataValue(m.DataValue)
 	if fields == nil {
+		// #region agent log
+		if dbg {
+			agentDebugLog("H3", "monitor_handler.Handle:drop", "FirstDataValue nil", map[string]any{"cardID": m.CardID, "deviceKey": deviceKey})
+		}
+		// #endregion
 		return nil
 	}
 	trackID := resolveTrackID(fields)
+	// #region agent log
+	if dbg {
+		agentDebugLog("H4", "monitor_handler.Handle:write", "buffer Write", map[string]any{"cardID": m.CardID, "deviceKey": deviceKey, "trackID": trackID, "trackInvalid": trackID == observation.TrackInvalid})
+	}
+	// #endregion
 	h.buffer.Write(m.CardID, deviceKey, strconv.Itoa(trackID), fields, m.Timestamp)
 	if h.bedCoord != nil && h.state != nil {
 		h.bedCoord.TryResolveAfterMonitorWrite(ctx, h.state, h.alarms, h.metaCache, h.buffer, m.CardID, h.logger)

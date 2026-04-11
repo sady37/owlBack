@@ -7,7 +7,6 @@ import (
 	"log"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"owl-common/alarm"
@@ -28,8 +27,6 @@ const (
 	// DeviceTypeRadar 设备类型常量（wisefido-qinglan网关的所有设备都是Radar）
 	DeviceTypeRadar = "Radar"
 )
-
-var monitorHandleLogCount uint64 // handleMonitorMessage 抽样日志（每 10 次）
 
 func businessAccessApproved(s string) bool {
 	switch s {
@@ -185,7 +182,18 @@ func (c *MQTTConsumer) publishOnlineForConnectedAfterStartup(ctx context.Context
 			tid = policyTid
 		}
 		cid = card.StreamHeadCardID(cid, did)
-		data := map[string]interface{}{alarm.FieldEventStatus: "start"}
+		item := observation.EventItem{
+			DataCategory: alarm.AlarmTypeOfflineRecover,
+			EventName:    alarm.AlarmTypeOfflineRecover,
+			EventSince:   ts,
+			EventStatus:  "end",
+			TrackID:      observation.TrackDevice,
+		}
+		data, _ := observation.EventItemToDataMap(&item)
+		if data == nil {
+			data = make(map[string]interface{})
+		}
+		data[observation.FieldOffline] = 0
 		msg := rediscommon.NewSingleItemMessage(tid, cid, uid, did, DeviceTypeRadar, ts, "alarm", alarm.AlarmTypeOfflineRecover, data)
 		_ = c.streamPublisher.PublishAlarm(ctx, msg)
 	}
@@ -469,7 +477,9 @@ func (c *MQTTConsumer) allowAccessFromCacheOrDB(uid string) bool {
 // handleMessage 处理 MQTT 消息（仅 .../post）
 // 注意：现在只订阅已认证设备的主题，未认证设备无法发送消息到服务端
 func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
-	// log.Printf("Received MQTT message on topic: %s", topic) // 已关闭，减少刷屏
+	if isQinglanVerboseLog() {
+		log.Printf("[MQTT_RX] topic=%s payload=%s", topic, string(payload))
+	}
 
 	// 解析主题，提取设备UID
 	uid, err := c.extractUIDFromTopic(topic)
@@ -728,19 +738,11 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 	}
 
 	if len(items) > 0 && canMonitor && isQinglanVerboseLog() {
-		n := atomic.AddUint64(&monitorHandleLogCount, 1)
-		if n%10 == 0 {
-			var sample map[string]interface{}
-			for _, it := range items {
-				if dc, _ := it["dataCategory"].(string); dc == "track" {
-					sample = it
-					break
-				}
-			}
-			if sample != nil {
-				log.Printf("[MONITOR_TRACK] device_uid=%s track_id=%v position_x=%v position_y=%v position_z=%v remaining_time=%v area_id=%v pose=%v event=%v (every 10, count=%d)",
-					uid, sample["track_id"], sample["position_x"], sample["position_y"], sample["position_z"],
-					sample["remaining_time"], sample["area_id"], sample["pose"], sample["event"], n)
+		for _, it := range items {
+			if dc, _ := it["dataCategory"].(string); dc == "track" {
+				log.Printf("[MONITOR_TRACK] device_uid=%s track_id=%v position_x=%v position_y=%v position_z=%v remaining_time=%v area_id=%v pose=%v event=%v",
+					uid, it["track_id"], it["position_x"], it["position_y"], it["position_z"],
+					it["remaining_time"], it["area_id"], it["pose"], it["event"])
 			}
 		}
 	}

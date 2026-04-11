@@ -1,23 +1,24 @@
 [Unit]
-Description=OwlBack backend services (data, cardagg, qinglan, sleepace, iot, ai)
-# 分模块: owlback.data / owlback.qinglan / … 见 owlback.*.service 与 install-modular-units.sh
+# systemctl start/stop owlback 仅编排各 owlback.*；真正进程在各子 unit（可单独 systemctl stop/start owlback.data 等）
+# 勿再使用旧版 ExecStart=start-owlback.sh（单 bash 拉六个 go run），与分模块二选一
+Description=OwlBack orchestrator (starts/stops modular owlback.* units)
 After=network.target docker.service
 Wants=docker.service
 
 [Service]
-Type=simple
-User=wisefido
-Group=wisefido
+Type=oneshot
+RemainAfterExit=yes
+# 编排需 systemctl；各子服务仍为 unit 内 User=wisefido
+User=root
+Group=root
 WorkingDirectory=/home/wisefido/owl/owlBack
-ExecStart=/home/wisefido/owl/owlBack/start-owlback.sh
-ExecStop=/home/wisefido/owl/owlBack/stop-owlback.sh
-TimeoutStopSec=60
-Restart=on-failure
-RestartSec=10
+ExecStart=/bin/bash /home/wisefido/owl/owlBack/start-owlback-full.sh --systemd-exec --no-status
+ExecStop=/bin/bash /home/wisefido/owl/owlBack/stop-owlback-full.sh --systemd-exec --no-status
+TimeoutStartSec=180
+TimeoutStopSec=180
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=owlback
-# 若用户/路径不同，可复制到 /etc/systemd/system/ 后 systemctl edit owlback 覆盖
 
 [Install]
 WantedBy=multi-user.target

@@ -97,9 +97,9 @@ func (h *EventHandler) stayOnEnter(ctx context.Context, m *redis.IoTStreamMessag
 	ses.ArmedPending = false
 	ses.ExitAtMs = 0
 	ses.ResolveExpireAt = 0
+	publishNow := time.Now().UnixMilli()
+	h.stayPublishPhase(ctx, m, deviceID, ses, publishNow)
 	h.staySesMu.Unlock()
-
-	h.stayPublishPhase(ctx, m, deviceID, ses, time.Now().UnixMilli())
 }
 
 // stayOnExit R1：开 150s 解除窗。
@@ -119,9 +119,9 @@ func (h *EventHandler) stayOnExit(ctx context.Context, m *redis.IoTStreamMessage
 	ses.ArmExpireAtMs = 0
 	ses.ActivityCount = 0
 	ses.NumberPositive = false
+	publishNow := time.Now().UnixMilli()
+	h.stayPublishPhase(ctx, m, deviceID, ses, publishNow)
 	h.staySesMu.Unlock()
-
-	h.stayPublishPhase(ctx, m, deviceID, ses, time.Now().UnixMilli())
 }
 
 // stayOnNumberPeople 在 PublishBathRoomStateFromEvent 之后调用：用最新 TotalPeople 推进武装/解除。

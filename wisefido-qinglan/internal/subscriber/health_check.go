@@ -284,6 +284,11 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 		return
 	}
 	cid := card.StreamHeadCardID("", did)
+	if m.db != nil {
+		if b, lookupErr := card.NewCardDB(m.db).LookupCard(ctx, deviceUID); lookupErr == nil && b != nil && b.CardID != "" {
+			cid = b.CardID
+		}
+	}
 	ts := time.Now().UnixMilli()
 	eventStatus := "start"
 	if value == 0 {

@@ -19,6 +19,7 @@ import (
 const (
 	DataCategoryKey = "dataCategory" // dataValue 每项“数据类别”键名；observation 字段名见 observation 包 Field*
 	DataValueKey    = "dataValue"    // iot:*:stream 顶层键名，与 IoTStreamMessage 的 json 一致
+	EventNameKey    = "event_name"   // dataValue 每项事件名，alarm/event 流必填；NewSingleItemMessage 自动补
 )
 
 // =============================================================================
@@ -172,6 +173,12 @@ func NewSingleItemMessage(tenantID, cardID, deviceUID, deviceID, deviceType stri
 		withCat[DataCategoryKey] = cat
 	} else if category != "" {
 		withCat[DataCategoryKey] = category
+	}
+	// 保证 event_name 存在；上游仅传 dataCategory/category 时自动补齐，避免消费方因 empty_event_name 丢弃
+	if _, has := withCat[EventNameKey]; !has {
+		if cat != "" {
+			withCat[EventNameKey] = cat
+		}
 	}
 	return NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, ts, topicType, cat, withCat)
 }

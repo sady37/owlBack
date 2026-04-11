@@ -1,5 +1,8 @@
 #!/bin/bash
-
+#
+# 启停成对：./start-iot.sh ↔ ./stop-iot.sh
+# systemd：systemctl start owlback.iot ↔ systemctl stop owlback.iot
+#
 # IoT 时序数据服务停止脚本
 # 
 # 职责：

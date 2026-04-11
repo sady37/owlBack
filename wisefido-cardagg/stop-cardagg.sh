@@ -1,4 +1,8 @@
 #!/bin/bash
+#
+# 启停成对：./start-cardagg.sh ↔ ./stop-cardagg.sh（尽量杀光本模块相关进程）
+# systemd：systemctl start owlback.cardagg ↔ systemctl stop owlback.cardagg
+#
 
 cd "$(dirname "$0")"
 
@@ -42,6 +46,17 @@ while IFS= read -r pid; do
         done
     fi
 done < <(pgrep -f "wisefido-cardagg" 2>/dev/null || true)
+
+# 方法2b: go run 仅带 main.go 路径（cmdline 可能无 wisefido-cardagg 字样）
+while IFS= read -r pid; do
+    if [ -n "$pid" ]; then
+        PIDS+=("$pid")
+        CHILD_PIDS=$(pgrep -P "$pid" 2>/dev/null || true)
+        for child_pid in $CHILD_PIDS; do
+            [ -n "$child_pid" ] && PIDS+=("$child_pid")
+        done
+    fi
+done < <(pgrep -f "cardagg/main.go" 2>/dev/null || true)
 
 # 方法3: 通过日志文件查找（如果 tee 占用日志文件）
 if command -v lsof &> /dev/null; then

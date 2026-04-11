@@ -88,7 +88,7 @@ const (
 
 const (
 	LeftBedFallMaxActivityCount  = 5   // 只处理离床后前 N 个 Activity
-	LeftBedFallSumStandThreshold = 260 // sum_stand >= 260 秒 → 报 SuspectedFall Warning
+	LeftBedFallSumStandThreshold = 260 // 离床跌倒慢速兜底：5 条 Activity 累计站立 ≥260s（久站）；与 monitor pose==卧床 的 C&I 路径并行
 	LeftBedFallSumMoveUpdateSec = 10  // sum_move >= 10 秒则更新 target lastActive
 	LeftBedFallDanceUpdateMin   = 1   // dance >= 1 分钟则更新 target lastActive
 )

@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# 【旧版】单 bash 后台拉六个 go run；与 systemd 分模块 owlback.* 勿同开（会抢端口）。
+# 推荐：systemctl start owlback（仓库内 owlback.service 已为 oneshot 编排各 owlback.*）
+#       或 ./start-owlback-full.sh ；单独启停：systemctl start/stop owlback.data 等
+# 本脚本若仍作手动排障用，启停成对：↔ stop-owlback.sh
+#
 # 统一启动脚本：启动所有后台服务
 # 日志写入 owl/log 各文件；不用 | tee（否则 $! 是 tee，ps -p 与健康检查会误判）
 #
@@ -374,66 +379,13 @@ echo "  Log: $DATA_LOG  (tail -f \"$DATA_LOG\")"
 # 等待一下确保服务启动
 sleep 2
 
-# 启动 wisefido-cardagg 服务
-# 功能：数据聚合（从 PostgreSQL + Redis 聚合卡片数据并缓存）
-# 注意：卡片创建/更新现在由 wisefido-data 直接处理，aggregator 主要用于数据聚合
-echo -e "${GREEN}[2/6] Starting wisefido-cardagg service...${NC}"
-echo -e "${BLUE}  Function: Data aggregation (PostgreSQL + Redis → full card cache)${NC}"
-echo -e "${YELLOW}  Note: Card creation/update is now handled by wisefido-data${NC}"
-cd "$OWLBACK_DIR/wisefido-cardagg"
-: >"$AGGREGATOR_LOG"
-go run "$OWLBACK_DIR/wisefido-cardagg/main.go" >>"$AGGREGATOR_LOG" 2>&1 &
-AGGREGATOR_PID=$!
-echo "  PID: $AGGREGATOR_PID"
-echo "  Log: $AGGREGATOR_LOG  (tail -f \"$AGGREGATOR_LOG\")"
-
-# 等待一下确保服务启动
-sleep 2
-
-# 启动 wisefido-qinglan 服务
-# 功能：设备接入与HTTPS认证 + MQTT消息路由（设备房间消费集成）
-echo -e "${GREEN}[3/6] Starting wisefido-qinglan service...${NC}"
-echo -e "${BLUE}  Function: Device access + MQTT message routing (internal control)${NC}"
-cd "$OWLBACK_DIR/wisefido-qinglan"
-# 设置一些关键环境变量（简化配置）
-export HTTP_HOST="${HTTP_HOST:-0.0.0.0}"
-export HTTP_PORT="${HTTP_PORT:-8081}"
-# HTTPS 认证端口：与 .env 中 RADAR_HTTPS_PORT 一致（默认 8443）
-export QINGLAN_HTTPS_PORT="${QINGLAN_HTTPS_PORT:-${RADAR_HTTPS_PORT:-8443}}"
-# .env 中 RADAR_HTTPS_* 会传给 qinglan 作为 QINGLAN_HTTPS_*（未设则用 qinglan 默认 owl-common 证书）
-export QINGLAN_HTTPS_CERT_FILE="${QINGLAN_HTTPS_CERT_FILE:-$RADAR_HTTPS_CERT_FILE}"
-export QINGLAN_HTTPS_KEY_FILE="${QINGLAN_HTTPS_KEY_FILE:-$RADAR_HTTPS_KEY_FILE}"
-: >"$QINGLAN_LOG"
-go run cmd/wisefido-qinglan/main.go >>"$QINGLAN_LOG" 2>&1 &
-QINGLAN_PID=$!
-echo "  PID: $QINGLAN_PID"
-echo "  Log: $QINGLAN_LOG  (tail -f \"$QINGLAN_LOG\")"
-
-# 等待一下确保服务启动
-sleep 2
-
-# 启动 wisefido-sleepace 服务（目录存在时）
-# 功能：Sleepad 设备网关（MQTT 消费 + HTTP 透传代理）
-if [ "$SLEEPACE_DIR_MISSING" != "true" ]; then
-  echo -e "${GREEN}[4/6] Starting wisefido-sleepace service...${NC}"
-  echo -e "${BLUE}  Function: Sleepad device gateway (MQTT consumer + HTTP proxy)${NC}"
-  cd "$OWLBACK_DIR/wisefido-sleepace"
-  : >"$SLEEPACE_LOG"
-  MQTT_CLIENT_ID=wisefido-sleepace-2 go run cmd/wisefido-sleepace/main.go -env dev >>"$SLEEPACE_LOG" 2>&1 &
-  SLEEPACE_PID=$!
-  echo "  PID: $SLEEPACE_PID"
-  echo "  Log: $SLEEPACE_LOG  (tail -f \"$SLEEPACE_LOG\")"
-else
-  echo -e "${YELLOW}[4/6] Skipping wisefido-sleepace (directory not found)${NC}"
-  SLEEPACE_PID=""
-fi
-
-# 等待一下确保服务启动
-sleep 2
+# 启动 data 后等待 30 秒，确保卡片初始化/同步先完成
+echo -e "${YELLOW}Waiting 30 seconds after starting wisefido-data...${NC}"
+sleep 30
 
 # 启动 wisefido-iot 服务
 # 功能：从 Redis Streams 消费数据，存储到 TimescaleDB
-echo -e "${GREEN}[5/6] Starting wisefido-iot service...${NC}"
+echo -e "${GREEN}[2/6] Starting wisefido-iot service...${NC}"
 echo -e "${BLUE}  Function: Consume data from Redis Streams → TimescaleDB${NC}"
 cd "$OWLBACK_DIR/wisefido-iot"
 # 设置环境变量（如果未从 .env 加载）
@@ -469,7 +421,7 @@ sleep 2
 
 # 启动 wisefido-ai 服务
 # 功能：AI 智能推理服务（高级推理、访客识别、巡房优化）
-echo -e "${GREEN}[6/6] Starting wisefido-ai service...${NC}"
+echo -e "${GREEN}[3/6] Starting wisefido-ai service...${NC}"
 echo -e "${BLUE}  Function: AI inference (advanced reasoning, visitor detection, patrol optimization)${NC}"
 cd "$OWLBACK_DIR/wisefido-ai"
 # 设置环境变量（如果未从 .env 加载）
@@ -479,6 +431,63 @@ go run cmd/wisefido-ai/main.go >>"$AI_LOG" 2>&1 &
 AI_PID=$!
 echo "  PID: $AI_PID"
 echo "  Log: $AI_LOG  (tail -f \"$AI_LOG\")"
+
+# 等待一下确保服务启动
+sleep 2
+
+# 启动 wisefido-cardagg 服务
+# 功能：数据聚合（从 PostgreSQL + Redis 聚合卡片数据并缓存）
+# 注意：卡片创建/更新现在由 wisefido-data 直接处理，aggregator 主要用于数据聚合
+echo -e "${GREEN}[4/6] Starting wisefido-cardagg service...${NC}"
+echo -e "${BLUE}  Function: Data aggregation (PostgreSQL + Redis → full card cache)${NC}"
+echo -e "${YELLOW}  Note: Card creation/update is now handled by wisefido-data${NC}"
+cd "$OWLBACK_DIR/wisefido-cardagg"
+: >"$AGGREGATOR_LOG"
+go run "$OWLBACK_DIR/wisefido-cardagg/main.go" >>"$AGGREGATOR_LOG" 2>&1 &
+AGGREGATOR_PID=$!
+echo "  PID: $AGGREGATOR_PID"
+echo "  Log: $AGGREGATOR_LOG  (tail -f \"$AGGREGATOR_LOG\")"
+
+# 等待一下确保服务启动
+sleep 2
+
+# 启动 wisefido-sleepace 服务（目录存在时）
+# 功能：Sleepad 设备网关（MQTT 消费 + HTTP 透传代理）
+if [ "$SLEEPACE_DIR_MISSING" != "true" ]; then
+    echo -e "${GREEN}[5/6] Starting wisefido-sleepace service...${NC}"
+    echo -e "${BLUE}  Function: Sleepad device gateway (MQTT consumer + HTTP proxy)${NC}"
+    cd "$OWLBACK_DIR/wisefido-sleepace"
+    : >"$SLEEPACE_LOG"
+    MQTT_CLIENT_ID=wisefido-sleepace-2 go run cmd/wisefido-sleepace/main.go -env dev >>"$SLEEPACE_LOG" 2>&1 &
+    SLEEPACE_PID=$!
+    echo "  PID: $SLEEPACE_PID"
+    echo "  Log: $SLEEPACE_LOG  (tail -f \"$SLEEPACE_LOG\")"
+else
+    echo -e "${YELLOW}[5/6] Skipping wisefido-sleepace (directory not found)${NC}"
+    SLEEPACE_PID=""
+fi
+
+# 等待一下确保服务启动
+sleep 2
+
+# 启动 wisefido-qinglan 服务
+# 功能：设备接入与HTTPS认证 + MQTT消息路由（设备房间消费集成）
+echo -e "${GREEN}[6/6] Starting wisefido-qinglan service...${NC}"
+echo -e "${BLUE}  Function: Device access + MQTT message routing (internal control)${NC}"
+cd "$OWLBACK_DIR/wisefido-qinglan"
+# 设置一些关键环境变量（简化配置）
+export HTTP_HOST="${HTTP_HOST:-0.0.0.0}"
+export HTTP_PORT="${HTTP_PORT:-8081}"
+# HTTPS 认证端口：与 .env 中 RADAR_HTTPS_PORT 一致（默认 8443）
+export QINGLAN_HTTPS_PORT="${QINGLAN_HTTPS_PORT:-${RADAR_HTTPS_PORT:-8443}}"
+# .env 中 RADAR_HTTPS_* 会传给 qinglan 作为 QINGLAN_HTTPS_*（未设则用 qinglan 默认 owl-common 证书）
+export QINGLAN_HTTPS_CERT_FILE="${QINGLAN_HTTPS_CERT_FILE:-$RADAR_HTTPS_CERT_FILE}"
+export QINGLAN_HTTPS_KEY_FILE="${QINGLAN_HTTPS_KEY_FILE:-$RADAR_HTTPS_KEY_FILE}"
+: >"$QINGLAN_LOG"
+LOG_LEVEL=info go run cmd/wisefido-qinglan/main.go >>"$QINGLAN_LOG" 2>&1 &
+QINGLAN_PID=$!
+echo "  PID: $QINGLAN_PID"
+echo "  Log: $QINGLAN_LOG  (tail -f \"$QINGLAN_LOG\")"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
@@ -495,14 +504,6 @@ sleep 3
 cleanup() {
     echo ""
     echo -e "${YELLOW}Cleaning up services...${NC}"
-    if [ -n "$DATA_PID" ] && ps -p "$DATA_PID" > /dev/null 2>&1; then
-        echo "  Stopping wisefido-data (PID: $DATA_PID)"
-        kill "$DATA_PID" 2>/dev/null || true
-    fi
-    if [ -n "$AGGREGATOR_PID" ] && ps -p "$AGGREGATOR_PID" > /dev/null 2>&1; then
-        echo "  Stopping wisefido-cardagg (PID: $AGGREGATOR_PID)"
-        kill "$AGGREGATOR_PID" 2>/dev/null || true
-    fi
     if [ -n "$QINGLAN_PID" ] && ps -p "$QINGLAN_PID" > /dev/null 2>&1; then
         echo "  Stopping wisefido-qinglan (PID: $QINGLAN_PID)"
         kill "$QINGLAN_PID" 2>/dev/null || true
@@ -511,23 +512,31 @@ cleanup() {
         echo "  Stopping wisefido-sleepace (PID: $SLEEPACE_PID)"
         kill "$SLEEPACE_PID" 2>/dev/null || true
     fi
-    if [ -n "$IOT_PID" ] && ps -p "$IOT_PID" > /dev/null 2>&1; then
-        echo "  Stopping wisefido-iot (PID: $IOT_PID)"
-        kill "$IOT_PID" 2>/dev/null || true
+    if [ -n "$AGGREGATOR_PID" ] && ps -p "$AGGREGATOR_PID" > /dev/null 2>&1; then
+        echo "  Stopping wisefido-cardagg (PID: $AGGREGATOR_PID)"
+        kill "$AGGREGATOR_PID" 2>/dev/null || true
     fi
     if [ -n "$AI_PID" ] && ps -p "$AI_PID" > /dev/null 2>&1; then
         echo "  Stopping wisefido-ai (PID: $AI_PID)"
         kill "$AI_PID" 2>/dev/null || true
     fi
+    if [ -n "$IOT_PID" ] && ps -p "$IOT_PID" > /dev/null 2>&1; then
+        echo "  Stopping wisefido-iot (PID: $IOT_PID)"
+        kill "$IOT_PID" 2>/dev/null || true
+    fi
+    if [ -n "$DATA_PID" ] && ps -p "$DATA_PID" > /dev/null 2>&1; then
+        echo "  Stopping wisefido-data (PID: $DATA_PID)"
+        kill "$DATA_PID" 2>/dev/null || true
+    fi
     # 等待进程退出
     sleep 2
     # 强制杀死仍在运行的进程
-    pkill -f "go run.*wisefido-data" 2>/dev/null || true
-    pkill -f "go run.*wisefido-cardagg" 2>/dev/null || true
     pkill -f "go run.*wisefido-qinglan" 2>/dev/null || true
     pkill -f "go run.*wisefido-sleepace" 2>/dev/null || true
-    pkill -f "go run.*wisefido-iot" 2>/dev/null || true
+    pkill -f "go run.*wisefido-cardagg" 2>/dev/null || true
     pkill -f "go run.*wisefido-ai" 2>/dev/null || true
+    pkill -f "go run.*wisefido-iot" 2>/dev/null || true
+    pkill -f "go run.*wisefido-data" 2>/dev/null || true
     echo -e "${GREEN}Cleanup completed${NC}"
 }
 

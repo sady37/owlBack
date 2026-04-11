@@ -40,37 +40,63 @@ export CARD_POLLING_INTERVAL="${CARD_POLLING_INTERVAL:-86400}"
 export CARD_AGGREGATION_ENABLED="${CARD_AGGREGATION_ENABLED:-true}"
 export CARD_AGGREGATION_INTERVAL="${CARD_AGGREGATION_INTERVAL:-2}"
 
+# go run 在子进程里跑编译产物，systemd 停服时易漏杀监听进程；构建到 .bin 后 exec 单进程。
+owlback_go_exec() {
+  local dir="$1"
+  local build_pkg="$2"
+  local bin_name="$3"
+  local log_file="$4"
+  shift 4
+  local bin="$dir/.bin/$bin_name"
+  mkdir -p "$dir/.bin"
+  cd "$dir" || exit 1
+  local stale=0
+  [[ ! -x "$bin" ]] && stale=1
+  [[ "$dir/go.mod" -nt "$bin" ]] && stale=1
+  if [[ -f "$dir/go.sum" && "$dir/go.sum" -nt "$bin" ]]; then
+    stale=1
+  fi
+  local mainf
+  if [[ "$build_pkg" = "." ]]; then
+    mainf="main.go"
+  else
+    mainf="${build_pkg#./}/main.go"
+  fi
+  if [[ -f "$dir/$mainf" && "$dir/$mainf" -nt "$bin" ]]; then
+    stale=1
+  fi
+  if [[ "$stale" -eq 1 ]]; then
+    go build -o "$bin" "$build_pkg"
+  fi
+  exec "$bin" "$@" >>"$log_file" 2>&1
+}
+
 case "$MODULE" in
   wisefido-data)
-    cd "$OWLBACK/wisefido-data"
     export HTTP_ADDR="${HTTP_ADDR:-:8080}"
     export QINGLAN_API_BASE_URL="${QINGLAN_API_BASE_URL:-http://127.0.0.1:8081}"
-    exec go run cmd/wisefido-data/main.go >>"$LOG_DIR/wisefido-data.log" 2>&1
+    owlback_go_exec "$OWLBACK/wisefido-data" "./cmd/wisefido-data" "wisefido-data" "$LOG_DIR/wisefido-data.log"
     ;;
   wisefido-cardagg)
-    cd "$OWLBACK/wisefido-cardagg"
-    exec go run "$OWLBACK/wisefido-cardagg/main.go" >>"$LOG_DIR/wisefido-cardagg.log" 2>&1
+    owlback_go_exec "$OWLBACK/wisefido-cardagg" "." "wisefido-cardagg" "$LOG_DIR/wisefido-cardagg.log"
     ;;
   wisefido-qinglan)
-    cd "$OWLBACK/wisefido-qinglan"
     export HTTP_HOST="${HTTP_HOST:-0.0.0.0}"
     export HTTP_PORT="${HTTP_PORT:-8081}"
     export QINGLAN_HTTPS_PORT="${QINGLAN_HTTPS_PORT:-${RADAR_HTTPS_PORT:-8443}}"
     export QINGLAN_HTTPS_CERT_FILE="${QINGLAN_HTTPS_CERT_FILE:-$RADAR_HTTPS_CERT_FILE}"
     export QINGLAN_HTTPS_KEY_FILE="${QINGLAN_HTTPS_KEY_FILE:-$RADAR_HTTPS_KEY_FILE}"
-    exec go run cmd/wisefido-qinglan/main.go >>"$LOG_DIR/wisefido-qinglan.log" 2>&1
+    owlback_go_exec "$OWLBACK/wisefido-qinglan" "./cmd/wisefido-qinglan" "wisefido-qinglan" "$LOG_DIR/wisefido-qinglan.log"
     ;;
   wisefido-sleepace)
     if [[ ! -d "$OWLBACK/wisefido-sleepace" ]]; then
       echo "wisefido-sleepace directory missing, exit" >&2
       exit 1
     fi
-    cd "$OWLBACK/wisefido-sleepace"
     export MQTT_CLIENT_ID="${MQTT_CLIENT_ID:-wisefido-sleepace-2}"
-    exec go run cmd/wisefido-sleepace/main.go -env dev >>"$LOG_DIR/wisefido-sleepace.log" 2>&1
+    owlback_go_exec "$OWLBACK/wisefido-sleepace" "./cmd/wisefido-sleepace" "wisefido-sleepace" "$LOG_DIR/wisefido-sleepace.log" -env dev
     ;;
   wisefido-iot)
-    cd "$OWLBACK/wisefido-iot"
     export HTTP_ADDR="${HTTP_ADDR:-:8085}"
     export REDIS_DB="${REDIS_DB:-0}"
     export STREAM_IOT_MONITOR="${STREAM_IOT_MONITOR:-iot:monitor:stream}"
@@ -90,12 +116,11 @@ case "$MODULE" in
     export STREAM_SLEEPACE_AUTH="${STREAM_SLEEPACE_AUTH:-iot:auth:stream}"
     export CONSUMER_GROUP="${CONSUMER_GROUP:-iot-timeseries-group}"
     export CONSUMER_NAME="${CONSUMER_NAME:-iot-timeseries-1}"
-    exec go run cmd/wisefido-iot/main.go >>"$LOG_DIR/wisefido-iot.log" 2>&1
+    owlback_go_exec "$OWLBACK/wisefido-iot" "./cmd/wisefido-iot" "wisefido-iot" "$LOG_DIR/wisefido-iot.log"
     ;;
   wisefido-ai)
-    cd "$OWLBACK/wisefido-ai"
     export REDIS_DB="${REDIS_DB:-0}"
-    exec go run cmd/wisefido-ai/main.go >>"$LOG_DIR/wisefido-ai.log" 2>&1
+    owlback_go_exec "$OWLBACK/wisefido-ai" "./cmd/wisefido-ai" "wisefido-ai" "$LOG_DIR/wisefido-ai.log"
     ;;
   *)
     echo "unknown module: $MODULE" >&2

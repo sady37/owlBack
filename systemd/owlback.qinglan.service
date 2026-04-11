@@ -1,4 +1,5 @@
 [Unit]
+# 启停成对: systemctl start owlback.qinglan ↔ stop owlback.qinglan；脚本: ./start-qinglan.sh ↔ ./stop-qinglan.sh
 Description=owlback — wisefido-qinglan
 After=network.target
 
@@ -8,6 +9,9 @@ User=wisefido
 Group=wisefido
 WorkingDirectory=/home/wisefido/owl/owlBack
 ExecStart=/bin/bash /home/wisefido/owl/owlBack/scripts/systemd/owlback-run-service.sh wisefido-qinglan
+# go run 子进程监听 8081/8443，仅 SIGTERM 主进程易漏杀；与 stop-qinglan.sh 一致清场
+ExecStop=/bin/bash /home/wisefido/owl/owlBack/wisefido-qinglan/stop-qinglan.sh
+KillMode=control-group
 TimeoutStopSec=30
 Restart=on-failure
 RestartSec=5

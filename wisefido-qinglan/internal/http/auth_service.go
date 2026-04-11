@@ -178,6 +178,8 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 		zap.Int("mqtt_port", mqttConfig.Port),
 		zap.String("auth_url", authURL),
 	)
+	log.Printf("[AUTH_FLOW] uid=%s step=device_validated tenant_id=%s device_id=%s device_type=%s mqtt_server=%s mqtt_port=%d",
+		req.UID, device.TenantID, device.DeviceID, device.DeviceType, mqttConfig.Server, mqttConfig.Port)
 
 	if s.cardMapping != nil {
 		s.cardMapping.RefreshBaseline(ctx, req.UID)
@@ -421,6 +423,8 @@ func (s *AuthService) publishAuthRequest(ctx context.Context, req *models.AuthRe
 	)
 	// 输出到标准输出，便于在终端查看
 	log.Printf("Published auth request to stream %s (stream_id: %s) for device %s", streamName, streamID, req.UID)
+	log.Printf("[AUTH_FLOW] uid=%s step=auth_request_stream_published stream=%s stream_id=%s tenant_id=%s device_id=%s",
+		req.UID, streamName, streamID, resolvedTenantID, deviceID.String)
 }
 
 // publishAuthResponseSuccess 发布认证成功响应到 Redis Stream
@@ -488,6 +492,8 @@ func (s *AuthService) publishAuthResponseSuccess(
 	)
 	// 输出到标准输出，便于在终端查看
 	log.Printf("Published auth response (success) to stream %s (stream_id: %s) for device %s", streamName, streamID, uid)
+	log.Printf("[AUTH_FLOW] uid=%s step=auth_response_success_stream_published stream=%s stream_id=%s tenant_id=%s device_id=%s",
+		uid, streamName, streamID, device.TenantID, authResponse.DeviceID)
 }
 
 // publishAuthResponseFailure 发布认证失败响应到 Redis Stream
@@ -551,6 +557,8 @@ func (s *AuthService) publishAuthResponseFailure(ctx context.Context, uid string
 	)
 	// 输出到标准输出，便于在终端查看
 	log.Printf("Published auth response (failure) to stream %s (stream_id: %s) for device %s", streamName, streamID, uid)
+	log.Printf("[AUTH_FLOW] uid=%s step=auth_response_failure_stream_published stream=%s stream_id=%s device_id=%s error=%s",
+		uid, streamName, streamID, authResponse.DeviceID, errorMsg)
 }
 
 // updateDeviceHardwareInfo 更新设备硬件信息到 device_store 表

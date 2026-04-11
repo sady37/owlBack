@@ -1,11 +1,16 @@
 #!/bin/bash
+#
+# 启停成对：./start-sleepace.sh ↔ ./stop-sleepace.sh
+# systemd：systemctl start owlback.sleepace ↔ systemctl stop owlback.sleepace
+#
 
 cd "$(dirname "$0")"
 
 echo "Stopping wisefido-sleepace service..."
 
-# 若由 systemd 模块托管，须先停 unit，否则 pkill 后 Restart= 会立刻拉起
-if command -v systemctl >/dev/null 2>&1; then
+# 手动执行时：若 unit 仍 active，先 systemctl stop，否则 pkill 后 Restart= 会立刻拉起。
+# systemd 执行本脚本作为 ExecStop 时已处于 stop 流程，禁止再 systemctl stop 同 unit（死锁）。
+if [ -z "${INVOCATION_ID:-}" ] && command -v systemctl >/dev/null 2>&1; then
     if systemctl is-active --quiet owlback.sleepace 2>/dev/null; then
         echo "owlback.sleepace is active — stopping unit first..."
         systemctl stop owlback.sleepace 2>/dev/null || true

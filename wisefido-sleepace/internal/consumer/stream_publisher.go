@@ -2,6 +2,8 @@ package consumer
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"time"
 
 	"owl-common/card"
@@ -13,6 +15,10 @@ import (
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
+
+func isSleepaceVerboseLog() bool {
+	return os.Getenv("SLEEPACE_VERBOSE_LOG") == "true"
+}
 
 type StreamPublisher struct {
 	redisClient    *redis.Client
@@ -77,6 +83,15 @@ func (p *StreamPublisher) PublishAlarm(ctx context.Context, msg *rediscommon.IoT
 func (p *StreamPublisher) publish(ctx context.Context, stream rediscommon.StreamDefinition, msg *rediscommon.IoTStreamMessage) error {
 	if msg.Timestamp == 0 {
 		msg.Timestamp = time.Now().UnixMilli()
+	}
+	if p.logger != nil && isSleepaceVerboseLog() {
+		payload, _ := json.Marshal(msg.DataValue)
+		p.logger.Debug("publish to redis",
+			zap.String("stream", stream.Name),
+			zap.String("cid", msg.CardID),
+			zap.String("device_uid", msg.DeviceUID),
+			zap.Int64("ts", msg.Timestamp),
+			zap.ByteString("event", payload))
 	}
 	data := msg.ToStreamMap()
 	maxLen, retention := p.config.GetStreamConfig(stream.Name)

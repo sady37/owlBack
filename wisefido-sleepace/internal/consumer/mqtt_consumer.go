@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -121,7 +120,6 @@ type MQTTConsumer struct {
 	lastBedStatusMu sync.Mutex
 	lastBedStatus   map[string]int // key = deviceUID+":"+leftRight, value 0 或 1
 
-	realtimeLogCount atomic.Uint64 // 每 10 条全局 realtime 打一条 Info（含 bed_status/heart/breath/init_status）
 }
 
 type rawMsg struct {
@@ -203,6 +201,12 @@ func (c *MQTTConsumer) worker(ctx context.Context) {
 
 // handleMessage 解析 MQTT payload：支持数组（事件/实时/deviceSenSor 等多条）与单条（报警默认 single）。逐条 dispatch。
 func (c *MQTTConsumer) handleMessage(ctx context.Context, msg *rawMsg) {
+	if isSleepaceVerboseLog() {
+		c.logger.Debug("[MQTT_RX]",
+			zap.String("topic", msg.topic),
+			zap.ByteString("payload", msg.payload))
+	}
+
 	var batch []*ReceivedMessage
 	if err := json.Unmarshal(msg.payload, &batch); err != nil {
 		// 报警默认 single 时为单对象，按单条解析后包装为单元素切片
@@ -364,10 +368,13 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		if canMonitor {
 			msg := redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, ts, "monitor", observation.CategoryTrack, data)
 			c.publisher.PublishMonitor(ctx, msg)
-			n := c.realtimeLogCount.Add(1)
-			if n%10 == 0 {
-				c.logger.Info("realtime received (every 10)", zap.Uint64("count", n), zap.String("device_uid", deviceUID), zap.String("device_id", deviceID), zap.Int("bed_status", d.BedStatus), zap.Int("heart", d.Heart), zap.Int("breath", d.Breath), zap.Int("init_status", d.InitStatus))
-			}
+			c.logger.Info("realtime received",
+				zap.String("device_uid", deviceUID),
+				zap.String("device_id", deviceID),
+				zap.Int("bed_status", d.BedStatus),
+				zap.Int("heart", d.Heart),
+				zap.Int("breath", d.Breath),
+				zap.Int("init_status", d.InitStatus))
 		} else if canIoT {
 			hb := observation.Track{TrackID: observation.TrackDevice, TrackConfidence: sleepaceTrackPoseConf}
 			hbData := hb.ToFieldMap()

@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# 启停成对：start-owlback.sh ↔ 本脚本；systemctl stop owlback 会执行本脚本（ExecStop）
+# 分模块部署：sudo ./start-owlback-full.sh 启 ； sudo ./stop-owlback-full.sh 停（先各 unit 再本脚本清场再 ServiceStatus）
+# 勿在 ExecStop 内再 systemctl stop owlback（已移除）；分模块也可单独 systemctl stop owlback.data 等
+# 单服务请用各目录 ./stop-qinglan.sh、./stop-cardagg.sh … 与对应 ./start-*.sh 成对
+#
 # 统一停止脚本：停止所有后台服务
 # 策略：1) 端口 LISTEN 找 PID（lsof + ss 双保险） 2) 名称 / main.go 匹配  3) 日志文件占用
 # 建议与启动使用同一用户执行；若用 sudo 而服务由普通用户启动，一般仍可杀，但需系统有 lsof 或 ss。
@@ -9,6 +14,11 @@ OWL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOG_DIR="${LOG_DIR:-$OWL_ROOT/log}"
 SHELL_PID=$$
 SHELL_PPID=$PPID
+
+# systemd 一体 owlback：ExecStop=... stop-owlback.sh $MAINPID（unit 里由 systemd 展开）
+OWL_MONOLITH_MAIN="${1:-}"
+[ -z "$OWL_MONOLITH_MAIN" ] && OWL_MONOLITH_MAIN="${MAINPID:-}"
+case "$OWL_MONOLITH_MAIN" in ''|0|'$MAINPID') OWL_MONOLITH_MAIN= ;; esac
 
 printf "========================================\n"
 printf "Stopping OwlBack Services\n"
@@ -54,6 +64,15 @@ kill_tree() {
     done
     safe_kill "$pid"
 }
+
+# 0) 一体 start-owlback.sh：先杀 MainPID 整棵子树（所有后台 go run），否则仅靠端口/pgrep 易漏
+if [ -n "$OWL_MONOLITH_MAIN" ] && [ "$OWL_MONOLITH_MAIN" != "$SHELL_PID" ] && [ "$OWL_MONOLITH_MAIN" != "$SHELL_PPID" ]; then
+    if kill -0 "$OWL_MONOLITH_MAIN" 2>/dev/null; then
+        printf "[*] kill_tree owlback monolith MainPID=%s (start-owlback.sh → go run children)\n" "$OWL_MONOLITH_MAIN"
+        kill_tree "$OWL_MONOLITH_MAIN"
+        sleep 1
+    fi
+fi
 
 # 收集并杀掉一个服务的所有相关进程
 stop_service() {
@@ -112,13 +131,11 @@ stop_service() {
     printf "  [✓] %s stopped\n" "$name"
 }
 
-# systemd 托管时仅 kill 进程会被 Restart= 立刻拉起，须先停 unit
+# systemd：只停「分模块」unit，绝不在这里对 owlback 本体再执行 systemctl stop owlback。
+# 原因：本脚本就是 owlback.service 的 ExecStop；若再 stop owlback，会与当前 stop job 嵌套等待，表现为停不掉/超时。
+# 一体 owlback 的停服：请只用「systemctl stop owlback」；systemd 会调本脚本杀子进程。
+# 若你手动执行本脚本且希望停掉一体 unit：请在另一条命令执行 systemctl stop owlback，不要在本脚本里递归 stop。
 if command -v systemctl >/dev/null 2>&1; then
-    if systemctl is-active --quiet owlback 2>/dev/null; then
-        printf "[*] systemctl stop owlback (否则杀 PID 后会被拉起)\n"
-        systemctl stop owlback 2>/dev/null || true
-        sleep 2
-    fi
     for u in owlback.data owlback.cardagg owlback.qinglan owlback.sleepace owlback.iot owlback.ai; do
         if systemctl is-active --quiet "$u" 2>/dev/null; then
             printf "[*] systemctl stop %s\n" "$u"
@@ -129,15 +146,16 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 stop_service "wisefido-data"           "8080" "$LOG_DIR/wisefido-data.log"      "wisefido-data" "cmd/wisefido-data/main.go"
-stop_service "wisefido-cardagg"        ""     "$LOG_DIR/wisefido-cardagg.log"   "wisefido-cardagg" "wisefido-cardagg/main.go"
+stop_service "wisefido-cardagg"        ""     "$LOG_DIR/wisefido-cardagg.log"   "wisefido-cardagg" "wisefido-cardagg/main.go" "cardagg/main.go"
 stop_service "wisefido-qinglan"        "8081" "$LOG_DIR/wisefido-qinglan.log"   "wisefido-qinglan" "cmd/wisefido-qinglan/main.go"
 stop_service "wisefido-sleepace"       "8083" "$LOG_DIR/wisefido-sleepace.log"  "wisefido-sleepace" "cmd/wisefido-sleepace/main.go"
 stop_service "wisefido-iot-timeseries" "8085" "$LOG_DIR/wisefido-iot.log"       "wisefido-iot-timeseries" "wisefido-iot" "cmd/wisefido-iot/main.go"
 stop_service "wisefido-ai"             ""     "$LOG_DIR/wisefido-ai.log"        "wisefido-ai" "cmd/wisefido-ai/main.go"
 
 # 再扫一轮约定端口（避免单服务阶段 lsof 与日志路径不一致导致漏杀）
-printf "\n[*] Sweep LISTEN on 8080 8081 8083 8085...\n"
-for port in 8080 8081 8083 8085; do
+# 8443 = wisefido-qinglan HTTPS 认证；此前未扫会导致「8081 已空但 8443 仍被旧进程占住」
+printf "\n[*] Sweep LISTEN on 8080 8081 8083 8085 8443...\n"
+for port in 8080 8081 8083 8085 8443; do
     for pid in $(pids_listen_tcp_port "$port"); do
         [ -z "$pid" ] && continue
         printf "  kill_tree pid %s (:%s)\n" "$pid" "$port"
@@ -148,7 +166,7 @@ sleep 1
 
 # 最后 fuser 强杀仍占用约定端口的进程（仅 OwlBack 常用口）
 if command -v fuser >/dev/null 2>&1; then
-    for port in 8080 8081 8083 8085; do
+    for port in 8080 8081 8083 8085 8443; do
         if fuser "${port}/tcp" >/dev/null 2>&1; then
             printf "  fuser -k %s/tcp\n" "$port"
             fuser -k "${port}/tcp" 2>/dev/null || true

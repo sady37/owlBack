@@ -21,6 +21,11 @@ func NewCardDB(db *sql.DB) *CardDB {
 	return &CardDB{db: db}
 }
 
+// pgUIDNormExpr PostgreSQL：与 NormalizeDeviceLookupKey 对齐的 UID/MAC 比较（大小写与分隔符不敏感）。
+func pgUIDNormExpr(col string) string {
+	return fmt.Sprintf(`regexp_replace(upper(btrim(COALESCE(%s, ''))), E'[:.\\s-]', '', 'g')`, col)
+}
+
 // LoadCodeToUIDMap batch loads device_code → device_uid from device_store.
 func (c *CardDB) LoadCodeToUIDMap(ctx context.Context, deviceTypes []string) (map[string]string, error) {
 	rows, err := c.db.QueryContext(ctx, `
@@ -59,9 +64,14 @@ func (c *CardDB) ListSleepadBaselinesForHealth(ctx context.Context, deviceTypes 
 		       COALESCE(dev.business_access, 'pending'),
 		       COALESCE(dev.monitoring_enabled, false),
 		       COALESCE(ds.device_code, ''),
-		       COALESCE(ds.device_type, '')
+		       COALESCE(ds.device_type, ''),
+		       COALESCE(cmap.card_id, '')
 		FROM device_store ds
 		LEFT JOIN devices dev ON dev.device_uid = ds.device_uid
+		LEFT JOIN (
+		    SELECT c2.card_id::text AS card_id, `+pgUIDNormExpr("d2.device_uid")+` AS norm_uid
+		    FROM cards c2, jsonb_to_recordset(c2.devices) AS d2(device_uid text)
+		) cmap ON `+pgUIDNormExpr("ds.device_uid")+` = cmap.norm_uid
 		WHERE ds.device_type = ANY($1::text[])
 		  AND ds.device_code IS NOT NULL AND BTRIM(ds.device_code) <> ''
 	`, pq.Array(deviceTypes))
@@ -73,7 +83,7 @@ func (c *CardDB) ListSleepadBaselinesForHealth(ctx context.Context, deviceTypes 
 	for rows.Next() {
 		var b DeviceBaseline
 		if err := rows.Scan(&b.TenantID, &b.DeviceID, &b.DeviceUID,
-			&b.AllowAccess, &b.BusinessAccess, &b.MonitoringEnabled, &b.DeviceCode, &b.DeviceType); err != nil {
+			&b.AllowAccess, &b.BusinessAccess, &b.MonitoringEnabled, &b.DeviceCode, &b.DeviceType, &b.CardID); err != nil {
 			return nil, err
 		}
 		out = append(out, b)
@@ -86,7 +96,8 @@ func (c *CardDB) ResolveDevice(ctx context.Context, deviceKey string) (deviceUID
 	err = c.db.QueryRowContext(ctx, `
 		SELECT device_uid, device_code
 		FROM device_store
-		WHERE device_uid = $1 OR device_code = $1
+		WHERE `+pgUIDNormExpr("device_uid")+` = regexp_replace(upper(btrim($1::text)), E'[:.\\s-]', '', 'g')
+		   OR device_code = $1
 		LIMIT 1
 	`, deviceKey).Scan(&deviceUID, &deviceCode)
 	if err != nil {
@@ -121,10 +132,10 @@ func (c *CardDB) LookupCard(ctx context.Context, deviceKey string) (*DeviceBasel
 		       COALESCE(dev.monitoring_enabled, false),
 		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, '')
 		FROM resolved r
-		LEFT JOIN device_store ds ON ds.device_uid = r.uid
+		LEFT JOIN device_store ds ON `+pgUIDNormExpr("ds.device_uid")+` = `+pgUIDNormExpr("r.uid")+`
 		, cards c, jsonb_to_recordset(c.devices) AS d(device_uid text, device_id text)
 		LEFT JOIN devices dev ON dev.device_id = NULLIF(TRIM(d.device_id), '')::uuid
-		WHERE d.device_uid = r.uid
+		WHERE `+pgUIDNormExpr("d.device_uid")+` = `+pgUIDNormExpr("r.uid")+`
 		LIMIT 1
 	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.BranchID, &m.UnitID, &m.CardID, &m.DeviceID,
 		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType)
@@ -233,10 +244,10 @@ func (c *CardDB) lookupMappingByDeviceInCardDevices(ctx context.Context, deviceK
 		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, '')
 		FROM cards c,
 		     jsonb_to_recordset(c.devices) AS d(device_uid text, device_id text)
-		LEFT JOIN device_store ds ON ds.device_uid = d.device_uid
+		LEFT JOIN device_store ds ON `+pgUIDNormExpr("ds.device_uid")+` = `+pgUIDNormExpr("d.device_uid")+`
 		   OR (NULLIF(TRIM(d.device_id), '') IS NOT NULL AND ds.device_id::text = NULLIF(TRIM(d.device_id), ''))
 		LEFT JOIN devices dev ON dev.device_id = NULLIF(TRIM(d.device_id), '')::uuid
-		WHERE (d.device_uid IS NOT NULL AND d.device_uid = $1)
+		WHERE (d.device_uid IS NOT NULL AND `+pgUIDNormExpr("d.device_uid")+` = regexp_replace(upper(btrim($1::text)), E'[:.\\s-]', '', 'g'))
 		   OR (NULLIF(TRIM(d.device_id), '') IS NOT NULL AND NULLIF(TRIM(d.device_id), '') = $1)
 		LIMIT 1
 	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.BranchID, &m.UnitID, &m.CardID, &m.DeviceID,
@@ -291,8 +302,8 @@ func (c *CardDB) LookupDeviceOnly(ctx context.Context, deviceKey string) (*Devic
 		       d.monitoring_enabled,
 		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, '')
 		FROM resolved r
-		JOIN devices d ON d.device_uid = r.uid
-		LEFT JOIN device_store ds ON ds.device_uid = r.uid
+		JOIN devices d ON `+pgUIDNormExpr("d.device_uid")+` = `+pgUIDNormExpr("r.uid")+`
+		LEFT JOIN device_store ds ON `+pgUIDNormExpr("ds.device_uid")+` = `+pgUIDNormExpr("r.uid")+`
 		LIMIT 1
 	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.DeviceID,
 		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType)
@@ -327,7 +338,7 @@ func (c *CardDB) LookupDeviceStoreOnly(ctx context.Context, deviceKey string) (*
 		       false,
 		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, '')
 		FROM resolved r
-		JOIN device_store ds ON ds.device_uid = r.uid
+		JOIN device_store ds ON `+pgUIDNormExpr("ds.device_uid")+` = `+pgUIDNormExpr("r.uid")+`
 		LIMIT 1
 	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.DeviceID,
 		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType)
@@ -440,8 +451,8 @@ func (c *CardDB) UpdateDeviceStoreReportedVersion(ctx context.Context, deviceKey
 	}
 	var currentFirmware sql.NullString
 	err := c.db.QueryRowContext(ctx, `
-		SELECT firmware_version FROM device_store WHERE device_uid = $1 OR device_code = $1 LIMIT 1
-	`, deviceKey, deviceKey).Scan(&currentFirmware)
+		SELECT firmware_version FROM device_store WHERE `+pgUIDNormExpr("device_uid")+` = regexp_replace(upper(btrim($1::text)), E'[:.\\s-]', '', 'g') OR device_code = $1 LIMIT 1
+	`, deviceKey).Scan(&currentFirmware)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil
@@ -457,8 +468,8 @@ func (c *CardDB) UpdateDeviceStoreReportedVersion(ctx context.Context, deviceKey
 	}
 	_, err = c.db.ExecContext(ctx, `
 		UPDATE device_store SET firmware_version = $1, ota_target_firmware_version = $1
-		WHERE device_uid = $2 OR device_code = $2
-	`, reportedVersion, reportedVersion, deviceKey)
+		WHERE `+pgUIDNormExpr("device_uid")+` = regexp_replace(upper(btrim($2::text)), E'[:.\\s-]', '', 'g') OR device_code = $2
+	`, reportedVersion, deviceKey)
 	if err != nil {
 		return fmt.Errorf("update device_store version: %w", err)
 	}

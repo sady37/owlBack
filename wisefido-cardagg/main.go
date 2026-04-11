@@ -150,6 +150,10 @@ func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *servi
 			currOnline[cid] = true
 		}
 
+		snappedCards := make(map[string]bool, len(snapshots))
+		for _, s := range snapshots {
+			snappedCards[s.CardID] = true
+		}
 		for _, snap := range snapshots {
 			meta := metaCache.GetOrLoad(ctx, snap.CardID)
 			if shouldDerive {
@@ -161,22 +165,18 @@ func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *servi
 				if status != nil && status.Target != nil {
 					prevTargets[snap.CardID] = status.Target
 				}
+			} else {
+				_ = state.DeriveDeviceOnlineOnly(ctx, snap.CardID, meta, buf)
 			}
 			state.DeriveBedStateFromRealtime(ctx, snap, meta)
 		}
-		if shouldDerive {
-			snappedCards := make(map[string]bool, len(snapshots))
-			for _, s := range snapshots {
-				snappedCards[s.CardID] = true
+		activeDevs := buf.ActiveDevicesByCard()
+		for cid := range activeDevs {
+			if snappedCards[cid] {
+				continue
 			}
-			activeDevs := buf.ActiveDevicesByCard()
-			for cid := range activeDevs {
-				if snappedCards[cid] {
-					continue
-				}
-				meta := metaCache.GetOrLoad(ctx, cid)
-				_ = state.DeriveDeviceOnlineOnly(ctx, cid, meta, buf)
-			}
+			meta := metaCache.GetOrLoad(ctx, cid)
+			_ = state.DeriveDeviceOnlineOnly(ctx, cid, meta, buf)
 		}
 		for cid := range prevOnline {
 			if !currOnline[cid] {

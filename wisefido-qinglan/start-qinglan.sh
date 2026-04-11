@@ -1,4 +1,8 @@
 #!/bin/bash
+#
+# 启停成对：./start-qinglan.sh ↔ ./stop-qinglan.sh
+# systemd：systemctl start owlback.qinglan ↔ systemctl stop owlback.qinglan（勿与一体 owlback 混同一实例）
+#
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -86,6 +90,7 @@ check_and_start_dependencies() {
 }
 
 check_port 8081 "HTTP Server"
+check_port 8443 "HTTPS (device auth)"
 
 if ! check_and_start_dependencies; then
     echo -e "${RED}❌ Dependencies are not ready${NC}"

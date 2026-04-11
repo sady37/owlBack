@@ -15,26 +15,72 @@ type Client struct {
 	config *config.MQTTConfig
 }
 
+func isLoopbackMQTTBroker(host string) bool {
+	h := strings.TrimSpace(strings.ToLower(host))
+	h = strings.TrimPrefix(h, "tcp://")
+	if i := strings.Index(h, ":"); i >= 0 {
+		h = h[:i]
+	}
+	switch h {
+	case "", "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return false
+	}
+}
+
+// effectiveMQTTConnect 本服务订阅/发布所用的 broker 与账号。
+// 若顶层 mqtt.broker 为回环而 radar_device_mqtt.server 为外网地址，则设备与青兰不在同一 broker，会永远收不到上行；此时改用雷达配置建连（与主题里的 product_id/prefix 一致）。
+func effectiveMQTTConnect(cfg *config.MQTTConfig) (host string, port int, username, password string) {
+	host = strings.TrimSpace(cfg.Broker)
+	port = cfg.Port
+	username = cfg.Username
+	password = cfg.Password
+	rs := strings.TrimSpace(cfg.RadarDeviceMQTT.Server)
+	if rs == "" {
+		return host, port, username, password
+	}
+	if isLoopbackMQTTBroker(host) && !isLoopbackMQTTBroker(rs) {
+		host = rs
+		if cfg.RadarDeviceMQTT.Port > 0 {
+			port = cfg.RadarDeviceMQTT.Port
+		}
+		if username == "" && password == "" {
+			username = cfg.RadarDeviceMQTT.Account
+			password = cfg.RadarDeviceMQTT.Password
+		}
+	}
+	return host, port, username, password
+}
+
+// EffectiveBrokerDialString 与 NewClient 实际拨号地址一致，供启动日志使用。
+func EffectiveBrokerDialString(cfg *config.MQTTConfig) string {
+	broker, port, _, _ := effectiveMQTTConnect(cfg)
+	if strings.HasPrefix(broker, "tcp://") || strings.HasPrefix(broker, "ssl://") || strings.HasPrefix(broker, "mqtts://") {
+		return broker
+	}
+	return fmt.Sprintf("tcp://%s:%d", broker, port)
+}
+
 // NewClient 创建MQTT客户端
 func NewClient(cfg *config.MQTTConfig) (*Client, error) {
 	var brokerURL string
-	
+
+	broker, port, user, pass := effectiveMQTTConnect(cfg)
+
 	// 检查Broker URL是否已经包含了协议前缀
-	broker := cfg.Broker
 	if strings.HasPrefix(broker, "tcp://") || strings.HasPrefix(broker, "ssl://") || strings.HasPrefix(broker, "mqtts://") {
-		// 如果已经有协议前缀，则直接使用
 		brokerURL = broker
 	} else {
-		// 否则添加协议前缀
-		brokerURL = fmt.Sprintf("tcp://%s:%d", broker, cfg.Port)
+		brokerURL = fmt.Sprintf("tcp://%s:%d", broker, port)
 	}
 
 	// 转换配置格式
 	mqttCfg := &commonconfig.MQTTConfig{
 		Broker:   brokerURL,
 		ClientID: cfg.ClientID,
-		Username: cfg.Username,
-		Password: cfg.Password,
+		Username: user,
+		Password: pass,
 		QoS:      1,
 	}
 

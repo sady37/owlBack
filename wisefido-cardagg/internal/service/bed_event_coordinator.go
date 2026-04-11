@@ -213,6 +213,9 @@ func (c *BedEventCoordinator) processPendingForCard(ctx context.Context, st *Sta
 			wr, _ := st.PublishBedStateFromEvent(ctx, cardID, alarm.LeftBed, p.deviceType, p.eventTs, 0, &z)
 			if wr {
 				_ = st.ReconcileRoomStateFromBedState(ctx, cardID)
+				if al != nil && meta.TenantID != "" {
+					PersistSuspectedFallPoseLyingIfEnabled(ctx, al, cardID, meta.TenantID, buf, meta, "ImmediateLeftBedFall_lying_pending")
+				}
 				if radarID := RadarDeviceIDBoundToBed(meta); radarID != "" {
 					StartLeftBedFall(cardID, radarID)
 				}
@@ -229,6 +232,9 @@ func (c *BedEventCoordinator) processPendingForCard(ctx context.Context, st *Sta
 		wr, _ := st.PublishBedStateFromEvent(ctx, cardID, alarm.LeftBed, p.deviceType, p.eventTs, 0, nil)
 		if wr {
 			_ = st.ReconcileRoomStateFromBedState(ctx, cardID)
+			if al != nil && meta.TenantID != "" {
+				PersistSuspectedFallPoseLyingIfEnabled(ctx, al, cardID, meta.TenantID, buf, meta, "ImmediateLeftBedFall_lying_pending_timeout")
+			}
 			if radarID := RadarDeviceIDBoundToBed(meta); radarID != "" {
 				StartLeftBedFall(cardID, radarID)
 			}

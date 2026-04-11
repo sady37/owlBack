@@ -50,18 +50,31 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 	if data == nil {
 		data = make(map[string]interface{})
 	}
-	eventName, _ := data[alarm.FieldEventName].(string)
+	eventName := streamEventName(m, data)
+	h.logger.Info("stream.consume", append(streamLogFields("alarm", m, eventName),
+		zap.String("status", "recv"),
+	)...) 
 	if eventName == "" {
+		h.logger.Warn("stream.consume", append(streamLogFields("alarm", m, eventName),
+			zap.String("status", "drop"),
+			zap.String("reason", "empty_event_name"),
+		)...)
 		return nil
 	}
 	// card_id / device_uid 已由 IotPreparedHandler 填充（若流里带 device_uid）
 	if time.Now().UnixMilli()-m.Timestamp > 30_000 {
-		h.logger.Debug("alarm dropped (stale)", zap.String("cid", m.CardID), zap.String("event", eventName))
+		h.logger.Info("stream.consume", append(streamLogFields("alarm", m, eventName),
+			zap.String("status", "drop"),
+			zap.String("reason", "stale"),
+		)...)
 		return nil
 	}
 	resolved := h.metaCache.ResolveDeviceID(ctx, m.CardID, m.DeviceID, m.DeviceUID)
 	if resolved == "" {
-		h.logger.Debug("alarm dropped (no device_id)", zap.String("cid", m.CardID), zap.String("event", eventName), zap.String("device_uid", m.DeviceUID))
+		h.logger.Info("stream.consume", append(streamLogFields("alarm", m, eventName),
+			zap.String("status", "drop"),
+			zap.String("reason", "no_device_id"),
+		)...)
 		return nil
 	}
 	m.DeviceID = resolved
@@ -70,7 +83,10 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 	isRadar := strings.Contains(dt, "radar")
 	// Radar 不支持的类型（仅 Sleepad）：来自 Radar 则丢弃
 	if isRadar && sleepadOnlyAlarmTypes[eventName] {
-		h.logger.Debug("alarm dropped (radar does not support)", zap.String("event", eventName))
+		h.logger.Info("stream.consume", append(streamLogFields("alarm", m, eventName),
+			zap.String("status", "drop"),
+			zap.String("reason", "radar_not_support"),
+		)...)
 		return nil
 	}
 	payload := &redis.IoTStreamMessage{
@@ -145,20 +161,31 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			skip := false
 			if h.bedCoord != nil {
 				skip, _ = h.bedCoord.LeftBed(ctx, h.state, h.metaCache, h.buffer, m.CardID, m.TenantID, m.DeviceID, m.DeviceUID, deviceType, m.Timestamp, func() {
-					if meta := h.metaCache.GetOrLoad(ctx, m.CardID); meta != nil {
-						if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
-							service.StartLeftBedFall(m.CardID, radarID)
-						}
+					meta := h.metaCache.GetOrLoad(ctx, m.CardID)
+					if meta == nil {
+						return
+					}
+					if meta.TenantID != "" && h.alarms != nil {
+						service.PersistSuspectedFallPoseLyingIfEnabled(ctx, h.alarms, m.CardID, meta.TenantID, h.buffer, meta, "ImmediateLeftBedFall_lying_coord")
+					}
+					if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
+						service.StartLeftBedFall(m.CardID, radarID)
 					}
 				})
 			}
 			if !skip {
 				trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.CardID)
-				_, _ = h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
-				_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
-				if meta := h.metaCache.GetOrLoad(ctx, m.CardID); meta != nil {
-					if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
-						service.StartLeftBedFall(m.CardID, radarID)
+				pubWritten, _ := h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
+				if pubWritten {
+					_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
+					meta := h.metaCache.GetOrLoad(ctx, m.CardID)
+					if meta != nil {
+						if meta.TenantID != "" && h.alarms != nil {
+							service.PersistSuspectedFallPoseLyingIfEnabled(ctx, h.alarms, m.CardID, meta.TenantID, h.buffer, meta, "ImmediateLeftBedFall_lying_alarm")
+						}
+						if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
+							service.StartLeftBedFall(m.CardID, radarID)
+						}
 					}
 				}
 			}
@@ -217,9 +244,53 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			}
 		}
 	case alarm.AlarmTypeOfflineRecover:
-		_ = h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.AlarmTypeOffline, alarm.AlarmTypeDeviceFailure})
-		if m.DeviceUID != "" && m.CardID != "" && h.state != nil {
-			_ = h.state.SetDeviceOnline(ctx, m.CardID, m.DeviceID, m.DeviceUID, m.DeviceType, true)
+		h.logger.Info("offline_recover.handle.start",
+			zap.String("tenant_id", m.TenantID),
+			zap.String("card_id", m.CardID),
+			zap.String("device_id", m.DeviceID),
+			zap.String("device_uid", m.DeviceUID),
+			zap.String("device_type", m.DeviceType),
+			zap.Int64("ts", m.Timestamp),
+		)
+		if err := h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.AlarmTypeOffline, alarm.AlarmTypeDeviceFailure}); err != nil {
+			h.logger.Warn("offline_recover.handle.recovery_failed",
+				zap.String("tenant_id", m.TenantID),
+				zap.String("card_id", m.CardID),
+				zap.String("device_id", m.DeviceID),
+				zap.String("device_uid", m.DeviceUID),
+				zap.Error(err),
+			)
+		} else {
+			h.logger.Info("offline_recover.handle.recovery_done",
+				zap.String("tenant_id", m.TenantID),
+				zap.String("card_id", m.CardID),
+				zap.String("device_id", m.DeviceID),
+				zap.String("device_uid", m.DeviceUID),
+			)
+		}
+		if m.DeviceUID == "" || m.CardID == "" || h.state == nil {
+			h.logger.Info("offline_recover.handle.skip_set_online",
+				zap.String("tenant_id", m.TenantID),
+				zap.String("card_id", m.CardID),
+				zap.String("device_id", m.DeviceID),
+				zap.String("device_uid", m.DeviceUID),
+				zap.Bool("state_nil", h.state == nil),
+			)
+		} else if err := h.state.SetDeviceOnline(ctx, m.CardID, m.DeviceID, m.DeviceUID, m.DeviceType, true); err != nil {
+			h.logger.Warn("offline_recover.handle.set_online_failed",
+				zap.String("tenant_id", m.TenantID),
+				zap.String("card_id", m.CardID),
+				zap.String("device_id", m.DeviceID),
+				zap.String("device_uid", m.DeviceUID),
+				zap.Error(err),
+			)
+		} else {
+			h.logger.Info("offline_recover.handle.set_online_done",
+				zap.String("tenant_id", m.TenantID),
+				zap.String("card_id", m.CardID),
+				zap.String("device_id", m.DeviceID),
+				zap.String("device_uid", m.DeviceUID),
+			)
 		}
 	// DeviceRecover：其它故障恢复；连通性上线由 Sleepace/qinglan 发 OfflineRecover。
 	case alarm.AlarmTypeDeviceRecover:

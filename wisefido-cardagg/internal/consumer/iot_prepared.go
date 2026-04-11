@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"wisefido-cardagg/internal/service"
 )
@@ -73,6 +74,16 @@ func (h *IotPreparedHandler) Handle(ctx context.Context, msg interface{}) error 
 				deviceUID = resolveKey
 			}
 			unboundFallback = true
+			log.Printf("[CARDAGG_CARD_FALLBACK] topic=%s category=%s tenant_id=%s incoming_card_id=%s fallback_card_id=%s device_id=%s device_uid=%s resolve_key=%s reason=resolve_card_failed",
+				streamMapStr(raw["topic_type"]),
+				streamMapStr(raw["category"]),
+				streamMapStr(raw["tenant_id"]),
+				streamMapStr(raw["card_id"]),
+				cardID,
+				streamMapStr(raw["device_id"]),
+				deviceUID,
+				resolveKey,
+			)
 		}
 		raw["card_id"] = cardID
 		raw["device_uid"] = deviceUID

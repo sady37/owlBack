@@ -1,4 +1,5 @@
 [Unit]
+# 启停成对: systemctl start owlback.cardagg ↔ stop owlback.cardagg；脚本: ./start-cardagg.sh ↔ ./stop-cardagg.sh
 Description=owlback — wisefido-cardagg
 After=network.target
 
@@ -8,6 +9,8 @@ User=wisefido
 Group=wisefido
 WorkingDirectory=/home/wisefido/owl/owlBack
 ExecStart=/bin/bash /home/wisefido/owl/owlBack/scripts/systemd/owlback-run-service.sh wisefido-cardagg
+ExecStop=/bin/bash /home/wisefido/owl/owlBack/wisefido-cardagg/stop-cardagg.sh
+KillMode=control-group
 TimeoutStopSec=30
 Restart=on-failure
 RestartSec=5

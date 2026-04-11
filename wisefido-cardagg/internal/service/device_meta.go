@@ -219,14 +219,35 @@ func (c *DeviceMetaCache) GetDeviceMeta(ctx context.Context, cardID, deviceID st
 	return cm.Devices[deviceID]
 }
 
+// normalizeUIDKey 去空格、冒号、连字符、点并大写，用于序列号/MAC 与库内 device_uid 对齐。
+func normalizeUIDKey(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToUpper(s) {
+		if r == ':' || r == '-' || r == ' ' || r == '.' {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // GetDeviceMetaByUID 仅当仅有 device_uid 时查 meta（如 log）；业务主 key 为 device_id。
 func (c *DeviceMetaCache) GetDeviceMetaByUID(ctx context.Context, cardID, deviceUID string) *DeviceMeta {
 	cm := c.GetOrLoad(ctx, cardID)
 	if cm == nil || cm.Devices == nil {
 		return nil
 	}
+	want := normalizeUIDKey(deviceUID)
+	if want == "" {
+		return nil
+	}
 	for _, dm := range cm.Devices {
-		if dm != nil && dm.DeviceUID == deviceUID {
+		if dm != nil && normalizeUIDKey(dm.DeviceUID) == want {
 			return dm
 		}
 	}
@@ -240,6 +261,11 @@ func (c *DeviceMetaCache) GetDeviceMetaByUID(ctx context.Context, cardID, device
 func (c *DeviceMetaCache) ResolveDeviceID(ctx context.Context, cardID, deviceID, deviceUID string) string {
 	if cardID != "" && deviceUID != "" {
 		if dm := c.GetDeviceMetaByUID(ctx, cardID, deviceUID); dm != nil && dm.DeviceID != "" {
+			return dm.DeviceID
+		}
+	}
+	if cardID != "" && deviceID != "" && !IsUUID(deviceID) {
+		if dm := c.GetDeviceMetaByUID(ctx, cardID, deviceID); dm != nil && dm.DeviceID != "" {
 			return dm.DeviceID
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -86,6 +87,12 @@ func main() {
 	zapCfg := zap.NewProductionConfig()
 	zapCfg.EncoderConfig.TimeKey = "timestamp"
 	zapCfg.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("15:04:05.000")
+	if cfg.Logging.Level != "" {
+		var lvl zapcore.Level
+		if err := lvl.UnmarshalText([]byte(strings.ToLower(strings.TrimSpace(cfg.Logging.Level)))); err == nil {
+			zapCfg.Level = zap.NewAtomicLevelAt(lvl)
+		}
+	}
 	logger, err := zapCfg.Build()
 	if err != nil {
 		log.Fatalf("Failed to create logger: %v", err)
@@ -215,7 +222,7 @@ func main() {
 	}
 
 	log.Printf("wisefido-qinglan service started successfully")
-	log.Printf("MQTT connected to: %s:%d", cfg.MQTT.Broker, cfg.MQTT.Port)
+	log.Printf("MQTT connected to: %s", mqtt.EffectiveBrokerDialString(&cfg.MQTT))
 	log.Printf("HTTP server (internal) listening on: %s", cfg.HTTP.GetAddr())
 	if httpsServer != nil {
 		log.Printf("HTTPS server (auth) listening on: :%d", cfg.HTTPS.Port)

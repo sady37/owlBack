@@ -111,7 +111,32 @@ func streamLabelFrom(streamName string, msg *rediscommon.IoTStreamMessage) strin
 	return "iot:" + xxx + ":" + yyy
 }
 
+// skipQinglanIotHeadPublish 网关不写或写空 card_id 时，若 device_uid 也为空则无法与 IotPreparedHandler 对齐；
+// 若 device_uid 与 device_id 皆空则下游无法 resolve。此类包不写入 iot:* stream。
+func skipQinglanIotHeadPublish(cardID, deviceID, deviceUID string) bool {
+	c := strings.TrimSpace(cardID)
+	u := strings.TrimSpace(deviceUID)
+	d := strings.TrimSpace(deviceID)
+	if c == "" && u == "" {
+		return true
+	}
+	if u == "" && d == "" {
+		return true
+	}
+	return false
+}
+
 func (p *StreamPublisher) publishObservation(ctx context.Context, stream rediscommon.StreamDefinition, msg *rediscommon.IoTStreamMessage) error {
+	if skipQinglanIotHeadPublish(msg.CardID, msg.DeviceID, msg.DeviceUID) {
+		if p.logger != nil {
+			QinglanHotPathLog(p.logger, "skip iot publish: empty card_id+device_uid or empty device_uid+device_id",
+				zap.String("stream", stream.Name),
+				zap.String("cid", msg.CardID),
+				zap.String("device_uid", msg.DeviceUID),
+				zap.String("device_id", msg.DeviceID))
+		}
+		return nil
+	}
 	if msg.Timestamp == 0 {
 		msg.Timestamp = time.Now().UnixMilli()
 	}
@@ -123,7 +148,7 @@ func (p *StreamPublisher) publishObservation(ctx context.Context, stream redisco
 		}
 	}
 	data := msg.ToStreamMap()
-	if p.logger != nil && stream.Name != rediscommon.StreamMonitor.Name {
+	if p.logger != nil {
 		streamLabel := streamLabelFrom(stream.Name, msg)
 		payload, _ := json.Marshal(msg.DataValue)
 		QinglanHotPathLog(p.logger, "publish to redis",
@@ -247,10 +272,20 @@ func (p *StreamPublisher) PublishDeviceStatus(
 		deviceType,
 		cardID, // 填充查询到的 cardID
 		tenantID,
-		time.Now().Unix(),
+		time.Now().UnixMilli(),
 		statuses,
 	)
 	msg.DeviceID = deviceID
+
+	if skipQinglanIotHeadPublish(msg.CardID, msg.DeviceID, msg.DeviceUID) {
+		if p.logger != nil {
+			QinglanHotPathLog(p.logger, "skip PublishDeviceStatus: empty card_id+device_uid or empty device_uid+device_id",
+				zap.String("cid", msg.CardID),
+				zap.String("device_uid", msg.DeviceUID),
+				zap.String("device_id", msg.DeviceID))
+		}
+		return nil
+	}
 
 	eventData := iotStreamMessageToMap(msg)
 

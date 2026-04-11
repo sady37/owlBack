@@ -1,4 +1,8 @@
 #!/bin/bash
+#
+# 启停成对：./start-cardagg.sh ↔ ./stop-cardagg.sh
+# systemd：systemctl start owlback.cardagg ↔ systemctl stop owlback.cardagg
+#
 
 cd "$(dirname "$0")"
 

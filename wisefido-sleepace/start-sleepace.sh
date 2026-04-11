@@ -1,4 +1,8 @@
 #!/bin/bash
+#
+# 启停成对：./start-sleepace.sh ↔ ./stop-sleepace.sh
+# systemd：systemctl start owlback.sleepace ↔ systemctl stop owlback.sleepace
+#
 
 cd "$(dirname "$0")"
 

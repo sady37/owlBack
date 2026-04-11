@@ -43,7 +43,6 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		h.logger.Warn("event dropped (invalid type)", zap.String("type", fmt.Sprintf("%T", msg)))
 		return nil
 	}
-	h.logger.Debug("event handler invoked", zap.Any("ts", raw["timestamp"]), zap.Any("cid", raw["card_id"]), zap.Any("did", raw["device_uid"]))
 
 	m, err := ParseMessage(raw)
 	if err != nil {
@@ -62,18 +61,19 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	// card_id / device_uid 已由 IotPreparedHandler 填充
 
 	if ageMs := time.Now().UnixMilli() - m.Timestamp; ageMs > 30_000 {
-		h.logger.Debug("event dropped (stale)",
-			zap.String("cid", m.CardID),
-			zap.String("did", m.DeviceUID),
+		h.logger.Info("stream.consume", append(streamLogFields("event", m, ""),
+			zap.String("status", "drop"),
+			zap.String("reason", "stale"),
 			zap.Int64("age_ms", ageMs),
-			zap.String("ts", time.UnixMilli(m.Timestamp).Format("15:04:05.000")))
+		)...)
 		return nil
 	}
 	resolved := h.metaCache.ResolveDeviceID(ctx, m.CardID, m.DeviceID, m.DeviceUID)
 	if resolved == "" {
-		h.logger.Debug("event dropped (no device_id)",
-			zap.String("cid", m.CardID),
-			zap.String("device_uid", m.DeviceUID))
+		h.logger.Info("stream.consume", append(streamLogFields("event", m, ""),
+			zap.String("status", "drop"),
+			zap.String("reason", "no_device_id"),
+		)...)
 		return nil
 	}
 	m.DeviceID = resolved
@@ -83,11 +83,18 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	if data == nil {
 		data = make(map[string]interface{})
 	}
+	evName := streamEventName(m, data)
+	h.logger.Info("stream.consume", append(streamLogFields("event", m, evName),
+		zap.String("status", "recv"),
+	)...) 
 	dataJSON, _ := json.Marshal(data)
-	h.logger.Debug("iot:event recv",
-		zap.String("cid", m.CardID),
-		zap.String("did", m.DeviceUID),
-		zap.String("ts", time.UnixMilli(m.Timestamp).Format("15:04:05.000")),
+	h.logger.Info("stream.payload",
+		zap.String("stream", "event"),
+		zap.String("card_id", m.CardID),
+		zap.String("device_id", m.DeviceID),
+		zap.String("device_uid", m.DeviceUID),
+		zap.String("event", evName),
+		zap.Int64("timestamp", m.Timestamp),
 		zap.ByteString("data", dataJSON))
 
 	// --- 1. 报警：有 event_name 则 ResolveEnablementByDevice + PersistAlarmAndPublish。LeftBed 由 case 先 TryAddLeftBedPendingAtTrigger，未加入 pending 再 ResolveEnablementByDevice + PersistAlarmAndPublish。---
@@ -109,7 +116,12 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	}
 
 	// --- 2. Event 分支：按 event_name 分发 ---
-	evName, _ := data[alarm.FieldEventName].(string)
+	if evName == "" {
+		h.logger.Warn("stream.consume", append(streamLogFields("event", m, evName),
+			zap.String("status", "drop"),
+			zap.String("reason", "empty_event_name"),
+		)...)
+	}
 	switch evName {
 	case alarm.SleepStage:
 		h.routeSleepStageEvent(ctx, m, data)
@@ -176,20 +188,31 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 			skip, written := false, false
 			if h.bedCoord != nil {
 				skip, written = h.bedCoord.LeftBed(ctx, h.state, h.metaCache, h.buffer, m.CardID, m.TenantID, m.DeviceID, m.DeviceUID, deviceType, m.Timestamp, func() {
-					if meta := h.metaCache.GetOrLoad(ctx, m.CardID); meta != nil {
-						if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
-							service.StartLeftBedFall(m.CardID, radarID)
-						}
+					meta := h.metaCache.GetOrLoad(ctx, m.CardID)
+					if meta == nil {
+						return
+					}
+					if meta.TenantID != "" && h.alarms != nil {
+						service.PersistSuspectedFallPoseLyingIfEnabled(ctx, h.alarms, m.CardID, meta.TenantID, h.buffer, meta, "ImmediateLeftBedFall_lying_coord")
+					}
+					if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
+						service.StartLeftBedFall(m.CardID, radarID)
 					}
 				})
 			}
 			if !skip {
 				trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.CardID)
-				_, _ = h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
-				_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
-				if meta := h.metaCache.GetOrLoad(ctx, m.CardID); meta != nil {
-					if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
-						service.StartLeftBedFall(m.CardID, radarID)
+				pubWritten, _ := h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
+				if pubWritten {
+					_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
+					meta := h.metaCache.GetOrLoad(ctx, m.CardID)
+					if meta != nil {
+						if meta.TenantID != "" && h.alarms != nil {
+							service.PersistSuspectedFallPoseLyingIfEnabled(ctx, h.alarms, m.CardID, meta.TenantID, h.buffer, meta, "ImmediateLeftBedFall_lying_event")
+						}
+						if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
+							service.StartLeftBedFall(m.CardID, radarID)
+						}
 					}
 				}
 			} else if !written {
@@ -371,17 +394,17 @@ func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStrea
 
 	if service.NeedBedFallCheck(m.CardID) {
 		trackCount := intFromAny(data[observation.FieldTrackCount])
-		done, suspectedFall, reportDeviceID := service.LeftBedFallActivity(ctx, m.CardID, deviceID, standDuration, walkDuration, 0, trackCount, h.state)
+		done, suspectedFall, reportDeviceID, fallPath := service.LeftBedFallActivity(ctx, m.CardID, deviceID, standDuration, walkDuration, 0, trackCount, h.state, h.buffer, meta)
 		if done && suspectedFall && reportDeviceID != "" {
-			meta := h.metaCache.GetOrLoad(ctx, m.CardID)
-			if meta != nil && meta.TenantID != "" {
-				_, level, _, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, meta.TenantID, reportDeviceID, alarm.SuspectedFall)
+			meta2 := h.metaCache.GetOrLoad(ctx, m.CardID)
+			if meta2 != nil && meta2.TenantID != "" {
+				_, level, _, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, meta2.TenantID, reportDeviceID, alarm.SuspectedFall)
 				if !enabled || level == "" {
 					level = alarm.AlarmLevelWarn
 				}
 				nowMs := time.Now().UnixMilli()
-				triggerData := map[string]interface{}{"source": "LeftBedFallActivity", "ts": nowMs}
-				_ = h.alarms.PersistAlarmWithTriggerData(ctx, m.CardID, meta.TenantID, reportDeviceID, alarm.SuspectedFall, level, time.UnixMilli(nowMs), triggerData)
+				triggerData := map[string]interface{}{"source": "LeftBedFallActivity", "path": fallPath, "ts": nowMs}
+				_ = h.alarms.PersistAlarmWithTriggerData(ctx, m.CardID, meta2.TenantID, reportDeviceID, alarm.SuspectedFall, level, time.UnixMilli(nowMs), triggerData)
 			}
 		}
 	}

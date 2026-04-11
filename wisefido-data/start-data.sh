@@ -1,4 +1,8 @@
 #!/bin/bash
+#
+# 启停成对：./start-data.sh ↔ ./stop-data.sh
+# systemd：systemctl start owlback.data ↔ systemctl stop owlback.data
+#
 
 cd "$(dirname "$0")"
 

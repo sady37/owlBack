@@ -551,6 +551,7 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 			zap.String("device_uid", deviceUID),
 		)
 	}
+	log.Printf("[AUTH_FLOW] uid=%s step=mqtt_topics_ready already_subscribed=%t", deviceUID, isMQTTSubscribed)
 
 	// 查询 device_type 和 tenant_id
 	deviceType := ""
@@ -621,6 +622,8 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 		zap.Int("content", m.defaultContent),
 	)
 	log.Printf("✅ Periodic subscription enabled for %s (device_id: %s, MQTT already subscribed: %v). Sending monitor command.", deviceUID, deviceID, isMQTTSubscribed)
+	log.Printf("[AUTH_FLOW] uid=%s step=periodic_subscription_enabled device_id=%s monitor_topic=%s duration=%d content=%d tenant_id=%s",
+		deviceUID, deviceID, monitorTopic, m.defaultDuration, m.defaultContent, tenantID)
 
 	// 延迟重试发送 monitor 订阅命令：设备 auth 后需要时间连接 MQTT，立即发会丢失
 	go m.sendMonitorWithRetry(deviceUID, deviceID)
@@ -634,6 +637,7 @@ func (m *DeviceSubscriptionManager) sendMonitorWithRetry(deviceUID, deviceID str
 	delays := []time.Duration{3 * time.Second, 6 * time.Second, 12 * time.Second}
 	for i, delay := range delays {
 		time.Sleep(delay)
+		log.Printf("[AUTH_FLOW] uid=%s step=monitor_retry_attempt attempt=%d delay_seconds=%d", deviceUID, i, int(delay/time.Second))
 
 		// 检查设备是否已经在发 monitor 数据（LastMonitorTime 非零 = 收到过 monitor 消息）
 		m.mu.RLock()
@@ -751,7 +755,18 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 				// 与 Sleepace connectionStatus 一致：首条 MQTT 后发 iot:alarm:stream OfflineRecover，cardagg 据此更新 device_status
 				go func() {
 					ctx := context.Background()
-					data := map[string]interface{}{alarm.FieldEventStatus: "start"}
+					item := observation.EventItem{
+						DataCategory: alarm.AlarmTypeOfflineRecover,
+						EventName:    alarm.AlarmTypeOfflineRecover,
+						EventSince:   time.Now().UnixMilli(),
+						EventStatus:  "end",
+						TrackID:      observation.TrackDevice,
+					}
+					data, _ := observation.EventItemToDataMap(&item)
+					if data == nil {
+						data = make(map[string]interface{})
+					}
+					data[observation.FieldOffline] = 0
 					msg := rediscommon.NewSingleItemMessage(tenantID, card.StreamHeadCardID("", deviceID), deviceUID, deviceID, deviceType, time.Now().UnixMilli(), "alarm", alarm.AlarmTypeOfflineRecover, data)
 					_ = m.streamPublisher.PublishAlarm(ctx, msg)
 				}()
