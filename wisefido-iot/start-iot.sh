@@ -181,7 +181,21 @@ echo -e "${BLUE}📝 Log: $LOG_FILE${NC}"
 echo ""
 
 if [ -t 1 ]; then
-    go run cmd/wisefido-iot/main.go 2>&1 | tee -a "$LOG_FILE"
+    BIN_DIR="$PWD/.bin"
+    mkdir -p "$BIN_DIR"
+    if go build -o "$BIN_DIR/wisefido-iot" ./cmd/wisefido-iot >/dev/null 2>&1; then
+        "$BIN_DIR/wisefido-iot" 2>&1 | tee -a "$LOG_FILE"
+    else
+        echo -e "${YELLOW}Warning: go build failed, falling back to go run${NC}"
+        go run cmd/wisefido-iot/main.go 2>&1 | tee -a "$LOG_FILE"
+    fi
 else
-    go run cmd/wisefido-iot/main.go 2>&1 | tee -a "$LOG_FILE"
+    BIN_DIR="$PWD/.bin"
+    mkdir -p "$BIN_DIR"
+    if go build -o "$BIN_DIR/wisefido-iot" ./cmd/wisefido-iot >/dev/null 2>&1; then
+        "$BIN_DIR/wisefido-iot" 2>&1 | tee -a "$LOG_FILE"
+    else
+        echo -e "${YELLOW}Warning: go build failed, falling back to go run${NC}"
+        go run cmd/wisefido-iot/main.go 2>&1 | tee -a "$LOG_FILE"
+    fi
 fi

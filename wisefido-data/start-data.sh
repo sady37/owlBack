@@ -157,13 +157,23 @@ echo "wisefido-data service starting at $(date)" >> "$LOG_FILE"
 echo "Log file: $LOG_FILE" >> "$LOG_FILE"
 echo "==========================================" >> "$LOG_FILE"
 
-# 同时输出到控制台和日志文件
-if [ -t 1 ]; then
-    echo -e "${GREEN}✅ Logging to: $LOG_FILE${NC}"
-    echo -e "${GREEN}✅ Output will be displayed in terminal and saved to log file${NC}"
-    echo ""
-    go run cmd/wisefido-data/main.go 2>&1 | tee -a "$LOG_FILE"
+# 同时输出到控制台和日志文件；优先使用预构建二进制以加速启动
+BIN_DIR="$PWD/.bin"
+mkdir -p "$BIN_DIR"
+echo -e "${GREEN}✅ Logging to: $LOG_FILE${NC}"
+echo -e "${GREEN}✅ Output will be displayed in terminal and saved to log file${NC}"
+echo ""
+if go build -o "$BIN_DIR/wisefido-data" ./cmd/wisefido-data >/dev/null 2>&1; then
+    if [ -t 1 ]; then
+        "$BIN_DIR/wisefido-data" 2>&1 | tee -a "$LOG_FILE"
+    else
+        "$BIN_DIR/wisefido-data" 2>&1 | tee -a "$LOG_FILE"
+    fi
 else
-    echo "Logging to: $LOG_FILE" >&2
-    go run cmd/wisefido-data/main.go 2>&1 | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}Warning: go build failed, falling back to go run${NC}"
+    if [ -t 1 ]; then
+        go run cmd/wisefido-data/main.go 2>&1 | tee -a "$LOG_FILE"
+    else
+        go run cmd/wisefido-data/main.go 2>&1 | tee -a "$LOG_FILE"
+    fi
 fi

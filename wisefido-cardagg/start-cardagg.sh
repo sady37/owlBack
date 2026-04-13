@@ -69,13 +69,15 @@ echo "wisefido-cardagg service starting at $(date)" >> "$LOG_FILE"
 echo "Log file: $LOG_FILE" >> "$LOG_FILE"
 echo "==========================================" >> "$LOG_FILE"
 
-# 同时输出到控制台和日志文件
-if [ -t 1 ]; then
-    echo -e "${GREEN}✅ Logging to: $LOG_FILE${NC}"
-    echo -e "${GREEN}✅ Output will be displayed in terminal and saved to log file${NC}"
-    echo ""
-    go run main.go 2>&1 | tee -a "$LOG_FILE"
+# 同时输出到控制台和日志文件；优先使用预构建二进制以加速启动
+BIN_DIR="$PWD/.bin"
+mkdir -p "$BIN_DIR"
+echo -e "${GREEN}✅ Logging to: $LOG_FILE${NC}"
+echo -e "${GREEN}✅ Output will be displayed in terminal and saved to log file${NC}"
+echo ""
+if go build -o "$BIN_DIR/wisefido-cardagg" . >/dev/null 2>&1; then
+    "$BIN_DIR/wisefido-cardagg" 2>&1 | tee -a "$LOG_FILE"
 else
-    echo "Logging to: $LOG_FILE" >&2
+    echo -e "${YELLOW}Warning: go build failed, falling back to go run${NC}"
     go run main.go 2>&1 | tee -a "$LOG_FILE"
 fi

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -81,7 +83,138 @@ func (s *RadarInstall) ListCardDevicesByDeviceID(ctx context.Context, tenantID, 
 	if roomID != "" {
 		layoutConfig = s.getCurrentLayoutByRoomID(ctx, tenantID, roomID)
 	}
+
+	// Inject device bindings into layout for unit-level templates that contain
+	// temporary iot.deviceId like "Radar01" but lack real device_id values.
+	if len(layoutConfig) > 0 && len(devices) > 0 {
+		layoutConfig = injectDeviceBindingsIntoLayout(layoutConfig, devices, s.logger)
+	}
+
 	return cardID, roomID, devices, layoutConfig, nil
+}
+
+// injectDeviceBindingsIntoLayout 对 layout 中 device_id 为空的 Radar/Sleepad/Sensor 对象，
+// 按 iot.deviceId 序号（Radar01→0, Radar02→1）与 devices 列表对应项建立绑定，
+// 并补全顶层 radar/sleepad map供前端 loadFromLayoutConfig 使用。
+func injectDeviceBindingsIntoLayout(layout json.RawMessage, devices []repository.CardDeviceItem, logger *zap.Logger) json.RawMessage {
+	if len(layout) == 0 || len(devices) == 0 {
+		return layout
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(layout, &doc); err != nil {
+		return layout
+	}
+
+	rawObjects, _ := doc["objects"].([]any)
+	if len(rawObjects) == 0 {
+		return layout
+	}
+
+	type devEntry struct{ id, uid string }
+	byType := map[string][]devEntry{}
+	for _, d := range devices {
+		t := strings.ToLower(d.DeviceType)
+		if t == "" {
+			t = "radar"
+		}
+		byType[t] = append(byType[t], devEntry{id: d.DeviceID, uid: d.DeviceUID})
+	}
+
+	topMap := map[string]map[string]string{}
+	changed := false
+
+	// iterate objects
+	for _, raw := range rawObjects {
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		// skip if already bound
+		if did, _ := obj["device_id"].(string); did != "" {
+			continue
+		}
+		if bid, _ := obj["bindedDeviceId"].(string); bid != "" {
+			continue
+		}
+
+		typeName, _ := obj["typeName"].(string)
+		t := strings.ToLower(typeName)
+		candidates := byType[t]
+		if len(candidates) == 0 {
+			continue
+		}
+
+		// parse iot.deviceId suffix number
+		idx := 0
+		if iot, ok2 := nestedString(obj, "device", "iot", "deviceId"); ok2 {
+			re := regexp.MustCompile(`(\d+)$`)
+			m := re.FindStringSubmatch(iot)
+			if len(m) > 1 {
+				if n, e := strconv.Atoi(m[1]); e == nil && n > 0 {
+					idx = n - 1
+				}
+			}
+		}
+		if idx >= len(candidates) {
+			idx = len(candidates) - 1
+		}
+
+		entry := candidates[idx]
+		obj["device_id"] = entry.id
+		obj["bindedDeviceId"] = entry.id
+
+		objID, _ := obj["id"].(string)
+		if objID != "" && entry.id != "" {
+			if topMap[t] == nil {
+				topMap[t] = map[string]string{}
+			}
+			topMap[t][objID] = entry.id
+		}
+		changed = true
+		if logger != nil {
+			logger.Info("injectDeviceBindings: bound radar object",
+				zap.String("typeName", typeName),
+				zap.String("objectId", objID),
+				zap.String("deviceId", entry.id),
+			)
+		}
+	}
+
+	if !changed {
+		return layout
+	}
+
+	for t, m := range topMap {
+		doc[t] = m
+	}
+
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return layout
+	}
+	return out
+}
+
+// nestedString 从 map[string]any 深层取字符串字段
+func nestedString(m map[string]any, keys ...string) (string, bool) {
+	cur := m
+	for i, k := range keys {
+		v, ok := cur[k]
+		if !ok {
+			return "", false
+		}
+		if i == len(keys)-1 {
+			s, ok := v.(string)
+			return s, ok
+		}
+		nxt, ok := v.(map[string]any)
+		if !ok {
+			return "", false
+		}
+		cur = nxt
+	}
+	return "", false
 }
 
 // getCurrentLayoutByRoomID 取房间当前布局：优先 rooms.layout_config，再回退 units.layout_config（统一楼层布局），最后 config_versions 最新一条（历史）。

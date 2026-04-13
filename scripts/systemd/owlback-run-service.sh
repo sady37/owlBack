@@ -33,6 +33,16 @@ export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
 export REDIS_PASSWORD="${REDIS_PASSWORD:-TeLunSu-36kr}"
 export MQTT_BROKER="${MQTT_BROKER:-127.0.0.1}"
 export MQTT_PORT="${MQTT_PORT:-1883}"
+
+# 为wisefido-qinglan生成唯一的MQTT客户端ID，使用无条件覆盖
+if [[ "$MODULE" == "wisefido-qinglan" ]]; then
+  export MQTT_CLIENT_ID="wisefido-qinglan-systemd-$(date +%s%3N)"
+elif [[ "$MODULE" == "wisefido-sleepace" ]]; then
+  export MQTT_CLIENT_ID="wisefido-sleepace-$(date +%s%3N)"
+else
+  export MQTT_CLIENT_ID="${MQTT_CLIENT_ID:-$MODULE-$(date +%s)}"
+fi
+
 export LOG_LEVEL="${LOG_LEVEL:-info}"
 export LOG_FORMAT="${LOG_FORMAT:-json}"
 export CARD_TRIGGER_MODE="${CARD_TRIGGER_MODE:-polling}"
@@ -68,6 +78,11 @@ owlback_go_exec() {
   if [[ "$stale" -eq 1 ]]; then
     go build -o "$bin" "$build_pkg"
   fi
+  # Write a prominent startup header so systemd-launched services show a clear start marker in logs
+  printf "\n########################################################################\n" >>"$log_file" 2>&1
+  printf "# STARTING %s (systemd)\n" "$bin_name" >>"$log_file" 2>&1
+  printf "# Time: %s\n" "$(date -u '+%Y-%m-%d %H:%M:%S %Z')" >>"$log_file" 2>&1
+  printf "########################################################################\n\n" >>"$log_file" 2>&1
   exec "$bin" "$@" >>"$log_file" 2>&1
 }
 

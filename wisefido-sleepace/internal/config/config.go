@@ -54,6 +54,8 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	// Allow overriding log settings from environment (LOG_LEVEL, LOG_FORMAT, etc.)
+	cfg.Log.LoadFromEnv("LOG")
 	cfg.DB.LoadFromEnv("DB")
 	cfg.Redis.LoadFromEnv("REDIS")
 	cfg.MQTT.loadFromEnv()

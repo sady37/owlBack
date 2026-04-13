@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"wisefido-data/internal/notify"
@@ -126,12 +127,15 @@ func (s *APNSDeviceService) SendAlarmPush(ctx context.Context, n AlarmNotificati
 			payload := s.buildPayload(n, badge)
 			err := s.sender.Send(sendCtx, token, env, payload)
 			if err == nil {
-				s.logger.Debug("[APNS] push sent",
+				s.logger.Info("[APNS] push sent",
 					zap.String("token_prefix", tokenPrefix(token)),
 					zap.String("event", n.EventType))
 				return
 			}
 			if err == notify.ErrDeviceTokenInvalid {
+				s.deactivateStaleToken(token)
+			} else if strings.Contains(err.Error(), "BadDeviceToken") {
+				// Treat APNs 400 BadDeviceToken as stale and deactivate to avoid DB pollution
 				s.deactivateStaleToken(token)
 			} else {
 				s.logger.Warn("[APNS] send failed",

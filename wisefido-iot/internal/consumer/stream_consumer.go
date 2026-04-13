@@ -142,23 +142,24 @@ func (c *StreamConsumer) Start(ctx context.Context) error {
 	}
 }
 
-// consumeStream 消费单个 Stream
+// consumeStream 消费单个 Stream（非阻塞：block=500ms，避免空闲 stream 拖慢整体吞吐）
 func (c *StreamConsumer) consumeStream(ctx context.Context, streamName string) error {
-	// 从 Stream 读取消息
-	messages, err := rediscommon.ReadFromStream(
+	// 短 block 避免空闲 stream 阻塞：5 个 stream 串行读取，block 过长会饿死 monitor
+	messages, err := rediscommon.ReadFromStreamWithBlock(
 		ctx,
 		c.redisClient,
 		streamName,
 		c.config.ConsumerGroup,
 		c.config.ConsumerName,
 		c.config.BatchSize,
+		500*time.Millisecond,
 	)
 
 	if err != nil {
 		return fmt.Errorf("failed to read from stream %s: %w", streamName, err)
 	}
 
-	// 处理消息
+	// 处理消息并 ACK
 	for _, msg := range messages {
 		if err := c.processMessage(ctx, streamName, msg); err != nil {
 			c.logger.Error("Failed to process message",
@@ -168,6 +169,14 @@ func (c *StreamConsumer) consumeStream(ctx context.Context, streamName string) e
 				zap.Error(err),
 			)
 			// 继续处理下一条消息，不中断
+		}
+		// ACK：无论处理成功或失败（skip），都确认消息以防 pending 堆积
+		if err := c.redisClient.XAck(ctx, streamName, c.config.ConsumerGroup, msg.ID).Err(); err != nil {
+			c.logger.Warn("Failed to ACK message",
+				zap.String("stream", streamName),
+				zap.String("message_id", msg.ID),
+				zap.Error(err),
+			)
 		}
 	}
 

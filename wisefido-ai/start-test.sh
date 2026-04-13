@@ -82,4 +82,11 @@ echo ""
 
 # 启动服务
 cd "$(dirname "$0")"
-go run cmd/wisefido-ai/main.go
+BIN_DIR="$PWD/.bin"
+mkdir -p "$BIN_DIR"
+if go build -o "$BIN_DIR/wisefido-ai" ./cmd/wisefido-ai >/dev/null 2>&1; then
+    "$BIN_DIR/wisefido-ai"
+else
+    echo -e "${YELLOW}Warning: go build failed, falling back to go run${NC}"
+    go run cmd/wisefido-ai/main.go
+fi

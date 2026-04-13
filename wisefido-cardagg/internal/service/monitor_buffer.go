@@ -2,6 +2,7 @@ package service
 
 import (
 	"sync"
+	"time"
 
 	"owl-common/card"
 )
@@ -27,20 +28,20 @@ type CardBuffer struct {
 	Devices map[string]*DeviceBuffer
 }
 
-// MonitorBuffer 接收 iot:monitor 写入，按 card/device 聚合；在线判定：连续 2 个 Prune 周期（RunLoop 里每 4s 一次）该 device 仍有条目则标 online，BuildDeviceStatus 用于 derive 写 Redis device_status；条目因 PruneFields/PruneStaleDevices 或 RemoveDevice 删除后自然变为 offline。
+// MonitorBuffer 接收 iot:monitor 写入，按 card/device 聚合；在线判定：连续 1 个 Prune 周期（RunLoop 里每 4s 一次）该 device 仍有条目则标 online，BuildDeviceStatus 用于 derive 写 Redis device_status；条目因 PruneFields/PruneStaleDevices 或 RemoveDevice 删除后自然变为 offline。
 type MonitorBuffer struct {
-	mu          sync.RWMutex
-	cards       map[string]*CardBuffer // cardID →
-	onlineMu    sync.RWMutex
-	prevEntries map[string]map[string]bool // cardID -> deviceID -> 上一 prune 周期仍有条目的 device 集合
-	online      map[string]map[string]bool // cardID -> deviceID -> 已连续两周期有条目，视为在线
+	mu       sync.RWMutex
+	cards    map[string]*CardBuffer // cardID →
+	onlineMu sync.RWMutex
+	online   map[string]map[string]*DeviceOnlineEntry // cardID -> deviceID -> 设备在线状态及最后活跃时间
+	prevEntries map[string]map[string]*DeviceOnlineEntry
 }
 
 func NewMonitorBuffer() *MonitorBuffer {
 	return &MonitorBuffer{
-		cards:       make(map[string]*CardBuffer),
-		prevEntries: make(map[string]map[string]bool),
-		online:      make(map[string]map[string]bool),
+		cards:  make(map[string]*CardBuffer),
+		online: make(map[string]map[string]*DeviceOnlineEntry),
+		prevEntries: make(map[string]map[string]*DeviceOnlineEntry),
 	}
 }
 
@@ -281,28 +282,44 @@ func (b *MonitorBuffer) ActiveDevicesByCard() map[string]map[string]bool {
 	return result
 }
 
-// AdvancePruneTick 在每轮 Prune 后调用：当前仍有条目的 deviceIDs；若某 device 上一轮也在 prev 中则标为 online，再以当前 deviceIDs 作为下一轮 prev。连续两周期有条目 → online。
-func (b *MonitorBuffer) AdvancePruneTick(cardID string, deviceIDs map[string]bool) {
+// DeviceOnlineEntry 记录设备在线状态和最后活跃时间
+type DeviceOnlineEntry struct {
+	Online    bool
+	LastSeen  int64 // 最后活跃时间戳（毫秒）
+}
+
+func (b *MonitorBuffer) AdvancePruneTick(cardID string) {
 	if cardID == "" {
 		return
 	}
+
+	now := time.Now().UnixMilli()
 	b.onlineMu.Lock()
 	defer b.onlineMu.Unlock()
 
-	prev := b.prevEntries[cardID]
 	if b.online[cardID] == nil {
-		b.online[cardID] = make(map[string]bool)
+		b.online[cardID] = make(map[string]*DeviceOnlineEntry)
 	}
-	for did := range deviceIDs {
-		if prev != nil && prev[did] {
-			b.online[cardID][did] = true
+
+	// 遍历当前卡片下的所有设备，根据LastTs判断是否在线
+	if cardBuffer, exists := b.cards[cardID]; exists {
+		timeoutMs := int64(90 * 1000) // 90秒超时
+
+		for deviceID, deviceBuffer := range cardBuffer.Devices {
+			// 如果设备的最后活动时间距现在不超过90秒，则视为在线
+			if now-deviceBuffer.LastTs <= timeoutMs {
+				b.online[cardID][deviceID] = &DeviceOnlineEntry{
+					Online:   true,
+					LastSeen: deviceBuffer.LastTs,
+				}
+			} else {
+				// 如果超过90秒没有活动，移除在线状态
+				delete(b.online[cardID], deviceID)
+			}
 		}
 	}
-	b.prevEntries[cardID] = deviceIDs
 }
 
-// BuildDeviceStatus 按 meta 设备列表 + 本 buffer 的 online（连续两周期有条目）生成 device_status，供 derive 写 Redis；未在 online 或已因老化/RemoveDevice 清除的 device 为 offline=1。
-// 当 devices==nil（未绑卡，card_id 即 device_id）：仅用 buffer 的 online 表建立 device_status，使 derive 能周期刷新并写入 Redis。
 func (b *MonitorBuffer) BuildDeviceStatus(cardID string, devices map[string]*DeviceMeta, now int64) map[string]*card.DeviceStatus {
 	b.onlineMu.RLock()
 	defer b.onlineMu.RUnlock()
@@ -314,11 +331,13 @@ func (b *MonitorBuffer) BuildDeviceStatus(cardID string, devices map[string]*Dev
 			return make(map[string]*card.DeviceStatus)
 		}
 		result := make(map[string]*card.DeviceStatus)
-		for deviceID := range onlineMap {
-			result[deviceID] = &card.DeviceStatus{
-				DeviceID:   deviceID,
-				UpdatedAt:  now,
-				Offline:    0,
+		for deviceID, entry := range onlineMap {
+			if entry != nil && entry.Online {
+				result[deviceID] = &card.DeviceStatus{
+					DeviceID:   deviceID,
+					UpdatedAt:  now,
+					Offline:    0,
+				}
 			}
 		}
 		return result
@@ -327,7 +346,7 @@ func (b *MonitorBuffer) BuildDeviceStatus(cardID string, devices map[string]*Dev
 	result := make(map[string]*card.DeviceStatus)
 	for deviceID, meta := range devices {
 		offline := 1
-		if b.online[cardID] != nil && b.online[cardID][deviceID] {
+		if b.online[cardID] != nil && b.online[cardID][deviceID] != nil && b.online[cardID][deviceID].Online {
 			offline = 0
 		}
 		if meta.DeviceID == "" {

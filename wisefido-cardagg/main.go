@@ -108,6 +108,9 @@ func main() {
 	cardChangeHandler := consumer.NewCardChangeHandler(alarmSvc, stateSvc, metaCache, enablementCache, resolver, bedCoord, db, logger)
 	alarmDeviceHandler := consumer.NewAlarmDeviceHandler(enablementCache, logger)
 
+	// 先同步耗尽 config:card:stream（含 PEL + 新积压），确保 resolver/metaCache 预热完毕
+	consumer.DrainConfigCardStream(ctx, logger, redisClient, cardChangeHandler)
+
 	consumer.SubscribeAll(ctx, logger, redisClient, consumer.Handlers{
 		Monitor:      consumer.NewIotPreparedHandler(resolver, stateSvc, metaCache, monitorHandler),
 		Event:        consumer.NewIotPreparedHandler(resolver, stateSvc, metaCache, eventHandler),
@@ -169,14 +172,6 @@ func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *servi
 				_ = state.DeriveDeviceOnlineOnly(ctx, snap.CardID, meta, buf)
 			}
 			state.DeriveBedStateFromRealtime(ctx, snap, meta)
-		}
-		activeDevs := buf.ActiveDevicesByCard()
-		for cid := range activeDevs {
-			if snappedCards[cid] {
-				continue
-			}
-			meta := metaCache.GetOrLoad(ctx, cid)
-			_ = state.DeriveDeviceOnlineOnly(ctx, cid, meta, buf)
 		}
 		for cid := range prevOnline {
 			if !currOnline[cid] {

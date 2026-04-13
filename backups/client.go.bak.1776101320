@@ -1,0 +1,212 @@
+package mqtt
+
+import (
+	"fmt"
+	"log"
+	"time"
+	"owl-common/config"
+	
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+)
+
+// MessageHandler 消息处理函数类型
+type MessageHandler func(topic string, payload []byte) error
+
+// Client MQTT客户端封装
+type Client struct {
+	client mqtt.Client
+	config *config.MQTTConfig
+}
+
+// NewClient 创建MQTT客户端
+func NewClient(cfg *config.MQTTConfig, logger interface{}) (*Client, error) {
+	opts := mqtt.NewClientOptions()
+	opts.AddBroker(cfg.Broker)
+	opts.SetClientID(cfg.ClientID)
+	
+	if cfg.Username != "" {
+		opts.SetUsername(cfg.Username)
+	}
+	if cfg.Password != "" {
+		opts.SetPassword(cfg.Password)
+	}
+	
+	// 设置连接参数以提高稳定性
+	opts.SetAutoReconnect(true)           // 自动重连
+	opts.SetCleanSession(false)           // 保持会话，使重连后不需要重新订阅
+	opts.SetConnectRetry(true)            // 连接重试
+	opts.SetConnectRetryInterval(5)       // 重试间隔5秒
+	opts.SetMaxReconnectInterval(60)      // 最大重连间隔60秒
+	opts.SetKeepAlive(60)                 // 增加保持连接时间到60秒
+	opts.SetPingTimeout(30)               // 增加ping超时到30秒
+	opts.SetResumeSubs(true)              // 重连后自动恢复订阅
+	opts.SetWriteTimeout(30)              // 设置写入超时
+	opts.SetConnectTimeout(30)            // 设置连接超时
+	
+	// 设置连接丢失时的处理
+	opts.OnConnectionLost = func(client mqtt.Client, reason error) {
+		log.Printf("MQTT Connection lost: %v", reason)
+	}
+	
+	// 设置重新连接时的处理
+	opts.OnConnect = func(client mqtt.Client) {
+		log.Printf("MQTT Reconnected to broker")
+		// 重连后可能需要一些时间来恢复订阅
+		time.Sleep(2 * time.Second)
+	}
+	
+	client := mqtt.NewClient(opts)
+	
+	// 循环尝试连接，直到成功
+	for i := 0; i < 10; i++ { // 最多重试10次
+		token := client.Connect()
+		token.Wait()
+		
+		if token.Error() == nil {
+			log.Printf("Successfully connected to MQTT broker: %s", cfg.Broker)
+			break
+		}
+		
+		if i == 9 { // 最后一次尝试失败
+			return nil, fmt.Errorf("failed to connect to MQTT broker after 10 attempts: %w", token.Error())
+		}
+		
+		log.Printf("Attempt %d failed to connect to MQTT broker: %v, retrying in 5 seconds...", i+1, token.Error())
+		// 等待5秒后重试
+		time.Sleep(5 * time.Second)
+	}
+	
+	return &Client{
+		client: client,
+		config: cfg,
+	}, nil
+}
+
+// Subscribe 订阅主题
+func (c *Client) Subscribe(topic string, qos byte, handler MessageHandler) error {
+	// 确保客户端已连接
+	if !c.client.IsConnected() {
+		// 尝试等待连接恢复
+		for i := 0; i < 20; i++ { // 最多重试20次，等待10秒
+			if c.client.IsConnected() {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		
+		if !c.client.IsConnected() {
+			return fmt.Errorf("MQTT client is not connected after waiting")
+		}
+	}
+	
+	token := c.client.Subscribe(topic, qos, func(client mqtt.Client, msg mqtt.Message) {
+		if err := handler(msg.Topic(), msg.Payload()); err != nil {
+			// 记录错误，但不中断处理
+			fmt.Printf("Error handling MQTT message: %v\n", err)
+		}
+	})
+	
+	// 等待订阅完成，设置超时
+	for i := 0; i < 10; i++ { // 最多等待10次尝试
+		if token.WaitTimeout(5000) { // 等待5秒
+			if token.Error() != nil {
+				return fmt.Errorf("failed to subscribe to topic %s: %w", topic, token.Error())
+			}
+			break
+		}
+		
+		// 如果还在等待，检查连接状态
+		if !c.client.IsConnected() {
+			return fmt.Errorf("MQTT client disconnected during subscription to topic %s", topic)
+		}
+		
+		// 等待一点时间再重试
+		time.Sleep(500 * time.Millisecond)
+	}
+	
+	return nil
+}
+
+// Publish 发布消息
+func (c *Client) Publish(topic string, qos byte, retained bool, payload []byte) error {
+	if !c.client.IsConnected() {
+		// 尝试等待连接恢复
+		for i := 0; i < 20; i++ { // 最多重试20次，等待10秒
+			if c.client.IsConnected() {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		
+		if !c.client.IsConnected() {
+			return fmt.Errorf("MQTT client is not connected after waiting")
+		}
+	}
+	
+	token := c.client.Publish(topic, qos, retained, payload)
+	
+	// 等待发布完成，设置超时
+	for i := 0; i < 10; i++ {
+		if token.WaitTimeout(5000) { // 等待5秒
+			if token.Error() != nil {
+				return fmt.Errorf("failed to publish to topic %s: %w", topic, token.Error())
+			}
+			break
+		}
+		
+		// 如果还在等待，检查连接状态
+		if !c.client.IsConnected() {
+			return fmt.Errorf("MQTT client disconnected during publish to topic %s", topic)
+		}
+		
+		// 等待一点时间再重试
+		time.Sleep(500 * time.Millisecond)
+	}
+	
+	return nil
+}
+
+// Unsubscribe 取消订阅
+func (c *Client) Unsubscribe(topics ...string) error {
+	if !c.client.IsConnected() {
+		return fmt.Errorf("MQTT client is not connected")
+	}
+	
+	token := c.client.Unsubscribe(topics...)
+	
+	// 等待取消订阅完成，设置超时
+	for i := 0; i < 10; i++ {
+		if token.WaitTimeout(5000) { // 等待5秒
+			if token.Error() != nil {
+				return fmt.Errorf("failed to unsubscribe: %w", token.Error())
+			}
+			break
+		}
+		
+		// 如果还在等待，检查连接状态
+		if !c.client.IsConnected() {
+			return fmt.Errorf("MQTT client disconnected during unsubscribe")
+		}
+		
+		// 等待一点时间再重试
+		time.Sleep(500 * time.Millisecond)
+	}
+	
+	return nil
+}
+
+// Disconnect 断开连接
+func (c *Client) Disconnect() {
+	if c.client != nil && c.client.IsConnected() {
+		c.client.Disconnect(250) // 250ms等待时间
+		log.Println("MQTT client disconnected")
+	}
+}
+
+// IsConnected 检查连接状态
+func (c *Client) IsConnected() bool {
+	if c.client == nil {
+		return false
+	}
+	return c.client.IsConnected()
+}

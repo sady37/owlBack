@@ -377,11 +377,11 @@ echo "  PID: $DATA_PID"
 echo "  Log: $DATA_LOG  (tail -f \"$DATA_LOG\")"
 
 # 等待一下确保服务启动
-sleep 2
+sleep 5
 
-# 启动 data 后等待 30 秒，确保卡片初始化/同步先完成
-echo -e "${YELLOW}Waiting 30 seconds after starting wisefido-data...${NC}"
-sleep 30
+# 启动 data 后等待 5 秒，确保卡片初始化/同步先完成
+echo -e "${YELLOW}Waiting 5 seconds after starting wisefido-data...${NC}"
+sleep 5
 
 # 启动 wisefido-iot 服务
 # 功能：从 Redis Streams 消费数据，存储到 TimescaleDB
@@ -411,8 +411,15 @@ export STREAM_SLEEPACE_AUTH="${STREAM_SLEEPACE_AUTH:-iot:auth:stream}"
 export CONSUMER_GROUP="${CONSUMER_GROUP:-iot-timeseries-group}"
 export CONSUMER_NAME="${CONSUMER_NAME:-iot-timeseries-1}"
 : >"$IOT_LOG"
-go run cmd/wisefido-iot/main.go >>"$IOT_LOG" 2>&1 &
-IOT_PID=$!
+mkdir -p "$OWLBACK_DIR/wisefido-iot/.bin"
+if go build -o "$OWLBACK_DIR/wisefido-iot/.bin/wisefido-iot" ./cmd/wisefido-iot >/dev/null 2>&1; then
+    "$OWLBACK_DIR/wisefido-iot/.bin/wisefido-iot" >>"$IOT_LOG" 2>&1 &
+    IOT_PID=$!
+else
+    echo -e "${YELLOW}Warning: go build failed for wisefido-iot, falling back to go run${NC}"
+    go run cmd/wisefido-iot/main.go >>"$IOT_LOG" 2>&1 &
+    IOT_PID=$!
+fi
 echo "  PID: $IOT_PID"
 echo "  Log: $IOT_LOG  (tail -f \"$IOT_LOG\")"
 
@@ -427,8 +434,15 @@ cd "$OWLBACK_DIR/wisefido-ai"
 # 设置环境变量（如果未从 .env 加载）
 export REDIS_DB="${REDIS_DB:-0}"
 : >"$AI_LOG"
-go run cmd/wisefido-ai/main.go >>"$AI_LOG" 2>&1 &
-AI_PID=$!
+mkdir -p "$OWLBACK_DIR/wisefido-ai/.bin"
+if go build -o "$OWLBACK_DIR/wisefido-ai/.bin/wisefido-ai" ./cmd/wisefido-ai >/dev/null 2>&1; then
+    "$OWLBACK_DIR/wisefido-ai/.bin/wisefido-ai" >>"$AI_LOG" 2>&1 &
+    AI_PID=$!
+else
+    echo -e "${YELLOW}Warning: go build failed for wisefido-ai, falling back to go run${NC}"
+    go run cmd/wisefido-ai/main.go >>"$AI_LOG" 2>&1 &
+    AI_PID=$!
+fi
 echo "  PID: $AI_PID"
 echo "  Log: $AI_LOG  (tail -f \"$AI_LOG\")"
 
@@ -443,13 +457,20 @@ echo -e "${BLUE}  Function: Data aggregation (PostgreSQL + Redis → full card c
 echo -e "${YELLOW}  Note: Card creation/update is now handled by wisefido-data${NC}"
 cd "$OWLBACK_DIR/wisefido-cardagg"
 : >"$AGGREGATOR_LOG"
-go run "$OWLBACK_DIR/wisefido-cardagg/main.go" >>"$AGGREGATOR_LOG" 2>&1 &
-AGGREGATOR_PID=$!
+mkdir -p "$OWLBACK_DIR/wisefido-cardagg/.bin"
+if go build -o "$OWLBACK_DIR/wisefido-cardagg/.bin/wisefido-cardagg" . >/dev/null 2>&1; then
+    "$OWLBACK_DIR/wisefido-cardagg/.bin/wisefido-cardagg" >>"$AGGREGATOR_LOG" 2>&1 &
+    AGGREGATOR_PID=$!
+else
+    echo -e "${YELLOW}Warning: go build failed for wisefido-cardagg, falling back to go run${NC}"
+    go run "$OWLBACK_DIR/wisefido-cardagg/main.go" >>"$AGGREGATOR_LOG" 2>&1 &
+    AGGREGATOR_PID=$!
+fi
 echo "  PID: $AGGREGATOR_PID"
 echo "  Log: $AGGREGATOR_LOG  (tail -f \"$AGGREGATOR_LOG\")"
 
 # 等待一下确保服务启动
-sleep 2
+sleep 3
 
 # 启动 wisefido-sleepace 服务（目录存在时）
 # 功能：Sleepad 设备网关（MQTT 消费 + HTTP 透传代理）
@@ -458,8 +479,15 @@ if [ "$SLEEPACE_DIR_MISSING" != "true" ]; then
     echo -e "${BLUE}  Function: Sleepad device gateway (MQTT consumer + HTTP proxy)${NC}"
     cd "$OWLBACK_DIR/wisefido-sleepace"
     : >"$SLEEPACE_LOG"
-    MQTT_CLIENT_ID=wisefido-sleepace-2 go run cmd/wisefido-sleepace/main.go -env dev >>"$SLEEPACE_LOG" 2>&1 &
-    SLEEPACE_PID=$!
+    mkdir -p "$OWLBACK_DIR/wisefido-sleepace/.bin"
+    if MQTT_CLIENT_ID=wisefido-sleepace-2 go build -o "$OWLBACK_DIR/wisefido-sleepace/.bin/wisefido-sleepace" ./cmd/wisefido-sleepace >/dev/null 2>&1; then
+        MQTT_CLIENT_ID=wisefido-sleepace-2 "$OWLBACK_DIR/wisefido-sleepace/.bin/wisefido-sleepace" -env dev >>"$SLEEPACE_LOG" 2>&1 &
+        SLEEPACE_PID=$!
+    else
+        echo -e "${YELLOW}Warning: go build failed for wisefido-sleepace, falling back to go run${NC}"
+        MQTT_CLIENT_ID=wisefido-sleepace-2 go run cmd/wisefido-sleepace/main.go -env dev >>"$SLEEPACE_LOG" 2>&1 &
+        SLEEPACE_PID=$!
+    fi
     echo "  PID: $SLEEPACE_PID"
     echo "  Log: $SLEEPACE_LOG  (tail -f \"$SLEEPACE_LOG\")"
 else
@@ -484,8 +512,15 @@ export QINGLAN_HTTPS_PORT="${QINGLAN_HTTPS_PORT:-${RADAR_HTTPS_PORT:-8443}}"
 export QINGLAN_HTTPS_CERT_FILE="${QINGLAN_HTTPS_CERT_FILE:-$RADAR_HTTPS_CERT_FILE}"
 export QINGLAN_HTTPS_KEY_FILE="${QINGLAN_HTTPS_KEY_FILE:-$RADAR_HTTPS_KEY_FILE}"
 : >"$QINGLAN_LOG"
-LOG_LEVEL=info go run cmd/wisefido-qinglan/main.go >>"$QINGLAN_LOG" 2>&1 &
-QINGLAN_PID=$!
+mkdir -p "$OWLBACK_DIR/wisefido-qinglan/.bin"
+if LOG_LEVEL=info go build -o "$OWLBACK_DIR/wisefido-qinglan/.bin/wisefido-qinglan" ./cmd/wisefido-qinglan >/dev/null 2>&1; then
+    LOG_LEVEL=info "$OWLBACK_DIR/wisefido-qinglan/.bin/wisefido-qinglan" >>"$QINGLAN_LOG" 2>&1 &
+    QINGLAN_PID=$!
+else
+    echo -e "${YELLOW}Warning: go build failed for wisefido-qinglan, falling back to go run${NC}"
+    LOG_LEVEL=info go run cmd/wisefido-qinglan/main.go >>"$QINGLAN_LOG" 2>&1 &
+    QINGLAN_PID=$!
+fi
 echo "  PID: $QINGLAN_PID"
 echo "  Log: $QINGLAN_LOG  (tail -f \"$QINGLAN_LOG\")"
 
@@ -498,7 +533,7 @@ echo -e "${BLUE}Logs: tail -f \"$DATA_LOG\" …；Ctrl+C 停止所有服务${NC}
 echo ""
 
 # 等待服务启动
-sleep 3
+sleep 2
 
 # 清理函数：在退出时停止所有后台服务
 cleanup() {

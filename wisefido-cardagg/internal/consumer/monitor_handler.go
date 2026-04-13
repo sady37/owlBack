@@ -52,9 +52,10 @@ func (h *MonitorHandler) RunLoop(ctx context.Context) {
 			nowMs := time.Now().UnixMilli()
 			if tick%4 == 0 {
 				h.buffer.PruneFields(nowMs, MonitorFieldTTL)
-				activeDevs := h.buffer.ActiveDevicesByCard()
-				for cid, devSet := range activeDevs {
-					h.buffer.AdvancePruneTick(cid, devSet)
+				// 获取所有活跃的卡片ID，然后为每个卡片单独处理在线状态
+				activeCardIDs := h.buffer.ActiveCardIDs()
+				for _, cardID := range activeCardIDs {
+					h.buffer.AdvancePruneTick(cardID)
 				}
 			}
 			// Flush 用 RLock，与 Write 不互斥；PruneFields 与 Write 之间已释放锁，写可优先

@@ -8,6 +8,17 @@ cd "$(dirname "$0")"
 
 echo "Starting wisefido-sleepace service..."
 
+# If an .env exists in the owlBack root, source it so environment variables
+# (LOG_LEVEL, REDIS_ADDR, etc.) are available to this script, matching
+# how systemd/start-owlback does it.
+ENV_FILE="$(cd "$(dirname "$0")" && pwd)/../.env"
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+    set +a
+fi
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -116,11 +127,13 @@ echo "wisefido-sleepace service starting at $(date)" >> "$LOG_FILE"
 echo "Log file: $LOG_FILE" >> "$LOG_FILE"
 echo "==========================================" >> "$LOG_FILE"
 
-if [ -t 1 ]; then
-    echo -e "${GREEN}Logging to: $LOG_FILE${NC}"
-    echo ""
-    go run cmd/wisefido-sleepace/main.go -env "$ENV" 2>&1 | tee -a "$LOG_FILE"
+BIN_DIR="$PWD/.bin"
+mkdir -p "$BIN_DIR"
+echo -e "${GREEN}Logging to: $LOG_FILE${NC}"
+echo ""
+if go build -o "$BIN_DIR/wisefido-sleepace" ./cmd/wisefido-sleepace >/dev/null 2>&1; then
+    "$BIN_DIR/wisefido-sleepace" -env "$ENV" 2>&1 | tee -a "$LOG_FILE"
 else
-    echo "Logging to: $LOG_FILE" >&2
+    echo -e "${YELLOW}Warning: go build failed, falling back to go run${NC}"
     go run cmd/wisefido-sleepace/main.go -env "$ENV" 2>&1 | tee -a "$LOG_FILE"
 fi
