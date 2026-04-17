@@ -238,6 +238,9 @@ func main() {
 		// Create MQTT publisher for OTA push via MQTT
 		mqttPublisher := publisher.NewMQTTPublisher(cfg, mqttClient)
 
+		// Inject MQTT publisher into OTA handler for device commands (restart/wifi/iotserver)
+		otaHandler.SetCommander(mqttPublisher)
+
 		// Create OTA scheduler with MQTT OTA push callback
 		fwDir := filepath.Join("..", "ota")
 		serverAddr := strings.TrimSpace(cfg.MQTT.RadarDeviceMQTT.Server)

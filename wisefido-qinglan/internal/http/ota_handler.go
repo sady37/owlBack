@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,10 +16,17 @@ import (
 	"github.com/gorilla/mux"
 )
 
+// DeviceCommander is the interface for sending MQTT commands to devices
+type DeviceCommander interface {
+	PublishReboot(ctx context.Context, uid string) error
+	SetDeviceProperties(ctx context.Context, uid string, properties map[string]interface{}) error
+}
+
 // OTAHandler handles OTA-related HTTP API requests
 type OTAHandler struct {
 	otaManager *ota.Manager
 	tcpServer  *tcp.Server
+	commander  DeviceCommander
 }
 
 // NewOTAHandler creates a new OTA handler
@@ -29,6 +37,11 @@ func NewOTAHandler(otaManager *ota.Manager, tcpServer *tcp.Server) *OTAHandler {
 	}
 }
 
+// SetCommander injects the MQTT publisher for device commands
+func (h *OTAHandler) SetCommander(c DeviceCommander) {
+	h.commander = c
+}
+
 // RegisterRoutes registers OTA routes on the router
 func (h *OTAHandler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/api/v1/ota/trigger/{uid}", h.TriggerOTA).Methods("POST")
@@ -37,6 +50,10 @@ func (h *OTAHandler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/api/v1/ota/firmware/{vendor}", h.ListFirmware).Methods("GET")
 	router.HandleFunc("/api/v1/ota/firmware/{vendor}", h.UploadFirmware).Methods("POST")
 	router.HandleFunc("/api/v1/ota/firmware/{vendor}/{filename}", h.DeleteFirmware).Methods("DELETE")
+	// Device command endpoints
+	router.HandleFunc("/api/v1/device/restart", h.BatchRestart).Methods("POST")
+	router.HandleFunc("/api/v1/device/set-wifi", h.BatchSetWiFi).Methods("POST")
+	router.HandleFunc("/api/v1/device/set-iotserver", h.BatchSetIoTServer).Methods("POST")
 }
 
 // TriggerOTA triggers OTA for a single device
@@ -205,4 +222,114 @@ func (h *OTAHandler) DeleteFirmware(w http.ResponseWriter, r *http.Request) {
 		"vendor":   vendor,
 		"filename": filename,
 	})
+}
+
+// --- Device command endpoints ---
+
+type batchUIDRequest struct {
+	UIDs []string `json:"uids"`
+}
+
+type batchResult struct {
+	UID     string `json:"uid"`
+	Success bool   `json:"success"`
+	Message string `json:"message,omitempty"`
+}
+
+// BatchRestart restarts multiple devices via MQTT (dev:0)
+func (h *OTAHandler) BatchRestart(w http.ResponseWriter, r *http.Request) {
+	if h.commander == nil {
+		http.Error(w, "MQTT publisher not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var req batchUIDRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+	log.Printf("[Device-API] batch restart: %d devices", len(req.UIDs))
+
+	results := make([]batchResult, 0, len(req.UIDs))
+	for _, uid := range req.UIDs {
+		if err := h.commander.PublishReboot(r.Context(), uid); err != nil {
+			results = append(results, batchResult{UID: uid, Success: false, Message: err.Error()})
+		} else {
+			results = append(results, batchResult{UID: uid, Success: true, Message: "restart sent"})
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
+}
+
+// BatchSetWiFi sets WiFi config for multiple devices via MQTT
+func (h *OTAHandler) BatchSetWiFi(w http.ResponseWriter, r *http.Request) {
+	if h.commander == nil {
+		http.Error(w, "MQTT publisher not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		UIDs []string `json:"uids"`
+		SSID string   `json:"ssid"`
+		Pass string   `json:"pass"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+	if req.SSID == "" {
+		http.Error(w, "ssid is required", http.StatusBadRequest)
+		return
+	}
+	log.Printf("[Device-API] batch set-wifi: %d devices ssid=%s", len(req.UIDs), req.SSID)
+
+	props := map[string]interface{}{
+		"wifi_ssid": req.SSID,
+		"wifi_pass": req.Pass,
+	}
+	results := make([]batchResult, 0, len(req.UIDs))
+	for _, uid := range req.UIDs {
+		if err := h.commander.SetDeviceProperties(r.Context(), uid, props); err != nil {
+			results = append(results, batchResult{UID: uid, Success: false, Message: err.Error()})
+		} else {
+			results = append(results, batchResult{UID: uid, Success: true, Message: "wifi config sent"})
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
+}
+
+// BatchSetIoTServer sets IoT server address for multiple devices via MQTT
+func (h *OTAHandler) BatchSetIoTServer(w http.ResponseWriter, r *http.Request) {
+	if h.commander == nil {
+		http.Error(w, "MQTT publisher not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		UIDs   []string `json:"uids"`
+		Server string   `json:"server"`
+		Port   int      `json:"port"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+	if req.Server == "" || req.Port == 0 {
+		http.Error(w, "server and port are required", http.StatusBadRequest)
+		return
+	}
+	log.Printf("[Device-API] batch set-iotserver: %d devices server=%s:%d", len(req.UIDs), req.Server, req.Port)
+
+	props := map[string]interface{}{
+		"ip_port": fmt.Sprintf("%s:%d", req.Server, req.Port),
+	}
+	results := make([]batchResult, 0, len(req.UIDs))
+	for _, uid := range req.UIDs {
+		if err := h.commander.SetDeviceProperties(r.Context(), uid, props); err != nil {
+			results = append(results, batchResult{UID: uid, Success: false, Message: err.Error()})
+		} else {
+			results = append(results, batchResult{UID: uid, Success: true, Message: "iotserver config sent"})
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
 }
