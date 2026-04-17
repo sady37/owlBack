@@ -14,6 +14,7 @@ import (
 
 	"wisefido-data/internal/config"
 	"wisefido-data/internal/domain"
+	phipkg "wisefido-data/internal/phi"
 	httpapi "wisefido-data/internal/http"
 	"wisefido-data/internal/notify"
 	"wisefido-data/internal/publisher"
@@ -404,8 +405,19 @@ func main() {
 			}
 		}
 
+		// 初始化 PHI 加密（K 服务模式）
+		kmsSocket := os.Getenv("KMS_SOCKET")
+		masterPin := os.Getenv("MASTER_PIN")
+		if kmsSocket != "" && masterPin != "" {
+			keyStore := phipkg.NewTenantKeyStore(kmsSocket, masterPin)
+			phiCryptor := phipkg.NewPHICryptor(keyStore)
+			residentsRepo.SetPHICryptor(phiCryptor)
+			logger.Info("PHI encryption enabled", zap.String("kms_socket", kmsSocket))
+		} else {
+			logger.Warn("PHI encryption NOT enabled — set KMS_SOCKET and MASTER_PIN")
+		}
+
 		// 创建 Resident Service 和 Handler
-		// residentsRepo 已在上面创建 CardStaticService 时声明，这里直接使用
 		residentService := service.NewResidentService(residentsRepo, db, cardSyncService, logger)
 		residentHandler := httpapi.NewResidentHandler(residentService, db, logger)
 		router.RegisterResidentRoutes(residentHandler)

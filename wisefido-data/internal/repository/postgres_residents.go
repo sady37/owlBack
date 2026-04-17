@@ -10,17 +10,24 @@ import (
 	"time"
 
 	"wisefido-data/internal/domain"
+	"wisefido-data/internal/phi"
 )
 
 // PostgresResidentsRepository 住户Repository实现（强类型版本）
 // 实现ResidentsRepository接口，使用domain领域模型
 type PostgresResidentsRepository struct {
-	db *sql.DB
+	db         *sql.DB
+	phiCryptor *phi.PHICryptor
 }
 
 // NewPostgresResidentsRepository 创建住户Repository
 func NewPostgresResidentsRepository(db *sql.DB) *PostgresResidentsRepository {
 	return &PostgresResidentsRepository{db: db}
+}
+
+// SetPHICryptor 设置 PHI 加密器。设置后 PHI 读写使用 _enc 列。
+func (r *PostgresResidentsRepository) SetPHICryptor(c *phi.PHICryptor) {
+	r.phiCryptor = c
 }
 
 // 确保实现了接口
@@ -1442,329 +1449,251 @@ func (r *PostgresResidentsRepository) GetResidentPHI(ctx context.Context, tenant
 	if tenantID == "" || residentID == "" {
 		return nil, fmt.Errorf("tenant_id and resident_id are required")
 	}
+	if r.phiCryptor != nil {
+		return r.getResidentPHIEncrypted(ctx, tenantID, residentID)
+	}
+	return r.getResidentPHIPlaintext(ctx, tenantID, residentID)
+}
 
-	query := `
-		SELECT 
-			phi_id::text,
-			tenant_id::text,
-			resident_id::text,
-			first_name,
-			last_name,
-			gender,
-			date_of_birth,
-			resident_phone,
-			resident_email,
-			weight_lb,
-			height_ft,
-			height_in,
-			mobility_level,
-			tremor_status,
-			mobility_aid,
-			adl_assistance,
-			comm_status,
-			has_hypertension,
-			has_hyperlipaemia,
-			has_hyperglycaemia,
-			has_stroke_history,
-			has_paralysis,
-			has_alzheimer,
-			medical_history,
-			home_address_street,
-			home_address_city,
-			home_address_state,
-			home_address_postal_code,
-			plus_code
-		FROM resident_phi
-		WHERE tenant_id = $1 AND resident_id = $2
-	`
+// getResidentPHIEncrypted 从 _enc 列读取并解密（全字段加密）
+func (r *PostgresResidentsRepository) getResidentPHIEncrypted(ctx context.Context, tenantID, residentID string) (*domain.ResidentPHI, error) {
+	query := `SELECT phi_id::text, tenant_id::text, resident_id::text,
+		first_name_enc, last_name_enc, gender_enc, date_of_birth_enc,
+		resident_phone_enc, resident_email_enc,
+		weight_lb_enc, height_ft_enc, height_in_enc, mobility_level_enc,
+		tremor_status_enc, mobility_aid_enc, adl_assistance_enc, comm_status_enc,
+		has_hypertension_enc, has_hyperlipaemia_enc, has_hyperglycaemia_enc,
+		has_stroke_history_enc, has_paralysis_enc, has_alzheimer_enc,
+		medical_history_enc,
+		home_address_street_enc, home_address_city_enc,
+		home_address_state_enc, home_address_postal_code_enc, plus_code_enc
+	FROM resident_phi WHERE tenant_id = $1 AND resident_id = $2`
 
-	var phi domain.ResidentPHI
+	var p domain.ResidentPHI
+	var enc [26][]byte
+	err := r.db.QueryRowContext(ctx, query, tenantID, residentID).Scan(
+		&p.PhiID, &p.TenantID, &p.ResidentID,
+		&enc[0], &enc[1], &enc[2], &enc[3], &enc[4], &enc[5],
+		&enc[6], &enc[7], &enc[8], &enc[9],
+		&enc[10], &enc[11], &enc[12], &enc[13],
+		&enc[14], &enc[15], &enc[16], &enc[17], &enc[18], &enc[19],
+		&enc[20], &enc[21], &enc[22], &enc[23], &enc[24], &enc[25],
+	)
+	if err != nil {
+		if err == sql.ErrNoRows { return nil, fmt.Errorf("resident PHI not found: %w", err) }
+		return nil, fmt.Errorf("failed to get resident PHI: %w", err)
+	}
+	c := r.phiCryptor
+	var e error
+	if p.FirstName, e = c.DecryptString(tenantID, enc[0]); e != nil { return nil, fmt.Errorf("dec first_name: %w", e) }
+	if p.LastName, e = c.DecryptString(tenantID, enc[1]); e != nil { return nil, fmt.Errorf("dec last_name: %w", e) }
+	if p.Gender, e = c.DecryptString(tenantID, enc[2]); e != nil { return nil, fmt.Errorf("dec gender: %w", e) }
+	if p.DateOfBirth, e = c.DecryptTime(tenantID, enc[3]); e != nil { return nil, fmt.Errorf("dec dob: %w", e) }
+	if p.ResidentPhone, e = c.DecryptString(tenantID, enc[4]); e != nil { return nil, fmt.Errorf("dec phone: %w", e) }
+	if p.ResidentEmail, e = c.DecryptString(tenantID, enc[5]); e != nil { return nil, fmt.Errorf("dec email: %w", e) }
+	if p.WeightLb, e = c.DecryptFloat(tenantID, enc[6]); e != nil { return nil, fmt.Errorf("dec weight: %w", e) }
+	if p.HeightFt, e = c.DecryptFloat(tenantID, enc[7]); e != nil { return nil, fmt.Errorf("dec height_ft: %w", e) }
+	if p.HeightIn, e = c.DecryptFloat(tenantID, enc[8]); e != nil { return nil, fmt.Errorf("dec height_in: %w", e) }
+	if p.MobilityLevel, e = c.DecryptInt(tenantID, enc[9]); e != nil { return nil, fmt.Errorf("dec mobility: %w", e) }
+	if p.TremorStatus, e = c.DecryptString(tenantID, enc[10]); e != nil { return nil, fmt.Errorf("dec tremor: %w", e) }
+	if p.MobilityAid, e = c.DecryptString(tenantID, enc[11]); e != nil { return nil, fmt.Errorf("dec mobility_aid: %w", e) }
+	if p.ADLAssistance, e = c.DecryptString(tenantID, enc[12]); e != nil { return nil, fmt.Errorf("dec adl: %w", e) }
+	if p.CommStatus, e = c.DecryptString(tenantID, enc[13]); e != nil { return nil, fmt.Errorf("dec comm: %w", e) }
+	if p.HasHypertension, e = c.DecryptBool(tenantID, enc[14]); e != nil { return nil, fmt.Errorf("dec hypertension: %w", e) }
+	if p.HasHyperlipaemia, e = c.DecryptBool(tenantID, enc[15]); e != nil { return nil, fmt.Errorf("dec hyperlipaemia: %w", e) }
+	if p.HasHyperglycaemia, e = c.DecryptBool(tenantID, enc[16]); e != nil { return nil, fmt.Errorf("dec hyperglycaemia: %w", e) }
+	if p.HasStrokeHistory, e = c.DecryptBool(tenantID, enc[17]); e != nil { return nil, fmt.Errorf("dec stroke: %w", e) }
+	if p.HasParalysis, e = c.DecryptBool(tenantID, enc[18]); e != nil { return nil, fmt.Errorf("dec paralysis: %w", e) }
+	if p.HasAlzheimer, e = c.DecryptBool(tenantID, enc[19]); e != nil { return nil, fmt.Errorf("dec alzheimer: %w", e) }
+	if p.MedicalHistory, e = c.DecryptString(tenantID, enc[20]); e != nil { return nil, fmt.Errorf("dec medical: %w", e) }
+	if p.HomeAddressStreet, e = c.DecryptString(tenantID, enc[21]); e != nil { return nil, fmt.Errorf("dec street: %w", e) }
+	if p.HomeAddressCity, e = c.DecryptString(tenantID, enc[22]); e != nil { return nil, fmt.Errorf("dec city: %w", e) }
+	if p.HomeAddressState, e = c.DecryptString(tenantID, enc[23]); e != nil { return nil, fmt.Errorf("dec state: %w", e) }
+	if p.HomeAddressPostalCode, e = c.DecryptString(tenantID, enc[24]); e != nil { return nil, fmt.Errorf("dec postal: %w", e) }
+	if p.PlusCode, e = c.DecryptString(tenantID, enc[25]); e != nil { return nil, fmt.Errorf("dec plus_code: %w", e) }
+	return &p, nil
+}
+
+// getResidentPHIPlaintext 明文模式（回退）
+func (r *PostgresResidentsRepository) getResidentPHIPlaintext(ctx context.Context, tenantID, residentID string) (*domain.ResidentPHI, error) {
+	query := `SELECT phi_id::text, tenant_id::text, resident_id::text,
+		first_name, last_name, gender, date_of_birth, resident_phone, resident_email,
+		weight_lb, height_ft, height_in, mobility_level,
+		tremor_status, mobility_aid, adl_assistance, comm_status,
+		has_hypertension, has_hyperlipaemia, has_hyperglycaemia,
+		has_stroke_history, has_paralysis, has_alzheimer, medical_history,
+		home_address_street, home_address_city, home_address_state, home_address_postal_code, plus_code
+	FROM resident_phi WHERE tenant_id = $1 AND resident_id = $2`
+
+	var p domain.ResidentPHI
 	var firstName, lastName, gender, residentPhone, residentEmail sql.NullString
 	var dateOfBirth sql.NullTime
 	var weightLb, heightFt, heightIn sql.NullFloat64
 	var mobilityLevel sql.NullInt64
 	var tremorStatus, mobilityAid, adlAssistance, commStatus sql.NullString
 	var hasHypertension, hasHyperlipaemia, hasHyperglycaemia, hasStrokeHistory, hasParalysis, hasAlzheimer sql.NullBool
-	var medicalHistory sql.NullString
-	var homeAddressStreet, homeAddressCity, homeAddressState, homeAddressPostalCode, plusCode sql.NullString
+	var medicalHistory, homeAddressStreet, homeAddressCity, homeAddressState, homeAddressPostalCode, plusCode sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, tenantID, residentID).Scan(
-		&phi.PhiID,
-		&phi.TenantID,
-		&phi.ResidentID,
-		&firstName,
-		&lastName,
-		&gender,
-		&dateOfBirth,
-		&residentPhone,
-		&residentEmail,
-		&weightLb,
-		&heightFt,
-		&heightIn,
-		&mobilityLevel,
-		&tremorStatus,
-		&mobilityAid,
-		&adlAssistance,
-		&commStatus,
-		&hasHypertension,
-		&hasHyperlipaemia,
-		&hasHyperglycaemia,
-		&hasStrokeHistory,
-		&hasParalysis,
-		&hasAlzheimer,
-		&medicalHistory,
-		&homeAddressStreet,
-		&homeAddressCity,
-		&homeAddressState,
-		&homeAddressPostalCode,
-		&plusCode,
+		&p.PhiID, &p.TenantID, &p.ResidentID,
+		&firstName, &lastName, &gender, &dateOfBirth, &residentPhone, &residentEmail,
+		&weightLb, &heightFt, &heightIn, &mobilityLevel,
+		&tremorStatus, &mobilityAid, &adlAssistance, &commStatus,
+		&hasHypertension, &hasHyperlipaemia, &hasHyperglycaemia,
+		&hasStrokeHistory, &hasParalysis, &hasAlzheimer, &medicalHistory,
+		&homeAddressStreet, &homeAddressCity, &homeAddressState, &homeAddressPostalCode, &plusCode,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("resident PHI not found: %w", err)
-		}
+		if err == sql.ErrNoRows { return nil, fmt.Errorf("resident PHI not found: %w", err) }
 		return nil, fmt.Errorf("failed to get resident PHI: %w", err)
 	}
-
-	// 处理可空字段
-	if firstName.Valid {
-		phi.FirstName = firstName.String
-	}
-	if lastName.Valid {
-		phi.LastName = lastName.String
-	}
-	if gender.Valid {
-		phi.Gender = gender.String
-	}
-	if dateOfBirth.Valid {
-		phi.DateOfBirth = &dateOfBirth.Time
-	}
-	if residentPhone.Valid {
-		phi.ResidentPhone = residentPhone.String
-	}
-	if residentEmail.Valid {
-		phi.ResidentEmail = residentEmail.String
-	}
-	if weightLb.Valid {
-		phi.WeightLb = &[]float64{weightLb.Float64}[0]
-	}
-	if heightFt.Valid {
-		phi.HeightFt = &[]float64{heightFt.Float64}[0]
-	}
-	if heightIn.Valid {
-		phi.HeightIn = &[]float64{heightIn.Float64}[0]
-	}
-	if mobilityLevel.Valid {
-		level := int(mobilityLevel.Int64)
-		phi.MobilityLevel = &level
-	}
-	if tremorStatus.Valid {
-		phi.TremorStatus = tremorStatus.String
-	}
-	if mobilityAid.Valid {
-		phi.MobilityAid = mobilityAid.String
-	}
-	if adlAssistance.Valid {
-		phi.ADLAssistance = adlAssistance.String
-	}
-	if commStatus.Valid {
-		phi.CommStatus = commStatus.String
-	}
-	if hasHypertension.Valid {
-		phi.HasHypertension = hasHypertension.Bool
-	}
-	if hasHyperlipaemia.Valid {
-		phi.HasHyperlipaemia = hasHyperlipaemia.Bool
-	}
-	if hasHyperglycaemia.Valid {
-		phi.HasHyperglycaemia = hasHyperglycaemia.Bool
-	}
-	if hasStrokeHistory.Valid {
-		phi.HasStrokeHistory = hasStrokeHistory.Bool
-	}
-	if hasParalysis.Valid {
-		phi.HasParalysis = hasParalysis.Bool
-	}
-	if hasAlzheimer.Valid {
-		phi.HasAlzheimer = hasAlzheimer.Bool
-	}
-	if medicalHistory.Valid {
-		phi.MedicalHistory = medicalHistory.String
-	}
-	if homeAddressStreet.Valid {
-		phi.HomeAddressStreet = homeAddressStreet.String
-	}
-	if homeAddressCity.Valid {
-		phi.HomeAddressCity = homeAddressCity.String
-	}
-	if homeAddressState.Valid {
-		phi.HomeAddressState = homeAddressState.String
-	}
-	if homeAddressPostalCode.Valid {
-		phi.HomeAddressPostalCode = homeAddressPostalCode.String
-	}
-	if plusCode.Valid {
-		phi.PlusCode = plusCode.String
-	}
-
-	return &phi, nil
+	if firstName.Valid { p.FirstName = firstName.String }
+	if lastName.Valid { p.LastName = lastName.String }
+	if gender.Valid { p.Gender = gender.String }
+	if dateOfBirth.Valid { p.DateOfBirth = &dateOfBirth.Time }
+	if residentPhone.Valid { p.ResidentPhone = residentPhone.String }
+	if residentEmail.Valid { p.ResidentEmail = residentEmail.String }
+	if weightLb.Valid { p.WeightLb = &[]float64{weightLb.Float64}[0] }
+	if heightFt.Valid { p.HeightFt = &[]float64{heightFt.Float64}[0] }
+	if heightIn.Valid { p.HeightIn = &[]float64{heightIn.Float64}[0] }
+	if mobilityLevel.Valid { lv := int(mobilityLevel.Int64); p.MobilityLevel = &lv }
+	if tremorStatus.Valid { p.TremorStatus = tremorStatus.String }
+	if mobilityAid.Valid { p.MobilityAid = mobilityAid.String }
+	if adlAssistance.Valid { p.ADLAssistance = adlAssistance.String }
+	if commStatus.Valid { p.CommStatus = commStatus.String }
+	if hasHypertension.Valid { p.HasHypertension = hasHypertension.Bool }
+	if hasHyperlipaemia.Valid { p.HasHyperlipaemia = hasHyperlipaemia.Bool }
+	if hasHyperglycaemia.Valid { p.HasHyperglycaemia = hasHyperglycaemia.Bool }
+	if hasStrokeHistory.Valid { p.HasStrokeHistory = hasStrokeHistory.Bool }
+	if hasParalysis.Valid { p.HasParalysis = hasParalysis.Bool }
+	if hasAlzheimer.Valid { p.HasAlzheimer = hasAlzheimer.Bool }
+	if medicalHistory.Valid { p.MedicalHistory = medicalHistory.String }
+	if homeAddressStreet.Valid { p.HomeAddressStreet = homeAddressStreet.String }
+	if homeAddressCity.Valid { p.HomeAddressCity = homeAddressCity.String }
+	if homeAddressState.Valid { p.HomeAddressState = homeAddressState.String }
+	if homeAddressPostalCode.Valid { p.HomeAddressPostalCode = homeAddressPostalCode.String }
+	if plusCode.Valid { p.PlusCode = plusCode.String }
+	return &p, nil
 }
 
 // UpsertResidentPHI 创建或更新住户PHI信息
-// 注意：UNIQUE(tenant_id, resident_id)，使用UPSERT语义
-func (r *PostgresResidentsRepository) UpsertResidentPHI(ctx context.Context, tenantID, residentID string, phi *domain.ResidentPHI) error {
-	if tenantID == "" || residentID == "" {
-		return fmt.Errorf("tenant_id and resident_id are required")
+func (r *PostgresResidentsRepository) UpsertResidentPHI(ctx context.Context, tenantID, residentID string, phiData *domain.ResidentPHI) error {
+	if tenantID == "" || residentID == "" { return fmt.Errorf("tenant_id and resident_id are required") }
+	if phiData == nil { return fmt.Errorf("phi is required") }
+	if r.phiCryptor != nil {
+		return r.upsertResidentPHIEncrypted(ctx, tenantID, residentID, phiData)
 	}
-	if phi == nil {
-		return fmt.Errorf("phi is required")
-	}
+	return r.upsertResidentPHIPlaintext(ctx, tenantID, residentID, phiData)
+}
 
-	query := `
-		INSERT INTO resident_phi (
-			tenant_id, resident_id,
-			first_name, last_name, gender, date_of_birth,
-			resident_phone, resident_email,
-			weight_lb, height_ft, height_in,
-			mobility_level,
-			tremor_status, mobility_aid, adl_assistance, comm_status,
-			has_hypertension, has_hyperlipaemia, has_hyperglycaemia,
-		has_stroke_history, has_paralysis, has_alzheimer,
-		medical_history,
-		home_address_street, home_address_city, home_address_state, home_address_postal_code, plus_code
-		) VALUES (
-			$1, $2,
-			NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6,
-			NULLIF($7, ''), NULLIF($8, ''),
-			$9, $10, $11,
-			$12,
-			NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''),
-			$17, $18, $19,
-			$20, $21, $22,
-			NULLIF($23, ''),
-			NULLIF($24, ''), NULLIF($25, ''), NULLIF($26, ''), NULLIF($27, ''), NULLIF($28, '')
-		)
-		ON CONFLICT (tenant_id, resident_id)
-		DO UPDATE SET
-			first_name = EXCLUDED.first_name,
-			last_name = EXCLUDED.last_name,
-			gender = EXCLUDED.gender,
-			date_of_birth = EXCLUDED.date_of_birth,
-			resident_phone = EXCLUDED.resident_phone,
-			resident_email = EXCLUDED.resident_email,
-			weight_lb = EXCLUDED.weight_lb,
-			height_ft = EXCLUDED.height_ft,
-			height_in = EXCLUDED.height_in,
-			mobility_level = EXCLUDED.mobility_level,
-			tremor_status = EXCLUDED.tremor_status,
-			mobility_aid = EXCLUDED.mobility_aid,
-			adl_assistance = EXCLUDED.adl_assistance,
-			comm_status = EXCLUDED.comm_status,
-			has_hypertension = EXCLUDED.has_hypertension,
-			has_hyperlipaemia = EXCLUDED.has_hyperlipaemia,
-			has_hyperglycaemia = EXCLUDED.has_hyperglycaemia,
-			has_stroke_history = EXCLUDED.has_stroke_history,
-			has_paralysis = EXCLUDED.has_paralysis,
-			has_alzheimer = EXCLUDED.has_alzheimer,
-			medical_history = EXCLUDED.medical_history,
-			home_address_street = EXCLUDED.home_address_street,
-			home_address_city = EXCLUDED.home_address_city,
-			home_address_state = EXCLUDED.home_address_state,
-			home_address_postal_code = EXCLUDED.home_address_postal_code,
-			plus_code = EXCLUDED.plus_code
-	`
+func (r *PostgresResidentsRepository) upsertResidentPHIEncrypted(ctx context.Context, tenantID, residentID string, p *domain.ResidentPHI) error {
+	c := r.phiCryptor
+	enc := make([][]byte, 26)
+	var err error
+	if enc[0], err = c.EncryptString(tenantID, p.FirstName); err != nil { return err }
+	if enc[1], err = c.EncryptString(tenantID, p.LastName); err != nil { return err }
+	if enc[2], err = c.EncryptString(tenantID, p.Gender); err != nil { return err }
+	if enc[3], err = c.EncryptTime(tenantID, p.DateOfBirth); err != nil { return err }
+	if enc[4], err = c.EncryptString(tenantID, p.ResidentPhone); err != nil { return err }
+	if enc[5], err = c.EncryptString(tenantID, p.ResidentEmail); err != nil { return err }
+	if enc[6], err = c.EncryptFloat(tenantID, p.WeightLb); err != nil { return err }
+	if enc[7], err = c.EncryptFloat(tenantID, p.HeightFt); err != nil { return err }
+	if enc[8], err = c.EncryptFloat(tenantID, p.HeightIn); err != nil { return err }
+	if enc[9], err = c.EncryptInt(tenantID, p.MobilityLevel); err != nil { return err }
+	if enc[10], err = c.EncryptString(tenantID, p.TremorStatus); err != nil { return err }
+	if enc[11], err = c.EncryptString(tenantID, p.MobilityAid); err != nil { return err }
+	if enc[12], err = c.EncryptString(tenantID, p.ADLAssistance); err != nil { return err }
+	if enc[13], err = c.EncryptString(tenantID, p.CommStatus); err != nil { return err }
+	if enc[14], err = c.EncryptBool(tenantID, p.HasHypertension); err != nil { return err }
+	if enc[15], err = c.EncryptBool(tenantID, p.HasHyperlipaemia); err != nil { return err }
+	if enc[16], err = c.EncryptBool(tenantID, p.HasHyperglycaemia); err != nil { return err }
+	if enc[17], err = c.EncryptBool(tenantID, p.HasStrokeHistory); err != nil { return err }
+	if enc[18], err = c.EncryptBool(tenantID, p.HasParalysis); err != nil { return err }
+	if enc[19], err = c.EncryptBool(tenantID, p.HasAlzheimer); err != nil { return err }
+	if enc[20], err = c.EncryptString(tenantID, p.MedicalHistory); err != nil { return err }
+	if enc[21], err = c.EncryptString(tenantID, p.HomeAddressStreet); err != nil { return err }
+	if enc[22], err = c.EncryptString(tenantID, p.HomeAddressCity); err != nil { return err }
+	if enc[23], err = c.EncryptString(tenantID, p.HomeAddressState); err != nil { return err }
+	if enc[24], err = c.EncryptString(tenantID, p.HomeAddressPostalCode); err != nil { return err }
+	if enc[25], err = c.EncryptString(tenantID, p.PlusCode); err != nil { return err }
 
-	// 处理可空字段
-	var firstName, lastName, gender, residentPhone, residentEmail any = nil, nil, nil, nil, nil
-	if phi.FirstName != "" {
-		firstName = phi.FirstName
-	}
-	if phi.LastName != "" {
-		lastName = phi.LastName
-	}
-	if phi.Gender != "" {
-		gender = phi.Gender
-	}
-	if phi.ResidentPhone != "" {
-		residentPhone = phi.ResidentPhone
-	}
-	if phi.ResidentEmail != "" {
-		residentEmail = phi.ResidentEmail
-	}
+	query := `INSERT INTO resident_phi (tenant_id, resident_id,
+		first_name_enc,last_name_enc,gender_enc,date_of_birth_enc,
+		resident_phone_enc,resident_email_enc,
+		weight_lb_enc,height_ft_enc,height_in_enc,mobility_level_enc,
+		tremor_status_enc,mobility_aid_enc,adl_assistance_enc,comm_status_enc,
+		has_hypertension_enc,has_hyperlipaemia_enc,has_hyperglycaemia_enc,
+		has_stroke_history_enc,has_paralysis_enc,has_alzheimer_enc,
+		medical_history_enc,
+		home_address_street_enc,home_address_city_enc,home_address_state_enc,home_address_postal_code_enc,plus_code_enc
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+	ON CONFLICT (tenant_id, resident_id) DO UPDATE SET
+		first_name_enc=EXCLUDED.first_name_enc,last_name_enc=EXCLUDED.last_name_enc,
+		gender_enc=EXCLUDED.gender_enc,date_of_birth_enc=EXCLUDED.date_of_birth_enc,
+		resident_phone_enc=EXCLUDED.resident_phone_enc,resident_email_enc=EXCLUDED.resident_email_enc,
+		weight_lb_enc=EXCLUDED.weight_lb_enc,height_ft_enc=EXCLUDED.height_ft_enc,
+		height_in_enc=EXCLUDED.height_in_enc,mobility_level_enc=EXCLUDED.mobility_level_enc,
+		tremor_status_enc=EXCLUDED.tremor_status_enc,mobility_aid_enc=EXCLUDED.mobility_aid_enc,
+		adl_assistance_enc=EXCLUDED.adl_assistance_enc,comm_status_enc=EXCLUDED.comm_status_enc,
+		has_hypertension_enc=EXCLUDED.has_hypertension_enc,has_hyperlipaemia_enc=EXCLUDED.has_hyperlipaemia_enc,
+		has_hyperglycaemia_enc=EXCLUDED.has_hyperglycaemia_enc,has_stroke_history_enc=EXCLUDED.has_stroke_history_enc,
+		has_paralysis_enc=EXCLUDED.has_paralysis_enc,has_alzheimer_enc=EXCLUDED.has_alzheimer_enc,
+		medical_history_enc=EXCLUDED.medical_history_enc,
+		home_address_street_enc=EXCLUDED.home_address_street_enc,home_address_city_enc=EXCLUDED.home_address_city_enc,
+		home_address_state_enc=EXCLUDED.home_address_state_enc,home_address_postal_code_enc=EXCLUDED.home_address_postal_code_enc,
+		plus_code_enc=EXCLUDED.plus_code_enc`
+	args := []any{tenantID, residentID}
+	for _, e := range enc { args = append(args, e) }
+	_, err = r.db.ExecContext(ctx, query, args...)
+	if err != nil { return fmt.Errorf("upsert PHI enc: %w", err) }
+	return nil
+}
 
-	var dateOfBirth any = nil
-	if phi.DateOfBirth != nil {
-		dateOfBirth = *phi.DateOfBirth
-	}
-
-	var weightLb, heightFt, heightIn any = nil, nil, nil
-	if phi.WeightLb != nil {
-		weightLb = *phi.WeightLb
-	}
-	if phi.HeightFt != nil {
-		heightFt = *phi.HeightFt
-	}
-	if phi.HeightIn != nil {
-		heightIn = *phi.HeightIn
-	}
-
-	var mobilityLevel any = nil
-	if phi.MobilityLevel != nil {
-		mobilityLevel = *phi.MobilityLevel
-	}
-
-	var tremorStatus, mobilityAid, adlAssistance, commStatus any = nil, nil, nil, nil
-	if phi.TremorStatus != "" {
-		tremorStatus = phi.TremorStatus
-	}
-	if phi.MobilityAid != "" {
-		mobilityAid = phi.MobilityAid
-	}
-	if phi.ADLAssistance != "" {
-		adlAssistance = phi.ADLAssistance
-	}
-	if phi.CommStatus != "" {
-		commStatus = phi.CommStatus
-	}
-
-	var medicalHistory any = nil
-	if phi.MedicalHistory != "" {
-		medicalHistory = phi.MedicalHistory
-	}
-
-	var homeAddressStreet, homeAddressCity, homeAddressState, homeAddressPostalCode, plusCode any = nil, nil, nil, nil, nil
-	if phi.HomeAddressStreet != "" {
-		homeAddressStreet = phi.HomeAddressStreet
-	}
-	if phi.HomeAddressCity != "" {
-		homeAddressCity = phi.HomeAddressCity
-	}
-	if phi.HomeAddressState != "" {
-		homeAddressState = phi.HomeAddressState
-	}
-	if phi.HomeAddressPostalCode != "" {
-		homeAddressPostalCode = phi.HomeAddressPostalCode
-	}
-	if phi.PlusCode != "" {
-		plusCode = phi.PlusCode
-	}
-
-	_, err := r.db.ExecContext(ctx, query,
-		tenantID, residentID,
-		firstName, lastName, gender, dateOfBirth,
-		residentPhone, residentEmail,
-		weightLb, heightFt, heightIn,
-		mobilityLevel,
-		tremorStatus, mobilityAid, adlAssistance, commStatus,
-		phi.HasHypertension, phi.HasHyperlipaemia, phi.HasHyperglycaemia,
-		phi.HasStrokeHistory, phi.HasParalysis, phi.HasAlzheimer,
-		medicalHistory,
-		homeAddressStreet, homeAddressCity, homeAddressState, homeAddressPostalCode, plusCode,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to upsert resident PHI: %w", err)
-	}
-
+func (r *PostgresResidentsRepository) upsertResidentPHIPlaintext(ctx context.Context, tenantID, residentID string, p *domain.ResidentPHI) error {
+	query := `INSERT INTO resident_phi (tenant_id, resident_id,
+		first_name,last_name,gender,date_of_birth,resident_phone,resident_email,
+		weight_lb,height_ft,height_in,mobility_level,
+		tremor_status,mobility_aid,adl_assistance,comm_status,
+		has_hypertension,has_hyperlipaemia,has_hyperglycaemia,
+		has_stroke_history,has_paralysis,has_alzheimer,medical_history,
+		home_address_street,home_address_city,home_address_state,home_address_postal_code,plus_code
+	) VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,NULLIF($7,''),NULLIF($8,''),
+		$9,$10,$11,$12,NULLIF($13,''),NULLIF($14,''),NULLIF($15,''),NULLIF($16,''),
+		$17,$18,$19,$20,$21,$22,NULLIF($23,''),NULLIF($24,''),NULLIF($25,''),NULLIF($26,''),NULLIF($27,''),NULLIF($28,''))
+	ON CONFLICT (tenant_id, resident_id) DO UPDATE SET
+		first_name=EXCLUDED.first_name,last_name=EXCLUDED.last_name,gender=EXCLUDED.gender,
+		date_of_birth=EXCLUDED.date_of_birth,resident_phone=EXCLUDED.resident_phone,
+		resident_email=EXCLUDED.resident_email,weight_lb=EXCLUDED.weight_lb,
+		height_ft=EXCLUDED.height_ft,height_in=EXCLUDED.height_in,mobility_level=EXCLUDED.mobility_level,
+		tremor_status=EXCLUDED.tremor_status,mobility_aid=EXCLUDED.mobility_aid,
+		adl_assistance=EXCLUDED.adl_assistance,comm_status=EXCLUDED.comm_status,
+		has_hypertension=EXCLUDED.has_hypertension,has_hyperlipaemia=EXCLUDED.has_hyperlipaemia,
+		has_hyperglycaemia=EXCLUDED.has_hyperglycaemia,has_stroke_history=EXCLUDED.has_stroke_history,
+		has_paralysis=EXCLUDED.has_paralysis,has_alzheimer=EXCLUDED.has_alzheimer,
+		medical_history=EXCLUDED.medical_history,home_address_street=EXCLUDED.home_address_street,
+		home_address_city=EXCLUDED.home_address_city,home_address_state=EXCLUDED.home_address_state,
+		home_address_postal_code=EXCLUDED.home_address_postal_code,plus_code=EXCLUDED.plus_code`
+	var fn, ln, g, ph, em any
+	if p.FirstName != "" { fn = p.FirstName }
+	if p.LastName != "" { ln = p.LastName }
+	if p.Gender != "" { g = p.Gender }
+	if p.ResidentPhone != "" { ph = p.ResidentPhone }
+	if p.ResidentEmail != "" { em = p.ResidentEmail }
+	var dob any; if p.DateOfBirth != nil { dob = *p.DateOfBirth }
+	var wt, hf, hi any; if p.WeightLb != nil { wt = *p.WeightLb }; if p.HeightFt != nil { hf = *p.HeightFt }; if p.HeightIn != nil { hi = *p.HeightIn }
+	var ml any; if p.MobilityLevel != nil { ml = *p.MobilityLevel }
+	var ts, ma, ad, cs any
+	if p.TremorStatus != "" { ts = p.TremorStatus }; if p.MobilityAid != "" { ma = p.MobilityAid }
+	if p.ADLAssistance != "" { ad = p.ADLAssistance }; if p.CommStatus != "" { cs = p.CommStatus }
+	var mh any; if p.MedicalHistory != "" { mh = p.MedicalHistory }
+	var st, ci, sa, pc, pl any
+	if p.HomeAddressStreet != "" { st = p.HomeAddressStreet }; if p.HomeAddressCity != "" { ci = p.HomeAddressCity }
+	if p.HomeAddressState != "" { sa = p.HomeAddressState }; if p.HomeAddressPostalCode != "" { pc = p.HomeAddressPostalCode }
+	if p.PlusCode != "" { pl = p.PlusCode }
+	_, err := r.db.ExecContext(ctx, query, tenantID, residentID, fn, ln, g, dob, ph, em, wt, hf, hi, ml,
+		ts, ma, ad, cs, p.HasHypertension, p.HasHyperlipaemia, p.HasHyperglycaemia,
+		p.HasStrokeHistory, p.HasParalysis, p.HasAlzheimer, mh, st, ci, sa, pc, pl)
+	if err != nil { return fmt.Errorf("upsert PHI: %w", err) }
 	return nil
 }
 
@@ -1935,59 +1864,51 @@ func (r *PostgresResidentsRepository) UpsertResidentPHIFields(ctx context.Contex
 	finalHomeAddressPostalCode := getFinalStringValue(update.HomeAddressPostalCode, currentHomeAddressPostalCode)
 	finalPlusCode := getFinalStringValue(update.PlusCode, currentPlusCode)
 
-	query := `
-		INSERT INTO resident_phi (
-			tenant_id, resident_id,
-			first_name, last_name, gender, date_of_birth,
-			resident_phone, resident_email,
-			weight_lb, height_ft, height_in,
-			mobility_level,
-			tremor_status, mobility_aid, adl_assistance, comm_status,
-			has_hypertension, has_hyperlipaemia, has_hyperglycaemia,
-			has_stroke_history, has_paralysis, has_alzheimer,
-			medical_history,
-			home_address_street, home_address_city, home_address_state, home_address_postal_code, plus_code
-		) VALUES (
-			$1, $2,
-			NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6,
-			NULLIF($7, ''), NULLIF($8, ''),
-			$9, $10, $11,
-			$12,
-			NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''),
-			$17, $18, $19,
-			$20, $21, $22,
-			NULLIF($23, ''),
-			NULLIF($24, ''), NULLIF($25, ''), NULLIF($26, ''), NULLIF($27, ''), NULLIF($28, '')
-		)
-		ON CONFLICT (tenant_id, resident_id)
-		DO UPDATE SET
-			first_name = EXCLUDED.first_name,
-			last_name = EXCLUDED.last_name,
-			gender = EXCLUDED.gender,
-			date_of_birth = EXCLUDED.date_of_birth,
-			resident_phone = EXCLUDED.resident_phone,
-			resident_email = EXCLUDED.resident_email,
-			weight_lb = EXCLUDED.weight_lb,
-			height_ft = EXCLUDED.height_ft,
-			height_in = EXCLUDED.height_in,
-			mobility_level = EXCLUDED.mobility_level,
-			tremor_status = EXCLUDED.tremor_status,
-			mobility_aid = EXCLUDED.mobility_aid,
-			adl_assistance = EXCLUDED.adl_assistance,
-			comm_status = EXCLUDED.comm_status,
-			has_hypertension = EXCLUDED.has_hypertension,
-			has_hyperlipaemia = EXCLUDED.has_hyperlipaemia,
-			has_hyperglycaemia = EXCLUDED.has_hyperglycaemia,
-			has_stroke_history = EXCLUDED.has_stroke_history,
-			has_paralysis = EXCLUDED.has_paralysis,
-			has_alzheimer = EXCLUDED.has_alzheimer,
-			medical_history = EXCLUDED.medical_history,
-			home_address_street = EXCLUDED.home_address_street,
-			home_address_city = EXCLUDED.home_address_city,
-			home_address_state = EXCLUDED.home_address_state,
-			home_address_postal_code = EXCLUDED.home_address_postal_code,
-			plus_code = EXCLUDED.plus_code
-	`
+	// 加密模式：构建完整 ResidentPHI 委托给加密写入
+	if r.phiCryptor != nil {
+		merged := &domain.ResidentPHI{
+			FirstName: ifStr(finalFirstName), LastName: ifStr(finalLastName),
+			Gender: ifStr(finalGender), DateOfBirth: ifTime(finalDateOfBirth),
+			ResidentPhone: ifStr(finalResidentPhone), ResidentEmail: ifStr(finalResidentEmail),
+			WeightLb: ifFloat(finalWeightLb), HeightFt: ifFloat(finalHeightFt), HeightIn: ifFloat(finalHeightIn),
+			MobilityLevel: ifInt(finalMobilityLevel),
+			TremorStatus: ifStr(finalTremorStatus), MobilityAid: ifStr(finalMobilityAid),
+			ADLAssistance: ifStr(finalADLAssistance), CommStatus: ifStr(finalCommStatus),
+			HasHypertension: ifBool(finalHasHypertension), HasHyperlipaemia: ifBool(finalHasHyperlipaemia),
+			HasHyperglycaemia: ifBool(finalHasHyperglycaemia), HasStrokeHistory: ifBool(finalHasStrokeHistory),
+			HasParalysis: ifBool(finalHasParalysis), HasAlzheimer: ifBool(finalHasAlzheimer),
+			MedicalHistory: ifStr(finalMedicalHistory),
+			HomeAddressStreet: ifStr(finalHomeAddressStreet), HomeAddressCity: ifStr(finalHomeAddressCity),
+			HomeAddressState: ifStr(finalHomeAddressState), HomeAddressPostalCode: ifStr(finalHomeAddressPostalCode),
+			PlusCode: ifStr(finalPlusCode),
+		}
+		return r.upsertResidentPHIEncrypted(ctx, tenantID, residentID, merged)
+	}
+
+	// 明文模式
+	query := `INSERT INTO resident_phi (tenant_id, resident_id,
+		first_name,last_name,gender,date_of_birth,resident_phone,resident_email,
+		weight_lb,height_ft,height_in,mobility_level,
+		tremor_status,mobility_aid,adl_assistance,comm_status,
+		has_hypertension,has_hyperlipaemia,has_hyperglycaemia,
+		has_stroke_history,has_paralysis,has_alzheimer,medical_history,
+		home_address_street,home_address_city,home_address_state,home_address_postal_code,plus_code
+	) VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,NULLIF($7,''),NULLIF($8,''),
+		$9,$10,$11,$12,NULLIF($13,''),NULLIF($14,''),NULLIF($15,''),NULLIF($16,''),
+		$17,$18,$19,$20,$21,$22,NULLIF($23,''),NULLIF($24,''),NULLIF($25,''),NULLIF($26,''),NULLIF($27,''),NULLIF($28,''))
+	ON CONFLICT (tenant_id, resident_id) DO UPDATE SET
+		first_name=EXCLUDED.first_name,last_name=EXCLUDED.last_name,gender=EXCLUDED.gender,
+		date_of_birth=EXCLUDED.date_of_birth,resident_phone=EXCLUDED.resident_phone,
+		resident_email=EXCLUDED.resident_email,weight_lb=EXCLUDED.weight_lb,
+		height_ft=EXCLUDED.height_ft,height_in=EXCLUDED.height_in,mobility_level=EXCLUDED.mobility_level,
+		tremor_status=EXCLUDED.tremor_status,mobility_aid=EXCLUDED.mobility_aid,
+		adl_assistance=EXCLUDED.adl_assistance,comm_status=EXCLUDED.comm_status,
+		has_hypertension=EXCLUDED.has_hypertension,has_hyperlipaemia=EXCLUDED.has_hyperlipaemia,
+		has_hyperglycaemia=EXCLUDED.has_hyperglycaemia,has_stroke_history=EXCLUDED.has_stroke_history,
+		has_paralysis=EXCLUDED.has_paralysis,has_alzheimer=EXCLUDED.has_alzheimer,
+		medical_history=EXCLUDED.medical_history,home_address_street=EXCLUDED.home_address_street,
+		home_address_city=EXCLUDED.home_address_city,home_address_state=EXCLUDED.home_address_state,
+		home_address_postal_code=EXCLUDED.home_address_postal_code,plus_code=EXCLUDED.plus_code`
 
 	_, err = r.db.ExecContext(ctx, query,
 		tenantID, residentID,
@@ -2007,6 +1928,13 @@ func (r *PostgresResidentsRepository) UpsertResidentPHIFields(ctx context.Contex
 
 	return nil
 }
+
+// interface{} → typed helpers for UpsertResidentPHIFields merge
+func ifStr(v interface{}) string { if v == nil { return "" }; if s, ok := v.(string); ok { return s }; return "" }
+func ifTime(v interface{}) *time.Time { if v == nil { return nil }; if t, ok := v.(*time.Time); ok { return t }; if t, ok := v.(time.Time); ok { return &t }; return nil }
+func ifFloat(v interface{}) *float64 { if v == nil { return nil }; if f, ok := v.(*float64); ok { return f }; if f, ok := v.(float64); ok { return &f }; return nil }
+func ifInt(v interface{}) *int { if v == nil { return nil }; if i, ok := v.(*int); ok { return i }; if i, ok := v.(int); ok { return &i }; return nil }
+func ifBool(v interface{}) bool { if v == nil { return false }; if b, ok := v.(bool); ok { return b }; return false }
 
 // ============================================
 // ResidentContacts 表操作
