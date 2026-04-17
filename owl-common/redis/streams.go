@@ -179,6 +179,41 @@ func ReadFromMultipleStreamsWithBlock(ctx context.Context, client *redis.Client,
 	return messages, nil
 }
 
+// AllStreams 返回系统中所有 stream 定义，供启动时批量操作使用。
+func AllStreams() []StreamDefinition {
+	return []StreamDefinition{
+		StreamMonitor,
+		StreamStat,
+		StreamEvent,
+		StreamAlarm,
+		StreamAuth,
+		StreamOther,
+		StreamIoTCard,
+		StreamConfigAlarmDevice,
+		StreamConfigAlarmProcess,
+		StreamConfigCard,
+		StreamCardRealTime,
+		StreamCardStatus,
+		StreamCardUpdate,
+	}
+}
+
+// TrimAllStreamsToNow 将所有 stream 裁剪到当前时间点，丢弃重启前的积压消息。
+func TrimAllStreamsToNow(ctx context.Context, client *redis.Client) map[string]string {
+	minID := fmt.Sprintf("%d-0", time.Now().UnixMilli())
+	results := make(map[string]string, len(AllStreams()))
+
+	for _, sd := range AllStreams() {
+		trimmed, err := client.XTrimMinID(ctx, sd.Name, minID).Result()
+		if err != nil {
+			results[sd.Name] = fmt.Sprintf("error: %v", err)
+		} else {
+			results[sd.Name] = fmt.Sprintf("trimmed %d", trimmed)
+		}
+	}
+	return results
+}
+
 // CreateConsumerGroup 创建消费者组
 func CreateConsumerGroup(ctx context.Context, client *redis.Client, stream string, groupName string) error {
 	// 尝试创建消费者组，如果已存在则忽略错误

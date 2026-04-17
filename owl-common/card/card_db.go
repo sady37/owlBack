@@ -130,15 +130,20 @@ func (c *CardDB) LookupCard(ctx context.Context, deviceKey string) (*DeviceBasel
 		       COALESCE(ds.allow_access, false),
 		       COALESCE(dev.business_access, 'pending'),
 		       COALESCE(dev.monitoring_enabled, false),
-		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, '')
+		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, ''),
+		       COALESCE(c.bed_id::text, ''),
+		       COALESCE(bd.room_id::text, '')
 		FROM resolved r
 		LEFT JOIN device_store ds ON `+pgUIDNormExpr("ds.device_uid")+` = `+pgUIDNormExpr("r.uid")+`
-		, cards c, jsonb_to_recordset(c.devices) AS d(device_uid text, device_id text)
+		, cards c
+		LEFT JOIN beds bd ON bd.bed_id = c.bed_id
+		, jsonb_to_recordset(c.devices) AS d(device_uid text, device_id text)
 		LEFT JOIN devices dev ON dev.device_id = NULLIF(TRIM(d.device_id), '')::uuid
 		WHERE `+pgUIDNormExpr("d.device_uid")+` = `+pgUIDNormExpr("r.uid")+`
 		LIMIT 1
 	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.BranchID, &m.UnitID, &m.CardID, &m.DeviceID,
-		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType)
+		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType,
+		&m.BedID, &m.RoomID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not in cards: %s", deviceKey)
@@ -241,8 +246,11 @@ func (c *CardDB) lookupMappingByDeviceInCardDevices(ctx context.Context, deviceK
 		       COALESCE(ds.allow_access, false),
 		       COALESCE(dev.business_access, 'pending'),
 		       COALESCE(dev.monitoring_enabled, false),
-		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, '')
-		FROM cards c,
+		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, ''),
+		       COALESCE(c.bed_id::text, ''),
+		       COALESCE(bd.room_id::text, '')
+		FROM cards c
+		LEFT JOIN beds bd ON bd.bed_id = c.bed_id,
 		     jsonb_to_recordset(c.devices) AS d(device_uid text, device_id text)
 		LEFT JOIN device_store ds ON `+pgUIDNormExpr("ds.device_uid")+` = `+pgUIDNormExpr("d.device_uid")+`
 		   OR (NULLIF(TRIM(d.device_id), '') IS NOT NULL AND ds.device_id::text = NULLIF(TRIM(d.device_id), ''))
@@ -251,7 +259,8 @@ func (c *CardDB) lookupMappingByDeviceInCardDevices(ctx context.Context, deviceK
 		   OR (NULLIF(TRIM(d.device_id), '') IS NOT NULL AND NULLIF(TRIM(d.device_id), '') = $1)
 		LIMIT 1
 	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.BranchID, &m.UnitID, &m.CardID, &m.DeviceID,
-		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType)
+		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType,
+		&m.BedID, &m.RoomID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, err
@@ -350,6 +359,64 @@ func (c *CardDB) LookupDeviceStoreOnly(ctx context.Context, deviceKey string) (*
 	}
 	m.CardID = m.DeviceID
 	return &m, nil
+}
+
+// ListAllBaselines returns DeviceBaseline for devices of given types (or all if deviceTypes is empty).
+func (c *CardDB) ListAllBaselines(ctx context.Context, deviceTypes []string) ([]DeviceBaseline, error) {
+	if c == nil || c.db == nil {
+		return nil, fmt.Errorf("card db nil")
+	}
+	whereClause := ""
+	var args []interface{}
+	if len(deviceTypes) > 0 {
+		whereClause = "WHERE ds.device_type = ANY($1::text[])"
+		args = append(args, pq.Array(deviceTypes))
+	}
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT ds.device_uid,
+		       ds.tenant_id::text,
+		       COALESCE(ds.device_id::text, ''),
+		       COALESCE(ds.device_code, ''),
+		       COALESCE(ds.device_type, ''),
+		       COALESCE(ds.allow_access, false),
+		       COALESCE(dev.business_access, 'pending'),
+		       COALESCE(dev.monitoring_enabled, false),
+		       COALESCE(cmap.card_id, ''),
+		       COALESCE(cmap.branch_id, ''),
+		       COALESCE(cmap.unit_id, ''),
+		       COALESCE(cmap.room_id, ''),
+		       COALESCE(cmap.bed_id, '')
+		FROM device_store ds
+		LEFT JOIN devices dev ON dev.device_uid = ds.device_uid
+		LEFT JOIN (
+		    SELECT c2.card_id::text AS card_id,
+		           c2.branch_id::text AS branch_id,
+		           COALESCE(c2.unit_id::text, '') AS unit_id,
+		           COALESCE(d2.bed_id, '') AS bed_id,
+		           COALESCE(bd.room_id::text, '') AS room_id,
+		           `+pgUIDNormExpr("d2.device_uid")+` AS norm_uid
+		    FROM cards c2,
+		         jsonb_to_recordset(c2.devices) AS d2(device_uid text, bed_id text)
+		    LEFT JOIN beds bd ON bd.bed_id::text = NULLIF(TRIM(d2.bed_id), '')::uuid::text
+		) cmap ON `+pgUIDNormExpr("ds.device_uid")+` = cmap.norm_uid
+		`+whereClause+`
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list all baselines: %w", err)
+	}
+	defer rows.Close()
+	var out []DeviceBaseline
+	for rows.Next() {
+		var b DeviceBaseline
+		if err := rows.Scan(&b.DeviceUID, &b.TenantID, &b.DeviceID,
+			&b.DeviceCode, &b.DeviceType,
+			&b.AllowAccess, &b.BusinessAccess, &b.MonitoringEnabled,
+			&b.CardID, &b.BranchID, &b.UnitID, &b.RoomID, &b.BedID); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
 }
 
 // InitializeCardAlarmCounts 在 card INSERT 之后调用，初始化报警计数。

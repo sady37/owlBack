@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"owl-common/alarm"
-	"owl-common/card"
 	"owl-common/observation"
 	rediscommon "owl-common/redis"
 	"wisefido-qinglan/internal/config"
@@ -767,7 +766,8 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 						data = make(map[string]interface{})
 					}
 					data[observation.FieldOffline] = 0
-					msg := rediscommon.NewSingleItemMessage(tenantID, card.StreamHeadCardID("", deviceID), deviceUID, deviceID, deviceType, time.Now().UnixMilli(), "alarm", alarm.AlarmTypeOfflineRecover, data)
+					cid := m.streamPublisher.GetCardID(ctx, deviceUID)
+					msg := rediscommon.NewSingleItemMessage(tenantID, cid, deviceUID, deviceID, deviceType, time.Now().UnixMilli(), "alarm", alarm.AlarmTypeOfflineRecover, data)
 					_ = m.streamPublisher.PublishAlarm(ctx, msg)
 				}()
 			}

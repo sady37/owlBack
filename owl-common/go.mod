@@ -1,6 +1,6 @@
 module owl-common
 
-go 1.21
+go 1.25.0
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.4.3

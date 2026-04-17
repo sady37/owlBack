@@ -181,7 +181,7 @@ func (c *MQTTConsumer) publishOnlineForConnectedAfterStartup(ctx context.Context
 		if policyTid != "" {
 			tid = policyTid
 		}
-		cid = card.StreamHeadCardID(cid, did)
+		// card_id comes from resolveDeviceIdentity via CardMappingService
 		item := observation.EventItem{
 			DataCategory: alarm.AlarmTypeOfflineRecover,
 			EventName:    alarm.AlarmTypeOfflineRecover,
@@ -715,7 +715,7 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 	if policyTid != "" {
 		tid = policyTid
 	}
-	cid = card.StreamHeadCardID(cid, did)
+	// card_id comes from resolveDeviceIdentity via CardMappingService
 	dataValue, err := decode.RadarDecoder(message, "monitor")
 	if err != nil {
 		dataValue = message
@@ -935,7 +935,7 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 	if policyTid != "" {
 		tid = policyTid
 	}
-	cid = "" // gateway 不填 card_id，由 cardagg 解析
+	// card_id comes from resolveDeviceIdentity via CardMappingService
 	dataValue, err := decode.RadarDecoder(message, "stat")
 	if err != nil {
 		log.Printf("[STAT_HANDLER] decode failed for device %s: %v", uid, err)
@@ -1119,7 +1119,7 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 	if policyTid != "" {
 		tid = policyTid
 	}
-	cid = "" // gateway 不填 card_id，由 cardagg 解析
+	// card_id comes from resolveDeviceIdentity via CardMappingService
 	dataValue, err := decode.RadarDecoder(message, "event")
 	if err != nil {
 		log.Printf("[EVENT_DECODE_ERROR] device=%s: %v", uid, err)

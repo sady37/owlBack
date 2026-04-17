@@ -11,14 +11,15 @@ import (
 )
 
 type Config struct {
-	Service  ServiceConfig              `yaml:"service"`
-	Log      commonconfig.LogConfig     `yaml:"log"`
-	DB       commonconfig.DatabaseConfig `yaml:"database"`
-	Redis    commonconfig.RedisConfig   `yaml:"redis"`
-	MQTT     MQTTConfig                 `yaml:"mqtt"`
-	Sleepace SleepaceConfig             `yaml:"sleepace"`
-	HTTP     commonconfig.HTTPConfig    `yaml:"http"`
-	Streams  commonconfig.StreamsConfig `yaml:"streams"`
+	Service    ServiceConfig              `yaml:"service"`
+	Log        commonconfig.LogConfig     `yaml:"log"`
+	DB         commonconfig.DatabaseConfig `yaml:"database"`
+	Redis      commonconfig.RedisConfig   `yaml:"redis"`
+	MQTT       MQTTConfig                 `yaml:"mqtt"`
+	Sleepace   SleepaceConfig             `yaml:"sleepace"`
+	HTTP       commonconfig.HTTPConfig    `yaml:"http"`
+	Streams    commonconfig.StreamsConfig `yaml:"streams"`
+	DataAPIURL string                     `yaml:"data_api_url"`
 }
 
 type ServiceConfig struct {
@@ -59,6 +60,9 @@ func Load(path string) (*Config, error) {
 	cfg.DB.LoadFromEnv("DB")
 	cfg.Redis.LoadFromEnv("REDIS")
 	cfg.MQTT.loadFromEnv()
+	if v := os.Getenv("DATA_API_URL"); v != "" {
+		cfg.DataAPIURL = v
+	}
 	return cfg, nil
 }
 

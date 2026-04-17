@@ -66,12 +66,19 @@ func main() {
 	defer database.Close(db)
 	logger.Info("database connected", zap.String("host", cfg.DB.Host))
 
-	// Card mapping: MQTT deviceId (device_code) → device_uid → DB cards lookup
-	cardDB := card.NewCardDB(db)
-	cardMapping := service.NewCardMappingService(cardDB, logger)
+	// Card mapping: MQTT deviceId (device_code) → device_uid via API
+	dataAPIURL := cfg.DataAPIURL
+	if dataAPIURL == "" {
+		dataAPIURL = "http://127.0.0.1:8080"
+	}
+	cardAPIClient := card.NewCardAPIClient(dataAPIURL)
+	cardMapping := service.NewCardMappingService(cardAPIClient, logger)
 	if err := cardMapping.LoadCodeToUIDMap(ctx); err != nil {
 		logger.Warn("load device_code→device_uid map", zap.Error(err))
 	}
+
+	// CardDB kept only for SetDeviceVersionSync
+	cardDB := card.NewCardDB(db)
 
 	// Sleepace API (HTTP proxy to sleepace-service Java)
 	sleepaceAPI := service.NewSleepaceAPI(&cfg.Sleepace, logger)

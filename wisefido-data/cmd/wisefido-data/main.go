@@ -450,6 +450,12 @@ func main() {
 	}
 	router.RegisterStubRoutes(stub)
 
+	// 注册内部 baseline API（供 gate/cardagg 查询 device→card 映射，/internal/ 跳过 auth）
+	if db != nil {
+		baselineHandler := httpapi.NewBaselineHandler(card.NewCardDB(db), logger)
+		router.RegisterBaselineRoutes(baselineHandler)
+	}
+
 	// 注册 Doctor 路由（健康检查和诊断功能）
 	doctorEnabled := os.Getenv("DOCTOR_ENABLED")
 	if doctorEnabled != "false" {
@@ -493,6 +499,16 @@ func main() {
 			time.Sleep(2 * time.Second)
 
 			logger.Info("Starting full card check/update on service startup")
+
+			// 重启时裁剪所有 stream，丢弃积压的旧消息
+			trimResults := rediscommon.TrimAllStreamsToNow(ctx, redisClient)
+			for stream, result := range trimResults {
+				logger.Info("stream trim on startup", zap.String("stream", stream), zap.String("result", result))
+			}
+			// 通知所有下游服务：stream 已裁剪，需回 data 重查映射
+			if err := cardSyncService.PublishConfigCardReset(ctx); err != nil {
+				logger.Warn("Failed to publish configCard reset", zap.Error(err))
+			}
 
 			// 初始化以当前 unit 为准重建卡片，不基于库里已有卡（重启后 unit 可能已变化）
 			if err := cardSyncService.ClearAllCards(ctx); err != nil {

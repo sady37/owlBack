@@ -97,24 +97,20 @@ func main() {
 		logger.Warn("alarm sync failed", zap.Error(err))
 	}
 
-	resolver := service.NewDeviceCardResolver(db)
 	bedCoord := service.NewBedEventCoordinator()
-	monitorHandler := consumer.NewMonitorHandler(monitorBuf, writer, metaCache, resolver, bedCoord, stateSvc, alarmSvc, logger)
+	monitorHandler := consumer.NewMonitorHandler(monitorBuf, writer, metaCache, bedCoord, stateSvc, alarmSvc, logger)
 	go monitorHandler.RunLoop(ctx)
 	go runDeriveLoop(ctx, monitorBuf, stateSvc, metaCache, reader, alarmSvc, bedCoord, logger)
-	eventHandler := consumer.NewEventHandler(stateSvc, alarmSvc, monitorBuf, metaCache, enablementCache, resolver, bedCoord, logger)
-	alarmHandler := consumer.NewAlarmHandler(alarmSvc, stateSvc, monitorBuf, metaCache, resolver, bedCoord, logger)
+	eventHandler := consumer.NewEventHandler(stateSvc, alarmSvc, monitorBuf, metaCache, enablementCache, bedCoord, logger)
+	alarmHandler := consumer.NewAlarmHandler(alarmSvc, stateSvc, monitorBuf, metaCache, bedCoord, logger)
 	alarmProcessHandler := consumer.NewAlarmProcessHandler(alarmSvc, logger)
-	cardChangeHandler := consumer.NewCardChangeHandler(alarmSvc, stateSvc, metaCache, enablementCache, resolver, bedCoord, db, logger)
+	cardChangeHandler := consumer.NewCardChangeHandler(alarmSvc, stateSvc, metaCache, enablementCache, bedCoord, db, logger)
 	alarmDeviceHandler := consumer.NewAlarmDeviceHandler(enablementCache, logger)
 
-	// 先同步耗尽 config:card:stream（含 PEL + 新积压），确保 resolver/metaCache 预热完毕
-	consumer.DrainConfigCardStream(ctx, logger, redisClient, cardChangeHandler)
-
 	consumer.SubscribeAll(ctx, logger, redisClient, consumer.Handlers{
-		Monitor:      consumer.NewIotPreparedHandler(resolver, stateSvc, metaCache, monitorHandler),
-		Event:        consumer.NewIotPreparedHandler(resolver, stateSvc, metaCache, eventHandler),
-		Alarm:        consumer.NewIotPreparedHandler(resolver, stateSvc, metaCache, alarmHandler),
+		Monitor:      consumer.NewIotPreparedHandler(stateSvc, metaCache, monitorHandler, logger),
+		Event:        consumer.NewIotPreparedHandler(stateSvc, metaCache, eventHandler, logger),
+		Alarm:        consumer.NewIotPreparedHandler(stateSvc, metaCache, alarmHandler, logger),
 		AlarmProcess: alarmProcessHandler,
 		CardChange:   cardChangeHandler,
 		AlarmDevice:  alarmDeviceHandler,

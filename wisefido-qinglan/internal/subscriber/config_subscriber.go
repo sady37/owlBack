@@ -4,11 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sync"
 	"time"
 
 	"wisefido-qinglan/internal/config"
-	"wisefido-qinglan/internal/repository"
 	"wisefido-qinglan/internal/service"
 
 	rediscommon "owl-common/redis"
@@ -22,12 +20,9 @@ type ConfigSubscriber struct {
 	redisClient    *redis.Client
 	config         *config.Config
 	logger         *zap.Logger
-	deviceRepo     repository.DeviceRepository
 	cardMappingSvc *service.CardMappingService
-	deviceCache    interface{} // 设备缓存（sync.Map），用于缓存设备认证信息
 	consumerGroup  string
 	consumerName   string
-	mu             sync.RWMutex
 }
 
 // NewConfigSubscriber 创建配置变更订阅器
@@ -35,16 +30,12 @@ func NewConfigSubscriber(
 	redisClient *redis.Client,
 	cfg *config.Config,
 	logger *zap.Logger,
-	deviceRepo repository.DeviceRepository,
-	deviceCache interface{}, // 设备缓存（sync.Map），用于缓存设备认证信息
 	cardMappingSvc *service.CardMappingService,
 ) *ConfigSubscriber {
 	return &ConfigSubscriber{
 		redisClient:    redisClient,
 		config:         cfg,
 		logger:         logger,
-		deviceRepo:     deviceRepo,
-		deviceCache:    deviceCache,
 		cardMappingSvc: cardMappingSvc,
 		consumerGroup:  "qinglan-config-consumer",
 		consumerName:   "qinglan-config-consumer-1",
@@ -127,9 +118,6 @@ func (s *ConfigSubscriber) Stop() error {
 	return nil
 }
 
-// DEPRECATED: handleAlarmDeviceChange — alarm 使能缓存已不需要，报警由 cardagg 处理。
-// func (s *ConfigSubscriber) handleAlarmDeviceChange(...) { ... }
-
 // handleCardChange 处理卡片配置变更 (BuildCardChangeMessage)
 func (s *ConfigSubscriber) handleCardChange(configMsg rediscommon.ConfigChangeMessage, messageID string) {
 	ctx := context.Background()
@@ -176,6 +164,14 @@ func (s *ConfigSubscriber) handleCardChange(configMsg rediscommon.ConfigChangeMe
 
 	// 提取关键字段
 	tenantID, _ := cardData["tenant_id"].(string)
+	op, _ := cardData["op"].(string)
+
+	if op == "reset" {
+		s.cardMappingSvc.InvalidateCache()
+		s.logger.Info("Card change processed (reset)",
+			zap.String("message_id", messageID))
+		return
+	}
 
 	if tenantID == "" {
 		s.logger.Warn("Card change message missing tenant_id",
@@ -187,31 +183,30 @@ func (s *ConfigSubscriber) handleCardChange(configMsg rediscommon.ConfigChangeMe
 }
 
 // handleNormalCardChange 处理正常的卡片配置变更 (ConfigCardChanged)
-// 有 tenant_id+unit_id 时按 unit 失效（含权限/business_access 等联动）；否则按 card_id；无则全量失效。
+// 优先使用 affected_device_uids 刷新；回退到 card_id 失效；否则全量失效。
 func (s *ConfigSubscriber) handleNormalCardChange(ctx context.Context, cardData map[string]interface{}, messageID string) {
 	cardID, _ := cardData["card_id"].(string)
 	tenantID, _ := cardData["tenant_id"].(string)
 	unitID, _ := cardData["unit_id"].(string)
-	if tenantID != "" && unitID != "" {
-		s.cardMappingSvc.InvalidateByTenantUnit(ctx, tenantID, unitID)
+
+	uids := affectedDeviceUIDsFromCardData(cardData)
+	if len(uids) > 0 {
+		for _, uid := range uids {
+			s.cardMappingSvc.InvalidateByDeviceUID(uid)
+			s.cardMappingSvc.RefreshBaseline(ctx, uid)
+		}
 	} else if cardID != "" {
 		s.cardMappingSvc.InvalidateByCardID(cardID)
 	} else {
 		s.cardMappingSvc.InvalidateCache()
 	}
-	// 消息同时带 tenant+unit+card_id 时，仅按 unit 枚举 DB 可能在删卡空窗期为 0；按 card_id 再清仍指向该卡的 baseline
-	if cardID != "" && tenantID != "" && unitID != "" {
-		s.cardMappingSvc.InvalidateByCardID(cardID)
-	}
-	for _, uid := range affectedDeviceUIDsFromCardData(cardData) {
-		s.cardMappingSvc.InvalidateByDeviceUID(uid)
-		s.cardMappingSvc.RefreshBaseline(ctx, uid)
-	}
+
 	s.logger.Info("Card change processed",
 		zap.String("message_id", messageID),
 		zap.String("card_id", cardID),
 		zap.String("tenant_id", tenantID),
-		zap.String("unit_id", unitID))
+		zap.String("unit_id", unitID),
+		zap.Int("affected_uids", len(uids)))
 
 	// data 中带 device_id 时按设备刷新 baseline（device_store / devices 变更）。
 	if deviceID, _ := cardData["device_id"].(string); deviceID != "" {
@@ -219,61 +214,18 @@ func (s *ConfigSubscriber) handleNormalCardChange(ctx context.Context, cardData 
 	}
 }
 
-// handleDeviceStoreChange data.device_id 非空时：查库 device_store → 根据 device_uid 和 allow_access 更新缓存
+// handleDeviceStoreChange data.device_id 非空时：按 device_uid 失效并重刷 baseline
 func (s *ConfigSubscriber) handleDeviceStoreChange(ctx context.Context, data map[string]interface{}, messageID string) {
-	deviceID, _ := data["device_id"].(string)
-
-	if deviceID == "" {
-		s.logger.Warn("Device store change message missing device_id",
-			zap.String("message_id", messageID))
+	deviceUID, _ := data["device_uid"].(string)
+	if deviceUID == "" {
 		return
 	}
-
-	s.logger.Info("Handling device store change",
-		zap.String("message_id", messageID),
-		zap.String("device_id", deviceID))
-
-	// 查询 device_store 表获取最新的 device_uid 和 allow_access
-	deviceStoreInfo, err := s.deviceRepo.GetDeviceStoreByDeviceID(ctx, deviceID)
-	if err != nil {
-		s.logger.Warn("Failed to get device store info",
-			zap.String("device_id", deviceID),
-			zap.Error(err))
-		return
-	}
-
-	s.logger.Info("Retrieved device store info, refreshing cache",
-		zap.String("device_id", deviceID),
-		zap.String("device_uid", deviceStoreInfo.DeviceUID),
-		zap.Bool("allow_access", deviceStoreInfo.AllowAccess))
-
-	// 设备绑定 room/bed / devices 权限可能已变：清映射后立刻从 DB 重刷 baseline + AllowAccessCache
-	s.cardMappingSvc.InvalidateByDeviceUID(deviceStoreInfo.DeviceUID)
-	s.cardMappingSvc.RefreshBaseline(ctx, deviceStoreInfo.DeviceUID)
-
-	// 根据最新的 allow_access 更新缓存
-	// DeviceCache: key=device_uid, value=*DeviceWithLocation
-	// AllowAccessCache: key=device_uid, value=bool
-	if s.deviceCache != nil {
-		if deviceStoreCache, ok := s.deviceCache.(*sync.Map); ok {
-			if deviceStoreInfo.AllowAccess {
-				// 允许访问：保留缓存中的设备信息
-				s.logger.Debug("Device allowed, keeping cache",
-					zap.String("device_uid", deviceStoreInfo.DeviceUID),
-					zap.String("device_id", deviceID))
-			} else {
-				// 禁止访问：从缓存中删除设备
-				deviceStoreCache.Delete(deviceStoreInfo.DeviceUID)
-				s.logger.Info("Device denied access, removed from cache",
-					zap.String("device_uid", deviceStoreInfo.DeviceUID),
-					zap.String("device_id", deviceID))
-			}
-		}
-	}
+	s.cardMappingSvc.InvalidateByDeviceUID(deviceUID)
+	s.cardMappingSvc.RefreshBaseline(ctx, deviceUID)
 
 	s.logger.Info("Device store change processed",
 		zap.String("message_id", messageID),
-		zap.String("device_id", deviceID))
+		zap.String("device_uid", deviceUID))
 }
 
 func affectedDeviceUIDsFromCardData(data map[string]interface{}) []string {
@@ -299,11 +251,6 @@ func affectedDeviceUIDsFromCardData(data map[string]interface{}) []string {
 		return nil
 	}
 }
-
-// 旧方法已注释（原: handleDeviceAlarmSettingChange）
-// func (s *ConfigSubscriber) handleDeviceAlarmSettingChange(configMsg rediscommon.ConfigChangeMessage, messageID string) {
-//     // 旧业务逻辑已移除
-// }
 
 // createConsumerGroupIfNotExists 创建消费者组（如果不存在）
 func (s *ConfigSubscriber) createConsumerGroupIfNotExists(ctx context.Context, stream string) error {

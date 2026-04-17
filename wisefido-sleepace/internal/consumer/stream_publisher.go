@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"time"
 
@@ -15,6 +16,8 @@ import (
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
+
+var errEmptyCardID = fmt.Errorf("card_id is empty, message dropped")
 
 func isSleepaceVerboseLog() bool {
 	return os.Getenv("SLEEPACE_VERBOSE_LOG") == "true"
@@ -81,6 +84,12 @@ func (p *StreamPublisher) PublishAlarm(ctx context.Context, msg *rediscommon.IoT
 }
 
 func (p *StreamPublisher) publish(ctx context.Context, stream rediscommon.StreamDefinition, msg *rediscommon.IoTStreamMessage) error {
+	if msg.CardID == "" {
+		p.logger.Error("card_id is empty, message dropped",
+			zap.String("stream", stream.Name),
+			zap.String("device_uid", msg.DeviceUID))
+		return errEmptyCardID
+	}
 	if msg.Timestamp == 0 {
 		msg.Timestamp = time.Now().UnixMilli()
 	}

@@ -19,7 +19,6 @@ type MonitorHandler struct {
 	buffer    *service.MonitorBuffer
 	writer    *card.Writer
 	metaCache *service.DeviceMetaCache
-	resolver  *service.DeviceCardResolver
 	bedCoord  *service.BedEventCoordinator
 	state     *service.StateService
 	alarms    *service.AlarmService
@@ -32,8 +31,8 @@ const (
 
 // 实时流不做报警处理：雷达/sleepace 已有阀值，立即报警型由网关直接发 iot:alarm:stream。
 // bedCoord/state/alarms 可选：非 nil 时每条 monitor 写入后尝试解析该卡 bed pending（对齐 2～3s 采样，不等 1s Tick）。
-func NewMonitorHandler(buffer *service.MonitorBuffer, writer *card.Writer, metaCache *service.DeviceMetaCache, resolver *service.DeviceCardResolver, bedCoord *service.BedEventCoordinator, state *service.StateService, alarms *service.AlarmService, logger *zap.Logger) *MonitorHandler {
-	return &MonitorHandler{buffer: buffer, writer: writer, metaCache: metaCache, resolver: resolver, bedCoord: bedCoord, state: state, alarms: alarms, logger: logger}
+func NewMonitorHandler(buffer *service.MonitorBuffer, writer *card.Writer, metaCache *service.DeviceMetaCache, bedCoord *service.BedEventCoordinator, state *service.StateService, alarms *service.AlarmService, logger *zap.Logger) *MonitorHandler {
+	return &MonitorHandler{buffer: buffer, writer: writer, metaCache: metaCache, bedCoord: bedCoord, state: state, alarms: alarms, logger: logger}
 }
 
 // RunLoop 与 monitor 相关的定时：1 秒发 snap，6 秒 PruneFields。不包含 derive。

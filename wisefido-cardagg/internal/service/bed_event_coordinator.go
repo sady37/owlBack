@@ -60,6 +60,16 @@ func sleepadInBedTrackCount(buf *MonitorBuffer, meta *CardMeta) int {
 	return SleepadTrackCountFromSnapshot(snap, meta, meta.BedBoundDeviceIDs())
 }
 
+// ClearAll clears all pending bed events (used on reset).
+func (c *BedEventCoordinator) ClearAll() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.pending = make(map[string]*pendingBedEvent)
+	c.mu.Unlock()
+}
+
 // ClearCard 删卡或重置时清 pending。
 func (c *BedEventCoordinator) ClearCard(cardID string) {
 	if c == nil || cardID == "" {

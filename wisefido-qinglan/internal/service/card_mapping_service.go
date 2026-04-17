@@ -8,37 +8,35 @@ import (
 
 	"owl-common/card"
 	"wisefido-qinglan/internal/domain"
-	"wisefido-qinglan/internal/repository"
 
 	"go.uber.org/zap"
 )
 
-// DeviceBoundResolver returns device-bound room_id and bed_id (e.g. from device_store).
-type DeviceBoundResolver interface {
-	GetBoundRoomAndBed(ctx context.Context, deviceUID string) (roomID, bedID string)
-}
-
-// CardMappingService 只缓存 DeviceBaseline（与 CardDB / 流头一致）。
+// CardMappingService 只缓存 DeviceBaseline（与 CardAPIClient / 流头一致）。
 type CardMappingService struct {
-	cardDB        *card.CardDB
-	logger        *zap.Logger
-	boundResolver DeviceBoundResolver
+	api    *card.CardAPIClient
+	logger *zap.Logger
 
 	mu            sync.RWMutex
 	baselineByUID map[string]card.DeviceBaseline
+
+	readyCh chan struct{} // closed when cache is ready; re-created on invalidate
 }
 
-func NewCardMappingService(cardDB *card.CardDB, logger *zap.Logger) *CardMappingService {
+func NewCardMappingService(api *card.CardAPIClient, logger *zap.Logger) *CardMappingService {
+	ch := make(chan struct{})
+	close(ch) // initially ready
 	return &CardMappingService{
-		cardDB:        cardDB,
+		api:           api,
 		logger:        logger,
 		baselineByUID: make(map[string]card.DeviceBaseline),
+		readyCh:       ch,
 	}
 }
 
-// SetDeviceBoundResolver sets the optional resolver for RoomID/BedID (e.g. qinglan device_store).
-func (s *CardMappingService) SetDeviceBoundResolver(r DeviceBoundResolver) {
-	s.boundResolver = r
+// WaitReady blocks until the cache is ready after an invalidation cycle.
+func (s *CardMappingService) WaitReady() {
+	<-s.readyCh
 }
 
 func effectiveCardIDFromBaseline(b card.DeviceBaseline) string {
@@ -46,17 +44,6 @@ func effectiveCardIDFromBaseline(b card.DeviceBaseline) string {
 		return c
 	}
 	return strings.TrimSpace(b.DeviceID)
-}
-
-func (s *CardMappingService) enrichBaselineRoomBed(ctx context.Context, lookupKey string, b *card.DeviceBaseline) {
-	if s.boundResolver == nil || b == nil {
-		return
-	}
-	uid := strings.TrimSpace(b.DeviceUID)
-	if uid == "" {
-		uid = lookupKey
-	}
-	b.RoomID, b.BedID = s.boundResolver.GetBoundRoomAndBed(ctx, uid)
 }
 
 // storeBaseline 须在持锁下调用；写入 room/bed 已合并后的快照。
@@ -84,34 +71,37 @@ func (s *CardMappingService) BaselineFor(deviceUID string) (card.DeviceBaseline,
 	if deviceUID == "" {
 		return card.DeviceBaseline{}, false
 	}
+	<-s.readyCh
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	b, ok := s.baselineByUID[deviceUID]
 	return b, ok
 }
 
-// RefreshBaseline 从 DB 重算并写入 baseline + AllowAccessCache。
+// RefreshBaseline 从 API 重算并写入 baseline + AllowAccessCache。
 func (s *CardMappingService) RefreshBaseline(ctx context.Context, lookupKey string) {
-	if s == nil || s.cardDB == nil || lookupKey == "" {
+	if s == nil || s.api == nil || lookupKey == "" {
 		return
 	}
-	b, ok := s.cardDB.ResolveDeviceBaseline(ctx, lookupKey)
+	b, err := s.api.LookupBaseline(ctx, lookupKey)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !ok {
+	if err != nil || b == nil {
 		s.evictDeviceKey(lookupKey)
 		domain.AllowAccessCache.Store(lookupKey, false)
 		return
 	}
-	s.enrichBaselineRoomBed(ctx, lookupKey, &b)
-	s.storeBaseline(lookupKey, b)
+	s.storeBaseline(lookupKey, *b)
 }
 
-// InvalidateCache clears baseline cache.
+// InvalidateCache clears baseline cache with readyCh gate.
 func (s *CardMappingService) InvalidateCache() {
+	ch := make(chan struct{})
 	s.mu.Lock()
+	s.readyCh = ch
 	s.baselineByUID = make(map[string]card.DeviceBaseline)
 	s.mu.Unlock()
+	close(ch)
 	if s.logger != nil {
 		s.logger.Info("baseline cache invalidated")
 	}
@@ -150,42 +140,7 @@ func (s *CardMappingService) InvalidateByDeviceUID(deviceUID string) {
 	}
 }
 
-// InvalidateByTenantUnit 按 unit 失效该 unit 下所有出现在 cards.devices 中的 device_id / device_uid 键。
-func (s *CardMappingService) InvalidateByTenantUnit(ctx context.Context, tenantID, unitID string) {
-	if s.cardDB == nil || tenantID == "" || unitID == "" {
-		return
-	}
-	dids, uids := s.cardDB.DeviceKeysInTenantUnit(ctx, tenantID, unitID)
-	seen := make(map[string]struct{})
-	s.mu.Lock()
-	for _, id := range dids {
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		s.evictDeviceKey(id)
-	}
-	for _, id := range uids {
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		s.evictDeviceKey(id)
-	}
-	s.mu.Unlock()
-	if s.logger != nil {
-		s.logger.Info("baseline cache evicted for tenant unit",
-			zap.String("tenant_id", tenantID), zap.String("unit_id", unitID), zap.Int("keys", len(seen)))
-	}
-}
-
-// GetCardIDByDeviceUID resolves deviceUID → DeviceBaseline（懒加载；字段含 card_id 等，与 CardDB 一致）。
+// GetCardIDByDeviceUID resolves deviceUID → DeviceBaseline（懒加载；字段含 card_id 等，与 CardAPIClient 一致）。
 func (s *CardMappingService) GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*card.DeviceBaseline, error) {
 	if deviceUID == "" {
 		return nil, fmt.Errorf("empty device uid")
@@ -198,45 +153,17 @@ func (s *CardMappingService) GetCardIDByDeviceUID(ctx context.Context, deviceUID
 		return &out, nil
 	}
 
-	if s.cardDB == nil {
-		return nil, fmt.Errorf("card db not configured")
+	if s.api == nil {
+		return nil, fmt.Errorf("card api not configured")
 	}
-	b, ok = s.cardDB.ResolveDeviceBaseline(ctx, deviceUID)
-	if !ok {
+	bp, err := s.api.LookupBaseline(ctx, deviceUID)
+	if err != nil || bp == nil {
 		return nil, fmt.Errorf("device not in cards: %s", deviceUID)
 	}
-	s.enrichBaselineRoomBed(ctx, deviceUID, &b)
 
 	s.mu.Lock()
-	s.storeBaseline(deviceUID, b)
+	s.storeBaseline(deviceUID, *bp)
 	s.mu.Unlock()
 
-	out := b
-	return &out, nil
+	return bp, nil
 }
-
-// deviceBoundResolver implements DeviceBoundResolver from device_store (BoundRoomID/BoundBedID).
-type deviceBoundResolver struct {
-	repo repository.DeviceRepository
-}
-
-// NewDeviceBoundResolver returns a resolver that fills RoomID/BedID from device_store.
-func NewDeviceBoundResolver(repo repository.DeviceRepository) DeviceBoundResolver {
-	return &deviceBoundResolver{repo: repo}
-}
-
-func (r *deviceBoundResolver) GetBoundRoomAndBed(ctx context.Context, deviceUID string) (roomID, bedID string) {
-	dev, err := r.repo.GetDeviceByUID(ctx, deviceUID)
-	if err != nil || dev == nil {
-		return "", ""
-	}
-	if dev.BoundRoomID.Valid {
-		roomID = dev.BoundRoomID.String
-	}
-	if dev.BoundBedID.Valid {
-		bedID = dev.BoundBedID.String
-	}
-	return roomID, bedID
-}
-
-var _ DeviceBoundResolver = (*deviceBoundResolver)(nil)

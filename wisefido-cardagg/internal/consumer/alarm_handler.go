@@ -25,14 +25,13 @@ type AlarmHandler struct {
 	state     *service.StateService
 	buffer    *service.MonitorBuffer
 	metaCache *service.DeviceMetaCache
-	resolver  *service.DeviceCardResolver
 	bedCoord  *service.BedEventCoordinator
 	logger    *zap.Logger
 }
 
-func NewAlarmHandler(alarms *service.AlarmService, state *service.StateService, buffer *service.MonitorBuffer, metaCache *service.DeviceMetaCache, resolver *service.DeviceCardResolver, bedCoord *service.BedEventCoordinator, logger *zap.Logger) *AlarmHandler {
+func NewAlarmHandler(alarms *service.AlarmService, state *service.StateService, buffer *service.MonitorBuffer, metaCache *service.DeviceMetaCache, bedCoord *service.BedEventCoordinator, logger *zap.Logger) *AlarmHandler {
 	return &AlarmHandler{
-		alarms: alarms, state: state, buffer: buffer, metaCache: metaCache, resolver: resolver, bedCoord: bedCoord, logger: logger,
+		alarms: alarms, state: state, buffer: buffer, metaCache: metaCache, bedCoord: bedCoord, logger: logger,
 	}
 }
 

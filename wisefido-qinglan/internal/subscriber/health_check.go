@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"owl-common/alarm"
-	"owl-common/card"
 	"owl-common/observation"
 	"owl-common/redis"
 	"wisefido-qinglan/internal/consumer"
@@ -283,12 +282,7 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 	if eventName == "" {
 		return
 	}
-	cid := card.StreamHeadCardID("", did)
-	if m.db != nil {
-		if b, lookupErr := card.NewCardDB(m.db).LookupCard(ctx, deviceUID); lookupErr == nil && b != nil && b.CardID != "" {
-			cid = b.CardID
-		}
-	}
+	cid := m.streamPublisher.GetCardID(ctx, deviceUID)
 	ts := time.Now().UnixMilli()
 	eventStatus := "start"
 	if value == 0 {

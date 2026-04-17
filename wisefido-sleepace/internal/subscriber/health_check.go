@@ -81,14 +81,12 @@ func (h *HealthCheck) Run(ctx context.Context) {
 	}
 }
 
-// ProbeAfterCardChange 收到 config.card：优先 device_id；否则 tenant+unit 或 card_id 枚举设备键（再按 device_id/device_uid 解析）；无 device_id 时可将同一 UUID 当作 card_id 再枚举。
+// ProbeAfterCardChange 收到 config.card：优先按 device_id 解析并探测单设备，否则 scanAll 兜底。
 func (h *HealthCheck) ProbeAfterCardChange(ctx context.Context, tenantID, unitID, cardID, deviceID string) {
 	if h.CardMapping == nil || h.SleepaceAPI == nil || h.Publisher == nil {
 		return
 	}
 	h.Logger.Info("health_check probe after card change",
-		zap.String("tenant_id", tenantID),
-		zap.String("unit_id", unitID),
 		zap.String("card_id", cardID),
 		zap.String("device_id", deviceID))
 
@@ -97,41 +95,8 @@ func (h *HealthCheck) ProbeAfterCardChange(ctx context.Context, tenantID, unitID
 			h.probeOne(ctx, &b)
 			return
 		}
-		dids, uids := h.CardMapping.DeviceKeysInCard(ctx, deviceID)
-		if len(dids)+len(uids) > 0 {
-			h.probeKeys(ctx, dids, uids)
-			return
-		}
-		h.Logger.Debug("health_check: device_id not resolved as device or card", zap.String("device_id", deviceID))
-		return
-	}
-	if tenantID != "" && unitID != "" {
-		dids, uids := h.CardMapping.DeviceKeysInTenantUnit(ctx, tenantID, unitID)
-		h.probeKeys(ctx, dids, uids)
-		return
-	}
-	if cardID != "" {
-		dids, uids := h.CardMapping.DeviceKeysInCard(ctx, cardID)
-		h.probeKeys(ctx, dids, uids)
-		return
 	}
 	h.scanAll(ctx)
-}
-
-func (h *HealthCheck) probeKeys(ctx context.Context, dids, uids []string) {
-	seen := make(map[string]struct{})
-	for _, k := range append(dids, uids...) {
-		if k == "" {
-			continue
-		}
-		if _, ok := seen[k]; ok {
-			continue
-		}
-		seen[k] = struct{}{}
-		if b, ok := h.CardMapping.ResolveBaseline(ctx, k); ok && h.isSleepadType(b.DeviceType) && b.DeviceCode != "" {
-			h.probeOne(ctx, &b)
-		}
-	}
 }
 
 func (h *HealthCheck) scanAll(ctx context.Context) {
@@ -207,7 +172,7 @@ func (h *HealthCheck) probeOne(ctx context.Context, b *card.DeviceBaseline) {
 		} else {
 			alarmData[observation.FieldOffline] = 1
 		}
-		msg := rediscommon.NewIoTStreamMessageWithData(b.TenantID, b.EffectiveCardID(), b.DeviceUID, b.DeviceID, deviceType, nowMs, "alarm", eventName, alarmData)
+		msg := rediscommon.NewIoTStreamMessageWithData(b.TenantID, b.CardID, b.DeviceUID, b.DeviceID, deviceType, nowMs, "alarm", eventName, alarmData)
 		if err := h.Publisher.PublishAlarm(ctx, msg); err != nil {
 			h.Logger.Warn("connectionStatus publish alarm failed", zap.String("device_uid", b.DeviceUID), zap.Bool("online", online), zap.Error(err))
 		}

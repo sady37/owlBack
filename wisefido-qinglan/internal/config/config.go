@@ -28,6 +28,8 @@ type Config struct {
 	Alarm        commonconfig.AlarmConfig    `yaml:"alarm"`
 	// AuthPublicURL 设备 HTTPS 认证完整 URL（如 https://test.wisefido.com:8443/prod-api/thirdmqtt/v2/auth/device）；空则按 RADAR_MQTT_SERVER + HTTPS 端口拼接
 	AuthPublicURL string `yaml:"auth_public_url"`
+	// DataAPIURL wisefido-data HTTP API base URL（用于 CardAPIClient 查询 device baseline）
+	DataAPIURL string `yaml:"data_api_url"`
 }
 
 // HTTPSConfig HTTPS 服务器配置（用于设备认证）
@@ -290,6 +292,11 @@ func LoadFromEnv() (*Config, error) {
 
 	cfg.HTTPS.CertFile = certFile
 	cfg.HTTPS.KeyFile = keyFile
+
+	// DataAPIURL（wisefido-data HTTP API）
+	if v := os.Getenv("DATA_API_URL"); v != "" {
+		cfg.DataAPIURL = v
+	}
 
 	// 日志配置
 	cfg.Logging.LoadFromEnv("LOG")

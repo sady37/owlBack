@@ -22,17 +22,16 @@ type EventHandler struct {
 	buffer     *service.MonitorBuffer
 	metaCache  *service.DeviceMetaCache
 	enablement *service.AlarmEnablementCache
-	resolver   *service.DeviceCardResolver
 	bedCoord   *service.BedEventCoordinator
 	logger      *zap.Logger
 	staySesMu   sync.Mutex
 	staySessions map[string]*staySession // tenant:device -> Stay 状态机
 }
 
-func NewEventHandler(state *service.StateService, alarms *service.AlarmService, buffer *service.MonitorBuffer, metaCache *service.DeviceMetaCache, enablement *service.AlarmEnablementCache, resolver *service.DeviceCardResolver, bedCoord *service.BedEventCoordinator, logger *zap.Logger) *EventHandler {
+func NewEventHandler(state *service.StateService, alarms *service.AlarmService, buffer *service.MonitorBuffer, metaCache *service.DeviceMetaCache, enablement *service.AlarmEnablementCache, bedCoord *service.BedEventCoordinator, logger *zap.Logger) *EventHandler {
 	return &EventHandler{
 		state: state, alarms: alarms, buffer: buffer, metaCache: metaCache,
-		enablement: enablement, resolver: resolver, bedCoord: bedCoord, logger: logger,
+		enablement: enablement, bedCoord: bedCoord, logger: logger,
 		staySessions: make(map[string]*staySession),
 	}
 }

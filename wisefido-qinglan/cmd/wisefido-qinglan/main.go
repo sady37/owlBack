@@ -105,9 +105,12 @@ func main() {
 
 	// 创建卡片映射服务
 	log.Println("Creating card mapping service...")
-	cardDB := card.NewCardDB(db)
-	cardMappingSvc := service.NewCardMappingService(cardDB, logger)
-	cardMappingSvc.SetDeviceBoundResolver(service.NewDeviceBoundResolver(deviceRepo))
+	dataAPIURL := cfg.DataAPIURL
+	if dataAPIURL == "" {
+		dataAPIURL = "http://127.0.0.1:8080"
+	}
+	cardAPIClient := card.NewCardAPIClient(dataAPIURL)
+	cardMappingSvc := service.NewCardMappingService(cardAPIClient, logger)
 
 	// 设置 cardMappingSvc 到 streamPublisher
 	streamPublisher.SetCardMappingService(cardMappingSvc)
@@ -146,7 +149,7 @@ func main() {
 	// 设置subscriptionManager到mqttConsumer（用于UpdateLastSeen）
 	mqttConsumer.SetSubscriptionManager(subscriptionManager)
 
-	configSub := subscriber.NewConfigSubscriber(redisClient, cfg, logger, deviceRepo, domain.DeviceCache, cardMappingSvc)
+	configSub := subscriber.NewConfigSubscriber(redisClient, cfg, logger, cardMappingSvc)
 	if err := configSub.Start(ctx); err != nil {
 		logger.Warn("config subscriber start", zap.Error(err))
 	}

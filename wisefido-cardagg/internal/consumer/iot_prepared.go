@@ -3,21 +3,22 @@ package consumer
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"wisefido-cardagg/internal/service"
+
+	"go.uber.org/zap"
 )
 
-// IotPreparedHandler 在 monitor/event/alarm 前统一填充 card_id：gateway 不填时用 device_id 查绑定的 card_id；查不到则用 device_id 充当 card_id。仅当解析到真实 card（DB 有绑定）时才查库占位。
+// IotPreparedHandler 在 monitor/event/alarm 前统一校验 card_id：空则丢弃；有效 UUID 则查库占位。
 type IotPreparedHandler struct {
-	resolver  *service.DeviceCardResolver
 	stateSvc  *service.StateService
 	metaCache *service.DeviceMetaCache
 	inner     StreamHandler
+	logger    *zap.Logger
 }
 
-func NewIotPreparedHandler(resolver *service.DeviceCardResolver, stateSvc *service.StateService, metaCache *service.DeviceMetaCache, inner StreamHandler) StreamHandler {
-	return &IotPreparedHandler{resolver: resolver, stateSvc: stateSvc, metaCache: metaCache, inner: inner}
+func NewIotPreparedHandler(stateSvc *service.StateService, metaCache *service.DeviceMetaCache, inner StreamHandler, logger *zap.Logger) StreamHandler {
+	return &IotPreparedHandler{stateSvc: stateSvc, metaCache: metaCache, inner: inner, logger: logger}
 }
 
 func streamMapStr(v interface{}) string {
@@ -40,56 +41,15 @@ func (h *IotPreparedHandler) Handle(ctx context.Context, msg interface{}) error 
 		return h.inner.Handle(ctx, msg)
 	}
 	cardID := streamMapStr(raw["card_id"])
-	deviceID := streamMapStr(raw["device_id"])   // 设备 UUID，业务主键
-	deviceUID := streamMapStr(raw["device_uid"]) // 设备序列号，如雷达 MAC
-	unboundFallback := false                     // 未绑卡时用 device_id 充当 card_id，不查库
-	// 需要解析：card_id 为空或非 UUID 时，用 resolveKey 查 card_id。iotHead 同时有 device_id/device_uid 时优先用 device_id(UUID) 与 cards.devices 一致，便于稳定解析出 card_id。
-	if cardID == "" || !service.IsUUID(cardID) || deviceUID == "" {
-		resolveKey := deviceID
-		if resolveKey == "" || !service.IsUUID(resolveKey) {
-			resolveKey = deviceUID
-		}
-		if resolveKey == "" {
-			resolveKey = deviceID
-		}
-		if resolveKey == "" {
-			return h.inner.Handle(ctx, raw)
-		}
-		resolvedCardID, resolvedDeviceID, resolvedUID, found := h.resolver.Resolve(ctx, resolveKey)
-		if found {
-			cardID = resolvedCardID
-			deviceUID = resolvedUID
-			if resolvedDeviceID != "" {
-				raw["device_id"] = resolvedDeviceID
-			} else if deviceID == "" && service.IsUUID(cardID) {
-				raw["device_id"] = cardID
-			}
-		} else {
-			// 查询失败：用 device_id 充当 card_id（UUID），无则用 resolveKey（多为 device_uid）
-			cardID = deviceID
-			if cardID == "" {
-				cardID = resolveKey
-			}
-			if deviceUID == "" && resolveKey != "" && !service.IsUUID(resolveKey) {
-				deviceUID = resolveKey
-			}
-			unboundFallback = true
-			log.Printf("[CARDAGG_CARD_FALLBACK] topic=%s category=%s tenant_id=%s incoming_card_id=%s fallback_card_id=%s device_id=%s device_uid=%s resolve_key=%s reason=resolve_card_failed",
-				streamMapStr(raw["topic_type"]),
-				streamMapStr(raw["category"]),
-				streamMapStr(raw["tenant_id"]),
-				streamMapStr(raw["card_id"]),
-				cardID,
-				streamMapStr(raw["device_id"]),
-				deviceUID,
-				resolveKey,
-			)
-		}
-		raw["card_id"] = cardID
-		raw["device_uid"] = deviceUID
+	if cardID == "" {
+		h.logger.Error("iot_prepared: empty card_id, dropping message",
+			zap.String("device_id", streamMapStr(raw["device_id"])),
+			zap.String("device_uid", streamMapStr(raw["device_uid"])),
+			zap.String("topic_type", streamMapStr(raw["topic_type"])),
+		)
+		return nil
 	}
-	// 仅当为真实 card（gateway 已填或 DB 解析到）时查库占位；未绑卡用 device_id 充当的不查库
-	if !unboundFallback && service.IsUUID(cardID) {
+	if service.IsUUID(cardID) {
 		if meta := h.metaCache.GetOrLoad(ctx, cardID); meta != nil {
 			_ = h.stateSvc.EnsureCardStatePrepared(ctx, cardID, meta)
 		}

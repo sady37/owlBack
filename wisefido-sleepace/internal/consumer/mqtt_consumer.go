@@ -120,6 +120,9 @@ type MQTTConsumer struct {
 	lastBedStatusMu sync.Mutex
 	lastBedStatus   map[string]int // key = deviceUID+":"+leftRight, value 0 或 1
 
+	// dedup: topic+deviceId+dataKey+timestamp → seen
+	dedupMu sync.Mutex
+	dedup   map[string]struct{}
 }
 
 type rawMsg struct {
@@ -135,6 +138,7 @@ func NewMQTTConsumer(publisher *StreamPublisher, reportSvc *service.ReportServic
 		logger:        logger,
 		msgCh:         make(chan *rawMsg, 1000),
 		lastBedStatus: make(map[string]int),
+		dedup:         make(map[string]struct{}),
 	}
 }
 
@@ -222,6 +226,23 @@ func (c *MQTTConsumer) handleMessage(ctx context.Context, msg *rawMsg) {
 	}
 }
 
+// isDuplicate returns true if this message was already seen (dedup by deviceId+dataKey+timestamp).
+func (c *MQTTConsumer) isDuplicate(m *ReceivedMessage) bool {
+	key := m.DeviceID + "|" + m.DataKey + "|" + strconv.FormatInt(m.TimeStamp, 10)
+	c.dedupMu.Lock()
+	defer c.dedupMu.Unlock()
+	if _, ok := c.dedup[key]; ok {
+		return true
+	}
+	c.dedup[key] = struct{}{}
+	// Simple cap: if map grows too large, reset it
+	if len(c.dedup) > 100000 {
+		c.dedup = make(map[string]struct{})
+		c.dedup[key] = struct{}{}
+	}
+	return false
+}
+
 // dispatch routes a single ReceivedMessage by constructing IoTStreamMessage and publishing to iot: streams.
 // 权限策略：
 // - allow_access 且 business_access 为 approved|enable => canIoT
@@ -229,6 +250,10 @@ func (c *MQTTConsumer) handleMessage(ctx context.Context, msg *rawMsg) {
 // - monitor=off（canMonitor=false）时，仅保留连通性最小信号（connectionStatus 与 monitor 心跳），不发布生理/行为 event/alarm。
 // MQTT 的 deviceId 首次可能为 device_uid、后续可能为 device_code，统一传 Resolve(deviceKey) 由 DB 解析；三元组由 DeviceBaseline 带回。device_code 以 DB 为准，空则不兜底 MQTT 的 deviceId，便于暴露配置/数据问题。
 func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
+	if c.isDuplicate(m) {
+		c.logger.Debug("duplicate message skipped", zap.String("device_id", m.DeviceID), zap.String("dataKey", m.DataKey))
+		return
+	}
 	tenantID, _, _, cardID, deviceID, deviceUID, deviceCode, deviceType, allowAccess, businessAccess, monitoringEnabled := c.publisher.Resolve(ctx, m.DeviceID)
 	canIoT := allowAccess && businessAccessApproved(businessAccess)
 	canMonitor := canIoT && monitoringEnabled
@@ -274,7 +299,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			c.logger.Debug("connectionStatus skip alarm (permission)", zap.String("device_uid", deviceUID), zap.Bool("allow_access", allowAccess), zap.String("business_access", businessAccess))
 		} else {
 			tsMs := toMillis(ts)
-			streamCID := card.StreamHeadCardID(cardID, deviceID)
+			streamCID := cardID
 			var eventName string
 			var item observation.EventItem
 			if online {
@@ -366,7 +391,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			}
 		}
 		if canMonitor {
-			msg := redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, ts, "monitor", observation.CategoryTrack, data)
+			msg := redis.NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, ts, "monitor", observation.CategoryTrack, data)
 			c.publisher.PublishMonitor(ctx, msg)
 			c.logger.Debug("realtime received",
 				zap.String("device_uid", deviceUID),
@@ -378,7 +403,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		} else if canIoT {
 			hb := observation.Track{TrackID: observation.TrackDevice, TrackConfidence: sleepaceTrackPoseConf}
 			hbData := hb.ToFieldMap()
-			hbMsg := redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, ts, "monitor", observation.CategoryHeart, hbData)
+			hbMsg := redis.NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, ts, "monitor", observation.CategoryHeart, hbData)
 			_ = c.publisher.PublishMonitor(ctx, hbMsg)
 		}
 
@@ -409,7 +434,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 					evData = make(map[string]any)
 				}
 				evData[observation.FieldBedStatus] = d.BedStatus // int: 0=在床, 1=离床
-				evMsg := redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, nowMs, "event", categoryBed, evData)
+				evMsg := redis.NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, nowMs, "event", categoryBed, evData)
 				evMsg.DeviceID = deviceID
 				if canIoT {
 					if err := c.publisher.PublishEvent(ctx, evMsg); err != nil {
@@ -458,7 +483,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		}
 		out[observation.FieldBedStatus] = d.InbedStatus
 		if canIoT {
-			c.publisher.PublishEvent(ctx, redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, nowMs, "event", categoryInBed, out))
+			c.publisher.PublishEvent(ctx, redis.NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, nowMs, "event", categoryInBed, out))
 			c.logger.Info("inBedStatus", zap.String("category", categoryInBed), zap.String("device_uid", deviceUID), zap.Int("status", d.InbedStatus), zap.Int("lr", d.LeftRight))
 		}
 
@@ -504,7 +529,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			out = make(map[string]any)
 		}
 		out[observation.FieldSleepStage] = stage
-		msg := redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, nowMs, "event", alarm.SleepStage, out)
+		msg := redis.NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, nowMs, "event", alarm.SleepStage, out)
 		if canIoT {
 			c.publisher.PublishEvent(ctx, msg)
 			c.logger.Info("sleepStage", zap.String("category", alarm.SleepStage), zap.String("device_uid", deviceUID), zap.Int("stage", stage), zap.Int("lr", d.LeftRight))
@@ -562,7 +587,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		}
 		out[observation.FieldDeviceFailure] = failureVal
 		if canIoT {
-			msg := redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, nowMs, "alarm", eventName, out)
+			msg := redis.NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, nowMs, "alarm", eventName, out)
 			c.publisher.PublishAlarm(ctx, msg)
 		}
 
@@ -610,7 +635,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		}
 		out[observation.FieldDetached] = detachedVal
 		if canIoT {
-			msg := redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, nowMs, "event", "pressureSensor", out)
+			msg := redis.NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, nowMs, "event", "pressureSensor", out)
 			c.publisher.PublishEvent(ctx, msg)
 		}
 
@@ -650,7 +675,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			out = make(map[string]any)
 		}
 		if deviceID != "" && canIoT {
-			msg := redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, nowMs, "event", "analysis", out)
+			msg := redis.NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, nowMs, "event", "analysis", out)
 			c.publisher.PublishEvent(ctx, msg)
 		}
 		if c.reportService != nil && deviceID != "" && canIoT {
@@ -702,7 +727,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		out[observation.FieldCommandAction] = "firmware_upgrade"
 		out[observation.FieldCommandProgress] = progress
 		if canIoT {
-			msg := redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, nowMs, "event", "upgradeProgress", out)
+			msg := redis.NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, nowMs, "event", "upgradeProgress", out)
 			c.publisher.PublishEvent(ctx, msg)
 		}
 
@@ -720,7 +745,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			c.logger.Error("unmarshal alarmNotify", zap.Error(err))
 			return
 		}
-		c.handleAlarmNotify(ctx, tenantID, deviceID, deviceUID, deviceType, ts, nowMs, &d)
+		c.handleAlarmNotify(ctx, tenantID, cardID, deviceID, deviceUID, deviceType, ts, nowMs, &d)
 
 	default:
 		c.logger.Warn("unknown dataKey", zap.String("dataKey", m.DataKey), zap.String("device_uid", deviceUID))
@@ -750,7 +775,7 @@ var mqttAlarmMap = map[string]alarmMapping{
 }
 
 // handleAlarmNotify 处理 Sleepace 明确上报告警（alarmNotify），发布到 iot:alarm:stream，cardagg 直接落库。 DataKey:alarmNotify。tsPayload 用于 payload 内 EventSince，nowMsEnvelope 用于 IotHead 消息时间戳。
-func (c *MQTTConsumer) handleAlarmNotify(ctx context.Context, tenantID, deviceID, deviceUID, deviceType string, tsPayload int64, nowMsEnvelope int64, d *AlarmNotifyData) {
+func (c *MQTTConsumer) handleAlarmNotify(ctx context.Context, tenantID, cardID, deviceID, deviceUID, deviceType string, tsPayload int64, nowMsEnvelope int64, d *AlarmNotifyData) {
 	am, ok := mqttAlarmMap[d.Type]
 	if !ok {
 		am = alarmMapping{EventName: d.Type, TrackID: observation.TrackUnknownPerson}
@@ -802,7 +827,7 @@ func (c *MQTTConsumer) handleAlarmNotify(ctx context.Context, tenantID, deviceID
 	if out == nil {
 		out = make(map[string]any)
 	}
-	msg := redis.NewIoTStreamMessageWithData(tenantID, "", deviceUID, deviceID, deviceType, nowMsEnvelope, "alarm", am.EventName, out)
+	msg := redis.NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, nowMsEnvelope, "alarm", am.EventName, out)
 	c.publisher.PublishAlarm(ctx, msg)
 }
 

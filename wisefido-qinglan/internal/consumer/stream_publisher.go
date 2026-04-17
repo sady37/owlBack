@@ -126,7 +126,18 @@ func skipQinglanIotHeadPublish(cardID, deviceID, deviceUID string) bool {
 	return false
 }
 
+var errEmptyCardID = fmt.Errorf("card_id is empty, skip publish")
+
 func (p *StreamPublisher) publishObservation(ctx context.Context, stream rediscommon.StreamDefinition, msg *rediscommon.IoTStreamMessage) error {
+	if strings.TrimSpace(msg.CardID) == "" {
+		if p.logger != nil {
+			QinglanHotPathLog(p.logger, "skip iot publish: empty card_id",
+				zap.String("stream", stream.Name),
+				zap.String("device_uid", msg.DeviceUID),
+				zap.String("device_id", msg.DeviceID))
+		}
+		return errEmptyCardID
+	}
 	if skipQinglanIotHeadPublish(msg.CardID, msg.DeviceID, msg.DeviceUID) {
 		if p.logger != nil {
 			QinglanHotPathLog(p.logger, "skip iot publish: empty card_id+device_uid or empty device_uid+device_id",

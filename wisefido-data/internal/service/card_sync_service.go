@@ -43,6 +43,11 @@ func NewCardSyncService(
 }
 
 
+// PublishConfigCardReset 发送 configCard reset 通知，委托给 ConfigPublisher。
+func (s *CardSyncService) PublishConfigCardReset(ctx context.Context) error {
+	return s.publisher.PublishConfigCardReset(ctx)
+}
+
 // CreateCardsForUnit 为指定单元创建/更新卡片（写 DB），同步后发送 config.card.*，并写 VitalFocusCard 静态缓存
 func (s *CardSyncService) CreateCardsForUnit(ctx context.Context, tenantID, unitID string) (*card.CardUpdateStats, error) {
 	s.logger.Info("Creating cards for unit",

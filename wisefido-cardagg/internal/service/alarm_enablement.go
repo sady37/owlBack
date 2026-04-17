@@ -86,6 +86,16 @@ func (c *AlarmEnablementCache) Invalidate(deviceID string) {
 	delete(c.cache, deviceID)
 }
 
+// InvalidateAll clears the entire enablement cache (used on reset).
+func (c *AlarmEnablementCache) InvalidateAll() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.cache = make(map[string]*deviceEnablement)
+	c.mu.Unlock()
+}
+
 // InvalidateDevices 批量失效告警使能缓存（同 unit 下多设备）。
 func (c *AlarmEnablementCache) InvalidateDevices(deviceIDs []string) {
 	if c == nil {

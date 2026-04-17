@@ -147,6 +147,13 @@ func (c *DeviceMetaCache) Remove(cardID string) {
 	c.mu.Unlock()
 }
 
+// InvalidateAll clears the entire cache (used on reset).
+func (c *DeviceMetaCache) InvalidateAll() {
+	c.mu.Lock()
+	c.cards = make(map[string]*CardMeta)
+	c.mu.Unlock()
+}
+
 // InvalidateCardsInTenantUnit 将 tenant+unit 下所有卡片的 meta 标为需重载（config:card 同 unit 内多卡联动）。
 func (c *DeviceMetaCache) InvalidateCardsInTenantUnit(ctx context.Context, tenantID, unitID string) {
 	if c.db == nil || tenantID == "" || unitID == "" {

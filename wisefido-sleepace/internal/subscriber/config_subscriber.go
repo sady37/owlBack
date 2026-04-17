@@ -59,34 +59,32 @@ func (s *ConfigSubscriber) handleCardLike(ctx context.Context, configMsg redisco
 	if data == nil {
 		return
 	}
-	tenantID, _ := data["tenant_id"].(string)
-	unitID, _ := data["unit_id"].(string)
+	op, _ := data["op"].(string)
 	cardID, _ := data["card_id"].(string)
 	deviceID, _ := data["device_id"].(string)
 
-	if tenantID != "" && unitID != "" {
-		s.cardMapping.InvalidateByTenantUnit(ctx, tenantID, unitID)
-	} else if cardID != "" {
-		s.cardMapping.InvalidateByCardID(cardID)
-	} else if deviceID != "" {
-		uid := s.cardMapping.ResolveToDeviceUID(ctx, deviceID)
-		if uid != "" {
-			s.cardMapping.InvalidateByDeviceUID(uid)
-		} else {
-			s.cardMapping.InvalidateCache(ctx)
-		}
-	} else {
+	// op=="reset" → full cache invalidation
+	if op == "reset" {
 		s.cardMapping.InvalidateCache(ctx)
+		if s.healthCheck != nil {
+			s.healthCheck.ProbeAfterCardChange(ctx, "", "", "", "")
+		}
+		return
 	}
-	if cardID != "" && tenantID != "" && unitID != "" {
-		s.cardMapping.InvalidateByCardID(cardID)
-	}
+
+	// Invalidate affected device UIDs from the event payload
 	for _, uid := range affectedDeviceUIDsFromConfigData(data) {
 		s.cardMapping.InvalidateByDeviceUID(uid)
+		// Reload the baseline for each affected device
+		s.cardMapping.GetCardInfo(ctx, uid)
+	}
+
+	if cardID != "" {
+		s.cardMapping.InvalidateByCardID(cardID)
 	}
 
 	if s.healthCheck != nil {
-		s.healthCheck.ProbeAfterCardChange(ctx, tenantID, unitID, cardID, deviceID)
+		s.healthCheck.ProbeAfterCardChange(ctx, "", "", cardID, deviceID)
 	}
 }
 

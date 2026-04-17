@@ -15,14 +15,13 @@ type CardChangeHandler struct {
 	stateService *service.StateService
 	metaCache    *service.DeviceMetaCache
 	enablement   *service.AlarmEnablementCache
-	resolver     *service.DeviceCardResolver
 	bedCoord     *service.BedEventCoordinator
 	db           *sql.DB
 	logger       *zap.Logger
 }
 
-func NewCardChangeHandler(alarms *service.AlarmService, stateService *service.StateService, metaCache *service.DeviceMetaCache, enablement *service.AlarmEnablementCache, resolver *service.DeviceCardResolver, bedCoord *service.BedEventCoordinator, db *sql.DB, logger *zap.Logger) *CardChangeHandler {
-	return &CardChangeHandler{alarms: alarms, stateService: stateService, metaCache: metaCache, enablement: enablement, resolver: resolver, bedCoord: bedCoord, db: db, logger: logger}
+func NewCardChangeHandler(alarms *service.AlarmService, stateService *service.StateService, metaCache *service.DeviceMetaCache, enablement *service.AlarmEnablementCache, bedCoord *service.BedEventCoordinator, db *sql.DB, logger *zap.Logger) *CardChangeHandler {
+	return &CardChangeHandler{alarms: alarms, stateService: stateService, metaCache: metaCache, enablement: enablement, bedCoord: bedCoord, db: db, logger: logger}
 }
 
 type cardChangeData struct {
@@ -60,31 +59,31 @@ func (h *CardChangeHandler) Handle(ctx context.Context, msg interface{}) error {
 		return nil
 	}
 
-	if d.Op == "deleted" || d.Op == "delete" {
+	switch {
+	case d.Op == "reset":
+		h.metaCache.InvalidateAll()
+		if h.enablement != nil {
+			h.enablement.InvalidateAll()
+		}
+		if h.bedCoord != nil {
+			h.bedCoord.ClearAll()
+		}
+	case d.Op == "deleted" || d.Op == "delete":
 		if h.bedCoord != nil {
 			h.bedCoord.ClearCard(d.CardID)
 		}
 		h.metaCache.Remove(d.CardID)
-	} else {
-		h.metaCache.Invalidate(d.CardID)
+	default:
+		h.metaCache.Remove(d.CardID)
 	}
 
-	// 同 unit 内多卡联动：失效该 unit 下所有卡 meta + 使能缓存；resolver 在删卡时全量失效（已删卡上的 device key 无法再从 DB 枚举）
+	// 同 unit 内多卡联动：失效该 unit 下所有卡片的 meta + 使能缓存
 	if d.TenantID != "" && d.UnitID != "" && h.db != nil {
 		h.metaCache.InvalidateCardsInTenantUnit(ctx, d.TenantID, d.UnitID)
-		dids, uids := service.DeviceKeysInTenantUnit(ctx, h.db, d.TenantID, d.UnitID)
+		dids, _ := service.DeviceKeysInTenantUnit(ctx, h.db, d.TenantID, d.UnitID)
 		if h.enablement != nil {
 			h.enablement.InvalidateDevices(dids)
 		}
-		if h.resolver != nil {
-			if d.Op == "deleted" || d.Op == "delete" {
-				h.resolver.InvalidateAll()
-			} else {
-				h.resolver.InvalidateKeys(dids, uids)
-			}
-		}
-	} else if h.resolver != nil {
-		h.resolver.InvalidateAll()
 	}
 
 	// Card 初始化/更新：默认创建 RoomState，存在卫生间雷达时创建 BathRoomState

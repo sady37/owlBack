@@ -175,6 +175,24 @@ func (r *Router) RegisterRadarRoutes(h *RadarHandler) {
 	})
 }
 
+// RegisterBaselineRoutes 注册内部设备 baseline 查询路由（/internal/ 前缀跳过 auth）
+func (r *Router) RegisterBaselineRoutes(h *BaselineHandler) {
+	r.Handle("/internal/device-baseline/", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		h.GetDeviceBaseline(w, req)
+	})
+	r.Handle("/internal/device-baselines", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		h.ListDeviceBaselines(w, req)
+	})
+}
+
 // RegisterPlaybackRoutes 历史回放（防扫库：ValidatePlaybackWindow + PlaybackLookbackForRole 按 X-User-Role）
 func (r *Router) RegisterPlaybackRoutes(h *PlaybackHandler) {
 	r.Handle("/api/radar/playback", h.PostRadarPlayback)

@@ -196,6 +196,23 @@ func compactDeviceUIDs(uids []string) []string {
 	return out
 }
 
+// PublishConfigCardReset 发送 reset 通知到 config:card:stream。
+func (p *ConfigPublisher) PublishConfigCardReset(ctx context.Context) error {
+	resetMsg := rediscommon.BuildCardChangeMessageWithExtraAndType(
+		"wisefido-data", "", "", "", "", rediscommon.ConfigCardChanged,
+		map[string]interface{}{"op": "reset"},
+	)
+	streamName := rediscommon.StreamConfigCard.Name
+	maxLen, retentionSeconds := rediscommon.GetStreamConfig(rediscommon.StreamConfigCard, nil)
+	streamID, err := rediscommon.PublishJSONToStream(ctx, p.redisClient, streamName, resetMsg, int64(maxLen), retentionSeconds)
+	if err != nil {
+		p.logger.Error("Failed to publish configCard reset", zap.String("stream", streamName), zap.Error(err))
+		return fmt.Errorf("failed to publish configCard reset: %w", err)
+	}
+	p.logger.Info("Published configCard reset", zap.String("stream", streamName), zap.String("stream_id", streamID))
+	return nil
+}
+
 // PublishCardChangeMessageWithExtraAndType 发送卡片变更消息到 config:card:stream（支持额外字段和自定义 type 字段）
 // messageType 一般为 ConfigCardChanged；extraData 可含：
 //   - device_id / change_type
