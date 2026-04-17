@@ -263,7 +263,15 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 			COALESCE(
 				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id WHERE r.room_id = d.bound_room_id AND u.tenant_id = d.tenant_id LIMIT 1),
 				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND u.tenant_id = d.tenant_id LIMIT 1)
-			) as unit_id
+			) as unit_id,
+			(
+				SELECT c.card_id::text
+				FROM cards c,
+					jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS j
+				WHERE (j->>'device_id') = d.device_id::text
+					AND c.tenant_id = d.tenant_id
+				LIMIT 1
+			) AS card_id
 		FROM devices d
 		LEFT JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE d.tenant_id = $1 AND d.device_id = $2
@@ -293,6 +301,7 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 		&d.OTATenantApproved,
 		&d.RoomID,
 		&d.UnitID,
+		&d.CardID,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not found: tenant_id=%s, device_id=%s", tenantID, deviceID)
@@ -340,7 +349,15 @@ func (r *PostgresDevicesRepository) GetDeviceByUID(ctx context.Context, tenantID
 			COALESCE(
 				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id WHERE r.room_id = d.bound_room_id AND u.tenant_id = d.tenant_id LIMIT 1),
 				(SELECT u.unit_id FROM units u JOIN rooms r ON u.unit_id = r.unit_id JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND u.tenant_id = d.tenant_id LIMIT 1)
-			) as unit_id
+			) as unit_id,
+			(
+				SELECT c.card_id::text
+				FROM cards c,
+					jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS j
+				WHERE (j->>'device_id') = d.device_id::text
+					AND c.tenant_id = d.tenant_id
+				LIMIT 1
+			) AS card_id
 		FROM devices d
 		LEFT JOIN device_store ds ON d.device_id = ds.device_id
 		WHERE d.tenant_id = $1 AND d.device_uid = $2
@@ -370,6 +387,7 @@ func (r *PostgresDevicesRepository) GetDeviceByUID(ctx context.Context, tenantID
 		&d.OTATenantApproved,
 		&d.RoomID,
 		&d.UnitID,
+		&d.CardID,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not found: tenant_id=%s, device_uid=%s", tenantID, deviceUID)
