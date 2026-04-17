@@ -222,6 +222,7 @@ func main() {
 		devicesRepo.SetLogger(logger) // 确保 logger 已设置（用于设备连接日志）
 		deviceService := service.NewDeviceService(devicesRepo, cardSyncService, qinglanClient, card.NewReader(redisClient), db, logger)
 		deviceHandler := httpapi.NewDeviceHandler(deviceService, logger)
+		deviceHandler.SetDB(db)
 		router.RegisterDeviceRoutes(deviceHandler)
 
 		// 创建 DeviceStore Handler（直接使用 Repository，在线状态与 device_service 一致：优先 cardagg Redis）

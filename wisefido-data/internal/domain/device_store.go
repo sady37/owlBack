@@ -2,6 +2,7 @@ package domain
 
 import (
 	"database/sql"
+	"time"
 )
 
 // DeviceStore 设备库存领域模型（对应 device_store 表）
@@ -34,6 +35,19 @@ type DeviceStore struct {
 	OTATargetFirmwareVersion sql.NullString `db:"ota_target_firmware_version"` // nullable
 	OTATargetMCUModel        sql.NullString `db:"ota_target_mcu_model"`        // nullable
 
+	// OTA 管理字段
+	OTAPermit      sql.NullString `db:"ota_permit"`
+	OTAWay         sql.NullString `db:"ota_way"`
+	OTASchedule    sql.NullString `db:"ota_schedule"`
+	OTAStatus      sql.NullString `db:"ota_status"`
+	OTAProgress    sql.NullInt32  `db:"ota_progress"`
+	OTAError       sql.NullString `db:"ota_error"`
+	OTAUpdatedAt   sql.NullTime   `db:"ota_updated_at"`
+	OTAFirmwareURL sql.NullString `db:"ota_firmware_url"`
+	OTAFirmwareSHA sql.NullString `db:"ota_firmware_sha256"`
+	OTAFirmwareSize sql.NullInt64 `db:"ota_firmware_size"`
+	OTATenantApproved bool       `db:"ota_tenant_approved"`
+
 	// 租户分配
 	TenantID string `db:"tenant_id"` // NOT NULL default Unallocated 002; 000 trash 001 system
 
@@ -47,6 +61,10 @@ type DeviceStore struct {
 	// Batch PATCH：仅当为 true 时更新对应列（避免只改 device_code 时误把 allow_access 写成 false）
 	DeviceCodeSet  bool `db:"-" json:"-"`
 	AllowAccessSet bool `db:"-" json:"-"`
+	OTAPermitSet   bool `db:"-" json:"-"`
+	OTAWaySet      bool `db:"-" json:"-"`
+	OTAScheduleSet bool `db:"-" json:"-"`
+	OTAStatusSet   bool `db:"-" json:"-"`
 
 	// 关联租户名称（查询时JOIN获取，不存储在device_store表）
 	TenantName sql.NullString `db:"tenant_name"` // 仅用于查询结果
@@ -94,6 +112,39 @@ func (d *DeviceStore) ToJSON() map[string]any {
 	if d.OTATargetMCUModel.Valid {
 		m["ota_target_mcu_model"] = d.OTATargetMCUModel.String
 	}
+	if d.OTAPermit.Valid {
+		m["ota_permit"] = d.OTAPermit.String
+	}
+	if d.OTAWay.Valid {
+		m["ota_way"] = d.OTAWay.String
+	}
+	if d.OTASchedule.Valid {
+		m["ota_schedule"] = d.OTASchedule.String
+	}
+	if d.OTAStatus.Valid {
+		m["ota_status"] = d.OTAStatus.String
+	} else {
+		m["ota_status"] = "idle"
+	}
+	if d.OTAProgress.Valid {
+		m["ota_progress"] = d.OTAProgress.Int32
+	}
+	if d.OTAError.Valid {
+		m["ota_error"] = d.OTAError.String
+	}
+	if d.OTAUpdatedAt.Valid {
+		m["ota_updated_at"] = d.OTAUpdatedAt.Time.Format(time.RFC3339)
+	}
+	if d.OTAFirmwareURL.Valid {
+		m["ota_firmware_url"] = d.OTAFirmwareURL.String
+	}
+	if d.OTAFirmwareSHA.Valid {
+		m["ota_firmware_sha256"] = d.OTAFirmwareSHA.String
+	}
+	if d.OTAFirmwareSize.Valid {
+		m["ota_firmware_size"] = d.OTAFirmwareSize.Int64
+	}
+	m["ota_tenant_approved"] = d.OTATenantApproved
 	if d.TenantName.Valid {
 		m["tenant_name"] = d.TenantName.String
 	}

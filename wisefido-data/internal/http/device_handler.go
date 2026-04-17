@@ -17,6 +17,7 @@ import (
 // DeviceHandler 设备管理 Handler
 type DeviceHandler struct {
 	deviceService service.DeviceService
+	db            *sql.DB
 	logger        *zap.Logger
 }
 
@@ -28,6 +29,11 @@ func NewDeviceHandler(deviceService service.DeviceService, logger *zap.Logger) *
 	}
 }
 
+// SetDB 注入数据库连接（用于 ApproveOTA 等直接操作 DB 的场景）
+func (h *DeviceHandler) SetDB(db *sql.DB) {
+	h.db = db
+}
+
 // ServeHTTP 实现 http.Handler 接口
 func (h *DeviceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 路由分发
@@ -36,6 +42,8 @@ func (h *DeviceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.ListDevices(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api/v1/devices/") && r.Method == http.MethodGet:
 		h.GetDevice(w, r)
+	case strings.HasSuffix(r.URL.Path, "/ota-approve") && r.Method == http.MethodPost:
+		h.ApproveOTA(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api/v1/devices/") && r.Method == http.MethodPut:
 		h.UpdateDevice(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api/v1/devices/") && r.Method == http.MethodDelete:
@@ -322,6 +330,34 @@ func (h *DeviceHandler) tenantIDFromReq(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusOK, Fail("tenant_id is required"))
 	return "", false
+}
+
+// ApproveOTA 租户管理员审批 OTA 升级
+// POST /admin/api/v1/devices/{id}/ota-approve
+func (h *DeviceHandler) ApproveOTA(w http.ResponseWriter, r *http.Request) {
+	// 解析 device_id：路径格式 /admin/api/v1/devices/{id}/ota-approve
+	path := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/devices/")
+	deviceID := strings.TrimSuffix(path, "/ota-approve")
+	if deviceID == "" || strings.Contains(deviceID, "/") {
+		writeJSON(w, http.StatusOK, Fail("device_id is required"))
+		return
+	}
+
+	if h.db == nil {
+		writeJSON(w, http.StatusOK, Fail("database not available"))
+		return
+	}
+
+	_, err := h.db.ExecContext(r.Context(),
+		`UPDATE device_store SET ota_tenant_approved = TRUE, ota_updated_at = CURRENT_TIMESTAMP WHERE device_id = $1`,
+		deviceID)
+	if err != nil {
+		h.logger.Error("ApproveOTA failed", zap.String("device_id", deviceID), zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail("failed to approve OTA"))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 }
 
 // payloadToDevice 将map[string]any转换为domain.Device

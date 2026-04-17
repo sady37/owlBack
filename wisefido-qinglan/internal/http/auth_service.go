@@ -233,9 +233,8 @@ func (s *AuthService) validateDeviceAndGetLocation(ctx context.Context, deviceUI
 	if ds.TenantID == platformSystemTenantID {
 		return nil, fmt.Errorf("device pending approval (assigned to system tenant)")
 	}
-	if ds.TenantID == platformUnallocatedTenantID {
-		return nil, fmt.Errorf("device not allocated to tenant")
-	}
+	// Unallocated tenant (000...002) is no longer rejected -- devices may operate
+	// in unallocated state and still receive OTA updates.
 
 	return ds, nil
 }
@@ -864,6 +863,12 @@ func getStringOrNullFromNullString(s sql.NullString) interface{} {
 	}
 	return nil
 }
+
+// OTAPropertyPublisher publishes OTA reconfig properties to devices via MQTT.
+// Currently disabled -- OTA reconfig is handled by the scheduler.
+// type OTAPropertyPublisher interface {
+// 	SetOTAReconfig(ctx context.Context, uid string, props map[string]interface{}) error
+// }
 
 // authMessageToMap 将 AuthMessage 转换为 map（用于发布到 Redis Stream）
 // 使用 IoTStreamMessage 格式（与 iot:monitor:stream 等保持一致）

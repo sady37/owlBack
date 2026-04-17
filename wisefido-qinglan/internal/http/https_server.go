@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,11 +17,14 @@ import (
 
 	"wisefido-qinglan/internal/config"
 	"wisefido-qinglan/internal/models"
+	"wisefido-qinglan/internal/ota"
 	"wisefido-qinglan/internal/repository"
 	"wisefido-qinglan/internal/service"
+	"wisefido-qinglan/internal/tcp"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/gorilla/mux"
+	"github.com/soheilhy/cmux"
 	"go.uber.org/zap"
 )
 
@@ -43,6 +47,8 @@ type HTTPSServer struct {
 	authService *AuthService
 	server      *http.Server
 	logger      *zap.Logger
+	tcpServer   *tcp.Server
+	otaManager  *ota.Manager
 }
 
 // NewHTTPSServer 创建 HTTPS 服务器
@@ -58,6 +64,27 @@ func NewHTTPSServer(
 ) (*HTTPSServer, error) {
 	authService := NewAuthService(appConfig, db, deviceRepo, redisClient, logger, subscriptionManager, cardMapping)
 
+	// Create firmware directory
+	fwDir := filepath.Join("..", "ota")
+	if err := os.MkdirAll(fwDir, 0755); err != nil {
+		log.Printf("Warning: failed to create firmware dir %s: %v", fwDir, err)
+	}
+
+	// Initialize TCP server for device connections (shares the HTTPS port via cmux)
+	serverAddr := strings.TrimSpace(appConfig.MQTT.RadarDeviceMQTT.Server)
+	if serverAddr == "" {
+		serverAddr = "0.0.0.0"
+	}
+	tcpSrv := tcp.NewServer(serverAddr, uint32(cfg.Port))
+
+	// Initialize OTA manager
+	fwURL := fmt.Sprintf("https://%s:%d/firmware", serverAddr, cfg.Port)
+	otaMgr := &ota.Manager{
+		TCPServer:   tcpSrv,
+		FirmwareDir: fwDir,
+		FirmwareURL: fwURL,
+	}
+
 	// 创建路由器，只注册 /auth 路由
 	router := mux.NewRouter()
 	authHandler := &AuthHTTPSHandler{authService: authService, logger: logger}
@@ -66,6 +93,9 @@ func NewHTTPSServer(
 	router.HandleFunc("/prod-api/thirdmqtt/v2/auth/device", authHandler.handleAuth).Methods("POST")
 	router.HandleFunc("/radar/api/v1/auth", authHandler.handleAuth).Methods("POST")
 	router.HandleFunc("/", authHandler.handleAuth).Methods("POST")
+
+	// Serve firmware files for OTA download
+	router.PathPrefix("/firmware/").Handler(http.StripPrefix("/firmware/", http.FileServer(http.Dir(fwDir))))
 
 	// 创建 TLS 配置
 	tlsConfig := &tls.Config{
@@ -121,23 +151,74 @@ func NewHTTPSServer(
 		authService: authService,
 		server:      s,
 		logger:      logger,
+		tcpServer:   tcpSrv,
+		otaManager:  otaMgr,
 	}, nil
 }
 
-// Start 启动 HTTPS 服务器
+// TCPServer returns the TCP server instance
+func (s *HTTPSServer) TCPServer() *tcp.Server {
+	return s.tcpServer
+}
+
+// OTAManager returns the OTA manager instance
+func (s *HTTPSServer) OTAManager() *ota.Manager {
+	return s.otaManager
+}
+
+// AuthService returns the auth service instance
+func (s *HTTPSServer) AuthService() *AuthService {
+	return s.authService
+}
+
+// Start 启动 HTTPS 服务器 (cmux: TLS connections go to HTTPS, raw TCP to the TCP server)
 func (s *HTTPSServer) Start() error {
-	s.logger.Info("Starting HTTPS server for device authentication",
+	s.logger.Info("Starting HTTPS+TCP server (cmux)",
 		zap.String("addr", s.server.Addr),
 		zap.Int("port", s.config.Port),
 	)
-	log.Printf("Starting HTTPS server for device authentication on %s", s.server.Addr)
+	log.Printf("Starting HTTPS+TCP server (cmux) on %s", s.server.Addr)
 
 	// 必须使用 TLS，禁止回退到 HTTP
 	if s.server.TLSConfig == nil || len(s.server.TLSConfig.Certificates) == 0 {
 		return fmt.Errorf("HTTPS server requires TLS certificate, but no certificate is configured")
 	}
 
-	return s.server.ListenAndServeTLS("", "")
+	// Create a raw TCP listener
+	ln, err := net.Listen("tcp", s.server.Addr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", s.server.Addr, err)
+	}
+
+	// Create cmux multiplexer
+	m := cmux.New(ln)
+
+	// TLS connections go to HTTPS server
+	tlsLn := m.Match(cmux.TLS())
+	// Everything else (raw TCP protobuf) goes to TCP server
+	tcpLn := m.Match(cmux.Any())
+
+	// Wrap TLS listener with TLS config
+	tlsListener := tls.NewListener(tlsLn, s.server.TLSConfig)
+
+	// Start HTTPS server
+	go func() {
+		log.Printf("HTTPS server serving on %s (TLS via cmux)", s.server.Addr)
+		if err := s.server.Serve(tlsListener); err != nil && err != http.ErrServerClosed {
+			log.Printf("HTTPS server error: %v", err)
+		}
+	}()
+
+	// Start TCP server
+	go func() {
+		log.Printf("TCP server serving on %s (raw via cmux)", s.server.Addr)
+		if err := s.tcpServer.Serve(tcpLn); err != nil {
+			log.Printf("TCP server error: %v", err)
+		}
+	}()
+
+	// Start cmux serving (blocks)
+	return m.Serve()
 }
 
 // Stop 停止服务器

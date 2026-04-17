@@ -62,6 +62,34 @@ func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
 	if v, ok := payload["allow_access"].(bool); ok {
 		ds.AllowAccess = v
 	}
+	if v, ok := payload["ota_permit"].(string); ok {
+		if v != "" {
+			ds.OTAPermit = sql.NullString{String: v, Valid: true}
+		} else {
+			ds.OTAPermit = sql.NullString{Valid: false}
+		}
+	}
+	if v, ok := payload["ota_way"].(string); ok {
+		if v != "" {
+			ds.OTAWay = sql.NullString{String: v, Valid: true}
+		} else {
+			ds.OTAWay = sql.NullString{Valid: false}
+		}
+	}
+	if v, ok := payload["ota_schedule"].(string); ok {
+		if v != "" {
+			ds.OTASchedule = sql.NullString{String: v, Valid: true}
+		} else {
+			ds.OTASchedule = sql.NullString{Valid: false}
+		}
+	}
+	if v, ok := payload["ota_status"].(string); ok {
+		if v != "" {
+			ds.OTAStatus = sql.NullString{String: v, Valid: true}
+		} else {
+			ds.OTAStatus = sql.NullString{Valid: false}
+		}
+	}
 
 	return ds
 }
@@ -90,6 +118,18 @@ func payloadToDeviceStorePatch(payload map[string]any) *domain.DeviceStore {
 		if v, ok := payload["allow_access"].(bool); ok {
 			ds.AllowAccess = v
 		}
+	}
+	if _, ok := payload["ota_permit"]; ok {
+		ds.OTAPermitSet = true
+	}
+	if _, ok := payload["ota_way"]; ok {
+		ds.OTAWaySet = true
+	}
+	if _, ok := payload["ota_schedule"]; ok {
+		ds.OTAScheduleSet = true
+	}
+	if _, ok := payload["ota_status"]; ok {
+		ds.OTAStatusSet = true
 	}
 	return ds
 }

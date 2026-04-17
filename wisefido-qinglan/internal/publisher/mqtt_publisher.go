@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	"wisefido-qinglan/internal/config"
 	"wisefido-qinglan/internal/mqtt"
@@ -172,6 +173,46 @@ func (p *MQTTPublisher) publish(topic string, data interface{}) error {
 	if err := p.mqttClient.Publish(topic, 1, false, payload); err != nil {
 		return fmt.Errorf("failed to publish to topic %s: %w", topic, err)
 	}
+	return nil
+}
+
+// PublishOTA publishes an OTA update command to a device via MQTT func topic
+func (p *MQTTPublisher) PublishOTA(ctx context.Context, uid string, data map[string]interface{}) error {
+	log.Printf("[MQTT-OTA] publishing OTA to uid=%s data=%v", uid, data)
+
+	command := map[string]interface{}{
+		"cmd":       "ota",
+		"requestId": fmt.Sprintf("ota-%s-%d", uid, time.Now().UnixMilli()),
+		"data":      data,
+	}
+
+	topic := p.mqttClient.BuildCommandTopic("func", uid)
+	if err := p.publish(topic, command); err != nil {
+		return fmt.Errorf("failed to publish OTA command: %w", err)
+	}
+
+	log.Printf("[MQTT-OTA] OTA command sent to %s on topic %s", uid, topic)
+	return nil
+}
+
+// PublishReboot publishes a reboot command (dev:0) to a device via MQTT func topic
+func (p *MQTTPublisher) PublishReboot(ctx context.Context, uid string) error {
+	log.Printf("[MQTT-REBOOT] publishing reboot to uid=%s", uid)
+
+	command := map[string]interface{}{
+		"cmd":       "control",
+		"requestId": fmt.Sprintf("reboot-%s-%d", uid, time.Now().UnixMilli()),
+		"data": map[string]interface{}{
+			"dev": 0,
+		},
+	}
+
+	topic := p.mqttClient.BuildCommandTopic("func", uid)
+	if err := p.publish(topic, command); err != nil {
+		return fmt.Errorf("failed to publish reboot command: %w", err)
+	}
+
+	log.Printf("[MQTT-REBOOT] reboot command sent to %s", uid)
 	return nil
 }
 

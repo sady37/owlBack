@@ -144,7 +144,10 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 			ds.comm_mode,
 			ds.mcu_model,
 			ds.firmware_version,
-			-- 位置信息：仅当 room 仍存在且属于某 unit 时返回，避免显示“unit 下已无 room”的孤立绑定
+			ds.ota_target_firmware_version, ds.ota_target_mcu_model, ds.ota_permit, ds.ota_way,
+			ds.ota_schedule, ds.ota_status, ds.ota_progress,
+			COALESCE(ds.ota_tenant_approved, FALSE) as ota_tenant_approved,
+			-- 位置信息：仅当 room 仍存在且属于某 unit 时返回，避免显示”unit 下已无 room”的孤立绑定
 			(CASE
 				WHEN d.bound_room_id IS NOT NULL AND EXISTS (SELECT 1 FROM rooms r JOIN units u ON r.unit_id = u.unit_id WHERE r.room_id = d.bound_room_id AND r.tenant_id = d.tenant_id) THEN d.bound_room_id
 				WHEN d.bound_bed_id IS NOT NULL AND EXISTS (SELECT 1 FROM beds b JOIN rooms r ON b.room_id = r.room_id JOIN units u ON r.unit_id = u.unit_id WHERE b.bed_id = d.bound_bed_id AND b.tenant_id = d.tenant_id) THEN (SELECT r.room_id FROM rooms r JOIN beds b ON r.room_id = b.room_id WHERE b.bed_id = d.bound_bed_id AND r.tenant_id = d.tenant_id LIMIT 1)
@@ -206,6 +209,9 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 			&d.CommMode,
 			&d.MCUModel,
 			&d.FirmwareVersion,
+			&d.OTATargetFW, &d.OTATargetMCU, &d.OTAPermit, &d.OTAWay,
+			&d.OTASchedule, &d.OTAStatus, &d.OTAProgress,
+			&d.OTATenantApproved,
 			&d.RoomID,
 			&d.UnitID,
 			&d.CardID,
@@ -245,6 +251,9 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 			ds.comm_mode,
 			ds.mcu_model,
 			ds.firmware_version,
+			ds.ota_target_firmware_version, ds.ota_target_mcu_model, ds.ota_permit, ds.ota_way,
+			ds.ota_schedule, ds.ota_status, ds.ota_progress,
+			COALESCE(ds.ota_tenant_approved, FALSE) as ota_tenant_approved,
 			-- 位置信息：仅当 room 仍存在且属于某 unit 时返回
 			(CASE
 				WHEN d.bound_room_id IS NOT NULL AND EXISTS (SELECT 1 FROM rooms r JOIN units u ON r.unit_id = u.unit_id WHERE r.room_id = d.bound_room_id AND r.tenant_id = d.tenant_id) THEN d.bound_room_id
@@ -279,6 +288,9 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 		&d.CommMode,
 		&d.MCUModel,
 		&d.FirmwareVersion,
+		&d.OTATargetFW, &d.OTATargetMCU, &d.OTAPermit, &d.OTAWay,
+		&d.OTASchedule, &d.OTAStatus, &d.OTAProgress,
+		&d.OTATenantApproved,
 		&d.RoomID,
 		&d.UnitID,
 	); err != nil {
@@ -316,6 +328,9 @@ func (r *PostgresDevicesRepository) GetDeviceByUID(ctx context.Context, tenantID
 			ds.comm_mode,
 			ds.mcu_model,
 			ds.firmware_version,
+			ds.ota_target_firmware_version, ds.ota_target_mcu_model, ds.ota_permit, ds.ota_way,
+			ds.ota_schedule, ds.ota_status, ds.ota_progress,
+			COALESCE(ds.ota_tenant_approved, FALSE) as ota_tenant_approved,
 			-- 位置信息：仅当 room 仍存在且属于某 unit 时返回
 			(CASE
 				WHEN d.bound_room_id IS NOT NULL AND EXISTS (SELECT 1 FROM rooms r JOIN units u ON r.unit_id = u.unit_id WHERE r.room_id = d.bound_room_id AND r.tenant_id = d.tenant_id) THEN d.bound_room_id
@@ -350,6 +365,9 @@ func (r *PostgresDevicesRepository) GetDeviceByUID(ctx context.Context, tenantID
 		&d.CommMode,
 		&d.MCUModel,
 		&d.FirmwareVersion,
+		&d.OTATargetFW, &d.OTATargetMCU, &d.OTAPermit, &d.OTAWay,
+		&d.OTASchedule, &d.OTAStatus, &d.OTAProgress,
+		&d.OTATenantApproved,
 		&d.RoomID,
 		&d.UnitID,
 	); err != nil {

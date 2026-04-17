@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -14,9 +17,12 @@ import (
 	"wisefido-qinglan/internal/domain"
 	"wisefido-qinglan/internal/http"
 	"wisefido-qinglan/internal/mqtt"
+	"wisefido-qinglan/internal/ota"
+	"wisefido-qinglan/internal/publisher"
 	"wisefido-qinglan/internal/repository"
 	"wisefido-qinglan/internal/service"
 	"wisefido-qinglan/internal/subscriber"
+	"wisefido-qinglan/internal/tcp"
 
 	"owl-common/card"
 	"owl-common/database"
@@ -209,14 +215,47 @@ func main() {
 		}
 	}()
 
+	// Set DB on MQTT consumer for OTA return handling
+	mqttConsumer.SetDB(db)
+
 	// 启动HTTPS服务器（用于设备认证，必须配置证书）
 	var httpsServer *http.HTTPSServer
+	var otaScheduler *ota.Scheduler
 	if cfg.HTTPS.Port > 0 {
 		log.Println("Starting HTTPS server (device authentication)...")
 		httpsServer, err = http.NewHTTPSServer(&cfg.HTTPS, cfg, db, deviceRepo, redisClient, logger, subscriptionManager, cardMappingSvc)
 		if err != nil {
-			log.Fatalf("❌ Failed to create HTTPS server: %v (HTTPS server requires TLS certificates)", err)
+			log.Fatalf("Failed to create HTTPS server: %v (HTTPS server requires TLS certificates)", err)
 		}
+
+		// Set TCP OnProgress callback
+		httpsServer.TCPServer().OnProgress = makeOTAProgressCallback(db)
+
+		// Create OTA handler and inject to HTTP server
+		otaHandler := http.NewOTAHandler(httpsServer.OTAManager(), httpsServer.TCPServer())
+		httpServer.SetOTAHandler(otaHandler)
+
+		// Create MQTT publisher for OTA push via MQTT
+		mqttPublisher := publisher.NewMQTTPublisher(cfg, mqttClient)
+
+		// Create OTA scheduler with MQTT OTA push callback
+		fwDir := filepath.Join("..", "ota")
+		serverAddr := strings.TrimSpace(cfg.MQTT.RadarDeviceMQTT.Server)
+		if serverAddr == "" {
+			serverAddr = "0.0.0.0"
+		}
+		fwURL := fmt.Sprintf("https://%s:%d/firmware", serverAddr, cfg.HTTPS.Port)
+		otaScheduler = ota.NewScheduler(
+			db,
+			func(uid string, data map[string]interface{}) error {
+				return mqttPublisher.PublishOTA(context.Background(), uid, data)
+			},
+			5*time.Minute,
+			fwDir,
+			fwURL,
+		)
+		otaScheduler.Start()
+
 		go func() {
 			if err := httpsServer.Start(); err != nil {
 				log.Fatalf("HTTPS server error: %v", err)
@@ -250,6 +289,11 @@ func main() {
 	// 优雅关闭
 	cancel()
 
+	// Stop OTA scheduler
+	if otaScheduler != nil {
+		otaScheduler.Stop()
+	}
+
 	// 关闭HTTP和HTTPS服务器
 	ctxShutdown, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
@@ -264,6 +308,33 @@ func main() {
 	}
 
 	log.Println("Service stopped gracefully")
+}
+
+// makeOTAProgressCallback creates a TCP OTA progress callback that updates device_store
+func makeOTAProgressCallback(db *sql.DB) tcp.OTAProgressCallback {
+	return func(uid string, progress int, message string) {
+		log.Printf("[OTA-Progress] uid=%s progress=%d msg=%s", uid, progress, message)
+
+		var otaStatus string
+		switch {
+		case progress == -1:
+			otaStatus = "failed"
+		case progress == 100:
+			otaStatus = "success"
+		case progress == 0:
+			otaStatus = "accepted"
+		default:
+			otaStatus = fmt.Sprintf("downloading_%d", progress)
+		}
+
+		_, err := db.ExecContext(context.Background(), `
+			UPDATE device_store SET ota_status = $1, ota_progress = $2, ota_updated_at = NOW()
+			WHERE device_uid = $3
+		`, otaStatus, progress, uid)
+		if err != nil {
+			log.Printf("[OTA-Progress] failed to update ota_status for uid=%s: %v", uid, err)
+		}
+	}
 }
 
 func runConfigCardStreamReader(ctx context.Context, redisClient *redis.Client, logger *zap.Logger, sub *subscriber.ConfigSubscriber) {

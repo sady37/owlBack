@@ -33,9 +33,17 @@ type DeviceStoreRepository interface {
 
 // DeviceStoreFilters 设备库存查询过滤器
 type DeviceStoreFilters struct {
-	TenantID   string // 租户ID过滤
-	DeviceType string // 设备类型过滤
-	Search     string // 搜索（device_code, device_uid, mac, imei）
+	TenantID        string // 租户ID过滤
+	DeviceType      string // 设备类型过滤
+	Search          string // 搜索（device_code, device_uid, mac, imei）
+	DeviceUID       string
+	DeviceCode      string
+	DeviceName      string
+	FirmwareVersion string
+	AllowAccess     string
+	OTAStatus       string
+	OTAPermit       string
+	OTAWay          string
 }
 
 

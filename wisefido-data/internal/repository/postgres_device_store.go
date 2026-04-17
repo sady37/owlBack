@@ -29,7 +29,7 @@ const (
 )
 
 func isDeviceStorePivotTenant(tenantID string) bool {
-	return tenantID == trashTenantID || tenantID == systemTenantID || tenantID == unallocatedTenantID
+	return tenantID == trashTenantID || tenantID == systemTenantID
 }
 
 // orderByClauseDeviceStore 白名单排序字段，防止 SQL 注入
@@ -44,7 +44,8 @@ func orderByClauseDeviceStore(sort, direction string) string {
 		return "ds." + col + " " + dir
 	case "device_type", "device_model", "device_name", "mac", "imei", "comm_mode", "mcu_model", "firmware_version":
 		return "ds." + col + " " + dir
-	case "ota_target_firmware_version", "ota_target_mcu_model":
+	case "ota_target_firmware_version", "ota_target_mcu_model",
+		"ota_permit", "ota_way", "ota_status", "ota_progress", "ota_updated_at":
 		return "ds." + col + " " + dir
 	case "tenant_id", "allow_access", "import_date", "allocate_time":
 		return "ds." + col + " " + dir
@@ -65,7 +66,7 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 
 	// Search filter
 	if filters.Search != "" {
-		where = append(where, fmt.Sprintf("(ds.device_code ILIKE $%d OR ds.device_uid ILIKE $%d OR ds.mac ILIKE $%d OR ds.imei ILIKE $%d)", argN, argN, argN, argN))
+		where = append(where, fmt.Sprintf("(ds.device_code ILIKE $%d OR ds.device_uid ILIKE $%d OR ds.mac ILIKE $%d OR ds.imei ILIKE $%d OR ds.device_id::text ILIKE $%d)", argN, argN, argN, argN, argN))
 		args = append(args, "%"+filters.Search+"%")
 		argN++
 	}
@@ -81,6 +82,50 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 	if filters.DeviceType != "" {
 		where = append(where, fmt.Sprintf("ds.device_type = $%d", argN))
 		args = append(args, filters.DeviceType)
+		argN++
+	}
+
+	// Column filters
+	if filters.DeviceUID != "" {
+		where = append(where, fmt.Sprintf("ds.device_uid ILIKE $%d", argN))
+		args = append(args, "%"+filters.DeviceUID+"%")
+		argN++
+	}
+	if filters.DeviceCode != "" {
+		where = append(where, fmt.Sprintf("ds.device_code ILIKE $%d", argN))
+		args = append(args, "%"+filters.DeviceCode+"%")
+		argN++
+	}
+	if filters.DeviceName != "" {
+		where = append(where, fmt.Sprintf("ds.device_name ILIKE $%d", argN))
+		args = append(args, "%"+filters.DeviceName+"%")
+		argN++
+	}
+	if filters.FirmwareVersion != "" {
+		where = append(where, fmt.Sprintf("ds.firmware_version ILIKE $%d", argN))
+		args = append(args, "%"+filters.FirmwareVersion+"%")
+		argN++
+	}
+	if filters.AllowAccess != "" {
+		if strings.EqualFold(filters.AllowAccess, "true") {
+			where = append(where, "ds.allow_access = TRUE")
+		} else {
+			where = append(where, "ds.allow_access = FALSE")
+		}
+	}
+	if filters.OTAStatus != "" {
+		where = append(where, fmt.Sprintf("COALESCE(ds.ota_status, 'idle') = $%d", argN))
+		args = append(args, filters.OTAStatus)
+		argN++
+	}
+	if filters.OTAPermit != "" {
+		where = append(where, fmt.Sprintf("ds.ota_permit = $%d", argN))
+		args = append(args, filters.OTAPermit)
+		argN++
+	}
+	if filters.OTAWay != "" {
+		where = append(where, fmt.Sprintf("ds.ota_way = $%d", argN))
+		args = append(args, filters.OTAWay)
 		argN++
 	}
 
@@ -130,6 +175,9 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 			ds.firmware_version,
 			ds.ota_target_firmware_version,
 			ds.ota_target_mcu_model,
+			ds.ota_permit, ds.ota_way, ds.ota_schedule, ds.ota_status, ds.ota_progress,
+			ds.ota_error, ds.ota_updated_at, ds.ota_firmware_url, ds.ota_firmware_sha256,
+			ds.ota_firmware_size, COALESCE(ds.ota_tenant_approved, FALSE) as ota_tenant_approved,
 			ds.tenant_id::text,
 			COALESCE(t.tenant_name, '') as tenant_name,
 			ds.allow_access,
@@ -165,6 +213,9 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 			&d.FirmwareVersion,
 			&d.OTATargetFirmwareVersion,
 			&d.OTATargetMCUModel,
+			&d.OTAPermit, &d.OTAWay, &d.OTASchedule, &d.OTAStatus, &d.OTAProgress,
+			&d.OTAError, &d.OTAUpdatedAt, &d.OTAFirmwareURL, &d.OTAFirmwareSHA,
+			&d.OTAFirmwareSize, &d.OTATenantApproved,
 			&d.TenantID,
 			&d.TenantName,
 			&d.AllowAccess,
@@ -198,6 +249,9 @@ func (r *PostgresDeviceStoreRepository) GetDeviceStore(ctx context.Context, devi
 			ds.firmware_version,
 			ds.ota_target_firmware_version,
 			ds.ota_target_mcu_model,
+			ds.ota_permit, ds.ota_way, ds.ota_schedule, ds.ota_status, ds.ota_progress,
+			ds.ota_error, ds.ota_updated_at, ds.ota_firmware_url, ds.ota_firmware_sha256,
+			ds.ota_firmware_size, COALESCE(ds.ota_tenant_approved, FALSE) as ota_tenant_approved,
 			ds.tenant_id::text,
 			COALESCE(t.tenant_name, '') as tenant_name,
 			ds.allow_access,
@@ -224,6 +278,9 @@ func (r *PostgresDeviceStoreRepository) GetDeviceStore(ctx context.Context, devi
 		&d.FirmwareVersion,
 		&d.OTATargetFirmwareVersion,
 		&d.OTATargetMCUModel,
+		&d.OTAPermit, &d.OTAWay, &d.OTASchedule, &d.OTAStatus, &d.OTAProgress,
+		&d.OTAError, &d.OTAUpdatedAt, &d.OTAFirmwareURL, &d.OTAFirmwareSHA,
+		&d.OTAFirmwareSize, &d.OTATenantApproved,
 		&d.TenantID,
 		&d.TenantName,
 		&d.AllowAccess,
@@ -259,6 +316,9 @@ func (r *PostgresDeviceStoreRepository) GetDeviceStoreByDeviceID(ctx context.Con
 			ds.firmware_version,
 			ds.ota_target_firmware_version,
 			ds.ota_target_mcu_model,
+			ds.ota_permit, ds.ota_way, ds.ota_schedule, ds.ota_status, ds.ota_progress,
+			ds.ota_error, ds.ota_updated_at, ds.ota_firmware_url, ds.ota_firmware_sha256,
+			ds.ota_firmware_size, COALESCE(ds.ota_tenant_approved, FALSE) as ota_tenant_approved,
 			ds.tenant_id::text,
 			COALESCE(t.tenant_name, '') as tenant_name,
 			ds.allow_access,
@@ -284,6 +344,9 @@ func (r *PostgresDeviceStoreRepository) GetDeviceStoreByDeviceID(ctx context.Con
 		&d.FirmwareVersion,
 		&d.OTATargetFirmwareVersion,
 		&d.OTATargetMCUModel,
+		&d.OTAPermit, &d.OTAWay, &d.OTASchedule, &d.OTAStatus, &d.OTAProgress,
+		&d.OTAError, &d.OTAUpdatedAt, &d.OTAFirmwareURL, &d.OTAFirmwareSHA,
+		&d.OTAFirmwareSize, &d.OTATenantApproved,
 		&d.TenantID,
 		&d.TenantName,
 		&d.AllowAccess,
@@ -331,10 +394,15 @@ func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, d
 		return "", fmt.Errorf("failed to check existing device: %w", err)
 	}
 
-	// 3. 处理 tenant_id（未提供则 Unallocated 002）
+	// 3. 处理 tenant_id（未提供则 System 001）
 	tenantID := deviceStore.TenantID
 	if tenantID == "" {
-		tenantID = unallocatedTenantID
+		tenantID = systemTenantID
+	}
+
+	// 默认 allow_access = true
+	if !deviceStore.AllowAccessSet {
+		deviceStore.AllowAccess = true
 	}
 
 	// 4. 插入新设备
@@ -412,7 +480,7 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 				newIs := isDeviceStorePivotTenant(update.TenantID)
 				if !currentIs && !newIs {
 					name1, name2 := tenantNamesOrIDs(ctx, tx, currentTenantID, update.TenantID)
-					return fmt.Errorf("cannot migrate device directly from tenant %s to tenant %s: must migrate via system/trash/Unallocated tenant first", name1, name2)
+					return fmt.Errorf("cannot migrate device directly from %s to %s: move to System first", name1, name2)
 				}
 				migrateFromPivot = currentIs && !newIs
 			}
@@ -457,6 +525,33 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 			args = append(args, update.AllowAccess)
 			argN++
 		}
+		if update.OTAPermitSet {
+			setParts = append(setParts, fmt.Sprintf("ota_permit = $%d", argN))
+			args = append(args, nullStringToAny(update.OTAPermit))
+			argN++
+		}
+		if update.OTAWaySet {
+			setParts = append(setParts, fmt.Sprintf("ota_way = $%d", argN))
+			args = append(args, nullStringToAny(update.OTAWay))
+			argN++
+		}
+		if update.OTAScheduleSet {
+			setParts = append(setParts, fmt.Sprintf("ota_schedule = $%d", argN))
+			args = append(args, nullStringToAny(update.OTASchedule))
+			argN++
+		}
+		if update.OTAStatusSet {
+			setParts = append(setParts, fmt.Sprintf("ota_status = $%d", argN))
+			args = append(args, nullStringToAny(update.OTAStatus))
+			argN++
+			setParts = append(setParts, "ota_updated_at = CURRENT_TIMESTAMP")
+		}
+		// OTA auto-reset: when OTA plan fields change and OTAStatusSet is false, reset status
+		otaPlanChanged := update.OTATargetFirmwareVersion.Valid || update.OTATargetMCUModel.Valid ||
+			update.OTAPermitSet || update.OTAWaySet || update.OTAScheduleSet
+		if otaPlanChanged && !update.OTAStatusSet {
+			setParts = append(setParts, "ota_status = 'idle'", "ota_progress = NULL", "ota_error = NULL", "ota_tenant_approved = FALSE")
+		}
 		if update.TenantID != "" && update.TenantID != trashTenantID && update.TenantID != unallocatedTenantID {
 			setParts = append(setParts, "allocate_time = CASE WHEN allocate_time IS NULL THEN CURRENT_TIMESTAMP ELSE allocate_time END")
 		}
@@ -472,11 +567,12 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 			return err
 		}
 
-		// 再同步 devices：tenant_id + business_access='rejected' + monitoring_enabled=FALSE
+		// 再同步 devices：tenant_id + business_access='approved' + monitoring_enabled=TRUE + clear bindings
 		if tenantChanged {
 			_, err := tx.ExecContext(ctx, `
 				UPDATE devices
-				SET tenant_id = $1, business_access = 'rejected', monitoring_enabled = FALSE
+				SET tenant_id = $1, business_access = 'approved', monitoring_enabled = TRUE,
+				    bound_room_id = NULL, bound_bed_id = NULL
 				WHERE device_id IN (SELECT device_id FROM device_store WHERE device_uid = $2)
 			`, update.TenantID, deviceUID)
 			if err != nil {
@@ -487,7 +583,7 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 					INSERT INTO devices (device_id, device_uid, tenant_id, device_name, status, business_access, monitoring_enabled)
 					SELECT ds.device_id, ds.device_uid, $1,
 						COALESCE(NULLIF(TRIM(ds.device_type), ''), 'Device') || '_' || RIGHT(ds.device_uid, 4),
-						'offline', 'rejected', FALSE
+						'offline', 'approved', TRUE
 					FROM device_store ds
 					WHERE ds.device_uid = $2
 					  AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.device_id = ds.device_id)

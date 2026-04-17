@@ -38,6 +38,12 @@ type Server struct {
 	authService        *AuthService
 	subscriptionManager DeviceSubscriptionManager
 	server             *http.Server
+	otaHandler         *OTAHandler
+}
+
+// SetOTAHandler sets the OTA handler for the HTTP server
+func (s *Server) SetOTAHandler(h *OTAHandler) {
+	s.otaHandler = h
 }
 
 // NewServer 创建HTTP服务器
@@ -68,7 +74,12 @@ func (s *Server) Start() error {
 	// 创建API处理器（传入 subscriptionManager 用于设备状态查询）
 	apiHandler := NewAPIHandler(s.radarService, s.subscriptionManager)
 	apiHandler.RegisterRoutes(router)
-	
+
+	// Register OTA routes if handler is set
+	if s.otaHandler != nil {
+		s.otaHandler.RegisterRoutes(router)
+	}
+
 	// 注意：auth 路由已移至独立的 HTTPS 服务器，此处不再注册
 	
 	// 创建HTTP服务器

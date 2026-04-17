@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -88,6 +89,12 @@ type MQTTConsumer struct {
 	subscriptionManager DeviceLastSeenUpdater // 设备最后收到消息时间更新器接口
 	subscribedTopics    map[string]struct{}   // 保存已订阅的设备主题（key: topic, value: struct{}）
 	mu                  sync.RWMutex
+	db                  *sql.DB // database for OTA status updates
+}
+
+// SetDB sets the database connection for OTA operations
+func (c *MQTTConsumer) SetDB(db *sql.DB) {
+	c.db = db
 }
 
 // GetMessageHandler 获取消息处理器（用于传递给subscriptionManager）
@@ -651,6 +658,13 @@ func (c *MQTTConsumer) handlePropertyMessage(uid string, message map[string]inte
 // requestId 并存 Redis，RadarService 方能取到响应并返回给 HTTP 调用方。
 func (c *MQTTConsumer) handleFunctionMessage(uid string, message map[string]interface{}) error {
 	log.Printf("Handling function message for device %s", uid)
+
+	// Check for OTA return message
+	if cmd, ok := message["cmd"].(string); ok && cmd == "ota_return" {
+		c.handleOTAReturn(uid, message)
+		return nil
+	}
+
 	var requestID string
 	if id, ok := message["requestId"].(string); ok && id != "" {
 		requestID = id
@@ -670,6 +684,48 @@ func (c *MQTTConsumer) handleFunctionMessage(uid string, message map[string]inte
 		log.Printf("Function message from device %s has no requestId, treating as function status notification", uid)
 	}
 	return nil
+}
+
+// handleOTAReturn handles OTA result messages from devices
+func (c *MQTTConsumer) handleOTAReturn(uid string, message map[string]interface{}) {
+	data, _ := message["data"].(map[string]interface{})
+	if data == nil {
+		log.Printf("[OTA-RETURN] uid=%s no data in ota_return message", uid)
+		return
+	}
+
+	code := 0
+	if v, ok := data["code"].(float64); ok {
+		code = int(v)
+	}
+	msg := ""
+	if v, ok := data["msg"].(string); ok {
+		msg = v
+	}
+	version := ""
+	if v, ok := data["version"].(string); ok {
+		version = v
+	}
+
+	log.Printf("[OTA-RETURN] uid=%s code=%d msg=%s version=%s", uid, code, msg, version)
+
+	// Update device_store ota_status
+	if c.db != nil {
+		status := "failed"
+		if code == 200 || code == 0 {
+			status = "success"
+		}
+		_, err := c.db.ExecContext(context.Background(), `
+			UPDATE device_store
+			SET ota_status = $1, ota_updated_at = NOW(), firmware_version = CASE WHEN $1 = 'success' AND $3 != '' THEN $3 ELSE firmware_version END
+			WHERE device_uid = $2
+		`, status, uid, version)
+		if err != nil {
+			log.Printf("[OTA-RETURN] failed to update ota_status for uid=%s: %v", uid, err)
+		} else {
+			log.Printf("[OTA-RETURN] updated ota_status=%s for uid=%s", status, uid)
+		}
+	}
 }
 
 // resolveDeviceIdentity 统一解析 device_uid → (tid, bid, unitID, cid, did, bedID, roomID)。monitor/stat/event 共用。

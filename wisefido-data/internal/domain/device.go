@@ -25,6 +25,16 @@ type Device struct {
 	MCUModel    sql.NullString `db:"mcu_model"`    // from device_store.mcu_model
 	FirmwareVersion sql.NullString `db:"firmware_version"` // from device_store.firmware_version
 
+	// OTA 字段（从 device_store 获取，只读）
+	OTATargetFW  sql.NullString `db:"ota_target_firmware_version"`
+	OTATargetMCU sql.NullString `db:"ota_target_mcu_model"`
+	OTAPermit    sql.NullString `db:"ota_permit"`
+	OTAWay       sql.NullString `db:"ota_way"`
+	OTASchedule  sql.NullString `db:"ota_schedule"`
+	OTAStatus    sql.NullString `db:"ota_status"`
+	OTAProgress  sql.NullInt32  `db:"ota_progress"`
+	OTATenantApproved bool     `db:"ota_tenant_approved"`
+
 	// 标识/资产
 	DeviceName string `db:"device_name"` // NOT NULL
 
@@ -87,6 +97,30 @@ func (d *Device) ToJSON() map[string]any {
 	if d.FirmwareVersion.Valid {
 		m["firmware_version"] = d.FirmwareVersion.String
 	}
+	if d.OTATargetFW.Valid {
+		m["ota_target_firmware_version"] = d.OTATargetFW.String
+	}
+	if d.OTATargetMCU.Valid {
+		m["ota_target_mcu_model"] = d.OTATargetMCU.String
+	}
+	if d.OTAPermit.Valid {
+		m["ota_permit"] = d.OTAPermit.String
+	}
+	if d.OTAWay.Valid {
+		m["ota_way"] = d.OTAWay.String
+	}
+	if d.OTASchedule.Valid {
+		m["ota_schedule"] = d.OTASchedule.String
+	}
+	if d.OTAStatus.Valid {
+		m["ota_status"] = d.OTAStatus.String
+	} else {
+		m["ota_status"] = "idle"
+	}
+	if d.OTAProgress.Valid {
+		m["ota_progress"] = d.OTAProgress.Int32
+	}
+	m["ota_tenant_approved"] = d.OTATenantApproved
 	if d.BoundRoomID.Valid {
 		m["bound_room_id"] = d.BoundRoomID.String
 	} else {

@@ -89,9 +89,17 @@ func (h *DeviceStoreHandler) ListDeviceStores(w http.ResponseWriter, r *http.Req
 	ctx := r.Context()
 
 	filters := repository.DeviceStoreFilters{
-		Search:     r.URL.Query().Get("search"),
-		TenantID:   r.URL.Query().Get("tenant_id"),
-		DeviceType: r.URL.Query().Get("device_type"),
+		Search:          r.URL.Query().Get("search"),
+		TenantID:        r.URL.Query().Get("tenant_id"),
+		DeviceType:      r.URL.Query().Get("device_type"),
+		DeviceUID:       r.URL.Query().Get("device_uid"),
+		DeviceCode:      r.URL.Query().Get("device_code"),
+		DeviceName:      r.URL.Query().Get("device_name"),
+		FirmwareVersion: r.URL.Query().Get("firmware_version"),
+		AllowAccess:     r.URL.Query().Get("allow_access"),
+		OTAStatus:       r.URL.Query().Get("ota_status"),
+		OTAPermit:       r.URL.Query().Get("ota_permit"),
+		OTAWay:          r.URL.Query().Get("ota_way"),
 	}
 	page := parseInt(r.URL.Query().Get("page"), 1)
 	size := parseInt(r.URL.Query().Get("size"), 100)
@@ -204,9 +212,17 @@ func (h *DeviceStoreHandler) ExportDeviceStores(w http.ResponseWriter, r *http.R
 
 	// Query data with same filters
 	filters := repository.DeviceStoreFilters{
-		Search:     r.URL.Query().Get("search"),
-		TenantID:   r.URL.Query().Get("tenant_id"),
-		DeviceType: r.URL.Query().Get("device_type"),
+		Search:          r.URL.Query().Get("search"),
+		TenantID:        r.URL.Query().Get("tenant_id"),
+		DeviceType:      r.URL.Query().Get("device_type"),
+		DeviceUID:       r.URL.Query().Get("device_uid"),
+		DeviceCode:      r.URL.Query().Get("device_code"),
+		DeviceName:      r.URL.Query().Get("device_name"),
+		FirmwareVersion: r.URL.Query().Get("firmware_version"),
+		AllowAccess:     r.URL.Query().Get("allow_access"),
+		OTAStatus:       r.URL.Query().Get("ota_status"),
+		OTAPermit:       r.URL.Query().Get("ota_permit"),
+		OTAWay:          r.URL.Query().Get("ota_way"),
 	}
 
 	items, _, err := h.deviceStoreRepo.ListDeviceStores(ctx, filters, 1, 1000, "", "asc")
