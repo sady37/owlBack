@@ -82,7 +82,15 @@ func (h *OTAHandler) TriggerOTA(w http.ResponseWriter, r *http.Request) {
 	}
 	req.UID = uid
 
-	log.Printf("[OTA-API] trigger OTA: uid=%s esp=%s radar=%s", uid, req.EspFirmware, req.RadarFirmware)
+	// Normalize: if only RadarFirmware set, move to ESP (all Qinglan MCU = ESP32)
+	if req.EspFirmware == "" && req.RadarFirmware != "" {
+		req.EspFirmware = req.RadarFirmware
+		req.EspVersion = req.RadarVersion
+		req.RadarFirmware = ""
+		req.RadarVersion = ""
+	}
+
+	log.Printf("[OTA-API] trigger OTA: uid=%s esp=%s", uid, req.EspFirmware)
 
 	// Try TCP push first
 	result := h.otaManager.PushToDevice(req)
@@ -96,14 +104,21 @@ func (h *OTAHandler) TriggerOTA(w http.ResponseWriter, r *http.Request) {
 	// TCP failed, try MQTT push
 	if h.mqttOTA != nil {
 		log.Printf("[OTA-API] TCP failed (%s), trying MQTT: uid=%s", result.Message, uid)
+		// Pick firmware file (ESP or Radar field, all use ESP MQTT fields)
+		fwFile := req.EspFirmware
+		fwVer := req.EspVersion
+		if fwFile == "" {
+			fwFile = req.RadarFirmware
+			fwVer = req.RadarVersion
+		}
 		data := map[string]interface{}{}
-		if req.EspFirmware != "" {
-			info, err := h.otaManager.GetFirmwareInfo(req.EspFirmware)
+		if fwFile != "" {
+			info, err := h.otaManager.GetFirmwareInfo(fwFile)
 			if err == nil {
-				data["espfileUrl"] = fmt.Sprintf("%s/%s", h.otaManager.FirmwareURL, req.EspFirmware)
+				data["espfileUrl"] = fmt.Sprintf("%s/%s", h.otaManager.FirmwareURL, fwFile)
 				data["espfilesha256"] = info.SHA256
 				data["espfilesize"] = info.Size
-				data["espver"] = req.EspVersion
+				data["espver"] = fwVer
 			}
 		}
 		if req.EspFileURL != "" {
