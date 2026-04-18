@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	commonconfig "owl-common/config"
@@ -79,6 +80,12 @@ func (s *Server) Start() error {
 	if s.otaHandler != nil {
 		s.otaHandler.RegisterRoutes(router)
 	}
+
+	// HTTP firmware download for TCP (old MCU) devices
+	// Old ESP32 MCU downloads firmware via HTTP (not HTTPS)
+	fwDir := filepath.Join("..", "ota")
+	router.PathPrefix("/firmware/").Handler(http.StripPrefix("/firmware/", http.FileServer(http.Dir(fwDir))))
+	log.Printf("HTTP firmware server: /firmware/ → %s", fwDir)
 
 	// 注意：auth 路由已移至独立的 HTTPS 服务器，此处不再注册
 	

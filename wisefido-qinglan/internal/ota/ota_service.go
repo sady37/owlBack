@@ -33,9 +33,11 @@ func NewManager(tcpServer *tcp.Server, firmwareDir, firmwareURL string) *Manager
 // PushRequest OTA push request
 type PushRequest struct {
 	UID           string
-	EspFirmware   string // ESP firmware filename (relative to FirmwareDir)
+	EspFirmware   string // ESP firmware filename (relative to FirmwareDir), or empty if EspFileURL set
 	EspVersion    string
 	EspSHA256     string // optional, auto-calculated if empty
+	EspFileURL    string // direct URL (skip local file lookup)
+	EspFileSize   uint32 // direct size (skip local file lookup)
 	RadarFirmware string
 	RadarVersion  string
 	RadarSHA256   string
@@ -52,7 +54,14 @@ type PushResult struct {
 func (m *Manager) PushToDevice(req PushRequest) PushResult {
 	otaReq := &pb.OTAReq{}
 
-	if req.EspFirmware != "" {
+	if req.EspFileURL != "" {
+		// Direct URL mode (from update.ini)
+		otaReq.Espsfver = req.EspVersion
+		otaReq.ESPFileUrl = req.EspFileURL
+		otaReq.ESPFileSize = req.EspFileSize
+		otaReq.ESPFileSHA256 = req.EspSHA256
+	} else if req.EspFirmware != "" {
+		// Local file mode
 		info, err := m.getFirmwareInfo(req.EspFirmware)
 		if err != nil {
 			return PushResult{UID: req.UID, Success: false, Message: fmt.Sprintf("ESP firmware error: %v", err)}

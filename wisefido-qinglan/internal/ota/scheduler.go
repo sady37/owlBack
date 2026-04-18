@@ -130,50 +130,40 @@ func (s *Scheduler) scan(ctx context.Context) {
 			}
 		}
 
-		// Read update.ini for version numbers
-		iniInfo := parseUpdateINI(s.fwDir, "qinglan")
-		espVer := ""
-		if iniInfo != nil {
-			espVer = iniInfo.EspVer
+		// Read update.ini — use manufacturer's URL/SHA256/Size directly
+		ini := parseUpdateINI(s.fwDir, "qinglan")
+		if ini == nil {
+			log.Printf("[OTA-Scheduler] uid=%s update.ini not found in ota/qinglan/", uid)
+			continue
 		}
-
-		// Pick the target file (could be set in either ota_target_firmware_version or ota_target_mcu_model)
-		targetFile := targetFW
-		if targetFile == "" {
-			targetFile = targetMCU
-		}
-		if targetFile == "" {
-			log.Printf("[OTA-Scheduler] uid=%s no target firmware set, skipping", uid)
+		if ini.ESPFileUrl == "" || ini.EspVer == "" {
+			log.Printf("[OTA-Scheduler] uid=%s update.ini missing ESPFileUrl or espsfver", uid)
 			continue
 		}
 
-		// All firmware pushed via ESP fields (Qinglan radar MCU = ESP32)
-		fwPath := filepath.Join(s.fwDir, "qinglan", targetFile)
-		size, err := getFileSize(fwPath)
-		if err != nil {
-			log.Printf("[OTA-Scheduler] uid=%s firmware not found: %s: %v", uid, fwPath, err)
-			continue
-		}
-		sha, _ := getFileSHA256(fwPath)
+		log.Printf("[OTA-Scheduler] pushing OTA to uid=%s espVer=%s url=%s", uid, ini.EspVer, ini.ESPFileUrl)
 
-		// MQTT payload: use ESP fields
+		// MQTT payload: use update.ini values directly
 		data := map[string]interface{}{
-			"espfileUrl":    s.fwURL + "/qinglan/" + targetFile,
-			"espfilesha256": sha,
-			"espfilesize":   size,
-			"espver":        espVer,
+			"espfileUrl":    ini.ESPFileUrl,
+			"espfilesha256": ini.ESPFileSHA256,
+			"espfilesize":   ini.ESPFileSize,
+			"espver":        ini.EspVer,
 		}
-
-		log.Printf("[OTA-Scheduler] pushing OTA to uid=%s file=%s espVer=%s", uid, targetFile, espVer)
 
 		// Try TCP push first (old MCU), fall back to MQTT
 		tcpOK := false
 		if s.tcpPushFn != nil {
-			// Always use ESP fields (Qinglan radar MCU = ESP32 chip)
+			espSize := uint32(0)
+			if v, err := strconv.ParseUint(ini.ESPFileSize, 10, 32); err == nil {
+				espSize = uint32(v)
+			}
 			req := PushRequest{
 				UID:         uid,
-				EspFirmware: "qinglan/" + targetFile,
-				EspVersion:  espVer,
+				EspVersion:  ini.EspVer,
+				EspFileURL:  ini.ESPFileUrl,
+				EspFileSize: espSize,
+				EspSHA256:   ini.ESPFileSHA256,
 			}
 			result := s.tcpPushFn(req)
 			if result.Success {
@@ -261,13 +251,19 @@ func (s *Scheduler) findFirmware(model, targetVer string) (string, error) {
 	return "", fmt.Errorf("no firmware found for model=%s targetVer=%s", model, targetVer)
 }
 
-// updateINIInfo holds version info parsed from update.ini
+// updateINIInfo holds all OTA info from update.ini
 type updateINIInfo struct {
-	EspVer   string
-	RadarVer string
+	EspVer        string
+	ESPFileUrl    string
+	ESPFileSize   string
+	ESPFileSHA256 string
+	RadarVer      string
+	RadarFileUrl  string
+	RadarFileSize string
+	RadarFileSHA256 string
 }
 
-// parseUpdateINI reads update.ini in the vendor directory and returns version info
+// parseUpdateINI reads update.ini in the vendor directory
 func parseUpdateINI(fwDir, vendor string) *updateINIInfo {
 	iniPath := filepath.Join(fwDir, vendor, "update.ini")
 	data, err := os.ReadFile(iniPath)
@@ -277,22 +273,29 @@ func parseUpdateINI(fwDir, vendor string) *updateINIInfo {
 	info := &updateINIInfo{}
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "espsfver") {
-			parts := strings.SplitN(line, "\t", 2)
-			if len(parts) < 2 {
-				parts = strings.Fields(line)
-			}
-			if len(parts) >= 2 {
-				info.EspVer = strings.TrimSpace(parts[len(parts)-1])
-			}
-		} else if strings.HasPrefix(line, "radarsfver") {
-			parts := strings.SplitN(line, "\t", 2)
-			if len(parts) < 2 {
-				parts = strings.Fields(line)
-			}
-			if len(parts) >= 2 {
-				info.RadarVer = strings.TrimSpace(parts[len(parts)-1])
-			}
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		key := parts[0]
+		val := strings.TrimSpace(strings.Join(parts[1:], " "))
+		switch key {
+		case "espsfver":
+			info.EspVer = val
+		case "ESPFileUrl":
+			info.ESPFileUrl = val
+		case "ESPFileSize":
+			info.ESPFileSize = val
+		case "ESPFileSHA256":
+			info.ESPFileSHA256 = val
+		case "radarsfver":
+			info.RadarVer = val
+		case "RadarFileUrl":
+			info.RadarFileUrl = val
+		case "RadarFileSize":
+			info.RadarFileSize = val
+		case "RadarFileSHA256":
+			info.RadarFileSHA256 = val
 		}
 	}
 	return info

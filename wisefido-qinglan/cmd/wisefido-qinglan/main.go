@@ -272,7 +272,7 @@ func main() {
 		if serverAddr == "" {
 			serverAddr = "0.0.0.0"
 		}
-		fwURL := fmt.Sprintf("https://%s:%d/firmware", serverAddr, cfg.HTTPS.Port)
+		fwURL := fmt.Sprintf("http://%s:%d/firmware", serverAddr, cfg.HTTP.Port)
 		otaScheduler = ota.NewScheduler(
 			db,
 			func(uid string, data map[string]interface{}) error {
