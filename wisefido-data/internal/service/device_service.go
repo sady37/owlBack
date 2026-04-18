@@ -401,6 +401,15 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 		if newDevice.UnitID.Valid {
 			syncUnit(newDevice.UnitID.String)
 		}
+
+		// DeviceCard 管理：设备绑定到 unit 后删除 DeviceCard，解绑后创建 DeviceCard
+		if newDevice.UnitID.Valid && newDevice.UnitID.String != "" {
+			// 设备已绑到 unit，清理独立 DeviceCard
+			s.cardSync.CleanupDeviceCard(ctx, req.TenantID, req.DeviceID)
+		} else {
+			// 设备未绑定 unit，确保有独立 DeviceCard
+			s.cardSync.EnsureDeviceCard(ctx, req.TenantID, *newDevice)
+		}
 	}
 
 	return &UpdateDeviceResponse{
@@ -452,12 +461,16 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 		return nil, fmt.Errorf("failed to delete device: %w", err)
 	}
 
-	if s.cardSync != nil && unitID != "" {
-		if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, unitID); err != nil {
-			s.logger.Warn("Failed to sync cards after device deletion", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", unitID))
-		} else {
-			s.logger.Info("Synced cards after device deletion", zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", unitID))
+	if s.cardSync != nil {
+		if unitID != "" {
+			if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, unitID); err != nil {
+				s.logger.Warn("Failed to sync cards after device deletion", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", unitID))
+			} else {
+				s.logger.Info("Synced cards after device deletion", zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", unitID))
+			}
 		}
+		// 清理设备的独立 DeviceCard
+		s.cardSync.CleanupDeviceCard(ctx, req.TenantID, req.DeviceID)
 	}
 
 	// 发送 device_store 变化信号（device_deleted）

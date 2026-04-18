@@ -601,6 +601,23 @@ func main() {
 				}
 			}
 
+			// 为未绑定 card 的设备创建 DeviceCard（card_id = device_id）
+			totalDeviceCards := 0
+			for _, tenant := range tenants {
+				dcCount, dcErr := cardSyncService.SyncDeviceCards(ctx, tenant.TenantID)
+				if dcErr != nil {
+					logger.Warn("Failed to sync device cards",
+						zap.String("tenant_id", tenant.TenantID),
+						zap.Error(dcErr),
+					)
+				} else {
+					totalDeviceCards += dcCount
+				}
+			}
+			if totalDeviceCards > 0 {
+				logger.Info("DeviceCards synced on startup", zap.Int("created", totalDeviceCards))
+			}
+
 			// 启动时按 alarm_events 重算并写回 cards（unhandled_alarm_*、pop_alarm_*），与 alarm_events 一致
 			// 在 CreateCardsForUnit 之后执行，直接调用内部 CardSyncService
 			recalcOk, recalcFail, err := cardSyncService.RecalcAllCardsAlarmState(ctx, db)

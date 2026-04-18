@@ -76,6 +76,22 @@ func (s *CardSyncService) CreateCardsForUnit(ctx context.Context, tenantID, unit
 		zap.Int("unchanged_count", stats.UnchangedCount),
 	)
 
+	// 清理被纳入 unit card 的设备的 DeviceCard
+	cleanedUp, cleanErr := s.cardRepo.CleanupDeviceCardsByUnit(tenantID, unitID)
+	if cleanErr != nil {
+		s.logger.Warn("Failed to cleanup DeviceCards by unit",
+			zap.String("tenant_id", tenantID),
+			zap.String("unit_id", unitID),
+			zap.Error(cleanErr),
+		)
+	} else if cleanedUp > 0 {
+		s.logger.Info("Cleaned up DeviceCards after unit card sync",
+			zap.String("tenant_id", tenantID),
+			zap.String("unit_id", unitID),
+			zap.Int("cleaned_up", cleanedUp),
+		)
+	}
+
 	affected := s.cardRepo.GetRecordedAndClear()
 	for _, a := range affected {
 		if err := s.emitCardChange(ctx, a); err != nil {
@@ -111,6 +127,125 @@ func (s *CardSyncService) RecalcAllCardsAlarmState(ctx context.Context, db *sql.
 		}
 	}
 	return ok, fail, rows.Err()
+}
+
+// SyncDeviceCards 为未绑定 card 的设备创建 DeviceCard（card_id = device_id）
+// cardagg 使用 card.device.[status] 结构管理设备状态，所有设备都需要有 card 记录
+func (s *CardSyncService) SyncDeviceCards(ctx context.Context, tenantID string) (created int, err error) {
+	if tenantID == "" {
+		return 0, fmt.Errorf("tenant_id is required")
+	}
+
+	devices, err := s.cardRepo.GetDevicesWithoutCard(tenantID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get devices without card: %w", err)
+	}
+
+	if len(devices) == 0 {
+		s.logger.Debug("SyncDeviceCards: no unbound devices found", zap.String("tenant_id", tenantID))
+		return 0, nil
+	}
+
+	s.cardRepo.ClearRecorded()
+	for _, device := range devices {
+		cardID, err := s.cardRepo.CreateDeviceCard(tenantID, device)
+		if err != nil {
+			s.logger.Warn("SyncDeviceCards: failed to create DeviceCard",
+				zap.String("tenant_id", tenantID),
+				zap.String("device_id", device.DeviceID),
+				zap.Error(err),
+			)
+			continue
+		}
+		created++
+		s.logger.Info("SyncDeviceCards: created DeviceCard",
+			zap.String("tenant_id", tenantID),
+			zap.String("card_id", cardID),
+			zap.String("device_uid", device.DeviceUID),
+		)
+	}
+
+	// emit card change events
+	affected := s.cardRepo.GetRecordedAndClear()
+	for _, a := range affected {
+		if err := s.emitCardChange(ctx, a); err != nil {
+			s.logger.Warn("SyncDeviceCards: failed to emit card change",
+				zap.String("card_id", a.CardID),
+				zap.Error(err),
+			)
+		}
+	}
+
+	s.logger.Info("SyncDeviceCards completed",
+		zap.String("tenant_id", tenantID),
+		zap.Int("created", created),
+		zap.Int("total_unbound", len(devices)),
+	)
+	return created, nil
+}
+
+// EnsureDeviceCard 为单个设备创建 DeviceCard（设备创建/首次连接时调用）
+// 如果设备已在某个 card 中则跳过
+func (s *CardSyncService) EnsureDeviceCard(ctx context.Context, tenantID string, device domain.Device) {
+	if tenantID == "" || device.DeviceID == "" {
+		return
+	}
+
+	di := card.DeviceInfo{
+		DeviceID:   device.DeviceID,
+		DeviceUID:  device.DeviceUID,
+		DeviceName: device.DeviceName,
+		Status:     device.Status,
+	}
+
+	s.cardRepo.ClearRecorded()
+	cardID, err := s.cardRepo.CreateDeviceCard(tenantID, di)
+	if err != nil {
+		s.logger.Warn("EnsureDeviceCard: failed",
+			zap.String("tenant_id", tenantID),
+			zap.String("device_id", device.DeviceID),
+			zap.Error(err),
+		)
+		return
+	}
+
+	s.logger.Info("EnsureDeviceCard: created",
+		zap.String("tenant_id", tenantID),
+		zap.String("card_id", cardID),
+	)
+
+	affected := s.cardRepo.GetRecordedAndClear()
+	for _, a := range affected {
+		if err := s.emitCardChange(ctx, a); err != nil {
+			s.logger.Warn("EnsureDeviceCard: emit card change failed",
+				zap.String("card_id", a.CardID), zap.Error(err))
+		}
+	}
+}
+
+// CleanupDeviceCard 删除 DeviceCard（设备绑定到 unit 后调用）
+func (s *CardSyncService) CleanupDeviceCard(ctx context.Context, tenantID, deviceID string) {
+	if tenantID == "" || deviceID == "" {
+		return
+	}
+
+	s.cardRepo.ClearRecorded()
+	if err := s.cardRepo.DeleteDeviceCard(tenantID, deviceID); err != nil {
+		s.logger.Warn("CleanupDeviceCard: failed",
+			zap.String("tenant_id", tenantID),
+			zap.String("device_id", deviceID),
+			zap.Error(err),
+		)
+		return
+	}
+
+	affected := s.cardRepo.GetRecordedAndClear()
+	for _, a := range affected {
+		if err := s.emitCardChange(ctx, a); err != nil {
+			s.logger.Warn("CleanupDeviceCard: emit card change failed",
+				zap.String("card_id", a.CardID), zap.Error(err))
+		}
+	}
 }
 
 // CreateAllCards 为所有单元创建/更新卡片（启动时调用，参考 card-manage CreateAllCards）
@@ -166,6 +301,21 @@ func (s *CardSyncService) CreateAllCards(ctx context.Context, tenantID string) e
 		zap.Int("error_count", errorCount),
 		zap.Int("total_units", len(unitIDs)),
 	)
+
+	// Phase 2: 为未绑定 card 的设备创建 DeviceCard（card_id = device_id）
+	deviceCardCount, err := s.SyncDeviceCards(ctx, tenantID)
+	if err != nil {
+		s.logger.Error("Failed to sync device cards",
+			zap.String("tenant_id", tenantID),
+			zap.Error(err),
+		)
+	} else if deviceCardCount > 0 {
+		s.logger.Info("DeviceCards created for unbound devices",
+			zap.String("tenant_id", tenantID),
+			zap.Int("count", deviceCardCount),
+		)
+	}
+
 	return nil
 }
 

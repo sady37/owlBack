@@ -555,6 +555,14 @@ func canCreateRole(currentRole, targetRole string) bool {
 	return targetLevel >= currentLevel
 }
 
+// canViewRole 检查当前用户是否可以查看指定角色的用户
+// 与 canCreateRole 不同：SystemAdmin 可以查看 SystemAdmin/SystemOperator
+func canViewRole(currentRole, targetRole string) bool {
+	currentLevel := getRoleLevel(currentRole)
+	targetLevel := getRoleLevel(targetRole)
+	return targetLevel >= currentLevel
+}
+
 // HashAccount 哈希账号（SHA256(lower(account))）
 func HashAccount(account string) string {
 	// 这个函数应该在 httpapi 包中，但为了 Service 层独立，我们在这里实现
@@ -775,7 +783,7 @@ func (s *userService) ListUsers(ctx context.Context, req ListUsersRequest) (*Lis
 			continue
 		}
 		// 检查是否可以查看该用户（角色层级检查）
-		if currentUser.Role != "" && !canCreateRole(currentUser.Role, user.Role) {
+		if currentUser.Role != "" && !canViewRole(currentUser.Role, user.Role) {
 			// 不能查看，跳过该用户
 			continue
 		}
@@ -959,7 +967,7 @@ func (s *userService) GetUser(ctx context.Context, req GetUserRequest) (*GetUser
 		}
 
 		// 检查是否可以查看目标用户（角色层级检查）
-		if currentUser.Role != "" && !canCreateRole(currentUser.Role, targetUser.Role) {
+		if currentUser.Role != "" && !canViewRole(currentUser.Role, targetUser.Role) {
 			return nil, fmt.Errorf("not allowed to view %s role user (current role: %s)", targetUser.Role, currentUser.Role)
 		}
 	}

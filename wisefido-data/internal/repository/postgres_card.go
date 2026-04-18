@@ -1180,3 +1180,162 @@ func dedupeNonEmptyStrings(in []string) []string {
 }
 
 // ConvertDevicesToJSON and ConvertResidentsToJSON are in owl-common/card/utils.go
+
+// CreateDeviceCard 为未绑定 card 的设备创建 DeviceCard（card_id = device_id）
+// DeviceCard 的 unit_id 和 bed_id 均为 NULL，devices JSONB 包含该设备信息
+func (r *PostgresCardRepository) CreateDeviceCard(tenantID string, device card.DeviceInfo) (string, error) {
+	if tenantID == "" || device.DeviceID == "" {
+		return "", fmt.Errorf("tenant_id and device_id are required")
+	}
+
+	devicesJSON, err := convertDevicesToJSON([]card.DeviceInfo{device})
+	if err != nil {
+		return "", fmt.Errorf("failed to convert device to JSON: %w", err)
+	}
+
+	// card_name = device_name, card_address = device_uid
+	cardName := device.DeviceName
+	if cardName == "" {
+		cardName = device.DeviceUID
+	}
+	cardAddress := device.DeviceUID
+
+	query := `
+		INSERT INTO cards (
+			card_id, tenant_id, card_type,
+			bed_id, unit_id,
+			card_name, card_address, timezone,
+			resident_id, devices, residents
+		) VALUES ($1, $2, 'DeviceCard', NULL, NULL, $3, $4, 'UTC', NULL, $5, '[]'::jsonb)
+		ON CONFLICT (card_id) DO UPDATE SET
+			card_name = EXCLUDED.card_name,
+			card_address = EXCLUDED.card_address,
+			devices = EXCLUDED.devices
+		RETURNING card_id
+	`
+
+	var cardID string
+	err = r.db.QueryRow(query,
+		device.DeviceID, // card_id = device_id
+		tenantID,
+		cardName,
+		cardAddress,
+		devicesJSON,
+	).Scan(&cardID)
+	if err != nil {
+		return "", fmt.Errorf("failed to create device card: %w", err)
+	}
+
+	r.appendRecorded("created", tenantID, cardID, "", []string{device.DeviceUID})
+	return cardID, nil
+}
+
+// DeleteDeviceCard 删除 DeviceCard（设备绑定到 unit 后清理）
+func (r *PostgresCardRepository) DeleteDeviceCard(tenantID, deviceID string) error {
+	if tenantID == "" || deviceID == "" {
+		return nil
+	}
+	result, err := r.db.Exec(
+		`DELETE FROM cards WHERE tenant_id = $1 AND card_id = $2 AND card_type = 'DeviceCard'`,
+		tenantID, deviceID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to delete device card: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n > 0 {
+		r.appendRecorded("deleted", tenantID, deviceID, "", nil)
+	}
+	return nil
+}
+
+// CleanupDeviceCardsByUnit 清理指定 unit 中所有设备的 DeviceCard
+// 当设备被纳入 unit card（ActiveBedCard/UnitCard）后，独立的 DeviceCard 不再需要
+func (r *PostgresCardRepository) CleanupDeviceCardsByUnit(tenantID, unitID string) (int, error) {
+	if tenantID == "" || unitID == "" {
+		return 0, nil
+	}
+
+	// 找出该 unit 下所有设备的 device_id，删除对应的 DeviceCard
+	query := `
+		DELETE FROM cards
+		WHERE tenant_id = $1
+		  AND card_type = 'DeviceCard'
+		  AND card_id IN (
+			SELECT d.device_id FROM devices d
+			JOIN rooms r ON d.bound_room_id = r.room_id
+			JOIN units u ON r.unit_id = u.unit_id
+			WHERE u.tenant_id = $1 AND u.unit_id = $2
+			UNION
+			SELECT d.device_id FROM devices d
+			JOIN beds b ON d.bound_bed_id = b.bed_id
+			JOIN rooms r ON b.room_id = r.room_id
+			JOIN units u ON r.unit_id = u.unit_id
+			WHERE u.tenant_id = $1 AND u.unit_id = $2
+		  )
+		RETURNING card_id
+	`
+
+	rows, err := r.db.Query(query, tenantID, unitID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to cleanup device cards by unit: %w", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var cardID string
+		if err := rows.Scan(&cardID); err == nil {
+			r.appendRecorded("deleted", tenantID, cardID, "", nil)
+			count++
+		}
+	}
+	return count, rows.Err()
+}
+
+// GetDevicesWithoutCard 查询所有没有出现在任何 card 的 devices JSONB 中的设备
+// 返回可直接用于创建 DeviceCard 的 DeviceInfo 列表
+func (r *PostgresCardRepository) GetDevicesWithoutCard(tenantID string) ([]card.DeviceInfo, error) {
+	if tenantID == "" {
+		return nil, nil
+	}
+
+	query := `
+		SELECT
+			d.device_id::text,
+			d.device_uid,
+			COALESCE(d.device_name, ''),
+			COALESCE(ds.device_type, ''),
+			COALESCE(ds.device_model, ''),
+			d.status
+		FROM devices d
+		LEFT JOIN device_store ds ON ds.device_uid = d.device_uid
+		WHERE d.tenant_id = $1
+		  AND NOT EXISTS (
+			SELECT 1 FROM cards c
+			WHERE c.tenant_id = $1
+			  AND c.devices @> jsonb_build_array(jsonb_build_object('device_id', d.device_id::text))
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM cards c2
+			WHERE c2.tenant_id = $1
+			  AND c2.card_id = d.device_id
+			  AND c2.card_type = 'DeviceCard'
+		  )
+	`
+
+	rows, err := r.db.Query(query, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query devices without card: %w", err)
+	}
+	defer rows.Close()
+
+	var devices []card.DeviceInfo
+	for rows.Next() {
+		var di card.DeviceInfo
+		if err := rows.Scan(&di.DeviceID, &di.DeviceUID, &di.DeviceName, &di.DeviceType, &di.DeviceModel, &di.Status); err != nil {
+			return nil, fmt.Errorf("failed to scan device: %w", err)
+		}
+		devices = append(devices, di)
+	}
+	return devices, rows.Err()
+}
