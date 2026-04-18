@@ -1278,3 +1278,62 @@ func (m *DeviceSubscriptionManager) GetAllDeviceStatuses(tenantID string) []doma
 	}
 	return result
 }
+
+// SetTCPDeviceOnline marks a TCP device as online in subscription manager memory
+// AND publishes online status to Redis cardagg (so wisefido-data API can read it)
+func (m *DeviceSubscriptionManager) SetTCPDeviceOnline(deviceUID, deviceID string) {
+	m.mu.Lock()
+
+	if sub, exists := m.subscriptionsByUID[deviceUID]; exists {
+		sub.mu.Lock()
+		sub.Status = "online"
+		sub.LastSeen = time.Now()
+		sub.mu.Unlock()
+		m.mu.Unlock()
+	} else {
+		// Create a minimal subscription entry for TCP device
+		sub := &DeviceSubscription{
+			DeviceUID: deviceUID,
+			DeviceID:  deviceID,
+			Status:    "online",
+			LastSeen:  time.Now(),
+		}
+		m.subscriptionsByUID[deviceUID] = sub
+		if deviceID != "" {
+			m.subscriptionsByID[deviceID] = sub
+		}
+		m.mu.Unlock()
+		log.Printf("[TCP] device %s marked online in subscription manager", deviceUID)
+	}
+
+	// Publish online status to Redis cardagg (same as MQTT devices)
+	if deviceID != "" && m.streamPublisher != nil {
+		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, "", "", deviceUID, map[string]int{
+			observation.FieldOffline: 0,
+		})
+		log.Printf("[TCP] published online status to cardagg: uid=%s deviceID=%s", deviceUID, deviceID)
+	}
+}
+
+// SetTCPDeviceOffline marks a TCP device as offline in subscription manager memory
+// AND publishes offline status to Redis cardagg
+func (m *DeviceSubscriptionManager) SetTCPDeviceOffline(deviceUID string) {
+	var deviceID string
+	m.mu.Lock()
+	if sub, exists := m.subscriptionsByUID[deviceUID]; exists {
+		sub.mu.Lock()
+		sub.Status = "offline"
+		deviceID = sub.DeviceID
+		sub.mu.Unlock()
+		log.Printf("[TCP] device %s marked offline in subscription manager", deviceUID)
+	}
+	m.mu.Unlock()
+
+	// Publish offline status to Redis cardagg
+	if deviceID != "" && m.streamPublisher != nil {
+		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, "", "", deviceUID, map[string]int{
+			observation.FieldOffline: 1,
+		})
+		log.Printf("[TCP] published offline status to cardagg: uid=%s", deviceUID)
+	}
+}

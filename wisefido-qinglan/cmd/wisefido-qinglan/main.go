@@ -231,27 +231,29 @@ func main() {
 		// Set TCP OnProgress callback
 		httpsServer.TCPServer().OnProgress = makeOTAProgressCallback(db)
 
-		// Set TCP OnRegister callback: update device_store firmware_version + online_status
+		// Set TCP OnRegister callback: writeback firmware + mark online
 		httpsServer.TCPServer().OnRegister = func(uid, deviceType, sfVer, hwVer string) {
 			log.Printf("[TCP-Register] writeback: uid=%s type=%s sfVer=%s hwVer=%s", uid, deviceType, sfVer, hwVer)
+			// Update firmware_version + mcu_model in device_store
 			_, err := db.ExecContext(context.Background(), `
 				UPDATE device_store SET
 					firmware_version = COALESCE(NULLIF($2, ''), firmware_version),
-					mcu_model = COALESCE(NULLIF($3, ''), mcu_model),
-					online_status = 'online'
+					mcu_model = COALESCE(NULLIF($3, ''), mcu_model)
 				WHERE device_uid = $1
 			`, uid, sfVer, hwVer)
 			if err != nil {
 				log.Printf("[TCP-Register] writeback failed uid=%s: %v", uid, err)
 			}
+			// Mark online in subscription manager (same mechanism as MQTT devices)
+			var deviceID string
+			_ = db.QueryRowContext(context.Background(), `SELECT device_id FROM device_store WHERE device_uid = $1`, uid).Scan(&deviceID)
+			subscriptionManager.SetTCPDeviceOnline(uid, deviceID)
 		}
 
-		// Set TCP disconnect callback: update device_store online_status to offline
+		// Set TCP disconnect callback: mark offline in subscription manager
 		httpsServer.TCPServer().Sessions.OnDisconnect = func(uid string) {
 			log.Printf("[TCP-Disconnect] setting offline: uid=%s", uid)
-			_, _ = db.ExecContext(context.Background(), `
-				UPDATE device_store SET online_status = 'offline' WHERE device_uid = $1
-			`, uid)
+			subscriptionManager.SetTCPDeviceOffline(uid)
 		}
 
 		// Create OTA handler and inject to HTTP server
