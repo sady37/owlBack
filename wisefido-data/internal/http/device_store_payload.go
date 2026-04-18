@@ -38,18 +38,18 @@ func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
 	if v, ok := payload["firmware_version"].(string); ok && v != "" {
 		ds.FirmwareVersion = sql.NullString{String: v, Valid: true}
 	}
-	if v, ok := payload["ota_target_firmware_version"].(string); ok {
-		if v != "" {
-			ds.OTATargetFirmwareVersion = sql.NullString{String: v, Valid: true}
+	if v, ok := payload["ota_target_firmware_version"]; ok {
+		if s, isStr := v.(string); isStr && s != "" {
+			ds.OTATargetFirmwareVersion = sql.NullString{String: s, Valid: true}
 		} else {
-			ds.OTATargetFirmwareVersion = sql.NullString{Valid: false}
+			ds.OTATargetFirmwareVersion = sql.NullString{Valid: false} // null or empty → clear
 		}
 	}
-	if v, ok := payload["ota_target_mcu_model"].(string); ok {
-		if v != "" {
-			ds.OTATargetMCUModel = sql.NullString{String: v, Valid: true}
+	if v, ok := payload["ota_target_mcu_model"]; ok {
+		if s, isStr := v.(string); isStr && s != "" {
+			ds.OTATargetMCUModel = sql.NullString{String: s, Valid: true}
 		} else {
-			ds.OTATargetMCUModel = sql.NullString{Valid: false}
+			ds.OTATargetMCUModel = sql.NullString{Valid: false} // null or empty → clear
 		}
 	}
 	if v, ok := payload["tenant_id"]; ok {
@@ -62,23 +62,23 @@ func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
 	if v, ok := payload["allow_access"].(bool); ok {
 		ds.AllowAccess = v
 	}
-	if v, ok := payload["ota_permit"].(string); ok {
-		if v != "" {
-			ds.OTAPermit = sql.NullString{String: v, Valid: true}
+	if v, ok := payload["ota_permit"]; ok {
+		if s, isStr := v.(string); isStr && s != "" {
+			ds.OTAPermit = sql.NullString{String: s, Valid: true}
 		} else {
 			ds.OTAPermit = sql.NullString{Valid: false}
 		}
 	}
-	if v, ok := payload["ota_way"].(string); ok {
-		if v != "" {
-			ds.OTAWay = sql.NullString{String: v, Valid: true}
+	if v, ok := payload["ota_way"]; ok {
+		if s, isStr := v.(string); isStr && s != "" {
+			ds.OTAWay = sql.NullString{String: s, Valid: true}
 		} else {
 			ds.OTAWay = sql.NullString{Valid: false}
 		}
 	}
-	if v, ok := payload["ota_schedule"].(string); ok {
-		if v != "" {
-			ds.OTASchedule = sql.NullString{String: v, Valid: true}
+	if v, ok := payload["ota_schedule"]; ok {
+		if s, isStr := v.(string); isStr && s != "" {
+			ds.OTASchedule = sql.NullString{String: s, Valid: true}
 		} else {
 			ds.OTASchedule = sql.NullString{Valid: false}
 		}
