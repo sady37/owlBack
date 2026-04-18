@@ -98,6 +98,8 @@ func NewHTTPSServer(
 
 	// Serve firmware files for OTA download
 	router.PathPrefix("/firmware/").Handler(http.StripPrefix("/firmware/", http.FileServer(http.Dir(fwDir))))
+	// /ota/ path maps directly to owlBack/ota/ directory
+	router.PathPrefix("/ota/").Handler(http.StripPrefix("/ota/", http.FileServer(http.Dir(fwDir))))
 
 	// 创建 TLS 配置
 	tlsConfig := &tls.Config{
