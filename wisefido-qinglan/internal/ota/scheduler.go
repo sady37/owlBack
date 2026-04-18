@@ -84,17 +84,19 @@ func (s *Scheduler) scan(ctx context.Context) {
 		return
 	}
 
-	// Query devices with ota_permit=true and ota_mode in (manual, schedule, tenant_approved)
-	// and ota_status in (idle, pending)
+	// Query devices with ota_permit='true' and ota_way in (schedule, tenant)
+	// that have been approved and are idle/pending
 	query := `
-		SELECT device_uid, device_model, firmware_version,
-		       COALESCE(ota_mode, '') as ota_mode,
+		SELECT device_uid, COALESCE(device_model, '') as device_model,
+		       COALESCE(firmware_version, '') as firmware_version,
+		       COALESCE(ota_way, '') as ota_way,
 		       COALESCE(ota_schedule, '') as ota_schedule,
-		       COALESCE(ota_target_version, '') as ota_target_version,
+		       COALESCE(ota_target_firmware_version, '') as ota_target_fw,
 		       COALESCE(ota_status, 'idle') as ota_status
 		FROM device_store
-		WHERE ota_permit = true
-		  AND ota_mode IN ('manual', 'schedule', 'tenant_approved')
+		WHERE ota_permit = 'true'
+		  AND ota_way IN ('schedule', 'tenant')
+		  AND ota_tenant_approved = true
 		  AND COALESCE(ota_status, 'idle') IN ('idle', 'pending')
 		  AND allow_access = true
 	`
@@ -108,15 +110,15 @@ func (s *Scheduler) scan(ctx context.Context) {
 	count := 0
 	pushed := 0
 	for rows.Next() {
-		var uid, model, fwVer, mode, schedule, targetVer, status string
-		if err := rows.Scan(&uid, &model, &fwVer, &mode, &schedule, &targetVer, &status); err != nil {
+		var uid, model, fwVer, way, schedule, targetVer, status string
+		if err := rows.Scan(&uid, &model, &fwVer, &way, &schedule, &targetVer, &status); err != nil {
 			log.Printf("[OTA-Scheduler] scan row failed: %v", err)
 			continue
 		}
 		count++
 
 		// For schedule mode, check if current time is within the schedule window
-		if mode == "schedule" && schedule != "" {
+		if way == "schedule" && schedule != "" {
 			if !IsInScheduleWindow(schedule, time.Now()) {
 				log.Printf("[OTA-Scheduler] uid=%s schedule=%s not in window, skipping", uid, schedule)
 				continue
