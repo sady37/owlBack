@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -44,6 +45,8 @@ func (h *DeviceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.GetDevice(w, r)
 	case strings.HasSuffix(r.URL.Path, "/ota-approve") && r.Method == http.MethodPost:
 		h.ApproveOTA(w, r)
+	case strings.HasSuffix(r.URL.Path, "/ota-schedule") && r.Method == http.MethodPost:
+		h.SetOTASchedule(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api/v1/devices/") && r.Method == http.MethodPut:
 		h.UpdateDevice(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api/v1/devices/") && r.Method == http.MethodDelete:
@@ -354,6 +357,48 @@ func (h *DeviceHandler) ApproveOTA(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.Error("ApproveOTA failed", zap.String("device_id", deviceID), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail("failed to approve OTA"))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
+}
+
+// SetOTASchedule allows tenant to update OTA schedule for their device
+func (h *DeviceHandler) SetOTASchedule(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/devices/")
+	deviceID := strings.TrimSuffix(path, "/ota-schedule")
+	if deviceID == "" || strings.Contains(deviceID, "/") {
+		writeJSON(w, http.StatusOK, Fail("device_id is required"))
+		return
+	}
+
+	if h.db == nil {
+		writeJSON(w, http.StatusOK, Fail("database not available"))
+		return
+	}
+
+	var body struct {
+		Schedule string `json:"schedule"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusOK, Fail("invalid request"))
+		return
+	}
+
+	// Only allow schedule update when way=tenant
+	var way sql.NullString
+	h.db.QueryRowContext(r.Context(), `SELECT ota_way FROM device_store WHERE device_id = $1`, deviceID).Scan(&way)
+	if !way.Valid || way.String != "tenant" {
+		writeJSON(w, http.StatusOK, Fail("schedule can only be modified when OTA way is tenant"))
+		return
+	}
+
+	_, err := h.db.ExecContext(r.Context(),
+		`UPDATE device_store SET ota_schedule = $1, ota_updated_at = CURRENT_TIMESTAMP WHERE device_id = $2`,
+		sql.NullString{String: body.Schedule, Valid: body.Schedule != ""}, deviceID)
+	if err != nil {
+		h.logger.Error("SetOTASchedule failed", zap.String("device_id", deviceID), zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail("failed to update schedule"))
 		return
 	}
 
