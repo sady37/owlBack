@@ -140,7 +140,7 @@ func (s *Scheduler) scan(ctx context.Context) {
 			continue
 		}
 
-		// Read version from config.ini (by filename)
+		// Read version from update.ini (by filename)
 		verInfo := parseConfigINI(s.fwDir, targetFile)
 		espVer := ""
 		if verInfo != nil {
@@ -265,15 +265,15 @@ func (s *Scheduler) findFirmware(model, targetVer string) (string, error) {
 	return "", fmt.Errorf("no firmware found for model=%s targetVer=%s", model, targetVer)
 }
 
-// fwVersionInfo holds version info for a firmware file from config.ini
+// fwVersionInfo holds version info for a firmware file from update.ini
 type fwVersionInfo struct {
 	EspVer   string
 	RadarVer string
 }
 
-// parseConfigINI reads ota/config.ini and returns version info for a specific filename
+// parseConfigINI reads ota/update.ini and returns version info for a specific filename
 func parseConfigINI(fwDir, targetFile string) *fwVersionInfo {
-	iniPath := filepath.Join(fwDir, "config.ini")
+	iniPath := filepath.Join(fwDir, "update.ini")
 	data, err := os.ReadFile(iniPath)
 	if err != nil {
 		return nil
