@@ -133,10 +133,8 @@ func (s *Scheduler) scan(ctx context.Context) {
 		// Read update.ini for version numbers
 		iniInfo := parseUpdateINI(s.fwDir, "qinglan")
 		espVer := ""
-		radarVer := ""
 		if iniInfo != nil {
 			espVer = iniInfo.EspVer
-			radarVer = iniInfo.RadarVer
 		}
 
 		// Pick the target file (could be set in either ota_target_firmware_version or ota_target_mcu_model)
@@ -171,16 +169,11 @@ func (s *Scheduler) scan(ctx context.Context) {
 		// Try TCP push first (old MCU), fall back to MQTT
 		tcpOK := false
 		if s.tcpPushFn != nil {
+			// Always use ESP fields (Qinglan radar MCU = ESP32 chip)
 			req := PushRequest{
 				UID:         uid,
 				EspFirmware: "qinglan/" + targetFile,
 				EspVersion:  espVer,
-			}
-			if radarVer != "" && strings.Contains(strings.ToLower(targetFile), "-mcu-") {
-				req.RadarFirmware = "qinglan/" + targetFile
-				req.RadarVersion = radarVer
-				req.EspFirmware = ""
-				req.EspVersion = ""
 			}
 			result := s.tcpPushFn(req)
 			if result.Success {
