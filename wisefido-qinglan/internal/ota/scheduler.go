@@ -84,21 +84,21 @@ func (s *Scheduler) scan(ctx context.Context) {
 		return
 	}
 
-	// Query devices with ota_permit='true' and ota_way in (schedule, tenant)
-	// that have been approved and are idle/pending
+	// Query approved devices ready for OTA
 	query := `
-		SELECT device_uid, COALESCE(device_model, '') as device_model,
-		       COALESCE(firmware_version, '') as firmware_version,
+		SELECT device_uid,
 		       COALESCE(ota_way, '') as ota_way,
 		       COALESCE(ota_schedule, '') as ota_schedule,
 		       COALESCE(ota_target_firmware_version, '') as ota_target_fw,
-		       COALESCE(ota_status, 'idle') as ota_status
+		       COALESCE(ota_target_mcu_model, '') as ota_target_mcu
 		FROM device_store
 		WHERE ota_permit = 'true'
 		  AND ota_way IN ('schedule', 'tenant')
 		  AND ota_tenant_approved = true
 		  AND COALESCE(ota_status, 'idle') IN ('idle', 'pending')
 		  AND allow_access = true
+		  AND (ota_target_firmware_version IS NOT NULL AND ota_target_firmware_version != ''
+		       OR ota_target_mcu_model IS NOT NULL AND ota_target_mcu_model != '')
 	`
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
@@ -110,8 +110,8 @@ func (s *Scheduler) scan(ctx context.Context) {
 	count := 0
 	pushed := 0
 	for rows.Next() {
-		var uid, model, fwVer, way, schedule, targetVer, status string
-		if err := rows.Scan(&uid, &model, &fwVer, &way, &schedule, &targetVer, &status); err != nil {
+		var uid, way, schedule, targetFW, targetMCU string
+		if err := rows.Scan(&uid, &way, &schedule, &targetFW, &targetMCU); err != nil {
 			log.Printf("[OTA-Scheduler] scan row failed: %v", err)
 			continue
 		}
@@ -125,42 +125,43 @@ func (s *Scheduler) scan(ctx context.Context) {
 			}
 		}
 
-		// Find firmware file for this device model
-		fwFile, err := s.findFirmware(model, targetVer)
-		if err != nil {
-			log.Printf("[OTA-Scheduler] uid=%s model=%s no firmware found: %v", uid, model, err)
+		// Build OTA data from target firmware filenames (already set in device_store)
+		data := map[string]interface{}{}
+
+		if targetFW != "" {
+			fwPath := filepath.Join(s.fwDir, "qinglan", targetFW)
+			size, err := getFileSize(fwPath)
+			if err != nil {
+				log.Printf("[OTA-Scheduler] uid=%s ESP firmware not found: %s: %v", uid, fwPath, err)
+			} else {
+				sha, _ := getFileSHA256(fwPath)
+				data["espfileUrl"] = s.fwURL + "/qinglan/" + targetFW
+				data["espfilesha256"] = sha
+				data["espfilesize"] = size
+				data["espver"] = targetFW
+			}
+		}
+
+		if targetMCU != "" {
+			mcuPath := filepath.Join(s.fwDir, "qinglan", targetMCU)
+			size, err := getFileSize(mcuPath)
+			if err != nil {
+				log.Printf("[OTA-Scheduler] uid=%s Radar firmware not found: %s: %v", uid, mcuPath, err)
+			} else {
+				sha, _ := getFileSHA256(mcuPath)
+				data["radarfileUrl"] = s.fwURL + "/qinglan/" + targetMCU
+				data["radarfilesha256"] = sha
+				data["radarfilesize"] = size
+				data["radarver"] = targetMCU
+			}
+		}
+
+		if len(data) == 0 {
+			log.Printf("[OTA-Scheduler] uid=%s no firmware files found, skipping", uid)
 			continue
 		}
 
-		// Get file info
-		fwPath := filepath.Join(s.fwDir, fwFile)
-		size, err := getFileSize(fwPath)
-		if err != nil {
-			log.Printf("[OTA-Scheduler] uid=%s firmware size error: %v", uid, err)
-			continue
-		}
-		sha, err := getFileSHA256(fwPath)
-		if err != nil {
-			log.Printf("[OTA-Scheduler] uid=%s firmware hash error: %v", uid, err)
-			continue
-		}
-
-		// Build MQTT OTA data payload
-		downloadURL := s.fwURL + "/" + fwFile
-		version := targetVer
-		if version == "" {
-			version = filepath.Base(fwFile)
-		}
-
-		data := map[string]interface{}{
-			"espfileUrl":    downloadURL,
-			"espfilesha256": sha,
-			"espfilesize":   size,
-			"espver":        version,
-		}
-
-		log.Printf("[OTA-Scheduler] pushing OTA to uid=%s model=%s firmware=%s version=%s",
-			uid, model, fwFile, version)
+		log.Printf("[OTA-Scheduler] pushing OTA to uid=%s fw=%s mcu=%s", uid, targetFW, targetMCU)
 
 		if err := s.otaPushFn(uid, data); err != nil {
 			log.Printf("[OTA-Scheduler] push failed uid=%s: %v", uid, err)
