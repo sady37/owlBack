@@ -130,7 +130,7 @@ func (s *Scheduler) scan(ctx context.Context) {
 			}
 		}
 
-		// Pick target file from device_store
+		// Pick target file from device_store (flat filename, e.g. mcu-qinglan-xxx.bin)
 		targetFile := targetFW
 		if targetFile == "" {
 			targetFile = targetMCU
@@ -140,21 +140,15 @@ func (s *Scheduler) scan(ctx context.Context) {
 			continue
 		}
 
-		// Determine vendor from file path (e.g. "qinglan" from ota/qinglan/xxx.bin)
-		vendor := filepath.Dir(targetFile)
-		if vendor == "." {
-			vendor = "qinglan" // default vendor
-		}
-
-		// Read version from update.ini
-		ini := parseUpdateINI(s.fwDir, vendor)
+		// Read version from config.ini (by filename)
+		verInfo := parseConfigINI(s.fwDir, targetFile)
 		espVer := ""
-		if ini != nil {
-			espVer = ini.EspVer
+		if verInfo != nil {
+			espVer = verInfo.EspVer
 		}
 
-		// Local file: size + SHA256
-		localPath := filepath.Join(s.fwDir, vendor, filepath.Base(targetFile))
+		// Local file: size + SHA256 (flat ota/ directory)
+		localPath := filepath.Join(s.fwDir, targetFile)
 		fwSize, err := getFileSize(localPath)
 		if err != nil {
 			log.Printf("[OTA-Scheduler] uid=%s firmware not found: %s: %v", uid, localPath, err)
@@ -162,8 +156,8 @@ func (s *Scheduler) scan(ctx context.Context) {
 		}
 		fwSHA, _ := getFileSHA256(localPath)
 
-		// Download URL: base URL + vendor/filename
-		downloadURL := fmt.Sprintf("%s/%s/%s", s.fwURL, vendor, filepath.Base(targetFile))
+		// Download URL: base URL + filename
+		downloadURL := fmt.Sprintf("%s/%s", s.fwURL, targetFile)
 
 		log.Printf("[OTA-Scheduler] pushing OTA to uid=%s file=%s ver=%s url=%s", uid, targetFile, espVer, downloadURL)
 
@@ -271,52 +265,49 @@ func (s *Scheduler) findFirmware(model, targetVer string) (string, error) {
 	return "", fmt.Errorf("no firmware found for model=%s targetVer=%s", model, targetVer)
 }
 
-// updateINIInfo holds all OTA info from update.ini
-type updateINIInfo struct {
-	EspVer        string
-	ESPFileUrl    string
-	ESPFileSize   string
-	ESPFileSHA256 string
-	RadarVer      string
-	RadarFileUrl  string
-	RadarFileSize string
-	RadarFileSHA256 string
+// fwVersionInfo holds version info for a firmware file from config.ini
+type fwVersionInfo struct {
+	EspVer   string
+	RadarVer string
 }
 
-// parseUpdateINI reads update.ini in the vendor directory
-func parseUpdateINI(fwDir, vendor string) *updateINIInfo {
-	iniPath := filepath.Join(fwDir, vendor, "update.ini")
+// parseConfigINI reads ota/config.ini and returns version info for a specific filename
+func parseConfigINI(fwDir, targetFile string) *fwVersionInfo {
+	iniPath := filepath.Join(fwDir, "config.ini")
 	data, err := os.ReadFile(iniPath)
 	if err != nil {
 		return nil
 	}
-	info := &updateINIInfo{}
+	// Find the section for targetFile
+	var info *fwVersionInfo
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "file:") {
+			fname := strings.TrimSpace(strings.TrimPrefix(line, "file:"))
+			if fname == targetFile {
+				info = &fwVersionInfo{}
+			} else {
+				info = nil // different file section
+			}
+			continue
+		}
+		if info == nil {
+			continue
+		}
 		parts := strings.Fields(line)
 		if len(parts) < 2 {
 			continue
 		}
-		key := parts[0]
-		val := strings.TrimSpace(strings.Join(parts[1:], " "))
-		switch key {
+		switch parts[0] {
 		case "espsfver":
-			info.EspVer = val
-		case "ESPFileUrl":
-			info.ESPFileUrl = val
-		case "ESPFileSize":
-			info.ESPFileSize = val
-		case "ESPFileSHA256":
-			info.ESPFileSHA256 = val
+			info.EspVer = strings.TrimSpace(parts[1])
 		case "radarsfver":
-			info.RadarVer = val
-		case "RadarFileUrl":
-			info.RadarFileUrl = val
-		case "RadarFileSize":
-			info.RadarFileSize = val
-		case "RadarFileSHA256":
-			info.RadarFileSHA256 = val
+			info.RadarVer = strings.TrimSpace(parts[1])
 		}
+	}
+	// Re-scan to find (in case file was last section)
+	if info == nil {
+		return nil
 	}
 	return info
 }
