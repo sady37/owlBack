@@ -735,8 +735,6 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 
 	// 如果这是设备首次收到消息（LastSeen为零值），发送monitor订阅命令并发布 online event
 	if oldLastSeen.IsZero() {
-		log.Printf("Device %s first MQTT message received (type: %s), sending monitor subscription command and publishing online event", deviceUID, topicType)
-
 		// 发布 online event 到 alarm stream 和 config stream
 		m.mu.RLock()
 		sub, exists := m.subscriptionsByUID[deviceUID]
@@ -771,10 +769,6 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 					_ = m.streamPublisher.PublishAlarm(ctx, msg)
 				}()
 			}
-			m.logger.Info("Device subscription created (first message)",
-				zap.String("device_uid", deviceUID),
-				zap.String("status", "online"),
-			)
 		}
 
 		// 发送 monitor 订阅命令
@@ -782,17 +776,17 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := m.mqttPublisher.SubscribeRealtimeData(ctx, deviceUID, m.defaultContent, m.defaultDuration); err != nil {
-				m.logger.Warn("Failed to send monitor subscription command on first message",
+				m.logger.Warn("Failed to send monitor subscription on first message",
 					zap.String("device_uid", deviceUID),
 					zap.Error(err),
 				)
-			} else {
-				m.logger.Info("Sent monitor subscription command on first message",
-					zap.String("device_uid", deviceUID),
-				)
-				log.Printf("✅ Sent monitor subscription command to device %s on first message", deviceUID)
 			}
 		}()
+
+		m.logger.Info("Device online, monitor subscribed",
+			zap.String("device_uid", deviceUID),
+			zap.String("first_msg_type", topicType),
+		)
 	}
 
 	// DB status 不存 on/offline；on/offline 仅存内存（LastSeen + 90s 超时）
@@ -812,19 +806,24 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 		return
 	}
 
+	// 检查 devices.status，disabled 的设备不创建订阅（避免与 checkDeviceHeartbeat 形成创建→删除死循环）
+	dbStatus, err := m.getDeviceStatus(ctx, deviceID)
+	if err == nil && dbStatus == "disabled" {
+		m.logger.Debug("Skipping auto-subscribe for disabled device",
+			zap.String("device_uid", deviceUID),
+			zap.String("device_id", deviceID),
+		)
+		return
+	}
+
 	// 订阅设备的6个MQTT主题（不使用通配符，仅订阅该设备的主题）
 	if m.mqttConsumer != nil {
 		if err := m.mqttConsumer.SubscribeDeviceTopics(deviceUID); err != nil {
-			m.logger.Warn("Failed to subscribe device MQTT topics on first message",
+			m.logger.Warn("Failed to subscribe device MQTT topics",
 				zap.String("device_uid", deviceUID),
 				zap.Error(err),
 			)
-			log.Printf("⚠️ Failed to subscribe MQTT topics for device %s on first message: %v", deviceUID, err)
-		} else {
-			m.logger.Info("Subscribed device MQTT topics on first message",
-				zap.String("device_uid", deviceUID),
-			)
-			log.Printf("✅ Subscribed MQTT topics for device %s on first message", deviceUID)
+			return
 		}
 	}
 
@@ -873,31 +872,10 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 		if deviceID != "" {
 			m.subscriptionsByID[deviceID] = sub
 		}
-		m.logger.Info("Device subscription created",
-			zap.String("device_uid", deviceUID),
-			zap.String("status", "online"),
-		)
-		m.logger.Info("Created subscription record for device on first message",
-			zap.String("device_uid", deviceUID),
-			zap.String("device_id", deviceID),
-		)
 	}
 	m.mu.Unlock()
 
-	// 发送monitor订阅命令（设备已经连接MQTT，命令不会丢失）
-	if err := m.mqttPublisher.SubscribeRealtimeData(ctx, deviceUID, m.defaultContent, m.defaultDuration); err != nil {
-		m.logger.Warn("Failed to send monitor subscription command on first message",
-			zap.String("device_uid", deviceUID),
-			zap.String("device_id", deviceID),
-			zap.Error(err),
-		)
-	} else {
-		m.logger.Info("Auto-subscribed on device first message",
-			zap.String("device_uid", deviceUID),
-			zap.String("device_id", deviceID),
-		)
-		log.Printf("✅ Auto-sent monitor subscription command to device %s on first message", deviceUID)
-	}
+	// monitor 订阅命令由 UpdateLastSeenByType 首条消息逻辑统一发送，此处不再重复
 }
 
 // heartbeatMonitor 心跳监测goroutine（每90秒检查一次）

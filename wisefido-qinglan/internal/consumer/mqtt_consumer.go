@@ -715,11 +715,15 @@ func (c *MQTTConsumer) handleOTAReturn(uid string, message map[string]interface{
 		if code == 200 || code == 0 {
 			status = "success"
 		}
+		progress := 0
+		if status == "success" {
+			progress = 100
+		}
 		_, err := c.db.ExecContext(context.Background(), `
 			UPDATE device_store
-			SET ota_status = $1, ota_updated_at = NOW(), firmware_version = CASE WHEN $1 = 'success' AND $3 != '' THEN $3 ELSE firmware_version END
+			SET ota_status = $1::text, ota_progress = $4, ota_updated_at = NOW(), firmware_version = CASE WHEN $1::text = 'success' AND $3::text != '' THEN $3::text ELSE firmware_version END
 			WHERE device_uid = $2
-		`, status, uid, version)
+		`, status, uid, version, progress)
 		if err != nil {
 			log.Printf("[OTA-RETURN] failed to update ota_status for uid=%s: %v", uid, err)
 		} else {
@@ -976,8 +980,8 @@ func asInt(v interface{}) int {
 }
 
 // handleStatMessage 处理统计数据消息（activity×1 + sleep×1）。
-//   - stat track (activity) → iot:event:stream, category=activity（状态汇总：people_count, walk_distance 等）
-//   - stat sleep            → iot:alarm/event（见 publishStatSleep）
+//   - !canMonitor: drop stat data, only send heart
+//   - canMonitor:  stat activity → iot:event:stream; stat sleep → iot:alarm/event + always send heart
 func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interface{}) error {
 	ctx := context.Background()
 	tid, bid, unitID, cid, did, _, _, ok := c.resolveDeviceIdentity(ctx, uid)
@@ -1015,8 +1019,18 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 	}
 
 	ts := time.Now().UnixMilli()
-	var lastErr error
 
+	if len(items) == 0 {
+		return nil
+	}
+
+	// !canMonitor: drop stat data, only send heart
+	if !canMonitor {
+		return c.publishRadarMonitorHeartbeat(ctx, tid, cid, uid, did, ts)
+	}
+
+	// canMonitor: process stat data normally + send heart
+	var lastErr error
 	for _, m := range items {
 		cat, _ := m["dataCategory"].(string)
 		if cat == "" {
@@ -1033,10 +1047,8 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 			}
 		}
 	}
-	if canIoT && !canMonitor && len(items) > 0 {
-		if err := c.publishRadarMonitorHeartbeat(ctx, tid, cid, uid, did, ts); err != nil {
-			lastErr = err
-		}
+	if err := c.publishRadarMonitorHeartbeat(ctx, tid, cid, uid, did, ts); err != nil {
+		lastErr = err
 	}
 	return lastErr
 }
@@ -1160,8 +1172,8 @@ func (c *MQTTConsumer) publishStatSleep(ctx context.Context, tid, bid, unitID, c
 }
 
 // handleEventMessage 处理事件/告警消息（event + alarm topic 统一入口），payload 符合 EventItem 格式。
-// decoder 输出 event_name（如 InBed、Fall）；consumer 用其值作 category 注入 dataCategory，用于业务路由。
-// 按 event_type 分配 track_id：type=1/2 人、type=3 TrackSpace、type=5/7/8 TrackDevice。流使用 device_uid。
+// !canMonitor: drop event/alarm data, only send heart。
+// canMonitor: decoder 输出 event_name（如 InBed、Fall），按 event_type 分配 track_id，流使用 device_uid。
 func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interface{}) error {
 	ctx := context.Background()
 	tid, _, _, cid, did, _, _, ok := c.resolveDeviceIdentity(ctx, uid)
@@ -1197,8 +1209,18 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 	}
 
 	ts := time.Now().UnixMilli()
-	var lastErr error
 
+	if len(items) == 0 {
+		return nil
+	}
+
+	// !canMonitor: drop event/alarm data, only send heart
+	if !canMonitor {
+		return c.publishRadarMonitorHeartbeat(ctx, tid, cid, uid, did, ts)
+	}
+
+	// canMonitor: process event/alarm data normally
+	var lastErr error
 	for _, m := range items {
 		eventName, _ := m["event_name"].(string)
 		if eventName == "" {
@@ -1286,11 +1308,6 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 		msg := rediscommon.NewSingleItemMessage(tid, cid, uid, did, DeviceTypeRadar, ts, "event", eventName, data)
 		if err := c.streamPublisher.PublishEvent(ctx, msg); err != nil {
 			log.Printf("[EVENT_HANDLER] publish failed device=%s cat=%s: %v", uid, eventName, err)
-			lastErr = err
-		}
-	}
-	if canIoT && !canMonitor && len(items) > 0 {
-		if err := c.publishRadarMonitorHeartbeat(ctx, tid, cid, uid, did, ts); err != nil {
 			lastErr = err
 		}
 	}

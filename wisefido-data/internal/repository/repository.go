@@ -191,7 +191,6 @@ type DevicesRepo interface {
 	CreateDevice(ctx context.Context, tenantID string, payload map[string]any) (string, error)
 	UpdateDevice(ctx context.Context, tenantID, deviceID string, payload map[string]any) error
 	DeleteDevice(ctx context.Context, tenantID, deviceID string) error
-	DisableDevice(ctx context.Context, tenantID, deviceID string) error
 	GetOrCreateDeviceFromStore(ctx context.Context, identifier string, mqttTopic string) (*Device, error)
 }
 

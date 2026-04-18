@@ -28,9 +28,6 @@ type DevicesRepository interface {
 	// 删除（物理删除，仅当设备未使用时）
 	DeleteDevice(ctx context.Context, tenantID, deviceID string) error
 
-	// 软删除（禁用设备）
-	DisableDevice(ctx context.Context, tenantID, deviceID string) error
-
 	// 自动创建（设备首次连接时自动创建）
 	GetOrCreateDeviceFromStore(ctx context.Context, identifier string, mqttTopic string) (*domain.Device, error)
 

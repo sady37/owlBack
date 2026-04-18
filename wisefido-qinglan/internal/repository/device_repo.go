@@ -34,9 +34,6 @@ type DeviceRepository interface {
 	// GetDevicesByTenant 根据租户获取设备列表
 	GetDevicesByTenant(ctx context.Context, tenantID string) ([]*domain.Device, error)
 
-	// UpdateDeviceStatus 更新设备状态
-	UpdateDeviceStatus(ctx context.Context, uid, status string) error
-
 	// UpdateDeviceMonitoring 更新设备监控状态
 	UpdateDeviceMonitoring(ctx context.Context, uid string, enabled bool) error
 
@@ -51,9 +48,6 @@ type DeviceRepository interface {
 
 	// UpdateDevice 更新设备信息
 	UpdateDevice(ctx context.Context, device *domain.Device) error
-
-	// DeleteDevice 删除设备（软删除）
-	//DeleteDevice(ctx context.Context, uid string) error
 
 	// SearchDevices 搜索设备
 	SearchDevices(ctx context.Context, criteria map[string]interface{}) ([]*domain.Device, error)

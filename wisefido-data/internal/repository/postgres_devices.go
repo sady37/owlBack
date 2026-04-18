@@ -1020,22 +1020,6 @@ func (r *PostgresDevicesRepository) DeleteDevice(ctx context.Context, tenantID, 
 	return nil
 }
 
-// DisableDevice 软删除设备
-// 功能：设置status='disabled', business_access='rejected', monitoring_enabled=FALSE
-// 同时解绑位置关系（bound_room_id, bound_bed_id），释放设备资源
-func (r *PostgresDevicesRepository) DisableDevice(ctx context.Context, tenantID, deviceID string) error {
-	_, err := r.db.ExecContext(ctx, `
-		UPDATE devices
-		SET status='disabled', 
-		    business_access='rejected', 
-		    monitoring_enabled=FALSE,
-		    bound_room_id=NULL,
-		    bound_bed_id=NULL
-		WHERE tenant_id=$1 AND device_id=$2
-	`, tenantID, deviceID)
-	return err
-}
-
 // GetDeviceRelations 获取设备关联关系（设备、地址、住户）
 func (r *PostgresDevicesRepository) GetDeviceRelations(ctx context.Context, tenantID, deviceID string) (*DeviceRelations, error) {
 	if tenantID == "" {

@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"wisefido-data/internal/service"
@@ -10,11 +12,74 @@ import (
 	"go.uber.org/zap"
 )
 
+// loginRateLimiter 登录重试限制器（滑动窗口）
+// 10 分钟内最多允许 maxAttempts 次失败登录
+type loginRateLimiter struct {
+	mu          sync.Mutex
+	attempts    map[string][]time.Time // key: IP+accountHash → 失败时间戳列表
+	window      time.Duration
+	maxAttempts int
+}
+
+func newLoginRateLimiter(window time.Duration, maxAttempts int) *loginRateLimiter {
+	return &loginRateLimiter{
+		attempts:    make(map[string][]time.Time),
+		window:      window,
+		maxAttempts: maxAttempts,
+	}
+}
+
+// isBlocked 检查是否超过重试限制，返回剩余等待秒数（0 表示未被限制）
+func (rl *loginRateLimiter) isBlocked(key string) int {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
+	// 清理过期记录
+	timestamps := rl.attempts[key]
+	valid := timestamps[:0]
+	for _, t := range timestamps {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+	rl.attempts[key] = valid
+	if len(valid) < rl.maxAttempts {
+		return 0
+	}
+	// 最早一条记录过期后即可重试
+	earliest := valid[0]
+	retryAfter := earliest.Add(rl.window).Sub(now)
+	secs := int(retryAfter.Seconds()) + 1
+	if secs < 1 {
+		secs = 1
+	}
+	return secs
+}
+
+// recordFailure 记录一次失败尝试
+func (rl *loginRateLimiter) recordFailure(key string) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
+	// 清理过期并追加
+	timestamps := rl.attempts[key]
+	valid := timestamps[:0]
+	for _, t := range timestamps {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+	rl.attempts[key] = append(valid, now)
+}
+
 // AuthHandler 认证授权 Handler
 type AuthHandler struct {
 	authService  service.AuthService
 	sessionStore SessionStore // 存储 session 信息（token → user info）
 	logger       *zap.Logger
+	rateLimiter  *loginRateLimiter
 }
 
 // NewAuthHandler 创建认证授权 Handler
@@ -22,6 +87,7 @@ func NewAuthHandler(authService service.AuthService, logger *zap.Logger) *AuthHa
 	return &AuthHandler{
 		authService: authService,
 		logger:      logger,
+		rateLimiter: newLoginRateLimiter(10*time.Minute, 10),
 	}
 }
 
@@ -125,19 +191,35 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		passwordHash = r.URL.Query().Get("passwordHash")
 	}
 
-	// 2. 调用 Service
+	// 2. 登录重试限制检查（10 分钟内最多 10 次失败）
+	clientIP := getClientIP(r)
+	rateLimitKey := clientIP + "|" + accountHash
+	if waitSecs := h.rateLimiter.isBlocked(rateLimitKey); waitSecs > 0 {
+		h.logger.Warn("Login rate limited",
+			zap.String("ip_address", clientIP),
+			zap.String("user_agent", r.UserAgent()),
+			zap.Int("retry_after_seconds", waitSecs),
+		)
+		mins := waitSecs / 60
+		msg := fmt.Sprintf("Too many login attempts, please try again in %d minutes", mins+1)
+		writeJSON(w, http.StatusOK, Fail(msg))
+		return
+	}
+
+	// 3. 调用 Service
 	req := service.LoginRequest{
 		TenantID:     tenantID,
 		UserType:     userType,
 		AccountHash:  accountHash,
 		PasswordHash: passwordHash,
-		IPAddress:    getClientIP(r),
+		IPAddress:    clientIP,
 		UserAgent:    r.UserAgent(),
 	}
 
 	resp, err := h.authService.Login(ctx, req)
 	if err != nil {
-		// Service 层已经记录了详细的日志，这里只记录错误
+		// 记录失败尝试
+		h.rateLimiter.recordFailure(rateLimitKey)
 		h.logger.Error("Login failed", zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return

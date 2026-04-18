@@ -107,31 +107,6 @@ func (r *PostgresDeviceRepository) GetDeviceByUID(ctx context.Context, uid strin
 	return &device, nil
 }
 
-// UpdateDeviceStatus 更新设备状态
-func (r *PostgresDeviceRepository) UpdateDeviceStatus(ctx context.Context, uid, status string) error {
-	query := `
-		UPDATE devices 
-		SET status = $1
-		WHERE device_uid = $2 AND status != 'disabled'
-	`
-
-	result, err := r.db.ExecContext(ctx, query, status, uid)
-	if err != nil {
-		return fmt.Errorf("failed to update device status: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	if rowsAffected == 0 {
-		return fmt.Errorf("device not found or is disabled: %s", uid)
-	}
-
-	return nil
-}
-
 // UpdateDeviceMonitoring 更新设备监控状态
 func (r *PostgresDeviceRepository) UpdateDeviceMonitoring(ctx context.Context, uid string, enabled bool) error {
 	query := `
@@ -549,31 +524,6 @@ func (r *PostgresDeviceRepository) UpdateDevice(ctx context.Context, device *dom
 
 	if rowsAffected == 0 {
 		return fmt.Errorf("device not found or is disabled: %s", device.DeviceUID)
-	}
-
-	return nil
-}
-
-// DeleteDevice 删除设备（软删除）
-func (r *PostgresDeviceRepository) DeleteDevice(ctx context.Context, uid string) error {
-	query := `
-		UPDATE devices 
-		SET status = 'disabled'
-		WHERE device_uid = $1
-	`
-
-	result, err := r.db.ExecContext(ctx, query, uid)
-	if err != nil {
-		return fmt.Errorf("failed to delete device: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	if rowsAffected == 0 {
-		return fmt.Errorf("device not found: %s", uid)
 	}
 
 	return nil

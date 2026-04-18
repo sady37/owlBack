@@ -66,13 +66,8 @@ owlback_go_exec() {
   if [[ -f "$dir/go.sum" && "$dir/go.sum" -nt "$bin" ]]; then
     stale=1
   fi
-  local mainf
-  if [[ "$build_pkg" = "." ]]; then
-    mainf="main.go"
-  else
-    mainf="${build_pkg#./}/main.go"
-  fi
-  if [[ -f "$dir/$mainf" && "$dir/$mainf" -nt "$bin" ]]; then
+  # 检查任意 .go 文件是否比二进制新（避免只检查 main.go 漏掉其他源文件变更）
+  if [[ "$stale" -eq 0 ]] && find "$dir" -name '*.go' -newer "$bin" -print -quit 2>/dev/null | grep -q .; then
     stale=1
   fi
   if [[ "$stale" -eq 1 ]]; then

@@ -296,6 +296,8 @@ func (r *PostgresTenantsRepository) CreateTenant(ctx context.Context, tenant *do
 }
 
 // UpdateTenant 更新租户信息
+// 注意：调用方（handler）已加载 existing tenant 并合并 payload 字段，
+// 因此这里无条件更新所有核心字段（domain/email/phone 空字符串 → NULL）。
 func (r *PostgresTenantsRepository) UpdateTenant(ctx context.Context, tenantID string, tenant *domain.Tenant) error {
 	if tenantID == "" {
 		return fmt.Errorf("tenant_id is required")
@@ -304,80 +306,64 @@ func (r *PostgresTenantsRepository) UpdateTenant(ctx context.Context, tenantID s
 		return fmt.Errorf("tenant is required")
 	}
 
-	// 构建UPDATE语句
-	updates := []string{}
-	args := []any{tenantID}
-	argIdx := 2
-
-	if tenant.TenantType != "" {
-		updates = append(updates, fmt.Sprintf("tenant_type = $%d", argIdx))
-		args = append(args, tenant.TenantType)
-		argIdx++
+	// tenant_name 非空校验 + 唯一性检查
+	trimmed := strings.TrimSpace(tenant.TenantName)
+	if trimmed == "" {
+		return fmt.Errorf("tenant_name is required")
+	}
+	var conflictID string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT tenant_id::text FROM tenants WHERE LOWER(TRIM(tenant_name)) = LOWER($1) AND tenant_id <> $2::uuid`,
+		trimmed, tenantID,
+	).Scan(&conflictID)
+	if err == nil {
+		return fmt.Errorf("tenant_name already exists: %q", trimmed)
+	}
+	if err != sql.ErrNoRows {
+		return fmt.Errorf("check tenant_name: %w", err)
 	}
 
-	if tenant.TenantName != "" {
-		trimmed := strings.TrimSpace(tenant.TenantName)
-		if trimmed == "" {
-			return fmt.Errorf("tenant_name is empty after trim")
-		}
-		var conflictID string
-		err := r.db.QueryRowContext(ctx,
-			`SELECT tenant_id::text FROM tenants WHERE LOWER(TRIM(tenant_name)) = LOWER($1) AND tenant_id <> $2::uuid`,
-			trimmed, tenantID,
-		).Scan(&conflictID)
-		if err == nil {
-			return fmt.Errorf("tenant_name already exists: %q", trimmed)
-		}
-		if err != sql.ErrNoRows {
-			return fmt.Errorf("check tenant_name: %w", err)
-		}
-		updates = append(updates, fmt.Sprintf("tenant_name = $%d", argIdx))
-		args = append(args, trimmed)
-		argIdx++
-	}
-
-	// domain, email, phone 使用 NULLIF 处理空字符串
-	if tenant.Domain != "" {
-		updates = append(updates, fmt.Sprintf("domain = NULLIF($%d, '')", argIdx))
-		args = append(args, tenant.Domain)
-		argIdx++
-	}
-
-	if tenant.Email != "" {
-		updates = append(updates, fmt.Sprintf("email = NULLIF($%d, '')", argIdx))
-		args = append(args, tenant.Email)
-		argIdx++
-	}
-
-	if tenant.Phone != "" {
-		updates = append(updates, fmt.Sprintf("phone = NULLIF($%d, '')", argIdx))
-		args = append(args, tenant.Phone)
-		argIdx++
-	}
-
-	if tenant.Status != "" {
-		updates = append(updates, fmt.Sprintf("status = $%d", argIdx))
-		args = append(args, tenant.Status)
-		argIdx++
-	}
-
+	// 处理 metadata
+	metadataArg := "{}"
 	if len(tenant.Metadata) > 0 {
-		updates = append(updates, fmt.Sprintf("metadata = $%d::jsonb", argIdx))
-		args = append(args, string(tenant.Metadata))
-		argIdx++
+		metadataArg = string(tenant.Metadata)
 	}
 
-	if len(updates) == 0 {
-		return fmt.Errorf("no fields to update")
+	// 处理 status 默认值
+	status := tenant.Status
+	if status == "" {
+		status = "active"
 	}
 
-	query := fmt.Sprintf(`
+	// 处理 tenant_type 默认值
+	tenantType := tenant.TenantType
+	if tenantType == "" {
+		tenantType = "organization"
+	}
+
+	// 无条件更新所有核心字段，空字符串通过 NULLIF 转为 NULL
+	query := `
 		UPDATE tenants
-		SET %s
+		SET tenant_type = $2,
+		    tenant_name = $3,
+		    domain = NULLIF($4, ''),
+		    email = NULLIF($5, ''),
+		    phone = NULLIF($6, ''),
+		    status = $7,
+		    metadata = $8::jsonb
 		WHERE tenant_id = $1::uuid
-	`, strings.Join(updates, ", "))
+	`
 
-	result, err := r.db.ExecContext(ctx, query, args...)
+	result, err := r.db.ExecContext(ctx, query,
+		tenantID,
+		tenantType,
+		trimmed,
+		tenant.Domain,
+		tenant.Email,
+		tenant.Phone,
+		status,
+		metadataArg,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to update tenant: %w", err)
 	}

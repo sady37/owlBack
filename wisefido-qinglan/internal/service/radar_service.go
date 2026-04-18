@@ -340,18 +340,10 @@ func (s *RadarService) SubscribeRealtimeData(ctx context.Context, deviceUID stri
 
 	topic := s.mqttClient.BuildCommandTopic("monitor", deviceUID)
 
-	// 记录发送的订阅命令格式
-	log.Printf("📤 Monitor Subscription: sending to device %s", deviceUID)
-	log.Printf("   MQTT Topic: %s", topic)
-	log.Printf("   MQTT Payload (JSON): %s", string(commandJSON))
-	log.Printf("   MQTT Format: {\"cmd\":\"subscription\",\"data\":{\"content\":\"%s\",\"duration\":%d}} (使用cmd/data外层结构 ✅)", contentStr, duration)
-
 	if err := s.mqttClient.Publish(topic, 1, false, commandJSON); err != nil {
 		log.Printf("❌ Monitor Subscription: failed to publish to device %s, topic: %s, error: %v", deviceUID, topic, err)
 		return fmt.Errorf("failed to publish command: %w", err)
 	}
-
-	log.Printf("✅ Realtime data subscription command sent successfully: device=%s, topic=%s, content=%s, duration=%d", deviceUID, topic, contentStr, duration)
 
 	// monitor 订阅不需要等待响应，设备会持续在 /monitor/.../post 主题上推送数据
 	// 这些数据会被 mqtt_consumer 的 handleMonitorMessage 处理并发布到 Redis Stream

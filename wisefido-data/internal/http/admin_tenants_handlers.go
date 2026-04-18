@@ -135,7 +135,12 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			tenant.TenantName = strings.TrimSpace(tenant.TenantName)
 			tenantID, err := h.Repo.CreateTenant(r.Context(), tenant)
 			if err != nil {
-				writeJSON(w, http.StatusOK, Fail("failed to create tenant"))
+				errMsg := err.Error()
+				if strings.Contains(errMsg, "already exists") {
+					writeJSON(w, http.StatusOK, Fail("Tenant name already exists, please choose a different name"))
+					return
+				}
+				writeJSON(w, http.StatusOK, Fail("failed to create tenant: "+errMsg))
 				return
 			}
 			
@@ -244,6 +249,17 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					writeJSON(w, http.StatusOK, Fail("failed to hash credentials"))
 					return
 				}
+				// 全局检查：新密码不能和其他租户 admin 的密码相同（避免跨租户密码碰撞）
+				var dupCount int
+				_ = h.DB.QueryRowContext(r.Context(),
+					`SELECT COUNT(*) FROM users
+					 WHERE role = 'Admin' AND password_hash = $1 AND tenant_id <> $2::uuid`,
+					aph, id,
+				).Scan(&dupCount)
+				if dupCount > 0 {
+					writeJSON(w, http.StatusOK, Fail("Security Validation Failed: Please use a more complex password to continue."))
+					return
+				}
 				_, err := h.DB.ExecContext(
 					r.Context(),
 					`UPDATE users SET password_hash = $2
@@ -324,7 +340,12 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			err = h.Repo.UpdateTenant(r.Context(), id, existing)
 			if err != nil {
-				writeJSON(w, http.StatusOK, Fail("failed to update tenant"))
+				errMsg := err.Error()
+				if strings.Contains(errMsg, "already exists") {
+					writeJSON(w, http.StatusOK, Fail("Tenant name already exists, please choose a different name"))
+					return
+				}
+				writeJSON(w, http.StatusOK, Fail("failed to update tenant: "+errMsg))
 				return
 			}
 			// 获取更新后的租户

@@ -106,20 +106,11 @@ func (p *MQTTPublisher) SubscribeRealtimeData(ctx context.Context, uid string, c
 	// 构建主题
 	topic := p.mqttClient.BuildCommandTopic("monitor", uid)
 	
-	// 记录发送的订阅命令格式
-	commandJSON, _ := json.Marshal(command)
-	log.Printf("📤 Monitor Subscription: sending to device %s", uid)
-	log.Printf("   MQTT Topic: %s", topic)
-	log.Printf("   MQTT Payload (JSON): %s", string(commandJSON))
-	log.Printf("   MQTT Format: {\"cmd\":\"subscription\",\"data\":{\"content\":\"%s\",\"duration\":%d}} (使用cmd/data topleve ✅)", contentStr, duration)
-	
 	// 发送命令
 	if err := p.publish(topic, command); err != nil {
 		log.Printf("❌ Monitor Subscription: failed to publish to device %s, topic: %s, error: %v", uid, topic, err)
 		return fmt.Errorf("failed to publish monitor subscription command: %w", err)
 	}
-	
-	log.Printf("✅ Monitor subscription command sent successfully to %s", uid)
 	return nil
 }
 
