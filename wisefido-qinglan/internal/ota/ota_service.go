@@ -32,15 +32,15 @@ func NewManager(tcpServer *tcp.Server, firmwareDir, firmwareURL string) *Manager
 
 // PushRequest OTA push request
 type PushRequest struct {
-	UID           string
-	EspFirmware   string // ESP firmware filename (relative to FirmwareDir), or empty if EspFileURL set
-	EspVersion    string
-	EspSHA256     string // optional, auto-calculated if empty
-	EspFileURL    string // direct URL (skip local file lookup)
-	EspFileSize   uint32 // direct size (skip local file lookup)
-	RadarFirmware string
-	RadarVersion  string
-	RadarSHA256   string
+	UID           string `json:"uid"`
+	EspFirmware   string `json:"esp_firmware"`
+	EspVersion    string `json:"esp_version"`
+	EspSHA256     string `json:"esp_sha256"`
+	EspFileURL    string `json:"esp_file_url"`
+	EspFileSize   uint32 `json:"esp_file_size"`
+	RadarFirmware string `json:"radar_firmware"`
+	RadarVersion  string `json:"radar_version"`
+	RadarSHA256   string `json:"radar_sha256"`
 }
 
 // PushResult OTA push result
