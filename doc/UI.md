@@ -104,17 +104,69 @@ Inline after Focus button: `|<< [current_page] >>| total_cards`
 - Level 3 (Deep Orange): dynamic theme
 - Level 4 (Light Orange): orange "Handle" button
 
-## Lock Screen (Passive Mode)
+## Lock Screen (Three-Level State Machine)
 
-| State | Timeout | Behavior |
-|-------|---------|----------|
-| Active | - | Normal operation |
-| Passive | 5 min (prod) / 60s (test) | Read-only, PIN required to unlock |
-| Locked | 4 hours (prod) / 5 min (test) | Full re-login required |
+```
+Active ──(inactivity)──> Passive ──(long inactivity)──> Locked
+  ^                        |                               |
+  |     (PIN verify)       |                               |
+  +────────────────────────+         (re-login)            |
+  +────────────────────────────────────────────────────────+
+```
 
-- Passive mode does NOT affect auto-scroll, alarm sounds, or alarm jumps
-- Only blocks user interactions (click, edit)
-- Configurable via `VITE_LOCK_SCREEN_PASSIVE_TIMEOUT_MS`
+### State Definitions
+
+| State | Timeout | UI | Operations | Unlock |
+|-------|---------|-----|------------|--------|
+| Active | - | Normal | Full access | - |
+| Passive | 5 min prod / 60s test | Read-only, opacity 0.7, cursor not-allowed | View only, no click/edit | 4-digit PIN |
+| Locked | 4 hours prod / 5 min test | Full lock overlay | Nothing | Re-login |
+
+### Passive Trigger Conditions (any one triggers)
+
+1. **Inactivity timeout**: no mouse/keyboard activity for `passiveTimeout`
+2. **Window blur timeout**: browser tab hidden or window lost focus for `passiveTimeout`
+3. Both use countdown mechanism (`passiveTargetTime = now + timeout`)
+
+### Passive Behavior
+
+- Card display continues rendering (cards visible but dimmed)
+- **Auto-scroll continues** (not affected)
+- **Alarm sound continues** (not affected)
+- **Alarm jump continues** (not affected)
+- **SSE stream continues** (realtime data keeps flowing)
+- Click anywhere shows PIN modal
+- Correct PIN returns to Active, resets all timers
+
+### Locked Behavior
+
+- Full-screen lock overlay, all content hidden
+- SSE stream closed
+- Requires full re-login (username + password)
+
+### Configuration
+
+| Env Variable | Default (prod) | Default (test) |
+|-------------|----------------|----------------|
+| `VITE_LOCK_SCREEN_PASSIVE_TIMEOUT_MS` | 300000 (5 min) | 60000 (60s) |
+| `VITE_LOCK_SCREEN_LOCKED_TIMEOUT_MS` | 14400000 (4 hr) | 300000 (5 min) |
+| `VITE_LOCK_SCREEN_TEST_MODE` | - | `true` enables test timeouts |
+
+### State Persistence
+
+- Saved to `sessionStorage` on every state change
+- Restored on page reload (if target times haven't expired)
+- `logout` clears all lock state
+
+### Interaction with Auto-Scroll
+
+| Event | Active | Passive | Locked |
+|-------|--------|---------|--------|
+| Auto-scroll runs | Yes (after 120s idle) | Yes | No |
+| Alarm sound plays | Yes | Yes | No |
+| Alarm jumps page | Yes | Yes | No |
+| Mouse resets scroll timer | Yes | No (dimmed) | No |
+| PIN unlock | - | Returns to Active | - |
 
 ## SSE (Server-Sent Events)
 
