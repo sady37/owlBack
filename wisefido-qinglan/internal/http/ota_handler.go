@@ -47,6 +47,9 @@ func (h *OTAHandler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/api/v1/ota/trigger/{uid}", h.TriggerOTA).Methods("POST")
 	router.HandleFunc("/api/v1/ota/trigger/batch", h.TriggerBatchOTA).Methods("POST")
 	router.HandleFunc("/api/v1/ota/status", h.GetTCPDevices).Methods("GET")
+	router.HandleFunc("/api/v1/ota/firmware", h.ListFirmwareRoot).Methods("GET")
+	router.HandleFunc("/api/v1/ota/firmware", h.UploadFirmwareRoot).Methods("POST")
+	router.HandleFunc("/api/v1/ota/firmware/{filename}", h.DeleteFirmwareRoot).Methods("DELETE")
 	router.HandleFunc("/api/v1/ota/firmware/{vendor}", h.ListFirmware).Methods("GET")
 	router.HandleFunc("/api/v1/ota/firmware/{vendor}", h.UploadFirmware).Methods("POST")
 	router.HandleFunc("/api/v1/ota/firmware/{vendor}/{filename}", h.DeleteFirmware).Methods("DELETE")
@@ -222,6 +225,62 @@ func (h *OTAHandler) DeleteFirmware(w http.ResponseWriter, r *http.Request) {
 		"vendor":   vendor,
 		"filename": filename,
 	})
+}
+
+// --- Root firmware endpoints (flat ota/ directory, no vendor) ---
+
+func (h *OTAHandler) ListFirmwareRoot(w http.ResponseWriter, r *http.Request) {
+	files, err := h.otaManager.ListFirmwareFiles("")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("list firmware failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(files)
+}
+
+func (h *OTAHandler) UploadFirmwareRoot(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(100 << 20); err != nil {
+		http.Error(w, fmt.Sprintf("parse form failed: %v", err), http.StatusBadRequest)
+		return
+	}
+	file, header, err := r.FormFile("firmware")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("get file failed: %v", err), http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	destPath := filepath.Join(h.otaManager.FirmwareDir, header.Filename)
+	dst, err := os.Create(destPath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("create file failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, file); err != nil {
+		http.Error(w, fmt.Sprintf("save file failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("[OTA-API] firmware uploaded: file=%s size=%d", header.Filename, header.Size)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"message": "uploaded", "filename": header.Filename, "size": header.Size})
+}
+
+func (h *OTAHandler) DeleteFirmwareRoot(w http.ResponseWriter, r *http.Request) {
+	filename := mux.Vars(r)["filename"]
+	fwPath := filepath.Join(h.otaManager.FirmwareDir, filename)
+	if err := os.Remove(fwPath); err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, fmt.Sprintf("delete failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("[OTA-API] firmware deleted: file=%s", filename)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"message": "deleted", "filename": filename})
 }
 
 // --- Device command endpoints ---
