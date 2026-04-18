@@ -130,61 +130,58 @@ func (s *Scheduler) scan(ctx context.Context) {
 			}
 		}
 
-		// Build OTA data from target firmware filenames (already set in device_store)
-		data := map[string]interface{}{}
-
-		if targetFW != "" {
-			fwPath := filepath.Join(s.fwDir, "qinglan", targetFW)
-			size, err := getFileSize(fwPath)
-			if err != nil {
-				log.Printf("[OTA-Scheduler] uid=%s ESP firmware not found: %s: %v", uid, fwPath, err)
-			} else {
-				sha, _ := getFileSHA256(fwPath)
-				data["espfileUrl"] = s.fwURL + "/qinglan/" + targetFW
-				data["espfilesha256"] = sha
-				data["espfilesize"] = size
-				data["espver"] = targetFW
-			}
+		// Read update.ini for version numbers
+		iniInfo := parseUpdateINI(s.fwDir, "qinglan")
+		espVer := ""
+		radarVer := ""
+		if iniInfo != nil {
+			espVer = iniInfo.EspVer
+			radarVer = iniInfo.RadarVer
 		}
 
-		if targetMCU != "" {
-			mcuPath := filepath.Join(s.fwDir, "qinglan", targetMCU)
-			size, err := getFileSize(mcuPath)
-			if err != nil {
-				log.Printf("[OTA-Scheduler] uid=%s Radar firmware not found: %s: %v", uid, mcuPath, err)
-			} else {
-				sha, _ := getFileSHA256(mcuPath)
-				data["radarfileUrl"] = s.fwURL + "/qinglan/" + targetMCU
-				data["radarfilesha256"] = sha
-				data["radarfilesize"] = size
-				data["radarver"] = targetMCU
-			}
+		// Pick the target file (could be set in either ota_target_firmware_version or ota_target_mcu_model)
+		targetFile := targetFW
+		if targetFile == "" {
+			targetFile = targetMCU
 		}
-
-		if len(data) == 0 {
-			log.Printf("[OTA-Scheduler] uid=%s no firmware files found, skipping", uid)
+		if targetFile == "" {
+			log.Printf("[OTA-Scheduler] uid=%s no target firmware set, skipping", uid)
 			continue
 		}
 
-		log.Printf("[OTA-Scheduler] pushing OTA to uid=%s fw=%s mcu=%s", uid, targetFW, targetMCU)
+		// All firmware pushed via ESP fields (Qinglan radar MCU = ESP32)
+		fwPath := filepath.Join(s.fwDir, "qinglan", targetFile)
+		size, err := getFileSize(fwPath)
+		if err != nil {
+			log.Printf("[OTA-Scheduler] uid=%s firmware not found: %s: %v", uid, fwPath, err)
+			continue
+		}
+		sha, _ := getFileSHA256(fwPath)
+
+		// MQTT payload: use ESP fields
+		data := map[string]interface{}{
+			"espfileUrl":    s.fwURL + "/qinglan/" + targetFile,
+			"espfilesha256": sha,
+			"espfilesize":   size,
+			"espver":        espVer,
+		}
+
+		log.Printf("[OTA-Scheduler] pushing OTA to uid=%s file=%s espVer=%s", uid, targetFile, espVer)
 
 		// Try TCP push first (old MCU), fall back to MQTT
 		var pushErr error
 		if s.tcpPushFn != nil {
 			req := PushRequest{
-				UID:           uid,
-				EspFirmware:   "qinglan/" + targetFW,
-				EspVersion:    targetFW,
-				RadarFirmware: "qinglan/" + targetMCU,
-				RadarVersion:  targetMCU,
+				UID:         uid,
+				EspFirmware: "qinglan/" + targetFile,
+				EspVersion:  espVer,
 			}
-			if targetFW == "" {
+			// If radarVer is set and file looks like radar firmware, also set radar fields
+			if radarVer != "" && strings.Contains(strings.ToLower(targetFile), "-mcu-") {
+				req.RadarFirmware = "qinglan/" + targetFile
+				req.RadarVersion = radarVer
 				req.EspFirmware = ""
 				req.EspVersion = ""
-			}
-			if targetMCU == "" {
-				req.RadarFirmware = ""
-				req.RadarVersion = ""
 			}
 			result := s.tcpPushFn(req)
 			if result.Success {
@@ -267,6 +264,43 @@ func (s *Scheduler) findFirmware(model, targetVer string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no firmware found for model=%s targetVer=%s", model, targetVer)
+}
+
+// updateINIInfo holds version info parsed from update.ini
+type updateINIInfo struct {
+	EspVer   string
+	RadarVer string
+}
+
+// parseUpdateINI reads update.ini in the vendor directory and returns version info
+func parseUpdateINI(fwDir, vendor string) *updateINIInfo {
+	iniPath := filepath.Join(fwDir, vendor, "update.ini")
+	data, err := os.ReadFile(iniPath)
+	if err != nil {
+		return nil
+	}
+	info := &updateINIInfo{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "espsfver") {
+			parts := strings.SplitN(line, "\t", 2)
+			if len(parts) < 2 {
+				parts = strings.Fields(line)
+			}
+			if len(parts) >= 2 {
+				info.EspVer = strings.TrimSpace(parts[len(parts)-1])
+			}
+		} else if strings.HasPrefix(line, "radarsfver") {
+			parts := strings.SplitN(line, "\t", 2)
+			if len(parts) < 2 {
+				parts = strings.Fields(line)
+			}
+			if len(parts) >= 2 {
+				info.RadarVer = strings.TrimSpace(parts[len(parts)-1])
+			}
+		}
+	}
+	return info
 }
 
 // getFileSize returns the size of a file
