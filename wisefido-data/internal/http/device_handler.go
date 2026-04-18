@@ -351,16 +351,25 @@ func (h *DeviceHandler) ApproveOTA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Support toggle: {approved: true/false}, default true for backwards compat
+	approved := true
+	var body struct {
+		Approved *bool `json:"approved"`
+	}
+	if json.NewDecoder(r.Body).Decode(&body) == nil && body.Approved != nil {
+		approved = *body.Approved
+	}
+
 	_, err := h.db.ExecContext(r.Context(),
-		`UPDATE device_store SET ota_tenant_approved = TRUE, ota_updated_at = CURRENT_TIMESTAMP WHERE device_id = $1`,
-		deviceID)
+		`UPDATE device_store SET ota_tenant_approved = $1, ota_updated_at = CURRENT_TIMESTAMP WHERE device_id = $2`,
+		approved, deviceID)
 	if err != nil {
 		h.logger.Error("ApproveOTA failed", zap.String("device_id", deviceID), zap.Error(err))
-		writeJSON(w, http.StatusOK, Fail("failed to approve OTA"))
+		writeJSON(w, http.StatusOK, Fail("failed to update OTA approval"))
 		return
 	}
 
-	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
+	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true, "approved": approved}))
 }
 
 // SetOTASchedule allows tenant to update OTA schedule for their device
