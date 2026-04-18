@@ -22,11 +22,17 @@ type DeviceCommander interface {
 	SetDeviceProperties(ctx context.Context, uid string, properties map[string]interface{}) error
 }
 
+// MQTTOTAPusher pushes OTA via MQTT
+type MQTTOTAPusher interface {
+	PublishOTA(ctx context.Context, uid string, data map[string]interface{}) error
+}
+
 // OTAHandler handles OTA-related HTTP API requests
 type OTAHandler struct {
-	otaManager *ota.Manager
-	tcpServer  *tcp.Server
-	commander  DeviceCommander
+	otaManager  *ota.Manager
+	tcpServer   *tcp.Server
+	commander   DeviceCommander
+	mqttOTA     MQTTOTAPusher
 }
 
 // NewOTAHandler creates a new OTA handler
@@ -40,6 +46,11 @@ func NewOTAHandler(otaManager *ota.Manager, tcpServer *tcp.Server) *OTAHandler {
 // SetCommander injects the MQTT publisher for device commands
 func (h *OTAHandler) SetCommander(c DeviceCommander) {
 	h.commander = c
+}
+
+// SetMQTTOTA injects the MQTT OTA publisher
+func (h *OTAHandler) SetMQTTOTA(p MQTTOTAPusher) {
+	h.mqttOTA = p
 }
 
 // RegisterRoutes registers OTA routes on the router
@@ -59,7 +70,7 @@ func (h *OTAHandler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/api/v1/device/set-iotserver", h.BatchSetIoTServer).Methods("POST")
 }
 
-// TriggerOTA triggers OTA for a single device
+// TriggerOTA triggers OTA for a single device (TCP first, MQTT fallback)
 func (h *OTAHandler) TriggerOTA(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	uid := vars["uid"]
@@ -73,7 +84,44 @@ func (h *OTAHandler) TriggerOTA(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[OTA-API] trigger OTA: uid=%s esp=%s radar=%s", uid, req.EspFirmware, req.RadarFirmware)
 
+	// Try TCP push first
 	result := h.otaManager.PushToDevice(req)
+	if result.Success {
+		log.Printf("[OTA-API] TCP push OK: uid=%s", uid)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+		return
+	}
+
+	// TCP failed, try MQTT push
+	if h.mqttOTA != nil {
+		log.Printf("[OTA-API] TCP failed (%s), trying MQTT: uid=%s", result.Message, uid)
+		data := map[string]interface{}{}
+		if req.EspFirmware != "" {
+			info, err := h.otaManager.GetFirmwareInfo(req.EspFirmware)
+			if err == nil {
+				data["espfileUrl"] = fmt.Sprintf("%s/%s", h.otaManager.FirmwareURL, req.EspFirmware)
+				data["espfilesha256"] = info.SHA256
+				data["espfilesize"] = info.Size
+				data["espver"] = req.EspVersion
+			}
+		}
+		if req.EspFileURL != "" {
+			data["espfileUrl"] = req.EspFileURL
+			data["espfilesha256"] = req.EspSHA256
+			data["espfilesize"] = req.EspFileSize
+			data["espver"] = req.EspVersion
+		}
+		if len(data) > 0 {
+			if err := h.mqttOTA.PublishOTA(r.Context(), uid, data); err != nil {
+				result.Message = fmt.Sprintf("TCP: %s, MQTT: %s", result.Message, err.Error())
+			} else {
+				log.Printf("[OTA-API] MQTT push OK: uid=%s", uid)
+				result.Success = true
+				result.Message = "OTA pushed via MQTT"
+			}
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if !result.Success {

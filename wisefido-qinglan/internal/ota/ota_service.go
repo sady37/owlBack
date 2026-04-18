@@ -62,7 +62,7 @@ func (m *Manager) PushToDevice(req PushRequest) PushResult {
 		otaReq.ESPFileSHA256 = req.EspSHA256
 	} else if req.EspFirmware != "" {
 		// Local file mode
-		info, err := m.getFirmwareInfo(req.EspFirmware)
+		info, err := m.GetFirmwareInfo(req.EspFirmware)
 		if err != nil {
 			return PushResult{UID: req.UID, Success: false, Message: fmt.Sprintf("ESP firmware error: %v", err)}
 		}
@@ -77,7 +77,7 @@ func (m *Manager) PushToDevice(req PushRequest) PushResult {
 	}
 
 	if req.RadarFirmware != "" {
-		info, err := m.getFirmwareInfo(req.RadarFirmware)
+		info, err := m.GetFirmwareInfo(req.RadarFirmware)
 		if err != nil {
 			return PushResult{UID: req.UID, Success: false, Message: fmt.Sprintf("Radar firmware error: %v", err)}
 		}
@@ -120,7 +120,7 @@ type firmwareInfo struct {
 	SHA256 string
 }
 
-func (m *Manager) getFirmwareInfo(filename string) (*firmwareInfo, error) {
+func (m *Manager) GetFirmwareInfo(filename string) (*firmwareInfo, error) {
 	filePath := filepath.Join(m.FirmwareDir, filename)
 	file, err := os.Open(filePath)
 	if err != nil {

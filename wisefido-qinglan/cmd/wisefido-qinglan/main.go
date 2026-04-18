@@ -265,6 +265,7 @@ func main() {
 
 		// Inject MQTT publisher into OTA handler for device commands (restart/wifi/iotserver)
 		otaHandler.SetCommander(mqttPublisher)
+		otaHandler.SetMQTTOTA(mqttPublisher)
 
 		// Create OTA scheduler with MQTT OTA push callback
 		fwDir := filepath.Join("..", "ota")
