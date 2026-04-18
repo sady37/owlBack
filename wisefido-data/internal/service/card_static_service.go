@@ -170,6 +170,7 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 		LEFT JOIN beds bed     ON c.bed_id = bed.bed_id
 		LEFT JOIN rooms room   ON bed.room_id = room.room_id
 		WHERE c.card_id = ANY($1::uuid[])
+		  AND c.card_type <> 'DeviceCard'
 	`
 	args := []any{pq.Array(cardIDs)}
 	argIdx := 2

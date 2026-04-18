@@ -215,7 +215,7 @@ func (p *AllowedCardIDsProviderImpl) filterCardsForStaff(ctx context.Context, us
 // filterTenantCards 查该 tenant 全部卡片，按 branch 分组返回 *CardList
 func (p *AllowedCardIDsProviderImpl) filterTenantCards(ctx context.Context, tenantID, userID string) (*CardList, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT card_id::text, COALESCE(branch_id::text, '_') FROM cards WHERE tenant_id = $1`,
+		`SELECT card_id::text, COALESCE(branch_id::text, '_') FROM cards WHERE tenant_id = $1 AND card_type <> 'DeviceCard'`,
 		tenantID,
 	)
 	if err != nil {
@@ -245,7 +245,7 @@ func (p *AllowedCardIDsProviderImpl) filterByBranchOnly(ctx context.Context, ten
 		`SELECT c.card_id::text, COALESCE(c.branch_id::text, '_')
 		 FROM cards c
 		 JOIN user_branches ub ON c.branch_id = ub.branch_id AND ub.tenant_id = c.tenant_id
-		 WHERE c.tenant_id = $1 AND ub.user_id = $2::uuid`,
+		 WHERE c.tenant_id = $1 AND ub.user_id = $2::uuid AND c.card_type <> 'DeviceCard'`,
 		tenantID, userID,
 	)
 	if err != nil {
