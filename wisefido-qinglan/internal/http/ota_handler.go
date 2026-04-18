@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"wisefido-qinglan/internal/ota"
 	"wisefido-qinglan/internal/tcp"
@@ -90,7 +91,14 @@ func (h *OTAHandler) TriggerOTA(w http.ResponseWriter, r *http.Request) {
 		req.RadarVersion = ""
 	}
 
-	log.Printf("[OTA-API] trigger OTA: uid=%s esp=%s", uid, req.EspFirmware)
+	// Read version from update.ini if version looks like a filename
+	if req.EspFirmware != "" && (req.EspVersion == "" || strings.Contains(req.EspVersion, ".bin")) {
+		if verInfo := ota.ParseUpdateINI(h.otaManager.FirmwareDir, req.EspFirmware); verInfo != nil {
+			req.EspVersion = verInfo.EspVer
+		}
+	}
+
+	log.Printf("[OTA-API] trigger OTA: uid=%s esp=%s ver=%s", uid, req.EspFirmware, req.EspVersion)
 
 	// Try TCP push first
 	result := h.otaManager.PushToDevice(req)

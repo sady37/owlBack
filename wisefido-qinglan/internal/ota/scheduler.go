@@ -141,7 +141,7 @@ func (s *Scheduler) scan(ctx context.Context) {
 		}
 
 		// Read version from update.ini (by filename)
-		verInfo := parseConfigINI(s.fwDir, targetFile)
+		verInfo := ParseUpdateINI(s.fwDir, targetFile)
 		espVer := ""
 		if verInfo != nil {
 			espVer = verInfo.EspVer
@@ -265,27 +265,28 @@ func (s *Scheduler) findFirmware(model, targetVer string) (string, error) {
 	return "", fmt.Errorf("no firmware found for model=%s targetVer=%s", model, targetVer)
 }
 
-// fwVersionInfo holds version info for a firmware file from update.ini
-type fwVersionInfo struct {
+// FwVersionInfo holds version info for a firmware file from update.ini
+type FwVersionInfo struct {
 	EspVer   string
 	RadarVer string
 }
 
 // parseConfigINI reads ota/update.ini and returns version info for a specific filename
-func parseConfigINI(fwDir, targetFile string) *fwVersionInfo {
+// ParseUpdateINI reads ota/update.ini and returns version info for a specific filename
+func ParseUpdateINI(fwDir, targetFile string) *FwVersionInfo {
 	iniPath := filepath.Join(fwDir, "update.ini")
 	data, err := os.ReadFile(iniPath)
 	if err != nil {
 		return nil
 	}
 	// Find the section for targetFile
-	var info *fwVersionInfo
+	var info *FwVersionInfo
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "file:") {
 			fname := strings.TrimSpace(strings.TrimPrefix(line, "file:"))
 			if fname == targetFile {
-				info = &fwVersionInfo{}
+				info = &FwVersionInfo{}
 			} else {
 				info = nil // different file section
 			}
