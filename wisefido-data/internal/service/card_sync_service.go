@@ -108,7 +108,7 @@ func (s *CardSyncService) CreateCardsForUnit(ctx context.Context, tenantID, unit
 
 // RecalcAllCardsAlarmState 启动时按 alarm_events 重算并写回所有 cards（unhandled_alarm_*、pop_alarm_*），与 alarm_events 一致
 func (s *CardSyncService) RecalcAllCardsAlarmState(ctx context.Context, db *sql.DB) (ok, fail int, err error) {
-	rows, err := db.QueryContext(ctx, `SELECT card_id, tenant_id FROM cards`)
+	rows, err := db.QueryContext(ctx, `SELECT card_id, tenant_id FROM cards WHERE card_type <> 'DeviceCard'`)
 	if err != nil {
 		return 0, 0, fmt.Errorf("query cards: %w", err)
 	}

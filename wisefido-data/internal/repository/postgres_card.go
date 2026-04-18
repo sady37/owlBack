@@ -787,7 +787,7 @@ func (r *PostgresCardRepository) DeleteCard(tenantID, cardID string) error {
 
 // ListAllCardsForClear 删除前列出所有卡片（tenant_id, card_id, unit_id），用于推送 config:card:stream deleted
 func (r *PostgresCardRepository) ListAllCardsForClear(ctx context.Context) ([]domain.CardSyncAffected, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT tenant_id::text, card_id::text, unit_id::text FROM cards`)
+	rows, err := r.db.QueryContext(ctx, `SELECT tenant_id::text, card_id::text, COALESCE(unit_id::text, '') FROM cards`)
 	if err != nil {
 		return nil, fmt.Errorf("list cards for clear: %w", err)
 	}
