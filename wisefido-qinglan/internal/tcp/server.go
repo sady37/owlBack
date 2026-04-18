@@ -13,6 +13,7 @@ type Server struct {
 	ServerAddr string
 	ServerPort uint32
 	OnProgress OTAProgressCallback
+	OnRegister OnRegisterCallback
 }
 
 // NewServer creates TCP server
@@ -60,7 +61,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	log.Printf("[TCP] new connection: %s (first frame type=%d)", conn.RemoteAddr(), firstFrame.Type)
 	s.Sessions.UpdateHeartbeat(conn)
-	HandleFrame(conn, firstFrame, s.Sessions, s.ServerAddr, s.ServerPort, s.OnProgress)
+	HandleFrame(conn, firstFrame, s.Sessions, s.ServerAddr, s.ServerPort, s.OnProgress, s.OnRegister)
 
 	if firstFrame.Type == TypeGetServer && s.Sessions.GetUIDByConn(conn) == "" {
 		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
@@ -69,7 +70,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			return
 		}
 		s.Sessions.UpdateHeartbeat(conn)
-		HandleFrame(conn, nextFrame, s.Sessions, s.ServerAddr, s.ServerPort, s.OnProgress)
+		HandleFrame(conn, nextFrame, s.Sessions, s.ServerAddr, s.ServerPort, s.OnProgress, s.OnRegister)
 	}
 
 	for {
@@ -83,7 +84,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			return
 		}
 		s.Sessions.UpdateHeartbeat(conn)
-		HandleFrame(conn, frame, s.Sessions, s.ServerAddr, s.ServerPort, s.OnProgress)
+		HandleFrame(conn, frame, s.Sessions, s.ServerAddr, s.ServerPort, s.OnProgress, s.OnRegister)
 	}
 }
 

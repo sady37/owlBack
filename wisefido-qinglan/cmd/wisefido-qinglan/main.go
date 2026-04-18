@@ -231,6 +231,29 @@ func main() {
 		// Set TCP OnProgress callback
 		httpsServer.TCPServer().OnProgress = makeOTAProgressCallback(db)
 
+		// Set TCP OnRegister callback: update device_store firmware_version + online_status
+		httpsServer.TCPServer().OnRegister = func(uid, deviceType, sfVer, hwVer string) {
+			log.Printf("[TCP-Register] writeback: uid=%s type=%s sfVer=%s hwVer=%s", uid, deviceType, sfVer, hwVer)
+			_, err := db.ExecContext(context.Background(), `
+				UPDATE device_store SET
+					firmware_version = COALESCE(NULLIF($2, ''), firmware_version),
+					mcu_model = COALESCE(NULLIF($3, ''), mcu_model),
+					online_status = 'online'
+				WHERE device_uid = $1
+			`, uid, sfVer, hwVer)
+			if err != nil {
+				log.Printf("[TCP-Register] writeback failed uid=%s: %v", uid, err)
+			}
+		}
+
+		// Set TCP disconnect callback: update device_store online_status to offline
+		httpsServer.TCPServer().Sessions.OnDisconnect = func(uid string) {
+			log.Printf("[TCP-Disconnect] setting offline: uid=%s", uid)
+			_, _ = db.ExecContext(context.Background(), `
+				UPDATE device_store SET online_status = 'offline' WHERE device_uid = $1
+			`, uid)
+		}
+
 		// Create OTA handler and inject to HTTP server
 		otaHandler := http.NewOTAHandler(httpsServer.OTAManager(), httpsServer.TCPServer())
 		httpServer.SetOTAHandler(otaHandler)

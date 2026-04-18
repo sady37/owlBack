@@ -15,6 +15,9 @@ import (
 // OTAProgressCallback OTA progress callback
 type OTAProgressCallback func(uid string, progress int, message string)
 
+// OnRegisterCallback called when a device registers via TCP, to update device_store
+type OnRegisterCallback func(uid, deviceType, sfVer, hwVer string)
+
 // MsgType constants
 const (
 	TypeGetServer     byte = 1
@@ -29,7 +32,7 @@ const (
 )
 
 // HandleFrame handles a single TCP frame
-func HandleFrame(conn net.Conn, frame *Frame, sm *SessionManager, serverAddr string, serverPort uint32, onProgress OTAProgressCallback) {
+func HandleFrame(conn net.Conn, frame *Frame, sm *SessionManager, serverAddr string, serverPort uint32, onProgress OTAProgressCallback, onRegister OnRegisterCallback) {
 	switch frame.Type {
 
 	case TypeGetServer:
@@ -52,6 +55,10 @@ func HandleFrame(conn net.Conn, frame *Frame, sm *SessionManager, serverAddr str
 		sm.Connect(conn, req.Uid, req.Type, req.Sfver, req.Hwver)
 		resp := &pb.RegisterResponse{Seq: 4, Result: 0}
 		sendProto(conn, TypeRegisterResp, resp)
+		// Callback: update device_store with firmware version + online status
+		if onRegister != nil {
+			onRegister(req.Uid, req.Type, req.Sfver, req.Hwver)
+		}
 
 	case TypeHeartbeat:
 		sm.UpdateHeartbeat(conn)
