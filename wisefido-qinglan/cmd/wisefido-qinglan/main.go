@@ -279,7 +279,7 @@ func main() {
 				return mqttPublisher.PublishOTA(context.Background(), uid, data)
 			},
 			httpsServer.OTAManager().PushToDevice, // TCP push for old MCU
-			2*time.Minute,
+			1*time.Minute,
 			fwDir,
 			fwURL,
 		)
