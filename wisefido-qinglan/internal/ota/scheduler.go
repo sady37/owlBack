@@ -169,14 +169,13 @@ func (s *Scheduler) scan(ctx context.Context) {
 		log.Printf("[OTA-Scheduler] pushing OTA to uid=%s file=%s espVer=%s", uid, targetFile, espVer)
 
 		// Try TCP push first (old MCU), fall back to MQTT
-		var pushErr error
+		tcpOK := false
 		if s.tcpPushFn != nil {
 			req := PushRequest{
 				UID:         uid,
 				EspFirmware: "qinglan/" + targetFile,
 				EspVersion:  espVer,
 			}
-			// If radarVer is set and file looks like radar firmware, also set radar fields
 			if radarVer != "" && strings.Contains(strings.ToLower(targetFile), "-mcu-") {
 				req.RadarFirmware = "qinglan/" + targetFile
 				req.RadarVersion = radarVer
@@ -186,28 +185,31 @@ func (s *Scheduler) scan(ctx context.Context) {
 			result := s.tcpPushFn(req)
 			if result.Success {
 				log.Printf("[OTA-Scheduler] TCP push OK uid=%s", uid)
-			} else if s.otaPushFn != nil {
-				// TCP failed (device offline on TCP), try MQTT
-				log.Printf("[OTA-Scheduler] TCP push failed (%s), trying MQTT uid=%s", result.Message, uid)
-				pushErr = s.otaPushFn(uid, data)
+				tcpOK = true
 			} else {
-				pushErr = fmt.Errorf("TCP: %s", result.Message)
+				log.Printf("[OTA-Scheduler] TCP push failed (%s), trying MQTT uid=%s", result.Message, uid)
+				if s.otaPushFn != nil {
+					_ = s.otaPushFn(uid, data) // best-effort MQTT, don't change status
+				}
+				continue // don't set pushing — device may not have received it
 			}
 		} else if s.otaPushFn != nil {
-			pushErr = s.otaPushFn(uid, data)
-		}
-		if pushErr != nil {
-			log.Printf("[OTA-Scheduler] push failed uid=%s: %v", uid, pushErr)
-			continue
+			if err := s.otaPushFn(uid, data); err != nil {
+				log.Printf("[OTA-Scheduler] MQTT push failed uid=%s: %v", uid, err)
+				continue
+			}
+			tcpOK = true // MQTT-only device, treat as pushed
 		}
 
-		// Update ota_status to 'pushing'
-		_, err = s.db.ExecContext(ctx, `
-			UPDATE device_store SET ota_status = 'pushing', ota_updated_at = NOW()
-			WHERE device_uid = $1
-		`, uid)
-		if err != nil {
-			log.Printf("[OTA-Scheduler] update status failed uid=%s: %v", uid, err)
+		// Only set 'pushing' when we confirmed delivery (TCP OK or MQTT-only)
+		if tcpOK {
+			_, err = s.db.ExecContext(ctx, `
+				UPDATE device_store SET ota_status = 'pushing', ota_updated_at = NOW()
+				WHERE device_uid = $1
+			`, uid)
+			if err != nil {
+				log.Printf("[OTA-Scheduler] update status failed uid=%s: %v", uid, err)
+			}
 		}
 
 		pushed++
