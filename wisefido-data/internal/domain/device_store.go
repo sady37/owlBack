@@ -64,7 +64,9 @@ type DeviceStore struct {
 	OTAPermitSet   bool `db:"-" json:"-"`
 	OTAWaySet      bool `db:"-" json:"-"`
 	OTAScheduleSet bool `db:"-" json:"-"`
-	OTAStatusSet   bool `db:"-" json:"-"`
+	OTAStatusSet    bool `db:"-" json:"-"`
+	OTATargetFWSet  bool `db:"-" json:"-"`
+	OTATargetMCUSet bool `db:"-" json:"-"`
 
 	// 关联租户名称（查询时JOIN获取，不存储在device_store表）
 	TenantName sql.NullString `db:"tenant_name"` // 仅用于查询结果

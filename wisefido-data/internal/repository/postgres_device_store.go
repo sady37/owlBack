@@ -510,14 +510,14 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 			args = append(args, nullStringToAny(update.DeviceCode))
 			argN++
 		}
-		if update.OTATargetFirmwareVersion.Valid {
+		if update.OTATargetFWSet {
 			setParts = append(setParts, fmt.Sprintf("ota_target_firmware_version = $%d", argN))
-			args = append(args, update.OTATargetFirmwareVersion.String)
+			args = append(args, nullStringToAny(update.OTATargetFirmwareVersion))
 			argN++
 		}
-		if update.OTATargetMCUModel.Valid {
+		if update.OTATargetMCUSet {
 			setParts = append(setParts, fmt.Sprintf("ota_target_mcu_model = $%d", argN))
-			args = append(args, update.OTATargetMCUModel.String)
+			args = append(args, nullStringToAny(update.OTATargetMCUModel))
 			argN++
 		}
 		if update.AllowAccessSet {

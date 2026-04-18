@@ -131,6 +131,12 @@ func payloadToDeviceStorePatch(payload map[string]any) *domain.DeviceStore {
 	if _, ok := payload["ota_status"]; ok {
 		ds.OTAStatusSet = true
 	}
+	if _, ok := payload["ota_target_firmware_version"]; ok {
+		ds.OTATargetFWSet = true
+	}
+	if _, ok := payload["ota_target_mcu_model"]; ok {
+		ds.OTATargetMCUSet = true
+	}
 	return ds
 }
 
