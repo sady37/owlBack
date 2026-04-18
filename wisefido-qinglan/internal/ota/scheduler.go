@@ -130,40 +130,60 @@ func (s *Scheduler) scan(ctx context.Context) {
 			}
 		}
 
-		// Read update.ini — use manufacturer's URL/SHA256/Size directly
-		ini := parseUpdateINI(s.fwDir, "qinglan")
-		if ini == nil {
-			log.Printf("[OTA-Scheduler] uid=%s update.ini not found in ota/qinglan/", uid)
-			continue
+		// Pick target file from device_store
+		targetFile := targetFW
+		if targetFile == "" {
+			targetFile = targetMCU
 		}
-		if ini.ESPFileUrl == "" || ini.EspVer == "" {
-			log.Printf("[OTA-Scheduler] uid=%s update.ini missing ESPFileUrl or espsfver", uid)
+		if targetFile == "" {
+			log.Printf("[OTA-Scheduler] uid=%s no target firmware set, skipping", uid)
 			continue
 		}
 
-		log.Printf("[OTA-Scheduler] pushing OTA to uid=%s espVer=%s url=%s", uid, ini.EspVer, ini.ESPFileUrl)
+		// Determine vendor from file path (e.g. "qinglan" from ota/qinglan/xxx.bin)
+		vendor := filepath.Dir(targetFile)
+		if vendor == "." {
+			vendor = "qinglan" // default vendor
+		}
 
-		// MQTT payload: use update.ini values directly
+		// Read version from update.ini
+		ini := parseUpdateINI(s.fwDir, vendor)
+		espVer := ""
+		if ini != nil {
+			espVer = ini.EspVer
+		}
+
+		// Local file: size + SHA256
+		localPath := filepath.Join(s.fwDir, vendor, filepath.Base(targetFile))
+		fwSize, err := getFileSize(localPath)
+		if err != nil {
+			log.Printf("[OTA-Scheduler] uid=%s firmware not found: %s: %v", uid, localPath, err)
+			continue
+		}
+		fwSHA, _ := getFileSHA256(localPath)
+
+		// Download URL: base URL + vendor/filename
+		downloadURL := fmt.Sprintf("%s/%s/%s", s.fwURL, vendor, filepath.Base(targetFile))
+
+		log.Printf("[OTA-Scheduler] pushing OTA to uid=%s file=%s ver=%s url=%s", uid, targetFile, espVer, downloadURL)
+
+		// MQTT payload
 		data := map[string]interface{}{
-			"espfileUrl":    ini.ESPFileUrl,
-			"espfilesha256": ini.ESPFileSHA256,
-			"espfilesize":   ini.ESPFileSize,
-			"espver":        ini.EspVer,
+			"espfileUrl":    downloadURL,
+			"espfilesha256": fwSHA,
+			"espfilesize":   fwSize,
+			"espver":        espVer,
 		}
 
 		// Try TCP push first (old MCU), fall back to MQTT
 		tcpOK := false
 		if s.tcpPushFn != nil {
-			espSize := uint32(0)
-			if v, err := strconv.ParseUint(ini.ESPFileSize, 10, 32); err == nil {
-				espSize = uint32(v)
-			}
 			req := PushRequest{
 				UID:         uid,
-				EspVersion:  ini.EspVer,
-				EspFileURL:  ini.ESPFileUrl,
-				EspFileSize: espSize,
-				EspSHA256:   ini.ESPFileSHA256,
+				EspVersion:  espVer,
+				EspFileURL:  downloadURL,
+				EspFileSize: uint32(fwSize),
+				EspSHA256:   fwSHA,
 			}
 			result := s.tcpPushFn(req)
 			if result.Success {

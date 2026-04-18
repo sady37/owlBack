@@ -78,9 +78,8 @@ func NewHTTPSServer(
 	tcpSrv := tcp.NewServer(serverAddr, uint32(cfg.Port))
 
 	// Initialize OTA manager
-	// TCP (old MCU) devices use HTTP for firmware download (ESP32 HTTPS download known issue)
-	// HTTP firmware served on port 8081 (wisefido-qinglan HTTP server)
-	fwURL := fmt.Sprintf("http://%s:8081/firmware", serverAddr)
+	// Firmware download via nginx 443 (Let's Encrypt cert)
+	fwURL := fmt.Sprintf("https://%s/ota", serverAddr)
 	otaMgr := &ota.Manager{
 		TCPServer:   tcpSrv,
 		FirmwareDir: fwDir,

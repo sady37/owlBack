@@ -272,7 +272,8 @@ func main() {
 		if serverAddr == "" {
 			serverAddr = "0.0.0.0"
 		}
-		fwURL := fmt.Sprintf("http://%s:%d/firmware", serverAddr, cfg.HTTP.Port)
+		// Firmware download via nginx 443 (Let's Encrypt cert, ESP32 compatible)
+		fwURL := fmt.Sprintf("https://%s/ota", serverAddr)
 		otaScheduler = ota.NewScheduler(
 			db,
 			func(uid string, data map[string]interface{}) error {
@@ -290,6 +291,7 @@ func main() {
 				log.Fatalf("HTTPS server error: %v", err)
 			}
 		}()
+
 	}
 
 	log.Printf("wisefido-qinglan service started successfully")
