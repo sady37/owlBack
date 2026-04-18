@@ -278,7 +278,7 @@ func main() {
 			func(uid string, data map[string]interface{}) error {
 				return mqttPublisher.PublishOTA(context.Background(), uid, data)
 			},
-			5*time.Minute,
+			2*time.Minute,
 			fwDir,
 			fwURL,
 		)
