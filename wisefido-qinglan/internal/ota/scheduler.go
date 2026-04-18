@@ -19,10 +19,14 @@ import (
 // OTAPushFn is the function signature for pushing OTA via MQTT
 type OTAPushFn func(uid string, data map[string]interface{}) error
 
+// TCPPushFn pushes OTA via TCP (for old MCU devices)
+type TCPPushFn func(req PushRequest) PushResult
+
 // Scheduler periodically scans for devices that need OTA updates
 type Scheduler struct {
 	db        *sql.DB
 	otaPushFn OTAPushFn
+	tcpPushFn TCPPushFn
 	interval  time.Duration
 	fwDir     string
 	fwURL     string
@@ -32,10 +36,11 @@ type Scheduler struct {
 }
 
 // NewScheduler creates a new OTA scheduler
-func NewScheduler(db *sql.DB, otaPushFn OTAPushFn, interval time.Duration, fwDir, fwURL string) *Scheduler {
+func NewScheduler(db *sql.DB, otaPushFn OTAPushFn, tcpPushFn TCPPushFn, interval time.Duration, fwDir, fwURL string) *Scheduler {
 	return &Scheduler{
 		db:        db,
 		otaPushFn: otaPushFn,
+		tcpPushFn: tcpPushFn,
 		interval:  interval,
 		fwDir:     fwDir,
 		fwURL:     fwURL,
@@ -163,8 +168,39 @@ func (s *Scheduler) scan(ctx context.Context) {
 
 		log.Printf("[OTA-Scheduler] pushing OTA to uid=%s fw=%s mcu=%s", uid, targetFW, targetMCU)
 
-		if err := s.otaPushFn(uid, data); err != nil {
-			log.Printf("[OTA-Scheduler] push failed uid=%s: %v", uid, err)
+		// Try TCP push first (old MCU), fall back to MQTT
+		var pushErr error
+		if s.tcpPushFn != nil {
+			req := PushRequest{
+				UID:           uid,
+				EspFirmware:   "qinglan/" + targetFW,
+				EspVersion:    targetFW,
+				RadarFirmware: "qinglan/" + targetMCU,
+				RadarVersion:  targetMCU,
+			}
+			if targetFW == "" {
+				req.EspFirmware = ""
+				req.EspVersion = ""
+			}
+			if targetMCU == "" {
+				req.RadarFirmware = ""
+				req.RadarVersion = ""
+			}
+			result := s.tcpPushFn(req)
+			if result.Success {
+				log.Printf("[OTA-Scheduler] TCP push OK uid=%s", uid)
+			} else if s.otaPushFn != nil {
+				// TCP failed (device offline on TCP), try MQTT
+				log.Printf("[OTA-Scheduler] TCP push failed (%s), trying MQTT uid=%s", result.Message, uid)
+				pushErr = s.otaPushFn(uid, data)
+			} else {
+				pushErr = fmt.Errorf("TCP: %s", result.Message)
+			}
+		} else if s.otaPushFn != nil {
+			pushErr = s.otaPushFn(uid, data)
+		}
+		if pushErr != nil {
+			log.Printf("[OTA-Scheduler] push failed uid=%s: %v", uid, pushErr)
 			continue
 		}
 
