@@ -26,13 +26,18 @@ type EventHandler struct {
 	logger      *zap.Logger
 	staySesMu   sync.Mutex
 	staySessions map[string]*staySession // tenant:device -> Stay 状态机
+	inBedSinceMu sync.Mutex
+	inBedSince   map[string]int64 // deviceID -> InBed 事件时间戳（毫秒），LeftBed 时用于计算在床时长
 }
+
+const leftBedMinInBedMs = 5 * 60 * 1000 // 在床≥5分钟才视为稳定上床，LeftBed 才进 pending
 
 func NewEventHandler(state *service.StateService, alarms *service.AlarmService, buffer *service.MonitorBuffer, metaCache *service.DeviceMetaCache, enablement *service.AlarmEnablementCache, bedCoord *service.BedEventCoordinator, logger *zap.Logger) *EventHandler {
 	return &EventHandler{
 		state: state, alarms: alarms, buffer: buffer, metaCache: metaCache,
 		enablement: enablement, bedCoord: bedCoord, logger: logger,
 		staySessions: make(map[string]*staySession),
+		inBedSince:   make(map[string]int64),
 	}
 }
 
@@ -132,6 +137,10 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		h.routeRoomStateEvent(ctx, m, data, evName)
 
 	case alarm.InBed:
+		// 记录 InBed 时间，供 LeftBed 计算在床时长（不依赖 BedState.StartTime，它会被 derive 覆盖）
+		h.inBedSinceMu.Lock()
+		h.inBedSince[m.DeviceID] = m.Timestamp
+		h.inBedSinceMu.Unlock()
 		if h.state != nil {
 			deviceType := ""
 			if dm := h.metaCache.GetDeviceMeta(ctx, m.CardID, m.DeviceID); dm != nil {
@@ -164,15 +173,28 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 			payload = &redis.IoTStreamMessage{CardID: m.CardID, TenantID: m.TenantID, DeviceID: m.DeviceID, DeviceUID: m.DeviceUID, DataValue: []interface{}{data}, Timestamp: m.Timestamp}
 		}
 		_, level, durationSec, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, m.TenantID, payload.DeviceID, alarm.LeftBed)
-		if enabled && level != "" && h.alarms.InRestTimeWindow(ctx, m.TenantID, m.CardID) && h.state != nil {
-			status, _ := h.state.ReadCardStatus(ctx, m.CardID)
-			if status != nil && status.BedState != nil && status.BedState.BedStatus == 0 && status.BedState.StartTime != 0 && (time.Now().UnixMilli()-status.BedState.StartTime) >= 5*60*1000 {
-				if durationSec == 0 {
-					_ = h.alarms.PersistAlarmAndPublish(ctx, payload, alarm.LeftBed, level)
-				} else {
-					triggerData, _ := json.Marshal(redis.FirstDataValue(payload.DataValue))
-					_ = h.alarms.AddPendingAlarm(ctx, m.TenantID, payload.DeviceID, alarm.LeftBed, level, m.Timestamp, durationSec, "", triggerData)
-				}
+		inRestWindow := h.alarms.InRestTimeWindow(ctx, m.TenantID, m.CardID)
+		// 从 inBedSince 取上床时间（不依赖 BedState.StartTime，它会被 derive 覆盖）
+		h.inBedSinceMu.Lock()
+		inBedTs := h.inBedSince[m.DeviceID]
+		delete(h.inBedSince, m.DeviceID) // 用完清除
+		h.inBedSinceMu.Unlock()
+		inBedMs := m.Timestamp - inBedTs
+		stableInBed := inBedTs > 0 && inBedMs >= leftBedMinInBedMs
+		h.logger.Info("LeftBed.pending.check",
+			zap.String("device_uid", m.DeviceUID),
+			zap.Bool("enabled", enabled),
+			zap.Bool("inRestWindow", inRestWindow),
+			zap.Bool("stableInBed", stableInBed),
+			zap.Int64("inBedMs", inBedMs),
+			zap.Int("durationSec", durationSec),
+		)
+		if enabled && level != "" && inRestWindow && stableInBed {
+			if durationSec == 0 {
+				_ = h.alarms.PersistAlarmAndPublish(ctx, payload, alarm.LeftBed, level)
+			} else {
+				triggerData, _ := json.Marshal(redis.FirstDataValue(payload.DataValue))
+				_ = h.alarms.AddPendingAlarm(ctx, m.TenantID, payload.DeviceID, alarm.LeftBed, level, m.Timestamp, durationSec, "", triggerData)
 			}
 		}
 		if h.state != nil {

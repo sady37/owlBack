@@ -772,6 +772,14 @@ func (s *StateService) PublishBedStateSleepStage(ctx context.Context, cardID str
 }
 
 // DeriveBedStateFromRealtime 当 bed_status！=0/1 时在 derive 定时点调用：每轮累加置信度，累加和>350 即发布在床（BedConfidence=sum/n）并 Reconcile；满 5 轮仍<350 则发布离床（BedStatus=1，BedConfidence=100-sum/5）并 Reconcile。
+// deriveStartTime 返回 StartTime：状态未变时继承 prev，状态变化时用 now。
+func deriveStartTime(now int64, newBedStatus int, prev *card.BedState) int64 {
+	if prev != nil && prev.BedStatus == newBedStatus && prev.StartTime > 0 {
+		return prev.StartTime
+	}
+	return now
+}
+
 func (s *StateService) DeriveBedStateFromRealtime(ctx context.Context, snap CardSnapshot, meta *CardMeta) {
 	if meta == nil || meta.BedID == "" {
 		return
@@ -847,7 +855,7 @@ func (s *StateService) DeriveBedStateFromRealtime(ctx context.Context, snap Card
 					UpdatedAt:     now,
 					BedStatus:     0,
 					TrackNumber:   1,
-					StartTime:     now,
+					StartTime:     deriveStartTime(now, 0, curr.BedState),
 					DurationSec:   0,
 					BedEvent:      BedEventNone,
 					BedConfidence: bedConf,
@@ -913,7 +921,7 @@ func (s *StateService) DeriveBedStateFromRealtime(ctx context.Context, snap Card
 					UpdatedAt:       now,
 					BedStatus:       0,
 					TrackNumber:     1,
-					StartTime:       now,
+					StartTime:       deriveStartTime(now, 0, curr.BedState),
 					DurationSec:     0,
 					BedEvent:        BedEventNone,
 					BedConfidence:   bedConf,
@@ -947,7 +955,7 @@ func (s *StateService) DeriveBedStateFromRealtime(ctx context.Context, snap Card
 					UpdatedAt:       now,
 					BedStatus:       1,
 					TrackNumber:     0,
-					StartTime:       now,
+					StartTime:       deriveStartTime(now, 1, curr.BedState),
 					DurationSec:     0,
 					BedEvent:        BedEventNone,
 					BedConfidence:   bedConf,
@@ -983,7 +991,7 @@ func (s *StateService) DeriveBedStateFromRealtime(ctx context.Context, snap Card
 				UpdatedAt:       now,
 				BedStatus:       0,
 				TrackNumber:     1,
-				StartTime:       now,
+				StartTime:       deriveStartTime(now, 0, curr.BedState),
 				DurationSec:     0,
 				BedEvent:        BedEventNone,
 				BedConfidence:   bedConf,
@@ -1017,7 +1025,7 @@ func (s *StateService) DeriveBedStateFromRealtime(ctx context.Context, snap Card
 				UpdatedAt:       now,
 				BedStatus:       1,
 				TrackNumber:     0,
-				StartTime:       now,
+				StartTime:       deriveStartTime(now, 1, curr.BedState),
 				DurationSec:     0,
 				BedEvent:        BedEventNone,
 				BedConfidence:   bedConf,

@@ -596,5 +596,13 @@ func (c *SleepaceGatewayClient) GetAlarmConfig(ctx context.Context, deviceID, de
 		return nil, fmt.Errorf("sleepad API error: %s (status: %d)", out.Msg, out.Status)
 	}
 
+	c.logger.Info("[SLEEPACE_RAW] getalarmnotifyconfig response",
+		zap.String("device_id", deviceID),
+		zap.Any("leftBedFlag", out.Data["leftBedFlag"]),
+		zap.Any("leftBedDuration", out.Data["leftBedDuration"]),
+		zap.Any("leftBedStartHour", out.Data["leftBedStartHour"]),
+		zap.Any("leftBedEndHour", out.Data["leftBedEndHour"]),
+	)
+
 	return out.Data, nil
 }

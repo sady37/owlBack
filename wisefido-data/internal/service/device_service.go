@@ -412,6 +412,42 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 		}
 	}
 
+	// 绑定关系快照：bound_room_id 或 bound_bed_id 发生变更时
+	if oldDevice != nil && newDevice != nil {
+		oldRoom := ""
+		if oldDevice.RoomID.Valid {
+			oldRoom = oldDevice.RoomID.String
+		}
+		newRoom := ""
+		if newDevice.RoomID.Valid {
+			newRoom = newDevice.RoomID.String
+		}
+		oldBed := ""
+		if oldDevice.BoundBedID.Valid {
+			oldBed = oldDevice.BoundBedID.String
+		}
+		newBed := ""
+		if newDevice.BoundBedID.Valid {
+			newBed = newDevice.BoundBedID.String
+		}
+		if oldRoom != newRoom || oldBed != newBed {
+			var affectedUnits []string
+			if oldDevice.UnitID.Valid && oldDevice.UnitID.String != "" {
+				affectedUnits = append(affectedUnits, oldDevice.UnitID.String)
+			}
+			if newDevice.UnitID.Valid && newDevice.UnitID.String != "" && (len(affectedUnits) == 0 || affectedUnits[0] != newDevice.UnitID.String) {
+				affectedUnits = append(affectedUnits, newDevice.UnitID.String)
+			}
+			summary := fmt.Sprintf("%s(%s): %s → %s",
+				newDevice.DeviceName, newDevice.DeviceUID,
+				snapshotLocationLabel(ctx, s.db, req.TenantID, oldRoom, oldBed),
+				snapshotLocationLabel(ctx, s.db, req.TenantID, newRoom, newBed))
+			if err := TakeBindingSnapshot(ctx, s.db, s.logger, req.TenantID, "device_binding", req.DeviceID, summary, affectedUnits, ""); err != nil {
+				s.logger.Warn("TakeBindingSnapshot failed", zap.Error(err))
+			}
+		}
+	}
+
 	return &UpdateDeviceResponse{
 		Success: true,
 	}, nil

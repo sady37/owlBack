@@ -2755,6 +2755,12 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 						} else {
 							s.logger.Info("Synced cards after resident caregivers change", zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID), zap.String("unit_id", updatedResident.UnitID))
 						}
+						// 护理关系变更快照
+						if err := TakeBindingSnapshot(ctx, s.db, s.logger, req.TenantID, "caregiver_change", req.ResidentID,
+							fmt.Sprintf("caregiver changed for resident %s", req.ResidentID),
+							[]string{updatedResident.UnitID}, req.CurrentUserID); err != nil {
+							s.logger.Warn("TakeBindingSnapshot failed", zap.Error(err))
+						}
 					}
 				}
 			}
@@ -2784,6 +2790,34 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 				} else {
 					s.logger.Info("Synced cards after resident change", zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID), zap.String("unit_id", uid))
 				}
+			}
+		}
+	}
+
+	// 绑定关系快照：住户 unit/room/bed 发生变更时
+	updatedResident2, _ := s.residentsRepo.GetResident(ctx, req.TenantID, req.ResidentID)
+	if updatedResident2 != nil && existingResident != nil {
+		oldUnit := existingResident.UnitID
+		newUnit2 := updatedResident2.UnitID
+		oldBed := existingResident.BedID
+		newBed := updatedResident2.BedID
+		if oldUnit != newUnit2 || oldBed != newBed {
+			var affectedUnits []string
+			if oldUnit != "" {
+				affectedUnits = append(affectedUnits, oldUnit)
+			}
+			if newUnit2 != "" && newUnit2 != oldUnit {
+				affectedUnits = append(affectedUnits, newUnit2)
+			}
+			name := updatedResident2.Nickname
+			if name == "" {
+				name = req.ResidentID
+			}
+			oldLoc := snapshotUnitLabel(ctx, s.db, req.TenantID, oldUnit)
+			newLoc := snapshotUnitLabel(ctx, s.db, req.TenantID, newUnit2)
+			summary := fmt.Sprintf("%s: %s → %s", name, oldLoc, newLoc)
+			if err := TakeBindingSnapshot(ctx, s.db, s.logger, req.TenantID, "resident_move", req.ResidentID, summary, affectedUnits, req.CurrentUserID); err != nil {
+				s.logger.Warn("TakeBindingSnapshot failed", zap.Error(err))
 			}
 		}
 	}

@@ -604,7 +604,17 @@ func (s *AlarmService) AddPendingAlarm(ctx context.Context, tenantID, deviceID, 
 	if err != nil {
 		return err
 	}
-	return s.redisPending.HSet(ctx, redisPendingAlarmKey, pendingField(tenantID, deviceID, alarmType), string(b))
+	err = s.redisPending.HSet(ctx, redisPendingAlarmKey, pendingField(tenantID, deviceID, alarmType), string(b))
+	if err == nil {
+		s.logger.Info("pending.added",
+			zap.String("device_id", deviceID),
+			zap.String("alarm_type", alarmType),
+			zap.String("level", alarmLevel),
+			zap.Int("duration_sec", durationSec),
+			zap.Int64("event_since", eventSinceMs),
+		)
+	}
+	return err
 }
 
 // RemovePendingAlarm 删除待处理项。会删新版 key；若 legacyCardID 非空同时删旧版 card_id:device_id:type，避免卡重建后删不掉。
@@ -625,7 +635,16 @@ func (s *AlarmService) RemovePendingAlarm(ctx context.Context, tenantID, legacyC
 	if len(keys) == 0 {
 		return nil
 	}
-	return s.redisPending.HDel(ctx, redisPendingAlarmKey, keys...)
+	err := s.redisPending.HDel(ctx, redisPendingAlarmKey, keys...)
+	if err == nil {
+		s.logger.Info("pending.removed",
+			zap.String("device_id", deviceID),
+			zap.String("alarm_type", alarmType),
+			zap.String("tenant_id", tenantID),
+			zap.String("reason", "InBed_cancel"),
+		)
+	}
+	return err
 }
 
 // AddStayPendingIfEnabled 若该设备已开启 Stay 告警且配置了 duration_sec，则写入 alarm:pending，供 ScanPendingAlarms 到时落库。
@@ -676,6 +695,17 @@ func (s *AlarmService) ScanPendingAlarms(ctx context.Context) error {
 			eventType = p.UpgradeTo
 		}
 		triggeredAt := time.Unix(0, p.EventSince*int64(time.Millisecond))
+		// 在 trigger_data 中补充 pending 信息，区分即时报警与计时到期报警
+		triggerData := p.TriggerData
+		if len(triggerData) > 0 {
+			var td map[string]interface{}
+			if json.Unmarshal(triggerData, &td) == nil {
+				td["alarm_source"] = "pending_expired"
+				td["pending_duration_sec"] = p.DurationSec
+				td["pending_fired_at"] = nowMs
+				triggerData, _ = json.Marshal(td)
+			}
+		}
 		// cardID 传空：事务内按 device_id 解析当前绑定卡，避免卡重建后 pending 内 card_id 失效
 		result, cardAlarmState, err := card.InsertAlarmAndUpdateCard(ctx, s.db, "", card.AlarmInsertParams{
 			TenantID:    p.TenantID,
@@ -684,7 +714,7 @@ func (s *AlarmService) ScanPendingAlarms(ctx context.Context) error {
 			Category:    alarm.GetFHIRCategory(eventType),
 			AlarmLevel:  p.AlarmLevel,
 			TriggeredAt: triggeredAt,
-			TriggerData: p.TriggerData,
+			TriggerData: triggerData,
 		})
 		if err != nil {
 			s.logger.Warn("scan pending insert alarm failed",
