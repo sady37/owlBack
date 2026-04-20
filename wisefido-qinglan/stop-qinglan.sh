@@ -69,6 +69,17 @@ add_pids() {
     done
 }
 
+# 先尝试 systemctl 停服务（owlback 一体 或 分模块 owlback.qinglan）
+if command -v systemctl >/dev/null 2>&1; then
+    for u in owlback.qinglan owlback; do
+        if systemctl is-active --quiet "$u" 2>/dev/null; then
+            echo "  systemctl stop $u ..."
+            sudo systemctl stop "$u" 2>/dev/null || systemctl stop "$u" 2>/dev/null || true
+            sleep 1
+        fi
+    done
+fi
+
 echo "🔍 Collecting PIDs (ports 8081+8443, log, cmdline patterns)..."
 
 for port in 8081 8443; do
