@@ -220,7 +220,7 @@ func main() {
 
 		// 创建 Device Service 和 Handler（qinglanClient 已在上面创建）
 		devicesRepo.SetLogger(logger) // 确保 logger 已设置（用于设备连接日志）
-		deviceService := service.NewDeviceService(devicesRepo, cardSyncService, qinglanClient, card.NewReader(redisClient), db, logger)
+		deviceService := service.NewDeviceService(devicesRepo, qinglanClient, card.NewReader(redisClient), db, logger)
 		deviceHandler := httpapi.NewDeviceHandler(deviceService, logger)
 		deviceHandler.SetDB(db)
 		router.RegisterDeviceRoutes(deviceHandler)
@@ -279,7 +279,7 @@ func main() {
 		router.RegisterBranchesRoutes(branchesHandler)
 
 		// 创建 Unit Service 和 Handler
-		unitService := service.NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, cardSyncService, logger)
+		unitService := service.NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, logger)
 		unitHandler := httpapi.NewUnitHandler(unitService, logger)
 		router.RegisterUnitRoutes(unitHandler)
 
@@ -297,6 +297,7 @@ func main() {
 
 		// 创建 CardSyncService
 		cardSyncService = service.NewCardSyncService(cardRepo, configPublisher, cardRealtimeSvc, logger)
+		service.InitGlobalCardSync(cardSyncService)
 
 		// 创建 DeviceMonitorSettings Service 和 Handler
 		alarmDeviceRepo := repository.NewPostgresAlarmDeviceRepository(db)
@@ -419,7 +420,7 @@ func main() {
 		}
 
 		// 创建 Resident Service 和 Handler
-		residentService := service.NewResidentService(residentsRepo, db, cardSyncService, logger)
+		residentService := service.NewResidentService(residentsRepo, db, logger)
 		residentHandler := httpapi.NewResidentHandler(residentService, db, logger)
 		router.RegisterResidentRoutes(residentHandler)
 

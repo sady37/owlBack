@@ -36,7 +36,6 @@ type DeviceService interface {
 // deviceService 实现
 type deviceService struct {
 	devicesRepo     repository.DevicesRepository
-	cardSync        *CardSyncService
 	configPublisher *publisher.ConfigPublisher
 	qinglanClient   *QinglanClient
 	stateReader     *card.Reader
@@ -44,24 +43,13 @@ type deviceService struct {
 	logger          *zap.Logger
 }
 
-func NewDeviceService(devicesRepo repository.DevicesRepository, cardSync *CardSyncService, qinglanClient *QinglanClient, stateReader *card.Reader, db *sql.DB, logger *zap.Logger) DeviceService {
+func NewDeviceService(devicesRepo repository.DevicesRepository, qinglanClient *QinglanClient, stateReader *card.Reader, db *sql.DB, logger *zap.Logger) DeviceService {
 	return &deviceService{
 		devicesRepo:   devicesRepo,
-		cardSync:      cardSync,
 		qinglanClient: qinglanClient,
 		stateReader:   stateReader,
 		db:            db,
 		logger:        logger,
-	}
-}
-
-func NewDeviceServiceWithPublisher(devicesRepo repository.DevicesRepository, cardSync *CardSyncService, configPublisher *publisher.ConfigPublisher, qinglanClient *QinglanClient, logger *zap.Logger) DeviceService {
-	return &deviceService{
-		devicesRepo:     devicesRepo,
-		cardSync:        cardSync,
-		configPublisher: configPublisher,
-		qinglanClient:   qinglanClient,
-		logger:          logger,
 	}
 }
 
@@ -368,47 +356,19 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 		}
 	}
 
-	if err != nil {
-		// newDevice 已用于发布；card sync 跳过
-	} else if s.cardSync != nil && newDevice != nil {
-		seen := make(map[string]struct{})
-		syncUnit := func(unitID string) {
-			if unitID == "" {
-				return
-			}
-			if _, ok := seen[unitID]; ok {
-				return
-			}
-			seen[unitID] = struct{}{}
-			if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, unitID); err != nil {
-				s.logger.Warn("Failed to sync cards after device update",
-					zap.Error(err),
-					zap.String("tenant_id", req.TenantID),
-					zap.String("device_id", req.DeviceID),
-					zap.String("unit_id", unitID),
-				)
-			} else {
-				s.logger.Info("Synced cards after device update",
-					zap.String("tenant_id", req.TenantID),
-					zap.String("device_id", req.DeviceID),
-					zap.String("unit_id", unitID),
-				)
-			}
-		}
+	if err == nil && newDevice != nil {
+		// card sync：新旧 unit 都同步
 		if oldDevice != nil && oldDevice.UnitID.Valid {
-			syncUnit(oldDevice.UnitID.String)
+			SyncUnitCards(ctx, req.TenantID, oldDevice.UnitID.String)
 		}
 		if newDevice.UnitID.Valid {
-			syncUnit(newDevice.UnitID.String)
+			SyncUnitCards(ctx, req.TenantID, newDevice.UnitID.String)
 		}
-
-		// DeviceCard 管理：设备绑定到 unit 后删除 DeviceCard，解绑后创建 DeviceCard
+		// DeviceCard 管理
 		if newDevice.UnitID.Valid && newDevice.UnitID.String != "" {
-			// 设备已绑到 unit，清理独立 DeviceCard
-			s.cardSync.CleanupDeviceCard(ctx, req.TenantID, req.DeviceID)
+			CleanupDeviceCardGlobal(ctx, req.TenantID, req.DeviceID)
 		} else {
-			// 设备未绑定 unit，确保有独立 DeviceCard
-			s.cardSync.EnsureDeviceCard(ctx, req.TenantID, *newDevice)
+			EnsureDeviceCardGlobal(ctx, req.TenantID, *newDevice)
 		}
 	}
 
@@ -497,17 +457,8 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 		return nil, fmt.Errorf("failed to delete device: %w", err)
 	}
 
-	if s.cardSync != nil {
-		if unitID != "" {
-			if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, unitID); err != nil {
-				s.logger.Warn("Failed to sync cards after device deletion", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", unitID))
-			} else {
-				s.logger.Info("Synced cards after device deletion", zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID), zap.String("unit_id", unitID))
-			}
-		}
-		// 清理设备的独立 DeviceCard
-		s.cardSync.CleanupDeviceCard(ctx, req.TenantID, req.DeviceID)
-	}
+	SyncUnitCards(ctx, req.TenantID, unitID)
+	CleanupDeviceCardGlobal(ctx, req.TenantID, req.DeviceID)
 
 	// 发送 device_store 变化信号（device_deleted）
 	if s.configPublisher != nil {

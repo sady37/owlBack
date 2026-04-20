@@ -1,5 +1,42 @@
 # Bug 记录
 
+## BUG-003: deviceService/unitService 的 cardSync 为 nil，设备解绑后 card 不同步
+
+**发现日期**: 2026-04-19  
+**严重程度**: P1  
+**状态**: 已修复  
+
+### 现象
+edit unit 解绑设备后，card 的 devices JSONB 仍残留已解绑的设备。
+
+### 根因
+main.go 初始化顺序：`deviceService` 和 `unitService` 在 `cardSyncService` 之前创建，
+传入的 `cardSyncService` 指针为 nil。Go 传值语义，后续赋值不影响已传入的 nil。
+
+```go
+var cardSyncService *CardSyncService          // nil
+deviceService = New(..., cardSyncService)     // 传了 nil
+unitService   = New(..., cardSyncService)     // 传了 nil
+cardSyncService = NewCardSyncService(...)     // 此处才初始化
+residentService = New(..., cardSyncService)   // OK，已有值
+```
+
+### 排除法确认
+| Service | 创建时机 | cardSync | 状态 |
+|---------|---------|----------|------|
+| deviceService | line 223（初始化前） | nil → SetCardSync 修复 | ✅ 已修 |
+| unitService | line 282（初始化前） | nil → SetCardSync 修复 | ✅ 已修 |
+| residentService | line 424（初始化后） | 有值 | ✅ 无问题 |
+| startup 直接调用 | line 511+（初始化后） | 有值 | ✅ 无问题 |
+
+### 修复
+重构为全局入口 `SyncUnitCards(ctx, tenantID, unitID)`：
+- 去掉所有 service 的 `cardSync *CardSyncService` 字段和构造注入
+- main.go 只需 `service.InitGlobalCardSync(cardSyncService)` 一次
+- 各 service 直接调 `SyncUnitCards()`，不可能遗漏注入
+
+---
+
 ## BUG-002: Redis stream 残留旧 consumer group 导致 cardagg 事件重复消费
 
 **发现日期**: 2026-04-19  

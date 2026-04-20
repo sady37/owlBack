@@ -45,16 +45,14 @@ type ResidentService interface {
 type residentService struct {
 	residentsRepo repository.ResidentsRepository
 	db            *sql.DB
-	cardSync      *CardSyncService
 	logger        *zap.Logger
 }
 
 // NewResidentService 创建 ResidentService 实例
-func NewResidentService(residentsRepo repository.ResidentsRepository, db *sql.DB, cardSync *CardSyncService, logger *zap.Logger) ResidentService {
+func NewResidentService(residentsRepo repository.ResidentsRepository, db *sql.DB, logger *zap.Logger) ResidentService {
 	return &residentService{
 		residentsRepo: residentsRepo,
 		db:            db,
-		cardSync:      cardSync,
 		logger:        logger,
 	}
 }
@@ -2074,22 +2072,7 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 		}
 	}
 
-	if s.cardSync != nil && unitID != "" {
-		if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, unitID); err != nil {
-			s.logger.Warn("Failed to sync cards after resident create",
-				zap.Error(err),
-				zap.String("tenant_id", req.TenantID),
-				zap.String("resident_id", residentID),
-				zap.String("unit_id", unitID),
-			)
-		} else {
-			s.logger.Info("Synced cards after resident create",
-				zap.String("tenant_id", req.TenantID),
-				zap.String("resident_id", residentID),
-				zap.String("unit_id", unitID),
-			)
-		}
-	}
+	SyncUnitCards(ctx, req.TenantID, unitID)
 
 	return &CreateResidentResponse{
 		ResidentID: residentID,
@@ -2745,16 +2728,12 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 				)
 				// 不失败整个操作，只记录警告
 			} else {
-				if s.cardSync != nil {
+				if true {
 					updatedResident, err := s.residentsRepo.GetResident(ctx, req.TenantID, req.ResidentID)
 					if err != nil {
 						s.logger.Warn("Failed to get updated resident for card sync", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID))
 					} else if updatedResident != nil && updatedResident.UnitID != "" {
-						if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, updatedResident.UnitID); err != nil {
-							s.logger.Warn("Failed to sync cards after resident caregivers change", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID), zap.String("unit_id", updatedResident.UnitID))
-						} else {
-							s.logger.Info("Synced cards after resident caregivers change", zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID), zap.String("unit_id", updatedResident.UnitID))
-						}
+						SyncUnitCards(ctx, req.TenantID, updatedResident.UnitID)
 						// 护理关系变更快照
 						if err := TakeBindingSnapshot(ctx, s.db, s.logger, req.TenantID, "caregiver_change", req.ResidentID,
 							fmt.Sprintf("caregiver changed for resident %s", req.ResidentID),
@@ -2767,7 +2746,7 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 		}
 	}
 
-	if s.cardSync != nil {
+	{
 		updatedResident, err := s.residentsRepo.GetResident(ctx, req.TenantID, req.ResidentID)
 		if err != nil {
 			s.logger.Warn("Failed to get updated resident for card sync", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID))
@@ -2776,21 +2755,8 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 			if updatedResident != nil {
 				newUnit = updatedResident.UnitID
 			}
-			seen := make(map[string]struct{})
-			for _, uid := range []string{existingResident.UnitID, newUnit} {
-				if uid == "" {
-					continue
-				}
-				if _, ok := seen[uid]; ok {
-					continue
-				}
-				seen[uid] = struct{}{}
-				if _, err := s.cardSync.CreateCardsForUnit(ctx, req.TenantID, uid); err != nil {
-					s.logger.Warn("Failed to sync cards after resident change", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID), zap.String("unit_id", uid))
-				} else {
-					s.logger.Info("Synced cards after resident change", zap.String("tenant_id", req.TenantID), zap.String("resident_id", req.ResidentID), zap.String("unit_id", uid))
-				}
-			}
+			SyncUnitCards(ctx, req.TenantID, existingResident.UnitID)
+			SyncUnitCards(ctx, req.TenantID, newUnit)
 		}
 	}
 
@@ -2994,22 +2960,7 @@ func (s *residentService) DeleteResident(ctx context.Context, req DeleteResident
 		return nil, fmt.Errorf("failed to delete resident: %w", err)
 	}
 
-	if s.cardSync != nil && unitIDBeforeDelete != "" {
-		if _, err := s.cardSync.CreateCardsForUnit(ctx, tenantID, unitIDBeforeDelete); err != nil {
-			s.logger.Warn("Failed to sync cards after resident delete",
-				zap.Error(err),
-				zap.String("tenant_id", tenantID),
-				zap.String("resident_id", req.ResidentID),
-				zap.String("unit_id", unitIDBeforeDelete),
-			)
-		} else {
-			s.logger.Info("Synced cards after resident delete",
-				zap.String("tenant_id", tenantID),
-				zap.String("resident_id", req.ResidentID),
-				zap.String("unit_id", unitIDBeforeDelete),
-			)
-		}
-	}
+	SyncUnitCards(ctx, tenantID, unitIDBeforeDelete)
 
 	return &DeleteResidentResponse{Success: true}, nil
 }

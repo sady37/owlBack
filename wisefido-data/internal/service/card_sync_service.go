@@ -413,3 +413,41 @@ func parseDeviceIDsFromJSON(devicesJSON []byte) []string {
 	}
 	return ids
 }
+
+// ========== 全局 CardSync 入口 ==========
+// 各 service（device/unit/resident）统一调 SyncUnitCards，不需要持有 cardSync 引用。
+
+var globalCardSync *CardSyncService
+
+// InitGlobalCardSync 在 main.go 中 CardSyncService 创建后调用一次。
+func InitGlobalCardSync(cs *CardSyncService) {
+	globalCardSync = cs
+}
+
+// SyncUnitCards 通知 unit 的卡片需要同步。unitID 为空时静默跳过。
+func SyncUnitCards(ctx context.Context, tenantID, unitID string) {
+	if globalCardSync == nil || tenantID == "" || unitID == "" {
+		return
+	}
+	if _, err := globalCardSync.CreateCardsForUnit(ctx, tenantID, unitID); err != nil {
+		globalCardSync.logger.Warn("SyncUnitCards failed",
+			zap.String("tenant_id", tenantID),
+			zap.String("unit_id", unitID),
+			zap.Error(err),
+		)
+	}
+}
+
+// EnsureDeviceCard 确保设备有独立 DeviceCard（未绑定 unit 时）。
+func EnsureDeviceCardGlobal(ctx context.Context, tenantID string, device domain.Device) {
+	if globalCardSync != nil {
+		globalCardSync.EnsureDeviceCard(ctx, tenantID, device)
+	}
+}
+
+// CleanupDeviceCardGlobal 清理设备的独立 DeviceCard（已绑定 unit 后）。
+func CleanupDeviceCardGlobal(ctx context.Context, tenantID, deviceID string) {
+	if globalCardSync != nil {
+		globalCardSync.CleanupDeviceCard(ctx, tenantID, deviceID)
+	}
+}

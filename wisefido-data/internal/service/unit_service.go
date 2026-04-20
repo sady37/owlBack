@@ -57,19 +57,17 @@ type unitService struct {
 	residentsRepo repository.ResidentsRepository
 	devicesRepo   repository.DevicesRepository
 	db            *sql.DB
-	cardSync      *CardSyncService
 	logger        *zap.Logger
 }
 
 // NewUnitService 创建 UnitService 实例
-func NewUnitService(unitsRepo repository.UnitsRepository, branchesRepo repository.BranchesRepository, residentsRepo repository.ResidentsRepository, devicesRepo repository.DevicesRepository, db *sql.DB, cardSync *CardSyncService, logger *zap.Logger) UnitService {
+func NewUnitService(unitsRepo repository.UnitsRepository, branchesRepo repository.BranchesRepository, residentsRepo repository.ResidentsRepository, devicesRepo repository.DevicesRepository, db *sql.DB, logger *zap.Logger) UnitService {
 	return &unitService{
 		unitsRepo:     unitsRepo,
 		branchesRepo:  branchesRepo,
 		residentsRepo: residentsRepo,
 		devicesRepo:   devicesRepo,
 		db:            db,
-		cardSync:      cardSync,
 		logger:        logger,
 	}
 }
@@ -431,25 +429,9 @@ func (s *unitService) verifyBedPermission(ctx context.Context, tenantID, bedID s
 	return bed, room, unit, nil
 }
 
-// syncCardsForUnit 单元层级（unit/room/bed）或展示字段变化后刷新该 unit 下卡片（card_name、card_address 等）
-func (s *unitService) syncCardsForUnit(ctx context.Context, tenantID, unitID, reason string) {
-	if s.cardSync == nil || tenantID == "" || unitID == "" {
-		return
-	}
-	if _, err := s.cardSync.CreateCardsForUnit(ctx, tenantID, unitID); err != nil {
-		s.logger.Warn("Failed to sync cards after unit hierarchy change",
-			zap.Error(err),
-			zap.String("tenant_id", tenantID),
-			zap.String("unit_id", unitID),
-			zap.String("reason", reason),
-		)
-	} else {
-		s.logger.Info("Synced cards after unit hierarchy change",
-			zap.String("tenant_id", tenantID),
-			zap.String("unit_id", unitID),
-			zap.String("reason", reason),
-		)
-	}
+// syncCardsForUnit 单元层级（unit/room/bed）或展示字段变化后刷新该 unit 下卡片
+func (s *unitService) syncCardsForUnit(ctx context.Context, tenantID, unitID, _ string) {
+	SyncUnitCards(ctx, tenantID, unitID)
 }
 
 // publicSyntheticResidentAccount public 单元占位住户账号：public + unit_id 字符串最后 3 位（小写）
