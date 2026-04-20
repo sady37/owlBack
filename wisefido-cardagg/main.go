@@ -142,6 +142,10 @@ func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *servi
 		tick++
 		bedCoord.Tick(ctx, state, alarmSvc, metaCache, buf, logger)
 		nowMs := time.Now().UnixMilli()
+		// 每 90s 清理 stale device entries（PR_DESCRIPTION 要求但此前缺失）
+		if tick%90 == 0 {
+			buf.PruneStaleDevices(nowMs, 90_000)
+		}
 		snapshots := buf.Flush(nowMs)
 		shouldDerive := service.IsDeriveTick(tick)
 		currOnline := make(map[string]bool)
@@ -168,6 +172,13 @@ func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *servi
 				_ = state.DeriveDeviceOnlineOnly(ctx, snap.CardID, meta, buf)
 			}
 			state.DeriveBedStateFromRealtime(ctx, snap, meta)
+		}
+		// 无 snapshot 的活跃 card 也要刷 device_status（90s 超时后 b.online 已标 offline，需写 Redis）
+		for cid := range currOnline {
+			if !snappedCards[cid] {
+				meta := metaCache.GetOrLoad(ctx, cid)
+				_ = state.DeriveDeviceOnlineOnly(ctx, cid, meta, buf)
+			}
 		}
 		for cid := range prevOnline {
 			if !currOnline[cid] {
