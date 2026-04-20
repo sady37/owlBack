@@ -1384,10 +1384,23 @@ func (s *StateService) SetDeviceOnline(ctx context.Context, cardID, deviceID, de
 	return s.writer.SetDeviceOnline(ctx, cardID, deviceID, deviceUID, deviceType, online)
 }
 
-// SetCardOffline marks a card as offline: writes empty DeviceStatus to card:state Hash.
-func (s *StateService) SetCardOffline(ctx context.Context, cardID string) {
+// SetCardOffline marks a card as offline: writes each device with offline=1 (not empty map, avoids omitempty swallowing).
+func (s *StateService) SetCardOffline(ctx context.Context, cardID string, meta *CardMeta) {
+	now := time.Now().UnixMilli()
+	ds := make(map[string]*card.DeviceStatus)
+	if meta != nil {
+		for devID, dm := range meta.Devices {
+			ds[devID] = &card.DeviceStatus{
+				DeviceUID:  dm.DeviceUID,
+				DeviceID:   dm.DeviceID,
+				DeviceType: dm.DeviceType,
+				UpdatedAt:  now,
+				Offline:    1,
+			}
+		}
+	}
 	if err := PublishCardStatus(ctx, s.writer, cardID, PublishFields{
-		DeviceStatus: map[string]*card.DeviceStatus{},
+		DeviceStatus: ds,
 	}); err != nil {
 		s.logger.Warn("set offline", zap.String("cid", cardID), zap.Error(err))
 	}

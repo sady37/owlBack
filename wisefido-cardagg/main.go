@@ -186,7 +186,7 @@ func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *servi
 				if meta != nil && len(meta.Devices) > 0 {
 					buf.ClearCard(cid, meta.Devices)
 				}
-				state.SetCardOffline(ctx, cid)
+				state.SetCardOffline(ctx, cid, meta)
 				delete(prevTargets, cid)
 				logger.Info("card offline", zap.String("cid", cid))
 			}
