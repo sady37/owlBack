@@ -117,6 +117,7 @@ func main() {
 	})
 
 	go runPendingAlarmScan(ctx, alarmSvc, logger)
+	go runNightAbsenceCheck(ctx, alarmSvc, metaCache, logger)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -203,12 +204,29 @@ func (a *redisPendingAdapter) HGetAll(ctx context.Context, key string) (map[stri
 	return a.client.HGetAll(ctx, key).Result()
 }
 
+func (a *redisPendingAdapter) HGet(ctx context.Context, key, field string) (string, error) {
+	return a.client.HGet(ctx, key, field).Result()
+}
+
 func (a *redisPendingAdapter) HSet(ctx context.Context, key string, values ...interface{}) error {
 	return a.client.HSet(ctx, key, values...).Err()
 }
 
 func (a *redisPendingAdapter) HDel(ctx context.Context, key string, fields ...string) error {
 	return a.client.HDel(ctx, key, fields...).Err()
+}
+
+func runNightAbsenceCheck(ctx context.Context, alarmSvc *service.AlarmService, metaCache *service.DeviceMetaCache, logger *zap.Logger) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			alarmSvc.CheckNightAbsence(ctx, metaCache)
+		}
+	}
 }
 
 func runPendingAlarmScan(ctx context.Context, alarmSvc *service.AlarmService, logger *zap.Logger) {

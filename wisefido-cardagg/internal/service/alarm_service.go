@@ -16,6 +16,7 @@ import (
 	"owl-common/observation"
 	"owl-common/redis"
 
+	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -24,6 +25,7 @@ const redisPendingAlarmKey = "alarm:pending"
 // RedisPendingStore 计时型告警待处理存储，由 main 传入 *redis.Client。
 type RedisPendingStore interface {
 	HGetAll(ctx context.Context, key string) (map[string]string, error)
+	HGet(ctx context.Context, key, field string) (string, error)
 	HSet(ctx context.Context, key string, values ...interface{}) error
 	HDel(ctx context.Context, key string, fields ...string) error
 }
@@ -897,4 +899,168 @@ func (s *AlarmService) refreshAlarmStateFromDB(ctx context.Context, cardID strin
 		return fmt.Errorf("query alarm state for card %s: %w", cardID, err)
 	}
 	return s.writeAlarmState(ctx, cardID, cas)
+}
+
+// ────────────────────────────────────────────────────────────────────
+// NightAbsence：每天 OutBedTime（默认 7:30）检查，整夜无 InBed/LeftBed → alarm
+// Sleepace 和 Radar 均适用：只要该 card 绑的设备开启了 NightAbsence 就检查。
+// ────────────────────────────────────────────────────────────────────
+
+const nightAbsenceCheckedKey = "alarm:night_absence_checked" // Redis Hash: cardID → "YYYY-MM-DD"
+
+// CheckNightAbsence 每 10 分钟调用。对所有 ActiveBedCard，判断当地时间是否刚过 OutBedTime，
+// 若今天尚未检查，则查 alarm_events 表昨晚 InBedTime~OutBedTime 有无 InBed/LeftBed 事件。
+// 无事件 + NightAbsence enabled → PersistAlarmWithTriggerData。
+func (s *AlarmService) CheckNightAbsence(ctx context.Context, metaCache *DeviceMetaCache) {
+	if s.db == nil || s.redisPending == nil {
+		return
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT card_id, tenant_id FROM cards WHERE card_type = 'ActiveBedCard'`)
+	if err != nil {
+		s.logger.Warn("night_absence: query cards failed", zap.Error(err))
+		return
+	}
+	defer rows.Close()
+
+	type cardRow struct {
+		cardID, tenantID string
+	}
+	var cards []cardRow
+	for rows.Next() {
+		var c cardRow
+		if err := rows.Scan(&c.cardID, &c.tenantID); err != nil {
+			continue
+		}
+		cards = append(cards, c)
+	}
+
+	for _, c := range cards {
+		s.checkNightAbsenceForCard(ctx, c.cardID, c.tenantID, metaCache)
+	}
+}
+
+// getEffectiveTimezoneForCardLA 与 getEffectiveTimezoneForCard 相同，但 fallback 为 America/Los_Angeles。
+func (s *AlarmService) getEffectiveTimezoneForCardLA(ctx context.Context, cardID string) string {
+	const fallback = "America/Los_Angeles"
+	if s.db == nil || cardID == "" {
+		return fallback
+	}
+	var ctz, utz sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT NULLIF(TRIM(c.timezone), ''), NULLIF(TRIM(u.timezone), '')
+		FROM cards c
+		LEFT JOIN units u ON c.unit_id = u.unit_id AND c.tenant_id = u.tenant_id
+		WHERE c.card_id = $1
+	`, cardID).Scan(&ctz, &utz)
+	if err != nil {
+		return fallback
+	}
+	if ctz.Valid && ctz.String != "" {
+		return ctz.String
+	}
+	if utz.Valid && utz.String != "" {
+		return utz.String
+	}
+	return fallback
+}
+
+func (s *AlarmService) checkNightAbsenceForCard(ctx context.Context, cardID, tenantID string, metaCache *DeviceMetaCache) {
+	tz := s.getEffectiveTimezoneForCardLA(ctx, cardID)
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		loc, _ = time.LoadLocation("America/Los_Angeles")
+	}
+	now := time.Now().In(loc)
+
+	// 获取 ResetTime 参数（InBedTime/OutBedTime），默认 21:30/07:30
+	params := s.getResetTimeParamsForTenant(ctx, tenantID)
+	outBedHour, outBedMin := 7, 30
+	if params != nil && params.OutBedTime != "" {
+		fmt.Sscanf(params.OutBedTime, "%d:%d", &outBedHour, &outBedMin)
+	}
+	inBedHour, inBedMin := 21, 30
+	if params != nil && params.InBedTime != "" {
+		fmt.Sscanf(params.InBedTime, "%d:%d", &inBedHour, &inBedMin)
+	}
+
+	// 只在 OutBedTime 后 30 分钟内检查（避免重复 + 给数据缓冲）
+	checkTime := time.Date(now.Year(), now.Month(), now.Day(), outBedHour, outBedMin, 0, 0, loc)
+	if now.Before(checkTime) || now.After(checkTime.Add(30*time.Minute)) {
+		return
+	}
+
+	// 今天已检查？
+	todayStr := now.Format("2006-01-02")
+	if checked, _ := s.redisPending.HGet(ctx, nightAbsenceCheckedKey, cardID); checked == todayStr {
+		return
+	}
+
+	// 标记今天已检查
+	_ = s.redisPending.HSet(ctx, nightAbsenceCheckedKey, cardID, todayStr)
+
+	// 从 metaCache 获取设备列表
+	meta := metaCache.GetOrLoad(ctx, cardID)
+	if meta == nil || len(meta.Devices) == 0 {
+		return
+	}
+
+	// 检查 NightAbsence 是否 enabled（任一设备启用即可）
+	var enabledDeviceID, enabledLevel string
+	for deviceID := range meta.Devices {
+		_, level, _, _, _, enabled := s.ResolveEnablementByDevice(ctx, tenantID, deviceID, alarm.NightAbsence)
+		if enabled && level != "" {
+			enabledDeviceID = deviceID
+			enabledLevel = level
+			break
+		}
+	}
+	if enabledDeviceID == "" {
+		return
+	}
+
+	// 收集该 card 所有 device_id
+	deviceIDs := make([]string, 0, len(meta.Devices))
+	for devID := range meta.Devices {
+		deviceIDs = append(deviceIDs, devID)
+	}
+
+	// 查 alarm_events：昨晚 InBedTime ~ 今早 OutBedTime 有无 InBed/LeftBed
+	nightStart := time.Date(now.Year(), now.Month(), now.Day()-1, inBedHour, inBedMin, 0, 0, loc)
+	nightEnd := time.Date(now.Year(), now.Month(), now.Day(), outBedHour, outBedMin, 0, 0, loc)
+
+	var bedEventCount int
+	err = s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM alarm_events
+		WHERE tenant_id = $1
+		  AND device_id = ANY($2::uuid[])
+		  AND event_type IN ('InBed', 'LeftBed')
+		  AND triggered_at >= $3 AND triggered_at < $4
+	`, tenantID, pq.Array(deviceIDs), nightStart, nightEnd).Scan(&bedEventCount)
+	if err != nil {
+		s.logger.Warn("night_absence: query bed events failed", zap.String("cid", cardID), zap.Error(err))
+		return
+	}
+
+	if bedEventCount > 0 {
+		s.logger.Debug("night_absence: bed events found, skip",
+			zap.String("cid", cardID), zap.Int("count", bedEventCount))
+		return
+	}
+
+	// 整夜无 InBed/LeftBed → 发 NightAbsence alarm
+	s.logger.Info("night_absence: no bed events overnight, triggering alarm",
+		zap.String("cid", cardID),
+		zap.String("device_id", enabledDeviceID),
+		zap.String("night", nightStart.Format("15:04")+"~"+nightEnd.Format("15:04")),
+		zap.String("tz", tz),
+	)
+	triggerData := map[string]interface{}{
+		"alarm_source":    "night_absence_check",
+		"night_start":     nightStart.Unix(),
+		"night_end":       nightEnd.Unix(),
+		"timezone":        tz,
+		"bed_event_count": 0,
+	}
+	_ = s.PersistAlarmWithTriggerData(ctx, cardID, tenantID, enabledDeviceID, alarm.NightAbsence, enabledLevel, nightEnd, triggerData)
 }
