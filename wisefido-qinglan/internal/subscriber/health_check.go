@@ -120,10 +120,11 @@ func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, devic
 	keys := []string{"wifi_rssi", "accelera", "radar_install_style"}
 	props, err := m.radarService.GetDeviceProperties(ctx, deviceUID, keys)
 	if err != nil {
-		m.logger.Warn("Failed to get device properties",
+		m.logger.Warn("Failed to get device properties, marking offline",
 			zap.String("device_uid", deviceUID),
 			zap.Error(err),
 		)
+		m.publishDeviceAlarm(ctx, tid, did, deviceUID, observation.FieldOffline, 1)
 		return
 	}
 
@@ -269,6 +270,7 @@ func toIntFromInterface(v interface{}) int {
 // fieldKey：observation 字段（FieldOffline/FieldSignalPoor/FieldAngleAbnormal/FieldDetached）。
 func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tenantID, deviceID, deviceUID, fieldKey string, value int) {
 	if m.streamPublisher == nil {
+		log.Printf("⚠️ publishDeviceAlarm: streamPublisher is nil, device=%s field=%s value=%d", deviceUID, fieldKey, value)
 		return
 	}
 	tid := strings.TrimSpace(tenantID)
@@ -280,9 +282,11 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 	}
 	eventName := dataCategoryFromFieldAndValue(fieldKey, value)
 	if eventName == "" {
+		log.Printf("⚠️ publishDeviceAlarm: empty eventName, device=%s field=%s value=%d", deviceUID, fieldKey, value)
 		return
 	}
 	cid := m.streamPublisher.GetCardID(ctx, deviceUID)
+	log.Printf("📢 publishDeviceAlarm: device=%s field=%s value=%d event=%s cid=%s tid=%s did=%s", deviceUID, fieldKey, value, eventName, cid, tid, did)
 	ts := time.Now().UnixMilli()
 	eventStatus := "start"
 	if value == 0 {
