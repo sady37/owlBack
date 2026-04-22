@@ -1049,22 +1049,32 @@ func (s *AlarmService) checkNightAbsenceForCard(ctx context.Context, cardID, ten
 			}
 
 		case strings.Contains(devType, "sleep"):
-			// Sleepace：查 sleepace_report，sleep_state 中 >=2 的值表示有人入睡
-			// date 格式 YYYYMMDD，用昨天的日期（夜间报告归属前一天）
+			// Sleepace：查 sleepace_report，仅检查夜间窗口对应的 sleep_state 索引
+			// date 格式 YYYYMMDD，报告从 start_time（通常 09:00）起每分钟一个值
 			reportDate := nightStart.Format("20060102")
 			var sleepState sql.NullString
+			var startTime int64
 			err = s.db.QueryRowContext(ctx, `
-				SELECT sr.sleep_state FROM sleepace_report sr
+				SELECT sr.sleep_state, sr.start_time FROM sleepace_report sr
 				JOIN device_store ds ON sr.device_code = ds.device_code
 				WHERE ds.device_id = $1 AND sr.date = $2
-			`, devID, reportDate).Scan(&sleepState)
+			`, devID, reportDate).Scan(&sleepState, &startTime)
 			if err == nil && sleepState.Valid {
-				// 解析 sleep_state 数组：0=离床 1=清醒在床 >=2=睡眠中
-				// 只要有 >=1 的值就说明人在（清醒坐床上也算在家）
 				raw := strings.Trim(sleepState.String, "\"[]")
-				for _, v := range strings.Split(raw, ",") {
+				vals := strings.Split(raw, ",")
+				// 计算夜间窗口在 sleep_state 数组中的索引范围
+				// start_time 是 Unix 秒，nightStart/nightEnd 是本地时间
+				reportStartMin := int(startTime / 60) // 报告起始分钟（Unix）
+				nightStartMin := int(nightStart.Unix() / 60)
+				nightEndMin := int(nightEnd.Unix() / 60)
+				idxFrom := nightStartMin - reportStartMin
+				idxTo := nightEndMin - reportStartMin
+				if idxFrom < 0 { idxFrom = 0 }
+				if idxTo > len(vals) { idxTo = len(vals) }
+				// 只检查夜间窗口：sleep_state >=1 表示人在床上
+				for i := idxFrom; i < idxTo && i < len(vals); i++ {
 					n := 0
-					fmt.Sscanf(strings.TrimSpace(v), "%d", &n)
+					fmt.Sscanf(strings.TrimSpace(vals[i]), "%d", &n)
 					if n >= 1 {
 						hasPresence = true
 						break
