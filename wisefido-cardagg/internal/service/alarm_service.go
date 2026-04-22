@@ -16,7 +16,6 @@ import (
 	"owl-common/observation"
 	"owl-common/redis"
 
-	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -1019,51 +1018,79 @@ func (s *AlarmService) checkNightAbsenceForCard(ctx context.Context, cardID, ten
 		return
 	}
 
-	// 收集该 card 所有 device_id
-	deviceIDs := make([]string, 0, len(meta.Devices))
-	for devID := range meta.Devices {
-		deviceIDs = append(deviceIDs, devID)
-	}
-
-	// 查 iot_timeseries：昨晚 InBedTime ~ 今早 OutBedTime 有无 InBed/LeftBed
-	// alarm_events 不含 InBed（InBed 不是 alarm），iot_timeseries 有完整的床态事件
 	nightStart := time.Date(now.Year(), now.Month(), now.Day()-1, inBedHour, inBedMin, 0, 0, loc)
 	nightEnd := time.Date(now.Year(), now.Month(), now.Day(), outBedHour, outBedMin, 0, 0, loc)
 	nightStartMs := nightStart.UnixMilli()
 	nightEndMs := nightEnd.UnixMilli()
 
-	var bedEventCount int
-	err = s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM iot_timeseries
-		WHERE tenant_id = $1
-		  AND device_id = ANY($2::uuid[])
-		  AND category IN ('InBed', 'LeftBed')
-		  AND timestamp >= $3 AND timestamp < $4
-	`, tenantID, pq.Array(deviceIDs), nightStartMs, nightEndMs).Scan(&bedEventCount)
-	if err != nil {
-		s.logger.Warn("night_absence: query bed events failed", zap.String("cid", cardID), zap.Error(err))
+	// 按设备类型分别检测：Radar 看 number_people，Sleepace 看 sleepace_report sleep_state
+	hasPresence := false
+	for devID, dm := range meta.Devices {
+		if hasPresence {
+			break
+		}
+		devType := strings.ToLower(dm.DeviceType)
+		switch {
+		case strings.Contains(devType, "radar"):
+			// Radar：查 iot_timeseries category=number_people，data_value 含 number_people>0
+			var cnt int
+			err = s.db.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM iot_timeseries
+				WHERE tenant_id = $1 AND device_id = $2
+				  AND category = 'number_people'
+				  AND timestamp >= $3 AND timestamp < $4
+				  AND EXISTS (
+				    SELECT 1 FROM jsonb_array_elements(data_value) elem
+				    WHERE (elem->>'number_people')::int > 0
+				  )
+			`, tenantID, devID, nightStartMs, nightEndMs).Scan(&cnt)
+			if err == nil && cnt > 0 {
+				hasPresence = true
+			}
+
+		case strings.Contains(devType, "sleep"):
+			// Sleepace：查 sleepace_report，sleep_state 中 >=2 的值表示有人入睡
+			// date 格式 YYYYMMDD，用昨天的日期（夜间报告归属前一天）
+			reportDate := nightStart.Format("20060102")
+			var sleepState sql.NullString
+			err = s.db.QueryRowContext(ctx, `
+				SELECT sr.sleep_state FROM sleepace_report sr
+				JOIN device_store ds ON sr.device_code = ds.device_code
+				WHERE ds.device_id = $1 AND sr.date = $2
+			`, devID, reportDate).Scan(&sleepState)
+			if err == nil && sleepState.Valid {
+				// 解析 sleep_state 数组，检查是否有 >=2 的值（浅睡/深睡/REM）
+				raw := strings.Trim(sleepState.String, "\"[]")
+				for _, v := range strings.Split(raw, ",") {
+					n := 0
+					fmt.Sscanf(strings.TrimSpace(v), "%d", &n)
+					if n >= 2 {
+						hasPresence = true
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if hasPresence {
+		s.logger.Debug("night_absence: presence detected, skip",
+			zap.String("cid", cardID))
 		return
 	}
 
-	if bedEventCount > 0 {
-		s.logger.Debug("night_absence: bed events found, skip",
-			zap.String("cid", cardID), zap.Int("count", bedEventCount))
-		return
-	}
-
-	// 整夜无 InBed/LeftBed → 发 NightAbsence alarm
-	s.logger.Info("night_absence: no bed events overnight, triggering alarm",
+	// 整夜无人 → 发 NightAbsence alarm
+	s.logger.Info("night_absence: no presence overnight, triggering alarm",
 		zap.String("cid", cardID),
 		zap.String("device_id", enabledDeviceID),
 		zap.String("night", nightStart.Format("15:04")+"~"+nightEnd.Format("15:04")),
 		zap.String("tz", tz),
 	)
 	triggerData := map[string]interface{}{
-		"alarm_source":    "night_absence_check",
-		"night_start":     nightStart.Unix(),
-		"night_end":       nightEnd.Unix(),
-		"timezone":        tz,
-		"bed_event_count": 0,
+		"alarm_source": "night_absence_check",
+		"night_start":  nightStart.Unix(),
+		"night_end":    nightEnd.Unix(),
+		"timezone":     tz,
 	}
 	_ = s.PersistAlarmWithTriggerData(ctx, cardID, tenantID, enabledDeviceID, alarm.NightAbsence, enabledLevel, nightEnd, triggerData)
 }
