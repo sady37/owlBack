@@ -1025,18 +1025,21 @@ func (s *AlarmService) checkNightAbsenceForCard(ctx context.Context, cardID, ten
 		deviceIDs = append(deviceIDs, devID)
 	}
 
-	// 查 alarm_events：昨晚 InBedTime ~ 今早 OutBedTime 有无 InBed/LeftBed
+	// 查 iot_timeseries：昨晚 InBedTime ~ 今早 OutBedTime 有无 InBed/LeftBed
+	// alarm_events 不含 InBed（InBed 不是 alarm），iot_timeseries 有完整的床态事件
 	nightStart := time.Date(now.Year(), now.Month(), now.Day()-1, inBedHour, inBedMin, 0, 0, loc)
 	nightEnd := time.Date(now.Year(), now.Month(), now.Day(), outBedHour, outBedMin, 0, 0, loc)
+	nightStartMs := nightStart.UnixMilli()
+	nightEndMs := nightEnd.UnixMilli()
 
 	var bedEventCount int
 	err = s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM alarm_events
+		SELECT COUNT(*) FROM iot_timeseries
 		WHERE tenant_id = $1
 		  AND device_id = ANY($2::uuid[])
-		  AND event_type IN ('InBed', 'LeftBed')
-		  AND triggered_at >= $3 AND triggered_at < $4
-	`, tenantID, pq.Array(deviceIDs), nightStart, nightEnd).Scan(&bedEventCount)
+		  AND category IN ('InBed', 'LeftBed')
+		  AND timestamp >= $3 AND timestamp < $4
+	`, tenantID, pq.Array(deviceIDs), nightStartMs, nightEndMs).Scan(&bedEventCount)
 	if err != nil {
 		s.logger.Warn("night_absence: query bed events failed", zap.String("cid", cardID), zap.Error(err))
 		return
