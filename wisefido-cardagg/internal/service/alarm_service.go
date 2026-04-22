@@ -1059,12 +1059,13 @@ func (s *AlarmService) checkNightAbsenceForCard(ctx context.Context, cardID, ten
 				WHERE ds.device_id = $1 AND sr.date = $2
 			`, devID, reportDate).Scan(&sleepState)
 			if err == nil && sleepState.Valid {
-				// 解析 sleep_state 数组，检查是否有 >=2 的值（浅睡/深睡/REM）
+				// 解析 sleep_state 数组：0=离床 1=清醒在床 >=2=睡眠中
+				// 只要有 >=1 的值就说明人在（清醒坐床上也算在家）
 				raw := strings.Trim(sleepState.String, "\"[]")
 				for _, v := range strings.Split(raw, ",") {
 					n := 0
 					fmt.Sscanf(strings.TrimSpace(v), "%d", &n)
-					if n >= 2 {
+					if n >= 1 {
 						hasPresence = true
 						break
 					}
