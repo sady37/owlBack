@@ -1183,3 +1183,24 @@ func (r *PostgresUsersRepository) CheckPhoneUniqueness(ctx context.Context, tena
 	}
 	return nil
 }
+
+// CheckAdminCredentialDuplicate 跨租户检查 Admin/Manager 的 account_hash + password_hash 是否重复
+func (r *PostgresUsersRepository) CheckAdminCredentialDuplicate(ctx context.Context, accountHash, passwordHash []byte, excludeUserID string) error {
+	var query string
+	var args []interface{}
+	if excludeUserID != "" {
+		query = `SELECT COUNT(*) FROM users WHERE user_account_hash = $1 AND password_hash = $2 AND role IN ('Admin', 'Manager') AND user_id::text != $3`
+		args = []interface{}{accountHash, passwordHash, excludeUserID}
+	} else {
+		query = `SELECT COUNT(*) FROM users WHERE user_account_hash = $1 AND password_hash = $2 AND role IN ('Admin', 'Manager')`
+		args = []interface{}{accountHash, passwordHash}
+	}
+	var count int
+	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("Security Validation Failed: Please use a more complex password to continue.")
+	}
+	return nil
+}

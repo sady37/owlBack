@@ -30,6 +30,9 @@ type UsersRepository interface {
 	// 唯一性检查
 	CheckEmailUniqueness(ctx context.Context, tenantID, email, excludeUserID string) error
 	CheckPhoneUniqueness(ctx context.Context, tenantID, phone, excludeUserID string) error
+
+	// 高权限账号凭据去重：跨租户检查 Admin/Manager 的 account_hash + password_hash 是否重复
+	CheckAdminCredentialDuplicate(ctx context.Context, accountHash, passwordHash []byte, excludeUserID string) error
 }
 
 // UserFilters 用户查询过滤器

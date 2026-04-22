@@ -1213,6 +1213,14 @@ func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*C
 		}
 	}
 
+	// 5.1 Admin/Manager 凭据去重：防止跨租户出现相同 account+password 的高权限账号
+	roleLowerForCheck := strings.ToLower(role)
+	if roleLowerForCheck == "admin" || roleLowerForCheck == "manager" {
+		if err := s.usersRepo.CheckAdminCredentialDuplicate(ctx, accountHash, passwordHash, ""); err != nil {
+			return nil, err
+		}
+	}
+
 	// 6. 构建 domain.User
 	user := &domain.User{
 		TenantID:        req.TenantID,
@@ -1770,7 +1778,15 @@ func (s *userService) ResetPassword(ctx context.Context, req UserResetPasswordRe
 		return nil, fmt.Errorf("failed to decode password hash: %w", err)
 	}
 
-	// 6. 更新密码
+	// 6. Admin/Manager 凭据去重：重置密码时也要检查
+	roleLower := strings.ToLower(targetUser.Role)
+	if roleLower == "admin" || roleLower == "manager" {
+		if err := s.usersRepo.CheckAdminCredentialDuplicate(ctx, targetUser.UserAccountHash, passwordHash, req.UserID); err != nil {
+			return nil, err
+		}
+	}
+
+	// 7. 更新密码
 	updateUser := *targetUser
 	updateUser.PasswordHash = passwordHash
 
