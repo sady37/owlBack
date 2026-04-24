@@ -94,6 +94,11 @@ func ConvertHardwareResponseToAlarmItems(hw map[string]interface{}) []alarm.Alar
 			if len(params) > 0 {
 				out.AlarmParams = params
 			}
+		} else {
+			// 无 hw 映射（如 SleepadSetting）——hw 完全不返回此类型的 params。
+			// 置 nil 避免 defaults 里的默认值（如 timezone="", sleep_report_time=8）
+			// 在 MergeHardwareIntoBaseline 里被当成 HW 值覆盖 baseline 的 per-device 覆盖。
+			out.AlarmParams = nil
 		}
 
 		result = append(result, out)
@@ -135,8 +140,18 @@ func MergeHardwareIntoBaseline(baseline, hwItems []alarm.AlarmItem) []alarm.Alar
 			if hw.IsEnabled != nil {
 				out.IsEnabled = hw.IsEnabled
 			}
-			if hw.AlarmParams != nil && len(hw.AlarmParams) > 0 {
-				out.AlarmParams = hw.AlarmParams
+			// Per-key merge: 硬件字段覆盖 baseline 同名字段，但保留 baseline 里硬件不返回的字段
+			// （如 SleepadSetting.timezone / sleep_report_time —— 厂家 getalarmnotifyconfig 不返回这些，
+			// 若整体替换会导致 DB 里的 per-device 覆盖值在 GET 响应里丢失，UI 显示不出来）
+			if len(hw.AlarmParams) > 0 {
+				merged := make(map[string]interface{}, len(out.AlarmParams)+len(hw.AlarmParams))
+				for k, v := range out.AlarmParams {
+					merged[k] = v
+				}
+				for k, v := range hw.AlarmParams {
+					merged[k] = v
+				}
+				out.AlarmParams = merged
 			}
 		}
 		result = append(result, out)

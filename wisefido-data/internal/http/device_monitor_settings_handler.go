@@ -208,12 +208,25 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseW
 		}
 	}
 
+	// 返回 tenant 级 sleepReportTime 默认值，供 UI 在 device 未覆盖时显示。
+	tenantSleepReportTime := alarm.DefaultSleepReportTime
+	if h.db != nil {
+		var metaRaw sql.NullString
+		if err := h.db.QueryRowContext(ctx, `SELECT metadata FROM alarm_cloud WHERE tenant_id = $1::uuid`, tenantID).Scan(&metaRaw); err == nil && metaRaw.Valid && metaRaw.String != "" {
+			var tr alarm.TenantResetTime
+			if json.Unmarshal([]byte(metaRaw.String), &tr) == nil && tr.TenantSleepReportTime >= 1 && tr.TenantSleepReportTime <= 24 {
+				tenantSleepReportTime = tr.TenantSleepReportTime
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, Ok(map[string]interface{}{
-		"alarm_items":   alarmItems,
-		"online_status": onlineStatus,
-		"device_uid":    deviceUID,
-		"device_name":   deviceName,
-		"timezone":      timezone,
+		"alarm_items":              alarmItems,
+		"online_status":            onlineStatus,
+		"device_uid":               deviceUID,
+		"device_name":              deviceName,
+		"timezone":                 timezone,
+		"tenant_sleepreport_time": tenantSleepReportTime,
 	}))
 }
 

@@ -16,7 +16,25 @@ import (
 	"go.uber.org/zap"
 )
 
-// IANAToOffsetSeconds 将 IANA 时区（如 America/Denver）转为当前时刻的 UTC 偏移秒数。
+// IANAToOffsetSeconds 将 IANA 时区（如 America/Denver）转为 **当前时刻** 的 UTC 偏移秒数。
+//
+// 重要注意事项（Sleepace 集成细节，勿删）：
+//
+//  1. call-time quirk：返回的是"调用瞬间"的 offset，含 DST。同一 IANA 在 DST 前后得到不同值（Denver 夏 -21600 / 冬 -25200）。
+//     bind 接口仅在装机时调一次，DST 切换后不会自动重跑，设备仍挂 bind 时那一刻的 offset。
+//
+//  2. 厂家忽略：Sleepace 服务器**不保存** bind 时传的 timezone——
+//     MySQL `user_device` / `user_ext` / `device_setting` / `alert_configuration` 均无 timezone 字段；
+//     `/sleepace/bindInfo` 回查也不返回 timezone；
+//     `sleepace_tb_data.history_summary_*.timezone` 永远写死 config.properties 的 `timeZone=-25200`，与 bind 参数无关。
+//     （经 2026-04 实测全表 38 条 distinct 只有 -25200，包含 Asia/Shanghai 设备）
+//
+//  3. 结论：此函数返回值在协议层**传了也白传**。真正 DST-aware 的操作由 SleepaceReportTimeScheduler
+//     每日重算 reportUploadTime 负责——它把 branch 本地目标 hour 换算到 Sleepace 服务器 OS 时钟（America/Los_Angeles），
+//     DST 切换当天自动得到正确值，无需重新 bind。
+//
+// 所以：不要试图用"DST 当周 re-bind"之类的方式解决时差问题——厂家不收货，只会增加 bind 被副作用伤害的风险。
+// 保留此函数仅为兼容现有 bind 接口签名。
 func IANAToOffsetSeconds(iana string) int {
 	if iana == "" {
 		return DefaultTimezoneOffsetSeconds
@@ -389,6 +407,45 @@ func (c *SleepaceGatewayClient) SetRealtimeModeAfterLeave(ctx context.Context, _
 	})
 }
 
+// GetRealtimeModeAfterLeave 查询当前离床后实时数据上报模式（0=上报 1=不上报）。
+// BM8701-2 等、固件≥v6.67。
+func (c *SleepaceGatewayClient) GetRealtimeModeAfterLeave(ctx context.Context, deviceCode string) (int, error) {
+	proxyURL := fmt.Sprintf("%s/api/v1/proxy/sleepace/realtimeMode/get", c.apiBaseURL)
+	payload := map[string]interface{}{"deviceId": deviceCode}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return 0, fmt.Errorf("marshal realtimeMode/get: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, proxyURL, bytes.NewReader(jsonData))
+	if err != nil {
+		return 0, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("realtimeMode/get request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("realtimeMode/get status %d: %s", resp.StatusCode, string(body))
+	}
+	var out struct {
+		Status int    `json:"status"`
+		Msg    string `json:"msg"`
+		Data   struct {
+			Mode int `json:"mode"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return 0, fmt.Errorf("unmarshal realtimeMode/get: %w", err)
+	}
+	if out.Status != 0 {
+		return 0, fmt.Errorf("realtimeMode/get API: %s (status %d)", out.Msg, out.Status)
+	}
+	return out.Data.Mode, nil
+}
+
 // SetBedParameters pushes mattress thickness/material via wisefido-sleepace proxy.
 func (c *SleepaceGatewayClient) SetBedParameters(ctx context.Context, deviceID, deviceCode string, thickness, material int) error {
 	return c.postProxy(ctx, "/sleepace/updateSetting", map[string]interface{}{
@@ -403,11 +460,115 @@ func (c *SleepaceGatewayClient) SetReportUploadType(ctx context.Context, deviceI
 	})
 }
 
+// BindDevice 调用厂家 /sleepace/bind（等价于 init 的第一步），用于刷新 user-device 绑定关系 + timezone + gender/age。
+// 与 InitializeDevice 的区别：不触发 wisefido-sleepace 的完整初始化流程（不会再跑 heartMode / realtimeInterval / leaveSensibility / reportUploadType 等级联配置），
+// 只做 bind 本身。适合"用户在 UI 改了时区想推下去"这种轻量场景。
+//
+// 厂家 MySQL `user_device` 以 userId+deviceId 为主键 upsert，重复调用幂等。
+// gender 1=男 2=女；age 按养老业务规则由调用方按 5 的倍数向上取整（最小 60）。
+// timezone 单位秒，含 DST；参考 IANAToOffsetSeconds 的"call-time quirk + 厂家忽略"说明。
+func (c *SleepaceGatewayClient) BindDevice(ctx context.Context, deviceID, deviceCode string, timezoneSeconds, gender, age int) error {
+	return c.postProxy(ctx, "/sleepace/bind", map[string]interface{}{
+		"deviceId":  deviceCode,
+		"leftRight": 0,
+		"userId":    deviceID,
+		"gender":    gender,
+		"age":       age,
+		"timezone":  timezoneSeconds,
+	})
+}
+
+// GetReportUploadType 查询历史数据存储方式：0=24 小时定时；1=离床 1h 自动/stopMonitor。
+// BM8701-2 专用（固件 ≥6.60）。
+func (c *SleepaceGatewayClient) GetReportUploadType(ctx context.Context, deviceCode string) (int, error) {
+	proxyURL := fmt.Sprintf("%s/api/v1/proxy/sleepace/reportUploadType/get", c.apiBaseURL)
+	payload := map[string]interface{}{"deviceId": deviceCode}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return 0, fmt.Errorf("marshal reportUploadType/get: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, proxyURL, bytes.NewReader(jsonData))
+	if err != nil {
+		return 0, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("reportUploadType/get request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("reportUploadType/get status %d: %s", resp.StatusCode, string(body))
+	}
+	var out struct {
+		Status int    `json:"status"`
+		Msg    string `json:"msg"`
+		Data   struct {
+			ReportUploadType int `json:"reportUploadType"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return 0, fmt.Errorf("unmarshal reportUploadType/get: %w", err)
+	}
+	if out.Status != 0 {
+		return 0, fmt.Errorf("reportUploadType/get API: %s (status %d)", out.Msg, out.Status)
+	}
+	return out.Data.ReportUploadType, nil
+}
+
+// StopMonitor 强制结束当前监测并生成报告（仅在 reportUploadType=1 下有效；异步，报告通过 MQ analysis 事件回传）。
+// leftRight：单人 0；双人 0/1。
+func (c *SleepaceGatewayClient) StopMonitor(ctx context.Context, deviceCode string, leftRight int) error {
+	return c.postProxy(ctx, "/sleepace/stopMonitor", map[string]interface{}{
+		"deviceId": deviceCode, "leftRight": leftRight,
+	})
+}
+
 // SetReportUploadTime pushes report upload time via wisefido-sleepace proxy.
 func (c *SleepaceGatewayClient) SetReportUploadTime(ctx context.Context, deviceID, deviceCode string, uploadTime int) error {
 	return c.postProxy(ctx, "/sleepace/setReportUploadTime", map[string]interface{}{
 		"userId": deviceID, "deviceId": deviceCode, "leftRight": 0, "reportUploadTime": uploadTime,
 	})
+}
+
+// GetReportUploadTime queries device's current reportUploadTime (integer 1-24) via proxy.
+// 厂家 /sleepace/getReportUploadTime 返回 data.reportUploadTime。
+func (c *SleepaceGatewayClient) GetReportUploadTime(ctx context.Context, deviceID, deviceCode string) (int, error) {
+	proxyURL := fmt.Sprintf("%s/api/v1/proxy/sleepace/getReportUploadTime", c.apiBaseURL)
+	payload := map[string]interface{}{"userId": deviceID, "deviceId": deviceCode, "leftRight": 0}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return 0, fmt.Errorf("marshal getReportUploadTime: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, proxyURL, bytes.NewReader(jsonData))
+	if err != nil {
+		return 0, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("getReportUploadTime request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("getReportUploadTime status %d: %s", resp.StatusCode, string(body))
+	}
+	var out struct {
+		Status int    `json:"status"`
+		Msg    string `json:"msg"`
+		Data   struct {
+			ReportUploadTime int `json:"reportUploadTime"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return 0, fmt.Errorf("unmarshal getReportUploadTime: %w", err)
+	}
+	if out.Status != 0 {
+		return 0, fmt.Errorf("getReportUploadTime API: %s (status %d)", out.Msg, out.Status)
+	}
+	return out.Data.ReportUploadTime, nil
 }
 
 // SetDeviceLightConf pushes indicator light on/off (厂家 deviceLightConf/set: status 0=on 1=off).

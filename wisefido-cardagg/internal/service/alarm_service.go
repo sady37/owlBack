@@ -1004,104 +1004,214 @@ func (s *AlarmService) checkNightAbsenceForCard(ctx context.Context, cardID, ten
 		return
 	}
 
-	// 检查 NightAbsence 是否 enabled（任一设备启用即可）
-	var enabledDeviceID, enabledLevel string
-	for deviceID := range meta.Devices {
-		_, level, _, _, _, enabled := s.ResolveEnablementByDevice(ctx, tenantID, deviceID, alarm.NightAbsence)
-		if enabled && level != "" {
-			enabledDeviceID = deviceID
-			enabledLevel = level
-			break
-		}
-	}
-	if enabledDeviceID == "" {
-		return
-	}
-
 	nightStart := time.Date(now.Year(), now.Month(), now.Day()-1, inBedHour, inBedMin, 0, 0, loc)
 	nightEnd := time.Date(now.Year(), now.Month(), now.Day(), outBedHour, outBedMin, 0, 0, loc)
+
+	// 两段式：
+	// Pass 1：先把 card 上**所有设备**状态都评估一遍（presence / absent / offline）。
+	//         Sleepad 的 presence 用于 Pass 2 里 Radar 的"合查"判定（同 card Sleepad 在床 → 抵消 Radar absent）。
+	// Pass 2：按设备类型各自发对应事件：
+	//         - Sleepad absent → BedNightAbsence（床层面）
+	//         - Radar   absent AND 没有同 card 的 Sleepad 报 presence → NightAbsence（房间层面）
+	//         - offline 不贡献，不发任何事件（Q1）
+	type assessed struct {
+		deviceType string
+		state      devicePresenceState
+	}
+	results := make(map[string]assessed, len(meta.Devices))
+	anySleepadPresence := false
+	for devID, dm := range meta.Devices {
+		st := s.assessDevicePresence(ctx, tenantID, devID, dm.DeviceType, nightStart, nightEnd)
+		results[devID] = assessed{deviceType: dm.DeviceType, state: st}
+		if st == presenceYes && strings.Contains(strings.ToLower(dm.DeviceType), "sleep") {
+			anySleepadPresence = true
+		}
+	}
+
+	for devID, r := range results {
+		if r.state != presenceAbsent {
+			continue // offline / presence 都不发
+		}
+		devType := strings.ToLower(r.deviceType)
+
+		// 选 event_type + 看 enablement
+		var eventType string
+		switch {
+		case strings.Contains(devType, "sleep"):
+			eventType = alarm.BedNightAbsence
+		case strings.Contains(devType, "radar"):
+			// Radar 合查同 card Sleepad：若 Sleepad 报 presence 说明房间有人，Radar 的 absent 是盲区
+			if anySleepadPresence {
+				s.logger.Debug("night_absence: radar absent but sibling sleepad presence, skip",
+					zap.String("cid", cardID), zap.String("device_id", devID))
+				continue
+			}
+			eventType = alarm.NightAbsence
+		default:
+			continue
+		}
+
+		_, level, _, _, _, enabled := s.ResolveEnablementByDevice(ctx, tenantID, devID, eventType)
+		if !enabled || level == "" {
+			continue
+		}
+
+		s.logger.Info("night_absence: triggering",
+			zap.String("cid", cardID),
+			zap.String("device_id", devID),
+			zap.String("device_type", r.deviceType),
+			zap.String("event", eventType),
+			zap.String("night", nightStart.Format("15:04")+"~"+nightEnd.Format("15:04")),
+			zap.String("tz", tz),
+		)
+		triggerData := map[string]interface{}{
+			"alarm_source": "night_absence_check",
+			"night_start":  nightStart.Unix(),
+			"night_end":    nightEnd.Unix(),
+			"timezone":     tz,
+		}
+		_ = s.PersistAlarmWithTriggerData(ctx, cardID, tenantID, devID, eventType, level, nightEnd, triggerData)
+	}
+}
+
+// devicePresenceState 单设备整夜 3 态判定。
+type devicePresenceState int
+
+const (
+	// presenceOffline 整夜无任何 track（设备掉线/断电）：状态未知，不贡献 absence/presence
+	presenceOffline devicePresenceState = iota
+	// presenceAbsent 有 track 但没任何"在床/在房间"信号 → 贡献 absence
+	presenceAbsent
+	// presenceYes 至少一条在床/在房间信号 → 贡献 presence
+	presenceYes
+)
+
+// assessDevicePresence 判断单个设备在夜间窗口的 3 态。
+//
+// Sleepad：
+//  1. iot_timeseries 有任何 track → 有数据；无 → offline
+//  2. 床上信号（bed_status=0）或 alarm_events.InBed 或 sleepace_report.sleep_state>=2 → presence
+//  3. 否则 absent
+//
+// Radar：
+//  1. iot_timeseries 有任何 track → 有数据；无 → offline
+//  2. number_people>0 → presence
+//  3. 否则 absent
+//
+// 同 room 有 Sleepad + Radar 两台设备时在 card iteration 自然覆盖："Radar 房间 absent + Sleepad 床 presence" → card presence。
+func (s *AlarmService) assessDevicePresence(ctx context.Context, tenantID, deviceID, deviceType string, nightStart, nightEnd time.Time) devicePresenceState {
+	if s.db == nil {
+		return presenceOffline
+	}
 	nightStartMs := nightStart.UnixMilli()
 	nightEndMs := nightEnd.UnixMilli()
+	devType := strings.ToLower(deviceType)
 
-	// 按设备类型分别检测：Radar 看 number_people，Sleepace 看 sleepace_report sleep_state
-	hasPresence := false
-	for devID, dm := range meta.Devices {
-		if hasPresence {
-			break
+	// 步骤 1：设备整夜是否有任何数据
+	var trackCount int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM iot_timeseries
+		WHERE tenant_id = $1 AND device_id = $2
+		  AND timestamp >= $3 AND timestamp < $4
+	`, tenantID, deviceID, nightStartMs, nightEndMs).Scan(&trackCount); err != nil || trackCount == 0 {
+		return presenceOffline
+	}
+
+	// 步骤 2：按类型查"有人"
+	if strings.Contains(devType, "radar") {
+		var cnt int
+		_ = s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM iot_timeseries
+			WHERE tenant_id = $1 AND device_id = $2
+			  AND category = 'number_people'
+			  AND timestamp >= $3 AND timestamp < $4
+			  AND EXISTS (
+			    SELECT 1 FROM jsonb_array_elements(data_value) elem
+			    WHERE (elem->>'number_people')::int > 0
+			  )
+		`, tenantID, deviceID, nightStartMs, nightEndMs).Scan(&cnt)
+		if cnt > 0 {
+			return presenceYes
 		}
-		devType := strings.ToLower(dm.DeviceType)
-		switch {
-		case strings.Contains(devType, "radar"):
-			// Radar：查 iot_timeseries category=number_people，data_value 含 number_people>0
-			var cnt int
-			err = s.db.QueryRowContext(ctx, `
-				SELECT COUNT(*) FROM iot_timeseries
-				WHERE tenant_id = $1 AND device_id = $2
-				  AND category = 'number_people'
-				  AND timestamp >= $3 AND timestamp < $4
-				  AND EXISTS (
-				    SELECT 1 FROM jsonb_array_elements(data_value) elem
-				    WHERE (elem->>'number_people')::int > 0
-				  )
-			`, tenantID, devID, nightStartMs, nightEndMs).Scan(&cnt)
-			if err == nil && cnt > 0 {
-				hasPresence = true
-			}
+		return presenceAbsent
+	}
 
-		case strings.Contains(devType, "sleep"):
-			// Sleepace：查 sleepace_report，仅检查夜间窗口对应的 sleep_state 索引
-			// date 格式 YYYYMMDD，报告从 start_time（通常 09:00）起每分钟一个值
-			reportDate := nightStart.Format("20060102")
-			var sleepState sql.NullString
-			var startTime int64
-			err = s.db.QueryRowContext(ctx, `
-				SELECT sr.sleep_state, sr.start_time FROM sleepace_report sr
-				JOIN device_store ds ON sr.device_code = ds.device_code
-				WHERE ds.device_id = $1 AND sr.date = $2
-			`, devID, reportDate).Scan(&sleepState, &startTime)
-			if err == nil && sleepState.Valid {
-				raw := strings.Trim(sleepState.String, "\"[]")
-				vals := strings.Split(raw, ",")
-				// 计算夜间窗口在 sleep_state 数组中的索引范围
-				// start_time 是 Unix 秒，nightStart/nightEnd 是本地时间
-				reportStartMin := int(startTime / 60) // 报告起始分钟（Unix）
-				nightStartMin := int(nightStart.Unix() / 60)
-				nightEndMin := int(nightEnd.Unix() / 60)
-				idxFrom := nightStartMin - reportStartMin
-				idxTo := nightEndMin - reportStartMin
-				if idxFrom < 0 { idxFrom = 0 }
-				if idxTo > len(vals) { idxTo = len(vals) }
-				// 只检查夜间窗口：sleep_state >=1 表示人在床上
-				for i := idxFrom; i < idxTo && i < len(vals); i++ {
-					n := 0
-					fmt.Sscanf(strings.TrimSpace(vals[i]), "%d", &n)
-					if n >= 1 {
-						hasPresence = true
-						break
-					}
+	if strings.Contains(devType, "sleep") {
+		// 2a. iot_timeseries 有 bed_status=0 (在床) / HR>0 / RR>0 (生命体征上报意味着人在)
+		var bedCnt int
+		_ = s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM iot_timeseries
+			WHERE tenant_id = $1 AND device_id = $2
+			  AND topic_type = 'monitor'
+			  AND timestamp >= $3 AND timestamp < $4
+			  AND EXISTS (
+			    SELECT 1 FROM jsonb_array_elements(data_value) elem
+			    WHERE (elem->>'bed_status')::int = 0
+			       OR (elem->>'heart_rate')::int > 0
+			       OR (elem->>'respiratory_rate')::int > 0
+			  )
+		`, tenantID, deviceID, nightStartMs, nightEndMs).Scan(&bedCnt)
+		if bedCnt > 0 {
+			return presenceYes
+		}
+
+		// 2b. alarm_events 有 InBed 事件（设备上报的在床事件）
+		var inBedCnt int
+		_ = s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM alarm_events
+			WHERE tenant_id = $1 AND device_id = $2
+			  AND event_type = $3
+			  AND triggered_at >= to_timestamp($4::double precision / 1000)
+			  AND triggered_at <  to_timestamp($5::double precision / 1000)
+		`, tenantID, deviceID, alarm.InBed, nightStartMs, nightEndMs).Scan(&inBedCnt)
+		if inBedCnt > 0 {
+			return presenceYes
+		}
+
+		// 2c. sleepace_report 兜底：找窗口覆盖 nightStart 的报告，检查 sleep_state>=2
+		nightStartSec := nightStart.Unix()
+		nightEndSec := nightEnd.Unix()
+		var sleepState sql.NullString
+		var startTime int64
+		var timeStepSec, recordCount int
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT sr.sleep_state, sr.start_time,
+			       COALESCE(NULLIF(sr.time_step, 0), 60) AS ts,
+			       COALESCE(NULLIF(sr.record_count, 0), 1440) AS rc
+			FROM sleepace_report sr
+			JOIN device_store ds ON sr.device_code = ds.device_code
+			WHERE ds.device_id = $1
+			  AND sr.start_time <= $2
+			  AND sr.start_time + COALESCE(NULLIF(sr.time_step, 0), 60) * COALESCE(NULLIF(sr.record_count, 0), 1440) > $2
+			ORDER BY sr.start_time DESC
+			LIMIT 1
+		`, deviceID, nightStartSec).Scan(&sleepState, &startTime, &timeStepSec, &recordCount); err == nil && sleepState.Valid {
+			raw := strings.Trim(sleepState.String, "\"[]")
+			vals := strings.Split(raw, ",")
+			if timeStepSec <= 0 {
+				timeStepSec = 60
+			}
+			idxFrom := int((nightStartSec - startTime) / int64(timeStepSec))
+			idxTo := int((nightEndSec - startTime) / int64(timeStepSec))
+			if idxFrom < 0 {
+				idxFrom = 0
+			}
+			if idxTo > len(vals) {
+				idxTo = len(vals)
+			}
+			// sleep_state 厂家文档：0=未监测；1=离床；2=清醒；3=深睡；4=浅睡；6=坐起。>=2 才是人在床。
+			for i := idxFrom; i < idxTo && i < len(vals); i++ {
+				n := 0
+				fmt.Sscanf(strings.TrimSpace(vals[i]), "%d", &n)
+				if n >= 2 {
+					return presenceYes
 				}
 			}
 		}
+
+		return presenceAbsent
 	}
 
-	if hasPresence {
-		s.logger.Debug("night_absence: presence detected, skip",
-			zap.String("cid", cardID))
-		return
-	}
-
-	// 整夜无人 → 发 NightAbsence alarm
-	s.logger.Info("night_absence: no presence overnight, triggering alarm",
-		zap.String("cid", cardID),
-		zap.String("device_id", enabledDeviceID),
-		zap.String("night", nightStart.Format("15:04")+"~"+nightEnd.Format("15:04")),
-		zap.String("tz", tz),
-	)
-	triggerData := map[string]interface{}{
-		"alarm_source": "night_absence_check",
-		"night_start":  nightStart.Unix(),
-		"night_end":    nightEnd.Unix(),
-		"timezone":     tz,
-	}
-	_ = s.PersistAlarmWithTriggerData(ctx, cardID, tenantID, enabledDeviceID, alarm.NightAbsence, enabledLevel, nightEnd, triggerData)
+	// 未识别类型：保守按 offline 处理，不贡献判定
+	return presenceOffline
 }

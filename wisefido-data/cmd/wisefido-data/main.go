@@ -138,6 +138,11 @@ func main() {
 
 	}
 
+	// 提升作用域：scheduler 在外部需要引用（见下方 Start 调用），避免 if db != nil 块内声明出不来
+	var sleepaceGateway *service.SleepaceGatewayClient
+	// 同上：/internal/sleepace/device/* resync 端点需要在 if db != nil 块外引用
+	var deviceMonitorSettingsService service.DeviceMonitorSettingsService
+
 	if db != nil {
 		// DB bootstrap: ensure System tenant + sysadmin exist in DB for UI pages that query users/roles.
 		// Login still uses AuthStore hashes, but keeping DB in sync makes admin pages behave as expected.
@@ -303,18 +308,18 @@ func main() {
 		alarmDeviceRepo := repository.NewPostgresAlarmDeviceRepository(db)
 		// 使用已创建的 alarmCloudRepo、configVersionsRepo（在 AlarmCloud Service 创建时已创建）
 		// 使用已创建的 configPublisher（在上面创建）
-		deviceMonitorSettingsService := service.NewDeviceMonitorSettingsService(
+		deviceMonitorSettingsService = service.NewDeviceMonitorSettingsService(
 			alarmDeviceRepo,
 			alarmCloudRepo,
 			configVersionsRepo, // 使用已创建的 configVersionsRepo
 			devicesRepo,
 			deviceStoreRepo,
-			db, // 添加 db 参数用于事务操作
+			residentsRepo, // 供 monitor save 时按 card 查 resident gender/age 下发 Sleepace bind
+			db,            // 添加 db 参数用于事务操作
 			configPublisher,
 			logger,
 		)
 
-		var sleepaceGateway *service.SleepaceGatewayClient
 		if cfg.SleepaceGateway.APIBaseURL != "" {
 			sleepaceGateway = service.NewSleepaceGatewayClient(cfg.SleepaceGateway.APIBaseURL, logger)
 			if svc, ok := deviceMonitorSettingsService.(interface {
@@ -504,6 +509,20 @@ func main() {
 	// 启动数据流消费协程（在ctx定义后）
 	if dataStreamSubscriber != nil {
 		go subscribeDataStream(ctx, logger, redisClient, dataStreamSubscriber)
+	}
+
+	// --- 旧 scheduler 停用 ---
+	// 原本计划每日 Denver 13:00 重算 reportUploadTime 对应到 LA 服务器 OS 时钟整点。
+	// 基于错误假设（以为厂家用"服务器 OS 时钟"触发报告，实际是"设备本地时间"）。
+	// 代码保留在 service/sleepace_report_time_scheduler.go 供参考/回滚。
+
+	// --- DST 脚本触发入口 ---
+	// 两个 internal endpoint，外部 DST 脚本按 device_id 调用，service 内部自己查 effective 值下发。
+	//   POST /internal/sleepace/device/{device_id}/resync-timezone    → bind with effective timezone + gender/age
+	//   POST /internal/sleepace/device/{device_id}/resync-report-time → setReportUploadTime with effective hour
+	if deviceMonitorSettingsService != nil {
+		resyncHandler := httpapi.NewSleepaceResyncHandler(deviceMonitorSettingsService, db, logger)
+		router.Handle("/internal/sleepace/device/", resyncHandler.Dispatch)
 	}
 
 	// 启动时全量检查并更新卡片（如果 DB 和 cardSyncService 可用）

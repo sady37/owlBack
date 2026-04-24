@@ -97,6 +97,35 @@ func (a *SleepaceAPI) setPushType() {
 	a.logger.Info("setPushType", zap.Int("status", resp.Status), zap.String("msg", resp.Msg))
 }
 
+// PushTypeConfig /sleepace/system/pushType/get 返回 data 结构。
+type PushTypeConfig struct {
+	Channel    int    `json:"channel"`
+	PushType   string `json:"pushType"`   // MQTT / HTTP
+	PushURL    string `json:"pushUrl"`
+	CreateTime int64  `json:"createTime"` // 毫秒
+	UpdateTime int64  `json:"updateTime"`
+}
+
+// GetPushType 查询当前数据推送配置。厂家 /sleepace/system/pushType/get 不要 data。
+func (a *SleepaceAPI) GetPushType() (*PushTypeConfig, error) {
+	req := SleepaceRequest{Token: a.token}
+	resp := SleepaceResponse{}
+	if _, err := a.client.R().SetBody(req).SetResult(&resp).Post("/sleepace/system/pushType/get"); err != nil {
+		return nil, err
+	}
+	if resp.Status != 0 {
+		return nil, errors.New(resp.Msg)
+	}
+	if len(resp.Data) == 0 || string(resp.Data) == "null" {
+		return nil, nil
+	}
+	var out PushTypeConfig
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // BindDevice 绑定设备。当前仅绑定在 left（leftRight=0，单人床/养老设备）。
 func (a *SleepaceAPI) BindDevice(deviceCode, userID string, timezone int) error {
 	req := SleepaceRequest{
@@ -135,6 +164,24 @@ func (a *SleepaceAPI) SetHeartMode(deviceCode string) error {
 		return errors.New(resp.Msg)
 	}
 	return nil
+}
+
+// GetHeartMode 查询心率/呼吸率计算模式（BM8701-2 专用，固件 ≥v6.30）。
+// mode=0：计算不出时保留之前值或加小波动；mode=1：计算不出上报 255。
+func (a *SleepaceAPI) GetHeartMode(deviceCode string) (int, error) {
+	req := SleepaceRequest{Token: a.token, Data: map[string]any{"deviceId": deviceCode}}
+	resp := struct {
+		Status int    `json:"status"`
+		Msg    string `json:"msg"`
+		Data   struct {
+			Mode int `json:"mode"`
+		} `json:"data"`
+	}{}
+	a.client.R().SetBody(req).SetResult(&resp).Post("/sleepace/heartModeGet")
+	if resp.Status != 0 {
+		return 0, errors.New(resp.Msg)
+	}
+	return resp.Data.Mode, nil
 }
 
 func (a *SleepaceAPI) SetRealtimeInterval(deviceCode, userID string, interval int) error {
@@ -180,6 +227,40 @@ func (a *SleepaceAPI) SetReportUploadType(deviceCode, userID string, uploadType 
 	return nil
 }
 
+// GetReportUploadType 查询当前历史数据存储方式。0=24 小时定时上报，1=离床 1h 自动生成/stopMonitor 触发。
+// BM8701-2 专用（固件 ≥6.60）。
+func (a *SleepaceAPI) GetReportUploadType(deviceCode string) (int, error) {
+	req := SleepaceRequest{Token: a.token, Data: map[string]any{"deviceId": deviceCode}}
+	resp := struct {
+		Status int    `json:"status"`
+		Msg    string `json:"msg"`
+		Data   struct {
+			ReportUploadType int `json:"reportUploadType"`
+		} `json:"data"`
+	}{}
+	a.client.R().SetBody(req).SetResult(&resp).Post("/sleepace/reportUploadType/get")
+	if resp.Status != 0 {
+		return 0, errors.New(resp.Msg)
+	}
+	return resp.Data.ReportUploadType, nil
+}
+
+// StopMonitor 强制触发当前监测结束并生成报告（异步：报告随后通过 analysis MQ 事件到达）。
+// 仅在历史数据存储方式为 mode=1（离床 1h 自动生成）时可用；mode=0 下调用厂家会返回错误。
+// leftRight：单人设备值为 0；双人设备 0/1（BM8701-2 养老场景固定 0）。
+func (a *SleepaceAPI) StopMonitor(deviceCode string, leftRight int) error {
+	req := SleepaceRequest{
+		Token: a.token,
+		Data:  map[string]any{"deviceId": deviceCode, "leftRight": leftRight},
+	}
+	resp := SleepaceResponse{}
+	a.client.R().SetBody(req).SetResult(&resp).Post("/sleepace/stopMonitor")
+	if resp.Status != 0 {
+		return errors.New(resp.Msg)
+	}
+	return nil
+}
+
 func (a *SleepaceAPI) SetReportUploadTime(deviceCode, userID string, uploadTime int) error {
 	req := SleepaceRequest{
 		Token: a.token,
@@ -191,6 +272,26 @@ func (a *SleepaceAPI) SetReportUploadTime(deviceCode, userID string, uploadTime 
 		return errors.New(resp.Msg)
 	}
 	return nil
+}
+
+// GetReportUploadTime 查询设备当前报告上传整点（1-24），对应厂家 /sleepace/getReportUploadTime。
+func (a *SleepaceAPI) GetReportUploadTime(deviceCode, userID string) (int, error) {
+	req := SleepaceRequest{
+		Token: a.token,
+		Data:  map[string]any{"userId": userID, "deviceId": deviceCode, "leftRight": 0},
+	}
+	resp := struct {
+		Status int    `json:"status"`
+		Msg    string `json:"msg"`
+		Data   struct {
+			ReportUploadTime int `json:"reportUploadTime"`
+		} `json:"data"`
+	}{}
+	a.client.R().SetBody(req).SetResult(&resp).Post("/sleepace/getReportUploadTime")
+	if resp.Status != 0 {
+		return 0, errors.New(resp.Msg)
+	}
+	return resp.Data.ReportUploadTime, nil
 }
 
 // DailyMaxReportQuery 对应厂家 get24HourDailyWithMaxReport 的 data 段（键名 userId / startTime / endTime）。
@@ -283,6 +384,66 @@ func (a *SleepaceAPI) SetBedParameters(deviceCode, userID string, thickness, mat
 		return errors.New(resp.Msg)
 	}
 	return nil
+}
+
+// BedSetting /sleepace/getSetting 返回 data：床垫厚度+材质。
+// thickness 1-3（1:5-10cm, 2:11-20cm, 3:21-30cm）；material 1-5（1 海绵 2 弹簧 3 乳胶 4 气垫 5 其他）。
+type BedSetting struct {
+	Thickness int `json:"thickness"`
+	Material  int `json:"material"`
+}
+
+// GetBedParameters 查询床垫参数。
+func (a *SleepaceAPI) GetBedParameters(deviceCode, userID string) (*BedSetting, error) {
+	req := SleepaceRequest{
+		Token: a.token,
+		Data:  map[string]any{"userId": userID, "deviceId": deviceCode, "leftRight": 0},
+	}
+	resp := struct {
+		Status int        `json:"status"`
+		Msg    string     `json:"msg"`
+		Data   BedSetting `json:"data"`
+	}{}
+	a.client.R().SetBody(req).SetResult(&resp).Post("/sleepace/getSetting")
+	if resp.Status != 0 {
+		return nil, errors.New(resp.Msg)
+	}
+	out := resp.Data
+	return &out, nil
+}
+
+// SetUserMode 单双人模式设置（SDC100 专用）：mode 0=单人 1=双人。
+func (a *SleepaceAPI) SetUserMode(deviceCode string, mode int) error {
+	req := SleepaceRequest{
+		Token: a.token,
+		Data:  map[string]any{"deviceId": deviceCode, "mode": mode},
+	}
+	resp := SleepaceResponse{}
+	a.client.R().SetBody(req).SetResult(&resp).Post("/sleepace/userMode/set")
+	if resp.Status != 0 {
+		return errors.New(resp.Msg)
+	}
+	return nil
+}
+
+// GetUserMode 单双人模式获取（SDC100 专用）。
+func (a *SleepaceAPI) GetUserMode(deviceCode string) (int, error) {
+	req := SleepaceRequest{
+		Token: a.token,
+		Data:  map[string]any{"deviceId": deviceCode},
+	}
+	resp := struct {
+		Status int    `json:"status"`
+		Msg    string `json:"msg"`
+		Data   struct {
+			Mode int `json:"mode"`
+		} `json:"data"`
+	}{}
+	a.client.R().SetBody(req).SetResult(&resp).Post("/sleepace/userMode/get")
+	if resp.Status != 0 {
+		return 0, errors.New(resp.Msg)
+	}
+	return resp.Data.Mode, nil
 }
 
 func (a *SleepaceAPI) GetLeavingMode(userID, deviceCode string) (int, error) {

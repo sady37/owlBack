@@ -37,6 +37,14 @@ type DeviceMonitorSettingsService interface {
 	// 检查设备在线状态（通过 wisefido-qinglan HTTP API 实时查询）
 	// 返回 nil 表示设备在线，否则返回错误
 	CheckDeviceOnlineStatus(ctx context.Context, deviceUID string) error
+
+	// ResyncDeviceTimezone 按当前 effective timezone 重发 Sleepace /bind，DST 切换脚本用。
+	// 返回下发的 IANA + seconds（成功/失败都返回，便于日志）。
+	ResyncDeviceTimezone(ctx context.Context, tenantID, deviceID string) (string, int, error)
+
+	// ResyncDeviceReportTime 按当前 effective sleep_report_time 重发 /setReportUploadTime。
+	// 返回下发的 hour（1-24）。
+	ResyncDeviceReportTime(ctx context.Context, tenantID, deviceID string) (int, error)
 }
 
 // deviceMonitorSettingsService 实现
@@ -46,10 +54,11 @@ type deviceMonitorSettingsService struct {
 	configVersionsRepo repository.ConfigVersionsRepository // 配置版本仓库（用于审计）
 	devicesRepo        repository.DevicesRepository
 	deviceStoreRepo    repository.DeviceStoreRepository
-	sleepaceGateway    *SleepaceGatewayClient // wisefido-sleepace 网关（厂家 HTTP 代理 + 下发硬件配置）
-	configPublisher    ConfigPublisher        // 配置消息发布器
-	qinglanClient      *QinglanClient         // 雷达设备仅经此客户端：查询状态/属性、下发属性（工作模式、跌倒/呼吸心率）
-	db                 *sql.DB                // 用于事务操作
+	residentsRepo      repository.ResidentsRepository // 查 resident 的 gender/age（PHI 解密）供 Sleepace bind 用
+	sleepaceGateway    *SleepaceGatewayClient         // wisefido-sleepace 网关（厂家 HTTP 代理 + 下发硬件配置）
+	configPublisher    ConfigPublisher                // 配置消息发布器
+	qinglanClient      *QinglanClient                 // 雷达设备仅经此客户端：查询状态/属性、下发属性（工作模式、跌倒/呼吸心率）
+	db                 *sql.DB                        // 用于事务操作
 	logger             *zap.Logger
 }
 
@@ -60,6 +69,7 @@ func NewDeviceMonitorSettingsService(
 	configVersionsRepo repository.ConfigVersionsRepository,
 	devicesRepo repository.DevicesRepository,
 	deviceStoreRepo repository.DeviceStoreRepository,
+	residentsRepo repository.ResidentsRepository,
 	db *sql.DB,
 	configPublisher ConfigPublisher,
 	logger *zap.Logger,
@@ -70,6 +80,7 @@ func NewDeviceMonitorSettingsService(
 		configVersionsRepo: configVersionsRepo,
 		devicesRepo:        devicesRepo,
 		deviceStoreRepo:    deviceStoreRepo,
+		residentsRepo:      residentsRepo,
 		db:                 db,
 		configPublisher:    configPublisher,
 		logger:             logger,
@@ -84,6 +95,230 @@ func (s *deviceMonitorSettingsService) SetSleepaceGatewayClient(client *Sleepace
 // SetQinglanClient 设置 Qinglan 客户端（下发雷达工作模式、跌倒/呼吸心率参数，不重启）
 func (s *deviceMonitorSettingsService) SetQinglanClient(client *QinglanClient) {
 	s.qinglanClient = client
+}
+
+// getDeviceTimezoneIANA 从设备 → bed/room → unit 查 IANA 时区，失败 fallback "America/Denver"（与系统其他 fallback 一致）。
+// 仅用于下发厂家 /sleepace/bind 的 timezone 字段；不对外暴露。
+func (s *deviceMonitorSettingsService) getDeviceTimezoneIANA(ctx context.Context, tenantID, deviceID string) string {
+	const fallback = DefaultTimezoneIANA
+	if s.db == nil || tenantID == "" || deviceID == "" {
+		return fallback
+	}
+	var tz sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT u.timezone
+		FROM devices d
+		LEFT JOIN beds b ON b.bed_id = d.bound_bed_id AND b.tenant_id = d.tenant_id
+		LEFT JOIN rooms r ON r.room_id = COALESCE(d.bound_room_id, b.room_id) AND r.tenant_id = d.tenant_id
+		LEFT JOIN units u ON u.unit_id = r.unit_id AND u.tenant_id = d.tenant_id
+		WHERE d.tenant_id = $1::uuid AND d.device_id = $2::uuid
+	`, tenantID, deviceID).Scan(&tz)
+	if err != nil || !tz.Valid || tz.String == "" {
+		return fallback
+	}
+	return tz.String
+}
+
+// sleepadAlarmParamsFromMonitorConfig 从 alarm_device.monitor_config 解出 SleepadSetting.alarm_params 字典。
+// monitor_config JSONB 结构：{"items": [{"alarm_type": "...", "alarm_params": {...}}, ...]}。
+// 查不到 / 解析失败返回 nil（调用方走 fallback）。
+func (s *deviceMonitorSettingsService) sleepadAlarmParamsFromMonitorConfig(ctx context.Context, tenantID, deviceID string) map[string]interface{} {
+	if s.alarmDeviceRepo == nil {
+		return nil
+	}
+	ad, err := s.alarmDeviceRepo.GetAlarmDevice(ctx, tenantID, deviceID)
+	if err != nil || ad == nil || len(ad.MonitorConfig) == 0 {
+		return nil
+	}
+	var mc struct {
+		Items []struct {
+			AlarmType   string                 `json:"alarm_type"`
+			AlarmParams map[string]interface{} `json:"alarm_params"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(ad.MonitorConfig, &mc); err != nil {
+		return nil
+	}
+	for _, it := range mc.Items {
+		if it.AlarmType == alarm.SleepadSetting {
+			return it.AlarmParams
+		}
+	}
+	return nil
+}
+
+// EffectiveTimezoneIANA 计算 Sleepad 设备下发厂家用的 IANA 时区：
+//
+//	alarm_device.monitor_config.items[SleepadSetting].alarm_params.timezone（UI 权威）
+//	> unit.timezone（查 device→bed→room→unit，UI 初次打开时的 default）
+//	> DefaultTimezoneIANA
+func (s *deviceMonitorSettingsService) EffectiveTimezoneIANA(ctx context.Context, tenantID, deviceID string) string {
+	if params := s.sleepadAlarmParamsFromMonitorConfig(ctx, tenantID, deviceID); params != nil {
+		if tz, ok := params["timezone"].(string); ok && tz != "" {
+			return tz
+		}
+	}
+	return s.getDeviceTimezoneIANA(ctx, tenantID, deviceID)
+}
+
+// EffectiveSleepReportTime 计算 Sleepad 设备下发厂家用的报告上传整点：
+//
+//	alarm_device.monitor_config.items[SleepadSetting].alarm_params.sleep_report_time（device 级覆盖）
+//	> alarm_cloud.metadata.tenant_sleepreport_time（tenant 默认）
+//	> alarm.DefaultSleepReportTime(8)
+//
+// 返回值保证在 [1, 24] 范围内。
+func (s *deviceMonitorSettingsService) EffectiveSleepReportTime(ctx context.Context, tenantID, deviceID string) int {
+	normalize := func(h int) int {
+		if h < 1 || h > 24 {
+			return alarm.DefaultSleepReportTime
+		}
+		return h
+	}
+	if params := s.sleepadAlarmParamsFromMonitorConfig(ctx, tenantID, deviceID); params != nil {
+		if h, ok := toIntParam(params["sleep_report_time"]); ok && h > 0 {
+			return normalize(h)
+		}
+	}
+	if s.alarmCloudRepo != nil {
+		if ac, err := s.alarmCloudRepo.GetAlarmCloud(ctx, tenantID); err == nil && ac != nil && len(ac.Metadata) > 0 {
+			var tr alarm.TenantResetTime
+			if json.Unmarshal(ac.Metadata, &tr) == nil && tr.TenantSleepReportTime > 0 {
+				return normalize(tr.TenantSleepReportTime)
+			}
+		}
+	}
+	return alarm.DefaultSleepReportTime
+}
+
+// computeBindAge 按养老场景把 resident real age 对齐到 5 的倍数（向上，最小 60）。
+//
+//	< 60 → 60
+//	60   → 60
+//	61   → 65
+//	65   → 65
+//	66   → 70
+func computeBindAge(age int) int {
+	if age < 60 {
+		return 60
+	}
+	r := age % 5
+	if r == 0 {
+		return age
+	}
+	return age + (5 - r)
+}
+
+// realAge 从 DOB 计算实岁（不算未到的月/日）。
+func realAge(dob time.Time) int {
+	now := time.Now()
+	years := now.Year() - dob.Year()
+	if now.Month() < dob.Month() || (now.Month() == dob.Month() && now.Day() < dob.Day()) {
+		years--
+	}
+	return years
+}
+
+// genderStringToInt Sleepace 要求 gender int：1=男 2=女。未知一律 1。
+func genderStringToInt(s string) int {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "female", "f", "女":
+		return 2
+	default:
+		return 1
+	}
+}
+
+// getBindGenderAge 查 device 绑定的 bed → resident → PHI（解密后）的 gender/age，按养老规则 round up。
+// 查不到 / 无 resident / 无 DOB 时返回 (1, 65)。
+func (s *deviceMonitorSettingsService) getBindGenderAge(ctx context.Context, tenantID, deviceID string) (int, int) {
+	const (
+		defaultGender = 1
+		defaultAge    = 65
+	)
+	if s.db == nil || s.residentsRepo == nil || tenantID == "" || deviceID == "" {
+		return defaultGender, defaultAge
+	}
+	var residentID sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT r.resident_id::text
+		FROM devices d
+		JOIN residents r ON r.bed_id = d.bound_bed_id AND r.tenant_id = d.tenant_id
+		WHERE d.tenant_id = $1::uuid AND d.device_id = $2::uuid
+		  AND COALESCE(r.status, 'active') = 'active'
+		LIMIT 1
+	`, tenantID, deviceID).Scan(&residentID)
+	if err != nil || !residentID.Valid || residentID.String == "" {
+		return defaultGender, defaultAge
+	}
+	phi, err := s.residentsRepo.GetResidentPHI(ctx, tenantID, residentID.String)
+	if err != nil || phi == nil {
+		return defaultGender, defaultAge
+	}
+	g := defaultGender
+	if phi.Gender != "" {
+		g = genderStringToInt(phi.Gender)
+	}
+	age := defaultAge
+	if phi.DateOfBirth != nil {
+		age = computeBindAge(realAge(*phi.DateOfBirth))
+	}
+	return g, age
+}
+
+// ResyncDeviceTimezone 按当前 effective timezone + resident gender/age 重发 /sleepace/bind。
+// 给 DST 切换脚本用——外部只需按 device_id 调此方法，我们自己查当前该给哪个 TZ。
+// 设备必须是 Sleepad 且有 device_code。返回 effective IANA + seconds（便于外部日志）。
+func (s *deviceMonitorSettingsService) ResyncDeviceTimezone(ctx context.Context, tenantID, deviceID string) (string, int, error) {
+	if s.sleepaceGateway == nil || s.devicesRepo == nil {
+		return "", 0, fmt.Errorf("sleepace gateway or devices repo not configured")
+	}
+	dev, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
+	if err != nil || dev == nil {
+		return "", 0, fmt.Errorf("device not found: %w", err)
+	}
+	if !dev.DeviceType.Valid || !strings.EqualFold(dev.DeviceType.String, "sleepad") {
+		return "", 0, fmt.Errorf("device %s is not a Sleepad", deviceID)
+	}
+	if !dev.DeviceCode.Valid || dev.DeviceCode.String == "" {
+		return "", 0, fmt.Errorf("device %s has no device_code", deviceID)
+	}
+	tzIANA := s.EffectiveTimezoneIANA(ctx, tenantID, deviceID)
+	tzSec := IANAToOffsetSeconds(tzIANA)
+	gender, age := s.getBindGenderAge(ctx, tenantID, deviceID)
+	if err := s.sleepaceGateway.BindDevice(ctx, deviceID, dev.DeviceCode.String, tzSec, gender, age); err != nil {
+		return tzIANA, tzSec, fmt.Errorf("bind failed: %w", err)
+	}
+	s.logger.Info("[RESYNC_TZ] pushed",
+		zap.String("device_id", deviceID), zap.String("iana", tzIANA),
+		zap.Int("tz_seconds", tzSec), zap.Int("gender", gender), zap.Int("age", age))
+	return tzIANA, tzSec, nil
+}
+
+// ResyncDeviceReportTime 按当前 effective sleep_report_time 重发 /sleepace/setReportUploadTime。
+// 给"报告时刻调整脚本"用（比如运维改 tenant 默认后想立刻生效）。
+// 返回下发的 hour（1-24）。
+func (s *deviceMonitorSettingsService) ResyncDeviceReportTime(ctx context.Context, tenantID, deviceID string) (int, error) {
+	if s.sleepaceGateway == nil || s.devicesRepo == nil {
+		return 0, fmt.Errorf("sleepace gateway or devices repo not configured")
+	}
+	dev, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
+	if err != nil || dev == nil {
+		return 0, fmt.Errorf("device not found: %w", err)
+	}
+	if !dev.DeviceType.Valid || !strings.EqualFold(dev.DeviceType.String, "sleepad") {
+		return 0, fmt.Errorf("device %s is not a Sleepad", deviceID)
+	}
+	if !dev.DeviceCode.Valid || dev.DeviceCode.String == "" {
+		return 0, fmt.Errorf("device %s has no device_code", deviceID)
+	}
+	hour := s.EffectiveSleepReportTime(ctx, tenantID, deviceID)
+	if err := s.sleepaceGateway.SetReportUploadTime(ctx, deviceID, dev.DeviceCode.String, hour); err != nil {
+		return hour, fmt.Errorf("setReportUploadTime failed: %w", err)
+	}
+	s.logger.Info("[RESYNC_RT] pushed",
+		zap.String("device_id", deviceID), zap.Int("hour", hour))
+	return hour, nil
 }
 
 // CheckDeviceOnlineStatus 检查设备在线状态（通过 wisefido-qinglan HTTP API 实时查询）
@@ -438,6 +673,10 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(ctx context.C
 	if deviceType == "radar" {
 		return s.UpdateRadarMonitorSettings(ctx, tenantID, deviceID, userID, alarmItems, progressCallback)
 	} else if deviceType == "sleepad" {
+		// 规范化 timezone：若用户没显式改过（= 等于 unit.timezone），存空字符串。
+		// 这样 unit.timezone 以后变更时设备能自动跟随；只有真正的 per-device 覆盖才会被持久化。
+		s.normalizeSleepadTimezone(ctx, tenantID, deviceID, alarmItems)
+
 		deviceWrite, dbWrite, noChange, err := s.UpdateSleepadMonitorSettings(ctx, tenantID, deviceID, userID, alarmItems, progressCallback)
 		return map[string]interface{}{
 			"success":      dbWrite,
@@ -447,6 +686,33 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(ctx context.C
 		}, err
 	}
 	return nil, fmt.Errorf("unsupported device_type: %s", deviceType)
+}
+
+// normalizeSleepadTimezone 若 SleepadSetting.alarm_params.timezone 与设备所在 unit.timezone 相等，就置空。
+// 语义：只有用户**显式**把 timezone 改成和 unit 不同的值时才持久化 per-device 覆盖；
+//       否则保持空字符串，UI 加载时由 resp.timezone（= unit.timezone）自动回填，unit 变更能自动跟上。
+// 注意：直接修改传入切片里的 SleepadSetting.AlarmParams（后续 save / push 用的都是同一份）。
+func (s *deviceMonitorSettingsService) normalizeSleepadTimezone(ctx context.Context, tenantID, deviceID string, alarmItems []alarm.AlarmItem) {
+	if len(alarmItems) == 0 {
+		return
+	}
+	unitTZ := s.getDeviceTimezoneIANA(ctx, tenantID, deviceID)
+	for i := range alarmItems {
+		if alarmItems[i].AlarmType != alarm.SleepadSetting {
+			continue
+		}
+		if alarmItems[i].AlarmParams == nil {
+			return
+		}
+		cur, _ := alarmItems[i].AlarmParams["timezone"].(string)
+		if cur != "" && cur == unitTZ {
+			alarmItems[i].AlarmParams["timezone"] = ""
+			s.logger.Info("[SAVE] normalize timezone to empty (matches unit)",
+				zap.String("device_id", deviceID),
+				zap.String("unit_tz", unitTZ))
+		}
+		return
+	}
 }
 
 // UpdateRadarMonitorSettings 更新 Radar 设备监控配置
@@ -698,7 +964,7 @@ func (s *deviceMonitorSettingsService) UpdateSleepadMonitorSettings(ctx context.
 			zap.String("device_id", deviceID),
 		)
 
-		s.pushDeviceSettings(ctx, device.DeviceID, device.DeviceCode.String, alarmItems)
+		s.pushDeviceSettings(ctx, tenantID, device.DeviceID, device.DeviceCode.String, alarmItems)
 	} else {
 		// 没有需要下发硬件的变更，也视为设备写入阶段成功
 		deviceWrite = true
@@ -763,7 +1029,7 @@ func (s *deviceMonitorSettingsService) overlaySleepadLightModeFromHardware(ctx c
 // pushDeviceSettings pushes SleepadSetting / MaterialSetting params to hardware
 // via the sleepace gateway proxy (individual API calls per setting type,含 realtimeMode/set).
 // 仅用本次请求体中的 alarm_params，不以 DB 补全下发（DB 在厂家不可达时仅作展示缓存，见 Get 侧 overlay）。
-func (s *deviceMonitorSettingsService) pushDeviceSettings(ctx context.Context, deviceID, deviceCode string, items []alarm.AlarmItem) {
+func (s *deviceMonitorSettingsService) pushDeviceSettings(ctx context.Context, tenantID, deviceID, deviceCode string, items []alarm.AlarmItem) {
 	if s.sleepaceGateway == nil || deviceID == "" || deviceCode == "" {
 		return
 	}
@@ -800,12 +1066,41 @@ func (s *deviceMonitorSettingsService) pushDeviceSettings(ctx context.Context, d
 				if err := s.sleepaceGateway.SetReportUploadType(ctx, deviceID, deviceCode, reportType); err != nil {
 					s.logger.Warn("[SLEEPAD_WRITE] push report_upload_type", zap.Error(err))
 				}
-				if reportType == 0 {
-					if t, ok := toIntParam(p["report_upload_time"]); ok {
-						if err := s.sleepaceGateway.SetReportUploadTime(ctx, deviceID, deviceCode, t); err != nil {
-							s.logger.Warn("[SLEEPAD_WRITE] push report_upload_time", zap.Error(err))
-						}
-					}
+				// 注意：不在此处下发 report_upload_time。
+				// reportUploadTime 由 SleepaceReportTimeScheduler 独占管理（每日 Denver 13:00 按 branch
+				// timezone + DST 重算并下发）。在这里下发会把 alarm_params 缓存的旧值（常见 8）覆盖 scheduler 算的值（如 6），
+				// 造成每次保存监控配置都会把报告上传时刻错 1 小时直到次日 scheduler 重跑才修正。
+				// 若 user 切回 mode=0，等下一次 scheduler 跑（最多 24h 内）会自动同步正确值。
+			}
+
+			// 下发 bind（等价于更新 user info：timezone + gender + age）
+			// timezone 直接从 p 读（与其他 SleepadSetting 字段一致，原地取值，不查 DB）；
+			// 空时回退到 unit.timezone；IANAToOffsetSeconds 在 call-time 按当前 DST 换算为秒数。
+			tzIANA, _ := p["timezone"].(string)
+			if tzIANA == "" {
+				tzIANA = s.getDeviceTimezoneIANA(ctx, tenantID, deviceID)
+			}
+			tzSec := IANAToOffsetSeconds(tzIANA)
+			gender, age := s.getBindGenderAge(ctx, tenantID, deviceID)
+			if err := s.sleepaceGateway.BindDevice(ctx, deviceID, deviceCode, tzSec, gender, age); err != nil {
+				s.logger.Warn("[SLEEPAD_WRITE] bind (tz+gender+age)",
+					zap.String("device_id", deviceID), zap.String("iana", tzIANA),
+					zap.Int("tz_seconds", tzSec), zap.Int("gender", gender), zap.Int("age", age),
+					zap.Error(err))
+			} else {
+				s.logger.Info("[SLEEPAD_WRITE] bind pushed",
+					zap.String("device_id", deviceID), zap.String("iana", tzIANA),
+					zap.Int("tz_seconds", tzSec), zap.Int("gender", gender), zap.Int("age", age))
+			}
+
+			// 下发 reportUploadTime：直接从 p 读 sleep_report_time；空时 fallback tenant 默认
+			if hour, ok := toIntParam(p["sleep_report_time"]); ok && hour >= 1 && hour <= 24 {
+				if err := s.sleepaceGateway.SetReportUploadTime(ctx, deviceID, deviceCode, hour); err != nil {
+					s.logger.Warn("[SLEEPAD_WRITE] setReportUploadTime",
+						zap.String("device_id", deviceID), zap.Int("hour", hour), zap.Error(err))
+				} else {
+					s.logger.Info("[SLEEPAD_WRITE] setReportUploadTime pushed",
+						zap.String("device_id", deviceID), zap.Int("hour", hour))
 				}
 			}
 			if lightV, lightOk := toIntParam(p["light_mode"]); lightOk {

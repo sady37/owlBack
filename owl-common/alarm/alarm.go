@@ -87,7 +87,8 @@ const (
 	WeakBiometricSignal      = "WeakBiometricSignal"
 	InBed                    = "InBed"
 	Stay                     = "Stay"
-	NightAbsence             = "NightAbsence"
+	NightAbsence             = "NightAbsence"    // Radar 用：整夜不在 room（房间层面）
+	BedNightAbsence          = "BedNightAbsence" // Sleepad 用：整夜不在床（床层面；床上没人 ≠ 房间没人）
 	WarningArea              = "WarningArea"
 	EnterRoom                = "EnterRoom"
 	ExitRoom                 = "ExitRoom"
@@ -140,7 +141,8 @@ var Registry = map[string]*AlarmDef{
 	AlarmTypeDeviceRecover:   {Key: AlarmTypeDeviceRecover, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Device recovery", Display: "Device Restored"},
 	AlarmTypeUnknown:         {Key: AlarmTypeUnknown, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Unknown alarm type"},
 	Stay:                     {Key: Stay, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 45 * 60}, Description: "Stay (e.g. 45min)", Display: "Prolonged Stay"},
-	NightAbsence:             {Key: NightAbsence, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, AlarmParams: map[string]interface{}{ParamDurationSec: 24 * 60 * 60}, Description: "24h no activity", Display: "No Activity (24h)"},
+	NightAbsence:             {Key: NightAbsence, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, AlarmParams: map[string]interface{}{ParamDurationSec: 24 * 60 * 60}, Description: "Night-long absence from the room (Radar)", Display: "Night Absence"},
+	BedNightAbsence:          {Key: BedNightAbsence, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, AlarmParams: map[string]interface{}{ParamDurationSec: 24 * 60 * 60}, Description: "Night-long absence from the bed (Sleepad)", Display: "Bed Night Absence"},
 	WeakBiometricSignal:      {Key: WeakBiometricSignal, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Weak vitals", Display: "Weak Biometric Signal"},
 	LeftBed:                  {Key: LeftBed, ProcessType: ProcessTypeTimeBased, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 0}, Description: "Left bed: duration_sec=0 immediate, >=30min timer", Display: "Bed Exit"},
 	InBed:                    {Key: InBed, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "In bed", Display: "In Bed"},
@@ -244,6 +246,7 @@ var AlarmTypeToFHIRCategory = map[string]string{
 	SuspectedSittingOnGround: FHIRCategorySafety,
 	Stay:                     FHIRCategorySafety,
 	NightAbsence:             FHIRCategorySafety,
+	BedNightAbsence:          FHIRCategorySafety,
 
 	// clinical: 生命体征异常
 	HeartRateAlert:       FHIRCategoryClinical,
@@ -443,9 +446,13 @@ type VitalAlarmConditions struct {
 // TenantResetTime 租户级别的作息时间配置
 // 存储在 alarm_cloud 表的 metadata JSONB 字段中，或者从 device_alarms 中的 ResetTime/NapTime 项提取
 type TenantResetTime struct {
-	ResetTime ResetTimeParams `json:"reset_time,omitempty"`
-	NapTime   NapTimeParams   `json:"nap_time,omitempty"`
+	ResetTime             ResetTimeParams `json:"reset_time,omitempty"`
+	NapTime               NapTimeParams   `json:"nap_time,omitempty"`
+	TenantSleepReportTime int             `json:"tenant_sleepreport_time,omitempty"` // 1-24 整点，tenant 级睡眠报告生成时刻默认值；设备级可覆盖
 }
+
+// DefaultSleepReportTime 代码硬编码的最终 fallback（tenant 无配置、device 无覆盖时用）。
+const DefaultSleepReportTime = 8
 
 // ResetTimeParams 重置时间参数
 type ResetTimeParams struct {
@@ -643,6 +650,7 @@ var DefaultTenantResetTime = TenantResetTime{
 		InBedTime:  "13:00",
 		OutBedTime: "14:00",
 	},
+	TenantSleepReportTime: DefaultSleepReportTime,
 }
 
 // DefaultAlarmSetting 各设备报警项默认值；直接改此变量后引用，json.Marshal(DefaultAlarmSetting) 可得 JSON
@@ -659,6 +667,7 @@ var DefaultAlarmSetting = struct {
 			AlarmParams: map[string]interface{}{
 				"InBedTime":  "21:30",
 				"OutBedTime": "07:30",
+				"TenantSleepReportTime": 8,
 			},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
@@ -677,14 +686,14 @@ var DefaultAlarmSetting = struct {
 			IsEnabled:  intPtr(IsEnabledOn),
 			AlarmLevel: nil,
 			AlarmParams: map[string]interface{}{
-				"SensorNumber":         0,                // //  单人Single 0，two 1   (左=0, 右=1)
-				"realtime_interval":    2,                //测量间隔2秒/ 4G 30sec  1-254
-				"Bed_Exit_Sensitivity": 1,                // 0:Low(15-20s) 1:Medium(5-8s) 2:High(3-5s)
-				"report_upload_type":   0,                //0 24H 1=自动结束
-				"report_upload_time":   8,                //AM8出报告
-				"Empty_Bed_Monitor":    0,                // 0:report 1:no report
-				"light_mode":           0,                // 0:开启 1:关闭
-				"timezone":             "America/Denver", // 未绑定 unit 时手动选取时区
+				"SensorNumber":         0,  // //  单人Single 0，two 1   (左=0, 右=1)
+				"realtime_interval":    2,  //测量间隔2秒/ 4G 30sec  1-254
+				"Bed_Exit_Sensitivity": 1,  // 0:Low(15-20s) 1:Medium(5-8s) 2:High(3-5s)
+				"report_upload_type":   0,  //0 24H 1=自动结束
+				"sleep_report_time":    8,  //AM8出报告（统一字段名，对应 tenant_sleepreport_time / alarm_device.metadata.sleep_report_time）
+				"Empty_Bed_Monitor":    0,  // 0:report 1:no report
+				"light_mode":           0,  // 0:开启 1:关闭
+				"timezone":             "", // 留空：UI 初次打开时由后端 resp.timezone（= unit.timezone）填充；用户改过后覆盖此字段
 			},
 			DisplaySetting: DisplayNone, // 设备配置项，不在报警列表中显示
 		},
@@ -732,8 +741,8 @@ var DefaultAlarmSetting = struct {
 			},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
-		{ // NightAbsence(Sleepad): 9PM-7AM 床上无人；实际由早上7点（或 RestTime 结束后）查 IoT 统计得出
-			AlarmType:      NightAbsence,
+		{ // BedNightAbsence(Sleepad): 9PM-7AM 床上无人；实际由早上7点（或 RestTime 结束后）查 IoT 统计得出
+			AlarmType:      BedNightAbsence,
 			IsEnabled:      intPtr(IsEnabledOn),
 			AlarmLevel:     strPtr(AlarmLevelWarn),
 			AlarmParams:    map[string]interface{}{},
@@ -976,8 +985,9 @@ func GetRadarAlarmTypes() []string {
 
 // GetSleepPadAlarmTypes 获取 SleepPad 设备的报警类型列表
 // 注意：报警类型已统一，不再区分设备前缀，设备类型通过 device_type 字段区分
+// Sleepad 用 BedNightAbsence（床层面）；Radar 用 NightAbsence（房间层面）
 func GetSleepPadAlarmTypes() []string {
-	return []string{AlarmTypeOffline, AlarmTypeDeviceFailure, SensorDetached, ApneaHypopnea, HeartRateAlert, RespRateAlert, LeftBed, BedSitUp, InBed, NightAbsence, AbnormalBodyMovement, NoBodyMove, NoTurnOver, ResetTime, NapTime, SleepadSetting, MaterialSetting}
+	return []string{AlarmTypeOffline, AlarmTypeDeviceFailure, SensorDetached, ApneaHypopnea, HeartRateAlert, RespRateAlert, LeftBed, BedSitUp, InBed, BedNightAbsence, AbnormalBodyMovement, NoBodyMove, NoTurnOver, ResetTime, NapTime, SleepadSetting, MaterialSetting}
 }
 
 // GetSupportedAlarmTypes 根据设备类型获取支持的报警类型列表
