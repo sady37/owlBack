@@ -692,9 +692,12 @@ func (r *PostgresDevicesRepository) CreateDevice(ctx context.Context, tenantID s
 	if status == "" {
 		status = "offline"
 	}
+	// 默认 approved + monitoring enabled；显式传值时尊重调用方
 	businessAccess := device.BusinessAccess
+	monitoringEnabled := device.MonitoringEnabled
 	if businessAccess == "" {
-		businessAccess = "pending"
+		businessAccess = "approved"
+		monitoringEnabled = true
 	}
 
 	err = tx.QueryRowContext(ctx, insertQuery,
@@ -705,7 +708,7 @@ func (r *PostgresDevicesRepository) CreateDevice(ctx context.Context, tenantID s
 		boundBedIDVal,
 		status,
 		businessAccess,
-		device.MonitoringEnabled,
+		monitoringEnabled,
 	).Scan(&deviceID)
 	if err != nil {
 		return "", fmt.Errorf("failed to create device: %w", err)
@@ -987,10 +990,11 @@ func (r *PostgresDevicesRepository) DeleteDevice(ctx context.Context, tenantID, 
 	}
 	defer tx.Rollback()
 
-	// 2.1. 更新 device_store 的 tenant_id 为 Trash 租户
+	// 2.1. 更新 device_store 的 tenant_id 为 Trash 租户，并同步关闭 allow_access
+	// 语义：仅 tenant==trash 的设备 allow_access=FALSE（与默认 TRUE 形成互斥）
 	_, err = tx.ExecContext(ctx, `
 		UPDATE device_store
-		SET tenant_id = $1
+		SET tenant_id = $1, allow_access = FALSE
 		WHERE device_id = $2
 	`, trashTenantID, deviceID)
 	if err != nil {
@@ -1259,7 +1263,7 @@ func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Conte
 			status,
 			business_access,
 			monitoring_enabled
-		) VALUES ($1, $2, $3, 'online', 'pending', FALSE)
+		) VALUES ($1, $2, $3, 'online', 'approved', TRUE)
 		RETURNING device_id::text
 	`
 

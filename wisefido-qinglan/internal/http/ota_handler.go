@@ -83,22 +83,19 @@ func (h *OTAHandler) TriggerOTA(w http.ResponseWriter, r *http.Request) {
 	}
 	req.UID = uid
 
-	// Normalize: if only RadarFirmware set, move to ESP (all Qinglan MCU = ESP32)
-	if req.EspFirmware == "" && req.RadarFirmware != "" {
-		req.EspFirmware = req.RadarFirmware
-		req.EspVersion = req.RadarVersion
-		req.RadarFirmware = ""
-		req.RadarVersion = ""
-	}
-
-	// Read version from update.ini if version looks like a filename
+	// 版本缺省则从 update.ini 按文件名查（esp / radar 独立）
 	if req.EspFirmware != "" && (req.EspVersion == "" || strings.Contains(req.EspVersion, ".bin")) {
 		if verInfo := ota.ParseUpdateINI(h.otaManager.FirmwareDir, req.EspFirmware); verInfo != nil {
 			req.EspVersion = verInfo.EspVer
 		}
 	}
+	if req.RadarFirmware != "" && (req.RadarVersion == "" || strings.Contains(req.RadarVersion, ".bin")) {
+		if verInfo := ota.ParseUpdateINI(h.otaManager.FirmwareDir, req.RadarFirmware); verInfo != nil {
+			req.RadarVersion = verInfo.RadarVer
+		}
+	}
 
-	log.Printf("[OTA-API] trigger OTA: uid=%s esp=%s ver=%s", uid, req.EspFirmware, req.EspVersion)
+	log.Printf("[OTA-API] trigger OTA: uid=%s esp=%s(v%s) radar=%s(v%s)", uid, req.EspFirmware, req.EspVersion, req.RadarFirmware, req.RadarVersion)
 
 	// Try TCP push first
 	result := h.otaManager.PushToDevice(req)
@@ -112,21 +109,15 @@ func (h *OTAHandler) TriggerOTA(w http.ResponseWriter, r *http.Request) {
 	// TCP failed, try MQTT push
 	if h.mqttOTA != nil {
 		log.Printf("[OTA-API] TCP failed (%s), trying MQTT: uid=%s", result.Message, uid)
-		// Pick firmware file (ESP or Radar field, all use ESP MQTT fields)
-		fwFile := req.EspFirmware
-		fwVer := req.EspVersion
-		if fwFile == "" {
-			fwFile = req.RadarFirmware
-			fwVer = req.RadarVersion
-		}
+		// 按协议同时支持 esp (主控) 与 radar (雷达) 两组字段，互相独立
 		data := map[string]interface{}{}
-		if fwFile != "" {
-			info, err := h.otaManager.GetFirmwareInfo(fwFile)
+		if req.EspFirmware != "" {
+			info, err := h.otaManager.GetFirmwareInfo(req.EspFirmware)
 			if err == nil {
-				data["espfileUrl"] = fmt.Sprintf("%s/%s", h.otaManager.FirmwareURL, fwFile)
+				data["espfileUrl"] = fmt.Sprintf("%s/%s", h.otaManager.FirmwareURL, req.EspFirmware)
 				data["espfilesha256"] = info.SHA256
 				data["espfilesize"] = info.Size
-				data["espver"] = fwVer
+				data["espver"] = req.EspVersion
 			}
 		}
 		if req.EspFileURL != "" {
@@ -134,6 +125,15 @@ func (h *OTAHandler) TriggerOTA(w http.ResponseWriter, r *http.Request) {
 			data["espfilesha256"] = req.EspSHA256
 			data["espfilesize"] = req.EspFileSize
 			data["espver"] = req.EspVersion
+		}
+		if req.RadarFirmware != "" {
+			info, err := h.otaManager.GetFirmwareInfo(req.RadarFirmware)
+			if err == nil {
+				data["radarfileUrl"] = fmt.Sprintf("%s/%s", h.otaManager.FirmwareURL, req.RadarFirmware)
+				data["radarfilesha256"] = info.SHA256
+				data["radarfilesize"] = info.Size
+				data["radarver"] = req.RadarVersion
+			}
 		}
 		if len(data) > 0 {
 			if err := h.mqttOTA.PublishOTA(r.Context(), uid, data); err != nil {

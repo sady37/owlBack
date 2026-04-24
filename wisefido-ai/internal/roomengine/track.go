@@ -1,96 +1,115 @@
 package roomengine
 
-// TrackVerdict track 判定结果。
+// TrackVerdict track 判定结果
 type TrackVerdict uint8
 
 const (
-	VerdictPending   TrackVerdict = 0 // 试用期中，尚未判定
-	VerdictReal      TrackVerdict = 1 // 确认为真实 track
-	VerdictGhost     TrackVerdict = 2 // 判定为 ghost
+	VerdictPending TrackVerdict = 0
+	VerdictReal    TrackVerdict = 1
+	VerdictGhost   TrackVerdict = 2
 )
 
-// Anomaly track 异常类型。
+// Anomaly track 异常类型
 type Anomaly uint8
 
 const (
 	AnomalyNone         Anomaly = 0
-	AnomalyFall         Anomaly = 1 // 跌倒（z 突降 + 速度归零）
-	AnomalyStillTooLong Anomaly = 2 // 静止超时（空地>8min / 卫生间>15min）
-	AnomalyPathBreak    Anomaly = 3 // 轨迹断裂（非出口处突然消失）
-	AnomalyPoseMismatch Anomaly = 4 // pose 与运动学矛盾（金属干扰）
+	AnomalyFall         Anomaly = 1 // 跌倒（z 骤降 / Silent Fall）
+	AnomalyStillTooLong Anomaly = 2 // 静止超时
+	AnomalyPathBreak    Anomaly = 3 // 轨迹断裂（非出口消失）
+	AnomalyPoseMismatch Anomaly = 4 // pose 与运动学矛盾
 )
 
-// TimedPoint 带时间戳的坐标（房间坐标 cm，时间 ms）。
+// TimedPoint 带时间戳的画布坐标（cm 整数）
 type TimedPoint struct {
-	X, Y float64
-	Z    float64 // 高度 cm（用于跌倒检测）
-	TMs  int64   // 毫秒时间戳
+	X, Y, Z int
+	TMs     int64
 }
 
 // TrackState 单个 track 的完整生命档案。
+// 运动粒子：Kalman + 即时判定 + 状态机转移。
+// 不累计空间属性（那些归 Cell）。
 type TrackState struct {
 	// ---- 身份 ----
-	TrackID   int    // 雷达原始 track_id
-	DeviceID  string // 来源设备
-	RoomID    string // 所在房间
+	TrackID  int
+	DeviceID string
+	RoomID   string
 
-	// ---- 出生 ----
-	BirthPos  TimedPoint // 首次出现的位置和时间
-	BirthScore float64   // 5 因子初始评分 [0,100]
+	// ---- 出生档案 ----
+	BirthPos   TimedPoint
+	BirthScore int // 5 因子初始分 [0,100]
 
-	// ---- Kalman 跟踪 ----
-	Kalman    *KalmanFilter2D // 预测/更新/残差
+	// ---- Kalman（内部 float，不持久化；track 死即销毁）----
+	Kalman *KalmanFilter2D
 
-	// ---- 历史轨迹 ----
-	History   []TimedPoint // 最近 HistoryLen 帧的坐标（滚动窗口）
-	FrameCount int         // 已累计帧数
+	// ---- 历史窗口（滚动 HistoryLen=30 帧；判定只用近 MotionWindowSec 秒）----
+	History    []TimedPoint
+	FrameCount int
 
-	// ---- 评分 ----
-	Score     float64      // 当前综合可信度 [0,100]
-	Verdict   TrackVerdict // 判定结果
-	ConfirmedAtMs int64    // 被确认 real 的时间（ms），0=未确认
+	// ---- Kalman 打分 ----
+	Score         int // [0,100]
+	Verdict       TrackVerdict
+	ConfirmedAtMs int64
 
-	// ---- 静止检测 ----
-	StillSince  int64   // 开始静止的时间（ms），0=在动
-	StillX, StillY float64 // 静止起始坐标
+	// ---- Z 抖动判断（本 track 内部，不累计到 cell）----
+	ZNoiseCount int // Z 突变次数（单 track 内统计）
 
-	// ---- 异常 ----
+	// ---- 运动学矛盾（本 track 内部）----
+	PoseMismatchCount int
+
+	// ---- 核心姿态状态机（Retract / Fall 检测用）----
+	PrevCore     CorePose
+	LieEnteredAt int64 // 进入 Lie 的时间（ms；0 = 未在 Lie 态）
+	LieEnteredX  int
+	LieEnteredY  int
+
+	// ---- 静止状态机 ----
+	StillSince        int64
+	StillX, StillY    int
+	LongStillReported bool // 防 LongStill 重复上报
+
+	// ---- 异常与 Silent Fall ----
 	CurrentAnomaly Anomaly
-	LastPose       int     // 上一帧的 pose（用于 mismatch 检测）
-	LastZ          float64 // 上一帧的 z（用于跌倒检测）
+	SilentFall     bool
 
-	// ---- 最后更新 ----
+	// ---- 最后观测 ----
+	LastPose     int
+	LastZ        int
 	LastUpdateMs int64
 }
 
+// Track 生命周期常量
 const (
-	HistoryLen      = 30  // 保留最近 30 帧（30 秒 @1Hz）
-	ProbationFrames = 5   // 试用期 5 帧（5 秒）
-	ScoreConfirmTh  = 50  // 连续 5 帧 score > 50 → confirmed
-	ScoreGhostTh    = 20  // 连续 5 帧 score < 20 → ghost
-	StillThreshCm   = 15  // 位移 < 15cm/帧 视为静止
+	HistoryLen       = 30   // 滚动窗口帧数
+	MotionWindowSec  = 5    // 运动学判定窗口（近 5 秒）
+	ProbationFrames  = 5    // 试用期帧数
+	ScoreConfirmTh   = 50   // Score ≥ 此值 → Real
+	ScoreGhostTh     = 20   // Score < 此值 → Ghost
+	StillThreshCm    = 15   // 帧间位移 < 此值视为静止
+	MaxMissCount     = 10   // 连续丢失 > 此值 → 消失
+	LieRetractMs     = 3000 // 进入 Lie 后 < 此时长回到 Stand/Move → Retract
 )
 
-// NewTrackState 新 track 出生。
-func NewTrackState(trackID int, deviceID, roomID string, x, y, z float64, tMs int64) *TrackState {
+// NewTrackState 新 track 出生
+func NewTrackState(trackID int, deviceID, roomID string, x, y, z int, tMs int64) *TrackState {
 	birth := TimedPoint{X: x, Y: y, Z: z, TMs: tMs}
 	return &TrackState{
 		TrackID:      trackID,
 		DeviceID:     deviceID,
 		RoomID:       roomID,
 		BirthPos:     birth,
-		Kalman:       NewKalmanFilter2D(x, y),
+		Kalman:       NewKalmanFilter2D(float64(x), float64(y)),
 		History:      []TimedPoint{birth},
 		FrameCount:   1,
-		Score:        50, // 中立起始分
+		Score:        50,
 		Verdict:      VerdictPending,
 		LastZ:        z,
 		LastUpdateMs: tMs,
 	}
 }
 
-// PushPoint 追加一帧观测，更新历史窗口。
-func (ts *TrackState) PushPoint(x, y, z float64, tMs int64) {
+// PushPoint 追加一帧观测到历史窗口
+func (ts *TrackState) PushPoint(x, y, z int, tMs int64) {
 	pt := TimedPoint{X: x, Y: y, Z: z, TMs: tMs}
 	ts.History = append(ts.History, pt)
 	if len(ts.History) > HistoryLen {
@@ -100,32 +119,33 @@ func (ts *TrackState) PushPoint(x, y, z float64, tMs int64) {
 	ts.LastUpdateMs = tMs
 }
 
-// HasHistory 是否有足够帧数做 Kalman（至少 2 帧才有速度）。
+// HasHistory 是否有足够帧数做 Kalman
 func (ts *TrackState) HasHistory() bool {
 	return ts.FrameCount >= 2
 }
 
-// TotalDisplacement 历史窗口内的总位移（cm）。
-func (ts *TrackState) TotalDisplacement() float64 {
+// TotalDisplacement 历史窗口内的总位移（cm）
+func (ts *TrackState) TotalDisplacement() int {
 	if len(ts.History) < 2 {
 		return 0
 	}
-	var sum float64
+	sum := 0
 	for i := 1; i < len(ts.History); i++ {
-		sum += dist(ts.History[i-1].X, ts.History[i-1].Y, ts.History[i].X, ts.History[i].Y)
+		sum += distInt(ts.History[i-1].X, ts.History[i-1].Y, ts.History[i].X, ts.History[i].Y)
 	}
 	return sum
 }
 
-// AgeSec 存活时长（秒）。
-func (ts *TrackState) AgeSec() float64 {
+// AgeSec 存活时长（秒）
+func (ts *TrackState) AgeSec() int {
 	if len(ts.History) < 2 {
 		return 0
 	}
-	return float64(ts.History[len(ts.History)-1].TMs-ts.BirthPos.TMs) / 1000.0
+	lastMs := ts.History[len(ts.History)-1].TMs
+	return int((lastMs - ts.BirthPos.TMs) / 1000)
 }
 
-// AdjustScore 调整分数，限制在 [0,100]。
-func (ts *TrackState) AdjustScore(delta float64) {
-	ts.Score = clamp(ts.Score+delta, 0, 100)
+// AdjustScore 调整分数，限制在 [0, 100]
+func (ts *TrackState) AdjustScore(delta int) {
+	ts.Score = clampInt(ts.Score+delta, 0, 100)
 }

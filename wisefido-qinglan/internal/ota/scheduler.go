@@ -95,7 +95,8 @@ func (s *Scheduler) scan(ctx context.Context) {
 		       COALESCE(ota_way, '') as ota_way,
 		       COALESCE(ota_schedule, '') as ota_schedule,
 		       COALESCE(ota_target_firmware_version, '') as ota_target_fw,
-		       COALESCE(ota_target_mcu_model, '') as ota_target_mcu
+		       COALESCE(ota_target_mcu_model, '') as ota_target_mcu,
+		       COALESCE(ota_updated_at, NOW()) as ota_updated_at
 		FROM device_store
 		WHERE ota_permit = 'true'
 		  AND ota_way IN ('schedule', 'tenant')
@@ -116,7 +117,8 @@ func (s *Scheduler) scan(ctx context.Context) {
 	pushed := 0
 	for rows.Next() {
 		var uid, way, schedule, targetFW, targetMCU string
-		if err := rows.Scan(&uid, &way, &schedule, &targetFW, &targetMCU); err != nil {
+		var updatedAt time.Time
+		if err := rows.Scan(&uid, &way, &schedule, &targetFW, &targetMCU, &updatedAt); err != nil {
 			log.Printf("[OTA-Scheduler] scan row failed: %v", err)
 			continue
 		}
@@ -124,82 +126,96 @@ func (s *Scheduler) scan(ctx context.Context) {
 
 		// For schedule mode, check if current time is within the schedule window
 		if way == "schedule" && schedule != "" {
-			if !IsInScheduleWindow(schedule, time.Now()) {
+			if !IsInScheduleWindow(schedule, time.Now(), updatedAt) {
 				log.Printf("[OTA-Scheduler] uid=%s schedule=%s not in window, skipping", uid, schedule)
 				continue
 			}
 		}
 
-		// Pick target file from device_store (flat filename, e.g. mcu-qinglan-xxx.bin)
-		targetFile := targetFW
-		if targetFile == "" {
-			targetFile = targetMCU
-		}
-		if targetFile == "" {
+		// target_mcu → esp* 字段 (主控固件)；target_fw → radar* 字段 (雷达固件)
+		// 见 Radar_MQTT_v3.0.md §3.8.4：一条 OTA 消息可同时带两组字段
+		if targetFW == "" && targetMCU == "" {
 			log.Printf("[OTA-Scheduler] uid=%s no target firmware set, skipping", uid)
 			continue
 		}
 
-		// Read version from update.ini (by filename)
-		verInfo := ParseUpdateINI(s.fwDir, targetFile)
-		espVer := ""
-		if verInfo != nil {
-			espVer = verInfo.EspVer
+		verInfo := &FwVersionInfo{}
+		data := map[string]interface{}{}
+		pushReq := PushRequest{UID: uid}
+
+		if targetMCU != "" {
+			localPath := filepath.Join(s.fwDir, targetMCU)
+			sz, err := getFileSize(localPath)
+			if err != nil {
+				log.Printf("[OTA-Scheduler] uid=%s mcu not found: %s: %v", uid, localPath, err)
+				continue
+			}
+			sha, _ := getFileSHA256(localPath)
+			if v := ParseUpdateINI(s.fwDir, targetMCU); v != nil {
+				verInfo.EspVer = v.EspVer
+			}
+			url := fmt.Sprintf("%s/%s", s.fwURL, targetMCU)
+			data["espfileUrl"] = url
+			data["espfilesha256"] = sha
+			data["espfilesize"] = sz
+			data["espver"] = verInfo.EspVer
+			pushReq.EspVersion = verInfo.EspVer
+			pushReq.EspFileURL = url
+			pushReq.EspFileSize = uint32(sz)
+			pushReq.EspSHA256 = sha
 		}
 
-		// Local file: size + SHA256 (flat ota/ directory)
-		localPath := filepath.Join(s.fwDir, targetFile)
-		fwSize, err := getFileSize(localPath)
-		if err != nil {
-			log.Printf("[OTA-Scheduler] uid=%s firmware not found: %s: %v", uid, localPath, err)
-			continue
+		if targetFW != "" {
+			localPath := filepath.Join(s.fwDir, targetFW)
+			sz, err := getFileSize(localPath)
+			if err != nil {
+				log.Printf("[OTA-Scheduler] uid=%s fw not found: %s: %v", uid, localPath, err)
+				continue
+			}
+			sha, _ := getFileSHA256(localPath)
+			if v := ParseUpdateINI(s.fwDir, targetFW); v != nil {
+				verInfo.RadarVer = v.RadarVer
+			}
+			url := fmt.Sprintf("%s/%s", s.fwURL, targetFW)
+			data["radarfileUrl"] = url
+			data["radarfilesha256"] = sha
+			data["radarfilesize"] = sz
+			data["radarver"] = verInfo.RadarVer
+			pushReq.RadarFirmware = targetFW
+			pushReq.RadarVersion = verInfo.RadarVer
+			pushReq.RadarSHA256 = sha
 		}
-		fwSHA, _ := getFileSHA256(localPath)
 
-		// Download URL: base URL + filename
-		downloadURL := fmt.Sprintf("%s/%s", s.fwURL, targetFile)
-
-		log.Printf("[OTA-Scheduler] pushing OTA to uid=%s file=%s ver=%s url=%s", uid, targetFile, espVer, downloadURL)
-
-		// MQTT payload
-		data := map[string]interface{}{
-			"espfileUrl":    downloadURL,
-			"espfilesha256": fwSHA,
-			"espfilesize":   fwSize,
-			"espver":        espVer,
-		}
+		log.Printf("[OTA-Scheduler] pushing OTA to uid=%s mcu=%s(v%s) fw=%s(v%s)", uid, targetMCU, verInfo.EspVer, targetFW, verInfo.RadarVer)
 
 		// Try TCP push first (old MCU), fall back to MQTT
-		tcpOK := false
+		pushed_ok := false
 		if s.tcpPushFn != nil {
-			req := PushRequest{
-				UID:         uid,
-				EspVersion:  espVer,
-				EspFileURL:  downloadURL,
-				EspFileSize: uint32(fwSize),
-				EspSHA256:   fwSHA,
-			}
-			result := s.tcpPushFn(req)
+			result := s.tcpPushFn(pushReq)
 			if result.Success {
 				log.Printf("[OTA-Scheduler] TCP push OK uid=%s", uid)
-				tcpOK = true
+				pushed_ok = true
 			} else {
 				log.Printf("[OTA-Scheduler] TCP push failed (%s), trying MQTT uid=%s", result.Message, uid)
 				if s.otaPushFn != nil {
-					_ = s.otaPushFn(uid, data) // best-effort MQTT, don't change status
+					if err := s.otaPushFn(uid, data); err != nil {
+						log.Printf("[OTA-Scheduler] MQTT fallback failed uid=%s: %v", uid, err)
+					} else {
+						// MQTT 已发出。标 pushing 避免下轮重推；若设备未收到/拒绝，依赖 ota_return 改 status。
+						pushed_ok = true
+					}
 				}
-				continue // don't set pushing — device may not have received it
 			}
 		} else if s.otaPushFn != nil {
 			if err := s.otaPushFn(uid, data); err != nil {
 				log.Printf("[OTA-Scheduler] MQTT push failed uid=%s: %v", uid, err)
 				continue
 			}
-			tcpOK = true // MQTT-only device, treat as pushed
+			pushed_ok = true // MQTT-only device, treat as pushed
 		}
 
-		// Only set 'pushing' when we confirmed delivery (TCP OK or MQTT-only)
-		if tcpOK {
+		// Only set 'pushing' when we confirmed delivery (TCP OK or MQTT sent)
+		if pushed_ok {
 			_, err = s.db.ExecContext(ctx, `
 				UPDATE device_store SET ota_status = 'pushing', ota_updated_at = NOW()
 				WHERE device_uid = $1
@@ -284,11 +300,13 @@ func ParseUpdateINI(fwDir, targetFile string) *FwVersionInfo {
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "file:") {
+			// 已解析完目标 section → 遇到下一个 file: 就返回；否则继续寻找
+			if info != nil {
+				return info
+			}
 			fname := strings.TrimSpace(strings.TrimPrefix(line, "file:"))
 			if fname == targetFile {
 				info = &FwVersionInfo{}
-			} else {
-				info = nil // different file section
 			}
 			continue
 		}
@@ -306,10 +324,7 @@ func ParseUpdateINI(fwDir, targetFile string) *FwVersionInfo {
 			info.RadarVer = strings.TrimSpace(parts[1])
 		}
 	}
-	// Re-scan to find (in case file was last section)
-	if info == nil {
-		return nil
-	}
+	// 目标 section 是文件最后一段
 	return info
 }
 
@@ -377,16 +392,52 @@ func ParseSchedule(s string) (month, day, hour, windowHours int, err error) {
 	return month, day, hour, windowHours, nil
 }
 
-// IsInScheduleWindow checks if the given time is within the schedule window
-func IsInScheduleWindow(schedule string, now time.Time) bool {
+// IsInScheduleWindow checks if the given time is within the schedule window.
+// 支持三种格式：
+//   1. "auto"        → 永远在窗口内（持续自动升级，直到手动改或 status=success）
+//   2. "now+Nd"/"Nh" → 从 updatedAt 起 N 天/小时内有效（有明确截止）
+//   3. "MMDDHH+xH"   → 绝对时间窗（原格式）
+func IsInScheduleWindow(schedule string, now time.Time, updatedAt time.Time) bool {
+	s := strings.ToLower(strings.TrimSpace(schedule))
+	if s == "" {
+		return false
+	}
+
+	// 识别码 1: auto → 永远在窗口内
+	if s == "auto" {
+		return true
+	}
+
+	// 识别码 2: now+Nd 或 now+Nh → 从 updatedAt 起的窗口
+	if strings.HasPrefix(s, "now+") {
+		dur := strings.TrimPrefix(s, "now+")
+		if len(dur) < 2 {
+			return false
+		}
+		unit := dur[len(dur)-1]
+		nStr := dur[:len(dur)-1]
+		n, err := strconv.Atoi(nStr)
+		if err != nil || n < 1 {
+			return false
+		}
+		var window time.Duration
+		switch unit {
+		case 'd':
+			window = time.Duration(n) * 24 * time.Hour
+		case 'h':
+			window = time.Duration(n) * time.Hour
+		default:
+			return false
+		}
+		return !now.Before(updatedAt) && now.Before(updatedAt.Add(window))
+	}
+
+	// 格式 3: 原 MMDDHH+xH 绝对时间窗
 	month, day, hour, windowHours, err := ParseSchedule(schedule)
 	if err != nil {
 		return false
 	}
-
-	// Build start time for this year
 	start := time.Date(now.Year(), time.Month(month), day, hour, 0, 0, 0, now.Location())
 	end := start.Add(time.Duration(windowHours) * time.Hour)
-
 	return now.After(start) && now.Before(end)
 }

@@ -687,6 +687,8 @@ func (c *MQTTConsumer) handleFunctionMessage(uid string, message map[string]inte
 }
 
 // handleOTAReturn handles OTA result messages from devices
+// 协议字段见 Radar_MQTT_v3.0.md §3.8.4.2：data.{progress,errMsg,uid}
+//   progress: 10=雷达下载完成 25=雷达升级完成 56=主控下载完成 100=全部完成 -1=失败
 func (c *MQTTConsumer) handleOTAReturn(uid string, message map[string]interface{}) {
 	data, _ := message["data"].(map[string]interface{})
 	if data == nil {
@@ -694,40 +696,50 @@ func (c *MQTTConsumer) handleOTAReturn(uid string, message map[string]interface{
 		return
 	}
 
-	code := 0
-	if v, ok := data["code"].(float64); ok {
-		code = int(v)
+	progress := 0
+	progressSet := false
+	if v, ok := data["progress"].(float64); ok {
+		progress = int(v)
+		progressSet = true
 	}
-	msg := ""
-	if v, ok := data["msg"].(string); ok {
-		msg = v
-	}
-	version := ""
-	if v, ok := data["version"].(string); ok {
-		version = v
+	errMsg := ""
+	if v, ok := data["errMsg"].(string); ok {
+		errMsg = v
 	}
 
-	log.Printf("[OTA-RETURN] uid=%s code=%d msg=%s version=%s", uid, code, msg, version)
+	log.Printf("[OTA-RETURN] uid=%s progress=%d errMsg=%s progressSet=%v", uid, progress, errMsg, progressSet)
 
-	// Update device_store ota_status
+	// 协议偏差：设备拒绝 OTA 时可能只发 errMsg 不发 progress。有 errMsg 即视为 failed，否则跳过。
+	if !progressSet {
+		if errMsg == "" {
+			log.Printf("[OTA-RETURN] uid=%s missing progress + empty errMsg, skip db update", uid)
+			return
+		}
+		progress = -1
+	}
+
+	// 映射：progress → ota_status
+	//   -1 → failed；100 → success；其它 → pushing（中间态）
+	var status string
+	switch {
+	case progress == -1:
+		status = "failed"
+	case progress == 100:
+		status = "success"
+	default:
+		status = "pushing"
+	}
+
 	if c.db != nil {
-		status := "failed"
-		if code == 200 || code == 0 {
-			status = "success"
-		}
-		progress := 0
-		if status == "success" {
-			progress = 100
-		}
 		_, err := c.db.ExecContext(context.Background(), `
 			UPDATE device_store
-			SET ota_status = $1::text, ota_progress = $4, ota_updated_at = NOW(), firmware_version = CASE WHEN $1::text = 'success' AND $3::text != '' THEN $3::text ELSE firmware_version END
-			WHERE device_uid = $2
-		`, status, uid, version, progress)
+			SET ota_status = $1::text, ota_progress = $2, ota_error = $3, ota_updated_at = NOW()
+			WHERE device_uid = $4
+		`, status, progress, errMsg, uid)
 		if err != nil {
 			log.Printf("[OTA-RETURN] failed to update ota_status for uid=%s: %v", uid, err)
 		} else {
-			log.Printf("[OTA-RETURN] updated ota_status=%s for uid=%s", status, uid)
+			log.Printf("[OTA-RETURN] updated ota_status=%s progress=%d for uid=%s", status, progress, uid)
 		}
 	}
 }

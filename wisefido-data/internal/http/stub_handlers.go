@@ -35,8 +35,8 @@ func (s *StubHandler) AdminDevices(w http.ResponseWriter, r *http.Request) {
 				"tenant_id":          "",
 				"device_name":        "stub-" + id,
 				"status":             "offline",
-				"business_access":    "pending",
-				"monitoring_enabled": false,
+				"business_access":    "approved",
+				"monitoring_enabled": true,
 			}))
 		case http.MethodPut:
 			writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))

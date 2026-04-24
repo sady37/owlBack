@@ -206,14 +206,9 @@ func main() {
 	}
 	defer subscriptionManager.Stop(ctx)
 
-	// 启动HTTP服务器（用于内部控制/查询）
-	log.Println("Starting HTTP server (internal control/query)...")
+	// 创建HTTP服务器（实际 Start 延后到 OTA handler 注入之后，否则路由在注册时丢失 OTA）
+	log.Println("Creating HTTP server (internal control/query)...")
 	httpServer := http.NewServer(&cfg.HTTP, radarService, cfg, db, deviceRepo, redisClient, logger, subscriptionManager, cardMappingSvc)
-	go func() {
-		if err := httpServer.Start(); err != nil {
-			log.Printf("HTTP server error: %v", err)
-		}
-	}()
 
 	// Set DB on MQTT consumer for OTA return handling
 	mqttConsumer.SetDB(db)
@@ -281,7 +276,7 @@ func main() {
 				return mqttPublisher.PublishOTA(context.Background(), uid, data)
 			},
 			httpsServer.OTAManager().PushToDevice, // TCP push for old MCU
-			1*time.Minute,
+			1*time.Minute, // 测试期间 1 分钟扫描一次，正式可回 5m
 			fwDir,
 			fwURL,
 		)
@@ -294,6 +289,14 @@ func main() {
 		}()
 
 	}
+
+	// OTA handler 已注入（若启用 HTTPS），此时再启动 HTTP server 以确保 OTA 路由被注册
+	log.Println("Starting HTTP server (internal control/query)...")
+	go func() {
+		if err := httpServer.Start(); err != nil {
+			log.Printf("HTTP server error: %v", err)
+		}
+	}()
 
 	log.Printf("wisefido-qinglan service started successfully")
 	log.Printf("MQTT connected to: %s", mqtt.EffectiveBrokerDialString(&cfg.MQTT))

@@ -89,31 +89,8 @@ for i in {1..30}; do
 done
 
 echo "=== systemctl start owlback.* ==="
-# Prebuild binaries for all modules to avoid on-start `go build` under systemd
-echo "[*] Prebuilding module binaries (if Go source present)"
-build_module() {
-	local dir="$1"
-	local pkg="$2"
-	local bin="$3"
-	if [ ! -d "$dir" ]; then
-		return 0
-	fi
-	mkdir -p "$dir/.bin"
-	echo "  Building $bin in $dir"
-	if (cd "$dir" && go build -o ".bin/$bin" "$pkg" >/dev/null 2>&1); then
-		echo "    OK: built $bin"
-	else
-		echo "    Warning: failed to build $bin (will still try to start unit)"
-	fi
-}
-
-# Modules: data, cardagg, qinglan, sleepace, iot, ai
-build_module "$SCRIPT_DIR/wisefido-data" "./cmd/wisefido-data" "wisefido-data"
-build_module "$SCRIPT_DIR/wisefido-cardagg" "." "wisefido-cardagg"
-build_module "$SCRIPT_DIR/wisefido-qinglan" "./cmd/wisefido-qinglan" "wisefido-qinglan"
-build_module "$SCRIPT_DIR/wisefido-sleepace" "./cmd/wisefido-sleepace" "wisefido-sleepace"
-build_module "$SCRIPT_DIR/wisefido-iot" "./cmd/wisefido-iot" "wisefido-iot"
-build_module "$SCRIPT_DIR/wisefido-ai" "./cmd/wisefido-ai" "wisefido-ai"
+# 注：不在此处 build；二进制由 start-owlback.sh（手动启动）在启动前编译。
+# systemd 路径仅负责拉起已有 .bin/*，避免 root 环境下 VCS stamping 失败。
 
 # 与 start-owlback.sh 一致：先起 wisefido-data（owlback.data），留时间做 card 表/全量同步，再起其它模块
 DATA_WAS_ACTIVE=false

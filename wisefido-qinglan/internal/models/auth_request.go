@@ -26,5 +26,5 @@ type MCUInfo struct {
 type RadarInfo struct {
 	HW  string `json:"hw"`  // 雷达硬件类型（T型号: 1.0; S型号: 2.3）
 	SW  string `json:"sw"`  // 雷达固件编译日期
-	Cap string `json:"cap"` // 雷达功能类别
+	Cap interface{} `json:"cap"` // 雷达功能类别（兼容 string 和 number）
 }
