@@ -1,6 +1,10 @@
 package roomengine
 
-import "math"
+import (
+	"math"
+
+	"owl-common/observation"
+)
 
 // ========================================================================
 // 枚举定义
@@ -14,9 +18,11 @@ const (
 	AreaUnknown AreaType = iota // 0 未知
 	AreaEnter                   // 1 进入区（门）
 	AreaBed                     // 2 可躺区
-	AreaSit                     // 3 允许坐姿（沙发/椅子/马桶）
+	AreaSit                     // 3 允许坐姿（沙发/椅子）
 	AreaActive                  // 4 活动区（走廊、开放空间）
 	AreaDeny                    // 5 禁止 track（墙/家具/Metal，track 出现 = Fake）
+	AreaShower                  // 6 淋浴区（高风险：潮湿+跌倒）
+	AreaToilet                  // 7 马桶（高风险：起身晕眩/坐姿突倒）
 	NumAreaTypes
 )
 
@@ -30,54 +36,39 @@ const (
 	SourceGeometry Source = 3
 )
 
-// CorePose 核心姿态（从雷达 13 种 pose 还原到 4 种）
+// CorePose 核心姿态（从雷达 13 种 pose 还原到 4 种）。
+// 常量值与 owl-common/observation/fields.go 里对应 Pose* 常量保持一致，
+// 便于调试时直接对比源 pose 和还原后的核心姿态。
 type CorePose uint8
 
 const (
-	CorePoseUnknown CorePose = 0
-	CorePoseMove    CorePose = 1
-	CorePoseStand   CorePose = 2
-	CorePoseSit     CorePose = 3
-	CorePoseLie     CorePose = 4
-)
-
-// Pose 常量（与 owl-common/observation/fields.go EnumPose 对齐）
-const (
-	PoseInit            = 0
-	PoseWalking         = 1
-	PoseSuspectedFall   = 2
-	PoseSitting         = 3
-	PoseStanding        = 4
-	PoseFall            = 5
-	PoseLying           = 6
-	PoseSuspectedFloor  = 7
-	PoseSittingOnGround = 8
-	PoseBedSitUp        = 9
-	PoseSuspectedBedUp  = 10
-	PoseConfirmedBedUp  = 11
-	PoseRunning         = 12
-	NumPoses            = 13
+	CorePoseUnknown CorePose = CorePose(observation.PoseUnknown)  // 0
+	CorePoseMove    CorePose = CorePose(observation.PoseWalking)  // 1
+	CorePoseSit     CorePose = CorePose(observation.PoseSitting)  // 3（蹲坐，也是沙发坐姿的代表）
+	CorePoseStand   CorePose = CorePose(observation.PoseStanding) // 4
+	CorePoseLie     CorePose = CorePose(observation.PoseLying)    // 6
 )
 
 // RadarPoseToCore 把雷达 13 种 pose 还原到 4 种核心姿态。
 // 核心哲学：不信雷达的 Suspected/Confirmed 分类和 area 派生事件——
 // 疑似与确认归为同一核心姿态，由我们自己做时间过滤和事件检测。
+// Pose 常量一律引用 owl-common/observation（唯一权威源）。
 func RadarPoseToCore(pose int) CorePose {
 	switch pose {
-	case PoseWalking, PoseRunning:
+	case observation.PoseWalking, observation.PoseRunning:
 		return CorePoseMove
-	case PoseStanding:
+	case observation.PoseStanding:
 		return CorePoseStand
-	case PoseSitting, PoseSuspectedFloor, PoseSittingOnGround,
-		PoseBedSitUp, PoseSuspectedBedUp, PoseConfirmedBedUp:
+	case observation.PoseSitting, observation.PoseSuspectedSitGround, observation.PoseSitGround,
+		observation.PoseBedSitUp, observation.PoseSuspectedBedSitUp, observation.PoseConfirmedBedSitUp:
 		return CorePoseSit
-	case PoseLying, PoseSuspectedFall, PoseFall:
+	case observation.PoseLying, observation.PoseSuspectedFall, observation.PoseFallen:
 		return CorePoseLie
 	}
 	return CorePoseUnknown
 }
 
-// ActiveType 索引常量
+// ActiveType 索引常量（独立于 CorePose 的值，因为 CorePose 值不连续 0/1/3/4/6）
 const (
 	ActiveIdxMove  = 0
 	ActiveIdxStand = 1
@@ -131,8 +122,11 @@ type Cell struct {
 	MinZ     int // Z 下限（cm）
 
 	// ---- 核心空间属性 ----
-	ActiveType [4]uint8 // [Move, Stand, Sit, Lie] 0-255 累计分（可视化作 RGBA 通道）
-	AreaType   AreaType // 推断属性，与 Belief[0].Type 镜像（query 加速）
+	// ActiveType[i] 单位 = 0.1 秒（×10 定点），用 uint16 容纳到 6553s（≈1.8h）。
+	// 定点是为了让 3×3 内核里"邻居 80% 权重"用整数表达（中心 +10×dt，邻居 +8×dt）。
+	ActiveType    [4]uint16 // [Move, Stand, Sit, Lie] 累计 0.1 秒
+	TraverseCount uint16    // Move 状态下穿越本 cell 的次数（cell 学习 Walk 升格用）
+	AreaType      AreaType  // 推断属性，与 Belief[0].Type 镜像（query 加速）
 
 	// ---- 访问可信度（track 层按本帧 quality 分桶喂）----
 	RealDecay  int
@@ -144,8 +138,9 @@ type Cell struct {
 	LongStillCount int // 静止 > 15min 次数
 
 	// ---- 事件累计（track 层触发）----
-	FallEventCount int // prevCore=Stand/Move → Lie + Z 骤降
-	LieRetract     int // Stand/Move → Lie → Stand/Move 短暂回撤（沙发签名）
+	FallEventCount  int // prevCore=Stand/Move → Lie + Z 骤降
+	LieRetract      int // Stand/Move → Lie → Stand/Move 短暂回撤（沙发签名）
+	LieAnomalyCount int // 床外/沙发外的 Lie 累计（cell_learning 写入；fall 检测消费）
 
 	// ---- 外部传感器事件 ----
 	SleepadInBedCount   int
@@ -162,11 +157,15 @@ type Cell struct {
 // 时间窗口（半衰期）
 // ========================================================================
 
-// 衰减常量（秒）。Decay 每小时调一次。
+// 衰减常量（秒）。Decay 每小时调一次（或按需更频繁）。
+//
+// 用户指令："15 分钟窗口能覆盖 95% 识别——人无法长时间维持非 sit/lie 姿态"。
+// 因此短档半衰期 = 15 min，让 ActiveType 快速反映"最近状态"，
+// 事件类长档 = 7 天，让稀疏事件（Fall/Sleepad 等）跨天累积。
 const (
-	HalfLifeShort    = 24 * 3600     // 24h：普通证据（访问/姿态/流动/停留）
-	HalfLifeLong     = 7 * 24 * 3600 // 7d：事件类（Fall/Retract/Sleepad/Door/LongStill）
-	eventHalfLifeMul = 7             // 长档 = 短档 × 7
+	HalfLifeShort    = 15 * 60       // 15 min：普通证据（ActiveType/Real/Ghost/Flow/Dwell）
+	HalfLifeLong     = 7 * 24 * 3600 // 7 d：事件类（Fall/Retract/Sleepad/Door/LongStill）
+	eventHalfLifeMul = 672           // 长档 = 短档 × 672 = 7d / 15min
 )
 
 // ========================================================================
@@ -190,10 +189,10 @@ func (c *Cell) IsEntry() bool {
 	return c.Belief[0].Type == AreaEnter
 }
 
-// IsRestZone 是否为合理静止区（Bed 或 Sit）。默认读 Belief[0]。
+// IsRestZone 是否为合理静止区（Bed / Sit / Toilet）。默认读 Belief[0]。
 func (c *Cell) IsRestZone() bool {
 	t := c.Belief[0].Type
-	return t == AreaBed || t == AreaSit
+	return t == AreaBed || t == AreaSit || t == AreaToilet
 }
 
 // StillTimeoutSec 静止超时阈值（秒；0 = 不限）。默认读 Belief[0]。
@@ -201,6 +200,10 @@ func (c *Cell) StillTimeoutSec() int {
 	switch c.Belief[0].Type {
 	case AreaBed, AreaSit:
 		return 0 // 床/沙发/椅子不限
+	case AreaToilet:
+		return 15 * 60 // 马桶 15 min（起身晕眩风险）
+	case AreaShower:
+		return 15 * 60 // 淋浴 15 min（潮湿跌倒风险）
 	case AreaDeny:
 		return 5 * 60 // Deny 区静止 5 min 即可疑
 	}
@@ -220,20 +223,23 @@ func (c *Cell) Decay(dtSec, halfLifeSec float64) {
 	f := math.Pow(0.5, dtSec/halfLifeSec)
 	fEv := math.Pow(0.5, dtSec/(halfLifeSec*eventHalfLifeMul))
 
-	// 短档（普通证据）
+	// 短档（普通证据）— 反映"最近这一段什么姿态"
 	c.RealDecay = scaleInt(c.RealDecay, f)
 	c.GhostDecay = scaleInt(c.GhostDecay, f)
 	c.FlowX = scaleInt(c.FlowX, f)
 	c.FlowY = scaleInt(c.FlowY, f)
 	c.DwellEMA = scaleInt(c.DwellEMA, f)
 	for i := range c.ActiveType {
-		c.ActiveType[i] = uint8(scaleInt(int(c.ActiveType[i]), f))
+		c.ActiveType[i] = uint16(scaleInt(int(c.ActiveType[i]), f))
 	}
 
-	// 长档（事件类）
+	// 长档（事件类 / 稀疏次数）— 跨天积累
+	// TraverseCount 单次穿越就是事件，需要跨天累计 5 次才能升格 Walk 区
+	c.TraverseCount = uint16(scaleInt(int(c.TraverseCount), fEv))
 	c.LongStillCount = scaleInt(c.LongStillCount, fEv)
 	c.FallEventCount = scaleInt(c.FallEventCount, fEv)
 	c.LieRetract = scaleInt(c.LieRetract, fEv)
+	c.LieAnomalyCount = scaleInt(c.LieAnomalyCount, fEv)
 	c.SleepadInBedCount = scaleInt(c.SleepadInBedCount, fEv)
 	c.SleepadLeftBedCount = scaleInt(c.SleepadLeftBedCount, fEv)
 	c.DoorEventCount = scaleInt(c.DoorEventCount, fEv)
@@ -257,9 +263,10 @@ func (c *Cell) UpdateBelief(g int, p ParamSet) {
 	total := c.RealDecay + c.GhostDecay
 	eventsSum := c.FallEventCount + c.LieRetract +
 		c.SleepadInBedCount + c.SleepadLeftBedCount + c.DoorEventCount
+	// activeSum 单位 = 0.1 秒；< 100 即 < 10 秒，证据不够更新 Belief
 	activeSum := int(c.ActiveType[0]) + int(c.ActiveType[1]) +
 		int(c.ActiveType[2]) + int(c.ActiveType[3])
-	if total < 3 && eventsSum < 1 && activeSum < 10 {
+	if total < 3 && eventsSum < 1 && activeSum < 100 {
 		return
 	}
 
@@ -385,7 +392,7 @@ func scaleInt(v int, f float64) int {
 	return int(math.Round(float64(v) * f))
 }
 
-// satAddUint8 饱和加法（上限 255），用于 ActiveType 累加。
+// satAddUint8 饱和加法（上限 255）
 func satAddUint8(v uint8, add int) uint8 {
 	r := int(v) + add
 	if r < 0 {
@@ -395,6 +402,18 @@ func satAddUint8(v uint8, add int) uint8 {
 		return 255
 	}
 	return uint8(r)
+}
+
+// satAddUint16 饱和加法（上限 65535），用于 ActiveType / TraverseCount。
+func satAddUint16(v uint16, add int) uint16 {
+	r := int(v) + add
+	if r < 0 {
+		return 0
+	}
+	if r > 65535 {
+		return 65535
+	}
+	return uint16(r)
 }
 
 // clamp01 限制到 [0, 1]

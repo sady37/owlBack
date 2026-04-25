@@ -1,0 +1,394 @@
+{
+    "radar": {
+        "radar_1776488508859": "fcaedf95-c8bf-4f81-8a2b-6bb4549fff27"
+    },
+    "params": null,
+    "objects": [
+        {
+            "id": "radar_1776488508859",
+            "name": "Radar_D523",
+            "angle": 0,
+            "device": {
+                "iot": {
+                    "radar": {
+                        "hfov": 140,
+                        "vfov": 120,
+                        "areas": [
+                        ],
+                        "ip_port": "test.wisefido.com:8443",
+                        "accelera": "-4.09:-64.59:-64.97:1",
+                        "baseline": {
+                            "areas": [
+                            ],
+                            "boundary": {
+                                "leftH": 300,
+                                "rearV": 0,
+                                "frontV": 400,
+                                "rightH": 300
+                            },
+                            "queriedAt": "2026-04-24T18:35:31.577Z",
+                            "workModel": "FullFunct",
+                            "installModel": "wall",
+                            "installHeight": 200
+                        },
+                        "boundary": {
+                            "leftH": 300,
+                            "rearV": 0,
+                            "frontV": 400,
+                            "rightH": 300
+                        },
+                        "rotation": 0,
+                        "wifi_rssi": "-34",
+                        "wifi_ssid": "network",
+                        "workModel": "vital",
+                        "showSignal": false,
+                        "installModel": "wall",
+                        "showBoundary": true,
+                        "signalRadius": 500,
+                        "wifi_password": "******"
+                    },
+                    "deviceId": "fcaedf95-c8bf-4f81-8a2b-6bb4549fff27",
+                    "isOnline": true,
+                    "device_uid": "E598A2ACD523",
+                    "communication": "wifi",
+                    "statusMessage": "Source: From Device  Query Result:\ninstallModel: wall\nworkModel: FullFunct\nboundary: L300 R300 F400 B0"
+                },
+                "type": "Radar",
+                "category": "iot",
+                "isObstacle": false,
+                "isInteractive": true
+            },
+            "visual": {
+                "color": "#2196F3",
+                "transparent": false
+            },
+            "geometry": {
+                "data": {
+                    "x": -130,
+                    "y": 50,
+                    "z": 200
+                },
+                "type": "point"
+            },
+            "typeName": "Radar",
+            "device_id": "fcaedf95-c8bf-4f81-8a2b-6bb4549fff27",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            },
+            "bindedDeviceId": "fcaedf95-c8bf-4f81-8a2b-6bb4549fff27"
+        },
+        {
+            "id": "obj_1776673197518",
+            "name": "Furniture",
+            "angle": 0,
+            "device": {
+                "type": "Furniture",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#d3d3d3",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "center": {
+                        "x": 60.5,
+                        "y": 451.5
+                    },
+                    "vertices": [
+                        {
+                            "x": 0,
+                            "y": 300
+                        },
+                        {
+                            "x": 120,
+                            "y": 300
+                        },
+                        {
+                            "x": 0,
+                            "y": 600
+                        },
+                        {
+                            "x": 120,
+                            "y": 600
+                        }
+                    ]
+                },
+                "type": "rectangle"
+            },
+            "typeName": "Furniture",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776704290167",
+            "name": "Enter",
+            "angle": 0,
+            "device": {
+                "type": "Enter",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#A9EAA9",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "vertices": [
+                        {
+                            "x": 230,
+                            "y": 50
+                        },
+                        {
+                            "x": 300,
+                            "y": 50
+                        },
+                        {
+                            "x": 230,
+                            "y": 200
+                        },
+                        {
+                            "x": 300,
+                            "y": 200
+                        }
+                    ]
+                },
+                "type": "rectangle"
+            },
+            "typeName": "Enter",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776704321117",
+            "name": "D",
+            "angle": 0,
+            "device": {
+                "type": "Furniture",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#d3d3d3",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "center": {
+                        "x": 265.5,
+                        "y": 565.5
+                    },
+                    "vertices": [
+                        {
+                            "x": 250,
+                            "y": 550
+                        },
+                        {
+                            "x": 280,
+                            "y": 550
+                        },
+                        {
+                            "x": 250,
+                            "y": 580
+                        },
+                        {
+                            "x": 280,
+                            "y": 580
+                        }
+                    ]
+                },
+                "type": "rectangle"
+            },
+            "typeName": "Furniture",
+            "interactive": {
+                "locked": true,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776704364492",
+            "name": "B",
+            "angle": 0,
+            "device": {
+                "type": "Furniture",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#d3d3d3",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "center": {
+                        "x": -267,
+                        "y": 566
+                    },
+                    "vertices": [
+                        {
+                            "x": -280,
+                            "y": 550
+                        },
+                        {
+                            "x": -250,
+                            "y": 550
+                        },
+                        {
+                            "x": -280,
+                            "y": 580
+                        },
+                        {
+                            "x": -250,
+                            "y": 580
+                        }
+                    ]
+                },
+                "type": "rectangle"
+            },
+            "typeName": "Furniture",
+            "interactive": {
+                "locked": true,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776704408079",
+            "name": "C",
+            "angle": 0,
+            "device": {
+                "type": "Furniture",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#d3d3d3",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "center": {
+                        "x": 262,
+                        "y": 33
+                    },
+                    "vertices": [
+                        {
+                            "x": 250,
+                            "y": 20
+                        },
+                        {
+                            "x": 280,
+                            "y": 20
+                        },
+                        {
+                            "x": 250,
+                            "y": 50
+                        },
+                        {
+                            "x": 280,
+                            "y": 50
+                        }
+                    ]
+                },
+                "type": "rectangle"
+            },
+            "typeName": "Furniture",
+            "interactive": {
+                "locked": true,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776704444363",
+            "name": "A",
+            "angle": 0,
+            "device": {
+                "type": "Furniture",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#d3d3d3",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "vertices": [
+                        {
+                            "x": -280,
+                            "y": 20
+                        },
+                        {
+                            "x": -250,
+                            "y": 20
+                        },
+                        {
+                            "x": -280,
+                            "y": 50
+                        },
+                        {
+                            "x": -250,
+                            "y": 50
+                        }
+                    ]
+                },
+                "type": "rectangle"
+            },
+            "typeName": "Furniture",
+            "interactive": {
+                "locked": true,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1777056837937",
+            "name": "Wall",
+            "angle": 0,
+            "device": {
+                "type": "Wall",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#000000",
+                "dashed": false,
+                "transparent": true,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "vertices": [
+                        {
+                            "x": -250,
+                            "y": 50
+                        },
+                        {
+                            "x": 250,
+                            "y": 50
+                        },
+                        {
+                            "x": -250,
+                            "y": 550
+                        },
+                        {
+                            "x": 250,
+                            "y": 550
+                        }
+                    ]
+                },
+                "type": "rectangle"
+            },
+            "typeName": "Wall",
+            "interactive": {
+                "locked": false,
+                "selected": true
+            }
+        }
+    ],
+    "timestamp": "2026-04-24T18:55:52.890Z"
+}

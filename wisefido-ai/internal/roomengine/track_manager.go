@@ -4,6 +4,8 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"owl-common/observation"
 )
 
 // TrackOutput Room Engine 对外输出的单条 track 评估结果
@@ -123,7 +125,16 @@ func (tm *TrackManager) ProcessFrame(frames []TrackFrame) []TrackOutput {
 
 		// 维度 B: 历史流（每帧无条件）
 		tm.grid.MarkOccupancy(f.X, f.Y, quality, vx, vy, nowMs)
-		tm.grid.MarkPoseTime(f.X, f.Y, RadarPoseToCore(f.Pose), dtSec, nowMs)
+		core := RadarPoseToCore(f.Pose)
+		tm.grid.MarkPoseTime(f.X, f.Y, core, dtSec, nowMs)
+
+		// Walk 区学习：core==Move 且进入新 cell 时 ++ TraverseCount
+		curCol, curRow := tm.grid.ToIndex(f.X, f.Y)
+		if core == CorePoseMove && (curCol != ts.LastCellCol || curRow != ts.LastCellRow) {
+			tm.grid.MarkTraverse(f.X, f.Y, nowMs)
+		}
+		ts.LastCellCol = curCol
+		ts.LastCellRow = curRow
 	}
 
 	// ========== 段 2: 未观测到的 track ==========
@@ -400,13 +411,13 @@ func (tm *TrackManager) detectZNoise(ts *TrackState, z int) {
 func (tm *TrackManager) detectPoseMismatch(ts *TrackState, pose int) {
 	speed := int(math.Round(ts.Kalman.Speed()))
 	// pose=Walking 但速度 ≈ 0
-	if pose == PoseWalking && speed < 5 && ts.FrameCount > 3 {
+	if pose == observation.PoseWalking && speed < 5 && ts.FrameCount > 3 {
 		ts.PoseMismatchCount++
 		ts.CurrentAnomaly = AnomalyPoseMismatch
 		ts.AdjustScore(-3)
 	}
 	// pose=Standing 但 Z < 50（在地面）
-	if pose == PoseStanding && ts.LastZ > 0 && ts.LastZ < 50 {
+	if pose == observation.PoseStanding && ts.LastZ > 0 && ts.LastZ < 50 {
 		ts.PoseMismatchCount++
 	}
 }

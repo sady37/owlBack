@@ -61,7 +61,8 @@ iot:monitor:stream   (radar 每帧 track) │
                         └── 历史流：每帧一个 (x,y,z) 单点 mark 一个 cell
                               (不过滤，按本帧 q 分桶到 Real/Ghost 累积)
                                                         ↓
-                                  cell 多维字段：Real/Ghost/ZVar/Dwell/Events/Pose...
+                                  cell 多维字段：Real/Ghost/ActiveType[4]/Flow/Dwell
+                                               /FallEvent/LieRetract/Sleepad/Door...
                                                         ↓
                                   定时 UpdateBelief（每 5 min）+ 事件触发点更新
                                                         ↓
@@ -100,9 +101,10 @@ alarm_events.resolution (扫表) ──→ AccuracyTracker → winner 自选
 - **Wall 矩形**：人类能画出的墙（偏粗），用来定义房间边界 + 减少 Open 区 cell 数量。
 - **Sofa/Chair** 允许人类可选标注（尽力粗标），初始 Confidence 中等（见 §7）。
 
-### 3.3 雷达视场（物理 FOV）
+### 3.3 雷达视场（本期：用 Boundary 多边形；二期再精细化物理 FOV）
 
-**Boundary 仅作 UI 参考**。真实信号可达域由物理参数算出：
+**本期简化策略**：直接用前端画的 Radar signal（Boundary 多边形）+ InRoom 交集作为可达域。
+公式判定留给二期精细化。物理字段（HFOV/VFOV/AzimuthFOV/ElevationFOV）保留但不参与判定，作为未来扩展位。
 
 ```go
 type RadarMount struct {
@@ -167,11 +169,11 @@ type RadarMount struct {
 | 坐标 / 距离 / 边界 | cm（int）| 画布/雷达本地/Boundary 全部 cm |
 | 角度 | 度（int）| Rotation / HFOV / VFOV / AzimuthFOV / ElevationFOV 全用度 |
 | 时间戳 | ms（int64）| `LastUpdateMs` 等 |
-| 计时累计（Dwell / Still / PoseGroupSec） | 秒（int）| |
-| 速度（FlowX/Y）| cm/s（int）| |
+| 计时累计（Dwell） | 秒（int）| 含 DwellEMA |
+| 姿态累计（ActiveType[4]）| 饱和计数（uint8 0-255）| Move/Stand/Sit/Lie |
+| 速度（FlowX/Y）| cm/s（int）| EMA |
 | 百分比（Confidence / Score / RiskScore）| 0-100（int）| |
-| 次数累计（Real/GhostDecay / Events / PoseMismatch）| 次（int）| 带衰减，整除到 0 即遗忘 |
-| Z 方差 ZVar | cm²（int）| 粗量化 |
+| 次数累计（Real/GhostDecay / LieRetract / FallEvent / Sleepad / Door / LongStill）| 次（int）| 带衰减，整除到 0 即遗忘 |
 
 **允许浮点的三个场景**：
 
@@ -241,8 +243,9 @@ type RadarMount struct {
   → 答"这个 track 现在在干什么"
   数据只活在 track object 里，track 消失就清
 
-历史流（24h / 7d 半衰期）: 区域属性学习
-  cell.RealDecay / GhostDecay / ZVar / DwellEMA / PoseHist[] / Events[].*
+历史流（15min 短档 / 7d 长档 半衰期）: 区域属性学习
+  cell.RealDecay / GhostDecay / FlowX/Y / DwellEMA / ActiveType[4]
+  cell.FallEventCount / LieRetract / SleepadInBedCount / DoorEventCount 等
   cell.Belief[3] 后验
   → 答"这个位置长期是什么"
   数据落在 cell 上，衰减但不清除
@@ -274,15 +277,16 @@ f
 │   └ 更新 Score / Verdict / Anomaly
 │
 └── 维度 B: 历史流（cell 层）
-    ├ 按本帧 q 分桶：
-    │   q > 阈值 → cell.RealDecay++  + FlowX/Y
-    │   q < 阈值 → cell.GhostDecay++
-    ├ 无条件累积（不看 q）：
-    │   ZMean / ZVar (Z 观测统计)
-    │   PoseHist[group] (pose 时长)
-    │   Events[].* (两阶段事件)
-    │   PoseMismatch（本帧若检测到矛盾则累加）
-    └ 事件触发时额外调用 MarkEvent
+    ├ 按本帧 q 分桶（不看 Verdict）：
+    │   grid.MarkOccupancy(x, y, q, vx, vy)
+    │     q ≥ 50 → RealDecay++ + FlowEMA
+    │     q < 50 → GhostDecay++
+    ├ 无条件累积：
+    │   grid.MarkPoseTime(x, y, core, dtSec)   // ActiveType[core] 饱和累加
+    ├ 事件触发（Track 层检测后调）：
+    │   grid.MarkFallEvent / MarkLieRetract / MarkDwell / MarkLongStill
+    │   grid.MarkSleepadInBed / MarkSleepadLeftBed / MarkDoorEvent
+    └ Z 抖动 / PoseMismatch 归 Track 层，不累计到 cell
 ```
 
 **关键：历史流不过滤**。
@@ -299,11 +303,20 @@ f
 
 ```go
 c := grid.CellAt(f.X, f.Y)
-c.RealDecay or GhostDecay += 1
-c.ZMean = EMA(c.ZMean, f.Z)
-c.ZVar  = EMA_residual_sq(c.ZVar, f.Z - c.ZMean)
-c.PoseHist[poseGroup(f.Pose)] += dtSec
-...
+// q 分桶
+if q >= 50 {
+    c.RealDecay++
+    c.FlowX = (9*c.FlowX + vx) / 10
+    c.FlowY = (9*c.FlowY + vy) / 10
+} else {
+    c.GhostDecay++
+}
+// ActiveType 饱和累加
+idx := CorePoseToActiveIdx(RadarPoseToCore(f.Pose))
+if idx >= 0 {
+    c.ActiveType[idx] = satAddUint8(c.ActiveType[idx], dtSec)
+}
+// ... 事件条件触发则 MarkFallEvent / MarkLieRetract / MarkDwell / ...
 ```
 
 不扩散到邻居。不聚合成椭圆。**时间和样本做空间聚合**：
@@ -481,63 +494,72 @@ Cell 的字段分 **几何（静态）** / **物理（rasterize 烤入）** / **
 |  | `MinZ` | int | Z 下限（cm）| — |
 | 证据：访问 | `RealDecay` | int | 本帧 q 高的累计 | ✓ |
 |  | `GhostDecay` | int | 本帧 q 低的累计 | ✓ |
-| 证据：运动静止 | `FlowX` / `FlowY` | int | 平均速度向量 EMA | ✓ |
-|  | `StillCount` | int | 累计静止秒 | ✓ |
-|  | `DwellEMA` | int | 单次停留 EMA（秒）| ✓ |
-|  | `LongStillCount` | int | 静止 > 15min 次数 | ✓ |
-| 证据：Z 抖动 | `ZMean` | int | Z 高度 EMA 均值 | ✗ |
-|  | `ZVar` | int | Z 残差² EMA | ✓ |
-| 证据：姿态 | `PoseGroupSec[5]` | int | 各分组累计秒 | ✓ |
-|  | `PoseMismatch` | int | pose 与运动学矛盾次数 | ✓ |
-| 证据：两阶段事件 | `Events[3].Suspected` | int | 疑似次数 | ✓ (长半衰期)|
-|  | `Events[3].Confirmed` | int | 确认次数 | ✓ (长半衰期)|
-|  | `Events[3].Retract` | int | 回撤次数 | ✓ (长半衰期)|
-| 证据：业务事件 | `BedEventCount` | int | In/LeftBed | ✓ |
-|  | `DoorEventCount` | int | Enter2out | ✓ |
-| 信念 | `Belief[3].Type` | CellType | 当前判定类型 | — |
+| 证据：运动/停留 | `FlowX` / `FlowY` | int | 平均速度向量 EMA (cm/s) | ✓（短档）|
+|  | `DwellEMA` | int | 单次停留 EMA（秒）| ✓（短档）|
+|  | `LongStillCount` | int | 静止 > 15min 次数 | ✓（长档）|
+| 核心姿态 | `ActiveType[4]` | [4]uint8 | 饱和累加 0-255 [Move/Stand/Sit/Lie] | ✓（短档）|
+|  | `AreaType` | AreaType | 推断属性镜像 | — |
+| 姿态转换 | `LieRetract` | int | 短暂 Lie 回撤（沙发签名）| ✓（长档）|
+| 自推事件 | `FallEventCount` | int | Stand/Move → Lie + Z 骤降 | ✓（长档）|
+| 外部传感器 | `SleepadInBedCount` | int | HR/RR/InBed | ✓（长档）|
+|  | `SleepadLeftBedCount` | int | LeftBed | ✓（长档）|
+|  | `DoorEventCount` | int | Enter/Exit | ✓（长档）|
+| 信念 | `Belief[3].Type` | AreaType | 当前判定类型 | — |
 |  | `Belief[3].Confidence` | int | [0,100] | ✗ 数据驱动 |
 |  | `Belief[3].RiskScore` | int | [0,100] | — |
 |  | `Belief[3].Source` | Source | 人 / 学 / 几何 | — |
 | 元 | `LastUpdateMs` | int64 | 最后更新时间 | — |
 
-**衰减半衰期**：普通证据 **24 小时**；事件计数 **7 天**。
+**衰减半衰期**：短档 **15 分钟**（ActiveType/Real/Ghost/Flow/Dwell）；长档 **7 天**（所有事件类）。
 
 **关键说明：**
-- Cell 字段都是**布尔/计数/EMA**，没有概率。
+- Cell 字段都是**布尔/uint8/int**，没有概率。
 - 证据字段**所有 3 组参数共享**；Belief[3] 独立演化。
 - `Confidence` 不随时间衰减——只被数据驱动升降。
 - 物理字段（EdgeDist/MaxZ/MinZ）在 Grid 构建时**一次性 rasterize**，运行时只读。
+- **Z 抖动 / PoseMismatch 归 Track 层**（track 内部 `ZNoiseCount` / `PoseMismatchCount`），不累计到 cell。
 
 ---
 
-## 8. CellType 单一类型系统
+## 8. AreaType 类型系统（7 种，功能分类）
 
-取消"静态 Type vs InferredType"的双轨，合并为一套：
+放弃按"家具名"分类，改按**engine 要问的问题**分类：
 
 ```
-CellOpen       未知开放空间
-CellDoor       门/入口
-CellBed        床
-CellChair      椅子/沙发（人坐之处）
-CellWall       墙
-CellFOVEdge    雷达视场边缘
-CellToilet     马桶
-CellShower     淋浴
-CellWalkway    通道（学习得到为主）
-CellMetal      反射/干扰区（学习得到）
+AreaUnknown (0)  未知
+AreaEnter   (1)  进入区（门）
+AreaBed     (2)  可躺区（床）
+AreaSit     (3)  允许坐姿（沙发/椅子）
+AreaActive  (4)  活动区（走廊、开放空间）
+AreaDeny    (5)  禁止 track（墙/家具/Metal，track 出现 = Fake）
+AreaShower  (6)  淋浴区（高风险：潮湿+跌倒）
+AreaToilet  (7)  马桶（高风险：起身晕眩）
 ```
+
+与功能对应：
+
+| AreaType | StillTimeoutSec | IsRestZone | 风险特征 |
+|---|---|---|---|
+| Enter | 8 min | 否 | 正常进出 |
+| Bed | 不限 | ✓ | 长躺姿 |
+| Sit | 不限 | ✓ | 长坐姿 |
+| Active | 8 min | 否 | 移动/短停 |
+| Deny | 5 min | 否 | track 不该出现 |
+| Shower | **15 min** | 否 | 高风险 |
+| Toilet | **15 min** | ✓ | 高风险 |
 
 人标和 AI 学到的**共用同一套类型**，用 `Confidence + Source` 区分来源：
 
 | Prior 来源 | Type | 初始 Confidence | Source |
 |---|---|---|---|
-| 人标 Bed / Door / Toilet / Wall | CellBed / CellDoor / … | **99** | Human |
-| 人标 Sofa（允许粗标）| CellChair | **80** | Human |
-| 雷达几何 → FOV 边 | CellFOVEdge | **99** | Geometry |
-| 未指定 | CellOpen | **0** | Unset |
+| 人标 Bed / Enter / Toilet / Shower / Wall | AreaBed / AreaEnter / … | **99** | Human |
+| 人标 Sofa（允许粗标）| AreaSit | **80** | Human |
+| 未指定 | AreaUnknown | **0** | Unset |
 | UpdateBelief 翻转 | 推断出的 Type | `bestL × 50` | Learned |
 
 **Confidence 不是硬锁**——99 而非 100，留 1 分让系统有机会翻转（床被搬走）。
+
+**Shower / Toilet 默认不参与自动学习**（似然为 0），只认人标——它们形状单一、位置固定，硬锚性强。
 
 ---
 
@@ -563,31 +585,37 @@ for cell in all cells:
 
 `α` 小（~0.02）让一致证据缓慢增强；`β` 大（~0.5）让矛盾证据快速削弱。
 
-### 9.2 各类型似然公式（都读历史累积字段）
+### 9.2 各类型似然公式（基于 ActiveType 分布 + 事件累计）
+
+设 `ratio(i) = ActiveType[i] / Σ ActiveType`，则 moveR/standR/sitR/lieR 为对应占比。
 
 ```
-L(CellOpen)     = 0.3                                    // 常数底
-L(CellDoor)     = clamp(DoorEventCount / 5, 0, 1)
-L(CellBed)      = clamp(DwellEMA/600, 0, 1) × LieRatio
-                + clamp(BedEventCount/3, 0, 1) × 0.5
-                + BedSitRatio × 0.3
+L(AreaUnknown) = 0.2                                    // 常数底
 
-L(CellChair)    = clamp(ZVar/50, 0, 1)
-                × clamp(DwellEMA/300, 0, 1)
-                × (StandSitRatio + 0.2)
-                × (1 + FallRetract/(Suspected+1))       ← 核心沙发签名
-                × clamp(1 - FallConfirmed/5, 0, 1)      ← 真 fall 扣分
+L(AreaEnter)   = clamp(DoorEventCount / 5, 0, 1)
 
-L(CellWalkway)  = clamp(|Flow|/50, 0, 1)
-                × clamp(1 - DwellEMA/10, 0, 1)
-                × (MoveRatio + 0.1)
+L(AreaBed)     = lieR
+               + (SleepadInBedCount > 0 ? 0.8 : 0)       // Sleepad 决定性证据
+               + clamp(LongStillCount / 3, 0, 1) × 0.3
 
-L(CellMetal)    = GhostRatio
-                × clamp(PoseMismatch/20, 0, 1)
-                × (1 + clamp(AllRetract/10, 0, 1))
+L(AreaSit)     = sitR × clamp(DwellEMA/300, 0, 1)
+               × (1 + LieRetract/5)                      // ← 核心沙发签名：短暂 Lie 回撤多
+               × clamp(1 - FallEventCount/5, 0, 1)        // ← 真 Fall 扣分
+
+L(AreaActive)  = moveR
+               + clamp(|Flow|/50, 0, 1) × 0.3
+               + clamp(1 - DwellEMA/10, 0, 1) × 0.2
+               + standR × 0.2
+
+L(AreaDeny)    = GhostRatio
+               + (若总 ActiveType 累积 < 5 且 RealDecay < 2: +0.3)
+
+L(AreaShower)  = 0   // 不参与自动学习（形状固定，只认人标）
+L(AreaToilet)  = 0   // 同上
 ```
 
-**沙发签名的核心**：雷达频繁疑似 fall 但都回撤 + Z 抖动 + 长 Dwell + 站坐姿主导。不依赖 ground truth 就能判定。
+**沙发签名的核心**（与原设计一致，但现在用 LieRetract 替代 Events[Fall].Retract）：
+短暂 Lie 回撤多（LieRetract 高）+ 长 Dwell + 坐姿主导 + 真 Fall 少。不依赖 ground truth 就能判定。
 
 ---
 
@@ -609,7 +637,8 @@ L(CellMetal)    = GhostRatio
 | SuspectedFall→非 Fall 超时 | 状态回撤 | 落点 cell | **Events[Fall].Retract++** |
 | pose = 8 (SittingOnGround) | 确认坐地 | 落点 cell | Events[Floor].Confirmed++ |
 | BedSitUp 家族 | 事件 | 落点 cell | Events[BedUp].* |
-| In/LeftBed | Sleepad 事件 | 坐标 cell | BedEventCount++ |
+| Sleepad InBed | Sleepad 压床 | 事件坐标 | SleepadInBedCount++ |
+| Sleepad LeftBed | Sleepad 离床 | 事件坐标 | SleepadLeftBedCount++ |
 | Enter2out | 门事件 | 坐标 cell | DoorEventCount++ |
 | 静止 > 15 min | track_manager | 静止 cell | LongStillCount++ |
 | **Silent Fall** | 合成规则 | 消失 cell | Events[Fall].Confirmed++ + 输出 alarm |
@@ -622,7 +651,7 @@ L(CellMetal)    = GhostRatio
 1. Verdict == VerdictReal                              // 真 track
 2. AgeSec > 10                                         // 短暂闪现不算
 3. 消失前 3 帧内 min(Z) < 20 cm                        // 贴地（短时流）
-4. 消失 cell.EdgeDist > 30 cm 且 非 CellDoor           // 物理上不是合法离场
+4. 消失 cell.EdgeDist > 30 cm 且 非 AreaEnter          // 物理上不是合法离场
 5. 消失前最后两帧 |Δpos| > 80 cm                       // 空间跳跃
    ↑ 80cm 跳跃 + Z 急降 = 真跌倒信号（反射中心从站立→躺下）
    ↑ 80cm 跳跃 + Z 不降 = 更可能是 Ghost

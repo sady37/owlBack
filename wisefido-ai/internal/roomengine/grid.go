@@ -209,19 +209,84 @@ func (g *RoomGrid) MarkOccupancy(x, y, quality, vx, vy int, nowMs int64) {
 	c.LastUpdateMs = nowMs
 }
 
-// MarkPoseTime 按本帧核心姿态累加 ActiveType 对应槽（饱和到 255）。
+// MarkPoseTime 按本帧核心姿态累加 ActiveType（×10 定点 = 0.1 秒/单位）。
+// 用 3×3 内核：中心 cell 加 dtSec×10，8 邻居各加 dtSec×8（80% 权重）。
+// 设计原因：补偿雷达位置 jitter——人坐稳时中心持续命中，散点 hovering 时分散到 9 cell 都过不了升格阈值。
 // 每帧都调（无过滤）。dtSec 为本帧时长（秒，通常 1）。
 func (g *RoomGrid) MarkPoseTime(x, y int, core CorePose, dtSec int, nowMs int64) {
-	c := g.CellAt(x, y)
-	if c == nil || dtSec <= 0 {
+	if dtSec <= 0 {
 		return
 	}
 	idx := CorePoseToActiveIdx(core)
 	if idx < 0 {
 		return
 	}
-	c.ActiveType[idx] = satAddUint8(c.ActiveType[idx], dtSec)
+	col, row := g.ToIndex(x, y)
+	if col < 0 || col >= g.Width || row < 0 || row >= g.Height {
+		return
+	}
+
+	const centerW = 10 // ×10 定点：本帧中心格子 = dtSec × 1.0
+	const neighW = 8   // 邻居 = dtSec × 0.8
+
+	for dr := -1; dr <= 1; dr++ {
+		rr := row + dr
+		if rr < 0 || rr >= g.Height {
+			continue
+		}
+		for dc := -1; dc <= 1; dc++ {
+			cc := col + dc
+			if cc < 0 || cc >= g.Width {
+				continue
+			}
+			c := &g.Cells[rr*g.Width+cc]
+			w := neighW
+			if dr == 0 && dc == 0 {
+				w = centerW
+			}
+			c.ActiveType[idx] = satAddUint16(c.ActiveType[idx], dtSec*w)
+			c.LastUpdateMs = nowMs
+		}
+	}
+}
+
+// MarkTraverse Move 状态下"穿越本 cell"的事件（track_manager 在进入新 cell 且 core==Move 时调）。
+// 用于 Walk 区学习：连续走动经过 ≥ 5 次 + ActiveTime[Move] 累计达阈值 → 该 cell 升格 AreaActive。
+func (g *RoomGrid) MarkTraverse(x, y int, nowMs int64) {
+	c := g.CellAt(x, y)
+	if c == nil {
+		return
+	}
+	c.TraverseCount = satAddUint16(c.TraverseCount, 1)
 	c.LastUpdateMs = nowMs
+}
+
+// IsNearPriorType 检查 (x,y) 是否在某个 AreaType 人标 Belief 矩形的容差范围内（曼哈顿距离）。
+// 用于 cell_learning：判断"床外 Lie"时给 Bed prior ±30cm 容差，避免 layout 位置误差误报。
+// 实现：扫指定半径 marginCm 内的所有 cell，发现任一 Belief[0].Type==t 且 Source==SourceHuman 即返回 true。
+func (g *RoomGrid) IsNearPriorType(x, y int, t AreaType, marginCm int) bool {
+	col, row := g.ToIndex(x, y)
+	rad := marginCm / g.CellSize
+	if rad < 1 {
+		rad = 1
+	}
+	for dr := -rad; dr <= rad; dr++ {
+		rr := row + dr
+		if rr < 0 || rr >= g.Height {
+			continue
+		}
+		for dc := -rad; dc <= rad; dc++ {
+			cc := col + dc
+			if cc < 0 || cc >= g.Width {
+				continue
+			}
+			c := &g.Cells[rr*g.Width+cc]
+			if c.Belief[0].Type == t && c.Belief[0].Source == SourceHuman {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // MarkFallEvent 自推"跌倒事件"触发时调（Stand/Move → Lie + Z 骤降）

@@ -76,6 +76,11 @@ type TrackState struct {
 	LastPose     int
 	LastZ        int
 	LastUpdateMs int64
+
+	// ---- cell 穿越追踪（Walk 学习用）----
+	// 初始为 -1 表示尚未定位；新 cell 进入且 core==Move 时调 grid.MarkTraverse 计数 ++。
+	LastCellCol int
+	LastCellRow int
 }
 
 // Track 生命周期常量
@@ -87,7 +92,9 @@ const (
 	ScoreGhostTh     = 20   // Score < 此值 → Ghost
 	StillThreshCm    = 15   // 帧间位移 < 此值视为静止
 	MaxMissCount     = 10   // 连续丢失 > 此值 → 消失
-	LieRetractMs     = 3000 // 进入 Lie 后 < 此时长回到 Stand/Move → Retract
+	LieRetractMs     = 8000 // 进入 Lie 后 < 此时长回到 Stand/Move → Retract
+	// 经验值：真跌倒 8 秒内爬起概率 < 5%；雷达固件的 fallSec 典型 10-30 秒，
+	// 8 秒远小于其最小值，确保只捕获"雷达尚未升级为 Fall 就回撤"的误报。
 )
 
 // NewTrackState 新 track 出生
@@ -105,6 +112,8 @@ func NewTrackState(trackID int, deviceID, roomID string, x, y, z int, tMs int64)
 		Verdict:      VerdictPending,
 		LastZ:        z,
 		LastUpdateMs: tMs,
+		LastCellCol:  -1,
+		LastCellRow:  -1,
 	}
 }
 
