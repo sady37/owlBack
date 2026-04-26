@@ -465,9 +465,9 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 		// 如果更新 tenant_id，需要验证迁移规则（仅校验，不写库）
 		var tenantChanged bool
 		var migrateFromPivot bool
+		var currentTenantID, currentDeviceID string
 		if update.TenantID != "" {
-			var currentTenantID string
-			err := tx.QueryRowContext(ctx, `SELECT tenant_id::text FROM device_store WHERE device_uid = $1`, deviceUID).Scan(&currentTenantID)
+			err := tx.QueryRowContext(ctx, `SELECT tenant_id::text, device_id::text FROM device_store WHERE device_uid = $1`, deviceUID).Scan(&currentTenantID, &currentDeviceID)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					return fmt.Errorf("device_store not found: device_uid=%s", deviceUID)
@@ -590,6 +590,29 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 				`, update.TenantID, deviceUID)
 				if err != nil {
 					return fmt.Errorf("failed to create devices row on migrate: %w", err)
+				}
+			}
+
+			// 清理旧租户残留：从所有 cards.devices JSONB 中移除该设备引用，并删除其 DeviceCard
+			// 否则旧租户的 DeviceCard 会成为孤儿，导致 cardagg/qinglan 把设备状态错路由到旧租户
+			if currentDeviceID != "" && currentTenantID != "" {
+				if _, err := tx.ExecContext(ctx, `
+					UPDATE cards
+					SET devices = COALESCE((
+						SELECT jsonb_agg(elem)
+						FROM jsonb_array_elements(devices) AS elem
+						WHERE elem->>'device_id' <> $2
+					), '[]'::jsonb)
+					WHERE tenant_id = $1
+					  AND devices @> jsonb_build_array(jsonb_build_object('device_id', $2))
+				`, currentTenantID, currentDeviceID); err != nil {
+					return fmt.Errorf("failed to clean cards.devices in old tenant: %w", err)
+				}
+				if _, err := tx.ExecContext(ctx, `
+					DELETE FROM cards
+					WHERE card_type = 'DeviceCard' AND tenant_id = $1 AND card_id = $2::uuid
+				`, currentTenantID, currentDeviceID); err != nil {
+					return fmt.Errorf("failed to delete orphan DeviceCard in old tenant: %w", err)
 				}
 			}
 		}

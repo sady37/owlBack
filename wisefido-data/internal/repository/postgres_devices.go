@@ -163,6 +163,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 					jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS j
 				WHERE (j->>'device_id') = d.device_id::text
 					AND c.tenant_id = d.tenant_id
+					AND c.card_type <> 'DeviceCard'
 				LIMIT 1
 			) AS card_id,
 			(
@@ -270,6 +271,7 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 					jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS j
 				WHERE (j->>'device_id') = d.device_id::text
 					AND c.tenant_id = d.tenant_id
+					AND c.card_type <> 'DeviceCard'
 				LIMIT 1
 			) AS card_id
 		FROM devices d
@@ -356,6 +358,7 @@ func (r *PostgresDevicesRepository) GetDeviceByUID(ctx context.Context, tenantID
 					jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS j
 				WHERE (j->>'device_id') = d.device_id::text
 					AND c.tenant_id = d.tenant_id
+					AND c.card_type <> 'DeviceCard'
 				LIMIT 1
 			) AS card_id
 		FROM devices d

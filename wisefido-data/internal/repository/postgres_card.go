@@ -1339,3 +1339,23 @@ func (r *PostgresCardRepository) GetDevicesWithoutCard(tenantID string) ([]card.
 	}
 	return devices, rows.Err()
 }
+
+// CleanOrphanDeviceCards 清理孤儿 DeviceCard：card_type='DeviceCard' 但对应 devices 行已不在或租户不一致。
+// 典型成因：设备跨租户迁移时未同步清理旧租户的 DeviceCard。返回被删除的行数。
+func (r *PostgresCardRepository) CleanOrphanDeviceCards(ctx context.Context) (int, error) {
+	res, err := r.db.ExecContext(ctx, `
+		DELETE FROM cards
+		WHERE card_type = 'DeviceCard'
+		  AND card_id IN (
+			SELECT c.card_id FROM cards c
+			LEFT JOIN devices d ON d.device_id = c.card_id
+			WHERE c.card_type = 'DeviceCard'
+			  AND (d.device_id IS NULL OR d.tenant_id <> c.tenant_id)
+		  )
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("failed to clean orphan device cards: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}

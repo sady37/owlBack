@@ -434,6 +434,26 @@ func (s *unitService) syncCardsForUnit(ctx context.Context, tenantID, unitID, _ 
 	SyncUnitCards(ctx, tenantID, unitID)
 }
 
+// collectUnitTypeChangeBlockers 检查 unit 下是否已有 resident，
+// 返回阻挡 unit_type 变更的实体类型列表（空表示可以变更）。
+// 只锁 residents：切换 unit_type 会让原本被 Facility/Public/Shared 隔开的住户跨权限看到他人的卡片和 PHI。
+// 设备绑定不锁：cards 重建只是体系切换，无 PHI 越权问题。
+func (s *unitService) collectUnitTypeChangeBlockers(ctx context.Context, tenantID, unitID string) ([]string, error) {
+	var blockers []string
+
+	if s.residentsRepo != nil {
+		residents, _, err := s.residentsRepo.ListResidents(ctx, tenantID, repository.ResidentFilters{UnitID: unitID}, 1, 1)
+		if err != nil {
+			return nil, fmt.Errorf("check residents: %w", err)
+		}
+		if len(residents) > 0 {
+			blockers = append(blockers, "residents")
+		}
+	}
+
+	return blockers, nil
+}
+
 // publicSyntheticResidentAccount public 单元占位住户账号：public + unit_id 字符串最后 3 位（小写）
 func publicSyntheticResidentAccount(unitID string) string {
 	uid := strings.TrimSpace(unitID)
@@ -1876,7 +1896,18 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 	}
 
 	if req.UnitType != "" {
-		unit.UnitType = normalizeUnitType(req.UnitType)
+		newType := normalizeUnitType(req.UnitType)
+		// unit_type 是建模级字段：切换会触发卡片体系按新模型重建（CreateCardsForUnit），
+		// 已绑 resident/device 的 unit 切换会越权放开 PHI 可见性、错位 cards.residents 绑定。
+		// 因此一旦 unit 已被使用，禁止切换 unit_type。
+		if newType != currentUnit.UnitType {
+			if blockers, err := s.collectUnitTypeChangeBlockers(ctx, req.TenantID, req.UnitID); err != nil {
+				return nil, err
+			} else if len(blockers) > 0 {
+				return nil, fmt.Errorf("cannot change unit_type: unit has bound %s, please unbind first", strings.Join(blockers, " and "))
+			}
+		}
+		unit.UnitType = newType
 	}
 	if req.IsPublicSpace != nil {
 		unit.IsPublic = *req.IsPublicSpace
