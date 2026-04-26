@@ -153,14 +153,12 @@ func handlePlayback(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 
 	if format == "json" {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"room_id":      roomID,
-			"total_rows":   res.TotalRows,
-			"total_frames": res.TotalFrames,
-			"grid_w":       res.GridW,
-			"grid_h":       res.GridH,
-			"snapshots":    res.Snapshots,
-		})
+		// 直接 encode Result struct（不要手写 map）—— 新加字段自动出现，避免漏列
+		// room_id 单独包起来：Result 里没有 room_id 字段（roomID 是入参）
+		_ = json.NewEncoder(w).Encode(struct {
+			RoomID string `json:"room_id"`
+			*playback.Result
+		}{RoomID: roomID, Result: res})
 		return
 	}
 	// HTML
