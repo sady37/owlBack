@@ -799,8 +799,9 @@ func (r *PostgresDeviceRepository) GetDeviceStoreByDeviceID(ctx context.Context,
 	return &ds, nil
 }
 
-// 从 alarm_device.monitor_config.alarms 中解析报警项，返回 []AlarmEnablementItem
-// 先查缓存，缓存未命中再查数据库并存入缓存
+// 从 alarm_device.monitor_config.items 中解析报警项，返回 []AlarmEnablementItem
+// monitor_config 由 wisefido-data 写入，结构为 {"items": [AlarmItem...]}，必须保持一致。
+// 先查缓存，缓存未命中再查数据库并存入缓存。
 func (r *PostgresDeviceRepository) GetAlarmEnablement(ctx context.Context, tenantID, deviceUID string) ([]alarm.AlarmEnablementItem, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
@@ -809,7 +810,6 @@ func (r *PostgresDeviceRepository) GetAlarmEnablement(ctx context.Context, tenan
 		return nil, fmt.Errorf("device_uid is required")
 	}
 
-	// 先查缓存
 	cacheKey := fmt.Sprintf("%s:%s", tenantID, deviceUID)
 	if cached, ok := r.enablementCache.Load(cacheKey); ok {
 		if enablementMap, ok := cached.([]alarm.AlarmEnablementItem); ok {
@@ -817,7 +817,6 @@ func (r *PostgresDeviceRepository) GetAlarmEnablement(ctx context.Context, tenan
 		}
 	}
 
-	// 缓存未命中，查询数据库
 	query := `
 		SELECT ad.monitor_config
 		FROM alarm_device ad
@@ -830,7 +829,6 @@ func (r *PostgresDeviceRepository) GetAlarmEnablement(ctx context.Context, tenan
 	err := r.db.QueryRowContext(ctx, query, tenantID, deviceUID).Scan(&monitorConfigJSON)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			// 没有配置，返回空列表并缓存
 			emptyEnablement := []alarm.AlarmEnablementItem{}
 			r.enablementCache.Store(cacheKey, emptyEnablement)
 			return emptyEnablement, nil
@@ -839,86 +837,19 @@ func (r *PostgresDeviceRepository) GetAlarmEnablement(ctx context.Context, tenan
 	}
 
 	if !monitorConfigJSON.Valid || monitorConfigJSON.String == "" {
-		// 空配置，返回空列表并缓存
 		emptyEnablement := []alarm.AlarmEnablementItem{}
 		r.enablementCache.Store(cacheKey, emptyEnablement)
 		return emptyEnablement, nil
 	}
 
-	var monitorConfig map[string]interface{}
-	if err := json.Unmarshal([]byte(monitorConfigJSON.String), &monitorConfig); err != nil {
+	var mc struct {
+		Items []alarm.AlarmItem `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(monitorConfigJSON.String), &mc); err != nil {
 		return nil, fmt.Errorf("failed to parse monitor_config: %w", err)
 	}
 
-	alarmsMap, ok := monitorConfig["alarms"].(map[string]interface{})
-	if !ok {
-		// 没有alarms配置，返回空列表并缓存
-		emptyEnablement := []alarm.AlarmEnablementItem{}
-		r.enablementCache.Store(cacheKey, emptyEnablement)
-		return emptyEnablement, nil
-	}
-
-	// 转换为 AlarmItem 列表
-	var alarmItems []alarm.AlarmItem
-	for alarmType, alarmConfig := range alarmsMap {
-		configMap, ok := alarmConfig.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		item := alarm.AlarmItem{
-			AlarmType:      alarmType,
-			AlarmParams:    make(map[string]interface{}),
-			DisplaySetting: 0,
-		}
-
-		// 解析 is_enabled 或 enabled（兼容两种字段名）
-		var enabled *int
-		if isEnabled, ok := configMap["is_enabled"].(float64); ok {
-			enabledVal := int(isEnabled)
-			enabled = &enabledVal
-		} else if isEnabled, ok := configMap["is_enabled"].(int); ok {
-			enabled = &isEnabled
-		} else if enabledBool, ok := configMap["enabled"].(bool); ok {
-			// 兼容 enabled 字段（布尔值）
-			enabledVal := 0
-			if enabledBool {
-				enabledVal = 1
-			}
-			enabled = &enabledVal
-		}
-		if enabled != nil {
-			item.IsEnabled = enabled
-		}
-
-		// 解析 alarm_level 或 level（兼容两种字段名）
-		if level, ok := configMap["alarm_level"].(string); ok {
-			item.AlarmLevel = &level
-		} else if level, ok := configMap["level"].(string); ok {
-			// 兼容 level 字段
-			item.AlarmLevel = &level
-		}
-
-		// 解析 alarm_params
-		if params, ok := configMap["alarm_params"].(map[string]interface{}); ok {
-			item.AlarmParams = params
-		}
-
-		// 解析 display_setting
-		if displaySetting, ok := configMap["display_setting"].(float64); ok {
-			item.DisplaySetting = int(displaySetting)
-		} else if displaySetting, ok := configMap["display_setting"].(int); ok {
-			item.DisplaySetting = displaySetting
-		}
-
-		alarmItems = append(alarmItems, item)
-	}
-
-	// 使用 GetAlarmEnablementMap 转换为 AlarmEnablementItem 列表
-	// 设备类型为 "radar"（qinglan 是雷达设备）
-	enablementMap := alarm.GetAlarmEnablementMap("radar", alarmItems)
-
-	// 存入缓存
+	enablementMap := alarm.GetAlarmEnablementMap("radar", mc.Items)
 	r.enablementCache.Store(cacheKey, enablementMap)
 
 	return enablementMap, nil

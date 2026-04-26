@@ -151,50 +151,16 @@ func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceID s
 	return dt.String
 }
 
-// enabledFlex 兼容 JSON 里 enabled 为 bool 或 int（true/1→1, false/0→0）
-type enabledFlex int
-
-func (e *enabledFlex) UnmarshalJSON(b []byte) error {
-	var v interface{}
-	if err := json.Unmarshal(b, &v); err != nil {
-		return err
-	}
-	switch x := v.(type) {
-	case bool:
-		if x {
-			*e = 1
-		} else {
-			*e = 0
-		}
-	case float64:
-		*e = enabledFlex(x)
-	default:
-		*e = 0
-	}
-	return nil
-}
-
-func (e enabledFlex) toInt() *int {
-	v := 0
-	if e != 0 {
-		v = 1
-	}
-	return &v
-}
-
 // parseMonitorConfig extracts AlarmItems from monitor_config JSON.
+// monitor_config 结构：{"items": [{alarm_type, is_enabled, alarm_level, alarm_params, display_setting}, ...]}
+// 由 wisefido-data 的 device_monitor_settings_service 写入，必须保持一致。
 func (c *AlarmEnablementCache) parseMonitorConfig(raw string, deviceType string) []alarm.AlarmItem {
 	if raw == "" {
 		return alarm.GetDefaultAlarmItems(deviceType)
 	}
 
 	var mc struct {
-		Alarms map[string]struct {
-			Level     *string                `json:"level"`
-			Enabled   enabledFlex            `json:"enabled"`
-			IsEnabled enabledFlex            `json:"is_enabled"`
-			Threshold map[string]interface{} `json:"threshold"`
-		} `json:"alarms"`
+		Items []alarm.AlarmItem `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(raw), &mc); err != nil {
 		c.logger.Warn("parse monitor_config", zap.Error(err))
@@ -206,20 +172,29 @@ func (c *AlarmEnablementCache) parseMonitorConfig(raw string, deviceType string)
 		return nil
 	}
 
+	overrides := make(map[string]alarm.AlarmItem, len(mc.Items))
+	for _, it := range mc.Items {
+		if it.AlarmType == "" {
+			continue
+		}
+		overrides[it.AlarmType] = it
+	}
+
 	result := make([]alarm.AlarmItem, 0, len(defaults))
 	for _, d := range defaults {
 		item := d
-		if cfg, ok := mc.Alarms[d.AlarmType]; ok {
-			if cfg.Level != nil {
-				item.AlarmLevel = cfg.Level
+		if cfg, ok := overrides[d.AlarmType]; ok {
+			if cfg.IsEnabled != nil {
+				item.IsEnabled = cfg.IsEnabled
 			}
-			if v := cfg.Enabled.toInt(); v != nil {
-				item.IsEnabled = v
-			} else if v := cfg.IsEnabled.toInt(); v != nil {
-				item.IsEnabled = v
+			if cfg.AlarmLevel != nil {
+				item.AlarmLevel = cfg.AlarmLevel
 			}
-			if len(cfg.Threshold) > 0 {
-				item.AlarmParams = cfg.Threshold
+			if len(cfg.AlarmParams) > 0 {
+				item.AlarmParams = cfg.AlarmParams
+			}
+			if cfg.DisplaySetting != 0 {
+				item.DisplaySetting = cfg.DisplaySetting
 			}
 		}
 		result = append(result, item)
