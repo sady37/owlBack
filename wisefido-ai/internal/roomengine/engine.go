@@ -37,7 +37,21 @@ type RoomConfig struct {
 	Showers    []radarutils.Rect // AreaShower
 	Chairs     []radarutils.Rect // AreaSit（粗标沙发/椅子，Conf=80）
 	Furnitures []radarutils.Rect // AreaDeny（家具/桌子）
-	Interferes []radarutils.Rect // AreaDeny（镜子/金属反射区）
+	Interferes []radarutils.Rect // AreaDeny（镜子/金属反射区/吊灯）
+
+	// 物体顶部高度（cm，地面为 0），与上面同名切片一一对应（Heights[i] ↔ Beds[i]）。
+	// 来源：layout JSON 里每个对象的 height 字段，由前端 Toolbar 录入；
+	// 缺失时 ParseLayoutConfig 用 FurnitureType 默认值（与前端 FURNITURE_CONFIGS.defaultHeight 对齐）。
+	// 当前 RoomEngine 不使用，仅持久化保留——未来用于：
+	//   - 空中物体（吊灯 height>200）不阻挡通行 → InFOV 不刷 Deny
+	//   - 床/桌面高度参与 Z 轴范围判定 → fall 检测加先验
+	EnterHeights     []int
+	BedHeights       []int
+	ToiletHeights    []int
+	ShowerHeights    []int
+	ChairHeights     []int
+	FurnitureHeights []int
+	InterfereHeights []int
 
 	// 雷达安装
 	Radar radarutils.RadarMount
@@ -82,22 +96,32 @@ func (a *AccuracyTracker) Accuracy() float64 {
 
 type Engine struct {
 	mu         sync.RWMutex
-	rooms      map[string]*TrackManager        // roomID → TrackManager
-	grids      map[string]*RoomGrid            // roomID → Grid
+	rooms      map[string]*TrackManager         // roomID → TrackManager
+	grids      map[string]*RoomGrid             // roomID → Grid
 	mounts     map[string]radarutils.RadarMount // roomID → Radar 安装参数（坐标转换用）
 	cardToRoom map[string]string                // cardID → roomID
 	deviceRoom map[string]string                // deviceUID/deviceID → roomID
+
+	// layout 几何 hash，RegisterRoom 时计算；snapshot save/load 比对用
+	layoutHashes map[string]string
 
 	// 自适应参数
 	paramSets [3]ParamSet
 	accuracy  [3]AccuracyTracker
 	winner    int // 当前 winner 组（0/1/2），-1=无 winner 用 baseline
 
+	// 运行时参数（由 Configure 注入；Decay/Learn 字段语义见 cell.go / cell_learning.go）
+	decayParams DecayParams
+	learnParams LearnParams
+
 	// 定时器
 	decayInterval      time.Duration // 默认 1 小时（Decay 计算一次）
-	decayHalfLifeSec   float64       // 短档半衰期（秒）
 	beliefScanInterval time.Duration // 默认 5 分钟（全图 UpdateBelief）
 	winnerEvalInterval time.Duration // 默认 24 小时（winner 重评）
+	snapshotInterval   time.Duration // 默认 5 分钟（持久化全量 dump）；0 = 关闭
+
+	// 持久化（nil = 不持久化）
+	persister Persister
 
 	redisClient *redis.Client
 	logger      *zap.Logger
@@ -105,7 +129,20 @@ type Engine struct {
 	onOutput func(roomID string, outputs []TrackOutput)
 }
 
-// NewEngine 创建 Room Engine
+// RuntimeConfig 与 wisefido-ai/internal/config::RoomEngineConfig 一一对应；
+// engine 包不依赖 config 包，wiring 在 cmd/wisefido-ai/main.go 中完成转换。
+type RuntimeConfig struct {
+	Decay              DecayParams
+	Learn              LearnParams
+	ParamSets          [3]ParamSet
+	DecayInterval      time.Duration
+	BeliefScanInterval time.Duration
+	WinnerEvalInterval time.Duration
+	SnapshotInterval   time.Duration // 0 = 关闭持久化定时器；Persister 仍可在退出时 dump
+	Persister          Persister     // nil = 不持久化
+}
+
+// NewEngine 创建 Room Engine（默认参数）。生产环境调用 Configure 注入 yaml 配置。
 func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 	return &Engine{
 		rooms:              make(map[string]*TrackManager),
@@ -113,15 +150,48 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		mounts:             make(map[string]radarutils.RadarMount),
 		cardToRoom:         make(map[string]string),
 		deviceRoom:         make(map[string]string),
+		layoutHashes:       make(map[string]string),
 		paramSets:          DefaultParamSets,
 		winner:             1, // 默认 balanced
+		decayParams:        DefaultDecayParams(),
+		learnParams:        DefaultLearnParams(),
 		decayInterval:      1 * time.Hour,
-		decayHalfLifeSec:   float64(HalfLifeShort), // 15 min（cell.go 定义）
 		beliefScanInterval: 5 * time.Minute,
 		winnerEvalInterval: 24 * time.Hour,
+		snapshotInterval:   5 * time.Minute,
 		redisClient:        redisClient,
 		logger:             logger,
 	}
+}
+
+// Configure 注入 yaml 加载的运行时参数。零值字段保留 New 时的默认值。
+// Persister 字段单独判断：显式传 nil 即关闭持久化（覆盖默认）。
+func (e *Engine) Configure(cfg RuntimeConfig) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if cfg.Decay.ImmediateSec > 0 {
+		e.decayParams = cfg.Decay
+	}
+	if cfg.Learn.SitActiveX10 > 0 {
+		e.learnParams = cfg.Learn
+	}
+	if cfg.ParamSets[0].Name != "" {
+		e.paramSets = cfg.ParamSets
+	}
+	if cfg.DecayInterval > 0 {
+		e.decayInterval = cfg.DecayInterval
+	}
+	if cfg.BeliefScanInterval > 0 {
+		e.beliefScanInterval = cfg.BeliefScanInterval
+	}
+	if cfg.WinnerEvalInterval > 0 {
+		e.winnerEvalInterval = cfg.WinnerEvalInterval
+	}
+	if cfg.SnapshotInterval > 0 {
+		e.snapshotInterval = cfg.SnapshotInterval
+	}
+	// Persister 直接赋值（nil 也接受，表示禁用）
+	e.persister = cfg.Persister
 }
 
 // SetOutputCallback 设置 track 输出回调（发 alarm 等下游）
@@ -170,12 +240,15 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		cfg.RoomH = radarutils.MaxRoomHeight
 	}
 
-	// 1. 创建空 grid，覆盖 cfg.RoomW × cfg.RoomH，origin 由 layout 决定
+	// 优化 grid 范围：bbox(WallPolygon ∪ FOV) + 4 cells，cap 600cm
+	// 对 cell 索引语义有影响 → 旧 snapshot 的 layoutHash 也会随之变（如预期）
+	rawW, rawH := cfg.RoomW, cfg.RoomH
+	ApplyOptimizedExtent(&cfg)
+
+	// 1. 创建空 grid，覆盖优化后的 RoomW × RoomH
 	grid := NewRoomGrid(cfg.RoomW, cfg.RoomH, radarutils.CellSize)
-	if cfg.OriginX != 0 || cfg.OriginY != 0 {
-		grid.OriginX = cfg.OriginX
-		grid.OriginY = cfg.OriginY
-	}
+	grid.OriginX = cfg.OriginX
+	grid.OriginY = cfg.OriginY
 
 	// 2. Stamp Wall 多边形 → InRoom
 	if len(cfg.WallPolygon) >= 3 {
@@ -213,18 +286,73 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 
 	e.grids[cfg.RoomID] = grid
 	e.mounts[cfg.RoomID] = cfg.Radar
-	e.rooms[cfg.RoomID] = NewTrackManager(cfg.RoomID, grid)
+	tm := NewTrackManager(cfg.RoomID, grid)
+	tm.SetMoveSpeedCms(e.learnParams.MoveSpeedCms)
+	e.rooms[cfg.RoomID] = tm
+
+	// 计算 layout hash 并保存（snapshot save/load 都按此 hash 比对）
+	hash := LayoutHash(cfg)
+	e.layoutHashes[cfg.RoomID] = hash
 
 	e.logger.Info("room registered",
 		zap.String("room_id", cfg.RoomID),
-		zap.Int("width_cm", cfg.RoomW),
-		zap.Int("height_cm", cfg.RoomH),
+		zap.Int("raw_w", rawW),
+		zap.Int("raw_h", rawH),
+		zap.Int("grid_w", cfg.RoomW),
+		zap.Int("grid_h", cfg.RoomH),
 		zap.Int("enters", len(cfg.Enters)),
 		zap.Int("beds", len(cfg.Beds)),
 		zap.Int("toilets", len(cfg.Toilets)),
 		zap.Int("showers", len(cfg.Showers)),
 		zap.Int("furnitures", len(cfg.Furnitures)),
 		zap.Int("cells", grid.Width*grid.Height),
+		zap.String("layout_hash", hash[:12]),
+	)
+
+	// 尝试加载已有 snapshot（hydrate Belief + counters）
+	// persister 可能未配置（dev/test 模式），用 background ctx 容忍 DB 慢
+	if e.persister != nil {
+		e.hydrateRoom(cfg.RoomID, grid, hash)
+	}
+}
+
+// hydrateRoom 从 persister 取回 snapshot 并灌入 grid。
+// 失败/不匹配/无记录都不致命——退化为 fresh start（baseline 已由 SetPrior 烤好）。
+// 调用方必须持有 e.mu.Lock。
+func (e *Engine) hydrateRoom(roomID string, grid *RoomGrid, expectedHash string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	storedHash, payload, found, err := e.persister.Load(ctx, roomID)
+	if err != nil {
+		e.logger.Warn("snapshot load failed", zap.String("room_id", roomID), zap.Error(err))
+		return
+	}
+	if !found {
+		e.logger.Info("no snapshot found, fresh start", zap.String("room_id", roomID))
+		return
+	}
+	if storedHash != expectedHash {
+		e.logger.Warn("snapshot layout_hash mismatch, discarding (layout edited?)",
+			zap.String("room_id", roomID),
+			zap.String("stored", storedHash[:12]),
+			zap.String("expected", expectedHash[:12]),
+		)
+		return
+	}
+
+	snap, err := UnmarshalSnapshot(payload)
+	if err != nil {
+		e.logger.Warn("snapshot unmarshal failed", zap.String("room_id", roomID), zap.Error(err))
+		return
+	}
+	if err := DecodeSnapshot(snap, grid); err != nil {
+		e.logger.Warn("snapshot decode failed", zap.String("room_id", roomID), zap.Error(err))
+		return
+	}
+	e.logger.Info("snapshot hydrated",
+		zap.String("room_id", roomID),
+		zap.Int("cells", len(snap.Cells)),
 	)
 }
 
@@ -245,15 +373,23 @@ func (e *Engine) Run(ctx context.Context) error {
 	go e.decayLoop(ctx)
 	go e.beliefScanLoop(ctx)
 	go e.winnerEvalLoop(ctx)
+	if e.persister != nil && e.snapshotInterval > 0 {
+		go e.snapshotLoop(ctx)
+	}
 
 	e.logger.Info("room engine started",
 		zap.String("stream", streamName),
 		zap.String("winner", e.paramSets[e.winner].Name),
+		zap.Bool("persist", e.persister != nil),
 	)
 
 	for {
 		select {
 		case <-ctx.Done():
+			// 优雅退出：dump 一次再走（避免最近 5 min 学习丢失）
+			if e.persister != nil {
+				e.saveAllRooms(context.Background())
+			}
 			e.logger.Info("room engine stopped")
 			return nil
 		default:
@@ -357,8 +493,9 @@ func (e *Engine) decayLoop(ctx context.Context) {
 		case <-ticker.C:
 			e.mu.RLock()
 			dtSec := e.decayInterval.Seconds()
+			dp := e.decayParams
 			for _, grid := range e.grids {
-				grid.DecayAll(dtSec, e.decayHalfLifeSec)
+				grid.DecayAll(dtSec, dp)
 			}
 			e.mu.RUnlock()
 			e.logger.Debug("decay all rooms done", zap.Float64("dt_sec", dtSec))
@@ -390,9 +527,10 @@ func (e *Engine) scanBeliefAll() {
 	defer e.mu.RUnlock()
 	totalCells := 0
 	totalLieAnomalies := 0
+	lp := e.learnParams
 	for _, grid := range e.grids {
-		grid.LearnCellAreas()
-		totalLieAnomalies += grid.LearnLyingAnomalies()
+		grid.LearnCellAreas(lp)
+		totalLieAnomalies += grid.LearnLyingAnomalies(lp)
 		for i := range grid.Cells {
 			for g := 0; g < 3; g++ {
 				grid.Cells[i].UpdateBelief(g, e.paramSets[g])
@@ -405,6 +543,62 @@ func (e *Engine) scanBeliefAll() {
 		zap.Int("lie_anomalies", totalLieAnomalies),
 		zap.Int("winner", e.winner),
 	)
+}
+
+// snapshotLoop 每 snapshotInterval 把所有 grid 状态 dump 到 persister。
+// 单次 dump 失败只警告，不退出循环（DB 抖动不应拖垮 engine）。
+func (e *Engine) snapshotLoop(ctx context.Context) {
+	ticker := time.NewTicker(e.snapshotInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.saveAllRooms(ctx)
+		}
+	}
+}
+
+// saveAllRooms 遍历所有 grid，逐房间 UPSERT 到 persister。
+// 调用方可来自 snapshotLoop（带 ctx）或 Run 退出（用 background ctx）。
+func (e *Engine) saveAllRooms(ctx context.Context) {
+	if e.persister == nil {
+		return
+	}
+	e.mu.RLock()
+	// 拷贝 (roomID, grid, hash) 三元组到本地切片，释放锁后再做 IO，避免锁内 DB 写
+	type roomDump struct {
+		id   string
+		grid *RoomGrid
+		hash string
+	}
+	dumps := make([]roomDump, 0, len(e.grids))
+	for id, g := range e.grids {
+		dumps = append(dumps, roomDump{id: id, grid: g, hash: e.layoutHashes[id]})
+	}
+	e.mu.RUnlock()
+
+	saved, failed := 0, 0
+	for _, d := range dumps {
+		snap := EncodeSnapshot(d.grid)
+		payload, cellCount, err := MarshalSnapshot(snap)
+		if err != nil {
+			e.logger.Warn("snapshot marshal failed",
+				zap.String("room_id", d.id), zap.Error(err))
+			failed++
+			continue
+		}
+		if err := e.persister.Save(ctx, d.id, d.hash, cellCount, payload); err != nil {
+			e.logger.Warn("snapshot save failed",
+				zap.String("room_id", d.id), zap.Error(err))
+			failed++
+			continue
+		}
+		saved++
+	}
+	e.logger.Debug("snapshot batch done",
+		zap.Int("saved", saved), zap.Int("failed", failed))
 }
 
 // winnerEvalLoop 每 24 小时评估一次 winner（需要 feedback_loop 积累 accuracy 数据）

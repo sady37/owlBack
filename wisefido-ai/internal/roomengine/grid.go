@@ -177,10 +177,10 @@ func (g *RoomGrid) NearestEntryDist(x, y int) int {
 	return best
 }
 
-// DecayAll 对所有 cell 做时间衰减
-func (g *RoomGrid) DecayAll(dtSec, halfLifeSec float64) {
+// DecayAll 对所有 cell 做时间衰减（按字段语义分档，p 一次性传入）
+func (g *RoomGrid) DecayAll(dtSec float64, p DecayParams) {
 	for i := range g.Cells {
-		g.Cells[i].Decay(dtSec, halfLifeSec)
+		g.Cells[i].Decay(dtSec, p)
 	}
 }
 
@@ -251,7 +251,12 @@ func (g *RoomGrid) MarkPoseTime(x, y int, core CorePose, dtSec int, nowMs int64)
 }
 
 // MarkTraverse Move 状态下"穿越本 cell"的事件（track_manager 在进入新 cell 且 core==Move 时调）。
-// 用于 Walk 区学习：连续走动经过 ≥ 5 次 + ActiveTime[Move] 累计达阈值 → 该 cell 升格 AreaActive。
+//
+// 双重作用：
+//  1. 本 cell ++TraverseCount → Walk 升格证据（人真走过这里）
+//  2. 8 邻居 ++NearTraverseCount → 邻接证据（auto-Deny 推断用：邻居反复被走但本 cell 0 触碰 = 人系统性绕开 = 障碍）
+//
+// 邻居传播不区分正交/对角（实际行人走位也不沿严格栅格）。后续如需精细加权，可改 8 邻居各自系数。
 func (g *RoomGrid) MarkTraverse(x, y int, nowMs int64) {
 	c := g.CellAt(x, y)
 	if c == nil {
@@ -259,6 +264,26 @@ func (g *RoomGrid) MarkTraverse(x, y int, nowMs int64) {
 	}
 	c.TraverseCount = satAddUint16(c.TraverseCount, 1)
 	c.LastUpdateMs = nowMs
+
+	// 邻居传播
+	col, row := g.ToIndex(x, y)
+	for dr := -1; dr <= 1; dr++ {
+		rr := row + dr
+		if rr < 0 || rr >= g.Height {
+			continue
+		}
+		for dc := -1; dc <= 1; dc++ {
+			if dr == 0 && dc == 0 {
+				continue // 中心 cell 已经 ++ 过了
+			}
+			cc := col + dc
+			if cc < 0 || cc >= g.Width {
+				continue
+			}
+			n := &g.Cells[rr*g.Width+cc]
+			n.NearTraverseCount = satAddUint16(n.NearTraverseCount, 1)
+		}
+	}
 }
 
 // IsNearPriorType 检查 (x,y) 是否在某个 AreaType 人标 Belief 矩形的容差范围内（曼哈顿距离）。

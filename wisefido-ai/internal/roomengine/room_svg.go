@@ -14,7 +14,15 @@ type RoomSVGOptions struct {
 	Sleepads    []radarutils.Point // Sleepad 位置（黄色图标）
 	LiveTracks  []radarutils.Point // 实时 track 位置（小人图标）
 	TrackLabels []string           // 对应 LiveTracks 的标签 (P0/P1...)
+	TrackPaths  []TrackPath        // 历史轨迹叠加（per-track polyline）
 	TitleSuffix string             // 标题追加（playback 用，例如 " | 2026-04-25 12:34:56"）
+}
+
+// TrackPath 一条 track 的历史路径（按时间排序的画布坐标点序列）。
+// 用于在 SVG 上叠加最近 N 分钟轨迹，方便观察"history track 是否覆盖学习区域"。
+type TrackPath struct {
+	TrackID int                // 用于颜色稳定性（不同 track 不同色）
+	Points  []radarutils.Point // 按时间顺序
 }
 
 // RenderRoomSVG 把 grid 渲染成 SVG 文件。内部委托 BuildRoomSVG 拼字符串再写文件。
@@ -60,6 +68,14 @@ func BuildRoomSVG(grid *RoomGrid, mount radarutils.RadarMount, wallPoly []radaru
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="%d %d %d %d" `+
 			`style="font-family:system-ui,monospace;background:#f4f4f4">`,
 		viewMinX, viewMinY, viewW, viewH)
+
+	// <defs>：AI 学到的 Deny cell 用斜线 pattern，与人标 Deny 区分
+	sb.WriteString(`<defs>` +
+		`<pattern id="aiDeny" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
+		`<rect width="6" height="6" fill="#5a5a5a"/>` +
+		`<line x1="0" y1="0" x2="0" y2="6" stroke="#9a9a9a" stroke-width="2"/>` +
+		`</pattern>` +
+		`</defs>`)
 
 	// 画布外缘（淡灰）
 	fmt.Fprintf(&sb,
@@ -111,6 +127,11 @@ func BuildRoomSVG(grid *RoomGrid, mount radarutils.RadarMount, wallPoly []radaru
 		drawSleepad(&sb, sp, fmt.Sprintf("Sleepad_%d", i+1))
 	}
 
+	// 4.6) 历史轨迹（半透明 polyline，每条 track 一色）
+	for _, tp := range opt.TrackPaths {
+		drawTrackPath(&sb, tp)
+	}
+
 	// 4.7) 实时 track（绿色小人）
 	for i, tp := range opt.LiveTracks {
 		label := ""
@@ -132,17 +153,21 @@ func BuildRoomSVG(grid *RoomGrid, mount radarutils.RadarMount, wallPoly []radaru
 	return sb.String()
 }
 
-// cellSVGFill 6 色映射 + 派生几何状态（Deny 优先）
+// cellSVGFill 按 Belief[0].Type + Source 返回填充色。
+// AreaDeny 三种来源用三种深浅 / 纹理：
+//   - !InRoom（几何）       → #2a2a2a 最深（边界外）
+//   - SourceHuman Deny      → #4a4a4a 实色中灰（layout 标的家具）
+//   - SourceLearned Deny    → url(#aiDeny) 斜线 pattern（AI 推断的家具/障碍）
 func cellSVGFill(c *Cell) string {
-	// 几何状态优先：!InRoom 一律 Deny（包括墙外 ghost 区）
+	// 几何状态优先：!InRoom 一律最深 Deny
 	if !c.InRoom {
-		return "#3a3a3a" // Deny 灰黑
+		return "#2a2a2a"
 	}
 	// 雷达盲区（InRoom 但 !InFOV）— 学不到，保守归 Unknown
 	if !c.InFOV {
-		return "#c8c8c8" // Unknown 灰
+		return "#c8c8c8"
 	}
-	// InRoom × InFOV：按 Belief[0].Type 上 6 色
+	// InRoom × InFOV：按 Belief[0].Type 上色
 	switch c.Belief[0].Type {
 	case AreaEnter:
 		return "#44cc66" // 绿
@@ -155,10 +180,14 @@ func cellSVGFill(c *Cell) string {
 	case AreaShower:
 		return "#ffffff" // 白（暂归 Walk，后期可独立色）
 	case AreaDeny:
-		return "#3a3a3a" // 灰黑
+		// Source 区分：AI 学的用斜线，人标用实色
+		if c.Belief[0].Source == SourceLearned {
+			return "url(#aiDeny)"
+		}
+		return "#4a4a4a" // 人标 / Geometry / 默认
 	}
 	// AreaUnknown
-	return "#c8c8c8" // 灰
+	return "#c8c8c8"
 }
 
 func drawAxes(sb *strings.Builder, w, h int) {
@@ -204,7 +233,7 @@ func drawTitleAndLegend(sb *strings.Builder, roomID string, grid *RoomGrid,
 		canvasH+18, roomID, grid.Width, grid.Height,
 		m.Center.X, m.Center.Y, m.Center.Z, installLabel(m.InstallModel), titleSuffix)
 
-	// 6 色图例（横向排开）
+	// 图例（横向排开；Deny 三色分开：墙外 / 人标家具 / AI 学习）
 	type item struct {
 		fill, label, textColor string
 	}
@@ -214,18 +243,21 @@ func drawTitleAndLegend(sb *strings.Builder, roomID string, grid *RoomGrid,
 		{"#ff9933", "Sit", "#222"},
 		{"#4488dd", "Lying", "#fff"},
 		{"#44cc66", "Enter", "#222"},
-		{"#3a3a3a", "Deny", "#fff"},
+		{"#2a2a2a", "Out", "#fff"},        // !InRoom
+		{"#4a4a4a", "Deny(layout)", "#fff"}, // SourceHuman
+		{"url(#aiDeny)", "Deny(AI)", "#fff"}, // SourceLearned 斜线
 	}
-	totalW := len(legend) * 70
+	const itemW = 78
+	totalW := len(legend) * itemW
 	x0 := -totalW / 2
 	y0 := canvasH + 30
 	for i, it := range legend {
-		x := x0 + i*70
+		x := x0 + i*itemW
 		fmt.Fprintf(sb,
-			`<rect x="%d" y="%d" width="60" height="14" fill="%s" stroke="#888" stroke-width="0.5"/>`+
+			`<rect x="%d" y="%d" width="68" height="14" fill="%s" stroke="#888" stroke-width="0.5"/>`+
 				`<text x="%d" y="%d" text-anchor="middle" fill="%s" font-size="10" font-weight="600">%s</text>`,
 			x, y0, it.fill,
-			x+30, y0+10, it.textColor, it.label)
+			x+34, y0+10, it.textColor, it.label)
 	}
 }
 
@@ -266,6 +298,44 @@ func drawSleepad(sb *strings.Builder, p radarutils.Point, label string) {
 }
 
 // drawLiveTrack 实时 track 小人图标（前端 P0 风格的绿色立人）
+// trackPathColors 8 种半透明色循环（按 trackID 取模）
+var trackPathColors = []string{
+	"rgba(255, 70, 70, 0.55)",  // 红
+	"rgba(70, 130, 255, 0.55)", // 蓝
+	"rgba(170, 70, 200, 0.55)", // 紫
+	"rgba(70, 180, 170, 0.55)", // 青
+	"rgba(255, 140, 50, 0.55)", // 橙
+	"rgba(80, 180, 80, 0.55)",  // 绿
+	"rgba(200, 140, 60, 0.55)", // 棕
+	"rgba(120, 120, 120, 0.55)",// 灰
+}
+
+func drawTrackPath(sb *strings.Builder, tp TrackPath) {
+	if len(tp.Points) < 2 {
+		return
+	}
+	color := trackPathColors[tp.TrackID%len(trackPathColors)]
+	// SVG polyline points="x1,y1 x2,y2 ..."
+	sb.WriteString(`<polyline fill="none" stroke="`)
+	sb.WriteString(color)
+	sb.WriteString(`" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" points="`)
+	for i, p := range tp.Points {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		fmt.Fprintf(sb, "%d,%d", p.X, p.Y)
+	}
+	sb.WriteString(`"/>`)
+	// 起点小圆点（淡）+ 终点空心圆（明显）
+	start := tp.Points[0]
+	end := tp.Points[len(tp.Points)-1]
+	fmt.Fprintf(sb,
+		`<circle cx="%d" cy="%d" r="1.6" fill="%s"/>`+
+			`<circle cx="%d" cy="%d" r="2.6" fill="none" stroke="%s" stroke-width="1.4"/>`,
+		start.X, start.Y, color,
+		end.X, end.Y, color)
+}
+
 func drawLiveTrack(sb *strings.Builder, p radarutils.Point, label string) {
 	// 简易立人：圆头 + 矩形身躯
 	fmt.Fprintf(sb,

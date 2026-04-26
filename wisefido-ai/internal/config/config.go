@@ -43,6 +43,52 @@ type Config struct {
 		Level  string `yaml:"level"`
 		Format string `yaml:"format"`
 	} `yaml:"logging"`
+
+	RoomEngine RoomEngineConfig `yaml:"roomengine"`
+}
+
+// RoomEngineConfig wisefido-ai/internal/roomengine 运行时参数
+// 每个字段都可在 config.yaml 中覆盖；未设置时由 setRoomEngineDefaults 填默认值
+type RoomEngineConfig struct {
+	Decay struct {
+		ImmediateSec int `yaml:"immediate_sec"` // Real/Ghost/Flow/DwellEMA/Stand   默认 15 min
+		WalkSec      int `yaml:"walk_sec"`      // ActiveType[Move]                 默认 3 d
+		SitSec       int `yaml:"sit_sec"`       // ActiveType[Sit]                  默认 24 h
+		LieSec       int `yaml:"lie_sec"`       // ActiveType[Lie]                  默认 7 d
+		EventSec     int `yaml:"event_sec"`     // Traverse/Fall/Retract/Sleepad/Door/LongStill/LieAnomaly  默认 7 d
+	} `yaml:"decay"`
+	Learn struct {
+		WalkActiveX10     int `yaml:"walk_active_x10"`     // 默认 20  (2s × 10)
+		WalkTraverse      int `yaml:"walk_traverse"`       // 默认 2   (单 cell 累计穿越次数)
+		SitActiveX10      int `yaml:"sit_active_x10"`      // 默认 150 (15s × 10)
+		LieAnomalyX10     int `yaml:"lie_anomaly_x10"`     // 默认 50  (5s × 10)
+		BedToleranceCm    int `yaml:"bed_tolerance_cm"`    // 默认 30
+		ToiletToleranceCm int `yaml:"toilet_tolerance_cm"` // 默认 20
+		ShowerToleranceCm int `yaml:"shower_tolerance_cm"` // 默认 20
+		MoveSpeedCms      int `yaml:"move_speed_cms"`      // 默认 20  Kalman 速度阈值，pose 不准时兜底判 Move
+		NearTraverseWalk  int `yaml:"near_traverse_walk"`  // 默认 5   邻居穿越阈值，本 cell 推断为 Walk（沿路径涂厚）
+		NearTraverseDeny  int `yaml:"near_traverse_deny"`  // 默认 10  邻居穿越阈值，本 cell 完全无触碰时反转 Deny
+	} `yaml:"learn"`
+	Belief struct {
+		DecayIntervalSec int  `yaml:"decay_interval_sec"` // 默认 3600 (1h)
+		ScanIntervalSec  int  `yaml:"scan_interval_sec"`  // 默认 300  (5min)
+		WinnerEvalSec    int  `yaml:"winner_eval_sec"`    // 默认 86400 (24h)
+		ConfidenceFloor  int  `yaml:"confidence_floor"`   // 默认 60   (promoteCell 起跑)
+		ConfidenceFull   int  `yaml:"confidence_full"`    // 默认 95   (promoteCell 上限)
+		Cumulative       bool `yaml:"cumulative"`         // 默认 true (同 type 累积取 max，多日推向 100)
+	} `yaml:"belief"`
+	ParamSets []struct {
+		Name   string  `yaml:"name"`
+		Alpha  float64 `yaml:"alpha"`
+		Beta   float64 `yaml:"beta"`
+		FlipTh int     `yaml:"flip_th"`
+	} `yaml:"paramsets"`
+	Persist struct {
+		Enabled             bool   `yaml:"enabled"`               // 默认 true
+		SnapshotIntervalSec int    `yaml:"snapshot_interval_sec"` // 默认 300 (5min)
+		Storage             string `yaml:"storage"`               // 默认 "postgres"
+		Table               string `yaml:"table"`                 // 默认 "roomengine_grid_snapshot"
+	} `yaml:"persist"`
 }
 
 // Load 加载配置
@@ -123,6 +169,96 @@ func (c *Config) setDefaults() {
 	if c.Log.Format == "" {
 		c.Log.Format = "json"
 	}
+	c.setRoomEngineDefaults()
+}
+
+func (c *Config) setRoomEngineDefaults() {
+	r := &c.RoomEngine
+	if r.Decay.ImmediateSec == 0 {
+		r.Decay.ImmediateSec = 15 * 60
+	}
+	if r.Decay.WalkSec == 0 {
+		r.Decay.WalkSec = 3 * 24 * 3600
+	}
+	if r.Decay.SitSec == 0 {
+		r.Decay.SitSec = 24 * 3600
+	}
+	if r.Decay.LieSec == 0 {
+		r.Decay.LieSec = 7 * 24 * 3600
+	}
+	if r.Decay.EventSec == 0 {
+		r.Decay.EventSec = 7 * 24 * 3600
+	}
+	if r.Learn.WalkActiveX10 == 0 {
+		r.Learn.WalkActiveX10 = 20
+	}
+	if r.Learn.WalkTraverse == 0 {
+		r.Learn.WalkTraverse = 5
+	}
+	if r.Learn.SitActiveX10 == 0 {
+		r.Learn.SitActiveX10 = 150
+	}
+	if r.Learn.LieAnomalyX10 == 0 {
+		r.Learn.LieAnomalyX10 = 50
+	}
+	if r.Learn.BedToleranceCm == 0 {
+		r.Learn.BedToleranceCm = 30
+	}
+	if r.Learn.ToiletToleranceCm == 0 {
+		r.Learn.ToiletToleranceCm = 20
+	}
+	if r.Learn.ShowerToleranceCm == 0 {
+		r.Learn.ShowerToleranceCm = 20
+	}
+	if r.Learn.MoveSpeedCms == 0 {
+		r.Learn.MoveSpeedCms = 20
+	}
+	if r.Learn.NearTraverseWalk == 0 {
+		r.Learn.NearTraverseWalk = 5
+	}
+	if r.Learn.NearTraverseDeny == 0 {
+		r.Learn.NearTraverseDeny = 20
+	}
+	if r.Belief.DecayIntervalSec == 0 {
+		r.Belief.DecayIntervalSec = 3600
+	}
+	if r.Belief.ScanIntervalSec == 0 {
+		r.Belief.ScanIntervalSec = 300
+	}
+	if r.Belief.WinnerEvalSec == 0 {
+		r.Belief.WinnerEvalSec = 86400
+	}
+	if r.Belief.ConfidenceFloor == 0 {
+		r.Belief.ConfidenceFloor = 60
+	}
+	if r.Belief.ConfidenceFull == 0 {
+		r.Belief.ConfidenceFull = 95
+	}
+	// Cumulative 是 promoteCell 的核心改进（同 type 累积取 max → 多日推向 100），
+	// 没有"想关掉"的合理场景；不暴露为可配置开关，engine 内部硬编码启用。
+	// （Belief.Cumulative 字段保留是为了 yaml 兼容；engine 不读取它。）
+	if len(r.ParamSets) == 0 {
+		r.ParamSets = []struct {
+			Name   string  `yaml:"name"`
+			Alpha  float64 `yaml:"alpha"`
+			Beta   float64 `yaml:"beta"`
+			FlipTh int     `yaml:"flip_th"`
+		}{
+			{Name: "conservative", Alpha: 0.01, Beta: 0.2, FlipTh: 10},
+			{Name: "balanced", Alpha: 0.02, Beta: 0.5, FlipTh: 20},
+			{Name: "aggressive", Alpha: 0.05, Beta: 1.0, FlipTh: 30},
+		}
+	}
+	if r.Persist.SnapshotIntervalSec == 0 {
+		r.Persist.SnapshotIntervalSec = 300
+	}
+	if r.Persist.Storage == "" {
+		r.Persist.Storage = "postgres"
+	}
+	if r.Persist.Table == "" {
+		r.Persist.Table = "roomengine_grid_snapshot"
+	}
+	// Persist.Enabled 不在此处自动开启：dev/test 场景需要能不持久化，由 yaml 显式控制。
 }
 
 func LoadFromEnv() (*Config, error) {

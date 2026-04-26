@@ -124,9 +124,10 @@ type Cell struct {
 	// ---- 核心空间属性 ----
 	// ActiveType[i] 单位 = 0.1 秒（×10 定点），用 uint16 容纳到 6553s（≈1.8h）。
 	// 定点是为了让 3×3 内核里"邻居 80% 权重"用整数表达（中心 +10×dt，邻居 +8×dt）。
-	ActiveType    [4]uint16 // [Move, Stand, Sit, Lie] 累计 0.1 秒
-	TraverseCount uint16    // Move 状态下穿越本 cell 的次数（cell 学习 Walk 升格用）
-	AreaType      AreaType  // 推断属性，与 Belief[0].Type 镜像（query 加速）
+	ActiveType        [4]uint16 // [Move, Stand, Sit, Lie] 累计 0.1 秒
+	TraverseCount     uint16    // Move 状态下穿越本 cell 的次数（Walk 升格用）
+	NearTraverseCount uint16    // 邻居被 Move 穿越的累计次数（auto-Deny 推断用 —— 兵家必争之地的"绕开"证据）
+	AreaType          AreaType  // 推断属性，与 Belief[0].Type 镜像（query 加速）
 
 	// ---- 访问可信度（track 层按本帧 quality 分桶喂）----
 	RealDecay  int
@@ -157,15 +158,40 @@ type Cell struct {
 // 时间窗口（半衰期）
 // ========================================================================
 
-// 衰减常量（秒）。Decay 每小时调一次（或按需更频繁）。
+// DecayParams 按字段语义分档的半衰期（秒）。Decay() 用此结构决定每个 counter 的衰减速度。
 //
-// 用户指令："15 分钟窗口能覆盖 95% 识别——人无法长时间维持非 sit/lie 姿态"。
-// 因此短档半衰期 = 15 min，让 ActiveType 快速反映"最近状态"，
-// 事件类长档 = 7 天，让稀疏事件（Fall/Sleepad 等）跨天累积。
+// 设计原则：每个字段的半衰期反映该字段的"语义时间尺度"——
+//   - 床/沙发/躺姿：人不挪 → 长（默认 7 d）
+//   - 椅子/坐姿：偶尔搬 → 中（默认 24 h）
+//   - 走道/Move：路径稳定但易污染 → 中长（默认 3 d）
+//   - 即时态（Real/Ghost/Flow/Stand）：反映"最近一段在干嘛" → 短（默认 15 min）
+//   - 事件类（Fall/Sleepad/Door/Traverse）：稀疏 → 长（默认 7 d 跨天累计）
+//
+// 由 wisefido-ai/internal/config 从 yaml 加载并传给 engine，engine 在 decayLoop / playback 中调用 DecayAll(dtSec, p)。
+type DecayParams struct {
+	ImmediateSec float64 // Real/Ghost/Flow/DwellEMA/ActiveType[Stand]
+	WalkSec      float64 // ActiveType[Move]
+	SitSec       float64 // ActiveType[Sit]
+	LieSec       float64 // ActiveType[Lie]
+	EventSec     float64 // Traverse/Fall/Retract/Sleepad/Door/LongStill/LieAnomaly
+}
+
+// DefaultDecayParams 与 config.yaml::roomengine.decay 默认值一致。
+// playback / 测试场景调用，prod 路径由 engine.Configure(...) 注入。
+func DefaultDecayParams() DecayParams {
+	return DecayParams{
+		ImmediateSec: 15 * 60,
+		WalkSec:      3 * 24 * 3600,
+		SitSec:       24 * 3600,
+		LieSec:       7 * 24 * 3600,
+		EventSec:     7 * 24 * 3600,
+	}
+}
+
+// Deprecated: 兼容旧 playback / 测试。新代码用 DecayParams。
 const (
-	HalfLifeShort    = 15 * 60       // 15 min：普通证据（ActiveType/Real/Ghost/Flow/Dwell）
-	HalfLifeLong     = 7 * 24 * 3600 // 7 d：事件类（Fall/Retract/Sleepad/Door/LongStill）
-	eventHalfLifeMul = 672           // 长档 = 短档 × 672 = 7d / 15min
+	HalfLifeShort = 15 * 60       // 15 min
+	HalfLifeLong  = 7 * 24 * 3600 // 7 d
 )
 
 // ========================================================================
@@ -214,28 +240,37 @@ func (c *Cell) StillTimeoutSec() int {
 // Decay（时间窗口衰减）
 // ========================================================================
 
-// Decay 按半衰期衰减累计字段。普通证据用 halfLifeSec；事件用 × eventHalfLifeMul。
+// Decay 按字段语义分档衰减累计字段。
 // 物理烤入（InRoom/InFOV/EdgeDist/MaxZ/MinZ）和 Belief 不衰减。
-func (c *Cell) Decay(dtSec, halfLifeSec float64) {
-	if dtSec <= 0 || halfLifeSec <= 0 {
+//
+// 关键改动：ActiveType[Move/Sit/Lie] 不再共用 ImmediateSec，分别对应 WalkSec/SitSec/LieSec。
+// 这样"床上躺姿"7天才衰一半、"椅子上坐姿"24h、"走道 Move"3d——符合 area 语义稳定性。
+func (c *Cell) Decay(dtSec float64, p DecayParams) {
+	if dtSec <= 0 {
 		return
 	}
-	f := math.Pow(0.5, dtSec/halfLifeSec)
-	fEv := math.Pow(0.5, dtSec/(halfLifeSec*eventHalfLifeMul))
+	fImm := factor(dtSec, p.ImmediateSec)
+	fWalk := factor(dtSec, p.WalkSec)
+	fSit := factor(dtSec, p.SitSec)
+	fLie := factor(dtSec, p.LieSec)
+	fEv := factor(dtSec, p.EventSec)
 
-	// 短档（普通证据）— 反映"最近这一段什么姿态"
-	c.RealDecay = scaleInt(c.RealDecay, f)
-	c.GhostDecay = scaleInt(c.GhostDecay, f)
-	c.FlowX = scaleInt(c.FlowX, f)
-	c.FlowY = scaleInt(c.FlowY, f)
-	c.DwellEMA = scaleInt(c.DwellEMA, f)
-	for i := range c.ActiveType {
-		c.ActiveType[i] = uint16(scaleInt(int(c.ActiveType[i]), f))
-	}
+	// 即时档 — 反映"最近这一段什么姿态/质量"
+	c.RealDecay = scaleInt(c.RealDecay, fImm)
+	c.GhostDecay = scaleInt(c.GhostDecay, fImm)
+	c.FlowX = scaleInt(c.FlowX, fImm)
+	c.FlowY = scaleInt(c.FlowY, fImm)
+	c.DwellEMA = scaleInt(c.DwellEMA, fImm)
+	c.ActiveType[ActiveIdxStand] = uint16(scaleInt(int(c.ActiveType[ActiveIdxStand]), fImm))
+
+	// 分档 ActiveType
+	c.ActiveType[ActiveIdxMove] = uint16(scaleInt(int(c.ActiveType[ActiveIdxMove]), fWalk))
+	c.ActiveType[ActiveIdxSit] = uint16(scaleInt(int(c.ActiveType[ActiveIdxSit]), fSit))
+	c.ActiveType[ActiveIdxLie] = uint16(scaleInt(int(c.ActiveType[ActiveIdxLie]), fLie))
 
 	// 长档（事件类 / 稀疏次数）— 跨天积累
-	// TraverseCount 单次穿越就是事件，需要跨天累计 5 次才能升格 Walk 区
 	c.TraverseCount = uint16(scaleInt(int(c.TraverseCount), fEv))
+	c.NearTraverseCount = uint16(scaleInt(int(c.NearTraverseCount), fEv))
 	c.LongStillCount = scaleInt(c.LongStillCount, fEv)
 	c.FallEventCount = scaleInt(c.FallEventCount, fEv)
 	c.LieRetract = scaleInt(c.LieRetract, fEv)
@@ -243,6 +278,14 @@ func (c *Cell) Decay(dtSec, halfLifeSec float64) {
 	c.SleepadInBedCount = scaleInt(c.SleepadInBedCount, fEv)
 	c.SleepadLeftBedCount = scaleInt(c.SleepadLeftBedCount, fEv)
 	c.DoorEventCount = scaleInt(c.DoorEventCount, fEv)
+}
+
+// factor 计算半衰期衰减因子；半衰期非正时不衰减（返回 1）
+func factor(dtSec, halfLifeSec float64) float64 {
+	if halfLifeSec <= 0 {
+		return 1
+	}
+	return math.Pow(0.5, dtSec/halfLifeSec)
 }
 
 // ========================================================================

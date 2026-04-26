@@ -42,16 +42,32 @@ type TrackManager struct {
 	outputs map[int]*TrackOutput
 
 	sleepadInBedCount int
+
+	// moveSpeedCms：Kalman 速度阈值（cm/s）。> 此速度的帧即使 pose 不是 Walking 也算 Move。
+	// 设计动机：雷达对老人慢走常报 Standing → ActiveType[Move]/TraverseCount 永远不涨。
+	// 默认 20（≈2 cells/s）；由 engine.Configure / playback.Run 从 yaml 注入。
+	moveSpeedCms int
 }
 
 // NewTrackManager 创建 track 管理器
 func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 	return &TrackManager{
-		roomID:  roomID,
-		grid:    grid,
-		tracks:  make(map[int]*TrackState),
-		outputs: make(map[int]*TrackOutput),
+		roomID:       roomID,
+		grid:         grid,
+		tracks:       make(map[int]*TrackState),
+		outputs:      make(map[int]*TrackOutput),
+		moveSpeedCms: 20, // 默认值（与 DefaultLearnParams.MoveSpeedCms 一致）
 	}
+}
+
+// SetMoveSpeedCms 注入"在动"速度阈值。<=0 保留默认。
+func (tm *TrackManager) SetMoveSpeedCms(v int) {
+	if v <= 0 {
+		return
+	}
+	tm.mu.Lock()
+	tm.moveSpeedCms = v
+	tm.mu.Unlock()
 }
 
 // SetSleepadInBedCount 外部更新 Sleepad 在床人数
@@ -126,6 +142,16 @@ func (tm *TrackManager) ProcessFrame(frames []TrackFrame) []TrackOutput {
 		// 维度 B: 历史流（每帧无条件）
 		tm.grid.MarkOccupancy(f.X, f.Y, quality, vx, vy, nowMs)
 		core := RadarPoseToCore(f.Pose)
+		// Speed 兜底：雷达对慢走老人常报 Standing → ActiveType[Move] 永远不涨。
+		// 仅对 Stand / Unknown 做升格（这两个本来就是"静态站立或不确定"）；
+		// Sit / Lie 不动 —— 坐着上半身晃动 / 床上翻身也可能让 Kalman 速度 > 阈值，强升 Move 会污染 Sit/Bed 学习。
+		// 阈值由 SetMoveSpeedCms 注入，默认 20 cm/s。
+		if core == CorePoseStand || core == CorePoseUnknown {
+			speed := math.Hypot(float64(vx), float64(vy))
+			if speed > float64(tm.moveSpeedCms) {
+				core = CorePoseMove
+			}
+		}
 		tm.grid.MarkPoseTime(f.X, f.Y, core, dtSec, nowMs)
 
 		// Walk 区学习：core==Move 且进入新 cell 时 ++ TraverseCount

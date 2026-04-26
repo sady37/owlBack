@@ -50,9 +50,16 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 			Geometry json.RawMessage `json:"geometry"`
 			Angle    *float64        `json:"angle,omitempty"`
 			Device   json.RawMessage `json:"device,omitempty"`
+			Height   *int            `json:"height,omitempty"` // 物体顶部高度 cm；缺失时按 typeName 默认值
 		}
 		if err := json.Unmarshal(objRaw, &hdr); err != nil {
 			continue
+		}
+
+		// height：优先 JSON 字段；缺失时取 typeName 默认；都没有则 0
+		objHeight := defaultHeightForType(hdr.TypeName)
+		if hdr.Height != nil && *hdr.Height >= 0 {
+			objHeight = *hdr.Height
 		}
 
 		switch hdr.TypeName {
@@ -64,6 +71,7 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 
 		case "Wall":
 			// Wall 可能是 line 段或 rectangle —— 把所有涉及的顶点收进来
+			// （Wall 自身有高度但当前 RoomEngine 不消费，先不存）
 			pts := parseWallPoints(hdr.Geometry)
 			wallPoints = append(wallPoints, pts...)
 			allObjectPoints = append(allObjectPoints, pts...)
@@ -71,43 +79,51 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 		case "Enter", "Door":
 			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
 				cfg.Enters = append(cfg.Enters, *rect)
+				cfg.EnterHeights = append(cfg.EnterHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
 		case "Bed", "MonitorBed":
 			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
 				cfg.Beds = append(cfg.Beds, *rect)
+				cfg.BedHeights = append(cfg.BedHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
 		case "Toilet":
 			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
 				cfg.Toilets = append(cfg.Toilets, *rect)
+				cfg.ToiletHeights = append(cfg.ToiletHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
 		case "Shower":
 			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
 				cfg.Showers = append(cfg.Showers, *rect)
+				cfg.ShowerHeights = append(cfg.ShowerHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
 		case "Chair":
 			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
 				cfg.Chairs = append(cfg.Chairs, *rect)
+				cfg.ChairHeights = append(cfg.ChairHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
 		case "Furniture", "Table", "Other":
 			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
 				cfg.Furnitures = append(cfg.Furnitures, *rect)
+				cfg.FurnitureHeights = append(cfg.FurnitureHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
 		case "Interfere", "MetalCan", "WheelChair", "GlassTV", "Curtain":
 			// 干扰/反射/金属 → AreaDeny
+			// 注意：吊灯也走 Interfere，但 height>200 表示空中不阻挡通行（未来 RoomEngine 用）
 			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
 				cfg.Interferes = append(cfg.Interferes, *rect)
+				cfg.InterfereHeights = append(cfg.InterfereHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
@@ -133,6 +149,36 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 // ------------------------------------------------------------------------
 // Radar 解析
 // ------------------------------------------------------------------------
+
+// defaultHeightForType 与前端 owlFront/src/utils/radar/types.ts::FURNITURE_CONFIGS[type].defaultHeight 对齐。
+// layout JSON 缺 height 字段时（老数据 / 前端没填）的兜底。
+func defaultHeightForType(typeName string) int {
+	switch typeName {
+	case "Bed", "MonitorBed":
+		return 60
+	case "Interfere":
+		return 120 // 默认洗手台/镜子；空中吊灯由前端 Toolbar 改 240+
+	case "Enter", "Door":
+		return 0 // 门洞地面到顶，不阻挡通行
+	case "Wall":
+		return 240
+	case "Furniture", "Other", "MetalCan":
+		return 80
+	case "GlassTV":
+		return 120
+	case "Table":
+		return 75
+	case "Chair":
+		return 90
+	case "Curtain":
+		return 240
+	case "WheelChair":
+		return 100
+	case "Toilet", "Shower":
+		return 0 // 当前未在 typescript 配置中；保守取地面
+	}
+	return 0
+}
 
 func parseRadarMount(geom json.RawMessage, outerAngle *float64, device json.RawMessage) (radarutils.RadarMount, error) {
 	var m radarutils.RadarMount
