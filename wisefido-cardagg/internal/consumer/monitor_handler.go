@@ -26,7 +26,10 @@ type MonitorHandler struct {
 }
 
 const (
-	MonitorFieldTTL = 6000 // ms, 6s prune / drop message older than 4s
+	// MonitorFieldTTL: PruneFields 删除 buffer 中超过此时长未刷新的字段。设为 12s 以覆盖 sleepace 10s 上报间隔，避免 HR/RR 在两帧之间被清空导致前端"假断流"。
+	MonitorFieldTTL = 12000
+	// MonitorMaxInboundAgeMs: 入站消息时间戳超过此时长则丢弃，防 MQTT 积压陈旧数据 / 设备时钟漂移污染。与 buffer TTL 解耦：buffer 容忍 12s，但拒绝接收 > 6s 旧的新消息。
+	MonitorMaxInboundAgeMs = 6000
 )
 
 // 实时流不做报警处理：雷达/sleepace 已有阀值，立即报警型由网关直接发 iot:alarm:stream。
@@ -120,10 +123,10 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 
 	nowMs := time.Now().UnixMilli()
 	age := nowMs - m.Timestamp
-	if age > MonitorFieldTTL {
+	if age > MonitorMaxInboundAgeMs {
 		// #region agent log
 		if dbg {
-			agentDebugLog("H2", "monitor_handler.Handle:drop", "stale timestamp", map[string]any{"ageMs": age, "limitMs": MonitorFieldTTL, "msgTs": m.Timestamp, "nowMs": nowMs})
+			agentDebugLog("H2", "monitor_handler.Handle:drop", "stale timestamp", map[string]any{"ageMs": age, "limitMs": MonitorMaxInboundAgeMs, "msgTs": m.Timestamp, "nowMs": nowMs})
 		}
 		// #endregion
 		return nil
