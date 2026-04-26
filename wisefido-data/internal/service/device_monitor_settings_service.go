@@ -42,7 +42,7 @@ type DeviceMonitorSettingsService interface {
 	// 返回下发的 IANA + seconds（成功/失败都返回，便于日志）。
 	ResyncDeviceTimezone(ctx context.Context, tenantID, deviceID string) (string, int, error)
 
-	// ResyncDeviceReportTime 按当前 effective sleep_report_time 重发 /setReportUploadTime。
+	// ResyncDeviceReportTime 按当前 effective report_upload_time 重发 /setReportUploadTime。
 	// 返回下发的 hour（1-24）。
 	ResyncDeviceReportTime(ctx context.Context, tenantID, deviceID string) (int, error)
 }
@@ -161,9 +161,9 @@ func (s *deviceMonitorSettingsService) EffectiveTimezoneIANA(ctx context.Context
 	return s.getDeviceTimezoneIANA(ctx, tenantID, deviceID)
 }
 
-// EffectiveSleepReportTime 计算 Sleepad 设备下发厂家用的报告上传整点：
+// EffectiveSleepReportTime 计算 Sleepad 设备下发厂家用的报告上传整点（厂家 reportUploadTime）：
 //
-//	alarm_device.monitor_config.items[SleepadSetting].alarm_params.sleep_report_time（device 级覆盖）
+//	alarm_device.monitor_config.items[SleepadSetting].alarm_params.report_upload_time（device 级覆盖）
 //	> alarm_cloud.metadata.tenant_sleepreport_time（tenant 默认）
 //	> alarm.DefaultSleepReportTime(8)
 //
@@ -176,7 +176,7 @@ func (s *deviceMonitorSettingsService) EffectiveSleepReportTime(ctx context.Cont
 		return h
 	}
 	if params := s.sleepadAlarmParamsFromMonitorConfig(ctx, tenantID, deviceID); params != nil {
-		if h, ok := toIntParam(params["sleep_report_time"]); ok && h > 0 {
+		if h, ok := toIntParam(params["report_upload_time"]); ok && h > 0 {
 			return normalize(h)
 		}
 	}
@@ -295,7 +295,7 @@ func (s *deviceMonitorSettingsService) ResyncDeviceTimezone(ctx context.Context,
 	return tzIANA, tzSec, nil
 }
 
-// ResyncDeviceReportTime 按当前 effective sleep_report_time 重发 /sleepace/setReportUploadTime。
+// ResyncDeviceReportTime 按当前 effective report_upload_time 重发 /sleepace/setReportUploadTime。
 // 给"报告时刻调整脚本"用（比如运维改 tenant 默认后想立刻生效）。
 // 返回下发的 hour（1-24）。
 func (s *deviceMonitorSettingsService) ResyncDeviceReportTime(ctx context.Context, tenantID, deviceID string) (int, error) {
@@ -563,10 +563,6 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 					zap.Int("baseline_items", len(baseline)),
 					zap.Int("hw_items", len(hwItems)),
 				)
-				changedTypes := s.getChangedAlarmTypes(baseline, merged)
-				if len(changedTypes) > 0 {
-					go s.syncSleepadHardwareToDB(context.Background(), tenantID, deviceID, baseline, merged)
-				}
 				// 语雀 getconfig：回填设备当前 realtimeDataInterval
 				if interval, cfgErr := s.sleepaceGateway.GetDeviceConfig(ctx, device.DeviceID, device.DeviceCode.String); cfgErr == nil && interval > 0 {
 					for i := range merged {
@@ -576,7 +572,21 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 						}
 					}
 				}
+				// 厂家 getReportUploadTime：回填设备当前 reportUploadTime（厂家是物理生效值，本地 DB 跟随）
+				if hour, rtErr := s.sleepaceGateway.GetReportUploadTime(ctx, device.DeviceID, device.DeviceCode.String); rtErr == nil && hour >= 1 && hour <= 24 {
+					for i := range merged {
+						if merged[i].AlarmType == alarm.SleepadSetting && merged[i].AlarmParams != nil {
+							merged[i].AlarmParams["report_upload_time"] = hour
+							break
+						}
+					}
+				}
 				merged = s.overlaySleepadLightModeFromHardware(ctx, device.DeviceCode.String, merged)
+				// 一次性 changed 计算 + sync：所有厂家覆盖（alarmNotifyConfig + getconfig + getReportUploadTime + lightMode）都已合并进 merged
+				changedTypes := s.getChangedAlarmTypes(baseline, merged)
+				if len(changedTypes) > 0 {
+					go s.syncSleepadHardwareToDB(context.Background(), tenantID, deviceID, baseline, merged)
+				}
 				return merged, nil
 			}
 		}
@@ -637,12 +647,20 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 		go s.syncDeviceValuesToDB(context.Background(), tenantID, deviceID, device.DeviceUID, deviceType, baselineAlarmItems, dbExists)
 	}
 
-	// Sleepad fallback：查询 getconfig 回填 realtime_interval；deviceLightConf/get 回填 light_mode
+	// Sleepad fallback：查询 getconfig 回填 realtime_interval；getReportUploadTime 回填 report_upload_time；deviceLightConf/get 回填 light_mode
 	if deviceType == "sleepad" && s.sleepaceGateway != nil && device.DeviceCode.Valid && device.DeviceCode.String != "" {
 		if interval, err := s.sleepaceGateway.GetDeviceConfig(ctx, device.DeviceID, device.DeviceCode.String); err == nil && interval > 0 {
 			for i := range baselineAlarmItems {
 				if baselineAlarmItems[i].AlarmType == alarm.SleepadSetting && baselineAlarmItems[i].AlarmParams != nil {
 					baselineAlarmItems[i].AlarmParams["realtime_interval"] = interval
+					break
+				}
+			}
+		}
+		if hour, err := s.sleepaceGateway.GetReportUploadTime(ctx, device.DeviceID, device.DeviceCode.String); err == nil && hour >= 1 && hour <= 24 {
+			for i := range baselineAlarmItems {
+				if baselineAlarmItems[i].AlarmType == alarm.SleepadSetting && baselineAlarmItems[i].AlarmParams != nil {
+					baselineAlarmItems[i].AlarmParams["report_upload_time"] = hour
 					break
 				}
 			}
@@ -1093,8 +1111,8 @@ func (s *deviceMonitorSettingsService) pushDeviceSettings(ctx context.Context, t
 					zap.Int("tz_seconds", tzSec), zap.Int("gender", gender), zap.Int("age", age))
 			}
 
-			// 下发 reportUploadTime：直接从 p 读 sleep_report_time；空时 fallback tenant 默认
-			if hour, ok := toIntParam(p["sleep_report_time"]); ok && hour >= 1 && hour <= 24 {
+			// 下发 reportUploadTime：直接从 p 读 report_upload_time；空时 fallback tenant 默认
+			if hour, ok := toIntParam(p["report_upload_time"]); ok && hour >= 1 && hour <= 24 {
 				if err := s.sleepaceGateway.SetReportUploadTime(ctx, deviceID, deviceCode, hour); err != nil {
 					s.logger.Warn("[SLEEPAD_WRITE] setReportUploadTime",
 						zap.String("device_id", deviceID), zap.Int("hour", hour), zap.Error(err))

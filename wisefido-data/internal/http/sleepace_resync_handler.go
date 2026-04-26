@@ -78,7 +78,7 @@ func (h *SleepaceResyncHandler) Dispatch(w http.ResponseWriter, r *http.Request)
 		resp := map[string]any{
 			"device_id":         deviceID,
 			"tenant_id":         tenantID,
-			"sleep_report_time": hour,
+			"report_upload_time": hour,
 		}
 		if err != nil {
 			resp["status"] = "error"

@@ -690,7 +690,7 @@ var DefaultAlarmSetting = struct {
 				"realtime_interval":    2,  //测量间隔2秒/ 4G 30sec  1-254
 				"Bed_Exit_Sensitivity": 1,  // 0:Low(15-20s) 1:Medium(5-8s) 2:High(3-5s)
 				"report_upload_type":   0,  //0 24H 1=自动结束
-				"sleep_report_time":    8,  //AM8出报告（统一字段名，对应 tenant_sleepreport_time / alarm_device.metadata.sleep_report_time）
+				"report_upload_time":   8,  //AM8出报告（统一字段名，与厂家 setReportUploadTime / wisefido-sleepace YAML 一致；雷达 sleep monitor 也复用此名）
 				"Empty_Bed_Monitor":    0,  // 0:report 1:no report
 				"light_mode":           0,  // 0:开启 1:关闭
 				"timezone":             "", // 留空：UI 初次打开时由后端 resp.timezone（= unit.timezone）填充；用户改过后覆盖此字段
