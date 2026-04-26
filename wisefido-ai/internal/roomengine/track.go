@@ -18,6 +18,7 @@ const (
 	AnomalyStillTooLong Anomaly = 2 // 静止超时
 	AnomalyPathBreak    Anomaly = 3 // 轨迹断裂（非出口消失）
 	AnomalyPoseMismatch Anomaly = 4 // pose 与运动学矛盾
+	AnomalyBedFall      Anomaly = 5 // 床下跌倒（雷达坐标仍在床 + sleepad 离床 + 仅 1 人）
 )
 
 // TimedPoint 带时间戳的画布坐标（cm 整数）
@@ -91,11 +92,29 @@ const (
 	ScoreConfirmTh   = 50   // Score ≥ 此值 → Real
 	ScoreGhostTh     = 20   // Score < 此值 → Ghost
 	StillThreshCm    = 15   // 帧间位移 < 此值视为静止
-	MaxMissCount     = 10   // 连续丢失 > 此值 → 消失
+	MaxMissCount     = 10   // 连续丢失 > 此值 → 消失（约 10 秒）
 	LieRetractMs     = 8000 // 进入 Lie 后 < 此时长回到 Stand/Move → Retract
 	// 经验值：真跌倒 8 秒内爬起概率 < 5%；雷达固件的 fallSec 典型 10-30 秒，
 	// 8 秒远小于其最小值，确保只捕获"雷达尚未升级为 Fall 就回撤"的误报。
+
+	// Silent Fall 60 秒挂起：消失后挂起，60 秒内若同位置附近有新 track 出生（且非 Lie 姿）
+	// → 视为 occlusion 复现，取消挂起；超时未取消才真报 silent fall。
+	PendingSilentFallMs = 60_000
+	PendingMatchDistCm  = 100 // 复现匹配距离（人被遮挡再出现，雷达位置可漂 50-100cm）
 )
+
+// PendingSilentFall 已消失但等待 60 秒复现窗口的 track。
+// 由 segment 2（消失判定）写入，segment 1（新 track 出生）按位置取消，segment 5（扫描）超时报警。
+type PendingSilentFall struct {
+	OriginalTrackID int
+	DeviceID        string
+	RoomID          string
+	LastX, LastY    int
+	LastZ           int
+	LastScore       int
+	LastVerdict     TrackVerdict
+	DisappearMs     int64 // 进入 pending 的时刻（≈MissCount 超阈值的 nowMs）
+}
 
 // NewTrackState 新 track 出生
 func NewTrackState(trackID int, deviceID, roomID string, x, y, z int, tMs int64) *TrackState {

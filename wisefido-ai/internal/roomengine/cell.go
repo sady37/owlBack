@@ -221,11 +221,43 @@ func (c *Cell) IsRestZone() bool {
 	return t == AreaBed || t == AreaSit || t == AreaToilet
 }
 
+// IsLikelyRestZone 比 IsRestZone 更宽松——除已升格的休息区外，
+// cell 累计有 ≥ 3s 的 Sit/Lie 观测也算可疑休息区（家具未标 + 学习未到阈值的过渡情况）。
+// 用于 silent fall 判断：拒报"曾经有人坐过/躺过"位置的静止丢失（防误报）。
+//
+// 30 = 3 秒 × 10 定点；远低于 SitActiveX10=150 (15s) 的升格门槛，
+// 但已是足够强的"这里有人停留过"证据。
+func (c *Cell) IsLikelyRestZone() bool {
+	if c.IsRestZone() {
+		return true
+	}
+	return c.ActiveType[ActiveIdxSit] >= 30 || c.ActiveType[ActiveIdxLie] >= 30
+}
+
 // StillTimeoutSec 静止超时阈值（秒；0 = 不限）。默认读 Belief[0]。
-func (c *Cell) StillTimeoutSec() int {
+//
+// isDay = true 时所有非零阈值 ×1.2（白天家属/护工活动多，放宽 20% 减误报）。
+// isDay = false 时用基线值（夜间敏感）。基线值即此函数返回值（夜间标准）。
+//
+// 时段判定见 math_util.go::IsNightTime（23:30-07:30 = 夜）。
+func (c *Cell) StillTimeoutSec(isDay bool) int {
+	base := c.stillTimeoutBaseNight()
+	if base == 0 {
+		return 0
+	}
+	if isDay {
+		// 白天 ×1.2，向上取整到秒
+		return base + base/5
+	}
+	return base
+}
+
+// stillTimeoutBaseNight 夜间基线值（不带白天放宽因子）。
+// 床/沙发：不限（休息合理）；马桶/淋浴：15min；Deny: 5min；其它：8min。
+func (c *Cell) stillTimeoutBaseNight() int {
 	switch c.Belief[0].Type {
 	case AreaBed, AreaSit:
-		return 0 // 床/沙发/椅子不限
+		return 0
 	case AreaToilet:
 		return 15 * 60 // 马桶 15 min（起身晕眩风险）
 	case AreaShower:

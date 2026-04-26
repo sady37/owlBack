@@ -262,13 +262,22 @@ func drawTitleAndLegend(sb *strings.Builder, roomID string, grid *RoomGrid,
 }
 
 // drawFOVOutline 雷达 boundary 蓝色虚线框（前端常见样式）
+//
+// BoundaryVertices 返回的顶点不是周长走法（与前端 getRadarBoundaryVertices 一致），
+// 这里按安装模式各自重排为闭合多边形顺序（避免渲染时自交成 X / 蝴蝶结）：
+//   - Ceiling/Wall 矩形：[右上, 左上, 左下, 右下] = [0,1,3,2]
+//   - Corn 菱形：       [雷达顶, R, 底, L]      = [1,0,2,3]
+//   （与前端 RadarCanvas.vue 的 [v1, v0, v2, v3, v1] 渲染顺序一致）
 func drawFOVOutline(sb *strings.Builder, m radarutils.RadarMount) {
 	poly := radarutils.BoundaryVertices(m)
 	if len(poly) < 3 {
 		return
 	}
-	if m.InstallModel == radarutils.InstallCeiling || m.InstallModel == radarutils.InstallWall {
+	switch m.InstallModel {
+	case radarutils.InstallCeiling, radarutils.InstallWall:
 		poly = []radarutils.Point{poly[0], poly[1], poly[3], poly[2]}
+	case radarutils.InstallCorn:
+		poly = []radarutils.Point{poly[1], poly[0], poly[2], poly[3]}
 	}
 	fmt.Fprintf(sb, `<polygon points="`)
 	for _, p := range poly {

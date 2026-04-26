@@ -43,6 +43,11 @@ type Result struct {
 	TotalFrames int        `json:"total_frames"`
 	GridW       int        `json:"grid_w"` // 优化后的 grid 尺寸
 	GridH       int        `json:"grid_h"`
+	// Silent Fall 60s 挂起机制统计（由 track_manager 暴露）
+	SilentFallPendingCreated   int `json:"silent_fall_pending_created"`
+	SilentFallPendingCancelled int `json:"silent_fall_pending_cancelled"`
+	SilentFallReported         int `json:"silent_fall_reported"`
+	SilentFallOutstanding      int `json:"silent_fall_outstanding"`
 }
 
 // 历史轨迹窗口（与原 playback 一致）
@@ -227,12 +232,17 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	snapshots = append(snapshots, takeSnapWithPaths(grid, cfg, opts.RoomID, simT,
 		buildTrackPaths(pathBuf, simT, trackLookbackMs)))
 
+	stats := tm.SilentFallStatsSnapshot()
 	return &Result{
-		Snapshots:   snapshots,
-		TotalRows:   totalRows,
-		TotalFrames: totalFrames,
-		GridW:       grid.Width,
-		GridH:       grid.Height,
+		Snapshots:                  snapshots,
+		TotalRows:                  totalRows,
+		TotalFrames:                totalFrames,
+		GridW:                      grid.Width,
+		GridH:                      grid.Height,
+		SilentFallPendingCreated:   stats.PendingCreated,
+		SilentFallPendingCancelled: stats.PendingCancelled,
+		SilentFallReported:         stats.Reported,
+		SilentFallOutstanding:      stats.Outstanding,
 	}, nil
 }
 

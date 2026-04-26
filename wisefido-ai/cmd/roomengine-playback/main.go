@@ -86,6 +86,9 @@ func main() {
 	}
 	log.Printf("processed %d rows, %d valid frames, %d snapshots (grid %d×%d)",
 		res.TotalRows, res.TotalFrames, len(res.Snapshots), res.GridW, res.GridH)
+	log.Printf("silent-fall stats: pending_created=%d cancelled=%d reported=%d outstanding=%d",
+		res.SilentFallPendingCreated, res.SilentFallPendingCancelled,
+		res.SilentFallReported, res.SilentFallOutstanding)
 
 	// 4. 写 HTML
 	if err := os.MkdirAll(filepath.Dir(*outHTML), 0755); err != nil {

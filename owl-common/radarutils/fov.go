@@ -48,6 +48,13 @@ func BoundaryVertices(m RadarMount) []Point {
 // cornVertices Corn（墙角）菱形的 4 个画布顶点。
 // 参照前端实现：R 在 +X 侧、L 在 -X 侧，雷达为顶点。
 // 旋转用 R(-α)：Canvas Y↓ 导致视觉逆时针需负角。
+//
+// 顶点索引语义（与前端 getRadarBoundaryVertices/RadarCanvas 一致）：
+//   [0] = R 侧（+X 臂）
+//   [1] = 顶点（雷达本身）
+//   [2] = 底顶点
+//   [3] = L 侧（-X 臂）
+// 这个顺序**不是**周长走法 —— 渲染/包含判定时调用方需重排为 [1]→[0]→[2]→[3]。
 func cornVertices(m RadarMount) []Point {
 	L := float64(m.Boundary.LeftH)
 	R := float64(m.Boundary.RightH)
@@ -60,10 +67,10 @@ func cornVertices(m RadarMount) []Point {
 	// 菱形 4 顶点（相对雷达中心的 dx/dy；angle=0 时朝下）
 	type d struct{ dx, dy float64 }
 	diamond := []d{
-		{R / sqrt2, R / sqrt2},             // R 侧 (+X)
-		{0, 0},                             // 顶点（雷达位置）
-		{(R - L) / sqrt2, (R + L) / sqrt2}, // 底顶点
-		{-L / sqrt2, L / sqrt2},            // L 侧 (-X)
+		{R / sqrt2, R / sqrt2},             // [0] R 侧 (+X)
+		{0, 0},                             // [1] 顶点（雷达位置）
+		{(R - L) / sqrt2, (R + L) / sqrt2}, // [2] 底顶点
+		{-L / sqrt2, L / sqrt2},            // [3] L 侧 (-X)
 	}
 
 	out := make([]Point, len(diamond))
@@ -79,15 +86,21 @@ func cornVertices(m RadarMount) []Point {
 
 // ContainsCanvas 判断画布坐标 (x, y) 是否在 Boundary 顶点构成的多边形内。
 // 仅 UI 参考判定（判信号真实可达域用 signal.go 的 SignalReachable）。
+//
+// 重排逻辑与 room_svg.go::drawFOVOutline 保持一致：BoundaryVertices 返回的顺序不是
+// 周长走法，PolygonContains 的射线算法需要闭合简单多边形，否则结果错误。
 func ContainsCanvas(m RadarMount, x, y int) bool {
 	poly := BoundaryVertices(m)
 	if len(poly) < 3 {
 		return false
 	}
-	// Ceiling/Wall 的 BoundaryVertices 返回顺序 [右上, 左上, 右下, 左下]，
-	// 对射线法需重排为闭合环 [右上, 左上, 左下, 右下]。
-	if m.InstallModel == InstallCeiling || m.InstallModel == InstallWall {
+	switch m.InstallModel {
+	case InstallCeiling, InstallWall:
+		// [右上, 左上, 右下, 左下] → [右上, 左上, 左下, 右下]
 		poly = []Point{poly[0], poly[1], poly[3], poly[2]}
+	case InstallCorn:
+		// [R侧, 雷达顶, 底, L侧] → [雷达顶, R侧, 底, L侧]（菱形周长走一圈）
+		poly = []Point{poly[1], poly[0], poly[2], poly[3]}
 	}
 	return PolygonContains(poly, x, y)
 }

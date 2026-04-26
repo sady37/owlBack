@@ -361,12 +361,17 @@ func (e *Engine) hydrateRoom(roomID string, grid *RoomGrid, expectedHash string)
 // ========================================================================
 
 func (e *Engine) Run(ctx context.Context) error {
-	streamName := "iot:monitor:stream"
-	group := "roomengine"
-	consumer := "roomengine-1"
+	const (
+		monitorStream = "iot:monitor:stream"
+		eventStream   = "iot:event:stream"
+		group         = "roomengine"
+	)
 
-	if err := rediscommon.CreateConsumerGroup(ctx, e.redisClient, streamName, group); err != nil {
-		e.logger.Warn("create consumer group", zap.Error(err))
+	if err := rediscommon.CreateConsumerGroup(ctx, e.redisClient, monitorStream, group); err != nil {
+		e.logger.Warn("create consumer group (monitor)", zap.Error(err))
+	}
+	if err := rediscommon.CreateConsumerGroup(ctx, e.redisClient, eventStream, group); err != nil {
+		e.logger.Warn("create consumer group (event)", zap.Error(err))
 	}
 
 	// 后台定时任务
@@ -376,9 +381,12 @@ func (e *Engine) Run(ctx context.Context) error {
 	if e.persister != nil && e.snapshotInterval > 0 {
 		go e.snapshotLoop(ctx)
 	}
+	// 单独 goroutine 消费 event 流（sleepad InBed/LeftBed 计数）
+	go e.runEventLoop(ctx, eventStream, group)
 
 	e.logger.Info("room engine started",
-		zap.String("stream", streamName),
+		zap.String("monitor_stream", monitorStream),
+		zap.String("event_stream", eventStream),
 		zap.String("winner", e.paramSets[e.winner].Name),
 		zap.Bool("persist", e.persister != nil),
 	)
@@ -395,7 +403,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		default:
 		}
 
-		messages, err := rediscommon.ReadFromStream(ctx, e.redisClient, streamName, group, consumer, 50)
+		messages, err := rediscommon.ReadFromStream(ctx, e.redisClient, monitorStream, group, "roomengine-monitor-1", 50)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -407,6 +415,74 @@ func (e *Engine) Run(ctx context.Context) error {
 		for _, msg := range messages {
 			e.handleMessage(ctx, msg)
 		}
+	}
+}
+
+// runEventLoop 消费 iot:event:stream，路由 sleepad InBed/LeftBed 事件到 TrackManager
+func (e *Engine) runEventLoop(ctx context.Context, stream, group string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		messages, err := rediscommon.ReadFromStream(ctx, e.redisClient, stream, group, "roomengine-event-1", 50)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		for _, msg := range messages {
+			e.handleEventMessage(msg)
+		}
+	}
+}
+
+// handleEventMessage 处理 iot:event:stream 一条消息（仅消费 sleepad InBed/LeftBed）
+func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
+	dataStr, ok := msg.Values["data"].(string)
+	if !ok {
+		return
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(dataStr), &raw); err != nil {
+		return
+	}
+	deviceType, _ := raw["device_type"].(string)
+	if !strings.EqualFold(deviceType, "sleepad") && !strings.EqualFold(deviceType, "sleeppad") {
+		return
+	}
+	deviceID, _ := raw["device_id"].(string)
+	deviceUID, _ := raw["device_uid"].(string)
+	cardID, _ := raw["card_id"].(string)
+	ts := int64FromAny(raw["timestamp"])
+	if ts == 0 {
+		ts = time.Now().UnixMilli()
+	}
+
+	// 路由到房间
+	e.mu.RLock()
+	roomID := e.cardToRoom[cardID]
+	if roomID == "" {
+		roomID = e.deviceRoom[deviceID]
+	}
+	if roomID == "" {
+		roomID = e.deviceRoom[deviceUID]
+	}
+	tm := e.rooms[roomID]
+	e.mu.RUnlock()
+	if tm == nil {
+		return
+	}
+
+	dv := raw[rediscommon.DataValueKey]
+	if dv == nil {
+		dv = raw["dataValue"]
+	}
+	for _, evt := range ParseSleepadBedEvents(dv, deviceUID, ts) {
+		tm.ProcessSleepadBedEvent(evt)
 	}
 }
 
@@ -429,12 +505,9 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 	deviceUID, _ := raw["device_uid"].(string)
 	cardID, _ := raw["card_id"].(string)
 	deviceType, _ := raw["device_type"].(string)
+	ts := int64FromAny(raw["timestamp"])
 
-	if !strings.EqualFold(deviceType, "radar") {
-		return
-	}
-
-	// 路由到房间
+	// 路由到房间（radar/sleepad 共用同一路由表）
 	e.mu.RLock()
 	roomID := e.cardToRoom[cardID]
 	if roomID == "" {
@@ -447,20 +520,46 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 	mount, hasMount := e.mounts[roomID]
 	e.mu.RUnlock()
 
-	if tm == nil || !hasMount {
+	if tm == nil {
 		return
 	}
 
-	// 解析 + 坐标转换 + 过滤
-	frames := e.parseTrackFrames(raw, deviceID, mount)
-	if len(frames) == 0 {
-		return
-	}
+	switch strings.ToLower(deviceType) {
+	case "radar":
+		if !hasMount {
+			return
+		}
+		frames := e.parseTrackFrames(raw, deviceID, mount)
+		if len(frames) == 0 {
+			return
+		}
+		outputs := tm.ProcessFrame(frames)
+		if e.onOutput != nil && len(outputs) > 0 {
+			e.onOutput(roomID, outputs)
+		}
 
-	outputs := tm.ProcessFrame(frames)
+	case "sleepad", "sleeppad":
+		// 多传感器融合：sleepad 帧喂入 TrackManager，silent fall 触发时做 short-circuit
+		dv := raw[rediscommon.DataValueKey]
+		if dv == nil {
+			dv = raw["dataValue"]
+		}
+		if ts == 0 {
+			ts = time.Now().UnixMilli()
+		}
+		obs := ParseSleepadObservations(dv, deviceID, deviceUID, ts)
+		for _, o := range obs {
+			tm.ProcessSleepadObservation(o)
+		}
 
-	if e.onOutput != nil && len(outputs) > 0 {
-		e.onOutput(roomID, outputs)
+		// 兼容老接口：把"在床人数"也推给 TrackManager（occupancyFactor 用）
+		inBedCount := 0
+		for _, o := range obs {
+			if o.InBed {
+				inBedCount++
+			}
+		}
+		tm.SetSleepadInBedCount(inBedCount)
 	}
 }
 
