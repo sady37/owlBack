@@ -148,17 +148,25 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 	return count, rows.Err()
 }
 
-// mapDevicesToRooms 从 devices 表读 device_uid + device_id → bound_room_id，
-// 同时填充 cardToRoom（若 device 关联了 card）。
+// mapDevicesToRooms 建 device → room 路由表。
+//
+// 路由解析顺序（per device）：
+//  1. devices.bound_room_id 直接绑（雷达常见）
+//  2. fallback: devices.bound_bed_id → beds.room_id（sleepad 常见，自己绑床而非房间）
+//
+// **不**用 card_id 路由：一个 card 可能跨多 room（例：sleepad + 2 雷达分属不同房间），
+// 用 card 推 room 会路由到错误房间。
 func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB,
 	logger *zap.Logger) (int, error) {
 
 	rows, err := db.QueryContext(ctx, `
 		SELECT d.device_id::text,
 		       d.device_uid,
-		       d.bound_room_id::text
+		       COALESCE(d.bound_room_id, b.room_id)::text AS room_id
 		FROM devices d
+		LEFT JOIN beds b ON b.bed_id = d.bound_bed_id
 		WHERE d.bound_room_id IS NOT NULL
+		   OR (d.bound_bed_id IS NOT NULL AND b.room_id IS NOT NULL)
 	`)
 	if err != nil {
 		return 0, err
@@ -170,6 +178,9 @@ func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.D
 		var deviceID, deviceUID, roomID string
 		if err := rows.Scan(&deviceID, &deviceUID, &roomID); err != nil {
 			logger.Warn("scan devices row", zap.Error(err))
+			continue
+		}
+		if roomID == "" {
 			continue
 		}
 		if deviceID != "" {
