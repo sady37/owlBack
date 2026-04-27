@@ -386,27 +386,26 @@ func (g *RoomGrid) MarkDoorEvent(x, y int, nowMs int64) {
 
 // CellStat dump 用：把 cell 关键字段拍平。
 type CellStat struct {
-	Col, Row     int      `json:"col"`
-	X, Y         int      `json:"x"`
-	AreaType     AreaType `json:"area_type"`
-	Source       Source   `json:"source"`
-	Confidence   int      `json:"confidence"`
-	MoveSec      float64  `json:"move_sec"`  // ActiveType[Move]/10
-	StandSec     float64  `json:"stand_sec"` // ActiveType[Stand]/10
-	SitSec       float64  `json:"sit_sec"`   // ActiveType[Sit]/10
-	LieSec       float64  `json:"lie_sec"`   // ActiveType[Lie]/10
-	TraverseCount     uint16 `json:"traverse_count"`
-	NearTraverseCount uint16 `json:"near_traverse_count"`
-	RealDecay         int    `json:"real_decay"`
-	GhostDecay        int    `json:"ghost_decay"`
-	FallEventCount    int    `json:"fall_event_count"`
-	LieAnomalyCount   int    `json:"lie_anomaly_count"`
-	LongStillCount    int    `json:"long_still_count"`
-	LieRetract        int    `json:"lie_retract"`
+	Col               int      `json:"col"`
+	Row               int      `json:"row"`
+	X                 int      `json:"x"`
+	Y                 int      `json:"y"`
+	AreaType          AreaType `json:"area_type"`
+	Source            Source   `json:"source"`
+	Confidence        int      `json:"confidence"`
+	MoveSec           float64  `json:"move_sec"`  // ActiveType[Move]/10
+	StandSec          float64  `json:"stand_sec"` // ActiveType[Stand]/10
+	SitSec            float64  `json:"sit_sec"`   // ActiveType[Sit]/10
+	LieSec            float64  `json:"lie_sec"`   // ActiveType[Lie]/10
+	TraverseCount     uint16   `json:"traverse_count"`
+	NearTraverseCount uint16   `json:"near_traverse_count"`
+	RealDecay         int      `json:"real_decay"`
+	GhostDecay        int      `json:"ghost_decay"`
+	FallEventCount    int      `json:"fall_event_count"`
+	LieAnomalyCount   int      `json:"lie_anomaly_count"`
+	LongStillCount    int      `json:"long_still_count"`
+	LieRetract        int      `json:"lie_retract"`
 }
-
-// CellStat.Row 是单独字段（embedded struct tag 复用 col 标签会冲突），手补一行
-func (s CellStat) MarshalRow() string { return "" } // placeholder（保留方法位）
 
 // DumpRect 把矩形（画布坐标 x1..x2, y1..y2）内所有 InRoom cell 平铺为 CellStat 列表。
 // 用于 debug：定位"为什么这片 cell 学成 X 类型"。

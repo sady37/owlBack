@@ -384,6 +384,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	const (
 		monitorStream = "iot:monitor:stream"
 		eventStream   = "iot:event:stream"
+		alarmStream   = "iot:alarm:stream"
 		group         = "roomengine"
 	)
 
@@ -393,6 +394,9 @@ func (e *Engine) Run(ctx context.Context) error {
 	if err := rediscommon.CreateConsumerGroup(ctx, e.redisClient, eventStream, group); err != nil {
 		e.logger.Warn("create consumer group (event)", zap.Error(err))
 	}
+	if err := rediscommon.CreateConsumerGroup(ctx, e.redisClient, alarmStream, group); err != nil {
+		e.logger.Warn("create consumer group (alarm)", zap.Error(err))
+	}
 
 	// 后台定时任务
 	go e.decayLoop(ctx)
@@ -401,12 +405,15 @@ func (e *Engine) Run(ctx context.Context) error {
 	if e.persister != nil && e.snapshotInterval > 0 {
 		go e.snapshotLoop(ctx)
 	}
-	// 单独 goroutine 消费 event 流（sleepad InBed/LeftBed 计数）
+	// 单独 goroutine 消费 event 流（sleepad + radar 的 InBed/LeftBed/EnterRoom/ExitRoom）
 	go e.runEventLoop(ctx, eventStream, group)
+	// 单独 goroutine 消费 alarm 流（radar Fall 等）
+	go e.runAlarmLoop(ctx, alarmStream, group)
 
 	e.logger.Info("room engine started",
 		zap.String("monitor_stream", monitorStream),
 		zap.String("event_stream", eventStream),
+		zap.String("alarm_stream", alarmStream),
 		zap.String("winner", e.paramSets[e.winner].Name),
 		zap.Bool("persist", e.persister != nil),
 	)
@@ -460,7 +467,7 @@ func (e *Engine) runEventLoop(ctx context.Context, stream, group string) {
 	}
 }
 
-// handleEventMessage 处理 iot:event:stream 一条消息（仅消费 sleepad InBed/LeftBed）
+// handleEventMessage 处理 iot:event:stream 一条消息（sleepad + radar 来源都消费）
 func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 	dataStr, ok := msg.Values["data"].(string)
 	if !ok {
@@ -471,7 +478,8 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 		return
 	}
 	deviceType, _ := raw["device_type"].(string)
-	if !strings.EqualFold(deviceType, "sleepad") && !strings.EqualFold(deviceType, "sleeppad") {
+	dt := strings.ToLower(deviceType)
+	if dt != "sleepad" && dt != "sleeppad" && dt != "radar" {
 		return
 	}
 	deviceID, _ := raw["device_id"].(string)
@@ -501,9 +509,108 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 	if dv == nil {
 		dv = raw["dataValue"]
 	}
-	for _, evt := range ParseSleepadBedEvents(dv, deviceUID, ts) {
-		tm.ProcessSleepadBedEvent(evt)
+
+	switch dt {
+	case "sleepad", "sleeppad":
+		for _, evt := range ParseSleepadBedEvents(dv, deviceUID, ts) {
+			tm.ProcessSleepadBedEvent(evt)
+		}
+	case "radar":
+		// 落账 radar EnterRoom/ExitRoom/InBed/LeftBed；同时 InBed/LeftBed 走"事件触发器"
+		// 路径：tm.RecordRadarEvent + tm.Tick(ts) → 段 4/5/6 立即跑一次。
+		// 当前不消费 EnterRoom/ExitRoom 做行为推断，仅落账供未来段 7 使用。
+		evts := ParseRadarTrackEvents(dv, deviceUID, ts)
+		if len(evts) == 0 {
+			return
+		}
+		for _, evt := range evts {
+			tm.RecordRadarEvent(evt)
+		}
+		tm.Tick(ts)
 	}
+}
+
+// runAlarmLoop 消费 iot:alarm:stream，路由 radar Fall 报警（仅落账 + Tick 触发，不做 verify）
+func (e *Engine) runAlarmLoop(ctx context.Context, stream, group string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		messages, err := rediscommon.ReadFromStream(ctx, e.redisClient, stream, group, "roomengine-alarm-1", 50)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		for _, msg := range messages {
+			e.handleAlarmMessage(msg)
+		}
+	}
+}
+
+// handleAlarmMessage 处理 iot:alarm:stream 一条消息（仅 radar Fall）。
+// 当前阶段：仅落账 + 立即 Tick；不否决 / 不延迟 / 不 verify。
+// 未来段 7 (radar fall verify) 在 TrackManager 内消费 recentRadarAlarms 做 narrative。
+func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
+	dataStr, ok := msg.Values["data"].(string)
+	if !ok {
+		return
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(dataStr), &raw); err != nil {
+		return
+	}
+	deviceType, _ := raw["device_type"].(string)
+	if !strings.EqualFold(deviceType, "radar") {
+		return // 非 radar 报警暂不消费
+	}
+	deviceID, _ := raw["device_id"].(string)
+	deviceUID, _ := raw["device_uid"].(string)
+	cardID, _ := raw["card_id"].(string)
+	ts := int64FromAny(raw["timestamp"])
+	if ts == 0 {
+		ts = time.Now().UnixMilli()
+	}
+
+	// 路由
+	e.mu.RLock()
+	roomID := e.cardToRoom[cardID]
+	if roomID == "" {
+		roomID = e.deviceRoom[deviceID]
+	}
+	if roomID == "" {
+		roomID = e.deviceRoom[deviceUID]
+	}
+	tm := e.rooms[roomID]
+	e.mu.RUnlock()
+	if tm == nil {
+		return
+	}
+
+	dv := raw[rediscommon.DataValueKey]
+	if dv == nil {
+		dv = raw["dataValue"]
+	}
+	alarms := ParseRadarFallAlarm(dv, deviceUID, ts)
+	if len(alarms) == 0 {
+		return
+	}
+	for _, a := range alarms {
+		tm.RecordRadarAlarm(a)
+		e.logger.Info("radar fall alarm recorded",
+			zap.String("room_id", roomID),
+			zap.String("device_uid", deviceUID),
+			zap.Int64("ts", a.TMs),
+			zap.Int("track_id", a.TrackID),
+			zap.Int("pose", a.Pose),
+			zap.String("status", a.Status),
+		)
+	}
+	tm.Tick(ts)
 }
 
 // ========================================================================

@@ -79,6 +79,13 @@ type TrackManager struct {
 	// bedsideFallCfg：R4（床边晕倒）参数；由 SetBedsideFallConfig 注入。
 	// 全 0 = 用默认（180s / 100cm / 900s）。
 	bedsideFallCfg BedsideFallConfig
+
+	// recentRadarAlarms / recentRadarEvents：来自 iot:alarm:stream / iot:event:stream 的 radar 来源记录。
+	// 仅"落账"，当前无消费方；未来段 7 (radar fall verify) 会读取做 narrative。
+	// 保留窗口 = recentBufferMs（默认 5 min），由 RecordXxx 顺手 evict。
+	recentRadarAlarms map[int64]*RadarFallAlarm  // key = TMs
+	recentRadarEvents map[int64]*RadarTrackEvent // key = TMs
+	recentBufferMs    int64                      // 默认 5 min
 }
 
 // BedsideFallConfig R4 床边晕倒参数。
@@ -109,6 +116,9 @@ func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 		bedPersonCount:     make(map[string]int),
 		moveSpeedCms:       20, // 默认值（与 DefaultLearnParams.MoveSpeedCms 一致）
 		bedsideFallCfg:     defaultBedsideFallCfg,
+		recentRadarAlarms:  make(map[int64]*RadarFallAlarm),
+		recentRadarEvents:  make(map[int64]*RadarTrackEvent),
+		recentBufferMs:     5 * 60 * 1000, // 5 min
 	}
 }
 
@@ -218,6 +228,66 @@ func (tm *TrackManager) SetBedsideFallConfig(c BedsideFallConfig) {
 	if c.StillTimeoutSec > 0 {
 		tm.bedsideFallCfg.StillTimeoutSec = c.StillTimeoutSec
 	}
+}
+
+// RecordRadarAlarm 落账 radar 来源的 alarm（当前阶段仅 Fall）。
+// 仅写入 recentRadarAlarms + 顺手 evict 老条目，不做任何 verify / 抑制。
+// 调用方（engine.handleAlarmMessage）应当紧跟 tm.Tick(alarm.TMs) 触发段 4-6 立即跑一次。
+func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	cp := a
+	tm.recentRadarAlarms[a.TMs] = &cp
+	tm.evictOldRadarAlarms(a.TMs)
+}
+
+// RecordRadarEvent 落账 radar 来源的事件（EnterRoom/ExitRoom/InBed/LeftBed）。
+// 仅落账。InBed/LeftBed 也"复用 sleepad 通道"更新 lastLeftBedAt（R4 开窗 + 床压计数）：
+//   - LeftBed → 更新 tm.lastLeftBedAt（任意来源都开 R4 窗口）
+//
+// 注：radar 的 InBed/LeftBed 不更新 bedPersonCount——bedPersonCount 是 sleepad 床压传感器累计的"在床人数"，
+// radar event 是空间检测，两者语义不同；混用会导致 bed-fall 段 5 的"仅 1 人"判定错乱。
+func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	cp := e
+	tm.recentRadarEvents[e.TMs] = &cp
+	tm.evictOldRadarEvents(e.TMs)
+	if e.EventName == "LeftBed" && e.TMs > tm.lastLeftBedAt {
+		tm.lastLeftBedAt = e.TMs
+	}
+}
+
+// evictOldRadarAlarms / evictOldRadarEvents：删除超出 recentBufferMs 的旧记录。
+// 调用方持锁。
+func (tm *TrackManager) evictOldRadarAlarms(nowMs int64) {
+	cutoff := nowMs - tm.recentBufferMs
+	for k := range tm.recentRadarAlarms {
+		if k < cutoff {
+			delete(tm.recentRadarAlarms, k)
+		}
+	}
+}
+
+func (tm *TrackManager) evictOldRadarEvents(nowMs int64) {
+	cutoff := nowMs - tm.recentBufferMs
+	for k := range tm.recentRadarEvents {
+		if k < cutoff {
+			delete(tm.recentRadarEvents, k)
+		}
+	}
+}
+
+// Tick 不带新 frame 的扫描入口，用 ts 作为 nowMs 推进段 2-6。
+// 用途：alarm/event 到达时立即触发，让 silent fall pending 检查 / bed-fall 矛盾检测 / R4
+// 都用 alarm 的时间戳重新评估（比等下一帧 monitor 更及时，最差能省 0-1s）。
+//
+// 返回当前所有 track 的输出快照（同 ProcessFrame 语义）。
+func (tm *TrackManager) Tick(ts int64) []TrackOutput {
+	if ts == 0 {
+		ts = time.Now().UnixMilli()
+	}
+	return tm.processFrameAt(nil, ts)
 }
 
 // SetSleepadInBedCount 外部更新 Sleepad 在床人数
