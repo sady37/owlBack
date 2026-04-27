@@ -648,6 +648,45 @@ func (s *AlarmService) RemovePendingAlarm(ctx context.Context, tenantID, legacyC
 	return err
 }
 
+// PurgeDisabledPendingForDevice 扫描该 device 在 alarm:pending 中的所有 entry，
+// 凡是当前 enablement 已变成 disabled 的 alarm_type 一律删除。
+// 用于 UI 把某 alarm 从 enabled 改成 disabled 时同步清理旧 pending（参考厂家"关闭报警清除统计"逻辑），
+// 防止用户已关闭的告警因为旧 pending 还在到期触发。
+func (s *AlarmService) PurgeDisabledPendingForDevice(ctx context.Context, tenantID, deviceID string) {
+	if s.redisPending == nil || tenantID == "" || deviceID == "" {
+		return
+	}
+	all, err := s.redisPending.HGetAll(ctx, redisPendingAlarmKey)
+	if err != nil {
+		s.logger.Warn("PurgeDisabledPending HGetAll", zap.Error(err))
+		return
+	}
+	prefix := tenantID + ":" + deviceID + ":"
+	var toDelete []string
+	for field := range all {
+		if !strings.HasPrefix(field, prefix) {
+			continue
+		}
+		alarmType := strings.TrimPrefix(field, prefix)
+		_, _, _, _, _, enabled := s.ResolveEnablementByDevice(ctx, tenantID, deviceID, alarmType)
+		if !enabled {
+			toDelete = append(toDelete, field)
+		}
+	}
+	if len(toDelete) == 0 {
+		return
+	}
+	if err := s.redisPending.HDel(ctx, redisPendingAlarmKey, toDelete...); err != nil {
+		s.logger.Warn("PurgeDisabledPending HDel", zap.Strings("fields", toDelete), zap.Error(err))
+		return
+	}
+	s.logger.Info("pending.purged_disabled",
+		zap.String("device_id", deviceID),
+		zap.String("tenant_id", tenantID),
+		zap.Strings("fields", toDelete),
+	)
+}
+
 // AddStayPendingIfEnabled 若该设备已开启 Stay 告警且配置了 duration_sec，则写入 alarm:pending，供 ScanPendingAlarms 到时落库。
 func (s *AlarmService) AddStayPendingIfEnabled(ctx context.Context, tenantID, deviceID string, eventSinceMs int64) error {
 	if s.redisPending == nil || deviceID == "" || tenantID == "" {
@@ -1107,11 +1146,25 @@ func (s *AlarmService) assessDevicePresence(ctx context.Context, tenantID, devic
 	nightEndMs := nightEnd.UnixMilli()
 	devType := strings.ToLower(deviceType)
 
-	// 步骤 1：设备整夜是否有任何数据
+	// 步骤 0：device.status='offline'（由 cardagg/qinglan device_healthCheck 维护，90s 无心跳 → offline）
+	// 直接短路，避免依赖 iot_timeseries 数据查询。两层防护：
+	//   ① 这里 device.status 短路（依赖 healthCheck 准确）
+	//   ② 步骤 1 monitor 数据过滤（healthCheck 漏判时兜底）
+	var devStatus sql.NullString
+	_ = s.db.QueryRowContext(ctx, `SELECT status FROM devices WHERE device_id = $1`, deviceID).Scan(&devStatus)
+	if devStatus.Valid && devStatus.String == "offline" {
+		return presenceOffline
+	}
+
+	// 步骤 1：设备整夜是否有真实监测数据（必须 topic_type='monitor'）。
+	// 注意：不能算 alarm/event 类（如 connectionStatus 产生的 Offline/OfflineRecover、
+	// deviceSenSor 产生的 SensorDetached），那些是设备元事件，offline 设备照样会产生，
+	// 会把 offline 误判成 absent 触发 NightAbsence/BedNightAbsence 误报。
 	var trackCount int
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM iot_timeseries
 		WHERE tenant_id = $1 AND device_id = $2
+		  AND topic_type = 'monitor'
 		  AND timestamp >= $3 AND timestamp < $4
 	`, tenantID, deviceID, nightStartMs, nightEndMs).Scan(&trackCount); err != nil || trackCount == 0 {
 		return presenceOffline

@@ -105,7 +105,7 @@ func main() {
 	alarmHandler := consumer.NewAlarmHandler(alarmSvc, stateSvc, monitorBuf, metaCache, bedCoord, logger)
 	alarmProcessHandler := consumer.NewAlarmProcessHandler(alarmSvc, logger)
 	cardChangeHandler := consumer.NewCardChangeHandler(alarmSvc, stateSvc, metaCache, enablementCache, bedCoord, db, logger)
-	alarmDeviceHandler := consumer.NewAlarmDeviceHandler(enablementCache, logger)
+	alarmDeviceHandler := consumer.NewAlarmDeviceHandler(enablementCache, alarmSvc, logger)
 
 	consumer.SubscribeAll(ctx, logger, redisClient, consumer.Handlers{
 		Monitor:      consumer.NewIotPreparedHandler(stateSvc, metaCache, monitorHandler, logger),
