@@ -1,0 +1,918 @@
+{
+    "radar": {
+        "radar_1776194828568": "ac790ba1-ac17-47d1-9cd1-c65848bd0027"
+    },
+    "params": null,
+    "objects": [
+        {
+            "id": "obj_1776193716049",
+            "name": "Wall",
+            "angle": 0,
+            "device": {
+                "type": "Wall",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#000000",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "end": {
+                        "x": -300,
+                        "y": 20
+                    },
+                    "start": {
+                        "x": -300,
+                        "y": 20
+                    },
+                    "thickness": 5
+                },
+                "type": "line"
+            },
+            "typeName": "Wall",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776193787141",
+            "name": "Bath",
+            "angle": 0,
+            "device": {
+                "type": "Enter",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#A9EAA9",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "center": {
+                        "x": -33,
+                        "y": 22
+                    },
+                    "vertices": [
+                        {
+                            "x": -80,
+                            "y": 0
+                        },
+                        {
+                            "x": 10,
+                            "y": 0
+                        },
+                        {
+                            "x": -80,
+                            "y": 40
+                        },
+                        {
+                            "x": 10,
+                            "y": 40
+                        }
+                    ]
+                },
+                "type": "rectangle"
+            },
+            "typeName": "Enter",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776193884198",
+            "name": "Wall",
+            "angle": 0,
+            "device": {
+                "type": "Wall",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#000000",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "end": {
+                        "x": -80,
+                        "y": 20
+                    },
+                    "start": {
+                        "x": -240,
+                        "y": 20
+                    },
+                    "thickness": 5
+                },
+                "type": "line"
+            },
+            "typeName": "Wall",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776193971814",
+            "name": "Wall",
+            "angle": 0,
+            "device": {
+                "type": "Wall",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#000000",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "end": {
+                        "x": 170,
+                        "y": 20
+                    },
+                    "start": {
+                        "x": 10,
+                        "y": 20
+                    },
+                    "thickness": 5
+                },
+                "type": "line"
+            },
+            "typeName": "Wall",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776194381702",
+            "name": "Bed201",
+            "angle": 0,
+            "device": {
+                "type": "Bed",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#d7d7a0",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "center": {
+                        "x": -125,
+                        "y": 265
+                    },
+                    "vertices": [
+                        {
+                            "x": -230,
+                            "y": 190
+                        },
+                        {
+                            "x": -10,
+                            "y": 190
+                        },
+                        {
+                            "x": -230,
+                            "y": 340
+                        },
+                        {
+                            "x": -10,
+                            "y": 340
+                        }
+                    ]
+                },
+                "type": "rectangle"
+            },
+            "typeName": "Bed",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776194419041",
+            "name": "Wall",
+            "angle": 0,
+            "device": {
+                "type": "Wall",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#000000",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "end": {
+                        "x": -240,
+                        "y": 10
+                    },
+                    "start": {
+                        "x": -240,
+                        "y": 10
+                    },
+                    "thickness": 5
+                },
+                "type": "line"
+            },
+            "typeName": "Wall",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776194483207",
+            "name": "Furniture",
+            "angle": 90,
+            "device": {
+                "type": "Furniture",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#d3d3d3",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "center": {
+                        "x": 116,
+                        "y": 485
+                    },
+                    "vertices": [
+                        {
+                            "x": 40,
+                            "y": 450
+                        },
+                        {
+                            "x": 200,
+                            "y": 450
+                        },
+                        {
+                            "x": 40,
+                            "y": 530
+                        },
+                        {
+                            "x": 200,
+                            "y": 530
+                        }
+                    ]
+                },
+                "type": "rectangle"
+            },
+            "typeName": "Furniture",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776194514474",
+            "name": "Furniture",
+            "angle": 0,
+            "device": {
+                "type": "Furniture",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#d3d3d3",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "center": {
+                        "x": -167,
+                        "y": 521
+                    },
+                    "vertices": [
+                        {
+                            "x": -230,
+                            "y": 480
+                        },
+                        {
+                            "x": -100,
+                            "y": 480
+                        },
+                        {
+                            "x": -230,
+                            "y": 570
+                        },
+                        {
+                            "x": -100,
+                            "y": 570
+                        }
+                    ]
+                },
+                "type": "rectangle"
+            },
+            "typeName": "Furniture",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776194548494",
+            "name": "Enter201",
+            "angle": 0,
+            "device": {
+                "type": "Enter",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#A9EAA9",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "center": {
+                        "x": 156,
+                        "y": 103
+                    },
+                    "vertices": [
+                        {
+                            "x": 140,
+                            "y": 20
+                        },
+                        {
+                            "x": 180,
+                            "y": 20
+                        },
+                        {
+                            "x": 140,
+                            "y": 180
+                        },
+                        {
+                            "x": 180,
+                            "y": 180
+                        }
+                    ]
+                },
+                "type": "rectangle"
+            },
+            "typeName": "Enter",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776194622379",
+            "name": "TV",
+            "angle": 0,
+            "device": {
+                "type": "Interfere",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#F5F5F5",
+                "transparent": false,
+                "reflectivity": 90
+            },
+            "geometry": {
+                "data": {
+                    "center": {
+                        "x": 147,
+                        "y": 304
+                    },
+                    "vertices": [
+                        {
+                            "x": 140,
+                            "y": 240
+                        },
+                        {
+                            "x": 150,
+                            "y": 240
+                        },
+                        {
+                            "x": 140,
+                            "y": 370
+                        },
+                        {
+                            "x": 150,
+                            "y": 370
+                        }
+                    ]
+                },
+                "type": "rectangle"
+            },
+            "typeName": "Interfere",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776194702686",
+            "name": "Wall",
+            "angle": 0,
+            "device": {
+                "type": "Wall",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#000000",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "end": {
+                        "x": 160,
+                        "y": 570
+                    },
+                    "start": {
+                        "x": 160,
+                        "y": 190
+                    },
+                    "thickness": 5
+                },
+                "type": "line"
+            },
+            "typeName": "Wall",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        },
+        {
+            "id": "radar_1776194828568",
+            "name": "Radar_CD2B",
+            "angle": 45,
+            "device": {
+                "iot": {
+                    "radar": {
+                        "hfov": 90,
+                        "vfov": 120,
+                        "areas": [
+                            {
+                                "areaId": 3,
+                                "areaType": 4,
+                                "objectId": "obj_1776193787141",
+                                "vertices": [
+                                    {
+                                        "h": -230,
+                                        "v": -20,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": -140,
+                                        "v": -20,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": -230,
+                                        "v": 20,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": -140,
+                                        "v": 20,
+                                        "z": 0
+                                    }
+                                ],
+                                "objectType": "Enter"
+                            },
+                            {
+                                "areaId": 12,
+                                "areaType": -1,
+                                "objectId": "obj_1776193884198",
+                                "vertices": [
+                                    {
+                                        "h": -140,
+                                        "v": 0,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 20,
+                                        "v": 0,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 0,
+                                        "v": 0,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 0,
+                                        "v": 0,
+                                        "z": 0
+                                    }
+                                ],
+                                "objectType": "Wall"
+                            },
+                            {
+                                "areaId": 13,
+                                "areaType": -1,
+                                "objectId": "obj_1776193971814",
+                                "vertices": [
+                                    {
+                                        "h": -390,
+                                        "v": 0,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": -230,
+                                        "v": 0,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 0,
+                                        "v": 0,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 0,
+                                        "v": 0,
+                                        "z": 0
+                                    }
+                                ],
+                                "objectType": "Wall"
+                            },
+                            {
+                                "areaId": 14,
+                                "areaType": 2,
+                                "objectId": "obj_1776194381702",
+                                "vertices": [
+                                    {
+                                        "h": -210,
+                                        "v": 170,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 10,
+                                        "v": 170,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": -210,
+                                        "v": 320,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 10,
+                                        "v": 320,
+                                        "z": 0
+                                    }
+                                ],
+                                "objectType": "Bed"
+                            },
+                            {
+                                "areaId": 15,
+                                "areaType": -1,
+                                "objectId": "obj_1776194419041",
+                                "vertices": [
+                                    {
+                                        "h": 20,
+                                        "v": -10,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 20,
+                                        "v": -10,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 0,
+                                        "v": 0,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 0,
+                                        "v": 0,
+                                        "z": 0
+                                    }
+                                ],
+                                "objectType": "Wall"
+                            },
+                            {
+                                "areaId": 5,
+                                "areaType": 1,
+                                "objectId": "obj_1776194514474",
+                                "vertices": [
+                                    {
+                                        "h": -120,
+                                        "v": 460,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 10,
+                                        "v": 460,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": -120,
+                                        "v": 550,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 10,
+                                        "v": 550,
+                                        "z": 0
+                                    }
+                                ],
+                                "objectType": "Furniture"
+                            },
+                            {
+                                "areaId": 6,
+                                "areaType": 4,
+                                "objectId": "obj_1776194548494",
+                                "vertices": [
+                                    {
+                                        "h": -400,
+                                        "v": 0,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": -360,
+                                        "v": 0,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": -400,
+                                        "v": 160,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": -360,
+                                        "v": 160,
+                                        "z": 0
+                                    }
+                                ],
+                                "objectType": "Enter"
+                            },
+                            {
+                                "areaId": 7,
+                                "areaType": 3,
+                                "objectId": "obj_1776194622379",
+                                "vertices": [
+                                    {
+                                        "h": -370,
+                                        "v": 220,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": -360,
+                                        "v": 220,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": -370,
+                                        "v": 350,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": -360,
+                                        "v": 350,
+                                        "z": 0
+                                    }
+                                ],
+                                "objectType": "Interfere"
+                            },
+                            {
+                                "areaId": 8,
+                                "areaType": -1,
+                                "objectId": "obj_1776194702686",
+                                "vertices": [
+                                    {
+                                        "h": -380,
+                                        "v": 170,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": -380,
+                                        "v": 550,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 0,
+                                        "v": 0,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 0,
+                                        "v": 0,
+                                        "z": 0
+                                    }
+                                ],
+                                "objectType": "Wall"
+                            },
+                            {
+                                "areaId": 9,
+                                "areaType": -1,
+                                "objectId": "obj_1776195084072",
+                                "vertices": [
+                                    {
+                                        "h": 20,
+                                        "v": 0,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 20,
+                                        "v": 550,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 0,
+                                        "v": 0,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 0,
+                                        "v": 0,
+                                        "z": 0
+                                    }
+                                ],
+                                "objectType": "Wall"
+                            },
+                            {
+                                "areaId": 10,
+                                "areaType": -1,
+                                "objectId": "obj_1776195547378",
+                                "vertices": [
+                                    {
+                                        "h": -380,
+                                        "v": 550,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 20,
+                                        "v": 550,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 0,
+                                        "v": 0,
+                                        "z": 0
+                                    },
+                                    {
+                                        "h": 0,
+                                        "v": 0,
+                                        "z": 0
+                                    }
+                                ],
+                                "objectType": "Wall"
+                            }
+                        ],
+                        "boundary": {
+                            "leftH": 550,
+                            "rearV": 0,
+                            "frontV": 0,
+                            "rightH": 400
+                        },
+                        "rotation": 45,
+                        "workModel": "vital",
+                        "showSignal": false,
+                        "installModel": "corn",
+                        "showBoundary": true,
+                        "signalRadius": 800
+                    },
+                    "deviceId": "ac790ba1-ac17-47d1-9cd1-c65848bd0027",
+                    "isOnline": true,
+                    "device_uid": "9D8A32A1CD2B",
+                    "communication": "wifi",
+                    "statusMessage": "Radar Areas: 11 objects\nBath(3, 4, -230,-20, -140,-20, -230,20, -140,20)\nWall(12, -1, -140,0, 20,0, 0,0, 0,0)\nWall(13, -1, -390,0, -230,0, 0,0, 0,0)\nBed201(14, 2, -210,170, 10,170, -210,320, 10,320)\nWall(15, -1, 20,-10, 20,-10, 0,0, 0,0)\nFurniture(5, 1, -120,460, 10,460, -120,550, 10,550)\nEnter201(6, 4, -400,0, -360,0, -400,160, -360,160)\nTV(7, 3, -370,220, -360,220, -370,350, -360,350)\nWall(8, -1, -380,170, -380,550, 0,0, 0,0)\nWall(9, -1, 20,0, 20,550, 0,0, 0,0)\nWall(10, -1, -380,550, 20,550, 0,0, 0,0)"
+                },
+                "type": "Radar",
+                "category": "iot",
+                "isObstacle": false,
+                "isInteractive": true
+            },
+            "visual": {
+                "color": "#2196F3",
+                "transparent": false
+            },
+            "geometry": {
+                "data": {
+                    "x": -220,
+                    "y": 20,
+                    "z": 300
+                },
+                "type": "point"
+            },
+            "typeName": "Radar",
+            "device_id": "ac790ba1-ac17-47d1-9cd1-c65848bd0027",
+            "interactive": {
+                "locked": false,
+                "selected": true
+            },
+            "bindedDeviceId": "ac790ba1-ac17-47d1-9cd1-c65848bd0027"
+        },
+        {
+            "id": "sleepad_1776194889391",
+            "name": "Sleepad_1641",
+            "angle": 90,
+            "device": {
+                "iot": {
+                    "deviceId": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+                    "isOnline": true,
+                    "device_uid": "BM87224601641",
+                    "communication": "wifi"
+                },
+                "type": "Sleepad",
+                "category": "iot",
+                "isObstacle": false,
+                "isInteractive": true
+            },
+            "visual": {
+                "color": "#9C27B0",
+                "transparent": false
+            },
+            "geometry": {
+                "data": {
+                    "x": -190,
+                    "y": 300,
+                    "z": 280
+                },
+                "type": "point"
+            },
+            "typeName": "Sleepad",
+            "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            },
+            "bindedDeviceId": "ad16fdff-383b-444a-b7c0-d2c021f97f7b"
+        },
+        {
+            "id": "obj_1776195084072",
+            "name": "Wall",
+            "angle": 0,
+            "device": {
+                "type": "Wall",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#000000",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "end": {
+                        "x": -240,
+                        "y": 570
+                    },
+                    "start": {
+                        "x": -240,
+                        "y": 20
+                    },
+                    "thickness": 5
+                },
+                "type": "line"
+            },
+            "typeName": "Wall",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        },
+        {
+            "id": "obj_1776195547378",
+            "name": "Wall",
+            "angle": 0,
+            "device": {
+                "type": "Wall",
+                "category": "furniture"
+            },
+            "visual": {
+                "color": "#000000",
+                "transparent": false,
+                "reflectivity": 30
+            },
+            "geometry": {
+                "data": {
+                    "end": {
+                        "x": 160,
+                        "y": 570
+                    },
+                    "start": {
+                        "x": -240,
+                        "y": 570
+                    },
+                    "thickness": 5
+                },
+                "type": "line"
+            },
+            "typeName": "Wall",
+            "interactive": {
+                "locked": false,
+                "selected": false
+            }
+        }
+    ],
+    "sleepad": {
+        "sleepad_1776194889391": "ad16fdff-383b-444a-b7c0-d2c021f97f7b"
+    },
+    "timestamp": "2026-04-23T14:19:04.351Z"
+}
