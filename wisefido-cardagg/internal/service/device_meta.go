@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"go.uber.org/zap"
+	"owl-common/roomutil"
 )
 
 // DeviceMeta holds static metadata + runtime status for one device within a card.
@@ -554,28 +555,10 @@ func pqUUIDs(ids []string) string {
 	return "{" + strings.Join(ids, ",") + "}"
 }
 
-// ClassifyRoomType 根据 room_name 推断 AreaType。
-//
-//	wc/bathroom/restroom/toilet → "bathroom"
-//	bedroom/bed room            → "bedroom"
-//	kitchen                     → "kitchen"
-//	其余                         → "other"
+// ClassifyRoomType 根据 room_name 推断房间语义类型。
+// 实现已迁移到 owl-common/roomutil 供多服务复用；保留本 wrapper 是为了不动本包 caller。
 func ClassifyRoomType(roomName string) string {
-	lower := strings.ToLower(roomName)
-	switch {
-	case strings.Contains(lower, "wc"),
-		strings.Contains(lower, "bathroom"),
-		strings.Contains(lower, "restroom"),
-		strings.Contains(lower, "toilet"):
-		return "bathroom"
-	case strings.Contains(lower, "bedroom"),
-		strings.Contains(lower, "bed room"):
-		return "bedroom"
-	case strings.Contains(lower, "kitchen"):
-		return "kitchen"
-	default:
-		return "other"
-	}
+	return roomutil.ClassifyRoomType(roomName)
 }
 
 // CardHasRadarAndSleepadOnBed 是否该卡片在指定 bed 上同时绑定了雷达和睡眠垫。

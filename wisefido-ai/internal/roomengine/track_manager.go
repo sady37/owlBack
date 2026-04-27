@@ -7,6 +7,7 @@ import (
 
 	"go.uber.org/zap"
 	"owl-common/observation"
+	"owl-common/roomutil"
 )
 
 // TrackOutput Room Engine 对外输出的单条 track 评估结果
@@ -95,6 +96,10 @@ type TrackManager struct {
 	// timezone：本房间 unit 的 IANA 时区（如 America/Denver），由 engine.RegisterRoom 注入。
 	// IsNightTime 调用时传入；nil 时退化为 UTC（错位风险，bootstrap 必须设置）。
 	timezone *time.Location
+
+	// roomName：rooms.room_name，由 engine.RegisterRoom 注入。
+	// Still fall 触发时与 cell.Belief[0].Type 取并集判 bathroom 语义（见 owl-common/roomutil.ClassifyRoomType）。
+	roomName string
 }
 
 // BedsideFallConfig R4 床边晕倒参数。
@@ -150,6 +155,22 @@ func (tm *TrackManager) SetTimezone(loc *time.Location) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	tm.timezone = loc
+}
+
+// SetRoomName 注入 rooms.room_name；用于 still fall 触发时按房间名判 bathroom 语义。
+// 由 engine.RegisterRoom 调用。
+func (tm *TrackManager) SetRoomName(name string) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.roomName = name
+}
+
+// IsBathroomByRoomName 用 owl-common/roomutil.ClassifyRoomType 判定本房间是否 bathroom。
+// 与 cell.Belief[0].Type ∈ {AreaToilet, AreaShower} 取并集驱动 still fall。
+func (tm *TrackManager) IsBathroomByRoomName() bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return roomutil.IsBathroom(tm.roomName)
 }
 
 // ProcessSleepadBedEvent 接收 sleepad InBed/LeftBed 事件，更新人数计数。

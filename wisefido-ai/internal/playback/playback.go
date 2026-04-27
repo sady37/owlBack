@@ -146,6 +146,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	decayParams := roomengine.DefaultDecayParams()
 	learnParams := roomengine.DefaultLearnParams()
 	tm.SetMoveSpeedCms(learnParams.MoveSpeedCms)
+	tm.SetRoomName(cfg.RoomName)
 	// 注入时区（IsNightTime 用）；playback 调用方应在 opts.Cfg.Timezone 中设置 IANA 字符串。
 	if cfg.Timezone != "" {
 		if loc, err := time.LoadLocation(cfg.Timezone); err == nil {

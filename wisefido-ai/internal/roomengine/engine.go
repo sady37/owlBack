@@ -21,11 +21,12 @@ import (
 
 // RoomConfig 房间配置（全 int 化 + 对齐 radarutils 类型）
 type RoomConfig struct {
-	RoomID  string
-	RoomW   int // 画布宽（cm）
-	RoomH   int // 画布深（cm）
-	OriginX int // grid[0][0] 左上角的画布坐标 X（让 grid 覆盖物体 bbox）
-	OriginY int // grid[0][0] 左上角的画布坐标 Y
+	RoomID   string
+	RoomName string // rooms.room_name；wisefido-ai 用 owl-common/roomutil.ClassifyRoomType 判 still fall 区
+	RoomW    int    // 画布宽（cm）
+	RoomH    int    // 画布深（cm）
+	OriginX  int    // grid[0][0] 左上角的画布坐标 X（让 grid 覆盖物体 bbox）
+	OriginY  int    // grid[0][0] 左上角的画布坐标 Y
 
 	// Wall 围出的房间多边形（闭合），用于 StampRoomPolygon
 	WallPolygon []radarutils.Point
@@ -314,6 +315,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetMoveSpeedCms(e.learnParams.MoveSpeedCms)
 	tm.SetBedsideFallConfig(e.bedsideFallCfg)
 	tm.SetLogger(e.logger)
+	tm.SetRoomName(cfg.RoomName)
 	// 注入 IANA 时区（IsNightTime 用）；空串保持 nil → IsNightTime 退化 UTC
 	if cfg.Timezone != "" {
 		if loc, err := time.LoadLocation(cfg.Timezone); err == nil {
@@ -336,6 +338,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 
 	e.logger.Info("room registered",
 		zap.String("room_id", cfg.RoomID),
+		zap.String("room_name", cfg.RoomName),
 		zap.Int("raw_w", rawW),
 		zap.Int("raw_h", rawH),
 		zap.Int("grid_w", cfg.RoomW),

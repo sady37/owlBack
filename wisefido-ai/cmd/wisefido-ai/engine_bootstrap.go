@@ -129,7 +129,7 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 	logger *zap.Logger) (int, error) {
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT r.room_id::text, r.layout_config::text, COALESCE(u.timezone, '')
+		SELECT r.room_id::text, r.room_name, r.layout_config::text, COALESCE(u.timezone, '')
 		FROM rooms r
 		LEFT JOIN units u ON u.unit_id = r.unit_id
 		WHERE r.layout_config IS NOT NULL
@@ -141,10 +141,10 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 
 	count := 0
 	for rows.Next() {
-		var roomID string
+		var roomID, roomName string
 		var layoutStr sql.NullString
 		var timezone string
-		if err := rows.Scan(&roomID, &layoutStr, &timezone); err != nil {
+		if err := rows.Scan(&roomID, &roomName, &layoutStr, &timezone); err != nil {
 			logger.Warn("scan rooms row", zap.Error(err))
 			continue
 		}
@@ -157,6 +157,7 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 			logger.Warn("parse layout failed", zap.String("room_id", roomID), zap.Error(err))
 			continue
 		}
+		cfg.RoomName = roomName
 		cfg.Timezone = timezone
 		roomengine.ApplyOptimizedExtent(&cfg)
 		engine.RegisterRoom(cfg)
