@@ -310,7 +310,7 @@ func TestIsNightTime(t *testing.T) {
 	}
 	for _, c := range cases {
 		ts := time.Date(2026, 4, 25, c.hour, c.min, 0, 0, time.Local).UnixMilli()
-		if got := IsNightTime(ts); got != c.want {
+		if got := IsNightTime(ts, time.Local); got != c.want {
 			t.Errorf("%s: IsNightTime(%02d:%02d)=%v, want %v",
 				c.desc, c.hour, c.min, got, c.want)
 		}

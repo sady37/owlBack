@@ -41,15 +41,22 @@ func SetRiskTimeConfig(c RiskTimeConfig) {
 	nightCfg = c
 }
 
-// IsNightTime 用毫秒时间戳判断本地时间是否在夜间时段。
-// 默认 23:30-07:30，可由 SetRiskTimeConfig 覆盖。
-// nowMs 0 时按系统当前时间。设备 timestamp 可直接传入。
-func IsNightTime(nowMs int64) bool {
+// IsNightTime 用毫秒时间戳判断本地时间是否在风险时段（默认 23:30-07:30）。
+//
+// loc 是房间所在 unit 的时区（IANA，如 "America/Denver"）。
+// loc=nil 时退化为 UTC（不要再用 time.Local()——服务器通常是 UTC，会让 risk-time 与本地时区错位）。
+//
+// 调用方应从 TrackManager 的 timezone 字段获取，由 engine.RegisterRoom 注入；
+// 测试场景可显式传 time.UTC / time.Local / time.LoadLocation 结果。
+func IsNightTime(nowMs int64, loc *time.Location) bool {
+	if loc == nil {
+		loc = time.UTC
+	}
 	var t time.Time
 	if nowMs > 0 {
-		t = time.UnixMilli(nowMs).Local()
+		t = time.UnixMilli(nowMs).In(loc)
 	} else {
-		t = time.Now().Local()
+		t = time.Now().In(loc)
 	}
 	h, m := t.Hour(), t.Minute()
 	if h > nightCfg.NightStartH || (h == nightCfg.NightStartH && m >= nightCfg.NightStartM) {

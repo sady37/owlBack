@@ -122,13 +122,17 @@ func buildRuntimeConfig(cfg *config.Config, db *sql.DB) roomengine.RuntimeConfig
 
 // registerAllRooms 扫 rooms 表所有 layout_config，逐个 ParseLayoutConfig + Optimize + RegisterRoom。
 // 解析失败的房间跳过并记日志，不阻塞其他房间。
+//
+// 顺带 LEFT JOIN units 取该房间所属 unit 的 IANA 时区（IsNightTime 用）。
+// 时区缺失（unit_id 为 null 或 timezone 空）时 cfg.Timezone 留空，engine 会日志警告并退化 UTC。
 func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB,
 	logger *zap.Logger) (int, error) {
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT room_id::text, layout_config::text
-		FROM rooms
-		WHERE layout_config IS NOT NULL
+		SELECT r.room_id::text, r.layout_config::text, COALESCE(u.timezone, '')
+		FROM rooms r
+		LEFT JOIN units u ON u.unit_id = r.unit_id
+		WHERE r.layout_config IS NOT NULL
 	`)
 	if err != nil {
 		return 0, err
@@ -139,7 +143,8 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 	for rows.Next() {
 		var roomID string
 		var layoutStr sql.NullString
-		if err := rows.Scan(&roomID, &layoutStr); err != nil {
+		var timezone string
+		if err := rows.Scan(&roomID, &layoutStr, &timezone); err != nil {
 			logger.Warn("scan rooms row", zap.Error(err))
 			continue
 		}
@@ -152,6 +157,7 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 			logger.Warn("parse layout failed", zap.String("room_id", roomID), zap.Error(err))
 			continue
 		}
+		cfg.Timezone = timezone
 		roomengine.ApplyOptimizedExtent(&cfg)
 		engine.RegisterRoom(cfg)
 		count++

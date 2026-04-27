@@ -91,6 +91,10 @@ type TrackManager struct {
 	// logger：用于 ai.log 输出 ghost / fall 结构化事件。
 	// 默认 zap.NewNop()，engine.Run 会调 SetLogger 注入真 logger。
 	logger *zap.Logger
+
+	// timezone：本房间 unit 的 IANA 时区（如 America/Denver），由 engine.RegisterRoom 注入。
+	// IsNightTime 调用时传入；nil 时退化为 UTC（错位风险，bootstrap 必须设置）。
+	timezone *time.Location
 }
 
 // BedsideFallConfig R4 床边晕倒参数。
@@ -138,6 +142,14 @@ func (tm *TrackManager) SetLogger(l *zap.Logger) {
 	} else {
 		tm.logger = l
 	}
+}
+
+// SetTimezone 注入本房间所在 unit 的 IANA 时区。
+// 由 engine.RegisterRoom 调用；nil 表示未配置（IsNightTime 会退化为 UTC）。
+func (tm *TrackManager) SetTimezone(loc *time.Location) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.timezone = loc
 }
 
 // ProcessSleepadBedEvent 接收 sleepad InBed/LeftBed 事件，更新人数计数。
@@ -831,7 +843,7 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64) {
 		}
 		// 静止超时（综合 cell history 的自适应阈值）
 		if cell != nil {
-			isRiskTime := IsNightTime(nowMs)
+			isRiskTime := IsNightTime(nowMs, tm.timezone)
 			timeout := cell.EffectiveStillTimeoutSec(isRiskTime)
 			if timeout > 0 {
 				// Bathroom caregiver 例外：本 cell 在 toilet/shower + ≥2 real track 同在 bathroom
@@ -858,7 +870,7 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64) {
 		// 与 R2(BedFall) 区别：R2 是"仍在床矛盾"，R4 是"离床后到不了远方"。
 		if tm.lastLeftBedAt > 0 &&
 			nowMs-tm.lastLeftBedAt < int64(tm.bedsideFallCfg.WindowSec)*1000 &&
-			IsNightTime(nowMs) &&
+			IsNightTime(nowMs, tm.timezone) &&
 			tm.grid.IsNearPriorType(x, y, AreaBed, tm.bedsideFallCfg.BedsideMarginCm) {
 			stillSec := int((nowMs - ts.StillSince) / 1000)
 			if stillSec > tm.bedsideFallCfg.StillTimeoutSec && ts.CurrentAnomaly != AnomalyBedsideFall {

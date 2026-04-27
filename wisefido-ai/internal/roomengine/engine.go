@@ -58,6 +58,11 @@ type RoomConfig struct {
 
 	// Sleepad 位置（point 几何，可能多个）— 用于事件路由 + 可视化
 	Sleepads []radarutils.Point
+
+	// Timezone IANA 时区字符串（如 "America/Denver"），来自该 room 所属 unit 的 units.timezone。
+	// 用于 IsNightTime 判定 risk-time（默认 23:30-07:30 本地时间）。
+	// 空值 → engine 退化为 UTC（错位风险，必须设置）。
+	Timezone string
 }
 
 // ========================================================================
@@ -309,6 +314,20 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetMoveSpeedCms(e.learnParams.MoveSpeedCms)
 	tm.SetBedsideFallConfig(e.bedsideFallCfg)
 	tm.SetLogger(e.logger)
+	// 注入 IANA 时区（IsNightTime 用）；空串保持 nil → IsNightTime 退化 UTC
+	if cfg.Timezone != "" {
+		if loc, err := time.LoadLocation(cfg.Timezone); err == nil {
+			tm.SetTimezone(loc)
+		} else {
+			e.logger.Warn("invalid timezone, falling back to UTC",
+				zap.String("room_id", cfg.RoomID),
+				zap.String("timezone", cfg.Timezone),
+				zap.Error(err))
+		}
+	} else {
+		e.logger.Warn("room registered without timezone, IsNightTime will use UTC (likely wrong)",
+			zap.String("room_id", cfg.RoomID))
+	}
 	e.rooms[cfg.RoomID] = tm
 
 	// 计算 layout hash 并保存（snapshot save/load 都按此 hash 比对）
