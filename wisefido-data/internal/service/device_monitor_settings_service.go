@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +48,33 @@ type DeviceMonitorSettingsService interface {
 	// ResyncDeviceReportTime 按当前 effective report_upload_time 重发 /setReportUploadTime。
 	// 返回下发的 hour（1-24）。
 	ResyncDeviceReportTime(ctx context.Context, tenantID, deviceID string) (int, error)
+
+	// TriggerSleepaceUpgrade 手动触发 sleepace 设备 OTA 升级。
+	// 调厂家 /sleepace/upgrade/device，参数 deviceVersion 形如 "6.89"。
+	// 厂家按 deviceVersion 查 sleepace_pro_version.device_version 表里对应固件，下发给设备。
+	TriggerSleepaceUpgrade(ctx context.Context, tenantID, deviceID, version string) error
+
+	// UploadSleepaceFirmware 上传固件 zip 到厂家。
+	// 厂家解压到 sleepace-service/classes/firmware/{ts}/ 并把 deviceVersion → url 写入 sleepace_pro_version。
+	UploadSleepaceFirmware(ctx context.Context, filename string, file io.Reader) error
+
+	// DeleteSleepaceFirmware 按 (deviceType, deviceVersion) 删除厂家固件。BM8701-2 deviceType=49。
+	DeleteSleepaceFirmware(ctx context.Context, deviceType int, deviceVersion string) error
+
+	// ListSleepaceFirmwareVersions 查询当前 channel 下厂家已部署的固件版本列表。
+	ListSleepaceFirmwareVersions(ctx context.Context) ([]SleepaceFirmwareVersion, error)
+
+	// LocalUploadSleepaceFirmware 把 zip 存到 owlBack/ota/<filename>，并在 update.ini 追加段。
+	// 当 deviceType+deviceVersion 都填了，同步推一份给厂家 /sleepace/firmware/uploadFile；
+	// 否则仅本地落盘 + ini stub（待人 edit ini 后再处理）。
+	LocalUploadSleepaceFirmware(ctx context.Context, filename string, file io.Reader, deviceType, deviceVersion string) (pushedToVendor bool, err error)
+
+	// LocalDeleteSleepaceFirmware 仅触发厂家删除。本地 zip 与 update.ini 段都不动。
+	// 从 update.ini 查 (deviceType, deviceVersion) 调厂家 /sleepace/firmware/delete。
+	LocalDeleteSleepaceFirmware(ctx context.Context, filename string) error
+
+	// ResolveSleepaceUpgradeVersion 按 filename 在 update.ini 查 deviceVerison。
+	ResolveSleepaceUpgradeVersion(filename string) (string, error)
 }
 
 // deviceMonitorSettingsService 实现
@@ -319,6 +349,172 @@ func (s *deviceMonitorSettingsService) ResyncDeviceReportTime(ctx context.Contex
 	s.logger.Info("[RESYNC_RT] pushed",
 		zap.String("device_id", deviceID), zap.Int("hour", hour))
 	return hour, nil
+}
+
+// TriggerSleepaceUpgrade 手动触发 sleepace 设备 OTA 升级。
+// 调厂家 /sleepace/upgrade/device，按 deviceVersion 查 sleepace_pro_version.device_version 表对应固件下发。
+func (s *deviceMonitorSettingsService) TriggerSleepaceUpgrade(ctx context.Context, tenantID, deviceID, version string) error {
+	if s.sleepaceGateway == nil || s.devicesRepo == nil {
+		return fmt.Errorf("sleepace gateway or devices repo not configured")
+	}
+	if version == "" {
+		return fmt.Errorf("version is required")
+	}
+	dev, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
+	if err != nil || dev == nil {
+		return fmt.Errorf("device not found: %w", err)
+	}
+	if !dev.DeviceType.Valid || !strings.EqualFold(dev.DeviceType.String, "sleepad") {
+		return fmt.Errorf("device %s is not a Sleepad", deviceID)
+	}
+	if !dev.DeviceCode.Valid || dev.DeviceCode.String == "" {
+		return fmt.Errorf("device %s has no device_code", deviceID)
+	}
+	if err := s.sleepaceGateway.UpgradeDevice(ctx, dev.DeviceCode.String, version); err != nil {
+		return fmt.Errorf("vendor upgrade trigger failed: %w", err)
+	}
+	s.logger.Info("[OTA_TRIGGER] sleepace upgrade pushed",
+		zap.String("device_id", deviceID),
+		zap.String("device_code", dev.DeviceCode.String),
+		zap.String("version", version),
+	)
+	return nil
+}
+
+// UploadSleepaceFirmware 上传固件到厂家 /sleepace/firmware/uploadFile。
+func (s *deviceMonitorSettingsService) UploadSleepaceFirmware(ctx context.Context, filename string, file io.Reader) error {
+	if s.sleepaceGateway == nil {
+		return fmt.Errorf("sleepace gateway not configured")
+	}
+	if filename == "" || file == nil {
+		return fmt.Errorf("filename and file are required")
+	}
+	if err := s.sleepaceGateway.UploadFirmware(ctx, filename, file); err != nil {
+		return fmt.Errorf("vendor upload firmware failed: %w", err)
+	}
+	s.logger.Info("[OTA_FIRMWARE] uploaded to vendor", zap.String("filename", filename))
+	return nil
+}
+
+// DeleteSleepaceFirmware 删除厂家固件 /sleepace/firmware/delete。
+func (s *deviceMonitorSettingsService) DeleteSleepaceFirmware(ctx context.Context, deviceType int, deviceVersion string) error {
+	if s.sleepaceGateway == nil {
+		return fmt.Errorf("sleepace gateway not configured")
+	}
+	if deviceVersion == "" {
+		return fmt.Errorf("deviceVersion is required")
+	}
+	if err := s.sleepaceGateway.DeleteFirmware(ctx, deviceType, deviceVersion); err != nil {
+		return fmt.Errorf("vendor delete firmware failed: %w", err)
+	}
+	s.logger.Info("[OTA_FIRMWARE] deleted at vendor",
+		zap.Int("device_type", deviceType), zap.String("device_version", deviceVersion))
+	return nil
+}
+
+// ListSleepaceFirmwareVersions 查询厂家 /sleepace/deviceVersions（channelId 由 wisefido-sleepace 注入）。
+func (s *deviceMonitorSettingsService) ListSleepaceFirmwareVersions(ctx context.Context) ([]SleepaceFirmwareVersion, error) {
+	if s.sleepaceGateway == nil {
+		return nil, fmt.Errorf("sleepace gateway not configured")
+	}
+	// channelID=0 让 wisefido-sleepace 用配置默认值（从 SleepaceConfig.ChannelID 注入）。
+	return s.sleepaceGateway.GetDeviceVersions(ctx, 0)
+}
+
+// LocalUploadSleepaceFirmware 见接口注释。
+func (s *deviceMonitorSettingsService) LocalUploadSleepaceFirmware(ctx context.Context, filename string, file io.Reader, deviceType, deviceVersion string) (bool, error) {
+	if filename == "" || file == nil {
+		return false, fmt.Errorf("filename and file required")
+	}
+	// 1) 落盘到 owlBack/ota/<filename>
+	otaDir := OtaDir()
+	if err := os.MkdirAll(otaDir, 0o755); err != nil {
+		return false, fmt.Errorf("mkdir ota: %w", err)
+	}
+	dst := filepath.Join(otaDir, filename)
+	out, err := os.Create(dst)
+	if err != nil {
+		return false, fmt.Errorf("create %s: %w", dst, err)
+	}
+	written, copyErr := io.Copy(out, file)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return false, fmt.Errorf("write file: %w", copyErr)
+	}
+	if closeErr != nil {
+		return false, fmt.Errorf("close file: %w", closeErr)
+	}
+
+	// 2) 追加 update.ini stub（同名段已存在则跳过，不重复）
+	if err := AppendUpdateIniStub(filename, strings.TrimSpace(deviceType), strings.TrimSpace(deviceVersion)); err != nil {
+		return false, fmt.Errorf("append update.ini: %w", err)
+	}
+
+	// 3) 仅当 deviceType+deviceVersion 都填了，才同步推到厂家
+	pushed := false
+	if strings.TrimSpace(deviceType) != "" && strings.TrimSpace(deviceVersion) != "" {
+		if s.sleepaceGateway == nil {
+			return pushed, fmt.Errorf("sleepace gateway not configured")
+		}
+		f, err := os.Open(dst)
+		if err != nil {
+			return pushed, fmt.Errorf("reopen for vendor push: %w", err)
+		}
+		defer f.Close()
+		if err := s.sleepaceGateway.UploadFirmware(ctx, filename, f); err != nil {
+			return pushed, fmt.Errorf("vendor push failed: %w", err)
+		}
+		pushed = true
+	}
+	s.logger.Info("[OTA_FIRMWARE] local saved + ini appended",
+		zap.String("filename", filename),
+		zap.Int64("size", written),
+		zap.Bool("pushed_to_vendor", pushed))
+	return pushed, nil
+}
+
+// LocalDeleteSleepaceFirmware 见接口注释。
+func (s *deviceMonitorSettingsService) LocalDeleteSleepaceFirmware(ctx context.Context, filename string) error {
+	if s.sleepaceGateway == nil {
+		return fmt.Errorf("sleepace gateway not configured")
+	}
+	sec, err := LookupUpdateIni(filename)
+	if err != nil {
+		return fmt.Errorf("lookup update.ini: %w", err)
+	}
+	if sec == nil {
+		return fmt.Errorf("filename %q not found in update.ini", filename)
+	}
+	if sec.DeviceID == "" || sec.DeviceVerison == "" {
+		return fmt.Errorf("update.ini section for %q missing deviceId/deviceVerison", filename)
+	}
+	devType, convErr := strconv.Atoi(sec.DeviceID)
+	if convErr != nil {
+		return fmt.Errorf("invalid deviceId %q in update.ini: %w", sec.DeviceID, convErr)
+	}
+	if err := s.sleepaceGateway.DeleteFirmware(ctx, devType, sec.DeviceVerison); err != nil {
+		return fmt.Errorf("vendor delete failed: %w", err)
+	}
+	s.logger.Info("[OTA_FIRMWARE] vendor delete triggered (local file kept)",
+		zap.String("filename", filename),
+		zap.Int("device_type", devType),
+		zap.String("device_version", sec.DeviceVerison))
+	return nil
+}
+
+// ResolveSleepaceUpgradeVersion 见接口注释。
+func (s *deviceMonitorSettingsService) ResolveSleepaceUpgradeVersion(filename string) (string, error) {
+	sec, err := LookupUpdateIni(filename)
+	if err != nil {
+		return "", fmt.Errorf("lookup update.ini: %w", err)
+	}
+	if sec == nil {
+		return "", fmt.Errorf("filename %q not found in update.ini", filename)
+	}
+	if sec.DeviceVerison == "" {
+		return "", fmt.Errorf("update.ini section for %q missing deviceVerison", filename)
+	}
+	return sec.DeviceVerison, nil
 }
 
 // CheckDeviceOnlineStatus 检查设备在线状态（通过 wisefido-qinglan HTTP API 实时查询）

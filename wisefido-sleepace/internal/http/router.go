@@ -36,7 +36,9 @@ func NewRouter(
 }
 
 func (r *Router) routes() {
-	// Proxy to sleepace-service
+	// Multipart 单独走专用 handler；必须在通用 JSON proxy 前注册（更长路径优先匹配）。
+	r.mux.HandleFunc("/api/v1/proxy/sleepace/firmware/uploadFile", r.proxy.UploadFirmwareHandler())
+	// Proxy to sleepace-service (JSON, 自动注入 appId/secureKey)
 	r.mux.HandleFunc("/api/v1/proxy/", r.proxy.Handler())
 
 	// Device lifecycle

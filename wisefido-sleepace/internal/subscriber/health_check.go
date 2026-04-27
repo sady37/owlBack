@@ -23,6 +23,7 @@ type HealthCheck struct {
 	SleepaceAPI   *service.SleepaceAPI
 	Publisher     *consumer.StreamPublisher
 	StatusTracker *service.DeviceStatusTracker
+	CardDB        *card.CardDB // 可选：device_store.firmware_version 同步用
 	Logger        *zap.Logger
 	DeviceTypes   []string
 }
@@ -63,7 +64,7 @@ func (h *HealthCheck) isSleepadType(t string) bool {
 	return false
 }
 
-// Run 仅 10 分钟全量探测兜底。
+// Run 仅 10 分钟全量探测兜底；启动后先做一次 scanAll，避免新添加的 firmware_version sync 要等到第一个 10min tick。
 func (h *HealthCheck) Run(ctx context.Context) {
 	if h.CardMapping == nil || h.SleepaceAPI == nil || h.Publisher == nil {
 		return
@@ -71,6 +72,7 @@ func (h *HealthCheck) Run(ctx context.Context) {
 	tick := time.NewTicker(10 * time.Minute)
 	defer tick.Stop()
 	h.Logger.Info("sleepace health_check started", zap.Duration("full_probe", 10*time.Minute))
+	h.scanAll(ctx) // startup probe
 	for {
 		select {
 		case <-ctx.Done():
@@ -135,6 +137,11 @@ func (h *HealthCheck) probeOne(ctx context.Context, b *card.DeviceBaseline) {
 		zap.String("device_uid", b.DeviceUID),
 		zap.String("device_code", b.DeviceCode),
 		zap.Bool("online", online))
+	// 在线时顺手 sync device_store.firmware_version；MQTT connectionStatus 只在 TCP 状态变化时推一次，
+	// 已在线设备不会重新触发 sync，所以这里 probe 时也补一刀。函数自带 current==reported 短路，幂等。
+	if online && h.CardDB != nil {
+		go h.syncDeviceStoreVersion(context.Background(), b.DeviceCode)
+	}
 	if b.DeviceID != "" {
 		nowMs := time.Now().UnixMilli()
 		tsMs := nowMs
@@ -177,4 +184,25 @@ func (h *HealthCheck) probeOne(ctx context.Context, b *card.DeviceBaseline) {
 			h.Logger.Warn("connectionStatus publish alarm failed", zap.String("device_uid", b.DeviceUID), zap.Bool("online", online), zap.Error(err))
 		}
 	}
+}
+
+// syncDeviceStoreVersion 跟 mqtt_consumer 同名函数同语义：拉厂家 deviceInfo → 写 device_store.firmware_version。
+// 与 mqtt_consumer 版本独立实现避免循环依赖（subscriber → consumer → subscriber）。
+func (h *HealthCheck) syncDeviceStoreVersion(ctx context.Context, deviceCode string) {
+	if deviceCode == "" || h.CardDB == nil || h.SleepaceAPI == nil {
+		return
+	}
+	info, err := h.SleepaceAPI.GetDeviceInfoByDeviceId(deviceCode)
+	if err != nil {
+		h.Logger.Debug("health_check version sync: get device info", zap.String("device_code", deviceCode), zap.Error(err))
+		return
+	}
+	if info == nil || info.Version == "" {
+		return
+	}
+	if err := h.CardDB.UpdateDeviceStoreReportedVersion(ctx, deviceCode, info.Version); err != nil {
+		h.Logger.Warn("health_check version sync: update device_store", zap.String("device_code", deviceCode), zap.String("version", info.Version), zap.Error(err))
+		return
+	}
+	h.Logger.Info("device_store version synced (health_check)", zap.String("device_code", deviceCode), zap.String("version", info.Version))
 }

@@ -520,9 +520,20 @@ func main() {
 	// 两个 internal endpoint，外部 DST 脚本按 device_id 调用，service 内部自己查 effective 值下发。
 	//   POST /internal/sleepace/device/{device_id}/resync-timezone    → bind with effective timezone + gender/age
 	//   POST /internal/sleepace/device/{device_id}/resync-report-time → setReportUploadTime with effective hour
+	//   POST /internal/sleepace/device/{device_id}/upgrade            → 触发厂家 OTA（body {"version":"6.89"}）
+	// 同样路径在 /sleepace/api/v1/sleepace/device/* 下挂一份给前端走 nginx /sleepace/api/ 转发使用（admin UI）。
 	if deviceMonitorSettingsService != nil {
 		resyncHandler := httpapi.NewSleepaceResyncHandler(deviceMonitorSettingsService, db, logger)
 		router.Handle("/internal/sleepace/device/", resyncHandler.Dispatch)
+		router.Handle("/sleepace/api/v1/sleepace/device/", resyncHandler.Dispatch)
+
+		// 厂家固件库管理（uploadFile/delete/deviceVersions）。
+		//   POST /sleepace/api/v1/sleepace/firmware/upload    multipart "file"
+		//   POST /sleepace/api/v1/sleepace/firmware/delete    body {device_type, device_version}
+		//   GET  /sleepace/api/v1/sleepace/firmware/versions  channel 由 wisefido-sleepace 注入
+		firmwareHandler := httpapi.NewSleepaceFirmwareHandler(deviceMonitorSettingsService, logger)
+		router.Handle("/internal/sleepace/firmware/", firmwareHandler.Dispatch)
+		router.Handle("/sleepace/api/v1/sleepace/firmware/", firmwareHandler.Dispatch)
 	}
 
 	// 启动时全量检查并更新卡片（如果 DB 和 cardSyncService 可用）

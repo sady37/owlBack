@@ -39,12 +39,15 @@ func (h *SleepaceResyncHandler) Dispatch(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	// path: /internal/sleepace/device/{device_id}/{action}
-	path := strings.TrimPrefix(r.URL.Path, "/internal/sleepace/device/")
+	//   或 /sleepace/api/v1/sleepace/device/{device_id}/{action}（前端走 nginx /sleepace/api/）
+	path := r.URL.Path
+	path = strings.TrimPrefix(path, "/internal/sleepace/device/")
+	path = strings.TrimPrefix(path, "/sleepace/api/v1/sleepace/device/")
 	parts := strings.Split(path, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		writeResyncJSON(w, http.StatusBadRequest, map[string]any{
 			"status": "error",
-			"error":  "path must be /internal/sleepace/device/{device_id}/{resync-timezone|resync-report-time}",
+			"error":  "path must be {prefix}/sleepace/device/{device_id}/{resync-timezone|resync-report-time|upgrade}",
 		})
 		return
 	}
@@ -88,10 +91,43 @@ func (h *SleepaceResyncHandler) Dispatch(w http.ResponseWriter, r *http.Request)
 		}
 		resp["status"] = "ok"
 		writeResyncJSON(w, http.StatusOK, resp)
+	case "upgrade":
+		// body 二选一：{"version":"6.89"} 直传；{"filename":"mcu_sleepace_..."} 由后端读 update.ini 查 deviceVerison。
+		var body struct {
+			Version  string `json:"version"`
+			Filename string `json:"filename"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		version := body.Version
+		if version == "" && body.Filename != "" {
+			v, err := h.svc.ResolveSleepaceUpgradeVersion(body.Filename)
+			if err != nil {
+				writeResyncJSON(w, http.StatusBadRequest, map[string]any{
+					"status": "error", "device_id": deviceID, "tenant_id": tenantID,
+					"filename": body.Filename, "error": "resolve version: " + err.Error(),
+				})
+				return
+			}
+			version = v
+		}
+		resp := map[string]any{
+			"device_id": deviceID,
+			"tenant_id": tenantID,
+			"version":   version,
+			"filename":  body.Filename,
+		}
+		if err := h.svc.TriggerSleepaceUpgrade(r.Context(), tenantID, deviceID, version); err != nil {
+			resp["status"] = "error"
+			resp["error"] = err.Error()
+			writeResyncJSON(w, http.StatusInternalServerError, resp)
+			return
+		}
+		resp["status"] = "ok"
+		writeResyncJSON(w, http.StatusOK, resp)
 	default:
 		writeResyncJSON(w, http.StatusBadRequest, map[string]any{
 			"status": "error",
-			"error":  "unknown action; expected resync-timezone or resync-report-time",
+			"error":  "unknown action; expected resync-timezone | resync-report-time | upgrade",
 		})
 	}
 }

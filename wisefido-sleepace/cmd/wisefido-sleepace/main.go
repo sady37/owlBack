@@ -94,6 +94,7 @@ func main() {
 	streamPub.SetCardMappingService(cardMapping)
 
 	healthCheck := subscriber.NewHealthCheck(cardMapping, sleepaceAPI, streamPub, statusTracker, logger)
+	healthCheck.CardDB = cardDB // probe 时顺手 sync device_store.firmware_version
 	go healthCheck.Run(ctx)
 
 	const sleepaceCardGroup = "wisefido-sleepace-card"

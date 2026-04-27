@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
@@ -397,6 +398,131 @@ func (c *SleepaceGatewayClient) SetLeaveSensibility(ctx context.Context, deviceI
 	return c.postProxy(ctx, "/sleepace/device/updateAlgMode", map[string]interface{}{
 		"userId": deviceID, "deviceId": deviceCode, "leftRight": 0, "mode": mode,
 	})
+}
+
+// UpgradeDevice 触发厂家手动 OTA 升级（厂家 /sleepace/upgrade/device）。
+// 厂家按 deviceVersion 在 sleepace_pro_version.device_version 表里查到对应固件，下发给设备。
+// 当前 device_store 里的 firmware zip 仅供 UI 显示，实际下发的是厂家自己上传后保存的拷贝。
+// deviceCode = device_store.device_code（厂家平台密文 ID）；version 形如 "6.89"。
+//
+// **注意厂家字段名 typo**：data 里 key 必须是 `deviceVerison`（少一个 s）；
+// 用正确拼写 `deviceVersion` 厂家会返回 status:2 静默失败，无 msg。实测 2026-04-27 确认。
+func (c *SleepaceGatewayClient) UpgradeDevice(ctx context.Context, deviceCode, version string) error {
+	return c.postProxy(ctx, "/sleepace/upgrade/device", map[string]interface{}{
+		"deviceId": deviceCode, "deviceVerison": version,
+	})
+}
+
+// UploadFirmware 上传固件 zip 到厂家 /sleepace/firmware/uploadFile。
+// 通过 wisefido-sleepace 的 multipart 专用代理（自动注入 appId/secureKey 表单字段）。
+// 厂家收到后解压到 sleepace-service/classes/firmware/{ts}/，并把 deviceVersion → url 写入 sleepace_pro_version。
+func (c *SleepaceGatewayClient) UploadFirmware(ctx context.Context, filename string, file io.Reader) error {
+	proxyURL := fmt.Sprintf("%s/api/v1/proxy/sleepace/firmware/uploadFile", c.apiBaseURL)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", filename)
+	if err != nil {
+		return fmt.Errorf("build multipart: %w", err)
+	}
+	if _, err := io.Copy(fw, file); err != nil {
+		return fmt.Errorf("copy file: %w", err)
+	}
+	if err := mw.Close(); err != nil {
+		return fmt.Errorf("close multipart: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, proxyURL, &buf)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("uploadFirmware request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("uploadFirmware status %d: %s", resp.StatusCode, string(body))
+	}
+	var out struct {
+		Status int    `json:"status"`
+		Msg    string `json:"msg"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return fmt.Errorf("unmarshal uploadFirmware: %w", err)
+	}
+	if out.Status != 0 {
+		return fmt.Errorf("uploadFirmware API: %s (status %d)", out.Msg, out.Status)
+	}
+	return nil
+}
+
+// DeleteFirmware 删除厂家已上传的固件（按 deviceType + deviceVersion 定位）。
+// 厂家 /sleepace/firmware/delete: data{deviceType:int, deviceVersion:string}。
+// BM8701-2 deviceType=49（与 verification.json model 字段一致）。
+func (c *SleepaceGatewayClient) DeleteFirmware(ctx context.Context, deviceType int, deviceVersion string) error {
+	return c.postProxy(ctx, "/sleepace/firmware/delete", map[string]interface{}{
+		"deviceType":    deviceType,
+		"deviceVersion": deviceVersion,
+	})
+}
+
+// SleepaceFirmwareVersion 厂家已部署的某型号最新固件信息（来自 /sleepace/deviceVersions）。
+// 文档说 deviceVersion 是 float、crcBin/crcDes 是 int，但实测部分版本会返回字符串/混合类型，
+// 用 json.RawMessage 保留原值给前端原样转发。
+type SleepaceFirmwareVersion struct {
+	DeviceType    int             `json:"deviceType"`
+	DeviceVersion json.RawMessage `json:"deviceVersion"`
+	Description   string          `json:"description"`
+	URL           string          `json:"url"`
+	FileLen       int64           `json:"fileLen"`
+	CrcBin        json.RawMessage `json:"crcBin"`
+	CrcDes        json.RawMessage `json:"crcDes"`
+	Lan           string          `json:"lan"`
+}
+
+// GetDeviceVersions 查询渠道（channelId）下已部署的最新固件版本列表。
+// 厂家 /sleepace/deviceVersions: data{channelId:int} → data:[{deviceType, deviceVersion, ...}]
+// channelID<=0 时不传该字段，由 wisefido-sleepace 代理用其配置默认值注入。
+func (c *SleepaceGatewayClient) GetDeviceVersions(ctx context.Context, channelID int) ([]SleepaceFirmwareVersion, error) {
+	proxyURL := fmt.Sprintf("%s/api/v1/proxy/sleepace/deviceVersions", c.apiBaseURL)
+	payload := map[string]interface{}{}
+	if channelID > 0 {
+		payload["channelId"] = channelID
+	}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal deviceVersions: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, proxyURL, bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("deviceVersions request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("deviceVersions status %d: %s", resp.StatusCode, string(body))
+	}
+	var out struct {
+		Status int                       `json:"status"`
+		Msg    string                    `json:"msg"`
+		Data   []SleepaceFirmwareVersion `json:"data"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("unmarshal deviceVersions: %w", err)
+	}
+	if out.Status != 0 {
+		return nil, fmt.Errorf("deviceVersions API: %s (status %d)", out.Msg, out.Status)
+	}
+	return out.Data, nil
 }
 
 // SetRealtimeModeAfterLeave sets 离床后实时数据上报 (语雀 /sleepace/realtimeMode/set；BM8701-2 等、固件≥v6.67)。

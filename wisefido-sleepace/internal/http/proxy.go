@@ -1,10 +1,13 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"wisefido-sleepace/internal/config"
@@ -16,10 +19,11 @@ import (
 // SleepaceProxy is a transparent HTTP proxy to sleepace-service (Java).
 // It auto-injects the token and forwards request/response as-is.
 type SleepaceProxy struct {
-	client *resty.Client
-	appID  string
-	secret string
-	logger *zap.Logger
+	client    *resty.Client
+	appID     string
+	secret    string
+	channelID string
+	logger    *zap.Logger
 }
 
 func NewSleepaceProxy(cfg *config.SleepaceConfig, logger *zap.Logger) *SleepaceProxy {
@@ -29,10 +33,11 @@ func NewSleepaceProxy(cfg *config.SleepaceConfig, logger *zap.Logger) *SleepaceP
 		SetHeader("Accept", "application/json")
 
 	return &SleepaceProxy{
-		client: client,
-		appID:  cfg.AppID,
-		secret: cfg.SecretKey,
-		logger: logger,
+		client:    client,
+		appID:     cfg.AppID,
+		secret:    cfg.SecretKey,
+		channelID: cfg.ChannelID,
+		logger:    logger,
 	}
 }
 
@@ -74,6 +79,18 @@ func (p *SleepaceProxy) Handler() http.HandlerFunc {
 			}
 		}
 
+		// /sleepace/deviceVersions 需要 channelId；调用方未传则用配置默认值。
+		if strings.HasSuffix(targetPath, "/deviceVersions") {
+			if data == nil {
+				data = map[string]interface{}{}
+			}
+			if _, ok := data["channelId"]; !ok && p.channelID != "" {
+				if id, err := strconv.Atoi(p.channelID); err == nil {
+					data["channelId"] = id
+				}
+			}
+		}
+
 		req := proxyRequest{
 			Token: map[string]string{"appId": p.appID, "secureKey": p.secret},
 			Data:  data,
@@ -105,6 +122,77 @@ func (p *SleepaceProxy) Handler() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(httpResp.StatusCode())
 		w.Write(httpResp.Body())
+	}
+}
+
+// UploadFirmwareHandler handles POST /api/v1/proxy/sleepace/firmware/uploadFile.
+// 厂家 /sleepace/firmware/uploadFile 是 multipart：file + appId + secureKey 三个 form field。
+// 这里读取上游传来的 multipart "file" 字段，重建 multipart body，注入 appId/secureKey 后转发。
+func (p *SleepaceProxy) UploadFirmwareHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if err := r.ParseMultipartForm(64 << 20); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "parse multipart: " + err.Error()})
+			return
+		}
+
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing form field 'file'"})
+			return
+		}
+		defer file.Close()
+
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		_ = mw.WriteField("appId", p.appID)
+		_ = mw.WriteField("secureKey", p.secret)
+		fw, err := mw.CreateFormFile("file", header.Filename)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "build multipart: " + err.Error()})
+			return
+		}
+		if _, err := io.Copy(fw, file); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "copy file: " + err.Error()})
+			return
+		}
+		if err := mw.Close(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "close multipart: " + err.Error()})
+			return
+		}
+
+		baseURL := strings.TrimRight(p.client.BaseURL, "/")
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, baseURL+"/sleepace/firmware/uploadFile", &buf)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "build request: " + err.Error()})
+			return
+		}
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+
+		httpClient := &http.Client{}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			p.logger.Error("upload firmware request failed", zap.Error(err))
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "sleepace-service unreachable"})
+			return
+		}
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+
+		p.logger.Debug("firmware upload",
+			zap.String("filename", header.Filename),
+			zap.Int64("size", header.Size),
+			zap.Int("upstream_status", resp.StatusCode),
+			zap.String("response", string(respBody)),
+		)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(respBody)
 	}
 }
 

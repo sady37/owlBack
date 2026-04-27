@@ -469,11 +469,18 @@ func (a *SleepaceAPI) GetLeavingMode(userID, deviceCode string) (int, error) {
 //
 //	PlaintextId = hardware label (e.g. "BM87224601903") = device_store.device_uid
 //	DeviceId    = sleepace platform ID (e.g. "1ua3erivl9pv1") = device_store.device_code
+//
+// 厂家 deviceInfo/deviceId 实际返回字段名：
+//
+//	{"devicePlaintextId":"BM87...", "deviceId":"...", "version":"6.89"}
+//
+// 注意：plaintextId 字段在 by-deviceId 接口里实际是 `devicePlaintextId`；
+// version 字段是 `version` 不是 `deviceVersion`（与文档不一致，2026-04-27 实测）。
 type SleepaceDeviceInfo struct {
 	DeviceId    string `json:"deviceId"`
-	PlaintextId string `json:"plaintextId"`
+	PlaintextId string `json:"devicePlaintextId"`
 	DeviceType  int    `json:"deviceType"`
-	Version     string `json:"deviceVersion"` // 厂家：设备版本 string
+	Version     string `json:"version"` // 厂家实际字段名 "version"，不是文档说的 deviceVersion
 }
 
 // GetDeviceInfoByPlaintextId queries sleepace-service by hardware label (BM87...).
