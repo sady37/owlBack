@@ -383,3 +383,81 @@ func (g *RoomGrid) MarkDoorEvent(x, y int, nowMs int64) {
 	c.DoorEventCount++
 	c.LastUpdateMs = nowMs
 }
+
+// CellStat dump 用：把 cell 关键字段拍平。
+type CellStat struct {
+	Col, Row     int      `json:"col"`
+	X, Y         int      `json:"x"`
+	AreaType     AreaType `json:"area_type"`
+	Source       Source   `json:"source"`
+	Confidence   int      `json:"confidence"`
+	MoveSec      float64  `json:"move_sec"`  // ActiveType[Move]/10
+	StandSec     float64  `json:"stand_sec"` // ActiveType[Stand]/10
+	SitSec       float64  `json:"sit_sec"`   // ActiveType[Sit]/10
+	LieSec       float64  `json:"lie_sec"`   // ActiveType[Lie]/10
+	TraverseCount     uint16 `json:"traverse_count"`
+	NearTraverseCount uint16 `json:"near_traverse_count"`
+	RealDecay         int    `json:"real_decay"`
+	GhostDecay        int    `json:"ghost_decay"`
+	FallEventCount    int    `json:"fall_event_count"`
+	LieAnomalyCount   int    `json:"lie_anomaly_count"`
+	LongStillCount    int    `json:"long_still_count"`
+	LieRetract        int    `json:"lie_retract"`
+}
+
+// CellStat.Row 是单独字段（embedded struct tag 复用 col 标签会冲突），手补一行
+func (s CellStat) MarshalRow() string { return "" } // placeholder（保留方法位）
+
+// DumpRect 把矩形（画布坐标 x1..x2, y1..y2）内所有 InRoom cell 平铺为 CellStat 列表。
+// 用于 debug：定位"为什么这片 cell 学成 X 类型"。
+func (g *RoomGrid) DumpRect(x1, y1, x2, y2 int) []CellStat {
+	if x1 > x2 {
+		x1, x2 = x2, x1
+	}
+	if y1 > y2 {
+		y1, y2 = y2, y1
+	}
+	c1, r1 := g.ToIndex(x1, y1)
+	c2, r2 := g.ToIndex(x2, y2)
+	if c1 < 0 {
+		c1 = 0
+	}
+	if r1 < 0 {
+		r1 = 0
+	}
+	if c2 >= g.Width {
+		c2 = g.Width - 1
+	}
+	if r2 >= g.Height {
+		r2 = g.Height - 1
+	}
+	out := make([]CellStat, 0, (c2-c1+1)*(r2-r1+1))
+	for row := r1; row <= r2; row++ {
+		for col := c1; col <= c2; col++ {
+			c := &g.Cells[row*g.Width+col]
+			if !c.InRoom {
+				continue
+			}
+			x, y := g.ToCanvas(col, row)
+			out = append(out, CellStat{
+				Col: col, Row: row, X: x, Y: y,
+				AreaType:          c.Belief[0].Type,
+				Source:            c.Belief[0].Source,
+				Confidence:        c.Belief[0].Confidence,
+				MoveSec:           float64(c.ActiveType[ActiveIdxMove]) / 10,
+				StandSec:          float64(c.ActiveType[ActiveIdxStand]) / 10,
+				SitSec:            float64(c.ActiveType[ActiveIdxSit]) / 10,
+				LieSec:            float64(c.ActiveType[ActiveIdxLie]) / 10,
+				TraverseCount:     c.TraverseCount,
+				NearTraverseCount: c.NearTraverseCount,
+				RealDecay:         c.RealDecay,
+				GhostDecay:        c.GhostDecay,
+				FallEventCount:    c.FallEventCount,
+				LieAnomalyCount:   c.LieAnomalyCount,
+				LongStillCount:    c.LongStillCount,
+				LieRetract:        c.LieRetract,
+			})
+		}
+	}
+	return out
+}

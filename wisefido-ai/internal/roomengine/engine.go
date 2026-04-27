@@ -111,8 +111,9 @@ type Engine struct {
 	winner    int // 当前 winner 组（0/1/2），-1=无 winner 用 baseline
 
 	// 运行时参数（由 Configure 注入；Decay/Learn 字段语义见 cell.go / cell_learning.go）
-	decayParams DecayParams
-	learnParams LearnParams
+	decayParams     DecayParams
+	learnParams     LearnParams
+	bedsideFallCfg  BedsideFallConfig // R4 床边晕倒参数；RegisterRoom 时下发到 TrackManager
 
 	// 定时器
 	decayInterval      time.Duration // 默认 1 小时（Decay 计算一次）
@@ -140,6 +141,14 @@ type RuntimeConfig struct {
 	WinnerEvalInterval time.Duration
 	SnapshotInterval   time.Duration // 0 = 关闭持久化定时器；Persister 仍可在退出时 dump
 	Persister          Persister     // nil = 不持久化
+
+	// 风险时段（夜间）；通过 SetRiskTimeConfig 注入到包级 nightCfg。
+	// 全 0 视为未设置，保留 IsNightTime 默认（23:30 - 07:30）。
+	RiskTime RiskTimeConfig
+
+	// R4 床边晕倒参数；通过 TrackManager.SetBedsideFallConfig 注入到每个房间。
+	// 任一字段 0 保留 defaultBedsideFallCfg 默认值。
+	BedsideFall BedsideFallConfig
 }
 
 // NewEngine 创建 Room Engine（默认参数）。生产环境调用 Configure 注入 yaml 配置。
@@ -192,6 +201,16 @@ func (e *Engine) Configure(cfg RuntimeConfig) {
 	}
 	// Persister 直接赋值（nil 也接受，表示禁用）
 	e.persister = cfg.Persister
+
+	// 风险时段（IsNightTime 用）—— 包级 var，所有房间共享
+	SetRiskTimeConfig(cfg.RiskTime)
+
+	// R4 参数：保存到 engine 级 + 下发到所有已注册房间的 TrackManager。
+	// （RegisterRoom 在 Configure 之前调用的房间也要补设。）
+	e.bedsideFallCfg = cfg.BedsideFall
+	for _, tm := range e.rooms {
+		tm.SetBedsideFallConfig(cfg.BedsideFall)
+	}
 }
 
 // SetOutputCallback 设置 track 输出回调（发 alarm 等下游）
@@ -288,6 +307,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	e.mounts[cfg.RoomID] = cfg.Radar
 	tm := NewTrackManager(cfg.RoomID, grid)
 	tm.SetMoveSpeedCms(e.learnParams.MoveSpeedCms)
+	tm.SetBedsideFallConfig(e.bedsideFallCfg)
 	e.rooms[cfg.RoomID] = tm
 
 	// 计算 layout hash 并保存（snapshot save/load 都按此 hash 比对）

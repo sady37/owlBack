@@ -70,6 +70,31 @@ type TrackManager struct {
 	// 设计动机：雷达对老人慢走常报 Standing → ActiveType[Move]/TraverseCount 永远不涨。
 	// 默认 20（≈2 cells/s）；由 engine.Configure / playback.Run 从 yaml 注入。
 	moveSpeedCms int
+
+	// lastLeftBedAt：任意来源（sleepad event / sleepad bed_status 转换 / 未来 radar event）
+	// 最近一次 LeftBed 事件的时间戳。R4（AnomalyBedsideFall）开窗判定用。
+	// 0 = 从未有 LeftBed 事件（或上次 InBed 后又被 InBed 抹掉）。
+	lastLeftBedAt int64
+
+	// bedsideFallCfg：R4（床边晕倒）参数；由 SetBedsideFallConfig 注入。
+	// 全 0 = 用默认（180s / 100cm / 900s）。
+	bedsideFallCfg BedsideFallConfig
+}
+
+// BedsideFallConfig R4 床边晕倒参数。
+// 物理含义：风险时段（IsNightTime）内 LeftBed 之后 WindowSec 秒内，
+// 若 track 距 AreaBed cell ≤ BedsideMarginCm 且静止 > StillTimeoutSec → AnomalyBedsideFall。
+type BedsideFallConfig struct {
+	WindowSec       int // LeftBed 后多少秒内是开窗期
+	BedsideMarginCm int // 距 AreaBed 此值内视为"床边"
+	StillTimeoutSec int // 静止此秒数触发
+}
+
+// 默认值（与 config.go 中 setRoomEngineDefaults 一致；零值兜底用）
+var defaultBedsideFallCfg = BedsideFallConfig{
+	WindowSec:       180,
+	BedsideMarginCm: 100,
+	StillTimeoutSec: 900,
 }
 
 // NewTrackManager 创建 track 管理器
@@ -83,6 +108,7 @@ func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 		sleepadStates:      make(map[string]*SleepadObservation),
 		bedPersonCount:     make(map[string]int),
 		moveSpeedCms:       20, // 默认值（与 DefaultLearnParams.MoveSpeedCms 一致）
+		bedsideFallCfg:     defaultBedsideFallCfg,
 	}
 }
 
@@ -99,6 +125,10 @@ func (tm *TrackManager) ProcessSleepadBedEvent(evt SleepadBedEvent) {
 			c = 0
 		}
 		tm.bedPersonCount[evt.DeviceUID] = c
+		// LeftBed 事件 → R4 开窗。任一来源（sleepad event / 状态机转换）触发即更新。
+		if evt.TMs > tm.lastLeftBedAt {
+			tm.lastLeftBedAt = evt.TMs
+		}
 	}
 }
 
@@ -119,6 +149,11 @@ func (tm *TrackManager) ProcessSleepadObservation(obs SleepadObservation) {
 	defer tm.mu.Unlock()
 	cur, ok := tm.sleepadStates[obs.DeviceUID]
 	if !ok || obs.TMs > cur.TMs {
+		// 状态转换 InBed=true → InBed=false 视为 LeftBed（与 ProcessSleepadBedEvent 等价）
+		// 单独的 event 流不一定到（部分固件只发 monitor），所以这里也要打开 R4 窗口。
+		if ok && cur.InBed && !obs.InBed && obs.TMs > tm.lastLeftBedAt {
+			tm.lastLeftBedAt = obs.TMs
+		}
 		copyObs := obs
 		tm.sleepadStates[obs.DeviceUID] = &copyObs
 	}
@@ -168,6 +203,21 @@ func (tm *TrackManager) SetMoveSpeedCms(v int) {
 	tm.mu.Lock()
 	tm.moveSpeedCms = v
 	tm.mu.Unlock()
+}
+
+// SetBedsideFallConfig 注入 R4 床边晕倒参数；任一字段 0 保留默认值。
+func (tm *TrackManager) SetBedsideFallConfig(c BedsideFallConfig) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if c.WindowSec > 0 {
+		tm.bedsideFallCfg.WindowSec = c.WindowSec
+	}
+	if c.BedsideMarginCm > 0 {
+		tm.bedsideFallCfg.BedsideMarginCm = c.BedsideMarginCm
+	}
+	if c.StillTimeoutSec > 0 {
+		tm.bedsideFallCfg.StillTimeoutSec = c.StillTimeoutSec
+	}
 }
 
 // SetSleepadInBedCount 外部更新 Sleepad 在床人数
@@ -614,6 +664,23 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64) {
 				}
 			}
 		}
+
+		// R4: 床边晕倒（升级 AnomalyStillTooLong → AnomalyBedsideFall）
+		// 触发：风险时段 + 最近 WindowSec 内有 LeftBed + 当前位置距 AreaBed ≤ BedsideMarginCm
+		//       + 静止 > StillTimeoutSec
+		// 物理意义：人离床去卫生间途中在床边滑倒/晕倒，雷达失锁前最后位置仍在床边。
+		// 与 R2(BedFall) 区别：R2 是"仍在床矛盾"，R4 是"离床后到不了远方"。
+		if tm.lastLeftBedAt > 0 &&
+			nowMs-tm.lastLeftBedAt < int64(tm.bedsideFallCfg.WindowSec)*1000 &&
+			IsNightTime(nowMs) &&
+			tm.grid.IsNearPriorType(x, y, AreaBed, tm.bedsideFallCfg.BedsideMarginCm) {
+			stillSec := int((nowMs - ts.StillSince) / 1000)
+			if stillSec > tm.bedsideFallCfg.StillTimeoutSec && ts.CurrentAnomaly != AnomalyBedsideFall {
+				ts.CurrentAnomaly = AnomalyBedsideFall
+				tm.grid.MarkFallEvent(x, y, nowMs)
+				ts.LongStillReported = true // 复用 flag 防 LongStill 重复 mark
+			}
+		}
 	} else {
 		// 在动：刚从静止恢复，记 Dwell EMA
 		if ts.StillSince > 0 {
@@ -781,6 +848,8 @@ func (tm *TrackManager) computeRisk(ts *TrackState, stillSec int, nowMs int64) i
 		base = 100
 	case AnomalyBedFall:
 		base = 100 // 双源矛盾确认的 bed-fall，最高风险
+	case AnomalyBedsideFall:
+		base = 100 // R4 床边晕倒（夜间 + LeftBed 后床边静止超时），最高风险
 	case AnomalyStillTooLong:
 		base = 60
 	case AnomalyPathBreak:

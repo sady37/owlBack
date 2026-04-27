@@ -19,6 +19,7 @@ const (
 	AnomalyPathBreak    Anomaly = 3 // 轨迹断裂（非出口消失）
 	AnomalyPoseMismatch Anomaly = 4 // pose 与运动学矛盾
 	AnomalyBedFall      Anomaly = 5 // 床下跌倒（雷达坐标仍在床 + sleepad 离床 + 仅 1 人）
+	AnomalyBedsideFall  Anomaly = 6 // 床边晕倒（夜间 LeftBed 后人未走开，床边静止超时；R4）
 )
 
 // TimedPoint 带时间戳的画布坐标（cm 整数）

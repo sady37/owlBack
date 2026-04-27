@@ -77,6 +77,20 @@ type RoomEngineConfig struct {
 		ConfidenceFull   int  `yaml:"confidence_full"`    // 默认 95   (promoteCell 上限)
 		Cumulative       bool `yaml:"cumulative"`         // 默认 true (同 type 累积取 max，多日推向 100)
 	} `yaml:"belief"`
+	RiskTime struct {
+		// 风险时段（夜间）开始/结束的本地时间，默认 23:30 - 07:30。
+		// 用于 StillTimeoutSec 白天放宽（×1.2）和 R4（床边晕倒）窗口判定。
+		NightStartH int `yaml:"night_start_h"` // 默认 23
+		NightStartM int `yaml:"night_start_m"` // 默认 30
+		NightEndH   int `yaml:"night_end_h"`   // 默认 7
+		NightEndM   int `yaml:"night_end_m"`   // 默认 30
+	} `yaml:"risk_time"`
+	BedsideFall struct {
+		// R4 床边晕倒：风险时段 LeftBed 后人未走开，床边静止 >阈值 → 报警
+		WindowSec        int `yaml:"window_sec"`         // 默认 180 (LeftBed 后 N 秒内是"开窗期")
+		BedsideMarginCm  int `yaml:"bedside_margin_cm"`  // 默认 100 (距 AreaBed cell 此值内 = 床边)
+		StillTimeoutSec  int `yaml:"still_timeout_sec"`  // 默认 900 (静止 15 min 触发)
+	} `yaml:"bedside_fall"`
 	ParamSets []struct {
 		Name   string  `yaml:"name"`
 		Alpha  float64 `yaml:"alpha"`
@@ -259,6 +273,25 @@ func (c *Config) setRoomEngineDefaults() {
 		r.Persist.Table = "roomengine_grid_snapshot"
 	}
 	// Persist.Enabled 不在此处自动开启：dev/test 场景需要能不持久化，由 yaml 显式控制。
+
+	// RiskTime 默认 23:30 - 07:30
+	if r.RiskTime.NightStartH == 0 && r.RiskTime.NightStartM == 0 &&
+		r.RiskTime.NightEndH == 0 && r.RiskTime.NightEndM == 0 {
+		r.RiskTime.NightStartH = 23
+		r.RiskTime.NightStartM = 30
+		r.RiskTime.NightEndH = 7
+		r.RiskTime.NightEndM = 30
+	}
+	// BedsideFall 默认 180s 开窗 / 100cm 床边 / 900s 静止超时
+	if r.BedsideFall.WindowSec == 0 {
+		r.BedsideFall.WindowSec = 180
+	}
+	if r.BedsideFall.BedsideMarginCm == 0 {
+		r.BedsideFall.BedsideMarginCm = 100
+	}
+	if r.BedsideFall.StillTimeoutSec == 0 {
+		r.BedsideFall.StillTimeoutSec = 900
+	}
 }
 
 func LoadFromEnv() (*Config, error) {

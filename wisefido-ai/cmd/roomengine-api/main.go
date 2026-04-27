@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -116,6 +117,24 @@ func handlePlayback(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	}
 	layoutPath := q.Get("layout")
 
+	// dump_rect=x1,y1,x2,y2（画布坐标，cm）—— debug：跑完后 dump 矩形内 cell 统计到 JSON
+	var dumpRect [4]int
+	if s := q.Get("dump_rect"); s != "" {
+		parts := strings.Split(s, ",")
+		if len(parts) != 4 {
+			http.Error(w, "dump_rect must be 'x1,y1,x2,y2'", http.StatusBadRequest)
+			return
+		}
+		for i, p := range parts {
+			v, err := strconv.Atoi(strings.TrimSpace(p))
+			if err != nil {
+				http.Error(w, "dump_rect parse: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			dumpRect[i] = v
+		}
+	}
+
 	// 解析 layout：要么从文件读，要么从 DB 查
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
@@ -136,6 +155,7 @@ func handlePlayback(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 		Start:     start,
 		End:       end,
 		SnapMin:   snapMin,
+		DumpRect:  dumpRect,
 	})
 	if err != nil {
 		// ctx timeout/cancel 走 504；其他走 500

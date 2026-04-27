@@ -87,6 +87,17 @@ func buildRuntimeConfig(cfg *config.Config, db *sql.DB) roomengine.RuntimeConfig
 		BeliefScanInterval: time.Duration(r.Belief.ScanIntervalSec) * time.Second,
 		WinnerEvalInterval: time.Duration(r.Belief.WinnerEvalSec) * time.Second,
 		SnapshotInterval:   time.Duration(r.Persist.SnapshotIntervalSec) * time.Second,
+		RiskTime: roomengine.RiskTimeConfig{
+			NightStartH: r.RiskTime.NightStartH,
+			NightStartM: r.RiskTime.NightStartM,
+			NightEndH:   r.RiskTime.NightEndH,
+			NightEndM:   r.RiskTime.NightEndM,
+		},
+		BedsideFall: roomengine.BedsideFallConfig{
+			WindowSec:       r.BedsideFall.WindowSec,
+			BedsideMarginCm: r.BedsideFall.BedsideMarginCm,
+			StillTimeoutSec: r.BedsideFall.StillTimeoutSec,
+		},
 	}
 
 	// ParamSets：3 组并行参数（保守/中庸/激进）

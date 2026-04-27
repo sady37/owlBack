@@ -34,6 +34,10 @@ type Options struct {
 	SnapMin   int // 快照间隔（分钟），默认 10
 	ChunkHrs  int // DB 分块查询大小（小时），默认 6
 	RowLimit  int // 单块最大行数，默认 30000
+
+	// DumpRect debug：跑完后把这个矩形（画布坐标 cm）内每个 InRoom cell 的统计灌进 Result.RectDump。
+	// 4 个 0 = 不 dump。用于定位"为什么这片 cell 学成 X 类型"。
+	DumpRect [4]int // [x1, y1, x2, y2]
 }
 
 // Result 回放结果（snapshots + 统计）
@@ -48,6 +52,9 @@ type Result struct {
 	SilentFallPendingCancelled int `json:"silent_fall_pending_cancelled"`
 	SilentFallReported         int `json:"silent_fall_reported"`
 	SilentFallOutstanding      int `json:"silent_fall_outstanding"`
+
+	// RectDump：Options.DumpRect 设置时，跑完后的 cell 统计列表（用于定位学习异常）
+	RectDump []roomengine.CellStat `json:"rect_dump,omitempty"`
 }
 
 // 历史轨迹窗口（与原 playback 一致）
@@ -233,7 +240,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		buildTrackPaths(pathBuf, simT, trackLookbackMs)))
 
 	stats := tm.SilentFallStatsSnapshot()
-	return &Result{
+	res := &Result{
 		Snapshots:                  snapshots,
 		TotalRows:                  totalRows,
 		TotalFrames:                totalFrames,
@@ -243,7 +250,13 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		SilentFallPendingCancelled: stats.PendingCancelled,
 		SilentFallReported:         stats.Reported,
 		SilentFallOutstanding:      stats.Outstanding,
-	}, nil
+	}
+	// 可选：dump 矩形内 cell 统计（debug 学习异常）
+	if opts.DumpRect != [4]int{0, 0, 0, 0} {
+		res.RectDump = grid.DumpRect(opts.DumpRect[0], opts.DumpRect[1],
+			opts.DumpRect[2], opts.DumpRect[3])
+	}
+	return res, nil
 }
 
 // pathPt 单帧 track 位置记录
