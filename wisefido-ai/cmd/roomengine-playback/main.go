@@ -33,7 +33,9 @@ func main() {
 		roomID     = flag.String("room", "09E7-room101", "room id（仅作显示标识）")
 		deviceUID  = flag.String("uid", "9D8A326309E7", "device_uid（雷达硬件 UID）")
 		tenantID   = flag.String("tenant", "", "tenant_id（缺省自动查 devices 表）")
-		hours      = flag.Int("hours", 48, "回放最近 N 小时")
+		hours      = flag.Int("hours", 48, "回放最近 N 小时（被 --start-ms/--end-ms 覆盖）")
+		startMs    = flag.Int64("start-ms", 0, "回放起始 epoch ms（与 --end-ms 一起使用）")
+		endMs      = flag.Int64("end-ms", 0, "回放结束 epoch ms（与 --start-ms 一起使用）")
 		snapMin    = flag.Int("snap", 30, "快照间隔（模拟分钟）")
 		outHTML    = flag.String("out", "doc/playback-09E7.html", "输出 HTML 路径")
 		chunkHours = flag.Int("chunk", 6, "DB 分块查询大小（小时）")
@@ -66,8 +68,16 @@ func main() {
 	defer db.Close()
 
 	// 3. 跑回放
-	end := time.Now()
-	start := end.Add(time.Duration(-*hours) * time.Hour)
+	var start, end time.Time
+	if *startMs > 0 && *endMs > 0 {
+		start = time.UnixMilli(*startMs)
+		end = time.UnixMilli(*endMs)
+		log.Printf("playback window (explicit): %s ~ %s", start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339))
+	} else {
+		end = time.Now()
+		start = end.Add(time.Duration(-*hours) * time.Hour)
+		log.Printf("playback window (last %dh): %s ~ %s", *hours, start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339))
+	}
 
 	res, err := playback.Run(ctx, playback.Options{
 		RoomID:    *roomID,
@@ -89,6 +99,9 @@ func main() {
 	log.Printf("silent-fall stats: pending_created=%d cancelled=%d reported=%d outstanding=%d",
 		res.SilentFallPendingCreated, res.SilentFallPendingCancelled,
 		res.SilentFallReported, res.SilentFallOutstanding)
+	log.Printf("lost-fall stats: pending_created=%d cancelled=%d reported=%d outstanding=%d",
+		res.LostFallPendingCreated, res.LostFallPendingCancelled,
+		res.LostFallReported, res.LostFallOutstanding)
 
 	// 4. 写 HTML
 	if err := os.MkdirAll(filepath.Dir(*outHTML), 0755); err != nil {

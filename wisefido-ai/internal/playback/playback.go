@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
 	"owl-common/radarutils"
 	"wisefido-ai/internal/roomengine"
 )
@@ -56,6 +57,12 @@ type Result struct {
 	SilentFallPendingCancelled int `json:"silent_fall_pending_cancelled"`
 	SilentFallReported         int `json:"silent_fall_reported"`
 	SilentFallOutstanding      int `json:"silent_fall_outstanding"`
+
+	// Lost Fall 挂起机制统计（cell-area-typed wait + ExitRoom + 多人 cancel）
+	LostFallPendingCreated   int `json:"lost_fall_pending_created"`
+	LostFallPendingCancelled int `json:"lost_fall_pending_cancelled"`
+	LostFallReported         int `json:"lost_fall_reported"`
+	LostFallOutstanding      int `json:"lost_fall_outstanding"`
 
 	// RectDump：Options.DumpRect 设置时，跑完后的 cell 统计列表（用于定位学习异常）
 	RectDump []roomengine.CellStat `json:"rect_dump,omitempty"`
@@ -147,6 +154,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	learnParams := roomengine.DefaultLearnParams()
 	tm.SetMoveSpeedCms(learnParams.MoveSpeedCms)
 	tm.SetRoomName(cfg.RoomName)
+	// 让 engine 内部 ai.log 走 stderr，方便 playback 实测看 ghost / fall 决策细节
+	if logger, err := zap.NewDevelopment(); err == nil {
+		tm.SetLogger(logger)
+	}
 	// 注入时区（IsNightTime 用）；playback 调用方应在 opts.Cfg.Timezone 中设置 IANA 字符串。
 	if cfg.Timezone != "" {
 		if loc, err := time.LoadLocation(cfg.Timezone); err == nil {
@@ -248,7 +259,15 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			}
 
 			frames := roomengine.ParseRadarTracks(row.DataValue, row.DeviceID, cfg.Radar, ts)
-			if len(frames) > 0 {
+			if len(frames) == 0 {
+				// firmware tid=88 heartbeat 帧被 ParseRadarTracks 过滤后，仍要 tick engine
+				// 否则之前活着的 track 的 MissCount 不递增，永远不会进入消失判定 → lost-fall pending 也不会创建。
+				// 与 prod engine.go 同 bug；此处先在 playback 层修，后续再看 prod 是否同改。
+				tm.Tick(ts)
+				simT = ts
+				continue
+			}
+			{
 				outputs := tm.ProcessFrame(frames)
 				totalFrames += len(frames)
 				realIDs := make(map[int]bool, len(outputs))
@@ -302,6 +321,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		buildTrackPaths(pathBuf, simT, trackLookbackMs)))
 
 	stats := tm.SilentFallStatsSnapshot()
+	lostStats := tm.LostFallStatsSnapshot()
 	res := &Result{
 		Snapshots:                  snapshots,
 		TotalRows:                  totalRows,
@@ -312,6 +332,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		SilentFallPendingCancelled: stats.PendingCancelled,
 		SilentFallReported:         stats.Reported,
 		SilentFallOutstanding:      stats.Outstanding,
+		LostFallPendingCreated:     lostStats.PendingCreated,
+		LostFallPendingCancelled:   lostStats.PendingCancelled,
+		LostFallReported:           lostStats.Reported,
+		LostFallOutstanding:        lostStats.Outstanding,
 	}
 	// 可选：dump 矩形内 cell 统计（debug 学习异常）
 	if opts.DumpRect != [4]int{0, 0, 0, 0} {

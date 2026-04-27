@@ -88,9 +88,15 @@ func ParseRadarFallAlarm(dv interface{}, deviceUID string, fallbackTs int64) []R
 }
 
 // ParseRadarTrackEvents 解析 event:stream 一条消息的 data_value 为 RadarTrackEvent 列表。
-// 仅返回 event_name ∈ {EnterRoom, ExitRoom, InBed, LeftBed} 且 event_status="instant" 的项。
+// 仅返回 event_name ∈ {EnterRoom, ExitRoom, InBed, LeftBed}。
 //
-// 与 ParseSleepadBedEvents 对称：sleepad 也是 instant 去重，避免 instant+start 重复计数。
+// 实测（2026-04-27 case_lostfall）：
+//   - EnterRoom / ExitRoom / InBed 只发 status="start"
+//   - LeftBed 双发 ("instant" + "start")
+//
+// 这里接受 "start" 与 "instant"。LeftBed 双发时同 TMs，RecordRadarEvent 用 TMs 做 map key
+// 会自然覆盖（无重复计数风险）。"end" 状态（如 SignalPoorRecover end）不在本表，已被 event_name
+// 白名单过滤。
 func ParseRadarTrackEvents(dv interface{}, deviceUID string, fallbackTs int64) []RadarTrackEvent {
 	arr := jsonArrayOfObjects(dv)
 	if len(arr) == 0 {
@@ -105,7 +111,7 @@ func ParseRadarTrackEvents(dv interface{}, deviceUID string, fallbackTs int64) [
 			continue
 		}
 		st, _ := m["event_status"].(string)
-		if st != "instant" {
+		if st != "start" && st != "instant" {
 			continue
 		}
 		ts := int64FromAny(m["event_since"])

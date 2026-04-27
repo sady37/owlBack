@@ -889,6 +889,24 @@ func (tm *TrackManager) SilentFallStatsSnapshot() SilentFallStats {
 	}
 }
 
+// LostFallStats lost-fall 统计快照（含三类 cancel 来源汇总）
+type LostFallStats struct {
+	PendingCreated   int // 进入挂起的总数
+	PendingCancelled int // 取消累计（含 birth-recovery / ExitRoom / 多人入屋）
+	Reported         int // 超时真报的 lost fall 数量
+	Outstanding      int // 当前仍在挂起池中
+}
+
+// LostFallStatsSnapshot 返回 lost-fall 累计统计
+func (tm *TrackManager) LostFallStatsSnapshot() LostFallStats {
+	return LostFallStats{
+		PendingCreated:   tm.lostFallPendingCreated,
+		PendingCancelled: tm.lostFallPendingCancelled,
+		Reported:         tm.lostFallReported,
+		Outstanding:      len(tm.pendingLostFalls),
+	}
+}
+
 // ========================================================================
 // 出生打分（基于 elder care 步速物理常识）
 // ========================================================================
@@ -1017,15 +1035,27 @@ func (tm *TrackManager) tryGraceUpgrade(ts *TrackState, nowMs int64) {
 
 	// 仅当 birth 是因「找不到 EnterRoom」而被短路时才补救
 	if ts.BirthReason != "no_enter_pair" && ts.BirthReason != "far_from_enter" {
+		tm.logger.Debug("birth_grace_skip_reason",
+			zap.Int("track_id", ts.TrackID),
+			zap.String("birth_reason", ts.BirthReason))
 		return
 	}
 	// 距离判断：>150cm 物理仍不可能
 	dEntry := tm.grid.NearestEntryDist(ts.BirthPos.X, ts.BirthPos.Y)
 	if dEntry > birthMaxRealisticCm {
+		tm.logger.Info("birth_grace_skip_far_from_enter",
+			zap.Int("track_id", ts.TrackID),
+			zap.Int("d_entry", dEntry),
+			zap.Int("birth_x", ts.BirthPos.X), zap.Int("birth_y", ts.BirthPos.Y))
 		return
 	}
 	// 扩展窗 [birth-3s, deadline] 重扫
 	if !tm.hasRecentEnterRoomBetween(ts.BirthPos.TMs-enterPairWindowMs, ts.BirthFinalDeadlineMs) {
+		tm.logger.Info("birth_grace_skip_no_enter_event_in_window",
+			zap.Int("track_id", ts.TrackID),
+			zap.Int64("birth_ms", ts.BirthPos.TMs),
+			zap.Int64("deadline", ts.BirthFinalDeadlineMs),
+			zap.Int("event_count", len(tm.recentRadarEvents)))
 		return
 	}
 	// 命中：抬 birth score

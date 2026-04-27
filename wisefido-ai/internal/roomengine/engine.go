@@ -684,6 +684,11 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 		}
 		frames := e.parseTrackFrames(raw, deviceID, mount)
 		if len(frames) == 0 {
+			// tid=88 heartbeat / 全零无效帧被 ParseRadarTracks 过滤后，仍要 tick 推进 MissCount，
+			// 否则之前活着的 track 永不进入消失判定 → silent/lost fall pending 不会创建。
+			if ts > 0 {
+				tm.Tick(ts)
+			}
 			return
 		}
 		outputs := tm.ProcessFrame(frames)
