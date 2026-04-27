@@ -384,6 +384,28 @@ func (g *RoomGrid) MarkDoorEvent(x, y int, nowMs int64) {
 	c.LastUpdateMs = nowMs
 }
 
+// MarkFakeAlarm 人工标记 false_alarm 反馈到该 cell（cell history integral）。
+// 来源：alarm_events.handle_type='false_alarm' 触发，定位回该 cell 后调用。
+func (g *RoomGrid) MarkFakeAlarm(x, y int, nowMs int64) {
+	c := g.CellAt(x, y)
+	if c == nil {
+		return
+	}
+	c.IncrFakeAlarm()
+	c.LastUpdateMs = nowMs
+}
+
+// MarkToleratedStill 容忍静止反馈：track 在该 cell 长时间 stand-static 后自然离开（无真跌倒）。
+// 调用位点：track 从静止恢复移动 + 之前已 LongStillReported（系统曾认为可疑）。
+func (g *RoomGrid) MarkToleratedStill(x, y int, nowMs int64) {
+	c := g.CellAt(x, y)
+	if c == nil {
+		return
+	}
+	c.IncrToleratedStill()
+	c.LastUpdateMs = nowMs
+}
+
 // CellStat dump 用：把 cell 关键字段拍平。
 type CellStat struct {
 	Col               int      `json:"col"`

@@ -148,6 +148,13 @@ type Cell struct {
 	SleepadLeftBedCount int
 	DoorEventCount      int
 
+	// ---- Cell history integral（自适应阈值反馈，详见 fall_rules_param.go）----
+	// FakeAlarmCount: 在该 cell 触发的 fall 报警被人工标 false_alarm 累计次数
+	// ToleratedStillCount: track 在该 cell 长时间 stand-static 但最终自己离开（无 fall 报警）累计次数
+	// 两者一起决定 EffectiveStillTimeoutSec 的放宽倍数；EventSec 半衰期衰减
+	FakeAlarmCount      int
+	ToleratedStillCount int
+
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState
 
@@ -236,36 +243,91 @@ func (c *Cell) IsLikelyRestZone() bool {
 
 // StillTimeoutSec 静止超时阈值（秒；0 = 不限）。默认读 Belief[0]。
 //
-// isDay = true 时所有非零阈值 ×1.2（白天家属/护工活动多，放宽 20% 减误报）。
-// isDay = false 时用基线值（夜间敏感）。基线值即此函数返回值（夜间标准）。
+// isRiskTime = true（高风险时段，默认夜间 23:30-07:30）→ 基线值（严格）。
+// isRiskTime = false（非风险时段，默认白天）→ 基线 × FallRulesParam.Still.NonRiskTimeFactor（宽松）。
 //
-// 时段判定见 math_util.go::IsNightTime（23:30-07:30 = 夜）。
-func (c *Cell) StillTimeoutSec(isDay bool) int {
-	base := c.stillTimeoutBaseNight()
+// 逻辑：高风险时段跌倒更易发、人手少 → 更短阈值更快报警。
+// 时段判定见 math_util.go::IsNightTime（默认 23:30-07:30，可由 RiskTimeConfig 覆盖）。
+//
+// 调参常量集中在 fall_rules_param.go::FallRulesParam.Still。
+func (c *Cell) StillTimeoutSec(isRiskTime bool) int {
+	base := c.stillTimeoutBase()
 	if base == 0 {
 		return 0
 	}
-	if isDay {
-		// 白天 ×1.2，向上取整到秒
-		return base + base/5
+	if !isRiskTime {
+		// non-risk-time × NonRiskTimeFactor（默认 1.2 → 18min）
+		return int(float64(base) * FallRulesParam.Still.NonRiskTimeFactor)
 	}
 	return base
 }
 
-// stillTimeoutBaseNight 夜间基线值（不带白天放宽因子）。
+// stillTimeoutBase risk-time 基线值（严格档）。
 // 床/沙发：不限（休息合理）；马桶/淋浴：15min；Deny: 5min；其它：8min。
-func (c *Cell) stillTimeoutBaseNight() int {
+func (c *Cell) stillTimeoutBase() int {
 	switch c.Belief[0].Type {
 	case AreaBed, AreaSit:
 		return 0
-	case AreaToilet:
-		return 15 * 60 // 马桶 15 min（起身晕眩风险）
-	case AreaShower:
-		return 15 * 60 // 淋浴 15 min（潮湿跌倒风险）
+	case AreaToilet, AreaShower:
+		return FallRulesParam.Still.ToiletShowerSec
 	case AreaDeny:
-		return 5 * 60 // Deny 区静止 5 min 即可疑
+		return FallRulesParam.Still.DenyZoneSec
 	}
-	return 8 * 60 // Enter/Active/Unknown: 8 min
+	return FallRulesParam.Still.DefaultSec
+}
+
+// EffectiveStillTimeoutSec 综合 cell history 的最终静止超时阈值（秒）。
+//
+// = StillTimeoutSec(isRiskTime) × toleranceFactor()
+//
+// toleranceFactor 由该 cell 累计的 FakeAlarmCount + ToleratedStillCount 决定：
+//   - 全新装机（无历史）→ factor = 1.0（基线，最严）
+//   - 反复假报后 → 自动放宽，最多至 MaxToleranceFactor（默认 2.0）
+//
+// 设计目的：让系统自动消化「这个雷达在这个位置就是会假报」的客观存在，不靠人工调阈值。
+func (c *Cell) EffectiveStillTimeoutSec(isRiskTime bool) int {
+	base := c.StillTimeoutSec(isRiskTime)
+	if base == 0 {
+		return 0
+	}
+	return int(float64(base) * c.toleranceFactor())
+}
+
+// toleranceFactor 自适应放宽因子 ∈ [1.0, MaxToleranceFactor]。
+//
+// 累计证据 ratio = (FakeAlarmCount + ToleratedStillCount) / (FakeAlarmThreshold + ToleratedStillThreshold)
+// 线性饱和：ratio=0 → factor=1.0；ratio>=1 → factor=MaxToleranceFactor。
+func (c *Cell) toleranceFactor() float64 {
+	p := FallRulesParam.CellHistory
+	thresholdSum := p.FakeAlarmThreshold + p.ToleratedStillThreshold
+	if thresholdSum <= 0 {
+		return 1.0 // 防御：未配置则不放宽
+	}
+	score := float64(c.FakeAlarmCount + c.ToleratedStillCount)
+	ratio := score / float64(thresholdSum)
+	if ratio < 0 {
+		ratio = 0
+	}
+	if ratio > 1 {
+		ratio = 1
+	}
+	maxF := p.MaxToleranceFactor
+	if maxF < 1.0 {
+		maxF = 1.0 // 不能比基线还严
+	}
+	return 1.0 + (maxF-1.0)*ratio
+}
+
+// IncrFakeAlarm 人工标记 false_alarm 反馈到该 cell（在告警触发位置调用）。
+// 累计后衰减由 Decay() 用 EventSec 半衰期处理。
+func (c *Cell) IncrFakeAlarm() {
+	c.FakeAlarmCount++
+}
+
+// IncrToleratedStill 该 cell 上长时间 stand-static 未报警 + track 自然离开 反馈（容忍证据）。
+// 典型场景：水池/灶台/化妆台/熨衣板等"人本来就站着不动办事"的位置。
+func (c *Cell) IncrToleratedStill() {
+	c.ToleratedStillCount++
 }
 
 // ========================================================================
@@ -310,6 +372,13 @@ func (c *Cell) Decay(dtSec float64, p DecayParams) {
 	c.SleepadInBedCount = scaleInt(c.SleepadInBedCount, fEv)
 	c.SleepadLeftBedCount = scaleInt(c.SleepadLeftBedCount, fEv)
 	c.DoorEventCount = scaleInt(c.DoorEventCount, fEv)
+
+	// Cell history integral：用 EventSec 半衰期（与设计 30 天一致时配置 EventSec=30d）。
+	// 注：DecayParams.EventSec 默认 7d，若希望按 fall_rules_param.go::DecayHalfLifeDays(30) 衰减，
+	// 应在 engine 层用 FallRulesParam.CellHistory.DecayHalfLifeDays 作为独立衰减档。
+	// 当前先用 EventSec，后续若需精细化再加 HistorySec 字段。
+	c.FakeAlarmCount = scaleInt(c.FakeAlarmCount, fEv)
+	c.ToleratedStillCount = scaleInt(c.ToleratedStillCount, fEv)
 }
 
 // factor 计算半衰期衰减因子；半衰期非正时不衰减（返回 1）

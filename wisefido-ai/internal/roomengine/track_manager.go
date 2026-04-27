@@ -829,10 +829,10 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64) {
 		if !isRest && ts.Verdict == VerdictPending {
 			ts.AdjustScore(-3)
 		}
-		// 静止超时
+		// 静止超时（综合 cell history 的自适应阈值）
 		if cell != nil {
-			isDay := !IsNightTime(nowMs)
-			timeout := cell.StillTimeoutSec(isDay)
+			isRiskTime := IsNightTime(nowMs)
+			timeout := cell.EffectiveStillTimeoutSec(isRiskTime)
 			if timeout > 0 {
 				// Bathroom caregiver 例外：本 cell 在 toilet/shower + ≥2 real track 同在 bathroom
 				// → 第二个 track 大概率是护工陪同，长时间静止合理（如老人坐马桶、护工旁边照看）
@@ -885,6 +885,11 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64) {
 			if dwellSec > 0 {
 				tm.grid.MarkDwell(ts.StillX, ts.StillY, dwellSec, nowMs)
 			}
+		}
+		// Cell history integral：之前曾被系统判为 long-still（LongStillReported=true）但 track 自己走了
+		// → 系统判错（容忍证据），喂给该 cell 自动放宽未来阈值
+		if ts.LongStillReported {
+			tm.grid.MarkToleratedStill(ts.StillX, ts.StillY, nowMs)
 		}
 		ts.StillSince = 0
 		ts.LongStillReported = false
