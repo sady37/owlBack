@@ -64,6 +64,10 @@ type Result struct {
 	LostFallReported         int `json:"lost_fall_reported"`
 	LostFallOutstanding      int `json:"lost_fall_outstanding"`
 
+	// Silent Fall LeftBed（PR-2c 新版：sleepad LeftBed + radar 仍在 Bed 邻域）
+	SilentFallLeftBedReported  int `json:"silent_fall_leftbed_reported"`
+	SilentFallLeftBedCancelled int `json:"silent_fall_leftbed_cancelled"`
+
 	// RectDump：Options.DumpRect 设置时，跑完后的 cell 统计列表（用于定位学习异常）
 	RectDump []roomengine.CellStat `json:"rect_dump,omitempty"`
 
@@ -322,6 +326,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 
 	stats := tm.SilentFallStatsSnapshot()
 	lostStats := tm.LostFallStatsSnapshot()
+	leftBedStats := tm.SilentFallLeftBedStatsSnapshot()
 	res := &Result{
 		Snapshots:                  snapshots,
 		TotalRows:                  totalRows,
@@ -336,6 +341,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		LostFallPendingCancelled:   lostStats.PendingCancelled,
 		LostFallReported:           lostStats.Reported,
 		LostFallOutstanding:        lostStats.Outstanding,
+		SilentFallLeftBedReported:  leftBedStats.Reported,
+		SilentFallLeftBedCancelled: leftBedStats.Cancelled,
 	}
 	// 可选：dump 矩形内 cell 统计（debug 学习异常）
 	if opts.DumpRect != [4]int{0, 0, 0, 0} {

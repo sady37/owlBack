@@ -13,6 +13,23 @@ package roomengine
 //      逻辑：高风险时段跌倒更易发、人手少 → 更快响应
 //   4. 修改方式：改本文件 → 重编 → 部署。属于「设计参数」不是「部署配置」。
 
+// silentFallParam Silent Fall（sleepad+radar 融合：床上方遮挡 / 离床后矛盾）参数
+//
+// 触发链（用户设计 2026-04-27）：
+//  1. sleepad InBed 时同房间 radar 也 InBed → 床区获得证据（多人为多 sleepad 累计）
+//  2. 持续在床 ≥ MinInBedSec（默认 5min）才作为 precondition（过滤短暂坐床）
+//  3. sleepad LeftBed 触发后开始等待
+//  4. 等待时长按 HR/RR 与人数：
+//     - LeftBed 时 sleepad 有 HR/RR + 单人 → WaitVitalSec=60s（信心高）
+//     - 否则 → WaitNoVitalSec=120s（保守）
+//  5. 等待期满时 radar 仍在 Bed 邻域 → silent fall（人离床但 radar 还看到 bed → 跌到地上）
+type silentFallParam struct {
+	MinInBedSec     int // 在床持续时间下限，作为 precondition
+	WaitNoVitalSec  int // sleepad LeftBed 时无 HR/RR：等待 120s
+	WaitVitalSec    int // sleepad LeftBed 时有 HR/RR + 单人：等待 60s
+	BedNeighborhood int // 视为「仍在 Bed 邻域」的距离 cm（与 BedsideMarginCm 同语义，独立可调）
+}
+
 // stillFallParam Still Fall（一直可见 + stand 静止）参数
 type stillFallParam struct {
 	// 基线时长（risk-time，按 cell areaType 分）
@@ -78,6 +95,7 @@ type cellHistoryParam struct {
 
 // fallRulesParam 顶层（不导出，避免外部直接构造；用 FallRulesParam 单例）
 type fallRulesParam struct {
+	Silent      silentFallParam
 	Still       stillFallParam
 	Lost        lostFallParam
 	CellHistory cellHistoryParam
@@ -87,6 +105,12 @@ type fallRulesParam struct {
 //
 // 约定：只读。修改值须改本文件并重编。运行时不修改字段。
 var FallRulesParam = fallRulesParam{
+	Silent: silentFallParam{
+		MinInBedSec:     5 * 60, // 在床 ≥5min 才作 precondition（过滤短坐）
+		WaitNoVitalSec:  120,    // 无 HR/RR：保守 120s
+		WaitVitalSec:    60,     // 有 HR/RR + 单人：60s
+		BedNeighborhood: 100,    // ≤1m 视为 Bed 邻域
+	},
 	Still: stillFallParam{
 		ToiletShowerSec:   15 * 60, // 15 min
 		DenyZoneSec:       5 * 60,  // 5 min

@@ -289,6 +289,159 @@ func TestBedPersonCount_Counting(t *testing.T) {
 }
 
 // ============================================================================
+// 新版 Silent Fall — sleepad LeftBed + radar 仍在 Bed 邻域（PR-2c）
+// ============================================================================
+
+// setupBedAt 在 grid 上标一个 AreaBed 矩形（SourceHuman），让 IsNearPriorType 命中。
+func setupBedAt(g *RoomGrid, x1, y1, x2, y2 int) {
+	for r := 0; r < g.Height; r++ {
+		for c := 0; c < g.Width; c++ {
+			cx, cy := g.ToCanvas(c, r)
+			if cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2 {
+				cell := &g.Cells[r*g.Width+c]
+				cell.Belief[0] = BeliefState{Type: AreaBed, Confidence: 99, Source: SourceHuman}
+				cell.AreaType = AreaBed
+			}
+		}
+	}
+}
+
+// TestSilentFallLeftBed_FiresWithoutHRRR：在床 ≥5min，无 HR/RR，LeftBed 后 120s radar 仍在床
+func TestSilentFallLeftBed_FiresWithoutHRRR(t *testing.T) {
+	tm, g := newTestTM()
+	setupBedAt(g, 80, 80, 140, 140) // bed 区域
+
+	const dev = "sleepad-1"
+	const t0 = int64(1_000_000)
+
+	// 1) sleepad InBed
+	tm.ProcessSleepadBedEvent(SleepadBedEvent{DeviceUID: dev, IsInBed: true, TMs: t0, Status: "instant"})
+
+	// 2) 喂一个 track 到 bed 区附近，且推进时间 ≥5min
+	tms := t0
+	for i := 0; i < 15; i++ {
+		tm.processFrameAt([]TrackFrame{frameAt(0, 100, 100, 50, observation.PoseLying, tms)}, tms)
+		tms += 1000
+	}
+	if ts, ok := tm.tracks[0]; ok {
+		ts.Verdict = VerdictReal
+		ts.Score = ScoreConfirmTh
+	}
+
+	// 3) 推进 5min（保 InBed precondition 满足）
+	tms = t0 + int64(FallRulesParam.Silent.MinInBedSec+10)*1000
+	tm.processFrameAt([]TrackFrame{frameAt(0, 100, 100, 50, observation.PoseLying, tms)}, tms)
+
+	// 4) sleepad LeftBed
+	tm.ProcessSleepadBedEvent(SleepadBedEvent{DeviceUID: dev, IsInBed: false, TMs: tms, Status: "instant"})
+
+	// 5) 120s 内仍喂 track（radar 还在 bed 区）
+	for i := 0; i < 130; i++ {
+		tms += 1000
+		tm.processFrameAt([]TrackFrame{frameAt(0, 100, 100, 50, observation.PoseLying, tms)}, tms)
+	}
+
+	if got := tm.silentFallLeftbedReported; got != 1 {
+		t.Errorf("expected 1 silent_fall_leftbed reported, got %d", got)
+	}
+}
+
+// TestSilentFallLeftBed_FiresWithHRRR60s：单人 + HR/RR → 60s 阈值
+func TestSilentFallLeftBed_FiresWithHRRR60s(t *testing.T) {
+	tm, g := newTestTM()
+	setupBedAt(g, 80, 80, 140, 140)
+
+	const dev = "sleepad-1"
+	const t0 = int64(1_000_000)
+
+	tm.ProcessSleepadBedEvent(SleepadBedEvent{DeviceUID: dev, IsInBed: true, TMs: t0, Status: "instant"})
+	// 提供 HR/RR 观测
+	tm.ProcessSleepadObservation(SleepadObservation{
+		DeviceUID: dev, TMs: t0 + 1000, InBed: true, HeartRate: 70, RespiratoryRate: 16,
+	})
+
+	tms := t0 + int64(FallRulesParam.Silent.MinInBedSec+10)*1000
+	for i := 0; i < 5; i++ {
+		tm.processFrameAt([]TrackFrame{frameAt(0, 100, 100, 50, observation.PoseLying, tms)}, tms)
+		tms += 1000
+	}
+	if ts, ok := tm.tracks[0]; ok {
+		ts.Verdict = VerdictReal
+		ts.Score = ScoreConfirmTh
+	}
+
+	tm.ProcessSleepadBedEvent(SleepadBedEvent{DeviceUID: dev, IsInBed: false, TMs: tms, Status: "instant"})
+
+	// 60s 内仍在床区
+	for i := 0; i < 70; i++ {
+		tms += 1000
+		tm.processFrameAt([]TrackFrame{frameAt(0, 100, 100, 50, observation.PoseLying, tms)}, tms)
+	}
+	if got := tm.silentFallLeftbedReported; got != 1 {
+		t.Errorf("expected 1 silent_fall_leftbed (60s vital path), got %d", got)
+	}
+}
+
+// TestSilentFallLeftBed_CancelOnRadarLeavesBed：120s 内 radar 也离开了 bed 区 → 取消
+func TestSilentFallLeftBed_CancelOnRadarLeavesBed(t *testing.T) {
+	tm, g := newTestTM()
+	setupBedAt(g, 80, 80, 140, 140)
+
+	const dev = "sleepad-1"
+	const t0 = int64(1_000_000)
+
+	tm.ProcessSleepadBedEvent(SleepadBedEvent{DeviceUID: dev, IsInBed: true, TMs: t0, Status: "instant"})
+
+	tms := t0 + int64(FallRulesParam.Silent.MinInBedSec+10)*1000
+	tm.processFrameAt([]TrackFrame{frameAt(0, 100, 100, 50, observation.PoseLying, tms)}, tms)
+	if ts, ok := tm.tracks[0]; ok {
+		ts.Verdict = VerdictReal
+		ts.Score = ScoreConfirmTh
+	}
+	tm.ProcessSleepadBedEvent(SleepadBedEvent{DeviceUID: dev, IsInBed: false, TMs: tms, Status: "instant"})
+
+	// 60s 后 radar 移走（远离 bed > 100cm）
+	for i := 0; i < 60; i++ {
+		tms += 1000
+		x := 100 + i*5 // 远离 bed
+		tm.processFrameAt([]TrackFrame{frameAt(0, x, 300, 50, observation.PoseStanding, tms)}, tms)
+	}
+	// 再推到 130s（>120s 等待窗）
+	for i := 0; i < 75; i++ {
+		tms += 1000
+		tm.processFrameAt([]TrackFrame{frameAt(0, 400, 300, 50, observation.PoseStanding, tms)}, tms)
+	}
+	if got := tm.silentFallLeftbedReported; got != 0 {
+		t.Errorf("radar moved away → should NOT fire, got reported=%d", got)
+	}
+	if got := tm.silentFallLeftbedCancelled; got != 1 {
+		t.Errorf("expected 1 cancelled, got %d", got)
+	}
+}
+
+// TestSilentFallLeftBed_NoFireBelowMinInBed：在床不足 5min 不进入等待状态
+func TestSilentFallLeftBed_NoFireBelowMinInBed(t *testing.T) {
+	tm, g := newTestTM()
+	setupBedAt(g, 80, 80, 140, 140)
+
+	const dev = "sleepad-1"
+	const t0 = int64(1_000_000)
+	tm.ProcessSleepadBedEvent(SleepadBedEvent{DeviceUID: dev, IsInBed: true, TMs: t0, Status: "instant"})
+	tms := t0 + 60*1000 // 仅 60s 在床（< 5min）
+	tm.ProcessSleepadBedEvent(SleepadBedEvent{DeviceUID: dev, IsInBed: false, TMs: tms, Status: "instant"})
+	for i := 0; i < 200; i++ {
+		tms += 1000
+		tm.processFrameAt(nil, tms)
+	}
+	if got := tm.silentFallLeftbedReported; got != 0 {
+		t.Errorf("InBed <5min should not arm; got reported=%d", got)
+	}
+	if got := tm.silentFallLeftbedCancelled; got != 0 {
+		t.Errorf("should not even cancel (never armed); got cancelled=%d", got)
+	}
+}
+
+// ============================================================================
 // IsNightTime
 // ============================================================================
 

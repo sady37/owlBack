@@ -154,6 +154,29 @@ type PendingSilentFall struct {
 	DisappearMs     int64 // 进入 pending 的时刻（≈MissCount 超阈值的 nowMs）
 }
 
+// BedSession 单 sleepad 设备的"在床会话"状态机。
+//
+// 用途：实现新版 silent fall（基于 sleepad LeftBed 与 radar 仍在 bed 邻域的矛盾）。
+//
+// 生命周期：
+//   sleepad InBed 首次到达    → InBedSinceMs 记录起点；HasHRRR 重置
+//   sleepad observation 含 HR/RR > 0 → HasHRRR = true（在 in-bed 期间任意时刻命中）
+//   sleepad LeftBed 到达       → 若已满 MinInBedSec，进入「等待矛盾」状态，记 LeftBedAtMs
+//   每 tick 检查超时             → 若 radar 仍在 Bed 邻域 → 报 silent fall
+//   重新 InBed                  → 重置 session（认为是新一轮上床）
+//
+// LeftBedHadHRRR / LeftBedMaxPeople 在 LeftBed 时刻 latch，不受后续观测影响。
+type BedSession struct {
+	DeviceUID         string // sleepad device_uid
+	InBedSinceMs      int64  // 首次 InBed 到达的时间戳；0 = 未在床
+	MaxPeople         int    // 该 session 期间见过的最大 bedPersonCount[device]
+	HasHRRR           bool   // in-bed 期间是否观测到 HR/RR > 0
+	LeftBedAtMs       int64  // 0 = 仍在床；>0 = 等待矛盾窗口
+	LeftBedHadHRRR    bool   // LeftBed 时刻的 HasHRRR latch
+	LeftBedMaxPeople  int    // LeftBed 时刻的 MaxPeople latch
+	SilentFallAlerted bool   // 防重复触发
+}
+
 // PendingLostFall 已消失但等待 cell-area-typed 时长复现窗口的 track（lost-fall 规则）。
 //
 // 与 PendingSilentFall 区别：

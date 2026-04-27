@@ -57,6 +57,10 @@ type TrackManager struct {
 	// 取消条件：新 track 出生 / ExitRoom 事件 / room.NumberPeople ≥ 2。
 	pendingLostFalls map[int]*PendingLostFall
 
+	// bedSessions：sleepad 设备维度的"在床会话"状态机；新版 silent fall 触发源。
+	// key = sleepad device_uid。详见 BedSession 结构体。
+	bedSessions map[string]*BedSession
+
 	// bathroomRealCount：当前帧 ProcessFrame 起点时，所在 cell 为 AreaToilet/AreaShower 的 Real track 数。
 	// 用途：≥2 时视为护工陪同，scoreMovement 跳过 long-still 15min 超时报警。
 	// 由 ProcessFrame 入口刷新，scoreMovement 读取（同步在锁内，无竞态）。
@@ -80,6 +84,10 @@ type TrackManager struct {
 	lostFallPendingCreated   int
 	lostFallPendingCancelled int // 含 birth-recovery / ExitRoom / NumberPeople 三类取消
 	lostFallReported         int
+
+	// Silent fall（新版 LeftBed 矛盾路径）统计
+	silentFallLeftbedReported  int
+	silentFallLeftbedCancelled int // wait 满但 radar 已离开 Bed 邻域 → 取消（人正常起床）
 
 	sleepadInBedCount int
 
@@ -142,6 +150,7 @@ func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 		outputs:            make(map[int]*TrackOutput),
 		pendingSilentFalls: make(map[int]*PendingSilentFall),
 		pendingLostFalls:   make(map[int]*PendingLostFall),
+		bedSessions:        make(map[string]*BedSession),
 		sleepadStates:      make(map[string]*SleepadObservation),
 		bedPersonCount:     make(map[string]int),
 		moveSpeedCms:       20, // 默认值（与 DefaultLearnParams.MoveSpeedCms 一致）
@@ -189,24 +198,60 @@ func (tm *TrackManager) IsBathroomByRoomName() bool {
 	return roomutil.IsBathroom(tm.roomName)
 }
 
-// ProcessSleepadBedEvent 接收 sleepad InBed/LeftBed 事件，更新人数计数。
+// ProcessSleepadBedEvent 接收 sleepad InBed/LeftBed 事件。
+//   - 维护 bedPersonCount + lastLeftBedAt（旧逻辑）
+//   - 维护 BedSession（新版 silent fall 状态机）
+//
 // 由 Engine 路由 iot:event:stream 中 device_type=Sleepad 时调用。
 func (tm *TrackManager) ProcessSleepadBedEvent(evt SleepadBedEvent) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
+
 	if evt.IsInBed {
 		tm.bedPersonCount[evt.DeviceUID]++
-	} else {
-		c := tm.bedPersonCount[evt.DeviceUID] - 1
-		if c < 0 {
-			c = 0
+		// BedSession：首次 InBed 启动会话；重复 InBed 仅更新 MaxPeople
+		s := tm.bedSessions[evt.DeviceUID]
+		if s == nil || s.InBedSinceMs == 0 {
+			s = &BedSession{DeviceUID: evt.DeviceUID, InBedSinceMs: evt.TMs}
+			tm.bedSessions[evt.DeviceUID] = s
 		}
-		tm.bedPersonCount[evt.DeviceUID] = c
-		// LeftBed 事件 → R4 开窗。任一来源（sleepad event / 状态机转换）触发即更新。
-		if evt.TMs > tm.lastLeftBedAt {
-			tm.lastLeftBedAt = evt.TMs
+		// 任意 InBed → 清掉之前的等待状态（视为新一轮上床）
+		s.LeftBedAtMs = 0
+		s.SilentFallAlerted = false
+		if cnt := tm.bedPersonCount[evt.DeviceUID]; cnt > s.MaxPeople {
+			s.MaxPeople = cnt
 		}
+		return
 	}
+
+	// LeftBed
+	c := tm.bedPersonCount[evt.DeviceUID] - 1
+	if c < 0 {
+		c = 0
+	}
+	tm.bedPersonCount[evt.DeviceUID] = c
+	if evt.TMs > tm.lastLeftBedAt {
+		tm.lastLeftBedAt = evt.TMs
+	}
+
+	// BedSession：人数归 0 时进入「等待矛盾」状态，要求满足 5min precondition
+	if c > 0 {
+		return
+	}
+	s := tm.bedSessions[evt.DeviceUID]
+	if s == nil || s.InBedSinceMs == 0 {
+		return // 没有有效 in-bed 历史，可能 LeftBed 来得太早或重复事件
+	}
+	if evt.TMs-s.InBedSinceMs < int64(FallRulesParam.Silent.MinInBedSec)*1000 {
+		// 在床时间不足 5min，不进入等待；直接结束 session
+		s.InBedSinceMs = 0
+		s.HasHRRR = false
+		s.MaxPeople = 0
+		return
+	}
+	s.LeftBedAtMs = evt.TMs
+	s.LeftBedHadHRRR = s.HasHRRR
+	s.LeftBedMaxPeople = s.MaxPeople
 }
 
 // totalBedPeople 同房间所有 sleepad 床的总人数（多床房间累加）
@@ -221,6 +266,8 @@ func (tm *TrackManager) totalBedPeople() int {
 // ProcessSleepadObservation 接收 sleepad 一帧观测，按设备 UID 保留最新状态。
 // 由 Engine.handleMessage 路由 device_type=Sleepad 时调用；
 // silent fall 报警前会查询此状态做 short-circuit（"sleepad 确认在床有 vital 即不报"）。
+//
+// BedSession 钩子：在 in-bed 期间任意时刻观测到 HR/RR > 0 → HasHRRR=true（用于 LeftBed 时刻 latch）。
 func (tm *TrackManager) ProcessSleepadObservation(obs SleepadObservation) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -233,6 +280,12 @@ func (tm *TrackManager) ProcessSleepadObservation(obs SleepadObservation) {
 		}
 		copyObs := obs
 		tm.sleepadStates[obs.DeviceUID] = &copyObs
+	}
+	// BedSession：在 in-bed 期间见到 HR/RR > 0 → 打 vital flag
+	if obs.InBed && obs.HasVitalSign() {
+		if s := tm.bedSessions[obs.DeviceUID]; s != nil && s.InBedSinceMs > 0 {
+			s.HasHRRR = true
+		}
 	}
 }
 
@@ -718,6 +771,12 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		delete(tm.pendingLostFalls, pid)
 	}
 
+	// ========== 段 4c: 新版 Silent Fall（sleepad LeftBed + radar 仍在 Bed 邻域） ==========
+	// 触发：bedSession.LeftBedAtMs > 0，等待 60s（vital + 单人）/ 120s（其它），
+	//       超时仍有任一活 track 在 AreaBed ±BedNeighborhood cm 内 → 矛盾报警。
+	// 否则取消（人正常起床，radar 也离床区）。
+	results = append(results, tm.scanSilentFallLeftBed(nowMs)...)
+
 	// ========== 段 5: Bed-Fall 物理矛盾检测 ==========
 	// 物理意义：人从床上跌落到地面/床边，但雷达因坐标精度仍认为人在床
 	// 触发条件：
@@ -889,6 +948,107 @@ func (tm *TrackManager) SilentFallStatsSnapshot() SilentFallStats {
 	}
 }
 
+// scanSilentFallLeftBed 扫描所有 BedSession，对到达等待窗的 LeftBed 进行裁决：
+//
+//	radar 仍在 Bed 邻域 → silent fall（矛盾，疑似跌倒地面 / 床边）
+//	radar 已离开 Bed 邻域 → 取消（人正常起床走开）
+//
+// Bed 邻域定义：任一 active track 距离最近 AreaBed cell ≤ FallRulesParam.Silent.BedNeighborhood cm。
+// 调用方持锁。
+func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
+	if len(tm.bedSessions) == 0 {
+		return nil
+	}
+	param := FallRulesParam.Silent
+	var out []TrackOutput
+	for _, s := range tm.bedSessions {
+		if s.LeftBedAtMs == 0 || s.SilentFallAlerted {
+			continue
+		}
+		waitSec := param.WaitNoVitalSec
+		if s.LeftBedHadHRRR && s.LeftBedMaxPeople == 1 {
+			waitSec = param.WaitVitalSec
+		}
+		if nowMs-s.LeftBedAtMs < int64(waitSec)*1000 {
+			continue
+		}
+		// 等待窗满 — 检查 radar 是否仍在 Bed 邻域
+		if tm.anyActiveTrackNearBed(param.BedNeighborhood) {
+			// 矛盾 → 报 silent fall
+			s.SilentFallAlerted = true
+			tm.silentFallLeftbedReported++
+			// 选用「最近 Bed 的 active track」位置作为告警坐标
+			x, y, z, scoreVal, verdict, deviceID := tm.pickActiveTrackNearBed(param.BedNeighborhood)
+			tm.grid.MarkFallEvent(x, y, nowMs)
+			tm.logger.Info("real_fall",
+				zap.String("device_uid", deviceID),
+				zap.String("kind", "engine_silent_leftbed"),
+				zap.String("sleepad_uid", s.DeviceUID),
+				zap.Int("score", scoreVal),
+				zap.Int("risk", 100),
+				zap.String("reason", "sleepad_leftbed_radar_still_on_bed"),
+				zap.Bool("had_hr_rr", s.LeftBedHadHRRR),
+				zap.Int("max_people", s.LeftBedMaxPeople),
+				zap.Int("wait_sec", waitSec),
+				zap.Int64("leftbed_ms", s.LeftBedAtMs),
+				zap.Int("x", x), zap.Int("y", y), zap.Int("z", z),
+				zap.Int64("ts_ms", nowMs),
+			)
+			out = append(out, TrackOutput{
+				DeviceID: deviceID,
+				RoomID:   tm.roomID,
+				Verdict:  verdict,
+				Score:    scoreVal,
+				Risk:     100,
+				Anomaly:  AnomalyFall,
+				X:        x,
+				Y:        y,
+				Z:        z,
+				Source:   "engine_silent_leftbed",
+			})
+		} else {
+			// 取消：radar 也离开了 Bed 邻域 → 人正常起床
+			tm.silentFallLeftbedCancelled++
+			tm.logger.Info("silent_fall_leftbed_cancelled",
+				zap.String("sleepad_uid", s.DeviceUID),
+				zap.Int64("leftbed_ms", s.LeftBedAtMs),
+				zap.Int64("nowMs", nowMs),
+				zap.Bool("had_hr_rr", s.LeftBedHadHRRR),
+				zap.Int("max_people", s.LeftBedMaxPeople),
+			)
+			s.SilentFallAlerted = true // 防重复
+			s.InBedSinceMs = 0         // session 结束，等待下次 InBed
+		}
+	}
+	return out
+}
+
+// anyActiveTrackNearBed 是否有任一 active track 距 AreaBed cell ≤ marginCm。
+// 调用方持锁。
+func (tm *TrackManager) anyActiveTrackNearBed(marginCm int) bool {
+	for _, t := range tm.tracks {
+		pxF, pyF := t.Kalman.Position()
+		px, py := int(math.Round(pxF)), int(math.Round(pyF))
+		if tm.grid.IsNearPriorType(px, py, AreaBed, marginCm) {
+			return true
+		}
+	}
+	return false
+}
+
+// pickActiveTrackNearBed 取最近 Bed 的 active track 信息（用于告警坐标）。
+// 找不到时返回 (0,0,0, 0, VerdictReal, "")（此时调用方已确认 anyActiveTrackNearBed=true，理论上不会走 fallback）。
+func (tm *TrackManager) pickActiveTrackNearBed(marginCm int) (x, y, z, score int, verdict TrackVerdict, deviceID string) {
+	for _, t := range tm.tracks {
+		pxF, pyF := t.Kalman.Position()
+		px, py := int(math.Round(pxF)), int(math.Round(pyF))
+		if tm.grid.IsNearPriorType(px, py, AreaBed, marginCm) {
+			return px, py, t.LastZ, t.Score, t.Verdict, t.DeviceID
+		}
+	}
+	return 0, 0, 0, 0, VerdictReal, ""
+}
+
 // LostFallStats lost-fall 统计快照（含三类 cancel 来源汇总）
 type LostFallStats struct {
 	PendingCreated   int // 进入挂起的总数
@@ -904,6 +1064,19 @@ func (tm *TrackManager) LostFallStatsSnapshot() LostFallStats {
 		PendingCancelled: tm.lostFallPendingCancelled,
 		Reported:         tm.lostFallReported,
 		Outstanding:      len(tm.pendingLostFalls),
+	}
+}
+
+// SilentFallLeftBedStats 新版 silent fall（sleepad LeftBed + radar 仍在 bed）统计
+type SilentFallLeftBedStats struct {
+	Reported  int // 报警次数
+	Cancelled int // 等待窗满但 radar 也离床 → 取消
+}
+
+func (tm *TrackManager) SilentFallLeftBedStatsSnapshot() SilentFallLeftBedStats {
+	return SilentFallLeftBedStats{
+		Reported:  tm.silentFallLeftbedReported,
+		Cancelled: tm.silentFallLeftbedCancelled,
 	}
 }
 

@@ -102,6 +102,8 @@ func main() {
 	log.Printf("lost-fall stats: pending_created=%d cancelled=%d reported=%d outstanding=%d",
 		res.LostFallPendingCreated, res.LostFallPendingCancelled,
 		res.LostFallReported, res.LostFallOutstanding)
+	log.Printf("silent-fall (leftbed v2) stats: reported=%d cancelled=%d",
+		res.SilentFallLeftBedReported, res.SilentFallLeftBedCancelled)
 
 	// 4. 写 HTML
 	if err := os.MkdirAll(filepath.Dir(*outHTML), 0755); err != nil {
