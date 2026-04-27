@@ -1,70 +1,102 @@
-# Lost Fall 测试 — Radar_CD2B 11:35-11:48 MDT
+# Lost Fall 测试 — Radar_CD2B + Sleepad_1641 11:35-11:48 MDT
 
-设备 `9D8A32A1CD2B` (Radar_CD2B)，房间 `b368ee77-0a13-4584-9ce1-bbcff6205e48` (Bedroom)，
-单元 `3db05d02-1257-407d-88bb-cbe9a7498b27`，tenant `43b8fbf7-b55f-4b48-bd8b-27bb14f48870`。
+设备：
+- Radar `9D8A32A1CD2B` (Radar_CD2B) — `device_id=ac790ba1-ac17-47d1-9cd1-c65848bd0027`
+- Sleepad `BM87224601641` (Sleepad_1641) — `device_id=ad16fdff-383b-444a-b7c0-d2c021f97f7b`，绑定本房间床位
+
+房间 `b368ee77-0a13-4584-9ce1-bbcff6205e48` (Bedroom)，单元 `3db05d02-1257-407d-88bb-cbe9a7498b27`，
+tenant `43b8fbf7-b55f-4b48-bd8b-27bb14f48870`。
 
 ## 文件清单
 
 | 文件 | 内容 |
 |---|---|
-| `room_layout.json` | rooms.layout_config raw（walls / Enter / Bed / radar mount 等） |
-| `2026-04-27_11-35_to_11-48_MDT.json` | 全量 iot_timeseries 559 条（monitor / event / alarm 三类） |
+| `room_layout.json` | rooms.layout_config raw（walls / Bed / Enter / radar mount） |
+| `2026-04-27_11-35_to_11-48_MDT.json` | Radar 559 条（534 monitor / 24 event / 1 alarm）|
+| `sleepad_BM1641_2026-04-27_11-35_to_11-48_MDT.json` | Sleepad 同窗口全部记录 |
 
-时间窗（MDT = UTC-6）：
-- MDT 11:35:00 – 11:48:00 = UTC 17:35:00 – 17:48:00
-- bigint 时间戳：1777311300000 – 1777312080000（ms）
+时间窗：
+- **MDT 11:35:00 - 11:48:00**（本案所有时间 = MDT，下同）
+- 服务器存的是 epoch ms `bigint`：1777311300000-1777312080000
+- 等价 UTC 17:35-17:48（postgres server timezone = UTC，查询时需 `AT TIME ZONE 'America/Denver'` 才显示 MDT）
 
-## 数据统计
+## 现场场景
 
-| topic_type | 条数 |
-|---|---|
-| monitor | 534 |
-| event | 24 |
-| alarm | 1 |
+人**进入卧室 → 上床 → 离床（疑似跌倒）→ 雷达看不到 5.5 分钟 → 重新出现**。
 
-## Event/Alarm Timeline (UTC)
+由于床高遮挡 + 人离床后落地角度，雷达完全失锁；firmware 持续广播最后一次"真实"track 5.5 分钟后才放弃。
+全程 **alarm_events 表无 Fall 报警**（漏报场景）。
 
-| 时间 | topic | event_name | status | track_id | 备注 |
-|---|---|---|---|---|---|
-| 17:35:05 | event | activity | instant | 9 | 进入房间前 activity |
-| 17:35:36 | event | activity | instant | 9 | |
-| 17:36:40 | event | number_people | start | 10 | |
-| 17:36:40 | event | activity | instant | 9 | |
-| 17:37:03 | event | number_people | start | 10 | |
-| **17:37:03** | **event** | **EnterRoom** | **start** | | **进房** |
-| 17:37:33 | event | activity | instant | 9 | |
-| 17:38:33 | event | activity | instant | 9 | |
-| **17:39:28** | **event** | **InBed** | **start** | | **躺床上** |
-| 17:39:32 | event | activity | instant | 9 | |
-| 17:40:32 | event | activity | instant | 9 | |
-| 17:41:31 | event | activity | instant | 9 | |
-| 17:42:32 | event | activity | instant | 9 | |
-| 17:43:31 | event | activity | instant | 9 | |
-| 17:43:55 | event | SignalPoorRecover | end | 11 | firmware 信号差恢复 |
-| 17:43:55 | alarm | OfflineRecover | end | 11 | firmware 离线恢复（非真 alarm） |
-| 17:43:55 | event | AngleExceptionRecover | end | 11 | firmware 角度异常恢复 |
-| 17:44:30 | event | activity | instant | 9 | |
-| 17:45:07 | event | number_people | start | 10 | |
-| 17:45:39 | event | activity | instant | 9 | |
-| 17:46:43 | event | activity | instant | 9 | |
-| 17:47:08 | event | number_people | start | 10 | |
-| **17:47:25** | **event** | **ExitRoom** | **start** | | **离房** |
-| 17:47:26 | event | number_people | start | 10 | |
-| 17:47:46 | event | activity | instant | 9 | |
+## 双源 Timeline（关键事件，全部 MDT）
 
-## 关键观察
+| 时间 (MDT) | 来源 | 事件 / 状态 |
+|---|---|---|
+| 11:35:00 | radar | 帧流开始（人尚未进房） |
+| **11:37:03** | **radar** | **EnterRoom start** — 人走进卧室 |
+| 11:37:03-11:37:35 | radar | 走到床边、躺下，pose 4→1→6 转换正常 |
+| 11:37:40 | sleepad | **InBed start + instant** — 床压感感测到人 |
+| 11:38:20-11:39:04 | radar | 床上躺姿 frozen 帧（45s 完全相同 `(10,200,0) pose=6 tc=60`）|
+| 11:39:05-11:39:35 | radar | 床上微动 → 起身 → 站立 → 走出床外 |
+| **11:39:35** | **sleepad + radar** | **同秒：sleepad LeftBed start + radar 最后一次"真实"track** `(-90, 320, 0) pose=4` |
+| **11:39:35-11:45:06** | **radar** | **🔴 5.5 分钟 frozen：334 帧完全相同 `(x=-90, y=320, z=0, pose=4, tc=60)`** |
+| 11:40:25 | sleepad | OfflineRecover end |
+| 11:43:55 | radar | OfflineRecover / SignalPoorRecover / AngleExceptionRecover (firmware 状态机 end，**非真 alarm**)|
+| 11:45:07 | radar | 切到 `tid=88`（heartbeat 无人帧）—— **firmware 放弃 tracking** |
+| 11:47:08-11:47:22 | radar | 人重新出现，从 (-240, 220) 移动到 (-410, 0) |
+| **11:47:25** | **radar** | **ExitRoom start** —— 人离开房间 |
 
-1. **alarm_events 表此窗口无 Fall 报警** — 漏报场景（用户测试 lost fall 用）
-2. **monitor 流连续**：17:37:03（EnterRoom）→ 17:45:39 之间无大于 5s 的间隔（最长 gap 是进房前/离房前的 ~30s 静默）
-3. **17:43:55 三个 Recover 事件**：firmware 状态机内部信号差/离线/角度异常的恢复信号；event_since 与 timestamp 同值意味着此时刻报告"刚恢复"，但其 start 事件不在本窗口（推测早于 11:35）
-4. **InBed 持续 ~8 分钟**（17:39:28 ~ 17:47:25 ExitRoom）
+## Frozen 帧的物理含义
+
+雷达 firmware 在 11:39:35 看到人最后位置是 `(-90, 320, 0) pose=4` —— 这个位置在**床尾下方/床外**（床中心约 y≈200）。
+之后 firmware 失锁：
+- **不愿意立即丢弃 track**（怕 1-2 帧抖动），所以**保持发布最后位置**
+- **持续 5.5 分钟**，每秒发 1 帧完全一致的内容（含 tc=60 不变）
+- 5.5 分钟超时后才切到 tid=88（无人）
+
+人在这 5.5 分钟里：
+- 没有触发 ExitRoom（11:39:35 - 11:47:25 之间无 ExitRoom 事件）→ 人**没出房间**
+- sleepad LeftBed → 人**确实离床**
+- 11:47:08 重新出现在 (-240, 220) 走动 → 人是从某个雷达盲区走回来的（卫生间？床的另一侧？）
+
+**两种可能**：
+1. 人离床 → 倒地（盲区）→ 自己爬起来 → 走出盲区
+2. 人离床 → 进卫生间（盲区）→ 出来
+
+但本案 alarm_events 无 Fall，handle_type 也无 false_alarm 标记，需要用户判定到底发生了什么。
+
+## 设计含义（讨论中）
+
+### 1. 雷达 frozen-frame 是强 lost-fall 信号
+
+**特征**：连续 N 帧（N≥30）`(x, y, z, pose, tc)` 完全一致 + 无任何 sleepad/door 事件支持「人没动」。
+
+与「真静止」区别：真静止时 engine 会看到 cell.ActiveType[Stand/Lie] 累计 + 偶尔的 quality 抖动；frozen 帧 quality 完全不变（tc=60 一动不动）。
+
+### 2. Lost-fall 等待时间应 > radar 自身 frozen 超时
+
+当前设计：lost fall walkway 5min。但 radar firmware 的 frozen → 放弃超时本身就是 ~5.5min。
+所以我们的 5min 阈值在**radar 还在「装作能看到」**的时候就触发了，可能误报；建议：
+
+- **从 frozen-stop（tid=88）那一刻**起算等待，而不是从 LeftBed/最后真实 track 起算 → 此时已经过了 5.5min，再等 2-3min 即可（总 7-8min）
+- 或：直接消费 frozen-pattern 作为「lost 起点」，从 frozen 出现连续 30s 之时起算（~5.5min 后超时报警），保守等到 8min
+
+### 3. 「人重新出现」要取消 pending
+
+本案 11:47:08 人重新出现 → 应取消任何 pending lost-fall。
+触发：track 在 lost-fall pending 期内有新 track 出现（不限位置，因为人可能从盲区走回）。
+
+### 4. ExitRoom 事件做反证
+
+本案没有 ExitRoom 事件支持「人走出去了」，所以 lost 假设成立。
+如果 frozen 期间有 ExitRoom，应取消 pending（人正常离开）。
 
 ## 用途
 
 回归 fixture，用于：
-- Lost fall 规则验证：track 在 Bed area 长时间静止（AreaBed/AreaSit cell timeout = 60min）应不触发，而 ExitRoom 后才正常退出
-- Cell history integral 学习入口：本段 InBed 期间长时间无 alarm，对应 cell 应累计 ToleratedStillCount
-- 验证 firmware Recover 事件不被误当作真 alarm 灌入告警表（topic_type=alarm 但 event_name=OfflineRecover）
+- Lost fall 规则触发条件实测验证
+- Frozen-frame 检测算法的 ground truth
+- 双源融合（radar frozen + sleepad LeftBed）作为 lost-fall 触发组合
+- Cell history integral：本段 InBed 期间无 alarm 应累计 ToleratedStillCount
 
 ## JSON Schema
 
@@ -72,8 +104,8 @@
 [
   {
     "id": <bigint>,
-    "device_uid": "9D8A32A1CD2B",
-    "device_id": "ac790ba1-ac17-47d1-9cd1-c65848bd0027",
+    "device_uid": <string>,
+    "device_id": <uuid>,
     "timestamp": <epoch ms>,
     "topic_type": "monitor" | "event" | "alarm",
     "category": <string>,
@@ -83,4 +115,4 @@
 ]
 ```
 
-monitor frame `data_value[i]` 字段：track_id / pose / x / y / z / heart_rate / resp_rate / sleep_state / ...
+monitor frame 字段（`event_name="track"`）：track_id / pose / position_x / position_y / position_z / track_confidence / bed_status / area_id / remaining_time / dataCategory
