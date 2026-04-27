@@ -28,7 +28,8 @@ import (
 //
 // v2 (2026-04-25): Counters 加 NearTraverseCount（NTC）— 用于 auto-Deny 推断
 // v3 (2026-04-27): Counters 加 FakeAlarmCount（FA）+ ToleratedStillCount（TS）— cell history integral 自适应阈值
-const SnapshotSchemaVersion = 3
+// v4 (2026-04-27): Counters 加 BlindSpotRecoveryCount（BSR）— 盲区返回端点累计（lost-fall recovery 反馈）
+const SnapshotSchemaVersion = 4
 
 // CellSnapshot 单 cell 的可持久化字段（紧凑 JSON，short keys 节省空间）
 type CellSnapshot struct {
@@ -56,6 +57,7 @@ type Counters struct {
 	DW  int       `json:"dw,omitempty"`  // DwellEMA
 	FA  int       `json:"fa,omitempty"`  // FakeAlarmCount (schema_v ≥ 3)
 	TS  int       `json:"ts,omitempty"`  // ToleratedStillCount (schema_v ≥ 3)
+	BSR int       `json:"bsr,omitempty"` // BlindSpotRecoveryCount (schema_v ≥ 4)
 }
 
 // GridSnapshot 顶层 payload 结构（写入 JSONB 字段）
@@ -150,12 +152,13 @@ func buildCounters(c *Cell) *Counters {
 		DW:  c.DwellEMA,
 		FA:  c.FakeAlarmCount,
 		TS:  c.ToleratedStillCount,
+		BSR: c.BlindSpotRecoveryCount,
 	}
 	if ct.RD == 0 && ct.GD == 0 &&
 		ct.AT == [4]uint16{} &&
 		ct.TC == 0 && ct.NTC == 0 && ct.LR == 0 && ct.FE == 0 && ct.LA == 0 && ct.LS == 0 &&
 		ct.SIB == 0 && ct.SLB == 0 && ct.DE == 0 && ct.FX == 0 && ct.FY == 0 && ct.DW == 0 &&
-		ct.FA == 0 && ct.TS == 0 {
+		ct.FA == 0 && ct.TS == 0 && ct.BSR == 0 {
 		return nil
 	}
 	return &ct
@@ -222,6 +225,7 @@ func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
 			c.DwellEMA = cs.C.DW
 			c.FakeAlarmCount = cs.C.FA
 			c.ToleratedStillCount = cs.C.TS
+			c.BlindSpotRecoveryCount = cs.C.BSR
 		}
 	}
 	return nil

@@ -154,6 +154,28 @@ type PendingSilentFall struct {
 	DisappearMs     int64 // 进入 pending 的时刻（≈MissCount 超阈值的 nowMs）
 }
 
+// PendingLostFall 已消失但等待 cell-area-typed 时长复现窗口的 track（lost-fall 规则）。
+//
+// 与 PendingSilentFall 区别：
+//   - silent 仅 60s + sleepad InBed 兜底（bedroom 专用）
+//   - lost 按消失点 cell areaType 分时长（5min~1h）+ ExitRoom + NumberPeople≥2 兜底（全屋通用）
+//
+// 触发：track 消失且不满足 silent fall 条件 + checkLostFall 通过（离门 >1m，非 Enter 区，年龄足够）
+// 取消：① 新 track 出生（含 BlindSpotRecovery 反馈）② ExitRoom 事件 ③ room.NumberPeople ≥ 2
+type PendingLostFall struct {
+	OriginalTrackID int
+	DeviceID        string
+	RoomID          string
+	LastX, LastY    int
+	LastZ           int
+	LastScore       int
+	LastVerdict     TrackVerdict
+	LastCellArea    AreaType // 消失点 cell.Belief[0].Type，决定 wait 时长
+	DisappearMs     int64
+	FrozenStartMs   int64 // 0 = 无 frozen run；>0 = frozen 起点（用于半计入 wait credit）
+	SpatialJump     bool  // MaxImpliedSpeedFromBirth > SuspectSpeedCm（更敏感）
+}
+
 // NewTrackState 新 track 出生
 func NewTrackState(trackID int, deviceID, roomID string, x, y, z int, tMs int64) *TrackState {
 	birth := TimedPoint{X: x, Y: y, Z: z, TMs: tMs}

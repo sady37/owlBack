@@ -52,6 +52,11 @@ type TrackManager struct {
 	// key = 原 trackID（仅做唯一标识；匹配靠位置距离）
 	pendingSilentFalls map[int]*PendingSilentFall
 
+	// pendingLostFalls：lost-fall 规则的挂起池。
+	// 时长按消失点 cell areaType（5min walkway / 60min bed / ...），含 frozen credit；
+	// 取消条件：新 track 出生 / ExitRoom 事件 / room.NumberPeople ≥ 2。
+	pendingLostFalls map[int]*PendingLostFall
+
 	// bathroomRealCount：当前帧 ProcessFrame 起点时，所在 cell 为 AreaToilet/AreaShower 的 Real track 数。
 	// 用途：≥2 时视为护工陪同，scoreMovement 跳过 long-still 15min 超时报警。
 	// 由 ProcessFrame 入口刷新，scoreMovement 读取（同步在锁内，无竞态）。
@@ -70,6 +75,11 @@ type TrackManager struct {
 	pendingCreatedCount   int // 进入 pending 的总数（消失且通过几何检查）
 	pendingCancelledCount int // 被新 track 出生取消的数量
 	silentFallReportCount int // 60s 超时真报 silent fall 的数量
+
+	// Lost fall 统计
+	lostFallPendingCreated   int
+	lostFallPendingCancelled int // 含 birth-recovery / ExitRoom / NumberPeople 三类取消
+	lostFallReported         int
 
 	sleepadInBedCount int
 
@@ -131,6 +141,7 @@ func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 		tracks:             make(map[int]*TrackState),
 		outputs:            make(map[int]*TrackOutput),
 		pendingSilentFalls: make(map[int]*PendingSilentFall),
+		pendingLostFalls:   make(map[int]*PendingLostFall),
 		sleepadStates:      make(map[string]*SleepadObservation),
 		bedPersonCount:     make(map[string]int),
 		moveSpeedCms:       20, // 默认值（与 DefaultLearnParams.MoveSpeedCms 一致）
@@ -312,6 +323,21 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	if e.EventName == "LeftBed" && e.TMs > tm.lastLeftBedAt {
 		tm.lastLeftBedAt = e.TMs
 	}
+	// ExitRoom 事件 → 取消所有挂起的 lost-fall（人正常走出房间，不再悬念）
+	// 注：silent fall 不取消（其语义是床上方遮挡，与 ExitRoom 无关）
+	if e.EventName == "ExitRoom" && len(tm.pendingLostFalls) > 0 {
+		for pid, p := range tm.pendingLostFalls {
+			tm.lostFallPendingCancelled++
+			tm.logger.Info("lost_fall_cancelled_by_exit_room",
+				zap.String("device_uid", p.DeviceID),
+				zap.Int("track_id", p.OriginalTrackID),
+				zap.String("room_id", p.RoomID),
+				zap.Int64("pending_age_ms", e.TMs-p.DisappearMs),
+				zap.Int64("exit_room_ms", e.TMs),
+			)
+			delete(tm.pendingLostFalls, pid)
+		}
+	}
 }
 
 // evictOldRadarAlarms / evictOldRadarEvents：删除超出 recentBufferMs 的旧记录。
@@ -402,11 +428,23 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			// 可能是被遮挡后真倒下，保留挂起继续等 60s 超时）
 			tm.cancelPendingByBirth(f.X, f.Y, RadarPoseToCore(f.Pose))
 
+			// 是否有 pending lost-fall 在等候 → 人从盲区返回；取消 + 学习盲区出口
+			recoveredFromLost := tm.cancelPendingLostFallByBirth(f.X, f.Y, f.TMs)
+
 			ts = NewTrackState(f.TrackID, f.DeviceID, tm.roomID, f.X, f.Y, f.Z, f.TMs)
 			b := tm.birthScore(f.X, f.Y, f.TMs)
 			ts.BirthScore = b.score
 			ts.BirthReason = b.reason
 			ts.Score = ts.BirthScore
+			// 盲区返回路径：直接给 Real verdict，绕过 ghost 检查
+			// （这是漏报场景下人从盲区返回的预期行为：track 看似凭空出现但实为真人）
+			if recoveredFromLost {
+				ts.Verdict = VerdictReal
+				ts.Score = ScoreConfirmTh
+				ts.BirthScore = ScoreConfirmTh
+				ts.BirthReason = "recovered_from_lost_fall"
+				ts.ConfirmedAtMs = f.TMs
+			}
 			// 初始化 frozen 检测签名：把出生帧记为第一个签名（FrozenSameCount=1）
 			ts.LastFrameSig = frameSigOf(f)
 			ts.FrozenSameCount = 1
@@ -486,7 +524,8 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		ts.LastUpdateMs = nowMs
 
 		if ts.Kalman.MissCount > MaxMissCount {
-			// 消失判定
+			// 消失判定：silent fall 优先（60s + sleepad 兜底，bedroom 专用）
+			// 不满足 silent → 检 lost fall（按 cell areaType 分时长，全屋通用，verdict 未定也算）
 			if ts.Verdict == VerdictReal && tm.checkSilentFall(ts) {
 				// 不立即报；挂起 60 秒等复现窗口（segment 1 取消 / segment 5 超时报）
 				pxF, pyF := ts.Kalman.Position()
@@ -502,6 +541,30 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 					DisappearMs:     nowMs,
 				}
 				tm.pendingCreatedCount++
+			} else if (ts.Verdict == VerdictReal || ts.Verdict == VerdictPending) && tm.checkLostFall(ts) {
+				pxF, pyF := ts.Kalman.Position()
+				px := int(math.Round(pxF))
+				py := int(math.Round(pyF))
+				cell := tm.grid.CellAt(px, py)
+				cellArea := AreaUnknown
+				if cell != nil {
+					cellArea = cell.Belief[0].Type
+				}
+				tm.pendingLostFalls[id] = &PendingLostFall{
+					OriginalTrackID: id,
+					DeviceID:        ts.DeviceID,
+					RoomID:          ts.RoomID,
+					LastX:           px,
+					LastY:           py,
+					LastZ:           ts.LastZ,
+					LastScore:       ts.Score,
+					LastVerdict:     ts.Verdict,
+					LastCellArea:    cellArea,
+					DisappearMs:     nowMs,
+					FrozenStartMs:   ts.FrozenRunStart,
+					SpatialJump:     ts.MaxImpliedSpeedFromBirth > FallRulesParam.Lost.SuspectSpeedCm,
+				}
+				tm.lostFallPendingCreated++
 			} else if ts.Verdict == VerdictReal {
 				pxF, pyF := ts.Kalman.Position()
 				px := int(math.Round(pxF))
@@ -520,6 +583,9 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		if ts.Verdict != VerdictPending {
 			continue
 		}
+		// Birth grace recompute（方案 A）：deadline 到了再扫扩展窗，给 EnterRoom event-stream 缓冲
+		tm.tryGraceUpgrade(ts, nowMs)
+
 		if ts.FrameCount >= ProbationFrames {
 			if ts.Score >= ScoreConfirmTh {
 				ts.Verdict = VerdictReal
@@ -594,6 +660,62 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		results = append(results, out)
 		tm.outputs[p.OriginalTrackID] = &out
 		delete(tm.pendingSilentFalls, pid)
+	}
+
+	// ========== 段 4b: 扫挂起的 lost fall，按 cell-area-typed wait + frozen credit 超时即报 ==========
+	// 取消条件已在他处处理（cancelPendingByBirth / handleExitRoom / numberPeopleCancel）。
+	// 此处仅扫超时触发：等待时间到达且未被取消 → 报 lost fall。
+	isRiskTime := IsNightTime(nowMs, tm.timezone)
+	for pid, p := range tm.pendingLostFalls {
+		waitMs := tm.lostFallWaitMs(p, isRiskTime)
+		if nowMs-p.DisappearMs < waitMs {
+			continue
+		}
+		// 实时再检多人入屋（与 birth/event 触发的取消互补；保 segment 4b 兜底）
+		if tm.realTrackCount() >= 2 {
+			tm.lostFallPendingCancelled++
+			tm.logger.Info("lost_fall_cancelled_by_multiple_real",
+				zap.String("device_uid", p.DeviceID),
+				zap.Int("track_id", p.OriginalTrackID),
+				zap.String("room_id", p.RoomID),
+				zap.Int64("nowMs", nowMs),
+			)
+			delete(tm.pendingLostFalls, pid)
+			continue
+		}
+		// 超时 → MarkFallEvent + 写输出（kind=engine_lost_fall）
+		tm.lostFallReported++
+		tm.grid.MarkFallEvent(p.LastX, p.LastY, nowMs)
+		tm.logger.Info("real_fall",
+			zap.String("device_uid", p.DeviceID),
+			zap.Int("track_id", p.OriginalTrackID),
+			zap.String("kind", "engine_lost_fall"),
+			zap.Int("score", p.LastScore),
+			zap.Int("risk", 100),
+			zap.String("reason", "track_lost_no_exit_room_no_recovery"),
+			zap.Int("cell_area_type", int(p.LastCellArea)),
+			zap.Int64("frozen_start_ms", p.FrozenStartMs),
+			zap.Bool("spatial_jump", p.SpatialJump),
+			zap.Int64("wait_ms", waitMs),
+			zap.Int("x", p.LastX), zap.Int("y", p.LastY), zap.Int("z", p.LastZ),
+			zap.Int64("ts_ms", nowMs),
+		)
+		out := TrackOutput{
+			TrackID:  p.OriginalTrackID,
+			DeviceID: p.DeviceID,
+			RoomID:   p.RoomID,
+			Verdict:  p.LastVerdict,
+			Score:    p.LastScore,
+			Risk:     100,
+			Anomaly:  AnomalyFall,
+			X:        p.LastX,
+			Y:        p.LastY,
+			Z:        p.LastZ,
+			Source:   "engine_lost",
+		}
+		results = append(results, out)
+		tm.outputs[p.OriginalTrackID] = &out
+		delete(tm.pendingLostFalls, pid)
 	}
 
 	// ========== 段 5: Bed-Fall 物理矛盾检测 ==========
@@ -711,6 +833,44 @@ func (tm *TrackManager) cancelPendingByBirth(x, y int, birthCore CorePose) {
 	}
 }
 
+// hasPendingLostFallInRoom 当前房间是否有挂起的 lost-fall（与 RoomID 等价于 tm.roomID）。
+// 用于 birth verdict bypass：人从盲区返回时新 track 不该被判 ghost。
+// 调用方持锁。
+func (tm *TrackManager) hasPendingLostFallInRoom() bool {
+	return len(tm.pendingLostFalls) > 0
+}
+
+// cancelPendingLostFallByBirth 新 track 出生时尝试取消挂起的 lost-fall。
+//
+// 与 silent fall cancel 区别：lost-fall 不限位置 + 不限 birth pose（人从盲区任何角度返回都算）。
+// 命中时：① 取消 pending ② cell.IncrBlindSpotRecovery（学习盲区出口） ③ 累计 cancelled 统计。
+//
+// 返回是否命中（调用方据此决定是否给新 track verdict 直接 Real / 加分）。
+func (tm *TrackManager) cancelPendingLostFallByBirth(birthX, birthY int, nowMs int64) bool {
+	if len(tm.pendingLostFalls) == 0 {
+		return false
+	}
+	// 单房间一般只有 1 个 pending；遍历全部，全部取消（人回来 = 所有 lost 候选都解除）
+	hit := false
+	for pid, p := range tm.pendingLostFalls {
+		hit = true
+		tm.lostFallPendingCancelled++
+		tm.logger.Info("lost_fall_cancelled_by_recovery",
+			zap.String("device_uid", p.DeviceID),
+			zap.Int("track_id", p.OriginalTrackID),
+			zap.String("room_id", p.RoomID),
+			zap.Int64("pending_age_ms", nowMs-p.DisappearMs),
+			zap.Int("recovered_at_x", birthX), zap.Int("recovered_at_y", birthY),
+		)
+		delete(tm.pendingLostFalls, pid)
+	}
+	if hit {
+		// 学习盲区出口：人在新 track 出生位置 cell 累计一个 BlindSpotRecovery
+		tm.grid.MarkBlindSpotRecovery(birthX, birthY, nowMs)
+	}
+	return hit
+}
+
 // SilentFallStats 给 playback / 监控用的统计快照
 type SilentFallStats struct {
 	PendingCreated   int // 进入挂起的总数
@@ -818,13 +978,17 @@ func (tm *TrackManager) birthScore(x, y int, tMs int64) birthScoreResult {
 // hasRecentEnterRoom 检查 [tMs - enterPairWindowMs, tMs] 窗口内有无 EnterRoom 事件。
 // 调用方持锁（segment 1 已持锁）。
 //
-// 注：仅 look-back（不 look-forward）。如果 monitor 早于 event 到达 engine，
-// 这里会判错（false ghost）。后续如有问题，可改成 pending 阶段持续重检：
-// 在 segment 3 promote 前再扫一遍 recentRadarEvents。
+// 注：仅 look-back（不 look-forward）—— 出生瞬时如 event-stream 还没到 → 判错 false ghost。
+// 修正路径：BirthFinalDeadlineMs 给 grace 缓冲（FallRulesParam.Lost.BirthFinalGraceMs，默认 2s），
+// 到点用 hasRecentEnterRoomBetween([T-3s, deadline]) 重检（见 tryGraceUpgrade）。
 func (tm *TrackManager) hasRecentEnterRoom(tMs int64) bool {
-	cutoff := tMs - enterPairWindowMs
+	return tm.hasRecentEnterRoomBetween(tMs-enterPairWindowMs, tMs)
+}
+
+// hasRecentEnterRoomBetween 在显式时间窗 [fromMs, toMs] 内查 EnterRoom 事件。
+func (tm *TrackManager) hasRecentEnterRoomBetween(fromMs, toMs int64) bool {
 	for k, e := range tm.recentRadarEvents {
-		if k < cutoff || k > tMs {
+		if k < fromMs || k > toMs {
 			continue
 		}
 		if e.EventName == "EnterRoom" {
@@ -832,6 +996,57 @@ func (tm *TrackManager) hasRecentEnterRoom(tMs int64) bool {
 		}
 	}
 	return false
+}
+
+// tryGraceUpgrade Birth verdict 多流时序兜底（方案 A）。
+//
+// 出生时 EnterRoom event-stream 可能落后于 monitor stream 1-3s，birth score 短路为 0。
+// BirthFinalDeadlineMs 给 grace 缓冲；到点用扩展窗 [birth-3s, deadline] 再扫，
+// 如有 EnterRoom 命中 + 出生位置物理可达（≤150cm to entry）→ 抬 birth_score。
+//
+// 一次性 recompute（不论结果如何，之后清空 deadline 不再重算）。
+// 调用位置：segment 3 promote 之前；调用方持锁。
+func (tm *TrackManager) tryGraceUpgrade(ts *TrackState, nowMs int64) {
+	if ts.BirthFinalDeadlineMs == 0 {
+		return // 已 finalize
+	}
+	if nowMs < ts.BirthFinalDeadlineMs {
+		return // 还在 grace 期内
+	}
+	defer func() { ts.BirthFinalDeadlineMs = 0 }() // 不论结果，之后不再重算
+
+	// 仅当 birth 是因「找不到 EnterRoom」而被短路时才补救
+	if ts.BirthReason != "no_enter_pair" && ts.BirthReason != "far_from_enter" {
+		return
+	}
+	// 距离判断：>150cm 物理仍不可能
+	dEntry := tm.grid.NearestEntryDist(ts.BirthPos.X, ts.BirthPos.Y)
+	if dEntry > birthMaxRealisticCm {
+		return
+	}
+	// 扩展窗 [birth-3s, deadline] 重扫
+	if !tm.hasRecentEnterRoomBetween(ts.BirthPos.TMs-enterPairWindowMs, ts.BirthFinalDeadlineMs) {
+		return
+	}
+	// 命中：抬 birth score
+	newScore := 50 + birthEnterPairBonus // base + entry bonus
+	if dEntry < 50 {
+		newScore = 50 + 20 // 与 birthScore 因子 1 dEntry<50 加分对齐
+	}
+	if newScore > ts.BirthScore {
+		delta := newScore - ts.BirthScore
+		ts.BirthScore = newScore
+		ts.BirthReason = "grace_enter_pair_recovered"
+		ts.Score = clampInt(ts.Score+delta, 0, 100)
+		tm.logger.Info("birth_grace_upgraded",
+			zap.String("device_uid", ts.DeviceID),
+			zap.Int("track_id", ts.TrackID),
+			zap.Int("new_birth_score", ts.BirthScore),
+			zap.Int("d_entry_cm", dEntry),
+			zap.Int64("birth_ms", ts.BirthPos.TMs),
+			zap.Int64("nowMs", nowMs),
+		)
+	}
 }
 
 // ========================================================================
@@ -1052,6 +1267,9 @@ func (tm *TrackManager) updateLieStateMachine(ts *TrackState, pose, x, y, z int,
 //   - 新加 prev pose：消失前最后一帧 core != Lie（本来就在 Lie 中消失，多半是入睡/正常静止丢失）
 //
 // 通过此函数仅"挂起"候选；最终是否报 silent fall 由 segment 5 在 60 秒后决定。
+//
+// 注：silent fall 完整重构（sleepad+radar 融合 + 120s/60s 双窗）见 PR-2c 待做。
+// 此函数保留旧语义不动，与 lost fall 互斥（silent 优先在 segment 2 trigger 顺序）。
 func (tm *TrackManager) checkSilentFall(ts *TrackState) bool {
 	if ts.AgeSec() < 10 {
 		return false
@@ -1089,6 +1307,87 @@ func (tm *TrackManager) checkSilentFall(ts *TrackState) bool {
 	}
 
 	return true
+}
+
+// ========================================================================
+// Lost Fall（cell-area-typed wait + ExitRoom + NumberPeople 兜底）
+// ========================================================================
+
+// checkLostFall 判断 track 消失是否符合 lost-fall 触发条件。
+//
+// 与 checkSilentFall 区别：
+//   - silent 仅 Real verdict + age≥10s + 非 likely-rest-zone（bedroom occluded-bed 专用）
+//   - lost  Real/Pending verdict + age≥5s + 离任一出口 > ExitDistMinCm（全屋通用）
+//
+// silent 已触发的 case 不再走 lost（segment 2 中已 else if 分支互斥）。
+func (tm *TrackManager) checkLostFall(ts *TrackState) bool {
+	if ts.AgeSec() < 5 {
+		return false
+	}
+	pxF, pyF := ts.Kalman.Position()
+	px := int(math.Round(pxF))
+	py := int(math.Round(pyF))
+	cell := tm.grid.CellAt(px, py)
+	if cell == nil {
+		return false
+	}
+	// 出门正常 — 在 Enter 区消失合法
+	if cell.Belief[0].Type == AreaEnter {
+		return false
+	}
+	// 离最近门 ≤ ExitDistMinCm 视为可能正常走出（≈1 秒可达）
+	if tm.grid.NearestEntryDist(px, py) <= FallRulesParam.Lost.ExitDistMinCm {
+		return false
+	}
+	return true
+}
+
+// lostFallWaitMs 计算 lost-fall pending 的等待时长（毫秒）。
+//
+// 基线按消失点 cell areaType：
+//   - AreaBed / AreaSit：60min（睡觉/坐着雷达丢 track 常见）
+//   - AreaToilet / AreaShower：与 still fall 同（risk-time / non-risk-time）
+//   - AreaDeny / 其它：5min
+//
+// Frozen credit：firmware 失锁前已 frozen 过 → 半计入等待
+// SpatialJump factor：track 表现过空间跳跃 → 等待时间 ×0.5（更敏感）
+// 兜底：min EffectiveWaitFloorSec
+func (tm *TrackManager) lostFallWaitMs(p *PendingLostFall, isRiskTime bool) int64 {
+	pl := FallRulesParam.Lost
+	var base int
+	switch p.LastCellArea {
+	case AreaBed, AreaSit:
+		base = pl.RestZoneWaitSec
+	case AreaToilet, AreaShower:
+		// 与 still fall 同时长
+		if isRiskTime {
+			base = FallRulesParam.Still.ToiletShowerSec
+		} else {
+			base = int(float64(FallRulesParam.Still.ToiletShowerSec) * FallRulesParam.Still.NonRiskTimeFactor)
+		}
+	case AreaDeny:
+		base = pl.DenyZoneWaitSec
+	default:
+		base = pl.WalkwayWaitSec
+	}
+
+	// Frozen credit：half of frozen duration counted toward wait
+	if p.FrozenStartMs > 0 {
+		frozenDurMs := p.DisappearMs - p.FrozenStartMs
+		if frozenDurMs > 0 {
+			base -= int(frozenDurMs / 2 / 1000)
+		}
+	}
+
+	// Spatial jump factor
+	if p.SpatialJump {
+		base = int(float64(base) * pl.SpatialJumpFactor)
+	}
+
+	if base < pl.EffectiveWaitFloorSec {
+		base = pl.EffectiveWaitFloorSec
+	}
+	return int64(base) * 1000
 }
 
 // ========================================================================
@@ -1152,6 +1451,18 @@ func (tm *TrackManager) occupancyFactor() float64 {
 		return 1.2
 	}
 	return 1.0
+}
+
+// realTrackCount 当前 VerdictReal track 数（用于 lost-fall NumberPeople≥2 取消判定）。
+// 调用方持锁（segment 内部）。
+func (tm *TrackManager) realTrackCount() int {
+	n := 0
+	for _, t := range tm.tracks {
+		if t.Verdict == VerdictReal {
+			n++
+		}
+	}
+	return n
 }
 
 // frameSigOf 把一帧抽成 frameSignature（用于 frozen-frame 检测的字面比对）。

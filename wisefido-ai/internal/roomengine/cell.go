@@ -151,9 +151,11 @@ type Cell struct {
 	// ---- Cell history integral（自适应阈值反馈，详见 fall_rules_param.go）----
 	// FakeAlarmCount: 在该 cell 触发的 fall 报警被人工标 false_alarm 累计次数
 	// ToleratedStillCount: track 在该 cell 长时间 stand-static 但最终自己离开（无 fall 报警）累计次数
-	// 两者一起决定 EffectiveStillTimeoutSec 的放宽倍数；EventSec 半衰期衰减
-	FakeAlarmCount      int
-	ToleratedStillCount int
+	// BlindSpotRecoveryCount: 人在 lost-fall pending 期间从该 cell 重新出现（盲区返回端点）次数
+	// 三者衰减由 Decay() 用 EventSec 半衰期处理
+	FakeAlarmCount         int
+	ToleratedStillCount    int
+	BlindSpotRecoveryCount int
 
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState
@@ -330,6 +332,13 @@ func (c *Cell) IncrToleratedStill() {
 	c.ToleratedStillCount++
 }
 
+// IncrBlindSpotRecovery 人从 lost-fall pending 期间在该 cell 重新出现（盲区返回端点）。
+// 该 cell 学到自己是「人能不能突然出现」的语义；未来 track 在此 cell 出生时，
+// birth-score 加成（避免重复误判 ghost）。
+func (c *Cell) IncrBlindSpotRecovery() {
+	c.BlindSpotRecoveryCount++
+}
+
 // ========================================================================
 // Decay（时间窗口衰减）
 // ========================================================================
@@ -379,6 +388,7 @@ func (c *Cell) Decay(dtSec float64, p DecayParams) {
 	// 当前先用 EventSec，后续若需精细化再加 HistorySec 字段。
 	c.FakeAlarmCount = scaleInt(c.FakeAlarmCount, fEv)
 	c.ToleratedStillCount = scaleInt(c.ToleratedStillCount, fEv)
+	c.BlindSpotRecoveryCount = scaleInt(c.BlindSpotRecoveryCount, fEv)
 }
 
 // factor 计算半衰期衰减因子；半衰期非正时不衰减（返回 1）

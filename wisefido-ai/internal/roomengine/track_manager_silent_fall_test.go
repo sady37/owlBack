@@ -345,6 +345,168 @@ func TestFrozenFrameDetection(t *testing.T) {
 	}
 }
 
+// TestLostFallFrozenThenRecovery 模拟 case_lostfall_cd2b_11351148 的核心时序：
+//
+//	t=0       人进房，VerdictReal
+//	t=20s     track 进入"卧室盲区前"位置 (-90, 320)
+//	t=20-50s  连续 30 帧字面相同（frozen）
+//	t=50+10s  firmware 放弃 → engine 看不到 → 入 pendingLostFalls
+//	t=120s    人重新出现在 (-240, 220) → 取消 pending（盲区返回）
+//
+// 校验：① pendingLostFalls 被创建 ② 被 birth 取消（不报 lost fall） ③ cell 学到 BlindSpotRecovery
+func TestLostFallFrozenThenRecovery(t *testing.T) {
+	tm, g := newTestTM()
+	// 角落 cell 设为 AreaEnter（离 (-90,320) 足够远，触发 NearestEntryDist > ExitDistMinCm）
+	for i := range g.Cells {
+		c := &g.Cells[i]
+		col := i % g.Width
+		row := i / g.Width
+		x, y := g.ToCanvas(col, row)
+		if x < -200 && y < -200 {
+			c.Belief[0].Type = AreaEnter
+			c.Belief[0].Confidence = 99
+			c.Belief[0].Source = SourceHuman
+		}
+	}
+	// 让消失点 (-90, 320) 的 cell 已累计 Sit 观测 → IsLikelyRestZone=true
+	// → checkSilentFall 跳过（视为正常静止丢失）→ 走 lost fall 路径
+	// 物理含义：这位置之前有人坐过（沙发未标 layout），所以雷达失锁不算 silent fall
+	disappearCell := g.CellAt(-90, 320)
+	if disappearCell != nil {
+		disappearCell.ActiveType[ActiveIdxSit] = 50 // ≥30 触发 IsLikelyRestZone
+	}
+
+	const tid = 0
+	startTms := int64(1_000_000)
+
+	// 1) 走 13 帧让 track 升 Real
+	tms := runFramesUntilReal(tm, tid, 100, 100, startTms, 30)
+	ts := tm.tracks[tid]
+	if ts == nil || ts.Verdict != VerdictReal {
+		t.Fatalf("track should be Real, got %v", ts)
+	}
+
+	// 2) 移到 (-90, 320)（远离 entry，> ExitDistMinCm）
+	tm.processFrameAt([]TrackFrame{
+		{TrackID: tid, DeviceID: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
+	}, tms)
+	tms += 1000
+
+	// 3) 连续 30 帧字面完全相同（frozen 模拟 firmware 失锁）
+	for i := 0; i < 30; i++ {
+		tm.processFrameAt([]TrackFrame{
+			{TrackID: tid, DeviceID: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
+		}, tms)
+		tms += 1000
+	}
+	if ts.FrozenRunStart == 0 {
+		t.Fatalf("FrozenRunStart should be set after 30 frozen frames, got 0")
+	}
+	if ts.FrozenSameCount < 25 {
+		t.Errorf("FrozenSameCount want >=25, got %d", ts.FrozenSameCount)
+	}
+	frozenStart := ts.FrozenRunStart
+
+	// 4) firmware giveup — 不再喂 frame；engine 走 segment 2 判失锁
+	// MaxMissCount = 10，连续 11 个空 tick 后 track 应该消失
+	for i := 0; i < 12; i++ {
+		tm.processFrameAt(nil, tms)
+		tms += 1000
+	}
+	if _, stillExists := tm.tracks[tid]; stillExists {
+		t.Fatalf("track should be deleted after MissCount > MaxMissCount")
+	}
+	if len(tm.pendingLostFalls) != 1 {
+		t.Fatalf("expected 1 pendingLostFall, got %d", len(tm.pendingLostFalls))
+	}
+	var pending *PendingLostFall
+	for _, p := range tm.pendingLostFalls {
+		pending = p
+	}
+	if pending.FrozenStartMs != frozenStart {
+		t.Errorf("PendingLostFall should carry FrozenStartMs from track, want %d got %d",
+			frozenStart, pending.FrozenStartMs)
+	}
+
+	// 5) 人重新出现 — 新 track 出生 → 触发 cancel by recovery
+	const newTid = 1
+	const recoverX, recoverY = -240, 220
+	tm.processFrameAt([]TrackFrame{
+		{TrackID: newTid, DeviceID: "dev1", X: recoverX, Y: recoverY, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
+	}, tms)
+	if len(tm.pendingLostFalls) != 0 {
+		t.Errorf("pendingLostFalls should be empty after recovery, got %d", len(tm.pendingLostFalls))
+	}
+	if tm.lostFallPendingCancelled != 1 {
+		t.Errorf("lostFallPendingCancelled want 1, got %d", tm.lostFallPendingCancelled)
+	}
+	if tm.lostFallReported != 0 {
+		t.Errorf("lostFallReported want 0 (cancelled in time), got %d", tm.lostFallReported)
+	}
+	// 新 track 应被升 Real（盲区返回的 verdict bypass）
+	newTs := tm.tracks[newTid]
+	if newTs == nil {
+		t.Fatal("new track not created")
+	}
+	if newTs.Verdict != VerdictReal {
+		t.Errorf("new track should be VerdictReal (recovered_from_lost), got %v", newTs.Verdict)
+	}
+	if newTs.BirthReason != "recovered_from_lost_fall" {
+		t.Errorf("new track BirthReason want 'recovered_from_lost_fall', got %q", newTs.BirthReason)
+	}
+	// 落点 cell 应有 BlindSpotRecovery 计数
+	recoverCell := g.CellAt(recoverX, recoverY)
+	if recoverCell == nil || recoverCell.BlindSpotRecoveryCount < 1 {
+		t.Errorf("recovery cell should have BlindSpotRecoveryCount>=1, got %v", recoverCell)
+	}
+}
+
+// TestLostFallExitRoomCancel ExitRoom 事件取消 pending lost-fall
+func TestLostFallExitRoomCancel(t *testing.T) {
+	tm, g := newTestTM()
+	for i := range g.Cells {
+		c := &g.Cells[i]
+		col := i % g.Width
+		row := i / g.Width
+		x, y := g.ToCanvas(col, row)
+		if x < -200 && y < -200 {
+			c.Belief[0].Type = AreaEnter
+			c.Belief[0].Confidence = 99
+			c.Belief[0].Source = SourceHuman
+		}
+	}
+	if disappearCell := g.CellAt(-90, 320); disappearCell != nil {
+		disappearCell.ActiveType[ActiveIdxSit] = 50
+	}
+
+	const tid = 0
+	tms := runFramesUntilReal(tm, tid, 100, 100, 1_000_000, 30)
+	tm.processFrameAt([]TrackFrame{
+		{TrackID: tid, DeviceID: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TMs: tms},
+	}, tms)
+	tms += 1000
+	for i := 0; i < 12; i++ {
+		tm.processFrameAt(nil, tms)
+		tms += 1000
+	}
+	if len(tm.pendingLostFalls) == 0 {
+		t.Skip("setup didn't produce pending lost fall")
+	}
+
+	// ExitRoom event 到达 → 取消
+	tm.RecordRadarEvent(RadarTrackEvent{
+		DeviceUID: "dev1",
+		EventName: "ExitRoom",
+		TMs:       tms,
+	})
+	if len(tm.pendingLostFalls) != 0 {
+		t.Errorf("pendingLostFalls should be empty after ExitRoom, got %d", len(tm.pendingLostFalls))
+	}
+	if tm.lostFallPendingCancelled != 1 {
+		t.Errorf("lostFallPendingCancelled want 1, got %d", tm.lostFallPendingCancelled)
+	}
+}
+
 // TestImpliedSpeedFromBirth：出生在 (100,100)，10 秒后跳到 (300,100) 距离 200cm → 隐含 20cm/s
 // 然后下一帧到 (500,100) age=11 dist=400 → 隐含 36cm/s（取 max）
 func TestImpliedSpeedFromBirth(t *testing.T) {

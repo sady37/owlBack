@@ -406,6 +406,17 @@ func (g *RoomGrid) MarkToleratedStill(x, y int, nowMs int64) {
 	c.LastUpdateMs = nowMs
 }
 
+// MarkBlindSpotRecovery 盲区返回反馈：lost-fall pending 期内人在此 cell 重新出现。
+// 该 cell 是已知盲区出口，未来 birth-score 可加成。
+func (g *RoomGrid) MarkBlindSpotRecovery(x, y int, nowMs int64) {
+	c := g.CellAt(x, y)
+	if c == nil {
+		return
+	}
+	c.IncrBlindSpotRecovery()
+	c.LastUpdateMs = nowMs
+}
+
 // CellStat dump 用：把 cell 关键字段拍平。
 type CellStat struct {
 	Col               int      `json:"col"`
