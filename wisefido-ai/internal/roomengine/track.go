@@ -28,6 +28,16 @@ type TimedPoint struct {
 	TMs     int64
 }
 
+// frameSignature 用于 frozen-frame 检测：firmware 失锁后 (track_id, x, y, z, pose, tc, rt)
+// 会保持 byte-equal 5+ 分钟。直接用 struct equality 比对，简单且无 hash 碰撞风险。
+type frameSignature struct {
+	TrackID         int
+	X, Y, Z         int
+	Pose            int
+	TrackConfidence int
+	RemainingTime   int
+}
+
 // TrackState 单个 track 的完整生命档案。
 // 运动粒子：Kalman + 即时判定 + 状态机转移。
 // 不累计空间属性（那些归 Cell）。
@@ -87,6 +97,29 @@ type TrackState struct {
 	// 初始为 -1 表示尚未定位；新 cell 进入且 core==Move 时调 grid.MarkTraverse 计数 ++。
 	LastCellCol int
 	LastCellRow int
+
+	// ---- Frozen-frame 检测（lazy 反应式，每帧 O(1) 维护）----
+	// LastFrameSig：上一帧关键字段签名；FrozenSameCount：连续相同帧数（含当前帧）；
+	// FrozenRunStart：当前 frozen 起点 ms（0 = 未达 frozen 状态）。
+	// firmware 失锁特征：连续 25 帧 (tid, x, y, z, pose, tc, rt) 字面相同，
+	// 用于 lost-fall pending 时计算 frozen credit（半计入等待）。
+	LastFrameSig    frameSignature
+	FrozenSameCount int
+	FrozenRunStart  int64
+
+	// ---- Birth-coherence Kalman 域（每帧 O(1) 维护）----
+	// MaxKalmanResidual：track 生命周期内的峰值残差（Mahalanobis-like）。
+	// MaxImpliedSpeedFromBirth：max over life of dist(current, birth) / age（cm/s）。
+	// 用途：firmware 复用 track_id 拼接两个不相关反射时（如 D5F7 case），
+	// 出生分通过 + 即时 Kalman 残差小，但累计位移除以累计时间隐含速度爆表 → 强 ghost 信号。
+	MaxKalmanResidual        float64
+	MaxImpliedSpeedFromBirth int
+
+	// ---- Birth verdict 多流时序兜底（方案 A）----
+	// BirthFinalDeadlineMs：若 verdict 仍 Pending 且 nowMs >= 此值 → 重算 birth score
+	// （把 EnterRoom 反查窗口扩展到 [Birth-3s, deadline]），给 event-stream 缓冲 2s。
+	// 0 = 已终判过，不再重算。
+	BirthFinalDeadlineMs int64
 }
 
 // Track 生命周期常量
@@ -125,19 +158,20 @@ type PendingSilentFall struct {
 func NewTrackState(trackID int, deviceID, roomID string, x, y, z int, tMs int64) *TrackState {
 	birth := TimedPoint{X: x, Y: y, Z: z, TMs: tMs}
 	return &TrackState{
-		TrackID:      trackID,
-		DeviceID:     deviceID,
-		RoomID:       roomID,
-		BirthPos:     birth,
-		Kalman:       NewKalmanFilter2D(float64(x), float64(y)),
-		History:      []TimedPoint{birth},
-		FrameCount:   1,
-		Score:        50,
-		Verdict:      VerdictPending,
-		LastZ:        z,
-		LastUpdateMs: tMs,
-		LastCellCol:  -1,
-		LastCellRow:  -1,
+		TrackID:              trackID,
+		DeviceID:             deviceID,
+		RoomID:               roomID,
+		BirthPos:             birth,
+		Kalman:               NewKalmanFilter2D(float64(x), float64(y)),
+		History:              []TimedPoint{birth},
+		FrameCount:           1,
+		Score:                50,
+		Verdict:              VerdictPending,
+		LastZ:                z,
+		LastUpdateMs:         tMs,
+		LastCellCol:          -1,
+		LastCellRow:          -1,
+		BirthFinalDeadlineMs: tMs + int64(FallRulesParam.Lost.BirthFinalGraceMs),
 	}
 }
 

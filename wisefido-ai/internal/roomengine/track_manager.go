@@ -33,6 +33,11 @@ type TrackFrame struct {
 	Pose     int
 	AreaType int // 雷达给的 area_id（保留兼容字段，engine 不信其判定，用 cell.AreaType）
 	TMs      int64
+
+	// 用于 frozen-frame 检测的辅助字段（每个值是 firmware 给的原始信号）
+	// firmware 失锁后这些字段会保持 byte-equal 5+ 分钟，是判 frozen 的强证据
+	TrackConfidence int // 0-100
+	RemainingTime   int
 }
 
 // TrackManager 管理一个房间内所有 track 的生命周期
@@ -402,6 +407,9 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			ts.BirthScore = b.score
 			ts.BirthReason = b.reason
 			ts.Score = ts.BirthScore
+			// 初始化 frozen 检测签名：把出生帧记为第一个签名（FrozenSameCount=1）
+			ts.LastFrameSig = frameSigOf(f)
+			ts.FrozenSameCount = 1
 			tm.tracks[f.TrackID] = ts
 			ts.PrevCore = RadarPoseToCore(f.Pose)
 			quality = ts.Score
@@ -421,6 +429,9 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			residualF := ts.Kalman.Update(float64(f.X), float64(f.Y))
 			ts.PushPoint(f.X, f.Y, f.Z, f.TMs)
 			residual := int(math.Round(residualF))
+
+			// 连续指标（frozen + Kalman birth-coherence），在 Kalman update 之后维护
+			tm.updateContinuousIndicators(ts, f, nowMs, residualF)
 
 			// 维度 A: 即时流
 			tm.scoreResidual(ts, residual)
@@ -1141,4 +1152,58 @@ func (tm *TrackManager) occupancyFactor() float64 {
 		return 1.2
 	}
 	return 1.0
+}
+
+// frameSigOf 把一帧抽成 frameSignature（用于 frozen-frame 检测的字面比对）。
+func frameSigOf(f TrackFrame) frameSignature {
+	return frameSignature{
+		TrackID:         f.TrackID,
+		X:               f.X,
+		Y:               f.Y,
+		Z:               f.Z,
+		Pose:            f.Pose,
+		TrackConfidence: f.TrackConfidence,
+		RemainingTime:   f.RemainingTime,
+	}
+}
+
+// updateContinuousIndicators 每帧维护 frozen-frame 检测 + Kalman birth-coherence 指标。
+//
+// 1. Frozen 检测：连续 N 帧 (tid, x, y, z, pose, tc, rt) 字面相同 → FrozenRunStart 记录起点。
+//    用于 lost-fall pending 计算 frozen credit（半计入等待）。
+// 2. MaxKalmanResidual：track 生命周期峰值残差。
+// 3. MaxImpliedSpeedFromBirth：max(dist(current, birth) / age) cm/s；
+//    > ImpossibleSpeedCm 判硬 ghost；> SuspectSpeedCm + 无 EnterRoom 判软 ghost。
+//
+// 调用位置：processFrameAt 已有 track 分支，Kalman.Update 之后。
+func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame, nowMs int64, residualF float64) {
+	// ---- Frozen 检测 ----
+	sig := frameSigOf(f)
+	if sig == ts.LastFrameSig {
+		ts.FrozenSameCount++
+		if ts.FrozenSameCount >= FallRulesParam.Lost.FrozenSameThreshold && ts.FrozenRunStart == 0 {
+			// 估算起点：假设 1Hz 帧率，回填到 (threshold-1) 秒前
+			ts.FrozenRunStart = nowMs - int64(FallRulesParam.Lost.FrozenSameThreshold-1)*1000
+		}
+	} else {
+		ts.FrozenSameCount = 1
+		ts.FrozenRunStart = 0
+		ts.LastFrameSig = sig
+	}
+
+	// ---- MaxKalmanResidual ----
+	if residualF > ts.MaxKalmanResidual {
+		ts.MaxKalmanResidual = residualF
+	}
+
+	// ---- MaxImpliedSpeedFromBirth ----
+	ageMs := nowMs - ts.BirthPos.TMs
+	if ageMs >= 1000 {
+		distFromBirth := distInt(f.X, f.Y, ts.BirthPos.X, ts.BirthPos.Y)
+		// implied = dist / ageSec = dist * 1000 / ageMs (cm/s)
+		implied := int(int64(distFromBirth) * 1000 / ageMs)
+		if implied > ts.MaxImpliedSpeedFromBirth {
+			ts.MaxImpliedSpeedFromBirth = implied
+		}
+	}
 }

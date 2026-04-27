@@ -42,6 +42,25 @@ type lostFallParam struct {
 	// 「空间跳跃」加权因子：表现过空间跳跃的 track 等待时间 × 此因子
 	// 0.5 = 跳过的等待时间砍半（更敏感）
 	SpatialJumpFactor float64
+
+	// Frozen 检测：连续 N 帧 (track_id, x, y, z, pose, tc, rt) 字面相同 → 判 frozen
+	// 实测 firmware 失锁后字面 byte-equal（无 noise），25 阈值给极少数抖动留余量
+	FrozenSameThreshold int
+
+	// 速度二档判定（cm/s）：
+	// > ImpossibleSpeedCm 硬 ghost（无 EnterRoom 也判定）：老人最快 100-150cm/s
+	// > SuspectSpeedCm + 无 EnterRoom 软 ghost（probation）：成人快走可达
+	// < SuspectSpeedCm 默认真人：老人 60-80cm/s 步速正常活动
+	ImpossibleSpeedCm int
+	SuspectSpeedCm    int
+
+	// Birth verdict 多流时序兜底：track 帧与 EnterRoom 事件分两条流，
+	// 出生瞬时 EnterRoom 可能还在路上 → birth 时仅打初步分留 Pending；
+	// 此 ms 后到达 deadline 重算（window 扩展到 [T-3s, deadline]）
+	BirthFinalGraceMs int
+
+	// Lost-fall pending 等待时间下限（兜底）
+	EffectiveWaitFloorSec int
 }
 
 // cellHistoryParam Cell History Integral（自适应阈值）参数
@@ -76,11 +95,16 @@ var FallRulesParam = fallRulesParam{
 		StaticPosCm:       20,
 	},
 	Lost: lostFallParam{
-		RestZoneWaitSec:   60 * 60, // 60 min
-		DenyZoneWaitSec:   5 * 60,
-		WalkwayWaitSec:    5 * 60,
-		ExitDistMinCm:     100, // 1 m
-		SpatialJumpFactor: 0.5,
+		RestZoneWaitSec:       60 * 60, // 60 min
+		DenyZoneWaitSec:       5 * 60,
+		WalkwayWaitSec:        5 * 60,
+		ExitDistMinCm:         100, // 1 m
+		SpatialJumpFactor:     0.5,
+		FrozenSameThreshold:   25,    // 连续 25 帧字面相同
+		ImpossibleSpeedCm:     200,   // 硬 ghost：老人最快 100-150cm/s
+		SuspectSpeedCm:        100,   // 软 ghost：需 EnterRoom 反证
+		BirthFinalGraceMs:     2000,  // birth 终判延迟 2s
+		EffectiveWaitFloorSec: 60,    // 兜底最少等 60s
 	},
 	CellHistory: cellHistoryParam{
 		FakeAlarmThreshold:      3,

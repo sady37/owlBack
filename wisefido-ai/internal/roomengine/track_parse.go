@@ -74,14 +74,16 @@ func ParseRadarTracks(dv interface{}, deviceID string, mount radarutils.RadarMou
 		}
 
 		frames = append(frames, TrackFrame{
-			TrackID:  trackID,
-			DeviceID: deviceID,
-			X:        canvas.X,
-			Y:        canvas.Y,
-			Z:        canvas.Z,
-			Pose:     pose,
-			AreaType: areaID,
-			TMs:      frameTs,
+			TrackID:         trackID,
+			DeviceID:        deviceID,
+			X:               canvas.X,
+			Y:               canvas.Y,
+			Z:               canvas.Z,
+			Pose:            pose,
+			AreaType:        areaID,
+			TMs:             frameTs,
+			TrackConfidence: intFromAny(item["track_confidence"]),
+			RemainingTime:   intFromAny(item["remaining_time"]),
 		})
 	}
 	return frames

@@ -292,6 +292,88 @@ func TestBedPersonCount_Counting(t *testing.T) {
 // IsNightTime
 // ============================================================================
 
+// ============================================================================
+// Frozen-frame 检测：连续 25 帧字面 byte-equal 时 FrozenRunStart 被填上
+// ============================================================================
+
+func TestFrozenFrameDetection(t *testing.T) {
+	tm, _ := newTestTM()
+	const tid = 7
+	const x, y, z = 100, 100, 50
+	const pose = 4 // standing
+
+	// 第一帧出生
+	tm.processFrameAt([]TrackFrame{
+		{TrackID: tid, DeviceID: "dev1", X: x, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: 1000},
+	}, 1000)
+	ts := tm.tracks[tid]
+	if ts == nil {
+		t.Fatal("track not created")
+	}
+	if ts.FrozenSameCount != 1 {
+		t.Errorf("after 1 frame want FrozenSameCount=1 got %d", ts.FrozenSameCount)
+	}
+	if ts.FrozenRunStart != 0 {
+		t.Errorf("after 1 frame FrozenRunStart should be 0, got %d", ts.FrozenRunStart)
+	}
+
+	// 喂 24 帧完全相同（共 25 帧）
+	for i := 1; i < 25; i++ {
+		tms := int64(1000 + i*1000)
+		tm.processFrameAt([]TrackFrame{
+			{TrackID: tid, DeviceID: "dev1", X: x, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: tms},
+		}, tms)
+	}
+	if ts.FrozenSameCount != 25 {
+		t.Errorf("after 25 same frames want FrozenSameCount=25 got %d", ts.FrozenSameCount)
+	}
+	// FrozenRunStart 应在 nowMs(=25000) - 24*1000 = 1000 (出生帧)
+	expectedStart := int64(25000 - 24*1000)
+	if ts.FrozenRunStart != expectedStart {
+		t.Errorf("FrozenRunStart want %d got %d", expectedStart, ts.FrozenRunStart)
+	}
+
+	// 一帧坐标变化 → 重置
+	tm.processFrameAt([]TrackFrame{
+		{TrackID: tid, DeviceID: "dev1", X: x + 50, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: 26000},
+	}, 26000)
+	if ts.FrozenSameCount != 1 {
+		t.Errorf("after pos change want FrozenSameCount=1 got %d", ts.FrozenSameCount)
+	}
+	if ts.FrozenRunStart != 0 {
+		t.Errorf("after pos change FrozenRunStart should reset to 0, got %d", ts.FrozenRunStart)
+	}
+}
+
+// TestImpliedSpeedFromBirth：出生在 (100,100)，10 秒后跳到 (300,100) 距离 200cm → 隐含 20cm/s
+// 然后下一帧到 (500,100) age=11 dist=400 → 隐含 36cm/s（取 max）
+func TestImpliedSpeedFromBirth(t *testing.T) {
+	tm, _ := newTestTM()
+	const tid = 8
+
+	// 出生：t=0, (100,100)
+	tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 50, observation.PoseStanding, 0)}, 0)
+	ts := tm.tracks[tid]
+	if ts == nil {
+		t.Fatal("track not created")
+	}
+	// 10s 后到 (300, 100)，dist=200，age=10s，implied=20 cm/s
+	tm.processFrameAt([]TrackFrame{frameAt(tid, 300, 100, 50, observation.PoseStanding, 10000)}, 10000)
+	if ts.MaxImpliedSpeedFromBirth < 19 || ts.MaxImpliedSpeedFromBirth > 21 {
+		t.Errorf("after 10s + 200cm displacement want implied~20, got %d", ts.MaxImpliedSpeedFromBirth)
+	}
+	// 11s 总，到 (500, 100)，dist=400，implied=36
+	tm.processFrameAt([]TrackFrame{frameAt(tid, 500, 100, 50, observation.PoseStanding, 11000)}, 11000)
+	if ts.MaxImpliedSpeedFromBirth < 35 || ts.MaxImpliedSpeedFromBirth > 38 {
+		t.Errorf("after 11s + 400cm want implied~36, got %d", ts.MaxImpliedSpeedFromBirth)
+	}
+	// 回到 (100, 100) implied 应不下降（取 max）
+	tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 50, observation.PoseStanding, 12000)}, 12000)
+	if ts.MaxImpliedSpeedFromBirth < 35 {
+		t.Errorf("MaxImpliedSpeedFromBirth should be max-tracking, got %d", ts.MaxImpliedSpeedFromBirth)
+	}
+}
+
 func TestIsNightTime(t *testing.T) {
 	cases := []struct {
 		hour, min int
