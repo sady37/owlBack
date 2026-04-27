@@ -146,16 +146,19 @@ func handlePlayback(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	}
 	roomengine.ApplyOptimizedExtent(&cfg)
 
+	logVerdicts := q.Get("log_verdicts") == "1"
+
 	// 跑回放
 	res, err := playback.Run(ctx, playback.Options{
-		RoomID:    roomID,
-		Cfg:       cfg,
-		DB:        db,
-		DeviceUID: uid,
-		Start:     start,
-		End:       end,
-		SnapMin:   snapMin,
-		DumpRect:  dumpRect,
+		RoomID:           roomID,
+		Cfg:              cfg,
+		DB:               db,
+		DeviceUID:        uid,
+		Start:            start,
+		End:              end,
+		SnapMin:          snapMin,
+		DumpRect:         dumpRect,
+		LogTrackVerdicts: logVerdicts,
 	})
 	if err != nil {
 		// ctx timeout/cancel 走 504；其他走 500

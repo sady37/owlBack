@@ -38,6 +38,10 @@ type Options struct {
 	// DumpRect debug：跑完后把这个矩形（画布坐标 cm）内每个 InRoom cell 的统计灌进 Result.RectDump。
 	// 4 个 0 = 不 dump。用于定位"为什么这片 cell 学成 X 类型"。
 	DumpRect [4]int // [x1, y1, x2, y2]
+
+	// LogTrackVerdicts debug：true = 每帧记录所有 track 的 verdict / anomaly / score 到 Result.TrackVerdicts。
+	// 用于 ghost / fall verify 算法验证。
+	LogTrackVerdicts bool
 }
 
 // Result 回放结果（snapshots + 统计）
@@ -55,6 +59,24 @@ type Result struct {
 
 	// RectDump：Options.DumpRect 设置时，跑完后的 cell 统计列表（用于定位学习异常）
 	RectDump []roomengine.CellStat `json:"rect_dump,omitempty"`
+
+	// TrackVerdicts：Options.LogTrackVerdicts 启用时，记录每帧 ProcessFrame 后所有 track 的 verdict / anomaly
+	// 用途：debug ghost 检测——看 engine 对真假 track 是否给出正确判定。
+	TrackVerdicts []TrackVerdictRecord `json:"track_verdicts,omitempty"`
+}
+
+// TrackVerdictRecord 单个 track 在某一帧的判定快照
+type TrackVerdictRecord struct {
+	TMs      int64  `json:"t_ms"`
+	TrackID  int    `json:"track_id"`
+	Verdict  string `json:"verdict"` // pending / real / ghost
+	Score    int    `json:"score"`
+	Risk     int    `json:"risk"`
+	Anomaly  string `json:"anomaly,omitempty"`
+	X        int    `json:"x"`
+	Y        int    `json:"y"`
+	Z        int    `json:"z"`
+	StillSec int    `json:"still_sec,omitempty"`
 }
 
 // 历史轨迹窗口（与原 playback 一致）
@@ -142,6 +164,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	var pathBuf []pathPt
 	var simT int64
 	var nextSnapAt, nextDecayAt, nextScanAt int64
+	var trackVerdicts []TrackVerdictRecord
 	totalRows, totalFrames := 0, 0
 
 	chunkStart := opts.Start
@@ -155,6 +178,14 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, fmt.Errorf("query rows %s~%s: %w",
 				chunkStart.Format("01-02 15:04"), chunkEnd.Format("01-02 15:04"), err)
 		}
+		// 同时拉 event 流（radar EnterRoom/ExitRoom/InBed/LeftBed），按 timestamp merge 进 monitor 流。
+		// birth filter 检查 EnterRoom 配对依赖此数据。
+		eventRows, eErr := QueryEvents(ctx, opts.DB, opts.TenantID, opts.DeviceUID, chunkStart, chunkEnd, opts.RowLimit)
+		if eErr != nil {
+			return nil, fmt.Errorf("query events %s~%s: %w",
+				chunkStart.Format("01-02 15:04"), chunkEnd.Format("01-02 15:04"), eErr)
+		}
+		rows = mergeRowsByTime(rows, eventRows)
 		totalRows += len(rows)
 
 		for _, row := range rows {
@@ -199,6 +230,16 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				}
 			}
 
+			// 分发：event 流（radar EnterRoom/ExitRoom/InBed/LeftBed）落账 + Tick；不参与 ProcessFrame
+			if row.TopicType == "event" {
+				for _, evt := range roomengine.ParseRadarTrackEvents(row.DataValue, row.DeviceUID, ts) {
+					tm.RecordRadarEvent(evt)
+				}
+				tm.Tick(ts)
+				simT = ts
+				continue
+			}
+
 			frames := roomengine.ParseRadarTracks(row.DataValue, row.DeviceID, cfg.Radar, ts)
 			if len(frames) > 0 {
 				outputs := tm.ProcessFrame(frames)
@@ -207,6 +248,20 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				for _, o := range outputs {
 					if o.Verdict == roomengine.VerdictReal {
 						realIDs[o.TrackID] = true
+					}
+					if opts.LogTrackVerdicts {
+						trackVerdicts = append(trackVerdicts, TrackVerdictRecord{
+							TMs:      ts,
+							TrackID:  o.TrackID,
+							Verdict:  verdictName(o.Verdict),
+							Score:    o.Score,
+							Risk:     o.Risk,
+							Anomaly:  anomalyName(o.Anomaly),
+							X:        o.X,
+							Y:        o.Y,
+							Z:        o.Z,
+							StillSec: o.StillSec,
+						})
 					}
 				}
 				for _, f := range frames {
@@ -256,7 +311,43 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		res.RectDump = grid.DumpRect(opts.DumpRect[0], opts.DumpRect[1],
 			opts.DumpRect[2], opts.DumpRect[3])
 	}
+	if opts.LogTrackVerdicts {
+		res.TrackVerdicts = trackVerdicts
+	}
 	return res, nil
+}
+
+// verdictName / anomalyName：把 enum 转可读字符串（JSON 输出用）
+func verdictName(v roomengine.TrackVerdict) string {
+	switch v {
+	case roomengine.VerdictPending:
+		return "pending"
+	case roomengine.VerdictReal:
+		return "real"
+	case roomengine.VerdictGhost:
+		return "ghost"
+	}
+	return "unknown"
+}
+
+func anomalyName(a roomengine.Anomaly) string {
+	switch a {
+	case roomengine.AnomalyNone:
+		return ""
+	case roomengine.AnomalyFall:
+		return "fall"
+	case roomengine.AnomalyStillTooLong:
+		return "still_too_long"
+	case roomengine.AnomalyPathBreak:
+		return "path_break"
+	case roomengine.AnomalyPoseMismatch:
+		return "pose_mismatch"
+	case roomengine.AnomalyBedFall:
+		return "bed_fall"
+	case roomengine.AnomalyBedsideFall:
+		return "bedside_fall"
+	}
+	return "unknown"
 }
 
 // pathPt 单帧 track 位置记录

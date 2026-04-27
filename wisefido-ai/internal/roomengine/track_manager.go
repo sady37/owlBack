@@ -347,7 +347,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			tm.cancelPendingByBirth(f.X, f.Y, RadarPoseToCore(f.Pose))
 
 			ts = NewTrackState(f.TrackID, f.DeviceID, tm.roomID, f.X, f.Y, f.Z, f.TMs)
-			ts.BirthScore = tm.birthScore(f.X, f.Y)
+			ts.BirthScore = tm.birthScore(f.X, f.Y, f.TMs)
 			ts.Score = ts.BirthScore
 			tm.tracks[f.TrackID] = ts
 			ts.PrevCore = RadarPoseToCore(f.Pose)
@@ -627,23 +627,47 @@ func (tm *TrackManager) SilentFallStatsSnapshot() SilentFallStats {
 }
 
 // ========================================================================
-// 出生打分（5 因子）
+// 出生打分（基于 elder care 步速物理常识）
 // ========================================================================
+//
+// 物理判据（用户 2026-04-26 对齐）：
+//   - 老人步速上限 1.0 m/s，青壮年 1.5 m/s
+//   - 出生位置距 Enter > 150cm = 1 秒走不到 = 物理不可能新人 → 直接 Ghost
+//   - 出生位置距 Enter ≤ 150cm 但没有近 3s 内的 EnterRoom 配对事件 → 也是 Ghost
+//     （radar firmware 的 enter2out 事件没触发 = 没经过门 = 不是真人入场）
+//   - 出生在镜子/家具 (AreaDeny) cell → 物理不可能 → Ghost
+//
+// 双因素：地理（dEntry） + 时间（EnterRoom 配对）
+//
+// 注：本函数返回初始 score。score < ScoreGhostTh(20) → 5 帧后判 Ghost；score >= ScoreConfirmTh(50) → 真人。
+// 没采用"birth 时直接 setVerdict=Ghost"是为了保留试用期内 EnterRoom 事件迟到时的纠正机会。
 
-func (tm *TrackManager) birthScore(x, y int) int {
+const (
+	enterPairWindowMs   = 3_000 // EnterRoom 与 birth 的最大时间差（ms）
+	birthMaxRealisticCm = 150   // 距 Enter 此值内才可能是 1 秒走入的真人（青壮年 1.5m/s 上限）
+	birthEnterPairBonus = 20    // 有 EnterRoom 配对加分（不让分数超过 100 边界）
+)
+
+func (tm *TrackManager) birthScore(x, y int, tMs int64) int {
 	score := 50
 
-	// 因子 1: d_enter
+	// 因子 1: d_enter — elder care 物理上限
+	// 规则：
+	//   dEntry < 50          → 紧贴 Enter，+20 奖励
+	//   dEntry 50-150 + 配对  → 1s 内走入 + EnterRoom 事件确认，+20
+	//   dEntry 50-150 无配对  → return 0（直接判 Ghost，不让其他因子救回）
+	//   dEntry > 150          → return 0（1s 走不到，物理不可能）
 	dEntry := tm.grid.NearestEntryDist(x, y)
 	switch {
 	case dEntry < 50:
 		score += 20
-	case dEntry < 150:
-		score += 10
-	case dEntry > 300:
-		score -= 25
+	case dEntry <= birthMaxRealisticCm:
+		if !tm.hasRecentEnterRoom(tMs) {
+			return 0 // 无 EnterRoom 配对 → 物理上不是入场真人
+		}
+		score += birthEnterPairBonus
 	default:
-		score -= 10
+		return 0 // 距 Enter > 150cm，1s 内不可能从门口到达
 	}
 
 	// 因子 2: 出生 cell 的 GhostRatio + AreaType
@@ -672,6 +696,25 @@ func (tm *TrackManager) birthScore(x, y int) int {
 	}
 
 	return clampInt(score, 0, 100)
+}
+
+// hasRecentEnterRoom 检查 [tMs - enterPairWindowMs, tMs] 窗口内有无 EnterRoom 事件。
+// 调用方持锁（segment 1 已持锁）。
+//
+// 注：仅 look-back（不 look-forward）。如果 monitor 早于 event 到达 engine，
+// 这里会判错（false ghost）。后续如有问题，可改成 pending 阶段持续重检：
+// 在 segment 3 promote 前再扫一遍 recentRadarEvents。
+func (tm *TrackManager) hasRecentEnterRoom(tMs int64) bool {
+	cutoff := tMs - enterPairWindowMs
+	for k, e := range tm.recentRadarEvents {
+		if k < cutoff || k > tMs {
+			continue
+		}
+		if e.EventName == "EnterRoom" {
+			return true
+		}
+	}
+	return false
 }
 
 // ========================================================================

@@ -58,11 +58,24 @@ type Row struct {
 	DeviceID    string
 	DeviceUID   string
 	TimestampMs int64
+	TopicType   string // "monitor" / "event"（merge 后区分用）
 	DataValue   interface{}
 }
 
 // QueryRows 拉一段时间内 device_uid 的 monitor 数据
 func QueryRows(ctx context.Context, db *sql.DB, tenantID, deviceUID string,
+	start, end time.Time, limit int) ([]Row, error) {
+	return queryByTopic(ctx, db, tenantID, deviceUID, "monitor", start, end, limit)
+}
+
+// QueryEvents 拉一段时间内 device_uid 的 event 数据（radar source）。
+// 用于 playback 喂 RecordRadarEvent — birth filter 检查 EnterRoom 配对依赖。
+func QueryEvents(ctx context.Context, db *sql.DB, tenantID, deviceUID string,
+	start, end time.Time, limit int) ([]Row, error) {
+	return queryByTopic(ctx, db, tenantID, deviceUID, "event", start, end, limit)
+}
+
+func queryByTopic(ctx context.Context, db *sql.DB, tenantID, deviceUID, topic string,
 	start, end time.Time, limit int) ([]Row, error) {
 
 	q := `
@@ -70,12 +83,12 @@ SELECT its.id, its.device_id::text, its.device_uid, its."timestamp", its.data_va
 FROM iot_timeseries its
 WHERE its.tenant_id::text = $1
   AND its.device_uid = $2
-  AND its.topic_type = 'monitor'
-  AND its."timestamp" >= $3
-  AND its."timestamp" <= $4
+  AND its.topic_type = $3
+  AND its."timestamp" >= $4
+  AND its."timestamp" <= $5
 ORDER BY its."timestamp" ASC
-LIMIT $5`
-	rows, err := db.QueryContext(ctx, q, tenantID, deviceUID,
+LIMIT $6`
+	rows, err := db.QueryContext(ctx, q, tenantID, deviceUID, topic,
 		start.UnixMilli(), end.UnixMilli(), limit)
 	if err != nil {
 		return nil, err
@@ -103,10 +116,33 @@ LIMIT $5`
 			DeviceID:    did.String,
 			DeviceUID:   duid.String,
 			TimestampMs: tsMs,
+			TopicType:   topic,
 			DataValue:   dv,
 		})
 	}
 	return out, rows.Err()
+}
+
+// mergeRowsByTime 把两个已按 TMs 排序的 Row 列表 merge 为一个有序列表（merge-sort step）
+func mergeRowsByTime(a, b []Row) []Row {
+	out := make([]Row, 0, len(a)+len(b))
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		if a[i].TimestampMs <= b[j].TimestampMs {
+			out = append(out, a[i])
+			i++
+		} else {
+			out = append(out, b[j])
+			j++
+		}
+	}
+	if i < len(a) {
+		out = append(out, a[i:]...)
+	}
+	if j < len(b) {
+		out = append(out, b[j:]...)
+	}
+	return out
 }
 
 func getenv(key, def string) string {
