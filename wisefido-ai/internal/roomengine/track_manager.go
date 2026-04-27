@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
 	"owl-common/observation"
 )
 
@@ -86,6 +87,10 @@ type TrackManager struct {
 	recentRadarAlarms map[int64]*RadarFallAlarm  // key = TMs
 	recentRadarEvents map[int64]*RadarTrackEvent // key = TMs
 	recentBufferMs    int64                      // 默认 5 min
+
+	// logger：用于 ai.log 输出 ghost / fall 结构化事件。
+	// 默认 zap.NewNop()，engine.Run 会调 SetLogger 注入真 logger。
+	logger *zap.Logger
 }
 
 // BedsideFallConfig R4 床边晕倒参数。
@@ -119,6 +124,19 @@ func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 		recentRadarAlarms:  make(map[int64]*RadarFallAlarm),
 		recentRadarEvents:  make(map[int64]*RadarTrackEvent),
 		recentBufferMs:     5 * 60 * 1000, // 5 min
+		logger:             zap.NewNop(),
+	}
+}
+
+// SetLogger 注入 zap logger（engine.Run 启动时调用）。
+// nil 输入会被替换为 NopLogger（防止后续 nil deref）。
+func (tm *TrackManager) SetLogger(l *zap.Logger) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if l == nil {
+		tm.logger = zap.NewNop()
+	} else {
+		tm.logger = l
 	}
 }
 
@@ -347,7 +365,9 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			tm.cancelPendingByBirth(f.X, f.Y, RadarPoseToCore(f.Pose))
 
 			ts = NewTrackState(f.TrackID, f.DeviceID, tm.roomID, f.X, f.Y, f.Z, f.TMs)
-			ts.BirthScore = tm.birthScore(f.X, f.Y, f.TMs)
+			b := tm.birthScore(f.X, f.Y, f.TMs)
+			ts.BirthScore = b.score
+			ts.BirthReason = b.reason
 			ts.Score = ts.BirthScore
 			tm.tracks[f.TrackID] = ts
 			ts.PrevCore = RadarPoseToCore(f.Pose)
@@ -462,6 +482,25 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				ts.ConfirmedAtMs = nowMs
 			} else if ts.Score < ScoreGhostTh {
 				ts.Verdict = VerdictGhost
+				if !ts.LoggedGhost {
+					reason := ts.BirthReason
+					if reason == "" {
+						reason = "low_score"
+					}
+					pxF, pyF := ts.Kalman.Position()
+					tm.logger.Info("track_verdict_ghost",
+						zap.String("device_uid", ts.DeviceID),
+						zap.Int("track_id", ts.TrackID),
+						zap.String("verdict", "ghost"),
+						zap.Int("score", ts.Score),
+						zap.Int("birth_score", ts.BirthScore),
+						zap.String("reason", reason),
+						zap.Int("x", int(math.Round(pxF))),
+						zap.Int("y", int(math.Round(pyF))),
+						zap.Int64("ts_ms", nowMs),
+					)
+					ts.LoggedGhost = true
+				}
 			}
 		}
 	}
@@ -485,6 +524,16 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		// 超时 → MarkFallEvent + 写一条输出
 		tm.silentFallReportCount++
 		tm.grid.MarkFallEvent(p.LastX, p.LastY, nowMs)
+		tm.logger.Info("real_fall",
+			zap.String("device_uid", p.DeviceID),
+			zap.Int("track_id", p.OriginalTrackID),
+			zap.String("kind", "engine_silent_fall"),
+			zap.Int("score", p.LastScore),
+			zap.Int("risk", 100),
+			zap.String("reason", "track_disappeared_in_non_rest_zone_60s"),
+			zap.Int("x", p.LastX), zap.Int("y", p.LastY), zap.Int("z", p.LastZ),
+			zap.Int64("ts_ms", nowMs),
+		)
 		out := TrackOutput{
 			TrackID:  p.OriginalTrackID,
 			DeviceID: p.DeviceID,
@@ -535,6 +584,16 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				if soleReal.CurrentAnomaly != AnomalyBedFall {
 					soleReal.CurrentAnomaly = AnomalyBedFall
 					tm.grid.MarkFallEvent(px, py, nowMs)
+					tm.logger.Info("real_fall",
+						zap.String("device_uid", soleReal.DeviceID),
+						zap.Int("track_id", soleReal.TrackID),
+						zap.String("kind", "engine_bed_fall"),
+						zap.Int("score", soleReal.Score),
+						zap.Int("risk", 100),
+						zap.String("reason", "radar_in_bed_cell_but_sleepad_off_bed_solo"),
+						zap.Int("x", px), zap.Int("y", py),
+						zap.Int64("ts_ms", nowMs),
+					)
 				}
 			}
 		}
@@ -648,26 +707,28 @@ const (
 	birthEnterPairBonus = 20    // 有 EnterRoom 配对加分（不让分数超过 100 边界）
 )
 
-func (tm *TrackManager) birthScore(x, y int, tMs int64) int {
-	score := 50
+// birthScoreResult birthScore 计算结果（score + 短路原因，调用方写入 ts.BirthReason 用于 ai.log）
+type birthScoreResult struct {
+	score  int
+	reason string // 空 = 正常打分；非空 = ghost 短路原因（"far_from_enter" / "no_enter_pair"）
+}
 
-	// 因子 1: d_enter — elder care 物理上限
-	// 规则：
-	//   dEntry < 50          → 紧贴 Enter，+20 奖励
-	//   dEntry 50-150 + 配对  → 1s 内走入 + EnterRoom 事件确认，+20
-	//   dEntry 50-150 无配对  → return 0（直接判 Ghost，不让其他因子救回）
-	//   dEntry > 150          → return 0（1s 走不到，物理不可能）
+func (tm *TrackManager) birthScore(x, y int, tMs int64) birthScoreResult {
+	score := 50
+	reason := ""
+
+	// 因子 1: d_enter — elder care 物理上限（青壮年 1.5 m/s, 老人 1.0 m/s）
 	dEntry := tm.grid.NearestEntryDist(x, y)
 	switch {
 	case dEntry < 50:
 		score += 20
 	case dEntry <= birthMaxRealisticCm:
 		if !tm.hasRecentEnterRoom(tMs) {
-			return 0 // 无 EnterRoom 配对 → 物理上不是入场真人
+			return birthScoreResult{0, "no_enter_pair"} // 50-150cm 但无 EnterRoom 配对
 		}
 		score += birthEnterPairBonus
 	default:
-		return 0 // 距 Enter > 150cm，1s 内不可能从门口到达
+		return birthScoreResult{0, "far_from_enter"} // > 150cm 物理不可能
 	}
 
 	// 因子 2: 出生 cell 的 GhostRatio + AreaType
@@ -684,6 +745,7 @@ func (tm *TrackManager) birthScore(x, y int, tMs int64) int {
 		}
 		if cell.Belief[0].Type == AreaDeny {
 			score -= 30 // 出生在 Deny 区直接重扣
+			reason = "born_in_deny"
 		}
 	}
 
@@ -695,7 +757,18 @@ func (tm *TrackManager) birthScore(x, y int, tMs int64) int {
 		score -= 10
 	}
 
-	return clampInt(score, 0, 100)
+	// 因子 4: 在已有 track 的同时，出生在"从未学到任何活动语义"的 cell（AreaUnknown）
+	// AreaType 已经过 LearnCellAreas 推断 + Decay 衰减，反映"近期活动 + 远期遗忘"。
+	// AreaUnknown 在 prod 长期运行后只剩"真没有人去过的角落"——多 track 共存时凭空出生几乎一定 ghost。
+	// 注：playback 短窗测试 grid 全 Unknown 时此规则会过度触发，prod 用 Persister hydrate 解决。
+	if cell != nil && cell.Belief[0].Type == AreaUnknown && nExisting >= 1 {
+		score -= 30
+		if reason == "" {
+			reason = "born_in_unknown_area_with_other_track"
+		}
+	}
+
+	return birthScoreResult{clampInt(score, 0, 100), reason}
 }
 
 // hasRecentEnterRoom 检查 [tMs - enterPairWindowMs, tMs] 窗口内有无 EnterRoom 事件。
@@ -792,6 +865,17 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64) {
 				ts.CurrentAnomaly = AnomalyBedsideFall
 				tm.grid.MarkFallEvent(x, y, nowMs)
 				ts.LongStillReported = true // 复用 flag 防 LongStill 重复 mark
+				tm.logger.Info("real_fall",
+					zap.String("device_uid", ts.DeviceID),
+					zap.Int("track_id", ts.TrackID),
+					zap.String("kind", "engine_bedside_fall_R4"),
+					zap.Int("score", ts.Score),
+					zap.Int("risk", 100),
+					zap.String("reason", "night_left_bed_then_bedside_still_15min"),
+					zap.Int("x", x), zap.Int("y", y),
+					zap.Int("still_sec", stillSec),
+					zap.Int64("ts_ms", nowMs),
+				)
 			}
 		}
 	} else {
@@ -876,6 +960,17 @@ func (tm *TrackManager) updateLieStateMachine(ts *TrackState, pose, x, y, z int,
 			ts.LastZ > 50 && z < 20 {
 			tm.grid.MarkFallEvent(x, y, nowMs)
 			ts.CurrentAnomaly = AnomalyFall
+			tm.logger.Info("real_fall",
+				zap.String("device_uid", ts.DeviceID),
+				zap.Int("track_id", ts.TrackID),
+				zap.String("kind", "engine_z_drop"),
+				zap.Int("score", ts.Score),
+				zap.Int("risk", 100),
+				zap.String("reason", "stand_or_move_to_lie_with_z_drop"),
+				zap.Int("x", x), zap.Int("y", y), zap.Int("z", z),
+				zap.Int("prev_z", ts.LastZ),
+				zap.Int64("ts_ms", nowMs),
+			)
 		}
 	}
 

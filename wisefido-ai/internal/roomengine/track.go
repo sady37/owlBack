@@ -38,8 +38,12 @@ type TrackState struct {
 	RoomID   string
 
 	// ---- 出生档案 ----
-	BirthPos   TimedPoint
-	BirthScore int // 5 因子初始分 [0,100]
+	BirthPos    TimedPoint
+	BirthScore  int    // 5 因子初始分 [0,100]
+	BirthReason string // birth filter 短路时的原因（"far_from_enter" / "no_enter_pair" / "unknown_area_multitrack" 等）
+
+	// LoggedGhost：verdict 第一次升 Ghost 时已写过 ai.log，避免后续重复 log
+	LoggedGhost bool
 
 	// ---- Kalman（内部 float，不持久化；track 死即销毁）----
 	Kalman *KalmanFilter2D

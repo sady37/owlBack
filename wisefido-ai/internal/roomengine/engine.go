@@ -308,6 +308,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm := NewTrackManager(cfg.RoomID, grid)
 	tm.SetMoveSpeedCms(e.learnParams.MoveSpeedCms)
 	tm.SetBedsideFallConfig(e.bedsideFallCfg)
+	tm.SetLogger(e.logger)
 	e.rooms[cfg.RoomID] = tm
 
 	// 计算 layout hash 并保存（snapshot save/load 都按此 hash 比对）
@@ -601,13 +602,16 @@ func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
 	}
 	for _, a := range alarms {
 		tm.RecordRadarAlarm(a)
-		e.logger.Info("radar fall alarm recorded",
-			zap.String("room_id", roomID),
+		// kind=radar_fall_received: radar firmware 发的 Fall 报警；engine 当前不验证（段 7 待做）。
+		// 未来 verifier 上线后会进一步分流：fake_fall（否决）/ real_fall（确认）/ lost_fall（应报漏报）
+		e.logger.Info("radar_fall_received",
 			zap.String("device_uid", deviceUID),
-			zap.Int64("ts", a.TMs),
 			zap.Int("track_id", a.TrackID),
+			zap.String("kind", "radar_firmware_fall"),
 			zap.Int("pose", a.Pose),
 			zap.String("status", a.Status),
+			zap.String("room_id", roomID),
+			zap.Int64("ts_ms", a.TMs),
 		)
 	}
 	tm.Tick(ts)
