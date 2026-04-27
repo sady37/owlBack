@@ -768,7 +768,7 @@ var DefaultAlarmSetting = struct {
 		},
 		{
 			AlarmType:      BedSitUp,
-			IsEnabled:      intPtr(IsEnabledOn),
+			IsEnabled:      intPtr(IsEnabledOff),
 			AlarmLevel:     strPtr(AlarmLevelWarn),
 			AlarmParams:    map[string]interface{}{},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
