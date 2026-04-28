@@ -2,6 +2,7 @@ package roomengine
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -130,6 +131,11 @@ type Engine struct {
 	// 持久化（nil = 不持久化）
 	persister Persister
 
+	// alarm-feedback ingestion（cell.IncrFakeAlarm 反馈链）
+	feedbackDB        *sql.DB
+	feedbackInterval  time.Duration // 默认 5 分钟；0 = 关闭
+	feedbackIngester  *AlarmFeedbackIngester
+
 	redisClient *redis.Client
 	logger      *zap.Logger
 
@@ -155,6 +161,11 @@ type RuntimeConfig struct {
 	// R4 床边晕倒参数；通过 TrackManager.SetBedsideFallConfig 注入到每个房间。
 	// 任一字段 0 保留 defaultBedsideFallCfg 默认值。
 	BedsideFall BedsideFallConfig
+
+	// FeedbackDB / FeedbackInterval：alarm_events false_alarm 反馈链。
+	// 二者都设置才启用；缺任一退化为不启动 feedbackLoop。
+	FeedbackDB       *sql.DB
+	FeedbackInterval time.Duration // 默认 5 分钟
 }
 
 // NewEngine 创建 Room Engine（默认参数）。生产环境调用 Configure 注入 yaml 配置。
@@ -217,6 +228,19 @@ func (e *Engine) Configure(cfg RuntimeConfig) {
 	for _, tm := range e.rooms {
 		tm.SetBedsideFallConfig(cfg.BedsideFall)
 	}
+
+	// alarm feedback：默认 5min；缺 DB 不启用
+	e.feedbackDB = cfg.FeedbackDB
+	if cfg.FeedbackInterval > 0 {
+		e.feedbackInterval = cfg.FeedbackInterval
+	} else if e.feedbackInterval == 0 {
+		e.feedbackInterval = 5 * time.Minute
+	}
+	if e.feedbackDB != nil {
+		e.feedbackIngester = NewAlarmFeedbackIngester(e.feedbackDB, e, e.logger)
+	} else {
+		e.feedbackIngester = nil
+	}
 }
 
 // SetOutputCallback 设置 track 输出回调（发 alarm 等下游）
@@ -243,6 +267,41 @@ func (e *Engine) SetRoomStayAlarmEnabled(roomID string, enabled bool) {
 		return
 	}
 	tm.SetStayAlarmEnabled(enabled)
+}
+
+// RoomForDevice 查 deviceKey（device_id 或 device_uid）对应的 room_id。
+// 用于 alarm feedback 反查。空字符串 = 未路由（设备未绑定房间或未注册）。
+func (e *Engine) RoomForDevice(deviceKey string) string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.deviceRoom[deviceKey]
+}
+
+// MountForRoom 取指定房间的雷达安装参数（用于 RadarToCanvas 转换）。
+// found=false 表示 room 未注册或未 stamp radar。
+func (e *Engine) MountForRoom(roomID string) (radarutils.RadarMount, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	mount, ok := e.mounts[roomID]
+	return mount, ok
+}
+
+// MarkFakeAlarmAt 在指定房间的 cell at (x, y) 累计 FakeAlarmCount + 1。
+// 用于 alarm_events.operation='false_alarm' 反馈链：
+// 人工标 fake → 反查 trigger 位置 → 命中 cell → 影响未来 still fall 阈值。
+// 房间不存在 / cell 越界 → false（调用方可记日志或忽略）。
+func (e *Engine) MarkFakeAlarmAt(roomID string, x, y int, nowMs int64) bool {
+	e.mu.RLock()
+	g := e.grids[roomID]
+	e.mu.RUnlock()
+	if g == nil {
+		return false
+	}
+	if g.CellAt(x, y) == nil {
+		return false
+	}
+	g.MarkFakeAlarm(x, y, nowMs)
+	return true
 }
 
 func (e *Engine) MapDeviceToRoom(deviceKey, roomID string) {
@@ -441,6 +500,9 @@ func (e *Engine) Run(ctx context.Context) error {
 	go e.winnerEvalLoop(ctx)
 	if e.persister != nil && e.snapshotInterval > 0 {
 		go e.snapshotLoop(ctx)
+	}
+	if e.feedbackIngester != nil && e.feedbackInterval > 0 {
+		go e.alarmFeedbackLoop(ctx)
 	}
 	// 单独 goroutine 消费 event 流（sleepad + radar 的 InBed/LeftBed/EnterRoom/ExitRoom）
 	go e.runEventLoop(ctx, eventStream, group)
@@ -814,6 +876,40 @@ func (e *Engine) scanBeliefAll() {
 		zap.Int("lie_anomalies", totalLieAnomalies),
 		zap.Int("winner", e.winner),
 	)
+}
+
+// alarmFeedbackLoop 每 feedbackInterval 跑一次 alarm_events false_alarm 反馈同步。
+// 启动时立即跑一次（首次会全量扫历史，把过往 false_alarm 灌入 cell.FakeAlarmCount）。
+// 单次失败只警告，不退出循环。
+func (e *Engine) alarmFeedbackLoop(ctx context.Context) {
+	if e.feedbackIngester == nil {
+		return
+	}
+	// 启动延迟 5s，避免与 RegisterRoom / hydrate 同时进 DB
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(5 * time.Second):
+	}
+	if n, err := e.feedbackIngester.IngestOnce(ctx); err != nil {
+		e.logger.Warn("alarm_feedback ingest at startup", zap.Error(err))
+	} else {
+		e.logger.Info("alarm_feedback startup ingest", zap.Int("processed", n))
+	}
+	ticker := time.NewTicker(e.feedbackInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n, err := e.feedbackIngester.IngestOnce(ctx); err != nil {
+				e.logger.Warn("alarm_feedback ingest tick", zap.Error(err))
+			} else if n > 0 {
+				e.logger.Info("alarm_feedback ingest tick", zap.Int("processed", n))
+			}
+		}
+	}
 }
 
 // snapshotLoop 每 snapshotInterval 把所有 grid 状态 dump 到 persister。
