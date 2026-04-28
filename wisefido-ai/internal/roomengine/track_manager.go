@@ -126,6 +126,12 @@ type TrackManager struct {
 	// roomName：rooms.room_name，由 engine.RegisterRoom 注入。
 	// Still fall 触发时与 cell.Belief[0].Type 取并集判 bathroom 语义（见 owl-common/roomutil.ClassifyRoomType）。
 	roomName string
+
+	// stayAlarmEnabled：本房间任一设备是否启用 Stay alarm（alarm_device.monitor_config Stay.is_enabled=1）。
+	// 启用 = 运维明确表达「需要长时间静止检测」 → still fall 视为 bathroom 类型。
+	// 与 cell.AreaToilet/Shower、room.name 三者取并集；任一命中即触发 still fall。
+	// 由 engine.RegisterRoom 启动时注入（查 DB），运行时变更需重启或加 Redis 通道（暂未做）。
+	stayAlarmEnabled bool
 }
 
 // BedsideFallConfig R4 床边晕倒参数。
@@ -191,6 +197,15 @@ func (tm *TrackManager) SetRoomName(name string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	tm.roomName = name
+}
+
+// SetStayAlarmEnabled 注入本房间是否有任一设备启用 Stay alarm。
+// 由 engine.RegisterRoom 启动时查 alarm_device 后调用。
+// true 时 still fall 视该房间为 bathroom-like（与 cell ∪ room.name 取并集）。
+func (tm *TrackManager) SetStayAlarmEnabled(enabled bool) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.stayAlarmEnabled = enabled
 }
 
 // IsBathroomByRoomName 用 owl-common/roomutil.ClassifyRoomType 判定本房间是否 bathroom。
@@ -1706,9 +1721,12 @@ func (tm *TrackManager) occupancyFactor() float64 {
 // stillFallTimeoutSec 当前 cell + room 上下文下 still-fall 的有效阈值（秒）。
 //
 //	cell.AreaToilet/AreaShower → cell.EffectiveStillTimeoutSec（含 cell history 自适应）
-//	否则 room.name 是 bathroom (cell∪room 并集) → FallRulesParam.Still.ToiletShowerSec
+//	否则 (room.name 是 bathroom) ∪ (Stay alarm 启用) → FallRulesParam.Still.ToiletShowerSec
 //	                                                  × NonRiskTimeFactor (non-risk-time 时)
 //	都不匹配 → 0（不报 still fall）
+//
+// 三路并集：cell 学到 / room 命名 / 运维显式启用 Stay alarm。
+// 任一命中即按 bathroom 处理；Stay alarm 启用语义="操作员明确需要长时间静止检测"。
 //
 // 调用方持锁。
 func (tm *TrackManager) stillFallTimeoutSec(cell *Cell, isRiskTime bool) int {
@@ -1720,8 +1738,8 @@ func (tm *TrackManager) stillFallTimeoutSec(cell *Cell, isRiskTime bool) int {
 		// cell 已学到 toilet/shower：完全用 cell.EffectiveStillTimeoutSec（已含 risk-time 与 tolerance）
 		return cell.EffectiveStillTimeoutSec(isRiskTime)
 	}
-	// cell 未学到但 room.name 是 bathroom → 用基线时长（无 cell history）
-	if roomutil.IsBathroom(tm.roomName) {
+	// cell 未学到但 (room.name 是 bathroom) 或 (Stay alarm 启用) → 用基线时长（无 cell history）
+	if roomutil.IsBathroom(tm.roomName) || tm.stayAlarmEnabled {
 		base := FallRulesParam.Still.ToiletShowerSec
 		if !isRiskTime {
 			base = int(float64(base) * FallRulesParam.Still.NonRiskTimeFactor)

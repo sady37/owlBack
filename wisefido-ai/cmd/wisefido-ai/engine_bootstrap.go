@@ -47,6 +47,14 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB,
 	}
 	logger.Info("roomengine: devices mapped", zap.Int("count", mapped))
 
+	// 3b. 注入 Stay alarm 启用状态（still fall 第三条 bathroom 路径）
+	stayRooms, err := loadStayAlarmEnablement(ctx, engine, db, logger)
+	if err != nil {
+		logger.Warn("roomengine: load Stay alarm enablement failed", zap.Error(err))
+	} else {
+		logger.Info("roomengine: rooms with Stay alarm enabled", zap.Int("count", stayRooms))
+	}
+
 	// 4. 启动主循环（消费 monitor + event 流，跑学习+持久化定时器）
 	go func() {
 		if err := engine.Run(ctx); err != nil {
@@ -161,6 +169,49 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 		cfg.Timezone = timezone
 		roomengine.ApplyOptimizedExtent(&cfg)
 		engine.RegisterRoom(cfg)
+		count++
+	}
+	return count, rows.Err()
+}
+
+// loadStayAlarmEnablement 扫 alarm_device.monitor_config，找出所有启用 Stay alarm
+// 的设备，把它们的 room_id（直接绑或 via beds）汇总后下发到对应 TrackManager。
+//
+// 用途：still fall position 的并集第三条 — 运维显式启用 Stay alarm 的房间，
+// 即使既不是 cell.AreaToilet/Shower 也不是 room.name=bathroom，也按 bathroom 处理。
+//
+// 该状态只在启动时灌一次；运行时配置变更需重启或后续接 Redis 通道（暂未做）。
+func loadStayAlarmEnablement(ctx context.Context, engine *roomengine.Engine, db *sql.DB,
+	logger *zap.Logger) (int, error) {
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT DISTINCT COALESCE(d.bound_room_id, b.room_id)::text AS room_id
+		FROM alarm_device ad
+		JOIN devices d ON d.device_id = ad.device_id
+		LEFT JOIN beds b ON b.bed_id = d.bound_bed_id
+		WHERE COALESCE(d.bound_room_id, b.room_id) IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM jsonb_array_elements(ad.monitor_config->'items') item
+			WHERE item->>'alarm_type' = 'Stay'
+			  AND (item->>'is_enabled')::int = 1
+		  )
+	`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var roomID string
+		if err := rows.Scan(&roomID); err != nil {
+			logger.Warn("scan stay enablement row", zap.Error(err))
+			continue
+		}
+		if roomID == "" {
+			continue
+		}
+		engine.SetRoomStayAlarmEnabled(roomID, true)
 		count++
 	}
 	return count, rows.Err()

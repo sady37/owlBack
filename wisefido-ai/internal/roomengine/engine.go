@@ -231,6 +231,20 @@ func (e *Engine) MapCardToRoom(cardID, roomID string) {
 	e.mu.Unlock()
 }
 
+// SetRoomStayAlarmEnabled 注入指定房间的 Stay alarm 启用状态。
+// 由 bootstrap 查 alarm_device.monitor_config 后调用。
+// 房间不存在或未注册 → 静默丢弃（warn 日志）。
+func (e *Engine) SetRoomStayAlarmEnabled(roomID string, enabled bool) {
+	e.mu.RLock()
+	tm := e.rooms[roomID]
+	e.mu.RUnlock()
+	if tm == nil {
+		e.logger.Warn("SetRoomStayAlarmEnabled: room not registered", zap.String("room_id", roomID))
+		return
+	}
+	tm.SetStayAlarmEnabled(enabled)
+}
+
 func (e *Engine) MapDeviceToRoom(deviceKey, roomID string) {
 	e.mu.Lock()
 	e.deviceRoom[deviceKey] = roomID

@@ -545,6 +545,46 @@ func TestStillFall_NotFireWhenPoseSit(t *testing.T) {
 	}
 }
 
+// TestStillFall_FiresWithStayAlarmEnabledOnly：roomName 不是 bathroom，
+// cell 也不是 toilet/shower，但 Stay alarm 启用 → 视为 bathroom，触发 still fall。
+func TestStillFall_FiresWithStayAlarmEnabledOnly(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.SetRoomName("Bedroom") // 房间名不命中
+	tm.SetStayAlarmEnabled(true)
+	loc, _ := time.LoadLocation("UTC")
+	tm.SetTimezone(loc)
+
+	startTms := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC).UnixMilli() // non-risk → 18min
+	const tid = 0
+	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1)
+	tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 60, observation.PoseStanding, lastMs)}, lastMs)
+	_ = runStillStandFor(tm, tid, 100, 100, lastMs+1000, 19*60)
+
+	if got := tm.stillFallReportCount; got != 1 {
+		t.Errorf("Stay-alarm-enabled bedroom should fire still_fall on stand 19min, got %d", got)
+	}
+}
+
+// TestStillFall_NoFireWhenStayAlarmDisabled：Bedroom + Stay alarm 关闭 → 不报
+// （等价于 case_lostfall 的真实配置）
+func TestStillFall_NoFireWhenStayAlarmDisabled(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.SetRoomName("Bedroom")
+	tm.SetStayAlarmEnabled(false)
+	loc, _ := time.LoadLocation("UTC")
+	tm.SetTimezone(loc)
+
+	startTms := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC).UnixMilli()
+	const tid = 0
+	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1)
+	tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 60, observation.PoseStanding, lastMs)}, lastMs)
+	_ = runStillStandFor(tm, tid, 100, 100, lastMs+1000, 25*60) // 25min stand
+
+	if got := tm.stillFallReportCount; got != 0 {
+		t.Errorf("Bedroom + Stay disabled should NOT fire, got %d", got)
+	}
+}
+
 // ============================================================================
 // IsNightTime
 // ============================================================================
