@@ -89,6 +89,9 @@ type TrackManager struct {
 	silentFallLeftbedReported  int
 	silentFallLeftbedCancelled int // wait 满但 radar 已离开 Bed 邻域 → 取消（人正常起床）
 
+	// Still fall 统计（bathroom + pose=Stand + 15/18min 持续静止）
+	stillFallReportCount int
+
 	sleepadInBedCount int
 
 	// moveSpeedCms：Kalman 速度阈值（cm/s）。> 此速度的帧即使 pose 不是 Walking 也算 Move。
@@ -526,7 +529,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 
 			// 维度 A: 即时流
 			tm.scoreResidual(ts, residual)
-			tm.scoreMovement(ts, f.X, f.Y, nowMs)
+			tm.scoreMovement(ts, f.X, f.Y, nowMs, f.Pose)
 			tm.detectZNoise(ts, f.Z)
 			tm.detectPoseMismatch(ts, f.Pose)
 			tm.updateLieStateMachine(ts, f.Pose, f.X, f.Y, f.Z, nowMs)
@@ -1080,6 +1083,15 @@ func (tm *TrackManager) SilentFallLeftBedStatsSnapshot() SilentFallLeftBedStats 
 	}
 }
 
+// StillFallStats Still Fall（bathroom + Stand 静止 ≥ 15/18min）统计
+type StillFallStats struct {
+	Reported int
+}
+
+func (tm *TrackManager) StillFallStatsSnapshot() StillFallStats {
+	return StillFallStats{Reported: tm.stillFallReportCount}
+}
+
 // ========================================================================
 // 出生打分（基于 elder care 步速物理常识）
 // ========================================================================
@@ -1270,8 +1282,9 @@ func (tm *TrackManager) scoreResidual(ts *TrackState, residual int) {
 	}
 }
 
-// scoreMovement 运动/静止评分 + 累计静止时长 + Dwell 记录
-func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64) {
+// scoreMovement 运动/静止评分 + 累计静止时长 + Dwell 记录。
+// pose 参数为当前帧 raw pose（用于 still-fall 升级判定 stand 姿态）。
+func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pose int) {
 	if len(ts.History) < 2 {
 		return
 	}
@@ -1308,6 +1321,39 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64) {
 							tm.grid.MarkLongStill(x, y, nowMs)
 							ts.LongStillReported = true
 						}
+					}
+				}
+			}
+
+			// 升级 → Still Fall（bathroom + pose=Stand + 15/18min 持续静止）。
+			// 触发位置语义：cell.Belief[0].Type ∈ {AreaToilet, AreaShower} 或 room.name 含 bathroom/restroom/toilet（取并集）。
+			// 阈值：cell 是 toilet/shower 时用 cell.EffectiveStillTimeoutSec（含 cell history 自适应）；
+			//       cell 未学到但 room name 是 bathroom 时用 FallRulesParam.Still.ToiletShowerSec（无 cell 容忍）。
+			// pose=Stand：避免坐马桶（pose=Sit）误报。caregiver 例外同上。
+			if !ts.StillFallReported && RadarPoseToCore(pose) == CorePoseStand {
+				stillFallTimeoutSec := tm.stillFallTimeoutSec(cell, isRiskTime)
+				if stillFallTimeoutSec > 0 && tm.bathroomRealCount < 2 {
+					stillSec := int((nowMs - ts.StillSince) / 1000)
+					if stillSec > stillFallTimeoutSec {
+						ts.CurrentAnomaly = AnomalyFall
+						ts.StillFallReported = true
+						tm.stillFallReportCount++
+						tm.grid.MarkFallEvent(x, y, nowMs)
+						tm.logger.Info("real_fall",
+							zap.String("device_uid", ts.DeviceID),
+							zap.Int("track_id", ts.TrackID),
+							zap.String("kind", "engine_still_fall"),
+							zap.Int("score", ts.Score),
+							zap.Int("risk", 100),
+							zap.String("reason", "bathroom_stand_static_too_long"),
+							zap.Int("still_sec", stillSec),
+							zap.Int("threshold_sec", stillFallTimeoutSec),
+							zap.Bool("is_risk_time", isRiskTime),
+							zap.Int("cell_area", int(cell.Belief[0].Type)),
+							zap.String("room_name", tm.roomName),
+							zap.Int("x", x), zap.Int("y", y),
+							zap.Int64("ts_ms", nowMs),
+						)
 					}
 				}
 			}
@@ -1355,6 +1401,7 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64) {
 		}
 		ts.StillSince = 0
 		ts.LongStillReported = false
+		ts.StillFallReported = false
 		if ts.CurrentAnomaly == AnomalyStillTooLong {
 			ts.CurrentAnomaly = AnomalyNone
 		}
@@ -1654,6 +1701,34 @@ func (tm *TrackManager) occupancyFactor() float64 {
 		return 1.2
 	}
 	return 1.0
+}
+
+// stillFallTimeoutSec 当前 cell + room 上下文下 still-fall 的有效阈值（秒）。
+//
+//	cell.AreaToilet/AreaShower → cell.EffectiveStillTimeoutSec（含 cell history 自适应）
+//	否则 room.name 是 bathroom (cell∪room 并集) → FallRulesParam.Still.ToiletShowerSec
+//	                                                  × NonRiskTimeFactor (non-risk-time 时)
+//	都不匹配 → 0（不报 still fall）
+//
+// 调用方持锁。
+func (tm *TrackManager) stillFallTimeoutSec(cell *Cell, isRiskTime bool) int {
+	if cell == nil {
+		return 0
+	}
+	cellType := cell.Belief[0].Type
+	if cellType == AreaToilet || cellType == AreaShower {
+		// cell 已学到 toilet/shower：完全用 cell.EffectiveStillTimeoutSec（已含 risk-time 与 tolerance）
+		return cell.EffectiveStillTimeoutSec(isRiskTime)
+	}
+	// cell 未学到但 room.name 是 bathroom → 用基线时长（无 cell history）
+	if roomutil.IsBathroom(tm.roomName) {
+		base := FallRulesParam.Still.ToiletShowerSec
+		if !isRiskTime {
+			base = int(float64(base) * FallRulesParam.Still.NonRiskTimeFactor)
+		}
+		return base
+	}
+	return 0
 }
 
 // realTrackCount 当前 VerdictReal track 数（用于 lost-fall NumberPeople≥2 取消判定）。

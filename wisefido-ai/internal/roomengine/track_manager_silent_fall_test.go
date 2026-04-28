@@ -442,6 +442,110 @@ func TestSilentFallLeftBed_NoFireBelowMinInBed(t *testing.T) {
 }
 
 // ============================================================================
+// Still Fall — bathroom + Stand 静止 ≥ 15/18min（PR-3）
+// ============================================================================
+
+// runStillStandFor 在 (x,y) 静止站立 N 秒（每秒一帧 pose=Stand）。
+// pose 不变、x/y 不变让 frozen 检测尽量不干扰；调用方先把 track 提到 Real。
+func runStillStandFor(tm *TrackManager, tid, x, y int, startTms int64, secs int) int64 {
+	tms := startTms
+	for i := 0; i < secs; i++ {
+		tm.processFrameAt([]TrackFrame{frameAt(tid, x, y, 60, observation.PoseStanding, tms)}, tms)
+		tms += 1000
+	}
+	return tms
+}
+
+// TestStillFall_FiresOnAreaToiletCell：cell 类型直接是 toilet，stand 静止 ≥ 15min（risk-time）→ 报警
+func TestStillFall_FiresOnAreaToiletCell(t *testing.T) {
+	tm, g := newTestTM()
+	// 把 (100,100) cell 标成 AreaToilet
+	c := g.CellAt(100, 100)
+	c.Belief[0] = BeliefState{Type: AreaToilet, Confidence: 99, Source: SourceHuman}
+	c.AreaType = AreaToilet
+	// 强制 risk-time（用 UTC，让默认 23:30-07:30 命中 0:00）
+	loc, _ := time.LoadLocation("UTC")
+	tm.SetTimezone(loc)
+
+	// 用一个夜间 ts 起步
+	startTms := time.Date(2026, 4, 27, 0, 30, 0, 0, time.UTC).UnixMilli()
+	const tid = 0
+	// runFramesUntilReal 移动到 (100, 100) 附近，Verdict=Real
+	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1) // dx=1，结束附近 (108,100)
+	// 强制把 track 拉到 (100,100)
+	tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 60, observation.PoseStanding, lastMs)}, lastMs)
+	// 静止 16min（>15min 风险时段阈值）
+	lastMs = runStillStandFor(tm, tid, 100, 100, lastMs+1000, 16*60+5)
+
+	if got := tm.stillFallReportCount; got != 1 {
+		t.Errorf("expected 1 still_fall reported (toilet cell + stand 16min night), got %d", got)
+	}
+}
+
+// TestStillFall_FiresByRoomNameOnly：cell 未学到（AreaUnknown），但 roomName="Bathroom" → 报警
+func TestStillFall_FiresByRoomNameOnly(t *testing.T) {
+	tm, g := newTestTM()
+	tm.SetRoomName("Bathroom") // cell ∪ room 并集中的 room name 路径
+	loc, _ := time.LoadLocation("UTC")
+	tm.SetTimezone(loc)
+
+	_ = g
+	startTms := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC).UnixMilli() // non-risk → 18min
+	const tid = 0
+	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1)
+	tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 60, observation.PoseStanding, lastMs)}, lastMs)
+	// 19min 静止，跨过 18min non-risk 阈值
+	lastMs = runStillStandFor(tm, tid, 100, 100, lastMs+1000, 19*60)
+	_ = lastMs
+
+	if got := tm.stillFallReportCount; got != 1 {
+		t.Errorf("expected 1 still_fall reported (room=Bathroom + stand 19min day), got %d", got)
+	}
+}
+
+// TestStillFall_NotFireOutsideBathroom：cell AreaUnknown + roomName="Bedroom" → 不报
+func TestStillFall_NotFireOutsideBathroom(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.SetRoomName("Bedroom")
+	loc, _ := time.LoadLocation("UTC")
+	tm.SetTimezone(loc)
+
+	startTms := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC).UnixMilli()
+	const tid = 0
+	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1)
+	tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 60, observation.PoseStanding, lastMs)}, lastMs)
+	_ = runStillStandFor(tm, tid, 100, 100, lastMs+1000, 25*60) // 25min 静止 stand
+
+	if got := tm.stillFallReportCount; got != 0 {
+		t.Errorf("not bathroom should not fire still_fall, got %d", got)
+	}
+}
+
+// TestStillFall_NotFireWhenPoseSit：cell toilet + 但 pose=Sit（坐马桶）→ 不报
+func TestStillFall_NotFireWhenPoseSit(t *testing.T) {
+	tm, g := newTestTM()
+	c := g.CellAt(100, 100)
+	c.Belief[0] = BeliefState{Type: AreaToilet, Confidence: 99, Source: SourceHuman}
+	c.AreaType = AreaToilet
+	loc, _ := time.LoadLocation("UTC")
+	tm.SetTimezone(loc)
+
+	startTms := time.Date(2026, 4, 27, 0, 30, 0, 0, time.UTC).UnixMilli()
+	const tid = 0
+	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1)
+	// 用 pose=Sit 静止 20min
+	tms := lastMs + 1000
+	for i := 0; i < 20*60; i++ {
+		tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 0, observation.PoseSitting, tms)}, tms)
+		tms += 1000
+	}
+
+	if got := tm.stillFallReportCount; got != 0 {
+		t.Errorf("pose=Sit should not fire still_fall (sitting on toilet OK), got %d", got)
+	}
+}
+
+// ============================================================================
 // IsNightTime
 // ============================================================================
 

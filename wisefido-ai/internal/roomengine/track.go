@@ -83,6 +83,7 @@ type TrackState struct {
 	StillSince        int64
 	StillX, StillY    int
 	LongStillReported bool // 防 LongStill 重复上报
+	StillFallReported bool // 防 still-fall 重复上报（bathroom + pose=Stand + 15/18min）
 
 	// ---- 异常与 Silent Fall ----
 	CurrentAnomaly Anomaly
