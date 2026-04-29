@@ -43,7 +43,19 @@ type Options struct {
 	// LogTrackVerdicts debug：true = 每帧记录所有 track 的 verdict / anomaly / score 到 Result.TrackVerdicts。
 	// 用于 ghost / fall verify 算法验证。
 	LogTrackVerdicts bool
+
+	// AlarmInjector：每个 monitor 行处理后调用，按时间戳注入 firmware Fall 报警到 engine。
+	// 用于 PR-5 fall verifier 离线测试（cmd/fall-score-replay）。nil = 不注入。
+	AlarmInjector AlarmInjector
+
+	// Logger：自定义 zap logger 注入 TrackManager；缺省走 zap.NewDevelopment 写 stderr。
+	// 用于 fall-score-replay 通过 zapcore.Tee 同时捕获 verifier 结果。
+	Logger *zap.Logger
 }
+
+// AlarmInjector playback 在每帧 nowMs 推进后调用；
+// impl 内部按 nowMs 把 [prev, now] 之间所有 firmware Fall 注入 tm.RecordRadarAlarm。
+type AlarmInjector func(tm *roomengine.TrackManager, nowMs int64)
 
 // Result 回放结果（snapshots + 统计）
 type Result struct {
@@ -162,7 +174,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	tm.SetMoveSpeedCms(learnParams.MoveSpeedCms)
 	tm.SetRoomName(cfg.RoomName)
 	// 让 engine 内部 ai.log 走 stderr，方便 playback 实测看 ghost / fall 决策细节
-	if logger, err := zap.NewDevelopment(); err == nil {
+	if opts.Logger != nil {
+		tm.SetLogger(opts.Logger)
+	} else if logger, err := zap.NewDevelopment(); err == nil {
 		tm.SetLogger(logger)
 	}
 	// 注入时区（IsNightTime 用）；playback 调用方应在 opts.Cfg.Timezone 中设置 IANA 字符串。
@@ -260,6 +274,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				for _, evt := range roomengine.ParseRadarTrackEvents(row.DataValue, row.DeviceUID, ts) {
 					tm.RecordRadarEvent(evt)
 				}
+				if opts.AlarmInjector != nil {
+					opts.AlarmInjector(tm, ts)
+				}
 				tm.Tick(ts)
 				simT = ts
 				continue
@@ -270,11 +287,17 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				// firmware tid=88 heartbeat 帧被 ParseRadarTracks 过滤后，仍要 tick engine
 				// 否则之前活着的 track 的 MissCount 不递增，永远不会进入消失判定 → lost-fall pending 也不会创建。
 				// 与 prod engine.go 同 bug；此处先在 playback 层修，后续再看 prod 是否同改。
+				if opts.AlarmInjector != nil {
+					opts.AlarmInjector(tm, ts)
+				}
 				tm.Tick(ts)
 				simT = ts
 				continue
 			}
 			{
+				if opts.AlarmInjector != nil {
+					opts.AlarmInjector(tm, ts)
+				}
 				outputs := tm.ProcessFrame(frames)
 				totalFrames += len(frames)
 				realIDs := make(map[int]bool, len(outputs))

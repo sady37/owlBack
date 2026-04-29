@@ -92,6 +92,11 @@ type TrackManager struct {
 	// Still fall 统计（bathroom + pose=Stand + 15/18min 持续静止）
 	stillFallReportCount int
 
+	// Firmware Fall verifier 累计（PR-5；仅打分，不否决 alarm）
+	fallVerifyGhostCount   int
+	fallVerifySuspectCount int
+	fallVerifyRealCount    int
+
 	sleepadInBedCount int
 
 	// moveSpeedCms：Kalman 速度阈值（cm/s）。> 此速度的帧即使 pose 不是 Walking 也算 Move。
@@ -368,15 +373,31 @@ func (tm *TrackManager) SetBedsideFallConfig(c BedsideFallConfig) {
 	}
 }
 
-// RecordRadarAlarm 落账 radar 来源的 alarm（当前阶段仅 Fall）。
-// 仅写入 recentRadarAlarms + 顺手 evict 老条目，不做任何 verify / 抑制。
+// RecordRadarAlarm 落账 radar 来源的 alarm（当前阶段仅 Fall）+ 跑 verifier 评分。
 // 调用方（engine.handleAlarmMessage）应当紧跟 tm.Tick(alarm.TMs) 触发段 4-6 立即跑一次。
+//
+// PR-5：增加 verifier。仅 log 评分结果（fake/suspect/real），不否决固件 alarm 流程
+// （alarm_events 表已由 wisefido-data 落账）。下游 cardagg 可订阅 ai.log 决定降级 risk。
 func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	cp := a
 	tm.recentRadarAlarms[a.TMs] = &cp
 	tm.evictOldRadarAlarms(a.TMs)
+
+	// 仅 status="start" 的 fall 评分（end 是固件解除报警，不需要 verify）
+	if a.Status == "start" || a.Status == "" {
+		result := tm.verifyRadarFall(a, a.TMs)
+		tm.logFallVerify(a, result)
+		switch result.Verdict {
+		case "ghost":
+			tm.fallVerifyGhostCount++
+		case "suspect":
+			tm.fallVerifySuspectCount++
+		case "real":
+			tm.fallVerifyRealCount++
+		}
+	}
 }
 
 // RecordRadarEvent 落账 radar 来源的事件（EnterRoom/ExitRoom/InBed/LeftBed）。
@@ -1105,6 +1126,21 @@ type StillFallStats struct {
 
 func (tm *TrackManager) StillFallStatsSnapshot() StillFallStats {
 	return StillFallStats{Reported: tm.stillFallReportCount}
+}
+
+// FallVerifyStats firmware Fall verifier 三档累计（PR-5）
+type FallVerifyStats struct {
+	Ghost   int
+	Suspect int
+	Real    int
+}
+
+func (tm *TrackManager) FallVerifyStatsSnapshot() FallVerifyStats {
+	return FallVerifyStats{
+		Ghost:   tm.fallVerifyGhostCount,
+		Suspect: tm.fallVerifySuspectCount,
+		Real:    tm.fallVerifyRealCount,
+	}
 }
 
 // ========================================================================
