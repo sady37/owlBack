@@ -201,13 +201,11 @@ func main() {
 		}
 	}
 
-	// 7b. 也输出 engine 自己 silent/lost/still 报警，作为 "潜在漏报" 的反向证据
+	// 7b. 也输出 engine 自己 lost/silent/still 报警，作为 "潜在漏报" 的反向证据
 	fmt.Println("\n----- Engine independent fall events in same window -----")
-	fmt.Printf("silent_fall (old 60s):   pending=%d cancelled=%d reported=%d\n",
-		res.SilentFallPendingCreated, res.SilentFallPendingCancelled, res.SilentFallReported)
 	fmt.Printf("lost_fall:                pending=%d cancelled=%d reported=%d\n",
 		res.LostFallPendingCreated, res.LostFallPendingCancelled, res.LostFallReported)
-	fmt.Printf("silent_fall (leftbed v2): reported=%d cancelled=%d\n",
+	fmt.Printf("silent_fall (leftbed):    reported=%d cancelled=%d\n",
 		res.SilentFallLeftBedReported, res.SilentFallLeftBedCancelled)
 	fmt.Printf("still_fall:               reported=%d\n", res.StillFallReported)
 	fmt.Printf("(每条 engine 独立报警 = 与 firmware Fall 不同源 → 候选「漏报」)\n")

@@ -31,7 +31,7 @@ func frameAt(tid int, x, y, z int, pose int, tms int64) TrackFrame {
 	return TrackFrame{TrackID: tid, DeviceID: "dev1", X: x, Y: y, Z: z, Pose: pose, TMs: tms}
 }
 
-// runFramesUntilReal 喂 ≥12 帧（保证 AgeSec≥10 满足 checkSilentFall）+ 强制升 Verdict=Real。
+// runFramesUntilReal 喂 ≥12 帧（保证 AgeSec≥10）+ 强制升 Verdict=Real。
 // 测试 grid 无 Enter 区，birthScore 默认起步低，自然升级困难；测试关心消失/融合逻辑，
 // 所以兜底强制改 Verdict 不影响本意。
 func runFramesUntilReal(tm *TrackManager, tid, x, y int, startTms int64, dx int) int64 {
@@ -50,162 +50,6 @@ func runFramesUntilReal(tm *TrackManager, tid, x, y int, startTms int64, dx int)
 
 func tickAt(tm *TrackManager, nowMs int64) []TrackOutput {
 	return tm.processFrameAt(nil, nowMs)
-}
-
-// ============================================================================
-// Silent Fall 基础流程
-// ============================================================================
-
-func TestSilentFall_ReportsAfter60s(t *testing.T) {
-	tm, _ := newTestTM()
-	startMs := int64(1_000_000)
-	lastMs := runFramesUntilReal(tm, 0, 100, 100, startMs, 5)
-
-	// 推进让 track 消失（MissCount > MaxMissCount）
-	for i := 0; i < MaxMissCount+2; i++ {
-		lastMs += 1000
-		tickAt(tm, lastMs)
-	}
-	if tm.SilentFallStatsSnapshot().PendingCreated != 1 {
-		t.Fatalf("expected pending=1, got %+v", tm.SilentFallStatsSnapshot())
-	}
-
-	// 推进 60+s 超时报警
-	lastMs += 65_000
-	out := tickAt(tm, lastMs)
-	if r := tm.SilentFallStatsSnapshot().Reported; r != 1 {
-		t.Errorf("expected reported=1 after timeout, got %d", r)
-	}
-	found := false
-	for _, o := range out {
-		if o.Anomaly == AnomalyFall && o.Source == "engine_silent" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected AnomalyFall/engine_silent in outputs, got %v", out)
-	}
-}
-
-func TestSilentFall_CancelByBirth(t *testing.T) {
-	tm, _ := newTestTM()
-	startMs := int64(1_000_000)
-	lastMs := runFramesUntilReal(tm, 0, 100, 100, startMs, 5)
-	for i := 0; i < MaxMissCount+2; i++ {
-		lastMs += 1000
-		tickAt(tm, lastMs)
-	}
-	if tm.SilentFallStatsSnapshot().PendingCreated != 1 {
-		t.Fatalf("setup pending != 1")
-	}
-
-	// 30s 后新 track 在 50cm 内出生（pose=Standing 非 Lie）
-	lastMs += 30_000
-	tm.processFrameAt([]TrackFrame{frameAt(99, 130, 100, 50, observation.PoseStanding, lastMs)}, lastMs)
-	if c := tm.SilentFallStatsSnapshot().PendingCancelled; c != 1 {
-		t.Errorf("expected cancelled=1, got %d", c)
-	}
-	// 60s 后不应该报
-	lastMs += 60_000
-	tickAt(tm, lastMs)
-	if r := tm.SilentFallStatsSnapshot().Reported; r != 0 {
-		t.Errorf("after cancel expected reported=0, got %d", r)
-	}
-}
-
-func TestSilentFall_NotCancelByLieBirth(t *testing.T) {
-	tm, _ := newTestTM()
-	startMs := int64(1_000_000)
-	lastMs := runFramesUntilReal(tm, 0, 100, 100, startMs, 5)
-	for i := 0; i < MaxMissCount+2; i++ {
-		lastMs += 1000
-		tickAt(tm, lastMs)
-	}
-	lastMs += 30_000
-	tm.processFrameAt([]TrackFrame{frameAt(99, 130, 100, 0, observation.PoseLying, lastMs)}, lastMs)
-	if c := tm.SilentFallStatsSnapshot().PendingCancelled; c != 0 {
-		t.Errorf("Lie birth should NOT cancel, got cancelled=%d", c)
-	}
-}
-
-func TestSilentFall_FilteredByAreaBed(t *testing.T) {
-	tm, g := newTestTM()
-	c := g.CellAt(100, 100)
-	c.Belief[0] = BeliefState{Type: AreaBed, Confidence: 99, Source: SourceHuman}
-	c.AreaType = AreaBed
-
-	startMs := int64(1_000_000)
-	// dx=0 让 track 静止在 (100,100) AreaBed cell 上，消失时 last pos 也在此
-	lastMs := runFramesUntilReal(tm, 0, 100, 100, startMs, 0)
-	for i := 0; i < MaxMissCount+2; i++ {
-		lastMs += 1000
-		tickAt(tm, lastMs)
-	}
-	if c := tm.SilentFallStatsSnapshot().PendingCreated; c != 0 {
-		t.Errorf("AreaBed cell should be filtered, got pending=%d", c)
-	}
-}
-
-func TestSilentFall_FilteredByLikelyRest(t *testing.T) {
-	tm, g := newTestTM()
-	g.CellAt(100, 100).ActiveType[ActiveIdxSit] = 50
-
-	startMs := int64(1_000_000)
-	// dx=0 同上理由
-	lastMs := runFramesUntilReal(tm, 0, 100, 100, startMs, 0)
-	for i := 0; i < MaxMissCount+2; i++ {
-		lastMs += 1000
-		tickAt(tm, lastMs)
-	}
-	if c := tm.SilentFallStatsSnapshot().PendingCreated; c != 0 {
-		t.Errorf("ActiveType[Sit]>=30 should filter, got pending=%d", c)
-	}
-}
-
-// ============================================================================
-// Sleepad 融合：silent fall short-circuit
-// ============================================================================
-
-func TestSleepadFusion_InBedShortCircuit(t *testing.T) {
-	tm, _ := newTestTM()
-	startMs := int64(1_000_000)
-	lastMs := runFramesUntilReal(tm, 0, 100, 100, startMs, 5)
-	for i := 0; i < MaxMissCount+2; i++ {
-		lastMs += 1000
-		tickAt(tm, lastMs)
-	}
-	// 60s 超时；sleepad 30s 内 InBed
-	lastMs += 65_000
-	tm.ProcessSleepadObservation(SleepadObservation{
-		DeviceUID: "sleepad-1", TMs: lastMs - 5_000, InBed: true,
-	})
-	tickAt(tm, lastMs)
-	stats := tm.SilentFallStatsSnapshot()
-	if stats.Reported != 0 {
-		t.Errorf("sleepad InBed should short-circuit, reported=%d", stats.Reported)
-	}
-	if stats.PendingCancelled != 1 {
-		t.Errorf("expected cancelled=1, got %d", stats.PendingCancelled)
-	}
-}
-
-func TestSleepadFusion_StaleNotShortCircuit(t *testing.T) {
-	tm, _ := newTestTM()
-	startMs := int64(1_000_000)
-	lastMs := runFramesUntilReal(tm, 0, 100, 100, startMs, 5)
-	for i := 0; i < MaxMissCount+2; i++ {
-		lastMs += 1000
-		tickAt(tm, lastMs)
-	}
-	// sleepad 数据是 60s 之前的（最终 nowMs 时已 >30s 老）
-	tm.ProcessSleepadObservation(SleepadObservation{
-		DeviceUID: "sleepad-1", TMs: lastMs, InBed: true,
-	})
-	lastMs += 65_000
-	tickAt(tm, lastMs)
-	if r := tm.SilentFallStatsSnapshot().Reported; r != 1 {
-		t.Errorf("stale sleepad should NOT short-circuit, got reported=%d", r)
-	}
 }
 
 // ============================================================================
@@ -328,6 +172,9 @@ func TestSilentFallLeftBed_FiresWithoutHRRR(t *testing.T) {
 		ts.Score = ScoreConfirmTh
 	}
 
+	// PR-14 入场门控：radar InBed 同房 ±15s 内到达
+	tm.RecordRadarEvent(RadarTrackEvent{DeviceUID: "radar-1", TMs: t0 + 1_000, EventName: "InBed", TrackID: 0, Status: "instant"})
+
 	// 3) 推进 5min（保 InBed precondition 满足）
 	tms = t0 + int64(FallRulesParam.Silent.MinInBedSec+10)*1000
 	tm.processFrameAt([]TrackFrame{frameAt(0, 100, 100, 50, observation.PoseLying, tms)}, tms)
@@ -359,6 +206,8 @@ func TestSilentFallLeftBed_FiresWithHRRR60s(t *testing.T) {
 	tm.ProcessSleepadObservation(SleepadObservation{
 		DeviceUID: dev, TMs: t0 + 1000, InBed: true, HeartRate: 70, RespiratoryRate: 16,
 	})
+	// PR-14 入场门控：radar InBed 同房 ±15s 内到达
+	tm.RecordRadarEvent(RadarTrackEvent{DeviceUID: "radar-1", TMs: t0 + 1_000, EventName: "InBed", TrackID: 0, Status: "instant"})
 
 	tms := t0 + int64(FallRulesParam.Silent.MinInBedSec+10)*1000
 	for i := 0; i < 5; i++ {
@@ -391,6 +240,8 @@ func TestSilentFallLeftBed_CancelOnRadarLeavesBed(t *testing.T) {
 	const t0 = int64(1_000_000)
 
 	tm.ProcessSleepadBedEvent(SleepadBedEvent{DeviceUID: dev, IsInBed: true, TMs: t0, Status: "instant"})
+	// PR-14 入场门控：radar InBed 同房 ±15s 内到达
+	tm.RecordRadarEvent(RadarTrackEvent{DeviceUID: "radar-1", TMs: t0 + 1_000, EventName: "InBed", TrackID: 0, Status: "instant"})
 
 	tms := t0 + int64(FallRulesParam.Silent.MinInBedSec+10)*1000
 	tm.processFrameAt([]TrackFrame{frameAt(0, 100, 100, 50, observation.PoseLying, tms)}, tms)
@@ -977,8 +828,7 @@ func TestLostFallFrozenThenRecovery(t *testing.T) {
 		}
 	}
 	// 让消失点 (-90, 320) 的 cell 已累计 Sit 观测 → IsLikelyRestZone=true
-	// → checkSilentFall 跳过（视为正常静止丢失）→ 走 lost fall 路径
-	// 物理含义：这位置之前有人坐过（沙发未标 layout），所以雷达失锁不算 silent fall
+	// 物理含义：这位置之前有人坐过（沙发未标 layout）；测试 lost fall 走 frozen credit 路径
 	disappearCell := g.CellAt(-90, 320)
 	if disappearCell != nil {
 		disappearCell.ActiveType[ActiveIdxSit] = 50 // ≥30 触发 IsLikelyRestZone

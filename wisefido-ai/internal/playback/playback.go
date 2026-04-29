@@ -69,12 +69,6 @@ type Result struct {
 	TotalFrames int        `json:"total_frames"`
 	GridW       int        `json:"grid_w"` // 优化后的 grid 尺寸
 	GridH       int        `json:"grid_h"`
-	// Silent Fall 60s 挂起机制统计（由 track_manager 暴露）
-	SilentFallPendingCreated   int `json:"silent_fall_pending_created"`
-	SilentFallPendingCancelled int `json:"silent_fall_pending_cancelled"`
-	SilentFallReported         int `json:"silent_fall_reported"`
-	SilentFallOutstanding      int `json:"silent_fall_outstanding"`
-
 	// Lost Fall 挂起机制统计（cell-area-typed wait + ExitRoom + 多人 cancel）
 	LostFallPendingCreated   int `json:"lost_fall_pending_created"`
 	LostFallPendingCancelled int `json:"lost_fall_pending_cancelled"`
@@ -376,7 +370,6 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	snapshots = append(snapshots, takeSnapWithPaths(grid, cfg, opts.RoomID, simT,
 		buildTrackPaths(pathBuf, simT, trackLookbackMs)))
 
-	stats := tm.SilentFallStatsSnapshot()
 	lostStats := tm.LostFallStatsSnapshot()
 	leftBedStats := tm.SilentFallLeftBedStatsSnapshot()
 	stillStats := tm.StillFallStatsSnapshot()
@@ -386,10 +379,6 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		TotalFrames:                totalFrames,
 		GridW:                      grid.Width,
 		GridH:                      grid.Height,
-		SilentFallPendingCreated:   stats.PendingCreated,
-		SilentFallPendingCancelled: stats.PendingCancelled,
-		SilentFallReported:         stats.Reported,
-		SilentFallOutstanding:      stats.Outstanding,
 		LostFallPendingCreated:     lostStats.PendingCreated,
 		LostFallPendingCancelled:   lostStats.PendingCancelled,
 		LostFallReported:           lostStats.Reported,

@@ -23,7 +23,7 @@ type TrackOutput struct {
 	X, Y, Z  int // 当前估计位置（画布坐标 cm）
 	VX, VY   int // cm/s
 	StillSec int
-	Source   string // "radar_direct" / "engine_silent"
+	Source   string // "radar_direct" / "engine_silent_leftbed" / "engine_lost" / "engine_still_fall" / ...
 }
 
 // TrackFrame 一帧输入（已由 engine 层做完 RadarToCanvas 转换）
@@ -49,10 +49,6 @@ type TrackManager struct {
 	tracks  map[int]*TrackState
 	outputs map[int]*TrackOutput
 
-	// pendingSilentFalls：消失后挂起 60 秒等待复现的 track 池
-	// key = 原 trackID（仅做唯一标识；匹配靠位置距离）
-	pendingSilentFalls map[int]*PendingSilentFall
-
 	// pendingLostFalls：lost-fall 规则的挂起池。
 	// 时长按消失点 cell areaType（5min walkway / 60min bed / ...），含 frozen credit；
 	// 取消条件：新 track 出生 / ExitRoom 事件 / room.NumberPeople ≥ 2。
@@ -68,7 +64,7 @@ type TrackManager struct {
 	bathroomRealCount int
 
 	// sleepadStates：同房间 sleepad 设备的最新观测（device_uid → obs）
-	// 由 ProcessSleepadObservation 写入；silent fall 触发前查 sleepadInBed 做 short-circuit
+	// 由 ProcessSleepadObservation 写入。
 	sleepadStates map[string]*SleepadObservation
 
 	// bedPersonCount：每张床（device_uid → 人数）当前在床人数计数。
@@ -76,17 +72,12 @@ type TrackManager struct {
 	// 用途：bed-fall 触发前判断"仅 1 人"避免家属/护工陪同时误报。
 	bedPersonCount map[string]int
 
-	// 累计计数（仅供 playback / 监控读取，不改变行为）
-	pendingCreatedCount   int // 进入 pending 的总数（消失且通过几何检查）
-	pendingCancelledCount int // 被新 track 出生取消的数量
-	silentFallReportCount int // 60s 超时真报 silent fall 的数量
-
 	// Lost fall 统计
 	lostFallPendingCreated   int
 	lostFallPendingCancelled int // 含 birth-recovery / ExitRoom / NumberPeople 三类取消
 	lostFallReported         int
 
-	// Silent fall（新版 LeftBed 矛盾路径）统计
+	// Silent fall（LeftBed 矛盾路径）统计
 	silentFallLeftbedReported  int
 	silentFallLeftbedCancelled int // wait 满但 radar 已离开 Bed 邻域 → 取消（人正常起床）
 
@@ -153,7 +144,7 @@ type TrackManager struct {
 }
 
 // AIPayload PR-8 发布 AI 事件/告警的轻量载荷。
-// 不耦合 TrackState（silent fall 旧路径在 track 删除后才报，没有 ts 在手）。
+// 不耦合 TrackState（lost fall 在 track 删除后才报，没有 ts 在手）。
 type AIPayload struct {
 	DeviceID   string // 源 radar UUID（FK to devices.device_id）
 	RoomID     string
@@ -192,7 +183,6 @@ func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 		grid:               grid,
 		tracks:             make(map[int]*TrackState),
 		outputs:            make(map[int]*TrackOutput),
-		pendingSilentFalls: make(map[int]*PendingSilentFall),
 		pendingLostFalls:   make(map[int]*PendingLostFall),
 		bedSessions:        make(map[string]*BedSession),
 		sleepadStates:      make(map[string]*SleepadObservation),
@@ -264,7 +254,7 @@ func (tm *TrackManager) SetAIPublisher(p AIPublisher) {
 }
 
 // emitAIEvent / emitAIAlarm 内部 helper：仅当 aiPublisher 非 nil 时调用。
-// payloadFromTrack 从 TrackState 构造 AIPayload；payloadFromPending 从 PendingSilentFall。
+// payloadFromTrack 从 TrackState 构造 AIPayload。
 
 func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
 	pxF, pyF := ts.Kalman.Position()
@@ -335,6 +325,16 @@ func (tm *TrackManager) ProcessSleepadBedEvent(evt SleepadBedEvent) {
 		s.SilentFallAlerted = false
 		if cnt := tm.bedPersonCount[evt.DeviceUID]; cnt > s.MaxPeople {
 			s.MaxPeople = cnt
+		}
+		// PR-14：入场门控——若 radar InBed 在 ±15s 内已到，标记双源一致确认
+		if tm.lastRadarInBedMs > 0 && tm.lastRadarInBedMs > tm.lastLeftBedAt {
+			delta := evt.TMs - tm.lastRadarInBedMs
+			if delta < 0 {
+				delta = -delta
+			}
+			if delta <= bedInBedConsistencyMs {
+				s.RadarInBedConfirmedMs = evt.TMs
+			}
 		}
 		return
 	}
@@ -422,11 +422,35 @@ func (tm *TrackManager) ProcessSleepadObservation(obs SleepadObservation) {
 	}
 }
 
+// bedInBedConsistencyMs PR-11/PR-14：sleepad 与 radar InBed 事件视作"双源一致"的最大时差。
+// 同时用于 PR-11 HR/RR 即时锁 AreaBed 与 PR-14 BedSession 入场门控。
+const bedInBedConsistencyMs = int64(15_000)
+
+// markRadarInBedCell PR-14：radar 报 InBed 事件时，把对应 track 当前位置 cell 锁为 AreaBed。
+// 设计：radar 事件本身就是空间证据，不再依赖 sleepad+HR/RR 一致期；
+// 双源一致只是 BedSession 触发条件，与"标床区"独立。
+//
+// 调用方持锁。
+func (tm *TrackManager) markRadarInBedCell(e RadarTrackEvent) {
+	ts, ok := tm.tracks[e.TrackID]
+	if !ok || ts.Verdict == VerdictGhost {
+		return
+	}
+	pxF, pyF := ts.Kalman.Position()
+	px, py := int(math.Round(pxF)), int(math.Round(pyF))
+	cell := tm.grid.CellAt(px, py)
+	if cell == nil {
+		return
+	}
+	if cell.MarkRestZoneByFeedback(AreaBed) {
+		tm.grid.boostNeighborSameType(px, py, AreaBed, e.TMs)
+	}
+}
+
 // consistentBedInBed PR-11：检查 sleepad 与 radar 的 InBed 事件是否在 ±15s 内一致。
 // 一致性窗口语义：双方独立确认"床上有人"，sleepad HR/RR 此刻可信，可作为 AreaBed cell ground truth。
 // 调用方持锁。
 func (tm *TrackManager) consistentBedInBed(nowMs int64) bool {
-	const windowMs = int64(15_000)
 	if tm.lastSleepadInBedMs == 0 || tm.lastRadarInBedMs == 0 {
 		return false
 	}
@@ -438,7 +462,7 @@ func (tm *TrackManager) consistentBedInBed(nowMs int64) bool {
 	if delta < 0 {
 		delta = -delta
 	}
-	return delta <= windowMs
+	return delta <= bedInBedConsistencyMs
 }
 
 // sleepadInBed 检查同房间任一 sleepad 在 30s 内报告 InBed（不要求 HR/RR）。
@@ -535,6 +559,10 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 //
 // 注：radar 的 InBed/LeftBed 不更新 bedPersonCount——bedPersonCount 是 sleepad 床压传感器累计的"在床人数"，
 // radar event 是空间检测，两者语义不同；混用会导致 bed-fall 段 5 的"仅 1 人"判定错乱。
+//
+// PR-14: radar InBed 触发两个副作用：
+//   1) 当前 track 位置 cell 锁为 AreaBed（"床区自学"——radar 有事件即给出空间证据）
+//   2) 若同房 sleepad InBed 已在 ±15s 内到达，标记 BedSession.RadarInBedConfirmedMs（双源一致门控）
 func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -544,9 +572,24 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	if e.EventName == "LeftBed" && e.TMs > tm.lastLeftBedAt {
 		tm.lastLeftBedAt = e.TMs
 	}
-	// PR-11: radar InBed → 记 ts 用于双方一致期判定
 	if e.EventName == "InBed" && e.TMs > tm.lastRadarInBedMs {
 		tm.lastRadarInBedMs = e.TMs
+		// PR-14 副作用 1：mark 当前 track 位置 cell 为 AreaBed
+		tm.markRadarInBedCell(e)
+		// PR-14 副作用 2：若 sleepad InBed 在 ±15s 内已到，标记双源确认
+		if tm.lastSleepadInBedMs > 0 && tm.lastSleepadInBedMs > tm.lastLeftBedAt {
+			delta := e.TMs - tm.lastSleepadInBedMs
+			if delta < 0 {
+				delta = -delta
+			}
+			if delta <= bedInBedConsistencyMs {
+				for _, s := range tm.bedSessions {
+					if s.InBedSinceMs > 0 && s.RadarInBedConfirmedMs == 0 {
+						s.RadarInBedConfirmedMs = e.TMs
+					}
+				}
+			}
+		}
 	}
 	// ExitRoom 事件 → 取消所有挂起的 lost-fall（人正常走出房间，不再悬念）
 	// 注：silent fall 不取消（其语义是床上方遮挡，与 ExitRoom 无关）
@@ -648,12 +691,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		var quality, vx, vy, dtSec int
 
 		if !exists {
-			// 新 track 出生 — 取消挂起的 silent fall 候选（occlusion 复现保护）
-			// 匹配条件：100cm 内 + 新 track 姿态非 Lie（如果出生姿就是 Lie，
-			// 可能是被遮挡后真倒下，保留挂起继续等 60s 超时）
-			tm.cancelPendingByBirth(f.X, f.Y, RadarPoseToCore(f.Pose))
-
-			// 是否有 pending lost-fall 在等候 → 人从盲区返回；取消 + 学习盲区出口
+			// 新 track 出生 — 是否有 pending lost-fall 在等候 → 人从盲区返回；取消 + 学习盲区出口
 			recoveredFromLost := tm.cancelPendingLostFallByBirth(f.X, f.Y, f.TMs)
 
 			ts = NewTrackState(f.TrackID, f.DeviceID, tm.roomID, f.X, f.Y, f.Z, f.TMs)
@@ -764,24 +802,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		ts.LastUpdateMs = nowMs
 
 		if ts.Kalman.MissCount > MaxMissCount {
-			// 消失判定：silent fall 优先（60s + sleepad 兜底，bedroom 专用）
-			// 不满足 silent → 检 lost fall（按 cell areaType 分时长，全屋通用，verdict 未定也算）
-			if ts.Verdict == VerdictReal && tm.checkSilentFall(ts) {
-				// 不立即报；挂起 60 秒等复现窗口（segment 1 取消 / segment 5 超时报）
-				pxF, pyF := ts.Kalman.Position()
-				tm.pendingSilentFalls[id] = &PendingSilentFall{
-					OriginalTrackID: id,
-					DeviceID:        ts.DeviceID,
-					RoomID:          ts.RoomID,
-					LastX:           int(math.Round(pxF)),
-					LastY:           int(math.Round(pyF)),
-					LastZ:           ts.LastZ,
-					LastScore:       ts.Score,
-					LastVerdict:     ts.Verdict,
-					DisappearMs:     nowMs,
-				}
-				tm.pendingCreatedCount++
-			} else if (ts.Verdict == VerdictReal || ts.Verdict == VerdictPending) && tm.checkLostFall(ts) {
+			// 消失判定：lost fall（按 cell areaType 分时长，verdict 未定也算）
+			// PR-14：旧 Path 1（track 消失 + 60s 复现窗口）已删除——
+			// silent fall 仅由 BedSession LeftBed 矛盾路径触发（见 scanSilentFallLeftBed）。
+			if (ts.Verdict == VerdictReal || ts.Verdict == VerdictPending) && tm.checkLostFall(ts) {
 				pxF, pyF := ts.Kalman.Position()
 				px := int(math.Round(pxF))
 				py := int(math.Round(pyF))
@@ -909,57 +933,9 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		}
 	}
 
-	// ========== 段 4: 扫挂起的 silent fall，超时即报 ==========
-	// 60 秒内没被 segment 1 取消（人没复现）→ 真报 silent fall
-	results := make([]TrackOutput, 0, len(tm.tracks)+len(tm.pendingSilentFalls))
-	for pid, p := range tm.pendingSilentFalls {
-		if nowMs-p.DisappearMs < PendingSilentFallMs {
-			continue
-		}
-		// 多传感器融合 short-circuit：同房间 sleepad 30s 内确认 InBed（不要求 HR/RR）
-		// → 床压传感器证明人还在床上，雷达消失只是失锁；不报 silent fall
-		// （即使消失位置 cell 不是 AreaBed —— 人可能在床边 cell，雷达坐标轻微偏离床区
-		// 但 sleepad 床压是物理硬证据，sleepad 在床即在床）
-		if tm.sleepadInBed(nowMs) {
-			tm.pendingCancelledCount++
-			delete(tm.pendingSilentFalls, pid)
-			continue
-		}
-		// 超时 → MarkFallEvent + 写一条输出
-		tm.silentFallReportCount++
-		tm.grid.MarkFallEvent(p.LastX, p.LastY, nowMs)
-		// PR-8: 发布 silent_fall 到 iot:alarm:stream
-		tm.emitAIAlarm(AIPayload{
-			DeviceID: p.DeviceID, RoomID: p.RoomID, TrackID: p.OriginalTrackID,
-			X: p.LastX, Y: p.LastY, Z: p.LastZ, Confidence: p.LastScore,
-		}, "silent_fall", nowMs)
-		tm.logger.Info("real_fall",
-			zap.String("device_uid", p.DeviceID),
-			zap.Int("track_id", p.OriginalTrackID),
-			zap.String("kind", "engine_silent_fall"),
-			zap.Int("score", p.LastScore),
-			zap.Int("risk", 100),
-			zap.String("reason", "track_disappeared_in_non_rest_zone_60s"),
-			zap.Int("x", p.LastX), zap.Int("y", p.LastY), zap.Int("z", p.LastZ),
-			zap.Int64("ts_ms", nowMs),
-		)
-		out := TrackOutput{
-			TrackID:  p.OriginalTrackID,
-			DeviceID: p.DeviceID,
-			RoomID:   p.RoomID,
-			Verdict:  p.LastVerdict,
-			Score:    p.LastScore,
-			Risk:     100, // silent fall 最高风险
-			Anomaly:  AnomalyFall,
-			X:        p.LastX,
-			Y:        p.LastY,
-			Z:        p.LastZ,
-			Source:   "engine_silent",
-		}
-		results = append(results, out)
-		tm.outputs[p.OriginalTrackID] = &out
-		delete(tm.pendingSilentFalls, pid)
-	}
+	// PR-14: 旧 Path 1（pendingSilentFalls 60s 超时报警）已删除。
+	// silent fall 现在仅通过 BedSession LeftBed 矛盾路径触发（scanSilentFallLeftBed）。
+	results := make([]TrackOutput, 0, len(tm.tracks)+len(tm.pendingLostFalls))
 
 	// ========== 段 4b: 扫挂起的 lost fall，按 cell-area-typed wait + frozen credit 超时即报 ==========
 	// 取消条件已在他处处理（cancelPendingByBirth / handleExitRoom / numberPeopleCancel）。
@@ -1090,9 +1066,6 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		}
 
 		source := "radar_direct"
-		if ts.SilentFall {
-			source = "engine_silent"
-		}
 
 		out := TrackOutput{
 			TrackID:  ts.TrackID,
@@ -1128,21 +1101,6 @@ func (tm *TrackManager) GetOutputs() []TrackOutput {
 	return out
 }
 
-// cancelPendingByBirth 新 track 出生时尝试取消挂起的 silent fall 候选。
-// 取消条件：100cm 内 + 新 track 姿态非 Lie（occlusion 复现 = 人没事）。
-// 出生姿态就是 Lie 时不取消，因为可能是被遮挡后真倒下了，仍需 60s 超时机制把关。
-func (tm *TrackManager) cancelPendingByBirth(x, y int, birthCore CorePose) {
-	if birthCore == CorePoseLie {
-		return
-	}
-	for pid, p := range tm.pendingSilentFalls {
-		if distInt(x, y, p.LastX, p.LastY) < PendingMatchDistCm {
-			delete(tm.pendingSilentFalls, pid)
-			tm.pendingCancelledCount++
-		}
-	}
-}
-
 // hasPendingLostFallInRoom 当前房间是否有挂起的 lost-fall（与 RoomID 等价于 tm.roomID）。
 // 用于 birth verdict bypass：人从盲区返回时新 track 不该被判 ghost。
 // 调用方持锁。
@@ -1152,7 +1110,7 @@ func (tm *TrackManager) hasPendingLostFallInRoom() bool {
 
 // cancelPendingLostFallByBirth 新 track 出生时尝试取消挂起的 lost-fall。
 //
-// 与 silent fall cancel 区别：lost-fall 不限位置 + 不限 birth pose（人从盲区任何角度返回都算）。
+// 不限位置 + 不限 birth pose（人从盲区任何角度返回都算）。
 // 命中时：① 取消 pending ② cell.IncrBlindSpotRecovery（学习盲区出口） ③ 累计 cancelled 统计。
 //
 // 返回是否命中（调用方据此决定是否给新 track verdict 直接 Real / 加分）。
@@ -1181,24 +1139,6 @@ func (tm *TrackManager) cancelPendingLostFallByBirth(birthX, birthY int, nowMs i
 	return hit
 }
 
-// SilentFallStats 给 playback / 监控用的统计快照
-type SilentFallStats struct {
-	PendingCreated   int // 进入挂起的总数
-	PendingCancelled int // 60s 内被取消的数量（occlusion 复现）
-	Reported         int // 真报的 silent fall 数量
-	Outstanding      int // 当前仍在挂起池中
-}
-
-// SilentFallStats 返回累计统计（无锁——调用方在 playback 单线程场景；prod 路径如需可加锁）
-func (tm *TrackManager) SilentFallStatsSnapshot() SilentFallStats {
-	return SilentFallStats{
-		PendingCreated:   tm.pendingCreatedCount,
-		PendingCancelled: tm.pendingCancelledCount,
-		Reported:         tm.silentFallReportCount,
-		Outstanding:      len(tm.pendingSilentFalls),
-	}
-}
-
 // scanSilentFallLeftBed 扫描所有 BedSession，对到达等待窗的 LeftBed 进行裁决：
 //
 //	radar 仍在 Bed 邻域 → silent fall（矛盾，疑似跌倒地面 / 床边）
@@ -1214,6 +1154,10 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 	var out []TrackOutput
 	for _, s := range tm.bedSessions {
 		if s.LeftBedAtMs == 0 || s.SilentFallAlerted {
+			continue
+		}
+		// PR-14 入场门控：未双源（sleepad+radar InBed ±15s）确认 → 不报
+		if s.RadarInBedConfirmedMs == 0 {
 			continue
 		}
 		waitSec := param.WaitNoVitalSec
@@ -2194,71 +2138,15 @@ func (tm *TrackManager) updateLieStateMachine(ts *TrackState, pose, x, y, z int,
 }
 
 // ========================================================================
-// Silent Fall（5 要素）
-// ========================================================================
-
-// checkSilentFall 判断 track 消失是否疑似 silent fall（"挂起候选"——还需 60s 复现窗口）
-//
-// 设计变更（2026-04 与用户对齐）：
-//   - 去掉 minZ<20：36% 设备完全不报 Z；间歇性 Z 报告下"持续 N 帧"会过滤真信号
-//   - 去掉位移>80：垂直跌倒水平位移本来就接近 0，要求 >80 排除典型"原地倒下"
-//   - 保留几何：消失位置不在边缘 + 不在 Enter 区（出门不算跌）
-//   - 新加 prev pose：消失前最后一帧 core != Lie（本来就在 Lie 中消失，多半是入睡/正常静止丢失）
-//
-// 通过此函数仅"挂起"候选；最终是否报 silent fall 由 segment 5 在 60 秒后决定。
-//
-// 注：silent fall 完整重构（sleepad+radar 融合 + 120s/60s 双窗）见 PR-2c 待做。
-// 此函数保留旧语义不动，与 lost fall 互斥（silent 优先在 segment 2 trigger 顺序）。
-func (tm *TrackManager) checkSilentFall(ts *TrackState) bool {
-	if ts.AgeSec() < 10 {
-		return false
-	}
-	n := len(ts.History)
-	if n < 3 {
-		return false
-	}
-
-	// 消失 cell 不在边缘 + 不在 Enter 区（出门 / 走到房间边缘消失合法）
-	pxF, pyF := ts.Kalman.Position()
-	px := int(math.Round(pxF))
-	py := int(math.Round(pyF))
-	cell := tm.grid.CellAt(px, py)
-	if cell == nil {
-		return false
-	}
-	if cell.EdgeDist <= 30 {
-		return false
-	}
-	if cell.Belief[0].Type == AreaEnter {
-		return false
-	}
-
-	// 消失位置已是休息区（床/沙发/马桶 OR 累计有 Sit/Lie 观测）→ 静止丢失合理
-	// 用 IsLikelyRestZone 比 IsRestZone 宽松，覆盖"沙发未标 layout + 学习未达 15s 阈值"过渡期。
-	// 雷达对该 cell pose 报错（如沙发被认成 Stand）不影响 —— 历史 ActiveType[Sit] 是确凿证据。
-	if cell.IsLikelyRestZone() {
-		return false
-	}
-
-	// 消失前最后一帧不能本来就 Lie（睡着/卧床期间丢失多半是雷达静止失锁，非新跌倒）
-	if ts.PrevCore == CorePoseLie {
-		return false
-	}
-
-	return true
-}
-
-// ========================================================================
 // Lost Fall（cell-area-typed wait + ExitRoom + NumberPeople 兜底）
 // ========================================================================
 
 // checkLostFall 判断 track 消失是否符合 lost-fall 触发条件。
 //
-// 与 checkSilentFall 区别：
-//   - silent 仅 Real verdict + age≥10s + 非 likely-rest-zone（bedroom occluded-bed 专用）
-//   - lost  Real/Pending verdict + age≥5s + 离任一出口 > ExitDistMinCm（全屋通用）
+//	Real/Pending verdict + age≥5s + 离任一出口 > ExitDistMinCm（全屋通用）
 //
-// silent 已触发的 case 不再走 lost（segment 2 中已 else if 分支互斥）。
+// PR-14：旧 silent fall path（消失 + 60s 复现窗口）已删除；
+// silent fall 现在仅通过 BedSession LeftBed 矛盾路径触发（scanSilentFallLeftBed）。
 func (tm *TrackManager) checkLostFall(ts *TrackState) bool {
 	if ts.AgeSec() < 5 {
 		return false

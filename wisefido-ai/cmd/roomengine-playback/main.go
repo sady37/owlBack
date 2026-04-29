@@ -98,13 +98,10 @@ func main() {
 	}
 	log.Printf("processed %d rows, %d valid frames, %d snapshots (grid %d×%d)",
 		res.TotalRows, res.TotalFrames, len(res.Snapshots), res.GridW, res.GridH)
-	log.Printf("silent-fall stats: pending_created=%d cancelled=%d reported=%d outstanding=%d",
-		res.SilentFallPendingCreated, res.SilentFallPendingCancelled,
-		res.SilentFallReported, res.SilentFallOutstanding)
 	log.Printf("lost-fall stats: pending_created=%d cancelled=%d reported=%d outstanding=%d",
 		res.LostFallPendingCreated, res.LostFallPendingCancelled,
 		res.LostFallReported, res.LostFallOutstanding)
-	log.Printf("silent-fall (leftbed v2) stats: reported=%d cancelled=%d",
+	log.Printf("silent-fall (leftbed) stats: reported=%d cancelled=%d",
 		res.SilentFallLeftBedReported, res.SilentFallLeftBedCancelled)
 	log.Printf("still-fall stats: reported=%d", res.StillFallReported)
 

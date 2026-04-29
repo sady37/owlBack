@@ -111,9 +111,8 @@ type TrackState struct {
 	RegionStartZ          int
 	AreaSitLearnedRegion  bool
 
-	// ---- 异常与 Silent Fall ----
+	// ---- 异常 ----
 	CurrentAnomaly Anomaly
-	SilentFall     bool
 
 	// ---- 最后观测 ----
 	LastPose     int
@@ -176,56 +175,42 @@ const (
 	LieRetractMs     = 8000 // 进入 Lie 后 < 此时长回到 Stand/Move → Retract
 	// 经验值：真跌倒 8 秒内爬起概率 < 5%；雷达固件的 fallSec 典型 10-30 秒，
 	// 8 秒远小于其最小值，确保只捕获"雷达尚未升级为 Fall 就回撤"的误报。
-
-	// Silent Fall 60 秒挂起：消失后挂起，60 秒内若同位置附近有新 track 出生（且非 Lie 姿）
-	// → 视为 occlusion 复现，取消挂起；超时未取消才真报 silent fall。
-	PendingSilentFallMs = 60_000
-	PendingMatchDistCm  = 100 // 复现匹配距离（人被遮挡再出现，雷达位置可漂 50-100cm）
 )
-
-// PendingSilentFall 已消失但等待 60 秒复现窗口的 track。
-// 由 segment 2（消失判定）写入，segment 1（新 track 出生）按位置取消，segment 5（扫描）超时报警。
-type PendingSilentFall struct {
-	OriginalTrackID int
-	DeviceID        string
-	RoomID          string
-	LastX, LastY    int
-	LastZ           int
-	LastScore       int
-	LastVerdict     TrackVerdict
-	DisappearMs     int64 // 进入 pending 的时刻（≈MissCount 超阈值的 nowMs）
-}
 
 // BedSession 单 sleepad 设备的"在床会话"状态机。
 //
-// 用途：实现新版 silent fall（基于 sleepad LeftBed 与 radar 仍在 bed 邻域的矛盾）。
+// 用途：实现 silent fall（基于 sleepad LeftBed 与 radar 仍在 bed 邻域的矛盾）。
+//
+// 入场门控（PR-14）：
+//   只有当同房间 sleepad InBed 与 radar InBed 在 ±15s 内都到齐才会"成立"——
+//   RadarInBedConfirmedMs > 0 是 silent fall 触发先决条件；
+//   防止单源（仅 sleepad / 仅 radar）误报。
 //
 // 生命周期：
-//   sleepad InBed 首次到达    → InBedSinceMs 记录起点；HasHRRR 重置
-//   sleepad observation 含 HR/RR > 0 → HasHRRR = true（在 in-bed 期间任意时刻命中）
-//   sleepad LeftBed 到达       → 若已满 MinInBedSec，进入「等待矛盾」状态，记 LeftBedAtMs
-//   每 tick 检查超时             → 若 radar 仍在 Bed 邻域 → 报 silent fall
-//   重新 InBed                  → 重置 session（认为是新一轮上床）
+//   sleepad InBed 首次到达             → InBedSinceMs 记录起点；HasHRRR 重置
+//   radar InBed 同房间 ±15s 内到达     → RadarInBedConfirmedMs 标记
+//   sleepad observation 含 HR/RR > 0   → HasHRRR = true
+//   sleepad LeftBed 到达                → 若已满 MinInBedSec，进入「等待矛盾」状态
+//   每 tick 检查超时                     → 若 radar 仍在 Bed 邻域 → 报 silent fall
+//   重新 InBed                          → 重置 session
 //
 // LeftBedHadHRRR / LeftBedMaxPeople 在 LeftBed 时刻 latch，不受后续观测影响。
 type BedSession struct {
-	DeviceUID         string // sleepad device_uid
-	InBedSinceMs      int64  // 首次 InBed 到达的时间戳；0 = 未在床
-	MaxPeople         int    // 该 session 期间见过的最大 bedPersonCount[device]
-	HasHRRR           bool   // in-bed 期间是否观测到 HR/RR > 0
-	LeftBedAtMs       int64  // 0 = 仍在床；>0 = 等待矛盾窗口
-	LeftBedHadHRRR    bool   // LeftBed 时刻的 HasHRRR latch
-	LeftBedMaxPeople  int    // LeftBed 时刻的 MaxPeople latch
-	SilentFallAlerted bool   // 防重复触发
+	DeviceUID             string // sleepad device_uid
+	InBedSinceMs          int64  // 首次 InBed 到达的时间戳；0 = 未在床
+	RadarInBedConfirmedMs int64  // PR-14：sleepad+radar InBed ±15s 一致确认时刻；0 = 未双源确认
+	MaxPeople             int    // 该 session 期间见过的最大 bedPersonCount[device]
+	HasHRRR               bool   // in-bed 期间是否观测到 HR/RR > 0
+	LeftBedAtMs           int64  // 0 = 仍在床；>0 = 等待矛盾窗口
+	LeftBedHadHRRR        bool   // LeftBed 时刻的 HasHRRR latch
+	LeftBedMaxPeople      int    // LeftBed 时刻的 MaxPeople latch
+	SilentFallAlerted     bool   // 防重复触发
 }
 
 // PendingLostFall 已消失但等待 cell-area-typed 时长复现窗口的 track（lost-fall 规则）。
 //
-// 与 PendingSilentFall 区别：
-//   - silent 仅 60s + sleepad InBed 兜底（bedroom 专用）
-//   - lost 按消失点 cell areaType 分时长（5min~1h）+ ExitRoom + NumberPeople≥2 兜底（全屋通用）
-//
-// 触发：track 消失且不满足 silent fall 条件 + checkLostFall 通过（离门 >1m，非 Enter 区，年龄足够）
+// 等待时长按消失点 cell areaType（5min~1h）+ frozen credit；
+// 触发：track 消失 + checkLostFall 通过（离门 >1m，非 Enter 区，年龄足够）
 // 取消：① 新 track 出生（含 BlindSpotRecovery 反馈）② ExitRoom 事件 ③ room.NumberPeople ≥ 2
 type PendingLostFall struct {
 	OriginalTrackID int
