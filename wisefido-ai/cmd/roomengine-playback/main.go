@@ -40,6 +40,7 @@ func main() {
 		outHTML    = flag.String("out", "doc/playback-09E7.html", "输出 HTML 路径")
 		chunkHours = flag.Int("chunk", 6, "DB 分块查询大小（小时）")
 		rowLimit   = flag.Int("row-limit", 30000, "单块最大行数")
+		feedback   = flag.Bool("feedback", true, "灌入历史 alarm_events 人类反馈到 grid（PR-9.1）")
 	)
 	flag.Parse()
 
@@ -80,16 +81,17 @@ func main() {
 	}
 
 	res, err := playback.Run(ctx, playback.Options{
-		RoomID:    *roomID,
-		Cfg:       cfg,
-		DB:        db,
-		DeviceUID: *deviceUID,
-		TenantID:  *tenantID,
-		Start:     start,
-		End:       end,
-		SnapMin:   *snapMin,
-		ChunkHrs:  *chunkHours,
-		RowLimit:  *rowLimit,
+		RoomID:                   *roomID,
+		Cfg:                      cfg,
+		DB:                       db,
+		DeviceUID:                *deviceUID,
+		TenantID:                 *tenantID,
+		Start:                    start,
+		End:                      end,
+		SnapMin:                  *snapMin,
+		ChunkHrs:                 *chunkHours,
+		RowLimit:                 *rowLimit,
+		IngestHistoricalFeedback: *feedback,
 	})
 	if err != nil {
 		log.Fatalf("playback run: %v", err)

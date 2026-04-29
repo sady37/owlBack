@@ -10,12 +10,13 @@ import (
 
 // RoomSVGOptions 渲染时的覆盖层选项
 type RoomSVGOptions struct {
-	ShowFOV     bool               // 画雷达 FOV 蓝色虚线框
-	Sleepads    []radarutils.Point // Sleepad 位置（黄色图标）
-	LiveTracks  []radarutils.Point // 实时 track 位置（小人图标）
-	TrackLabels []string           // 对应 LiveTracks 的标签 (P0/P1...)
-	TrackPaths  []TrackPath        // 历史轨迹叠加（per-track polyline）
-	TitleSuffix string             // 标题追加（playback 用，例如 " | 2026-04-25 12:34:56"）
+	ShowFOV             bool               // 画雷达 FOV 蓝色虚线框
+	ShowFeedbackOverlay bool               // PR-9：画 cell 反馈层（GhostCount/RestZoneConfirmed/RealFallCount/FakeAlarmCount/FallEventCount）
+	Sleepads            []radarutils.Point // Sleepad 位置（黄色图标）
+	LiveTracks          []radarutils.Point // 实时 track 位置（小人图标）
+	TrackLabels         []string           // 对应 LiveTracks 的标签 (P0/P1...)
+	TrackPaths          []TrackPath        // 历史轨迹叠加（per-track polyline）
+	TitleSuffix         string             // 标题追加（playback 用，例如 " | 2026-04-25 12:34:56"）
 }
 
 // TrackPath 一条 track 的历史路径（按时间排序的画布坐标点序列）。
@@ -98,6 +99,11 @@ func BuildRoomSVG(grid *RoomGrid, mount radarutils.RadarMount, wallPoly []radaru
 
 	// 2) 100 cm 网格 + 坐标数字
 	drawAxes(&sb, canvasW, canvasH)
+
+	// 2.5) PR-9 反馈叠加层：把 cell 计数器（人类反馈 + 事件累计）画成半透明圆点
+	if opt.ShowFeedbackOverlay {
+		drawFeedbackOverlay(&sb, grid)
+	}
 
 	// 3) Wall 多边形（黑色粗描边，覆盖 cell 之上）
 	if len(wallPoly) >= 3 {
@@ -188,6 +194,57 @@ func cellSVGFill(c *Cell) string {
 	}
 	// AreaUnknown
 	return "#c8c8c8"
+}
+
+// drawFeedbackOverlay PR-9：在 cell 中心画半透明圆点，半径 ~ sqrt(count)，最大 5px。
+//
+// 5 类 counter 各一色（同一 cell 多类同时存在时同心叠加，按"严重程度"半径 +1px 错位）：
+//
+//	红色 (#dc2626)  GhostCount        — 人工标 NoPerson/Electric/AC/Mirror/AC Interference
+//	深紫 (#7c3aed)  RealFallCount     — verified ☑ Fall (ground truth)
+//	深红 (#991b1b)  FallEventCount    — engine 自身识别的 Stand→Lie 转换事件
+//	橙色 (#f59e0b)  RestZoneConfirmed — 人工标 Sit on Chair/Sofa/Wheelchair
+//	灰色 (#6b7280)  FakeAlarmCount    — Other / 旧格式 false_alarm 兜底
+func drawFeedbackOverlay(sb *strings.Builder, grid *RoomGrid) {
+	cellSize := grid.CellSize
+	for row := 0; row < grid.Height; row++ {
+		for col := 0; col < grid.Width; col++ {
+			c := &grid.Cells[row*grid.Width+col]
+			cx := grid.OriginX + col*cellSize + cellSize/2
+			cy := grid.OriginY + row*cellSize + cellSize/2
+
+			// 严重 → 不严重；半径 r = clamp(ceil(sqrt(count)), 1, 5)
+			drawCounterDot(sb, cx, cy, c.GhostCount, "#dc2626", 0.7)
+			drawCounterDot(sb, cx, cy, c.RealFallCount, "#7c3aed", 0.7)
+			drawCounterDot(sb, cx, cy, c.FallEventCount, "#991b1b", 0.5)
+			drawCounterDot(sb, cx, cy, c.RestZoneConfirmed, "#f59e0b", 0.55)
+			drawCounterDot(sb, cx, cy, c.FakeAlarmCount, "#6b7280", 0.45)
+		}
+	}
+}
+
+func drawCounterDot(sb *strings.Builder, cx, cy, count int, color string, alpha float64) {
+	if count <= 0 {
+		return
+	}
+	r := count
+	if r > 25 {
+		r = 25
+	}
+	// sqrt(count) 缩放：count=1→1, count=4→2, count=9→3, count=25→5
+	rad := 1
+	switch {
+	case r >= 16:
+		rad = 5
+	case r >= 9:
+		rad = 4
+	case r >= 4:
+		rad = 3
+	case r >= 2:
+		rad = 2
+	}
+	fmt.Fprintf(sb, `<circle cx="%d" cy="%d" r="%d" fill="%s" fill-opacity="%.2f"/>`,
+		cx, cy, rad, color, alpha)
 }
 
 func drawAxes(sb *strings.Builder, w, h int) {

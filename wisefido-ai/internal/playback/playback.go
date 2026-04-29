@@ -48,6 +48,11 @@ type Options struct {
 	// 用于 PR-5 fall verifier 离线测试（cmd/fall-score-replay）。nil = 不注入。
 	AlarmInjector AlarmInjector
 
+	// IngestHistoricalFeedback PR-9.1：playback 启动时跑一次历史 alarm_events 反馈解析，
+	// 把 ☑ 勾选直接灌进 grid.cells（GhostCount/RestZoneConfirmed/RealFallCount/FakeAlarmCount）。
+	// 让 SVG 反馈层 overlay 能展示真实人类反馈。默认 false（向后兼容）。
+	IngestHistoricalFeedback bool
+
 	// Logger：自定义 zap logger 注入 TrackManager；缺省走 zap.NewDevelopment 写 stderr。
 	// 用于 fall-score-replay 通过 zapcore.Tee 同时捕获 verifier 结果。
 	Logger *zap.Logger
@@ -186,6 +191,24 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	if cfg.Timezone != "" {
 		if loc, err := time.LoadLocation(cfg.Timezone); err == nil {
 			tm.SetTimezone(loc)
+		}
+	}
+
+	// PR-9.1: 灌入历史人类反馈到 grid（让 SVG overlay 可展示真实反馈层）
+	if opts.IngestHistoricalFeedback && opts.DB != nil {
+		ingestLogger := opts.Logger
+		if ingestLogger == nil {
+			ingestLogger, _ = zap.NewDevelopment()
+		}
+		if succ, total, err := IngestHistoricalFeedback(ctx, opts.DB, opts.DeviceUID,
+			opts.Start, opts.End, grid, cfg.Radar, ingestLogger); err != nil {
+			if ingestLogger != nil {
+				ingestLogger.Warn("ingest historical feedback", zap.Error(err))
+			}
+		} else if ingestLogger != nil {
+			ingestLogger.Info("playback historical feedback ingested",
+				zap.String("device_uid", opts.DeviceUID),
+				zap.Int("success", succ), zap.Int("total", total))
 		}
 	}
 
@@ -455,10 +478,11 @@ func takeSnapWithPaths(grid *roomengine.RoomGrid, cfg roomengine.RoomConfig,
 		TsMs: simTMs,
 		SVG: roomengine.BuildRoomSVG(grid, cfg.Radar, cfg.WallPolygon, cfg.Enters, roomID,
 			roomengine.RoomSVGOptions{
-				ShowFOV:     true,
-				Sleepads:    cfg.Sleepads,
-				TrackPaths:  paths,
-				TitleSuffix: " | " + t,
+				ShowFOV:             true,
+				ShowFeedbackOverlay: true, // PR-9：渲染 cell 反馈层
+				Sleepads:            cfg.Sleepads,
+				TrackPaths:          paths,
+				TitleSuffix:         " | " + t,
 			}),
 		Label: t,
 	}

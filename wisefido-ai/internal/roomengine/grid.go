@@ -417,6 +417,38 @@ func (g *RoomGrid) MarkBlindSpotRecovery(x, y int, nowMs int64) {
 	c.LastUpdateMs = nowMs
 }
 
+// MarkGhostFeedback PR-6：人工标 ☑ NoPerson/Electric/AC Interference → cell.GhostCount++
+func (g *RoomGrid) MarkGhostFeedback(x, y int, nowMs int64) {
+	c := g.CellAt(x, y)
+	if c == nil {
+		return
+	}
+	c.IncrGhostCount()
+	c.LastUpdateMs = nowMs
+}
+
+// MarkRestZoneFeedback PR-6+7.1：人工标 ☑ Sit on Chair/Sofa/Wheelchair。
+// 累计 RestZoneConfirmed 并即时锁 AreaSit（一次反馈即认；半衰期保护）。
+func (g *RoomGrid) MarkRestZoneFeedback(x, y int, nowMs int64) {
+	c := g.CellAt(x, y)
+	if c == nil {
+		return
+	}
+	c.IncrRestZoneConfirmed()
+	c.MarkRestZoneByFeedback(AreaSit)
+	c.LastUpdateMs = nowMs
+}
+
+// MarkRealFallFeedback PR-6：人工标 verified ☑ Fall (ground truth) → cell.RealFallCount++
+func (g *RoomGrid) MarkRealFallFeedback(x, y int, nowMs int64) {
+	c := g.CellAt(x, y)
+	if c == nil {
+		return
+	}
+	c.IncrRealFallCount()
+	c.LastUpdateMs = nowMs
+}
+
 // CellStat dump 用：把 cell 关键字段拍平。
 type CellStat struct {
 	Col               int      `json:"col"`
