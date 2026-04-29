@@ -1624,6 +1624,135 @@ func positionAtMsAgo(ts *TrackState, nowMs int64, windowMs int64) (TimedPoint, b
 	return ts.History[0], true
 }
 
+// updateRegionStatic PR-13：region static 累积器 + A/B 路径触发判定。
+//
+// 区域定义：连续帧间 |dx|≤15 AND |dy|≤15（D523 实测 ~96% 帧满足；single-axis 跳变 ≤5%）。
+// 容忍机制：累积期内允许 ≤10% 帧打断（≥90% 静止）；解决 PR-7.2 严格累积被噪声打断 (4e-12 概率) 的问题。
+// 触发条件 OR：
+//   A 路径（z 突变 = 坐→站）：region static ≥2min AND |z - RegionStartZ| ≥10cm AND 双方 z>0
+//   B 路径（持续累积）：region static ≥ threshold （RestZone cell 8min；其它 12min）AND ratio ≥0.90
+// 触发后双 cell 加分：prev cell + cur cell 同时 MarkRestZoneFeedback(AreaSit)。
+// per-track 一次性（AreaSitLearnedRegion flag）。
+//
+// 调用方持锁；nowMs/cell 已由 scoreMovement 计算。
+func (tm *TrackManager) updateRegionStatic(ts *TrackState, prev TimedPoint, x, y int, nowMs int64, cell *Cell) {
+	const (
+		regionDxDyMaxCm = 15  // |dx|≤15 AND |dy|≤15 = 同区域
+		regionResetCm   = 50  // |dx|>50 或 |dy|>50 = 大跨步，立即 reset
+		ratioMin        = 0.90
+		ratioResetMin   = 0.85 // ratio 跌破此值 → region 失效 reset
+		zJumpMinCm      = 10
+		zJumpMinElapse  = 2 * 60 * 1000      // 2 min
+		thresholdRest   = 8 * 60 * 1000      // RestZone cell: 8min
+		thresholdNonRest = 12 * 60 * 1000    // 其它: 12min
+	)
+
+	dx := x - prev.X
+	if dx < 0 {
+		dx = -dx
+	}
+	dy := y - prev.Y
+	if dy < 0 {
+		dy = -dy
+	}
+
+	// 大跨步：立即 reset region
+	if dx > regionResetCm || dy > regionResetCm {
+		ts.RegionStaticStartedMs = 0
+		ts.RegionStaticFrames = 0
+		ts.RegionTotalFrames = 0
+		return
+	}
+
+	// 维护 region 帧计数
+	staticFrame := dx <= regionDxDyMaxCm && dy <= regionDxDyMaxCm
+	if ts.RegionStaticStartedMs == 0 {
+		// 启动 region；要求当前是 static 帧
+		if !staticFrame {
+			return
+		}
+		ts.RegionStaticStartedMs = nowMs
+		ts.RegionStartZ = prev.Z
+		ts.RegionStaticFrames = 1
+		ts.RegionTotalFrames = 1
+		return
+	}
+
+	ts.RegionTotalFrames++
+	if staticFrame {
+		ts.RegionStaticFrames++
+	}
+
+	// ratio 跌破 0.85 → 区域失效，reset
+	if ts.RegionTotalFrames >= 10 {
+		ratio := float64(ts.RegionStaticFrames) / float64(ts.RegionTotalFrames)
+		if ratio < ratioResetMin {
+			ts.RegionStaticStartedMs = 0
+			ts.RegionStaticFrames = 0
+			ts.RegionTotalFrames = 0
+			return
+		}
+	}
+
+	// 已学习过 → 不重复触发
+	if ts.AreaSitLearnedRegion {
+		return
+	}
+
+	// PR-13: 与 PR-7.2 一致 — still-fall 触发场景（toilet/shower/bathroom-room/Stay-alarm）
+	// 不学 AreaSit；让 still-fall 处理。否则浴室长时间静止会被误学成坐位。
+	if cell != nil && tm.stillFallTimeoutSec(cell, false) > 0 {
+		return
+	}
+
+	elapsed := nowMs - ts.RegionStaticStartedMs
+
+	// A 路径：region static ≥2min + z 突变 ≥10cm（双方 z 有效）
+	if elapsed >= int64(zJumpMinElapse) && ts.RegionStartZ > 0 && prev.Z > 0 {
+		dz := prev.Z - ts.RegionStartZ
+		if dz < 0 {
+			dz = -dz
+		}
+		if dz >= zJumpMinCm {
+			tm.markBothCellsAreaSit(ts, prev, x, y, nowMs, "zjump")
+			ts.AreaSitLearnedRegion = true
+			return
+		}
+	}
+
+	// B 路径：累积时长 + ratio ≥0.90
+	threshold := int64(thresholdNonRest)
+	if cell != nil && cell.IsRestZone() {
+		threshold = int64(thresholdRest)
+	}
+	if elapsed >= threshold {
+		ratio := float64(ts.RegionStaticFrames) / float64(ts.RegionTotalFrames)
+		if ratio >= ratioMin {
+			tm.markBothCellsAreaSit(ts, prev, x, y, nowMs, "static_accum")
+			ts.AreaSitLearnedRegion = true
+		}
+	}
+}
+
+// markBothCellsAreaSit PR-13：双 cell 加分。prev cell + cur cell 同时 MarkRestZoneFeedback(AreaSit)。
+// 内部各自调 boostNeighborSameType（PR-10）；cell1↔cell2 邻居时互相 boost cap 100。
+func (tm *TrackManager) markBothCellsAreaSit(ts *TrackState, prev TimedPoint, x, y int, nowMs int64, trigger string) {
+	tm.grid.MarkRestZoneFeedback(prev.X, prev.Y, AreaSit, nowMs)
+	tm.grid.MarkRestZoneFeedback(x, y, AreaSit, nowMs)
+	tm.logger.Info("area_sit_auto_learned_region",
+		zap.String("device_uid", ts.DeviceID),
+		zap.Int("track_id", ts.TrackID),
+		zap.String("trigger", trigger),
+		zap.Int("region_total_frames", ts.RegionTotalFrames),
+		zap.Int("region_static_frames", ts.RegionStaticFrames),
+		zap.Int64("region_elapsed_ms", nowMs-ts.RegionStaticStartedMs),
+		zap.Int("prev_x", prev.X), zap.Int("prev_y", prev.Y), zap.Int("prev_z", prev.Z),
+		zap.Int("cur_x", x), zap.Int("cur_y", y),
+		zap.Int("region_start_z", ts.RegionStartZ),
+		zap.Int64("ts_ms", nowMs),
+	)
+}
+
 // nearestEnterRoomMs 在 [tMs - windowMs, tMs + windowMs] 内查最近 EnterRoom 事件。
 // 返回最接近 tMs 的事件时间戳。调用方持锁。
 func (tm *TrackManager) nearestEnterRoomMs(tMs int64, windowMs int64) (int64, bool) {
@@ -1762,6 +1891,9 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 
 	cell := tm.grid.CellAt(x, y)
 	isRest := cell != nil && cell.IsRestZone()
+
+	// PR-13: region static 维护 — |dx|≤15 AND |dy|≤15 视为同区域；累积期 ≥90% 容忍单帧噪声
+	tm.updateRegionStatic(ts, prev, x, y, nowMs, cell)
 
 	if d < StillThreshCm {
 		// 静止

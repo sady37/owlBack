@@ -761,6 +761,7 @@ func TestAreaSitAutoLearn_NotInBathroom(t *testing.T) {
 }
 
 // TestAreaSitAutoLearn_NotBeforeThreshold 11min < 12min 阈值 → 不学
+// 用 z=0 关闭 A 路径（z-jump），单独考察 B 路径（累积时长）阈值生效。
 func TestAreaSitAutoLearn_NotBeforeThreshold(t *testing.T) {
 	tm, _ := newTestTM()
 	tm.SetRoomName("LivingRoom")
@@ -770,8 +771,12 @@ func TestAreaSitAutoLearn_NotBeforeThreshold(t *testing.T) {
 	startTms := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC).UnixMilli()
 	const tid = 0
 	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1)
-	tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 60, observation.PoseStanding, lastMs)}, lastMs)
-	_ = runStillStandFor(tm, tid, 100, 100, lastMs+1000, 11*60)
+	// z=0 全程 → A 路径短路（要求 prev.Z>0）；只测 B 路径
+	tms := lastMs + 1000
+	for i := 0; i < 11*60; i++ {
+		tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 0, observation.PoseStanding, tms)}, tms)
+		tms += 1000
+	}
 
 	cell := tm.grid.CellAt(100, 100)
 	if cell.Belief[0].Type == AreaSit {
@@ -779,8 +784,10 @@ func TestAreaSitAutoLearn_NotBeforeThreshold(t *testing.T) {
 	}
 }
 
-// TestAreaSitAutoLearn_PoseSitDoesNotCount pose=Sit 不算 stand-static
-func TestAreaSitAutoLearn_PoseSitDoesNotCount(t *testing.T) {
+// TestAreaSitAutoLearn_PoseSitTriggersRegionStatic
+// PR-13 后 pose=Sit 静止 ≥12min 也触发 region static 自学习（不再仅 pose=Stand）。
+// 这是 PR-13 的核心改进：pose=Sit/Stand/Lie 都纳入区域静止判定。
+func TestAreaSitAutoLearn_PoseSitTriggersRegionStatic(t *testing.T) {
 	tm, _ := newTestTM()
 	tm.SetRoomName("LivingRoom")
 	loc, _ := time.LoadLocation("UTC")
@@ -789,24 +796,109 @@ func TestAreaSitAutoLearn_PoseSitDoesNotCount(t *testing.T) {
 	startTms := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC).UnixMilli()
 	const tid = 0
 	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1)
-	// 全程 pose=Sit 静止 20min
+	// 全程 pose=Sit 静止 13min（>12min 默认阈值）
 	tms := lastMs + 1000
-	for i := 0; i < 20*60; i++ {
+	for i := 0; i < 13*60; i++ {
 		tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 0, observation.PoseSitting, tms)}, tms)
 		tms += 1000
 	}
 
 	cell := tm.grid.CellAt(100, 100)
-	// pose=Sit 不应触发 stand-static 自学习路径
-	// （但 pose=Sit 长期静止本身的 ToleratedStillCount 累计是另一条路径）
-	if cell.Belief[0].Source == SourceHuman && cell.Belief[0].Type == AreaSit {
-		t.Errorf("pose=Sit should not trigger stand-static auto-learn; cell shouldn't be locked SourceHuman")
+	if cell.Belief[0].Type != AreaSit || cell.Belief[0].Source != SourceHuman {
+		t.Errorf("PR-13: pose=Sit 13min static should auto-learn AreaSit, got type=%v source=%v",
+			cell.Belief[0].Type, cell.Belief[0].Source)
 	}
 }
 
 // ============================================================================
-// IsNightTime
+// PR-13: region static 双 cell 自学习 + 90% 容忍 + Z 突变路径
 // ============================================================================
+
+// TestRegionStatic_BothCellsMarked B 路径触发后 prev cell + cur cell 都标 AreaSit
+func TestRegionStatic_BothCellsMarked(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.SetRoomName("LivingRoom")
+	loc, _ := time.LoadLocation("UTC")
+	tm.SetTimezone(loc)
+
+	startTms := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC).UnixMilli()
+	const tid = 0
+	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1)
+	// 在 (100,100) 与 (108,108) 之间漂移（|dx|≤15）→ region static，跨 cell
+	tms := lastMs + 1000
+	for i := 0; i < 13*60; i++ {
+		x, y := 100, 100
+		if i%2 == 0 {
+			x, y = 108, 108
+		}
+		tm.processFrameAt([]TrackFrame{frameAt(tid, x, y, 0, observation.PoseStanding, tms)}, tms)
+		tms += 1000
+	}
+
+	cellA := tm.grid.CellAt(100, 100)
+	cellB := tm.grid.CellAt(108, 108)
+	if cellA.Belief[0].Type != AreaSit {
+		t.Errorf("cell (100,100) should be AreaSit, got %v", cellA.Belief[0].Type)
+	}
+	if cellB.Belief[0].Type != AreaSit {
+		t.Errorf("cell (108,108) should be AreaSit (PR-13 双 cell 加分), got %v", cellB.Belief[0].Type)
+	}
+}
+
+// TestRegionStatic_90PercentTolerance 静止 ≥90% 容忍单帧噪声
+func TestRegionStatic_90PercentTolerance(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.SetRoomName("LivingRoom")
+	loc, _ := time.LoadLocation("UTC")
+	tm.SetTimezone(loc)
+
+	startTms := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC).UnixMilli()
+	const tid = 0
+	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1)
+	// 13min × 60 = 780 帧；每 20 帧插一次 dx=20 跳变（5% 打断 < 10% 容忍）
+	tms := lastMs + 1000
+	for i := 0; i < 13*60; i++ {
+		x, y := 100, 100
+		if i%20 == 0 {
+			x = 125 // 单帧大跳：dx=25 (打断)
+		}
+		tm.processFrameAt([]TrackFrame{frameAt(tid, x, y, 0, observation.PoseStanding, tms)}, tms)
+		tms += 1000
+	}
+
+	cell := tm.grid.CellAt(100, 100)
+	if cell.Belief[0].Type != AreaSit {
+		t.Errorf("PR-13 90%% tolerance: 5%% noise frames should not block AreaSit learning, got %v",
+			cell.Belief[0].Type)
+	}
+}
+
+// TestRegionStatic_ResetOnLargeMove dx>50 立即 reset region
+func TestRegionStatic_ResetOnLargeMove(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.SetRoomName("LivingRoom")
+	loc, _ := time.LoadLocation("UTC")
+	tm.SetTimezone(loc)
+
+	startTms := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC).UnixMilli()
+	const tid = 0
+	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1)
+	// 6min static 后大跨步（dx=100），region reset；继续 6min 在新位置 → 都不到 12min
+	tms := lastMs + 1000
+	for i := 0; i < 6*60; i++ {
+		tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 0, observation.PoseStanding, tms)}, tms)
+		tms += 1000
+	}
+	for i := 0; i < 6*60; i++ {
+		tm.processFrameAt([]TrackFrame{frameAt(tid, 200, 100, 0, observation.PoseStanding, tms)}, tms)
+		tms += 1000
+	}
+
+	cell := tm.grid.CellAt(100, 100)
+	if cell.Belief[0].Type == AreaSit && cell.Belief[0].Source == SourceHuman {
+		t.Errorf("两段 6min 各自累积，都不到 12min，不该锁 AreaSit")
+	}
+}
 
 // ============================================================================
 // Frozen-frame 检测：连续 25 帧字面 byte-equal 时 FrozenRunStart 被填上
