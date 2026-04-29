@@ -235,10 +235,17 @@ func (c *Cell) IsEntry() bool {
 	return c.Belief[0].Type == AreaEnter
 }
 
-// IsRestZone 是否为合理静止区（Bed / Sit / Toilet）。默认读 Belief[0]。
+// IsRestZone 是否为「可长时间停留」的休息区。仅 Bed / Sit。
+//
+// 语义（用户 2026-04-29 对齐）：
+//   - Bed / Sit (沙发/椅子)：人可长时间坐/躺；still-fall / silent-fall 都应排除
+//   - Toilet / Shower：**人不应久留**（>15-20min 异常）；属于 still-fall 触发场景，不在此集合
+//
+// 旧版本曾包含 AreaToilet，是 bug：toilet 上消失/久留应触发告警，不应被
+// "rest zone exempt" 跳过。
 func (c *Cell) IsRestZone() bool {
 	t := c.Belief[0].Type
-	return t == AreaBed || t == AreaSit || t == AreaToilet
+	return t == AreaBed || t == AreaSit
 }
 
 // IsLikelyRestZone 比 IsRestZone 更宽松——除已升格的休息区外，
