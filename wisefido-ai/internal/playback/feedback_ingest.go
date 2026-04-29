@@ -91,8 +91,13 @@ func IngestHistoricalFeedback(ctx context.Context, db *sql.DB, deviceUID string,
 				grid.MarkGhostFeedback(canvas.X, canvas.Y, int64(handMs))
 				applied = true
 			}
-			if pc.FAChair || pc.FASofa || pc.FAWheelchair {
-				grid.MarkRestZoneFeedback(canvas.X, canvas.Y, int64(handMs))
+			// PR-9.2: 拆分 target — Chair/Wheelchair → AreaSit；Sofa → AreaBed (lying)
+			if pc.FAChair || pc.FAWheelchair {
+				grid.MarkRestZoneFeedback(canvas.X, canvas.Y, roomengine.AreaSit, int64(handMs))
+				applied = true
+			}
+			if pc.FASofa {
+				grid.MarkRestZoneFeedback(canvas.X, canvas.Y, roomengine.AreaBed, int64(handMs))
 				applied = true
 			}
 			if pc.FAOther || (!pc.FAGhostInterference && !pc.FAChair && !pc.FASofa && !pc.FAWheelchair) {

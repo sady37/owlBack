@@ -339,19 +339,32 @@ func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int
 				routes = append(routes, "ghost")
 			}
 		}
-		if pc.FAChair || pc.FASofa || pc.FAWheelchair {
+		// PR-9.2: 拆分 target — Chair/Wheelchair → AreaSit；Sofa → AreaBed (lying)
+		if pc.FAChair || pc.FAWheelchair {
 			locked := false
 			if apply(func(c *Cell) {
 				c.IncrRestZoneConfirmed()
-				// PR-7.1: 即时锁 AreaType=AreaSit（一次反馈即认；半衰期保护）
-				// MarkRestZoneByFeedback 内部跳过 Bed/Toilet/Shower/Deny/Enter
 				if c.MarkRestZoneByFeedback(AreaSit) {
 					locked = true
 				}
 			}) {
-				routes = append(routes, "rest_zone")
+				routes = append(routes, "rest_zone_chair")
 				if locked {
 					routes = append(routes, "rest_zone_locked_AreaSit")
+				}
+			}
+		}
+		if pc.FASofa {
+			locked := false
+			if apply(func(c *Cell) {
+				c.IncrRestZoneConfirmed()
+				if c.MarkRestZoneByFeedback(AreaBed) {
+					locked = true
+				}
+			}) {
+				routes = append(routes, "rest_zone_sofa")
+				if locked {
+					routes = append(routes, "rest_zone_locked_AreaBed")
 				}
 			}
 		}

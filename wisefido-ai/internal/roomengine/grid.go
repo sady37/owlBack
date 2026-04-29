@@ -427,15 +427,18 @@ func (g *RoomGrid) MarkGhostFeedback(x, y int, nowMs int64) {
 	c.LastUpdateMs = nowMs
 }
 
-// MarkRestZoneFeedback PR-6+7.1：人工标 ☑ Sit on Chair/Sofa/Wheelchair。
-// 累计 RestZoneConfirmed 并即时锁 AreaSit（一次反馈即认；半衰期保护）。
-func (g *RoomGrid) MarkRestZoneFeedback(x, y int, nowMs int64) {
+// MarkRestZoneFeedback PR-6+7.1+9.2：人工标 ☑ Sit on Chair/Sofa/Wheelchair。
+// target 区分语义：
+//   - AreaSit （Chair / Wheelchair）— 坐姿区，橙色
+//   - AreaBed （Sofa / Lounge chair）— 躺姿区（沙发可坐可躺，归 lying），蓝色
+// 累计 RestZoneConfirmed 并即时锁定 target（一次反馈即认；半衰期保护）。
+func (g *RoomGrid) MarkRestZoneFeedback(x, y int, target AreaType, nowMs int64) {
 	c := g.CellAt(x, y)
 	if c == nil {
 		return
 	}
 	c.IncrRestZoneConfirmed()
-	c.MarkRestZoneByFeedback(AreaSit)
+	c.MarkRestZoneByFeedback(target)
 	c.LastUpdateMs = nowMs
 }
 

@@ -1797,9 +1797,10 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 			if ts.StandStaticSince > 0 && !ts.AreaSitAutoLearned && cell != nil {
 				if tm.stillFallTimeoutSec(cell, isRiskTime) == 0 {
 					// 非 still-fall 触发场景；可学习
-					threshold := int64(12 * 60 * 1000) // 默认 12min
-					if cell.Belief[0].Type == AreaSit {
-						threshold = int64(8 * 60 * 1000) // 已是 AreaSit 缩短为 8min（强化）
+					// PR-9.2: 任何已是 RestZone（AreaSit / AreaBed）都用 8min（强化）；其它 12min
+					threshold := int64(12 * 60 * 1000)
+					if cell.IsRestZone() {
+						threshold = int64(8 * 60 * 1000)
 					}
 					if nowMs-ts.StandStaticSince >= threshold {
 						locked := cell.MarkRestZoneByFeedback(AreaSit)

@@ -376,20 +376,28 @@ func (c *Cell) IncrRealFallCount() {
 	c.RealFallCount++
 }
 
-// MarkRestZoneByFeedback PR-7.1：依据人类反馈即时锁定 cell.AreaType（一次即认）。
-// target ∈ {AreaSit}（当前仅 AreaSit；未来可能 AreaLying 等）。
+// MarkRestZoneByFeedback PR-7.1 / PR-9.2：依据人类反馈即时锁定 cell.AreaType。
+// target ∈ {AreaSit, AreaBed}：
+//   AreaSit  — Chair / Wheelchair（橙色坐姿）
+//   AreaBed  — Sofa / Lounge chair（蓝色躺姿；沙发可坐可躺归 lying）
 // Confidence=95, Source=SourceHuman；依靠 Decay() 自然衰减，无需重复反馈。
 //
-// 不覆盖现有更具体的 layout 类型（AreaBed / AreaToilet / AreaShower / AreaDeny / AreaEnter）。
-// Belief[0] 已是 SourceHuman 且 type 一致时跳过（保持稳态，避免 Confidence 反复 reset）。
+// 保护规则（不覆盖）：
+//   - AreaToilet / AreaShower / AreaDeny / AreaEnter  layout 锁定的特殊语义
+//   - 当前已是 SourceHuman + 同 target  幂等不 reset
+//   - 当前是 AreaBed 且 target=AreaSit  不降级（lying 信息更具体）
 func (c *Cell) MarkRestZoneByFeedback(target AreaType) bool {
 	cur := c.Belief[0].Type
-	// 不覆盖 layout 标的更具体类型
-	if cur == AreaBed || cur == AreaToilet || cur == AreaShower ||
+	// 不覆盖更具体的 layout 类型
+	if cur == AreaToilet || cur == AreaShower ||
 		cur == AreaDeny || cur == AreaEnter {
 		return false
 	}
-	// 已经是 SourceHuman + 同类 → 不重复 reset
+	// AreaBed 不被 AreaSit 降级（lying 信息更精确）
+	if cur == AreaBed && target == AreaSit {
+		return false
+	}
+	// 幂等：已是 SourceHuman + 同 target
 	if cur == target && c.Belief[0].Source == SourceHuman {
 		return false
 	}
