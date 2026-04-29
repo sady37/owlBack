@@ -586,6 +586,100 @@ func TestStillFall_NoFireWhenStayAlarmDisabled(t *testing.T) {
 }
 
 // ============================================================================
+// PR-7.2: stand-static 自学习 → AreaSit
+// ============================================================================
+
+// TestAreaSitAutoLearn_FromActive 12min stand-static in non-Sit cell → AreaSit auto-learned
+func TestAreaSitAutoLearn_FromActive(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.SetRoomName("LivingRoom") // 非 bathroom；不会触发 still-fall
+	loc, _ := time.LoadLocation("UTC")
+	tm.SetTimezone(loc)
+
+	startTms := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC).UnixMilli()
+	const tid = 0
+	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1)
+	tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 60, observation.PoseStanding, lastMs)}, lastMs)
+
+	// 站立静止 13min（>12min 阈值）
+	_ = runStillStandFor(tm, tid, 100, 100, lastMs+1000, 13*60)
+
+	cell := tm.grid.CellAt(100, 100)
+	if cell == nil {
+		t.Fatalf("cell at (100,100) is nil")
+	}
+	if cell.Belief[0].Type != AreaSit {
+		t.Errorf("expected AreaSit auto-learned, got %v", cell.Belief[0].Type)
+	}
+	if cell.Belief[0].Source != SourceHuman {
+		t.Errorf("expected SourceHuman after lock, got %v", cell.Belief[0].Source)
+	}
+}
+
+// TestAreaSitAutoLearn_NotInBathroom bathroom-room 不学（让 still-fall 处理）
+func TestAreaSitAutoLearn_NotInBathroom(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.SetRoomName("Bathroom")
+	loc, _ := time.LoadLocation("UTC")
+	tm.SetTimezone(loc)
+
+	startTms := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC).UnixMilli()
+	const tid = 0
+	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1)
+	tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 60, observation.PoseStanding, lastMs)}, lastMs)
+	_ = runStillStandFor(tm, tid, 100, 100, lastMs+1000, 13*60)
+
+	cell := tm.grid.CellAt(100, 100)
+	if cell.Belief[0].Type == AreaSit {
+		t.Errorf("bathroom room should NOT auto-learn AreaSit (still-fall takes over); got AreaSit")
+	}
+}
+
+// TestAreaSitAutoLearn_NotBeforeThreshold 11min < 12min 阈值 → 不学
+func TestAreaSitAutoLearn_NotBeforeThreshold(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.SetRoomName("LivingRoom")
+	loc, _ := time.LoadLocation("UTC")
+	tm.SetTimezone(loc)
+
+	startTms := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC).UnixMilli()
+	const tid = 0
+	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1)
+	tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 60, observation.PoseStanding, lastMs)}, lastMs)
+	_ = runStillStandFor(tm, tid, 100, 100, lastMs+1000, 11*60)
+
+	cell := tm.grid.CellAt(100, 100)
+	if cell.Belief[0].Type == AreaSit {
+		t.Errorf("11min < 12min threshold; should NOT auto-learn")
+	}
+}
+
+// TestAreaSitAutoLearn_PoseSitDoesNotCount pose=Sit 不算 stand-static
+func TestAreaSitAutoLearn_PoseSitDoesNotCount(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.SetRoomName("LivingRoom")
+	loc, _ := time.LoadLocation("UTC")
+	tm.SetTimezone(loc)
+
+	startTms := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC).UnixMilli()
+	const tid = 0
+	lastMs := runFramesUntilReal(tm, tid, 95, 100, startTms, 1)
+	// 全程 pose=Sit 静止 20min
+	tms := lastMs + 1000
+	for i := 0; i < 20*60; i++ {
+		tm.processFrameAt([]TrackFrame{frameAt(tid, 100, 100, 0, observation.PoseSitting, tms)}, tms)
+		tms += 1000
+	}
+
+	cell := tm.grid.CellAt(100, 100)
+	// pose=Sit 不应触发 stand-static 自学习路径
+	// （但 pose=Sit 长期静止本身的 ToleratedStillCount 累计是另一条路径）
+	if cell.Belief[0].Source == SourceHuman && cell.Belief[0].Type == AreaSit {
+		t.Errorf("pose=Sit should not trigger stand-static auto-learn; cell shouldn't be locked SourceHuman")
+	}
+}
+
+// ============================================================================
 // IsNightTime
 // ============================================================================
 

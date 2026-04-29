@@ -1530,6 +1530,14 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 			ts.StillX = x
 			ts.StillY = y
 		}
+		// PR-7.2: 跟踪 pose=Stand 静止专用计时（用于自学习升 AreaSit）
+		if RadarPoseToCore(pose) == CorePoseStand {
+			if ts.StandStaticSince == 0 {
+				ts.StandStaticSince = nowMs
+			}
+		} else {
+			ts.StandStaticSince = 0
+		}
 		if !isRest && ts.Verdict == VerdictPending {
 			ts.AdjustScore(-3)
 		}
@@ -1586,6 +1594,38 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 					}
 				}
 			}
+
+			// PR-7.2: stand-static 自学习 → AreaSit
+			// 触发条件:
+			//   pose=Stand 静止 ≥ 12min (cell 非 AreaSit) 或 ≥ 8min (已是 AreaSit 强化)
+			//   且 cell 不在 still-fall 触发场景（toilet/shower/bathroom-room/Stay-alarm）
+			// 物理意义: 人很难 stand-static 超过 12min 在非 bathroom 场景；如果 track 在此
+			// 静止这么久且没消失/没报警 = 该位置实际是个站立工作/坐位（如水池前/化妆台/电脑桌）
+			// 阈值 < 15min 避免与 still-fall 冲突。
+			if ts.StandStaticSince > 0 && !ts.AreaSitAutoLearned && cell != nil {
+				if tm.stillFallTimeoutSec(cell, isRiskTime) == 0 {
+					// 非 still-fall 触发场景；可学习
+					threshold := int64(12 * 60 * 1000) // 默认 12min
+					if cell.Belief[0].Type == AreaSit {
+						threshold = int64(8 * 60 * 1000) // 已是 AreaSit 缩短为 8min（强化）
+					}
+					if nowMs-ts.StandStaticSince >= threshold {
+						locked := cell.MarkRestZoneByFeedback(AreaSit)
+						cell.IncrToleratedStill()
+						ts.AreaSitAutoLearned = true
+						tm.logger.Info("area_sit_auto_learned",
+							zap.String("device_uid", ts.DeviceID),
+							zap.Int("track_id", ts.TrackID),
+							zap.Int("stand_static_sec", int((nowMs-ts.StandStaticSince)/1000)),
+							zap.Int("threshold_sec", int(threshold/1000)),
+							zap.Bool("area_sit_locked", locked),
+							zap.Int("cell_area_before", int(cell.Belief[0].Type)),
+							zap.Int("x", x), zap.Int("y", y),
+							zap.Int64("ts_ms", nowMs),
+						)
+					}
+				}
+			}
 		}
 
 		// R4: 床边晕倒（升级 AnomalyStillTooLong → AnomalyBedsideFall）
@@ -1631,6 +1671,7 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 		ts.StillSince = 0
 		ts.LongStillReported = false
 		ts.StillFallReported = false
+		ts.StandStaticSince = 0 // PR-7.2: track 移动 → reset stand-static 计时
 		if ts.CurrentAnomaly == AnomalyStillTooLong {
 			ts.CurrentAnomaly = AnomalyNone
 		}

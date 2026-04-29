@@ -85,6 +85,14 @@ type TrackState struct {
 	LongStillReported bool // 防 LongStill 重复上报
 	StillFallReported bool // 防 still-fall 重复上报（bathroom + pose=Stand + 15/18min）
 
+	// ---- PR-7.2 stand-static 自学习 → AreaSit 强化 ----
+	// StandStaticSince：pose=Stand 且静止的起点 ms（0 = 不在 stand-static 状态）。
+	// AreaSitAutoLearned：track 生命周期内已触发过 AreaSit 自学习（防重复）。
+	// 阈值：cell 已是 AreaSit 时 8min（强化）；其它 cell 12min（自学升级）；
+	// AreaToilet/Shower 或 bathroom-room/Stay-alarm 跳过（避免阻挡 still-fall 15-18min）。
+	StandStaticSince     int64
+	AreaSitAutoLearned   bool
+
 	// ---- 异常与 Silent Fall ----
 	CurrentAnomaly Anomaly
 	SilentFall     bool
