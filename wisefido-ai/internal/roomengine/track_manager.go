@@ -105,6 +105,11 @@ type TrackManager struct {
 	// 默认 20（≈2 cells/s）；由 engine.Configure / playback.Run 从 yaml 注入。
 	moveSpeedCms int
 
+	// PR-11: 双方一致 InBed 时间窗判定 — sleepad 与 radar 各自最近 InBed 事件 ts。
+	// 仅当 |sleepadInBed - radarInBed| ≤ 15s 时，sleepad HR/RR 视作可信，触发 AreaBed cell refresh。
+	lastSleepadInBedMs int64
+	lastRadarInBedMs   int64
+
 	// lastLeftBedAt：任意来源（sleepad event / sleepad bed_status 转换 / 未来 radar event）
 	// 最近一次 LeftBed 事件的时间戳。R4（AnomalyBedsideFall）开窗判定用。
 	// 0 = 从未有 LeftBed 事件（或上次 InBed 后又被 InBed 抹掉）。
@@ -315,6 +320,10 @@ func (tm *TrackManager) ProcessSleepadBedEvent(evt SleepadBedEvent) {
 
 	if evt.IsInBed {
 		tm.bedPersonCount[evt.DeviceUID]++
+		// PR-11: 记录 sleepad InBed ts 用于 radar/sleepad 一致期判定
+		if evt.TMs > tm.lastSleepadInBedMs {
+			tm.lastSleepadInBedMs = evt.TMs
+		}
 		// BedSession：首次 InBed 启动会话；重复 InBed 仅更新 MaxPeople
 		s := tm.bedSessions[evt.DeviceUID]
 		if s == nil || s.InBedSinceMs == 0 {
@@ -392,7 +401,44 @@ func (tm *TrackManager) ProcessSleepadObservation(obs SleepadObservation) {
 		if s := tm.bedSessions[obs.DeviceUID]; s != nil && s.InBedSinceMs > 0 {
 			s.HasHRRR = true
 		}
+		// PR-11: 双方一致 InBed ±15s → sleepad HR/RR 可信，refresh active radar track 当前 cell 为 AreaBed
+		// 设计：sleepad 不知坐标，但 radar 也报 InBed 且时间一致 → radar 当前 track 位置就是床位
+		if tm.consistentBedInBed(obs.TMs) {
+			for _, ts := range tm.tracks {
+				if ts.Verdict != VerdictReal {
+					continue
+				}
+				pxF, pyF := ts.Kalman.Position()
+				px, py := int(math.Round(pxF)), int(math.Round(pyF))
+				cell := tm.grid.CellAt(px, py)
+				if cell == nil {
+					continue
+				}
+				if cell.MarkRestZoneByFeedback(AreaBed) {
+					tm.grid.boostNeighborSameType(px, py, AreaBed, obs.TMs)
+				}
+			}
+		}
 	}
+}
+
+// consistentBedInBed PR-11：检查 sleepad 与 radar 的 InBed 事件是否在 ±15s 内一致。
+// 一致性窗口语义：双方独立确认"床上有人"，sleepad HR/RR 此刻可信，可作为 AreaBed cell ground truth。
+// 调用方持锁。
+func (tm *TrackManager) consistentBedInBed(nowMs int64) bool {
+	const windowMs = int64(15_000)
+	if tm.lastSleepadInBedMs == 0 || tm.lastRadarInBedMs == 0 {
+		return false
+	}
+	// 必须都晚于 lastLeftBedAt（防止旧的 InBed 与新的 LeftBed 后又一致）
+	if tm.lastSleepadInBedMs <= tm.lastLeftBedAt || tm.lastRadarInBedMs <= tm.lastLeftBedAt {
+		return false
+	}
+	delta := tm.lastSleepadInBedMs - tm.lastRadarInBedMs
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= windowMs
 }
 
 // sleepadInBed 检查同房间任一 sleepad 在 30s 内报告 InBed（不要求 HR/RR）。
@@ -497,6 +543,10 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	tm.evictOldRadarEvents(e.TMs)
 	if e.EventName == "LeftBed" && e.TMs > tm.lastLeftBedAt {
 		tm.lastLeftBedAt = e.TMs
+	}
+	// PR-11: radar InBed → 记 ts 用于双方一致期判定
+	if e.EventName == "InBed" && e.TMs > tm.lastRadarInBedMs {
+		tm.lastRadarInBedMs = e.TMs
 	}
 	// ExitRoom 事件 → 取消所有挂起的 lost-fall（人正常走出房间，不再悬念）
 	// 注：silent fall 不取消（其语义是床上方遮挡，与 ExitRoom 无关）
@@ -1728,6 +1778,44 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 		} else {
 			ts.StandStaticSince = 0
 		}
+		// PR-11: pose=Lie on AreaBed 持续刷新 — 4h 累计 → 重锁 confidence=95
+		if cell != nil && RadarPoseToCore(pose) == CorePoseLie && cell.Belief[0].Type == AreaBed {
+			if ts.LyingOnBedSinceMs == 0 {
+				ts.LyingOnBedSinceMs = nowMs
+			}
+			if !ts.AreaBedRefreshed && nowMs-ts.LyingOnBedSinceMs >= 4*3600*1000 {
+				cell.MarkRestZoneByFeedback(AreaBed)
+				tm.grid.boostNeighborSameType(x, y, AreaBed, nowMs)
+				ts.AreaBedRefreshed = true
+				tm.logger.Info("area_bed_refreshed_by_lying4h",
+					zap.String("device_uid", ts.DeviceID),
+					zap.Int("track_id", ts.TrackID),
+					zap.Int("x", x), zap.Int("y", y),
+					zap.Int64("ts_ms", nowMs),
+				)
+			}
+		} else {
+			ts.LyingOnBedSinceMs = 0
+		}
+		// PR-11: pose=Sit on AreaToilet 持续刷新 — 5min 累计 → 重锁
+		if cell != nil && RadarPoseToCore(pose) == CorePoseSit && cell.Belief[0].Type == AreaToilet {
+			if ts.SitOnToiletSinceMs == 0 {
+				ts.SitOnToiletSinceMs = nowMs
+			}
+			if !ts.AreaToiletRefreshed && nowMs-ts.SitOnToiletSinceMs >= 5*60*1000 {
+				cell.MarkRestZoneByFeedback(AreaToilet)
+				tm.grid.boostNeighborSameType(x, y, AreaToilet, nowMs)
+				ts.AreaToiletRefreshed = true
+				tm.logger.Info("area_toilet_refreshed_by_sit5min",
+					zap.String("device_uid", ts.DeviceID),
+					zap.Int("track_id", ts.TrackID),
+					zap.Int("x", x), zap.Int("y", y),
+					zap.Int64("ts_ms", nowMs),
+				)
+			}
+		} else {
+			ts.SitOnToiletSinceMs = 0
+		}
 		if !isRest && ts.Verdict == VerdictPending {
 			ts.AdjustScore(-3)
 		}
@@ -1869,6 +1957,8 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 		ts.LongStillReported = false
 		ts.StillFallReported = false
 		ts.StandStaticSince = 0 // PR-7.2: track 移动 → reset stand-static 计时
+		ts.LyingOnBedSinceMs = 0
+		ts.SitOnToiletSinceMs = 0 // PR-11: track 移动 → reset 持续观测计时
 		if ts.CurrentAnomaly == AnomalyStillTooLong {
 			ts.CurrentAnomaly = AnomalyNone
 		}

@@ -130,7 +130,7 @@ type Engine struct {
 
 	// 定时器
 	decayInterval      time.Duration // 默认 1 小时（Decay 计算一次）
-	beliefScanInterval time.Duration // 默认 5 分钟（全图 UpdateBelief）
+	beliefScanInterval time.Duration // PR-11: 默认 10 分钟（原 5min；降低 CPU 功率）
 	winnerEvalInterval time.Duration // 默认 24 小时（winner 重评）
 	snapshotInterval   time.Duration // 默认 5 分钟（持久化全量 dump）；0 = 关闭
 
@@ -192,7 +192,7 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		decayParams:        DefaultDecayParams(),
 		learnParams:        DefaultLearnParams(),
 		decayInterval:      1 * time.Hour,
-		beliefScanInterval: 5 * time.Minute,
+		beliefScanInterval: 10 * time.Minute, // PR-11
 		winnerEvalInterval: 24 * time.Hour,
 		snapshotInterval:   5 * time.Minute,
 		redisClient:        redisClient,

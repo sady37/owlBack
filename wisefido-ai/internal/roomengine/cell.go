@@ -194,7 +194,13 @@ type DecayParams struct {
 	SitSec       float64 // ActiveType[Sit]
 	LieSec       float64 // ActiveType[Lie]
 	EventSec     float64 // Traverse/Fall/Retract/Sleepad/Door/LongStill/LieAnomaly
-	BeliefSec    float64 // PR-10: Belief[0].Confidence 半衰期；2d 默认（7d 衰到 ≤10）
+
+	// PR-11: Belief[0].Confidence 按 AreaType 分档半衰期（秒）。索引 = AreaType 值。
+	// 设计：T_half = days_to_10 / log2(10) ≈ days_to_10 / 3.32
+	// 物理稳定性 → 衰退快慢：床/卫浴稳定，沙发/走道相对动态。
+	// 衰到 < 10 触发降级 AreaUnknown + Source=Unset（cell.Decay 内）。
+	// 0 = 该类型不衰减（保留给特殊用途）。
+	BeliefHalfLifeByType [NumAreaTypes]float64
 }
 
 // DefaultDecayParams 与 config.yaml::roomengine.decay 默认值一致。
@@ -206,7 +212,25 @@ func DefaultDecayParams() DecayParams {
 		SitSec:       24 * 3600,
 		LieSec:       7 * 24 * 3600,
 		EventSec:     7 * 24 * 3600,
-		BeliefSec:    2 * 24 * 3600, // PR-10: 2 天半衰期 → 7天衰到 ~10%
+
+		// PR-11: 按 AreaType 分档 Belief 衰退（半衰期，秒）
+		//   AreaSit (沙发/椅子)：    7 天衰到 10  HL=2.1d  — 可移动家具
+		//   AreaBed (床/lying)：     9 天衰到 10  HL=2.71d — 防周末移床方向；与 sleep 4h+ 刷新机制配合
+		//   AreaToilet/Shower：      60 天衰到 10 HL=18d   — 固定家具/管道连接，几乎不变
+		//   AreaActive (walk path)：  14 天衰到 10 HL=4.2d  — 走道路径稳定，但易被新家具污染
+		//   AreaEnter (门洞)：        30 天衰到 10 HL=9d    — 几何固定但 layout 可能改
+		//   AreaDeny (墙/家具/镜子)： 30 天衰到 10 HL=9d    — 同上
+		//   AreaUnknown：             0（不衰退；本来就是 0）
+		BeliefHalfLifeByType: [NumAreaTypes]float64{
+			AreaUnknown: 0,
+			AreaEnter:   9 * 24 * 3600,    // 30天
+			AreaBed:     2.71 * 24 * 3600, // 9天
+			AreaSit:     2.1 * 24 * 3600,  // 7天
+			AreaActive:  4.2 * 24 * 3600,  // 14天
+			AreaDeny:    9 * 24 * 3600,    // 30天
+			AreaShower:  18 * 24 * 3600,   // 60天
+			AreaToilet:  18 * 24 * 3600,   // 60天
+		},
 	}
 }
 
@@ -378,25 +402,31 @@ func (c *Cell) IncrRealFallCount() {
 	c.RealFallCount++
 }
 
-// MarkRestZoneByFeedback PR-7.1 / PR-9.2：依据人类反馈即时锁定 cell.AreaType。
-// target ∈ {AreaSit, AreaBed}：
-//   AreaSit  — Chair / Wheelchair（橙色坐姿）
-//   AreaBed  — Sofa / Lounge chair（蓝色躺姿；沙发可坐可躺归 lying）
-// Confidence=95, Source=SourceHuman；依靠 Decay() 自然衰减，无需重复反馈。
+// MarkRestZoneByFeedback PR-7.1 / PR-9.2 / PR-11：依据反馈/持续观测即时锁定 cell.AreaType。
+// target ∈ {AreaSit, AreaBed, AreaToilet, AreaShower}：
+//   AreaSit     — Chair / Wheelchair（橙色坐姿）
+//   AreaBed     — Sofa / Lounge chair（蓝色躺姿）+ lying ≥4h on bed 持续观测刷新
+//   AreaToilet  — sit ≥5min on toilet 持续观测刷新
+//   AreaShower  — 待加（暂同 toilet）
+// Confidence=95, Source=SourceHuman；依靠 Decay() 自然衰减。
 //
-// 保护规则（不覆盖）：
-//   - AreaToilet / AreaShower / AreaDeny / AreaEnter  layout 锁定的特殊语义
-//   - 当前已是 SourceHuman + 同 target  幂等不 reset
-//   - 当前是 AreaBed 且 target=AreaSit  不降级（lying 信息更具体）
+// 保护规则（不覆盖；防止降级）：
+//   - AreaDeny / AreaEnter  layout 锁定（墙/门洞）
+//   - AreaBed 不被 AreaSit 降级（lying 信息更精确）
+//   - AreaToilet/Shower 不被 AreaBed/Sit 降级（卫浴更具体）
+//   - 已是 SourceHuman + 同 target  幂等不 reset
 func (c *Cell) MarkRestZoneByFeedback(target AreaType) bool {
 	cur := c.Belief[0].Type
-	// 不覆盖更具体的 layout 类型
-	if cur == AreaToilet || cur == AreaShower ||
-		cur == AreaDeny || cur == AreaEnter {
+	// 不覆盖 layout 物理锁定（墙/门）
+	if cur == AreaDeny || cur == AreaEnter {
 		return false
 	}
-	// AreaBed 不被 AreaSit 降级（lying 信息更精确）
+	// AreaBed 不被 AreaSit 降级（lying 信息更具体）
 	if cur == AreaBed && target == AreaSit {
+		return false
+	}
+	// 卫浴更具体，不被 sit/bed 降级
+	if (cur == AreaToilet || cur == AreaShower) && (target == AreaSit || target == AreaBed) {
 		return false
 	}
 	// 幂等：已是 SourceHuman + 同 target
@@ -464,18 +494,20 @@ func (c *Cell) Decay(dtSec float64, p DecayParams) {
 	c.RestZoneConfirmed = scaleInt(c.RestZoneConfirmed, fEv)
 	c.RealFallCount = scaleInt(c.RealFallCount, fEv)
 
-	// PR-10: Belief[0].Confidence 衰减（半衰期 BeliefSec，默认 2 天 → 7天衰到 ~10）
+	// PR-11: Belief[0].Confidence 按 AreaType 分档衰减（半衰期 BeliefHalfLifeByType[type]）
 	// 衰减后 Confidence < 10 → 降级 AreaUnknown + Source=Unset（不再贡献 IsRestZone 等判定）。
 	// 仅衰减 [0]（最强信念）；[1][2] 是历史快照，保持原样。
+	// 半衰期 0 时该类型不衰减（如 AreaUnknown 已是 0）。
 	if c.Belief[0].Confidence > 0 {
-		fBelief := factor(dtSec, p.BeliefSec)
-		newConf := scaleInt(c.Belief[0].Confidence, fBelief)
-		if newConf < 10 {
-			// 降级：清空 type / source，让 Decay 后该 cell 重新 unlearn
-			c.Belief[0] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
-			c.AreaType = AreaUnknown
-		} else {
-			c.Belief[0].Confidence = newConf
+		hl := p.BeliefHalfLifeByType[c.Belief[0].Type]
+		if hl > 0 {
+			newConf := scaleInt(c.Belief[0].Confidence, factor(dtSec, hl))
+			if newConf < 10 {
+				c.Belief[0] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
+				c.AreaType = AreaUnknown
+			} else {
+				c.Belief[0].Confidence = newConf
+			}
 		}
 	}
 }

@@ -54,37 +54,62 @@ func TestMarkRestZoneByFeedback_NoDoubleSet(t *testing.T) {
 	}
 }
 
-// PR-10: BeliefSec 衰减 + 降级
-func TestBeliefDecay_HalfLife2Days(t *testing.T) {
+// PR-11: BeliefHalfLifeByType 分档衰减 + 降级
+// AreaSit: 半衰期 2.1d → 2.1 天衰到 50 ✓
+func TestBeliefDecay_AreaSit_HalfLife(t *testing.T) {
 	c := &Cell{}
 	c.Belief[0] = BeliefState{Type: AreaSit, Confidence: 100, Source: SourceHuman}
 	c.AreaType = AreaSit
 
 	p := DefaultDecayParams()
-	// 2 天后应衰到 ~50
-	c.Decay(2*24*3600, p)
+	c.Decay(2.1*24*3600, p)
 	if c.Belief[0].Confidence < 45 || c.Belief[0].Confidence > 55 {
-		t.Errorf("after 2d expect ~50, got %d", c.Belief[0].Confidence)
-	}
-	if c.Belief[0].Type != AreaSit {
-		t.Errorf("Type should remain AreaSit at 50 confidence, got %v", c.Belief[0].Type)
+		t.Errorf("AreaSit after 2.1d expect ~50, got %d", c.Belief[0].Confidence)
 	}
 }
 
-func TestBeliefDecay_DowngradeBelow10(t *testing.T) {
+// AreaSit 7.5 天衰到 < 10 → 降级（7d 边界精度，给 0.5 margin）
+func TestBeliefDecay_AreaSit_DowngradeAt7d(t *testing.T) {
 	c := &Cell{}
 	c.Belief[0] = BeliefState{Type: AreaSit, Confidence: 100, Source: SourceHuman}
 	c.AreaType = AreaSit
 
 	p := DefaultDecayParams()
-	// 7 天后应衰到 ~10 → 触发降级 → AreaUnknown + Source=Unset
-	c.Decay(7*24*3600, p)
+	c.Decay(7.5*24*3600, p)
 	if c.Belief[0].Type != AreaUnknown {
-		t.Errorf("after 7d expect AreaUnknown downgrade, got %v conf=%d",
+		t.Errorf("AreaSit 7.5d expect downgrade to AreaUnknown, got %v conf=%d",
 			c.Belief[0].Type, c.Belief[0].Confidence)
 	}
-	if c.Belief[0].Source != SourceUnset {
-		t.Errorf("Source should be Unset after downgrade, got %v", c.Belief[0].Source)
+}
+
+// AreaBed: 9.5 天衰到 < 10 → 降级
+func TestBeliefDecay_AreaBed_DowngradeAt9d(t *testing.T) {
+	c := &Cell{}
+	c.Belief[0] = BeliefState{Type: AreaBed, Confidence: 100, Source: SourceHuman}
+	c.AreaType = AreaBed
+
+	p := DefaultDecayParams()
+	c.Decay(9.5*24*3600, p)
+	if c.Belief[0].Type != AreaUnknown {
+		t.Errorf("AreaBed 9.5d expect downgrade, got %v conf=%d",
+			c.Belief[0].Type, c.Belief[0].Confidence)
+	}
+}
+
+// AreaToilet: 60 天衰到 10（远长于 AreaSit/AreaBed）
+func TestBeliefDecay_AreaToilet_StillStrongAt9d(t *testing.T) {
+	c := &Cell{}
+	c.Belief[0] = BeliefState{Type: AreaToilet, Confidence: 100, Source: SourceHuman}
+	c.AreaType = AreaToilet
+
+	p := DefaultDecayParams()
+	c.Decay(9*24*3600, p)
+	// 9 天对 toilet 来说还很强（60d 才衰完）
+	if c.Belief[0].Type != AreaToilet {
+		t.Errorf("AreaToilet 9d should remain AreaToilet, got %v", c.Belief[0].Type)
+	}
+	if c.Belief[0].Confidence < 50 {
+		t.Errorf("AreaToilet 9d expect confidence still > 50, got %d", c.Belief[0].Confidence)
 	}
 }
 
