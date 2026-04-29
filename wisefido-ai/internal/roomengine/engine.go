@@ -291,16 +291,27 @@ func (e *Engine) MountForRoom(roomID string) (radarutils.RadarMount, bool) {
 // 人工标 fake → 反查 trigger 位置 → 命中 cell → 影响未来 still fall 阈值。
 // 房间不存在 / cell 越界 → false（调用方可记日志或忽略）。
 func (e *Engine) MarkFakeAlarmAt(roomID string, x, y int, nowMs int64) bool {
+	return e.ApplyToCell(roomID, x, y, nowMs, func(c *Cell) { c.IncrFakeAlarm() })
+}
+
+// ApplyToCell 通用 cell 修改接口。返回是否成功（cell 在 grid 内）。
+// 用于 PR-6 alarm-feedback 按 conditions 分流到不同 counter。
+// 调用方传 closure 直接操作 cell；engine 负责 grid 路由 + LastUpdateMs 更新。
+func (e *Engine) ApplyToCell(roomID string, x, y int, nowMs int64, fn func(*Cell)) bool {
 	e.mu.RLock()
 	g := e.grids[roomID]
 	e.mu.RUnlock()
 	if g == nil {
 		return false
 	}
-	if g.CellAt(x, y) == nil {
+	cell := g.CellAt(x, y)
+	if cell == nil {
 		return false
 	}
-	g.MarkFakeAlarm(x, y, nowMs)
+	fn(cell)
+	if nowMs > cell.LastUpdateMs {
+		cell.LastUpdateMs = nowMs
+	}
 	return true
 }
 

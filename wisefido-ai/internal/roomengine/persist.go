@@ -29,7 +29,9 @@ import (
 // v2 (2026-04-25): Counters 加 NearTraverseCount（NTC）— 用于 auto-Deny 推断
 // v3 (2026-04-27): Counters 加 FakeAlarmCount（FA）+ ToleratedStillCount（TS）— cell history integral 自适应阈值
 // v4 (2026-04-27): Counters 加 BlindSpotRecoveryCount（BSR）— 盲区返回端点累计（lost-fall recovery 反馈）
-const SnapshotSchemaVersion = 4
+// v5 (2026-04-29): Counters 加 GhostCount（GC）+ RestZoneConfirmed（RZC）+ RealFallCount（RFC）—
+//                  PR-6 结构化人类反馈（False Alarm Reason / Observed Conditions checkbox）
+const SnapshotSchemaVersion = 5
 
 // CellSnapshot 单 cell 的可持久化字段（紧凑 JSON，short keys 节省空间）
 type CellSnapshot struct {
@@ -58,6 +60,9 @@ type Counters struct {
 	FA  int       `json:"fa,omitempty"`  // FakeAlarmCount (schema_v ≥ 3)
 	TS  int       `json:"ts,omitempty"`  // ToleratedStillCount (schema_v ≥ 3)
 	BSR int       `json:"bsr,omitempty"` // BlindSpotRecoveryCount (schema_v ≥ 4)
+	GC  int       `json:"gc,omitempty"`  // GhostCount (schema_v ≥ 5)
+	RZC int       `json:"rzc,omitempty"` // RestZoneConfirmed (schema_v ≥ 5)
+	RFC int       `json:"rfc,omitempty"` // RealFallCount (schema_v ≥ 5)
 }
 
 // GridSnapshot 顶层 payload 结构（写入 JSONB 字段）
@@ -153,6 +158,9 @@ func buildCounters(c *Cell) *Counters {
 		FA:  c.FakeAlarmCount,
 		TS:  c.ToleratedStillCount,
 		BSR: c.BlindSpotRecoveryCount,
+		GC:  c.GhostCount,
+		RZC: c.RestZoneConfirmed,
+		RFC: c.RealFallCount,
 	}
 	if ct.RD == 0 && ct.GD == 0 &&
 		ct.AT == [4]uint16{} &&
@@ -175,8 +183,12 @@ func buildCounters(c *Cell) *Counters {
 //
 // 单 cell 越界（i >= len(grid.Cells)）会跳过并不报错——可能是 grid 裁剪过（边界 ±1 cell）。
 func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
-	if snap.SchemaVer != SnapshotSchemaVersion {
-		return fmt.Errorf("snapshot schema_v=%d unsupported (expect %d)", snap.SchemaVer, SnapshotSchemaVersion)
+	// 向后兼容：低版本 snapshot 也接受（仅新字段视为 0）；高于当前版本拒绝
+	if snap.SchemaVer > SnapshotSchemaVersion {
+		return fmt.Errorf("snapshot schema_v=%d > current %d (downgrade unsupported)", snap.SchemaVer, SnapshotSchemaVersion)
+	}
+	if snap.SchemaVer < 3 {
+		return fmt.Errorf("snapshot schema_v=%d too old (min supported = 3)", snap.SchemaVer)
 	}
 	if snap.Grid.W != g.Width || snap.Grid.H != g.Height ||
 		snap.Grid.OX != g.OriginX || snap.Grid.OY != g.OriginY {
@@ -226,6 +238,9 @@ func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
 			c.FakeAlarmCount = cs.C.FA
 			c.ToleratedStillCount = cs.C.TS
 			c.BlindSpotRecoveryCount = cs.C.BSR
+			c.GhostCount = cs.C.GC
+			c.RestZoneConfirmed = cs.C.RZC
+			c.RealFallCount = cs.C.RFC
 		}
 	}
 	return nil

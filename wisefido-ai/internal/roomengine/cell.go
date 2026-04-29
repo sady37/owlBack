@@ -149,13 +149,24 @@ type Cell struct {
 	DoorEventCount      int
 
 	// ---- Cell history integral（自适应阈值反馈，详见 fall_rules_param.go）----
-	// FakeAlarmCount: 在该 cell 触发的 fall 报警被人工标 false_alarm 累计次数
+	// FakeAlarmCount: 在该 cell 触发的 fall 报警被人工标 false_alarm 累计次数（"Other" 兜底）
 	// ToleratedStillCount: track 在该 cell 长时间 stand-static 但最终自己离开（无 fall 报警）累计次数
 	// BlindSpotRecoveryCount: 人在 lost-fall pending 期间从该 cell 重新出现（盲区返回端点）次数
-	// 三者衰减由 Decay() 用 EventSec 半衰期处理
+	// 全部衰减由 Decay() 用 EventSec 半衰期处理
 	FakeAlarmCount         int
 	ToleratedStillCount    int
 	BlindSpotRecoveryCount int
+
+	// ---- PR-6 结构化人类反馈（False Alarm Reason / Observed Conditions 多选 checkbox）----
+	// GhostCount: false_alarm 反馈勾"NoPerson / Electric / AC Interference" → 该 cell 是 ghost 多发点
+	//             birth filter 因子 6 / fall verifier 都参考此值
+	// RestZoneConfirmed: false_alarm 勾 "Sit on Chair / Sofa / Wheelchair" → 该 cell 是真人坐姿/卧姿区
+	//                    强力学习成 AreaSit / AreaBed；wheelchair 反馈乘 0.3 防 mobile 污染
+	// RealFallCount: verified 勾 "Fall / Sitting on the Ground" → 该 cell 是真 fall 高发点
+	//                未来可用于反向调整 still-fall 灵敏度
+	GhostCount         int
+	RestZoneConfirmed  int
+	RealFallCount      int
 
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState
@@ -339,6 +350,25 @@ func (c *Cell) IncrBlindSpotRecovery() {
 	c.BlindSpotRecoveryCount++
 }
 
+// IncrGhostCount 人工标记 "NoPerson / Electric / AC Interference"（false_alarm 反馈第 1 项）。
+// 强 ghost 证据；累计后影响 birth filter 因子 6 (cell.GhostRatio) 与 fall verifier。
+func (c *Cell) IncrGhostCount() {
+	c.GhostCount++
+}
+
+// IncrRestZoneConfirmed 人工标记 "Sit on Chair / Sofa / Wheelchair"（false_alarm 反馈第 2-4 项）。
+// 三类统一 +1，wheelchair mobile 污染依靠 Decay() 自然过滤
+// （wheelchair 各位置累积低 → 衰减期内不到学习阈值 → 不会误学成 AreaSit）。
+func (c *Cell) IncrRestZoneConfirmed() {
+	c.RestZoneConfirmed++
+}
+
+// IncrRealFallCount 人工标记 "Fall / Sitting on the Ground"（verified 反馈核心 ground truth）。
+// 累计该 cell 真 fall 次数；未来用于反向调整 still-fall 灵敏度（真 fall 高发区收紧阈值）。
+func (c *Cell) IncrRealFallCount() {
+	c.RealFallCount++
+}
+
 // ========================================================================
 // Decay（时间窗口衰减）
 // ========================================================================
@@ -389,6 +419,11 @@ func (c *Cell) Decay(dtSec float64, p DecayParams) {
 	c.FakeAlarmCount = scaleInt(c.FakeAlarmCount, fEv)
 	c.ToleratedStillCount = scaleInt(c.ToleratedStillCount, fEv)
 	c.BlindSpotRecoveryCount = scaleInt(c.BlindSpotRecoveryCount, fEv)
+
+	// PR-6 结构化反馈：同 EventSec 半衰期
+	c.GhostCount = scaleInt(c.GhostCount, fEv)
+	c.RestZoneConfirmed = scaleInt(c.RestZoneConfirmed, fEv)
+	c.RealFallCount = scaleInt(c.RealFallCount, fEv)
 }
 
 // factor 计算半衰期衰减因子；半衰期非正时不衰减（返回 1）
