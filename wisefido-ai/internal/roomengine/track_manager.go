@@ -1,6 +1,7 @@
 package roomengine
 
 import (
+	"context"
 	"math"
 	"sync"
 	"time"
@@ -141,6 +142,26 @@ type TrackManager struct {
 	// startupMs：TrackManager 创建时间。用于"service 启动 5min grace"反 ghost 兜底
 	// （grace 内 first-seen 的 track 视为已存在，birth filter 不打 ghost）。
 	startupMs int64
+
+	// PR-8: AI 派生事件 / 告警发布回调。engine 注入；nil 时不发布（playback / 测试场景）。
+	aiPublisher AIPublisher
+}
+
+// AIPayload PR-8 发布 AI 事件/告警的轻量载荷。
+// 不耦合 TrackState（silent fall 旧路径在 track 删除后才报，没有 ts 在手）。
+type AIPayload struct {
+	DeviceID   string // 源 radar UUID（FK to devices.device_id）
+	RoomID     string
+	TrackID    int
+	Pose       int
+	X, Y, Z    int // canvas 坐标（cm）
+	Confidence int // 0-100；ghost penalty 反向（100 - GhostPenalty）
+}
+
+// AIPublisher PR-8 解耦：TrackManager 不直接持有 redis client，由 engine 实现接口注入。
+type AIPublisher interface {
+	PublishAIEvent(ctx context.Context, p AIPayload, category string, nowMs int64)
+	PublishAIAlarm(ctx context.Context, p AIPayload, category string, nowMs int64)
 }
 
 // BedsideFallConfig R4 床边晕倒参数。
@@ -226,6 +247,53 @@ func (tm *TrackManager) SetStartupMs(ms int64) {
 	if ms > 0 {
 		tm.startupMs = ms
 	}
+}
+
+// SetAIPublisher PR-8：注入 AI 派生事件/告警的发布器。
+// engine 在 RegisterRoom 后调用，传入 engine 自身（实现 AIPublisher 接口）。
+// nil = 不发布（playback / 测试场景）。
+func (tm *TrackManager) SetAIPublisher(p AIPublisher) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.aiPublisher = p
+}
+
+// emitAIEvent / emitAIAlarm 内部 helper：仅当 aiPublisher 非 nil 时调用。
+// payloadFromTrack 从 TrackState 构造 AIPayload；payloadFromPending 从 PendingSilentFall。
+
+func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
+	pxF, pyF := ts.Kalman.Position()
+	conf := 100 - ts.GhostPenalty
+	if conf < 0 {
+		conf = 0
+	}
+	if conf > 100 {
+		conf = 100
+	}
+	return AIPayload{
+		DeviceID:   ts.DeviceID,
+		RoomID:     ts.RoomID,
+		TrackID:    ts.TrackID,
+		Pose:       ts.LastPose,
+		X:          int(pxF + 0.5),
+		Y:          int(pyF + 0.5),
+		Z:          ts.LastZ,
+		Confidence: conf,
+	}
+}
+
+func (tm *TrackManager) emitAIEvent(p AIPayload, category string, nowMs int64) {
+	if tm.aiPublisher == nil {
+		return
+	}
+	tm.aiPublisher.PublishAIEvent(context.Background(), p, category, nowMs)
+}
+
+func (tm *TrackManager) emitAIAlarm(p AIPayload, category string, nowMs int64) {
+	if tm.aiPublisher == nil {
+		return
+	}
+	tm.aiPublisher.PublishAIAlarm(context.Background(), p, category, nowMs)
 }
 
 // IsBathroomByRoomName 用 owl-common/roomutil.ClassifyRoomType 判定本房间是否 bathroom。
@@ -720,6 +788,8 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			if ts.GhostPenalty >= GhostPenaltyThreshold && !ts.LongSurvivalAnchored && !ts.StartupGrace {
 				if ts.Verdict != VerdictGhost {
 					ts.Verdict = VerdictGhost
+					// PR-8: 发布 ghost event 到 iot:event:stream
+					tm.emitAIEvent(tm.payloadFromTrack(ts), "ghost", nowMs)
 				}
 			}
 			continue
@@ -733,6 +803,8 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		// PR-5.x 主路径：累积 GhostPenalty ≥ 80 → Ghost（独立于 ProbationFrames）
 		if ts.GhostPenalty >= GhostPenaltyThreshold {
 			ts.Verdict = VerdictGhost
+			// PR-8: 发布 ghost event 到 iot:event:stream
+			tm.emitAIEvent(tm.payloadFromTrack(ts), "ghost", nowMs)
 			if !ts.LoggedGhost {
 				reason := ts.BirthReason
 				if reason == "" {
@@ -762,6 +834,8 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				ts.ConfirmedAtMs = nowMs
 			} else if ts.Score < ScoreGhostTh {
 				ts.Verdict = VerdictGhost
+				// PR-8: 发布 ghost event（旧 score-based 路径）
+				tm.emitAIEvent(tm.payloadFromTrack(ts), "ghost", nowMs)
 				if !ts.LoggedGhost {
 					reason := ts.BirthReason
 					if reason == "" {
@@ -804,6 +878,11 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		// 超时 → MarkFallEvent + 写一条输出
 		tm.silentFallReportCount++
 		tm.grid.MarkFallEvent(p.LastX, p.LastY, nowMs)
+		// PR-8: 发布 silent_fall 到 iot:alarm:stream
+		tm.emitAIAlarm(AIPayload{
+			DeviceID: p.DeviceID, RoomID: p.RoomID, TrackID: p.OriginalTrackID,
+			X: p.LastX, Y: p.LastY, Z: p.LastZ, Confidence: p.LastScore,
+		}, "silent_fall", nowMs)
 		tm.logger.Info("real_fall",
 			zap.String("device_uid", p.DeviceID),
 			zap.Int("track_id", p.OriginalTrackID),
@@ -856,6 +935,11 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		// 超时 → MarkFallEvent + 写输出（kind=engine_lost_fall）
 		tm.lostFallReported++
 		tm.grid.MarkFallEvent(p.LastX, p.LastY, nowMs)
+		// PR-8: 发布 lost_fall 到 iot:alarm:stream
+		tm.emitAIAlarm(AIPayload{
+			DeviceID: p.DeviceID, RoomID: p.RoomID, TrackID: p.OriginalTrackID,
+			X: p.LastX, Y: p.LastY, Z: p.LastZ, Confidence: p.LastScore,
+		}, "lost_fall", nowMs)
 		tm.logger.Info("real_fall",
 			zap.String("device_uid", p.DeviceID),
 			zap.Int("track_id", p.OriginalTrackID),
@@ -1097,6 +1181,10 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 			// 选用「最近 Bed 的 active track」位置作为告警坐标
 			x, y, z, scoreVal, verdict, deviceID := tm.pickActiveTrackNearBed(param.BedNeighborhood)
 			tm.grid.MarkFallEvent(x, y, nowMs)
+			// PR-8: 发布 silent_leftbed_fall 到 iot:alarm:stream
+			tm.emitAIAlarm(AIPayload{
+				DeviceID: deviceID, RoomID: tm.roomID, X: x, Y: y, Z: z, Confidence: scoreVal,
+			}, "silent_leftbed_fall", nowMs)
 			tm.logger.Info("real_fall",
 				zap.String("device_uid", deviceID),
 				zap.String("kind", "engine_silent_leftbed"),
@@ -1678,6 +1766,8 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 						ts.StillFallReported = true
 						tm.stillFallReportCount++
 						tm.grid.MarkFallEvent(x, y, nowMs)
+						// PR-8: 发布 still_fall 到 iot:alarm:stream
+						tm.emitAIAlarm(tm.payloadFromTrack(ts), "still_fall", nowMs)
 						tm.logger.Info("real_fall",
 							zap.String("device_uid", ts.DeviceID),
 							zap.Int("track_id", ts.TrackID),
@@ -1744,6 +1834,8 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 				ts.CurrentAnomaly = AnomalyBedsideFall
 				tm.grid.MarkFallEvent(x, y, nowMs)
 				ts.LongStillReported = true // 复用 flag 防 LongStill 重复 mark
+				// PR-8: 发布 bedside_fall 到 iot:alarm:stream（R4 床边晕倒）
+				tm.emitAIAlarm(tm.payloadFromTrack(ts), "bedside_fall", nowMs)
 				tm.logger.Info("real_fall",
 					zap.String("device_uid", ts.DeviceID),
 					zap.Int("track_id", ts.TrackID),

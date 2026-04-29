@@ -108,6 +108,12 @@ type Engine struct {
 	mounts     map[string]radarutils.RadarMount // roomID → Radar 安装参数（坐标转换用）
 	cardToRoom map[string]string                // cardID → roomID
 	deviceRoom map[string]string                // deviceUID/deviceID → roomID
+	// PR-8: AI publish 用 — 源 radar UUID 反查 deviceUID + room 反查 tenant/card
+	deviceIDToUID map[string]string // deviceID(UUID) → device_uid（IoTStreamMessage.DeviceUID）
+	roomTenants   map[string]string // roomID → tenant_id（alarm_events 必填）
+	roomCards     map[string]string // roomID → card_id（可选）
+	// AI device_type 标识，让 cardagg 区分 AI 来源；缺省 "AI_Radar"
+	aiDeviceType string
 
 	// layout 几何 hash，RegisterRoom 时计算；snapshot save/load 比对用
 	layoutHashes map[string]string
@@ -176,6 +182,10 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		mounts:             make(map[string]radarutils.RadarMount),
 		cardToRoom:         make(map[string]string),
 		deviceRoom:         make(map[string]string),
+		deviceIDToUID:      make(map[string]string),
+		roomTenants:        make(map[string]string),
+		roomCards:          make(map[string]string),
+		aiDeviceType:       "AI_Radar",
 		layoutHashes:       make(map[string]string),
 		paramSets:          DefaultParamSets,
 		winner:             1, // 默认 balanced
@@ -321,6 +331,151 @@ func (e *Engine) MapDeviceToRoom(deviceKey, roomID string) {
 	e.mu.Unlock()
 }
 
+// MapDeviceIDToUID 注册 device UUID → device_uid（PR-8 AI publish 反查源 radar UID 用）。
+func (e *Engine) MapDeviceIDToUID(deviceID, deviceUID string) {
+	if deviceID == "" || deviceUID == "" {
+		return
+	}
+	e.mu.Lock()
+	e.deviceIDToUID[deviceID] = deviceUID
+	e.mu.Unlock()
+}
+
+// SetRoomTenant 注入 roomID → tenant_id（alarm_events.tenant_id 必填，从 rooms 表查）。
+func (e *Engine) SetRoomTenant(roomID, tenantID string) {
+	if roomID == "" {
+		return
+	}
+	e.mu.Lock()
+	e.roomTenants[roomID] = tenantID
+	e.mu.Unlock()
+}
+
+// SetRoomCard 注入 roomID → card_id（可选，alarm_events.card_id；多卡场景缺省取首张）。
+func (e *Engine) SetRoomCard(roomID, cardID string) {
+	if roomID == "" || cardID == "" {
+		return
+	}
+	e.mu.Lock()
+	e.roomCards[roomID] = cardID
+	e.mu.Unlock()
+}
+
+// SetAIDeviceType 覆盖默认 "AI_Radar" 标识；多机扩展时可改 "AI_Radar_02" 等。
+func (e *Engine) SetAIDeviceType(deviceType string) {
+	if deviceType == "" {
+		return
+	}
+	e.mu.Lock()
+	e.aiDeviceType = deviceType
+	e.mu.Unlock()
+}
+
+// PublishAIEvent 实现 AIPublisher 接口（PR-8）；发布 AI 派生 event 到 iot:event:stream。
+// 当前用例 category="ghost" — track verdict 转 Ghost 时。
+//
+// 消息字段：
+//   DeviceUID: 源 radar 的 device_uid（保留源身份，反馈链按此反查；从 e.deviceIDToUID 取）
+//   DeviceID:  源 radar 的 UUID（FK to devices.device_id；payload.DeviceID）
+//   DeviceType: e.aiDeviceType（默认 "AI_Radar"，cardagg 据此区分 AI 来源）
+//   TenantID:  从 e.roomTenants 反查
+//   CardID:    从 e.roomCards 反查（可空）
+//   DataValue: [{ track_id, ts, position_x/y/z, area_type, pose, track_confidence }]
+//
+// 失败仅 warn 日志，不阻塞调用方。
+func (e *Engine) PublishAIEvent(ctx context.Context, p AIPayload, category string, nowMs int64) {
+	if e.redisClient == nil {
+		return
+	}
+	e.publishAIMessage(ctx, p, category, "event",
+		rediscommon.StreamEvent.Name,
+		rediscommon.StreamEvent.MaxLen, rediscommon.StreamEvent.RetentionSeconds, nowMs)
+}
+
+// PublishAIAlarm 实现 AIPublisher 接口；发布 AI 派生 alarm 到 iot:alarm:stream。
+// category ∈ {"silent_fall", "still_fall", "lost_fall", "silent_leftbed_fall"}
+func (e *Engine) PublishAIAlarm(ctx context.Context, p AIPayload, category string, nowMs int64) {
+	if e.redisClient == nil {
+		return
+	}
+	e.publishAIMessage(ctx, p, category, "alarm",
+		rediscommon.StreamAlarm.Name,
+		rediscommon.StreamAlarm.MaxLen, rediscommon.StreamAlarm.RetentionSeconds, nowMs)
+}
+
+func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
+	category, topicType, streamName string, maxLen int64, retentionSec int, nowMs int64) {
+	e.mu.RLock()
+	deviceUID := e.deviceIDToUID[p.DeviceID]
+	tenantID := e.roomTenants[p.RoomID]
+	cardID := e.roomCards[p.RoomID]
+	deviceType := e.aiDeviceType
+	g := e.grids[p.RoomID]
+	e.mu.RUnlock()
+
+	areaTypeStr := "none"
+	if g != nil {
+		if cell := g.CellAt(p.X, p.Y); cell != nil {
+			areaTypeStr = areaTypeProtocolStr(cell.Belief[0].Type)
+		}
+	}
+	track := map[string]interface{}{
+		"track_id":         p.TrackID,
+		"ts":               nowMs,
+		"position_x":       p.X,
+		"position_y":       p.Y,
+		"position_z":       p.Z,
+		"area_type":        areaTypeStr,
+		"event":            0,
+		"track_confidence": p.Confidence,
+		"pose":             p.Pose,
+		"dataCategory":     category,
+		"event_name":       category,
+	}
+
+	msg := rediscommon.IoTStreamMessage{
+		DeviceUID:  deviceUID,
+		DeviceID:   p.DeviceID,
+		DeviceType: deviceType,
+		CardID:     cardID,
+		TenantID:   tenantID,
+		Timestamp:  nowMs,
+		TopicType:  topicType,
+		Category:   category,
+		DataValue:  []interface{}{track},
+	}
+	if _, err := rediscommon.PublishToStream(ctx, e.redisClient, streamName, msg.ToStreamMap(), maxLen, retentionSec); err != nil {
+		e.logger.Warn("ai_publish_failed",
+			zap.String("stream", streamName),
+			zap.String("category", category),
+			zap.String("device_uid", deviceUID),
+			zap.String("device_id", p.DeviceID),
+			zap.Error(err),
+		)
+	}
+}
+
+// areaTypeProtocolStr 把 engine 的 AreaType 映射成 observation.EnumAreaType 协议字符串。
+// 协议：0=none / 1=custom / 2=bed / 3=interfer / 4=door / 5=monitor_bed / 6=sensing
+// engine 内部枚举跟协议不完全对齐；做一个 best-effort 映射，cardagg 端按 device_type=AI_Radar 容错处理。
+func areaTypeProtocolStr(t AreaType) string {
+	switch t {
+	case AreaBed:
+		return "bed"
+	case AreaSit:
+		return "custom" // 沙发/椅子归 custom（协议没单独 sit 类）
+	case AreaToilet, AreaShower:
+		return "monitor_bed" // 卫浴归 monitor_bed（最接近的 high-risk 区）
+	case AreaEnter:
+		return "door"
+	case AreaDeny:
+		return "interfer"
+	case AreaActive:
+		return "sensing"
+	}
+	return "none"
+}
+
 // GetRoomOutputs 查询某房间最新 track 输出
 func (e *Engine) GetRoomOutputs(roomID string) []TrackOutput {
 	e.mu.RLock()
@@ -400,6 +555,8 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetBedsideFallConfig(e.bedsideFallCfg)
 	tm.SetLogger(e.logger)
 	tm.SetRoomName(cfg.RoomName)
+	// PR-8: 注入 AI 派生事件 / 告警发布器（engine 实现 AIPublisher 接口）
+	tm.SetAIPublisher(e)
 	// 注入 IANA 时区（IsNightTime 用）；空串保持 nil → IsNightTime 退化 UTC
 	if cfg.Timezone != "" {
 		if loc, err := time.LoadLocation(cfg.Timezone); err == nil {

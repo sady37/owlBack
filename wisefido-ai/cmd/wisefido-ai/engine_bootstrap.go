@@ -140,7 +140,8 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 	logger *zap.Logger) (int, error) {
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT r.room_id::text, r.room_name, r.layout_config::text, COALESCE(u.timezone, '')
+		SELECT r.room_id::text, r.room_name, r.layout_config::text,
+		       COALESCE(u.timezone, ''), r.tenant_id::text
 		FROM rooms r
 		LEFT JOIN units u ON u.unit_id = r.unit_id
 		WHERE r.layout_config IS NOT NULL
@@ -152,10 +153,10 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 
 	count := 0
 	for rows.Next() {
-		var roomID, roomName string
+		var roomID, roomName, tenantID string
 		var layoutStr sql.NullString
 		var timezone string
-		if err := rows.Scan(&roomID, &roomName, &layoutStr, &timezone); err != nil {
+		if err := rows.Scan(&roomID, &roomName, &layoutStr, &timezone, &tenantID); err != nil {
 			logger.Warn("scan rooms row", zap.Error(err))
 			continue
 		}
@@ -172,6 +173,8 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 		cfg.Timezone = timezone
 		roomengine.ApplyOptimizedExtent(&cfg)
 		engine.RegisterRoom(cfg)
+		// PR-8: 注入 roomID → tenant_id（AI 派生 alarm 发布需要）
+		engine.SetRoomTenant(roomID, tenantID)
 		count++
 	}
 	return count, rows.Err()
@@ -260,6 +263,10 @@ func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.D
 		}
 		if deviceUID != "" {
 			engine.MapDeviceToRoom(deviceUID, roomID)
+		}
+		// PR-8: 反向映射 deviceID UUID → device_uid（AI publish 反查源 radar uid）
+		if deviceID != "" && deviceUID != "" {
+			engine.MapDeviceIDToUID(deviceID, deviceUID)
 		}
 		count++
 	}
