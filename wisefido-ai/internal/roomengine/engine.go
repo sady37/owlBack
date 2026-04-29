@@ -115,6 +115,11 @@ type Engine struct {
 	// AI device_type 标识，让 cardagg 区分 AI 来源；缺省 "AI_Radar"
 	aiDeviceType string
 
+	// PR-12: AI publish 开关。默认 false（只走 ai.log，不发 redis stream）。
+	// 等 cardagg 端 ready 接 device_type=AI_Radar 分支后再开启。
+	// 通过 SetAIPublishEnabled / Configure 启用。
+	aiPublishEnabled bool
+
 	// layout 几何 hash，RegisterRoom 时计算；snapshot save/load 比对用
 	layoutHashes map[string]string
 
@@ -371,6 +376,22 @@ func (e *Engine) SetAIDeviceType(deviceType string) {
 	e.mu.Unlock()
 }
 
+// SetAIPublishEnabled PR-12: 启用/关闭 AI 派生 event/alarm 发布到 iot streams。
+// 默认 false（仅 ai.log，不污染 cardagg 现有 alarm_events 表）。
+// cardagg 接好 device_type=AI_Radar 处理后再调 SetAIPublishEnabled(true) 启用。
+func (e *Engine) SetAIPublishEnabled(enabled bool) {
+	e.mu.Lock()
+	e.aiPublishEnabled = enabled
+	e.mu.Unlock()
+}
+
+// publishEnabled PR-12 helper：当前是否允许 publish。
+func (e *Engine) publishEnabled() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.aiPublishEnabled
+}
+
 // PublishAIEvent 实现 AIPublisher 接口（PR-8）；发布 AI 派生 event 到 iot:event:stream。
 // 当前用例 category="ghost" — track verdict 转 Ghost 时。
 //
@@ -384,8 +405,8 @@ func (e *Engine) SetAIDeviceType(deviceType string) {
 //
 // 失败仅 warn 日志，不阻塞调用方。
 func (e *Engine) PublishAIEvent(ctx context.Context, p AIPayload, category string, nowMs int64) {
-	if e.redisClient == nil {
-		return
+	if e.redisClient == nil || !e.publishEnabled() {
+		return // PR-12: 默认关闭 publish，仅 log（已在 ai.log 由 track_verdict_ghost / real_fall 等结构化记录）
 	}
 	e.publishAIMessage(ctx, p, category, "event",
 		rediscommon.StreamEvent.Name,
@@ -395,7 +416,7 @@ func (e *Engine) PublishAIEvent(ctx context.Context, p AIPayload, category strin
 // PublishAIAlarm 实现 AIPublisher 接口；发布 AI 派生 alarm 到 iot:alarm:stream。
 // category ∈ {"silent_fall", "still_fall", "lost_fall", "silent_leftbed_fall"}
 func (e *Engine) PublishAIAlarm(ctx context.Context, p AIPayload, category string, nowMs int64) {
-	if e.redisClient == nil {
+	if e.redisClient == nil || !e.publishEnabled() {
 		return
 	}
 	e.publishAIMessage(ctx, p, category, "alarm",
