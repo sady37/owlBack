@@ -586,6 +586,131 @@ func TestStillFall_NoFireWhenStayAlarmDisabled(t *testing.T) {
 }
 
 // ============================================================================
+// PR-5.4: 双 track 运动对称性（仅 GhostPenalty ∈ [70, 80) 启用）
+// ============================================================================
+
+// TestMotionSymmetry_HitsAt30Degrees 紧邻 + 同向位移 → 命中
+func TestMotionSymmetry_HitsAt30Degrees(t *testing.T) {
+	tm, _ := newTestTM()
+
+	// partner: verdict=Real，位置 (100, 100)，2s 内位移 (20, 0) — 沿 X 走 20cm
+	tm.tracks[1] = &TrackState{
+		TrackID: 1, Verdict: VerdictReal,
+		BirthPos: TimedPoint{X: 80, Y: 100, TMs: 0},
+		History: []TimedPoint{
+			{X: 80, Y: 100, TMs: 0},
+			{X: 100, Y: 100, TMs: 2000},
+		},
+		LastUpdateMs: 2000,
+	}
+	tm.tracks[1].Kalman = NewKalmanFilter2D(100, 100)
+
+	// 候选 ghost: 紧邻 (105, 105), 同向位移 (20, 5) — 与 partner 夹角 ≈ 14°
+	ts := &TrackState{
+		TrackID:      0,
+		GhostPenalty: 70,
+		BirthPos:     TimedPoint{X: 85, Y: 100, TMs: 0},
+		History: []TimedPoint{
+			{X: 85, Y: 100, TMs: 0},
+			{X: 105, Y: 105, TMs: 2000},
+		},
+		LastUpdateMs: 2000,
+	}
+	ts.Kalman = NewKalmanFilter2D(105, 105)
+	tm.tracks[0] = ts
+
+	if !tm.checkMotionSymmetry(ts, 2000) {
+		t.Errorf("expected motion symmetry hit (parallel movement, close)")
+	}
+}
+
+// TestMotionSymmetry_NotHitWhenFar 距离 > 100cm → 不命中
+func TestMotionSymmetry_NotHitWhenFar(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.tracks[1] = &TrackState{
+		TrackID: 1, Verdict: VerdictReal,
+		History:      []TimedPoint{{X: 0, Y: 0, TMs: 0}, {X: 20, Y: 0, TMs: 2000}},
+		LastUpdateMs: 2000,
+	}
+	tm.tracks[1].Kalman = NewKalmanFilter2D(20, 0)
+
+	ts := &TrackState{
+		TrackID: 0, GhostPenalty: 70,
+		History:      []TimedPoint{{X: 200, Y: 200, TMs: 0}, {X: 220, Y: 200, TMs: 2000}},
+		LastUpdateMs: 2000,
+	}
+	ts.Kalman = NewKalmanFilter2D(220, 200)
+	tm.tracks[0] = ts
+
+	if tm.checkMotionSymmetry(ts, 2000) {
+		t.Errorf("far apart (>100cm) should not trigger; got hit")
+	}
+}
+
+// TestMotionSymmetry_NotHitWhenOpposite 反向运动 → 不命中
+func TestMotionSymmetry_NotHitWhenOpposite(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.tracks[1] = &TrackState{
+		TrackID: 1, Verdict: VerdictReal,
+		History:      []TimedPoint{{X: 100, Y: 100, TMs: 0}, {X: 120, Y: 100, TMs: 2000}},
+		LastUpdateMs: 2000,
+	}
+	tm.tracks[1].Kalman = NewKalmanFilter2D(120, 100)
+
+	// 反方向：partner +X 走，ghost 候选 -X 走
+	ts := &TrackState{
+		TrackID: 0, GhostPenalty: 70,
+		History:      []TimedPoint{{X: 130, Y: 105, TMs: 0}, {X: 110, Y: 105, TMs: 2000}},
+		LastUpdateMs: 2000,
+	}
+	ts.Kalman = NewKalmanFilter2D(110, 105)
+	tm.tracks[0] = ts
+
+	if tm.checkMotionSymmetry(ts, 2000) {
+		t.Errorf("opposite direction should not trigger; got hit")
+	}
+}
+
+// TestMotionSymmetry_NotHitWhenStatic 双方都静止 → 不命中（位移 < 10cm 噪声过滤）
+func TestMotionSymmetry_NotHitWhenStatic(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.tracks[1] = &TrackState{
+		TrackID: 1, Verdict: VerdictReal,
+		History:      []TimedPoint{{X: 100, Y: 100, TMs: 0}, {X: 102, Y: 101, TMs: 2000}},
+		LastUpdateMs: 2000,
+	}
+	tm.tracks[1].Kalman = NewKalmanFilter2D(102, 101)
+
+	ts := &TrackState{
+		TrackID: 0, GhostPenalty: 70,
+		History:      []TimedPoint{{X: 110, Y: 105, TMs: 0}, {X: 113, Y: 106, TMs: 2000}},
+		LastUpdateMs: 2000,
+	}
+	ts.Kalman = NewKalmanFilter2D(113, 106)
+	tm.tracks[0] = ts
+
+	if tm.checkMotionSymmetry(ts, 2000) {
+		t.Errorf("both static (<10cm displacement) should not trigger; got hit")
+	}
+}
+
+// TestMotionSymmetry_NotHitWithoutPartner 没有 verdict=Real 的另一 track → 不命中
+func TestMotionSymmetry_NotHitWithoutPartner(t *testing.T) {
+	tm, _ := newTestTM()
+	ts := &TrackState{
+		TrackID: 0, GhostPenalty: 70,
+		History:      []TimedPoint{{X: 100, Y: 100, TMs: 0}, {X: 120, Y: 100, TMs: 2000}},
+		LastUpdateMs: 2000,
+	}
+	ts.Kalman = NewKalmanFilter2D(120, 100)
+	tm.tracks[0] = ts
+
+	if tm.checkMotionSymmetry(ts, 2000) {
+		t.Errorf("no Real partner should not trigger; got hit")
+	}
+}
+
+// ============================================================================
 // PR-7.2: stand-static 自学习 → AreaSit
 // ============================================================================
 

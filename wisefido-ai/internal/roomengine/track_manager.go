@@ -1356,10 +1356,14 @@ func (tm *TrackManager) birthScore(x, y int, tMs int64) birthScoreResult {
 }
 
 // applyLifetimeGhostFactors 在 track 生命周期内增量累积 ghost penalty。
-// 当前覆盖：因子 3（30s 内位移很少 → 凭空出现又不动）。
-// 因子 5（运动对称性）留 PR-5.4 实现。
 //
-// 调用方持锁；幂等（用 LifetimeFactorsApplied bitmask 防重复扣）。
+// 因子覆盖：
+//   - 因子 3（30s 内位移很少 → 凭空出现又不动）：每 track 一次性
+//   - 因子 5（双 track 运动对称性 → 后出现的反射 ghost）：仅在 GhostPenalty ∈ [70, 80)
+//     边缘时启用；命中 -10 推过阈值 80 判 Ghost
+//
+// 调用方持锁；因子 3 幂等（LifetimeFactorsApplied bitmask 防重复扣）；
+// 因子 5 每帧触发一次，命中即跨阈值。
 func (tm *TrackManager) applyLifetimeGhostFactors(ts *TrackState, nowMs int64) {
 	const (
 		factor3Bit          = 1 << 0
@@ -1382,6 +1386,104 @@ func (tm *TrackManager) applyLifetimeGhostFactors(ts *TrackState, nowMs int64) {
 		}
 		ts.LifetimeFactorsApplied |= factor3Bit
 	}
+
+	// 因子 5: 双 track 运动对称性（PR-5.4）
+	// 仅当 GhostPenalty 已在 [70, 80) 边缘时启用 — 此时命中 +10 = 80 跨阈值，决定性。
+	// 之外不计算（避免每帧扫所有 track 对，开销不必要）。
+	if ts.GhostPenalty >= 70 && ts.GhostPenalty < GhostPenaltyThreshold {
+		if tm.checkMotionSymmetry(ts, nowMs) {
+			ts.GhostPenalty += 10
+			ts.BirthReason = "motion_symmetric_with_real_track"
+			tm.logger.Info("ghost_motion_symmetry_hit",
+				zap.String("device_uid", ts.DeviceID),
+				zap.Int("track_id", ts.TrackID),
+				zap.Int("ghost_penalty", ts.GhostPenalty),
+				zap.Int64("ts_ms", nowMs),
+			)
+		}
+	}
+}
+
+// checkMotionSymmetry PR-5.4 因子 5：双 track 运动对称性检测。
+//
+// 触发判定：
+//  1. 房间存在另一 verdict=Real 的 track（partner）
+//  2. 当前位置与 partner 距离 < 100cm（紧贴 → 反射 ghost 经典模式）
+//  3. 取 2s 前两 track 的位置 → 计算位移向量 (dx, dy)
+//  4. 两向量长度都 ≥ 10cm（避免静止 noise 触发）
+//  5. 夹角 < 30°（cos > 0.866） → 同步移动 → 强 ghost 信号
+//
+// 返回 true 表示命中（应扣 -10 跨阈值）。调用方持锁。
+func (tm *TrackManager) checkMotionSymmetry(ts *TrackState, nowMs int64) bool {
+	const (
+		coexistDistMaxCm = 100      // 双 track 距离上限
+		windowMs         = int64(2_000) // 2s 滚动窗
+		minDispCm        = 10       // 单 track 最小位移（< 10 视为静止 noise）
+		cosThreshold     = 0.866    // cos(30°)
+	)
+	// 找另一个共存 Real track
+	var partner *TrackState
+	for tid, t := range tm.tracks {
+		if tid == ts.TrackID {
+			continue
+		}
+		if t.Verdict != VerdictReal {
+			continue
+		}
+		partner = t
+		break
+	}
+	if partner == nil {
+		return false
+	}
+	// 当前位置 + 2s 前位置
+	pxA, pyA := ts.Kalman.Position()
+	pxB, pyB := partner.Kalman.Position()
+	axNow, ayNow := int(math.Round(pxA)), int(math.Round(pyA))
+	bxNow, byNow := int(math.Round(pxB)), int(math.Round(pyB))
+
+	// 距离 < 100cm
+	if distInt(axNow, ayNow, bxNow, byNow) > coexistDistMaxCm {
+		return false
+	}
+
+	// 2s 前位置（从 History 取最接近的早期点）
+	pa0, okA := positionAtMsAgo(ts, nowMs, windowMs)
+	pb0, okB := positionAtMsAgo(partner, nowMs, windowMs)
+	if !okA || !okB {
+		return false
+	}
+
+	// 位移向量
+	dxA, dyA := axNow-pa0.X, ayNow-pa0.Y
+	dxB, dyB := bxNow-pb0.X, byNow-pb0.Y
+	magA := math.Sqrt(float64(dxA*dxA + dyA*dyA))
+	magB := math.Sqrt(float64(dxB*dxB + dyB*dyB))
+	if magA < float64(minDispCm) || magB < float64(minDispCm) {
+		return false // 至少有一方没动 → 不算同步运动
+	}
+
+	// 夹角余弦
+	dot := float64(dxA*dxB + dyA*dyB)
+	cosTheta := dot / (magA * magB)
+	return cosTheta > cosThreshold
+}
+
+// positionAtMsAgo 从 ts.History 取最接近 (nowMs - windowMs) 的位置。
+// 返回 (TimedPoint, found)；ok=false 表示 history 为空或全比目标新。
+func positionAtMsAgo(ts *TrackState, nowMs int64, windowMs int64) (TimedPoint, bool) {
+	if len(ts.History) == 0 {
+		return TimedPoint{}, false
+	}
+	target := nowMs - windowMs
+	// 倒序找第一个 TMs <= target 的点
+	for i := len(ts.History) - 1; i >= 0; i-- {
+		if ts.History[i].TMs <= target {
+			return ts.History[i], true
+		}
+	}
+	// 都比 target 新 → 用最早的（不严谨但作为 fallback）
+	return ts.History[0], true
 }
 
 // nearestEnterRoomMs 在 [tMs - windowMs, tMs + windowMs] 内查最近 EnterRoom 事件。
