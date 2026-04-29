@@ -55,6 +55,9 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB,
 		logger.Info("roomengine: rooms with Stay alarm enabled", zap.Int("count", stayRooms))
 	}
 
+	// 3c. PR-15：每日 22:00 (local) 重读 layout，hash 变即重置该 room → 从 0 重学
+	engine.SetDailyLayoutReload(22, db)
+
 	// 4. 启动主循环（消费 monitor + event 流，跑学习+持久化定时器）
 	go func() {
 		if err := engine.Run(ctx); err != nil {

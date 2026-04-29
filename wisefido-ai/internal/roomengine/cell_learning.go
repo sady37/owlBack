@@ -112,12 +112,14 @@ func (g *RoomGrid) LearnCellAreas(p LearnParams) {
 			continue
 		}
 
-		// Sit 优先（停留 > 穿越的语义更强）
-		if int(c.ActiveType[ActiveIdxSit]) >= p.SitActiveX10 {
-			conf := mapToConf(int(c.ActiveType[ActiveIdxSit]), p.SitActiveX10, p.SitActiveX10*4, p.ConfFloor, p.ConfFull)
-			promoteCell(c, AreaSit, conf)
-			continue
-		}
+		// PR-15: AreaSit 升格已禁用此简单规则。
+		// 旧规则 ActiveType[Sit] >= 15s 触发 → 雷达近场常误判 pose=Sit 累积；
+		// 实测在 D523 bookroom 雷达下方 (~1.5m 近场) 学出假的 Sit 区。
+		// 现在 AreaSit 仅由两条更严格路径产生：
+		//   - PR-13 RegionStatic A 路径：region static ≥2min + |dz| ≥10cm（双方 z>0）
+		//   - PR-13 RegionStatic B 路径：region static ≥8-12min + 90% 静止帧比
+		//   - PR-7.2 stand-static：pose=Stand 静止 ≥8-12min + 非 still-fall 作用域
+		// 三条都直接调 MarkRestZoneByFeedback，无需走此 LearnCellAreas 路径。
 
 		// Walk 直升：直接走过 ≥ WalkTraverse 次（默认 2）
 		t := c.Belief[0].Type
@@ -140,18 +142,42 @@ func (g *RoomGrid) LearnCellAreas(p LearnParams) {
 			continue
 		}
 
-		// Auto-Deny 反转：邻居走过 ≥ NearTraverseDeny（默认 20）+ 本 cell 完全无直接触碰
-		// RealDecay==0 && TraverseCount==0：高质量 track 没碰过、Move 状态也没穿过
-		// （GhostDecay 不限：ghost 漂移到家具上很正常，不否定 Deny 结论）
+		// Auto-Deny 反转：邻居走过 ≥ NearTraverseDeny + 5-cell consensus（中心 + 4 邻居全无直接触碰）
+		// PR-15：原规则只看中心 cell TraverseCount==0，10cm 网格上 jitter / 跳格频繁让中心未被穿过 → 误判。
+		// 改用中心+上下左右 5 cell 的"完全绕开"共识：任一 cell 有 TraverseCount>0 或 RealDecay>0 即否决。
+		// 物理含义：人若实际能走到这一带（哪怕中心 cell 没被精确踩中），5 cell 至少有一个会被穿过；
+		// 唯有 furniture 中心（≥2 cell 离最近 walk）才会 5 cell 全空。
 		if int(c.NearTraverseCount) >= p.NearTraverseDeny &&
-			c.RealDecay == 0 && c.TraverseCount == 0 {
-			if t == AreaUnknown || t == AreaActive {
-				conf := mapToConf(int(c.NearTraverseCount), p.NearTraverseDeny, p.NearTraverseDeny*3, p.ConfFloor, p.ConfFull)
-				promoteCell(c, AreaDeny, conf)
-				continue
-			}
+			(t == AreaUnknown || t == AreaActive) &&
+			fiveCellAllUnreached(g, i) {
+			conf := mapToConf(int(c.NearTraverseCount), p.NearTraverseDeny, p.NearTraverseDeny*3, p.ConfFloor, p.ConfFull)
+			promoteCell(c, AreaDeny, conf)
+			continue
 		}
 	}
+}
+
+// fiveCellAllUnreached 检查 cell + 4 邻居（N/S/E/W）是否全部 RealDecay==0 && TraverseCount==0。
+// PR-15 Auto-Deny 5-cell consensus：减少 jitter / 跳格导致的"中心 cell 永不被走"误判。
+// 越界邻居视为 unreached（不否决；房间边角不应该因为邻居越界而无法学 Deny）。
+func fiveCellAllUnreached(g *RoomGrid, idx int) bool {
+	if g.Cells[idx].RealDecay != 0 || g.Cells[idx].TraverseCount != 0 {
+		return false
+	}
+	row := idx / g.Width
+	col := idx % g.Width
+	deltas := [4][2]int{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}
+	for _, d := range deltas {
+		r, cc := row+d[0], col+d[1]
+		if r < 0 || r >= g.Height || cc < 0 || cc >= g.Width {
+			continue // 越界跳过
+		}
+		nb := &g.Cells[r*g.Width+cc]
+		if nb.RealDecay != 0 || nb.TraverseCount != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // LearnLyingAnomalies 扫全图，把"床外 Lie"事件累计到 LieAnomalyCount。

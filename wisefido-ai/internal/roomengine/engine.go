@@ -147,6 +147,11 @@ type Engine struct {
 	feedbackInterval  time.Duration // 默认 5 分钟；0 = 关闭
 	feedbackIngester  *AlarmFeedbackIngester
 
+	// PR-15: 每日定时 layout reload。dailyReloadHour 0-23（local time）；-1=禁用
+	// 目的：管理员下班后重读 rooms.layout_config，hash 变 → 重置该 room grid，从 0 重学
+	dailyReloadHour int
+	dailyReloadDB   *sql.DB // 用于 SELECT layout_config；nil 时跳过
+
 	redisClient *redis.Client
 	logger      *zap.Logger
 
@@ -200,9 +205,22 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		beliefScanInterval: 10 * time.Minute, // PR-11
 		winnerEvalInterval: 24 * time.Hour,
 		snapshotInterval:   5 * time.Minute,
+		dailyReloadHour:    22, // PR-15：22:00 local 重读 layout
 		redisClient:        redisClient,
 		logger:             logger,
 	}
+}
+
+// SetDailyLayoutReload 注入 daily layout reload 配置。
+// hourLocal：0-23 表示 local time 时刻；-1 禁用。
+// db：用于 SELECT rooms.layout_config；nil 时禁用。
+// PR-15：管理员下班后定时重读 layout，hash 变化 → 重置该 room grid 从 0 重学。
+func (e *Engine) SetDailyLayoutReload(hourLocal int, db *sql.DB) {
+	if hourLocal < -1 || hourLocal > 23 {
+		hourLocal = -1
+	}
+	e.dailyReloadHour = hourLocal
+	e.dailyReloadDB = db
 }
 
 // Configure 注入 yaml 加载的运行时参数。零值字段保留 New 时的默认值。
@@ -693,6 +711,10 @@ func (e *Engine) Run(ctx context.Context) error {
 	if e.feedbackIngester != nil && e.feedbackInterval > 0 {
 		go e.alarmFeedbackLoop(ctx)
 	}
+	// PR-15: daily layout reload — 管理员下班后重读 layout_config，hash 变 → reset grid
+	if e.dailyReloadHour >= 0 && e.dailyReloadDB != nil {
+		go e.dailyLayoutReloadLoop(ctx)
+	}
 	// 单独 goroutine 消费 event 流（sleepad + radar 的 InBed/LeftBed/EnterRoom/ExitRoom）
 	go e.runEventLoop(ctx, eventStream, group)
 	// 单独 goroutine 消费 alarm 流（radar Fall 等）
@@ -1155,6 +1177,111 @@ func (e *Engine) saveAllRooms(ctx context.Context) {
 	}
 	e.logger.Debug("snapshot batch done",
 		zap.Int("saved", saved), zap.Int("failed", failed))
+}
+
+// dailyLayoutReloadLoop PR-15：每天 dailyReloadHour:00 (local) 重读 rooms.layout_config。
+//
+// 用途：管理员通过前端 layout 编辑器修改房间布局后，无需重启 wisefido-ai 即可生效。
+// 每日触发时刻应避开管理员上班时间（默认 22:00 = 晚 10 点）。
+//
+// 流程：
+//  1. 等到下次 dailyReloadHour:00:00 local
+//  2. 扫所有已注册 room，对比 DB 中 layout_config 的 hash 与内存 layoutHashes
+//  3. hash 变 → 重置该 room（替换 TrackManager + 清空 grid 学习状态）
+//  4. 立即持久化（覆盖旧 snapshot）
+//
+// 不变 hash 的 room 跳过；DB 查不到（room 已删）的房间也跳过。
+func (e *Engine) dailyLayoutReloadLoop(ctx context.Context) {
+	for {
+		next := nextDailyTrigger(time.Now(), e.dailyReloadHour)
+		wait := time.Until(next)
+		e.logger.Info("daily_layout_reload_scheduled",
+			zap.Time("next", next),
+			zap.Duration("wait", wait),
+			zap.Int("hour_local", e.dailyReloadHour),
+		)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		e.runDailyLayoutReload(ctx)
+	}
+}
+
+// nextDailyTrigger 返回下一次 hour:00:00 local 的时间点。
+// 若当前已经过当天 hour 时刻，则取明天。
+func nextDailyTrigger(now time.Time, hour int) time.Time {
+	t := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, now.Location())
+	if !t.After(now) {
+		t = t.Add(24 * time.Hour)
+	}
+	return t
+}
+
+// runDailyLayoutReload 扫 rooms 表 → hash diff → 重置变化 room。
+// 调用方：dailyLayoutReloadLoop 触发时；不持锁进入。
+func (e *Engine) runDailyLayoutReload(ctx context.Context) {
+	if e.dailyReloadDB == nil {
+		return
+	}
+	rows, err := e.dailyReloadDB.QueryContext(ctx, `
+		SELECT r.room_id::text, r.room_name, r.layout_config::text,
+		       COALESCE(u.timezone, ''), r.tenant_id::text
+		FROM rooms r
+		LEFT JOIN units u ON u.unit_id = r.unit_id
+		WHERE r.layout_config IS NOT NULL`)
+	if err != nil {
+		e.logger.Warn("daily_reload query failed", zap.Error(err))
+		return
+	}
+	defer rows.Close()
+
+	type pendingReload struct {
+		cfg      RoomConfig
+		tenantID string
+		newHash  string
+	}
+	var pending []pendingReload
+	for rows.Next() {
+		var roomID, roomName, tenantID, timezone string
+		var layoutStr sql.NullString
+		if err := rows.Scan(&roomID, &roomName, &layoutStr, &timezone, &tenantID); err != nil {
+			continue
+		}
+		if !layoutStr.Valid || layoutStr.String == "" {
+			continue
+		}
+		cfg, err := ParseLayoutConfig(roomID, []byte(layoutStr.String))
+		if err != nil {
+			e.logger.Warn("daily_reload parse failed", zap.String("room_id", roomID), zap.Error(err))
+			continue
+		}
+		cfg.RoomName = roomName
+		cfg.Timezone = timezone
+		ApplyOptimizedExtent(&cfg)
+		newHash := LayoutHash(cfg)
+		e.mu.RLock()
+		oldHash := e.layoutHashes[roomID]
+		e.mu.RUnlock()
+		if oldHash == newHash {
+			continue // 没变
+		}
+		pending = append(pending, pendingReload{cfg: cfg, tenantID: tenantID, newHash: newHash})
+	}
+	for _, pr := range pending {
+		e.logger.Info("daily_reload room changed, resetting",
+			zap.String("room_id", pr.cfg.RoomID),
+			zap.String("new_hash", pr.newHash[:12]),
+		)
+		// RegisterRoom 替换 TrackManager + grid，hydrateRoom 见 hash 不同会丢弃旧 snapshot
+		e.RegisterRoom(pr.cfg)
+		e.SetRoomTenant(pr.cfg.RoomID, pr.tenantID)
+	}
+	if len(pending) > 0 && e.persister != nil {
+		// 立刻持久化新状态，覆盖旧 snapshot
+		e.saveAllRooms(ctx)
+	}
 }
 
 // winnerEvalLoop 每 24 小时评估一次 winner（需要 feedback_loop 积累 accuracy 数据）
