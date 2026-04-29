@@ -1,6 +1,58 @@
 package roomengine
 
-import "testing"
+import (
+	"testing"
+)
+
+// TestMarkRestZoneByFeedback PR-7.1：人类反馈即时锁 AreaType
+func TestMarkRestZoneByFeedback_LocksAreaSit(t *testing.T) {
+	c := &Cell{}
+	c.Belief[0] = BeliefState{Type: AreaUnknown, Confidence: 50, Source: SourceLearned}
+	c.AreaType = AreaUnknown
+
+	if !c.MarkRestZoneByFeedback(AreaSit) {
+		t.Errorf("expected MarkRestZoneByFeedback to lock; got false")
+	}
+	if c.AreaType != AreaSit {
+		t.Errorf("AreaType expected AreaSit, got %v", c.AreaType)
+	}
+	if c.Belief[0].Source != SourceHuman || c.Belief[0].Confidence != 95 {
+		t.Errorf("Belief[0] should be SourceHuman/95, got %+v", c.Belief[0])
+	}
+}
+
+func TestMarkRestZoneByFeedback_PreservesLayoutBed(t *testing.T) {
+	c := &Cell{}
+	c.Belief[0] = BeliefState{Type: AreaBed, Confidence: 99, Source: SourceHuman}
+	c.AreaType = AreaBed
+
+	if c.MarkRestZoneByFeedback(AreaSit) {
+		t.Errorf("should NOT overwrite layout AreaBed; got true")
+	}
+	if c.AreaType != AreaBed {
+		t.Errorf("AreaType should stay AreaBed, got %v", c.AreaType)
+	}
+}
+
+func TestMarkRestZoneByFeedback_PreservesLayoutDenyAndEnter(t *testing.T) {
+	for _, kind := range []AreaType{AreaDeny, AreaEnter, AreaToilet, AreaShower} {
+		c := &Cell{}
+		c.Belief[0] = BeliefState{Type: kind, Confidence: 99, Source: SourceHuman}
+		c.AreaType = kind
+		if c.MarkRestZoneByFeedback(AreaSit) {
+			t.Errorf("should NOT overwrite layout %v; got true", kind)
+		}
+	}
+}
+
+func TestMarkRestZoneByFeedback_NoDoubleSet(t *testing.T) {
+	c := &Cell{}
+	c.Belief[0] = BeliefState{Type: AreaSit, Confidence: 95, Source: SourceHuman}
+	c.AreaType = AreaSit
+	if c.MarkRestZoneByFeedback(AreaSit) {
+		t.Errorf("should be no-op when already SourceHuman+AreaSit; got true")
+	}
+}
 
 // 测试 PR-6 notes parser
 func TestParseConditions_FalseAlarmReason(t *testing.T) {

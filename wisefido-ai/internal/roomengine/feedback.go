@@ -340,8 +340,19 @@ func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int
 			}
 		}
 		if pc.FAChair || pc.FASofa || pc.FAWheelchair {
-			if apply(func(c *Cell) { c.IncrRestZoneConfirmed() }) {
+			locked := false
+			if apply(func(c *Cell) {
+				c.IncrRestZoneConfirmed()
+				// PR-7.1: 即时锁 AreaType=AreaSit（一次反馈即认；半衰期保护）
+				// MarkRestZoneByFeedback 内部跳过 Bed/Toilet/Shower/Deny/Enter
+				if c.MarkRestZoneByFeedback(AreaSit) {
+					locked = true
+				}
+			}) {
 				routes = append(routes, "rest_zone")
+				if locked {
+					routes = append(routes, "rest_zone_locked_AreaSit")
+				}
 			}
 		}
 		// Other 或全无勾选 → 通用 fake alarm（PR-4 兜底）

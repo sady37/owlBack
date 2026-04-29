@@ -369,6 +369,28 @@ func (c *Cell) IncrRealFallCount() {
 	c.RealFallCount++
 }
 
+// MarkRestZoneByFeedback PR-7.1：依据人类反馈即时锁定 cell.AreaType（一次即认）。
+// target ∈ {AreaSit}（当前仅 AreaSit；未来可能 AreaLying 等）。
+// Confidence=95, Source=SourceHuman；依靠 Decay() 自然衰减，无需重复反馈。
+//
+// 不覆盖现有更具体的 layout 类型（AreaBed / AreaToilet / AreaShower / AreaDeny / AreaEnter）。
+// Belief[0] 已是 SourceHuman 且 type 一致时跳过（保持稳态，避免 Confidence 反复 reset）。
+func (c *Cell) MarkRestZoneByFeedback(target AreaType) bool {
+	cur := c.Belief[0].Type
+	// 不覆盖 layout 标的更具体类型
+	if cur == AreaBed || cur == AreaToilet || cur == AreaShower ||
+		cur == AreaDeny || cur == AreaEnter {
+		return false
+	}
+	// 已经是 SourceHuman + 同类 → 不重复 reset
+	if cur == target && c.Belief[0].Source == SourceHuman {
+		return false
+	}
+	c.Belief[0] = BeliefState{Type: target, Confidence: 95, Source: SourceHuman}
+	c.AreaType = target
+	return true
+}
+
 // ========================================================================
 // Decay（时间窗口衰减）
 // ========================================================================
