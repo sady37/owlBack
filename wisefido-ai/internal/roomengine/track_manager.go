@@ -1805,6 +1805,8 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 					if nowMs-ts.StandStaticSince >= threshold {
 						locked := cell.MarkRestZoneByFeedback(AreaSit)
 						cell.IncrToleratedStill()
+						// PR-10: 自学习也触发邻居增强（与人工反馈一致）
+						tm.grid.boostNeighborSameType(x, y, AreaSit, nowMs)
 						ts.AreaSitAutoLearned = true
 						tm.logger.Info("area_sit_auto_learned",
 							zap.String("device_uid", ts.DeviceID),

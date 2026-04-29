@@ -427,11 +427,17 @@ func (g *RoomGrid) MarkGhostFeedback(x, y int, nowMs int64) {
 	c.LastUpdateMs = nowMs
 }
 
-// MarkRestZoneFeedback PR-6+7.1+9.2：人工标 ☑ Sit on Chair/Sofa/Wheelchair。
+// MarkRestZoneFeedback PR-6+7.1+9.2+10：人工标 ☑ Sit on Chair/Sofa/Wheelchair。
 // target 区分语义：
 //   - AreaSit （Chair / Wheelchair）— 坐姿区，橙色
 //   - AreaBed （Sofa / Lounge chair）— 躺姿区（沙发可坐可躺，归 lying），蓝色
-// 累计 RestZoneConfirmed 并即时锁定 target（一次反馈即认；半衰期保护）。
+//
+// 流程：
+//  1. 累计 RestZoneConfirmed
+//  2. 即时锁定 target Belief
+//  3. PR-10：4 邻居中**已是同类**的 cell confidence ×1.3（cap 100）增强；
+//     设计意图：sofa/床占多 cell，相邻同类反馈 = 强空间一致性证据，
+//     抵抗 BeliefSec=2d 半衰期的衰退。
 func (g *RoomGrid) MarkRestZoneFeedback(x, y int, target AreaType, nowMs int64) {
 	c := g.CellAt(x, y)
 	if c == nil {
@@ -440,6 +446,34 @@ func (g *RoomGrid) MarkRestZoneFeedback(x, y int, target AreaType, nowMs int64) 
 	c.IncrRestZoneConfirmed()
 	c.MarkRestZoneByFeedback(target)
 	c.LastUpdateMs = nowMs
+	// PR-10: 邻居增强
+	g.boostNeighborSameType(x, y, target, nowMs)
+}
+
+// boostNeighborSameType PR-10：4 邻居（上下左右）同 target 类型 cell confidence ×1.3。
+// cap 100；不动新 cell 自己；不动不同类邻居。设计平衡：
+//   - 一次邻居增强 ×1.3 (+30%) ≈ 1 天衰退（-29%，BeliefSec=2d 算）的反向
+//   - 多次确认下能稳态维持；单次反馈不会立即推到 100 锁死
+func (g *RoomGrid) boostNeighborSameType(x, y int, target AreaType, nowMs int64) {
+	col, row := g.ToIndex(x, y)
+	for _, d := range [4][2]int{{0, -1}, {0, 1}, {-1, 0}, {1, 0}} {
+		nc, nr := col+d[0], row+d[1]
+		if nr < 0 || nr >= g.Height || nc < 0 || nc >= g.Width {
+			continue
+		}
+		n := &g.Cells[nr*g.Width+nc]
+		if n.Belief[0].Type != target {
+			continue
+		}
+		newConf := n.Belief[0].Confidence * 13 / 10 // ×1.3
+		if newConf > 100 {
+			newConf = 100
+		}
+		if newConf > n.Belief[0].Confidence {
+			n.Belief[0].Confidence = newConf
+			n.LastUpdateMs = nowMs
+		}
+	}
 }
 
 // MarkRealFallFeedback PR-6：人工标 verified ☑ Fall (ground truth) → cell.RealFallCount++

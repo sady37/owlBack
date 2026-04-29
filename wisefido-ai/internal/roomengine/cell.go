@@ -194,6 +194,7 @@ type DecayParams struct {
 	SitSec       float64 // ActiveType[Sit]
 	LieSec       float64 // ActiveType[Lie]
 	EventSec     float64 // Traverse/Fall/Retract/Sleepad/Door/LongStill/LieAnomaly
+	BeliefSec    float64 // PR-10: Belief[0].Confidence 半衰期；2d 默认（7d 衰到 ≤10）
 }
 
 // DefaultDecayParams 与 config.yaml::roomengine.decay 默认值一致。
@@ -205,6 +206,7 @@ func DefaultDecayParams() DecayParams {
 		SitSec:       24 * 3600,
 		LieSec:       7 * 24 * 3600,
 		EventSec:     7 * 24 * 3600,
+		BeliefSec:    2 * 24 * 3600, // PR-10: 2 天半衰期 → 7天衰到 ~10%
 	}
 }
 
@@ -461,6 +463,21 @@ func (c *Cell) Decay(dtSec float64, p DecayParams) {
 	c.GhostCount = scaleInt(c.GhostCount, fEv)
 	c.RestZoneConfirmed = scaleInt(c.RestZoneConfirmed, fEv)
 	c.RealFallCount = scaleInt(c.RealFallCount, fEv)
+
+	// PR-10: Belief[0].Confidence 衰减（半衰期 BeliefSec，默认 2 天 → 7天衰到 ~10）
+	// 衰减后 Confidence < 10 → 降级 AreaUnknown + Source=Unset（不再贡献 IsRestZone 等判定）。
+	// 仅衰减 [0]（最强信念）；[1][2] 是历史快照，保持原样。
+	if c.Belief[0].Confidence > 0 {
+		fBelief := factor(dtSec, p.BeliefSec)
+		newConf := scaleInt(c.Belief[0].Confidence, fBelief)
+		if newConf < 10 {
+			// 降级：清空 type / source，让 Decay 后该 cell 重新 unlearn
+			c.Belief[0] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
+			c.AreaType = AreaUnknown
+		} else {
+			c.Belief[0].Confidence = newConf
+		}
+	}
 }
 
 // factor 计算半衰期衰减因子；半衰期非正时不衰减（返回 1）
