@@ -137,6 +137,10 @@ type TrackManager struct {
 	// 与 cell.AreaToilet/Shower、room.name 三者取并集；任一命中即触发 still fall。
 	// 由 engine.RegisterRoom 启动时注入（查 DB），运行时变更需重启或加 Redis 通道（暂未做）。
 	stayAlarmEnabled bool
+
+	// startupMs：TrackManager 创建时间。用于"service 启动 5min grace"反 ghost 兜底
+	// （grace 内 first-seen 的 track 视为已存在，birth filter 不打 ghost）。
+	startupMs int64
 }
 
 // BedsideFallConfig R4 床边晕倒参数。
@@ -173,6 +177,7 @@ func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 		recentRadarEvents:  make(map[int64]*RadarTrackEvent),
 		recentBufferMs:     5 * 60 * 1000, // 5 min
 		logger:             zap.NewNop(),
+		startupMs:          time.Now().UnixMilli(),
 	}
 }
 
@@ -211,6 +216,16 @@ func (tm *TrackManager) SetStayAlarmEnabled(enabled bool) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	tm.stayAlarmEnabled = enabled
+}
+
+// SetStartupMs 覆盖默认的 startup 时间戳。playback / 离线测试用：把 startupMs
+// 对齐到回放窗口起点（默认是 time.Now()，离线时无意义）。
+func (tm *TrackManager) SetStartupMs(ms int64) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if ms > 0 {
+		tm.startupMs = ms
+	}
 }
 
 // IsBathroomByRoomName 用 owl-common/roomutil.ClassifyRoomType 判定本房间是否 bathroom。
@@ -524,10 +539,24 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			recoveredFromLost := tm.cancelPendingLostFallByBirth(f.X, f.Y, f.TMs)
 
 			ts = NewTrackState(f.TrackID, f.DeviceID, tm.roomID, f.X, f.Y, f.Z, f.TMs)
-			b := tm.birthScore(f.X, f.Y, f.TMs)
-			ts.BirthScore = b.score
-			ts.BirthReason = b.reason
-			ts.Score = ts.BirthScore
+
+			// PR-5.3 反 ghost: service startup 5min grace 内 first-seen → 默认 Real
+			isStartupGrace := tm.startupMs > 0 && (f.TMs-tm.startupMs) < 5*60*1000
+			if isStartupGrace {
+				ts.StartupGrace = true
+				ts.Verdict = VerdictReal
+				ts.Score = ScoreConfirmTh
+				ts.BirthScore = ScoreConfirmTh
+				ts.BirthReason = "startup_grace"
+				ts.GhostPenalty = 0
+				ts.ConfirmedAtMs = f.TMs
+			} else {
+				b := tm.birthScore(f.X, f.Y, f.TMs)
+				ts.BirthScore = b.score
+				ts.BirthReason = b.reason
+				ts.Score = ts.BirthScore
+				ts.GhostPenalty = b.penalty
+			}
 			// 盲区返回路径：直接给 Real verdict，绕过 ghost 检查
 			// （这是漏报场景下人从盲区返回的预期行为：track 看似凭空出现但实为真人）
 			if recoveredFromLost {
@@ -535,6 +564,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				ts.Score = ScoreConfirmTh
 				ts.BirthScore = ScoreConfirmTh
 				ts.BirthReason = "recovered_from_lost_fall"
+				ts.GhostPenalty = 0
 				ts.ConfirmedAtMs = f.TMs
 			}
 			// 初始化 frozen 检测签名：把出生帧记为第一个签名（FrozenSameCount=1）
@@ -672,11 +702,59 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 
 	// ========== 段 3: 试用期判定 ==========
 	for _, ts := range tm.tracks {
+		// PR-5.3 反 ghost：track 存活 ≥ 5min 锚定 Real（不论之前 verdict）
+		if !ts.LongSurvivalAnchored && ts.AgeSec() >= 300 {
+			ts.LongSurvivalAnchored = true
+			if ts.Verdict != VerdictReal {
+				ts.Verdict = VerdictReal
+				ts.ConfirmedAtMs = nowMs
+				ts.BirthReason = "long_survival_anchor"
+			}
+			continue
+		}
+
 		if ts.Verdict != VerdictPending {
+			// PR-5.x 持续期 ghost factor：每帧重算 lifetime 因子（30s 静止等）
+			tm.applyLifetimeGhostFactors(ts, nowMs)
+			// 即使已是 Real verdict，penalty ≥ 80 也翻 Ghost（除非 LongSurvival 锚定）
+			if ts.GhostPenalty >= GhostPenaltyThreshold && !ts.LongSurvivalAnchored && !ts.StartupGrace {
+				if ts.Verdict != VerdictGhost {
+					ts.Verdict = VerdictGhost
+				}
+			}
 			continue
 		}
 		// Birth grace recompute（方案 A）：deadline 到了再扫扩展窗，给 EnterRoom event-stream 缓冲
 		tm.tryGraceUpgrade(ts, nowMs)
+
+		// 持续期 ghost 因子（30s 静止等）
+		tm.applyLifetimeGhostFactors(ts, nowMs)
+
+		// PR-5.x 主路径：累积 GhostPenalty ≥ 80 → Ghost（独立于 ProbationFrames）
+		if ts.GhostPenalty >= GhostPenaltyThreshold {
+			ts.Verdict = VerdictGhost
+			if !ts.LoggedGhost {
+				reason := ts.BirthReason
+				if reason == "" {
+					reason = "ghost_penalty_accumulated"
+				}
+				pxF, pyF := ts.Kalman.Position()
+				tm.logger.Info("track_verdict_ghost",
+					zap.String("device_uid", ts.DeviceID),
+					zap.Int("track_id", ts.TrackID),
+					zap.String("verdict", "ghost"),
+					zap.Int("score", ts.Score),
+					zap.Int("birth_score", ts.BirthScore),
+					zap.Int("ghost_penalty", ts.GhostPenalty),
+					zap.String("reason", reason),
+					zap.Int("x", int(math.Round(pxF))),
+					zap.Int("y", int(math.Round(pyF))),
+					zap.Int64("ts_ms", nowMs),
+				)
+				ts.LoggedGhost = true
+			}
+			continue
+		}
 
 		if ts.FrameCount >= ProbationFrames {
 			if ts.Score >= ScoreConfirmTh {
@@ -1144,89 +1222,189 @@ func (tm *TrackManager) FallVerifyStatsSnapshot() FallVerifyStats {
 }
 
 // ========================================================================
-// 出生打分（基于 elder care 步速物理常识）
+// 出生打分（PR-5.1+5.2+5.3 重写：累积 GhostPenalty 模式）
 // ========================================================================
 //
-// 物理判据（用户 2026-04-26 对齐）：
-//   - 老人步速上限 1.0 m/s，青壮年 1.5 m/s
-//   - 出生位置距 Enter > 150cm = 1 秒走不到 = 物理不可能新人 → 直接 Ghost
-//   - 出生位置距 Enter ≤ 150cm 但没有近 3s 内的 EnterRoom 配对事件 → 也是 Ghost
-//     （radar firmware 的 enter2out 事件没触发 = 没经过门 = 不是真人入场）
-//   - 出生在镜子/家具 (AreaDeny) cell → 物理不可能 → Ghost
+// 设计：用户 2026-04-29 对齐
+//   主路径：累积 GhostPenalty，> 80 判 Ghost；阈值高、必须多重证据合击。
+//   保留 ts.Score 双轨（baseline 50 + 加分）作向后兼容；不再 hard cut 0/100。
 //
-// 双因素：地理（dEntry） + 时间（EnterRoom 配对）
+// 因子（出生瞬时）：
+//   1. dEntry / EnterRoom 速度反推    最多 -60
+//      - 配对窗 ±3s（实证 92% coverage）
+//      - 无配对 EnterRoom: -60
+//      - D=0（室外但 InFOV）: 0
+//      - speed >= 100 cm/s: -60；50-100 线性；< 50: 0
+//   2. 出生 cell 类型                  -10
+//      - AreaDeny / AreaSit / AreaBed / AreaToilet / AreaShower: -10
+//   4. 已有 ≥1 个 verdict=Real track：    -10  (后出现的 ID)
+//   6. cell.GhostRatio > 0.3：              -10  (历史 ghost 多发区)
 //
-// 注：本函数返回初始 score。score < ScoreGhostTh(20) → 5 帧后判 Ghost；score >= ScoreConfirmTh(50) → 真人。
-// 没采用"birth 时直接 setVerdict=Ghost"是为了保留试用期内 EnterRoom 事件迟到时的纠正机会。
+// 因子 3 (30s 静止) / 因子 5 (运动对称性) 在 lifetime 期间累积。
+//
+// 反 ghost 兜底（在 verdict 转换段处理）：
+//   - track 存活 ≥ 5min 锚定 Real
+//   - service startup 5min grace 内 first-seen 默认 Real
 
 const (
-	enterPairWindowMs   = 3_000 // EnterRoom 与 birth 的最大时间差（ms）
-	birthMaxRealisticCm = 150   // 距 Enter 此值内才可能是 1 秒走入的真人（青壮年 1.5m/s 上限）
-	birthEnterPairBonus = 20    // 有 EnterRoom 配对加分（不让分数超过 100 边界）
+	enterPairWindowMs    = 3_000 // EnterRoom 与 birth 的最大时间差（ms）
+	birthMaxRealisticCm  = 150   // 距 Enter 此值内才可能是 1 秒走入的真人
+	birthEnterPairBonus  = 20    // 有 EnterRoom 配对加分
+	GhostPenaltyThreshold = 80   // 累积 ghost penalty 阈值
 )
 
-// birthScoreResult birthScore 计算结果（score + 短路原因，调用方写入 ts.BirthReason 用于 ai.log）
+// birthScoreResult birthScore 计算结果。
+// score: baseline 50 + 加分（用于 ts.Score 向后兼容，影响 ProbationFrames 升降）
+// penalty: ghost 累积扣分（写入 ts.GhostPenalty），≥ 80 在 verdict 转换段判 Ghost
+// reason: 主导信号（用于 ai.log）
 type birthScoreResult struct {
-	score  int
-	reason string // 空 = 正常打分；非空 = ghost 短路原因（"far_from_enter" / "no_enter_pair"）
+	score   int
+	penalty int
+	reason  string
 }
 
 func (tm *TrackManager) birthScore(x, y int, tMs int64) birthScoreResult {
+	cell := tm.grid.CellAt(x, y)
 	score := 50
+	penalty := 0
 	reason := ""
 
-	// 因子 1: d_enter — elder care 物理上限（青壮年 1.5 m/s, 老人 1.0 m/s）
+	// ===== 因子 1: dEntry / EnterRoom 速度反推（最多 -60）=====
 	dEntry := tm.grid.NearestEntryDist(x, y)
+	isOutdoorButInFOV := cell == nil || !cell.InRoom
 	switch {
-	case dEntry < 50:
-		score += 20
-	case dEntry <= birthMaxRealisticCm:
-		if !tm.hasRecentEnterRoom(tMs) {
-			return birthScoreResult{0, "no_enter_pair"} // 50-150cm 但无 EnterRoom 配对
-		}
-		score += birthEnterPairBonus
+	case isOutdoorButInFOV:
+		// D=0 边界规则：在室外但仍 InFOV 的 birth 不扣
 	default:
-		return birthScoreResult{0, "far_from_enter"} // > 150cm 物理不可能
+		enterMs, enterFound := tm.nearestEnterRoomMs(tMs, enterPairWindowMs)
+		if !enterFound {
+			penalty += 60
+			reason = "no_enter_pair"
+		} else {
+			T := math.Abs(float64(tMs-enterMs)) / 1000.0
+			if T < 1.0 {
+				T = 1.0 // 防除零；T=0 视为 1s
+			}
+			speed := float64(dEntry) / T
+			switch {
+			case speed >= 100:
+				penalty += 60
+				reason = "birth_speed_impossible"
+			case speed >= 50:
+				p := int(math.Round(60 * (speed - 50) / 50))
+				penalty += p
+				if reason == "" {
+					reason = "birth_speed_high"
+				}
+			}
+		}
 	}
 
-	// 因子 2: 出生 cell 的 GhostRatio + AreaType
-	cell := tm.grid.CellAt(x, y)
+	// ===== 因子 2: 出生 cell 类型（-10）=====
 	if cell != nil {
-		ghostR := cell.GhostRatio()
-		if ghostR > 0.7 {
-			score -= 25
-		} else if ghostR > 0.4 {
-			score -= 10
-		}
-		if cell.IsEntry() {
-			score += 15
-		}
-		if cell.Belief[0].Type == AreaDeny {
-			score -= 30 // 出生在 Deny 区直接重扣
-			reason = "born_in_deny"
+		switch cell.Belief[0].Type {
+		case AreaDeny:
+			penalty += 10
+			if reason == "" {
+				reason = "born_in_deny"
+			}
+		case AreaSit, AreaBed, AreaToilet, AreaShower:
+			penalty += 10
+			if reason == "" {
+				reason = "born_in_rest_or_shower"
+			}
 		}
 	}
 
-	// 因子 3: 房间已有 track 数
-	nExisting := len(tm.tracks)
-	if nExisting == 0 {
-		score += 10
-	} else if nExisting >= 2 {
-		score -= 10
+	// ===== 因子 4: 后出现的 ID（已有 verdict=Real 的 track）-10 =====
+	nReal := 0
+	for _, t := range tm.tracks {
+		if t.Verdict == VerdictReal {
+			nReal++
+		}
 	}
-
-	// 因子 4: 在已有 track 的同时，出生在"从未学到任何活动语义"的 cell（AreaUnknown）
-	// AreaType 已经过 LearnCellAreas 推断 + Decay 衰减，反映"近期活动 + 远期遗忘"。
-	// AreaUnknown 在 prod 长期运行后只剩"真没有人去过的角落"——多 track 共存时凭空出生几乎一定 ghost。
-	// 注：playback 短窗测试 grid 全 Unknown 时此规则会过度触发，prod 用 Persister hydrate 解决。
-	if cell != nil && cell.Belief[0].Type == AreaUnknown && nExisting >= 1 {
-		score -= 30
+	if nReal >= 1 {
+		penalty += 10
 		if reason == "" {
-			reason = "born_in_unknown_area_with_other_track"
+			reason = "later_born_with_real_track"
 		}
 	}
 
-	return birthScoreResult{clampInt(score, 0, 100), reason}
+	// ===== 因子 6: 历史 ghost 多发区（cell.GhostRatio > 0.3）-10 =====
+	if cell != nil && cell.GhostRatio() > 0.3 {
+		penalty += 10
+		if reason == "" {
+			reason = "ghost_history_zone"
+		}
+	}
+
+	// ===== Score baseline 加分（保持 verdict 旧路径可走 Real）=====
+	if dEntry < 50 {
+		score += 20
+	} else if dEntry <= birthMaxRealisticCm && tm.hasRecentEnterRoom(tMs) {
+		score += birthEnterPairBonus
+	}
+	if cell != nil && cell.IsEntry() {
+		score += 15
+	}
+
+	return birthScoreResult{
+		score:   clampInt(score, 0, 100),
+		penalty: penalty,
+		reason:  reason,
+	}
+}
+
+// applyLifetimeGhostFactors 在 track 生命周期内增量累积 ghost penalty。
+// 当前覆盖：因子 3（30s 内位移很少 → 凭空出现又不动）。
+// 因子 5（运动对称性）留 PR-5.4 实现。
+//
+// 调用方持锁；幂等（用 LifetimeFactorsApplied bitmask 防重复扣）。
+func (tm *TrackManager) applyLifetimeGhostFactors(ts *TrackState, nowMs int64) {
+	const (
+		factor3Bit          = 1 << 0
+		factor3CheckAgeMs   = 30_000 // 出生后 30s 检查一次
+		factor3DispThreshCm = 50     // 位移 < 50cm 视为"凭空又不动"
+		factor3Penalty      = 10
+	)
+	// 因子 3: 30s 内位移很少
+	if ts.LifetimeFactorsApplied&factor3Bit == 0 &&
+		ts.LastUpdateMs-ts.BirthPos.TMs >= factor3CheckAgeMs {
+		px, py := ts.Kalman.Position()
+		dx := int(math.Round(px)) - ts.BirthPos.X
+		dy := int(math.Round(py)) - ts.BirthPos.Y
+		disp := int(math.Sqrt(float64(dx*dx + dy*dy)))
+		if disp < factor3DispThreshCm {
+			ts.GhostPenalty += factor3Penalty
+			if ts.BirthReason == "" || ts.BirthReason == "low_score" {
+				ts.BirthReason = "static_after_birth"
+			}
+		}
+		ts.LifetimeFactorsApplied |= factor3Bit
+	}
+}
+
+// nearestEnterRoomMs 在 [tMs - windowMs, tMs + windowMs] 内查最近 EnterRoom 事件。
+// 返回最接近 tMs 的事件时间戳。调用方持锁。
+func (tm *TrackManager) nearestEnterRoomMs(tMs int64, windowMs int64) (int64, bool) {
+	var bestMs int64
+	bestDelta := windowMs + 1
+	found := false
+	for k, e := range tm.recentRadarEvents {
+		if e.EventName != "EnterRoom" {
+			continue
+		}
+		delta := tMs - k
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta <= windowMs && delta < bestDelta {
+			bestMs = k
+			bestDelta = delta
+			found = true
+		}
+	}
+	return bestMs, found
 }
 
 // hasRecentEnterRoom 检查 [tMs - enterPairWindowMs, tMs] 窗口内有无 EnterRoom 事件。

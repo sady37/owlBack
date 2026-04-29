@@ -53,6 +53,16 @@ type verifyRecord struct {
 	Breakdown      map[string]int
 }
 
+type ghostVerdictRec struct {
+	TMs          int64
+	TrackID      int
+	Score        int
+	BirthScore   int
+	GhostPenalty int
+	Reason       string
+	X, Y         int
+}
+
 func main() {
 	layoutPath := flag.String("layout", "", "layout JSON 路径（可选；缺省时不构建 grid）")
 	roomID := flag.String("room", "Bedroom", "room id")
@@ -92,9 +102,10 @@ func main() {
 	}
 	log.Printf("firmware Fall events in window: %d", len(falls))
 
-	// 4. captures verifier output via custom zap core
-	captured := make(map[int64]*verifyRecord) // key = ts_ms
-	captureCore := newVerifyCaptureCore(captured)
+	// 4. captures verifier output + ghost verdicts via custom zap core
+	captured := make(map[int64]*verifyRecord) // key = ts_ms (radar_fall_verify)
+	ghostVerdicts := []ghostVerdictRec{}      // track_verdict_ghost log entries
+	captureCore := newVerifyCaptureCore(captured, &ghostVerdicts)
 
 	devLogger, _ := zap.NewDevelopment()
 	logger := zap.New(zapcore.NewTee(devLogger.Core(), captureCore))
@@ -163,7 +174,34 @@ func main() {
 	fmt.Printf("Verifier verdict counts: ghost=%d suspect=%d real=%d (missed=%d)\n",
 		stat.ghost, stat.suspect, stat.real, stat.missed)
 
-	// 7. 也输出 engine 自己 silent/lost/still 报警，作为 "潜在漏报" 的反向证据
+	// 7a. Engine 内部 ghost verdict 统计（无关 firmware Fall，专门看 ghost 检出能力）
+	fmt.Println("\n----- Engine ghost verdicts in window -----")
+	if len(ghostVerdicts) == 0 {
+		fmt.Println("  (no ghost verdicts emitted)")
+	} else {
+		fmt.Printf("  total ghost verdicts: %d\n", len(ghostVerdicts))
+		// 按 reason 聚合
+		reasonCount := map[string]int{}
+		for _, g := range ghostVerdicts {
+			reasonCount[g.Reason]++
+		}
+		for r, c := range reasonCount {
+			fmt.Printf("  - reason=%-40s : %d\n", r, c)
+		}
+		fmt.Println("  Sample (first 10):")
+		fmt.Printf("  %-20s | %-3s | %-5s | %-12s | %-30s | %s\n",
+			"time(local)", "tid", "score", "ghost_penal", "reason", "pos")
+		for i, g := range ghostVerdicts {
+			if i >= 10 {
+				break
+			}
+			t := time.UnixMilli(g.TMs).In(loc).Format("01-02 15:04:05")
+			fmt.Printf("  %-20s | %-3d | %-5d | %-12d | %-30s | (%d,%d)\n",
+				t, g.TrackID, g.Score, g.GhostPenalty, g.Reason, g.X, g.Y)
+		}
+	}
+
+	// 7b. 也输出 engine 自己 silent/lost/still 报警，作为 "潜在漏报" 的反向证据
 	fmt.Println("\n----- Engine independent fall events in same window -----")
 	fmt.Printf("silent_fall (old 60s):   pending=%d cancelled=%d reported=%d\n",
 		res.SilentFallPendingCreated, res.SilentFallPendingCancelled, res.SilentFallReported)
@@ -185,9 +223,9 @@ func loadFirmwareFalls(ctx context.Context, db *sql.DB, deviceUID string,
 			ae.device_id::text,
 			d.device_uid,
 			extract(epoch from ae.triggered_at)*1000 AS trigger_ms,
-			ae.operation,
+			COALESCE(ae.operation, '') AS operation,
 			ae.alarm_status,
-			ae.trigger_data->>'event_payload' AS payload
+			COALESCE(ae.trigger_data->>'event_payload', '') AS payload
 		FROM alarm_events ae
 		JOIN devices d ON d.device_id = ae.device_id
 		WHERE d.device_uid = $1
@@ -250,13 +288,15 @@ func makeAlarmInjector(falls []fallEvent, mount radarutils.RadarMount) playback.
 
 type verifyCaptureCore struct {
 	zapcore.Core
-	captured map[int64]*verifyRecord
+	captured      map[int64]*verifyRecord
+	ghostVerdicts *[]ghostVerdictRec
 }
 
-func newVerifyCaptureCore(captured map[int64]*verifyRecord) zapcore.Core {
+func newVerifyCaptureCore(captured map[int64]*verifyRecord, ghostList *[]ghostVerdictRec) zapcore.Core {
 	return &verifyCaptureCore{
-		Core:     zapcore.NewNopCore(),
-		captured: captured,
+		Core:          zapcore.NewNopCore(),
+		captured:      captured,
+		ghostVerdicts: ghostList,
 	}
 }
 
@@ -265,12 +305,40 @@ func (c *verifyCaptureCore) With(_ []zapcore.Field) zapcore.Core {
 	return c
 }
 func (c *verifyCaptureCore) Check(e zapcore.Entry, ce *zapcore.CheckedEntry) *zapcore.CheckedEntry {
-	if e.Message == "radar_fall_verify" {
+	if e.Message == "radar_fall_verify" || e.Message == "track_verdict_ghost" {
 		return ce.AddCore(e, c)
 	}
 	return ce
 }
-func (c *verifyCaptureCore) Write(_ zapcore.Entry, fields []zapcore.Field) error {
+func (c *verifyCaptureCore) Write(e zapcore.Entry, fields []zapcore.Field) error {
+	if e.Message == "track_verdict_ghost" {
+		g := ghostVerdictRec{}
+		for _, f := range fields {
+			switch f.Key {
+			case "ts_ms":
+				g.TMs = f.Integer
+			case "track_id":
+				g.TrackID = int(f.Integer)
+			case "score":
+				g.Score = int(f.Integer)
+			case "birth_score":
+				g.BirthScore = int(f.Integer)
+			case "ghost_penalty":
+				g.GhostPenalty = int(f.Integer)
+			case "reason":
+				g.Reason = f.String
+			case "x":
+				g.X = int(f.Integer)
+			case "y":
+				g.Y = int(f.Integer)
+			}
+		}
+		if c.ghostVerdicts != nil {
+			*c.ghostVerdicts = append(*c.ghostVerdicts, g)
+		}
+		return nil
+	}
+	// radar_fall_verify
 	rec := &verifyRecord{Breakdown: map[string]int{}}
 	for _, f := range fields {
 		switch f.Key {

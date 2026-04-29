@@ -173,6 +173,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	learnParams := roomengine.DefaultLearnParams()
 	tm.SetMoveSpeedCms(learnParams.MoveSpeedCms)
 	tm.SetRoomName(cfg.RoomName)
+	// playback 是测试场景：把 startupMs 设到回放窗起点前 10min，
+	// 让"5min startup grace"完全不命中（否则窗口前 5min 的 track 全被豁免成 Real，掩盖 ghost 检测能力）。
+	tm.SetStartupMs(opts.Start.UnixMilli() - 10*60*1000)
 	// 让 engine 内部 ai.log 走 stderr，方便 playback 实测看 ghost / fall 决策细节
 	if opts.Logger != nil {
 		tm.SetLogger(opts.Logger)

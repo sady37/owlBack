@@ -121,6 +121,21 @@ type TrackState struct {
 	// （把 EnterRoom 反查窗口扩展到 [Birth-3s, deadline]），给 event-stream 缓冲 2s。
 	// 0 = 已终判过，不再重算。
 	BirthFinalDeadlineMs int64
+
+	// ---- PR-5.x Ghost penalty 累积器（与 BirthScore 互补）----
+	// GhostPenalty：track 生命周期累积的 ghost 扣分（>= 0），≥ 80 判 Ghost。
+	// 出生时由 birthScore 因子 1/2/4/6 累积；持续期由因子 3/5 增量。
+	GhostPenalty int
+
+	// LifetimeFactorsApplied：bitmask，防止 lifetime 因子（如 30s 静止）重复扣。
+	// bit 0 = factor 3 (30s static) applied
+	LifetimeFactorsApplied uint32
+
+	// LongSurvivalAnchored：track 存活 ≥ 5min 后兜底锚定 Real（不再翻 Ghost）。
+	LongSurvivalAnchored bool
+
+	// StartupGrace：service 启动 5min grace 期内 first-seen 的 track，默认 Real。
+	StartupGrace bool
 }
 
 // Track 生命周期常量

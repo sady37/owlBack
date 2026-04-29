@@ -71,27 +71,40 @@ func (tm *TrackManager) verifyRadarFall(a RadarFallAlarm, nowMs int64) FallVerif
 	ts := tm.tracks[a.TrackID]
 	if ts == nil {
 		// engine 没有匹配的 track（firmware 复用 track_id / engine 已 evict）
-		// 这种情况固件单方面发了 Fall，engine 完全没目击 → 偏 ghost
 		score -= 25
 		breakdown["no_engine_track"] = -25
 		return finalizeFallVerifyResult(score, breakdown)
 	}
 
-	// === 强 ghost 信号（择一应用最大的） ===
-	switch {
-	case ts.Verdict == VerdictGhost:
-		score -= 40
-		breakdown["verdict_ghost"] = -40
-	case ts.BirthReason == "no_enter_pair" || ts.BirthReason == "far_from_enter" ||
-		ts.BirthReason == "unknown_area_multitrack":
-		score -= 25
-		breakdown["birth_failed_"+ts.BirthReason] = -25
-	case ts.MaxImpliedSpeedFromBirth > FallRulesParam.Lost.SuspectSpeedCm:
+	// === 反 ghost 强保护（PR-5.3）===
+	if ts.LongSurvivalAnchored {
+		breakdown["anti_ghost_long_survival"] = 50 // 锚定 Real 后强保护
+		score = 100
+		return finalizeFallVerifyResult(score, breakdown)
+	}
+	if ts.StartupGrace {
+		breakdown["anti_ghost_startup_grace"] = 50
+		score = 100
+		return finalizeFallVerifyResult(score, breakdown)
+	}
+
+	// === Ghost 信号 ===
+	// 主信号：累积 GhostPenalty（PR-5.x 新机制）
+	if ts.GhostPenalty > 0 {
+		// penalty 直接转化为 fall verifier 的扣分（按比例缩放）
+		// GhostPenalty 80 → -50 (强 ghost)；20 → -12.5；clamp [-50, 0]
+		p := -int(math.Round(float64(ts.GhostPenalty) * 50.0 / 80.0))
+		if p < -50 {
+			p = -50
+		}
+		score += p
+		breakdown["ghost_penalty"] = p
+	}
+
+	// 辅助信号：原有 ts.Verdict（兜底，用于 GhostPenalty 未累积但 verdict 已定的边缘 case）
+	if ts.Verdict == VerdictGhost && ts.GhostPenalty < 30 {
 		score -= 20
-		breakdown["impossible_speed"] = -20
-	case nowMs-ts.BirthPos.TMs < 3000 && ts.BirthScore < ScoreConfirmTh:
-		score -= 20
-		breakdown["fresh_low_birth"] = -20
+		breakdown["verdict_ghost_fallback"] = -20
 	}
 
 	// === 辅助减分 ===
