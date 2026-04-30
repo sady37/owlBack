@@ -63,3 +63,9 @@ kms/owl-kms
 
 # Stale binaries
 wisefido-qinglan/wisefido-qinglan
+wisefido-ai/feedback-once
+wisefido-ai/roomengine-playback
+
+# Local debug artifacts (not for repo)
+doc/playback-*.html
+ota/*.zip
