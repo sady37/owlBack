@@ -871,7 +871,17 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			// 消失判定：lost fall（按 cell areaType 分时长，verdict 未定也算）
 			// PR-14：旧 Path 1（track 消失 + 60s 复现窗口）已删除——
 			// silent fall 仅由 BedSession LeftBed 矛盾路径触发（见 scanSilentFallLeftBed）。
-			if (ts.Verdict == VerdictReal || ts.Verdict == VerdictPending) && tm.checkLostFall(ts) {
+			//
+			// dedup：若该 track 已报过 bedside_fall（R4 床边晕倒，track 仍活时报），
+			// 跳过 lost_fall pending 入池——避免"15min static→bedside_fall fire→track
+			// 失锁→lost_fall 又 fire"的同事件双报。
+			if ts.BedsideFallReported {
+				tm.logger.Info("lost_fall_pending_skipped_after_bedside_fall",
+					zap.String("device_uid", ts.DeviceID),
+					zap.Int("track_id", ts.TrackID),
+					zap.Int64("ts_ms", nowMs),
+				)
+			} else if (ts.Verdict == VerdictReal || ts.Verdict == VerdictPending) && tm.checkLostFall(ts) {
 				pxF, pyF := ts.Kalman.Position()
 				px := int(math.Round(pxF))
 				py := int(math.Round(pyF))
@@ -2123,7 +2133,8 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 			if stillSec > tm.bedsideFallCfg.StillTimeoutSec && ts.CurrentAnomaly != AnomalyBedsideFall {
 				ts.CurrentAnomaly = AnomalyBedsideFall
 				tm.grid.MarkFallEvent(x, y, nowMs)
-				ts.LongStillReported = true // 复用 flag 防 LongStill 重复 mark
+				ts.LongStillReported = true   // 复用 flag 防 LongStill 重复 mark
+				ts.BedsideFallReported = true // 防双报：后续若 track 失锁，跳过 lost_fall pending 入池
 				// PR5c: alarm.Fall + Source=ai_bedside_silent（R4 床边晕倒）
 				bedsideP := tm.payloadFromTrack(ts)
 				bedsideP.Source = SourceAIBedsideSilent

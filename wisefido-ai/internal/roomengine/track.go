@@ -84,6 +84,9 @@ type TrackState struct {
 	StillX, StillY    int
 	LongStillReported bool // 防 LongStill 重复上报
 	StillFallReported bool // 防 still-fall 重复上报（bathroom + pose=Stand + 15/18min）
+	// BedsideFallReported R4 床边晕倒已报过 → lost_fall pending 入池跳过该 track，
+	// 防双报（track 仍活时报 bedside_fall，后续 firmware 丢失 track 又触发 lost_fall）
+	BedsideFallReported bool
 
 	// ---- PR-7.2 stand-static 自学习 → AreaSit 强化 ----
 	// StandStaticSince：pose=Stand 且静止的起点 ms（0 = 不在 stand-static 状态）。

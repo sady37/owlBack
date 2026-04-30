@@ -1018,3 +1018,61 @@ func TestIsNightTime(t *testing.T) {
 		}
 	}
 }
+
+// TestLostFall_SkippedAfterBedsideFall 验证 dedup：track 已报过 bedside_fall
+// 后，firmware 失锁不应再进 pendingLostFalls 池（防止同一物理事件双报）。
+//
+// 场景模拟：
+//
+//	t=0      track 出生在合法 lost-fall 位置（远离 entry），升 Real
+//	t=N      标记 BedsideFallReported = true（模拟 R4 床边晕倒已 fire）
+//	t=N+12s  firmware 停止上报 → engine 应判 lost，但因 BedsideFallReported
+//	         跳过 pending 入池
+func TestLostFall_SkippedAfterBedsideFall(t *testing.T) {
+	tm, g := newTestTM()
+	// 角落 cell 设为 AreaEnter（让消失点 (-90,320) 距 entry 足够远）
+	for i := range g.Cells {
+		c := &g.Cells[i]
+		col := i % g.Width
+		row := i / g.Width
+		x, y := g.ToCanvas(col, row)
+		if x < -200 && y < -200 {
+			c.Belief[0].Type = AreaEnter
+			c.Belief[0].Confidence = 99
+			c.Belief[0].Source = SourceHuman
+		}
+	}
+
+	const tid = 0
+	startTms := int64(1_000_000)
+
+	// 1) track 升 Real
+	tms := runFramesUntilReal(tm, tid, 100, 100, startTms, 30)
+
+	// 2) 移到合法 lost-fall 位置（远离 entry）
+	tm.processFrameAt([]TrackFrame{
+		{TrackID: tid, DeviceID: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
+	}, tms)
+	tms += 1000
+
+	// 3) 标记 BedsideFallReported（模拟 R4 已 fire）
+	ts := tm.tracks[tid]
+	if ts == nil {
+		t.Fatal("track lost before flag set")
+	}
+	ts.BedsideFallReported = true
+
+	// 4) firmware 停止上报，等 MissCount > MaxMissCount
+	for i := 0; i < 12; i++ {
+		tm.processFrameAt(nil, tms)
+		tms += 1000
+	}
+	if _, exists := tm.tracks[tid]; exists {
+		t.Fatal("track should be deleted after MissCount > MaxMissCount")
+	}
+
+	// 5) 关键断言：pendingLostFalls 应为空（被 dedup 跳过）
+	if got := len(tm.pendingLostFalls); got != 0 {
+		t.Errorf("pendingLostFalls should be empty after BedsideFallReported, got %d", got)
+	}
+}
