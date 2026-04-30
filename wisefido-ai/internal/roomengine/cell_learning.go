@@ -64,17 +64,24 @@ type LearnParams struct {
 	//   - 5-cell 软共识用 TraverseCount < AutoDenyTraverseTolerate（默认 3）
 	//     容忍背景 ghost/jitter ≈ 0.3/天 噪声，类 PR-13 sit 学习的 90% 容忍
 	//   - reset 用 TraverseCount >= AutoDenyTraverseReset（默认 5）
-	//     高于此说明真有人走过，重置 15 天计时
+	//     高于此说明真有人走过，重置时间计时
 	//   - hysteresis 区间 [3, 5)：维持当前状态，不前进不重置（避免阈值附近抖动）
 	//
-	// 时间门控（默认 15 天）：要求 cell 持续满足 5-cell 软共识 ≥ 15 天才真正 promote AreaDeny。
-	// 物理含义：15 天人都不踩到的 cell，几乎可肯定是家具/障碍。
-	//   - 老 walk 已搬走的 cell：15 天内重新走过 → reset 重学
-	//   - 真 furniture 核心：15 天持续无穿越 → 升格
-	// playback 限制：3 天数据 < 15 天阈值 → playback 中此规则几乎不生效（预期，prod 长期累积）
-	AutoDenyMinPersistDays  int // 时间门控最少持续天数（默认 15）
+	// 时间门控（默认 10 天，PR-15.5 实测调整）：cell 持续满足条件 ≥ 10 天才升 AreaDeny。
+	// 物理含义：10 天人都不踩到的 cell，几乎可肯定是家具/障碍。
+	//   - 老 walk 已搬走的 cell：10 天内重新走过 → reset 重学
+	//   - 真 furniture 核心：10 天持续无穿越 → 升格
+	//
+	// 实测对比 (Kitchen-min layout 5 cycles 16.25 天等效数据)：
+	//   15d/3/5：第 5 cycle (~16d) 触发，最终 200 cells
+	//   10d/3/5（当前默认）：第 4 cycle (~13d) 触发，最终 200 cells（加速 5 天）
+	//   10d/2/4（更严）：触发时机相同，最终 cell 数相同
+	// → 时间门控是主导因素；tolerance/reset 在 Kitchen-min 双峰分布影响小，保留 3/5 抗噪
+	//
+	// playback 限制：3 天数据 < 10 天阈值 → 单 cycle playback 中此规则不生效（预期）
+	AutoDenyMinPersistDays   int // 时间门控最少持续天数（默认 10）
 	AutoDenyTraverseTolerate int // 5-cell 软共识容忍 TraverseCount 上限（< 此值算"未走过"，默认 3）
-	AutoDenyTraverseReset   int // 重置 15 天计时的 TraverseCount 阈值（>= 此值视为"真走过"，默认 5）
+	AutoDenyTraverseReset    int // 重置时间计时的 TraverseCount 阈值（>= 此值视为"真走过"，默认 5）
 }
 
 // DefaultLearnParams 与 config.yaml::roomengine.learn 默认值一致。
@@ -93,9 +100,9 @@ func DefaultLearnParams() LearnParams {
 		MoveSpeedCms:             20,
 		NearTraverseWalk:         5,
 		NearTraverseDeny:         20,
-		AutoDenyMinPersistDays:   15, // PR-15.3 持续 15 天满足软共识才升 Deny
-		AutoDenyTraverseTolerate: 3,  // PR-15.3 软共识：TraverseCount<3 算未走过（容忍背景噪声）
-		AutoDenyTraverseReset:    5,  // PR-15.3 重置：TraverseCount>=5 视为真走过 → 重置计时
+		AutoDenyMinPersistDays:   10, // PR-15.5: 10 天持续门控（实测 vs 15d 加速 5 天，结果一致）
+		AutoDenyTraverseTolerate: 3,  // 软共识：TraverseCount<3 算未走过（容忍背景噪声 ~0.3/天）
+		AutoDenyTraverseReset:    5,  // 重置：TraverseCount>=5 视为真走过 → 重置计时
 	}
 }
 
