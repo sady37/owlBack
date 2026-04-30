@@ -53,7 +53,11 @@ type lostFallParam struct {
 	WalkwayWaitSec  int // 其它（Active / Unknown / Enter）5min
 	// AreaToilet / AreaShower 不在此表—与 still fall 同时长（运行时取）
 
-	// 离最近出口最小距离（cm）—— 小于此值认为可能正常走出
+	// 离最近出口最小距离（cm）—— ≤此值视为「贴近门口」可能正常走出，>此值未配
+	// ExitRoom 事件全部进 lost-fall pending 池。
+	// 2026-04-30 收紧：原 100cm（1 米/约 1 秒走完）→ 30cm（必须真贴在门口）。
+	// 收紧动机：elder care 宁可误报不可漏报；门口 30cm-1m 区间的真摔倒原先被
+	// 当作"可能正常出门"漏掉，30cm 以内才视为正常通过门框的合理误差。
 	ExitDistMinCm int
 
 	// 「空间跳跃」加权因子：表现过空间跳跃的 track 等待时间 × 此因子
@@ -122,7 +126,7 @@ var FallRulesParam = fallRulesParam{
 		RestZoneWaitSec:       60 * 60, // 60 min
 		DenyZoneWaitSec:       5 * 60,
 		WalkwayWaitSec:        5 * 60,
-		ExitDistMinCm:         100, // 1 m
+		ExitDistMinCm:         30, // 30cm（贴近门口）；2026-04-30 从 100cm 收紧
 		SpatialJumpFactor:     0.5,
 		FrozenSameThreshold:   25,    // 连续 25 帧字面相同
 		ImpossibleSpeedCm:     200,   // 硬 ghost：老人最快 100-150cm/s

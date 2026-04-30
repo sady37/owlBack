@@ -2295,7 +2295,8 @@ func (tm *TrackManager) checkLostFall(ts *TrackState) bool {
 	if cell.Belief[0].Type == AreaEnter {
 		return false
 	}
-	// 离最近门 ≤ ExitDistMinCm 视为可能正常走出（≈1 秒可达）
+	// 离最近门 ≤ ExitDistMinCm（30cm）视为「贴在门口正常通过」；>30cm 即使无
+	// ExitRoom 事件也进 lost-fall pending（elder care 宁可误报）。
 	if tm.grid.NearestEntryDist(px, py) <= FallRulesParam.Lost.ExitDistMinCm {
 		return false
 	}

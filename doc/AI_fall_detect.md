@@ -870,3 +870,181 @@ cell 距 walk path ≥2 cell 且持续 10 天无穿越才升 AreaDeny。新部�
 - (b) 等 10 天数据自动积累
 
 详见 PR-15.4 BFS 距离场设计。
+
+---
+
+## 17. AI Fall Rules 总结（PR1-5c 后）
+
+四类 AI 派生 Fall，**category 统一 `alarm.Fall`**，通过 `Source` 字段区分子路径。
+cardagg 现有 `case alarm.Fall` handler 自动落 alarm_events；子类型分析查
+`trigger_data->>'source'`。
+
+### 17.1 silent_fall — sleepad/radar 多模融合矛盾
+
+**Source**: `ai_sleepad_radar_conflict`
+
+**物理含义**：同房间 sleepad+radar 已确认人在床，sleepad 报 LeftBed 但 radar
+仍看到人在床区 → 没真正离床（很可能从床边滑下，radar 仍捕捉到地面位置）。
+
+**触发链（5 步）**：
+
+1. **双源 InBed 入场门控**（PR-14 硬要求）：sleepad 报 InBed + radar 独立判
+   定 InBed（area_id 落在 AreaBed cell），两事件 `|Δt| ≤ 15s` → 标记
+   `RadarInBedConfirmedMs`。**未双源确认的 BedSession 永不触发** silent fall。
+2. **多人计数**：同房 sleepad 各 +1 → `bedPersonCount`，BedSession 维护
+   `MaxPeople`。
+3. **Bed Area 锚定**：radar InBed 那帧的 `area_id` 作为该 Bed 几何锚。
+4. **持续在床门槛**：`InBedSinceMs → LeftBedAtMs` ≥ `MinInBedSec = 5min`，
+   过滤短暂坐床。
+5. **LeftBed 后等待 + radar 矛盾判定**（两档等待时长）：
+   - `LeftBedHadHRRR && LeftBedMaxPeople == 1` → **`WaitVitalSec = 60s`**
+   - 其它 → **`WaitNoVitalSec = 120s`**
+   - 等待窗满时任一 active radar track 距最近 AreaBed cell ≤
+     **`BedNeighborhood = 100cm`** → 报 silent fall；已离开邻域 → 取消。
+
+**参数（[fall_rules_param.go:108-113](../wisefido-ai/internal/roomengine/fall_rules_param.go#L108-L113)）**：MinInBedSec=300s / WaitNoVitalSec=120s / WaitVitalSec=60s / BedNeighborhood=100cm。
+
+---
+
+### 17.2 bedside_fall — R4 床边晕倒
+
+**Source**: `ai_bedside_silent`
+
+**物理含义**：老人夜间 LeftBed 后**真离床走开了**（不像 silent_fall 还在床区），
+但**没走远**就在床边停住，长时间静止——典型"起夜走两步晕倒"。
+
+**与 silent_fall 区别（disjoint）**：
+
+| 维度 | silent_fall | bedside_fall |
+|---|---|---|
+| LeftBed 后 radar 位置 | 仍在床 ≤100cm（**矛盾**）| 离床区但 ≤100cm（人真走开了，没走远）|
+| 关键证据 | sleepad/radar 跨源不一致 | radar 自己的「长时间静止」 |
+| 时间维度 | LeftBed 后 60-120s（短窗）| LeftBed 后 15min 静止（长窗）|
+| 时段约束 | 全天 | **仅夜间** IsNightTime |
+
+**触发链（4 个 AND）**：
+
+1. **风险时段**：必须 `IsNightTime`（默认 23:30-07:30），白天不报。
+2. **LeftBed 开窗**：最近 LeftBed 后 ≤ `WindowSec = 180s`（3 min）。
+3. **位置约束**：track 距最近 AreaBed cell ≤ `BedsideMarginCm = 100cm`。
+4. **静止时长**：> `StillTimeoutSec = 900s`（15 min）→ 报 bedside_fall。
+
+**与 lost_fall 双报 corner case**：bedside_fall 触发时 track 仍活，后续若
+firmware 丢 track 也会满足 lost_fall 条件 → 双报。**建议加 dedup**：
+`ts.BedsideFallReported = true` 时 lost_fall pending 入池跳过。
+
+---
+
+### 17.3 still_fall — 长时间站立静止
+
+**Source**: `ai_still_in_bathroom`
+
+**物理含义**：老人在卫浴内 stand 姿态静止超过阈值——正常人不会站着不动 15
+分钟以上。
+
+**触发条件（5 个 AND）**：
+
+1. **位置语义是浴室**——三条件**取并集**任一满足：
+   - cell.Belief[0].Type ∈ {AreaToilet, AreaShower}
+   - room.name 含 `bathroom` / `restroom` / `toilet`（不区分大小写）
+   - alarm_device.monitor_config 显式启用 `Stay alarm`（运维标注的特殊房间）
+2. **Pose=Stand**：避免坐马桶（pose=Sit）误报。
+3. **位移静止**：`|Δpos| < StaticPosCm = 20cm`。
+4. **静止时长超阈**：
+   - 风险时段（夜）→ **15 min**（`ToiletShowerSec=900s`）
+   - 非风险时段（白天）→ 15 × `NonRiskTimeFactor (1.2) = 18 min`
+5. **Bathroom caregiver 例外**：cell ∈ {AreaToilet, AreaShower} 且同房间
+   ≥ 2 个 real track → 大概率护工陪同，跳过。
+
+**参数**：ToiletShowerSec=15min / DenyZoneSec=5min / DefaultSec=8min /
+NonRiskTimeFactor=1.2 / StaticPosCm=20cm。
+
+---
+
+### 17.4 lost_fall — Real track 异常消失
+
+**Source**: `ai_lost_track`
+
+**物理含义**：track 在室内合法位置（非门口、非 Enter 区）被 firmware 丢失，
+等待 cell-area-typed 时长后无"复现"（无新出生 + 无 ExitRoom + 无多人入屋）
+→ 极可能跌倒倒地被低 z 信号失锁。
+
+**触发条件（4 个 AND）**：
+
+1. **track 状态**：消失前 `VerdictReal` 或 `VerdictPending`。
+   - **Pending 也算**（用户对齐 2026-04-27）：还没确定是 ghost/real 时消失，
+     按 real 计算（保守，宁可误报）。
+   - `VerdictGhost` 不入池。
+2. **位置约束**（消失瞬间最后位置）：
+   - 不在 Enter 区（cell.Belief[0].Type != AreaEnter）。
+   - **距最近 Enter 区 > `ExitDistMinCm = 30cm`**（**2026-04-30 从 100cm 收紧**）。
+     - **改动动机**：原 1m 阈值下，门口 30cm-1m 区间真摔倒被当作"可能正常出门"
+       漏掉。30cm 才是合理"贴在门口正常通过"的物理误差，>30cm 没 ExitRoom 都进
+       fall pending。
+3. **Track 年龄**：`AgeSec() ≥ 5s`，刚出生即消失不算（噪声）。
+4. **等待窗满 + 无复现**：按消失点 cell.Belief[0].Type 分档：
+   - AreaBed / AreaSit → **60 min**（睡觉/坐着丢 track 常见）
+   - AreaToilet / AreaShower → **15 min**（与 still_fall 同步）
+   - AreaDeny → **5 min**
+   - 其它（Active / Unknown / Walk / Enter）→ **5 min**
+   - **空间跳跃修正**：若消失前 `MaxImpliedSpeedFromBirth > SuspectSpeedCm = 100`
+     → 等待时长 × `SpatialJumpFactor = 0.5`（更敏感，砍半）。
+   - **取消条件**（任一）：新 track 出生附近（BlindSpotRecovery）/ ExitRoom
+     事件 / 房间 number_people ≥ 2。
+
+**参数（[fall_rules_param.go:121-130](../wisefido-ai/internal/roomengine/fall_rules_param.go#L121-L130)）**：RestZoneWaitSec=60min / DenyZoneWaitSec=5min / WalkwayWaitSec=5min / **ExitDistMinCm=30cm** / SpatialJumpFactor=0.5。
+
+**已知误报场景**（见 §16.1 Kitchen 长时间站立做饭）。30cm 收紧后 Kitchen 误报会**更频繁**，elder care 场景下"老人不下厨"可暂忽略，常规养老机构（多人厨房）建议 layout 显式标 Counter / Stove 为 Furniture (AreaDeny)。
+
+---
+
+### 17.5 一图对照
+
+```
+触发时刻 track 还在 tm.tracks ?
+    │
+    ├─ 是 → 看位置 + 静止特征
+    │       │
+    │       ├─ 浴室 + Stand + 静止 ≥15min → still_fall (ai_still_in_bathroom)
+    │       │
+    │       └─ 床边 ≤100cm + 静止 ≥15min + 夜间 + 在 LeftBed 窗内
+    │          → bedside_fall (ai_bedside_silent)
+    │
+    └─ 否（firmware 已丢失 track）
+            │
+            ├─ sleepad LeftBed 矛盾路径（仅 BedSession 双源确认过）
+            │   且 radar 仍在 Bed ≤100cm
+            │   → silent_fall (ai_sleepad_radar_conflict)
+            │
+            └─ 一般消失 + 距门 >30cm + 等待窗满无复现
+                → lost_fall (ai_lost_track)
+```
+
+### 17.6 wire 上的样子
+
+发到 `iot:alarm:stream` 的统一形态（以 still_fall 为例）：
+
+```json
+{
+    "device_uid": "9923003AB17F",
+    "device_type": "Radar.AI01",
+    "category": "Fall",
+    "topic_type": "alarm",
+    "data_value": [{
+        "track_id": 0, "position_x": 50, "position_y": 320, "position_z": 80,
+        "track_confidence": 60, "pose": 4,
+        "dataCategory": "Fall", "event_name": "Fall",
+        "source_device_uid": "9923003AB17F",
+        "source": "ai_still_in_bathroom",
+        "reason": "still_in_bathroom_over_threshold",
+        "evidence": {
+            "still_seconds": 920,
+            "still_timeout_sec": 900,
+            "cell_area_type": 6
+        }
+    }]
+}
+```
+
+cardagg 端零改动接管（PR4 的 BaseDeviceType + 现有 case alarm.Fall），子类型
+通过 `trigger_data->>'source'` 在 alarm_events 表里查询 / group by。
