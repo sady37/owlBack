@@ -56,6 +56,11 @@ type Options struct {
 	// Logger：自定义 zap logger 注入 TrackManager；缺省走 zap.NewDevelopment 写 stderr。
 	// 用于 fall-score-replay 通过 zapcore.Tee 同时捕获 verifier 结果。
 	Logger *zap.Logger
+
+	// Cycles 重放循环数（默认 1）。> 1 时用同一段 DB 数据连续跑 N 次，simT 单调递增
+	// （cycle k 时间戳 += k * windowDuration），grid 状态在 cycle 间保留累积。
+	// 用途：检查 PR-15.3 时间门控（15 天）等长期累积规则；3 cycles × 3 天 ≈ 9 天等效数据。
+	Cycles int
 }
 
 // AlarmInjector playback 在每帧 nowMs 推进后调用；
@@ -226,141 +231,149 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	var trackVerdicts []TrackVerdictRecord
 	totalRows, totalFrames := 0, 0
 
-	chunkStart := opts.Start
-	for chunkStart.Before(opts.End) {
-		chunkEnd := chunkStart.Add(time.Duration(opts.ChunkHrs) * time.Hour)
-		if chunkEnd.After(opts.End) {
-			chunkEnd = opts.End
-		}
-		rows, err := QueryRows(ctx, opts.DB, opts.TenantID, opts.DeviceUID, chunkStart, chunkEnd, opts.RowLimit)
-		if err != nil {
-			return nil, fmt.Errorf("query rows %s~%s: %w",
-				chunkStart.Format("01-02 15:04"), chunkEnd.Format("01-02 15:04"), err)
-		}
-		// 同时拉 event 流（radar EnterRoom/ExitRoom/InBed/LeftBed），按 timestamp merge 进 monitor 流。
-		// birth filter 检查 EnterRoom 配对依赖此数据。
-		eventRows, eErr := QueryEvents(ctx, opts.DB, opts.TenantID, opts.DeviceUID, chunkStart, chunkEnd, opts.RowLimit)
-		if eErr != nil {
-			return nil, fmt.Errorf("query events %s~%s: %w",
-				chunkStart.Format("01-02 15:04"), chunkEnd.Format("01-02 15:04"), eErr)
-		}
-		rows = mergeRowsByTime(rows, eventRows)
-		totalRows += len(rows)
+	cycles := opts.Cycles
+	if cycles < 1 {
+		cycles = 1
+	}
+	windowDurationMs := opts.End.UnixMilli() - opts.Start.UnixMilli()
 
-		for _, row := range rows {
-			ts := row.TimestampMs
+	for cycle := 0; cycle < cycles; cycle++ {
+		cycleOffsetMs := int64(cycle) * windowDurationMs
+		chunkStart := opts.Start
+		for chunkStart.Before(opts.End) {
+			chunkEnd := chunkStart.Add(time.Duration(opts.ChunkHrs) * time.Hour)
+			if chunkEnd.After(opts.End) {
+				chunkEnd = opts.End
+			}
+			rows, err := QueryRows(ctx, opts.DB, opts.TenantID, opts.DeviceUID, chunkStart, chunkEnd, opts.RowLimit)
+			if err != nil {
+				return nil, fmt.Errorf("query rows %s~%s: %w",
+					chunkStart.Format("01-02 15:04"), chunkEnd.Format("01-02 15:04"), err)
+			}
+			eventRows, eErr := QueryEvents(ctx, opts.DB, opts.TenantID, opts.DeviceUID, chunkStart, chunkEnd, opts.RowLimit)
+			if eErr != nil {
+				return nil, fmt.Errorf("query events %s~%s: %w",
+					chunkStart.Format("01-02 15:04"), chunkEnd.Format("01-02 15:04"), eErr)
+			}
+			rows = mergeRowsByTime(rows, eventRows)
+			totalRows += len(rows)
 
-			if simT == 0 {
+			for _, row := range rows {
+				ts := row.TimestampMs + cycleOffsetMs // PR-15.3: cycle 内时间戳 += offset，simT 单调递增
+
+				if simT == 0 {
+					simT = ts
+					nextScanAt = ts + 5*60*1000
+					nextDecayAt = ts + 60*60*1000
+					nextSnapAt = ts + int64(opts.SnapMin)*60_000
+				}
+
+				for simT < ts {
+					nextEvent := ts
+					if nextScanAt < nextEvent {
+						nextEvent = nextScanAt
+					}
+					if nextDecayAt < nextEvent {
+						nextEvent = nextDecayAt
+					}
+					if nextSnapAt < nextEvent {
+						nextEvent = nextSnapAt
+					}
+					if nextEvent <= simT {
+						nextEvent = simT + 1
+					}
+					simT = nextEvent
+
+					if simT >= nextScanAt {
+						grid.LearnCellAreas(learnParams, simT)
+						grid.LearnLyingAnomalies(learnParams)
+						nextScanAt += 5 * 60 * 1000
+					}
+					if simT >= nextDecayAt {
+						grid.DecayAll(3600, decayParams)
+						nextDecayAt += 60 * 60 * 1000
+					}
+					if simT >= nextSnapAt {
+						snapshots = append(snapshots, takeSnapWithPaths(grid, cfg, opts.RoomID, simT,
+							buildTrackPaths(pathBuf, simT, trackLookbackMs)))
+						nextSnapAt += int64(opts.SnapMin) * 60 * 1000
+					}
+				}
+
+				// 分发：event 流（radar EnterRoom/ExitRoom/InBed/LeftBed）落账 + Tick；不参与 ProcessFrame
+				if row.TopicType == "event" {
+					for _, evt := range roomengine.ParseRadarTrackEvents(row.DataValue, row.DeviceUID, ts) {
+						tm.RecordRadarEvent(evt)
+					}
+					if opts.AlarmInjector != nil {
+						opts.AlarmInjector(tm, ts)
+					}
+					tm.Tick(ts)
+					simT = ts
+					continue
+				}
+
+				frames := roomengine.ParseRadarTracks(row.DataValue, row.DeviceID, cfg.Radar, ts)
+				// PR-15.3 cycle 支持：强制 frame.TMs = shifted ts（覆盖 firmware 自带 timestamp）
+				for i := range frames {
+					frames[i].TMs = ts
+				}
+				if len(frames) == 0 {
+					// firmware tid=88 heartbeat 帧被 ParseRadarTracks 过滤后，仍要 tick engine
+					if opts.AlarmInjector != nil {
+						opts.AlarmInjector(tm, ts)
+					}
+					tm.Tick(ts)
+					simT = ts
+					continue
+				}
+				{
+					if opts.AlarmInjector != nil {
+						opts.AlarmInjector(tm, ts)
+					}
+					outputs := tm.ProcessFrame(frames)
+					totalFrames += len(frames)
+					realIDs := make(map[int]bool, len(outputs))
+					for _, o := range outputs {
+						if o.Verdict == roomengine.VerdictReal {
+							realIDs[o.TrackID] = true
+						}
+						if opts.LogTrackVerdicts {
+							trackVerdicts = append(trackVerdicts, TrackVerdictRecord{
+								TMs:      ts,
+								TrackID:  o.TrackID,
+								Verdict:  verdictName(o.Verdict),
+								Score:    o.Score,
+								Risk:     o.Risk,
+								Anomaly:  anomalyName(o.Anomaly),
+								X:        o.X,
+								Y:        o.Y,
+								Z:        o.Z,
+								StillSec: o.StillSec,
+							})
+						}
+					}
+					for _, f := range frames {
+						if !realIDs[f.TrackID] {
+							continue
+						}
+						pathBuf = append(pathBuf, pathPt{tid: f.TrackID, x: f.X, y: f.Y, tms: f.TMs})
+					}
+					if cutoff := ts - pathBufKeepMs; len(pathBuf) > 0 && pathBuf[0].tms < cutoff {
+						i := 0
+						for i < len(pathBuf) && pathBuf[i].tms < cutoff {
+							i++
+						}
+						pathBuf = pathBuf[i:]
+					}
+				}
 				simT = ts
-				nextScanAt = ts + 5*60*1000
-				nextDecayAt = ts + 60*60*1000
-				nextSnapAt = ts + int64(opts.SnapMin)*60_000
 			}
 
-			for simT < ts {
-				nextEvent := ts
-				if nextScanAt < nextEvent {
-					nextEvent = nextScanAt
-				}
-				if nextDecayAt < nextEvent {
-					nextEvent = nextDecayAt
-				}
-				if nextSnapAt < nextEvent {
-					nextEvent = nextSnapAt
-				}
-				if nextEvent <= simT {
-					nextEvent = simT + 1
-				}
-				simT = nextEvent
-
-				if simT >= nextScanAt {
-					grid.LearnCellAreas(learnParams, simT)
-					grid.LearnLyingAnomalies(learnParams)
-					nextScanAt += 5 * 60 * 1000
-				}
-				if simT >= nextDecayAt {
-					grid.DecayAll(3600, decayParams)
-					nextDecayAt += 60 * 60 * 1000
-				}
-				if simT >= nextSnapAt {
-					snapshots = append(snapshots, takeSnapWithPaths(grid, cfg, opts.RoomID, simT,
-						buildTrackPaths(pathBuf, simT, trackLookbackMs)))
-					nextSnapAt += int64(opts.SnapMin) * 60 * 1000
-				}
+			chunkStart = chunkEnd.Add(time.Millisecond)
+			if err := ctx.Err(); err != nil {
+				return nil, err
 			}
-
-			// 分发：event 流（radar EnterRoom/ExitRoom/InBed/LeftBed）落账 + Tick；不参与 ProcessFrame
-			if row.TopicType == "event" {
-				for _, evt := range roomengine.ParseRadarTrackEvents(row.DataValue, row.DeviceUID, ts) {
-					tm.RecordRadarEvent(evt)
-				}
-				if opts.AlarmInjector != nil {
-					opts.AlarmInjector(tm, ts)
-				}
-				tm.Tick(ts)
-				simT = ts
-				continue
-			}
-
-			frames := roomengine.ParseRadarTracks(row.DataValue, row.DeviceID, cfg.Radar, ts)
-			if len(frames) == 0 {
-				// firmware tid=88 heartbeat 帧被 ParseRadarTracks 过滤后，仍要 tick engine
-				// 否则之前活着的 track 的 MissCount 不递增，永远不会进入消失判定 → lost-fall pending 也不会创建。
-				// 与 prod engine.go 同 bug；此处先在 playback 层修，后续再看 prod 是否同改。
-				if opts.AlarmInjector != nil {
-					opts.AlarmInjector(tm, ts)
-				}
-				tm.Tick(ts)
-				simT = ts
-				continue
-			}
-			{
-				if opts.AlarmInjector != nil {
-					opts.AlarmInjector(tm, ts)
-				}
-				outputs := tm.ProcessFrame(frames)
-				totalFrames += len(frames)
-				realIDs := make(map[int]bool, len(outputs))
-				for _, o := range outputs {
-					if o.Verdict == roomengine.VerdictReal {
-						realIDs[o.TrackID] = true
-					}
-					if opts.LogTrackVerdicts {
-						trackVerdicts = append(trackVerdicts, TrackVerdictRecord{
-							TMs:      ts,
-							TrackID:  o.TrackID,
-							Verdict:  verdictName(o.Verdict),
-							Score:    o.Score,
-							Risk:     o.Risk,
-							Anomaly:  anomalyName(o.Anomaly),
-							X:        o.X,
-							Y:        o.Y,
-							Z:        o.Z,
-							StillSec: o.StillSec,
-						})
-					}
-				}
-				for _, f := range frames {
-					if !realIDs[f.TrackID] {
-						continue
-					}
-					pathBuf = append(pathBuf, pathPt{tid: f.TrackID, x: f.X, y: f.Y, tms: f.TMs})
-				}
-				if cutoff := ts - pathBufKeepMs; len(pathBuf) > 0 && pathBuf[0].tms < cutoff {
-					i := 0
-					for i < len(pathBuf) && pathBuf[i].tms < cutoff {
-						i++
-					}
-					pathBuf = pathBuf[i:]
-				}
-			}
-			simT = ts
-		}
-
-		chunkStart = chunkEnd.Add(time.Millisecond)
-		// 主动检查 ctx 取消（HTTP 客户端断开等）
-		if err := ctx.Err(); err != nil {
-			return nil, err
 		}
 	}
 

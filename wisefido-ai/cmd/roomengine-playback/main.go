@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -41,6 +42,9 @@ func main() {
 		chunkHours = flag.Int("chunk", 6, "DB 分块查询大小（小时）")
 		rowLimit   = flag.Int("row-limit", 30000, "单块最大行数")
 		feedback   = flag.Bool("feedback", true, "灌入历史 alarm_events 人类反馈到 grid（PR-9.1）")
+		startISO   = flag.String("start", "", "回放起始（RFC3339 / 2006-01-02 15:04:05 local），与 --end 配合")
+		endISO     = flag.String("end", "", "回放结束")
+		cycles     = flag.Int("cycles", 1, "重放循环次数（>1 时同段数据连跑 N 遍，simT 单调递增）")
 	)
 	flag.Parse()
 
@@ -70,7 +74,25 @@ func main() {
 
 	// 3. 跑回放
 	var start, end time.Time
-	if *startMs > 0 && *endMs > 0 {
+	parseTime := func(s string) (time.Time, error) {
+		layouts := []string{time.RFC3339, "2006-01-02 15:04:05", "2006-01-02 15:04"}
+		for _, ly := range layouts {
+			if t, err := time.ParseInLocation(ly, s, time.Local); err == nil {
+				return t, nil
+			}
+		}
+		return time.Time{}, fmt.Errorf("cannot parse %q", s)
+	}
+	if *startISO != "" && *endISO != "" {
+		var err error
+		if start, err = parseTime(*startISO); err != nil {
+			log.Fatalf("parse start: %v", err)
+		}
+		if end, err = parseTime(*endISO); err != nil {
+			log.Fatalf("parse end: %v", err)
+		}
+		log.Printf("playback window (--start/--end): %s ~ %s", start.Format(time.RFC3339), end.Format(time.RFC3339))
+	} else if *startMs > 0 && *endMs > 0 {
 		start = time.UnixMilli(*startMs)
 		end = time.UnixMilli(*endMs)
 		log.Printf("playback window (explicit): %s ~ %s", start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339))
@@ -78,6 +100,9 @@ func main() {
 		end = time.Now()
 		start = end.Add(time.Duration(-*hours) * time.Hour)
 		log.Printf("playback window (last %dh): %s ~ %s", *hours, start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339))
+	}
+	if *cycles > 1 {
+		log.Printf("playback cycles: %d (simT monotonically increasing across cycles)", *cycles)
 	}
 
 	res, err := playback.Run(ctx, playback.Options{
@@ -92,6 +117,7 @@ func main() {
 		ChunkHrs:                 *chunkHours,
 		RowLimit:                 *rowLimit,
 		IngestHistoricalFeedback: *feedback,
+		Cycles:                   *cycles,
 	})
 	if err != nil {
 		log.Fatalf("playback run: %v", err)
