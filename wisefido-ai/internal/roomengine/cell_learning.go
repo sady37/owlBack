@@ -171,41 +171,54 @@ func (g *RoomGrid) LearnCellAreas(p LearnParams, nowMs int64) {
 			continue
 		}
 
-		// Auto-Deny 反转 (PR-15.4) — 双触发路径 OR + 软共识 + 15 天时间门控
+		// Auto-Deny 反转 (PR-15.4 simplified) — 单一 BFS 距离场 + 软共识 + 15 天门控
 		//
-		// 触发路径（OR 关系，任一即可）：
-		//   A. NearTraverseCount ≥ NearTraverseDeny（默认 20）
-		//      物理含义：walk 边缘 furniture，邻居被走过但本 cell 未走过
-		//   B. BFS depth ≥ 2（dist[i] >= 2 或 dist[i] == -1 不可达）
-		//      物理含义：island 核心 / 不可达角，距 walk 太远
-		//      Walk + Enter + Sit/Bed/Toilet/Shower 是 BFS source，
-		//      传播仅通过 AreaUnknown（停留区不传播；不污染 island）
+		// 设计原理（差异化扩散模型）：
+		//   Walk 扩散快：阈值低（5 邻居） + 直接 Move 触碰即学，几小时-1 天升格
+		//   Auto-Deny 扩散慢：BFS 距离 ≥2 + 5-cell 软共识 + 持续 15 天才升格
+		//   原因：Auto-Deny 后果严重（拒绝 fall 检测），需更严格证据
 		//
-		// 共同条件：
+		// 触发条件 (AND)：
+		//   - BFS depth ≥ 2 (dist[i] >= 2 或 dist[i] == -1 不可达)
+		//     物理含义：cell 距任何"活动" cell ≥ 20cm 或几何隔绝
+		//     Walk + Enter + Sit/Bed/Toilet/Shower 是 BFS source；
+		//     仅传播过 AreaUnknown（停留区不传播；不污染 island）
 		//   - 5-cell 软共识：center + 4 邻居 TraverseCount < 3 + RealDecay < 5
-		//     容忍背景 ghost/jitter ~0.3/天 噪声，类 PR-13 sit 学习的 90% 容忍
+		//     容忍背景 ghost/jitter ~0.3/天 噪声（类 PR-13 sit 学习的 90% 容忍）
+		//   - cell 当前是 AreaUnknown（Walk/Sit/Bed 不动）
 		//   - 15 天时间门控（cell.AutoDenyQualifiedSinceMs）：持续满足才升 Deny
 		//
 		// reset：TraverseCount >= 5 或 RealDecay >= 5（真活动证据）→ 重置计时
 		// hysteresis 区 TraverseCount [3, 5)：维持现状（既不前进也不重置）
 		//
+		// 自纠错：cell 已是 AreaDeny + 被走过（TraverseCount >= 5）→ 回退 Unknown
+		// 让 Walk 规则重新评估（应对家具搬走/重布局）
+		//
 		// 历史教训：
-		//   PR-15.0/15.1 严格 ==0：jitter 单次触发即重置，无法稳定累积
-		//   PR-15.2 BFS 无时间门控：早期标记 walk decay cell + 无观测角落 → 误判
-		//   PR-15.4 = PR-15.3 (软共识+时间门控) + BFS 路径 B（解锁 island 核心）
-		qualifiesNearTraverse := int(c.NearTraverseCount) >= p.NearTraverseDeny
-		qualifiesBfsDepth := dist[i] >= 2 || dist[i] == -1
-		qualifies := (qualifiesNearTraverse || qualifiesBfsDepth) &&
-			(t == AreaUnknown || t == AreaActive) &&
-			fiveCellSoftConsensus(g, i, p.AutoDenyTraverseTolerate)
+		//   PR-15.0/15.1 严格 ==0：jitter 单次触发即重置
+		//   PR-15.2 BFS 无时间门控：早期误标
+		//   PR-15.3 仅 NearTraverseCount：抓不到 island 核心（互斥几何）
+		//   PR-15.4 = BFS 距离场 + 5-cell 软共识 + 15 天门控 + 自纠错
 
-		// reset 条件：cell 有真实活动证据
+		// 自纠错：Deny cell 被走过 → 回退 Unknown
 		resetThresh := p.AutoDenyTraverseReset
 		if resetThresh < 1 {
 			resetThresh = 5
 		}
 		hasRealActivity := int(c.TraverseCount) >= resetThresh ||
 			c.RealDecay >= realDecayDenyTolerance
+		if t == AreaDeny && c.Belief[0].Source == SourceLearned && hasRealActivity {
+			c.Belief[0] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
+			c.Belief[1] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
+			c.Belief[2] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
+			c.AreaType = AreaUnknown
+			c.AutoDenyQualifiedSinceMs = 0
+			continue
+		}
+
+		qualifies := (dist[i] >= 2 || dist[i] == -1) &&
+			t == AreaUnknown &&
+			fiveCellSoftConsensus(g, i, p.AutoDenyTraverseTolerate)
 
 		if hasRealActivity {
 			c.AutoDenyQualifiedSinceMs = 0 // 重置计时
@@ -219,7 +232,12 @@ func (g *RoomGrid) LearnCellAreas(p LearnParams, nowMs int64) {
 				}
 				if nowMs-c.AutoDenyQualifiedSinceMs >= int64(persistDays)*24*3600*1000 {
 					// 持续 ≥15 天 → 升格 AreaDeny
-					conf := mapToConf(int(c.NearTraverseCount), p.NearTraverseDeny, p.NearTraverseDeny*3, p.ConfFloor, p.ConfFull)
+					// confidence 用 BFS 距离映射（深度越大越自信，cap ConfFull）
+					depthFactor := dist[i]
+					if depthFactor < 0 {
+						depthFactor = 5 // 不可达视为强证据
+					}
+					conf := mapToConf(depthFactor, 2, 5, p.ConfFloor, p.ConfFull)
 					promoteCell(c, AreaDeny, conf)
 					c.AutoDenyQualifiedSinceMs = 0
 					continue
