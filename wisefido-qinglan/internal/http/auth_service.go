@@ -125,15 +125,6 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 				}, nil
 			}
 
-			// 如果是 pending 状态（分配给系统租户），返回 pending 响应
-			if err.Error() == "device pending approval (assigned to system tenant)" {
-				return &models.AuthResponse{
-					Msg:  "Device pending administrator approval",
-					Code: 401,
-					Data: nil,
-				}, nil
-			}
-
 			return &models.AuthResponse{
 				Msg:  "Device validation failed: " + err.Error(),
 				Code: 401,
@@ -230,11 +221,8 @@ func (s *AuthService) validateDeviceAndGetLocation(ctx context.Context, deviceUI
 	if ds.TenantID == platformTrashTenantID {
 		return nil, fmt.Errorf("device in trash tenant")
 	}
-	if ds.TenantID == platformSystemTenantID {
-		return nil, fmt.Errorf("device pending approval (assigned to system tenant)")
-	}
-	// Unallocated tenant (000...002) is no longer rejected -- devices may operate
-	// in unallocated state and still receive OTA updates.
+	// system (000...001) 和 unallocated (000...002) 均允许通过：
+	// allow_access=TRUE 已视为审批通过，租户分配可在认证后由管理员调整。
 
 	return ds, nil
 }

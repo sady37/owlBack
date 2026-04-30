@@ -69,15 +69,15 @@ add_pids() {
     done
 }
 
-# 先尝试 systemctl 停服务（owlback 一体 或 分模块 owlback.qinglan）
-if command -v systemctl >/dev/null 2>&1; then
-    for u in owlback.qinglan owlback; do
-        if systemctl is-active --quiet "$u" 2>/dev/null; then
-            echo "  systemctl stop $u ..."
-            sudo systemctl stop "$u" 2>/dev/null || systemctl stop "$u" 2>/dev/null || true
-            sleep 1
-        fi
-    done
+# 手动执行时：若 unit 仍 active，先 systemctl stop owlback.qinglan，避免 Restart= 立刻拉起。
+# systemd 把本脚本当 ExecStop 调用时已处于 stop 流程，禁止再 systemctl stop（递归）。
+# 不要触碰 owlback 一体编排器，否则会连带停所有兄弟服务。
+if [ -z "${INVOCATION_ID:-}" ] && command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet owlback.qinglan 2>/dev/null; then
+        echo "  systemctl stop owlback.qinglan ..."
+        sudo systemctl stop owlback.qinglan 2>/dev/null || systemctl stop owlback.qinglan 2>/dev/null || true
+        sleep 1
+    fi
 fi
 
 echo "🔍 Collecting PIDs (ports 8081+8443, log, cmdline patterns)..."
