@@ -109,16 +109,19 @@ type Engine struct {
 	cardToRoom map[string]string                // cardID → roomID
 	deviceRoom map[string]string                // deviceUID/deviceID → roomID
 	// PR-8: AI publish 用 — 源 radar UUID 反查 deviceUID + room 反查 tenant/card
-	deviceIDToUID map[string]string // deviceID(UUID) → device_uid（IoTStreamMessage.DeviceUID）
-	roomTenants   map[string]string // roomID → tenant_id（alarm_events 必填）
-	roomCards     map[string]string // roomID → card_id（可选）
-	// AI device_type 标识，让 cardagg 区分 AI 来源；缺省 "AI_Radar"
-	aiDeviceType string
+	deviceIDToUID   map[string]string // deviceID(UUID) → device_uid（IoTStreamMessage.DeviceUID）
+	deviceIDToType  map[string]string // deviceID(UUID) → 源 sensor 类型（"Radar"/"Sleepad"），AI publish 加 ".AI<node>" 后缀
+	roomTenants     map[string]string // roomID → tenant_id（alarm_events 必填）
+	roomCards       map[string]string // roomID → card_id（可选）
 
-	// PR-12: AI publish 开关。默认 false（只走 ai.log，不发 redis stream）。
-	// 等 cardagg 端 ready 接 device_type=AI_Radar 分支后再开启。
-	// 通过 SetAIPublishEnabled / Configure 启用。
-	aiPublishEnabled bool
+	// AI 节点 tag（"AI01" / "AI02" ...）；publish 时拼到 device_type 后缀，如 "Radar.AI01"。
+	// 由 SetAIPublishConfig 注入，缺省 "AI01"。
+	aiNodeTag string
+
+	// AI publish 模式："log" | "log&publish"。
+	// 默认 "log&publish"（cardagg 已加 BaseDeviceType 兼容，PR4 完成后可发布）。
+	// "log" 模式仅写 ai.log，不发 redis stream；任何模式都不影响 alarm 触发路径。
+	aiPublishMode string
 
 	// layout 几何 hash，RegisterRoom 时计算；snapshot save/load 比对用
 	layoutHashes map[string]string
@@ -193,9 +196,11 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		cardToRoom:         make(map[string]string),
 		deviceRoom:         make(map[string]string),
 		deviceIDToUID:      make(map[string]string),
+		deviceIDToType:     make(map[string]string),
 		roomTenants:        make(map[string]string),
 		roomCards:          make(map[string]string),
-		aiDeviceType:       "AI_Radar",
+		aiNodeTag:          "AI01",
+		aiPublishMode:      "log&publish",
 		layoutHashes:       make(map[string]string),
 		paramSets:          DefaultParamSets,
 		winner:             1, // 默认 balanced
@@ -364,6 +369,17 @@ func (e *Engine) MapDeviceIDToUID(deviceID, deviceUID string) {
 	e.mu.Unlock()
 }
 
+// MapDeviceIDToType 注册 device UUID → 源 sensor 类型（"Radar"/"Sleepad"）。
+// AI publish 时用此拼成 "Radar.AI<NodeID>" 后缀。缺失则退化为纯 "AI<NodeID>"。
+func (e *Engine) MapDeviceIDToType(deviceID, deviceType string) {
+	if deviceID == "" || deviceType == "" {
+		return
+	}
+	e.mu.Lock()
+	e.deviceIDToType[deviceID] = deviceType
+	e.mu.Unlock()
+}
+
 // SetRoomTenant 注入 roomID → tenant_id（alarm_events.tenant_id 必填，从 rooms 表查）。
 func (e *Engine) SetRoomTenant(roomID, tenantID string) {
 	if roomID == "" {
@@ -384,59 +400,59 @@ func (e *Engine) SetRoomCard(roomID, cardID string) {
 	e.mu.Unlock()
 }
 
-// SetAIDeviceType 覆盖默认 "AI_Radar" 标识；多机扩展时可改 "AI_Radar_02" 等。
-func (e *Engine) SetAIDeviceType(deviceType string) {
-	if deviceType == "" {
-		return
+// SetAIPublishConfig 注入 AI publish 单点配置：mode + node_id（来自 yaml/env）。
+// 替换旧的 SetAIDeviceType + SetAIPublishEnabled，单一入口避免漂移。
+//
+// mode："log" 仅写 ai.log；"log&publish" 还会推 redis stream。任何模式下 alarm
+// 的 fire 路径都不变（"宁可误报不可漏报"原则——mode 仅控制下游 stream，不 gate
+// 告警生成）。
+//
+// nodeTag：完整节点标签（"AI01"/"AI02"），publish 时拼到 device_type 后缀，如
+// 源 type="Radar" + nodeTag="AI01" → "Radar.AI01"。
+func (e *Engine) SetAIPublishConfig(mode, nodeTag string) {
+	if mode == "" {
+		mode = "log&publish"
+	}
+	if nodeTag == "" {
+		nodeTag = "AI01"
 	}
 	e.mu.Lock()
-	e.aiDeviceType = deviceType
+	e.aiPublishMode = mode
+	e.aiNodeTag = nodeTag
 	e.mu.Unlock()
 }
 
-// SetAIPublishEnabled PR-12: 启用/关闭 AI 派生 event/alarm 发布到 iot streams。
-// 默认 false（仅 ai.log，不污染 cardagg 现有 alarm_events 表）。
-// cardagg 接好 device_type=AI_Radar 处理后再调 SetAIPublishEnabled(true) 启用。
-func (e *Engine) SetAIPublishEnabled(enabled bool) {
-	e.mu.Lock()
-	e.aiPublishEnabled = enabled
-	e.mu.Unlock()
-}
-
-// publishEnabled PR-12 helper：当前是否允许 publish。
+// publishEnabled 当前是否会真发到 redis（mode == "log&publish"）。
 func (e *Engine) publishEnabled() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.aiPublishEnabled
+	return e.aiPublishMode == "log&publish"
 }
 
-// PublishAIEvent 实现 AIPublisher 接口（PR-8）；发布 AI 派生 event 到 iot:event:stream。
-// 当前用例 category="ghost" — track verdict 转 Ghost 时。
+// PublishAIEvent 发布 AI 派生 event 到 iot:event:stream。
+// 当前用例：category="track_verdict"（PR5 后 ghost 走这条；旧代码可能仍传 "ghost" 兼容）。
 //
 // 消息字段：
-//   DeviceUID: 源 radar 的 device_uid（保留源身份，反馈链按此反查；从 e.deviceIDToUID 取）
-//   DeviceID:  源 radar 的 UUID（FK to devices.device_id；payload.DeviceID）
-//   DeviceType: e.aiDeviceType（默认 "AI_Radar"，cardagg 据此区分 AI 来源）
-//   TenantID:  从 e.roomTenants 反查
-//   CardID:    从 e.roomCards 反查（可空）
-//   DataValue: [{ track_id, ts, position_x/y/z, area_type, pose, track_confidence }]
+//   DeviceUID:  源 sensor 的 device_uid（业务主键不变，反查源设备）
+//   DeviceID:   源 sensor 的 UUID
+//   DeviceType: 源类型 + AI 后缀（如 "Radar.AI01" / "Sleepad.AI01"）
+//   TenantID:   roomTenants[roomID]
+//   CardID:     roomCards[roomID]（可空）
+//   DataValue:  [{ track_id, ts, position_x/y/z, area_type, pose, track_confidence, ... }]
 //
-// 失败仅 warn 日志，不阻塞调用方。
+// 推送失败仅 warn 日志，不阻塞调用方。任何模式都打 ai_emit 结构化日志，作演示
+// 与审计追溯依据；mode=log 时 published=false 仅 log，mode=log&publish 时尝试推流。
 func (e *Engine) PublishAIEvent(ctx context.Context, p AIPayload, category string, nowMs int64) {
-	if e.redisClient == nil || !e.publishEnabled() {
-		return // PR-12: 默认关闭 publish，仅 log（已在 ai.log 由 track_verdict_ghost / real_fall 等结构化记录）
-	}
 	e.publishAIMessage(ctx, p, category, "event",
 		rediscommon.StreamEvent.Name,
 		rediscommon.StreamEvent.MaxLen, rediscommon.StreamEvent.RetentionSeconds, nowMs)
 }
 
-// PublishAIAlarm 实现 AIPublisher 接口；发布 AI 派生 alarm 到 iot:alarm:stream。
-// category ∈ {"silent_fall", "still_fall", "lost_fall", "silent_leftbed_fall"}
+// PublishAIAlarm 发布 AI 派生 alarm 到 iot:alarm:stream。
+// category ∈ {"silent_fall", "still_fall", "lost_fall", "silent_leftbed_fall", "bedside_fall"}
+//
+// alarm 路径不受 mode 影响 fire 决策（"宁可误报不可漏报"），mode 仅控制是否推到 stream。
 func (e *Engine) PublishAIAlarm(ctx context.Context, p AIPayload, category string, nowMs int64) {
-	if e.redisClient == nil || !e.publishEnabled() {
-		return
-	}
 	e.publishAIMessage(ctx, p, category, "alarm",
 		rediscommon.StreamAlarm.Name,
 		rediscommon.StreamAlarm.MaxLen, rediscommon.StreamAlarm.RetentionSeconds, nowMs)
@@ -446,30 +462,68 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	category, topicType, streamName string, maxLen int64, retentionSec int, nowMs int64) {
 	e.mu.RLock()
 	deviceUID := e.deviceIDToUID[p.DeviceID]
+	baseType := e.deviceIDToType[p.DeviceID]
 	tenantID := e.roomTenants[p.RoomID]
 	cardID := e.roomCards[p.RoomID]
-	deviceType := e.aiDeviceType
+	nodeTag := e.aiNodeTag
+	mode := e.aiPublishMode
 	g := e.grids[p.RoomID]
 	e.mu.RUnlock()
 
-	areaTypeStr := "none"
+	if baseType == "" {
+		baseType = "Radar" // 兜底：路由表缺失时默认按 radar 派生
+	}
+	deviceType := baseType + "." + nodeTag // e.g. "Radar.AI01"
+
+	// PR5b: 用 observation.Track 的标准字段 map（与上游 firmware/engine 同 schema）
+	fields := p.Track.ToFieldMap()
+	fields["ts"] = nowMs
+	fields["dataCategory"] = category
+	fields["event_name"] = category
+	fields["source_device_uid"] = deviceUID // 冗余但便于下游追溯
+	// area_type engine 自己算（observation.Track 的 AreaType 是字符串，engine 这边类型不同）
 	if g != nil {
-		if cell := g.CellAt(p.X, p.Y); cell != nil {
-			areaTypeStr = areaTypeProtocolStr(cell.Belief[0].Type)
+		px, py := 0, 0
+		if p.Track.PositionX != nil {
+			px = *p.Track.PositionX
+		}
+		if p.Track.PositionY != nil {
+			py = *p.Track.PositionY
+		}
+		if cell := g.CellAt(px, py); cell != nil {
+			fields["area_type"] = areaTypeProtocolStr(cell.Belief[0].Type)
 		}
 	}
-	track := map[string]interface{}{
-		"track_id":         p.TrackID,
-		"ts":               nowMs,
-		"position_x":       p.X,
-		"position_y":       p.Y,
-		"position_z":       p.Z,
-		"area_type":        areaTypeStr,
-		"event":            0,
-		"track_confidence": p.Confidence,
-		"pose":             p.Pose,
-		"dataCategory":     category,
-		"event_name":       category,
+	// PR5b: Source（一等公民）+ Reason / Evidence（审计元数据）
+	if p.Source != "" {
+		fields["source"] = p.Source
+	}
+	if p.Reason != "" {
+		fields["reason"] = p.Reason
+	}
+	if len(p.Evidence) > 0 {
+		fields["evidence"] = p.Evidence
+	}
+
+	willPublish := e.redisClient != nil && mode == "log&publish"
+
+	// 任何模式都打 ai_emit 审计日志：sandbox 演示靠这条 log 看 AI 在思考
+	e.logger.Info("ai_emit",
+		zap.String("ai_node", nodeTag),
+		zap.String("mode", mode),
+		zap.String("device_type", deviceType),
+		zap.String("device_uid", deviceUID),
+		zap.String("category", category),
+		zap.String("source", p.Source),
+		zap.String("topic_type", topicType),
+		zap.String("would_publish_to", streamName),
+		zap.Bool("published", willPublish),
+		zap.Int("track_id", p.Track.TrackID),
+		zap.Int("track_confidence", p.Track.TrackConfidence),
+	)
+
+	if !willPublish {
+		return
 	}
 
 	msg := rediscommon.IoTStreamMessage{
@@ -481,10 +535,11 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 		Timestamp:  nowMs,
 		TopicType:  topicType,
 		Category:   category,
-		DataValue:  []interface{}{track},
+		DataValue:  []interface{}{fields},
 	}
 	if _, err := rediscommon.PublishToStream(ctx, e.redisClient, streamName, msg.ToStreamMap(), maxLen, retentionSec); err != nil {
 		e.logger.Warn("ai_publish_failed",
+			zap.String("ai_node", nodeTag),
 			zap.String("stream", streamName),
 			zap.String("category", category),
 			zap.String("device_uid", deviceUID),
@@ -496,7 +551,7 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 
 // areaTypeProtocolStr 把 engine 的 AreaType 映射成 observation.EnumAreaType 协议字符串。
 // 协议：0=none / 1=custom / 2=bed / 3=interfer / 4=door / 5=monitor_bed / 6=sensing
-// engine 内部枚举跟协议不完全对齐；做一个 best-effort 映射，cardagg 端按 device_type=AI_Radar 容错处理。
+// engine 内部枚举跟协议不完全对齐；做一个 best-effort 映射，cardagg 端按 BaseDeviceType=Radar 处理。
 func areaTypeProtocolStr(t AreaType) string {
 	switch t {
 	case AreaBed:

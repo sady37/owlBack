@@ -1,5 +1,15 @@
 # wisefido-ai 配置文件
 
+# AI 派生 event/alarm 发布开关。单点配置同时管两件事：推送模式 + AI 节点序号。
+# mode: "log"          仅写 ai.log（每条带 ai_node + would_publish_to + published=false）
+# mode: "log&publish"  写 log + 推送 iot:event/alarm:stream（默认，商业演示场景）
+# node_id：AI 节点序号；进 device_type 后缀（如 Radar.AI01）+ ai.log 审计字段。
+# alarm 永远 fire（"宁可误报不可漏报"），mode 仅控制 publish 路径，不影响告警。
+# env 覆盖：AI_PUBLISH_MODE / AI_NODE_ID
+ai_publish:
+  mode: "log&publish"
+  node_id: "01"
+
 database:
   host: "localhost"
   port: 5432

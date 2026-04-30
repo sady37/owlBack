@@ -1,6 +1,10 @@
 package service
 
-import "strings"
+import (
+	"strings"
+
+	"owl-common/redis"
+)
 
 // ============================================================================
 // Weights — derive 与 affinity 所用权重/常量集中在此，便于查找和调参
@@ -38,8 +42,9 @@ const (
 )
 
 // PoseWeight 返回该设备类型对 Pose 的信任权重。
+// AI 派生事件（"Radar.AI01"）按源类型继承权重。
 func PoseWeight(deviceType string) int {
-	switch strings.ToLower(deviceType) {
+	switch strings.ToLower(redis.BaseDeviceType(deviceType)) {
 	case "sleepad", "sleeppad":
 		return PoseWeightSleepad
 	case "radar":
@@ -50,8 +55,9 @@ func PoseWeight(deviceType string) int {
 }
 
 // VitalWeight 返回该设备类型对 Vital/HR/RR/SleepStage 的信任权重。
+// AI 派生事件（"Radar.AI01"）按源类型继承权重。
 func VitalWeight(deviceType string) int {
-	switch strings.ToLower(deviceType) {
+	switch strings.ToLower(redis.BaseDeviceType(deviceType)) {
 	case "sleepad", "sleeppad":
 		return VitalWeightSleepad
 	case "radar":

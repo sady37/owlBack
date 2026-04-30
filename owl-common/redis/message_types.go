@@ -4,12 +4,48 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"owl-common/observation"
 
 	"github.com/google/uuid"
 )
+
+// =============================================================================
+// 块 0：device_type AI 后缀解析
+//
+// 约定：AI 派生事件的 device_type 在原 sensor 类型后加 ".AI<NodeID>"，如：
+//   "Radar"          → 原始 radar 上报
+//   "Radar.AI01"     → AI 节点 01 基于 radar 数据派生
+//   "Sleepad.AI01"   → AI 节点 01 基于 sleepad 数据派生
+// 这样 cardagg 现有按 base type（radar/sleepad）路由的逻辑可零改动跑（用
+// BaseDeviceType 解包），需要区分 AI 来源时用 IsAIDerived 显式判断。
+// =============================================================================
+
+// SplitDeviceType 把可能带 AI 后缀的 device_type 拆成 base 类型 + AI 节点 tag。
+//   "Radar"        → ("Radar",   "")
+//   "Radar.AI01"   → ("Radar",   "AI01")
+//   "Sleepad.AI02" → ("Sleepad", "AI02")
+// 仅识别 ".AI" 开头的后缀；其它带点的 device_type 不动（base 原样返回，ai 空）。
+func SplitDeviceType(s string) (base, aiTag string) {
+	if i := strings.Index(s, ".AI"); i >= 0 {
+		return s[:i], s[i+1:]
+	}
+	return s, ""
+}
+
+// BaseDeviceType 仅返回去掉 AI 后缀的 base 类型；cardagg switch case 用此。
+func BaseDeviceType(s string) string {
+	base, _ := SplitDeviceType(s)
+	return base
+}
+
+// IsAIDerived device_type 是否带 AI 后缀（即由 AI 节点派生而非设备直发）。
+func IsAIDerived(s string) bool {
+	_, ai := SplitDeviceType(s)
+	return ai != ""
+}
 
 // =============================================================================
 // 块 1：流与 dataValue 约定

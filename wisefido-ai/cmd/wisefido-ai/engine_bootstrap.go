@@ -33,6 +33,13 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB,
 	// 1. 注入 yaml 运行时参数 + Persister
 	engine.Configure(buildRuntimeConfig(cfg, db))
 
+	// 1b. 注入 AI publish 单点配置（mode + node_id）；
+	//     mode="log" 仅写 ai.log，"log&publish" 推到 iot:event/alarm:stream。
+	engine.SetAIPublishConfig(cfg.AIPublish.Mode, cfg.AIPublish.AINodeTag())
+	logger.Info("roomengine: ai_publish configured",
+		zap.String("mode", cfg.AIPublish.Mode),
+		zap.String("ai_node", cfg.AIPublish.AINodeTag()))
+
 	// 2. 注册所有有 layout 的房间
 	registered, err := registerAllRooms(ctx, engine, db, logger)
 	if err != nil {
@@ -240,8 +247,10 @@ func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.D
 	rows, err := db.QueryContext(ctx, `
 		SELECT d.device_id::text,
 		       d.device_uid,
+		       COALESCE(ds.device_type, '') AS device_type,
 		       COALESCE(d.bound_room_id, b.room_id)::text AS room_id
 		FROM devices d
+		LEFT JOIN device_store ds ON ds.device_id = d.device_id
 		LEFT JOIN beds b ON b.bed_id = d.bound_bed_id
 		WHERE d.bound_room_id IS NOT NULL
 		   OR (d.bound_bed_id IS NOT NULL AND b.room_id IS NOT NULL)
@@ -253,8 +262,8 @@ func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.D
 
 	count := 0
 	for rows.Next() {
-		var deviceID, deviceUID, roomID string
-		if err := rows.Scan(&deviceID, &deviceUID, &roomID); err != nil {
+		var deviceID, deviceUID, deviceType, roomID string
+		if err := rows.Scan(&deviceID, &deviceUID, &deviceType, &roomID); err != nil {
 			logger.Warn("scan devices row", zap.Error(err))
 			continue
 		}
@@ -270,6 +279,10 @@ func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.D
 		// PR-8: 反向映射 deviceID UUID → device_uid（AI publish 反查源 radar uid）
 		if deviceID != "" && deviceUID != "" {
 			engine.MapDeviceIDToUID(deviceID, deviceUID)
+		}
+		// PR2: 注册 deviceID → device_type，AI publish 拼 "Radar.AI<node>" 后缀用
+		if deviceID != "" && deviceType != "" {
+			engine.MapDeviceIDToType(deviceID, deviceType)
 		}
 		count++
 	}

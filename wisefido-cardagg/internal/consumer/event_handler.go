@@ -442,8 +442,9 @@ func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStrea
 }
 
 // sleepStageSourceFromDeviceType 睡眠阶段置信度 100 分制：Sleepad=90，Radar=60，其它=0。
+// 用 BaseDeviceType 解 AI 后缀（"Radar.AI01" → "Radar"），AI 派生事件继承源类型权重。
 func sleepStageSourceFromDeviceType(deviceType string) int {
-	switch strings.ToLower(deviceType) {
+	switch strings.ToLower(redis.BaseDeviceType(deviceType)) {
 	case "sleepad", "sleeppad":
 		return 90
 	case "radar":

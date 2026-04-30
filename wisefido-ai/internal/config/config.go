@@ -45,6 +45,47 @@ type Config struct {
 	} `yaml:"logging"`
 
 	RoomEngine RoomEngineConfig `yaml:"roomengine"`
+
+	AIPublish AIPublishConfig `yaml:"ai_publish"`
+}
+
+// AIPublishConfig 控制 AI 派生 event/alarm 的发布行为。
+//
+// 单点配置同时管两件事：
+//  1. 推送模式（仅 log，还是 log + 推送 iot stream）
+//  2. AI 节点序号 —— 进 device_type 后缀（如 "Radar.AI01"）+ ai.log 审计字段
+//
+// device_uid 不变（仍是源 radar 的业务主键），只在 device_type 里加 ".AI<node_id>"
+// 后缀区分 AI 派生事件，原 sensor 类型保留以兼容 cardagg 现有路由。
+type AIPublishConfig struct {
+	// Mode 取值：
+	//   "log"          仅写 ai.log（每条 emit 都带 ai_node + would_publish_to + published=false）
+	//   "log&publish"  写 log + 推送 iot:event/alarm:stream（默认）
+	// 任何模式 alarm 都正常 fire（"宁可误报不可漏报"原则），mode 仅控制 publish 路径。
+	Mode string `yaml:"mode"`
+
+	// NodeID AI 节点序号字符串（如 "01"、"02"）。
+	// 驱动两处：
+	//   - IoTStreamMessage.DeviceType = "<base>.AI" + NodeID，如 "Radar.AI01"
+	//   - ai.log 每条 publish/skip 都带 ai_node="AI" + NodeID
+	// 多 AI 实例横向扩展时每个进程取不同 NodeID。
+	NodeID string `yaml:"node_id"`
+}
+
+// PublishModeLog 仅 log 不推流；PublishModeLogPublish log + 推流。
+const (
+	PublishModeLog        = "log"
+	PublishModeLogPublish = "log&publish"
+)
+
+// PublishEnabled 是否实际推送到 redis stream。Mode 为 PublishModeLogPublish 时返回 true。
+func (c AIPublishConfig) PublishEnabled() bool {
+	return c.Mode == PublishModeLogPublish
+}
+
+// AINodeTag 返回 "AI" + NodeID（如 "AI01"），用于 device_type 后缀和 ai.log 审计字段。
+func (c AIPublishConfig) AINodeTag() string {
+	return "AI" + c.NodeID
 }
 
 // RoomEngineConfig wisefido-ai/internal/roomengine 运行时参数
@@ -184,6 +225,30 @@ func (c *Config) setDefaults() {
 		c.Log.Format = "json"
 	}
 	c.setRoomEngineDefaults()
+	c.setAIPublishDefaults()
+}
+
+func (c *Config) setAIPublishDefaults() {
+	a := &c.AIPublish
+	// env 覆盖优先（部署/调试场景）
+	if v := os.Getenv("AI_PUBLISH_MODE"); v != "" {
+		a.Mode = v
+	}
+	if v := os.Getenv("AI_NODE_ID"); v != "" {
+		a.NodeID = v
+	}
+	// 默认 log&publish；非法值回退到默认并 warn
+	if a.Mode == "" {
+		a.Mode = PublishModeLogPublish
+	} else if a.Mode != PublishModeLog && a.Mode != PublishModeLogPublish {
+		log.Printf("(warn) invalid ai_publish.mode=%q, falling back to %q (valid: %q | %q)",
+			a.Mode, PublishModeLogPublish, PublishModeLog, PublishModeLogPublish)
+		a.Mode = PublishModeLogPublish
+	}
+	// node_id 默认 "01"；多 AI 实例必须显式指定
+	if a.NodeID == "" {
+		a.NodeID = "01"
+	}
 }
 
 func (c *Config) setRoomEngineDefaults() {
@@ -336,6 +401,7 @@ func LoadFromEnv() (*Config, error) {
 	}
 	cfg.Log.Level = getEnv("LOG_LEVEL", "info")
 	cfg.Log.Format = getEnv("LOG_FORMAT", "json")
+	cfg.setAIPublishDefaults()
 	return cfg, nil
 }
 
