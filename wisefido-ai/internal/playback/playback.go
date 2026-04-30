@@ -274,7 +274,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				simT = nextEvent
 
 				if simT >= nextScanAt {
-					grid.LearnCellAreas(learnParams)
+					grid.LearnCellAreas(learnParams, simT)
 					grid.LearnLyingAnomalies(learnParams)
 					nextScanAt += 5 * 60 * 1000
 				}
@@ -365,7 +365,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	// 5. 终态快照
-	grid.LearnCellAreas(learnParams)
+	grid.LearnCellAreas(learnParams, simT)
 	grid.LearnLyingAnomalies(learnParams)
 	snapshots = append(snapshots, takeSnapWithPaths(grid, cfg, opts.RoomID, simT,
 		buildTrackPaths(pathBuf, simT, trackLookbackMs)))

@@ -157,6 +157,20 @@ type Cell struct {
 	ToleratedStillCount    int
 	BlindSpotRecoveryCount int
 
+	// ---- PR-15.3 Auto-Deny 时间门控 ----
+	// AutoDenyQualifiedSinceMs: 该 cell 首次满足 5-cell consensus 软共识（TraverseCount<3 + RealDecay<5）
+	// 的时间戳。持续满足 ≥ 15 天才升格 AreaDeny。
+	//
+	// 设计原理（双阈值滞后 + 类 PR-13 90% 容忍）：
+	//   - 5-cell consensus 软共识用 TraverseCount<3：容忍背景 ghost/jitter 噪声（~0.3/天）
+	//     避免严格 ==0 导致单次误触即重置
+	//   - reset 用 TraverseCount>=5：超出此值视为"真有人走过"，重置 15 天计时
+	//   - 中间区 [3,5)：保持当前状态（既不前进也不重置），形成 hysteresis 防抖
+	//   - 时间门控 15 天：filter 短期偶发，要求长期持续不被走过才确认 island/furniture
+	//
+	// 重置（=0）：TraverseCount>=5 OR RealDecay>=5（活动证据）OR Belief 升为非 Unknown/Active
+	AutoDenyQualifiedSinceMs int64
+
 	// ---- PR-6 结构化人类反馈（False Alarm Reason / Observed Conditions 多选 checkbox）----
 	// GhostCount: false_alarm 反馈勾"NoPerson / Electric / AC Interference" → 该 cell 是 ghost 多发点
 	//             birth filter 因子 6 / fall verifier 都参考此值

@@ -50,26 +50,52 @@ type LearnParams struct {
 	//   - NearTraverseDeny（默认 20）：邻居走过 ≥ 20 次 + 本 cell 完全无直接触碰 → 反转 Deny
 	//     （"20 次都没经过 = 系统性绕开 = 障碍"）
 	// 顺序：Walk 优先（有直接证据时立即确认），再 Deny（没直接证据时高阈值反转）。
+	//
+	// PR-15.3 — Walk vs Auto-Deny 扩散速度差异：
+	//   Walk 扩散快：阈值低（5）+ 直接 Move 触碰即学，几小时-1 天内升格
+	//   Auto-Deny 扩散慢：阈值高（20）+ 5-cell 软共识 + 持续 15 天时间门控
+	//   原因：Auto-Deny 后果更严重（拒绝 fall 检测），需要更严格的证据
 	NearTraverseWalk int
 	NearTraverseDeny int
+
+	// PR-15.3 Auto-Deny 时间门控（与 cell.AutoDenyQualifiedSinceMs 配合）。
+	//
+	// 双阈值滞后设计（防抖 + 抗噪声）：
+	//   - 5-cell 软共识用 TraverseCount < AutoDenyTraverseTolerate（默认 3）
+	//     容忍背景 ghost/jitter ≈ 0.3/天 噪声，类 PR-13 sit 学习的 90% 容忍
+	//   - reset 用 TraverseCount >= AutoDenyTraverseReset（默认 5）
+	//     高于此说明真有人走过，重置 15 天计时
+	//   - hysteresis 区间 [3, 5)：维持当前状态，不前进不重置（避免阈值附近抖动）
+	//
+	// 时间门控（默认 15 天）：要求 cell 持续满足 5-cell 软共识 ≥ 15 天才真正 promote AreaDeny。
+	// 物理含义：15 天人都不踩到的 cell，几乎可肯定是家具/障碍。
+	//   - 老 walk 已搬走的 cell：15 天内重新走过 → reset 重学
+	//   - 真 furniture 核心：15 天持续无穿越 → 升格
+	// playback 限制：3 天数据 < 15 天阈值 → playback 中此规则几乎不生效（预期，prod 长期累积）
+	AutoDenyMinPersistDays  int // 时间门控最少持续天数（默认 15）
+	AutoDenyTraverseTolerate int // 5-cell 软共识容忍 TraverseCount 上限（< 此值算"未走过"，默认 3）
+	AutoDenyTraverseReset   int // 重置 15 天计时的 TraverseCount 阈值（>= 此值视为"真走过"，默认 5）
 }
 
 // DefaultLearnParams 与 config.yaml::roomengine.learn 默认值一致。
 // playback / 测试场景调用，prod 路径由 engine.Configure(...) 注入。
 func DefaultLearnParams() LearnParams {
 	return LearnParams{
-		WalkActiveX10:     20,
-		WalkTraverse:      2, // 配合 speed 兜底：原 5 太高，散点单次穿越凑不齐；降到 2 让"走过 2 次"即升格
-		SitActiveX10:      150,
-		LieAnomalyX10:     50,
-		BedToleranceCm:    30,
-		ToiletToleranceCm: 20,
-		ShowerToleranceCm: 20,
-		ConfFloor:         60,
-		ConfFull:          95,
-		MoveSpeedCms:      20,
-		NearTraverseWalk:  5,
-		NearTraverseDeny:  20,
+		WalkActiveX10:            20,
+		WalkTraverse:             2, // 配合 speed 兜底：原 5 太高，散点单次穿越凑不齐；降到 2 让"走过 2 次"即升格
+		SitActiveX10:             150,
+		LieAnomalyX10:            50,
+		BedToleranceCm:           30,
+		ToiletToleranceCm:        20,
+		ShowerToleranceCm:        20,
+		ConfFloor:                60,
+		ConfFull:                 95,
+		MoveSpeedCms:             20,
+		NearTraverseWalk:         5,
+		NearTraverseDeny:         20,
+		AutoDenyMinPersistDays:   15, // PR-15.3 持续 15 天满足软共识才升 Deny
+		AutoDenyTraverseTolerate: 3,  // PR-15.3 软共识：TraverseCount<3 算未走过（容忍背景噪声）
+		AutoDenyTraverseReset:    5,  // PR-15.3 重置：TraverseCount>=5 视为真走过 → 重置计时
 	}
 }
 
@@ -92,16 +118,18 @@ const (
 //  3. Walk 直升（直接走过 ≥ WalkTraverse 次）
 //  4. Walk 邻接确认（邻居走过 ≥ NearTraverseWalk 次 + 本 cell 至少 1 次直接 Move 穿过）
 //     —— "一次经过就确认"：直接证据强，立即确认 Walk
-//  5. Auto-Deny 反转（邻居走过 ≥ NearTraverseDeny 次 + 本 cell 完全无直接触碰）
-//     —— "20 次都没经过" = 系统性绕开 = 障碍
+//  5. Auto-Deny 反转（邻居走过 ≥ NearTraverseDeny + 5-cell 软共识 + 持续 15 天）
+//     —— PR-15.3：从单次评估改为时间门控；详见 cell.AutoDenyQualifiedSinceMs 注释
 //
 // 4 与 5 是同一信号 NearTraverseCount 的双因素解释：
-//   - 有直接 Move 触碰（TraverseCount > 0）→ 低阈值即确认 Walk
-//   - 完全无直接触碰（RealDecay == 0 且 TraverseCount == 0）→ 高阈值反转 Deny
+//   - 有直接 Move 触碰（TraverseCount > 0）→ 低阈值即确认 Walk（扩散快）
+//   - 完全无直接触碰 + 持续 15 天 → 反转 Deny（扩散慢，因为后果严重）
 //
 // 写入 3 组 Belief 都标 SourceLearned。
 // 同 type 升格用 max(cur, mapped) 累积——多日观测可把 Confidence 推向 ConfFull（默认 95）。
-func (g *RoomGrid) LearnCellAreas(p LearnParams) {
+//
+// nowMs 用于 PR-15.3 时间门控；调用方传当前模拟时间（playback）或 wall-clock（prod）。
+func (g *RoomGrid) LearnCellAreas(p LearnParams, nowMs int64) {
 	for i := range g.Cells {
 		c := &g.Cells[i]
 		if !c.InRoom || !c.InFOV {
@@ -142,38 +170,78 @@ func (g *RoomGrid) LearnCellAreas(p LearnParams) {
 			continue
 		}
 
-		// Auto-Deny 反转：邻居走过 ≥ NearTraverseDeny + 5-cell consensus（中心 + 4 邻居全无直接触碰）
-		// PR-15：原规则只看中心 cell TraverseCount==0，10cm 网格上 jitter / 跳格频繁让中心未被穿过 → 误判。
-		// 改用中心+上下左右 5 cell 的"完全绕开"共识：任一 cell 有 TraverseCount>0 或 RealDecay>0 即否决。
-		// 物理含义：人若实际能走到这一带（哪怕中心 cell 没被精确踩中），5 cell 至少有一个会被穿过；
-		// 此规则覆盖"furniture 边缘紧贴 walk"的 case（counter / sofa 边）。
+		// Auto-Deny 反转 (PR-15.3) — 双阈值滞后 + 15 天时间门控
 		//
-		// PR-15.2 实验：尝试用 BFS 距离场补 island 核心检测——失败回退。
-		// 失败原因：island 核心 cell 的 NearTraverseCount=0（其邻居也是 island 内 cell），
-		// BFS 加门控到不了核心；BFS 不加门控会误覆盖 walk 衰减的 cell + 无观测角落。
-		// 结论：island 核心仍需 layout 显式标 Furniture（人标 SourceHuman 不会被算法覆写）。
-		if int(c.NearTraverseCount) >= p.NearTraverseDeny &&
+		// 失败的实验回顾：
+		//   PR-15.0: 只查中心 cell TraverseCount==0 → jitter / 跳格频繁误判
+		//   PR-15.1: 5-cell consensus（中心+4 邻居 TraverseCount==0）→ jitter 单次触即重置
+		//   PR-15.2: BFS 距离场抓 island 核心 → 早期标记后无法回退，吃了 walk
+		//
+		// PR-15.3 设计：保留 5-cell 共识（处理 walk 边缘 furniture），但
+		//   (a) 软化：TraverseCount < AutoDenyTraverseTolerate（默认 3）算"未走过"
+		//   (b) 滞后：reset 用 TraverseCount >= AutoDenyTraverseReset（默认 5）
+		//   (c) 时间：要求持续 ≥ AutoDenyMinPersistDays（默认 15）天才升格
+		//
+		// 物理含义：
+		//   - 容忍背景 ghost / jitter（~0.3/天）的偶发触碰
+		//   - 真有人走过（≥5 次累积）才重置 15 天观察期
+		//   - 15 天人都不踩到的 cell，几乎肯定是家具/障碍 → 升 Deny
+		//
+		// island 核心限制：核心 cell 邻居 NearTraverseCount=0，永远到不了 NearTraverseDeny=20。
+		// 这条规则覆盖不到，需 layout 显式标 Furniture。
+		qualifies := int(c.NearTraverseCount) >= p.NearTraverseDeny &&
 			(t == AreaUnknown || t == AreaActive) &&
-			fiveCellAllUnreached(g, i) {
-			conf := mapToConf(int(c.NearTraverseCount), p.NearTraverseDeny, p.NearTraverseDeny*3, p.ConfFloor, p.ConfFull)
-			promoteCell(c, AreaDeny, conf)
-			continue
+			fiveCellSoftConsensus(g, i, p.AutoDenyTraverseTolerate)
+
+		// reset 条件：cell 有真实活动证据
+		resetThresh := p.AutoDenyTraverseReset
+		if resetThresh < 1 {
+			resetThresh = 5
 		}
+		hasRealActivity := int(c.TraverseCount) >= resetThresh ||
+			c.RealDecay >= realDecayDenyTolerance
+
+		if hasRealActivity {
+			c.AutoDenyQualifiedSinceMs = 0 // 重置计时
+		} else if qualifies {
+			if c.AutoDenyQualifiedSinceMs == 0 {
+				c.AutoDenyQualifiedSinceMs = nowMs // 首次满足，启动 15 天计时
+			} else {
+				persistDays := p.AutoDenyMinPersistDays
+				if persistDays < 1 {
+					persistDays = 15
+				}
+				if nowMs-c.AutoDenyQualifiedSinceMs >= int64(persistDays)*24*3600*1000 {
+					// 持续 ≥15 天 → 升格 AreaDeny
+					conf := mapToConf(int(c.NearTraverseCount), p.NearTraverseDeny, p.NearTraverseDeny*3, p.ConfFloor, p.ConfFull)
+					promoteCell(c, AreaDeny, conf)
+					c.AutoDenyQualifiedSinceMs = 0
+					continue
+				}
+			}
+		}
+		// 否则（!qualifies && !resetCondition）：保持 hysteresis 区，计时不前进也不重置
 	}
 }
 
-// fiveCellAllUnreached 检查 cell + 4 邻居（N/S/E/W）是否全部"基本未被走"。
+// fiveCellSoftConsensus 检查 cell + 4 邻居（N/S/E/W）是否全部"基本未被走"——软共识。
 //
-// PR-15 Auto-Deny 5-cell consensus：减少 jitter / 跳格导致的"中心 cell 永不被走"误判。
-// PR-15.1 RealDecay < realDecayDenyTolerance：容忍偶发轻触碰。
+// PR-15.3：从严格 TraverseCount==0 改为 TraverseCount<traverseTolerate（默认 3），
+// 容忍背景 ghost/jitter 噪声（实测 ~0.3/天）。类 PR-13 sit 学习的 90% 容忍思路。
 //
-// RealDecay 半衰期 15min，一次触碰约 60min 内衰到 < 1；阈值 5 容忍"≤ 30min 内一次轻触"。
-// TraverseCount 长档 7 天；要求严格 == 0（Move 状态穿越是强证据）。
+// 检查项：
+//   - RealDecay < realDecayDenyTolerance（5）：30 min 内无 Real 触碰（HL 15min）
+//   - TraverseCount < traverseTolerate（3）：未累积"显著"Move 穿越（HL 7d，3 次≈背景上限）
+//
 // 越界邻居视为 unreached（不否决；房间边角不因邻居越界无法学 Deny）。
 const realDecayDenyTolerance = 5
 
-func fiveCellAllUnreached(g *RoomGrid, idx int) bool {
-	if g.Cells[idx].RealDecay >= realDecayDenyTolerance || g.Cells[idx].TraverseCount != 0 {
+func fiveCellSoftConsensus(g *RoomGrid, idx int, traverseTolerate int) bool {
+	if traverseTolerate < 1 {
+		traverseTolerate = 3
+	}
+	c := &g.Cells[idx]
+	if c.RealDecay >= realDecayDenyTolerance || int(c.TraverseCount) >= traverseTolerate {
 		return false
 	}
 	row := idx / g.Width
@@ -182,10 +250,10 @@ func fiveCellAllUnreached(g *RoomGrid, idx int) bool {
 	for _, d := range deltas {
 		r, cc := row+d[0], col+d[1]
 		if r < 0 || r >= g.Height || cc < 0 || cc >= g.Width {
-			continue // 越界跳过
+			continue
 		}
 		nb := &g.Cells[r*g.Width+cc]
-		if nb.RealDecay >= realDecayDenyTolerance || nb.TraverseCount != 0 {
+		if nb.RealDecay >= realDecayDenyTolerance || int(nb.TraverseCount) >= traverseTolerate {
 			return false
 		}
 	}

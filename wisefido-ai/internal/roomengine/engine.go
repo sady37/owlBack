@@ -1072,8 +1072,9 @@ func (e *Engine) scanBeliefAll() {
 	totalCells := 0
 	totalLieAnomalies := 0
 	lp := e.learnParams
+	nowMs := time.Now().UnixMilli()
 	for _, grid := range e.grids {
-		grid.LearnCellAreas(lp)
+		grid.LearnCellAreas(lp, nowMs)
 		totalLieAnomalies += grid.LearnLyingAnomalies(lp)
 		for i := range grid.Cells {
 			for g := 0; g < 3; g++ {

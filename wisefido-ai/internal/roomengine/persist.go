@@ -31,7 +31,8 @@ import (
 // v4 (2026-04-27): Counters 加 BlindSpotRecoveryCount（BSR）— 盲区返回端点累计（lost-fall recovery 反馈）
 // v5 (2026-04-29): Counters 加 GhostCount（GC）+ RestZoneConfirmed（RZC）+ RealFallCount（RFC）—
 //                  PR-6 结构化人类反馈（False Alarm Reason / Observed Conditions checkbox）
-const SnapshotSchemaVersion = 5
+// v6 (2026-04-29): Counters 加 AutoDenyQualifiedSinceMs（ADS）— PR-15.3 Auto-Deny 15 天时间门控状态
+const SnapshotSchemaVersion = 6
 
 // CellSnapshot 单 cell 的可持久化字段（紧凑 JSON，short keys 节省空间）
 type CellSnapshot struct {
@@ -63,6 +64,7 @@ type Counters struct {
 	GC  int       `json:"gc,omitempty"`  // GhostCount (schema_v ≥ 5)
 	RZC int       `json:"rzc,omitempty"` // RestZoneConfirmed (schema_v ≥ 5)
 	RFC int       `json:"rfc,omitempty"` // RealFallCount (schema_v ≥ 5)
+	ADS int64     `json:"ads,omitempty"` // AutoDenyQualifiedSinceMs (schema_v ≥ 6)
 }
 
 // GridSnapshot 顶层 payload 结构（写入 JSONB 字段）
@@ -161,12 +163,13 @@ func buildCounters(c *Cell) *Counters {
 		GC:  c.GhostCount,
 		RZC: c.RestZoneConfirmed,
 		RFC: c.RealFallCount,
+		ADS: c.AutoDenyQualifiedSinceMs,
 	}
 	if ct.RD == 0 && ct.GD == 0 &&
 		ct.AT == [4]uint16{} &&
 		ct.TC == 0 && ct.NTC == 0 && ct.LR == 0 && ct.FE == 0 && ct.LA == 0 && ct.LS == 0 &&
 		ct.SIB == 0 && ct.SLB == 0 && ct.DE == 0 && ct.FX == 0 && ct.FY == 0 && ct.DW == 0 &&
-		ct.FA == 0 && ct.TS == 0 && ct.BSR == 0 {
+		ct.FA == 0 && ct.TS == 0 && ct.BSR == 0 && ct.ADS == 0 {
 		return nil
 	}
 	return &ct
@@ -241,6 +244,7 @@ func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
 			c.GhostCount = cs.C.GC
 			c.RestZoneConfirmed = cs.C.RZC
 			c.RealFallCount = cs.C.RFC
+			c.AutoDenyQualifiedSinceMs = cs.C.ADS
 		}
 	}
 	return nil
