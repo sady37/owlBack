@@ -16,13 +16,14 @@ import (
 )
 
 type MonitorHandler struct {
-	buffer    *service.MonitorBuffer
-	writer    *card.Writer
-	metaCache *service.DeviceMetaCache
-	bedCoord  *service.BedEventCoordinator
-	state     *service.StateService
-	alarms    *service.AlarmService
-	logger    *zap.Logger
+	buffer      *service.MonitorBuffer
+	writer      *card.Writer
+	metaCache   *service.DeviceMetaCache
+	bedCoord    *service.BedEventCoordinator
+	state       *service.StateService
+	alarms      *service.AlarmService
+	aiOverrides *service.AIOverrideCache // PR6: AI 派生 verdict 合并 + tid=88 清理
+	logger      *zap.Logger
 }
 
 const (
@@ -34,8 +35,8 @@ const (
 
 // 实时流不做报警处理：雷达/sleepace 已有阀值，立即报警型由网关直接发 iot:alarm:stream。
 // bedCoord/state/alarms 可选：非 nil 时每条 monitor 写入后尝试解析该卡 bed pending（对齐 2～3s 采样，不等 1s Tick）。
-func NewMonitorHandler(buffer *service.MonitorBuffer, writer *card.Writer, metaCache *service.DeviceMetaCache, bedCoord *service.BedEventCoordinator, state *service.StateService, alarms *service.AlarmService, logger *zap.Logger) *MonitorHandler {
-	return &MonitorHandler{buffer: buffer, writer: writer, metaCache: metaCache, bedCoord: bedCoord, state: state, alarms: alarms, logger: logger}
+func NewMonitorHandler(buffer *service.MonitorBuffer, writer *card.Writer, metaCache *service.DeviceMetaCache, bedCoord *service.BedEventCoordinator, state *service.StateService, alarms *service.AlarmService, aiOverrides *service.AIOverrideCache, logger *zap.Logger) *MonitorHandler {
+	return &MonitorHandler{buffer: buffer, writer: writer, metaCache: metaCache, bedCoord: bedCoord, state: state, alarms: alarms, aiOverrides: aiOverrides, logger: logger}
 }
 
 // RunLoop 与 monitor 相关的定时：1 秒发 snap，6 秒 PruneFields。不包含 derive。
@@ -147,6 +148,16 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 		agentDebugLog("H4", "monitor_handler.Handle:write", "buffer Write", map[string]any{"cardID": m.CardID, "deviceKey": deviceKey, "trackID": trackID, "trackInvalid": trackID == observation.TrackInvalid})
 	}
 	// #endregion
+	// PR6: AI override 缓存合并 / tid=88 清理（仅 radar 来源；sleepad 不参与 ghost verdict）
+	if h.aiOverrides != nil && m.DeviceUID != "" {
+		if trackID == observation.TrackInvalid {
+			// firmware no-target heartbeat → 该 device 所有 track 都退场，清空 verdicts
+			h.aiOverrides.ClearDevice(m.DeviceUID)
+		} else {
+			// 有效 track → 合并 AI verdict 到 fields（release 模式才真覆写 track_confidence）
+			h.aiOverrides.Apply(m.DeviceUID, trackID, fields)
+		}
+	}
 	h.buffer.Write(m.CardID, deviceKey, strconv.Itoa(trackID), fields, m.Timestamp)
 	if h.bedCoord != nil && h.state != nil {
 		h.bedCoord.TryResolveAfterMonitorWrite(ctx, h.state, h.alarms, h.metaCache, h.buffer, m.CardID, h.logger)

@@ -98,10 +98,21 @@ func main() {
 	}
 
 	bedCoord := service.NewBedEventCoordinator()
-	monitorHandler := consumer.NewMonitorHandler(monitorBuf, writer, metaCache, bedCoord, stateSvc, alarmSvc, logger)
+
+	// PR6: AI override cache（wisefido-ai 通过 iot:event:stream + category=track_verdict 喂入）
+	// sandbox 默认开，release 模式才把 AI confidence 合并到前端 track 字段。
+	// 任何模式都不影响 alarm 路径（"宁可误报不可漏报"）。
+	aiOverrides := service.NewAIOverrideCache(cfg.AIOverride.Mode, cfg.AIOverride.TTLSec, logger)
+	logger.Info("ai_override cache initialized",
+		zap.String("mode", string(aiOverrides.Mode())),
+		zap.Int("ttl_sec", cfg.AIOverride.TTLSec),
+		zap.Int("gc_sec", cfg.AIOverride.GCSec))
+	go aiOverrides.RunGCLoop(ctx.Done(), time.Duration(cfg.AIOverride.GCSec)*time.Second)
+
+	monitorHandler := consumer.NewMonitorHandler(monitorBuf, writer, metaCache, bedCoord, stateSvc, alarmSvc, aiOverrides, logger)
 	go monitorHandler.RunLoop(ctx)
 	go runDeriveLoop(ctx, monitorBuf, stateSvc, metaCache, reader, alarmSvc, bedCoord, logger)
-	eventHandler := consumer.NewEventHandler(stateSvc, alarmSvc, monitorBuf, metaCache, enablementCache, bedCoord, logger)
+	eventHandler := consumer.NewEventHandler(stateSvc, alarmSvc, monitorBuf, metaCache, enablementCache, bedCoord, aiOverrides, logger)
 	alarmHandler := consumer.NewAlarmHandler(alarmSvc, stateSvc, monitorBuf, metaCache, bedCoord, logger)
 	alarmProcessHandler := consumer.NewAlarmProcessHandler(alarmSvc, logger)
 	cardChangeHandler := consumer.NewCardChangeHandler(alarmSvc, stateSvc, metaCache, enablementCache, bedCoord, db, logger)

@@ -16,6 +16,23 @@ type Config struct {
 	Redis   commonconfig.RedisConfig    `yaml:"redis"`
 	Logging commonconfig.LogConfig      `yaml:"logging"`
 	Streams commonconfig.StreamsConfig  `yaml:"streams"`
+
+	AIOverride AIOverrideConfig `yaml:"ai_override"`
+}
+
+// AIOverrideConfig wisefido-ai 派生 track_verdict 在 cardagg 端的合并行为。
+//
+// 仅作用于 UI 合并（调整 track_confidence 字段供前端渲染），**绝不影响 alarm
+// 触发路径**——用户原则"宁可误报不可漏报"。
+//
+//	mode = "sandbox"（默认）：仅 log，track_confidence 不变。演示"AI 在思考"。
+//	mode = "release"：把 AI 写的 confidence 覆写到 monitor 流 track 字段。
+//
+// env 覆盖：CARDAGG_AI_OVERRIDE_MODE / CARDAGG_AI_OVERRIDE_TTL_SEC
+type AIOverrideConfig struct {
+	Mode     string `yaml:"mode"`        // "sandbox" | "release"
+	TTLSec   int    `yaml:"ttl_sec"`     // 缓存条目兜底过期秒数
+	GCSec    int    `yaml:"gc_sec"`      // GC 间隔秒数（≤0 取默认 30s）
 }
 
 // Load 加载配置
@@ -102,6 +119,26 @@ func (c *Config) setDefaults() {
 	}
 	if c.Streams.Default.RetentionSeconds == 0 {
 		c.Streams.Default.RetentionSeconds = 86400 // 24小时
+	}
+	// AI override 默认 sandbox / 60s TTL / 30s GC，env 覆盖优先
+	if v := os.Getenv("CARDAGG_AI_OVERRIDE_MODE"); v != "" {
+		c.AIOverride.Mode = v
+	}
+	if v := os.Getenv("CARDAGG_AI_OVERRIDE_TTL_SEC"); v != "" {
+		var n int
+		_, _ = fmt.Sscanf(v, "%d", &n)
+		if n > 0 {
+			c.AIOverride.TTLSec = n
+		}
+	}
+	if c.AIOverride.Mode == "" {
+		c.AIOverride.Mode = "sandbox"
+	}
+	if c.AIOverride.TTLSec <= 0 {
+		c.AIOverride.TTLSec = 60
+	}
+	if c.AIOverride.GCSec <= 0 {
+		c.AIOverride.GCSec = 30
 	}
 }
 

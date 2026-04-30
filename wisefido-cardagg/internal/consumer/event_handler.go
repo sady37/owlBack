@@ -23,6 +23,7 @@ type EventHandler struct {
 	metaCache  *service.DeviceMetaCache
 	enablement *service.AlarmEnablementCache
 	bedCoord   *service.BedEventCoordinator
+	aiOverrides *service.AIOverrideCache // PR6: track_verdict 收口 + Enter/ExitRoom 清理
 	logger      *zap.Logger
 	staySesMu   sync.Mutex
 	staySessions map[string]*staySession // tenant:device -> Stay 状态机
@@ -32,10 +33,10 @@ type EventHandler struct {
 
 const leftBedMinInBedMs = 5 * 60 * 1000 // 在床≥5分钟才视为稳定上床，LeftBed 才进 pending
 
-func NewEventHandler(state *service.StateService, alarms *service.AlarmService, buffer *service.MonitorBuffer, metaCache *service.DeviceMetaCache, enablement *service.AlarmEnablementCache, bedCoord *service.BedEventCoordinator, logger *zap.Logger) *EventHandler {
+func NewEventHandler(state *service.StateService, alarms *service.AlarmService, buffer *service.MonitorBuffer, metaCache *service.DeviceMetaCache, enablement *service.AlarmEnablementCache, bedCoord *service.BedEventCoordinator, aiOverrides *service.AIOverrideCache, logger *zap.Logger) *EventHandler {
 	return &EventHandler{
 		state: state, alarms: alarms, buffer: buffer, metaCache: metaCache,
-		enablement: enablement, bedCoord: bedCoord, logger: logger,
+		enablement: enablement, bedCoord: bedCoord, aiOverrides: aiOverrides, logger: logger,
 		staySessions: make(map[string]*staySession),
 		inBedSince:   make(map[string]int64),
 	}
@@ -136,11 +137,36 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	case alarm.SleepStage:
 		h.routeSleepStageEvent(ctx, m, data)
 	case alarm.EnterRoom:
+		// PR6: 新人进 → 该 device 旧 verdict 全部作废（track_id 可能复用）
+		if h.aiOverrides != nil && m.DeviceUID != "" {
+			h.aiOverrides.ClearDevice(m.DeviceUID)
+		}
 		h.routeRoomStateEvent(ctx, m, data, evName)
 	case alarm.ExitRoom:
+		// PR6: 房间空了 → 清空该 device 所有 verdicts
+		if h.aiOverrides != nil && m.DeviceUID != "" {
+			h.aiOverrides.ClearDevice(m.DeviceUID)
+		}
 		h.routeRoomStateEvent(ctx, m, data, evName)
 	case alarm.NumberPeople:
 		h.routeRoomStateEvent(ctx, m, data, evName)
+
+	case "track_verdict":
+		// PR6: wisefido-ai 派生的 track 事后裁决（目前主要是 ghost 判定，confidence=20）
+		// 收入 aiOverrides cache，后续 monitor 流合并 track 字段时套用。
+		// 不参与 alarm 路径——仅影响 UI 渲染（"宁可误报不可漏报"原则）。
+		if h.aiOverrides != nil && m.DeviceUID != "" {
+			tid := intFromAny(data["track_id"])
+			conf := intFromAny(data["track_confidence"])
+			source, _ := data["source"].(string)
+			reason, _ := data["reason"].(string)
+			h.aiOverrides.Set(m.DeviceUID, tid, service.AIVerdict{
+				Confidence: conf,
+				Source:     source,
+				Reason:     reason,
+				UpdatedMs:  m.Timestamp,
+			})
+		}
 
 	case alarm.InBed:
 		// 记录 InBed 时间，供 LeftBed 计算在床时长（不依赖 BedState.StartTime，它会被 derive 覆盖）
