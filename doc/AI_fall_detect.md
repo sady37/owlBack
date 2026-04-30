@@ -837,3 +837,36 @@ ALTER TABLE alarm_events ADD COLUMN resolution_ts BIGINT DEFAULT NULL;
 4. 人标 Sofa "中心 80/边缘 40" 分级 Confidence——骨架内先统一 80，二期细化。
 5. Kalman 从匀速升级到匀加速（CA 模型）或 IMM 多模型——二期。
 6. 物理 FOV 的 r_max 信号最大作用距离：目前从 Boundary 最远边 fallback，等 device_meta 暴露硬件规格后精化。
+
+---
+
+## 16. 已知误报场景
+
+### 16.1 Kitchen 长时间站立做饭 → lost-fall 误报
+
+**场景**：人在厨房 counter / stove 前**长时间站立**做饭（通常 15-60min 不挪动），雷达可能报 track 短暂消失（pose=Stand 静止久 → 失锁），触发 lost-fall pending。5min 等待期内若无新 track 出生 + 无 ExitRoom event → 报 lost-fall。
+
+**实测**：D523 bookroom 3 天回放 47 次 lost-fall（layout boundary 修复前）；Kitchen 3 天 11 次。多数集中在做饭时段（午餐/晚餐），位置在 counter 前。
+
+**对 elder care 场景的影响**：**不适用**。
+- 老人 elder care 场景下，厨房不是主要活动区（多由家属/护工代劳）
+- 老人若进厨房，通常**短暂**（取水/取药/微波热菜），不会站 15min+
+- 该误报模式仅在"老人独居 + 自己做饭 + 厨房有 radar"才显著触发
+
+**部署建议**：
+- 老人独居 + 厨房雷达：建议在厨房 layout 显式标 Counter / Stove 区为 `Furniture`（AreaDeny），让 radar 在该区消失视为正常（cell 是 Deny）
+- 或考虑在 kitchen room 的 stay-alarm config 关闭 still-fall 触发
+- 通用养老机构（多人厨房）：该房间不部署 radar，集中在卧室/卫生间/客厅监测
+
+### 16.2 雷达近场 pose 误判 → AreaSit 误学（PR-15.3 前）
+
+旧 `cell_learning` 简单规则 "ActiveType[Sit] >= 15s → AreaSit" 在雷达近场（≤1.5m）易误学（z 测距不准）。
+**已修复**（PR-15）：移除该规则，AreaSit 仅由 PR-13 RegionStatic（2min Z-jump 或 12min 静止）+ PR-7.2 stand-static 学，要求"位姿切换硬证据"。
+
+### 16.3 Auto-Deny island 核心识别需 ≥10 天数据（PR-15.5）
+
+cell 距 walk path ≥2 cell 且持续 10 天无穿越才升 AreaDeny。新部署房间前 10 天 furniture 不会自动学到——需要：
+- (a) Layout 显式标 Furniture 矩形（推荐）
+- (b) 等 10 天数据自动积累
+
+详见 PR-15.4 BFS 距离场设计。
