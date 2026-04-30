@@ -118,18 +118,19 @@ const (
 //  3. Walk 直升（直接走过 ≥ WalkTraverse 次）
 //  4. Walk 邻接确认（邻居走过 ≥ NearTraverseWalk 次 + 本 cell 至少 1 次直接 Move 穿过）
 //     —— "一次经过就确认"：直接证据强，立即确认 Walk
-//  5. Auto-Deny 反转（邻居走过 ≥ NearTraverseDeny + 5-cell 软共识 + 持续 15 天）
-//     —— PR-15.3：从单次评估改为时间门控；详见 cell.AutoDenyQualifiedSinceMs 注释
-//
-// 4 与 5 是同一信号 NearTraverseCount 的双因素解释：
-//   - 有直接 Move 触碰（TraverseCount > 0）→ 低阈值即确认 Walk（扩散快）
-//   - 完全无直接触碰 + 持续 15 天 → 反转 Deny（扩散慢，因为后果严重）
+//  5. Auto-Deny 反转（PR-15.4 双触发路径）
+//     A. NearTraverseCount ≥ 20（walk 边缘 furniture）
+//     B. BFS depth ≥ 2 或不可达（island 核心 / 不可达角落）
+//     A 或 B 任一 + 5-cell 软共识 + 持续 15 天
 //
 // 写入 3 组 Belief 都标 SourceLearned。
 // 同 type 升格用 max(cur, mapped) 累积——多日观测可把 Confidence 推向 ConfFull（默认 95）。
 //
 // nowMs 用于 PR-15.3 时间门控；调用方传当前模拟时间（playback）或 wall-clock（prod）。
 func (g *RoomGrid) LearnCellAreas(p LearnParams, nowMs int64) {
+	// PR-15.4: 一次性计算全图 BFS 距离场（从 walk/enter/sit/bed 出发），
+	// 用于 Auto-Deny 路径 B 抓 island 核心。
+	dist := g.computeWalkDistance()
 	for i := range g.Cells {
 		c := &g.Cells[i]
 		if !c.InRoom || !c.InFOV {
@@ -170,26 +171,31 @@ func (g *RoomGrid) LearnCellAreas(p LearnParams, nowMs int64) {
 			continue
 		}
 
-		// Auto-Deny 反转 (PR-15.3) — 双阈值滞后 + 15 天时间门控
+		// Auto-Deny 反转 (PR-15.4) — 双触发路径 OR + 软共识 + 15 天时间门控
 		//
-		// 失败的实验回顾：
-		//   PR-15.0: 只查中心 cell TraverseCount==0 → jitter / 跳格频繁误判
-		//   PR-15.1: 5-cell consensus（中心+4 邻居 TraverseCount==0）→ jitter 单次触即重置
-		//   PR-15.2: BFS 距离场抓 island 核心 → 早期标记后无法回退，吃了 walk
+		// 触发路径（OR 关系，任一即可）：
+		//   A. NearTraverseCount ≥ NearTraverseDeny（默认 20）
+		//      物理含义：walk 边缘 furniture，邻居被走过但本 cell 未走过
+		//   B. BFS depth ≥ 2（dist[i] >= 2 或 dist[i] == -1 不可达）
+		//      物理含义：island 核心 / 不可达角，距 walk 太远
+		//      Walk + Enter + Sit/Bed/Toilet/Shower 是 BFS source，
+		//      传播仅通过 AreaUnknown（停留区不传播；不污染 island）
 		//
-		// PR-15.3 设计：保留 5-cell 共识（处理 walk 边缘 furniture），但
-		//   (a) 软化：TraverseCount < AutoDenyTraverseTolerate（默认 3）算"未走过"
-		//   (b) 滞后：reset 用 TraverseCount >= AutoDenyTraverseReset（默认 5）
-		//   (c) 时间：要求持续 ≥ AutoDenyMinPersistDays（默认 15）天才升格
+		// 共同条件：
+		//   - 5-cell 软共识：center + 4 邻居 TraverseCount < 3 + RealDecay < 5
+		//     容忍背景 ghost/jitter ~0.3/天 噪声，类 PR-13 sit 学习的 90% 容忍
+		//   - 15 天时间门控（cell.AutoDenyQualifiedSinceMs）：持续满足才升 Deny
 		//
-		// 物理含义：
-		//   - 容忍背景 ghost / jitter（~0.3/天）的偶发触碰
-		//   - 真有人走过（≥5 次累积）才重置 15 天观察期
-		//   - 15 天人都不踩到的 cell，几乎肯定是家具/障碍 → 升 Deny
+		// reset：TraverseCount >= 5 或 RealDecay >= 5（真活动证据）→ 重置计时
+		// hysteresis 区 TraverseCount [3, 5)：维持现状（既不前进也不重置）
 		//
-		// island 核心限制：核心 cell 邻居 NearTraverseCount=0，永远到不了 NearTraverseDeny=20。
-		// 这条规则覆盖不到，需 layout 显式标 Furniture。
-		qualifies := int(c.NearTraverseCount) >= p.NearTraverseDeny &&
+		// 历史教训：
+		//   PR-15.0/15.1 严格 ==0：jitter 单次触发即重置，无法稳定累积
+		//   PR-15.2 BFS 无时间门控：早期标记 walk decay cell + 无观测角落 → 误判
+		//   PR-15.4 = PR-15.3 (软共识+时间门控) + BFS 路径 B（解锁 island 核心）
+		qualifiesNearTraverse := int(c.NearTraverseCount) >= p.NearTraverseDeny
+		qualifiesBfsDepth := dist[i] >= 2 || dist[i] == -1
+		qualifies := (qualifiesNearTraverse || qualifiesBfsDepth) &&
 			(t == AreaUnknown || t == AreaActive) &&
 			fiveCellSoftConsensus(g, i, p.AutoDenyTraverseTolerate)
 
@@ -258,6 +264,63 @@ func fiveCellSoftConsensus(g *RoomGrid, idx int, traverseTolerate int) bool {
 		}
 	}
 	return true
+}
+
+// computeWalkDistance PR-15.4：从所有"活动" cell（Walk/Enter/Sit/Bed/Toilet/Shower）
+// 出发做 4-连通 BFS，传播仅通过 AreaUnknown 的 cell（停留区作为 source 而非 propagator
+// 防止 BFS 跨 island 内部）。
+//
+// 返回 dist[i]：cell i 到最近"活动" cell 的最短跳数。
+//   dist[i] = 0：cell 是 source（活动区）
+//   dist[i] >= 1：cell 是 Unknown，且 BFS 可达
+//   dist[i] == -1：cell 不可达（被 Deny 或几何隔绝）→ Auto-Deny 路径 B 也接受
+//
+// 用途：Auto-Deny 路径 B：dist >= 2 或 -1 视为"远离 walk" → island 核心候选。
+// 调用方持锁；scoping in caller LearnCellAreas。
+func (g *RoomGrid) computeWalkDistance() []int {
+	dist := make([]int, len(g.Cells))
+	for i := range dist {
+		dist[i] = -1
+	}
+	queue := make([]int, 0, 256)
+	for i := range g.Cells {
+		c := &g.Cells[i]
+		if !c.InRoom || !c.InFOV {
+			continue
+		}
+		switch c.Belief[0].Type {
+		case AreaActive, AreaEnter, AreaSit, AreaBed, AreaToilet, AreaShower:
+			dist[i] = 0
+			queue = append(queue, i)
+		}
+	}
+	deltas := [4][2]int{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}
+	for head := 0; head < len(queue); head++ {
+		idx := queue[head]
+		row := idx / g.Width
+		col := idx % g.Width
+		for _, d := range deltas {
+			r, cc := row+d[0], col+d[1]
+			if r < 0 || r >= g.Height || cc < 0 || cc >= g.Width {
+				continue
+			}
+			ni := r*g.Width + cc
+			if dist[ni] >= 0 {
+				continue
+			}
+			n := &g.Cells[ni]
+			if !n.InRoom || !n.InFOV {
+				continue
+			}
+			// 仅传播过 AreaUnknown：stop at Deny / 已学到的活动区（不污染 island）
+			if n.Belief[0].Type != AreaUnknown {
+				continue
+			}
+			dist[ni] = dist[idx] + 1
+			queue = append(queue, ni)
+		}
+	}
+	return dist
 }
 
 // LearnLyingAnomalies 扫全图，把"床外 Lie"事件累计到 LieAnomalyCount。
