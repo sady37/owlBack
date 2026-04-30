@@ -146,7 +146,12 @@ func (g *RoomGrid) LearnCellAreas(p LearnParams) {
 		// PR-15：原规则只看中心 cell TraverseCount==0，10cm 网格上 jitter / 跳格频繁让中心未被穿过 → 误判。
 		// 改用中心+上下左右 5 cell 的"完全绕开"共识：任一 cell 有 TraverseCount>0 或 RealDecay>0 即否决。
 		// 物理含义：人若实际能走到这一带（哪怕中心 cell 没被精确踩中），5 cell 至少有一个会被穿过；
-		// 唯有 furniture 中心（≥2 cell 离最近 walk）才会 5 cell 全空。
+		// 此规则覆盖"furniture 边缘紧贴 walk"的 case（counter / sofa 边）。
+		//
+		// PR-15.2 实验：尝试用 BFS 距离场补 island 核心检测——失败回退。
+		// 失败原因：island 核心 cell 的 NearTraverseCount=0（其邻居也是 island 内 cell），
+		// BFS 加门控到不了核心；BFS 不加门控会误覆盖 walk 衰减的 cell + 无观测角落。
+		// 结论：island 核心仍需 layout 显式标 Furniture（人标 SourceHuman 不会被算法覆写）。
 		if int(c.NearTraverseCount) >= p.NearTraverseDeny &&
 			(t == AreaUnknown || t == AreaActive) &&
 			fiveCellAllUnreached(g, i) {
@@ -157,11 +162,18 @@ func (g *RoomGrid) LearnCellAreas(p LearnParams) {
 	}
 }
 
-// fiveCellAllUnreached 检查 cell + 4 邻居（N/S/E/W）是否全部 RealDecay==0 && TraverseCount==0。
+// fiveCellAllUnreached 检查 cell + 4 邻居（N/S/E/W）是否全部"基本未被走"。
+//
 // PR-15 Auto-Deny 5-cell consensus：减少 jitter / 跳格导致的"中心 cell 永不被走"误判。
-// 越界邻居视为 unreached（不否决；房间边角不应该因为邻居越界而无法学 Deny）。
+// PR-15.1 RealDecay < realDecayDenyTolerance：容忍偶发轻触碰。
+//
+// RealDecay 半衰期 15min，一次触碰约 60min 内衰到 < 1；阈值 5 容忍"≤ 30min 内一次轻触"。
+// TraverseCount 长档 7 天；要求严格 == 0（Move 状态穿越是强证据）。
+// 越界邻居视为 unreached（不否决；房间边角不因邻居越界无法学 Deny）。
+const realDecayDenyTolerance = 5
+
 func fiveCellAllUnreached(g *RoomGrid, idx int) bool {
-	if g.Cells[idx].RealDecay != 0 || g.Cells[idx].TraverseCount != 0 {
+	if g.Cells[idx].RealDecay >= realDecayDenyTolerance || g.Cells[idx].TraverseCount != 0 {
 		return false
 	}
 	row := idx / g.Width
@@ -173,7 +185,7 @@ func fiveCellAllUnreached(g *RoomGrid, idx int) bool {
 			continue // 越界跳过
 		}
 		nb := &g.Cells[r*g.Width+cc]
-		if nb.RealDecay != 0 || nb.TraverseCount != 0 {
+		if nb.RealDecay >= realDecayDenyTolerance || nb.TraverseCount != 0 {
 			return false
 		}
 	}
