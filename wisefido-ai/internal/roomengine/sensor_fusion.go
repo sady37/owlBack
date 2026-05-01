@@ -110,9 +110,19 @@ type SleepadBedEvent struct {
 }
 
 // ParseSleepadBedEvents 把 sleepad event 流的 data_value 解析为床压事件。
-// 仅返回 event_name ∈ {InBed, LeftBed} 且 status=instant 的事件（避免重复计数）。
-func ParseSleepadBedEvents(dv interface{}, deviceUID string, fallbackTs int64) []SleepadBedEvent {
+// 仅返回 envelopeCat ∈ {InBed, LeftBed} 且 status=instant 的事件（避免重复计数）。
+// envelopeCat 来自 IoTStreamMessage.Category（事件类型唯一权威）。
+func ParseSleepadBedEvents(dv interface{}, deviceUID, envelopeCat string, fallbackTs int64) []SleepadBedEvent {
 	if dv == nil {
+		return nil
+	}
+	var isInBed bool
+	switch envelopeCat {
+	case "InBed":
+		isInBed = true
+	case "LeftBed":
+		isInBed = false
+	default:
 		return nil
 	}
 	var arr []map[string]interface{}
@@ -133,18 +143,11 @@ func ParseSleepadBedEvents(dv interface{}, deviceUID string, fallbackTs int64) [
 	}
 	out := make([]SleepadBedEvent, 0, len(arr))
 	for _, m := range arr {
-		// Stage 1a：event_name 已停写，读 dataCategory（Stage 1b 后切到 envelope.Category）
-		evt, _ := m["dataCategory"].(string)
 		st, _ := m["event_status"].(string)
 		if st != "instant" {
 			continue // 只用 instant 事件，避免 instant+start 重复
 		}
-		switch evt {
-		case "InBed":
-			out = append(out, SleepadBedEvent{DeviceUID: deviceUID, TMs: fallbackTs, IsInBed: true, Status: st})
-		case "LeftBed":
-			out = append(out, SleepadBedEvent{DeviceUID: deviceUID, TMs: fallbackTs, IsInBed: false, Status: st})
-		}
+		out = append(out, SleepadBedEvent{DeviceUID: deviceUID, TMs: fallbackTs, IsInBed: isInBed, Status: st})
 	}
 	return out
 }

@@ -51,19 +51,17 @@ type RadarTrackEvent struct {
 }
 
 // ParseRadarFallAlarm 解析 alarm:stream 一条消息的 data_value 为 RadarFallAlarm 列表。
-// 仅返回 event_name="Fall" 的项；其他 alarm 类型暂忽略（可在未来扩展）。
-func ParseRadarFallAlarm(dv interface{}, deviceUID string, fallbackTs int64) []RadarFallAlarm {
+// 仅当 envelopeCat="Fall" 才返回（envelope.Category 是事件类型唯一权威）。
+func ParseRadarFallAlarm(dv interface{}, deviceUID, envelopeCat string, fallbackTs int64) []RadarFallAlarm {
+	if envelopeCat != "Fall" {
+		return nil
+	}
 	arr := jsonArrayOfObjects(dv)
 	if len(arr) == 0 {
 		return nil
 	}
 	out := make([]RadarFallAlarm, 0, len(arr))
 	for _, m := range arr {
-		// Stage 1a：event_name 已停写，读 dataCategory
-		evt, _ := m["dataCategory"].(string)
-		if evt != "Fall" {
-			continue
-		}
 		st, _ := m["event_status"].(string)
 		ts := int64FromAny(m["event_since"])
 		if ts == 0 {
@@ -89,29 +87,26 @@ func ParseRadarFallAlarm(dv interface{}, deviceUID string, fallbackTs int64) []R
 }
 
 // ParseRadarTrackEvents 解析 event:stream 一条消息的 data_value 为 RadarTrackEvent 列表。
-// 仅返回 event_name ∈ {EnterRoom, ExitRoom, InBed, LeftBed}。
+// 仅当 envelopeCat ∈ {EnterRoom, ExitRoom, InBed, LeftBed} 才返回（envelope.Category 是事件类型唯一权威）。
 //
 // 实测（2026-04-27 case_lostfall）：
 //   - EnterRoom / ExitRoom / InBed 只发 status="start"
 //   - LeftBed 双发 ("instant" + "start")
 //
 // 这里接受 "start" 与 "instant"。LeftBed 双发时同 TMs，RecordRadarEvent 用 TMs 做 map key
-// 会自然覆盖（无重复计数风险）。"end" 状态（如 SignalPoorRecover end）不在本表，已被 event_name
-// 白名单过滤。
-func ParseRadarTrackEvents(dv interface{}, deviceUID string, fallbackTs int64) []RadarTrackEvent {
+// 会自然覆盖（无重复计数风险）。"end" 状态（如 SignalPoorRecover end）不在白名单内会被 envelopeCat 过滤。
+func ParseRadarTrackEvents(dv interface{}, deviceUID, envelopeCat string, fallbackTs int64) []RadarTrackEvent {
+	switch envelopeCat {
+	case "EnterRoom", "ExitRoom", "InBed", "LeftBed":
+	default:
+		return nil
+	}
 	arr := jsonArrayOfObjects(dv)
 	if len(arr) == 0 {
 		return nil
 	}
 	out := make([]RadarTrackEvent, 0, len(arr))
 	for _, m := range arr {
-		// Stage 1a：event_name 已停写，读 dataCategory
-		evt, _ := m["dataCategory"].(string)
-		switch evt {
-		case "EnterRoom", "ExitRoom", "InBed", "LeftBed":
-		default:
-			continue
-		}
 		st, _ := m["event_status"].(string)
 		if st != "start" && st != "instant" {
 			continue
@@ -123,7 +118,7 @@ func ParseRadarTrackEvents(dv interface{}, deviceUID string, fallbackTs int64) [
 		out = append(out, RadarTrackEvent{
 			DeviceUID: deviceUID,
 			TMs:       ts,
-			EventName: evt,
+			EventName: envelopeCat,
 			TrackID:   jsonInt(m["track_id"]),
 			Status:    st,
 		})

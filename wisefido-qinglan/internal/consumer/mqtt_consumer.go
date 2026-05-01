@@ -190,11 +190,9 @@ func (c *MQTTConsumer) publishOnlineForConnectedAfterStartup(ctx context.Context
 		}
 		// card_id comes from resolveDeviceIdentity via CardMappingService
 		item := observation.EventItem{
-			DataCategory: alarm.AlarmTypeOfflineRecover,
-			EventName:    alarm.AlarmTypeOfflineRecover,
-			EventSince:   ts,
-			EventStatus:  "end",
-			TrackID:      observation.TrackDevice,
+			EventSince:  ts,
+			EventStatus: "end",
+			TrackID:     observation.TrackDevice,
 		}
 		data, _ := observation.EventItemToDataMap(&item)
 		if data == nil {
@@ -1068,11 +1066,9 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 // publishStatActivity 发布老人活动性状态汇总到 iot:event:stream，payload 符合 EventItem 格式，activity 字段平铺。
 func (c *MQTTConsumer) publishStatActivity(ctx context.Context, tid, bid, unitID, cid, deviceUID, deviceID string, ts int64, m map[string]interface{}) error {
 	item := observation.EventItem{
-		DataCategory: observation.FieldActivity,
-		EventName:    observation.FieldActivity,
-		EventSince:   ts,
-		EventStatus:  "instant",
-		TrackID:      observation.TrackUnknownPerson,
+		EventSince:  ts,
+		EventStatus: "instant",
+		TrackID:     observation.TrackUnknownPerson,
 	}
 	data, err := observation.EventItemToDataMap(&item)
 	if err != nil {
@@ -1115,8 +1111,6 @@ func (c *MQTTConsumer) publishStatSleep(ctx context.Context, tid, bid, unitID, c
 	publishAlarm := func(category string, eventValue int64, eventReason string, rawDecode map[string]interface{}) error {
 		payloadJSON, _ := json.Marshal(rawDecode)
 		item := observation.EventItem{
-			DataCategory: category,
-			EventName:    category,
 			EventSince:   ts,
 			EventStatus:  "instant",
 			EventValue:   eventValue,
@@ -1244,10 +1238,8 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 		eventType := asInt(m["event_type"])
 
 		item := observation.EventItem{
-			DataCategory: eventName,
-			EventName:    eventName,
-			EventSince:   ts,
-			EventStatus:  "start",
+			EventSince:  ts,
+			EventStatus: "start",
 		}
 		switch eventType {
 		case 1:
@@ -1284,8 +1276,6 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 			if alarmCat != "" {
 				payloadJSON, _ := json.Marshal(m)
 				alarmItem := observation.EventItem{
-					DataCategory: alarmCat,
-					EventName:    alarmCat,
 					EventSince:   ts,
 					EventStatus:  "start",
 					EventPayload: string(payloadJSON),

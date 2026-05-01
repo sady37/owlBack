@@ -564,8 +564,7 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	// PR5b: 用 observation.Track 的标准字段 map（与上游 firmware/engine 同 schema）
 	fields := p.Track.ToFieldMap()
 	fields["ts"] = nowMs
-	fields["dataCategory"] = category
-	// Stage 1a：不再写 event_name；envelope.Category 唯一权威
+	// Stage 1b：dataCategory + event_name 已退出 wire；envelope.Category 唯一权威（构造 IoTStreamMessage 时 Category 字段直传）
 	// AI 派生 track_verdict 与床状态无关；仅 sleepad_radar_conflict 显式传 BedStatus=1
 	// 才保留。其它情况（默认 0）删掉，避免协议噪音。
 	if p.Track.BedStatus == 0 {
@@ -968,14 +967,14 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 
 	switch dt {
 	case "sleepad", "sleeppad":
-		for _, evt := range ParseSleepadBedEvents(m.DataValue, m.DeviceUID, ts) {
+		for _, evt := range ParseSleepadBedEvents(m.DataValue, m.DeviceUID, m.Category, ts) {
 			tm.ProcessSleepadBedEvent(evt)
 		}
 	case "radar":
 		// 落账 radar EnterRoom/ExitRoom/InBed/LeftBed；同时 InBed/LeftBed 走"事件触发器"
 		// 路径：tm.RecordRadarEvent + tm.Tick(ts) → 段 4/5/6 立即跑一次。
 		// 当前不消费 EnterRoom/ExitRoom 做行为推断，仅落账供未来段 7 使用。
-		evts := ParseRadarTrackEvents(m.DataValue, m.DeviceUID, ts)
+		evts := ParseRadarTrackEvents(m.DataValue, m.DeviceUID, m.Category, ts)
 		if len(evts) == 0 {
 			return
 		}
@@ -1041,7 +1040,7 @@ func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
 		return
 	}
 
-	alarms := ParseRadarFallAlarm(m.DataValue, m.DeviceUID, ts)
+	alarms := ParseRadarFallAlarm(m.DataValue, m.DeviceUID, m.Category, ts)
 	if len(alarms) == 0 {
 		return
 	}

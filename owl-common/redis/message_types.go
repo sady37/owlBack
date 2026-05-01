@@ -117,8 +117,9 @@ func FromStreamMap(values map[string]interface{}) (*IoTStreamMessage, error) {
 }
 
 func NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType string, ts int64, topicType, category string, data map[string]interface{}) *IoTStreamMessage {
-	// Stage 1a：在 publish 边界 strip event_name，envelope.Category 是事件类型唯一权威
+	// Stage 1a/1b：在 publish 边界 strip dataCategory + event_name，envelope.Category 是事件类型唯一权威
 	if data != nil {
+		delete(data, DataCategoryKey)
 		delete(data, EventNameKey)
 	}
 	dataValue := []interface{}{data}
@@ -177,17 +178,12 @@ func NewSingleItemMessage(tenantID, cardID, deviceUID, deviceID, deviceType stri
 	}
 	cat := category
 	if cat == "" {
+		// 兼容老 caller：category 参数为空时从 data["dataCategory"] 提一次进 envelope（提完即剥）
 		if v, ok := withCat[DataCategoryKey].(string); ok {
 			cat = v
 		}
 	}
-	if _, has := withCat[DataCategoryKey]; !has {
-		withCat[DataCategoryKey] = cat
-	} else if category != "" {
-		withCat[DataCategoryKey] = category
-	}
-	// Stage 1a：不再 auto-sync event_name；envelope.Category 唯一权威。NewIoTStreamMessageWithData 还会再 strip 一次兜底。
-	delete(withCat, EventNameKey)
+	// Stage 1b：dataCategory + event_name 由 NewIoTStreamMessageWithData 边界 strip；envelope.Category 唯一权威
 	return NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, ts, topicType, cat, withCat)
 }
 
@@ -229,6 +225,7 @@ const (
 )
 
 func BuildDeviceStatusMessage(deviceUID, deviceType, cardID, tenantID string, timestamp int64, statuses map[string]int) IoTStreamMessage {
+	// Stage 1b：dataValue 不再带 dataCategory；envelope.Category 是事件类型唯一权威
 	return IoTStreamMessage{
 		DeviceUID:  deviceUID,
 		DeviceType: deviceType,
@@ -238,7 +235,7 @@ func BuildDeviceStatusMessage(deviceUID, deviceType, cardID, tenantID string, ti
 		TopicType:  "status",
 		Category:   "deviceStatus",
 		DataValue: []interface{}{
-			map[string]interface{}{DataCategoryKey: "deviceStatus", "statuses": statuses},
+			map[string]interface{}{"statuses": statuses},
 		},
 	}
 }

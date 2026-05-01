@@ -6,17 +6,12 @@ import (
 	"go.uber.org/zap"
 )
 
-func streamEventName(m *redis.IoTStreamMessage, data map[string]interface{}) string {
-	// Stage 1a：envelope.Category 优先；保留 dataCategory 兜底（旧消息 / Stage 1b 前的灰度窗口）
-	if m != nil && m.Category != "" {
-		return m.Category
+func streamEventName(m *redis.IoTStreamMessage, _ map[string]interface{}) string {
+	// Stage 1b：envelope.Category 是事件类型唯一权威
+	if m == nil {
+		return ""
 	}
-	if data != nil {
-		if v, _ := data[redis.DataCategoryKey].(string); v != "" {
-			return v
-		}
-	}
-	return ""
+	return m.Category
 }
 
 func streamLogFields(stream string, m *redis.IoTStreamMessage, eventName string) []zap.Field {

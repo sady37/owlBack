@@ -293,12 +293,10 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 		eventStatus = "end"
 	}
 	item := observation.EventItem{
-		DataCategory: eventName,
-		EventName:    eventName,
-		EventSince:   ts,
-		EventStatus:  eventStatus,
-		TrackID:      observation.TrackDevice,
-		EventValue:   int64(value),
+		EventSince:  ts,
+		EventStatus: eventStatus,
+		TrackID:     observation.TrackDevice,
+		EventValue:  int64(value),
 	}
 	data, err := observation.EventItemToDataMap(&item)
 	if err != nil {

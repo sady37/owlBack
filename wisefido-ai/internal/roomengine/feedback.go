@@ -402,6 +402,7 @@ func (i *AlarmFeedbackIngester) findRadarPositionAt(ctx context.Context,
 		FROM iot_timeseries
 		WHERE device_id = $1::uuid
 		  AND topic_type = 'monitor'
+		  AND category = 'track'
 		  AND timestamp BETWEEN $2 AND $3
 		ORDER BY timestamp DESC
 		LIMIT 50
@@ -432,11 +433,7 @@ func (i *AlarmFeedbackIngester) findRadarPositionAt(ctx context.Context,
 			continue
 		}
 		for _, m := range arr {
-			// Stage 1a：event_name 已停写，读 dataCategory
-			eventName, _ := m["dataCategory"].(string)
-			if eventName != "track" {
-				continue
-			}
+			// Stage 1b：category='track' 已由 SQL 过滤；这里只解 payload 字段
 			tid := jsonInt(m["track_id"])
 			h := jsonInt(m["position_x"])
 			v := jsonInt(m["position_y"])

@@ -192,6 +192,7 @@ func lookbackPositionFromIoT(ctx context.Context, db *sql.DB, deviceID string,
 		SELECT timestamp, data_value
 		FROM iot_timeseries
 		WHERE device_id = $1::uuid AND topic_type = 'monitor'
+		  AND category = 'track'
 		  AND timestamp BETWEEN $2 AND $3
 		ORDER BY timestamp DESC LIMIT 50
 	`
@@ -224,11 +225,7 @@ func lookbackPositionFromIoT(ctx context.Context, db *sql.DB, deviceID string,
 			continue
 		}
 		for _, m := range arr {
-			// Stage 1a：event_name 已停写，读 dataCategory
-			ev, _ := m["dataCategory"].(string)
-			if ev != "track" {
-				continue
-			}
+			// Stage 1b：category='track' 已由 SQL 过滤；这里只解 payload 字段
 			tid, _ := m["track_id"].(float64)
 			hv, _ := m["position_x"].(float64)
 			vv, _ := m["position_y"].(float64)

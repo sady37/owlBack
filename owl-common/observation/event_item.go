@@ -2,14 +2,11 @@ package observation
 
 import "encoding/json"
 
-// EventItem 表示 iot:event:stream 的 dataValue 中单条事件/报警，兼容 qinglan 与 sleepace。
-// 当前约定 dataCategory 与 event_name 同值；dataCategory 预留作上位类（如 SuspectedFall/Fall → fall_detection）。
-// 网关必填：dataCategory、event_name、event_since、event_status；可选：event_id、track_id、event_end、event_reason、event_level、event_value。
+// EventItem 表示 iot:event:stream / iot:alarm:stream 的 dataValue 中单条事件/报警 payload。
+// Stage 2：dataCategory / event_name 字段已删，事件类型权威由 envelope.Category（IoTStreamMessage.Category）承担。
+// 必填：event_since、event_status；其它字段按事件子类按需填写。
 type EventItem struct {
-	DataCategory string `json:"dataCategory"` // 与 event_name 同值，预留作上位类
-
 	EventID      string `json:"event_id,omitempty"`
-	EventName    string `json:"event_name"`   // 必填，事件类型名
 	EventSince   int64  `json:"event_since"`  // 必填，发生时间戳 ms
 	EventStatus  string `json:"event_status"` // 必填：start / end / instant / pending
 	EventEnd     int64  `json:"event_end,omitempty"`

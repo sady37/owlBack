@@ -753,11 +753,9 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 				go func() {
 					ctx := context.Background()
 					item := observation.EventItem{
-						DataCategory: alarm.AlarmTypeOfflineRecover,
-						EventName:    alarm.AlarmTypeOfflineRecover,
-						EventSince:   time.Now().UnixMilli(),
-						EventStatus:  "end",
-						TrackID:      observation.TrackDevice,
+						EventSince:  time.Now().UnixMilli(),
+						EventStatus: "end",
+						TrackID:     observation.TrackDevice,
 					}
 					data, _ := observation.EventItemToDataMap(&item)
 					if data == nil {

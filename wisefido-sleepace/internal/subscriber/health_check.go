@@ -150,30 +150,24 @@ func (h *HealthCheck) probeOne(ctx context.Context, b *card.DeviceBaseline) {
 		if online {
 			eventName = alarm.AlarmTypeOfflineRecover
 			item = observation.EventItem{
-				DataCategory: eventName,
-				EventName:    eventName,
-				EventSince:   tsMs,
-				EventStatus:  "end",
-				EventValue:   0,
-				TrackID:      observation.TrackDevice,
+				EventSince:  tsMs,
+				EventStatus: "end",
+				EventValue:  0,
+				TrackID:     observation.TrackDevice,
 			}
 		} else {
 			eventName = alarm.AlarmTypeOffline
 			item = observation.EventItem{
-				DataCategory: eventName,
-				EventName:    eventName,
-				EventSince:   tsMs,
-				EventStatus:  "start",
-				EventValue:   1,
-				TrackID:      observation.TrackDevice,
+				EventSince:  tsMs,
+				EventStatus: "start",
+				EventValue:  1,
+				TrackID:     observation.TrackDevice,
 			}
 		}
 		alarmData, _ := observation.EventItemToDataMap(&item)
 		if alarmData == nil {
 			alarmData = make(map[string]any)
 		}
-		alarmData[observation.FieldEventName] = eventName
-		alarmData[rediscommon.DataCategoryKey] = eventName
 		if online {
 			alarmData[observation.FieldOffline] = 0
 		} else {

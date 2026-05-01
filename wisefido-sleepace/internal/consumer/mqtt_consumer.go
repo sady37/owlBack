@@ -305,30 +305,24 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			if online {
 				eventName = alarm.AlarmTypeOfflineRecover
 				item = observation.EventItem{
-					DataCategory: eventName,
-					EventName:    eventName,
-					EventSince:   tsMs,
-					EventStatus:  "end",
-					EventValue:   0,
-					TrackID:      observation.TrackDevice,
+					EventSince:  tsMs,
+					EventStatus: "end",
+					EventValue:  0,
+					TrackID:     observation.TrackDevice,
 				}
 			} else {
 				eventName = alarm.AlarmTypeOffline
 				item = observation.EventItem{
-					DataCategory: eventName,
-					EventName:    eventName,
-					EventSince:   tsMs,
-					EventStatus:  "start",
-					EventValue:   1,
-					TrackID:      observation.TrackDevice,
+					EventSince:  tsMs,
+					EventStatus: "start",
+					EventValue:  1,
+					TrackID:     observation.TrackDevice,
 				}
 			}
 			alarmData, _ := observation.EventItemToDataMap(&item)
 			if alarmData == nil {
 				alarmData = make(map[string]any)
 			}
-			alarmData[observation.FieldEventName] = eventName
-			alarmData[redis.DataCategoryKey] = eventName
 			if online {
 				alarmData[observation.FieldOffline] = 0
 			} else {
@@ -423,11 +417,9 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 					categoryBed = alarm.LeftBed // 1=离床
 				}
 				evItem := observation.EventItem{
-					DataCategory: categoryBed,
-					EventName:    categoryBed,
-					EventSince:   ts,
-					EventStatus:  "start",
-					TrackID:      d.LeftRight,
+					EventSince:  ts,
+					EventStatus: "start",
+					TrackID:     d.LeftRight,
 				}
 				evData, _ := observation.EventItemToDataMap(&evItem)
 				if evData == nil {
@@ -470,8 +462,6 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		}
 		payloadJSON, _ := json.Marshal(data)
 		item := observation.EventItem{
-			DataCategory: categoryInBed,
-			EventName:    categoryInBed,
 			EventSince:   ts,
 			EventStatus:  "instant",
 			TrackID:      d.LeftRight,
@@ -508,8 +498,6 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			c.statusTracker.UpdateSleepStage(deviceUID, stage)
 		}
 		payloadData := map[string]any{
-			redis.DataCategoryKey:       alarm.SleepStage,
-			"event_name":                alarm.SleepStage,
 			"event_since":               ts,
 			"event_status":              "instant",
 			"track_id":                  d.LeftRight,
@@ -517,8 +505,6 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		}
 		payloadJSON, _ := json.Marshal(payloadData)
 		item := observation.EventItem{
-			DataCategory: alarm.SleepStage,
-			EventName:    alarm.SleepStage,
 			EventSince:   ts,
 			EventStatus:  "instant",
 			TrackID:      d.LeftRight,
@@ -574,8 +560,6 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		}
 		payloadJSON, _ := json.Marshal(payloadData)
 		item := observation.EventItem{
-			DataCategory: alarm.SensorDetached,
-			EventName:    eventName,
 			EventSince:   ts,
 			EventStatus:  eventStatus,
 			TrackID:      observation.TrackDevice,
@@ -613,8 +597,6 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			eventStatus = "end"
 		}
 		payloadData := map[string]any{
-			"dataCategory":            "pressureSensor",
-			"event_name":              "pressureSensor",
 			"event_since":             ts,
 			"event_status":            eventStatus,
 			"track_id":                observation.TrackDevice,
@@ -622,8 +604,6 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		}
 		payloadJSON, _ := json.Marshal(payloadData)
 		item := observation.EventItem{
-			DataCategory: "pressureSensor",
-			EventName:    "pressureSensor",
 			EventSince:   ts,
 			EventStatus:  eventStatus,
 			TrackID:      observation.TrackDevice,
@@ -654,8 +634,6 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			streamUserID = deviceID
 		}
 		payloadData := map[string]any{
-			"dataCategory": "analysis",
-			"event_name":   "analysis",
 			"event_since":  ts,
 			"event_status": "instant",
 			"user_id":      streamUserID,
@@ -663,8 +641,6 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		}
 		payloadJSON, _ := json.Marshal(payloadData)
 		item := observation.EventItem{
-			DataCategory: "analysis",
-			EventName:    "analysis",
 			EventSince:   ts,
 			EventStatus:  "instant",
 			TrackID:      observation.TrackDevice,
@@ -701,8 +677,6 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			progress = d.Offset * 100 / d.Length
 		}
 		payloadData := map[string]any{
-			"dataCategory":                   "upgradeProgress",
-			"event_name":                     "upgradeProgress",
 			"event_since":                    ts,
 			"event_status":                   "instant",
 			"track_id":                       observation.TrackDevice,
@@ -713,8 +687,6 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		}
 		payloadJSON, _ := json.Marshal(payloadData)
 		item := observation.EventItem{
-			DataCategory: "upgradeProgress",
-			EventName:    "upgradeProgress",
 			EventSince:   ts,
 			EventStatus:  "instant",
 			TrackID:      observation.TrackDevice,
@@ -805,9 +777,7 @@ func (c *MQTTConsumer) handleAlarmNotify(ctx context.Context, tenantID, cardID, 
 	}
 	payloadJSON, _ := json.Marshal(payloadData)
 	item := observation.EventItem{
-		DataCategory: am.EventName,
 		EventID:      strconv.FormatInt(d.Id, 10),
-		EventName:    am.EventName,
 		EventSince:   tsPayload,
 		EventStatus:  eventStatus,
 		TrackID:      am.TrackID,

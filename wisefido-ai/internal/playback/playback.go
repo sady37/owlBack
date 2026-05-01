@@ -302,7 +302,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 
 				// 分发：event 流（radar EnterRoom/ExitRoom/InBed/LeftBed）落账 + Tick；不参与 ProcessFrame
 				if row.TopicType == "event" {
-					for _, evt := range roomengine.ParseRadarTrackEvents(row.DataValue, row.DeviceUID, ts) {
+					for _, evt := range roomengine.ParseRadarTrackEvents(row.DataValue, row.DeviceUID, row.Category, ts) {
 						tm.RecordRadarEvent(evt)
 					}
 					if opts.AlarmInjector != nil {
