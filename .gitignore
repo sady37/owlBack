@@ -69,3 +69,8 @@ wisefido-ai/roomengine-playback
 # Local debug artifacts (not for repo)
 doc/playback-*.html
 ota/*.zip
+
+# Local debug / scratch artifacts
+doc/sleepad-debug/
+ota/other/
+wisefido-qinglan/cmd/test_parse_main.go
