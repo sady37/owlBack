@@ -1,26 +1,20 @@
 package consumer
 
 import (
-	"owl-common/alarm"
 	"owl-common/redis"
 
 	"go.uber.org/zap"
 )
 
 func streamEventName(m *redis.IoTStreamMessage, data map[string]interface{}) string {
+	// Stage 1a：envelope.Category 优先；保留 dataCategory 兜底（旧消息 / Stage 1b 前的灰度窗口）
+	if m != nil && m.Category != "" {
+		return m.Category
+	}
 	if data != nil {
-		if v, _ := data[alarm.FieldEventName].(string); v != "" {
-			return v
-		}
 		if v, _ := data[redis.DataCategoryKey].(string); v != "" {
 			return v
 		}
-		if v, _ := data["category"].(string); v != "" {
-			return v
-		}
-	}
-	if m != nil {
-		return m.Category
 	}
 	return ""
 }

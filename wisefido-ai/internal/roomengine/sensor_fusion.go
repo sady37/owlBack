@@ -133,7 +133,8 @@ func ParseSleepadBedEvents(dv interface{}, deviceUID string, fallbackTs int64) [
 	}
 	out := make([]SleepadBedEvent, 0, len(arr))
 	for _, m := range arr {
-		evt, _ := m["event_name"].(string)
+		// Stage 1a：event_name 已停写，读 dataCategory（Stage 1b 后切到 envelope.Category）
+		evt, _ := m["dataCategory"].(string)
 		st, _ := m["event_status"].(string)
 		if st != "instant" {
 			continue // 只用 instant 事件，避免 instant+start 重复

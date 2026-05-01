@@ -432,7 +432,8 @@ func (i *AlarmFeedbackIngester) findRadarPositionAt(ctx context.Context,
 			continue
 		}
 		for _, m := range arr {
-			eventName, _ := m["event_name"].(string)
+			// Stage 1a：event_name 已停写，读 dataCategory
+			eventName, _ := m["dataCategory"].(string)
 			if eventName != "track" {
 				continue
 			}

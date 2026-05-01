@@ -224,7 +224,8 @@ func lookbackPositionFromIoT(ctx context.Context, db *sql.DB, deviceID string,
 			continue
 		}
 		for _, m := range arr {
-			ev, _ := m["event_name"].(string)
+			// Stage 1a：event_name 已停写，读 dataCategory
+			ev, _ := m["dataCategory"].(string)
 			if ev != "track" {
 				continue
 			}

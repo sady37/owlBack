@@ -59,7 +59,8 @@ func ParseRadarFallAlarm(dv interface{}, deviceUID string, fallbackTs int64) []R
 	}
 	out := make([]RadarFallAlarm, 0, len(arr))
 	for _, m := range arr {
-		evt, _ := m["event_name"].(string)
+		// Stage 1a：event_name 已停写，读 dataCategory
+		evt, _ := m["dataCategory"].(string)
 		if evt != "Fall" {
 			continue
 		}
@@ -104,7 +105,8 @@ func ParseRadarTrackEvents(dv interface{}, deviceUID string, fallbackTs int64) [
 	}
 	out := make([]RadarTrackEvent, 0, len(arr))
 	for _, m := range arr {
-		evt, _ := m["event_name"].(string)
+		// Stage 1a：event_name 已停写，读 dataCategory
+		evt, _ := m["dataCategory"].(string)
 		switch evt {
 		case "EnterRoom", "ExitRoom", "InBed", "LeftBed":
 		default:

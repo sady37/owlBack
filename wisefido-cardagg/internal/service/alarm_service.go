@@ -534,7 +534,8 @@ func (s *AlarmService) TryAddLeftBedPendingAtTrigger(ctx context.Context, msg *r
 	if data == nil {
 		return false
 	}
-	eventName, _ := data[alarm.FieldEventName].(string)
+	// Stage 1a：envelope.Category 是事件类型唯一权威
+	eventName := msg.Category
 	if eventName != alarm.LeftBed {
 		return false
 	}

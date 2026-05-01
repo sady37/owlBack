@@ -117,6 +117,10 @@ func FromStreamMap(values map[string]interface{}) (*IoTStreamMessage, error) {
 }
 
 func NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType string, ts int64, topicType, category string, data map[string]interface{}) *IoTStreamMessage {
+	// Stage 1a：在 publish 边界 strip event_name，envelope.Category 是事件类型唯一权威
+	if data != nil {
+		delete(data, EventNameKey)
+	}
 	dataValue := []interface{}{data}
 	if data == nil {
 		dataValue = nil
@@ -182,12 +186,8 @@ func NewSingleItemMessage(tenantID, cardID, deviceUID, deviceID, deviceType stri
 	} else if category != "" {
 		withCat[DataCategoryKey] = category
 	}
-	// 保证 event_name 存在；上游仅传 dataCategory/category 时自动补齐，避免消费方因 empty_event_name 丢弃
-	if _, has := withCat[EventNameKey]; !has {
-		if cat != "" {
-			withCat[EventNameKey] = cat
-		}
-	}
+	// Stage 1a：不再 auto-sync event_name；envelope.Category 唯一权威。NewIoTStreamMessageWithData 还会再 strip 一次兜底。
+	delete(withCat, EventNameKey)
 	return NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, ts, topicType, cat, withCat)
 }
 

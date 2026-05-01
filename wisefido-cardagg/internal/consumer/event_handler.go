@@ -108,9 +108,9 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		zap.Int64("timestamp", m.Timestamp),
 		zap.ByteString("data", dataJSON))
 
-	// --- 1. 报警：有 event_name 则 ResolveEnablementByDevice + PersistAlarmAndPublish。LeftBed 由 case 先 TryAddLeftBedPendingAtTrigger，未加入 pending 再 ResolveEnablementByDevice + PersistAlarmAndPublish。---
+	// --- 1. 报警：envelope.Category 非空即可构造 alarmPayload，由各 case 决定是否升格 alarm。LeftBed 由 case 先 TryAddLeftBedPendingAtTrigger，未加入 pending 再 ResolveEnablementByDevice + PersistAlarmAndPublish。---
 	var alarmPayload *redis.IoTStreamMessage
-	if _, hasEventName := data[alarm.FieldEventName]; hasEventName {
+	if m.Category != "" {
 		payload := &redis.IoTStreamMessage{
 			DeviceUID:  m.DeviceUID,
 			DeviceType: m.DeviceType,

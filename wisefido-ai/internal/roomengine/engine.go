@@ -565,7 +565,7 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	fields := p.Track.ToFieldMap()
 	fields["ts"] = nowMs
 	fields["dataCategory"] = category
-	fields["event_name"] = category // 与 dataCategory 重复，cardagg 等消费方目前按 event_name 路由；统一砍是后续 backlog 项
+	// Stage 1a：不再写 event_name；envelope.Category 唯一权威
 	// AI 派生 track_verdict 与床状态无关；仅 sleepad_radar_conflict 显式传 BedStatus=1
 	// 才保留。其它情况（默认 0）删掉，避免协议噪音。
 	if p.Track.BedStatus == 0 {
