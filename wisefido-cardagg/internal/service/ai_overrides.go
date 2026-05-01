@@ -70,7 +70,7 @@ type AIOverrideCache struct {
 	setCount     int64
 	clearCount   int64
 	applyHits    int64
-	applyMisses  int64
+	applyMisses int64
 	gcRemoved    int64
 }
 

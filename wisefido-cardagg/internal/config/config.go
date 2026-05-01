@@ -30,9 +30,9 @@ type Config struct {
 //
 // env 覆盖：CARDAGG_AI_OVERRIDE_MODE / CARDAGG_AI_OVERRIDE_TTL_SEC
 type AIOverrideConfig struct {
-	Mode     string `yaml:"mode"`        // "sandbox" | "release"
-	TTLSec   int    `yaml:"ttl_sec"`     // 缓存条目兜底过期秒数
-	GCSec    int    `yaml:"gc_sec"`      // GC 间隔秒数（≤0 取默认 30s）
+	Mode   string `yaml:"mode"`    // "sandbox" | "release"
+	TTLSec int    `yaml:"ttl_sec"` // 缓存条目兜底过期秒数
+	GCSec  int    `yaml:"gc_sec"`  // GC 间隔秒数（≤0 取默认 30s）
 }
 
 // Load 加载配置
