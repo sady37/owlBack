@@ -107,6 +107,9 @@ func main() {
 		zap.String("mode", string(aiOverrides.Mode())),
 		zap.Int("ttl_sec", cfg.AIOverride.TTLSec),
 		zap.Int("gc_sec", cfg.AIOverride.GCSec))
+	logger.Info("ai_override runtime switch enabled",
+		zap.String("sandbox_signal", "SIGUSR1"),
+		zap.String("release_signal", "SIGUSR2"))
 	go aiOverrides.RunGCLoop(ctx.Done(), time.Duration(cfg.AIOverride.GCSec)*time.Second)
 
 	monitorHandler := consumer.NewMonitorHandler(monitorBuf, writer, metaCache, bedCoord, stateSvc, alarmSvc, aiOverrides, logger)
@@ -131,8 +134,23 @@ func main() {
 	go runNightAbsenceCheck(ctx, alarmSvc, metaCache, logger)
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1, syscall.SIGUSR2)
+	for {
+		sig := <-sigCh
+		switch sig {
+		case syscall.SIGUSR1:
+			aiOverrides.SetMode(string(service.AIOverrideModeSandbox))
+			logger.Info("ai_override mode switched", zap.String("mode", string(aiOverrides.Mode())))
+			continue
+		case syscall.SIGUSR2:
+			aiOverrides.SetMode(string(service.AIOverrideModeRelease))
+			logger.Info("ai_override mode switched", zap.String("mode", string(aiOverrides.Mode())))
+			continue
+		case syscall.SIGINT, syscall.SIGTERM:
+			// graceful shutdown
+		}
+		break
+	}
 
 	logger.Info("shutting down")
 	cancel()
