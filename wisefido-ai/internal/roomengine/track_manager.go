@@ -167,34 +167,40 @@ type AIPayload struct {
 	// AI 只填它要表达的字段，其它留零值 = "AI 对此无意见"。
 	Track observation.Track
 
-	// Source 决策路径（一等公民），如 "ai_still_in_bathroom"。见 SourceAI* 常量。
+	// Source 数据生产者节点身份（WHO）。当前 TrackManager 全部派生自护工角色，
+	// engine.publishAIMessage 默认填 cfg.AIPublish.Source（如 "AI.Caregiver01"）。
+	// 本字段保留作未来多角色 override 钩子（例：同一 TrackManager 内派生健康风险
+	// verdict 时可显式设为 "AI.Doctor01"）。空 = 用 engine 默认。
 	Source string
 
-	// 审计元数据
-	Reason   string                 // 简短文本，如 "frozen_outside_room"
-	Evidence map[string]interface{} // 可选证据 KV（score / penalty / frame_count 等）
+	// Reason AI 派生决策的理由路径（WHY）。填本地 Reason* 路径常量；空 = 非 AI 派生。
+	Reason string
+
+	// Evidence 证据 KV map（score / penalty / context 等审计字段，下游不解析）。
+	Evidence map[string]interface{}
 }
 
-// 公开常量：track verdict 的 category 路由键 + AI 判 ghost 的 confidence 数值。
-// category 是事件 TYPE（routing key），不是 verdict label。
-const (
-	CategoryTrackVerdict = "track_verdict"
-	GhostConfidenceValue = 20 // AI 判定 ghost 时写入 track_confidence 的固定值
-)
+// CategoryTrackVerdict 是 track verdict 的 category 路由键（事件 TYPE，不是 verdict label）。
+const CategoryTrackVerdict = "track_verdict"
 
-// Source 决策路径常量。命名规则：ai_<算法/触发条件>。
-// 单点定义 + 编译期类型安全；新增 source 时改这里一处。
+// Reason 常量本地定义——目前 wisefido-ai 是唯一 producer，下游 cardagg /
+// wisefido-data 透传字符串不解析。未来若出现第二个 AI producer（如健康风险
+// 模块），再上移到 owl-common 共享。
+//
+// Source（"AI.Caregiver01" 等）由 engine 在 publishAIMessage 默认填入
+// （取自 cfg.AIPublish.Source），TrackManager 不直接设置——避免节点身份
+// 散落到业务代码。
 const (
-	// track_verdict 子路径（GhostPenalty / Score 不同触发条件）
-	SourceAIGhostPostReal = "ai_ghost_post_real" // Real → Ghost 翻转（原已确认 real，penalty 累积超阈）
-	SourceAIGhostPenalty  = "ai_ghost_penalty"   // 主路径：累积 penalty ≥ 阈值
-	SourceAIGhostLowScore = "ai_ghost_low_score" // probation 期满 score 低于阈值
+	// Reason: ghost 判定（track_verdict category）
+	ReasonGhostPostReal = "ghost_post_real" // Real → Ghost 翻转（已确认 real 后 penalty 累积超阈）
+	ReasonGhostPenalty  = "ghost_penalty"   // 主路径：累积 penalty ≥ 阈值（含 motion_symmetry / no_enter_pair）
+	ReasonGhostLowScore = "ghost_low_score" // probation 期满 score 低于阈值
 
-	// alarm 子路径（4 个 fall 派生子类型）
-	SourceAILostTrack            = "ai_lost_track"             // track 异常消失（可能是真摔倒后失锁）
-	SourceAIStillInBathroom      = "ai_still_in_bathroom"      // 浴室长时间静止
-	SourceAIBedsideSilent        = "ai_bedside_silent"         // LeftBed 后床边静止过久
-	SourceAISleepadRadarConflict = "ai_sleepad_radar_conflict" // sleepad LeftBed + radar 仍在床
+	// Reason: fall 判定（alarm category，4 个 fall 派生子类型）
+	ReasonLostTrack            = "lost_track"             // track 异常消失（可能是真摔倒后失锁）
+	ReasonStillInBathroom      = "still_in_bathroom"      // 浴室长时间静止 still-fall
+	ReasonBedsideSilent        = "bedside_silent"         // LeftBed 后床边静止过久 R4
+	ReasonSleepadRadarConflict = "sleepad_radar_conflict" // sleepad LeftBed + radar 仍在床
 )
 
 // AIPublisher PR-8 解耦：TrackManager 不直接持有 redis client，由 engine 实现接口注入。
@@ -338,21 +344,25 @@ func (tm *TrackManager) emitAIAlarm(p AIPayload, category string, nowMs int64) {
 
 // emitGhostVerdict 发布 track_verdict（事后裁决）到 iot:event:stream。
 //
-// 写入 Track.TrackConfidence = GhostConfidenceValue (20)，下游 cardagg/前端按
-// 数值阈值自己派生类别（如 ≤30 → 低饱和度渲染）。
-// Source 标识具体 ghost 子路径（penalty / low_score / post_real），用于审计。
+// reason 传 ReasonGhostXxx 路径常量；context 传自然语言细节（如 BirthReason
+// / "low_score"），进 Evidence["context"] 作审计。Reason 是机器可分类的子路
+// 径，下游可按值 group by；context 是自然语言审计文本，下游不解析。
+// Source 由 engine.publishAIMessage 默认填入（cfg.AIPublish.Source），不在此设置。
+// TrackConfidence 由 payloadFromTrack 给（= 100 - GhostPenalty，AI 实时评估值，
+// ghost 路径自然落入低分区间），下游按数值阈值渲染饱满度（如 ≤30 → 低饱和）。
 //
 // 不参与 alarm 触发路径——firmware/AI alarm 仍按"宁可误报不可漏报"原则照常 fire。
-func (tm *TrackManager) emitGhostVerdict(ts *TrackState, source, reason string, nowMs int64) {
+func (tm *TrackManager) emitGhostVerdict(ts *TrackState, reason, context string, nowMs int64) {
 	p := tm.payloadFromTrack(ts)
-	p.Track.TrackConfidence = GhostConfidenceValue
-	p.Source = source
 	p.Reason = reason
 	p.Evidence = map[string]interface{}{
 		"score":         ts.Score,
 		"birth_score":   ts.BirthScore,
 		"ghost_penalty": ts.GhostPenalty,
 		"frame_count":   ts.FrameCount,
+	}
+	if context != "" {
+		p.Evidence["context"] = context
 	}
 	tm.emitAIEvent(p, CategoryTrackVerdict, nowMs)
 }
@@ -943,7 +953,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 					if reason == "" {
 						reason = "ghost_penalty_accumulated_post_real"
 					}
-					tm.emitGhostVerdict(ts, SourceAIGhostPostReal, reason, nowMs)
+					tm.emitGhostVerdict(ts, ReasonGhostPostReal, reason, nowMs)
 				}
 			}
 			continue
@@ -962,7 +972,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				reason = "ghost_penalty_accumulated"
 			}
 			// PR5b: track_verdict（事后裁决）—— 主路径 penalty 累积
-			tm.emitGhostVerdict(ts, SourceAIGhostPenalty, reason, nowMs)
+			tm.emitGhostVerdict(ts, ReasonGhostPenalty, reason, nowMs)
 			if !ts.LoggedGhost {
 				pxF, pyF := ts.Kalman.Position()
 				tm.logger.Info("track_verdict_ghost",
@@ -993,7 +1003,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 					reason = "low_score"
 				}
 				// PR5b: track_verdict（事后裁决）—— score-based 路径
-				tm.emitGhostVerdict(ts, SourceAIGhostLowScore, reason, nowMs)
+				tm.emitGhostVerdict(ts, ReasonGhostLowScore, reason, nowMs)
 				if !ts.LoggedGhost {
 					pxF, pyF := ts.Kalman.Position()
 					tm.logger.Info("track_verdict_ghost",
@@ -1042,28 +1052,20 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		tm.lostFallReported++
 		tm.grid.MarkFallEvent(p.LastX, p.LastY, nowMs)
 		// PR5c: 发布到 iot:alarm:stream，category=alarm.Fall（cardagg 现有 Fall handler 接管）。
-		// 子类型通过 Source 区分（"ai_lost_track"），fall 严重度进 Evidence.fall_score。
-		// LastVerdict 决定 TrackConfidence：Real=80 / Pending=60 / Ghost=20（理论不会到此）。
-		lastConf := 60
-		switch p.LastVerdict {
-		case VerdictReal:
-			lastConf = 80
-		case VerdictGhost:
-			lastConf = GhostConfidenceValue
-		}
+		// fall alarm 已是确认态——不再发 track_confidence/score（确信值无需信号），
+		// 子类型通过 Reason 区分（"lost_track"），fall 严重度进 Evidence.fall_score。
 		tm.emitAIAlarm(AIPayload{
 			DeviceID: p.DeviceID,
 			RoomID:   p.RoomID,
 			Track: observation.Track{
-				TrackID:         p.OriginalTrackID,
-				PositionX:       intPtr(p.LastX),
-				PositionY:       intPtr(p.LastY),
-				PositionZ:       intPtr(p.LastZ),
-				TrackConfidence: lastConf,
+				TrackID:   p.OriginalTrackID,
+				PositionX: intPtr(p.LastX),
+				PositionY: intPtr(p.LastY),
+				PositionZ: intPtr(p.LastZ),
 			},
-			Source: SourceAILostTrack,
-			Reason: "track_lost_no_exit_room_no_recovery",
+			Reason: ReasonLostTrack,
 			Evidence: map[string]interface{}{
+				"context":         "track_lost_no_exit_room_no_recovery",
 				"fall_score":      p.LastScore,
 				"frozen_start_ms": p.FrozenStartMs,
 				"spatial_jump":    p.SpatialJump,
@@ -1281,20 +1283,20 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 			// 选用「最近 Bed 的 active track」位置作为告警坐标
 			x, y, z, scoreVal, verdict, deviceID := tm.pickActiveTrackNearBed(param.BedNeighborhood)
 			tm.grid.MarkFallEvent(x, y, nowMs)
-			// PR5c: alarm.Fall + Source 区分子类型；BedStatus=1 反映 sleepad LeftBed 触发
+			// PR5c: alarm.Fall + Reason 区分子类型；BedStatus=1 反映 sleepad LeftBed 触发。
+			// fall 已确认，不发 track_confidence；fall 严重度进 Evidence.fall_score。
 			tm.emitAIAlarm(AIPayload{
 				DeviceID: deviceID,
 				RoomID:   tm.roomID,
 				Track: observation.Track{
-					PositionX:       intPtr(x),
-					PositionY:       intPtr(y),
-					PositionZ:       intPtr(z),
-					TrackConfidence: 60, // sleepad-触发，radar 仅贡献位置；用 firmware 默认值
-					BedStatus:       1,  // sleepad 报 LeftBed
+					PositionX: intPtr(x),
+					PositionY: intPtr(y),
+					PositionZ: intPtr(z),
+					BedStatus: 1, // sleepad 报 LeftBed
 				},
-				Source: SourceAISleepadRadarConflict,
-				Reason: "sleepad_leftbed_radar_still_on_bed",
+				Reason: ReasonSleepadRadarConflict,
 				Evidence: map[string]interface{}{
+					"context":      "sleepad_leftbed_radar_still_on_bed",
 					"fall_score":   scoreVal,
 					"radar_verdict": int(verdict),
 					"sleepad_uid":  s.DeviceUID,
@@ -2055,11 +2057,13 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 						ts.StillFallReported = true
 						tm.stillFallReportCount++
 						tm.grid.MarkFallEvent(x, y, nowMs)
-						// PR5c: alarm.Fall + Source=ai_still_in_bathroom；时长进 Evidence
+						// PR5c: alarm.Fall + Reason=still_in_bathroom；时长进 Evidence。
+						// fall 已确认，清零 TrackConfidence（payloadFromTrack 默认带 conf 值）。
 						stillP := tm.payloadFromTrack(ts)
-						stillP.Source = SourceAIStillInBathroom
-						stillP.Reason = "still_in_bathroom_over_threshold"
+						stillP.Track.TrackConfidence = 0
+						stillP.Reason = ReasonStillInBathroom
 						stillP.Evidence = map[string]interface{}{
+							"context":           "still_in_bathroom_over_threshold",
 							"still_seconds":     stillSec,
 							"still_timeout_sec": stillFallTimeoutSec,
 							"cell_area_type":    int(cell.Belief[0].Type),
@@ -2135,11 +2139,13 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 				tm.grid.MarkFallEvent(x, y, nowMs)
 				ts.LongStillReported = true   // 复用 flag 防 LongStill 重复 mark
 				ts.BedsideFallReported = true // 防双报：后续若 track 失锁，跳过 lost_fall pending 入池
-				// PR5c: alarm.Fall + Source=ai_bedside_silent（R4 床边晕倒）
+				// PR5c: alarm.Fall + Reason=bedside_silent（R4 床边晕倒）。
+				// fall 已确认，清零 TrackConfidence（payloadFromTrack 默认带 conf 值）。
 				bedsideP := tm.payloadFromTrack(ts)
-				bedsideP.Source = SourceAIBedsideSilent
-				bedsideP.Reason = "bedside_still_after_leftbed"
+				bedsideP.Track.TrackConfidence = 0
+				bedsideP.Reason = ReasonBedsideSilent
 				bedsideP.Evidence = map[string]interface{}{
+					"context":            "bedside_still_after_leftbed",
 					"still_seconds":      stillSec,
 					"window_sec":         tm.bedsideFallCfg.WindowSec,
 					"still_timeout_sec":  tm.bedsideFallCfg.StillTimeoutSec,

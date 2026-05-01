@@ -33,12 +33,12 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB,
 	// 1. 注入 yaml 运行时参数 + Persister
 	engine.Configure(buildRuntimeConfig(cfg, db))
 
-	// 1b. 注入 AI publish 单点配置（mode + node_id）；
+	// 1b. 注入 AI publish 单点配置（mode + source）；
 	//     mode="log" 仅写 ai.log，"log&publish" 推到 iot:event/alarm:stream。
-	engine.SetAIPublishConfig(cfg.AIPublish.Mode, cfg.AIPublish.AINodeTag())
+	engine.SetAIPublishConfig(cfg.AIPublish.Mode, cfg.AIPublish.Source)
 	logger.Info("roomengine: ai_publish configured",
 		zap.String("mode", cfg.AIPublish.Mode),
-		zap.String("ai_node", cfg.AIPublish.AINodeTag()))
+		zap.String("source", cfg.AIPublish.Source))
 
 	// 2. 注册所有有 layout 的房间
 	registered, err := registerAllRooms(ctx, engine, db, logger)
@@ -64,6 +64,13 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB,
 
 	// 3c. PR-15：每日 22:00 (local) 重读 layout，hash 变即重置该 room → 从 0 重学
 	engine.SetDailyLayoutReload(22, db)
+
+	// 3d. 路由表周期热加载（60s）——修复"启动后才绑定的 device 永远沉默"bug。
+	// reloader 闭包共享同一个 db handle，在线运行时安全调用。
+	engine.SetRoutesReloader(func(rctx context.Context) error {
+		_, err := mapDevicesToRooms(rctx, engine, db, logger)
+		return err
+	}, 60*time.Second)
 
 	// 4. 启动主循环（消费 monitor + event 流，跑学习+持久化定时器）
 	go func() {
@@ -280,7 +287,7 @@ func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.D
 		if deviceID != "" && deviceUID != "" {
 			engine.MapDeviceIDToUID(deviceID, deviceUID)
 		}
-		// PR2: 注册 deviceID → device_type，AI publish 拼 "Radar.AI<node>" 后缀用
+		// 注册 deviceID → device_type，AI publish 时用作 message.DeviceType（不再拼后缀）
 		if deviceID != "" && deviceType != "" {
 			engine.MapDeviceIDToType(deviceID, deviceType)
 		}

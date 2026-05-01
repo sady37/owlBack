@@ -53,23 +53,24 @@ type Config struct {
 //
 // 单点配置同时管两件事：
 //  1. 推送模式（仅 log，还是 log + 推送 iot stream）
-//  2. AI 节点序号 —— 进 device_type 后缀（如 "Radar.AI01"）+ ai.log 审计字段
+//  2. 节点身份 Source —— 进 wire 的 fields["source"] + ai.log 审计字段
 //
-// device_uid 不变（仍是源 radar 的业务主键），只在 device_type 里加 ".AI<node_id>"
-// 后缀区分 AI 派生事件，原 sensor 类型保留以兼容 cardagg 现有路由。
+// device_uid 不变（仍是源 radar 的业务主键），device_type 保持源 sensor 类型；
+// AI 派生身份由 dataValue 内 source 字段表达，格式 "<role><实例号>"（如 "AI.Caregiver01"）。
 type AIPublishConfig struct {
 	// Mode 取值：
-	//   "log"          仅写 ai.log（每条 emit 都带 ai_node + would_publish_to + published=false）
+	//   "log"          仅写 ai.log（每条 emit 都带 source + would_publish_to + published=false）
 	//   "log&publish"  写 log + 推送 iot:event/alarm:stream（默认）
 	// 任何模式 alarm 都正常 fire（"宁可误报不可漏报"原则），mode 仅控制 publish 路径。
 	Mode string `yaml:"mode"`
 
-	// NodeID AI 节点序号字符串（如 "01"、"02"）。
-	// 驱动两处：
-	//   - IoTStreamMessage.DeviceType = "<base>.AI" + NodeID，如 "Radar.AI01"
-	//   - ai.log 每条 publish/skip 都带 ai_node="AI" + NodeID
-	// 多 AI 实例横向扩展时每个进程取不同 NodeID。
-	NodeID string `yaml:"node_id"`
+	// Source AI 节点完整身份字符串，直接作 wire 的 fields["source"] 值 + ai.log 审计字段。
+	// 格式 "<role><实例号>"，role 闭合：
+	//   - AI.Caregiver：护工（safety + 行为照护：fall / ghost / 监护）
+	//   - AI.Doctor：医师（health risk + 趋势——未来）
+	// 例值："AI.Caregiver01" / "AI.Caregiver02" / "AI.Doctor01"。
+	// 多实例横向扩展时每进程必须显式指定不同实例号。
+	Source string `yaml:"source"`
 }
 
 // PublishModeLog 仅 log 不推流；PublishModeLogPublish log + 推流。
@@ -81,11 +82,6 @@ const (
 // PublishEnabled 是否实际推送到 redis stream。Mode 为 PublishModeLogPublish 时返回 true。
 func (c AIPublishConfig) PublishEnabled() bool {
 	return c.Mode == PublishModeLogPublish
-}
-
-// AINodeTag 返回 "AI" + NodeID（如 "AI01"），用于 device_type 后缀和 ai.log 审计字段。
-func (c AIPublishConfig) AINodeTag() string {
-	return "AI" + c.NodeID
 }
 
 // RoomEngineConfig wisefido-ai/internal/roomengine 运行时参数
@@ -234,8 +230,8 @@ func (c *Config) setAIPublishDefaults() {
 	if v := os.Getenv("AI_PUBLISH_MODE"); v != "" {
 		a.Mode = v
 	}
-	if v := os.Getenv("AI_NODE_ID"); v != "" {
-		a.NodeID = v
+	if v := os.Getenv("AI_SOURCE"); v != "" {
+		a.Source = v
 	}
 	// 默认 log&publish；非法值回退到默认并 warn
 	if a.Mode == "" {
@@ -245,9 +241,9 @@ func (c *Config) setAIPublishDefaults() {
 			a.Mode, PublishModeLogPublish, PublishModeLog, PublishModeLogPublish)
 		a.Mode = PublishModeLogPublish
 	}
-	// node_id 默认 "01"；多 AI 实例必须显式指定
-	if a.NodeID == "" {
-		a.NodeID = "01"
+	// source 默认 "AI.Caregiver01"；多 AI 实例必须显式指定不同实例号
+	if a.Source == "" {
+		a.Source = "AI.Caregiver01"
 	}
 }
 

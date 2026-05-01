@@ -114,12 +114,12 @@ type Engine struct {
 	roomTenants     map[string]string // roomID → tenant_id（alarm_events 必填）
 	roomCards       map[string]string // roomID → card_id（可选）
 
-	// AI 节点 tag（"AI01" / "AI02" ...）；publish 时拼到 device_type 后缀，如 "Radar.AI01"。
-	// 由 SetAIPublishConfig 注入，缺省 "AI01"。
-	aiNodeTag string
+	// AI 节点完整身份字符串（如 "AI.Caregiver01"），同时作 wire fields["source"]
+	// 默认值 + ai_emit log 审计字段。多实例横向扩展时各进程 source 不同 →
+	// wire 自动区分实例。来源见 cfg.AIPublish.Source。
+	aiSource string
 
 	// AI publish 模式："log" | "log&publish"。
-	// 默认 "log&publish"（cardagg 已加 BaseDeviceType 兼容，PR4 完成后可发布）。
 	// "log" 模式仅写 ai.log，不发 redis stream；任何模式都不影响 alarm 触发路径。
 	aiPublishMode string
 
@@ -154,6 +154,16 @@ type Engine struct {
 	// 目的：管理员下班后重读 rooms.layout_config，hash 变 → 重置该 room grid，从 0 重学
 	dailyReloadHour int
 	dailyReloadDB   *sql.DB // 用于 SELECT layout_config；nil 时跳过
+
+	// 路由表周期热加载（启动后才绑 device→room 的设备永远进不来——见 handleMessage tm==nil）
+	// 注入方式：bootstrap 调 SetRoutesReloader 传入"重新跑 mapDevicesToRooms"的闭包
+	routesReloader       func(context.Context) error
+	routesReloadInterval time.Duration
+
+	// 路由失败的 device 频率限制告警（避免每条 frame 都 warn 一次）。
+	// 同一 device key 60s 内只 warn 一次，确保 deviceRoom 缺失能被发现而不淹日志。
+	unroutedMu sync.Mutex
+	unrouted   map[string]int64 // device key → last warn epoch ms
 
 	redisClient *redis.Client
 	logger      *zap.Logger
@@ -199,20 +209,91 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		deviceIDToType:     make(map[string]string),
 		roomTenants:        make(map[string]string),
 		roomCards:          make(map[string]string),
-		aiNodeTag:          "AI01",
+		aiSource:           "AI.Caregiver01",
 		aiPublishMode:      "log&publish",
 		layoutHashes:       make(map[string]string),
 		paramSets:          DefaultParamSets,
 		winner:             1, // 默认 balanced
 		decayParams:        DefaultDecayParams(),
 		learnParams:        DefaultLearnParams(),
-		decayInterval:      1 * time.Hour,
-		beliefScanInterval: 10 * time.Minute, // PR-11
-		winnerEvalInterval: 24 * time.Hour,
-		snapshotInterval:   5 * time.Minute,
-		dailyReloadHour:    22, // PR-15：22:00 local 重读 layout
-		redisClient:        redisClient,
-		logger:             logger,
+		decayInterval:        1 * time.Hour,
+		beliefScanInterval:   10 * time.Minute, // PR-11
+		winnerEvalInterval:   24 * time.Hour,
+		snapshotInterval:     5 * time.Minute,
+		dailyReloadHour:      22,               // PR-15：22:00 local 重读 layout
+		routesReloadInterval: 60 * time.Second, // 路由表周期热加载默认 60s
+		unrouted:             make(map[string]int64),
+		redisClient:          redisClient,
+		logger:               logger,
+	}
+}
+
+// SetRoutesReloader 注入路由表（device→room、card→room）周期热加载闭包。
+// 解决 handleMessage 在 deviceRoom 缺失时静默丢帧的问题——启动后才绑定/重绑的
+// device 不再永远沉默。reloader 通常是"重跑 mapDevicesToRooms"的 wrapper。
+// interval ≤ 0 时取默认 60s。
+func (e *Engine) SetRoutesReloader(fn func(context.Context) error, interval time.Duration) {
+	if interval <= 0 {
+		interval = 60 * time.Second
+	}
+	e.mu.Lock()
+	e.routesReloader = fn
+	e.routesReloadInterval = interval
+	e.mu.Unlock()
+}
+
+// warnUnrouted 路由失败的 device 频率限制告警（同一 key 60s 内一次）。
+// stream：消息来自哪个 stream（"monitor"/"event"/"alarm"）便于排查。
+func (e *Engine) warnUnrouted(stream, cardID, deviceID, deviceUID, deviceType string) {
+	key := deviceUID
+	if key == "" {
+		key = deviceID
+	}
+	if key == "" {
+		key = cardID
+	}
+	if key == "" {
+		return
+	}
+	nowMs := time.Now().UnixMilli()
+	e.unroutedMu.Lock()
+	last := e.unrouted[key]
+	if nowMs-last < 60_000 {
+		e.unroutedMu.Unlock()
+		return
+	}
+	e.unrouted[key] = nowMs
+	e.unroutedMu.Unlock()
+	e.logger.Warn("dropped_unrouted_message",
+		zap.String("stream", stream),
+		zap.String("device_uid", deviceUID),
+		zap.String("device_id", deviceID),
+		zap.String("card_id", cardID),
+		zap.String("device_type", deviceType),
+		zap.String("hint", "device not in deviceRoom/cardToRoom; if just bound after startup, will heal at next routes reload"),
+	)
+}
+
+// routesReloadLoop 周期调用 routesReloader 热加载路由表。
+func (e *Engine) routesReloadLoop(ctx context.Context) {
+	e.mu.RLock()
+	interval := e.routesReloadInterval
+	reloader := e.routesReloader
+	e.mu.RUnlock()
+	if reloader == nil || interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := reloader(ctx); err != nil {
+				e.logger.Warn("routes_reload_failed", zap.Error(err))
+			}
+		}
 	}
 }
 
@@ -370,7 +451,7 @@ func (e *Engine) MapDeviceIDToUID(deviceID, deviceUID string) {
 }
 
 // MapDeviceIDToType 注册 device UUID → 源 sensor 类型（"Radar"/"Sleepad"）。
-// AI publish 时用此拼成 "Radar.AI<NodeID>" 后缀。缺失则退化为纯 "AI<NodeID>"。
+// AI publish 时直接作 message.DeviceType（不再拼 AI 后缀）。缺失时兜底 "Radar"。
 func (e *Engine) MapDeviceIDToType(deviceID, deviceType string) {
 	if deviceID == "" || deviceType == "" {
 		return
@@ -407,18 +488,20 @@ func (e *Engine) SetRoomCard(roomID, cardID string) {
 // 的 fire 路径都不变（"宁可误报不可漏报"原则——mode 仅控制下游 stream，不 gate
 // 告警生成）。
 //
-// nodeTag：完整节点标签（"AI01"/"AI02"），publish 时拼到 device_type 后缀，如
-// 源 type="Radar" + nodeTag="AI01" → "Radar.AI01"。
-func (e *Engine) SetAIPublishConfig(mode, nodeTag string) {
+// source：完整节点身份字符串（"AI.Caregiver01" / "AI.Doctor01" 等），同时作
+// wire fields["source"] 默认值 + ai_emit log 审计字段。直接由 config 注入，
+// 不在此拼接——多实例横向扩展时各进程 source 不同即可。
+// device_type 保持源 sensor 类型，AI 派生身份在 dataValue.source 表达。
+func (e *Engine) SetAIPublishConfig(mode, source string) {
 	if mode == "" {
 		mode = "log&publish"
 	}
-	if nodeTag == "" {
-		nodeTag = "AI01"
+	if source == "" {
+		source = "AI.Caregiver01"
 	}
 	e.mu.Lock()
 	e.aiPublishMode = mode
-	e.aiNodeTag = nodeTag
+	e.aiSource = source
 	e.mu.Unlock()
 }
 
@@ -435,10 +518,11 @@ func (e *Engine) publishEnabled() bool {
 // 消息字段：
 //   DeviceUID:  源 sensor 的 device_uid（业务主键不变，反查源设备）
 //   DeviceID:   源 sensor 的 UUID
-//   DeviceType: 源类型 + AI 后缀（如 "Radar.AI01" / "Sleepad.AI01"）
+//   DeviceType: 源 sensor 类型（"Radar" / "Sleepad"），不带后缀；
+//               AI 派生标识由 dataValue 内 Track.Source 一等公民字段表达。
 //   TenantID:   roomTenants[roomID]
 //   CardID:     roomCards[roomID]（可空）
-//   DataValue:  [{ track_id, ts, position_x/y/z, area_type, pose, track_confidence, ... }]
+//   DataValue:  [{ track_id, ts, position_x/y/z, area_type, pose, track_confidence, source, ... }]
 //
 // 推送失败仅 warn 日志，不阻塞调用方。任何模式都打 ai_emit 结构化日志，作演示
 // 与审计追溯依据；mode=log 时 published=false 仅 log，mode=log&publish 时尝试推流。
@@ -465,7 +549,7 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	baseType := e.deviceIDToType[p.DeviceID]
 	tenantID := e.roomTenants[p.RoomID]
 	cardID := e.roomCards[p.RoomID]
-	nodeTag := e.aiNodeTag
+	defaultSource := e.aiSource
 	mode := e.aiPublishMode
 	g := e.grids[p.RoomID]
 	e.mu.RUnlock()
@@ -473,14 +557,20 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	if baseType == "" {
 		baseType = "Radar" // 兜底：路由表缺失时默认按 radar 派生
 	}
-	deviceType := baseType + "." + nodeTag // e.g. "Radar.AI01"
+	// device_type 保持源 sensor 类型（不再拼 ".AI<NodeID>" 后缀）。
+	// AI 派生身份由 fields["source"] 一等公民字段表达。
+	deviceType := baseType
 
 	// PR5b: 用 observation.Track 的标准字段 map（与上游 firmware/engine 同 schema）
 	fields := p.Track.ToFieldMap()
 	fields["ts"] = nowMs
 	fields["dataCategory"] = category
-	fields["event_name"] = category
-	fields["source_device_uid"] = deviceUID // 冗余但便于下游追溯
+	fields["event_name"] = category // 与 dataCategory 重复，cardagg 等消费方目前按 event_name 路由；统一砍是后续 backlog 项
+	// AI 派生 track_verdict 与床状态无关；仅 sleepad_radar_conflict 显式传 BedStatus=1
+	// 才保留。其它情况（默认 0）删掉，避免协议噪音。
+	if p.Track.BedStatus == 0 {
+		delete(fields, "bed_status")
+	}
 	// area_type engine 自己算（observation.Track 的 AreaType 是字符串，engine 这边类型不同）
 	if g != nil {
 		px, py := 0, 0
@@ -495,8 +585,14 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 		}
 	}
 	// PR5b: Source（一等公民）+ Reason / Evidence（审计元数据）
-	if p.Source != "" {
-		fields["source"] = p.Source
+	// Source 默认 = e.aiSource（来自 cfg.AIPublish.Source，如 "AI.Caregiver01"）。
+	// p.Source 非空时尊重 caller override（未来多角色场景，如健康风险模块发 verdict）
+	source := p.Source
+	if source == "" {
+		source = defaultSource
+	}
+	if source != "" {
+		fields["source"] = source
 	}
 	if p.Reason != "" {
 		fields["reason"] = p.Reason
@@ -509,12 +605,11 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 
 	// 任何模式都打 ai_emit 审计日志：sandbox 演示靠这条 log 看 AI 在思考
 	e.logger.Info("ai_emit",
-		zap.String("ai_node", nodeTag),
+		zap.String("source", source), // 节点身份兼审计字段（如 "AI.Caregiver01"）
 		zap.String("mode", mode),
 		zap.String("device_type", deviceType),
 		zap.String("device_uid", deviceUID),
 		zap.String("category", category),
-		zap.String("source", p.Source),
 		zap.String("topic_type", topicType),
 		zap.String("would_publish_to", streamName),
 		zap.Bool("published", willPublish),
@@ -539,7 +634,7 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	}
 	if _, err := rediscommon.PublishToStream(ctx, e.redisClient, streamName, msg.ToStreamMap(), maxLen, retentionSec); err != nil {
 		e.logger.Warn("ai_publish_failed",
-			zap.String("ai_node", nodeTag),
+			zap.String("source", source),
 			zap.String("stream", streamName),
 			zap.String("category", category),
 			zap.String("device_uid", deviceUID),
@@ -551,7 +646,7 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 
 // areaTypeProtocolStr 把 engine 的 AreaType 映射成 observation.EnumAreaType 协议字符串。
 // 协议：0=none / 1=custom / 2=bed / 3=interfer / 4=door / 5=monitor_bed / 6=sensing
-// engine 内部枚举跟协议不完全对齐；做一个 best-effort 映射，cardagg 端按 BaseDeviceType=Radar 处理。
+// engine 内部枚举跟协议不完全对齐；做一个 best-effort 映射，cardagg 端按 device_type=Radar 处理。
 func areaTypeProtocolStr(t AreaType) string {
 	switch t {
 	case AreaBed:
@@ -774,6 +869,10 @@ func (e *Engine) Run(ctx context.Context) error {
 	go e.runEventLoop(ctx, eventStream, group)
 	// 单独 goroutine 消费 alarm 流（radar Fall 等）
 	go e.runAlarmLoop(ctx, alarmStream, group)
+	// 路由表周期热加载（启动后才绑定的 device 不再永远沉默）
+	if e.routesReloader != nil {
+		go e.routesReloadLoop(ctx)
+	}
 
 	e.logger.Info("room engine started",
 		zap.String("monitor_stream", monitorStream),
@@ -806,6 +905,9 @@ func (e *Engine) Run(ctx context.Context) error {
 
 		for _, msg := range messages {
 			e.handleMessage(ctx, msg)
+			// XAck 每条消息（即便路由失败也 ACK——路由层已 warnUnrouted 暴露问题，
+			// 不 ACK 只会让 pending 列表无限增长直到 redis 内存爆）。
+			e.redisClient.XAck(ctx, monitorStream, group, msg.ID)
 		}
 	}
 }
@@ -828,63 +930,52 @@ func (e *Engine) runEventLoop(ctx context.Context, stream, group string) {
 		}
 		for _, msg := range messages {
 			e.handleEventMessage(msg)
+			e.redisClient.XAck(ctx, stream, group, msg.ID)
 		}
 	}
 }
 
 // handleEventMessage 处理 iot:event:stream 一条消息（sleepad + radar 来源都消费）
 func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
-	dataStr, ok := msg.Values["data"].(string)
-	if !ok {
+	m, err := rediscommon.FromStreamMap(msg.Values)
+	if err != nil {
 		return
 	}
-	var raw map[string]interface{}
-	if err := json.Unmarshal([]byte(dataStr), &raw); err != nil {
-		return
-	}
-	deviceType, _ := raw["device_type"].(string)
-	dt := strings.ToLower(deviceType)
+	dt := strings.ToLower(m.DeviceType)
 	if dt != "sleepad" && dt != "sleeppad" && dt != "radar" {
 		return
 	}
-	deviceID, _ := raw["device_id"].(string)
-	deviceUID, _ := raw["device_uid"].(string)
-	cardID, _ := raw["card_id"].(string)
-	ts := int64FromAny(raw["timestamp"])
+	ts := m.Timestamp
 	if ts == 0 {
 		ts = time.Now().UnixMilli()
 	}
 
 	// 路由到房间
 	e.mu.RLock()
-	roomID := e.cardToRoom[cardID]
+	roomID := e.cardToRoom[m.CardID]
 	if roomID == "" {
-		roomID = e.deviceRoom[deviceID]
+		roomID = e.deviceRoom[m.DeviceID]
 	}
 	if roomID == "" {
-		roomID = e.deviceRoom[deviceUID]
+		roomID = e.deviceRoom[m.DeviceUID]
 	}
 	tm := e.rooms[roomID]
 	e.mu.RUnlock()
 	if tm == nil {
+		e.warnUnrouted("event", m.CardID, m.DeviceID, m.DeviceUID, m.DeviceType)
 		return
-	}
-
-	dv := raw[rediscommon.DataValueKey]
-	if dv == nil {
-		dv = raw["dataValue"]
 	}
 
 	switch dt {
 	case "sleepad", "sleeppad":
-		for _, evt := range ParseSleepadBedEvents(dv, deviceUID, ts) {
+		for _, evt := range ParseSleepadBedEvents(m.DataValue, m.DeviceUID, ts) {
 			tm.ProcessSleepadBedEvent(evt)
 		}
 	case "radar":
 		// 落账 radar EnterRoom/ExitRoom/InBed/LeftBed；同时 InBed/LeftBed 走"事件触发器"
 		// 路径：tm.RecordRadarEvent + tm.Tick(ts) → 段 4/5/6 立即跑一次。
 		// 当前不消费 EnterRoom/ExitRoom 做行为推断，仅落账供未来段 7 使用。
-		evts := ParseRadarTrackEvents(dv, deviceUID, ts)
+		evts := ParseRadarTrackEvents(m.DataValue, m.DeviceUID, ts)
 		if len(evts) == 0 {
 			return
 		}
@@ -913,6 +1004,7 @@ func (e *Engine) runAlarmLoop(ctx context.Context, stream, group string) {
 		}
 		for _, msg := range messages {
 			e.handleAlarmMessage(msg)
+			e.redisClient.XAck(ctx, stream, group, msg.ID)
 		}
 	}
 }
@@ -921,46 +1013,35 @@ func (e *Engine) runAlarmLoop(ctx context.Context, stream, group string) {
 // 当前阶段：仅落账 + 立即 Tick；不否决 / 不延迟 / 不 verify。
 // 未来段 7 (radar fall verify) 在 TrackManager 内消费 recentRadarAlarms 做 narrative。
 func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
-	dataStr, ok := msg.Values["data"].(string)
-	if !ok {
+	m, err := rediscommon.FromStreamMap(msg.Values)
+	if err != nil {
 		return
 	}
-	var raw map[string]interface{}
-	if err := json.Unmarshal([]byte(dataStr), &raw); err != nil {
-		return
-	}
-	deviceType, _ := raw["device_type"].(string)
-	if !strings.EqualFold(deviceType, "radar") {
+	if !strings.EqualFold(m.DeviceType, "radar") {
 		return // 非 radar 报警暂不消费
 	}
-	deviceID, _ := raw["device_id"].(string)
-	deviceUID, _ := raw["device_uid"].(string)
-	cardID, _ := raw["card_id"].(string)
-	ts := int64FromAny(raw["timestamp"])
+	ts := m.Timestamp
 	if ts == 0 {
 		ts = time.Now().UnixMilli()
 	}
 
 	// 路由
 	e.mu.RLock()
-	roomID := e.cardToRoom[cardID]
+	roomID := e.cardToRoom[m.CardID]
 	if roomID == "" {
-		roomID = e.deviceRoom[deviceID]
+		roomID = e.deviceRoom[m.DeviceID]
 	}
 	if roomID == "" {
-		roomID = e.deviceRoom[deviceUID]
+		roomID = e.deviceRoom[m.DeviceUID]
 	}
 	tm := e.rooms[roomID]
 	e.mu.RUnlock()
 	if tm == nil {
+		e.warnUnrouted("alarm", m.CardID, m.DeviceID, m.DeviceUID, m.DeviceType)
 		return
 	}
 
-	dv := raw[rediscommon.DataValueKey]
-	if dv == nil {
-		dv = raw["dataValue"]
-	}
-	alarms := ParseRadarFallAlarm(dv, deviceUID, ts)
+	alarms := ParseRadarFallAlarm(m.DataValue, m.DeviceUID, ts)
 	if len(alarms) == 0 {
 		return
 	}
@@ -969,7 +1050,7 @@ func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
 		// kind=radar_fall_received: radar firmware 发的 Fall 报警；engine 当前不验证（段 7 待做）。
 		// 未来 verifier 上线后会进一步分流：fake_fall（否决）/ real_fall（确认）/ lost_fall（应报漏报）
 		e.logger.Info("radar_fall_received",
-			zap.String("device_uid", deviceUID),
+			zap.String("device_uid", m.DeviceUID),
 			zap.Int("track_id", a.TrackID),
 			zap.String("kind", "radar_firmware_fall"),
 			zap.Int("pose", a.Pose),
@@ -986,51 +1067,46 @@ func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
 // ========================================================================
 
 func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage) {
-	dataStr, ok := msg.Values["data"].(string)
-	if !ok {
+	// 真实生产消息是 flat key（device_uid/dataValue/.../timestamp 都是 stream Values 顶层 key），
+	// 不是包在 "data" 单 key 里的 JSON。用 FromStreamMap 与 cardagg/wisefido-data 一致解析。
+	m, err := rediscommon.FromStreamMap(msg.Values)
+	if err != nil {
 		return
 	}
-
-	var raw map[string]interface{}
-	if err := json.Unmarshal([]byte(dataStr), &raw); err != nil {
-		return
-	}
-
-	deviceID, _ := raw["device_id"].(string)
-	deviceUID, _ := raw["device_uid"].(string)
-	cardID, _ := raw["card_id"].(string)
-	deviceType, _ := raw["device_type"].(string)
-	ts := int64FromAny(raw["timestamp"])
 
 	// 路由到房间（radar/sleepad 共用同一路由表）
 	e.mu.RLock()
-	roomID := e.cardToRoom[cardID]
+	roomID := e.cardToRoom[m.CardID]
 	if roomID == "" {
-		roomID = e.deviceRoom[deviceID]
+		roomID = e.deviceRoom[m.DeviceID]
 	}
 	if roomID == "" {
-		roomID = e.deviceRoom[deviceUID]
+		roomID = e.deviceRoom[m.DeviceUID]
 	}
 	tm := e.rooms[roomID]
 	mount, hasMount := e.mounts[roomID]
 	e.mu.RUnlock()
 
 	if tm == nil {
+		e.warnUnrouted("monitor", m.CardID, m.DeviceID, m.DeviceUID, m.DeviceType)
 		return
 	}
 
-	switch strings.ToLower(deviceType) {
+	ts := m.Timestamp
+	if ts == 0 {
+		ts = time.Now().UnixMilli()
+	}
+
+	switch strings.ToLower(m.DeviceType) {
 	case "radar":
 		if !hasMount {
 			return
 		}
-		frames := e.parseTrackFrames(raw, deviceID, mount)
+		frames := ParseRadarTracks(m.DataValue, m.DeviceID, mount, ts)
 		if len(frames) == 0 {
 			// tid=88 heartbeat / 全零无效帧被 ParseRadarTracks 过滤后，仍要 tick 推进 MissCount，
 			// 否则之前活着的 track 永不进入消失判定 → silent/lost fall pending 不会创建。
-			if ts > 0 {
-				tm.Tick(ts)
-			}
+			tm.Tick(ts)
 			return
 		}
 		outputs := tm.ProcessFrame(frames)
@@ -1040,14 +1116,7 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 
 	case "sleepad", "sleeppad":
 		// 多传感器融合：sleepad 帧喂入 TrackManager，silent fall 触发时做 short-circuit
-		dv := raw[rediscommon.DataValueKey]
-		if dv == nil {
-			dv = raw["dataValue"]
-		}
-		if ts == 0 {
-			ts = time.Now().UnixMilli()
-		}
-		obs := ParseSleepadObservations(dv, deviceID, deviceUID, ts)
+		obs := ParseSleepadObservations(m.DataValue, m.DeviceID, m.DeviceUID, ts)
 		for _, o := range obs {
 			tm.ProcessSleepadObservation(o)
 		}
@@ -1061,20 +1130,6 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 		}
 		tm.SetSleepadInBedCount(inBedCount)
 	}
-}
-
-// parseTrackFrames 把 iot:monitor:stream 一条消息里的多 track 拆解。
-// 内部委托 ParseRadarTracks（同包，也供 playback 工具直接调用）。
-func (e *Engine) parseTrackFrames(raw map[string]interface{}, deviceID string, mount radarutils.RadarMount) []TrackFrame {
-	dv := raw[rediscommon.DataValueKey]
-	if dv == nil {
-		dv = raw["dataValue"]
-	}
-	ts := int64FromAny(raw["timestamp"])
-	if ts == 0 {
-		ts = time.Now().UnixMilli()
-	}
-	return ParseRadarTracks(dv, deviceID, mount, ts)
 }
 
 // ========================================================================

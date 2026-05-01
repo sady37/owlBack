@@ -159,6 +159,7 @@ var Registry = map[string]*FieldDef{
 	FieldPositionZ:           {Key: FieldPositionZ, Type: TInt, Unit: "cm", Persist: false, Max: 500},
 	FieldPose:                {Key: FieldPose, Type: TEnum, Persist: true, Enum: EnumPose},
 	FieldTrackID:             {Key: FieldTrackID, Type: TInt, Persist: false, Max: 88},
+	FieldLogicID:             {Key: FieldLogicID, Type: TStr, Persist: false},
 	FieldEvent:               {Key: FieldEvent, Type: TInt, Persist: false, Max: 6}, // 0=无, 1-6=EventInRoom/OutRoom/InArea/OutArea/EnterMonitor/ExitMonitor
 	FieldTrackCount:          {Key: FieldTrackCount, Type: TInt, Persist: true, Max: 8},
 	FieldAreaID:              {Key: FieldAreaID, Type: TInt, Persist: false},
