@@ -2,8 +2,6 @@ package service
 
 import (
 	"strings"
-
-	"owl-common/redis"
 )
 
 // ============================================================================
@@ -42,9 +40,8 @@ const (
 )
 
 // PoseWeight 返回该设备类型对 Pose 的信任权重。
-// AI 派生事件（"Radar.AI01"）按源类型继承权重。
 func PoseWeight(deviceType string) int {
-	switch strings.ToLower(redis.BaseDeviceType(deviceType)) {
+	switch strings.ToLower(deviceType) {
 	case "sleepad", "sleeppad":
 		return PoseWeightSleepad
 	case "radar":
@@ -55,9 +52,8 @@ func PoseWeight(deviceType string) int {
 }
 
 // VitalWeight 返回该设备类型对 Vital/HR/RR/SleepStage 的信任权重。
-// AI 派生事件（"Radar.AI01"）按源类型继承权重。
 func VitalWeight(deviceType string) int {
-	switch strings.ToLower(redis.BaseDeviceType(deviceType)) {
+	switch strings.ToLower(deviceType) {
 	case "sleepad", "sleeppad":
 		return VitalWeightSleepad
 	case "radar":

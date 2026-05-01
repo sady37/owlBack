@@ -9,7 +9,6 @@ import (
 	"owl-common/alarm"
 	"owl-common/card"
 	"owl-common/observation"
-	"owl-common/redis"
 
 	"go.uber.org/zap"
 )
@@ -75,9 +74,8 @@ const (
 )
 
 // bedConfidenceFromDeviceType 进出床事件置信度基准（100 分制）：Sleepad=90，Radar=60，其它=0。
-// AI 派生事件（"Radar.AI01"）按源类型继承 confidence 基准。
 func bedConfidenceFromDeviceType(deviceType string) int {
-	switch strings.ToLower(redis.BaseDeviceType(deviceType)) {
+	switch strings.ToLower(deviceType) {
 	case "sleepad", "sleeppad":
 		return BedConfidenceSleepadBase
 	case "radar":

@@ -2,8 +2,6 @@ package service
 
 import (
 	"strings"
-
-	"owl-common/redis"
 )
 
 // Affinity — 设备间亲和性评分（保留供 AI 层使用）。权重常量见 weights.go。
@@ -25,9 +23,8 @@ func ComputeAffinity(a, b *DeviceMeta) int {
 	}
 
 	functional := 0
-	// 用 BaseDeviceType 解 AI 后缀，避免 "Radar.AI01" vs "Radar" 被误判为异构
-	aType := strings.ToLower(redis.BaseDeviceType(a.DeviceType))
-	bType := strings.ToLower(redis.BaseDeviceType(b.DeviceType))
+	aType := strings.ToLower(a.DeviceType)
+	bType := strings.ToLower(b.DeviceType)
 	if aType == bType {
 		if aType == "radar" {
 			functional = FuncFullMatch
