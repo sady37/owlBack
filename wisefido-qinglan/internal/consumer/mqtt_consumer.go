@@ -763,7 +763,7 @@ func (c *MQTTConsumer) resolveDeviceIdentity(ctx context.Context, uid string) (t
 
 // publishRadarMonitorHeartbeat monitoring 关闭时发单条 track_id=11（设备级），category=heart，供 cardagg MonitorBuffer 推导在线。
 func (c *MQTTConsumer) publishRadarMonitorHeartbeat(ctx context.Context, tid, cid, uid, did string, ts int64) error {
-	t := observation.Track{TrackID: observation.TrackDevice, TrackConfidence: 60}
+	t := observation.Track{TrackID: observation.TrackDevice, TrackConfidence: 80}
 	data := t.ToFieldMap()
 	msg := rediscommon.NewSingleItemMessage(tid, cid, uid, did, DeviceTypeRadar, ts, "monitor", observation.CategoryHeart, data)
 	return c.streamPublisher.PublishMonitor(ctx, msg)
@@ -926,8 +926,8 @@ func radarTrackToData(tr map[string]interface{}) map[string]any {
 	if v, ok := tr["area_id"]; ok {
 		data[observation.FieldAreaID] = asInt(v)
 	}
-	// 雷达无 signal_quality，轨迹置信度固定 60
-	data[observation.FieldTrackConfidence] = 60
+	// 雷达无 signal_quality，轨迹置信度固定 80（落在 owlfront ≥80 全饱和档；AI 判 ghost 时覆写到 ≤20）
+	data[observation.FieldTrackConfidence] = 80
 	return data
 }
 
