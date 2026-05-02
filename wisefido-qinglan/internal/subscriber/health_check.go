@@ -286,7 +286,11 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 		return
 	}
 	cid := m.streamPublisher.GetCardID(ctx, deviceUID)
-	log.Printf("📢 publishDeviceAlarm: device=%s field=%s value=%d event=%s cid=%s tid=%s did=%s", deviceUID, fieldKey, value, eventName, cid, tid, did)
+	// 健康检查触发的衍生告警（Offline/SignalPoor/AngleException 类）— 落 iot:alarm:stream
+	// 后立刻被 wisefido-iot 写 iot_timeseries，这里再打日志冗余。仅 verbose 时回放。
+	if os.Getenv("QINGLAN_VERBOSE_LOG") == "true" {
+		log.Printf("📢 publishDeviceAlarm: device=%s field=%s value=%d event=%s cid=%s tid=%s did=%s", deviceUID, fieldKey, value, eventName, cid, tid, did)
+	}
 	ts := time.Now().UnixMilli()
 	eventStatus := "start"
 	if value == 0 {

@@ -34,20 +34,25 @@ type RadarFallAlarm struct {
 	Status    string // "start" / "end"
 }
 
-// RadarTrackEvent radar 固件发的 EnterRoom/ExitRoom/InBed/LeftBed（来自 iot:event:stream）。
+// RadarTrackEvent radar 固件发的 EnterRoom/ExitRoom/InBed/LeftBed/NumberPeople（来自 iot:event:stream）。
 //
 // 数据样例：
 //
 //	{"track_id": 11, "event_name": "EnterRoom", "event_status": "instant",
 //	 "event_since": 1777179605010, "track_count": 1}
 //
+//	{"track_id": 10, "event_name": "number_people", "event_status": "start",
+//	 "event_since": 1777703748870, "number_people": 0}
+//
 // 用途：硬证据"人数变化"或"床压状态"，未来用于交叉验证 sleepad / 校准 segment 1 realCount 推断。
+// NumberPeople=0 也作为 ExitRoom 兜底（部分 firmware 在 FOV 边缘离场不发 ExitRoom）。
 type RadarTrackEvent struct {
-	DeviceUID string
-	TMs       int64
-	EventName string // "EnterRoom" / "ExitRoom" / "InBed" / "LeftBed"
-	TrackID   int
-	Status    string // "instant" / "start" / "end"
+	DeviceUID    string
+	TMs          int64
+	EventName    string // "EnterRoom" / "ExitRoom" / "InBed" / "LeftBed" / "NumberPeople"
+	TrackID      int
+	Status       string // "instant" / "start" / "end"
+	NumberPeople int    // 仅 EventName=="NumberPeople" 时有效
 }
 
 // ParseRadarFallAlarm 解析 alarm:stream 一条消息的 data_value 为 RadarFallAlarm 列表。
@@ -96,8 +101,13 @@ func ParseRadarFallAlarm(dv interface{}, deviceUID, envelopeCat string, fallback
 // 这里接受 "start" 与 "instant"。LeftBed 双发时同 TMs，RecordRadarEvent 用 TMs 做 map key
 // 会自然覆盖（无重复计数风险）。"end" 状态（如 SignalPoorRecover end）不在白名单内会被 envelopeCat 过滤。
 func ParseRadarTrackEvents(dv interface{}, deviceUID, envelopeCat string, fallbackTs int64) []RadarTrackEvent {
+	// envelopeCat 是 iot:event:stream envelope 字段，与 firmware 内部 event_name 不完全同名。
+	// number_people（小写下划线）是 envelope 形式，统一规整成 EventName="NumberPeople" 便于内部判断。
+	canonical := envelopeCat
 	switch envelopeCat {
 	case "EnterRoom", "ExitRoom", "InBed", "LeftBed":
+	case "number_people", "NumberPeople":
+		canonical = "NumberPeople"
 	default:
 		return nil
 	}
@@ -115,13 +125,17 @@ func ParseRadarTrackEvents(dv interface{}, deviceUID, envelopeCat string, fallba
 		if ts == 0 {
 			ts = fallbackTs
 		}
-		out = append(out, RadarTrackEvent{
+		evt := RadarTrackEvent{
 			DeviceUID: deviceUID,
 			TMs:       ts,
-			EventName: envelopeCat,
+			EventName: canonical,
 			TrackID:   jsonInt(m["track_id"]),
 			Status:    st,
-		})
+		}
+		if canonical == "NumberPeople" {
+			evt.NumberPeople = jsonInt(m["number_people"])
+		}
+		out = append(out, evt)
 	}
 	return out
 }

@@ -603,8 +603,11 @@ func (c *MQTTConsumer) handlePropertyMessage(uid string, message map[string]inte
 	if cmd == "read" {
 		logLabel = "GetDeviceProperties"
 	}
-	// 属性读/写为低频，始终打设备原始回包（不依赖 QINGLAN_VERBOSE_LOG）
-	log.Printf("%s receive MQTT (device raw): device=%s, requestId=%s, msg=%+v", logLabel, uid, requestIDRaw, message)
+	// 属性读其实是高频（30s × 设备数 → 数百行/小时），轮询的设备原始回包仅 verbose 时打。
+	// SetDeviceProperties 是低频（手动配置触发），始终打。
+	if cmd != "read" || isQinglanVerboseLog() {
+		log.Printf("%s receive MQTT (device raw): device=%s, requestId=%s, msg=%+v", logLabel, uid, requestIDRaw, message)
+	}
 
 	decoded, err := decode.RadarDecoder(message, "prop")
 	if err != nil || decoded == nil {
@@ -640,7 +643,7 @@ func (c *MQTTConsumer) handlePropertyMessage(uid string, message map[string]inte
 		ctx := context.Background()
 		if err := c.streamPublisher.StoreCommandResponse(ctx, requestID, payload); err != nil {
 			log.Printf("❌ %s store Redis: requestId=%s: %v", logLabel, requestID, err)
-		} else {
+		} else if cmd != "read" || isQinglanVerboseLog() {
 			log.Printf("✅ %s send Redis: device=%s, requestId=%s, payload=%+v", logLabel, uid, requestID, payload)
 		}
 	} else {

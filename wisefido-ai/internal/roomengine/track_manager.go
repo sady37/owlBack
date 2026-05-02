@@ -110,6 +110,13 @@ type TrackManager struct {
 	// 0 = 从未有 LeftBed 事件（或上次 InBed 后又被 InBed 抹掉）。
 	lastLeftBedAt int64
 
+	// lastNumberPeopleZeroMs：最近一次 firmware number_people=0 事件时间戳。
+	// 部分 firmware（如 D523）在 FOV 边角离场不发 ExitRoom，但会发 number_people=0
+	// （实测早 track_id=88 心跳 36-44ms）。当 track 终止入 pendingLostFall 池前，
+	// 检查 ±NumberPeopleZeroFallbackMs 窗口内有无 number_people=0 → 视作 ExitRoom 兜底，
+	// 跳过 pending 创建（避免人正常离场误报 lost_fall）。同时也用于取消已存在的 pending。
+	lastNumberPeopleZeroMs int64
+
 	// bedsideFallCfg：R4（床边晕倒）参数；由 SetBedsideFallConfig 注入。
 	// 全 0 = 用默认（180s / 100cm / 900s）。
 	bedsideFallCfg BedsideFallConfig
@@ -682,6 +689,39 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 			delete(tm.pendingLostFalls, pid)
 		}
 	}
+	// NumberPeople=0 → ExitRoom 兜底：① 记录时间戳供入池前查 ② 取消已存在的 non-frozen pending。
+	// 实测 D523 firmware 在 FOV 边角离场不发 ExitRoom，但 number_people=0 始终发，
+	// 且早 track_id=88 心跳 36-44ms，是更可靠的"屋空"信号。
+	//
+	// frozen 互斥：firmware 进入 frozen 残影状态时认为屋内有人（持续发同帧），
+	// 绝不会发 number_people=0。若 pending.FrozenStartMs > 0（track 失锁前已 frozen），
+	// 即使后来收到 number_people=0 也不取消——这是盲区返回 case（CD2B 类型），
+	// 应保留 pending 等 birth-recovery 取消或正常超时报警。
+	if e.EventName == "NumberPeople" && e.NumberPeople == 0 {
+		if e.TMs > tm.lastNumberPeopleZeroMs {
+			tm.lastNumberPeopleZeroMs = e.TMs
+		}
+		for pid, p := range tm.pendingLostFalls {
+			if p.FrozenStartMs > 0 {
+				tm.logger.Info("lost_fall_pending_kept_frozen_vs_number_people_zero",
+					zap.String("device_uid", p.DeviceID),
+					zap.Int("track_id", p.OriginalTrackID),
+					zap.Int64("frozen_start_ms", p.FrozenStartMs),
+					zap.Int64("number_people_zero_ms", e.TMs),
+				)
+				continue
+			}
+			tm.lostFallPendingCancelled++
+			tm.logger.Info("lost_fall_cancelled_by_number_people_zero",
+				zap.String("device_uid", p.DeviceID),
+				zap.Int("track_id", p.OriginalTrackID),
+				zap.String("room_id", p.RoomID),
+				zap.Int64("pending_age_ms", e.TMs-p.DisappearMs),
+				zap.Int64("number_people_zero_ms", e.TMs),
+			)
+			delete(tm.pendingLostFalls, pid)
+		}
+	}
 }
 
 // evictOldRadarAlarms / evictOldRadarEvents：删除超出 recentBufferMs 的旧记录。
@@ -892,6 +932,40 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 					zap.Int64("ts_ms", nowMs),
 				)
 			} else if (ts.Verdict == VerdictReal || ts.Verdict == VerdictPending) && tm.checkLostFall(ts) {
+				// NumberPeople=0 ExitRoom 兜底：firmware 不发 ExitRoom 但发 number_people=0
+				// （实测 D523 三个样本 100% 命中且早 track_id=88 36-44ms）→ 视作正常离场。
+				//
+				// 三道关卡：
+				//   ① ts.FrozenRunStart == 0：track 失锁前未进入 frozen 残影状态。
+				//      frozen ↔ number_people=0 互斥（firmware 状态机产物）：frozen 期间
+				//      firmware 维持"屋内有人"判定，不发 number_people=0；若 track 经历过
+				//      frozen 期才失锁，说明这是盲区残影 case（CD2B 类），应进 pending 池
+				//      等 birth-recovery 取消或正常超时报警，不能被 number_people=0 抑制。
+				//   ② lastNumberPeopleZeroMs > 0 && ts.LastObservedMs > 0：两个时间戳都有效。
+				//   ③ |lastNumberPeopleZeroMs − LastObservedMs| ≤ NumberPeopleZeroFallbackMs(60s)：
+				//      number_people=0 与 track 最后真实帧时间差在窗口内。
+				//      比对基准是 LastObservedMs 不是 nowMs：后者因 MaxMissCount=10 会比
+				//      number_people=0 晚约 10s，落不进窗口；前者紧贴 number_people=0
+				//      （实测 ~1s 内）。
+				if ts.FrozenRunStart == 0 && tm.lastNumberPeopleZeroMs > 0 && ts.LastObservedMs > 0 {
+					gapMs := tm.lastNumberPeopleZeroMs - ts.LastObservedMs
+					if gapMs < 0 {
+						gapMs = -gapMs
+					}
+					if gapMs <= FallRulesParam.Lost.NumberPeopleZeroFallbackMs {
+						tm.logger.Info("lost_fall_pending_skipped_by_number_people_zero",
+							zap.String("device_uid", ts.DeviceID),
+							zap.Int("track_id", id),
+							zap.Int64("number_people_zero_ms", tm.lastNumberPeopleZeroMs),
+							zap.Int64("last_observed_ms", ts.LastObservedMs),
+							zap.Int64("gap_ms", gapMs),
+							zap.Int64("ts_ms", nowMs),
+						)
+						tm.lostFallPendingCancelled++
+						delete(tm.tracks, id)
+						continue
+					}
+				}
 				pxF, pyF := ts.Kalman.Position()
 				px := int(math.Round(pxF))
 				py := int(math.Round(pyF))

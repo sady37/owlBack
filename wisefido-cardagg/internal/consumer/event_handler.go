@@ -89,17 +89,14 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		data = make(map[string]interface{})
 	}
 	evName := streamEventName(m, data)
-	// 常规事件（activity/track/number_people 等）用 Debug 减少日志量；
-	// 报警相关事件（Fall/LeftBed/Offline 等）保留 Info
-	logLevel := h.logger.Debug
-	if isAlarmRelatedEvent(evName) {
-		logLevel = h.logger.Info
-	}
-	logLevel("stream.consume", append(streamLogFields("event", m, evName),
+	// stream.consume / stream.payload 全部走 Debug：原始事件已由 wisefido-iot 写 iot_timeseries，
+	// 在 cardagg log 重复一份纯属噪音（单台设备 24h 上千行）。各业务分支 case 内部
+	// 自己 Info-log 关键决策（alarm inserted / pending.added / LeftBed.pending.check 等）。
+	h.logger.Debug("stream.consume", append(streamLogFields("event", m, evName),
 		zap.String("status", "recv"),
 	)...)
 	dataJSON, _ := json.Marshal(data)
-	logLevel("stream.payload",
+	h.logger.Debug("stream.payload",
 		zap.String("stream", "event"),
 		zap.String("card_id", m.CardID),
 		zap.String("device_id", m.DeviceID),
@@ -568,22 +565,4 @@ func sleepadTrackOverride(ctx context.Context, metaCache *service.DeviceMetaCach
 	}
 	count := service.SleepadTrackCountFromSnapshot(snap, meta, bedDevs)
 	return &count
-}
-
-// isAlarmRelatedEvent 报警/安全相关事件保留 Info 级别日志
-func isAlarmRelatedEvent(evName string) bool {
-	switch evName {
-	case "Fall", "SuspectedFall", "LeftBed", "InBed",
-		"Offline", "OfflineRecover",
-		"SensorDetached", "SensorDetachedRecover",
-		"SignalPoor", "SignalPoorRecover",
-		"AngleException", "AngleExceptionRecover",
-		"HeartRateAlert", "RespRateAlert",
-		"ApneaHypopnea", "WeakBiometricSignal",
-		"BedSitUp", "SittingOnGround",
-		"NightAbsence",
-		"deviceStatus":
-		return true
-	}
-	return false
 }

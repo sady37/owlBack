@@ -82,6 +82,17 @@ type lostFallParam struct {
 
 	// Lost-fall pending 等待时间下限（兜底）
 	EffectiveWaitFloorSec int
+
+	// NumberPeople=0 ExitRoom 兜底窗口（ms）：
+	// 部分 firmware（如 D523）在 FOV 边角离场不发 ExitRoom，但会发 number_people=0。
+	// track 终止入 pendingLostFall 池前，若 number_people=0 在 ts.LastObservedMs ±此值
+	// 内到达 → 视作 ExitRoom 兜底，跳过 pending。**前提：track 未进入 frozen 状态**
+	// （frozen 与 number_people=0 在 firmware 状态机里互斥；frozen 状态下 firmware
+	// 仍认为屋内有人，绝不会发 number_people=0。若两者同现说明 firmware 异常或
+	// 是 firmware-frozen 残影结束后的新状态——后者属于 CD2B 类盲区返回 case，
+	// 应正常入 lost_fall pending 池等待 recovery 取消，不能被 number_people=0 抑制）。
+	// 默认 60000ms：与用户设计语义对齐——"t1+60s 前收到 number_people=0 视为正常离房"。
+	NumberPeopleZeroFallbackMs int64
 }
 
 // cellHistoryParam Cell History Integral（自适应阈值）参数
@@ -128,11 +139,12 @@ var FallRulesParam = fallRulesParam{
 		WalkwayWaitSec:        5 * 60,
 		ExitDistMinCm:         30, // 30cm（贴近门口）；2026-04-30 从 100cm 收紧
 		SpatialJumpFactor:     0.5,
-		FrozenSameThreshold:   25,    // 连续 25 帧字面相同
-		ImpossibleSpeedCm:     200,   // 硬 ghost：老人最快 100-150cm/s
-		SuspectSpeedCm:        100,   // 软 ghost：需 EnterRoom 反证
-		BirthFinalGraceMs:     2000,  // birth 终判延迟 2s
-		EffectiveWaitFloorSec: 60,    // 兜底最少等 60s
+		FrozenSameThreshold:        25,   // 连续 25 帧字面相同
+		ImpossibleSpeedCm:          200,  // 硬 ghost：老人最快 100-150cm/s
+		SuspectSpeedCm:             100,  // 软 ghost：需 EnterRoom 反证
+		BirthFinalGraceMs:          2000, // birth 终判延迟 2s
+		EffectiveWaitFloorSec:      60,   // 兜底最少等 60s
+		NumberPeopleZeroFallbackMs: 60000, // ExitRoom 缺失时 number_people=0 兜底窗口 60s（仅 non-frozen 时生效）
 	},
 	CellHistory: cellHistoryParam{
 		FakeAlarmThreshold:      3,

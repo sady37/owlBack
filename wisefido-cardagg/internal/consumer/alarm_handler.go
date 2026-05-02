@@ -50,9 +50,11 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		data = make(map[string]interface{})
 	}
 	eventName := streamEventName(m, data)
-	h.logger.Info("stream.consume", append(streamLogFields("alarm", m, eventName),
+	// stream.consume 走 Debug：原始 alarm 已由 wisefido-iot 写 iot_timeseries。
+	// 各 case 分支自己 Info-log 关键决策（alarm inserted / pending.added 等）。
+	h.logger.Debug("stream.consume", append(streamLogFields("alarm", m, eventName),
 		zap.String("status", "recv"),
-	)...) 
+	)...)
 	if eventName == "" {
 		h.logger.Warn("stream.consume", append(streamLogFields("alarm", m, eventName),
 			zap.String("status", "drop"),
@@ -243,54 +245,38 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			}
 		}
 	case alarm.AlarmTypeOfflineRecover:
-		h.logger.Info("offline_recover.handle.start",
-			zap.String("tenant_id", m.TenantID),
-			zap.String("card_id", m.CardID),
-			zap.String("device_id", m.DeviceID),
+		// 三段处理（清旧 alarm + 设 online + 状态归位）合并成单条 done 日志。
+		// 失败路径仍单独 Warn 出来。
+		recoveryOK := true
+		if err := h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.AlarmTypeOffline, alarm.AlarmTypeDeviceFailure}); err != nil {
+			recoveryOK = false
+			h.logger.Warn("offline_recover.recovery_failed",
+				zap.String("device_uid", m.DeviceUID),
+				zap.String("card_id", m.CardID),
+				zap.Error(err),
+			)
+		}
+		setOnlineOK, setOnlineSkip := false, false
+		if m.DeviceUID == "" || m.CardID == "" || h.state == nil {
+			setOnlineSkip = true
+		} else if err := h.state.SetDeviceOnline(ctx, m.CardID, m.DeviceID, m.DeviceUID, m.DeviceType, true); err != nil {
+			h.logger.Warn("offline_recover.set_online_failed",
+				zap.String("device_uid", m.DeviceUID),
+				zap.String("card_id", m.CardID),
+				zap.Error(err),
+			)
+		} else {
+			setOnlineOK = true
+		}
+		h.logger.Info("offline_recover.done",
 			zap.String("device_uid", m.DeviceUID),
+			zap.String("card_id", m.CardID),
 			zap.String("device_type", m.DeviceType),
+			zap.Bool("recovery_ok", recoveryOK),
+			zap.Bool("set_online_ok", setOnlineOK),
+			zap.Bool("set_online_skipped", setOnlineSkip),
 			zap.Int64("ts", m.Timestamp),
 		)
-		if err := h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.AlarmTypeOffline, alarm.AlarmTypeDeviceFailure}); err != nil {
-			h.logger.Warn("offline_recover.handle.recovery_failed",
-				zap.String("tenant_id", m.TenantID),
-				zap.String("card_id", m.CardID),
-				zap.String("device_id", m.DeviceID),
-				zap.String("device_uid", m.DeviceUID),
-				zap.Error(err),
-			)
-		} else {
-			h.logger.Info("offline_recover.handle.recovery_done",
-				zap.String("tenant_id", m.TenantID),
-				zap.String("card_id", m.CardID),
-				zap.String("device_id", m.DeviceID),
-				zap.String("device_uid", m.DeviceUID),
-			)
-		}
-		if m.DeviceUID == "" || m.CardID == "" || h.state == nil {
-			h.logger.Info("offline_recover.handle.skip_set_online",
-				zap.String("tenant_id", m.TenantID),
-				zap.String("card_id", m.CardID),
-				zap.String("device_id", m.DeviceID),
-				zap.String("device_uid", m.DeviceUID),
-				zap.Bool("state_nil", h.state == nil),
-			)
-		} else if err := h.state.SetDeviceOnline(ctx, m.CardID, m.DeviceID, m.DeviceUID, m.DeviceType, true); err != nil {
-			h.logger.Warn("offline_recover.handle.set_online_failed",
-				zap.String("tenant_id", m.TenantID),
-				zap.String("card_id", m.CardID),
-				zap.String("device_id", m.DeviceID),
-				zap.String("device_uid", m.DeviceUID),
-				zap.Error(err),
-			)
-		} else {
-			h.logger.Info("offline_recover.handle.set_online_done",
-				zap.String("tenant_id", m.TenantID),
-				zap.String("card_id", m.CardID),
-				zap.String("device_id", m.DeviceID),
-				zap.String("device_uid", m.DeviceUID),
-			)
-		}
 	// DeviceRecover：其它故障恢复；连通性上线由 Sleepace/qinglan 发 OfflineRecover。
 	case alarm.AlarmTypeDeviceRecover:
 		_ = h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.AlarmTypeDeviceFailure})

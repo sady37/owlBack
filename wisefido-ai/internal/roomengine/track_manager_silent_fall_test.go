@@ -1076,3 +1076,311 @@ func TestLostFall_SkippedAfterBedsideFall(t *testing.T) {
 		t.Errorf("pendingLostFalls should be empty after BedsideFallReported, got %d", got)
 	}
 }
+
+// ============================================================================
+// PR-C: NumberPeople=0 ExitRoom 兜底
+// ============================================================================
+
+// settleAtPos 喂 N 帧同位置同 pose，让 Kalman 速度收敛到 ~0；
+// 不这样做，runFramesUntilReal 留下的高速度会让 PredictOnly 把消失点甩飞到屋外，CellAt=nil 导致 checkLostFall 直接 false。
+func settleAtPos(tm *TrackManager, tid, x, y, z int, pose int, startTms int64, frames int) int64 {
+	tms := startTms
+	for i := 0; i < frames; i++ {
+		tm.processFrameAt([]TrackFrame{
+			{TrackID: tid, DeviceID: "dev1", X: x, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: tms},
+		}, tms)
+		tms += 1000
+	}
+	return tms
+}
+
+// TestLostFall_NumberPeopleZeroSkipsPendingCreation：
+// 实测 D523 firmware 在 FOV 边角离场不发 ExitRoom，但发 number_people=0（早 track=88 36-44ms）。
+// 设计：track 终止前若 ±5s 内有 number_people=0 → 跳过 pending 入池，避免误报 lost_fall。
+func TestLostFall_NumberPeopleZeroSkipsPendingCreation(t *testing.T) {
+	tm, g := newTestTM()
+	for i := range g.Cells {
+		c := &g.Cells[i]
+		col := i % g.Width
+		row := i / g.Width
+		x, y := g.ToCanvas(col, row)
+		if x < -200 && y < -200 {
+			c.Belief[0].Type = AreaEnter
+			c.Belief[0].Confidence = 99
+			c.Belief[0].Source = SourceHuman
+		}
+	}
+
+	const tid = 0
+	tms := runFramesUntilReal(tm, tid, 100, 100, 1_000_000, 30)
+	// 喂 8 帧让 Kalman 在消失点稳定（避免后续 PredictOnly 把位置甩出屋外）
+	tms = settleAtPos(tm, tid, -90, 320, 0, 4, tms, 8)
+
+	// 模拟实测时序：firmware 即将失锁前 number_people=0 到达（无 ExitRoom）
+	tm.RecordRadarEvent(RadarTrackEvent{
+		DeviceUID:    "dev1",
+		EventName:    "NumberPeople",
+		TMs:          tms,
+		NumberPeople: 0,
+	})
+	if tm.lastNumberPeopleZeroMs != tms {
+		t.Errorf("lastNumberPeopleZeroMs want %d got %d", tms, tm.lastNumberPeopleZeroMs)
+	}
+
+	// 再跑 12 帧空 tick 让 MissCount > MaxMissCount=10 → track 失锁判定
+	// MissCount 累到 11 时（约第 4 个 miss）触发 lost-fall 入池逻辑。此时 nowMs - lastNumberPeopleZeroMs ≈ 4s，在 5s 窗口内 → 应跳过 pending 创建
+	for i := 0; i < 12; i++ {
+		tm.processFrameAt(nil, tms)
+		tms += 1000
+	}
+
+	if got := len(tm.pendingLostFalls); got != 0 {
+		t.Errorf("pendingLostFalls should be empty (skipped by number_people=0), got %d", got)
+	}
+	if tm.lostFallPendingCancelled != 1 {
+		t.Errorf("lostFallPendingCancelled want 1 (skip counted), got %d", tm.lostFallPendingCancelled)
+	}
+	if tm.lostFallPendingCreated != 0 {
+		t.Errorf("lostFallPendingCreated want 0, got %d", tm.lostFallPendingCreated)
+	}
+}
+
+// TestLostFall_NumberPeopleZeroCancelsExisting：
+// number_people=0 在 pending 已入池后到达 → 取消已存在的 pending。
+// 防御性路径，正常流程不应触发（number_people=0 普遍领先 track 终止），但 firmware
+// 时序若反转（pending 先创建，number_people=0 几秒后到）兜底兼容。
+func TestLostFall_NumberPeopleZeroCancelsExisting(t *testing.T) {
+	tm, g := newTestTM()
+	for i := range g.Cells {
+		c := &g.Cells[i]
+		col := i % g.Width
+		row := i / g.Width
+		x, y := g.ToCanvas(col, row)
+		if x < -200 && y < -200 {
+			c.Belief[0].Type = AreaEnter
+			c.Belief[0].Confidence = 99
+			c.Belief[0].Source = SourceHuman
+		}
+	}
+
+	const tid = 0
+	tms := runFramesUntilReal(tm, tid, 100, 100, 1_000_000, 30)
+	tms = settleAtPos(tm, tid, -90, 320, 0, 4, tms, 8)
+	for i := 0; i < 12; i++ {
+		tm.processFrameAt(nil, tms)
+		tms += 1000
+	}
+	if len(tm.pendingLostFalls) != 1 {
+		t.Fatalf("setup should produce 1 pending lost fall (after settle), got %d", len(tm.pendingLostFalls))
+	}
+
+	tm.RecordRadarEvent(RadarTrackEvent{
+		DeviceUID:    "dev1",
+		EventName:    "NumberPeople",
+		TMs:          tms,
+		NumberPeople: 0,
+	})
+	if got := len(tm.pendingLostFalls); got != 0 {
+		t.Errorf("pendingLostFalls should be empty after number_people=0, got %d", got)
+	}
+	if tm.lostFallPendingCancelled != 1 {
+		t.Errorf("lostFallPendingCancelled want 1, got %d", tm.lostFallPendingCancelled)
+	}
+}
+
+// TestLostFall_NumberPeopleZeroOutsideWindow：
+// number_people=0 距离 track 真实失踪 >60s（窗口外）→ 不跳过，pending 正常创建。
+// 防止过度抑制：上一个人很久之前离场过，又有新人进屋失踪时 lost_fall 仍能触发。
+func TestLostFall_NumberPeopleZeroOutsideWindow(t *testing.T) {
+	tm, g := newTestTM()
+	for i := range g.Cells {
+		c := &g.Cells[i]
+		col := i % g.Width
+		row := i / g.Width
+		x, y := g.ToCanvas(col, row)
+		if x < -200 && y < -200 {
+			c.Belief[0].Type = AreaEnter
+			c.Belief[0].Confidence = 99
+			c.Belief[0].Source = SourceHuman
+		}
+	}
+
+	const tid = 0
+	tms := runFramesUntilReal(tm, tid, 100, 100, 1_000_000, 30)
+
+	// 一个很久之前的 number_people=0（远早于后续 track 失踪）
+	tm.RecordRadarEvent(RadarTrackEvent{
+		DeviceUID:    "dev1",
+		EventName:    "NumberPeople",
+		TMs:          tms,
+		NumberPeople: 0,
+	})
+	earlyZeroMs := tms
+
+	// settle 到 lost-fall 位置喂 70 帧 — LastObservedMs 推到 number_people=0 之后 70s
+	// （超过 NumberPeopleZeroFallbackMs=60s 窗口）
+	tms = settleAtPos(tm, tid, -90, 320, 0, 4, tms, 70)
+
+	// firmware 停报：number_people=0 已远早于 last frame（>60s）→ 应正常入池
+	for i := 0; i < 12; i++ {
+		tm.processFrameAt(nil, tms)
+		tms += 1000
+	}
+
+	if got := len(tm.pendingLostFalls); got != 1 {
+		t.Errorf("pendingLostFalls want 1 (number_people=0 too old, %dms before last frame), got %d",
+			tms-earlyZeroMs, got)
+	}
+}
+
+// TestLostFall_FrozenOverridesNumberPeopleZeroSkip：
+// frozen 状态下 track 失锁时即使有近期 number_people=0，也不应跳过 pending。
+// frozen ↔ number_people=0 互斥；若两者同现说明是 firmware 残影结束（CD2B 类盲区返回），
+// 应进 pending 池等 birth-recovery 取消，不能误抑制。
+func TestLostFall_FrozenOverridesNumberPeopleZeroSkip(t *testing.T) {
+	tm, g := newTestTM()
+	for i := range g.Cells {
+		c := &g.Cells[i]
+		col := i % g.Width
+		row := i / g.Width
+		x, y := g.ToCanvas(col, row)
+		if x < -200 && y < -200 {
+			c.Belief[0].Type = AreaEnter
+			c.Belief[0].Confidence = 99
+			c.Belief[0].Source = SourceHuman
+		}
+	}
+
+	const tid = 0
+	tms := runFramesUntilReal(tm, tid, 100, 100, 1_000_000, 30)
+
+	// 在 (-90, 320) 喂 30 帧字面完全相同 → 触发 FrozenRunStart > 0
+	for i := 0; i < 30; i++ {
+		tm.processFrameAt([]TrackFrame{
+			{TrackID: tid, DeviceID: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
+		}, tms)
+		tms += 1000
+	}
+	if ts := tm.tracks[tid]; ts == nil || ts.FrozenRunStart == 0 {
+		t.Fatalf("track should be in frozen state after 30 identical frames, got %v", ts)
+	}
+
+	// number_people=0 在 last frame 1s 后到达（窗口内）
+	tm.RecordRadarEvent(RadarTrackEvent{
+		DeviceUID:    "dev1",
+		EventName:    "NumberPeople",
+		TMs:          tms,
+		NumberPeople: 0,
+	})
+
+	// firmware 停报，等 MaxMissCount 触发判失锁
+	for i := 0; i < 12; i++ {
+		tm.processFrameAt(nil, tms)
+		tms += 1000
+	}
+
+	// 关键断言：尽管 number_people=0 在窗口内，frozen 状态强制走 pending（不抑制）
+	if got := len(tm.pendingLostFalls); got != 1 {
+		t.Errorf("pendingLostFalls want 1 (frozen overrides number_people=0 skip), got %d", got)
+	}
+	for _, p := range tm.pendingLostFalls {
+		if p.FrozenStartMs == 0 {
+			t.Errorf("pending should carry FrozenStartMs > 0, got %d", p.FrozenStartMs)
+		}
+	}
+}
+
+// TestLostFall_FrozenPendingNotCancelledByNumberPeopleZero：
+// frozen 状态下入了池的 pending，即使后来收到 number_people=0 也不应取消。
+// 同 frozen ↔ number_people=0 互斥语义；保留 pending 等 recovery / 正常超时。
+func TestLostFall_FrozenPendingNotCancelledByNumberPeopleZero(t *testing.T) {
+	tm, g := newTestTM()
+	for i := range g.Cells {
+		c := &g.Cells[i]
+		col := i % g.Width
+		row := i / g.Width
+		x, y := g.ToCanvas(col, row)
+		if x < -200 && y < -200 {
+			c.Belief[0].Type = AreaEnter
+			c.Belief[0].Confidence = 99
+			c.Belief[0].Source = SourceHuman
+		}
+	}
+
+	const tid = 0
+	tms := runFramesUntilReal(tm, tid, 100, 100, 1_000_000, 30)
+	// 30 帧 frozen
+	for i := 0; i < 30; i++ {
+		tm.processFrameAt([]TrackFrame{
+			{TrackID: tid, DeviceID: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
+		}, tms)
+		tms += 1000
+	}
+	// firmware 停报 → pending 创建（带 FrozenStartMs>0）
+	for i := 0; i < 12; i++ {
+		tm.processFrameAt(nil, tms)
+		tms += 1000
+	}
+	if len(tm.pendingLostFalls) != 1 {
+		t.Fatalf("expected 1 pending (frozen → not skipped), got %d", len(tm.pendingLostFalls))
+	}
+	var pending *PendingLostFall
+	for _, p := range tm.pendingLostFalls {
+		pending = p
+	}
+	if pending.FrozenStartMs == 0 {
+		t.Fatalf("pending must carry FrozenStartMs>0 to test frozen guard")
+	}
+
+	// number_people=0 到达 → 不应取消（frozen guard）
+	tm.RecordRadarEvent(RadarTrackEvent{
+		DeviceUID:    "dev1",
+		EventName:    "NumberPeople",
+		TMs:          tms,
+		NumberPeople: 0,
+	})
+	if got := len(tm.pendingLostFalls); got != 1 {
+		t.Errorf("frozen pending should be kept (not cancelled by number_people=0), got %d remaining", got)
+	}
+}
+
+// TestParseRadarTrackEvents_NumberPeople：解析 number_people category 入 RadarTrackEvent
+func TestParseRadarTrackEvents_NumberPeople(t *testing.T) {
+	dv := []interface{}{
+		map[string]interface{}{
+			"track_id":      float64(10),
+			"event_since":   float64(1777703748870),
+			"event_status":  "start",
+			"number_people": float64(0),
+		},
+	}
+
+	evts := ParseRadarTrackEvents(dv, "E598A2ACD523", "number_people", 0)
+	if len(evts) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(evts))
+	}
+	e := evts[0]
+	if e.EventName != "NumberPeople" {
+		t.Errorf("EventName want 'NumberPeople' got %q", e.EventName)
+	}
+	if e.NumberPeople != 0 {
+		t.Errorf("NumberPeople want 0 got %d", e.NumberPeople)
+	}
+	if e.TMs != 1777703748870 {
+		t.Errorf("TMs want 1777703748870 got %d", e.TMs)
+	}
+
+	// number_people=2 也应被解析（虽然 RecordRadarEvent 不动作）
+	dv2 := []interface{}{
+		map[string]interface{}{
+			"track_id":      float64(10),
+			"event_since":   float64(1777703704233),
+			"event_status":  "start",
+			"number_people": float64(2),
+		},
+	}
+	evts2 := ParseRadarTrackEvents(dv2, "E598A2ACD523", "NumberPeople", 0)
+	if len(evts2) != 1 || evts2[0].NumberPeople != 2 {
+		t.Errorf("expected NumberPeople=2 parsed, got %+v", evts2)
+	}
+}

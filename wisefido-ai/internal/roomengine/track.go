@@ -120,7 +120,13 @@ type TrackState struct {
 	// ---- 最后观测 ----
 	LastPose     int
 	LastZ        int
+	// LastUpdateMs：每次 processFrameAt（含 miss tick）都会刷新到 nowMs，反映"engine
+	// 最近一次为该 track 计算/预测过的时间"。不能用作"最后真正看到 track 的时间"。
 	LastUpdateMs int64
+	// LastObservedMs：最近一次真实收到帧（PushPoint）的时间。miss tick 不更新。
+	// 用途：lost-fall 入池时与 lastNumberPeopleZeroMs 比对，判断 number_people=0 是否在
+	// "track 实际失踪后"短窗口内到达（PR-C ExitRoom 兜底）。
+	LastObservedMs int64
 
 	// ---- cell 穿越追踪（Walk 学习用）----
 	// 初始为 -1 表示尚未定位；新 cell 进入且 core==Move 时调 grid.MarkTraverse 计数 ++。
@@ -244,6 +250,7 @@ func NewTrackState(trackID int, deviceID, roomID string, x, y, z int, tMs int64)
 		Verdict:              VerdictPending,
 		LastZ:                z,
 		LastUpdateMs:         tMs,
+		LastObservedMs:       tMs,
 		LastCellCol:          -1,
 		LastCellRow:          -1,
 		BirthFinalDeadlineMs: tMs + int64(FallRulesParam.Lost.BirthFinalGraceMs),
@@ -259,6 +266,7 @@ func (ts *TrackState) PushPoint(x, y, z int, tMs int64) {
 	}
 	ts.FrameCount++
 	ts.LastUpdateMs = tMs
+	ts.LastObservedMs = tMs
 }
 
 // HasHistory 是否有足够帧数做 Kalman

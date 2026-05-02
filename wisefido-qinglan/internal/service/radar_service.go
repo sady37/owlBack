@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -24,6 +25,10 @@ import (
 
 	"github.com/go-redis/redis/v8"
 )
+
+// qlVerbose 与 consumer.isQinglanVerboseLog 同源；service 包内的 log.Printf
+// 热路径用它做闸门——属性轮询每 30s × 设备数 = 频次很高，默认应静默。
+func qlVerbose() bool { return os.Getenv("QINGLAN_VERBOSE_LOG") == "true" }
 
 // 设备响应错误码常量
 const (
@@ -125,7 +130,9 @@ func (s *RadarService) readOneBatch(ctx context.Context, deviceUID string, keys 
 		// keys 为空时，添加空的 data 字段，表示读取所有属性
 		command["data"] = map[string]interface{}{"key": []string{}}
 	}
-	log.Printf("📤 Read Command: device=%s, requestId=%s, command=%+v", deviceUID, requestID, command)
+	if qlVerbose() {
+		log.Printf("📤 Read Command: device=%s, requestId=%s, command=%+v", deviceUID, requestID, command)
+	}
 	commandJSON, err := json.Marshal(command)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal command: %w", err)
@@ -134,18 +141,22 @@ func (s *RadarService) readOneBatch(ctx context.Context, deviceUID string, keys 
 	if err := s.mqttClient.Publish(topic, 1, false, commandJSON); err != nil {
 		return nil, fmt.Errorf("failed to publish command: %w", err)
 	}
-	log.Printf("Send MQTT: device=%s, requestId=%s, keys: %v", deviceUID, requestID, keys)
-	log.Printf("Wait device response: ⏳ device=%s, requestId=%s, GetDeviceProperties", deviceUID, requestID)
+	if qlVerbose() {
+		log.Printf("Send MQTT: device=%s, requestId=%s, keys: %v", deviceUID, requestID, keys)
+		log.Printf("Wait device response: ⏳ device=%s, requestId=%s, GetDeviceProperties", deviceUID, requestID)
+	}
 	response, err := s.waitForResponse(ctx, requestID, 10*time.Second)
 	if err != nil {
 		log.Printf("❌ GetDeviceProperties: failed to get response - device: %s, requestId: [%s], error: %v", deviceUID, requestID, err)
 		return nil, fmt.Errorf("failed to get response: %w", err)
 	}
 	if data, ok := response["data"].(map[string]interface{}); ok {
-		if b, err := json.Marshal(data); err == nil {
-			log.Printf("✅ GetDeviceProperties: device=%s, requestId=%s, data=%s", deviceUID, requestID, string(b))
-		} else {
-			log.Printf("✅ GetDeviceProperties: device=%s, requestId=%s, data=%+v", deviceUID, requestID, data)
+		if qlVerbose() {
+			if b, err := json.Marshal(data); err == nil {
+				log.Printf("✅ GetDeviceProperties: device=%s, requestId=%s, data=%s", deviceUID, requestID, string(b))
+			} else {
+				log.Printf("✅ GetDeviceProperties: device=%s, requestId=%s, data=%+v", deviceUID, requestID, data)
+			}
 		}
 		return data, nil
 	}
