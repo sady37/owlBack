@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 	"owl-common/alarm"
 	"owl-common/observation"
+	"owl-common/radarutils"
 	"owl-common/roomutil"
 )
 
@@ -145,6 +146,12 @@ type TrackManager struct {
 	// 与 cell.AreaToilet/Shower、room.name 三者取并集；任一命中即触发 still fall。
 	// 由 engine.RegisterRoom 启动时注入（查 DB），运行时变更需重启或加 Redis 通道（暂未做）。
 	stayAlarmEnabled bool
+
+	// interferes：本房间镜面/反射区矩形（cfg.Interferes：mirror、glass-tv、metal、curtain）。
+	// 用于因子 7（镜面对称 ghost 检测）：对当前 track 求关于 interfere 长轴的镜像位置，
+	// 若另一 Real track 距镜像点 < 50cm → 当前 track 是其镜像 ghost，+60 penalty 直接判 Ghost。
+	// 由 engine.RegisterRoom 调 SetInterferes 注入；nil 时因子 7 不参与。
+	interferes []radarutils.Rect
 
 	// startupMs：TrackManager 创建时间。用于"service 启动 5min grace"反 ghost 兜底
 	// （grace 内 first-seen 的 track 视为已存在，birth filter 不打 ghost）。
@@ -288,6 +295,19 @@ func (tm *TrackManager) SetStayAlarmEnabled(enabled bool) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	tm.stayAlarmEnabled = enabled
+}
+
+// SetInterferes 注入本房间镜面/反射区矩形（cfg.Interferes）。
+// 由 engine.RegisterRoom 启动时调用。用于因子 7 镜面对称 ghost 检测。
+// 内部 deep-copy 避免共享 slice 被外部修改。
+func (tm *TrackManager) SetInterferes(rects []radarutils.Rect) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if len(rects) == 0 {
+		tm.interferes = nil
+		return
+	}
+	tm.interferes = append([]radarutils.Rect(nil), rects...)
 }
 
 // SetStartupMs 覆盖默认的 startup 时间戳。playback / 离线测试用：把 startupMs
@@ -1642,11 +1662,11 @@ func (tm *TrackManager) birthScore(x, y int, tMs int64) birthScoreResult {
 //
 // 因子覆盖：
 //   - 因子 3（30s 内位移很少 → 凭空出现又不动）：每 track 一次性
-//   - 因子 5（双 track 运动对称性 → 后出现的反射 ghost）：仅在 GhostPenalty ∈ [70, 80)
-//     边缘时启用；命中 -10 推过阈值 80 判 Ghost
+//   - 因子 5/7（对称性 ghost：紧贴运动 OR 关于镜面几何对称）：并列 peer，
+//     仅在 GhostPenalty ∈ [70, 80) 边缘时启用；任一命中 +10 跨阈值判 Ghost。
 //
 // 调用方持锁；因子 3 幂等（LifetimeFactorsApplied bitmask 防重复扣）；
-// 因子 5 每帧触发一次，命中即跨阈值。
+// 因子 5/7 每帧检查一次，命中即跨阈值。
 func (tm *TrackManager) applyLifetimeGhostFactors(ts *TrackState, nowMs int64) {
 	const (
 		factor3Bit          = 1 << 0
@@ -1670,9 +1690,11 @@ func (tm *TrackManager) applyLifetimeGhostFactors(ts *TrackState, nowMs int64) {
 		ts.LifetimeFactorsApplied |= factor3Bit
 	}
 
-	// 因子 5: 双 track 运动对称性（PR-5.4）
-	// 仅当 GhostPenalty 已在 [70, 80) 边缘时启用 — 此时命中 +10 = 80 跨阈值，决定性。
-	// 之外不计算（避免每帧扫所有 track 对，开销不必要）。
+	// 因子 5/7: 对称性 ghost 检测（peer 因子，并列结构）
+	// 仅当 GhostPenalty 已在 [70, 80) 边缘时启用 — 此时任一命中 +10 = 80 跨阈值。
+	// 之外不计算（避免每帧扫所有 track 对 / interferes，开销不必要）。
+	//   - 因子 5: 双 track 紧贴（<100cm）+ 同向移动 → 多径反射 ghost
+	//   - 因子 7: 当前 track 关于 cfg.Interferes 长轴镜像 ≤50cm 处有 Real → 镜面 ghost
 	if ts.GhostPenalty >= 70 && ts.GhostPenalty < GhostPenaltyThreshold {
 		if tm.checkMotionSymmetry(ts, nowMs) {
 			ts.GhostPenalty += 10
@@ -1683,8 +1705,80 @@ func (tm *TrackManager) applyLifetimeGhostFactors(ts *TrackState, nowMs int64) {
 				zap.Int("ghost_penalty", ts.GhostPenalty),
 				zap.Int64("ts_ms", nowMs),
 			)
+		} else if partner, mx, my, rx, ry, ok := tm.checkMirrorSymmetry(ts); ok {
+			ts.GhostPenalty += 10
+			ts.BirthReason = "mirror_image_of_real_track"
+			bxF, byF := ts.Kalman.Position()
+			tm.logger.Info("ghost_mirror_symmetry_hit",
+				zap.String("device_uid", ts.DeviceID),
+				zap.Int("track_id", ts.TrackID),
+				zap.Int("partner_track_id", partner),
+				zap.Int("ghost_penalty", ts.GhostPenalty),
+				zap.Int("track_x", int(math.Round(bxF))), zap.Int("track_y", int(math.Round(byF))),
+				zap.Int("reflected_x", rx), zap.Int("reflected_y", ry),
+				zap.Int("partner_x", mx), zap.Int("partner_y", my),
+				zap.Int64("ts_ms", nowMs),
+			)
 		}
 	}
+}
+
+// checkMirrorSymmetry 因子 7：镜面对称 ghost 检测（peer to motion_symmetry）。
+//
+// 触发判定：
+//  1. 房间存在另一 verdict=Real 的 track（partner）
+//  2. 对每个 cfg.Interferes 矩形 m，求当前 track 关于 m 长轴中线的镜像 (rx, ry)
+//  3. 任一 partner 距 (rx, ry) ≤ 50cm → 当前 track 是镜像 ghost
+//
+// 物理意义：镜子/玻璃/金属反射面把人毫米波信号镜像到镜面对侧，雷达把这个二次反射
+// 当成"另一个人"在镜后等距处。motion_symmetry 抓"两 track 紧贴同向"的多径反射；
+// 镜面对称抓"两 track 关于固定物理几何镜像"的反射，互为补充。
+//
+// 返回 (partnerTrackID, partnerX, partnerY, reflectedX, reflectedY, hit)。调用方持锁。
+func (tm *TrackManager) checkMirrorSymmetry(ts *TrackState) (int, int, int, int, int, bool) {
+	const mirrorDistCm = 50
+	if len(tm.interferes) == 0 {
+		return 0, 0, 0, 0, 0, false
+	}
+	bxF, byF := ts.Kalman.Position()
+	bx, by := int(math.Round(bxF)), int(math.Round(byF))
+	for _, m := range tm.interferes {
+		rx, ry := reflectAcrossMirror(bx, by, m)
+		for tid, t := range tm.tracks {
+			if tid == ts.TrackID || t.Verdict != VerdictReal {
+				continue
+			}
+			axF, ayF := t.Kalman.Position()
+			ax, ay := int(math.Round(axF)), int(math.Round(ayF))
+			if distInt(ax, ay, rx, ry) <= mirrorDistCm {
+				return tid, ax, ay, rx, ry, true
+			}
+		}
+	}
+	return 0, 0, 0, 0, 0, false
+}
+
+// reflectAcrossMirror 把点 (px, py) 关于矩形 m 的"长轴中线"做镜像。
+//
+//	长轴 = AABB 较长那一对边（width >= height 时为水平镜，否则垂直镜）。
+//	物理意义：mirror 通常薄长，AABB 长边方向 ≈ 镜面方向；中线 ≈ 镜面物理表面。
+//	薄镜（depth ~5-10cm）下中线与表面差几 cm，对 50cm 距离阈值无影响。
+//
+// 数学：
+//
+//	水平镜 axis Y = (Y1+Y2)/2 → 反射 (x, 2*cy - y)
+//	垂直镜 axis X = (X1+X2)/2 → 反射 (2*cx - x, y)
+//
+// 注意：当前只处理 AABB（layout 解析后的镜面均轴对齐）；旋转镜面将来 PR 再加。
+func reflectAcrossMirror(px, py int, m radarutils.Rect) (int, int) {
+	w := m.X2 - m.X1
+	h := m.Y2 - m.Y1
+	if w >= h {
+		cy := (m.Y1 + m.Y2) / 2
+		return px, 2*cy - py
+	}
+	cx := (m.X1 + m.X2) / 2
+	return 2*cx - px, py
 }
 
 // checkMotionSymmetry PR-5.4 因子 5：双 track 运动对称性检测。

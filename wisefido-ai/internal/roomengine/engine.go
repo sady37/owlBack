@@ -743,6 +743,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetBedsideFallConfig(e.bedsideFallCfg)
 	tm.SetLogger(e.logger)
 	tm.SetRoomName(cfg.RoomName)
+	tm.SetInterferes(cfg.Interferes)
 	// PR-8: 注入 AI 派生事件 / 告警发布器（engine 实现 AIPublisher 接口）
 	tm.SetAIPublisher(e)
 	// 注入 IANA 时区（IsNightTime 用）；空串保持 nil → IsNightTime 退化 UTC

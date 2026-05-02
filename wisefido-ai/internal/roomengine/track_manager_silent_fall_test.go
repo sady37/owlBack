@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"owl-common/observation"
+	"owl-common/radarutils"
 )
 
 // ============================================================================
@@ -1382,5 +1383,149 @@ func TestParseRadarTrackEvents_NumberPeople(t *testing.T) {
 	evts2 := ParseRadarTrackEvents(dv2, "E598A2ACD523", "NumberPeople", 0)
 	if len(evts2) != 1 || evts2[0].NumberPeople != 2 {
 		t.Errorf("expected NumberPeople=2 parsed, got %+v", evts2)
+	}
+}
+
+// ============================================================================
+// PR-D: 镜面对称 ghost 检测
+// ============================================================================
+
+// TestReflectAcrossMirror_HorizontalMirror：水平镜（W>=H）反射 Y 分量。
+// 镜面 Y=(Y1+Y2)/2，X 不变，Y 关于镜面镜像。
+func TestReflectAcrossMirror_HorizontalMirror(t *testing.T) {
+	// 长 200cm、宽 10cm 的水平镜，中线 Y=100
+	m := radarutils.Rect{X1: 0, Y1: 95, X2: 200, Y2: 105}
+	rx, ry := reflectAcrossMirror(50, 30, m)
+	if rx != 50 || ry != 170 {
+		t.Errorf("horizontal mirror at Y=100: (50,30) -> want (50,170) got (%d,%d)", rx, ry)
+	}
+	// 镜上方点应反射到下方等距处
+	rx2, ry2 := reflectAcrossMirror(150, 200, m)
+	if rx2 != 150 || ry2 != 0 {
+		t.Errorf("horizontal mirror at Y=100: (150,200) -> want (150,0) got (%d,%d)", rx2, ry2)
+	}
+}
+
+// TestReflectAcrossMirror_VerticalMirror：垂直镜（H>W）反射 X 分量。
+func TestReflectAcrossMirror_VerticalMirror(t *testing.T) {
+	// 长 200cm、宽 10cm 的垂直镜，中线 X=100
+	m := radarutils.Rect{X1: 95, Y1: 0, X2: 105, Y2: 200}
+	rx, ry := reflectAcrossMirror(30, 50, m)
+	if rx != 170 || ry != 50 {
+		t.Errorf("vertical mirror at X=100: (30,50) -> want (170,50) got (%d,%d)", rx, ry)
+	}
+}
+
+// TestMirrorSymmetry_HitsRealMirrorImage：典型浴室 case。
+// 镜面在中线 Y=100，partner real 在 (50, 30)，候选 ghost 在 (50, 170) → 镜像 (50, 30) ≈ partner → 命中
+func TestMirrorSymmetry_HitsRealMirrorImage(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.SetInterferes([]radarutils.Rect{
+		{X1: 0, Y1: 95, X2: 200, Y2: 105},
+	})
+
+	// partner 真人 @ (50, 30)，verdict=Real
+	tm.tracks[1] = &TrackState{
+		TrackID: 1, Verdict: VerdictReal,
+		History:      []TimedPoint{{X: 50, Y: 30, TMs: 0}},
+		LastUpdateMs: 0,
+	}
+	tm.tracks[1].Kalman = NewKalmanFilter2D(50, 30)
+
+	// 候选 ghost @ (50, 170) — 关于 Y=100 镜面对称于 partner
+	ts := &TrackState{
+		TrackID:      0,
+		GhostPenalty: 70, // 卡 [70,80) 边缘
+		Kalman:       NewKalmanFilter2D(50, 170),
+	}
+	tm.tracks[0] = ts
+
+	tm.applyLifetimeGhostFactors(ts, 5_000)
+	if ts.GhostPenalty < GhostPenaltyThreshold {
+		t.Errorf("expected mirror symmetry hit to push penalty ≥ %d, got %d",
+			GhostPenaltyThreshold, ts.GhostPenalty)
+	}
+	if ts.BirthReason != "mirror_image_of_real_track" {
+		t.Errorf("expected BirthReason=mirror_image_of_real_track, got %q", ts.BirthReason)
+	}
+}
+
+// TestMirrorSymmetry_NoHitWhenNotMirrored：partner 真人不在镜面对称位置 → 不命中
+func TestMirrorSymmetry_NoHitWhenNotMirrored(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.SetInterferes([]radarutils.Rect{
+		{X1: 0, Y1: 95, X2: 200, Y2: 105},
+	})
+
+	// partner 在 (50, 30)；候选 ghost 在 (200, 170) — 关于镜面镜像应为 (200, 30)，离 partner 150cm，不命中
+	tm.tracks[1] = &TrackState{
+		TrackID: 1, Verdict: VerdictReal,
+		LastUpdateMs: 0,
+	}
+	tm.tracks[1].Kalman = NewKalmanFilter2D(50, 30)
+
+	ts := &TrackState{
+		TrackID:      0,
+		GhostPenalty: 70,
+		Kalman:       NewKalmanFilter2D(200, 170),
+	}
+	tm.tracks[0] = ts
+
+	tm.applyLifetimeGhostFactors(ts, 5_000)
+	if ts.GhostPenalty >= GhostPenaltyThreshold {
+		t.Errorf("expected no mirror hit (mirror image far from partner), but penalty=%d crossed threshold", ts.GhostPenalty)
+	}
+}
+
+// TestMirrorSymmetry_GatedByPenaltyThreshold：penalty 没到 70 时即使镜像几何完美也不触发。
+// 与 motion_symmetry 一致的 [70,80) 门槛（避免每帧扫所有 track × interferes）。
+func TestMirrorSymmetry_GatedByPenaltyThreshold(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.SetInterferes([]radarutils.Rect{
+		{X1: 0, Y1: 95, X2: 200, Y2: 105},
+	})
+
+	tm.tracks[1] = &TrackState{
+		TrackID: 1, Verdict: VerdictReal,
+		LastUpdateMs: 0,
+	}
+	tm.tracks[1].Kalman = NewKalmanFilter2D(50, 30)
+
+	ts := &TrackState{
+		TrackID:      0,
+		GhostPenalty: 50, // ★ 没到 70 边缘
+		Kalman:       NewKalmanFilter2D(50, 170),
+	}
+	tm.tracks[0] = ts
+
+	tm.applyLifetimeGhostFactors(ts, 5_000)
+	if ts.GhostPenalty != 50 {
+		t.Errorf("penalty < 70 should skip symmetry checks, got %d (was 50)", ts.GhostPenalty)
+	}
+}
+
+// TestMirrorSymmetry_NoInterferes：房间无 Interferes → 不调用 mirror 检测，不影响 motion_symmetry。
+func TestMirrorSymmetry_NoInterferes(t *testing.T) {
+	tm, _ := newTestTM()
+	// 不调用 SetInterferes，tm.interferes 为 nil
+
+	tm.tracks[1] = &TrackState{
+		TrackID: 1, Verdict: VerdictReal,
+		LastUpdateMs: 0,
+	}
+	tm.tracks[1].Kalman = NewKalmanFilter2D(50, 30)
+
+	ts := &TrackState{
+		TrackID:      0,
+		GhostPenalty: 70,
+		Kalman:       NewKalmanFilter2D(50, 170),
+	}
+	tm.tracks[0] = ts
+
+	// motion_symmetry 由于 partner 距离 >100cm 不命中（dist((50,170),(50,30))=140cm）
+	// 没有 interferes → mirror_symmetry 不计算 → penalty 应保持 70
+	tm.applyLifetimeGhostFactors(ts, 5_000)
+	if ts.GhostPenalty != 70 {
+		t.Errorf("no interferes should leave penalty unchanged at 70, got %d", ts.GhostPenalty)
 	}
 }
