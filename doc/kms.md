@@ -242,7 +242,59 @@ echo "KMS_SOCKET=/tmp/owl-kms.sock" >> .env
 
 ---
 
-## 8. Git 历史
+## 8. 日常验证流程
+
+每次 KMS 重启后、定期巡检、或怀疑加解密通路异常时，跑 `verify_phi` 工具确认端到端链路活的。
+
+### 工具
+
+[wisefido-data/cmd/verify_phi](../wisefido-data/cmd/verify_phi/main.go) — 纯只读：DB 只 SELECT，KMS 只调 `/tenant-key` 派生，`MASTER_PIN` 仅从 env 读、不入日志。
+
+```bash
+cd owlBack/wisefido-data
+
+# 模式 A: round-trip 自检（任选一行 first_name + first_name_enc，解密对比）
+MASTER_PIN=$(awk -F= '/^MASTER_PIN=/{print $2}' ../.env) go run ./cmd/verify_phi
+# 期望: "OK — END-TO-END decrypt matches plaintext"
+
+# 模式 B: 指定 resident（按 nickname 或 UUID），dump 所有非空 PHI 字段
+MASTER_PIN=$(awk -F= '/^MASTER_PIN=/{print $2}' ../.env) go run ./cmd/verify_phi Arthur.S
+# 期望: "fields: N decrypted OK, 0 failed, M empty/null"
+```
+
+### 标准验证 resident
+
+| 项 | 值 |
+|---|---|
+| tenant | `demo` |
+| nickname | `Arthur.S` |
+| resident_id | `876f6663-5dad-47b1-a204-ee8920fd35ed` |
+| 标记字段 | `resident_phi.medical_history`（PHI 加密字段，写入会强制走 KMS） |
+| 标记内容格式 | `KMS YYYYMMDDHHMMSS`（带时分秒，多次验证不冲突）<br>例：`KMS 20260502194930` |
+
+### 标准验证步骤
+
+1. **UI 写入**：登录 demo tenant → 找到 Arthur.S → 编辑 `medical_history` → 写入 `KMS <当前时分秒>` → 保存
+2. **后台读出**：跑 `verify_phi Arthur.S`
+3. **比对**：输出里 `medical_history = "KMS <你刚写的时间戳>"` ✓
+
+### 验证什么
+
+| 输出 | 验证了什么 |
+|---|---|
+| 工具能跑通 | KMS socket 在线 + master_pin 正确 + tenant_key 派生成功 |
+| 显示真明文（非乱码） | tenant_key 解出来跟历史 init 时一致（masterKey + deploymentSalt 没变） |
+| `medical_history` 等于你刚写的时间戳 | 写入路径调用了 PHICryptor 加密、读出路径用同一 tenant_key 解密成功 |
+| `[YYYY-MM-DD HH:MM:SS]` 时间戳 | 工具自身的执行时间，便于回看"上次验证在何时" |
+
+### 副作用
+
+- KMS audit log 增加一条 `action=tenant-key tenant=<demo> detail=issued`（这是预期，不是问题）
+- 不修改任何 DB / KMS 状态
+
+---
+
+## 9. Git 历史
 
 KMS 代码在 owlBack 仓库**只有一个 commit**：
 
