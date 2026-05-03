@@ -1,428 +1,369 @@
-# 架构分层设计
+# wisefido-data 架构设计（分层 + 领域模型）
 
-## 一、现状分析
+> 合并自原 `ARCHITECTURE_DESIGN.md`（三层架构）+ `BOTTOM_UP_DESIGN.md`（自底向上 + 领域模型），2026-05-02。
+> 原文档基线日期 2026-04-16；本文删除已过时的"Phase 进度"描述，保留长期有效的架构原则与领域模型契约。当前实现状态以代码为准。
 
-### 1.1 API 端点统计（按业务领域）
+---
 
-| 领域 | 端点 | 复杂度 | Handler 行数 | 状态 |
-|------|------|--------|---------------|------|
-| **住户管理** | `/admin/api/v1/residents` | 极高 | 3032 | ❌ 需重构 |
-| **用户管理** | `/admin/api/v1/users` | 高 | 1257 | ❌ 需重构 |
-| **认证授权** | `/auth/api/v1/*` | 高 | 886 | ❌ 需重构 |
-| **Tag 管理** | `/admin/api/v1/tags` | 中 | 576 | ❌ 需重构 |
-| **角色权限** | `/admin/api/v1/roles`, `/admin/api/v1/role-permissions` | 中 | 634 | ❌ 需重构 |
-| **地址管理** | `/admin/api/v1/buildings/units/rooms/beds` | 中 | 336 | ✅ 已使用 Repository |
-| **设备管理** | `/admin/api/v1/devices`, `/admin/api/v1/device-store` | 中 | 924 | ✅ 已使用 Repository |
-| **租户管理** | `/admin/api/v1/tenants` | 低 | 266 | ✅ 已使用 Repository |
-| **告警管理** | `/admin/api/v1/alarm-*` | 低 | 245 | ⚠️ 待处理 |
-| **数据查询** | `/data/api/v1/data/vital-focus/*` | 中 | 305 | ⚠️ 待处理 |
-
-### 1.2 业务领域边界
+## 1. 业务领域边界
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │ 平台层（Platform）                                       │
 │  - 租户管理（Tenants）                                   │
-│  - 系统配置                                             │
 └─────────────────────────────────────────────────────────┘
                     ↓
 ┌─────────────────────────────────────────────────────────┐
 │ 用户权限层（Auth & Access）                              │
-│  - 用户管理（Users）                                     │
-│  - 角色管理（Roles）                                     │
-│  - 权限管理（RolePermissions）                          │
-│  - 认证登录（Auth）                                      │
+│  - Users / Roles / RolePermissions / Auth                │
 └─────────────────────────────────────────────────────────┘
                     ↓
 ┌─────────────────────────────────────────────────────────┐
 │ 业务层（Business）                                        │
-│  ├─ 地址层级（Location）                                 │
-│  │   - 楼栋（Buildings）                                │
-│  │   - 单元（Units）                                    │
-│  │   - 房间（Rooms）                                    │
-│  │   - 床位（Beds）                                     │
-│  ├─ 住户管理（Resident）                                 │
-│  │   - 住户信息                                         │
-│  │   - 住户 PHI                                         │
-│  │   - 联系人（Contacts）                               │
-│  │   - 护工分配（Caregivers）                          │
-│  ├─ 设备管理（Device）                                   │
-│  │   - 设备（Devices）                                  │
-│  │   - 设备库存（Device Store）                        │
-│  ├─ 标签管理（Tag）                                      │
-│  │   - Tag 目录（TagsCatalog）                         │
-│  │   - Tag 查询                                         │
-│  └─ 告警管理（Alarm）                                    │
-│      - 告警配置                                         │
-│      - 告警事件                                         │
+│  ├─ 地址层级：Buildings / Units / Rooms / Beds            │
+│  ├─ 住户管理：Resident / ResidentPHI / Contact / Caregiver │
+│  ├─ 设备管理：Devices / DeviceStore                       │
+│  ├─ 标签管理：Tag / TagsCatalog                           │
+│  └─ 告警管理：alarm_cloud / alarm_device / alarm_events   │
 └─────────────────────────────────────────────────────────┘
                     ↓
 ┌─────────────────────────────────────────────────────────┐
 │ 数据查询层（Data）                                       │
-│  - Vital Focus                                          │
-│  - 卡片数据                                             │
+│  - Vital Focus / 卡片数据                                │
 └─────────────────────────────────────────────────────────┘
 ```
 
-### 1.3 Repository 现状
-
-**已实现（使用 map[string]any）**：
-- ✅ `PostgresUnitsRepo` (1073 行) - 已集成到 Handler
-  - 接口：`UnitsRepo` (repository.go)
-  - 问题：使用 `map[string]any`，有 `ToJSON()` 方法
-- ✅ `PostgresDevicesRepo` (533 行) - 已集成到 Handler
-  - 接口：`DevicesRepo` (repository.go)
-  - 问题：使用 `map[string]any`
-- ✅ `PostgresResidentsRepo` (487 行) - **已实现触发器替代，但未集成到 Handler**
-  - 接口：无（直接实现）
-  - 问题：使用 `map[string]any`
-- ✅ `PostgresDeviceStoreRepo` (391 行) - 已集成到 Handler
-  - 接口：`DeviceStoreRepo` (repository.go)
-  - 问题：使用 `map[string]any`
-- ✅ `PostgresTenantsRepo` (137 行) - 已集成到 Handler
-  - 接口：`TenantsRepo` (tenants_types.go)
-  - 问题：使用 `map[string]any`
-
-**新定义（使用强类型领域模型）**：
-- ✅ `ResidentsRepository` (residents_repo.go) - **接口已定义，实现待完成**
-  - 使用：`domain.Resident`, `domain.ResidentPHI`, `domain.ResidentContact`, `domain.ResidentCaregiver`
-  - 优势：强类型，不使用 `map[string]any`
-- ✅ `UsersRepository` (users_repo.go) - **接口已定义，实现待完成**
-  - 使用：`domain.User`
-  - 优势：强类型，不使用 `map[string]any`
-- ✅ `TagsRepository` (tags_repo.go) - **接口已定义，实现待完成**
-  - 使用：`domain.Tag`
-  - 优势：强类型，不使用 `map[string]any`
-
-**Repository接口统计**：
-- 新定义（强类型）：3个
-- 原有（map[string]any）：4个
-- **总计：7个**
-
-**问题**：
-- 原有实现使用 `map[string]any` 而不是强类型
-- 原有实现有 `ToJSON()` 方法（耦合前端）
-- `PostgresResidentsRepo` 未集成到 Handler
-- 新定义的接口需要实现对应的Postgres实现
-
-### 1.4 Handler 现状
-
-**两种模式**：
-
-1. **简单模式**（Units/Devices/Tenants）：
-   ```
-   Handler → Repository → Database
-   ```
-   - Handler 只做 HTTP 处理
-   - 业务逻辑在 Repository
-   - 代码简洁（~100-200 行/Handler）
-
-2. **复杂模式**（Residents/Users/Tags）：
-   ```
-   Handler → 直接 SQL → Database
-   ```
-   - Handler 包含所有逻辑（权限、业务规则、数据转换、SQL）
-   - 代码复杂（3000+ 行/Handler）
-   - 无法复用、无法测试
-
 ---
 
-## 二、分层原则
-
-### 2.1 三层架构
+## 2. 三层架构原则
 
 ```
 ┌─────────────┐
 │   Handler   │  HTTP 请求/响应处理
-│   Layer     │  - 解析请求参数
-└──────┬──────┘  - 返回 JSON 响应
-       │         - 错误处理
+└──────┬──────┘  - 解析参数、生成 JSON、错误处理
        ↓
 ┌─────────────┐
 │   Service   │  业务逻辑
-│   Layer     │  - 权限检查
-└──────┬──────┘  - 业务规则验证
-       │         - 数据转换
-       │         - 业务编排
+└──────┬──────┘  - 权限检查、业务规则、数据转换、跨 Repository 编排
        ↓
 ┌─────────────┐
 │ Repository  │  数据访问
-│   Layer     │  - SQL 操作
-└──────┬──────┘  - 数据一致性（替代触发器）
-       │         - 事务管理
+└──────┬──────┘  - SQL 操作、数据一致性（替代触发器）、单 Repo 内事务
        ↓
 ┌─────────────┐
 │  Database   │
 └─────────────┘
 ```
 
-### 2.2 职责边界
+**职责边界**：
 
-#### Handler 层
-**职责**：
-- ✅ 解析 HTTP 请求（URL 参数、请求体、请求头）
-- ✅ 生成 HTTP 响应（JSON 格式）
-- ✅ 路由分发（根据 HTTP 方法和路径）
-- ✅ 错误处理（捕获异常并返回 HTTP 状态码）
+| 层 | 负责 | 不负责 |
+|---|---|---|
+| Handler | 解析 HTTP 请求、生成 JSON 响应、路由分发、错误捕获 | 业务规则、权限、数据转换、SQL |
+| Service | 权限检查、业务规则验证、数据转换、跨 Repo 事务编排 | HTTP 处理、SQL |
+| Repository | SQL 抽象、领域模型映射、数据一致性、单 Repo 内事务 | 业务规则、权限、HTTP |
 
-**不负责**：
-- ❌ 业务规则验证
-- ❌ 权限检查
-- ❌ 数据转换
-- ❌ 数据库操作
+**依赖方向**：`Handler → Service → Repository → Database`，**不允许反向依赖**。
 
-#### Service 层
-**职责**：
-- ✅ 权限检查（调用 PermissionChecker）
-- ✅ 业务规则验证（如 nickname 不能为空）
-- ✅ 数据转换（JSON ↔ 领域模型）
-- ✅ 业务编排（协调多个 Repository）
-- ✅ 事务管理（跨 Repository 的事务）
+**简单领域可省 Service**：Location / Device 当前直接 Handler→Repository，OK。
 
-**不负责**：
-- ❌ HTTP 请求/响应处理
-- ❌ 数据库 SQL 操作
-- ❌ 数据一致性维护（属于 Repository）
+### 2.1 Service 层直接用 db 的例外
 
-#### Repository 层
-**职责**：
-- ✅ 数据访问抽象（封装 SQL）
-- ✅ 数据一致性（替代数据库触发器）
-- ✅ 事务管理（单 Repository 内的事务）
-- ✅ 领域模型映射（数据库记录 ↔ 领域模型）
+复杂 JOIN + 权限过滤的查询如果硬塞进 Repository 接口会让接口爆炸。允许 Service 层直接 `s.db.QueryContext()`，但必须封装为 Service 内部方法，不暴露给 Handler。
 
-**不负责**：
-- ❌ 业务规则验证
-- ❌ 权限检查
-- ❌ HTTP 处理
-
-### 2.3 依赖方向
-
-```
-Handler → Service → Repository → Database
-```
-
-**规则**：
-- Handler 只能调用 Service
-- Service 只能调用 Repository
-- Repository 只能调用 Database
-- **不允许反向依赖**
-
----
-
-## 三、分类原则
-
-### 3.1 业务领域分类
-
-按业务领域组织 Service 和 Repository：
-
-```
-internal/
-├── service/
-│   ├── resident_service.go      # 住户管理
-│   ├── user_service.go          # 用户管理
-│   ├── auth_service.go          # 认证授权
-│   ├── tag_service.go           # Tag 管理
-│   ├── role_service.go          # 角色权限
-│   ├── location_service.go      # 地址管理（可选，当前直接使用 Repository）
-│   ├── device_service.go        # 设备管理（可选，当前直接使用 Repository）
-│   └── alarm_service.go         # 告警管理
-│
-└── repository/
-    ├── postgres_residents.go    # 住户 Repository
-    ├── postgres_users.go        # 用户 Repository
-    ├── postgres_tags_catalog.go # Tag Repository
-    ├── postgres_roles.go        # 角色 Repository
-    ├── postgres_role_permissions.go # 权限 Repository
-    ├── postgres_units.go        # 地址 Repository（已存在）
-    ├── postgres_devices.go      # 设备 Repository（已存在）
-    └── postgres_tenants.go      # 租户 Repository（已存在）
-```
-
-### 3.2 Service 分类原则
-
-**按业务领域分类**，每个领域一个 Service：
-- `ResidentService` - 住户相关业务逻辑
-- `UserService` - 用户相关业务逻辑
-- `AuthService` - 认证授权业务逻辑
-- `TagService` - Tag 相关业务逻辑
-- `RoleService` - 角色权限业务逻辑
-
-**简单领域可以不设 Service**（直接使用 Repository）：
-- `LocationService` - 地址管理（当前直接使用 `UnitsRepo`）
-- `DeviceService` - 设备管理（当前直接使用 `DevicesRepo`）
-
-### 3.3 Repository 分类原则
-
-**按数据实体分类**，每个实体一个 Repository：
-- `PostgresResidentsRepo` - 住户数据
-- `PostgresUsersRepo` - 用户数据
-- `PostgresTagsCatalogRepo` - Tag 数据
-- `PostgresRolesRepo` - 角色数据
-- `PostgresRolePermissionsRepo` - 权限数据
-
----
-
-## 四、最小集（MVP）
-
-### 4.1 优先级排序
-
-**Phase 1: 最高优先级**（复杂度极高，影响最大）
-1. ✅ `ResidentService` + `PostgresResidentsRepo`（3032 行 → 重构）
-   - 已实现 Repository，需集成到 Handler
-   - 需提取 Service 层
-
-**Phase 2: 高优先级**（复杂度高）
-2. ✅ `UserService` + `PostgresUsersRepo`（1257 行 → 重构）
-3. ✅ `AuthService`（886 行 → 重构）
-
-**Phase 3: 中优先级**（复杂度中）
-4. ✅ `TagService` + `PostgresTagsCatalogRepo`（576 行 → 重构）
-5. ✅ `RoleService` + `PostgresRolesRepo` + `PostgresRolePermissionsRepo`（634 行 → 重构）
-
-**Phase 4: 低优先级**（复杂度低或已实现）
-6. ⚠️ `AlarmService`（245 行，待处理）
-7. ✅ `LocationService`（已直接使用 Repository，可选）
-8. ✅ `DeviceService`（已直接使用 Repository，可选）
-
-### 4.2 MVP 最小集
-
-**必须实现**（Phase 1-2）：
-- `ResidentService` + `PostgresResidentsRepo`（已实现，需集成）
-- `UserService` + `PostgresUsersRepo`（需实现）
-- `AuthService`（需实现）
-
-**可选实现**（Phase 3）：
-- `TagService` + `PostgresTagsCatalogRepo`（需实现）
-- `RoleService` + `PostgresRolesRepo` + `PostgresRolePermissionsRepo`（需实现）
-
----
-
-## 五、迁移方案
-
-### 5.1 迁移步骤
-
-**Step 1: 分析现有代码**
-- ✅ 已完成（见本文档第一部分）
-
-**Step 2: 实现 Repository（如未实现）**
-- ✅ `ResidentsRepository` 接口已定义（residents_repo.go）
-- ⚠️ `PostgresResidentsRepo` 已实现但使用 `map[string]any`，需重构为强类型实现
-- ✅ `UsersRepository` 接口已定义（users_repo.go）
-- ❌ `PostgresUsersRepo` 需实现（实现 `UsersRepository` 接口）
-- ✅ `TagsRepository` 接口已定义（tags_repo.go）
-- ❌ `PostgresTagsRepo` 需实现（实现 `TagsRepository` 接口）
-- ❌ `PostgresRolesRepo` 需实现
-- ❌ `PostgresRolePermissionsRepo` 需实现
-
-**Step 3: 实现 Service 层**
-- ❌ `ResidentService` 需实现
-- ❌ `UserService` 需实现
-- ❌ `AuthService` 需实现
-- ❌ `TagService` 需实现
-- ❌ `RoleService` 需实现
-
-**Step 4: 重构 Handler**
-- ❌ `admin_residents_handlers.go` 需重构（3032 行 → ~200 行）
-- ❌ `admin_users_handlers.go` 需重构（1257 行 → ~200 行）
-- ❌ `auth_handlers.go` 需重构（886 行 → ~200 行）
-- ❌ `admin_tags_handlers.go` 需重构（576 行 → ~200 行）
-- ❌ `admin_roles_handlers.go` + `admin_role_permissions_handlers.go` 需重构（634 行 → ~200 行）
-
-**Step 5: 集成测试**
-- 确保功能不变
-- 确保性能不降
-
-### 5.2 迁移示例
-
-**当前代码**（`admin_residents_handlers.go`）：
 ```go
-func (s *StubHandler) AdminResidents(w http.ResponseWriter, r *http.Request) {
-    // 3000+ 行代码
-    // 权限检查（200+ 行）
-    // 业务规则验证
-    // 数据转换
-    // 直接 SQL（100+ 行）
+// ✅ 允许：跨表 JOIN + 当前用户权限过滤
+func (s *userService) ListUsers(ctx context.Context, req ListUsersRequest) (*ListUsersResponse, error) {
+    query := `
+        SELECT u.*, b.branch_name
+        FROM users u
+        LEFT JOIN LATERAL (
+            SELECT branch_name FROM branches b
+            JOIN user_branches ub ON b.branch_id = ub.branch_id
+            WHERE ub.user_id = u.user_id
+            LIMIT 1
+        ) b ON true
+        WHERE u.tenant_id = $1
+        -- 还有按当前用户 BranchTag 的权限过滤
+    `
+    rows, err := s.db.QueryContext(ctx, query, ...)
+    // ...
 }
 ```
 
-**目标代码**：
+判定规则：
+- **简单查询**（单表 / 用过滤条件就能搞定）→ Repository
+- **跨表 JOIN + 业务级权限过滤** → 允许 Service 层 db，但封装为内部方法
+- **跨 Repository 写操作的事务** → Service 层 `db.BeginTx`，但**仍调 Repository 方法**（Repository 接口需扩展支持 tx 参数），不要在 Service 里手写 INSERT/UPDATE/DELETE
+
+反例（要改）：
 ```go
-// Handler 层（~50 行）
-type ResidentHandler struct {
-    service *service.ResidentService
-}
-
-func (h *ResidentHandler) CreateResident(w http.ResponseWriter, r *http.Request) {
-    var payload map[string]any
-    if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-        writeJSON(w, http.StatusBadRequest, Fail("invalid body"))
-        return
-    }
-    
-    tenantID, _ := getTenantIDFromRequest(r)
-    userID := r.Header.Get("X-User-Id")
-    userRole := r.Header.Get("X-User-Role")
-    
-    residentID, err := h.service.CreateResident(r.Context(), tenantID, payload, userID, userRole)
-    if err != nil {
-        handleError(w, err)
-        return
-    }
-    
-    writeJSON(w, http.StatusOK, Ok(map[string]any{"resident_id": residentID}))
-}
-
-// Service 层（~100 行）
-type ResidentService struct {
-    repo            *repository.PostgresResidentsRepo
-    permissionChecker *PermissionChecker
-}
-
-func (s *ResidentService) CreateResident(ctx, tenantID, payload, userID, userRole) {
-    // 权限检查
-    if !s.permissionChecker.CanCreateResident(ctx, tenantID, userID, userRole) {
-        return "", ErrPermissionDenied
-    }
-    
-    // 业务规则验证
-    if err := s.validateResidentPayload(payload); err != nil {
-        return "", err
-    }
-    
-    // 数据转换
-    resident := s.convertPayloadToResident(payload)
-    
-    // 调用 Repository
-    return s.repo.CreateResident(ctx, tenantID, resident)
-}
-
-// Repository 层（已实现）
-func (r *PostgresResidentsRepo) CreateResident(ctx, tenantID, resident) {
-    // 数据访问 + 数据一致性（替代触发器）
+// ❌ Service 直接写跨表 DELETE+INSERT 应改为调 Repository
+func (s *userService) updateUserBranches(ctx, tenantID, userID string, branchIDs []string) error {
+    tx, _ := s.db.BeginTx(ctx, nil)
+    _, _ = tx.ExecContext(ctx, `DELETE FROM user_branches WHERE user_id=$1`, userID)
+    // ...
 }
 ```
 
 ---
 
-## 六、设计原则总结
+## 3. 设计决策
 
-### 6.1 分层原则
-- **Handler**: HTTP 处理
-- **Service**: 业务逻辑
-- **Repository**: 数据访问
+| 决策 | 选择 | 理由 |
+|---|---|---|
+| 数据结构 | 强类型领域模型 | 类型安全、IDE 补全、编译时检查 |
+| 不用 `map[string]any` | — | 无类型校验，难维护；与触发器语义耦合 |
+| 数据一致性 | Repository 层维护 | 可测试、可调试，替代隐式 DB 触发器 |
+| 事务边界 | 单 Repo 内事务在 Repo 层；跨 Repo 事务在 Service 层 | 隔离 + 复用 |
+| 触发器策略 | 数据格式/合规类保留；反向索引/级联删除迁到应用层 | DB 触发器对应用透明、调试困难 |
 
-### 6.2 分类原则
-- **按业务领域分类** Service
-- **按数据实体分类** Repository
+---
 
-### 6.3 最小集原则
-- **Phase 1**: ResidentService（最高优先级）
-- **Phase 2**: UserService, AuthService
-- **Phase 3**: TagService, RoleService
+## 4. 领域模型契约
 
-### 6.4 迁移原则
-- **逐步迁移**，确保功能不变
-- **参考现有模式**（Units/Devices Handler → Repository）
-- **保持接口稳定**，避免破坏性变更
+### 4.1 Resident（住户）
 
+```go
+// internal/domain/resident.go
+type Resident struct {
+    ResidentID          string
+    TenantID            string
+    ResidentAccount     string
+    ResidentAccountHash []byte
+    Nickname            string
+    Status              ResidentStatus  // active / discharged / transferred
+    ServiceLevel        sql.NullString
+    Role                string          // 固定 'Resident'
+
+    AdmissionDate       time.Time
+    DischargeDate       sql.NullTime
+
+    // 位置
+    UnitID              string
+    RoomID              sql.NullString
+    BedID               sql.NullString
+
+    // Tag
+    FamilyTag           sql.NullString
+
+    // 权限
+    CanViewStatus       bool
+
+    // 联系方式（Hash）
+    PhoneHash           []byte
+    EmailHash           []byte
+    PasswordHash        []byte
+
+    Note                sql.NullString
+    Metadata            sql.NullString
+    // 注意：DB 表无 created_at / updated_at
+}
+
+type ResidentStatus string
+const (
+    ResidentStatusActive      ResidentStatus = "active"
+    ResidentStatusDischarged  ResidentStatus = "discharged"
+    ResidentStatusTransferred ResidentStatus = "transferred"
+)
+```
+
+### 4.2 ResidentPHI（个人健康信息，HIPAA 加密字段）
+
+```go
+type ResidentPHI struct {
+    PHIID       string
+    TenantID    string
+    ResidentID  string
+
+    // 基本信息（PII，AES-256-GCM 加密 → *_enc 列）
+    FirstName   sql.NullString
+    LastName    sql.NullString
+    Gender      sql.NullString
+    DateOfBirth sql.NullTime
+
+    // 联系
+    ResidentPhone sql.NullString
+    ResidentEmail sql.NullString
+
+    // 健康
+    WeightLb      sql.NullFloat64
+    HeightFt      sql.NullFloat64
+    HeightIn      sql.NullFloat64
+    MobilityLevel sql.NullInt64
+    TremorStatus  sql.NullString
+    MobilityAid   sql.NullString
+    ADLAssistance sql.NullString
+    CommStatus    sql.NullString
+
+    // 疾病史
+    HasHypertension   sql.NullBool
+    HasHyperlipaemia  sql.NullBool
+    HasHyperglycaemia sql.NullBool
+    HasStrokeHistory  sql.NullBool
+    HasParalysis      sql.NullBool
+    HasAlzheimer      sql.NullBool
+    MedicalHistory    sql.NullString
+
+    // 家庭地址（Home 场景）
+    HomeAddressStreet     sql.NullString
+    HomeAddressCity       sql.NullString
+    HomeAddressState      sql.NullString
+    HomeAddressPostalCode sql.NullString
+    PlusCode              sql.NullString
+}
+```
+
+> PHI 加密设计见 [doc/kms.md](../doc/kms.md)。HIS_* 系列字段已移除（admission/discharge_date 等）。
+
+### 4.3 ResidentContact / ResidentCaregiver
+
+```go
+type ResidentContact struct {
+    ContactID, TenantID, ResidentID string
+    Slot                            string  // A/B/C/D/E
+    IsEnabled, IsEmergencyContact   bool
+    Relationship                    sql.NullString
+    Role                            string  // 固定 'Family'
+    ContactFirstName, ContactLastName, ContactPhone, ContactEmail sql.NullString
+    ReceiveSMS, ReceiveEmail        bool
+    PhoneHash, EmailHash, PasswordHash []byte
+    AlertTimeWindow                 sql.NullString  // JSONB
+}
+
+type ResidentCaregiver struct {
+    CaregiverID, TenantID, ResidentID string
+    GroupList sql.NullString  // JSONB: ["tag1", "tag2"]
+    UserList  sql.NullString  // JSONB: ["user_id1", "user_id2"]
+}
+```
+
+### 4.4 User
+
+```go
+type User struct {
+    UserID, TenantID                 string
+    UserAccount                      string
+    UserAccountHash                  []byte
+    Nickname                         sql.NullString
+    Role                             string          // 引用 roles.role_code
+    BranchTag                        sql.NullString
+    Status                           UserStatus      // active / suspended / deleted
+
+    // 联系方式（明文 + Hash）
+    Email, Phone                     sql.NullString
+    EmailHash, PhoneHash             []byte
+    PasswordHash, PinHash            []byte
+
+    Tags                             []string        // user_tag JSONB
+    AlarmLevels, AlarmChannels       []string
+    AlarmScope                       sql.NullString
+    Preferences                      sql.NullString  // JSONB
+    LastLoginAt                      sql.NullTime
+    // 注意：DB 表无 created_at / updated_at
+}
+
+type UserStatus string
+const (
+    UserStatusActive    UserStatus = "active"
+    UserStatusSuspended UserStatus = "suspended"
+    UserStatusDeleted   UserStatus = "deleted"
+)
+```
+
+### 4.5 Tag
+
+```go
+type Tag struct {
+    TagID, TenantID string
+    TagType         TagType
+    TagName         string
+}
+
+type TagType string
+const (
+    TagTypeBranchTag TagType = "branch_tag"  // 系统预定义
+    TagTypeFamilyTag TagType = "family_tag"  // 系统预定义
+    TagTypeAreaTag   TagType = "area_tag"    // 系统预定义
+    TagTypeUserTag   TagType = "user_tag"    // 租户自定义
+)
+```
+
+---
+
+## 5. Repository 接口模板
+
+### 5.1 ResidentsRepository
+
+```go
+type ResidentsRepository interface {
+    // 查询
+    GetResident(ctx, tenantID, residentID) (*domain.Resident, error)
+    ListResidents(ctx, filter ResidentsFilter) ([]*domain.Resident, total int, error)
+
+    // 写（Create/Update 替代 trigger_sync_family_tag）
+    CreateResident(ctx, tenantID, *domain.Resident) (residentID string, error)
+    UpdateResident(ctx, tenantID, residentID, *domain.Resident) error
+    DeleteResident(ctx, tenantID, residentID) error  // 替代 trigger_cleanup_resident_from_tags
+
+    // PHI（透过 KMS 加解密）
+    GetResidentPHI(ctx, tenantID, residentID) (*domain.ResidentPHI, error)
+    UpsertResidentPHI(ctx, tenantID, residentID, *domain.ResidentPHI) error
+
+    // Contact
+    GetResidentContacts(ctx, tenantID, residentID) ([]*domain.ResidentContact, error)
+    CreateResidentContact(ctx, tenantID, residentID, *domain.ResidentContact) (string, error)
+    UpdateResidentContact(ctx, tenantID, contactID, *domain.ResidentContact) error
+    DeleteResidentContact(ctx, tenantID, contactID) error
+
+    // Caregiver
+    GetResidentCaregivers(ctx, tenantID, residentID) ([]*domain.ResidentCaregiver, error)
+    UpsertResidentCaregiver(ctx, tenantID, residentID, *domain.ResidentCaregiver) error
+}
+
+type ResidentsFilter struct {
+    TenantID                          string
+    Search                            string  // nickname / unit_name
+    Status, ServiceLevel, FamilyTag   string
+    UnitID, RoomID, BedID             string
+    AssignedUserID                    string  // 仅查分配给该用户的
+    BranchTag                         string  // 仅查该 branch 的
+    Page, Size                        int
+}
+```
+
+---
+
+## 6. 触发器迁移指引
+
+| 触发器 | 现状 | 应用层做法 |
+|---|---|---|
+| `trigger_sync_family_tag` | 保留（自动维护 tags_catalog 目录） | Create/Update Resident 时调 `upsert_tag_to_catalog()` |
+| `trigger_cleanup_resident_from_tags` | 已删除（`tag_objects` 字段已删，无需反向清理） | 不做 |
+| `trigger_sync_units_groupList_to_cards` | 保留（维护 cards.routing_alarm_tags） | UnitsRepo 同步调用即可 |
+| `trigger_sync_user_tags` | 保留（自动维护目录） | 同 family_tag |
+| `trigger_cleanup_user_from_tags` | 已删除 | 不做 |
+| `trigger_validate_*` | 保留（数据校验类） | 不做 |
+| `trigger_*_lowercase_account` | 保留或迁应用层（数据格式转换） | 二选一 |
+
+> **PostgresResidentsRepo 已知问题**：旧实现里调 `update_tag_objects()` / `drop_object_from_all_tags()` 会报错（`tag_objects` 字段已删除），需改为只调 `upsert_tag_to_catalog()`。
+
+---
+
+## 7. Cards 表
+
+`cards` 是**实体表**，但 `devices` / `residents` (JSONB) / `routing_alarm_tags` / `unhandled_alarm_*` 全部由**应用层**计算和维护：
+
+- 设备/住户/单元变化时，service 层调 wisefido-card-aggregator API（或事件驱动）触发 card 重算
+- 现有 `cardCreator.CreateCardsForUnit()` 是入口
+- cardagg 自身定时全量轮询是兜底机制
+
+cards 表数据契约见 [docs/Reside_stream_stand.md](Reside_stream_stand.md) + cardagg 实现。
+
+---
+
+## 8. 已知 follow-up
+
+- 大 Handler（`admin_residents_handlers.go` 3000+ 行 / `admin_users_handlers.go` 1200+ 行 / `auth_handlers.go` 800+ 行 / `admin_tags_handlers.go` 580+ 行）仍待按本文三层原则拆分
+- `PostgresResidentsRepo` 改强类型 + 修 `update_tag_objects` 调用
+- `PostgresUsersRepo` / `PostgresTagsRepo` / `PostgresRolesRepo` / `PostgresRolePermissionsRepo` 待实现
