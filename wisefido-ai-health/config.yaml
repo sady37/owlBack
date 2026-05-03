@@ -1,0 +1,37 @@
+# wisefido-ai-health 配置文件
+#
+# AI Health 离线 ETL 服务（设计文档 doc/AI_health.md §0.3 / §8.5）
+# 三条架构原则：
+#   1) 事后批处理 / 零改实时通路（只读 owlrd 表，不做 RPC）
+#   2) Care, not Treatment（不进 realtime alert 通道；CHECK 约束在 DB 层）
+#   3) Sensor-derived only（不接受用药 / 体重 / cost 字段）
+
+database:
+  host: "127.0.0.1"
+  port: 5432
+  user: "postgres"
+  password: "postgres"
+  database: "owlrd"
+  sslmode: "disable"
+  maxconns: 8        # 并行 8 路 1000 cards (设计文档 §8.5)
+  maxidle: 4
+
+logging:
+  level: "info"
+  format: "text"
+  output: "stdout"
+  filepath: "/var/log/wisefido-ai-health.log"
+
+# ETL 调度（院区时区，cron 风格但用 stdlib timer 实现）
+schedule:
+  timezone: "America/Denver"     # Phase 5 Denver 试点；Phase 0–3 用此默认
+  daily_at: "02:00"              # T+1 02:00 跑 daily_etl
+  monthly_day: 1                 # 每月 1 号跑 monthly_etl
+  monthly_at: "03:00"            # 在 daily 之后
+
+# ETL 控制
+etl:
+  parallel: 8                    # 并行 card 数（设计文档 §8.5）
+  per_card_timeout_sec: 60       # 单 card 超时（>1s/card/天 × 30天 = 30s+ buffer）
+  watermark_lookback_days: 7     # 启动时回看几天补跑（兜底重启丢数据）
+  dry_run: false                 # true = 只读不写，用于本地验证
