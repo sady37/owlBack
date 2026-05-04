@@ -595,16 +595,17 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 
 			// 清理旧租户残留：从所有 cards.devices JSONB 中移除该设备引用，并删除其 DeviceCard
 			// 否则旧租户的 DeviceCard 会成为孤儿，导致 cardagg/qinglan 把设备状态错路由到旧租户
+			// 注：jsonb_build_object 接受 any 类型，pq 推不出 $2 类型，必须显式 ::text
 			if currentDeviceID != "" && currentTenantID != "" {
 				if _, err := tx.ExecContext(ctx, `
 					UPDATE cards
 					SET devices = COALESCE((
 						SELECT jsonb_agg(elem)
 						FROM jsonb_array_elements(devices) AS elem
-						WHERE elem->>'device_id' <> $2
+						WHERE elem->>'device_id' <> $2::text
 					), '[]'::jsonb)
 					WHERE tenant_id = $1
-					  AND devices @> jsonb_build_array(jsonb_build_object('device_id', $2))
+					  AND devices @> jsonb_build_array(jsonb_build_object('device_id', $2::text))
 				`, currentTenantID, currentDeviceID); err != nil {
 					return fmt.Errorf("failed to clean cards.devices in old tenant: %w", err)
 				}
