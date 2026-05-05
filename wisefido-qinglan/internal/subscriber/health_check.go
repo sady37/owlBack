@@ -249,6 +249,100 @@ func (m *DeviceSubscriptionManager) publishHealthIfChanged(ctx context.Context, 
 	m.publishDeviceAlarm(ctx, tenantID, deviceID, deviceUID, fieldKey, value)
 }
 
+// RefreshHealthFromProps 把任意"成功"读到的设备属性当作健康证据，仅做正向恢复（value=0）：
+//   - 读通本身证明在线 → 发 OfflineRecover
+//   - props 含 wifi_rssi 且 > -88 → 发 SignalPoorRecover
+//   - props 含 accelera + install_style 且角度合法 → 发 AngleAbnormalRecover
+//
+// 设计约束（与 healthCheckMonitor 互补）：
+//   - 不做反向告警：onset (value=1) 路径由 healthCheckMonitor 独占。任何外部查询都可能因
+//     瞬时超时/设备 app 抖动 失败，让它发 Offline=1 会放大误报。
+//   - 失败语义不变：调用方 GetDeviceProperties 读失败时，不会进到这里。
+//   - 幂等：publishHealthIfChanged 是 transition-only，重复调零副作用；与 10min 健康检查
+//     的 prevHealth 共享缓存，恢复事件不会重复下发。
+//
+// 触发场景：install/排错/HTTP 查询命中 wifi_rssi/accelera 后，几秒内 alarm 即恢复，
+// 而不必等下一个 10min 健康检查 tick。
+func (m *DeviceSubscriptionManager) RefreshHealthFromProps(ctx context.Context, deviceUID string, props map[string]interface{}) {
+	if deviceUID == "" || len(props) == 0 {
+		return
+	}
+	tid, did, ok := m.resolveTenantDevice(ctx, deviceUID)
+	if !ok {
+		return
+	}
+
+	// 读通即为在线证据（OfflineRecover 总是发起；transition-only 会自然过滤无 active 的 noop）
+	m.publishHealthIfChanged(ctx, tid, did, deviceUID, observation.FieldOffline, 0)
+
+	h := &DeviceHealthStatus{}
+	hasWifi := false
+	if wifiVal, has := props["wifi_rssi"]; has {
+		h.WifiRSSI = toIntFromInterface(wifiVal)
+		hasWifi = true
+	}
+	hasAcc := false
+	if accVal, has := props["accelera"]; has {
+		switch v := accVal.(type) {
+		case string:
+			h.AcceleraRaw = v
+		default:
+			h.AcceleraRaw = fmt.Sprintf("%v", accVal)
+		}
+		hasAcc = true
+	}
+	hasStyle := false
+	if styleVal, has := props["install_model"]; has {
+		h.InstallStyle = toIntFromInterface(styleVal)
+		hasStyle = true
+	} else if styleVal, has := props["radar_install_style"]; has {
+		h.InstallStyle = toIntFromInterface(styleVal)
+		hasStyle = true
+	}
+
+	m.validateDeviceHealth(h, deviceUID)
+
+	// SignalPoor 恢复：只在观测到好信号时发，且必须有 wifi_rssi（否则 h.WifiRSSI=0 默认值会假阳）
+	if hasWifi && h.SignalPoor == 0 {
+		m.publishHealthIfChanged(ctx, tid, did, deviceUID, observation.FieldSignalPoor, 0)
+	}
+	// AngleAbnormal 恢复：accelera + install_style 二者齐备且校验通过才发
+	if hasAcc && hasStyle && h.AngleAbnormal == 0 {
+		m.publishHealthIfChanged(ctx, tid, did, deviceUID, observation.FieldAngleAbnormal, 0)
+	}
+}
+
+// resolveTenantDevice 优先从内存订阅表取 (tenant_id, device_id)，未命中则回落到 device_store。
+// 与 checkDeviceHealth 里的解析路径保持一致；外部调用方（install/HTTP）可能没在 subscriptionsByUID 里
+// （设备未认证或刚断线），所以 deviceRepo fallback 必要。
+func (m *DeviceSubscriptionManager) resolveTenantDevice(ctx context.Context, deviceUID string) (string, string, bool) {
+	m.mu.RLock()
+	sub, ok := m.subscriptionsByUID[deviceUID]
+	m.mu.RUnlock()
+	if ok {
+		sub.mu.RLock()
+		tid := strings.TrimSpace(sub.TenantID)
+		did := strings.TrimSpace(sub.DeviceID)
+		sub.mu.RUnlock()
+		if tid != "" && did != "" {
+			return tid, did, true
+		}
+	}
+	if m.deviceRepo == nil {
+		return "", "", false
+	}
+	ds, err := m.deviceRepo.GetDeviceStoreInfo(ctx, deviceUID)
+	if err != nil || ds == nil {
+		return "", "", false
+	}
+	tid := strings.TrimSpace(ds.TenantID)
+	did := strings.TrimSpace(ds.DeviceID)
+	if tid == "" || did == "" {
+		return "", "", false
+	}
+	return tid, did, true
+}
+
 // validateDeviceHealth 验证设备健康状态，计算 SignalPoor 和 AngleAbnormal
 func (m *DeviceSubscriptionManager) validateDeviceHealth(health *DeviceHealthStatus, deviceUID string) {
 	health.SignalPoor = 0

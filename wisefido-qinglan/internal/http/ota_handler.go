@@ -17,9 +17,12 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// DeviceCommander is the interface for sending MQTT commands to devices
+// DeviceCommander is the interface for sending MQTT commands to devices.
+// CallDeviceFunction 覆盖协议 §3.8.1 全部 dev 值（0/1/2 重启 + 100/101/102 清数据），
+// PublishReboot 是 dev=0 的便捷封装（保留以兼容旧调用点）。
 type DeviceCommander interface {
 	PublishReboot(ctx context.Context, uid string) error
+	CallDeviceFunction(ctx context.Context, uid string, dev int) error
 	SetDeviceProperties(ctx context.Context, uid string, properties map[string]interface{}) error
 }
 
@@ -67,6 +70,7 @@ func (h *OTAHandler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/api/v1/ota/firmware/{vendor}/{filename}", h.DeleteFirmware).Methods("DELETE")
 	// Device command endpoints
 	router.HandleFunc("/api/v1/device/restart", h.BatchRestart).Methods("POST")
+	router.HandleFunc("/api/v1/device/control", h.BatchControl).Methods("POST")
 	router.HandleFunc("/api/v1/device/set-wifi", h.BatchSetWiFi).Methods("POST")
 	router.HandleFunc("/api/v1/device/set-iotserver", h.BatchSetIoTServer).Methods("POST")
 }
@@ -385,6 +389,50 @@ func (h *OTAHandler) BatchRestart(w http.ResponseWriter, r *http.Request) {
 			results = append(results, batchResult{UID: uid, Success: false, Message: err.Error()})
 		} else {
 			results = append(results, batchResult{UID: uid, Success: true, Message: "restart sent"})
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
+}
+
+// BatchControl 批量发协议 §3.8.1 control 命令（dev=0/1/2 重启 + 100/101/102 清数据）。
+// dev 值由前端 Reset 菜单决定；后端只验值 + 透传，不在这里做 destructive 二次提示——
+// 那是 UI 的职责（modal 双确认 + 红色样式）。
+func (h *OTAHandler) BatchControl(w http.ResponseWriter, r *http.Request) {
+	if h.commander == nil {
+		http.Error(w, "MQTT publisher not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		UIDs []string `json:"uids"`
+		Dev  int      `json:"dev"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+	// dev 白名单：协议规定的 6 个值；其它值直接拒绝避免误透传
+	validDev := map[int]string{
+		0:   "restart radar+MCU",
+		1:   "restart radar",
+		2:   "restart MCU",
+		100: "clear all data",
+		101: "clear radar data",
+		102: "clear MCU data",
+	}
+	desc, ok := validDev[req.Dev]
+	if !ok {
+		http.Error(w, fmt.Sprintf("invalid dev value: %d (allowed: 0/1/2/100/101/102)", req.Dev), http.StatusBadRequest)
+		return
+	}
+	log.Printf("[Device-API] batch control dev=%d (%s): %d devices", req.Dev, desc, len(req.UIDs))
+
+	results := make([]batchResult, 0, len(req.UIDs))
+	for _, uid := range req.UIDs {
+		if err := h.commander.CallDeviceFunction(r.Context(), uid, req.Dev); err != nil {
+			results = append(results, batchResult{UID: uid, Success: false, Message: err.Error()})
+		} else {
+			results = append(results, batchResult{UID: uid, Success: true, Message: desc + " sent"})
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")

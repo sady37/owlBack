@@ -198,6 +198,9 @@ func main() {
 
 	// 设置 RadarService 到订阅管理器（用于健康检查时读取设备属性）
 	subscriptionManager.SetRadarService(radarService)
+	// 反向注入：任何 GetDeviceProperties 成功（install/HTTP/排错）触发"正向恢复"，
+	// 几秒内同步 Offline/SignalPoor/AngleAbnormal=0，避免等下一个 10min 健康检查 tick。
+	radarService.SetHealthRefresher(subscriptionManager)
 
 	// 启动设备订阅管理器
 	log.Println("Starting device subscription manager...")

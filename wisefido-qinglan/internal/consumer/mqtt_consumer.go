@@ -140,76 +140,14 @@ func (c *MQTTConsumer) Start(ctx context.Context) error {
 	// 启动时主动订阅所有符合条件的设备
 	go c.subscribeAllAccessibleDevices(ctx)
 
-	// 启动 1 分钟后检查 MQTT 队列（subscribedTopics），检查所有 func 主题对应的设备，对接入的发布上线通知
-	go c.publishOnlineForConnectedAfterStartup(ctx)
+	// 上线通知由 autoSubscribeOnFirstMessage 在首条 MQTT 时 inline publish OfflineRecover；
+	// 旧的 publishOnlineForConnectedAfterStartup 启动+1min fan-out 已删除——它扫的是
+	// subscribedTopics（qinglan 自己订阅的 topic 列表），与"设备真在发包"无关，
+	// 会给所有允许设备无差别发 OfflineRecover，导致离线设备被假阳标 online。
 
 	log.Println("MQTT consumer started")
 
 	return nil
-}
-
-// publishOnlineForConnectedAfterStartup 启动 1 分钟后，从已订阅主题（MQTT 队列）中取所有 func 主题对应的设备 UID，按统一 IoTHead 发 topic=alarm、category=OfflineRecover 到 iot:alarm:stream，由 cardagg 更新 cardstatus.device_status
-func (c *MQTTConsumer) publishOnlineForConnectedAfterStartup(ctx context.Context) {
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(1 * time.Minute):
-	}
-	c.mu.RLock()
-	topics := make([]string, 0, len(c.subscribedTopics))
-	for topic := range c.subscribedTopics {
-		topics = append(topics, topic)
-	}
-	c.mu.RUnlock()
-	uidSet := make(map[string]struct{})
-	for _, topic := range topics {
-		if c.extractTopicType(topic) != "func" {
-			continue
-		}
-		uid, err := c.extractUIDFromTopic(topic)
-		if err != nil {
-			continue
-		}
-		uidSet[uid] = struct{}{}
-	}
-	if len(uidSet) == 0 {
-		return
-	}
-	ts := time.Now().UnixMilli()
-	for uid := range uidSet {
-		canIoT, _, policyTid := c.resolveIotPolicy(ctx, uid)
-		if !canIoT {
-			continue
-		}
-		tid, _, _, cid, did, _, _, ok := c.resolveDeviceIdentity(ctx, uid)
-		if !ok {
-			continue
-		}
-		if policyTid != "" {
-			tid = policyTid
-		}
-		// card_id comes from resolveDeviceIdentity via CardMappingService
-		item := observation.EventItem{
-			EventSince:  ts,
-			EventStatus: "end",
-			TrackID:     observation.TrackDevice,
-		}
-		data, _ := observation.EventItemToDataMap(&item)
-		if data == nil {
-			data = make(map[string]interface{})
-		}
-		data[observation.FieldOffline] = 0
-		msg := rediscommon.NewSingleItemMessage(tid, cid, uid, did, DeviceTypeRadar, ts, "alarm", alarm.AlarmTypeOfflineRecover, data)
-		_ = c.streamPublisher.PublishAlarm(ctx, msg)
-	}
-	// 已由上方 iot:alarm:stream OfflineRecover 由 cardagg 更新 device_status，不再走 event 流
-	// if c.subscriptionManager != nil {
-	// 	uids := make([]string, 0, len(uidSet))
-	// 	for uid := range uidSet {
-	// 		uids = append(uids, uid)
-	// 	}
-	// 	c.subscriptionManager.PublishOnlineForConnectedDevices(ctx, uids)
-	// }
 }
 
 // subscribeAllAccessibleDevices 订阅所有可访问的设备

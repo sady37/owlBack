@@ -828,10 +828,10 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 	// 如果设备不在订阅列表中，创建订阅记录
 	m.mu.Lock()
 	_, exists := m.subscriptionsByUID[deviceUID]
+	justCreated := false
+	var subDeviceType, subTenantID string
 	if !exists {
 		// 查询 device_type 和 tenant_id
-		deviceType := ""
-		tenantID := ""
 		deviceStoreInfo, err := m.deviceRepo.GetDeviceStoreInfo(ctx, deviceUID)
 		if err != nil {
 			m.logger.Warn("Failed to get device store info on first message, creating subscription without device info",
@@ -840,38 +840,70 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 			)
 			// 即使查询失败，也创建订阅记录（但没有 device info）
 		} else if deviceStoreInfo != nil {
-			deviceType = deviceStoreInfo.DeviceType
-			tenantID = deviceStoreInfo.TenantID
+			subDeviceType = deviceStoreInfo.DeviceType
+			subTenantID = deviceStoreInfo.TenantID
 		}
 
 		now := time.Now()
 		sub := &DeviceSubscription{
-			DeviceUID:       deviceUID,
-			DeviceID:        deviceID,
-			PropTopic:       m.mqttClient.BuildTopic("prop", deviceUID),
-			MonitorTopic:    m.mqttClient.BuildTopic("monitor", deviceUID),
-			FuncTopic:       m.mqttClient.BuildTopic("func", deviceUID),
-			StatTopic:       m.mqttClient.BuildTopic("stat", deviceUID),
-			EventTopic:      m.mqttClient.BuildTopic("event", deviceUID),
-			AlarmTopic:      m.mqttClient.BuildTopic("alarm", deviceUID),
-			MonitorSubTime:  now,
-			LastSeen:        time.Time{}, // 初始化为零值
-			LastMonitorTime: time.Time{}, // 初始化为零值
-			LastStatTime:    time.Time{}, // 初始化为零值
-			LastEventTime:   time.Time{}, // 初始化为零值
-			LastAlarmTime:   time.Time{}, // 初始化为零值
-			Status:          "online",    // 初始状态为online
-			TenantID:        tenantID,
-
-			DeviceType: deviceType,
+			DeviceUID:    deviceUID,
+			DeviceID:     deviceID,
+			PropTopic:    m.mqttClient.BuildTopic("prop", deviceUID),
+			MonitorTopic: m.mqttClient.BuildTopic("monitor", deviceUID),
+			FuncTopic:    m.mqttClient.BuildTopic("func", deviceUID),
+			StatTopic:    m.mqttClient.BuildTopic("stat", deviceUID),
+			EventTopic:   m.mqttClient.BuildTopic("event", deviceUID),
+			AlarmTopic:   m.mqttClient.BuildTopic("alarm", deviceUID),
+			MonitorSubTime: now,
+			// LastSeen 立刻设为 now：本函数被调到=设备已发首条 MQTT，是"已上线"的实证。
+			// 旧逻辑 LastSeen=zero 会让 UpdateLastSeenByType 首次匹配不到 sub 早 return，
+			// path A 的 OfflineRecover 直到第二条 MQTT 才触发——心跳间隔 5min 的设备就要等 5min 才上线。
+			LastSeen:        now,
+			LastMonitorTime: time.Time{},
+			LastStatTime:    time.Time{},
+			LastEventTime:   time.Time{},
+			LastAlarmTime:   time.Time{},
+			Status:          "online",
+			TenantID:        subTenantID,
+			DeviceType:      subDeviceType,
 		}
 		// 同时存储到两个 map
 		m.subscriptionsByUID[deviceUID] = sub
 		if deviceID != "" {
 			m.subscriptionsByID[deviceID] = sub
 		}
+		justCreated = true
 	}
 	m.mu.Unlock()
+
+	// 首次创建 → 立即发 OfflineRecover（与 UpdateLastSeenByType 的 path A 等价，但提前一拍）。
+	// 这里的实证：本函数被调用本身证明 mqtt_consumer 收到了一条该设备的 MQTT 包；
+	// 不再依赖第二条 MQTT，离线/在线判定立刻反映真实状态。
+	if justCreated && deviceID != "" && m.streamPublisher != nil {
+		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, subDeviceType, subTenantID, deviceUID, map[string]int{
+			observation.FieldOffline: 0,
+		})
+		go func() {
+			pubCtx := context.Background()
+			item := observation.EventItem{
+				EventSince:  time.Now().UnixMilli(),
+				EventStatus: "end",
+				TrackID:     observation.TrackDevice,
+			}
+			data, _ := observation.EventItemToDataMap(&item)
+			if data == nil {
+				data = make(map[string]interface{})
+			}
+			data[observation.FieldOffline] = 0
+			cid := m.streamPublisher.GetCardID(pubCtx, deviceUID)
+			msg := rediscommon.NewSingleItemMessage(subTenantID, cid, deviceUID, deviceID, subDeviceType, time.Now().UnixMilli(), "alarm", alarm.AlarmTypeOfflineRecover, data)
+			_ = m.streamPublisher.PublishAlarm(pubCtx, msg)
+		}()
+		m.logger.Info("Device online (first MQTT after subscription create), OfflineRecover published",
+			zap.String("device_uid", deviceUID),
+			zap.String("device_id", deviceID),
+		)
+	}
 
 	// monitor 订阅命令由 UpdateLastSeenByType 首条消息逻辑统一发送，此处不再重复
 }

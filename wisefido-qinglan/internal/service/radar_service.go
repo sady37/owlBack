@@ -38,6 +38,17 @@ const (
 	DeviceResponseCodeNotSupported = 778 // 该设备不适用该模式
 )
 
+// HealthRefresher 接收成功的设备属性读响应，用于"正向恢复"加速：
+// 任何 GetDeviceProperties 成功都会触发，把外部观察到的健康证据同步给
+// DeviceSubscriptionManager，让 alarm 在几秒内 auto-recover，而不是等下一个
+// 10min 健康检查 tick。
+//
+// 不接管反向告警：onset (value=1) 路径仍由 healthCheckMonitor 独占——外部查询
+// 失败原因（瞬时超时/设备 app 抖动/上游 MQTT 抖动）不能可靠推断"设备真离线"。
+type HealthRefresher interface {
+	RefreshHealthFromProps(ctx context.Context, deviceUID string, props map[string]interface{})
+}
+
 // RadarService 雷达服务
 type RadarService struct {
 	config          *config.Config
@@ -46,6 +57,7 @@ type RadarService struct {
 	deviceRepo      repository.DeviceRepository
 	streamPublisher *consumer.StreamPublisher
 	mqttConsumer    *consumer.MQTTConsumer
+	healthRefresher HealthRefresher // 由 main 在 subscriptionManager 创建后注入；nil 时行为退化为旧路径
 }
 
 // NewRadarService 创建雷达服务
@@ -65,6 +77,12 @@ func NewRadarService(
 		streamPublisher: streamPublisher,
 		mqttConsumer:    mqttConsumer,
 	}, nil
+}
+
+// SetHealthRefresher 注入健康刷新器（由 main 在 subscriptionManager 创建后调用）。
+// 未注入时 GetDeviceProperties 行为不变，向后兼容；测试场景可省略。
+func (s *RadarService) SetHealthRefresher(refresher HealthRefresher) {
+	s.healthRefresher = refresher
 }
 
 // Start 启动服务
@@ -97,23 +115,37 @@ func (s *RadarService) Stop(ctx context.Context) error {
 // 协议：/prefix/prop/productId/UID/get
 // 当 len(keys)>1 时：分笔依次 MQTT 读每个 key，每个指令间额外 50ms，再合并返回（设备分笔读取，间隔由本服务控制）
 func (s *RadarService) GetDeviceProperties(ctx context.Context, deviceUID string, keys []string) (map[string]interface{}, error) {
+	var result map[string]interface{}
 	if len(keys) <= 1 {
-		return s.readOneBatch(ctx, deviceUID, keys)
-	}
-	merged := make(map[string]interface{})
-	for i, k := range keys {
-		batch, err := s.readOneBatch(ctx, deviceUID, []string{k})
+		r, err := s.readOneBatch(ctx, deviceUID, keys)
 		if err != nil {
-			return nil, fmt.Errorf("read key %q: %w", k, err)
+			return nil, err
 		}
-		for kk, v := range batch {
-			merged[kk] = v
+		result = r
+	} else {
+		merged := make(map[string]interface{})
+		for i, k := range keys {
+			batch, err := s.readOneBatch(ctx, deviceUID, []string{k})
+			if err != nil {
+				return nil, fmt.Errorf("read key %q: %w", k, err)
+			}
+			for kk, v := range batch {
+				merged[kk] = v
+			}
+			if i < len(keys)-1 {
+				time.Sleep(50 * time.Millisecond)
+			}
 		}
-		if i < len(keys)-1 {
-			time.Sleep(50 * time.Millisecond)
-		}
+		result = merged
 	}
-	return merged, nil
+
+	// 正向恢复 hook：成功读到任意属性都是"设备在线"证据；若 props 含 wifi_rssi/accelera+install_style
+	// 还能恢复 SignalPoor/AngleAbnormal。同步调用——publishHealthIfChanged 内部 transition-only +
+	// Redis XADD 量级几 ms，相对 MQTT 等待（多秒）可忽略。
+	if s.healthRefresher != nil && len(result) > 0 {
+		s.healthRefresher.RefreshHealthFromProps(ctx, deviceUID, result)
+	}
+	return result, nil
 }
 
 // readOneBatch 发一笔 MQTT read（keys 可为空表示读全部），等响应后返回 data
