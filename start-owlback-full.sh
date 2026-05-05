@@ -60,7 +60,7 @@ is_active() {
 }
 
 echo "=========================================="
-echo "OwlBack modular start (owlback.data → 30s → cardagg…qinglan… → owlback.ai)"
+echo "OwlBack modular start (owlback.data → 30s → cardagg…qinglan… → owlback.sensor)"
 echo "=========================================="
 
 echo ""
@@ -109,7 +109,7 @@ if ! $DATA_WAS_ACTIVE; then
 fi
 sleep 1
 
-for u in owlback.cardagg owlback.qinglan owlback.sleepace owlback.iot owlback.ai; do
+for u in owlback.cardagg owlback.qinglan owlback.sleepace owlback.iot owlback.sensor; do
 	if is_active "$u"; then
 		echo "    (already active) $u"
 	else

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 一次性清理 wisefido-ai roomengine consumer group 的历史 stale pending。
+# 一次性清理 wisefido-sensor roomengine consumer group 的历史 stale pending。
 #
 # 背景：旧版 engine 主循环 XReadGroup 后从不 XAck，pending 列表无限增长
 # （4.86 天积压 1.39M+ 条）。新版 engine（commit 之后）已修复 XAck，但历史
@@ -69,4 +69,4 @@ done
 
 echo
 echo "Total stale pending deleted: $total_deleted"
-echo "Done. If wisefido-ai is running, redis will recreate the consumers on next XReadGroup."
+echo "Done. If wisefido-sensor is running, redis will recreate the consumers on next XReadGroup."

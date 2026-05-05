@@ -88,6 +88,9 @@ func main() {
 	stateSvc := service.NewStateService(writer, reader, logger)
 	monitorBuf := service.NewMonitorBuffer()
 	metaCache := service.NewDeviceMetaCache(db, logger)
+	if err := metaCache.BuildDeviceIndex(ctx); err != nil {
+		logger.Warn("device index initial build failed", zap.Error(err))
+	}
 	enablementCache := service.NewAlarmEnablementCache(db, metaCache, logger)
 	alarmSvc := service.NewAlarmService(writer, reader, db, enablementCache, logger)
 	alarmSvc.SetRedisPending(&redisPendingAdapter{client: redisClient})
@@ -96,10 +99,16 @@ func main() {
 	if err := alarmSvc.SyncAllCardsAlarmState(ctx); err != nil {
 		logger.Warn("alarm sync failed", zap.Error(err))
 	}
+	// Sync device:status hash alarm flags from alarm_events.active (信号差/倾角/传感器脱落 3 个 flag）
+	// 解决 qinglan/sleepace transition dedup 已 cache=1 之后 cardagg 重启 / WriteDeviceStatus 历史 bug
+	// 把 hash 漂移到 0 的场景 —— 启动时按 DB 真值自动重建 hash flag。
+	if err := alarmSvc.SyncDeviceStatusFromActiveAlarms(ctx); err != nil {
+		logger.Warn("device:status flag sync failed", zap.Error(err))
+	}
 
 	bedCoord := service.NewBedEventCoordinator()
 
-	// PR6: AI override cache（wisefido-ai 通过 iot:event:stream + category=track_verdict 喂入）
+	// PR6: AI override cache（wisefido-sensor 通过 iot:event:stream + category=track_verdict 喂入）
 	// sandbox 默认开，release 模式才把 AI confidence 合并到前端 track 字段。
 	// 任何模式都不影响 alarm 路径（"宁可误报不可漏报"）。
 	aiOverrides := service.NewAIOverrideCache(cfg.AIOverride.Mode, cfg.AIOverride.TTLSec, logger)

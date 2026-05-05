@@ -777,6 +777,16 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 						}
 					}
 				}
+				// 厂家 realtimeMode/get：回填 Empty_Bed_Monitor（0=离床后仍上报 / 1=离床后不上报）。
+				// 仅 BM8701-2 + 固件 ≥ 6.67 支持；不支持的设备返回 err，保持 baseline 值不变。
+				if mode, mErr := s.sleepaceGateway.GetRealtimeModeAfterLeave(ctx, device.DeviceCode.String); mErr == nil && (mode == 0 || mode == 1) {
+					for i := range merged {
+						if merged[i].AlarmType == alarm.SleepadSetting && merged[i].AlarmParams != nil {
+							merged[i].AlarmParams["Empty_Bed_Monitor"] = mode
+							break
+						}
+					}
+				}
 				merged = s.overlaySleepadLightModeFromHardware(ctx, device.DeviceCode.String, merged)
 				// 一次性 changed 计算 + sync：所有厂家覆盖（alarmNotifyConfig + getconfig + getReportUploadTime + lightMode）都已合并进 merged
 				changedTypes := s.getChangedAlarmTypes(baseline, merged)

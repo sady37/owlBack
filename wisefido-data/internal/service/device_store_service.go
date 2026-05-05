@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/publisher"
@@ -136,6 +137,7 @@ func (s *DeviceStoreService) SyncSleepaceBind(ctx context.Context) (*SyncSleepac
 			errMsgs = append(errMsgs, row.DeviceUID+": "+msg)
 			continue
 		}
+		s.applyDefaultSleepadRealtime(ctx, row)
 		synced++
 	}
 	return &SyncSleepaceBindResult{Synced: synced, Skipped: skipped, Failed: failed, Errors: errMsgs}, nil
@@ -206,6 +208,7 @@ func (s *DeviceStoreService) InitialAllSleepad(ctx context.Context) (*InitialAll
 				}
 				errMsgs = append(errMsgs, row.DeviceUID+": bind "+initMsg)
 			} else {
+				s.applyDefaultSleepadRealtime(ctx, row)
 				noDataBound++
 			}
 			continue
@@ -257,6 +260,7 @@ func (s *DeviceStoreService) BindSleepadOne(ctx context.Context, deviceID string
 	if initErr != nil {
 		return initErr
 	}
+	s.applyDefaultSleepadRealtime(ctx, ds)
 	if s.configPublisher != nil && ds.DeviceID != "" {
 		_ = s.configPublisher.PublishCardChangeForDevice(ctx, ds.TenantID, ds.DeviceID, "sleepad_bind", ds.DeviceUID)
 	}
@@ -308,6 +312,103 @@ func (s *DeviceStoreService) DeleteDeviceStoreAndNotify(ctx context.Context, dev
 	return nil
 }
 
+// applyDefaultSleepadRealtime 在 Sleepace bind 成功后下发默认实时上报配置：
+//   - SetRealtimeInterval(2)  —— 在床期 2 秒高频，所有 Sleepad 型号支持
+//   - SetRealtimeModeAfterLeave(1) —— 离床后停止上报；仅 BM8701-2 + 固件 ≥ 6.67 支持
+//
+// 任何错误降级为 Warn 日志，不阻塞 bind 流程。偶发瞬时错误（实测厂家 status:3 空 msg）做一次重试。
+// 这是 bind 后的"最后一公里"配置，失败也不影响绑定成功；后续可由 cmd/sleepace-set-realtime -apply-all 兜底。
+func (s *DeviceStoreService) applyDefaultSleepadRealtime(ctx context.Context, ds *domain.DeviceStore) {
+	if s.sleepaceGateway == nil || ds == nil {
+		return
+	}
+	if !ds.DeviceCode.Valid || ds.DeviceCode.String == "" {
+		return
+	}
+	const targetInterval = 2
+	const targetMode = 1
+
+	if err := setIntervalWithRetry(ctx, s.sleepaceGateway, ds.DeviceID, ds.DeviceCode.String, targetInterval); err != nil {
+		s.logger.Warn("post-bind SetRealtimeInterval failed",
+			zap.String("device_uid", ds.DeviceUID),
+			zap.String("device_id", ds.DeviceID),
+			zap.Error(err))
+	}
+
+	if !sleepadSupportsRealtimeMode(ds) {
+		return
+	}
+	if err := setRealtimeModeWithRetry(ctx, s.sleepaceGateway, ds.DeviceID, ds.DeviceCode.String, targetMode); err != nil {
+		s.logger.Warn("post-bind SetRealtimeModeAfterLeave failed",
+			zap.String("device_uid", ds.DeviceUID),
+			zap.String("device_id", ds.DeviceID),
+			zap.Error(err))
+	}
+}
+
+func setIntervalWithRetry(ctx context.Context, gw *SleepaceGatewayClient, deviceID, deviceCode string, interval int) error {
+	if err := gw.SetRealtimeInterval(ctx, deviceID, deviceCode, interval); err == nil {
+		return nil
+	}
+	time.Sleep(2 * time.Second)
+	return gw.SetRealtimeInterval(ctx, deviceID, deviceCode, interval)
+}
+
+func setRealtimeModeWithRetry(ctx context.Context, gw *SleepaceGatewayClient, deviceID, deviceCode string, mode int) error {
+	if err := gw.SetRealtimeModeAfterLeave(ctx, deviceID, deviceCode, mode); err == nil {
+		return nil
+	}
+	time.Sleep(2 * time.Second)
+	return gw.SetRealtimeModeAfterLeave(ctx, deviceID, deviceCode, mode)
+}
+
+// sleepadSupportsRealtimeMode 仅 BM8701-2 + 固件 ≥ 6.67。fw "0.00" / 空 / 非数字均视为不支持（保守）。
+func sleepadSupportsRealtimeMode(ds *domain.DeviceStore) bool {
+	if !ds.DeviceModel.Valid || !strings.EqualFold(ds.DeviceModel.String, "BM8701-2") {
+		return false
+	}
+	if !ds.FirmwareVersion.Valid {
+		return false
+	}
+	return parseSleepadFirmwareScore(ds.FirmwareVersion.String) >= 667
+}
+
+// parseSleepadFirmwareScore "6.89" → 689；"6.67" → 667；"0.00" → 0；非数字/空 → -1。
+func parseSleepadFirmwareScore(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return -1
+	}
+	parts := strings.SplitN(s, ".", 2)
+	major, ok := atoiAllDigits(parts[0])
+	if !ok {
+		return -1
+	}
+	minor := 0
+	if len(parts) == 2 {
+		var ok2 bool
+		minor, ok2 = atoiAllDigits(parts[1])
+		if !ok2 {
+			return -1
+		}
+	}
+	return major*100 + minor
+}
+
+func atoiAllDigits(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, true
+}
+
 // PostImportSleepadBind 导入后对新插入的 Sleepad 调用 Sleepace initialize 绑定。device_code 来自厂家导入，不在此写回。
 func (s *DeviceStoreService) PostImportSleepadBind(ctx context.Context, inserted []*domain.DeviceStore) {
 	if s.sleepaceGateway == nil || len(inserted) == 0 {
@@ -330,6 +431,8 @@ func (s *DeviceStoreService) PostImportSleepadBind(ctx context.Context, inserted
 				zap.String("device_uid", row.DeviceUID),
 				zap.String("device_id", row.DeviceID),
 				zap.Error(initErr))
+			continue
 		}
+		s.applyDefaultSleepadRealtime(ctx, row)
 	}
 }

@@ -43,7 +43,8 @@ func main() {
 		os.Exit(1)
 	}
 	key := "card:state:" + cardID
-	fields := []string{"target", "room_state", "bathroom_state", "bed_state", "device_status", "alarm_state", "message"}
+	// Phase A：device_status 已迁出 card:state，独立到 device:status:{deviceID} Hash。
+	fields := []string{"target", "room_state", "bathroom_state", "bed_state", "alarm_state", "message"}
 	fmt.Printf("card_id=%s\nredis_key=%s\n---\n", cardID, key)
 	for _, f := range fields {
 		val, err := client.HGet(ctx, key, f).Result()

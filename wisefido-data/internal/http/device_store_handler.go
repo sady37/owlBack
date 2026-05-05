@@ -116,11 +116,23 @@ func (h *DeviceStoreHandler) ListDeviceStores(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// 在线状态：只从 cardagg 读取（与 device_service.fillDeviceOnlineStatus 一致）
-	onlineMap := service.FillDeviceOnlineStatusFromCardagg(ctx, h.stateReader, h.db, deviceStoreDeviceIDs(items), h.logger)
+	// 实时健康状态：从 device:status:{deviceID} hash 读完整字段（offline + signal_poor + angle_abnormal + sensor_detached + last_seen_ms）
+	// 设备未绑卡也照样有 hash，admin 视角无差别可见。
+	dsMap := service.FillDeviceStatusFromCardagg(ctx, h.stateReader, deviceStoreDeviceIDs(items), h.logger)
 	for _, s := range items {
-		s.OnlineStatus = onlineMap[s.DeviceID]
-		if s.OnlineStatus == "" {
+		if ds := dsMap[s.DeviceID]; ds != nil {
+			s.Offline = ds.Offline
+			s.SignalPoor = ds.SignalPoor
+			s.AngleAbnormal = ds.AngleAbnormal
+			s.SensorDetached = ds.SensorDetached
+			s.LastSeenMs = ds.LastSeenMs
+			if ds.Offline == 0 {
+				s.OnlineStatus = "online"
+			} else {
+				s.OnlineStatus = "offline"
+			}
+		} else {
+			s.Offline = 1
 			s.OnlineStatus = "offline"
 		}
 	}
@@ -231,10 +243,21 @@ func (h *DeviceStoreHandler) ExportDeviceStores(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to list device stores: %v", err)))
 		return
 	}
-	onlineMap := service.FillDeviceOnlineStatusFromCardagg(ctx, h.stateReader, h.db, deviceStoreDeviceIDs(items), h.logger)
+	dsMap := service.FillDeviceStatusFromCardagg(ctx, h.stateReader, deviceStoreDeviceIDs(items), h.logger)
 	for _, s := range items {
-		s.OnlineStatus = onlineMap[s.DeviceID]
-		if s.OnlineStatus == "" {
+		if ds := dsMap[s.DeviceID]; ds != nil {
+			s.Offline = ds.Offline
+			s.SignalPoor = ds.SignalPoor
+			s.AngleAbnormal = ds.AngleAbnormal
+			s.SensorDetached = ds.SensorDetached
+			s.LastSeenMs = ds.LastSeenMs
+			if ds.Offline == 0 {
+				s.OnlineStatus = "online"
+			} else {
+				s.OnlineStatus = "offline"
+			}
+		} else {
+			s.Offline = 1
 			s.OnlineStatus = "offline"
 		}
 	}

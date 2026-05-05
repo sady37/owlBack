@@ -7,11 +7,11 @@ import (
 )
 
 // PublishFields 待发布的 CardStatus 各块，均为可选；只传需要发布的块（一项或多项）。
+// Phase A：DeviceStatus 已迁出（独立 device:status:{deviceID} Hash，Writer.WriteDeviceStatus）。
 type PublishFields struct {
 	Target        *card.TargetState
 	RoomState     *card.RoomState
 	BathRoomState *card.BathRoomState
-	DeviceStatus  map[string]*card.DeviceStatus
 	BedState      *card.BedState
 	AlarmState    *card.AlarmState
 	Message       map[string]interface{}
@@ -28,9 +28,6 @@ func PublishCardStatus(ctx context.Context, w *card.Writer, cardID string, field
 	}
 	if fields.BathRoomState != nil {
 		status.BathRoomState = fields.BathRoomState
-	}
-	if fields.DeviceStatus != nil {
-		status.DeviceStatus = fields.DeviceStatus
 	}
 	if fields.BedState != nil {
 		status.BedState = fields.BedState
@@ -55,9 +52,6 @@ func PublishCardStatusSilent(ctx context.Context, w *card.Writer, cardID string,
 	}
 	if fields.BathRoomState != nil {
 		status.BathRoomState = fields.BathRoomState
-	}
-	if fields.DeviceStatus != nil {
-		status.DeviceStatus = fields.DeviceStatus
 	}
 	if fields.BedState != nil {
 		status.BedState = fields.BedState

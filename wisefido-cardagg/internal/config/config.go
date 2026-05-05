@@ -20,7 +20,7 @@ type Config struct {
 	AIOverride AIOverrideConfig `yaml:"ai_override"`
 }
 
-// AIOverrideConfig wisefido-ai 派生 track_verdict 在 cardagg 端的合并行为。
+// AIOverrideConfig wisefido-sensor 派生 track_verdict 在 cardagg 端的合并行为。
 //
 // 仅作用于 UI 合并（调整 track_confidence 字段供前端渲染），**绝不影响 alarm
 // 触发路径**——用户原则"宁可误报不可漏报"。

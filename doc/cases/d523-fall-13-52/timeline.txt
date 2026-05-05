@@ -1,0 +1,248 @@
+13:52:00.000 monitor track              tid=0 pose=4 pos=(-190,500,0) tc=80 rt=0
+13:52:01.000 monitor track              tid=0 pose=4 pos=(-200,500,0) tc=80 rt=0
+13:52:02.000 monitor track              tid=0 pose=4 pos=(-200,500,0) tc=80 rt=0
+13:52:03.000 monitor track              tid=0 pose=4 pos=(-200,500,0) tc=80 rt=0
+13:52:04.000 monitor track              tid=0 pose=4 pos=(-200,500,0) tc=80 rt=0
+13:52:05.000 monitor track              tid=0 pose=4 pos=(-200,510,67) tc=80 rt=0
+13:52:06.000 monitor track              tid=0 pose=4 pos=(-220,500,85) tc=80 rt=0
+13:52:07.000 monitor track              tid=0 pose=4 pos=(-210,510,56) tc=80 rt=0
+13:52:08.000 monitor track              tid=0 pose=4 pos=(-190,500,44) tc=80 rt=0
+13:52:09.000 monitor track              tid=0 pose=4 pos=(-210,470,78) tc=80 rt=0
+13:52:10.000 monitor track              tid=0 pose=4 pos=(-230,440,70) tc=80 rt=0
+13:52:11.000 monitor track              tid=0 pose=4 pos=(-280,440,103) tc=80 rt=0
+13:52:12.000 monitor track              tid=0 pose=4 pos=(-310,460,78) tc=80 rt=0
+13:52:13.000 monitor track              tid=0 pose=1 pos=(-300,530,121) tc=80 rt=0
+13:52:14.000 monitor track              tid=0 pose=1 pos=(-290,500,86) tc=80 rt=0
+13:52:15.000 monitor track              tid=0 pose=1 pos=(-300,450,76) tc=80 rt=0
+13:52:16.000 monitor track              tid=0 pose=1 pos=(-300,480,87) tc=80 rt=0
+13:52:17.000 monitor track              tid=0 pose=1 pos=(-300,520,0) tc=80 rt=0
+13:52:18.000 monitor track              tid=0 pose=1 pos=(-300,510,87) tc=80 rt=0
+13:52:19.000 monitor track              tid=0 pose=4 pos=(-280,510,0) tc=80 rt=0
+13:52:20.000 monitor track              tid=0 pose=4 pos=(-280,570,0) tc=80 rt=0
+13:52:21.000 monitor track              tid=0 pose=4 pos=(-280,570,0) tc=80 rt=0
+13:52:22.000 monitor track              tid=0 pose=4 pos=(-300,530,93) tc=80 rt=0
+13:52:23.000 monitor track              tid=0 pose=4 pos=(-280,540,108) tc=80 rt=0
+13:52:24.000 monitor track              tid=0 pose=4 pos=(-290,510,0) tc=80 rt=0
+13:52:25.000 monitor track              tid=0 pose=4 pos=(-250,510,0) tc=80 rt=0
+13:52:26.000 monitor track              tid=0 pose=4 pos=(-260,580,0) tc=80 rt=0
+13:52:27.000 monitor track              tid=0 pose=4 pos=(-250,510,0) tc=80 rt=0
+13:52:28.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:29.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:30.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:31.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:32.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:33.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:34.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:35.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:36.000 event   activity           tid=9 count=1 status=instant walk=5cm/19s stand=41s lie=0s
+13:52:36.000 monitor heart              hr=None br=None sleep=None
+13:52:36.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:37.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:38.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:39.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:40.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:41.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:42.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:43.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:44.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:45.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:46.000 monitor track              tid=0 pose=4 pos=(-260,500,0) tc=80 rt=0
+13:52:47.000 monitor track              tid=0 pose=4 pos=(-280,530,104) tc=80 rt=0
+13:52:48.000 monitor track              tid=0 pose=4 pos=(-310,500,69) tc=80 rt=0
+13:52:49.000 monitor track              tid=0 pose=4 pos=(-310,580,0) tc=80 rt=0
+13:52:50.000 monitor track              tid=0 pose=4 pos=(-310,600,0) tc=80 rt=0
+13:52:51.000 monitor track              tid=0 pose=4 pos=(-310,600,0) tc=80 rt=0
+13:52:52.000 monitor track              tid=0 pose=4 pos=(-310,550,0) tc=80 rt=0
+13:52:53.000 monitor track              tid=0 pose=4 pos=(-330,470,0) tc=80 rt=0
+13:52:54.000 monitor track              tid=0 pose=4 pos=(-330,480,0) tc=80 rt=0
+13:52:55.000 monitor track              tid=0 pose=4 pos=(-340,520,91) tc=80 rt=0
+13:52:56.000 monitor track              tid=0 pose=4 pos=(-370,480,99) tc=80 rt=0
+13:52:57.000 monitor track              tid=0 pose=1 pos=(-430,490,106) tc=80 rt=0
+13:52:58.000 monitor track              tid=0 pose=1 pos=(-430,490,120) tc=80 rt=0
+13:52:59.000 monitor track              tid=0 pose=1 pos=(-440,480,114) tc=80 rt=0
+13:53:00.000 monitor track              tid=0 pose=1 pos=(-390,470,0) tc=80 rt=0
+13:53:01.000 monitor track              tid=0 pose=1 pos=(-370,450,0) tc=80 rt=0
+13:53:02.000 monitor track              tid=0 pose=1 pos=(-350,450,0) tc=80 rt=0
+13:53:03.000 monitor track              tid=0 pose=4 pos=(-360,440,0) tc=80 rt=0
+13:53:04.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:05.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:06.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:07.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:08.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:09.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:10.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:11.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:12.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:13.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:14.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:15.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:16.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:17.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:18.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:19.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:20.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:21.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:22.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:23.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:24.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:25.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:26.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:27.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:28.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:29.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:30.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:31.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:32.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:33.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:34.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:35.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:36.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:37.000 event   activity           tid=9 count=1 status=instant walk=1cm/6s stand=54s lie=0s
+13:53:37.000 monitor heart              hr=None br=None sleep=None
+13:53:37.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:38.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:39.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:40.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:41.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:42.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:43.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:44.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:45.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:46.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:47.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:48.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:49.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:50.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:51.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:52.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:53.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:54.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:55.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:56.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:57.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:58.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:53:59.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:54:00.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:54:01.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:54:02.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:54:02.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:54:03.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:54:04.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:54:05.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:54:06.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:54:07.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:54:08.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:54:09.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:54:10.000 monitor track              tid=0 pose=4 pos=(-370,440,0) tc=80 rt=0
+13:54:11.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:12.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:13.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:14.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:15.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:16.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:17.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:18.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:19.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:20.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:21.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:22.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:23.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:24.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:25.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:26.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:27.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:28.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:29.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:30.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:31.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:32.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:33.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:34.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:35.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:36.000 event   activity           tid=9 count=1 status=instant walk=0cm/0s stand=60s lie=0s
+13:54:36.000 monitor heart              hr=None br=None sleep=None
+13:54:36.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:37.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:38.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:39.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:40.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:41.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:42.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:43.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:44.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:45.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:46.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:47.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:48.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:49.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:50.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:51.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:52.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:53.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:54.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:55.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:56.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:57.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:58.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:54:59.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:00.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:01.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:02.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:03.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:04.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:05.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:06.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:07.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:08.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:09.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:10.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:11.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:12.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:13.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:14.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:15.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:16.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:17.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:18.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:19.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:20.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:21.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:22.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:23.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:24.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:25.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:26.000 monitor track              tid=0 pose=4 pos=(-350,430,0) tc=80 rt=0
+13:55:27.000 event   number_people      tid=10 status=start n=0
+13:55:27.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0
+13:55:28.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0
+13:55:29.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0
+13:55:49.000 monitor heart              hr=None br=None sleep=None
+13:55:49.000 event   activity           tid=9 count=0 status=instant walk=0cm/0s stand=53s lie=0s
+13:55:49.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0
+13:56:20.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0
+13:56:52.000 event   activity           tid=9 count=0 status=instant walk=0cm/0s stand=0s lie=0s
+13:56:52.000 monitor heart              hr=None br=None sleep=None
+13:56:52.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0
+13:57:24.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0
+13:57:56.000 event   activity           tid=9 count=0 status=instant walk=0cm/0s stand=0s lie=0s
+13:57:56.000 monitor heart              hr=None br=None sleep=None
+13:57:56.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0
+13:58:27.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0
+13:58:59.000 event   activity           tid=9 count=0 status=instant walk=0cm/0s stand=0s lie=0s
+13:58:59.000 monitor heart              hr=None br=None sleep=None
+13:58:59.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0
+13:59:31.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0
+13:59:39.000 event   SignalPoorRecover  tid=11 status=end signal_poor=0
+13:59:39.000 alarm   OfflineRecover     tid=11 status=end offline=0
+13:59:39.000 event   AngleException     tid=11 status=start val=1 angle_abnormal=1
+14:00:03.000 monitor heart              hr=None br=None sleep=None
+14:00:03.000 event   activity           tid=9 count=0 status=instant walk=0cm/0s stand=0s lie=0s
+14:00:03.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0
+14:00:34.000 monitor heart              hr=None br=None sleep=None
+14:00:34.000 event   activity           tid=9 count=0 status=instant walk=0cm/0s stand=0s lie=0s
+14:00:35.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0
+14:01:06.000 alarm   Fall               reason=lost_track pos=(100,430,0) area=sensing wait=188000ms frozen_start=1777838051669 jump=False score=98 verdict=1
+14:01:06.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0
+14:01:38.000 monitor heart              hr=None br=None sleep=None
+14:01:38.000 event   activity           tid=9 count=0 status=instant walk=0cm/0s stand=0s lie=0s
+14:01:38.000 monitor track              tid=88 pose=None pos=(0,0,0) tc=80 rt=0

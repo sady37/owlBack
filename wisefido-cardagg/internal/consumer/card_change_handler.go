@@ -62,6 +62,9 @@ func (h *CardChangeHandler) Handle(ctx context.Context, msg interface{}) error {
 	switch {
 	case d.Op == "reset":
 		h.metaCache.InvalidateAll()
+		if err := h.metaCache.BuildDeviceIndex(ctx); err != nil {
+			h.logger.Warn("rebuild device index on reset failed", zap.Error(err))
+		}
 		if h.enablement != nil {
 			h.enablement.InvalidateAll()
 		}
@@ -73,8 +76,10 @@ func (h *CardChangeHandler) Handle(ctx context.Context, msg interface{}) error {
 			h.bedCoord.ClearCard(d.CardID)
 		}
 		h.metaCache.Remove(d.CardID)
+		h.metaCache.RefreshDeviceIndexForCard(ctx, d.CardID)
 	default:
 		h.metaCache.Remove(d.CardID)
+		h.metaCache.RefreshDeviceIndexForCard(ctx, d.CardID)
 	}
 
 	// 同 unit 内多卡联动：失效该 unit 下所有卡片的 meta + 使能缓存

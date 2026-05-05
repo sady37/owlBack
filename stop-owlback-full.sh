@@ -41,7 +41,7 @@ echo "=========================================="
 
 echo ""
 echo "=== 1) systemctl stop owlback.* (reverse order) ==="
-for u in owlback.ai owlback.iot owlback.sleepace owlback.qinglan owlback.cardagg owlback.data; do
+for u in owlback.sensor owlback.ai owlback.iot owlback.sleepace owlback.qinglan owlback.cardagg owlback.data; do
 	if is_active "$u"; then
 		echo "[*] stopping $u"
 		run_sctl stop "$u" 2>/dev/null || true

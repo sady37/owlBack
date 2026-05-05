@@ -70,7 +70,7 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		)...)
 		return nil
 	}
-	resolved := h.metaCache.ResolveDeviceID(ctx, m.CardID, m.DeviceID, m.DeviceUID)
+	resolved := h.metaCache.ResolveDeviceID(ctx, m.SubjectEntity, m.DeviceID, m.DeviceUID)
 	if resolved == "" {
 		h.logger.Info("stream.consume", append(streamLogFields("alarm", m, eventName),
 			zap.String("status", "drop"),
@@ -91,14 +91,15 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		return nil
 	}
 	payload := &redis.IoTStreamMessage{
-		DeviceUID:  m.DeviceUID,
-		DeviceType: m.DeviceType,
-		CardID:     m.CardID,
-		TenantID:   m.TenantID,
-		Timestamp:  m.Timestamp,
-		TopicType:  m.TopicType,
-		Category:   m.Category,
-		DataValue:  []interface{}{data},
+		Producer:      m.Producer,
+		SubjectEntity: m.SubjectEntity,
+		DeviceUID:     m.DeviceUID,
+		DeviceType:    m.DeviceType,
+		TenantID:      m.TenantID,
+		Timestamp:     m.Timestamp,
+		TopicType:     m.TopicType,
+		Category:      m.Category,
+		DataValue:     []interface{}{data},
 	}
 	payload.DeviceID = m.DeviceID
 	_, level, _, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, m.TenantID, payload.DeviceID, eventName)
@@ -120,28 +121,28 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		}
 		if h.state != nil {
 			deviceType := ""
-			if dm := h.metaCache.GetDeviceMeta(ctx, m.CardID, m.DeviceID); dm != nil {
+			if dm := h.metaCache.GetDeviceMeta(ctx, m.SubjectEntity, m.DeviceID); dm != nil {
 				deviceType = dm.DeviceType
 			} else if m.DeviceUID != "" {
-				if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.CardID, m.DeviceUID); dm != nil {
+				if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.SubjectEntity, m.DeviceUID); dm != nil {
 					deviceType = dm.DeviceType
 				}
 			}
 			skip := false
 			if h.bedCoord != nil {
-				skip, _ = h.bedCoord.InBed(ctx, h.state, h.alarms, h.metaCache, h.buffer, m.CardID, m.TenantID, m.DeviceID, m.DeviceUID, deviceType, m.Timestamp, func(wr bool) {
+				skip, _ = h.bedCoord.InBed(ctx, h.state, h.alarms, h.metaCache, h.buffer, m.SubjectEntity, m.TenantID, m.DeviceID, m.DeviceUID, deviceType, m.Timestamp, func(wr bool) {
 					if wr {
-						_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, payload.DeviceID, alarm.LeftBed)
+						_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.SubjectEntity, payload.DeviceID, alarm.LeftBed)
 					}
 				})
 			}
 			if !skip {
-				trackOverride := sleepadTrackOverrideForInBed(ctx, h.metaCache, h.buffer, m.CardID)
-				written, _ := h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.InBed, deviceType, m.Timestamp, 0, trackOverride)
+				trackOverride := sleepadTrackOverrideForInBed(ctx, h.metaCache, h.buffer, m.SubjectEntity)
+				written, _ := h.state.PublishBedStateFromEvent(ctx, m.SubjectEntity, alarm.InBed, deviceType, m.Timestamp, 0, trackOverride)
 				if written {
-					_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, payload.DeviceID, alarm.LeftBed)
+					_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.SubjectEntity, payload.DeviceID, alarm.LeftBed)
 				}
-				_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
+				_ = h.state.ReconcileRoomStateFromBedState(ctx, m.SubjectEntity)
 			}
 		}
 	case alarm.LeftBed:
@@ -152,49 +153,78 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		}
 		if h.state != nil {
 			deviceType := ""
-			if dm := h.metaCache.GetDeviceMeta(ctx, m.CardID, m.DeviceID); dm != nil {
+			if dm := h.metaCache.GetDeviceMeta(ctx, m.SubjectEntity, m.DeviceID); dm != nil {
 				deviceType = dm.DeviceType
 			} else if m.DeviceUID != "" {
-				if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.CardID, m.DeviceUID); dm != nil {
+				if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.SubjectEntity, m.DeviceUID); dm != nil {
 					deviceType = dm.DeviceType
 				}
 			}
 			skip := false
 			if h.bedCoord != nil {
-				skip, _ = h.bedCoord.LeftBed(ctx, h.state, h.metaCache, h.buffer, m.CardID, m.TenantID, m.DeviceID, m.DeviceUID, deviceType, m.Timestamp, func() {
-					meta := h.metaCache.GetOrLoad(ctx, m.CardID)
+				skip, _ = h.bedCoord.LeftBed(ctx, h.state, h.metaCache, h.buffer, m.SubjectEntity, m.TenantID, m.DeviceID, m.DeviceUID, deviceType, m.Timestamp, func() {
+					meta := h.metaCache.GetOrLoad(ctx, m.SubjectEntity)
 					if meta == nil {
 						return
 					}
 					if meta.TenantID != "" && h.alarms != nil {
-						service.PersistSuspectedFallPoseLyingIfEnabled(ctx, h.alarms, m.CardID, meta.TenantID, h.buffer, meta, "ImmediateLeftBedFall_lying_coord")
+						service.PersistSuspectedFallPoseLyingIfEnabled(ctx, h.alarms, m.SubjectEntity, meta.TenantID, h.buffer, meta, "ImmediateLeftBedFall_lying_coord")
 					}
 					if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
-						service.StartLeftBedFall(m.CardID, radarID)
+						service.StartLeftBedFall(m.SubjectEntity, radarID)
 					}
 				})
 			}
 			if !skip {
-				trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.CardID)
-				pubWritten, _ := h.state.PublishBedStateFromEvent(ctx, m.CardID, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
+				trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.SubjectEntity)
+				pubWritten, _ := h.state.PublishBedStateFromEvent(ctx, m.SubjectEntity, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
 				if pubWritten {
-					_ = h.state.ReconcileRoomStateFromBedState(ctx, m.CardID)
-					meta := h.metaCache.GetOrLoad(ctx, m.CardID)
+					_ = h.state.ReconcileRoomStateFromBedState(ctx, m.SubjectEntity)
+					meta := h.metaCache.GetOrLoad(ctx, m.SubjectEntity)
 					if meta != nil {
 						if meta.TenantID != "" && h.alarms != nil {
-							service.PersistSuspectedFallPoseLyingIfEnabled(ctx, h.alarms, m.CardID, meta.TenantID, h.buffer, meta, "ImmediateLeftBedFall_lying_alarm")
+							service.PersistSuspectedFallPoseLyingIfEnabled(ctx, h.alarms, m.SubjectEntity, meta.TenantID, h.buffer, meta, "ImmediateLeftBedFall_lying_alarm")
 						}
 						if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
-							service.StartLeftBedFall(m.CardID, radarID)
+							service.StartLeftBedFall(m.SubjectEntity, radarID)
 						}
 					}
 				}
 			}
 		}
 
-	// SingalPoorRecover/AngleExceptionRecover 已切到 event 流，此处丢弃
-	case alarm.SingalPoorRecover, alarm.AngleExceptionRecover:
-		return nil
+	// 设备类抖动信号：SignalPoor / AngleException 与 Offline / SensorDetached 同等处理 ——
+	// onset 入库报警，*Recover 触发 auto-recover 解除 active alarm（无 active 时 noop，幂等）。
+	// 同时把当前真值写到 device:status:{deviceID} hash，前端无需穿越 alarm_events 反推标志位。
+	// 原则：设备类报警一律自动恢复，不需人工标记。
+	case alarm.SignalPoor:
+		if m.DeviceID != "" && h.state != nil {
+			_ = h.state.PatchDeviceFlag(ctx, m.DeviceID, "signal_poor", 1)
+		}
+		if enabled && level != "" {
+			if err := h.alarms.PersistAlarmAndPublish(ctx, payload, eventName, level); err != nil {
+				return err
+			}
+		}
+	case alarm.AngleException:
+		if m.DeviceID != "" && h.state != nil {
+			_ = h.state.PatchDeviceFlag(ctx, m.DeviceID, "angle_abnormal", 1)
+		}
+		if enabled && level != "" {
+			if err := h.alarms.PersistAlarmAndPublish(ctx, payload, eventName, level); err != nil {
+				return err
+			}
+		}
+	case alarm.SingalPoorRecover:
+		if m.DeviceID != "" && h.state != nil {
+			_ = h.state.PatchDeviceFlag(ctx, m.DeviceID, "signal_poor", 0)
+		}
+		_ = h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.SignalPoor})
+	case alarm.AngleExceptionRecover:
+		if m.DeviceID != "" && h.state != nil {
+			_ = h.state.PatchDeviceFlag(ctx, m.DeviceID, "angle_abnormal", 0)
+		}
+		_ = h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.AngleException})
 
 	// Sleepad 专有：使能则落库并推送   / 异动抽搐 /翻身/体动/ 床上坐起
 	case alarm.AbnormalBodyMovement, alarm.NoTurnOver, alarm.NoBodyMove, alarm.BedSitUp:
@@ -238,10 +268,10 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			}
 		}
 		if m.DeviceUID != "" {
-			h.buffer.RemoveDevice(m.CardID, m.DeviceID)
+			h.buffer.RemoveDevice(m.SubjectEntity, m.DeviceID)
 			// device_status 下线时从 Redis 删除该设备（仅上线时置 Offline=0）
-			if m.CardID != "" && h.state != nil {
-				_ = h.state.SetDeviceOnline(ctx, m.CardID, m.DeviceID, m.DeviceUID, m.DeviceType, false)
+			if m.SubjectEntity != "" && h.state != nil {
+				_ = h.state.SetDeviceOnline(ctx, m.SubjectEntity, m.DeviceID, m.DeviceUID, m.DeviceType, false)
 			}
 		}
 	case alarm.AlarmTypeOfflineRecover:
@@ -252,25 +282,32 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			recoveryOK = false
 			h.logger.Warn("offline_recover.recovery_failed",
 				zap.String("device_uid", m.DeviceUID),
-				zap.String("card_id", m.CardID),
+				zap.String("card_id", m.SubjectEntity),
 				zap.Error(err),
 			)
 		}
 		setOnlineOK, setOnlineSkip := false, false
-		if m.DeviceUID == "" || m.CardID == "" || h.state == nil {
+		if m.DeviceUID == "" || m.SubjectEntity == "" || h.state == nil {
 			setOnlineSkip = true
-		} else if err := h.state.SetDeviceOnline(ctx, m.CardID, m.DeviceID, m.DeviceUID, m.DeviceType, true); err != nil {
+		} else if err := h.state.SetDeviceOnline(ctx, m.SubjectEntity, m.DeviceID, m.DeviceUID, m.DeviceType, true); err != nil {
 			h.logger.Warn("offline_recover.set_online_failed",
 				zap.String("device_uid", m.DeviceUID),
-				zap.String("card_id", m.CardID),
+				zap.String("card_id", m.SubjectEntity),
 				zap.Error(err),
 			)
 		} else {
 			setOnlineOK = true
 		}
+		// KeepAlive 续命 monitor_buffer：alarm 流的 OfflineRecover 等价于一次软心跳，
+		// 阻止 AdvancePruneTick 因 90s 内无 monitor 数据而把该设备移出 online map（典型场景：
+		// mode=1 sleepad 离床期 iot:monitor:stream 完全静默）。无此续命则下一秒 BuildDeviceStatus
+		// 会把 SetDeviceOnline 写的 offline=0 覆盖回 1。
+		if m.DeviceID != "" && m.SubjectEntity != "" {
+			h.buffer.KeepAlive(m.SubjectEntity, m.DeviceID, time.Now().UnixMilli())
+		}
 		h.logger.Info("offline_recover.done",
 			zap.String("device_uid", m.DeviceUID),
-			zap.String("card_id", m.CardID),
+			zap.String("card_id", m.SubjectEntity),
 			zap.String("device_type", m.DeviceType),
 			zap.Bool("recovery_ok", recoveryOK),
 			zap.Bool("set_online_ok", setOnlineOK),
@@ -285,18 +322,23 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 				return err
 			}
 		}
-		if m.DeviceUID != "" && m.CardID != "" && h.state != nil {
-			_ = h.state.SetDeviceOnline(ctx, m.CardID, m.DeviceID, m.DeviceUID, m.DeviceType, true)
+		if m.DeviceUID != "" && m.SubjectEntity != "" && h.state != nil {
+			_ = h.state.SetDeviceOnline(ctx, m.SubjectEntity, m.DeviceID, m.DeviceUID, m.DeviceType, true)
 		}
 	case alarm.SensorDetached:
+		if m.DeviceID != "" && h.state != nil {
+			_ = h.state.PatchDeviceFlag(ctx, m.DeviceID, "sensor_detached", 1)
+		}
 		if enabled && level != "" {
 			if err := h.alarms.PersistAlarmAndPublish(ctx, payload, eventName, level); err != nil {
 				return err
 			}
 		}
-		//当前DeviceStatus仅包含 offline ,SensorDetached不用更新devcieStatus
-	// status=1 时 gateway 发 SensorDetachedRecover；此处仅恢复该设备既有 SensorDetached，不落新告警
+	// status=1 时 gateway 发 SensorDetachedRecover；此处仅恢复该设备既有 SensorDetached，不落新告警；同时清除 device:status hash 标志位。
 	case alarm.SensorDetachedRecover:
+		if m.DeviceID != "" && h.state != nil {
+			_ = h.state.PatchDeviceFlag(ctx, m.DeviceID, "sensor_detached", 0)
+		}
 		_ = h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.SensorDetached})
 
 	case alarm.Stay, alarm.NightAbsence:

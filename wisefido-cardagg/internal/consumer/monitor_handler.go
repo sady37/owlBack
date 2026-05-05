@@ -96,27 +96,27 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 	}
 
 	// #region agent log
-	dbg := strings.Contains(strings.ToLower(m.CardID), "d2ba029d") || m.DeviceUID == "BM87224700978" ||
+	dbg := strings.Contains(strings.ToLower(m.SubjectEntity), "d2ba029d") || m.DeviceUID == "BM87224700978" ||
 		strings.EqualFold(m.DeviceUID, "E598A2ACD523") || strings.EqualFold(m.DeviceUID, "E598A2ACD5F7") ||
 		strings.EqualFold(m.DeviceID, "E598A2ACD523") || strings.EqualFold(m.DeviceID, "E598A2ACD5F7")
 	if dbg {
-		agentDebugLog("H0", "monitor_handler.Handle:parsed", "monitor parsed", map[string]any{"cardID": m.CardID, "deviceID": m.DeviceID, "deviceUID": m.DeviceUID, "msgTs": m.Timestamp})
+		agentDebugLog("H0", "monitor_handler.Handle:parsed", "monitor parsed", map[string]any{"cardID": m.SubjectEntity, "deviceID": m.DeviceID, "deviceUID": m.DeviceUID, "msgTs": m.Timestamp})
 	}
 	// #endregion
 
 	if m.DeviceUID == "" {
 		// #region agent log
 		if dbg {
-			agentDebugLog("H1", "monitor_handler.Handle:drop", "empty device_uid", map[string]any{"cardID": m.CardID})
+			agentDebugLog("H1", "monitor_handler.Handle:drop", "empty device_uid", map[string]any{"cardID": m.SubjectEntity})
 		}
 		// #endregion
 		return nil
 	}
-	deviceKey := h.metaCache.ResolveDeviceID(ctx, m.CardID, m.DeviceID, m.DeviceUID)
+	deviceKey := h.metaCache.ResolveDeviceID(ctx, m.SubjectEntity, m.DeviceID, m.DeviceUID)
 	if deviceKey == "" {
 		// #region agent log
 		if dbg {
-			agentDebugLog("H1", "monitor_handler.Handle:drop", "ResolveDeviceID empty", map[string]any{"cardID": m.CardID, "deviceID": m.DeviceID, "deviceUID": m.DeviceUID})
+			agentDebugLog("H1", "monitor_handler.Handle:drop", "ResolveDeviceID empty", map[string]any{"cardID": m.SubjectEntity, "deviceID": m.DeviceID, "deviceUID": m.DeviceUID})
 		}
 		// #endregion
 		return nil
@@ -137,7 +137,7 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 	if fields == nil {
 		// #region agent log
 		if dbg {
-			agentDebugLog("H3", "monitor_handler.Handle:drop", "FirstDataValue nil", map[string]any{"cardID": m.CardID, "deviceKey": deviceKey})
+			agentDebugLog("H3", "monitor_handler.Handle:drop", "FirstDataValue nil", map[string]any{"cardID": m.SubjectEntity, "deviceKey": deviceKey})
 		}
 		// #endregion
 		return nil
@@ -145,7 +145,7 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 	trackID := resolveTrackID(fields)
 	// #region agent log
 	if dbg {
-		agentDebugLog("H4", "monitor_handler.Handle:write", "buffer Write", map[string]any{"cardID": m.CardID, "deviceKey": deviceKey, "trackID": trackID, "trackInvalid": trackID == observation.TrackInvalid})
+		agentDebugLog("H4", "monitor_handler.Handle:write", "buffer Write", map[string]any{"cardID": m.SubjectEntity, "deviceKey": deviceKey, "trackID": trackID, "trackInvalid": trackID == observation.TrackInvalid})
 	}
 	// #endregion
 	// PR6: AI override 缓存合并 / tid=88 清理（仅 radar 来源；sleepad 不参与 ghost verdict）
@@ -158,9 +158,9 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 			h.aiOverrides.Apply(m.DeviceUID, trackID, fields)
 		}
 	}
-	h.buffer.Write(m.CardID, deviceKey, strconv.Itoa(trackID), fields, m.Timestamp)
+	h.buffer.Write(m.SubjectEntity, deviceKey, strconv.Itoa(trackID), fields, m.Timestamp)
 	if h.bedCoord != nil && h.state != nil {
-		h.bedCoord.TryResolveAfterMonitorWrite(ctx, h.state, h.alarms, h.metaCache, h.buffer, m.CardID, h.logger)
+		h.bedCoord.TryResolveAfterMonitorWrite(ctx, h.state, h.alarms, h.metaCache, h.buffer, m.SubjectEntity, h.logger)
 	}
 	return nil
 }

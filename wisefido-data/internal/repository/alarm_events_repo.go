@@ -27,7 +27,7 @@ type AlarmEventsRepository interface {
 }
 
 // AlarmEventFilters 报警事件过滤条件
-// 注意：与 wisefido-ai 的 AlarmEventFilters 保持一致
+// 注意：与 wisefido-sensor 的 AlarmEventFilters 保持一致
 type AlarmEventFilters struct {
 	// 时间段过滤
 	StartTime *time.Time // 开始时间（triggered_at >= StartTime）

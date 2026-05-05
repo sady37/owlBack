@@ -2,7 +2,7 @@
 //
 // PR6 — AI 派生 track verdict 的 cardagg 端缓存。
 //
-// wisefido-ai 通过 iot:event:stream + category=track_verdict 发出"事后裁决"
+// wisefido-sensor 通过 iot:event:stream + category=track_verdict 发出"事后裁决"
 // （目前主要是 ghost 判定，写入 track_confidence=20）。本缓存接收并按需合并到
 // monitor 流的 track 字段，让前端 UI 用 AI 调整后的 confidence 渲染。
 //

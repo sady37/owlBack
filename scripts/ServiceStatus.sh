@@ -82,7 +82,7 @@ check_cardagg_process
 check_port 8081 "wisefido-qinglan"
 check_port 8083 "wisefido-sleepace (Go gateway)"
 check_port 8085 "wisefido-iot"
-check_process "wisefido-ai" "wisefido-ai"
+check_process "wisefido-sensor" "wisefido-sensor"
 
 echo ""
 echo "=== Infrastructure ==="

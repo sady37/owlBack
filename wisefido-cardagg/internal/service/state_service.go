@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -85,38 +86,10 @@ func bedConfidenceFromDeviceType(deviceType string) int {
 	}
 }
 
-// mergeDeviceStatus 按设备合并：fromTracker 的 key 仅为 device_id（HIPAA）；current 可能为旧数据 uid key，用 tr.DeviceUID 回查兼容。
-func mergeDeviceStatus(current, fromTracker map[string]*card.DeviceStatus) map[string]*card.DeviceStatus {
-	if len(fromTracker) == 0 {
-		return current
-	}
-	if current == nil {
-		current = make(map[string]*card.DeviceStatus)
-	}
-	merged := make(map[string]*card.DeviceStatus, len(fromTracker))
-	for key, tr := range fromTracker {
-		cur := current[key]
-		if cur == nil && tr.DeviceUID != "" {
-			cur = current[tr.DeviceUID]
-		}
-		if cur != nil {
-			merged[key] = &card.DeviceStatus{
-				DeviceUID:  tr.DeviceUID,
-				DeviceID:   tr.DeviceID,
-				DeviceType: tr.DeviceType,
-				UpdatedAt:  tr.UpdatedAt,
-				Offline:    tr.Offline,
-			}
-		} else {
-			merged[key] = tr
-		}
-	}
-	return merged
-}
-
 const bedStateWindowMs = 5000 // 5s 内视为同一时间窗口，做权重比较
 
-// ReadCardStatus 读取当前卡片状态（Targets/BedState/DeviceStatus 等），供 event 层防静电等逻辑使用。
+// ReadCardStatus 读取当前卡片状态（Targets/BedState 等），供 event 层防静电等逻辑使用。
+// Phase A：DeviceStatus 已迁出 card:state，调用 reader.ReadDeviceStatus 单独读。
 func (s *StateService) ReadCardStatus(ctx context.Context, cardID string) (*card.CardStatus, error) {
 	if s.reader == nil {
 		return nil, nil
@@ -602,7 +575,8 @@ func (s *StateService) ReconcileRoomStateFromBedState(ctx context.Context, cardI
 	return PublishCardStatus(ctx, s.writer, cardID, PublishFields{RoomState: cur})
 }
 
-// DeriveAndWriteState 在 derive 定时点执行：仅写 DeviceStatus；Target 保留 prevTarget（单 Target）。
+// DeriveAndWriteState 在 derive 定时点执行：写 Target；并把每台设备的实时在线状态写到 device:status:{deviceID} 独立 Hash。
+// Phase A：DeviceStatus 已迁出 card:state（每设备一个 Hash）；不再合并跨调用，仅写本轮 derive 命中的设备。
 func (s *StateService) DeriveAndWriteState(
 	ctx context.Context,
 	snap CardSnapshot,
@@ -615,23 +589,21 @@ func (s *StateService) DeriveAndWriteState(
 		devices = meta.Devices
 	}
 	fromTracker := buf.BuildDeviceStatus(snap.CardID, devices, time.Now().UnixMilli())
-	var currentDS map[string]*card.DeviceStatus
-	if s.reader != nil {
-		if curr, err := s.reader.ReadCardStatus(ctx, snap.CardID); err == nil && curr != nil && curr.DeviceStatus != nil {
-			currentDS = curr.DeviceStatus
+	for _, ds := range fromTracker {
+		if err := s.writer.WriteDeviceStatus(ctx, ds); err != nil {
+			s.logger.Warn("write device status",
+				zap.String("device_id", ds.DeviceID),
+				zap.Error(err))
 		}
 	}
-	deviceStatus := mergeDeviceStatus(currentDS, fromTracker)
 
 	status := &card.CardStatus{
-		CardID:       snap.CardID,
-		Target:       prevTarget,
-		DeviceStatus: deviceStatus,
+		CardID: snap.CardID,
+		Target: prevTarget,
 	}
 
 	if err := PublishCardStatus(ctx, s.writer, snap.CardID, PublishFields{
-		Target:       status.Target,
-		DeviceStatus: status.DeviceStatus,
+		Target: status.Target,
 	}); err != nil {
 		return nil, err
 	}
@@ -639,7 +611,7 @@ func (s *StateService) DeriveAndWriteState(
 	s.logger.Debug("card:status derive",
 		zap.String("cid", snap.CardID),
 		zap.Bool("has_target", prevTarget != nil),
-		zap.Int("devices", len(deviceStatus)))
+		zap.Int("devices", len(fromTracker)))
 
 	return status, nil
 }
@@ -1353,56 +1325,60 @@ func intFromAny(v any) int {
 	}
 }
 
-// DeriveDeviceOnlineOnly writes only DeviceStatus to card:state Hash.
-// Used on derive ticks when a card has active device entries in buffer
-// but no field-level snapshots (fields expired within 4s TTL).
-// Merges with current Redis device_status so event-updated devices are not overwritten.
+// DeriveDeviceOnlineOnly Phase A：仅写每台设备的 device:status:{deviceID} Hash。
+// derive 定时点：buffer 中有活跃 device 但无 field-level snapshot 时也要刷新心跳，避免被健康检测误判 offline。
 func (s *StateService) DeriveDeviceOnlineOnly(ctx context.Context, cardID string, meta *CardMeta, buf *MonitorBuffer) error {
 	var devices map[string]*DeviceMeta
 	if meta != nil {
 		devices = meta.Devices
 	}
 	fromTracker := buf.BuildDeviceStatus(cardID, devices, time.Now().UnixMilli())
-	var currentDS map[string]*card.DeviceStatus
-	if s.reader != nil {
-		if curr, err := s.reader.ReadCardStatus(ctx, cardID); err == nil && curr != nil && curr.DeviceStatus != nil {
-			currentDS = curr.DeviceStatus
-		}
-	}
-	deviceStatus := mergeDeviceStatus(currentDS, fromTracker)
-	if len(deviceStatus) == 0 {
+	if len(fromTracker) == 0 {
 		return nil
 	}
+	for _, ds := range fromTracker {
+		if err := s.writer.WriteDeviceStatus(ctx, ds); err != nil {
+			s.logger.Warn("write device status",
+				zap.String("device_id", ds.DeviceID),
+				zap.Error(err))
+		}
+	}
+	return nil
+}
 
-	return PublishCardStatus(ctx, s.writer, cardID, PublishFields{
-		DeviceStatus: deviceStatus,
+// SetDeviceOnline Phase A：写 device:status:{deviceID} 独立 Hash。cardID 仍接受但仅用于日志。
+func (s *StateService) SetDeviceOnline(ctx context.Context, cardID, deviceID, deviceUID, deviceType string, online bool) error {
+	_ = cardID
+	return s.writer.SetDeviceOnline(ctx, deviceID, deviceUID, deviceType, online)
+}
+
+// PatchDeviceFlag Phase A 后续：把单个 device-class 标志位（signal_poor / angle_abnormal / sensor_detached）
+// 同步到 device:status:{deviceID}，由 alarm_handler 在收到对应 alarm/recover 时联动调用。
+// 这样前端轮询 device:status hash 能拿到当前真值；不再依赖 alarm_events 表反向推导。
+func (s *StateService) PatchDeviceFlag(ctx context.Context, deviceID, fieldKey string, value int) error {
+	if deviceID == "" || fieldKey == "" {
+		return nil
+	}
+	return s.writer.PatchDeviceStatus(ctx, deviceID, map[string]interface{}{
+		fieldKey: fmt.Sprintf("%d", value),
 	})
 }
 
-// SetDeviceOnline immediately updates one device's offline status in DeviceStatus JSON. Map key 仅用 deviceID（HIPAA）；不用 device_uid 兜底。
-func (s *StateService) SetDeviceOnline(ctx context.Context, cardID, deviceID, deviceUID, deviceType string, online bool) error {
-	return s.writer.SetDeviceOnline(ctx, cardID, deviceID, deviceUID, deviceType, online)
-}
-
-// SetCardOffline marks a card as offline: writes each device with offline=1 (not empty map, avoids omitempty swallowing).
+// SetCardOffline Phase A：把该卡所有设备的 device:status:{deviceID} 标 offline=1。
 func (s *StateService) SetCardOffline(ctx context.Context, cardID string, meta *CardMeta) {
-	now := time.Now().UnixMilli()
-	ds := make(map[string]*card.DeviceStatus)
-	if meta != nil {
-		for devID, dm := range meta.Devices {
-			ds[devID] = &card.DeviceStatus{
-				DeviceUID:  dm.DeviceUID,
-				DeviceID:   dm.DeviceID,
-				DeviceType: dm.DeviceType,
-				UpdatedAt:  now,
-				Offline:    1,
-			}
-		}
+	if meta == nil {
+		return
 	}
-	if err := PublishCardStatus(ctx, s.writer, cardID, PublishFields{
-		DeviceStatus: ds,
-	}); err != nil {
-		s.logger.Warn("set offline", zap.String("cid", cardID), zap.Error(err))
+	for devID, dm := range meta.Devices {
+		if devID == "" {
+			continue
+		}
+		if err := s.writer.SetDeviceOnline(ctx, devID, dm.DeviceUID, dm.DeviceType, false); err != nil {
+			s.logger.Warn("set offline",
+				zap.String("cid", cardID),
+				zap.String("device_id", devID),
+				zap.Error(err))
+		}
 	}
 }
 

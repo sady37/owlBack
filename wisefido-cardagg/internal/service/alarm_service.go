@@ -226,7 +226,7 @@ func (s *AlarmService) GetDeviceHRThreshold(ctx context.Context, tenantID, devic
 // PersistAlarmAndPublish 落库 alarm_events、更新 cards 报警计数与 popAlarm、写 Redis+stream。eventName/level 需已标准化。
 func (s *AlarmService) PersistAlarmAndPublish(ctx context.Context, msg *redis.IoTStreamMessage, eventName, level string) error {
 	if s.db == nil {
-		s.logger.Warn("no DB, alarm not persisted", zap.String("cid", msg.CardID))
+		s.logger.Warn("no DB, alarm not persisted", zap.String("cid", msg.SubjectEntity))
 		return nil
 	}
 	if eventName == "" || level == "" {
@@ -235,7 +235,7 @@ func (s *AlarmService) PersistAlarmAndPublish(ctx context.Context, msg *redis.Io
 	triggerData, _ := json.Marshal(redis.FirstDataValue(msg.DataValue))
 	fhirCategory := alarm.GetFHIRCategory(eventName)
 	triggeredAt := time.UnixMilli(msg.Timestamp)
-	result, cardAlarmState, err := card.InsertAlarmAndUpdateCard(ctx, s.db, msg.CardID, card.AlarmInsertParams{
+	result, cardAlarmState, err := card.InsertAlarmAndUpdateCard(ctx, s.db, msg.SubjectEntity, card.AlarmInsertParams{
 		TenantID:    msg.TenantID,
 		DeviceID:    msg.DeviceID,
 		EventType:   eventName,
@@ -245,14 +245,18 @@ func (s *AlarmService) PersistAlarmAndPublish(ctx context.Context, msg *redis.Io
 		TriggerData: triggerData,
 	})
 	if err != nil {
-		s.logger.Warn("insert alarm failed", zap.String("cid", msg.CardID), zap.Error(err))
+		s.logger.Warn("insert alarm failed", zap.String("cid", msg.SubjectEntity), zap.Error(err))
 		return err
 	}
-	s.logger.Info("alarm inserted", zap.String("cid", msg.CardID), zap.String("event_id", result.EventID), zap.String("level", level), zap.String("type", eventName))
-	if err := s.writeAlarmState(ctx, msg.CardID, cardAlarmState); err != nil {
+	if result.Deduped {
+		s.logger.Debug("alarm onset deduped (active exists)", zap.String("cid", msg.SubjectEntity), zap.String("device_id", msg.DeviceID), zap.String("type", eventName), zap.String("active_event_id", result.EventID))
+		return nil
+	}
+	s.logger.Info("alarm inserted", zap.String("cid", msg.SubjectEntity), zap.String("event_id", result.EventID), zap.String("level", level), zap.String("type", eventName))
+	if err := s.writeAlarmState(ctx, msg.SubjectEntity, cardAlarmState); err != nil {
 		return err
 	}
-	s.notifyAlarmPushAsync(msg.TenantID, msg.CardID, msg.DeviceID, result.EventID, eventName, level)
+	s.notifyAlarmPushAsync(msg.TenantID, msg.SubjectEntity, msg.DeviceID, result.EventID, eventName, level)
 	return nil
 }
 
@@ -279,6 +283,10 @@ func (s *AlarmService) PersistAlarmFromTrack(ctx context.Context, cardID, tenant
 	if err != nil {
 		s.logger.Warn("insert alarm failed", zap.String("cid", cardID), zap.Error(err))
 		return err
+	}
+	if result.Deduped {
+		s.logger.Debug("alarm onset deduped (active exists)", zap.String("cid", cardID), zap.String("device_id", deviceID), zap.String("type", eventName), zap.String("active_event_id", result.EventID))
+		return nil
 	}
 	s.logger.Info("alarm inserted", zap.String("cid", cardID), zap.String("event_id", result.EventID), zap.String("level", level), zap.String("type", eventName))
 	if err := s.writeAlarmState(ctx, cardID, cardAlarmState); err != nil {
@@ -317,6 +325,10 @@ func (s *AlarmService) PersistAlarmWithTriggerData(ctx context.Context, cardID, 
 		s.logger.Warn("insert alarm failed", zap.String("cid", cardID), zap.Error(err))
 		return err
 	}
+	if result.Deduped {
+		s.logger.Debug("alarm onset deduped (active exists)", zap.String("cid", cardID), zap.String("device_id", deviceID), zap.String("type", eventName), zap.String("active_event_id", result.EventID))
+		return nil
+	}
 	s.logger.Info("alarm inserted", zap.String("cid", cardID), zap.String("event_id", result.EventID), zap.String("level", level), zap.String("type", eventName))
 	if err := s.writeAlarmState(ctx, cardID, cardAlarmState); err != nil {
 		return err
@@ -352,6 +364,10 @@ func (s *AlarmService) RecordDeviceFailure(ctx context.Context, cardID, tenantID
 	if err != nil {
 		s.logger.Warn("insert device_failure alarm failed", zap.String("cid", cardID), zap.Error(err))
 		return err
+	}
+	if result.Deduped {
+		s.logger.Debug("device_failure deduped (active exists)", zap.String("cid", cardID), zap.String("device_id", deviceID), zap.String("active_event_id", result.EventID))
+		return nil
 	}
 	s.logger.Info("device_failure alarm inserted", zap.String("cid", cardID), zap.String("event_id", result.EventID), zap.String("reason", reason))
 	if err := s.writeAlarmState(ctx, cardID, cardAlarmState); err != nil {
@@ -548,24 +564,24 @@ func (s *AlarmService) TryAddLeftBedPendingAtTrigger(ctx context.Context, msg *r
 		return false
 	}
 	params := s.getResetTimeParamsForTenant(ctx, msg.TenantID)
-	tz := s.getEffectiveTimezoneForCard(ctx, msg.CardID)
+	tz := s.getEffectiveTimezoneForCard(ctx, msg.SubjectEntity)
 	if !isWithinResetTimeWindow(time.Now(), params, tz) {
-		s.logger.Debug("LeftBed pending skip: outside ResetTimeParams", zap.String("cid", msg.CardID))
+		s.logger.Debug("LeftBed pending skip: outside ResetTimeParams", zap.String("cid", msg.SubjectEntity))
 		return false
 	}
 	if s.reader != nil {
-		status, _ := s.reader.ReadCardStatus(ctx, msg.CardID)
+		status, _ := s.reader.ReadCardStatus(ctx, msg.SubjectEntity)
 		if status == nil || status.BedState == nil || status.BedState.BedStatus != 0 {
-			s.logger.Debug("LeftBed pending skip: not in_bed", zap.String("cid", msg.CardID))
+			s.logger.Debug("LeftBed pending skip: not in_bed", zap.String("cid", msg.SubjectEntity))
 			return false
 		}
 		if status.BedState.StartTime == 0 {
-			s.logger.Debug("LeftBed pending skip: start_time not set", zap.String("cid", msg.CardID))
+			s.logger.Debug("LeftBed pending skip: start_time not set", zap.String("cid", msg.SubjectEntity))
 			return false
 		}
 		inBedDurationMs := time.Now().UnixMilli() - status.BedState.StartTime
 		if inBedDurationMs < 5*60*1000 {
-			s.logger.Debug("LeftBed pending skip: in_bed < 5min", zap.String("cid", msg.CardID), zap.Int64("ms", inBedDurationMs))
+			s.logger.Debug("LeftBed pending skip: in_bed < 5min", zap.String("cid", msg.SubjectEntity), zap.Int64("ms", inBedDurationMs))
 			return false
 		}
 	}
@@ -578,7 +594,7 @@ func (s *AlarmService) TryAddLeftBedPendingAtTrigger(ctx context.Context, msg *r
 		upgradeTo = def.UpgradeTo
 	}
 	if err := s.AddPendingAlarm(ctx, msg.TenantID, msg.DeviceID, eventName, level, msg.Timestamp, durationSec, upgradeTo, triggerData); err != nil {
-		s.logger.Warn("add LeftBed pending at trigger", zap.String("cid", msg.CardID), zap.Error(err))
+		s.logger.Warn("add LeftBed pending at trigger", zap.String("cid", msg.SubjectEntity), zap.Error(err))
 		return false
 	}
 	return true
@@ -765,6 +781,12 @@ func (s *AlarmService) ScanPendingAlarms(ctx context.Context) error {
 				zap.Error(err))
 			continue
 		}
+		if result.Deduped {
+			// pending 触发命中已 active 行：清掉 pending 记录但不重发通知
+			s.logger.Debug("pending alarm deduped (active exists)", zap.String("device_id", p.DeviceID), zap.String("type", eventType), zap.String("active_event_id", result.EventID))
+			_ = s.redisPending.HDel(ctx, redisPendingAlarmKey, field)
+			continue
+		}
 		resolvedCardID, lookupErr := card.LookupCardIDByDeviceID(ctx, s.db, p.DeviceID)
 		if lookupErr != nil {
 			s.logger.Warn("pending alarm fired: lookup card_id for stream",
@@ -837,6 +859,64 @@ func (s *AlarmService) SyncAllCardsAlarmState(ctx context.Context) error {
 	return nil
 }
 
+// SyncDeviceStatusFromActiveAlarms 启动时从 alarm_events.active 重建 device:status hash 的 alarm flags。
+//
+// 解决场景：
+//   - WriteDeviceStatus 历史 bug 把 alarm flags 重置为 0，bug 修复后 qinglan/sleepace transition dedup 已
+//     cache=1，不再 republish onset，hash 永远停留在 0。
+//   - cardagg 重启后丢失内存状态，但 alarm_events.active 是 DB 真值，借此恢复 hash。
+//
+// 这是幂等的：每次启动都按 active 行重建 hash flag。已 auto_resolved/acked 的不计入（hash 应为 0）。
+// 设备类只覆盖 3 个 hash flag：signal_poor / angle_abnormal / sensor_detached。
+// offline 字段由 device-gateway 心跳/健康检测维护，不在此处覆写。
+func (s *AlarmService) SyncDeviceStatusFromActiveAlarms(ctx context.Context) error {
+	if s.db == nil || s.writer == nil {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT device_id::text, event_type
+		FROM alarm_events
+		WHERE alarm_status='active'
+		  AND event_type IN ('SignalPoor','AngleException','SensorDetached')
+		  AND (metadata->>'deleted_at' IS NULL)
+	`)
+	if err != nil {
+		return fmt.Errorf("query active device alarms: %w", err)
+	}
+	defer rows.Close()
+
+	patched := 0
+	for rows.Next() {
+		var deviceID, eventType string
+		if err := rows.Scan(&deviceID, &eventType); err != nil {
+			continue
+		}
+		var fieldKey string
+		switch eventType {
+		case alarm.SignalPoor:
+			fieldKey = "signal_poor"
+		case alarm.AngleException:
+			fieldKey = "angle_abnormal"
+		case alarm.SensorDetached:
+			fieldKey = "sensor_detached"
+		default:
+			continue
+		}
+		if err := s.writer.PatchDeviceStatus(ctx, deviceID, map[string]interface{}{
+			fieldKey: "1",
+		}); err != nil {
+			s.logger.Warn("sync device flag failed",
+				zap.String("device_id", deviceID),
+				zap.String("field", fieldKey),
+				zap.Error(err))
+			continue
+		}
+		patched++
+	}
+	s.logger.Info("startup device:status flag sync done", zap.Int("patched", patched))
+	return nil
+}
+
 // HandleCardChange processes card add/update/delete from config:card:stream.
 func (s *AlarmService) HandleCardChange(ctx context.Context, cardID, op string) error {
 	if cardID == "" {
@@ -860,9 +940,9 @@ func (s *AlarmService) HandleRecoveryWithTypes(ctx context.Context, msg *redis.I
 		return nil
 	}
 
-	cardAlarmState, result, err := card.AutoResolveDeviceAlarms(ctx, s.db, msg.CardID, msg.TenantID, msg.DeviceID, alarmTypes)
+	cardAlarmState, result, err := card.AutoResolveDeviceAlarms(ctx, s.db, msg.SubjectEntity, msg.TenantID, msg.DeviceID, alarmTypes)
 	if err != nil {
-		s.logger.Warn("auto resolve failed", zap.String("cid", msg.CardID), zap.Error(err))
+		s.logger.Warn("auto resolve failed", zap.String("cid", msg.SubjectEntity), zap.Error(err))
 		return err
 	}
 	if result.ResolvedCount == 0 {
@@ -870,10 +950,10 @@ func (s *AlarmService) HandleRecoveryWithTypes(ctx context.Context, msg *redis.I
 	}
 
 	s.logger.Info("alarm auto-resolved",
-		zap.String("cid", msg.CardID),
+		zap.String("cid", msg.SubjectEntity),
 		zap.Int("resolved", result.ResolvedCount))
 
-	return s.writeAlarmState(ctx, msg.CardID, cardAlarmState)
+	return s.writeAlarmState(ctx, msg.SubjectEntity, cardAlarmState)
 }
 
 // writeAlarmState converts CardAlarmState → AlarmState and writes to Redis Hash + stream.
@@ -886,7 +966,7 @@ func (s *AlarmService) writeAlarmState(ctx context.Context, cardID string, cas *
 	})
 }
 
-// notifyAlarmPushAsync 在 cardStatus 发布成功后，异步通知 wisefido-data 走 APNs（仅 staff；与 wisefido-ai/alarmpush 同 URL）
+// notifyAlarmPushAsync 在 cardStatus 发布成功后，异步通知 wisefido-data 走 APNs（仅 staff；与 wisefido-sensor/alarmpush 同 URL）
 func (s *AlarmService) notifyAlarmPushAsync(tenantID, cardID, deviceID, eventID, eventType, alarmLevel string) {
 	base := strings.TrimSpace(os.Getenv("WISEFIDO_DATA_ALARM_PUSH_URL"))
 	sec := strings.TrimSpace(os.Getenv("INTERNAL_ALARM_PUSH_SECRET"))

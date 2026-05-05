@@ -111,13 +111,13 @@ func streamLabelFrom(streamName string, msg *rediscommon.IoTStreamMessage) strin
 	return "iot:" + xxx + ":" + yyy
 }
 
-// skipQinglanIotHeadPublish 网关不写或写空 card_id 时，若 device_uid 也为空则无法与 IotPreparedHandler 对齐；
-// 若 device_uid 与 device_id 皆空则下游无法 resolve。此类包不写入 iot:* stream。
-func skipQinglanIotHeadPublish(cardID, deviceID, deviceUID string) bool {
-	c := strings.TrimSpace(cardID)
+// skipQinglanIotHeadPublish 网关不写或写空 subject_entity 时，若 device_uid+device_id 也都空则下游无法 resolve；
+// 此类包不写入 iot:* stream。Phase A：未绑卡 caller 已用 device_id 占位 subject_entity。
+func skipQinglanIotHeadPublish(subjectEntity, deviceID, deviceUID string) bool {
+	s := strings.TrimSpace(subjectEntity)
 	u := strings.TrimSpace(deviceUID)
 	d := strings.TrimSpace(deviceID)
-	if c == "" && u == "" {
+	if s == "" && u == "" && d == "" {
 		return true
 	}
 	if u == "" && d == "" {
@@ -126,23 +126,27 @@ func skipQinglanIotHeadPublish(cardID, deviceID, deviceUID string) bool {
 	return false
 }
 
-var errEmptyCardID = fmt.Errorf("card_id is empty, skip publish")
+var errEmptySubjectEntity = fmt.Errorf("subject_entity is empty, skip publish")
 
 func (p *StreamPublisher) publishObservation(ctx context.Context, stream rediscommon.StreamDefinition, msg *rediscommon.IoTStreamMessage) error {
-	if strings.TrimSpace(msg.CardID) == "" {
+	// Phase A: Producer 缺省按 device-gateway 语义自动填充
+	if msg.Producer == "" {
+		msg.Producer = rediscommon.BuildDeviceProducer(msg.DeviceID)
+	}
+	if strings.TrimSpace(msg.SubjectEntity) == "" {
 		if p.logger != nil {
-			QinglanHotPathLog(p.logger, "skip iot publish: empty card_id",
+			QinglanHotPathLog(p.logger, "skip iot publish: empty subject_entity",
 				zap.String("stream", stream.Name),
 				zap.String("device_uid", msg.DeviceUID),
 				zap.String("device_id", msg.DeviceID))
 		}
-		return errEmptyCardID
+		return errEmptySubjectEntity
 	}
-	if skipQinglanIotHeadPublish(msg.CardID, msg.DeviceID, msg.DeviceUID) {
+	if skipQinglanIotHeadPublish(msg.SubjectEntity, msg.DeviceID, msg.DeviceUID) {
 		if p.logger != nil {
-			QinglanHotPathLog(p.logger, "skip iot publish: empty card_id+device_uid or empty device_uid+device_id",
+			QinglanHotPathLog(p.logger, "skip iot publish: empty identity",
 				zap.String("stream", stream.Name),
-				zap.String("cid", msg.CardID),
+				zap.String("subject_entity", msg.SubjectEntity),
 				zap.String("device_uid", msg.DeviceUID),
 				zap.String("device_id", msg.DeviceID))
 		}
@@ -164,7 +168,7 @@ func (p *StreamPublisher) publishObservation(ctx context.Context, stream redisco
 		payload, _ := json.Marshal(msg.DataValue)
 		QinglanHotPathLog(p.logger, "publish to redis",
 			zap.String("stream", streamLabel),
-			zap.String("cid", msg.CardID),
+			zap.String("cid", msg.SubjectEntity),
 			zap.String("device_uid", msg.DeviceUID),
 			zap.Int64("ts", msg.Timestamp),
 			zap.ByteString("event", payload))
@@ -201,18 +205,19 @@ func (p *StreamPublisher) PublishToStream(ctx context.Context, streamName string
 }
 
 // BuildEncodedData 构建 iot:*:stream 输出数据（顶层无 addressInfo，键 dataValue 为数组）
-// cardID 未绑卡可传空；dataValue 为数组，每项含 category 及对应字段。
+// subjectEntity 未绑卡可传空（caller 用 device_id 占位）；dataValue 为数组，每项含 category 及对应字段。
 func (p *StreamPublisher) BuildEncodedData(
-	cardID string,
+	subjectEntity string,
 	tenantID string,
 	deviceID string,
 	topicType, category string,
 	dataValue []interface{},
 ) map[string]interface{} {
 	msg := rediscommon.BuildIoTStreamMessage(
+		"",                // device_uid 由 caller 在外层填充（此 helper 只构造 envelope 头部）
 		deviceID,
-		DeviceTypeRadar, // wisefido-qinglan网关的所有设备都是Radar（常量在mqtt_consumer.go中定义）
-		cardID,
+		DeviceTypeRadar,   // wisefido-qinglan 网关的所有设备都是 Radar
+		subjectEntity,
 		tenantID,
 		time.Now().Unix(),
 		topicType,
@@ -278,20 +283,24 @@ func (p *StreamPublisher) PublishDeviceStatus(
 		}
 	}
 
+	subjectEntity := cardID
+	if subjectEntity == "" {
+		subjectEntity = deviceID // Phase A：未绑卡用 device_id 占位
+	}
 	msg := rediscommon.BuildDeviceStatusMessage(
 		deviceUID,
+		deviceID,
 		deviceType,
-		cardID, // 填充查询到的 cardID
+		subjectEntity,
 		tenantID,
 		time.Now().UnixMilli(),
 		statuses,
 	)
-	msg.DeviceID = deviceID
 
-	if skipQinglanIotHeadPublish(msg.CardID, msg.DeviceID, msg.DeviceUID) {
+	if skipQinglanIotHeadPublish(msg.SubjectEntity, msg.DeviceID, msg.DeviceUID) {
 		if p.logger != nil {
 			QinglanHotPathLog(p.logger, "skip PublishDeviceStatus: empty card_id+device_uid or empty device_uid+device_id",
-				zap.String("cid", msg.CardID),
+				zap.String("cid", msg.SubjectEntity),
 				zap.String("device_uid", msg.DeviceUID),
 				zap.String("device_id", msg.DeviceID))
 		}

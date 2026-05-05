@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 供 systemd 单模块启动；与 start-owlback.sh 同源环境约定。
-# 用法: owlback-run-service.sh wisefido-data|wisefido-cardagg|wisefido-qinglan|wisefido-sleepace|wisefido-iot|wisefido-ai
+# 用法: owlback-run-service.sh wisefido-data|wisefido-cardagg|wisefido-qinglan|wisefido-sleepace|wisefido-iot|wisefido-sensor
 set -euo pipefail
 
 MODULE="${1:-}"
@@ -128,9 +128,10 @@ case "$MODULE" in
     export CONSUMER_NAME="${CONSUMER_NAME:-iot-timeseries-1}"
     owlback_go_exec "$OWLBACK/wisefido-iot" "./cmd/wisefido-iot" "wisefido-iot" "$LOG_DIR/wisefido-iot.log"
     ;;
-  wisefido-ai)
+  wisefido-sensor|wisefido-ai)
+    # Phase B：wisefido-ai 改名 wisefido-sensor；保留旧 module 名兼容（重启过渡期遗留 systemd unit）
     export REDIS_DB="${REDIS_DB:-0}"
-    owlback_go_exec "$OWLBACK/wisefido-ai" "./cmd/wisefido-ai" "wisefido-ai" "$LOG_DIR/wisefido-ai.log"
+    owlback_go_exec "$OWLBACK/wisefido-sensor" "./cmd/wisefido-sensor" "wisefido-sensor" "$LOG_DIR/wisefido-sensor.log"
     ;;
   *)
     echo "unknown module: $MODULE" >&2

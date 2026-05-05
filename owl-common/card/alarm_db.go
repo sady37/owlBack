@@ -26,9 +26,14 @@ type AlarmInsertParams struct {
 }
 
 // AlarmInsertResult INSERT 后返回的结果
+//
+// Deduped=true 表示因 AlarmDef.DedupWhileActive=true 且已有 active 行，未实际插入新行。
+// EventID 为现存 active 行的 event_id。CardAlarmState 同步返回 nil（计数未变，无需写回 Redis）。
+// 调用方 MUST 检查 Deduped 并短路 notifyAlarmPushAsync —— 否则等同 push 通知 10min 灌一次。
 type AlarmInsertResult struct {
 	EventID     string
 	TriggeredAt time.Time
+	Deduped     bool
 }
 
 // AlarmUpdateParams UPDATE alarm_events 所需参数
@@ -84,6 +89,31 @@ func (c *CardAlarmState) ToAlarmState() *AlarmState {
 //
 // cardID 由调用方提供；为空时通过 DeviceID 自动查找，查不到返回 error。
 func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, params AlarmInsertParams) (*AlarmInsertResult, *CardAlarmState, error) {
+	// 设备类 dedup（Phase C P0）：DedupWhileActive=true 且同 (device_id, event_type) 已有 active 行时，
+	// 不开 tx、不插新行，返回 Deduped=true 由调用方短路 push 通知。
+	// 现成索引 idx_alarm_events_device_active(device_id, alarm_status) WHERE active 命中此查询。
+	// 在 BeginTx 之前做：免一次空 tx 开销；竞态窗口很小（10min 周期 vs 单设备单 publisher）且双 active 行下次 recover 会被 batch UPDATE 一并 auto_resolved，无残留。
+	if def := alarm.LookupAlarm(params.EventType); def != nil && def.DedupWhileActive && params.DeviceID != "" {
+		var existingEventID string
+		err := db.QueryRowContext(ctx,
+			`SELECT event_id::text FROM alarm_events
+			 WHERE device_id=$1 AND event_type=$2 AND alarm_status='active'
+			 ORDER BY triggered_at DESC LIMIT 1`,
+			params.DeviceID, params.EventType,
+		).Scan(&existingEventID)
+		if err == nil {
+			return &AlarmInsertResult{
+				EventID:     existingEventID,
+				TriggeredAt: params.TriggeredAt,
+				Deduped:     true,
+			}, nil, nil
+		}
+		if err != sql.ErrNoRows {
+			return nil, nil, fmt.Errorf("dedup check %s/%s: %w", params.DeviceID, params.EventType, err)
+		}
+		// ErrNoRows 落到下方正常 INSERT 路径
+	}
+
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("begin tx: %w", err)
@@ -789,11 +819,13 @@ func AutoResolveDeviceAlarms(ctx context.Context, db *sql.DB, cardID, tenantID, 
 		return nil, nil, fmt.Errorf("find top resolved alarm: %w", err)
 	}
 
-	// 2. batch UPDATE: active → auto_resolved，trigger_data 追加 resolve_snapshot 不覆盖原触发快照
+	// 2. batch UPDATE: active → auto_resolved，trigger_data 追加 resolve_snapshot 不覆盖原触发快照。
+	// handler 列是 uuid 类型（非空时存 user_id），系统自动恢复无 user uuid，写 NULL；
+	// "system:device_recovery" 字符串放在 trigger_data.resolve_snapshot 里供审计。
 	_, err = tx.ExecContext(ctx, `
 		UPDATE alarm_events
 		SET alarm_status = 'auto_resolved',
-		    handler = 'system:device_recovery',
+		    handler = NULL,
 		    hand_time = CURRENT_TIMESTAMP,
 		    updated_at = CURRENT_TIMESTAMP,
 		    operation = 'auto_resolved',

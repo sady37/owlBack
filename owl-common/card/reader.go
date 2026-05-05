@@ -19,8 +19,9 @@ func NewReader(client *redis.Client) *Reader {
 }
 
 func (r *Reader) ReadCardStatus(ctx context.Context, cardID string) (*CardStatus, error) {
+	// Phase A：device_status 已迁出 card:state，独立到 device:status:{deviceID}（详 ReadDeviceStatusByDeviceIDs）。
 	vals, err := r.client.HMGet(ctx, HashKey(cardID),
-		"target", "room_state", "bathroom_state", "bed_state", "device_status", "alarm_state", "message",
+		"target", "room_state", "bathroom_state", "bed_state", "alarm_state", "message",
 	).Result()
 	if err != nil {
 		return nil, err
@@ -51,18 +52,12 @@ func (r *Reader) ReadCardStatus(ctx context.Context, cardID string) (*CardStatus
 		}
 	}
 	if s, ok := vals[4].(string); ok && s != "" && s != "{}" {
-		var ds map[string]*DeviceStatus
-		if json.Unmarshal([]byte(s), &ds) == nil {
-			status.DeviceStatus = ds
-		}
-	}
-	if s, ok := vals[5].(string); ok && s != "" && s != "{}" {
 		var as AlarmState
 		if json.Unmarshal([]byte(s), &as) == nil {
 			status.AlarmState = &as
 		}
 	}
-	if s, ok := vals[6].(string); ok && s != "" && s != "{}" {
+	if s, ok := vals[5].(string); ok && s != "" && s != "{}" {
 		var msg map[string]interface{}
 		if json.Unmarshal([]byte(s), &msg) == nil {
 			status.Message = msg
@@ -121,49 +116,94 @@ func (r *Reader) ReadAIFields(ctx context.Context, cardID string) (map[string]st
 	return result, nil
 }
 
-func (r *Reader) ReadDeviceStatusBatch(ctx context.Context, cardIDs []string) (map[string]map[string]*DeviceStatus, error) {
-	if len(cardIDs) == 0 {
+// ReadDeviceStatus 读单个设备状态（device:status:{deviceID} Hash）。
+func (r *Reader) ReadDeviceStatus(ctx context.Context, deviceID string) (*DeviceStatus, error) {
+	if deviceID == "" {
 		return nil, nil
 	}
-	seen := make(map[string]struct{}, len(cardIDs))
-	unique := make([]string, 0, len(cardIDs))
-	for _, k := range cardIDs {
-		if k == "" {
+	vals, err := r.client.HGetAll(ctx, DeviceStatusHashKey(deviceID)).Result()
+	if err != nil {
+		return nil, err
+	}
+	if len(vals) == 0 {
+		return nil, nil
+	}
+	return parseDeviceStatusHash(deviceID, vals), nil
+}
+
+// ReadDeviceStatusByDeviceIDs 批量读多个设备状态（pipeline，按 deviceID 列表）。
+// 用于卡片详情聚合：调用方先从 cards.devices JSONB 拿 deviceID 列表，再调本接口。
+func (r *Reader) ReadDeviceStatusByDeviceIDs(ctx context.Context, deviceIDs []string) (map[string]*DeviceStatus, error) {
+	if len(deviceIDs) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(deviceIDs))
+	unique := make([]string, 0, len(deviceIDs))
+	for _, d := range deviceIDs {
+		if d == "" {
 			continue
 		}
-		if _, ok := seen[k]; ok {
+		if _, ok := seen[d]; ok {
 			continue
 		}
-		seen[k] = struct{}{}
-		unique = append(unique, k)
+		seen[d] = struct{}{}
+		unique = append(unique, d)
 	}
 	if len(unique) == 0 {
 		return nil, nil
 	}
 	pipe := r.client.Pipeline()
-	cmds := make([]*redis.StringCmd, 0, len(unique))
-	for _, k := range unique {
-		cmds = append(cmds, pipe.HGet(ctx, HashKey(k), "device_status"))
+	cmds := make([]*redis.StringStringMapCmd, 0, len(unique))
+	for _, d := range unique {
+		cmds = append(cmds, pipe.HGetAll(ctx, DeviceStatusHashKey(d)))
 	}
 	_, err := pipe.Exec(ctx)
 	if err != nil && err != redis.Nil {
 		return nil, err
 	}
-	out := make(map[string]map[string]*DeviceStatus, len(unique))
-	for i, k := range unique {
-		raw, e := cmds[i].Result()
-		if e != nil || raw == "" || raw == "{}" {
-			out[k] = nil
+	out := make(map[string]*DeviceStatus, len(unique))
+	for i, d := range unique {
+		vals, e := cmds[i].Result()
+		if e != nil || len(vals) == 0 {
 			continue
 		}
-		var m map[string]*DeviceStatus
-		if json.Unmarshal([]byte(raw), &m) != nil {
-			out[k] = nil
-			continue
-		}
-		out[k] = m
+		out[d] = parseDeviceStatusHash(d, vals)
 	}
 	return out, nil
+}
+
+func parseDeviceStatusHash(deviceID string, vals map[string]string) *DeviceStatus {
+	atoi := func(k string) int {
+		s, ok := vals[k]
+		if !ok || s == "" {
+			return 0
+		}
+		v, _ := strconv.Atoi(s)
+		return v
+	}
+	atoi64 := func(k string) int64 {
+		s, ok := vals[k]
+		if !ok || s == "" {
+			return 0
+		}
+		v, _ := strconv.ParseInt(s, 10, 64)
+		return v
+	}
+	got := vals["device_id"]
+	if got == "" {
+		got = deviceID
+	}
+	return &DeviceStatus{
+		DeviceUID:      vals["device_uid"],
+		DeviceID:       got,
+		DeviceType:     vals["device_type"],
+		UpdatedAt:      atoi64("updated_at"),
+		LastSeenMs:     atoi64("last_seen_ms"),
+		Offline:        atoi("offline"),
+		SignalPoor:     atoi("signal_poor"),
+		AngleAbnormal:  atoi("angle_abnormal"),
+		SensorDetached: atoi("sensor_detached"),
+	}
 }
 
 func (r *Reader) Exists(ctx context.Context, cardID string) (bool, error) {

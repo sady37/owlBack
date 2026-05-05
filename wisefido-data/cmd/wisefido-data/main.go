@@ -511,6 +511,9 @@ func main() {
 		go subscribeDataStream(ctx, logger, redisClient, dataStreamSubscriber)
 	}
 
+	// Sleepad 实时上报配置（interval=2 + realtimeMode=1）走 bind 流程自动下发，
+	// 见 service.DeviceStoreService.applyDefaultSleepadRealtime。批量补刷由 cmd/sleepace-set-realtime -apply-all 处理。
+
 	// --- 旧 scheduler 停用 ---
 	// 原本计划每日 Denver 13:00 重算 reportUploadTime 对应到 LA 服务器 OS 时钟整点。
 	// 基于错误假设（以为厂家用"服务器 OS 时钟"触发报告，实际是"设备本地时间"）。

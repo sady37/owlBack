@@ -84,8 +84,11 @@ func (p *StreamPublisher) PublishAlarm(ctx context.Context, msg *rediscommon.IoT
 }
 
 func (p *StreamPublisher) publish(ctx context.Context, stream rediscommon.StreamDefinition, msg *rediscommon.IoTStreamMessage) error {
-	if msg.CardID == "" {
-		p.logger.Error("card_id is empty, message dropped",
+	if msg.Producer == "" {
+		msg.Producer = rediscommon.BuildDeviceProducer(msg.DeviceID)
+	}
+	if msg.SubjectEntity == "" {
+		p.logger.Error("subject_entity is empty, message dropped",
 			zap.String("stream", stream.Name),
 			zap.String("device_uid", msg.DeviceUID))
 		return errEmptyCardID
@@ -97,7 +100,7 @@ func (p *StreamPublisher) publish(ctx context.Context, stream rediscommon.Stream
 		payload, _ := json.Marshal(msg.DataValue)
 		p.logger.Debug("publish to redis",
 			zap.String("stream", stream.Name),
-			zap.String("cid", msg.CardID),
+			zap.String("subject_entity", msg.SubjectEntity),
 			zap.String("device_uid", msg.DeviceUID),
 			zap.Int64("ts", msg.Timestamp),
 			zap.ByteString("event", payload))

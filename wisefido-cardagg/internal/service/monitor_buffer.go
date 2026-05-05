@@ -288,6 +288,32 @@ type DeviceOnlineEntry struct {
 	LastSeen  int64 // 最后活跃时间戳（毫秒）
 }
 
+// KeepAlive 用 alarm 流（如 Sleepace health_check 的 OfflineRecover）来给 device 续命：
+// 仅更新 b.cards[cardID].Devices[deviceID].LastTs，不动 Tracks/Fields。
+// 设计目的：mode=1 sleepad 离床期 monitor 流静默，单靠 monitor 流续命会被 90s TTL 误判 offline；
+// 由上游周期性 polling（健康检查）触发，等价于一次"软心跳"。
+func (b *MonitorBuffer) KeepAlive(cardID, deviceID string, ts int64) {
+	if cardID == "" || deviceID == "" {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	cb := b.cards[cardID]
+	if cb == nil {
+		cb = &CardBuffer{Devices: make(map[string]*DeviceBuffer)}
+		b.cards[cardID] = cb
+	}
+	db := cb.Devices[deviceID]
+	if db == nil {
+		db = &DeviceBuffer{Tracks: make(map[string]*TrackBuffer)}
+		cb.Devices[deviceID] = db
+	}
+	if ts > db.LastTs {
+		db.LastTs = ts
+	}
+}
+
 func (b *MonitorBuffer) AdvancePruneTick(cardID string) {
 	if cardID == "" {
 		return
@@ -336,6 +362,7 @@ func (b *MonitorBuffer) BuildDeviceStatus(cardID string, devices map[string]*Dev
 				result[deviceID] = &card.DeviceStatus{
 					DeviceID:   deviceID,
 					UpdatedAt:  now,
+					LastSeenMs: now,
 					Offline:    0,
 				}
 			}
@@ -346,8 +373,10 @@ func (b *MonitorBuffer) BuildDeviceStatus(cardID string, devices map[string]*Dev
 	result := make(map[string]*card.DeviceStatus)
 	for deviceID, meta := range devices {
 		offline := 1
+		var lastSeen int64
 		if b.online[cardID] != nil && b.online[cardID][deviceID] != nil && b.online[cardID][deviceID].Online {
 			offline = 0
+			lastSeen = now
 		}
 		if meta.DeviceID == "" {
 			continue
@@ -357,6 +386,7 @@ func (b *MonitorBuffer) BuildDeviceStatus(cardID string, devices map[string]*Dev
 			DeviceID:   meta.DeviceID,
 			DeviceType: meta.DeviceType,
 			UpdatedAt:  now,
+			LastSeenMs: lastSeen,
 			Offline:    offline,
 		}
 	}

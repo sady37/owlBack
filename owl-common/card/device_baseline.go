@@ -2,6 +2,10 @@ package card
 
 import "strings"
 
+// Phase A 后：subject_entity 由 publisher（device-gateway 端）填写，未绑卡用 device_id 占位。
+// 历史的 StreamHeadCardID / EffectiveCardID 助手已删除（不再需要"包头 cardID 兜底回填"），
+// 业务路径直接读 envelope.SubjectEntity。
+
 // BaselineField 基准结构在 JSON / Redis map / 配置里的统一键名，与各网关、流包头对齐。
 const (
 	BaselineFieldTenantID           = "tenant_id"
@@ -25,7 +29,7 @@ const (
 
 // DeviceBaseline 设备身份与策略的统一类型：CardDB 联合查询 Scan、网关流包头、Redis/JSON、进程内缓存均用此结构（原 DeviceCardMapping 已并入）。
 // 约定：branch_id / building_id / floor 可选；同房判定以 tenant_id + unit_id（若 room 仅在 unit 内唯一则必填）+ room_id 为准。
-// 未绑卡时 card_id 为空，EffectiveCardID() 回退为 device_id（UUID），与 cardagg IotPreparedHandler 未绑卡占位一致。
+// 未绑卡时 CardID 为空，由 publisher 在构造 envelope.SubjectEntity 时回退为 device_id（cardagg IotPreparedHandler 未绑卡占位规则）。
 type DeviceBaseline struct {
 	// 硬件身份
 	DeviceID   string `json:"device_id,omitempty"`
@@ -57,20 +61,16 @@ type DeviceBaseline struct {
 	UpdatedAtMS int64 `json:"updated_at_ms,omitempty"`
 }
 
-// StreamHeadCardID 流包头 card_id：已绑卡用 card_id，未绑卡用 device_id（UUID），与 cardagg 未绑卡占位一致。
-func StreamHeadCardID(cardID, deviceID string) string {
-	if s := strings.TrimSpace(cardID); s != "" {
-		return s
-	}
-	return strings.TrimSpace(deviceID)
-}
-
-// EffectiveCardID 同 StreamHeadCardID（DeviceBaseline 上的便捷方法）。
-func (b *DeviceBaseline) EffectiveCardID() string {
+// SubjectEntityForBaseline 计算 envelope.SubjectEntity：已绑=card_id；未绑=device_id 占位。
+// device-gateway publisher 在构造 envelope 时统一调用本 helper（替代 Phase A 之前的 StreamHeadCardID）。
+func SubjectEntityForBaseline(b *DeviceBaseline) string {
 	if b == nil {
 		return ""
 	}
-	return StreamHeadCardID(b.CardID, b.DeviceID)
+	if s := strings.TrimSpace(b.CardID); s != "" {
+		return s
+	}
+	return strings.TrimSpace(b.DeviceID)
 }
 
 // SameRoomScopeKey 同房粗判：tenant|unit|room（unit 在 room 全局唯一时可传空 unit，由数据模型保证）。

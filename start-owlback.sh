@@ -12,7 +12,7 @@
 # - wisefido-data: 数据管理 API + 卡片创建/更新（Redis 缓存 + config.card.*）
 # - wisefido-cardagg: 数据聚合（从 PostgreSQL + Redis 聚合卡片数据并缓存到 Redis）
 # - wisefido-iot: 数据消费服务（从 Redis Streams 消费数据，存储到 TimescaleDB）
-# - wisefido-ai: AI 智能推理服务（高级推理、访客识别、巡房优化）
+# - wisefido-sensor: AI 智能推理服务（高级推理、访客识别、巡房优化）
 #
 # Radar 网关由 wisefido-qinglan 提供（本脚本已启动）
 
@@ -112,7 +112,7 @@ AGGREGATOR_LOG="$LOG_DIR/wisefido-cardagg.log"
 QINGLAN_LOG="$LOG_DIR/wisefido-qinglan.log"
 SLEEPACE_LOG="$LOG_DIR/wisefido-sleepace.log"
 IOT_LOG="$LOG_DIR/wisefido-iot.log"
-AI_LOG="$LOG_DIR/wisefido-ai.log"
+AI_LOG="$LOG_DIR/wisefido-sensor.log"
 COMBINED_LOG="$LOG_DIR/combined.log"
 
 echo -e "${GREEN}========================================${NC}"
@@ -136,7 +136,7 @@ check_running_services() {
     if tcp_listen 8083; then any_running=true; running_names+=("wisefido-sleepace(:8083)"); fi
     if tcp_listen 8085; then any_running=true; running_names+=("wisefido-iot(:8085)"); fi
     if pgrep -f "wisefido-cardagg" >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-cardagg"); fi
-    if pgrep -f "wisefido-ai" >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-ai"); fi
+    if pgrep -f "wisefido-sensor" >/dev/null 2>&1; then any_running=true; running_names+=("wisefido-sensor"); fi
 
     if [ "$any_running" = true ]; then
         echo -e "${YELLOW}Warning: Services are already running${NC}"
@@ -166,13 +166,13 @@ free_listen_port 8081 "wisefido-qinglan"
 free_listen_port 8083 "wisefido-sleepace"
 free_listen_port 8085 "wisefido-iot"
 if command -v pgrep >/dev/null 2>&1; then
-    for pid in $(pgrep -f "cmd/wisefido-ai/main.go" 2>/dev/null || true); do
+    for pid in $(pgrep -f "cmd/wisefido-sensor/main.go" 2>/dev/null || true); do
         [ -n "$pid" ] && kill_tree_start "$pid"
     done
     for pid in $(pgrep -f "wisefido-cardagg/main.go" 2>/dev/null || true); do
         [ -n "$pid" ] && kill_tree_start "$pid"
     done
-    for pid in $(pgrep -f "go run.*wisefido-ai" 2>/dev/null || true); do
+    for pid in $(pgrep -f "go run.*wisefido-sensor" 2>/dev/null || true); do
         [ -n "$pid" ] && kill_tree_start "$pid"
     done
     for pid in $(pgrep -f "go run.*wisefido-cardagg" 2>/dev/null || true); do
@@ -224,7 +224,7 @@ export REDIS_PASSWORD="${REDIS_PASSWORD:-TeLunSu-36kr}"
 export MQTT_BROKER="${MQTT_BROKER:-127.0.0.1}"
 export MQTT_PORT="${MQTT_PORT:-1883}"
 
-# wisefido-ai 可读 TENANT_ID（可选）；不设也能启动，管理员建业务租户后再填即可。不在此写默认 UUID。
+# wisefido-sensor 可读 TENANT_ID（可选）；不设也能启动，管理员建业务租户后再填即可。不在此写默认 UUID。
 export CARD_TRIGGER_MODE="${CARD_TRIGGER_MODE:-polling}"
 export CARD_POLLING_INTERVAL="${CARD_POLLING_INTERVAL:-86400}"
 export CARD_AGGREGATION_ENABLED="${CARD_AGGREGATION_ENABLED:-true}"
@@ -287,7 +287,7 @@ echo "  DB_HOST: $DB_HOST"
 echo "  DB_NAME: $DB_NAME"
 echo "  REDIS_ADDR: $REDIS_ADDR"
 echo "  MQTT_BROKER: $MQTT_BROKER:$MQTT_PORT"
-echo "  TENANT_ID: ${TENANT_ID:-<unset — 可选；建业务租户后填 wisefido-ai 轮询用>}"
+echo "  TENANT_ID: ${TENANT_ID:-<unset — 可选；建业务租户后填 wisefido-sensor 轮询用>}"
 echo "  CARD_TRIGGER_MODE: $CARD_TRIGGER_MODE (card creation now handled by wisefido-data, this is backup)"
 if [ "$CARD_POLLING_INTERVAL" -ge 86400 ]; then
     echo "  CARD_POLLING_INTERVAL: $CARD_POLLING_INTERVAL seconds (auto-switched to daily 8:00 AM scheduled task)"
@@ -312,7 +312,7 @@ echo "  wisefido-cardagg: $AGGREGATOR_LOG"
 echo "  wisefido-qinglan: $QINGLAN_LOG"
 echo "  wisefido-sleepace: $SLEEPACE_LOG"
 echo "  wisefido-iot: $IOT_LOG"
-echo "  wisefido-ai: $AI_LOG"
+echo "  wisefido-sensor: $AI_LOG"
 echo "  combined: $COMBINED_LOG"
 echo ""
 
@@ -426,21 +426,21 @@ echo "  Log: $IOT_LOG  (tail -f \"$IOT_LOG\")"
 # 等待一下确保服务启动
 sleep 2
 
-# 启动 wisefido-ai 服务
+# 启动 wisefido-sensor 服务
 # 功能：AI 智能推理服务（高级推理、访客识别、巡房优化）
-echo -e "${GREEN}[3/6] Starting wisefido-ai service...${NC}"
+echo -e "${GREEN}[3/6] Starting wisefido-sensor service...${NC}"
 echo -e "${BLUE}  Function: AI inference (advanced reasoning, visitor detection, patrol optimization)${NC}"
-cd "$OWLBACK_DIR/wisefido-ai"
+cd "$OWLBACK_DIR/wisefido-sensor"
 # 设置环境变量（如果未从 .env 加载）
 export REDIS_DB="${REDIS_DB:-0}"
 : >"$AI_LOG"
-mkdir -p "$OWLBACK_DIR/wisefido-ai/.bin"
-if go build -o "$OWLBACK_DIR/wisefido-ai/.bin/wisefido-ai" ./cmd/wisefido-ai >/dev/null 2>&1; then
-    "$OWLBACK_DIR/wisefido-ai/.bin/wisefido-ai" >>"$AI_LOG" 2>&1 &
+mkdir -p "$OWLBACK_DIR/wisefido-sensor/.bin"
+if go build -o "$OWLBACK_DIR/wisefido-sensor/.bin/wisefido-sensor" ./cmd/wisefido-sensor >/dev/null 2>&1; then
+    "$OWLBACK_DIR/wisefido-sensor/.bin/wisefido-sensor" >>"$AI_LOG" 2>&1 &
     AI_PID=$!
 else
-    echo -e "${YELLOW}Warning: go build failed for wisefido-ai, falling back to go run${NC}"
-    go run cmd/wisefido-ai/main.go >>"$AI_LOG" 2>&1 &
+    echo -e "${YELLOW}Warning: go build failed for wisefido-sensor, falling back to go run${NC}"
+    go run cmd/wisefido-sensor/main.go >>"$AI_LOG" 2>&1 &
     AI_PID=$!
 fi
 echo "  PID: $AI_PID"
@@ -552,7 +552,7 @@ cleanup() {
         kill "$AGGREGATOR_PID" 2>/dev/null || true
     fi
     if [ -n "$AI_PID" ] && ps -p "$AI_PID" > /dev/null 2>&1; then
-        echo "  Stopping wisefido-ai (PID: $AI_PID)"
+        echo "  Stopping wisefido-sensor (PID: $AI_PID)"
         kill "$AI_PID" 2>/dev/null || true
     fi
     if [ -n "$IOT_PID" ] && ps -p "$IOT_PID" > /dev/null 2>&1; then
@@ -569,7 +569,7 @@ cleanup() {
     pkill -f "go run.*wisefido-qinglan" 2>/dev/null || true
     pkill -f "go run.*wisefido-sleepace" 2>/dev/null || true
     pkill -f "go run.*wisefido-cardagg" 2>/dev/null || true
-    pkill -f "go run.*wisefido-ai" 2>/dev/null || true
+    pkill -f "go run.*wisefido-sensor" 2>/dev/null || true
     pkill -f "go run.*wisefido-iot" 2>/dev/null || true
     pkill -f "go run.*wisefido-data" 2>/dev/null || true
     echo -e "${GREEN}Cleanup completed${NC}"
@@ -635,10 +635,10 @@ else
     IOT_FAILED=true
 fi
 
-if ps -p "$AI_PID" >/dev/null 2>&1 || pgrep -f "wisefido-ai" >/dev/null 2>&1; then
+if ps -p "$AI_PID" >/dev/null 2>&1 || pgrep -f "wisefido-sensor" >/dev/null 2>&1; then
     AI_FAILED=false
 else
-    echo -e "${RED}Error: wisefido-ai service failed to start${NC}"
+    echo -e "${RED}Error: wisefido-sensor service failed to start${NC}"
     echo "Check log: $AI_LOG"
     tail -20 "$AI_LOG"
     AI_FAILED=true
@@ -691,7 +691,7 @@ if [ "$IOT_FAILED" = true ]; then
 fi
 
 if [ "$AI_FAILED" = true ]; then
-    echo -e "${YELLOW}Warning: wisefido-ai failed, but continuing with other services${NC}"
+    echo -e "${YELLOW}Warning: wisefido-sensor failed, but continuing with other services${NC}"
     echo "  You can check the log: $AI_LOG"
     echo ""
 fi

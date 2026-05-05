@@ -31,6 +31,6 @@ require (
 
 replace owl-common => ../owl-common
 
-replace wisefido-ai => ../wisefido-ai
+replace wisefido-sensor => ../wisefido-sensor
 
 replace wisefido-qinglan => ../wisefido-qinglan

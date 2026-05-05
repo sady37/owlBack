@@ -123,6 +123,13 @@ type MQTTConsumer struct {
 	// dedup: topic+deviceId+dataKey+timestamp → seen
 	dedupMu sync.Mutex
 	dedup   map[string]struct{}
+
+	// 设备健康类（Offline/SensorDetached）transition dedup：仅 0↔1 跳变时下发，
+	// 防止 sleepace 云若把状态当心跳重发或 MQTT 网络抖动重投导致 alarm_events 被周期灌行。
+	// key=deviceUID, value: 0=ok, 1=fault, -1=尚未观测过（首次=0 静默初始化，不发"全清"假恢复）。
+	deviceHealthMu       sync.Mutex
+	prevConnFault        map[string]int // 0=online, 1=offline
+	prevSensorFailure    map[string]int // 0=已插上, 1=脱落
 }
 
 type rawMsg struct {
@@ -132,14 +139,47 @@ type rawMsg struct {
 
 func NewMQTTConsumer(publisher *StreamPublisher, reportSvc *service.ReportService, statusTracker *service.DeviceStatusTracker, logger *zap.Logger) *MQTTConsumer {
 	return &MQTTConsumer{
-		publisher:     publisher,
-		reportService: reportSvc,
-		statusTracker: statusTracker,
-		logger:        logger,
-		msgCh:         make(chan *rawMsg, 1000),
-		lastBedStatus: make(map[string]int),
-		dedup:         make(map[string]struct{}),
+		publisher:         publisher,
+		reportService:     reportSvc,
+		statusTracker:     statusTracker,
+		logger:            logger,
+		msgCh:             make(chan *rawMsg, 1000),
+		lastBedStatus:     make(map[string]int),
+		dedup:             make(map[string]struct{}),
+		prevConnFault:     make(map[string]int),
+		prevSensorFailure: make(map[string]int),
 	}
+}
+
+// shouldPublishDeviceHealth 判断设备健康类事件（Offline/SensorDetached）是否需要下发。
+//
+// 返回 true 表示这是一次真正的状态跳变（或首次故障），调用方应正常 publish；
+// 返回 false 表示状态未变（或首次=健康），调用方应跳过 publish。
+//
+// 状态规则：
+//   - 首次观测 + value=0（健康）：静默初始化为 0，返回 false（不发"全清"假恢复）
+//   - 首次观测 + value=1（故障）：记录为 1，返回 true（发 onset）
+//   - 已记录 + 值未变：返回 false
+//   - 已记录 + 值跳变：更新缓存，返回 true
+//
+// cache=&c.prevConnFault 或 &c.prevSensorFailure；deviceUID 为 key；fault=1 表示故障。
+func (c *MQTTConsumer) shouldPublishDeviceHealth(cache map[string]int, deviceUID string, fault int) bool {
+	c.deviceHealthMu.Lock()
+	defer c.deviceHealthMu.Unlock()
+	last, seen := cache[deviceUID]
+	if !seen {
+		if fault == 0 {
+			cache[deviceUID] = 0
+			return false
+		}
+		cache[deviceUID] = 1
+		return true
+	}
+	if last == fault {
+		return false
+	}
+	cache[deviceUID] = fault
+	return true
 }
 
 // SetDeviceVersionSync 设置首次上连时同步 device_store 版本所需依赖（cardDB + sleepaceAPI）
@@ -298,39 +338,48 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		} else if !canIoT {
 			c.logger.Debug("connectionStatus skip alarm (permission)", zap.String("device_uid", deviceUID), zap.Bool("allow_access", allowAccess), zap.String("business_access", businessAccess))
 		} else {
-			tsMs := toMillis(ts)
-			streamCID := cardID
-			var eventName string
-			var item observation.EventItem
-			if online {
-				eventName = alarm.AlarmTypeOfflineRecover
-				item = observation.EventItem{
-					EventSince:  tsMs,
-					EventStatus: "end",
-					EventValue:  0,
-					TrackID:     observation.TrackDevice,
-				}
+			fault := 0
+			if !online {
+				fault = 1
+			}
+			// transition-only：值未变 / 首次=online 都不下发，避免 sleepace 云重发心跳灌爆 alarm_events
+			if !c.shouldPublishDeviceHealth(c.prevConnFault, deviceUID, fault) {
+				c.logger.Debug("connectionStatus dedup (no transition)", zap.String("device_uid", deviceUID), zap.Bool("online", online))
 			} else {
-				eventName = alarm.AlarmTypeOffline
-				item = observation.EventItem{
-					EventSince:  tsMs,
-					EventStatus: "start",
-					EventValue:  1,
-					TrackID:     observation.TrackDevice,
+				tsMs := toMillis(ts)
+				streamCID := cardID
+				var eventName string
+				var item observation.EventItem
+				if online {
+					eventName = alarm.AlarmTypeOfflineRecover
+					item = observation.EventItem{
+						EventSince:  tsMs,
+						EventStatus: "end",
+						EventValue:  0,
+						TrackID:     observation.TrackDevice,
+					}
+				} else {
+					eventName = alarm.AlarmTypeOffline
+					item = observation.EventItem{
+						EventSince:  tsMs,
+						EventStatus: "start",
+						EventValue:  1,
+						TrackID:     observation.TrackDevice,
+					}
 				}
-			}
-			alarmData, _ := observation.EventItemToDataMap(&item)
-			if alarmData == nil {
-				alarmData = make(map[string]any)
-			}
-			if online {
-				alarmData[observation.FieldOffline] = 0
-			} else {
-				alarmData[observation.FieldOffline] = 1
-			}
-			msg := redis.NewIoTStreamMessageWithData(tenantID, streamCID, deviceUID, deviceID, deviceType, nowMs, "alarm", eventName, alarmData)
-			if err := c.publisher.PublishAlarm(ctx, msg); err != nil {
-				c.logger.Warn("connectionStatus publish alarm failed", zap.String("device_uid", deviceUID), zap.Bool("online", online), zap.Error(err))
+				alarmData, _ := observation.EventItemToDataMap(&item)
+				if alarmData == nil {
+					alarmData = make(map[string]any)
+				}
+				if online {
+					alarmData[observation.FieldOffline] = 0
+				} else {
+					alarmData[observation.FieldOffline] = 1
+				}
+				msg := redis.NewIoTStreamMessageWithData(tenantID, streamCID, deviceUID, deviceID, deviceType, nowMs, "alarm", eventName, alarmData)
+				if err := c.publisher.PublishAlarm(ctx, msg); err != nil {
+					c.logger.Warn("connectionStatus publish alarm failed", zap.String("device_uid", deviceUID), zap.Bool("online", online), zap.Error(err))
+				}
 			}
 		}
 	// realtime/实时：订阅接口约定为数组推送，handleMessage 已逐条 dispatch；此处每条对应一个 (deviceId, data)，data 内含 leftRight。
@@ -540,6 +589,11 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		failureVal := 0
 		if failure {
 			failureVal = 1
+		}
+		// transition-only：sleepace 设备会周期重发 deviceSenSor，状态未变就跳过，避免 alarm_events 被刷
+		if !c.shouldPublishDeviceHealth(c.prevSensorFailure, deviceUID, failureVal) {
+			c.logger.Debug("deviceSenSor dedup (no transition)", zap.String("device_uid", deviceUID), zap.Bool("failure", failure))
+			return
 		}
 		// status=1 必须发 SensorDetachedRecover，cardagg 只做 auto_resolve，不落新 SensorDetached
 		eventName := alarm.SensorDetached

@@ -13,7 +13,6 @@ import (
 	"owl-common/card"
 	rediscommon "owl-common/redis"
 
-	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -141,17 +140,43 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 	}, nil
 }
 
-// FillDeviceOnlineStatusFromCardagg 只从 cardagg 读在线状态，返回 device_id -> "online"|"offline"。供 fillDeviceOnlineStatus 与 device_store 共用。
-// 约定：前后台统一用 device_id (UUID)。有 card 时 Redis Hash key = card_id；无 card 时 = device_id。device_status 内层 map 的 key 仅用 device_id。
+// FillDeviceOnlineStatusFromCardagg 只从 cardagg 读在线状态，返回 device_id -> "online"|"offline"。
+// Phase A：device_status 已迁出 card:state，按 device_id 直读 device:status:{deviceID} 独立 Hash。
+//
+// online 判定 = `ds.Offline == 0`（仅网络/心跳维度）。
+// SensorDetached / SignalPoor / AngleAbnormal 是独立的 degraded 标志位，**不**聚合到 offline——
+// 字段语义保持单一职责，让前端按需决定怎么渲染（例如 Sleepad 卡片在 SensorDetached 时显示
+// "Sensor Detached" 文字，Detail 页显示 Online 黄字提示 degraded 等）。
+//
+// 仅返回字符串状态；要拿完整 DeviceStatus（含 signal_poor/angle_abnormal/sensor_detached/last_seen_ms）
+// 用 FillDeviceStatusFromCardagg。
 func FillDeviceOnlineStatusFromCardagg(ctx context.Context, stateReader *card.Reader, db *sql.DB, deviceIDs []string, logger *zap.Logger) map[string]string {
+	full := FillDeviceStatusFromCardagg(ctx, stateReader, deviceIDs, logger)
 	out := make(map[string]string, len(deviceIDs))
 	for _, id := range deviceIDs {
-		if id != "" {
+		if id == "" {
+			continue
+		}
+		ds := full[id]
+		if ds != nil && ds.Offline == 0 {
+			out[id] = "online"
+		} else {
 			out[id] = "offline"
 		}
 	}
-	if stateReader == nil || db == nil || len(deviceIDs) == 0 {
-		return out
+	_ = db
+	return out
+}
+
+// FillDeviceStatusFromCardagg 批量读 device:status:{deviceID} Hash，返回完整 DeviceStatus map。
+// 缺失/读失败的 device 在 map 中不存在；调用方负责决定 fallback（典型：构造 offline=1 占位）。
+//
+// 调用方拿到完整 DeviceStatus 后，下发到前端时**必须把 offline 字段聚合**为 (Offline OR SensorDetached) —— API
+// 边界 contract（详见 FillDeviceOnlineStatusFromCardagg 注释）；否则老客户端（owlCare iOS / 老 Swift）只看 raw
+// `offline` 时会把 SensorDetached 设备误判为在线。
+func FillDeviceStatusFromCardagg(ctx context.Context, stateReader *card.Reader, deviceIDs []string, logger *zap.Logger) map[string]*card.DeviceStatus {
+	if stateReader == nil || len(deviceIDs) == 0 {
+		return make(map[string]*card.DeviceStatus)
 	}
 	ids := make([]string, 0, len(deviceIDs))
 	for _, id := range deviceIDs {
@@ -160,62 +185,16 @@ func FillDeviceOnlineStatusFromCardagg(ctx context.Context, stateReader *card.Re
 		}
 	}
 	if len(ids) == 0 {
-		return out
+		return make(map[string]*card.DeviceStatus)
 	}
-	// 先查 card_id：cards.devices 下按 device_id 匹配，一个 card_id 下可有多个 device
-	deviceIDToCardID := make(map[string]string)
-	rows, err := db.QueryContext(ctx, `
-		SELECT c.card_id, j->>'device_id' AS device_id
-		FROM cards c, jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS j
-		WHERE (j->>'device_id') = ANY($1)`, pq.Array(ids))
+	devStatusBatch, err := stateReader.ReadDeviceStatusByDeviceIDs(ctx, ids)
 	if err != nil {
 		if logger != nil {
-			logger.Warn("FillDeviceOnlineStatusFromCardagg: device_id→card_id query failed", zap.Error(err))
+			logger.Warn("FillDeviceStatusFromCardagg: ReadDeviceStatusByDeviceIDs failed", zap.Error(err))
 		}
-		return out
+		return make(map[string]*card.DeviceStatus)
 	}
-	for rows.Next() {
-		var cid, did string
-		if rows.Scan(&cid, &did) == nil && did != "" {
-			deviceIDToCardID[did] = cid
-		}
-	}
-	rows.Close()
-
-	cardIDSet := make(map[string]struct{})
-	for _, id := range ids {
-		key := deviceIDToCardID[id]
-		if key == "" {
-			key = id
-		}
-		cardIDSet[key] = struct{}{}
-	}
-	cardIDs := make([]string, 0, len(cardIDSet))
-	for k := range cardIDSet {
-		cardIDs = append(cardIDs, k)
-	}
-	devStatusBatch, err := stateReader.ReadDeviceStatusBatch(ctx, cardIDs)
-	if err != nil {
-		if logger != nil {
-			logger.Warn("FillDeviceOnlineStatusFromCardagg: ReadDeviceStatusBatch failed", zap.Error(err))
-		}
-		return out
-	}
-	for _, id := range ids {
-		cardID := deviceIDToCardID[id]
-		if cardID == "" {
-			cardID = id
-		}
-		cardStatus := devStatusBatch[cardID]
-		if cardStatus == nil {
-			continue
-		}
-		ds := cardStatus[id]
-		if ds != nil && ds.Offline == 0 {
-			out[id] = "online"
-		}
-	}
-	return out
+	return devStatusBatch
 }
 
 // fillDeviceOnlineStatus 只从 cardagg 读在线状态，使用 FillDeviceOnlineStatusFromCardagg。

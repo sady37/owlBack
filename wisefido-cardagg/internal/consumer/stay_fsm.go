@@ -75,7 +75,7 @@ func (h *EventHandler) stayPublishPhase(ctx context.Context, m *redis.IoTStreamM
 		phase = stayPhaseArmWindow
 		armAt = ses.EnterAtMs
 	}
-	_ = h.state.PublishBathRoomStayFSM(ctx, m.CardID, deviceID, m.DeviceUID, phase, armAt, resolveAt)
+	_ = h.state.PublishBathRoomStayFSM(ctx, m.SubjectEntity, deviceID, m.DeviceUID, phase, armAt, resolveAt)
 }
 
 // stayOnEnter S1/S4：新 Enter 清 Stay pending，重置武装窗。
@@ -89,7 +89,7 @@ func (h *EventHandler) stayOnEnter(ctx context.Context, m *redis.IoTStreamMessag
 	}
 	h.staySesMu.Lock()
 	ses := h.ensureStaySessionLocked(m.TenantID, deviceID)
-	_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, deviceID, alarm.Stay)
+	_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.SubjectEntity, deviceID, alarm.Stay)
 	ses.EnterAtMs = now
 	ses.ArmExpireAtMs = now + stayWindowTTLMs
 	ses.ActivityCount = 0
@@ -142,12 +142,12 @@ func (h *EventHandler) stayOnNumberPeople(ctx context.Context, m *redis.IoTStrea
 	}
 
 	if totalPeople >= 2 {
-		_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, deviceID, alarm.Stay)
+		_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.SubjectEntity, deviceID, alarm.Stay)
 		ses.ArmedPending = false
 	}
 
 	if ses.inResolveWindow(now) && totalPeople == 0 {
-		_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.CardID, deviceID, alarm.Stay)
+		_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.SubjectEntity, deviceID, alarm.Stay)
 		ses.ArmedPending = false
 		ses.ExitAtMs = 0
 		ses.ResolveExpireAt = 0
@@ -187,7 +187,7 @@ func (h *EventHandler) tryArmStayPendingLocked(ctx context.Context, m *redis.IoT
 	if ses.ActivityCount < stayMinActivityForArm || !ses.NumberPositive {
 		return
 	}
-	curr, err := h.state.ReadCardStatus(ctx, m.CardID)
+	curr, err := h.state.ReadCardStatus(ctx, m.SubjectEntity)
 	if err != nil || curr == nil || curr.BathRoomState == nil {
 		return
 	}

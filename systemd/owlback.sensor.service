@@ -1,0 +1,20 @@
+[Unit]
+# 启停成对: systemctl start owlback.sensor ↔ stop owlback.sensor
+# Phase B: 原 owlback.ai 改名 owlback.sensor（sensor agent layer 1）
+Description=owlback — wisefido-sensor
+After=network.target
+
+[Service]
+Type=simple
+User=wisefido
+Group=wisefido
+WorkingDirectory=/home/wisefido/owl/owlBack
+ExecStart=/bin/bash /home/wisefido/owl/owlBack/scripts/systemd/owlback-run-service.sh wisefido-sensor
+ExecStop=/bin/bash /home/wisefido/owl/owlBack/wisefido-sensor/stop-sensor.sh
+KillMode=control-group
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=owlback-sensor

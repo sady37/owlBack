@@ -122,6 +122,11 @@ type AlarmDef struct {
 	AlarmParams  map[string]interface{} // 扩展参数，如 duration_sec、duration_min、min、max
 	Description  string                 // 规则说明
 	Display      string                 // UI 展示用友好名称（可选，空则用 Key）
+	// DedupWhileActive=true：同 (device_id, event_type) 已有 active 行时，
+	// InsertAlarmAndUpdateCard 不再插入新行，返回 Deduped=true 由调用方短路通知。
+	// 设备类（Offline/SignalPoor/AngleException/SensorDetached/DeviceFailure）开启；
+	// 事件型（Fall/SuspectedFall/NightAbsence/Stay/InBed/LeftBed/...）保持 false 各自独立成行。
+	DedupWhileActive bool
 }
 
 // Registry 全量报警/事件注册表，Key = alarm_type。与 EventStatToAlarmMap 语义一致，便于按类型查元数据与 AlarmParams。
@@ -133,11 +138,11 @@ var Registry = map[string]*AlarmDef{
 	BedSitUp:                 {Key: BedSitUp, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Bed sit-up", Display: "Bed Sit-up"},
 	SuspectedBedSitUp:        {Key: SuspectedBedSitUp, ProcessType: ProcessTypeTimeBased, DurationSec: 60, UpgradeTo: BedSitUp, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 60}, Description: "Suspected bed sit-up", Display: "Potential Bed Sit-up"},
 	WarningArea:              {Key: WarningArea, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, Description: "Warning area", Display: "Warning Area"},
-	SignalPoor:               {Key: SignalPoor, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Signal poor", Display: "Weak Signal"},
-	AngleException:           {Key: AngleException, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Angle exception", Display: "Device Tilted"},
-	AlarmTypeOffline:         {Key: AlarmTypeOffline, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Offline", Display: "Device Offline"},
+	SignalPoor:               {Key: SignalPoor, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Signal poor", Display: "Weak Signal", DedupWhileActive: true},
+	AngleException:           {Key: AngleException, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Angle exception", Display: "Device Tilted", DedupWhileActive: true},
+	AlarmTypeOffline:         {Key: AlarmTypeOffline, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Offline", Display: "Device Offline", DedupWhileActive: true},
 	AlarmTypeOfflineRecover:  {Key: AlarmTypeOfflineRecover, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Offline recovery", Display: "Device Restored"},
-	AlarmTypeDeviceFailure:   {Key: AlarmTypeDeviceFailure, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Device failure", Display: "Device Fault"},
+	AlarmTypeDeviceFailure:   {Key: AlarmTypeDeviceFailure, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Device failure", Display: "Device Fault", DedupWhileActive: true},
 	AlarmTypeDeviceRecover:   {Key: AlarmTypeDeviceRecover, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Device recovery", Display: "Device Restored"},
 	AlarmTypeUnknown:         {Key: AlarmTypeUnknown, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Unknown alarm type"},
 	Stay:                     {Key: Stay, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 45 * 60}, Description: "Stay (e.g. 45min)", Display: "Prolonged Stay"},
@@ -164,7 +169,7 @@ var Registry = map[string]*AlarmDef{
 	AbnormalBodyMovement:     {Key: AbnormalBodyMovement, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Abnormal body movement", Display: "Excessive Movement"},
 	NoBodyMove:               {Key: NoBodyMove, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "No body move", Display: "No Movement"},
 	NoTurnOver:               {Key: NoTurnOver, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "No turn over", Display: "No Turn-over"},
-	SensorDetached:           {Key: SensorDetached, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Sensor detached", Display: "Sensor Detached"},
+	SensorDetached:           {Key: SensorDetached, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Sensor detached", Display: "Sensor Detached", DedupWhileActive: true},
 	PressureSensor:           {Key: PressureSensor, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Pressure sensor status (Sleepad)", Display: "Pressure Sensor"},
 
 	// 数据类别（radar stat / gateway 拆出的 category，仅用于路由；具体报警由子逻辑或 EventStatToAlarmMap 产生）
@@ -691,7 +696,7 @@ var DefaultAlarmSetting = struct {
 				"Bed_Exit_Sensitivity": 1,  // 0:Low(15-20s) 1:Medium(5-8s) 2:High(3-5s)
 				"report_upload_type":   0,  //0 24H 1=自动结束
 				"report_upload_time":   8,  //AM8出报告（统一字段名，与厂家 setReportUploadTime / wisefido-sleepace YAML 一致；雷达 sleep monitor 也复用此名）
-				"Empty_Bed_Monitor":    0,  // 0:report 1:no report
+				"Empty_Bed_Monitor":    1,  // 0:report 1:no report
 				"light_mode":           0,  // 0:开启 1:关闭
 				"timezone":             "", // 留空：UI 初次打开时由后端 resp.timezone（= unit.timezone）填充；用户改过后覆盖此字段
 			},
@@ -737,7 +742,7 @@ var DefaultAlarmSetting = struct {
 			IsEnabled:  intPtr(IsEnabledOn),
 			AlarmLevel: strPtr(AlarmLevelCrit),
 			AlarmParams: map[string]interface{}{
-				ParamDurationSec: 30,
+				ParamDurationSec: 120,
 			},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},

@@ -964,6 +964,7 @@ func (m *DeviceSubscriptionManager) checkDeviceHeartbeat(ctx context.Context) {
 			if deviceID != "" {
 				delete(m.subscriptionsByID, deviceID)
 			}
+			delete(m.prevHealth, deviceUID)
 			m.mu.Unlock()
 			continue
 		}
@@ -1055,6 +1056,8 @@ func (m *DeviceSubscriptionManager) unsubscribeDevice(deviceUID string) {
 			delete(m.subscriptionsByID, deviceID)
 		}
 		m.unsubscribedDueToTimeout[deviceUID] = struct{}{}
+		// 重新订阅时视作首次观测——清掉旧的 transition 缓存，避免上线"假恢复"
+		delete(m.prevHealth, deviceUID)
 		m.mu.Unlock()
 	} else {
 		sub.mu.Unlock()

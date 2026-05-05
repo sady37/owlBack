@@ -62,18 +62,32 @@ func (m *CardMeta) BedBoundDeviceIDs() []string {
 }
 
 // DeviceMetaCache is a lazy-loading, card_change-invalidated in-memory cache.
+//
+// 反向索引（Phase A 启动时全量 load + cardChange 增量重建）：
+//
+//	deviceIDIndex  : device_id  → []cardID
+//	deviceUIDIndex : device_uid → []cardID
+//
+// 设计动机：sensor agent (wisefido-sensor 等) 派生消息空 SubjectEntity 时，cardagg
+// IotPreparedHandler 需 O(1) 反查 device→card；避免每条消息都 SQL 命中 cards.devices JSONB。
 type DeviceMetaCache struct {
 	mu     sync.RWMutex
 	cards  map[string]*CardMeta // cardID →
 	db     *sql.DB
 	logger *zap.Logger
+
+	idxMu          sync.RWMutex
+	deviceIDIndex  map[string][]string // device_id  → []cardID
+	deviceUIDIndex map[string][]string // device_uid → []cardID
 }
 
 func NewDeviceMetaCache(db *sql.DB, logger *zap.Logger) *DeviceMetaCache {
 	return &DeviceMetaCache{
-		cards:  make(map[string]*CardMeta),
-		db:     db,
-		logger: logger,
+		cards:          make(map[string]*CardMeta),
+		db:             db,
+		logger:         logger,
+		deviceIDIndex:  make(map[string][]string),
+		deviceUIDIndex: make(map[string][]string),
 	}
 }
 
@@ -260,6 +274,201 @@ func (c *DeviceMetaCache) GetDeviceMetaByUID(ctx context.Context, cardID, device
 		}
 	}
 	return nil
+}
+
+// LookupCardsByDevice 反查一个设备绑定的所有 card_id（O(1) 内存索引；空时回退 SQL）。
+//
+// 数据源：内存反向索引（启动 BuildDeviceIndex 全量 load；cardChange 事件触发 RefreshDeviceIndexForCard 增量更新）。
+// 索引未命中时 fallback 一次 SQL 直查 cards.devices JSONB（防止 cold start / 并发竞态时返回错的"未绑卡"结论）。
+//
+// 返回：cards 列表（绝大多数 1 张；多人共享设备时多张）；nil 表示未绑定任何卡。
+//
+// 用途：iot:event/alarm:stream 入口处理 envelope subject_entity="" 的消息（典型场景：
+// wisefido-sensor 等 sensor agent 派生消息只带 device 标识，subject_entity（card）
+// 由 cardagg 反查 fan-out）。这是协议层北极星 layer 1 (sensor) 与 layer 2/3
+// 解耦的关键——AI 不染卡概念，cardagg 反查 device→subject 路由。
+func (c *DeviceMetaCache) LookupCardsByDevice(ctx context.Context, deviceUID, deviceID string) []string {
+	if deviceUID == "" && deviceID == "" {
+		return nil
+	}
+	c.idxMu.RLock()
+	hit := mergeUniqueCards(c.deviceIDIndex[deviceID], c.deviceUIDIndex[deviceUID])
+	c.idxMu.RUnlock()
+	if len(hit) > 0 {
+		return hit
+	}
+	// 索引未命中（cold start / 新绑卡尚未 cardChange / 数据异常）→ SQL 兜底
+	if c.db == nil {
+		return nil
+	}
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT DISTINCT c.card_id::text
+		FROM cards c, jsonb_array_elements(c.devices) d
+		WHERE ($1 <> '' AND d->>'device_uid' = $1)
+		   OR ($2 <> '' AND d->>'device_id' = $2)
+	`, deviceUID, deviceID)
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Warn("LookupCardsByDevice query failed",
+				zap.String("device_uid", deviceUID),
+				zap.String("device_id", deviceID),
+				zap.Error(err))
+		}
+		return nil
+	}
+	defer rows.Close()
+	var cards []string
+	for rows.Next() {
+		var cid string
+		if err := rows.Scan(&cid); err == nil && cid != "" {
+			cards = append(cards, cid)
+		}
+	}
+	return cards
+}
+
+// mergeUniqueCards 合并两个 cardID 列表，保持顺序去重（少量元素，遍历即可）。
+func mergeUniqueCards(a, b []string) []string {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, cid := range a {
+		if cid == "" {
+			continue
+		}
+		if _, ok := seen[cid]; ok {
+			continue
+		}
+		seen[cid] = struct{}{}
+		out = append(out, cid)
+	}
+	for _, cid := range b {
+		if cid == "" {
+			continue
+		}
+		if _, ok := seen[cid]; ok {
+			continue
+		}
+		seen[cid] = struct{}{}
+		out = append(out, cid)
+	}
+	return out
+}
+
+// BuildDeviceIndex 全量扫 cards 表构建 device→cards 反向索引。Phase A 启动时调用。
+func (c *DeviceMetaCache) BuildDeviceIndex(ctx context.Context) error {
+	if c.db == nil {
+		return nil
+	}
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT c.card_id::text, COALESCE(d->>'device_id', ''), COALESCE(d->>'device_uid', '')
+		FROM cards c, jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS d
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	idxByID := make(map[string][]string)
+	idxByUID := make(map[string][]string)
+	for rows.Next() {
+		var cid, did, uid string
+		if err := rows.Scan(&cid, &did, &uid); err != nil {
+			continue
+		}
+		if cid == "" {
+			continue
+		}
+		if did != "" {
+			idxByID[did] = appendUnique(idxByID[did], cid)
+		}
+		if uid != "" {
+			idxByUID[uid] = appendUnique(idxByUID[uid], cid)
+		}
+	}
+	c.idxMu.Lock()
+	c.deviceIDIndex = idxByID
+	c.deviceUIDIndex = idxByUID
+	c.idxMu.Unlock()
+	if c.logger != nil {
+		c.logger.Info("device index built",
+			zap.Int("by_device_id", len(idxByID)),
+			zap.Int("by_device_uid", len(idxByUID)))
+	}
+	return nil
+}
+
+// RefreshDeviceIndexForCard 重建单张 card 的索引条目（cardChange 事件触发）。
+// 先剔除旧条目，再按当前 DB 行重新加入。card 已删除时仅做剔除。
+func (c *DeviceMetaCache) RefreshDeviceIndexForCard(ctx context.Context, cardID string) {
+	if cardID == "" {
+		return
+	}
+	// 先剔除该 card 在两张索引中的所有条目
+	c.idxMu.Lock()
+	for k, v := range c.deviceIDIndex {
+		c.deviceIDIndex[k] = removeFromSlice(v, cardID)
+		if len(c.deviceIDIndex[k]) == 0 {
+			delete(c.deviceIDIndex, k)
+		}
+	}
+	for k, v := range c.deviceUIDIndex {
+		c.deviceUIDIndex[k] = removeFromSlice(v, cardID)
+		if len(c.deviceUIDIndex[k]) == 0 {
+			delete(c.deviceUIDIndex, k)
+		}
+	}
+	c.idxMu.Unlock()
+
+	if c.db == nil {
+		return
+	}
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT COALESCE(d->>'device_id', ''), COALESCE(d->>'device_uid', '')
+		FROM cards c, jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS d
+		WHERE c.card_id = $1
+	`, cardID)
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Warn("refresh device index query failed", zap.String("card_id", cardID), zap.Error(err))
+		}
+		return
+	}
+	defer rows.Close()
+	c.idxMu.Lock()
+	defer c.idxMu.Unlock()
+	for rows.Next() {
+		var did, uid string
+		if err := rows.Scan(&did, &uid); err != nil {
+			continue
+		}
+		if did != "" {
+			c.deviceIDIndex[did] = appendUnique(c.deviceIDIndex[did], cardID)
+		}
+		if uid != "" {
+			c.deviceUIDIndex[uid] = appendUnique(c.deviceUIDIndex[uid], cardID)
+		}
+	}
+}
+
+func appendUnique(s []string, v string) []string {
+	for _, x := range s {
+		if x == v {
+			return s
+		}
+	}
+	return append(s, v)
+}
+
+func removeFromSlice(s []string, v string) []string {
+	out := s[:0]
+	for _, x := range s {
+		if x != v {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // ResolveDeviceID 仅返回业务主键 device_id（UUID）或空字符串。禁止将 device_uid 当作返回值；使能、告警、meta 查表均只用本函数结果。

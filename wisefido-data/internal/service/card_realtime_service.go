@@ -947,6 +947,11 @@ func (s *CardRealtimeService) pushStatusSnapshot(w http.ResponseWriter, flusher 
 		if data == nil {
 			continue
 		}
+		// Phase A：device_status 已迁出 card:state 独立 Hash，ReadCardStateSnapshot 不再含此键。
+		// 这里补上 enrichDeviceStatus，让 SSE init snapshot 与 HTTP polling 行为一致。
+		if err := s.enrichDeviceStatus(ctx, cardID, data); err != nil {
+			s.logger.Warn("pushStatusSnapshot enrichDeviceStatus", zap.String("card_id", cardID), zap.Error(err))
+		}
 		payload := make(map[string]interface{}, len(dataKeys)+2)
 		payload["card_id"] = cardID
 		for _, k := range dataKeys {
@@ -1009,7 +1014,34 @@ func (s *CardRealtimeService) getCardStatusFromQuery(ctx context.Context, cardID
 	}
 	out["timestamp"] = nowMs
 
-	// 仅覆盖 device_status：DB 设备列表 + cardagg 在线状态
+	// device_status：DB 设备列表 + cardagg device:status hash（含 signal_poor/angle_abnormal/sensor_detached/last_seen_ms）
+	if err := s.enrichDeviceStatus(ctx, cardID, out); err != nil {
+		return nil, err
+	}
+
+	// 覆盖 alarm_state：DB 完整 AlarmState（与 CardStatus.AlarmState 对齐）
+	if cardState, err := card.QueryCardAlarmState(ctx, s.db, cardID); err != nil {
+		s.logger.Warn("GetCardStatus QueryCardAlarmState", zap.String("card_id", cardID), zap.Error(err))
+	} else if cardState != nil {
+		if as := cardState.ToAlarmState(); as != nil {
+			out["alarm_state"] = cardAlarmStateToMap(as)
+		}
+	}
+	return out, nil
+}
+
+// enrichDeviceStatus 把 cards.devices 列表 × device:status:{deviceID} hash 拼成完整 device_status map，
+// 写入 data["device_status"]。供 SSE init (pushStatusSnapshot) 与 HTTP polling (getCardStatusFromQuery) 共用。
+//
+// 字段单一职责：`offline` 仅反映网络/心跳维度（= raw `ds.Offline`）；signal_poor / angle_abnormal /
+// sensor_detached / last_seen_ms 作为 omitempty 明细字段暴露，前端按需决定渲染策略：
+//   - Sleepad 卡片 SensorDetached 显示"Sensor Detached"文字（替代 Offline 文字）
+//   - Detail 页 Online 字色随 degraded 状态变绿/黄
+//   - 老客户端 JSON 解码默认忽略未知 key，看 `offline` 二态保持原行为；SensorDetached 漏报场景属于已知妥协，待 app 升级独立加图标
+func (s *CardRealtimeService) enrichDeviceStatus(ctx context.Context, cardID string, data map[string]interface{}) error {
+	if s.db == nil {
+		return nil
+	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT j->>'device_id' AS device_id, COALESCE(ds.device_type, '') AS device_type
 		FROM cards c,
@@ -1018,7 +1050,7 @@ func (s *CardRealtimeService) getCardStatusFromQuery(ctx context.Context, cardID
 		WHERE c.card_id = $1
 	`, cardID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
 	var devices []struct{ deviceID, deviceType string }
@@ -1031,31 +1063,43 @@ func (s *CardRealtimeService) getCardStatusFromQuery(ctx context.Context, cardID
 		devices = append(devices, struct{ deviceID, deviceType string }{deviceID, deviceType})
 		deviceIDs = append(deviceIDs, deviceID)
 	}
-	onlineMap := FillDeviceOnlineStatusFromCardagg(ctx, s.stateReader, s.db, deviceIDs, s.logger)
-	deviceStatus := make(map[string]interface{})
+
+	nowMs := time.Now().UnixMilli()
+	dsMap := FillDeviceStatusFromCardagg(ctx, s.stateReader, deviceIDs, s.logger)
+	deviceStatus := make(map[string]interface{}, len(devices))
 	for _, d := range devices {
-		offlineNum := 1
-		if onlineMap[d.deviceID] == "online" {
-			offlineNum = 0
-		}
-		deviceStatus[d.deviceID] = map[string]interface{}{
+		entry := map[string]interface{}{
 			"device_id":   d.deviceID,
 			"device_type": d.deviceType,
-			"updated_at":  nowMs,
-			"offline":     offlineNum,
 		}
-	}
-	out["device_status"] = deviceStatus
-
-	// 覆盖 alarm_state：DB 完整 AlarmState（与 CardStatus.AlarmState 对齐）
-	if cardState, err := card.QueryCardAlarmState(ctx, s.db, cardID); err != nil {
-		s.logger.Warn("GetCardStatus QueryCardAlarmState", zap.String("card_id", cardID), zap.Error(err))
-	} else if cardState != nil {
-		if as := cardState.ToAlarmState(); as != nil {
-			out["alarm_state"] = cardAlarmStateToMap(as)
+		if ds := dsMap[d.deviceID]; ds != nil {
+			entry["offline"] = ds.Offline
+			if ds.SignalPoor != 0 {
+				entry["signal_poor"] = ds.SignalPoor
+			}
+			if ds.AngleAbnormal != 0 {
+				entry["angle_abnormal"] = ds.AngleAbnormal
+			}
+			if ds.SensorDetached != 0 {
+				entry["sensor_detached"] = ds.SensorDetached
+			}
+			if ds.LastSeenMs > 0 {
+				entry["last_seen_ms"] = ds.LastSeenMs
+			}
+			if ds.UpdatedAt > 0 {
+				entry["updated_at"] = ds.UpdatedAt
+			} else {
+				entry["updated_at"] = nowMs
+			}
+		} else {
+			// hash 不存在 → 视为 offline
+			entry["offline"] = 1
+			entry["updated_at"] = nowMs
 		}
+		deviceStatus[d.deviceID] = entry
 	}
-	return out, nil
+	data["device_status"] = deviceStatus
+	return nil
 }
 
 func cardStatusToMap(st *card.CardStatus) map[string]interface{} {

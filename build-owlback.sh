@@ -27,7 +27,7 @@ MODULES=(
     "qinglan  wisefido-qinglan   ./cmd/wisefido-qinglan"
     "sleepace wisefido-sleepace  ./cmd/wisefido-sleepace"
     "iot      wisefido-iot       ./cmd/wisefido-iot"
-    "ai       wisefido-ai        ./cmd/wisefido-ai"
+    "sensor   wisefido-sensor    ./cmd/wisefido-sensor"
 )
 
 build_one() {

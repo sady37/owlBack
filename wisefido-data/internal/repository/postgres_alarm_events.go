@@ -12,7 +12,7 @@ import (
 )
 
 // PostgresAlarmEventsRepository 报警事件Repository实现
-// 注意：与 wisefido-ai 的实现保持一致，但使用 wisefido-data 的 domain 模型
+// 注意：与 wisefido-sensor 的实现保持一致，但使用 wisefido-data 的 domain 模型
 type PostgresAlarmEventsRepository struct {
 	db *sql.DB
 }

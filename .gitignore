@@ -60,6 +60,14 @@ owl-common/cert/
 kms/master_key*.json
 kms/mw.*
 kms/owl-kms
+vault/
+
+# MQTT TLS (per-env)
+mqtt/config/*.pem
+mqtt/config/*.key
+
+# One-shot dev tools (built artifacts)
+wisefido-data/sleepace-set-realtime
 
 # Stale binaries
 wisefido-qinglan/wisefido-qinglan

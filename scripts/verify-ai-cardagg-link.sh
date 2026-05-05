@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # 三期任务 B 第 1 项：AI emit + cardagg cache 链路实证。
 #
-# 目的：一次性 dump 4 个 tap 点的日志/wire，确认 wisefido-ai → iot:event:stream
+# 目的：一次性 dump 4 个 tap 点的日志/wire，确认 wisefido-sensor → iot:event:stream
 # → wisefido-cardagg 的 track_verdict 链路是否完整（含 sandbox/release 模式诊断）。
 #
 # 4 个 tap 点：
-#   ① wisefido-ai     ai_emit                   （AI 决策 emit + would_publish_to + published）
+#   ① wisefido-sensor     ai_emit                   （AI 决策 emit + would_publish_to + published）
 #   ② iot:event:stream                          （wire 实证：track_verdict 落地 redis）
 #   ③ wisefido-cardagg ai_verdict_cached/cleared（cache Set 与 device 清理）
 #   ④ wisefido-cardagg ai_verdict_applied       （monitor 流合并：mode + merged 标志）
@@ -39,7 +39,7 @@ journalctl -t owlback-cardagg --since "${SINCE}" --no-pager 2>/dev/null \
 echo
 
 # 1. AI 侧 emit
-echo "── [1] wisefido-ai  ai_emit (category=track_verdict) ──────────"
+echo "── [1] wisefido-sensor  ai_emit (category=track_verdict) ──────────"
 ai_emit_count=$(journalctl -t owlback-ai --since "${SINCE}" --no-pager 2>/dev/null \
   | grep -c '"ai_emit"' || true)
 journalctl -t owlback-ai --since "${SINCE}" --no-pager 2>/dev/null \

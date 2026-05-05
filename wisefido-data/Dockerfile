@@ -1,4 +1,4 @@
-# 构建阶段。context 须为 owlBack 根目录，且含 owl-common、wisefido-qinglan、wisefido-ai
+# 构建阶段。context 须为 owlBack 根目录，且含 owl-common、wisefido-qinglan、wisefido-sensor
 FROM golang:1.24-alpine AS builder
 
 WORKDIR /build
@@ -6,7 +6,7 @@ WORKDIR /build
 # 复制本地 replace 依赖（与 go.mod replace 一致）
 COPY owl-common ./owl-common
 COPY wisefido-qinglan ./wisefido-qinglan
-COPY wisefido-ai ./wisefido-ai
+COPY wisefido-sensor ./wisefido-sensor
 
 # 复制 wisefido-data 的 go mod 文件
 COPY wisefido-data/go.mod wisefido-data/go.sum ./wisefido-data/

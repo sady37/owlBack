@@ -73,6 +73,14 @@ type DeviceStore struct {
 
 	// 实时在线状态（从 Redis 读取，不存储到数据库）
 	OnlineStatus string `db:"-"` // 实时在线状态（online/offline/unsubscribed），从 Redis 读取
+
+	// 实时健康标志位（从 device:status:{deviceID} hash 读取，不存数据库）
+	// 不论设备是否绑卡都会写入 hash，admin 视角无差别可见
+	Offline        int   `db:"-"` // 0/1 网络/心跳维度（与 OnlineStatus 互补，前端展示用）
+	SignalPoor     int   `db:"-"` // 0/1 WiFi 弱（设备仍能上行）
+	AngleAbnormal  int   `db:"-"` // 0/1 雷达倾角异常（设备仍能上行）
+	SensorDetached int   `db:"-"` // 0/1 Sleepad 传感器脱落
+	LastSeenMs     int64 `db:"-"` // 最近上行时间（毫秒）
 }
 
 // ToJSON 转换为JSON格式（用于HTTP响应）
@@ -160,6 +168,20 @@ func (d *DeviceStore) ToJSON() map[string]any {
 		m["online_status"] = d.OnlineStatus
 	} else {
 		m["online_status"] = "offline"
+	}
+	// 健康标志位（仅在非零时输出，前端 undefined 兜底为 0）。omitempty 风格保持响应紧凑。
+	m["offline"] = d.Offline
+	if d.SignalPoor != 0 {
+		m["signal_poor"] = d.SignalPoor
+	}
+	if d.AngleAbnormal != 0 {
+		m["angle_abnormal"] = d.AngleAbnormal
+	}
+	if d.SensorDetached != 0 {
+		m["sensor_detached"] = d.SensorDetached
+	}
+	if d.LastSeenMs > 0 {
+		m["last_seen_ms"] = d.LastSeenMs
 	}
 	return m
 }

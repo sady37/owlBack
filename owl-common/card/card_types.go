@@ -222,13 +222,23 @@ type CardRealTime struct {
 
 // ========== Card Status (card:state / card:status:stream) ==========
 
-// DeviceStatus 单个设备在线状态（仅 offline；其它如 signal_poor 走告警）
+// DeviceStatus 单个设备运行时真相（独立 Hash device:status:{device_id}）。
+//
+// Phase A：与 card:state 解耦，本结构是设备级的统一状态视图。
+// 上线/下线由 cardagg 设备健康检测驱动；signal_poor / angle_abnormal / sensor_detached
+// 由 device-class alarm 流（auto-recover）侧驱动写入对应 flag。
 type DeviceStatus struct {
-	DeviceUID  string `json:"-"`                    // 内部/Redis 用，不向前端暴露（HIPAA）
-	DeviceID   string `json:"device_id"`            // 前端展示用
-	DeviceType string `json:"device_type"`          // "Radar" | "Sleepad"
-	UpdatedAt  int64  `json:"updated_at,omitempty"` // 最后更新时间（Unix 毫秒），与 TargetState/AlarmState 一致
-	Offline    int    `json:"offline"`              // 0=在线, 1=离线
+	DeviceUID  string `json:"-"`           // 内部用，不向前端暴露（HIPAA）
+	DeviceID   string `json:"device_id"`   // 前端展示用
+	DeviceType string `json:"device_type"` // "Radar" | "Sleepad"
+
+	UpdatedAt  int64 `json:"updated_at,omitempty"`   // 最后更新时间（毫秒）
+	LastSeenMs int64 `json:"last_seen_ms,omitempty"` // 最近一次任意上行（含心跳/数据帧）的毫秒戳
+
+	Offline         int `json:"offline"`                    // 0=在线, 1=离线
+	SignalPoor      int `json:"signal_poor,omitempty"`      // 0/1 信号差告警是否激活
+	AngleAbnormal   int `json:"angle_abnormal,omitempty"`   // 0/1 安装角度异常告警是否激活
+	SensorDetached  int `json:"sensor_detached,omitempty"`  // 0/1 传感器脱落告警是否激活
 }
 
 // BedState 在/离床状态（护理者最核心的二元判断）
@@ -321,13 +331,14 @@ type AlarmState struct {
 // 写入 card:state:{card_id} Hash + 发布到 card:status:stream
 // 初始化：默认创建 RoomState；为雷达分配角色 isBathroomRadar（绑定 room=Bathroom）时创建/更新 BathRoomState。
 // 当前仅有一个 Target（老人维度），用 Target 单对象。
+//
+// Phase A：DeviceStatus 已迁出此结构（独立到 device:status:{device_id} Hash，详 keys.go）。
 type CardStatus struct {
-	CardID        string                   `json:"card_id"`
-	Target        *TargetState             `json:"target,omitempty"`         // 单 Target（当前仅一个）
-	RoomState     *RoomState               `json:"room_state,omitempty"`     // 房间（不含卫生间），默认创建
-	BathRoomState *BathRoomState           `json:"bathroom_state,omitempty"` // 仅当有卫生间雷达时存在
-	BedState      *BedState                `json:"bed_state,omitempty"`
-	AlarmState    *AlarmState              `json:"alarm_state,omitempty"`
-	DeviceStatus  map[string]*DeviceStatus `json:"device_status,omitempty"`
-	Message       map[string]interface{}   `json:"message,omitempty"`
+	CardID        string                 `json:"card_id"`
+	Target        *TargetState           `json:"target,omitempty"`         // 单 Target（当前仅一个）
+	RoomState     *RoomState             `json:"room_state,omitempty"`     // 房间（不含卫生间），默认创建
+	BathRoomState *BathRoomState         `json:"bathroom_state,omitempty"` // 仅当有卫生间雷达时存在
+	BedState      *BedState              `json:"bed_state,omitempty"`
+	AlarmState    *AlarmState            `json:"alarm_state,omitempty"`
+	Message       map[string]interface{} `json:"message,omitempty"`
 }

@@ -34,27 +34,47 @@ const (
 // 块 2：IoTStreamMessage（iot:*:stream 唯一消息体）
 // =============================================================================
 
+// IoTStreamMessage envelope（Phase A v2，TDPv2 三维度对齐）：
+//
+//   - Producer / SubjectEntity / SemanticLocation 显式 first-class
+//   - 历史 CardID 字段已弃用，subject 走 SubjectEntity
+//   - DeviceUID 仍保留（Phase D 移除）；wire 不再依赖物理 MAC/SN 做身份
+//
+// SubjectEntity 填写责任：
+//   - device-gateway（qinglan/sleepace）：必填——已绑卡=card_id；未绑卡=device_id 占位
+//   - sensor agent（wisefido-sensor 等 layer 1+）：留空，cardagg 反查
 type IoTStreamMessage struct {
-	DeviceUID  string        `json:"device_uid"`  //主键，业务逻辑
-	DeviceID   string        `json:"device_id"` // 主要用于log及debug
-	DeviceType string        `json:"device_type"`
-	CardID     string        `json:"card_id,omitempty"`
-	TenantID   string        `json:"tenant_id"`
-	Timestamp  int64         `json:"timestamp"`
-	TopicType  string        `json:"topic_type"`
-	Category   string        `json:"category"`
-	DataValue  []interface{} `json:"dataValue"` // monitor 流为 []Track 形状，字段名见 observation 包
+	// TDPv2 三维度
+	Producer         string `json:"producer"`                    // "device:<UUID>" / "sensor.caregiver01"
+	SubjectEntity    string `json:"subject_entity,omitempty"`    // 已绑=card_id；未绑=device_id；AI 留空
+	SemanticLocation string `json:"semantic_location,omitempty"` // room_id / unit_id
+	SequenceNumber   uint64 `json:"sequence_number,omitempty"`   // producer 内单调
+
+	// 物理身份（Phase D 远期淡出）
+	DeviceUID  string `json:"device_uid"`            // 主键，业务逻辑
+	DeviceID   string `json:"device_id"`             // server UUID
+	DeviceType string `json:"device_type"`
+
+	TenantID  string        `json:"tenant_id"`
+	Timestamp int64         `json:"timestamp"`
+	TopicType string        `json:"topic_type"`
+	Category  string        `json:"category"`
+	DataValue []interface{} `json:"dataValue"` // monitor 流为 []Track 形状，字段名见 observation 包
 }
 
 type IotHead struct {
-	DeviceUID  string        `json:"device_uid"`  //主键，业务逻辑
-	DeviceID   string        `json:"device_id"` // 主要用于log及debug	
-	DeviceType string        `json:"device_type"`
-	CardID     string        `json:"card_id,omitempty"`
-	TenantID   string        `json:"tenant_id"`
-	Timestamp  int64         `json:"timestamp"`
-	TopicType  string        `json:"topic_type"`
-	Category   string        `json:"category"`
+	Producer         string `json:"producer"`
+	SubjectEntity    string `json:"subject_entity,omitempty"`
+	SemanticLocation string `json:"semantic_location,omitempty"`
+	SequenceNumber   uint64 `json:"sequence_number,omitempty"`
+
+	DeviceUID  string `json:"device_uid"`
+	DeviceID   string `json:"device_id"`
+	DeviceType string `json:"device_type"`
+	TenantID   string `json:"tenant_id"`
+	Timestamp  int64  `json:"timestamp"`
+	TopicType  string `json:"topic_type"`
+	Category   string `json:"category"`
 }
 
 
@@ -75,14 +95,17 @@ func streamStr(v interface{}) string {
 func (m *IoTStreamMessage) ToStreamMap() map[string]interface{} {
 	dataValueJSON, _ := json.Marshal(m.DataValue)
 	out := map[string]interface{}{
-		"device_uid":  m.DeviceUID,
-		"device_type": m.DeviceType,
-		"card_id":     m.CardID,
-		"tenant_id":   m.TenantID,
-		"timestamp":   fmt.Sprintf("%d", m.Timestamp),
-		"topic_type":  m.TopicType,
-		"category":    m.Category,
-		DataValueKey:  string(dataValueJSON),
+		"producer":          m.Producer,
+		"subject_entity":    m.SubjectEntity,
+		"semantic_location": m.SemanticLocation,
+		"sequence_number":   fmt.Sprintf("%d", m.SequenceNumber),
+		"device_uid":        m.DeviceUID,
+		"device_type":       m.DeviceType,
+		"tenant_id":         m.TenantID,
+		"timestamp":         fmt.Sprintf("%d", m.Timestamp),
+		"topic_type":        m.TopicType,
+		"category":          m.Category,
+		DataValueKey:        string(dataValueJSON),
 	}
 	if m.DeviceID != "" {
 		out["device_id"] = m.DeviceID
@@ -92,13 +115,20 @@ func (m *IoTStreamMessage) ToStreamMap() map[string]interface{} {
 
 func FromStreamMap(values map[string]interface{}) (*IoTStreamMessage, error) {
 	msg := &IoTStreamMessage{}
+	msg.Producer = streamStr(values["producer"])
+	msg.SubjectEntity = streamStr(values["subject_entity"])
+	msg.SemanticLocation = streamStr(values["semantic_location"])
+	if seq := streamStr(values["sequence_number"]); seq != "" {
+		if v, err := strconv.ParseUint(seq, 10, 64); err == nil {
+			msg.SequenceNumber = v
+		}
+	}
 	msg.DeviceUID = streamStr(values["device_uid"])
 	msg.DeviceID = streamStr(values["device_id"])
 	if msg.DeviceUID == "" {
 		msg.DeviceUID = msg.DeviceID
 	}
 	msg.DeviceType = streamStr(values["device_type"])
-	msg.CardID = streamStr(values["card_id"])
 	msg.TenantID = streamStr(values["tenant_id"])
 	if ts := streamStr(values["timestamp"]); ts != "" {
 		msg.Timestamp, _ = strconv.ParseInt(ts, 10, 64)
@@ -116,7 +146,20 @@ func FromStreamMap(values map[string]interface{}) (*IoTStreamMessage, error) {
 	return msg, nil
 }
 
-func NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType string, ts int64, topicType, category string, data map[string]interface{}) *IoTStreamMessage {
+// BuildDeviceProducer 设备 Producer 标识：用 server UUID（device_id），不用 device_uid (MAC/SN)。
+// 见 doc/TODO.md Phase A: 内网仍有 plain MQTT 1883；MAC 泄露 → 物理追踪 + 位置关联。
+func BuildDeviceProducer(deviceID string) string {
+	if deviceID == "" {
+		return ""
+	}
+	return "device:" + deviceID
+}
+
+// NewIoTStreamMessageWithData 构造 envelope（Phase A v2）。
+// Producer 留给 caller 自行 msg.Producer = ... 设置（device gateway 用 BuildDeviceProducer(deviceID)；
+// sensor agent 用 "sensor.<name>"），避免参数列表暴涨。
+// subjectEntity 由 caller 明确填：device-gateway 已绑=card_id；未绑=device_id 占位；sensor agent 留空。
+func NewIoTStreamMessageWithData(tenantID, subjectEntity, deviceUID, deviceID, deviceType string, ts int64, topicType, category string, data map[string]interface{}) *IoTStreamMessage {
 	// Stage 1a/1b：在 publish 边界 strip dataCategory + event_name，envelope.Category 是事件类型唯一权威
 	if data != nil {
 		delete(data, DataCategoryKey)
@@ -127,14 +170,15 @@ func NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceTy
 		dataValue = nil
 	}
 	msg := &IoTStreamMessage{
-		DeviceUID:  deviceUID,
-		DeviceType: deviceType,
-		CardID:     cardID,
-		TenantID:   tenantID,
-		Timestamp:  ts,
-		TopicType:  topicType,
-		Category:   category,
-		DataValue:  dataValue,
+		Producer:      BuildDeviceProducer(deviceID), // 默认 device-gateway 语义；sensor agent 调用方再覆盖
+		SubjectEntity: subjectEntity,
+		DeviceUID:     deviceUID,
+		DeviceType:    deviceType,
+		TenantID:      tenantID,
+		Timestamp:     ts,
+		TopicType:     topicType,
+		Category:      category,
+		DataValue:     dataValue,
 	}
 	if deviceID != "" {
 		msg.DeviceID = deviceID
@@ -142,16 +186,18 @@ func NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceTy
 	return msg
 }
 
-func BuildIoTStreamMessage(deviceUID, deviceType, cardID, tenantID string, timestamp int64, topicType, category string, dataValue []interface{}) IoTStreamMessage {
+func BuildIoTStreamMessage(deviceUID, deviceID, deviceType, subjectEntity, tenantID string, timestamp int64, topicType, category string, dataValue []interface{}) IoTStreamMessage {
 	return IoTStreamMessage{
-		DeviceUID:  deviceUID,
-		DeviceType: deviceType,
-		CardID:     cardID,
-		TenantID:   tenantID,
-		Timestamp:  timestamp,
-		TopicType:  topicType,
-		Category:   category,
-		DataValue:  dataValue,
+		Producer:      BuildDeviceProducer(deviceID),
+		SubjectEntity: subjectEntity,
+		DeviceUID:     deviceUID,
+		DeviceID:      deviceID,
+		DeviceType:    deviceType,
+		TenantID:      tenantID,
+		Timestamp:     timestamp,
+		TopicType:     topicType,
+		Category:      category,
+		DataValue:     dataValue,
 	}
 }
 
@@ -168,7 +214,8 @@ func FirstDataValue(dataValue []interface{}) map[string]interface{} {
 }
 
 // NewSingleItemMessage 构造单条 data 的 IoTStreamMessage。先有 dataCategory（data 内），包头 Category 优先取 data 的 dataCategory，缺省时用参数 category；保证 payload 含 dataCategory。deviceID 可选，非空时写入包头。
-func NewSingleItemMessage(tenantID, cardID, deviceUID, deviceID, deviceType string, ts int64, topicType, category string, data map[string]interface{}) *IoTStreamMessage {
+// Producer 默认按 device-gateway 语义自动填充 ("device:<deviceID>")；sensor agent 调用方在拿到结果后覆盖 msg.Producer。
+func NewSingleItemMessage(tenantID, subjectEntity, deviceUID, deviceID, deviceType string, ts int64, topicType, category string, data map[string]interface{}) *IoTStreamMessage {
 	if data == nil {
 		data = make(map[string]interface{})
 	}
@@ -184,7 +231,7 @@ func NewSingleItemMessage(tenantID, cardID, deviceUID, deviceID, deviceType stri
 		}
 	}
 	// Stage 1b：dataCategory + event_name 由 NewIoTStreamMessageWithData 边界 strip；envelope.Category 唯一权威
-	return NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, ts, topicType, cat, withCat)
+	return NewIoTStreamMessageWithData(tenantID, subjectEntity, deviceUID, deviceID, deviceType, ts, topicType, cat, withCat)
 }
 
 // =============================================================================
@@ -224,16 +271,18 @@ const (
 	AlarmProcessActionAck  = "ack"
 )
 
-func BuildDeviceStatusMessage(deviceUID, deviceType, cardID, tenantID string, timestamp int64, statuses map[string]int) IoTStreamMessage {
+func BuildDeviceStatusMessage(deviceUID, deviceID, deviceType, subjectEntity, tenantID string, timestamp int64, statuses map[string]int) IoTStreamMessage {
 	// Stage 1b：dataValue 不再带 dataCategory；envelope.Category 是事件类型唯一权威
 	return IoTStreamMessage{
-		DeviceUID:  deviceUID,
-		DeviceType: deviceType,
-		CardID:     cardID,
-		TenantID:   tenantID,
-		Timestamp:  timestamp,
-		TopicType:  "status",
-		Category:   "deviceStatus",
+		Producer:      BuildDeviceProducer(deviceID),
+		SubjectEntity: subjectEntity,
+		DeviceUID:     deviceUID,
+		DeviceID:      deviceID,
+		DeviceType:    deviceType,
+		TenantID:      tenantID,
+		Timestamp:     timestamp,
+		TopicType:     "status",
+		Category:      "deviceStatus",
 		DataValue: []interface{}{
 			map[string]interface{}{"statuses": statuses},
 		},
@@ -343,10 +392,12 @@ const (
 )
 
 type AuthMessage struct {
+	Producer      string                 `json:"producer,omitempty"`
+	SubjectEntity string                 `json:"subject_entity,omitempty"`
+
 	DeviceUID  string                 `json:"device_uid"`
 	DeviceID   string                 `json:"device_id,omitempty"`
 	DeviceType string                 `json:"device_type"`
-	CardID     string                 `json:"card_id,omitempty"`
 	TenantID   string                 `json:"tenant_id"`
 	Timestamp  int64                  `json:"timestamp"`
 	TopicType  string                 `json:"topic_type"`

@@ -20,7 +20,7 @@ LOG_FILES=(
   "wisefido-qinglan.log"
   "wisefido-data.log"
   "wisefido-iot.log"
-  "wisefido-ai.log"
+  "wisefido-sensor.log"
 )
 
 d=$(date +%Y%m%d)
@@ -46,7 +46,7 @@ if [ "${RETAIN_DAYS:-0}" -gt 0 ] 2>/dev/null && command -v find >/dev/null 2>&1;
     -name 'wisefido-qinglan.log.*' -o \
     -name 'wisefido-data.log.*' -o \
     -name 'wisefido-iot.log.*' -o \
-    -name 'wisefido-ai.log.*' \
+    -name 'wisefido-sensor.log.*' \
     \) -mtime +"$RETAIN_DAYS" -delete 2>/dev/null || true
   echo "$(date '+%Y-%m-%d %H:%M:%S') cleaned archives older than ${RETAIN_DAYS} days"
 fi

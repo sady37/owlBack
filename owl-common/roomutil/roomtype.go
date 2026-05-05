@@ -2,7 +2,7 @@
 //
 // 提供 room_name → 语义类型的统一判定。两个使用方：
 //   - wisefido-cardagg：决定设备是否走卫生间事件 / Stay 检测路径
-//   - wisefido-ai：still fall 触发位置语义并集（cell.AreaToilet/AreaShower ∪ room.bathroom）
+//   - wisefido-sensor：still fall 触发位置语义并集（cell.AreaToilet/AreaShower ∪ room.bathroom）
 //
 // 单一来源避免漂移：将来加新模式（如 "WC1F"、"powderRoom"）只需改本文件，两服务都生效。
 package roomutil
