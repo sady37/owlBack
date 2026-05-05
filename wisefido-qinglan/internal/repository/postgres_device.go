@@ -870,15 +870,20 @@ func (r *PostgresDeviceRepository) PreloadAlarmEnablement(ctx context.Context, t
 	return err
 }
 
-// GetAllAccessibleDevices 获取所有可访问的设备（用于启动时主动订阅）
-// 条件：device_store.allow_access = TRUE 且 devices.business_access = 'approved' 或 'enable'
-// 如果 devices 表中没有记录，也允许（d.business_access IS NULL）
+// GetAllAccessibleDevices 获取所有可访问的 Radar 设备（用于启动时主动订阅）
+// 条件：device_store.device_type = 'Radar' 且 allow_access = TRUE
+//      且 devices.business_access = 'approved' 或 'enable'（或 devices 无记录时也允许）
+//
+// 必须按 device_type 过滤，否则 Sleepad 等非雷达设备会被一并订阅，
+// publishOnlineForConnectedAfterStartup 会以硬编码 DeviceTypeRadar 给它们打上错误的 device_type，
+// 污染 iot_timeseries / iot:alarm:stream（参见 BM87225200672 的 211 条 OfflineRecover 误打 Radar 标签）。
 func (r *PostgresDeviceRepository) GetAllAccessibleDevices(ctx context.Context) ([]string, error) {
 	query := `
 		SELECT DISTINCT ds.device_uid
 		FROM device_store ds
 		LEFT JOIN devices d ON ds.device_id = d.device_id AND d.status != 'disabled'
 		WHERE ds.allow_access = TRUE
+		  AND ds.device_type = 'Radar'
 		  AND (d.business_access = 'approved' OR d.business_access = 'enable' OR d.business_access IS NULL)
 		ORDER BY ds.device_uid
 	`

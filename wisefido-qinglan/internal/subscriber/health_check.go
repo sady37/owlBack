@@ -18,13 +18,25 @@ import (
 )
 
 // DeviceHealthStatus 设备健康状态（属性值）
+//
+// 该结构既用作单次健康检查的临时计算结果（含 WifiRSSI/AcceleraRaw 原始值），
+// 也用作 manager.prevHealth 缓存——记录上次"已发布"的状态供 transition 判定。
+// 已发布的状态只看 Offline/SignalPoor/AngleAbnormal 三个字段；其余为采样辅助。
+//
+// Initialized 必须**逐字段**独立——三个字段在同一 health_check 周期里依次调用
+// publishHealthIfChanged，若用单一 bool 共享，第一次调用置 true 后第二/三次会
+// 把"默认零值 vs 当前 0"误判成"无跳变"，跳过 publish，导致 *Recover 漏发。
 type DeviceHealthStatus struct {
-	WifiRSSI      int    // wifi信号强度(dBm)
-	AcceleraRaw   string // 原始格式: X:Y:Z:V
-	InstallStyle  int    // 安装方式: 0=顶装, 1=侧装, 2=角装
-	SignalPoor    int    // 0=正常, 1=信号差
-	AngleAbnormal int    // 0=正常, 1=倾角异常
-	LastCheckTime time.Time
+	WifiRSSI                 int    // wifi信号强度(dBm)
+	AcceleraRaw              string // 原始格式: X:Y:Z:V[:extra...]
+	InstallStyle             int    // 安装方式: 0=顶装, 1=侧装, 2=角装
+	Offline                  int    // 0=在线, 1=离线（read 失败兜底）
+	SignalPoor               int    // 0=正常, 1=信号差
+	AngleAbnormal            int    // 0=正常, 1=倾角异常
+	OfflineInitialized       bool   // FieldOffline 是否已记录过
+	SignalPoorInitialized    bool   // FieldSignalPoor 是否已记录过
+	AngleAbnormalInitialized bool   // FieldAngleAbnormal 是否已记录过
+	LastCheckTime            time.Time
 }
 
 // healthCheckMonitor 设备健康检查（每10分钟执行一次）
@@ -124,7 +136,7 @@ func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, devic
 			zap.String("device_uid", deviceUID),
 			zap.Error(err),
 		)
-		m.publishDeviceAlarm(ctx, tid, did, deviceUID, observation.FieldOffline, 1)
+		m.publishHealthIfChanged(ctx, tid, did, deviceUID, observation.FieldOffline, 1)
 		return
 	}
 
@@ -163,10 +175,78 @@ func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, devic
 			deviceUID, health.SignalPoor, health.WifiRSSI, health.AngleAbnormal)
 	}
 
-	// 按 iot:alarm:stream 标准格式：每个 status 一条 alarm，category/eventName 用 dataCategoryFromFieldAndValue 的准确值
-	m.publishDeviceAlarm(ctx, tid, did, deviceUID, observation.FieldOffline, 0) // OfflineRecover
-	m.publishDeviceAlarm(ctx, tid, did, deviceUID, observation.FieldSignalPoor, health.SignalPoor)
-	m.publishDeviceAlarm(ctx, tid, did, deviceUID, observation.FieldAngleAbnormal, health.AngleAbnormal)
+	// 按 iot:alarm:stream 标准格式：每个 status 一条 alarm，category/eventName 用 dataCategoryFromFieldAndValue 的准确值。
+	// transition-only：值未变 / 首次观测=0（健康）都不再下发，避免每 10min 重复刷 alarm_events。
+	m.publishHealthIfChanged(ctx, tid, did, deviceUID, observation.FieldOffline, 0) // OfflineRecover（read 成功）
+	m.publishHealthIfChanged(ctx, tid, did, deviceUID, observation.FieldSignalPoor, health.SignalPoor)
+	m.publishHealthIfChanged(ctx, tid, did, deviceUID, observation.FieldAngleAbnormal, health.AngleAbnormal)
+}
+
+// publishHealthIfChanged 仅在值发生跳变时下发设备健康类 alarm/recover。
+//
+// 旧逻辑每次健康检查（10min）无条件 publish offline=0/signal_poor/angle_abnormal 三条，
+// 即便状态从未变化也会每 10min 灌一条 alarm_events（cardagg 端没有 onset dedup），导致：
+//   - alarm_events 表周期性灌行
+//   - cards.unhandled_alarm_X 计数失真
+//   - pop_alarm 反复刷新 / push 重复轰炸
+//
+// 现在按 (device_uid, fieldKey) 缓存上次发布值，仅 0→1 / 1→0 跳变时下发。
+//
+// 首次观测：无条件 publish 当前值，让 cardagg 把外部观察到的状态同步到 alarm_events 表。
+// 历史"value=0 时静默初始化"会让 qinglan 重启后 stale active alarm 永远清不掉
+// （设备实际健康但 DB 还挂着重启前的 active 行）；改 publish 后：
+//   - cardagg.HandleRecoveryWithTypes 对无 active 同类 alarm 是 noop（幂等）→ 无副作用
+//   - 有 active 同类 alarm → 正确 auto-resolve
+// onset (value=1) 路径走 InsertAlarmAndUpdateCard，cardagg Phase C 的 DedupWhileActive
+// 防御重复 onset。
+//
+// 这是 qinglan 侧的源头去重；cardagg Phase C 的 DedupWhileActive 是 defense-in-depth。
+func (m *DeviceSubscriptionManager) publishHealthIfChanged(ctx context.Context, tenantID, deviceID, deviceUID, fieldKey string, value int) {
+	m.mu.Lock()
+	prev, ok := m.prevHealth[deviceUID]
+	if !ok {
+		prev = DeviceHealthStatus{}
+	}
+	var lastValue int
+	var initialized bool
+	switch fieldKey {
+	case observation.FieldOffline:
+		lastValue, initialized = prev.Offline, prev.OfflineInitialized
+	case observation.FieldSignalPoor:
+		lastValue, initialized = prev.SignalPoor, prev.SignalPoorInitialized
+	case observation.FieldAngleAbnormal:
+		lastValue, initialized = prev.AngleAbnormal, prev.AngleAbnormalInitialized
+	default:
+		m.mu.Unlock()
+		// 未知字段直接透传（保留极端兜底，不应到这里）
+		m.publishDeviceAlarm(ctx, tenantID, deviceID, deviceUID, fieldKey, value)
+		return
+	}
+
+	// 跳变去重：仅当**该字段**已初始化且值未变才 skip。
+	// 首次观测（!initialized）一律 publish，让 cardagg 把当前实际状态同步进 DB——
+	// 健康 (value=0) 触发 *Recover 清掉 stale active；异常 (value=1) 触发 onset。
+	if initialized && lastValue == value {
+		m.mu.Unlock()
+		return
+	}
+
+	// 首次观测 / 真跳变：先更新缓存再放锁 publish
+	switch fieldKey {
+	case observation.FieldOffline:
+		prev.Offline = value
+		prev.OfflineInitialized = true
+	case observation.FieldSignalPoor:
+		prev.SignalPoor = value
+		prev.SignalPoorInitialized = true
+	case observation.FieldAngleAbnormal:
+		prev.AngleAbnormal = value
+		prev.AngleAbnormalInitialized = true
+	}
+	m.prevHealth[deviceUID] = prev
+	m.mu.Unlock()
+
+	m.publishDeviceAlarm(ctx, tenantID, deviceID, deviceUID, fieldKey, value)
 }
 
 // validateDeviceHealth 验证设备健康状态，计算 SignalPoor 和 AngleAbnormal
@@ -205,12 +285,16 @@ func (m *DeviceSubscriptionManager) validateDeviceHealth(health *DeviceHealthSta
 	}
 }
 
-// parseAccelerator 解析 accelera 字符串格式: X:Y:Z:V
+// parseAccelerator 解析 accelera 字符串格式: X:Y:Z:V[:extra...]
 // 返回: x, y, z, calibrated(V==1)
+//
+// firmware 不同批次会在 V 之后追加字段（如温度/电压/sample count），
+// 所以接受「至少 4 段」，多余尾部字段忽略 —— 否则新 firmware 一上线就被误判
+// AngleAbnormal=1（实测 2026-05-03 Radar_1797 上报 6 段 -0.29:-5.71:-5.72:1:6553.4:5.6）。
 func (m *DeviceSubscriptionManager) parseAccelerator(accRaw string) (float64, float64, float64, bool) {
 	accRaw = strings.TrimSpace(accRaw)
 	parts := strings.Split(accRaw, ":")
-	if len(parts) != 4 {
+	if len(parts) < 4 {
 		return 0, 0, 0, false
 	}
 
@@ -237,8 +321,9 @@ func (m *DeviceSubscriptionManager) validateAngle(x, y float64, installStyle int
 		return ax <= 10 && absFloat(y) <= 10
 	case 1: // 侧装：近乎垂直，|x|≤10 且 y < -60（y=-60 为异常）
 		return ax <= 10 && y < -60
-	case 2: // 墙角：45°~60° 倾角支架，|x|≤10 且 -60 ≤ y ≤ -45
-		return ax <= 10 && y >= -60 && y <= -45
+		
+	case 2: // 墙角：45°~60° 倾角支架，|x|≤10 且 -60 ≤ y ≤ -45    临时放宽到69
+		return ax <= 10 && y >= -69 && y <= -45
 	default:
 		return false
 	}
@@ -252,7 +337,10 @@ func absFloat(x float64) float64 {
 	return x
 }
 
-// toIntFromInterface 将 interface{} 转为 int（兼容 JSON 解析后的 float64）
+// toIntFromInterface 将 interface{} 转为 int（兼容 JSON 解析后的 float64 与 firmware 字符串数字）
+//
+// firmware 用 MQTT 返回的字段经常是字符串数字（如 wifi_rssi="-45"，install_model="2"），
+// 必须 ParseInt 取出来。漏 case string 会让 -45 这种好信号被吞成 0，导致 SignalPoor 判定永远 fail-open。
 func toIntFromInterface(v interface{}) int {
 	switch n := v.(type) {
 	case int:
@@ -261,6 +349,10 @@ func toIntFromInterface(v interface{}) int {
 		return int(n)
 	case int64:
 		return int(n)
+	case string:
+		if i, err := strconv.Atoi(strings.TrimSpace(n)); err == nil {
+			return i
+		}
 	}
 	return 0
 }
@@ -311,8 +403,12 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 		data = make(map[string]interface{})
 	}
 	data[fieldKey] = value
+	// 设备类（onset + recover）一律走 iot:alarm:stream；cardagg 端 *Recover 触发 auto-recover
+	// 解除 active alarm。原则：设备类报警都是自动恢复，不需要人工标记。
 	directAlarm := eventName == alarm.AlarmTypeOffline || eventName == alarm.AlarmTypeOfflineRecover ||
-		eventName == alarm.SensorDetached || eventName == alarm.SensorDetachedRecover
+		eventName == alarm.SensorDetached || eventName == alarm.SensorDetachedRecover ||
+		eventName == alarm.SignalPoor || eventName == alarm.SingalPoorRecover ||
+		eventName == alarm.AngleException || eventName == alarm.AngleExceptionRecover
 	topicType := "event"
 	if directAlarm {
 		topicType = "alarm"

@@ -67,13 +67,14 @@ func (s *ConfigSubscriber) handleCardLike(ctx context.Context, configMsg redisco
 	if op == "reset" {
 		s.cardMapping.InvalidateCache(ctx)
 		if s.healthCheck != nil {
-			s.healthCheck.ProbeAfterCardChange(ctx, "", "", "", "")
+			s.healthCheck.ProbeAfterCardChange(ctx, "", "", "", "", nil)
 		}
 		return
 	}
 
 	// Invalidate affected device UIDs from the event payload
-	for _, uid := range affectedDeviceUIDsFromConfigData(data) {
+	affectedUIDs := affectedDeviceUIDsFromConfigData(data)
+	for _, uid := range affectedUIDs {
 		s.cardMapping.InvalidateByDeviceUID(uid)
 		// Reload the baseline for each affected device
 		s.cardMapping.GetCardInfo(ctx, uid)
@@ -84,7 +85,9 @@ func (s *ConfigSubscriber) handleCardLike(ctx context.Context, configMsg redisco
 	}
 
 	if s.healthCheck != nil {
-		s.healthCheck.ProbeAfterCardChange(ctx, "", "", cardID, deviceID)
+		// 把 affectedUIDs 一并传下去：HealthCheck 优先按 UID 列表只探目标 Sleepad，
+		// 避免 deviceID 留空时 fallback 到 scanAll 引发风暴（启动 backlog 28 条 → 同一台 1s 17 次）。
+		s.healthCheck.ProbeAfterCardChange(ctx, "", "", cardID, deviceID, affectedUIDs)
 	}
 }
 
