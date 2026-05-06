@@ -254,11 +254,12 @@ func (s *StateService) publishBedStateLeftBed(ctx context.Context, cardID, devic
 			prev = curr.BedState
 		}
 	}
+	// LeftBed 不再继承 SleepStage——离床即清，下一次 InBed 后等 Sleepad/Radar 再上报
+	// （SleepStage 是事件，不是连续量；持有 stale 值会导致"Sleepad 关了仍显示 Awake"）
 	bedFromPrev := func(b *card.BedState) {
-		if prev != nil {
-			b.SleepStage = prev.SleepStage
-			b.SleepConfidence = prev.SleepConfidence
-		}
+		_ = prev // 占位避免未使用警告
+		b.SleepStage = 0
+		b.SleepConfidence = 0
 	}
 
 	var trackNumber int
@@ -716,6 +717,34 @@ func (s *StateService) EnsureCardStatePrepared(ctx context.Context, cardID strin
 	s.preparedCards[cardID] = struct{}{}
 	s.preparedMu.Unlock()
 	return nil
+}
+
+// ClearBedStateSleepStage 清掉 SleepStage（事件式：LeftBed/ExitRoom/EnterRoom/device clear 触发）。
+// SleepStage 是事件驱动状态——Sleepad 仅在状态变化或重连时上报，Radar 不发独立 sleep 事件。
+// 不能用 TTL（两类设备 sample 周期不同），必须按生命周期事件主动清。
+// 同时把 SleepConfidence 重置为 0，让下一个事件无论从哪台设备来都能写入。
+func (s *StateService) ClearBedStateSleepStage(ctx context.Context, cardID string) error {
+	if s.writer == nil || cardID == "" {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	var cur *card.BedState
+	if s.reader != nil {
+		if curr, err := s.reader.ReadCardStatus(ctx, cardID); err == nil && curr != nil && curr.BedState != nil {
+			cur = &card.BedState{}
+			*cur = *curr.BedState
+		}
+	}
+	if cur == nil {
+		return nil // 没 BedState 不需要清
+	}
+	if cur.SleepStage == 0 && cur.SleepConfidence == 0 {
+		return nil // 已清，幂等
+	}
+	cur.UpdatedAt = now
+	cur.SleepStage = 0
+	cur.SleepConfidence = 0
+	return PublishCardStatus(ctx, s.writer, cardID, PublishFields{BedState: cur})
 }
 
 // PublishBedStateSleepStage 仅更新 BedState.SleepStage（Sleepad/Radar 事件写入）。SleepConfidence 100 分制：60=Radar, 90=Sleepad, 100=双设备；仅更高或同级覆盖。

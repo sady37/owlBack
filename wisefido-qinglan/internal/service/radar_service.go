@@ -202,24 +202,26 @@ func (s *RadarService) SetDeviceProperties(ctx context.Context, deviceUID string
 	convertedProperties := make(map[string]interface{})
 
 	// 处理 _alarm_items_json：从 wisefido-data 传递的原始 AlarmItem[] 数据
-	// 构建 fall_param 和 heart_breath_param 的 base64，并应用单位转换
+	// 用 EncodeAlarmItemsToDeviceProps 一次拿齐 radar_func_ctrl + fall_param + heart_breath_param
+	// （之前只单独调 fall/heart 两个 sub-func，遗漏了 work_model 的写入，导致 settings 改 Sleep 也落不到 firmware）
 	if alarmItemsJSON, ok := properties["_alarm_items_json"].(string); ok {
 		var alarmItems []alarm.AlarmItem
 		if err := json.Unmarshal([]byte(alarmItemsJSON), &alarmItems); err == nil {
-			// 构建 fall_param base64（应用转换：秒 → 10秒单位）
-			if fallParamBase64, err := decode.EncodeFallParam(alarmItems); err == nil {
-				convertedProperties["fall_param"] = fallParamBase64
-				log.Printf("[CONFIG_WRITE] ✅ Built fall_param base64 from AlarmItems (applied unit conversion)")
-			} else {
-				log.Printf("[CONFIG_WRITE] ❌ Failed to build fall_param: %v", err)
+			built, encErr := decode.EncodeAlarmItemsToDeviceProps(alarmItems)
+			if encErr != nil {
+				log.Printf("[CONFIG_WRITE] ❌ EncodeAlarmItemsToDeviceProps: %v", encErr)
 			}
-
-			// 构建 heart_breath_param base64（无需转换，单位已一致）
-			if heartBreathParamBase64, err := decode.EncodeHeartBreathParam(alarmItems); err == nil {
-				convertedProperties["heart_breath_param"] = heartBreathParamBase64
+			if v, ok := built["radar_func_ctrl"]; ok {
+				convertedProperties["radar_func_ctrl"] = v
+				log.Printf("[CONFIG_WRITE] ✅ Built radar_func_ctrl=%v from AlarmItems.MonitoringMode", v)
+			}
+			if v, ok := built["fall_param"]; ok {
+				convertedProperties["fall_param"] = v
+				log.Printf("[CONFIG_WRITE] ✅ Built fall_param base64 from AlarmItems")
+			}
+			if v, ok := built["heart_breath_param"]; ok {
+				convertedProperties["heart_breath_param"] = v
 				log.Printf("[CONFIG_WRITE] ✅ Built heart_breath_param base64 from AlarmItems")
-			} else {
-				log.Printf("[CONFIG_WRITE] ❌ Failed to build heart_breath_param: %v", err)
 			}
 		} else {
 			log.Printf("[CONFIG_WRITE] ❌ Failed to unmarshal _alarm_items_json: %v", err)

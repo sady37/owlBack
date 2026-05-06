@@ -577,8 +577,8 @@ func (s *deviceMonitorSettingsService) buildDeviceAlarmItemsFromCloudOrDefault(c
 		return defaultItems, nil
 	}
 
-	// 3. 解析 device_alarms，用 alarm_cloud 的 alarm_level 覆盖默认值
-	deviceAlarmsMap := make(map[string]map[string]string)
+	// 3. 解析 device_alarms（DeviceAlarmEntry 自带兼容老 string 格式的 UnmarshalJSON）。
+	deviceAlarmsMap := make(map[string]map[string]DeviceAlarmEntry)
 	if len(alarmCloud.DeviceAlarms) > 0 {
 		if err := json.Unmarshal(alarmCloud.DeviceAlarms, &deviceAlarmsMap); err != nil {
 			// 解析失败，返回默认值
@@ -630,13 +630,19 @@ func (s *deviceMonitorSettingsService) buildDeviceAlarmItemsFromCloudOrDefault(c
 			newItem.AlarmParams = newParams
 		}
 
-		// alarm_cloud only provides AlarmLevel for initialization; IsEnabled stays from defaults
+		// alarm_cloud 是双字段权威源：is_enabled 和 alarm_level 都覆盖 default。
+		// 老 sentinel 行为（"DISABLED" 同时表达 disabled + 丢失 level）已由 DeviceAlarmEntry.UnmarshalJSON 在反序列化时拆解。
 		if deviceTypeKey != "" {
 			if typeMap, ok := deviceAlarmsMap[deviceTypeKey]; ok {
-				if level, exists := typeMap[item.AlarmType]; exists {
-					level = strings.TrimSpace(level)
-					level = strings.Trim(level, `"`)
-					newItem.AlarmLevel = &level
+				if entry, exists := typeMap[item.AlarmType]; exists {
+					enabled := entry.IsEnabled
+					newItem.IsEnabled = &enabled
+					if entry.AlarmLevel != "" {
+						level := strings.TrimSpace(entry.AlarmLevel)
+						level = strings.Trim(level, `"`)
+						newItem.AlarmLevel = &level
+					}
+					// AlarmLevel 空（来自老格式 disabled 项）→ 保留 default level
 				}
 			}
 		}

@@ -148,8 +148,9 @@ func buildRuntimeConfig(cfg *config.Config, db *sql.DB) roomengine.RuntimeConfig
 	return rc
 }
 
-// registerAllRooms 扫 rooms 表所有 layout_config，逐个 ParseLayoutConfig + Optimize + RegisterRoom。
-// 解析失败的房间跳过并记日志，不阻塞其他房间。
+// registerAllRooms 扫 rooms 表所有 room，逐个 ParseLayoutConfig + Optimize + RegisterRoom；
+// layout_config 为空或解析失败的 room 仍以"无 layout placeholder"注册，让 sleepad-only 流量
+// （ProcessSleepadBedEvent 不依赖 grid）能正常路由到 TrackManager，避免被 dropped_unrouted_message 沉默。
 //
 // 顺带 LEFT JOIN units 取该房间所属 unit 的 IANA 时区（IsNightTime 用）。
 // 时区缺失（unit_id 为 null 或 timezone 空）时 cfg.Timezone 留空，engine 会日志警告并退化 UTC。
@@ -161,7 +162,6 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 		       COALESCE(u.timezone, ''), r.tenant_id::text
 		FROM rooms r
 		LEFT JOIN units u ON u.unit_id = r.unit_id
-		WHERE r.layout_config IS NOT NULL
 	`)
 	if err != nil {
 		return 0, err
@@ -169,6 +169,7 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 	defer rows.Close()
 
 	count := 0
+	placeholderCount := 0
 	for rows.Next() {
 		var roomID, roomName, tenantID string
 		var layoutStr sql.NullString
@@ -177,22 +178,36 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 			logger.Warn("scan rooms row", zap.Error(err))
 			continue
 		}
-		if !layoutStr.Valid || layoutStr.String == "" {
-			continue
-		}
 
-		cfg, err := roomengine.ParseLayoutConfig(roomID, []byte(layoutStr.String))
-		if err != nil {
-			logger.Warn("parse layout failed", zap.String("room_id", roomID), zap.Error(err))
-			continue
+		var cfg roomengine.RoomConfig
+		if !layoutStr.Valid || layoutStr.String == "" {
+			// 无 layout：minimal placeholder。RegisterRoom 内部 RoomW/RoomH=0 会兜底成 Max；
+			// WallPolygon/Radar/Beds 等全空 → grid 全是空 cell，雷达派生事件天然走不通；
+			// sleepad ProcessSleepadBedEvent 仅用 tm 内部 maps，不查 grid，可正常工作。
+			cfg = roomengine.RoomConfig{RoomID: roomID, RoomName: roomName, Timezone: timezone}
+			placeholderCount++
+		} else {
+			cfg, err = roomengine.ParseLayoutConfig(roomID, []byte(layoutStr.String))
+			if err != nil {
+				// 解析失败也降级成 placeholder，与"无 layout"同等待遇——保 sleepad 能通
+				logger.Warn("parse layout failed; registering as placeholder",
+					zap.String("room_id", roomID), zap.Error(err))
+				cfg = roomengine.RoomConfig{RoomID: roomID, RoomName: roomName, Timezone: timezone}
+				placeholderCount++
+			} else {
+				cfg.RoomName = roomName
+				cfg.Timezone = timezone
+				roomengine.ApplyOptimizedExtent(&cfg)
+			}
 		}
-		cfg.RoomName = roomName
-		cfg.Timezone = timezone
-		roomengine.ApplyOptimizedExtent(&cfg)
 		engine.RegisterRoom(cfg)
 		// PR-8: 注入 roomID → tenant_id（AI 派生 alarm 发布需要）
 		engine.SetRoomTenant(roomID, tenantID)
 		count++
+	}
+	if placeholderCount > 0 {
+		logger.Info("roomengine: registered rooms without layout (sleepad-only fallback)",
+			zap.Int("placeholder_count", placeholderCount))
 	}
 	return count, rows.Err()
 }

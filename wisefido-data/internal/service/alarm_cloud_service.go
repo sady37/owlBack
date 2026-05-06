@@ -16,6 +16,20 @@ import (
 	"go.uber.org/zap"
 )
 
+// DeviceAlarmEntry 是 alarm_cloud.device_alarms JSONB 中"每条 alarm 的存储格式"。
+//
+// 双字段独立存储，is_enabled 与 alarm_level 解耦：
+//
+//	{"SleepPad": {"LeftBed": {"is_enabled": 0, "alarm_level": "WARNING"}}}
+//
+// 老格式（合并 string + sentinel "DISABLED"）已通过一次性 SQL migration 升级为本结构；
+// 本类型不再做 UnmarshalJSON 兼容——遇到旧字符串数据会反序列化失败，作为部署侧的
+// 硬规则强制 schema 干净。迁移脚本见 doc/migrations/alarm_cloud_device_alarms_split.sql。
+type DeviceAlarmEntry struct {
+	IsEnabled  int    `json:"is_enabled"`
+	AlarmLevel string `json:"alarm_level"`
+}
+
 // getResourcePermission 查询资源权限配置（从 role_permissions 表）
 // 为了避免循环导入，这里复制了 httpapi.GetResourcePermission 的逻辑
 //
@@ -314,59 +328,50 @@ func buildAlarmCloudConfigFromDomain(alarmCloud *domain.AlarmCloud) (*alarm.Alar
 	config.AlarmSetting.Sleepad = make([]alarm.AlarmItem, 0)
 	config.AlarmSetting.Radar = make([]alarm.AlarmItem, 0)
 
-	// 从 device_alarms 构建映射表
-	var deviceAlarmsMap map[string]map[string]string
+	// 从 device_alarms 构建映射表（DeviceAlarmEntry 自带兼容老 string 格式的 UnmarshalJSON）
+	var deviceAlarmsMap map[string]map[string]DeviceAlarmEntry
 	if len(alarmCloud.DeviceAlarms) > 0 {
 		if err := json.Unmarshal(alarmCloud.DeviceAlarms, &deviceAlarmsMap); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal device_alarms: %w", err)
 		}
 	}
 
-	// 处理 SleepPad：使用 DefaultAlarmSetting 作为基础，更新 alarm_level
+	// 处理 SleepPad：用 DefaultAlarmSetting 作基础，alarm_cloud 双字段直接覆盖
 	for _, item := range alarm.DefaultAlarmSetting.Sleepad {
-		// 过滤掉 DisplayNone 的项，只保留 DisplayAlarmCloud 或 DisplayAlarmCloudAndDevice 的项
 		if item.DisplaySetting == alarm.DisplayNone {
 			continue
 		}
-		newItem := item // 复制基础配置
+		newItem := item
 		if sleepPadMap, ok := deviceAlarmsMap["SleepPad"]; ok {
-			if level, exists := sleepPadMap[item.AlarmType]; exists {
-				// 更新 alarm_level
-				newItem.AlarmLevel = &level
-				if level == "DISABLE" || level == "DISABLED" {
-					enabled := alarm.IsEnabledOff
-					newItem.IsEnabled = &enabled
-				} else {
-					enabled := alarm.IsEnabledOn
-					newItem.IsEnabled = &enabled
+			if entry, exists := sleepPadMap[item.AlarmType]; exists {
+				enabled := entry.IsEnabled
+				newItem.IsEnabled = &enabled
+				if entry.AlarmLevel != "" {
+					level := entry.AlarmLevel
+					newItem.AlarmLevel = &level
 				}
+				// AlarmLevel 空（来自老格式 disabled 项）→ 保留 default level 不动
 			}
 		}
-		// 保存完整配置（包括 alarm_params, display_setting 等）
 		config.AlarmSetting.Sleepad = append(config.AlarmSetting.Sleepad, newItem)
 	}
 
-	// 处理 Radar：使用 DefaultAlarmSetting 作为基础，更新 alarm_level
+	// 处理 Radar（同 SleepPad 双字段语义）
 	for _, item := range alarm.DefaultAlarmSetting.Radar {
-		// 过滤掉 DisplayNone 的项，只保留 DisplayAlarmCloud 或 DisplayAlarmCloudAndDevice 的项
 		if item.DisplaySetting == alarm.DisplayNone {
 			continue
 		}
-		newItem := item // 复制基础配置
+		newItem := item
 		if radarMap, ok := deviceAlarmsMap["Radar"]; ok {
-			if level, exists := radarMap[item.AlarmType]; exists {
-				// 更新 alarm_level
-				newItem.AlarmLevel = &level
-				if level == "DISABLE" || level == "DISABLED" {
-					enabled := alarm.IsEnabledOff
-					newItem.IsEnabled = &enabled
-				} else {
-					enabled := alarm.IsEnabledOn
-					newItem.IsEnabled = &enabled
+			if entry, exists := radarMap[item.AlarmType]; exists {
+				enabled := entry.IsEnabled
+				newItem.IsEnabled = &enabled
+				if entry.AlarmLevel != "" {
+					level := entry.AlarmLevel
+					newItem.AlarmLevel = &level
 				}
 			}
 		}
-		// 保存完整配置（包括 alarm_params, display_setting 等）
 		config.AlarmSetting.Radar = append(config.AlarmSetting.Radar, newItem)
 	}
 
@@ -397,32 +402,43 @@ func buildAlarmCloudConfigFromDomain(alarmCloud *domain.AlarmCloud) (*alarm.Alar
 // buildDomainAlarmCloudFromConfig 从 alarm.AlarmCloudConfig 构建 domain.AlarmCloud
 func buildDomainAlarmCloudFromConfig(tenantID string, config *alarm.AlarmCloudConfig) (*domain.AlarmCloud, error) {
 	// 1. 构建 device_alarms JSONB
-	// 格式：{ "Radar": { "Radar_Fall": "CRITICAL", ... }, "SleepPad": { "SleepPad_LeftBed": "WARNING", ... } }
-	deviceAlarms := make(map[string]map[string]string)
+	// 新格式：{ "Radar": { "Fall": {"is_enabled":1,"alarm_level":"CRITICAL"} }, "SleepPad": ... }
 
-	// 处理 SleepPad 报警
-	sleepPadAlarms := make(map[string]string)
+	// 写 device_alarms JSONB：每条 alarm 用 DeviceAlarmEntry 对象表达 is_enabled + alarm_level 双字段，
+	// 不再用合并 string + sentinel "DISABLED"。读侧 buildAlarmCloudConfigFromDomain 直接读双字段，
+	// disabled 项的 alarm_level 也保留下来（用户切回 enabled 不丢失上次等级）。
+	deviceAlarmsTyped := map[string]map[string]DeviceAlarmEntry{}
+
+	sleepPadAlarms := map[string]DeviceAlarmEntry{}
 	for _, item := range config.AlarmSetting.Sleepad {
-		// 只包含启用的且有报警级别的项
-		if item.IsEnabled != nil && *item.IsEnabled == alarm.IsEnabledOn && item.AlarmLevel != nil {
-			sleepPadAlarms[item.AlarmType] = *item.AlarmLevel
+		if item.IsEnabled == nil {
+			continue
 		}
+		entry := DeviceAlarmEntry{IsEnabled: *item.IsEnabled}
+		if item.AlarmLevel != nil {
+			entry.AlarmLevel = *item.AlarmLevel
+		}
+		sleepPadAlarms[item.AlarmType] = entry
 	}
 	if len(sleepPadAlarms) > 0 {
-		deviceAlarms["SleepPad"] = sleepPadAlarms
+		deviceAlarmsTyped["SleepPad"] = sleepPadAlarms
 	}
 
-	// 处理 Radar 报警
-	radarAlarms := make(map[string]string)
+	radarAlarms := map[string]DeviceAlarmEntry{}
 	for _, item := range config.AlarmSetting.Radar {
-		// 只包含启用的且有报警级别的项
-		if item.IsEnabled != nil && *item.IsEnabled == alarm.IsEnabledOn && item.AlarmLevel != nil {
-			radarAlarms[item.AlarmType] = *item.AlarmLevel
+		if item.IsEnabled == nil {
+			continue
 		}
+		entry := DeviceAlarmEntry{IsEnabled: *item.IsEnabled}
+		if item.AlarmLevel != nil {
+			entry.AlarmLevel = *item.AlarmLevel
+		}
+		radarAlarms[item.AlarmType] = entry
 	}
 	if len(radarAlarms) > 0 {
-		deviceAlarms["Radar"] = radarAlarms
+		deviceAlarmsTyped["Radar"] = radarAlarms
 	}
+	deviceAlarms := deviceAlarmsTyped
 
 	deviceAlarmsJSON, err := json.Marshal(deviceAlarms)
 	if err != nil {

@@ -819,37 +819,44 @@ func (s *AlarmService) HandleAlarmProcess(ctx context.Context, cardID, tenantID,
 	return s.refreshAlarmStateFromDB(ctx, cardID)
 }
 
-// SyncAllCardsAlarmState queries alarm state from DB and writes to Hash on startup.
+// SyncAllCardsAlarmState 启动时从 alarm_events 重算 cards.unhandled_alarm_X 计数 + 写 Redis Hash。
+//
+// 用 RecalcCardAlarmState（GROUP BY alarm_events 真值）而不是 QueryCardAlarmState（只读 cards
+// 表 counter），以**自我治愈** counter 漂移：历史上若有 ack 路径漏调 updateAlarmCount（如
+// 通过 repository 直接 UPDATE 而绕过 owl-common 单事务），cards.unhandled_alarm_X 会和
+// alarm_events.active 真值偏离；启动 sync 时本函数会把 cards 表回写为真值，下游 Redis
+// alarm_state 顺势纠正。每次进程重启等价于一次全表对账。
 func (s *AlarmService) SyncAllCardsAlarmState(ctx context.Context) error {
 	if s.db == nil {
 		return nil
 	}
 
-	cardRows, err := s.db.QueryContext(ctx, `SELECT card_id FROM cards`)
+	cardRows, err := s.db.QueryContext(ctx, `SELECT card_id, tenant_id FROM cards`)
 	if err != nil {
 		return fmt.Errorf("query cards: %w", err)
 	}
 	defer cardRows.Close()
 
-	var cardIDs []string
+	type cardRow struct{ cardID, tenantID string }
+	var cards []cardRow
 	for cardRows.Next() {
-		var cid string
-		if err := cardRows.Scan(&cid); err == nil {
-			cardIDs = append(cardIDs, cid)
+		var c cardRow
+		if err := cardRows.Scan(&c.cardID, &c.tenantID); err == nil {
+			cards = append(cards, c)
 		}
 	}
 
 	synced := 0
-	for _, cid := range cardIDs {
-		cas, err := card.QueryCardAlarmState(ctx, s.db, cid)
+	for _, c := range cards {
+		cas, err := card.RecalcCardAlarmState(ctx, s.db, c.cardID, c.tenantID)
 		if err != nil {
-			s.logger.Warn("query alarm state", zap.String("cid", cid), zap.Error(err))
+			s.logger.Warn("recalc alarm state", zap.String("cid", c.cardID), zap.Error(err))
 			continue
 		}
-		if err := PublishCardStatusSilent(ctx, s.writer, cid, PublishFields{
+		if err := PublishCardStatusSilent(ctx, s.writer, c.cardID, PublishFields{
 			AlarmState: cas.ToAlarmState(),
 		}); err != nil {
-			s.logger.Warn("sync alarm state", zap.String("cid", cid), zap.Error(err))
+			s.logger.Warn("sync alarm state", zap.String("cid", c.cardID), zap.Error(err))
 			continue
 		}
 		synced++
@@ -933,7 +940,17 @@ func (s *AlarmService) HandleCardChange(ctx context.Context, cardID, op string) 
 }
 
 // HandleRecoveryWithTypes 将 device 下指定类型的 active 告警改为 auto_resolved 并写库、发布 AlarmState。
-// 仅用于设备类恢复事件（OfflineRecover/SensorDetachedRecover/SignalPoorRecover/AngleExceptionRecover）；生理类不调用，须人工恢复。
+// 适用：
+//
+//	(1) 设备恢复型 alarm（独立 EventName）：OfflineRecover / SensorDetachedRecover / SignalPoorRecover / AngleExceptionRecover；
+//	(2) sleepace 行为/状态恢复型 alarm 收到 event_status=end 时：BedSitUp / NoTurnOver
+//	    —— 同 EventName + start/end 配对，end 即行为信号消失（坐回 / 翻身），等价于 device-driven recovery。
+//
+// 不适用：
+//   - 心率/呼吸阈值等连续测量值类 alarm（须人工恢复）
+//   - sleepace 风险事件型 alarm（AbnormalBodyMovement / NoBodyMove）—— 设备 end ≠ 病情已评估，
+//     与 Fall/SittingOnGround 同级，须人工 ack；end 信号仅记日志留痕，alarm_handler 不调用本函数。
+//
 // 供 alarm_handler/event_handler 在恢复型 case 直接调用。
 func (s *AlarmService) HandleRecoveryWithTypes(ctx context.Context, msg *redis.IoTStreamMessage, alarmTypes []string) error {
 	if s.db == nil || len(alarmTypes) == 0 {

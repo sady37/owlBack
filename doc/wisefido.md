@@ -48,19 +48,25 @@ mmWave radar has been "almost there" for a decade. Two failure modes have blocke
 - **Multi-Modal Sensor Fusion AI** — radar (spatial) + Sleepace (pressure) + activity-window temporal model
 - **Self-Learning Spatial Cognition (RoomEngine)** — per-home unsupervised learning of room geometry, ghost zones, and behavior cells
 - **Cell-Level Adaptive Thresholds** — every grid cell in every room learns its own false-alarm signature; couch-lying and kitchen-standing stop triggering false falls
-- **Fleet-Learning Algorithms** — accuracy compounds across the install base; this is the engine behind the time-to-data moat (§5C)
+- **Fleet-Learning Algorithms** — accuracy compounds across the install base; this is the engine behind the time-to-data moat (§6C)
 
 ### **C. StayFSM — Bathroom Black-Box, Solved**
 
 Proprietary finite-state-machine logic optimized for the highest-risk, most-unmonitorable space in any facility. Distinguishes bathing, toileting, and prolonged-no-response — turning the bathroom from a liability black box into auditable, explainable evidence.
 
-### **D. AI-VoIP Active Inquiry**
+---
 
-On detected fall, the system initiates a two-way VoIP call: *"Are you OK? Do you need help?"* Human staff are paged only on negative response or silence — **reducing manual workload by ~90%** while preserving 100% safety coverage.
+## **4. 3.0 Roadmap — Already Engineered, Shipping Next**
+
+WiseFido 2.0 is the institutional-grade product shipping today. 3.0 is the next-generation platform already in active development:
+
+- **Zero-damage magnetic install** — magnetic mounts, **10-second redeploy**, fully drill-free, ADA-compliant. Eliminates the last objection from facilities operating in leased buildings.
+- **AI-VoIP Active Inquiry** — on detected fall, the system initiates a two-way VoIP call: *"Are you OK? Do you need help?"* Human staff are paged only on negative response or silence — **reducing manual workload by ~90%** while preserving 100% safety coverage.
+- **3D Spatial Self-Learning** — evolves beyond today's planar (floor-grid) learning to full volumetric cognition via a **Baseline-Scan → Track → Gaze** pipeline. The radar first scans each room to build a 3D baseline, then tracks occupants across that 3D space, then "gazes" — focusing high-resolution beams on regions of interest. Unlocks pose-level reasoning, finer ghost suppression, and per-room semantic tagging without any added hardware.
 
 ---
 
-## **4. Market Opportunity**
+## **5. Market Opportunity**
 
 ### **No Incumbent in Radar Elder Care**
 
@@ -81,12 +87,12 @@ Cameras are a red ocean (Wyze, Ring, Nest, ADT). Radar elder care is **empty** �
 
 ---
 
-## **5. Competitive Moats — Four Buckets**
+## **6. Competitive Moats — Four Buckets**
 
 ### **A. Sensing Moat — *We see what no one else can***
 1. Zero-wearable, zero-camera, zero-behavior-change — the **only modality permitted in bedrooms and bathrooms 24×365**
 2. **Bathroom black-box solved** via StayFSM
-3. **Zero-damage install** — magnetic mounts, 10-second redeploy, no drilling, ADA-friendly
+3. **No-drill install** — custom-engineered mount supporting wall and corner deployment, no drilling required, 30-second redeploy. **Corner mode (5m × 5m) is the unlock**: more flexible placement, zero floor/wall footprint, significantly larger effective coverage and far fewer blind zones than wall-only competitors
 
 ### **B. AI Moat — *Every install makes the model smarter***
 4. **Multi-modal fusion AI** with continuous activity-window analysis (not single-event triggers)
@@ -109,7 +115,7 @@ Cameras are a red ocean (Wyze, Ring, Nest, ADT). Radar elder care is **empty** �
 
 ---
 
-## **6. Unit Economics**
+## **7. Unit Economics**
 
 Targeting 2.7M+ institutional beds in the US, transitioning from Hardware-as-a-Service to high-margin **Hybrid SaaS**.
 
@@ -127,7 +133,7 @@ Targeting 2.7M+ institutional beds in the US, transitioning from Hardware-as-a-S
 
 ---
 
-## **7. Why WiseFido**
+## **8. Why WiseFido**
 
 - **Founder–Product Fit**: Founded by a software / former network engineer with deep personal experience caring for a stroke-recovering parent
 - **Speed of Execution**: 3-month iteration cycle between US design and global supply chain — outpacing ADT, Best Buy Health, and every legacy player
@@ -135,7 +141,7 @@ Targeting 2.7M+ institutional beds in the US, transitioning from Hardware-as-a-S
 
 ---
 
-## **8. Use of Funds ($1M Seed Round)**
+## **9. Use of Funds ($1M Seed Round)**
 
 - **45% Sales & Field Deployment** — scale Denver team to convert WeCare lighthouse into 10+ paid institutional contracts; this directly extends the time-to-data moat
 - **35% Product & Compliance** — HIPAA / HITRUST / SOC 2 / state-level audit completion; FHIR data interoperability for Medicaid / PACE integration
@@ -145,7 +151,7 @@ Targeting 2.7M+ institutional beds in the US, transitioning from Hardware-as-a-S
 
 ---
 
-## **9. The Closing Pitch**
+## **10. The Closing Pitch**
 
 > *Classical signal processing alone cannot solve radar multipath in elder homes. We layered a self-learning AI on top — every cell in every room learns its own signature. Ghost suppression and fall recall both improve with every install.*
 >

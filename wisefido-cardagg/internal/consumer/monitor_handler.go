@@ -153,6 +153,10 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 		if trackID == observation.TrackInvalid {
 			// firmware no-target heartbeat → 该 device 所有 track 都退场，清空 verdicts
 			h.aiOverrides.ClearDevice(m.DeviceUID)
+			// SleepStage 同步清：device 退场即"事件源消失"，stale Awake 必须清掉
+			if h.state != nil && m.SubjectEntity != "" {
+				_ = h.state.ClearBedStateSleepStage(ctx, m.SubjectEntity)
+			}
 		} else {
 			// 有效 track → 合并 AI verdict 到 fields（release 模式才真覆写 track_confidence）
 			h.aiOverrides.Apply(m.DeviceUID, trackID, fields)

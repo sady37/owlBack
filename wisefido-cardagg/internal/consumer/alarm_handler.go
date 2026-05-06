@@ -226,9 +226,44 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		}
 		_ = h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.AngleException})
 
-	// Sleepad 专有：使能则落库并推送   / 异动抽搐 /翻身/体动/ 床上坐起
-	case alarm.AbnormalBodyMovement, alarm.NoTurnOver, alarm.NoBodyMove, alarm.BedSitUp:
-		if isSleepad && enabled && level != "" {
+	// Sleepad 行为/状态恢复型 alarm（BedSitUp 床上坐起 / NoTurnOver 长时不翻身）：
+	// sleepace 协议用同一 EventName + event_status="start"/"end" 配对。
+	// 临床语义上设备 end = 行为信号本身已消失（坐回 / 翻身了），等价 device-driven recovery。
+	// onset(start) → 落库推送；relieve(end) → auto-resolve，否则会永久 latch active。
+	case alarm.BedSitUp, alarm.NoTurnOver:
+		if !isSleepad {
+			break
+		}
+		eventStatus, _ := data["event_status"].(string)
+		if eventStatus == "end" {
+			_ = h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{eventName})
+			break
+		}
+		if enabled && level != "" {
+			if err := h.alarms.PersistAlarmAndPublish(ctx, payload, eventName, level); err != nil {
+				return err
+			}
+		}
+
+	// Sleepad 风险事件型 alarm（AbnormalBodyMovement 异动抽搐 / NoBodyMove 长时无体动）：
+	// 同样有 event_status="start"/"end" 配对，但临床语义上设备 end ≠ 病情已评估，
+	// 必须保持 active 等护理人员人工 ack（与 Fall/SittingOnGround 同级）。
+	// onset(start) → 落库推送；relieve(end) → 仅记日志留痕，不改 active 状态。
+	case alarm.AbnormalBodyMovement, alarm.NoBodyMove:
+		if !isSleepad {
+			break
+		}
+		eventStatus, _ := data["event_status"].(string)
+		if eventStatus == "end" {
+			h.logger.Info("sleepace_relieve_signal_kept_active",
+				zap.String("cid", m.SubjectEntity),
+				zap.String("device_id", m.DeviceID),
+				zap.String("event_type", eventName),
+				zap.String("reason", "high_risk_requires_manual_ack"),
+			)
+			break
+		}
+		if enabled && level != "" {
 			if err := h.alarms.PersistAlarmAndPublish(ctx, payload, eventName, level); err != nil {
 				return err
 			}

@@ -138,6 +138,19 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 
 	// 根据 Wall 顶点围出多边形（bbox）
 	cfg.WallPolygon = buildWallPolygon(wallPoints, cfg.Enters)
+	// 客户未画 Wall（顶点 < 2）时用雷达 Boundary 顶点作为兜底多边形，
+	// 让 cell.InRoom 至少等于 InFOV——否则所有 InRoom-依赖逻辑（cell_learning /
+	// birth scoring isOutdoorButInFOV / room_svg）退化失效。
+	// trade-off：boundary 是设备配置矩形而非物理墙，若 boundary 设得过大会让墙外
+	// ghost 漏判 !InRoom——但客户没画 wall 本来就是放弃这层防御，兜底比裸跑好。
+	//
+	// 重要：BoundaryVertices 返回 [右上,左上,右下,左下] 不是闭合简单多边形（直接连线是
+	// 蝴蝶结），StampRoomPolygon 走 PolygonContains 射线算法会判错。Ceiling/Wall 重排成
+	// [右上,左上,左下,右下]；Corn 菱形重排成 [雷达顶, R侧, 底, L侧]——与
+	// owl-common/radarutils.ContainsCanvas + signal.go::SignalEdgeDist 保持一致。
+	if cfg.WallPolygon == nil {
+		cfg.WallPolygon = boundaryPolygonForStamp(cfg.Radar)
+	}
 
 	// 推算房间画布范围（覆盖所有物体 + 留 margin）
 	cfg.RoomW, cfg.RoomH, cfg.OriginX, cfg.OriginY =
@@ -416,6 +429,29 @@ func buildWallPolygon(wallPoints []radarutils.Point, enters []radarutils.Rect) [
 		{X: bbox.X2, Y: bbox.Y1}, // 右上
 		{X: bbox.X2, Y: bbox.Y2}, // 右下
 		{X: bbox.X1, Y: bbox.Y2}, // 左下
+	}
+}
+
+// boundaryPolygonForStamp 把 BoundaryVertices 重排成 PolygonContains 可用的闭合简单多边形。
+//
+// owl-common BoundaryVertices 返回的顶点序不是周长走法（直接连线是蝴蝶结）：
+//   - Ceiling/Wall: [右上, 左上, 右下, 左下]   → 重排为 [右上, 左上, 左下, 右下]
+//   - Corn:         [R侧, 雷达顶, 底, L侧]    → 重排为 [雷达顶, R侧, 底, L侧]
+//
+// 与 owl-common/radarutils.ContainsCanvas + signal.go::SignalEdgeDist 同源（它们也内嵌
+// 重排）；这里独立一份避免循环依赖（roomengine 不依赖 ContainsCanvas，只要顶点）。
+func boundaryPolygonForStamp(m radarutils.RadarMount) []radarutils.Point {
+	v := radarutils.BoundaryVertices(m)
+	if len(v) < 4 {
+		return nil
+	}
+	switch m.InstallModel {
+	case radarutils.InstallCeiling, radarutils.InstallWall:
+		return []radarutils.Point{v[0], v[1], v[3], v[2]}
+	case radarutils.InstallCorn:
+		return []radarutils.Point{v[1], v[0], v[2], v[3]}
+	default:
+		return nil
 	}
 }
 

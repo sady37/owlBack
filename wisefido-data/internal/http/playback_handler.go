@@ -217,9 +217,19 @@ func (h *PlaybackHandler) PostVitalPlayback(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-	_ = tenantID
-	h.logReplayAudit("PostVitalPlayback", r, rk, src, reqTime, false, nil)
-	writeJSON(w, http.StatusOK, Fail("vital playback not implemented"))
+	if strings.TrimSpace(req.DeviceID) == "" {
+		h.logReplayAudit("PostVitalPlayback", r, rk, src, reqTime, false, nil)
+		writeJSON(w, http.StatusOK, Fail("deviceId is required"))
+		return
+	}
+	result, err := h.track.RadarVitalPlayback(r.Context(), tenantID, strings.TrimSpace(req.DeviceID), req.StartTime, req.EndTime, vitalRole)
+	if err != nil {
+		h.logReplayAudit("PostVitalPlayback", r, rk, src, reqTime, false, err)
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	h.logReplayAudit("PostVitalPlayback", r, rk, src, reqTime, true, nil)
+	writeJSON(w, http.StatusOK, Ok(result))
 }
 
 // alarmReplayContextBody WaveMonitor 从 alarm_records 点 RePlay 时上报，供后端查询/审计（与回放数据面解耦）

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"owl-common/card"
 
@@ -12,10 +13,16 @@ import (
 	"go.uber.org/zap"
 )
 
+// realtimeCacheTTL 实时数据 cache 过期阈值。与前端 REALTIME_TTL_MS=12000 / cardagg MonitorFieldTTL=12s 对齐。
+// 设备静默 ≥ 此阈值后 GetCardRealtimeData 返 nil，避免历史 latch（如人离床后旧 pose 一直被 SSE 推给新连接）。
+// 注意：仅 realtime cache 适用；status cache 由 cardagg 显式驱动，不应自动过期。
+const realtimeCacheTTL = 12 * time.Second
+
 // CachedCardData 带版本号的缓存数据
 type CachedCardData struct {
-	Data    map[string]interface{}
-	Version uint64
+	Data      map[string]interface{}
+	Version   uint64
+	UpdatedAt time.Time // 仅 realtime cache 使用，用于 staleness 判定；status cache 留 zero value
 }
 
 // CardStatusEvent 卡片状态事件
@@ -119,12 +126,14 @@ func (s *DataStreamSubscriber) HandleCardRealtimeMessage(ctx context.Context, me
 		msgData = make(map[string]interface{})
 	}
 	msgData["card_id"] = cardID
+	now := time.Now()
 	s.cacheMu.Lock()
 	if existing, ok := s.cardRealtimeCache[cardID]; ok {
 		existing.Data = msgData
 		existing.Version++
+		existing.UpdatedAt = now
 	} else {
-		s.cardRealtimeCache[cardID] = &CachedCardData{Data: msgData, Version: 1}
+		s.cardRealtimeCache[cardID] = &CachedCardData{Data: msgData, Version: 1, UpdatedAt: now}
 	}
 	s.cacheMu.Unlock()
 
@@ -221,14 +230,20 @@ func (s *DataStreamSubscriber) ReadCardStateSnapshot(ctx context.Context, cardID
 	return result
 }
 
-// GetCardRealtimeData 获取缓存的卡片实时数据
+// GetCardRealtimeData 获取缓存的卡片实时数据。
+// staleness 判定：cache 超 realtimeCacheTTL 未刷新即视为静默，返 nil 让上层（SSE ticker / radar handler）跳过推送，
+// 避免设备静默期把历史 latch（如人离床后的 sit_up=1/pose=9）推给新建连接的前端。
 func (s *DataStreamSubscriber) GetCardRealtimeData(cardID string) map[string]interface{} {
 	s.cacheMu.RLock()
 	defer s.cacheMu.RUnlock()
-	if cached, ok := s.cardRealtimeCache[cardID]; ok {
-		return deepCopyMap(cached.Data)
+	cached, ok := s.cardRealtimeCache[cardID]
+	if !ok {
+		return nil
 	}
-	return nil
+	if !cached.UpdatedAt.IsZero() && time.Since(cached.UpdatedAt) > realtimeCacheTTL {
+		return nil
+	}
+	return deepCopyMap(cached.Data)
 }
 
 func deepCopyMap(src map[string]interface{}) map[string]interface{} {

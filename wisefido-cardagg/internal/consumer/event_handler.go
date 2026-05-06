@@ -139,11 +139,19 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		if h.aiOverrides != nil && m.DeviceUID != "" {
 			h.aiOverrides.ClearDevice(m.DeviceUID)
 		}
+		// SleepStage 是事件式状态：换人入房等价于上一会话结束 → 清掉
+		if h.state != nil && m.SubjectEntity != "" {
+			_ = h.state.ClearBedStateSleepStage(ctx, m.SubjectEntity)
+		}
 		h.routeRoomStateEvent(ctx, m, data, evName)
 	case alarm.ExitRoom:
 		// PR6: 房间空了 → 清空该 device 所有 verdicts
 		if h.aiOverrides != nil && m.DeviceUID != "" {
 			h.aiOverrides.ClearDevice(m.DeviceUID)
+		}
+		// 房间空了 → SleepStage 必清（无人何来 sleep state）
+		if h.state != nil && m.SubjectEntity != "" {
+			_ = h.state.ClearBedStateSleepStage(ctx, m.SubjectEntity)
 		}
 		h.routeRoomStateEvent(ctx, m, data, evName)
 	case alarm.NumberPeople:
