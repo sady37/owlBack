@@ -127,6 +127,12 @@ type AlarmDef struct {
 	// 设备类（Offline/SignalPoor/AngleException/SensorDetached/DeviceFailure）开启；
 	// 事件型（Fall/SuspectedFall/NightAbsence/Stay/InBed/LeftBed/...）保持 false 各自独立成行。
 	DedupWhileActive bool
+	// SkipUnhandledCount=true：alarm_events 仍按 'active' 落库（审计），但**不**计入
+	// cards.unhandled_alarm_N、**不**写 card.pop_alarm、**不**触发推送通知。
+	// 用于设备健康类（Offline/SignalPoor/AngleException/SensorDetached/DeviceFailure 及其 Recover）：
+	// UI 上的设备状态由 device:status hash 独立通道驱动（卡片 sleepace-offline / radar-offline 图标），
+	// 不污染老人状态 alarm 计数 / 弹窗。AutoResolveDeviceAlarms 也按本字段同步过滤 -count。
+	SkipUnhandledCount bool
 }
 
 // Registry 全量报警/事件注册表，Key = alarm_type。与 EventStatToAlarmMap 语义一致，便于按类型查元数据与 AlarmParams。
@@ -138,12 +144,12 @@ var Registry = map[string]*AlarmDef{
 	BedSitUp:                 {Key: BedSitUp, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Bed sit-up", Display: "Bed Sit-up"},
 	SuspectedBedSitUp:        {Key: SuspectedBedSitUp, ProcessType: ProcessTypeTimeBased, DurationSec: 60, UpgradeTo: BedSitUp, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 60}, Description: "Suspected bed sit-up", Display: "Potential Bed Sit-up"},
 	WarningArea:              {Key: WarningArea, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, Description: "Warning area", Display: "Warning Area"},
-	SignalPoor:               {Key: SignalPoor, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Signal poor", Display: "Weak Signal", DedupWhileActive: true},
-	AngleException:           {Key: AngleException, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Angle exception", Display: "Device Tilted", DedupWhileActive: true},
-	AlarmTypeOffline:         {Key: AlarmTypeOffline, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Offline", Display: "Device Offline", DedupWhileActive: true},
-	AlarmTypeOfflineRecover:  {Key: AlarmTypeOfflineRecover, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Offline recovery", Display: "Device Restored"},
-	AlarmTypeDeviceFailure:   {Key: AlarmTypeDeviceFailure, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Device failure", Display: "Device Fault", DedupWhileActive: true},
-	AlarmTypeDeviceRecover:   {Key: AlarmTypeDeviceRecover, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Device recovery", Display: "Device Restored"},
+	SignalPoor:               {Key: SignalPoor, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Signal poor", Display: "Weak Signal", DedupWhileActive: true, SkipUnhandledCount: true},
+	AngleException:           {Key: AngleException, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Angle exception", Display: "Device Tilted", DedupWhileActive: true, SkipUnhandledCount: true},
+	AlarmTypeOffline:         {Key: AlarmTypeOffline, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Offline", Display: "Device Offline", DedupWhileActive: true, SkipUnhandledCount: true},
+	AlarmTypeOfflineRecover:  {Key: AlarmTypeOfflineRecover, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Offline recovery", Display: "Device Restored", SkipUnhandledCount: true},
+	AlarmTypeDeviceFailure:   {Key: AlarmTypeDeviceFailure, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Device failure", Display: "Device Fault", DedupWhileActive: true, SkipUnhandledCount: true},
+	AlarmTypeDeviceRecover:   {Key: AlarmTypeDeviceRecover, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Device recovery", Display: "Device Restored", SkipUnhandledCount: true},
 	AlarmTypeUnknown:         {Key: AlarmTypeUnknown, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Unknown alarm type"},
 	Stay:                     {Key: Stay, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 45 * 60}, Description: "Stay (e.g. 45min)", Display: "Prolonged Stay"},
 	NightAbsence:             {Key: NightAbsence, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, AlarmParams: map[string]interface{}{ParamDurationSec: 24 * 60 * 60}, Description: "Night-long absence from the room (Radar)", Display: "Night Absence"},
@@ -169,7 +175,7 @@ var Registry = map[string]*AlarmDef{
 	AbnormalBodyMovement:     {Key: AbnormalBodyMovement, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Abnormal body movement", Display: "Excessive Movement"},
 	NoBodyMove:               {Key: NoBodyMove, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "No body move", Display: "No Movement"},
 	NoTurnOver:               {Key: NoTurnOver, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "No turn over", Display: "No Turn-over"},
-	SensorDetached:           {Key: SensorDetached, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Sensor detached", Display: "Sensor Detached", DedupWhileActive: true},
+	SensorDetached:           {Key: SensorDetached, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Sensor detached", Display: "Sensor Detached", DedupWhileActive: true, SkipUnhandledCount: true},
 	PressureSensor:           {Key: PressureSensor, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Pressure sensor status (Sleepad)", Display: "Pressure Sensor"},
 
 	// 数据类别（radar stat / gateway 拆出的 category，仅用于路由；具体报警由子逻辑或 EventStatToAlarmMap 产生）

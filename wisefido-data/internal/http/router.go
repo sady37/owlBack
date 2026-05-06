@@ -247,6 +247,11 @@ func (r *Router) RegisterAlarmCloudRoutes(h *AlarmCloudHandler) {
 	r.Handle("/admin/api/v1/alarm-cloud", h.ServeHTTP)
 }
 
+// RegisterCardRefreshRoutes 注册主动刷新卡片设备状态路由（POST 触发 health_check）
+func (r *Router) RegisterCardRefreshRoutes(h *CardRefreshHandler) {
+	r.Handle("/admin/api/v1/cards/", h.ServeHTTP)
+}
+
 // RegisterAuthRoutes 注册认证授权路由
 func (r *Router) RegisterAuthRoutes(h *AuthHandler) {
 	r.Handle("/auth/api/v1/login", h.ServeHTTP)

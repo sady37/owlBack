@@ -136,6 +136,10 @@ func main() {
 		MontitorHandler.SetRealtimeService(cardRealtimeSvc)
 		router.RegisterMonitorRoutes(MontitorHandler)
 
+		// 主动刷新卡片设备状态（前端 refresh 按钮 → 推 iot:probe:device:stream → qinglan/sleepace 立即 health_check）
+		cardRefreshHandler := httpapi.NewCardRefreshHandler(db, redisClient, logger)
+		router.RegisterCardRefreshRoutes(cardRefreshHandler)
+
 	}
 
 	// 提升作用域：scheduler 在外部需要引用（见下方 Start 调用），避免 if db != nil 块内声明出不来

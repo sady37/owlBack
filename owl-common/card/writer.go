@@ -141,33 +141,6 @@ func (w *Writer) WriteCardStatusSilent(ctx context.Context, status *CardStatus) 
 	return w.client.HSet(ctx, hashKey, args...).Err()
 }
 
-// WriteDeviceStatus 写连通性维度（offline / last_seen_ms / identity）到 device:status:{deviceID} 独立 Hash（Phase A）。
-// 不发 stream（device-level 状态变化频率很低，由 cardagg 健康检测/告警自驱）。
-//
-// 故意**不**写 signal_poor / angle_abnormal / sensor_detached —— 这 3 个字段由 cardagg alarm_handler
-// 在收到对应 alarm/recover 时通过 PatchDeviceFlag 单独维护。每轮 derive 调用 WriteDeviceStatus 时若全量
-// HSet 这些字段会把刚刚 alarm_handler 写入的 1 重置回 0（因为 BuildDeviceStatus 不读 alarm flags 真值，
-// struct 里都是 zero value），导致 device:status hash 始终看不到 degraded 标志。
-func (w *Writer) WriteDeviceStatus(ctx context.Context, status *DeviceStatus) error {
-	if status == nil || status.DeviceID == "" {
-		return nil
-	}
-	hashKey := DeviceStatusHashKey(status.DeviceID)
-	now := time.Now().UnixMilli()
-	if status.UpdatedAt == 0 {
-		status.UpdatedAt = now
-	}
-	args := []interface{}{
-		"device_id", status.DeviceID,
-		"device_uid", status.DeviceUID,
-		"device_type", status.DeviceType,
-		"updated_at", fmt.Sprintf("%d", status.UpdatedAt),
-		"last_seen_ms", fmt.Sprintf("%d", status.LastSeenMs),
-		"offline", fmt.Sprintf("%d", status.Offline),
-	}
-	return w.client.HSet(ctx, hashKey, args...).Err()
-}
-
 // PatchDeviceStatus 增量更新 device:status:{deviceID} Hash 的部分字段（仅写传入的非空 string/int 字段）。
 // fields 中的 key 应为 Hash 字段名（"offline" / "signal_poor" / "last_seen_ms" 等）。
 func (w *Writer) PatchDeviceStatus(ctx context.Context, deviceID string, fields map[string]interface{}) error {

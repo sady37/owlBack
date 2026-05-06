@@ -7,7 +7,7 @@ import (
 )
 
 // PublishFields 待发布的 CardStatus 各块，均为可选；只传需要发布的块（一项或多项）。
-// Phase A：DeviceStatus 已迁出（独立 device:status:{deviceID} Hash，Writer.WriteDeviceStatus）。
+// device:status:{deviceID} 独立 Hash 由 monitor/event/alarm 流事件驱动 + 看门狗 fail-safe，不在此发布。
 type PublishFields struct {
 	Target        *card.TargetState
 	RoomState     *card.RoomState

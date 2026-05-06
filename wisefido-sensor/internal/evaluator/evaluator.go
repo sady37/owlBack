@@ -142,6 +142,14 @@ func (e *Evaluator) Evaluate(tenantID string, card repository.CardInfo, realtime
 			)
 			continue
 		}
+		if result.SkippedNotify {
+			e.logger.Info("Device-class alarm audited (skip pop/notify)",
+				zap.String("event_type", alarm.EventType),
+				zap.String("card_id", card.CardID),
+				zap.String("event_id", result.EventID),
+			)
+			continue
+		}
 		alarmpush.NotifyWisefidoData(e.logger, alarm.TenantID, card.CardID, alarm.DeviceID, result.EventID, alarm.EventType, alarm.AlarmLevel)
 		e.logger.Info("Alarm event created and card updated",
 			zap.String("event_id", result.EventID),

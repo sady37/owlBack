@@ -192,6 +192,7 @@ func AllStreams() []StreamDefinition {
 		StreamConfigAlarmDevice,
 		StreamConfigAlarmProcess,
 		StreamConfigCard,
+		StreamProbeDevice,
 		StreamCardRealTime,
 		StreamCardStatus,
 		StreamCardUpdate,

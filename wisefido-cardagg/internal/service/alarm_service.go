@@ -252,6 +252,10 @@ func (s *AlarmService) PersistAlarmAndPublish(ctx context.Context, msg *redis.Io
 		s.logger.Debug("alarm onset deduped (active exists)", zap.String("cid", msg.SubjectEntity), zap.String("device_id", msg.DeviceID), zap.String("type", eventName), zap.String("active_event_id", result.EventID))
 		return nil
 	}
+	if result.SkippedNotify {
+		s.logger.Info("device-class alarm audited (skip pop/notify)", zap.String("cid", msg.SubjectEntity), zap.String("device_id", msg.DeviceID), zap.String("event_id", result.EventID), zap.String("type", eventName))
+		return nil
+	}
 	s.logger.Info("alarm inserted", zap.String("cid", msg.SubjectEntity), zap.String("event_id", result.EventID), zap.String("level", level), zap.String("type", eventName))
 	if err := s.writeAlarmState(ctx, msg.SubjectEntity, cardAlarmState); err != nil {
 		return err
@@ -286,6 +290,10 @@ func (s *AlarmService) PersistAlarmFromTrack(ctx context.Context, cardID, tenant
 	}
 	if result.Deduped {
 		s.logger.Debug("alarm onset deduped (active exists)", zap.String("cid", cardID), zap.String("device_id", deviceID), zap.String("type", eventName), zap.String("active_event_id", result.EventID))
+		return nil
+	}
+	if result.SkippedNotify {
+		s.logger.Info("device-class alarm audited (skip pop/notify)", zap.String("cid", cardID), zap.String("device_id", deviceID), zap.String("event_id", result.EventID), zap.String("type", eventName))
 		return nil
 	}
 	s.logger.Info("alarm inserted", zap.String("cid", cardID), zap.String("event_id", result.EventID), zap.String("level", level), zap.String("type", eventName))
@@ -329,6 +337,10 @@ func (s *AlarmService) PersistAlarmWithTriggerData(ctx context.Context, cardID, 
 		s.logger.Debug("alarm onset deduped (active exists)", zap.String("cid", cardID), zap.String("device_id", deviceID), zap.String("type", eventName), zap.String("active_event_id", result.EventID))
 		return nil
 	}
+	if result.SkippedNotify {
+		s.logger.Info("device-class alarm audited (skip pop/notify)", zap.String("cid", cardID), zap.String("device_id", deviceID), zap.String("event_id", result.EventID), zap.String("type", eventName))
+		return nil
+	}
 	s.logger.Info("alarm inserted", zap.String("cid", cardID), zap.String("event_id", result.EventID), zap.String("level", level), zap.String("type", eventName))
 	if err := s.writeAlarmState(ctx, cardID, cardAlarmState); err != nil {
 		return err
@@ -367,6 +379,10 @@ func (s *AlarmService) RecordDeviceFailure(ctx context.Context, cardID, tenantID
 	}
 	if result.Deduped {
 		s.logger.Debug("device_failure deduped (active exists)", zap.String("cid", cardID), zap.String("device_id", deviceID), zap.String("active_event_id", result.EventID))
+		return nil
+	}
+	if result.SkippedNotify {
+		s.logger.Info("device_failure audited (skip pop/notify)", zap.String("cid", cardID), zap.String("device_id", deviceID), zap.String("event_id", result.EventID), zap.String("reason", reason))
 		return nil
 	}
 	s.logger.Info("device_failure alarm inserted", zap.String("cid", cardID), zap.String("event_id", result.EventID), zap.String("reason", reason))
@@ -787,6 +803,12 @@ func (s *AlarmService) ScanPendingAlarms(ctx context.Context) error {
 			_ = s.redisPending.HDel(ctx, redisPendingAlarmKey, field)
 			continue
 		}
+		if result.SkippedNotify {
+			// 防御：pending 类型本不应是设备类，但若未来被误标 SkipUnhandledCount 也不能 NPE
+			s.logger.Info("pending alarm audited (skip pop/notify)", zap.String("device_id", p.DeviceID), zap.String("event_id", result.EventID), zap.String("type", eventType))
+			_ = s.redisPending.HDel(ctx, redisPendingAlarmKey, field)
+			continue
+		}
 		resolvedCardID, lookupErr := card.LookupCardIDByDeviceID(ctx, s.db, p.DeviceID)
 		if lookupErr != nil {
 			s.logger.Warn("pending alarm fired: lookup card_id for stream",
@@ -866,16 +888,14 @@ func (s *AlarmService) SyncAllCardsAlarmState(ctx context.Context) error {
 	return nil
 }
 
-// SyncDeviceStatusFromActiveAlarms 启动时从 alarm_events.active 重建 device:status hash 的 alarm flags。
+// SyncDeviceStatusFromActiveAlarms 启动 bootstrap：从 alarm_events.active 重建 device:status hash 的 alarm flags。
 //
-// 解决场景：
-//   - WriteDeviceStatus 历史 bug 把 alarm flags 重置为 0，bug 修复后 qinglan/sleepace transition dedup 已
-//     cache=1，不再 republish onset，hash 永远停留在 0。
-//   - cardagg 重启后丢失内存状态，但 alarm_events.active 是 DB 真值，借此恢复 hash。
+// cardagg 重启时丢失内存状态，但 alarm_events.active 是 DB 真值；qinglan/sleepace 源头
+// transition dedup 已 cache=1 时不会 republish onset，所以必须自重建。幂等：已 auto_resolved/acked
+// 的不计入（hash 应为 0）。
 //
-// 这是幂等的：每次启动都按 active 行重建 hash flag。已 auto_resolved/acked 的不计入（hash 应为 0）。
-// 设备类只覆盖 3 个 hash flag：signal_poor / angle_abnormal / sensor_detached。
-// offline 字段由 device-gateway 心跳/健康检测维护，不在此处覆写。
+// 仅覆盖 3 个设备类 hash flag：signal_poor / angle_abnormal / sensor_detached。
+// offline / last_seen_ms 由 monitor/event/alarm 流事件驱动 + 看门狗 fail-safe 维护，不在此处覆写。
 func (s *AlarmService) SyncDeviceStatusFromActiveAlarms(ctx context.Context) error {
 	if s.db == nil || s.writer == nil {
 		return nil

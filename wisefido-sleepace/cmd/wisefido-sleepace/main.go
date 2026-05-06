@@ -104,6 +104,14 @@ func main() {
 	cfgSub := subscriber.NewConfigSubscriber(redisClient, cardMapping, healthCheck, logger)
 	go subscriber.SubscribeLoop(ctx, logger, redisClient, rediscommon.StreamConfigCard.Name, sleepaceCardGroup, "sleepace-1", cfgSub)
 
+	// 主动探测请求流（前端 refresh 触发）：device_type=Sleepad 时单设备 probe，缩短状态延迟
+	const sleepaceProbeGroup = "wisefido-sleepace-probe"
+	if err := rediscommon.CreateConsumerGroup(ctx, redisClient, rediscommon.StreamProbeDevice.Name, sleepaceProbeGroup); err != nil {
+		logger.Warn("create consumer group for probe stream", zap.Error(err))
+	}
+	probeSub := subscriber.NewProbeSubscriber(healthCheck, logger)
+	go subscriber.SubscribeProbeLoop(ctx, logger, redisClient, sleepaceProbeGroup, "sleepace-probe-1", probeSub)
+
 	// MQTT consumer（首次上连时同步 device_store 版本：cardDB + sleepaceAPI）
 	mqttConsumer := consumer.NewMQTTConsumer(streamPub, reportSvc, statusTracker, logger)
 	mqttConsumer.SetDeviceVersionSync(cardDB, sleepaceAPI)

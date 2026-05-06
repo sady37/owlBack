@@ -576,8 +576,8 @@ func (s *StateService) ReconcileRoomStateFromBedState(ctx context.Context, cardI
 	return PublishCardStatus(ctx, s.writer, cardID, PublishFields{RoomState: cur})
 }
 
-// DeriveAndWriteState 在 derive 定时点执行：写 Target；并把每台设备的实时在线状态写到 device:status:{deviceID} 独立 Hash。
-// Phase A：DeviceStatus 已迁出 card:state（每设备一个 Hash）；不再合并跨调用，仅写本轮 derive 命中的设备。
+// DeriveAndWriteState 在 derive 定时点执行：写 Target。
+// device:status 不再由 derive 路径维护——已切换为 monitor/event/alarm 流事件驱动 + 看门狗 fail-safe。
 func (s *StateService) DeriveAndWriteState(
 	ctx context.Context,
 	snap CardSnapshot,
@@ -585,18 +585,8 @@ func (s *StateService) DeriveAndWriteState(
 	prevTarget *card.TargetState,
 	buf *MonitorBuffer,
 ) (*card.CardStatus, error) {
-	var devices map[string]*DeviceMeta
-	if meta != nil {
-		devices = meta.Devices
-	}
-	fromTracker := buf.BuildDeviceStatus(snap.CardID, devices, time.Now().UnixMilli())
-	for _, ds := range fromTracker {
-		if err := s.writer.WriteDeviceStatus(ctx, ds); err != nil {
-			s.logger.Warn("write device status",
-				zap.String("device_id", ds.DeviceID),
-				zap.Error(err))
-		}
-	}
+	_ = meta
+	_ = buf
 
 	status := &card.CardStatus{
 		CardID: snap.CardID,
@@ -611,8 +601,7 @@ func (s *StateService) DeriveAndWriteState(
 
 	s.logger.Debug("card:status derive",
 		zap.String("cid", snap.CardID),
-		zap.Bool("has_target", prevTarget != nil),
-		zap.Int("devices", len(fromTracker)))
+		zap.Bool("has_target", prevTarget != nil))
 
 	return status, nil
 }
@@ -1354,30 +1343,10 @@ func intFromAny(v any) int {
 	}
 }
 
-// DeriveDeviceOnlineOnly Phase A：仅写每台设备的 device:status:{deviceID} Hash。
-// derive 定时点：buffer 中有活跃 device 但无 field-level snapshot 时也要刷新心跳，避免被健康检测误判 offline。
-func (s *StateService) DeriveDeviceOnlineOnly(ctx context.Context, cardID string, meta *CardMeta, buf *MonitorBuffer) error {
-	var devices map[string]*DeviceMeta
-	if meta != nil {
-		devices = meta.Devices
-	}
-	fromTracker := buf.BuildDeviceStatus(cardID, devices, time.Now().UnixMilli())
-	if len(fromTracker) == 0 {
-		return nil
-	}
-	for _, ds := range fromTracker {
-		if err := s.writer.WriteDeviceStatus(ctx, ds); err != nil {
-			s.logger.Warn("write device status",
-				zap.String("device_id", ds.DeviceID),
-				zap.Error(err))
-		}
-	}
-	return nil
-}
-
-// SetDeviceOnline Phase A：写 device:status:{deviceID} 独立 Hash。cardID 仍接受但仅用于日志。
-func (s *StateService) SetDeviceOnline(ctx context.Context, cardID, deviceID, deviceUID, deviceType string, online bool) error {
-	_ = cardID
+// SetDeviceOnline 写 device:status:{deviceID} Hash 的部分更新。
+// online=true：offline=0 + last_seen_ms=now（正向维护——monitor/event/recover 流共用此入口）
+// online=false：offline=1（不动 last_seen_ms——alarm Offline / 看门狗显式负向标记）
+func (s *StateService) SetDeviceOnline(ctx context.Context, deviceID, deviceUID, deviceType string, online bool) error {
 	return s.writer.SetDeviceOnline(ctx, deviceID, deviceUID, deviceType, online)
 }
 
@@ -1391,24 +1360,6 @@ func (s *StateService) PatchDeviceFlag(ctx context.Context, deviceID, fieldKey s
 	return s.writer.PatchDeviceStatus(ctx, deviceID, map[string]interface{}{
 		fieldKey: fmt.Sprintf("%d", value),
 	})
-}
-
-// SetCardOffline Phase A：把该卡所有设备的 device:status:{deviceID} 标 offline=1。
-func (s *StateService) SetCardOffline(ctx context.Context, cardID string, meta *CardMeta) {
-	if meta == nil {
-		return
-	}
-	for devID, dm := range meta.Devices {
-		if devID == "" {
-			continue
-		}
-		if err := s.writer.SetDeviceOnline(ctx, devID, dm.DeviceUID, dm.DeviceType, false); err != nil {
-			s.logger.Warn("set offline",
-				zap.String("cid", cardID),
-				zap.String("device_id", devID),
-				zap.Error(err))
-		}
-	}
 }
 
 // objectRoom 统一 Room/BathRoom 的更新字段（RoomState 无 Stay；BathRoomState.StaySec 在写回后按 LastEnterTime 墙钟补算）。

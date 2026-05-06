@@ -180,8 +180,10 @@ func (c *AlarmEnablementCache) parseMonitorConfig(raw string, deviceType string)
 		overrides[it.AlarmType] = it
 	}
 
-	result := make([]alarm.AlarmItem, 0, len(defaults))
+	defaultTypes := make(map[string]bool, len(defaults))
+	result := make([]alarm.AlarmItem, 0, len(defaults)+len(overrides))
 	for _, d := range defaults {
+		defaultTypes[d.AlarmType] = true
 		item := d
 		if cfg, ok := overrides[d.AlarmType]; ok {
 			if cfg.IsEnabled != nil {
@@ -198,6 +200,15 @@ func (c *AlarmEnablementCache) parseMonitorConfig(raw string, deviceType string)
 			}
 		}
 		result = append(result, item)
+	}
+	// monitor_config 里有但 defaults 没有的项也保留（设备健康类 Offline / SignalPoor /
+	// AngleException / DeviceFailure 通常不在 defaults 里——它们由系统强制审计，
+	// is_enabled / alarm_level 来自 monitor_config 即可）。
+	for _, cfg := range overrides {
+		if defaultTypes[cfg.AlarmType] {
+			continue
+		}
+		result = append(result, cfg)
 	}
 	return result
 }

@@ -92,6 +92,14 @@ func (m *DeviceSubscriptionManager) checkAllDevicesHealth(ctx context.Context) {
 // 1. 通过 RadarService 读取 wifi_rssi, accelera, radar_install_style
 // 2. 验证值是否正常
 // 3. 发送异常状态到stream
+// ProbeDevice 主动探测单个设备健康状态，由 iot:probe:device:stream 触发（前端 refresh）。
+// 等价于一次 health_check ticker 命中：调用 GetDeviceProperties → publishHealthIfChanged，
+// 把 Offline / OfflineRecover / SignalPoor 等 transition 立刻推到 iot:alarm:stream，
+// 跳过 10 分钟周期等待。仅 device_type=Radar 时调用方才触发本方法。
+func (m *DeviceSubscriptionManager) ProbeDevice(ctx context.Context, deviceUID, deviceID, deviceType, tenantID string) {
+	m.checkDeviceHealth(ctx, deviceUID, deviceID, deviceType, tenantID)
+}
+
 func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, deviceUID, deviceID, deviceType, tenantID string) {
 	m.logger.Info("Checking device health",
 		zap.String("device_uid", deviceUID),
@@ -129,8 +137,12 @@ func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, devic
 	}
 
 	// 通过 RadarService 读取设备属性
+	// 用 3s context timeout 覆盖 GetDeviceProperties 内部 10s 默认值（context.WithTimeout 取最早 deadline）。
+	// 在线设备响应 <500ms；3s 足够，让前端 refresh 触发的 probe 在 ~5s 内见结果。
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 	keys := []string{"wifi_rssi", "accelera", "radar_install_style"}
-	props, err := m.radarService.GetDeviceProperties(ctx, deviceUID, keys)
+	props, err := m.radarService.GetDeviceProperties(probeCtx, deviceUID, keys)
 	if err != nil {
 		m.logger.Warn("Failed to get device properties, marking offline",
 			zap.String("device_uid", deviceUID),

@@ -346,6 +346,15 @@ func (s *AlarmEventService) CreateAlarmEvent(
 		return nil
 	}
 
+	if result.SkippedNotify {
+		s.logger.Info("Device-class alarm audited (skip pop/notify)",
+			zap.String("tenant_id", tenantID),
+			zap.String("event_type", event.EventType),
+			zap.String("event_id", result.EventID),
+		)
+		return nil
+	}
+
 	if cid, err := alarmpush.LookupCardIDByDevice(ctx, s.db, event.DeviceID); err == nil && cid != "" {
 		alarmpush.NotifyWisefidoData(s.logger, tenantID, cid, event.DeviceID, result.EventID, event.EventType, event.AlarmLevel)
 	}

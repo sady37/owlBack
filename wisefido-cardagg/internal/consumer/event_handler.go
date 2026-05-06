@@ -83,6 +83,14 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	}
 	m.DeviceID = resolved
 
+	// 正向维护 device:status：device 直发的 event 同样是"设备活着"的证据。
+	// 与 monitor 流共享语义；alarm 流由 alarm_handler 按事件类型决定正/负向。
+	if h.state != nil {
+		if err := h.state.SetDeviceOnline(ctx, m.DeviceID, m.DeviceUID, m.DeviceType, true); err != nil {
+			h.logger.Warn("event touch device", zap.String("device_id", m.DeviceID), zap.Error(err))
+		}
+	}
+
 	// radar/Sleepace 上游已按条拆分，dataValue 仅单条；取首项即可。
 	data := redis.FirstDataValue(m.DataValue)
 	if data == nil {

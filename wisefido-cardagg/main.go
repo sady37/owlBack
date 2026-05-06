@@ -100,8 +100,8 @@ func main() {
 		logger.Warn("alarm sync failed", zap.Error(err))
 	}
 	// Sync device:status hash alarm flags from alarm_events.active (信号差/倾角/传感器脱落 3 个 flag）
-	// 解决 qinglan/sleepace transition dedup 已 cache=1 之后 cardagg 重启 / WriteDeviceStatus 历史 bug
-	// 把 hash 漂移到 0 的场景 —— 启动时按 DB 真值自动重建 hash flag。
+	// 启动 bootstrap：cardagg 重启 + qinglan/sleepace transition dedup 已 cache=1 不再 republish onset 时，
+	// 按 DB 真值自动重建 hash 的 3 个 alarm flag。
 	if err := alarmSvc.SyncDeviceStatusFromActiveAlarms(ctx); err != nil {
 		logger.Warn("device:status flag sync failed", zap.Error(err))
 	}
@@ -142,6 +142,11 @@ func main() {
 	go runPendingAlarmScan(ctx, alarmSvc, logger)
 	go runNightAbsenceCheck(ctx, alarmSvc, metaCache, logger)
 
+	// device:status fail-safe：alarm/event/monitor 三流断时（gateway 故障），把 last_seen_ms
+	// 长期未刷新的设备主动 patch offline=1。180s 阈值 = 2× sleepace OfflineRecover 80s 周期。
+	deviceWatchdog := service.NewDeviceWatchdog(redisClient, writer, 180*time.Second, 30*time.Second, logger)
+	go deviceWatchdog.Run(ctx)
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1, syscall.SIGUSR2)
 	for {
@@ -166,6 +171,7 @@ func main() {
 }
 
 func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *service.StateService, metaCache *service.DeviceMetaCache, reader *card.Reader, alarmSvc *service.AlarmService, bedCoord *service.BedEventCoordinator, logger *zap.Logger) {
+	_ = reader
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	prevOnline := make(map[string]bool)
@@ -181,7 +187,6 @@ func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *servi
 		tick++
 		bedCoord.Tick(ctx, state, alarmSvc, metaCache, buf, logger)
 		nowMs := time.Now().UnixMilli()
-		// 每 90s 清理 stale device entries（PR_DESCRIPTION 要求但此前缺失）
 		if tick%90 == 0 {
 			buf.PruneStaleDevices(nowMs, 90_000)
 		}
@@ -190,11 +195,6 @@ func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *servi
 		currOnline := make(map[string]bool)
 		for _, cid := range buf.ActiveCardIDs() {
 			currOnline[cid] = true
-		}
-
-		snappedCards := make(map[string]bool, len(snapshots))
-		for _, s := range snapshots {
-			snappedCards[s.CardID] = true
 		}
 		for _, snap := range snapshots {
 			meta := metaCache.GetOrLoad(ctx, snap.CardID)
@@ -207,25 +207,13 @@ func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *servi
 				if status != nil && status.Target != nil {
 					prevTargets[snap.CardID] = status.Target
 				}
-			} else {
-				_ = state.DeriveDeviceOnlineOnly(ctx, snap.CardID, meta, buf)
 			}
 			state.DeriveBedStateFromRealtime(ctx, snap, meta)
 		}
-		// 无 snapshot 的活跃 card 也要刷 device_status（90s 超时后 b.online 已标 offline，需写 Redis）
-		for cid := range currOnline {
-			if !snappedCards[cid] {
-				meta := metaCache.GetOrLoad(ctx, cid)
-				_ = state.DeriveDeviceOnlineOnly(ctx, cid, meta, buf)
-			}
-		}
+		// card 从 buffer 退场时清 prevTargets，防止 map 长期增长。
+		// device:status offline 由 watchdog/alarm Offline 维护，本循环不再插手。
 		for cid := range prevOnline {
 			if !currOnline[cid] {
-				meta := metaCache.GetOrLoad(ctx, cid)
-				if meta != nil && len(meta.Devices) > 0 {
-					buf.ClearCard(cid, meta.Devices)
-				}
-				state.SetCardOffline(ctx, cid, meta)
 				delete(prevTargets, cid)
 				logger.Info("card offline", zap.String("cid", cid))
 			}

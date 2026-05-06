@@ -39,8 +39,9 @@ func NewMonitorHandler(buffer *service.MonitorBuffer, writer *card.Writer, metaC
 	return &MonitorHandler{buffer: buffer, writer: writer, metaCache: metaCache, bedCoord: bedCoord, state: state, alarms: alarms, aiOverrides: aiOverrides, logger: logger}
 }
 
-// RunLoop 与 monitor 相关的定时：1 秒发 snap，6 秒 PruneFields。不包含 derive。
+// RunLoop 与 monitor 相关的定时：1 秒发 snap，4 秒 PruneFields。不包含 derive。
 // 写优先：PruneFields 用写锁、Flush 用读锁；两次加锁之间释放锁，Handle.Write 可插入。
+// device 在线状态由 Handle 中 state.SetDeviceOnline(true) 直接事件驱动，不再依赖本循环推导。
 func (h *MonitorHandler) RunLoop(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -55,11 +56,6 @@ func (h *MonitorHandler) RunLoop(ctx context.Context) {
 			nowMs := time.Now().UnixMilli()
 			if tick%4 == 0 {
 				h.buffer.PruneFields(nowMs, MonitorFieldTTL)
-				// 获取所有活跃的卡片ID，然后为每个卡片单独处理在线状态
-				activeCardIDs := h.buffer.ActiveCardIDs()
-				for _, cardID := range activeCardIDs {
-					h.buffer.AdvancePruneTick(cardID)
-				}
 			}
 			// Flush 用 RLock，与 Write 不互斥；PruneFields 与 Write 之间已释放锁，写可优先
 			snapshots := h.buffer.Flush(nowMs)
@@ -163,6 +159,13 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 		}
 	}
 	h.buffer.Write(m.SubjectEntity, deviceKey, strconv.Itoa(trackID), fields, m.Timestamp)
+	// 正向维护 device:status：sensor 数据是"设备活着"的最强证据，刷新 last_seen_ms 并 offline=0。
+	// 与 alarm Offline 的负向标记互为对偶；看门狗 180s fail-safe 兜底 gateway 故障场景。
+	if h.state != nil {
+		if err := h.state.SetDeviceOnline(ctx, deviceKey, m.DeviceUID, m.DeviceType, true); err != nil {
+			h.logger.Warn("monitor touch device", zap.String("device_id", deviceKey), zap.Error(err))
+		}
+	}
 	if h.bedCoord != nil && h.state != nil {
 		h.bedCoord.TryResolveAfterMonitorWrite(ctx, h.state, h.alarms, h.metaCache, h.buffer, m.SubjectEntity, h.logger)
 	}

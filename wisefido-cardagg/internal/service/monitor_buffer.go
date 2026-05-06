@@ -2,9 +2,6 @@ package service
 
 import (
 	"sync"
-	"time"
-
-	"owl-common/card"
 )
 
 type FieldValue struct {
@@ -28,20 +25,17 @@ type CardBuffer struct {
 	Devices map[string]*DeviceBuffer
 }
 
-// MonitorBuffer 接收 iot:monitor 写入，按 card/device 聚合；在线判定：连续 1 个 Prune 周期（RunLoop 里每 4s 一次）该 device 仍有条目则标 online，BuildDeviceStatus 用于 derive 写 Redis device_status；条目因 PruneFields/PruneStaleDevices 或 RemoveDevice 删除后自然变为 offline。
+// MonitorBuffer 接收 iot:monitor 写入，按 card/device 聚合，供 Flush 派生 card-level 业务（人数/床/区域）。
+// device 在线状态不再由本 buffer 推导——已切换为 monitor/event/alarm 流事件驱动 + 看门狗 fail-safe；
+// 本结构仅保留 card-level 字段聚合 + GC，PruneStaleDevices/RemoveDevice 仅作内存清理。
 type MonitorBuffer struct {
-	mu       sync.RWMutex
-	cards    map[string]*CardBuffer // cardID →
-	onlineMu sync.RWMutex
-	online   map[string]map[string]*DeviceOnlineEntry // cardID -> deviceID -> 设备在线状态及最后活跃时间
-	prevEntries map[string]map[string]*DeviceOnlineEntry
+	mu    sync.RWMutex
+	cards map[string]*CardBuffer // cardID →
 }
 
 func NewMonitorBuffer() *MonitorBuffer {
 	return &MonitorBuffer{
-		cards:  make(map[string]*CardBuffer),
-		online: make(map[string]map[string]*DeviceOnlineEntry),
-		prevEntries: make(map[string]map[string]*DeviceOnlineEntry),
+		cards: make(map[string]*CardBuffer),
 	}
 }
 
@@ -282,130 +276,3 @@ func (b *MonitorBuffer) ActiveDevicesByCard() map[string]map[string]bool {
 	return result
 }
 
-// DeviceOnlineEntry 记录设备在线状态和最后活跃时间
-type DeviceOnlineEntry struct {
-	Online    bool
-	LastSeen  int64 // 最后活跃时间戳（毫秒）
-}
-
-// KeepAlive 用 alarm 流（如 Sleepace health_check 的 OfflineRecover）来给 device 续命：
-// 仅更新 b.cards[cardID].Devices[deviceID].LastTs，不动 Tracks/Fields。
-// 设计目的：mode=1 sleepad 离床期 monitor 流静默，单靠 monitor 流续命会被 90s TTL 误判 offline；
-// 由上游周期性 polling（健康检查）触发，等价于一次"软心跳"。
-func (b *MonitorBuffer) KeepAlive(cardID, deviceID string, ts int64) {
-	if cardID == "" || deviceID == "" {
-		return
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	cb := b.cards[cardID]
-	if cb == nil {
-		cb = &CardBuffer{Devices: make(map[string]*DeviceBuffer)}
-		b.cards[cardID] = cb
-	}
-	db := cb.Devices[deviceID]
-	if db == nil {
-		db = &DeviceBuffer{Tracks: make(map[string]*TrackBuffer)}
-		cb.Devices[deviceID] = db
-	}
-	if ts > db.LastTs {
-		db.LastTs = ts
-	}
-}
-
-func (b *MonitorBuffer) AdvancePruneTick(cardID string) {
-	if cardID == "" {
-		return
-	}
-
-	now := time.Now().UnixMilli()
-	b.onlineMu.Lock()
-	defer b.onlineMu.Unlock()
-
-	if b.online[cardID] == nil {
-		b.online[cardID] = make(map[string]*DeviceOnlineEntry)
-	}
-
-	// 遍历当前卡片下的所有设备，根据LastTs判断是否在线
-	if cardBuffer, exists := b.cards[cardID]; exists {
-		timeoutMs := int64(90 * 1000) // 90秒超时
-
-		for deviceID, deviceBuffer := range cardBuffer.Devices {
-			// 如果设备的最后活动时间距现在不超过90秒，则视为在线
-			if now-deviceBuffer.LastTs <= timeoutMs {
-				b.online[cardID][deviceID] = &DeviceOnlineEntry{
-					Online:   true,
-					LastSeen: deviceBuffer.LastTs,
-				}
-			} else {
-				// 如果超过90秒没有活动，移除在线状态
-				delete(b.online[cardID], deviceID)
-			}
-		}
-	}
-}
-
-func (b *MonitorBuffer) BuildDeviceStatus(cardID string, devices map[string]*DeviceMeta, now int64) map[string]*card.DeviceStatus {
-	b.onlineMu.RLock()
-	defer b.onlineMu.RUnlock()
-
-	if devices == nil {
-		// 未绑卡：无 meta，用 buffer 内该 card 下已标 online 的 device_id 建立 device_status
-		onlineMap := b.online[cardID]
-		if onlineMap == nil {
-			return make(map[string]*card.DeviceStatus)
-		}
-		result := make(map[string]*card.DeviceStatus)
-		for deviceID, entry := range onlineMap {
-			if entry != nil && entry.Online {
-				result[deviceID] = &card.DeviceStatus{
-					DeviceID:   deviceID,
-					UpdatedAt:  now,
-					LastSeenMs: now,
-					Offline:    0,
-				}
-			}
-		}
-		return result
-	}
-
-	result := make(map[string]*card.DeviceStatus)
-	for deviceID, meta := range devices {
-		offline := 1
-		var lastSeen int64
-		if b.online[cardID] != nil && b.online[cardID][deviceID] != nil && b.online[cardID][deviceID].Online {
-			offline = 0
-			lastSeen = now
-		}
-		if meta.DeviceID == "" {
-			continue
-		}
-		result[deviceID] = &card.DeviceStatus{
-			DeviceUID:  meta.DeviceUID,
-			DeviceID:   meta.DeviceID,
-			DeviceType: meta.DeviceType,
-			UpdatedAt:  now,
-			LastSeenMs: lastSeen,
-			Offline:    offline,
-		}
-	}
-	return result
-}
-
-func (b *MonitorBuffer) ClearCard(cardID string, devices map[string]*DeviceMeta) {
-	if cardID == "" {
-		return
-	}
-	b.onlineMu.Lock()
-	defer b.onlineMu.Unlock()
-
-	for deviceID := range devices {
-		if b.prevEntries[cardID] != nil {
-			delete(b.prevEntries[cardID], deviceID)
-		}
-		if b.online[cardID] != nil {
-			delete(b.online[cardID], deviceID)
-		}
-	}
-}

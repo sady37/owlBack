@@ -160,6 +160,8 @@ func main() {
 		logger.Warn("config subscriber start", zap.Error(err))
 	}
 	go runConfigCardStreamReader(ctx, redisClient, logger, configSub)
+	// 主动探测请求流（前端 refresh 触发）：device_type=Radar 时立刻跑 health_check
+	go runProbeDeviceStreamReader(ctx, redisClient, logger, subscriptionManager)
 
 	// 启动时初始化缓存
 	log.Println("Initializing device and card mapping caches at startup...")
@@ -373,6 +375,71 @@ func makeOTAProgressCallback(db *sql.DB) tcp.OTAProgressCallback {
 			log.Printf("[OTA-Progress] failed to update ota_status for uid=%s: %v", uid, err)
 		}
 	}
+}
+
+// runProbeDeviceStreamReader 订阅 iot:probe:device:stream，对 device_type=Radar 的请求
+// 立刻调用 ProbeDevice → checkDeviceHealth，缩短前端 refresh 到状态更新的延迟。
+func runProbeDeviceStreamReader(ctx context.Context, redisClient *redis.Client, logger *zap.Logger, mgr *subscriber.DeviceSubscriptionManager) {
+	stream := rediscommon.StreamProbeDevice.Name
+	lastID := "$"
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		res, err := redisClient.XRead(ctx, &redis.XReadArgs{
+			Streams: []string{stream, lastID},
+			Block:   5 * time.Second,
+			Count:   16,
+		}).Result()
+		if err != nil {
+			if err == redis.Nil {
+				continue
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			logger.Warn("probe device stream XRead", zap.Error(err))
+			time.Sleep(time.Second)
+			continue
+		}
+		for _, st := range res {
+			for _, msg := range st.Messages {
+				lastID = msg.ID
+				deviceType := streamFieldStr(msg.Values, "device_type")
+				if !strings.EqualFold(deviceType, "Radar") {
+					continue
+				}
+				deviceUID := streamFieldStr(msg.Values, "device_uid")
+				deviceID := streamFieldStr(msg.Values, "device_id")
+				tenantID := streamFieldStr(msg.Values, "tenant_id")
+				if deviceUID == "" || deviceID == "" {
+					continue
+				}
+				logger.Info("probe radar requested",
+					zap.String("device_uid", deviceUID),
+					zap.String("device_id", deviceID),
+					zap.String("source", streamFieldStr(msg.Values, "trigger_source")),
+				)
+				go mgr.ProbeDevice(ctx, deviceUID, deviceID, deviceType, tenantID)
+			}
+		}
+	}
+}
+
+func streamFieldStr(values map[string]interface{}, key string) string {
+	if v, ok := values[key]; ok && v != nil {
+		switch s := v.(type) {
+		case string:
+			return s
+		case []byte:
+			return string(s)
+		default:
+			return fmt.Sprintf("%v", s)
+		}
+	}
+	return ""
 }
 
 func runConfigCardStreamReader(ctx context.Context, redisClient *redis.Client, logger *zap.Logger, sub *subscriber.ConfigSubscriber) {

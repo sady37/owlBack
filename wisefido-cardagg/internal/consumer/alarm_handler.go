@@ -304,9 +304,10 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		}
 		if m.DeviceUID != "" {
 			h.buffer.RemoveDevice(m.SubjectEntity, m.DeviceID)
-			// device_status 下线时从 Redis 删除该设备（仅上线时置 Offline=0）
-			if m.SubjectEntity != "" && h.state != nil {
-				_ = h.state.SetDeviceOnline(ctx, m.SubjectEntity, m.DeviceID, m.DeviceUID, m.DeviceType, false)
+			// 负向标记 device:status：alarm Offline 显式 offline=1（不刷 last_seen_ms——
+			// 设备死了不是它活着的证据）。看门狗 fail-safe 兜底 alarm 流自身故障的场景。
+			if m.DeviceID != "" && h.state != nil {
+				_ = h.state.SetDeviceOnline(ctx, m.DeviceID, m.DeviceUID, m.DeviceType, false)
 			}
 		}
 	case alarm.AlarmTypeOfflineRecover:
@@ -322,9 +323,9 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			)
 		}
 		setOnlineOK, setOnlineSkip := false, false
-		if m.DeviceUID == "" || m.SubjectEntity == "" || h.state == nil {
+		if m.DeviceID == "" || h.state == nil {
 			setOnlineSkip = true
-		} else if err := h.state.SetDeviceOnline(ctx, m.SubjectEntity, m.DeviceID, m.DeviceUID, m.DeviceType, true); err != nil {
+		} else if err := h.state.SetDeviceOnline(ctx, m.DeviceID, m.DeviceUID, m.DeviceType, true); err != nil {
 			h.logger.Warn("offline_recover.set_online_failed",
 				zap.String("device_uid", m.DeviceUID),
 				zap.String("card_id", m.SubjectEntity),
@@ -332,13 +333,6 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			)
 		} else {
 			setOnlineOK = true
-		}
-		// KeepAlive 续命 monitor_buffer：alarm 流的 OfflineRecover 等价于一次软心跳，
-		// 阻止 AdvancePruneTick 因 90s 内无 monitor 数据而把该设备移出 online map（典型场景：
-		// mode=1 sleepad 离床期 iot:monitor:stream 完全静默）。无此续命则下一秒 BuildDeviceStatus
-		// 会把 SetDeviceOnline 写的 offline=0 覆盖回 1。
-		if m.DeviceID != "" && m.SubjectEntity != "" {
-			h.buffer.KeepAlive(m.SubjectEntity, m.DeviceID, time.Now().UnixMilli())
 		}
 		h.logger.Info("offline_recover.done",
 			zap.String("device_uid", m.DeviceUID),
@@ -357,8 +351,8 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 				return err
 			}
 		}
-		if m.DeviceUID != "" && m.SubjectEntity != "" && h.state != nil {
-			_ = h.state.SetDeviceOnline(ctx, m.SubjectEntity, m.DeviceID, m.DeviceUID, m.DeviceType, true)
+		if m.DeviceID != "" && h.state != nil {
+			_ = h.state.SetDeviceOnline(ctx, m.DeviceID, m.DeviceUID, m.DeviceType, true)
 		}
 	case alarm.SensorDetached:
 		if m.DeviceID != "" && h.state != nil {

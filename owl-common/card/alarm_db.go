@@ -29,11 +29,16 @@ type AlarmInsertParams struct {
 //
 // Deduped=true 表示因 AlarmDef.DedupWhileActive=true 且已有 active 行，未实际插入新行。
 // EventID 为现存 active 行的 event_id。CardAlarmState 同步返回 nil（计数未变，无需写回 Redis）。
-// 调用方 MUST 检查 Deduped 并短路 notifyAlarmPushAsync —— 否则等同 push 通知 10min 灌一次。
+//
+// SkippedNotify=true 表示因 AlarmDef.SkipUnhandledCount=true，alarm_events 已落库（审计），
+// 但**未**更新 cards.unhandled_alarm_N、**未**写 card.pop_alarm。CardAlarmState 同步返回 nil。
+// 调用方 MUST 检查 Deduped/SkippedNotify 并短路 writeAlarmState + notifyAlarmPushAsync——
+// 设备健康类的 UI 由 device:status hash 独立通道驱动，不走 alarm 弹窗 / 计数 / 推送。
 type AlarmInsertResult struct {
-	EventID     string
-	TriggeredAt time.Time
-	Deduped     bool
+	EventID       string
+	TriggeredAt   time.Time
+	Deduped       bool
+	SkippedNotify bool
 }
 
 // AlarmUpdateParams UPDATE alarm_events 所需参数
@@ -149,6 +154,15 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 	).Scan(&eventID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("insert alarm_events: %w", err)
+	}
+
+	// SkipUnhandledCount=true 设备健康类：仅落库审计，不更 cards 计数 / 不写 popAlarm。
+	// 提交事务 + 返回 SkippedNotify=true 让调用方短路 writeAlarmState + push。
+	if def := alarm.LookupAlarm(params.EventType); def != nil && def.SkipUnhandledCount {
+		if err := tx.Commit(); err != nil {
+			return nil, nil, fmt.Errorf("commit: %w", err)
+		}
+		return &AlarmInsertResult{EventID: eventID, TriggeredAt: params.TriggeredAt, SkippedNotify: true}, nil, nil
 	}
 
 	// cardID 为空时通过 DeviceID 查找；若仍找不到（如 AI 虚拟设备），fallback 到 metadata.card_id
@@ -642,7 +656,20 @@ func getCardDeviceIDs(ctx context.Context, tx *sql.Tx, cardID string) ([]string,
 	return ids, nil
 }
 
+// skipUnhandledCountTypes 返回 Registry 中 SkipUnhandledCount=true 的 event_type 列表（设备健康类）。
+// recalc / count 路径用它排除：保持与 InsertAlarmAndUpdateCard 跳过 +1 一致。
+func skipUnhandledCountTypes() []string {
+	out := make([]string, 0, 8)
+	for k, def := range alarm.Registry {
+		if def != nil && def.SkipUnhandledCount {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 // countActiveAlarms 按 device_id 列表 + alarm_level 分组统计 active alarm 数量，返回 [5]int (0~4)
+// 排除 SkipUnhandledCount 类型（设备健康类，不计入 cards.unhandled_alarm_N）。
 func countActiveAlarms(ctx context.Context, tx *sql.Tx, tenantID string, deviceIDs []string) ([5]int, error) {
 	var counts [5]int
 	if len(deviceIDs) == 0 {
@@ -659,9 +686,10 @@ func countActiveAlarms(ctx context.Context, tx *sql.Tx, tenantID string, deviceI
 		WHERE tenant_id = $1
 		  AND device_id = ANY($2::uuid[])
 		  AND alarm_status = 'active'
+		  AND event_type <> ALL($3::text[])
 		  AND (metadata->>'deleted_at' IS NULL)
 	`
-	err := tx.QueryRowContext(ctx, query, tenantID, pq.Array(deviceIDs)).Scan(
+	err := tx.QueryRowContext(ctx, query, tenantID, pq.Array(deviceIDs), pq.Array(skipUnhandledCountTypes())).Scan(
 		&counts[0], &counts[1], &counts[2], &counts[3], &counts[4],
 	)
 	return counts, err
@@ -669,6 +697,7 @@ func countActiveAlarms(ctx context.Context, tx *sql.Tx, tenantID string, deviceI
 
 // findTopActiveAlarm 按 device_id 列表查找最高级别的最新 active alarm
 // 返回 (alarm_level, event_type, event_id)；无 active alarm 时返回空值
+// 排除 SkipUnhandledCount 类型（popAlarm 永不指向设备健康类，与 Insert 端 setPopAlarmIfHigher 跳过一致）。
 func findTopActiveAlarm(ctx context.Context, tx *sql.Tx, tenantID string, deviceIDs []string) (string, string, string, error) {
 	var level, eventType, eventId string
 
@@ -683,6 +712,7 @@ func findTopActiveAlarm(ctx context.Context, tx *sql.Tx, tenantID string, device
 		  AND device_id = ANY($2::uuid[])
 		  AND alarm_status = 'active'
 		  AND alarm_level IN ('0', '1', '2', '3', '4', 'EMERG', 'ALERT', 'CRITICAL', 'ERROR', 'WARNING')
+		  AND event_type <> ALL($3::text[])
 		  AND (metadata->>'deleted_at' IS NULL)
 		ORDER BY
 			CASE alarm_level
@@ -695,7 +725,7 @@ func findTopActiveAlarm(ctx context.Context, tx *sql.Tx, tenantID string, device
 			triggered_at DESC
 		LIMIT 1
 	`
-	err := tx.QueryRowContext(ctx, query, tenantID, pq.Array(deviceIDs)).Scan(&level, &eventType, &eventId)
+	err := tx.QueryRowContext(ctx, query, tenantID, pq.Array(deviceIDs), pq.Array(skipUnhandledCountTypes())).Scan(&level, &eventType, &eventId)
 	if err == sql.ErrNoRows {
 		return "", "", "", nil
 	}
@@ -758,48 +788,75 @@ func AutoResolveDeviceAlarms(ctx context.Context, db *sql.DB, cardID, tenantID, 
 		alarmTypes = DeviceSelfRecoveryAlarmTypes
 	}
 
+	// 拆分：countable（参与 cards.unhandled_alarm_N -count）/ skipped（仅 UPDATE→auto_resolved 做审计）。
+	// SkipUnhandledCount=true 的设备健康类 Insert 时未 +1，Recover 时也不能 -1（否则
+	// 影响其他同 level 非设备类报警的计数；GREATEST 兜底虽不变负但语义错乱）。
+	countableTypes := make([]string, 0, len(alarmTypes))
+	for _, t := range alarmTypes {
+		if def := alarm.LookupAlarm(t); def != nil && def.SkipUnhandledCount {
+			continue
+		}
+		countableTypes = append(countableTypes, t)
+	}
+
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	// 1. 查出将被 resolve 的 alarm 按 level 分组计数 + 最新 event_id
-	type levelCount struct {
-		Level string
-		Count int
-	}
-	rows, err := tx.QueryContext(ctx, `
-		SELECT alarm_level, COUNT(*)
+	// 0. 总活跃数（含 skipped）：用于决定是否需要执行 UPDATE / clearPop。
+	var totalActive int
+	err = tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
 		FROM alarm_events
 		WHERE device_id = $1
 		  AND tenant_id = $2
 		  AND alarm_status = 'active'
 		  AND event_type = ANY($3::text[])
 		  AND (metadata->>'deleted_at' IS NULL)
-		GROUP BY alarm_level
-	`, deviceID, tenantID, pq.Array(alarmTypes))
+	`, deviceID, tenantID, pq.Array(alarmTypes)).Scan(&totalActive)
 	if err != nil {
-		return nil, nil, fmt.Errorf("count alarms to resolve: %w", err)
+		return nil, nil, fmt.Errorf("count active alarms: %w", err)
+	}
+	if totalActive == 0 {
+		return nil, &AutoResolveResult{}, nil
+	}
+
+	// 1. 查 countable 部分按 level 分组计数 —— 只对它们 -count
+	type levelCount struct {
+		Level string
+		Count int
 	}
 	var levelCounts []levelCount
-	for rows.Next() {
-		var lc levelCount
-		if err := rows.Scan(&lc.Level, &lc.Count); err != nil {
-			rows.Close()
-			return nil, nil, err
+	if len(countableTypes) > 0 {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT alarm_level, COUNT(*)
+			FROM alarm_events
+			WHERE device_id = $1
+			  AND tenant_id = $2
+			  AND alarm_status = 'active'
+			  AND event_type = ANY($3::text[])
+			  AND (metadata->>'deleted_at' IS NULL)
+			GROUP BY alarm_level
+		`, deviceID, tenantID, pq.Array(countableTypes))
+		if err != nil {
+			return nil, nil, fmt.Errorf("count alarms to resolve: %w", err)
 		}
-		levelCounts = append(levelCounts, lc)
+		for rows.Next() {
+			var lc levelCount
+			if err := rows.Scan(&lc.Level, &lc.Count); err != nil {
+				rows.Close()
+				return nil, nil, err
+			}
+			levelCounts = append(levelCounts, lc)
+		}
+		rows.Close()
 	}
-	rows.Close()
 
 	totalResolved := 0
 	for _, lc := range levelCounts {
 		totalResolved += lc.Count
-	}
-
-	if totalResolved == 0 {
-		return nil, &AutoResolveResult{}, nil
 	}
 
 	// 查最新那条的 event_id + alarm_level
@@ -848,7 +905,7 @@ func AutoResolveDeviceAlarms(ctx context.Context, db *sql.DB, cardID, tenantID, 
 		}
 	}
 
-	// 4. 对每个 level 调 updateAlarmCount(cardID, level, -count)
+	// 4. 对每个 countable level 调 updateAlarmCount(cardID, level, -count)
 	var counts [5]int
 	for _, lc := range levelCounts {
 		counts, err = updateAlarmCount(ctx, tx, cardID, lc.Level, -lc.Count)
@@ -856,20 +913,31 @@ func AutoResolveDeviceAlarms(ctx context.Context, db *sql.DB, cardID, tenantID, 
 			return nil, nil, fmt.Errorf("update alarm count for level %s: %w", lc.Level, err)
 		}
 	}
-	// 如果只有一个 level，counts 已经是最终值；多个 level 时最后一次 RETURNING 是最终值
-	if len(levelCounts) == 0 {
-		// 不应该走到这里（totalResolved > 0），但防御
-		return nil, &AutoResolveResult{}, nil
-	}
 
-	// 5. clearPopAlarmIfResolved: popAlarm 的 event 不再 active → 清空
-	popLevel, popType, popEventId, err := clearPopAlarmIfResolved(ctx, tx, cardID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("clear pop_alarm: %w", err)
+	// 5. clearPopAlarmIfResolved：popAlarm 永不指向 SkipUnhandledCount 类型，所以仅在 countable
+	// 有计数变化时才需要清。全部 skipped 时跳过——transaction 仅含审计用 UPDATE，无 popAlarm 关联。
+	var popLevel, popType, popEventId string
+	if len(levelCounts) > 0 {
+		popLevel, popType, popEventId, err = clearPopAlarmIfResolved(ctx, tx, cardID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("clear pop_alarm: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, nil, fmt.Errorf("commit: %w", err)
+	}
+
+	result := &AutoResolveResult{
+		ResolvedCount: totalActive,
+		TopEventId:    topEventId,
+		TopAlarmLevel: topAlarmLevel,
+	}
+
+	// 全部 skipped → 仅审计落库 auto_resolved，cards 计数 / popAlarm 无变化 → state=nil
+	// 调用方 writeAlarmState(nil) 已 nil-check，HandleRecoveryWithTypes 用 result.ResolvedCount 判断是否打日志。
+	if len(levelCounts) == 0 {
+		return nil, result, nil
 	}
 
 	state := &CardAlarmState{
@@ -881,12 +949,6 @@ func AutoResolveDeviceAlarms(ctx context.Context, db *sql.DB, cardID, tenantID, 
 		PopAlarmLevel:   popLevel,
 		PopAlarmType:    popType,
 		PopAlarmEventId: popEventId,
-	}
-
-	result := &AutoResolveResult{
-		ResolvedCount: totalResolved,
-		TopEventId:    topEventId,
-		TopAlarmLevel: topAlarmLevel,
 	}
 
 	return state, result, nil

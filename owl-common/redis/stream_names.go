@@ -69,6 +69,13 @@ var (
 		MaxLen:           2000,
 		RetentionSeconds: 0, // 不限制保留时间
 	}
+	// 主动 device 探测请求流。前端 refresh 按钮 → wisefido-data 写入；
+	// wisefido-qinglan / wisefido-sleepace 各自 filter device_type 后调用现有 health_check 入口。
+	StreamProbeDevice = StreamDefinition{
+		Name:             "iot:probe:device:stream",
+		MaxLen:           500,
+		RetentionSeconds: 60, // 60s 足够：probe 请求是即时事件，过期就丢
+	}
 	//  新增：卡片实时数据流（wisefido-data消费，6Hz更新）
 	// 来源：wisefido-qinglan → cardagg去重处理(分离track/vital) → 此流
 	// 用途：前端实时显示 track/vital 数据
