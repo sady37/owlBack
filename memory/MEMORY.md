@@ -1,0 +1,38 @@
+- [PHI Encryption Deployed](phi_encryption.md) — resident_phi全字段AES-256-GCM加密，K服务+MW双因素，已迁移14条数据
+- [KMS recover 双 token 模式](kms_recover_token_quirk.md) — master_pin 永久不变；init archive 用 MW 封（首次 reboot=FCKE7K，灾备跳板）/ recover archive 用 master_pin 封（之后=FtjPuGB8，日常钥匙）；详 doc/kms.md
+- [PHI Encryption Restore](phi_encryption_restore.md) — 加密功能在00ae2f0中丢失，完整恢复提示词（架构+步骤+约束）
+- [User Profile](user_profile.md) — 系统架构师/运维，中文沟通，偏好简洁方案
+- [OTA Development](ota_development.md) — Qinglan雷达OTA升级，两阶段TCP→MQTT，P0/P1/P2 全部完成（otaScheduler 1min 周期 + MQTTPublisher.PublishOTA 都已 wire）
+- [Track Fusion & Gate Card-ID](track_fusion_and_gate_cardid.md) — Radar-Sleepace融合+gate填card_id架构重构，5轮实测验证
+- [OTA Port Behavior](ota_port_behavior.md) — 老MCU OTA后port回443需BLE重配，新MCU自动读取port
+- [Room Engine](room_engine.md) — wisefido-ai/roomengine空间认知模块，ghost过滤+Kalman跟踪+网格学习，待完善时空因果关联
+- [Device Health Bug](device_health_bug.md) — cardagg/qinglan deviceHealth 90s超时检测未生效，WiFi断后offline仍为0（已修）
+- [NightAbsence Implementation](night_absence.md) — 整夜未归检测，cardagg定时查alarm_events，代码已写一半待完善
+- [Radar Pose Interpretation](radar_pose_interpretation.md) — 判断跌倒真伪时pose=1缺失不是证据（1s采样会漏瞬时态），应看z变化+位移+过渡前姿态
+- [AI-Fall Model](ai_fall_model.md) — 另一个agent在做，用非跌倒态z分布给cell打空间语义标签（沙发/床），降低在沙发躺下的误报
+- [Walking Speed Health Roadmap](walking_speed_health.md) — 老人步速临床数据(<60 危险/<80 衰弱/>100 健康) + 4 个未来扩展点；详细文档在 doc/walking_speed_health.md
+- [Event/Alarm 订阅现状](event_alarm_subscription_gap.md) — engine 已消费 EnterRoom/ExitRoom/InBed/LeftBed/NumberPeople + iot:alarm radar Fall；剩余 gap=R4+firmware 门区
+- [number_people=0 ExitRoom 兜底](number_people_zero_exitroom_fallback.md) — D523 firmware 不发 ExitRoom 用 number_people=0 兜底跳过 lost_fall pending；早 track=88 36-44ms，三例 100%
+- [D5F7 浴室 ghost cases](d5f7_ghost_cases.md) — 04-25 17:26 firmware track-ID 切换 ghost + 04-26 12:41 6.5min 双 ghost 共存，ghost 算法回归测试 fixture
+- [CABB radar ghost+fall fixture](cabb_ghost_fall_cases.md) — 4D8710D5CABB 24h 3 fall (frozen-track + health-tick commit) + 3 ghost 段，6 份 fixture in doc/cases/cabb-*
+- [Ghost 检测待做项](ghost_detection_todos.md) — 镜面反射检测 + track-ID 数据关联（架构改造）；当前先做 birth-position + 速度过滤
+- [跌倒三类规则 + cell history](fall_rules_three_classes.md) — still/silent/lost 三类 + cell-level 假报历史自适应阈值；参数集中 ai_fall_parameter.yaml；risk-time 18/non-risk 15
+- [Kitchen lost-fall 已知误报](kitchen_lostfall_known_limitation.md) — 长时间站立做饭→lost-fall；elder care 场景不适用（老人不下厨）；详 doc/AI_fall_detect.md §16.1
+- [RoomEngine 下一阶段 prompt](roomengine_next_phase_prompt.md) — feat/radar-fall-verifier @0e0a44b 后的工作清单（PR-16 prod 部署 / PR-17 自纠错验证 / PR-18 wall 虚线 / PR-19 kitchen 智能 stay-alarm）
+- [餐桌区保持 Walk 是设计意图](dining_table_walk_intentional.md) — 餐桌学不成 AreaDeny 是预期；Deny 拒绝 fall，Walk 才能报老人餐桌跌倒
+- [Case fixture export script](export_case_script.md) — `scripts/export_case.sh` 统一导出 ghost/fall fixture 到 `doc/cases/<name>/`，不要再写新脚本
+- [AI publish 二期+三期 backlog](ai_publish_phase2_backlog.md) — A wire 清理完；B1+B2 已实证（每日 ai_emit/Fall 出现）；B3(PR7b) 已撤销；C1 三档饱和度+fall 例外 已部署（qinglan TrackConfidence 80 + RadarCanvas isLowConf）
+- [AI_health Phase 0 校准+建表+评审](ai_health_phase0.md) — 13 张表 SQL **已 deploy 2026-05-03**（含 signing_keys + cohort + realtime_liveness_alert with chk_alert_type_non_medical）；wisefido-ai-health 服务骨架已建（cmd/health-etl + scheduler/repo/etl/config）；3 条架构原则=事后批处理/Care-not-Treatment/Sensor-only；下次接续 Phase 1 daily ETL 实现
+- [VC Pitch Positioning](vc_pitch_positioning.md) — 路演核心叙事：11 条护城河/4 bucket/3 反共识赌注/TAM 三层金字塔；Rockies VC 投递（2026-05-02）
+- [Track.ToFieldMap bed_status leak](track_tofieldmap_bedstatus_leak.md) — Track 床+雷达双用导致 ToFieldMap 强写零值 bed_status；雷达心跳已局部改手写 map；累计 ≥3 处再考虑全局清理
+- [设备类报警一律 alarm 流 + auto-recover](device_class_alarm_auto_recover.md) — Offline/SignalPoor/AngleException/SensorDetached 同等处理；不走 event 流；阈值待复审（RSSI -88、墙角 angle -60~-45）
+- [cardagg dedup + device_status 独立化 backlog](cardagg_dedup_and_device_status_todo.md) — Layer1 (qinglan/sleepace 源头 dedup) + Layer2 (cardagg DedupWhileActive) 均已 2026-05-03 落地；device_status 独立化仍待
+- [协议层北极星 — 演进式靠近](agent_pipeline_north_star.md) — IPv6+TDP+Cognitive 分层；wisefido-ai 是 sensor 层不是 AI；每件 PR 顺手向 TDPv2 靠近一步；ai-health 不能复刻单体反模式
+- [设备与卡 1:1 绑定](device_to_card_one_to_one.md) — 公共区域用 public 卡（不属任何住户）；不做 fan-out；多卡命中=数据异常 warn 兜底
+- [未绑卡 device 用 device_id 兜底](unbound_device_card_id_fallback.md) — owl-common StreamHeadCardID 规则；cardagg IotPreparedHandler 0 卡分支不再 drop；红线：不回退
+- [协议层 4 Phase 进度跟踪](phase_a_kickoff.md) — A/B 完成；C P0 完成 2026-05-03；C P1/P2/P3 + D 待做；详 owlBack/doc/TODO.md
+- [Radar Layout/Device 不变量](radar_layout_device_invariant.md) — InstallMod/Height/Boundary 三项 layout 必须 == firmware；不允许漂移；唯一入口 unifiedSave
+- [qinglan radar online 检测路径](qinglan_online_detection.md) — 上线只走 path A inline OfflineRecover；禁止任何无证据 fan-out（path B 已删，重启 +60s 假阳 bug 已修）
+- [sensor 无 Wall 时 Boundary 兜底](sensor_wall_boundary_fallback.md) — 客户没画 Wall 时 cfg.WallPolygon 用 radar BoundaryVertices；让 InRoom 至少 == InFOV，避免下游全部退化失效
+- [device_status 事件驱动重构](device_status_event_driven_refactor.md) — 撤掉 b.online 推导，改 monitor/event/alarm 流事件驱动 + 看门狗 180s fail-safe；默认不在线；2026-05-05 cardagg 落地；待实测验证
+- [area_id=255 不是 ghost 判据](area_id_255_not_ghost.md) — firmware area_id=255 仅表示 declared area 之外；ghost 判定由 roomengine 综合判断；roomengine 无 verdict = 默认放行真人
