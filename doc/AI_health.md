@@ -789,7 +789,7 @@ CREATE UNIQUE INDEX ux_signing_keys_active
 - 兜底：sleep_state 数组从睡眠态(2/3/4)→离床态(1) 的转换 = `start_time + i × time_step`
 
 **步速计算**（基于 iot_timeseries position 差分，`Track` struct 无 vx/vy）：
-- 关键参数：POSE_WALK=1（[cell.go:46](../../owlBack/wisefido-ai/internal/roomengine/cell.go#L46)）、MIN_DT 200ms、MAX_DT 2000ms、SPEED 范围 [15, 200] cm/s
+- 关键参数：POSE_WALK=1（[cell.go:46](../../owlBack/wisefido-sensor/internal/roomengine/cell.go#L46)）、MIN_DT 200ms、MAX_DT 2000ms、SPEED 范围 [15, 200] cm/s
 - 取 `[起床时刻, 起床时刻+15min]` 窗口内 walking 样本
 - `gait_morning_p10_cms` = 该窗 P10（**主指标 — 最差时刻**）
 - `gait_morning_p50_cms` = 该窗 P50（辅助 — 中位数代表当时整体状态）
@@ -1243,7 +1243,7 @@ postprandial_response_decline_pct = (current_month - baseline_90d) / baseline_90
 
 **Episode 边界**（cardagg 现有逻辑）：multi_person_duration ≥ 30s 启动；多人消失结束。
 
-**亲密度算法**（在 wisefido-ai/roomengine 新模块）：
+**亲密度算法**（在 wisefido-sensor/roomengine 新模块）：
 ```python
 # 每秒（雷达 1Hz）算两 track 距离
 distance_t = sqrt((x_resident - x_visitor)^2 + (y_resident - y_visitor)^2)
@@ -1595,11 +1595,11 @@ GET /api/v1/health/cohorts/{cohort_id}/members/{card_id}/reports/{month_key}.pdf
 | **新服务 `wisefido-ai-health`** | ETL 调度 + 风险评分 + REST API + signed report 渲染 | Go，独立进程 |
 | **新服务 `wisefido-liveness-streamer`** | 实时活动信号监听 + alert 推送 | Go，订阅 Redis stream |
 | **新模块 `wisefido-data` / sleepace_sampling_scheduler**（独立工单） | sleepace adaptive sampling（夜睡 + 午睡两窗口） | Go，per-card scheduler |
-| **新模块 `wisefido-ai/roomengine` / intimacy_calculator**（独立工单） | 多 track 距离 → 亲密度 → visitor_episode | Go，订阅多 track 状态 |
+| **新模块 `wisefido-sensor/roomengine` / intimacy_calculator**（独立工单） | 多 track 距离 → 亲密度 → visitor_episode | Go，订阅多 track 状态 |
 | **新模块 `wisefido-cardagg` / visitor_episode_persistence**（独立工单） | TargetState episode 落 PostgreSQL | Go，扩展现有 state_service |
 | 复用 `wisefido-data` | API gateway 反代 | 仅路由 |
 | 复用 `wisefido-cardagg` | 只读 alarm_events | 不改主逻辑 |
-| 复用 `wisefido-ai/roomengine` | cell tag 查询接口（路径 B） | RPC |
+| 复用 `wisefido-sensor/roomengine` | cell tag 查询接口（路径 B） | RPC |
 
 ### 8.2 ETL 调度
 
@@ -1758,7 +1758,7 @@ GET /api/v1/health/cohorts/{cohort_id}/members/{card_id}/reports/{month_key}.pdf
 
 | # | 校准项 | 实际结果 | 设计落点 |
 |---|---|---|---|
-| 1 | POSE 编码 | walking=1 / sit=3 / stand=4 / lie=6（[cell.go:46-49](../../owlBack/wisefido-ai/internal/roomengine/cell.go#L46-L49)） | 直接落 §3.1 / §3.6 |
+| 1 | POSE 编码 | walking=1 / sit=3 / stand=4 / lie=6（[cell.go:46-49](../../owlBack/wisefido-sensor/internal/roomengine/cell.go#L46-L49)） | 直接落 §3.1 / §3.6 |
 | 2 | facility_id 列 | **不存在** — cards 用 `branch_id`（cards.branch_id REFERENCES branches） | 全设计 facility_id → branch_id |
 | 3 | cards→devices JOIN | `cards.devices JSONB` 已预计算包含 `[{device_id, ...}]` 列表（ETL 直读） | 不必 JOIN devices |
 | 4 | alarm_events.event_type | 实际 13 种：`Fall/BedSitUp/LeftBed/HeartRateAlert.High/NoBodyMove/ApneaHypopnea/NightAbsence/BedNightAbsence/Stay/SensorDetached/AbnormalBodyMovement/HeartRateAlert.Low/RespRateAlert.High`。**无 LongSit / ProlongedStay / Radar_Fall** | §3.1 long-sit 改自算（D1.c）；Fall 公式只查 `'Fall'` |
@@ -1780,7 +1780,7 @@ GET /api/v1/health/cohorts/{cohort_id}/members/{card_id}/reports/{month_key}.pdf
 | **iot_timeseries.timestamp 是 bigint (Unix ms)** | 不是 timestamp tz；JOIN alarm_events.triggered_at 时需转换 | ETL 显式 cast |
 | **iot_timeseries 是 PG 分区表（42 child）** | 按时间分区 | TimescaleDB 候选；查询性能由分区裁剪保证 |
 | **iot_timeseries 已冗余 `branch_name/unit_name/room_name/bed_name`**（VARCHAR 字符串非 UUID）| 不能直接用作 JOIN，仅供 ETL 错位时 sanity check | 主路径走 cards → branches |
-| **roomengine_grid_snapshot.payload schema** | `{grid:{w,h,ox,oy}, cells:[{i, b:[[type,conf,source]×3], c:{at:[Move,Stand,Sit,Lie],...}}]}`；AreaType 枚举 0-7（[cell.go:17-27](../../owlBack/wisefido-ai/internal/roomengine/cell.go#L17-L27)） | §3.1 cell_tag_at 算法已落 |
+| **roomengine_grid_snapshot.payload schema** | `{grid:{w,h,ox,oy}, cells:[{i, b:[[type,conf,source]×3], c:{at:[Move,Stand,Sit,Lie],...}}]}`；AreaType 枚举 0-7（[cell.go:17-27](../../owlBack/wisefido-sensor/internal/roomengine/cell.go#L17-L27)） | §3.1 cell_tag_at 算法已落 |
 
 ---
 
@@ -1870,7 +1870,7 @@ signature     = ed25519_sign(wisefido_private_key, bundle_hash)
 | 触点 | 关系 |
 |---|---|
 | `cardagg` | **零修改**。事后批处理从 alarm_events 表读 |
-| `wisefido-ai/roomengine` | **零修改**。DB 直读 `roomengine_grid_snapshot.payload` 解析 cell tag（见 §3.1 cell_tag_at 算法），不要 RPC |
+| `wisefido-sensor/roomengine` | **零修改**。DB 直读 `roomengine_grid_snapshot.payload` 解析 cell tag（见 §3.1 cell_tag_at 算法），不要 RPC |
 | `wisefido-sleepace` | **零修改**。从 sleepace_report 读；seIndex 等未解析字段 ETL 自取 jsonb（D4.b） |
 | `wisefido-data` | 路由 reverse proxy；**独立工单**：sleepace_sampling_scheduler（adaptive sampling，影响 nap / vital 细粒度） |
 | visitor / intimacy | **独立工单**：cardagg `visitor_episode` 持久化 + roomengine `intimacy_calculator`（§2.5 / 附录 D #2-3） |

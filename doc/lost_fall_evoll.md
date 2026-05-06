@@ -3,8 +3,8 @@
 ## 最终版 PR-C 改动（去掉了 lookback 的过度设计）
 
 ### 数据结构（最小）
-- `TrackState` 加 [`LastObservedMs int64`](../wisefido-ai/internal/roomengine/track.go) — 这个保留，用于 number_people=0 时间窗对齐
-- `FallRulesParam.Lost` 加 [`NumberPeopleZeroFallbackMs = 60000`](../wisefido-ai/internal/roomengine/fall_rules_param.go)
+- `TrackState` 加 [`LastObservedMs int64`](../wisefido-sensor/internal/roomengine/track.go) — 这个保留，用于 number_people=0 时间窗对齐
+- `FallRulesParam.Lost` 加 [`NumberPeopleZeroFallbackMs = 60000`](../wisefido-sensor/internal/roomengine/fall_rules_param.go)
 - `RadarTrackEvent` 加 `NumberPeople int` 字段
 - `ParseRadarTrackEvents` 接受 `number_people` envelope category
 

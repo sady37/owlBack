@@ -14,9 +14,9 @@
 #   REDIS_PASSWORD=xxx ./clean-roomengine-pending.sh
 #
 # 推荐流程：
-#   sudo systemctl stop owlback.ai
+#   sudo systemctl stop owlback.sensor
 #   ./clean-roomengine-pending.sh
-#   sudo systemctl start owlback.ai
+#   sudo systemctl start owlback.sensor
 #
 # 在线运行也能跑（已修复 XAck 的 engine 不会因 consumer 短暂消失出问题），
 # 但停服跑更干净（无需考虑微秒级的 in-flight 消息 race）。

@@ -37,9 +37,7 @@ add_pids() {
     done
 }
 
-# Phase B：新名 wisefido-sensor 优先，但兼容遗留 wisefido-ai 进程（重启过渡期）
-for pat in "go run.*wisefido-sensor" "cmd/wisefido-sensor/main.go" "wisefido-sensor" \
-           "go run.*wisefido-ai" "cmd/wisefido-ai/main.go" "wisefido-ai"; do
+for pat in "go run.*wisefido-sensor" "cmd/wisefido-sensor/main.go" "wisefido-sensor"; do
     add_pids $(pgrep -f "$pat" 2>/dev/null || true)
 done
 

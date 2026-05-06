@@ -39,7 +39,7 @@
 
 ## 2. 当前实现（基线）
 
-[track_manager.go::ProcessFrame](../wisefido-ai/internal/roomengine/track_manager.go) 中用 Kalman 速度做 **二值判定**：
+[track_manager.go::ProcessFrame](../wisefido-sensor/internal/roomengine/track_manager.go) 中用 Kalman 速度做 **二值判定**：
 
 ```go
 if core == CorePoseStand || core == CorePoseUnknown {
@@ -69,7 +69,7 @@ if core == CorePoseStand || core == CorePoseUnknown {
 
 **触发样例**：30 天均值从 90 cm/s → 60 cm/s → 推送家属"运动能力衰退"。
 
-**依赖**：需要 cardagg / wisefido-ai 加一个 daily aggregator goroutine。
+**依赖**：需要 cardagg / wisefido-sensor 加一个 daily aggregator goroutine。
 
 ### 3.2 慢走 + 高风险区域 → fall 预警权重提升
 

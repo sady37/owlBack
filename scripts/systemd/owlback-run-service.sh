@@ -128,8 +128,7 @@ case "$MODULE" in
     export CONSUMER_NAME="${CONSUMER_NAME:-iot-timeseries-1}"
     owlback_go_exec "$OWLBACK/wisefido-iot" "./cmd/wisefido-iot" "wisefido-iot" "$LOG_DIR/wisefido-iot.log"
     ;;
-  wisefido-sensor|wisefido-ai)
-    # Phase B：wisefido-ai 改名 wisefido-sensor；保留旧 module 名兼容（重启过渡期遗留 systemd unit）
+  wisefido-sensor)
     export REDIS_DB="${REDIS_DB:-0}"
     owlback_go_exec "$OWLBACK/wisefido-sensor" "./cmd/wisefido-sensor" "wisefido-sensor" "$LOG_DIR/wisefido-sensor.log"
     ;;

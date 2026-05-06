@@ -1,6 +1,6 @@
 # AI 派生 iot stream 报文格式（Ghost / Fall）
 
-wisefido-ai 通过 `iot:event:stream` 与 `iot:alarm:stream` 发布"事后裁决"
+wisefido-sensor 通过 `iot:event:stream` 与 `iot:alarm:stream` 发布"事后裁决"
 （ghost）与"AI 派生 alarm"（fall）。本文档 freeze wire 格式 + 字段语义，
 作为下游消费方（cardagg / owlfront / 其它 future consumer）的契约。
 

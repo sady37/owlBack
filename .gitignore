@@ -71,8 +71,8 @@ wisefido-data/sleepace-set-realtime
 
 # Stale binaries
 wisefido-qinglan/wisefido-qinglan
-wisefido-ai/feedback-once
-wisefido-ai/roomengine-playback
+wisefido-sensor/feedback-once
+wisefido-sensor/roomengine-playback
 wisefido-sensor/roomengine-api
 
 # Local debug artifacts (not for repo)

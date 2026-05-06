@@ -1,5 +1,5 @@
 # owlBack 根目录唯一 .dockerignore，供 docker-compose 构建 wisefido-data（context: .）使用
-# 不排除：owl-common、wisefido-qinglan、wisefido-ai、wisefido-data（构建需要）
+# 不排除：owl-common、wisefido-qinglan、wisefido-sensor、wisefido-data（构建需要）
 
 # 运行时/权限敏感，不参与构建
 mqtt/log

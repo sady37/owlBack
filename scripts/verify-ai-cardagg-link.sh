@@ -38,11 +38,11 @@ journalctl -t owlback-cardagg --since "${SINCE}" --no-pager 2>/dev/null \
   | grep -E "ai_override|AIOverride|track_verdict 收口|PR6" | tail -5
 echo
 
-# 1. AI 侧 emit
+# 1. sensor 侧 emit
 echo "── [1] wisefido-sensor  ai_emit (category=track_verdict) ──────────"
-ai_emit_count=$(journalctl -t owlback-ai --since "${SINCE}" --no-pager 2>/dev/null \
+ai_emit_count=$(journalctl -t owlback-sensor --since "${SINCE}" --no-pager 2>/dev/null \
   | grep -c '"ai_emit"' || true)
-journalctl -t owlback-ai --since "${SINCE}" --no-pager 2>/dev/null \
+journalctl -t owlback-sensor --since "${SINCE}" --no-pager 2>/dev/null \
   | grep '"ai_emit"' | grep 'track_verdict' | tail -10
 echo "  → emit 总数: ${ai_emit_count}"
 echo

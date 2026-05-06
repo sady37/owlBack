@@ -190,9 +190,9 @@ func (t *RadarTransformer) transformEnterExitEvent(rawData map[string]interface{
 }
 ```
 
-### 2. 在 wisefido-ai 中订阅事件
+### 2. 在 wisefido-sensor 中订阅事件
 
-**位置**：`wisefido-ai/internal/consumer/event_consumer.go`
+**位置**：`wisefido-sensor/internal/consumer/event_consumer.go`
 
 **处理逻辑**：
 ```go
@@ -279,7 +279,7 @@ func (c *EventConsumer) handleENTER_ROOM_Event(
 4. ✅ 实现 `transformPersonCountEvent` 方法
 5. ✅ 设置 `EventType` 字段
 
-### 阶段2：在 wisefido-ai 中订阅事件
+### 阶段2：在 wisefido-sensor 中订阅事件
 
 1. ✅ 更新 `EventConsumer` 处理 `ENTER_ROOM` 事件
 2. ✅ 更新 `EventConsumer` 处理 `LEFT_ROOM` 事件

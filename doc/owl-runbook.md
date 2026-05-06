@@ -20,7 +20,7 @@
 端口 8083 ───►  wisefido-sleepace ─► Java :8090 (host) ──────► sleepace-mysql :3306 (Docker)
 端口 8085 ───►  wisefido-iot ──────► Redis Streams                                
 (无端口) ───►   wisefido-cardagg ──► PG / Redis                                    
-(无端口) ───►   wisefido-ai ───────► Redis / PG                                    
+(无端口) ───►   wisefido-sensor ───► Redis / PG                                    
 ```
 
 关键依赖链（启停顺序的依据）：
@@ -44,7 +44,7 @@ wisefido-data :8080                ← cardagg 启动时同步 card 表（先起
 | wisefido-qinglan | 8081 / 8443 | `wisefido-qinglan/.bin/wisefido-qinglan` | `owlback.qinglan` | `wisefido-qinglan/start-qinglan.sh` | `wisefido-qinglan/stop-qinglan.sh` |
 | wisefido-sleepace | 8083 | `wisefido-sleepace/.bin/wisefido-sleepace` | `owlback.sleepace` | (在 owlback-run-service.sh) | `wisefido-sleepace/stop-sleepace.sh` |
 | wisefido-iot | 8085 | `wisefido-iot/.bin/wisefido-iot` | `owlback.iot` | (同上) | `wisefido-iot/stop-iot.sh` |
-| wisefido-ai | — | `wisefido-ai/.bin/wisefido-ai` | `owlback.ai` | (同上) | `wisefido-ai/stop-ai.sh` |
+| wisefido-sensor | — | `wisefido-sensor/.bin/wisefido-sensor` | `owlback.sensor` | (同上) | `wisefido-sensor/stop-sensor.sh` |
 | owlback (编排) | — | (oneshot) | `owlback` | `start-owlback-full.sh` | `stop-owlback-full.sh` |
 | sleepace-service (Java) | 8090 | `java`（Tomcat 内嵌） | `sleepace` | `sleepace/sleepace.sh start` | `sleepace/sleepace.sh stop` |
 | owlFront (Vite dev) | 3100 | `node`（npm run dev） | `owlfront` | `npm run dev` | `systemctl stop owlfront` |
@@ -226,7 +226,7 @@ curl -s --unix-socket /tmp/owl-kms.sock http://localhost/health
 ```bash
 sudo systemctl restart owlback
 # 或仅 restart 受影响模块
-sudo systemctl restart owlback.data owlback.cardagg owlback.ai
+sudo systemctl restart owlback.data owlback.cardagg owlback.sensor
 ```
 
 ### 3.4 完整重启后理想顺序
@@ -303,7 +303,7 @@ bash /home/wisefido/owl/owlBack/ServiceStatus.sh
   [UP]   wisefido-qinglan         port:8081
   [UP]   wisefido-sleepace        port:8083
   [UP]   wisefido-iot             port:8085
-  [UP]   wisefido-ai
+  [UP]   wisefido-sensor
 
 === Infrastructure ===
   [UP]   PostgreSQL  port:5432
@@ -373,8 +373,8 @@ tail -50 /home/wisefido/owl/log/wisefido-qinglan.log | grep -iE "track|fall|ente
 tail -50 /home/wisefido/owl/log/wisefido-sleepace.log
 tail -50 /home/wisefido/owl/log/sleepace.out      # Java 端
 
-# AI / RoomEngine 告警
-tail -50 /home/wisefido/owl/log/wisefido-ai.log | grep -iE "fall|alarm|pending"
+# Sensor / RoomEngine 告警
+tail -50 /home/wisefido/owl/log/wisefido-sensor.log | grep -iE "fall|alarm|pending"
 
 # CardAgg 心跳/聚合
 tail -50 /home/wisefido/owl/log/wisefido-cardagg.log | grep -iE "card|aggregat|alarm"

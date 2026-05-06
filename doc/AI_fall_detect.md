@@ -9,7 +9,7 @@
 
 单纯靠雷达原始 pose 判定（pose=5 Fall）既多虚报也有漏报。需要一个**房间级空间认知模块**，把每个房间当作一张自学习的"底片"，结合 radar 原始信号、业务事件（床/门）、家属反馈，给出更准确的异常判定。
 
-模块代号：**Room Engine**，位于 `owlBack/wisefido-ai/internal/roomengine/`。
+模块代号：**Room Engine**，位于 `owlBack/wisefido-sensor/internal/roomengine/`。
 
 ---
 
@@ -798,7 +798,7 @@ ALTER TABLE alarm_events ADD COLUMN resolution_ts BIGINT DEFAULT NULL;
 
 | 动作 | 说明 |
 |---|---|
-| `go build ./...` | wisefido-ai + owl-common 必须都过 |
+| `go build ./...` | wisefido-sensor + owl-common 必须都过 |
 | Log 回放 | 拿 wisefido-qinglan.log 的 track 数据灌 engine |
 | 关键单元测试 | Kalman 残差 / Silent Fall / UpdateBelief / 坐标转换 |
 
@@ -902,7 +902,7 @@ cardagg 现有 `case alarm.Fall` handler 自动落 alarm_events；子类型分�
    - 等待窗满时任一 active radar track 距最近 AreaBed cell ≤
      **`BedNeighborhood = 100cm`** → 报 silent fall；已离开邻域 → 取消。
 
-**参数（[fall_rules_param.go:108-113](../wisefido-ai/internal/roomengine/fall_rules_param.go#L108-L113)）**：MinInBedSec=300s / WaitNoVitalSec=120s / WaitVitalSec=60s / BedNeighborhood=100cm。
+**参数（[fall_rules_param.go:108-113](../wisefido-sensor/internal/roomengine/fall_rules_param.go#L108-L113)）**：MinInBedSec=300s / WaitNoVitalSec=120s / WaitVitalSec=60s / BedNeighborhood=100cm。
 
 ---
 
@@ -992,7 +992,7 @@ NonRiskTimeFactor=1.2 / StaticPosCm=20cm。
    - **取消条件**（任一）：新 track 出生附近（BlindSpotRecovery）/ ExitRoom
      事件 / 房间 number_people ≥ 2。
 
-**参数（[fall_rules_param.go:121-130](../wisefido-ai/internal/roomengine/fall_rules_param.go#L121-L130)）**：RestZoneWaitSec=60min / DenyZoneWaitSec=5min / WalkwayWaitSec=5min / **ExitDistMinCm=30cm** / SpatialJumpFactor=0.5。
+**参数（[fall_rules_param.go:121-130](../wisefido-sensor/internal/roomengine/fall_rules_param.go#L121-L130)）**：RestZoneWaitSec=60min / DenyZoneWaitSec=5min / WalkwayWaitSec=5min / **ExitDistMinCm=30cm** / SpatialJumpFactor=0.5。
 
 **已知误报场景**（见 §16.1 Kitchen 长时间站立做饭）。30cm 收紧后 Kitchen 误报会**更频繁**，elder care 场景下"老人不下厨"可暂忽略，常规养老机构（多人厨房）建议 layout 显式标 Counter / Stove 为 Furniture (AreaDeny)。
 

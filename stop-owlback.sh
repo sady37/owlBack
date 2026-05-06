@@ -136,7 +136,7 @@ stop_service() {
 # 一体 owlback 的停服：请只用「systemctl stop owlback」；systemd 会调本脚本杀子进程。
 # 若你手动执行本脚本且希望停掉一体 unit：请在另一条命令执行 systemctl stop owlback，不要在本脚本里递归 stop。
 if command -v systemctl >/dev/null 2>&1; then
-    for u in owlback.data owlback.cardagg owlback.qinglan owlback.sleepace owlback.iot owlback.sensor owlback.ai; do
+    for u in owlback.data owlback.cardagg owlback.qinglan owlback.sleepace owlback.iot owlback.sensor; do
         if systemctl is-active --quiet "$u" 2>/dev/null; then
             printf "[*] systemctl stop %s\n" "$u"
             systemctl stop "$u" 2>/dev/null || true
@@ -150,7 +150,7 @@ stop_service "wisefido-cardagg"        ""     "$LOG_DIR/wisefido-cardagg.log"   
 stop_service "wisefido-qinglan"        "8081" "$LOG_DIR/wisefido-qinglan.log"   "wisefido-qinglan" "cmd/wisefido-qinglan/main.go"
 stop_service "wisefido-sleepace"       "8083" "$LOG_DIR/wisefido-sleepace.log"  "wisefido-sleepace" "cmd/wisefido-sleepace/main.go"
 stop_service "wisefido-iot-timeseries" "8085" "$LOG_DIR/wisefido-iot.log"       "wisefido-iot-timeseries" "wisefido-iot" "cmd/wisefido-iot/main.go"
-stop_service "wisefido-sensor"         ""     "$LOG_DIR/wisefido-sensor.log"    "wisefido-sensor" "cmd/wisefido-sensor/main.go" "wisefido-ai" "cmd/wisefido-ai/main.go"
+stop_service "wisefido-sensor"         ""     "$LOG_DIR/wisefido-sensor.log"    "wisefido-sensor" "cmd/wisefido-sensor/main.go"
 
 # 再扫一轮约定端口（避免单服务阶段 lsof 与日志路径不一致导致漏杀）
 # 8443 = wisefido-qinglan HTTPS 认证；此前未扫会导致「8081 已空但 8443 仍被旧进程占住」

@@ -246,7 +246,7 @@ card:state:{cardID}          ← 直接删除 DeviceStatus 子字段（不双写
 - TDPv2 protobuf schema：[`owlRD/TDPv2-1122.md`](../../owlRD/TDPv2-1122.md)
 - 当前 wire schema：[`docs/AI_Iot_stream.md`](AI_Iot_stream.md)
 - Card Creation Rules：[`owlRD/docs/20_Card_Creation_Rules_Final.md`](../../owlRD/docs/20_Card_Creation_Rules_Final.md)
-- AI publish 现状：[`wisefido-ai/internal/roomengine/engine.go publishAIMessage`](../wisefido-ai/internal/roomengine/engine.go)
+- AI publish 现状：[`wisefido-sensor/internal/roomengine/engine.go publishAIMessage`](../wisefido-sensor/internal/roomengine/engine.go)
 
 ---
 
