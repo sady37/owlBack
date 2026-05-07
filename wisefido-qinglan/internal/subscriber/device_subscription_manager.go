@@ -752,11 +752,8 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 				// 与 Sleepace connectionStatus 一致：首条 MQTT 后发 iot:alarm:stream OfflineRecover，cardagg 据此更新 device_status
 				go func() {
 					ctx := context.Background()
-					item := observation.EventItem{
-						EventSince:  time.Now().UnixMilli(),
-						EventStatus: "end",
-						TrackID:     observation.TrackDevice,
-					}
+					item := observation.NewEventItem(time.Now().UnixMilli(), "end")
+					item.TrackID = observation.TrackDevice
 					data, _ := observation.EventItemToDataMap(&item)
 					if data == nil {
 						data = make(map[string]interface{})
@@ -885,11 +882,8 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 		})
 		go func() {
 			pubCtx := context.Background()
-			item := observation.EventItem{
-				EventSince:  time.Now().UnixMilli(),
-				EventStatus: "end",
-				TrackID:     observation.TrackDevice,
-			}
+			item := observation.NewEventItem(time.Now().UnixMilli(), "end")
+			item.TrackID = observation.TrackDevice
 			data, _ := observation.EventItemToDataMap(&item)
 			if data == nil {
 				data = make(map[string]interface{})

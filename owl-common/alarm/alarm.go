@@ -112,6 +112,19 @@ const (
 	Activity     = "activity" // 老人活动性统计：walk_distance, walk_duration, lie_duration, stand_duration 等
 )
 
+// EndPolicy 声明 alarm_type 收到 iot:alarm:stream 中 event_status="end"（持续事件解除）的处理策略。
+// EndPolicyIgnore（零值默认）：协议层无 end 配对，end 信号来了直接丢弃记日志。
+// EndPolicyAutoResolve：设备侧 end = 行为信号已消失，等价 device-driven recovery，调 HandleRecoveryWithTypes 解除同 (device, event_type) active 行。
+// EndPolicyManualAck：临床高风险信号（如长时无体动），end ≠ 病情已评估，必须保持 active 等护理人员人工 ack；end 仅记日志。
+// 路由由 AlarmHandler 入口集中处理，case 分支不再各自判断 event_status。
+type EndPolicy string
+
+const (
+	EndPolicyIgnore      EndPolicy = ""
+	EndPolicyAutoResolve EndPolicy = "auto_resolve"
+	EndPolicyManualAck   EndPolicy = "manual_ack"
+)
+
 // AlarmDef 单条报警/事件元数据，消费方通过 Key 查表获取完整配置（类似 observation.Registry）。
 type AlarmDef struct {
 	Key          string                 // 与 AlarmType 一致，全局唯一
@@ -133,6 +146,9 @@ type AlarmDef struct {
 	// UI 上的设备状态由 device:status hash 独立通道驱动（卡片 sleepace-offline / radar-offline 图标），
 	// 不污染老人状态 alarm 计数 / 弹窗。AutoResolveDeviceAlarms 也按本字段同步过滤 -count。
 	SkipUnhandledCount bool
+	// EndPolicy 收到 event_status=end 的策略；零值=Ignore（默认协议无 end 配对）。
+	// AlarmHandler 入口集中按本字段路由 end 信号，确保不会被当成新报警插入 alarm_events。
+	EndPolicy EndPolicy
 }
 
 // Registry 全量报警/事件注册表，Key = alarm_type。与 EventStatToAlarmMap 语义一致，便于按类型查元数据与 AlarmParams。
@@ -141,7 +157,7 @@ var Registry = map[string]*AlarmDef{
 	SuspectedFall:            {Key: SuspectedFall, ProcessType: ProcessTypeTimeBased, DurationSec: 60, UpgradeTo: Fall, DefaultLevel: AlarmLevelAlert, AlarmParams: map[string]interface{}{ParamDurationSec: 60}, Description: "Suspected fall, upgrade after 60s", Display: "Potential Fall"},
 	SittingOnGround:          {Key: SittingOnGround, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, Description: "Sitting on ground", Display: "On Floor Alert"},
 	SuspectedSittingOnGround: {Key: SuspectedSittingOnGround, ProcessType: ProcessTypeTimeBased, DurationSec: 60, UpgradeTo: SittingOnGround, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 60}, Description: "Suspected sitting on ground", Display: "Potential On Floor Alert"},
-	BedSitUp:                 {Key: BedSitUp, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Bed sit-up", Display: "Bed Sit-up"},
+	BedSitUp:                 {Key: BedSitUp, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Bed sit-up", Display: "Bed Sit-up", EndPolicy: EndPolicyAutoResolve},
 	SuspectedBedSitUp:        {Key: SuspectedBedSitUp, ProcessType: ProcessTypeTimeBased, DurationSec: 60, UpgradeTo: BedSitUp, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 60}, Description: "Suspected bed sit-up", Display: "Potential Bed Sit-up"},
 	WarningArea:              {Key: WarningArea, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, Description: "Warning area", Display: "Warning Area"},
 	SignalPoor:               {Key: SignalPoor, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Signal poor", Display: "Weak Signal", DedupWhileActive: true, SkipUnhandledCount: true},
@@ -155,8 +171,8 @@ var Registry = map[string]*AlarmDef{
 	NightAbsence:             {Key: NightAbsence, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, AlarmParams: map[string]interface{}{ParamDurationSec: 24 * 60 * 60}, Description: "Night-long absence from the room (Radar)", Display: "Night Absence"},
 	BedNightAbsence:          {Key: BedNightAbsence, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, AlarmParams: map[string]interface{}{ParamDurationSec: 24 * 60 * 60}, Description: "Night-long absence from the bed (Sleepad)", Display: "Bed Night Absence"},
 	WeakBiometricSignal:      {Key: WeakBiometricSignal, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Weak vitals", Display: "Weak Biometric Signal"},
-	LeftBed:                  {Key: LeftBed, ProcessType: ProcessTypeTimeBased, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 0}, Description: "Left bed: duration_sec=0 immediate, >=30min timer", Display: "Bed Exit"},
-	InBed:                    {Key: InBed, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "In bed", Display: "In Bed"},
+	LeftBed:                  {Key: LeftBed, ProcessType: ProcessTypeTimeBased, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 0}, Description: "Left bed: duration_sec=0 immediate, >=30min timer", Display: "Bed Exit", EndPolicy: EndPolicyAutoResolve},
+	InBed:                    {Key: InBed, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "In bed", Display: "In Bed", EndPolicy: EndPolicyAutoResolve},
 	EnterRoom:                {Key: EnterRoom, ProcessType: ProcessTypeRoomStateChange, DefaultLevel: AlarmLevelNotice, Description: "Enter room", Display: "Room Entry"},
 	ExitRoom:                 {Key: ExitRoom, ProcessType: ProcessTypeRoomStateChange, DefaultLevel: AlarmLevelNotice, Description: "Exit room", Display: "Room Exit"},
 	EnterSensingArea:         {Key: EnterSensingArea, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Enter sensing area", Display: "Entered Sensing Area"},
@@ -172,9 +188,9 @@ var Registry = map[string]*AlarmDef{
 	RespRateAlertLow:         {Key: RespRateAlertLow, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelCrit, Description: "Resp rate low", Display: "Resp. Rate Alert"},
 	RespiratoryRateNormal:    {Key: RespiratoryRateNormal, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Respiratory rate normal (recovery)", Display: "Resp. Rate Normal"},
 	ApneaHypopnea:            {Key: ApneaHypopnea, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelCrit, Description: "Apnea/hypopnea", Display: "Apnea/Hypopnea Event"},
-	AbnormalBodyMovement:     {Key: AbnormalBodyMovement, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Abnormal body movement", Display: "Excessive Movement"},
-	NoBodyMove:               {Key: NoBodyMove, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "No body move", Display: "No Movement"},
-	NoTurnOver:               {Key: NoTurnOver, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "No turn over", Display: "No Turn-over"},
+	AbnormalBodyMovement:     {Key: AbnormalBodyMovement, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Abnormal body movement", Display: "Excessive Movement", EndPolicy: EndPolicyManualAck},
+	NoBodyMove:               {Key: NoBodyMove, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "No body move", Display: "No Movement", EndPolicy: EndPolicyManualAck},
+	NoTurnOver:               {Key: NoTurnOver, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "No turn over", Display: "No Turn-over", EndPolicy: EndPolicyAutoResolve},
 	SensorDetached:           {Key: SensorDetached, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelErr, Description: "Sensor detached", Display: "Sensor Detached", DedupWhileActive: true, SkipUnhandledCount: true},
 	PressureSensor:           {Key: PressureSensor, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Pressure sensor status (Sleepad)", Display: "Pressure Sensor"},
 

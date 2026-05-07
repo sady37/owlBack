@@ -126,6 +126,7 @@ func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Reque
 
 	// 关联过滤
 	cardID := strings.TrimSpace(r.URL.Query().Get("card_id"))
+	roomID := strings.TrimSpace(r.URL.Query().Get("room_id"))
 	var deviceIDs []string
 	if deviceIDsStr := strings.TrimSpace(r.URL.Query().Get("device_ids")); deviceIDsStr != "" {
 		deviceIDs = strings.Split(deviceIDsStr, ",")
@@ -148,6 +149,7 @@ func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Reque
 		AlarmLevels:     alarmLevels,
 		CardID:          cardID,
 		DeviceIDs:       deviceIDs,
+		RoomID:          roomID,
 		Page:            page,
 		PageSize:        pageSize,
 	}

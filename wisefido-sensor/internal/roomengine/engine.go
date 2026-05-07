@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"owl-common/observation"
 	"owl-common/radarutils"
 	rediscommon "owl-common/redis"
 
@@ -147,6 +148,12 @@ type Engine struct {
 	// 持久化（nil = 不持久化）
 	persister Persister
 
+	// 历史归档（nil = 不归档）。每天 dailySnapshotHour:dailySnapshotMinute 触发，保留 historyRetainDays 天
+	historyPersister    HistoryPersister
+	dailySnapshotHour   int // 0-23 local；-1=禁用 daily snapshot
+	dailySnapshotMinute int // 0-59 local
+	historyRetainDays   int // <=0 表示不清理
+
 	// alarm-feedback ingestion（cell.IncrFakeAlarm 反馈链）
 	feedbackDB        *sql.DB
 	feedbackInterval  time.Duration // 默认 5 分钟；0 = 关闭
@@ -185,6 +192,12 @@ type RuntimeConfig struct {
 	SnapshotInterval   time.Duration // 0 = 关闭持久化定时器；Persister 仍可在退出时 dump
 	Persister          Persister     // nil = 不持久化
 
+	// HistoryPersister + DailySnapshotHour/Minute + HistoryRetainDays：每日归档
+	HistoryPersister    HistoryPersister
+	DailySnapshotHour   int // -1=禁用；默认 11（11:50 local）
+	DailySnapshotMinute int // 0-59；默认 50
+	HistoryRetainDays   int // 默认 365；<=0 不清理
+
 	// 风险时段（夜间）；通过 SetRiskTimeConfig 注入到包级 nightCfg。
 	// 全 0 视为未设置，保留 IsNightTime 默认（23:30 - 07:30）。
 	RiskTime RiskTimeConfig
@@ -221,7 +234,10 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		beliefScanInterval:   10 * time.Minute, // PR-11
 		winnerEvalInterval:   24 * time.Hour,
 		snapshotInterval:     5 * time.Minute,
-		dailyReloadHour:      22,               // PR-15：22:00 local 重读 layout
+		dailyReloadHour:      22, // PR-15：22:00 local 重读 layout
+		dailySnapshotHour:    11, // 每天 11:50 local 归档 daily history
+		dailySnapshotMinute:  50,
+		historyRetainDays:    365, // 一年滚动清理
 		routesReloadInterval: 60 * time.Second, // 路由表周期热加载默认 60s
 		unrouted:             make(map[string]int64),
 		redisClient:          redisClient,
@@ -338,6 +354,16 @@ func (e *Engine) Configure(cfg RuntimeConfig) {
 	}
 	// Persister 直接赋值（nil 也接受，表示禁用）
 	e.persister = cfg.Persister
+
+	// HistoryPersister 与 daily snapshot 时刻；时刻字段 0 视为未覆盖（保留默认 11:50/365 天）
+	e.historyPersister = cfg.HistoryPersister
+	if cfg.DailySnapshotHour != 0 || cfg.DailySnapshotMinute != 0 {
+		e.dailySnapshotHour = cfg.DailySnapshotHour
+		e.dailySnapshotMinute = cfg.DailySnapshotMinute
+	}
+	if cfg.HistoryRetainDays > 0 {
+		e.historyRetainDays = cfg.HistoryRetainDays
+	}
 
 	// 风险时段（IsNightTime 用）—— 包级 var，所有房间共享
 	SetRiskTimeConfig(cfg.RiskTime)
@@ -553,14 +579,41 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	// AI 派生身份由 fields["source"] 一等公民字段表达。
 	deviceType := baseType
 
-	// PR5b: 用 observation.Track 的标准字段 map（与上游 firmware/engine 同 schema）
-	fields := p.Track.ToFieldMap()
-	fields["ts"] = nowMs
-	// Stage 1b：dataCategory + event_name 已退出 wire；envelope.Category 唯一权威（构造 IoTStreamMessage 时 Category 字段直传）
-	// AI 派生 track_verdict 与床状态无关；仅 sleepad_radar_conflict 显式传 BedStatus=1
-	// 才保留。其它情况（默认 0）删掉，避免协议噪音。
-	if p.Track.BedStatus == 0 {
-		delete(fields, "bed_status")
+	// alarm/event 流统一走 EventItem 契约（与 qinglan/sleepace publisher 一致）：
+	// EventItem 提供生命周期 + first-class 业务字段（TrackID/Pose/HeartRate/RespiratoryRate）；
+	// 其余 sensor-specific 字段（position / track_confidence / area_type / source / reason / evidence）
+	// 作为 dataValue map 同级平铺补充。
+	item := observation.NewEventItem(nowMs, "instant")
+	item.TrackID = p.Track.TrackID
+	if p.Track.Pose != 0 {
+		item.Pose = p.Track.Pose
+	}
+	if p.Track.HeartRate != 0 {
+		item.HeartRate = p.Track.HeartRate
+	}
+	if p.Track.RespiratoryRate != 0 {
+		item.RespiratoryRate = p.Track.RespiratoryRate
+	}
+	fields, _ := observation.EventItemToDataMap(&item)
+	if fields == nil {
+		fields = make(map[string]interface{})
+	}
+	// sensor-specific 业务扩展字段平铺
+	if p.Track.PositionX != nil {
+		fields[observation.FieldPositionX] = *p.Track.PositionX
+	}
+	if p.Track.PositionY != nil {
+		fields[observation.FieldPositionY] = *p.Track.PositionY
+	}
+	if p.Track.PositionZ != nil {
+		fields[observation.FieldPositionZ] = *p.Track.PositionZ
+	}
+	if p.Track.TrackConfidence != 0 {
+		fields[observation.FieldTrackConfidence] = p.Track.TrackConfidence
+	}
+	// AI 派生 track_verdict 与床状态无关；仅 sleepad_radar_conflict 显式传 BedStatus=1 才保留。
+	if p.Track.BedStatus != 0 {
+		fields[observation.FieldBedStatus] = p.Track.BedStatus
 	}
 	// area_type engine 自己算（observation.Track 的 AreaType 是字符串，engine 这边类型不同）
 	if g != nil {
@@ -864,6 +917,10 @@ func (e *Engine) Run(ctx context.Context) error {
 	// PR-15: daily layout reload — 管理员下班后重读 layout_config，hash 变 → reset grid
 	if e.dailyReloadHour >= 0 && e.dailyReloadDB != nil {
 		go e.dailyLayoutReloadLoop(ctx)
+	}
+	// Daily history snapshot — 每天指定时刻归档 grid 状态，保留 365 天
+	if e.historyPersister != nil && e.dailySnapshotHour >= 0 {
+		go e.dailySnapshotLoop(ctx)
 	}
 	// 单独 goroutine 消费 event 流（sleepad + radar 的 InBed/LeftBed/EnterRoom/ExitRoom）
 	go e.runEventLoop(ctx, eventStream, group)
@@ -1288,6 +1345,80 @@ func (e *Engine) saveAllRooms(ctx context.Context) {
 	}
 	e.logger.Debug("snapshot batch done",
 		zap.Int("saved", saved), zap.Int("failed", failed))
+}
+
+// dailySnapshotLoop 每天 dailySnapshotHour:dailySnapshotMinute (local) 归档 grid 状态到 history 表。
+// 区别于 snapshotLoop（每 5min 写 live 表，仅最新一份）：history 表按日期保留 365 天用于 playback 历史起点。
+func (e *Engine) dailySnapshotLoop(ctx context.Context) {
+	for {
+		next := nextDailyTriggerHM(time.Now(), e.dailySnapshotHour, e.dailySnapshotMinute)
+		wait := time.Until(next)
+		e.logger.Info("daily_snapshot_scheduled",
+			zap.Time("next", next),
+			zap.Duration("wait", wait),
+			zap.Int("hour_local", e.dailySnapshotHour),
+			zap.Int("minute_local", e.dailySnapshotMinute),
+			zap.Int("retain_days", e.historyRetainDays),
+		)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		e.saveAllRoomsHistory(ctx, time.Now())
+	}
+}
+
+// saveAllRoomsHistory 遍历所有 grid，逐房间 SaveDaily 到 history 表。
+// snapshotDate 用 nowLocal 的日期部分；retainDays 写入完成后顺手清理。
+func (e *Engine) saveAllRoomsHistory(ctx context.Context, nowLocal time.Time) {
+	if e.historyPersister == nil {
+		return
+	}
+	e.mu.RLock()
+	type roomDump struct {
+		id   string
+		grid *RoomGrid
+		hash string
+	}
+	dumps := make([]roomDump, 0, len(e.grids))
+	for id, g := range e.grids {
+		dumps = append(dumps, roomDump{id: id, grid: g, hash: e.layoutHashes[id]})
+	}
+	e.mu.RUnlock()
+
+	saved, failed := 0, 0
+	for _, d := range dumps {
+		snap := EncodeSnapshot(d.grid)
+		payload, cellCount, err := MarshalSnapshot(snap)
+		if err != nil {
+			e.logger.Warn("daily snapshot marshal failed",
+				zap.String("room_id", d.id), zap.Error(err))
+			failed++
+			continue
+		}
+		if err := e.historyPersister.SaveDaily(ctx, d.id, d.hash, nowLocal, cellCount, payload, e.historyRetainDays); err != nil {
+			e.logger.Warn("daily snapshot save failed",
+				zap.String("room_id", d.id), zap.Error(err))
+			failed++
+			continue
+		}
+		saved++
+	}
+	e.logger.Info("daily_snapshot_done",
+		zap.Int("saved", saved),
+		zap.Int("failed", failed),
+		zap.String("snapshot_date", nowLocal.Format("2006-01-02")),
+	)
+}
+
+// nextDailyTriggerHM 返回下一次 hour:minute 的 local 时间点；已过则取明天。
+func nextDailyTriggerHM(now time.Time, hour, minute int) time.Time {
+	t := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
+	if !t.After(now) {
+		t = t.Add(24 * time.Hour)
+	}
+	return t
 }
 
 // dailyLayoutReloadLoop PR-15：每天 dailyReloadHour:00 (local) 重读 rooms.layout_config。

@@ -1011,11 +1011,8 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 
 // publishStatActivity 发布老人活动性状态汇总到 iot:event:stream，payload 符合 EventItem 格式，activity 字段平铺。
 func (c *MQTTConsumer) publishStatActivity(ctx context.Context, tid, bid, unitID, cid, deviceUID, deviceID string, ts int64, m map[string]interface{}) error {
-	item := observation.EventItem{
-		EventSince:  ts,
-		EventStatus: "instant",
-		TrackID:     observation.TrackUnknownPerson,
-	}
+	item := observation.NewEventItem(ts, "instant")
+	item.TrackID = observation.TrackUnknownPerson
 	data, err := observation.EventItemToDataMap(&item)
 	if err != nil {
 		return err
@@ -1054,57 +1051,63 @@ func (c *MQTTConsumer) publishStatSleep(ctx context.Context, tid, bid, unitID, c
 	heartState := asInt(m["heart_state"]) & 0x03
 	vitalSignsState := asInt(m["vital_signs_state"]) & 0x03
 
-	publishAlarm := func(category string, eventValue int64, eventReason string, rawDecode map[string]interface{}) error {
-		payloadJSON, _ := json.Marshal(rawDecode)
-		item := observation.EventItem{
-			EventSince:   ts,
-			EventStatus:  "instant",
-			EventValue:   eventValue,
-			EventReason:  eventReason,
-			EventPayload: string(payloadJSON),
-			TrackID:      observation.TrackUnknownPerson,
+	// 业务字段（heart_rate / respiratory_rate / weak_biometric_signal）按 category 平铺到 dataValue 顶层。
+	// HR/RR 升级为 EventItem first-class 字段（NewEventItem 默认 -1=未测量）；
+	// HR 类告警 publisher 显式填 item.HeartRate；RR 类告警 publisher 显式填 item.RespiratoryRate。
+	publishAlarm := func(category string, hr, rr int, weakSignal int64, eventReason string) error {
+		item := observation.NewEventItem(ts, "instant")
+		item.EventReason = eventReason
+		item.TrackID = observation.TrackUnknownPerson
+		if hr >= 0 {
+			item.HeartRate = hr
+		}
+		if rr >= 0 {
+			item.RespiratoryRate = rr
 		}
 		alarmData, _ := observation.EventItemToDataMap(&item)
 		if alarmData == nil {
 			alarmData = make(map[string]interface{})
+		}
+		if weakSignal > 0 {
+			alarmData[observation.FieldWeakBiometricSignal] = weakSignal
 		}
 		alarmMsg := rediscommon.NewSingleItemMessage(tid, cid, deviceUID, deviceID, DeviceTypeRadar, ts, "alarm", category, alarmData)
 		return c.streamPublisher.PublishAlarm(ctx, alarmMsg)
 	}
 
 	if breathState != 0 {
-		ev := int64(asInt(m["respiratory_rate"]))
-		if ev == 0 {
-			ev = int64(asInt(m["avg_respiratory_rate"]))
+		rr := asInt(m["respiratory_rate"])
+		if rr == 0 {
+			rr = asInt(m["avg_respiratory_rate"])
 		}
 		avgBreathe := asInt(m["avg_respiratory_rate"])
 		reason := fmt.Sprintf("avgBreathe=%d", avgBreathe)
 		switch breathState {
 		case 1:
-			_ = publishAlarm(alarm.RespRateAlertHigh, ev, reason, m)
+			_ = publishAlarm(alarm.RespRateAlertHigh, -1, rr, 0, reason)
 		case 2:
-			_ = publishAlarm(alarm.RespRateAlertLow, ev, reason, m)
+			_ = publishAlarm(alarm.RespRateAlertLow, -1, rr, 0, reason)
 		case 3:
-			_ = publishAlarm(alarm.ApneaHypopnea, ev, reason, m)
+			_ = publishAlarm(alarm.ApneaHypopnea, -1, rr, 0, reason)
 		}
 	}
 	if heartState == 1 {
-		hr := int64(asInt(m["heart_rate"]))
+		hr := asInt(m["heart_rate"])
 		if hr == 0 {
-			hr = int64(asInt(m["avg_heart_rate"]))
+			hr = asInt(m["avg_heart_rate"])
 		}
 		avgHeart := asInt(m["avg_heart_rate"])
-		_ = publishAlarm(alarm.HeartRateAlertLow, hr, fmt.Sprintf("avgHeart=%d", avgHeart), m)
+		_ = publishAlarm(alarm.HeartRateAlertLow, hr, -1, 0, fmt.Sprintf("avgHeart=%d", avgHeart))
 	} else if heartState == 2 {
-		hr := int64(asInt(m["heart_rate"]))
+		hr := asInt(m["heart_rate"])
 		if hr == 0 {
-			hr = int64(asInt(m["avg_heart_rate"]))
+			hr = asInt(m["avg_heart_rate"])
 		}
 		avgHeart := asInt(m["avg_heart_rate"])
-		_ = publishAlarm(alarm.HeartRateAlertHigh, hr, fmt.Sprintf("avgHeart=%d", avgHeart), m)
+		_ = publishAlarm(alarm.HeartRateAlertHigh, hr, -1, 0, fmt.Sprintf("avgHeart=%d", avgHeart))
 	}
 	if vitalSignsState == 3 {
-		_ = publishAlarm(alarm.WeakBiometricSignal, int64(vitalSignsState)*20, alarm.WeakBiometricSignal, m)
+		_ = publishAlarm(alarm.WeakBiometricSignal, -1, -1, int64(vitalSignsState)*20, alarm.WeakBiometricSignal)
 	}
 
 	if breathState != 0 || heartState != 0 || vitalSignsState == 3 {
@@ -1183,10 +1186,7 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 		}
 		eventType := asInt(m["event_type"])
 
-		item := observation.EventItem{
-			EventSince:  ts,
-			EventStatus: "start",
-		}
+		item := observation.NewEventItem(ts, "start")
 		switch eventType {
 		case 1:
 			item.TrackID = asInt(m["track_id"])
@@ -1220,13 +1220,10 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 				alarmCat = alarm.SittingOnGround
 			}
 			if alarmCat != "" {
-				payloadJSON, _ := json.Marshal(m)
-				alarmItem := observation.EventItem{
-					EventSince:   ts,
-					EventStatus:  "start",
-					EventPayload: string(payloadJSON),
-					TrackID:      asInt(m["track_id"]),
-				}
+				// Plan B：业务字段 first-class 平铺（TrackID / Pose 都是 EventItem 字段）。
+				alarmItem := observation.NewEventItem(ts, "start")
+				alarmItem.TrackID = asInt(m["track_id"])
+				alarmItem.Pose = asInt(m["pose"])
 				alarmData, _ := observation.EventItemToDataMap(&alarmItem)
 				if alarmData == nil {
 					alarmData = make(map[string]interface{})

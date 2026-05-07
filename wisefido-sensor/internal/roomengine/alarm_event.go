@@ -17,20 +17,24 @@ import (
 
 // RadarFallAlarm radar 固件直接发的 Fall 报警（来自 iot:alarm:stream）。
 //
-// 数据样例（从 iot_timeseries 实测）：
+// 数据样例（Plan B 后，2026-05-06 起；event_payload 字段不再出现）：
 //
-//	{"event_name": "Fall", "event_since": 1777180187386,
-//	 "dataCategory": "Fall", "event_status": "start",
-//	 "event_payload": "{\"event_type\":2,\"pose\":2,\"track_id\":0}"}
+//	envelope: {"topic_type":"alarm","category":"Fall",...}
+//	dataValue[0]: {"event_since": ..., "event_status":"start",
+//	               "track_id": 9, "pose": 2}
 //
-// 注意：event_payload 是嵌套 JSON 字符串，需要二次解析才能拿到 track_id / pose。
+// 历史数据（Plan B 前）event_payload 是嵌套 JSON 字符串：
+//
+//	{"event_payload": "{\"event_type\":2,\"pose\":2,\"track_id\":0}"}
+//
+// 解析时优先读顶层 first-class 字段；event_payload 兜底兼容历史 wire 数据。
 type RadarFallAlarm struct {
 	DeviceUID string
 	TMs       int64
 
-	TrackID int    // event_payload.track_id
-	Pose    int    // event_payload.pose（雷达 pose 编码）
-	EventType int  // event_payload.event_type（固件 fall 子类型）
+	TrackID   int    // EventItem.TrackID（顶层；老数据从 event_payload.track_id 兜底）
+	Pose      int    // EventItem.Pose（顶层；老数据从 event_payload.pose 兜底）
+	EventType int    // event_payload.event_type（仅历史数据；新数据无此字段，envelope.Category 已是事件类型权威）
 	Status    string // "start" / "end"
 }
 
@@ -76,14 +80,23 @@ func ParseRadarFallAlarm(dv interface{}, deviceUID, envelopeCat string, fallback
 			DeviceUID: deviceUID,
 			TMs:       ts,
 			Status:    st,
+			TrackID:   jsonInt(m["track_id"]),
+			Pose:      jsonInt(m["pose"]),
 		}
-		// event_payload 是嵌套 JSON 字符串，二次解析
-		if pl, ok := m["event_payload"].(string); ok && pl != "" {
-			var p map[string]interface{}
-			if err := json.Unmarshal([]byte(pl), &p); err == nil {
-				alarm.TrackID = jsonInt(p["track_id"])
-				alarm.Pose = jsonInt(p["pose"])
-				alarm.EventType = jsonInt(p["event_type"])
+		// 兼容历史 wire 数据（Plan B 前）：event_payload 嵌套 JSON 字符串。
+		// 顶层未取到值时才从 event_payload 兜底。
+		if alarm.TrackID == 0 || alarm.Pose == 0 || alarm.EventType == 0 {
+			if pl, ok := m["event_payload"].(string); ok && pl != "" {
+				var p map[string]interface{}
+				if err := json.Unmarshal([]byte(pl), &p); err == nil {
+					if alarm.TrackID == 0 {
+						alarm.TrackID = jsonInt(p["track_id"])
+					}
+					if alarm.Pose == 0 {
+						alarm.Pose = jsonInt(p["pose"])
+					}
+					alarm.EventType = jsonInt(p["event_type"])
+				}
 			}
 		}
 		out = append(out, alarm)

@@ -100,8 +100,9 @@ type ListAlarmEventsRequest struct {
 	AlarmLevels []string // 报警级别过滤
 
 	// 关联过滤
-	CardID    string   // 按卡片ID过滤（后端会转换为 device_ids）
-	DeviceIDs []string // 按设备ID过滤
+	CardID    string   // 按卡片ID过滤（后端通过 card.unit_id + card.bed_id 反查 devices 表的物理位置绑定，得 device_ids）
+	DeviceIDs []string // 按设备ID过滤（精确指定，绕过 card → location → devices 推导）
+	RoomID    string   // 按 room 过滤（room_id → devices.bound_room_id 或 beds.room_id → bound_bed_id）
 
 	// 分页
 	Page     int // 页码，默认 1
@@ -287,6 +288,20 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 		filters.EndTime = &endTime
 	}
 
+	// Role-based 时间窗硬上限（server-side enforce，无论前端传多大）：
+	//   - Admin / Manager: 14 天上限（运营审计）
+	//   - Caregiver / Nurse / Resident（其他 role）: 3 天上限（一线护理只看近期）
+	roleLower := strings.ToLower(strings.TrimSpace(req.CurrentUserRole))
+	maxLookback := 3 * 24 * time.Hour
+	if roleLower == "admin" || roleLower == "manager" {
+		maxLookback = 14 * 24 * time.Hour
+	}
+	now := time.Now()
+	earliestAllowed := now.Add(-maxLookback)
+	if filters.StartTime == nil || filters.StartTime.Before(earliestAllowed) {
+		filters.StartTime = &earliestAllowed
+	}
+
 	// 搜索参数
 	if req.DeviceName != "" {
 		filters.DeviceName = &req.DeviceName
@@ -308,21 +323,30 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 		filters.AlarmLevels = normalizeAlarmLevelsForFilter(req.AlarmLevels)
 	}
 
-	// 关联过滤
-	if req.CardID != "" {
-		// 查询卡片关联的设备列表
-		deviceIDs, err := s.getCardDeviceIDs(ctx, req.TenantID, req.CardID)
+	// 关联过滤——优先级（精确度由高到低）：
+	//   1. req.DeviceIDs    显式 device_ids（如 WaveMonitor 用 canvas 当前 room 内设备）
+	//   2. req.RoomID       按 room 反查 devices（room 内 radar + bed 上 sleepad）
+	//   3. req.CardID       按 card 物理位置（unit + bed）反查 devices
+	// 不再用 cards.devices JSONB 快照（易变量）。
+	switch {
+	case len(req.DeviceIDs) > 0:
+		filters.DeviceIDs = req.DeviceIDs
+	case req.RoomID != "":
+		deviceIDs, err := s.getRoomDeviceIDs(ctx, req.TenantID, req.RoomID)
 		if err != nil {
-			s.logger.Warn("Failed to get card devices, ignoring card_id filter",
-				zap.String("card_id", req.CardID),
-				zap.Error(err),
-			)
+			s.logger.Warn("Failed to get room devices, ignoring room_id filter",
+				zap.String("room_id", req.RoomID), zap.Error(err))
 		} else {
 			filters.DeviceIDs = deviceIDs
 		}
-	}
-	if len(req.DeviceIDs) > 0 {
-		filters.DeviceIDs = req.DeviceIDs
+	case req.CardID != "":
+		deviceIDs, err := s.getCardDeviceIDs(ctx, req.TenantID, req.CardID)
+		if err != nil {
+			s.logger.Warn("Failed to get card devices, ignoring card_id filter",
+				zap.String("card_id", req.CardID), zap.Error(err))
+		} else {
+			filters.DeviceIDs = deviceIDs
+		}
 	}
 
 	// 权限过滤（根据用户角色）
@@ -1390,33 +1414,96 @@ func (s *alarmEventService) isResidentAssignedToUser(ctx context.Context, tenant
 	return false
 }
 
-// getCardDeviceIDs 查询卡片关联的设备ID列表
+// getCardDeviceIDs 通过 card 的物理位置（unit_id + bed_id）反查 devices 表得设备 ID 列表。
+//
+// 设计原则：cards.devices JSONB 是衍生快照（易变量，重启服务/卡片重绑会变），
+// 不应作为 alarm 查询的 scope 来源。改用持久物理量：
+//
+//   - card.bed_id     → devices WHERE bound_bed_id = card.bed_id  （床上传感器，如 sleepad）
+//   - card.unit_id    → rooms WHERE unit_id → devices WHERE bound_room_id IN (...)
+//                       （房间内传感器，如 radar）
+//
+// 这样 alarm 查询 scope 严格 = "这个 card 物理覆盖范围内的设备"，不再因 card.devices JSON
+// stale / 跨房间快照导致跨 room 串入。
 func (s *alarmEventService) getCardDeviceIDs(ctx context.Context, tenantID, cardID string) ([]string, error) {
-	query := `
-		SELECT devices
-		FROM cards
-		WHERE tenant_id = $1 AND card_id = $2
-	`
-
-	var devicesJSON []byte
-	err := s.db.QueryRowContext(ctx, query, tenantID, cardID).Scan(&devicesJSON)
+	// Step 1: 取 card 的 unit_id / bed_id（物理锚点）
+	var unitID, bedID sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT unit_id, bed_id FROM cards WHERE tenant_id = $1 AND card_id = $2`,
+		tenantID, cardID,
+	).Scan(&unitID, &bedID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get card devices: %w", err)
+		return nil, fmt.Errorf("failed to get card location anchors: %w", err)
 	}
 
-	// 解析 JSONB
-	var devices []map[string]interface{}
-	if err := json.Unmarshal(devicesJSON, &devices); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal devices JSON: %w", err)
+	// Step 2: 反查 devices 表中物理绑定到本 card 范围的所有设备
+	//   bound_bed_id = card.bed_id        → 床上传感器（sleepad）
+	//   bound_room_id IN (该 unit 下所有 room) → 房间内传感器（radar）
+	query := `
+		SELECT DISTINCT device_id::text
+		FROM devices
+		WHERE tenant_id = $1
+		  AND (
+		    ($2::uuid IS NOT NULL AND bound_bed_id = $2::uuid)
+		    OR ($3::uuid IS NOT NULL AND bound_room_id IN (
+		      SELECT room_id FROM rooms WHERE tenant_id = $1 AND unit_id = $3::uuid
+		    ))
+		  )
+	`
+	var bedIDArg, unitIDArg interface{}
+	if bedID.Valid {
+		bedIDArg = bedID.String
+	}
+	if unitID.Valid {
+		unitIDArg = unitID.String
 	}
 
-	deviceIDs := make([]string, 0, len(devices))
-	for _, device := range devices {
-		if deviceID, ok := device["device_id"].(string); ok {
-			deviceIDs = append(deviceIDs, deviceID)
+	rows, err := s.db.QueryContext(ctx, query, tenantID, bedIDArg, unitIDArg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query devices by card location: %w", err)
+	}
+	defer rows.Close()
+
+	deviceIDs := make([]string, 0)
+	for rows.Next() {
+		var did string
+		if err := rows.Scan(&did); err != nil {
+			return nil, fmt.Errorf("failed to scan device_id: %w", err)
 		}
+		deviceIDs = append(deviceIDs, did)
 	}
+	return deviceIDs, nil
+}
 
+// getRoomDeviceIDs 通过 room_id 反查 devices 表得设备 ID 列表。
+// 用于 WaveMonitor 等"按物理 room scope"的告警查询，避免跨 room 串入。
+//
+//   - bound_room_id = room_id       → 房间内传感器（radar）
+//   - bound_bed_id IN (该 room 下所有 bed) → 床上传感器（sleepad）
+func (s *alarmEventService) getRoomDeviceIDs(ctx context.Context, tenantID, roomID string) ([]string, error) {
+	query := `
+		SELECT DISTINCT device_id::text
+		FROM devices
+		WHERE tenant_id = $1
+		  AND (
+		    bound_room_id = $2::uuid
+		    OR bound_bed_id IN (SELECT bed_id FROM beds WHERE tenant_id = $1 AND room_id = $2::uuid)
+		  )
+	`
+	rows, err := s.db.QueryContext(ctx, query, tenantID, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query devices by room: %w", err)
+	}
+	defer rows.Close()
+
+	deviceIDs := make([]string, 0)
+	for rows.Next() {
+		var did string
+		if err := rows.Scan(&did); err != nil {
+			return nil, fmt.Errorf("failed to scan device_id: %w", err)
+		}
+		deviceIDs = append(deviceIDs, did)
+	}
 	return deviceIDs, nil
 }
 

@@ -352,21 +352,12 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 				var item observation.EventItem
 				if online {
 					eventName = alarm.AlarmTypeOfflineRecover
-					item = observation.EventItem{
-						EventSince:  tsMs,
-						EventStatus: "end",
-						EventValue:  0,
-						TrackID:     observation.TrackDevice,
-					}
+					item = observation.NewEventItem(tsMs, "end")
 				} else {
 					eventName = alarm.AlarmTypeOffline
-					item = observation.EventItem{
-						EventSince:  tsMs,
-						EventStatus: "start",
-						EventValue:  1,
-						TrackID:     observation.TrackDevice,
-					}
+					item = observation.NewEventItem(tsMs, "start")
 				}
+				item.TrackID = observation.TrackDevice
 				alarmData, _ := observation.EventItemToDataMap(&item)
 				if alarmData == nil {
 					alarmData = make(map[string]any)
@@ -465,11 +456,8 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 				} else {
 					categoryBed = alarm.LeftBed // 1=离床
 				}
-				evItem := observation.EventItem{
-					EventSince:  ts,
-					EventStatus: "start",
-					TrackID:     d.LeftRight,
-				}
+				evItem := observation.NewEventItem(ts, "start")
+				evItem.TrackID = d.LeftRight
 				evData, _ := observation.EventItemToDataMap(&evItem)
 				if evData == nil {
 					evData = make(map[string]any)
@@ -504,18 +492,8 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		if d.InbedStatus == 1 {
 			categoryInBed = alarm.LeftBed // 1=离床
 		}
-		data := map[string]any{
-			redis.DataCategoryKey:      categoryInBed,
-			observation.FieldTrackID:   d.LeftRight,
-			observation.FieldBedStatus: d.InbedStatus,
-		}
-		payloadJSON, _ := json.Marshal(data)
-		item := observation.EventItem{
-			EventSince:   ts,
-			EventStatus:  "instant",
-			TrackID:      d.LeftRight,
-			EventPayload: string(payloadJSON),
-		}
+		item := observation.NewEventItem(ts, "instant")
+		item.TrackID = d.LeftRight
 		out, _ := observation.EventItemToDataMap(&item)
 		if out == nil {
 			out = make(map[string]any)
@@ -546,19 +524,8 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		if c.statusTracker != nil {
 			c.statusTracker.UpdateSleepStage(deviceUID, stage)
 		}
-		payloadData := map[string]any{
-			"event_since":               ts,
-			"event_status":              "instant",
-			"track_id":                  d.LeftRight,
-			observation.FieldSleepStage: stage,
-		}
-		payloadJSON, _ := json.Marshal(payloadData)
-		item := observation.EventItem{
-			EventSince:   ts,
-			EventStatus:  "instant",
-			TrackID:      d.LeftRight,
-			EventPayload: string(payloadJSON),
-		}
+		item := observation.NewEventItem(ts, "instant")
+		item.TrackID = d.LeftRight
 		out, _ := observation.EventItemToDataMap(&item)
 		if out == nil {
 			out = make(map[string]any)
@@ -604,21 +571,8 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		if !failure {
 			eventStatus = "end"
 		}
-		payloadData := map[string]any{
-			redis.DataCategoryKey:          alarm.SensorDetached,
-			"event_name":                   eventName,
-			"event_since":                  ts,
-			"event_status":                 eventStatus,
-			"track_id":                     observation.TrackDevice,
-			observation.FieldDeviceFailure: failureVal,
-		}
-		payloadJSON, _ := json.Marshal(payloadData)
-		item := observation.EventItem{
-			EventSince:   ts,
-			EventStatus:  eventStatus,
-			TrackID:      observation.TrackDevice,
-			EventPayload: string(payloadJSON),
-		}
+		item := observation.NewEventItem(ts, eventStatus)
+		item.TrackID = observation.TrackDevice
 		out, _ := observation.EventItemToDataMap(&item)
 		if out == nil {
 			out = make(map[string]any)
@@ -650,19 +604,8 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		if !detached {
 			eventStatus = "end"
 		}
-		payloadData := map[string]any{
-			"event_since":             ts,
-			"event_status":            eventStatus,
-			"track_id":                observation.TrackDevice,
-			observation.FieldDetached: detachedVal,
-		}
-		payloadJSON, _ := json.Marshal(payloadData)
-		item := observation.EventItem{
-			EventSince:   ts,
-			EventStatus:  eventStatus,
-			TrackID:      observation.TrackDevice,
-			EventPayload: string(payloadJSON),
-		}
+		item := observation.NewEventItem(ts, eventStatus)
+		item.TrackID = observation.TrackDevice
 		out, _ := observation.EventItemToDataMap(&item)
 		if out == nil {
 			out = make(map[string]any)
@@ -687,23 +630,14 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		if deviceID != "" {
 			streamUserID = deviceID
 		}
-		payloadData := map[string]any{
-			"event_since":  ts,
-			"event_status": "instant",
-			"user_id":      streamUserID,
-			"start_time":   d.StartTime,
-		}
-		payloadJSON, _ := json.Marshal(payloadData)
-		item := observation.EventItem{
-			EventSince:   ts,
-			EventStatus:  "instant",
-			TrackID:      observation.TrackDevice,
-			EventPayload: string(payloadJSON),
-		}
+		item := observation.NewEventItem(ts, "instant")
+		item.TrackID = observation.TrackDevice
 		out, _ := observation.EventItemToDataMap(&item)
 		if out == nil {
 			out = make(map[string]any)
 		}
+		out["user_id"] = streamUserID
+		out["start_time"] = d.StartTime
 		if deviceID != "" && canIoT {
 			msg := redis.NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, nowMs, "event", "analysis", out)
 			c.publisher.PublishEvent(ctx, msg)
@@ -730,28 +664,16 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		if d.Length > 0 {
 			progress = d.Offset * 100 / d.Length
 		}
-		payloadData := map[string]any{
-			"event_since":                    ts,
-			"event_status":                   "instant",
-			"track_id":                       observation.TrackDevice,
-			observation.FieldCommandAction:   "firmware_upgrade",
-			observation.FieldCommandProgress: progress,
-			"length":                         d.Length,
-			"offset":                         d.Offset,
-		}
-		payloadJSON, _ := json.Marshal(payloadData)
-		item := observation.EventItem{
-			EventSince:   ts,
-			EventStatus:  "instant",
-			TrackID:      observation.TrackDevice,
-			EventPayload: string(payloadJSON),
-		}
+		item := observation.NewEventItem(ts, "instant")
+		item.TrackID = observation.TrackDevice
 		out, _ := observation.EventItemToDataMap(&item)
 		if out == nil {
 			out = make(map[string]any)
 		}
 		out[observation.FieldCommandAction] = "firmware_upgrade"
 		out[observation.FieldCommandProgress] = progress
+		out["length"] = d.Length
+		out["offset"] = d.Offset
 		if canIoT {
 			msg := redis.NewIoTStreamMessageWithData(tenantID, cardID, deviceUID, deviceID, deviceType, nowMs, "event", "upgradeProgress", out)
 			c.publisher.PublishEvent(ctx, msg)
@@ -821,22 +743,19 @@ func (c *MQTTConsumer) handleAlarmNotify(ctx context.Context, tenantID, cardID, 
 		c.statusTracker.UpdateAlarm(deviceID, active)
 	}
 
-	payloadData := map[string]any{
-		"id":             d.Id,
-		"type":           d.Type,
-		"user_id":        d.UserId,
-		"status":         d.Status,
-		"relieve_reason": d.RelieveReason,
-		"relieve_time":   d.RelieveTime,
-	}
-	payloadJSON, _ := json.Marshal(payloadData)
-	item := observation.EventItem{
-		EventID:      strconv.FormatInt(d.Id, 10),
-		EventSince:   tsPayload,
-		EventStatus:  eventStatus,
-		TrackID:      am.TrackID,
-		EventPayload: string(payloadJSON),
-	}
+	// Plan B：sleepace alarmNotify 所有字段都已经在 envelope/EventItem 顶层
+	//   id            → EventItem.EventID
+	//   type          → envelope.Category（via am.EventName 映射）
+	//   status        → EventItem.EventStatus（"start"/"end"）
+	//   userId        → envelope.SubjectEntity（gateway 已映射成 card_id）
+	//   deviceId      → envelope.DeviceUID
+	//   relieveReason → EventItem.EventReason
+	//   relieveTime   → EventItem.EventEnd
+	//   timestamp     → EventItem.EventSince
+	// EventPayload 之前装的 raw 复本是 100% 冗余，删掉让下游直接读 envelope/EventItem。
+	item := observation.NewEventItem(tsPayload, eventStatus)
+	item.EventID = strconv.FormatInt(d.Id, 10)
+	item.TrackID = am.TrackID
 	if d.RelieveReason != "" {
 		item.EventReason = d.RelieveReason
 	}

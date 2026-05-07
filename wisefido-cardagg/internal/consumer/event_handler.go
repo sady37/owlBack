@@ -143,6 +143,14 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	case alarm.SleepStage:
 		h.routeSleepStageEvent(ctx, m, data)
 	case alarm.EnterRoom:
+		h.logger.Info("room.event.recv",
+			zap.String("cid", m.SubjectEntity),
+			zap.String("device_id", m.DeviceID),
+			zap.String("device_uid", m.DeviceUID),
+			zap.String("type", evName),
+			zap.Int("number_people", intFromAny(data[observation.FieldNumberPeople])),
+			zap.Int("track_id", intFromAny(data["track_id"])),
+		)
 		// PR6: 新人进 → 该 device 旧 verdict 全部作废（track_id 可能复用）
 		if h.aiOverrides != nil && m.DeviceUID != "" {
 			h.aiOverrides.ClearDevice(m.DeviceUID)
@@ -153,6 +161,14 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		}
 		h.routeRoomStateEvent(ctx, m, data, evName)
 	case alarm.ExitRoom:
+		h.logger.Info("room.event.recv",
+			zap.String("cid", m.SubjectEntity),
+			zap.String("device_id", m.DeviceID),
+			zap.String("device_uid", m.DeviceUID),
+			zap.String("type", evName),
+			zap.Int("number_people", intFromAny(data[observation.FieldNumberPeople])),
+			zap.Int("track_id", intFromAny(data["track_id"])),
+		)
 		// PR6: 房间空了 → 清空该 device 所有 verdicts
 		if h.aiOverrides != nil && m.DeviceUID != "" {
 			h.aiOverrides.ClearDevice(m.DeviceUID)
@@ -183,6 +199,13 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		}
 
 	case alarm.InBed:
+		h.logger.Info("bed.event.recv",
+			zap.String("cid", m.SubjectEntity),
+			zap.String("device_id", m.DeviceID),
+			zap.String("device_uid", m.DeviceUID),
+			zap.String("device_type", m.DeviceType),
+			zap.String("type", evName),
+		)
 		// 记录 InBed 时间，供 LeftBed 计算在床时长（不依赖 BedState.StartTime，它会被 derive 覆盖）
 		h.inBedSinceMu.Lock()
 		h.inBedSince[m.DeviceID] = m.Timestamp
@@ -214,34 +237,58 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 			}
 		}
 	case alarm.LeftBed:
+		h.logger.Info("bed.event.recv",
+			zap.String("cid", m.SubjectEntity),
+			zap.String("device_id", m.DeviceID),
+			zap.String("device_uid", m.DeviceUID),
+			zap.String("device_type", m.DeviceType),
+			zap.String("type", evName),
+		)
 		payload := alarmPayload
 		if payload == nil {
 			payload = &redis.IoTStreamMessage{Producer: m.Producer, SubjectEntity: m.SubjectEntity, TenantID: m.TenantID, DeviceID: m.DeviceID, DeviceUID: m.DeviceUID, DataValue: []interface{}{data}, Timestamp: m.Timestamp}
 		}
-		_, level, durationSec, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, m.TenantID, payload.DeviceID, alarm.LeftBed)
-		inRestWindow := h.alarms.InRestTimeWindow(ctx, m.TenantID, m.SubjectEntity)
-		// 从 inBedSince 取上床时间（不依赖 BedState.StartTime，它会被 derive 覆盖）
-		h.inBedSinceMu.Lock()
-		inBedTs := h.inBedSince[m.DeviceID]
-		delete(h.inBedSince, m.DeviceID) // 用完清除
-		h.inBedSinceMu.Unlock()
-		inBedMs := m.Timestamp - inBedTs
-		stableInBed := inBedTs > 0 && inBedMs >= leftBedMinInBedMs
-		h.logger.Info("LeftBed.pending.check",
-			zap.String("device_uid", m.DeviceUID),
-			zap.Bool("enabled", enabled),
-			zap.Bool("inRestWindow", inRestWindow),
-			zap.Bool("stableInBed", stableInBed),
-			zap.Int64("inBedMs", inBedMs),
-			zap.Int("durationSec", durationSec),
-		)
-		if enabled && level != "" && inRestWindow && stableInBed {
-			if durationSec == 0 {
-				_ = h.alarms.PersistAlarmAndPublish(ctx, payload, alarm.LeftBed, level)
-			} else {
-				triggerData, _ := json.Marshal(redis.FirstDataValue(payload.DataValue))
-				_ = h.alarms.AddPendingAlarm(ctx, m.TenantID, payload.DeviceID, alarm.LeftBed, level, m.Timestamp, durationSec, "", triggerData)
+		dtLower := strings.ToLower(m.DeviceType)
+		isSleepad := strings.Contains(dtLower, "sleepad") || strings.Contains(dtLower, "sleeppad")
+		// Sleepace 自带 alarm 151 (alarmLeftBed) 在床垫侧已实现 45min 阈值并经 alarm:stream 落库，
+		// 这里再走 owl pending 会与 alarm_handler.go 的 sleepace 原生报警双写同一离床事件。
+		// Sleepace 设备：跳过 pending，仅维护下方 BedState（PublishBedStateFromEvent + ReconcileRoom）。
+		// Radar 设备：保留 pending（无厂家原生 LeftBed 报警，pending 是唯一来源）。
+		if !isSleepad {
+			_, level, durationSec, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, m.TenantID, payload.DeviceID, alarm.LeftBed)
+			inRestWindow := h.alarms.InRestTimeWindow(ctx, m.TenantID, m.SubjectEntity)
+			// 从 inBedSince 取上床时间（不依赖 BedState.StartTime，它会被 derive 覆盖）
+			h.inBedSinceMu.Lock()
+			inBedTs := h.inBedSince[m.DeviceID]
+			delete(h.inBedSince, m.DeviceID) // 用完清除
+			h.inBedSinceMu.Unlock()
+			inBedMs := m.Timestamp - inBedTs
+			stableInBed := inBedTs > 0 && inBedMs >= leftBedMinInBedMs
+			h.logger.Info("LeftBed.pending.check",
+				zap.String("device_uid", m.DeviceUID),
+				zap.Bool("enabled", enabled),
+				zap.Bool("inRestWindow", inRestWindow),
+				zap.Bool("stableInBed", stableInBed),
+				zap.Int64("inBedMs", inBedMs),
+				zap.Int("durationSec", durationSec),
+			)
+			if enabled && level != "" && inRestWindow && stableInBed {
+				if durationSec == 0 {
+					_ = h.alarms.PersistAlarmAndPublish(ctx, payload, alarm.LeftBed, level)
+				} else {
+					triggerData, _ := json.Marshal(redis.FirstDataValue(payload.DataValue))
+					_ = h.alarms.AddPendingAlarm(ctx, m.TenantID, payload.DeviceID, alarm.LeftBed, level, m.Timestamp, durationSec, "", triggerData)
+				}
 			}
+		} else {
+			// 同时清掉 inBedSince 缓存，避免下次 LeftBed 算出陈旧 inBedMs
+			h.inBedSinceMu.Lock()
+			delete(h.inBedSince, m.DeviceID)
+			h.inBedSinceMu.Unlock()
+			h.logger.Info("LeftBed.pending.skip.sleepad",
+				zap.String("device_uid", m.DeviceUID),
+				zap.String("reason", "sleepace_native_alarm_151_authoritative"),
+			)
 		}
 		if h.state != nil {
 			deviceType := ""

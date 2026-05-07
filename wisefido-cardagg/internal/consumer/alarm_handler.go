@@ -104,9 +104,50 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 	payload.DeviceID = m.DeviceID
 	_, level, _, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, m.TenantID, payload.DeviceID, eventName)
 
+	// 集中处理 event_status=end（持续事件解除）：协议层 end 永远不该被当作新报警插入 alarm_events。
+	// 仅对 Registry 中 EndPolicy 显式标注的类型拦截，避免误拦截 *Recover 类型自身的 end 语义
+	// （OfflineRecover/SignalPoorRecover 等 recovery 事件本身需要进入各自 case 分支处理）。
+	// 后续 switch case 只关心 start/instant/pending，不需要再检查 event_status。
+	if eventStatus, _ := data["event_status"].(string); eventStatus == "end" {
+		if def := alarm.LookupAlarm(eventName); def != nil {
+			switch def.EndPolicy {
+			case alarm.EndPolicyAutoResolve:
+				h.logger.Info("alarm.end.auto_resolve",
+					zap.String("cid", m.SubjectEntity),
+					zap.String("device_id", m.DeviceID),
+					zap.String("type", eventName),
+				)
+				return h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{eventName})
+			case alarm.EndPolicyManualAck:
+				h.logger.Info("alarm.end.manual_ack_required",
+					zap.String("cid", m.SubjectEntity),
+					zap.String("device_id", m.DeviceID),
+					zap.String("type", eventName),
+					zap.String("reason", "high_risk_requires_manual_ack"),
+				)
+				return nil
+			}
+			// EndPolicyIgnore（零值）→ fall through 到下方 switch 让 case 自行处理
+		}
+	}
+
 	switch eventName {
 
 	case alarm.Fall, alarm.SittingOnGround:
+		// Fall 是高优先级事件，无论 enabled 如何都打 Info 留迹（含 trigger 上下文便于追溯）。
+		// gateway 已把 pose / track_id 等业务字段拍平到 data 顶层（Plan B），消费方直接读。
+		h.logger.Info("fall.event.recv",
+			zap.String("cid", m.SubjectEntity),
+			zap.String("device_id", m.DeviceID),
+			zap.String("device_uid", m.DeviceUID),
+			zap.String("type", eventName),
+			zap.Int("track_id", intFromAny(data["track_id"])),
+			zap.Int("pose", intFromAny(data["pose"])),
+			zap.Int("track_confidence", intFromAny(data["track_confidence"])),
+			zap.String("ai_source", stringFromAny(data["ai_source"])),
+			zap.Bool("enabled", enabled),
+			zap.String("level", level),
+		)
 		if enabled && level != "" {
 			if err := h.alarms.PersistAlarmAndPublish(ctx, payload, eventName, level); err != nil {
 				return err
@@ -114,6 +155,15 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		}
 	// InBed/LeftBed 是 sleepace 直接发的 alarm：先使能检查、报警，再与 event_handler 一致更新 bed status
 	case alarm.InBed:
+		h.logger.Info("bed.alarm.recv",
+			zap.String("cid", m.SubjectEntity),
+			zap.String("device_id", m.DeviceID),
+			zap.String("device_uid", m.DeviceUID),
+			zap.String("type", eventName),
+			zap.String("source", "sleepace_alarm"),
+			zap.Bool("enabled", enabled),
+			zap.String("level", level),
+		)
 		if enabled && level != "" {
 			if err := h.alarms.PersistAlarmAndPublish(ctx, payload, eventName, level); err != nil {
 				return err
@@ -146,6 +196,15 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			}
 		}
 	case alarm.LeftBed:
+		h.logger.Info("bed.alarm.recv",
+			zap.String("cid", m.SubjectEntity),
+			zap.String("device_id", m.DeviceID),
+			zap.String("device_uid", m.DeviceUID),
+			zap.String("type", eventName),
+			zap.String("source", "sleepace_alarm"),
+			zap.Bool("enabled", enabled),
+			zap.String("level", level),
+		)
 		if enabled && level != "" {
 			if err := h.alarms.PersistAlarmAndPublish(ctx, payload, eventName, level); err != nil {
 				return err
@@ -227,16 +286,9 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		_ = h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.AngleException})
 
 	// Sleepad 行为/状态恢复型 alarm（BedSitUp 床上坐起 / NoTurnOver 长时不翻身）：
-	// sleepace 协议用同一 EventName + event_status="start"/"end" 配对。
-	// 临床语义上设备 end = 行为信号本身已消失（坐回 / 翻身了），等价 device-driven recovery。
-	// onset(start) → 落库推送；relieve(end) → auto-resolve，否则会永久 latch active。
+	// onset(start) → 落库推送；relieve(end) 由入口 EndPolicyAutoResolve 集中处理，不会进入此 case。
 	case alarm.BedSitUp, alarm.NoTurnOver:
 		if !isSleepad {
-			break
-		}
-		eventStatus, _ := data["event_status"].(string)
-		if eventStatus == "end" {
-			_ = h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{eventName})
 			break
 		}
 		if enabled && level != "" {
@@ -246,21 +298,9 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		}
 
 	// Sleepad 风险事件型 alarm（AbnormalBodyMovement 异动抽搐 / NoBodyMove 长时无体动）：
-	// 同样有 event_status="start"/"end" 配对，但临床语义上设备 end ≠ 病情已评估，
-	// 必须保持 active 等护理人员人工 ack（与 Fall/SittingOnGround 同级）。
-	// onset(start) → 落库推送；relieve(end) → 仅记日志留痕，不改 active 状态。
+	// onset(start) → 落库推送；relieve(end) 由入口 EndPolicyManualAck 集中处理，仅记日志保持 active。
 	case alarm.AbnormalBodyMovement, alarm.NoBodyMove:
 		if !isSleepad {
-			break
-		}
-		eventStatus, _ := data["event_status"].(string)
-		if eventStatus == "end" {
-			h.logger.Info("sleepace_relieve_signal_kept_active",
-				zap.String("cid", m.SubjectEntity),
-				zap.String("device_id", m.DeviceID),
-				zap.String("event_type", eventName),
-				zap.String("reason", "high_risk_requires_manual_ack"),
-			)
 			break
 		}
 		if enabled && level != "" {

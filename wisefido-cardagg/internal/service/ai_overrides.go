@@ -110,12 +110,13 @@ func (c *AIOverrideCache) Set(deviceUID string, trackID int, v AIVerdict) {
 	c.setCount++
 	c.mu.Unlock()
 	if c.logger != nil {
-		c.logger.Info("ai_verdict_cached",
+		c.logger.Info("ai.score.recv",
 			zap.String("mode", string(c.mode)),
 			zap.String("device_uid", deviceUID),
 			zap.Int("track_id", trackID),
 			zap.Int("confidence", v.Confidence),
 			zap.String("source", v.Source),
+			zap.String("reason", v.Reason),
 		)
 	}
 }
@@ -153,7 +154,10 @@ func (c *AIOverrideCache) Apply(deviceUID string, trackID int, fields map[string
 	}
 	c.bumpHit()
 	if c.logger != nil {
-		c.logger.Info("ai_verdict_applied",
+		// 每条 monitor track 都会 Apply，每秒命中频次很高；
+		// 仅在 confidence 实际变化（release 模式且数值不同）时 Info，否则 Debug。
+		changed := mode == AIOverrideModeRelease && origConf != v.Confidence
+		fields := []zap.Field{
 			zap.String("mode", string(mode)),
 			zap.String("device_uid", deviceUID),
 			zap.Int("track_id", trackID),
@@ -161,7 +165,12 @@ func (c *AIOverrideCache) Apply(deviceUID string, trackID int, fields map[string
 			zap.Int("ai_confidence", v.Confidence),
 			zap.String("source", v.Source),
 			zap.Bool("merged", mode == AIOverrideModeRelease),
-		)
+		}
+		if changed {
+			c.logger.Info("ai.score.apply.changed", fields...)
+		} else {
+			c.logger.Debug("ai.score.apply.noop", fields...)
+		}
 	}
 }
 
@@ -181,7 +190,7 @@ func (c *AIOverrideCache) ClearDevice(deviceUID string) {
 	c.clearCount++
 	c.mu.Unlock()
 	if c.logger != nil && cleared > 0 {
-		c.logger.Info("ai_verdict_cleared",
+		c.logger.Info("ai.score.cleared",
 			zap.String("device_uid", deviceUID),
 			zap.Int("verdicts_dropped", cleared),
 		)
