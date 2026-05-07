@@ -17,6 +17,7 @@ type RoomSVGOptions struct {
 	TrackLabels         []string           // 对应 LiveTracks 的标签 (P0/P1...)
 	TrackPaths          []TrackPath        // 历史轨迹叠加（per-track polyline）
 	TitleSuffix         string             // 标题追加（playback 用，例如 " | 2026-04-25 12:34:56"）
+	RoomName            string             // 非空时标题用 RoomName 替代 roomID（"Bathroom" 比 UUID 易读）
 }
 
 // TrackPath 一条 track 的历史路径（按时间排序的画布坐标点序列）。
@@ -152,7 +153,7 @@ func BuildRoomSVG(grid *RoomGrid, mount radarutils.RadarMount, wallPoly []radaru
 
 	// 6) 标题 + 图例
 	titleSuffix := opt.TitleSuffix
-	drawTitleAndLegend(&sb, roomID, grid, mount, canvasW, canvasH, titleSuffix)
+	drawTitleAndLegend(&sb, roomID, opt.RoomName, grid, mount, canvasW, canvasH, titleSuffix)
 
 	sb.WriteString(`</svg>`)
 
@@ -281,28 +282,34 @@ func drawRadar(sb *strings.Builder, m radarutils.RadarMount) {
 		cx+18, cy-8, installLabel(m.InstallModel), m.Center.Z)
 }
 
-func drawTitleAndLegend(sb *strings.Builder, roomID string, grid *RoomGrid,
+func drawTitleAndLegend(sb *strings.Builder, roomID, roomName string, grid *RoomGrid,
 	m radarutils.RadarMount, canvasW, canvasH int, titleSuffix string) {
-	// 标题
+	// 标题（roomName 非空优先，fallback 到 roomID）
+	displayName := roomName
+	if displayName == "" {
+		displayName = roomID
+	}
 	fmt.Fprintf(sb,
 		`<text x="0" y="%d" text-anchor="middle" fill="#222" font-size="13" font-weight="bold">`+
 			`Room: %s | %d×%d cells | radar @(%d,%d,%d) %s%s</text>`,
-		canvasH+18, roomID, grid.Width, grid.Height,
+		canvasH+18, displayName, grid.Width, grid.Height,
 		m.Center.X, m.Center.Y, m.Center.Z, installLabel(m.InstallModel), titleSuffix)
 
-	// 图例（横向排开；Deny 三色分开：墙外 / 人标家具 / AI 学习）
+	// 图例（横向排开；Deny 三色分开：墙外 / 人标家具 / AI 学习；最右紫色 Fall(AI) 用圆点匹配 RealFallCount overlay 视觉）
 	type item struct {
 		fill, label, textColor string
+		isDot                  bool // true → 画圆点（cell counter 类反馈）；false → 画方块（area 类背景色）
 	}
 	legend := []item{
-		{"#c8c8c8", "Unknown", "#222"},
-		{"#ffffff", "Walk", "#222"},
-		{"#ff9933", "Sit", "#222"},
-		{"#4488dd", "Lying", "#fff"},
-		{"#44cc66", "Enter", "#222"},
-		{"#2a2a2a", "Out", "#fff"},        // !InRoom
-		{"#4a4a4a", "Deny(layout)", "#fff"}, // SourceHuman
-		{"url(#aiDeny)", "Deny(AI)", "#fff"}, // SourceLearned 斜线
+		{"#c8c8c8", "Unknown", "#222", false},
+		{"#ffffff", "Walk", "#222", false},
+		{"#ff9933", "Sit", "#222", false},
+		{"#4488dd", "Lying", "#fff", false},
+		{"#44cc66", "Enter", "#222", false},
+		{"#2a2a2a", "Out", "#fff", false},        // !InRoom
+		{"#4a4a4a", "Deny(layout)", "#fff", false}, // SourceHuman
+		{"url(#aiDeny)", "Deny(AI)", "#fff", false}, // SourceLearned 斜线
+		{"#7c3aed", "Fall(AI)", "#222", true},       // RealFallCount overlay 紫圆点
 	}
 	const itemW = 78
 	totalW := len(legend) * itemW
@@ -310,11 +317,22 @@ func drawTitleAndLegend(sb *strings.Builder, roomID string, grid *RoomGrid,
 	y0 := canvasH + 30
 	for i, it := range legend {
 		x := x0 + i*itemW
-		fmt.Fprintf(sb,
-			`<rect x="%d" y="%d" width="68" height="14" fill="%s" stroke="#888" stroke-width="0.5"/>`+
-				`<text x="%d" y="%d" text-anchor="middle" fill="%s" font-size="10" font-weight="600">%s</text>`,
-			x, y0, it.fill,
-			x+34, y0+10, it.textColor, it.label)
+		if it.isDot {
+			// 圆点 + 标签横排（圆点居左，文字居右；与画布上 drawCounterDot 的紫点视觉对齐）
+			fmt.Fprintf(sb,
+				`<rect x="%d" y="%d" width="68" height="14" fill="#fff" stroke="#888" stroke-width="0.5"/>`+
+					`<circle cx="%d" cy="%d" r="4" fill="%s" fill-opacity="0.7"/>`+
+					`<text x="%d" y="%d" text-anchor="middle" fill="%s" font-size="10" font-weight="600">%s</text>`,
+				x, y0,
+				x+12, y0+7, it.fill,
+				x+40, y0+10, it.textColor, it.label)
+		} else {
+			fmt.Fprintf(sb,
+				`<rect x="%d" y="%d" width="68" height="14" fill="%s" stroke="#888" stroke-width="0.5"/>`+
+					`<text x="%d" y="%d" text-anchor="middle" fill="%s" font-size="10" font-weight="600">%s</text>`,
+				x, y0, it.fill,
+				x+34, y0+10, it.textColor, it.label)
+		}
 	}
 }
 

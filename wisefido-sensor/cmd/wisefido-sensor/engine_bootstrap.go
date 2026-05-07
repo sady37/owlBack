@@ -143,6 +143,8 @@ func buildRuntimeConfig(cfg *config.Config, db *sql.DB) roomengine.RuntimeConfig
 	// Persister：开启时建 PostgresPersister
 	if r.Persist.Enabled && r.Persist.Storage == "postgres" {
 		rc.Persister = roomengine.NewPostgresPersister(db, r.Persist.Table)
+		// History persister：复用同 DB；写到 37_*.sql 历史表（每天 11:50 归档，保留 365 天）
+		rc.HistoryPersister = roomengine.NewPostgresHistoryPersister(db, "")
 	}
 
 	return rc

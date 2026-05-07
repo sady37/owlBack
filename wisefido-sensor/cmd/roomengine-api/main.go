@@ -105,11 +105,16 @@ func main() {
 
 // playbackFilename: playback_<uid>_<startMMDD>_<endMMDDHHMM>.html
 // 不带年份：业务上同 (uid, startMMDD, endMMDDHHMM) 的同年请求被视为同一份产物（避免重生成几百 M）。
-func playbackFilename(uid string, start, end time.Time) string {
-	return fmt.Sprintf("playback_%s_%s_%s.html",
+func playbackFilename(uid string, start, end time.Time, from time.Time) string {
+	suffix := ""
+	if !from.IsZero() {
+		suffix = "_from" + from.Format("0102")
+	}
+	return fmt.Sprintf("playback_%s_%s_%s%s.html",
 		uid,
 		start.Format("0102"),
 		end.Format("01021504"),
+		suffix,
 	)
 }
 
@@ -157,6 +162,17 @@ func handlePlayback(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	}
 	layoutPath := q.Get("layout")
 
+	// from=YYYY-MM-DD：从 history 表加载该日期 snapshot 作为演化起点（PR2）
+	var fromDate time.Time
+	if s := q.Get("from"); s != "" {
+		t, err := time.Parse("2006-01-02", s)
+		if err != nil {
+			http.Error(w, "bad from (YYYY-MM-DD): "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		fromDate = t
+	}
+
 	// dump_rect=x1,y1,x2,y2（画布坐标，cm）—— debug：跑完后 dump 矩形内 cell 统计到 JSON
 	var dumpRect [4]int
 	if s := q.Get("dump_rect"); s != "" {
@@ -176,7 +192,7 @@ func handlePlayback(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	}
 
 	// Cache hit：文件已存在直接复用，跳过重生成（HTML 可能几百 M）
-	filename := playbackFilename(uid, start, end)
+	filename := playbackFilename(uid, start, end, fromDate)
 	fpath := filepath.Join(outDir, filename)
 	if st, err := os.Stat(fpath); err == nil && !st.IsDir() {
 		log.Printf("playback CACHE-HIT uid=%s file=%s size=%d", uid, filename, st.Size())
@@ -212,6 +228,7 @@ func handlePlayback(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 		SnapMin:          snapMin,
 		DumpRect:         dumpRect,
 		LogTrackVerdicts: logVerdicts,
+		FromDate:         fromDate,
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -359,7 +376,7 @@ func loadLayout(ctx context.Context, db *sql.DB, deviceUID, layoutPath string) (
 		return roomID, cfg, nil
 	}
 
-	roomID, raw, err := playback.LookupRoomLayout(ctx, db, deviceUID)
+	roomID, roomName, raw, err := playback.LookupRoomLayout(ctx, db, deviceUID)
 	if err != nil {
 		return "", roomengine.RoomConfig{}, err
 	}
@@ -367,6 +384,7 @@ func loadLayout(ctx context.Context, db *sql.DB, deviceUID, layoutPath string) (
 	if err != nil {
 		return "", roomengine.RoomConfig{}, err
 	}
+	cfg.RoomName = roomName
 	return roomID, cfg, nil
 }
 

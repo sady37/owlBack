@@ -17,6 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PORT="${PORT:-7788}"
+OUT_DIR="${OUT_DIR:-/home/wisefido/owl/out}"
 
 # 继承 owlBack/.env 的 DB_*（如果存在）
 ENV_FILE="$SCRIPT_DIR/../.env"
@@ -54,7 +55,7 @@ echo "   db:   $DB_HOST:$DB_PORT/$DB_NAME"
 echo ""
 
 : >"$LOG_FILE"
-nohup go run ./cmd/roomengine-api --listen ":$PORT" >>"$LOG_FILE" 2>&1 &
+nohup go run ./cmd/roomengine-api --listen ":$PORT" --out-dir "$OUT_DIR" >>"$LOG_FILE" 2>&1 &
 echo $! >"$PID_FILE"
 
 # 等服务起来（最多 30s）

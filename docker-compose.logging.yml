@@ -24,7 +24,7 @@ services:
     image: grafana/promtail:2.9.0
     container_name: owl-promtail
     volumes:
-      - ./logging/promtail-config.yml:/etc/promtail/config.yml
+      - ./observability/promtail-config.yml:/etc/promtail/config.yml
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     command: -config.file=/etc/promtail/config.yml
@@ -42,7 +42,7 @@ services:
       - GF_INSTALL_PLUGINS=grafana-piechart-panel
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./logging/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+      - ./observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
     depends_on:
       - loki
 

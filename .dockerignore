@@ -16,7 +16,7 @@ mqtt/data
 # 文档与脚本（减小 context）
 *.md
 docs/
-logging/
+observability/
 scripts/
 examples/
 exports/

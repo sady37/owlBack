@@ -33,23 +33,42 @@ func LookupTenantID(ctx context.Context, db *sql.DB, deviceUID string) (string, 
 	return tid, nil
 }
 
-// LookupRoomLayout 从 rooms 表查 device_uid 绑定房间的 layout_config（JSONB raw bytes）
-// 仅 API 模式用（CLI 模式直接读 layout 文件）
-func LookupRoomLayout(ctx context.Context, db *sql.DB, deviceUID string) (roomID string, layoutRaw []byte, err error) {
+// LookupHistorySnapshot 从 roomengine_grid_snapshot_history 拉指定 (room_id, snapshot_date) 的 payload。
+// 用于 playback FromDate：把那一天的 grid 状态作为演化起点。
+// found=false 表示该房间该日期没有 snapshot（roomengine 当时未运行 / 该日尚未到 11:50 触发）。
+func LookupHistorySnapshot(ctx context.Context, db *sql.DB, roomID string, date time.Time) (payload []byte, layoutHash string, found bool, err error) {
 	q := `
-		SELECT r.room_id::text, r.layout_config::text
+		SELECT layout_hash, payload
+		FROM roomengine_grid_snapshot_history
+		WHERE room_id = $1::uuid AND snapshot_date = $2::date
+		LIMIT 1`
+	err = db.QueryRowContext(ctx, q, roomID, date.Format("2006-01-02")).Scan(&layoutHash, &payload)
+	if err == sql.ErrNoRows {
+		return nil, "", false, nil
+	}
+	if err != nil {
+		return nil, "", false, err
+	}
+	return payload, layoutHash, true, nil
+}
+
+// LookupRoomLayout 从 rooms 表查 device_uid 绑定房间的 layout_config（JSONB raw bytes）+ room_name
+// 仅 API 模式用（CLI 模式直接读 layout 文件，roomName 留空）
+func LookupRoomLayout(ctx context.Context, db *sql.DB, deviceUID string) (roomID, roomName string, layoutRaw []byte, err error) {
+	q := `
+		SELECT r.room_id::text, COALESCE(r.room_name, ''), r.layout_config::text
 		FROM devices d
 		JOIN rooms r ON r.room_id = d.bound_room_id
 		WHERE d.device_uid = $1
 		LIMIT 1`
 	var layoutStr sql.NullString
-	if err := db.QueryRowContext(ctx, q, deviceUID).Scan(&roomID, &layoutStr); err != nil {
-		return "", nil, err
+	if err := db.QueryRowContext(ctx, q, deviceUID).Scan(&roomID, &roomName, &layoutStr); err != nil {
+		return "", "", nil, err
 	}
 	if !layoutStr.Valid || layoutStr.String == "" {
-		return roomID, nil, fmt.Errorf("device %s bound room has no layout_config", deviceUID)
+		return roomID, roomName, nil, fmt.Errorf("device %s bound room has no layout_config", deviceUID)
 	}
-	return roomID, []byte(layoutStr.String), nil
+	return roomID, roomName, []byte(layoutStr.String), nil
 }
 
 // Row iot_timeseries 单行（Run 内部消费）

@@ -61,6 +61,11 @@ type Options struct {
 	// （cycle k 时间戳 += k * windowDuration），grid 状态在 cycle 间保留累积。
 	// 用途：检查 PR-15.3 时间门控（15 天）等长期累积规则；3 cycles × 3 天 ≈ 9 天等效数据。
 	Cycles int
+
+	// FromDate 非零时，从 roomengine_grid_snapshot_history (room_id, snapshot_date=FromDate)
+	// 加载历史 snapshot 并 DecodeSnapshot 灌回 grid，作为演化起点（不再是空白 baseline）。
+	// layout_hash 不匹配（中途人工编辑过 layout）→ 警告 + fallback baseline。
+	FromDate time.Time
 }
 
 // AlarmInjector playback 在每帧 nowMs 推进后调用；
@@ -193,6 +198,53 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
+	// PR-2: 从 history 表灌入"从某天起步"的 grid 状态（区别于空白 baseline）
+	startLabel := "T=0 baseline (layout prior only)"
+	startTitleSuffix := " | T=0 baseline"
+	if !opts.FromDate.IsZero() && opts.DB != nil {
+		// 保证 from 注入路径无论调用方是否传 Logger 都能写出可观察日志（否则静默回退到 baseline 难排查）
+		plog := opts.Logger
+		if plog == nil {
+			plog, _ = zap.NewDevelopment()
+		}
+		payload, snapHash, found, err := LookupHistorySnapshot(ctx, opts.DB, opts.RoomID, opts.FromDate)
+		expectHash := roomengine.LayoutHash(cfg)
+		switch {
+		case err != nil:
+			plog.Warn("playback history snapshot lookup failed; fallback to baseline",
+				zap.String("room_id", opts.RoomID),
+				zap.String("from_date", opts.FromDate.Format("2006-01-02")),
+				zap.Error(err))
+		case !found:
+			plog.Warn("playback history snapshot not found; fallback to baseline",
+				zap.String("room_id", opts.RoomID),
+				zap.String("from_date", opts.FromDate.Format("2006-01-02")))
+		case snapHash != expectHash:
+			plog.Warn("playback history snapshot layout_hash mismatch; fallback to baseline",
+				zap.String("room_id", opts.RoomID),
+				zap.String("from_date", opts.FromDate.Format("2006-01-02")),
+				zap.String("snap_hash", snapHash),
+				zap.String("expect_hash", expectHash))
+		default:
+			snap, derr := roomengine.UnmarshalSnapshot(payload)
+			if derr != nil {
+				plog.Warn("playback history snapshot unmarshal failed; fallback to baseline",
+					zap.String("room_id", opts.RoomID), zap.Error(derr))
+				break
+			}
+			if derr := roomengine.DecodeSnapshot(snap, grid); derr != nil {
+				plog.Warn("playback history snapshot decode failed; fallback to baseline",
+					zap.String("room_id", opts.RoomID), zap.Error(derr))
+				break
+			}
+			startLabel = "T=0 history " + opts.FromDate.Format("2006-01-02")
+			startTitleSuffix = " | from " + opts.FromDate.Format("2006-01-02")
+			plog.Info("playback started from history snapshot",
+				zap.String("room_id", opts.RoomID),
+				zap.String("from_date", opts.FromDate.Format("2006-01-02")))
+		}
+	}
+
 	// PR-9.1: 灌入历史人类反馈到 grid（让 SVG overlay 可展示真实反馈层）
 	if opts.IngestHistoricalFeedback && opts.DB != nil {
 		ingestLogger := opts.Logger
@@ -211,16 +263,17 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
-	// 3. 起始快照
+	// 3. 起始快照（FromDate 注入成功时显示 history 标签；否则保持 baseline）
 	snapshots := []Snapshot{
 		{
 			TsMs: 0,
 			SVG: roomengine.BuildRoomSVG(grid, cfg.Radar, cfg.WallPolygon, cfg.Enters, opts.RoomID,
 				roomengine.RoomSVGOptions{
 					ShowFOV: true, Sleepads: cfg.Sleepads,
-					TitleSuffix: " | T=0 baseline",
+					TitleSuffix: startTitleSuffix,
+					RoomName:    cfg.RoomName,
 				}),
-			Label: "T=0 baseline (layout prior only)",
+			Label: startLabel,
 		},
 	}
 
@@ -485,6 +538,7 @@ func takeSnapWithPaths(grid *roomengine.RoomGrid, cfg roomengine.RoomConfig,
 				Sleepads:            cfg.Sleepads,
 				TrackPaths:          paths,
 				TitleSuffix:         " | " + t,
+				RoomName:            cfg.RoomName,
 			}),
 		Label: t,
 	}
