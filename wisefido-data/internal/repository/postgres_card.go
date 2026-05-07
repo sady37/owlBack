@@ -804,7 +804,42 @@ func (r *PostgresCardRepository) ListAllCardsForClear(ctx context.Context) ([]do
 	return out, rows.Err()
 }
 
+// ListOrphanCards 列出物理锚点（bed/unit/device）已不存在的孤儿卡。
+// card_id 一体化（=bed_id/unit_id/device_id）后，老 unit/bed 删除若没主动清 cards 行就会成孤儿。
+//
+// 孤儿判定：
+//   - ActiveBedCard: bed_id 在 beds 表已不存在
+//   - UnitCard:      unit_id 在 units 表已不存在
+//   - DeviceCard:    card_id（=device_id 复用）在 devices 表已不存在
+func (r *PostgresCardRepository) ListOrphanCards(ctx context.Context) ([]domain.CardSyncAffected, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT c.tenant_id::text, c.card_id::text, COALESCE(c.unit_id::text, '')
+		FROM cards c
+		WHERE
+		  (c.card_type = 'ActiveBedCard' AND (c.bed_id IS NULL OR NOT EXISTS (SELECT 1 FROM beds b WHERE b.bed_id = c.bed_id)))
+		  OR (c.card_type = 'UnitCard' AND (c.unit_id IS NULL OR NOT EXISTS (SELECT 1 FROM units u WHERE u.unit_id = c.unit_id)))
+		  OR (c.card_type = 'DeviceCard' AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.device_id = c.card_id))
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list orphan cards: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.CardSyncAffected
+	for rows.Next() {
+		var a domain.CardSyncAffected
+		if err := rows.Scan(&a.TenantID, &a.CardID, &a.UnitID); err != nil {
+			return nil, err
+		}
+		a.Op = "deleted"
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // ClearAllCards 清理全局所有卡片记录（删除所有租户的卡片）
+//
+// Deprecated: card_id 已与物理 UUID 一体化，启动用 ListOrphanCards + DeleteCard 精确清理；
+// 仅保留供 admin 工具 / 灾难恢复使用。
 func (r *PostgresCardRepository) ClearAllCards() error {
 	result, err := r.db.Exec("DELETE FROM cards")
 	if err != nil {
@@ -1029,8 +1064,31 @@ func (r *PostgresCardRepository) CreateCard(
 		}
 	}
 
+	// card_id 复用底层物理实体 UUID（持久量），让 cards 真正成为视图固化：
+	//   ActiveBedCard → card_id = bed_id     （每床一卡，bed_id UUID 跨重启稳定）
+	//   UnitCard      → card_id = unit_id    （公共区域卡，unit_id UUID 稳定）
+	//   DeviceCard    → card_id = device_id  （由 EnsureDeviceCard 路径处理，已经如此）
+	// 不是 hash derivation，是直接 alias 持久量 → 无 HIPAA re-identification 风险
+	// （UUID 本身是 PG gen_random_uuid 生成的随机值，非"about the individual"派生）。
+	// 重启后 unit/bed 不变 → card_id 也不变，业务表里现存的 card_id 引用全部仍有效。
+	var explicitCardID *string
+	switch cardType {
+	case "ActiveBedCard":
+		if bedID != nil && *bedID != "" {
+			explicitCardID = bedID
+		}
+	case "UnitCard":
+		if unitID != "" {
+			u := unitID
+			explicitCardID = &u
+		}
+	}
+
+	// ON CONFLICT (card_id) DO UPDATE 实现 idempotent UPSERT：
+	// 重启时同 bed/unit 已有 row 走 UPDATE 路径（保留 card_id），unit/bed 真删后再有同 UUID 复活才走 INSERT。
 	query := `
 		INSERT INTO cards (
+			card_id,
 			tenant_id,
 			branch_id,
 			card_type,
@@ -1042,13 +1100,29 @@ func (r *PostgresCardRepository) CreateCard(
 			resident_id,
 			devices,
 			residents
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		) VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		ON CONFLICT (card_id) DO UPDATE SET
+			card_type    = EXCLUDED.card_type,
+			bed_id       = EXCLUDED.bed_id,
+			unit_id      = EXCLUDED.unit_id,
+			branch_id    = EXCLUDED.branch_id,
+			card_name    = EXCLUDED.card_name,
+			card_address = EXCLUDED.card_address,
+			timezone     = EXCLUDED.timezone,
+			resident_id  = EXCLUDED.resident_id,
+			devices      = EXCLUDED.devices,
+			residents    = EXCLUDED.residents
 		RETURNING card_id
 	`
 
 	var cardID string
+	var explicitCardIDArg interface{}
+	if explicitCardID != nil {
+		explicitCardIDArg = *explicitCardID
+	}
 	err = r.db.QueryRow(
 		query,
+		explicitCardIDArg,
 		tenantID,
 		branchID,
 		cardType,

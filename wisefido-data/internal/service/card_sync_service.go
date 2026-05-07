@@ -319,7 +319,39 @@ func (s *CardSyncService) CreateAllCards(ctx context.Context, tenantID string) e
 	return nil
 }
 
+// CleanupOrphanCards 删除其物理锚点（bed/unit/device）已不存在的孤儿卡。
+// 每次 wisefido-data 启动时调用：card_id 一体化（=bed/unit/device）后，
+// 老 unit/bed 删除若没主动清 cards 行就会变成孤儿；本函数在启动时兜底清理。
+//
+// 删除前发 cardChange deleted（cardagg 清 Redis card:state:* + 内存 cache）。
+// 返回 (cleaned, err)。
+func (s *CardSyncService) CleanupOrphanCards(ctx context.Context) (int, error) {
+	affected, err := s.cardRepo.ListOrphanCards(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list orphan cards: %w", err)
+	}
+	cleaned := 0
+	for _, a := range affected {
+		// 先通知下游（cardagg DeleteCardState 同步清 Redis card:state:{cardID} Hash）
+		if err := s.emitCardChange(ctx, a); err != nil {
+			s.logger.Warn("emit orphan card deleted failed", zap.String("card_id", a.CardID), zap.Error(err))
+		}
+		if err := s.cardRepo.DeleteCard(a.TenantID, a.CardID); err != nil {
+			s.logger.Warn("delete orphan card failed", zap.String("card_id", a.CardID), zap.Error(err))
+			continue
+		}
+		cleaned++
+	}
+	if cleaned > 0 {
+		s.logger.Info("orphan cards cleaned on startup", zap.Int("count", cleaned))
+	}
+	return cleaned, nil
+}
+
 // ClearAllCards 清理全局所有卡片记录（删除前对每张卡推送 config:card:stream deleted，供 cardagg 清缓存）
+//
+// Deprecated: card_id 已与底层物理 UUID 一体化（bed/unit/device），不再需要启动重建。
+// 仅保留供 admin 工具 / 灾难恢复使用；常规启动路径已切到 CleanupOrphanCards。
 func (s *CardSyncService) ClearAllCards(ctx context.Context) error {
 	affected, err := s.cardRepo.ListAllCardsForClear(ctx)
 	if err != nil {

@@ -561,10 +561,16 @@ func main() {
 				logger.Warn("Failed to publish configCard reset", zap.Error(err))
 			}
 
-			// 初始化以当前 unit 为准重建卡片，不基于库里已有卡（重启后 unit 可能已变化）
-			if err := cardSyncService.ClearAllCards(ctx); err != nil {
-				logger.Warn("Failed to clear all cards before sync", zap.Error(err))
-				return
+			// card_id 已与底层物理实体 UUID 一体化（ActiveBedCard.card_id=bed_id, UnitCard.card_id=unit_id,
+			// DeviceCard.card_id=device_id），CreateCard 改为 idempotent UPSERT。重启时 unit/bed/device
+			// 不变 → 同 card_id 走 UPDATE 路径，业务表里现存的 card_id 引用全部仍有效。
+			//
+			// 启动 orphan cleanup：物理锚点（bed/unit/device）已不存在的 card 行兜底删除，
+			// 同时通过 emitCardChange 通知 cardagg 清 Redis card:state:* 防孤儿键 leak。
+			if cleaned, err := cardSyncService.CleanupOrphanCards(ctx); err != nil {
+				logger.Warn("CleanupOrphanCards failed", zap.Error(err))
+			} else if cleaned > 0 {
+				logger.Info("Orphan cards cleaned on startup", zap.Int("count", cleaned))
 			}
 
 			// 获取所有活跃租户
