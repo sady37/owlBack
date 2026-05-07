@@ -77,6 +77,19 @@ func snapshotName(data map[string]interface{}, nameKey, legacyKey string) *strin
 	return stringPtrFromData(data, legacyKey)
 }
 
+// uuidPtrFromData 按优先级 keys 取 string 字段，验证是 UUID 格式后返回（非 UUID/空值返回 nil，让列保 NULL）。
+func uuidPtrFromData(data map[string]interface{}, keys ...string) *string {
+	for _, k := range keys {
+		if p := stringPtrFromData(data, k); p != nil {
+			// 简单 UUID 长度校验（36 字符 + 4 个 dash），非严格但够过滤数字 / 短串
+			if len(*p) == 36 && (*p)[8] == '-' && (*p)[13] == '-' && (*p)[18] == '-' && (*p)[23] == '-' {
+				return p
+			}
+		}
+	}
+	return nil
+}
+
 func inferTopicTypeFromDataKey(data map[string]interface{}) *string {
 	dk, ok := data["data_key"].(string)
 	if !ok || dk == "" {
@@ -199,7 +212,17 @@ func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, er
 	}
 
 	deviceType := stringPtrFromData(data, "device_type")
-	cardID := stringPtrFromData(data, "card_id")
+
+	// Where (snapshot)：仅 alarm/event 流写 room_id（5W where 维度，低频但需法律级永久 snapshot）。
+	// monitor 流是 hot path 高频时序（每秒每雷达 multi tracks），不写 room_id 以省存储；
+	// 按 room 维度查 monitor 时 JOIN devices.bound_room_id 取最新（device 极少跨房间重绑）。
+	// bed_id 同理仅 alarm/event 用。
+	// 不再写 card_id（card 是视图，view-level ID 不入业务表）。
+	var roomID, bedID *string
+	if topicType != nil && (*topicType == "alarm" || *topicType == "event") {
+		roomID = uuidPtrFromData(data, "semantic_location", "room_id")
+		bedID = uuidPtrFromData(data, "bed_id")
+	}
 
 	branchName := snapshotName(data, "branch_name", "branch_id")
 	buildingName := snapshotName(data, "building_name", "building_id")
@@ -214,19 +237,21 @@ func (r *IoTTimeSeriesRepository) Insert(data map[string]interface{}) (int64, er
 
 	const q = `
 		INSERT INTO iot_timeseries (
-			tenant_id, device_id, device_uid, device_type, card_id,
+			tenant_id, device_id, device_uid, device_type,
 			"timestamp", topic_type, category,
 			branch_name, building_name, unit_name, room_name, bed_name,
+			room_id, bed_id,
 			data_value
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
 		) RETURNING id`
 
 	var id int64
 	err = r.db.QueryRow(q,
-		tenantID, deviceIDPtr, deviceUID, deviceType, cardID,
+		tenantID, deviceIDPtr, deviceUID, deviceType,
 		timestampMs, topicType, category,
 		branchName, buildingName, unitName, roomName, bedName,
+		roomID, bedID,
 		dataValueJSON,
 	).Scan(&id)
 	if err != nil {

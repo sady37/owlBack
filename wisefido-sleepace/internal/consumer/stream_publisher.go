@@ -87,6 +87,14 @@ func (p *StreamPublisher) publish(ctx context.Context, stream rediscommon.Stream
 	if msg.Producer == "" {
 		msg.Producer = rediscommon.BuildDeviceProducer(msg.DeviceID)
 	}
+	// SemanticLocation: 用 cardMappingService cache（server 启动时 load，server down 仍存活）
+	// 自动填 device 当前 room_id；让 envelope 的 where 维度在 producer 端齐全，
+	// 边缘自治时本 unit 的 device 仍能据此本地联动。
+	if msg.SemanticLocation == "" && p.cardMappingSvc != nil && msg.DeviceUID != "" {
+		if info, err := p.cardMappingSvc.GetCardInfo(ctx, msg.DeviceUID); err == nil && info != nil {
+			msg.SemanticLocation = info.RoomID
+		}
+	}
 	if msg.SubjectEntity == "" {
 		p.logger.Error("subject_entity is empty, message dropped",
 			zap.String("stream", stream.Name),

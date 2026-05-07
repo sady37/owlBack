@@ -133,6 +133,14 @@ func (p *StreamPublisher) publishObservation(ctx context.Context, stream redisco
 	if msg.Producer == "" {
 		msg.Producer = rediscommon.BuildDeviceProducer(msg.DeviceID)
 	}
+	// SemanticLocation: 用 cardMappingService cache（server 启动时 load，server down 仍存活）
+	// 自动填 device 当前 room_id；让 envelope 的 where 维度在 producer 端就齐全，
+	// 边缘自治时本 unit 的 device 仍能据此本地联动。
+	if msg.SemanticLocation == "" && p.cardMappingSvc != nil && msg.DeviceUID != "" {
+		if cdi, _ := p.cardMappingSvc.GetCardIDByDeviceUID(ctx, msg.DeviceUID); cdi != nil {
+			msg.SemanticLocation = cdi.RoomID
+		}
+	}
 	if strings.TrimSpace(msg.SubjectEntity) == "" {
 		if p.logger != nil {
 			QinglanHotPathLog(p.logger, "skip iot publish: empty subject_entity",

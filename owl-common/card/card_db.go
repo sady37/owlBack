@@ -132,7 +132,7 @@ func (c *CardDB) LookupCard(ctx context.Context, deviceKey string) (*DeviceBasel
 		       COALESCE(dev.monitoring_enabled, false),
 		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, ''),
 		       COALESCE(c.bed_id::text, ''),
-		       COALESCE(bd.room_id::text, '')
+		       COALESCE(bd.room_id::text, dev.bound_room_id::text, '')
 		FROM resolved r
 		LEFT JOIN device_store ds ON `+pgUIDNormExpr("ds.device_uid")+` = `+pgUIDNormExpr("r.uid")+`
 		, cards c
@@ -239,6 +239,10 @@ func (c *CardDB) lookupMappingByDeviceInCardDevices(ctx context.Context, deviceK
 		BusinessAccess:    BusinessAccessDefault,
 		MonitoringEnabled: false,
 	}
+	// RoomID 取值优先级（兜底链）：
+	//   1. beds.room_id (via c.bed_id)  — ActiveBedCard 走床→房路径
+	//   2. devices.bound_room_id        — UnitCard / DeviceCard 走 device 自身绑定（公共设备等无床）
+	// 任何 device_type 都能可靠取到 RoomID，让 envelope.SemanticLocation 100% 填充。
 	err := c.db.QueryRowContext(ctx, `
 		SELECT d.device_uid, c.tenant_id, c.branch_id,
 		       COALESCE(c.unit_id::text, ''), c.card_id::text,
@@ -248,7 +252,7 @@ func (c *CardDB) lookupMappingByDeviceInCardDevices(ctx context.Context, deviceK
 		       COALESCE(dev.monitoring_enabled, false),
 		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, ''),
 		       COALESCE(c.bed_id::text, ''),
-		       COALESCE(bd.room_id::text, '')
+		       COALESCE(bd.room_id::text, dev.bound_room_id::text, '')
 		FROM cards c
 		LEFT JOIN beds bd ON bd.bed_id = c.bed_id,
 		     jsonb_to_recordset(c.devices) AS d(device_uid text, device_id text)
@@ -309,13 +313,14 @@ func (c *CardDB) LookupDeviceOnly(ctx context.Context, deviceKey string) (*Devic
 		       COALESCE(ds.allow_access, false),
 		       d.business_access,
 		       d.monitoring_enabled,
-		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, '')
+		       COALESCE(ds.device_code, ''), COALESCE(ds.device_type, ''),
+		       COALESCE(d.bound_room_id::text, '')
 		FROM resolved r
 		JOIN devices d ON `+pgUIDNormExpr("d.device_uid")+` = `+pgUIDNormExpr("r.uid")+`
 		LEFT JOIN device_store ds ON `+pgUIDNormExpr("ds.device_uid")+` = `+pgUIDNormExpr("r.uid")+`
 		LIMIT 1
 	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.DeviceID,
-		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType)
+		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType, &m.RoomID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not in devices table: %s", deviceKey)

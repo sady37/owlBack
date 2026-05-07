@@ -23,6 +23,9 @@ type AlarmInsertParams struct {
 	TriggeredAt time.Time
 	TriggerData json.RawMessage // JSONB
 	Metadata    json.RawMessage // JSONB
+	// Where（trigger-time snapshot；空则由 InsertAlarmAndUpdateCard 从 device.bound_room_id / bed.room_id → rooms.unit_id 兜底）
+	RoomID string // envelope.SemanticLocation 优先；为空时自动反查
+	UnitID string // 自动从 room → rooms.unit_id 推导（caller 通常无需填）
 }
 
 // AlarmInsertResult INSERT 后返回的结果
@@ -137,19 +140,38 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 	params.Metadata = snapshotBindingToMetadata(ctx, tx, params.TenantID, params.DeviceID, params.Metadata)
 	params.AlarmLevel = alarm.NormalizeAlarmLevel(params.AlarmLevel)
 
+	// Where snapshot：room_id / unit_id 在 trigger 时落库（持久 5W where 维度）。
+	// caller 提供的 RoomID（来自 envelope.SemanticLocation）优先；缺则从 device 物理绑定兜底反查。
+	if params.RoomID == "" && params.DeviceID != "" {
+		_ = tx.QueryRowContext(ctx, `
+			SELECT COALESCE(d.bound_room_id, b.room_id)::text
+			FROM devices d
+			LEFT JOIN beds b ON b.bed_id = d.bound_bed_id
+			WHERE d.device_id = $1::uuid
+		`, params.DeviceID).Scan(&params.RoomID)
+	}
+	if params.UnitID == "" && params.RoomID != "" {
+		_ = tx.QueryRowContext(ctx,
+			`SELECT unit_id::text FROM rooms WHERE room_id = $1::uuid`,
+			params.RoomID,
+		).Scan(&params.UnitID)
+	}
+
 	// 1. INSERT alarm_events
 	var eventID string
 	insertSQL := `
 		INSERT INTO alarm_events (
-			tenant_id, device_id, event_type, category, alarm_level,
+			tenant_id, device_id, room_id, unit_id, event_type, category, alarm_level,
 			alarm_status, triggered_at, trigger_data, metadata,
 			notified_users, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8, '[]'::jsonb,
+		) VALUES ($1, $2, NULLIF($3,'')::uuid, NULLIF($4,'')::uuid, $5, $6, $7,
+			'active', $8, $9, $10, '[]'::jsonb,
 			CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		RETURNING event_id
 	`
 	err = tx.QueryRowContext(ctx, insertSQL,
-		params.TenantID, params.DeviceID, params.EventType, params.Category, params.AlarmLevel,
+		params.TenantID, params.DeviceID, params.RoomID, params.UnitID,
+		params.EventType, params.Category, params.AlarmLevel,
 		params.TriggeredAt, params.TriggerData, params.Metadata,
 	).Scan(&eventID)
 	if err != nil {

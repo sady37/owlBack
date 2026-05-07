@@ -53,7 +53,7 @@ func (r *PostgresIoTTimeSeriesRepository) queryPlaybackRawRows(ctx context.Conte
 	}
 	q := `
 SELECT its.id, its.tenant_id::text, its.device_id::text, its.device_uid,
-its.device_type, its.card_id, its."timestamp", its.topic_type, its.category,
+its.device_type, its.room_id::text, its.bed_id::text, its."timestamp", its.topic_type, its.category,
 its.branch_name, its.building_name, its.unit_name, its.room_name, its.bed_name,
 its.data_value
 FROM iot_timeseries its
@@ -75,7 +75,7 @@ LIMIT $5`
 		var (
 			id                                                       int64
 			tid, did, duid                                           sql.NullString
-			deviceType, cardID                                       sql.NullString
+			deviceType, roomID, bedID                                sql.NullString
 			tsMs                                                     int64
 			topicType, category                                      sql.NullString
 			branchName, buildingName, unitName, roomName, bedName sql.NullString
@@ -83,7 +83,7 @@ LIMIT $5`
 		)
 		if err := rows.Scan(
 			&id, &tid, &did, &duid,
-			&deviceType, &cardID, &tsMs, &topicType, &category,
+			&deviceType, &roomID, &bedID, &tsMs, &topicType, &category,
 			&branchName, &buildingName, &unitName, &roomName, &bedName,
 			&dataVal,
 		); err != nil {
@@ -113,8 +113,11 @@ LIMIT $5`
 		if deviceType.Valid {
 			row["device_type"] = deviceType.String
 		}
-		if cardID.Valid {
-			row["card_id"] = cardID.String
+		if roomID.Valid {
+			row["room_id"] = roomID.String
+		}
+		if bedID.Valid {
+			row["bed_id"] = bedID.String
 		}
 		out = append(out, row)
 	}

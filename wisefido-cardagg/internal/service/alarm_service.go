@@ -243,6 +243,7 @@ func (s *AlarmService) PersistAlarmAndPublish(ctx context.Context, msg *redis.Io
 		AlarmLevel:  level,
 		TriggeredAt: triggeredAt,
 		TriggerData: triggerData,
+		RoomID:      msg.SemanticLocation, // envelope where 维度；空则 InsertAlarmAndUpdateCard 内部从 device.bound_room_id 兜底
 	})
 	if err != nil {
 		s.logger.Warn("insert alarm failed", zap.String("cid", msg.SubjectEntity), zap.Error(err))
