@@ -40,8 +40,13 @@ type AlarmEventFilters struct {
 	BranchTag *string // 分支标签（通过 device_id JOIN devices → beds/rooms → units → units.branch_tag 获取）
 	UnitID    *string // 单元ID（通过 device_id JOIN devices → beds/rooms → units 获取）
 
+	// 5W where 直接过滤（alarm_events 表持久化的 trigger 时刻 snapshot，commit 4a854cb 起可用，
+	// 不依赖 devices 当前 binding，能 scope 到"那一刻该 device 在哪个 unit/room"）
+	EventUnitID *string // 直接过滤 ae.unit_id（5W where snapshot）
+	EventRoomID *string // 直接过滤 ae.room_id（5W where snapshot）
+
 	// 设备过滤
-	DeviceID     *string   // 设备ID（直接过滤）
+	DeviceID     *string   // 设备ID（直接过滤 ae.device_id）
 	DeviceName   *string   // 设备名称（通过 device_id JOIN devices.device_name 获取，支持模糊匹配）
 	DeviceIDs    []string  // 设备ID列表（IN 查询）
 

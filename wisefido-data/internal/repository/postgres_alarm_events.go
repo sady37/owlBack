@@ -46,6 +46,18 @@ func (r *PostgresAlarmEventsRepository) buildWhereClause(tenantID string, filter
 		*argN++
 	}
 
+	// 5W where 直接过滤（ae.unit_id / ae.room_id snapshot，不经 devices JOIN）
+	if filters.EventUnitID != nil {
+		where = append(where, fmt.Sprintf("ae.unit_id = $%d", *argN))
+		*args = append(*args, *filters.EventUnitID)
+		*argN++
+	}
+	if filters.EventRoomID != nil {
+		where = append(where, fmt.Sprintf("ae.room_id = $%d", *argN))
+		*args = append(*args, *filters.EventRoomID)
+		*argN++
+	}
+
 	// 设备过滤
 	if filters.DeviceID != nil {
 		where = append(where, fmt.Sprintf("ae.device_id = $%d", *argN))

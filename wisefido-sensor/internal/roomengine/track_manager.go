@@ -1145,6 +1145,17 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		// PR5c: 发布到 iot:alarm:stream，category=alarm.Fall（cardagg 现有 Fall handler 接管）。
 		// fall alarm 已是确认态——不再发 track_confidence/score（确信值无需信号），
 		// 子类型通过 Reason 区分（"lost_track"），fall 严重度进 Evidence.fall_score。
+		//
+		// engine_lost_fall 的 nowMs 是"engine 推断时刻"（= 实际跌倒后 wait_ms 才确认）。
+		// alarm.triggered_at 必须用"实际发生时刻"才能让用户在列表按时间找到这条 fall，
+		// 否则列表显示 08:35 / replay 中心 08:30 二者对不上。
+		// anchor：frozen_start_ms 优先（track frozen ≈ 跌倒邻近时刻），
+		// 否则 nowMs - waitMs - 30s（最后活跃时刻 -30s 给 context）。
+		// engine 推断时刻保留在 Evidence.engine_fire_ms + 日志 ts_ms 里供审计。
+		replayAnchorMs := p.FrozenStartMs
+		if replayAnchorMs <= 0 {
+			replayAnchorMs = nowMs - waitMs - 30_000
+		}
 		tm.emitAIAlarm(AIPayload{
 			DeviceID: p.DeviceID,
 			RoomID:   p.RoomID,
@@ -1156,15 +1167,17 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			},
 			Reason: ReasonLostTrack,
 			Evidence: map[string]interface{}{
-				"context":         "track_lost_no_exit_room_no_recovery",
-				"fall_score":      p.LastScore,
-				"frozen_start_ms": p.FrozenStartMs,
-				"spatial_jump":    p.SpatialJump,
-				"cell_area_type":  int(p.LastCellArea),
-				"wait_ms":         waitMs,
-				"last_verdict":    int(p.LastVerdict),
+				"context":          "track_lost_no_exit_room_no_recovery",
+				"fall_score":       p.LastScore,
+				"frozen_start_ms":  p.FrozenStartMs,
+				"spatial_jump":     p.SpatialJump,
+				"cell_area_type":   int(p.LastCellArea),
+				"wait_ms":          waitMs,
+				"last_verdict":     int(p.LastVerdict),
+				"replay_anchor_ms": replayAnchorMs,
+				"engine_fire_ms":   nowMs, // 引擎推断时刻（审计）
 			},
-		}, alarm.Fall, nowMs)
+		}, alarm.Fall, replayAnchorMs) // alarm Timestamp = anchor，让列表显示真正发生时刻
 		tm.logger.Info("real_fall",
 			zap.String("device_uid", p.DeviceID),
 			zap.Int("track_id", p.OriginalTrackID),
@@ -1177,7 +1190,8 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			zap.Bool("spatial_jump", p.SpatialJump),
 			zap.Int64("wait_ms", waitMs),
 			zap.Int("x", p.LastX), zap.Int("y", p.LastY), zap.Int("z", p.LastZ),
-			zap.Int64("ts_ms", nowMs),
+			zap.Int64("anchor_ms", replayAnchorMs), // = alarm.triggered_at
+			zap.Int64("ts_ms", nowMs),              // engine 推断时刻
 		)
 		out := TrackOutput{
 			TrackID:  p.OriginalTrackID,
@@ -1387,16 +1401,18 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 				},
 				Reason: ReasonSleepadRadarConflict,
 				Evidence: map[string]interface{}{
-					"context":      "sleepad_leftbed_radar_still_on_bed",
-					"fall_score":   scoreVal,
-					"radar_verdict": int(verdict),
-					"sleepad_uid":  s.DeviceUID,
-					"had_hr_rr":    s.LeftBedHadHRRR,
-					"max_people":   s.LeftBedMaxPeople,
-					"wait_sec":     waitSec,
-					"leftbed_ms":   s.LeftBedAtMs,
+					"context":          "sleepad_leftbed_radar_still_on_bed",
+					"fall_score":       scoreVal,
+					"radar_verdict":    int(verdict),
+					"sleepad_uid":      s.DeviceUID,
+					"had_hr_rr":        s.LeftBedHadHRRR,
+					"max_people":       s.LeftBedMaxPeople,
+					"wait_sec":         waitSec,
+					"leftbed_ms":       s.LeftBedAtMs,
+					"replay_anchor_ms": s.LeftBedAtMs, // sleepad LeftBed 时刻 = 跌倒矛盾起点
+					"engine_fire_ms":   nowMs,         // 引擎确认时刻（审计）
 				},
-			}, alarm.Fall, nowMs)
+			}, alarm.Fall, s.LeftBedAtMs) // alarm Timestamp = LeftBed 时刻
 			tm.logger.Info("real_fall",
 				zap.String("device_uid", deviceID),
 				zap.String("kind", "engine_silent_leftbed"),
@@ -1409,7 +1425,8 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 				zap.Int("wait_sec", waitSec),
 				zap.Int64("leftbed_ms", s.LeftBedAtMs),
 				zap.Int("x", x), zap.Int("y", y), zap.Int("z", z),
-				zap.Int64("ts_ms", nowMs),
+				zap.Int64("anchor_ms", s.LeftBedAtMs), // = alarm.triggered_at
+				zap.Int64("ts_ms", nowMs),             // engine 推断时刻
 			)
 			out = append(out, TrackOutput{
 				DeviceID: deviceID,

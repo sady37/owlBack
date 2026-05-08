@@ -44,9 +44,15 @@ func parseArrayParam(q map[string][]string, key, altKey string) []string {
 // ServeHTTP 实现 http.Handler 接口
 func (h *AlarmEventHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 路由分发
+	//
+	// 两个独立入口（防 cross-card event leak）：
+	//   GET /admin/api/v1/alarm-events           全局列表，按 role 过滤；服务 AlarmRecord.vue
+	//   GET /admin/api/v1/alarm-events/by-card   严格 scope（5W 直接 / card 反查）；缺 scope → 400
+	//                                            服务 Detail / WaveMonitor / Overview-RePlay
 	path := r.URL.Path
 	switch {
-	// ListAlarmEvents
+	case path == "/admin/api/v1/alarm-events/by-card" && r.Method == http.MethodGet:
+		h.ScopedListAlarmEvents(w, r)
 	case path == "/admin/api/v1/alarm-events" && r.Method == http.MethodGet:
 		h.ListAlarmEvents(w, r)
 	// HandleAlarmEvent
@@ -67,73 +73,72 @@ func (h *AlarmEventHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ListAlarmEvents 查询报警事件列表
 // ============================================
 
-// ListAlarmEvents 查询报警事件列表
-func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+// parseListAlarmEventsRequest 解析查询参数（两个入口共用）。
+// 第二返回值 ok=false 表示已经向 client 写入 4xx，调用方直接 return。
+func (h *AlarmEventHandler) parseListAlarmEventsRequest(w http.ResponseWriter, r *http.Request) (service.ListAlarmEventsRequest, bool) {
+	var req service.ListAlarmEventsRequest
 
 	tenantID, ok := h.base.tenantIDFromReq(w, r)
 	if !ok {
-		return
+		return req, false
 	}
 
 	currentUserID := r.Header.Get("X-User-Id")
 	if currentUserID == "" {
 		writeJSON(w, http.StatusOK, Fail("user ID is required"))
-		return
+		return req, false
 	}
 
 	currentUserRole := r.Header.Get("X-User-Role")
 	if currentUserRole == "" {
 		writeJSON(w, http.StatusOK, Fail("user role is required"))
-		return
+		return req, false
 	}
 
-	// 解析查询参数
-	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	page := parseInt(r.URL.Query().Get("page"), 1)
-	pageSize := parseInt(r.URL.Query().Get("page_size"), 20)
+	q := r.URL.Query()
+	status := strings.TrimSpace(q.Get("status"))
+	page := parseInt(q.Get("page"), 1)
+	pageSize := parseInt(q.Get("page_size"), 20)
 	if pageSize > 100 {
 		pageSize = 100
 	}
 
-	// 时间范围过滤
 	var alarmTimeStart, alarmTimeEnd *int64
-	if startStr := strings.TrimSpace(r.URL.Query().Get("alarm_time_start")); startStr != "" {
+	if startStr := strings.TrimSpace(q.Get("alarm_time_start")); startStr != "" {
 		if start, err := strconv.ParseInt(startStr, 10, 64); err == nil {
 			alarmTimeStart = &start
 		}
 	}
-	if endStr := strings.TrimSpace(r.URL.Query().Get("alarm_time_end")); endStr != "" {
+	if endStr := strings.TrimSpace(q.Get("alarm_time_end")); endStr != "" {
 		if end, err := strconv.ParseInt(endStr, 10, 64); err == nil {
 			alarmTimeEnd = &end
 		}
 	}
 
-	// 搜索参数（前端传 branch_name）
-	resident := strings.TrimSpace(r.URL.Query().Get("resident"))
-	branchTag := strings.TrimSpace(r.URL.Query().Get("branch_tag"))
+	resident := strings.TrimSpace(q.Get("resident"))
+	branchTag := strings.TrimSpace(q.Get("branch_tag"))
 	if branchTag == "" {
-		branchTag = strings.TrimSpace(r.URL.Query().Get("branch_name"))
+		branchTag = strings.TrimSpace(q.Get("branch_name"))
 	}
-	unitName := strings.TrimSpace(r.URL.Query().Get("unit_name"))
-	deviceName := strings.TrimSpace(r.URL.Query().Get("device_name"))
+	unitName := strings.TrimSpace(q.Get("unit_name"))
+	deviceName := strings.TrimSpace(q.Get("device_name"))
 
-	// 过滤参数（多选）：支持逗号分隔或重复键（axios 可能发 alarm_levels=3 或 alarm_levels[]=3）
-	q := r.URL.Query()
 	eventTypes := parseArrayParam(q, "event_types", "event_types[]")
 	categories := parseArrayParam(q, "categories", "categories[]")
 	alarmLevels := parseArrayParam(q, "alarm_levels", "alarm_levels[]")
 
-	// 关联过滤
-	cardID := strings.TrimSpace(r.URL.Query().Get("card_id"))
-	roomID := strings.TrimSpace(r.URL.Query().Get("room_id"))
+	cardID := strings.TrimSpace(q.Get("card_id"))
+	roomID := strings.TrimSpace(q.Get("room_id"))
 	var deviceIDs []string
-	if deviceIDsStr := strings.TrimSpace(r.URL.Query().Get("device_ids")); deviceIDsStr != "" {
+	if deviceIDsStr := strings.TrimSpace(q.Get("device_ids")); deviceIDsStr != "" {
 		deviceIDs = strings.Split(deviceIDsStr, ",")
 	}
 
-	// 构建请求
-	req := service.ListAlarmEventsRequest{
+	scopeUnitID := strings.TrimSpace(q.Get("scope_unit_id"))
+	scopeRoomID := strings.TrimSpace(q.Get("scope_room_id"))
+	scopeDeviceID := strings.TrimSpace(q.Get("scope_device_id"))
+
+	req = service.ListAlarmEventsRequest{
 		TenantID:        tenantID,
 		CurrentUserID:   currentUserID,
 		CurrentUserRole: currentUserRole,
@@ -141,7 +146,7 @@ func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Reque
 		AlarmTimeStart:  alarmTimeStart,
 		AlarmTimeEnd:    alarmTimeEnd,
 		Resident:        resident,
-		BranchName:      branchTag, // 使用 BranchName 字段（从查询参数 branch_name 获取）
+		BranchName:      branchTag,
 		UnitName:        unitName,
 		DeviceName:      deviceName,
 		EventTypes:      eventTypes,
@@ -150,19 +155,48 @@ func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Reque
 		CardID:          cardID,
 		DeviceIDs:       deviceIDs,
 		RoomID:          roomID,
+		ScopeUnitID:     scopeUnitID,
+		ScopeRoomID:     scopeRoomID,
+		ScopeDeviceID:   scopeDeviceID,
 		Page:            page,
 		PageSize:        pageSize,
 	}
+	return req, true
+}
 
-	// 调用 Service
-	resp, err := h.alarmEventService.ListAlarmEvents(ctx, req)
-	if err != nil {
-		h.logger.Error("ListAlarmEvents failed", zap.Error(err))
-		writeJSON(w, http.StatusOK, Fail(err.Error()))
+// ScopedListAlarmEvents：按 5W 严格 scope 查询。优先级：
+//   scope_unit_id + scope_room_id + scope_device_id   (alarm_events 直接列过滤，最快最精确)
+// > scope_unit_id + scope_room_id                     (alarm_events 直接列过滤，room 内全部设备)
+// > card_id / room_id / device_ids                    (反查 devices 兼容旧调用)
+//
+// scope 全空 → 400 Bad Request（不允许穿透到 role-based 宽过滤，这是 cross-card leak 根因）。
+func (h *AlarmEventHandler) ScopedListAlarmEvents(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	req, ok := h.parseListAlarmEventsRequest(w, r)
+	if !ok {
 		return
 	}
 
-	// 转换为旧 Handler 格式（对齐 GetAlarmEventsResult）
+	hasDirectScope := (req.ScopeUnitID != "" && req.ScopeRoomID != "") || req.ScopeDeviceID != ""
+	hasFallbackScope := req.CardID != "" || req.RoomID != "" || len(req.DeviceIDs) > 0
+	if !hasDirectScope && !hasFallbackScope {
+		writeJSON(w, http.StatusBadRequest, Fail(
+			"scope required: scope_unit_id+scope_room_id (+scope_device_id) or card_id or room_id or device_ids",
+		))
+		return
+	}
+
+	resp, err := h.alarmEventService.ListAlarmEvents(ctx, req)
+	if err != nil {
+		h.logger.Error("ScopedListAlarmEvents failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(buildAlarmEventsListPayload(resp)))
+}
+
+// buildAlarmEventsListPayload 把 service response 转换为前端 GetAlarmEventsResult 形态。
+func buildAlarmEventsListPayload(resp *service.ListAlarmEventsResponse) map[string]any {
 	items := make([]any, 0, len(resp.Items))
 	for _, item := range resp.Items {
 		itemMap := map[string]any{
@@ -175,8 +209,6 @@ func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Reque
 			"alarm_status": item.AlarmStatus,
 			"triggered_at": item.TriggeredAt,
 		}
-
-		// 处理信息
 		if item.HandledAt != nil {
 			itemMap["handled_at"] = *item.HandledAt
 		}
@@ -192,8 +224,6 @@ func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Reque
 		if item.HandlerName != nil {
 			itemMap["handler_name"] = *item.HandlerName
 		}
-
-		// 关联数据
 		if item.CardID != nil {
 			itemMap["card_id"] = *item.CardID
 		}
@@ -215,8 +245,6 @@ func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Reque
 		if item.ResidentNetwork != nil {
 			itemMap["resident_network"] = *item.ResidentNetwork
 		}
-
-		// 地址信息
 		if item.BranchID != nil {
 			itemMap["branch_id"] = *item.BranchID
 		}
@@ -250,8 +278,6 @@ func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Reque
 		if item.UnitTimezone != nil {
 			itemMap["unit_timezone"] = *item.UnitTimezone
 		}
-
-		// JSONB 字段
 		if item.TriggerData != nil {
 			itemMap["trigger_data"] = item.TriggerData
 		}
@@ -261,22 +287,39 @@ func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Reque
 		if item.Metadata != nil {
 			itemMap["metadata"] = item.Metadata
 		}
-
 		items = append(items, itemMap)
 	}
+	return map[string]any{
+		"items": items,
+		"pagination": map[string]any{
+			"size":  resp.Pagination.Size,
+			"page":  resp.Pagination.Page,
+			"count": resp.Pagination.Count,
+			"total": resp.Pagination.Total,
+		},
+	}
+}
 
-	// 分页信息
-	pagination := map[string]any{
-		"size":  resp.Pagination.Size,
-		"page":  resp.Pagination.Page,
-		"count": resp.Pagination.Count,
-		"total": resp.Pagination.Total,
+// ListAlarmEvents 查询报警事件列表（全局入口）
+//
+// 不强制 scope；admin 看 tenant 全部，staff 按 branch/unit，resident 按 bed/unit。
+// 注意：scope 参数（card_id/room_id/device_ids/scope_*）即使携带也仅生效在
+// service.ListAlarmEvents 内部已有的 fail-secure 反查路径上——本入口的语义
+// 是"全局列表"。需要严格 scope 的调用方请走 /admin/api/v1/alarm-events/by-card。
+func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	req, ok := h.parseListAlarmEventsRequest(w, r)
+	if !ok {
+		return
 	}
 
-	writeJSON(w, http.StatusOK, Ok(map[string]any{
-		"items":      items,
-		"pagination": pagination,
-	}))
+	resp, err := h.alarmEventService.ListAlarmEvents(ctx, req)
+	if err != nil {
+		h.logger.Error("ListAlarmEvents failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(buildAlarmEventsListPayload(resp)))
 }
 
 // ============================================

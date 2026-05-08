@@ -28,7 +28,10 @@ type ConfigPublisher interface {
 
 // AlarmEventService 报警事件服务接口
 type AlarmEventService interface {
-	// 查询报警事件列表（支持复杂过滤、跨表 JOIN、权限过滤）
+	// 查询报警事件列表（service 层共享核心；scope 校验在 HTTP handler 层做——
+	// /admin/api/v1/alarm-events           全局入口（role 过滤）
+	// /admin/api/v1/alarm-events/by-card   scope 严格入口（5W 直接 / card 反查）
+	// 见 alarm_event_handler.go）
 	ListAlarmEvents(ctx context.Context, req ListAlarmEventsRequest) (*ListAlarmEventsResponse, error)
 
 	// 处理报警事件（确认或解决）
@@ -103,6 +106,12 @@ type ListAlarmEventsRequest struct {
 	CardID    string   // 按卡片ID过滤（后端通过 card.unit_id + card.bed_id 反查 devices 表的物理位置绑定，得 device_ids）
 	DeviceIDs []string // 按设备ID过滤（精确指定，绕过 card → location → devices 推导）
 	RoomID    string   // 按 room 过滤（room_id → devices.bound_room_id 或 beds.room_id → bound_bed_id）
+
+	// 5W 直接 scope（仅在 ScopedListAlarmEvents 入口使用，其他入口忽略）：
+	// 优先级：UnitID + RoomID + DeviceID > UnitID + RoomID > CardID。
+	ScopeUnitID   string // ae.unit_id 直接过滤（5W where snapshot）
+	ScopeRoomID   string // ae.room_id 直接过滤（5W where snapshot）
+	ScopeDeviceID string // ae.device_id 直接过滤
 
 	// 分页
 	Page     int // 页码，默认 1
@@ -323,30 +332,62 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 		filters.AlarmLevels = normalizeAlarmLevelsForFilter(req.AlarmLevels)
 	}
 
+	// 5W 直接 scope（最快最精确，依赖 commit 4a854cb 起 alarm_events 持久化的 unit_id/room_id 列）：
+	// 优先级 ScopeUnitID + ScopeRoomID + ScopeDeviceID > ScopeUnitID + ScopeRoomID。
+	// 这条路径不依赖 devices 当前 binding，scope 严格 = "trigger 时刻 device 所在的那个 room"。
+	if req.ScopeUnitID != "" {
+		v := req.ScopeUnitID
+		filters.EventUnitID = &v
+	}
+	if req.ScopeRoomID != "" {
+		v := req.ScopeRoomID
+		filters.EventRoomID = &v
+	}
+	if req.ScopeDeviceID != "" {
+		v := req.ScopeDeviceID
+		filters.DeviceID = &v
+	}
+
 	// 关联过滤——优先级（精确度由高到低）：
 	//   1. req.DeviceIDs    显式 device_ids（如 WaveMonitor 用 canvas 当前 room 内设备）
 	//   2. req.RoomID       按 room 反查 devices（room 内 radar + bed 上 sleepad）
 	//   3. req.CardID       按 card 物理位置（unit + bed）反查 devices
 	// 不再用 cards.devices JSONB 快照（易变量）。
+	//
+	// 双轨语义（HTTP 路由层校验，见 alarm_event_handler.go）：
+	//   - /admin/api/v1/alarm-events 全局入口：不强制 scope；admin/staff role 自然 scope；
+	//     scope 解析失败仍 fail-secure 返回空（不 fall-through 到 role 宽过滤）
+	//   - /admin/api/v1/alarm-events/by-card scope 严格入口：handler 层校验 scope 至少一个
+	emptyResp := func() *ListAlarmEventsResponse {
+		return &ListAlarmEventsResponse{
+			Items: []*AlarmEventDTO{},
+			Pagination: PaginationDTO{
+				Size:  req.PageSize,
+				Page:  req.Page,
+				Count: 0,
+				Total: 0,
+			},
+		}
+	}
 	switch {
 	case len(req.DeviceIDs) > 0:
 		filters.DeviceIDs = req.DeviceIDs
 	case req.RoomID != "":
 		deviceIDs, err := s.getRoomDeviceIDs(ctx, req.TenantID, req.RoomID)
-		if err != nil {
-			s.logger.Warn("Failed to get room devices, ignoring room_id filter",
+		if err != nil || len(deviceIDs) == 0 {
+			s.logger.Warn("room_id resolved to no devices — fail-secure empty",
 				zap.String("room_id", req.RoomID), zap.Error(err))
-		} else {
-			filters.DeviceIDs = deviceIDs
+			return emptyResp(), nil
 		}
+		filters.DeviceIDs = deviceIDs
 	case req.CardID != "":
 		deviceIDs, err := s.getCardDeviceIDs(ctx, req.TenantID, req.CardID)
-		if err != nil {
-			s.logger.Warn("Failed to get card devices, ignoring card_id filter",
+		if err != nil || len(deviceIDs) == 0 {
+			s.logger.Warn("card_id resolved to no devices — fail-secure empty",
 				zap.String("card_id", req.CardID), zap.Error(err))
-		} else {
-			filters.DeviceIDs = deviceIDs
+			return emptyResp(), nil
 		}
+		filters.DeviceIDs = deviceIDs
 	}
 
 	// 权限过滤（根据用户角色）
@@ -1417,14 +1458,13 @@ func (s *alarmEventService) isResidentAssignedToUser(ctx context.Context, tenant
 // getCardDeviceIDs 通过 card 的物理位置（unit_id + bed_id）反查 devices 表得设备 ID 列表。
 //
 // 设计原则：cards.devices JSONB 是衍生快照（易变量，重启服务/卡片重绑会变），
-// 不应作为 alarm 查询的 scope 来源。改用持久物理量：
+// 不应作为 alarm 查询的 scope 来源。改用持久物理量。
 //
-//   - card.bed_id     → devices WHERE bound_bed_id = card.bed_id  （床上传感器，如 sleepad）
-//   - card.unit_id    → rooms WHERE unit_id → devices WHERE bound_room_id IN (...)
-//                       （房间内传感器，如 radar）
-//
-// 这样 alarm 查询 scope 严格 = "这个 card 物理覆盖范围内的设备"，不再因 card.devices JSON
-// stale / 跨房间快照导致跨 room 串入。
+// 卡类型严格 scope（防止跨 card leak，原 unit_id-fan-out 写法对 ActiveBedCard 太宽，
+// 会把同 unit 邻居房间的雷达全捞回来）：
+//   - ActiveBedCard（bed_id 非空）：bed sleepad + 该 bed 所在 room 的 radar，仅此而已。
+//   - UnitCard（bed_id 空 + unit_id 非空）：整 unit 全 rooms 的 radar（公共区域卡，意图如此）。
+//   - 都为空（DeviceCard / 异常）：返回空。
 func (s *alarmEventService) getCardDeviceIDs(ctx context.Context, tenantID, cardID string) ([]string, error) {
 	// Step 1: 取 card 的 unit_id / bed_id（物理锚点）
 	var unitID, bedID sql.NullString
@@ -1436,29 +1476,42 @@ func (s *alarmEventService) getCardDeviceIDs(ctx context.Context, tenantID, card
 		return nil, fmt.Errorf("failed to get card location anchors: %w", err)
 	}
 
-	// Step 2: 反查 devices 表中物理绑定到本 card 范围的所有设备
-	//   bound_bed_id = card.bed_id        → 床上传感器（sleepad）
-	//   bound_room_id IN (该 unit 下所有 room) → 房间内传感器（radar）
-	query := `
-		SELECT DISTINCT device_id::text
-		FROM devices
-		WHERE tenant_id = $1
-		  AND (
-		    ($2::uuid IS NOT NULL AND bound_bed_id = $2::uuid)
-		    OR ($3::uuid IS NOT NULL AND bound_room_id IN (
-		      SELECT room_id FROM rooms WHERE tenant_id = $1 AND unit_id = $3::uuid
-		    ))
-		  )
-	`
-	var bedIDArg, unitIDArg interface{}
-	if bedID.Valid {
-		bedIDArg = bedID.String
-	}
-	if unitID.Valid {
-		unitIDArg = unitID.String
+	var (
+		query string
+		args  []interface{}
+	)
+	switch {
+	case bedID.Valid:
+		// ActiveBedCard：bed sleepad + 该 bed 所在 room 的 radar（窄 scope，不 fan-out 整 unit）
+		query = `
+			SELECT DISTINCT device_id::text
+			FROM devices
+			WHERE tenant_id = $1
+			  AND (
+			    bound_bed_id = $2::uuid
+			    OR bound_room_id = (
+			      SELECT room_id FROM beds WHERE bed_id = $2::uuid AND tenant_id = $1
+			    )
+			  )
+		`
+		args = []interface{}{tenantID, bedID.String}
+	case unitID.Valid:
+		// UnitCard：整 unit 全 rooms 的 radar（公共区域卡）
+		query = `
+			SELECT DISTINCT device_id::text
+			FROM devices
+			WHERE tenant_id = $1
+			  AND bound_room_id IN (
+			    SELECT room_id FROM rooms WHERE tenant_id = $1 AND unit_id = $2::uuid
+			  )
+		`
+		args = []interface{}{tenantID, unitID.String}
+	default:
+		// 异常 card（无 bed 也无 unit）→ 空
+		return []string{}, nil
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, tenantID, bedIDArg, unitIDArg)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query devices by card location: %w", err)
 	}
