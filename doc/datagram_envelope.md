@@ -179,6 +179,112 @@ SELECT * FROM alarm_events WHERE device_addr <<= 'fd00:owl:1:112:42:300::/88'::i
 -- 跨 unit 范围 / branch 范围 / 整 tenant 范围 同样模式
 ```
 
+### 2.7 Subject 寻址（Mobile IPv6 风格）
+
+Devices 是 spatial 实体（雷达 / 床垫 钉在墙 / 床上不动），但 **resident / caregiver 是移动的"人"**。RFC 6275 Mobile IPv6 提供了天然模型：
+
+| Mobile IPv6 概念 | owl subject 对应 |
+|---|---|
+| **Home Address (HoA)** | 永久身份地址，stateless 派生（subject_id 由业务保证唯一） |
+| **Care-of Address (CoA)** | 当前位置 = 当前 tracking 该 subject 的 device 完整地址 |
+| **Binding Cache** | `(subject_id, hoA, coA, coa_since)` 表，分钟级更新 |
+| **Binding Update** | resident 进/离床、跨房间事件 → 更新 binding |
+
+业务查询 "subject 在哪 / 谁在 room X / device D 是否对应 caregiver C" 全部退化成 IPv6 prefix.Contains() 标准原语，**零自定义关系判断代码**。
+
+#### 2.7.1 编码：保留 branch=0xFF 作 subject namespace
+
+```
+spatial 地址（branch ≠ 0xFF）：
+fd00 : 0000 : TTTT : BB SS : UUUU : RR BB : DDDD DDDD
+                    └─┬─┘
+                   branch < 0xFF + site
+
+subject HoA（branch == 0xFF）：
+fd00 : 0000 : TTTT : FF KK : SSSS : 0000 : 0000 : 0000
+                    └─┬─┘  └─┬─┘  └────────── reserved 48 bit ──────────┘
+                  branch=FF subject_id (uint16)
+                  +kind     未来扩展 subject 子属性
+```
+
+各 subject 字段宽度与 spatial 对齐：
+
+```
+spatial:  tenant(16) | branch(8)  | site(8) | unit(16)        | room(8) | bed(8) | host(32)
+subject:  tenant(16) | 0xFF(8)    | kind(8) | subject_id(16)  | reserved(48)
+```
+
+`subject_id = uint16` → 65k subject per (tenant × kind)，远超任何 elder care 场景总人数。
+
+#### 2.7.2 SubjectKind 编码
+
+| Kind | 值 | 用途 | Phase A 状态 |
+|---|---|---|---|
+| `SubjectKindResident` | 0x01 | 住户 | ✓ HoA + 未来 CoA 接 binding cache |
+| `SubjectKindCaregiver` | 0x02 | 护工 | ⏳ 占位，业务不接线（详见 §2.7.5） |
+| 0x03..0xFE | 保留 | 未来 visitor / family / external_doctor / consultant | 未启用 |
+| 0x00 / 0xFF | 禁用 | 0xFF 与 branch 字节冲突；0x00 留作 unknown | 拒绝构造 |
+
+#### 2.7.3 Prefix 查询语义（标准 IPv6 longest-prefix-match）
+
+```
+"tenant 1 内任意 subject"      = fd00:0:1:FF00::/56
+"tenant 1 的所有 residents"    = fd00:0:1:FF01::/64
+"tenant 1 的所有 caregivers"   = fd00:0:1:FF02::/64
+"特定 resident 0x42"          = fd00:0:1:FF01:42::/128
+```
+
+#### 2.7.4 Mobile IPv6 业务收益（4 个具体例子）
+
+| 当前代码痛点 | Mobile IPv6 后变成 |
+|---|---|
+| "alarm 应通知谁的 caregiver" | `LookupCaregiverByCoAPrefix(unitPrefix)` 查 binding cache 一行 |
+| "resident X 最近 30min 在哪"（轨迹） | 历史 binding events 按 `traceid` 排序 |
+| "device D 是否绑定到 resident R 的床" | `bedPrefix.Contains(D) && bedPrefix.Contains(R.HoA)` |
+| "caregiver C 现在管辖的 unit" | `LongestPrefixMatch(C.CoA, unitPrefixes)` |
+
+#### 2.7.5 各类人物 / 数据的处理策略
+
+| 类型 | 物理在场景中 | 进 IPv6 体系？ | Phase A 处理 |
+|---|---|---|---|
+| **resident** | ✓ 床位/房间/单元 | ✓ Mobile IPv6 (HoA + CoA) | encoder 全功能；CoA binding cache 二期接 |
+| **caregiver** | ✓ 上班时在场 | ✓ kind=0x02 占位 | encoder 暴露 `BuildSubjectHoA(t, Caregiver, id)`，**业务不接线**；alarm 路由 / 访问权限沿用 user role 模型；DB 预留 subject_id / home_addr 列（NULL 允许） |
+| **admin / manager** | ✗ 远程登录 | ✗ 不进体系 | 沿用 UUID + role 在 user 表 |
+| **visitor** | ✓ 临时 | ✗ 不进体系 | 仅作为 monitor track 流的 anonymous person tracking |
+
+#### 2.7.6 caregiver 后期接入路径（不动 spatial 包）
+
+将来引入"caregiver 当前位置 + 班次跟踪"时，新增独立模块即可：
+
+```
++ caregiver_binding 表 (subject_id, coa, coa_since, on_shift)
++ binding-update service (消费 monitor track 流，识别 caregiver → 更新 CoA)
++ caregiver_id 在 track 流里识别（人脸 / 制服 / RFID — wisefido-ai 任务）
++ alarm 路由切到 LookupCaregiverByCoAPrefix
++ 访问权限切到 HoA-based ACL
+```
+
+**caregiver HoA 编码方案现在 frozen，未来零迁移成本**。
+
+#### 2.7.7 BIND DNS 集成（可选二期）
+
+subject 体系跟 spatial 共用 `ip6.arpa` 反向 zone：
+
+```
+正向：
+  alice.tenant1.owl.       AAAA = HoA fd00:0:1:ff01:42::    (永久)
+                          AAAA = CoA fd00:0:1:112:42:301:a2ac:d523  (动态 TTL=60s)
+
+反向：
+  ip6.arpa PTR (HoA addr)   → "alice.tenant1.owl."
+  ip6.arpa PTR (device CoA) → "device-Radar_D523.bed1.room3.unit42.tenant1.owl."
+
+业务查询 "alice 在哪？" = dig alice.tenant1.owl AAAA | tail -1
+                        = 一次 DNS 查询，BIND 缓存命中 < 1ms
+```
+
+DNS 解析独立于 owl 服务进程；future kea-DHCP 与 BIND DDNS 联动后自动维护。
+
 ---
 
 ## 3. CloudEvents Envelope 字段详解
