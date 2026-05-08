@@ -36,23 +36,38 @@ const (
 
 // IoTStreamMessage envelope（Phase A v2，TDPv2 三维度对齐）：
 //
-//   - Producer / SubjectEntity / SemanticLocation 显式 first-class
+//   - Producer / SubjectEntity / SpatialPath 显式 first-class
 //   - 历史 CardID 字段已弃用，subject 走 SubjectEntity
 //   - DeviceUID 仍保留（Phase D 移除）；wire 不再依赖物理 MAC/SN 做身份
+//
+// 5W where 演进（envelope_protocol_evolution.md）：
+//   - 旧字段 SemanticLocation（单一 room_id/unit_id 字符串）保留兜底，新代码不要再写
+//   - 新字段 SpatialPath / ScopePrefix（IPv6 风格） + RoomID / UnitID（first-class UUID）
+//   - 路径格式 "tenant.branch.building.floor.unit.room.bed" 7 段，缺级用空（".."）
+//   - ScopePrefix 1-7：producer 写到自己有的精度；consumer 用 prefix-match 决定订阅
 //
 // SubjectEntity 填写责任：
 //   - device-gateway（qinglan/sleepace）：必填——已绑卡=card_id；未绑卡=device_id 占位
 //   - sensor agent（wisefido-sensor 等 layer 1+）：留空，cardagg 反查
 type IoTStreamMessage struct {
 	// TDPv2 三维度
-	Producer         string `json:"producer"`                    // "device:<UUID>" / "sensor.caregiver01"
-	SubjectEntity    string `json:"subject_entity,omitempty"`    // 已绑=card_id；未绑=device_id；AI 留空
-	SemanticLocation string `json:"semantic_location,omitempty"` // room_id / unit_id
-	SequenceNumber   uint64 `json:"sequence_number,omitempty"`   // producer 内单调
+	Producer       string `json:"producer"`                  // "device:<UUID>" / "sensor.caregiver01"
+	SubjectEntity  string `json:"subject_entity,omitempty"`  // 已绑=card_id；未绑=device_id；AI 留空
+	SequenceNumber uint64 `json:"sequence_number,omitempty"` // producer 内单调
+
+	// 5W where（first-class，IPv6 风格）—— 新代码必填，旧 SemanticLocation 保留兜底
+	UnitID      string `json:"unit_id,omitempty"`      // 5W where: unit
+	RoomID      string `json:"room_id,omitempty"`      // 5W where: room
+	BedID       string `json:"bed_id,omitempty"`       // 5W where: bed（可选；床上传感器才填）
+	SpatialPath string `json:"spatial_path,omitempty"` // "tenant.branch.building.floor.unit.room.bed"，缺级空
+	ScopePrefix int    `json:"scope_prefix,omitempty"` // 1-7：producer 写到的精度；consumer prefix-match 用
+
+	// Deprecated: 用 RoomID/UnitID/SpatialPath 替代；过渡期内继续兜底反序列化。
+	SemanticLocation string `json:"semantic_location,omitempty"`
 
 	// 物理身份（Phase D 远期淡出）
-	DeviceUID  string `json:"device_uid"`            // 主键，业务逻辑
-	DeviceID   string `json:"device_id"`             // server UUID
+	DeviceUID  string `json:"device_uid"`  // 主键，业务逻辑
+	DeviceID   string `json:"device_id"`   // server UUID
 	DeviceType string `json:"device_type"`
 
 	TenantID  string        `json:"tenant_id"`
@@ -63,10 +78,19 @@ type IoTStreamMessage struct {
 }
 
 type IotHead struct {
-	Producer         string `json:"producer"`
-	SubjectEntity    string `json:"subject_entity,omitempty"`
+	Producer       string `json:"producer"`
+	SubjectEntity  string `json:"subject_entity,omitempty"`
+	SequenceNumber uint64 `json:"sequence_number,omitempty"`
+
+	// 5W where 新字段（first-class）
+	UnitID      string `json:"unit_id,omitempty"`
+	RoomID      string `json:"room_id,omitempty"`
+	BedID       string `json:"bed_id,omitempty"`
+	SpatialPath string `json:"spatial_path,omitempty"`
+	ScopePrefix int    `json:"scope_prefix,omitempty"`
+
+	// Deprecated: 用 RoomID/UnitID/SpatialPath
 	SemanticLocation string `json:"semantic_location,omitempty"`
-	SequenceNumber   uint64 `json:"sequence_number,omitempty"`
 
 	DeviceUID  string `json:"device_uid"`
 	DeviceID   string `json:"device_id"`
@@ -95,20 +119,43 @@ func streamStr(v interface{}) string {
 func (m *IoTStreamMessage) ToStreamMap() map[string]interface{} {
 	dataValueJSON, _ := json.Marshal(m.DataValue)
 	out := map[string]interface{}{
-		"producer":          m.Producer,
-		"subject_entity":    m.SubjectEntity,
-		"semantic_location": m.SemanticLocation,
-		"sequence_number":   fmt.Sprintf("%d", m.SequenceNumber),
-		"device_uid":        m.DeviceUID,
-		"device_type":       m.DeviceType,
-		"tenant_id":         m.TenantID,
-		"timestamp":         fmt.Sprintf("%d", m.Timestamp),
-		"topic_type":        m.TopicType,
-		"category":          m.Category,
-		DataValueKey:        string(dataValueJSON),
+		"producer":        m.Producer,
+		"subject_entity":  m.SubjectEntity,
+		"sequence_number": fmt.Sprintf("%d", m.SequenceNumber),
+		"device_uid":      m.DeviceUID,
+		"device_type":     m.DeviceType,
+		"tenant_id":       m.TenantID,
+		"timestamp":       fmt.Sprintf("%d", m.Timestamp),
+		"topic_type":      m.TopicType,
+		"category":        m.Category,
+		DataValueKey:      string(dataValueJSON),
 	}
 	if m.DeviceID != "" {
 		out["device_id"] = m.DeviceID
+	}
+	// 5W where（first-class）；只写非空字段，省 wire 体积
+	if m.UnitID != "" {
+		out["unit_id"] = m.UnitID
+	}
+	if m.RoomID != "" {
+		out["room_id"] = m.RoomID
+	}
+	if m.BedID != "" {
+		out["bed_id"] = m.BedID
+	}
+	if m.SpatialPath != "" {
+		out["spatial_path"] = m.SpatialPath
+	}
+	if m.ScopePrefix > 0 {
+		out["scope_prefix"] = fmt.Sprintf("%d", m.ScopePrefix)
+	}
+	// Deprecated 兜底：旧消费者仍读 semantic_location（取 RoomID 优先，否则 UnitID）
+	if loc := m.SemanticLocation; loc != "" {
+		out["semantic_location"] = loc
+	} else if m.RoomID != "" {
+		out["semantic_location"] = m.RoomID
+	} else if m.UnitID != "" {
+		out["semantic_location"] = m.UnitID
 	}
 	return out
 }
@@ -118,6 +165,16 @@ func FromStreamMap(values map[string]interface{}) (*IoTStreamMessage, error) {
 	msg.Producer = streamStr(values["producer"])
 	msg.SubjectEntity = streamStr(values["subject_entity"])
 	msg.SemanticLocation = streamStr(values["semantic_location"])
+	// 5W where（first-class）；新字段优先，旧 SemanticLocation 兜底
+	msg.UnitID = streamStr(values["unit_id"])
+	msg.RoomID = streamStr(values["room_id"])
+	msg.BedID = streamStr(values["bed_id"])
+	msg.SpatialPath = streamStr(values["spatial_path"])
+	if sp := streamStr(values["scope_prefix"]); sp != "" {
+		if v, err := strconv.Atoi(sp); err == nil {
+			msg.ScopePrefix = v
+		}
+	}
 	if seq := streamStr(values["sequence_number"]); seq != "" {
 		if v, err := strconv.ParseUint(seq, 10, 64); err == nil {
 			msg.SequenceNumber = v
@@ -145,6 +202,17 @@ func FromStreamMap(values map[string]interface{}) (*IoTStreamMessage, error) {
 	}
 	return msg, nil
 }
+
+// =============================================================================
+// SpatialPath helpers 已迁移至独立 package owl-common/spatial（2026-05-07）
+//
+// 调用方请用：
+//   import "owl-common/spatial"
+//   spatial.BuildPath / spatial.MatchPrefix / spatial.MatchAddress / ...
+//   spatial.Address{Tenant:"T", Unit:"U", Room:"R", Bed:"B"}.Path()
+//
+// 见 doc/datagram_envelope.md 与 spatial/spatial.go。
+// =============================================================================
 
 // BuildDeviceProducer 设备 Producer 标识：用 server UUID（device_id），不用 device_uid (MAC/SN)。
 // 见 doc/TODO.md Phase A: 内网仍有 plain MQTT 1883；MAC 泄露 → 物理追踪 + 位置关联。
