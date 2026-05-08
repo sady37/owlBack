@@ -83,17 +83,31 @@ body: <protobuf bytes ~50 字节>
 
 ## 2. IPv6 寻址（核心设计）
 
-### 2.1 128 位完整布局
+### 2.0 owl namespace 分配（bytes 2-3）
+
+ULA `fd00::/8` 之后的 16 bit 留作 owl namespace 标识。当前与未来分配：
+
+| Namespace | 范围 | 用途 | 状态 |
+|---|---|---|---|
+| `fd00:0000::/32` | bytes 2-3 = 0x0000 | **owl B2B**（养老机构 SaaS）| ✓ 当前 owl_v2 用此 |
+| `fd00:0001::/32` | bytes 2-3 = 0x0001 | **owl B2C**（家庭/个人）保留 | ⏳ 未启用，layout 待 PMF 验证后定 |
+| `fd00:0002::/32`-`fd00:fffe::/32` | bytes 2-3 ∈ [0x0002, 0xFFFE] | 未来扩展（区域分实例 / 联邦 / 试验）| 保留 |
+| `fd00:ffff::/32` | bytes 2-3 = 0xFFFF | 通配/测试 | 保留 |
+
+**B2C 启动时机**：现有 B2B 65k tenant slot 远超养老机构市场需求（全球 ≈ 100k 量级）；B2C 家庭量级（亿级）需独立 layout，启动时新建 fd00:0001::/32 子布局，与 B2B 数据物理隔离。当前 owl_v2 不做 B2C 表结构，留 namespace 段位即可。
+
+### 2.1 128 位完整布局（B2B namespace = fd00:0000::/32）
 
 ```
-fd00 : owl  : TTTT : BB SS : UUUU : RR BB : DDDD DDDD
-└──┘  └──┘  └──┘   └─┬─┘   └──┘   └─┬─┘  └──── 32 bit ────┘
-ULA   owl   tenant  br/site unit   rm bd   = device_uid 末 32 bit
+fd00 : 0000 : TTTT : BB SS : UUUU : RR BB : DDDD DDDD
+└──┘  └──┘   └──┘  └─┬─┘   └──┘   └─┬─┘  └──── 32 bit ────┘
+ULA   owl B2B tenant br/site unit  rm bd   = device_uid 末 32 bit
 ```
 
 | 段 | 位宽 | bit 起始位 | 容量 | 来源 |
 |---|---|---|---|---|
-| ULA `fd00:owl:` | 32 | 0-31 | 固定常量 | RFC 4193 ULA + owl 命名空间 |
+| ULA `fd00:` | 16 | 0-15 | 固定 0xFD00 | RFC 4193 ULA |
+| owl namespace | 16 | 16-31 | 固定 0x0000 = B2B | owl 私有 |
 | Tenant | 16 | 32-47 | 65k 租户 | 全局分配（= /48 prefix） |
 | Branch | 8 | 48-55 | 256/tenant | tenant 内分配（= /56） |
 | Site (Bldg+Floor) | 8 | 56-63 | 16 bldg × 16 floor | branch 内分配（= /64 subnet 边界） |
