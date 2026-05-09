@@ -1,5 +1,67 @@
 # owl_v2 kea + BIND infrastructure
 
+## 重要：双库共存策略
+
+owlrd 旧库**不动**（保留回退），owl_v2 新库**单独创建**。两库同住一个 postgres
+容器，容量上忽略不计。
+
+切换 owl 服务到新库由 `.env` 的 `DB_NAME` 决定（Phase B 接入时改 `DB_NAME=owl_v2`）。
+
+## 备份位置
+
+切换前的 v1 配置已存档：
+```
+/home/wisefido/owl/backup1.0/owlBack-config-v1/
+├── docker-compose.yml._v1   (kea+BIND 加入前)
+├── .env._v1                 (DB_NAME=owlrd 时刻)
+└── env.example._v1
+```
+
+## 环境变量约定（.env）
+
+```
+# owl_v2
+DB_NAME_V2=owl_v2
+
+# kea REST API
+KEA_API_HOST / PORT / USER / PASSWORD
+
+# DDNS TSIG（kea-ddns + bind + owl service nsupdate 共用）
+DDNS_TSIG_NAME / ALGORITHM / SECRET
+
+# BIND DNS
+BIND_HOST / PORT
+```
+
+## bring-up 顺序
+
+```bash
+# 1. owl 业务侧（含 owlrd 旧库；首次 init 即跑 dbv1）
+docker compose up -d postgresql redis mqtt sleepace-mysql
+
+# 2. 创建 owl_v2 新库（不影响 owlrd）
+bash scripts/setup_owl_v2.sh
+
+# 3. 启 IPAM + DNS
+docker compose up -d kea-dhcp6 kea-ctrl bind
+
+# 4. 验证
+curl http://localhost:8000/  # kea-ctrl-agent 应回 "found 200"
+dig @localhost tenant1.owl AAAA  # BIND 应解析
+
+# 5. 切换 owl 服务到 owl_v2（Phase B）
+#    编辑 .env: DB_NAME=owl_v2
+#    重启 wisefido-* services
+```
+
+## 回退方案
+
+```bash
+# 改回 owlrd
+sed -i 's/^DB_NAME=owl_v2/DB_NAME=owlrd/' .env
+# 重启 services；owlrd 数据未动，立即可用
+```
+
 owl IPv6 寻址体系的运行时支撑：
 - **kea-dhcp6** + **kea-ctrl-agent**：IPAM，prefix delegation REST API
 - **BIND9**：DNS 短名解析 + ip6.arpa 反向

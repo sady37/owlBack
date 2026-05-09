@@ -9,14 +9,14 @@ services:
       - -c
       - log_min_messages=warning
     environment:
-      POSTGRES_DB: owl_v2
+      POSTGRES_DB: owlrd            # 旧库不动；owl_v2 通过 setup_owl_v2.sh 单独创建
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../owlRD/dbv2:/docker-entrypoint-initdb.d
+      - ../owlRD/dbv1:/docker-entrypoint-initdb.d  # 首次 init 用旧 schema；owl_v2 走脚本
     networks:
       - owl-net
     healthcheck:
