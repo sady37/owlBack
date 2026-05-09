@@ -22,15 +22,41 @@ owl 写入 owl_v2.tenants/branches/units/...
 BIND9 zone files
 ```
 
-## 数据库策略：仅 owl_v2
+## 数据库策略：双库共存，**不动旧 volume**
 
-旧库 owlrd 不再启用。docker-compose 配置 `POSTGRES_DB=owl_v2` + `initdb.d=../owlRD/dbv2`，**首次启动自动初始化 dbv2 schema**。
+postgres 单实例同时托管两库：
+- `owlrd`（旧）— 保留作物理冗余备份；不连任何服务
+- `owl_v2`（新）— owl 服务的实际工作库
 
-- 历史 owlrd 数据全 dump 已存档：`/home/wisefido/owl/backup1.0/db-rebuild-20260508-080819/full.sql`
-- 配置 v1 已存档：`/home/wisefido/owl/backup1.0/owlBack-config-v1/`
-- 真要回退，restore from `full.sql` 单独重建 owlrd 即可
+两库互不影响。owl 服务通过 `.env DB_NAME=owl_v2` 只连新库。
 
-**首次启动注意**：如果 `postgres_data` volume 已有 owlrd 旧数据，需先 `docker volume rm` 才能让 init 跑。
+### 为什么不清 volume
+
+逻辑 dump 已完整：`/home/wisefido/owl/backup1.0/db-rebuild-20260508-080819/`
+- `full.sql` (2.5 GB) — pg_dump 完整 owlrd
+- 关键表单独 dump（device_store / units / rooms / layouts_by_name.json）
+
+加上 volume 内 owlrd 保留，**3 层备份冗余**（逻辑 dump + 工程 tarball + 物理 volume）。
+
+### docker-compose `POSTGRES_DB=owl_v2` 的语义
+
+- 首次 init（空 volume）：postgres 创建 owl_v2 默认库 + 跑 initdb.d 全套 dbv2 schema
+- 已存在 volume：env 不生效，老 owlrd 保留；用 `setup_owl_v2.sh` 在同实例内补建 owl_v2
+
+两条路径都到达同一终点：postgres 内有 owl_v2 + dbv2 schema。
+
+### 真要回退（紧急情况）
+
+```bash
+# 选项 A：直接连回 owlrd
+sed -i 's/^DB_NAME=owl_v2/DB_NAME=owlrd/' .env
+sudo systemctl restart owlback.*
+
+# 选项 B：从 full.sql 重建 owlrd（如 volume 也丢了）
+docker exec -i owl-postgresql psql -U postgres -c "CREATE DATABASE owlrd_restore;"
+cat /home/wisefido/owl/backup1.0/db-rebuild-*/full.sql | \
+  docker exec -i owl-postgresql psql -U postgres -d owlrd_restore
+```
 
 ## 备份位置
 
@@ -60,28 +86,40 @@ DDNS_TSIG_NAME / ALGORITHM / SECRET
 BIND_HOST / PORT
 ```
 
-## bring-up 顺序（首次部署 owl_v2）
+## bring-up 顺序
+
+### 路径 A：volume 已有 owlrd（当前）— 非破坏性
 
 ```bash
 cd /home/wisefido/owl/owlBack
 
-# 1. 检查并清理旧 volume（如果存在 owlrd 旧数据）
-docker volume ls | grep postgres_data
-docker volume rm owlBack_postgres_data 2>/dev/null || true
-
-# 2. 启全部 owl_v2 服务（含 kea/bind）
+# 1. 启全部基础设施（owlrd 旧数据保留在 volume）
 docker compose up -d
 
-# 3. 等 postgres 初始化完成（首次约 30s 跑 dbv2 全套 schema）
+# 2. 等 postgres ready
 docker compose logs -f postgresql | grep "ready to accept connections"
 
-# 4. 验证
-psql -h localhost -U postgres -d owl_v2 -c "\dt"   # 应见 dbv2 全部表
+# 3. 在同实例内创建 owl_v2 + 跑 dbv2 schema
+bash scripts/setup_owl_v2.sh
+
+# 4. 验证（应见两库 + dbv2 表）
+psql -h localhost -U postgres -lA | grep -E "owlrd|owl_v2"
+psql -h localhost -U postgres -d owl_v2 -c "\dt" | head -20
+
+# 5. 验证 IPAM + DNS
 curl http://localhost:8000/                         # kea-ctrl-agent
 dig @localhost tenant1.owl AAAA                     # BIND
 
-# 5. 启 wisefido-* services（host-run）
+# 6. 启 wisefido-* services（连 owl_v2 via .env DB_NAME=owl_v2）
 sudo systemctl start owlback.cardagg owlback.data owlback.iot owlback.qinglan owlback.sensor owlback.sleepace
+```
+
+### 路径 B：全新 volume（清空后重启）— 自动 init
+
+```bash
+docker volume rm owlBack_postgres_data
+docker compose up -d         # 自动 init owl_v2 with dbv2 schema (initdb.d)
+# 跳过 setup_owl_v2.sh；其他步骤同路径 A
 ```
 
 ## 回退到 owlrd（紧急情况）

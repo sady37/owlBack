@@ -1,12 +1,16 @@
 #!/bin/bash
 # setup_owl_v2.sh
 # 在已运行的 postgres container 内创建 owl_v2 数据库 + 跑 dbv2 schema
-# 不影响现有 owlrd 库（旧 schema 保留作回退）
+# 不影响现有 owlrd 库（保留作物理冗余备份）
+#
+# # 何时需要本脚本
+#   路径 A（推荐，非破坏性）：postgres volume 已有 owlrd → 用本脚本补建 owl_v2
+#   路径 B：全新 volume → docker compose up 自动跑 initdb.d 跑 dbv2，本脚本不需要
 #
 # 用法（从 owlBack/ 目录执行）：
 #   bash scripts/setup_owl_v2.sh                # 创建 owl_v2 + 全套 dbv2
-#   bash scripts/setup_owl_v2.sh --drop         # 先 DROP 再 CREATE（重置）
-#   bash scripts/setup_owl_v2.sh --check        # 仅检查 owl_v2 是否存在 + 列表
+#   bash scripts/setup_owl_v2.sh --drop         # 先 DROP 再 CREATE（重置 owl_v2，不影响 owlrd）
+#   bash scripts/setup_owl_v2.sh --check        # 仅检查 owl_v2 是否存在
 
 set -euo pipefail
 
