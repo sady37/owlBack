@@ -1,68 +1,6 @@
 # owl_v2 kea + BIND infrastructure
 
-## 重要：双库共存策略
-
-owlrd 旧库**不动**（保留回退），owl_v2 新库**单独创建**。两库同住一个 postgres
-容器，容量上忽略不计。
-
-切换 owl 服务到新库由 `.env` 的 `DB_NAME` 决定（Phase B 接入时改 `DB_NAME=owl_v2`）。
-
-## 备份位置
-
-切换前的 v1 配置已存档：
-```
-/home/wisefido/owl/backup1.0/owlBack-config-v1/
-├── docker-compose.yml._v1   (kea+BIND 加入前)
-├── .env._v1                 (DB_NAME=owlrd 时刻)
-└── env.example._v1
-```
-
-## 环境变量约定（.env）
-
-```
-# owl_v2
-DB_NAME_V2=owl_v2
-
-# kea REST API
-KEA_API_HOST / PORT / USER / PASSWORD
-
-# DDNS TSIG（kea-ddns + bind + owl service nsupdate 共用）
-DDNS_TSIG_NAME / ALGORITHM / SECRET
-
-# BIND DNS
-BIND_HOST / PORT
-```
-
-## bring-up 顺序
-
-```bash
-# 1. owl 业务侧（含 owlrd 旧库；首次 init 即跑 dbv1）
-docker compose up -d postgresql redis mqtt sleepace-mysql
-
-# 2. 创建 owl_v2 新库（不影响 owlrd）
-bash scripts/setup_owl_v2.sh
-
-# 3. 启 IPAM + DNS
-docker compose up -d kea-dhcp6 kea-ctrl bind
-
-# 4. 验证
-curl http://localhost:8000/  # kea-ctrl-agent 应回 "found 200"
-dig @localhost tenant1.owl AAAA  # BIND 应解析
-
-# 5. 切换 owl 服务到 owl_v2（Phase B）
-#    编辑 .env: DB_NAME=owl_v2
-#    重启 wisefido-* services
-```
-
-## 回退方案
-
-```bash
-# 改回 owlrd
-sed -i 's/^DB_NAME=owl_v2/DB_NAME=owlrd/' .env
-# 重启 services；owlrd 数据未动，立即可用
-```
-
-owl IPv6 寻址体系的运行时支撑：
+owl_v2 IPv6 寻址体系运行时支撑：
 - **kea-dhcp6** + **kea-ctrl-agent**：IPAM，prefix delegation REST API
 - **BIND9**：DNS 短名解析 + ip6.arpa 反向
 
@@ -84,44 +22,80 @@ owl 写入 owl_v2.tenants/branches/units/...
 BIND9 zone files
 ```
 
-## bring-up 顺序（首次启动）
+## 数据库策略：仅 owl_v2
+
+旧库 owlrd 不再启用。docker-compose 配置 `POSTGRES_DB=owl_v2` + `initdb.d=../owlRD/dbv2`，**首次启动自动初始化 dbv2 schema**。
+
+- 历史 owlrd 数据全 dump 已存档：`/home/wisefido/owl/backup1.0/db-rebuild-20260508-080819/full.sql`
+- 配置 v1 已存档：`/home/wisefido/owl/backup1.0/owlBack-config-v1/`
+- 真要回退，restore from `full.sql` 单独重建 owlrd 即可
+
+**首次启动注意**：如果 `postgres_data` volume 已有 owlrd 旧数据，需先 `docker volume rm` 才能让 init 跑。
+
+## 备份位置
+
+```
+/home/wisefido/owl/backup1.0/
+├── db-rebuild-20260508-080819/        full owlrd dump (2.5 GB)
+└── owlBack-config-v1/
+    ├── docker-compose.yml._v1          (kea+BIND 加入前)
+    ├── .env._v1                        (DB_NAME=owlrd 时刻)
+    └── env.example._v1
+```
+
+## 环境变量约定（.env）
+
+```
+# DB
+DB_NAME=owl_v2
+DB_HOST / PORT / USER / PASSWORD
+
+# kea REST API
+KEA_API_HOST / PORT / USER / PASSWORD
+
+# DDNS TSIG（kea-ddns + bind + owl service nsupdate 共用）
+DDNS_TSIG_NAME / ALGORITHM / SECRET
+
+# BIND DNS
+BIND_HOST / PORT
+```
+
+## bring-up 顺序（首次部署 owl_v2）
 
 ```bash
-# 1. 启 postgres + redis + mqtt + sleepace-mysql（业务侧）
-docker compose up -d postgresql redis mqtt sleepace-mysql
+cd /home/wisefido/owl/owlBack
 
-# 2. 等 owl_v2 schema 完全初始化（首次约 30s）
+# 1. 检查并清理旧 volume（如果存在 owlrd 旧数据）
+docker volume ls | grep postgres_data
+docker volume rm owlBack_postgres_data 2>/dev/null || true
+
+# 2. 启全部 owl_v2 服务（含 kea/bind）
+docker compose up -d
+
+# 3. 等 postgres 初始化完成（首次约 30s 跑 dbv2 全套 schema）
 docker compose logs -f postgresql | grep "ready to accept connections"
 
-# 3. 启 IPAM + DNS（独立 stack，依赖 owl_v2 已就绪）
-docker compose up -d kea-dhcp6 kea-ctrl bind
-
 # 4. 验证
-curl http://localhost:8000/  # kea-ctrl-agent 应回 "found 200"
-dig @localhost tenant1.owl AAAA  # BIND 应解析
+psql -h localhost -U postgres -d owl_v2 -c "\dt"   # 应见 dbv2 全部表
+curl http://localhost:8000/                         # kea-ctrl-agent
+dig @localhost tenant1.owl AAAA                     # BIND
 
-# 5. seed initial tenant（写 owl_v2 + 触发 DDNS 推 BIND）
-psql -h localhost -U postgres -d owl_v2 -f ../owlRD/dbv2/90_seed_initial_tenant.sql
+# 5. 启 wisefido-* services（host-run）
+sudo systemctl start owlback.cardagg owlback.data owlback.iot owlback.qinglan owlback.sensor owlback.sleepace
 ```
 
-## 配置文件清单
+## 回退到 owlrd（紧急情况）
 
-```
-kea/
-  dhcp6/
-    kea-dhcp6.conf       DHCPv6 daemon 配置（subnet 定义 + DDNS hooks）
-  ctrl/
-    kea-ctrl-agent.conf  REST API 配置（port 8000）
-  ddns/
-    kea-ddns.conf        DDNS 推送 BIND（共享 TSIG 密钥）
+```bash
+docker compose down
+# 恢复旧 volume
+docker volume create owlBack_postgres_data
+docker run --rm -v owlBack_postgres_data:/restore postgres:15 \
+  pg_restore -d postgres /backup1.0/db-rebuild-20260508-080819/full.sql
 
-bind/
-  named.conf             BIND 主配置
-  zones/
-    tenant1.owl.zone     tenant 1 正向 zone（AAAA records）
-    d.0.0.f.ip6.arpa.zone  反向 zone (fd00::/8 ULA 范围)
-  keys/
-    ddns-update.key      DDNS TSIG 密钥（与 kea-ddns 共享）
+# 改 docker-compose.yml: POSTGRES_DB=owlrd, initdb.d=../owlRD/dbv1
+# 改 .env: DB_NAME=owlrd
+docker compose up -d
 ```
 
 ## owl Go service 调用 kea REST 范例
@@ -147,16 +121,31 @@ resp, _ := http.Post("http://localhost:8000/", "application/json",
                      bytes.NewReader(jsonMarshal(cmd)))
 ```
 
-## 注意
+## 配置文件清单
 
-- **首次启动时 BIND 会因 zone 文件缺失报错**：seed 脚本生成 zone 后 reload BIND（`docker exec owl-bind rndc reload`）
-- **DDNS 共享密钥**：开发环境用明文，**production 必须 rotate 真密钥**
-- **kea config 是 hjson**（带注释的 JSON）：编辑前用 `kea-shell` 验证语法
-- **bind ip6.arpa zone 长度**：fd00::/8 范围反向 zone 名是 `0.0.0.0.f.d.ip6.arpa`（按 RFC 3596）
+```
+kea/
+  dhcp6/
+    kea-dhcp6.conf       DHCPv6 daemon 配置（subnet 定义 + DDNS hooks）
+  ctrl/
+    kea-ctrl-agent.conf  REST API 配置（port 8000）
 
-## 待实施
+bind/
+  named.conf             BIND 主配置
+  zones/
+    tenant1.owl.zone     tenant 1 正向 zone（AAAA records）
+    d.0.0.f.ip6.arpa.zone  反向 zone (fd00::/8 ULA 范围)
+  keys/
+    ddns-update.key      DDNS TSIG 密钥（与 kea-ddns 共享）
 
-当前是骨架。Phase B 完整对接 owl service 时需要：
+scripts/
+  setup_owl_v2.sh        手动 setup 脚本（默认首次 docker compose up
+                         自动跑 init.d，无需手动；保留作灾备 / 重跑用）
+```
+
+## 待 Phase B
+
+当前是基础设施骨架。Phase B 完整对接 owl service 时需要：
 1. owl-data 加 kea-ctrl-agent client（HTTP wrapper）
 2. CreateTenant / Branch / Unit / Room / Bed handler 调用 kea REST
 3. kea-ddns 集成 BIND 自动维护 zone
