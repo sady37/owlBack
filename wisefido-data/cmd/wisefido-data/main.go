@@ -25,6 +25,8 @@ import (
 
 	"owl-common/card"
 	"owl-common/database"
+	"owl-common/ddns"
+	"owl-common/ipam"
 	logpkg "owl-common/logger"
 	rediscommon "owl-common/redis"
 
@@ -473,6 +475,12 @@ func main() {
 	}
 	router.RegisterStubRoutes(stub)
 
+	// 注册 v2 spatial IPAM/DDNS API（owl_v2 IPv6 体系）— 独立于 v1
+	// owl-common/ipam.PGBackend 直接走 dbv2 spatial 表 + 可选 kea audit
+	if db != nil {
+		registerSpatialV2(router, db, logger)
+	}
+
 	// 注册内部 baseline API（供 gate/cardagg 查询 device→card 映射，/internal/ 跳过 auth）
 	if db != nil {
 		baselineHandler := httpapi.NewBaselineHandler(card.NewCardDB(db), logger)
@@ -839,4 +847,71 @@ func subscribeDataStream(ctx context.Context, logger *zap.Logger, redisClient *r
 			}
 		}
 	}
+}
+
+// registerSpatialV2 wire up owl_v2 IPAM/DDNS REST API on /admin/api/v2/spatial/...
+//
+// 配置（环境变量；缺失则跳过相应组件）：
+//   KEA_CTRL_URL  http://localhost:8000   (空 = 不接 kea audit，仅 PG)
+//   KEA_USER      owl
+//   KEA_PASSWORD  owl-kea-dev-2026
+//   BIND_HOST     127.0.0.1                (空 = 不推 DDNS)
+//   BIND_PORT     5353
+//   DDNS_KEY_NAME ddns-update
+//   DDNS_ALGO     hmac-sha256
+//   DDNS_TSIG_SECRET  base64
+//   OWL_DOMAIN    owl.
+func registerSpatialV2(router *httpapi.Router, db *sql.DB, logger *zap.Logger) {
+	// kea audit (可选)
+	var keaClient *ipam.KeaClient
+	if url := os.Getenv("KEA_CTRL_URL"); url != "" {
+		keaClient = ipam.NewKeaClient(url,
+			os.Getenv("KEA_USER"),
+			os.Getenv("KEA_PASSWORD"))
+		// 启动期 ping 一下 kea (失败不阻断启动，仅警告)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if v, err := keaClient.VersionGet(ctx); err != nil {
+			logger.Warn("v2 spatial: kea ctrl-agent not reachable; PG IPAM still works without audit",
+				zap.String("url", url), zap.Error(err))
+			keaClient = nil
+		} else {
+			logger.Info("v2 spatial: kea audit enabled", zap.String("kea_version", v))
+		}
+	}
+	backend := ipam.NewPGBackendWithKea(db, keaClient)
+
+	// ddns (可选)
+	var ddnsClient *ddns.Client
+	if host := os.Getenv("BIND_HOST"); host != "" {
+		port := 53
+		if p := os.Getenv("BIND_PORT"); p != "" {
+			fmt.Sscanf(p, "%d", &port)
+		}
+		c, err := ddns.New(ddns.Config{
+			Server:    host,
+			Port:      port,
+			KeyName:   getenvDefault("DDNS_KEY_NAME", "ddns-update"),
+			Algorithm: getenvDefault("DDNS_ALGO", "hmac-sha256"),
+			Secret:    os.Getenv("DDNS_TSIG_SECRET"),
+			OwlDomain: getenvDefault("OWL_DOMAIN", "owl."),
+		})
+		if err != nil {
+			logger.Warn("v2 spatial: DDNS client init failed", zap.Error(err))
+		} else {
+			ddnsClient = c
+			logger.Info("v2 spatial: DDNS enabled", zap.String("bind", host))
+		}
+	}
+
+	handler := httpapi.NewSpatialV2Handler(backend, ddnsClient, logger)
+	router.RegisterSpatialV2Routes(handler)
+	logger.Info("v2 spatial: API registered at /admin/api/v2/spatial/*")
+}
+
+func getenvDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
