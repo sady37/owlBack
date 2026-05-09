@@ -1,27 +1,10 @@
-; d.0.0.f.ip6.arpa. zone file
-;
-; 反向 DNS — fd00::/8 ULA range
-; PTR records 解析 IPv6 地址 → 名称
-;
-; 命名规则：
-;   <128 位 IPv6 倒序 nibble>.ip6.arpa  PTR  device-Radar_D523.bed1.room3.unit42.tenant1.owl.
-;
-; 实际记录由 seed script 生成 + DDNS 动态更新（kea-ddns / nsupdate）
-
-$TTL    300
-
-@       IN      SOA     ns.owl. admin.owl. (
-                        2026050801      ; serial
-                        3600            ; refresh
-                        600             ; retry
-                        604800          ; expire
-                        300             ; minimum
-                        )
-
-@       IN      NS      ns.owl.
-
-; 占位 PTR records（seed 后实际填充）
-; 例：device addr = fd00:0:1:112:42:301:a2ac:d523
-;     反向：3.2.5.d.c.a.2.a.1.0.3.0.2.4.0.0.2.1.1.0.1.0.0.0.0.0.0.0.0.0.d.f.ip6.arpa.
-;
-; 3.2.5.d.c.a.2.a.1.0.3.0.2.4.0.0.2.1.1.0.1.0.0.0.0.0.0.0  IN  PTR  Radar_D523.bed1.room3.unit42.tenant1.owl.
+$TTL 300	; 5 minutes
+0.0.0.0.0.0.d.f.ip6.arpa. IN SOA ns.owl. admin.owl. (
+				2026050810 ; serial
+				3600       ; refresh (1 hour)
+				600        ; retry (10 minutes)
+				604800     ; expire (1 week)
+				300        ; minimum (5 minutes)
+				)
+			NS	ns.owl.
+1.0.0.0.0.0.0.0.1.0.1.0.5.6.0.0.1.0.1.0.1.0.0.0.0.0.0.0.0.0.d.f.ip6.arpa. PTR john-bed.tenant1.owl.
