@@ -9,14 +9,16 @@ services:
       - -c
       - log_min_messages=warning
     environment:
-      POSTGRES_DB: owlrd
+      POSTGRES_DB: owl_v2
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../owlRD/db:/docker-entrypoint-initdb.d
+      - ../owlRD/dbv2:/docker-entrypoint-initdb.d
+    networks:
+      - owl-net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -29,13 +31,15 @@ services:
         max-file: "3"
 
   redis:
-    image: redis:7-alpine  
+    image: redis:7-alpine
     command: redis-server --requirepass TeLunSu-36kr --loglevel warning
     container_name: owl-redis
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    networks:
+      - owl-net
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "TeLunSu-36kr", "ping"]
       interval: 10s
@@ -58,6 +62,8 @@ services:
       - ./mqtt/config:/mosquitto/config
       - ./mqtt/data:/mosquitto/data
       - ./mqtt/log:/mosquitto/log
+    networks:
+      - owl-net
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "1883"]
       interval: 10s
@@ -80,6 +86,8 @@ services:
     volumes:
       - sleepace_mysql_data:/var/lib/mysql
       - ../sleepace/sql:/docker-entrypoint-initdb.d  # 添加SQL初始化脚本
+    networks:
+      - owl-net
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
@@ -94,6 +102,76 @@ services:
   # sleepace-service（Java Tomcat）不放进 Docker，在宿主机运行；仅 MySQL、MQTT 用 Docker
   # 宿主机启动：cd ../sleepace/sleepace-service && ./bin/start.sh 等
 
+  # ========================================================================
+  # owl_v2 IPAM + DNS infrastructure
+  # ========================================================================
+  # kea-dhcp6: ISC kea DHCPv6 daemon (作 IPAM；owl 设备不直接 DHCP，由 owl
+  #            service 通过 kea-ctrl-agent REST API 调用做 prefix delegation)
+  # kea-ctrl-agent: kea REST API 入口
+  # bind: BIND9 DNS server, 服务 owl namespace zones
+  #       - 正向 zone tenant<N>.owl. (AAAA records)
+  #       - 反向 zone d.0.0.f.ip6.arpa. (PTR records)
+  # 详 ./kea/README.md
+
+  kea-dhcp6:
+    image: cloudpirate/kea:latest
+    container_name: owl-kea-dhcp6
+    command: kea-dhcp6 -c /etc/kea/kea-dhcp6.conf
+    volumes:
+      - ./kea/dhcp6:/etc/kea
+      - kea_lease_data:/var/lib/kea
+    ports:
+      - "547:547/udp"
+    networks:
+      - owl-net
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  kea-ctrl:
+    image: cloudpirate/kea:latest
+    container_name: owl-kea-ctrl
+    command: kea-ctrl-agent -c /etc/kea/kea-ctrl-agent.conf
+    volumes:
+      - ./kea/ctrl:/etc/kea
+      - kea_lease_data:/var/lib/kea  # 共享 socket
+    ports:
+      - "8000:8000"  # REST API；owl Go services 调用此
+    networks:
+      - owl-net
+    depends_on:
+      - kea-dhcp6
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  bind:
+    image: internetsystemsconsortium/bind9:9.20
+    container_name: owl-bind
+    volumes:
+      - ./bind/named.conf:/etc/bind/named.conf:ro
+      - ./bind/zones:/etc/bind/zones:ro
+      - ./bind/keys:/etc/bind/keys:ro      # DDNS 共享密钥（kea-ddns 同源）
+      - bind_cache:/var/cache/bind
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "953:953/tcp"  # rndc 控制
+    networks:
+      - owl-net
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
 volumes:
   postgres_data:
     driver: local
@@ -101,3 +179,11 @@ volumes:
     driver: local
   redis_data:
     driver: local
+  kea_lease_data:
+    driver: local
+  bind_cache:
+    driver: local
+
+networks:
+  owl-net:
+    driver: bridge

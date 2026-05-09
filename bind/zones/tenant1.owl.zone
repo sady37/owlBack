@@ -1,0 +1,31 @@
+; tenant1.owl. zone file
+;
+; 正向 DNS 解析：name → AAAA (IPv6 ULA)
+;
+; 命名规则（与 owl_v2 cards.dns_short_name 对应）：
+;   <resident>-bed.tenant1.owl    → AAAA bed prefix /96
+;   <unit-name>.tenant1.owl       → AAAA unit prefix /80
+;   <branch-name>.tenant1.owl     → AAAA branch prefix /56
+;   tenant1.owl                    → AAAA tenant prefix /48
+;
+; 实际记录由 seed script 生成 + DDNS 动态更新
+
+$TTL    300
+
+@       IN      SOA     ns.owl. admin.owl. (
+                        2026050801      ; serial
+                        3600            ; refresh (1 hr)
+                        600             ; retry (10 min)
+                        604800          ; expire (1 week)
+                        300             ; minimum (5 min)
+                        )
+
+@       IN      NS      ns.owl.
+
+; tenant 根
+@       IN      AAAA    fd00:0:1::
+
+; 占位 records（seed 后实际填充）
+; alice-bed       IN      AAAA    fd00:0:1:112:42:301:0:1
+; unit201         IN      AAAA    fd00:0:1:112:42::
+; downtown-campus IN      AAAA    fd00:0:1:100::
