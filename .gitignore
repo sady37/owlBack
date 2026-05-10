@@ -70,6 +70,7 @@ mqtt/config/*.key
 wisefido-data/sleepace-set-realtime
 
 # Stale binaries
+wisefido-data/wisefido-data
 wisefido-qinglan/wisefido-qinglan
 wisefido-sensor/feedback-once
 wisefido-sensor/roomengine-playback
