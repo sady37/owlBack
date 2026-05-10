@@ -19,8 +19,11 @@ type Unit struct {
 	BuildingName sql.NullString `db:"building_name"`  // nullable, 通过 JOIN buildings 表获取（不存储在 units 表）
 	Floor        sql.NullString `db:"floor"`          // nullable, default '1F' (由 Service 层控制)
 	LayoutConfig sql.NullString `db:"layout_config"`  // nullable, JSONB
-	UnitType     string         `db:"unit_type"`      // NOT NULL
-	IsPublic     bool           `db:"is_public"`      // NOT NULL, default false
-	IsSharedUnit bool           `db:"is_shared_unit"` // NOT NULL, default false
-	Timezone     string         `db:"timezone"`       // NOT NULL
+	// v2 双维度（2026-05-09 重设计）：
+	//   UnitProperty 0=Home, 1=Facility (default)
+	//   UnitType     0=unknown, 1=single (VIP), 2=share (default), 3=public
+	//   约束：Home → UnitType=0；Facility → UnitType ∈ {1,2,3}
+	UnitProperty int8   `db:"unit_property"` // 0=Home, 1=Facility
+	UnitType     int8   `db:"unit_type"`     // 0/1/2/3 enum
+	Timezone     string `db:"timezone"`      // NOT NULL
 }

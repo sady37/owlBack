@@ -4,79 +4,100 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // PermissionCheck 权限检查结果
-// 包含 assigned_only 和 branch_only 两个标志
+// 包含 assigned_only 和 branch_only 两个标志（v1 历史语义保留）
+//
+// v2 (owl_v2) 改造说明：
+//   v1 表 role_permissions(tenant_id, role_code, resource_type, permission_type, permission_scope)
+//   v2 表 role_permissions(role_id FK→roles, permission, resource_scope INET)
+//   v2 角色：role_code 为 snake_case（platform_admin / tenant_admin / manager / nurse / caregiver / family / viewer）
+//   v2 通配：platform_admin = '*' (全平台); tenant_admin = 'tenant.*' (单租户全权)
+//
+// 现在的实现策略：把 v1 (resource, permType) 翻译成 v2 permission 字符串，
+// 用 EXISTS 查 role 是否拥有 (resource.action / resource.* / tenant.* / *) 任一匹配。
+// scope (assigned_only / branch_only) 在 v2 由 IPv6 prefix 自带层级表达，业务侧用 utils/spatial 派生；
+// 这里返回 (false,false) = 允许，让上层不做额外 branch 过滤；不允许时仍返回 strictest 兜底。
 type PermissionCheck struct {
 	AssignedOnly bool // 是否仅限分配的资源
 	BranchOnly   bool // 是否仅限同一 Branch 的资源
 }
 
-// GetResourcePermission 查询资源权限配置
-// 从 role_permissions 表中查询指定角色对指定资源的权限配置
-// 返回 assigned_only 和 branch_only 标志
-//
-// 参数:
-//   - db: 数据库连接
-//   - ctx: 上下文
-//   - roleCode: 角色代码（如 "Manager", "Admin"）
-//   - resourceType: 资源类型（如 "residents", "users"）
-//   - permissionType: 权限类型（"R", "C", "U", "D"）
-//
-// 返回:
-//   - *PermissionCheck: 权限检查结果，如果查询失败或记录不存在，返回最严格的权限（assigned_only=true, branch_only=true）
-//   - error: 查询错误（如果记录不存在，返回 nil，使用默认值）
-//
-// 注意: permission_scope 值映射:
-//   - 'A' = All (no restriction) → assigned_only=false, branch_only=false
-//   - 'S' = assigned_only → assigned_only=true, branch_only=false
-//   - 'B' = branch_only → assigned_only=false, branch_only=true
+// mapRoleToV2 把 v1 PascalCase role code（前端/session 注入用）映射回 v2 snake_case role_code。
+// 与 normalizeRole 在 auth_v2_handler 里的方向相反。
+func mapRoleToV2(role string) string {
+	switch role {
+	case "SystemAdmin":
+		return "platform_admin"
+	case "SystemOperator":
+		// owl_v2 seed 暂无独立 operator 角色；按最高权限处理（与 v1 行为一致）
+		return "platform_admin"
+	case "Admin":
+		return "tenant_admin"
+	case "Manager":
+		return "manager"
+	case "Nurse":
+		return "nurse"
+	case "Caregiver":
+		return "caregiver"
+	case "Family":
+		return "family"
+	case "Viewer":
+		return "viewer"
+	}
+	return strings.ToLower(role)
+}
+
+// permWord 把 v1 单字母权限码转 v2 动词。
+func permWord(p string) string {
+	switch strings.ToUpper(p) {
+	case "R":
+		return "read"
+	case "C":
+		return "create"
+	case "U":
+		return "update"
+	case "D":
+		return "delete"
+	}
+	return strings.ToLower(p)
+}
+
+// GetResourcePermission 查询 v2 RBAC 中 (role, resource, action) 是否被允许。
+// 兼容 v1 调用方签名；内部走 v2 schema。
 func GetResourcePermission(db *sql.DB, ctx context.Context,
 	roleCode, resourceType, permissionType string) (*PermissionCheck, error) {
 
-	var permissionScope string
-	err := db.QueryRowContext(ctx,
-		`SELECT permission_scope
-		 FROM role_permissions
-		 WHERE tenant_id = $1 
-		   AND role_code = $2 
-		   AND resource_type = $3 
-		   AND permission_type = $4
-		 LIMIT 1`,
-		SystemTenantID(), roleCode, resourceType, permissionType,
-	).Scan(&permissionScope)
+	v2Role := mapRoleToV2(roleCode)
+	action := permWord(permissionType)
 
-	if err == sql.ErrNoRows {
-		// 记录不存在：返回最严格的权限（安全默认值）
-		return &PermissionCheck{AssignedOnly: true, BranchOnly: true}, nil
-	}
+	// 候选 permission 字符串：精确 → 资源通配 → 租户通配 → 全局通配
+	target := resourceType + "." + action
+	resourceAll := resourceType + ".*"
+	const tenantAll = "tenant.*"
+	const platformAll = "*"
+
+	var exists bool
+	err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			  FROM role_permissions rp
+			  JOIN roles r ON r.role_id = rp.role_id
+			 WHERE r.role_code = $1
+			   AND rp.permission IN ($2, $3, $4, $5)
+		)
+	`, v2Role, target, resourceAll, tenantAll, platformAll).Scan(&exists)
 	if err != nil {
 		return nil, err
 	}
-
-	// 将 permission_scope 转换为 assigned_only 和 branch_only 标志
-	var assignedOnly, branchOnly bool
-	switch permissionScope {
-	case "A":
-		// All (no restriction)
-		assignedOnly = false
-		branchOnly = false
-	case "S":
-		// assigned_only
-		assignedOnly = true
-		branchOnly = false
-	case "B":
-		// branch_only
-		assignedOnly = false
-		branchOnly = true
-	default:
-		// 未知值，返回最严格的权限（安全默认值）
-		assignedOnly = true
-		branchOnly = true
+	if !exists {
+		// 没匹配：返回 strictest（v1 行为兜底）
+		return &PermissionCheck{AssignedOnly: true, BranchOnly: true}, nil
 	}
-
-	return &PermissionCheck{AssignedOnly: assignedOnly, BranchOnly: branchOnly}, nil
+	// 命中通配/精确权限 → 完全允许（branch 边界后续业务侧用 utils/spatial 自己判）
+	return &PermissionCheck{AssignedOnly: false, BranchOnly: false}, nil
 }
 
 // ApplyBranchFilter 应用 branch 过滤条件到 SQL 查询

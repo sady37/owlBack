@@ -172,7 +172,9 @@ func (h *BranchesHandler) UpdateBranch(w http.ResponseWriter, r *http.Request) {
 
 	// 1. 参数解析
 	branchID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/branches/")
-	if branchID == "" || strings.Contains(branchID, "/") {
+	// v2: branch_id 是 IPv6 prefix CIDR（'fd00:0:3:100::/56'），URL 自带 '/' 是合法的；
+	// 仅拒绝多段路径（如 ".../foo/bar/baz" 这种 sub-action 格式）
+	if branchID == "" || isMultiSegmentPath(branchID) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -247,7 +249,9 @@ func (h *BranchesHandler) DeleteBranch(w http.ResponseWriter, r *http.Request) {
 
 	// 1. 参数解析
 	branchID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/branches/")
-	if branchID == "" || strings.Contains(branchID, "/") {
+	// v2: branch_id 是 IPv6 prefix CIDR（'fd00:0:3:100::/56'），URL 自带 '/' 是合法的；
+	// 仅拒绝多段路径（如 ".../foo/bar/baz" 这种 sub-action 格式）
+	if branchID == "" || isMultiSegmentPath(branchID) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}

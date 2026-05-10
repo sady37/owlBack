@@ -142,7 +142,7 @@ func (h *UnitHandler) GetBuilding(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	buildingID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/buildings/")
-	if buildingID == "" || strings.Contains(buildingID, "/") {
+	if buildingID == "" || isMultiSegmentPath(buildingID) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -255,7 +255,7 @@ func (h *UnitHandler) UpdateBuilding(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	buildingID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/buildings/")
-	if buildingID == "" || strings.Contains(buildingID, "/") {
+	if buildingID == "" || isMultiSegmentPath(buildingID) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -327,7 +327,7 @@ func (h *UnitHandler) DeleteBuilding(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	buildingID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/buildings/")
-	if buildingID == "" || strings.Contains(buildingID, "/") {
+	if buildingID == "" || isMultiSegmentPath(buildingID) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -542,7 +542,7 @@ func (h *UnitHandler) GetUnit(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	unitID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/units/")
-	if unitID == "" || strings.Contains(unitID, "/") || unitID == "with-hierarchy" {
+	if unitID == "" || isMultiSegmentPath(unitID) || unitID == "with-hierarchy" {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -602,21 +602,22 @@ func (h *UnitHandler) CreateUnit(w http.ResponseWriter, r *http.Request) {
 		buildingName = ""
 	}
 
+	// v2 双维度：unit_property (0=Home, 1=Facility default) + unit_type (0=unknown, 1=single, 2=share, 3=public)
+	// FE 直接发整数；不再用 is_public_space / is_shared_unit / unit_type 字符串
 	req := service.CreateUnitRequest{
-		TenantID:      tenantID,
-		BranchID:      branchID,
-		BranchName:    branchName,
-		UnitName:      getString(payload, "unit_name"),
-		BuildingID:    buildingID,
-		BuildingName:  buildingName,
-		Floor:         getString(payload, "floor"),
-		AreaName:      getString(payload, "area_name"),
-		UnitNumber:    getString(payload, "unit_number"),
-		LayoutConfig:  getString(payload, "layout_config"),
-		UnitType:      getString(payload, "unit_type"),
-		IsPublicSpace: getBool(payload, "is_public_space"),
-		IsSharedUnit:  getBool(payload, "is_shared_unit"), // 统一使用 is_shared_unit（向后兼容：也支持 is_multi_person_room）
-		Timezone:      getString(payload, "timezone"),
+		TenantID:     tenantID,
+		BranchID:     branchID,
+		BranchName:   branchName,
+		UnitName:     getString(payload, "unit_name"),
+		BuildingID:   buildingID,
+		BuildingName: buildingName,
+		Floor:        getString(payload, "floor"),
+		AreaName:     getString(payload, "area_name"),
+		UnitNumber:   getString(payload, "unit_number"),
+		LayoutConfig: getString(payload, "layout_config"),
+		UnitProperty: getInt8(payload, "unit_property"),
+		UnitType:     getInt8(payload, "unit_type"),
+		Timezone:     getString(payload, "timezone"),
 	}
 
 	resp, err := h.unitService.CreateUnit(ctx, req)
@@ -646,7 +647,7 @@ func (h *UnitHandler) UpdateUnit(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	unitID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/units/")
-	if unitID == "" || strings.Contains(unitID, "/") || unitID == "with-hierarchy" {
+	if unitID == "" || isMultiSegmentPath(unitID) || unitID == "with-hierarchy" {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -683,21 +684,20 @@ func (h *UnitHandler) UpdateUnit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := service.UpdateUnitRequest{
-		TenantID:      tenantID,
-		UnitID:        unitID,
-		BranchID:      branchID,
-		BranchName:    branchName,
-		UnitName:      getString(payload, "unit_name"),
-		BuildingID:    buildingID,
-		BuildingName:  buildingName,
-		Floor:         getString(payload, "floor"),
-		AreaName:      getString(payload, "area_name"),
-		UnitNumber:    getString(payload, "unit_number"),
-		LayoutConfig:  getString(payload, "layout_config"),
-		UnitType:      getString(payload, "unit_type"),
-		IsPublicSpace: getBoolPtr(payload, "is_public_space"),
-		IsSharedUnit:  getBoolPtrFromMultipleKeys(payload, "is_shared_unit", "is_multi_person_room"), // 统一使用 is_shared_unit（向后兼容：也支持 is_multi_person_room）
-		Timezone:      getString(payload, "timezone"),
+		TenantID:     tenantID,
+		UnitID:       unitID,
+		BranchID:     branchID,
+		BranchName:   branchName,
+		UnitName:     getString(payload, "unit_name"),
+		BuildingID:   buildingID,
+		BuildingName: buildingName,
+		Floor:        getString(payload, "floor"),
+		AreaName:     getString(payload, "area_name"),
+		UnitNumber:   getString(payload, "unit_number"),
+		LayoutConfig: getString(payload, "layout_config"),
+		UnitProperty: getInt8Ptr(payload, "unit_property"),
+		UnitType:     getInt8Ptr(payload, "unit_type"),
+		Timezone:     getString(payload, "timezone"),
 	}
 
 	_, err := h.unitService.UpdateUnit(ctx, req)
@@ -727,7 +727,7 @@ func (h *UnitHandler) DeleteUnit(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	unitID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/units/")
-	if unitID == "" || strings.Contains(unitID, "/") || unitID == "with-hierarchy" {
+	if unitID == "" || isMultiSegmentPath(unitID) || unitID == "with-hierarchy" {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -928,7 +928,7 @@ func (h *UnitHandler) UpdateRoom(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	roomID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/rooms/")
-	if roomID == "" || strings.Contains(roomID, "/") {
+	if roomID == "" || isMultiSegmentPath(roomID) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -998,7 +998,7 @@ func (h *UnitHandler) DeleteRoom(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	roomID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/rooms/")
-	if roomID == "" || strings.Contains(roomID, "/") {
+	if roomID == "" || isMultiSegmentPath(roomID) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -1209,7 +1209,7 @@ func (h *UnitHandler) UpdateBed(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	bedID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/beds/")
-	if bedID == "" || strings.Contains(bedID, "/") {
+	if bedID == "" || isMultiSegmentPath(bedID) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -1282,7 +1282,7 @@ func (h *UnitHandler) DeleteBed(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	bedID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/beds/")
-	if bedID == "" || strings.Contains(bedID, "/") {
+	if bedID == "" || isMultiSegmentPath(bedID) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -1361,6 +1361,38 @@ func getString(payload map[string]any, key string) string {
 	return ""
 }
 
+// 辅助函数：从 map 中获取 int8（用于 unit_property/unit_type 等枚举字段）
+// 兼容数字（float64/int）和数字字符串
+func getInt8(payload map[string]any, key string) int8 {
+	if v, ok := payload[key]; ok {
+		switch n := v.(type) {
+		case float64:
+			return int8(n)
+		case int:
+			return int8(n)
+		case int64:
+			return int8(n)
+		case string:
+			if n == "" {
+				return 0
+			}
+			var i int
+			_, _ = fmt.Sscanf(n, "%d", &i)
+			return int8(i)
+		}
+	}
+	return 0
+}
+
+// 辅助函数：从 map 中获取 int8 指针（可选字段）
+func getInt8Ptr(payload map[string]any, key string) *int8 {
+	if _, ok := payload[key]; !ok {
+		return nil
+	}
+	v := getInt8(payload, key)
+	return &v
+}
+
 // 辅助函数：从 map 中获取布尔值
 func getBool(payload map[string]any, key string) bool {
 	if v, ok := payload[key]; ok {
@@ -1414,16 +1446,14 @@ func buildingToJSON(b *domain.Building) map[string]any {
 
 // 辅助函数：转换 Unit 为 JSON（复用 repository.Unit.ToJSON 的逻辑）
 func unitToJSON(u *domain.Unit) map[string]any {
+	// v2 双维度：FE 直接消费 unit_property + unit_type 整数 enum
 	m := map[string]any{
-		"unit_id":         u.UnitID,
-		"tenant_id":       u.TenantID,
-		"unit_name":       u.UnitName,
-		"unit_type":       u.UnitType,
-		"is_public_space": u.IsPublic,     // 前端使用 is_public_space，后端数据库字段是 is_public
-		"is_shared_unit":  u.IsSharedUnit, // 统一使用 is_shared_unit（不再使用 is_multi_person_room）
-		"timezone":        u.Timezone,
-		// 向后兼容：同时返回旧字段名
-		"is_public": u.IsPublic,
+		"unit_id":       u.UnitID,
+		"tenant_id":     u.TenantID,
+		"unit_name":     u.UnitName,
+		"unit_property": u.UnitProperty, // 0=Home, 1=Facility
+		"unit_type":     u.UnitType,     // 0=unknown, 1=VIP, 2=Share, 3=Public
+		"timezone":      u.Timezone,
 	}
 	// 返回 branch_id（前端需要 ID 来选择对象）
 	if u.BranchID.Valid {

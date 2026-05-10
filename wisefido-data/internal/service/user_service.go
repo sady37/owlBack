@@ -424,17 +424,24 @@ func (s *userService) updateUserBranches(ctx context.Context, tenantID, userID s
 }
 
 // getUserBranchIDs 查询用户所属的院区信息（Service 层内部方法）
-// 从 user_branches 表 JOIN branches 表查询用户关联的所有院区（包含 branch_id 和 branch_name）
-// 返回：
-//   - branches: 用户所属的院区信息列表（包含 branch_id 和 branch_name，可能为空）
-//   - hasBranches: 用户是否有关联的院区（false 表示可以访问所有院区或 NULL 院区）
+//
+// v2 改造说明：owl_v2 schema 删除了 user_branches 表；用户的 branch 关系由 user_roles +
+// roles.tenant_prefix + role_permissions.resource_scope INET 派生（用 utils/spatial 在调用侧推），
+// 不再有"用户属于哪几个 branch"的关系列表。本方法直接返回 (nil, false, nil) — service 层会按
+// "无 branch 限制 = 可访问全部"处理（即 admin/sysadmin 行为），与 v2 RBAC 默认权限一致。
 func (s *userService) getUserBranchIDs(ctx context.Context, tenantID, userID string) (branches []UserBranchInfo, hasBranches bool, err error) {
+	return nil, false, nil
+}
+
+// 旧 v1 实现（依赖 user_branches 表，v2 已删）保留以下死代码以备 grep；活路径走上面 stub。
+// nolint:unused
+func (s *userService) getUserBranchIDs_v1Legacy(ctx context.Context, tenantID, userID string) (branches []UserBranchInfo, hasBranches bool, err error) {
 	if tenantID == "" || userID == "" {
 		return nil, false, nil
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT 
+		`SELECT
 			ub.branch_id::text,
 			COALESCE(b.branch_name, '') as branch_name
 		 FROM user_branches ub

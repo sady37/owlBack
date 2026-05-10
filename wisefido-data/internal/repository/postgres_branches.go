@@ -4,189 +4,128 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net"
 	"strings"
 
 	"wisefido-data/internal/domain"
 )
 
-// PostgresBranchesRepository 院区Repository实现
-// 实现BranchesRepository接口，使用domain.Branch领域模型
+// PostgresBranchesRepository 院区 Repository — owl_v2 schema 版本。
+//
+// v2 schema 与 v1 关键差异（不向后兼容）：
+//   - 主键从 branch_id UUID 改为 spatial_prefix INET (/56)
+//   - 父租户关系不再有显式 tenant_id 外键列；靠 INET prefix-match (`branches.spatial_prefix <<= tenants.spatial_prefix`)
+//   - 列改名：description → address
+//   - 列新增：branch_slot SMALLINT (uint8 0..254) / timezone / created_at / updated_at
+//   - users/residents/units 不再用 user_branches 表关联；rooms 等下游也是 prefix-match
+//
+// 兼容策略：domain.Branch.BranchID/TenantID 在 v2 装 CIDR 字符串；Description 字段映射到 address。
 type PostgresBranchesRepository struct {
 	db *sql.DB
 }
 
-// NewPostgresBranchesRepository 创建院区Repository
 func NewPostgresBranchesRepository(db *sql.DB) *PostgresBranchesRepository {
 	return &PostgresBranchesRepository{db: db}
 }
 
-// 确保实现了接口
 var _ BranchesRepository = (*PostgresBranchesRepository)(nil)
 
-// GetBranch 获取院区信息（通过 branch_id）
-// 如果 tenantID 为空，只通过 branchID 查询（branch_id 是主键，全局唯一）
+// network(set_masklen(...)) — 必须先 set_masklen 再 network，否则 host bits（byte 6+）不会被 mask 掉。
+// status 列：HIPAA + 业务约束 — branches 也走软删（active/suspended/deleted），不向 v1 domain.Branch 暴露
+// （domain.Branch 没有 Status 字段；此值在 SQL 层 default 过滤掉 deleted，外层不见）。
+const branchesSelectCols = `
+		host(spatial_prefix) || '/56' AS branch_id,
+		network(set_masklen(spatial_prefix, 48))::text AS tenant_id,
+		branch_name,
+		address AS description,
+		created_at,
+		updated_at
+`
+
+// GetBranch 按 branch CIDR 查；tenantID 可选，给了就限定父 prefix。
 func (r *PostgresBranchesRepository) GetBranch(ctx context.Context, tenantID, branchID string) (*domain.Branch, error) {
 	if branchID == "" {
 		return nil, sql.ErrNoRows
 	}
-
-	var query string
-	var args []any
-
-	if tenantID == "" {
-		// 只通过 branch_id 查询（branch_id 是主键，全局唯一）
-		query = `
-			SELECT 
-				branch_id::text,
-				tenant_id::text,
-				branch_name,
-				description,
-				created_at,
-				updated_at
-			FROM branches
-			WHERE branch_id = $1
-		`
-		args = []any{branchID}
-	} else {
-		// 通过 tenant_id 和 branch_id 查询（更精确）
-		query = `
-			SELECT 
-				branch_id::text,
-				tenant_id::text,
-				branch_name,
-				description,
-				created_at,
-				updated_at
-			FROM branches
-			WHERE tenant_id = $1 AND branch_id = $2
-		`
-		args = []any{tenantID, branchID}
+	if !looksLikeINETPrefix(branchID) {
+		return nil, fmt.Errorf("branch not found: %q is not a v2 INET prefix", branchID)
 	}
 
-	var branch domain.Branch
-	var description sql.NullString
-	var createdAt, updatedAt sql.NullTime
-
-	err := r.db.QueryRowContext(ctx, query, args...).Scan(
-		&branch.BranchID,
-		&branch.TenantID,
-		&branch.BranchName,
-		&description,
-		&createdAt,
-		&updatedAt,
-	)
+	q := `SELECT ` + branchesSelectCols + ` FROM branches WHERE spatial_prefix = $1::INET`
+	args := []any{branchID}
+	if tenantID != "" && looksLikeINETPrefix(tenantID) {
+		q += ` AND spatial_prefix <<= $2::INET`
+		args = append(args, tenantID)
+	}
+	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("branch not found: branch_id '%s'", branchID)
-		}
 		return nil, fmt.Errorf("failed to get branch: %w", err)
 	}
-
-	branch.Description = description
-	branch.CreatedAt = createdAt
-	branch.UpdatedAt = updatedAt
-
-	return &branch, nil
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("branch not found: branch_id '%s'", branchID)
+	}
+	return scanBranch(rows)
 }
 
-// GetBranchByName 获取院区信息（通过 branch_name）
+// GetBranchByName 按 (tenant prefix, branch_name) 查。
 func (r *PostgresBranchesRepository) GetBranchByName(ctx context.Context, tenantID, branchName string) (*domain.Branch, error) {
 	if tenantID == "" || branchName == "" {
 		return nil, sql.ErrNoRows
 	}
-
-	query := `
-		SELECT 
-			branch_id::text,
-			tenant_id::text,
-			branch_name,
-			description,
-			created_at,
-			updated_at
-		FROM branches
-		WHERE tenant_id = $1 AND branch_name = $2
-	`
-
-	var branch domain.Branch
-	var description sql.NullString
-	var createdAt, updatedAt sql.NullTime
-
-	err := r.db.QueryRowContext(ctx, query, tenantID, branchName).Scan(
-		&branch.BranchID,
-		&branch.TenantID,
-		&branch.BranchName,
-		&description,
-		&createdAt,
-		&updatedAt,
-	)
+	if !looksLikeINETPrefix(tenantID) {
+		return nil, fmt.Errorf("tenant not found: %q is not a v2 INET prefix", tenantID)
+	}
+	q := `SELECT ` + branchesSelectCols + ` FROM branches WHERE spatial_prefix <<= $1::INET AND branch_name = $2 LIMIT 1`
+	rows, err := r.db.QueryContext(ctx, q, tenantID, branchName)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("branch not found: tenant_id '%s', branch_name '%s'", tenantID, branchName)
-		}
 		return nil, fmt.Errorf("failed to get branch by name: %w", err)
 	}
-
-	branch.Description = description
-	branch.CreatedAt = createdAt
-	branch.UpdatedAt = updatedAt
-
-	return &branch, nil
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("branch not found: tenant_id '%s', branch_name '%s'", tenantID, branchName)
+	}
+	return scanBranch(rows)
 }
 
-// ListBranches 列出所有院区（支持搜索）
+// ListBranches 按 tenant_prefix 列出 branches，支持 branch_name + address 模糊搜索。
+//
+// v1 search 还覆盖了 nested users/units/residents 文本（user_branches JOIN）；
+// v2 schema 删了 user_branches，这部分降级（前端 BranchList nested arrays 暂用空数组占位）。
 func (r *PostgresBranchesRepository) ListBranches(ctx context.Context, tenantID string, search string, page, size int) ([]*domain.Branch, int, error) {
 	if tenantID == "" {
 		return []*domain.Branch{}, 0, nil
 	}
+	if !looksLikeINETPrefix(tenantID) {
+		return []*domain.Branch{}, 0, nil
+	}
 
-	// 构建 WHERE 条件
-	where := []string{"b.tenant_id = $1"}
+	where := []string{
+		"spatial_prefix <<= $1::INET",
+		"COALESCE(status, 'active') <> 'deleted'", // 默认隐藏软删的
+	}
 	args := []any{tenantID}
 	argIdx := 2
 
-	// 搜索条件：模糊匹配 branch_name, description, user_nickname, unit_name, resident_nickname
 	if search != "" {
-		searchPattern := "%" + strings.ToLower(search) + "%"
-		// 使用 EXISTS 子查询检查关联的 users, units, residents
-		// 每个 $%d 占位符都需要一个参数，虽然值相同，但位置不同
-		searchCondition := fmt.Sprintf(`(
-			LOWER(b.branch_name) LIKE $%d OR
-			LOWER(COALESCE(b.description, '')) LIKE $%d OR
-			EXISTS (
-				SELECT 1 FROM user_branches ub
-				INNER JOIN users u ON u.user_id = ub.user_id AND u.tenant_id = ub.tenant_id
-				WHERE ub.tenant_id = b.tenant_id AND ub.branch_id::text = b.branch_id::text
-				  AND (LOWER(u.user_account) LIKE $%d OR LOWER(COALESCE(u.nickname, '')) LIKE $%d)
-			) OR
-			EXISTS (
-				SELECT 1 FROM units u
-				WHERE u.tenant_id = b.tenant_id AND u.branch_id::text = b.branch_id::text
-				  AND LOWER(u.unit_name) LIKE $%d
-			) OR
-			EXISTS (
-				SELECT 1 FROM residents r
-				INNER JOIN units u ON u.unit_id = r.unit_id AND u.tenant_id = r.tenant_id
-				WHERE r.tenant_id = b.tenant_id AND u.branch_id::text = b.branch_id::text
-				  AND LOWER(r.nickname) LIKE $%d
-			)
-		)`, argIdx, argIdx+1, argIdx+2, argIdx+3, argIdx+4, argIdx+5)
-		where = append(where, searchCondition)
-		// 每个占位符都需要一个参数，虽然值相同
-		args = append(args, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern)
-		argIdx += 6
+		pat := "%" + strings.ToLower(search) + "%"
+		where = append(where, fmt.Sprintf("(LOWER(branch_name) LIKE $%d OR LOWER(COALESCE(address, '')) LIKE $%d)", argIdx, argIdx))
+		args = append(args, pat)
+		argIdx++
 	}
+	whereClause := "WHERE " + strings.Join(where, " AND ")
 
-	whereClause := strings.Join(where, " AND ")
-
-	// 计算总数
-	countQuery := fmt.Sprintf(`SELECT COUNT(DISTINCT b.branch_id) FROM branches b WHERE %s`, whereClause)
 	var total int
-	err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
-	if err != nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM branches `+whereClause, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("failed to count branches: %w", err)
 	}
 
-	// 查询列表
 	if page <= 0 {
 		page = 1
 	}
@@ -195,23 +134,11 @@ func (r *PostgresBranchesRepository) ListBranches(ctx context.Context, tenantID 
 	}
 	offset := (page - 1) * size
 
-	query := fmt.Sprintf(`
-		SELECT DISTINCT
-			b.branch_id::text,
-			b.tenant_id::text,
-			b.branch_name,
-			b.description,
-			b.created_at,
-			b.updated_at
-		FROM branches b
-		WHERE %s
-		ORDER BY b.branch_name ASC
-		LIMIT $%d OFFSET $%d
-	`, whereClause, argIdx, argIdx+1)
-
+	listQ := `SELECT ` + branchesSelectCols + ` FROM branches ` + whereClause +
+		fmt.Sprintf(` ORDER BY branch_slot ASC LIMIT $%d OFFSET $%d`, argIdx, argIdx+1)
 	args = append(args, size, offset)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.db.QueryContext(ctx, listQ, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list branches: %w", err)
 	}
@@ -219,141 +146,151 @@ func (r *PostgresBranchesRepository) ListBranches(ctx context.Context, tenantID 
 
 	branches := []*domain.Branch{}
 	for rows.Next() {
-		var branch domain.Branch
-		var description sql.NullString
-		var createdAt, updatedAt sql.NullTime
-
-		err := rows.Scan(
-			&branch.BranchID,
-			&branch.TenantID,
-			&branch.BranchName,
-			&description,
-			&createdAt,
-			&updatedAt,
-		)
+		b, err := scanBranch(rows)
 		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan branch: %w", err)
+			return nil, 0, err
 		}
-
-		branch.Description = description
-		branch.CreatedAt = createdAt
-		branch.UpdatedAt = updatedAt
-
-		branches = append(branches, &branch)
+		branches = append(branches, b)
 	}
-
-	if err = rows.Err(); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("failed to iterate branches: %w", err)
 	}
-
 	return branches, total, nil
 }
 
-// CreateBranch 创建院区
+// CreateBranch 在 tenant 下分配下一个 branch_slot 派生 /56 prefix。
+//
+// 并发安全：advisory lock 串行化同 tenant 内的 slot 分配。
 func (r *PostgresBranchesRepository) CreateBranch(ctx context.Context, tenantID string, branch *domain.Branch) (string, error) {
 	if tenantID == "" {
 		return "", fmt.Errorf("tenant_id is required")
 	}
-	if branch == nil {
-		return "", fmt.Errorf("branch is required")
+	if !looksLikeINETPrefix(tenantID) {
+		return "", fmt.Errorf("tenant_id %q is not a v2 INET prefix", tenantID)
+	}
+	if branch == nil || branch.BranchName == "" {
+		return "", fmt.Errorf("branch_name is required")
 	}
 
-	// 处理可空字段
-	// 注意：branch_name 的空值处理应该在 Service 层完成，Repository 层不做业务逻辑处理
-	branchName := branch.BranchName
-	var descriptionArg any = nil
-	if branch.Description.Valid && branch.Description.String != "" {
-		descriptionArg = branch.Description.String
-	}
-
-	// 插入新院区
-	var branchID string
-	err := r.db.QueryRowContext(ctx,
-		`INSERT INTO branches (tenant_id, branch_name, description)
-		 VALUES ($1, $2, $3)
-		 RETURNING branch_id::text`,
-		tenantID, branchName, descriptionArg,
-	).Scan(&branchID)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		// 检查是否是唯一性约束冲突
-		if strings.Contains(err.Error(), "unique") || strings.Contains(err.Error(), "duplicate") {
-			return "", fmt.Errorf("branch_name already exists: tenant_id '%s', branch_name '%s'", tenantID, branchName)
-		}
+		return "", fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// advisory lock 按 tenant prefix 哈希
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "owl_v2.branches.alloc:"+tenantID); err != nil {
+		return "", fmt.Errorf("advisory lock: %w", err)
+	}
+
+	// 唯一性 (tenant, branch_name)
+	var dup string
+	err = tx.QueryRowContext(ctx,
+		`SELECT host(spatial_prefix) || '/56' FROM branches
+		 WHERE spatial_prefix <<= $1::INET AND branch_name = $2 LIMIT 1`,
+		tenantID, branch.BranchName,
+	).Scan(&dup)
+	if err == nil {
+		return "", fmt.Errorf("branch_name already exists: tenant_id '%s', branch_name '%s'", tenantID, branch.BranchName)
+	}
+	if err != sql.ErrNoRows {
+		return "", fmt.Errorf("check branch_name: %w", err)
+	}
+
+	// 下一 slot — 从 1 起（slot 0 保留为 "unbound 哨兵"，0xFF wildcard 保留）
+	var nextSlot int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(branch_slot), 0) + 1 FROM branches WHERE spatial_prefix <<= $1::INET`, tenantID,
+	).Scan(&nextSlot); err != nil {
+		return "", fmt.Errorf("compute next branch_slot: %w", err)
+	}
+	if nextSlot < 1 || nextSlot > 254 {
+		return "", fmt.Errorf("branch_slot exhausted: %d (valid 1..254)", nextSlot)
+	}
+
+	branchPrefix, err := deriveBranchCIDR(tenantID, byte(nextSlot))
+	if err != nil {
+		return "", fmt.Errorf("derive branch prefix: %w", err)
+	}
+
+	var addrArg any
+	if branch.Description.Valid && branch.Description.String != "" {
+		addrArg = branch.Description.String
+	}
+
+	var newPrefix string
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO branches (spatial_prefix, branch_slot, branch_name, address)
+		VALUES ($1::INET, $2, $3, $4)
+		RETURNING host(spatial_prefix) || '/56'
+	`, branchPrefix, nextSlot, branch.BranchName, addrArg).Scan(&newPrefix)
+	if err != nil {
 		return "", fmt.Errorf("failed to create branch: %w", err)
 	}
 
-	return branchID, nil
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit: %w", err)
+	}
+	return newPrefix, nil
 }
 
-// UpdateBranch 更新院区信息
+// UpdateBranch 简单更新 branch_name / address（v2: description 列已改名为 address）。
 func (r *PostgresBranchesRepository) UpdateBranch(ctx context.Context, tenantID, branchID string, branch *domain.Branch) error {
-	if tenantID == "" || branchID == "" {
-		return fmt.Errorf("tenant_id and branch_id are required")
+	if branchID == "" {
+		return fmt.Errorf("branch_id is required")
+	}
+	if !looksLikeINETPrefix(branchID) {
+		return fmt.Errorf("branch_id %q is not a v2 INET prefix", branchID)
 	}
 	if branch == nil {
 		return fmt.Errorf("branch is required")
 	}
 
-	// 构建UPDATE语句
 	updates := []string{}
-	args := []any{tenantID, branchID}
-	argIdx := 3
+	args := []any{branchID}
+	argIdx := 2
 
 	if branch.BranchName != "" {
 		updates = append(updates, fmt.Sprintf("branch_name = $%d", argIdx))
 		args = append(args, branch.BranchName)
 		argIdx++
 	}
-
-	// 处理 description
 	if branch.Description.Valid {
 		if branch.Description.String != "" {
-			updates = append(updates, fmt.Sprintf("description = $%d", argIdx))
+			updates = append(updates, fmt.Sprintf("address = $%d", argIdx))
 			args = append(args, branch.Description.String)
 			argIdx++
 		} else {
-			updates = append(updates, "description = NULL")
+			updates = append(updates, "address = NULL")
 		}
 	}
-
-	// 自动更新 updated_at
-	updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
+	updates = append(updates, "updated_at = NOW()")
 
 	if len(updates) == 1 {
-		// 只有 updated_at，没有其他字段需要更新
-		return nil
+		return nil // only updated_at, nothing meaningful
 	}
 
-	query := fmt.Sprintf(
-		`UPDATE branches SET %s WHERE tenant_id = $1 AND branch_id = $2`,
-		strings.Join(updates, ", "),
-	)
-
-	result, err := r.db.ExecContext(ctx, query, args...)
+	q := fmt.Sprintf(`UPDATE branches SET %s WHERE spatial_prefix = $1::INET`, strings.Join(updates, ", "))
+	res, err := r.db.ExecContext(ctx, q, args...)
 	if err != nil {
-		// 检查是否是唯一性约束冲突
 		if strings.Contains(err.Error(), "unique") || strings.Contains(err.Error(), "duplicate") {
-			return fmt.Errorf("branch_name already exists: tenant_id '%s', branch_name '%s'", tenantID, branch.BranchName)
+			return fmt.Errorf("branch_name already exists: branch_id '%s', branch_name '%s'", branchID, branch.BranchName)
 		}
 		return fmt.Errorf("failed to update branch: %w", err)
 	}
-
-	// 检查是否有行被更新
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("branch not found: branch_id '%s'", branchID)
 	}
-	if rowsAffected == 0 {
-		return fmt.Errorf("branch not found: tenant_id '%s', branch_id '%s'", tenantID, branchID)
-	}
-
 	return nil
 }
 
-// UpdateBranchFields 更新院区信息（使用更新模型）
+// UpdateBranchFields v2 schema 不再有 description 列；映射到 address。其它字段 keep/delete 语义保留。
 func (r *PostgresBranchesRepository) UpdateBranchFields(ctx context.Context, tenantID, branchID string, update *domain.BranchUpdate) error {
-	if tenantID == "" || branchID == "" {
-		return fmt.Errorf("tenant_id and branch_id are required")
+	if branchID == "" {
+		return fmt.Errorf("branch_id is required")
+	}
+	if !looksLikeINETPrefix(branchID) {
+		return fmt.Errorf("branch_id %q is not a v2 INET prefix", branchID)
 	}
 	if update == nil {
 		return fmt.Errorf("update is required")
@@ -366,112 +303,178 @@ func (r *PostgresBranchesRepository) UpdateBranchFields(ctx context.Context, ten
 	defer tx.Rollback()
 
 	updates := []string{}
-	args := []any{tenantID, branchID}
-	argIdx := 3
+	args := []any{branchID}
+	argIdx := 2
 
-	// 处理 UpdateString
 	if update.BranchName != nil {
 		switch update.BranchName.Action {
 		case domain.UpdateActionUpdate:
-			// 注意：branch_name 的空值处理应该在 Service 层完成，Repository 层不做业务逻辑处理
-			// 如果 Service 层未处理，这里会返回错误（NOT NULL 约束）
 			if update.BranchName.Value == "" {
 				return fmt.Errorf("branch_name cannot be empty (NOT NULL constraint)")
 			}
-			// 检查唯一性约束（如果更新 branch_name）
+			// 唯一性（同租户内，排除自己）
 			var exists bool
-			err = tx.QueryRowContext(ctx,
-				`SELECT EXISTS(
-					SELECT 1 FROM branches 
-					WHERE tenant_id = $1 AND branch_name = $2 AND branch_id != $3
-				)`,
-				tenantID, update.BranchName.Value, branchID,
-			).Scan(&exists)
+			err = tx.QueryRowContext(ctx, `
+				SELECT EXISTS (
+				  SELECT 1 FROM branches
+				   WHERE spatial_prefix <<= set_masklen($1::INET, 48)
+				     AND branch_name = $2
+				     AND spatial_prefix <> $1::INET
+				)`, branchID, update.BranchName.Value).Scan(&exists)
 			if err != nil {
 				return fmt.Errorf("failed to check branch_name uniqueness: %w", err)
 			}
 			if exists {
-				return fmt.Errorf("branch_name already exists: tenant_id '%s', branch_name '%s'", tenantID, update.BranchName.Value)
+				return fmt.Errorf("branch_name already exists: branch_name '%s'", update.BranchName.Value)
 			}
 			updates = append(updates, fmt.Sprintf("branch_name = $%d", argIdx))
 			args = append(args, update.BranchName.Value)
 			argIdx++
 		case domain.UpdateActionDelete:
-			// branch_name 是 NOT NULL，不能删除，只能更新
 			return fmt.Errorf("branch_name cannot be deleted (NOT NULL constraint)")
 		case domain.UpdateActionKeep:
-			// 不更新，跳过
+			// noop
 		}
 	}
 
 	if update.Description != nil {
 		switch update.Description.Action {
 		case domain.UpdateActionUpdate:
-			updates = append(updates, fmt.Sprintf("description = $%d", argIdx))
+			updates = append(updates, fmt.Sprintf("address = $%d", argIdx))
 			args = append(args, update.Description.Value)
 			argIdx++
 		case domain.UpdateActionDelete:
-			updates = append(updates, "description = NULL")
+			updates = append(updates, "address = NULL")
 		case domain.UpdateActionKeep:
-			// 不更新，跳过
+			// noop
 		}
 	}
 
-	if len(updates) == 0 {
-		// 没有字段需要更新，但可以只更新 updated_at
-		updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
-	} else {
-		// 自动更新 updated_at
-		updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
-	}
+	updates = append(updates, "updated_at = NOW()")
 
-	query := fmt.Sprintf(`
-		UPDATE branches
-		SET %s
-		WHERE tenant_id = $1 AND branch_id = $2
-	`, strings.Join(updates, ", "))
-
-	result, err := tx.ExecContext(ctx, query, args...)
+	q := fmt.Sprintf(`UPDATE branches SET %s WHERE spatial_prefix = $1::INET`, strings.Join(updates, ", "))
+	res, err := tx.ExecContext(ctx, q, args...)
 	if err != nil {
-		// 检查是否是唯一性约束冲突
 		if strings.Contains(err.Error(), "unique") || strings.Contains(err.Error(), "duplicate") {
-			return fmt.Errorf("branch_name already exists: tenant_id '%s'", tenantID)
+			return fmt.Errorf("branch_name already exists")
 		}
 		return fmt.Errorf("failed to update branch: %w", err)
 	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("branch not found: branch_id '%s'", branchID)
 	}
-	if rowsAffected == 0 {
-		return fmt.Errorf("branch not found: tenant_id '%s', branch_id '%s'", tenantID, branchID)
-	}
-
 	return tx.Commit()
 }
 
-// DeleteBranch 删除院区
+// DeleteBranch 智能删除：
+//   - 空 branch（下游 sites/units/rooms/beds/residents/devices 全空）→ 真物理 DELETE（误创建救济）
+//   - 非空 branch → 拒绝（要求先删除子节点）；HIPAA 数据保留靠子层数据本身，不靠 branch 软删
 func (r *PostgresBranchesRepository) DeleteBranch(ctx context.Context, tenantID, branchID string) error {
-	if tenantID == "" || branchID == "" {
-		return fmt.Errorf("tenant_id and branch_id are required")
+	if branchID == "" {
+		return fmt.Errorf("branch_id is required")
 	}
-
-	result, err := r.db.ExecContext(ctx,
-		`DELETE FROM branches WHERE tenant_id = $1 AND branch_id = $2`,
-		tenantID, branchID,
-	)
+	if !looksLikeINETPrefix(branchID) {
+		return fmt.Errorf("branch_id %q is not a v2 INET prefix", branchID)
+	}
+	empty, err := r.isBranchEmpty(ctx, branchID)
 	if err != nil {
-		return fmt.Errorf("failed to delete branch: %w", err)
+		return fmt.Errorf("check branch empty: %w", err)
 	}
-
-	rowsAffected, err := result.RowsAffected()
+	if !empty {
+		return fmt.Errorf("branch has children: delete sites/units/rooms/beds/residents/devices first")
+	}
+	res, err := r.db.ExecContext(ctx,
+		`DELETE FROM branches WHERE spatial_prefix = $1::INET`, branchID)
 	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
+		return fmt.Errorf("hard delete empty branch: %w", err)
 	}
-	if rowsAffected == 0 {
-		return fmt.Errorf("branch not found: tenant_id '%s', branch_id '%s'", tenantID, branchID)
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("branch not found: branch_id '%s'", branchID)
 	}
-
 	return nil
+}
+
+// isBranchEmpty 判定 branch 下游是否有任何业务数据（active/suspended/deleted 都算）。
+//
+// 检查表（spatial_prefix <<= /56 范围内）：
+//   - sites / units / rooms / beds（spatial 子层）
+//   - residents（hoa /128 在 /56 范围内）
+//   - devices（spatial_addr /128 在 /56 范围内）
+//
+// 注意：v2 不再用 user_branches 关联用户与 branch；users 表只关联 tenant_prefix（/48），
+// 不在此 check 范围内（删 branch 不影响 users）。
+func (r *PostgresBranchesRepository) isBranchEmpty(ctx context.Context, branchPrefix string) (bool, error) {
+	var hasData bool
+	err := r.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM sites     WHERE spatial_prefix <<= $1::INET
+		  UNION ALL
+		  SELECT 1 FROM units     WHERE spatial_prefix <<= $1::INET
+		  UNION ALL
+		  SELECT 1 FROM rooms     WHERE spatial_prefix <<= $1::INET
+		  UNION ALL
+		  SELECT 1 FROM beds      WHERE spatial_prefix <<= $1::INET
+		  UNION ALL
+		  SELECT 1 FROM residents WHERE hoa IS NOT NULL AND hoa <<= $1::INET
+		  UNION ALL
+		  SELECT 1 FROM devices   WHERE spatial_addr IS NOT NULL AND spatial_addr <<= $1::INET
+		)
+	`, branchPrefix).Scan(&hasData)
+	if err != nil {
+		return false, err
+	}
+	return !hasData, nil
+}
+
+// =============================================================================
+// helpers
+// =============================================================================
+
+func scanBranch(rs rowScanner) (*domain.Branch, error) {
+	var branch domain.Branch
+	var description sql.NullString
+	var createdAt, updatedAt sql.NullTime
+	if err := rs.Scan(
+		&branch.BranchID,
+		&branch.TenantID,
+		&branch.BranchName,
+		&description,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("failed to scan branch: %w", err)
+	}
+	branch.Description = description
+	branch.CreatedAt = createdAt
+	branch.UpdatedAt = updatedAt
+	return &branch, nil
+}
+
+// deriveBranchCIDR 从 tenant /48 + branch_slot 派生 branch /56 CIDR 字符串。
+//
+// IPv6 layout (per owl_v2 doc §2.1)：byte 6 = branch_slot；byte 7 = site_slot（branch /56 时为 0）。
+//
+//	tenant 'fd00:0:6::/48' + slot 1 → 'fd00:0:6:0100::/56'
+//	tenant 'fd00:0:3::/48' + slot 0xab → 'fd00:0:3:ab00::/56'
+func deriveBranchCIDR(tenantPrefix string, branchSlot byte) (string, error) {
+	addrPart := tenantPrefix
+	if i := strings.IndexByte(addrPart, '/'); i >= 0 {
+		addrPart = addrPart[:i]
+	}
+	ip := net.ParseIP(addrPart)
+	if ip == nil {
+		return "", fmt.Errorf("invalid tenant prefix: %q", tenantPrefix)
+	}
+	v6 := ip.To16()
+	if v6 == nil {
+		return "", fmt.Errorf("not an IPv6 address: %q", tenantPrefix)
+	}
+	out := make(net.IP, 16)
+	copy(out, v6)
+	// 清掉 mask 之外的位（保险），再写 byte 6
+	for i := 6; i < 16; i++ {
+		out[i] = 0
+	}
+	out[6] = branchSlot
+	return out.String() + "/56", nil
 }

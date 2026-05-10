@@ -217,16 +217,32 @@ func (r *PostgresDeviceRepository) SetDeviceProperties(ctx context.Context, uid 
 	return nil
 }
 
-// GetAllDeviceStoreInfo 获取所有device_store记录（用于启动时初始化设备缓存）
+// GetAllDeviceStoreInfo 获取所有 device 元数据（启动时初始化设备缓存）。
+// v2: 从 device_factory_meta + device_runtime_state + devices 派生（v1 device_store 表已删）。
+//   - DeviceStoreInfo.TenantID 取 v2 devices.spatial_addr 反推 /48 的 host 字符串（fd00:0:1:: 等）
+//   - AllowAccess v2 默认 TRUE（device_factory_meta 不再有此列；权限走 role + scope）
 func (r *PostgresDeviceRepository) GetAllDeviceStoreInfo(ctx context.Context) ([]*DeviceStoreInfo, error) {
 	query := `
-		SELECT device_id, device_uid, device_code, device_type, device_model, mac, imei, comm_mode, mcu_model, firmware_version, tenant_id, allow_access
-		FROM device_store
-	`
+		SELECT
+		  dfm.device_id::text,
+		  dfm.device_uid,
+		  dfm.device_code,
+		  dfm.device_type::text,
+		  dfm.device_model,
+		  dfm.mac_wifi,
+		  dfm.imei,
+		  dfm.comm_mode,
+		  dfm.mcu_model,
+		  drs.firmware_version,
+		  COALESCE(host(network(set_masklen(d.spatial_addr, 48))), 'fd00:0:1::') AS tenant_id,
+		  TRUE AS allow_access
+		FROM device_factory_meta dfm
+		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
+		LEFT JOIN devices d ON d.device_id = dfm.device_id`
 
 	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query device_store: %w", err)
+		return nil, fmt.Errorf("failed to query device_factory_meta: %w", err)
 	}
 	defer rows.Close()
 
@@ -238,7 +254,7 @@ func (r *PostgresDeviceRepository) GetAllDeviceStoreInfo(ctx context.Context) ([
 		var allowAccess bool
 
 		if err := rows.Scan(&d.DeviceID, &d.DeviceUID, &deviceCode, &d.DeviceType, &deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion, &d.TenantID, &allowAccess); err != nil {
-			return nil, fmt.Errorf("failed to scan device_store row: %w", err)
+			return nil, fmt.Errorf("failed to scan device row: %w", err)
 		}
 
 		d.DeviceCode = deviceCode

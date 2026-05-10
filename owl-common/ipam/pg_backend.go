@@ -84,16 +84,17 @@ func (p *PGBackend) AllocateBranch(ctx context.Context, tenant netip.Prefix, att
 		return netip.Prefix{}, err
 	}
 
-	// 算下一个 branch_slot；0 允许、0xFF (255) 保留作 subject namespace
+	// branch_slot 1..254：0 = unbound 哨兵（device.spatial_addr byte 6=0 表示未绑 branch）；
+	// 0xFF (255) 保留作 subject namespace（resident HoA / caregiver 等）
 	var nextSlot int
 	err = tx.QueryRowContext(ctx, `
-		SELECT COALESCE(MAX(branch_slot), -1) + 1
+		SELECT COALESCE(MAX(branch_slot), 0) + 1
 		FROM branches WHERE spatial_prefix << $1::INET
 	`, tenant.String()).Scan(&nextSlot)
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("query MAX branch_slot: %w", err)
 	}
-	if nextSlot > 254 {
+	if nextSlot < 1 || nextSlot > 254 {
 		return netip.Prefix{}, ErrSlotExhausted
 	}
 

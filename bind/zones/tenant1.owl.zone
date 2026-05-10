@@ -1,6 +1,6 @@
 $TTL 300	; 5 minutes
 tenant1.owl.		IN SOA	ns.owl. admin.owl. (
-				2026050810 ; serial
+				2026050812 ; serial
 				3600       ; refresh (1 hour)
 				600        ; retry (10 minutes)
 				604800     ; expire (1 week)

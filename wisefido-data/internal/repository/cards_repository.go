@@ -334,9 +334,15 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 		if layoutConfig.Valid {
 			unit.LayoutConfig = sql.NullString{String: layoutConfig.String, Valid: true}
 		}
-		// 设置 Unit 的 boolean 字段（注意：domain.Unit 中的字段名与数据库不一致，但这里先按数据库字段名设置）
-		unit.IsPublic = isPublic
-		unit.IsSharedUnit = isSharedUnit
+		// v2: domain.Unit 不再有 IsPublic/IsSharedUnit；改派生 unit_type
+		// 这里 isPublic/isSharedUnit 局部变量来自 v1 SQL（cards_repository 整体 v1，Phase F 重写）
+		_ = isPublic
+		_ = isSharedUnit
+		if isPublic {
+			unit.UnitType = 3
+		} else if isSharedUnit {
+			unit.UnitType = 2
+		}
 
 		results = append(results, &domain.CardWithUnitInfo{
 			Card: card,

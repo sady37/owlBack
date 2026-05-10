@@ -3,16 +3,27 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"wisefido-data/internal/domain"
 
 	"github.com/lib/pq"
 )
 
-// PostgresDeviceStoreRepository 设备库存Repository实现（强类型）
+// PostgresDeviceStoreRepository 设备库存Repository实现（v2 schema）。
+//
+// v2 把 v1 的 device_store 表拆为 4 张表：
+//   - device_factory_meta — 出厂元数据（device_id PK UUID, device_uid UNIQUE, mac_wifi/mac_ble, etc.）
+//   - device_runtime_state — 运行时状态（device_id PK FK→factory_meta, online, firmware_version, last_heartbeat_at, ...）
+//   - devices — 业务空间绑定（spatial_addr INET /128 PK, device_id FK UNIQUE, monitoring_enabled）
+//   - device_ota — OTA 升级计划（spatial_addr PK FK→devices, target_firmware_version, approve_way enum, schedule, status, ...）
+//
+// FE 期望的 v1 字段（OTAPermit/OTAWay/OTASchedule/AllowAccess 等）由本 repo 在读写两端做映射。
 type PostgresDeviceStoreRepository struct {
 	db *sql.DB
 }
@@ -22,111 +33,347 @@ func NewPostgresDeviceStoreRepository(db *sql.DB) *PostgresDeviceStoreRepository
 	return &PostgresDeviceStoreRepository{db: db}
 }
 
-const (
-	trashTenantID       = "00000000-0000-0000-0000-000000000000"
-	systemTenantID      = "00000000-0000-0000-0000-000000000001"
-	unallocatedTenantID = "00000000-0000-0000-0000-000000000002"
-)
+// v2 默认未分配 tenant prefix（trash/2 号 slot；FE/import 不指定 TenantID 时落入此池）。
+const defaultUnboundTenantPrefix = "fd00:0:2::/48"
 
-func isDeviceStorePivotTenant(tenantID string) bool {
-	return tenantID == trashTenantID || tenantID == systemTenantID
+// v2 pivot tenants（system + trash）— device 调拨业务规则（v1 R-001 保留）：
+// 跨 tenant 转移必须经 pivot 中转（System 是合法跳板，trash 是丢弃入口）。
+//   System  = fd00:0:1::/48  (slot=1)
+//   Trash   = fd00:0:2::/48  (slot=2)
+func isV2PivotTenantPrefix(prefix string) bool {
+	p := strings.TrimSpace(prefix)
+	return p == "fd00:0:1::/48" || p == "fd00:0:2::/48"
 }
 
-// orderByClauseDeviceStore 白名单排序字段，防止 SQL 注入
-func orderByClauseDeviceStore(sort, direction string) string {
+// tenantNamesOrIDsByPrefix 拉两个 tenant 的 display name；查不到时回 prefix 字符串
+func tenantNamesOrIDsByPrefix(ctx context.Context, tx *sql.Tx, p1, p2 string) (string, string) {
+	get := func(p string) string {
+		var n sql.NullString
+		_ = tx.QueryRowContext(ctx,
+			`SELECT tenant_name FROM tenants WHERE spatial_prefix = $1::INET`, p).Scan(&n)
+		if n.Valid && n.String != "" {
+			return n.String
+		}
+		return p
+	}
+	return get(p1), get(p2)
+}
+
+// ----------------------------------------------------------------------------
+// 排序白名单 — v2 表名映射（dfm/drs/d/t/o）
+// ----------------------------------------------------------------------------
+
+func orderByClauseDeviceStoreV2(sortKey, direction string) string {
 	dir := "ASC"
 	if strings.TrimSpace(strings.ToUpper(direction)) == "DESC" {
 		dir = "DESC"
 	}
-	col := strings.TrimSpace(strings.ToLower(sort))
+	col := strings.TrimSpace(strings.ToLower(sortKey))
 	switch col {
-	case "device_uid", "device_code":
-		return "ds." + col + " " + dir
-	case "device_type", "device_model", "device_name", "mac", "imei", "comm_mode", "mcu_model", "firmware_version":
-		return "ds." + col + " " + dir
-	case "ota_target_firmware_version", "ota_target_mcu_model",
-		"ota_permit", "ota_way", "ota_status", "ota_progress", "ota_updated_at":
-		return "ds." + col + " " + dir
-	case "tenant_id", "allow_access", "import_date", "allocate_time":
-		return "ds." + col + " " + dir
+	case "device_uid", "device_code", "device_type", "device_model", "imei", "comm_mode", "mcu_model":
+		return "dfm." + col + " " + dir
+	case "mac":
+		return "dfm.mac_wifi " + dir
+	case "firmware_version":
+		return "drs.firmware_version " + dir
+	case "import_date":
+		return "dfm.import_date " + dir
+	case "allocate_time":
+		return "d.created_at " + dir
 	case "tenant_name":
 		return "t.tenant_name " + dir
 	case "device_id":
-		return "ds.device_id " + dir
+		return "dfm.device_id " + dir
+	case "ota_target_firmware_version":
+		return "o.target_firmware_version " + dir
+	case "ota_target_mcu_model":
+		return "o.target_mcu_model " + dir
+	case "ota_status":
+		return "o.status " + dir
+	case "ota_progress":
+		return "o.progress " + dir
+	case "ota_updated_at":
+		return "o.updated_at " + dir
 	default:
-		return "ds.import_date DESC, ds.device_type, ds.device_uid"
+		return "dfm.import_date DESC, dfm.device_type, dfm.device_uid"
 	}
 }
 
-// ListDeviceStores 查询设备库存列表；sort/direction 为全量排序后分页
+// ----------------------------------------------------------------------------
+// v1 ⇄ v2 OTA 字段映射 helpers
+// ----------------------------------------------------------------------------
+
+// v1Schedule 形如 "now+3d" / "MMDDHH+xH" / "" 解析为 timestamptz；空串→NULL。
+//
+// 解析规则：
+//
+//	"now+Nd"      → NOW() + N*1day
+//	"now+Nh"      → NOW() + N*1hour
+//	"MMDDHH+xH"   → 当年下一次 MM-DD HH:00 之后再 +x 小时（若已过则 +1 年）
+//	其它格式      → 返回 NULL（视为无 schedule）
+var (
+	reNowDelta = regexp.MustCompile(`^now\+(\d+)([dh])$`)
+	reMMDDHH   = regexp.MustCompile(`^(\d{2})(\d{2})(\d{2})\+(\d+)H$`)
+)
+
+func parseV1OTAScheduleToTime(v1 string) sql.NullTime {
+	s := strings.TrimSpace(v1)
+	if s == "" {
+		return sql.NullTime{}
+	}
+	if m := reNowDelta.FindStringSubmatch(strings.ToLower(s)); m != nil {
+		var n int
+		fmt.Sscanf(m[1], "%d", &n)
+		now := time.Now().UTC()
+		switch m[2] {
+		case "d":
+			return sql.NullTime{Time: now.Add(time.Duration(n) * 24 * time.Hour), Valid: true}
+		case "h":
+			return sql.NullTime{Time: now.Add(time.Duration(n) * time.Hour), Valid: true}
+		}
+	}
+	if m := reMMDDHH.FindStringSubmatch(s); m != nil {
+		var mm, dd, hh, plusH int
+		fmt.Sscanf(m[1], "%d", &mm)
+		fmt.Sscanf(m[2], "%d", &dd)
+		fmt.Sscanf(m[3], "%d", &hh)
+		fmt.Sscanf(m[4], "%d", &plusH)
+		now := time.Now().UTC()
+		t := time.Date(now.Year(), time.Month(mm), dd, hh, 0, 0, 0, time.UTC).Add(time.Duration(plusH) * time.Hour)
+		if t.Before(now) {
+			t = t.AddDate(1, 0, 0)
+		}
+		return sql.NullTime{Time: t, Valid: true}
+	}
+	// 兜底：尝试 RFC3339
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return sql.NullTime{Time: t, Valid: true}
+	}
+	return sql.NullTime{}
+}
+
+// mapV1OTAWayToV2ApproveWay 把 v1 的 (ota_permit, ota_way) 映射为 v2 approve_way enum。
+//   - permit='false' / 空           → NULL（无 OTA 计划）
+//   - permit='true' + way='manual'   → "system_manual"   (无 tenant context 时默认 system_*)
+//   - permit='true' + way='schedule' → "system_schedule"
+//   - permit='true' + way='tenant'   → "tenant_manual"   (历史兼容：v1 'tenant' 视作 tenant_manual)
+//
+// tenantApproved=true 时强制走 tenant_*；false/未设视为 system_*。
+func mapV1OTAWayToV2ApproveWay(otaPermit, otaWay sql.NullString, tenantApproved bool) sql.NullString {
+	permit := strings.ToLower(strings.TrimSpace(otaPermit.String))
+	way := strings.ToLower(strings.TrimSpace(otaWay.String))
+	if !otaPermit.Valid || permit == "" || permit == "false" {
+		return sql.NullString{}
+	}
+	prefix := "system"
+	if tenantApproved || way == "tenant" {
+		prefix = "tenant"
+	}
+	suffix := "manual"
+	switch way {
+	case "schedule":
+		suffix = "schedule"
+	case "manual", "":
+		suffix = "manual"
+	case "tenant":
+		// v1 'tenant' 历史用法 = tenant_manual
+		suffix = "manual"
+	}
+	return sql.NullString{String: prefix + "_" + suffix, Valid: true}
+}
+
+// ----------------------------------------------------------------------------
+// 共用 SELECT 列表（List/Get/GetByID 复用），返回 v1 形 ToJSON 兼容字段
+// ----------------------------------------------------------------------------
+
+const deviceStoreSelectColumnsV2 = `
+  dfm.device_id::text,
+  dfm.device_uid,
+  dfm.device_code,
+  dfm.device_type::text,
+  dfm.device_model,
+  dfm.mac_wifi      AS mac,
+  dfm.imei,
+  dfm.comm_mode,
+  dfm.mcu_model,
+  drs.firmware_version,
+  -- OTA 字段：v2 表 device_ota → v1 形
+  o.target_firmware_version AS ota_target_firmware_version,
+  o.target_mcu_model        AS ota_target_mcu_model,
+  CASE WHEN o.approve_way IS NULL THEN 'false' ELSE 'true' END AS ota_permit,
+  CASE
+    WHEN o.approve_way IS NULL THEN NULL
+    WHEN o.approve_way LIKE '%_schedule' THEN 'schedule'
+    WHEN o.approve_way LIKE 'tenant_%'   THEN 'tenant'
+    WHEN o.approve_way LIKE '%_manual'   THEN 'manual'
+    ELSE NULL
+  END AS ota_way,
+  to_char(o.schedule, 'YYYY-MM-DD HH24:MI:SS') AS ota_schedule,
+  o.status   AS ota_status,
+  o.progress AS ota_progress,
+  o.error    AS ota_error,
+  o.updated_at AS ota_updated_at,
+  ''::text   AS ota_firmware_url,
+  ''::text   AS ota_firmware_sha256,
+  0::bigint  AS ota_firmware_size,
+  CASE WHEN o.approve_way LIKE 'tenant_%' THEN TRUE ELSE FALSE END AS ota_tenant_approved,
+  -- tenant 反推：spatial_addr /48 (CIDR 字符串)
+  COALESCE(host(network(set_masklen(d.spatial_addr, 48))) || '/48', $TENANT_DEFAULT$) AS tenant_id,
+  COALESCE(t.tenant_name, '') AS tenant_name,
+  d.created_at AS allocate_time,
+  dfm.import_date,
+  CASE WHEN drs.online IS TRUE THEN 'online' ELSE 'offline' END AS online_status
+`
+
+// scanDeviceStoreRowV2 共用 row 扫描（List/Get 都用）。
+func scanDeviceStoreRowV2(scan func(...any) error) (*domain.DeviceStore, error) {
+	var d domain.DeviceStore
+	var deviceCode, deviceModel, mac, imei, commMode, mcuModel, firmwareVersion sql.NullString
+	var otaTargetFW, otaTargetMCU, otaPermit, otaWay, otaSchedule, otaStatus, otaError sql.NullString
+	var otaURL, otaSHA sql.NullString
+	var otaProgress sql.NullInt32
+	var otaSize sql.NullInt64
+	var otaUpdatedAt sql.NullTime
+	var otaTenantApproved sql.NullBool
+	var tenantName sql.NullString
+	var allocateTime sql.NullTime
+	var importDate sql.NullTime
+	var tenantID, onlineStatus string
+
+	err := scan(
+		&d.DeviceID,
+		&d.DeviceUID,
+		&deviceCode,
+		&d.DeviceType,
+		&deviceModel,
+		&mac,
+		&imei,
+		&commMode,
+		&mcuModel,
+		&firmwareVersion,
+		&otaTargetFW,
+		&otaTargetMCU,
+		&otaPermit,
+		&otaWay,
+		&otaSchedule,
+		&otaStatus,
+		&otaProgress,
+		&otaError,
+		&otaUpdatedAt,
+		&otaURL,
+		&otaSHA,
+		&otaSize,
+		&otaTenantApproved,
+		&tenantID,
+		&tenantName,
+		&allocateTime,
+		&importDate,
+		&onlineStatus,
+	)
+	if err != nil {
+		return nil, err
+	}
+	d.DeviceCode = deviceCode
+	d.DeviceModel = deviceModel
+	d.MAC = mac
+	d.IMEI = imei
+	d.CommMode = commMode
+	d.MCUModel = mcuModel
+	d.FirmwareVersion = firmwareVersion
+	d.OTATargetFirmwareVersion = otaTargetFW
+	d.OTATargetMCUModel = otaTargetMCU
+	d.OTAPermit = otaPermit
+	d.OTAWay = otaWay
+	d.OTASchedule = otaSchedule
+	d.OTAStatus = otaStatus
+	d.OTAProgress = otaProgress
+	d.OTAError = otaError
+	d.OTAUpdatedAt = otaUpdatedAt
+	d.OTAFirmwareURL = otaURL
+	d.OTAFirmwareSHA = otaSHA
+	d.OTAFirmwareSize = otaSize
+	if otaTenantApproved.Valid {
+		d.OTATenantApproved = otaTenantApproved.Bool
+	}
+	d.TenantID = tenantID
+	d.TenantName = tenantName
+	d.AllocateTime = allocateTime
+	d.ImportDate = importDate
+	d.OnlineStatus = onlineStatus
+	// v2 default: AllowAccess = TRUE（v2 没有 allow_access 列；权限走 role + spatial scope）
+	d.AllowAccess = true
+	return &d, nil
+}
+
+// expandSelectColumnsV2 替换占位符 $TENANT_DEFAULT$ 为引号包裹的字符串字面量。
+func expandSelectColumnsV2() string {
+	return strings.ReplaceAll(deviceStoreSelectColumnsV2, "$TENANT_DEFAULT$", "'"+defaultUnboundTenantPrefix+"'")
+}
+
+// ----------------------------------------------------------------------------
+// ListDeviceStores
+// ----------------------------------------------------------------------------
+
 func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, filters DeviceStoreFilters, page, size int, sort, direction string) ([]*domain.DeviceStore, int, error) {
 	where := []string{}
 	args := []any{}
 	argN := 1
 
-	// Search filter
-	if filters.Search != "" {
-		where = append(where, fmt.Sprintf("(ds.device_code ILIKE $%d OR ds.device_uid ILIKE $%d OR ds.mac ILIKE $%d OR ds.imei ILIKE $%d OR ds.device_id::text ILIKE $%d)", argN, argN, argN, argN, argN))
-		args = append(args, "%"+filters.Search+"%")
+	if s := strings.TrimSpace(filters.Search); s != "" {
+		where = append(where, fmt.Sprintf("(dfm.device_uid ILIKE $%d OR dfm.device_code ILIKE $%d OR dfm.mac_wifi ILIKE $%d OR dfm.mac_ble ILIKE $%d OR dfm.imei ILIKE $%d OR dfm.device_id::text ILIKE $%d)",
+			argN, argN, argN, argN, argN, argN))
+		args = append(args, "%"+s+"%")
 		argN++
 	}
-
-	// Tenant filter
-	if filters.TenantID != "" {
-		where = append(where, fmt.Sprintf("ds.tenant_id = $%d", argN))
-		args = append(args, filters.TenantID)
+	if t := strings.TrimSpace(filters.TenantID); t != "" {
+		// v2 tenant 是 INET /48；devices.spatial_addr 在该范围内即视为绑定到该 tenant
+		where = append(where, fmt.Sprintf("EXISTS (SELECT 1 FROM devices d2 WHERE d2.device_id = dfm.device_id AND d2.spatial_addr <<= $%d::INET)", argN))
+		args = append(args, t)
 		argN++
 	}
-
-	// Device type filter
-	if filters.DeviceType != "" {
-		where = append(where, fmt.Sprintf("ds.device_type = $%d", argN))
-		args = append(args, filters.DeviceType)
+	if dt := strings.TrimSpace(filters.DeviceType); dt != "" {
+		where = append(where, fmt.Sprintf("dfm.device_type::text = $%d", argN))
+		args = append(args, dt)
 		argN++
 	}
-
-	// Column filters
-	if filters.DeviceUID != "" {
-		where = append(where, fmt.Sprintf("ds.device_uid ILIKE $%d", argN))
-		args = append(args, "%"+filters.DeviceUID+"%")
+	if u := strings.TrimSpace(filters.DeviceUID); u != "" {
+		where = append(where, fmt.Sprintf("dfm.device_uid ILIKE $%d", argN))
+		args = append(args, "%"+u+"%")
 		argN++
 	}
-	if filters.DeviceCode != "" {
-		where = append(where, fmt.Sprintf("ds.device_code ILIKE $%d", argN))
-		args = append(args, "%"+filters.DeviceCode+"%")
+	if c := strings.TrimSpace(filters.DeviceCode); c != "" {
+		where = append(where, fmt.Sprintf("dfm.device_code ILIKE $%d", argN))
+		args = append(args, "%"+c+"%")
 		argN++
 	}
-	if filters.DeviceName != "" {
-		where = append(where, fmt.Sprintf("ds.device_name ILIKE $%d", argN))
-		args = append(args, "%"+filters.DeviceName+"%")
+	if fv := strings.TrimSpace(filters.FirmwareVersion); fv != "" {
+		where = append(where, fmt.Sprintf("drs.firmware_version ILIKE $%d", argN))
+		args = append(args, "%"+fv+"%")
 		argN++
 	}
-	if filters.FirmwareVersion != "" {
-		where = append(where, fmt.Sprintf("ds.firmware_version ILIKE $%d", argN))
-		args = append(args, "%"+filters.FirmwareVersion+"%")
+	// v1 OTA 过滤 → v2 WHERE 翻译
+	if v := strings.TrimSpace(filters.OTAStatus); v != "" {
+		where = append(where, fmt.Sprintf("o.status = $%d", argN))
+		args = append(args, v)
 		argN++
 	}
-	if filters.AllowAccess != "" {
-		if strings.EqualFold(filters.AllowAccess, "true") {
-			where = append(where, "ds.allow_access = TRUE")
-		} else {
-			where = append(where, "ds.allow_access = FALSE")
+	if v := strings.TrimSpace(filters.OTAPermit); v != "" {
+		switch strings.ToLower(v) {
+		case "true":
+			where = append(where, "o.approve_way IS NOT NULL")
+		case "false":
+			where = append(where, "o.approve_way IS NULL")
 		}
 	}
-	if filters.OTAStatus != "" {
-		where = append(where, fmt.Sprintf("COALESCE(ds.ota_status, 'idle') = $%d", argN))
-		args = append(args, filters.OTAStatus)
-		argN++
-	}
-	if filters.OTAPermit != "" {
-		where = append(where, fmt.Sprintf("ds.ota_permit = $%d", argN))
-		args = append(args, filters.OTAPermit)
-		argN++
-	}
-	if filters.OTAWay != "" {
-		where = append(where, fmt.Sprintf("ds.ota_way = $%d", argN))
-		args = append(args, filters.OTAWay)
-		argN++
+	if v := strings.TrimSpace(filters.OTAWay); v != "" {
+		switch strings.ToLower(v) {
+		case "manual":
+			where = append(where, "o.approve_way LIKE '%_manual'")
+		case "schedule":
+			where = append(where, "o.approve_way LIKE '%_schedule'")
+		case "tenant":
+			where = append(where, "o.approve_way LIKE 'tenant_%'")
+		}
 	}
 
 	whereClause := ""
@@ -134,19 +381,18 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 		whereClause = "WHERE " + strings.Join(where, " AND ")
 	}
 
-	// Count total
-	queryCount := `
+	countQ := `
 		SELECT COUNT(*)
-		FROM device_store ds
-		LEFT JOIN tenants t ON ds.tenant_id = t.tenant_id
-		` + whereClause
-
+		  FROM device_factory_meta dfm
+		  LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
+		  LEFT JOIN devices d ON d.device_id = dfm.device_id
+		  LEFT JOIN device_ota o ON o.spatial_addr = d.spatial_addr
+		  ` + whereClause
 	var total int
-	if err := r.db.QueryRowContext(ctx, queryCount, args...).Scan(&total); err != nil {
-		return nil, 0, err
+	if err := r.db.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count device_factory_meta: %w", err)
 	}
 
-	// Pagination
 	if page <= 0 {
 		page = 1
 	}
@@ -155,223 +401,95 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 	}
 	offset := (page - 1) * size
 
-	argsList := append(args, size, offset)
-	limitPos := argN
-	offsetPos := argN + 1
+	dataArgs := append([]any{}, args...)
+	dataArgs = append(dataArgs, size, offset)
+	limitN := argN
+	offsetN := argN + 1
 
-	// Query data
-	query := `
-		SELECT
-			ds.device_id::text,
-			ds.device_uid,
-			ds.device_code,
-			ds.device_type,
-			ds.device_model,
-			ds.device_name,
-			ds.mac,
-			ds.imei,
-			ds.comm_mode,
-			ds.mcu_model,
-			ds.firmware_version,
-			ds.ota_target_firmware_version,
-			ds.ota_target_mcu_model,
-			ds.ota_permit, ds.ota_way, ds.ota_schedule, ds.ota_status, ds.ota_progress,
-			ds.ota_error, ds.ota_updated_at, ds.ota_firmware_url, ds.ota_firmware_sha256,
-			ds.ota_firmware_size, COALESCE(ds.ota_tenant_approved, FALSE) as ota_tenant_approved,
-			ds.tenant_id::text,
-			COALESCE(t.tenant_name, '') as tenant_name,
-			ds.allow_access,
-			ds.import_date,
-			ds.allocate_time
-		FROM device_store ds
-		LEFT JOIN tenants t ON ds.tenant_id = t.tenant_id
+	q := `
+		SELECT ` + expandSelectColumnsV2() + `
+		FROM device_factory_meta dfm
+		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
+		LEFT JOIN devices d ON d.device_id = dfm.device_id
+		LEFT JOIN device_ota o ON o.spatial_addr = d.spatial_addr
+		LEFT JOIN tenants t ON t.spatial_prefix = network(set_masklen(d.spatial_addr, 48))
 		` + whereClause + `
-		ORDER BY ` + orderByClauseDeviceStore(sort, direction) + `
-		LIMIT $` + fmt.Sprintf("%d", limitPos) + ` OFFSET $` + fmt.Sprintf("%d", offsetPos)
+		ORDER BY ` + orderByClauseDeviceStoreV2(sort, direction) + `
+		LIMIT $` + fmt.Sprintf("%d", limitN) + ` OFFSET $` + fmt.Sprintf("%d", offsetN)
 
-	rows, err := r.db.QueryContext(ctx, query, argsList...)
+	rows, err := r.db.QueryContext(ctx, q, dataArgs...)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("list device_factory_meta: %w", err)
 	}
 	defer rows.Close()
 
 	out := []*domain.DeviceStore{}
 	for rows.Next() {
-		var d domain.DeviceStore
-		var deviceCode sql.NullString
-		if err := rows.Scan(
-			&d.DeviceID,
-			&d.DeviceUID,
-			&deviceCode,
-			&d.DeviceType,
-			&d.DeviceModel,
-			&d.DeviceName,
-			&d.MAC,
-			&d.IMEI,
-			&d.CommMode,
-			&d.MCUModel,
-			&d.FirmwareVersion,
-			&d.OTATargetFirmwareVersion,
-			&d.OTATargetMCUModel,
-			&d.OTAPermit, &d.OTAWay, &d.OTASchedule, &d.OTAStatus, &d.OTAProgress,
-			&d.OTAError, &d.OTAUpdatedAt, &d.OTAFirmwareURL, &d.OTAFirmwareSHA,
-			&d.OTAFirmwareSize, &d.OTATenantApproved,
-			&d.TenantID,
-			&d.TenantName,
-			&d.AllowAccess,
-			&d.ImportDate,
-			&d.AllocateTime,
-		); err != nil {
-			return nil, 0, err
+		ds, err := scanDeviceStoreRowV2(rows.Scan)
+		if err != nil {
+			return nil, 0, fmt.Errorf("scan device_factory_meta: %w", err)
 		}
-		if deviceCode.Valid {
-			d.DeviceCode = deviceCode
-		}
-		out = append(out, &d)
+		out = append(out, ds)
 	}
 	return out, total, rows.Err()
 }
 
-// GetDeviceStore 查询单个设备库存
+// ----------------------------------------------------------------------------
+// GetDeviceStore / GetDeviceStoreByDeviceID
+// ----------------------------------------------------------------------------
+
 func (r *PostgresDeviceStoreRepository) GetDeviceStore(ctx context.Context, deviceUID string) (*domain.DeviceStore, error) {
-	query := `
-		SELECT
-			ds.device_id::text,
-			ds.device_uid,
-			ds.device_code,
-			ds.device_type,
-			ds.device_model,
-			ds.device_name,
-			ds.mac,
-			ds.imei,
-			ds.comm_mode,
-			ds.mcu_model,
-			ds.firmware_version,
-			ds.ota_target_firmware_version,
-			ds.ota_target_mcu_model,
-			ds.ota_permit, ds.ota_way, ds.ota_schedule, ds.ota_status, ds.ota_progress,
-			ds.ota_error, ds.ota_updated_at, ds.ota_firmware_url, ds.ota_firmware_sha256,
-			ds.ota_firmware_size, COALESCE(ds.ota_tenant_approved, FALSE) as ota_tenant_approved,
-			ds.tenant_id::text,
-			COALESCE(t.tenant_name, '') as tenant_name,
-			ds.allow_access,
-			ds.import_date,
-			ds.allocate_time
-		FROM device_store ds
-		LEFT JOIN tenants t ON ds.tenant_id = t.tenant_id
-		WHERE ds.device_uid = $1
+	q := `
+		SELECT ` + expandSelectColumnsV2() + `
+		FROM device_factory_meta dfm
+		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
+		LEFT JOIN devices d ON d.device_id = dfm.device_id
+		LEFT JOIN device_ota o ON o.spatial_addr = d.spatial_addr
+		LEFT JOIN tenants t ON t.spatial_prefix = network(set_masklen(d.spatial_addr, 48))
+		WHERE dfm.device_uid = $1
+		LIMIT 1
 	`
-
-	var d domain.DeviceStore
-	var deviceCode sql.NullString
-	err := r.db.QueryRowContext(ctx, query, deviceUID).Scan(
-		&d.DeviceID,
-		&d.DeviceUID,
-		&deviceCode,
-		&d.DeviceType,
-		&d.DeviceModel,
-		&d.DeviceName,
-		&d.MAC,
-		&d.IMEI,
-		&d.CommMode,
-		&d.MCUModel,
-		&d.FirmwareVersion,
-		&d.OTATargetFirmwareVersion,
-		&d.OTATargetMCUModel,
-		&d.OTAPermit, &d.OTAWay, &d.OTASchedule, &d.OTAStatus, &d.OTAProgress,
-		&d.OTAError, &d.OTAUpdatedAt, &d.OTAFirmwareURL, &d.OTAFirmwareSHA,
-		&d.OTAFirmwareSize, &d.OTATenantApproved,
-		&d.TenantID,
-		&d.TenantName,
-		&d.AllowAccess,
-		&d.ImportDate,
-		&d.AllocateTime,
-	)
+	row := r.db.QueryRowContext(ctx, q, deviceUID)
+	ds, err := scanDeviceStoreRowV2(row.Scan)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("device_store not found: device_uid=%s", deviceUID)
+	}
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("device_store not found: device_uid=%s", deviceUID)
-		}
 		return nil, err
 	}
-	if deviceCode.Valid {
-		d.DeviceCode = deviceCode
-	}
-	return &d, nil
+	return ds, nil
 }
 
-// GetDeviceStoreByDeviceID 按 device_id (UUID) 查询单条设备库存
 func (r *PostgresDeviceStoreRepository) GetDeviceStoreByDeviceID(ctx context.Context, deviceID string) (*domain.DeviceStore, error) {
-	query := `
-		SELECT
-			ds.device_id::text,
-			ds.device_uid,
-			ds.device_code,
-			ds.device_type,
-			ds.device_model,
-			ds.device_name,
-			ds.mac,
-			ds.imei,
-			ds.comm_mode,
-			ds.mcu_model,
-			ds.firmware_version,
-			ds.ota_target_firmware_version,
-			ds.ota_target_mcu_model,
-			ds.ota_permit, ds.ota_way, ds.ota_schedule, ds.ota_status, ds.ota_progress,
-			ds.ota_error, ds.ota_updated_at, ds.ota_firmware_url, ds.ota_firmware_sha256,
-			ds.ota_firmware_size, COALESCE(ds.ota_tenant_approved, FALSE) as ota_tenant_approved,
-			ds.tenant_id::text,
-			COALESCE(t.tenant_name, '') as tenant_name,
-			ds.allow_access,
-			ds.import_date,
-			ds.allocate_time
-		FROM device_store ds
-		LEFT JOIN tenants t ON ds.tenant_id = t.tenant_id
-		WHERE ds.device_id = $1::uuid
+	q := `
+		SELECT ` + expandSelectColumnsV2() + `
+		FROM device_factory_meta dfm
+		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
+		LEFT JOIN devices d ON d.device_id = dfm.device_id
+		LEFT JOIN device_ota o ON o.spatial_addr = d.spatial_addr
+		LEFT JOIN tenants t ON t.spatial_prefix = network(set_masklen(d.spatial_addr, 48))
+		WHERE dfm.device_id = $1::uuid
+		LIMIT 1
 	`
-	var d domain.DeviceStore
-	var deviceCode sql.NullString
-	err := r.db.QueryRowContext(ctx, query, deviceID).Scan(
-		&d.DeviceID,
-		&d.DeviceUID,
-		&deviceCode,
-		&d.DeviceType,
-		&d.DeviceModel,
-		&d.DeviceName,
-		&d.MAC,
-		&d.IMEI,
-		&d.CommMode,
-		&d.MCUModel,
-		&d.FirmwareVersion,
-		&d.OTATargetFirmwareVersion,
-		&d.OTATargetMCUModel,
-		&d.OTAPermit, &d.OTAWay, &d.OTASchedule, &d.OTAStatus, &d.OTAProgress,
-		&d.OTAError, &d.OTAUpdatedAt, &d.OTAFirmwareURL, &d.OTAFirmwareSHA,
-		&d.OTAFirmwareSize, &d.OTATenantApproved,
-		&d.TenantID,
-		&d.TenantName,
-		&d.AllowAccess,
-		&d.ImportDate,
-		&d.AllocateTime,
-	)
+	row := r.db.QueryRowContext(ctx, q, deviceID)
+	ds, err := scanDeviceStoreRowV2(row.Scan)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
 		return nil, err
 	}
-	if deviceCode.Valid {
-		d.DeviceCode = deviceCode
-	}
-	return &d, nil
+	return ds, nil
 }
 
-// CreateDeviceStore 单个创建设备库存（入库操作）
+// ----------------------------------------------------------------------------
+// CreateDeviceStore — 写入 factory_meta + runtime_state + devices(stateless addr)
+// ----------------------------------------------------------------------------
+
 func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, deviceStore *domain.DeviceStore) (string, error) {
 	if deviceStore == nil {
 		return "", fmt.Errorf("device_store is required")
 	}
-
-	// 1. 验证必填字段
 	if deviceStore.DeviceType == "" {
 		return "", fmt.Errorf("device_type is required")
 	}
@@ -379,72 +497,133 @@ func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, d
 		return "", fmt.Errorf("device_uid is required")
 	}
 
-	// 2. 检查是否已存在
+	// 1. 重复检查
 	var existingUID string
-	checkQuery := `
-		SELECT device_uid
-		FROM device_store
-		WHERE device_uid = $1
-		LIMIT 1
-	`
-	err := r.db.QueryRowContext(ctx, checkQuery, deviceStore.DeviceUID).Scan(&existingUID)
+	err := r.db.QueryRowContext(ctx,
+		`SELECT device_uid FROM device_factory_meta WHERE device_uid = $1 LIMIT 1`,
+		deviceStore.DeviceUID,
+	).Scan(&existingUID)
 	if err == nil {
 		return "", fmt.Errorf("device already exists: device_uid=%s", existingUID)
 	} else if err != sql.ErrNoRows {
 		return "", fmt.Errorf("failed to check existing device: %w", err)
 	}
 
-	// 3. 处理 tenant_id（未提供则 System 001）
-	tenantID := deviceStore.TenantID
-	if tenantID == "" {
-		tenantID = systemTenantID
+	// 2. 决定 tenant prefix（未提供 → trash 池）
+	tenantPrefix := strings.TrimSpace(deviceStore.TenantID)
+	if tenantPrefix == "" {
+		tenantPrefix = defaultUnboundTenantPrefix
 	}
 
-	// 默认 allow_access = true
-	if !deviceStore.AllowAccessSet {
-		deviceStore.AllowAccess = true
+	// 3. 派生 spatial_addr：tenant_prefix + 0:0:0:0:MAC32（最后 32bit 取自 MAC 或 device_uid）
+	mac32 := deriveMAC32Suffix(deviceStore.MAC, deviceStore.DeviceUID)
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	// 4. INSERT device_factory_meta（device_id 由 DB 默认 gen_random_uuid()？ 检查 schema：
+	//    PK = device_id UUID, NO DEFAULT；需要由应用生成 UUID）
+	var deviceID string
+	if err := tx.QueryRowContext(ctx, `SELECT gen_random_uuid()::text`).Scan(&deviceID); err != nil {
+		return "", fmt.Errorf("gen device_id: %w", err)
 	}
 
-	// 4. 插入新设备
-	// 注意：device_id 是主键，由数据库自动生成（gen_random_uuid()），不需要在 INSERT 中指定
-	insertQuery := `
-		INSERT INTO device_store (
-			device_uid, device_code, device_type, device_model, device_name, mac, imei,
-			comm_mode, mcu_model, firmware_version,
-			tenant_id, allow_access
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		RETURNING device_id::text
+	insertMeta := `
+		INSERT INTO device_factory_meta (
+			device_id, device_uid, device_code, device_type, device_model,
+			mcu_model, mac_wifi, mac_ble, imei, comm_mode
+		) VALUES ($1::uuid, $2, $3, $4::device_type_enum, $5, $6, $7, $8, $9, $10)
 	`
-
-	args := []any{
+	if _, err := tx.ExecContext(ctx, insertMeta,
+		deviceID,
 		deviceStore.DeviceUID,
 		nullStringToAny(deviceStore.DeviceCode),
 		deviceStore.DeviceType,
 		nullStringToAny(deviceStore.DeviceModel),
-		nullStringToAny(deviceStore.DeviceName),
-		nullStringToAny(deviceStore.MAC),
+		nullStringToAny(deviceStore.MCUModel),
+		nullStringToAny(deviceStore.MAC), // mac_wifi
+		nil,                              // mac_ble: 不接 v1 字段
 		nullStringToAny(deviceStore.IMEI),
 		nullStringToAny(deviceStore.CommMode),
-		nullStringToAny(deviceStore.MCUModel),
-		nullStringToAny(deviceStore.FirmwareVersion),
-		tenantID,
-		deviceStore.AllowAccess,
-	}
-
-	var deviceID string
-	err = r.db.QueryRowContext(ctx, insertQuery, args...).Scan(&deviceID)
-	if err != nil {
+	); err != nil {
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
 			return "", fmt.Errorf("device already exists (duplicate device_uid)")
 		}
-		return "", fmt.Errorf("failed to create device_store: %w", err)
+		return "", fmt.Errorf("failed to insert device_factory_meta: %w", err)
 	}
 
+	// 5. INSERT device_runtime_state（默认 offline；firmware_version 可写入）
+	insertRuntime := `
+		INSERT INTO device_runtime_state (device_id, online, firmware_version)
+		VALUES ($1::uuid, FALSE, $2)
+	`
+	if _, err := tx.ExecContext(ctx, insertRuntime,
+		deviceID, nullStringToAny(deviceStore.FirmwareVersion),
+	); err != nil {
+		return "", fmt.Errorf("failed to insert device_runtime_state: %w", err)
+	}
+
+	// 6. INSERT devices —— spatial_addr = tenant_prefix host bytes 全 0 ++ MAC32
+	insertDevice := `
+		INSERT INTO devices (spatial_addr, device_id, monitoring_enabled)
+		VALUES (
+		  set_masklen(network(set_masklen($1::INET, 48)), 128) | ('::' || $2)::INET,
+		  $3::uuid, TRUE
+		)
+	`
+	if _, err := tx.ExecContext(ctx, insertDevice, tenantPrefix, mac32, deviceID); err != nil {
+		return "", fmt.Errorf("failed to insert devices: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit: %w", err)
+	}
 	return deviceID, nil
 }
 
-// BatchUpdateDeviceStores 批量更新设备库存
-// 迁移规则：须经由 pivot（system / trash / Unallocated）中转，禁止租户 A 直迁租户 B
+// deriveMAC32Suffix 从 MAC 取低 32bit（"::ffff:ffff" 形式 hex 字符串），不可用则 hash device_uid。
+//
+// 返回 IPv6 host suffix 字面量片段（不含 "::"），形如 "abcd:1234"（=最后 4 字节）。
+func deriveMAC32Suffix(mac sql.NullString, deviceUID string) string {
+	hexBytes := func(s string) []byte {
+		// 接受 "AA:BB:CC:DD:EE:FF" / "aabbccddeeff" / 任意分隔符
+		clean := strings.Map(func(r rune) rune {
+			switch {
+			case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
+				return r
+			default:
+				return -1
+			}
+		}, s)
+		b, err := hex.DecodeString(clean)
+		if err != nil {
+			return nil
+		}
+		return b
+	}
+	var b []byte
+	if mac.Valid {
+		b = hexBytes(mac.String)
+	}
+	if len(b) < 4 {
+		// fallback: 用 device_uid 生成可重复的 4 字节
+		b = hexBytes(deviceUID)
+	}
+	if len(b) < 4 {
+		// 极端情况：填 0
+		b = []byte{0, 0, 0, 0}
+	}
+	last4 := b[len(b)-4:]
+	return fmt.Sprintf("%x%x:%x%x", last4[0], last4[1], last4[2], last4[3])
+}
+
+// ----------------------------------------------------------------------------
+// BatchUpdateDeviceStores — v2 schema
+// ----------------------------------------------------------------------------
+
 func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Context, updates []*domain.DeviceStore) error {
 	if len(updates) == 0 {
 		return nil
@@ -462,221 +641,206 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 		}
 		deviceUID := update.DeviceUID
 
-		// 如果更新 tenant_id，需要验证迁移规则（仅校验，不写库）
-		var tenantChanged bool
-		var migrateFromPivot bool
-		var currentTenantID, currentDeviceID string
-		if update.TenantID != "" {
-			err := tx.QueryRowContext(ctx, `SELECT tenant_id::text, device_id::text FROM device_store WHERE device_uid = $1`, deviceUID).Scan(&currentTenantID, &currentDeviceID)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					return fmt.Errorf("device_store not found: device_uid=%s", deviceUID)
-				}
-				return fmt.Errorf("failed to query current tenant_id: %w", err)
+		// 解出 device_id + 当前 spatial_addr
+		var deviceID string
+		var currentAddr sql.NullString
+		err := tx.QueryRowContext(ctx, `
+			SELECT dfm.device_id::text, host(d.spatial_addr) || '/128'
+			  FROM device_factory_meta dfm
+			  LEFT JOIN devices d ON d.device_id = dfm.device_id
+			 WHERE dfm.device_uid = $1
+		`, deviceUID).Scan(&deviceID, &currentAddr)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("device_store not found: device_uid=%s", deviceUID)
 			}
-			if currentTenantID != update.TenantID {
-				tenantChanged = true
-				currentIs := isDeviceStorePivotTenant(currentTenantID)
-				newIs := isDeviceStorePivotTenant(update.TenantID)
-				if !currentIs && !newIs {
-					name1, name2 := tenantNamesOrIDs(ctx, tx, currentTenantID, update.TenantID)
-					return fmt.Errorf("cannot migrate device directly from %s to %s: move to System first", name1, name2)
-				}
-				migrateFromPivot = currentIs && !newIs
-			}
+			return fmt.Errorf("failed to query device: %w", err)
 		}
 
-		setParts := []string{}
-		args := []any{}
-		argN := 1
+		// 1) device_factory_meta 字段（device_type / device_model / device_code / mac / imei / comm_mode / mcu_model）
+		factorySet := []string{}
+		factoryArgs := []any{}
+		fN := 1
 		if update.DeviceType != "" {
-			setParts = append(setParts, fmt.Sprintf("device_type = $%d", argN))
-			args = append(args, update.DeviceType)
-			argN++
+			factorySet = append(factorySet, fmt.Sprintf("device_type = $%d::device_type_enum", fN))
+			factoryArgs = append(factoryArgs, update.DeviceType)
+			fN++
 		}
 		if update.DeviceModel.Valid {
-			setParts = append(setParts, fmt.Sprintf("device_model = $%d", argN))
-			args = append(args, nullStringToAny(update.DeviceModel))
-			argN++
-		}
-		// device_name 不由 device_store 更新，由 devices 表同步
-		if update.TenantID != "" {
-			setParts = append(setParts, fmt.Sprintf("tenant_id = $%d", argN))
-			args = append(args, update.TenantID)
-			argN++
+			factorySet = append(factorySet, fmt.Sprintf("device_model = $%d", fN))
+			factoryArgs = append(factoryArgs, nullStringToAny(update.DeviceModel))
+			fN++
 		}
 		if update.DeviceCodeSet {
-			setParts = append(setParts, fmt.Sprintf("device_code = $%d", argN))
-			args = append(args, nullStringToAny(update.DeviceCode))
-			argN++
+			factorySet = append(factorySet, fmt.Sprintf("device_code = $%d", fN))
+			factoryArgs = append(factoryArgs, nullStringToAny(update.DeviceCode))
+			fN++
 		}
-		if update.OTATargetFWSet {
-			setParts = append(setParts, fmt.Sprintf("ota_target_firmware_version = $%d", argN))
-			args = append(args, nullStringToAny(update.OTATargetFirmwareVersion))
-			argN++
+		if len(factorySet) > 0 {
+			factoryArgs = append(factoryArgs, deviceUID)
+			q := fmt.Sprintf(`UPDATE device_factory_meta SET %s WHERE device_uid = $%d`,
+				strings.Join(factorySet, ", "), fN)
+			if _, err := tx.ExecContext(ctx, q, factoryArgs...); err != nil {
+				return fmt.Errorf("update device_factory_meta: %w", err)
+			}
 		}
-		if update.OTATargetMCUSet {
-			setParts = append(setParts, fmt.Sprintf("ota_target_mcu_model = $%d", argN))
-			args = append(args, nullStringToAny(update.OTATargetMCUModel))
-			argN++
+
+		// 2) tenant 迁移 — 用 reset_device_prefix 把 branch+下层全清零，再用 string-substitute 替换 tenant /48 头部
+		if update.TenantID != "" && currentAddr.Valid {
+			// 当前 tenant /48
+			var currentTenantPrefix string
+			if err := tx.QueryRowContext(ctx, `
+				SELECT host(network(set_masklen($1::INET, 48))) || '/48'
+			`, currentAddr.String).Scan(&currentTenantPrefix); err != nil {
+				return fmt.Errorf("derive current tenant prefix: %w", err)
+			}
+			if currentTenantPrefix != update.TenantID {
+				// 业务规则（v1 R-001 保留）：device 不能直接从一个非 pivot tenant 调到另一个非 pivot tenant，
+				// 必须先回 System (fd00:0:1::/48) 中转。pivot = system / trash (fd00:0:1::/48 / fd00:0:2::/48)。
+				currentIsPivot := isV2PivotTenantPrefix(currentTenantPrefix)
+				newIsPivot := isV2PivotTenantPrefix(update.TenantID)
+				if !currentIsPivot && !newIsPivot {
+					name1, name2 := tenantNamesOrIDsByPrefix(ctx, tx, currentTenantPrefix, update.TenantID)
+					return fmt.Errorf("cannot migrate device directly from %s to %s: move to System first", name1, name2)
+				}
+				// reset 到 branch 层 — 把当前 addr 的 byte 6..11 清零（保留 MAC bytes 12-15）
+				// 用 platform_admin 的 fd00::/32 scope 调用
+				var resetAddr string
+				if err := tx.QueryRowContext(ctx, `
+					SELECT host(reset_device_prefix(
+					  $1::INET, 'fd00::/32'::INET, 32::SMALLINT, 'branch'
+					)) || '/128'
+				`, currentAddr.String).Scan(&resetAddr); err != nil {
+					return fmt.Errorf("reset_device_prefix: %w", err)
+				}
+				// 替换 tenant /48 头部：取 resetAddr 的 host bits + target tenant 的 network bits
+				// SQL: target_tenant_prefix（/48 网络部分）OR reset_addr 的低 80bit
+				var newAddr string
+				if err := tx.QueryRowContext(ctx, `
+					SELECT host(
+					  set_masklen(network(set_masklen($1::INET, 48)), 128)
+					  | ($2::INET & '::ffff:ffff:ffff:ffff:ffff'::INET)
+					) || '/128'
+				`, update.TenantID, resetAddr).Scan(&newAddr); err != nil {
+					return fmt.Errorf("compose new tenant addr: %w", err)
+				}
+				// UPDATE devices.spatial_addr — FK 已设 ON UPDATE CASCADE，device_ota.spatial_addr 自动同步
+				if _, err := tx.ExecContext(ctx, `
+					UPDATE devices SET spatial_addr = $2::INET, updated_at = NOW()
+					 WHERE spatial_addr = $1::INET
+				`, currentAddr.String, newAddr); err != nil {
+					return fmt.Errorf("update devices.spatial_addr: %w", err)
+				}
+				// 后续 OTA UPSERT 用新地址定位
+				currentAddr = sql.NullString{String: newAddr, Valid: true}
+			}
 		}
-		if update.AllowAccessSet {
-			setParts = append(setParts, fmt.Sprintf("allow_access = $%d", argN))
-			args = append(args, update.AllowAccess)
-			argN++
-		}
-		if update.OTAPermitSet {
-			setParts = append(setParts, fmt.Sprintf("ota_permit = $%d", argN))
-			args = append(args, nullStringToAny(update.OTAPermit))
-			argN++
-		}
-		if update.OTAWaySet {
-			setParts = append(setParts, fmt.Sprintf("ota_way = $%d", argN))
-			args = append(args, nullStringToAny(update.OTAWay))
-			argN++
-		}
-		if update.OTAScheduleSet {
-			setParts = append(setParts, fmt.Sprintf("ota_schedule = $%d", argN))
-			args = append(args, nullStringToAny(update.OTASchedule))
-			argN++
-		}
-		if update.OTAStatusSet {
-			setParts = append(setParts, fmt.Sprintf("ota_status = $%d", argN))
-			args = append(args, nullStringToAny(update.OTAStatus))
-			argN++
-			setParts = append(setParts, "ota_updated_at = CURRENT_TIMESTAMP")
-		}
-		// OTA auto-reset: when OTA plan fields change and OTAStatusSet is false, reset status
-		otaPlanChanged := update.OTATargetFirmwareVersion.Valid || update.OTATargetMCUModel.Valid ||
+
+		// 3) OTA 字段 — UPSERT device_ota（v1→v2 字段映射）
+		otaPlanChanged := update.OTATargetFWSet || update.OTATargetMCUSet ||
 			update.OTAPermitSet || update.OTAWaySet || update.OTAScheduleSet
-		if otaPlanChanged && !update.OTAStatusSet {
-			setParts = append(setParts, "ota_status = 'idle'", "ota_progress = NULL", "ota_error = NULL", "ota_tenant_approved = FALSE")
-		}
-		if update.TenantID != "" && update.TenantID != trashTenantID && update.TenantID != unallocatedTenantID {
-			setParts = append(setParts, "allocate_time = CASE WHEN allocate_time IS NULL THEN CURRENT_TIMESTAMP ELSE allocate_time END")
-		}
-		if len(setParts) == 0 {
-			continue
-		}
+		if (otaPlanChanged || update.OTAStatusSet) && currentAddr.Valid {
+			// 计算 approve_way（仅当 OTAPermitSet 或 OTAWaySet 时改）
+			otaSet := []string{}
+			otaArgs := []any{}
+			oN := 1
 
-		// 先更新 device_store，满足触发器 validate_device_store_tenant（devices.tenant_id 须与 device_store.tenant_id 一致）
-		query := fmt.Sprintf(`UPDATE device_store SET %s WHERE device_uid = $%d`, strings.Join(setParts, ", "), argN)
-		argsDs := append([]any{}, args...)
-		argsDs = append(argsDs, deviceUID)
-		if _, err := tx.ExecContext(ctx, query, argsDs...); err != nil {
-			return err
-		}
-
-		// 再同步 devices：tenant_id + business_access='approved' + monitoring_enabled=TRUE + clear bindings
-		if tenantChanged {
-			_, err := tx.ExecContext(ctx, `
-				UPDATE devices
-				SET tenant_id = $1, business_access = 'approved', monitoring_enabled = TRUE,
-				    bound_room_id = NULL, bound_bed_id = NULL
-				WHERE device_id IN (SELECT device_id FROM device_store WHERE device_uid = $2)
-			`, update.TenantID, deviceUID)
-			if err != nil {
-				return fmt.Errorf("failed to update devices table: %w", err)
+			if update.OTATargetFWSet {
+				otaSet = append(otaSet, fmt.Sprintf("target_firmware_version = $%d", oN))
+				otaArgs = append(otaArgs, nullStringToAny(update.OTATargetFirmwareVersion))
+				oN++
 			}
-			if migrateFromPivot {
-				_, err = tx.ExecContext(ctx, `
-					INSERT INTO devices (device_id, device_uid, tenant_id, device_name, status, business_access, monitoring_enabled)
-					SELECT ds.device_id, ds.device_uid, $1,
-						COALESCE(NULLIF(TRIM(ds.device_type), ''), 'Device') || '_' || RIGHT(ds.device_uid, 4),
-						'offline', 'approved', TRUE
-					FROM device_store ds
-					WHERE ds.device_uid = $2
-					  AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.device_id = ds.device_id)
-				`, update.TenantID, deviceUID)
-				if err != nil {
-					return fmt.Errorf("failed to create devices row on migrate: %w", err)
-				}
+			if update.OTATargetMCUSet {
+				otaSet = append(otaSet, fmt.Sprintf("target_mcu_model = $%d", oN))
+				otaArgs = append(otaArgs, nullStringToAny(update.OTATargetMCUModel))
+				oN++
 			}
+			if update.OTAPermitSet || update.OTAWaySet {
+				approveWay := mapV1OTAWayToV2ApproveWay(update.OTAPermit, update.OTAWay, update.OTATenantApproved)
+				otaSet = append(otaSet, fmt.Sprintf("approve_way = $%d", oN))
+				otaArgs = append(otaArgs, nullStringToAny(approveWay))
+				oN++
+			}
+			if update.OTAScheduleSet {
+				sched := parseV1OTAScheduleToTime(update.OTASchedule.String)
+				otaSet = append(otaSet, fmt.Sprintf("schedule = $%d", oN))
+				if sched.Valid {
+					otaArgs = append(otaArgs, sched.Time)
+				} else {
+					otaArgs = append(otaArgs, nil)
+				}
+				oN++
+			}
+			if update.OTAStatusSet {
+				otaSet = append(otaSet, fmt.Sprintf("status = $%d", oN))
+				otaArgs = append(otaArgs, nullStringToAny(update.OTAStatus))
+				oN++
+			}
+			// auto-reset：plan 变了但 status 没显式设 → status='idle'
+			if otaPlanChanged && !update.OTAStatusSet {
+				otaSet = append(otaSet, "status = 'idle'", "progress = NULL", "error = NULL")
+			}
+			otaSet = append(otaSet, "updated_at = NOW()")
 
-			// 清理旧租户残留：从所有 cards.devices JSONB 中移除该设备引用，并删除其 DeviceCard
-			// 否则旧租户的 DeviceCard 会成为孤儿，导致 cardagg/qinglan 把设备状态错路由到旧租户
-			// 注：jsonb_build_object 接受 any 类型，pq 推不出 $2 类型，必须显式 ::text
-			if currentDeviceID != "" && currentTenantID != "" {
-				if _, err := tx.ExecContext(ctx, `
-					UPDATE cards
-					SET devices = COALESCE((
-						SELECT jsonb_agg(elem)
-						FROM jsonb_array_elements(devices) AS elem
-						WHERE elem->>'device_id' <> $2::text
-					), '[]'::jsonb)
-					WHERE tenant_id = $1
-					  AND devices @> jsonb_build_array(jsonb_build_object('device_id', $2::text))
-				`, currentTenantID, currentDeviceID); err != nil {
-					return fmt.Errorf("failed to clean cards.devices in old tenant: %w", err)
-				}
-				if _, err := tx.ExecContext(ctx, `
-					DELETE FROM cards
-					WHERE card_type = 'DeviceCard' AND tenant_id = $1 AND card_id = $2::uuid
-				`, currentTenantID, currentDeviceID); err != nil {
-					return fmt.Errorf("failed to delete orphan DeviceCard in old tenant: %w", err)
-				}
+			// UPSERT
+			otaArgs = append(otaArgs, currentAddr.String)
+			q := fmt.Sprintf(`
+				INSERT INTO device_ota (spatial_addr, status, updated_at)
+				VALUES ($%d::INET, 'idle', NOW())
+				ON CONFLICT (spatial_addr) DO UPDATE SET %s
+			`, oN, strings.Join(otaSet, ", "))
+			if _, err := tx.ExecContext(ctx, q, otaArgs...); err != nil {
+				return fmt.Errorf("upsert device_ota: %w", err)
 			}
 		}
+
+		// allow_access — v2 已删此列；忽略写入（兼容 FE）。
 	}
 
 	return tx.Commit()
 }
 
-// tenantNamesOrIDs 查询 tenants 表取 tenant_name，若不存在则返回 tenant_id
-func tenantNamesOrIDs(ctx context.Context, tx *sql.Tx, id1, id2 string) (string, string) {
-	rows, err := tx.QueryContext(ctx, `SELECT tenant_id::text, tenant_name FROM tenants WHERE tenant_id IN ($1, $2)`, id1, id2)
-	if err != nil {
-		return id1, id2
-	}
-	defer rows.Close()
-	m := make(map[string]string)
-	for rows.Next() {
-		var tid, tname string
-		if err := rows.Scan(&tid, &tname); err != nil {
-			continue
-		}
-		m[tid] = tname
-	}
-	n1, n2 := id1, id2
-	if s, ok := m[id1]; ok && s != "" {
-		n1 = s
-	}
-	if s, ok := m[id2]; ok && s != "" {
-		n2 = s
-	}
-	return n1, n2
-}
+// ----------------------------------------------------------------------------
+// DeleteDeviceStore — 移除 devices(CASCADE device_ota) 与 device_factory_meta(CASCADE runtime_state)
+// ----------------------------------------------------------------------------
 
-// DeleteDeviceStore 删除设备库存。仅允许 tenant_id = trash(000)；需先迁回 trash 再删。
 func (r *PostgresDeviceStoreRepository) DeleteDeviceStore(ctx context.Context, deviceUID string) error {
-	var tenantID string
-	err := r.db.QueryRowContext(ctx, `SELECT tenant_id::text FROM device_store WHERE device_uid = $1`, deviceUID).Scan(&tenantID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("device_store not found: device_uid=%s", deviceUID)
-		}
-		return fmt.Errorf("failed to query device_store: %w", err)
-	}
-	if tenantID != trashTenantID {
-		return fmt.Errorf("cannot delete: device must be in trash tenant first (current tenant_id=%s)", tenantID)
-	}
-
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	_, err = tx.ExecContext(ctx, `DELETE FROM devices WHERE device_uid = $1`, deviceUID)
-	if err != nil {
+	// 解出 device_id
+	var deviceID string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT device_id::text FROM device_factory_meta WHERE device_uid = $1`,
+		deviceUID,
+	).Scan(&deviceID); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("device_store not found: device_uid=%s", deviceUID)
+		}
+		return fmt.Errorf("failed to query device: %w", err)
+	}
+
+	// devices CASCADE 删 device_ota（FK ON DELETE CASCADE）
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM devices WHERE device_id = $1::uuid`, deviceID,
+	); err != nil {
 		return fmt.Errorf("failed to delete devices: %w", err)
 	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM device_store WHERE device_uid = $1`, deviceUID)
-	if err != nil {
-		return fmt.Errorf("failed to delete device_store: %w", err)
+	// device_factory_meta CASCADE 删 device_runtime_state（FK ON DELETE CASCADE 在 22_*.sql 里）
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM device_factory_meta WHERE device_id = $1::uuid`, deviceID,
+	); err != nil {
+		return fmt.Errorf("failed to delete device_factory_meta: %w", err)
 	}
 	return tx.Commit()
 }
+
+// ----------------------------------------------------------------------------
+// ImportDeviceStores — 批量导入；后者覆盖前者；同 Create 写 4 张表
+// ----------------------------------------------------------------------------
 
 func deviceStoreNormUID(uid string) string {
 	return strings.TrimSpace(uid)
@@ -689,8 +853,6 @@ func deviceStoreNormCode(c sql.NullString) string {
 	return strings.TrimSpace(c.String)
 }
 
-// ImportDeviceStores 批量导入设备库存；返回成功数、新插入或更新行(含 device_id)、跳过、失败。
-// 同一导入内相同 device_uid 多行时后者覆盖前者（cover）；库中已有该 uid 则 UPDATE，否则 INSERT。
 func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, items []*domain.DeviceStore) (successCount int, inserted []*domain.DeviceStore, skipped []*domain.DeviceStore, errors []*domain.DeviceStore, err error) {
 	if len(items) == 0 {
 		return 0, nil, nil, nil, nil
@@ -737,49 +899,52 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 		item := lastByUID[k]
 		normUID := k
 		normCode := deviceStoreNormCode(item.DeviceCode)
-		tenantID := item.TenantID
-		if tenantID == "" {
-			tenantID = unallocatedTenantID
+		tenantPrefix := strings.TrimSpace(item.TenantID)
+		if tenantPrefix == "" {
+			tenantPrefix = defaultUnboundTenantPrefix
 		}
 		codeForInsert := sql.NullString{String: normCode, Valid: normCode != ""}
 
-		args := []any{
-			normUID,
-			nullStringToAny(codeForInsert),
-			item.DeviceType,
-			nullStringToAny(item.DeviceModel),
-			nullStringToAny(item.DeviceName),
-			nullStringToAny(item.MAC),
-			nullStringToAny(item.IMEI),
-			nullStringToAny(item.CommMode),
-			nullStringToAny(item.MCUModel),
-			nullStringToAny(item.FirmwareVersion),
-			tenantID,
-			item.AllowAccess,
-		}
-
+		// 已存在 → UPDATE device_factory_meta（不动 spatial_addr）
 		var deviceID string
-		err := tx.QueryRowContext(ctx, `SELECT device_id::text FROM device_store WHERE device_uid = $1`, normUID).Scan(&deviceID)
+		err := tx.QueryRowContext(ctx,
+			`SELECT device_id::text FROM device_factory_meta WHERE device_uid = $1`,
+			normUID,
+		).Scan(&deviceID)
 		if err == nil {
-			updateQuery := `
-				UPDATE device_store SET
+			updateMeta := `
+				UPDATE device_factory_meta SET
 					device_code = $2,
-					device_type = $3,
+					device_type = $3::device_type_enum,
 					device_model = $4,
-					device_name = $5,
-					mac = $6,
-					imei = $7,
-					comm_mode = $8,
-					mcu_model = $9,
-					firmware_version = $10,
-					tenant_id = $11,
-					allow_access = $12
+					mac_wifi = $5,
+					imei = $6,
+					comm_mode = $7,
+					mcu_model = $8
 				WHERE device_uid = $1
 			`
-			_, err = tx.ExecContext(ctx, updateQuery, args...)
-			if err != nil {
+			if _, e := tx.ExecContext(ctx, updateMeta,
+				normUID,
+				nullStringToAny(codeForInsert),
+				item.DeviceType,
+				nullStringToAny(item.DeviceModel),
+				nullStringToAny(item.MAC),
+				nullStringToAny(item.IMEI),
+				nullStringToAny(item.CommMode),
+				nullStringToAny(item.MCUModel),
+			); e != nil {
 				errs = append(errs, item)
 				continue
+			}
+			// firmware_version 若提供则同步到 runtime_state
+			if item.FirmwareVersion.Valid && item.FirmwareVersion.String != "" {
+				if _, e := tx.ExecContext(ctx, `
+					UPDATE device_runtime_state SET firmware_version = $1, updated_at = NOW()
+					 WHERE device_id = $2::uuid
+				`, item.FirmwareVersion.String, deviceID); e != nil {
+					errs = append(errs, item)
+					continue
+				}
 			}
 			successCount++
 			ins = append(ins, &domain.DeviceStore{
@@ -787,7 +952,7 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 				DeviceUID:  normUID,
 				DeviceType: item.DeviceType,
 				DeviceCode: codeForInsert,
-				TenantID:   tenantID,
+				TenantID:   tenantPrefix,
 			})
 			continue
 		}
@@ -796,16 +961,45 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 			continue
 		}
 
-		insertQuery := `
-			INSERT INTO device_store (
-				device_uid, device_code, device_type, device_model, device_name, mac, imei,
-				comm_mode, mcu_model, firmware_version,
-				tenant_id, allow_access
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-			RETURNING device_id::text
-		`
-		err = tx.QueryRowContext(ctx, insertQuery, args...).Scan(&deviceID)
-		if err != nil {
+		// 新增 — 三张表写
+		if e := tx.QueryRowContext(ctx, `SELECT gen_random_uuid()::text`).Scan(&deviceID); e != nil {
+			errs = append(errs, item)
+			continue
+		}
+		if _, e := tx.ExecContext(ctx, `
+			INSERT INTO device_factory_meta (
+				device_id, device_uid, device_code, device_type, device_model,
+				mcu_model, mac_wifi, imei, comm_mode
+			) VALUES ($1::uuid, $2, $3, $4::device_type_enum, $5, $6, $7, $8, $9)
+		`,
+			deviceID,
+			normUID,
+			nullStringToAny(codeForInsert),
+			item.DeviceType,
+			nullStringToAny(item.DeviceModel),
+			nullStringToAny(item.MCUModel),
+			nullStringToAny(item.MAC),
+			nullStringToAny(item.IMEI),
+			nullStringToAny(item.CommMode),
+		); e != nil {
+			errs = append(errs, item)
+			continue
+		}
+		if _, e := tx.ExecContext(ctx, `
+			INSERT INTO device_runtime_state (device_id, online, firmware_version)
+			VALUES ($1::uuid, FALSE, $2)
+		`, deviceID, nullStringToAny(item.FirmwareVersion)); e != nil {
+			errs = append(errs, item)
+			continue
+		}
+		mac32 := deriveMAC32Suffix(item.MAC, normUID)
+		if _, e := tx.ExecContext(ctx, `
+			INSERT INTO devices (spatial_addr, device_id, monitoring_enabled)
+			VALUES (
+			  set_masklen(network(set_masklen($1::INET, 48)), 128) | ('::' || $2)::INET,
+			  $3::uuid, TRUE
+			)
+		`, tenantPrefix, mac32, deviceID); e != nil {
 			errs = append(errs, item)
 			continue
 		}
@@ -816,7 +1010,7 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 			DeviceUID:  normUID,
 			DeviceType: item.DeviceType,
 			DeviceCode: codeForInsert,
-			TenantID:   tenantID,
+			TenantID:   tenantPrefix,
 		})
 	}
 
@@ -827,17 +1021,25 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 	return successCount, ins, sk, errs, nil
 }
 
-// UpdateDeviceCode 更新 device_code。device_code 仅来自厂家导入文件；绑定/initialize 不提供可写回的值。
+// ----------------------------------------------------------------------------
+// UpdateDeviceCode / UpdateFirmwareVersion
+// ----------------------------------------------------------------------------
+
+// UpdateDeviceCode 更新 device_code（厂家会话 ID） — 写 device_factory_meta
 func (r *PostgresDeviceStoreRepository) UpdateDeviceCode(ctx context.Context, deviceID, deviceCode string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE device_store SET device_code = $1 WHERE device_id = $2`, deviceCode, deviceID)
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE device_factory_meta SET device_code = $1 WHERE device_id = $2::uuid`,
+		deviceCode, deviceID)
 	return err
 }
 
-// UpdateFirmwareVersion 仅更新 firmware_version（InitialAll 调 bindInfo 后按返回的 deviceVersion 写回）。
+// UpdateFirmwareVersion 仅更新 firmware_version — 写 device_runtime_state
 func (r *PostgresDeviceStoreRepository) UpdateFirmwareVersion(ctx context.Context, deviceID, firmwareVersion string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE device_store SET firmware_version = $1 WHERE device_id = $2`, firmwareVersion, deviceID)
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO device_runtime_state (device_id, firmware_version)
+		VALUES ($1::uuid, $2)
+		ON CONFLICT (device_id) DO UPDATE
+		SET firmware_version = EXCLUDED.firmware_version, updated_at = NOW()
+	`, deviceID, firmwareVersion)
 	return err
 }
-
-// Helper function to convert sql.NullString to any (already defined in postgres_units.go)
-// Using the same function from postgres_units.go

@@ -41,12 +41,14 @@ func (h *DeviceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/admin/api/v1/devices" && r.Method == http.MethodGet:
 		h.ListDevices(w, r)
-	case strings.HasPrefix(r.URL.Path, "/admin/api/v1/devices/") && r.Method == http.MethodGet:
-		h.GetDevice(w, r)
+	case strings.HasSuffix(r.URL.Path, "/reset") && r.Method == http.MethodPost:
+		h.ResetDevicePrefix(w, r)
 	case strings.HasSuffix(r.URL.Path, "/ota-approve") && r.Method == http.MethodPost:
 		h.ApproveOTA(w, r)
 	case strings.HasSuffix(r.URL.Path, "/ota-schedule") && r.Method == http.MethodPost:
 		h.SetOTASchedule(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/api/v1/devices/") && r.Method == http.MethodGet:
+		h.GetDevice(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api/v1/devices/") && r.Method == http.MethodPut:
 		h.UpdateDevice(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api/v1/devices/") && r.Method == http.MethodDelete:
@@ -54,6 +56,108 @@ func (h *DeviceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// ResetDevicePrefix 解绑 device 到指定层级（清零 spatial_addr 字节段，保留 MAC）。
+// 路径：POST /admin/api/v1/devices/{spatial_addr}/reset?layer=branch|site|unit|room|bed
+// 设计说明详见 memory/device_unbind_via_prefix_reset.md：
+//   - spatial_addr (PK /128) 不删行；UPDATE 清零 [byte_start..11]，bytes 12-15 (MAC) 保留
+//   - 权限：调用者 role.scope_prefix_len 必须 ≤ byte_start*8（不能清零 scope 之外的字节）
+//   - SQL 集中校验：reset_device_prefix(addr, session_prefix, session_masklen, layer)
+//   - 触发器已放宽：unbound device 落在 branch /56 池内合法
+func (h *DeviceHandler) ResetDevicePrefix(w http.ResponseWriter, r *http.Request) {
+	if h.db == nil {
+		writeJSON(w, http.StatusOK, Fail("database not available"))
+		return
+	}
+
+	// 1. 解析 spatial_addr from path: /admin/api/v1/devices/{addr}/reset
+	// addr 是 IPv6 CIDR /128，含 '/'；不能简单按 '/' split，要走 stitchCIDRSegments
+	rest := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/devices/")
+	rest = strings.TrimSuffix(rest, "/reset")
+	if rest == "" || isMultiSegmentPath(rest) {
+		writeJSON(w, http.StatusOK, Fail("spatial_addr is required (IPv6 CIDR /128)"))
+		return
+	}
+	spatialAddr := rest
+
+	// 2. layer 参数
+	layer := r.URL.Query().Get("layer")
+	switch layer {
+	case "branch", "site", "unit", "room", "bed":
+		// ok
+	default:
+		writeJSON(w, http.StatusOK, Fail("layer must be one of: branch, site, unit, room, bed"))
+		return
+	}
+
+	// 3. 调用者 scope：role + tenant_prefix
+	role := r.Header.Get("X-User-Role")
+	if role == "" {
+		writeJSON(w, http.StatusOK, Fail("X-User-Role header required"))
+		return
+	}
+	tenantID := r.Header.Get("X-Tenant-Id")
+
+	// 查 roles.scope_prefix_len
+	var scopeLen int
+	err := h.db.QueryRowContext(r.Context(),
+		`SELECT scope_prefix_len FROM roles WHERE LOWER(role_code) = LOWER($1) AND is_system = TRUE LIMIT 1`,
+		role).Scan(&scopeLen)
+	if err == sql.ErrNoRows {
+		writeJSON(w, http.StatusOK, Fail("unknown role: "+role))
+		return
+	}
+	if err != nil {
+		h.logger.Error("ResetDevicePrefix: lookup role failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail("role lookup failed"))
+		return
+	}
+
+	// 决定 session_prefix：platform=fd00::/32, tenant=X-Tenant-Id, 其它=暂不支持
+	var sessionPrefix string
+	switch scopeLen {
+	case 32:
+		sessionPrefix = "fd00::/32"
+	case 48:
+		if tenantID == "" {
+			writeJSON(w, http.StatusOK, Fail("X-Tenant-Id header required for tenant-scoped role"))
+			return
+		}
+		sessionPrefix = tenantID
+	default:
+		// branch_manager (56) / unit_manager (80) 需 X-Branch-Id / X-Unit-Id；先 not-implemented
+		writeJSON(w, http.StatusOK, Fail("role scope not yet wired (only platform_admin and tenant_admin supported in this PR)"))
+		return
+	}
+
+	// 4. UPDATE devices 用 reset_device_prefix() 派生新 addr
+	var newAddr string
+	err = h.db.QueryRowContext(r.Context(), `
+		UPDATE devices
+		   SET spatial_addr = reset_device_prefix(spatial_addr, $2::INET, $3::SMALLINT, $4),
+		       updated_at = NOW()
+		 WHERE spatial_addr = $1::INET
+		RETURNING host(spatial_addr) || '/128'`,
+		spatialAddr, sessionPrefix, scopeLen, layer).Scan(&newAddr)
+	if err == sql.ErrNoRows {
+		writeJSON(w, http.StatusOK, Fail("device not found: "+spatialAddr))
+		return
+	}
+	if err != nil {
+		h.logger.Error("ResetDevicePrefix: UPDATE failed",
+			zap.String("addr", spatialAddr), zap.String("layer", layer), zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Ok(map[string]any{
+		"old_spatial_addr": spatialAddr,
+		"new_spatial_addr": newAddr,
+		"layer":            layer,
+		"caller_role":      role,
+		"caller_scope":     sessionPrefix,
+	}))
 }
 
 // GetDeviceRelations 查询设备关联关系

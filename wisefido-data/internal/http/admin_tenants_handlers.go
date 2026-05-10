@@ -11,16 +11,32 @@ import (
 	"strings"
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
-	
+
 	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type TenantsHandler struct {
-	Repo          repository.TenantsRepository   // 使用新的 TenantsRepository 接口
-	BranchesRepo  repository.BranchesRepository  // optional: 用于创建默认 branch
-	Auth          *AuthStore                     // optional (dev only)
-	DB            *sql.DB                        // optional (dev only): seed bootstrap admin into DB users table
-	logger        *zap.Logger                    // optional: 用于记录创建默认 branch 的错误
+	Repo              repository.TenantsRepository  // 使用新的 TenantsRepository 接口
+	BranchesRepo      repository.BranchesRepository // optional: 用于创建默认 branch
+	Auth              *AuthStore                    // optional (dev only)
+	DB                *sql.DB                       // optional (dev only): seed bootstrap admin into DB users table
+	logger            *zap.Logger                   // optional: 用于记录创建默认 branch 的错误
+	tenantStatusCache *TenantStatusCache            // D-001b：改 tenant.status 后调 Invalidate
+}
+
+// SetTenantStatusCache 注入 D-001b cache；改 tenant.status / 删 tenant 后会 Invalidate(prefix)。
+func (h *TenantsHandler) SetTenantStatusCache(c *TenantStatusCache) {
+	if h != nil {
+		h.tenantStatusCache = c
+	}
+}
+
+// invalidateTenantCache 内部 helper：cache 非 nil 时清掉指定 prefix 的 entry。
+func (h *TenantsHandler) invalidateTenantCache(tenantPrefix string) {
+	if h != nil && h.tenantStatusCache != nil {
+		h.tenantStatusCache.Invalidate(tenantPrefix)
+	}
 }
 
 func NewTenantsHandler(repo repository.TenantsRepository, branchesRepo repository.BranchesRepository, auth *AuthStore, db *sql.DB) *TenantsHandler {
@@ -40,34 +56,56 @@ func genTempPassword() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-func (h *TenantsHandler) upsertBootstrapAdminUserInDB(tenantID, password string) {
+// upsertBootstrapAdminUserInDB v2 schema 适配：
+//   - tenantPrefix 是 CIDR ('fd00:0:T::/48')，写入 users.tenant_prefix INET
+//   - username = 'admin'（v2 改 per-tenant UNIQUE，与 v1 一致；不再需要 admin_<slot> 派生）
+//   - password 三层：
+//       password_hash       = bcrypt(sha256(plain))   真正登录验证（抗暴力）
+//       password_check_hash = sha256(plain) bytes     反向定位 user + DB partial UNIQUE 拦 admin 全局密码冲突
+//   - role = 'tenant_admin'（partial UNIQUE 索引基于此过滤）
+//   - must_change_password=true 强制首次登录改密
+//
+// 返回 (username, error)；error 包含 "uniq_admin_password_check" 时调用方应换密码重试。
+func (h *TenantsHandler) upsertBootstrapAdminUserInDB(tenantPrefix, password string) (string, error) {
 	if h == nil || h.DB == nil {
-		return
+		return "", fmt.Errorf("db unavailable")
 	}
-	// password_hash should only depend on password itself (independent of account/phone/email)
-	ah, _ := hex.DecodeString(HashAccount("admin"))
-	aph, _ := hex.DecodeString(HashPassword(password))
-	// Ensure at least non-empty hashes; if decode fails, skip DB write (dev helper only).
-	if len(ah) == 0 || len(aph) == 0 {
-		return
+	if tenantPrefix == "" || password == "" {
+		return "", fmt.Errorf("tenant_prefix and password required")
 	}
-	// Best-effort insert/update. Login currently uses AuthStore, but DB should reflect the bootstrap admin.
-	_, _ = h.DB.Exec(
-		`INSERT INTO users (tenant_id, user_account, user_account_hash, password_hash, nickname, role, status)
-		 VALUES ($1, $2, $3, $4, $5, $6, 'active')
-		 ON CONFLICT (tenant_id, user_account)
-		 DO UPDATE SET user_account_hash = EXCLUDED.user_account_hash,
-		               password_hash = EXCLUDED.password_hash,
-		               nickname = EXCLUDED.nickname,
-		               role = EXCLUDED.role,
-		               status = 'active'`,
-		tenantID,
-		"admin",
-		ah,
-		aph,
-		"Admin",
-		"Admin",
+
+	// 双层 hash + 检索 hash
+	shaHex := HashPassword(password) // sha256(plain) hex
+	checkHash, err := hex.DecodeString(shaHex)
+	if err != nil {
+		return "", fmt.Errorf("decode sha256 hex: %w", err)
+	}
+	bcryptHash, err := bcrypt.GenerateFromPassword([]byte(shaHex), bcrypt.DefaultCost)
+	if err != nil {
+		return "", fmt.Errorf("bcrypt: %w", err)
+	}
+
+	const username = "admin"
+	// INSERT or UPDATE：(tenant_prefix, username) UNIQUE 处理同 tenant 重入；
+	// admin 类的 password_check_hash 全局 UNIQUE 拦明文密码碰撞（DB 层）。
+	_, err = h.DB.Exec(
+		`INSERT INTO users (tenant_prefix, username, password_hash, password_check_hash,
+		                    nickname, role, status, must_change_password)
+		 VALUES ($1::INET, $2, $3, $4, 'Admin', 'tenant_admin', 'active', true)
+		 ON CONFLICT (tenant_prefix, username) DO UPDATE SET
+		   password_hash = EXCLUDED.password_hash,
+		   password_check_hash = EXCLUDED.password_check_hash,
+		   nickname = EXCLUDED.nickname,
+		   role = EXCLUDED.role,
+		   status = 'active',
+		   must_change_password = true,
+		   updated_at = NOW()`,
+		tenantPrefix, username, string(bcryptHash), checkHash,
 	)
+	if err != nil {
+		return "", fmt.Errorf("upsert user: %w", err)
+	}
+	return username, nil
 }
 
 func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -180,13 +218,26 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"metadata":    t.Metadata,
 			}
 			// Dev bootstrap account: create ONLY admin with TEMP password.
-			// Manager is a role; real "manager" users should be created by admin.
+			// v2: username 全局 UNIQUE，由 upsertBootstrapAdminUserInDB 派生为 'admin_<slot>'；
+			// 明文密码全局唯一约束 → 撞了重试（temp 是随机 12 字节 base64，碰撞概率近 0）。
 			if h.Auth != nil {
-				adminPwd := genTempPassword()
-				_ = h.Auth.UpsertUser(t.TenantID, "admin", "Admin", adminPwd)
-				h.upsertBootstrapAdminUserInDB(t.TenantID, adminPwd)
-				out["bootstrap_accounts"] = []any{
-					map[string]any{"user_account": "admin", "role": "Admin", "temp_password": adminPwd},
+				var adminPwd, username string
+				for retry := 0; retry < 3; retry++ {
+					adminPwd = genTempPassword()
+					u, err := h.upsertBootstrapAdminUserInDB(t.TenantID, adminPwd)
+					if err == nil {
+						username = u
+						break
+					}
+					if !strings.Contains(err.Error(), "collision") {
+						break // 非密码碰撞错误就放弃
+					}
+				}
+				if username != "" {
+					_ = h.Auth.UpsertUser(t.TenantID, username, "Admin", adminPwd)
+					out["bootstrap_accounts"] = []any{
+						map[string]any{"user_account": username, "role": "Admin", "temp_password": adminPwd},
+					}
 				}
 			}
 			writeJSON(w, http.StatusOK, Ok(out))
@@ -202,7 +253,9 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		parts := strings.Split(rest, "/")
+		// v2: tenant_id 现在装 IPv6 prefix CIDR（'fd00:0:6::/48'），URL 拆段时
+		// '/48' 会被当成下一个 path segment。识别 IPv6 串 + 数字尾巴重新拼回 mask。
+		parts := stitchCIDRSegments(strings.Split(rest, "/"))
 		id := parts[0]
 		if id == "" {
 			w.WriteHeader(http.StatusNotFound)
@@ -241,41 +294,22 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if adminPwd == "" {
 					adminPwd = genTempPassword()
 				}
-				// Update password in DB
-				// password_hash should only depend on password itself (independent of account/phone/email)
-				ah, _ := hex.DecodeString(HashAccount("admin"))
-				aph, _ := hex.DecodeString(HashPassword(adminPwd))
-				if len(ah) == 0 || len(aph) == 0 {
-					writeJSON(w, http.StatusOK, Fail("failed to hash credentials"))
+				// v2: 走双层 hash bcrypt(sha256(plain))；username 全局 UNIQUE 派生 'admin_<slot>'；
+				// 业务约束 admin 明文密码全局唯一 → 命中 collision 时 admin 必须换密码重试。
+				username, upErr := h.upsertBootstrapAdminUserInDB(id, adminPwd)
+				if upErr != nil {
+					if strings.Contains(upErr.Error(), "collision") {
+						writeJSON(w, http.StatusOK, Fail("password already used by another tenant admin; please choose a different password"))
+						return
+					}
+					writeJSON(w, http.StatusOK, Fail("failed to reset admin password: "+upErr.Error()))
 					return
 				}
-				// 全局检查：新密码不能和其他租户 admin 的密码相同（避免跨租户密码碰撞）
-				var dupCount int
-				_ = h.DB.QueryRowContext(r.Context(),
-					`SELECT COUNT(*) FROM users
-					 WHERE role = 'Admin' AND password_hash = $1 AND tenant_id <> $2::uuid`,
-					aph, id,
-				).Scan(&dupCount)
-				if dupCount > 0 {
-					writeJSON(w, http.StatusOK, Fail("Security Validation Failed: Please use a more complex password to continue."))
-					return
-				}
-				_, err := h.DB.ExecContext(
-					r.Context(),
-					`UPDATE users SET password_hash = $2
-					 WHERE tenant_id = $1 AND user_account = 'admin'`,
-					id, aph,
-				)
-				if err != nil {
-					writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to reset admin password: %v", err)))
-					return
-				}
-				// Optional: keep AuthStore in sync for dev/stub flows
 				if h.Auth != nil {
-					_ = h.Auth.UpsertUser(id, "admin", "Admin", adminPwd)
+					_ = h.Auth.UpsertUser(id, username, "Admin", adminPwd)
 				}
 				outAccounts := []any{
-					map[string]any{"user_account": "admin", "role": "Admin", "temp_password": adminPwd},
+					map[string]any{"user_account": username, "role": "Admin", "temp_password": adminPwd},
 				}
 				writeJSON(w, http.StatusOK, Ok(map[string]any{
 					"tenant_id":          id,
@@ -301,6 +335,7 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					writeJSON(w, http.StatusOK, Fail("failed to update tenant status"))
 					return
 				}
+				h.invalidateTenantCache(id) // D-001b
 				writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 				return
 			}
@@ -331,6 +366,10 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if _, ok := payload["phone"]; ok {
 				existing.Phone = getStringFromMap(payload, "phone")
 			}
+			if _, ok := payload["status"]; ok {
+				// v2: status 走 active/suspended/deleted（HIPAA 软删）
+				existing.Status = getStringFromMap(payload, "status")
+			}
 			if v, ok := payload["metadata"]; ok {
 				if v == nil {
 					existing.Metadata = nil
@@ -348,6 +387,7 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, Fail("failed to update tenant: "+errMsg))
 				return
 			}
+			h.invalidateTenantCache(id) // D-001b: status 字段可能在 update 中变了
 			// 获取更新后的租户
 			t, err := h.Repo.GetTenant(r.Context(), id)
 			if err != nil {
@@ -370,8 +410,12 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
-			// soft delete
-			_ = h.Repo.SetTenantStatus(r.Context(), id, "deleted")
+			// 智能删除：repo.DeleteTenant 内部判定空 tenant 硬删 / 非空软删
+			if err := h.Repo.DeleteTenant(r.Context(), id); err != nil {
+				writeJSON(w, http.StatusOK, Fail("failed to delete tenant: "+err.Error()))
+				return
+			}
+			h.invalidateTenantCache(id) // D-001b
 			writeJSON(w, http.StatusOK, Ok[any](nil))
 			return
 		default:

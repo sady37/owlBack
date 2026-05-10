@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -181,45 +180,12 @@ func (s *unitService) getUserBranchID(ctx context.Context, tenantID, userID stri
 }
 
 // getUserBranchIDs 查询用户所属的所有 branch_id 列表（Service 层内部方法）
-// 从 user_branches 表查询用户关联的所有院区 ID
-// 如果 user_branches 表返回空且 role=Admin，返回所有 Branch_id
-// 返回：
-//   - branchIDs: 用户所属的 branch_id 列表（可能为空）
-//   - hasBranches: 用户是否有关联的院区（false 表示可以访问所有院区或 NULL 院区）
+//
+// v2 改造：owl_v2 schema 删除了 user_branches 表（用户与院区的关系由 user_roles +
+// roles.tenant_prefix + role_permissions.resource_scope INET 派生）。
+// 这里返回 (nil, false, nil) — service 层把"无 branch 限制 = 全部 branch 可访问"处理（admin 行为）。
 func (s *unitService) getUserBranchIDs(ctx context.Context, tenantID, userID string) (branchIDs []string, hasBranches bool, err error) {
-	if tenantID == "" || userID == "" {
-		return nil, false, nil
-	}
-
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT branch_id::text FROM user_branches 
-		 WHERE tenant_id = $1 AND user_id::text = $2`,
-		tenantID, userID,
-	)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to query user branches: %w", err)
-	}
-	defer rows.Close()
-
-	var ids []string
-	for rows.Next() {
-		var branchID string
-		if err := rows.Scan(&branchID); err != nil {
-			return nil, false, fmt.Errorf("failed to scan branch_id: %w", err)
-		}
-		ids = append(ids, branchID)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, false, fmt.Errorf("failed to iterate user branches: %w", err)
-	}
-
-	// 如果 user_branches 表返回空，检查是否是 Admin 的 *(ALL) 情况
-	if len(ids) == 0 {
-		return s.handleAdminAllBranches(ctx, tenantID, userID)
-	}
-
-	return ids, true, nil
+	return nil, false, nil
 }
 
 // handleAdminAllBranches 处理 Admin 的 *(ALL) 情况（user_branches 表为空时返回所有 branch）
@@ -454,98 +420,6 @@ func (s *unitService) collectUnitTypeChangeBlockers(ctx context.Context, tenantI
 	return blockers, nil
 }
 
-// publicSyntheticResidentAccount public 单元占位住户账号：public + unit_id 字符串最后 3 位（小写）
-func publicSyntheticResidentAccount(unitID string) string {
-	uid := strings.TrimSpace(unitID)
-	if uid == "" {
-		return "public"
-	}
-	suf := uid
-	if len(suf) > 3 {
-		suf = suf[len(suf)-3:]
-	}
-	return "public" + strings.ToLower(suf)
-}
-
-// createPublicUnitSyntheticResident 公共空间单元创建时同步创建占位住户（nickname=unit_name，access 关闭）
-func (s *unitService) createPublicUnitSyntheticResident(ctx context.Context, tenantID, unitID string, unit *domain.Unit) error {
-	if s.residentsRepo == nil || unitID == "" || unit == nil {
-		return nil
-	}
-	acct := publicSyntheticResidentAccount(unitID)
-	accHashHex := HashAccount(acct)
-	accHash, err := hex.DecodeString(accHashHex)
-	if err != nil || len(accHash) == 0 {
-		return fmt.Errorf("decode account hash: %w", err)
-	}
-	pwHex := GeneratePasswordHash("ChangeMe123!")
-	pwHash, err := hex.DecodeString(pwHex)
-	if err != nil || len(pwHash) == 0 {
-		return fmt.Errorf("decode password hash: %w", err)
-	}
-	name := strings.TrimSpace(unit.UnitName)
-	if name == "" {
-		return fmt.Errorf("unit_name is empty")
-	}
-	res := &domain.Resident{
-		ResidentAccount:     acct,
-		ResidentAccountHash: accHash,
-		PasswordHash:        pwHash,
-		Nickname:            name,
-		Status:              "active",
-		Role:                "Resident",
-		IsAccessEnabled:     false,
-		UnitID:              unitID,
-	}
-	if unit.BranchID.Valid && unit.BranchID.String != "" {
-		res.BranchID = unit.BranchID.String
-	}
-	_, err = s.residentsRepo.CreateResident(ctx, tenantID, res)
-	if err != nil {
-		return err
-	}
-	s.logger.Info("Created synthetic resident for public unit",
-		zap.String("tenant_id", tenantID),
-		zap.String("unit_id", unitID),
-		zap.String("resident_account", acct),
-	)
-	return nil
-}
-
-// deletePublicUnitSyntheticResident 删除 public 单元前移除占位住户（账号与 create 规则一致）
-func (s *unitService) deletePublicUnitSyntheticResident(ctx context.Context, tenantID, unitID string) error {
-	if s.db == nil || s.residentsRepo == nil || unitID == "" {
-		return nil
-	}
-	acct := publicSyntheticResidentAccount(unitID)
-	var rid string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT resident_id::text FROM residents WHERE tenant_id = $1 AND unit_id = $2 AND resident_account = LOWER($3)`,
-		tenantID, unitID, acct,
-	).Scan(&rid)
-	if err == sql.ErrNoRows {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("find synthetic public resident: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM resident_caregivers WHERE tenant_id = $1 AND resident_id = $2`,
-		tenantID, rid,
-	); err != nil {
-		return fmt.Errorf("clear resident_caregivers for synthetic public resident: %w", err)
-	}
-	if err := s.residentsRepo.DeleteResident(ctx, tenantID, rid); err != nil {
-		return fmt.Errorf("delete synthetic public resident: %w", err)
-	}
-	s.logger.Info("Deleted synthetic resident for public unit",
-		zap.String("tenant_id", tenantID),
-		zap.String("unit_id", unitID),
-		zap.String("resident_id", rid),
-	)
-	return nil
-}
-
 // ============================================
 // Building 相关请求/响应结构
 // ============================================
@@ -696,20 +570,20 @@ type GetUnitResponse struct {
 }
 
 type CreateUnitRequest struct {
-	TenantID      string // 必填
-	BranchID      string // 可选（优先使用，如果提供则忽略 BranchName）
-	BranchName    string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
-	UnitName      string // 必填
-	BuildingID    string // 可选（优先使用，如果提供则忽略 BuildingName）
-	BuildingName  string // 可选（向后兼容，如果 BuildingID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
-	Floor         string // 可选（默认 "1F"）
-	AreaName      string // 可选
-	UnitNumber    string // 必填
-	LayoutConfig  string // 可选（JSON 字符串）
-	UnitType      string // 必填
-	IsPublicSpace bool   // 可选（默认 false）
-	IsSharedUnit  bool   // 可选（默认 false）- 统一使用 IsSharedUnit，不再使用 IsMultiPersonRoom
-	Timezone      string // 必填
+	TenantID     string // 必填
+	BranchID     string // 可选（优先使用，如果提供则忽略 BranchName）
+	BranchName   string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
+	UnitName     string // 必填
+	BuildingID   string // 可选（优先使用，如果提供则忽略 BuildingName）
+	BuildingName string // 可选（向后兼容）
+	Floor        string // 可选（默认 "1F"）
+	AreaName     string // 可选
+	UnitNumber   string // 可选（v2 已删除该字段，但 FE 仍可发送，忽略）
+	LayoutConfig string // 可选（JSON 字符串）
+	// v2 双维度 (2026-05-09 重设计)
+	UnitProperty int8 // 0=Home, 1=Facility (default)
+	UnitType     int8 // 0=unknown, 1=single (VIP), 2=share (default), 3=public
+	Timezone     string // 必填
 }
 
 type CreateUnitResponse struct {
@@ -717,21 +591,21 @@ type CreateUnitResponse struct {
 }
 
 type UpdateUnitRequest struct {
-	TenantID      string // 必填
-	UnitID        string // 必填
-	BranchID      string // 可选（优先使用，如果提供则忽略 BranchName）
-	BranchName    string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
-	UnitName      string // 可选
-	BuildingID    string // 可选（优先使用，如果提供则忽略 BuildingName）
-	BuildingName  string // 可选（向后兼容，如果 BuildingID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
-	Floor         string // 可选
-	AreaName      string // 可选
-	UnitNumber    string // 可选
-	LayoutConfig  string // 可选（JSON 字符串）
-	UnitType      string // 可选
-	IsPublicSpace *bool  // 可选（指针类型，nil 表示不更新）
-	IsSharedUnit  *bool  // 可选（指针类型，nil 表示不更新）- 统一使用 IsSharedUnit，不再使用 IsMultiPersonRoom
-	Timezone      string // 可选
+	TenantID     string // 必填
+	UnitID       string // 必填
+	BranchID     string // 可选
+	BranchName   string // 可选
+	UnitName     string // 可选
+	BuildingID   string // 可选
+	BuildingName string // 可选
+	Floor        string // 可选
+	AreaName     string // 可选
+	UnitNumber   string // 可选
+	LayoutConfig string // 可选（JSON 字符串）
+	// v2 双维度 — 指针类型表示"未提供则不更新"
+	UnitProperty *int8
+	UnitType     *int8
+	Timezone     string // 可选
 }
 
 type UpdateUnitResponse struct {
@@ -1704,9 +1578,17 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 	// 如果都没有提供，building_id 保持为 NULL（允许为空，支持 home care 场景）
 
 	// 4. 应用默认值和格式转换（可选字段）
-	unitType := normalizeUnitType(req.UnitType) // "" → "Facility"
 	floor := normalizeFloor(req.Floor)          // ""/"1"/1 → sql.NullString{String: "1F", Valid: true}
 	timezone := normalizeTimezone(req.Timezone) // "" → "America/Denver" (IANA 标识符)
+
+	// v2 双维度默认值 + 配对约束兜底（repo 层也会再 normalize 一次）
+	unitProperty := req.UnitProperty // 0=Home, 1=Facility
+	unitType := req.UnitType
+	if unitProperty == 0 {
+		unitType = 0 // Home 强制 unknown
+	} else if unitType < 1 || unitType > 3 {
+		unitType = 2 // Facility 默认 share
+	}
 
 	// 5. 构建 domain.Unit（使用新的字段名）
 	unit := &domain.Unit{
@@ -1716,20 +1598,14 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 		BuildingID:   buildingID,
 		Floor:        floor,
 		LayoutConfig: normalizeLayoutConfig(req.LayoutConfig),
+		UnitProperty: unitProperty,
 		UnitType:     unitType,
-		IsPublic:     req.IsPublicSpace,
-		IsSharedUnit: req.IsSharedUnit,
 		Timezone:     timezone,
 	}
 
-	// 6. 业务规则验证
-	// 注意：branch_id 现在必须提供（已在步骤 2 中验证），building_id 可以为 NULL
-	// 不需要额外的验证
-
-	// 6. 调用 Repository
+	// 调用 Repository
 	unitID, err := s.unitsRepo.CreateUnit(ctx, req.TenantID, unit)
 	if err != nil {
-		// 检查唯一约束错误（Repository 会返回数据库错误）
 		s.logger.Error("CreateUnit failed",
 			zap.String("tenant_id", req.TenantID),
 			zap.String("unit_name", req.UnitName),
@@ -1738,20 +1614,8 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 		return nil, fmt.Errorf("failed to create unit: %w", err)
 	}
 
-	// 7. public 单元：同步创建占位住户（先于卡片同步，便于绑定）
-	if unit.IsPublic {
-		if err := s.createPublicUnitSyntheticResident(ctx, req.TenantID, unitID, unit); err != nil {
-			if delErr := s.unitsRepo.DeleteUnit(ctx, req.TenantID, unitID); delErr != nil {
-				s.logger.Error("CreateUnit: rollback unit after synthetic resident failed",
-					zap.String("tenant_id", req.TenantID),
-					zap.String("unit_id", unitID),
-					zap.Error(err),
-					zap.NamedError("rollback_err", delErr),
-				)
-			}
-			return nil, fmt.Errorf("failed to create synthetic resident for public unit: %w", err)
-		}
-	}
+	// public unit 占位 resident 同步逻辑已删除：v2 residents/cards 模块属 Phase D/F，
+	// Phase D 启动时再设计是否需要 synthetic resident（v1 行为不直接复刻）
 
 	// 8. 构建响应
 	s.syncCardsForUnit(ctx, req.TenantID, unitID, "unit_create")
@@ -1798,9 +1662,8 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 		BuildingID:   currentUnit.BuildingID,
 		Floor:        currentUnit.Floor,
 		LayoutConfig: currentUnit.LayoutConfig,
+		UnitProperty: currentUnit.UnitProperty,
 		UnitType:     currentUnit.UnitType,
-		IsPublic:     currentUnit.IsPublic,
-		IsSharedUnit: currentUnit.IsSharedUnit,
 		Timezone:     currentUnit.Timezone,
 	}
 
@@ -1895,26 +1758,37 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 		unit.LayoutConfig = sql.NullString{String: "", Valid: true}
 	}
 
-	if req.UnitType != "" {
-		newType := normalizeUnitType(req.UnitType)
-		// unit_type 是建模级字段：切换会触发卡片体系按新模型重建（CreateCardsForUnit），
+	// v2 双维度更新：当 UnitProperty 或 UnitType 任一变化时校验
+	// (Home → type=0；Facility → type ∈ {1,2,3})
+	newProperty := currentUnit.UnitProperty
+	newType := currentUnit.UnitType
+	changed := false
+	if req.UnitProperty != nil {
+		newProperty = *req.UnitProperty
+		changed = changed || (newProperty != currentUnit.UnitProperty)
+	}
+	if req.UnitType != nil {
+		newType = *req.UnitType
+		changed = changed || (newType != currentUnit.UnitType)
+	}
+	// 强制配对约束
+	if newProperty == 0 {
+		newType = 0
+	} else if newType < 1 || newType > 3 {
+		newType = 2
+	}
+	if changed {
+		// unit_type/property 是建模级字段：切换会触发卡片体系按新模型重建，
 		// 已绑 resident/device 的 unit 切换会越权放开 PHI 可见性、错位 cards.residents 绑定。
-		// 因此一旦 unit 已被使用，禁止切换 unit_type。
-		if newType != currentUnit.UnitType {
-			if blockers, err := s.collectUnitTypeChangeBlockers(ctx, req.TenantID, req.UnitID); err != nil {
-				return nil, err
-			} else if len(blockers) > 0 {
-				return nil, fmt.Errorf("cannot change unit_type: unit has bound %s, please unbind first", strings.Join(blockers, " and "))
-			}
+		// 因此一旦 unit 已被使用，禁止切换。
+		if blockers, err := s.collectUnitTypeChangeBlockers(ctx, req.TenantID, req.UnitID); err != nil {
+			return nil, err
+		} else if len(blockers) > 0 {
+			return nil, fmt.Errorf("cannot change unit type/property: unit has bound %s, please unbind first", strings.Join(blockers, " and "))
 		}
-		unit.UnitType = newType
 	}
-	if req.IsPublicSpace != nil {
-		unit.IsPublic = *req.IsPublicSpace
-	}
-	if req.IsSharedUnit != nil {
-		unit.IsSharedUnit = *req.IsSharedUnit
-	}
+	unit.UnitProperty = newProperty
+	unit.UnitType = newType
 	if req.Timezone != "" {
 		unit.Timezone = normalizeTimezone(req.Timezone)
 	}
@@ -1961,11 +1835,8 @@ func (s *unitService) DeleteUnit(ctx context.Context, req DeleteUnitRequest) (*D
 		return nil, err
 	}
 
-	if unit.IsPublic {
-		if err := s.deletePublicUnitSyntheticResident(ctx, req.TenantID, req.UnitID); err != nil {
-			return nil, err
-		}
-	}
+	// public unit 占位 resident 删除已移除：v2 residents 模块由 Phase D 重做，不复刻 v1 行为
+	_ = unit
 
 	// 3. 检查关联数据：residents、devices、rooms
 	var errorDetails []string

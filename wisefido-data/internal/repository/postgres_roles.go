@@ -9,175 +9,124 @@ import (
 	"wisefido-data/internal/domain"
 )
 
-// PostgresRolesRepository 角色Repository实现（强类型版本）
-// 实现RolesRepository接口，使用domain.Role领域模型
-// 遵循"bottom-up"设计原则，Repository层负责数据访问和数据完整性验证
+// PostgresRolesRepository 角色 Repository 实现 — owl_v2 schema 版本。
+//
+// v2 schema 与 v1 关键差异：
+//   - 主键不变 role_id UUID；但租户字段从 tenant_id UUID 改为 tenant_prefix INET
+//   - 无 is_active 字段（v2 设计：禁用走 user_roles 解绑而非 role 自身禁用）；本 repo 对外永远返回 IsActive=true
+//   - 多了 role_name VARCHAR(100) NOT NULL（v1 只有 description）；这里把 description 同时写入 role_name 以满足 NOT NULL
+//   - system roles tenant_prefix 为 NULL（与 v1 'System tenant UUID' 语义对应）
+//
+// 兼容策略：domain.Role 字段不变；TenantID 在 v2 装 prefix CIDR 字符串（'fd00:0:T::/48'），系统角色装空串。
 type PostgresRolesRepository struct {
 	db *sql.DB
 }
 
-// NewPostgresRolesRepository 创建角色Repository
 func NewPostgresRolesRepository(db *sql.DB) *PostgresRolesRepository {
 	return &PostgresRolesRepository{db: db}
 }
 
-// 确保实现了接口
 var _ RolesRepository = (*PostgresRolesRepository)(nil)
 
-// GetRole 查询单个角色
-// 功能：根据roleID查询单个角色
+// 公共 SELECT 子句：v2 schema 列适配回 v1 domain.Role 字段
+//
+// description 字段映射策略：service.roleToItem 期望 v1 "two-line" 格式
+//   line 1 = display_name, line 2+ = 详细 permission 描述
+// v2 schema 把它们拆成两列：role_name + description
+// 这里拼回 "{role_name}\n{description}" 让 v1 UI 不动地正常解析。
+const rolesSelectCols = `
+		role_id::text,
+		COALESCE(host(tenant_prefix) || '/48', '') AS tenant_id,
+		role_code,
+		TRIM(BOTH E'\n' FROM COALESCE(NULLIF(role_name, '') || E'\n', '') || COALESCE(description, '')) AS description,
+		is_system,
+		TRUE AS is_active
+`
+
+// resolveTenantFilter 把 v1 调用者传入的 tenantID（可能是 UUID 老格式 / prefix CIDR / 空）
+// 翻译成 v2 SQL 谓词（绑参形式）。
+//
+// v2 永远把 system roles（tenant_prefix IS NULL）一并返回，保证 admin 能看到全套预定义角色。
+//
+// 返回 (whereSnippet, args)。whereSnippet 形如 "(tenant_prefix IS NULL OR tenant_prefix = $1::INET)" 或 "tenant_prefix IS NULL"。
+func resolveTenantFilter(tenantID *string, startArgN int) (string, []any) {
+	if tenantID == nil || *tenantID == "" || isV1SystemTenantUUID(*tenantID) {
+		return "tenant_prefix IS NULL", nil
+	}
+	if !looksLikeINETPrefix(*tenantID) {
+		// 兼容：调用方传了非 prefix 的 UUID（自定义 tenant），v2 schema 没法直接用，回退到 system roles
+		return "tenant_prefix IS NULL", nil
+	}
+	return fmt.Sprintf("(tenant_prefix IS NULL OR tenant_prefix = $%d::INET)", startArgN), []any{*tenantID}
+}
+
+func isV1SystemTenantUUID(s string) bool {
+	return s == "00000000-0000-0000-0000-000000000001"
+}
+func looksLikeINETPrefix(s string) bool {
+	return strings.Contains(s, ":") || strings.Contains(s, "/")
+}
+
+// GetRole 按 role_id 查单个角色。
 func (r *PostgresRolesRepository) GetRole(ctx context.Context, roleID string) (*domain.Role, error) {
 	if roleID == "" {
 		return nil, fmt.Errorf("role_id is required")
 	}
-
-	query := `
-		SELECT 
-			role_id::text,
-			tenant_id,
-			role_code,
-			description,
-			is_system,
-			is_active
-		FROM roles
-		WHERE role_id = $1
-	`
-
-	var role domain.Role
-	err := r.db.QueryRowContext(ctx, query, roleID).Scan(
-		&role.RoleID,
-		&role.TenantID,
-		&role.RoleCode,
-		&role.Description,
-		&role.IsSystem,
-		&role.IsActive,
-	)
+	role, err := r.scanOneByQuery(ctx, `SELECT `+rolesSelectCols+` FROM roles WHERE role_id = $1`, roleID)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("role not found: role_id=%s", roleID)
+	}
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("role not found: role_id=%s", roleID)
-		}
 		return nil, fmt.Errorf("failed to query role: %w", err)
 	}
-
-	return &role, nil
+	return role, nil
 }
 
-// GetRoleByCode 通过role_code查询角色
-// 功能：根据role_code查询角色（用于程序引用）
-// 输入：tenantID（可选，用于区分系统角色和租户角色），roleCode
+// GetRoleByCode 按 (tenant, role_code) 查角色。tenant 为空 / system tenant UUID / 非 prefix 时只查系统角色（tenant_prefix IS NULL）。
 func (r *PostgresRolesRepository) GetRoleByCode(ctx context.Context, tenantID *string, roleCode string) (*domain.Role, error) {
 	if roleCode == "" {
 		return nil, fmt.Errorf("role_code is required")
 	}
-
-	var query string
-	var args []any
-
-	if tenantID != nil && *tenantID != "" {
-		// 查询指定租户的角色
-		query = `
-			SELECT 
-				role_id::text,
-				tenant_id,
-				role_code,
-				description,
-				is_system,
-				is_active
-			FROM roles
-			WHERE tenant_id = $1 AND role_code = $2
-		`
-		args = []any{*tenantID, roleCode}
-	} else {
-		// 查询系统角色（System tenant）
-		systemTenantID := "00000000-0000-0000-0000-000000000001"
-		query = `
-			SELECT 
-				role_id::text,
-				tenant_id,
-				role_code,
-				description,
-				is_system,
-				is_active
-			FROM roles
-			WHERE tenant_id = $1 AND role_code = $2
-		`
-		args = []any{systemTenantID, roleCode}
+	tFilter, args := resolveTenantFilter(tenantID, 1)
+	args = append(args, roleCode)
+	codeArgN := len(args) // 1-based
+	q := `SELECT ` + rolesSelectCols + ` FROM roles WHERE ` + tFilter +
+		fmt.Sprintf(` AND role_code = $%d LIMIT 1`, codeArgN)
+	role, err := r.scanOneByQuery(ctx, q, args...)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("role not found: role_code=%s", roleCode)
 	}
-
-	var role domain.Role
-	err := r.db.QueryRowContext(ctx, query, args...).Scan(
-		&role.RoleID,
-		&role.TenantID,
-		&role.RoleCode,
-		&role.Description,
-		&role.IsSystem,
-		&role.IsActive,
-	)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("role not found: role_code=%s", roleCode)
-		}
 		return nil, fmt.Errorf("failed to query role: %w", err)
 	}
-
-	return &role, nil
+	return role, nil
 }
 
-// ListRoles 查询角色列表
-// 功能：查询角色列表，支持过滤和分页
-// 输入：tenantID（可选），filters（search, is_system, is_active），page, size
+// ListRoles 列出角色。filter.IsActive/IsSystem 仍兼容；v2 没有 is_active 列，IsActive 过滤被忽略。
 func (r *PostgresRolesRepository) ListRoles(ctx context.Context, tenantID *string, filter RolesFilter, page, size int) ([]*domain.Role, int, error) {
-	where := []string{}
-	args := []any{}
-	argN := 1
+	tFilter, args := resolveTenantFilter(tenantID, 1)
+	where := []string{tFilter}
+	argN := len(args) + 1
 
-	// tenantID过滤
-	if tenantID != nil && *tenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argN))
-		args = append(args, *tenantID)
-		argN++
-	} else {
-		// 默认查询系统角色（System tenant）
-		systemTenantID := "00000000-0000-0000-0000-000000000001"
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argN))
-		args = append(args, systemTenantID)
-		argN++
-	}
-
-	// search过滤（模糊搜索role_code, description）
 	if filter.Search != "" {
-		where = append(where, fmt.Sprintf("(role_code ILIKE $%d OR description ILIKE $%d)", argN, argN))
+		where = append(where, fmt.Sprintf("(role_code ILIKE $%d OR role_name ILIKE $%d OR description ILIKE $%d)", argN, argN, argN))
 		args = append(args, "%"+filter.Search+"%")
 		argN++
 	}
-
-	// is_system过滤
 	if filter.IsSystem != nil {
 		where = append(where, fmt.Sprintf("is_system = $%d", argN))
 		args = append(args, *filter.IsSystem)
 		argN++
 	}
+	// filter.IsActive: v2 schema 无此列，忽略
 
-	// is_active过滤
-	if filter.IsActive != nil {
-		where = append(where, fmt.Sprintf("is_active = $%d", argN))
-		args = append(args, *filter.IsActive)
-		argN++
-	}
+	whereClause := "WHERE " + strings.Join(where, " AND ")
 
-	whereClause := ""
-	if len(where) > 0 {
-		whereClause = "WHERE " + strings.Join(where, " AND ")
-	}
-
-	// 查询总数
-	countQuery := `SELECT COUNT(*) FROM roles ` + whereClause
 	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM roles `+whereClause, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("failed to count roles: %w", err)
 	}
 
-	// 分页
 	if page <= 0 {
 		page = 1
 	}
@@ -186,22 +135,11 @@ func (r *PostgresRolesRepository) ListRoles(ctx context.Context, tenantID *strin
 	}
 	offset := (page - 1) * size
 
-	// 查询数据
-	query := `
-		SELECT 
-			role_id::text,
-			tenant_id,
-			role_code,
-			description,
-			is_system,
-			is_active
-		FROM roles
-		` + whereClause + `
-		ORDER BY is_system DESC, role_code ASC
-		LIMIT $` + fmt.Sprintf("%d", argN) + ` OFFSET $` + fmt.Sprintf("%d", argN+1)
-
+	listQ := `SELECT ` + rolesSelectCols + ` FROM roles ` + whereClause +
+		fmt.Sprintf(` ORDER BY is_system DESC, role_code ASC LIMIT $%d OFFSET $%d`, argN, argN+1)
 	args = append(args, size, offset)
-	rows, err := r.db.QueryContext(ctx, query, args...)
+
+	rows, err := r.db.QueryContext(ctx, listQ, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to query roles: %w", err)
 	}
@@ -209,39 +147,25 @@ func (r *PostgresRolesRepository) ListRoles(ctx context.Context, tenantID *strin
 
 	roles := []*domain.Role{}
 	for rows.Next() {
-		var role domain.Role
-		if err := rows.Scan(
-			&role.RoleID,
-			&role.TenantID,
-			&role.RoleCode,
-			&role.Description,
-			&role.IsSystem,
-			&role.IsActive,
-		); err != nil {
-			return nil, 0, fmt.Errorf("failed to scan role: %w", err)
+		role, err := scanRole(rows)
+		if err != nil {
+			return nil, 0, err
 		}
-		roles = append(roles, &role)
+		roles = append(roles, role)
 	}
-
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("rows iteration error: %w", err)
 	}
-
 	return roles, total, nil
 }
 
-// CreateRole 创建角色
-// 功能：创建角色（Repository层不限制业务规则，业务规则在Service层验证）
-// 验证（Repository层）：
-//   - role_code必填
-//   - (tenant_id, role_code)唯一性检查
-//   - description必填
+// CreateRole 新建角色。tenantID 必须是 INET prefix CIDR；空/UUID 视作系统角色（tenant_prefix=NULL）。
+//
+// v2 强制 role_name NOT NULL；这里以 description 第一行作 role_name fallback（v1 description 业务约定就是头一行 = 角色名）。
 func (r *PostgresRolesRepository) CreateRole(ctx context.Context, tenantID string, role *domain.Role) (string, error) {
 	if role == nil {
 		return "", fmt.Errorf("role is required")
 	}
-
-	// 验证必填字段
 	if role.RoleCode == "" {
 		return "", fmt.Errorf("role_code is required")
 	}
@@ -249,78 +173,46 @@ func (r *PostgresRolesRepository) CreateRole(ctx context.Context, tenantID strin
 		return "", fmt.Errorf("description is required")
 	}
 
-	// 验证tenant_id存在（外键约束）
-	if tenantID != "" {
-		var exists bool
-		err := r.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM tenants WHERE tenant_id = $1)", tenantID).Scan(&exists)
-		if err != nil {
-			return "", fmt.Errorf("failed to validate tenant_id: %w", err)
-		}
-		if !exists {
-			return "", fmt.Errorf("tenant not found: tenant_id=%s", tenantID)
-		}
+	var tenantPrefix any
+	if tenantID != "" && looksLikeINETPrefix(tenantID) {
+		tenantPrefix = tenantID
+	} else {
+		tenantPrefix = nil // system role
 	}
 
-	// 检查(tenant_id, role_code)唯一性
-	var existingRoleID string
-	checkQuery := `
-		SELECT role_id::text
-		FROM roles
-		WHERE (COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($1::uuid, '00000000-0000-0000-0000-000000000000'::uuid))
-		  AND role_code = $2
-		LIMIT 1
-	`
-	err := r.db.QueryRowContext(ctx, checkQuery, tenantID, role.RoleCode).Scan(&existingRoleID)
-	if err == nil {
-		return "", fmt.Errorf("role already exists: role_code=%s (role_id=%s)", role.RoleCode, existingRoleID)
-	} else if err != sql.ErrNoRows {
+	// 唯一性：(tenant_prefix, role_code)
+	dup, err := r.db.QueryContext(ctx, `
+		SELECT role_id::text FROM roles
+		 WHERE COALESCE(tenant_prefix::text, '') = COALESCE($1::INET::text, '')
+		   AND role_code = $2 LIMIT 1
+	`, tenantPrefix, role.RoleCode)
+	if err != nil {
 		return "", fmt.Errorf("failed to check role uniqueness: %w", err)
 	}
+	if dup.Next() {
+		var existingRoleID string
+		_ = dup.Scan(&existingRoleID)
+		dup.Close()
+		return "", fmt.Errorf("role already exists: role_code=%s (role_id=%s)", role.RoleCode, existingRoleID)
+	}
+	dup.Close()
 
-	// 插入新角色
-	insertQuery := `
-		INSERT INTO roles (tenant_id, role_code, description, is_system, is_active)
-		VALUES ($1, $2, $3, $4, COALESCE($5, TRUE))
-		RETURNING role_id::text
-	`
+	// role_name 取 description 第一行；若 description 多行则保留全文做 description。
+	roleName := firstLine(role.Description)
 
 	var roleID string
-	var tenantIDVal interface{}
-	if tenantID != "" {
-		tenantIDVal = tenantID
-	} else {
-		tenantIDVal = nil
-	}
-
-	var isActiveVal interface{}
-	if role.IsActive.Valid {
-		isActiveVal = role.IsActive.Bool
-	} else {
-		isActiveVal = nil // 使用COALESCE默认值TRUE
-	}
-
-	err = r.db.QueryRowContext(ctx, insertQuery,
-		tenantIDVal,
-		role.RoleCode,
-		role.Description,
-		role.IsSystem,
-		isActiveVal,
-	).Scan(&roleID)
+	err = r.db.QueryRowContext(ctx, `
+		INSERT INTO roles (tenant_prefix, role_code, role_name, description, is_system)
+		VALUES ($1::INET, $2, $3, $4, $5)
+		RETURNING role_id::text
+	`, tenantPrefix, role.RoleCode, roleName, role.Description, role.IsSystem).Scan(&roleID)
 	if err != nil {
 		return "", fmt.Errorf("failed to create role: %w", err)
 	}
-
 	return roleID, nil
 }
 
-// UpdateRole 更新角色
-// 功能：更新角色信息（部分更新）
-// 验证（Repository层）：
-//   - 数据完整性：role_code唯一性（如果更新role_code）
-//   - 数据一致性：不能将is_system从TRUE改为FALSE（或反之）
-// 业务规则（Service层）：
-//   - 系统角色（is_system=TRUE）：只能更新is_active，不能修改description和role_code
-//   - Resident和Family：不能禁用（is_active不能改为FALSE）
+// UpdateRole 更新角色（部分更新）。v2 schema 无 is_active 列；IsActive 输入被忽略。
 func (r *PostgresRolesRepository) UpdateRole(ctx context.Context, roleID string, role *domain.Role) error {
 	if roleID == "" {
 		return fmt.Errorf("role_id is required")
@@ -329,128 +221,103 @@ func (r *PostgresRolesRepository) UpdateRole(ctx context.Context, roleID string,
 		return fmt.Errorf("role is required")
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	// 取现有
+	existing, err := r.GetRole(ctx, roleID)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return err
 	}
-	defer tx.Rollback()
-
-	// 1. 查询现有角色
-	var existingRole domain.Role
-	err = tx.QueryRowContext(ctx, `
-		SELECT role_id::text, tenant_id, role_code, description, is_system, is_active
-		FROM roles
-		WHERE role_id = $1
-	`, roleID).Scan(
-		&existingRole.RoleID,
-		&existingRole.TenantID,
-		&existingRole.RoleCode,
-		&existingRole.Description,
-		&existingRole.IsSystem,
-		&existingRole.IsActive,
-	)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("role not found: role_id=%s", roleID)
-		}
-		return fmt.Errorf("failed to query role: %w", err)
+	// is_system 不可改
+	if role.IsSystem != existing.IsSystem {
+		return fmt.Errorf("cannot change is_system: role_id=%s (current=%v, new=%v)", roleID, existing.IsSystem, role.IsSystem)
 	}
 
-	// 2. 验证数据一致性：is_system不能改变
-	if role.IsSystem != existingRole.IsSystem {
-		return fmt.Errorf("cannot change is_system: role_id=%s (current=%v, new=%v)", roleID, existingRole.IsSystem, role.IsSystem)
-	}
-
-	// 3. 如果更新role_code，检查唯一性
-	if role.RoleCode != "" && role.RoleCode != existingRole.RoleCode {
-		var existingID string
-		checkQuery := `
-			SELECT role_id::text
-			FROM roles
-			WHERE (COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($1::uuid, '00000000-0000-0000-0000-000000000000'::uuid))
-			  AND role_code = $2
-			  AND role_id != $3
-			LIMIT 1
-		`
-		var tenantIDVal interface{}
-		if existingRole.TenantID.Valid {
-			tenantIDVal = existingRole.TenantID.String
-		} else {
-			tenantIDVal = nil
-		}
-		err = tx.QueryRowContext(ctx, checkQuery, tenantIDVal, role.RoleCode, roleID).Scan(&existingID)
-		if err == nil {
-			return fmt.Errorf("role_code already exists: role_code=%s (role_id=%s)", role.RoleCode, existingID)
-		} else if err != sql.ErrNoRows {
-			return fmt.Errorf("failed to check role_code uniqueness: %w", err)
-		}
-	}
-
-	// 4. 构建UPDATE语句（部分更新）
 	set := []string{}
 	args := []any{roleID}
 	argN := 2
 
-	if role.RoleCode != "" && role.RoleCode != existingRole.RoleCode {
+	if role.RoleCode != "" && role.RoleCode != existing.RoleCode {
 		set = append(set, fmt.Sprintf("role_code = $%d", argN))
 		args = append(args, role.RoleCode)
 		argN++
 	}
-
-	if role.Description != "" && role.Description != existingRole.Description {
+	if role.Description != "" && role.Description != existing.Description {
+		// 同步更新 role_name = first-line(description)
 		set = append(set, fmt.Sprintf("description = $%d", argN))
 		args = append(args, role.Description)
 		argN++
-	}
-
-	if role.IsActive.Valid {
-		set = append(set, fmt.Sprintf("is_active = $%d", argN))
-		args = append(args, role.IsActive.Bool)
+		set = append(set, fmt.Sprintf("role_name = $%d", argN))
+		args = append(args, firstLine(role.Description))
 		argN++
 	}
+	// IsActive: v2 schema 不再支持；忽略
 
 	if len(set) == 0 {
-		// 没有需要更新的字段
-		return tx.Commit()
+		return nil // nothing to update
 	}
-
-	// 5. 执行UPDATE
 	updateQuery := "UPDATE roles SET " + strings.Join(set, ", ") + " WHERE role_id = $1"
-	_, err = tx.ExecContext(ctx, updateQuery, args...)
-	if err != nil {
+	if _, err := r.db.ExecContext(ctx, updateQuery, args...); err != nil {
 		return fmt.Errorf("failed to update role: %w", err)
 	}
-
-	return tx.Commit()
+	return nil
 }
 
-// DeleteRole 删除角色
-// 功能：删除角色
-// 验证（Repository层）：
-//   - 数据完整性：检查是否存在
-// 业务规则（Service层）：
-//   - 系统角色（is_system=TRUE）：不能删除
+// DeleteRole 删角色（系统角色由 service 层挡）。
 func (r *PostgresRolesRepository) DeleteRole(ctx context.Context, roleID string) error {
 	if roleID == "" {
 		return fmt.Errorf("role_id is required")
 	}
-
-	// 检查角色是否存在
-	var exists bool
-	err := r.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM roles WHERE role_id = $1)", roleID).Scan(&exists)
-	if err != nil {
-		return fmt.Errorf("failed to check role existence: %w", err)
-	}
-	if !exists {
-		return fmt.Errorf("role not found: role_id=%s", roleID)
-	}
-
-	// 删除角色
-	_, err = r.db.ExecContext(ctx, "DELETE FROM roles WHERE role_id = $1", roleID)
+	res, err := r.db.ExecContext(ctx, "DELETE FROM roles WHERE role_id = $1", roleID)
 	if err != nil {
 		return fmt.Errorf("failed to delete role: %w", err)
 	}
-
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("role not found: role_id=%s", roleID)
+	}
 	return nil
 }
 
+// =============================================================================
+// helpers
+// =============================================================================
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanRole(rs rowScanner) (*domain.Role, error) {
+	var role domain.Role
+	if err := rs.Scan(
+		&role.RoleID,
+		&role.TenantID, // sql.NullString — '' 时表示 system role
+		&role.RoleCode,
+		&role.Description,
+		&role.IsSystem,
+		&role.IsActive, // 总是 TRUE（COALESCE 兜底）
+	); err != nil {
+		return nil, fmt.Errorf("failed to scan role: %w", err)
+	}
+	return &role, nil
+}
+
+func (r *PostgresRolesRepository) scanOneByQuery(ctx context.Context, q string, args ...any) (*domain.Role, error) {
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, sql.ErrNoRows
+	}
+	return scanRole(rows)
+}
+
+// firstLine 返回字符串第一行（不含换行符），用于把 v1 description 头一行映射到 v2 role_name。
+func firstLine(s string) string {
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		return s[:i]
+	}
+	return s
+}

@@ -148,32 +148,39 @@ WHERE NOT EXISTS (
 
 -- =========================================================================
 -- USERS - system tenant (1 sysadmin)
+--
+-- 凭证形态（双层 hash + 检索哈希）：
+--   password_hash       = bcrypt(sha256(plaintext))         -- 真正登录验证（抗暴力）
+--   password_check_hash = sha256(plaintext)                 -- 反向定位 user（无 salt）+ admin 类全局唯一约束
+--   mobile_pin_hash     = bcrypt(plaintext_pin)             -- 4 位 PIN 不走 sha256（信息熵低）
+-- 与前端 utils/crypto.ts hashPassword + auth.ts loginApi 配套：
+--   前端 sha256(password) → hex 上送，后端 (username, password_check_hash) 反向定位 + bcrypt 验证。
 -- =========================================================================
-INSERT INTO users (tenant_prefix, username, password_hash, mobile_pin_hash, nickname, full_name, email, status, notify_mode) VALUES
-    ('fd00:0:1::/48', 'sysadmin', crypt('ChangeMe@123', gen_salt('bf')), crypt('1212', gen_salt('bf')), 'sysadmin', 'System Admin', 'sysadmin@owl.internal', 'active', 'forever')
-ON CONFLICT (username) DO NOTHING;
+INSERT INTO users (tenant_prefix, username, password_hash, password_check_hash, role, mobile_pin_hash, nickname, full_name, email, status, notify_mode) VALUES
+    ('fd00:0:1::/48', 'sysadmin', crypt(encode(sha256('ChangeMe@123'::bytea), 'hex'), gen_salt('bf')), sha256('ChangeMe@123'::bytea), 'platform_admin', crypt('1212', gen_salt('bf')), 'sysadmin', 'System Admin', 'sysadmin@owl.internal', 'active', 'forever')
+ON CONFLICT (tenant_prefix, username) DO NOTHING;
 
 -- =========================================================================
 -- USERS - demo tenant：3 admin (no hoa) + 5 caregiver + 4 nurse (with hoa)
 -- =========================================================================
-INSERT INTO users (tenant_prefix, username, password_hash, mobile_pin_hash, nickname, full_name, email, status, notify_mode) VALUES
-    ('fd00:0:3::/48', 'admin', crypt('Ts123@123',  gen_salt('bf')), crypt('1212', gen_salt('bf')), 'admin', 'Demo Admin', 'admin@wisefido.com', 'active', 'login_only'),
-    ('fd00:0:3::/48', 'demo',  crypt('Demo@2026',  gen_salt('bf')), crypt('1212', gen_salt('bf')), 'demo',  'Demo User',  'demo@wisefido.com',  'active', 'login_only'),
-    ('fd00:0:3::/48', 'hunzi', crypt('hunzi@2026', gen_salt('bf')), crypt('1212', gen_salt('bf')), 'hunzi', 'HunZi',      'hunzi@wisefido.com', 'active', 'login_only')
-ON CONFLICT (username) DO NOTHING;
+INSERT INTO users (tenant_prefix, username, password_hash, password_check_hash, role, mobile_pin_hash, nickname, full_name, email, status, notify_mode) VALUES
+    ('fd00:0:3::/48', 'admin', crypt(encode(sha256('Ts123@123'::bytea),  'hex'), gen_salt('bf')), sha256('Ts123@123'::bytea),  'tenant_admin', crypt('1212', gen_salt('bf')), 'admin', 'Demo Admin', 'admin@wisefido.com', 'active', 'login_only'),
+    ('fd00:0:3::/48', 'demo',  crypt(encode(sha256('Demo@2026'::bytea),  'hex'), gen_salt('bf')), sha256('Demo@2026'::bytea),  'manager',      crypt('1212', gen_salt('bf')), 'demo',  'Demo User',  'demo@wisefido.com',  'active', 'login_only'),
+    ('fd00:0:3::/48', 'hunzi', crypt(encode(sha256('hunzi@2026'::bytea), 'hex'), gen_salt('bf')), sha256('hunzi@2026'::bytea), 'manager',      crypt('1212', gen_salt('bf')), 'hunzi', 'HunZi',      'hunzi@wisefido.com', 'active', 'login_only')
+ON CONFLICT (tenant_prefix, username) DO NOTHING;
 
 -- caregiver/nurse (hoa filled，每分支挂 1 个；Denver 多 1 caregiver)
-INSERT INTO users (tenant_prefix, username, password_hash, mobile_pin_hash, nickname, full_name, email, hoa, subject_slot, employee_code, role, hire_date, status, notify_mode) VALUES
-    ('fd00:0:3::/48', 'caregiver_denver_1',  crypt('Caregiver@2026', gen_salt('bf')), crypt('1212', gen_salt('bf')), 'Alice', 'Alice Brown',  'alice@wisefido.com',  'fd00:0:3:ff02:1::/128', 1, 'CG-DEN-001', 'caregiver', '2025-01-15', 'active', 'login_only'),
-    ('fd00:0:3::/48', 'caregiver_denver_2',  crypt('Caregiver@2026', gen_salt('bf')), crypt('1212', gen_salt('bf')), 'Bob',   'Bob Carter',   'bob@wisefido.com',    'fd00:0:3:ff02:2::/128', 2, 'CG-DEN-002', 'caregiver', '2025-02-01', 'active', 'login_only'),
-    ('fd00:0:3::/48', 'caregiver_spring',    crypt('Caregiver@2026', gen_salt('bf')), crypt('1212', gen_salt('bf')), 'Carol', 'Carol Davis',  'carol@wisefido.com',  'fd00:0:3:ff02:3::/128', 3, 'CG-SPR-001', 'caregiver', '2025-03-10', 'active', 'login_only'),
-    ('fd00:0:3::/48', 'caregiver_sandiego',  crypt('Caregiver@2026', gen_salt('bf')), crypt('1212', gen_salt('bf')), 'Dave',  'Dave Edwards', 'dave@wisefido.com',   'fd00:0:3:ff02:4::/128', 4, 'CG-SDG-001', 'caregiver', '2025-04-05', 'active', 'login_only'),
-    ('fd00:0:3::/48', 'caregiver_shenzhen',  crypt('Caregiver@2026', gen_salt('bf')), crypt('1212', gen_salt('bf')), 'Ling',  'Wang Ling',    'ling@wisefido.com',   'fd00:0:3:ff02:5::/128', 5, 'CG-SHE-001', 'caregiver', '2024-08-01', 'active', 'login_only'),
-    ('fd00:0:3::/48', 'nurse_denver',        crypt('Nurse@2026',     gen_salt('bf')), crypt('1212', gen_salt('bf')), 'Ema',   'Ema Foster',   'ema@wisefido.com',    'fd00:0:3:ff02:6::/128', 6, 'RN-DEN-001', 'nurse',     '2024-06-01', 'active', 'login_only'),
-    ('fd00:0:3::/48', 'nurse_spring',        crypt('Nurse@2026',     gen_salt('bf')), crypt('1212', gen_salt('bf')), 'Fred',  'Fred Garcia',  'fred@wisefido.com',   'fd00:0:3:ff02:7::/128', 7, 'RN-SPR-001', 'nurse',     '2024-07-01', 'active', 'login_only'),
-    ('fd00:0:3::/48', 'nurse_sandiego',      crypt('Nurse@2026',     gen_salt('bf')), crypt('1212', gen_salt('bf')), 'Grace', 'Grace Harris', 'grace@wisefido.com',  'fd00:0:3:ff02:8::/128', 8, 'RN-SDG-001', 'nurse',     '2024-08-15', 'active', 'login_only'),
-    ('fd00:0:3::/48', 'nurse_shenzhen',      crypt('Nurse@2026',     gen_salt('bf')), crypt('1212', gen_salt('bf')), 'Hong',  'Liu Hong',     'hong@wisefido.com',   'fd00:0:3:ff02:9::/128', 9, 'RN-SHE-001', 'nurse',     '2024-05-15', 'active', 'login_only')
-ON CONFLICT (username) DO NOTHING;
+INSERT INTO users (tenant_prefix, username, password_hash, password_check_hash, mobile_pin_hash, nickname, full_name, email, hoa, subject_slot, employee_code, role, hire_date, status, notify_mode) VALUES
+    ('fd00:0:3::/48', 'caregiver_denver_1',  crypt(encode(sha256('Caregiver@2026'::bytea), 'hex'), gen_salt('bf')), sha256('Caregiver@2026'::bytea), crypt('1212', gen_salt('bf')), 'Alice', 'Alice Brown',  'alice@wisefido.com',  'fd00:0:3:ff02:1::/128', 1, 'CG-DEN-001', 'caregiver', '2025-01-15', 'active', 'login_only'),
+    ('fd00:0:3::/48', 'caregiver_denver_2',  crypt(encode(sha256('Caregiver@2026'::bytea), 'hex'), gen_salt('bf')), sha256('Caregiver@2026'::bytea), crypt('1212', gen_salt('bf')), 'Bob',   'Bob Carter',   'bob@wisefido.com',    'fd00:0:3:ff02:2::/128', 2, 'CG-DEN-002', 'caregiver', '2025-02-01', 'active', 'login_only'),
+    ('fd00:0:3::/48', 'caregiver_spring',    crypt(encode(sha256('Caregiver@2026'::bytea), 'hex'), gen_salt('bf')), sha256('Caregiver@2026'::bytea), crypt('1212', gen_salt('bf')), 'Carol', 'Carol Davis',  'carol@wisefido.com',  'fd00:0:3:ff02:3::/128', 3, 'CG-SPR-001', 'caregiver', '2025-03-10', 'active', 'login_only'),
+    ('fd00:0:3::/48', 'caregiver_sandiego',  crypt(encode(sha256('Caregiver@2026'::bytea), 'hex'), gen_salt('bf')), sha256('Caregiver@2026'::bytea), crypt('1212', gen_salt('bf')), 'Dave',  'Dave Edwards', 'dave@wisefido.com',   'fd00:0:3:ff02:4::/128', 4, 'CG-SDG-001', 'caregiver', '2025-04-05', 'active', 'login_only'),
+    ('fd00:0:3::/48', 'caregiver_shenzhen',  crypt(encode(sha256('Caregiver@2026'::bytea), 'hex'), gen_salt('bf')), sha256('Caregiver@2026'::bytea), crypt('1212', gen_salt('bf')), 'Ling',  'Wang Ling',    'ling@wisefido.com',   'fd00:0:3:ff02:5::/128', 5, 'CG-SHE-001', 'caregiver', '2024-08-01', 'active', 'login_only'),
+    ('fd00:0:3::/48', 'nurse_denver',        crypt(encode(sha256('Nurse@2026'::bytea),     'hex'), gen_salt('bf')), sha256('Nurse@2026'::bytea),     crypt('1212', gen_salt('bf')), 'Ema',   'Ema Foster',   'ema@wisefido.com',    'fd00:0:3:ff02:6::/128', 6, 'RN-DEN-001', 'nurse',     '2024-06-01', 'active', 'login_only'),
+    ('fd00:0:3::/48', 'nurse_spring',        crypt(encode(sha256('Nurse@2026'::bytea),     'hex'), gen_salt('bf')), sha256('Nurse@2026'::bytea),     crypt('1212', gen_salt('bf')), 'Fred',  'Fred Garcia',  'fred@wisefido.com',   'fd00:0:3:ff02:7::/128', 7, 'RN-SPR-001', 'nurse',     '2024-07-01', 'active', 'login_only'),
+    ('fd00:0:3::/48', 'nurse_sandiego',      crypt(encode(sha256('Nurse@2026'::bytea),     'hex'), gen_salt('bf')), sha256('Nurse@2026'::bytea),     crypt('1212', gen_salt('bf')), 'Grace', 'Grace Harris', 'grace@wisefido.com',  'fd00:0:3:ff02:8::/128', 8, 'RN-SDG-001', 'nurse',     '2024-08-15', 'active', 'login_only'),
+    ('fd00:0:3::/48', 'nurse_shenzhen',      crypt(encode(sha256('Nurse@2026'::bytea),     'hex'), gen_salt('bf')), sha256('Nurse@2026'::bytea),     crypt('1212', gen_salt('bf')), 'Hong',  'Liu Hong',     'hong@wisefido.com',   'fd00:0:3:ff02:9::/128', 9, 'RN-SHE-001', 'nurse',     '2024-05-15', 'active', 'login_only')
+ON CONFLICT (tenant_prefix, username) DO NOTHING;
 
 -- =========================================================================
 -- USER_ROLES：assign roles by branch /56 scope

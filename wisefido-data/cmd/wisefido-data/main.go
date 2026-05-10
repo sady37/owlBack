@@ -229,6 +229,10 @@ func main() {
 
 		router.RegisterAuthRoutes(authHandler)
 
+		// v2 (owl_v2 IPv6-native) auth：plaintext username + bcrypt password；与 v1 完全独立
+		authV2Handler := httpapi.NewAuthV2Handler(db, sessionStore, logger)
+		router.RegisterAuthV2Routes(authV2Handler)
+
 		// 创建 Device Service 和 Handler（qinglanClient 已在上面创建）
 		devicesRepo.SetLogger(logger) // 确保 logger 已设置（用于设备连接日志）
 		deviceService := service.NewDeviceService(devicesRepo, qinglanClient, card.NewReader(redisClient), db, logger)
@@ -467,12 +471,14 @@ func main() {
 	router.RegisterAdminUnitDeviceRoutes(admin)
 	// 如果 DB 启用，传入 BranchesRepository 以便创建 tenant 时自动创建默认 branch
 	var branchesRepoForTenants repository.BranchesRepository
+	var tenantsHandler *httpapi.TenantsHandler
 	if db != nil {
 		branchesRepoForTenants = repository.NewPostgresBranchesRepository(db)
-		router.RegisterAdminTenantRoutes(httpapi.NewTenantsHandlerWithLogger(tenantsRepo, branchesRepoForTenants, authStore, db, logger))
+		tenantsHandler = httpapi.NewTenantsHandlerWithLogger(tenantsRepo, branchesRepoForTenants, authStore, db, logger)
 	} else {
-		router.RegisterAdminTenantRoutes(httpapi.NewTenantsHandler(tenantsRepo, branchesRepoForTenants, authStore, db))
+		tenantsHandler = httpapi.NewTenantsHandler(tenantsRepo, branchesRepoForTenants, authStore, db)
 	}
+	router.RegisterAdminTenantRoutes(tenantsHandler)
 	router.RegisterStubRoutes(stub)
 
 	// 注册 v2 spatial IPAM/DDNS API（owl_v2 IPv6 体系）— 独立于 v1
@@ -501,13 +507,21 @@ func main() {
 	// 初始化认证中间件
 	// AuthMiddleware 从 Authorization header 提取 Bearer token，
 	// 查询 sessionStore 获取用户信息，然后注入到请求 header（X-User-Id, X-Tenant-Id, X-User-Type, X-User-Role）
+	// D-001b：tenantStatusCache 5min in-memory cache 用于每请求 tenant.status 检查；
+	// admin_tenants_handlers 改 status 后通过 SetTenantCache(...) 主动 invalidate。
 	authMiddlewareEnabled := os.Getenv("AUTH_MIDDLEWARE_ENABLED") != "false" // 默认启用
+	tenantStatusCache := httpapi.NewTenantStatusCache(db)
 	authMiddleware := httpapi.NewAuthMiddleware(httpapi.AuthMiddlewareConfig{
-		Store:   sessionStore,
-		Skipped: httpapi.DefaultSkippedPaths,
-		Logger:  logger,
-		Enabled: authMiddlewareEnabled,
+		Store:       sessionStore,
+		Skipped:     httpapi.DefaultSkippedPaths,
+		Logger:      logger,
+		Enabled:     authMiddlewareEnabled,
+		TenantCache: tenantStatusCache,
 	})
+	// 把 cache 注入到 TenantsHandler，让其改 tenant 后自动 invalidate
+	if tenantsHandler != nil {
+		tenantsHandler.SetTenantStatusCache(tenantStatusCache)
+	}
 
 	// 将 router 通过 authMiddleware 包装，使所有路由（非跳过清单）都需要有效的 token
 	wrappedHandler := authMiddleware.Wrap(router)
