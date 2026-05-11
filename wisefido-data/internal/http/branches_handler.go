@@ -135,6 +135,7 @@ func (h *BranchesHandler) CreateBranch(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		BranchName  string `json:"branch_name"`
 		Description string `json:"description"`
+		Timezone    string `json:"timezone"`
 	}
 	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 		writeJSON(w, http.StatusOK, Fail("invalid body"))
@@ -153,6 +154,7 @@ func (h *BranchesHandler) CreateBranch(w http.ResponseWriter, r *http.Request) {
 		TenantID:    tenantID,
 		BranchName:  branchNameTrimmed,
 		Description: payload.Description,
+		Timezone:    strings.TrimSpace(payload.Timezone),
 	}
 
 	resp, err := h.branchService.CreateBranch(ctx, req)
@@ -229,6 +231,11 @@ func (h *BranchesHandler) UpdateBranch(w http.ResponseWriter, r *http.Request) {
 	// 处理 description
 	if v, ok := payload["description"].(string); ok {
 		req.Description = &v
+	}
+
+	// 处理 timezone
+	if v, ok := payload["timezone"].(string); ok {
+		req.Timezone = &v
 	}
 
 	// 4. 调用 Service

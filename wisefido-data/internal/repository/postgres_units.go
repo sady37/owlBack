@@ -148,9 +148,9 @@ func zeroSuffix(prefixCIDR string, byteIdx int) (net.IP, error) {
 // =============================================================================
 
 const buildingsSelectCols = `
-		host(s.spatial_prefix) || '/64' AS building_id,
-		network(set_masklen(s.spatial_prefix, 48))::text AS tenant_id,
-		network(set_masklen(s.spatial_prefix, 56))::text AS branch_id,
+		host(s.site_id) || '/64' AS building_id,
+		network(set_masklen(s.site_id, 48))::text AS tenant_id,
+		network(set_masklen(s.site_id, 56))::text AS branch_id,
 		COALESCE(b.branch_name, '') AS branch_name,
 		COALESCE(s.site_name, '') AS building_name,
 		s.created_at, s.updated_at
@@ -158,7 +158,7 @@ const buildingsSelectCols = `
 
 const buildingsFromClause = `
 	FROM sites s
-	LEFT JOIN branches b ON b.spatial_prefix = network(set_masklen(s.spatial_prefix, 56))
+	LEFT JOIN branches b ON b.branch_id = network(set_masklen(s.site_id, 56))
 `
 
 func scanBuilding(rs rowScanner) (*domain.Building, error) {
@@ -182,16 +182,16 @@ func (r *PostgresUnitsRepository) ListBuildings(ctx context.Context, tenantID st
 	args := []any{}
 	argIdx := 1
 	if tenantID != "" && looksLikeINETPrefix(tenantID) {
-		where = append(where, fmt.Sprintf("s.spatial_prefix <<= $%d::INET", argIdx))
+		where = append(where, fmt.Sprintf("s.site_id <<= $%d::INET", argIdx))
 		args = append(args, tenantID)
 		argIdx++
 	}
 	if branchID.Valid && branchID.String != "" && looksLikeINETPrefix(branchID.String) {
-		where = append(where, fmt.Sprintf("s.spatial_prefix <<= $%d::INET", argIdx))
+		where = append(where, fmt.Sprintf("s.site_id <<= $%d::INET", argIdx))
 		args = append(args, branchID.String)
 		argIdx++
 	} else if branchName != "" {
-		where = append(where, fmt.Sprintf("EXISTS (SELECT 1 FROM branches b2 WHERE b2.spatial_prefix = network(set_masklen(s.spatial_prefix, 56)) AND b2.branch_name = $%d)", argIdx))
+		where = append(where, fmt.Sprintf("EXISTS (SELECT 1 FROM branches b2 WHERE b2.branch_id = network(set_masklen(s.site_id, 56)) AND b2.branch_name = $%d)", argIdx))
 		args = append(args, branchName)
 		argIdx++
 	}
@@ -201,9 +201,9 @@ func (r *PostgresUnitsRepository) ListBuildings(ctx context.Context, tenantID st
 	}
 	// v1 业务：每个 building 一行（不展开 floor）；v2 sites 表里 (branch, building_int) 同组的多 floor sites
 	// 用 DISTINCT ON 去重，取 floor 最小的那行作 building_id 占位（floor=0 的 placeholder 通常存在）。
-	q := `SELECT DISTINCT ON (network(set_masklen(s.spatial_prefix, 56)), s.building) ` +
+	q := `SELECT DISTINCT ON (network(set_masklen(s.site_id, 56)), s.building) ` +
 		buildingsSelectCols + buildingsFromClause + whereClause +
-		` ORDER BY network(set_masklen(s.spatial_prefix, 56)), s.building, s.floor, s.spatial_prefix`
+		` ORDER BY network(set_masklen(s.site_id, 56)), s.building, s.floor, s.site_id`
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list buildings: %w", err)
@@ -224,7 +224,7 @@ func (r *PostgresUnitsRepository) GetBuilding(ctx context.Context, tenantID, bui
 	if buildingID == "" || !looksLikeINETPrefix(buildingID) {
 		return nil, fmt.Errorf("invalid building_id")
 	}
-	q := `SELECT ` + buildingsSelectCols + buildingsFromClause + ` WHERE s.spatial_prefix = $1::INET`
+	q := `SELECT ` + buildingsSelectCols + buildingsFromClause + ` WHERE s.site_id = $1::INET`
 	rows, err := r.db.QueryContext(ctx, q, buildingID)
 	if err != nil {
 		return nil, fmt.Errorf("get building: %w", err)
@@ -245,11 +245,11 @@ func (r *PostgresUnitsRepository) GetBuildingUnits(ctx context.Context, tenantID
 	}
 	// 跨 floor 拿同 (branch, building_int) 下的所有 units
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT host(u.spatial_prefix) || '/80', u.unit_name, s.floor
+		SELECT host(u.unit_id) || '/80', u.unit_name, s.floor
 		  FROM units u
-		  JOIN sites s ON s.spatial_prefix = network(set_masklen(u.spatial_prefix, 64))
-		 WHERE u.spatial_prefix <<= network(set_masklen($1::INET, 56))
-		   AND s.building = (SELECT building FROM sites WHERE spatial_prefix = $1::INET)
+		  JOIN sites s ON s.site_id = network(set_masklen(u.unit_id, 64))
+		 WHERE u.unit_id <<= network(set_masklen($1::INET, 56))
+		   AND s.building = (SELECT building FROM sites WHERE site_id = $1::INET)
 		 ORDER BY s.floor, u.unit_slot`, buildingID)
 	if err != nil {
 		return nil, err
@@ -274,8 +274,8 @@ func (r *PostgresUnitsRepository) FindBuildingByBranchAndName(ctx context.Contex
 	}
 	var prefix string
 	err := r.db.QueryRowContext(ctx, `
-		SELECT host(spatial_prefix) || '/64' FROM sites
-		 WHERE spatial_prefix <<= $1::INET AND LOWER(COALESCE(site_name,'')) = LOWER($2)
+		SELECT host(site_id) || '/64' FROM sites
+		 WHERE site_id <<= $1::INET AND LOWER(COALESCE(site_name,'')) = LOWER($2)
 		 ORDER BY building, floor LIMIT 1`, branchID, buildingName).Scan(&prefix)
 	if err == sql.ErrNoRows {
 		return "", nil
@@ -316,12 +316,12 @@ func (r *PostgresUnitsRepository) CreateBuilding(ctx context.Context, tenantID s
 	var buildingInt int
 	err = tx.QueryRowContext(ctx, `
 		SELECT DISTINCT building FROM sites
-		 WHERE spatial_prefix <<= $1::INET AND LOWER(COALESCE(site_name,'')) = LOWER($2)
+		 WHERE site_id <<= $1::INET AND LOWER(COALESCE(site_name,'')) = LOWER($2)
 		 LIMIT 1`, branchPrefix, building.BuildingName).Scan(&buildingInt)
 	if err == sql.ErrNoRows {
 		// 分配下一个 building 整数 — 从 1 起（0 = unbound 哨兵）
 		if err := tx.QueryRowContext(ctx, `
-			SELECT COALESCE(MAX(building), 0) + 1 FROM sites WHERE spatial_prefix <<= $1::INET`, branchPrefix).Scan(&buildingInt); err != nil {
+			SELECT COALESCE(MAX(building), 0) + 1 FROM sites WHERE site_id <<= $1::INET`, branchPrefix).Scan(&buildingInt); err != nil {
 			return "", fmt.Errorf("allocate building int: %w", err)
 		}
 		if buildingInt < 1 || buildingInt > 14 {
@@ -334,8 +334,8 @@ func (r *PostgresUnitsRepository) CreateBuilding(ctx context.Context, tenantID s
 	// 2. (branch, building, floor) idempotent check
 	var existingPrefix string
 	err = tx.QueryRowContext(ctx, `
-		SELECT host(spatial_prefix) || '/64' FROM sites
-		 WHERE spatial_prefix <<= $1::INET AND building = $2 AND floor = $3
+		SELECT host(site_id) || '/64' FROM sites
+		 WHERE site_id <<= $1::INET AND building = $2 AND floor = $3
 		 LIMIT 1`, branchPrefix, buildingInt, floorInt).Scan(&existingPrefix)
 	if err == nil {
 		return existingPrefix, tx.Commit()
@@ -351,7 +351,7 @@ func (r *PostgresUnitsRepository) CreateBuilding(ctx context.Context, tenantID s
 	}
 	siteSlot := (buildingInt << 4) | floorInt
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO sites (spatial_prefix, site_slot, building, floor, site_name)
+		INSERT INTO sites (site_id, site_slot, building, floor, site_name)
 		VALUES ($1::INET, $2, $3, $4, $5)`,
 		sitePrefix, siteSlot, buildingInt, floorInt, building.BuildingName); err != nil {
 		return "", fmt.Errorf("insert site: %w", err)
@@ -370,8 +370,8 @@ func (r *PostgresUnitsRepository) UpdateBuilding(ctx context.Context, tenantID, 
 	}
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE sites SET site_name = $2, updated_at = NOW()
-		 WHERE spatial_prefix <<= network(set_masklen($1::INET, 56))
-		   AND building = (SELECT building FROM sites WHERE spatial_prefix = $1::INET)`,
+		 WHERE site_id <<= network(set_masklen($1::INET, 56))
+		   AND building = (SELECT building FROM sites WHERE site_id = $1::INET)`,
 		buildingID, building.BuildingName)
 	if err != nil {
 		return fmt.Errorf("update site: %w", err)
@@ -393,9 +393,9 @@ func (r *PostgresUnitsRepository) DeleteBuilding(ctx context.Context, tenantID, 
 	if err := r.db.QueryRowContext(ctx, `
 		SELECT EXISTS (
 		  SELECT 1 FROM units u
-		   WHERE u.spatial_prefix <<= network(set_masklen($1::INET, 56))
-		     AND (SELECT s.building FROM sites s WHERE s.spatial_prefix = network(set_masklen(u.spatial_prefix, 64)))
-		         = (SELECT building FROM sites WHERE spatial_prefix = $1::INET)
+		   WHERE u.unit_id <<= network(set_masklen($1::INET, 56))
+		     AND (SELECT s.building FROM sites s WHERE s.site_id = network(set_masklen(u.unit_id, 64)))
+		         = (SELECT building FROM sites WHERE site_id = $1::INET)
 		)`, buildingID).Scan(&hasUnits); err != nil {
 		return fmt.Errorf("check building empty: %w", err)
 	}
@@ -404,8 +404,8 @@ func (r *PostgresUnitsRepository) DeleteBuilding(ctx context.Context, tenantID, 
 	}
 	res, err := r.db.ExecContext(ctx, `
 		DELETE FROM sites
-		 WHERE spatial_prefix <<= network(set_masklen($1::INET, 56))
-		   AND building = (SELECT building FROM sites WHERE spatial_prefix = $1::INET)`, buildingID)
+		 WHERE site_id <<= network(set_masklen($1::INET, 56))
+		   AND building = (SELECT building FROM sites WHERE site_id = $1::INET)`, buildingID)
 	if err != nil {
 		return fmt.Errorf("delete sites: %w", err)
 	}
@@ -422,14 +422,14 @@ func (r *PostgresUnitsRepository) DeleteBuilding(ctx context.Context, tenantID, 
 // building_id 必须返回与 ListBuildings DISTINCT ON 同样的 winner（最小 floor 的 /64），
 // 否则前端 unit.building_id ≠ building.building_id，filter 会把同 building 跨 floor 的 unit 全部隐藏。
 const unitsSelectCols = `
-		host(u.spatial_prefix) || '/80' AS unit_id,
-		network(set_masklen(u.spatial_prefix, 48))::text AS tenant_id,
-		network(set_masklen(u.spatial_prefix, 56))::text AS branch_id,
+		host(u.unit_id) || '/80' AS unit_id,
+		network(set_masklen(u.unit_id, 48))::text AS tenant_id,
+		network(set_masklen(u.unit_id, 56))::text AS branch_id,
 		COALESCE(b.branch_name, '') AS branch_name,
 		u.unit_name,
-		(SELECT host(s2.spatial_prefix) || '/64'
+		(SELECT host(s2.site_id) || '/64'
 		   FROM sites s2
-		  WHERE s2.spatial_prefix <<= network(set_masklen(u.spatial_prefix, 56))
+		  WHERE s2.site_id <<= network(set_masklen(u.unit_id, 56))
 		    AND s2.building = s.building
 		  ORDER BY s2.floor LIMIT 1) AS building_id,
 		COALESCE(s.site_name, '') AS building_name,
@@ -442,8 +442,8 @@ const unitsSelectCols = `
 // JOIN 用 network(set_masklen(...)) 而非 set_masklen — 后者不清 host bits 会让 INET 比较失败。
 const unitsFromClause = `
 	FROM units u
-	JOIN sites s    ON s.spatial_prefix = network(set_masklen(u.spatial_prefix, 64))
-	JOIN branches b ON b.spatial_prefix = network(set_masklen(u.spatial_prefix, 56))
+	JOIN sites s    ON s.site_id = network(set_masklen(u.unit_id, 64))
+	JOIN branches b ON b.branch_id = network(set_masklen(u.unit_id, 56))
 `
 
 func scanUnit(rs rowScanner) (*domain.Unit, error) {
@@ -470,12 +470,12 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 	argIdx := 1
 
 	if tenantID != "" && looksLikeINETPrefix(tenantID) {
-		where = append(where, fmt.Sprintf("u.spatial_prefix <<= $%d::INET", argIdx))
+		where = append(where, fmt.Sprintf("u.unit_id <<= $%d::INET", argIdx))
 		args = append(args, tenantID)
 		argIdx++
 	}
 	if filters.BranchID != "" && looksLikeINETPrefix(filters.BranchID) {
-		where = append(where, fmt.Sprintf("u.spatial_prefix <<= $%d::INET", argIdx))
+		where = append(where, fmt.Sprintf("u.unit_id <<= $%d::INET", argIdx))
 		args = append(args, filters.BranchID)
 		argIdx++
 	} else if len(filters.BranchIDs) > 0 {
@@ -484,7 +484,7 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 			if !looksLikeINETPrefix(bid) {
 				continue
 			}
-			ph = append(ph, fmt.Sprintf("u.spatial_prefix <<= $%d::INET", argIdx))
+			ph = append(ph, fmt.Sprintf("u.unit_id <<= $%d::INET", argIdx))
 			args = append(args, bid)
 			argIdx++
 		}
@@ -496,7 +496,7 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 		// v1 业务：按 building_id 过滤 = 该 building 的**全部楼层**的 units（不限单 floor）。
 		// v2 building_id 是某 floor 的 site /64 占位 prefix；跨 floor 范围 = (branch, building_int) 组。
 		where = append(where, fmt.Sprintf(
-			"u.spatial_prefix <<= network(set_masklen($%d::INET, 56)) AND s.building = (SELECT building FROM sites WHERE spatial_prefix = $%d::INET)",
+			"u.unit_id <<= network(set_masklen($%d::INET, 56)) AND s.building = (SELECT building FROM sites WHERE site_id = $%d::INET)",
 			argIdx, argIdx))
 		args = append(args, filters.BuildingID)
 		argIdx++
@@ -567,7 +567,7 @@ func (r *PostgresUnitsRepository) GetUnit(ctx context.Context, tenantID, unitID 
 	if unitID == "" || !looksLikeINETPrefix(unitID) {
 		return nil, sql.ErrNoRows
 	}
-	q := `SELECT ` + unitsSelectCols + unitsFromClause + ` WHERE u.spatial_prefix = $1::INET`
+	q := `SELECT ` + unitsSelectCols + unitsFromClause + ` WHERE u.unit_id = $1::INET`
 	rows, err := r.db.QueryContext(ctx, q, unitID)
 	if err != nil {
 		return nil, fmt.Errorf("get unit: %w", err)
@@ -609,14 +609,14 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 		var branchPrefix string
 		var buildingInt int
 		if err := tx.QueryRowContext(ctx, `
-			SELECT network(set_masklen(spatial_prefix, 56))::text, building
-			  FROM sites WHERE spatial_prefix = $1::INET`, unit.BuildingID.String).Scan(&branchPrefix, &buildingInt); err != nil {
+			SELECT network(set_masklen(site_id, 56))::text, building
+			  FROM sites WHERE site_id = $1::INET`, unit.BuildingID.String).Scan(&branchPrefix, &buildingInt); err != nil {
 			return "", fmt.Errorf("resolve building: %w", err)
 		}
 		// lookup-or-create (branch, building_int, floor)
 		err := tx.QueryRowContext(ctx, `
-			SELECT host(spatial_prefix) || '/64' FROM sites
-			 WHERE spatial_prefix <<= $1::INET AND building = $2 AND floor = $3 LIMIT 1`,
+			SELECT host(site_id) || '/64' FROM sites
+			 WHERE site_id <<= $1::INET AND building = $2 AND floor = $3 LIMIT 1`,
 			branchPrefix, buildingInt, floorInt).Scan(&sitePrefix)
 		if err == sql.ErrNoRows {
 			derived, derr := deriveSiteCIDR(branchPrefix, byte(buildingInt), byte(floorInt))
@@ -626,9 +626,9 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 			siteSlot := (buildingInt << 4) | floorInt
 			// 拿原 building 的 site_name 用作新 floor site 的 name
 			var siteName string
-			_ = tx.QueryRowContext(ctx, `SELECT COALESCE(site_name,'') FROM sites WHERE spatial_prefix = $1::INET`, unit.BuildingID.String).Scan(&siteName)
+			_ = tx.QueryRowContext(ctx, `SELECT COALESCE(site_name,'') FROM sites WHERE site_id = $1::INET`, unit.BuildingID.String).Scan(&siteName)
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO sites (spatial_prefix, site_slot, building, floor, site_name)
+				INSERT INTO sites (site_id, site_slot, building, floor, site_name)
 				VALUES ($1::INET, $2, $3, $4, $5)`,
 				derived, siteSlot, buildingInt, floorInt, siteName); err != nil {
 				return "", fmt.Errorf("auto-create site for new floor: %w", err)
@@ -641,8 +641,8 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 		// 无 BuildingID：building=1 默认（home care 单楼宇场景；v2 不再用 building=0/floor=0）
 		const defaultBuilding = 1
 		err := tx.QueryRowContext(ctx, `
-			SELECT host(spatial_prefix) || '/64' FROM sites
-			 WHERE spatial_prefix <<= $1::INET AND building = $2 AND floor = $3 LIMIT 1`,
+			SELECT host(site_id) || '/64' FROM sites
+			 WHERE site_id <<= $1::INET AND building = $2 AND floor = $3 LIMIT 1`,
 			unit.BranchID.String, defaultBuilding, floorInt).Scan(&sitePrefix)
 		if err == sql.ErrNoRows {
 			derived, derr := deriveSiteCIDR(unit.BranchID.String, byte(defaultBuilding), byte(floorInt))
@@ -651,7 +651,7 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 			}
 			siteSlot := (defaultBuilding << 4) | floorInt
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO sites (spatial_prefix, site_slot, building, floor, site_name)
+				INSERT INTO sites (site_id, site_slot, building, floor, site_name)
 				VALUES ($1::INET, $2, $3, $4, '')`, derived, siteSlot, defaultBuilding, floorInt); err != nil {
 				return "", fmt.Errorf("auto-create default site: %w", err)
 			}
@@ -670,7 +670,7 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 	// unit_slot 从 1 起（slot 0 = unbound 哨兵；0xFFFF wildcard 保留）
 	var nextSlot int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(unit_slot), 0) + 1 FROM units WHERE spatial_prefix <<= $1::INET`, sitePrefix).Scan(&nextSlot); err != nil {
+		`SELECT COALESCE(MAX(unit_slot), 0) + 1 FROM units WHERE unit_id <<= $1::INET`, sitePrefix).Scan(&nextSlot); err != nil {
 		return "", fmt.Errorf("compute unit_slot: %w", err)
 	}
 	if nextSlot < 1 || nextSlot > 65534 {
@@ -697,7 +697,7 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 		tz = "UTC"
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO units (spatial_prefix, unit_slot, unit_name, unit_property, unit_type, timezone)
+		INSERT INTO units (unit_id, unit_slot, unit_name, unit_property, unit_type, timezone)
 		VALUES ($1::INET, $2, $3, $4, $5, $6)`,
 		unitPrefix, nextSlot, unit.UnitName, unitProperty, unitType, tz); err != nil {
 		return "", fmt.Errorf("insert unit: %w", err)
@@ -715,20 +715,20 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 func cleanupEmptyFloorSites(ctx context.Context, tx *sql.Tx, referencePrefix string) error {
 	_, err := tx.ExecContext(ctx, `
 		WITH grp AS (
-		  SELECT network(set_masklen(spatial_prefix, 56)) AS branch_prefix, building
-		    FROM sites WHERE spatial_prefix = $1::INET
+		  SELECT network(set_masklen(site_id, 56)) AS branch_prefix, building
+		    FROM sites WHERE site_id = $1::INET
 		),
 		all_sites AS (
-		  SELECT s.spatial_prefix
+		  SELECT s.site_id
 		    FROM sites s, grp
-		   WHERE s.spatial_prefix <<= grp.branch_prefix AND s.building = grp.building
+		   WHERE s.site_id <<= grp.branch_prefix AND s.building = grp.building
 		),
 		empty_sites AS (
-		  SELECT spatial_prefix FROM all_sites
-		   WHERE NOT EXISTS (SELECT 1 FROM units u WHERE u.spatial_prefix <<= all_sites.spatial_prefix)
+		  SELECT site_id FROM all_sites
+		   WHERE NOT EXISTS (SELECT 1 FROM units u WHERE u.unit_id <<= all_sites.site_id)
 		)
 		DELETE FROM sites
-		 WHERE spatial_prefix IN (SELECT spatial_prefix FROM empty_sites)
+		 WHERE site_id IN (SELECT site_id FROM empty_sites)
 		   AND (SELECT COUNT(*) FROM all_sites) - (SELECT COUNT(*) FROM empty_sites) >= 1`,
 		referencePrefix)
 	return err
@@ -763,7 +763,7 @@ func (r *PostgresUnitsRepository) UpdateUnit(ctx context.Context, tenantID, unit
 	}
 	updates = append(updates, "updated_at = NOW()")
 
-	q := `UPDATE units SET ` + strings.Join(updates, ", ") + ` WHERE spatial_prefix = $1::INET`
+	q := `UPDATE units SET ` + strings.Join(updates, ", ") + ` WHERE unit_id = $1::INET`
 	res, err := r.db.ExecContext(ctx, q, args...)
 	if err != nil {
 		return fmt.Errorf("update unit: %w", err)
@@ -789,7 +789,7 @@ func (r *PostgresUnitsRepository) DeleteUnit(ctx context.Context, tenantID, unit
 		`SELECT host(network(set_masklen($1::INET, 64))) || '/64'`, unitID).Scan(&siteRef); err != nil {
 		return fmt.Errorf("derive site ref: %w", err)
 	}
-	res, err := tx.ExecContext(ctx, `DELETE FROM units WHERE spatial_prefix = $1::INET`, unitID)
+	res, err := tx.ExecContext(ctx, `DELETE FROM units WHERE unit_id = $1::INET`, unitID)
 	if err != nil {
 		return fmt.Errorf("delete unit (likely has rooms): %w", err)
 	}
@@ -819,9 +819,9 @@ func (r *PostgresUnitsRepository) GetUnitAvailability(ctx context.Context, tenan
 // =============================================================================
 
 const roomsSelectCols = `
-		host(r.spatial_prefix) || '/88' AS room_id,
-		network(set_masklen(r.spatial_prefix, 48))::text AS tenant_id,
-		host(network(set_masklen(r.spatial_prefix, 80))) || '/80' AS unit_id,
+		host(r.room_id) || '/88' AS room_id,
+		network(set_masklen(r.room_id, 48))::text AS tenant_id,
+		host(network(set_masklen(r.room_id, 80))) || '/80' AS unit_id,
 		COALESCE(u.unit_name, '') AS unit_name,
 		s.floor AS floor_int,
 		r.room_name
@@ -829,8 +829,8 @@ const roomsSelectCols = `
 
 const roomsFromClause = `
 	FROM rooms r
-	JOIN units u ON u.spatial_prefix = network(set_masklen(r.spatial_prefix, 80))
-	JOIN sites s ON s.spatial_prefix = network(set_masklen(r.spatial_prefix, 64))
+	JOIN units u ON u.unit_id = network(set_masklen(r.room_id, 80))
+	JOIN sites s ON s.site_id = network(set_masklen(r.room_id, 64))
 `
 
 func scanRoom(rs rowScanner) (*domain.Room, error) {
@@ -850,7 +850,7 @@ func (r *PostgresUnitsRepository) ListRooms(ctx context.Context, tenantID, unitI
 	if unitID == "" || !looksLikeINETPrefix(unitID) {
 		return nil, nil
 	}
-	where := []string{"r.spatial_prefix <<= $1::INET"}
+	where := []string{"r.room_id <<= $1::INET"}
 	args := []any{unitID}
 	argIdx := 2
 	if search != "" {
@@ -879,7 +879,7 @@ func (r *PostgresUnitsRepository) GetRoom(ctx context.Context, tenantID, roomID 
 	if roomID == "" || !looksLikeINETPrefix(roomID) {
 		return nil, sql.ErrNoRows
 	}
-	q := `SELECT ` + roomsSelectCols + roomsFromClause + ` WHERE r.spatial_prefix = $1::INET`
+	q := `SELECT ` + roomsSelectCols + roomsFromClause + ` WHERE r.room_id = $1::INET`
 	rows, err := r.db.QueryContext(ctx, q, roomID)
 	if err != nil {
 		return nil, fmt.Errorf("get room: %w", err)
@@ -908,7 +908,7 @@ func (r *PostgresUnitsRepository) CreateRoom(ctx context.Context, tenantID, unit
 	}
 	// room_slot 从 1 起（slot 0 = unbound 哨兵；0xFF wildcard 保留）
 	var nextSlot int
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(room_slot), 0) + 1 FROM rooms WHERE spatial_prefix <<= $1::INET`, unitID).Scan(&nextSlot); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(room_slot), 0) + 1 FROM rooms WHERE room_id <<= $1::INET`, unitID).Scan(&nextSlot); err != nil {
 		return "", fmt.Errorf("compute room_slot: %w", err)
 	}
 	if nextSlot < 1 || nextSlot > 254 {
@@ -919,7 +919,7 @@ func (r *PostgresUnitsRepository) CreateRoom(ctx context.Context, tenantID, unit
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO rooms (spatial_prefix, room_slot, room_name)
+		INSERT INTO rooms (room_id, room_slot, room_name)
 		VALUES ($1::INET, $2, $3)`, roomPrefix, nextSlot, room.RoomName); err != nil {
 		return "", fmt.Errorf("insert room: %w", err)
 	}
@@ -934,7 +934,7 @@ func (r *PostgresUnitsRepository) UpdateRoom(ctx context.Context, tenantID, room
 		return fmt.Errorf("room_name required")
 	}
 	res, err := r.db.ExecContext(ctx, `
-		UPDATE rooms SET room_name = $2, updated_at = NOW() WHERE spatial_prefix = $1::INET`, roomID, room.RoomName)
+		UPDATE rooms SET room_name = $2, updated_at = NOW() WHERE room_id = $1::INET`, roomID, room.RoomName)
 	if err != nil {
 		return fmt.Errorf("update room: %w", err)
 	}
@@ -948,7 +948,7 @@ func (r *PostgresUnitsRepository) DeleteRoom(ctx context.Context, tenantID, room
 	if roomID == "" || !looksLikeINETPrefix(roomID) {
 		return fmt.Errorf("invalid room_id")
 	}
-	res, err := r.db.ExecContext(ctx, `DELETE FROM rooms WHERE spatial_prefix = $1::INET`, roomID)
+	res, err := r.db.ExecContext(ctx, `DELETE FROM rooms WHERE room_id = $1::INET`, roomID)
 	if err != nil {
 		return fmt.Errorf("delete room (likely has beds): %w", err)
 	}
@@ -969,14 +969,14 @@ func (r *PostgresUnitsRepository) ListRoomsByUnitIDs(ctx context.Context, tenant
 		if !looksLikeINETPrefix(uid) {
 			continue
 		}
-		conds = append(conds, fmt.Sprintf("r.spatial_prefix <<= $%d::INET", argIdx))
+		conds = append(conds, fmt.Sprintf("r.room_id <<= $%d::INET", argIdx))
 		args = append(args, uid)
 		argIdx++
 	}
 	if len(conds) == 0 {
 		return nil, nil
 	}
-	q := `SELECT ` + roomsSelectCols + roomsFromClause + ` WHERE (` + strings.Join(conds, " OR ") + `) ORDER BY r.spatial_prefix, r.room_slot`
+	q := `SELECT ` + roomsSelectCols + roomsFromClause + ` WHERE (` + strings.Join(conds, " OR ") + `) ORDER BY r.room_id, r.room_slot`
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list rooms by unit ids: %w", err)
@@ -1018,19 +1018,19 @@ func (r *PostgresUnitsRepository) ListRoomsByBranch(ctx context.Context, tenantI
 	// v2: unit_type 派生为 v1 字符串标签（Home / Facility），FacilityType 由 unit_type 子枚举派生
 	q := `
 		SELECT
-		  host(r.spatial_prefix) || '/88' AS room_id,
-		  network(set_masklen(r.spatial_prefix, 48))::text AS tenant_id,
-		  host(network(set_masklen(r.spatial_prefix, 80))) || '/80' AS unit_id,
+		  host(r.room_id) || '/88' AS room_id,
+		  network(set_masklen(r.room_id, 48))::text AS tenant_id,
+		  host(network(set_masklen(r.room_id, 80))) || '/80' AS unit_id,
 		  u.unit_name,
 		  COALESCE(s.site_name, '') AS building_name,
 		  s.floor AS floor_int,
 		  r.room_name,
 		  CASE u.unit_property WHEN 0 THEN 'Home' ELSE 'Facility' END AS unit_type,
-		  CASE u.unit_type WHEN 1 THEN 'VIP' WHEN 2 THEN 'Share' WHEN 3 THEN 'Public' ELSE '' END AS facility_type
+		  CASE u.unit_type WHEN 1 THEN 'Private' WHEN 2 THEN 'Share' WHEN 3 THEN 'Public' ELSE '' END AS facility_type
 		FROM rooms r
-		JOIN units u ON u.spatial_prefix = network(set_masklen(r.spatial_prefix, 80))
-		JOIN sites s ON s.spatial_prefix = network(set_masklen(r.spatial_prefix, 64))
-		WHERE r.spatial_prefix <<= $1::INET
+		JOIN units u ON u.unit_id = network(set_masklen(r.room_id, 80))
+		JOIN sites s ON s.site_id = network(set_masklen(r.room_id, 64))
+		WHERE r.room_id <<= $1::INET
 		ORDER BY s.building, s.floor, u.unit_slot, r.room_slot`
 	rows, err := r.db.QueryContext(ctx, q, branchID)
 	if err != nil {
@@ -1058,16 +1058,16 @@ func (r *PostgresUnitsRepository) ListRoomsByBranch(ctx context.Context, tenantI
 // =============================================================================
 
 const bedsSelectCols = `
-		host(b.spatial_prefix) || '/96' AS bed_id,
-		network(set_masklen(b.spatial_prefix, 48))::text AS tenant_id,
-		host(network(set_masklen(b.spatial_prefix, 88))) || '/88' AS room_id,
+		host(b.bed_id) || '/96' AS bed_id,
+		network(set_masklen(b.bed_id, 48))::text AS tenant_id,
+		host(network(set_masklen(b.bed_id, 88))) || '/88' AS room_id,
 		COALESCE(rm.room_name, '') AS room_name,
 		b.bed_name
 `
 
 const bedsFromClause = `
 	FROM beds b
-	JOIN rooms rm ON rm.spatial_prefix = network(set_masklen(b.spatial_prefix, 88))
+	JOIN rooms rm ON rm.room_id = network(set_masklen(b.bed_id, 88))
 `
 
 func scanBed(rs rowScanner) (*domain.Bed, error) {
@@ -1086,7 +1086,7 @@ func (r *PostgresUnitsRepository) ListBeds(ctx context.Context, tenantID, roomID
 	if roomID == "" || !looksLikeINETPrefix(roomID) {
 		return nil, nil
 	}
-	where := []string{"b.spatial_prefix <<= $1::INET"}
+	where := []string{"b.bed_id <<= $1::INET"}
 	args := []any{roomID}
 	argIdx := 2
 	if search != "" {
@@ -1133,7 +1133,7 @@ func (r *PostgresUnitsRepository) GetBed(ctx context.Context, tenantID, bedID st
 	if bedID == "" || !looksLikeINETPrefix(bedID) {
 		return nil, sql.ErrNoRows
 	}
-	q := `SELECT ` + bedsSelectCols + bedsFromClause + ` WHERE b.spatial_prefix = $1::INET`
+	q := `SELECT ` + bedsSelectCols + bedsFromClause + ` WHERE b.bed_id = $1::INET`
 	rows, err := r.db.QueryContext(ctx, q, bedID)
 	if err != nil {
 		return nil, fmt.Errorf("get bed: %w", err)
@@ -1162,7 +1162,7 @@ func (r *PostgresUnitsRepository) CreateBed(ctx context.Context, tenantID, roomI
 	}
 	// bed_slot 从 1 起（slot 0 = unbound 哨兵；0xFF wildcard 保留）
 	var nextSlot int
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(bed_slot), 0) + 1 FROM beds WHERE spatial_prefix <<= $1::INET`, roomID).Scan(&nextSlot); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(bed_slot), 0) + 1 FROM beds WHERE bed_id <<= $1::INET`, roomID).Scan(&nextSlot); err != nil {
 		return "", fmt.Errorf("compute bed_slot: %w", err)
 	}
 	if nextSlot < 1 || nextSlot > 254 {
@@ -1173,7 +1173,7 @@ func (r *PostgresUnitsRepository) CreateBed(ctx context.Context, tenantID, roomI
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO beds (spatial_prefix, bed_slot, bed_name)
+		INSERT INTO beds (bed_id, bed_slot, bed_name)
 		VALUES ($1::INET, $2, $3)`, bedPrefix, nextSlot, bed.BedName); err != nil {
 		return "", fmt.Errorf("insert bed: %w", err)
 	}
@@ -1188,7 +1188,7 @@ func (r *PostgresUnitsRepository) UpdateBed(ctx context.Context, tenantID, bedID
 		return fmt.Errorf("bed_name required")
 	}
 	res, err := r.db.ExecContext(ctx, `
-		UPDATE beds SET bed_name = $2, updated_at = NOW() WHERE spatial_prefix = $1::INET`, bedID, bed.BedName)
+		UPDATE beds SET bed_name = $2, updated_at = NOW() WHERE bed_id = $1::INET`, bedID, bed.BedName)
 	if err != nil {
 		return fmt.Errorf("update bed: %w", err)
 	}
@@ -1202,7 +1202,7 @@ func (r *PostgresUnitsRepository) DeleteBed(ctx context.Context, tenantID, bedID
 	if bedID == "" || !looksLikeINETPrefix(bedID) {
 		return fmt.Errorf("invalid bed_id")
 	}
-	res, err := r.db.ExecContext(ctx, `DELETE FROM beds WHERE spatial_prefix = $1::INET`, bedID)
+	res, err := r.db.ExecContext(ctx, `DELETE FROM beds WHERE bed_id = $1::INET`, bedID)
 	if err != nil {
 		return fmt.Errorf("delete bed: %w", err)
 	}
@@ -1223,14 +1223,14 @@ func (r *PostgresUnitsRepository) ListBedsByRoomIDs(ctx context.Context, tenantI
 		if !looksLikeINETPrefix(rid) {
 			continue
 		}
-		conds = append(conds, fmt.Sprintf("b.spatial_prefix <<= $%d::INET", argIdx))
+		conds = append(conds, fmt.Sprintf("b.bed_id <<= $%d::INET", argIdx))
 		args = append(args, rid)
 		argIdx++
 	}
 	if len(conds) == 0 {
 		return nil, nil
 	}
-	q := `SELECT ` + bedsSelectCols + bedsFromClause + ` WHERE (` + strings.Join(conds, " OR ") + `) ORDER BY b.spatial_prefix, b.bed_slot`
+	q := `SELECT ` + bedsSelectCols + bedsFromClause + ` WHERE (` + strings.Join(conds, " OR ") + `) ORDER BY b.bed_id, b.bed_slot`
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list beds by room ids: %w", err)

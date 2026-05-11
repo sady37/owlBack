@@ -117,7 +117,7 @@ type CreateUserRequest struct {
 	Status        string   // 可选，默认 "active"
 	AlarmLevels   []string // 可选
 	AlarmChannels []string // 可选
-	AlarmScope    string   // 可选，根据角色设置默认值
+	Relegation    string   // 可选，根据角色设置默认值
 	Tags          []string // 可选
 	BranchIDs     []string // 可选：通过 branch_id 列表在 user_branches 表中创建多个院区关联
 
@@ -147,9 +147,11 @@ type UpdateUserRequest struct {
 	Status        *string  // 可选
 	AlarmLevels   []string // 可选（nil 表示不更新，空数组表示清空）
 	AlarmChannels []string // 可选（nil 表示不更新，空数组表示清空）
-	AlarmScope    *string  // 可选
+	Relegation    *string  // 可选
 	Tags          []string // 可选（nil 表示不更新，空数组表示清空）
 	BranchIDs     []string // 可选：通过 branch_id 列表在 user_branches 表中更新多个院区关联（nil 表示不更新，空数组表示删除所有关联）
+	PasswordHash  *string  // 可选：sha256(plain) hex 字符串（FE 约定，64 chars / decode 后 32 bytes）
+	PinHash       *string  // 可选：sha256(plain_pin) hex 字符串
 
 	// 注意：AvailableBranches 不应由 Handler 传递，Service 层会自己从数据库查询用户的 branch 信息
 	// 这是用户本身的属性，不能信任前端传递的值
@@ -305,7 +307,7 @@ type UserDTO struct {
 	Status        string                 `json:"status"`
 	AlarmLevels   []string               `json:"alarm_levels,omitempty"`
 	AlarmChannels []string               `json:"alarm_channels,omitempty"`
-	AlarmScope    string                 `json:"alarm_scope,omitempty"`
+	Relegation    string                 `json:"relegation,omitempty"`
 	BranchIDs     []string               `json:"branch_ids,omitempty"`    // 返回所有 branch_id 列表
 	BranchID      string                 `json:"branch_id,omitempty"`     // 向后兼容：第一个 branch ID（按 branch_name 排序）
 	BranchName    string                 `json:"branch_name,omitempty"`   // 向后兼容：第一个 branch 名称（用于显示）
@@ -426,7 +428,7 @@ func (s *userService) updateUserBranches(ctx context.Context, tenantID, userID s
 // getUserBranchIDs 查询用户所属的院区信息（Service 层内部方法）
 //
 // v2 改造说明：owl_v2 schema 删除了 user_branches 表；用户的 branch 关系由 user_roles +
-// roles.tenant_prefix + role_permissions.resource_scope INET 派生（用 utils/spatial 在调用侧推），
+// roles.tenant_id + role_permissions.resource_scope INET 派生（用 utils/spatial 在调用侧推），
 // 不再有"用户属于哪几个 branch"的关系列表。本方法直接返回 (nil, false, nil) — service 层会按
 // "无 branch 限制 = 可访问全部"处理（即 admin/sysadmin 行为），与 v2 RBAC 默认权限一致。
 func (s *userService) getUserBranchIDs(ctx context.Context, tenantID, userID string) (branches []UserBranchInfo, hasBranches bool, err error) {
@@ -651,8 +653,8 @@ func domainUserToDTO(user *domain.User) *UserDTO {
 	if len(user.AlarmChannels) > 0 {
 		dto.AlarmChannels = []string(user.AlarmChannels)
 	}
-	if user.AlarmScope.Valid {
-		dto.AlarmScope = user.AlarmScope.String
+	if user.Relegation.Valid {
+		dto.Relegation = user.Relegation.String
 	}
 	// BranchID 和 BranchName 从 Repository 层的 LATERAL 子查询获取（第一个 branch，按 branch_name 排序）
 	// 注意：不再使用 users.branch_id 字段（已废弃），也不使用 is_primary 字段（已删除）
@@ -1188,10 +1190,10 @@ func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*C
 		status = "active"
 	}
 
-	// AlarmScope 默认值（根据角色）
+	// Relegation 默认值（根据角色）
 	var alarmScope string
-	if req.AlarmScope != "" {
-		alarmScope = req.AlarmScope
+	if req.Relegation != "" {
+		alarmScope = req.Relegation
 	} else {
 		roleLower := strings.ToLower(role)
 		if roleLower == "caregiver" || roleLower == "nurse" {
@@ -1250,7 +1252,7 @@ func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*C
 		user.PhoneHash = phoneHash
 	}
 	if alarmScope != "" {
-		user.AlarmScope = sql.NullString{String: alarmScope, Valid: true}
+		user.Relegation = sql.NullString{String: alarmScope, Valid: true}
 	}
 	if len(req.AlarmLevels) > 0 {
 		user.AlarmLevels = req.AlarmLevels
@@ -1349,7 +1351,7 @@ func (s *userService) UpdateUser(ctx context.Context, req UpdateUserRequest) (*U
 	updatingStatus := req.Status != nil && *req.Status != ""
 	updatingOtherFields := req.Nickname != nil || req.Email != nil || req.Phone != nil ||
 		req.AlarmLevels != nil || req.AlarmChannels != nil ||
-		req.AlarmScope != nil || req.Tags != nil || req.BranchIDs != nil
+		req.Relegation != nil || req.Tags != nil || req.BranchIDs != nil
 
 	// 权限规则：如果更新自己且只更新 password/email/phone，无限制
 	// 如果更新其他用户或更新 role/status/otherFields，需要权限检查
@@ -1390,6 +1392,45 @@ func (s *userService) UpdateUser(ctx context.Context, req UpdateUserRequest) (*U
 	// 注意：UpdateUser 需要完整的 domain.User，但只更新非零字段
 	// 这里我们需要先获取现有用户，然后只更新提供的字段
 	updateUser := *targetUser // 复制现有用户
+
+	// 清空 hash 字段（避免被 repo 层当成"待更新"再次 bcrypt）：
+	//   targetUser.PasswordHash 是 DB 中的 bcrypt 字符串 bytes（≈60 bytes），
+	//   若不清空，repo UpdateUser 检测到 len>0 会再 bcrypt(hex(60 bytes))=120 chars → ">72 bytes" 硬报错。
+	// 后续仅当 req.PasswordHash != nil 时按 FE 约定（sha256 hex）重新解码并 set。
+	updateUser.PasswordHash = nil
+	updateUser.PinHash = nil
+	// 同时清空 EmailHash / PhoneHash，让下面的 email/phone 业务路径决定是否更新 hash
+	updateUser.EmailHash = nil
+	updateUser.PhoneHash = nil
+
+	// 6.1 PasswordHash：FE 约定 = sha256(plain) hex 字符串（64 chars，decode 后 32 bytes）
+	if req.PasswordHash != nil && *req.PasswordHash != "" {
+		raw := *req.PasswordHash
+		passwordHashBytes, decodeErr := hex.DecodeString(raw)
+		if decodeErr != nil || len(passwordHashBytes) == 0 || len(passwordHashBytes) > 32 {
+			s.logger.Warn("invalid password_hash format (expected sha256 hex 64 chars)",
+				zap.String("user_id", req.UserID),
+				zap.Int("hex_len", len(raw)),
+				zap.Int("decoded_bytes", len(passwordHashBytes)),
+				zap.Bool("has_decode_err", decodeErr != nil))
+			return nil, fmt.Errorf("invalid password_hash: must be sha256 hex string (64 chars)")
+		}
+		updateUser.PasswordHash = passwordHashBytes
+	}
+
+	// 6.2 PinHash：FE 约定 = sha256(plain_pin) hex 字符串
+	if req.PinHash != nil && *req.PinHash != "" {
+		raw := *req.PinHash
+		pinHashBytes, decodeErr := hex.DecodeString(raw)
+		if decodeErr != nil || len(pinHashBytes) == 0 || len(pinHashBytes) > 32 {
+			s.logger.Warn("invalid pin_hash format",
+				zap.String("user_id", req.UserID),
+				zap.Int("hex_len", len(raw)),
+				zap.Int("decoded_bytes", len(pinHashBytes)))
+			return nil, fmt.Errorf("invalid pin_hash: must be sha256 hex string")
+		}
+		updateUser.PinHash = pinHashBytes
+	}
 
 	// 统一的字段更新辅助函数
 	// 规则 1：普通字段（带值比较）
@@ -1531,12 +1572,12 @@ func (s *userService) UpdateUser(ctx context.Context, req UpdateUserRequest) (*U
 		}
 	})
 
-	// AlarmScope
-	updateStringField(req.AlarmScope, targetUser.AlarmScope, func(val string) {
+	// Relegation
+	updateStringField(req.Relegation, targetUser.Relegation, func(val string) {
 		if val == "" {
-			updateUser.AlarmScope = sql.NullString{Valid: false} // 清空为 NULL
+			updateUser.Relegation = sql.NullString{Valid: false} // 清空为 NULL
 		} else {
-			updateUser.AlarmScope = sql.NullString{String: val, Valid: true}
+			updateUser.Relegation = sql.NullString{String: val, Valid: true}
 		}
 	})
 	// 处理 BranchIDs：如果提供了，更新 user_branches 关联
@@ -1724,6 +1765,11 @@ func (s *userService) DeleteUser(ctx context.Context, req DeleteUserRequest) (*D
 	// 6. 软删除（设置 status = 'left'）
 	updateUser := *targetUser
 	updateUser.Status = "left"
+	// 清空 hash 字段，避免 repo.UpdateUser 把已 bcrypt 的 PasswordHash 再次 bcrypt（>72 bytes 报错）
+	updateUser.PasswordHash = nil
+	updateUser.PinHash = nil
+	updateUser.EmailHash = nil
+	updateUser.PhoneHash = nil
 
 	if err := s.usersRepo.UpdateUser(ctx, req.TenantID, req.UserID, &updateUser); err != nil {
 		s.logger.Error("DeleteUser failed", zap.Error(err))
@@ -1795,6 +1841,12 @@ func (s *userService) ResetPassword(ctx context.Context, req UserResetPasswordRe
 
 	// 7. 更新密码
 	updateUser := *targetUser
+	// 先清空所有 hash 字段，避免 repo 把 DB 读出的已 bcrypt 值再次 bcrypt（>72 bytes 报错）
+	updateUser.PasswordHash = nil
+	updateUser.PinHash = nil
+	updateUser.EmailHash = nil
+	updateUser.PhoneHash = nil
+	// 再 set 新 password hash
 	updateUser.PasswordHash = passwordHash
 
 	if err := s.usersRepo.UpdateUser(ctx, req.TenantID, req.UserID, &updateUser); err != nil {
@@ -1874,6 +1926,12 @@ func (s *userService) ResetPIN(ctx context.Context, req UserResetPINRequest) (*U
 
 	// 7. 更新 PIN
 	updateUser := *targetUser
+	// 先清空所有 hash 字段，避免 repo 把 DB 读出的已 bcrypt 值再次 bcrypt（>72 bytes 报错）
+	updateUser.PasswordHash = nil
+	updateUser.PinHash = nil
+	updateUser.EmailHash = nil
+	updateUser.PhoneHash = nil
+	// 再 set 新 pin hash
 	updateUser.PinHash = pinHash
 
 	if err := s.usersRepo.UpdateUser(ctx, req.TenantID, req.UserID, &updateUser); err != nil {
@@ -2035,9 +2093,20 @@ func (s *userService) UpdateAccountSettings(ctx context.Context, req UpdateAccou
 		TenantID: targetUser.TenantID,
 	}
 
-	// 4.1 更新密码（如果提供，!= nil 就更新，不进行任何判断）
-	if req.PasswordHash != nil {
-		passwordHashBytes, _ := hex.DecodeString(*req.PasswordHash)
+	// 4.1 更新密码（如果提供，!= nil 就更新）
+	//   FE 约定：req.PasswordHash = sha256(plain) hex 字符串（64 chars，decode 后 32 bytes）
+	//   防御：非 hex 或 decode 后 >32 bytes（避免 bcrypt(>72 bytes hex_string) 硬报错）
+	if req.PasswordHash != nil && *req.PasswordHash != "" {
+		raw := *req.PasswordHash
+		passwordHashBytes, decodeErr := hex.DecodeString(raw)
+		if decodeErr != nil || len(passwordHashBytes) == 0 || len(passwordHashBytes) > 32 {
+			s.logger.Warn("invalid password_hash format (expected sha256 hex 64 chars)",
+				zap.String("user_id", req.UserID),
+				zap.Int("hex_len", len(raw)),
+				zap.Int("decoded_bytes", len(passwordHashBytes)),
+				zap.Bool("has_decode_err", decodeErr != nil))
+			return nil, fmt.Errorf("invalid password_hash: must be sha256 hex string (64 chars)")
+		}
 		updateUser.PasswordHash = passwordHashBytes
 	}
 
@@ -2244,6 +2313,52 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 		return nil, fmt.Errorf("branch_id is required")
 	}
 
+	// v2 short-circuit：tenant_id 是 INET CIDR → 直接 raw SQL 查 tenant 下 role∈(Nurse,Caregiver) 的 active users
+	// （v1 SQL 依赖 user_branches.tenant_id UUID + units.unit_id UUID 等，v2 schema 已变）
+	if strings.Contains(req.TenantID, "::") {
+		tenantPrefix := req.TenantID
+		if !strings.Contains(tenantPrefix, "/") {
+			tenantPrefix += "/48"
+		}
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT u.user_id::text,
+			       host(u.tenant_id) || '/48' AS tenant_id,
+			       u.user_account AS user_account,
+			       COALESCE(u.nickname, ''),
+			       COALESCE(u.email, ''),
+			       COALESCE(u.role, ''),
+			       COALESCE(u.status, 'active')
+			  FROM users u
+			 WHERE u.tenant_id = $1::INET
+			   AND LOWER(u.role) IN ('nurse', 'caregiver', 'individual', 'manager')
+			   AND COALESCE(u.status, 'active') = 'active'
+			 ORDER BY u.user_account`, tenantPrefix)
+		if err != nil {
+			return nil, fmt.Errorf("query caregivers (v2): %w", err)
+		}
+		defer rows.Close()
+		out := []UserDTO{}
+		for rows.Next() {
+			var u UserDTO
+			if err := rows.Scan(&u.UserID, &u.TenantID, &u.UserAccount, &u.Nickname, &u.Email, &u.Role, &u.Status); err != nil {
+				continue
+			}
+			// 归一化 role 显示
+			switch strings.ToLower(u.Role) {
+			case "nurse":
+				u.Role = "Nurse"
+			case "caregiver":
+				u.Role = "Caregiver"
+			case "manager":
+				u.Role = "Manager"
+			case "individual":
+				u.Role = "Individual"
+			}
+			out = append(out, u)
+		}
+		return &GetAvailableCaregiversResponse{Items: out}, nil
+	}
+
 	// 2. 权限验证：检查当前用户是否有权限访问指定的 branch
 	userBranches, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
 	if err != nil {
@@ -2385,6 +2500,51 @@ func (s *userService) GetAvailableCaregiverGroups(ctx context.Context, req GetAv
 	}
 	if req.BranchID == "" {
 		return nil, fmt.Errorf("branch_id is required")
+	}
+
+	// v2 short-circuit：caregiver_group 概念在 v2 由 care_teams 表承担
+	// FE 已 mapping CareTeam = caregiver group；返 tenant 下 active care_teams + 各 team 成员名
+	if strings.Contains(req.TenantID, "::") {
+		tenantPrefix := req.TenantID
+		if !strings.Contains(tenantPrefix, "/") {
+			tenantPrefix += "/48"
+		}
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT t.team_id::text,
+			       t.team_name,
+			       t.team_kind,
+			       (SELECT COUNT(*) FROM care_team_members m WHERE m.team_id = t.team_id AND m.valid_to IS NULL) AS member_count,
+			       COALESCE(
+			         (SELECT array_agg(COALESCE(NULLIF(u.nickname,''), u.user_account) ORDER BY u.user_account)
+			            FROM care_team_members m
+			            JOIN users u ON u.user_id = m.user_id
+			           WHERE m.team_id = t.team_id AND m.valid_to IS NULL), '{}'
+			       ) AS member_names
+			  FROM care_teams t
+			 WHERE t.tenant_id = $1::INET
+			   AND t.is_active = TRUE
+			 ORDER BY t.team_kind, t.team_name`, tenantPrefix)
+		if err != nil {
+			return nil, fmt.Errorf("query care_teams (v2): %w", err)
+		}
+		defer rows.Close()
+		out := []CaregiverGroupDTO{}
+		for rows.Next() {
+			var teamID, teamName, teamKind string
+			var memberCount int
+			var memberNames pq.StringArray
+			if err := rows.Scan(&teamID, &teamName, &teamKind, &memberCount, &memberNames); err != nil {
+				continue
+			}
+			// FE 把 TagName 当 team 标识；这里用 team_id 作 stable key（FE 之前用 tag_name 文本）
+			out = append(out, CaregiverGroupDTO{
+				TagName:     teamID, // v2: team_id (FE 提交回来作 GroupList 元素)
+				MemberCount: memberCount,
+				MemberNames: []string(memberNames),
+				Members:     nil, // 不返成员 user 详细列表（FE 暂不需要）
+			})
+		}
+		return &GetAvailableCaregiverGroupsResponse{Items: out}, nil
 	}
 
 	// 2. 获取当前用户信息（用于检查角色）

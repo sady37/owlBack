@@ -4,7 +4,7 @@ package domain
 // 用途：
 //  1. 支持一个用户属于多个院区的多对多关系
 //  2. 用于权限过滤（branch_only）：通过 user_branches 表查询用户所属的院区
-//  3. 用于告警接收范围过滤（alarm_scope = 'BRANCH'）
+//  3. 用于告警接收范围过滤（relegation = 'BRANCH'）
 type UserBranch struct {
 	// 主键
 	UserBranchID string `db:"user_branch_id"` // UUID, PRIMARY KEY

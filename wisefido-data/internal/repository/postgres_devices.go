@@ -45,8 +45,8 @@ func orderByClause(sort, direction string) string {
 		return "ds.device_model " + dir
 	case "status":
 		return "d.status " + dir
-	case "business_access":
-		return "d.business_access " + dir
+	case "access":
+		return "d.access " + dir
 	case "device_id":
 		return "d.device_id " + dir
 	case "device_code":
@@ -95,7 +95,7 @@ func orderByClauseDevicesV2(sortKey, direction string) string {
 		return "dfm.device_uid " + dir
 	case "status":
 		// v1 的 status 是 Enabled/Disabled/Error；v2 用 devices 行存在性近似
-		return "(CASE WHEN d.spatial_addr IS NOT NULL THEN 0 ELSE 1 END) " + dir + ", dfm.device_uid"
+		return "(CASE WHEN d.device_ipv6 IS NOT NULL THEN 0 ELSE 1 END) " + dir + ", dfm.device_uid"
 	default:
 		return "dfm.import_date DESC, dfm.device_uid"
 	}
@@ -105,20 +105,20 @@ func orderByClauseDevicesV2(sortKey, direction string) string {
 //
 // 业务规则（v1 R-001 / BR-001 保留）：
 //   - tenantID == ""：不加 tenant 过滤（platform_admin 视图，跨 tenant 可见）
-//   - tenantID != ""：WHERE devices.spatial_addr <<= $tenantID::INET
+//   - tenantID != ""：WHERE devices.device_ipv6 <<= $tenantID::INET
 //     调用方（DeviceHandler）负责决定是否传 ""，本层不做 admin 检测。
 //
 // v2 schema JOIN（已纯位掩码化，详见 owlBack/doc/spatial_query_patterns.md）：
 //
 //	device_factory_meta dfm  (PK device_id, 出厂元数据：device_uid/device_code/device_type/mac_wifi/imei/...)
 //	    LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id  (online/firmware_version/...)
-//	    LEFT JOIN devices d              ON d.device_id = dfm.device_id      (spatial_addr → tenant/room/bed 反推)
-//	    LEFT JOIN device_ota o           ON o.spatial_addr = d.spatial_addr  (OTA 计划)
+//	    LEFT JOIN devices d              ON d.device_id = dfm.device_id      (device_ipv6 → tenant/room/bed 反推)
+//	    LEFT JOIN device_ota o           ON o.device_ipv6 = d.device_ipv6  (OTA 计划)
 //
 // rooms/beds 不再 JOIN：legacy slot=0 已迁移，byte 10/11 != 0 唯一含义 = 绑定到该层。
 //
 // v1 ⇄ v2 字段映射：
-//   - tenant_id        ← host(network(set_masklen(d.spatial_addr,48))) || '/48'
+//   - tenant_id        ← host(network(set_masklen(d.device_ipv6,48))) || '/48'
 //   - bound_room_id    ← /88 prefix when byte 10 != 0
 //   - bound_bed_id     ← /96 prefix when byte 11 != 0
 //   - status           ← devices 行存在 → 'Enabled'，否则 'Disabled'（FE 软删用）
@@ -136,7 +136,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 			// 防御：非法 INET prefix 直接返回空（避免 SQL 报错把 500 抛给 FE）
 			return []*domain.Device{}, 0, nil
 		}
-		where = append(where, fmt.Sprintf("d.spatial_addr <<= $%d::INET", argN))
+		where = append(where, fmt.Sprintf("d.device_ipv6 <<= $%d::INET", argN))
 		args = append(args, t)
 		argN++
 	}
@@ -173,21 +173,18 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		}
 	}
 
-	// business_access：v2 没有 allow_access 列；统一视为 approved，FE filter 'approved' 不丢数据。
-	// filters.BusinessAccess 在 v2 直接忽略（详见函数注释）。
-
 	whereClause := ""
 	if len(where) > 0 {
 		whereClause = "WHERE " + strings.Join(where, " AND ")
 	}
 
-	// COUNT(*) — 分页前的总数，必须 JOIN devices d 因为 tenant 过滤靠 d.spatial_addr
+	// COUNT(*) — 分页前的总数，必须 JOIN devices d 因为 tenant 过滤靠 d.device_ipv6
 	countQ := `
 		SELECT COUNT(*)
 		  FROM device_factory_meta dfm
 		  LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		  LEFT JOIN devices d                ON d.device_id = dfm.device_id
-		  LEFT JOIN device_ota o             ON o.spatial_addr = d.spatial_addr
+		  LEFT JOIN device_ota o             ON o.device_ipv6 = d.device_ipv6
 		  ` + whereClause
 	var total int
 	if err := r.db.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
@@ -223,25 +220,26 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		  dfm.mcu_model                                                                        AS mcu_model,
 		  drs.firmware_version                                                                 AS firmware_version,
 		  -- tenant /48 反推（无 devices 行时为 NULL，由扫描层兜底为 unbound prefix）
-		  CASE WHEN d.spatial_addr IS NOT NULL
-		       THEN host(network(set_masklen(d.spatial_addr, 48))) || '/48'
+		  CASE WHEN d.device_ipv6 IS NOT NULL
+		       THEN host(network(set_masklen(d.device_ipv6, 48))) || '/48'
 		  END                                                                                  AS tenant_id,
 		  -- bound_room_id / bound_bed_id：纯位掩码 + **最长掩码优先**互斥
 		  --   byte 11 != 0           ⇒ bound to bed (bound_bed_id)，bound_room_id = NULL
 		  --   byte 10 != 0 且 11 = 0 ⇒ bound to room (bound_room_id)
 		  --   byte 10 = 0            ⇒ unbound (兩者皆 NULL)
 		  -- 这样 FE tree 只会在 device 真正归属的最深层节点显示一次
-		  CASE WHEN d.spatial_addr IS NOT NULL
-		        AND (d.spatial_addr & '::ff00:0:0'::INET) <> '::'::INET
-		        AND (d.spatial_addr & '::ff:0:0'::INET)   = '::'::INET
-		       THEN host(network(set_masklen(d.spatial_addr, 88))) || '/88'
+		  CASE WHEN d.device_ipv6 IS NOT NULL
+		        AND (d.device_ipv6 & '::ff00:0:0'::INET) <> '::'::INET
+		        AND (d.device_ipv6 & '::ff:0:0'::INET)   = '::'::INET
+		       THEN host(network(set_masklen(d.device_ipv6, 88))) || '/88'
 		  END                                                                                  AS bound_room_id,
-		  CASE WHEN d.spatial_addr IS NOT NULL
-		        AND (d.spatial_addr & '::ff:0:0'::INET) <> '::'::INET
-		       THEN host(network(set_masklen(d.spatial_addr, 96))) || '/96'
+		  CASE WHEN d.device_ipv6 IS NOT NULL
+		        AND (d.device_ipv6 & '::ff:0:0'::INET) <> '::'::INET
+		       THEN host(network(set_masklen(d.device_ipv6, 96))) || '/96'
 		  END                                                                                  AS bound_bed_id,
 		  -- status 软删：devices 行存在 → Enabled，否则 Disabled
-		  CASE WHEN d.spatial_addr IS NOT NULL THEN 'Enabled' ELSE 'Disabled' END              AS status,
+		  CASE WHEN d.device_ipv6 IS NOT NULL THEN 'Enabled' ELSE 'Disabled' END              AS status,
+		  COALESCE(d.access, FALSE)                                                            AS access,
 		  COALESCE(d.monitoring_enabled, FALSE)                                                AS monitoring_enabled,
 		  -- OTA 字段（v2 device_ota → v1 形）
 		  o.target_firmware_version                                                            AS ota_target_firmware_version,
@@ -261,7 +259,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		FROM device_factory_meta dfm
 		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d                ON d.device_id = dfm.device_id
-		LEFT JOIN device_ota o             ON o.spatial_addr = d.spatial_addr
+		LEFT JOIN device_ota o             ON o.device_ipv6 = d.device_ipv6
 		` + whereClause + `
 		ORDER BY ` + orderByClauseDevicesV2(sort, direction) + `
 		LIMIT $` + fmt.Sprintf("%d", limitN) + ` OFFSET $` + fmt.Sprintf("%d", offsetN)
@@ -279,7 +277,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 			deviceCode, deviceType, deviceModel, mac, imei, commMode, mcuModel, firmwareVersion sql.NullString
 			tenantID, boundRoomID, boundBedID                                                   sql.NullString
 			status                                                                              string
-			monitoringEnabled                                                                   bool
+			access, monitoringEnabled                                                           bool
 			otaTargetFW, otaTargetMCU, otaPermit, otaWay, otaSchedule, otaStatus                sql.NullString
 			otaProgress                                                                         sql.NullInt32
 			otaTenantApproved                                                                   sql.NullBool
@@ -299,6 +297,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 			&boundRoomID,
 			&boundBedID,
 			&status,
+			&access,
 			&monitoringEnabled,
 			&otaTargetFW,
 			&otaTargetMCU,
@@ -332,9 +331,8 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		d.RoomID = boundRoomID
 		// unit_id 暂不展开（需要再 JOIN units 表；FE 列表场景一般不需要 unit_id，详情页另查）
 		d.Status = status
+		d.Access = access
 		d.MonitoringEnabled = monitoringEnabled
-		// v2 没 allow_access 列；统一 'approved' 让 FE filter 不过滤掉
-		d.BusinessAccess = "approved"
 		// v2 没 device_name 列；用 device_uid 占位（FE 可自行渲染）
 		d.DeviceName = d.DeviceUID
 
@@ -358,25 +356,25 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 }
 
 // GetDevice 查询单个设备
-// v2 stub: Phase E.2 will rewrite using devices.spatial_addr + reset_device_prefix()
+// v2 stub: Phase E.2 will rewrite using devices.device_ipv6 + reset_device_prefix()
 func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, deviceID string) (*domain.Device, error) {
 	return nil, fmt.Errorf("device not found: tenant_id=%s, device_id=%s", tenantID, deviceID)
 }
 
 // GetDeviceByUID 根据 device_uid 和 tenant_id 获取设备信息
-// v2 stub: Phase E.2 will rewrite using devices.spatial_addr + reset_device_prefix()
+// v2 stub: Phase E.2 will rewrite using devices.device_ipv6 + reset_device_prefix()
 func (r *PostgresDevicesRepository) GetDeviceByUID(ctx context.Context, tenantID, deviceUID string) (*domain.Device, error) {
 	return nil, fmt.Errorf("device not found: tenant_id=%s, device_uid=%s", tenantID, deviceUID)
 }
 
 // GetDevicesBoundToRoom 查询绑定到指定 room 的设备（仅 id/name，用于删除前检查）
-// v2: roomID 是 /88 prefix；device.spatial_addr <<= room.spatial_prefix 即视为绑定到该 room（含 bed 下层）。
+// v2: roomID 是 /88 prefix；device.device_ipv6 <<= room.spatial_prefix 即视为绑定到该 room（含 bed 下层）。
 // devices 表无 device_name 列；用 device_id 字符串占位回填 d.DeviceName 让上层错误信息能显示。
 func (r *PostgresDevicesRepository) GetDevicesBoundToRoom(ctx context.Context, tenantID, roomID string) ([]*domain.Device, error) {
 	if tenantID == "" || roomID == "" || !looksLikeINETPrefix(roomID) {
 		return nil, nil
 	}
-	q := `SELECT device_id::text, host(spatial_addr) FROM devices WHERE spatial_addr <<= $1::INET`
+	q := `SELECT device_id::text, host(device_ipv6) FROM devices WHERE device_ipv6 <<= $1::INET`
 	rows, err := r.db.QueryContext(ctx, q, roomID)
 	if err != nil {
 		return nil, err
@@ -394,7 +392,7 @@ func (r *PostgresDevicesRepository) GetDevicesBoundToRoom(ctx context.Context, t
 }
 
 // GetRoomBoundDeviceTypeLetters 返回绑定到 room 的设备类型字母（R=Radar, S=Sleepad），供前端 RoomName(R) 展示
-// v2 stub: Phase E.2 will rewrite using devices.spatial_addr + reset_device_prefix()
+// v2 stub: Phase E.2 will rewrite using devices.device_ipv6 + reset_device_prefix()
 func (r *PostgresDevicesRepository) GetRoomBoundDeviceTypeLetters(ctx context.Context, tenantID, roomID string) ([]string, error) {
 	return nil, nil
 }
@@ -406,12 +404,12 @@ func (r *PostgresDevicesRepository) GetDevicesBoundToBedsWithDetails(ctx context
 }
 
 // GetDevicesBoundToBed 查询绑定到指定 bed 的设备（仅 id/name，用于删除前检查）
-// v2: bedID 是 /96 prefix；device.spatial_addr <<= bed.spatial_prefix 视为绑定到该 bed。
+// v2: bedID 是 /96 prefix；device.device_ipv6 <<= bed.spatial_prefix 视为绑定到该 bed。
 func (r *PostgresDevicesRepository) GetDevicesBoundToBed(ctx context.Context, tenantID, bedID string) ([]*domain.Device, error) {
 	if tenantID == "" || bedID == "" || !looksLikeINETPrefix(bedID) {
 		return nil, nil
 	}
-	q := `SELECT device_id::text, host(spatial_addr) FROM devices WHERE spatial_addr <<= $1::INET`
+	q := `SELECT device_id::text, host(device_ipv6) FROM devices WHERE device_ipv6 <<= $1::INET`
 	rows, err := r.db.QueryContext(ctx, q, bedID)
 	if err != nil {
 		return nil, err
@@ -435,15 +433,15 @@ func (r *PostgresDevicesRepository) GetDevicesBoundToRoomsOrBeds(ctx context.Con
 }
 
 // CreateDevice 手动创建设备与位置的绑定关系（出库操作）
-// v2 stub: Phase E.2 will rewrite using devices.spatial_addr + reset_device_prefix()
+// v2 stub: Phase E.2 will rewrite using devices.device_ipv6 + reset_device_prefix()
 func (r *PostgresDevicesRepository) CreateDevice(ctx context.Context, tenantID string, device *domain.Device) (string, error) {
 	return "", fmt.Errorf("CreateDevice not implemented in v2 yet (Phase E.2)")
 }
 
-// UpdateDevice 更新设备绑定（v2: 通过改 spatial_addr 实现 bind/unbind/migrate）
+// UpdateDevice 更新设备绑定（v2: 通过改 device_ipv6 实现 bind/unbind/migrate）
 //
 // FE 期望（v1 shape）：传 bound_room_id (/88 prefix) 或 bound_bed_id (/96 prefix) 或都 NULL（unbind）
-// v2 实现：构造新 spatial_addr，bytes 0-N 取目标 prefix（room/bed/tenant 池），bytes (N+1)..11 清零，bytes 12-15 保留 MAC
+// v2 实现：构造新 device_ipv6，bytes 0-N 取目标 prefix（room/bed/tenant 池），bytes (N+1)..11 清零，bytes 12-15 保留 MAC
 //   - bound_bed_id 给定 → addr = bed_prefix(0..11) | (orig_addr & '::ffff:ffff'::INET) → bed-bound
 //   - bound_room_id 给定 → addr = room_prefix(0..10) | zeros(11) | mac → room-bound
 //   - 都 NULL → reset_device_prefix(addr, fd00::/32, 32, 'branch') 退回 tenant unbound pool
@@ -453,8 +451,8 @@ func (r *PostgresDevicesRepository) UpdateDevice(ctx context.Context, tenantID, 
 }
 
 // UpdateDeviceWithFlags 同 UpdateDevice，但用 flag 区分字段是否要写
-// 当前实现：bound_room_id / bound_bed_id 任一 flag 为 true 即重新计算 spatial_addr；monitoring_enabled flag 控制其更新
-func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID, updateBusinessAccess, updateMonitoringEnabled bool) error {
+// 当前实现：bound_room_id / bound_bed_id 任一 flag 为 true 即重新计算 device_ipv6；access / monitoring_enabled flag 控制其更新
+func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID, updateAccess, updateMonitoringEnabled bool) error {
 	if deviceID == "" {
 		return fmt.Errorf("device_id is required")
 	}
@@ -464,21 +462,21 @@ func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, t
 	}
 	defer tx.Rollback()
 
-	// 1. 拿当前 spatial_addr
+	// 1. 拿当前 device_ipv6
 	var currentAddr sql.NullString
 	if err := tx.QueryRowContext(ctx,
-		`SELECT host(spatial_addr) FROM devices WHERE device_id = $1::UUID`, deviceID,
+		`SELECT host(device_ipv6) FROM devices WHERE device_id = $1::UUID`, deviceID,
 	).Scan(&currentAddr); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("device not found: %s", deviceID)
 		}
-		return fmt.Errorf("get current spatial_addr: %w", err)
+		return fmt.Errorf("get current device_ipv6: %w", err)
 	}
 	if !currentAddr.Valid || currentAddr.String == "" {
-		return fmt.Errorf("device has no spatial_addr (factory-only?)")
+		return fmt.Errorf("device has no device_ipv6 (factory-only?)")
 	}
 
-	// 2. 计算新 spatial_addr（仅在 bind/unbind flag 触发时）
+	// 2. 计算新 device_ipv6（仅在 bind/unbind flag 触发时）
 	bindFlag := updateBoundRoomID || updateBoundBedID
 	if bindFlag {
 		var newAddr string
@@ -513,12 +511,12 @@ func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, t
 				return fmt.Errorf("reset to tenant pool: %w", err)
 			}
 		}
-		// FK device_ota_spatial_addr_fkey 已 ON UPDATE CASCADE，device_ota.spatial_addr 自动同步
+		// FK device_ota_device_ipv6_fkey 已 ON UPDATE CASCADE，device_ota.device_ipv6 自动同步
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE devices SET spatial_addr = $2::INET, updated_at = NOW()
+			UPDATE devices SET device_ipv6 = $2::INET, updated_at = NOW()
 			 WHERE device_id = $1::UUID
 		`, deviceID, newAddr); err != nil {
-			return fmt.Errorf("update devices.spatial_addr: %w", err)
+			return fmt.Errorf("update devices.device_ipv6: %w", err)
 		}
 	}
 
@@ -531,26 +529,32 @@ func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, t
 		}
 	}
 
-	// 4. business_access — v2 已删该列；忽略写入
-	_ = updateBusinessAccess
+	// 4. access — platform_admin 审批位
+	if updateAccess {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE devices SET access = $2, updated_at = NOW() WHERE device_id = $1::UUID`,
+			deviceID, device.Access); err != nil {
+			return fmt.Errorf("update access: %w", err)
+		}
+	}
 
 	return tx.Commit()
 }
 
-// DeleteDevice 删除设备（v2 软删通过 reset_device_prefix() 把 spatial_addr 退回 trash /48）
-// v2 stub: Phase E.2 will rewrite using devices.spatial_addr + reset_device_prefix()
+// DeleteDevice 删除设备（v2 软删通过 reset_device_prefix() 把 device_ipv6 退回 trash /48）
+// v2 stub: Phase E.2 will rewrite using devices.device_ipv6 + reset_device_prefix()
 func (r *PostgresDevicesRepository) DeleteDevice(ctx context.Context, tenantID, deviceID string) error {
 	return nil
 }
 
 // GetDeviceRelations 获取设备关联关系（设备、地址、住户）
-// v2 stub: Phase E.2 will rewrite using devices.spatial_addr + reset_device_prefix()
+// v2 stub: Phase E.2 will rewrite using devices.device_ipv6 + reset_device_prefix()
 func (r *PostgresDevicesRepository) GetDeviceRelations(ctx context.Context, tenantID, deviceID string) (*DeviceRelations, error) {
 	return nil, fmt.Errorf("device not found: tenant_id=%s, device_id=%s", tenantID, deviceID)
 }
 
 // GetOrCreateDeviceFromStore 首次连接时自动创建设备记录
-// v2 stub: Phase E.2 will rewrite using devices.spatial_addr + reset_device_prefix()
+// v2 stub: Phase E.2 will rewrite using devices.device_ipv6 + reset_device_prefix()
 func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Context, identifier string, mqttTopic string) (*domain.Device, error) {
 	return nil, fmt.Errorf("unauthorized device: not registered in device_store")
 }
@@ -561,7 +565,7 @@ func (r *PostgresDevicesRepository) GetOrCreateDeviceFromStore(ctx context.Conte
 
 // GetDevicesByRoomIDs 返回每个 room 直接绑定的 devices（**不含**绑到 bed 的设备 — 避免重复计数）。
 // roomIDs 是 v2 /88 prefix 字符串数组（如 'fd00:0:3:111::/88'）
-// "直接绑定 room" = devices.spatial_addr 的 /88 网络等于 room.spatial_prefix AND byte 11 = 0
+// "直接绑定 room" = devices.device_ipv6 的 /88 网络等于 room.spatial_prefix AND byte 11 = 0
 func (r *PostgresDevicesRepository) GetDevicesByRoomIDs(ctx context.Context, tenantID string, roomIDs []string) (map[string][]DeviceInfo, error) {
 	out := make(map[string][]DeviceInfo, len(roomIDs))
 	if len(roomIDs) == 0 {
@@ -578,12 +582,12 @@ func (r *PostgresDevicesRepository) GetDevicesByRoomIDs(ctx context.Context, ten
 	}
 	// byte 11 = 0：room-level（不绑到具体 bed）；用 inet bitwise AND 检测
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT host(network(set_masklen(d.spatial_addr, 88))) || '/88' AS room_id,
+		SELECT host(network(set_masklen(d.device_ipv6, 88))) || '/88' AS room_id,
 		       d.device_id::text, dfm.device_uid
 		  FROM devices d
 		  JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		 WHERE network(set_masklen(d.spatial_addr, 88))::text = ANY($1::text[])
-		   AND (d.spatial_addr & '::ff:0:0'::INET) = '::'::INET`,
+		 WHERE network(set_masklen(d.device_ipv6, 88))::text = ANY($1::text[])
+		   AND (d.device_ipv6 & '::ff:0:0'::INET) = '::'::INET`,
 		pq.Array(prefixes))
 	if err != nil {
 		return nil, fmt.Errorf("query devices by room IDs: %w", err)
@@ -616,11 +620,11 @@ func (r *PostgresDevicesRepository) GetDevicesByBedIDs(ctx context.Context, tena
 		return out, nil
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT host(network(set_masklen(d.spatial_addr, 96))) || '/96' AS bed_id,
+		SELECT host(network(set_masklen(d.device_ipv6, 96))) || '/96' AS bed_id,
 		       d.device_id::text, dfm.device_uid
 		  FROM devices d
 		  JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		 WHERE network(set_masklen(d.spatial_addr, 96))::text = ANY($1::text[])`,
+		 WHERE network(set_masklen(d.device_ipv6, 96))::text = ANY($1::text[])`,
 		pq.Array(prefixes))
 	if err != nil {
 		return nil, fmt.Errorf("query devices by bed IDs: %w", err)
@@ -637,13 +641,13 @@ func (r *PostgresDevicesRepository) GetDevicesByBedIDs(ctx context.Context, tena
 }
 
 // GetDeviceLocationInfo 获取设备的完整位置信息
-// v2 stub: Phase E.2 will rewrite using devices.spatial_addr + reset_device_prefix()
+// v2 stub: Phase E.2 will rewrite using devices.device_ipv6 + reset_device_prefix()
 func (r *PostgresDevicesRepository) GetDeviceLocationInfo(ctx context.Context, tenantID, deviceID string) (*DeviceLocationInfo, error) {
 	return nil, fmt.Errorf("device not found: tenant_id=%s, device_id=%s", tenantID, deviceID)
 }
 
 // GetDeviceLocationInfoByIdentifier 通过设备标识符（device_uid）获取位置信息
-// v2 stub: Phase E.2 will rewrite using devices.spatial_addr + reset_device_prefix()
+// v2 stub: Phase E.2 will rewrite using devices.device_ipv6 + reset_device_prefix()
 func (r *PostgresDevicesRepository) GetDeviceLocationInfoByIdentifier(ctx context.Context, identifier string) (*DeviceLocationInfo, error) {
 	return nil, fmt.Errorf("device not found: identifier=%s", identifier)
 }

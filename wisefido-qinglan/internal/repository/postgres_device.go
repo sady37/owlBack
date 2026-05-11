@@ -219,7 +219,7 @@ func (r *PostgresDeviceRepository) SetDeviceProperties(ctx context.Context, uid 
 
 // GetAllDeviceStoreInfo 获取所有 device 元数据（启动时初始化设备缓存）。
 // v2: 从 device_factory_meta + device_runtime_state + devices 派生（v1 device_store 表已删）。
-//   - DeviceStoreInfo.TenantID 取 v2 devices.spatial_addr 反推 /48 的 host 字符串（fd00:0:1:: 等）
+//   - DeviceStoreInfo.TenantID 取 v2 devices.device_ipv6 反推 /48 的 host 字符串（fd00:0:1:: 等）
 //   - AllowAccess v2 默认 TRUE（device_factory_meta 不再有此列；权限走 role + scope）
 func (r *PostgresDeviceRepository) GetAllDeviceStoreInfo(ctx context.Context) ([]*DeviceStoreInfo, error) {
 	query := `
@@ -234,7 +234,7 @@ func (r *PostgresDeviceRepository) GetAllDeviceStoreInfo(ctx context.Context) ([
 		  dfm.comm_mode,
 		  dfm.mcu_model,
 		  drs.firmware_version,
-		  COALESCE(host(network(set_masklen(d.spatial_addr, 48))), 'fd00:0:1::') AS tenant_id,
+		  COALESCE(host(network(set_masklen(d.device_ipv6, 48))), 'fd00:0:1::') AS tenant_id,
 		  TRUE AS allow_access
 		FROM device_factory_meta dfm
 		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id

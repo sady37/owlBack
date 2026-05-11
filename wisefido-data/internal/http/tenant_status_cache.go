@@ -40,10 +40,10 @@ func NewTenantStatusCache(db *sql.DB) *TenantStatusCache {
 }
 
 // Get 取 tenant 的 status，命中返回 cached 值；miss 查 DB 并写 cache。
-// 对于查不到的 tenant_prefix 返回 'unknown'，由调用方决定是否拒绝。
+// 对于查不到的 tenant_id 返回 'unknown'，由调用方决定是否拒绝。
 func (c *TenantStatusCache) Get(ctx context.Context, tenantPrefix string) string {
 	if tenantPrefix == "" {
-		return "active" // 无 tenant_prefix（platform admin）放行
+		return "active" // 无 tenant_id（platform admin）放行
 	}
 	now := time.Now()
 	c.mu.RLock()
@@ -56,7 +56,7 @@ func (c *TenantStatusCache) Get(ctx context.Context, tenantPrefix string) string
 	// miss → 回源
 	var status string
 	err := c.db.QueryRowContext(ctx,
-		`SELECT COALESCE(status, 'active') FROM tenants WHERE spatial_prefix = $1::INET`,
+		`SELECT COALESCE(status, 'active') FROM tenants WHERE tenant_id = $1::INET`,
 		tenantPrefix,
 	).Scan(&status)
 	if err != nil {

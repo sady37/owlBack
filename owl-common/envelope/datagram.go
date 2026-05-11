@@ -130,7 +130,7 @@ func (d *Datagram) WithSubject(subject string) *Datagram {
 	return d
 }
 
-// WithSpatial 设置 5W where（spatial_addr extension）。
+// WithSpatial 设置 5W where（device_ipv6 extension）。
 func (d *Datagram) WithSpatial(addr netip.Addr) *Datagram {
 	d.SpatialAddr = addr
 	return d

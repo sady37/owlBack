@@ -12,7 +12,7 @@ import (
 //
 // 字段约定：
 //   - TenantID 历史字段，v1 流程存 UUID 字符串，v2 流程存 prefix CIDR 字符串（兼容期占位）
-//   - TenantPrefix v2 专用，IPv6 /48 CIDR 字符串（如 "fd00:0:3::/48"）；middleware 注入 X-Tenant-Prefix
+//   - TenantPrefix v2 专用，IPv6 /48 CIDR 字符串（如 "fd00:0:3::/48"）；middleware 注入 X-Tenant-Id
 //   - HoA  resident/caregiver 自身 /128 IPv6 host address；staff/admin 为空
 type SessionData struct {
 	UserID       string

@@ -10,7 +10,7 @@ import (
 // PostgresUserBranchesRepository — owl_v2 stub 实现。
 //
 // v2 schema 已删除 user_branches 表（用户与院区关系改为通过 user_roles.role_id +
-// roles.tenant_prefix 派生 + role_permissions.resource_scope INET 表达，由 utils/spatial
+// roles.tenant_id 派生 + role_permissions.resource_scope INET 表达，由 utils/spatial
 // 计算）。这个 repo 保留接口签名以兼容上层 service / handler 调用，所有方法返回空数据 / no-op，
 // 不再触发 SQL。
 //

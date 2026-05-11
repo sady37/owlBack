@@ -144,6 +144,7 @@ func (h *RolesHandler) UpdateRole(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, Fail("invalid body"))
 		return
 	}
+	h.logger.Info("UpdateRole payload", zap.String("role_id", roleID), zap.String("user_role", userRole), zap.Any("payload", payload))
 
 	// 2. 构建请求
 	req := service.UpdateRoleRequest{

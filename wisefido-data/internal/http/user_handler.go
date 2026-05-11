@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"database/sql"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -176,8 +177,8 @@ func (h *UserHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 		if len(u.AlarmChannels) > 0 {
 			item["alarm_channels"] = u.AlarmChannels
 		}
-		if u.AlarmScope != "" {
-			item["alarm_scope"] = u.AlarmScope
+		if u.Relegation != "" {
+			item["relegation"] = u.Relegation
 		}
 		// 始终返回 branch_ids，即使是空数组或 ["*"]
 		// 空数组表示未分配，["*"] 表示所有分支（仅 Admin）
@@ -343,8 +344,8 @@ func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request, userID str
 		if len(resp.User.AlarmChannels) > 0 {
 			item["alarm_channels"] = resp.User.AlarmChannels
 		}
-		if resp.User.AlarmScope != "" {
-			item["alarm_scope"] = resp.User.AlarmScope
+		if resp.User.Relegation != "" {
+			item["relegation"] = resp.User.Relegation
 		}
 		if len(resp.User.BranchIDs) > 0 {
 			item["branch_ids"] = resp.User.BranchIDs
@@ -371,6 +372,52 @@ func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request, userID str
 		item["available_tags"] = resp.AvailableTags
 	} else {
 		item["available_tags"] = []string{}
+	}
+
+	// v2 扩展字段（service/repo 暂未支持，raw SQL 直读 — 下次合并到 service path）
+	//   relegation / notify_mode / work_days / work_time_start / work_time_end
+	//   user_branches → branch_ids (覆盖 service 给的占位值)
+	if h.db != nil && resp.User != nil {
+		var relegation, notifyMode, workDays sql.NullString
+		var workStart, workEnd sql.NullTime
+		if err := h.db.QueryRowContext(ctx, `
+			SELECT relegation, notify_mode, work_days, work_time_start, work_time_end
+			  FROM users WHERE user_id = $1::UUID`, resp.User.UserID,
+		).Scan(&relegation, &notifyMode, &workDays, &workStart, &workEnd); err == nil {
+			if relegation.Valid {
+				item["relegation"] = relegation.String
+			}
+			if notifyMode.Valid {
+				item["notify_mode"] = notifyMode.String
+			}
+			if workDays.Valid {
+				item["work_days"] = workDays.String
+			}
+			if workStart.Valid {
+				item["work_time_start"] = workStart.Time.Format("15:04")
+			}
+			if workEnd.Valid {
+				item["work_time_end"] = workEnd.Time.Format("15:04")
+			}
+		}
+
+		if rows, err := h.db.QueryContext(ctx, `
+			SELECT host(branch_prefix) || '/' || masklen(branch_prefix)
+			  FROM user_branches
+			 WHERE user_id = $1::UUID AND valid_to IS NULL
+			 ORDER BY is_primary DESC, branch_prefix`, resp.User.UserID); err == nil {
+			defer rows.Close()
+			var prefixes []string
+			for rows.Next() {
+				var p string
+				if err := rows.Scan(&p); err == nil {
+					prefixes = append(prefixes, p)
+				}
+			}
+			if len(prefixes) > 0 {
+				item["branch_ids"] = prefixes
+			}
+		}
 	}
 
 	writeJSON(w, http.StatusOK, Ok(item))
@@ -441,8 +488,8 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 解析 alarm_scope
-	alarmScope, _ := payload["alarm_scope"].(string)
+	// 解析 relegation
+	alarmScope, _ := payload["relegation"].(string)
 
 	// 解析 tags
 	var tags []string
@@ -472,9 +519,13 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// branch_ids 必填，但 tenant_admin / Admin 例外（管理员可无 branch，全 tenant 范围）
 	if len(branchIDs) == 0 {
-		writeJSON(w, http.StatusOK, Fail("at least one branch_id is required"))
-		return
+		roleLower := strings.ToLower(strings.TrimSpace(role))
+		if roleLower != "admin" && roleLower != "tenant_admin" {
+			writeJSON(w, http.StatusOK, Fail("at least one branch_id is required"))
+			return
+		}
 	}
 
 	// 注意：AvailableBranches 不应传递给 Service 层
@@ -494,7 +545,7 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		Status:        status,
 		AlarmLevels:   alarmLevels,
 		AlarmChannels: alarmChannels,
-		AlarmScope:    alarmScope,
+		Relegation:    alarmScope,
 		Tags:          tags,
 		BranchIDs:     branchIDs,
 	}
@@ -633,13 +684,25 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request, userID 
 	req.Nickname = parseStringField("nickname")
 	req.Role = parseStringField("role")
 	req.Status = parseStringField("status")
-	req.AlarmScope = parseStringField("alarm_scope")
+	req.Relegation = parseStringField("relegation")
 
 	// 有 Hash 的字段
 	req.Email = parseStringField("email")
 	req.EmailHash = parseStringField("email_hash")
 	req.Phone = parseStringField("phone")
 	req.PhoneHash = parseStringField("phone_hash")
+
+	// password_hash / pin_hash：FE 约定 sha256 hex 字符串。空字符串 / null / 不存在均视为不更新
+	if v, ok := payload["password_hash"]; ok {
+		if s, ok := v.(string); ok && s != "" {
+			req.PasswordHash = &s
+		}
+	}
+	if v, ok := payload["pin_hash"]; ok {
+		if s, ok := v.(string); ok && s != "" {
+			req.PinHash = &s
+		}
+	}
 
 	// 数组字段
 	req.AlarmLevels = parseStringArrayField("alarm_levels")
@@ -676,6 +739,92 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request, userID 
 		h.logger.Error("UpdateUser failed", zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
+	}
+
+	// v2 扩展字段：raw SQL 落地 — service/repo 暂未支持，下次合并到 service path
+	if h.db != nil {
+		setParts := []string{}
+		args := []any{userID}
+		argN := 2
+		if v, ok := payload["relegation"]; ok {
+			if s, ok := v.(string); ok {
+				s = strings.ToLower(strings.TrimSpace(s))
+				if s == "all" || s == "branch" || s == "assigned_only" {
+					setParts = append(setParts, fmt.Sprintf("relegation = $%d", argN))
+					args = append(args, s)
+					argN++
+				}
+			}
+		}
+		if v, ok := payload["notify_mode"]; ok {
+			if v == nil {
+				setParts = append(setParts, "notify_mode = 'login_only'")
+			} else if s, ok := v.(string); ok {
+				s = strings.ToLower(strings.TrimSpace(s))
+				switch s {
+				case "forever", "off", "login_only", "work_time":
+					setParts = append(setParts, fmt.Sprintf("notify_mode = $%d", argN))
+					args = append(args, s)
+					argN++
+				}
+			}
+		}
+		for _, f := range []string{"work_days", "work_time_start", "work_time_end"} {
+			if v, ok := payload[f]; ok {
+				if v == nil {
+					setParts = append(setParts, f+" = NULL")
+				} else if s, ok := v.(string); ok {
+					if s == "" {
+						setParts = append(setParts, f+" = NULL")
+					} else {
+						setParts = append(setParts, fmt.Sprintf("%s = $%d", f, argN))
+						args = append(args, s)
+						argN++
+					}
+				}
+			}
+		}
+		if len(setParts) > 0 {
+			sqlStr := "UPDATE users SET " + strings.Join(setParts, ", ") + ", updated_at = NOW() WHERE user_id = $1::UUID"
+			if _, err := h.db.ExecContext(ctx, sqlStr, args...); err != nil {
+				h.logger.Warn("v2 update user fields", zap.Error(err))
+			}
+		}
+
+		// user_branches reset (when branch_ids in payload)
+		if branchIDs != nil {
+			var prefixes []string
+			for _, b := range branchIDs {
+				b = strings.TrimSpace(b)
+				if b != "" && b != "*" {
+					prefixes = append(prefixes, b)
+				}
+			}
+			if tx, err := h.db.BeginTx(ctx, nil); err == nil {
+				txOk := true
+				if _, err := tx.ExecContext(ctx, `DELETE FROM user_branches WHERE user_id = $1::UUID`, userID); err != nil {
+					txOk = false
+					h.logger.Warn("v2 delete user_branches", zap.Error(err))
+				}
+				for i, p := range prefixes {
+					if !txOk {
+						break
+					}
+					isPrimary := i == 0
+					if _, err := tx.ExecContext(ctx,
+						`INSERT INTO user_branches (user_id, branch_prefix, is_primary) VALUES ($1::UUID, $2::INET, $3) ON CONFLICT DO NOTHING`,
+						userID, p, isPrimary); err != nil {
+						txOk = false
+						h.logger.Warn("v2 insert user_branches", zap.Error(err), zap.String("prefix", p))
+					}
+				}
+				if txOk {
+					_ = tx.Commit()
+				} else {
+					_ = tx.Rollback()
+				}
+			}
+		}
 	}
 
 	if resp.Success {
@@ -727,6 +876,19 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request, userID 
 		h.logger.Error("DeleteUser failed", zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
+	}
+
+	// 联动：从 care_team_members 移除该 user 的所有关联（即使 user 是软删，team membership 也应解绑）
+	if h.db != nil && resp.Success {
+		if _, err := h.db.ExecContext(ctx,
+			`DELETE FROM care_team_members WHERE user_id = $1::UUID`, userID); err != nil {
+			h.logger.Warn("DeleteUser: cleanup care_team_members", zap.String("user_id", userID), zap.Error(err))
+		}
+		// user_branches 同理：解除 branch 关联（不删 user 本身）
+		if _, err := h.db.ExecContext(ctx,
+			`DELETE FROM user_branches WHERE user_id = $1::UUID`, userID); err != nil {
+			h.logger.Warn("DeleteUser: cleanup user_branches", zap.String("user_id", userID), zap.Error(err))
+		}
 	}
 
 	if resp.Success {

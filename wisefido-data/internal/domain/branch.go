@@ -34,6 +34,9 @@ type Branch struct {
 	// 院区描述（可选）
 	Description sql.NullString `db:"description"` // TEXT, nullable
 
+	// 时区（IANA tz name；空 = 继承 tenant.timezone）
+	Timezone string `db:"timezone" json:"timezone"`
+
 	// 创建和更新时间
 	CreatedAt sql.NullTime `db:"created_at"` // TIMESTAMP, nullable, DEFAULT CURRENT_TIMESTAMP
 	UpdatedAt sql.NullTime `db:"updated_at"` // TIMESTAMP, nullable, DEFAULT CURRENT_TIMESTAMP

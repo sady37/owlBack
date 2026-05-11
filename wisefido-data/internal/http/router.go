@@ -306,6 +306,18 @@ func (r *Router) RegisterUsersRoutes(h *UserHandler) {
 	r.Handle("/admin/api/v1/users/", h.ServeHTTP)
 }
 
+// RegisterCareTeamsRoutes 注册 CareTeam（护士站）管理路由
+func (r *Router) RegisterCareTeamsRoutes(h *CareTeamsHandler) {
+	r.Handle("/admin/api/v1/care-teams", h.ServeHTTP)
+	r.Handle("/admin/api/v1/care-teams/", h.ServeHTTP)
+}
+
+// RegisterResidentV2Routes 注册 V2 Resident 路由（forward design，独立于 v1）
+func (r *Router) RegisterResidentV2Routes(h *ResidentV2Handler) {
+	r.Handle("/admin/api/v2/residents", h.ServeHTTP)
+	r.Handle("/admin/api/v2/residents/", h.ServeHTTP)
+}
+
 // RegisterDeviceMonitorSettingsRoutes 注册设备监控配置路由
 func (r *Router) RegisterDeviceMonitorSettingsRoutes(h *DeviceMonitorSettingsHandler) {
 	r.Handle("/settings/api/v1/monitor/sleepad/", h.ServeHTTP)

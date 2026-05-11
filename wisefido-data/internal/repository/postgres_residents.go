@@ -516,7 +516,7 @@ func (r *PostgresResidentsRepository) GetResidentByPhone(ctx context.Context, te
 // v2 stub：v1 schema 用 r.tenant_id / r.unit_id / r.room_id / r.bed_id / r.resident_account 等列；
 // v2 residents 表 PK=hoa /128，绑定走 resident_unit 表（SCD-2）。完整 v2 改造需要：
 //   - 改 SELECT 列从 PK=resident_id UUID → PK=hoa INET
-//   - 加 JOIN resident_unit ON resident_hoa=hoa AND valid_to IS NULL，按 spatial_prefix 过滤
+//   - 加 JOIN resident_unit ON resident_id=hoa AND valid_to IS NULL，按 spatial_prefix 过滤
 //   - 改 ResidentFilters 字段含义（UnitID 是 /80 CIDR 不是 UUID）
 // 残端临时保护：UnitID/RoomID/BedID 过滤都是 v2 prefix 形式（含 ':'）→ 走 v2 路径返回 empty；
 // 老 UUID 形式 → 也返回 empty（v2 切换阶段 residents 模块未启用）。

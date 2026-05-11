@@ -12,10 +12,10 @@ import (
 // PostgresRolesRepository 角色 Repository 实现 — owl_v2 schema 版本。
 //
 // v2 schema 与 v1 关键差异：
-//   - 主键不变 role_id UUID；但租户字段从 tenant_id UUID 改为 tenant_prefix INET
+//   - 主键不变 role_id UUID；但租户字段从 tenant_id UUID 改为 tenant_id INET
 //   - 无 is_active 字段（v2 设计：禁用走 user_roles 解绑而非 role 自身禁用）；本 repo 对外永远返回 IsActive=true
 //   - 多了 role_name VARCHAR(100) NOT NULL（v1 只有 description）；这里把 description 同时写入 role_name 以满足 NOT NULL
-//   - system roles tenant_prefix 为 NULL（与 v1 'System tenant UUID' 语义对应）
+//   - system roles tenant_id 为 NULL（与 v1 'System tenant UUID' 语义对应）
 //
 // 兼容策略：domain.Role 字段不变；TenantID 在 v2 装 prefix CIDR 字符串（'fd00:0:T::/48'），系统角色装空串。
 type PostgresRolesRepository struct {
@@ -28,17 +28,13 @@ func NewPostgresRolesRepository(db *sql.DB) *PostgresRolesRepository {
 
 var _ RolesRepository = (*PostgresRolesRepository)(nil)
 
-// 公共 SELECT 子句：v2 schema 列适配回 v1 domain.Role 字段
-//
-// description 字段映射策略：service.roleToItem 期望 v1 "two-line" 格式
-//   line 1 = display_name, line 2+ = 详细 permission 描述
-// v2 schema 把它们拆成两列：role_name + description
-// 这里拼回 "{role_name}\n{description}" 让 v1 UI 不动地正常解析。
+// 公共 SELECT 子句：v2 schema 列直接返；role_name / description 独立字段，service 层不再做拼接。
 const rolesSelectCols = `
 		role_id::text,
-		COALESCE(host(tenant_prefix) || '/48', '') AS tenant_id,
+		COALESCE(host(tenant_id) || '/48', '') AS tenant_id,
 		role_code,
-		TRIM(BOTH E'\n' FROM COALESCE(NULLIF(role_name, '') || E'\n', '') || COALESCE(description, '')) AS description,
+		COALESCE(role_name, '') AS role_name,
+		COALESCE(description, '') AS description,
 		is_system,
 		TRUE AS is_active
 `
@@ -46,18 +42,18 @@ const rolesSelectCols = `
 // resolveTenantFilter 把 v1 调用者传入的 tenantID（可能是 UUID 老格式 / prefix CIDR / 空）
 // 翻译成 v2 SQL 谓词（绑参形式）。
 //
-// v2 永远把 system roles（tenant_prefix IS NULL）一并返回，保证 admin 能看到全套预定义角色。
+// v2 永远把 system roles（tenant_id IS NULL）一并返回，保证 admin 能看到全套预定义角色。
 //
-// 返回 (whereSnippet, args)。whereSnippet 形如 "(tenant_prefix IS NULL OR tenant_prefix = $1::INET)" 或 "tenant_prefix IS NULL"。
+// 返回 (whereSnippet, args)。whereSnippet 形如 "(tenant_id IS NULL OR tenant_id = $1::INET)" 或 "tenant_id IS NULL"。
 func resolveTenantFilter(tenantID *string, startArgN int) (string, []any) {
 	if tenantID == nil || *tenantID == "" || isV1SystemTenantUUID(*tenantID) {
-		return "tenant_prefix IS NULL", nil
+		return "tenant_id IS NULL", nil
 	}
 	if !looksLikeINETPrefix(*tenantID) {
 		// 兼容：调用方传了非 prefix 的 UUID（自定义 tenant），v2 schema 没法直接用，回退到 system roles
-		return "tenant_prefix IS NULL", nil
+		return "tenant_id IS NULL", nil
 	}
-	return fmt.Sprintf("(tenant_prefix IS NULL OR tenant_prefix = $%d::INET)", startArgN), []any{*tenantID}
+	return fmt.Sprintf("(tenant_id IS NULL OR tenant_id = $%d::INET)", startArgN), []any{*tenantID}
 }
 
 func isV1SystemTenantUUID(s string) bool {
@@ -82,7 +78,7 @@ func (r *PostgresRolesRepository) GetRole(ctx context.Context, roleID string) (*
 	return role, nil
 }
 
-// GetRoleByCode 按 (tenant, role_code) 查角色。tenant 为空 / system tenant UUID / 非 prefix 时只查系统角色（tenant_prefix IS NULL）。
+// GetRoleByCode 按 (tenant, role_code) 查角色。tenant 为空 / system tenant UUID / 非 prefix 时只查系统角色（tenant_id IS NULL）。
 func (r *PostgresRolesRepository) GetRoleByCode(ctx context.Context, tenantID *string, roleCode string) (*domain.Role, error) {
 	if roleCode == "" {
 		return nil, fmt.Errorf("role_code is required")
@@ -159,7 +155,7 @@ func (r *PostgresRolesRepository) ListRoles(ctx context.Context, tenantID *strin
 	return roles, total, nil
 }
 
-// CreateRole 新建角色。tenantID 必须是 INET prefix CIDR；空/UUID 视作系统角色（tenant_prefix=NULL）。
+// CreateRole 新建角色。tenantID 必须是 INET prefix CIDR；空/UUID 视作系统角色（tenant_id=NULL）。
 //
 // v2 强制 role_name NOT NULL；这里以 description 第一行作 role_name fallback（v1 description 业务约定就是头一行 = 角色名）。
 func (r *PostgresRolesRepository) CreateRole(ctx context.Context, tenantID string, role *domain.Role) (string, error) {
@@ -180,10 +176,10 @@ func (r *PostgresRolesRepository) CreateRole(ctx context.Context, tenantID strin
 		tenantPrefix = nil // system role
 	}
 
-	// 唯一性：(tenant_prefix, role_code)
+	// 唯一性：(tenant_id, role_code)
 	dup, err := r.db.QueryContext(ctx, `
 		SELECT role_id::text FROM roles
-		 WHERE COALESCE(tenant_prefix::text, '') = COALESCE($1::INET::text, '')
+		 WHERE COALESCE(tenant_id::text, '') = COALESCE($1::INET::text, '')
 		   AND role_code = $2 LIMIT 1
 	`, tenantPrefix, role.RoleCode)
 	if err != nil {
@@ -197,12 +193,15 @@ func (r *PostgresRolesRepository) CreateRole(ctx context.Context, tenantID strin
 	}
 	dup.Close()
 
-	// role_name 取 description 第一行；若 description 多行则保留全文做 description。
-	roleName := firstLine(role.Description)
+	// role_name 来自 domain.RoleName（v2 独立列）；若空则回退到 RoleCode
+	roleName := role.RoleName
+	if roleName == "" {
+		roleName = role.RoleCode
+	}
 
 	var roleID string
 	err = r.db.QueryRowContext(ctx, `
-		INSERT INTO roles (tenant_prefix, role_code, role_name, description, is_system)
+		INSERT INTO roles (tenant_id, role_code, role_name, description, is_system)
 		VALUES ($1::INET, $2, $3, $4, $5)
 		RETURNING role_id::text
 	`, tenantPrefix, role.RoleCode, roleName, role.Description, role.IsSystem).Scan(&roleID)
@@ -240,13 +239,14 @@ func (r *PostgresRolesRepository) UpdateRole(ctx context.Context, roleID string,
 		args = append(args, role.RoleCode)
 		argN++
 	}
-	if role.Description != "" && role.Description != existing.Description {
-		// 同步更新 role_name = first-line(description)
+	if role.RoleName != "" && role.RoleName != existing.RoleName {
+		set = append(set, fmt.Sprintf("role_name = $%d", argN))
+		args = append(args, role.RoleName)
+		argN++
+	}
+	if role.Description != existing.Description {
 		set = append(set, fmt.Sprintf("description = $%d", argN))
 		args = append(args, role.Description)
-		argN++
-		set = append(set, fmt.Sprintf("role_name = $%d", argN))
-		args = append(args, firstLine(role.Description))
 		argN++
 	}
 	// IsActive: v2 schema 不再支持；忽略
@@ -290,6 +290,7 @@ func scanRole(rs rowScanner) (*domain.Role, error) {
 		&role.RoleID,
 		&role.TenantID, // sql.NullString — '' 时表示 system role
 		&role.RoleCode,
+		&role.RoleName,
 		&role.Description,
 		&role.IsSystem,
 		&role.IsActive, // 总是 TRUE（COALESCE 兜底）

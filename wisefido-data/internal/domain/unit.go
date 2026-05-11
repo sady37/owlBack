@@ -21,7 +21,7 @@ type Unit struct {
 	LayoutConfig sql.NullString `db:"layout_config"`  // nullable, JSONB
 	// v2 双维度（2026-05-09 重设计）：
 	//   UnitProperty 0=Home, 1=Facility (default)
-	//   UnitType     0=unknown, 1=single (VIP), 2=share (default), 3=public
+	//   UnitType     0=unknown, 1=single (Private), 2=share (default), 3=public
 	//   约束：Home → UnitType=0；Facility → UnitType ∈ {1,2,3}
 	UnitProperty int8   `db:"unit_property"` // 0=Home, 1=Facility
 	UnitType     int8   `db:"unit_type"`     // 0/1/2/3 enum

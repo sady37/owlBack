@@ -57,21 +57,21 @@ func genTempPassword() string {
 }
 
 // upsertBootstrapAdminUserInDB v2 schema 适配：
-//   - tenantPrefix 是 CIDR ('fd00:0:T::/48')，写入 users.tenant_prefix INET
-//   - username = 'admin'（v2 改 per-tenant UNIQUE，与 v1 一致；不再需要 admin_<slot> 派生）
+//   - tenantPrefix 是 CIDR ('fd00:0:T::/48')，写入 users.tenant_id INET
+//   - user_account = 'admin'（v2 改 per-tenant UNIQUE，与 v1 一致；不再需要 admin_<slot> 派生）
 //   - password 三层：
 //       password_hash       = bcrypt(sha256(plain))   真正登录验证（抗暴力）
 //       password_check_hash = sha256(plain) bytes     反向定位 user + DB partial UNIQUE 拦 admin 全局密码冲突
 //   - role = 'tenant_admin'（partial UNIQUE 索引基于此过滤）
 //   - must_change_password=true 强制首次登录改密
 //
-// 返回 (username, error)；error 包含 "uniq_admin_password_check" 时调用方应换密码重试。
+// 返回 (user_account, error)；error 包含 "uniq_admin_password_check" 时调用方应换密码重试。
 func (h *TenantsHandler) upsertBootstrapAdminUserInDB(tenantPrefix, password string) (string, error) {
 	if h == nil || h.DB == nil {
 		return "", fmt.Errorf("db unavailable")
 	}
 	if tenantPrefix == "" || password == "" {
-		return "", fmt.Errorf("tenant_prefix and password required")
+		return "", fmt.Errorf("tenant_id and password required")
 	}
 
 	// 双层 hash + 检索 hash
@@ -85,14 +85,14 @@ func (h *TenantsHandler) upsertBootstrapAdminUserInDB(tenantPrefix, password str
 		return "", fmt.Errorf("bcrypt: %w", err)
 	}
 
-	const username = "admin"
-	// INSERT or UPDATE：(tenant_prefix, username) UNIQUE 处理同 tenant 重入；
+	const user_account = "admin"
+	// INSERT or UPDATE：(tenant_id, user_account) UNIQUE 处理同 tenant 重入；
 	// admin 类的 password_check_hash 全局 UNIQUE 拦明文密码碰撞（DB 层）。
 	_, err = h.DB.Exec(
-		`INSERT INTO users (tenant_prefix, username, password_hash, password_check_hash,
+		`INSERT INTO users (tenant_id, user_account, password_hash, password_check_hash,
 		                    nickname, role, status, must_change_password)
 		 VALUES ($1::INET, $2, $3, $4, 'Admin', 'tenant_admin', 'active', true)
-		 ON CONFLICT (tenant_prefix, username) DO UPDATE SET
+		 ON CONFLICT (tenant_id, user_account) DO UPDATE SET
 		   password_hash = EXCLUDED.password_hash,
 		   password_check_hash = EXCLUDED.password_check_hash,
 		   nickname = EXCLUDED.nickname,
@@ -100,12 +100,12 @@ func (h *TenantsHandler) upsertBootstrapAdminUserInDB(tenantPrefix, password str
 		   status = 'active',
 		   must_change_password = true,
 		   updated_at = NOW()`,
-		tenantPrefix, username, string(bcryptHash), checkHash,
+		tenantPrefix, user_account, string(bcryptHash), checkHash,
 	)
 	if err != nil {
 		return "", fmt.Errorf("upsert user: %w", err)
 	}
-	return username, nil
+	return user_account, nil
 }
 
 func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -137,6 +137,8 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					"tenant_id":   t.TenantID,
 					"tenant_type": t.TenantType,
 					"tenant_name": t.TenantName,
+					"kind":        t.Kind,
+					"timezone":    t.Timezone,
 					"domain":      t.Domain,
 					"email":       t.Email,
 					"phone":       t.Phone,
@@ -211,6 +213,8 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"tenant_id":   t.TenantID,
 				"tenant_type": t.TenantType,
 				"tenant_name": t.TenantName,
+				"kind":        t.Kind,
+				"timezone":    t.Timezone,
 				"domain":      t.Domain,
 				"email":       t.Email,
 				"phone":       t.Phone,
@@ -218,25 +222,25 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"metadata":    t.Metadata,
 			}
 			// Dev bootstrap account: create ONLY admin with TEMP password.
-			// v2: username 全局 UNIQUE，由 upsertBootstrapAdminUserInDB 派生为 'admin_<slot>'；
+			// v2: user_account 全局 UNIQUE，由 upsertBootstrapAdminUserInDB 派生为 'admin_<slot>'；
 			// 明文密码全局唯一约束 → 撞了重试（temp 是随机 12 字节 base64，碰撞概率近 0）。
 			if h.Auth != nil {
-				var adminPwd, username string
+				var adminPwd, user_account string
 				for retry := 0; retry < 3; retry++ {
 					adminPwd = genTempPassword()
 					u, err := h.upsertBootstrapAdminUserInDB(t.TenantID, adminPwd)
 					if err == nil {
-						username = u
+						user_account = u
 						break
 					}
 					if !strings.Contains(err.Error(), "collision") {
 						break // 非密码碰撞错误就放弃
 					}
 				}
-				if username != "" {
-					_ = h.Auth.UpsertUser(t.TenantID, username, "Admin", adminPwd)
+				if user_account != "" {
+					_ = h.Auth.UpsertUser(t.TenantID, user_account, "Admin", adminPwd)
 					out["bootstrap_accounts"] = []any{
-						map[string]any{"user_account": username, "role": "Admin", "temp_password": adminPwd},
+						map[string]any{"user_account": user_account, "role": "Admin", "temp_password": adminPwd},
 					}
 				}
 			}
@@ -294,9 +298,9 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if adminPwd == "" {
 					adminPwd = genTempPassword()
 				}
-				// v2: 走双层 hash bcrypt(sha256(plain))；username 全局 UNIQUE 派生 'admin_<slot>'；
+				// v2: 走双层 hash bcrypt(sha256(plain))；user_account 全局 UNIQUE 派生 'admin_<slot>'；
 				// 业务约束 admin 明文密码全局唯一 → 命中 collision 时 admin 必须换密码重试。
-				username, upErr := h.upsertBootstrapAdminUserInDB(id, adminPwd)
+				user_account, upErr := h.upsertBootstrapAdminUserInDB(id, adminPwd)
 				if upErr != nil {
 					if strings.Contains(upErr.Error(), "collision") {
 						writeJSON(w, http.StatusOK, Fail("password already used by another tenant admin; please choose a different password"))
@@ -306,10 +310,10 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if h.Auth != nil {
-					_ = h.Auth.UpsertUser(id, username, "Admin", adminPwd)
+					_ = h.Auth.UpsertUser(id, user_account, "Admin", adminPwd)
 				}
 				outAccounts := []any{
-					map[string]any{"user_account": username, "role": "Admin", "temp_password": adminPwd},
+					map[string]any{"user_account": user_account, "role": "Admin", "temp_password": adminPwd},
 				}
 				writeJSON(w, http.StatusOK, Ok(map[string]any{
 					"tenant_id":          id,

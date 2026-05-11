@@ -71,7 +71,7 @@ type RoomWithAvailability struct {
 	Floor        string // 楼层
 	RoomName     string
 	UnitType     string // Home / Facility
-	FacilityType string // Share / Public / VIP
+	FacilityType string // Share / Public / Private
 	IsFull       bool   // room 下所有 bed 均已被绑定
 	IsBound      bool   // 有住户绑定了该 room（room_id 或该 room 下 bed）
 }
@@ -89,7 +89,7 @@ type UnitFilters struct {
 	UnitName   string
 	UnitType   string
 	Search     string // 模糊搜索 unit_name, unit_number
-	// ResidentID: 非 nil 表示住户绑定时，VIP 单元仅返回未被其他住户占用的（nil=不过滤）
+	// ResidentID: 非 nil 表示住户绑定时，Private 单元仅返回未被其他住户占用的（nil=不过滤）
 	ResidentID *string
 }
 

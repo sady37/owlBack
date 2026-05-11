@@ -11,27 +11,27 @@
 -- =========================================================================
 -- BRANCHES (4 in demo, branch_slot 1..4)
 -- =========================================================================
-INSERT INTO branches (spatial_prefix, branch_slot, branch_name, timezone) VALUES
+INSERT INTO branches (branch_id, branch_slot, branch_name, timezone) VALUES
     ('fd00:0:3:100::/56', 1, 'Denver',   'America/Denver'),
     ('fd00:0:3:200::/56', 2, 'Spring',   'America/Denver'),     -- Spring, CO (Denver 旁边)
     ('fd00:0:3:300::/56', 3, 'SanDiego', 'America/Los_Angeles'),
     ('fd00:0:3:400::/56', 4, 'ShenZhen', 'Asia/Shanghai')
-ON CONFLICT (spatial_prefix) DO NOTHING;
+ON CONFLICT (branch_id) DO NOTHING;
 
 -- =========================================================================
 -- SITES (one per branch, building 0 floor 1, site_slot=0x01)
 -- =========================================================================
-INSERT INTO sites (spatial_prefix, site_slot, building, floor, site_name) VALUES
+INSERT INTO sites (site_id, site_slot, building, floor, site_name) VALUES
     ('fd00:0:3:101::/64', 1, 0, 1, 'Denver Bldg-0 Floor-1'),
     ('fd00:0:3:201::/64', 1, 0, 1, 'Spring Bldg-0 Floor-1'),
     ('fd00:0:3:301::/64', 1, 0, 1, 'SanDiego Bldg-0 Floor-1'),
     ('fd00:0:3:401::/64', 1, 0, 1, 'ShenZhen Bldg-0 Floor-1')
-ON CONFLICT (spatial_prefix) DO NOTHING;
+ON CONFLICT (site_id) DO NOTHING;
 
 -- =========================================================================
 -- UNITS (9 total)
 -- =========================================================================
-INSERT INTO units (spatial_prefix, unit_slot, unit_name, unit_type, unit_layout_type, is_public, is_shared_unit) VALUES
+INSERT INTO units (unit_id, unit_slot, unit_name, unit_type, unit_layout_type, is_public, is_shared_unit) VALUES
     -- Denver
     ('fd00:0:3:101:1::/80',   1,   'Denver Common',      'public',      'public_area', TRUE,  FALSE),
     ('fd00:0:3:101:65::/80',  101, 'Denver 101 VIP',     'residential', '2br_bath',    FALSE, FALSE),
@@ -45,12 +45,12 @@ INSERT INTO units (spatial_prefix, unit_slot, unit_name, unit_type, unit_layout_
     ('fd00:0:3:401:65::/80',  101, 'ShenZhen 101',       'residential', '1br_bath',    FALSE, FALSE),
     ('fd00:0:3:401:66::/80',  102, 'ShenZhen 102',       'residential', '1br_bath',    FALSE, FALSE),
     ('fd00:0:3:401:67::/80',  103, 'ShenZhen 103',       'residential', '1br_bath',    FALSE, FALSE)
-ON CONFLICT (spatial_prefix) DO NOTHING;
+ON CONFLICT (unit_id) DO NOTHING;
 
 -- =========================================================================
 -- ROOMS (17 total)
 -- =========================================================================
-INSERT INTO rooms (spatial_prefix, room_slot, room_name, room_type, is_primary) VALUES
+INSERT INTO rooms (room_id, room_slot, room_name, room_type, is_primary) VALUES
     -- Denver Common (3 public rooms; no primary)
     ('fd00:0:3:101:1:100::/88',  1, 'LivingRoom',  'livingroom', FALSE),
     ('fd00:0:3:101:1:200::/88',  2, 'ReadingRoom', 'other',      FALSE),
@@ -76,12 +76,12 @@ INSERT INTO rooms (spatial_prefix, room_slot, room_name, room_type, is_primary) 
     ('fd00:0:3:401:66:200::/88', 2, 'Bathroom',    'bathroom',   FALSE),
     ('fd00:0:3:401:67:100::/88', 1, 'Bedroom',     'bedroom',    TRUE),
     ('fd00:0:3:401:67:200::/88', 2, 'Bathroom',    'bathroom',   FALSE)
-ON CONFLICT (spatial_prefix) DO NOTHING;
+ON CONFLICT (room_id) DO NOTHING;
 
 -- =========================================================================
 -- BEDS (9 total)
 -- =========================================================================
-INSERT INTO beds (spatial_prefix, bed_slot, bed_name) VALUES
+INSERT INTO beds (bed_id, bed_slot, bed_name) VALUES
     -- Denver 101 VIP
     ('fd00:0:3:101:65:101::/96', 1, 'Room1-BedA'),
     ('fd00:0:3:101:65:201::/96', 1, 'Room2-BedA'),
@@ -96,7 +96,7 @@ INSERT INTO beds (spatial_prefix, bed_slot, bed_name) VALUES
     ('fd00:0:3:401:65:101::/96', 1, 'BedA'),
     ('fd00:0:3:401:66:101::/96', 1, 'BedA'),
     ('fd00:0:3:401:67:101::/96', 1, 'BedA')
-ON CONFLICT (spatial_prefix) DO NOTHING;
+ON CONFLICT (bed_id) DO NOTHING;
 
 -- =========================================================================
 -- RESIDENTS (10：7 US + 3 CN；slots 1..10)
@@ -129,7 +129,7 @@ ON CONFLICT (hoa) DO NOTHING;
 -- =========================================================================
 -- RESIDENT_UNIT (8 active assignments；2 unassigned 备选)
 -- =========================================================================
-INSERT INTO resident_unit (resident_hoa, spatial_prefix, valid_from, move_reason)
+INSERT INTO resident_unit (resident_id, spatial_prefix, valid_from, move_reason)
 SELECT * FROM (VALUES
     ('fd00:0:3:ff01:1::/128'::INET,  'fd00:0:3:101:65::/80'::INET,     '2025-03-15'::TIMESTAMPTZ, 'initial'),  -- John VIP unit /80
     ('fd00:0:3:ff01:2::/128'::INET,  'fd00:0:3:101:c9::/80'::INET,     '2025-05-01'::TIMESTAMPTZ, 'initial'),  -- Mary single unit /80
@@ -140,10 +140,10 @@ SELECT * FROM (VALUES
     ('fd00:0:3:ff01:8::/128'::INET,  'fd00:0:3:401:65::/80'::INET,     '2024-09-01'::TIMESTAMPTZ, 'initial'),  -- MoM unit
     ('fd00:0:3:ff01:9::/128'::INET,  'fd00:0:3:401:66::/80'::INET,     '2024-11-15'::TIMESTAMPTZ, 'initial'),  -- Frand unit
     ('fd00:0:3:ff01:a::/128'::INET,  'fd00:0:3:401:67::/80'::INET,     '2025-02-01'::TIMESTAMPTZ, 'initial')   -- Ton unit
-) AS v(resident_hoa, spatial_prefix, valid_from, move_reason)
+) AS v(resident_id, spatial_prefix, valid_from, move_reason)
 WHERE NOT EXISTS (
     SELECT 1 FROM resident_unit ru
-    WHERE ru.resident_hoa = v.resident_hoa AND ru.valid_to IS NULL
+    WHERE ru.resident_id = v.resident_id AND ru.valid_to IS NULL
 );
 
 -- =========================================================================
@@ -152,25 +152,25 @@ WHERE NOT EXISTS (
 -- 凭证形态（双层 hash + 检索哈希）：
 --   password_hash       = bcrypt(sha256(plaintext))         -- 真正登录验证（抗暴力）
 --   password_check_hash = sha256(plaintext)                 -- 反向定位 user（无 salt）+ admin 类全局唯一约束
---   mobile_pin_hash     = bcrypt(plaintext_pin)             -- 4 位 PIN 不走 sha256（信息熵低）
+--   pin_hash     = bcrypt(plaintext_pin)             -- 4 位 PIN 不走 sha256（信息熵低）
 -- 与前端 utils/crypto.ts hashPassword + auth.ts loginApi 配套：
---   前端 sha256(password) → hex 上送，后端 (username, password_check_hash) 反向定位 + bcrypt 验证。
+--   前端 sha256(password) → hex 上送，后端 (user_account, password_check_hash) 反向定位 + bcrypt 验证。
 -- =========================================================================
-INSERT INTO users (tenant_prefix, username, password_hash, password_check_hash, role, mobile_pin_hash, nickname, full_name, email, status, notify_mode) VALUES
+INSERT INTO users (tenant_id, user_account, password_hash, password_check_hash, role, pin_hash, nickname, full_name, email, status, notify_mode) VALUES
     ('fd00:0:1::/48', 'sysadmin', crypt(encode(sha256('ChangeMe@123'::bytea), 'hex'), gen_salt('bf')), sha256('ChangeMe@123'::bytea), 'platform_admin', crypt('1212', gen_salt('bf')), 'sysadmin', 'System Admin', 'sysadmin@owl.internal', 'active', 'forever')
-ON CONFLICT (tenant_prefix, username) DO NOTHING;
+ON CONFLICT (tenant_id, user_account) DO NOTHING;
 
 -- =========================================================================
 -- USERS - demo tenant：3 admin (no hoa) + 5 caregiver + 4 nurse (with hoa)
 -- =========================================================================
-INSERT INTO users (tenant_prefix, username, password_hash, password_check_hash, role, mobile_pin_hash, nickname, full_name, email, status, notify_mode) VALUES
+INSERT INTO users (tenant_id, user_account, password_hash, password_check_hash, role, pin_hash, nickname, full_name, email, status, notify_mode) VALUES
     ('fd00:0:3::/48', 'admin', crypt(encode(sha256('Ts123@123'::bytea),  'hex'), gen_salt('bf')), sha256('Ts123@123'::bytea),  'tenant_admin', crypt('1212', gen_salt('bf')), 'admin', 'Demo Admin', 'admin@wisefido.com', 'active', 'login_only'),
     ('fd00:0:3::/48', 'demo',  crypt(encode(sha256('Demo@2026'::bytea),  'hex'), gen_salt('bf')), sha256('Demo@2026'::bytea),  'manager',      crypt('1212', gen_salt('bf')), 'demo',  'Demo User',  'demo@wisefido.com',  'active', 'login_only'),
     ('fd00:0:3::/48', 'hunzi', crypt(encode(sha256('hunzi@2026'::bytea), 'hex'), gen_salt('bf')), sha256('hunzi@2026'::bytea), 'manager',      crypt('1212', gen_salt('bf')), 'hunzi', 'HunZi',      'hunzi@wisefido.com', 'active', 'login_only')
-ON CONFLICT (tenant_prefix, username) DO NOTHING;
+ON CONFLICT (tenant_id, user_account) DO NOTHING;
 
 -- caregiver/nurse (hoa filled，每分支挂 1 个；Denver 多 1 caregiver)
-INSERT INTO users (tenant_prefix, username, password_hash, password_check_hash, mobile_pin_hash, nickname, full_name, email, hoa, subject_slot, employee_code, role, hire_date, status, notify_mode) VALUES
+INSERT INTO users (tenant_id, user_account, password_hash, password_check_hash, pin_hash, nickname, full_name, email, hoa, subject_slot, employee_code, role, hire_date, status, notify_mode) VALUES
     ('fd00:0:3::/48', 'caregiver_denver_1',  crypt(encode(sha256('Caregiver@2026'::bytea), 'hex'), gen_salt('bf')), sha256('Caregiver@2026'::bytea), crypt('1212', gen_salt('bf')), 'Alice', 'Alice Brown',  'alice@wisefido.com',  'fd00:0:3:ff02:1::/128', 1, 'CG-DEN-001', 'caregiver', '2025-01-15', 'active', 'login_only'),
     ('fd00:0:3::/48', 'caregiver_denver_2',  crypt(encode(sha256('Caregiver@2026'::bytea), 'hex'), gen_salt('bf')), sha256('Caregiver@2026'::bytea), crypt('1212', gen_salt('bf')), 'Bob',   'Bob Carter',   'bob@wisefido.com',    'fd00:0:3:ff02:2::/128', 2, 'CG-DEN-002', 'caregiver', '2025-02-01', 'active', 'login_only'),
     ('fd00:0:3::/48', 'caregiver_spring',    crypt(encode(sha256('Caregiver@2026'::bytea), 'hex'), gen_salt('bf')), sha256('Caregiver@2026'::bytea), crypt('1212', gen_salt('bf')), 'Carol', 'Carol Davis',  'carol@wisefido.com',  'fd00:0:3:ff02:3::/128', 3, 'CG-SPR-001', 'caregiver', '2025-03-10', 'active', 'login_only'),
@@ -180,7 +180,7 @@ INSERT INTO users (tenant_prefix, username, password_hash, password_check_hash, 
     ('fd00:0:3::/48', 'nurse_spring',        crypt(encode(sha256('Nurse@2026'::bytea),     'hex'), gen_salt('bf')), sha256('Nurse@2026'::bytea),     crypt('1212', gen_salt('bf')), 'Fred',  'Fred Garcia',  'fred@wisefido.com',   'fd00:0:3:ff02:7::/128', 7, 'RN-SPR-001', 'nurse',     '2024-07-01', 'active', 'login_only'),
     ('fd00:0:3::/48', 'nurse_sandiego',      crypt(encode(sha256('Nurse@2026'::bytea),     'hex'), gen_salt('bf')), sha256('Nurse@2026'::bytea),     crypt('1212', gen_salt('bf')), 'Grace', 'Grace Harris', 'grace@wisefido.com',  'fd00:0:3:ff02:8::/128', 8, 'RN-SDG-001', 'nurse',     '2024-08-15', 'active', 'login_only'),
     ('fd00:0:3::/48', 'nurse_shenzhen',      crypt(encode(sha256('Nurse@2026'::bytea),     'hex'), gen_salt('bf')), sha256('Nurse@2026'::bytea),     crypt('1212', gen_salt('bf')), 'Hong',  'Liu Hong',     'hong@wisefido.com',   'fd00:0:3:ff02:9::/128', 9, 'RN-SHE-001', 'nurse',     '2024-05-15', 'active', 'login_only')
-ON CONFLICT (tenant_prefix, username) DO NOTHING;
+ON CONFLICT (tenant_id, user_account) DO NOTHING;
 
 -- =========================================================================
 -- USER_ROLES：assign roles by branch /56 scope
@@ -205,9 +205,9 @@ FROM (VALUES
     ('nurse_spring',       'nurse',     'fd00:0:3:200::/56'),
     ('nurse_sandiego',     'nurse',     'fd00:0:3:300::/56'),
     ('nurse_shenzhen',     'nurse',     'fd00:0:3:400::/56')
-) AS v(username, role_code, scope)
-JOIN users u ON u.username = v.username
-JOIN roles r ON r.role_code = v.role_code AND r.tenant_prefix IS NULL
+) AS v(user_account, role_code, scope)
+JOIN users u ON u.user_account = v.user_account
+JOIN roles r ON r.role_code = v.role_code AND r.tenant_id IS NULL
 ON CONFLICT (user_id, role_id, scope) DO NOTHING;
 
 -- =========================================================================
@@ -217,7 +217,7 @@ ON CONFLICT (user_id, role_id, scope) DO NOTHING;
 --   /96 bed prefix       — sleepad (床上) + bed-scoped radar
 --   /88 room prefix      — room-level radar (浴室 / 公共空间 / 卧室通用)
 --
--- /128 spatial_addr 派生：
+-- /128 device_ipv6 派生：
 --   bed-bound : bed_prefix(/96) + 16 bit zero (group7) + 16 bit dev_seq → fd00:...:101:0:1/128
 --   room-bound: room_prefix(/88) + 8 bit byte11=0x00 (no bed) + 32 bit dev_seq → fd00:...:300::1/128
 --
@@ -235,7 +235,7 @@ selected_sleepads AS (
     SELECT device_id, ROW_NUMBER() OVER (ORDER BY device_uid) AS n
     FROM device_factory_meta WHERE device_model = 'BM8701-2' LIMIT 8
 ),
-radar_bindings (n, spatial_addr, label) AS (VALUES
+radar_bindings (n, device_ipv6, label) AS (VALUES
     -- Denver
     (1::INT, 'fd00:0:3:101:65:101:0:1'::INET, '101_Bedroom_radar'),     -- 101 Room1.bedA
     (2,      'fd00:0:3:101:65:300::1'::INET,  '101_Bathroom_radar'),    -- 101 Bathroom (room-level)
@@ -252,7 +252,7 @@ radar_bindings (n, spatial_addr, label) AS (VALUES
     (10,     'fd00:0:3:401:65:200::1'::INET,  'Mom_radar'),             -- ShenZhen 101 Bathroom
     (11,     'fd00:0:3:401:66:200::1'::INET,  'Hunzi_Radar')            -- ShenZhen 102 Bathroom
 ),
-sleepad_bindings (n, spatial_addr, label) AS (VALUES
+sleepad_bindings (n, device_ipv6, label) AS (VALUES
     -- Denver
     (1::INT, 'fd00:0:3:101:65:101:0:2'::INET, '101_Bedroom_sleepad'),   -- 101 Room1.bedA sleepad
     (2,      'fd00:0:3:101:65:201:0:1'::INET, 'GuestRoom_sleepad'),     -- 101 Room2.bedA sleepad
@@ -265,13 +265,13 @@ sleepad_bindings (n, spatial_addr, label) AS (VALUES
     (7,      'fd00:0:3:401:65:101:0:1'::INET, 'MoM_sleepad'),           -- ShenZhen 101 BedA
     (8,      'fd00:0:3:401:66:101:0:1'::INET, 'Hunzi_Sleepad')          -- ShenZhen 102 BedA
 )
-INSERT INTO devices (spatial_addr, device_id, monitoring_enabled)
-SELECT b.spatial_addr, r.device_id, TRUE
+INSERT INTO devices (device_ipv6, device_id, monitoring_enabled)
+SELECT b.device_ipv6, r.device_id, TRUE
 FROM radar_bindings b JOIN selected_radars r ON r.n = b.n
 UNION ALL
-SELECT b.spatial_addr, s.device_id, TRUE
+SELECT b.device_ipv6, s.device_id, TRUE
 FROM sleepad_bindings b JOIN selected_sleepads s ON s.n = b.n
-ON CONFLICT (spatial_addr) DO NOTHING;
+ON CONFLICT (device_ipv6) DO NOTHING;
 
 -- 把 device label 写到 device_factory_meta.notes（追加到 import note 后）
 UPDATE device_factory_meta dfm

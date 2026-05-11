@@ -13,13 +13,13 @@ import (
 // PostgresTenantsRepository 租户 Repository — owl_v2 schema 版本。
 //
 // v2 schema 与 v1 关键差异（不向后兼容）：
-//   - 主键从 tenant_id UUID 改为 spatial_prefix INET (/48 CIDR)
+//   - 主键从 tenant_id UUID 改为 tenant_id INET (/48 CIDR)
 //   - 列删除：tenant_type / domain / status / metadata
 //   - 列改名：email→contact_email / phone→contact_phone
 //   - 列新增：tenant_slot SMALLINT (uint16, 全局自增) / timezone / contact_name / created_at / updated_at
 //   - 删除走 hard DELETE（FK CASCADE 清 branches/units/...）
 //
-// 兼容策略：domain.Tenant 字段不变；TenantID 在 v2 装 spatial_prefix CIDR 字符串；
+// 兼容策略：domain.Tenant 字段不变；TenantID 在 v2 装 tenant_id CIDR 字符串；
 // TenantType/Status/Domain/Metadata 字段对外伪装值（'organization' / 'active' / '' / '{}'）。
 type PostgresTenantsRepository struct {
 	db *sql.DB
@@ -33,9 +33,11 @@ var _ TenantsRepository = (*PostgresTenantsRepository)(nil)
 
 // 公共 SELECT 子句：v2 schema 列适配回 v1 domain.Tenant 字段
 const tenantsSelectCols = `
-		host(spatial_prefix) || '/48' AS tenant_id,
+		host(tenant_id) || '/48' AS tenant_id,
 		'organization' AS tenant_type,
 		tenant_name,
+		COALESCE(kind, 'B2B') AS kind,
+		COALESCE(timezone, 'America/Los_Angeles') AS timezone,
 		'' AS domain,
 		COALESCE(contact_email, '') AS email,
 		COALESCE(contact_phone, '') AS phone,
@@ -43,7 +45,7 @@ const tenantsSelectCols = `
 		'{}'::jsonb AS metadata
 `
 
-// GetTenant 按 tenant_id (实为 spatial_prefix CIDR) 查询租户。
+// GetTenant 按 tenant_id (实为 tenant_id CIDR) 查询租户。
 func (r *PostgresTenantsRepository) GetTenant(ctx context.Context, tenantID string) (*domain.Tenant, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
@@ -52,7 +54,7 @@ func (r *PostgresTenantsRepository) GetTenant(ctx context.Context, tenantID stri
 		return nil, fmt.Errorf("tenant not found: %q is not a v2 INET prefix", tenantID)
 	}
 
-	q := `SELECT ` + tenantsSelectCols + ` FROM tenants WHERE spatial_prefix = $1::INET`
+	q := `SELECT ` + tenantsSelectCols + ` FROM tenants WHERE tenant_id = $1::INET`
 	return r.scanOneTenant(ctx, q, tenantID)
 }
 
@@ -64,14 +66,14 @@ func (r *PostgresTenantsRepository) GetTenantByDomain(ctx context.Context, domai
 	return nil, fmt.Errorf("tenant not found: domain lookup deprecated in owl_v2")
 }
 
-// GetTenantIDByName 按 tenant_name 精确匹配（trim + 不区分大小写）；唯一则返回 spatial_prefix CIDR。
+// GetTenantIDByName 按 tenant_name 精确匹配（trim + 不区分大小写）；唯一则返回 tenant_id CIDR。
 func (r *PostgresTenantsRepository) GetTenantIDByName(ctx context.Context, tenantName string) (string, error) {
 	name := strings.TrimSpace(tenantName)
 	if name == "" {
 		return "", fmt.Errorf("tenant_name is empty")
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT host(spatial_prefix) || '/48' FROM tenants
+		SELECT host(tenant_id) || '/48' FROM tenants
 		 WHERE LOWER(TRIM(tenant_name)) = LOWER($1)`, name)
 	if err != nil {
 		return "", fmt.Errorf("lookup tenant by name: %w", err)
@@ -162,7 +164,7 @@ func (r *PostgresTenantsRepository) ListTenants(ctx context.Context, filter Tena
 	return tenants, total, nil
 }
 
-// CreateTenant 新建租户：自动分配 tenant_slot = MAX+1，派生 spatial_prefix。
+// CreateTenant 新建租户：自动分配 tenant_slot = MAX+1，派生 tenant_id。
 //
 // 并发安全：用 advisory lock + 事务（MAX+1 模式无 lock 时会冲突）。
 func (r *PostgresTenantsRepository) CreateTenant(ctx context.Context, tenant *domain.Tenant) (string, error) {
@@ -188,7 +190,7 @@ func (r *PostgresTenantsRepository) CreateTenant(ctx context.Context, tenant *do
 	// 唯一性 (tenant_name)
 	var dupID string
 	err = tx.QueryRowContext(ctx,
-		`SELECT host(spatial_prefix) || '/48' FROM tenants WHERE LOWER(TRIM(tenant_name)) = LOWER($1) LIMIT 1`,
+		`SELECT host(tenant_id) || '/48' FROM tenants WHERE LOWER(TRIM(tenant_name)) = LOWER($1) LIMIT 1`,
 		trimmed,
 	).Scan(&dupID)
 	if err == nil {
@@ -219,9 +221,9 @@ func (r *PostgresTenantsRepository) CreateTenant(ctx context.Context, tenant *do
 
 	var newPrefix string
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO tenants (spatial_prefix, tenant_slot, tenant_name, timezone, contact_email, contact_phone, status)
+		INSERT INTO tenants (tenant_id, tenant_slot, tenant_name, timezone, contact_email, contact_phone, status)
 		VALUES ($1::INET, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''), $7)
-		RETURNING host(spatial_prefix) || '/48'
+		RETURNING host(tenant_id) || '/48'
 	`, prefixStr, nextSlot, trimmed, timezone, tenant.Email, tenant.Phone, status).Scan(&newPrefix)
 	if err != nil {
 		return "", fmt.Errorf("failed to create tenant: %w", err)
@@ -252,7 +254,7 @@ func (r *PostgresTenantsRepository) UpdateTenant(ctx context.Context, tenantID s
 	// 唯一性 (tenant_name) 排除自己
 	var conflict string
 	err := r.db.QueryRowContext(ctx,
-		`SELECT host(spatial_prefix) || '/48' FROM tenants WHERE LOWER(TRIM(tenant_name)) = LOWER($1) AND spatial_prefix <> $2::INET`,
+		`SELECT host(tenant_id) || '/48' FROM tenants WHERE LOWER(TRIM(tenant_name)) = LOWER($1) AND tenant_id <> $2::INET`,
 		trimmed, tenantID,
 	).Scan(&conflict)
 	if err == nil {
@@ -275,7 +277,7 @@ func (r *PostgresTenantsRepository) UpdateTenant(ctx context.Context, tenantID s
 		q += `, status = $5`
 		args = append(args, tenant.Status)
 	}
-	q += ` WHERE spatial_prefix = $1::INET`
+	q += ` WHERE tenant_id = $1::INET`
 	res, err := r.db.ExecContext(ctx, q, args...)
 	if err != nil {
 		return fmt.Errorf("failed to update tenant: %w", err)
@@ -289,7 +291,7 @@ func (r *PostgresTenantsRepository) UpdateTenant(ctx context.Context, tenantID s
 
 // SetTenantStatus 真正更新 status 列：active / suspended / deleted。
 //
-// HIPAA + 业务约束：tenant 不允许硬删（下游 audit_log/event_log/resident_phi 等都引用 spatial_prefix）。
+// HIPAA + 业务约束：tenant 不允许硬删（下游 audit_log/event_log/resident_phi 等都引用 tenant_id）。
 // 'deleted' 也是软删（设 status='deleted' 隐藏 from list；历史数据保留）。
 func (r *PostgresTenantsRepository) SetTenantStatus(ctx context.Context, tenantID string, status string) error {
 	if tenantID == "" {
@@ -314,7 +316,7 @@ func (r *PostgresTenantsRepository) SetTenantStatus(ctx context.Context, tenantI
 		}
 	}
 	res, err := r.db.ExecContext(ctx,
-		`UPDATE tenants SET status = $2, updated_at = NOW() WHERE spatial_prefix = $1::INET`,
+		`UPDATE tenants SET status = $2, updated_at = NOW() WHERE tenant_id = $1::INET`,
 		tenantID, status)
 	if err != nil {
 		return fmt.Errorf("failed to set tenant status: %w", err)
@@ -371,24 +373,24 @@ func (r *PostgresTenantsRepository) hardDeleteTenant(ctx context.Context, tenant
 	// 清 user_roles → users（bootstrap admin 自动创建的，删 tenant 时一并清）
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM user_roles
-		 WHERE user_id IN (SELECT user_id FROM users WHERE tenant_prefix = $1::INET)`,
+		 WHERE user_id IN (SELECT user_id FROM users WHERE tenant_id = $1::INET)`,
 		tenantPrefix); err != nil {
 		return fmt.Errorf("hard delete user_roles: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM users WHERE tenant_prefix = $1::INET`, tenantPrefix); err != nil {
+		`DELETE FROM users WHERE tenant_id = $1::INET`, tenantPrefix); err != nil {
 		return fmt.Errorf("hard delete users: %w", err)
 	}
 
 	// 清掉 v1 自动创建的 default branch（如果有）
 	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM branches WHERE spatial_prefix <<= $1::INET AND branch_name = 'default'`,
+		`DELETE FROM branches WHERE branch_id <<= $1::INET AND branch_name = 'default'`,
 		tenantPrefix); err != nil {
 		return fmt.Errorf("hard delete default branch: %w", err)
 	}
 
 	res, err := tx.ExecContext(ctx,
-		`DELETE FROM tenants WHERE spatial_prefix = $1::INET`, tenantPrefix)
+		`DELETE FROM tenants WHERE tenant_id = $1::INET`, tenantPrefix)
 	if err != nil {
 		return fmt.Errorf("hard delete tenant: %w", err)
 	}
@@ -403,7 +405,7 @@ func (r *PostgresTenantsRepository) hardDeleteTenant(ctx context.Context, tenant
 func (r *PostgresTenantsRepository) isProtectedSystemTenant(ctx context.Context, tenantPrefix string) (bool, error) {
 	var slot int
 	err := r.db.QueryRowContext(ctx,
-		`SELECT tenant_slot FROM tenants WHERE spatial_prefix = $1::INET`, tenantPrefix).Scan(&slot)
+		`SELECT tenant_slot FROM tenants WHERE tenant_id = $1::INET`, tenantPrefix).Scan(&slot)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -421,12 +423,12 @@ func (r *PostgresTenantsRepository) isTenantEmpty(ctx context.Context, tenantPre
 	var hasData bool
 	err := r.db.QueryRowContext(ctx, `
 		SELECT EXISTS (
-		  SELECT 1 FROM branches  WHERE spatial_prefix <<= $1::INET
+		  SELECT 1 FROM branches  WHERE branch_id <<= $1::INET
 		    AND COALESCE(branch_name, '') <> 'default'
 		  UNION ALL
 		  SELECT 1 FROM residents WHERE hoa IS NOT NULL AND hoa <<= $1::INET
 		  UNION ALL
-		  SELECT 1 FROM devices   WHERE spatial_addr IS NOT NULL AND spatial_addr <<= $1::INET
+		  SELECT 1 FROM devices   WHERE device_ipv6 IS NOT NULL AND device_ipv6 <<= $1::INET
 		)
 	`, tenantPrefix).Scan(&hasData)
 	if err != nil {
@@ -461,6 +463,8 @@ func scanTenant(rs rowScanner) (*domain.Tenant, error) {
 		&tenant.TenantID,
 		&tenant.TenantType,
 		&tenant.TenantName,
+		&tenant.Kind,
+		&tenant.Timezone,
 		&tenant.Domain,
 		&tenant.Email,
 		&tenant.Phone,

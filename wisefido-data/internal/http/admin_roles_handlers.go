@@ -44,15 +44,21 @@ func (s *StubHandler) AdminRoles(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					displayName := roleCode
+					body := desc
 					if p := strings.SplitN(desc, "\n", 2); len(p) > 0 && strings.TrimSpace(p[0]) != "" {
 						displayName = strings.TrimSpace(p[0])
+						if len(p) > 1 {
+							body = p[1]
+						} else {
+							body = ""
+						}
 					}
 					item := map[string]any{
 						"role_id":      roleID,
 						"tenant_id":    nil,
 						"role_code":    roleCode,
 						"display_name": displayName,
-						"description":  desc,
+						"description":  body,
 						"is_system":    isSystem,
 						"is_active":    isActive,
 					}

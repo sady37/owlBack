@@ -9,5 +9,8 @@ type BranchUpdate struct {
 
 	// 院区描述
 	Description *UpdateString // TEXT, nullable
+
+	// 时区（IANA tz name；空 = 继承 tenant.timezone）
+	Timezone *UpdateString
 }
 

@@ -306,6 +306,16 @@ func main() {
 		userHandler := httpapi.NewUserHandler(userService, db, logger)
 		router.RegisterUsersRoutes(userHandler)
 
+		// CareTeam（护士站）— 自包含 raw SQL handler，不依赖 service/repo
+		careTeamsHandler := httpapi.NewCareTeamsHandler(db, logger)
+		router.RegisterCareTeamsRoutes(careTeamsHandler)
+
+		// Resident V2 (Forward Design)— 独立 /admin/api/v2/residents 路由
+		residentsV2Repo := repository.NewPostgresResidentsRepositoryV2(db)
+		residentV2Svc := service.NewResidentV2Service(residentsV2Repo)
+		residentV2Handler := httpapi.NewResidentV2Handler(db, residentV2Svc, logger)
+		router.RegisterResidentV2Routes(residentV2Handler)
+
 		// 创建 ConfigPublisher（用于发送所有 config:* 消息）
 		configPublisher := publisher.NewConfigPublisher(redisClient, logger)
 		deviceService.SetConfigPublisher(configPublisher)

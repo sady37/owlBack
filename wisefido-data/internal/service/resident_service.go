@@ -233,7 +233,7 @@ type ResidentListItemDTO struct {
 	BranchID        *string `json:"branch_id,omitempty"`      // 从 residents.branch_id 获取
 	BranchName      *string `json:"branch_name,omitempty"`    // 从 branches.branch_name 获取（通过 residents.branch_id）
 	IsSharedUnit    *bool   `json:"is_shared_unit,omitempty"` // 从 units.is_shared_unit 获取（原 is_multi_person_room），未绑定 unit 时为 nil
-	FacilityType    *string `json:"facility_type,omitempty"`  // Share / Public / VIP（由 units.is_shared_unit + is_public 推导）
+	FacilityType    *string `json:"facility_type,omitempty"`  // Share / Public / Private（由 units.is_shared_unit + is_public 推导）
 	RoomID          *string `json:"room_id,omitempty"`
 	RoomName        *string `json:"room_name,omitempty"`
 	BedID           *string `json:"bed_id,omitempty"`
@@ -242,7 +242,7 @@ type ResidentListItemDTO struct {
 	// Note: 列表不需要 Note 字段
 }
 
-// residentListFacilityType 列表用：Share（共享）/ Public（公共）/ VIP（独享）
+// residentListFacilityType 列表用：Share（共享）/ Public（公共）/ Private（独享）
 func residentListFacilityType(shared, public sql.NullBool) *string {
 	if !shared.Valid && !public.Valid {
 		return nil
@@ -255,7 +255,7 @@ func residentListFacilityType(shared, public sql.NullBool) *string {
 		s := "Public"
 		return &s
 	}
-	s := "VIP"
+	s := "Private"
 	return &s
 }
 
@@ -277,8 +277,16 @@ type GetResidentRequest struct {
 
 // ResidentCaregiverDTO 住户护理人员分配 DTO
 type ResidentCaregiverDTO struct {
-	UserList  []UserDTO `json:"user_list,omitempty"`  // 用户详细信息列表（包含 user_id, nickname, user_account 等）
-	GroupList []string  `json:"group_list,omitempty"` // JSONB array -> []string (tag_name 列表)
+	UserList  []UserDTO         `json:"user_list,omitempty"`  // 直接绑定的 caregiver users (resident_caregivers.caregiver_id 非空)
+	GroupList []string          `json:"group_list,omitempty"` // [v1 legacy] JSONB array -> []string (tag_name)
+	TeamList  []ResidentTeamDTO `json:"team_list,omitempty"`  // v2: 通过 care team 间接关联 (resident_caregivers.care_team_id 非空)
+}
+
+// ResidentTeamDTO Care team summary used in resident assignment
+type ResidentTeamDTO struct {
+	TeamID   string `json:"team_id"`
+	TeamName string `json:"team_name"`
+	TeamKind string `json:"team_kind,omitempty"`
 }
 
 // GetResidentResponse 获取住户详情响应
@@ -775,6 +783,20 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 
+	// =============================================================================
+	// v2 short-circuit — owl_v2 schema 完全重新设计 residents：
+	//   PK = hoa INET（fd00:tenant:ff01:slot::）； tenant 通过 hoa /48 反推
+	//   spatial 关联 = resident_unit (resident_id, spatial_prefix INET, valid_to)
+	//   PHI = resident_phi (full_name_enc 等加密字段，本 list 不暴露)
+	// 业务规则保留：status 软删；按 tenant 隔离；分页；nickname 搜索
+	// 暂未实现：assigned_only / branch_only 权限过滤；service_level；is_access_enabled；search by email/phone
+	// 这些后续会话补全。原 v1 SQL 路径保留下方作 reference，永不进入。
+	// =============================================================================
+	v2Out, _, err := s.listResidentsV2(ctx, req)
+	return v2Out, err
+	//nolint:unreachable
+	// 以下 v1 dead code（保留 reference；v2 cutover 后由后续 PR 删除整段）
+
 	// 1. 参数验证和默认值
 	page := req.Page
 	if page <= 0 {
@@ -1057,6 +1079,11 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 		return nil, fmt.Errorf("resident_id is required")
 	}
 
+	// v2 short-circuit — 详见 resident_service_v2.go
+	v2Out, _, err := s.getResidentV2(ctx, req)
+	return v2Out, err
+	//nolint:unreachable
+
 	// 1. 支持通过 resident_id 或 contact_id 查询
 	actualResidentID := req.ResidentID
 	if s.db != nil {
@@ -1193,7 +1220,7 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 	var note sql.NullString
 	var canViewStatus bool
 
-	err := s.db.QueryRowContext(ctx,
+	err = s.db.QueryRowContext(ctx,
 		`SELECT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,
 		        r.status, r.service_level, r.admission_date, r.discharge_date,
 		        r.unit_id::text, r.room_id::text, r.bed_id::text,
@@ -1545,11 +1572,17 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 	if req.InherentAttributes == nil {
 		return nil, fmt.Errorf("inherent_attributes is required")
 	}
-	if req.InherentAttributes.ResidentAccount == "" {
-		return nil, fmt.Errorf("resident_account is required (each institution has its own encoding pattern)")
-	}
 	if req.InherentAttributes.Nickname == "" {
 		return nil, fmt.Errorf("nickname is required")
+	}
+
+	// v2 short-circuit — 详见 resident_service_v2.go (createResidentV2)
+	v2Out, _, err := s.createResidentV2(ctx, req)
+	return v2Out, err
+	//nolint:unreachable
+
+	if req.InherentAttributes.ResidentAccount == "" {
+		return nil, fmt.Errorf("resident_account is required (each institution has its own encoding pattern)")
 	}
 
 	// 1.1 角色权限检查：只有 Admin 和 Manager 可以创建 resident
@@ -1570,8 +1603,8 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 
 	// 1.2 验证用户角色（从数据库查询，不信任前端传递的值）
 	var userRole sql.NullString
-	err := s.db.QueryRowContext(ctx,
-		`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+	err = s.db.QueryRowContext(ctx,
+		`SELECT role FROM users WHERE tenant_id = $1::INET AND user_id::text = $2`,
 		req.TenantID, req.CurrentUserID,
 	).Scan(&userRole)
 	if err != nil {
@@ -1673,11 +1706,11 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 		if !unitExists {
 			return nil, fmt.Errorf("unit not found")
 		}
-		// VIP 单元创建时也必须带 room_id，避免下游业务因缺少 room 失败
+		// Private 单元创建时也必须带 room_id，避免下游业务因缺少 room 失败
 		var isPublic, isShared bool
 		if err := s.db.QueryRowContext(ctx, `SELECT is_public, is_shared_unit FROM units WHERE tenant_id = $1 AND unit_id = $2`, req.TenantID, unitID).Scan(&isPublic, &isShared); err == nil && !isPublic && !isShared {
 			if req.UnitRelation.RoomID == "" {
-				return nil, fmt.Errorf("VIP unit requires room_id")
+				return nil, fmt.Errorf("Private unit requires room_id")
 			}
 		}
 
@@ -2144,6 +2177,11 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 		return nil, fmt.Errorf("resident_id is required")
 	}
 
+	// v2 short-circuit — 详见 resident_service_v2.go
+	v2Out, _, err := s.updateResidentV2(ctx, req)
+	return v2Out, err
+	//nolint:unreachable
+
 	// 1. 权限检查（细粒度）
 	if req.CurrentUserRole == "Resident" {
 		// Resident: 只能更新自己
@@ -2158,7 +2196,7 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 		// Admin: 先检查 accountID 的角色是 Admin，然后允许更新所有 resident
 		var userRole sql.NullString
 		err := s.db.QueryRowContext(ctx,
-			`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+			`SELECT role FROM users WHERE tenant_id = $1::INET AND user_id::text = $2`,
 			req.TenantID, req.CurrentUserID,
 		).Scan(&userRole)
 		if err != nil {
@@ -2173,7 +2211,7 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 		// 查询 1：验证用户角色是 Manager
 		var userRole sql.NullString
 		err := s.db.QueryRowContext(ctx,
-			`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+			`SELECT role FROM users WHERE tenant_id = $1::INET AND user_id::text = $2`,
 			req.TenantID, req.CurrentUserID,
 		).Scan(&userRole)
 		if err != nil {
@@ -2663,7 +2701,7 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 					return nil, fmt.Errorf("room_id requires unit_id")
 				}
 			}
-			// Public/VIP/Share 绑定规则：Public、VIP 必须 room；Share 必须 bed
+			// Public/Private/Share 绑定规则：Public、Private 必须 room；Share 必须 bed
 			if residentUpdate.UnitID != nil && residentUpdate.UnitID.Action == domain.UpdateActionUpdate && residentUpdate.UnitID.Value != "" && s.db != nil {
 				var isPublic, isShared bool
 				err := s.db.QueryRowContext(ctx, `SELECT is_public, is_shared_unit FROM units WHERE tenant_id = $1 AND unit_id = $2`, req.TenantID, residentUpdate.UnitID.Value).Scan(&isPublic, &isShared)
@@ -2675,7 +2713,7 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 							return nil, fmt.Errorf("Share unit requires bed_id")
 						}
 					} else {
-						// Public、VIP：必须指定 room
+						// Public、Private：必须指定 room
 						if residentUpdate.RoomID == nil || residentUpdate.RoomID.Action != domain.UpdateActionUpdate || residentUpdate.RoomID.Value == "" {
 							return nil, fmt.Errorf("unit requires room_id")
 						}
@@ -2795,6 +2833,9 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 
 // DeleteResident 删除住户（软删除）
 func (s *residentService) DeleteResident(ctx context.Context, req DeleteResidentRequest) (*DeleteResidentResponse, error) {
+	v2Out, _, err := s.deleteResidentV2(ctx, req)
+	return v2Out, err
+	//nolint:unreachable
 	// ========== 1. 参数验证 ==========
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
@@ -2810,7 +2851,7 @@ func (s *residentService) DeleteResident(ctx context.Context, req DeleteResident
 
 	// 2.1 查询用户信息（不信任前端传入的数据）
 	var dbTenantID, dbRole, dbStatus string
-	err := s.db.QueryRowContext(ctx,
+	err = s.db.QueryRowContext(ctx,
 		`SELECT tenant_id::text, role, status 
 		 FROM users 
 		 WHERE user_id::text = $1`,
@@ -2967,6 +3008,10 @@ func (s *residentService) DeleteResident(ctx context.Context, req DeleteResident
 
 // ResetResidentPassword 重置住户密码
 func (s *residentService) ResetResidentPassword(ctx context.Context, req ResetResidentPasswordRequest) (*ResetResidentPasswordResponse, error) {
+	v2Out, _, err := s.resetResidentPasswordV2(req)
+	_ = ctx
+	return v2Out, err
+	//nolint:unreachable
 	// ========== 1. 参数验证 ==========
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
@@ -2982,7 +3027,7 @@ func (s *residentService) ResetResidentPassword(ctx context.Context, req ResetRe
 
 	// 2.1 查询用户信息（不信任前端传入的数据）
 	var dbTenantID, dbRole, dbStatus string
-	err := s.db.QueryRowContext(ctx,
+	err = s.db.QueryRowContext(ctx,
 		`SELECT tenant_id::text, role, status 
 		 FROM users 
 		 WHERE user_id::text = $1`,
@@ -3170,6 +3215,10 @@ func generateRandomPassword(length int) string {
 // 注意：这个 API 只能查看自己的账户设置，不允许查看其他用户的
 // 注意：联系人不能登录系统，所以不支持联系人的账户设置
 func (s *residentService) GetResidentAccountSettings(ctx context.Context, req GetResidentAccountSettingsRequest) (*GetResidentAccountSettingsResponse, error) {
+	v2Out, _, err := s.getResidentAccountSettingsV2(req)
+	_ = ctx
+	return v2Out, err
+	//nolint:unreachable
 	// 1. 权限检查：只能查看自己的账户设置
 	if req.CurrentUserID != req.ResidentID {
 		return nil, fmt.Errorf("permission denied: can only view own account settings")
@@ -3189,7 +3238,7 @@ func (s *residentService) GetResidentAccountSettings(ctx context.Context, req Ge
 	var residentAccount, nickname sql.NullString
 	var residentEmail, residentPhone sql.NullString
 
-	err := s.db.QueryRowContext(ctx,
+	err = s.db.QueryRowContext(ctx,
 		`SELECT 
 				r.resident_account,
 				COALESCE(r.nickname, '') as nickname,
@@ -3237,6 +3286,10 @@ func (s *residentService) GetResidentAccountSettings(ctx context.Context, req Ge
 // 注意：这个 API 只能更新自己的账户设置，不允许更新其他用户的
 // 注意：联系人不能登录系统，所以不支持联系人的账户设置
 func (s *residentService) UpdateResidentAccountSettings(ctx context.Context, req UpdateResidentAccountSettingsRequest) (*UpdateResidentAccountSettingsResponse, error) {
+	v2Out, _, err := s.updateResidentAccountSettingsV2(req)
+	_ = ctx
+	return v2Out, err
+	//nolint:unreachable
 	// 1. 参数验证
 	if req.TenantID == "" || req.ResidentID == "" || req.CurrentUserID == "" {
 		return nil, fmt.Errorf("tenant_id, resident_id, and current_user_id are required")
@@ -3419,6 +3472,10 @@ func (s *residentService) UpdateResidentAccountSettings(ctx context.Context, req
 
 // UpdateResidentContact 更新住户联系人信息
 func (s *residentService) UpdateResidentContact(ctx context.Context, req UpdateResidentContactStandaloneRequest) (*UpdateResidentContactResponse, error) {
+	v2Out, _, err := s.updateResidentContactV2(req)
+	_ = ctx
+	return v2Out, err
+	//nolint:unreachable
 	// 1. 参数验证
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
@@ -3441,7 +3498,7 @@ func (s *residentService) UpdateResidentContact(ctx context.Context, req UpdateR
 		// Admin: 先检查 accountID 的角色是 Admin，然后允许更新所有 contact
 		var userRole sql.NullString
 		err := s.db.QueryRowContext(ctx,
-			`SELECT role FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
+			`SELECT role FROM users WHERE tenant_id = $1::INET AND user_id::text = $2`,
 			req.TenantID, req.CurrentUserID,
 		).Scan(&userRole)
 		if err != nil {
@@ -3464,7 +3521,7 @@ func (s *residentService) UpdateResidentContact(ctx context.Context, req UpdateR
 	// 3. 检查 contact 是否存在（通过 resident_id + slot 定位）
 	// 如果不存在，使用 UpdateResidentContactFields 时会自动创建（repository 层处理）
 	var contactExists bool
-	err := s.db.QueryRowContext(ctx,
+	err = s.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM resident_contacts WHERE tenant_id = $1 AND resident_id::text = $2 AND slot = $3)`,
 		req.TenantID, req.ResidentID, req.Slot,
 	).Scan(&contactExists)

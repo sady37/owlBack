@@ -1452,7 +1452,7 @@ func unitToJSON(u *domain.Unit) map[string]any {
 		"tenant_id":     u.TenantID,
 		"unit_name":     u.UnitName,
 		"unit_property": u.UnitProperty, // 0=Home, 1=Facility
-		"unit_type":     u.UnitType,     // 0=unknown, 1=VIP, 2=Share, 3=Public
+		"unit_type":     u.UnitType,     // 0=unknown, 1=Private, 2=Share, 3=Public
 		"timezone":      u.Timezone,
 	}
 	// 返回 branch_id（前端需要 ID 来选择对象）

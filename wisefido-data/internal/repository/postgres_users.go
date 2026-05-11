@@ -16,11 +16,11 @@ import (
 // PostgresUsersRepository — owl_v2 schema 版本。
 //
 // v2 users 表关键差异（不向后兼容）：
-//   - 主键 user_id UUID 不变；租户字段 tenant_id UUID → tenant_prefix INET
-//   - 列改名：user_account → username（无 user_account_hash bytea）
-//   - 列删除：pin_hash bytea / email_hash / phone_hash / alarm_levels / alarm_channels / alarm_scope
+//   - 主键 user_id UUID 不变；租户字段 tenant_id UUID → tenant_id INET
+//   - 列改名：user_account → user_account（无 user_account_hash bytea）
+//   - 列删除：pin_hash bytea / email_hash / phone_hash / alarm_levels / alarm_channels / relegation
 //             / preferences / user_tags
-//   - 列新增：mobile_pin_hash varchar (bcrypt) / hoa inet / subject_slot / employee_code
+//   - 列新增：pin_hash varchar (bcrypt) / hoa inet / subject_slot / employee_code
 //             / hire_date / leave_date / notify_mode / work_days / work_time_*
 //   - 不再有 user_branches 关联表；branch 关系用 user_roles.role_id + role_permissions.resource_scope INET 派生
 //   - password 双层 hash：DB 存 bcrypt(sha256(plain))；输入端 user.PasswordHash 是 sha256 bytes，repo 在 INSERT 前 bcrypt
@@ -62,11 +62,11 @@ const usersFromClause = `
 
 const usersSelectCols = `
 		u.user_id::text,
-		COALESCE(host(u.tenant_prefix) || '/48', '') AS tenant_id,
-		u.username AS user_account,
+		COALESCE(host(u.tenant_id) || '/48', '') AS tenant_id,
+		u.user_account AS user_account,
 		ARRAY[]::bytea[] AS user_account_hash_placeholder,
 		COALESCE(u.password_hash, '')::bytea AS password_hash,
-		COALESCE(u.mobile_pin_hash, '')::bytea AS pin_hash,
+		COALESCE(u.pin_hash, '')::bytea AS pin_hash,
 		u.nickname,
 		u.email,
 		u.phone,
@@ -76,7 +76,7 @@ const usersSelectCols = `
 		ARRAY[]::bytea[] AS phone_hash_placeholder,
 		ARRAY[]::text[] AS alarm_levels,
 		ARRAY[]::text[] AS alarm_channels,
-		NULL::text AS alarm_scope,
+		NULL::text AS relegation,
 		u.last_login_at,
 		NULL::text AS user_tags,
 		NULL::text AS branch_id,
@@ -141,7 +141,7 @@ func (r *PostgresUsersRepository) scanUser(rs interface {
 	}
 	user.AlarmLevels = alarmLevels
 	user.AlarmChannels = alarmChannels
-	user.AlarmScope = alarmScope
+	user.Relegation = alarmScope
 	user.LastLoginAt = lastLoginAt
 	user.Tags = tags
 	user.BranchID = branchID
@@ -162,7 +162,7 @@ func (r *PostgresUsersRepository) GetUser(ctx context.Context, tenantID, userID 
 	q := `SELECT ` + usersSelectCols + ` ` + usersFromClause + ` WHERE u.user_id = $1::uuid`
 	args := []any{userID}
 	if tenantID != "" && looksLikeINETPrefix(tenantID) {
-		q += ` AND u.tenant_prefix = $2::INET`
+		q += ` AND u.tenant_id = $2::INET`
 		args = append(args, tenantID)
 	}
 	rows, err := r.db.QueryContext(ctx, q, args...)
@@ -179,15 +179,15 @@ func (r *PostgresUsersRepository) GetUser(ctx context.Context, tenantID, userID 
 	return r.scanUser(rows)
 }
 
-// GetUserByAccount 按 (tenant, username) 查。
+// GetUserByAccount 按 (tenant, user_account) 查。
 func (r *PostgresUsersRepository) GetUserByAccount(ctx context.Context, tenantID, account string) (*domain.User, error) {
 	if account == "" {
 		return nil, sql.ErrNoRows
 	}
-	q := `SELECT ` + usersSelectCols + ` ` + usersFromClause + ` WHERE u.username = $1`
+	q := `SELECT ` + usersSelectCols + ` ` + usersFromClause + ` WHERE u.user_account = $1`
 	args := []any{account}
 	if tenantID != "" && looksLikeINETPrefix(tenantID) {
-		q += ` AND u.tenant_prefix = $2::INET`
+		q += ` AND u.tenant_id = $2::INET`
 		args = append(args, tenantID)
 	}
 	q += ` LIMIT 1`
@@ -206,7 +206,7 @@ func (r *PostgresUsersRepository) GetUserByAccount(ctx context.Context, tenantID
 }
 
 // GetUserByEmail v2 schema 删除了 email_hash 列；hash 查询不再支持。
-// 兼容期：返回 sql.ErrNoRows，让 caller fallback 到 username 查询路径。
+// 兼容期：返回 sql.ErrNoRows，让 caller fallback 到 user_account 查询路径。
 func (r *PostgresUsersRepository) GetUserByEmail(ctx context.Context, tenantID string, emailHash []byte) (*domain.User, error) {
 	return nil, sql.ErrNoRows
 }
@@ -228,7 +228,7 @@ func (r *PostgresUsersRepository) ListUsers(ctx context.Context, tenantID string
 	argIdx := 1
 
 	if tenantID != "" && looksLikeINETPrefix(tenantID) {
-		where = append(where, fmt.Sprintf("u.tenant_prefix = $%d::INET", argIdx))
+		where = append(where, fmt.Sprintf("u.tenant_id = $%d::INET", argIdx))
 		args = append(args, tenantID)
 		argIdx++
 	}
@@ -245,7 +245,7 @@ func (r *PostgresUsersRepository) ListUsers(ctx context.Context, tenantID string
 	if filters.Search != "" {
 		pat := "%" + strings.ToLower(filters.Search) + "%"
 		where = append(where, fmt.Sprintf(`(
-			LOWER(u.username) LIKE $%d OR
+			LOWER(u.user_account) LIKE $%d OR
 			LOWER(COALESCE(u.nickname,'')) LIKE $%d OR
 			LOWER(COALESCE(u.email,'')) LIKE $%d OR
 			LOWER(COALESCE(u.phone,'')) LIKE $%d
@@ -274,7 +274,7 @@ func (r *PostgresUsersRepository) ListUsers(ctx context.Context, tenantID string
 	offset := (page - 1) * size
 
 	listQ := `SELECT ` + usersSelectCols + ` ` + usersFromClause + ` ` + whereClause +
-		fmt.Sprintf(` ORDER BY u.username ASC LIMIT $%d OFFSET $%d`, argIdx, argIdx+1)
+		fmt.Sprintf(` ORDER BY u.user_account ASC LIMIT $%d OFFSET $%d`, argIdx, argIdx+1)
 	args = append(args, size, offset)
 
 	rows, err := r.db.QueryContext(ctx, listQ, args...)
@@ -304,8 +304,8 @@ func (r *PostgresUsersRepository) ListUsers(ctx context.Context, tenantID string
 // CreateUser 在 v2 users 表插入新员工。
 //
 // 字段映射：
-//   - tenantID → tenant_prefix INET（必填；非 INET 字符串拒绝）
-//   - user.UserAccount → username
+//   - tenantID → tenant_id INET（必填；非 INET 字符串拒绝）
+//   - user.UserAccount → user_account
 //   - user.PasswordHash bytea (sha256 hex bytes from frontend) → bcrypt → password_hash varchar
 //   - user.Nickname/Email/Phone/Role/Status → 同名列
 //   - 其它 v1-only 字段（PinHash bytea / AlarmLevels / Tags / Preferences）忽略
@@ -314,7 +314,7 @@ func (r *PostgresUsersRepository) CreateUser(ctx context.Context, tenantID strin
 		return "", fmt.Errorf("user is required")
 	}
 	if user.UserAccount == "" {
-		return "", fmt.Errorf("username is required")
+		return "", fmt.Errorf("user_account is required")
 	}
 	if tenantID != "" && !looksLikeINETPrefix(tenantID) {
 		return "", fmt.Errorf("tenant_id %q is not a v2 INET prefix", tenantID)
@@ -323,7 +323,7 @@ func (r *PostgresUsersRepository) CreateUser(ctx context.Context, tenantID strin
 	// 双层 hash + 检索：
 	//   user.PasswordHash 由调用方传入 = sha256(plaintext) bytes（前端约定形态）
 	//   - password_hash      = bcrypt(sha256_hex)  -> 真正登录验证（抗暴力）
-	//   - password_check_hash = sha256_bytes        -> (username, password_check_hash) 反向定位 + admin 类全局唯一
+	//   - password_check_hash = sha256_bytes        -> (user_account, password_check_hash) 反向定位 + admin 类全局唯一
 	var passwordHash sql.NullString
 	var passwordCheckHash []byte
 	if len(user.PasswordHash) > 0 {
@@ -359,13 +359,13 @@ func (r *PostgresUsersRepository) CreateUser(ctx context.Context, tenantID strin
 
 	nickname := nullToString(user.Nickname)
 	if nickname == "" {
-		// v2 schema NOT NULL；用 username 兜底
+		// v2 schema NOT NULL；用 user_account 兜底
 		nickname = user.UserAccount
 	}
 
 	var userID string
 	err := r.db.QueryRowContext(ctx, `
-		INSERT INTO users (tenant_prefix, username, password_hash, password_check_hash, mobile_pin_hash,
+		INSERT INTO users (tenant_id, user_account, password_hash, password_check_hash, pin_hash,
 		                   nickname, email, phone, role, status)
 		VALUES ($1::INET, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''), $10)
 		RETURNING user_id::text
@@ -380,11 +380,18 @@ func (r *PostgresUsersRepository) CreateUser(ctx context.Context, tenantID strin
 	).Scan(&userID)
 	if err != nil {
 		if isUniqueViolation(err) {
-			// (tenant_prefix, username) 撞 → 重名；password_check_hash 撞（admin 类）→ 全局密码冲突
-			if strings.Contains(err.Error(), "uniq_admin_password_check") {
+			msg := err.Error()
+			switch {
+			case strings.Contains(msg, "uniq_admin_password_check"):
 				return "", fmt.Errorf("password collision: another tenant admin uses the same plaintext password")
+			case strings.Contains(msg, "uniq_users_tenant_email"):
+				return "", fmt.Errorf("email already in use: %s", nullToString(user.Email))
+			case strings.Contains(msg, "uniq_users_tenant_phone"):
+				return "", fmt.Errorf("phone already in use: %s", nullToString(user.Phone))
+			default:
+				// (tenant_id, user_account) 撞 → 重名
+				return "", fmt.Errorf("user_account already exists in this tenant: %q", user.UserAccount)
 			}
-			return "", fmt.Errorf("username already exists in this tenant: %q", user.UserAccount)
 		}
 		return "", fmt.Errorf("failed to create user: %w", err)
 	}
@@ -405,7 +412,7 @@ func (r *PostgresUsersRepository) UpdateUser(ctx context.Context, tenantID, user
 	argIdx := 2
 
 	if user.UserAccount != "" {
-		updates = append(updates, fmt.Sprintf("username = $%d", argIdx))
+		updates = append(updates, fmt.Sprintf("user_account = $%d", argIdx))
 		args = append(args, user.UserAccount)
 		argIdx++
 	}
@@ -427,7 +434,7 @@ func (r *PostgresUsersRepository) UpdateUser(ctx context.Context, tenantID, user
 		if err != nil {
 			return fmt.Errorf("bcrypt pin: %w", err)
 		}
-		updates = append(updates, fmt.Sprintf("mobile_pin_hash = $%d", argIdx))
+		updates = append(updates, fmt.Sprintf("pin_hash = $%d", argIdx))
 		args = append(args, string(bc))
 		argIdx++
 	}
@@ -465,16 +472,23 @@ func (r *PostgresUsersRepository) UpdateUser(ctx context.Context, tenantID, user
 
 	q := fmt.Sprintf(`UPDATE users SET %s WHERE user_id = $1::uuid`, strings.Join(updates, ", "))
 	if tenantID != "" && looksLikeINETPrefix(tenantID) {
-		q += fmt.Sprintf(` AND tenant_prefix = $%d::INET`, argIdx)
+		q += fmt.Sprintf(` AND tenant_id = $%d::INET`, argIdx)
 		args = append(args, tenantID)
 	}
 	res, err := r.db.ExecContext(ctx, q, args...)
 	if err != nil {
 		if isUniqueViolation(err) {
-			if strings.Contains(err.Error(), "uniq_admin_password_check") {
+			msg := err.Error()
+			switch {
+			case strings.Contains(msg, "uniq_admin_password_check"):
 				return fmt.Errorf("password collision: another tenant admin uses the same plaintext password")
+			case strings.Contains(msg, "uniq_users_tenant_email"):
+				return fmt.Errorf("email already in use: %s", nullToString(user.Email))
+			case strings.Contains(msg, "uniq_users_tenant_phone"):
+				return fmt.Errorf("phone already in use: %s", nullToString(user.Phone))
+			default:
+				return fmt.Errorf("user_account already exists in this tenant: %q", user.UserAccount)
 			}
-			return fmt.Errorf("username already exists in this tenant: %q", user.UserAccount)
 		}
 		return fmt.Errorf("failed to update user: %w", err)
 	}
@@ -492,7 +506,7 @@ func (r *PostgresUsersRepository) DeleteUser(ctx context.Context, tenantID, user
 	q := `UPDATE users SET status = 'deleted', updated_at = NOW() WHERE user_id = $1::uuid`
 	args := []any{userID}
 	if tenantID != "" && looksLikeINETPrefix(tenantID) {
-		q += ` AND tenant_prefix = $2::INET`
+		q += ` AND tenant_id = $2::INET`
 		args = append(args, tenantID)
 	}
 	res, err := r.db.ExecContext(ctx, q, args...)
@@ -527,7 +541,7 @@ func (r *PostgresUsersRepository) CheckEmailUniqueness(ctx context.Context, tena
 	q := `SELECT EXISTS (SELECT 1 FROM users WHERE LOWER(email) = LOWER($1)`
 	if tenantID != "" && looksLikeINETPrefix(tenantID) {
 		args = append(args, tenantID)
-		q += fmt.Sprintf(` AND tenant_prefix = $%d::INET`, len(args))
+		q += fmt.Sprintf(` AND tenant_id = $%d::INET`, len(args))
 	}
 	if excludeUserID != "" {
 		args = append(args, excludeUserID)
@@ -553,7 +567,7 @@ func (r *PostgresUsersRepository) CheckPhoneUniqueness(ctx context.Context, tena
 	q := `SELECT EXISTS (SELECT 1 FROM users WHERE phone = $1`
 	if tenantID != "" && looksLikeINETPrefix(tenantID) {
 		args = append(args, tenantID)
-		q += fmt.Sprintf(` AND tenant_prefix = $%d::INET`, len(args))
+		q += fmt.Sprintf(` AND tenant_id = $%d::INET`, len(args))
 	}
 	if excludeUserID != "" {
 		args = append(args, excludeUserID)

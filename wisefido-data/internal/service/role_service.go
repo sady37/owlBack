@@ -144,20 +144,16 @@ func (s *RoleService) CreateRole(ctx context.Context, req CreateRoleRequest) (*C
 		return nil, fmt.Errorf("role_code is required")
 	}
 
-	// 构建描述（两行格式：第一行显示名称，第二行详细描述）
+	// role_name / description 独立列；不再拼接
 	displayName := strings.TrimSpace(req.DisplayName)
 	if displayName == "" {
 		displayName = req.RoleCode
 	}
-	fullDesc := displayName
-	if strings.TrimSpace(req.Description) != "" {
-		fullDesc = fullDesc + "\n" + strings.TrimSpace(req.Description)
-	}
 
-	// 创建角色领域模型
 	role := &domain.Role{
 		RoleCode:    req.RoleCode,
-		Description: fullDesc,
+		RoleName:    displayName,
+		Description: strings.TrimSpace(req.Description),
 		IsSystem:    false,
 		IsActive:    sql.NullBool{Bool: true, Valid: true},
 	}
@@ -275,33 +271,16 @@ func (s *RoleService) UpdateRole(ctx context.Context, req UpdateRoleRequest) err
 		}
 	}
 
-	// 更新显示名称和描述
-	if req.DisplayName != nil || req.Description != nil {
-		displayName := role.RoleCode
-		if req.DisplayName != nil {
-			displayName = strings.TrimSpace(*req.DisplayName)
-			if displayName == "" {
-				displayName = role.RoleCode
-			}
-		} else {
-			// 从现有描述中提取显示名称
-			if p := strings.SplitN(role.Description, "\n", 2); len(p) > 0 && strings.TrimSpace(p[0]) != "" {
-				displayName = strings.TrimSpace(p[0])
-			}
+	// 更新显示名称和描述：role_name / description 独立列，不再拼接
+	if req.DisplayName != nil {
+		dn := strings.TrimSpace(*req.DisplayName)
+		if dn == "" {
+			dn = role.RoleCode
 		}
-
-		desc := ""
-		if req.Description != nil {
-			desc = strings.TrimSpace(*req.Description)
-		} else if len(strings.SplitN(role.Description, "\n", 2)) > 1 {
-			desc = strings.TrimSpace(strings.SplitN(role.Description, "\n", 2)[1])
-		}
-
-		fullDesc := displayName
-		if desc != "" {
-			fullDesc = fullDesc + "\n" + desc
-		}
-		role.Description = fullDesc
+		role.RoleName = dn
+	}
+	if req.Description != nil {
+		role.Description = strings.TrimSpace(*req.Description)
 	}
 
 	return s.roleRepo.UpdateRole(ctx, req.RoleID, role)
@@ -319,10 +298,9 @@ func (s *RoleService) roleToItem(role *domain.Role) RoleItem {
 		item.TenantID = &role.TenantID.String
 	}
 
-	// 提取显示名称和描述
-	if p := strings.SplitN(role.Description, "\n", 2); len(p) > 0 && strings.TrimSpace(p[0]) != "" {
-		item.DisplayName = strings.TrimSpace(p[0])
-	} else {
+	// 显示名直接取 role_name 列；description 是 body 部分
+	item.DisplayName = role.RoleName
+	if item.DisplayName == "" {
 		item.DisplayName = role.RoleCode
 	}
 	item.Description = role.Description

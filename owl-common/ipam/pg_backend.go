@@ -84,12 +84,12 @@ func (p *PGBackend) AllocateBranch(ctx context.Context, tenant netip.Prefix, att
 		return netip.Prefix{}, err
 	}
 
-	// branch_slot 1..254：0 = unbound 哨兵（device.spatial_addr byte 6=0 表示未绑 branch）；
+	// branch_slot 1..254：0 = unbound 哨兵（device.device_ipv6 byte 6=0 表示未绑 branch）；
 	// 0xFF (255) 保留作 subject namespace（resident HoA / caregiver 等）
 	var nextSlot int
 	err = tx.QueryRowContext(ctx, `
 		SELECT COALESCE(MAX(branch_slot), 0) + 1
-		FROM branches WHERE spatial_prefix << $1::INET
+		FROM branches WHERE branch_id << $1::INET
 	`, tenant.String()).Scan(&nextSlot)
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("query MAX branch_slot: %w", err)
@@ -104,7 +104,7 @@ func (p *PGBackend) AllocateBranch(ctx context.Context, tenant netip.Prefix, att
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO branches (spatial_prefix, branch_slot, branch_name, timezone, address)
+		INSERT INTO branches (branch_id, branch_slot, branch_name, timezone, address)
 		VALUES ($1::INET, $2, $3, NULLIF($4, ''), NULLIF($5, ''))
 	`, branchPrefix.String(), nextSlot, attrs.Name, attrs.Timezone, attrs.Address)
 	if err != nil {
@@ -148,7 +148,7 @@ func (p *PGBackend) AllocateSite(ctx context.Context, branch netip.Prefix, build
 
 	// site 是显式指定 (building, floor)，不是 MAX+1 自动分配；冲突直接报
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO sites (spatial_prefix, site_slot, building, floor, site_name, address)
+		INSERT INTO sites (site_id, site_slot, building, floor, site_name, address)
 		VALUES ($1::INET, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''))
 	`, sitePrefix.String(), siteSlot, building, floor, attrs.Name, attrs.Address)
 	if err != nil {
@@ -187,7 +187,7 @@ func (p *PGBackend) AllocateUnit(ctx context.Context, site netip.Prefix, attrs U
 	var nextSlot int
 	err = tx.QueryRowContext(ctx, `
 		SELECT COALESCE(MAX(unit_slot), 0) + 1
-		FROM units WHERE spatial_prefix << $1::INET
+		FROM units WHERE unit_id << $1::INET
 	`, site.String()).Scan(&nextSlot)
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("query MAX unit_slot: %w", err)
@@ -202,7 +202,7 @@ func (p *PGBackend) AllocateUnit(ctx context.Context, site netip.Prefix, attrs U
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO units (spatial_prefix, unit_slot, unit_name, unit_type,
+		INSERT INTO units (unit_id, unit_slot, unit_name, unit_type,
 		                   unit_layout_type, is_public, is_shared_unit, timezone)
 		VALUES ($1::INET, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6, $7, NULLIF($8, ''))
 	`, unitPrefix.String(), nextSlot, attrs.Name, attrs.UnitType,
@@ -243,7 +243,7 @@ func (p *PGBackend) AllocateRoom(ctx context.Context, unit netip.Prefix, attrs R
 	var nextSlot int
 	err = tx.QueryRowContext(ctx, `
 		SELECT COALESCE(MAX(room_slot), 0) + 1
-		FROM rooms WHERE spatial_prefix << $1::INET
+		FROM rooms WHERE room_id << $1::INET
 	`, unit.String()).Scan(&nextSlot)
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("query MAX room_slot: %w", err)
@@ -258,7 +258,7 @@ func (p *PGBackend) AllocateRoom(ctx context.Context, unit netip.Prefix, attrs R
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO rooms (spatial_prefix, room_slot, room_name, room_type, is_primary)
+		INSERT INTO rooms (room_id, room_slot, room_name, room_type, is_primary)
 		VALUES ($1::INET, $2, $3, NULLIF($4, ''), $5)
 	`, roomPrefix.String(), nextSlot, attrs.Name, attrs.RoomType, attrs.IsPrimary)
 	if err != nil {
@@ -297,7 +297,7 @@ func (p *PGBackend) AllocateBed(ctx context.Context, room netip.Prefix, attrs Be
 	var nextSlot int
 	err = tx.QueryRowContext(ctx, `
 		SELECT COALESCE(MAX(bed_slot), 0) + 1
-		FROM beds WHERE spatial_prefix << $1::INET
+		FROM beds WHERE bed_id << $1::INET
 	`, room.String()).Scan(&nextSlot)
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("query MAX bed_slot: %w", err)
@@ -312,7 +312,7 @@ func (p *PGBackend) AllocateBed(ctx context.Context, room netip.Prefix, attrs Be
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO beds (spatial_prefix, bed_slot, bed_name, description)
+		INSERT INTO beds (bed_id, bed_slot, bed_name, description)
 		VALUES ($1::INET, $2, $3, NULLIF($4, ''))
 	`, bedPrefix.String(), nextSlot, attrs.Name, attrs.Description)
 	if err != nil {
@@ -346,9 +346,9 @@ func (p *PGBackend) RegisterDevice(ctx context.Context, base netip.Prefix, devic
 	// device 是 stateless 派生，理论上无并发冲突；用 INSERT ... ON CONFLICT DO NOTHING + 检查行数
 	// PG INET cast 对 IPv6 host address 默认 /128 (无需显式 suffix)
 	res, err := p.db.ExecContext(ctx, `
-		INSERT INTO devices (spatial_addr, device_id, monitoring_enabled)
+		INSERT INTO devices (device_ipv6, device_id, monitoring_enabled)
 		VALUES ($1::INET, $2, TRUE)
-		ON CONFLICT (spatial_addr) DO NOTHING
+		ON CONFLICT (device_ipv6) DO NOTHING
 	`, addr.String(), deviceID)
 	if err != nil {
 		return netip.Addr{}, fmt.Errorf("insert device: %w", err)
@@ -357,7 +357,7 @@ func (p *PGBackend) RegisterDevice(ctx context.Context, base netip.Prefix, devic
 	if rows == 0 {
 		// 已存在 — 校验绑定的 device_id 一致
 		var existing string
-		err := p.db.QueryRowContext(ctx, `SELECT device_id::text FROM devices WHERE spatial_addr = $1::INET`, addr.String()).Scan(&existing)
+		err := p.db.QueryRowContext(ctx, `SELECT device_id::text FROM devices WHERE device_ipv6 = $1::INET`, addr.String()).Scan(&existing)
 		if err != nil {
 			return netip.Addr{}, fmt.Errorf("read existing device: %w", err)
 		}
@@ -382,7 +382,7 @@ func (p *PGBackend) LookupTenant(ctx context.Context, tenant netip.Prefix) (*Ten
 	var contactName, contactEmail, contactPhone sql.NullString
 	err := p.db.QueryRowContext(ctx, `
 		SELECT tenant_slot, tenant_name, timezone, contact_name, contact_email, contact_phone
-		FROM tenants WHERE spatial_prefix = $1::INET
+		FROM tenants WHERE tenant_id = $1::INET
 	`, tenant.String()).Scan(&t.Slot, &t.Name, &t.Timezone, &contactName, &contactEmail, &contactPhone)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

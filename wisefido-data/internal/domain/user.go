@@ -33,7 +33,7 @@ type User struct {
 	// 告警设置
 	AlarmLevels   pq.StringArray `db:"alarm_levels"`   // nullable, VARCHAR[]
 	AlarmChannels pq.StringArray `db:"alarm_channels"` // nullable, VARCHAR[]
-	AlarmScope    sql.NullString `db:"alarm_scope"`    // nullable
+	Relegation    sql.NullString `db:"relegation"`    // nullable
 
 	// 登录和标签
 	LastLoginAt sql.NullTime   `db:"last_login_at"` // nullable

@@ -61,7 +61,6 @@ type ListDevicesRequest struct {
 	TenantID       string   // 必填（SystemAdmin 查看所有设备时，此字段仍需要但会被忽略）
 	IsSystemAdmin  bool     // SystemAdmin 查看所有租户的设备
 	Status         []string // 可选：设备状态过滤（online, offline, error）
-	BusinessAccess string   // 可选：业务访问权限（pending, approved, rejected）
 	DeviceType     string   // 可选：设备类型
 	SearchType     string   // 可选：搜索类型（device_name, device_uid）
 	SearchKeyword  string   // 可选：搜索关键词
@@ -97,7 +96,6 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 	// 3. 构建过滤器
 	filters := repository.DeviceFilters{
 		Status:         statuses,
-		BusinessAccess: strings.TrimSpace(req.BusinessAccess),
 		DeviceType:     strings.TrimSpace(req.DeviceType),
 		SearchType:     strings.TrimSpace(req.SearchType),
 		SearchKeyword:  strings.TrimSpace(req.SearchKeyword),
@@ -275,7 +273,7 @@ type UpdateDeviceRequest struct {
 	UpdateBoundRoomID bool           // 是否更新 bound_room_id（即使为 null）
 	UpdateBoundBedID  bool           // 是否更新 bound_bed_id（即使为 null）
 	// 标记哪些字段在 payload 中（用于部分更新）
-	UpdateBusinessAccess    bool // 是否更新 business_access
+	UpdateAccess    bool // 是否更新 business_access
 	UpdateMonitoringEnabled bool // 是否更新 monitoring_enabled
 }
 
@@ -306,7 +304,7 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 	// Service 层只验证 bound_room_id 和 bound_bed_id 的逻辑
 
 	// 4. 调用 Repository（传递更新标志）
-	if err := s.devicesRepo.UpdateDeviceWithFlags(ctx, req.TenantID, req.DeviceID, req.Device, req.UpdateBoundRoomID, req.UpdateBoundBedID, req.UpdateBusinessAccess, req.UpdateMonitoringEnabled); err != nil {
+	if err := s.devicesRepo.UpdateDeviceWithFlags(ctx, req.TenantID, req.DeviceID, req.Device, req.UpdateBoundRoomID, req.UpdateBoundBedID, req.UpdateAccess, req.UpdateMonitoringEnabled); err != nil {
 		s.logger.Error("UpdateDevice failed",
 			zap.String("tenant_id", req.TenantID),
 			zap.String("device_id", req.DeviceID),

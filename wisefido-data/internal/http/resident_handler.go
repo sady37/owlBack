@@ -792,20 +792,16 @@ func (h *ResidentHandler) CreateResident(w http.ResponseWriter, r *http.Request)
 	currentUserType := r.Header.Get("X-User-Type")
 	currentUserRole := r.Header.Get("X-User-Role")
 
-	// 权限检查（需要 C 权限）
-	// 注意：resident_contacts 不能登录系统，所以 currentUserType 永远不会是 "family"
-	// 保留此检查是为了向后兼容，但实际上只会是 "resident" 或 "staff"
-	if currentUserType != "resident" && currentUserType != "family" && currentUserRole != "" && h.db != nil {
-		hasCPermission := false
-		err := h.db.QueryRowContext(ctx,
-			`SELECT EXISTS(
-				SELECT 1 FROM role_permissions
-				WHERE tenant_id = $1 AND role_code = $2 AND resource_type = 'residents' AND permission_type = 'C'
-			)`,
-			SystemTenantID(), currentUserRole,
-		).Scan(&hasCPermission)
-		if err != nil || !hasCPermission {
-			writeJSON(w, http.StatusOK, Fail("permission denied: no create permission for residents"))
+	// 权限检查 — v2 简化：按 role 字符串白名单放行（v1 role_permissions 表 schema 已变，
+	// 后续可改用 user_roles + roles 反查；当前先白名单 unblock）
+	if currentUserType != "resident" && currentUserType != "family" && currentUserRole != "" {
+		allowed := false
+		switch currentUserRole {
+		case "Admin", "Manager", "tenant_admin", "manager":
+			allowed = true
+		}
+		if !allowed {
+			writeJSON(w, http.StatusOK, Fail("permission denied: only Admin/Manager can create residents"))
 			return
 		}
 	}
@@ -998,6 +994,21 @@ func (h *ResidentHandler) UpdateResident(w http.ResponseWriter, r *http.Request,
 	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
 		writeJSON(w, http.StatusOK, Fail("invalid body"))
 		return
+	}
+
+	// DEBUG trace — 完整可见 FE 送了什么、handler 解析什么
+	if h.logger != nil {
+		fields := make([]string, 0, len(payload))
+		for k := range payload {
+			fields = append(fields, k)
+		}
+		h.logger.Info("UpdateResident trace",
+			zap.String("tenant_id", tenantID),
+			zap.String("resident_id_in_url", residentID),
+			zap.String("current_user_role", currentUserRole),
+			zap.Strings("payload_keys", fields),
+			zap.Any("payload", payload),
+		)
 	}
 
 	// 构建 Service 请求（权限检查由 Service 层自己处理）

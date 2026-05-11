@@ -29,7 +29,7 @@ type Backend interface {
 	AllocateRoom(ctx context.Context, unit netip.Prefix, attrs RoomAttrs) (netip.Prefix, error)
 	AllocateBed(ctx context.Context, room netip.Prefix, attrs BedAttrs) (netip.Prefix, error)
 
-	// RegisterDevice 派生 device /128 spatial_addr (= base + hash(device_uid))
+	// RegisterDevice 派生 device /128 device_ipv6 (= base + hash(device_uid))
 	// 并写入 owl_v2.devices 表。base 通常是 bed /96，少数公共区设备用 unit /80 或 room /88。
 	// device_id 必须先在 device_factory_meta 中已存在（device 出厂导入时入库）。
 	RegisterDevice(ctx context.Context, base netip.Prefix, deviceID, deviceUID string) (netip.Addr, error)

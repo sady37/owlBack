@@ -130,7 +130,7 @@ type Device struct {
 	FirmwareVersion   sql.NullString `json:"-"`
 	MCUModel          sql.NullString `json:"-"`
 	Status            string         `json:"status"`
-	BusinessAccess    string         `json:"business_access"`
+	Access            bool           `json:"access"`
 	MonitoringEnabled bool           `json:"monitoring_enabled"`
 	UnitID            sql.NullString `json:"-"`
 	BoundRoomID       sql.NullString `json:"-"`
@@ -145,7 +145,7 @@ func (d Device) ToJSON() map[string]any {
 		"device_uid":         d.DeviceUID,
 		"device_name":        d.DeviceName,
 		"status":             d.Status,
-		"business_access":    d.BusinessAccess,
+		"access":             d.Access,
 		"monitoring_enabled": d.MonitoringEnabled,
 	}
 	if d.DeviceModel.Valid {

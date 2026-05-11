@@ -13,7 +13,8 @@ type Role struct {
 
 	// 角色信息
 	RoleCode    string `db:"role_code"`    // NOT NULL: 角色代码，用于程序引用
-	Description string `db:"description"`  // NOT NULL: 两行格式，第一行角色名称，第二行详细描述
+	RoleName    string `db:"role_name"`    // NOT NULL: 显示名称（独立列）
+	Description string `db:"description"`  // 详细描述 body（不含显示名前缀）
 
 	// 系统角色标识
 	IsSystem bool `db:"is_system"` // NOT NULL DEFAULT FALSE: 是否为系统预定义角色

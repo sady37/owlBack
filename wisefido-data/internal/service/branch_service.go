@@ -69,8 +69,9 @@ type BranchItem struct {
 	BranchID    string               `json:"branch_id"`
 	TenantID    string               `json:"tenant_id"`
 	BranchName  string               `json:"branch_name"`
-	Users       []BranchUserItem     `json:"users,omitempty"`     // 该 branch_id 下的所有 user（id + account）
-	Units       []BranchUnitItem     `json:"units,omitempty"`     // 该 branch_id 下的所有 unit（id + name）
+	Timezone    string               `json:"timezone,omitempty"` // IANA tz name；空 = 继承 tenant.timezone
+	Users       []BranchUserItem     `json:"users,omitempty"`    // 该 branch_id 下的所有 user（id + account）
+	Units       []BranchUnitItem     `json:"units,omitempty"`    // 该 branch_id 下的所有 unit（id + name）
 	Residents   []BranchResidentItem `json:"residents,omitempty"` // 该 branch_id 下的所有 resident（id + nickname）
 	Description string               `json:"description,omitempty"`
 	CreatedAt   string               `json:"created_at,omitempty"`
@@ -191,6 +192,7 @@ func (s *BranchService) branchToItem(branch *domain.Branch) BranchItem {
 		BranchID:   branch.BranchID,
 		TenantID:   branch.TenantID,
 		BranchName: branch.BranchName,
+		Timezone:   branch.Timezone,
 		Users:      []BranchUserItem{},
 		Units:      []BranchUnitItem{},
 		Residents:  []BranchResidentItem{},
@@ -310,6 +312,7 @@ type CreateBranchRequest struct {
 	TenantID    string
 	BranchName  string
 	Description string
+	Timezone    string // IANA tz name；空 = 继承 tenant.timezone
 }
 
 // CreateBranchResponse 创建院区响应
@@ -334,6 +337,7 @@ func (s *BranchService) CreateBranch(ctx context.Context, req CreateBranchReques
 	// 创建院区领域模型
 	branch := &domain.Branch{
 		BranchName: branchName,
+		Timezone:   strings.TrimSpace(req.Timezone),
 	}
 	if req.Description != "" {
 		branch.Description = sql.NullString{String: strings.TrimSpace(req.Description), Valid: true}
@@ -411,6 +415,7 @@ type UpdateBranchRequest struct {
 	BranchID    string
 	BranchName  *string
 	Description *string
+	Timezone    *string // IANA tz name；空字符串 = 清空（继承 tenant.timezone）
 	Delete      *bool
 }
 
@@ -468,6 +473,22 @@ func (s *BranchService) UpdateBranch(ctx context.Context, req UpdateBranchReques
 			update.Description = &domain.UpdateString{
 				Action: domain.UpdateActionUpdate,
 				Value:  desc,
+			}
+		}
+	}
+
+	// 处理 timezone
+	if req.Timezone != nil {
+		tz := strings.TrimSpace(*req.Timezone)
+		if tz == "" {
+			update.Timezone = &domain.UpdateString{
+				Action: domain.UpdateActionDelete,
+				Value:  "",
+			}
+		} else {
+			update.Timezone = &domain.UpdateString{
+				Action: domain.UpdateActionUpdate,
+				Value:  tz,
 			}
 		}
 	}

@@ -86,7 +86,7 @@ func (p *AllowedCardIDsProviderImpl) GetAllowedCardIDsByBranches(ctx context.Con
 }
 
 // GetCardList 统一入口，返回 *CardList
-// alarm_scope 和 role 从 DB (usersRepo.GetUser) 获取，不需外部传入
+// relegation 和 role 从 DB (usersRepo.GetUser) 获取，不需外部传入
 func (p *AllowedCardIDsProviderImpl) GetCardList(ctx context.Context, tenantID, userID, userType string) (*CardList, error) {
 	if userType == "resident" {
 		return p.filterCardsForResident(ctx, userID, tenantID)
@@ -182,7 +182,7 @@ func (p *AllowedCardIDsProviderImpl) ActiveBedcardIDsByUnitShared(ctx context.Co
 	return &CardList{UserID: residentID, TenantID: tenantID, CardsByBranch: byBranch}, nil
 }
 
-// filterCardsForStaff 按 users.alarm_scope 直接查 DB，返回 *CardList
+// filterCardsForStaff 按 users.relegation 直接查 DB，返回 *CardList
 // ALL / Admin = 该 tenant 全部卡片
 // ASSIGNED_ONLY = 仅分配的住户关联卡片
 // BRANCH = 仅所在院区的卡片
@@ -196,8 +196,8 @@ func (p *AllowedCardIDsProviderImpl) filterCardsForStaff(ctx context.Context, us
 	}
 
 	scope := ""
-	if user.AlarmScope.Valid && user.AlarmScope.String != "" {
-		scope = user.AlarmScope.String
+	if user.Relegation.Valid && user.Relegation.String != "" {
+		scope = user.Relegation.String
 	}
 	if user.Role == "Admin" || scope == "ALL" {
 		return p.filterTenantCards(ctx, tenantID, userID)

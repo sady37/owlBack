@@ -100,7 +100,7 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		// D-001b 已登录 session tenant 状态门槛：tenant 被 suspend/delete 后立刻拒绝旧 token。
-		// 例外：platform_admin（SystemAdmin）/ 无 tenant_prefix 的 platform-level 用户不受限制。
+		// 例外：platform_admin（SystemAdmin）/ 无 tenant_id 的 platform-level 用户不受限制。
 		if m.tenantCache != nil && session.TenantPrefix != "" && session.Role != "SystemAdmin" {
 			status := m.tenantCache.Get(r.Context(), session.TenantPrefix)
 			if status != "active" {
@@ -116,7 +116,7 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		r.Header.Set("X-User-Role", session.Role)
 		// v2 IPv6 spatial 注入（resident/caregiver 才有 HoA；admin/staff 空）
 		if session.TenantPrefix != "" {
-			r.Header.Set("X-Tenant-Prefix", session.TenantPrefix)
+			r.Header.Set("X-Tenant-Id", session.TenantPrefix)
 		}
 		if session.HoA != "" {
 			r.Header.Set("X-User-HoA", session.HoA)

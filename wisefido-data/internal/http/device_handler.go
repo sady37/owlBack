@@ -58,10 +58,10 @@ func (h *DeviceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ResetDevicePrefix 解绑 device 到指定层级（清零 spatial_addr 字节段，保留 MAC）。
-// 路径：POST /admin/api/v1/devices/{spatial_addr}/reset?layer=branch|site|unit|room|bed
+// ResetDevicePrefix 解绑 device 到指定层级（清零 device_ipv6 字节段，保留 MAC）。
+// 路径：POST /admin/api/v1/devices/{device_ipv6}/reset?layer=branch|site|unit|room|bed
 // 设计说明详见 memory/device_unbind_via_prefix_reset.md：
-//   - spatial_addr (PK /128) 不删行；UPDATE 清零 [byte_start..11]，bytes 12-15 (MAC) 保留
+//   - device_ipv6 (PK /128) 不删行；UPDATE 清零 [byte_start..11]，bytes 12-15 (MAC) 保留
 //   - 权限：调用者 role.scope_prefix_len 必须 ≤ byte_start*8（不能清零 scope 之外的字节）
 //   - SQL 集中校验：reset_device_prefix(addr, session_prefix, session_masklen, layer)
 //   - 触发器已放宽：unbound device 落在 branch /56 池内合法
@@ -71,12 +71,12 @@ func (h *DeviceHandler) ResetDevicePrefix(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// 1. 解析 spatial_addr from path: /admin/api/v1/devices/{addr}/reset
+	// 1. 解析 device_ipv6 from path: /admin/api/v1/devices/{addr}/reset
 	// addr 是 IPv6 CIDR /128，含 '/'；不能简单按 '/' split，要走 stitchCIDRSegments
 	rest := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/devices/")
 	rest = strings.TrimSuffix(rest, "/reset")
 	if rest == "" || isMultiSegmentPath(rest) {
-		writeJSON(w, http.StatusOK, Fail("spatial_addr is required (IPv6 CIDR /128)"))
+		writeJSON(w, http.StatusOK, Fail("device_ipv6 is required (IPv6 CIDR /128)"))
 		return
 	}
 	spatialAddr := rest
@@ -91,7 +91,7 @@ func (h *DeviceHandler) ResetDevicePrefix(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// 3. 调用者 scope：role + tenant_prefix
+	// 3. 调用者 scope：role + tenant_id
 	role := r.Header.Get("X-User-Role")
 	if role == "" {
 		writeJSON(w, http.StatusOK, Fail("X-User-Role header required"))
@@ -135,10 +135,10 @@ func (h *DeviceHandler) ResetDevicePrefix(w http.ResponseWriter, r *http.Request
 	var newAddr string
 	err = h.db.QueryRowContext(r.Context(), `
 		UPDATE devices
-		   SET spatial_addr = reset_device_prefix(spatial_addr, $2::INET, $3::SMALLINT, $4),
+		   SET device_ipv6 = reset_device_prefix(device_ipv6, $2::INET, $3::SMALLINT, $4),
 		       updated_at = NOW()
-		 WHERE spatial_addr = $1::INET
-		RETURNING host(spatial_addr) || '/128'`,
+		 WHERE device_ipv6 = $1::INET
+		RETURNING host(device_ipv6) || '/128'`,
 		spatialAddr, sessionPrefix, scopeLen, layer).Scan(&newAddr)
 	if err == sql.ErrNoRows {
 		writeJSON(w, http.StatusOK, Fail("device not found: "+spatialAddr))
@@ -152,8 +152,8 @@ func (h *DeviceHandler) ResetDevicePrefix(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, Ok(map[string]any{
-		"old_spatial_addr": spatialAddr,
-		"new_spatial_addr": newAddr,
+		"old_device_ipv6": spatialAddr,
+		"new_device_ipv6": newAddr,
 		"layer":            layer,
 		"caller_role":      role,
 		"caller_scope":     sessionPrefix,
@@ -253,7 +253,6 @@ func (h *DeviceHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
 		TenantID:       tenantID,
 		IsSystemAdmin:  false, // 始终按 tenant 过滤，SystemAdmin 也只能查看 System tenant 的设备
 		Status:         statuses,
-		BusinessAccess: r.URL.Query().Get("business_access"),
 		DeviceType:     r.URL.Query().Get("device_type"),
 		SearchType:     r.URL.Query().Get("search_type"),
 		SearchKeyword:  r.URL.Query().Get("search_keyword"),
@@ -364,7 +363,7 @@ func (h *DeviceHandler) UpdateDevice(w http.ResponseWriter, r *http.Request) {
 	// 如果字段在 payload 中，就需要更新（即使为 null）
 	_, hasBoundRoomID := payload["bound_room_id"]
 	_, hasBoundBedID := payload["bound_bed_id"]
-	_, hasBusinessAccess := payload["business_access"]
+	_, hasAccess := payload["access"]
 	_, hasMonitoringEnabled := payload["monitoring_enabled"]
 
 	// 5. 调用 Service
@@ -376,7 +375,7 @@ func (h *DeviceHandler) UpdateDevice(w http.ResponseWriter, r *http.Request) {
 		// 如果字段在 payload 中（即使为 null），就更新它
 		UpdateBoundRoomID:       hasBoundRoomID,
 		UpdateBoundBedID:        hasBoundBedID,
-		UpdateBusinessAccess:    hasBusinessAccess,
+		UpdateAccess: hasAccess,
 		UpdateMonitoringEnabled: hasMonitoringEnabled,
 	}
 
@@ -557,10 +556,10 @@ func payloadToDevice(payload map[string]any) *domain.Device {
 	if v, ok := payload["status"].(string); ok {
 		device.Status = v
 	}
-	// Handle business_access: must check if field exists in payload to distinguish between "not provided" and "empty string"
-	if val, exists := payload["business_access"]; exists {
-		if v, ok := val.(string); ok {
-			device.BusinessAccess = v // Allow empty string to be set (for validation purposes)
+	// Handle access: platform_admin 审批位（bool）
+	if val, exists := payload["access"]; exists {
+		if v, ok := val.(bool); ok {
+			device.Access = v
 		}
 	}
 	// Handle monitoring_enabled: must check if field exists in payload

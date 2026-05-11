@@ -20,8 +20,8 @@ import (
 // v2 把 v1 的 device_store 表拆为 4 张表：
 //   - device_factory_meta — 出厂元数据（device_id PK UUID, device_uid UNIQUE, mac_wifi/mac_ble, etc.）
 //   - device_runtime_state — 运行时状态（device_id PK FK→factory_meta, online, firmware_version, last_heartbeat_at, ...）
-//   - devices — 业务空间绑定（spatial_addr INET /128 PK, device_id FK UNIQUE, monitoring_enabled）
-//   - device_ota — OTA 升级计划（spatial_addr PK FK→devices, target_firmware_version, approve_way enum, schedule, status, ...）
+//   - devices — 业务空间绑定（device_ipv6 INET /128 PK, device_id FK UNIQUE, monitoring_enabled）
+//   - device_ota — OTA 升级计划（device_ipv6 PK FK→devices, target_firmware_version, approve_way enum, schedule, status, ...）
 //
 // FE 期望的 v1 字段（OTAPermit/OTAWay/OTASchedule/AllowAccess 等）由本 repo 在读写两端做映射。
 type PostgresDeviceStoreRepository struct {
@@ -50,7 +50,7 @@ func tenantNamesOrIDsByPrefix(ctx context.Context, tx *sql.Tx, p1, p2 string) (s
 	get := func(p string) string {
 		var n sql.NullString
 		_ = tx.QueryRowContext(ctx,
-			`SELECT tenant_name FROM tenants WHERE spatial_prefix = $1::INET`, p).Scan(&n)
+			`SELECT tenant_name FROM tenants WHERE tenant_id = $1::INET`, p).Scan(&n)
 		if n.Valid && n.String != "" {
 			return n.String
 		}
@@ -217,12 +217,13 @@ const deviceStoreSelectColumnsV2 = `
   ''::text   AS ota_firmware_sha256,
   0::bigint  AS ota_firmware_size,
   CASE WHEN o.approve_way LIKE 'tenant_%' THEN TRUE ELSE FALSE END AS ota_tenant_approved,
-  -- tenant 反推：spatial_addr /48 (CIDR 字符串)
-  COALESCE(host(network(set_masklen(d.spatial_addr, 48))) || '/48', $TENANT_DEFAULT$) AS tenant_id,
+  -- tenant 反推：device_ipv6 /48 (CIDR 字符串)
+  COALESCE(host(network(set_masklen(d.device_ipv6, 48))) || '/48', $TENANT_DEFAULT$) AS tenant_id,
   COALESCE(t.tenant_name, '') AS tenant_name,
   d.created_at AS allocate_time,
   dfm.import_date,
-  CASE WHEN drs.online IS TRUE THEN 'online' ELSE 'offline' END AS online_status
+  CASE WHEN drs.online IS TRUE THEN 'online' ELSE 'offline' END AS online_status,
+  COALESCE(d.access, FALSE) AS allow_access
 `
 
 // scanDeviceStoreRowV2 共用 row 扫描（List/Get 都用）。
@@ -239,6 +240,7 @@ func scanDeviceStoreRowV2(scan func(...any) error) (*domain.DeviceStore, error) 
 	var allocateTime sql.NullTime
 	var importDate sql.NullTime
 	var tenantID, onlineStatus string
+	var allowAccess bool
 
 	err := scan(
 		&d.DeviceID,
@@ -269,6 +271,7 @@ func scanDeviceStoreRowV2(scan func(...any) error) (*domain.DeviceStore, error) 
 		&allocateTime,
 		&importDate,
 		&onlineStatus,
+		&allowAccess,
 	)
 	if err != nil {
 		return nil, err
@@ -300,8 +303,8 @@ func scanDeviceStoreRowV2(scan func(...any) error) (*domain.DeviceStore, error) 
 	d.AllocateTime = allocateTime
 	d.ImportDate = importDate
 	d.OnlineStatus = onlineStatus
-	// v2 default: AllowAccess = TRUE（v2 没有 allow_access 列；权限走 role + spatial scope）
-	d.AllowAccess = true
+	// v2: devicestore Access toggle = devices.access (platform 审批位，platform_admin 管)
+	d.AllowAccess = allowAccess
 	return &d, nil
 }
 
@@ -326,8 +329,8 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 		argN++
 	}
 	if t := strings.TrimSpace(filters.TenantID); t != "" {
-		// v2 tenant 是 INET /48；devices.spatial_addr 在该范围内即视为绑定到该 tenant
-		where = append(where, fmt.Sprintf("EXISTS (SELECT 1 FROM devices d2 WHERE d2.device_id = dfm.device_id AND d2.spatial_addr <<= $%d::INET)", argN))
+		// v2 tenant 是 INET /48；devices.device_ipv6 在该范围内即视为绑定到该 tenant
+		where = append(where, fmt.Sprintf("EXISTS (SELECT 1 FROM devices d2 WHERE d2.device_id = dfm.device_id AND d2.device_ipv6 <<= $%d::INET)", argN))
 		args = append(args, t)
 		argN++
 	}
@@ -386,7 +389,7 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 		  FROM device_factory_meta dfm
 		  LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		  LEFT JOIN devices d ON d.device_id = dfm.device_id
-		  LEFT JOIN device_ota o ON o.spatial_addr = d.spatial_addr
+		  LEFT JOIN device_ota o ON o.device_ipv6 = d.device_ipv6
 		  ` + whereClause
 	var total int
 	if err := r.db.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
@@ -411,8 +414,8 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 		FROM device_factory_meta dfm
 		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d ON d.device_id = dfm.device_id
-		LEFT JOIN device_ota o ON o.spatial_addr = d.spatial_addr
-		LEFT JOIN tenants t ON t.spatial_prefix = network(set_masklen(d.spatial_addr, 48))
+		LEFT JOIN device_ota o ON o.device_ipv6 = d.device_ipv6
+		LEFT JOIN tenants t ON t.tenant_id = network(set_masklen(d.device_ipv6, 48))
 		` + whereClause + `
 		ORDER BY ` + orderByClauseDeviceStoreV2(sort, direction) + `
 		LIMIT $` + fmt.Sprintf("%d", limitN) + ` OFFSET $` + fmt.Sprintf("%d", offsetN)
@@ -444,8 +447,8 @@ func (r *PostgresDeviceStoreRepository) GetDeviceStore(ctx context.Context, devi
 		FROM device_factory_meta dfm
 		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d ON d.device_id = dfm.device_id
-		LEFT JOIN device_ota o ON o.spatial_addr = d.spatial_addr
-		LEFT JOIN tenants t ON t.spatial_prefix = network(set_masklen(d.spatial_addr, 48))
+		LEFT JOIN device_ota o ON o.device_ipv6 = d.device_ipv6
+		LEFT JOIN tenants t ON t.tenant_id = network(set_masklen(d.device_ipv6, 48))
 		WHERE dfm.device_uid = $1
 		LIMIT 1
 	`
@@ -466,8 +469,8 @@ func (r *PostgresDeviceStoreRepository) GetDeviceStoreByDeviceID(ctx context.Con
 		FROM device_factory_meta dfm
 		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d ON d.device_id = dfm.device_id
-		LEFT JOIN device_ota o ON o.spatial_addr = d.spatial_addr
-		LEFT JOIN tenants t ON t.spatial_prefix = network(set_masklen(d.spatial_addr, 48))
+		LEFT JOIN device_ota o ON o.device_ipv6 = d.device_ipv6
+		LEFT JOIN tenants t ON t.tenant_id = network(set_masklen(d.device_ipv6, 48))
 		WHERE dfm.device_id = $1::uuid
 		LIMIT 1
 	`
@@ -515,7 +518,7 @@ func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, d
 		tenantPrefix = defaultUnboundTenantPrefix
 	}
 
-	// 3. 派生 spatial_addr：tenant_prefix + 0:0:0:0:MAC32（最后 32bit 取自 MAC 或 device_uid）
+	// 3. 派生 device_ipv6：tenant_id + 0:0:0:0:MAC32（最后 32bit 取自 MAC 或 device_uid）
 	mac32 := deriveMAC32Suffix(deviceStore.MAC, deviceStore.DeviceUID)
 
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -566,9 +569,9 @@ func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, d
 		return "", fmt.Errorf("failed to insert device_runtime_state: %w", err)
 	}
 
-	// 6. INSERT devices —— spatial_addr = tenant_prefix host bytes 全 0 ++ MAC32
+	// 6. INSERT devices —— device_ipv6 = tenant_id host bytes 全 0 ++ MAC32
 	insertDevice := `
-		INSERT INTO devices (spatial_addr, device_id, monitoring_enabled)
+		INSERT INTO devices (device_ipv6, device_id, monitoring_enabled)
 		VALUES (
 		  set_masklen(network(set_masklen($1::INET, 48)), 128) | ('::' || $2)::INET,
 		  $3::uuid, TRUE
@@ -641,11 +644,11 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 		}
 		deviceUID := update.DeviceUID
 
-		// 解出 device_id + 当前 spatial_addr
+		// 解出 device_id + 当前 device_ipv6
 		var deviceID string
 		var currentAddr sql.NullString
 		err := tx.QueryRowContext(ctx, `
-			SELECT dfm.device_id::text, host(d.spatial_addr) || '/128'
+			SELECT dfm.device_id::text, host(d.device_ipv6) || '/128'
 			  FROM device_factory_meta dfm
 			  LEFT JOIN devices d ON d.device_id = dfm.device_id
 			 WHERE dfm.device_uid = $1
@@ -724,12 +727,12 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 				`, update.TenantID, resetAddr).Scan(&newAddr); err != nil {
 					return fmt.Errorf("compose new tenant addr: %w", err)
 				}
-				// UPDATE devices.spatial_addr — FK 已设 ON UPDATE CASCADE，device_ota.spatial_addr 自动同步
+				// UPDATE devices.device_ipv6 — FK 已设 ON UPDATE CASCADE，device_ota.device_ipv6 自动同步
 				if _, err := tx.ExecContext(ctx, `
-					UPDATE devices SET spatial_addr = $2::INET, updated_at = NOW()
-					 WHERE spatial_addr = $1::INET
+					UPDATE devices SET device_ipv6 = $2::INET, updated_at = NOW()
+					 WHERE device_ipv6 = $1::INET
 				`, currentAddr.String, newAddr); err != nil {
-					return fmt.Errorf("update devices.spatial_addr: %w", err)
+					return fmt.Errorf("update devices.device_ipv6: %w", err)
 				}
 				// 后续 OTA UPSERT 用新地址定位
 				currentAddr = sql.NullString{String: newAddr, Valid: true}
@@ -785,16 +788,24 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 			// UPSERT
 			otaArgs = append(otaArgs, currentAddr.String)
 			q := fmt.Sprintf(`
-				INSERT INTO device_ota (spatial_addr, status, updated_at)
+				INSERT INTO device_ota (device_ipv6, status, updated_at)
 				VALUES ($%d::INET, 'idle', NOW())
-				ON CONFLICT (spatial_addr) DO UPDATE SET %s
+				ON CONFLICT (device_ipv6) DO UPDATE SET %s
 			`, oN, strings.Join(otaSet, ", "))
 			if _, err := tx.ExecContext(ctx, q, otaArgs...); err != nil {
 				return fmt.Errorf("upsert device_ota: %w", err)
 			}
 		}
 
-		// allow_access — v2 已删此列；忽略写入（兼容 FE）。
+		// 4) allow_access → devices.access (platform 审批位)
+		if update.AllowAccessSet && currentAddr.Valid {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE devices SET access = $2, updated_at = NOW()
+				 WHERE device_ipv6 = $1::INET
+			`, currentAddr.String, update.AllowAccess); err != nil {
+				return fmt.Errorf("update devices.access: %w", err)
+			}
+		}
 	}
 
 	return tx.Commit()
@@ -905,7 +916,7 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 		}
 		codeForInsert := sql.NullString{String: normCode, Valid: normCode != ""}
 
-		// 已存在 → UPDATE device_factory_meta（不动 spatial_addr）
+		// 已存在 → UPDATE device_factory_meta（不动 device_ipv6）
 		var deviceID string
 		err := tx.QueryRowContext(ctx,
 			`SELECT device_id::text FROM device_factory_meta WHERE device_uid = $1`,
@@ -994,7 +1005,7 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 		}
 		mac32 := deriveMAC32Suffix(item.MAC, normUID)
 		if _, e := tx.ExecContext(ctx, `
-			INSERT INTO devices (spatial_addr, device_id, monitoring_enabled)
+			INSERT INTO devices (device_ipv6, device_id, monitoring_enabled)
 			VALUES (
 			  set_masklen(network(set_masklen($1::INET, 48)), 128) | ('::' || $2)::INET,
 			  $3::uuid, TRUE

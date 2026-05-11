@@ -92,7 +92,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionByKey(ctx context.Conte
 		`
 		args = []any{*tenantID, roleCode, resourceType, permissionType}
 	} else {
-		// v2: system permissions = roles with tenant_prefix IS NULL (no v1 UUID).
+		// v2: system permissions = roles with tenant_id IS NULL (no v1 UUID).
 		// v2 stub: Phase E.2 will rewrite this whole repo to v2 role_permissions schema.
 		query = `
 			SELECT
@@ -103,7 +103,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionByKey(ctx context.Conte
 				rp.permission_type,
 				rp.permission_scope
 			FROM role_permissions rp
-			JOIN roles r ON r.role_code = rp.role_code AND r.tenant_prefix IS NULL
+			JOIN roles r ON r.role_code = rp.role_code AND r.tenant_id IS NULL
 			WHERE rp.role_code = $1 AND rp.resource_type = $2 AND rp.permission_type = $3
 		`
 		args = []any{roleCode, resourceType, permissionType}
@@ -142,9 +142,9 @@ func (r *PostgresRolePermissionsRepository) ListPermissions(ctx context.Context,
 		args = append(args, *tenantID)
 		argN++
 	} else {
-		// v2: system permissions = roles with tenant_prefix IS NULL (no v1 UUID).
+		// v2: system permissions = roles with tenant_id IS NULL (no v1 UUID).
 		// v2 stub: Phase E.2 will rewrite this whole repo to v2 role_permissions schema.
-		where = append(where, "role_code IN (SELECT role_code FROM roles WHERE tenant_prefix IS NULL)")
+		where = append(where, "role_code IN (SELECT role_code FROM roles WHERE tenant_id IS NULL)")
 	}
 
 	// role_code过滤
@@ -265,7 +265,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionsByRole(ctx context.Con
 		`
 		args = []any{*tenantID, roleCode}
 	} else {
-		// v2: system permissions = roles with tenant_prefix IS NULL (no v1 UUID).
+		// v2: system permissions = roles with tenant_id IS NULL (no v1 UUID).
 		// v2 stub: Phase E.2 will rewrite this whole repo to v2 role_permissions schema.
 		query = `
 			SELECT
@@ -276,7 +276,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionsByRole(ctx context.Con
 				rp.permission_type,
 				rp.permission_scope
 			FROM role_permissions rp
-			JOIN roles r ON r.role_code = rp.role_code AND r.tenant_prefix IS NULL
+			JOIN roles r ON r.role_code = rp.role_code AND r.tenant_id IS NULL
 			WHERE rp.role_code = $1
 			ORDER BY rp.resource_type, rp.permission_type
 		`
@@ -337,7 +337,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionsByResource(ctx context
 		`
 		args = []any{*tenantID, resourceType}
 	} else {
-		// v2: system permissions = roles with tenant_prefix IS NULL (no v1 UUID).
+		// v2: system permissions = roles with tenant_id IS NULL (no v1 UUID).
 		// v2 stub: Phase E.2 will rewrite this whole repo to v2 role_permissions schema.
 		query = `
 			SELECT
@@ -348,7 +348,7 @@ func (r *PostgresRolePermissionsRepository) GetPermissionsByResource(ctx context
 				rp.permission_type,
 				rp.permission_scope
 			FROM role_permissions rp
-			JOIN roles r ON r.role_code = rp.role_code AND r.tenant_prefix IS NULL
+			JOIN roles r ON r.role_code = rp.role_code AND r.tenant_id IS NULL
 			WHERE rp.resource_type = $1
 			ORDER BY rp.role_code, rp.permission_type
 		`
@@ -863,11 +863,11 @@ func (r *PostgresRolePermissionsRepository) DeletePermissionsByRole(ctx context.
 		query = `DELETE FROM role_permissions WHERE tenant_id = $1 AND role_code = $2`
 		args = []any{tenantID, roleCode}
 	} else {
-		// v2: system permissions = roles with tenant_prefix IS NULL (no v1 UUID).
+		// v2: system permissions = roles with tenant_id IS NULL (no v1 UUID).
 		// v2 stub: Phase E.2 will rewrite this whole repo to v2 role_permissions schema.
 		query = `DELETE FROM role_permissions
 			WHERE role_code = $1
-			  AND role_code IN (SELECT role_code FROM roles WHERE tenant_prefix IS NULL)`
+			  AND role_code IN (SELECT role_code FROM roles WHERE tenant_id IS NULL)`
 		args = []any{roleCode}
 	}
 

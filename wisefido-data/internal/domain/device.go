@@ -53,8 +53,8 @@ type Device struct {
 	// 状态/维护
 	Status            string `db:"status"`              // NOT NULL, default 'offline' (数据库状态：Enabled/Disabled/Error，用于软删除)
 	OnlineStatus      string `db:"-"`                   // 实时在线状态（online/offline/unsubscribed），从 Redis 读取，不存储到数据库
-	BusinessAccess    string `db:"business_access"`      // NOT NULL, default 'pending'
-	MonitoringEnabled bool   `db:"monitoring_enabled"`  // NOT NULL, default false
+	Access            bool   `db:"access"`              // platform_admin 审批位
+	MonitoringEnabled bool   `db:"monitoring_enabled"`  // tenant 业务开关
 
 	// 元数据
 	Metadata sql.NullString `db:"metadata"` // nullable, JSONB
@@ -68,7 +68,7 @@ func (d *Device) ToJSON() map[string]any {
 		"device_name":        d.DeviceName,
 		"status":             d.Status,        // 数据库状态（Enabled/Disabled/Error）
 		"online_status":      d.OnlineStatus,  // 实时在线状态（online/offline/unsubscribed）
-		"business_access":    d.BusinessAccess,
+		"access":             d.Access,
 		"monitoring_enabled": d.MonitoringEnabled,
 	}
 	m["device_uid"] = d.DeviceUID

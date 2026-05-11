@@ -77,28 +77,28 @@ func TestE2E_IPAM_DDNS(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = db.ExecContext(context.Background(), `
 			DELETE FROM devices WHERE spatial_addr << 'fd00:0:3:6300::/56'::INET;
-			DELETE FROM beds WHERE spatial_prefix << 'fd00:0:3:6300::/56'::INET;
-			DELETE FROM rooms WHERE spatial_prefix << 'fd00:0:3:6300::/56'::INET;
-			DELETE FROM units WHERE spatial_prefix << 'fd00:0:3:6300::/56'::INET;
-			DELETE FROM sites WHERE spatial_prefix << 'fd00:0:3:6300::/56'::INET;
-			DELETE FROM branches WHERE spatial_prefix = 'fd00:0:3:6300::/56'::INET;
+			DELETE FROM beds WHERE bed_id << 'fd00:0:3:6300::/56'::INET;
+			DELETE FROM rooms WHERE room_id << 'fd00:0:3:6300::/56'::INET;
+			DELETE FROM units WHERE unit_id << 'fd00:0:3:6300::/56'::INET;
+			DELETE FROM sites WHERE site_id << 'fd00:0:3:6300::/56'::INET;
+			DELETE FROM branches WHERE branch_id = 'fd00:0:3:6300::/56'::INET;
 		`)
 	})
 
 	// Step 0: clean up first to avoid prev-run pollution
 	_, _ = db.ExecContext(ctx, `
 		DELETE FROM devices WHERE spatial_addr << 'fd00:0:3:6300::/56'::INET;
-		DELETE FROM beds WHERE spatial_prefix << 'fd00:0:3:6300::/56'::INET;
-		DELETE FROM rooms WHERE spatial_prefix << 'fd00:0:3:6300::/56'::INET;
-		DELETE FROM units WHERE spatial_prefix << 'fd00:0:3:6300::/56'::INET;
-		DELETE FROM sites WHERE spatial_prefix << 'fd00:0:3:6300::/56'::INET;
-		DELETE FROM branches WHERE spatial_prefix = 'fd00:0:3:6300::/56'::INET;
+		DELETE FROM beds WHERE bed_id << 'fd00:0:3:6300::/56'::INET;
+		DELETE FROM rooms WHERE room_id << 'fd00:0:3:6300::/56'::INET;
+		DELETE FROM units WHERE unit_id << 'fd00:0:3:6300::/56'::INET;
+		DELETE FROM sites WHERE site_id << 'fd00:0:3:6300::/56'::INET;
+		DELETE FROM branches WHERE branch_id = 'fd00:0:3:6300::/56'::INET;
 	`)
 
 	// 由于 AllocateBranch 是 MAX+1 自动分配，无法精确控制 slot=99；
 	// 直接 INSERT 一个 branch_slot=99 (0x63) 测试 branch 用 (避免与 demo 现有 1..4 冲突)
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO branches (spatial_prefix, branch_slot, branch_name, timezone)
+		INSERT INTO branches (branch_id, branch_slot, branch_name, timezone)
 		VALUES ('fd00:0:3:6300::/56', 99, 'Test-Phase-B', 'America/Denver')
 	`)
 	if err != nil {

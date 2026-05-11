@@ -182,7 +182,7 @@ func (s *unitService) getUserBranchID(ctx context.Context, tenantID, userID stri
 // getUserBranchIDs 查询用户所属的所有 branch_id 列表（Service 层内部方法）
 //
 // v2 改造：owl_v2 schema 删除了 user_branches 表（用户与院区的关系由 user_roles +
-// roles.tenant_prefix + role_permissions.resource_scope INET 派生）。
+// roles.tenant_id + role_permissions.resource_scope INET 派生）。
 // 这里返回 (nil, false, nil) — service 层把"无 branch 限制 = 全部 branch 可访问"处理（admin 行为）。
 func (s *unitService) getUserBranchIDs(ctx context.Context, tenantID, userID string) (branchIDs []string, hasBranches bool, err error) {
 	return nil, false, nil
@@ -498,7 +498,7 @@ type ListUnitsRequest struct {
 	Search     *string // 可选（nil 表示未提供，模糊搜索 unit_name, unit_number）
 	Page       int     // 可选，默认 1
 	Size       int     // 可选，默认 100
-	// ResidentID: 住户绑定时传入（可为空表示新住户），VIP 单元仅返回未被其他住户占用的
+	// ResidentID: 住户绑定时传入（可为空表示新住户），Private 单元仅返回未被其他住户占用的
 	ResidentID *string
 }
 
@@ -582,7 +582,7 @@ type CreateUnitRequest struct {
 	LayoutConfig string // 可选（JSON 字符串）
 	// v2 双维度 (2026-05-09 重设计)
 	UnitProperty int8 // 0=Home, 1=Facility (default)
-	UnitType     int8 // 0=unknown, 1=single (VIP), 2=share (default), 3=public
+	UnitType     int8 // 0=unknown, 1=single (Private), 2=share (default), 3=public
 	Timezone     string // 必填
 }
 

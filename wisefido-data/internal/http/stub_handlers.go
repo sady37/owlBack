@@ -29,13 +29,13 @@ func (s *StubHandler) AdminDevices(w http.ResponseWriter, r *http.Request) {
 		}
 		switch r.Method {
 		case http.MethodGet:
-			// 参考 owlFront Device model 的必填字段：device_id/tenant_id/device_name/status/business_access
+			// 参考 owlFront Device model 的必填字段：device_id/tenant_id/device_name/status/access
 			writeJSON(w, http.StatusOK, Ok(map[string]any{
 				"device_id":          id,
 				"tenant_id":          "",
 				"device_name":        "stub-" + id,
 				"status":             "offline",
-				"business_access":    "approved",
+				"access":             true,
 				"monitoring_enabled": true,
 			}))
 		case http.MethodPut:

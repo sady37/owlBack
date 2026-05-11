@@ -11,6 +11,8 @@ type Tenant struct {
 	// 基本信息
 	TenantType string `db:"tenant_type"` // VARCHAR(20), NOT NULL, DEFAULT 'organization' (individual, organization)
 	TenantName string `db:"tenant_name"` // VARCHAR(255), NOT NULL
+	Kind       string `db:"kind" json:"kind"` // 'B2B' | 'B2C'，决定 Family role 行为
+	Timezone   string `db:"timezone" json:"timezone"` // IANA tz name，默认 America/Los_Angeles
 	Domain     string `db:"domain"`      // VARCHAR(255), UNIQUE, nullable
 	Email      string `db:"email"`       // VARCHAR(255), nullable
 	Phone      string `db:"phone"`       // VARCHAR(50), nullable

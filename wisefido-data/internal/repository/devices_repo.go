@@ -22,7 +22,7 @@ type DevicesRepository interface {
 	UpdateDevice(ctx context.Context, tenantID, deviceID string, device *domain.Device) error
 
 	// UpdateDeviceWithFlags 更新设备（带更新标志，用于区分字段是否在 payload 中）
-	UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID, updateBusinessAccess, updateMonitoringEnabled bool) error
+	UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID, updateAccess, updateMonitoringEnabled bool) error
 
 
 	// 删除（物理删除，仅当设备未使用时）
@@ -83,7 +83,6 @@ type DeviceRelationResident struct {
 type DeviceFilters struct {
 	IsSystemAdmin  bool     // SystemAdmin 查看所有租户的设备（不限制 tenant_id）
 	Status         []string // 设备状态过滤（online, offline, error）
-	BusinessAccess string   // 业务访问权限（pending, approved, rejected）
 	DeviceType     string   // 设备类型
 	SearchType     string   // 搜索类型（device_name, device_code, device_uid）
 	SearchKeyword  string   // 搜索关键词
