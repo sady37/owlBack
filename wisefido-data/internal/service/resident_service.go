@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"wisefido-data/internal/domain"
+	"wisefido-data/internal/phi"
 	"wisefido-data/internal/repository"
 
 	"github.com/lib/pq"
@@ -46,6 +47,7 @@ type residentService struct {
 	residentsRepo repository.ResidentsRepository
 	db            *sql.DB
 	logger        *zap.Logger
+	phiCryptor    *phi.PHICryptor // v2 PHI/Contacts encrypt 用（main.go 注入）
 }
 
 // NewResidentService 创建 ResidentService 实例
@@ -55,6 +57,11 @@ func NewResidentService(residentsRepo repository.ResidentsRepository, db *sql.DB
 		db:            db,
 		logger:        logger,
 	}
+}
+
+// SetPHICryptor 注入 PHI 加密器（v2 PHI/Contacts 用）
+func (s *residentService) SetPHICryptor(c *phi.PHICryptor) {
+	s.phiCryptor = c
 }
 
 // getResourcePermission 查询资源权限配置（Service 层内部方法）
@@ -238,7 +245,7 @@ type ResidentListItemDTO struct {
 	RoomName        *string `json:"room_name,omitempty"`
 	BedID           *string `json:"bed_id,omitempty"`
 	BedName         *string `json:"bed_name,omitempty"`
-	IsAccessEnabled bool    `json:"is_access_enabled"`
+	FamilyAccess bool    `json:"family_access"`
 	// Note: 列表不需要 Note 字段
 }
 
@@ -277,9 +284,10 @@ type GetResidentRequest struct {
 
 // ResidentCaregiverDTO 住户护理人员分配 DTO
 type ResidentCaregiverDTO struct {
-	UserList  []UserDTO         `json:"user_list,omitempty"`  // 直接绑定的 caregiver users (resident_caregivers.caregiver_id 非空)
-	GroupList []string          `json:"group_list,omitempty"` // [v1 legacy] JSONB array -> []string (tag_name)
-	TeamList  []ResidentTeamDTO `json:"team_list,omitempty"`  // v2: 通过 care team 间接关联 (resident_caregivers.care_team_id 非空)
+	UserList   []UserDTO         `json:"user_list,omitempty"`   // 直接绑定的 caregiver users (resident_caregivers.caregiver_id 非空)
+	GroupList  []string          `json:"group_list,omitempty"`  // [v1 legacy] JSONB array -> []string (tag_name)
+	TeamList   []ResidentTeamDTO `json:"team_list,omitempty"`   // v2: 通过 care team 间接关联 (resident_caregivers.care_team_id 非空)
+	FamilyList []UserDTO         `json:"family_list,omitempty"` // v2: 家属绑定 (resident_caregivers.family_id 非空, users.role=Family)
 }
 
 // ResidentTeamDTO Care team summary used in resident assignment
@@ -317,8 +325,10 @@ type ResidentDetailDTO struct {
 	RoomName        *string `json:"room_name,omitempty"`
 	BedID           *string `json:"bed_id,omitempty"`
 	BedName         *string `json:"bed_name,omitempty"`
-	IsAccessEnabled bool    `json:"is_access_enabled"`
+	FamilyAccess    bool    `json:"family_access"`
 	Note            *string `json:"note,omitempty"`
+	Gender          *string `json:"gender,omitempty"`
+	BirthYear       *int    `json:"birth_year,omitempty"`
 }
 
 // ResidentPHIDTO 住户 PHI 数据 DTO
@@ -383,7 +393,7 @@ type CreateResidentInherentAttributes struct {
 	AdmissionDate   *int64          // 入院日期（Unix 时间戳，可选）
 	DischargeDate   *int64          // 出院日期（Unix 时间戳，可选）
 	BranchID        string          // 院区ID（可选）
-	IsAccessEnabled bool            // 是否允许查看状态（可选，默认 false）
+	FamilyAccess bool            // 是否允许查看状态（可选，默认 false）
 	Note            string          // 备注（可选）
 	PhoneHash       string          // phone_hash hex 字符串（可选，前端已计算）
 	EmailHash       string          // email_hash hex 字符串（可选，前端已计算）
@@ -405,14 +415,12 @@ type CreateResidentUnitRelation struct {
 	// 业务规则：bed → room → unit（如果指定 bed_id，则必须同时指定 room_id 和 unit_id）
 }
 
-// CreateResidentCaregiverRelation Resident 与 Caregiver 的关系创建结构体
-// 业务属性：护理人员分配（存储在 resident_caregivers 表中）
+// CreateResidentCaregiverRelation Resident 与 Caregiver/Family 的关系创建结构体
+// 业务属性：护理 (caregiver/team 二选一) + 家属 (family 独立) 都存 resident_caregivers
 type CreateResidentCaregiverRelation struct {
-	UserList  []string // 用户ID列表（可选，JSONB array）
-	GroupList []string // 用户组标签列表（可选，JSONB array，用于匹配 users.user_tags）
-	// 说明：
-	//   - 每个租户+住户最多一条记录（UNIQUE(tenant_id, resident_id)）
-	//   - 如果 user_list 和 group_list 都为空，使用默认告警路由规则（由应用层处理）
+	UserList   []string // caregiver user_id 列表（resident_caregivers.caregiver_id 行）
+	GroupList  []string // care team_id 列表（resident_caregivers.care_team_id 行）
+	FamilyList []string // family user_id 列表（resident_caregivers.family_id 行；与护理独立）
 }
 
 // CreateResidentRequest 创建住户请求
@@ -502,7 +510,7 @@ type UpdateResidentInherentAttributes struct {
 	AdmissionDate   *domain.UpdateTime   // 入院日期（可选更新）
 	DischargeDate   *domain.UpdateTime   // 出院日期（可选更新）
 	BranchID        *domain.UpdateString // 院区ID（可选更新）
-	IsAccessEnabled *domain.UpdateBool   // 是否允许查看状态（可选更新）
+	FamilyAccess *domain.UpdateBool   // 是否允许查看状态（可选更新）
 	Note            *domain.UpdateString // 备注（可选更新）
 	Phone           *domain.UpdateString // phone（可选更新）
 	Email           *domain.UpdateString // email（可选更新）
@@ -577,14 +585,12 @@ type UpdateResidentUnitRelation struct {
 	// 业务规则：bed → room → unit（如果指定 bed_id，则必须同时指定 room_id 和 unit_id）
 }
 
-// UpdateResidentCaregiverRelation Resident 与 Caregiver 的关系更新结构体
-// 业务属性：护理人员分配（存储在 resident_caregivers 表中）
+// UpdateResidentCaregiverRelation Resident 与 Caregiver/Family 的关系更新结构体
+// 业务属性：护理 (caregiver/team 二选一) + 家属 (family 独立) 都存 resident_caregivers
 type UpdateResidentCaregiverRelation struct {
-	UserList  *domain.UpdateJSON // 用户ID列表（可选更新，JSONB array）
-	GroupList *domain.UpdateJSON // 用户组标签列表（可选更新，JSONB array，用于匹配 users.user_tags）
-	// 说明：
-	//   - 每个租户+住户最多一条记录（UNIQUE(tenant_id, resident_id)）
-	//   - 如果 user_list 和 group_list 都为空，使用默认告警路由规则（由应用层处理）
+	UserList   *domain.UpdateJSON // caregiver user_id 列表（resident_caregivers.caregiver_id 行）
+	GroupList  *domain.UpdateJSON // care team_id 列表（resident_caregivers.care_team_id 行）
+	FamilyList *domain.UpdateJSON // family user_id 列表（resident_caregivers.family_id 行；与护理独立）
 }
 
 // UpdateResidentRequest 更新住户请求
@@ -789,7 +795,7 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 	//   spatial 关联 = resident_unit (resident_id, spatial_prefix INET, valid_to)
 	//   PHI = resident_phi (full_name_enc 等加密字段，本 list 不暴露)
 	// 业务规则保留：status 软删；按 tenant 隔离；分页；nickname 搜索
-	// 暂未实现：assigned_only / branch_only 权限过滤；service_level；is_access_enabled；search by email/phone
+	// 暂未实现：assigned_only / branch_only 权限过滤；service_level；family_access；search by email/phone
 	// 这些后续会话补全。原 v1 SQL 路径保留下方作 reference，永不进入。
 	// =============================================================================
 	v2Out, _, err := s.listResidentsV2(ctx, req)
@@ -820,7 +826,7 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 	             br.branch_name,
 	             rm.room_name,
 	             b.bed_name,
-	             r.is_access_enabled,
+	             r.family_access,
 	             COALESCE(r.resident_account, '') as resident_account_for_sort,
 	             r.resident_id::text as resident_id_for_sort
 	      FROM residents r
@@ -991,7 +997,7 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 			TenantID:        tid.String,
 			Nickname:        nickname.String,
 			Status:          status.String,
-			IsAccessEnabled: canViewStatus,
+			FamilyAccess: canViewStatus,
 		}
 
 		// 只有当 isSharedUnit 有效时才赋值，未绑定 unit 时为 nil
@@ -1046,7 +1052,7 @@ func (s *residentService) ListResidents(ctx context.Context, req ListResidentsRe
 	}
 
 	// 8. 查询总数（使用相同的 WHERE 条件，但不包含 JOIN 和分页）
-	countQuery := strings.Replace(q, "SELECT DISTINCT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,\n\t             r.status, r.service_level, r.admission_date, r.discharge_date,\n\t             r.unit_id::text, r.room_id::text, r.bed_id::text,\n\t             r.branch_id::text,\n\t             u.unit_name,\n\t             bld.building_name,\n\t             u.is_shared_unit,\n\t             u.is_public,\n\t             br.branch_name,\n\t             rm.room_name,\n\t             b.bed_name,\n\t             r.is_access_enabled,\n\t             COALESCE(r.resident_account, '') as resident_account_for_sort,\n\t             r.resident_id::text as resident_id_for_sort\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN buildings bld ON bld.building_id = u.building_id\n	      LEFT JOIN rooms rm ON rm.room_id = r.room_id\n	      LEFT JOIN beds b ON b.bed_id = r.bed_id\n	      LEFT JOIN branches br ON br.branch_id = r.branch_id\n	      LEFT JOIN resident_phi rp ON rp.resident_id = r.resident_id AND rp.tenant_id = r.tenant_id\n	      LEFT JOIN resident_contacts rc ON rc.resident_id = r.resident_id AND rc.tenant_id = r.tenant_id", "SELECT COUNT(DISTINCT r.resident_id)\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN buildings bld ON bld.building_id = u.building_id\n	      LEFT JOIN branches br ON br.branch_id = r.branch_id\n	      LEFT JOIN resident_phi rp ON rp.resident_id = r.resident_id AND rp.tenant_id = r.tenant_id\n	      LEFT JOIN resident_contacts rc ON rc.resident_id = r.resident_id AND rc.tenant_id = r.tenant_id", 1)
+	countQuery := strings.Replace(q, "SELECT DISTINCT r.resident_id::text, r.tenant_id::text, r.resident_account, r.nickname,\n\t             r.status, r.service_level, r.admission_date, r.discharge_date,\n\t             r.unit_id::text, r.room_id::text, r.bed_id::text,\n\t             r.branch_id::text,\n\t             u.unit_name,\n\t             bld.building_name,\n\t             u.is_shared_unit,\n\t             u.is_public,\n\t             br.branch_name,\n\t             rm.room_name,\n\t             b.bed_name,\n\t             r.family_access,\n\t             COALESCE(r.resident_account, '') as resident_account_for_sort,\n\t             r.resident_id::text as resident_id_for_sort\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN buildings bld ON bld.building_id = u.building_id\n	      LEFT JOIN rooms rm ON rm.room_id = r.room_id\n	      LEFT JOIN beds b ON b.bed_id = r.bed_id\n	      LEFT JOIN branches br ON br.branch_id = r.branch_id\n	      LEFT JOIN resident_phi rp ON rp.resident_id = r.resident_id AND rp.tenant_id = r.tenant_id\n	      LEFT JOIN resident_contacts rc ON rc.resident_id = r.resident_id AND rc.tenant_id = r.tenant_id", "SELECT COUNT(DISTINCT r.resident_id)\n	      FROM residents r\n	      LEFT JOIN units u ON u.unit_id = r.unit_id\n	      LEFT JOIN buildings bld ON bld.building_id = u.building_id\n	      LEFT JOIN branches br ON br.branch_id = r.branch_id\n	      LEFT JOIN resident_phi rp ON rp.resident_id = r.resident_id AND rp.tenant_id = r.tenant_id\n	      LEFT JOIN resident_contacts rc ON rc.resident_id = r.resident_id AND rc.tenant_id = r.tenant_id", 1)
 	countQuery = strings.Replace(countQuery, " ORDER BY resident_account_for_sort ASC, resident_id_for_sort ASC", "", 1)
 	countQuery = strings.Replace(countQuery, " ORDER BY r.nickname ASC", "", 1)
 	countQuery = strings.Replace(countQuery, fmt.Sprintf(` LIMIT $%d OFFSET $%d`, argIdx, argIdx+1), "", 1)
@@ -1232,7 +1238,7 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 		        rm.room_name,
 		        b.bed_name,
 		        r.note,
-		        r.is_access_enabled
+		        r.family_access
 		 FROM residents r
 		 LEFT JOIN units u ON u.unit_id = r.unit_id
 		 LEFT JOIN buildings bld ON bld.building_id = u.building_id
@@ -1268,7 +1274,7 @@ func (s *residentService) GetResident(ctx context.Context, req GetResidentReques
 		TenantID:        tid.String,
 		Nickname:        nickname.String,
 		Status:          status.String,
-		IsAccessEnabled: canViewStatus,
+		FamilyAccess: canViewStatus,
 	}
 
 	// 只有当 isSharedUnit 有效时才赋值，未绑定 unit 时为 nil
@@ -1786,7 +1792,7 @@ func (s *residentService) CreateResident(ctx context.Context, req CreateResident
 		Status:              status,
 		Role:                "Resident",
 		AdmissionDate:       &admissionDate,
-		IsAccessEnabled:     req.InherentAttributes.IsAccessEnabled,
+		FamilyAccess:     req.InherentAttributes.FamilyAccess,
 		Note:                req.InherentAttributes.Note,
 		PhoneHash:           phoneHash,
 		EmailHash:           emailHash,
@@ -2427,7 +2433,7 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 				branchChangedAndUnbound = true
 			}
 		}
-		residentUpdate.IsAccessEnabled = req.InherentAttributes.IsAccessEnabled
+		residentUpdate.FamilyAccess = req.InherentAttributes.FamilyAccess
 		residentUpdate.Note = req.InherentAttributes.Note
 		residentUpdate.Phone = req.InherentAttributes.Phone
 		residentUpdate.Email = req.InherentAttributes.Email
@@ -2541,7 +2547,7 @@ func (s *residentService) UpdateResident(ctx context.Context, req UpdateResident
 		hasResidentFields := residentUpdate.ResidentAccount != nil || residentUpdate.Nickname != nil ||
 			residentUpdate.PasswordHash != nil || residentUpdate.Status != nil || residentUpdate.ServiceLevel != nil ||
 			residentUpdate.AdmissionDate != nil || residentUpdate.DischargeDate != nil || residentUpdate.BranchID != nil ||
-			residentUpdate.IsAccessEnabled != nil || residentUpdate.Note != nil || residentUpdate.Phone != nil ||
+			residentUpdate.FamilyAccess != nil || residentUpdate.Note != nil || residentUpdate.Phone != nil ||
 			residentUpdate.Email != nil || residentUpdate.PhoneHash != nil || residentUpdate.EmailHash != nil ||
 			residentUpdate.Metadata != nil
 

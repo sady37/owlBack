@@ -62,7 +62,7 @@ func (r *PostgresResidentsRepository) GetResident(ctx context.Context, tenantID,
 			phone_hash,
 			email_hash,
 			password_hash,
-			is_access_enabled,
+			family_access,
 			branch_id::text,
 			unit_id::text,
 			room_id::text,
@@ -95,7 +95,7 @@ func (r *PostgresResidentsRepository) GetResident(ctx context.Context, tenantID,
 		&phoneHash,
 		&emailHash,
 		&passwordHash,
-		&resident.IsAccessEnabled,
+		&resident.FamilyAccess,
 		&branchID,
 		&unitID,
 		&roomID,
@@ -180,7 +180,7 @@ func (r *PostgresResidentsRepository) GetResidentByAccount(ctx context.Context, 
 			phone_hash,
 			email_hash,
 			password_hash,
-			is_access_enabled,
+			family_access,
 			branch_id::text,
 			unit_id::text,
 			room_id::text,
@@ -213,7 +213,7 @@ func (r *PostgresResidentsRepository) GetResidentByAccount(ctx context.Context, 
 		&phoneHash,
 		&emailHash,
 		&passwordHash,
-		&resident.IsAccessEnabled,
+		&resident.FamilyAccess,
 		&branchID,
 		&unitID,
 		&roomID,
@@ -299,7 +299,7 @@ func (r *PostgresResidentsRepository) GetResidentByEmail(ctx context.Context, te
 			phone_hash,
 			email_hash,
 			password_hash,
-			is_access_enabled,
+			family_access,
 			branch_id::text,
 			unit_id::text,
 			room_id::text,
@@ -332,7 +332,7 @@ func (r *PostgresResidentsRepository) GetResidentByEmail(ctx context.Context, te
 		&phoneHashVal,
 		&emailHashVal,
 		&passwordHash,
-		&resident.IsAccessEnabled,
+		&resident.FamilyAccess,
 		&branchID,
 		&unitID,
 		&roomID,
@@ -418,7 +418,7 @@ func (r *PostgresResidentsRepository) GetResidentByPhone(ctx context.Context, te
 			phone_hash,
 			email_hash,
 			password_hash,
-			is_access_enabled,
+			family_access,
 			branch_id::text,
 			unit_id::text,
 			room_id::text,
@@ -451,7 +451,7 @@ func (r *PostgresResidentsRepository) GetResidentByPhone(ctx context.Context, te
 		&phoneHashVal,
 		&emailHashVal,
 		&passwordHash,
-		&resident.IsAccessEnabled,
+		&resident.FamilyAccess,
 		&branchID,
 		&unitID,
 		&roomID,
@@ -611,7 +611,7 @@ func (r *PostgresResidentsRepository) ListResidents(ctx context.Context, tenantI
 			r.phone_hash,
 			r.email_hash,
 			r.password_hash,
-			r.is_access_enabled,
+			r.family_access,
 			r.branch_id::text,
 			r.unit_id::text,
 			r.room_id::text,
@@ -656,7 +656,7 @@ func (r *PostgresResidentsRepository) ListResidents(ctx context.Context, tenantI
 			&phoneHash,
 			&emailHash,
 			&passwordHash,
-			&resident.IsAccessEnabled,
+			&resident.FamilyAccess,
 			&branchID,
 			&unitID,
 			&roomID,
@@ -821,13 +821,13 @@ func (r *PostgresResidentsRepository) CreateResident(ctx context.Context, tenant
 			tenant_id, resident_account, resident_account_hash, nickname,
 			admission_date, discharge_date, service_level, status, role,
 			metadata, note, phone, email, phone_hash, email_hash, password_hash,
-			is_access_enabled, branch_id, unit_id, room_id, bed_id
+			family_access, branch_id, unit_id, room_id, bed_id
 		) VALUES ($1, LOWER($2), $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		RETURNING resident_id::text`,
 		tenantID, resident.ResidentAccount, resident.ResidentAccountHash, resident.Nickname,
 		admissionDate, dischargeDateArg, serviceLevelArg, status, role,
 		metadataArg, noteArg, phoneArg, emailArg, phoneHashArg, emailHashArg, passwordHashArg,
-		resident.IsAccessEnabled, branchIDArg, unitIDArg, roomIDArg, bedIDArg,
+		resident.FamilyAccess, branchIDArg, unitIDArg, roomIDArg, bedIDArg,
 	).Scan(&residentID)
 	if err != nil {
 		return "", fmt.Errorf("failed to create resident: %w", err)
@@ -954,8 +954,8 @@ func (r *PostgresResidentsRepository) UpdateResident(ctx context.Context, tenant
 		// 允许设置为NULL
 		updates = append(updates, "email = NULL")
 	}
-	updates = append(updates, fmt.Sprintf("is_access_enabled = $%d", argIdx))
-	args = append(args, resident.IsAccessEnabled)
+	updates = append(updates, fmt.Sprintf("family_access = $%d", argIdx))
+	args = append(args, resident.FamilyAccess)
 	argIdx++
 	if resident.BranchID != "" {
 		updates = append(updates, fmt.Sprintf("branch_id = $%d", argIdx))
@@ -1273,13 +1273,13 @@ func (r *PostgresResidentsRepository) UpdateResidentFields(ctx context.Context, 
 		}
 	}
 
-	// Handle IsAccessEnabled (NOT NULL)
-	if update.IsAccessEnabled != nil {
-		switch update.IsAccessEnabled.Action {
+	// Handle FamilyAccess (NOT NULL)
+	if update.FamilyAccess != nil {
+		switch update.FamilyAccess.Action {
 		case domain.UpdateActionUpdate:
-			addUpdate("is_access_enabled", update.IsAccessEnabled.Value)
+			addUpdate("family_access", update.FamilyAccess.Value)
 		case domain.UpdateActionDelete:
-			return fmt.Errorf("is_access_enabled cannot be deleted (NOT NULL constraint)")
+			return fmt.Errorf("family_access cannot be deleted (NOT NULL constraint)")
 		case domain.UpdateActionKeep:
 			// Do nothing
 		}

@@ -36,7 +36,7 @@ type ResidentUpdate struct {
 	PasswordHash *UpdateBytes  // BYTEA, NOT NULL（但更新时可以为空，表示不更新）
 
 	// 权限控制
-	IsAccessEnabled *UpdateBool // BOOLEAN, NOT NULL（但更新时可以为空，表示不更新）
+	FamilyAccess *UpdateBool // BOOLEAN, NOT NULL（但更新时可以为空，表示不更新）
 
 	// 院区关联
 	BranchID *UpdateString // UUID, nullable

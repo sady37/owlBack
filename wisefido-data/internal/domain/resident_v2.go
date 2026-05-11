@@ -33,6 +33,7 @@ type ResidentV2 struct {
 	BirthYear       *int    `json:"birth_year,omitempty"`
 	AdmissionDate   *string `json:"admission_date,omitempty"`
 	DischargeDate   *string `json:"discharge_date,omitempty"`
+	FamilyAccess    *bool   `json:"family_access,omitempty"`  // 是否允许 role=Family 用户登录
 	Note            *string `json:"note,omitempty"`
 }
 
@@ -52,12 +53,16 @@ type ResidentV2Detail struct {
 	RoomName     *string `json:"room_name,omitempty"`
 	BedName      *string `json:"bed_name,omitempty"`
 
-	// 关联（resident_caregivers 一表二选一）
+	// 关联：resident_caregivers 一表，护理（caregiver/team 二选一）+ 家属(family_id 独立)
 	Caregivers []ResidentCaregiverV2 `json:"caregivers,omitempty"`
 	Teams      []ResidentTeamV2      `json:"teams,omitempty"`
+	Family     []ResidentFamilyV2    `json:"family,omitempty"`
 
-	// PHI（Phase 3b 加解密）
+	// PHI（加解密）
 	PHI *ResidentPHIv2 `json:"phi,omitempty"`
+
+	// Contacts（紧急联系人，多行）
+	Contacts []ResidentContactV2 `json:"contacts,omitempty"`
 }
 
 // ResidentCaregiverV2 — caregiver 直接绑定 (resident_caregivers.caregiver_id)
@@ -67,7 +72,14 @@ type ResidentCaregiverV2 struct {
 	UserAccount string `json:"user_account"`
 	Nickname  string `json:"nickname,omitempty"`
 	Role      string `json:"role,omitempty"`       // Caregiver / Nurse / Manager / Individual
-	IsPrimary bool   `json:"is_primary,omitempty"`
+}
+
+// ResidentFamilyV2 — family 绑定 (resident_caregivers.family_id, users.role=Family)
+type ResidentFamilyV2 struct {
+	HoA         string `json:"hoa"`
+	UserID      string `json:"user_id"`
+	UserAccount string `json:"user_account"`
+	Nickname    string `json:"nickname,omitempty"`
 }
 
 // ResidentTeamV2 — care team 间接关联 (resident_caregivers.care_team_id)
@@ -77,12 +89,12 @@ type ResidentTeamV2 struct {
 	TeamKind string `json:"team_kind,omitempty"`
 }
 
-// ResidentPHIv2 — Phase 3b 接通加密链路；当前 stub 显示明文 read-only
+// ResidentPHIv2 — 全字段 AES-256-GCM 加密；FE/BE/DB 字段名 1:1
 type ResidentPHIv2 struct {
 	// HIPAA min-necessary: 所有字段 optional，空值不写入
 	FirstName             *string  `json:"first_name,omitempty"`
 	LastName              *string  `json:"last_name,omitempty"`
-	DateOfBirth           *string  `json:"date_of_birth,omitempty"` // ISO date
+	DateOfBirth           *string  `json:"date_of_birth,omitempty"` // ISO date (YYYY-MM-DD)
 	ResidentPhone         *string  `json:"resident_phone,omitempty"`
 	ResidentEmail         *string  `json:"resident_email,omitempty"`
 	WeightLb              *float64 `json:"weight_lb,omitempty"`
@@ -104,6 +116,34 @@ type ResidentPHIv2 struct {
 	HomeAddressCity       *string  `json:"home_address_city,omitempty"`
 	HomeAddressState      *string  `json:"home_address_state,omitempty"`
 	HomeAddressPostalCode *string  `json:"home_address_postal_code,omitempty"`
+	PlusCode              *string  `json:"plus_code,omitempty"` // 短码明文存
+
+	// OTP 一次性授权码（独立 feature，不属常规 PHI 字段）
+	OTP *ResidentOTPv2 `json:"otp,omitempty"`
+}
+
+// ResidentOTPv2 — resident ↔ caregiver 匿名身份认证 OTP
+type ResidentOTPv2 struct {
+	Code      *string `json:"code,omitempty"`       // 当前有效 OTP
+	Purpose   *string `json:"purpose,omitempty"`    // 'caregiver_visit' / 'emergency_dispatch'
+	IssuedAt  *string `json:"issued_at,omitempty"`  // ISO timestamp
+	ExpiresAt *string `json:"expires_at,omitempty"`
+	UsedAt    *string `json:"used_at,omitempty"`
+	UsedBy    *string `json:"used_by,omitempty"` // caregiver user_id (uuid)
+}
+
+// ResidentContactV2 — 紧急/家属联系人（resident_contacts 表，多行）
+type ResidentContactV2 struct {
+	ContactID         string  `json:"contact_id"` // uuid
+	ResidentID        string  `json:"resident_id,omitempty"`
+	LinkedUserID      *string `json:"linked_user_id,omitempty"` // 关联已注册 owl user (uuid)
+	Relationship      string  `json:"relationship"`             // NOT NULL
+	ContactFirstName  *string `json:"contact_first_name,omitempty"`
+	ContactLastName   *string `json:"contact_last_name,omitempty"`
+	ContactPhone      *string `json:"contact_phone,omitempty"`
+	ContactEmail      *string `json:"contact_email,omitempty"`
+	ReceiveSMS        bool    `json:"receive_sms"`
+	ReceiveEmail      bool    `json:"receive_email"`
 }
 
 // ===========================================================================
@@ -114,23 +154,26 @@ type ResidentPHIv2 struct {
 type ResidentV2CreateInput struct {
 	Nickname string `json:"nickname"` // 必填
 
-	ResidentAccount *string `json:"resident_account,omitempty"` // 留空 → 后端 'R{slot:0000}'
-	ServiceLevel    *string `json:"service_level,omitempty"`    // 写 DB service_tier
+	ResidentAccount *string `json:"resident_account,omitempty"`
+	ServiceLevel    *string `json:"service_level,omitempty"`
 	Gender          *string `json:"gender,omitempty"`
 	BirthYear       *int    `json:"birth_year,omitempty"`
-	AdmissionDate   *string `json:"admission_date,omitempty"`   // 写 DB move_in_date
-	Note            *string `json:"note,omitempty"`             // 写 DB notes
+	AdmissionDate   *string `json:"admission_date,omitempty"`
+	FamilyAccess    *bool   `json:"family_access,omitempty"`
+	Note            *string `json:"note,omitempty"`
 
 	// 空间分配（值 IPv6 CIDR string）
 	UnitID *string `json:"unit_id,omitempty"` // /80 CIDR
 	RoomID *string `json:"room_id,omitempty"` // /88 CIDR
 	BedID  *string `json:"bed_id,omitempty"`  // /96 CIDR
 
-	// 关联（FE 二选一）
+	// 关联
 	CaregiverUserIDs []string `json:"caregiver_user_ids,omitempty"`
 	CareTeamIDs      []string `json:"care_team_ids,omitempty"`
+	FamilyUserIDs    []string `json:"family_user_ids,omitempty"`
 
-	PHI *ResidentPHIv2 `json:"phi,omitempty"`
+	PHI      *ResidentPHIv2      `json:"phi,omitempty"`
+	Contacts []ResidentContactV2 `json:"contacts,omitempty"`
 }
 
 // ResidentV2UpdateInput — PUT /admin/api/v2/residents/{hoa}
@@ -143,8 +186,9 @@ type ResidentV2UpdateInput struct {
 	ServiceLevel    *string `json:"service_level,omitempty"`
 	Gender          *string `json:"gender,omitempty"`
 	BirthYear       *int    `json:"birth_year,omitempty"`
-	AdmissionDate   *string `json:"admission_date,omitempty"` // Nurse 不可改（business rule）
-	DischargeDate   *string `json:"discharge_date,omitempty"` // Nurse 不可改
+	AdmissionDate   *string `json:"admission_date,omitempty"`
+	DischargeDate   *string `json:"discharge_date,omitempty"`
+	FamilyAccess    *bool   `json:"family_access,omitempty"`
 	Note            *string `json:"note,omitempty"`
 
 	// 空间分配（任一字段提供即视为重新分配；空字符串 = 解绑）
@@ -152,12 +196,14 @@ type ResidentV2UpdateInput struct {
 	RoomID *string `json:"room_id,omitempty"`
 	BedID  *string `json:"bed_id,omitempty"`
 
-	// 关联（提供即重置；FE 二选一时另一方提空数组清残留）
-	CaregiverUserIDs *[]string `json:"caregiver_user_ids,omitempty"` // *nil*=不改 / *empty*=清空 / *N items*=替换
+	// 关联（提供即重置）
+	CaregiverUserIDs *[]string `json:"caregiver_user_ids,omitempty"`
 	CareTeamIDs      *[]string `json:"care_team_ids,omitempty"`
+	FamilyUserIDs    *[]string `json:"family_user_ids,omitempty"`
 
-	// PHI（提供即更新；Phase 3b 实际加密落库）
-	PHI *ResidentPHIv2 `json:"phi,omitempty"`
+	// PHI / Contacts（提供即更新）
+	PHI      *ResidentPHIv2       `json:"phi,omitempty"`
+	Contacts *[]ResidentContactV2 `json:"contacts,omitempty"`
 }
 
 // ResidentV2ListFilter

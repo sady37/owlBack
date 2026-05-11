@@ -48,6 +48,9 @@ type UserService interface {
 	// Caregivers 管理（用于前端选择 caregivers 和 caregiver groups）
 	GetAvailableCaregivers(ctx context.Context, req GetAvailableCaregiversRequest) (*GetAvailableCaregiversResponse, error)
 	GetAvailableCaregiverGroups(ctx context.Context, req GetAvailableCaregiverGroupsRequest) (*GetAvailableCaregiverGroupsResponse, error)
+
+	// Family 管理（用于前端选择本 branch 下 role=Family 的 user）
+	GetAvailableFamily(ctx context.Context, req GetAvailableFamilyRequest) (*GetAvailableFamilyResponse, error)
 }
 
 // userService 实现
@@ -285,6 +288,18 @@ type GetAvailableCaregiverGroupsRequest struct {
 // GetAvailableCaregiverGroupsResponse 获取可用 caregiver groups 响应
 type GetAvailableCaregiverGroupsResponse struct {
 	Items []CaregiverGroupDTO // 可用 caregiver groups 列表（tag 名称和成员数量）
+}
+
+// GetAvailableFamilyRequest 获取本 branch 下 role=Family 的 user 列表
+type GetAvailableFamilyRequest struct {
+	TenantID      string
+	CurrentUserID string
+	BranchID      string
+}
+
+// GetAvailableFamilyResponse
+type GetAvailableFamilyResponse struct {
+	Items []UserDTO
 }
 
 // CaregiverGroupDTO caregiver group 数据传输对象
@@ -2320,6 +2335,7 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 		if !strings.Contains(tenantPrefix, "/") {
 			tenantPrefix += "/48"
 		}
+		// 同时聚合 user 所属 active care_teams 的 team_name（作为 Tags / CareTeam 列）
 		rows, err := s.db.QueryContext(ctx, `
 			SELECT u.user_id::text,
 			       host(u.tenant_id) || '/48' AS tenant_id,
@@ -2327,7 +2343,13 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 			       COALESCE(u.nickname, ''),
 			       COALESCE(u.email, ''),
 			       COALESCE(u.role, ''),
-			       COALESCE(u.status, 'active')
+			       COALESCE(u.status, 'active'),
+			       COALESCE((
+			         SELECT array_agg(t.team_name ORDER BY t.team_name)
+			           FROM care_team_members m
+			           JOIN care_teams t ON t.team_id = m.team_id
+			          WHERE m.user_id = u.user_id AND m.valid_to IS NULL
+			       ), '{}') AS teams
 			  FROM users u
 			 WHERE u.tenant_id = $1::INET
 			   AND LOWER(u.role) IN ('nurse', 'caregiver', 'individual', 'manager')
@@ -2340,7 +2362,8 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 		out := []UserDTO{}
 		for rows.Next() {
 			var u UserDTO
-			if err := rows.Scan(&u.UserID, &u.TenantID, &u.UserAccount, &u.Nickname, &u.Email, &u.Role, &u.Status); err != nil {
+			var teams pq.StringArray
+			if err := rows.Scan(&u.UserID, &u.TenantID, &u.UserAccount, &u.Nickname, &u.Email, &u.Role, &u.Status, &teams); err != nil {
 				continue
 			}
 			// 归一化 role 显示
@@ -2354,6 +2377,7 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 			case "individual":
 				u.Role = "Individual"
 			}
+			u.Tags = []string(teams)
 			out = append(out, u)
 		}
 		return &GetAvailableCaregiversResponse{Items: out}, nil
@@ -3249,4 +3273,52 @@ func stringSlicesEqual(a, b []string) bool {
 	}
 
 	return true
+}
+
+// GetAvailableFamily 返回 tenant 下 role=Family 且 active 的 users
+// branch 过滤暂不严格（Family 通常不像 caregiver 那样严格按 branch 划分），保留 branch_id 参数兼容前端
+func (s *userService) GetAvailableFamily(ctx context.Context, req GetAvailableFamilyRequest) (*GetAvailableFamilyResponse, error) {
+	if req.TenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	if req.BranchID == "" {
+		return nil, fmt.Errorf("branch_id is required")
+	}
+
+	// 仅 v2：tenant_id 是 INET CIDR
+	if !strings.Contains(req.TenantID, "::") {
+		return &GetAvailableFamilyResponse{Items: []UserDTO{}}, nil
+	}
+	tenantPrefix := req.TenantID
+	if !strings.Contains(tenantPrefix, "/") {
+		tenantPrefix += "/48"
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT u.user_id::text,
+		       host(u.tenant_id) || '/48' AS tenant_id,
+		       u.user_account,
+		       COALESCE(u.nickname, ''),
+		       COALESCE(u.email, ''),
+		       COALESCE(u.role, ''),
+		       COALESCE(u.status, 'active')
+		  FROM users u
+		 WHERE u.tenant_id = $1::INET
+		   AND LOWER(u.role) = 'family'
+		   AND COALESCE(u.status, 'active') = 'active'
+		 ORDER BY u.user_account`, tenantPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("query family users: %w", err)
+	}
+	defer rows.Close()
+	out := []UserDTO{}
+	for rows.Next() {
+		var u UserDTO
+		if err := rows.Scan(&u.UserID, &u.TenantID, &u.UserAccount, &u.Nickname, &u.Email, &u.Role, &u.Status); err != nil {
+			continue
+		}
+		u.Role = "Family"
+		out = append(out, u)
+	}
+	return &GetAvailableFamilyResponse{Items: out}, nil
 }

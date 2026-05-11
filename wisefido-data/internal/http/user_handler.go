@@ -49,6 +49,9 @@ func (h *UserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// GetAvailableCaregiverGroups
 	case path == "/admin/api/v1/users/caregiver-groups" && r.Method == http.MethodGet:
 		h.GetAvailableCaregiverGroups(w, r)
+	// GetAvailableFamily
+	case path == "/admin/api/v1/users/family" && r.Method == http.MethodGet:
+		h.GetAvailableFamily(w, r)
 	// GetAccountSettings (必须在 GetUser 之前，因为路径更具体)
 	case strings.HasSuffix(path, "/account-settings") && r.Method == http.MethodGet:
 		userID := strings.TrimSuffix(path, "/account-settings")
@@ -1318,6 +1321,55 @@ func (h *UserHandler) GetAvailableCaregivers(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, Ok(map[string]any{
 		"items": items,
 	}))
+}
+
+// GetAvailableFamily 获取本 branch 下所有 role=Family 的 user
+//   query: branch_id (必填)
+//   header: X-User-Id (用于审计 / 权限检查)
+func (h *UserHandler) GetAvailableFamily(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	tenantID, ok := h.base.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+	currentUserID := r.Header.Get("X-User-Id")
+	if currentUserID == "" {
+		writeJSON(w, http.StatusOK, Fail("current_user_id is required"))
+		return
+	}
+	branchID := r.URL.Query().Get("branch_id")
+	if branchID == "" {
+		writeJSON(w, http.StatusOK, Fail("branch_id is required"))
+		return
+	}
+
+	resp, err := h.userService.GetAvailableFamily(ctx, service.GetAvailableFamilyRequest{
+		TenantID:      tenantID,
+		CurrentUserID: currentUserID,
+		BranchID:      branchID,
+	})
+	if err != nil {
+		h.logger.Error("GetAvailableFamily failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	items := make([]map[string]any, 0, len(resp.Items))
+	for _, user := range resp.Items {
+		items = append(items, map[string]any{
+			"user_id":       user.UserID,
+			"tenant_id":     user.TenantID,
+			"user_account":  user.UserAccount,
+			"user_nickname": user.Nickname,
+			"nickname":      user.Nickname,
+			"email":         user.Email,
+			"phone":         user.Phone,
+			"role":          user.Role,
+			"status":        user.Status,
+		})
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]any{"items": items}))
 }
 
 // GetAvailableCaregiverGroups 获取可用 caregiver groups 列表

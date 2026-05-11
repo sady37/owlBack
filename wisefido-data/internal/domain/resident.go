@@ -49,7 +49,7 @@ type Resident struct {
 	PasswordHash []byte `db:"password_hash"` // BYTEA, NOT NULL
 
 	// 权限控制
-	IsAccessEnabled bool `db:"is_access_enabled"` // BOOLEAN, NOT NULL, DEFAULT FALSE
+	FamilyAccess bool `db:"family_access"` // BOOLEAN, NOT NULL, DEFAULT FALSE
 
 	// 院区关联
 	BranchID string `db:"branch_id"` // UUID, nullable（引用branches.branch_id）

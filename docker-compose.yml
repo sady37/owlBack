@@ -130,7 +130,8 @@ services:
     volumes:
       - ./kea/dhcp6:/etc/kea:ro
       - kea_lease_data:/var/lib/kea
-      - kea_run:/var/run/kea
+    tmpfs:
+      - /var/run/kea   # PID/lock 文件不持久化，避免 reboot 后 stale PID 卡死 daemon
     # owl 设备不真连 DHCPv6，547 不需对外（仅容器内监听）
     networks:
       - owl-net
@@ -154,7 +155,8 @@ services:
     volumes:
       - ./kea/ctrl:/etc/kea:ro
       - kea_lease_data:/var/lib/kea
-      - kea_run:/var/run/kea
+    tmpfs:
+      - /var/run/kea   # PID/lock 文件不持久化，避免 reboot 后 stale PID 卡死 daemon
     ports:
       - "8000:8000"   # REST API 给宿主 owl-data service 调
     networks:
@@ -209,8 +211,6 @@ volumes:
   redis_data:
     driver: local
   kea_lease_data:
-    driver: local
-  kea_run:
     driver: local
   bind_cache:
     driver: local

@@ -140,7 +140,7 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 							SELECT 1 FROM residents r
 							WHERE r.tenant_id = c.tenant_id
 								AND r.resident_id::text = (c.residents->1->>'resident_id')::text
-								AND r.is_access_enabled = TRUE
+								AND r.family_access = TRUE
 						)
 					)
 				)
@@ -216,7 +216,7 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 							SELECT 1 FROM residents r
 							WHERE r.tenant_id = c.tenant_id
 								AND r.resident_id::text = $` + fmt.Sprintf("%d", argIdx) + `
-								AND r.is_access_enabled = TRUE
+								AND r.family_access = TRUE
 						)
 					)
 				)

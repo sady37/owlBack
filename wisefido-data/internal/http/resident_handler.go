@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -94,13 +95,6 @@ func (h *ResidentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				case "contacts":
 					// GET /admin/api/v1/residents/:id/contacts - 获取联系人列表（已包含在 GetResident 中）
 					h.GetResident(w, r, parts[0])
-				case "reset-password":
-					// POST /admin/api/v1/residents/:id/reset-password
-					if r.Method == http.MethodPost {
-						h.ResetResidentPassword(w, r, parts[0])
-					} else {
-						w.WriteHeader(http.StatusMethodNotAllowed)
-					}
 				default:
 					w.WriteHeader(http.StatusNotFound)
 				}
@@ -143,15 +137,6 @@ func (h *ResidentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		residentID := strings.TrimPrefix(path, "/admin/api/v1/residents/")
 		if residentID != "" && !strings.Contains(residentID, "/") {
 			h.DeleteResident(w, r, residentID)
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
-	// ResetResidentPassword
-	case strings.HasSuffix(path, "/reset-password") && r.Method == http.MethodPost:
-		residentID := strings.TrimSuffix(path, "/reset-password")
-		residentID = strings.TrimPrefix(residentID, "/admin/api/v1/residents/")
-		if residentID != "" && !strings.Contains(residentID, "/") {
-			h.ResetResidentPassword(w, r, residentID)
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -234,7 +219,7 @@ func (h *ResidentHandler) ListResidents(w http.ResponseWriter, r *http.Request) 
 			"tenant_id":         item.TenantID,
 			"nickname":          item.Nickname,
 			"status":            item.Status,
-			"is_access_enabled": item.IsAccessEnabled,
+			"family_access": item.FamilyAccess,
 		}
 		if item.ResidentAccount != nil {
 			itemMap["resident_account"] = *item.ResidentAccount
@@ -328,7 +313,7 @@ type CreateResidentInherentAttributesRequest struct {
 	AdmissionDate   string          `json:"admission_date"`    // 入院日期 YYYY-MM-DD 格式（可选，默认当前日期）
 	DischargeDate   string          `json:"discharge_date"`    // 出院日期 YYYY-MM-DD 格式（可选，仅在 status='discharged' 或 'transferred' 时有效）
 	BranchID        string          `json:"branch_id"`         // 院区ID（可选）
-	IsAccessEnabled bool            `json:"is_access_enabled"` // 是否允许查看状态（可选，默认 false）
+	FamilyAccess bool            `json:"family_access"` // 是否允许查看状态（可选，默认 false）
 	Note            string          `json:"note"`              // 备注（可选）
 	PhoneHash       string          `json:"phone_hash"`        // phone_hash hex 字符串（可选，前端已计算）
 	EmailHash       string          `json:"email_hash"`        // email_hash hex 字符串（可选，前端已计算）
@@ -398,13 +383,11 @@ type CreateResidentUnitRelationRequest struct {
 	// 业务规则：bed → room → unit（如果指定 bed_id，则必须同时指定 room_id 和 unit_id）
 }
 
-// CreateResidentCaregiverRelationRequest Handler 层 Resident 与 Caregiver 的关系请求结构
+// CreateResidentCaregiverRelationRequest Handler 层 Resident 与 Caregiver/Family 的关系请求结构
 type CreateResidentCaregiverRelationRequest struct {
-	UserList  []string `json:"user_list"`  // 用户ID列表（可选，JSONB array）
-	GroupList []string `json:"group_list"` // 用户组标签列表（可选，JSONB array，用于匹配 users.user_tags）
-	// 说明：
-	//   - 每个租户+住户最多一条记录（UNIQUE(tenant_id, resident_id)）
-	//   - 如果 user_list 和 group_list 都为空，使用默认告警路由规则（由应用层处理）
+	UserList   []string `json:"user_list"`   // caregiver user_id 列表（resident_caregivers.caregiver_id 行）
+	GroupList  []string `json:"group_list"`  // care team_id 列表（resident_caregivers.care_team_id 行）
+	FamilyList []string `json:"family_list"` // family user_id 列表（resident_caregivers.family_id 行；与护理独立）
 }
 
 // ============================================
@@ -476,7 +459,7 @@ func (h *ResidentHandler) GetResident(w http.ResponseWriter, r *http.Request, re
 		"tenant_id":         resp.Resident.TenantID,
 		"nickname":          resp.Resident.Nickname,
 		"status":            resp.Resident.Status,
-		"is_access_enabled": resp.Resident.IsAccessEnabled,
+		"family_access": resp.Resident.FamilyAccess,
 	}
 	if resp.Resident.ResidentAccount != nil {
 		item["resident_account"] = *resp.Resident.ResidentAccount
@@ -769,6 +752,22 @@ func (h *ResidentHandler) GetResident(w http.ResponseWriter, r *http.Request, re
 		} else {
 			caregivers["userList"] = []any{}
 		}
+		// FamilyList - 与 UserList 同结构，但 role=Family
+		if len(resp.Caregivers.FamilyList) > 0 {
+			familyList := make([]map[string]any, 0, len(resp.Caregivers.FamilyList))
+			for _, user := range resp.Caregivers.FamilyList {
+				familyList = append(familyList, map[string]any{
+					"user_id":      user.UserID,
+					"user_account": user.UserAccount,
+					"nickname":     user.Nickname,
+					"role":         user.Role,
+					"status":       user.Status,
+				})
+			}
+			caregivers["familyList"] = familyList
+		} else {
+			caregivers["familyList"] = []any{}
+		}
 		item["caregivers"] = caregivers
 	}
 
@@ -847,7 +846,7 @@ func (h *ResidentHandler) CreateResident(w http.ResponseWriter, r *http.Request)
 			Status:          handlerReq.InherentAttributes.Status,
 			ServiceLevel:    handlerReq.InherentAttributes.ServiceLevel,
 			BranchID:        handlerReq.InherentAttributes.BranchID,
-			IsAccessEnabled: handlerReq.InherentAttributes.IsAccessEnabled,
+			FamilyAccess: handlerReq.InherentAttributes.FamilyAccess,
 			Note:            handlerReq.InherentAttributes.Note,
 			PhoneHash:       handlerReq.InherentAttributes.PhoneHash,
 			EmailHash:       handlerReq.InherentAttributes.EmailHash,
@@ -944,11 +943,12 @@ func (h *ResidentHandler) CreateResident(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// 3. 构建 CaregiverRelation（护理人员分配）
+	// 3. 构建 CaregiverRelation（护理人员分配 + 家属绑定）
 	if handlerReq.CaregiverRelation != nil {
 		serviceReq.CaregiverRelation = &service.CreateResidentCaregiverRelation{
-			UserList:  handlerReq.CaregiverRelation.UserList,
-			GroupList: handlerReq.CaregiverRelation.GroupList,
+			UserList:   handlerReq.CaregiverRelation.UserList,
+			GroupList:  handlerReq.CaregiverRelation.GroupList,
+			FamilyList: handlerReq.CaregiverRelation.FamilyList,
 		}
 	}
 
@@ -1091,11 +1091,11 @@ func (h *ResidentHandler) UpdateResident(w http.ResponseWriter, r *http.Request,
 			inherentAttrs.BranchID = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
 		}
 	}
-	if val, exists := payload["is_access_enabled"]; exists {
+	if val, exists := payload["family_access"]; exists {
 		if val == nil {
-			inherentAttrs.IsAccessEnabled = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
+			inherentAttrs.FamilyAccess = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
 		} else if b, ok := val.(bool); ok {
-			inherentAttrs.IsAccessEnabled = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
+			inherentAttrs.FamilyAccess = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
 		}
 	}
 	if val, exists := payload["note"]; exists {
@@ -1473,7 +1473,7 @@ func (h *ResidentHandler) UpdateResident(w http.ResponseWriter, r *http.Request,
 	if inherentAttrs != nil && (inherentAttrs.ResidentAccount != nil || inherentAttrs.Nickname != nil ||
 		inherentAttrs.PasswordHash != nil || inherentAttrs.Status != nil || inherentAttrs.ServiceLevel != nil ||
 		inherentAttrs.AdmissionDate != nil || inherentAttrs.DischargeDate != nil || inherentAttrs.BranchID != nil ||
-		inherentAttrs.IsAccessEnabled != nil || inherentAttrs.Note != nil || inherentAttrs.Phone != nil ||
+		inherentAttrs.FamilyAccess != nil || inherentAttrs.Note != nil || inherentAttrs.Phone != nil ||
 		inherentAttrs.Email != nil || inherentAttrs.PhoneHash != nil || inherentAttrs.EmailHash != nil ||
 		inherentAttrs.Metadata != nil || inherentAttrs.PHI != nil || len(inherentAttrs.Contacts) > 0) {
 		req.InherentAttributes = inherentAttrs
@@ -1514,15 +1514,43 @@ func (h *ResidentHandler) UpdateResident(w http.ResponseWriter, r *http.Request,
 
 	// 5. 处理 CaregiverRelation（护理人员分配）
 	// 注意：前端发送的格式是 {userList: [], groupList: []}（驼峰格式）
+	debugFile, _ := os.OpenFile("/tmp/caregiver-debug.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if debugFile != nil {
+		fmt.Fprintf(debugFile, "=== CAREGIVER DEBUG ===\n")
+		fmt.Fprintf(debugFile, "payload keys: %v\n", func() []string {
+			keys := make([]string, 0)
+			for k := range payload {
+				keys = append(keys, k)
+			}
+			return keys
+		}())
+		debugFile.Close()
+	}
+
 	if caregivers, ok := payload["caregivers"].(map[string]any); ok {
+		debugFile, _ := os.OpenFile("/tmp/caregiver-debug.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if debugFile != nil {
+			fmt.Fprintf(debugFile, "caregivers found: %+v\n", caregivers)
+			debugFile.Close()
+		}
 		cgRelation := &service.UpdateResidentCaregiverRelation{}
 
 		if val, exists := caregivers["userList"]; exists {
+			debugFile, _ := os.OpenFile("/tmp/caregiver-debug.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+			if debugFile != nil {
+				fmt.Fprintf(debugFile, "userList exists: %v\n", val)
+				debugFile.Close()
+			}
 			if val == nil {
 				cgRelation.UserList = &domain.UpdateJSON{Action: domain.UpdateActionDelete, Value: nil}
 			} else if userList, ok := val.([]any); ok {
 				if jsonBytes, err := json.Marshal(userList); err == nil {
 					cgRelation.UserList = &domain.UpdateJSON{Action: domain.UpdateActionUpdate, Value: jsonBytes}
+					debugFile, _ := os.OpenFile("/tmp/caregiver-debug.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+					if debugFile != nil {
+						fmt.Fprintf(debugFile, "userList set: %s\n", string(jsonBytes))
+						debugFile.Close()
+					}
 				}
 			}
 		}
@@ -1535,10 +1563,36 @@ func (h *ResidentHandler) UpdateResident(w http.ResponseWriter, r *http.Request,
 				}
 			}
 		}
+		if val, exists := caregivers["familyList"]; exists {
+			if val == nil {
+				cgRelation.FamilyList = &domain.UpdateJSON{Action: domain.UpdateActionDelete, Value: nil}
+			} else if familyList, ok := val.([]any); ok {
+				if jsonBytes, err := json.Marshal(familyList); err == nil {
+					cgRelation.FamilyList = &domain.UpdateJSON{Action: domain.UpdateActionUpdate, Value: jsonBytes}
+				}
+			}
+		}
 
 		// 只有至少有一个字段需要更新时，才设置 CaregiverRelation
-		if cgRelation.UserList != nil || cgRelation.GroupList != nil {
+		if cgRelation.UserList != nil || cgRelation.GroupList != nil || cgRelation.FamilyList != nil {
 			req.CaregiverRelation = cgRelation
+			debugFile, _ := os.OpenFile("/tmp/caregiver-debug.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+			if debugFile != nil {
+				fmt.Fprintf(debugFile, "CaregiverRelation set!\n")
+				debugFile.Close()
+			}
+		} else {
+			debugFile, _ := os.OpenFile("/tmp/caregiver-debug.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+			if debugFile != nil {
+				fmt.Fprintf(debugFile, "No CaregiverRelation fields\n")
+				debugFile.Close()
+			}
+		}
+	} else {
+		debugFile, _ := os.OpenFile("/tmp/caregiver-debug.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if debugFile != nil {
+			fmt.Fprintf(debugFile, "caregivers NOT found in payload\n")
+			debugFile.Close()
 		}
 	}
 
@@ -1976,66 +2030,6 @@ func (h *ResidentHandler) DeleteResident(w http.ResponseWriter, r *http.Request,
 // ResetResidentPassword 重置住户密码
 // ============================================
 
-func (h *ResidentHandler) ResetResidentPassword(w http.ResponseWriter, r *http.Request, residentID string) {
-	ctx := r.Context()
-
-	tenantID, ok := h.base.tenantIDFromReq(w, r)
-	if !ok {
-		return
-	}
-
-	currentUserID := r.Header.Get("X-User-Id")
-	currentUserType := r.Header.Get("X-User-Type")
-	currentUserRole := r.Header.Get("X-User-Role")
-
-	// 解析请求体（可选）
-	var payload map[string]any
-	var passwordHash string
-	if err := readBodyJSON(r, 1<<20, &payload); err == nil {
-		if pwd, ok := payload["password_hash"].(string); ok {
-			passwordHash = pwd
-		}
-	}
-
-	// 权限检查结果（Service 层会自己查询用户信息和验证权限，这里只传递权限配置）
-	var permCheck *service.PermissionCheckResult
-	if currentUserRole != "" && h.db != nil {
-		perm, err := GetResourcePermission(h.db, ctx, currentUserRole, "residents", "U")
-		if err == nil {
-			// Service 层会自己查询用户的 branch_id，这里不需要传递 UserBranchTag
-			permCheck = &service.PermissionCheckResult{
-				AssignedOnly: perm.AssignedOnly,
-				BranchOnly:   perm.BranchOnly,
-			}
-		}
-	}
-
-	req := service.ResetResidentPasswordRequest{
-		TenantID:        tenantID,
-		ResidentID:      residentID,
-		CurrentUserID:   currentUserID,
-		CurrentUserType: currentUserType,
-		CurrentUserRole: currentUserRole,
-		PermissionCheck: permCheck,
-		NewPassword:     passwordHash,
-	}
-
-	resp, err := h.residentService.ResetResidentPassword(ctx, req)
-	if err != nil {
-		h.logger.Error("ResetResidentPassword failed",
-			zap.String("tenant_id", tenantID),
-			zap.String("resident_id", residentID),
-			zap.Error(err),
-		)
-		writeJSON(w, http.StatusOK, Fail(err.Error()))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, Ok(map[string]any{
-		"success":      resp.Success,
-		"new_password": resp.NewPassword,
-	}))
-}
 
 // ============================================
 // GetResidentAccountSettings 获取住户/联系人账户设置

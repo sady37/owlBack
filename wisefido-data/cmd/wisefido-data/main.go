@@ -435,9 +435,10 @@ func main() {
 		// 初始化 PHI 加密（K 服务模式）
 		kmsSocket := os.Getenv("KMS_SOCKET")
 		masterPin := os.Getenv("MASTER_PIN")
+		var phiCryptor *phipkg.PHICryptor
 		if kmsSocket != "" && masterPin != "" {
 			keyStore := phipkg.NewTenantKeyStore(kmsSocket, masterPin)
-			phiCryptor := phipkg.NewPHICryptor(keyStore)
+			phiCryptor = phipkg.NewPHICryptor(keyStore)
 			residentsRepo.SetPHICryptor(phiCryptor)
 			logger.Info("PHI encryption enabled", zap.String("kms_socket", kmsSocket))
 		} else {
@@ -446,6 +447,14 @@ func main() {
 
 		// 创建 Resident Service 和 Handler
 		residentService := service.NewResidentService(residentsRepo, db, logger)
+		// v2 service 也注入 cryptor（用于 PHI/Contacts 加密）
+		if phiCryptor != nil {
+			if svcWithCryptor, ok := residentService.(interface {
+				SetPHICryptor(*phipkg.PHICryptor)
+			}); ok {
+				svcWithCryptor.SetPHICryptor(phiCryptor)
+			}
+		}
 		residentHandler := httpapi.NewResidentHandler(residentService, db, logger)
 		router.RegisterResidentRoutes(residentHandler)
 

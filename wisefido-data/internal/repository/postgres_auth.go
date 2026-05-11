@@ -166,7 +166,7 @@ func (r *PostgresAuthRepository) GetResidentForLogin(ctx context.Context, tenant
 		   AND r.password_hash = $3
 		   AND (r.email_hash = $2 OR r.phone_hash = $2 OR r.resident_account_hash = $2)
 		   AND COALESCE(r.status,'active') = 'active'
-		   AND COALESCE(r.is_access_enabled,true) = true
+		   AND COALESCE(r.family_access,true) = true
 		 ORDER BY 
 		   CASE
 		     WHEN r.phone_hash = $2 THEN 1
@@ -225,7 +225,7 @@ func (r *PostgresAuthRepository) SearchTenantsForResidentLogin(ctx context.Conte
 		 WHERE r.password_hash = $2
 		   AND COALESCE(r.status,'active') = 'active'
 		   AND (r.email_hash = $1 OR r.phone_hash = $1 OR r.resident_account_hash = $1)
-		   AND COALESCE(r.is_access_enabled,true) = true
+		   AND COALESCE(r.family_access,true) = true
 		 ORDER BY priority ASC, r.tenant_id::text ASC
 	`
 

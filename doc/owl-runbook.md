@@ -176,26 +176,40 @@ docker ps                        # 应空（或仅剩与 owl 无关的容器）
 
 ### 3.2 必须人工干预：KMS 恢复
 
-KMS 没有 systemd unit，且 `--init` 会**生成新 master key**（导致已加密 PHI 数据无法解密）。重启后必须用 `--recover`。
+KMS 故意**不 enable** auto-start，且 `--init` 会**生成新 master key**（导致已加密 PHI 数据无法解密）。重启后必须人工触发 `--recover`。
 
-**两条路径**（取决于本机是否经历过 recover）：
+**推荐路径**（首次 reboot 之后都用这条）：
 
-| 情况 | 用什么 archive | `--mw-token` 传什么 |
+```bash
+sudo systemctl start owl-kms        # 不 enable，仅手动启动
+sudo systemctl status owl-kms       # 应为 active (running)
+curl -s --unix-socket /tmp/owl-kms.sock http://localhost/health   # {"status":"ok"}
+```
+
+`owl-kms.service` 调用 [`owlBack/scripts/systemd/owl-kms-run.sh`](../scripts/systemd/owl-kms-run.sh)，从 `kms/.kms-secrets`（chmod 600）读 `MW_TOKEN` / `MASTER_PIN`，自动挑最新的 `master_key-YYYYMMDD.json`，硬编码 `--recover`（脚本里禁掉了 `--init`）。
+
+> ⚠️ **已知妥协**：`ps -ef` 仍能看到 token——owl-kms 只接收 CLI 参数，无法消除。改善方向是 owl-kms 支持从 fd / env 读 token，下个迭代再做。
+>
+> ⚠️ **首次 reboot 例外**：如果 `.kms-secrets` 还没建（或 archive 仍是 init 那份），不要走 systemctl，照旧手敲（下面步骤）。`--mw-token` 用 init 当日 MW 单元格（本机 = `FCKE7K`，Apr×Fri；查 `mw.pgp`）。
+
+**两种 archive 阶段**：
+
+| 阶段 | archive | `--mw-token` |
 |---|---|---|
-| **首次 reboot**（archive 还是 init 那份） | `kms/master_key-20260417.json` | 查 mw.pgp 找 init 当日 MW 单元格 (本机 = `FCKE7K`，Apr×Fri) |
-| **后续 reboot**（archive 是上次 recover 写的） | 最新 `kms/master_key-YYYYMMDD.json` | 直接用 `.env` 里的 `MASTER_PIN` (本机 = `FtjPuGB8`) |
+| **首次 reboot**（archive = init 那份）| `kms/master_key-20260417.json` | `FCKE7K`（查 mw.pgp）|
+| **后续 reboot**（archive = 上次 recover 写的）| 最新 `kms/master_key-YYYYMMDD.json` | `FtjPuGB8`（== MASTER_PIN）|
 
 > 为什么两种 token 不一样？详见 [kms.md §3.2](kms.md)。简言之：
 > - init archive 用 MW token 加密（灾难恢复跳板）
 > - recover 写出的 archive 用 master_pin 加密（日常运维钥匙）
 > - cleanupArchives 保留最新 2 份，**第 2 次 recover 之后 init archive 会被删**，必须异地备份
 
-恢复步骤：
+**首次 reboot 手敲步骤**（仅在 `.kms-secrets` 尚未建立时用）：
 
 ```bash
 cd /home/wisefido/owl
 
-# (1) 仅首次 reboot 需要：解 mw.pgp 查 token
+# (1) 解 mw.pgp 查 token
 gpg --batch --yes --output /tmp/mw.md --decrypt owlBack/kms/mw.pgp
 cat /tmp/mw.md
 # 找 "Apr | Fri" = "FCKE7K"
@@ -206,7 +220,7 @@ nohup ./owlBack/kms/owl-kms \
   --recover \
   --archive owlBack/kms/master_key-20260417.json \
   --vault-dir owlBack/kms \
-  --mw-token <FCKE7K 或 FtjPuGB8> \
+  --mw-token FCKE7K \
   --master-pin FtjPuGB8 \
   > log/kms.out 2> log/kms.err &
 disown
@@ -215,11 +229,18 @@ disown
 ls -la /tmp/owl-kms.sock           # srw-rw---- wisefido wisefido
 curl -s --unix-socket /tmp/owl-kms.sock http://localhost/health
 # {"status":"ok"}
+
+# (4) 后续 reboot 准备：建 .kms-secrets（之后用 systemctl start owl-kms 即可）
+umask 077
+cat > owlBack/kms/.kms-secrets <<'EOF'
+MW_TOKEN=FtjPuGB8
+MASTER_PIN=FtjPuGB8
+EOF
 ```
 
 > ⚠️ **`--vault-dir` 必须传 `owlBack/kms`**——否则默认 `owlBack/vault` 会让新 archive 散到另一目录，cleanupArchives 也作用不到 init archive 那个目录。
 
-> ⚠️ **绝不要用 `--init`**——会生成新 master key + 新 salt，导致 resident_phi 表里所有 `*_enc` 列无法解密，业务面会大面积 401 / 解密失败。
+> ⚠️ **绝不要用 `--init`**——会生成新 master key + 新 salt，导致 resident_phi 表里所有 `*_enc` 列无法解密，业务面会大面积 401 / 解密失败。wrapper 脚本会拒绝 `--init`，但直接调 owl-kms 不会。
 
 ### 3.3 KMS 起来后重拉 owlback
 
@@ -234,7 +255,7 @@ sudo systemctl restart owlback.data owlback.cardagg owlback.sensor
 ```
 系统 reboot
    │
-   ├─► docker.service 自起 → owl-postgresql / owl-redis / owl-mqtt / sleepace-mysql 自起
+   ├─► docker.service 自起 → owl-postgresql / owl-redis / owl-mqtt / sleepace-mysql / kea-* 自起
    ├─► owlback.service 自起 (oneshot)
    │     └─► start-owlback-full.sh
    │           ├─► 30s 等基础设施 ready
@@ -242,9 +263,19 @@ sudo systemctl restart owlback.data owlback.cardagg owlback.sensor
    ├─► sleepace.service 自起 → 启 Java（端口 8090）
    ├─► owlfront.service 自起 → Vite :3100
    │
-人工: gpg 解 mw.pgp → 查 token → owl-kms --recover ...
-人工: sudo systemctl restart owlback
+人工: sudo systemctl start owl-kms     # 见 §3.2 推荐路径
+人工: sudo systemctl restart owlback   # 让 owlback 重新挂上 KMS
 ```
+
+### 3.5 已知 reboot 陷阱（历史踩过的坑）
+
+| 陷阱 | 症状 | 修复 | 是否一次性 |
+|---|---|---|---|
+| **Ubuntu 自带 postgresql.service 占 5432** | docker `owl-postgresql` 一直 Exited，wisefido-data 连不上 `owl_v2` DB | `sudo systemctl disable --now postgresql.service`（系统 PG 没业务数据，禁掉即可）| **永久**（已 disable）|
+| **kea 容器 stale PID** | `owl-kea-dhcp6` / `owl-kea-ctrl` 卡 `Restarting` 循环，日志 `DHCP6_ALREADY_RUNNING ... PID: 1` | docker-compose 已把 `/var/run/kea` 改成 tmpfs（[commit](../docker-compose.yml)）—— PID 不再持久化 | **永久**（compose 改完）|
+| **KMS recover 手敲参数易错** | 端口起来但 PHI 解密失败 / KMS 不接 socket | 用 `sudo systemctl start owl-kms`（见 §3.2）；首次 reboot 仍需手敲一次拿 init MW token | 首次手敲一次后永久 |
+
+> 都是已修复或固化的问题。如果未来又有新 reboot 翻车点，往这张表里加一行 + 写下永久修复方式。
 
 ---
 
@@ -403,6 +434,8 @@ curl -s -H "Authorization: Bearer <token>" http://127.0.0.1:8080/api/v1/resident
 | KMS 报 unwrap failed | mw-token 输错 / 取错单元格（注意 ISO 周日=7）/ 用了 init 的 token 解 recover archive（反之亦然） |
 | Vite 起不来 | `journalctl -u owlfront`，常见 npm 缺包 → `cd owlFront && npm i` 再 `systemctl restart owlfront` |
 | Docker 容器丢了数据 | `docker volume ls`，重要 volume：`owlback_postgres_data` `owlback_sleepace_mysql_data` `owlback_redis_data` |
+| `owl-postgresql` Exited / 占不到 5432 | Ubuntu system postgresql 抢端口；本机已 `systemctl disable postgresql.service`，若重新出现先 `systemctl is-enabled postgresql` 确认 |
+| `owl-kea-*` 卡 Restarting / 日志 `DHCP6_ALREADY_RUNNING PID:1` | stale PID。`/var/run/kea` 已改 tmpfs（compose 内），若复发先 `docker volume rm owlback_kea_run`（若存在）再 `docker compose up -d --force-recreate kea-dhcp6 kea-ctrl` |
 
 ---
 

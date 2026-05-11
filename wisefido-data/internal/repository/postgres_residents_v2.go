@@ -225,9 +225,10 @@ func (r *PostgresResidentsRepositoryV2) GetResident(
 		d.BedName = &bedName.String
 	}
 
-	// caregivers / teams
+	// caregivers / teams / family
 	d.Caregivers = r.loadCaregivers(ctx, hoa)
 	d.Teams = r.loadTeams(ctx, hoa)
+	d.Family = r.loadFamily(ctx, hoa)
 	// PHI: Phase 3b 接通解密
 	d.PHI = nil
 
@@ -236,18 +237,17 @@ func (r *PostgresResidentsRepositoryV2) GetResident(
 
 func (r *PostgresResidentsRepositoryV2) loadCaregivers(ctx context.Context, hoa string) []domain.ResidentCaregiverV2 {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT host(u.hoa),
+		SELECT u.hoa::text,
 		       u.user_id::text,
 		       u.user_account,
 		       COALESCE(u.nickname,''),
-		       COALESCE(u.role,''),
-		       rc.is_primary
+		       COALESCE(u.role,'')
 		  FROM resident_caregivers rc
-		  JOIN users u ON u.hoa = rc.caregiver_id
+		  JOIN users u ON u.user_id = rc.caregiver_id
 		 WHERE rc.resident_id = $1::INET
 		   AND rc.valid_to IS NULL
 		   AND rc.caregiver_id IS NOT NULL
-		 ORDER BY rc.is_primary DESC, rc.care_priority, u.user_account`, hoa)
+		 ORDER BY u.user_account`, hoa)
 	if err != nil {
 		return nil
 	}
@@ -255,7 +255,7 @@ func (r *PostgresResidentsRepositoryV2) loadCaregivers(ctx context.Context, hoa 
 	out := []domain.ResidentCaregiverV2{}
 	for rows.Next() {
 		var c domain.ResidentCaregiverV2
-		if err := rows.Scan(&c.HoA, &c.UserID, &c.UserAccount, &c.Nickname, &c.Role, &c.IsPrimary); err == nil {
+		if err := rows.Scan(&c.HoA, &c.UserID, &c.UserAccount, &c.Nickname, &c.Role); err == nil {
 			out = append(out, c)
 		}
 	}
@@ -270,7 +270,7 @@ func (r *PostgresResidentsRepositoryV2) loadTeams(ctx context.Context, hoa strin
 		 WHERE rc.resident_id = $1::INET
 		   AND rc.valid_to IS NULL
 		   AND rc.care_team_id IS NOT NULL
-		 ORDER BY rc.is_primary DESC, t.team_name`, hoa)
+		 ORDER BY t.team_name`, hoa)
 	if err != nil {
 		return nil
 	}
@@ -280,6 +280,32 @@ func (r *PostgresResidentsRepositoryV2) loadTeams(ctx context.Context, hoa strin
 		var t domain.ResidentTeamV2
 		if err := rows.Scan(&t.TeamID, &t.TeamName, &t.TeamKind); err == nil {
 			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (r *PostgresResidentsRepositoryV2) loadFamily(ctx context.Context, hoa string) []domain.ResidentFamilyV2 {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT u.hoa::text,
+		       u.user_id::text,
+		       u.user_account,
+		       COALESCE(u.nickname,'')
+		  FROM resident_caregivers rc
+		  JOIN users u ON u.user_id = rc.family_id
+		 WHERE rc.resident_id = $1::INET
+		   AND rc.valid_to IS NULL
+		   AND rc.family_id IS NOT NULL
+		 ORDER BY u.user_account`, hoa)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := []domain.ResidentFamilyV2{}
+	for rows.Next() {
+		var f domain.ResidentFamilyV2
+		if err := rows.Scan(&f.HoA, &f.UserID, &f.UserAccount, &f.Nickname); err == nil {
+			out = append(out, f)
 		}
 	}
 	return out
@@ -360,10 +386,9 @@ func (r *PostgresResidentsRepositoryV2) CreateResident(
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO resident_caregivers (resident_id, caregiver_id, role)
-			SELECT $1::INET, u.hoa, 'caregiver'
-			  FROM users u WHERE u.user_id::text = $2 AND u.hoa IS NOT NULL
-			ON CONFLICT (resident_id, caregiver_id, role) WHERE caregiver_id IS NOT NULL DO NOTHING`,
+			INSERT INTO resident_caregivers (resident_id, caregiver_id)
+			VALUES ($1::INET, $2::UUID)
+			ON CONFLICT (resident_id, caregiver_id) WHERE caregiver_id IS NOT NULL DO NOTHING`,
 			hoa, uid,
 		); err != nil {
 			return "", fmt.Errorf("insert caregiver: %w", err)
@@ -375,9 +400,9 @@ func (r *PostgresResidentsRepositoryV2) CreateResident(
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO resident_caregivers (resident_id, care_team_id, role)
-			VALUES ($1::INET, $2::UUID, 'team')
-			ON CONFLICT (resident_id, care_team_id, role) WHERE care_team_id IS NOT NULL DO NOTHING`,
+			INSERT INTO resident_caregivers (resident_id, care_team_id)
+			VALUES ($1::INET, $2::UUID)
+			ON CONFLICT (resident_id, care_team_id) WHERE care_team_id IS NOT NULL DO NOTHING`,
 			hoa, tid,
 		); err != nil {
 			return "", fmt.Errorf("insert team: %w", err)
@@ -435,7 +460,7 @@ func (r *PostgresResidentsRepositoryV2) UpdateResident(
 	addI("birth_year", in.BirthYear)
 	addS("admission_date", in.AdmissionDate)
 	addS("discharge_date", in.DischargeDate)
-	addS("notes", in.Note)
+	addS("note", in.Note)
 
 	if len(sets) > 0 {
 		q := "UPDATE residents SET " + strings.Join(sets, ", ") + ", updated_at = NOW() " +
@@ -491,10 +516,9 @@ func (r *PostgresResidentsRepositoryV2) replaceCaregivers(ctx context.Context, t
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO resident_caregivers (resident_id, caregiver_id, role)
-			SELECT $1::INET, u.hoa, 'caregiver'
-			  FROM users u WHERE u.user_id::text = $2 AND u.hoa IS NOT NULL
-			ON CONFLICT (resident_id, caregiver_id, role) WHERE caregiver_id IS NOT NULL DO NOTHING`,
+			INSERT INTO resident_caregivers (resident_id, caregiver_id)
+			VALUES ($1::INET, $2::UUID)
+			ON CONFLICT (resident_id, caregiver_id) WHERE caregiver_id IS NOT NULL DO NOTHING`,
 			hoa, uid,
 		); err != nil {
 			return err
@@ -515,9 +539,9 @@ func (r *PostgresResidentsRepositoryV2) replaceTeams(ctx context.Context, tx *sq
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO resident_caregivers (resident_id, care_team_id, role)
-			VALUES ($1::INET, $2::UUID, 'team')
-			ON CONFLICT (resident_id, care_team_id, role) WHERE care_team_id IS NOT NULL DO NOTHING`,
+			INSERT INTO resident_caregivers (resident_id, care_team_id)
+			VALUES ($1::INET, $2::UUID)
+			ON CONFLICT (resident_id, care_team_id) WHERE care_team_id IS NOT NULL DO NOTHING`,
 			hoa, tid,
 		); err != nil {
 			return err

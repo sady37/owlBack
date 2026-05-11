@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // GeneratePasswordHash 生成密码哈希（用于测试用户和密码初始化）
@@ -983,15 +984,14 @@ func (s *authService) VerifyPIN(ctx context.Context, req VerifyPINRequest) (*Ver
 		return nil, fmt.Errorf("database connection test failed: %w", err)
 	}
 
-	// 1. 解析 PIN hash
-	pinHash, err := hex.DecodeString(req.PinHash)
-	if err != nil {
+	// 1. 校验 PIN hash 格式（sha256 hex = 64 chars / 32 bytes）
+	if _, err := hex.DecodeString(req.PinHash); err != nil {
 		return nil, fmt.Errorf("invalid pin_hash format: %w", err)
 	}
 
-	// 2. 查询用户的 PIN hash
-	var storedPinHash []byte
-	err = s.db.QueryRowContext(ctx,
+	// 2. 查询用户的 PIN hash（v2 schema: bcrypt(sha256_hex(pin)) 存为 varchar）
+	var storedPinHash sql.NullString
+	err := s.db.QueryRowContext(ctx,
 		`SELECT pin_hash FROM users WHERE user_id::text = $1`,
 		req.UserID,
 	).Scan(&storedPinHash)
@@ -1003,15 +1003,14 @@ func (s *authService) VerifyPIN(ctx context.Context, req VerifyPINRequest) (*Ver
 		return nil, fmt.Errorf("failed to query user PIN: %w", err)
 	}
 
-	// 3. 验证 PIN hash
-	if len(storedPinHash) == 0 {
-		// 用户未设置 PIN
+	// 3. 用户未设置 PIN
+	if !storedPinHash.Valid || storedPinHash.String == "" {
 		return &VerifyPINResponse{Success: false}, nil
 	}
 
-	// 4. 比较 PIN hash（使用 constant-time comparison 防止时序攻击）
-	match := constantTimeCompare(pinHash, storedPinHash)
-	if !match {
+	// 4. bcrypt 比较（与 password 登录路径同款）
+	//    DB 存的是 bcrypt(sha256_hex(pin))，前端送的 req.PinHash 就是 sha256_hex(pin)
+	if err := bcrypt.CompareHashAndPassword([]byte(storedPinHash.String), []byte(req.PinHash)); err != nil {
 		return &VerifyPINResponse{Success: false}, nil
 	}
 
@@ -1020,16 +1019,4 @@ func (s *authService) VerifyPIN(ctx context.Context, req VerifyPINRequest) (*Ver
 	)
 
 	return &VerifyPINResponse{Success: true}, nil
-}
-
-// constantTimeCompare 使用常数时间比较两个字节切片（防止时序攻击）
-func constantTimeCompare(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	result := 0
-	for i := 0; i < len(a); i++ {
-		result |= int(a[i]) ^ int(b[i])
-	}
-	return result == 0
 }
