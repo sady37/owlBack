@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -20,14 +21,15 @@ import (
 type PlaybackHandler struct {
 	track   *service.TrackPlaybackService
 	tenants repository.TenantsRepository
+	db      *sql.DB // 用于 Phase 3 device scope 校验
 	log     *zap.Logger
 }
 
-func NewPlaybackHandler(track *service.TrackPlaybackService, tenants repository.TenantsRepository, log *zap.Logger) *PlaybackHandler {
+func NewPlaybackHandler(track *service.TrackPlaybackService, tenants repository.TenantsRepository, db *sql.DB, log *zap.Logger) *PlaybackHandler {
 	if log == nil {
 		log = zap.NewNop()
 	}
-	return &PlaybackHandler{track: track, tenants: tenants, log: log}
+	return &PlaybackHandler{track: track, tenants: tenants, db: db, log: log}
 }
 
 type radarPlaybackBody struct {
@@ -135,6 +137,16 @@ func (h *PlaybackHandler) PostRadarPlayback(w http.ResponseWriter, r *http.Reque
 	}
 
 	did := strings.TrimSpace(req.DeviceID)
+	// Phase 3: device 必须在 user scope 内
+	if h.db != nil {
+		uid := r.Header.Get("X-User-Id")
+		role := r.Header.Get("X-User-Role")
+		if err := VerifyDeviceInScope(h.db, r.Context(), uid, role, did); err != nil {
+			h.logReplayAudit("PostRadarPlayback", r, rk, src, reqTime, false, err)
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
+	}
 	startRFC := time.UnixMilli(req.StartTime).UTC().Format(time.RFC3339Nano)
 	endRFC := time.UnixMilli(req.EndTime).UTC().Format(time.RFC3339Nano)
 	h.log.Info("PostRadarPlayback received",
@@ -222,6 +234,15 @@ func (h *PlaybackHandler) PostVitalPlayback(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusOK, Fail("deviceId is required"))
 		return
 	}
+	// Phase 3: device 必须在 user scope 内
+	if h.db != nil {
+		uid := r.Header.Get("X-User-Id")
+		if err := VerifyDeviceInScope(h.db, r.Context(), uid, vitalRole, strings.TrimSpace(req.DeviceID)); err != nil {
+			h.logReplayAudit("PostVitalPlayback", r, rk, src, reqTime, false, err)
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
+	}
 	result, err := h.track.RadarVitalPlayback(r.Context(), tenantID, strings.TrimSpace(req.DeviceID), req.StartTime, req.EndTime, vitalRole)
 	if err != nil {
 		h.logReplayAudit("PostVitalPlayback", r, rk, src, reqTime, false, err)
@@ -267,6 +288,16 @@ func (h *PlaybackHandler) PostAlarmReplayContext(w http.ResponseWriter, r *http.
 		rk = replayKindFromAlarmEventType(req.EventType)
 	}
 	src := normRequestSource(req.RequestSource)
+	// Phase 3: device 必须在 user scope 内
+	if h.db != nil && strings.TrimSpace(req.DeviceID) != "" {
+		uid := r.Header.Get("X-User-Id")
+		role := r.Header.Get("X-User-Role")
+		if err := VerifyDeviceInScope(h.db, r.Context(), uid, role, strings.TrimSpace(req.DeviceID)); err != nil {
+			h.logReplayAudit("PostAlarmReplayContext", r, rk, src, reqTime, false, err)
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
+	}
 	h.logReplayAudit("PostAlarmReplayContext", r, rk, src, reqTime, true, nil,
 		zap.String("device_id", req.DeviceID),
 		zap.String("event_id", req.EventID),

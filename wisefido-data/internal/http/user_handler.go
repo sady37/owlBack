@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -43,6 +44,9 @@ func (h *UserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// GetAvailableBranches
 	case path == "/admin/api/v1/users/branches" && r.Method == http.MethodGet:
 		h.GetAvailableBranches(w, r)
+	// Switch Current Branch (自己切换业务 scope)
+	case path == "/admin/api/v1/users/me/current-branch" && r.Method == http.MethodPut:
+		h.SwitchCurrentBranch(w, r)
 	// GetAvailableCaregivers
 	case path == "/admin/api/v1/users/caregivers" && r.Method == http.MethodGet:
 		h.GetAvailableCaregivers(w, r)
@@ -352,6 +356,16 @@ func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request, userID str
 		}
 		if len(resp.User.BranchIDs) > 0 {
 			item["branch_ids"] = resp.User.BranchIDs
+		}
+		// v1.0 成对：branches = [{branch_id, branch_name}, ...]，FE 显示用，避免反查 race
+		if len(resp.User.Branches) > 0 {
+			item["branches"] = resp.User.Branches
+		}
+		if len(resp.User.CareTeamIDs) > 0 {
+			item["care_team_ids"] = resp.User.CareTeamIDs
+		}
+		if len(resp.User.CareTeams) > 0 {
+			item["care_teams"] = resp.User.CareTeams
 		}
 		// 向后兼容
 		if resp.User.BranchID != "" {
@@ -1258,6 +1272,73 @@ func (h *UserHandler) GetAvailableBranches(w http.ResponseWriter, r *http.Reques
 	}))
 }
 
+// SwitchCurrentBranch — PUT /admin/api/v1/users/me/current-branch  body {branch_id: "..."}
+//
+// 把当前 session user 的 user_branches.is_primary 切换到指定 branch（事务内原子操作）。
+// 校验：branch_id 必须在该 user active 挂载的 branches 之中，否则拒绝（防止越权切到没权限的 branch）。
+func (h *UserHandler) SwitchCurrentBranch(w http.ResponseWriter, r *http.Request) {
+	currentUserID, _, _, _, ok := service.MustSession(r.Context())
+	if !ok || currentUserID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
+	var body struct {
+		BranchID string `json:"branch_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusOK, Fail("invalid JSON"))
+		return
+	}
+	body.BranchID = strings.TrimSpace(body.BranchID)
+	if body.BranchID == "" {
+		writeJSON(w, http.StatusOK, Fail("branch_id is required"))
+		return
+	}
+
+	// 校验：branch_id 必须是该 user active 挂载的
+	var allowed bool
+	if err := h.db.QueryRowContext(r.Context(), `
+		SELECT EXISTS (
+			SELECT 1 FROM user_branches
+			 WHERE user_id = $1::UUID AND branch_prefix = $2::INET AND valid_to IS NULL
+		)`, currentUserID, body.BranchID).Scan(&allowed); err != nil {
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	if !allowed {
+		writeJSON(w, http.StatusOK, Fail("branch_id not assigned to current user"))
+		return
+	}
+
+	tx, err := h.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	defer tx.Rollback()
+	// 1) 先 clear 旧 is_primary（unique partial index 要求 user 至多 1 行 is_primary=TRUE）
+	if _, err := tx.ExecContext(r.Context(), `
+		UPDATE user_branches SET is_primary = FALSE
+		 WHERE user_id = $1::UUID AND is_primary = TRUE AND valid_to IS NULL`,
+		currentUserID); err != nil {
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	// 2) 设新 is_primary
+	if _, err := tx.ExecContext(r.Context(), `
+		UPDATE user_branches SET is_primary = TRUE
+		 WHERE user_id = $1::UUID AND branch_prefix = $2::INET AND valid_to IS NULL`,
+		currentUserID, body.BranchID); err != nil {
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]any{"current_branch_id": body.BranchID}))
+}
+
 // GetAvailableCaregivers 获取可用 caregivers 列表
 func (h *UserHandler) GetAvailableCaregivers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -1413,25 +1494,21 @@ func (h *UserHandler) GetAvailableCaregiverGroups(w http.ResponseWriter, r *http
 	// 4. 转换为前端格式
 	items := make([]map[string]any, 0, len(resp.Items))
 	for _, group := range resp.Items {
-		// 转换 members 为前端格式
 		members := make([]map[string]any, 0, len(group.Members))
 		for _, member := range group.Members {
-			memberMap := map[string]any{
-				"user_id":       member.UserID,
-				"user_account":  member.UserAccount,
-				"user_nickname": member.Nickname,
-				"role":          member.Role,
-				"tags":          member.Tags,
-			}
-			members = append(members, memberMap)
+			members = append(members, map[string]any{
+				"user_id":      member.UserID,
+				"user_account": member.UserAccount,
+				"nickname":     member.Nickname,
+				"role":         member.Role,
+			})
 		}
-		item := map[string]any{
-			"tag_name":     group.TagName,
+		items = append(items, map[string]any{
+			"team_id":      group.TeamID,
+			"team_name":    group.TeamName,
 			"member_count": group.MemberCount,
-			"member_names": group.MemberNames, // 向后兼容：成员昵称列表
-			"members":      members,           // 成员详细信息列表
-		}
-		items = append(items, item)
+			"members":      members,
+		})
 	}
 
 	writeJSON(w, http.StatusOK, Ok(map[string]any{

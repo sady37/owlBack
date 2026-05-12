@@ -107,6 +107,12 @@ func (r *PostgresRoundsRepository) ListRounds(ctx context.Context, tenantID stri
 			args = append(args, filters.UnitID)
 			argN++
 		}
+		if filters.BranchPrefix != "" {
+			// Phase 3 Current Branch scope: unit_id (INET /80) <<= branch_prefix (/56)
+			where = append(where, fmt.Sprintf("unit_id <<= $%d::INET", argN))
+			args = append(args, filters.BranchPrefix)
+			argN++
+		}
 		if filters.RoundType != "" {
 			where = append(where, fmt.Sprintf("round_type = $%d", argN))
 			args = append(args, filters.RoundType)

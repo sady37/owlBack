@@ -43,7 +43,7 @@ func (cl *CardList) BranchIDs() []string {
 type AllowedCardIDsProviderImpl struct {
 	kv            store.KV
 	usersRepo     repository.UsersRepository
-	residentsRepo repository.ResidentsRepository
+	residentsRepo *repository.PostgresResidentsRepository
 	db            *sql.DB
 	cardRepo      *repository.PostgresCardRepository
 	logger        *zap.Logger
@@ -58,7 +58,7 @@ type AllowedCardIDsProvider interface {
 func NewAllowedCardIDsProvider(
 	kv store.KV,
 	usersRepo repository.UsersRepository,
-	residentsRepo repository.ResidentsRepository,
+	residentsRepo *repository.PostgresResidentsRepository,
 	db *sql.DB,
 	cardRepo *repository.PostgresCardRepository,
 	logger *zap.Logger,
@@ -101,19 +101,19 @@ func (p *AllowedCardIDsProviderImpl) filterCardsForResident(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	if resident.UnitID == "" {
+	if resident.UnitID == nil || *resident.UnitID == "" {
 		return nil, nil
 	}
 
-	unitInfo, err := p.cardRepo.GetUnitInfo(tenantID, resident.UnitID)
+	unitInfo, err := p.cardRepo.GetUnitInfo(tenantID, *resident.UnitID)
 	if err != nil {
-		p.logger.Warn("filterCardsForResident GetUnitInfo failed", zap.String("unit_id", resident.UnitID), zap.Error(err))
+		p.logger.Warn("filterCardsForResident GetUnitInfo failed", zap.String("unit_id", *resident.UnitID), zap.Error(err))
 		return nil, nil
 	}
 
 	// unit_type=home → 该 unit 下全部 card
 	if unitInfo.UnitType == "home" {
-		return p.cardIDsByUnit(ctx, tenantID, resident.UnitID, residentID)
+		return p.cardIDsByUnit(ctx, tenantID, *resident.UnitID, residentID)
 	}
 
 	// unit_type=facility + is_public → nil
@@ -123,11 +123,11 @@ func (p *AllowedCardIDsProviderImpl) filterCardsForResident(ctx context.Context,
 
 	// facility + not public + not shared → 该 unit 下全部 card
 	if !unitInfo.IsSharedUnit {
-		return p.cardIDsByUnit(ctx, tenantID, resident.UnitID, residentID)
+		return p.cardIDsByUnit(ctx, tenantID, *resident.UnitID, residentID)
 	}
 
 	// facility + not public + shared → ActiveBedCard only
-	return p.ActiveBedcardIDsByUnitShared(ctx, tenantID, resident.UnitID, residentID)
+	return p.ActiveBedcardIDsByUnitShared(ctx, tenantID, *resident.UnitID, residentID)
 }
 
 // cardIDsByUnit 查该 unit 下所有 card，返回 *CardList
@@ -238,14 +238,22 @@ func (p *AllowedCardIDsProviderImpl) filterTenantCards(ctx context.Context, tena
 }
 
 
-// filterByBranchOnly BRANCH scope：
-// cards 表已有 branch_id 冗余字段，直接 JOIN user_branches 一次查出
+// filterByBranchOnly BRANCH scope —— Phase 3：只返 user.is_primary Current Branch 内的 card
+// v2 schema：cards 没冗余 branch_id 列；用 spatial_prefix /56 反推 + user_branches.is_primary INET 过滤
 func (p *AllowedCardIDsProviderImpl) filterByBranchOnly(ctx context.Context, tenantID, userID string) (*CardList, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT c.card_id::text, COALESCE(c.branch_id::text, '_')
-		 FROM cards c
-		 JOIN user_branches ub ON c.branch_id = ub.branch_id AND ub.tenant_id = c.tenant_id
-		 WHERE c.tenant_id = $1 AND ub.user_id = $2::uuid AND c.card_type <> 'DeviceCard'`,
+		`SELECT c.card_id::text,
+		        host(network(set_masklen(c.spatial_prefix, 56))) || '/56' AS branch_id
+		   FROM cards c
+		  WHERE c.spatial_prefix <<= $1::INET
+		    AND c.card_type <> 'DeviceCard'
+		    AND EXISTS (
+		      SELECT 1 FROM user_branches ub
+		       WHERE ub.user_id = $2::UUID
+		         AND ub.is_primary = TRUE
+		         AND ub.valid_to IS NULL
+		         AND c.spatial_prefix <<= ub.branch_prefix
+		    )`,
 		tenantID, userID,
 	)
 	if err != nil {

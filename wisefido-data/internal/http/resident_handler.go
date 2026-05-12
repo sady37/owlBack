@@ -1,14 +1,16 @@
+// Package httpapi — Resident V2 Handler (Forward Design)
+//
+// REST: /admin/api/v2/residents[/{hoa}[/clear-check]]
+//
+// 不引用 v1 ResidentHandler；session role 通过 X-User-Role header（auth_v2_handler 注入）。
 package httpapi
 
 import (
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"os"
+	"strconv"
 	"strings"
-	"time"
 
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/service"
@@ -16,2321 +18,267 @@ import (
 	"go.uber.org/zap"
 )
 
-// ResidentHandler 住户管理 Handler
 type ResidentHandler struct {
-	residentService service.ResidentService
-	logger          *zap.Logger
-	base            *StubHandler // 用于 tenantIDFromReq
-	db              *sql.DB      // 用于权限检查
+	svc    *service.ResidentService
+	logger *zap.Logger
+	base   *StubHandler
+	db     *sql.DB
 }
 
-// NewResidentHandler 创建住户管理 Handler
-func NewResidentHandler(residentService service.ResidentService, db *sql.DB, logger *zap.Logger) *ResidentHandler {
-	return &ResidentHandler{
-		residentService: residentService,
-		logger:          logger,
-		base:            &StubHandler{},
-		db:              db,
-	}
+func NewResidentHandler(db *sql.DB, svc *service.ResidentService, logger *zap.Logger) *ResidentHandler {
+	return &ResidentHandler{svc: svc, logger: logger, base: &StubHandler{}, db: db}
 }
 
-// ServeHTTP 实现 http.Handler 接口
 func (h *ResidentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
+	path := strings.TrimSuffix(r.URL.Path, "/")
 	switch {
-	// ListResidents
-	case path == "/admin/api/v1/residents" && r.Method == http.MethodGet:
-		h.ListResidents(w, r)
-	// CreateResident
-	case path == "/admin/api/v1/residents" && r.Method == http.MethodPost:
-		h.CreateResident(w, r)
-	// GetResidentAccountSettings (必须在 GetResident 之前，因为路径更具体)
-	// 处理 /admin/api/v1/residents/:id/account-settings
-	case strings.HasPrefix(path, "/admin/api/v1/residents/") && strings.HasSuffix(path, "/account-settings") && r.Method == http.MethodGet:
-		residentID := strings.TrimSuffix(path, "/account-settings")
-		residentID = strings.TrimPrefix(residentID, "/admin/api/v1/residents/")
-		if residentID != "" && !strings.Contains(residentID, "/") {
-			h.GetResidentAccountSettings(w, r, residentID)
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
-	// GetResidentAccountSettings for contacts (必须在 GetResident 之前，因为路径更具体)
-	// 处理 /admin/api/v1/contacts/:id/account-settings
-	case strings.HasPrefix(path, "/admin/api/v1/contacts/") && strings.HasSuffix(path, "/account-settings") && r.Method == http.MethodGet:
-		contactID := strings.TrimSuffix(path, "/account-settings")
-		contactID = strings.TrimPrefix(contactID, "/admin/api/v1/contacts/")
-		if contactID != "" && !strings.Contains(contactID, "/") {
-			h.GetResidentAccountSettings(w, r, contactID)
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
-	// UpdateResidentAccountSettings (必须在 UpdateResident 之前，因为路径更具体)
-	// 处理 /admin/api/v1/residents/:id/account-settings
-	case strings.HasPrefix(path, "/admin/api/v1/residents/") && strings.HasSuffix(path, "/account-settings") && r.Method == http.MethodPut:
-		residentID := strings.TrimSuffix(path, "/account-settings")
-		residentID = strings.TrimPrefix(residentID, "/admin/api/v1/residents/")
-		if residentID != "" && !strings.Contains(residentID, "/") {
-			h.UpdateResidentAccountSettings(w, r, residentID)
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
-	// UpdateResidentAccountSettings for contacts (必须在 UpdateResident 之前，因为路径更具体)
-	// 处理 /admin/api/v1/contacts/:id/account-settings
-	case strings.HasPrefix(path, "/admin/api/v1/contacts/") && strings.HasSuffix(path, "/account-settings") && r.Method == http.MethodPut:
-		contactID := strings.TrimSuffix(path, "/account-settings")
-		contactID = strings.TrimPrefix(contactID, "/admin/api/v1/contacts/")
-		if contactID != "" && !strings.Contains(contactID, "/") {
-			h.UpdateResidentAccountSettings(w, r, contactID)
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
-	// GetResident
-	case strings.HasPrefix(path, "/admin/api/v1/residents/") && r.Method == http.MethodGet:
-		residentID := strings.TrimPrefix(path, "/admin/api/v1/residents/")
-		// 处理子路径（如 /contacts, /reset-password）
-		if strings.Contains(residentID, "/") {
-			parts := strings.Split(residentID, "/")
-			if len(parts) == 2 {
-				switch parts[1] {
-				case "contacts":
-					// GET /admin/api/v1/residents/:id/contacts - 获取联系人列表（已包含在 GetResident 中）
-					h.GetResident(w, r, parts[0])
-				default:
-					w.WriteHeader(http.StatusNotFound)
-				}
-			} else {
-				w.WriteHeader(http.StatusNotFound)
-			}
-		} else if residentID != "" {
-			h.GetResident(w, r, residentID)
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
-	// UpdateResidentPHI - PUT /admin/api/v1/residents/:id/phi
-	case strings.HasSuffix(path, "/phi") && r.Method == http.MethodPut:
-		residentID := strings.TrimSuffix(path, "/phi")
-		residentID = strings.TrimPrefix(residentID, "/admin/api/v1/residents/")
-		if residentID != "" && !strings.Contains(residentID, "/") {
-			h.UpdateResidentPHI(w, r, residentID)
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
-	// UpdateResidentContact - PUT /admin/api/v1/residents/:id/contacts (必须在 UpdateResident 之前，因为路径更具体)
-	case strings.HasSuffix(path, "/contacts") && strings.HasPrefix(path, "/admin/api/v1/residents/") && r.Method == http.MethodPut:
-		residentID := strings.TrimSuffix(path, "/contacts")
-		residentID = strings.TrimPrefix(residentID, "/admin/api/v1/residents/")
-		if residentID != "" && !strings.Contains(residentID, "/") {
-			h.UpdateResidentContact(w, r, residentID)
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
-	// UpdateResident - PUT /admin/api/v1/residents/:id
-	case strings.HasPrefix(path, "/admin/api/v1/residents/") && r.Method == http.MethodPut:
-		residentID := strings.TrimPrefix(path, "/admin/api/v1/residents/")
-		if residentID != "" && !strings.Contains(residentID, "/") {
-			h.UpdateResident(w, r, residentID)
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
-	// DeleteResident
-	case strings.HasPrefix(path, "/admin/api/v1/residents/") && r.Method == http.MethodDelete:
-		residentID := strings.TrimPrefix(path, "/admin/api/v1/residents/")
-		if residentID != "" && !strings.Contains(residentID, "/") {
-			h.DeleteResident(w, r, residentID)
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
+	case path == "/admin/api/v2/residents" && r.Method == http.MethodGet:
+		h.list(w, r)
+	case path == "/admin/api/v2/residents" && r.Method == http.MethodPost:
+		h.create(w, r)
+	case strings.HasPrefix(path, "/admin/api/v2/residents/") && strings.HasSuffix(path, "/clear-check") && r.Method == http.MethodGet:
+		hoa := extractHoa(path, "/clear-check")
+		h.clearCheck(w, r, hoa)
+	case strings.HasPrefix(path, "/admin/api/v2/residents/") && strings.HasSuffix(path, "/discharge") && r.Method == http.MethodPost:
+		hoa := extractHoa(path, "/discharge")
+		h.discharge(w, r, hoa)
+	case strings.HasPrefix(path, "/admin/api/v2/residents/") && r.Method == http.MethodGet:
+		hoa := strings.TrimPrefix(path, "/admin/api/v2/residents/")
+		h.get(w, r, hoa)
+	case strings.HasPrefix(path, "/admin/api/v2/residents/") && r.Method == http.MethodPut:
+		hoa := strings.TrimPrefix(path, "/admin/api/v2/residents/")
+		h.update(w, r, hoa)
+	case strings.HasPrefix(path, "/admin/api/v2/residents/") && r.Method == http.MethodDelete:
+		hoa := strings.TrimPrefix(path, "/admin/api/v2/residents/")
+		h.delete(w, r, hoa)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
 }
 
-// ============================================
-// ListResidents 查询住户列表
-// ============================================
+func extractHoa(path, suffix string) string {
+	rest := strings.TrimPrefix(path, "/admin/api/v2/residents/")
+	return strings.TrimSuffix(rest, suffix)
+}
 
-func (h *ResidentHandler) ListResidents(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+// ============================================================================
 
-	tenantID, ok := h.base.tenantIDFromReq(w, r)
+func (h *ResidentHandler) list(w http.ResponseWriter, r *http.Request) {
+	tenantPrefix, ok := h.base.tenantIDFromReq(w, r)
 	if !ok {
 		return
 	}
+	role := r.Header.Get("X-User-Role")
+	currentHOA := r.Header.Get("X-User-HoA") // 可空；Resident 自查需要
 
-	// 从 context 获取可信会话（由 AuthMiddleware 注入）
-	currentUserID, _, currentUserType, currentUserRole, ok := service.MustSession(ctx)
-	if !ok {
-		h.logger.Warn("missing session in context for ListResidents")
-		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
-		return
-	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	includeDel := r.URL.Query().Get("include_deleted") == "true"
 
-	// 获取查询参数
-	search := strings.TrimSpace(r.URL.Query().Get("search"))
-	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	serviceLevel := strings.TrimSpace(r.URL.Query().Get("service_level"))
-	page := parseInt(r.URL.Query().Get("page"), 1)
-	pageSize := parseInt(r.URL.Query().Get("size"), 20)
-
-	// 权限检查（仅 Staff 需要）
-	// Service 层会自己查询用户的 branch_id（通过 user_branches 表），这里不需要传递 UserBranchTag
-	var permCheck *service.PermissionCheckResult
-	// 注意：resident_contacts 不能登录系统，所以 currentUserType 永远不会是 "family"
-	// 保留此检查是为了向后兼容，但实际上只会是 "resident" 或 "staff"
-	if currentUserType != "resident" && currentUserType != "family" && currentUserRole != "" && h.db != nil {
-		// 检查权限
-		perm, err := GetResourcePermission(h.db, ctx, currentUserRole, "residents", "R")
-		if err == nil {
-			permCheck = &service.PermissionCheckResult{
-				AssignedOnly: perm.AssignedOnly,
-				BranchOnly:   perm.BranchOnly,
-			}
-		}
-	}
-
-	req := service.ListResidentsRequest{
-		TenantID:        tenantID,
-		CurrentUserID:   currentUserID,
-		CurrentUserType: currentUserType,
-		CurrentUserRole: currentUserRole,
-		PermissionCheck: permCheck,
-		Search:          search,
-		Status:          status,
-		ServiceLevel:    serviceLevel,
-		Page:            page,
-		PageSize:        pageSize,
-	}
-
-	resp, err := h.residentService.ListResidents(ctx, req)
+	resp, err := h.svc.List(r.Context(), service.ListResidentsV2Request{
+		TenantPrefix:    tenantPrefix,
+		CurrentUserID:   r.Header.Get("X-User-Id"),
+		CurrentUserHOA:  currentHOA,
+		CurrentUserRole: role,
+		Filter: domain.ResidentListFilter{
+			Search:        r.URL.Query().Get("search"),
+			Status:        r.URL.Query().Get("status"),
+			IncludeDelete: includeDel,
+			Page:          page,
+			PageSize:      size,
+		},
+	})
 	if err != nil {
-		h.logger.Error("ListResidents failed",
-			zap.String("tenant_id", tenantID),
-			zap.Error(err),
-		)
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-
-	// 转换为旧 Handler 格式
-	items := make([]any, 0, len(resp.Items))
-	for _, item := range resp.Items {
-		itemMap := map[string]any{
-			"resident_id":       item.ResidentID,
-			"tenant_id":         item.TenantID,
-			"nickname":          item.Nickname,
-			"status":            item.Status,
-			"family_access": item.FamilyAccess,
-		}
-		if item.ResidentAccount != nil {
-			itemMap["resident_account"] = *item.ResidentAccount
-		}
-		if item.ServiceLevel != nil {
-			itemMap["service_level"] = *item.ServiceLevel
-		}
-		if item.AdmissionDate != nil {
-			itemMap["admission_date"] = time.Unix(*item.AdmissionDate, 0).Format("2006-01-02")
-		}
-		if item.DischargeDate != nil {
-			itemMap["discharge_date"] = time.Unix(*item.DischargeDate, 0).Format("2006-01-02")
-		}
-		if item.UnitID != nil {
-			itemMap["unit_id"] = *item.UnitID
-		}
-		if item.UnitName != nil {
-			itemMap["unit_name"] = *item.UnitName
-		}
-		if item.FacilityType != nil {
-			itemMap["facility_type"] = *item.FacilityType
-		}
-		if item.BranchID != nil {
-			itemMap["branch_id"] = *item.BranchID
-		}
-		if item.BranchName != nil {
-			itemMap["branch_name"] = *item.BranchName
-			// 保持向后兼容：同时设置 branch_tag
-			itemMap["branch_tag"] = *item.BranchName
-		}
-		if item.BuildingName != nil {
-			itemMap["building_name"] = *item.BuildingName
-			// 保持向后兼容：同时设置 building
-			itemMap["building"] = *item.BuildingName
-		}
-		// is_shared_unit 现在为 *bool，未绑定 unit 时为 nil
-		if item.IsSharedUnit != nil {
-			itemMap["is_shared_unit"] = *item.IsSharedUnit
-			// 保持向后兼容：同时设置 is_multi_person_room
-			itemMap["is_multi_person_room"] = *item.IsSharedUnit
-		}
-		if item.RoomID != nil {
-			itemMap["room_id"] = *item.RoomID
-		}
-		if item.RoomName != nil {
-			itemMap["room_name"] = *item.RoomName
-		}
-		if item.BedID != nil {
-			itemMap["bed_id"] = *item.BedID
-		}
-		if item.BedName != nil {
-			itemMap["bed_name"] = *item.BedName
-		}
-		items = append(items, itemMap)
-	}
-
-	writeJSON(w, http.StatusOK, Ok(map[string]any{
-		"items": items,
-		"total": resp.Total,
-	}))
+	writeJSON(w, http.StatusOK, Ok(resp))
 }
 
-// ============================================
-// Handler 层请求/响应结构定义
-// ============================================
-
-// CreateResidentRequest Handler 层创建住户请求结构
-// 按照 Service 层的三个结构体组织：InherentAttributes + UnitRelation + CaregiverRelation
-type CreateResidentRequest struct {
-	// Resident 固有属性（3张表：residents, resident_phi, resident_contacts）
-	InherentAttributes *CreateResidentInherentAttributesRequest `json:"inherent_attributes"`
-
-	// Resident 与 Unit 的关系（位置分配）
-	UnitRelation *CreateResidentUnitRelationRequest `json:"unit_relation,omitempty"`
-
-	// Resident 与 Caregiver 的关系（护理人员分配）
-	CaregiverRelation *CreateResidentCaregiverRelationRequest `json:"caregiver_relation,omitempty"`
-}
-
-// CreateResidentInherentAttributesRequest Handler 层 Resident 固有属性请求结构
-type CreateResidentInherentAttributesRequest struct {
-	// ========== residents 表字段 ==========
-	// 必填字段
-	ResidentAccount string `json:"resident_account"` // 住户账号（必填）
-	Nickname        string `json:"nickname"`         // 昵称（必填）
-
-	// 可选字段
-	PasswordHash    string          `json:"password_hash"`     // password_hash hex 字符串（可选，前端已计算）
-	Status          string          `json:"status"`            // 状态（可选，默认 "active"）
-	ServiceLevel    string          `json:"service_level"`     // 护理级别（可选）
-	AdmissionDate   string          `json:"admission_date"`    // 入院日期 YYYY-MM-DD 格式（可选，默认当前日期）
-	DischargeDate   string          `json:"discharge_date"`    // 出院日期 YYYY-MM-DD 格式（可选，仅在 status='discharged' 或 'transferred' 时有效）
-	BranchID        string          `json:"branch_id"`         // 院区ID（可选）
-	FamilyAccess bool            `json:"family_access"` // 是否允许查看状态（可选，默认 false）
-	Note            string          `json:"note"`              // 备注（可选）
-	PhoneHash       string          `json:"phone_hash"`        // phone_hash hex 字符串（可选，前端已计算）
-	EmailHash       string          `json:"email_hash"`        // email_hash hex 字符串（可选，前端已计算）
-	Metadata        json.RawMessage `json:"metadata"`          // metadata JSONB（可选）
-
-	// ========== resident_phi 表字段 ==========
-	PHI *PHIRequest `json:"phi,omitempty"`
-
-	// ========== resident_contacts 表字段 ==========
-	Contacts []*ContactRequest `json:"contacts,omitempty"`
-}
-
-// PHIRequest Handler 层 PHI 请求结构
-type PHIRequest struct {
-	FirstName             string   `json:"first_name"`
-	LastName              string   `json:"last_name"`
-	Gender                string   `json:"gender"`
-	DateOfBirth           string   `json:"date_of_birth"` // YYYY-MM-DD 格式
-	ResidentPhone         string   `json:"resident_phone"`
-	ResidentEmail         string   `json:"resident_email"`
-	SavePhone             bool     `json:"save_phone"`
-	SaveEmail             bool     `json:"save_email"`
-	WeightLb              *float64 `json:"weight_lb"`
-	HeightFt              *float64 `json:"height_ft"`
-	HeightIn              *float64 `json:"height_in"`
-	MobilityLevel         *int     `json:"mobility_level"`
-	TremorStatus          string   `json:"tremor_status"`
-	MobilityAid           string   `json:"mobility_aid"`
-	ADLAssistance         string   `json:"adl_assistance"`
-	CommStatus            string   `json:"comm_status"`
-	HasHypertension       *bool    `json:"has_hypertension"`
-	HasHyperlipaemia      *bool    `json:"has_hyperlipaemia"`
-	HasHyperglycaemia     *bool    `json:"has_hyperglycaemia"`
-	HasStrokeHistory      *bool    `json:"has_stroke_history"`
-	HasParalysis          *bool    `json:"has_paralysis"`
-	HasAlzheimer          *bool    `json:"has_alzheimer"`
-	MedicalHistory        string   `json:"medical_history"`
-	HomeAddressStreet     string   `json:"home_address_street"`
-	HomeAddressCity       string   `json:"home_address_city"`
-	HomeAddressState      string   `json:"home_address_state"`
-	HomeAddressPostalCode string   `json:"home_address_postal_code"`
-	PlusCode              string   `json:"plus_code"`
-}
-
-// ContactRequest Handler 层联系人请求结构
-// 对应 resident_contacts 表，注意：联系人不登录系统，仅作为住户的属性
-type ContactRequest struct {
-	Slot             string          `json:"slot"`               // 槽位 'A', 'B', 'C', 'D', 'E'（必填）
-	IsEnabled        bool            `json:"is_enabled"`         // 是否启用该联系人（对应前端的 "slot Enable" 复选框）
-	Relationship     string          `json:"relationship"`       // 关系（可选）：Child/Spouse/Friend/Caregiver/Other
-	ContactFirstName string          `json:"contact_first_name"` // 联系人名（可选）
-	ContactLastName  string          `json:"contact_last_name"`  // 联系人姓（可选）
-	ContactPhone     string          `json:"contact_phone"`      // 联系人电话（可选），明文保存
-	ContactEmail     string          `json:"contact_email"`      // 联系人邮箱（可选），明文保存
-	ContactPhoneHash string          `json:"contact_phone_hash"` // 联系人电话 hash（可选，前端计算的 hex 字符串，用于搜索）
-	ContactEmailHash string          `json:"contact_email_hash"` // 联系人邮箱 hash（可选，前端计算的 hex 字符串，用于搜索）
-	ReceiveSMS       bool            `json:"receive_sms"`        // 是否接收短信（可选，默认 false）
-	ReceiveEmail     bool            `json:"receive_email"`      // 是否接收邮件（可选，默认 false）
-	AlertTimeWindow  json.RawMessage `json:"alert_time_window"`  // 告警接收时间窗口 JSONB（可选）
-}
-
-// CreateResidentUnitRelationRequest Handler 层 Resident 与 Unit 的关系请求结构
-type CreateResidentUnitRelationRequest struct {
-	UnitID string `json:"unit_id"` // 单元ID（可选）
-	RoomID string `json:"room_id"` // 房间ID（可选）
-	BedID  string `json:"bed_id"`  // 床位ID（可选）
-	// 业务规则：bed → room → unit（如果指定 bed_id，则必须同时指定 room_id 和 unit_id）
-}
-
-// CreateResidentCaregiverRelationRequest Handler 层 Resident 与 Caregiver/Family 的关系请求结构
-type CreateResidentCaregiverRelationRequest struct {
-	UserList   []string `json:"user_list"`   // caregiver user_id 列表（resident_caregivers.caregiver_id 行）
-	GroupList  []string `json:"group_list"`  // care team_id 列表（resident_caregivers.care_team_id 行）
-	FamilyList []string `json:"family_list"` // family user_id 列表（resident_caregivers.family_id 行；与护理独立）
-}
-
-// ============================================
-// GetResident 获取住户详情
-// ============================================
-
-func (h *ResidentHandler) GetResident(w http.ResponseWriter, r *http.Request, residentID string) {
-	ctx := r.Context()
-
-	tenantID, ok := h.base.tenantIDFromReq(w, r)
+func (h *ResidentHandler) get(w http.ResponseWriter, r *http.Request, hoa string) {
+	tenantPrefix, ok := h.base.tenantIDFromReq(w, r)
 	if !ok {
 		return
 	}
-
-	// 从 context 获取可信会话（由 AuthMiddleware 注入）
-	currentUserID, _, currentUserType, currentUserRole, ok := service.GetSessionFromContext(ctx)
-	if !ok {
-		h.logger.Warn("missing session in context for GetResident")
-		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
-		return
-	}
-
-	// 获取查询参数
-	includePHI := r.URL.Query().Get("include_phi") == "true"
-	includeContacts := r.URL.Query().Get("include_contacts") == "true"
-
-	// 权限检查（仅 Staff 需要）
-	// 注意：resident_contacts 不能登录系统，所以 currentUserType 永远不会是 "family"
-	// currentUserRole 也不会是 "Family"，因为只有 residents 可以登录
-	// 保留这些检查是为了向后兼容，但实际上只会是 "resident" 或 "staff"
-	// Service 层会自己查询用户的 branch_id（通过 user_branches 表），这里不需要传递 UserBranchTag
-	var permCheck *service.PermissionCheckResult
-	isResident := currentUserType == "resident" || currentUserRole == "Resident"
-	if !isResident && currentUserRole != "" && h.db != nil {
-		perm, err := GetResourcePermission(h.db, ctx, currentUserRole, "residents", "R")
-		if err == nil {
-			permCheck = &service.PermissionCheckResult{
-				AssignedOnly: perm.AssignedOnly,
-				BranchOnly:   perm.BranchOnly,
-			}
-		}
-	}
-
-	req := service.GetResidentRequest{
-		TenantID:        tenantID,
-		ResidentID:      residentID,
-		CurrentUserID:   currentUserID,
-		CurrentUserType: currentUserType,
-		CurrentUserRole: currentUserRole,
-		PermissionCheck: permCheck,
-		IncludePHI:      includePHI,
-		IncludeContacts: includeContacts,
-	}
-
-	resp, err := h.residentService.GetResident(ctx, req)
+	h.logger.Info("[ResidentHandler.get ENTRY]", zap.String("hoa", hoa), zap.String("tenant_prefix", tenantPrefix))
+	d, err := h.svc.Get(r.Context(), service.GetResidentRequest{
+		TenantPrefix:    tenantPrefix,
+		HoA:             hoa,
+		CurrentUserID:   r.Header.Get("X-User-Id"),
+		CurrentUserHOA:  r.Header.Get("X-User-HoA"),
+		CurrentUserRole: r.Header.Get("X-User-Role"),
+	})
 	if err != nil {
-		h.logger.Error("GetResident failed",
-			zap.String("tenant_id", tenantID),
-			zap.String("resident_id", residentID),
-			zap.Error(err),
-		)
+		h.logger.Error("[ResidentHandler.get FAILED]", zap.String("hoa", hoa), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-
-	// 转换为旧 Handler 格式
-	item := map[string]any{
-		"resident_id":       resp.Resident.ResidentID,
-		"tenant_id":         resp.Resident.TenantID,
-		"nickname":          resp.Resident.Nickname,
-		"status":            resp.Resident.Status,
-		"family_access": resp.Resident.FamilyAccess,
-	}
-	if resp.Resident.ResidentAccount != nil {
-		item["resident_account"] = *resp.Resident.ResidentAccount
-	}
-	if resp.Resident.ServiceLevel != nil {
-		item["service_level"] = *resp.Resident.ServiceLevel
-	}
-	if resp.Resident.AdmissionDate != nil {
-		item["admission_date"] = time.Unix(*resp.Resident.AdmissionDate, 0).Format("2006-01-02")
-	}
-	if resp.Resident.DischargeDate != nil {
-		item["discharge_date"] = time.Unix(*resp.Resident.DischargeDate, 0).Format("2006-01-02")
-	}
-	if resp.Resident.UnitID != nil {
-		item["unit_id"] = *resp.Resident.UnitID
-	}
-	if resp.Resident.UnitName != nil {
-		item["unit_name"] = *resp.Resident.UnitName
-	}
-	if resp.Resident.BranchID != nil {
-		item["branch_id"] = *resp.Resident.BranchID
-	}
-	if resp.Resident.BranchName != nil {
-		item["branch_name"] = *resp.Resident.BranchName
-		// 保持向后兼容：同时设置 branch_tag
-		item["branch_tag"] = *resp.Resident.BranchName
-	}
-	if resp.Resident.BuildingName != nil {
-		item["building_name"] = *resp.Resident.BuildingName
-		// 保持向后兼容：同时设置 building
-		item["building"] = *resp.Resident.BuildingName
-	}
-	// is_shared_unit 现在为 *bool，未绑定 unit 时为 nil
-	if resp.Resident.IsSharedUnit != nil {
-		item["is_shared_unit"] = *resp.Resident.IsSharedUnit
-		// 保持向后兼容：同时设置 is_multi_person_room
-		item["is_multi_person_room"] = *resp.Resident.IsSharedUnit
-	}
-	if resp.Resident.RoomID != nil {
-		item["room_id"] = *resp.Resident.RoomID
-	}
-	if resp.Resident.RoomName != nil {
-		item["room_name"] = *resp.Resident.RoomName
-	}
-	if resp.Resident.BedID != nil {
-		item["bed_id"] = *resp.Resident.BedID
-	}
-	if resp.Resident.BedName != nil {
-		item["bed_name"] = *resp.Resident.BedName
-	}
-	if resp.Resident.Note != nil {
-		item["note"] = *resp.Resident.Note
-	}
-
-	// 添加 email 和 phone（从 PHI 中获取，用于前端显示和创建时的 hash 计算）
-	// 注意：这些字段不在 residents 表中，但在前端 Resident 模型中定义
-	if resp.PHI != nil {
-		if resp.PHI.ResidentEmail != nil {
-			item["email"] = *resp.PHI.ResidentEmail
-		} else {
-			// 检查 email_hash 是否存在（如果存在但 email 为 NULL，返回占位符）
-			var emailHash []byte
-			err := h.db.QueryRowContext(ctx,
-				`SELECT email_hash FROM residents WHERE tenant_id = $1 AND resident_id::text = $2`,
-				tenantID, residentID,
-			).Scan(&emailHash)
-			if err == nil && len(emailHash) > 0 {
-				item["email"] = "***@***" // Placeholder when hash exists but email is not saved
-			}
-		}
-		if resp.PHI.ResidentPhone != nil {
-			item["phone"] = *resp.PHI.ResidentPhone
-		} else {
-			// 检查 phone_hash 是否存在（如果存在但 phone 为 NULL，返回占位符）
-			var phoneHash []byte
-			err := h.db.QueryRowContext(ctx,
-				`SELECT phone_hash FROM residents WHERE tenant_id = $1 AND resident_id::text = $2`,
-				tenantID, residentID,
-			).Scan(&phoneHash)
-			if err == nil && len(phoneHash) > 0 {
-				item["phone"] = "xxx-xxx-xxxx" // Placeholder when hash exists but phone is not saved
-			}
-		}
-	} else {
-		// 如果没有 PHI 数据，检查 hash 是否存在
-		var phoneHash, emailHash []byte
-		err := h.db.QueryRowContext(ctx,
-			`SELECT phone_hash, email_hash FROM residents WHERE tenant_id = $1 AND resident_id::text = $2`,
-			tenantID, residentID,
-		).Scan(&phoneHash, &emailHash)
-		if err == nil {
-			if len(phoneHash) > 0 {
-				item["phone"] = "xxx-xxx-xxxx" // Placeholder when hash exists but phone is not saved
-			}
-			if len(emailHash) > 0 {
-				item["email"] = "***@***" // Placeholder when hash exists but email is not saved
-			}
-		}
-	}
-
-	// 添加 PHI 数据
-	if resp.PHI != nil {
-		phi := map[string]any{
-			"phi_id":      resp.PHI.PhiID,
-			"resident_id": residentID, // PHI DTO 中没有 ResidentID 字段，使用传入的 residentID
-		}
-		if resp.PHI.FirstName != nil {
-			phi["first_name"] = *resp.PHI.FirstName
-		}
-		if resp.PHI.LastName != nil {
-			phi["last_name"] = *resp.PHI.LastName
-			// 同时在顶层设置 last_name，前端期望它在顶层
-			item["last_name"] = *resp.PHI.LastName
-		}
-		if resp.PHI.Gender != nil {
-			phi["gender"] = *resp.PHI.Gender
-		}
-		if resp.PHI.DateOfBirth != nil {
-			phi["date_of_birth"] = time.Unix(*resp.PHI.DateOfBirth, 0).Format("2006-01-02")
-		}
-		// 处理 phone/email（需要检查 hash 是否存在）
-		// 注意：Service 层返回的 PHI 中，如果 phone_hash 存在但 phone 为 NULL，应该返回占位符
-		// 但当前 Service 层实现中，如果 phone 为 NULL，则不会在 DTO 中设置
-		// 这里需要从数据库查询 phone_hash 和 email_hash 来判断
-		if resp.PHI.ResidentPhone != nil {
-			phi["resident_phone"] = *resp.PHI.ResidentPhone
-		} else {
-			// 检查 phone_hash 是否存在（如果存在但 phone 为 NULL，返回占位符）
-			var phoneHash []byte
-			err := h.db.QueryRowContext(ctx,
-				`SELECT phone_hash FROM residents WHERE tenant_id = $1 AND resident_id::text = $2`,
-				tenantID, residentID,
-			).Scan(&phoneHash)
-			if err == nil && phoneHash != nil && len(phoneHash) > 0 {
-				phi["resident_phone"] = "xxx-xxx-xxxx" // Placeholder when hash exists but phone is not saved
-			}
-		}
-		if resp.PHI.ResidentEmail != nil {
-			phi["resident_email"] = *resp.PHI.ResidentEmail
-		} else {
-			// 检查 email_hash 是否存在
-			var emailHash []byte
-			err := h.db.QueryRowContext(ctx,
-				`SELECT email_hash FROM residents WHERE tenant_id = $1 AND resident_id::text = $2`,
-				tenantID, residentID,
-			).Scan(&emailHash)
-			if err == nil && emailHash != nil && len(emailHash) > 0 {
-				phi["resident_email"] = "***@***" // Placeholder when hash exists but email is not saved
-			}
-		}
-		// 其他 PHI 字段
-		if resp.PHI.WeightLb != nil {
-			phi["weight_lb"] = *resp.PHI.WeightLb
-		}
-		if resp.PHI.HeightFt != nil {
-			phi["height_ft"] = *resp.PHI.HeightFt
-		}
-		if resp.PHI.HeightIn != nil {
-			phi["height_in"] = *resp.PHI.HeightIn
-		}
-		if resp.PHI.MobilityLevel != nil {
-			phi["mobility_level"] = *resp.PHI.MobilityLevel
-		}
-		if resp.PHI.TremorStatus != nil {
-			phi["tremor_status"] = *resp.PHI.TremorStatus
-		}
-		if resp.PHI.MobilityAid != nil {
-			phi["mobility_aid"] = *resp.PHI.MobilityAid
-		}
-		if resp.PHI.ADLAssistance != nil {
-			phi["adl_assistance"] = *resp.PHI.ADLAssistance
-		}
-		if resp.PHI.CommStatus != nil {
-			phi["comm_status"] = *resp.PHI.CommStatus
-		}
-		if resp.PHI.HasHypertension != nil {
-			phi["has_hypertension"] = *resp.PHI.HasHypertension
-		}
-		if resp.PHI.HasHyperlipaemia != nil {
-			phi["has_hyperlipaemia"] = *resp.PHI.HasHyperlipaemia
-		}
-		if resp.PHI.HasHyperglycaemia != nil {
-			phi["has_hyperglycaemia"] = *resp.PHI.HasHyperglycaemia
-		}
-		if resp.PHI.HasStrokeHistory != nil {
-			phi["has_stroke_history"] = *resp.PHI.HasStrokeHistory
-		}
-		if resp.PHI.HasParalysis != nil {
-			phi["has_paralysis"] = *resp.PHI.HasParalysis
-		}
-		if resp.PHI.HasAlzheimer != nil {
-			phi["has_alzheimer"] = *resp.PHI.HasAlzheimer
-		}
-		if resp.PHI.MedicalHistory != nil {
-			phi["medical_history"] = *resp.PHI.MedicalHistory
-		}
-		if resp.PHI.HomeAddressStreet != nil {
-			phi["home_address_street"] = *resp.PHI.HomeAddressStreet
-		}
-		if resp.PHI.HomeAddressCity != nil {
-			phi["home_address_city"] = *resp.PHI.HomeAddressCity
-		}
-		if resp.PHI.HomeAddressState != nil {
-			phi["home_address_state"] = *resp.PHI.HomeAddressState
-		}
-		if resp.PHI.HomeAddressPostalCode != nil {
-			phi["home_address_postal_code"] = *resp.PHI.HomeAddressPostalCode
-		}
-		if resp.PHI.PlusCode != nil {
-			phi["plus_code"] = *resp.PHI.PlusCode
-		}
-		item["phi"] = phi
-	}
-
-	// 添加联系人数据
-	if len(resp.Contacts) > 0 {
-		contacts := make([]any, 0, len(resp.Contacts))
-		for _, c := range resp.Contacts {
-			contact := map[string]any{
-				"contact_id":    c.ContactID,
-				"resident_id":   residentID, // 添加 resident_id
-				"slot":          c.Slot,
-				"is_enabled":    c.IsEnabled,
-				"receive_sms":   c.ReceiveSMS,
-				"receive_email": c.ReceiveEmail,
-			}
-			if c.Relationship != nil {
-				contact["relationship"] = *c.Relationship
-			}
-			if c.ContactFirstName != nil {
-				contact["contact_first_name"] = *c.ContactFirstName
-			}
-			if c.ContactLastName != nil {
-				contact["contact_last_name"] = *c.ContactLastName
-			}
-			// 处理 phone/email（需要检查 hash 是否存在）
-			if c.ContactPhone != nil {
-				contact["contact_phone"] = *c.ContactPhone
-			} else {
-				// 检查 phone_hash 是否存在
-				var phoneHash []byte
-				err := h.db.QueryRowContext(ctx,
-					`SELECT phone_hash FROM resident_contacts WHERE tenant_id = $1 AND contact_id::text = $2`,
-					tenantID, c.ContactID,
-				).Scan(&phoneHash)
-				if err == nil && phoneHash != nil && len(phoneHash) > 0 {
-					contact["contact_phone"] = "xxx-xxx-xxxx" // Placeholder when hash exists but phone is not saved
-				}
-			}
-			if c.ContactEmail != nil {
-				contact["contact_email"] = *c.ContactEmail
-			} else {
-				// 检查 email_hash 是否存在
-				var emailHash []byte
-				err := h.db.QueryRowContext(ctx,
-					`SELECT email_hash FROM resident_contacts WHERE tenant_id = $1 AND contact_id::text = $2`,
-					tenantID, c.ContactID,
-				).Scan(&emailHash)
-				if err == nil && emailHash != nil && len(emailHash) > 0 {
-					contact["contact_email"] = "***@***" // Placeholder when hash exists but email is not saved
-				}
-			}
-			if c.ContactFamilyTag != nil {
-				contact["contact_family_tag"] = *c.ContactFamilyTag
-			}
-			contacts = append(contacts, contact)
-		}
-		item["contacts"] = contacts
-	}
-
-	// 添加 caregivers 数据（使用 Service 层返回的数据）
-	if resp.Caregivers != nil {
-		caregivers := map[string]any{
-			"groupList": resp.Caregivers.GroupList,
-		}
-		// 转换 UserList 为前端格式（UserDTO 数组 -> 对象数组）
-		if len(resp.Caregivers.UserList) > 0 {
-			userList := make([]map[string]any, 0, len(resp.Caregivers.UserList))
-			for _, user := range resp.Caregivers.UserList {
-				userMap := map[string]any{
-					"user_id":      user.UserID,
-					"user_account": user.UserAccount,
-					"nickname":     user.Nickname,
-					"role":         user.Role,
-					"status":       user.Status,
-				}
-				userList = append(userList, userMap)
-			}
-			caregivers["userList"] = userList
-		} else {
-			caregivers["userList"] = []any{}
-		}
-		// FamilyList - 与 UserList 同结构，但 role=Family
-		if len(resp.Caregivers.FamilyList) > 0 {
-			familyList := make([]map[string]any, 0, len(resp.Caregivers.FamilyList))
-			for _, user := range resp.Caregivers.FamilyList {
-				familyList = append(familyList, map[string]any{
-					"user_id":      user.UserID,
-					"user_account": user.UserAccount,
-					"nickname":     user.Nickname,
-					"role":         user.Role,
-					"status":       user.Status,
+	caregiverCount := 0
+	teamCount := 0
+	familyCount := 0
+	caregiverDetails := make([]map[string]string, 0)
+	teamDetails := make([]map[string]string, 0)
+	familyDetails := make([]map[string]string, 0)
+	if d != nil {
+		if len(d.Caregivers) > 0 {
+			caregiverCount = len(d.Caregivers)
+			for _, c := range d.Caregivers {
+				caregiverDetails = append(caregiverDetails, map[string]string{
+					"user_id":  c.UserID,
+					"nickname": c.Nickname,
+					"account":  c.UserAccount,
 				})
 			}
-			caregivers["familyList"] = familyList
-		} else {
-			caregivers["familyList"] = []any{}
 		}
-		item["caregivers"] = caregivers
+		if len(d.Teams) > 0 {
+			teamCount = len(d.Teams)
+			for _, t := range d.Teams {
+				teamDetails = append(teamDetails, map[string]string{
+					"team_id":   t.TeamID,
+					"team_name": t.TeamName,
+					"team_kind": t.TeamKind,
+				})
+			}
+		}
+		if len(d.Family) > 0 {
+			familyCount = len(d.Family)
+			for _, f := range d.Family {
+				familyDetails = append(familyDetails, map[string]string{
+					"user_id":  f.UserID,
+					"nickname": f.Nickname,
+					"account":  f.UserAccount,
+				})
+			}
+		}
 	}
-
-	writeJSON(w, http.StatusOK, Ok(item))
+	h.logger.Info("[ResidentHandler.get SUCCESS]",
+		zap.String("hoa", hoa),
+		zap.Int("caregiver_count", caregiverCount),
+		zap.Int("team_count", teamCount),
+		zap.Int("family_count", familyCount),
+		zap.Any("caregivers", caregiverDetails),
+		zap.Any("teams", teamDetails),
+		zap.Any("family", familyDetails))
+	writeJSON(w, http.StatusOK, Ok(d))
 }
 
-// ============================================
-// CreateResident 创建住户
-// ============================================
-
-func (h *ResidentHandler) CreateResident(w http.ResponseWriter, r *http.Request) {
-	// ========== 新实现开始 ==========
-	ctx := r.Context()
-
-	tenantID, ok := h.base.tenantIDFromReq(w, r)
+func (h *ResidentHandler) create(w http.ResponseWriter, r *http.Request) {
+	tenantPrefix, ok := h.base.tenantIDFromReq(w, r)
 	if !ok {
 		return
 	}
-
-	currentUserID := r.Header.Get("X-User-Id")
-	currentUserType := r.Header.Get("X-User-Type")
-	currentUserRole := r.Header.Get("X-User-Role")
-
-	// 权限检查 — v2 简化：按 role 字符串白名单放行（v1 role_permissions 表 schema 已变，
-	// 后续可改用 user_roles + roles 反查；当前先白名单 unblock）
-	if currentUserType != "resident" && currentUserType != "family" && currentUserRole != "" {
-		allowed := false
-		switch currentUserRole {
-		case "Admin", "Manager", "tenant_admin", "manager":
-			allowed = true
-		}
-		if !allowed {
-			writeJSON(w, http.StatusOK, Fail("permission denied: only Admin/Manager can create residents"))
-			return
-		}
-	}
-
-	// 解析请求体到 Handler 层结构
-	var handlerReq CreateResidentRequest
-	if err := json.NewDecoder(r.Body).Decode(&handlerReq); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
+	var input domain.ResidentCreateInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeJSON(w, http.StatusOK, Fail("invalid JSON: "+err.Error()))
 		return
 	}
-
-	// 权限检查结果
-	// Service 层会自己查询用户的 branch_id（通过 user_branches 表），这里不需要传递 UserBranchTag
-	var permCheck *service.PermissionCheckResult
-	if currentUserRole != "" && h.db != nil {
-		perm, err := GetResourcePermission(h.db, ctx, currentUserRole, "residents", "C")
-		if err == nil {
-			permCheck = &service.PermissionCheckResult{
-				AssignedOnly: perm.AssignedOnly,
-				BranchOnly:   perm.BranchOnly,
-			}
-		}
-	}
-
-	// 注意：AvailableBranches 不应传递给 Service 层
-	// Service 层会自己从数据库查询用户的 branch 信息（这是用户本身的属性，不能信任前端传递的值）
-	// 如果前端需要获取可用 branch 列表，应该调用专门的 API（如 GetAvailableBranches）
-
-	// 转换为 Service 层请求 - 按照三个结构体组织：InherentAttributes + UnitRelation + CaregiverRelation
-	serviceReq := service.CreateResidentRequest{
-		TenantID:        tenantID,
-		CurrentUserID:   currentUserID,
-		CurrentUserRole: currentUserRole,
-		PermissionCheck: permCheck,
-	}
-
-	// 1. 构建 InherentAttributes（固有属性：residents + resident_phi + resident_contacts）
-	if handlerReq.InherentAttributes != nil {
-		inherentAttrs := &service.CreateResidentInherentAttributes{
-			ResidentAccount: strings.TrimSpace(handlerReq.InherentAttributes.ResidentAccount),
-			Nickname:        strings.TrimSpace(handlerReq.InherentAttributes.Nickname),
-			PasswordHash:    handlerReq.InherentAttributes.PasswordHash,
-			Status:          handlerReq.InherentAttributes.Status,
-			ServiceLevel:    handlerReq.InherentAttributes.ServiceLevel,
-			BranchID:        handlerReq.InherentAttributes.BranchID,
-			FamilyAccess: handlerReq.InherentAttributes.FamilyAccess,
-			Note:            handlerReq.InherentAttributes.Note,
-			PhoneHash:       handlerReq.InherentAttributes.PhoneHash,
-			EmailHash:       handlerReq.InherentAttributes.EmailHash,
-			Metadata:        handlerReq.InherentAttributes.Metadata,
-		}
-
-		// 处理 admission_date
-		if handlerReq.InherentAttributes.AdmissionDate != "" {
-			if t, err := time.Parse("2006-01-02", handlerReq.InherentAttributes.AdmissionDate); err == nil {
-				ts := t.Unix()
-				inherentAttrs.AdmissionDate = &ts
-			}
-		}
-
-		// 处理 discharge_date（创建时通常为空，但如果提供了则设置）
-		if handlerReq.InherentAttributes.DischargeDate != "" {
-			if t, err := time.Parse("2006-01-02", handlerReq.InherentAttributes.DischargeDate); err == nil {
-				ts := t.Unix()
-				inherentAttrs.DischargeDate = &ts
-			}
-		}
-
-		// 处理 PHI 数据
-		if handlerReq.InherentAttributes.PHI != nil {
-			phi := &service.CreateResidentPHIRequest{
-				FirstName:             handlerReq.InherentAttributes.PHI.FirstName,
-				LastName:              handlerReq.InherentAttributes.PHI.LastName,
-				Gender:                handlerReq.InherentAttributes.PHI.Gender,
-				ResidentPhone:         handlerReq.InherentAttributes.PHI.ResidentPhone,
-				ResidentEmail:         handlerReq.InherentAttributes.PHI.ResidentEmail,
-				SavePhone:             handlerReq.InherentAttributes.PHI.SavePhone,
-				SaveEmail:             handlerReq.InherentAttributes.PHI.SaveEmail,
-				WeightLb:              handlerReq.InherentAttributes.PHI.WeightLb,
-				HeightFt:              handlerReq.InherentAttributes.PHI.HeightFt,
-				HeightIn:              handlerReq.InherentAttributes.PHI.HeightIn,
-				MobilityLevel:         handlerReq.InherentAttributes.PHI.MobilityLevel,
-				TremorStatus:          handlerReq.InherentAttributes.PHI.TremorStatus,
-				MobilityAid:           handlerReq.InherentAttributes.PHI.MobilityAid,
-				ADLAssistance:         handlerReq.InherentAttributes.PHI.ADLAssistance,
-				CommStatus:            handlerReq.InherentAttributes.PHI.CommStatus,
-				HasHypertension:       handlerReq.InherentAttributes.PHI.HasHypertension,
-				HasHyperlipaemia:      handlerReq.InherentAttributes.PHI.HasHyperlipaemia,
-				HasHyperglycaemia:     handlerReq.InherentAttributes.PHI.HasHyperglycaemia,
-				HasStrokeHistory:      handlerReq.InherentAttributes.PHI.HasStrokeHistory,
-				HasParalysis:          handlerReq.InherentAttributes.PHI.HasParalysis,
-				HasAlzheimer:          handlerReq.InherentAttributes.PHI.HasAlzheimer,
-				MedicalHistory:        handlerReq.InherentAttributes.PHI.MedicalHistory,
-				HomeAddressStreet:     handlerReq.InherentAttributes.PHI.HomeAddressStreet,
-				HomeAddressCity:       handlerReq.InherentAttributes.PHI.HomeAddressCity,
-				HomeAddressState:      handlerReq.InherentAttributes.PHI.HomeAddressState,
-				HomeAddressPostalCode: handlerReq.InherentAttributes.PHI.HomeAddressPostalCode,
-				PlusCode:              handlerReq.InherentAttributes.PHI.PlusCode,
-			}
-			if handlerReq.InherentAttributes.PHI.DateOfBirth != "" {
-				if t, err := time.Parse("2006-01-02", handlerReq.InherentAttributes.PHI.DateOfBirth); err == nil {
-					ts := t.Unix()
-					phi.DateOfBirth = &ts
-				}
-			}
-			inherentAttrs.PHI = phi
-		}
-
-		// 处理联系人数据（注意：联系人不登录系统，但需要保存 phone_hash 和 email_hash 用于搜索）
-		if len(handlerReq.InherentAttributes.Contacts) > 0 {
-			inherentAttrs.Contacts = make([]*service.CreateResidentContactRequest, 0, len(handlerReq.InherentAttributes.Contacts))
-			for _, handlerContact := range handlerReq.InherentAttributes.Contacts {
-				contactReq := &service.CreateResidentContactRequest{
-					Slot:             handlerContact.Slot,
-					IsEnabled:        handlerContact.IsEnabled,
-					Relationship:     handlerContact.Relationship,
-					ContactFirstName: handlerContact.ContactFirstName,
-					ContactLastName:  handlerContact.ContactLastName,
-					ContactPhone:     handlerContact.ContactPhone,
-					ContactEmail:     handlerContact.ContactEmail,
-					ContactPhoneHash: handlerContact.ContactPhoneHash,
-					ContactEmailHash: handlerContact.ContactEmailHash,
-					ReceiveSMS:       handlerContact.ReceiveSMS,
-					ReceiveEmail:     handlerContact.ReceiveEmail,
-					AlertTimeWindow:  handlerContact.AlertTimeWindow,
-				}
-				inherentAttrs.Contacts = append(inherentAttrs.Contacts, contactReq)
-			}
-		}
-
-		serviceReq.InherentAttributes = inherentAttrs
-	}
-
-	// 2. 构建 UnitRelation（位置分配）
-	if handlerReq.UnitRelation != nil {
-		serviceReq.UnitRelation = &service.CreateResidentUnitRelation{
-			UnitID: handlerReq.UnitRelation.UnitID,
-			RoomID: handlerReq.UnitRelation.RoomID,
-			BedID:  handlerReq.UnitRelation.BedID,
-		}
-	}
-
-	// 3. 构建 CaregiverRelation（护理人员分配 + 家属绑定）
-	if handlerReq.CaregiverRelation != nil {
-		serviceReq.CaregiverRelation = &service.CreateResidentCaregiverRelation{
-			UserList:   handlerReq.CaregiverRelation.UserList,
-			GroupList:  handlerReq.CaregiverRelation.GroupList,
-			FamilyList: handlerReq.CaregiverRelation.FamilyList,
-		}
-	}
-
-	resp, err := h.residentService.CreateResident(ctx, serviceReq)
+	hoa, err := h.svc.Create(r.Context(), service.CreateResidentRequest{
+		TenantPrefix:    tenantPrefix,
+		ActorUserID:     r.Header.Get("X-User-Id"),
+		CurrentUserRole: r.Header.Get("X-User-Role"),
+		Input:           &input,
+	})
 	if err != nil {
-		h.logger.Error("CreateResident failed",
-			zap.String("tenant_id", tenantID),
-			zap.Error(err),
-		)
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-
-	writeJSON(w, http.StatusOK, Ok(map[string]any{
-		"resident_id": resp.ResidentID,
-	}))
+	writeJSON(w, http.StatusOK, Ok(map[string]string{"hoa": hoa}))
 }
 
-// ============================================
-// UpdateResident 更新住户
-// ============================================
-// 前端数据格式转换规则：
-// - 字段不存在（undefined）→ nil（不更新）
-// - 字段存在且有值 → UpdateActionUpdate（更新为新值）
-// - 字段存在但值为 null → UpdateActionDelete（删除/设置为 NULL）
-
-func (h *ResidentHandler) UpdateResident(w http.ResponseWriter, r *http.Request, residentID string) {
-	ctx := r.Context()
-
-	tenantID, ok := h.base.tenantIDFromReq(w, r)
+func (h *ResidentHandler) update(w http.ResponseWriter, r *http.Request, hoa string) {
+	tenantPrefix, ok := h.base.tenantIDFromReq(w, r)
 	if !ok {
 		return
 	}
-
-	currentUserID, _, _, currentUserRole, ok := service.MustSession(ctx)
-	if !ok {
-		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+	var input domain.ResidentUpdateInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		h.logger.Error("[ResidentHandler.update] decode failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail("invalid JSON: "+err.Error()))
 		return
 	}
-
-	// 解析请求体
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
-		return
+	caregiverCount := 0
+	var caregiverIDs []string
+	if input.CaregiverUserIDs != nil {
+		caregiverCount = len(*input.CaregiverUserIDs)
+		caregiverIDs = *input.CaregiverUserIDs
 	}
-
-	// DEBUG trace — 完整可见 FE 送了什么、handler 解析什么
-	if h.logger != nil {
-		fields := make([]string, 0, len(payload))
-		for k := range payload {
-			fields = append(fields, k)
-		}
-		h.logger.Info("UpdateResident trace",
-			zap.String("tenant_id", tenantID),
-			zap.String("resident_id_in_url", residentID),
-			zap.String("current_user_role", currentUserRole),
-			zap.Strings("payload_keys", fields),
-			zap.Any("payload", payload),
-		)
+	familyCount := -1
+	var familyIDs []string
+	if input.FamilyUserIDs != nil {
+		familyCount = len(*input.FamilyUserIDs)
+		familyIDs = *input.FamilyUserIDs
 	}
-
-	// 构建 Service 请求（权限检查由 Service 层自己处理）
-	req := service.UpdateResidentRequest{
-		TenantID:        tenantID,
-		ResidentID:      residentID,
-		CurrentUserID:   currentUserID,
-		CurrentUserRole: currentUserRole,
-		PermissionCheck: nil, // Service 层自己查询权限
+	teamCount := -1
+	var teamIDs []string
+	if input.CareTeamIDs != nil {
+		teamCount = len(*input.CareTeamIDs)
+		teamIDs = *input.CareTeamIDs
 	}
-
-	// 构建 InherentAttributes（residents 表字段 + PHI + Contacts）
-	inherentAttrs := &service.UpdateResidentInherentAttributes{}
-
-	// 1. 处理 residents 表字段
-	if val, exists := payload["resident_account"]; exists {
-		if val == nil {
-			inherentAttrs.ResidentAccount = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok && str != "" {
-			inherentAttrs.ResidentAccount = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := payload["nickname"]; exists {
-		if val == nil {
-			inherentAttrs.Nickname = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok {
-			inherentAttrs.Nickname = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := payload["password_hash"]; exists {
-		if val == nil {
-			inherentAttrs.PasswordHash = &domain.UpdateBytes{Action: domain.UpdateActionDelete, Value: nil}
-		} else if str, ok := val.(string); ok && str != "" {
-			// password_hash 是 hex 字符串，需要转换为 []byte
-			if hashBytes, err := hex.DecodeString(str); err == nil {
-				inherentAttrs.PasswordHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: hashBytes}
-			}
-		}
-	}
-	if val, exists := payload["status"]; exists {
-		if val == nil {
-			inherentAttrs.Status = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok {
-			inherentAttrs.Status = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := payload["service_level"]; exists {
-		if val == nil {
-			inherentAttrs.ServiceLevel = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok {
-			inherentAttrs.ServiceLevel = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := payload["admission_date"]; exists {
-		if val == nil {
-			inherentAttrs.AdmissionDate = &domain.UpdateTime{Action: domain.UpdateActionDelete, Value: nil}
-		} else if str, ok := val.(string); ok && str != "" {
-			if t, err := time.Parse("2006-01-02", str); err == nil {
-				inherentAttrs.AdmissionDate = &domain.UpdateTime{Action: domain.UpdateActionUpdate, Value: &t}
-			}
-		}
-	}
-	if val, exists := payload["discharge_date"]; exists {
-		if val == nil {
-			inherentAttrs.DischargeDate = &domain.UpdateTime{Action: domain.UpdateActionDelete, Value: nil}
-		} else if str, ok := val.(string); ok {
-			if str == "" {
-				inherentAttrs.DischargeDate = &domain.UpdateTime{Action: domain.UpdateActionDelete, Value: nil}
-			} else {
-				if t, err := time.Parse("2006-01-02", str); err == nil {
-					inherentAttrs.DischargeDate = &domain.UpdateTime{Action: domain.UpdateActionUpdate, Value: &t}
-				}
-			}
-		}
-	}
-	if val, exists := payload["branch_id"]; exists {
-		if val == nil {
-			inherentAttrs.BranchID = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok {
-			inherentAttrs.BranchID = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := payload["family_access"]; exists {
-		if val == nil {
-			inherentAttrs.FamilyAccess = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-		} else if b, ok := val.(bool); ok {
-			inherentAttrs.FamilyAccess = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-		}
-	}
-	if val, exists := payload["note"]; exists {
-		if val == nil {
-			inherentAttrs.Note = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok {
-			inherentAttrs.Note = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := payload["phone"]; exists {
-		if val == nil {
-			inherentAttrs.Phone = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok {
-			inherentAttrs.Phone = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := payload["email"]; exists {
-		if val == nil {
-			inherentAttrs.Email = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok {
-			inherentAttrs.Email = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := payload["phone_hash"]; exists {
-		if val == nil {
-			inherentAttrs.PhoneHash = &domain.UpdateBytes{Action: domain.UpdateActionDelete, Value: nil}
-		} else if str, ok := val.(string); ok && str != "" {
-			if hashBytes, err := hex.DecodeString(str); err == nil {
-				inherentAttrs.PhoneHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: hashBytes}
-			}
-		}
-	}
-	if val, exists := payload["email_hash"]; exists {
-		if val == nil {
-			inherentAttrs.EmailHash = &domain.UpdateBytes{Action: domain.UpdateActionDelete, Value: nil}
-		} else if str, ok := val.(string); ok && str != "" {
-			if hashBytes, err := hex.DecodeString(str); err == nil {
-				inherentAttrs.EmailHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: hashBytes}
-			}
-		}
-	}
-	if val, exists := payload["metadata"]; exists {
-		if val == nil {
-			inherentAttrs.Metadata = &domain.UpdateJSON{Action: domain.UpdateActionDelete, Value: nil}
-		} else {
-			if jsonBytes, err := json.Marshal(val); err == nil {
-				inherentAttrs.Metadata = &domain.UpdateJSON{Action: domain.UpdateActionUpdate, Value: jsonBytes}
-			}
-		}
-	}
-
-	// 2. 处理 PHI 数据（resident_phi 表字段）
-	if phiData, ok := payload["phi"].(map[string]any); ok {
-		phi := &service.UpdateResidentPHIRequest{}
-
-		// 使用辅助函数处理各个字段
-		if val, exists := phiData["first_name"]; exists {
-			if val == nil {
-				phi.FirstName = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok && str != "" {
-				phi.FirstName = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-		if val, exists := phiData["last_name"]; exists {
-			if val == nil {
-				phi.LastName = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok && str != "" {
-				phi.LastName = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-		if val, exists := phiData["gender"]; exists {
-			if val == nil {
-				phi.Gender = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok && str != "" {
-				phi.Gender = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-		if val, exists := phiData["date_of_birth"]; exists {
-			if val == nil {
-				phi.DateOfBirth = &domain.UpdateTime{Action: domain.UpdateActionDelete, Value: nil}
-			} else if str, ok := val.(string); ok && str != "" {
-				if t, err := time.Parse("2006-01-02", str); err == nil {
-					phi.DateOfBirth = &domain.UpdateTime{Action: domain.UpdateActionUpdate, Value: &t}
-				}
-			}
-		}
-		if val, exists := phiData["resident_phone"]; exists {
-			if val == nil {
-				phi.ResidentPhone = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok {
-				phi.ResidentPhone = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-		if val, exists := phiData["resident_email"]; exists {
-			if val == nil {
-				phi.ResidentEmail = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok {
-				phi.ResidentEmail = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-		if val, exists := phiData["save_phone"]; exists {
-			if val == nil {
-				phi.SavePhone = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-			} else if b, ok := val.(bool); ok {
-				phi.SavePhone = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-			}
-		}
-		if val, exists := phiData["save_email"]; exists {
-			if val == nil {
-				phi.SaveEmail = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-			} else if b, ok := val.(bool); ok {
-				phi.SaveEmail = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-			}
-		}
-		if val, exists := phiData["weight_lb"]; exists {
-			if val == nil {
-				phi.WeightLb = &domain.UpdateFloat64{Action: domain.UpdateActionDelete, Value: 0}
-			} else if f, ok := val.(float64); ok {
-				phi.WeightLb = &domain.UpdateFloat64{Action: domain.UpdateActionUpdate, Value: f}
-			}
-		}
-		if val, exists := phiData["height_ft"]; exists {
-			if val == nil {
-				phi.HeightFt = &domain.UpdateFloat64{Action: domain.UpdateActionDelete, Value: 0}
-			} else if f, ok := val.(float64); ok {
-				phi.HeightFt = &domain.UpdateFloat64{Action: domain.UpdateActionUpdate, Value: f}
-			}
-		}
-		if val, exists := phiData["height_in"]; exists {
-			if val == nil {
-				phi.HeightIn = &domain.UpdateFloat64{Action: domain.UpdateActionDelete, Value: 0}
-			} else if f, ok := val.(float64); ok {
-				phi.HeightIn = &domain.UpdateFloat64{Action: domain.UpdateActionUpdate, Value: f}
-			}
-		}
-		if val, exists := phiData["mobility_level"]; exists {
-			if val == nil {
-				phi.MobilityLevel = &domain.UpdateInt{Action: domain.UpdateActionDelete, Value: 0}
-			} else if f, ok := val.(float64); ok {
-				phi.MobilityLevel = &domain.UpdateInt{Action: domain.UpdateActionUpdate, Value: int(f)}
-			}
-		}
-		if val, exists := phiData["tremor_status"]; exists {
-			if val == nil {
-				phi.TremorStatus = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok && str != "" {
-				phi.TremorStatus = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-		if val, exists := phiData["mobility_aid"]; exists {
-			if val == nil {
-				phi.MobilityAid = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok && str != "" {
-				phi.MobilityAid = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-		if val, exists := phiData["adl_assistance"]; exists {
-			if val == nil {
-				phi.ADLAssistance = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok && str != "" {
-				phi.ADLAssistance = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-		if val, exists := phiData["comm_status"]; exists {
-			if val == nil {
-				phi.CommStatus = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok && str != "" {
-				phi.CommStatus = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-		if val, exists := phiData["has_hypertension"]; exists {
-			if val == nil {
-				phi.HasHypertension = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-			} else if b, ok := val.(bool); ok {
-				phi.HasHypertension = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-			}
-		}
-		if val, exists := phiData["has_hyperlipaemia"]; exists {
-			if val == nil {
-				phi.HasHyperlipaemia = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-			} else if b, ok := val.(bool); ok {
-				phi.HasHyperlipaemia = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-			}
-		}
-		if val, exists := phiData["has_hyperglycaemia"]; exists {
-			if val == nil {
-				phi.HasHyperglycaemia = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-			} else if b, ok := val.(bool); ok {
-				phi.HasHyperglycaemia = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-			}
-		}
-		if val, exists := phiData["has_stroke_history"]; exists {
-			if val == nil {
-				phi.HasStrokeHistory = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-			} else if b, ok := val.(bool); ok {
-				phi.HasStrokeHistory = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-			}
-		}
-		if val, exists := phiData["has_paralysis"]; exists {
-			if val == nil {
-				phi.HasParalysis = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-			} else if b, ok := val.(bool); ok {
-				phi.HasParalysis = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-			}
-		}
-		if val, exists := phiData["has_alzheimer"]; exists {
-			if val == nil {
-				phi.HasAlzheimer = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-			} else if b, ok := val.(bool); ok {
-				phi.HasAlzheimer = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-			}
-		}
-		if val, exists := phiData["medical_history"]; exists {
-			if val == nil {
-				phi.MedicalHistory = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok && str != "" {
-				phi.MedicalHistory = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-		if val, exists := phiData["home_address_street"]; exists {
-			if val == nil {
-				phi.HomeAddressStreet = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok && str != "" {
-				phi.HomeAddressStreet = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-		if val, exists := phiData["home_address_city"]; exists {
-			if val == nil {
-				phi.HomeAddressCity = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok && str != "" {
-				phi.HomeAddressCity = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-		if val, exists := phiData["home_address_state"]; exists {
-			if val == nil {
-				phi.HomeAddressState = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok && str != "" {
-				phi.HomeAddressState = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-		if val, exists := phiData["home_address_postal_code"]; exists {
-			if val == nil {
-				phi.HomeAddressPostalCode = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok && str != "" {
-				phi.HomeAddressPostalCode = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-		if val, exists := phiData["plus_code"]; exists {
-			if val == nil {
-				phi.PlusCode = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			} else if str, ok := val.(string); ok && str != "" {
-				phi.PlusCode = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			}
-		}
-
-		inherentAttrs.PHI = phi
-	}
-
-	// 3. 处理 Contacts（resident_contacts 表字段）
-	// 注意：前端可能通过单独的 API 更新 contacts，这里先支持在 UpdateResident 中一起更新
-	if contacts, ok := payload["contacts"].([]any); ok {
-		contactReqs := make([]*service.UpdateResidentContactRequest, 0, len(contacts))
-		for _, contactRaw := range contacts {
-			if contactData, ok := contactRaw.(map[string]any); ok {
-				slotVal, slotExists := contactData["slot"]
-				if !slotExists {
-					continue // slot 是必填字段
-				}
-				slot, ok := slotVal.(string)
-				if !ok || slot == "" {
-					continue
-				}
-
-				contactReq := &service.UpdateResidentContactRequest{
-					Slot: slot,
-				}
-
-				if val, exists := contactData["is_enabled"]; exists {
-					if val == nil {
-						contactReq.IsEnabled = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-					} else if b, ok := val.(bool); ok {
-						contactReq.IsEnabled = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-					}
-				}
-				if val, exists := contactData["relationship"]; exists {
-					if val == nil {
-						contactReq.Relationship = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-					} else if str, ok := val.(string); ok && str != "" {
-						contactReq.Relationship = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-					}
-				}
-				if val, exists := contactData["contact_first_name"]; exists {
-					if val == nil {
-						contactReq.ContactFirstName = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-					} else if str, ok := val.(string); ok && str != "" {
-						contactReq.ContactFirstName = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-					}
-				}
-				if val, exists := contactData["contact_last_name"]; exists {
-					if val == nil {
-						contactReq.ContactLastName = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-					} else if str, ok := val.(string); ok && str != "" {
-						contactReq.ContactLastName = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-					}
-				}
-				if val, exists := contactData["contact_phone"]; exists {
-					if val == nil {
-						contactReq.ContactPhone = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-					} else if str, ok := val.(string); ok {
-						contactReq.ContactPhone = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-					}
-				}
-				if val, exists := contactData["contact_email"]; exists {
-					if val == nil {
-						contactReq.ContactEmail = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-					} else if str, ok := val.(string); ok {
-						contactReq.ContactEmail = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-					}
-				}
-				// Handle contact_phone_hash (for search)
-				if val, exists := contactData["contact_phone_hash"]; exists {
-					if val == nil {
-						contactReq.ContactPhoneHash = &domain.UpdateBytes{Action: domain.UpdateActionDelete, Value: nil}
-					} else if str, ok := val.(string); ok && str != "" {
-						hashBytes, err := hex.DecodeString(str)
-						if err == nil && len(hashBytes) > 0 {
-							contactReq.ContactPhoneHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: hashBytes}
-						}
-					}
-				}
-				// Handle contact_email_hash (for search)
-				if val, exists := contactData["contact_email_hash"]; exists {
-					if val == nil {
-						contactReq.ContactEmailHash = &domain.UpdateBytes{Action: domain.UpdateActionDelete, Value: nil}
-					} else if str, ok := val.(string); ok && str != "" {
-						hashBytes, err := hex.DecodeString(str)
-						if err == nil && len(hashBytes) > 0 {
-							contactReq.ContactEmailHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: hashBytes}
-						}
-					}
-				}
-				if val, exists := contactData["receive_sms"]; exists {
-					if val == nil {
-						contactReq.ReceiveSMS = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-					} else if b, ok := val.(bool); ok {
-						contactReq.ReceiveSMS = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-					}
-				}
-				if val, exists := contactData["receive_email"]; exists {
-					if val == nil {
-						contactReq.ReceiveEmail = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-					} else if b, ok := val.(bool); ok {
-						contactReq.ReceiveEmail = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-					}
-				}
-				if val, exists := contactData["alert_time_window"]; exists {
-					if val == nil {
-						contactReq.AlertTimeWindow = &domain.UpdateJSON{Action: domain.UpdateActionDelete, Value: nil}
-					} else {
-						if jsonBytes, err := json.Marshal(val); err == nil {
-							contactReq.AlertTimeWindow = &domain.UpdateJSON{Action: domain.UpdateActionUpdate, Value: jsonBytes}
-						}
-					}
-				}
-
-				contactReqs = append(contactReqs, contactReq)
-			}
-		}
-		if len(contactReqs) > 0 {
-			inherentAttrs.Contacts = contactReqs
-		}
-	}
-
-	// 只有至少有一个字段需要更新时，才设置 InherentAttributes
-	if inherentAttrs != nil && (inherentAttrs.ResidentAccount != nil || inherentAttrs.Nickname != nil ||
-		inherentAttrs.PasswordHash != nil || inherentAttrs.Status != nil || inherentAttrs.ServiceLevel != nil ||
-		inherentAttrs.AdmissionDate != nil || inherentAttrs.DischargeDate != nil || inherentAttrs.BranchID != nil ||
-		inherentAttrs.FamilyAccess != nil || inherentAttrs.Note != nil || inherentAttrs.Phone != nil ||
-		inherentAttrs.Email != nil || inherentAttrs.PhoneHash != nil || inherentAttrs.EmailHash != nil ||
-		inherentAttrs.Metadata != nil || inherentAttrs.PHI != nil || len(inherentAttrs.Contacts) > 0) {
-		req.InherentAttributes = inherentAttrs
-	}
-
-	// 4. 处理 UnitRelation（位置分配）
-	unitRelation := &service.UpdateResidentUnitRelation{}
-	hasUnitRelation := false
-
-	if val, exists := payload["unit_id"]; exists {
-		hasUnitRelation = true
-		if val == nil {
-			unitRelation.UnitID = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok {
-			unitRelation.UnitID = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := payload["room_id"]; exists {
-		hasUnitRelation = true
-		if val == nil {
-			unitRelation.RoomID = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok {
-			unitRelation.RoomID = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := payload["bed_id"]; exists {
-		hasUnitRelation = true
-		if val == nil {
-			unitRelation.BedID = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok {
-			unitRelation.BedID = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-
-	if hasUnitRelation {
-		req.UnitRelation = unitRelation
-	}
-
-	// 5. 处理 CaregiverRelation（护理人员分配）
-	// 注意：前端发送的格式是 {userList: [], groupList: []}（驼峰格式）
-	debugFile, _ := os.OpenFile("/tmp/caregiver-debug.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if debugFile != nil {
-		fmt.Fprintf(debugFile, "=== CAREGIVER DEBUG ===\n")
-		fmt.Fprintf(debugFile, "payload keys: %v\n", func() []string {
-			keys := make([]string, 0)
-			for k := range payload {
-				keys = append(keys, k)
-			}
-			return keys
-		}())
-		debugFile.Close()
-	}
-
-	if caregivers, ok := payload["caregivers"].(map[string]any); ok {
-		debugFile, _ := os.OpenFile("/tmp/caregiver-debug.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-		if debugFile != nil {
-			fmt.Fprintf(debugFile, "caregivers found: %+v\n", caregivers)
-			debugFile.Close()
-		}
-		cgRelation := &service.UpdateResidentCaregiverRelation{}
-
-		if val, exists := caregivers["userList"]; exists {
-			debugFile, _ := os.OpenFile("/tmp/caregiver-debug.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-			if debugFile != nil {
-				fmt.Fprintf(debugFile, "userList exists: %v\n", val)
-				debugFile.Close()
-			}
-			if val == nil {
-				cgRelation.UserList = &domain.UpdateJSON{Action: domain.UpdateActionDelete, Value: nil}
-			} else if userList, ok := val.([]any); ok {
-				if jsonBytes, err := json.Marshal(userList); err == nil {
-					cgRelation.UserList = &domain.UpdateJSON{Action: domain.UpdateActionUpdate, Value: jsonBytes}
-					debugFile, _ := os.OpenFile("/tmp/caregiver-debug.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-					if debugFile != nil {
-						fmt.Fprintf(debugFile, "userList set: %s\n", string(jsonBytes))
-						debugFile.Close()
-					}
-				}
-			}
-		}
-		if val, exists := caregivers["groupList"]; exists {
-			if val == nil {
-				cgRelation.GroupList = &domain.UpdateJSON{Action: domain.UpdateActionDelete, Value: nil}
-			} else if groupList, ok := val.([]any); ok {
-				if jsonBytes, err := json.Marshal(groupList); err == nil {
-					cgRelation.GroupList = &domain.UpdateJSON{Action: domain.UpdateActionUpdate, Value: jsonBytes}
-				}
-			}
-		}
-		if val, exists := caregivers["familyList"]; exists {
-			if val == nil {
-				cgRelation.FamilyList = &domain.UpdateJSON{Action: domain.UpdateActionDelete, Value: nil}
-			} else if familyList, ok := val.([]any); ok {
-				if jsonBytes, err := json.Marshal(familyList); err == nil {
-					cgRelation.FamilyList = &domain.UpdateJSON{Action: domain.UpdateActionUpdate, Value: jsonBytes}
-				}
-			}
-		}
-
-		// 只有至少有一个字段需要更新时，才设置 CaregiverRelation
-		if cgRelation.UserList != nil || cgRelation.GroupList != nil || cgRelation.FamilyList != nil {
-			req.CaregiverRelation = cgRelation
-			debugFile, _ := os.OpenFile("/tmp/caregiver-debug.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-			if debugFile != nil {
-				fmt.Fprintf(debugFile, "CaregiverRelation set!\n")
-				debugFile.Close()
-			}
-		} else {
-			debugFile, _ := os.OpenFile("/tmp/caregiver-debug.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-			if debugFile != nil {
-				fmt.Fprintf(debugFile, "No CaregiverRelation fields\n")
-				debugFile.Close()
-			}
-		}
-	} else {
-		debugFile, _ := os.OpenFile("/tmp/caregiver-debug.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-		if debugFile != nil {
-			fmt.Fprintf(debugFile, "caregivers NOT found in payload\n")
-			debugFile.Close()
-		}
-	}
-
-	resp, err := h.residentService.UpdateResident(ctx, req)
-	if err != nil {
-		h.logger.Error("UpdateResident failed",
-			zap.String("tenant_id", tenantID),
-			zap.String("resident_id", residentID),
-			zap.Error(err),
-		)
+	h.logger.Info("[ResidentHandler.update ENTRY]",
+		zap.String("hoa", hoa),
+		zap.String("tenant_prefix", tenantPrefix),
+		zap.String("role", r.Header.Get("X-User-Role")),
+		zap.Int("caregiver_count", caregiverCount),
+		zap.Int("family_count", familyCount),
+		zap.Int("team_count", teamCount),
+		zap.Strings("caregiver_ids", caregiverIDs),
+		zap.Strings("family_ids", familyIDs),
+		zap.Strings("team_ids", teamIDs))
+	if err := h.svc.Update(r.Context(), service.UpdateResidentRequest{
+		TenantPrefix:    tenantPrefix,
+		HoA:             hoa,
+		ActorUserID:     r.Header.Get("X-User-Id"),
+		CurrentUserRole: r.Header.Get("X-User-Role"),
+		Input:           &input,
+	}); err != nil {
+		h.logger.Error("[ResidentHandler.update FAILED]", zap.String("hoa", hoa), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-
-	writeJSON(w, http.StatusOK, Ok(map[string]any{
-		"success": resp.Success,
-	}))
+	h.logger.Info("[ResidentHandler.update SUCCESS]", zap.String("hoa", hoa))
+	writeJSON(w, http.StatusOK, Ok(map[string]bool{"success": true}))
 }
 
-// ============================================
-// UpdateResidentPHI 更新住户 PHI
-// ============================================
-
-func (h *ResidentHandler) UpdateResidentPHI(w http.ResponseWriter, r *http.Request, residentID string) {
-	ctx := r.Context()
-
-	tenantID, ok := h.base.tenantIDFromReq(w, r)
+func (h *ResidentHandler) delete(w http.ResponseWriter, r *http.Request, hoa string) {
+	tenantPrefix, ok := h.base.tenantIDFromReq(w, r)
 	if !ok {
 		return
 	}
-
-	currentUserID, _, currentUserType, currentUserRole, ok := service.MustSession(ctx)
-	if !ok {
-		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
-		return
-	}
-
-	// Permission check: Resident/Family cannot update PHI
-	// 注意：resident_contacts 不能登录系统，所以 currentUserType 永远不会是 "family"
-	// 保留此检查是为了向后兼容，但实际上只会是 "resident" 或 "staff"
-	if currentUserType == "resident" || currentUserType == "family" {
-		writeJSON(w, http.StatusOK, Fail("permission denied: resident/family cannot update PHI"))
-		return
-	}
-
-	// 解析请求体
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
-		return
-	}
-
-	// 构建 UpdateResidentRequest，只包含 PHI 数据（权限检查由 Service 层自己处理）
-	req := service.UpdateResidentRequest{
-		TenantID:        tenantID,
-		ResidentID:      residentID,
-		CurrentUserID:   currentUserID,
-		CurrentUserRole: currentUserRole,
-		PermissionCheck: nil, // Service 层自己查询权限
-	}
-
-	// 构建 InherentAttributes（residents 表字段 + PHI）
-	inherentAttrs := &service.UpdateResidentInherentAttributes{}
-
-	// 1. 处理 phone_hash 和 email_hash（residents 表字段）
-	// 这些字段可能在 payload 的顶层，也可能在 phi 对象中
-	if val, exists := payload["phone_hash"]; exists {
-		if val == nil {
-			inherentAttrs.PhoneHash = &domain.UpdateBytes{Action: domain.UpdateActionDelete, Value: nil}
-		} else if str, ok := val.(string); ok && str != "" {
-			if hashBytes, err := hex.DecodeString(str); err == nil {
-				inherentAttrs.PhoneHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: hashBytes}
-			}
-		}
-	}
-	if val, exists := payload["email_hash"]; exists {
-		if val == nil {
-			inherentAttrs.EmailHash = &domain.UpdateBytes{Action: domain.UpdateActionDelete, Value: nil}
-		} else if str, ok := val.(string); ok && str != "" {
-			if hashBytes, err := hex.DecodeString(str); err == nil {
-				inherentAttrs.EmailHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: hashBytes}
-			}
-		}
-	}
-
-	// 2. 处理 PHI 数据（resident_phi 表字段）
-	// 支持两种格式：payload["phi"] 对象，或 payload 顶层字段
-	var phiData map[string]any
-	if phiObj, ok := payload["phi"].(map[string]any); ok {
-		phiData = phiObj
-		// 如果 phone_hash 和 email_hash 在 phi 对象中，也要处理
-		if val, exists := phiData["phone_hash"]; exists {
-			if val == nil {
-				inherentAttrs.PhoneHash = &domain.UpdateBytes{Action: domain.UpdateActionDelete, Value: nil}
-			} else if str, ok := val.(string); ok && str != "" {
-				if hashBytes, err := hex.DecodeString(str); err == nil {
-					inherentAttrs.PhoneHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: hashBytes}
-				}
-			}
-		}
-		if val, exists := phiData["email_hash"]; exists {
-			if val == nil {
-				inherentAttrs.EmailHash = &domain.UpdateBytes{Action: domain.UpdateActionDelete, Value: nil}
-			} else if str, ok := val.(string); ok && str != "" {
-				if hashBytes, err := hex.DecodeString(str); err == nil {
-					inherentAttrs.EmailHash = &domain.UpdateBytes{Action: domain.UpdateActionUpdate, Value: hashBytes}
-				}
-			}
-		}
-	} else {
-		// 如果没有 phi 字段，直接使用 payload 作为 PHI 数据（前端直接发送字段，不在 phi 对象中）
-		phiData = payload
-	}
-
-	// 处理 PHI 字段（使用 domain.UpdateX 类型）
-	phi := &service.UpdateResidentPHIRequest{}
-
-	if val, exists := phiData["first_name"]; exists {
-		if val == nil {
-			phi.FirstName = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok && str != "" {
-			phi.FirstName = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := phiData["last_name"]; exists {
-		if val == nil {
-			phi.LastName = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok && str != "" {
-			phi.LastName = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := phiData["gender"]; exists {
-		if val == nil {
-			phi.Gender = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok && str != "" {
-			phi.Gender = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := phiData["date_of_birth"]; exists {
-		if val == nil {
-			phi.DateOfBirth = &domain.UpdateTime{Action: domain.UpdateActionDelete, Value: nil}
-		} else if str, ok := val.(string); ok && str != "" {
-			if t, err := time.Parse("2006-01-02", str); err == nil {
-				phi.DateOfBirth = &domain.UpdateTime{Action: domain.UpdateActionUpdate, Value: &t}
-			}
-		}
-	}
-	if val, exists := phiData["resident_phone"]; exists {
-		if val == nil {
-			// null 表示删除或占位符（不保存 phone），不更新
-			phi.ResidentPhone = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok {
-			// 如果是占位符 "xxx-xxx-xxxx"，不更新（保持现有状态）
-			if str == "xxx-xxx-xxxx" {
-				// 占位符：不更新 phone，也不更新 phone_hash（保持现有 hash）
-				// 不设置 phi.ResidentPhone，这样就不会触发更新
-			} else if str != "" {
-				// 有效的 phone 值，正常更新
-				phi.ResidentPhone = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			} else {
-				// 空字符串，删除
-				phi.ResidentPhone = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			}
-		}
-	}
-	if val, exists := phiData["resident_email"]; exists {
-		if val == nil {
-			// null 表示删除或占位符（不保存 email），不更新
-			phi.ResidentEmail = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok {
-			// 如果是占位符 "***@***"，不更新（保持现有状态）
-			if str == "***@***" {
-				// 占位符：不更新 email，也不更新 email_hash（保持现有 hash）
-				// 不设置 phi.ResidentEmail，这样就不会触发更新
-			} else if str != "" {
-				// 有效的 email 值，正常更新
-				phi.ResidentEmail = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-			} else {
-				// 空字符串，删除
-				phi.ResidentEmail = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-			}
-		}
-	}
-	if val, exists := phiData["save_phone"]; exists {
-		if val == nil {
-			phi.SavePhone = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-		} else if b, ok := val.(bool); ok {
-			phi.SavePhone = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-		}
-	}
-	if val, exists := phiData["save_email"]; exists {
-		if val == nil {
-			phi.SaveEmail = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-		} else if b, ok := val.(bool); ok {
-			phi.SaveEmail = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-		}
-	}
-	if val, exists := phiData["weight_lb"]; exists {
-		if val == nil {
-			phi.WeightLb = &domain.UpdateFloat64{Action: domain.UpdateActionDelete, Value: 0}
-		} else if f, ok := val.(float64); ok {
-			phi.WeightLb = &domain.UpdateFloat64{Action: domain.UpdateActionUpdate, Value: f}
-		}
-	}
-	if val, exists := phiData["height_ft"]; exists {
-		if val == nil {
-			phi.HeightFt = &domain.UpdateFloat64{Action: domain.UpdateActionDelete, Value: 0}
-		} else if f, ok := val.(float64); ok {
-			phi.HeightFt = &domain.UpdateFloat64{Action: domain.UpdateActionUpdate, Value: f}
-		}
-	}
-	if val, exists := phiData["height_in"]; exists {
-		if val == nil {
-			phi.HeightIn = &domain.UpdateFloat64{Action: domain.UpdateActionDelete, Value: 0}
-		} else if f, ok := val.(float64); ok {
-			phi.HeightIn = &domain.UpdateFloat64{Action: domain.UpdateActionUpdate, Value: f}
-		}
-	}
-	if val, exists := phiData["mobility_level"]; exists {
-		if val == nil {
-			phi.MobilityLevel = &domain.UpdateInt{Action: domain.UpdateActionDelete, Value: 0}
-		} else if f, ok := val.(float64); ok {
-			phi.MobilityLevel = &domain.UpdateInt{Action: domain.UpdateActionUpdate, Value: int(f)}
-		}
-	}
-	if val, exists := phiData["tremor_status"]; exists {
-		if val == nil {
-			phi.TremorStatus = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok && str != "" {
-			phi.TremorStatus = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := phiData["mobility_aid"]; exists {
-		if val == nil {
-			phi.MobilityAid = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok && str != "" {
-			phi.MobilityAid = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := phiData["adl_assistance"]; exists {
-		if val == nil {
-			phi.ADLAssistance = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok && str != "" {
-			phi.ADLAssistance = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := phiData["comm_status"]; exists {
-		if val == nil {
-			phi.CommStatus = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok && str != "" {
-			phi.CommStatus = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := phiData["has_hypertension"]; exists {
-		if val == nil {
-			phi.HasHypertension = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-		} else if b, ok := val.(bool); ok {
-			phi.HasHypertension = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-		}
-	}
-	if val, exists := phiData["has_hyperlipaemia"]; exists {
-		if val == nil {
-			phi.HasHyperlipaemia = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-		} else if b, ok := val.(bool); ok {
-			phi.HasHyperlipaemia = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-		}
-	}
-	if val, exists := phiData["has_hyperglycaemia"]; exists {
-		if val == nil {
-			phi.HasHyperglycaemia = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-		} else if b, ok := val.(bool); ok {
-			phi.HasHyperglycaemia = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-		}
-	}
-	if val, exists := phiData["has_stroke_history"]; exists {
-		if val == nil {
-			phi.HasStrokeHistory = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-		} else if b, ok := val.(bool); ok {
-			phi.HasStrokeHistory = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-		}
-	}
-	if val, exists := phiData["has_paralysis"]; exists {
-		if val == nil {
-			phi.HasParalysis = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-		} else if b, ok := val.(bool); ok {
-			phi.HasParalysis = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-		}
-	}
-	if val, exists := phiData["has_alzheimer"]; exists {
-		if val == nil {
-			phi.HasAlzheimer = &domain.UpdateBool{Action: domain.UpdateActionDelete, Value: false}
-		} else if b, ok := val.(bool); ok {
-			phi.HasAlzheimer = &domain.UpdateBool{Action: domain.UpdateActionUpdate, Value: b}
-		}
-	}
-	if val, exists := phiData["medical_history"]; exists {
-		if val == nil {
-			phi.MedicalHistory = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok && str != "" {
-			phi.MedicalHistory = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := phiData["home_address_street"]; exists {
-		if val == nil {
-			phi.HomeAddressStreet = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok && str != "" {
-			phi.HomeAddressStreet = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := phiData["home_address_city"]; exists {
-		if val == nil {
-			phi.HomeAddressCity = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok && str != "" {
-			phi.HomeAddressCity = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := phiData["home_address_state"]; exists {
-		if val == nil {
-			phi.HomeAddressState = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok && str != "" {
-			phi.HomeAddressState = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := phiData["home_address_postal_code"]; exists {
-		if val == nil {
-			phi.HomeAddressPostalCode = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok && str != "" {
-			phi.HomeAddressPostalCode = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-	if val, exists := phiData["plus_code"]; exists {
-		if val == nil {
-			phi.PlusCode = &domain.UpdateString{Action: domain.UpdateActionDelete, Value: ""}
-		} else if str, ok := val.(string); ok && str != "" {
-			phi.PlusCode = &domain.UpdateString{Action: domain.UpdateActionUpdate, Value: str}
-		}
-	}
-
-	// 只有至少有一个 PHI 字段需要更新时，才设置 PHI
-	hasPHI := phi.FirstName != nil || phi.LastName != nil || phi.Gender != nil ||
-		phi.DateOfBirth != nil || phi.ResidentPhone != nil || phi.ResidentEmail != nil ||
-		phi.SavePhone != nil || phi.SaveEmail != nil || phi.WeightLb != nil ||
-		phi.HeightFt != nil || phi.HeightIn != nil || phi.MobilityLevel != nil ||
-		phi.TremorStatus != nil || phi.MobilityAid != nil || phi.ADLAssistance != nil ||
-		phi.CommStatus != nil || phi.HasHypertension != nil || phi.HasHyperlipaemia != nil ||
-		phi.HasHyperglycaemia != nil || phi.HasStrokeHistory != nil || phi.HasParalysis != nil ||
-		phi.HasAlzheimer != nil || phi.MedicalHistory != nil || phi.HomeAddressStreet != nil ||
-		phi.HomeAddressCity != nil || phi.HomeAddressState != nil || phi.HomeAddressPostalCode != nil ||
-		phi.PlusCode != nil
-
-	if hasPHI {
-		inherentAttrs.PHI = phi
-	}
-
-	// 只有至少有一个字段需要更新时，才设置 InherentAttributes
-	hasInherentAttrs := inherentAttrs.PhoneHash != nil || inherentAttrs.EmailHash != nil || inherentAttrs.PHI != nil
-
-	if hasInherentAttrs {
-		req.InherentAttributes = inherentAttrs
-	}
-
-	resp, err := h.residentService.UpdateResident(ctx, req)
-	if err != nil {
-		h.logger.Error("UpdateResidentPHI failed",
-			zap.String("tenant_id", tenantID),
-			zap.String("resident_id", residentID),
-			zap.Error(err),
-		)
+	hard := r.URL.Query().Get("hard") == "true" || r.URL.Query().Get("clear") == "true"
+	if err := h.svc.Delete(r.Context(), service.DeleteResidentRequest{
+		TenantPrefix:    tenantPrefix,
+		HoA:             hoa,
+		CurrentUserRole: r.Header.Get("X-User-Role"),
+		Hard:            hard,
+	}); err != nil {
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-
-	writeJSON(w, http.StatusOK, Ok(map[string]any{
-		"success": resp.Success,
-	}))
+	writeJSON(w, http.StatusOK, Ok(map[string]bool{"success": true}))
 }
 
-// ============================================
-// DeleteResident 删除住户
-// ============================================
-
-func (h *ResidentHandler) DeleteResident(w http.ResponseWriter, r *http.Request, residentID string) {
-	ctx := r.Context()
-
-	tenantID, ok := h.base.tenantIDFromReq(w, r)
-	if !ok {
-		return
-	}
-
-	currentUserID, _, currentUserType, currentUserRole, ok := service.MustSession(ctx)
-	if !ok {
-		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
-		return
-	}
-
-	// 权限检查结果（Service 层会自己查询用户信息和验证权限，这里只传递权限配置）
-	var permCheck *service.PermissionCheckResult
-	if currentUserRole != "" && h.db != nil {
-		perm, err := GetResourcePermission(h.db, ctx, currentUserRole, "residents", "D")
-		if err == nil {
-			// Service 层会自己查询用户的 branch_id，这里不需要传递 UserBranchTag
-			permCheck = &service.PermissionCheckResult{
-				AssignedOnly: perm.AssignedOnly,
-				BranchOnly:   perm.BranchOnly,
-			}
-		}
-	}
-
-	req := service.DeleteResidentRequest{
-		TenantID:        tenantID,
-		ResidentID:      residentID,
-		CurrentUserID:   currentUserID,
-		CurrentUserType: currentUserType,
-		CurrentUserRole: currentUserRole,
-		PermissionCheck: permCheck,
-	}
-
-	resp, err := h.residentService.DeleteResident(ctx, req)
+func (h *ResidentHandler) clearCheck(w http.ResponseWriter, r *http.Request, hoa string) {
+	res, err := h.svc.CheckClearable(r.Context(), hoa)
 	if err != nil {
-		h.logger.Error("DeleteResident failed",
-			zap.String("tenant_id", tenantID),
-			zap.String("resident_id", residentID),
-			zap.Error(err),
-		)
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-
-	writeJSON(w, http.StatusOK, Ok(map[string]any{
-		"success": resp.Success,
-	}))
+	writeJSON(w, http.StatusOK, Ok(res))
 }
 
-// ============================================
-// ResetResidentPassword 重置住户密码
-// ============================================
-
-
-// ============================================
-// GetResidentAccountSettings 获取住户/联系人账户设置
-// ============================================
-
-// GetResidentAccountSettings 获取住户/联系人账户设置
-func (h *ResidentHandler) GetResidentAccountSettings(w http.ResponseWriter, r *http.Request, residentID string) {
-	ctx := r.Context()
-
-	tenantID, ok := h.base.tenantIDFromReq(w, r)
+func (h *ResidentHandler) discharge(w http.ResponseWriter, r *http.Request, hoa string) {
+	tenantPrefix, ok := h.base.tenantIDFromReq(w, r)
 	if !ok {
 		return
 	}
-
-	currentUserID, _, currentUserType, currentUserRole, ok := service.MustSession(ctx)
-	if !ok || currentUserID == "" {
-		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
-		return
-	}
-
-	req := service.GetResidentAccountSettingsRequest{
-		TenantID:        tenantID,
-		ResidentID:      residentID,
-		CurrentUserID:   currentUserID,
-		CurrentUserType: currentUserType,
-		CurrentUserRole: currentUserRole,
-	}
-
-	// Input log
-	fmt.Printf("[GetResidentAccountSettings] INPUT: tenant_id=%s, resident_id=%s, current_user_id=%s, current_user_role=%s\n",
-		req.TenantID, req.ResidentID, req.CurrentUserID, req.CurrentUserRole)
-
-	resp, err := h.residentService.GetResidentAccountSettings(ctx, req)
-	if err != nil {
-		h.logger.Error("GetResidentAccountSettings failed", zap.Error(err))
+	if err := h.svc.Discharge(r.Context(), service.UpdateResidentRequest{
+		TenantPrefix:    tenantPrefix,
+		HoA:             hoa,
+		ActorUserID:     r.Header.Get("X-User-Id"),
+		CurrentUserRole: r.Header.Get("X-User-Role"),
+	}); err != nil {
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-
-	item := map[string]any{
-		"id":         residentID, // UUID: resident_id 或 contact_id
-		"nickname":   resp.Nickname,
-		"is_contact": resp.IsContact,
-		"role":       currentUserRole, // 角色代码
-	}
-	if resp.ResidentAccount != nil {
-		item["account"] = *resp.ResidentAccount
-	} else {
-		// resp.ResidentAccount is nil, item["account"] will not be set
-	}
-
-	// Output log
-	accountValue := ""
-	if resp.ResidentAccount != nil {
-		accountValue = *resp.ResidentAccount
-	}
-	fmt.Printf("[GetResidentAccountSettings] OUTPUT: tenant_id=%s, resident_id=%s, account=%s, nickname=%s, is_contact=%v\n",
-		req.TenantID, req.ResidentID, accountValue, resp.Nickname, resp.IsContact)
-	if resp.Email != nil {
-		item["email"] = *resp.Email
-	}
-	if resp.Phone != nil {
-		item["phone"] = *resp.Phone
-	}
-	// resident 和 contact 都需要返回 save 标志
-	item["save_email"] = resp.SaveEmail
-	item["save_phone"] = resp.SavePhone
-
-	writeJSON(w, http.StatusOK, Ok(item))
-}
-
-// ============================================
-// UpdateResidentAccountSettings 更新住户/联系人账户设置
-// ============================================
-
-// UpdateResidentAccountSettings 更新住户/联系人账户设置（统一 API）
-func (h *ResidentHandler) UpdateResidentAccountSettings(w http.ResponseWriter, r *http.Request, residentID string) {
-	ctx := r.Context()
-
-	tenantID, ok := h.base.tenantIDFromReq(w, r)
-	if !ok {
-		return
-	}
-
-	currentUserID, _, currentUserType, currentUserRole, ok := service.MustSession(ctx)
-	if !ok || currentUserID == "" {
-		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
-		return
-	}
-
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
-		return
-	}
-
-	req := service.UpdateResidentAccountSettingsRequest{
-		TenantID:        tenantID,
-		ResidentID:      residentID,
-		CurrentUserID:   currentUserID,
-		CurrentUserType: currentUserType,
-		CurrentUserRole: currentUserRole,
-	}
-
-	// 解析 password_hash
-	if passwordHash, ok := payload["password_hash"].(string); ok && passwordHash != "" {
-		req.PasswordHash = &passwordHash
-	}
-
-	// 解析 email 和 email_hash
-	if email, ok := payload["email"].(string); ok {
-		req.Email = &email
-	}
-	if emailHash, ok := payload["email_hash"].(string); ok && emailHash != "" {
-		req.EmailHash = &emailHash
-	}
-
-	// 解析 phone 和 phone_hash
-	if phone, ok := payload["phone"].(string); ok {
-		req.Phone = &phone
-	}
-	if phoneHash, ok := payload["phone_hash"].(string); ok && phoneHash != "" {
-		req.PhoneHash = &phoneHash
-	}
-
-	// 解析 save_email 和 save_phone（仅 resident 需要）
-	if saveEmail, ok := payload["save_email"].(bool); ok {
-		req.SaveEmail = &saveEmail
-	}
-	if savePhone, ok := payload["save_phone"].(bool); ok {
-		req.SavePhone = &savePhone
-	}
-
-	// 检查是否有任何更新（含 email_hash / phone_hash / save_email / save_phone）
-	if req.PasswordHash == nil && req.Email == nil && req.Phone == nil &&
-		req.EmailHash == nil && req.PhoneHash == nil && req.SaveEmail == nil && req.SavePhone == nil {
-		writeJSON(w, http.StatusOK, Fail("no fields to update"))
-		return
-	}
-
-	resp, err := h.residentService.UpdateResidentAccountSettings(ctx, req)
-	if err != nil {
-		h.logger.Error("UpdateResidentAccountSettings failed", zap.Error(err))
-		writeJSON(w, http.StatusOK, Fail(err.Error()))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, Ok(map[string]any{
-		"success": resp.Success,
-		"message": resp.Message,
-	}))
-}
-
-// ============================================
-// UpdateResidentContact 更新联系人信息
-// ============================================
-
-func (h *ResidentHandler) UpdateResidentContact(w http.ResponseWriter, r *http.Request, residentID string) {
-	ctx := r.Context()
-
-	tenantID, ok := h.base.tenantIDFromReq(w, r)
-	if !ok {
-		return
-	}
-
-	currentUserID, _, currentUserType, currentUserRole, ok := service.MustSession(ctx)
-	if !ok {
-		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
-		return
-	}
-
-	// 解析请求体
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
-		return
-	}
-
-	// 获取 slot（必填）：通过 resident_id + slot 定位 contact
-	slot, ok := payload["slot"].(string)
-	if !ok || slot == "" {
-		writeJSON(w, http.StatusOK, Fail("slot is required"))
-		return
-	}
-
-	// 构建 Service 请求（权限检查由 Service 层自己处理）
-	req := service.UpdateResidentContactStandaloneRequest{
-		TenantID:        tenantID,
-		ResidentID:      residentID,
-		Slot:            slot, // slot 是必填的，用于定位 contact
-		CurrentUserID:   currentUserID,
-		CurrentUserType: currentUserType,
-		CurrentUserRole: currentUserRole,
-	}
-
-	// 解析字段（使用指针表示可选）
-	// 规则：
-	//   - 字段不存在 → nil（不更新）
-	//   - 字段为 null → ""（删除，Repository 会转换为 NULL）
-	//   - 字段为 "" → ""（删除，Repository 会转换为 NULL）
-	//   - 字段有值 → 有值（更新）
-	if isEnabled, ok := payload["is_enabled"].(bool); ok {
-		req.IsEnabled = &isEnabled
-	}
-	// 处理 contact_first_name：支持 string 和 null
-	if firstName, ok := payload["contact_first_name"].(string); ok {
-		req.ContactFirstName = &firstName // "" 表示删除
-	} else if _, exists := payload["contact_first_name"]; exists && payload["contact_first_name"] == nil {
-		// Vue 发送 null 时，转换为 ""（删除）
-		emptyStr := ""
-		req.ContactFirstName = &emptyStr
-	}
-	// contact_first_name 字段不存在 → nil（不更新）
-	// 处理 contact_last_name：支持 string 和 null
-	if lastName, ok := payload["contact_last_name"].(string); ok {
-		req.ContactLastName = &lastName // "" 表示删除
-	} else if _, exists := payload["contact_last_name"]; exists && payload["contact_last_name"] == nil {
-		// Vue 发送 null 时，转换为 ""（删除）
-		emptyStr := ""
-		req.ContactLastName = &emptyStr
-	}
-	// contact_last_name 字段不存在 → nil（不更新）
-	// 处理 relationship：支持 string 和 null
-	if relationship, ok := payload["relationship"].(string); ok {
-		req.Relationship = &relationship // "" 表示删除
-	} else if _, exists := payload["relationship"]; exists && payload["relationship"] == nil {
-		// Vue 发送 null 时，转换为 ""（删除）
-		emptyStr := ""
-		req.Relationship = &emptyStr
-	}
-	// relationship 字段不存在 → nil（不更新）
-	// 处理 contact_phone：支持 string 和 null
-	if phone, ok := payload["contact_phone"].(string); ok {
-		req.ContactPhone = &phone // "" 表示删除
-	} else if payload["contact_phone"] == nil {
-		// Vue 发送 null 时，转换为 ""（删除）
-		emptyStr := ""
-		req.ContactPhone = &emptyStr
-	}
-	// contact_phone 字段不存在 → nil（不更新）
-	// 处理 contact_email：支持 string 和 null
-	if email, ok := payload["contact_email"].(string); ok {
-		req.ContactEmail = &email // "" 表示删除
-	} else if payload["contact_email"] == nil {
-		// Vue 发送 null 时，转换为 ""（删除）
-		emptyStr := ""
-		req.ContactEmail = &emptyStr
-	}
-	// contact_email 字段不存在 → nil（不更新）
-
-	// 处理 contact_phone_hash（用于搜索）：支持 string 和 null
-	if phoneHash, ok := payload["contact_phone_hash"].(string); ok && phoneHash != "" {
-		req.PhoneHash = &phoneHash // 有效的 hash hex 字符串
-	} else if payload["contact_phone_hash"] == nil {
-		// Vue 发送 null 时，表示删除 hash（phone 被删除）
-		emptyStr := ""
-		req.PhoneHash = &emptyStr
-	}
-	// contact_phone_hash 字段不存在 → nil（不更新）
-
-	// 处理 contact_email_hash（用于搜索）：支持 string 和 null
-	if emailHash, ok := payload["contact_email_hash"].(string); ok && emailHash != "" {
-		req.EmailHash = &emailHash // 有效的 hash hex 字符串
-	} else if payload["contact_email_hash"] == nil {
-		// Vue 发送 null 时，表示删除 hash（email 被删除）
-		emptyStr := ""
-		req.EmailHash = &emptyStr
-	}
-	// contact_email_hash 字段不存在 → nil（不更新）
-
-	if receiveSMS, ok := payload["receive_sms"].(bool); ok {
-		req.ReceiveSMS = &receiveSMS
-	}
-	if receiveEmail, ok := payload["receive_email"].(bool); ok {
-		req.ReceiveEmail = &receiveEmail
-	}
-
-	// 处理 password_hash（已废弃，联系人不登录系统）
-	// 规则：passwd 是不回显的，没有从密码改为无密码的状态转换，所以不能发送 ""
-	// vue 要么发送有效 password 的 hash，要么不发送该字段，表示 passwd 未修改
-	// 如果前端未发送 password_hash 字段，req.PasswordHash 为 nil（不更新）
-	if passwordHash, ok := payload["password_hash"].(string); ok && passwordHash != "" {
-		// 前端发送有效的 password_hash（hex 字符串）
-		req.PasswordHash = &passwordHash
-	}
-	// password_hash 字段不存在或为空字符串 → req.PasswordHash 为 nil（不更新）
-
-	// 调用 Service 层
-	resp, err := h.residentService.UpdateResidentContact(ctx, req)
-	if err != nil {
-		h.logger.Error("UpdateResidentContact failed",
-			zap.String("tenant_id", tenantID),
-			zap.String("resident_id", residentID),
-			zap.String("slot", slot),
-			zap.Error(err),
-		)
-		writeJSON(w, http.StatusOK, Fail(err.Error()))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, Ok(map[string]any{
-		"success": resp.Success,
-	}))
+	writeJSON(w, http.StatusOK, Ok(map[string]bool{"success": true}))
 }

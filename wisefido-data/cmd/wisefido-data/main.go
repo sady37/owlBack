@@ -19,6 +19,7 @@ import (
 	"wisefido-data/internal/notify"
 	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
+	scopepkg "wisefido-data/internal/scope"
 	"wisefido-data/internal/service"
 	"wisefido-data/internal/store"
 	"wisefido-data/internal/subscriber"
@@ -217,21 +218,9 @@ func main() {
 		alarmCloudHandler := httpapi.NewAlarmCloudHandler(alarmCloudService, logger)
 		router.RegisterAlarmCloudRoutes(alarmCloudHandler)
 
-		// 创建 Auth Service 和 Handler
-		authRepo := repository.NewPostgresAuthRepository(db)
-
-		// 使用 sessionStore 创建 authService（这样 Login 会返回真实的 UUID token 而不是 stub）
-		authService := service.NewAuthServiceWithSessionStore(authRepo, tenantsRepo, db, logger, sessionStore)
-		authHandler := httpapi.NewAuthHandler(authService, logger)
-
-		// 关联会话存储到 authHandler（供 middleware 读取会话）
-		authHandler.SetSessionStore(sessionStore)
-
+		// 创建 Auth Handler (owl_v2 IPv6-native auth)
+		authHandler := httpapi.NewAuthHandler(db, sessionStore, logger)
 		router.RegisterAuthRoutes(authHandler)
-
-		// v2 (owl_v2 IPv6-native) auth：plaintext username + bcrypt password；与 v1 完全独立
-		authV2Handler := httpapi.NewAuthV2Handler(db, sessionStore, logger)
-		router.RegisterAuthV2Routes(authV2Handler)
 
 		// 创建 Device Service 和 Handler（qinglanClient 已在上面创建）
 		devicesRepo.SetLogger(logger) // 确保 logger 已设置（用于设备连接日志）
@@ -284,7 +273,7 @@ func main() {
 
 		iotTSRepo := repository.NewPostgresIoTTimeSeriesRepository(db)
 		trackPlaybackSvc := service.NewTrackPlaybackService(devicesRepo, iotTSRepo, logger)
-		playbackHandler := httpapi.NewPlaybackHandler(trackPlaybackSvc, tenantsRepo, logger)
+		playbackHandler := httpapi.NewPlaybackHandler(trackPlaybackSvc, tenantsRepo, db, logger)
 		router.RegisterPlaybackRoutes(playbackHandler)
 
 		// 创建 Branch Service 和 Handler
@@ -293,10 +282,11 @@ func main() {
 		branchesHandler := httpapi.NewBranchesHandler(branchService, db, logger)
 		router.RegisterBranchesRoutes(branchesHandler)
 
-		// 创建 Unit Service 和 Handler
-		unitService := service.NewUnitService(unitsRepo, branchesRepo, residentsRepo, devicesRepo, db, logger)
+		// 创建 Unit Service 和 Handler（v2: residentsRepo 解耦走 raw SQL）
+		unitService := service.NewUnitService(unitsRepo, branchesRepo, devicesRepo, db, logger)
 		unitHandler := httpapi.NewUnitHandler(unitService, logger)
 		router.RegisterUnitRoutes(unitHandler)
+
 
 		// 创建 User Service 和 Handler
 		// usersRepo 已在上面创建 RoleService 时声明，这里直接使用
@@ -310,11 +300,28 @@ func main() {
 		careTeamsHandler := httpapi.NewCareTeamsHandler(db, logger)
 		router.RegisterCareTeamsRoutes(careTeamsHandler)
 
-		// Resident V2 (Forward Design)— 独立 /admin/api/v2/residents 路由
-		residentsV2Repo := repository.NewPostgresResidentsRepositoryV2(db)
-		residentV2Svc := service.NewResidentV2Service(residentsV2Repo)
-		residentV2Handler := httpapi.NewResidentV2Handler(db, residentV2Svc, logger)
-		router.RegisterResidentV2Routes(residentV2Handler)
+		// Resident (Forward Design)— 独立 /admin/api/v2/residents 路由
+		// 注意：复用 line 126 已创建的外层 residentsRepo（用 = 而非 :=，避免变量 shadowing
+		// 让 PHI cryptor 注入到错误的实例上 → contacts/PHI 路径假性 nil）
+		residentsRepo.SetLogger(logger)
+
+		// 初始化 PHI 加密（K 服务模式）—— 必须在 residentsRepo 拿到 logger 之后、service 创建之前注入
+		kmsSocket := os.Getenv("KMS_SOCKET")
+		masterPin := os.Getenv("MASTER_PIN")
+		var phiCryptor *phipkg.PHICryptor
+		if kmsSocket != "" && masterPin != "" {
+			keyStore := phipkg.NewTenantKeyStore(kmsSocket, masterPin)
+			phiCryptor = phipkg.NewPHICryptor(keyStore)
+			residentsRepo.SetPHICryptor(phiCryptor)
+			logger.Info("PHI encryption enabled", zap.String("kms_socket", kmsSocket))
+		} else {
+			logger.Warn("PHI encryption NOT enabled — set KMS_SOCKET and MASTER_PIN")
+		}
+
+		residentSvc := service.NewResidentService(residentsRepo)
+		residentSvc.SetLogger(logger)
+		residentHandler := httpapi.NewResidentHandler(db, residentSvc, logger)
+		router.RegisterResidentRoutes(residentHandler)
 
 		// 创建 ConfigPublisher（用于发送所有 config:* 消息）
 		configPublisher := publisher.NewConfigPublisher(redisClient, logger)
@@ -325,20 +332,20 @@ func main() {
 		service.InitGlobalCardSync(cardSyncService)
 
 		// 创建 DeviceMonitorSettings Service 和 Handler
-		alarmDeviceRepo := repository.NewPostgresAlarmDeviceRepository(db)
 		// 使用已创建的 alarmCloudRepo、configVersionsRepo（在 AlarmCloud Service 创建时已创建）
 		// 使用已创建的 configPublisher（在上面创建）
-		deviceMonitorSettingsService = service.NewDeviceMonitorSettingsService(
-			alarmDeviceRepo,
-			alarmCloudRepo,
-			configVersionsRepo, // 使用已创建的 configVersionsRepo
-			devicesRepo,
-			deviceStoreRepo,
-			residentsRepo, // 供 monitor save 时按 card 查 resident gender/age 下发 Sleepace bind
-			db,            // 添加 db 参数用于事务操作
-			configPublisher,
-			logger,
-		)
+		// deviceMonitorSettingsService — 暂时跳过（v1 接口不兼容 v2 实现）
+		// deviceMonitorSettingsService = service.NewDeviceMonitorSettingsService(
+		// 	alarmDeviceRepo,
+		// 	alarmCloudRepo,
+		// 	configVersionsRepo,
+		// 	devicesRepo,
+		// 	deviceStoreRepo,
+		// 	residentsRepo,
+		// 	db,
+		// 	configPublisher,
+		// 	logger,
+		// )
 
 		if cfg.SleepaceGateway.APIBaseURL != "" {
 			sleepaceGateway = service.NewSleepaceGatewayClient(cfg.SleepaceGateway.APIBaseURL, logger)
@@ -432,39 +439,15 @@ func main() {
 			}
 		}
 
-		// 初始化 PHI 加密（K 服务模式）
-		kmsSocket := os.Getenv("KMS_SOCKET")
-		masterPin := os.Getenv("MASTER_PIN")
-		var phiCryptor *phipkg.PHICryptor
-		if kmsSocket != "" && masterPin != "" {
-			keyStore := phipkg.NewTenantKeyStore(kmsSocket, masterPin)
-			phiCryptor = phipkg.NewPHICryptor(keyStore)
-			residentsRepo.SetPHICryptor(phiCryptor)
-			logger.Info("PHI encryption enabled", zap.String("kms_socket", kmsSocket))
-		} else {
-			logger.Warn("PHI encryption NOT enabled — set KMS_SOCKET and MASTER_PIN")
-		}
-
-		// 创建 Resident Service 和 Handler
-		residentService := service.NewResidentService(residentsRepo, db, logger)
-		// v2 service 也注入 cryptor（用于 PHI/Contacts 加密）
-		if phiCryptor != nil {
-			if svcWithCryptor, ok := residentService.(interface {
-				SetPHICryptor(*phipkg.PHICryptor)
-			}); ok {
-				svcWithCryptor.SetPHICryptor(phiCryptor)
-			}
-		}
-		residentHandler := httpapi.NewResidentHandler(residentService, db, logger)
-		router.RegisterResidentRoutes(residentHandler)
-
 		sleepaceReportHandler := httpapi.NewSleepaceReportHandler(sleepaceReportService, db, logger)
+
+		// 创建 Sleepace Report Service
 		router.RegisterSleepaceReportRoutes(sleepaceReportHandler)
 
 		// Rounds（Automatic Rounds 完成落库与审计列表）
 		roundsRepo := repository.NewPostgresRoundsRepository(db)
 		roundsService := service.NewRoundsService(roundsRepo, logger)
-		roundsHandler := httpapi.NewRoundsHandler(roundsService, logger)
+		roundsHandler := httpapi.NewRoundsHandler(roundsService, db, logger)
 		router.RegisterRoundsRoutes(roundsHandler)
 
 		// Sleepace MQTT 由 wisefido-sleepace 消费；本进程经 SleepaceGatewayClient 访问厂家 HTTP。
@@ -543,7 +526,9 @@ func main() {
 	}
 
 	// 将 router 通过 authMiddleware 包装，使所有路由（非跳过清单）都需要有效的 token
-	wrappedHandler := authMiddleware.Wrap(router)
+	// 然后再叠加 scope.Middleware：从 X-User-* headers 解析 ScopeContext 并注入 ctx，
+	// 下游 handler/service 用 scope.FromContext(ctx) 拿 user/tenant/branch/role 4 维 scope。
+	wrappedHandler := authMiddleware.Wrap(scopepkg.Middleware(db)(router))
 
 	// 创建  HTTP 服务器
 	srv := service.NewServer(cfg.HTTP.Addr, wrappedHandler, logger)

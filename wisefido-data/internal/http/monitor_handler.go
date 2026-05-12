@@ -147,7 +147,7 @@ func (h *MonitorHandler) GetCardInfo(w http.ResponseWriter, r *http.Request, car
 // GET /data/api/v1/data/vital-focus/card/{id}/status
 func (h *MonitorHandler) GetCardStatus(w http.ResponseWriter, r *http.Request, cardID string) {
 	ctx := r.Context()
-	_, tenantID, _, _, ok := service.MustSession(ctx)
+	currentUserID, tenantID, _, _, ok := service.MustSession(ctx)
 	if !ok || tenantID == "" {
 		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
 		return
@@ -155,6 +155,14 @@ func (h *MonitorHandler) GetCardStatus(w http.ResponseWriter, r *http.Request, c
 	if h.realtime == nil {
 		writeJSON(w, http.StatusOK, Fail("realtime service not available"))
 		return
+	}
+	// Phase 3 scope check: cardID 必须在 user 可见的 cardList 内（含 Current Branch 过滤）
+	if h.cardService != nil {
+		card, err := h.cardService.GetCardInfo(ctx, tenantID, currentUserID, cardID)
+		if err != nil || card == nil {
+			writeJSON(w, http.StatusOK, Fail("permission denied: card not in your scope"))
+			return
+		}
 	}
 	data, err := h.realtime.GetCardStatus(ctx, cardID)
 	if err != nil {

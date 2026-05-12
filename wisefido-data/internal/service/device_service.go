@@ -9,6 +9,7 @@ import (
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
+	"wisefido-data/internal/scope"
 
 	"owl-common/card"
 	rediscommon "owl-common/redis"
@@ -58,16 +59,17 @@ func (s *deviceService) SetConfigPublisher(pub *publisher.ConfigPublisher) {
 
 // ListDevicesRequest 查询设备列表请求
 type ListDevicesRequest struct {
-	TenantID       string   // 必填（SystemAdmin 查看所有设备时，此字段仍需要但会被忽略）
-	IsSystemAdmin  bool     // SystemAdmin 查看所有租户的设备
-	Status         []string // 可选：设备状态过滤（online, offline, error）
-	DeviceType     string   // 可选：设备类型
-	SearchType     string   // 可选：搜索类型（device_name, device_uid）
-	SearchKeyword  string   // 可选：搜索关键词
-	Page           int      // 可选，默认 1
-	Size           int      // 可选，默认 20
-	Sort           string   // 可选：排序字段（device_name, device_type, device_model, device_uid, ...）
-	Direction      string   // 可选：asc / desc，默认 asc
+	TenantID      string   // 必填（SystemAdmin 查看所有设备时，此字段仍需要但会被忽略）
+	IsSystemAdmin bool     // SystemAdmin 查看所有租户的设备
+	CurrentUserID string   // Phase 3：service 据此查 user_branches.is_primary 当 scope
+	Status        []string // 可选：设备状态过滤（online, offline, error）
+	DeviceType    string   // 可选：设备类型
+	SearchType    string   // 可选：搜索类型（device_name, device_uid）
+	SearchKeyword string   // 可选：搜索关键词
+	Page          int      // 可选，默认 1
+	Size          int      // 可选，默认 20
+	Sort          string   // 可选：排序字段（device_name, device_type, device_model, device_uid, ...）
+	Direction     string   // 可选：asc / desc，默认 asc
 }
 
 // ListDevicesResponse 查询设备列表响应
@@ -95,11 +97,31 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 
 	// 3. 构建过滤器
 	filters := repository.DeviceFilters{
-		Status:         statuses,
-		DeviceType:     strings.TrimSpace(req.DeviceType),
-		SearchType:     strings.TrimSpace(req.SearchType),
-		SearchKeyword:  strings.TrimSpace(req.SearchKeyword),
-		IsSystemAdmin:  req.IsSystemAdmin, // SystemAdmin 查看所有设备
+		Status:        statuses,
+		DeviceType:    strings.TrimSpace(req.DeviceType),
+		SearchType:    strings.TrimSpace(req.SearchType),
+		SearchKeyword: strings.TrimSpace(req.SearchKeyword),
+		IsSystemAdmin: req.IsSystemAdmin,
+	}
+
+	// Phase 3: Current Branch scope via scope.ScopeContext (middleware 注入)
+	if !req.IsSystemAdmin {
+		if sc := scope.MustFromContext(ctx); sc != nil {
+			if !sc.IsTenantWide() && sc.HasCurrentBranch() {
+				filters.BranchPrefix = sc.CurrentBranchID
+			}
+		} else if strings.TrimSpace(req.CurrentUserID) != "" {
+			// fallback：ctx 没注入时旧 SQL 路径
+			var bid sql.NullString
+			err := s.db.QueryRowContext(ctx, `
+				SELECT host(branch_prefix) || '/56'
+				  FROM user_branches
+				 WHERE user_id = $1::UUID AND is_primary = TRUE AND valid_to IS NULL
+				 LIMIT 1`, req.CurrentUserID).Scan(&bid)
+			if err == nil && bid.Valid && bid.String != "" {
+				filters.BranchPrefix = bid.String
+			}
+		}
 	}
 
 	// 4. 分页参数

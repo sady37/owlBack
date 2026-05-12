@@ -252,16 +252,6 @@ func (r *Router) RegisterCardRefreshRoutes(h *CardRefreshHandler) {
 	r.Handle("/admin/api/v1/cards/", h.ServeHTTP)
 }
 
-// RegisterAuthRoutes 注册认证授权路由
-func (r *Router) RegisterAuthRoutes(h *AuthHandler) {
-	r.Handle("/auth/api/v1/login", h.ServeHTTP)
-	r.Handle("/auth/api/v1/institutions/search", h.ServeHTTP)
-	r.Handle("/auth/api/v1/forgot-password/send-code", h.ServeHTTP)
-	r.Handle("/auth/api/v1/forgot-password/verify-code", h.ServeHTTP)
-	r.Handle("/auth/api/v1/forgot-password/reset", h.ServeHTTP)
-	r.Handle("/auth/api/v1/verify-pin", h.ServeHTTP)
-}
-
 // RegisterDeviceRoutes 注册设备管理路由
 func (r *Router) RegisterDeviceRoutes(h *DeviceHandler) {
 	r.Handle("/admin/api/v1/devices", h.ServeHTTP)
@@ -312,8 +302,8 @@ func (r *Router) RegisterCareTeamsRoutes(h *CareTeamsHandler) {
 	r.Handle("/admin/api/v1/care-teams/", h.ServeHTTP)
 }
 
-// RegisterResidentV2Routes 注册 V2 Resident 路由（forward design，独立于 v1）
-func (r *Router) RegisterResidentV2Routes(h *ResidentV2Handler) {
+// RegisterResidentRoutes 注册 Resident 路由
+func (r *Router) RegisterResidentRoutes(h *ResidentHandler) {
 	r.Handle("/admin/api/v2/residents", h.ServeHTTP)
 	r.Handle("/admin/api/v2/residents/", h.ServeHTTP)
 }
@@ -331,14 +321,6 @@ func (r *Router) RegisterDeviceMonitorSettingsRoutes(h *DeviceMonitorSettingsHan
 func (r *Router) RegisterAlarmEventRoutes(h *AlarmEventHandler) {
 	r.Handle("/admin/api/v1/alarm-events", h.ServeHTTP)
 	r.Handle("/admin/api/v1/alarm-events/", h.ServeHTTP)
-}
-
-// RegisterResidentRoutes 注册住户管理路由
-func (r *Router) RegisterResidentRoutes(h *ResidentHandler) {
-	r.HandleHandler("/admin/api/v1/residents", h)
-	r.HandleHandler("/admin/api/v1/residents/", h)
-	// 联系人密码重置路由
-	r.HandleHandler("/admin/api/v1/contacts/", h)
 }
 
 // RegisterSleepaceReportRoutes 注册 Sleepace 睡眠报告路由

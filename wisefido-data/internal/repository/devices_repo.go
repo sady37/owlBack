@@ -81,11 +81,12 @@ type DeviceRelationResident struct {
 
 // DeviceFilters 设备查询过滤器
 type DeviceFilters struct {
-	IsSystemAdmin  bool     // SystemAdmin 查看所有租户的设备（不限制 tenant_id）
-	Status         []string // 设备状态过滤（online, offline, error）
-	DeviceType     string   // 设备类型
-	SearchType     string   // 搜索类型（device_name, device_code, device_uid）
-	SearchKeyword  string   // 搜索关键词
+	IsSystemAdmin bool     // SystemAdmin 查看所有租户的设备（不限制 tenant_id）
+	Status        []string // 设备状态过滤（online, offline, error）
+	DeviceType    string   // 设备类型
+	SearchType    string   // 搜索类型（device_name, device_code, device_uid）
+	SearchKeyword string   // 搜索关键词
+	BranchPrefix  string   // Current Branch scope /56 CIDR (Phase 3)；空=tenant 全部
 }
 
 // DeviceLocationInfo 设备位置信息

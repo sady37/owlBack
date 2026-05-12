@@ -114,6 +114,14 @@ func (h *TenantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Platform-level resource: only SystemAdmin / SystemOperator may list/CUD tenants.
+	// 任何其它 role 即使登录也禁止访问，避免跨 tenant 元数据泄漏。
+	role := r.Header.Get("X-User-Role")
+	if !strings.EqualFold(role, "SystemAdmin") && !strings.EqualFold(role, "SystemOperator") {
+		writeJSON(w, http.StatusOK, Fail("permission denied: tenants are platform-level resources (SystemAdmin only)"))
+		return
+	}
+
 	switch {
 	case r.URL.Path == "/admin/api/v1/tenants":
 		switch r.Method {

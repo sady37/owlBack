@@ -141,6 +141,14 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		argN++
 	}
 
+	// Phase 3: Current Branch scope (/56)。device.device_ipv6 byte 6-7 即 branch_slot，
+	// /56 prefix-match 把 device 限定到该 branch
+	if bp := strings.TrimSpace(filters.BranchPrefix); bp != "" {
+		where = append(where, fmt.Sprintf("d.device_ipv6 <<= $%d::INET", argN))
+		args = append(args, bp)
+		argN++
+	}
+
 	if dt := strings.TrimSpace(filters.DeviceType); dt != "" {
 		where = append(where, fmt.Sprintf("dfm.device_type::text = $%d", argN))
 		args = append(args, dt)

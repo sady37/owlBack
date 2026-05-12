@@ -12,6 +12,7 @@ import (
 
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
+	"wisefido-data/internal/scope"
 
 	"owl-common/alarm"
 	commoncard "owl-common/card"
@@ -1262,10 +1263,11 @@ func (s *alarmEventService) checkHandlePermission(ctx context.Context, tenantID,
 				// 检查权限配置
 				perm, err := s.getResourcePermission(ctx, userRole, "residents", "R")
 				if err == nil && perm.BranchOnly {
-					// 获取用户的 branch_id 列表（从 user_branches 表）
+					// Phase 3：Manager 按 Current Branch (is_primary=TRUE) 严格过滤
 					rows, err := s.db.QueryContext(ctx,
-						`SELECT branch_id::text FROM user_branches WHERE tenant_id = $1 AND user_id::text = $2`,
-						tenantID, userID,
+						`SELECT host(branch_prefix) || '/56' FROM user_branches
+						  WHERE user_id = $1::UUID AND is_primary = TRUE AND valid_to IS NULL LIMIT 1`,
+						userID,
 					)
 					if err == nil {
 						defer rows.Close()
@@ -1277,12 +1279,13 @@ func (s *alarmEventService) checkHandlePermission(ctx context.Context, tenantID,
 							}
 						}
 
-						// 获取住户的 branch_id（通过 unit_id → units.branch_id）
+						// 获取住户的 branch_id：v2 schema unit_id 是 INET /80，branch /56 prefix-match 反推
 						if residentInfo.UnitID.Valid && residentInfo.UnitID.String != "" {
 							var residentBranchID sql.NullString
 							err := s.db.QueryRowContext(ctx,
-								`SELECT branch_id::text FROM units WHERE tenant_id = $1 AND unit_id = $2`,
-								tenantID, residentInfo.UnitID.String,
+								`SELECT host(network(set_masklen(unit_id, 56))) || '/56'
+								   FROM units WHERE unit_id = $1::INET`,
+								residentInfo.UnitID.String,
 							).Scan(&residentBranchID)
 							if err == nil {
 								if len(userBranchIDs) == 0 {
@@ -1733,32 +1736,36 @@ func (s *alarmEventService) getDeviceIDsFromCardsForResident(ctx context.Context
 	return deviceIDs, nil
 }
 
-// getUserBranchIDs 查询用户所属的 branch_id 列表
-func (s *alarmEventService) getUserBranchIDs(ctx context.Context, tenantID, userID string) ([]string, error) {
+// getUserBranchIDs — Phase 3 + Step B：优先从 ctx 取 ScopeContext，fallback 直查 DB
+// 返回空数组 = tenant-wide user（admin/sysadmin），调用方应不加 branch filter
+func (s *alarmEventService) getUserBranchIDs(ctx context.Context, _ string, userID string) ([]string, error) {
+	if sc := scope.MustFromContext(ctx); sc != nil && sc.UserID == userID {
+		if sc.IsTenantWide() || !sc.HasCurrentBranch() {
+			return []string{}, nil
+		}
+		return []string{sc.CurrentBranchID}, nil
+	}
 	if s.db == nil {
 		return nil, fmt.Errorf("database connection not available")
 	}
-
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT branch_id::text 
-		 FROM user_branches 
-		 WHERE tenant_id = $1 AND user_id::text = $2`,
-		tenantID, userID,
-	)
+	var bid sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT host(branch_prefix) || '/56'
+		  FROM user_branches
+		 WHERE user_id = $1::UUID
+		   AND is_primary = TRUE
+		   AND valid_to IS NULL
+		 LIMIT 1`, userID).Scan(&bid)
+	if err == sql.ErrNoRows {
+		return []string{}, nil
+	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to query user branch IDs: %w", err)
+		return nil, fmt.Errorf("query current branch: %w", err)
 	}
-	defer rows.Close()
-
-	branchIDs := []string{}
-	for rows.Next() {
-		var branchID sql.NullString
-		if err := rows.Scan(&branchID); err == nil && branchID.Valid {
-			branchIDs = append(branchIDs, branchID.String)
-		}
+	if !bid.Valid || bid.String == "" {
+		return []string{}, nil
 	}
-
-	return branchIDs, rows.Err()
+	return []string{bid.String}, nil
 }
 
 // getUnitIDsByBranchIDs 通过多个 branch_id 查询所有关联的 unit_ids

@@ -1,0 +1,475 @@
+package httpapi
+
+import (
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"wisefido-data/internal/service"
+
+	"go.uber.org/zap"
+)
+
+// loginRateLimiter 登录重试限制器（滑动窗口）
+// 10 分钟内最多允许 maxAttempts 次失败登录
+type loginRateLimiter struct {
+	mu          sync.Mutex
+	attempts    map[string][]time.Time // key: IP+accountHash → 失败时间戳列表
+	window      time.Duration
+	maxAttempts int
+}
+
+func newLoginRateLimiter(window time.Duration, maxAttempts int) *loginRateLimiter {
+	return &loginRateLimiter{
+		attempts:    make(map[string][]time.Time),
+		window:      window,
+		maxAttempts: maxAttempts,
+	}
+}
+
+// isBlocked 检查是否超过重试限制，返回剩余等待秒数（0 表示未被限制）
+func (rl *loginRateLimiter) isBlocked(key string) int {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
+	// 清理过期记录
+	timestamps := rl.attempts[key]
+	valid := timestamps[:0]
+	for _, t := range timestamps {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+	rl.attempts[key] = valid
+	if len(valid) < rl.maxAttempts {
+		return 0
+	}
+	// 最早一条记录过期后即可重试
+	earliest := valid[0]
+	retryAfter := earliest.Add(rl.window).Sub(now)
+	secs := int(retryAfter.Seconds()) + 1
+	if secs < 1 {
+		secs = 1
+	}
+	return secs
+}
+
+// recordFailure 记录一次失败尝试
+func (rl *loginRateLimiter) recordFailure(key string) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
+	// 清理过期并追加
+	timestamps := rl.attempts[key]
+	valid := timestamps[:0]
+	for _, t := range timestamps {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+	rl.attempts[key] = append(valid, now)
+}
+
+// AuthHandler 认证授权 Handler
+type AuthHandler struct {
+	authService  service.AuthService
+	sessionStore SessionStore // 存储 session 信息（token → user info）
+	logger       *zap.Logger
+	rateLimiter  *loginRateLimiter
+}
+
+// NewAuthHandler 创建认证授权 Handler
+func NewAuthHandler(authService service.AuthService, logger *zap.Logger) *AuthHandler {
+	return &AuthHandler{
+		authService: authService,
+		logger:      logger,
+		rateLimiter: newLoginRateLimiter(10*time.Minute, 10),
+	}
+}
+
+// SetSessionStore 设置会话存储（供主入口调用）
+func (h *AuthHandler) SetSessionStore(store SessionStore) {
+	h.sessionStore = store
+}
+
+// ServeHTTP 实现 http.Handler 接口
+func (h *AuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 路由分发
+	switch r.URL.Path {
+	case "/auth/api/v1/login":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		h.Login(w, r)
+	case "/auth/api/v1/institutions/search":
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		h.SearchInstitutions(w, r)
+	case "/auth/api/v1/forgot-password/send-code":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		h.SendVerificationCode(w, r)
+	case "/auth/api/v1/forgot-password/verify-code":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		h.VerifyCode(w, r)
+	case "/auth/api/v1/forgot-password/reset":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		h.ResetPassword(w, r)
+	case "/auth/api/v1/verify-pin":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		h.VerifyPIN(w, r)
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+// Login 用户登录
+func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 1. 参数解析（支持多种格式）
+	// 对齐 owlFront LoginResult（authModel.ts）
+	// loginApi 会把 tenant_id/userType 等放在 JSON body（axios beforeRequestHook 会把 params 作为 data）
+	var reqBody map[string]any
+	_ = readBodyJSON(r, 1<<20, &reqBody)
+
+	// Some clients may wrap params in {params:{...}}
+	if p, ok := reqBody["params"].(map[string]any); ok && p != nil {
+		if _, ok2 := reqBody["tenant_id"]; !ok2 {
+			reqBody["tenant_id"] = p["tenant_id"]
+		}
+		if _, ok2 := reqBody["userType"]; !ok2 {
+			reqBody["userType"] = p["userType"]
+		}
+		if _, ok2 := reqBody["accountHash"]; !ok2 {
+			reqBody["accountHash"] = p["accountHash"]
+		}
+		if _, ok2 := reqBody["passwordHash"]; !ok2 {
+			reqBody["passwordHash"] = p["passwordHash"]
+		}
+	}
+
+	// 参数优先级：Body > Query
+	tenantID, _ := reqBody["tenant_id"].(string)
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
+
+	userType, _ := reqBody["userType"].(string)
+	if userType == "" {
+		userType = r.URL.Query().Get("userType")
+	}
+	if userType == "" {
+		userType = "staff"
+	}
+
+	accountHash, _ := reqBody["accountHash"].(string)
+	if accountHash == "" {
+		accountHash = r.URL.Query().Get("accountHash")
+	}
+
+	passwordHash, _ := reqBody["passwordHash"].(string)
+	if passwordHash == "" {
+		passwordHash = r.URL.Query().Get("passwordHash")
+	}
+
+	// 2. 登录重试限制检查（10 分钟内最多 10 次失败）
+	clientIP := getClientIP(r)
+	rateLimitKey := clientIP + "|" + accountHash
+	if waitSecs := h.rateLimiter.isBlocked(rateLimitKey); waitSecs > 0 {
+		h.logger.Warn("Login rate limited",
+			zap.String("ip_address", clientIP),
+			zap.String("user_agent", r.UserAgent()),
+			zap.Int("retry_after_seconds", waitSecs),
+		)
+		mins := waitSecs / 60
+		msg := fmt.Sprintf("Too many login attempts, please try again in %d minutes", mins+1)
+		writeJSON(w, http.StatusOK, Fail(msg))
+		return
+	}
+
+	// 3. 调用 Service
+	req := service.LoginRequest{
+		TenantID:     tenantID,
+		UserType:     userType,
+		AccountHash:  accountHash,
+		PasswordHash: passwordHash,
+		IPAddress:    clientIP,
+		UserAgent:    r.UserAgent(),
+	}
+
+	resp, err := h.authService.Login(ctx, req)
+	if err != nil {
+		// 记录失败尝试
+		h.rateLimiter.recordFailure(rateLimitKey)
+		h.logger.Error("Login failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	// 将 session 信息存储到 sessionStore（登录成功后）
+	// accessToken 由前端保存，AuthMiddleware 在请求时从 Authorization header 提取
+	if h.sessionStore != nil && resp.AccessToken != "" {
+		sessionData := SessionData{
+			UserID:   resp.UserID,
+			TenantID: resp.TenantID,
+			UserType: resp.UserType,
+			Role:     resp.Role,
+		}
+		// 使用 accessToken 作为 session key，24h TTL
+		_ = h.sessionStore.Set(ctx, resp.AccessToken, sessionData, 24*time.Hour)
+	}
+
+	// 3. 构建响应（对齐 owlFront LoginResult）
+	result := map[string]any{
+		"accessToken":  resp.AccessToken,
+		"refreshToken": resp.RefreshToken,
+		"userId":       resp.UserID,
+		"user_account": resp.UserAccount,
+		"userType":     resp.UserType,
+		"role":         resp.Role,
+		"nickName":     resp.NickName,
+		"tenant_id":    resp.TenantID,
+		"tenant_name":  resp.TenantName,
+		"domain":       resp.Domain,
+		"branch_id":    resp.BranchID,
+		"branchTag":    resp.BranchTag,
+		"branch_ids":   resp.BranchIDs,
+		"homePath":     resp.HomePath,
+	}
+
+	writeJSON(w, http.StatusOK, Ok(result))
+}
+
+// SearchInstitutions 搜索机构
+func (h *AuthHandler) SearchInstitutions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 添加日志记录请求详情
+	h.logger.Info("SearchInstitutions request received",
+		zap.String("method", r.Method),
+		zap.String("remote_addr", r.RemoteAddr),
+		zap.String("user_agent", r.UserAgent()),
+		zap.String("authorization_header", r.Header.Get("Authorization")),
+	)
+
+	// 1. 参数解析（从 Query 参数获取）
+	accountHash := strings.TrimSpace(r.URL.Query().Get("accountHash"))
+	passwordHash := strings.TrimSpace(r.URL.Query().Get("passwordHash"))
+	userType := strings.TrimSpace(r.URL.Query().Get("userType"))
+	if userType == "" {
+		userType = "staff"
+	}
+
+	h.logger.Info("SearchInstitutions parsed params",
+		zap.String("accountHash", maskString(accountHash)),
+		zap.String("passwordHash", maskString(passwordHash)),
+		zap.String("userType", userType),
+	)
+
+	// 2. 调用 Service
+	req := service.SearchInstitutionsRequest{
+		AccountHash:  accountHash,
+		PasswordHash: passwordHash,
+		UserType:     userType,
+	}
+
+	resp, err := h.authService.SearchInstitutions(ctx, req)
+	if err != nil {
+		h.logger.Error("SearchInstitutions failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	// 3. 构建响应（与旧 Handler 格式一致）
+	items := make([]any, 0, len(resp.Institutions))
+	for _, inst := range resp.Institutions {
+		item := map[string]any{
+			"id":          inst.ID,
+			"name":        inst.Name,
+			"accountType": inst.AccountType,
+		}
+		if inst.Domain != "" {
+			item["domain"] = inst.Domain
+		}
+		items = append(items, item)
+	}
+
+	h.logger.Info("SearchInstitutions completed",
+		zap.Int("result_count", len(items)),
+	)
+
+	writeJSON(w, http.StatusOK, Ok(items))
+}
+
+// SendVerificationCode 发送验证码
+func (h *AuthHandler) SendVerificationCode(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 1. 参数解析
+	var payload map[string]any
+	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
+		writeJSON(w, http.StatusOK, Fail("invalid body"))
+		return
+	}
+
+	account, _ := payload["account"].(string)
+	userType, _ := payload["userType"].(string)
+	tenantID, _ := payload["tenant_id"].(string)
+	tenantName, _ := payload["tenant_name"].(string)
+
+	// 2. 调用 Service
+	req := service.SendVerificationCodeRequest{
+		Account:    account,
+		UserType:   userType,
+		TenantID:   tenantID,
+		TenantName: tenantName,
+	}
+
+	resp, err := h.authService.SendVerificationCode(ctx, req)
+	if err != nil {
+		h.logger.Error("SendVerificationCode failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	// 3. 返回响应
+	writeJSON(w, http.StatusOK, Ok(resp))
+}
+
+// VerifyCode 验证验证码
+func (h *AuthHandler) VerifyCode(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 1. 参数解析
+	var payload map[string]any
+	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
+		writeJSON(w, http.StatusOK, Fail("invalid body"))
+		return
+	}
+
+	account, _ := payload["account"].(string)
+	code, _ := payload["code"].(string)
+	userType, _ := payload["userType"].(string)
+	tenantID, _ := payload["tenant_id"].(string)
+	tenantName, _ := payload["tenant_name"].(string)
+
+	// 2. 调用 Service
+	req := service.VerifyCodeRequest{
+		Account:    account,
+		Code:       code,
+		UserType:   userType,
+		TenantID:   tenantID,
+		TenantName: tenantName,
+	}
+
+	resp, err := h.authService.VerifyCode(ctx, req)
+	if err != nil {
+		h.logger.Error("VerifyCode failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	// 3. 返回响应
+	writeJSON(w, http.StatusOK, Ok(resp))
+}
+
+// ResetPassword 重置密码
+func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 1. 参数解析
+	var payload map[string]any
+	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
+		writeJSON(w, http.StatusOK, Fail("invalid body"))
+		return
+	}
+
+	token, _ := payload["token"].(string)
+	newPassword, _ := payload["newPassword"].(string)
+	userType, _ := payload["userType"].(string)
+
+	// 2. 调用 Service
+	req := service.ResetPasswordRequest{
+		Token:       token,
+		NewPassword: newPassword,
+		UserType:    userType,
+	}
+
+	resp, err := h.authService.ResetPassword(ctx, req)
+	if err != nil {
+		h.logger.Error("ResetPassword failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	// 3. 返回响应
+	writeJSON(w, http.StatusOK, Ok(resp))
+}
+
+// VerifyPIN 验证 PIN（用于锁屏解锁）
+func (h *AuthHandler) VerifyPIN(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 1. 参数解析
+	var payload map[string]any
+	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
+		writeJSON(w, http.StatusOK, Fail("invalid body"))
+		return
+	}
+
+	pinHash, _ := payload["pin_hash"].(string)
+	if pinHash == "" {
+		writeJSON(w, http.StatusOK, Fail("pin_hash is required"))
+		return
+	}
+
+	// 2. 从 request header 获取 user_id
+	userID := r.Header.Get("X-User-Id")
+	if userID == "" {
+		writeJSON(w, http.StatusOK, Fail("user not authenticated"))
+		return
+	}
+
+	// 3. 调用 Service
+	req := service.VerifyPINRequest{
+		PinHash: pinHash,
+		UserID:  userID,
+	}
+
+	resp, err := h.authService.VerifyPIN(ctx, req)
+	if err != nil {
+		h.logger.Error("VerifyPIN failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+
+	// 4. 返回响应
+	writeJSON(w, http.StatusOK, Ok(resp))
+}
+
+// maskString 用于隐藏敏感信息的日志输出
+func maskString(s string) string {
+	if len(s) <= 4 {
+		return "***"
+	}
+	return s[:4] + "***"
+}

@@ -461,30 +461,32 @@ func (h *SleepaceReportHandler) checkReportPermission(ctx context.Context, tenan
 			return nil
 		}
 
-		// 3.2 Manager：检查 branch-only
+		// 3.2 Manager：Phase 3 按 Current Branch (user_branches.is_primary) 严格过滤
 		if userRole == "Manager" {
-			// 检查权限配置
 			perm, err := GetResourcePermission(h.db, ctx, userRole, "residents", "R")
 			if err == nil && perm.BranchOnly {
-				// 获取用户的 branch_tag
-				var userBranchTag sql.NullString
-				err := h.db.QueryRowContext(ctx,
-					`SELECT branch_tag FROM users WHERE tenant_id = $1 AND user_id::text = $2`,
-					tenantID, userID,
-				).Scan(&userBranchTag)
-				if err == nil {
-					// 检查住户的 branch_tag
-					if !userBranchTag.Valid || userBranchTag.String == "" {
-						// 用户 branch_tag 为 NULL：只能访问 branch_tag 为 NULL 或 '-' 的住户
-						if residentInfo.BranchTag.Valid && residentInfo.BranchTag.String != "" && residentInfo.BranchTag.String != "-" {
-							return fmt.Errorf("access denied: can only access residents with branch_tag NULL or '-'")
-						}
-					} else {
-						// 用户 branch_tag 有值：只能访问匹配的 branch
-						if !residentInfo.BranchTag.Valid || residentInfo.BranchTag.String != userBranchTag.String {
-							return fmt.Errorf("access denied: resident belongs to different branch")
-						}
-					}
+				// 1) 拿 user 的 Current Branch /56
+				var userBranch sql.NullString
+				_ = h.db.QueryRowContext(ctx, `
+					SELECT host(branch_prefix) || '/56' FROM user_branches
+					 WHERE user_id = $1::UUID AND is_primary = TRUE AND valid_to IS NULL LIMIT 1`,
+					userID,
+				).Scan(&userBranch)
+				if !userBranch.Valid || userBranch.String == "" {
+					// 没挂任何 branch = tenant-wide（admin 走前面 SystemAdmin 分支，到这里基本表 unassigned）
+					return fmt.Errorf("access denied: manager has no current branch")
+				}
+				// 2) 拿 resident 的 Current Branch /56 (resident_unit 反推)
+				var residentBranch sql.NullString
+				_ = h.db.QueryRowContext(ctx, `
+					SELECT host(network(set_masklen(spatial_prefix, 56))) || '/56'
+					  FROM resident_unit
+					 WHERE resident_id = $1::INET AND valid_to IS NULL
+					 ORDER BY valid_from DESC LIMIT 1`,
+					residentInfo.ResidentID,
+				).Scan(&residentBranch)
+				if !residentBranch.Valid || residentBranch.String != userBranch.String {
+					return fmt.Errorf("access denied: resident belongs to different branch")
 				}
 			}
 			return nil

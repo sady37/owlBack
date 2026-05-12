@@ -9,6 +9,7 @@ import (
 
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
+	"wisefido-data/internal/scope"
 
 	"go.uber.org/zap"
 )
@@ -51,24 +52,54 @@ type UnitService interface {
 
 // unitService 实现
 type unitService struct {
-	unitsRepo     repository.UnitsRepository
-	branchesRepo  repository.BranchesRepository
-	residentsRepo repository.ResidentsRepository
-	devicesRepo   repository.DevicesRepository
-	db            *sql.DB
-	logger        *zap.Logger
+	unitsRepo    repository.UnitsRepository
+	branchesRepo repository.BranchesRepository
+	devicesRepo  repository.DevicesRepository
+	db           *sql.DB
+	logger       *zap.Logger
 }
 
 // NewUnitService 创建 UnitService 实例
-func NewUnitService(unitsRepo repository.UnitsRepository, branchesRepo repository.BranchesRepository, residentsRepo repository.ResidentsRepository, devicesRepo repository.DevicesRepository, db *sql.DB, logger *zap.Logger) UnitService {
+//
+// 注意：v2 不再注入 ResidentsRepository — "查 prefix 下 resident" 改走本 service 内
+// findResidentNamesInPrefix raw SQL（v2 schema 用 resident_unit.spatial_prefix）。
+func NewUnitService(unitsRepo repository.UnitsRepository, branchesRepo repository.BranchesRepository, devicesRepo repository.DevicesRepository, db *sql.DB, logger *zap.Logger) UnitService {
 	return &unitService{
-		unitsRepo:     unitsRepo,
-		branchesRepo:  branchesRepo,
-		residentsRepo: residentsRepo,
-		devicesRepo:   devicesRepo,
-		db:            db,
-		logger:        logger,
+		unitsRepo:    unitsRepo,
+		branchesRepo: branchesRepo,
+		devicesRepo:  devicesRepo,
+		db:           db,
+		logger:       logger,
 	}
+}
+
+// findResidentNamesInPrefix — 查 spatial_prefix 下 active resident 的 nickname 列表
+// v2 schema: resident_unit.spatial_prefix INET (CIDR /80/88/96)，prefix <<= 查询
+// 用于删除 unit/room/bed 前检查占用，避免误删
+func (s *unitService) findResidentNamesInPrefix(ctx context.Context, prefix string) ([]string, error) {
+	if strings.TrimSpace(prefix) == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT COALESCE(r.nickname, host(r.resident_id))
+		  FROM residents r
+		  JOIN resident_unit ru ON ru.resident_id = r.resident_id
+		 WHERE ru.valid_to IS NULL
+		   AND ru.spatial_prefix <<= $1::INET
+		   AND COALESCE(r.status, 'active') <> 'deleted'`, prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
 }
 
 // ============================================
@@ -179,13 +210,44 @@ func (s *unitService) getUserBranchID(ctx context.Context, tenantID, userID stri
 	return "", false, nil // 用户没有关联任何院区
 }
 
-// getUserBranchIDs 查询用户所属的所有 branch_id 列表（Service 层内部方法）
+// getUserBranchIDs 查询用户的 Current Branch（user_branches.is_primary=TRUE）
 //
-// v2 改造：owl_v2 schema 删除了 user_branches 表（用户与院区的关系由 user_roles +
-// roles.tenant_id + role_permissions.resource_scope INET 派生）。
-// 这里返回 (nil, false, nil) — service 层把"无 branch 限制 = 全部 branch 可访问"处理（admin 行为）。
+// Phase 3：业务 scope 统一为单一 Current Branch（不再用 branch_ids 集合）。
+// Step B: 优先从 ctx 取 scope.ScopeContext；fallback 直查 user_branches。
+// Admin（user_branches 表无行）→ 走 handleAdminAllBranches 兜底，返所有 branch。
 func (s *unitService) getUserBranchIDs(ctx context.Context, tenantID, userID string) (branchIDs []string, hasBranches bool, err error) {
-	return nil, false, nil
+	if userID == "" {
+		return nil, false, nil
+	}
+	// 优先：从 middleware 注入的 ScopeContext 拿
+	if sc := scope.MustFromContext(ctx); sc != nil && sc.UserID == userID {
+		if sc.IsTenantWide() {
+			return s.handleAdminAllBranches(ctx, tenantID, userID)
+		}
+		if sc.HasCurrentBranch() {
+			return []string{sc.CurrentBranchID}, true, nil
+		}
+		return s.handleAdminAllBranches(ctx, tenantID, userID)
+	}
+	// fallback：直查 DB
+	var bid sql.NullString
+	err = s.db.QueryRowContext(ctx, `
+		SELECT host(branch_prefix) || '/56'
+		  FROM user_branches
+		 WHERE user_id = $1::UUID
+		   AND is_primary = TRUE
+		   AND valid_to IS NULL
+		 LIMIT 1`, userID).Scan(&bid)
+	if err == sql.ErrNoRows {
+		return s.handleAdminAllBranches(ctx, tenantID, userID)
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("query current branch: %w", err)
+	}
+	if !bid.Valid || bid.String == "" {
+		return s.handleAdminAllBranches(ctx, tenantID, userID)
+	}
+	return []string{bid.String}, true, nil
 }
 
 // handleAdminAllBranches 处理 Admin 的 *(ALL) 情况（user_branches 表为空时返回所有 branch）
@@ -407,15 +469,14 @@ func (s *unitService) syncCardsForUnit(ctx context.Context, tenantID, unitID, _ 
 func (s *unitService) collectUnitTypeChangeBlockers(ctx context.Context, tenantID, unitID string) ([]string, error) {
 	var blockers []string
 
-	if s.residentsRepo != nil {
-		residents, _, err := s.residentsRepo.ListResidents(ctx, tenantID, repository.ResidentFilters{UnitID: unitID}, 1, 1)
-		if err != nil {
-			return nil, fmt.Errorf("check residents: %w", err)
-		}
-		if len(residents) > 0 {
-			blockers = append(blockers, "residents")
-		}
+	names, err := s.findResidentNamesInPrefix(ctx, unitID)
+	if err != nil {
+		return nil, fmt.Errorf("check residents: %w", err)
 	}
+	if len(names) > 0 {
+		blockers = append(blockers, "residents")
+	}
+	_ = tenantID
 
 	return blockers, nil
 }
@@ -425,9 +486,10 @@ func (s *unitService) collectUnitTypeChangeBlockers(ctx context.Context, tenantI
 // ============================================
 
 type ListBuildingsRequest struct {
-	TenantID   string // 必填
-	BranchID   string // 可选（优先使用，如果提供则忽略 BranchName）
-	BranchName string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
+	TenantID      string // 必填
+	BranchID      string // 可选（优先使用，如果提供则忽略 BranchName）
+	BranchName    string // 可选（向后兼容，如果 BranchID 未提供则使用此字段查找 ID，空字符串自动转换为 "-"）
+	CurrentUserID string // Phase 3：BranchID/Name 都没传时，按 user.is_primary (Current Branch) 兜底过滤
 }
 
 type ListBuildingsResponse struct {
@@ -831,7 +893,8 @@ func (s *unitService) ListBuildings(ctx context.Context, req ListBuildingsReques
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 
-	// 处理 branch_id：优先使用 BranchID，如果没有则通过 BranchName 查找
+	// 处理 branch_id：优先使用 BranchID，否则通过 BranchName 查找
+	// Phase 3：未显式传 BranchID/Name 时，默认按 user 的 Current Branch (is_primary) 过滤
 	var branchID sql.NullString
 	var branchNameForQuery string
 
@@ -839,15 +902,18 @@ func (s *unitService) ListBuildings(ctx context.Context, req ListBuildingsReques
 		branchID = sql.NullString{String: req.BranchID, Valid: true}
 		branchNameForQuery = ""
 	} else if req.BranchName != "" {
-		// 向后兼容：使用 BranchName
 		branchNameTrimmed := strings.TrimSpace(req.BranchName)
 		if branchNameTrimmed == "" {
 			branchNameTrimmed = domain.DefaultBranchName
 		}
 		branchNameForQuery = branchNameTrimmed
-	} else {
-		// 都没有提供：查询整个 tenant 的所有 buildings
-		branchNameForQuery = ""
+	} else if req.CurrentUserID != "" {
+		// Phase 3：默认按 Current Branch 过滤
+		userBranches, _, _ := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
+		if len(userBranches) == 1 {
+			branchID = sql.NullString{String: userBranches[0], Valid: true}
+		}
+		// Admin 兜底返多 branch 的情况：保持 NULL（不过滤）
 	}
 
 	// 如果提供了 BranchID，Repository 层需要支持通过 branch_id 过滤
@@ -1841,11 +1907,8 @@ func (s *unitService) DeleteUnit(ctx context.Context, req DeleteUnitRequest) (*D
 	// 3. 检查关联数据：residents、devices、rooms
 	var errorDetails []string
 
-	// 3.1 检查 residents
-	residentFilters := repository.ResidentFilters{
-		UnitID: req.UnitID,
-	}
-	residents, _, err := s.residentsRepo.ListResidents(ctx, req.TenantID, residentFilters, 1, 1000)
+	// 3.1 检查 residents（v2 走 resident_unit.spatial_prefix）
+	residentNames, err := s.findResidentNamesInPrefix(ctx, req.UnitID)
 	if err != nil {
 		s.logger.Error("DeleteUnit: failed to check residents",
 			zap.String("tenant_id", req.TenantID),
@@ -1854,15 +1917,7 @@ func (s *unitService) DeleteUnit(ctx context.Context, req DeleteUnitRequest) (*D
 		)
 		return nil, fmt.Errorf("failed to check residents: %w", err)
 	}
-	if len(residents) > 0 {
-		residentNames := make([]string, 0, len(residents))
-		for _, r := range residents {
-			if r.Nickname != "" {
-				residentNames = append(residentNames, r.Nickname)
-			} else {
-				residentNames = append(residentNames, r.ResidentID)
-			}
-		}
+	if len(residentNames) > 0 {
 		errorDetails = append(errorDetails, fmt.Sprintf("residents: %s", strings.Join(residentNames, ", ")))
 	}
 
@@ -2345,9 +2400,8 @@ func (s *unitService) DeleteRoom(ctx context.Context, req DeleteRoomRequest) (*D
 		errorDetails = append(errorDetails, fmt.Sprintf("devices: %s", strings.Join(deviceNames, ", ")))
 	}
 
-	// 3.3 业务关联：住户绑定到该 room（residents.room_id）
-	residentFilters := repository.ResidentFilters{RoomID: req.RoomID}
-	residents, _, err := s.residentsRepo.ListResidents(ctx, req.TenantID, residentFilters, 1, 10000)
+	// 3.3 业务关联：住户绑定到该 room（v2: resident_unit.spatial_prefix <<= room /88）
+	residentNames, err := s.findResidentNamesInPrefix(ctx, req.RoomID)
 	if err != nil {
 		s.logger.Error("DeleteRoom: failed to check residents",
 			zap.String("tenant_id", req.TenantID),
@@ -2356,15 +2410,7 @@ func (s *unitService) DeleteRoom(ctx context.Context, req DeleteRoomRequest) (*D
 		)
 		return nil, fmt.Errorf("failed to check residents: %w", err)
 	}
-	if len(residents) > 0 {
-		residentNames := make([]string, 0, len(residents))
-		for _, r := range residents {
-			if r.Nickname != "" {
-				residentNames = append(residentNames, r.Nickname)
-			} else {
-				residentNames = append(residentNames, r.ResidentID)
-			}
-		}
+	if len(residentNames) > 0 {
 		errorDetails = append(errorDetails, fmt.Sprintf("residents: %s", strings.Join(residentNames, ", ")))
 	}
 
@@ -2783,11 +2829,8 @@ func (s *unitService) DeleteBed(ctx context.Context, req DeleteBedRequest) (*Del
 		errorDetails = append(errorDetails, fmt.Sprintf("devices: %s", strings.Join(deviceNames, ", ")))
 	}
 
-	// 3.2 业务关联：住户绑定到该 bed（residents.bed_id）
-	residentFilters := repository.ResidentFilters{
-		BedID: req.BedID,
-	}
-	residents, _, err := s.residentsRepo.ListResidents(ctx, req.TenantID, residentFilters, 1, 10000)
+	// 3.2 业务关联：住户绑定到该 bed（v2: resident_unit.spatial_prefix <<= bed /96）
+	residentNames, err := s.findResidentNamesInPrefix(ctx, req.BedID)
 	if err != nil {
 		s.logger.Error("DeleteBed: failed to check residents",
 			zap.String("tenant_id", req.TenantID),
@@ -2796,15 +2839,7 @@ func (s *unitService) DeleteBed(ctx context.Context, req DeleteBedRequest) (*Del
 		)
 		return nil, fmt.Errorf("failed to check residents: %w", err)
 	}
-	if len(residents) > 0 {
-		residentNames := make([]string, 0, len(residents))
-		for _, r := range residents {
-			if r.Nickname != "" {
-				residentNames = append(residentNames, r.Nickname)
-			} else {
-				residentNames = append(residentNames, r.ResidentID)
-			}
-		}
+	if len(residentNames) > 0 {
 		errorDetails = append(errorDetails, fmt.Sprintf("residents: %s", strings.Join(residentNames, ", ")))
 	}
 

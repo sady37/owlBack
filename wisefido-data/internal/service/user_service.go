@@ -7,12 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
+	"wisefido-data/internal/scope"
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
@@ -302,12 +302,25 @@ type GetAvailableFamilyResponse struct {
 	Items []UserDTO
 }
 
-// CaregiverGroupDTO caregiver group 数据传输对象
+// CaregiverGroupDTO caregiver group 数据传输对象（v2: care_teams 表）
+// 业务标识 = team_id (UUID stable key)；显示 = team_name。
 type CaregiverGroupDTO struct {
-	TagName     string    `json:"tag_name"`     // 标签名称
-	MemberCount int       `json:"member_count"` // 成员数量（该 tag 下有多少个 active 的 caregiver/nurse）
-	MemberNames []string  `json:"member_names"` // 成员昵称列表（用于前端显示，向后兼容）
-	Members     []UserDTO `json:"members"`      // 成员详细信息列表（user_id, user_account, user_nickname, role, tags）
+	TeamID      string    `json:"team_id"`      // care_teams.team_id（stable identifier）
+	TeamName    string    `json:"team_name"`    // care_teams.team_name（display）
+	MemberCount int       `json:"member_count"` // 成员数量
+	Members     []UserDTO `json:"members"`      // 成员详细列表（user_id, user_account, nickname, role）
+}
+
+// BranchRef — id+name 配对（v1.0 约定：BE 返 ID 必须成对返 name）
+type BranchRef struct {
+	BranchID   string `json:"branch_id"`
+	BranchName string `json:"branch_name"`
+}
+
+// TeamRef — id+name 配对
+type TeamRef struct {
+	TeamID   string `json:"team_id"`
+	TeamName string `json:"team_name"`
 }
 
 // UserDTO 用户数据传输对象（用于响应）
@@ -323,10 +336,13 @@ type UserDTO struct {
 	AlarmLevels   []string               `json:"alarm_levels,omitempty"`
 	AlarmChannels []string               `json:"alarm_channels,omitempty"`
 	Relegation    string                 `json:"relegation,omitempty"`
-	BranchIDs     []string               `json:"branch_ids,omitempty"`    // 返回所有 branch_id 列表
-	BranchID      string                 `json:"branch_id,omitempty"`     // 向后兼容：第一个 branch ID（按 branch_name 排序）
-	BranchName    string                 `json:"branch_name,omitempty"`   // 向后兼容：第一个 branch 名称（用于显示）
-	LastLoginAt   string                 `json:"last_login_at,omitempty"` // RFC3339 格式
+	BranchIDs     []string               `json:"branch_ids,omitempty"`    // v-model 用（编辑时 select 绑 ID 数组）
+	Branches      []BranchRef            `json:"branches,omitempty"`      // 成对返回（FE 显示用，避开 fetch race）
+	BranchID      string                 `json:"branch_id,omitempty"`     // 向后兼容：第一个 branch ID
+	BranchName    string                 `json:"branch_name,omitempty"`   // 向后兼容：第一个 branch 名称
+	CareTeamIDs   []string               `json:"care_team_ids,omitempty"` // v-model 用
+	CareTeams     []TeamRef              `json:"care_teams,omitempty"`    // 成对返回
+	LastLoginAt   string                 `json:"last_login_at,omitempty"`
 	Tags          []string               `json:"tags,omitempty"`
 	Preferences   map[string]interface{} `json:"preferences,omitempty"`
 }
@@ -440,14 +456,79 @@ func (s *userService) updateUserBranches(ctx context.Context, tenantID, userID s
 	return nil
 }
 
+// getCurrentBranchID — 查 user 的 Current Branch (user_branches.is_primary=TRUE)
+//
+// 业务 scope 唯一依据：所有 non-tenant-wide 列表（residents/users/units/buildings/care_teams）
+// 都按 Current Branch 过滤，不再按"挂载的所有 branch 集合"。
+//
+// 返回:
+//   - "" 表示 tenant-wide (admin/sysadmin 类，user_branches 表无行) → service 不加 branch filter
+//   - branchID (/56 CIDR) → service 按此严格过滤
+func (s *userService) getCurrentBranchID(ctx context.Context, userID string) (string, error) {
+	if strings.TrimSpace(userID) == "" {
+		return "", nil
+	}
+	var branchID sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT host(branch_prefix) || '/56'
+		  FROM user_branches
+		 WHERE user_id = $1::UUID
+		   AND is_primary = TRUE
+		   AND valid_to IS NULL
+		 LIMIT 1`, userID).Scan(&branchID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("query current branch: %w", err)
+	}
+	if !branchID.Valid {
+		return "", nil
+	}
+	return branchID.String, nil
+}
+
 // getUserBranchIDs 查询用户所属的院区信息（Service 层内部方法）
 //
-// v2 改造说明：owl_v2 schema 删除了 user_branches 表；用户的 branch 关系由 user_roles +
-// roles.tenant_id + role_permissions.resource_scope INET 派生（用 utils/spatial 在调用侧推），
-// 不再有"用户属于哪几个 branch"的关系列表。本方法直接返回 (nil, false, nil) — service 层会按
-// "无 branch 限制 = 可访问全部"处理（即 admin/sysadmin 行为），与 v2 RBAC 默认权限一致。
+// 2026-05-12 恢复：user_branches 表回来了（multi-branch 执业 / assigned_only relegation 用），
+// 真实查询；无 active 行时走 admin all-branches 兜底（Admin 跨 branch）。
+// 注意：业务 scope 过滤应改用 getCurrentBranchID（仅 is_primary），此方法保留用于 GetAvailableBranches
+// 等"用户能切换到哪些 branch"的列表场景。
 func (s *userService) getUserBranchIDs(ctx context.Context, tenantID, userID string) (branches []UserBranchInfo, hasBranches bool, err error) {
-	return nil, false, nil
+	if tenantID == "" || userID == "" {
+		return nil, false, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT host(ub.branch_prefix) || '/56' AS branch_id,
+		       COALESCE(b.branch_name, '') AS branch_name
+		  FROM user_branches ub
+		  LEFT JOIN branches b ON b.branch_id = ub.branch_prefix
+		 WHERE ub.user_id = $1::UUID
+		   AND ub.valid_to IS NULL
+		 ORDER BY b.branch_name ASC`, userID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return s.handleAdminAllBranches(ctx, tenantID, userID)
+		}
+		return nil, false, fmt.Errorf("query user_branches: %w", err)
+	}
+	defer rows.Close()
+
+	var branchList []UserBranchInfo
+	for rows.Next() {
+		var bid, bname string
+		if err := rows.Scan(&bid, &bname); err != nil {
+			return nil, false, fmt.Errorf("scan user_branches: %w", err)
+		}
+		branchList = append(branchList, UserBranchInfo{BranchID: bid, BranchName: bname})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(branchList) == 0 {
+		return s.handleAdminAllBranches(ctx, tenantID, userID)
+	}
+	return branchList, true, nil
 }
 
 // 旧 v1 实现（依赖 user_branches 表，v2 已删）保留以下死代码以备 grep；活路径走上面 stub。
@@ -747,35 +828,19 @@ func (s *userService) ListUsers(ctx context.Context, req ListUsersRequest) (*Lis
 			Total: 1,
 		}, nil
 	} else if permCheck.BranchOnly {
-		// Manager: 只能查看同 branch 的用户
-		// 查询用户关联的所有院区信息（支持 1 对多关系，包含 branch_id 和 branch_name）
-		userBranches, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
-		if err != nil {
-			s.logger.Error("Failed to get user branch IDs", zap.Error(err))
-			return nil, fmt.Errorf("failed to get user branch IDs: %w", err)
-		}
-
-		if hasBranches && len(userBranches) > 0 {
-			// 用户有关联的院区：提取 branch_id 列表进行 IN 查询
-			// 注意：如果第一个元素是 "*"，说明是 Admin 的 *(ALL) 情况，不设置 filters.BranchIDs（查询所有用户）
-			if userBranches[0].BranchID == "*" {
-				// Admin 的 *(ALL) 情况：不设置 filters.BranchIDs，查询所有用户
-				// filters.BranchIDs 保持为 nil，表示不过滤
-			} else {
-				// 提取实际的 branch_id 列表（过滤掉 "*"）
-				branchIDs := make([]string, 0, len(userBranches))
-				for _, branch := range userBranches {
-					if branch.BranchID != "" && branch.BranchID != "*" {
-						branchIDs = append(branchIDs, branch.BranchID)
-					}
-				}
-				if len(branchIDs) > 0 {
-					filters.BranchIDs = branchIDs
-				}
-			}
+		// Manager / Nurse 等：按 Current Branch (user_branches.is_primary) 严格过滤
+		// 优先从 ctx 取 ScopeContext；fallback 直接 SQL 查
+		if sc := scope.MustFromContext(ctx); sc != nil && sc.HasCurrentBranch() {
+			filters.BranchIDs = []string{sc.CurrentBranchID}
 		} else {
-			// 用户没有关联任何院区：只能查看 branch_name 为 NULL、"" 或 'default' 的用户（都视为空院区/默认院区）
-			filters.BranchNameNull = true
+			currentBranch, err := s.getCurrentBranchID(ctx, req.CurrentUserID)
+			if err != nil {
+				s.logger.Error("Failed to get current branch", zap.Error(err))
+				return nil, fmt.Errorf("failed to get current branch: %w", err)
+			}
+			if currentBranch != "" {
+				filters.BranchIDs = []string{currentBranch}
+			}
 		}
 	}
 	// Admin/IT: 无额外过滤（可以查看所有用户）
@@ -1024,8 +1089,13 @@ func (s *userService) GetUser(ctx context.Context, req GetUserRequest) (*GetUser
 	if hasBranches && len(userBranches) > 0 {
 		// 用户有指定的 branch（从 user_branches 表查询到记录）
 		dto.BranchIDs = make([]string, 0, len(userBranches))
+		dto.Branches = make([]BranchRef, 0, len(userBranches))
 		for _, branch := range userBranches {
 			dto.BranchIDs = append(dto.BranchIDs, branch.BranchID)
+			dto.Branches = append(dto.Branches, BranchRef{
+				BranchID:   branch.BranchID,
+				BranchName: branch.BranchName,
+			})
 		}
 		// 第一个 branch 用于向后兼容（branch_id 和 branch_name）
 		dto.BranchID = userBranches[0].BranchID
@@ -1047,8 +1117,14 @@ func (s *userService) GetUser(ctx context.Context, req GetUserRequest) (*GetUser
 				// 构建 branch_ids 列表：['*', 'branch-id-1', 'branch-id-2', ...]
 				dto.BranchIDs = make([]string, 0, len(allBranches)+1)
 				dto.BranchIDs = append(dto.BranchIDs, "*")
+				dto.Branches = make([]BranchRef, 0, len(allBranches)+1)
+				dto.Branches = append(dto.Branches, BranchRef{BranchID: "*", BranchName: "*(ALL)"})
 				for _, branch := range allBranches {
 					dto.BranchIDs = append(dto.BranchIDs, branch.BranchID)
+					dto.Branches = append(dto.Branches, BranchRef{
+						BranchID:   branch.BranchID,
+						BranchName: branch.BranchName,
+					})
 				}
 				// 设置第一个 branch 用于向后兼容
 				if len(allBranches) > 0 {
@@ -1063,6 +1139,32 @@ func (s *userService) GetUser(ctx context.Context, req GetUserRequest) (*GetUser
 			dto.BranchID = ""
 			dto.BranchName = ""
 		}
+	}
+
+	// 8b. 查 active care_team 关联（v1.0 成对：team_id + team_name）
+	teamRows, err := s.db.QueryContext(ctx, `
+		SELECT t.team_id::text, t.team_name
+		  FROM care_team_members m
+		  JOIN care_teams t ON t.team_id = m.team_id
+		 WHERE m.user_id = $1::UUID
+		   AND m.valid_to IS NULL
+		   AND t.is_active = TRUE
+		 ORDER BY t.team_name`, req.UserID)
+	if err == nil {
+		defer teamRows.Close()
+		teamIDs := []string{}
+		teamRefs := []TeamRef{}
+		for teamRows.Next() {
+			var tid, tname string
+			if err := teamRows.Scan(&tid, &tname); err == nil {
+				teamIDs = append(teamIDs, tid)
+				teamRefs = append(teamRefs, TeamRef{TeamID: tid, TeamName: tname})
+			}
+		}
+		dto.CareTeamIDs = teamIDs
+		dto.CareTeams = teamRefs
+	} else {
+		s.logger.Warn("Failed to fetch user care_teams", zap.Error(err))
 	}
 
 	// 9. 获取被编辑用户所在 Branch 中存在的 tags（使用 req.UserID 而不是 req.CurrentUserID）
@@ -2336,6 +2438,8 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 			tenantPrefix += "/48"
 		}
 		// 同时聚合 user 所属 active care_teams 的 team_name（作为 Tags / CareTeam 列）
+		// branch 过滤：user_branches 挂在请求 branch 的（Nurse/Caregiver），
+		// 或未挂任何 branch 的 tenant-wide user（Admin/Manager 兜底）
 		rows, err := s.db.QueryContext(ctx, `
 			SELECT u.user_id::text,
 			       host(u.tenant_id) || '/48' AS tenant_id,
@@ -2354,7 +2458,11 @@ func (s *userService) GetAvailableCaregivers(ctx context.Context, req GetAvailab
 			 WHERE u.tenant_id = $1::INET
 			   AND LOWER(u.role) IN ('nurse', 'caregiver', 'individual', 'manager')
 			   AND COALESCE(u.status, 'active') = 'active'
-			 ORDER BY u.user_account`, tenantPrefix)
+			   AND (
+			     NOT EXISTS (SELECT 1 FROM user_branches WHERE user_id = u.user_id AND valid_to IS NULL)
+			     OR EXISTS (SELECT 1 FROM user_branches WHERE user_id = u.user_id AND branch_prefix = $2::INET AND valid_to IS NULL)
+			   )
+			 ORDER BY u.user_account`, tenantPrefix, req.BranchID)
 		if err != nil {
 			return nil, fmt.Errorf("query caregivers (v2): %w", err)
 		}
@@ -2527,12 +2635,13 @@ func (s *userService) GetAvailableCaregiverGroups(ctx context.Context, req GetAv
 	}
 
 	// v2 short-circuit：caregiver_group 概念在 v2 由 care_teams 表承担
-	// FE 已 mapping CareTeam = caregiver group；返 tenant 下 active care_teams + 各 team 成员名
+	// FE 已 mapping CareTeam = caregiver group；返 tenant 下 active care_teams + 各 team 成员详情
 	if strings.Contains(req.TenantID, "::") {
 		tenantPrefix := req.TenantID
 		if !strings.Contains(tenantPrefix, "/") {
 			tenantPrefix += "/48"
 		}
+		// 1) 查 active care_teams（按 branch_id 严格过滤，team 不能跨 branch）
 		rows, err := s.db.QueryContext(ctx, `
 			SELECT t.team_id::text,
 			       t.team_name,
@@ -2546,186 +2655,78 @@ func (s *userService) GetAvailableCaregiverGroups(ctx context.Context, req GetAv
 			       ) AS member_names
 			  FROM care_teams t
 			 WHERE t.tenant_id = $1::INET
+			   AND t.branch_id = $2::INET
 			   AND t.is_active = TRUE
-			 ORDER BY t.team_kind, t.team_name`, tenantPrefix)
+			 ORDER BY t.team_kind, t.team_name`, tenantPrefix, req.BranchID)
 		if err != nil {
 			return nil, fmt.Errorf("query care_teams (v2): %w", err)
 		}
-		defer rows.Close()
-		out := []CaregiverGroupDTO{}
+		type teamRow struct {
+			teamID, teamName string
+			memberCount      int
+		}
+		var teamRows []teamRow
 		for rows.Next() {
-			var teamID, teamName, teamKind string
-			var memberCount int
-			var memberNames pq.StringArray
-			if err := rows.Scan(&teamID, &teamName, &teamKind, &memberCount, &memberNames); err != nil {
-				continue
+			var tr teamRow
+			var teamKind string
+			var names pq.StringArray
+			if err := rows.Scan(&tr.teamID, &tr.teamName, &teamKind, &tr.memberCount, &names); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan care_teams (v2): %w", err)
 			}
-			// FE 把 TagName 当 team 标识；这里用 team_id 作 stable key（FE 之前用 tag_name 文本）
+			teamRows = append(teamRows, tr)
+		}
+		rows.Close()
+
+		// 2) 查每个 team 的成员详情（user_id, user_account, nickname, role）
+		// 单次 query 取出所有 active 成员（一个 user 可能属多 team，按 team_id 分组）
+		membersByTeam := map[string][]UserDTO{}
+		if len(teamRows) > 0 {
+			memRows, err := s.db.QueryContext(ctx, `
+				SELECT m.team_id::text,
+				       u.user_id::text,
+				       u.user_account,
+				       COALESCE(u.nickname, '') AS nickname,
+				       u.role
+				  FROM care_team_members m
+				  JOIN users u ON u.user_id = m.user_id
+				  JOIN care_teams t ON t.team_id = m.team_id
+				 WHERE t.tenant_id = $1::INET
+				   AND t.branch_id = $2::INET
+				   AND t.is_active = TRUE
+				   AND m.valid_to IS NULL
+				 ORDER BY u.user_account`, tenantPrefix, req.BranchID)
+			if err != nil {
+				return nil, fmt.Errorf("query care_team_members (v2): %w", err)
+			}
+			for memRows.Next() {
+				var teamID string
+				var u UserDTO
+				if err := memRows.Scan(&teamID, &u.UserID, &u.UserAccount, &u.Nickname, &u.Role); err != nil {
+					memRows.Close()
+					return nil, fmt.Errorf("scan care_team_members (v2): %w", err)
+				}
+				u.TenantID = req.TenantID
+				membersByTeam[teamID] = append(membersByTeam[teamID], u)
+			}
+			memRows.Close()
+		}
+
+		// 3) 组装 DTO
+		out := []CaregiverGroupDTO{}
+		for _, tr := range teamRows {
 			out = append(out, CaregiverGroupDTO{
-				TagName:     teamID, // v2: team_id (FE 提交回来作 GroupList 元素)
-				MemberCount: memberCount,
-				MemberNames: []string(memberNames),
-				Members:     nil, // 不返成员 user 详细列表（FE 暂不需要）
+				TeamID:      tr.teamID,
+				TeamName:    tr.teamName,
+				MemberCount: tr.memberCount,
+				Members:     membersByTeam[tr.teamID],
 			})
 		}
 		return &GetAvailableCaregiverGroupsResponse{Items: out}, nil
 	}
 
-	// 2. 获取当前用户信息（用于检查角色）
-	currentUser, err := s.usersRepo.GetUser(ctx, req.TenantID, req.CurrentUserID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get current user: %w", err)
-	}
-
-	// 3. 权限验证：检查当前用户是否有权限访问指定的 branch
-	userBranches, hasBranches, err := s.getUserBranchIDs(ctx, req.TenantID, req.CurrentUserID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get user branches: %w", err)
-	}
-
-	// 检查权限：如果是 Admin 且 user_branches 表为空（*(ALL)），允许访问任何 branch
-	hasPermission := false
-	if !hasBranches || len(userBranches) == 0 {
-		// 用户没有关联任何 branch
-		if strings.EqualFold(currentUser.Role, "Admin") {
-			// Admin 的 *(ALL) 情况：允许访问任何 branch
-			hasPermission = true
-		} else {
-			// 非 Admin 用户没有关联任何 branch，返回空列表
-			return &GetAvailableCaregiverGroupsResponse{
-				Items: []CaregiverGroupDTO{},
-			}, nil
-		}
-	} else {
-		// 检查指定的 branch_id 是否在用户可管理的 branch 列表中
-		for _, branch := range userBranches {
-			if branch.BranchID == req.BranchID {
-				hasPermission = true
-				break
-			}
-		}
-		if !hasPermission {
-			// 用户没有权限访问指定的 branch，返回空列表
-			return &GetAvailableCaregiverGroupsResponse{
-				Items: []CaregiverGroupDTO{},
-			}, nil
-		}
-	}
-
-	// 4. 分两步计算：
-	//    步骤1：查询指定 branch_id 中所有 active 状态的 caregiver/nurse 及其 tags
-	//    步骤2：在 Go 代码中按 tag 分组，将相同 tag 的 user 归到同一 tag 组
-	query := `
-		SELECT DISTINCT
-			u.user_id::text,
-			u.tenant_id::text,
-			u.user_account,
-			COALESCE(u.nickname, '') as nickname,
-			u.role,
-			COALESCE(u.user_tags, '[]'::jsonb)::text as user_tags
-		FROM users u
-		INNER JOIN user_branches ub ON u.user_id = ub.user_id
-		WHERE u.tenant_id = $1
-		  AND ub.branch_id = $2::uuid
-		  AND u.role IN ('Nurse', 'Caregiver')
-		  AND u.status = 'active'
-		ORDER BY u.user_account
-	`
-
-	rows, err := s.db.QueryContext(ctx, query, req.TenantID, req.BranchID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query available caregivers: %w", err)
-	}
-	defer rows.Close()
-
-	// 步骤2：在内存中按 tag 分组
-	// tagGroups: map[tag_name] -> []UserDTO
-	tagGroups := make(map[string][]UserDTO)
-
-	for rows.Next() {
-		var user UserDTO
-		var userTagsRaw sql.NullString
-		err := rows.Scan(
-			&user.UserID,
-			&user.TenantID,
-			&user.UserAccount,
-			&user.Nickname,
-			&user.Role,
-			&userTagsRaw,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan caregiver: %w", err)
-		}
-
-		// 解析 user_tags (JSONB array)
-		var tags []string
-		if userTagsRaw.Valid && userTagsRaw.String != "" && userTagsRaw.String != "[]" {
-			if err := json.Unmarshal([]byte(userTagsRaw.String), &tags); err != nil {
-				// 如果解析失败，跳过该用户的 tags
-				tags = []string{}
-			}
-		}
-		user.Tags = tags
-
-		// 将 user 添加到每个 tag 对应的组中
-		for _, tag := range tags {
-			if tag != "" {
-				// 如果该 tag 组不存在，创建它
-				if _, exists := tagGroups[tag]; !exists {
-					tagGroups[tag] = make([]UserDTO, 0)
-				}
-				// 检查该 user 是否已经在该 tag 组中（避免重复）
-				found := false
-				for _, existingUser := range tagGroups[tag] {
-					if existingUser.UserID == user.UserID {
-						found = true
-						break
-					}
-				}
-				if !found {
-					tagGroups[tag] = append(tagGroups[tag], user)
-				}
-			}
-		}
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to iterate caregivers: %w", err)
-	}
-
-	// 步骤3：转换为 CaregiverGroupDTO 列表，按 tag 名称排序
-	var groups []CaregiverGroupDTO
-	tagNames := make([]string, 0, len(tagGroups))
-	for tagName := range tagGroups {
-		tagNames = append(tagNames, tagName)
-	}
-	sort.Strings(tagNames)
-
-	for _, tagName := range tagNames {
-		members := tagGroups[tagName]
-		// 生成 member_names（用于向后兼容）
-		memberNames := make([]string, 0, len(members))
-		for _, member := range members {
-			name := member.Nickname
-			if name == "" {
-				name = member.UserAccount
-			}
-			memberNames = append(memberNames, name)
-		}
-		sort.Strings(memberNames) // 排序 member_names
-
-		group := CaregiverGroupDTO{
-			TagName:     tagName,
-			MemberCount: len(members),
-			MemberNames: memberNames,
-			Members:     members,
-		}
-		groups = append(groups, group)
-	}
-
-	return &GetAvailableCaregiverGroupsResponse{
-		Items: groups,
-	}, nil
+	// v1 tenant_id (legacy uuid) 路径不再支持：当前 deploy 全部 v2 tenant (::-prefix CIDR)
+	return nil, fmt.Errorf("v1 tenant_id path is deprecated; tenant_id must be a CIDR (got %q)", req.TenantID)
 }
 
 // createResidentForIndividual 为 Individual 用户自动创建对应的 Resident 记录

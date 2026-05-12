@@ -11,14 +11,15 @@ import (
 type ResidentsRepository interface {
 	// ========== Residents 表操作 ==========
 	// 查询接口
-	GetResident(ctx context.Context, tenantID, residentID string) (*domain.Resident, error)
+	GetResident(ctx context.Context, tenantID, residentID string) (*domain.ResidentDetail, error)
 	GetResidentByAccount(ctx context.Context, tenantID string, accountHash []byte) (*domain.Resident, error)
 	GetResidentByEmail(ctx context.Context, tenantID string, emailHash []byte) (*domain.Resident, error)
 	GetResidentByPhone(ctx context.Context, tenantID string, phoneHash []byte) (*domain.Resident, error)
 	ListResidents(ctx context.Context, tenantID string, filters ResidentFilters, page, size int) ([]*domain.Resident, int, error)
 
 	// 创建接口（替代触发器：trigger_sync_family_tag）
-	CreateResident(ctx context.Context, tenantID string, resident *domain.Resident) (string, error)
+	// 支持 v1: *domain.Resident 或 v2: *domain.ResidentCreateInput
+	CreateResident(ctx context.Context, tenantID string, resident interface{}) (string, error)
 
 	// Deprecated: Use UpdateResidentFields instead.
 	UpdateResident(ctx context.Context, tenantID, residentID string, resident *domain.Resident) error

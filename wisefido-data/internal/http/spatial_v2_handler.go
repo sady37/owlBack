@@ -303,6 +303,15 @@ func (h *SpatialV2Handler) HandleLookupTenant(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, Fail("invalid tenant prefix: "+err.Error()))
 		return
 	}
+	// Scope gate: SystemAdmin/SystemOperator 可任意查；其它角色仅能查自己的 tenant
+	role := r.Header.Get("X-User-Role")
+	if !strings.EqualFold(role, "SystemAdmin") && !strings.EqualFold(role, "SystemOperator") {
+		ownTenant := r.Header.Get("X-Tenant-Id")
+		if ownTenant == "" || !strings.EqualFold(ownTenant, parent.String()) {
+			writeJSON(w, http.StatusOK, Fail("permission denied: cross-tenant lookup requires SystemAdmin"))
+			return
+		}
+	}
 	t, err := h.ipam.LookupTenant(r.Context(), parent)
 	if err != nil {
 		if errors.Is(err, ipam.ErrNotFound) {

@@ -253,7 +253,26 @@ func (r *PostgresUsersRepository) ListUsers(ctx context.Context, tenantID string
 		args = append(args, pat)
 		argIdx++
 	}
-	// filter.BranchName / BranchNameNull / BranchIDs / Tag — v2 schema 不再支持，忽略
+	// filter.BranchIDs — 2026-05-12 恢复：user_branches 表回来了，按 branch 过滤
+	// admin/manager 类 tenant-wide user 没挂 user_branches → 兜底放行（NOT EXISTS）
+	if len(filters.BranchIDs) > 0 {
+		placeholders := make([]string, 0, len(filters.BranchIDs))
+		for _, b := range filters.BranchIDs {
+			if b == "" || b == "*" {
+				continue
+			}
+			args = append(args, b)
+			placeholders = append(placeholders, fmt.Sprintf("$%d::INET", argIdx))
+			argIdx++
+		}
+		if len(placeholders) > 0 {
+			where = append(where, fmt.Sprintf(`(
+				NOT EXISTS (SELECT 1 FROM user_branches ub WHERE ub.user_id = u.user_id AND ub.valid_to IS NULL)
+				OR EXISTS (SELECT 1 FROM user_branches ub WHERE ub.user_id = u.user_id AND ub.valid_to IS NULL AND ub.branch_prefix IN (%s))
+			)`, strings.Join(placeholders, ",")))
+		}
+	}
+	// filter.BranchName / BranchNameNull / Tag — v2 schema 不再支持，忽略
 
 	whereClause := ""
 	if len(where) > 0 {
@@ -648,7 +667,11 @@ func callV2GetResourcePermission(db *sql.DB, ctx context.Context, roleCode, reso
 	v2Role := mapV1RoleToV2(roleCode)
 	action := permissionVerb(permissionType)
 
+	// 候选 permission 字符串（命中任一即允许）：
+	//   精确 read/create/update/delete → 资源 manage 聚合 → 资源通配 → 租户通配 → 全局通配
+	// `users.manage` 这种聚合权限语义上包含所有 CRUD，等价于 `users.*`
 	target := resourceType + "." + action
+	manageAll := resourceType + ".manage"
 	resourceAll := resourceType + ".*"
 	const tenantAll = "tenant.*"
 	const platformAll = "*"
@@ -660,14 +683,19 @@ func callV2GetResourcePermission(db *sql.DB, ctx context.Context, roleCode, reso
 			  FROM role_permissions rp
 			  JOIN roles r ON r.role_id = rp.role_id
 			 WHERE r.role_code = $1
-			   AND rp.permission IN ($2, $3, $4, $5)
+			   AND rp.permission IN ($2, $3, $4, $5, $6)
 		)
-	`, v2Role, target, resourceAll, tenantAll, platformAll).Scan(&exists)
+	`, v2Role, target, manageAll, resourceAll, tenantAll, platformAll).Scan(&exists)
 	if err != nil {
 		return nil, err
 	}
 	if !exists {
 		return &v2PermissionCheck{AssignedOnly: true, BranchOnly: true}, nil
+	}
+	// 命中通配 / .manage / 精确权限 → 完全允许（branch 边界后续走 user_branches）
+	// Manager 等中层角色需要走 BranchOnly 分支（按 user_branches 过滤），不是 wide-open
+	if v2Role == "manager" || v2Role == "nurse" {
+		return &v2PermissionCheck{AssignedOnly: false, BranchOnly: true}, nil
 	}
 	return &v2PermissionCheck{AssignedOnly: false, BranchOnly: false}, nil
 }

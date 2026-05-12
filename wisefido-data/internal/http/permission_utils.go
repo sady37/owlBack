@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"wisefido-data/internal/scope"
 )
 
 // PermissionCheck 权限检查结果
@@ -98,6 +100,42 @@ func GetResourcePermission(db *sql.DB, ctx context.Context,
 	}
 	// 命中通配/精确权限 → 完全允许（branch 边界后续业务侧用 utils/spatial 自己判）
 	return &PermissionCheck{AssignedOnly: false, BranchOnly: false}, nil
+}
+
+// VerifyCardInScope / VerifyDeviceInScope — thin shim 调 internal/scope
+//
+// Step B 后真正实现在 internal/scope.ScopeContext.VerifyCard/VerifyDevice 里。
+// 这里保留 wrapper 让旧 caller (radar / playback handlers) 不用改签名也能工作。
+// 新代码建议直接：
+//
+//	sc := scope.MustFromContext(r.Context())
+//	if err := sc.VerifyCard(ctx, db, cardID); err != nil { ... }
+
+func VerifyCardInScope(db *sql.DB, ctx context.Context, userID, role, cardID string) error {
+	// 优先用 ctx 里的 ScopeContext；fallback 现场构造一个最小版
+	sc, ok := scope.FromContext(ctx)
+	if !ok || sc == nil {
+		sc = &scope.ScopeContext{UserID: userID, Role: role}
+		// 注意：fallback 没填 CurrentBranchID — staff role 会被强制走 "no current branch" 拒绝路径。
+		// 这是安全侧：未注入 ctx 时拒绝，提示 caller 接 middleware。
+	}
+	return sc.VerifyCard(ctx, db, cardID)
+}
+
+func VerifyDeviceInScope(db *sql.DB, ctx context.Context, userID, role, deviceID string) error {
+	sc, ok := scope.FromContext(ctx)
+	if !ok || sc == nil {
+		sc = &scope.ScopeContext{UserID: userID, Role: role}
+	}
+	return sc.VerifyDevice(ctx, db, deviceID)
+}
+
+// 兼容旧 caller（不传 role 的早期版本）
+func VerifyCardInCurrentBranch(db *sql.DB, ctx context.Context, userID, cardID string) error {
+	return VerifyCardInScope(db, ctx, userID, "", cardID)
+}
+func VerifyDeviceInCurrentBranch(db *sql.DB, ctx context.Context, userID, deviceID string) error {
+	return VerifyDeviceInScope(db, ctx, userID, "", deviceID)
 }
 
 // ApplyBranchFilter 应用 branch 过滤条件到 SQL 查询

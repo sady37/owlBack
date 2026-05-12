@@ -9,12 +9,13 @@ import (
 
 // RoundFilters 巡房记录查询过滤器
 type RoundFilters struct {
-	ExecutorID string    // 执行人ID
-	UnitID     string    // 单元ID
-	RoundType  string    // 巡房类型：'location'/'manual'/'scheduled'
-	Status     string    // 状态：'draft'/'completed'/'cancelled'
-	StartTime  *time.Time // 开始时间
-	EndTime    *time.Time // 结束时间
+	ExecutorID   string    // 执行人ID
+	UnitID       string    // 单元ID
+	BranchPrefix string    // Phase 3 Current Branch scope /56 CIDR (unit_id <<= branch_prefix)
+	RoundType    string    // 巡房类型：'location'/'manual'/'scheduled'
+	Status       string    // 状态：'draft'/'completed'/'cancelled'
+	StartTime    *time.Time // 开始时间
+	EndTime      *time.Time // 结束时间
 }
 
 // RoundsRepository 巡房记录Repository接口

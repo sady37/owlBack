@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -16,12 +17,13 @@ import (
 // RoundsHandler 巡房记录 HTTP（Automatic Rounds 完成、审计列表）
 type RoundsHandler struct {
 	svc    *service.RoundsService
+	db     *sql.DB // 用于 Phase 3 Current Branch scope 查询
 	logger *zap.Logger
 }
 
 // NewRoundsHandler 创建 handler
-func NewRoundsHandler(svc *service.RoundsService, logger *zap.Logger) *RoundsHandler {
-	return &RoundsHandler{svc: svc, logger: logger}
+func NewRoundsHandler(svc *service.RoundsService, db *sql.DB, logger *zap.Logger) *RoundsHandler {
+	return &RoundsHandler{svc: svc, db: db, logger: logger}
 }
 
 // CreateRoundRequest 与 service.CreateRoundRequest 一致，供 JSON 绑定
@@ -75,12 +77,24 @@ func (h *RoundsHandler) createRound(w http.ResponseWriter, r *http.Request) {
 
 func (h *RoundsHandler) listRounds(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	_, tenantID, _, _, ok := service.MustSession(ctx)
+	currentUserID, tenantID, _, _, ok := service.MustSession(ctx)
 	if !ok || tenantID == "" {
 		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
 		return
 	}
 	filters := &repository.RoundFilters{}
+	// Phase 3: 按 user Current Branch (is_primary) 过滤；admin/sysadmin 无挂载 → 不限制
+	if currentUserID != "" && h.db != nil {
+		var bp sql.NullString
+		_ = h.db.QueryRowContext(ctx, `
+			SELECT host(branch_prefix) || '/56' FROM user_branches
+			 WHERE user_id = $1::UUID AND is_primary = TRUE AND valid_to IS NULL LIMIT 1`,
+			currentUserID,
+		).Scan(&bp)
+		if bp.Valid && bp.String != "" {
+			filters.BranchPrefix = bp.String
+		}
+	}
 	if v := r.URL.Query().Get("executor_id"); v != "" {
 		filters.ExecutorID = v
 	}

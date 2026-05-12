@@ -251,7 +251,8 @@ func (h *DeviceHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
 	// 严格限制：所有用户（包括 SystemAdmin）只能查看/编辑本 tenant 的设备
 	req := service.ListDevicesRequest{
 		TenantID:       tenantID,
-		IsSystemAdmin:  false, // 始终按 tenant 过滤，SystemAdmin 也只能查看 System tenant 的设备
+		IsSystemAdmin:  false, // 始终按 tenant 过滤
+		CurrentUserID:  r.Header.Get("X-User-Id"),
 		Status:         statuses,
 		DeviceType:     r.URL.Query().Get("device_type"),
 		SearchType:     r.URL.Query().Get("search_type"),

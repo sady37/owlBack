@@ -60,6 +60,15 @@ func (h *RadarHandler) GetCardDevices(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Phase 3: card 必须在 user scope 内（staff = Current Branch；family = own residents）
+	if h.stubHandler != nil && h.stubHandler.DB != nil {
+		uid := r.Header.Get("X-User-Id")
+		role := r.Header.Get("X-User-Role")
+		if err := VerifyCardInScope(h.stubHandler.DB, r.Context(), uid, role, cardID); err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
+	}
 	list, err := h.radarInstall.ListCardDevices(r.Context(), tenantID, cardID)
 	if err != nil {
 		h.logger.Error("GetCardDevices", zap.String("card_id", cardID), zap.String("tenant_id", tenantID), zap.Error(err))
@@ -95,6 +104,15 @@ func (h *RadarHandler) GetCardDevicesByDeviceID(w http.ResponseWriter, r *http.R
 	tenantID, ok := h.tenantIDFromReq(w, r)
 	if !ok {
 		return
+	}
+	// Phase 3: device 必须在 user scope 内（staff = Current Branch；family = own residents space）
+	if h.stubHandler != nil && h.stubHandler.DB != nil {
+		uid := r.Header.Get("X-User-Id")
+		role := r.Header.Get("X-User-Role")
+		if err := VerifyDeviceInScope(h.stubHandler.DB, r.Context(), uid, role, deviceID); err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
 	}
 	cardID, roomID, list, layoutConfig, err := h.radarInstall.ListCardDevicesByDeviceID(r.Context(), tenantID, deviceID)
 	if err != nil {
@@ -272,6 +290,16 @@ func (h *RadarHandler) SubscribeRealtimeStream(w http.ResponseWriter, r *http.Re
 		io.WriteString(w, "event: error\ndata: {\"error\":\"tenant_id is required\"}\n\n")
 		return
 	}
+	// Phase 3: device 必须在 user scope 内
+	if h.stubHandler != nil && h.stubHandler.DB != nil {
+		uid := r.Header.Get("X-User-Id")
+		role := r.Header.Get("X-User-Role")
+		if err := VerifyDeviceInScope(h.stubHandler.DB, r.Context(), uid, role, deviceID); err != nil {
+			w.WriteHeader(http.StatusOK)
+			io.WriteString(w, "event: error\ndata: {\"error\":\""+err.Error()+"\"}\n\n")
+			return
+		}
+	}
 
 	// 记录连接尝试
 	h.logger.Info("[RADAR_STREAM_SSE] connection attempt",
@@ -436,6 +464,15 @@ func (h *RadarHandler) GetOriginalProperties(w http.ResponseWriter, r *http.Requ
 	tenantID, ok := h.tenantIDFromReq(w, r)
 	if !ok {
 		return
+	}
+	// Phase 3: device 必须在 user scope 内（staff = Current Branch；family = own residents space）
+	if h.stubHandler != nil && h.stubHandler.DB != nil {
+		uid := r.Header.Get("X-User-Id")
+		role := r.Header.Get("X-User-Role")
+		if err := VerifyDeviceInScope(h.stubHandler.DB, r.Context(), uid, role, deviceID); err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
 	}
 	if strings.TrimSpace(r.URL.Query().Get("source")) == "db" {
 		propertiesJSON, err := h.radarInstall.GetOriginalPropertiesFromDB(r.Context(), tenantID, deviceID)

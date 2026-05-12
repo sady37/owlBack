@@ -116,9 +116,10 @@ func (h *UnitHandler) ListBuildings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := service.ListBuildingsRequest{
-		TenantID:   tenantID,
-		BranchID:   branchID,
-		BranchName: branchName,
+		TenantID:      tenantID,
+		BranchID:      branchID,
+		BranchName:    branchName,
+		CurrentUserID: r.Header.Get("X-User-Id"),
 	}
 
 	resp, err := h.unitService.ListBuildings(ctx, req)

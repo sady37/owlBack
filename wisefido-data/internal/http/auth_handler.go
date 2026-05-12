@@ -1,15 +1,33 @@
 package httpapi
 
+// AuthHandler implements owl_v2 IPv6-native authentication.
+//
+// 凭证传输形态（双层 hash 设计）：
+//   - 前端 user_account 明文 + sha256(password) → hex 上送
+//   - DB 存 bcrypt(sha256(password)) — bcrypt 抗暴力，sha256 防止网络/日志层明文泄漏
+//   - 服务端 bcrypt.CompareHashAndPassword(stored_bcrypt_bytes, sha256_hex_bytes) 验证
+//
+// 与 v1 区别（不向后兼容）：
+//   - v1 客户端 sha256(account)/sha256(account:password) → bytea 与 DB bytea 直接比；v2 走 bcrypt 抗暴力
+//   - v1 用 user_branches 表算 branch_ids；v2 用户关系完全靠 IPv6 prefix 自带层级派生（owl-common/spatial）
+//   - v1 返回 tenant_id (UUID)；v2 返回 tenant_id (INET /48 字符串)
+//
+// 端点：
+//   POST /auth/api/v2/search-tenants  body:{user_account,password_hash}                 → matches[]
+//   POST /auth/api/v2/login            body:{user_account,password_hash,tenant_id?} → session
+
 import (
-	"fmt"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"wisefido-data/internal/service"
-
 	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // loginRateLimiter 登录重试限制器（滑动窗口）
@@ -74,402 +92,479 @@ func (rl *loginRateLimiter) recordFailure(key string) {
 	rl.attempts[key] = append(valid, now)
 }
 
-// AuthHandler 认证授权 Handler
+
+// AuthHandler 提供 owl_v2 (IPv6-native) 鉴权 endpoint。
 type AuthHandler struct {
-	authService  service.AuthService
-	sessionStore SessionStore // 存储 session 信息（token → user info）
+	db           *sql.DB
+	sessionStore SessionStore
 	logger       *zap.Logger
 	rateLimiter  *loginRateLimiter
 }
 
-// NewAuthHandler 创建认证授权 Handler
-func NewAuthHandler(authService service.AuthService, logger *zap.Logger) *AuthHandler {
+// NewAuthHandler 构造 auth handler。
+func NewAuthHandler(db *sql.DB, sessionStore SessionStore, logger *zap.Logger) *AuthHandler {
 	return &AuthHandler{
-		authService: authService,
-		logger:      logger,
-		rateLimiter: newLoginRateLimiter(10*time.Minute, 10),
+		db:           db,
+		sessionStore: sessionStore,
+		logger:       logger,
+		rateLimiter:  newLoginRateLimiter(10*time.Minute, 10),
 	}
 }
 
-// SetSessionStore 设置会话存储（供主入口调用）
-func (h *AuthHandler) SetSessionStore(store SessionStore) {
-	h.sessionStore = store
+// RegisterAuthRoutes 注册 auth 路由。
+func (r *Router) RegisterAuthRoutes(h *AuthHandler) {
+	r.Handle("/auth/api/v2/search-tenants", h.HandleSearchTenants)
+	r.Handle("/auth/api/v2/login", h.HandleLogin)
 }
 
-// ServeHTTP 实现 http.Handler 接口
-func (h *AuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// 路由分发
-	switch r.URL.Path {
-	case "/auth/api/v1/login":
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		h.Login(w, r)
-	case "/auth/api/v1/institutions/search":
-		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		h.SearchInstitutions(w, r)
-	case "/auth/api/v1/forgot-password/send-code":
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		h.SendVerificationCode(w, r)
-	case "/auth/api/v1/forgot-password/verify-code":
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		h.VerifyCode(w, r)
-	case "/auth/api/v1/forgot-password/reset":
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		h.ResetPassword(w, r)
-	case "/auth/api/v1/verify-pin":
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		h.VerifyPIN(w, r)
-	default:
-		w.WriteHeader(http.StatusNotFound)
-	}
+// =============================================================================
+// DTOs
+// =============================================================================
+
+type v2LoginReq struct {
+	Username     string `json:"user_account"`
+	PasswordHash string `json:"password_hash"`           // sha256(password) hex；DB 存 bcrypt(sha256(password))
+	TenantPrefix string `json:"tenant_id,omitempty"` // 可选；多 tenant 重名 user_account 时必填
 }
 
-// Login 用户登录
-func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+type v2TenantMatch struct {
+	TenantPrefix string `json:"tenant_id"`
+	TenantName   string `json:"tenant_name"`
+	Role         string `json:"role,omitempty"`
+}
 
-	// 1. 参数解析（支持多种格式）
-	// 对齐 owlFront LoginResult（authModel.ts）
-	// loginApi 会把 tenant_id/userType 等放在 JSON body（axios beforeRequestHook 会把 params 作为 data）
-	var reqBody map[string]any
-	_ = readBodyJSON(r, 1<<20, &reqBody)
+type v2SearchResp struct {
+	Matches []v2TenantMatch `json:"matches"`
+}
 
-	// Some clients may wrap params in {params:{...}}
-	if p, ok := reqBody["params"].(map[string]any); ok && p != nil {
-		if _, ok2 := reqBody["tenant_id"]; !ok2 {
-			reqBody["tenant_id"] = p["tenant_id"]
-		}
-		if _, ok2 := reqBody["userType"]; !ok2 {
-			reqBody["userType"] = p["userType"]
-		}
-		if _, ok2 := reqBody["accountHash"]; !ok2 {
-			reqBody["accountHash"] = p["accountHash"]
-		}
-		if _, ok2 := reqBody["passwordHash"]; !ok2 {
-			reqBody["passwordHash"] = p["passwordHash"]
-		}
+type v2LoginResp struct {
+	AccessToken     string   `json:"accessToken"`
+	UserID          string   `json:"userId"`
+	Username        string   `json:"user_account"`
+	NickName        string   `json:"nickName"`
+	Role            string   `json:"role"`
+	TenantPrefix    string   `json:"tenant_id"`
+	TenantName      string   `json:"tenant_name"`
+	HoA             string   `json:"hoa,omitempty"`
+	BranchIDs       []string `json:"branch_ids,omitempty"`        // 用户挂载的所有 branch（用于切换器下拉选项）
+	CurrentBranchID string   `json:"current_branch_id,omitempty"` // user_branches.is_primary=TRUE 那条；所有业务 scope 以此为准
+	HomePath        string   `json:"homePath,omitempty"`
+}
+
+// =============================================================================
+// Handlers
+// =============================================================================
+
+// HandleSearchTenants 当 user_account 在多 tenant 重名时，前端先调这个拿 tenant 列表让用户选；
+// 命中 1 条时前端可直接 auto-fill 调 login。
+//
+// 业务规则：必须 user_account + password 都对，才返回机构列表（与 v1 SearchInstitutions 同语义，避免泄露 user_account 是否存在）。
+func (h *AuthHandler) HandleSearchTenants(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
 	}
-
-	// 参数优先级：Body > Query
-	tenantID, _ := reqBody["tenant_id"].(string)
-	if tenantID == "" {
-		tenantID = r.URL.Query().Get("tenant_id")
+	var body v2LoginReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, Fail("invalid JSON body: "+err.Error()))
+		return
 	}
-
-	userType, _ := reqBody["userType"].(string)
-	if userType == "" {
-		userType = r.URL.Query().Get("userType")
-	}
-	if userType == "" {
-		userType = "staff"
-	}
-
-	accountHash, _ := reqBody["accountHash"].(string)
-	if accountHash == "" {
-		accountHash = r.URL.Query().Get("accountHash")
-	}
-
-	passwordHash, _ := reqBody["passwordHash"].(string)
-	if passwordHash == "" {
-		passwordHash = r.URL.Query().Get("passwordHash")
-	}
-
-	// 2. 登录重试限制检查（10 分钟内最多 10 次失败）
-	clientIP := getClientIP(r)
-	rateLimitKey := clientIP + "|" + accountHash
-	if waitSecs := h.rateLimiter.isBlocked(rateLimitKey); waitSecs > 0 {
-		h.logger.Warn("Login rate limited",
-			zap.String("ip_address", clientIP),
-			zap.String("user_agent", r.UserAgent()),
-			zap.Int("retry_after_seconds", waitSecs),
-		)
-		mins := waitSecs / 60
-		msg := fmt.Sprintf("Too many login attempts, please try again in %d minutes", mins+1)
-		writeJSON(w, http.StatusOK, Fail(msg))
+	// user_account 不区分大小写：与 HandleLogin 对称
+	user_account := strings.ToLower(strings.TrimSpace(body.Username))
+	password := body.PasswordHash
+	if user_account == "" || password == "" {
+		writeJSON(w, http.StatusOK, Fail("user_account and password_hash required"))
 		return
 	}
 
-	// 3. 调用 Service
-	req := service.LoginRequest{
-		TenantID:     tenantID,
-		UserType:     userType,
-		AccountHash:  accountHash,
-		PasswordHash: passwordHash,
-		IPAddress:    clientIP,
-		UserAgent:    r.UserAgent(),
+	rateKey := r.RemoteAddr + "|" + user_account
+	if wait := h.rateLimiter.isBlocked(rateKey); wait > 0 {
+		w.Header().Set("Retry-After", itoa(wait))
+		writeJSON(w, http.StatusTooManyRequests, Fail("too many attempts; retry later"))
+		return
 	}
 
-	resp, err := h.authService.Login(ctx, req)
+	matches, err := h.searchTenantsByCredentials(r.Context(), user_account, password)
 	if err != nil {
-		// 记录失败尝试
-		h.rateLimiter.recordFailure(rateLimitKey)
-		h.logger.Error("Login failed", zap.Error(err))
-		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		h.logger.Warn("v2 auth: search-tenants db error", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail("search failed"))
 		return
 	}
-
-	// 将 session 信息存储到 sessionStore（登录成功后）
-	// accessToken 由前端保存，AuthMiddleware 在请求时从 Authorization header 提取
-	if h.sessionStore != nil && resp.AccessToken != "" {
-		sessionData := SessionData{
-			UserID:   resp.UserID,
-			TenantID: resp.TenantID,
-			UserType: resp.UserType,
-			Role:     resp.Role,
-		}
-		// 使用 accessToken 作为 session key，24h TTL
-		_ = h.sessionStore.Set(ctx, resp.AccessToken, sessionData, 24*time.Hour)
+	if len(matches) == 0 {
+		h.rateLimiter.recordFailure(rateKey)
 	}
-
-	// 3. 构建响应（对齐 owlFront LoginResult）
-	result := map[string]any{
-		"accessToken":  resp.AccessToken,
-		"refreshToken": resp.RefreshToken,
-		"userId":       resp.UserID,
-		"user_account": resp.UserAccount,
-		"userType":     resp.UserType,
-		"role":         resp.Role,
-		"nickName":     resp.NickName,
-		"tenant_id":    resp.TenantID,
-		"tenant_name":  resp.TenantName,
-		"domain":       resp.Domain,
-		"branch_id":    resp.BranchID,
-		"branchTag":    resp.BranchTag,
-		"branch_ids":   resp.BranchIDs,
-		"homePath":     resp.HomePath,
-	}
-
-	writeJSON(w, http.StatusOK, Ok(result))
+	writeJSON(w, http.StatusOK, Ok(v2SearchResp{Matches: matches}))
 }
 
-// SearchInstitutions 搜索机构
-func (h *AuthHandler) SearchInstitutions(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	// 添加日志记录请求详情
-	h.logger.Info("SearchInstitutions request received",
-		zap.String("method", r.Method),
-		zap.String("remote_addr", r.RemoteAddr),
-		zap.String("user_agent", r.UserAgent()),
-		zap.String("authorization_header", r.Header.Get("Authorization")),
-	)
-
-	// 1. 参数解析（从 Query 参数获取）
-	accountHash := strings.TrimSpace(r.URL.Query().Get("accountHash"))
-	passwordHash := strings.TrimSpace(r.URL.Query().Get("passwordHash"))
-	userType := strings.TrimSpace(r.URL.Query().Get("userType"))
-	if userType == "" {
-		userType = "staff"
+// HandleLogin 标准 v2 登录。如果 tenant_id 给了，仅在该 tenant 内查；否则要求全局唯一。
+func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var body v2LoginReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, Fail("invalid JSON body: "+err.Error()))
+		return
+	}
+	// user_account 不区分大小写：DB 端用户存储归一为小写，登录入口同样 lower 以匹配
+	user_account := strings.ToLower(strings.TrimSpace(body.Username))
+	password := body.PasswordHash
+	tenantPrefix := strings.TrimSpace(body.TenantPrefix)
+	if user_account == "" || password == "" {
+		writeJSON(w, http.StatusOK, Fail("user_account and password_hash required"))
+		return
 	}
 
-	h.logger.Info("SearchInstitutions parsed params",
-		zap.String("accountHash", maskString(accountHash)),
-		zap.String("passwordHash", maskString(passwordHash)),
-		zap.String("userType", userType),
-	)
-
-	// 2. 调用 Service
-	req := service.SearchInstitutionsRequest{
-		AccountHash:  accountHash,
-		PasswordHash: passwordHash,
-		UserType:     userType,
+	rateKey := r.RemoteAddr + "|" + user_account
+	if wait := h.rateLimiter.isBlocked(rateKey); wait > 0 {
+		w.Header().Set("Retry-After", itoa(wait))
+		writeJSON(w, http.StatusTooManyRequests, Fail("too many attempts; retry later"))
+		return
 	}
 
-	resp, err := h.authService.SearchInstitutions(ctx, req)
+	row, err := h.findActiveUser(r.Context(), user_account, password, tenantPrefix)
 	if err != nil {
-		h.logger.Error("SearchInstitutions failed", zap.Error(err))
-		writeJSON(w, http.StatusOK, Fail(err.Error()))
-		return
-	}
-
-	// 3. 构建响应（与旧 Handler 格式一致）
-	items := make([]any, 0, len(resp.Institutions))
-	for _, inst := range resp.Institutions {
-		item := map[string]any{
-			"id":          inst.ID,
-			"name":        inst.Name,
-			"accountType": inst.AccountType,
+		if errors.Is(err, errMultipleTenants) {
+			writeJSON(w, http.StatusOK, Fail("multiple institutions found, please select one"))
+			return
 		}
-		if inst.Domain != "" {
-			item["domain"] = inst.Domain
+		if errors.Is(err, sql.ErrNoRows) {
+			h.rateLimiter.recordFailure(rateKey)
+			h.recordLoginFailure(r.Context(), user_account)
+			writeJSON(w, http.StatusOK, Fail("invalid credentials"))
+			return
 		}
-		items = append(items, item)
+		h.logger.Warn("v2 auth: login db error", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail("login failed"))
+		return
 	}
-
-	h.logger.Info("SearchInstitutions completed",
-		zap.Int("result_count", len(items)),
-	)
-
-	writeJSON(w, http.StatusOK, Ok(items))
-}
-
-// SendVerificationCode 发送验证码
-func (h *AuthHandler) SendVerificationCode(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	// 1. 参数解析
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
+	// 兜底：password_check_hash 已确认明文一致，bcrypt 再做"抗暴力"层验证（DB 内 stored bcrypt(sha256_hex) 必须匹配）
+	if err := bcrypt.CompareHashAndPassword([]byte(row.PasswordHash), []byte(password)); err != nil {
+		h.rateLimiter.recordFailure(rateKey)
+		h.recordLoginFailure(r.Context(), user_account)
+		writeJSON(w, http.StatusOK, Fail("invalid credentials"))
 		return
 	}
 
-	account, _ := payload["account"].(string)
-	userType, _ := payload["userType"].(string)
-	tenantID, _ := payload["tenant_id"].(string)
-	tenantName, _ := payload["tenant_name"].(string)
+	// 异步更新 last_login_at + 重置失败计数 / 自动解锁（locked → active）
+	go func(uid string) {
+		_, _ = h.db.Exec(`
+			UPDATE users SET
+			  last_login_at = NOW(),
+			  last_active_at = NOW(),
+			  failed_login_count = 0,
+			  locked_until = NULL,
+			  status = CASE WHEN status = 'locked' THEN 'active' ELSE status END
+			WHERE user_id = $1`, uid)
+	}(row.UserID)
 
-	// 2. 调用 Service
-	req := service.SendVerificationCodeRequest{
-		Account:    account,
-		UserType:   userType,
-		TenantID:   tenantID,
-		TenantName: tenantName,
+	token := GenerateSessionToken()
+	if h.sessionStore != nil {
+		_ = h.sessionStore.Set(r.Context(), token, SessionData{
+			UserID:       row.UserID,
+			TenantID:     row.TenantPrefix, // v2: 用 prefix 字符串占 TenantID 字段，middleware 注入 X-Tenant-Id
+			TenantPrefix: row.TenantPrefix,
+			UserType:     "staff",
+			Role:         row.Role,
+			HoA:          row.HoA,
+		}, 24*time.Hour)
 	}
 
-	resp, err := h.authService.SendVerificationCode(ctx, req)
-	if err != nil {
-		h.logger.Error("SendVerificationCode failed", zap.Error(err))
-		writeJSON(w, http.StatusOK, Fail(err.Error()))
-		return
+	// 查 user 挂的 branch_ids + 当前 is_primary（Current Branch）
+	// 没挂任何 branch = tenant-wide user（admin/sysadmin）→ branch_ids 空 + current 空，FE 走 'tenant-wide' 分支
+	branchIDs := []string{}
+	currentBranch := ""
+	{
+		rows, qerr := h.db.QueryContext(r.Context(),
+			`SELECT host(branch_prefix) || '/56' AS bid, is_primary
+			   FROM user_branches
+			  WHERE user_id = $1::UUID AND valid_to IS NULL
+			  ORDER BY branch_prefix`,
+			row.UserID)
+		if qerr == nil {
+			for rows.Next() {
+				var b string
+				var pri bool
+				if rows.Scan(&b, &pri) == nil {
+					branchIDs = append(branchIDs, b)
+					if pri {
+						currentBranch = b
+					}
+				}
+			}
+			rows.Close()
+		}
+		// 兜底：user 挂了 branch 但没设 is_primary → 默认取第一个
+		if currentBranch == "" && len(branchIDs) > 0 {
+			currentBranch = branchIDs[0]
+			_, _ = h.db.ExecContext(r.Context(), `
+				UPDATE user_branches SET is_primary = TRUE
+				 WHERE user_id = $1::UUID AND branch_prefix = $2::INET AND valid_to IS NULL`,
+				row.UserID, currentBranch)
+		}
 	}
 
-	// 3. 返回响应
+	resp := v2LoginResp{
+		AccessToken:     token,
+		UserID:          row.UserID,
+		Username:        row.Username,
+		NickName:        fallback(row.Nickname, row.Username),
+		Role:            row.Role,
+		TenantPrefix:    row.TenantPrefix,
+		TenantName:      row.TenantName,
+		HoA:             row.HoA,
+		BranchIDs:       branchIDs,
+		CurrentBranchID: currentBranch,
+		HomePath:        "/monitoring/overview",
+	}
 	writeJSON(w, http.StatusOK, Ok(resp))
 }
 
-// VerifyCode 验证验证码
-func (h *AuthHandler) VerifyCode(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+// =============================================================================
+// Internal: SQL helpers (v2 schema only)
+// =============================================================================
 
-	// 1. 参数解析
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
-		return
-	}
+var errMultipleTenants = errors.New("multiple institutions match this user_account; tenant_id required")
 
-	account, _ := payload["account"].(string)
-	code, _ := payload["code"].(string)
-	userType, _ := payload["userType"].(string)
-	tenantID, _ := payload["tenant_id"].(string)
-	tenantName, _ := payload["tenant_name"].(string)
-
-	// 2. 调用 Service
-	req := service.VerifyCodeRequest{
-		Account:    account,
-		Code:       code,
-		UserType:   userType,
-		TenantID:   tenantID,
-		TenantName: tenantName,
-	}
-
-	resp, err := h.authService.VerifyCode(ctx, req)
-	if err != nil {
-		h.logger.Error("VerifyCode failed", zap.Error(err))
-		writeJSON(w, http.StatusOK, Fail(err.Error()))
-		return
-	}
-
-	// 3. 返回响应
-	writeJSON(w, http.StatusOK, Ok(resp))
+type userRow struct {
+	UserID       string
+	Username     string
+	Nickname     string
+	Role         string
+	PasswordHash string
+	TenantPrefix string
+	TenantName   string
+	HoA          string
 }
 
-// ResetPassword 重置密码
-func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	// 1. 参数解析
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
-		return
+// findActiveUser 在 v2 users + tenants + user_roles + roles 表里按 (user_account, password_check_hash)
+// 反向定位活跃用户。这是 v2 cutover 的"不输 organize 也能登录"实现：
+//
+//   - sha256(plain) 无 salt 存为 password_check_hash bytea；前端发的 password_hash hex decode 后比对
+//   - admin 类（platform_admin/tenant_admin）有 partial UNIQUE → 命中必然 0 或 1 条
+//   - 普通 user 多点执业可能同 (user_account, password) → 命中 N 条 → errMultipleTenants
+//   - tenant_id 给了就额外限定（用户在 LoginForm 手工选 organize 的情况）
+//
+// SQL 设计：
+//   - JOIN tenants 拿 tenant_name
+//   - LEFT JOIN user_roles + roles 拿 RBAC role_code（normalize 成 PascalCase 给前端）
+//   - status='active' 才放行
+//
+// password 参数：前端发的 sha256(plain) hex 字符串，SQL 内 decode($2, 'hex') 转 bytea 比对。
+func (h *AuthHandler) findActiveUser(ctx context.Context, user_account, passwordHashHex, tenantPrefix string) (*userRow, error) {
+	// 状态门槛（用 OR 组合）：
+	//   D-001a tenant 级联停权：tenant.status='active' 才放行；platform_admin 例外
+	//   账号锁定 (B-009)：status='active' 直接放行；status='locked' 仅 locked_until <= NOW() 才放行（自动解锁）
+	const baseSelect = `
+		SELECT u.user_id::text,
+		       u.user_account,
+		       COALESCE(u.nickname, ''),
+		       COALESCE(u.role, ''),
+		       COALESCE(r.role_name, '') AS rbac_role,
+		       COALESCE(u.password_hash, ''),
+		       host(u.tenant_id) || '/48' AS tenant_prefix_cidr,
+		       COALESCE(t.tenant_name, ''),
+		       COALESCE(host(u.hoa), '')
+		  FROM users u
+		  JOIN tenants t ON t.tenant_id = u.tenant_id
+		  LEFT JOIN user_roles ur ON ur.user_id = u.user_id
+		  LEFT JOIN roles r ON r.role_id = ur.role_id
+		 WHERE u.user_account = $1
+		   AND u.password_check_hash = decode($2, 'hex')
+		   AND (
+		         COALESCE(u.status,'active') = 'active'
+		         OR (u.status = 'locked' AND u.locked_until IS NOT NULL AND u.locked_until <= NOW())
+		       )
+		   AND (
+		         COALESCE(t.status,'active') = 'active'
+		         OR u.role = 'platform_admin'
+		         OR r.role_code = 'platform_admin'
+		       )
+	`
+	scan := func(rs interface {
+		Scan(...any) error
+	}, out *userRow) error {
+		var rbacRole string
+		if err := rs.Scan(&out.UserID, &out.Username, &out.Nickname, &out.Role, &rbacRole,
+			&out.PasswordHash, &out.TenantPrefix, &out.TenantName, &out.HoA); err != nil {
+			return err
+		}
+		out.Role = normalizeRole(out.Role, rbacRole)
+		return nil
 	}
 
-	token, _ := payload["token"].(string)
-	newPassword, _ := payload["newPassword"].(string)
-	userType, _ := payload["userType"].(string)
-
-	// 2. 调用 Service
-	req := service.ResetPasswordRequest{
-		Token:       token,
-		NewPassword: newPassword,
-		UserType:    userType,
+	if tenantPrefix != "" {
+		row := h.db.QueryRowContext(ctx, baseSelect+` AND u.tenant_id = $3::INET LIMIT 1`, user_account, passwordHashHex, tenantPrefix)
+		out := &userRow{}
+		if err := scan(row, out); err != nil {
+			return nil, err
+		}
+		return out, nil
 	}
 
-	resp, err := h.authService.ResetPassword(ctx, req)
+	// 无 tenant_id：(user_account, password_check_hash) 命中多条 → 多点执业冲突，要求选 organize
+	rows, err := h.db.QueryContext(ctx, baseSelect, user_account, passwordHashHex)
 	if err != nil {
-		h.logger.Error("ResetPassword failed", zap.Error(err))
-		writeJSON(w, http.StatusOK, Fail(err.Error()))
-		return
+		return nil, err
 	}
-
-	// 3. 返回响应
-	writeJSON(w, http.StatusOK, Ok(resp))
+	defer rows.Close()
+	var first *userRow
+	count := 0
+	for rows.Next() {
+		count++
+		if count > 1 {
+			return nil, errMultipleTenants
+		}
+		first = &userRow{}
+		if err := scan(rows, first); err != nil {
+			return nil, err
+		}
+	}
+	if first == nil {
+		return nil, sql.ErrNoRows
+	}
+	return first, nil
 }
 
-// VerifyPIN 验证 PIN（用于锁屏解锁）
-func (h *AuthHandler) VerifyPIN(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	// 1. 参数解析
-	var payload map[string]any
-	if err := readBodyJSON(r, 1<<20, &payload); err != nil {
-		writeJSON(w, http.StatusOK, Fail("invalid body"))
-		return
+// normalizeRole 把 (users.role, roles.role_name) 归一到前端 pagePermissions 期待的 PascalCase
+// role code。优先 users.role，空时回落到 roles.role_name 友好名做映射。
+//
+// 映射来自当前 owl_v2 seed 数据（90_seed_roles.sql 等）。未来若引入新角色名，扩这里。
+func normalizeRole(usersRole, rolesName string) string {
+	s := strings.TrimSpace(usersRole)
+	if s == "" {
+		s = strings.TrimSpace(rolesName)
 	}
-
-	pinHash, _ := payload["pin_hash"].(string)
-	if pinHash == "" {
-		writeJSON(w, http.StatusOK, Fail("pin_hash is required"))
-		return
+	switch strings.ToLower(s) {
+	case "platform_admin", "platform administrator", "system administrator", "systemadmin":
+		return "SystemAdmin"
+	case "system_operator", "system operator", "systemoperator":
+		return "SystemOperator"
+	case "tenant_admin", "tenant administrator", "admin":
+		return "Admin"
+	case "branch_manager", "manager":
+		return "Manager"
+	case "nurse":
+		return "Nurse"
+	case "caregiver":
+		return "Caregiver"
+	case "family":
+		return "Family"
+	case "viewer":
+		return "Viewer"
+	case "it":
+		return "IT"
+	case "resident":
+		return "Resident"
 	}
-
-	// 2. 从 request header 获取 user_id
-	userID := r.Header.Get("X-User-Id")
-	if userID == "" {
-		writeJSON(w, http.StatusOK, Fail("user not authenticated"))
-		return
-	}
-
-	// 3. 调用 Service
-	req := service.VerifyPINRequest{
-		PinHash: pinHash,
-		UserID:  userID,
-	}
-
-	resp, err := h.authService.VerifyPIN(ctx, req)
-	if err != nil {
-		h.logger.Error("VerifyPIN failed", zap.Error(err))
-		writeJSON(w, http.StatusOK, Fail(err.Error()))
-		return
-	}
-
-	// 4. 返回响应
-	writeJSON(w, http.StatusOK, Ok(resp))
+	return s // 未知名直接透传，前端再处理（避免吞掉）
 }
 
-// maskString 用于隐藏敏感信息的日志输出
-func maskString(s string) string {
-	if len(s) <= 4 {
-		return "***"
+// searchTenantsByCredentials 按 (user_account, password_check_hash) 找所有匹配的 tenant，用于 LoginForm
+// 选机构（多点执业场景）。SQL 直接走 password_check_hash 索引，O(log n)；不再 N+1 bcrypt 比较。
+//
+// admin 类有 partial UNIQUE(password_check_hash) → 永远 0/1 条；普通 user 多点执业可能 N 条。
+//
+// D-001a tenant 级联停权：suspended/deleted tenant 不进 search 结果（platform_admin 例外）。
+func (h *AuthHandler) searchTenantsByCredentials(ctx context.Context, user_account, passwordHashHex string) ([]v2TenantMatch, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT host(u.tenant_id) || '/48' AS tenant_prefix_cidr,
+		       COALESCE(t.tenant_name, ''),
+		       COALESCE(u.role, '')
+		  FROM users u
+		  JOIN tenants t ON t.tenant_id = u.tenant_id
+		 WHERE u.user_account = $1
+		   AND u.password_check_hash = decode($2, 'hex')
+		   AND COALESCE(u.status,'active') = 'active'
+		   AND (
+		         COALESCE(t.status,'active') = 'active'
+		         OR u.role = 'platform_admin'
+		       )
+	`, user_account, passwordHashHex)
+	if err != nil {
+		return nil, err
 	}
-	return s[:4] + "***"
+	defer rows.Close()
+
+	out := make([]v2TenantMatch, 0, 2)
+	for rows.Next() {
+		var prefix, name, role string
+		if err := rows.Scan(&prefix, &name, &role); err != nil {
+			continue
+		}
+		out = append(out, v2TenantMatch{TenantPrefix: prefix, TenantName: name, Role: role})
+	}
+	return out, nil
+}
+
+// recordLoginFailure 持久化登录失败计数。
+//
+// 当 (user_account, password_check_hash) 不匹配（密码错或账号不存在），按 user_account 找所有同名 user
+// 累加 failed_login_count + last_failed_at；累计 ≥ failedLoginThreshold 时设 status='locked' +
+// locked_until = NOW() + lockoutDuration。
+//
+// 注意：v2 user_account per-tenant UNIQUE，admin 攻击 'admin' 时会一起锁所有 tenant 的 admin 用户
+// （同 user_account 在多 tenant 全部 +1）。这是保守的"广撒网"防护：攻击者无法定向某 tenant 的 admin。
+//
+// 同步执行，确保在响应前 DB 已写入；写失败仅 log，不阻塞响应。
+const (
+	failedLoginThreshold = 10
+	lockoutDuration      = "2 hours"
+)
+
+func (h *AuthHandler) recordLoginFailure(ctx context.Context, user_account string) {
+	if user_account == "" {
+		return
+	}
+	_, err := h.db.ExecContext(ctx, `
+		UPDATE users SET
+		  failed_login_count = failed_login_count + 1,
+		  last_failed_at = NOW(),
+		  status = CASE
+		             WHEN failed_login_count + 1 >= $2 THEN 'locked'
+		             ELSE status
+		           END,
+		  locked_until = CASE
+		                   WHEN failed_login_count + 1 >= $2 THEN NOW() + ($3 || '')::INTERVAL
+		                   ELSE locked_until
+		                 END
+		WHERE user_account = $1
+	`, user_account, failedLoginThreshold, lockoutDuration)
+	if err != nil {
+		h.logger.Warn("v2 auth: record login failure failed", zap.Error(err))
+	}
+}
+
+// =============================================================================
+// utils
+// =============================================================================
+
+func fallback(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }

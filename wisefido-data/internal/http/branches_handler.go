@@ -97,8 +97,7 @@ func (h *BranchesHandler) ListBranches(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-
-	// 4. 返回响应
+	// is_primary 标记：FE 自己拿 store.current_branch_id 与每行 branch_id 比对即可，BE 无需再注入
 	writeJSON(w, http.StatusOK, Ok(resp))
 }
 

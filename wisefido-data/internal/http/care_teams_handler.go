@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 
+	"wisefido-data/internal/service"
+
 	"go.uber.org/zap"
 )
 
@@ -74,8 +76,33 @@ func (h *CareTeamsHandler) list(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// branch 过滤优先级：
+	//   1) URL ?branch_id=X 显式（FE resident profile 等场景按 resident 当前 branch 查）
+	//   2) 否则按 user.is_primary = Current Branch (Phase 3 scope 统一)
+	// Admin（无 user_branches 行）→ 都不传 → 不加 branch filter，看 tenant 全部
+	args := []any{tenantPrefix}
+	where := "t.tenant_id = $1::INET"
+	bid := strings.TrimSpace(r.URL.Query().Get("branch_id"))
+	if bid == "" {
+		if uid, _, _, _, ok := service.MustSession(r.Context()); ok && uid != "" {
+			var current sql.NullString
+			if err := h.db.QueryRowContext(r.Context(), `
+				SELECT host(branch_prefix) || '/56'
+				  FROM user_branches
+				 WHERE user_id = $1::UUID AND is_primary = TRUE AND valid_to IS NULL
+				 LIMIT 1`, uid).Scan(&current); err == nil && current.Valid {
+				bid = current.String
+			}
+		}
+	}
+	if bid != "" {
+		where += " AND t.branch_id = $2::INET"
+		args = append(args, bid)
+	}
 	rows, err := h.db.QueryContext(r.Context(), `
 		SELECT t.team_id::text,
+		       host(t.branch_id) || '/56' AS branch_id,
+		       COALESCE(b.branch_name, '') AS branch_name,
 		       t.team_code,
 		       t.team_name,
 		       t.team_kind,
@@ -90,8 +117,9 @@ func (h *CareTeamsHandler) list(w http.ResponseWriter, r *http.Request) {
 		           WHERE m.team_id = t.team_id AND m.valid_to IS NULL), ''
 		       ) AS member_names
 		  FROM care_teams t
-		 WHERE t.tenant_id = $1::INET
-		 ORDER BY t.team_kind, t.team_name`, tenantPrefix)
+		  LEFT JOIN branches b ON b.branch_id = t.branch_id
+		 WHERE `+where+`
+		 ORDER BY t.team_kind, t.team_name`, args...)
 	if err != nil {
 		h.logger.Error("list care_teams", zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
@@ -100,10 +128,10 @@ func (h *CareTeamsHandler) list(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var id, code, name, kind, desc, color, memberNames string
+		var id, branchID, branchName, code, name, kind, desc, color, memberNames string
 		var active bool
 		var memberCount int
-		if err := rows.Scan(&id, &code, &name, &kind, &desc, &color, &active, &memberCount, &memberNames); err == nil {
+		if err := rows.Scan(&id, &branchID, &branchName, &code, &name, &kind, &desc, &color, &active, &memberCount, &memberNames); err == nil {
 			names := []string{}
 			if memberNames != "" {
 				for _, n := range strings.Split(memberNames, ",") {
@@ -113,15 +141,17 @@ func (h *CareTeamsHandler) list(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			out = append(out, map[string]any{
-				"team_id":       id,
-				"team_code":     code,
-				"team_name":     name,
-				"team_kind":     kind,
-				"description":   desc,
-				"color_hex":     color,
-				"is_active":     active,
-				"member_count":  memberCount,
-				"member_names":  names,
+				"team_id":      id,
+				"branch_id":    branchID,
+				"branch_name":  branchName,
+				"team_code":    code,
+				"team_name":    name,
+				"team_kind":    kind,
+				"description":  desc,
+				"color_hex":    color,
+				"is_active":    active,
+				"member_count": memberCount,
+				"member_names": names,
 			})
 		}
 	}
@@ -135,6 +165,7 @@ func (h *CareTeamsHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
+		BranchID    string `json:"branch_id"`
 		TeamCode    string `json:"team_code"`
 		TeamName    string `json:"team_name"`
 		TeamKind    string `json:"team_kind"`
@@ -146,12 +177,26 @@ func (h *CareTeamsHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body.TeamName = strings.TrimSpace(body.TeamName)
+	body.BranchID = strings.TrimSpace(body.BranchID)
 	if body.TeamName == "" {
 		writeJSON(w, http.StatusOK, Fail("team_name is required"))
 		return
 	}
+	if body.BranchID == "" {
+		writeJSON(w, http.StatusOK, Fail("branch_id is required (care team must belong to a branch)"))
+		return
+	}
+	// 验证 branch_id 属于当前 tenant（防越权 cross-tenant 创建）
+	var ok2 bool
+	if err := h.db.QueryRowContext(r.Context(),
+		`SELECT EXISTS (SELECT 1 FROM branches WHERE branch_id = $1::INET AND $1::INET <<= $2::INET)`,
+		body.BranchID, tenantPrefix,
+	).Scan(&ok2); err != nil || !ok2 {
+		writeJSON(w, http.StatusOK, Fail("branch_id not found in current tenant"))
+		return
+	}
 	if body.TeamCode == "" {
-		// team_code 默认 = team_name 转 lowercase + spaces→_，避免 unique conflict 时返回明确错
+		// team_code 默认 = team_name 转 lowercase + spaces→_
 		body.TeamCode = strings.ToLower(strings.ReplaceAll(body.TeamName, " ", "_"))
 	}
 	if body.TeamKind == "" {
@@ -159,10 +204,10 @@ func (h *CareTeamsHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	var newID string
 	err := h.db.QueryRowContext(r.Context(), `
-		INSERT INTO care_teams (tenant_id, team_code, team_name, team_kind, description, color_hex, is_active)
-		VALUES ($1::INET, $2, $3, $4, $5, NULLIF($6,''), TRUE)
+		INSERT INTO care_teams (tenant_id, branch_id, team_code, team_name, team_kind, description, color_hex, is_active)
+		VALUES ($1::INET, $2::INET, $3, $4, $5, $6, NULLIF($7,''), TRUE)
 		RETURNING team_id::text`,
-		tenantPrefix, body.TeamCode, body.TeamName, body.TeamKind, body.Description, body.ColorHex,
+		tenantPrefix, body.BranchID, body.TeamCode, body.TeamName, body.TeamKind, body.Description, body.ColorHex,
 	).Scan(&newID)
 	if err != nil {
 		h.logger.Error("create care_team", zap.Error(err))
@@ -291,12 +336,19 @@ func (h *CareTeamsHandler) listMembers(w http.ResponseWriter, r *http.Request, t
 		}
 	}
 
-	// 同时返回 tenant 下所有可加入的 user（未在 team 里的），方便 FE Add Member picker
+	// 同时返回可加入的 user（未在 team 里 + 同 team.branch + 是 caregiver 类角色），方便 FE Add Member picker
+	// branch 过滤：user_branches 挂在 team.branch_id（Nurse/Caregiver），或 tenant-wide 无挂载（admin/manager 兜底）
 	availRows, err := h.db.QueryContext(r.Context(), `
 		SELECT u.user_id::text, u.user_account, COALESCE(u.nickname,'') AS nickname, COALESCE(u.role,'') AS role
 		  FROM users u
+		  JOIN care_teams t ON t.team_id = $2::UUID
 		 WHERE u.tenant_id = $1::INET
 		   AND u.status = 'active'
+		   AND LOWER(u.role) IN ('nurse','caregiver','manager','individual')
+		   AND (
+		     NOT EXISTS (SELECT 1 FROM user_branches WHERE user_id = u.user_id AND valid_to IS NULL)
+		     OR EXISTS (SELECT 1 FROM user_branches WHERE user_id = u.user_id AND branch_prefix = t.branch_id AND valid_to IS NULL)
+		   )
 		   AND NOT EXISTS (
 		     SELECT 1 FROM care_team_members m
 		      WHERE m.team_id = $2::UUID AND m.user_id = u.user_id AND m.valid_to IS NULL
