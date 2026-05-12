@@ -180,23 +180,17 @@ func (h *BranchesHandler) UpdateBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. 权限检查：只允许 SystemAdmin, SystemOperator, Admin 更新
+	// 2. 权限检查：v2 RBAC — 通过 role_permissions 表（'branches.update' / 'branches.*' / 'branches.config' / 'tenant.*' / '*'）。
+	// Manager 通过 seed 'manager: branches.config' 拿到 update 权（自管 branch；scope 校验留待 user_roles.scope 数据齐全后做）。
 	currentUserRole := r.Header.Get("X-User-Role")
-	if currentUserRole != "SystemAdmin" && currentUserRole != "SystemOperator" && currentUserRole != "Admin" {
-		writeJSON(w, http.StatusOK, Fail("permission denied: only SystemAdmin, SystemOperator, and Admin can update branches"))
-		return
-	}
-
-	// 检查是否有更新权限
 	perm, err := GetResourcePermission(h.db, ctx, currentUserRole, "branches", "U")
 	if err != nil {
 		h.logger.Error("Failed to check permission", zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail("permission check failed"))
 		return
 	}
-	// 如果没有权限（返回默认严格权限），拒绝
-	if perm.AssignedOnly && perm.BranchOnly && currentUserRole != "SystemAdmin" && currentUserRole != "SystemOperator" && currentUserRole != "Admin" {
-		writeJSON(w, http.StatusOK, Fail("permission denied: no update permission for branches"))
+	if perm.AssignedOnly && perm.BranchOnly {
+		writeJSON(w, http.StatusOK, Fail("permission denied: role cannot update branches"))
 		return
 	}
 

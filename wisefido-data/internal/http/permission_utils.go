@@ -75,8 +75,11 @@ func GetResourcePermission(db *sql.DB, ctx context.Context,
 	v2Role := mapRoleToV2(roleCode)
 	action := permWord(permissionType)
 
-	// 候选 permission 字符串：精确 → 资源通配 → 租户通配 → 全局通配
+	// 候选 permission 字符串：精确 → 资源 .config（CRUD 合一）→ 资源通配 → 租户通配 → 全局通配
+	// .config 语义：v2 seed 用 `<resource>.config` 表示"完全管理该 config"（含 R/C/U/D），
+	// 比拆 4 行单独 grant 更紧凑（详见 owlrd/dbv2/42_role_permissions.sql 注释）。
 	target := resourceType + "." + action
+	resourceConfig := resourceType + ".config"
 	resourceAll := resourceType + ".*"
 	const tenantAll = "tenant.*"
 	const platformAll = "*"
@@ -88,9 +91,9 @@ func GetResourcePermission(db *sql.DB, ctx context.Context,
 			  FROM role_permissions rp
 			  JOIN roles r ON r.role_id = rp.role_id
 			 WHERE r.role_code = $1
-			   AND rp.permission IN ($2, $3, $4, $5)
+			   AND rp.permission IN ($2, $3, $4, $5, $6)
 		)
-	`, v2Role, target, resourceAll, tenantAll, platformAll).Scan(&exists)
+	`, v2Role, target, resourceConfig, resourceAll, tenantAll, platformAll).Scan(&exists)
 	if err != nil {
 		return nil, err
 	}

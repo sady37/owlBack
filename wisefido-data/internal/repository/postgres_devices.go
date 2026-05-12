@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net"
 	"strings"
 
 	"wisefido-data/internal/domain"
@@ -363,10 +364,107 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 	return out, total, nil
 }
 
-// GetDevice 查询单个设备
-// v2 stub: Phase E.2 will rewrite using devices.device_ipv6 + reset_device_prefix()
+// GetDevice 查询单个设备 — v2 Phase 1b 最小实现。
+//
+// 字段口径（其余 v1 列在 v2 不存在，置零或省略）：
+//   - DeviceID       = devices.device_id (UUID)
+//   - TenantID       = 由 device_ipv6 前 /48 派生（让上层 device.TenantID==tenantID 校验通过）
+//   - DeviceUID      = device_factory_meta.device_uid
+//   - DeviceName     = device_factory_meta.device_code (回退 device_uid)
+//   - DeviceType     = device_factory_meta.device_type (枚举字符串)
+//   - DeviceModel/MCUModel/MAC/IMEI/CommMode/FirmwareVersion = device_factory_meta 对应列
+//   - UnitID/RoomID/BoundRoomID/BoundBedID/Status/Access/MonitoringEnabled = 该 device 当前 ipv6
+//     所在的 unit/room prefix 由 spatial_views 派生；Phase 1b 不查（监控配置不依赖），保持 NullString。
 func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, deviceID string) (*domain.Device, error) {
-	return nil, fmt.Errorf("device not found: tenant_id=%s, device_id=%s", tenantID, deviceID)
+	if deviceID == "" {
+		return nil, fmt.Errorf("device_id is required")
+	}
+
+	d := &domain.Device{}
+	var ipv6, deviceUID, deviceType string
+	var deviceCode, deviceModel, mcuModel, macWifi, imei, commMode sql.NullString
+
+	err := r.db.QueryRowContext(ctx, `
+		SELECT
+			d.device_id::text,
+			host(d.device_ipv6),
+			dfm.device_uid,
+			dfm.device_type::text,
+			dfm.device_code,
+			dfm.device_model,
+			dfm.mcu_model,
+			dfm.mac_wifi,
+			dfm.imei,
+			dfm.comm_mode,
+			d.access,
+			d.monitoring_enabled
+		FROM devices d
+		JOIN device_factory_meta dfm USING (device_id)
+		WHERE d.device_id = $1::uuid
+		LIMIT 1
+	`, deviceID).Scan(
+		&d.DeviceID,
+		&ipv6,
+		&deviceUID,
+		&deviceType,
+		&deviceCode,
+		&deviceModel,
+		&mcuModel,
+		&macWifi,
+		&imei,
+		&commMode,
+		&d.Access,
+		&d.MonitoringEnabled,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("device not found: device_id=%s", deviceID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get device: %w", err)
+	}
+
+	// TenantID 由 ipv6 前 48 bit 派生（让上层 tenant 一致性校验通过）
+	d.TenantID = deviceIPv6ToTenantPrefix(ipv6)
+	d.DeviceUID = deviceUID
+	d.DeviceType = sql.NullString{String: deviceType, Valid: deviceType != ""}
+	d.DeviceCode = deviceCode
+	d.DeviceModel = deviceModel
+	d.MCUModel = mcuModel
+	d.MAC = macWifi
+	d.IMEI = imei
+	d.CommMode = commMode
+
+	// DeviceName 取 device_code，回退 device_uid（v2 schema 无独立 device_name 列）
+	if deviceCode.Valid && deviceCode.String != "" {
+		d.DeviceName = deviceCode.String
+	} else {
+		d.DeviceName = deviceUID
+	}
+
+	// 默认 status='offline'（数据库语义 = 未被禁用；实时在线由 cardagg 推 Redis）
+	d.Status = "offline"
+
+	return d, nil
+}
+
+// deviceIPv6ToTenantPrefix 把 device 的 /128 ipv6 前 48 bit 拼成 tenant 的 /48 CIDR。
+// 例：fd00:0:3:1000::1 -> fd00:0:3::/48
+func deviceIPv6ToTenantPrefix(ipv6 string) string {
+	if ipv6 == "" {
+		return ""
+	}
+	ip := net.ParseIP(ipv6)
+	if ip == nil {
+		return ""
+	}
+	ip = ip.To16()
+	if ip == nil {
+		return ""
+	}
+	// 取前 6 字节，余下置零
+	t := make(net.IP, net.IPv6len)
+	copy(t[:6], ip[:6])
+	return (&net.IPNet{IP: t, Mask: net.CIDRMask(48, 128)}).String()
 }
 
 // GetDeviceByUID 根据 device_uid 和 tenant_id 获取设备信息
@@ -399,16 +497,92 @@ func (r *PostgresDevicesRepository) GetDevicesBoundToRoom(ctx context.Context, t
 	return out, rows.Err()
 }
 
-// GetRoomBoundDeviceTypeLetters 返回绑定到 room 的设备类型字母（R=Radar, S=Sleepad），供前端 RoomName(R) 展示
-// v2 stub: Phase E.2 will rewrite using devices.device_ipv6 + reset_device_prefix()
+// GetRoomBoundDeviceTypeLetters 返回绑定到 room 的设备类型字母（R=Radar, S=Sleepad）的 distinct 集合。
+// 绑定判定：device.device_ipv6 落在 room /88 prefix 内（包含 room-level 和 bed-level）。
 func (r *PostgresDevicesRepository) GetRoomBoundDeviceTypeLetters(ctx context.Context, tenantID, roomID string) ([]string, error) {
-	return nil, nil
+	if roomID == "" || !looksLikeINETPrefix(roomID) {
+		return nil, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT DISTINCT dfm.device_type::text AS dev_type
+		  FROM devices d
+		  JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		 WHERE d.device_ipv6 <<= $1::INET
+		 ORDER BY dev_type`, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("query room device letters: %w", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var devType string
+		if err := rows.Scan(&devType); err != nil {
+			return nil, err
+		}
+		if l := deviceTypeLetter(devType); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out, rows.Err()
 }
 
-// GetDevicesBoundToBedsWithDetails 返回多个 bed 上绑定的设备类型字母及 monitor 状态
+// GetDevicesBoundToBedsWithDetails 返回多个 bed 上绑定的设备类型字母及 monitor 状态。
+// 绑定判定：device.device_ipv6 的 /96 prefix 与 bed_id 精确匹配（即 device 绑到该 bed）。
 func (r *PostgresDevicesRepository) GetDevicesBoundToBedsWithDetails(ctx context.Context, tenantID string, bedIDs []string) (map[string][]DeviceTypeDetail, error) {
-	// v2 stub：device_store 表已删；返回空让上层不爆 SQL。Phase E 重写时改用 device_runtime_state。
-	return make(map[string][]DeviceTypeDetail), nil
+	out := make(map[string][]DeviceTypeDetail, len(bedIDs))
+	if len(bedIDs) == 0 {
+		return out, nil
+	}
+	prefixes := make([]string, 0, len(bedIDs))
+	for _, id := range bedIDs {
+		if looksLikeINETPrefix(id) {
+			prefixes = append(prefixes, id)
+		}
+	}
+	if len(prefixes) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT host(network(set_masklen(d.device_ipv6, 96))) || '/96' AS bed_id,
+		       dfm.device_type::text AS dev_type,
+		       d.monitoring_enabled
+		  FROM devices d
+		  JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		 WHERE network(set_masklen(d.device_ipv6, 96))::text = ANY($1::text[])
+		 ORDER BY bed_id, dev_type`,
+		pq.Array(prefixes))
+	if err != nil {
+		return nil, fmt.Errorf("query device details by bed IDs: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var bedID, devType string
+		var monEnabled bool
+		if err := rows.Scan(&bedID, &devType, &monEnabled); err != nil {
+			return nil, err
+		}
+		letter := deviceTypeLetter(devType)
+		if letter == "" {
+			continue
+		}
+		out[bedID] = append(out[bedID], DeviceTypeDetail{
+			Letter:            letter,
+			MonitoringEnabled: monEnabled,
+		})
+	}
+	return out, rows.Err()
+}
+
+// deviceTypeLetter 映射 device_type_enum → 弹窗显示字母（R=Radar, S=Sleepad）
+func deviceTypeLetter(t string) string {
+	switch t {
+	case "Radar":
+		return "R"
+	case "Sleepad":
+		return "S"
+	default:
+		return ""
+	}
 }
 
 // GetDevicesBoundToBed 查询绑定到指定 bed 的设备（仅 id/name，用于删除前检查）

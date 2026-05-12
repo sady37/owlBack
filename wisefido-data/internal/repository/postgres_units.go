@@ -1010,12 +1010,20 @@ func (r *PostgresUnitsRepository) ListRoomsWithBeds(ctx context.Context, tenantI
 	return out, nil
 }
 
-// ListRoomsByBranch 按 branch 列出 room 携带 unit + 占用信息（v2 简化：is_full/is_bound 暂返回 false）。
+// ListRoomsByBranch 按 branch 列出 room 携带 unit + 占用信息。
+//
+// is_bound 从 resident_unit (valid_to IS NULL) 派生：
+//   - Private (unit_type=1)：unit 内任何 active binding 即 binded（整 unit 归一 resident）
+//   - Share   (unit_type=2)：
+//       有 bed → 全部 bed /96 绑定才 binded；任何 bed 未绑 = unbind
+//       无 bed → room /88 自身绑定才 binded
+//   - Public  (unit_type=3)：永远 false（前端过滤）
+//
+// is_full 保留字段但当前不区分（前端只显示 Binded/Unbind 两态）；统一返回 false。
 func (r *PostgresUnitsRepository) ListRoomsByBranch(ctx context.Context, tenantID, branchID string) ([]*RoomWithAvailability, error) {
 	if branchID == "" || !looksLikeINETPrefix(branchID) {
 		return nil, nil
 	}
-	// v2: unit_type 派生为 v1 字符串标签（Home / Facility），FacilityType 由 unit_type 子枚举派生
 	q := `
 		SELECT
 		  host(r.room_id) || '/88' AS room_id,
@@ -1026,7 +1034,32 @@ func (r *PostgresUnitsRepository) ListRoomsByBranch(ctx context.Context, tenantI
 		  s.floor AS floor_int,
 		  r.room_name,
 		  CASE u.unit_property WHEN 0 THEN 'Home' ELSE 'Facility' END AS unit_type,
-		  CASE u.unit_type WHEN 1 THEN 'Private' WHEN 2 THEN 'Share' WHEN 3 THEN 'Public' ELSE '' END AS facility_type
+		  CASE u.unit_type WHEN 1 THEN 'Private' WHEN 2 THEN 'Share' WHEN 3 THEN 'Public' ELSE '' END AS facility_type,
+		  CASE u.unit_type
+		    WHEN 1 THEN EXISTS (
+		      SELECT 1 FROM resident_unit ru
+		       WHERE ru.valid_to IS NULL
+		         AND ru.spatial_prefix <<= u.unit_id
+		    )
+		    WHEN 2 THEN CASE
+		      WHEN (SELECT COUNT(*) FROM beds b WHERE b.bed_id <<= r.room_id) > 0 THEN
+		        NOT EXISTS (
+		          SELECT 1 FROM beds b
+		           WHERE b.bed_id <<= r.room_id
+		             AND NOT EXISTS (
+		               SELECT 1 FROM resident_unit ru2
+		                WHERE ru2.valid_to IS NULL
+		                  AND ru2.spatial_prefix = b.bed_id
+		             )
+		        )
+		      ELSE EXISTS (
+		        SELECT 1 FROM resident_unit ru
+		         WHERE ru.valid_to IS NULL
+		           AND ru.spatial_prefix = r.room_id
+		      )
+		    END
+		    ELSE false
+		  END AS is_bound
 		FROM rooms r
 		JOIN units u ON u.unit_id = network(set_masklen(r.room_id, 80))
 		JOIN sites s ON s.site_id = network(set_masklen(r.room_id, 64))
@@ -1042,12 +1075,12 @@ func (r *PostgresUnitsRepository) ListRoomsByBranch(ctx context.Context, tenantI
 		var rwa RoomWithAvailability
 		var floorInt int
 		if err := rows.Scan(&rwa.RoomID, &rwa.TenantID, &rwa.UnitID, &rwa.UnitName,
-			&rwa.BuildingName, &floorInt, &rwa.RoomName, &rwa.UnitType, &rwa.FacilityType); err != nil {
+			&rwa.BuildingName, &floorInt, &rwa.RoomName, &rwa.UnitType, &rwa.FacilityType,
+			&rwa.IsBound); err != nil {
 			return nil, err
 		}
 		rwa.Floor = formatFloor(floorInt)
 		rwa.IsFull = false
-		rwa.IsBound = false
 		out = append(out, &rwa)
 	}
 	return out, rows.Err()
@@ -1116,17 +1149,52 @@ func (r *PostgresUnitsRepository) ListAvailableBeds(ctx context.Context, tenantI
 	return r.ListBeds(ctx, tenantID, roomID, search)
 }
 
-// ListBedsWithResident v2 简化：ResidentID 总返回 nil（未占用）。
+// ListBedsWithResident 返回 room 下全部 bed 并解析 resident_id：
+// 该 bed 被 active resident_unit 覆盖时返回 host(resident_id)，否则 nil。
+// 覆盖包括三档：/96 bed 直接绑定、/88 整 room 绑定、/80 整 unit 绑定（Private）。
+// 多档同时存在时取最精细一档（masklen DESC）。
 func (r *PostgresUnitsRepository) ListBedsWithResident(ctx context.Context, tenantID, roomID, search string) ([]*BedWithResident, error) {
-	beds, err := r.ListBeds(ctx, tenantID, roomID, search)
+	if roomID == "" || !looksLikeINETPrefix(roomID) {
+		return nil, nil
+	}
+	where := []string{"b.bed_id <<= $1::INET"}
+	args := []any{roomID}
+	argIdx := 2
+	if search != "" {
+		where = append(where, fmt.Sprintf("LOWER(b.bed_name) LIKE $%d", argIdx))
+		args = append(args, "%"+strings.ToLower(search)+"%")
+		argIdx++
+	}
+	q := `SELECT ` + bedsSelectCols + `,
+		(SELECT host(ru.resident_id)
+		   FROM resident_unit ru
+		  WHERE ru.valid_to IS NULL
+		    AND b.bed_id <<= ru.spatial_prefix
+		  ORDER BY masklen(ru.spatial_prefix) DESC
+		  LIMIT 1) AS resident_id_text
+		` + bedsFromClause + ` WHERE ` + strings.Join(where, " AND ") + ` ORDER BY b.bed_slot`
+	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list beds with resident: %w", err)
 	}
-	out := make([]*BedWithResident, 0, len(beds))
-	for _, bd := range beds {
-		out = append(out, &BedWithResident{Bed: bd, ResidentID: nil})
+	defer rows.Close()
+	out := []*BedWithResident{}
+	for rows.Next() {
+		var bd domain.Bed
+		var roomName string
+		var residentIDText sql.NullString
+		if err := rows.Scan(&bd.BedID, &bd.TenantID, &bd.RoomID, &roomName, &bd.BedName, &residentIDText); err != nil {
+			return nil, fmt.Errorf("scan bed with resident: %w", err)
+		}
+		bd.RoomName = sql.NullString{String: roomName, Valid: roomName != ""}
+		var ridPtr *string
+		if residentIDText.Valid && residentIDText.String != "" {
+			rid := residentIDText.String
+			ridPtr = &rid
+		}
+		out = append(out, &BedWithResident{Bed: &bd, ResidentID: ridPtr})
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 func (r *PostgresUnitsRepository) GetBed(ctx context.Context, tenantID, bedID string) (*domain.Bed, error) {

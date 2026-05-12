@@ -99,6 +99,9 @@ func (r *PostgresResidentsRepository) ListResidents(
 	}
 
 	args = append(args, f.PageSize, (f.Page-1)*f.PageSize)
+	// LATERAL active 子查询取 resident 当前有效 unit 分配；列名直接引 active.spatial_prefix
+	// （不能在子查询的 FROM 里再 "active a" 当 sub-table — LATERAL 别名是 row-set 不是 table；
+	// 历史 GetResident 用 WITH CTE，那里 CTE 名可入 FROM；这里 list 跨 resident 必须 LATERAL）。
 	q := `
 		SELECT host(r.resident_id),
 		       host(network(set_masklen(r.resident_id, 48))) || '/48' AS tenant_id,
@@ -110,8 +113,22 @@ func (r *PostgresResidentsRepository) ListResidents(
 		       r.service_level,
 		       r.admission_date,
 		       r.discharge_date,
-		       r.note
+		       r.note,
+		       r.family_access,
+		       (SELECT u.unit_name FROM units u WHERE u.unit_id = network(set_masklen(active.spatial_prefix, 80))),
+		       CASE WHEN active.m >= 88 THEN (SELECT rm.room_name FROM rooms rm WHERE rm.room_id = network(set_masklen(active.spatial_prefix, 88))) END,
+		       CASE WHEN active.m >= 96 THEN (SELECT bd.bed_name FROM beds bd WHERE bd.bed_id = network(set_masklen(active.spatial_prefix, 96))) END,
+		       (SELECT s.building::text FROM sites s WHERE s.site_id = network(set_masklen(active.spatial_prefix, 64))),
+		       (SELECT b.branch_name FROM branches b WHERE b.branch_id = network(set_masklen(active.spatial_prefix, 56))),
+		       (SELECT u.unit_type FROM units u WHERE u.unit_id = network(set_masklen(active.spatial_prefix, 80))),
+		       (SELECT t.kind FROM tenants t WHERE t.tenant_id = network(set_masklen(r.resident_id, 48))) AS kind
 		  FROM residents r
+		  LEFT JOIN LATERAL (
+		    SELECT spatial_prefix, masklen(spatial_prefix) AS m
+		      FROM resident_unit
+		     WHERE resident_id = r.resident_id AND valid_to IS NULL
+		     ORDER BY valid_from DESC LIMIT 1
+		  ) active ON TRUE
 		 WHERE ` + whereClause + `
 		 ORDER BY COALESCE(r.resident_account, ''), r.resident_slot
 		 LIMIT $` + fmt.Sprintf("%d", argN) + ` OFFSET $` + fmt.Sprintf("%d", argN+1)
@@ -1524,13 +1541,21 @@ type rowScannerLite interface {
 
 func scanResident(rs rowScannerLite) (*domain.Resident, error) {
 	var (
-		v                       domain.Resident
-		serviceTier, notes      sql.NullString
-		moveIn, moveOut         sql.NullString
+		v                                                domain.Resident
+		serviceTier, notes                               sql.NullString
+		moveIn, moveOut                                  sql.NullString
+		familyAccess                                     sql.NullBool
+		unitName, roomName, bedName, buildingNum         sql.NullString
+		branchName                                       sql.NullString
+		unitType                                         sql.NullInt32
+		tenantKind                                       sql.NullString
 	)
 	if err := rs.Scan(&v.ResidentID, &v.TenantID, &v.BranchID, &v.ResidentSlot,
 		&v.ResidentAccount, &v.Nickname, &v.Status,
-		&serviceTier, &moveIn, &moveOut, &notes); err != nil {
+		&serviceTier, &moveIn, &moveOut, &notes,
+		&familyAccess,
+		&unitName, &roomName, &bedName, &buildingNum,
+		&branchName, &unitType, &tenantKind); err != nil {
 		return nil, err
 	}
 	if serviceTier.Valid {
@@ -1544,6 +1569,41 @@ func scanResident(rs rowScannerLite) (*domain.Resident, error) {
 	}
 	if notes.Valid {
 		v.Note = &notes.String
+	}
+	if familyAccess.Valid {
+		b := familyAccess.Bool
+		v.FamilyAccess = &b
+	}
+	if unitName.Valid {
+		v.UnitName = &unitName.String
+	}
+	if roomName.Valid {
+		v.RoomName = &roomName.String
+	}
+	if bedName.Valid {
+		v.BedName = &bedName.String
+	}
+	if buildingNum.Valid {
+		// sites.building 是 smallint(0..14)；UI 展示 "B<N>"
+		bn := "B" + buildingNum.String
+		v.BuildingName = &bn
+	}
+	if branchName.Valid {
+		v.BranchName = &branchName.String
+	}
+	if unitType.Valid {
+		ut := int(unitType.Int32)
+		v.FacilityType = &ut
+	}
+	if tenantKind.Valid {
+		var prop string
+		switch strings.ToUpper(tenantKind.String) {
+		case "B2C":
+			prop = "home"
+		default: // B2B 或异常都按 facility 显示
+			prop = "facility"
+		}
+		v.Property = &prop
 	}
 	return &v, nil
 }

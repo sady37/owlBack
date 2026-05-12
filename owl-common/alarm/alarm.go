@@ -776,8 +776,9 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{ // RestTime 期间，上床5分钟后，启用离床检测：0立即， 30min,45min,1h,1h30h,2h
+			// Default disabled — Sleepad bed-exit triggers too frequently for casual restroom trips.
 			AlarmType:  LeftBed,
-			IsEnabled:  intPtr(IsEnabledOn),
+			IsEnabled:  intPtr(IsEnabledOff),
 			AlarmLevel: strPtr(AlarmLevelWarn),
 			AlarmParams: map[string]interface{}{
 				ParamDurationSec: 2700,
@@ -940,15 +941,18 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
+			// Default disabled — same rationale as LeftBed: posture transitions noisy enough that
+			// per-bed sit-up isn't useful as a default alarm; opt-in per device if needed.
 			AlarmType:      BedSitUp,
-			IsEnabled:      intPtr(IsEnabledOn),
+			IsEnabled:      intPtr(IsEnabledOff),
 			AlarmLevel:     strPtr(AlarmLevelWarn),
 			AlarmParams:    map[string]interface{}{},
 			DisplaySetting: DisplayNone,
 		},
 		{
+			// Default disabled — Radar bed-exit triggers too frequently for casual restroom trips.
 			AlarmType:  LeftBed,
-			IsEnabled:  intPtr(IsEnabledOn),
+			IsEnabled:  intPtr(IsEnabledOff),
 			AlarmLevel: strPtr(AlarmLevelWarn),
 			AlarmParams: map[string]interface{}{
 				ParamDurationSec: 2700,

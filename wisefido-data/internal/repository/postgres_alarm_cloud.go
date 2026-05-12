@@ -3,62 +3,90 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
-	"time"
 
 	"wisefido-data/internal/domain"
 )
 
-// PostgresAlarmCloudRepository 云端告警策略Repository实现（强类型版本）
+// PostgresAlarmCloudRepository 云端告警策略 Repository — owl_v2 spatial_config 版。
+//
+// v2 schema 中 alarm_cloud / alarm_device 两张表已合并进 spatial_config(longest-prefix-match KV)。
+// 本 repo 保留 interface 不变（GetAlarmCloud/UpsertAlarmCloud/...），实现改为读写
+// spatial_config 单行 JSONB blob：
+//
+//	spatial_prefix = tenant_id (INET CIDR, e.g. 'fd00:0:3::/48')
+//	config_key     = alarmCloudConfigKey
+//	config_value   = packed JSONB (含 offlinealarm/lowbattery/.../metadata)
+//
+// 单 JSONB 方案理由：该 UI（AlarmCloud.vue）定位为 tenant 首次批量设置，配置体小、整体读写、
+// 无字段级粒度需求；将来若需 branch/device 层覆盖，可在更细 prefix 上再插行（spatial_config
+// longest-prefix-match 自带覆盖语义），但本期不实现。
 type PostgresAlarmCloudRepository struct {
 	db *sql.DB
 }
 
-// NewPostgresAlarmCloudRepository 创建云端告警策略Repository
+const alarmCloudConfigKey = "alarm.cloud_config"
+
+// alarmCloudPacked 是 domain.AlarmCloud 的 JSONB 序列化壳（显式 json tag 防字段重命名漂移）。
+type alarmCloudPacked struct {
+	OfflineAlarm      string          `json:"offlinealarm,omitempty"`
+	LowBattery        string          `json:"lowbattery,omitempty"`
+	DeviceFailure     string          `json:"devicefailure,omitempty"`
+	DeviceAlarms      json.RawMessage `json:"device_alarms,omitempty"`
+	Conditions        json.RawMessage `json:"conditions,omitempty"`
+	NotificationRules json.RawMessage `json:"notification_rules,omitempty"`
+	Metadata          json.RawMessage `json:"metadata,omitempty"`
+}
+
+func packAlarmCloud(a *domain.AlarmCloud) ([]byte, error) {
+	return json.Marshal(alarmCloudPacked{
+		OfflineAlarm:      a.OfflineAlarm,
+		LowBattery:        a.LowBattery,
+		DeviceFailure:     a.DeviceFailure,
+		DeviceAlarms:      a.DeviceAlarms,
+		Conditions:        a.Conditions,
+		NotificationRules: a.NotificationRules,
+		Metadata:          a.Metadata,
+	})
+}
+
+func unpackAlarmCloud(jsonBytes []byte, tenantID string) (*domain.AlarmCloud, error) {
+	var p alarmCloudPacked
+	if err := json.Unmarshal(jsonBytes, &p); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal alarm_cloud JSONB: %w", err)
+	}
+	return &domain.AlarmCloud{
+		TenantID:          tenantID,
+		OfflineAlarm:      p.OfflineAlarm,
+		LowBattery:        p.LowBattery,
+		DeviceFailure:     p.DeviceFailure,
+		DeviceAlarms:      p.DeviceAlarms,
+		Conditions:        p.Conditions,
+		NotificationRules: p.NotificationRules,
+		Metadata:          p.Metadata,
+	}, nil
+}
+
 func NewPostgresAlarmCloudRepository(db *sql.DB) *PostgresAlarmCloudRepository {
 	return &PostgresAlarmCloudRepository{db: db}
 }
 
-// 确保实现了接口
 var _ AlarmCloudRepository = (*PostgresAlarmCloudRepository)(nil)
 
-// SystemTenantID 系统租户ID（用于系统默认模板）
-const SystemTenantID = "00000000-0000-0000-0000-000000000001"
-
-// GetAlarmCloud 获取租户的告警策略配置
+// GetAlarmCloud 读 spatial_config 中 tenant 级 alarm 配置。
 func (r *PostgresAlarmCloudRepository) GetAlarmCloud(ctx context.Context, tenantID string) (*domain.AlarmCloud, error) {
 	if tenantID == "" {
 		return nil, sql.ErrNoRows
 	}
 
-	query := `
-		SELECT 
-			tenant_id::text,
-			offlinealarm,
-			lowbattery,
-			devicefailure,
-			device_alarms,
-			conditions,
-			notification_rules,
-			metadata
-		FROM alarm_cloud
-		WHERE tenant_id = $1
-	`
-
-	var alarmCloud domain.AlarmCloud
-	var offlineAlarm, lowBattery, deviceFailure sql.NullString
-	var deviceAlarms, conditions, notificationRules, metadata sql.NullString
-
-	err := r.db.QueryRowContext(ctx, query, tenantID).Scan(
-		&alarmCloud.TenantID,
-		&offlineAlarm,
-		&lowBattery,
-		&deviceFailure,
-		&deviceAlarms,
-		&conditions,
-		&notificationRules,
-		&metadata,
-	)
+	var configValue []byte
+	err := r.db.QueryRowContext(ctx, `
+		SELECT config_value
+		  FROM spatial_config
+		 WHERE spatial_prefix = $1::inet
+		   AND config_key = $2
+	`, tenantID, alarmCloudConfigKey).Scan(&configValue)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("alarm cloud not found: %w", err)
@@ -66,130 +94,62 @@ func (r *PostgresAlarmCloudRepository) GetAlarmCloud(ctx context.Context, tenant
 		return nil, fmt.Errorf("failed to get alarm cloud: %w", err)
 	}
 
-	if offlineAlarm.Valid {
-		alarmCloud.OfflineAlarm = offlineAlarm.String
-	}
-	if lowBattery.Valid {
-		alarmCloud.LowBattery = lowBattery.String
-	}
-	if deviceFailure.Valid {
-		alarmCloud.DeviceFailure = deviceFailure.String
-	}
-	if deviceAlarms.Valid {
-		alarmCloud.DeviceAlarms = []byte(deviceAlarms.String)
-	}
-	if conditions.Valid {
-		alarmCloud.Conditions = []byte(conditions.String)
-	}
-	if notificationRules.Valid {
-		alarmCloud.NotificationRules = []byte(notificationRules.String)
-	}
-	if metadata.Valid {
-		alarmCloud.Metadata = []byte(metadata.String)
-	}
-
-	return &alarmCloud, nil
+	return unpackAlarmCloud(configValue, tenantID)
 }
 
-// UpsertAlarmCloud 创建或更新租户的告警策略配置
+// UpsertAlarmCloud 写 spatial_config 中 tenant 级 alarm 配置。
+// source='manual_ui' 表示来自 admin UI；updated_by 由 service 层带；本 repo 接口无 userID 参数。
 func (r *PostgresAlarmCloudRepository) UpsertAlarmCloud(ctx context.Context, tenantID string, alarmCloud *domain.AlarmCloud) error {
 	if tenantID == "" {
 		return fmt.Errorf("tenant_id is required")
 	}
 
-	query := `
-		INSERT INTO alarm_cloud (
-			tenant_id,
-			offlinealarm,
-			lowbattery,
-			devicefailure,
-			device_alarms,
-			conditions,
-			notification_rules,
-			metadata,
-			updated_at,
-			updated_by
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10)
-		ON CONFLICT (tenant_id) DO UPDATE SET
-			offlinealarm = EXCLUDED.offlinealarm,
-			lowbattery = EXCLUDED.lowbattery,
-			devicefailure = EXCLUDED.devicefailure,
-			device_alarms = EXCLUDED.device_alarms,
-			conditions = EXCLUDED.conditions,
-			notification_rules = EXCLUDED.notification_rules,
-			metadata = EXCLUDED.metadata,
-			updated_at = EXCLUDED.updated_at,
-			updated_by = EXCLUDED.updated_by
-	`
-
-	var offlineAlarm, lowBattery, deviceFailure interface{}
-	if alarmCloud.OfflineAlarm != "" {
-		offlineAlarm = alarmCloud.OfflineAlarm
-	}
-	if alarmCloud.LowBattery != "" {
-		lowBattery = alarmCloud.LowBattery
-	}
-	if alarmCloud.DeviceFailure != "" {
-		deviceFailure = alarmCloud.DeviceFailure
+	payload, err := packAlarmCloud(alarmCloud)
+	if err != nil {
+		return fmt.Errorf("failed to pack alarm_cloud: %w", err)
 	}
 
-	var deviceAlarms, conditions, notificationRules, metadata interface{}
-	if len(alarmCloud.DeviceAlarms) > 0 {
-		deviceAlarms = string(alarmCloud.DeviceAlarms)
-	} else {
-		deviceAlarms = "{}"
-	}
-	if len(alarmCloud.Conditions) > 0 {
-		conditions = string(alarmCloud.Conditions)
-	} else {
-		// 如果 conditions 为空，设置为空 JSON 对象（而不是 null）
-		conditions = "{}"
-	}
-	if len(alarmCloud.NotificationRules) > 0 {
-		notificationRules = string(alarmCloud.NotificationRules)
-	}
-	if len(alarmCloud.Metadata) > 0 {
-		metadata = string(alarmCloud.Metadata)
-	}
-
-	// 设置 updated_at（updated_by 在 UpsertAlarmCloud 中不支持，因为接口没有 userID 参数）
-	// 如果需要 updated_by，应该在 Service 层使用事务方式保存
-	updatedAt := time.Now().UTC()
-
-	_, err := r.db.ExecContext(ctx, query, tenantID, offlineAlarm, lowBattery, deviceFailure,
-		deviceAlarms, conditions, notificationRules, metadata, updatedAt, nil)
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO spatial_config (
+			spatial_prefix, config_key, config_value,
+			source, state_db, last_synced_at, updated_at
+		) VALUES (
+			$1::inet, $2, $3::jsonb,
+			'manual_ui', 3, now(), now()
+		)
+		ON CONFLICT (spatial_prefix, config_key) DO UPDATE SET
+			config_value   = EXCLUDED.config_value,
+			source         = EXCLUDED.source,
+			state_db       = EXCLUDED.state_db,
+			last_synced_at = EXCLUDED.last_synced_at,
+			updated_at     = EXCLUDED.updated_at
+	`, tenantID, alarmCloudConfigKey, string(payload))
 	if err != nil {
 		return fmt.Errorf("failed to upsert alarm cloud: %w", err)
 	}
-
 	return nil
 }
 
-
-// GetSystemAlarmCloud 获取系统默认告警策略模板
+// GetSystemAlarmCloud 系统默认模板（v2 不再维护此模板）。
+// 返回 ErrNoRows，让上层走 owl-common/alarm 硬编码默认值。
 func (r *PostgresAlarmCloudRepository) GetSystemAlarmCloud(ctx context.Context) (*domain.AlarmCloud, error) {
-	return r.GetAlarmCloud(ctx, SystemTenantID)
+	return nil, sql.ErrNoRows
 }
 
-// DeleteAlarmCloud 删除租户的告警策略配置（回退到系统默认）
+// DeleteAlarmCloud 删除租户 alarm 配置（删 spatial_config 单行）。
 func (r *PostgresAlarmCloudRepository) DeleteAlarmCloud(ctx context.Context, tenantID string) error {
 	if tenantID == "" {
 		return fmt.Errorf("tenant_id is required")
 	}
-	if tenantID == SystemTenantID {
-		return fmt.Errorf("cannot delete system alarm cloud")
-	}
 
-	query := `
-		DELETE FROM alarm_cloud
-		WHERE tenant_id = $1
-	`
-
-	result, err := r.db.ExecContext(ctx, query, tenantID)
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM spatial_config
+		 WHERE spatial_prefix = $1::inet
+		   AND config_key = $2
+	`, tenantID, alarmCloudConfigKey)
 	if err != nil {
 		return fmt.Errorf("failed to delete alarm cloud: %w", err)
 	}
-
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("failed to get rows affected: %w", err)
@@ -197,7 +157,5 @@ func (r *PostgresAlarmCloudRepository) DeleteAlarmCloud(ctx context.Context, ten
 	if rowsAffected == 0 {
 		return fmt.Errorf("alarm cloud not found")
 	}
-
 	return nil
 }
-

@@ -69,6 +69,41 @@ func canEditResident(role string) bool {
 	return role == roleNurse || role == "nurse"
 }
 
+// canAppendNote — Caregiver 仅可写 note 字段（交班簿）；其余 resident 字段不可改。
+// 用于 update path 的"note-only"放宽：除了 canEditResident 的角色之外，Caregiver 也通过。
+func canAppendNote(role string) bool {
+	if canEditResident(role) {
+		return true
+	}
+	return role == roleCaregiver || role == "caregiver"
+}
+
+// isNoteOnlyUpdate — Update input 中除 Note 外其它"resident-level"字段必须全 nil。
+// Caregiver 提交 PUT 时若含其它字段（哪怕值没变也是恶意 curl 风险），直接拒。
+func isNoteOnlyUpdate(in *domain.ResidentUpdateInput) bool {
+	if in == nil {
+		return false
+	}
+	if in.Note == nil {
+		return false
+	}
+	return in.Nickname == nil &&
+		in.ResidentAccount == nil &&
+		in.Status == nil &&
+		in.ServiceLevel == nil &&
+		in.AdmissionDate == nil &&
+		in.DischargeDate == nil &&
+		in.FamilyAccess == nil &&
+		in.UnitID == nil &&
+		in.RoomID == nil &&
+		in.BedID == nil &&
+		in.CaregiverUserIDs == nil &&
+		in.CareTeamIDs == nil &&
+		in.FamilyUserIDs == nil &&
+		in.PHI == nil &&
+		in.Contacts == nil
+}
+
 func canEditAdmissionDischarge(role string) bool {
 	// Nurse 不能改 admission/discharge（涉及财务）
 	return canCRUDResident(role)
@@ -142,11 +177,96 @@ func (s *ResidentService) List(ctx context.Context, req ListResidentsV2Request) 
 		}
 	}
 
+	// Email/Phone 搜索：PHI 加密存，DB LIKE 无法直接命中
+	// 策略：清掉 DB 端 search、扩大 PageSize 拉满 scope 内 resident，再逐条 GetResident 解密 PHI+contacts 匹配
+	origSearch := strings.TrimSpace(req.Filter.Search)
+	postFilter := SearchTypeUnknown
+	if origSearch != "" {
+		postFilter = ClassifySearch(origSearch)
+	}
+	if postFilter == SearchTypeEmail || postFilter == SearchTypePhone {
+		req.Filter.Search = ""
+		if req.Filter.PageSize < 10000 {
+			req.Filter.PageSize = 10000
+		}
+	}
+
 	items, total, err := s.repo.ListResidents(ctx, req.TenantPrefix, req.Filter)
 	if err != nil {
 		return nil, err
 	}
+
+	if postFilter == SearchTypeEmail || postFilter == SearchTypePhone {
+		items = s.filterByPHIContact(ctx, req.TenantPrefix, items, origSearch, postFilter)
+		total = len(items)
+	}
 	return &ListResidentsV2Response{Items: items, Total: total}, nil
+}
+
+// filterByPHIContact 加载每个 resident 的 PHI + contacts（解密），按 email/phone 子串匹配过滤。
+// 命中条件：resident.PHI.{Email,Phone} 或 任一 contact.{ContactEmail,ContactPhone} 子串命中。
+// Email 比较忽略大小写；Phone 比较仅看数字字符（忽略 +/-/空格）。
+func (s *ResidentService) filterByPHIContact(
+	ctx context.Context, tenantPrefix string,
+	items []*domain.Resident, needle string, st SearchType,
+) []*domain.Resident {
+	needleLow := strings.ToLower(strings.TrimSpace(needle))
+	needleDigits := digitsOnly(needle)
+	out := make([]*domain.Resident, 0, len(items))
+	for _, it := range items {
+		d, err := s.repo.GetResident(ctx, tenantPrefix, it.ResidentID)
+		if err != nil || d == nil {
+			continue
+		}
+		hit := false
+		switch st {
+		case SearchTypeEmail:
+			if d.PHI != nil && d.PHI.ResidentEmail != nil &&
+				strings.Contains(strings.ToLower(*d.PHI.ResidentEmail), needleLow) {
+				hit = true
+			}
+			if !hit {
+				for _, c := range d.Contacts {
+					if c.ContactEmail != nil &&
+						strings.Contains(strings.ToLower(*c.ContactEmail), needleLow) {
+						hit = true
+						break
+					}
+				}
+			}
+		case SearchTypePhone:
+			if needleDigits == "" {
+				continue
+			}
+			if d.PHI != nil && d.PHI.ResidentPhone != nil &&
+				strings.Contains(digitsOnly(*d.PHI.ResidentPhone), needleDigits) {
+				hit = true
+			}
+			if !hit {
+				for _, c := range d.Contacts {
+					if c.ContactPhone != nil &&
+						strings.Contains(digitsOnly(*c.ContactPhone), needleDigits) {
+						hit = true
+						break
+					}
+				}
+			}
+		}
+		if hit {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+func digitsOnly(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 type GetResidentRequest struct {
@@ -222,13 +342,23 @@ func (s *ResidentService) Update(ctx context.Context, req UpdateResidentRequest)
 	if isFamilyRole(req.CurrentUserRole) {
 		return fmt.Errorf("permission denied: Family role cannot edit resident profile")
 	}
-	if !canEditResident(req.CurrentUserRole) {
-		s.logger.Error("[ResidentService.Update FAILED] permission denied", zap.String("role", req.CurrentUserRole))
-		return fmt.Errorf("permission denied: role %q cannot edit residents", req.CurrentUserRole)
-	}
 	if req.Input == nil {
 		s.logger.Error("[ResidentService.Update FAILED] input nil")
 		return fmt.Errorf("input required")
+	}
+	// 权限分流：
+	//   Admin / Manager / Nurse → 走 canEditResident（完整 update；Nurse 受 admission/discharge gate 约束）
+	//   Caregiver               → 走 canAppendNote 但必须 isNoteOnlyUpdate（仅 note 字段，其余字段必须 nil）
+	if !canEditResident(req.CurrentUserRole) {
+		if canAppendNote(req.CurrentUserRole) && isNoteOnlyUpdate(req.Input) {
+			s.logger.Info("[ResidentService.Update] Caregiver note-only update permitted",
+				zap.String("role", req.CurrentUserRole))
+		} else {
+			s.logger.Error("[ResidentService.Update FAILED] permission denied",
+				zap.String("role", req.CurrentUserRole),
+				zap.Bool("note_only_check", isNoteOnlyUpdate(req.Input)))
+			return fmt.Errorf("permission denied: role %q cannot edit residents (caregiver can only append note)", req.CurrentUserRole)
+		}
 	}
 	// Nurse 不能改 admission/discharge
 	if !canEditAdmissionDischarge(req.CurrentUserRole) {

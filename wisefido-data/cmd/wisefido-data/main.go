@@ -331,21 +331,11 @@ func main() {
 		cardSyncService = service.NewCardSyncService(cardRepo, configPublisher, cardRealtimeSvc, logger)
 		service.InitGlobalCardSync(cardSyncService)
 
-		// 创建 DeviceMonitorSettings Service 和 Handler
-		// 使用已创建的 alarmCloudRepo、configVersionsRepo（在 AlarmCloud Service 创建时已创建）
-		// 使用已创建的 configPublisher（在上面创建）
-		// deviceMonitorSettingsService — 暂时跳过（v1 接口不兼容 v2 实现）
-		// deviceMonitorSettingsService = service.NewDeviceMonitorSettingsService(
-		// 	alarmDeviceRepo,
-		// 	alarmCloudRepo,
-		// 	configVersionsRepo,
-		// 	devicesRepo,
-		// 	deviceStoreRepo,
-		// 	residentsRepo,
-		// 	db,
-		// 	configPublisher,
-		// 	logger,
-		// )
+		// v2 Phase 1b: slim DeviceMonitorSettingsV2Service — backed by spatial_config (device /128) + tenant snapshot fallback.
+		// v1 service 依赖 alarmDeviceRepo / configVersionsRepo / deviceStoreRepo / residentsRepo 等 v2 已删/重构的表，
+		// 整段跳过；slim v2 仅实现 Get/Update/GetDefault/CheckOnline 4 个核心方法，
+		// 其它 9 个（OTA / firmware / resync）返回 NotImplemented 错误，等具体场景再 v2 化。
+		deviceMonitorSettingsService = service.NewDeviceMonitorSettingsV2Service(db, alarmCloudRepo, logger)
 
 		if cfg.SleepaceGateway.APIBaseURL != "" {
 			sleepaceGateway = service.NewSleepaceGatewayClient(cfg.SleepaceGateway.APIBaseURL, logger)

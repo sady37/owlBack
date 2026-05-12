@@ -34,6 +34,18 @@ type Resident struct {
 	DischargeDate   *string `json:"discharge_date,omitempty"`
 	FamilyAccess    *bool   `json:"family_access,omitempty"`  // 是否允许 role=Family 用户登录
 	Note            *string `json:"note,omitempty"`
+
+	// 空间反推字段（来自 active resident_unit + sites/branches/units/rooms/beds JOIN）
+	// 仅 list 视图填充；非 active 或未分配时为 nil/空。
+	UnitName     *string `json:"unit_name,omitempty"`
+	RoomName     *string `json:"room_name,omitempty"`
+	BedName      *string `json:"bed_name,omitempty"`
+	BuildingName *string `json:"building_name,omitempty"`
+	BranchName   *string `json:"branch_name,omitempty"`
+	// FacilityType 沿用 ResidentDetail.UnitType 枚举：1=Private / 2=Share / 3=Public
+	FacilityType *int `json:"facility_type,omitempty"`
+	// Property 由 tenants.kind 映射：B2B → "facility" / B2C → "home"
+	Property *string `json:"property,omitempty"`
 }
 
 // ResidentDetail = main + 关联（GetResident 用）

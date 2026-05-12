@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"owl-common/alarm"
 
@@ -30,57 +29,78 @@ type DeviceAlarmEntry struct {
 	AlarmLevel string `json:"alarm_level"`
 }
 
-// getResourcePermission 查询资源权限配置（从 role_permissions 表）
-// 为了避免循环导入，这里复制了 httpapi.GetResourcePermission 的逻辑
+// getResourcePermission 查询 v2 RBAC 中 (role, resource, action) 是否被允许。
 //
-// 注意: permission_scope 值映射:
-//   - 'A' = All (no restriction) → assigned_only=false, branch_only=false
-//   - 'S' = assigned_only → assigned_only=true, branch_only=false
-//   - 'B' = branch_only → assigned_only=false, branch_only=true
+// 与 httpapi.GetResourcePermission 行为一致；这里独立一份避免 service→http 循环依赖。
+// v2 role_permissions 列 (role_id FK→roles, permission, resource_scope INET)：
+// 用 EXISTS 查 role 是否拥有 ({resource}.{action} / {resource}.* / tenant.* / *) 任一匹配。
+// scope (assigned_only/branch_only) 在 v2 由 IPv6 prefix 自带层级表达，业务侧用 utils/spatial 派生；
+// 这里命中返回 (false,false) 放行，未命中返回 strictest 兜底。
 func getResourcePermission(db *sql.DB, ctx context.Context, roleCode, resourceType, permissionType string) (*resourcePermissionCheck, error) {
-	var permissionScope string
-	err := db.QueryRowContext(ctx,
-		`SELECT permission_scope
-		 FROM role_permissions
-		 WHERE tenant_id = $1 
-		   AND role_code = $2 
-		   AND resource_type = $3 
-		   AND permission_type = $4
-		 LIMIT 1`,
-		"00000000-0000-0000-0000-000000000001", // SystemTenantID
-		roleCode, resourceType, permissionType,
-	).Scan(&permissionScope)
+	v2Role := mapRoleToV2(roleCode)
+	action := permWord(permissionType)
 
-	if err == sql.ErrNoRows {
-		// 记录不存在：返回最严格的权限（安全默认值）
-		return &resourcePermissionCheck{AssignedOnly: true, BranchOnly: true}, nil
-	}
+	// 候选 permission 字符串：精确 → 资源 .config（CRUD 合一）→ 资源通配 → 租户通配 → 全局通配
+	target := resourceType + "." + action
+	resourceConfig := resourceType + ".config"
+	resourceAll := resourceType + ".*"
+	const tenantAll = "tenant.*"
+	const platformAll = "*"
+
+	var exists bool
+	err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			  FROM role_permissions rp
+			  JOIN roles r ON r.role_id = rp.role_id
+			 WHERE r.role_code = $1
+			   AND rp.permission IN ($2, $3, $4, $5, $6)
+		)
+	`, v2Role, target, resourceConfig, resourceAll, tenantAll, platformAll).Scan(&exists)
 	if err != nil {
 		return nil, err
 	}
-
-	// 将 permission_scope 转换为 assigned_only 和 branch_only 标志
-	var assignedOnly, branchOnly bool
-	switch permissionScope {
-	case "A":
-		// All (no restriction)
-		assignedOnly = false
-		branchOnly = false
-	case "S":
-		// assigned_only
-		assignedOnly = true
-		branchOnly = false
-	case "B":
-		// branch_only
-		assignedOnly = false
-		branchOnly = true
-	default:
-		// 未知值，返回最严格的权限（安全默认值）
-		assignedOnly = true
-		branchOnly = true
+	if !exists {
+		return &resourcePermissionCheck{AssignedOnly: true, BranchOnly: true}, nil
 	}
+	return &resourcePermissionCheck{AssignedOnly: false, BranchOnly: false}, nil
+}
 
-	return &resourcePermissionCheck{AssignedOnly: assignedOnly, BranchOnly: branchOnly}, nil
+// mapRoleToV2 把 v1 PascalCase role code 映射回 v2 snake_case role_code。
+// 与 httpapi.mapRoleToV2 一致；这里独立一份避免循环依赖。
+func mapRoleToV2(role string) string {
+	switch role {
+	case "SystemAdmin", "SystemOperator":
+		return "platform_admin"
+	case "Admin":
+		return "tenant_admin"
+	case "Manager":
+		return "manager"
+	case "Nurse":
+		return "nurse"
+	case "Caregiver":
+		return "caregiver"
+	case "Family":
+		return "family"
+	case "Viewer":
+		return "viewer"
+	}
+	return strings.ToLower(role)
+}
+
+// permWord 把 v1 单字母权限码转 v2 动词。
+func permWord(p string) string {
+	switch strings.ToUpper(p) {
+	case "R":
+		return "read"
+	case "C":
+		return "create"
+	case "U":
+		return "update"
+	case "D":
+		return "delete"
+	}
+	return strings.ToLower(p)
 }
 
 // resourcePermissionCheck 资源权限检查结果（用于 service 包内的权限检查）
@@ -135,32 +155,25 @@ type UpdateAlarmCloudConfigRequest struct {
 
 // GetAlarmCloudConfig 查询告警配置
 // 返回完整的 AlarmCloudConfig 对象
+//
+// 权限矩阵（IsAlarmAccessAllowed）：alarm_cloud READ 全角色放行（B2B + B2C）。
 func (s *alarmCloudService) GetAlarmCloudConfig(ctx context.Context, req GetAlarmCloudConfigRequest) (*alarm.AlarmCloudConfig, error) {
-	// 参数验证
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 
-	// 权限检查：只有 SystemAdmin 或 Admin 可以查看告警配置
 	if req.UserRole != "" && s.db != nil {
-		normalizedRole := strings.ToLower(strings.TrimSpace(req.UserRole))
-		// SystemAdmin 和 Admin 可以查看
-		if normalizedRole != "systemadmin" && normalizedRole != "admin" {
-			// 检查是否有 read 权限
-			permCheck, err := getResourcePermission(s.db, ctx, req.UserRole, "alarm_cloud", "R")
-			if err != nil {
-				s.logger.Warn("Failed to check permission for GetAlarmCloudConfig",
-					zap.String("user_role", req.UserRole),
-					zap.Error(err),
-				)
-				// 权限检查失败时，使用默认严格权限（不允许访问）
-				return nil, fmt.Errorf("permission denied: failed to check permissions")
-			}
-			// 如果权限检查返回最严格权限（assigned_only=true, branch_only=true），表示没有权限记录
-			// 这种情况下，只有 SystemAdmin 和 Admin 可以访问
-			if permCheck.AssignedOnly && permCheck.BranchOnly {
-				return nil, fmt.Errorf("permission denied: only SystemAdmin or Admin can view alarm cloud config")
-			}
+		allowed, err := IsAlarmAccessAllowed(ctx, s.db, req.TenantID, req.UserRole, AlarmResourceCloud, AlarmActionRead)
+		if err != nil {
+			s.logger.Warn("alarm access check failed (GetAlarmCloudConfig)",
+				zap.String("user_role", req.UserRole),
+				zap.String("tenant_id", req.TenantID),
+				zap.Error(err),
+			)
+			return nil, fmt.Errorf("permission check failed: %w", err)
+		}
+		if !allowed {
+			return nil, fmt.Errorf("permission denied: role %q cannot read alarm_cloud config", req.UserRole)
 		}
 	}
 
@@ -184,77 +197,9 @@ func (s *alarmCloudService) GetAlarmCloudConfig(ctx context.Context, req GetAlar
 				return buildDefaultAlarmCloudConfigObject(), nil
 			}
 
-			// 使用事务方式保存默认配置，以便设置 created_by 和 updated_by
-			if s.db != nil && req.UserID != "" {
-				tx, txErr := s.db.BeginTx(ctx, nil)
-				if txErr == nil {
-					defer tx.Rollback()
-
-					// 构建 SQL 语句
-					query := `
-						INSERT INTO alarm_cloud (
-							tenant_id,
-							offlinealarm,
-							lowbattery,
-							devicefailure,
-							device_alarms,
-							conditions,
-							notification_rules,
-							metadata,
-							created_at,
-							created_by,
-							updated_at,
-							updated_by
-						) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12)
-					`
-
-					var offlineAlarm, lowBattery, deviceFailure interface{}
-					if defaultConfig.OfflineAlarm != "" {
-						offlineAlarm = defaultConfig.OfflineAlarm
-					}
-					if defaultConfig.LowBattery != "" {
-						lowBattery = defaultConfig.LowBattery
-					}
-					if defaultConfig.DeviceFailure != "" {
-						deviceFailure = defaultConfig.DeviceFailure
-					}
-
-					var deviceAlarms, conditions, notificationRules, metadata interface{}
-					if len(defaultConfig.DeviceAlarms) > 0 {
-						deviceAlarms = string(defaultConfig.DeviceAlarms)
-					} else {
-						deviceAlarms = "{}"
-					}
-					if len(defaultConfig.Conditions) > 0 {
-						conditions = string(defaultConfig.Conditions)
-					} else {
-						conditions = "{}"
-					}
-					if len(defaultConfig.NotificationRules) > 0 {
-						notificationRules = string(defaultConfig.NotificationRules)
-					}
-					if len(defaultConfig.Metadata) > 0 {
-						metadata = string(defaultConfig.Metadata)
-					}
-
-					now := time.Now().UTC()
-					_, execErr := tx.ExecContext(ctx, query, req.TenantID, offlineAlarm, lowBattery, deviceFailure,
-						deviceAlarms, conditions, notificationRules, metadata, now, req.UserID, now, req.UserID)
-					if execErr == nil {
-						if commitErr := tx.Commit(); commitErr == nil {
-							// 保存成功，重新读取记录
-							alarmCloud, readErr := s.alarmCloudRepo.GetAlarmCloud(ctx, req.TenantID)
-							if readErr == nil {
-								// 使用读取的记录构建响应
-								return buildAlarmCloudConfigFromDomain(alarmCloud)
-							}
-						}
-					}
-					// 如果事务保存失败，继续使用 UpsertAlarmCloud 作为后备方案
-				}
-			}
-
-			// 后备方案：使用 UpsertAlarmCloud（无法设置 created_by）
+			// v2: alarm_cloud 表已并入 spatial_config(longest-prefix-match KV)；
+			// repo.UpsertAlarmCloud 直接写 spatial_config 单行 JSONB；created_by/updated_by
+			// 字段已不在表中（spatial_config 只跟踪 updated_by），故不再走独立事务路径。
 			if saveErr := s.alarmCloudRepo.UpsertAlarmCloud(ctx, req.TenantID, defaultConfig); saveErr != nil {
 				s.logger.Warn("Failed to save default alarm cloud config",
 					zap.String("tenant_id", req.TenantID),
@@ -328,7 +273,8 @@ func buildAlarmCloudConfigFromDomain(alarmCloud *domain.AlarmCloud) (*alarm.Alar
 	config.AlarmSetting.Sleepad = make([]alarm.AlarmItem, 0)
 	config.AlarmSetting.Radar = make([]alarm.AlarmItem, 0)
 
-	// 从 device_alarms 构建映射表（DeviceAlarmEntry 自带兼容老 string 格式的 UnmarshalJSON）
+	// 从 device_alarms 构建映射表 — 唯一接受 v2 DeviceAlarmEntry 格式 {is_enabled, alarm_level}。
+	// v1 老 string 格式（"Fall": "CRITICAL"）不再兼容；DELETE 老行让新 binary 重建即可。
 	var deviceAlarmsMap map[string]map[string]DeviceAlarmEntry
 	if len(alarmCloud.DeviceAlarms) > 0 {
 		if err := json.Unmarshal(alarmCloud.DeviceAlarms, &deviceAlarmsMap); err != nil {
@@ -375,24 +321,19 @@ func buildAlarmCloudConfigFromDomain(alarmCloud *domain.AlarmCloud) (*alarm.Alar
 		config.AlarmSetting.Radar = append(config.AlarmSetting.Radar, newItem)
 	}
 
-	// 4. 解析 CloudVitalAlarmThreshold（从 conditions）
+	// 4. 解析 CloudVitalAlarmThreshold（从 conditions 列）
+	// 写侧（buildDomainAlarmCloudFromConfig）只把 VitalAlarmConditions 存进 conditions 列，
+	// 没有 outer "conditions" wrapper；读侧把它包回 CloudVitalAlarmThreshold.Conditions。
 	if len(alarmCloud.Conditions) > 0 {
-		var threshold alarm.CloudVitalAlarmThreshold
-		if err := json.Unmarshal(alarmCloud.Conditions, &threshold); err == nil {
-			// 检查解析后的 threshold 是否为空（Conditions 为 nil 或空对象）
-			// 如果为空，使用默认值
-			if threshold.Conditions == nil {
-				// conditions 为空，使用默认值
-				config.CloudVitalAlarmThreshold = alarm.DefaultCloudVitalAlarmThreshold
-			} else {
-				config.CloudVitalAlarmThreshold = threshold
-			}
+		var inner alarm.VitalAlarmConditions
+		if err := json.Unmarshal(alarmCloud.Conditions, &inner); err == nil && (inner.HeartRate != nil || inner.RespiratoryRate != nil) {
+			config.CloudVitalAlarmThreshold = alarm.CloudVitalAlarmThreshold{Conditions: &inner}
 		} else {
-			// 解析失败，使用默认值
+			// 兼容旧格式：早期错误地把整个 CloudVitalAlarmThreshold 序列化（外层多一个 conditions）。
+			// 不再走双层 fallback，让 FE 退到默认；老数据 user 重存一次即升级。
 			config.CloudVitalAlarmThreshold = alarm.DefaultCloudVitalAlarmThreshold
 		}
 	} else {
-		// conditions 字段为空，使用默认值
 		config.CloudVitalAlarmThreshold = alarm.DefaultCloudVitalAlarmThreshold
 	}
 
@@ -446,9 +387,18 @@ func buildDomainAlarmCloudFromConfig(tenantID string, config *alarm.AlarmCloudCo
 	}
 
 	// 2. 构建 conditions JSONB（Cloud Vital Alarm Threshold）
-	conditionsJSON, err := json.Marshal(config.CloudVitalAlarmThreshold)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal conditions: %w", err)
+	// 仅写入内部 .Conditions（即 VitalAlarmConditions），避免外层 CloudVitalAlarmThreshold
+	// 自身带的 "conditions" json tag 造成 {conditions: {conditions: {...}}} 双层嵌套。
+	// FE 读侧期望 `config.CloudVitalAlarmThreshold.conditions` = VitalAlarmConditions，
+	// 由 buildAlarmCloudConfigFromDomain 在读出时重新包回 CloudVitalAlarmThreshold.Conditions。
+	var conditionsJSON []byte
+	if config.CloudVitalAlarmThreshold.Conditions != nil {
+		conditionsJSON, err = json.Marshal(config.CloudVitalAlarmThreshold.Conditions)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal conditions: %w", err)
+		}
+	} else {
+		conditionsJSON = []byte("{}")
 	}
 
 	// 3. 构建 metadata JSONB（Tenant ResetTime/NapTime）
@@ -482,49 +432,65 @@ func buildDefaultAlarmCloudConfig(tenantID string) (*domain.AlarmCloud, error) {
 	// 使用 DefaultAlarmSetting Go 结构体（而不是 JSON 字符串）
 	defaultSetting := alarm.DefaultAlarmSetting
 
-	// 1. 构建 device_alarms JSONB
-	// 格式：{ "Radar": { "Radar_Fall": "CRITICAL", ... }, "SleepPad": { "SleepPad_LeftBed": "WARNING", ... } }
-	deviceAlarms := make(map[string]map[string]string)
+	// 1. 构建 device_alarms JSONB — DeviceAlarmEntry 双字段格式（与 buildDomainAlarmCloudFromConfig / read 路径一致）
+	// 旧格式 "Fall": "CRITICAL"（字符串）会让 buildAlarmCloudConfigFromDomain 的 json.Unmarshal 撞类型错误（DeviceAlarmEntry 期望 object）。
+	// 这里改成 "Fall": {is_enabled: 1, alarm_level: "CRITICAL"} 双字段，读侧 normalize 一致。
+	// **包含全部 displayable 项（含 disabled）**：disabled 项也要存 is_enabled=0，否则 read 侧 buildAlarmCloudConfigFromDomain
+	// 只能从 defaults 拿到 enabled 状态，写回 FE 会显示成默认 enabled——LeftBed/BedSitUp 应保持 disabled。
+	deviceAlarmsTyped := map[string]map[string]DeviceAlarmEntry{}
 
-	// 处理 SleepPad 报警
-	sleepPadAlarms := make(map[string]string)
+	sleepPadAlarms := map[string]DeviceAlarmEntry{}
 	for _, item := range defaultSetting.Sleepad {
-		// 只包含启用的、有报警级别的、且 DisplaySetting 包含 alarm_cloud 的项
-		if item.IsEnabled != nil && *item.IsEnabled == alarm.IsEnabledOn && item.AlarmLevel != nil {
-			// 过滤掉 DisplayNone 的项，只保留 DisplayAlarmCloud 或 DisplayAlarmCloudAndDevice
-			if item.DisplaySetting == alarm.DisplayAlarmCloud || item.DisplaySetting == alarm.DisplayAlarmCloudAndDevice {
-				sleepPadAlarms[item.AlarmType] = *item.AlarmLevel
-			}
+		if item.DisplaySetting != alarm.DisplayAlarmCloud && item.DisplaySetting != alarm.DisplayAlarmCloudAndDevice {
+			continue
 		}
+		if item.IsEnabled == nil {
+			continue
+		}
+		entry := DeviceAlarmEntry{IsEnabled: *item.IsEnabled}
+		if item.AlarmLevel != nil {
+			entry.AlarmLevel = *item.AlarmLevel
+		}
+		sleepPadAlarms[item.AlarmType] = entry
 	}
 	if len(sleepPadAlarms) > 0 {
-		deviceAlarms["SleepPad"] = sleepPadAlarms
+		deviceAlarmsTyped["SleepPad"] = sleepPadAlarms
 	}
 
-	// 处理 Radar 报警
-	radarAlarms := make(map[string]string)
+	radarAlarms := map[string]DeviceAlarmEntry{}
 	for _, item := range defaultSetting.Radar {
-		// 只包含启用的、有报警级别的、且 DisplaySetting 包含 alarm_cloud 的项
-		if item.IsEnabled != nil && *item.IsEnabled == alarm.IsEnabledOn && item.AlarmLevel != nil {
-			// 过滤掉 DisplayNone 的项，只保留 DisplayAlarmCloud 或 DisplayAlarmCloudAndDevice
-			if item.DisplaySetting == alarm.DisplayAlarmCloud || item.DisplaySetting == alarm.DisplayAlarmCloudAndDevice {
-				radarAlarms[item.AlarmType] = *item.AlarmLevel
-			}
+		if item.DisplaySetting != alarm.DisplayAlarmCloud && item.DisplaySetting != alarm.DisplayAlarmCloudAndDevice {
+			continue
 		}
+		if item.IsEnabled == nil {
+			continue
+		}
+		entry := DeviceAlarmEntry{IsEnabled: *item.IsEnabled}
+		if item.AlarmLevel != nil {
+			entry.AlarmLevel = *item.AlarmLevel
+		}
+		radarAlarms[item.AlarmType] = entry
 	}
 	if len(radarAlarms) > 0 {
-		deviceAlarms["Radar"] = radarAlarms
+		deviceAlarmsTyped["Radar"] = radarAlarms
 	}
 
-	deviceAlarmsJSON, err := json.Marshal(deviceAlarms)
+	deviceAlarmsJSON, err := json.Marshal(deviceAlarmsTyped)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal device_alarms: %w", err)
 	}
 
 	// 2. 构建 conditions JSONB（Cloud Vital Alarm Threshold）
-	conditionsJSON, err := json.Marshal(alarm.DefaultCloudVitalAlarmThreshold)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal conditions: %w", err)
+	// 与 buildDomainAlarmCloudFromConfig 一致：只 marshal 内部 VitalAlarmConditions，
+	// 避免 conditions.conditions 双层嵌套（读侧用 buildAlarmCloudConfigFromDomain 包回 outer）。
+	var conditionsJSON []byte
+	if alarm.DefaultCloudVitalAlarmThreshold.Conditions != nil {
+		conditionsJSON, err = json.Marshal(alarm.DefaultCloudVitalAlarmThreshold.Conditions)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal conditions: %w", err)
+		}
+	} else {
+		conditionsJSON = []byte("{}")
 	}
 
 	// 3. 构建 metadata JSONB（Tenant ResetTime/NapTime）
@@ -547,243 +513,54 @@ func buildDefaultAlarmCloudConfig(tenantID string) (*domain.AlarmCloud, error) {
 	return alarmCloud, nil
 }
 
-// UpdateAlarmCloudConfig 更新告警配置
-// 接收完整的 AlarmCloudConfig 对象，比对后更新，旧记录存入 config_versions
+// UpdateAlarmCloudConfig 更新告警配置 — v2 spatial_config 版。
+//
+// v1 该函数走事务：①UPDATE config_versions 旧版本 + INSERT 新版本（审计）②INSERT alarm_cloud ON CONFLICT
+// v2 schema 中 config_versions 表已废（各表自带 history），alarm_cloud 表已并入 spatial_config；
+// spatial_config 自带审计字段 (updated_at / last_synced_at / updated_by)，无需独立 history 表。
+// 因此整段简化为：权限检查 → 构造 domain → repo.UpsertAlarmCloud。
 func (s *alarmCloudService) UpdateAlarmCloudConfig(ctx context.Context, req UpdateAlarmCloudConfigRequest) (*alarm.AlarmCloudConfig, error) {
-	// 参数验证
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
 	if req.Config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
-
-	// 权限检查：只有 SystemAdmin 或 Admin 可以更新告警配置
 	if req.UserRole == "" {
 		return nil, fmt.Errorf("user_role is required for update operation")
 	}
+
+	// 权限矩阵：alarm_cloud WRITE 仅 tenant_admin / platform_admin。
 	if s.db != nil {
-		normalizedRole := strings.ToLower(strings.TrimSpace(req.UserRole))
-		// SystemAdmin 和 Admin 可以更新
-		if normalizedRole != "systemadmin" && normalizedRole != "admin" {
-			// 检查是否有 update 权限
-			permCheck, err := getResourcePermission(s.db, ctx, req.UserRole, "alarm_cloud", "U")
-			if err != nil {
-				s.logger.Warn("Failed to check permission for UpdateAlarmCloudConfig",
-					zap.String("user_role", req.UserRole),
-					zap.Error(err),
-				)
-				return nil, fmt.Errorf("permission denied: failed to check permissions")
-			}
-			// 如果权限检查返回最严格权限（assigned_only=true, branch_only=true），表示没有权限记录
-			// 这种情况下，只有 SystemAdmin 和 Admin 可以更新
-			if permCheck.AssignedOnly && permCheck.BranchOnly {
-				return nil, fmt.Errorf("permission denied: only SystemAdmin or Admin can update alarm cloud config")
-			}
+		allowed, err := IsAlarmAccessAllowed(ctx, s.db, req.TenantID, req.UserRole, AlarmResourceCloud, AlarmActionWrite)
+		if err != nil {
+			s.logger.Warn("alarm access check failed (UpdateAlarmCloudConfig)",
+				zap.String("user_role", req.UserRole),
+				zap.String("tenant_id", req.TenantID),
+				zap.Error(err),
+			)
+			return nil, fmt.Errorf("permission check failed: %w", err)
+		}
+		if !allowed {
+			return nil, fmt.Errorf("permission denied: role %q cannot update alarm_cloud config", req.UserRole)
 		}
 	}
 
-	// 业务规则验证：不能更新系统默认配置
+	// 业务规则：禁止覆盖系统默认配置（v1 留下的硬编码哨兵 tenant_id，v2 不再写入此 tenant）
 	if req.TenantID == "00000000-0000-0000-0000-000000000001" {
 		return nil, fmt.Errorf("cannot update system alarm cloud config")
 	}
 
-	// 1. 获取现有配置（如果存在），用于比对和保存到 config_versions
-	var existingConfig *alarm.AlarmCloudConfig
-	existingAlarmCloud, err := s.alarmCloudRepo.GetAlarmCloud(ctx, req.TenantID)
-	if err != nil {
-		// 检查是否是 "not found" 错误
-		isNotFound := err == sql.ErrNoRows ||
-			(fmt.Sprintf("%v", err) == "alarm cloud not found: sql: no rows in result set" ||
-				strings.Contains(fmt.Sprintf("%v", err), "alarm cloud not found"))
-		if !isNotFound {
-			return nil, fmt.Errorf("failed to get existing alarm cloud: %w", err)
-		}
-		// 如果是 not found，existingConfig 为 nil，使用默认配置
-		existingConfig = buildDefaultAlarmCloudConfigObject()
-	} else {
-		// 从 domain.AlarmCloud 构建 alarm.AlarmCloudConfig
-		existingConfig, err = buildAlarmCloudConfigFromDomain(existingAlarmCloud)
-		if err != nil {
-			return nil, fmt.Errorf("failed to build existing config: %w", err)
-		}
-	}
-
-	// 2. 比对配置是否有变化（简单比对 JSON 字符串）
-	existingJSON, err := json.Marshal(existingConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal existing config: %w", err)
-	}
-	newJSON, err := json.Marshal(req.Config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal new config: %w", err)
-	}
-
-	hasChanges := string(existingJSON) != string(newJSON)
-
-	// 3. 从 alarm.AlarmCloudConfig 构建 domain.AlarmCloud
 	alarmCloud, err := buildDomainAlarmCloudFromConfig(req.TenantID, req.Config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build domain alarm cloud: %w", err)
 	}
 
-	// 4. 使用事务保证原子性：要么全部成功，要么全部失败
-	// 开始事务
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback() // 确保在函数返回时回滚（如果未提交）
-
-	// 4.1. 如果有变化，先保存旧配置到 config_versions（在事务中）
-	if hasChanges && s.configVersionsRepo != nil {
-		configData := map[string]interface{}{
-			"metadata": existingConfig,
-		}
-		configDataJSON, err := json.Marshal(configData)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal config_data for config_version: %w", err)
-		}
-
-		configVersion := &domain.ConfigVersion{
-			ConfigType:      "alarm_cloud",
-			EntityID:        req.TenantID, // alarm_cloud 的 entity_id 就是 tenant_id
-			CurrentEntityID: req.TenantID,
-			ConfigData:      json.RawMessage(configDataJSON),
-			ValidFrom:       time.Now().UTC(),
-		}
-		if req.UserID != "" {
-			configVersion.CreatedBy = &req.UserID
-		}
-
-		// 在事务中执行 config_versions 的插入
-		// 将旧版本的valid_to设置为当前时间
-		updateOldQuery := `
-			UPDATE config_versions
-			SET valid_to = $4
-			WHERE tenant_id = $1 
-				AND config_type = $2 
-				AND entity_id = $3
-				AND (valid_to IS NULL OR valid_to > $4)
-		`
-		_, err = tx.ExecContext(ctx, updateOldQuery, req.TenantID, configVersion.ConfigType, configVersion.EntityID, configVersion.ValidFrom)
-		if err != nil {
-			return nil, fmt.Errorf("failed to update old config versions: %w", err)
-		}
-
-		// 创建新版本
-		insertQuery := `
-			INSERT INTO config_versions (
-				tenant_id,
-				config_type,
-				entity_id,
-				current_entity_id,
-				config_data,
-				valid_from,
-				valid_to,
-				created_by
-			) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
-			RETURNING version_id::text
-		`
-
-		var currentEntityID interface{}
-		if configVersion.CurrentEntityID != "" {
-			currentEntityID = configVersion.CurrentEntityID
-		}
-
-		var validTo interface{}
-		if configVersion.ValidTo != nil {
-			validTo = *configVersion.ValidTo
-		}
-
-		var createdBy interface{}
-		if configVersion.CreatedBy != nil && *configVersion.CreatedBy != "" {
-			createdBy = *configVersion.CreatedBy
-		}
-
-		var versionID string
-		err = tx.QueryRowContext(ctx, insertQuery, req.TenantID, configVersion.ConfigType, configVersion.EntityID,
-			currentEntityID, string(configVersion.ConfigData), configVersion.ValidFrom, validTo, createdBy).Scan(&versionID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create config version: %w", err)
-		}
+	if err := s.alarmCloudRepo.UpsertAlarmCloud(ctx, req.TenantID, alarmCloud); err != nil {
+		return nil, fmt.Errorf("failed to upsert alarm cloud: %w", err)
 	}
 
-	// 4.2. 更新 alarm_cloud（在事务中）
-	query := `
-		INSERT INTO alarm_cloud (
-			tenant_id,
-			offlinealarm,
-			lowbattery,
-			devicefailure,
-			device_alarms,
-			conditions,
-			notification_rules,
-			metadata,
-			updated_at,
-			updated_by
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10)
-		ON CONFLICT (tenant_id) DO UPDATE SET
-			offlinealarm = EXCLUDED.offlinealarm,
-			lowbattery = EXCLUDED.lowbattery,
-			devicefailure = EXCLUDED.devicefailure,
-			device_alarms = EXCLUDED.device_alarms,
-			conditions = EXCLUDED.conditions,
-			notification_rules = EXCLUDED.notification_rules,
-			metadata = EXCLUDED.metadata,
-			updated_at = EXCLUDED.updated_at,
-			updated_by = EXCLUDED.updated_by
-	`
-
-	var offlineAlarm, lowBattery, deviceFailure interface{}
-	if alarmCloud.OfflineAlarm != "" {
-		offlineAlarm = alarmCloud.OfflineAlarm
-	}
-	if alarmCloud.LowBattery != "" {
-		lowBattery = alarmCloud.LowBattery
-	}
-	if alarmCloud.DeviceFailure != "" {
-		deviceFailure = alarmCloud.DeviceFailure
-	}
-
-	var deviceAlarms, conditions, notificationRules, metadata interface{}
-	if len(alarmCloud.DeviceAlarms) > 0 {
-		deviceAlarms = string(alarmCloud.DeviceAlarms)
-	} else {
-		deviceAlarms = "{}"
-	}
-	if len(alarmCloud.Conditions) > 0 {
-		conditions = string(alarmCloud.Conditions)
-	} else {
-		conditions = "{}"
-	}
-	if len(alarmCloud.NotificationRules) > 0 {
-		notificationRules = string(alarmCloud.NotificationRules)
-	}
-	if len(alarmCloud.Metadata) > 0 {
-		metadata = string(alarmCloud.Metadata)
-	}
-
-	// 设置 updated_at 和 updated_by
-	updatedAt := time.Now().UTC()
-	var updatedBy interface{}
-	if req.UserID != "" {
-		updatedBy = req.UserID
-	}
-
-	_, err = tx.ExecContext(ctx, query, req.TenantID, offlineAlarm, lowBattery, deviceFailure,
-		deviceAlarms, conditions, notificationRules, metadata, updatedAt, updatedBy)
-	if err != nil {
-		return nil, fmt.Errorf("failed to update alarm cloud: %w", err)
-	}
-
-	// 4.3. 提交事务（如果所有操作都成功）
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	// 5. 返回更新后的配置
-	// 注意：alarm_cloud 配置变更不再发布事件（已废弃，不影响已初始化的设备）
+	// 返回最新配置（走 GET 路径 = 一次 round-trip 验证）
 	return s.GetAlarmCloudConfig(ctx, GetAlarmCloudConfigRequest{
 		TenantID: req.TenantID,
 		UserID:   req.UserID,

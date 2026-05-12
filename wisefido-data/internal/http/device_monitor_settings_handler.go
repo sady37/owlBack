@@ -154,12 +154,34 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceOnlineStatus(w http.ResponseWrit
 }
 
 // GetDeviceMonitorSettings 获取设备监控配置
+//
+// 权限矩阵 (alarm_device, READ)：
+//   - B2B: family 禁；tenant_admin / manager / nurse / platform_admin 放行
+//   - B2C: 全角色放行
 func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseWriter, r *http.Request, deviceType, deviceID string) {
 	ctx := r.Context()
 
 	tenantID, ok := h.base.tenantIDFromReq(w, r)
 	if !ok {
 		return
+	}
+
+	userRole := r.Header.Get("X-User-Role")
+	if userRole != "" {
+		allowed, err := service.IsAlarmAccessAllowed(ctx, h.db, tenantID, userRole, service.AlarmResourceDevice, service.AlarmActionRead)
+		if err != nil {
+			h.logger.Warn("alarm access check failed (GetDeviceMonitorSettings)",
+				zap.String("user_role", userRole),
+				zap.String("tenant_id", tenantID),
+				zap.Error(err),
+			)
+			writeJSON(w, http.StatusOK, Fail("permission check failed"))
+			return
+		}
+		if !allowed {
+			writeJSON(w, http.StatusOK, Fail("permission denied: role cannot read device monitor settings"))
+			return
+		}
 	}
 
 	alarmItems, err := h.deviceMonitorSettingsService.GetDeviceMonitorSettings(ctx, tenantID, deviceID, deviceType)
@@ -259,15 +281,31 @@ func (h *DeviceMonitorSettingsHandler) UpdateDeviceMonitorSettings(w http.Respon
 		return
 	}
 
-	// 3. 安全验证：验证 user role (Manager/admin)
-	if err := h.verifyUserRole(ctx, sessionUserID, tenantID, []string{"Manager", "admin"}); err != nil {
-		h.logger.Warn("Security check failed: insufficient role",
-			zap.String("user_id", sessionUserID),
-			zap.String("tenant_id", tenantID),
-			zap.Error(err),
-		)
-		writeJSON(w, http.StatusOK, Fail("unauthorized: insufficient role (requires Manager or admin)"))
-		return
+	// 3. 安全验证：alarm_device WRITE 权限矩阵
+	//    B2B: family 禁；tenant_admin / manager / nurse / platform_admin 放行
+	//    B2C: 全角色放行
+	userRole := r.Header.Get("X-User-Role")
+	if userRole != "" {
+		allowed, perr := service.IsAlarmAccessAllowed(ctx, h.db, tenantID, userRole, service.AlarmResourceDevice, service.AlarmActionWrite)
+		if perr != nil {
+			h.logger.Warn("alarm access check failed (UpdateDeviceMonitorSettings)",
+				zap.String("user_id", sessionUserID),
+				zap.String("user_role", userRole),
+				zap.String("tenant_id", tenantID),
+				zap.Error(perr),
+			)
+			writeJSON(w, http.StatusOK, Fail("permission check failed"))
+			return
+		}
+		if !allowed {
+			h.logger.Warn("Security check failed: role denied by alarm matrix",
+				zap.String("user_id", sessionUserID),
+				zap.String("user_role", userRole),
+				zap.String("tenant_id", tenantID),
+			)
+			writeJSON(w, http.StatusOK, Fail("unauthorized: role cannot modify device monitor settings"))
+			return
+		}
 	}
 
 	// 4. 安全验证：验证 device_id 与 user_id/tenant_id 一致性
@@ -414,18 +452,15 @@ func (h *DeviceMonitorSettingsHandler) UpdateDeviceMonitorSettings(w http.Respon
 }
 
 // GetDefaultDeviceMonitorSettings 获取默认设备监控配置
-// 阈值：硬编码（与 System 租户模板设备的值相同）
-// Alarm Level：优先从当前租户的 alarm_cloud 读取，如果没有则使用硬编码值
+// v2 service (DeviceMonitorSettingsV2Service) 直接返回 owl-common/alarm.GetDefaultAlarmItems；
+// 不再从 alarm_cloud 读 override（租户级 override 由独立的 alarm-cloud 端点提供）。
 func (h *DeviceMonitorSettingsHandler) GetDefaultDeviceMonitorSettings(w http.ResponseWriter, r *http.Request, deviceType string) {
 	ctx := r.Context()
-
-	// 从请求中获取 tenantID
 	tenantID, ok := h.base.tenantIDFromReq(w, r)
 	if !ok {
 		return
 	}
-
-	alarmItems, err := h.deviceMonitorSettingsService.GetDefaultDeviceMonitorSettings(ctx, tenantID, deviceType)
+	items, err := h.deviceMonitorSettingsService.GetDefaultDeviceMonitorSettings(ctx, tenantID, deviceType)
 	if err != nil {
 		h.logger.Error("GetDefaultDeviceMonitorSettings failed",
 			zap.String("tenant_id", tenantID),
@@ -435,8 +470,7 @@ func (h *DeviceMonitorSettingsHandler) GetDefaultDeviceMonitorSettings(w http.Re
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-
-	writeJSON(w, http.StatusOK, Ok(alarmItems))
+	writeJSON(w, http.StatusOK, Ok(items))
 }
 
 // ============================================

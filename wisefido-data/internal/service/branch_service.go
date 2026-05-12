@@ -92,33 +92,39 @@ func (s *BranchService) ListBranches(ctx context.Context, req ListBranchesReques
 	}
 
 	// Manager 权限过滤：只显示本 Branch
+	// v2: Manager 的 branch 归属由 user_roles.scope (INET) 表达；v1 的 user_branches 表已删。
+	// 取所有 (user_id, role) 行的 scope；过滤掉 NULL 与 valid_to 过期的；用 host(scope) 转成
+	// branches.branch_id CIDR 形态后再 == 比较（branches.branch_id 是 /56 prefix）。
+	//
+	// 数据现状：v2 demo 的 manager 行 scope 当前全 NULL（多 branch 执业 UI 尚未落地，见 memory
+	// multi_branch_nurse_employment.md）。为避免"Manager 看见空白"破坏可用性，scope 全 NULL 时
+	// 回退到"显示本 tenant 全部 branch"（与 Admin 同 view）；待 User 模块加 my_branches/now_branch
+	// 字段后再收紧到严格 scope-only。
 	var allowedBranchIDs []string
+	hasScopeFilter := false
 	if req.BranchOnly && req.CurrentUserID != "" && s.db != nil {
-		// 查询用户关联的所有 branch_id
-		rows, err := s.db.QueryContext(ctx,
-			`SELECT DISTINCT branch_id::text
-			 FROM user_branches
-			 WHERE tenant_id = $1 AND user_id::text = $2`,
-			req.TenantID, req.CurrentUserID,
-		)
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT DISTINCT host(ur.scope) || '/56' AS branch_cidr
+			  FROM user_roles ur
+			 WHERE ur.user_id = $1::uuid
+			   AND ur.scope IS NOT NULL
+			   AND masklen(ur.scope) >= 48
+			   AND (ur.valid_to IS NULL OR ur.valid_to > now())
+		`, req.CurrentUserID)
 		if err != nil {
-			s.logger.Warn("Failed to query user branches", zap.Error(err))
+			s.logger.Warn("Failed to query user_roles scope", zap.Error(err))
 		} else {
 			defer rows.Close()
 			for rows.Next() {
-				var branchID string
-				if err := rows.Scan(&branchID); err == nil {
-					allowedBranchIDs = append(allowedBranchIDs, branchID)
+				var cidr string
+				if err := rows.Scan(&cidr); err == nil {
+					allowedBranchIDs = append(allowedBranchIDs, cidr)
 				}
 			}
 		}
-		// 如果用户没有关联任何 branch，返回空列表（Manager 只能查看本 Branch）
-		if len(allowedBranchIDs) == 0 {
-			return &ListBranchesResponse{
-				Items: []BranchItem{},
-				Total: 0,
-			}, nil
-		}
+		hasScopeFilter = len(allowedBranchIDs) > 0
+		// 注意：scope 全 NULL 时 hasScopeFilter=false → 后续不做过滤 → Manager 看见 tenant 全部 branch
+		// 这是过渡行为；待 my_branches/now_branch 字段加上后改为严格 scope-only 并返回空。
 	}
 
 	// 查询院区列表（搜索在 SQL 查询中进行）
@@ -130,8 +136,8 @@ func (s *BranchService) ListBranches(ctx context.Context, req ListBranchesReques
 	// 转换为前端格式
 	items := make([]BranchItem, 0, len(branches))
 	for _, branch := range branches {
-		// Manager 权限过滤：只显示本 Branch
-		if req.BranchOnly && len(allowedBranchIDs) > 0 {
+		// Manager 权限过滤：只显示本 Branch（仅在有真实 scope 数据时启用；全 NULL 时退化为全 tenant 可见）
+		if req.BranchOnly && hasScopeFilter {
 			found := false
 			for _, allowedID := range allowedBranchIDs {
 				if branch.BranchID == allowedID {

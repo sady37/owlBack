@@ -42,6 +42,21 @@ func (h *ResidentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(path, "/admin/api/v2/residents/") && strings.HasSuffix(path, "/discharge") && r.Method == http.MethodPost:
 		hoa := extractHoa(path, "/discharge")
 		h.discharge(w, r, hoa)
+	// P0 subresources — thin wrappers 折叠到 unified ResidentUpdateInput；
+	// 同样的角色 gate（canEditResident: Admin/Manager/Nurse），admission/discharge 等敏感字段
+	// 不会经由这里（updateInput 里相关字段为 nil）。FE 由 v1 路径迁过来。
+	case strings.HasPrefix(path, "/admin/api/v2/residents/") && strings.HasSuffix(path, "/phi") && r.Method == http.MethodPut:
+		hoa := extractHoa(path, "/phi")
+		h.updatePHI(w, r, hoa)
+	case strings.HasPrefix(path, "/admin/api/v2/residents/") && strings.HasSuffix(path, "/contacts") && r.Method == http.MethodPut:
+		hoa := extractHoa(path, "/contacts")
+		h.updateContacts(w, r, hoa)
+	case strings.HasPrefix(path, "/admin/api/v2/residents/") && strings.HasSuffix(path, "/unit-history") && r.Method == http.MethodPost:
+		hoa := extractHoa(path, "/unit-history")
+		h.assignUnit(w, r, hoa)
+	case strings.HasPrefix(path, "/admin/api/v2/residents/") && strings.HasSuffix(path, "/caregivers") && r.Method == http.MethodPost:
+		hoa := extractHoa(path, "/caregivers")
+		h.assignCaregivers(w, r, hoa)
 	case strings.HasPrefix(path, "/admin/api/v2/residents/") && r.Method == http.MethodGet:
 		hoa := strings.TrimPrefix(path, "/admin/api/v2/residents/")
 		h.get(w, r, hoa)
@@ -151,6 +166,17 @@ func (h *ResidentHandler) get(w http.ResponseWriter, r *http.Request, hoa string
 			}
 		}
 	}
+	// HIPAA min-necessary：Caregiver / Viewer / Family 等非临床角色不返回 PHI / Contacts。
+	// FE 同时也 hide PHI / Contacts tab；BE 这层是 defense-in-depth，防 curl 直接拉。
+	// Manager / Admin / Nurse / Resident（看自己）/ SystemAdmin（跨 tenant 只读）正常返回。
+	if d != nil {
+		switch r.Header.Get("X-User-Role") {
+		case "Caregiver", "Viewer":
+			d.PHI = nil
+			d.Contacts = nil
+		}
+	}
+
 	h.logger.Info("[ResidentHandler.get SUCCESS]",
 		zap.String("hoa", hoa),
 		zap.Int("caregiver_count", caregiverCount),
@@ -281,4 +307,90 @@ func (h *ResidentHandler) discharge(w http.ResponseWriter, r *http.Request, hoa 
 		return
 	}
 	writeJSON(w, http.StatusOK, Ok(map[string]bool{"success": true}))
+}
+
+// callUpdate — 共享底座：wrapper 子路由把局部 payload 折成完整 ResidentUpdateInput 后走同一个 service.Update。
+// 共用 admission/discharge gate（仅这两个字段在 wrapper 里**永不**赋值，自然不会触发 nurse 的 finance 边界拒绝）。
+func (h *ResidentHandler) callUpdate(w http.ResponseWriter, r *http.Request, hoa string, in *domain.ResidentUpdateInput) {
+	tenantPrefix, ok := h.base.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+	if err := h.svc.Update(r.Context(), service.UpdateResidentRequest{
+		TenantPrefix:    tenantPrefix,
+		HoA:             hoa,
+		ActorUserID:     r.Header.Get("X-User-Id"),
+		CurrentUserRole: r.Header.Get("X-User-Role"),
+		Input:           in,
+	}); err != nil {
+		h.logger.Error("[ResidentHandler.subresource update FAILED]",
+			zap.String("hoa", hoa),
+			zap.String("path", r.URL.Path),
+			zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]bool{"success": true}))
+}
+
+// updatePHI — PUT /admin/api/v2/residents/{hoa}/phi
+// body = ResidentPHIv2 (flat, FE Partial<ResidentPHIv2>)；折成 UpdateInput{PHI: &body} 走 service.Update。
+func (h *ResidentHandler) updatePHI(w http.ResponseWriter, r *http.Request, hoa string) {
+	var phi domain.ResidentPHIv2
+	if err := json.NewDecoder(r.Body).Decode(&phi); err != nil {
+		writeJSON(w, http.StatusOK, Fail("invalid JSON: "+err.Error()))
+		return
+	}
+	h.callUpdate(w, r, hoa, &domain.ResidentUpdateInput{PHI: &phi})
+}
+
+// updateContacts — PUT /admin/api/v2/residents/{hoa}/contacts
+// body = []ResidentContactV2 (替换 resident 的全部紧急联系人；FE 传整个数组)。
+// 若 FE 单条改：先 GET 拿完整 contacts → 改本地数组 → PUT 整组。
+func (h *ResidentHandler) updateContacts(w http.ResponseWriter, r *http.Request, hoa string) {
+	var contacts []domain.ResidentContactV2
+	if err := json.NewDecoder(r.Body).Decode(&contacts); err != nil {
+		writeJSON(w, http.StatusOK, Fail("invalid JSON: "+err.Error()))
+		return
+	}
+	h.callUpdate(w, r, hoa, &domain.ResidentUpdateInput{Contacts: &contacts})
+}
+
+// assignUnit — POST /admin/api/v2/residents/{hoa}/unit-history
+// body = {unit_id?, room_id?, bed_id?}：unit_id 必填或显式空字符串（解绑）；room_id/bed_id 可选下钻。
+// repo.UpdateResident 里实际转化为 resident_unit 表的 valid_from/valid_to 切换（中途换 unit 自动 close 旧行新增新行）。
+func (h *ResidentHandler) assignUnit(w http.ResponseWriter, r *http.Request, hoa string) {
+	var body struct {
+		UnitID *string `json:"unit_id"`
+		RoomID *string `json:"room_id"`
+		BedID  *string `json:"bed_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusOK, Fail("invalid JSON: "+err.Error()))
+		return
+	}
+	h.callUpdate(w, r, hoa, &domain.ResidentUpdateInput{
+		UnitID: body.UnitID,
+		RoomID: body.RoomID,
+		BedID:  body.BedID,
+	})
+}
+
+// assignCaregivers — POST /admin/api/v2/residents/{hoa}/caregivers
+// body = {caregiver_user_ids?, care_team_ids?, family_user_ids?}：任一字段提供即重置该 slice；空数组 = 显式清空。
+func (h *ResidentHandler) assignCaregivers(w http.ResponseWriter, r *http.Request, hoa string) {
+	var body struct {
+		CaregiverUserIDs *[]string `json:"caregiver_user_ids"`
+		CareTeamIDs      *[]string `json:"care_team_ids"`
+		FamilyUserIDs    *[]string `json:"family_user_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusOK, Fail("invalid JSON: "+err.Error()))
+		return
+	}
+	h.callUpdate(w, r, hoa, &domain.ResidentUpdateInput{
+		CaregiverUserIDs: body.CaregiverUserIDs,
+		CareTeamIDs:      body.CareTeamIDs,
+		FamilyUserIDs:    body.FamilyUserIDs,
+	})
 }
