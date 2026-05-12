@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/store"
@@ -207,20 +208,24 @@ func (p *AllowedCardIDsProviderImpl) filterCardsForStaff(ctx context.Context, us
 		return nil, fmt.Errorf("GetUser: %w", err)
 	}
 
+	// scope 大小写宽松匹配（DB 里 demo Manager 存 'branch' 小写，老种子可能存 'BRANCH'/'Branch'）
 	scope := ""
 	if user.Relegation.Valid && user.Relegation.String != "" {
-		scope = user.Relegation.String
+		scope = strings.ToUpper(strings.TrimSpace(user.Relegation.String))
 	}
-	if user.Role == "Admin" || scope == "ALL" {
+	if strings.EqualFold(user.Role, "Admin") || scope == "ALL" {
 		return p.filterTenantCards(ctx, tenantID, userID)
 	}
 	switch scope {
-	case "ASSIGNED_ONLY":
+	case "ASSIGNED_ONLY", "ASSIGNED":
 		return p.filterByAssignedOnly(ctx, tenantID, userID)
 	case "BRANCH":
 		return p.filterByBranchOnly(ctx, tenantID, userID)
 	default:
-		return nil, nil
+		p.logger.Warn("filterCardsForStaff: unknown scope, returning empty",
+			zap.String("user_id", userID), zap.String("role", user.Role),
+			zap.String("scope", scope))
+		return &CardList{UserID: userID, TenantID: tenantID, CardsByBranch: make(map[string][]string)}, nil
 	}
 }
 

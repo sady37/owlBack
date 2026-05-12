@@ -76,7 +76,7 @@ const usersSelectCols = `
 		ARRAY[]::bytea[] AS phone_hash_placeholder,
 		ARRAY[]::text[] AS alarm_levels,
 		ARRAY[]::text[] AS alarm_channels,
-		NULL::text AS relegation,
+		COALESCE(u.relegation, '') AS relegation,
 		u.last_login_at,
 		NULL::text AS user_tags,
 		NULL::text AS branch_id,
