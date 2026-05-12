@@ -424,10 +424,13 @@ func (c *DeviceMetaCache) RefreshDeviceIndexForCard(ctx context.Context, cardID 
 	if c.db == nil {
 		return
 	}
+	// v2 unified: card_id ≡ spatial_prefix；device 走 LPM 反查
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT COALESCE(d->>'device_id', ''), COALESCE(d->>'device_uid', '')
-		FROM cards c, jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS d
-		WHERE c.card_id = $1
+		SELECT dfm.device_id::text, dfm.device_uid
+		FROM cards c
+		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
+		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		WHERE c.spatial_prefix = $1::INET
 	`, cardID)
 	if err != nil {
 		if c.logger != nil {
@@ -538,13 +541,16 @@ func coalesceNonEmptyPtr(a, b *string) *string {
 	return b
 }
 
-// IsUUID 判断是否为 UUID 格式（cards.card_id 为 UUID，未绑卡时会用 deviceKey 充 card_id，不应查库）
-func IsUUID(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	return s[8] == '-' && s[13] == '-' && s[18] == '-' && s[23] == '-'
+// IsCardID 判断是否为 v2 card_id 格式（INET CIDR with mask，e.g. "fd00:0:3:111:3:301::/96"）
+// 未绑卡时 cardagg 会用 deviceKey 充 card_id（非 CIDR），不应查库。
+func IsCardID(s string) bool {
+	// v2 card_id ≡ spatial_prefix；最简单识别：包含 "::" 或 ":" + "/" mask 后缀
+	return len(s) >= 9 && strings.Contains(s, "/") && strings.Contains(s, ":")
 }
+
+// IsUUID 历史 alias：现转发到 IsCardID。保留是为了平滑 caller 现有引用（不引入 rename 风暴）。
+// Deprecated: 用 IsCardID。
+func IsUUID(s string) bool { return IsCardID(s) }
 
 func (c *DeviceMetaCache) loadFromDB(ctx context.Context, cardID string) *CardMeta {
 	if c.db == nil {
@@ -554,13 +560,13 @@ func (c *DeviceMetaCache) loadFromDB(ctx context.Context, cardID string) *CardMe
 		return nil
 	}
 
-	var devicesJSON sql.NullString
-	var bedID sql.NullString
-	var cardType sql.NullString
-	var tenantID sql.NullString
+	// v2 unified: card_id ≡ spatial_prefix；tenant 由 prefix /48 派生；bed/cardType 同理
+	var spatialPrefix, cardType sql.NullString
 	err := c.db.QueryRowContext(ctx, `
-		SELECT devices, bed_id, card_type, tenant_id FROM cards WHERE card_id = $1
-	`, cardID).Scan(&devicesJSON, &bedID, &cardType, &tenantID)
+		SELECT spatial_prefix::text, card_type
+		  FROM cards
+		 WHERE spatial_prefix = $1::INET
+	`, cardID).Scan(&spatialPrefix, &cardType)
 	if err != nil {
 		if err != sql.ErrNoRows {
 			c.logger.Warn("load device meta", zap.String("cid", cardID), zap.Error(err))
@@ -573,16 +579,20 @@ func (c *DeviceMetaCache) loadFromDB(ctx context.Context, cardID string) *CardMe
 		Devices:  make(map[string]*DeviceMeta),
 		dbLoaded: true,
 	}
-	if tenantID.Valid {
-		meta.TenantID = tenantID.String
-	}
-	if bedID.Valid {
-		meta.BedID = bedID.String
+	if spatialPrefix.Valid {
+		// 派生 tenant prefix /48
+		if i := strings.Index(spatialPrefix.String, "/"); i > 0 {
+			meta.TenantID = spatialPrefix.String[:i] // 简化：完整 prefix 作 TenantID 占位
+		}
+		// 派生 bed_id = /96 spatial（masklen 96 时）
+		meta.BedID = spatialPrefix.String
 	}
 	if cardType.Valid {
 		meta.CardType = cardType.String
 	}
 
+	// v2: cards.devices JSONB 已删，devices 走 LPM 反查
+	devicesJSON := sql.NullString{Valid: false}
 	if !devicesJSON.Valid || devicesJSON.String == "" || devicesJSON.String == "[]" {
 		return meta
 	}

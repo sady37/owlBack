@@ -222,7 +222,7 @@ func GetActiveAlarmsByCardID(ctx context.Context, db *sql.DB, cardID string) ([]
 		       EXTRACT(EPOCH FROM ae.triggered_at)::bigint
 		FROM alarm_events ae
 		JOIN cards c ON ae.device_addr <<= c.spatial_prefix
-		WHERE c.card_id = $1::uuid
+		WHERE c.spatial_prefix = $1::INET
 		  AND ae.process_status = 'pending'
 		ORDER BY ae.triggered_at DESC
 	`, cardID)

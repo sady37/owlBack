@@ -7,15 +7,18 @@
 
 ## 一、设计共识（已锁定，不可回退）
 
-### 1. card_id 三层身份
+### 1. card_id 双层身份（**Phase F.6 简化：UUID 层已退役**）
 
 | 层 | 字段 | 形态 | 谁用 | 何时变 |
 |---|---|---|---|---|
-| 业务身份（北极星） | `spatial_prefix INET /96` | `fd00:owl:0001:0112:0042:0301::/96` | service / cardagg / stream payload | 仅 bed 被物理删除 |
-| DB PK（稳定性） | `card_id UUID` | `gen_random_uuid()` | FK / cache key | 同上；业务代码不解析 |
-| 人类可读（DNS） | `dns_short_name` | `u42-r03-b01.tenant1.owl` | UI / 日志 / 报警显示 | card 增删 |
+| **业务身份 + DB PK** | `spatial_prefix INET` | `fd00:0:3:111:3:101::/96` | service / cardagg / stream payload / FK / cache key | 仅 prefix 物理删除（bed 被销毁）|
+| 人类可读（DNS） | `dns_short_name` | `br01-s12-u0001-r01-b01.tenant3.owl` | UI / 日志 / 报警显示 | card 增删 |
 
-类比 `192.168.1.0/24`：bed 是子网，HR/RR + radar + cam 是子网内 host，card 是子网门牌号。`device_uid` (host 末 32 bit) 不入 card_id。
+**核心规则**：`card_id ≡ spatial_prefix`。空间不变 → card_id 不变（删除重建也不变；prefix 是身份本身）。
+
+类比 `192.168.1.0/24`：bed 是子网，HR/RR + radar + cam 是子网内 host，card 是子网本身（用 CIDR 表示）。`device_uid` (host 末 32 bit) 不入 card_id。
+
+**历史**：v1 用 UUID 做 PK + spatial_prefix 做业务身份，两层冗余。Phase F.6 简化为单层 — `card_id` 在 API/JSON 中保留为字段名，但其值就是 `spatial_prefix` INET CIDR 字符串。
 
 ### 2. card 删除条件
 **当且仅当 card 下所有 device 移除**，与 resident 完全解耦。

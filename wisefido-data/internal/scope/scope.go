@@ -232,7 +232,7 @@ func (sc *ScopeContext) VerifyCard(ctx context.Context, db *sql.DB, cardID strin
 			    ON rc.resident_id = c.resident_id
 			   AND rc.family_id = $1::UUID
 			   AND rc.valid_to IS NULL
-			 WHERE c.card_id = $2::UUID
+			 WHERE c.spatial_prefix = $2::INET
 			)`, sc.UserID, cardID).Scan(&ok)
 		if err != nil {
 			return fmt.Errorf("verify card family link: %w", err)
@@ -250,7 +250,7 @@ func (sc *ScopeContext) VerifyCard(ctx context.Context, db *sql.DB, cardID strin
 	err := db.QueryRowContext(ctx, `
 		SELECT EXISTS (
 		  SELECT 1 FROM cards c
-		 WHERE c.card_id = $1::UUID
+		 WHERE c.spatial_prefix = $1::INET
 		   AND c.spatial_prefix <<= $2::INET
 		)`, cardID, sc.CurrentBranchID).Scan(&ok)
 	if err != nil {

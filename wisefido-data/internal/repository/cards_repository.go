@@ -84,9 +84,10 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 	var args []any
 	argIdx := 1
 
+	// v2 unified: card_id ≡ spatial_prefix
 	query.WriteString(`
 		SELECT
-			c.card_id::text,
+			text(c.spatial_prefix) AS card_id,
 			text(c.spatial_prefix) AS spatial_prefix,
 			c.card_type,
 			COALESCE(c.card_name, ''),
@@ -110,7 +111,7 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 	argIdx++
 
 	if req.CardID != "" {
-		query.WriteString(` AND c.card_id::text = $` + fmt.Sprintf("%d", argIdx) + ` `)
+		query.WriteString(` AND c.spatial_prefix = $` + fmt.Sprintf("%d", argIdx) + `::INET `)
 		args = append(args, req.CardID)
 		argIdx++
 	}
@@ -254,7 +255,7 @@ func (r *PostgresCardsRepository) GetCardDevices(ctx context.Context, tenantID, 
 		FROM cards c
 		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
 		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		WHERE c.card_id = $1::uuid
+		WHERE c.spatial_prefix = $1::INET
 		ORDER BY d.device_ipv6
 	`
 	rows, err := r.db.QueryContext(ctx, q, cardID)

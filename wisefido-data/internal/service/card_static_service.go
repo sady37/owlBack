@@ -147,9 +147,10 @@ func (s *CardStaticService) GetCardsByCardIDs(ctx context.Context, tenantID, use
 func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []string, branchIDs []string, page, pageSize int) ([]commoncard.CardStatic, int, error) {
 	// v2 查询：cards 表只剩 spatial_prefix INET 一根空间柱；unit/branch 通过 set_masklen 派生。
 	// devices/residents 列表由 caller 通过 LPM 实时查（Phase F 接入 view 聚合）。
+	// v2 unified: card_id ≡ spatial_prefix
 	query := `
 		SELECT
-			c.card_id::text,
+			text(c.spatial_prefix) AS card_id,
 			text(c.spatial_prefix) AS spatial_prefix,
 			c.card_type,
 			COALESCE(c.card_name, ''),
@@ -163,7 +164,7 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 		FROM cards c
 		LEFT JOIN units u ON u.unit_id = set_masklen(c.spatial_prefix, 80)
 		LEFT JOIN branches br ON br.branch_id = set_masklen(c.spatial_prefix, 56)
-		WHERE c.card_id = ANY($1::uuid[])
+		WHERE c.spatial_prefix = ANY($1::inet[])
 		  AND c.card_type <> 'device'
 	`
 	args := []any{pq.Array(cardIDs)}

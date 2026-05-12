@@ -515,12 +515,13 @@ func (s *AlarmService) getEffectiveTimezoneForCard(ctx context.Context, cardID s
 	if s.db == nil || cardID == "" {
 		return fallback
 	}
+	// v2 unified: card_id ≡ spatial_prefix；cards 表无 timezone 列，仅看 units.timezone（按 /80 派生）
 	var ctz, utz sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT NULLIF(TRIM(c.timezone), ''), NULLIF(TRIM(u.timezone), '')
+		SELECT NULL::text, NULLIF(TRIM(u.timezone), '')
 		FROM cards c
-		LEFT JOIN units u ON c.unit_id = u.unit_id AND c.tenant_id = u.tenant_id
-		WHERE c.card_id = $1
+		LEFT JOIN units u ON u.unit_id = set_masklen(c.spatial_prefix, 80)
+		WHERE c.spatial_prefix = $1::INET
 	`, cardID).Scan(&ctz, &utz)
 	if err != nil {
 		return fallback
@@ -1103,12 +1104,13 @@ func (s *AlarmService) getEffectiveTimezoneForCardLA(ctx context.Context, cardID
 	if s.db == nil || cardID == "" {
 		return fallback
 	}
+	// v2 unified: card_id ≡ spatial_prefix；cards 表无 timezone 列，仅看 units.timezone（按 /80 派生）
 	var ctz, utz sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT NULLIF(TRIM(c.timezone), ''), NULLIF(TRIM(u.timezone), '')
+		SELECT NULL::text, NULLIF(TRIM(u.timezone), '')
 		FROM cards c
-		LEFT JOIN units u ON c.unit_id = u.unit_id AND c.tenant_id = u.tenant_id
-		WHERE c.card_id = $1
+		LEFT JOIN units u ON u.unit_id = set_masklen(c.spatial_prefix, 80)
+		WHERE c.spatial_prefix = $1::INET
 	`, cardID).Scan(&ctz, &utz)
 	if err != nil {
 		return fallback

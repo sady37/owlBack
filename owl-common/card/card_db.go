@@ -209,12 +209,13 @@ func (c *CardDB) DeviceKeysInCard(ctx context.Context, cardID string) (deviceIDs
 	if c == nil || c.db == nil || cardID == "" {
 		return nil, nil
 	}
+	// v2 unified: card_id ≡ spatial_prefix
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT dfm.device_id::text, dfm.device_uid
 		FROM cards c
 		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
 		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		WHERE c.card_id = $1::uuid
+		WHERE c.spatial_prefix = $1::INET
 	`, cardID)
 	if err != nil {
 		return nil, nil
@@ -396,11 +397,12 @@ func (c *CardDB) RoomIdentifiersForCard(ctx context.Context, tenantID, cardID st
 	if c == nil || c.db == nil || cardID == "" {
 		return nil, nil
 	}
+	// v2 unified: card_id ≡ spatial_prefix
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT DISTINCT host(set_masklen(d.device_ipv6, 88))::text AS room_id
 		FROM cards c
 		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
-		WHERE c.card_id = $1::uuid
+		WHERE c.spatial_prefix = $1::INET
 	`, cardID)
 	if err != nil {
 		return nil, fmt.Errorf("room identifiers for card: %w", err)

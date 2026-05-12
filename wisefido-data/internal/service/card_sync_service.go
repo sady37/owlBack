@@ -162,17 +162,20 @@ func (s *CardSyncService) upsertResidentCard(ctx context.Context, tenantPrefix, 
 		cardName = shortName
 	}
 
-	// 查现状（card_id / 现 resident_id / card_name）
-	var existingCardID, existingResident, existingName sql.NullString
-	_ = s.db.QueryRowContext(ctx, `
-		SELECT card_id::text, COALESCE(resident_id::text, ''), COALESCE(card_name, '')
+	// 查现状（现 resident_id / card_name）— card_id ≡ spatial_prefix，无独立 UUID 列
+	var existingResident, existingName sql.NullString
+	existingExists := false
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(resident_id::text, ''), COALESCE(card_name, '')
 		  FROM cards
-		 WHERE spatial_prefix = $1::INET AND card_type = $2
+		 WHERE spatial_prefix = $1::INET
 		 LIMIT 1
-	`, prefixStr, cardType).Scan(&existingCardID, &existingResident, &existingName)
+	`, prefixStr).Scan(&existingResident, &existingName); err == nil {
+		existingExists = true
+	}
 
 	op := "created"
-	if existingCardID.Valid && existingCardID.String != "" {
+	if existingExists {
 		if strings.TrimRight(existingResident.String, "/128") == strings.TrimRight(hoa, "/128") &&
 			existingName.String == cardName {
 			return "unchanged", nil
@@ -180,19 +183,19 @@ func (s *CardSyncService) upsertResidentCard(ctx context.Context, tenantPrefix, 
 		op = "updated"
 	}
 
-	var cardID string
-	err = s.db.QueryRowContext(ctx, `
+	// PK = spatial_prefix → UPSERT 用 ON CONFLICT (spatial_prefix)
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO cards (spatial_prefix, card_type, card_name, dns_short_name, resident_id, is_active, enabled_at)
 		VALUES ($1::inet, $2, $3, $4, $5::inet, TRUE, NOW())
-		ON CONFLICT (spatial_prefix, card_type) DO UPDATE SET
+		ON CONFLICT (spatial_prefix) DO UPDATE SET
 			card_name      = COALESCE(EXCLUDED.card_name, cards.card_name),
 			dns_short_name = COALESCE(EXCLUDED.dns_short_name, cards.dns_short_name),
 			resident_id    = EXCLUDED.resident_id,
 			is_active      = TRUE,
 			enabled_at     = COALESCE(cards.enabled_at, NOW()),
 			updated_at     = NOW()
-		RETURNING card_id::text
-	`, prefixStr, cardType, cardName, shortName, hoa).Scan(&cardID)
+	`, prefixStr, cardType, cardName, shortName, hoa)
+	cardID := prefixStr // card_id ≡ spatial_prefix
 	if err != nil {
 		return "", err
 	}
@@ -217,9 +220,10 @@ func (s *CardSyncService) upsertResidentCard(ctx context.Context, tenantPrefix, 
 }
 
 // clearStaleResidentCards 给 unit /80 范围内 cards：若 resident_id 指向的 resident 已无 active resident_unit @ 该 prefix，则 NULL 掉。
+// card_id ≡ spatial_prefix（PK），所以扫到 (prefix, oldHoA) 直接 UPDATE WHERE spatial_prefix=$prefix。
 func (s *CardSyncService) clearStaleResidentCards(ctx context.Context, unitPrefix string) (int, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT c.card_id::text, c.spatial_prefix::text, c.resident_id::text
+		SELECT c.spatial_prefix::text, c.resident_id::text
 		  FROM cards c
 		 WHERE c.spatial_prefix <<= $1::INET
 		   AND c.resident_id IS NOT NULL
@@ -235,11 +239,11 @@ func (s *CardSyncService) clearStaleResidentCards(ctx context.Context, unitPrefi
 	}
 	defer rows.Close()
 
-	type stale struct{ cardID, prefix, oldHoA string }
+	type stale struct{ prefix, oldHoA string }
 	var list []stale
 	for rows.Next() {
 		var v stale
-		if err := rows.Scan(&v.cardID, &v.prefix, &v.oldHoA); err == nil {
+		if err := rows.Scan(&v.prefix, &v.oldHoA); err == nil {
 			list = append(list, v)
 		}
 	}
@@ -250,15 +254,15 @@ func (s *CardSyncService) clearStaleResidentCards(ctx context.Context, unitPrefi
 	cleared := 0
 	for _, v := range list {
 		if _, err := s.db.ExecContext(ctx,
-			`UPDATE cards SET resident_id = NULL, updated_at = NOW() WHERE card_id = $1::uuid`, v.cardID); err != nil {
-			s.logger.Warn("clearStale: UPDATE failed", zap.String("card_id", v.cardID), zap.Error(err))
+			`UPDATE cards SET resident_id = NULL, updated_at = NOW() WHERE spatial_prefix = $1::INET`, v.prefix); err != nil {
+			s.logger.Warn("clearStale: UPDATE failed", zap.String("prefix", v.prefix), zap.Error(err))
 			continue
 		}
 		// tenant prefix derive from unit prefix
 		tenantPrefix := ""
 		_ = s.db.QueryRowContext(ctx, `SELECT set_masklen($1::inet, 48)::text`, v.prefix).Scan(&tenantPrefix)
 		if s.publisher != nil {
-			_ = s.publisher.PublishCardResidentChanged(ctx, tenantPrefix, v.cardID, "reconcile_discharge", v.oldHoA, "", v.prefix)
+			_ = s.publisher.PublishCardResidentChanged(ctx, tenantPrefix, v.prefix, "reconcile_discharge", v.oldHoA, "", v.prefix)
 		}
 		cleared++
 	}

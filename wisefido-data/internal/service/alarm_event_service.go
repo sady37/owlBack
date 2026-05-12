@@ -2053,43 +2053,38 @@ func (s *alarmEventService) getUnitIDsByResidentIDs(ctx context.Context, tenantI
 
 // getCardIDByDeviceID 通过 device_id 查询 card_id（直接查 DB）
 func (s *alarmEventService) getCardIDByDeviceID(ctx context.Context, tenantID, deviceID string) (string, error) {
+	// v2 unified: card_id ≡ spatial_prefix；LPM 反查（先 device_id → device_ipv6，再 LPM cards）
+	_ = tenantID
 	query := `
-		SELECT card_id::text
-		FROM cards
-		WHERE tenant_id = $1
-		  AND devices @> $2::jsonb
+		SELECT find_card_by_device_addr(d.device_ipv6)::text
+		FROM devices d
+		WHERE d.device_id = $1::UUID
 		LIMIT 1
 	`
-	deviceJSON := fmt.Sprintf(`[{"device_id":"%s"}]`, deviceID)
-	var cardID string
-	err := s.db.QueryRowContext(ctx, query, tenantID, deviceJSON).Scan(&cardID)
+	var cardID sql.NullString
+	err := s.db.QueryRowContext(ctx, query, deviceID).Scan(&cardID)
 	if err != nil {
 		return "", fmt.Errorf("failed to get card by device_id: %w", err)
 	}
-	return cardID, nil
+	if !cardID.Valid {
+		return "", nil
+	}
+	return cardID.String, nil
 }
 
-// getCardUnitType 查询卡片的 unit_type
+// getCardUnitType 查询卡片的 unit_type（v2: 由 spatial_prefix /80 派生 unit）
 func (s *alarmEventService) getCardUnitType(ctx context.Context, tenantID, cardID string) (string, error) {
+	_ = tenantID
 	query := `
-		SELECT 
-			CASE 
-				WHEN c.card_type = 'ActiveBedCard' AND c.bed_id IS NOT NULL THEN
-					COALESCE(u.unit_type, 'Home')
-				WHEN c.card_type = 'UnitCard' AND c.unit_id IS NOT NULL THEN
-					COALESCE(u.unit_type, 'Home')
-				ELSE 'Home'
-			END as unit_type
+		SELECT COALESCE(u.unit_type::text, 'Home') AS unit_type
 		FROM cards c
-		LEFT JOIN beds b ON c.bed_id = b.bed_id
-		LEFT JOIN rooms r ON b.room_id = r.room_id OR c.unit_id = r.unit_id
-		LEFT JOIN units u ON r.unit_id = u.unit_id OR c.unit_id = u.unit_id
-		WHERE c.tenant_id = $1 AND c.card_id = $2
+		LEFT JOIN units u ON u.unit_id = set_masklen(c.spatial_prefix, 80)
+		WHERE c.spatial_prefix = $1::INET
 		LIMIT 1
 	`
 
 	var unitType string
-	err := s.db.QueryRowContext(ctx, query, tenantID, cardID).Scan(&unitType)
+	err := s.db.QueryRowContext(ctx, query, cardID).Scan(&unitType)
 	if err != nil {
 		return "", fmt.Errorf("failed to get card unit_type: %w", err)
 	}

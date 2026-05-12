@@ -1042,12 +1042,13 @@ func (s *CardRealtimeService) enrichDeviceStatus(ctx context.Context, cardID str
 	if s.db == nil {
 		return nil
 	}
+	// v2 unified: card_id ≡ spatial_prefix；device 走 LPM 反查 + device_factory_meta
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT j->>'device_id' AS device_id, COALESCE(ds.device_type, '') AS device_type
-		FROM cards c,
-		     jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS j
-		     LEFT JOIN device_store ds ON ds.device_id = (j->>'device_id')::uuid
-		WHERE c.card_id = $1
+		SELECT dfm.device_id::text, COALESCE(dfm.device_type::text, '') AS device_type
+		FROM cards c
+		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
+		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		WHERE c.spatial_prefix = $1::INET
 	`, cardID)
 	if err != nil {
 		return err

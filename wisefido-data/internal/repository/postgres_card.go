@@ -135,9 +135,10 @@ type CardRowForCache struct {
 //
 // 注意：tenantID 参数在 v2 是 /48 INET CIDR，仅做 sanity check（cards 表无 tenant_id 列）。
 func (r *PostgresCardRepository) GetCardRowForCache(ctx context.Context, tenantID, cardID string) (*CardRowForCache, error) {
+	// v2 unified: card_id ≡ spatial_prefix；按 prefix 查
 	query := `
 		SELECT
-			c.card_id::text,
+			c.spatial_prefix::text AS card_id,
 			c.spatial_prefix::text,
 			c.card_type,
 			COALESCE(c.card_name, ''),
@@ -161,7 +162,7 @@ func (r *PostgresCardRepository) GetCardRowForCache(ctx context.Context, tenantI
 		LEFT JOIN units    u  ON u.unit_id   = (CASE WHEN masklen(c.spatial_prefix) >= 80 THEN set_masklen(c.spatial_prefix, 80) ELSE NULL END)
 		LEFT JOIN rooms    rm ON rm.room_id  = (CASE WHEN masklen(c.spatial_prefix) >= 88 THEN set_masklen(c.spatial_prefix, 88) ELSE NULL END)
 		LEFT JOIN beds     b  ON b.bed_id    = (CASE WHEN masklen(c.spatial_prefix) = 96  THEN set_masklen(c.spatial_prefix, 96) ELSE NULL END)
-		WHERE c.card_id = $1
+		WHERE c.spatial_prefix = $1::INET
 	`
 
 	// 防止 unused variable warning（保留 tenantID 参数位）
@@ -228,7 +229,7 @@ func (r *PostgresCardRepository) GetBranchIDByCard(ctx context.Context, tenantID
 		             THEN set_masklen(spatial_prefix, 56)::text
 		             ELSE ''
 		        END
-		   FROM cards WHERE card_id = $1`,
+		   FROM cards WHERE spatial_prefix = $1::INET`,
 		cardID,
 	).Scan(&branchPrefix)
 	if err != nil {
@@ -601,8 +602,9 @@ func (r *PostgresCardRepository) GetUnitIDByBedID(tenantID, bedID string) (strin
 // 包含 unit 自身 (/80) 和其后代 (/88 /96 /128)
 func (r *PostgresCardRepository) GetCardsByUnit(tenantID, unitID string) ([]domain.Card, error) {
 	_ = tenantID
+	// v2 unified: card_id ≡ spatial_prefix
 	query := `
-		SELECT card_id::text, spatial_prefix::text, card_type,
+		SELECT spatial_prefix::text AS card_id, spatial_prefix::text, card_type,
 		       card_name, dns_short_name, resident_id::text,
 		       is_active, enabled_at, disabled_at, created_at, updated_at
 		FROM cards
@@ -639,9 +641,11 @@ func (r *PostgresCardRepository) GetCardsByUnit(tenantID, unitID string) ([]doma
 func (r *PostgresCardRepository) DeleteCard(tenantID, cardID string) error {
 	_ = tenantID
 
-	// 先拿到 spatial_prefix 和受影响 device_uid
-	var spatialPrefix string
-	err := r.db.QueryRow(`SELECT spatial_prefix::text FROM cards WHERE card_id = $1`, cardID).Scan(&spatialPrefix)
+	// v2 unified: cardID is INET CIDR (= spatial_prefix)
+	spatialPrefix := cardID
+	// Sanity check exists
+	var existsRow sql.NullString
+	err := r.db.QueryRow(`SELECT spatial_prefix::text FROM cards WHERE spatial_prefix = $1::INET`, cardID).Scan(&existsRow)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil
@@ -658,7 +662,7 @@ func (r *PostgresCardRepository) DeleteCard(tenantID, cardID string) error {
 		}
 	}
 
-	if _, err := r.db.Exec(`DELETE FROM cards WHERE card_id = $1`, cardID); err != nil {
+	if _, err := r.db.Exec(`DELETE FROM cards WHERE spatial_prefix = $1::INET`, cardID); err != nil {
 		return fmt.Errorf("delete card: %w", err)
 	}
 
@@ -673,7 +677,7 @@ func (r *PostgresCardRepository) DeleteCard(tenantID, cardID string) error {
 func (r *PostgresCardRepository) ListAllCardsForClear(ctx context.Context) ([]domain.CardSyncAffected, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT set_masklen(spatial_prefix, 48)::text AS tenant_prefix,
-		       card_id::text,
+		       spatial_prefix::text AS card_id,
 		       spatial_prefix::text
 		FROM cards
 	`)
@@ -697,12 +701,12 @@ func (r *PostgresCardRepository) ListAllCardsForClear(ctx context.Context) ([]do
 func (r *PostgresCardRepository) ListOrphanCards(ctx context.Context) ([]domain.CardSyncAffected, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT set_masklen(c.spatial_prefix, 48)::text AS tenant_prefix,
-		       c.card_id::text,
+		       c.spatial_prefix::text AS card_id,
 		       c.spatial_prefix::text
 		FROM cards c
 		LEFT JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
 		WHERE c.card_type IN ('active_bed','room','device','public','unit')
-		GROUP BY c.card_id, c.spatial_prefix
+		GROUP BY c.spatial_prefix
 		HAVING COUNT(d.device_id) = 0
 	`)
 	if err != nil {
@@ -735,9 +739,9 @@ func (r *PostgresCardRepository) ClearAllCards() error {
 
 // DeleteCardsByUnit 删除 unit prefix 下所有 cards（/80 + 后代）
 func (r *PostgresCardRepository) DeleteCardsByUnit(tenantID, unitID string) error {
-	// 先收集 card_id 列表，记录到 recorded（含 device_uid）
+	// 先收集 card_id 列表（v2: ≡ spatial_prefix），记录到 recorded（含 device_uid）
 	rows, err := r.db.Query(
-		`SELECT card_id::text FROM cards WHERE spatial_prefix <<= $1::inet`,
+		`SELECT spatial_prefix::text FROM cards WHERE spatial_prefix <<= $1::inet`,
 		unitID,
 	)
 	if err != nil {
@@ -830,8 +834,9 @@ func (r *PostgresCardRepository) UpdateCard(
 		}
 	}
 
+	// v2 unified: cardID is INET CIDR (= spatial_prefix)
 	args = append(args, cardID)
-	query := fmt.Sprintf(`UPDATE cards SET %s WHERE card_id = $%d`,
+	query := fmt.Sprintf(`UPDATE cards SET %s WHERE spatial_prefix = $%d::INET`,
 		strings.Join(sets, ", "), idx)
 
 	result, err := r.db.Exec(query, args...)
@@ -843,10 +848,8 @@ func (r *PostgresCardRepository) UpdateCard(
 		return fmt.Errorf("card not found: %s", cardID)
 	}
 
-	// 取 spatial_prefix 用于 recorded
-	var spatialPrefix string
-	_ = r.db.QueryRow(`SELECT spatial_prefix::text FROM cards WHERE card_id = $1`, cardID).
-		Scan(&spatialPrefix)
+	// spatial_prefix ≡ cardID
+	spatialPrefix := cardID
 
 	// derive tenant prefix
 	tenantPrefix := ""
@@ -868,34 +871,30 @@ func (r *PostgresCardRepository) UpdateCard(
 }
 
 // GetResidentCardIDByPrefix — 反查给定 spatial_prefix 上承载 resident 的 card_id。
-// 不限 card_type（active_bed/room/unit 任一）；按 masklen 唯一决定该 prefix 的 resident-bearing card。
-// 没匹配 / 出错时返回 ""（caller 用 if cardID != "" 守卫）。
+// v2 unified: card_id ≡ spatial_prefix；本函数仅做存在性校验，命中即返回 prefix。
 //
-// Phase F cards 物化路径用：service syncCard 清空 old prefix 上的 resident_id 时需要 cardID。
-// 设计：一个 spatial_prefix 同一 masklen 下只能有一个 card（UNIQUE(spatial_prefix, card_type)
-// + masklen↔card_type 映射 1:1，参 owl-common/card.CardTypeForMasklen）。
+// 设计：一个 spatial_prefix PK 下只有一张 card，masklen↔card_type 1:1（CardTypeForMasklen）。
 func (r *PostgresCardRepository) GetResidentCardIDByPrefix(ctx context.Context, prefix string) (string, error) {
 	if strings.TrimSpace(prefix) == "" {
 		return "", nil
 	}
-	var cardID sql.NullString
+	var found sql.NullString
 	err := r.db.QueryRowContext(ctx, `
-		SELECT card_id::text
+		SELECT spatial_prefix::text
 		  FROM cards
 		 WHERE spatial_prefix = $1::INET
-		 ORDER BY (resident_id IS NULL), card_type
 		 LIMIT 1
-	`, prefix).Scan(&cardID)
+	`, prefix).Scan(&found)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return "", nil
 		}
 		return "", fmt.Errorf("lookup card by prefix: %w", err)
 	}
-	if !cardID.Valid {
+	if !found.Valid {
 		return "", nil
 	}
-	return cardID.String, nil
+	return found.String, nil
 }
 
 // CreateCard 创建卡片（v2 签名）。
@@ -931,18 +930,19 @@ func (r *PostgresCardRepository) CreateCard(
 		dnsArg = dnsShortName
 	}
 
+	// v2 unified: card_id ≡ spatial_prefix；UPSERT 用 ON CONFLICT (spatial_prefix)
 	query := `
 		INSERT INTO cards (
 			spatial_prefix, card_type, card_name, dns_short_name, resident_id, is_active, enabled_at
 		) VALUES ($1::inet, $2, $3, $4, $5::inet, TRUE, NOW())
-		ON CONFLICT (spatial_prefix, card_type) DO UPDATE SET
+		ON CONFLICT (spatial_prefix) DO UPDATE SET
 			card_name      = COALESCE(EXCLUDED.card_name, cards.card_name),
 			dns_short_name = COALESCE(EXCLUDED.dns_short_name, cards.dns_short_name),
 			resident_id    = EXCLUDED.resident_id,
 			is_active      = TRUE,
 			enabled_at     = COALESCE(cards.enabled_at, NOW()),
 			updated_at     = NOW()
-		RETURNING card_id::text
+		RETURNING spatial_prefix::text
 	`
 
 	var cardID string
@@ -970,7 +970,7 @@ func (r *PostgresCardRepository) getCardDeviceIDList(cardID string) []string {
 		SELECT d.device_id::text
 		FROM cards c
 		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
-		WHERE c.card_id = $1
+		WHERE c.spatial_prefix = $1::INET
 	`, cardID)
 	if err != nil {
 		return nil
@@ -997,7 +997,7 @@ func (r *PostgresCardRepository) getCardDeviceUIDList(tenantID, cardID string) [
 		FROM cards c
 		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
 		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		WHERE c.card_id = $1
+		WHERE c.spatial_prefix = $1::INET
 	`, cardID)
 	if err != nil {
 		return nil

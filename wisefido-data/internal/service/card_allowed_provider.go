@@ -137,9 +137,14 @@ func (p *AllowedCardIDsProviderImpl) filterCardsForResident(ctx context.Context,
 }
 
 // cardIDsByUnit 查该 unit 下所有 card，返回 *CardList
+// v2 unified: card_id ≡ spatial_prefix；tenantID 是 /48 INET，unitID 是 /80 INET
 func (p *AllowedCardIDsProviderImpl) cardIDsByUnit(ctx context.Context, tenantID, unitID, userID string) (*CardList, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT card_id::text, COALESCE(branch_id::text, '_') FROM cards WHERE tenant_id = $1 AND unit_id = $2`,
+		`SELECT c.spatial_prefix::text AS card_id,
+		        host(set_masklen(c.spatial_prefix, 56)) || '/56' AS branch_id
+		   FROM cards c
+		  WHERE c.spatial_prefix <<= $1::INET
+		    AND c.spatial_prefix <<= $2::INET`,
 		tenantID, unitID,
 	)
 	if err != nil {
@@ -163,7 +168,7 @@ func (p *AllowedCardIDsProviderImpl) cardIDsByUnit(ctx context.Context, tenantID
 // v2: cards.resident_id 是 INET HoA pointer；不再走 residents JSONB；unitID 是 INET /80 CIDR。
 func (p *AllowedCardIDsProviderImpl) ActiveBedcardIDsByUnitShared(ctx context.Context, tenantID, unitID, residentID string) (*CardList, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT c.card_id::text,
+		`SELECT c.spatial_prefix::text AS card_id,
 		        host(set_masklen(c.spatial_prefix, 56)) || '/56' AS branch_id
 		   FROM cards c
 		  WHERE c.spatial_prefix <<= $1::INET
@@ -223,7 +228,7 @@ func (p *AllowedCardIDsProviderImpl) filterCardsForStaff(ctx context.Context, us
 // v2: tenant_id INET CIDR /48；branch /56 由 spatial_prefix 派生。
 func (p *AllowedCardIDsProviderImpl) filterTenantCards(ctx context.Context, tenantID, userID string) (*CardList, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT c.card_id::text,
+		`SELECT c.spatial_prefix::text AS card_id,
 		        host(set_masklen(c.spatial_prefix, 56)) || '/56' AS branch_id
 		   FROM cards c
 		  WHERE c.spatial_prefix <<= $1::INET
@@ -254,7 +259,7 @@ func (p *AllowedCardIDsProviderImpl) filterTenantCards(ctx context.Context, tena
 // v2 schema：cards 没冗余 branch_id 列；用 spatial_prefix /56 反推 + user_branches.is_primary INET 过滤
 func (p *AllowedCardIDsProviderImpl) filterByBranchOnly(ctx context.Context, tenantID, userID string) (*CardList, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT c.card_id::text,
+		`SELECT c.spatial_prefix::text AS card_id,
 		        host(network(set_masklen(c.spatial_prefix, 56))) || '/56' AS branch_id
 		   FROM cards c
 		  WHERE c.spatial_prefix <<= $1::INET
@@ -322,7 +327,7 @@ func (p *AllowedCardIDsProviderImpl) filterByAssignedOnly(ctx context.Context, t
 	// 'unit' / 'public' cards 不再有"含 resident" 概念（data 流不冗余 resident_id；
 	// 走 ts ∈ episode 反查），按业务规则不在 assigned 视图内。
 	rows2, err := p.db.QueryContext(ctx,
-		`SELECT c.card_id::text,
+		`SELECT c.spatial_prefix::text AS card_id,
 		        host(set_masklen(c.spatial_prefix, 56)) || '/56' AS branch_id
 		   FROM cards c
 		  WHERE c.spatial_prefix <<= $1::INET

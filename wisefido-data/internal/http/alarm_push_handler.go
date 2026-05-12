@@ -68,10 +68,13 @@ func (h *AlarmPushHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// v2 unified: card_id ≡ spatial_prefix；tenant 由 spatial_prefix /48 派生（无独立 tenant_id 列）
 	cardName := req.CardID
 	var cn sql.NullString
 	if err := h.db.QueryRowContext(r.Context(), `
-		SELECT card_name FROM cards WHERE card_id = $1::uuid AND tenant_id = $2::uuid
+		SELECT card_name FROM cards
+		 WHERE spatial_prefix = $1::INET
+		   AND set_masklen(spatial_prefix, 48) = $2::INET
 	`, req.CardID, req.TenantID).Scan(&cn); err == nil && cn.Valid && cn.String != "" {
 		cardName = cn.String
 	}
