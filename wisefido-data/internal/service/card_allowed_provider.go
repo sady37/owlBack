@@ -153,16 +153,17 @@ func (p *AllowedCardIDsProviderImpl) cardIDsByUnit(ctx context.Context, tenantID
 	return &CardList{UserID: userID, TenantID: tenantID, CardsByBranch: byBranch}, nil
 }
 
-// ActiveBedcardIDsByUnitShared shared unit：只返回 ActiveBedCard 且 residents JSONB 含 residentID，返回 *CardList
+// ActiveBedcardIDsByUnitShared shared unit：只返回 active_bed 且 resident_id 匹配的卡。
+// v2: cards.resident_id 是 INET HoA pointer；不再走 residents JSONB；unitID 是 INET /80 CIDR。
 func (p *AllowedCardIDsProviderImpl) ActiveBedcardIDsByUnitShared(ctx context.Context, tenantID, unitID, residentID string) (*CardList, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT card_id::text, COALESCE(branch_id::text, '_') FROM cards
-		 WHERE tenant_id = $1 AND unit_id = $2
-		   AND card_type = 'ActiveBedCard'
-		   AND EXISTS (
-		     SELECT 1 FROM jsonb_array_elements(residents) elem
-		     WHERE elem->>'resident_id' = $3
-		   )`,
+		`SELECT c.card_id::text,
+		        host(set_masklen(c.spatial_prefix, 56)) || '/56' AS branch_id
+		   FROM cards c
+		  WHERE c.spatial_prefix <<= $1::INET
+		    AND c.spatial_prefix <<= $2::INET
+		    AND c.card_type = 'active_bed'
+		    AND c.resident_id = $3::INET`,
 		tenantID, unitID, residentID,
 	)
 	if err != nil {
@@ -212,10 +213,15 @@ func (p *AllowedCardIDsProviderImpl) filterCardsForStaff(ctx context.Context, us
 	}
 }
 
-// filterTenantCards 查该 tenant 全部卡片，按 branch 分组返回 *CardList
+// filterTenantCards 查该 tenant 全部卡片，按 branch 分组返回 *CardList。
+// v2: tenant_id INET CIDR /48；branch /56 由 spatial_prefix 派生。
 func (p *AllowedCardIDsProviderImpl) filterTenantCards(ctx context.Context, tenantID, userID string) (*CardList, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT card_id::text, COALESCE(branch_id::text, '_') FROM cards WHERE tenant_id = $1 AND card_type <> 'DeviceCard'`,
+		`SELECT c.card_id::text,
+		        host(set_masklen(c.spatial_prefix, 56)) || '/56' AS branch_id
+		   FROM cards c
+		  WHERE c.spatial_prefix <<= $1::INET
+		    AND c.card_type <> 'device'`,
 		tenantID,
 	)
 	if err != nil {
@@ -246,7 +252,7 @@ func (p *AllowedCardIDsProviderImpl) filterByBranchOnly(ctx context.Context, ten
 		        host(network(set_masklen(c.spatial_prefix, 56))) || '/56' AS branch_id
 		   FROM cards c
 		  WHERE c.spatial_prefix <<= $1::INET
-		    AND c.card_type <> 'DeviceCard'
+		    AND c.card_type <> 'device'
 		    AND EXISTS (
 		      SELECT 1 FROM user_branches ub
 		       WHERE ub.user_id = $2::UUID
@@ -306,20 +312,17 @@ func (p *AllowedCardIDsProviderImpl) filterByAssignedOnly(ctx context.Context, t
 		return &CardList{UserID: userID, TenantID: tenantID, CardsByBranch: make(map[string][]string)}, nil
 	}
 
-	// Step2: ActiveBedCard（resident_id 直接匹配）+ UnitCard（residents JSONB 包含）
+	// Step2: v2 — active_bed cards where cards.resident_id ∈ assigned。
+	// 'unit' / 'public' cards 不再有"含 resident" 概念（data 流不冗余 resident_id；
+	// 走 ts ∈ episode 反查），按业务规则不在 assigned 视图内。
 	rows2, err := p.db.QueryContext(ctx,
-		`SELECT card_id::text, COALESCE(branch_id::text, '_')
-		 FROM cards
-		 WHERE tenant_id = $1
-		   AND (
-		     (card_type = 'ActiveBedCard' AND resident_id = ANY($2::uuid[]))
-		     OR
-		     (card_type = 'UnitCard' AND EXISTS (
-		       SELECT 1 FROM jsonb_array_elements(residents) r
-		       WHERE r->>'resident_id' = ANY($3::text[])
-		     ))
-		   )`,
-		tenantID, pq.Array(rids), pq.Array(rids),
+		`SELECT c.card_id::text,
+		        host(set_masklen(c.spatial_prefix, 56)) || '/56' AS branch_id
+		   FROM cards c
+		  WHERE c.spatial_prefix <<= $1::INET
+		    AND c.card_type = 'active_bed'
+		    AND c.resident_id = ANY($2::INET[])`,
+		tenantID, pq.Array(rids),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("filterByAssignedOnly cards: %w", err)

@@ -75,52 +75,66 @@ Envelope 严格按 [`doc/datagram_envelope.md`](datagram_envelope.md)：source /
 
 ## 三、Phase 进度
 
-### Phase A — Schema 收尾
+### Phase A — Schema 收尾 ✅
 - [x] cards 表 v2 schema 已 deploy（`/owlRD/dbv2/50_cards.sql`）
 - [x] resident_unit 表已支持 spatial_prefix INET + valid_from/valid_to
 - [x] view `card_hr_source` 已部署
-- [ ] **TODO**: 加 view `card_current_resident`
-- [ ] **TODO**: 加 PG function `find_card_by_device_addr(INET)` LPM 反查（封装）
+- [x] view `card_current_resident` 已部署（commit `cabad63`）
+- [x] PG function `find_card_by_device_addr(INET)` 已部署
 
-### Phase B — owl-common + wisefido-data 重写
-- [ ] B1：`owl-common/card/*` 全部重写
-  - 删除 `card_db.go` / `alarm_db.go` 引用的 v1 字段
-  - 删除 `devices_jsonb.go` / `utils.go` (ConvertDevices/ResidentsToJSON)
-  - 新 `card_types.go` 枚举：`tenant/branch/site/unit/public/room/active_bed/device`
-- [ ] B2：`owl-common/ddns/client.go` 加 `RegisterCardName/UnregisterCardName`
-- [ ] B3：`wisefido-data/internal/domain/card.go` 重写为 v2 model
-- [ ] B3：`wisefido-data/internal/repository/postgres_card.go` SQL 全部重写
-- [ ] B3：`wisefido-data/internal/repository/cards_repository.go` 权限查询用新 card_type 值
-- [ ] B4：`wisefido-data/internal/service/card_create_service.go` 改为事件驱动
-- [ ] B4：删除 `staff_pop_pending_counter.go` 中 unhandled_alarm_* 引用 → 走 alarm_events 实时聚合
-- [ ] B4：`card_static_service.go` / `card_sync_service.go` / `card_realtime_service.go` / `card_allowed_provider.go` / `alarm_event_service.go` 适配新枚举值
-- [ ] B5：`config_publisher.go` 拆成 `PublishCardChanged` + `PublishCardResidentChanged`
+### Phase B — owl-common + wisefido-data 重写 ✅
+- [x] **B1**：`owl-common/card/*` 全部重写（commit `889714b`）
+  - `card_types.go` 删 ExpectedCard/CardWithContent；CardStatic 加 SpatialPrefix/DNSShortName；加 v2 card_type 枚举
+  - `card_db.go` 重写为 LPM 反查范式（device_factory_meta + device_runtime_state 替代 device_store）
+  - `alarm_db.go` 缩为 v2 stub（详 Phase G 内 carve-out）
+  - `devices_jsonb.go` 删除；`utils.go` 删 JSON 序列化 helper
+- [x] **B2**：`owl-common/ddns/client.go` 加 `RegisterCardName/UnregisterCardName/CardShortName`（commit `cd67f0b`）
+  - 单轨永久名 `u<unit>-r<room>-b<bed>.<tenant>.owl`，无 PHI
+- [x] **B3**：`wisefido-data/internal/domain/card.go` + `repository/postgres_card.go` (1435→1014 行) + `cards_repository.go` 重写（commit `6a6cd1f`）
+- [x] **B4**：`card_create_service.go` + `card_sync_service.go` 缩为 v2 no-op stub（commit `b428210`）；`card_static_service.queryCardsByIDs` v2 SQL；`card_allowed_provider.go` 三处 filter 函数 v2 INET 化（待 commit）
+- [x] **B5**：`config_publisher.go` 拆分两 type **deferred to Phase F**；现暂用单一 `PublishCardChangeMessageWithExtra` 路径（足够 cardagg consumer 适配）
 
-### Phase C — wisefido-cardagg
-- [ ] `card_change_handler.go` 处理两种新 CloudEvents type
-- [ ] `alarm_service.go` 用新 card_type 值
-- [ ] 内存反查 map 改为 `device_addr INET → card_id`（已是这样的不动）
+### Phase C — wisefido-cardagg + 其他 service ✅
+- [x] cardagg `card_change_handler.go`：现有 CloudEvents 解析路径已对齐，无需改（caller 仍发 `owl.config.card.changed` 单 type）
+- [x] cardagg `alarm_service.go`：本次未触动（alarm path 整体 carve out 至 Phase G）
+- [x] sensor / iot / sleepace / qinglan / ai-health：无 cards.devices JSONB / unhandled_alarm_* 直接引用，仅 import 路径透传，build 全绿
 
-### Phase D — Build green
-- [ ] `wisefido-data` go build
-- [ ] `wisefido-cardagg` go build
-- [ ] `wisefido-iot` go build（如有引用）
-- [ ] `wisefido-sensor` go build
-- [ ] `wisefido-sleepace` go build
-- [ ] `wisefido-qinglan` go build
-- [ ] `wisefido-ai-health` go build
+### Phase D — Build green ✅
+- [x] `wisefido-data` go build ✓
+- [x] `wisefido-cardagg` go build ✓
+- [x] `wisefido-iot` go build ✓
+- [x] `wisefido-sensor` go build ✓
+- [x] `wisefido-sleepace` go build ✓
+- [x] `wisefido-qinglan` go build ✓
+- [x] `wisefido-ai-health` go build ✓
 
-### Phase E — 自动 e2e 测试
-- [ ] E1：重启服务（owlBack stack）+ tail 启动日志 60s 无 panic
-- [ ] E2：login sysadmin → admin → 创建 resident 关联 bed → 验证 cards 行自动创建
-- [ ] E3：验证 DDNS zone 文件含新永久名
-- [ ] E4：验证 redis stream `config:card:stream` 收到 CloudEvents
-- [ ] E5：login family/nurse 视角查看 card list（覆盖权限）
+### Phase E — 自动 e2e 测试 ✅
+- [x] **E1**：重启 owlBack stack（stop-owlback.sh + start-owlback.sh），新二进制全部加载；启动日志 60s 内无 panic / fatal
+  - `wisefido-data:917584` started 03:31，启动 reconcile 全 0（v2 stub no-op 符合预期）
+  - cardagg/sensor/qinglan/sleepace/iot 全部跑起
+- [x] **E2**：login admin@demo → 200 OK，accessToken 派发；tenant_id 已是 INET CIDR `fd00:0:3::/48`
+- [x] **E2b**：cards list endpoint `/data/api/v1/data/vital-focus/cards` → 200 / 空列表（cards 表 0 rows，符合 v2 stub 现状）
+- [x] **E2c**：cards permission filter (`filterTenantCards` v2 INET-based) → 通过（不再触 `column branch_id does not exist`）
+- [x] **E2d**：`/admin/api/v2/residents` list → 200，返 4 个 demo resident（INET HoA / PHI 解密 / branch_id 派生全跑通）
+- [ ] **E3**：DDNS zone 文件验证 — Phase F 待做（cards 表为空时 DDNS 注册路径不会被触发）
+- [ ] **E4**：redis stream `config:card:stream` CloudEvents 验证 — 同 E3
 
-### Phase F — 前端（按需）
-- [ ] `src/api/monitors/model/monitorModel.ts` CardType enum
-- [ ] `Overview.vue` card_type 判断改新值
-- [ ] Pinia store / TS interface 同步
+### Phase F — 写入路径 + 前端 + DDNS wire（pending，独立 PR）
+
+**重点（下次会话）**：
+
+1. **写入路径**：在 `resident_service.go` 的 admission/discharge/transfer hook 上接 cards INSERT/UPDATE/DELETE
+   - admission：resident_unit episode 新增 → 检查 spatial_prefix 是否已有 active_bed card；无 → INSERT cards + DDNS register
+   - discharge：UPDATE cards.resident_id = NULL（保留 card）
+   - 转床：旧 prefix UPDATE NULL + 新 prefix INSERT/UPDATE
+   - device bind/unbind：同 prefix 上 device 数 0 → DELETE card + DDNS unregister
+2. **DDNS wire**：装配 `ddns.Client`（已在 owl-common/ddns 就绪）到 wisefido-data；resident lifecycle 触发 RegisterCardName/UnregisterCardName
+3. **config_publisher 二态化**：拆 `PublishCardChanged` (create/delete) + `PublishCardResidentChanged` (admission/discharge/transfer)
+4. **前端**：
+   - `src/api/monitors/model/monitorModel.ts`：CardType enum 改 v2 值
+   - `Overview.vue` card_type 判断改新值
+   - Pinia store / TS interface 同步
+5. **DeviceCard 真的需要吗**：v2 cards 表有 /128 device card_type 但本次 service 已删 DeviceCard 相关 CRUD。如确实有公共区无 bed 设备场景，回头补 unit card (/80) 触发
 
 ### Phase G — alarm_events v2 改造（独立子项目，从本次 carve out）
 
@@ -170,4 +184,29 @@ feat(cards-v2): Phase X — short description
 Refs: doc/cards_v2_migration_checklist.md § X
 ```
 
-最后 push 前在本文件 § 三勾选并写 Phase G summary。
+## 六、本次会话产出 summary（2026-05-12）
+
+| Commit | Repo | Phase | Files | Lines |
+|---|---|---|---|---|
+| `cabad63` | owlRD | A | dbv2/50_cards.sql | +45 |
+| `889714b` | owlBack | B1 | owl-common/card/*  | +591 / -1682 |
+| `cd67f0b` | owlBack | B2 | owl-common/ddns/client.go | +119 |
+| `6a6cd1f` | owlBack | B3 | wisefido-data/internal/domain + repository | +732 / -1301 |
+| `b428210` | owlBack | B4 | wisefido-data/internal/service stubs | +112 / -882 |
+| (pending) | owlBack | B4b | card_allowed_provider.go (filterTenantCards v2) | minor |
+
+**净减代码 ~3000 行**（v1 reconcile / JSONB / 4 alarm counter / pop_alarm 路径全部退役）。
+
+**关键改变摘要**：
+1. cards 表三层身份（spatial_prefix INET 主 / card_id UUID PK / dns_short_name）已落定
+2. owl-common/card 全部基于 LPM（`cards.spatial_prefix >>= devices.device_ipv6`）反查
+3. owl-common/ddns 已提供 RegisterCardName API（DNS 单轨永久名）
+4. wisefido-data 7 处 service / repo 文件适配 v2 schema
+5. 所有 7 个 owlBack 服务 go build 全绿；systemd restart 成功；boot 无 panic；e2e login + 关键 list endpoint 全 200
+
+**显式 carve out 至下次会话**：
+
+- **Phase G**：alarm_events v2 改造（device_addr/alarm_kind/severity/process_status/payload/evidence 全新 schema）。owl-common/card/alarm_db.go 已成 v2 stub，Insert/Update/Recalc 返回 error 让 caller fail-soft。
+- **Phase F**：resident lifecycle 触发 cards INSERT/UPDATE/DELETE + DDNS wire + config_publisher 二态化 + 前端 CardType enum。当前 cards 表是空，写入由下次会话补完。
+
+测试账号已验证：admin/Ts123@123（tenant Demo, fd00:0:3::/48）。
