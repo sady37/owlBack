@@ -82,18 +82,22 @@ func (s *CardSyncService) SetReconcileDeps(db *sql.DB, ddnsClient *ddns.Client, 
 	}
 }
 
-// CreateCardsForUnit — v2 重新实现：unit /80 scope 的 resident → card reconcile。
+// CreateCardsForUnit — v2 重新实现：unit /80 scope 的**空间驱动**reconcile。
 //
-// 与 v1 区别（参 doc/cards_v2_migration_checklist.md §一）：
-//   - v1 按 unit JSONB residents/devices 数组重建 → v2 不再 maintain JSONB
-//   - v1 在 cards 表 INSERT/DELETE 完整生命周期 → v2 cards 与 resident 解耦，
-//     这里只 reconcile **resident_id 指针**（INSERT new active_bed/room/unit
-//     card 对应 active resident_unit；NULL out 落空 resident_id）
-//   - card 删除（spatial_prefix 下设备全空）由 CleanupOrphanCards 处理（device-driven）
+// 设计转折（vs 老 v2 仅 resident-driven）：
+// 用户反馈：v1 行为 = 每张物理床 1 张 active_bed card；每个公共 unit 1 张 unit
+// /public card。空床也该有卡（resident 来去仅改 resident_id 指针，不动 card 行数）。
+// 老 v2 reconcile 只扫 resident_unit → Unit 101 的 2 张空床 / Kitchen / LivingRoom
+// 都没卡。改为按空间结构（beds + units）驱动：
 //
-// 启动 reconcile 走 main.go for tenant→for unit 循环现状（无破坏），但实际工作
-// 在第一轮 (unit 重复扫描 resident_unit) 即完成；后续 unit 调用基本空跑。
-// 简单清晰 > 性能（启动 reconcile 不在 hot path）。
+//   Step 1: 列 unit 下 beds → 每张床 INSERT/UPSERT active_bed card (NoOne)
+//   Step 2: 若 unit 是公共区（unit_type ∈ public/shared 配置，或本 unit 无 bed）
+//           → INSERT/UPSERT unit/public card
+//   Step 3: overlay active resident_unit → 命中 prefix 的 card.resident_id +
+//           card_name=nickname；resident_unit prefix 是 /88 (room) 时也建 room card
+//   Step 4: clearStaleResidentCards 把指向已 expired resident 的 resident_id NULL 掉
+//
+// card 删除（spatial_prefix 下设备全空）由 CleanupOrphanCards 处理（device-driven）。
 func (s *CardSyncService) CreateCardsForUnit(ctx context.Context, tenantPrefix, unitPrefix string) (*CardUpdateStats, error) {
 	stats := &CardUpdateStats{}
 	if s.db == nil {
@@ -104,7 +108,49 @@ func (s *CardSyncService) CreateCardsForUnit(ctx context.Context, tenantPrefix, 
 		return stats, nil
 	}
 
-	// 1) 扫 active resident_unit (resident_id, spatial_prefix) 在该 unit /80 下
+	// === Step 1: 空间结构驱动 — 每张 bed 一张 active_bed card ===
+	bedRows, err := s.db.QueryContext(ctx, `
+		SELECT b.bed_id::text, COALESCE(b.bed_name, '')
+		  FROM beds b
+		 WHERE b.bed_id <<= $1::INET
+		 ORDER BY b.bed_id
+	`, unitPrefix)
+	if err == nil {
+		defer bedRows.Close()
+		for bedRows.Next() {
+			var bedPrefix, bedName string
+			if err := bedRows.Scan(&bedPrefix, &bedName); err != nil {
+				continue
+			}
+			op, err := s.upsertSpaceCard(ctx, tenantPrefix, bedPrefix, "")
+			if err != nil {
+				s.logger.Warn("reconcile: upsertSpaceCard bed failed",
+					zap.String("bed", bedPrefix), zap.String("bed_name", bedName), zap.Error(err))
+				continue
+			}
+			countOp(stats, op)
+		}
+	} else {
+		s.logger.Warn("reconcile: list beds failed", zap.String("unit", unitPrefix), zap.Error(err))
+	}
+
+	// === Step 2: unit /80 是公共区（无 bed）→ 建 unit/public card ===
+	var hasBed bool
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM beds WHERE bed_id <<= $1::INET)`,
+		unitPrefix).Scan(&hasBed)
+	if !hasBed {
+		// 整个 unit 无床位 = 公共区域 (LivingRoom/Kitchen/etc) → 建 /80 unit card
+		op, err := s.upsertSpaceCard(ctx, tenantPrefix, unitPrefix, "")
+		if err != nil {
+			s.logger.Warn("reconcile: upsertSpaceCard unit failed",
+				zap.String("unit", unitPrefix), zap.Error(err))
+		} else {
+			countOp(stats, op)
+		}
+	}
+
+	// === Step 3: overlay active resident_unit on existing cards ===
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT r.resident_id::text, COALESCE(r.nickname, ''), ru.spatial_prefix::text
 		  FROM residents r
@@ -123,53 +169,75 @@ func (s *CardSyncService) CreateCardsForUnit(ctx context.Context, tenantPrefix, 
 			s.logger.Warn("CreateCardsForUnit scan failed", zap.Error(err))
 			continue
 		}
-		op, err := s.upsertResidentCard(ctx, tenantPrefix, hoa, nickname, prefixStr)
+		// 若 resident 赋到 /88 room 或 /80 unit（无对应 bed card），仍创建对应 card
+		op, err := s.upsertSpaceCard(ctx, tenantPrefix, prefixStr, hoa)
 		if err != nil {
-			s.logger.Warn("reconcile: upsertResidentCard failed",
+			s.logger.Warn("reconcile: upsertSpaceCard resident overlay failed",
 				zap.String("hoa", hoa), zap.String("prefix", prefixStr), zap.Error(err))
 			continue
 		}
-		switch op {
-		case "created":
-			stats.CreatedCount++
-		case "updated":
-			stats.UpdatedCount++
-		case "unchanged":
-			stats.UnchangedCount++
-		}
-		stats.ExistingCount++
+		// resident overlay 阶段统计走 "updated"（已有 space card → 改 resident_id）；
+		// 真新建（resident 赋到 /80 unit 而无对应 unit card 等罕见场景）按 op 真实结果
+		countOp(stats, op)
+		_ = nickname // upsertSpaceCard 内部用 hoa 反查 nickname
 	}
 	if err := rows.Err(); err != nil {
 		s.logger.Warn("CreateCardsForUnit rows err", zap.Error(err))
 	}
 
-	// 2) 清扫该 unit /80 下 resident_id 已落空的 card（resident 出院 / 转走但 card 行还指向旧 HoA）
+	// === Step 4: 清扫该 unit /80 下 resident_id 已落空的 card ===
 	cleared, err := s.clearStaleResidentCards(ctx, unitPrefix)
 	if err != nil {
 		s.logger.Warn("CreateCardsForUnit clearStale failed", zap.String("unit", unitPrefix), zap.Error(err))
 	}
-	stats.DeletedCount = cleared // 复用现有字段：表示 resident 指针被清的数量（非物理删 card）
+	stats.DeletedCount = cleared
 	return stats, nil
 }
 
-// upsertResidentCard 调 cards 表 UPSERT + 尝试 DDNS register；返回 op ∈ {"created","updated","unchanged"}。
-func (s *CardSyncService) upsertResidentCard(ctx context.Context, tenantPrefix, hoa, nickname, prefixStr string) (string, error) {
+func countOp(stats *CardUpdateStats, op string) {
+	switch op {
+	case "created":
+		stats.CreatedCount++
+		stats.ExistingCount++
+	case "updated":
+		stats.UpdatedCount++
+		stats.ExistingCount++
+	case "unchanged":
+		stats.UnchangedCount++
+		stats.ExistingCount++
+	}
+}
+
+// upsertSpaceCard — 空间-驱动 UPSERT。
+//   prefixStr: bed/room/unit prefix（INET CIDR）
+//   hoa:       "" → NoOne (空床/空 unit)；非空 → resident 入住，card_name=nickname
+// card_type 按 prefix masklen 决定（CardTypeForMasklen）。
+func (s *CardSyncService) upsertSpaceCard(ctx context.Context, tenantPrefix, prefixStr, hoa string) (string, error) {
 	prefix, err := netip.ParsePrefix(prefixStr)
 	if err != nil {
 		return "", err
 	}
 	cardType := card.CardTypeForMasklen(prefix.Bits())
 	if cardType == "" {
-		return "", nil // 不支持的 masklen，跳过
+		return "", nil
 	}
 	shortName, _ := ddns.CardShortName(prefix)
-	// card_name = resident.nickname 有人 / "NoOne" 无人；空间维度 (Unit-Room-Bed) 由 dns_short_name 承载
-	cardName := nickname
-	if cardName == "" {
-		cardName = CardNameNoResident
+
+	// card_name 解析：hoa 非空时查 residents.nickname；空则 "NoOne"
+	cardName := CardNameNoResident
+	hoaArg := interface{}(nil)
+	if strings.TrimSpace(hoa) != "" {
+		var nick sql.NullString
+		_ = s.db.QueryRowContext(ctx,
+			`SELECT COALESCE(nickname, '') FROM residents WHERE resident_id = $1::INET`,
+			hoa).Scan(&nick)
+		if nick.Valid && nick.String != "" {
+			cardName = nick.String
+		}
+		hoaArg = hoa
 	}
 
-	// 查现状（现 resident_id / card_name）— card_id ≡ spatial_prefix，无独立 UUID 列
+	// 查现状
 	var existingResident, existingName sql.NullString
 	existingExists := false
 	if err := s.db.QueryRowContext(ctx, `
@@ -183,14 +251,15 @@ func (s *CardSyncService) upsertResidentCard(ctx context.Context, tenantPrefix, 
 
 	op := "created"
 	if existingExists {
-		if strings.TrimRight(existingResident.String, "/128") == strings.TrimRight(hoa, "/128") &&
-			existingName.String == cardName {
+		// 比较是否真要 update（避免无脑 update）
+		existingHoA := strings.TrimRight(existingResident.String, "/128")
+		newHoA := strings.TrimRight(hoa, "/128")
+		if existingHoA == newHoA && existingName.String == cardName {
 			return "unchanged", nil
 		}
 		op = "updated"
 	}
 
-	// PK = spatial_prefix → UPSERT 用 ON CONFLICT (spatial_prefix)
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO cards (spatial_prefix, card_type, card_name, dns_short_name, resident_id, is_active, enabled_at)
 		VALUES ($1::inet, $2, $3, $4, $5::inet, TRUE, NOW())
@@ -201,13 +270,12 @@ func (s *CardSyncService) upsertResidentCard(ctx context.Context, tenantPrefix, 
 			is_active      = TRUE,
 			enabled_at     = COALESCE(cards.enabled_at, NOW()),
 			updated_at     = NOW()
-	`, prefixStr, cardType, cardName, shortName, hoa)
-	cardID := prefixStr // card_id ≡ spatial_prefix
+	`, prefixStr, cardType, cardName, shortName, hoaArg)
 	if err != nil {
 		return "", err
 	}
 
-	// DDNS register best-effort（启动 reconcile 时全量推一遍，failed = log warn 继续）
+	// DDNS register best-effort
 	if s.ddns != nil && shortName != "" {
 		tenantSlot, _, _, _, _, _, _, derr := spatial.SlotsOf(prefix.Addr())
 		if derr == nil {
@@ -219,11 +287,22 @@ func (s *CardSyncService) upsertResidentCard(ctx context.Context, tenantPrefix, 
 		}
 	}
 
-	// publish CloudEvent（reconcile 期不区分 admission/transfer；用统一 op="reconcile"）
 	if s.publisher != nil {
-		_ = s.publisher.PublishCardResidentChanged(ctx, tenantPrefix, cardID, "reconcile", "", hoa, prefixStr)
+		evtOp := "reconcile"
+		if op == "created" {
+			evtOp = "reconcile_create"
+		}
+		_ = s.publisher.PublishCardResidentChanged(ctx, tenantPrefix, prefixStr, evtOp, "", hoa, prefixStr)
 	}
 	return op, nil
+}
+
+// upsertResidentCard — Deprecated, 被 upsertSpaceCard 取代（空间驱动 + resident overlay 统一）。
+// 保留签名为零调用方编译兼容；正式去除可在下次 cleanup pass 删。
+//
+// Deprecated: use upsertSpaceCard.
+func (s *CardSyncService) upsertResidentCard(ctx context.Context, tenantPrefix, hoa, _ string, prefixStr string) (string, error) {
+	return s.upsertSpaceCard(ctx, tenantPrefix, prefixStr, hoa)
 }
 
 // clearStaleResidentCards 给 unit /80 范围内 cards：若 resident_id 指向的 resident 已无 active resident_unit @ 该 prefix，则 NULL 掉。
