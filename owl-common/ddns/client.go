@@ -244,6 +244,9 @@ func CardShortName(prefix netip.Prefix) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// site = bld<<4 | floor (4+4 split)；DNS name 须含 branch+site 才能在多 branch 下唯一
+	siteByte := uint8(prefix.Addr().As16()[7])
+	bld, flr := spatial.UnpackSiteSlot(siteByte)
 	switch prefix.Bits() {
 	case 48:
 		_ = tenant
@@ -251,16 +254,13 @@ func CardShortName(prefix netip.Prefix) (string, error) {
 	case 56:
 		return fmt.Sprintf("br%02x", branch), nil
 	case 64:
-		// site = bld<<4 | floor (4+4 split)
-		_, _ = branch, unit
-		bld, flr := spatial.UnpackSiteSlot(uint8(prefix.Addr().As16()[7]))
 		return fmt.Sprintf("site%xb%xf", bld, flr), nil
 	case 80:
-		return fmt.Sprintf("u%04x", unit), nil
+		return fmt.Sprintf("br%02x-s%02x-u%04x", branch, siteByte, unit), nil
 	case 88:
-		return fmt.Sprintf("u%04x-r%02x", unit, room), nil
+		return fmt.Sprintf("br%02x-s%02x-u%04x-r%02x", branch, siteByte, unit, room), nil
 	case 96:
-		return fmt.Sprintf("u%04x-r%02x-b%02x", unit, room, bed), nil
+		return fmt.Sprintf("br%02x-s%02x-u%04x-r%02x-b%02x", branch, siteByte, unit, room, bed), nil
 	case 128:
 		return "", fmt.Errorf("ddns: /128 device prefix should use RegisterDevice")
 	}

@@ -335,6 +335,8 @@ func main() {
 
 		// 创建 CardSyncService
 		cardSyncService = service.NewCardSyncService(cardRepo, configPublisher, cardRealtimeSvc, logger)
+		// Phase F+: 启动 reconcile 路径要 db / DDNS / owlDomain 装配
+		cardSyncService.SetReconcileDeps(db, ddnsClient, getenvDefault("OWL_DOMAIN", "owl."))
 		service.InitGlobalCardSync(cardSyncService)
 
 		// v2 Phase 1b: slim DeviceMonitorSettingsV2Service — backed by spatial_config (device /128) + tenant snapshot fallback.

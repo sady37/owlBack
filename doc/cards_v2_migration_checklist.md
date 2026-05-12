@@ -141,6 +141,35 @@ Envelope 严格按 [`doc/datagram_envelope.md`](datagram_envelope.md)：source /
 | DDNS PTR | `dig -x fd00:0:3:111:3:101::` | `0.0.0.0.0.0.0.0.1.0.1.0.3.0.0.0.1.1.1.0.3.0.0.0.0.0.0.0.0.0.d.f.ip6.arpa. PTR u0003-r01-b01.tenant3.owl.` ✅ |
 | frontend cards list | GET `/data/api/v1/data/vital-focus/cards` | 返 `card_type:"active_bed"`, `dns_short_name:"u0003-r01-b01"`, `spatial_prefix:"fd00:0:3:111:3:101::/96"` ✅ |
 
+**Phase F.5 — 启动 reconcile 恢复**（同次会话补完）：
+
+v1 启动期 `CreateCardsForUnit` 已 Phase B4 退役成 stub，意味着旁路写入（SQL seed
+demo data / migration import / 任何不走 `ResidentService.Create()` 的 resident）
+都不会自动 materialize cards，与 v1 "重启时少了的补 / 多了的清 / 不变的留" 语义
+不一致。
+
+修复（commit pending）：
+
+- 在 `card_sync_service.go` 重新实现 `CreateCardsForUnit(tenantPrefix, unitPrefix)`，
+  按 unit /80 scope 扫 active resident_unit + LPM →
+  对每个 (resident_id, spatial_prefix) UPSERT card +
+  card_type 由 prefix.Bits() 决定（`CardTypeForMasklen`，/88=room, /96=active_bed, /80=unit）+
+  DDNS register 尝试（best-effort）
+- 同步 NULL out stale `resident_id`：扫 unit 范围 cards 中 resident_id 已无 active
+  resident_unit 匹配的行
+- 新增 `SetReconcileDeps(db, ddnsClient, owlDomain)` 注入；main.go 启动 wire
+- **修 DNS shortName 冲突**：`CardShortName` 老版本 `/88 → u<unit>-r<room>` 在
+  跨 branch/site 下会撞（多 branch 同 unit slot 重名）。改为
+  `br<branch>-s<site>-u<unit>-r<room>[-b<bed>]`，跨 branch/site 唯一
+
+E2E 验证（清空 cards 表 → 重启）：
+
+| 步骤 | 结果 |
+|---|---|
+| `DELETE FROM cards` + 重启 | 自动 reconcile 出 8 张 card（4 room + 4 active_bed）覆盖所有 11 个 active resident 中 8 个有 spatial_prefix 分配的 |
+| 手动 hard-delete 1 个 resident → 重启 | 该 prefix 的 active_bed card `resident_id` 自动 NULL 化（card 行保留，等待 device unbind 触发 物理删） |
+| 再次重启（不变） | reconcile 跑完后 cards 表 0 net change（少不补、多不清） |
+
 **已知 follow-up**（不阻塞 Phase F 验收）：
 
 1. **DDNS forward zone (`tenant<N>.owl.`) 未在 BIND 配置中预创建** → `RegisterCardName` 推 AAAA 时收 NOTAUTH（仅 log warn，业务不阻塞）；PTR 在 `0.0.0.0.0.0.d.f.ip6.arpa.` 已就绪所以反查 OK。须 Phase B' 基建侧补 per-tenant forward zone bootstrap（kea ddns-conf 或 BIND zone provisioning）。

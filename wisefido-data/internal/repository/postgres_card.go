@@ -867,11 +867,14 @@ func (r *PostgresCardRepository) UpdateCard(
 	return nil
 }
 
-// GetActiveBedCardIDByPrefix — 反查给定 spatial_prefix 对应的 active_bed card_id。
+// GetResidentCardIDByPrefix — 反查给定 spatial_prefix 上承载 resident 的 card_id。
+// 不限 card_type（active_bed/room/unit 任一）；按 masklen 唯一决定该 prefix 的 resident-bearing card。
 // 没匹配 / 出错时返回 ""（caller 用 if cardID != "" 守卫）。
 //
 // Phase F cards 物化路径用：service syncCard 清空 old prefix 上的 resident_id 时需要 cardID。
-func (r *PostgresCardRepository) GetActiveBedCardIDByPrefix(ctx context.Context, prefix string) (string, error) {
+// 设计：一个 spatial_prefix 同一 masklen 下只能有一个 card（UNIQUE(spatial_prefix, card_type)
+// + masklen↔card_type 映射 1:1，参 owl-common/card.CardTypeForMasklen）。
+func (r *PostgresCardRepository) GetResidentCardIDByPrefix(ctx context.Context, prefix string) (string, error) {
 	if strings.TrimSpace(prefix) == "" {
 		return "", nil
 	}
@@ -879,14 +882,15 @@ func (r *PostgresCardRepository) GetActiveBedCardIDByPrefix(ctx context.Context,
 	err := r.db.QueryRowContext(ctx, `
 		SELECT card_id::text
 		  FROM cards
-		 WHERE spatial_prefix = $1::INET AND card_type = 'active_bed'
+		 WHERE spatial_prefix = $1::INET
+		 ORDER BY (resident_id IS NULL), card_type
 		 LIMIT 1
 	`, prefix).Scan(&cardID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return "", nil
 		}
-		return "", fmt.Errorf("lookup active_bed card by prefix: %w", err)
+		return "", fmt.Errorf("lookup card by prefix: %w", err)
 	}
 	if !cardID.Valid {
 		return "", nil

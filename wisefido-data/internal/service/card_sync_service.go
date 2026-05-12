@@ -2,10 +2,17 @@ package service
 
 import (
 	"context"
+	"database/sql"
+	"net/netip"
+	"strings"
 
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
+
+	"owl-common/card"
+	"owl-common/ddns"
+	"owl-common/spatial"
 
 	"go.uber.org/zap"
 )
@@ -25,6 +32,11 @@ type CardSyncService struct {
 	publisher *publisher.ConfigPublisher
 	realtime  *CardRealtimeService
 	logger    *zap.Logger
+
+	// Phase F+ — 启动 reconcile / per-tenant DDNS push 用
+	db         *sql.DB
+	ddns       *ddns.Client
+	owlDomain  string
 }
 
 // NewCardSyncService 创建卡片同步服务
@@ -49,11 +61,208 @@ func (s *CardSyncService) PublishConfigCardReset(ctx context.Context) error {
 	return s.publisher.PublishConfigCardReset(ctx)
 }
 
-// CreateCardsForUnit v2 no-op；真正的 INSERT 由 resident lifecycle 路径完成。
-func (s *CardSyncService) CreateCardsForUnit(ctx context.Context, tenantID, unitID string) (*CardUpdateStats, error) {
-	s.logger.Debug("CardSyncService.CreateCardsForUnit skipped (v2 event-driven; pending Phase F)",
-		zap.String("tenant_id", tenantID), zap.String("unit_id", unitID))
-	return &CardUpdateStats{}, nil
+// SetReconcileDeps 装配启动 reconcile 所需依赖（db / DDNS / owlDomain）。
+// 仅 main.go 启动期注入一次；后续 ReconcileResidentCards 调用 will use 这些。
+func (s *CardSyncService) SetReconcileDeps(db *sql.DB, ddnsClient *ddns.Client, owlDomain string) {
+	s.db = db
+	s.ddns = ddnsClient
+	if strings.TrimSpace(owlDomain) != "" {
+		s.owlDomain = owlDomain
+		if !strings.HasSuffix(s.owlDomain, ".") {
+			s.owlDomain += "."
+		}
+	} else {
+		s.owlDomain = "owl."
+	}
+}
+
+// CreateCardsForUnit — v2 重新实现：unit /80 scope 的 resident → card reconcile。
+//
+// 与 v1 区别（参 doc/cards_v2_migration_checklist.md §一）：
+//   - v1 按 unit JSONB residents/devices 数组重建 → v2 不再 maintain JSONB
+//   - v1 在 cards 表 INSERT/DELETE 完整生命周期 → v2 cards 与 resident 解耦，
+//     这里只 reconcile **resident_id 指针**（INSERT new active_bed/room/unit
+//     card 对应 active resident_unit；NULL out 落空 resident_id）
+//   - card 删除（spatial_prefix 下设备全空）由 CleanupOrphanCards 处理（device-driven）
+//
+// 启动 reconcile 走 main.go for tenant→for unit 循环现状（无破坏），但实际工作
+// 在第一轮 (unit 重复扫描 resident_unit) 即完成；后续 unit 调用基本空跑。
+// 简单清晰 > 性能（启动 reconcile 不在 hot path）。
+func (s *CardSyncService) CreateCardsForUnit(ctx context.Context, tenantPrefix, unitPrefix string) (*CardUpdateStats, error) {
+	stats := &CardUpdateStats{}
+	if s.db == nil {
+		s.logger.Debug("CreateCardsForUnit skipped (db not wired)")
+		return stats, nil
+	}
+	if strings.TrimSpace(unitPrefix) == "" {
+		return stats, nil
+	}
+
+	// 1) 扫 active resident_unit (resident_id, spatial_prefix) 在该 unit /80 下
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT r.resident_id::text, COALESCE(r.nickname, ''), ru.spatial_prefix::text
+		  FROM residents r
+		  JOIN resident_unit ru ON ru.resident_id = r.resident_id AND ru.valid_to IS NULL
+		 WHERE r.status = 'active'
+		   AND ru.spatial_prefix <<= $1::INET
+	`, unitPrefix)
+	if err != nil {
+		return stats, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var hoa, nickname, prefixStr string
+		if err := rows.Scan(&hoa, &nickname, &prefixStr); err != nil {
+			s.logger.Warn("CreateCardsForUnit scan failed", zap.Error(err))
+			continue
+		}
+		op, err := s.upsertResidentCard(ctx, tenantPrefix, hoa, nickname, prefixStr)
+		if err != nil {
+			s.logger.Warn("reconcile: upsertResidentCard failed",
+				zap.String("hoa", hoa), zap.String("prefix", prefixStr), zap.Error(err))
+			continue
+		}
+		switch op {
+		case "created":
+			stats.CreatedCount++
+		case "updated":
+			stats.UpdatedCount++
+		case "unchanged":
+			stats.UnchangedCount++
+		}
+		stats.ExistingCount++
+	}
+	if err := rows.Err(); err != nil {
+		s.logger.Warn("CreateCardsForUnit rows err", zap.Error(err))
+	}
+
+	// 2) 清扫该 unit /80 下 resident_id 已落空的 card（resident 出院 / 转走但 card 行还指向旧 HoA）
+	cleared, err := s.clearStaleResidentCards(ctx, unitPrefix)
+	if err != nil {
+		s.logger.Warn("CreateCardsForUnit clearStale failed", zap.String("unit", unitPrefix), zap.Error(err))
+	}
+	stats.DeletedCount = cleared // 复用现有字段：表示 resident 指针被清的数量（非物理删 card）
+	return stats, nil
+}
+
+// upsertResidentCard 调 cards 表 UPSERT + 尝试 DDNS register；返回 op ∈ {"created","updated","unchanged"}。
+func (s *CardSyncService) upsertResidentCard(ctx context.Context, tenantPrefix, hoa, nickname, prefixStr string) (string, error) {
+	prefix, err := netip.ParsePrefix(prefixStr)
+	if err != nil {
+		return "", err
+	}
+	cardType := card.CardTypeForMasklen(prefix.Bits())
+	if cardType == "" {
+		return "", nil // 不支持的 masklen，跳过
+	}
+	shortName, _ := ddns.CardShortName(prefix)
+	cardName := nickname
+	if cardName == "" {
+		cardName = shortName
+	}
+
+	// 查现状（card_id / 现 resident_id / card_name）
+	var existingCardID, existingResident, existingName sql.NullString
+	_ = s.db.QueryRowContext(ctx, `
+		SELECT card_id::text, COALESCE(resident_id::text, ''), COALESCE(card_name, '')
+		  FROM cards
+		 WHERE spatial_prefix = $1::INET AND card_type = $2
+		 LIMIT 1
+	`, prefixStr, cardType).Scan(&existingCardID, &existingResident, &existingName)
+
+	op := "created"
+	if existingCardID.Valid && existingCardID.String != "" {
+		if strings.TrimRight(existingResident.String, "/128") == strings.TrimRight(hoa, "/128") &&
+			existingName.String == cardName {
+			return "unchanged", nil
+		}
+		op = "updated"
+	}
+
+	var cardID string
+	err = s.db.QueryRowContext(ctx, `
+		INSERT INTO cards (spatial_prefix, card_type, card_name, dns_short_name, resident_id, is_active, enabled_at)
+		VALUES ($1::inet, $2, $3, $4, $5::inet, TRUE, NOW())
+		ON CONFLICT (spatial_prefix, card_type) DO UPDATE SET
+			card_name      = COALESCE(EXCLUDED.card_name, cards.card_name),
+			dns_short_name = COALESCE(EXCLUDED.dns_short_name, cards.dns_short_name),
+			resident_id    = EXCLUDED.resident_id,
+			is_active      = TRUE,
+			enabled_at     = COALESCE(cards.enabled_at, NOW()),
+			updated_at     = NOW()
+		RETURNING card_id::text
+	`, prefixStr, cardType, cardName, shortName, hoa).Scan(&cardID)
+	if err != nil {
+		return "", err
+	}
+
+	// DDNS register best-effort（启动 reconcile 时全量推一遍，failed = log warn 继续）
+	if s.ddns != nil && shortName != "" {
+		tenantSlot, _, _, _, _, _, _, derr := spatial.SlotsOf(prefix.Addr())
+		if derr == nil {
+			zone := ddns.ZoneForTenant(tenantSlot, s.owlDomain)
+			if err := s.ddns.RegisterCardName(ctx, prefix, shortName, zone); err != nil {
+				s.logger.Warn("reconcile: DDNS RegisterCardName failed",
+					zap.String("prefix", prefixStr), zap.String("zone", zone), zap.Error(err))
+			}
+		}
+	}
+
+	// publish CloudEvent（reconcile 期不区分 admission/transfer；用统一 op="reconcile"）
+	if s.publisher != nil {
+		_ = s.publisher.PublishCardResidentChanged(ctx, tenantPrefix, cardID, "reconcile", "", hoa, prefixStr)
+	}
+	return op, nil
+}
+
+// clearStaleResidentCards 给 unit /80 范围内 cards：若 resident_id 指向的 resident 已无 active resident_unit @ 该 prefix，则 NULL 掉。
+func (s *CardSyncService) clearStaleResidentCards(ctx context.Context, unitPrefix string) (int, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.card_id::text, c.spatial_prefix::text, c.resident_id::text
+		  FROM cards c
+		 WHERE c.spatial_prefix <<= $1::INET
+		   AND c.resident_id IS NOT NULL
+		   AND NOT EXISTS (
+		     SELECT 1 FROM resident_unit ru
+		      WHERE ru.resident_id = c.resident_id
+		        AND ru.spatial_prefix = c.spatial_prefix
+		        AND ru.valid_to IS NULL
+		   )
+	`, unitPrefix)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	type stale struct{ cardID, prefix, oldHoA string }
+	var list []stale
+	for rows.Next() {
+		var v stale
+		if err := rows.Scan(&v.cardID, &v.prefix, &v.oldHoA); err == nil {
+			list = append(list, v)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	cleared := 0
+	for _, v := range list {
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE cards SET resident_id = NULL, updated_at = NOW() WHERE card_id = $1::uuid`, v.cardID); err != nil {
+			s.logger.Warn("clearStale: UPDATE failed", zap.String("card_id", v.cardID), zap.Error(err))
+			continue
+		}
+		// tenant prefix derive from unit prefix
+		tenantPrefix := ""
+		_ = s.db.QueryRowContext(ctx, `SELECT set_masklen($1::inet, 48)::text`, v.prefix).Scan(&tenantPrefix)
+		if s.publisher != nil {
+			_ = s.publisher.PublishCardResidentChanged(ctx, tenantPrefix, v.cardID, "reconcile_discharge", v.oldHoA, "", v.prefix)
+		}
+		cleared++
+	}
+	return cleared, nil
 }
 
 // SyncDeviceCards v2 no-op。

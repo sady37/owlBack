@@ -497,7 +497,7 @@ func (s *ResidentService) syncCardForResident(ctx context.Context, tenantPrefix,
 
 	// 1) 旧 prefix → 清空 resident_id（保留 card 本身）
 	if oldPrefix != "" {
-		if cardID, err := s.cardRepo.GetActiveBedCardIDByPrefix(ctx, oldPrefix); err == nil && cardID != "" {
+		if cardID, err := s.cardRepo.GetResidentCardIDByPrefix(ctx, oldPrefix); err == nil && cardID != "" {
 			empty := ""
 			if err := s.cardRepo.UpdateCard(cardID, nil, &empty, nil); err != nil {
 				s.logger.Warn("syncCard: clear old card resident_id failed",
@@ -542,7 +542,15 @@ func (s *ResidentService) materializeActiveBedCard(ctx context.Context, tenantPr
 		cardName = shortName
 	}
 
-	cardID, err := s.cardRepo.CreateCard(prefixStr, card.CardTypeActiveBed, cardName, shortName, &hoa)
+	// card_type 由 prefix masklen 决定（/96=active_bed, /88=room, /80=unit, ...）
+	cardType := card.CardTypeForMasklen(prefix.Bits())
+	if cardType == "" {
+		s.logger.Warn("syncCard: unsupported masklen — skipping card materialize",
+			zap.String("prefix", prefixStr), zap.Int("bits", prefix.Bits()))
+		return
+	}
+
+	cardID, err := s.cardRepo.CreateCard(prefixStr, cardType, cardName, shortName, &hoa)
 	if err != nil {
 		s.logger.Error("syncCard: CreateCard failed",
 			zap.String("prefix", prefixStr), zap.String("hoa", hoa), zap.Error(err))
