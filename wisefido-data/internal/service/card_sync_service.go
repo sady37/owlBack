@@ -26,6 +26,12 @@ import (
 // 实际写入逻辑暂为 no-op；只保留 emit 路径以便 reset notification 仍可发。
 //
 // 真正的 v2 实现见 [doc/cards_v2_migration_checklist.md § Phase F]。
+
+// CardNameNoResident — 空床/空间卡的 card_name 占位（resident 缺位时用）。
+// 参 doc/cards_v2_migration_checklist.md §一.1：card_name 仅随 admission/discharge 变；
+// 空间维度由 dns_short_name (Unit-Room-Bed) 承载，不混入 card_name。
+const CardNameNoResident = "NoOne"
+
 type CardSyncService struct {
 	cardRepo  *repository.PostgresCardRepository
 	creator   *CardCreateService
@@ -157,9 +163,10 @@ func (s *CardSyncService) upsertResidentCard(ctx context.Context, tenantPrefix, 
 		return "", nil // 不支持的 masklen，跳过
 	}
 	shortName, _ := ddns.CardShortName(prefix)
+	// card_name = resident.nickname 有人 / "NoOne" 无人；空间维度 (Unit-Room-Bed) 由 dns_short_name 承载
 	cardName := nickname
 	if cardName == "" {
-		cardName = shortName
+		cardName = CardNameNoResident
 	}
 
 	// 查现状（现 resident_id / card_name）— card_id ≡ spatial_prefix，无独立 UUID 列
@@ -253,8 +260,10 @@ func (s *CardSyncService) clearStaleResidentCards(ctx context.Context, unitPrefi
 
 	cleared := 0
 	for _, v := range list {
+		// 清 resident_id + card_name 改回 "NoOne"（card_name 与 resident 联动；空间名走 dns_short_name）
 		if _, err := s.db.ExecContext(ctx,
-			`UPDATE cards SET resident_id = NULL, updated_at = NOW() WHERE spatial_prefix = $1::INET`, v.prefix); err != nil {
+			`UPDATE cards SET resident_id = NULL, card_name = $2, updated_at = NOW() WHERE spatial_prefix = $1::INET`,
+			v.prefix, CardNameNoResident); err != nil {
 			s.logger.Warn("clearStale: UPDATE failed", zap.String("prefix", v.prefix), zap.Error(err))
 			continue
 		}

@@ -7,18 +7,22 @@
 
 ## 一、设计共识（已锁定，不可回退）
 
-### 1. card_id 双层身份（**Phase F.6 简化：UUID 层已退役**）
+### 1. card_id / card_address / card_name 三字段语义（**Phase F.6+ 简化**）
 
-| 层 | 字段 | 形态 | 谁用 | 何时变 |
-|---|---|---|---|---|
-| **业务身份 + DB PK** | `spatial_prefix INET` | `fd00:0:3:111:3:101::/96` | service / cardagg / stream payload / FK / cache key | 仅 prefix 物理删除（bed 被销毁）|
-| 人类可读（DNS） | `dns_short_name` | `br01-s12-u0001-r01-b01.tenant3.owl` | UI / 日志 / 报警显示 | card 增删 |
+| 字段 | 形态 | 何时变 | 备注 |
+|---|---|---|---|
+| `spatial_prefix` (= card_id) | INET CIDR `fd00:0:3:111:3:101::/96` | 仅 prefix 物理删除（bed/room/unit 被销毁）| **DB PK / 业务身份 / cache key**；空间不变就不变；删除重建也不变 |
+| `dns_short_name` (= card_address) | 字符串 `br01-s12-u0001-r01-b01` | card 增删 | 按最长 mask 拼 Unit-Room-Bed；DNS 永久名（无 PHI） |
+| `card_name` | `<nickname>` 有人 / `"NoOne"` 无人 | admission / discharge 两个时刻 | 仅承载 resident 维度；空间维度走 dns_short_name |
 
-**核心规则**：`card_id ≡ spatial_prefix`。空间不变 → card_id 不变（删除重建也不变；prefix 是身份本身）。
+**核心规则**：
+- `card_id ≡ spatial_prefix`：空间本身就是身份（v1 UUID 那层冗余已退役）
+- `card_address` 由空间结构决定，跟 device 来去无关，跟 resident 来去无关
+- `card_name` 只随 resident 进出变；空 card 全部叫 `"NoOne"`
 
 类比 `192.168.1.0/24`：bed 是子网，HR/RR + radar + cam 是子网内 host，card 是子网本身（用 CIDR 表示）。`device_uid` (host 末 32 bit) 不入 card_id。
 
-**历史**：v1 用 UUID 做 PK + spatial_prefix 做业务身份，两层冗余。Phase F.6 简化为单层 — `card_id` 在 API/JSON 中保留为字段名，但其值就是 `spatial_prefix` INET CIDR 字符串。
+**历史**：v1 用 UUID 做 PK + spatial_prefix 做业务身份，两层冗余；card_name 之前还混合了 dns_short_name fallback。Phase F.6+ 全面简化：`card_id ≡ spatial_prefix`，`card_name ∈ {nickname, "NoOne"}` 二态。
 
 ### 2. card 删除条件
 **当且仅当 card 下所有 device 移除**，与 resident 完全解耦。

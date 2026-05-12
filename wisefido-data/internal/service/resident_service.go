@@ -73,6 +73,12 @@ const (
 	roleResident    = "Resident"
 	roleFamily      = "Family"
 	roleSystemAdmin = "SystemAdmin"
+
+	// cardNameNoResident — 空床/空间卡的 card_name 占位（resident 缺位时用）。
+	// 设计原则（参 doc/cards_v2_migration_checklist.md §一.1）：
+	//   card_name = resident.nickname 有人 | "NoOne" 无人；
+	//   仅随 admission/discharge 变；空间维度由 dns_short_name (Unit-Room-Bed) 承载。
+	cardNameNoResident = "NoOne"
 )
 
 // isFamilyRole — Family role 大小写兼容判断
@@ -495,11 +501,12 @@ func (s *ResidentService) syncCardForResident(ctx context.Context, tenantPrefix,
 		return // no spatial change
 	}
 
-	// 1) 旧 prefix → 清空 resident_id（保留 card 本身）
+	// 1) 旧 prefix → 清空 resident_id + card_name 改回 "NoOne"（保留 card 本身）
 	if oldPrefix != "" {
 		if cardID, err := s.cardRepo.GetResidentCardIDByPrefix(ctx, oldPrefix); err == nil && cardID != "" {
 			empty := ""
-			if err := s.cardRepo.UpdateCard(cardID, nil, &empty, nil); err != nil {
+			noOne := cardNameNoResident
+			if err := s.cardRepo.UpdateCard(cardID, &noOne, &empty, nil); err != nil {
 				s.logger.Warn("syncCard: clear old card resident_id failed",
 					zap.String("card_id", cardID), zap.String("old_prefix", oldPrefix), zap.Error(err))
 			} else {
@@ -536,10 +543,11 @@ func (s *ResidentService) materializeActiveBedCard(ctx context.Context, tenantPr
 		// 仍然尝试 DB 写入，DNS 跳过
 	}
 
-	// card_name 用 resident.nickname；查不到 fallback 用 dns_short_name
+	// card_name = resident.nickname 有人 / "NoOne" 无人；空间维度 (Unit-Room-Bed) 由
+	// dns_short_name 承载，不混入 card_name。card_name 仅随 admission/discharge 变。
 	cardName := s.lookupResidentNickname(ctx, tenantPrefix, hoa)
 	if cardName == "" {
-		cardName = shortName
+		cardName = cardNameNoResident
 	}
 
 	// card_type 由 prefix masklen 决定（/96=active_bed, /88=room, /80=unit, ...）
