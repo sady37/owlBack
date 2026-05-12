@@ -867,6 +867,33 @@ func (r *PostgresCardRepository) UpdateCard(
 	return nil
 }
 
+// GetActiveBedCardIDByPrefix — 反查给定 spatial_prefix 对应的 active_bed card_id。
+// 没匹配 / 出错时返回 ""（caller 用 if cardID != "" 守卫）。
+//
+// Phase F cards 物化路径用：service syncCard 清空 old prefix 上的 resident_id 时需要 cardID。
+func (r *PostgresCardRepository) GetActiveBedCardIDByPrefix(ctx context.Context, prefix string) (string, error) {
+	if strings.TrimSpace(prefix) == "" {
+		return "", nil
+	}
+	var cardID sql.NullString
+	err := r.db.QueryRowContext(ctx, `
+		SELECT card_id::text
+		  FROM cards
+		 WHERE spatial_prefix = $1::INET AND card_type = 'active_bed'
+		 LIMIT 1
+	`, prefix).Scan(&cardID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", fmt.Errorf("lookup active_bed card by prefix: %w", err)
+	}
+	if !cardID.Valid {
+		return "", nil
+	}
+	return cardID.String, nil
+}
+
 // CreateCard 创建卡片（v2 签名）。
 //
 //	spatialPrefix: INET CIDR (e.g. "fd00:0:1:112:42:301::/96")

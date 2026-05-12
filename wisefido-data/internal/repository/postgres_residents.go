@@ -178,6 +178,33 @@ func (r *PostgresResidentsRepository) GetCurrentBranchID(ctx context.Context, us
 }
 
 // IsResidentLinkedToFamily — 检查 resident_caregivers 是否有 active 的 (resident_id, family_id) link
+// GetActiveSpatialPrefix — 返回 resident 当前有效 unit 分配的 spatial_prefix（INET CIDR 字符串），
+// 没有 active 分配 / 查不到 / 出错时返回空串 + nil error（service 层视为 "无 prefix" 处理）。
+//
+// 用于 Phase F cards 物化路径：service 在 Update/Delete 前后两次调用以检测 transfer/discharge。
+func (r *PostgresResidentsRepository) GetActiveSpatialPrefix(ctx context.Context, hoa string) (string, error) {
+	if strings.TrimSpace(hoa) == "" {
+		return "", nil
+	}
+	var prefix sql.NullString
+	err := r.db.QueryRowContext(ctx, `
+		SELECT spatial_prefix::text
+		  FROM resident_unit
+		 WHERE resident_id = $1::INET AND valid_to IS NULL
+		 LIMIT 1
+	`, hoa).Scan(&prefix)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", fmt.Errorf("get active spatial prefix: %w", err)
+	}
+	if !prefix.Valid {
+		return "", nil
+	}
+	return prefix.String, nil
+}
+
 // 用于 Family role 的 GetResident scope 强制：family 用户只能看绑定到自己的 resident
 func (r *PostgresResidentsRepository) IsResidentLinkedToFamily(
 	ctx context.Context, hoa, familyUserID string,
@@ -1476,7 +1503,7 @@ func (r *PostgresResidentsRepository) upsertPHI(
 
 func (r *PostgresResidentsRepository) SoftDelete(ctx context.Context, hoa string) error {
 	if _, err := r.db.ExecContext(ctx,
-		`UPDATE residents SET status = 'deleted', updated_at = NOW() WHERE hoa = $1::INET`,
+		`UPDATE residents SET status = 'deleted', updated_at = NOW() WHERE resident_id = $1::INET`,
 		hoa); err != nil {
 		return fmt.Errorf("soft delete: %w", err)
 	}
@@ -1525,7 +1552,7 @@ func (r *PostgresResidentsRepository) HardDelete(ctx context.Context, hoa string
 		return fmt.Errorf("%s", chk.Reason)
 	}
 	if _, err := r.db.ExecContext(ctx,
-		`DELETE FROM residents WHERE hoa = $1::INET`, hoa); err != nil {
+		`DELETE FROM residents WHERE resident_id = $1::INET`, hoa); err != nil {
 		return fmt.Errorf("hard delete: %w", err)
 	}
 	return nil

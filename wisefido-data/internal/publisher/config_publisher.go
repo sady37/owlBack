@@ -213,6 +213,51 @@ func (p *ConfigPublisher) PublishConfigCardReset(ctx context.Context) error {
 	return nil
 }
 
+// PublishCardChanged — 结构变更（card 增/删；v2 cards 表行的产生与消亡）。
+//
+// 当前实现：仍发 ConfigCardChanged stream 单 type（消费者已识别）；语义解耦体现在 extras.op：
+//
+//	op = "create" : card 新建（首个 device bind 触发 / admission 触发 active_bed 新建）
+//	op = "delete" : card 删除（spatial_prefix 下所有 device unbind 触发；保留 resident_id 历史归属由 view 反查）
+//
+// 与 PublishCardResidentChanged 的区别：本方法表示 cards 表 INSERT/DELETE；resident 流入/流出
+// 同一 card 不动 cards 行的 op，应该用 PublishCardResidentChanged。
+//
+// 详 [doc/cards_v2_migration_checklist.md] § 一.7。
+func (p *ConfigPublisher) PublishCardChanged(
+	ctx context.Context,
+	tenantID, cardID, op, spatialPrefix, dnsShortName string,
+) error {
+	extra := map[string]interface{}{
+		"op":             op,
+		"spatial_prefix": spatialPrefix,
+		"dns_short_name": dnsShortName,
+	}
+	return p.PublishCardChangeMessageWithExtraAndType(ctx, tenantID, cardID, "", "", rediscommon.ConfigCardChanged, extra)
+}
+
+// PublishCardResidentChanged — resident 在 cards.resident_id 指针的迁移（admission/discharge/transfer）。
+//
+// 不动 cards 表行本身；只动 resident_id 列。供 cardagg 失效 resident 视图缓存 + 历史归属反查侧 trigger。
+//
+//	op = "admission" : 空床 → resident（prevHoA=""）
+//	op = "discharge" : resident → 空床（newHoA=""）
+//	op = "transfer"  : 同一 resident 跨 prefix（prevHoA/newHoA 同 HoA，不同 spatial_prefix）
+//
+// 详 [doc/cards_v2_migration_checklist.md] § 一.7。
+func (p *ConfigPublisher) PublishCardResidentChanged(
+	ctx context.Context,
+	tenantID, cardID, op, prevHoA, newHoA, spatialPrefix string,
+) error {
+	extra := map[string]interface{}{
+		"op":               op,
+		"prev_resident_id": prevHoA,
+		"new_resident_id":  newHoA,
+		"spatial_prefix":   spatialPrefix,
+	}
+	return p.PublishCardChangeMessageWithExtraAndType(ctx, tenantID, cardID, "", "", rediscommon.ConfigCardChanged, extra)
+}
+
 // PublishCardChangeMessageWithExtraAndType 发送卡片变更消息到 config:card:stream（支持额外字段和自定义 type 字段）
 // messageType 一般为 ConfigCardChanged；extraData 可含：
 //   - device_id / change_type

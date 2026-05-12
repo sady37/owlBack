@@ -6,27 +6,53 @@ package service
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"strings"
 
 	"wisefido-data/internal/domain"
+	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/scope"
+
+	"owl-common/card"
+	"owl-common/ddns"
+	"owl-common/spatial"
 
 	"go.uber.org/zap"
 )
 
 type ResidentService struct {
-	repo   *repository.PostgresResidentsRepository
-	logger *zap.Logger
+	repo     *repository.PostgresResidentsRepository
+	cardRepo *repository.PostgresCardRepository
+	pub      *publisher.ConfigPublisher
+	ddns     *ddns.Client
+	owlDom   string
+	logger   *zap.Logger
 }
 
 func NewResidentService(repo *repository.PostgresResidentsRepository) *ResidentService {
-	return &ResidentService{repo: repo, logger: zap.NewNop()}
+	return &ResidentService{repo: repo, logger: zap.NewNop(), owlDom: "owl."}
 }
 
 func (s *ResidentService) SetLogger(logger *zap.Logger) {
 	if logger != nil {
 		s.logger = logger
+	}
+}
+
+// SetCardDeps 注入 card 写路径相关依赖（main.go 装配）。
+//
+//	cardRepo / pub 任一为 nil 则跳过 card 写入（保持 ResidentService 主路径可独立测试）；
+//	ddnsClient 为 nil 时跳过 DNS 注册（仅写 DB card），owl Domain 默认 "owl."。
+func (s *ResidentService) SetCardDeps(cardRepo *repository.PostgresCardRepository, pub *publisher.ConfigPublisher, ddnsClient *ddns.Client, owlDomain string) {
+	s.cardRepo = cardRepo
+	s.pub = pub
+	s.ddns = ddnsClient
+	if strings.TrimSpace(owlDomain) != "" {
+		s.owlDom = owlDomain
+		if !strings.HasSuffix(s.owlDom, ".") {
+			s.owlDom += "."
+		}
 	}
 }
 
@@ -325,7 +351,13 @@ func (s *ResidentService) Create(ctx context.Context, req CreateResidentRequest)
 	if req.Input == nil {
 		return "", fmt.Errorf("input required")
 	}
-	return s.repo.CreateResident(ctx, req.TenantPrefix, req.Input, req.ActorUserID, req.CurrentUserRole)
+	hoa, err := s.repo.CreateResident(ctx, req.TenantPrefix, req.Input, req.ActorUserID, req.CurrentUserRole)
+	if err != nil {
+		return hoa, err
+	}
+	// Phase F — admission：物化 active_bed card + DDNS register
+	s.syncCardForResident(ctx, req.TenantPrefix, hoa, "" /* oldPrefix=none */)
+	return hoa, nil
 }
 
 type UpdateResidentRequest struct {
@@ -367,11 +399,14 @@ func (s *ResidentService) Update(ctx context.Context, req UpdateResidentRequest)
 			return fmt.Errorf("permission denied: Nurse cannot modify admission/discharge dates (financial)")
 		}
 	}
+	// 抓 oldPrefix → 让 syncCard 检测转床/出院（admission/transfer/discharge 三态）
+	oldPrefix, _ := s.repo.GetActiveSpatialPrefix(ctx, req.HoA)
 	err := s.repo.UpdateResident(ctx, req.TenantPrefix, req.HoA, req.Input, req.ActorUserID, req.CurrentUserRole)
 	if err != nil {
 		s.logger.Error("[ResidentService.Update FAILED]", zap.String("hoa", req.HoA), zap.Error(err))
 		return err
 	}
+	s.syncCardForResident(ctx, req.TenantPrefix, req.HoA, oldPrefix)
 	s.logger.Info("[ResidentService.Update SUCCESS]", zap.String("hoa", req.HoA))
 	return nil
 }
@@ -387,10 +422,19 @@ func (s *ResidentService) Delete(ctx context.Context, req DeleteResidentRequest)
 	if !canCRUDResident(req.CurrentUserRole) {
 		return fmt.Errorf("permission denied: only Admin/Manager can delete residents")
 	}
+	oldPrefix, _ := s.repo.GetActiveSpatialPrefix(ctx, req.HoA)
+	var err error
 	if req.Hard {
-		return s.repo.HardDelete(ctx, req.HoA)
+		err = s.repo.HardDelete(ctx, req.HoA)
+	} else {
+		err = s.repo.SoftDelete(ctx, req.HoA)
 	}
-	return s.repo.SoftDelete(ctx, req.HoA)
+	if err != nil {
+		return err
+	}
+	// 删除/软删 = 出院：清空当前 card 的 resident_id；card 本身保留
+	s.syncCardForResident(ctx, req.TenantPrefix, req.HoA, oldPrefix)
+	return nil
 }
 
 func (s *ResidentService) CheckClearable(ctx context.Context, hoa string) (*domain.ResidentClearCheckResult, error) {
@@ -411,12 +455,134 @@ func (s *ResidentService) Discharge(ctx context.Context, req UpdateResidentReque
 	if !canCRUDResident(req.CurrentUserRole) {
 		return fmt.Errorf("permission denied")
 	}
+	oldPrefix, _ := s.repo.GetActiveSpatialPrefix(ctx, req.HoA)
 	now := nowDateString()
 	in := &domain.ResidentUpdateInput{
 		Status:      strPtr("discharged"),
 		DischargeDate: &now,
 	}
-	return s.repo.UpdateResident(ctx, req.TenantPrefix, req.HoA, in, req.ActorUserID, req.CurrentUserRole)
+	if err := s.repo.UpdateResident(ctx, req.TenantPrefix, req.HoA, in, req.ActorUserID, req.CurrentUserRole); err != nil {
+		return err
+	}
+	s.syncCardForResident(ctx, req.TenantPrefix, req.HoA, oldPrefix)
+	return nil
+}
+
+// ============================================================================
+// Phase F — cards 物化（admission/discharge/transfer）
+// ============================================================================
+//
+// 触发：Create / Update / Discharge / Delete 完成后调用 syncCardForResident。
+//
+// 业务规则（[doc/cards_v2_migration_checklist.md] § 一.6 / § 一.4）：
+//
+//	state 转移                 cards 表动作                       DDNS                    publish
+//	---------------------------------------------------------------------------------------------
+//	old=""  + new=prefix       INSERT (UPSERT) active_bed card    register AAAA + PTR    card.resident_changed (admission)
+//	old=A   + new=A            no-op                              -                       -
+//	old=A   + new=B (B!=A)     UPDATE A.resident_id=NULL +         register B (new)        2× (discharge A, admission B)
+//	                            INSERT/UPSERT B
+//	old=A   + new=""           UPDATE A.resident_id=NULL          -                       card.resident_changed (discharge)
+//
+// 注意：card 自身的删除条件 = "spatial_prefix 下所有 device 移除"，与 resident 解耦
+// 因此 discharge 不删 card（仅清 resident_id 指针），space-card 保留供日后再入住直接复用。
+func (s *ResidentService) syncCardForResident(ctx context.Context, tenantPrefix, hoa, oldPrefix string) {
+	if s.cardRepo == nil || s.pub == nil {
+		return // deps 未装配 → 跳过（保持 service 主路径可独立测试）
+	}
+	newPrefix, _ := s.repo.GetActiveSpatialPrefix(ctx, hoa)
+	if newPrefix == oldPrefix {
+		return // no spatial change
+	}
+
+	// 1) 旧 prefix → 清空 resident_id（保留 card 本身）
+	if oldPrefix != "" {
+		if cardID, err := s.cardRepo.GetActiveBedCardIDByPrefix(ctx, oldPrefix); err == nil && cardID != "" {
+			empty := ""
+			if err := s.cardRepo.UpdateCard(cardID, nil, &empty, nil); err != nil {
+				s.logger.Warn("syncCard: clear old card resident_id failed",
+					zap.String("card_id", cardID), zap.String("old_prefix", oldPrefix), zap.Error(err))
+			} else {
+				op := "discharge"
+				if newPrefix != "" {
+					op = "transfer"
+				}
+				_ = s.pub.PublishCardResidentChanged(ctx, tenantPrefix, cardID, op, hoa, "", oldPrefix)
+				s.logger.Info("syncCard: cleared resident_id from old card",
+					zap.String("card_id", cardID), zap.String("old_prefix", oldPrefix),
+					zap.String("op", op))
+			}
+		}
+	}
+
+	// 2) 新 prefix → 物化 active_bed card + DDNS register
+	if newPrefix != "" {
+		s.materializeActiveBedCard(ctx, tenantPrefix, newPrefix, hoa, oldPrefix)
+	}
+}
+
+// materializeActiveBedCard upserts an active_bed card for the given spatial_prefix
+// 并尝试 DDNS register（best-effort，失败仅 log warn 不阻塞业务）。
+func (s *ResidentService) materializeActiveBedCard(ctx context.Context, tenantPrefix, prefixStr, hoa, oldPrefix string) {
+	prefix, err := netip.ParsePrefix(prefixStr)
+	if err != nil {
+		s.logger.Warn("syncCard: invalid spatial_prefix", zap.String("prefix", prefixStr), zap.Error(err))
+		return
+	}
+	shortName, err := ddns.CardShortName(prefix)
+	if err != nil {
+		s.logger.Warn("syncCard: cardShortName derive failed",
+			zap.String("prefix", prefixStr), zap.Error(err))
+		// 仍然尝试 DB 写入，DNS 跳过
+	}
+
+	// card_name 用 resident.nickname；查不到 fallback 用 dns_short_name
+	cardName := s.lookupResidentNickname(ctx, tenantPrefix, hoa)
+	if cardName == "" {
+		cardName = shortName
+	}
+
+	cardID, err := s.cardRepo.CreateCard(prefixStr, card.CardTypeActiveBed, cardName, shortName, &hoa)
+	if err != nil {
+		s.logger.Error("syncCard: CreateCard failed",
+			zap.String("prefix", prefixStr), zap.String("hoa", hoa), zap.Error(err))
+		return
+	}
+	op := "admission"
+	prevHoA := ""
+	if oldPrefix != "" {
+		op = "transfer"
+		prevHoA = hoa // 同一个 resident 转床，prev/new HoA 相同；体现 prefix 变化
+	}
+	_ = s.pub.PublishCardResidentChanged(ctx, tenantPrefix, cardID, op, prevHoA, hoa, prefixStr)
+
+	// DDNS register（best-effort）
+	if s.ddns != nil && shortName != "" {
+		// tenant_slot 取自 prefix 第 6 byte（spatial.SlotsOf）
+		tenantSlot, _, _, _, _, _, _, derr := spatial.SlotsOf(prefix.Addr())
+		if derr != nil {
+			s.logger.Warn("syncCard: DDNS skipped — slot derive failed",
+				zap.String("prefix", prefixStr), zap.Error(derr))
+			return
+		}
+		zone := ddns.ZoneForTenant(tenantSlot, s.owlDom)
+		if err := s.ddns.RegisterCardName(ctx, prefix, shortName, zone); err != nil {
+			s.logger.Warn("syncCard: DDNS RegisterCardName failed",
+				zap.String("prefix", prefixStr), zap.String("zone", zone), zap.Error(err))
+		} else {
+			s.logger.Info("syncCard: DDNS registered",
+				zap.String("fqdn", shortName+"."+zone), zap.String("prefix", prefixStr))
+		}
+	}
+}
+
+// lookupResidentNickname 尽量取 resident.nickname 作为 card_name；查不到返回 ""
+func (s *ResidentService) lookupResidentNickname(ctx context.Context, tenantPrefix, hoa string) string {
+	d, err := s.repo.GetResident(ctx, tenantPrefix, hoa)
+	if err != nil || d == nil {
+		return ""
+	}
+	return strings.TrimSpace(d.Nickname)
 }
 
 // ============================================================================

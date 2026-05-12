@@ -89,6 +89,9 @@ func main() {
 		}
 	}
 
+	// DDNS client — 一次性装配 (BIND_HOST 缺失 = nil)；同时供 registerSpatialV2 + ResidentService Phase F 写卡路径用
+	ddnsClient := initDDNSClient(logger)
+
 	if db != nil {
 		// DB可用时创建完整功能的服务
 		unitsRepo = repository.NewPostgresUnitsRepository(db)
@@ -327,6 +330,9 @@ func main() {
 		configPublisher := publisher.NewConfigPublisher(redisClient, logger)
 		deviceService.SetConfigPublisher(configPublisher)
 
+		// Phase F — ResidentService 接 cards 写入路径 (Create/Update/Discharge → cards INSERT/UPDATE + DDNS register)
+		residentSvc.SetCardDeps(cardRepo, configPublisher, ddnsClient, getenvDefault("OWL_DOMAIN", "owl."))
+
 		// 创建 CardSyncService
 		cardSyncService = service.NewCardSyncService(cardRepo, configPublisher, cardRealtimeSvc, logger)
 		service.InitGlobalCardSync(cardSyncService)
@@ -476,7 +482,7 @@ func main() {
 	// 注册 v2 spatial IPAM/DDNS API（owl_v2 IPv6 体系）— 独立于 v1
 	// owl-common/ipam.PGBackend 直接走 dbv2 spatial 表 + 可选 kea audit
 	if db != nil {
-		registerSpatialV2(router, db, logger)
+		registerSpatialV2(router, db, ddnsClient, logger)
 	}
 
 	// 注册内部 baseline API（供 gate/cardagg 查询 device→card 映射，/internal/ 跳过 auth）
@@ -865,7 +871,7 @@ func subscribeDataStream(ctx context.Context, logger *zap.Logger, redisClient *r
 //   DDNS_ALGO     hmac-sha256
 //   DDNS_TSIG_SECRET  base64
 //   OWL_DOMAIN    owl.
-func registerSpatialV2(router *httpapi.Router, db *sql.DB, logger *zap.Logger) {
+func registerSpatialV2(router *httpapi.Router, db *sql.DB, ddnsClient *ddns.Client, logger *zap.Logger) {
 	// kea audit (可选)
 	var keaClient *ipam.KeaClient
 	if url := os.Getenv("KEA_CTRL_URL"); url != "" {
@@ -885,32 +891,37 @@ func registerSpatialV2(router *httpapi.Router, db *sql.DB, logger *zap.Logger) {
 	}
 	backend := ipam.NewPGBackendWithKea(db, keaClient)
 
-	// ddns (可选)
-	var ddnsClient *ddns.Client
-	if host := os.Getenv("BIND_HOST"); host != "" {
-		port := 53
-		if p := os.Getenv("BIND_PORT"); p != "" {
-			fmt.Sscanf(p, "%d", &port)
-		}
-		c, err := ddns.New(ddns.Config{
-			Server:    host,
-			Port:      port,
-			KeyName:   getenvDefault("DDNS_KEY_NAME", "ddns-update"),
-			Algorithm: getenvDefault("DDNS_ALGO", "hmac-sha256"),
-			Secret:    os.Getenv("DDNS_TSIG_SECRET"),
-			OwlDomain: getenvDefault("OWL_DOMAIN", "owl."),
-		})
-		if err != nil {
-			logger.Warn("v2 spatial: DDNS client init failed", zap.Error(err))
-		} else {
-			ddnsClient = c
-			logger.Info("v2 spatial: DDNS enabled", zap.String("bind", host))
-		}
-	}
-
 	handler := httpapi.NewSpatialV2Handler(backend, ddnsClient, logger)
 	router.RegisterSpatialV2Routes(handler)
 	logger.Info("v2 spatial: API registered at /admin/api/v2/spatial/*")
+}
+
+// initDDNSClient 启动期一次性装配 DDNS client（BIND_HOST 缺失 → 返回 nil 静默跳过）。
+// 同时供 registerSpatialV2 + ResidentService Phase F 写卡路径复用。
+func initDDNSClient(logger *zap.Logger) *ddns.Client {
+	host := os.Getenv("BIND_HOST")
+	if host == "" {
+		logger.Info("v2 spatial: DDNS disabled (BIND_HOST unset)")
+		return nil
+	}
+	port := 53
+	if p := os.Getenv("BIND_PORT"); p != "" {
+		fmt.Sscanf(p, "%d", &port)
+	}
+	c, err := ddns.New(ddns.Config{
+		Server:    host,
+		Port:      port,
+		KeyName:   getenvDefault("DDNS_KEY_NAME", getenvDefault("DDNS_TSIG_NAME", "ddns-update")),
+		Algorithm: getenvDefault("DDNS_ALGO", getenvDefault("DDNS_TSIG_ALGORITHM", "hmac-sha256")),
+		Secret:    os.Getenv("DDNS_TSIG_SECRET"),
+		OwlDomain: getenvDefault("OWL_DOMAIN", "owl."),
+	})
+	if err != nil {
+		logger.Warn("v2 spatial: DDNS client init failed", zap.Error(err))
+		return nil
+	}
+	logger.Info("v2 spatial: DDNS enabled", zap.String("bind", host), zap.Int("port", port))
+	return c
 }
 
 func getenvDefault(key, def string) string {

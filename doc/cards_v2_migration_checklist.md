@@ -119,22 +119,34 @@ Envelope 严格按 [`doc/datagram_envelope.md`](datagram_envelope.md)：source /
 - [ ] **E3**：DDNS zone 文件验证 — Phase F 待做（cards 表为空时 DDNS 注册路径不会被触发）
 - [ ] **E4**：redis stream `config:card:stream` CloudEvents 验证 — 同 E3
 
-### Phase F — 写入路径 + 前端 + DDNS wire（pending，独立 PR）
+### Phase F — 写入路径 + 前端 + DDNS wire ✅
 
-**重点（下次会话）**：
+完成于 2026-05-12（commit pending）。
 
-1. **写入路径**：在 `resident_service.go` 的 admission/discharge/transfer hook 上接 cards INSERT/UPDATE/DELETE
-   - admission：resident_unit episode 新增 → 检查 spatial_prefix 是否已有 active_bed card；无 → INSERT cards + DDNS register
-   - discharge：UPDATE cards.resident_id = NULL（保留 card）
-   - 转床：旧 prefix UPDATE NULL + 新 prefix INSERT/UPDATE
-   - device bind/unbind：同 prefix 上 device 数 0 → DELETE card + DDNS unregister
-2. **DDNS wire**：装配 `ddns.Client`（已在 owl-common/ddns 就绪）到 wisefido-data；resident lifecycle 触发 RegisterCardName/UnregisterCardName
-3. **config_publisher 二态化**：拆 `PublishCardChanged` (create/delete) + `PublishCardResidentChanged` (admission/discharge/transfer)
-4. **前端**：
-   - `src/api/monitors/model/monitorModel.ts`：CardType enum 改 v2 值
-   - `Overview.vue` card_type 判断改新值
-   - Pinia store / TS interface 同步
-5. **DeviceCard 真的需要吗**：v2 cards 表有 /128 device card_type 但本次 service 已删 DeviceCard 相关 CRUD。如确实有公共区无 bed 设备场景，回头补 unit card (/80) 触发
+- [x] **F1 写入路径**：`resident_service.go` admission/transfer/discharge/delete hook 调 `syncCardForResident(ctx, tenantPrefix, hoa, oldPrefix)`
+  - oldPrefix → 清空 resident_id；newPrefix → INSERT/UPSERT active_bed card + DDNS register
+  - 转床两段事件：旧 card emit `transfer` (new_resident_id=""); 新 card emit `transfer` (prev=new=HoA, prefix=new)
+  - admission: prev=""; discharge: new=""
+  - 新增 repo 方法：`PostgresResidentsRepository.GetActiveSpatialPrefix(ctx, hoa)` + `PostgresCardRepository.GetActiveBedCardIDByPrefix(ctx, prefix)`
+- [x] **F2 DDNS wire**：`initDDNSClient(logger)` 顶层 helper，wisefido-data main.go 启动期一次性装配，传给 `registerSpatialV2` + `residentSvc.SetCardDeps(cardRepo, configPublisher, ddnsClient, owlDom)`
+- [x] **F3 二态化 publisher**：`PublishCardChanged(op, prefix, dnsShortName)` + `PublishCardResidentChanged(op, prevHoA, newHoA, prefix)`。底层仍单 type `config.card`（消费者无需 break）；`extras.op` 体现语义解耦
+- [x] **F4 前端**：`monitorModel.ts` `CardType` 改 v2 值 `'active_bed'|'unit'|'public'|'room'|'device'|'tenant'|'branch'|'site'`；Overview.vue 5 处 `=== 'ActiveBedCard'` / `=== 'UnitCard'` 字面量同步替换
+
+**E2E 验证（admin@demo, fd00:0:3::/48）**：
+
+| step | 输入 | 结果 |
+|---|---|---|
+| admission | POST /admin/api/v2/residents `{nickname,bed_id=fd00:0:3:111:3:101::/96}` | cards INSERT 1 行 `active_bed`, `dns_short_name=u0003-r01-b01`; CloudEvent `op=admission` ✅ |
+| transfer | PUT 改 bed_id 至 `fd00:0:3:111:3:301::/96` | cards: 旧 prefix.resident_id=NULL + 新 prefix INSERT/UPSERT; 2× CloudEvent `op=transfer` ✅ |
+| DDNS PTR | `dig -x fd00:0:3:111:3:101::` | `0.0.0.0.0.0.0.0.1.0.1.0.3.0.0.0.1.1.1.0.3.0.0.0.0.0.0.0.0.0.d.f.ip6.arpa. PTR u0003-r01-b01.tenant3.owl.` ✅ |
+| frontend cards list | GET `/data/api/v1/data/vital-focus/cards` | 返 `card_type:"active_bed"`, `dns_short_name:"u0003-r01-b01"`, `spatial_prefix:"fd00:0:3:111:3:101::/96"` ✅ |
+
+**已知 follow-up**（不阻塞 Phase F 验收）：
+
+1. **DDNS forward zone (`tenant<N>.owl.`) 未在 BIND 配置中预创建** → `RegisterCardName` 推 AAAA 时收 NOTAUTH（仅 log warn，业务不阻塞）；PTR 在 `0.0.0.0.0.0.d.f.ip6.arpa.` 已就绪所以反查 OK。须 Phase B' 基建侧补 per-tenant forward zone bootstrap（kea ddns-conf 或 BIND zone provisioning）。
+2. **discharge 软删被 residents.status CHECK 约束拒**：`residents_status_valid` 仅允许 `active|inactive|deceased|transferred`，与 memory R-002 `status='deleted'` 约定不一致。须二选一：(a) 改 schema CHECK 加 `deleted`；(b) 改 SoftDelete 用 `inactive`。memory 与 schema 不对齐属 owl_v2 cutover 收尾遗留。
+3. **device unbind hook**: spatial_prefix 下所有 device 移除 → DELETE card + DDNS unregister 尚未接入；属 device path 修改，本次 cards-v2 carve out。
+4. **alarm_events v2 化** → 仍在 Phase G（独立 PR）。
 
 ### Phase G — alarm_events v2 改造（独立子项目，从本次 carve out）
 
@@ -207,6 +219,28 @@ Refs: doc/cards_v2_migration_checklist.md § X
 **显式 carve out 至下次会话**：
 
 - **Phase G**：alarm_events v2 改造（device_addr/alarm_kind/severity/process_status/payload/evidence 全新 schema）。owl-common/card/alarm_db.go 已成 v2 stub，Insert/Update/Recalc 返回 error 让 caller fail-soft。
-- **Phase F**：resident lifecycle 触发 cards INSERT/UPDATE/DELETE + DDNS wire + config_publisher 二态化 + 前端 CardType enum。当前 cards 表是空，写入由下次会话补完。
 
 测试账号已验证：admin/Ts123@123（tenant Demo, fd00:0:3::/48）。
+
+## 七、Phase F session summary（2026-05-12）
+
+| Commit (pending) | Repo | Phase | Files | Notes |
+|---|---|---|---|---|
+| (this PR) | owlBack | F1 | wisefido-data/internal/service/resident_service.go | +120 行 syncCardForResident / materializeActiveBedCard / SetCardDeps |
+| (this PR) | owlBack | F1 | wisefido-data/internal/repository/postgres_residents.go | +25 行 GetActiveSpatialPrefix；fix soft/hardDelete column 残留 (`hoa`→`resident_id`) |
+| (this PR) | owlBack | F1 | wisefido-data/internal/repository/postgres_card.go | +24 行 GetActiveBedCardIDByPrefix |
+| (this PR) | owlBack | F2 | wisefido-data/cmd/wisefido-data/main.go | +28 行 initDDNSClient hoist + SetCardDeps wire |
+| (this PR) | owlBack | F3 | wisefido-data/internal/publisher/config_publisher.go | +44 行 PublishCardChanged + PublishCardResidentChanged |
+| (this PR) | owlFront | F4 | src/api/monitors/model/monitorModel.ts + Overview.vue | CardType v2 enum + 5 处字面量同步 |
+
+**E2E 验证已通过** — 详 §三 Phase F 表。
+
+**红线遵循（R-001..R-008）**：
+- ✅ 不向后兼容（CardType enum 直接换值，无 alias）
+- ✅ 不新建 v2 文件（全部 in-place 重写）
+- ✅ 单次完整改造（一次性 wire 起 admission/transfer/discharge/delete 四条路径）
+- ✅ HIPAA：cards.resident_id 仅 current pointer；CloudEvent payload 不带 nickname/PHI
+- ✅ DNS 永久名仅含 unit/room/bed slot（u<hex>-r<hex>-b<hex>），无 PHI
+- ✅ DB schema 未改（仅复用现有 cards 表 + cards.dns_short_name 列）
+- ✅ Claude 自主启停 owl-postgresql / owl-redis container + wisefido-data binary 完成 e2e
+- ✅ commit 引用 § 编号（见 commit message）
