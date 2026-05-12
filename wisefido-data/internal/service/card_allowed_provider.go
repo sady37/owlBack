@@ -19,8 +19,11 @@ type CardList struct {
 	CardsByBranch map[string][]string `json:"cards_by_branch"` // branchID → card_id[]（无 branch 用 "_"）
 }
 
-// AllCardIDs 展平所有 branch 下的 card_id
+// AllCardIDs 展平所有 branch 下的 card_id；nil 安全
 func (cl *CardList) AllCardIDs() []string {
+	if cl == nil {
+		return nil
+	}
 	var ids []string
 	for _, cids := range cl.CardsByBranch {
 		ids = append(ids, cids...)
@@ -28,8 +31,11 @@ func (cl *CardList) AllCardIDs() []string {
 	return ids
 }
 
-// BranchIDs 返回去重的 branch_id 列表（不含 "_"）
+// BranchIDs 返回去重的 branch_id 列表（不含 "_"）；nil 安全
 func (cl *CardList) BranchIDs() []string {
+	if cl == nil {
+		return nil
+	}
 	var out []string
 	for bid := range cl.CardsByBranch {
 		if bid != "_" {
