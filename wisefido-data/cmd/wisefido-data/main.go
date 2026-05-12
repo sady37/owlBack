@@ -661,13 +661,9 @@ func main() {
 				}
 			}
 
-			// 先清理孤儿 DeviceCard：tenant 已迁但旧租户的 DeviceCard 残留
-			// 必须在 SyncDeviceCards 之前，否则被新租户重建后又被识别为"无对应 device 的孤儿"
-			if cleaned, cleanErr := cardRepo.CleanOrphanDeviceCards(ctx); cleanErr != nil {
-				logger.Warn("Failed to clean orphan device cards on startup", zap.Error(cleanErr))
-			} else if cleaned > 0 {
-				logger.Info("Orphan DeviceCards cleaned on startup", zap.Int("deleted", cleaned))
-			}
+			// v2: DeviceCard 概念已退役（改为 card_type='device' /128 极罕见）；
+			// 孤儿清理由 CleanupOrphanCards 统一处理（v2 LPM 反查无 device 的 card）。
+			_ = cardRepo // keep alive for downstream references
 
 			// 为未绑定 card 的设备创建 DeviceCard（card_id = device_id）
 			totalDeviceCards := 0

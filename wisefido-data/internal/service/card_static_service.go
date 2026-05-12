@@ -145,43 +145,38 @@ func (s *CardStaticService) GetCardsByCardIDs(ctx context.Context, tenantID, use
 
 // queryCardsByIDs 用 card_id[] 做联合查询，直接组装 CardStatic
 func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []string, branchIDs []string, page, pageSize int) ([]commoncard.CardStatic, int, error) {
-	// 构建查询
+	// v2 查询：cards 表只剩 spatial_prefix INET 一根空间柱；unit/branch 通过 set_masklen 派生。
+	// devices/residents 列表由 caller 通过 LPM 实时查（Phase F 接入 view 聚合）。
 	query := `
 		SELECT
-			c.card_id::text, c.tenant_id::text, c.card_type, c.card_name, c.card_address,
-			c.bed_id::text, c.unit_id::text, c.timezone,
-			c.devices, c.residents,
-			COALESCE(c.icon_alarm_level, 2), COALESCE(c.pop_alarm, 2),
-			COALESCE(u.branch_id::text, '')       AS branch_id,
-			COALESCE(b.branch_name, '')           AS branch_name,
-			COALESCE(u.unit_name, '')             AS unit_name,
-			COALESCE(bld.building_name, '')       AS building,
-			COALESCE(u.is_public, false)          AS is_public,
-			COALESCE(u.is_shared_unit, false)     AS is_shared_unit,
-			COALESCE(u.unit_type, '')             AS unit_type,
-			COALESCE(bed.bed_name, '')            AS bed_name,
-			COALESCE(room.room_id::text, '')      AS room_id,
-			COALESCE(room.room_name, '')          AS room_name,
-			COUNT(*) OVER()                       AS total_count
+			c.card_id::text,
+			text(c.spatial_prefix) AS spatial_prefix,
+			c.card_type,
+			COALESCE(c.card_name, ''),
+			COALESCE(c.dns_short_name, ''),
+			COALESCE(text(c.resident_id), ''),
+			COALESCE(u.unit_id::text, ''),
+			COALESCE(u.unit_name, ''),
+			COALESCE(u.timezone, ''),
+			COALESCE(br.branch_name, ''),
+			COUNT(*) OVER() AS total_count
 		FROM cards c
-		LEFT JOIN units u      ON c.unit_id = u.unit_id
-		LEFT JOIN branches b   ON u.branch_id = b.branch_id
-		LEFT JOIN buildings bld ON u.building_id = bld.building_id
-		LEFT JOIN beds bed     ON c.bed_id = bed.bed_id
-		LEFT JOIN rooms room   ON bed.room_id = room.room_id
+		LEFT JOIN units u ON u.unit_id = set_masklen(c.spatial_prefix, 80)
+		LEFT JOIN branches br ON br.branch_id = set_masklen(c.spatial_prefix, 56)
 		WHERE c.card_id = ANY($1::uuid[])
-		  AND c.card_type <> 'DeviceCard'
+		  AND c.card_type <> 'device'
 	`
 	args := []any{pq.Array(cardIDs)}
 	argIdx := 2
 
 	if len(branchIDs) > 0 {
-		query += fmt.Sprintf(` AND u.branch_id = ANY($%d::uuid[])`, argIdx)
+		// branchIDs 在 v2 是 INET CIDR /56 prefix 列表
+		query += fmt.Sprintf(` AND c.spatial_prefix <<= ANY($%d::inet[])`, argIdx)
 		args = append(args, pq.Array(branchIDs))
 		argIdx++
 	}
 
-	query += ` ORDER BY c.card_address ASC`
+	query += ` ORDER BY c.card_name ASC NULLS LAST`
 
 	offset := (page - 1) * pageSize
 	query += fmt.Sprintf(` LIMIT $%d OFFSET $%d`, argIdx, argIdx+1)
@@ -198,91 +193,32 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 
 	for rows.Next() {
 		var (
-			cardID, tenantID, cardType, cardName, cardAddress string
-			bedID, unitID, timezone                           sql.NullString
-			devicesJSON, residentsJSON                        []byte
-			iconAlarmLevel, popAlarm                          int
-			branchID, branchName, unitName                    string
-			building, unitType                                string
-			isPublic, isSharedUnit                            bool
-			bedName, roomID, roomName                         string
+			cardID, spatialPrefix, cardType, cardName, dnsShortName, residentID string
+			unitID, unitName, timezone, branchName                              string
 		)
-
 		if err := rows.Scan(
-			&cardID, &tenantID, &cardType, &cardName, &cardAddress,
-			&bedID, &unitID, &timezone,
-			&devicesJSON, &residentsJSON,
-			&iconAlarmLevel, &popAlarm,
-			&branchID, &branchName, &unitName,
-			&building, &isPublic, &isSharedUnit, &unitType,
-			&bedName, &roomID, &roomName,
+			&cardID, &spatialPrefix, &cardType, &cardName, &dnsShortName, &residentID,
+			&unitID, &unitName, &timezone, &branchName,
 			&totalCount,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan card row: %w", err)
 		}
 
 		unit := &commoncard.UnitInfo{
-			BranchID:     branchID,
-			BranchName:   branchName,
-			Building:     building,
-			IsPublic:     isPublic,
-			IsSharedUnit: isSharedUnit,
-			UnitType:     unitType,
-			Timezone:     timezone.String,
+			UnitID:     unitID,
+			UnitName:   unitName,
+			BranchName: branchName,
+			Timezone:   timezone,
 		}
-		if unitID.Valid {
-			unit.UnitID = unitID.String
-			unit.UnitName = unitName
+		c := commoncard.CardStatic{
+			CardID:        cardID,
+			CardType:      cardType,
+			CardName:      cardName,
+			DNSShortName:  dnsShortName,
+			SpatialPrefix: spatialPrefix,
+			Unit:          unit,
 		}
-		card := commoncard.CardStatic{
-			CardID:      cardID,
-			TenantID:    tenantID,
-			CardType:    cardType,
-			CardName:    cardName,
-			CardAddress: cardAddress,
-			Unit:        unit,
-		}
-		if bedID.Valid {
-			card.BedID = &bedID.String
-			if bedName != "" {
-				card.BedName = &bedName
-			}
-		}
-		if iconAlarmLevel > 0 {
-			card.IconAlarmLevel = &iconAlarmLevel
-		}
-		if popAlarm > 0 {
-			card.PopAlarm = &popAlarm
-		}
-
-		// 展开 devices JSONB（与 cards 表存盘键 bed_id/room_id 对齐，勿直接 Unmarshal 到 DeviceInfo）
-		if len(devicesJSON) > 0 {
-			if devices, err := commoncard.ParseDevicesFromCardsJSONB(devicesJSON); err == nil {
-				card.Devices = devices
-			}
-		}
-		// 展开 residents JSONB
-		if len(residentsJSON) > 0 {
-			var residents []commoncard.ResidentInfo
-			if json.Unmarshal(residentsJSON, &residents) == nil {
-				card.Residents = residents
-			}
-		}
-
-		cdb := commoncard.NewCardDB(s.db)
-		if rooms, err := cdb.RoomIdentifiersForCard(ctx, tenantID, cardID); err != nil {
-			s.logger.Warn("RoomIdentifiersForCard", zap.String("card_id", cardID), zap.Error(err))
-			if roomID != "" {
-				card.Rooms = []commoncard.RoomIdentifier{{RoomID: roomID, RoomName: roomName}}
-			}
-		} else {
-			card.Rooms = rooms
-			if len(card.Rooms) == 0 && roomID != "" {
-				card.Rooms = []commoncard.RoomIdentifier{{RoomID: roomID, RoomName: roomName}}
-			}
-		}
-
-		cards = append(cards, card)
+		cards = append(cards, c)
 	}
 
 	if err := rows.Err(); err != nil {
