@@ -147,3 +147,122 @@ func ZoneForTenant(slot uint16, owlDomain string) string {
 	}
 	return fmt.Sprintf("tenant%d.%s", slot, owlDomain)
 }
+
+// RegisterCardName 为 card 注册永久 DNS 名（AAAA + PTR）。
+//
+// 与 RegisterDevice 区别：
+//   - card 用 spatial_prefix（如 /96 bed prefix），但 DNS AAAA 只能指向 host address
+//     → 解析方式：取 prefix 的 network address（host 部分 = 0）作为 AAAA target
+//   - card_name 是 bed-stable 永久名（不含 PHI），如 "u42-r03-b01.tenant1.owl"
+//
+// 参数：
+//
+//	prefix     - card 的 spatial_prefix（netip.Prefix），mask 必须 < 128
+//	shortName  - DNS 短名（一段 label），如 "u42-r03-b01"
+//	zone       - tenant zone，如 "tenant1.owl."
+//
+// 写入：
+//   - forward: <shortName>.<zone> AAAA <network(prefix)>     in zone <zone>
+//   - reverse: <network(prefix) ip6.arpa> PTR <shortName>.<zone>  in zone "0.0.0.0.0.0.d.f.ip6.arpa."
+//
+// Idempotency：caller 应在 INSERT card 前先 UnregisterCardName 兜底；或假设单次 INSERT only。
+func (c *Client) RegisterCardName(ctx context.Context, prefix netip.Prefix, shortName, zone string) error {
+	if !prefix.IsValid() || prefix.Bits() < 0 || prefix.Bits() > 128 {
+		return fmt.Errorf("ddns: invalid prefix %s", prefix)
+	}
+	if !spatial.IsOwlAddr(prefix.Addr()) {
+		return fmt.Errorf("ddns: prefix %s not in owl namespace fd00:0000::/32", prefix)
+	}
+	if shortName == "" || zone == "" {
+		return errors.New("ddns: shortName + zone required")
+	}
+	if !strings.HasSuffix(zone, ".") {
+		zone += "."
+	}
+	netAddr := prefix.Masked().Addr()
+	fqdn := shortName + "." + zone
+	ptrName := spatial.ReverseDNS(netAddr) + "."
+	revZone := "0.0.0.0.0.0.d.f.ip6.arpa."
+
+	cmds := fmt.Sprintf(`server %s %d
+zone %s
+update add %s 300 AAAA %s
+send
+zone %s
+update add %s 300 PTR %s
+send
+`, c.cfg.Server, c.cfg.Port,
+		zone, fqdn, netAddr.String(),
+		revZone, ptrName, fqdn)
+
+	return c.run(ctx, cmds)
+}
+
+// UnregisterCardName 删除 card 的 forward + reverse records。
+func (c *Client) UnregisterCardName(ctx context.Context, prefix netip.Prefix, shortName, zone string) error {
+	if !strings.HasSuffix(zone, ".") {
+		zone += "."
+	}
+	netAddr := prefix.Masked().Addr()
+	fqdn := shortName + "." + zone
+	ptrName := spatial.ReverseDNS(netAddr) + "."
+	revZone := "0.0.0.0.0.0.d.f.ip6.arpa."
+
+	cmds := fmt.Sprintf(`server %s %d
+zone %s
+update delete %s AAAA
+send
+zone %s
+update delete %s PTR
+send
+`, c.cfg.Server, c.cfg.Port,
+		zone, fqdn,
+		revZone, ptrName)
+	return c.run(ctx, cmds)
+}
+
+// CardShortName 生成 card 的永久 DNS 短名（bed-stable，无 PHI）。
+//
+// 命名规则：
+//
+//	/48 tenant     → "t"               （整个 tenant zone 公共名）
+//	/56 branch     → "br<branch>"      （branch=01..FF）
+//	/64 site       → "site<bld><flr>"
+//	/80 unit       → "u<unit>"
+//	/88 room       → "u<unit>-r<room>"
+//	/96 active_bed → "u<unit>-r<room>-b<bed>"  ⭐ 最常见
+//	/128 device    → caller 用 RegisterDevice 走 device shortName
+//
+// 例: SlotsOf(fd00:0:1:112:42:301::) → tenant=1, branch=1, site=18, unit=42, room=3, bed=1
+//
+//	prefix /96 → "u42-r03-b01"
+func CardShortName(prefix netip.Prefix) (string, error) {
+	if !prefix.IsValid() {
+		return "", fmt.Errorf("ddns: invalid prefix")
+	}
+	tenant, branch, _, unit, room, bed, _, err := spatial.SlotsOf(prefix.Addr())
+	if err != nil {
+		return "", err
+	}
+	switch prefix.Bits() {
+	case 48:
+		_ = tenant
+		return "t", nil
+	case 56:
+		return fmt.Sprintf("br%02x", branch), nil
+	case 64:
+		// site = bld<<4 | floor (4+4 split)
+		_, _ = branch, unit
+		bld, flr := spatial.UnpackSiteSlot(uint8(prefix.Addr().As16()[7]))
+		return fmt.Sprintf("site%xb%xf", bld, flr), nil
+	case 80:
+		return fmt.Sprintf("u%04x", unit), nil
+	case 88:
+		return fmt.Sprintf("u%04x-r%02x", unit, room), nil
+	case 96:
+		return fmt.Sprintf("u%04x-r%02x-b%02x", unit, room, bed), nil
+	case 128:
+		return "", fmt.Errorf("ddns: /128 device prefix should use RegisterDevice")
+	}
+	return "", fmt.Errorf("ddns: unsupported masklen /%d", prefix.Bits())
+}
