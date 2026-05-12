@@ -95,9 +95,13 @@ type CardStatic struct {
 	// 基础信息（cards 表权威）
 	CardID        string `json:"card_id"`
 	CardType      string `json:"card_type"`
-	CardName      string `json:"card_name"`
-	DNSShortName  string `json:"dns_short_name,omitempty"` // v2 永久名（bed-stable）
+	CardName      string `json:"card_name"`                 // 'nickname' 有人 / 'NoOne' 无人
+	DNSShortName  string `json:"dns_short_name,omitempty"`  // v2 永久名（bed-stable）：br<branch>-s<site>-u<unit>-r<room>-b<bed>
 	SpatialPrefix string `json:"spatial_prefix"`            // INET CIDR 字符串
+
+	// 人类可读地址（按最长 mask 派生：Unit-Room-Bed）；空间结构变才变
+	// v2: cards 表无 card_address 列，运行时 LEFT JOIN units/rooms/beds 拼出
+	CardAddress string `json:"card_address,omitempty"` // e.g. "Unit 201 / Room A / Bed 1"
 
 	// 同一 card 必属同一 unit/branch（reverse-derive via LPM）
 	Unit *UnitInfo `json:"unit,omitempty"`
