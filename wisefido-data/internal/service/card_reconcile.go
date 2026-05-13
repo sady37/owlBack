@@ -282,6 +282,19 @@ func (s *CardSyncService) ReconcileCards(ctx context.Context, scopePrefix string
 			}
 			ridArg = residentID.String
 			newHoA = residentID.String
+		} else {
+			// 无 resident 时按 unit_type 区分默认 name：
+			//   public (unit_type=3) → "Public"（如 LivingRoom 等公共区，无入住人）
+			//   其他 (single/share)   → "NoOne"（保留 v1 语义：空房 / 待入住）
+			// 仅 /80 unit card 适用；/96 /88 子卡未占用仍为 NoOne。
+			if strings.HasSuffix(p, "/80") {
+				var unitType sql.NullInt32
+				_ = tx.QueryRowContext(ctx,
+					`SELECT unit_type FROM units WHERE unit_id = $1::INET`, p).Scan(&unitType)
+				if unitType.Valid && unitType.Int32 == 3 {
+					cardName = CardNamePublic
+				}
+			}
 		}
 
 		cardType, err := cardTypeForPrefix(p)

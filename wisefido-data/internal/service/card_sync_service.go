@@ -30,7 +30,10 @@ import (
 // CardNameNoResident — 空床/空间卡的 card_name 占位（resident 缺位时用）。
 // 参 doc/cards_v2_migration_checklist.md §一.1：card_name 仅随 admission/discharge 变；
 // 空间维度由 dns_short_name (Unit-Room-Bed) 承载，不混入 card_name。
-const CardNameNoResident = "NoOne"
+const (
+	CardNameNoResident = "NoOne"  // 单人/share unit 未入住时（待分配）
+	CardNamePublic     = "Public" // public unit (unit_type=3) 公共区，无 resident 概念
+)
 
 type CardSyncService struct {
 	cardRepo  *repository.PostgresCardRepository

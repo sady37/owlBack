@@ -433,9 +433,14 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 	deviceRoomSet := map[string]map[string]bool{}     // card prefix → distinct room set (用于 unit-card coverage_label)
 	for _, dr := range devs {
 		owning := ""
-		// 1. bed anchor
+		// 1. bed anchor — /96 bed card 不在 batch（merge mode 只有 /80 unit）→ 兜底到 /80 unit
 		if dr.bedAnchor != "" {
-			owning = dr.bedAnchor
+			if _, ok := cardByPrefix[dr.bedAnchor]; ok {
+				owning = dr.bedAnchor
+			} else if _, ok := cardByPrefix[dr.unitAnchor]; ok && dr.unitAnchor != "" {
+				// merge mode：bed 卡不存在，bed-anchor device 上推到 /80 unit card
+				owning = dr.unitAnchor
+			}
 		} else if dr.roomAnchor != "" {
 			// 2. room anchor — 看 room 内 active_bed_count
 			if roomBedCount[dr.roomAnchor] == 1 {
