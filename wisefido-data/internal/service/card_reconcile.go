@@ -108,24 +108,26 @@ func (s *CardSyncService) ReconcileCards(ctx context.Context, scopePrefix string
 		return fmt.Errorf("iter expected: %w", err)
 	}
 
-	// 1b) Layer 2 (v3 统一规则)：不查 units.unit_type — card 拓扑仅由 device 分布决定，
-	//     与 resident 占用模式 (Private/Share/Public) 完全解耦。
+	// 1b) Layer 2 — 分层 split 规则（按 unit / room 两级递归 activeBed > 1 判定）
 	//
-	// 单向阀: cards 表当前 /96 数量 ≥ 1 视为 alreadySplit
+	// **决策规则**（已与用户对齐 2026-05-13）：
 	//
-	// Step 2 决策矩阵:
-	//   raw=0:                          有 device → 1 张 /80；无 device → 无卡
-	//   raw=1 + !alreadySplit:          1 张 /80 (merge，bed/room 设备都在内)
-	//   raw=1 + alreadySplit:           走套娃 (单向阀维持)
-	//   raw≥2:                          走套娃
+	//   Layer-1 Unit：
+	//     unit 内 activeBed > 1 → split:
+	//       - 进 Layer-2 计算 room 归宿
+	//       - 若 unit 内有 "Room 之外的 device"（即 device 在 activeBed=0 room 或 unit 层），出 1 张 unitCard
+	//     unit 内 activeBed ≤ 1 → merge:
+	//       - 仅 1 张 /80 unit card，装所有 device（bed + room + unit 层）
 	//
-	// Step 3 套娃 (split mode 展开):
-	//   L3 bed: 每 active bed → 1 张 /96
-	//   L2 room: 同 room 内 active_bed_count
-	//            == 1 → room-only device 被该 bed card 吸收 (不创建 /88)
-	//            ≥ 2 → 1 张 /88 room card 装 room-level device
-	//            == 0 → 1 张 /88 room card (孤立 room device)
-	//   L1 unit: 直接装 /80 的 device → 1 张 /80 unit card
+	//   Layer-2 Room（仅在 Unit split 时进入）:
+	//     room 内 activeBed > 1 → split:
+	//       - N 张 /96 bed card（每 active bed 一张）
+	//       - 若 room 内有 room-level device（byte11=0，无 bed 绑定），出 1 张 /88 roomCard
+	//     room 内 activeBed = 1 → /96 bed card 吸收所有 room 内 device（room radar 也归入）
+	//     room 内 activeBed = 0 → 不出 roomCard，device 上推到 Layer-1 unitCard
+	//
+	// **单向阀**: split 仅由 activeBed > 1 触发；activeBed ≤ 1 时永远 merge（取消旧的 alreadySplit latching）。
+	//             已存在的 split 同级卡：新设备磁吸进同级卡（不重建结构）。
 	expected := map[string]bool{}
 	for unitPrefix, info := range units {
 		bedCount := len(info.bedAnchors)
@@ -134,20 +136,13 @@ func (s *CardSyncService) ReconcileCards(ctx context.Context, scopePrefix string
 			continue
 		}
 
-		var currentBedCardCount int
-		_ = tx.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM cards
-			 WHERE spatial_prefix <<= $1::INET
-			   AND masklen(spatial_prefix) = 96`, unitPrefix).Scan(&currentBedCardCount)
-		alreadySplit := currentBedCardCount >= 1
-
-		// Single mode: raw=0 (only non-bed) 或 raw=1 + !alreadySplit
-		if bedCount == 0 || (bedCount == 1 && !alreadySplit) {
+		// Merge mode：unit 内 activeBed ≤ 1 → 1 张 /80 unit card
+		if bedCount <= 1 {
 			expected[unitPrefix] = true
 			continue
 		}
 
-		// Split mode (套娃) - 每 active bed 必出 /96
+		// Split mode (activeBed > 1) — 每 active bed 必出 /96
 		for a := range info.bedAnchors {
 			expected[a] = true
 		}
@@ -167,13 +162,15 @@ func (s *CardSyncService) ReconcileCards(ctx context.Context, scopePrefix string
 			switch {
 			case strings.HasSuffix(anchor, "/88"):
 				// room-level device
-				switch roomBedCount[anchor] {
-				case 1:
-					// 唯一 bed 吸收 — 不创建 /88 room card
-					// device 归该 bed card (enrich 阶段 join)
-				default:
-					// 0 active bed (孤立 room) 或 ≥2 bed (歧义) → /88 room card 出现
+				switch {
+				case roomBedCount[anchor] >= 2:
+					// activeBed > 1 → room 自己 split + 出 /88 roomCard 装 room-level device
 					expected[anchor] = true
+				case roomBedCount[anchor] == 1:
+					// 唯一 bed 吸收 — 不创建 /88 room card；device 归该 bed card
+				default:
+					// activeBed = 0 → 不出 /88，device 上推到 unitCard
+					needUnitCard = true
 				}
 			default:
 				// /80 直挂 device → /80 unit card 出现

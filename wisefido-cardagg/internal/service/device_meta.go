@@ -169,18 +169,26 @@ func (c *DeviceMetaCache) InvalidateAll() {
 	c.mu.Unlock()
 }
 
-// InvalidateCardsInTenantUnit 将 tenant+unit 下所有卡片的 meta 标为需重载（config:card 同 unit 内多卡联动）。
+// InvalidateCardsInTenantUnit v2：把指定 unit (/80) 下所有 cards 的 meta 标为需重载。
+//
+// v2 unified: card_id ≡ spatial_prefix；unit_id 是 /80 INET CIDR 字符串（含 "/80"）。
+// 用 prefix-match：cards.spatial_prefix <<= unit_prefix (/80)。
 func (c *DeviceMetaCache) InvalidateCardsInTenantUnit(ctx context.Context, tenantID, unitID string) {
-	if c.db == nil || tenantID == "" || unitID == "" {
+	if c.db == nil || unitID == "" {
 		return
 	}
+	_ = tenantID // v2 不再用 tenant_id 列过滤；unitID prefix 已隐含 tenant /48
+	prefix := unitID
+	if !strings.Contains(prefix, "/") && strings.Contains(prefix, ":") {
+		prefix = prefix + "/80"
+	}
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT card_id::text FROM cards WHERE tenant_id = $1::uuid AND unit_id = $2::uuid`,
-		tenantID, unitID)
+		`SELECT c.spatial_prefix::text FROM cards c WHERE c.spatial_prefix <<= $1::INET`,
+		prefix)
 	if err != nil {
 		if c.logger != nil {
 			c.logger.Warn("InvalidateCardsInTenantUnit query failed",
-				zap.String("tenant_id", tenantID), zap.String("unit_id", unitID), zap.Error(err))
+				zap.String("unit_id", unitID), zap.Error(err))
 		}
 		return
 	}
@@ -194,17 +202,24 @@ func (c *DeviceMetaCache) InvalidateCardsInTenantUnit(ctx context.Context, tenan
 	}
 }
 
-// DeviceKeysInTenantUnit 返回该 unit 下所有卡 devices JSON 中的 device_id / device_uid（去重），供告警使能与 resolver 键失效。
+// DeviceKeysInTenantUnit v2：返回 unit (/80) 下所有 device_id/device_uid（去重）。
+//
+// v2: cards.devices JSONB 已删；改用 devices + device_factory_meta JOIN by unit /80 prefix-match。
 func DeviceKeysInTenantUnit(ctx context.Context, db *sql.DB, tenantID, unitID string) (deviceIDs []string, deviceUIDs []string) {
-	if db == nil || tenantID == "" || unitID == "" {
+	if db == nil || unitID == "" {
 		return nil, nil
 	}
+	_ = tenantID // v2 隐含在 unit prefix /48 内
+	prefix := unitID
+	if !strings.Contains(prefix, "/") && strings.Contains(prefix, ":") {
+		prefix = prefix + "/80"
+	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT DISTINCT j->>'device_id', j->>'device_uid'
-		FROM cards c, jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS j
-		WHERE c.tenant_id = $1::uuid AND c.unit_id = $2::uuid
-		  AND COALESCE(j->>'device_id', '') <> ''`,
-		tenantID, unitID)
+		SELECT DISTINCT dfm.device_id::text, dfm.device_uid
+		FROM devices d
+		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		WHERE d.device_ipv6 <<= $1::INET`,
+		prefix)
 	if err != nil {
 		return nil, nil
 	}
@@ -297,15 +312,17 @@ func (c *DeviceMetaCache) LookupCardsByDevice(ctx context.Context, deviceUID, de
 	if len(hit) > 0 {
 		return hit
 	}
-	// 索引未命中（cold start / 新绑卡尚未 cardChange / 数据异常）→ SQL 兜底
+	// 索引未命中（cold start / 新绑卡尚未 cardChange / 数据异常）→ v2 SQL 兜底
 	if c.db == nil {
 		return nil
 	}
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT DISTINCT c.card_id::text
-		FROM cards c, jsonb_array_elements(c.devices) d
-		WHERE ($1 <> '' AND d->>'device_uid' = $1)
-		   OR ($2 <> '' AND d->>'device_id' = $2)
+		SELECT DISTINCT c.spatial_prefix::text
+		FROM cards c
+		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
+		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		WHERE ($1 <> '' AND dfm.device_uid = $1)
+		   OR ($2 <> '' AND dfm.device_id::text = $2)
 	`, deviceUID, deviceID)
 	if err != nil {
 		if c.logger != nil {
@@ -357,14 +374,25 @@ func mergeUniqueCards(a, b []string) []string {
 	return out
 }
 
-// BuildDeviceIndex 全量扫 cards 表构建 device→cards 反向索引。Phase A 启动时调用。
+// BuildDeviceIndex v2：全量扫 devices + cards 派生 device→cards 反向索引（Phase A 启动）。
+//
+// v2 unified: card_id ≡ spatial_prefix（字符串 host CIDR）；
+//   device → cards: cards.spatial_prefix >>= devices.device_ipv6 — 一个 device 可能挂多张父级 card
+//   (例：bed /96 + unit /80 同时存在时都 contain 该 device_ipv6)
+//
+// 注：未应用 fillDevicesV3 的"唯一 bed 吸收"等业务归属规则；这里返回所有 prefix-contain 的 cards，
+// caller（iot_prepared）只用该列表做路由广播，多挂几张不影响 — 主路由按 alarm_event.device_addr 走。
 func (c *DeviceMetaCache) BuildDeviceIndex(ctx context.Context) error {
 	if c.db == nil {
 		return nil
 	}
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT c.card_id::text, COALESCE(d->>'device_id', ''), COALESCE(d->>'device_uid', '')
-		FROM cards c, jsonb_array_elements(COALESCE(c.devices, '[]'::jsonb)) AS d
+		SELECT c.spatial_prefix::text AS card_id,
+		       dfm.device_id::text     AS device_id,
+		       dfm.device_uid          AS device_uid
+		FROM cards c
+		JOIN devices d  ON d.device_ipv6 <<= c.spatial_prefix
+		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
 	`)
 	if err != nil {
 		return err

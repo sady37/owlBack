@@ -1042,13 +1042,19 @@ func (s *CardRealtimeService) enrichDeviceStatus(ctx context.Context, cardID str
 	if s.db == nil {
 		return nil
 	}
-	// v2 unified: card_id ≡ spatial_prefix；device 走 LPM 反查 + device_factory_meta
+	// v2 unified: card_id ≡ spatial_prefix。
+	//
+	// 范围必须用 /80 unit pool（不能用 c.spatial_prefix），与 card_static_service.fillDevicesV3 对齐：
+	//   - fillDevicesV3 套娃归属：bed-anchor → room-anchor 吸收唯一 bed → /80 兜底
+	//   - 例：room "Main" 只有 1 bed card /96 "John.Y"，同 room 内 byte11=00 的设备 D523 被吸收到该 /96
+	//   - 若 enrichDeviceStatus 用严格 <<= /96 查，吸收进来的 D523 查不到 → 默认 offline，与 FE 显示的设备列表不一致
+	//   - 改用 /80 unit pool：返回 unit 内全部 monitor-on 设备的 status；FE 按 device.device_id 在 card.devices 内查找，
+	//     多余的 status entry 自然被忽略（map 查 key 即可）
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT dfm.device_id::text, COALESCE(dfm.device_type::text, '') AS device_type
-		FROM cards c
-		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
+		FROM devices d
 		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		WHERE c.spatial_prefix = $1::INET
+		WHERE d.device_ipv6 <<= network(set_masklen($1::INET, 80))
 	`, cardID)
 	if err != nil {
 		return err

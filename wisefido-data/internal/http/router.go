@@ -451,12 +451,18 @@ func (r *Router) RegisterMonitorRoutes(h *MonitorHandler) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		// rest 格式: {id} | {id}/stream | {id}/caregivers
-		parts := strings.SplitN(rest, "/", 2)
-		cardID := parts[0]
+		// v2: cardID ≡ spatial_prefix INET CIDR（含 "/N" mask），路径里就有 "/"。
+		// 用尾部已知后缀词反向切分，避免误吃 mask。
+		// 格式: {cardID} | {cardID}/stream | {cardID}/caregivers | {cardID}/status
+		cardID := rest
 		suffix := ""
-		if len(parts) == 2 {
-			suffix = parts[1]
+		if idx := strings.LastIndex(rest, "/"); idx >= 0 {
+			tail := rest[idx+1:]
+			switch tail {
+			case "stream", "caregivers", "status":
+				cardID = rest[:idx]
+				suffix = tail
+			}
 		}
 		switch suffix {
 		case "stream":
@@ -465,10 +471,8 @@ func (r *Router) RegisterMonitorRoutes(h *MonitorHandler) {
 			h.GetCardCaregivers(w, req, cardID)
 		case "status":
 			h.GetCardStatus(w, req, cardID)
-		case "":
-			h.GetCardInfo(w, req, cardID)
 		default:
-			w.WriteHeader(http.StatusNotFound)
+			h.GetCardInfo(w, req, cardID)
 		}
 	})
 }

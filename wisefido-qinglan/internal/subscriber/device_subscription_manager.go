@@ -171,13 +171,14 @@ func (m *DeviceSubscriptionManager) Start(ctx context.Context) error {
 func (m *DeviceSubscriptionManager) restoreAuthenticatedDeviceSubscriptions(ctx context.Context) {
 	log.Println("Restoring MQTT subscriptions for authenticated Radar devices from database...")
 
-	// 查询所有已认证的 Radar 设备（allow_access = TRUE AND device_type = 'Radar'）
+	// v2: 已认证 Radar = dfm.device_type='Radar' AND devices.access=TRUE
 	// 注意：wisefido-qinglan 只管理 Radar 设备，Sleepace 设备由其他服务管理
 	query := `
-		SELECT device_uid, device_id
-		FROM device_store
-		WHERE allow_access = TRUE
-		  AND device_type = 'Radar'
+		SELECT dfm.device_uid, dfm.device_id::text
+		FROM device_factory_meta dfm
+		JOIN devices d ON d.device_id = dfm.device_id
+		WHERE d.access = TRUE
+		  AND dfm.device_type = 'Radar'
 	`
 
 	rows, err := m.db.QueryContext(ctx, query)
@@ -789,8 +790,12 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 
 // autoSubscribeOnFirstMessage 在收到设备第一条消息时自动发送monitor订阅命令
 func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Context, deviceUID string) {
-	// 查询device_id（只查询 Radar 设备）
-	query := `SELECT device_id FROM device_store WHERE device_uid = $1 AND allow_access = TRUE AND device_type = 'Radar'`
+	// v2: device_id 来自 dfm；access=TRUE 来自 devices；device_type 来自 dfm
+	query := `
+		SELECT dfm.device_id::text
+		FROM device_factory_meta dfm
+		JOIN devices d ON d.device_id = dfm.device_id
+		WHERE dfm.device_uid = $1 AND d.access = TRUE AND dfm.device_type = 'Radar'`
 	var deviceID string
 	err := m.db.QueryRowContext(ctx, query, deviceUID).Scan(&deviceID)
 	if err != nil {
@@ -1152,15 +1157,20 @@ func (m *DeviceSubscriptionManager) renewSubscriptions(ctx context.Context) {
 	}
 }
 
-// getDeviceStatus 获取设备当前状态（仅用于 disabled 检查，DB status 不存 on/offline）
+// getDeviceStatus 获取设备当前状态（仅用于 disabled 检查；on/offline 不存 DB）
+//
+// v2: devices.access=FALSE → "disabled"（platform 拒绝接入）；TRUE → "active"
 func (m *DeviceSubscriptionManager) getDeviceStatus(ctx context.Context, deviceID string) (string, error) {
-	var status string
-	query := `SELECT status FROM devices WHERE device_id = $1`
-	err := m.db.QueryRowContext(ctx, query, deviceID).Scan(&status)
+	var access bool
+	query := `SELECT access FROM devices WHERE device_id = $1::uuid`
+	err := m.db.QueryRowContext(ctx, query, deviceID).Scan(&access)
 	if err != nil {
 		return "", err
 	}
-	return status, nil
+	if !access {
+		return "disabled", nil
+	}
+	return "active", nil
 }
 
 // IsForceUnsubscribed 是否因 90s 超时被强制取消订阅（需重认证）
@@ -1234,8 +1244,8 @@ func (m *DeviceSubscriptionManager) GetDeviceOnlineStatus(identifier string) str
 // GetDeviceOnlineStatusByDeviceID 通过 device_id 获取设备的在线状态
 // 需要先通过 device_id 查询 device_uid
 func (m *DeviceSubscriptionManager) GetDeviceOnlineStatusByDeviceID(ctx context.Context, deviceID string) (string, error) {
-	// 查询 device_uid
-	query := `SELECT device_uid FROM device_store WHERE device_id = $1`
+	// v2: device_uid 来自 dfm
+	query := `SELECT device_uid FROM device_factory_meta WHERE device_id = $1::uuid`
 	var deviceUID string
 	err := m.db.QueryRowContext(ctx, query, deviceID).Scan(&deviceUID)
 	if err != nil {

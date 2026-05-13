@@ -57,10 +57,26 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
+	// env 优先覆盖 YAML（deployment 字段不能写死在 YAML）：
 	// 设置默认值
 	cfg.setDefaults()
 
+	// 应用 env overlay（DB/Redis/Log 等部署参数 env 总是覆盖 YAML）
+	cfg.applyEnvOverrides()
+
 	return &cfg, nil
+}
+
+// applyEnvOverrides — env 在 YAML 之上 overlay：deployment 字段（DB/Redis 等）env 总是优先
+func (c *Config) applyEnvOverrides() {
+	c.DB.LoadFromEnv("DB")
+	if c.DB.Database == "" || os.Getenv("DB_NAME") != "" {
+		if v := getEnv("DB_NAME", ""); v != "" {
+			c.DB.Database = v
+		}
+	}
+	c.Redis.LoadFromEnv("REDIS")
+	c.Logging.LoadFromEnv("LOG")
 }
 
 // LoadFromEnv 从环境变量加载配置

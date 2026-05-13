@@ -784,10 +784,91 @@ func (r *PostgresDevicesRepository) DeleteDevice(ctx context.Context, tenantID, 
 	return nil
 }
 
-// GetDeviceRelations 获取设备关联关系（设备、地址、住户）
-// v2 stub: Phase E.2 will rewrite using devices.device_ipv6 + reset_device_prefix()
+// GetDeviceRelations 获取设备关联关系（设备 + Address + Residents）。
+//
+// v2 实现：
+//   - device_ipv6 → join device_factory_meta 取 device_uid/code（DeviceName/InternalCode）
+//   - device_ipv6 <<= units.unit_id 反查所属 unit (/80)，unit_name → AddressName
+//   - device_ipv6 <<= resident_unit.spatial_prefix AND valid_to IS NULL 反查 active residents
+//
+// 不返回 gender/birthday（PHI 字段在 32_resident_phi 加密表）— FE 当前未使用，避免 PHI 链路。
 func (r *PostgresDevicesRepository) GetDeviceRelations(ctx context.Context, tenantID, deviceID string) (*DeviceRelations, error) {
-	return nil, fmt.Errorf("device not found: tenant_id=%s, device_id=%s", tenantID, deviceID)
+	if deviceID == "" {
+		return nil, fmt.Errorf("device_id is required")
+	}
+
+	var deviceIPv6, deviceUID, deviceType string
+	var deviceCode sql.NullString
+	err := r.db.QueryRowContext(ctx, `
+		SELECT host(d.device_ipv6), dfm.device_uid, dfm.device_type::text, dfm.device_code
+		  FROM devices d
+		  JOIN device_factory_meta dfm USING (device_id)
+		 WHERE d.device_id = $1::uuid
+		 LIMIT 1
+	`, deviceID).Scan(&deviceIPv6, &deviceUID, &deviceType, &deviceCode)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("device not found: device_id=%s", deviceID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get device: %w", err)
+	}
+
+	out := &DeviceRelations{
+		DeviceID:           deviceID,
+		DeviceInternalCode: deviceUID,
+	}
+	if deviceCode.Valid && deviceCode.String != "" {
+		out.DeviceName = deviceCode.String
+	} else {
+		out.DeviceName = deviceUID
+	}
+
+	var unitID, unitName string
+	var unitProperty sql.NullInt32
+	err = r.db.QueryRowContext(ctx, `
+		SELECT host(u.unit_id) || '/80', u.unit_name, u.unit_property
+		  FROM units u
+		 WHERE $1::INET <<= u.unit_id
+		 LIMIT 1
+	`, deviceIPv6).Scan(&unitID, &unitName, &unitProperty)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("failed to get unit: %w", err)
+	}
+	if err == nil {
+		out.AddressID = unitID
+		out.AddressName = unitName
+		if unitProperty.Valid {
+			out.AddressType = int(unitProperty.Int32)
+		}
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT host(r.resident_id), r.nickname
+		  FROM resident_unit ru
+		  JOIN residents r ON r.resident_id = ru.resident_id
+		 WHERE ru.valid_to IS NULL
+		   AND $1::INET <<= ru.spatial_prefix
+		   AND r.status = 'active'
+		 ORDER BY r.nickname
+	`, deviceIPv6)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query residents: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rid, name string
+		if err := rows.Scan(&rid, &name); err != nil {
+			return nil, fmt.Errorf("scan resident: %w", err)
+		}
+		out.Residents = append(out.Residents, DeviceRelationResident{
+			ID:   rid,
+			Name: name,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate residents: %w", err)
+	}
+	return out, nil
 }
 
 // GetOrCreateDeviceFromStore 首次连接时自动创建设备记录

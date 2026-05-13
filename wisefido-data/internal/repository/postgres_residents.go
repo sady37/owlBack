@@ -559,9 +559,11 @@ func (r *PostgresResidentsRepository) CreateResident(
 	}
 
 	// 空间分配（取 deepest non-empty prefix；Bed>Room>Unit>Branch）
+	// B2C/private unit (unit_property=0) 强制 clamp 到 /80，不允许 room/bed 细分。
 	// 没填 unit/room/bed 时 fallback 到 branch_id (/56 招待状态)，
 	// 否则 staff branch scope check (scope.go VerifyResident) 查不到 resident_unit 行 → 拒访。
 	sp := pickDeepestPrefix(in.BedID, in.RoomID, in.UnitID, in.BranchID)
+	sp = clampToUnitIfSingle(ctx, tx, sp)
 	if sp != "" {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO resident_unit (resident_id, spatial_prefix, move_reason) VALUES ($1::INET, $2::INET, 'initial')`,
@@ -631,6 +633,7 @@ func (r *PostgresResidentsRepository) CreateResident(
 	// Hook: 通知 cards 表 reconcile（commit 后才 fire，回滚不触发）
 	// scope = 新分配的 resident_unit spatial_prefix 所在 unit /80
 	if sp := pickDeepestPrefix(in.BedID, in.RoomID, in.UnitID, in.BranchID); sp != "" {
+		sp = clampToUnitIfSingle(ctx, r.db, sp)
 		r.fireResidentUnitChange(ctx, narrowPrefixToUnit(sp))
 	}
 	return hoa, nil
@@ -715,6 +718,8 @@ func (r *PostgresResidentsRepository) UpdateResident(
 		}
 
 		newPrefix := pickDeepestPrefix(in.BedID, in.RoomID, in.UnitID)
+		// unit_type=1 (single) 强制 clamp 到 /80：FE 可能多送了 room_id/bed_id，单人 unit 不能细绑
+		newPrefix = clampToUnitIfSingle(ctx, tx, newPrefix)
 		// 解绑 unit 不等于"离开 branch" — 拿老行 /56 fallback，避免 staff scope 突然看不到
 		// （否则 VerifyResident 查不到 active resident_unit 行 → permission denied，
 		//  自己刚操作的 resident 立刻消失，体验和一致性双输）
@@ -1765,6 +1770,44 @@ func pickDeepestPrefix(vals ...*string) string {
 		return s
 	}
 	return ""
+}
+
+// clampToUnitIfSingle — unit_type=1 (single/私人) 强制 binding 在 /80：
+//   - unit_type=1 (single)：任何深于 /80 的 prefix 截到所属 unit_id (/80)；
+//     B2C 家庭 + B2B 机构内的单人房（如 101 / 201）都适用
+//   - unit_type=2 (share)：保留原值（允许 /96 bed 细绑，多人合住按床绑）
+//   - unit_type=3 (public)：保留原值（一般不绑 resident，只装公共设备）
+//   - prefix 无法定位到 units 表（如 /48 /56 招待状态）：保留原值
+//
+// 注：判据是 unit_type 而非 unit_property（B2B/B2C）；机构里的单人房间和家庭单元用同一规则。
+func clampToUnitIfSingle(ctx context.Context, q interface {
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+}, prefix string) string {
+	if prefix == "" || !strings.Contains(prefix, "::") {
+		return prefix
+	}
+	// /56 /48 /64 招待 / 跨 unit 状态不属于具体 unit；保留
+	if strings.HasSuffix(prefix, "/48") || strings.HasSuffix(prefix, "/56") || strings.HasSuffix(prefix, "/64") {
+		return prefix
+	}
+	var unitID sql.NullString
+	var unitType sql.NullInt32
+	err := q.QueryRowContext(ctx, `
+		SELECT host(unit_id) || '/80', unit_type
+		  FROM units
+		 WHERE $1::INET <<= unit_id
+		 LIMIT 1`, prefix).Scan(&unitID, &unitType)
+	if err != nil {
+		return prefix
+	}
+	if !unitID.Valid || !unitType.Valid {
+		return prefix
+	}
+	// unit_type=1 (single) → clamp 到 /80；其它类型保留
+	if unitType.Int32 == 1 {
+		return unitID.String
+	}
+	return prefix
 }
 
 // narrowPrefixToUnit — 把任意 INET CIDR 截到 unit /80

@@ -6,36 +6,46 @@ import (
 	"sync"
 )
 
-// Device 设备领域模型（对应 devices 表）
-// 基于 owlRD/db/17_devices.sql 的实际表结构
+// Device 设备领域模型（v2: 派生自 device_factory_meta + device_runtime_state + devices）
+//
+// v2 schema 映射（详见 owlRD/dbv2/23_devices.sql / 21_device_factory_meta.sql / 22_device_runtime_state.sql）：
+//   - DeviceID/DeviceUID/DeviceType/DeviceModel/IMEI/CommMode/MCUModel: device_factory_meta
+//   - DeviceIPv6/MonitoringEnabled/AllowAccess: devices (PK = device_ipv6)
+//   - FirmwareVersion/Online/SensorDetached: device_runtime_state
+//   - TenantID/BoundRoomID/BoundBedID/DeviceName: 由 IPv6 prefix-mask / device_code 派生（无独立列）
+//   - BusinessAccess: legacy 字段映射 (access=TRUE → "approved" / FALSE → "pending")
 type Device struct {
-	// 主键 / SaaS
-	DeviceID  string `db:"device_id"`  // UUID, PRIMARY KEY REFERENCES device_store(device_id)
-	DeviceUID string `db:"device_uid"` // VARCHAR(50), 用于首次连接匹配和查询
-	TenantID  string `db:"tenant_id"`  // UUID, NOT NULL REFERENCES tenants(tenant_id)
+	// 主键 / 身份（dfm）
+	DeviceID  string `db:"device_id"`  // UUID, dfm.device_id
+	DeviceUID string `db:"device_uid"` // VARCHAR(50), dfm.device_uid (logMAC)
 
-	// 标识 / 资产
-	DeviceName string `db:"device_name"` // VARCHAR(100), NOT NULL
+	// 空间地址（v2 first-class）
+	DeviceIPv6 string `db:"device_ipv6"` // INET /128, devices.device_ipv6 (text repr)
+	TenantID   string `db:"tenant_id"`   // 派生：host(network(set_masklen(device_ipv6, 48)))，"fd00:0:1::" 等
 
-	// 位置绑定（互斥）
-	BoundRoomID sql.NullString `db:"bound_room_id"` // UUID REFERENCES rooms(room_id)
-	BoundBedID  sql.NullString `db:"bound_bed_id"`  // UUID REFERENCES beds(bed_id)
+	// 显示用（dfm.device_code 优先，fallback device_uid）
+	DeviceName string `db:"device_name"` // COALESCE(dfm.device_code, dfm.device_uid)
 
-	// 状态 / 维护
-	Status            string `db:"status"`             // VARCHAR(20), NOT NULL DEFAULT 'offline'
-	BusinessAccess    string `db:"business_access"`    // VARCHAR(20), NOT NULL DEFAULT 'pending'
-	MonitoringEnabled bool   `db:"monitoring_enabled"` // BOOLEAN, NOT NULL DEFAULT FALSE
+	// 位置绑定（v2 派生自 device_ipv6 字节段；保留 v1 字段名供 caller）
+	BoundRoomID sql.NullString `db:"bound_room_id"` // /88 prefix host(...)::text；NULL if mask <88
+	BoundBedID  sql.NullString `db:"bound_bed_id"`  // /96 prefix host(...)::text；NULL if mask <96
 
-	// 其他扩展配置 / 标签
-	Metadata sql.NullString `db:"metadata"` // JSONB
+	// 运行时状态（drs + devices.access）
+	Status            string `db:"status"`             // "online"|"offline"，drs.online 派生
+	BusinessAccess    string `db:"business_access"`    // "approved"|"pending"，devices.access 派生
+	AllowAccess       bool   `db:"allow_access"`       // alias of devices.access
+	MonitoringEnabled bool   `db:"monitoring_enabled"` // devices.monitoring_enabled
 
-	// 物理属性（通过 JOIN device_store 获取）
-	DeviceType      sql.NullString `db:"device_type"`      // from device_store
-	DeviceModel     sql.NullString `db:"device_model"`     // from device_store
-	IMEI            sql.NullString `db:"imei"`             // from device_store
-	CommMode        sql.NullString `db:"comm_mode"`        // from device_store
-	MCUModel        sql.NullString `db:"mcu_model"`        // from device_store
-	FirmwareVersion sql.NullString `db:"firmware_version"` // from device_store
+	// 物理属性（dfm + drs）
+	DeviceType      sql.NullString `db:"device_type"`      // dfm.device_type
+	DeviceModel     sql.NullString `db:"device_model"`     // dfm.device_model
+	IMEI            sql.NullString `db:"imei"`             // dfm.imei
+	CommMode        sql.NullString `db:"comm_mode"`        // dfm.comm_mode
+	MCUModel        sql.NullString `db:"mcu_model"`        // dfm.mcu_model
+	FirmwareVersion sql.NullString `db:"firmware_version"` // drs.firmware_version
+
+	// v2: 不持久化的扩展槽（v1 devices.metadata JSONB 已删；caller 临时挂任意 JSON 用）
+	Metadata sql.NullString `db:"-"` // 不写 DB；保留字段让 ToJSON 兼容旧 API
 }
 
 /*

@@ -57,12 +57,15 @@ func (s *AlarmService) CheckAH(ctx context.Context, deviceID string) bool {
 	if s.db == nil || deviceID == "" {
 		return false
 	}
-	sinceMs := time.Now().Add(-120 * time.Second).UnixMilli()
+	sinceTs := time.Now().Add(-120 * time.Second)
+	// v2: monitor_stream 取代 iot_timeseries；device_addr 派生自 device_id；ts 替代 timestamp(ms→TIMESTAMPTZ)；
+	//     payload->'data_value' 取出 v1 data_value 等价物（保留 parseRRFromDataValue 兼容）
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT its."timestamp", its.data_value FROM iot_timeseries its
-		WHERE its.device_id = $1::uuid AND its."timestamp" >= $2 AND its.topic_type = 'monitor'
-		ORDER BY its."timestamp"`,
-		deviceID, sinceMs)
+		SELECT ms.ts, ms.payload->'data_value' AS data_value FROM monitor_stream ms
+		WHERE ms.device_addr = (SELECT device_ipv6 FROM devices WHERE device_id = $1::uuid)
+		  AND ms.ts >= $2 AND ms.stream_type = 'monitor'
+		ORDER BY ms.ts`,
+		deviceID, sinceTs)
 	if err != nil {
 		s.logger.Debug("CheckAH query", zap.String("device_id", deviceID), zap.Error(err))
 		return false
@@ -76,12 +79,11 @@ func (s *AlarmService) CheckAH(ctx context.Context, deviceID string) bool {
 	since := time.Now().Add(-120 * time.Second)
 	var points []point
 	for rows.Next() {
-		var tsMs int64
+		var ts time.Time
 		var dataValueJSON []byte
-		if err := rows.Scan(&tsMs, &dataValueJSON); err != nil {
+		if err := rows.Scan(&ts, &dataValueJSON); err != nil {
 			continue
 		}
-		ts := time.UnixMilli(tsMs)
 		rr := parseRRFromDataValue(dataValueJSON)
 		points = append(points, point{ts: ts, rr: rr})
 	}
@@ -542,18 +544,30 @@ func (s *AlarmService) InRestTimeWindow(ctx context.Context, tenantID, cardID st
 	return isWithinResetTimeWindow(time.Now(), params, tz)
 }
 
-// getResetTimeParamsForTenant 从 alarm_cloud.metadata 读取租户 TenantResetTime.ResetTime，无配置或解析失败返回 nil（视为在窗口内）。
+// getResetTimeParamsForTenant v2：从 spatial_config 读 tenant /48 的 alarm.reset_time 配置
+//
+// v1 alarm_cloud.metadata JSONB → v2 spatial_config (config_key='alarm.reset_time' at tenant /48)
+// 当前 v2 spatial_config 尚未由 wisefido-data 写入端 seed → 返回 nil（视为在窗口内）= 当前行为不变
 func (s *AlarmService) getResetTimeParamsForTenant(ctx context.Context, tenantID string) *alarm.ResetTimeParams {
 	if s.db == nil || tenantID == "" {
 		return nil
 	}
-	var metadata sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT metadata FROM alarm_cloud WHERE tenant_id = $1`, tenantID).Scan(&metadata)
-	if err != nil || !metadata.Valid || metadata.String == "" {
+	// v2 占位：spatial_config 写入端 phase 后再切；当前路径相当于 v1 "无配置 → nil"
+	var configValue sql.NullString
+	prefix := tenantID
+	if !strings.Contains(prefix, "/") && strings.Contains(prefix, ":") {
+		prefix = prefix + "/48"
+	}
+	err := s.db.QueryRowContext(ctx, `
+		SELECT config_value::text FROM spatial_config
+		WHERE config_key = 'alarm.reset_time' AND spatial_prefix = $1::INET
+		LIMIT 1
+	`, prefix).Scan(&configValue)
+	if err != nil || !configValue.Valid || configValue.String == "" {
 		return nil
 	}
 	var tr alarm.TenantResetTime
-	if err := json.Unmarshal([]byte(metadata.String), &tr); err != nil {
+	if err := json.Unmarshal([]byte(configValue.String), &tr); err != nil {
 		return nil
 	}
 	if tr.ResetTime.InBedTime == "" || tr.ResetTime.OutBedTime == "" {
@@ -855,7 +869,12 @@ func (s *AlarmService) SyncAllCardsAlarmState(ctx context.Context) error {
 		return nil
 	}
 
-	cardRows, err := s.db.QueryContext(ctx, `SELECT card_id, tenant_id FROM cards`)
+	// v2 unified: card_id ≡ spatial_prefix（INET 字符串）；tenant_id 派生自 /48
+	cardRows, err := s.db.QueryContext(ctx, `
+		SELECT c.spatial_prefix::text AS card_id,
+		       host(network(set_masklen(c.spatial_prefix, 48))) AS tenant_id
+		FROM cards c
+	`)
 	if err != nil {
 		return fmt.Errorf("query cards: %w", err)
 	}
@@ -902,12 +921,13 @@ func (s *AlarmService) SyncDeviceStatusFromActiveAlarms(ctx context.Context) err
 	if s.db == nil || s.writer == nil {
 		return nil
 	}
+	// v2 alarm_events (已 rename 至 v1 命名 2026-05-13)：event_type / alarm_status
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT DISTINCT device_id::text, event_type
 		FROM alarm_events
-		WHERE alarm_status='active'
+		WHERE alarm_status = 'active'
 		  AND event_type IN ('SignalPoor','AngleException','SensorDetached')
-		  AND (metadata->>'deleted_at' IS NULL)
+		  AND device_id IS NOT NULL
 	`)
 	if err != nil {
 		return fmt.Errorf("query active device alarms: %w", err)
@@ -1074,7 +1094,11 @@ func (s *AlarmService) CheckNightAbsence(ctx context.Context, metaCache *DeviceM
 		return
 	}
 
-	rows, err := s.db.QueryContext(ctx, `SELECT card_id, tenant_id FROM cards WHERE card_type = 'ActiveBedCard'`)
+	// v2 unified: card_id ≡ spatial_prefix；card_type 'active_bed' 替代旧 'ActiveBedCard'
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.spatial_prefix::text AS card_id,
+		       host(network(set_masklen(c.spatial_prefix, 48))) AS tenant_id
+		FROM cards c WHERE c.card_type = 'active_bed'`)
 	if err != nil {
 		s.logger.Warn("night_absence: query cards failed", zap.Error(err))
 		return
@@ -1263,31 +1287,31 @@ func (s *AlarmService) assessDevicePresence(ctx context.Context, tenantID, devic
 	if s.db == nil {
 		return presenceOffline
 	}
-	nightStartMs := nightStart.UnixMilli()
-	nightEndMs := nightEnd.UnixMilli()
+	nightStart_ts := nightStart // ts for SQL timestamp args
+	nightEnd_ts := nightEnd
+	_ = tenantID // v2: tenant 从 device_addr /48 派生；保留入参不破坏 caller
 	devType := strings.ToLower(deviceType)
 
-	// 步骤 0：device.status='offline'（由 cardagg/qinglan device_healthCheck 维护，90s 无心跳 → offline）
-	// 直接短路，避免依赖 iot_timeseries 数据查询。两层防护：
-	//   ① 这里 device.status 短路（依赖 healthCheck 准确）
-	//   ② 步骤 1 monitor 数据过滤（healthCheck 漏判时兜底）
-	var devStatus sql.NullString
-	_ = s.db.QueryRowContext(ctx, `SELECT status FROM devices WHERE device_id = $1`, deviceID).Scan(&devStatus)
-	if devStatus.Valid && devStatus.String == "offline" {
+	// 步骤 0：drs.online=false 短路（替代 v1 devices.status）
+	// v2: device 运行时态在 device_runtime_state；与 cardagg/qinglan device_healthCheck 维护的 Redis device:status 互为对偶
+	var drsOnline sql.NullBool
+	_ = s.db.QueryRowContext(ctx, `SELECT online FROM device_runtime_state WHERE device_id = $1::uuid`, deviceID).Scan(&drsOnline)
+	if drsOnline.Valid && !drsOnline.Bool {
 		return presenceOffline
 	}
 
-	// 步骤 1：设备整夜是否有真实监测数据（必须 topic_type='monitor'）。
+	// 步骤 1：设备整夜是否有真实监测数据（v2 用 monitor_stream，device_addr 派生自 device_id）
 	// 注意：不能算 alarm/event 类（如 connectionStatus 产生的 Offline/OfflineRecover、
 	// deviceSenSor 产生的 SensorDetached），那些是设备元事件，offline 设备照样会产生，
 	// 会把 offline 误判成 absent 触发 NightAbsence/BedNightAbsence 误报。
+	// v2 monitor_stream.stream_type='monitor' (枚举) 等价 v1 topic_type='monitor'
 	var trackCount int
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM iot_timeseries
-		WHERE tenant_id = $1 AND device_id = $2
-		  AND topic_type = 'monitor'
-		  AND timestamp >= $3 AND timestamp < $4
-	`, tenantID, deviceID, nightStartMs, nightEndMs).Scan(&trackCount); err != nil || trackCount == 0 {
+		SELECT COUNT(*) FROM monitor_stream ms
+		WHERE ms.device_addr = (SELECT device_ipv6 FROM devices WHERE device_id = $1::uuid)
+		  AND ms.stream_type = 'monitor'
+		  AND ms.ts >= $2 AND ms.ts < $3
+	`, deviceID, nightStart_ts, nightEnd_ts).Scan(&trackCount); err != nil || trackCount == 0 {
 		return presenceOffline
 	}
 
@@ -1295,15 +1319,15 @@ func (s *AlarmService) assessDevicePresence(ctx context.Context, tenantID, devic
 	if strings.Contains(devType, "radar") {
 		var cnt int
 		_ = s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM iot_timeseries
-			WHERE tenant_id = $1 AND device_id = $2
-			  AND category = 'number_people'
-			  AND timestamp >= $3 AND timestamp < $4
+			SELECT COUNT(*) FROM monitor_stream ms
+			WHERE ms.device_addr = (SELECT device_ipv6 FROM devices WHERE device_id = $1::uuid)
+			  AND ms.payload->>'category' = 'number_people'
+			  AND ms.ts >= $2 AND ms.ts < $3
 			  AND EXISTS (
-			    SELECT 1 FROM jsonb_array_elements(data_value) elem
+			    SELECT 1 FROM jsonb_array_elements(ms.payload->'data_value') elem
 			    WHERE (elem->>'number_people')::int > 0
 			  )
-		`, tenantID, deviceID, nightStartMs, nightEndMs).Scan(&cnt)
+		`, deviceID, nightStart_ts, nightEnd_ts).Scan(&cnt)
 		if cnt > 0 {
 			return presenceYes
 		}
@@ -1311,55 +1335,56 @@ func (s *AlarmService) assessDevicePresence(ctx context.Context, tenantID, devic
 	}
 
 	if strings.Contains(devType, "sleep") {
-		// 2a. iot_timeseries 有 bed_status=0 (在床) / HR>0 / RR>0 (生命体征上报意味着人在)
+		// 2a. monitor_stream 有 bed_status=0 (在床) / HR>0 / RR>0 (生命体征上报意味着人在)
 		var bedCnt int
 		_ = s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM iot_timeseries
-			WHERE tenant_id = $1 AND device_id = $2
-			  AND topic_type = 'monitor'
-			  AND timestamp >= $3 AND timestamp < $4
+			SELECT COUNT(*) FROM monitor_stream ms
+			WHERE ms.device_addr = (SELECT device_ipv6 FROM devices WHERE device_id = $1::uuid)
+			  AND ms.stream_type = 'monitor'
+			  AND ms.ts >= $2 AND ms.ts < $3
 			  AND EXISTS (
-			    SELECT 1 FROM jsonb_array_elements(data_value) elem
+			    SELECT 1 FROM jsonb_array_elements(ms.payload->'data_value') elem
 			    WHERE (elem->>'bed_status')::int = 0
 			       OR (elem->>'heart_rate')::int > 0
 			       OR (elem->>'respiratory_rate')::int > 0
 			  )
-		`, tenantID, deviceID, nightStartMs, nightEndMs).Scan(&bedCnt)
+		`, deviceID, nightStart_ts, nightEnd_ts).Scan(&bedCnt)
 		if bedCnt > 0 {
 			return presenceYes
 		}
 
-		// 2b. alarm_events 有 InBed 事件（设备上报的在床事件）
+		// 2b. alarm_events 有 InBed 事件（v2: device_id snapshot 列保留；tenant_id 列已删）
 		var inBedCnt int
 		_ = s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM alarm_events
-			WHERE tenant_id = $1 AND device_id = $2
-			  AND event_type = $3
-			  AND triggered_at >= to_timestamp($4::double precision / 1000)
-			  AND triggered_at <  to_timestamp($5::double precision / 1000)
-		`, tenantID, deviceID, alarm.InBed, nightStartMs, nightEndMs).Scan(&inBedCnt)
+			SELECT COUNT(*) FROM alarm_events ae
+			WHERE ae.device_id = $1::uuid
+			  AND ae.event_type = $2
+			  AND ae.triggered_at >= $3 AND ae.triggered_at < $4
+		`, deviceID, alarm.InBed, nightStart_ts, nightEnd_ts).Scan(&inBedCnt)
 		if inBedCnt > 0 {
 			return presenceYes
 		}
 
-		// 2c. sleepace_report 兜底：找窗口覆盖 nightStart 的报告，检查 sleep_state>=2
-		nightStartSec := nightStart.Unix()
-		nightEndSec := nightEnd.Unix()
+		// 2c. sleepace_report 兜底（v2: 用 device_id 直接查；start_time_ms ms 单位）
+		nightStartMs := nightStart.UnixMilli()
 		var sleepState sql.NullString
-		var startTime int64
+		var startTimeMs int64
 		var timeStepSec, recordCount int
 		if err := s.db.QueryRowContext(ctx, `
-			SELECT sr.sleep_state, sr.start_time,
+			SELECT sr.sleep_state,
+			       sr.start_time_ms,
 			       COALESCE(NULLIF(sr.time_step, 0), 60) AS ts,
 			       COALESCE(NULLIF(sr.record_count, 0), 1440) AS rc
 			FROM sleepace_report sr
-			JOIN device_store ds ON sr.device_code = ds.device_code
-			WHERE ds.device_id = $1
-			  AND sr.start_time <= $2
-			  AND sr.start_time + COALESCE(NULLIF(sr.time_step, 0), 60) * COALESCE(NULLIF(sr.record_count, 0), 1440) > $2
-			ORDER BY sr.start_time DESC
+			WHERE sr.device_id = $1::uuid
+			  AND sr.start_time_ms <= $2
+			  AND sr.start_time_ms + COALESCE(NULLIF(sr.time_step, 0), 60) * COALESCE(NULLIF(sr.record_count, 0), 1440) * 1000 > $2
+			ORDER BY sr.start_time_ms DESC
 			LIMIT 1
-		`, deviceID, nightStartSec).Scan(&sleepState, &startTime, &timeStepSec, &recordCount); err == nil && sleepState.Valid {
+		`, deviceID, nightStartMs).Scan(&sleepState, &startTimeMs, &timeStepSec, &recordCount); err == nil && sleepState.Valid {
+			startTime := startTimeMs / 1000 // 后续 idx 计算用 sec
+			nightStartSec := nightStart.Unix()
+			nightEndSec := nightEnd.Unix()
 			raw := strings.Trim(sleepState.String, "\"[]")
 			vals := strings.Split(raw, ",")
 			if timeStepSec <= 0 {

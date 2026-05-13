@@ -670,15 +670,21 @@ func (c *MQTTConsumer) handleOTAReturn(uid string, message map[string]interface{
 	}
 
 	if c.db != nil {
+		// v2: device_ota PK = device_ipv6；UPDATE 走 dfm → devices.device_ipv6 反查
 		_, err := c.db.ExecContext(context.Background(), `
-			UPDATE device_store
-			SET ota_status = $1::text, ota_progress = $2, ota_error = $3, ota_updated_at = NOW()
-			WHERE device_uid = $4
+			UPDATE device_ota
+			SET status = $1, progress = $2, error = $3, updated_at = NOW()
+			WHERE device_ipv6 = (
+				SELECT d.device_ipv6
+				FROM devices d
+				JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+				WHERE dfm.device_uid = $4
+			)
 		`, status, progress, errMsg, uid)
 		if err != nil {
-			log.Printf("[OTA-RETURN] failed to update ota_status for uid=%s: %v", uid, err)
+			log.Printf("[OTA-RETURN] failed to update device_ota status for uid=%s: %v", uid, err)
 		} else {
-			log.Printf("[OTA-RETURN] updated ota_status=%s progress=%d for uid=%s", status, progress, uid)
+			log.Printf("[OTA-RETURN] updated device_ota status=%s progress=%d for uid=%s", status, progress, uid)
 		}
 	}
 }

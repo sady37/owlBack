@@ -25,14 +25,21 @@ func NewPostgresAlarmEventsRepository(db *sql.DB) *PostgresAlarmEventsRepository
 // 确保实现了接口
 var _ AlarmEventsRepository = (*PostgresAlarmEventsRepository)(nil)
 
-// buildWhereClause 构建 WHERE 子句（用于 ListAlarmEvents 等查询方法）
+// buildWhereClause v2：构建 WHERE 子句。
+//
+// v2 重大变化：
+//   - 删除 ae.tenant_id 列 → 改用 ae.device_addr <<= tenant_prefix（/48 INET CIDR）
+//   - 删除 ae.metadata JSONB 列 → 无软删，alarm_events 是不可变事件日志
+//   - 删除 ae.unit_id / ae.room_id 列 → 用 snapshot ae.unit_name / ae.room_name 过滤，或用 device_addr prefix-match
 func (r *PostgresAlarmEventsRepository) buildWhereClause(tenantID string, filters AlarmEventFilters, args *[]interface{}, argN *int) []string {
-	where := []string{fmt.Sprintf("ae.tenant_id = $%d", *argN)}
-	*args = append(*args, tenantID)
+	// v2: tenant prefix matching（tenantID 期望 v2 host 字符串 "fd00:0:T::" 或 CIDR "fd00:0:T::/48"）
+	tenantPrefix := tenantID
+	if !strings.Contains(tenantPrefix, "/") && strings.Contains(tenantPrefix, ":") {
+		tenantPrefix = tenantPrefix + "/48"
+	}
+	where := []string{fmt.Sprintf("ae.device_addr <<= $%d::INET", *argN)}
+	*args = append(*args, tenantPrefix)
 	*argN++
-
-	// 软删除过滤
-	where = append(where, "(ae.metadata->>'deleted_at' IS NULL)")
 
 	// 时间段过滤
 	if filters.StartTime != nil {
@@ -46,21 +53,22 @@ func (r *PostgresAlarmEventsRepository) buildWhereClause(tenantID string, filter
 		*argN++
 	}
 
-	// 5W where 直接过滤（ae.unit_id / ae.room_id snapshot，不经 devices JOIN）
+	// 5W 过滤改用 snapshot 名字列（v2 ae.unit_name / ae.room_name 派生时锁住）
 	if filters.EventUnitID != nil {
-		where = append(where, fmt.Sprintf("ae.unit_id = $%d", *argN))
+		// EventUnitID 入参语义已变：v2 期望 unit_name 而非 UUID
+		where = append(where, fmt.Sprintf("ae.unit_name = $%d", *argN))
 		*args = append(*args, *filters.EventUnitID)
 		*argN++
 	}
 	if filters.EventRoomID != nil {
-		where = append(where, fmt.Sprintf("ae.room_id = $%d", *argN))
+		where = append(where, fmt.Sprintf("ae.room_name = $%d", *argN))
 		*args = append(*args, *filters.EventRoomID)
 		*argN++
 	}
 
-	// 设备过滤
+	// 设备过滤（v2 仍存 ae.device_id snapshot 列）
 	if filters.DeviceID != nil {
-		where = append(where, fmt.Sprintf("ae.device_id = $%d", *argN))
+		where = append(where, fmt.Sprintf("ae.device_id = $%d::uuid", *argN))
 		*args = append(*args, *filters.DeviceID)
 		*argN++
 	}
@@ -172,66 +180,33 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 	argN := 1
 	where := r.buildWhereClause(tenantID, filters, &args, &argN)
 
-	// 构建 JOIN 子句（如果需要）
+	// v2：alarm_events 自带 snapshot 名字列（tenant_name/branch_name/unit_name/room_name/bed_name/resident_nickname/device_uid）
+	// 不需要 JOIN devices/units/rooms/beds/residents 表过滤（FE filter 都改 snapshot 列）。
 	joins := []string{}
 
-	// 需要 JOIN devices 表的情况
-	needDevicesJoin := filters.DeviceName != nil ||
-		filters.ResidentID != nil || filters.BranchTag != nil || filters.UnitID != nil
-
-	if needDevicesJoin {
-		joins = append(joins, "LEFT JOIN devices d ON ae.device_id = d.device_id")
-
-		// 设备名称过滤
-		if filters.DeviceName != nil {
-			where = append(where, fmt.Sprintf("d.device_name ILIKE $%d", argN))
-			args = append(args, "%"+*filters.DeviceName+"%")
-			argN++
-		}
+	// 设备名称过滤 → v2 用 ae.device_uid snapshot
+	if filters.DeviceName != nil {
+		where = append(where, fmt.Sprintf("ae.device_uid ILIKE $%d", argN))
+		args = append(args, "%"+*filters.DeviceName+"%")
+		argN++
 	}
-
-	// 需要 JOIN beds/rooms/units 的情况
-	needLocationJoin := filters.ResidentID != nil || filters.BranchTag != nil || filters.UnitID != nil
-
-	if needLocationJoin {
-		joins = append(joins, `
-			LEFT JOIN beds b ON d.bound_bed_id = b.bed_id
-			LEFT JOIN rooms r ON (d.bound_room_id = r.room_id OR b.room_id = r.room_id)
-			LEFT JOIN units u ON r.unit_id = u.unit_id
-		`)
-
-		// 住户过滤
-		if filters.ResidentID != nil {
-			joins = append(joins, "LEFT JOIN residents res ON (b.bed_id = res.bed_id OR r.room_id = res.room_id OR u.unit_id = res.unit_id)")
-			where = append(where, fmt.Sprintf("res.resident_id = $%d", argN))
-			args = append(args, *filters.ResidentID)
-			argN++
-		}
-
-		// 分支标签过滤（通过 JOIN branches 表获取 branch_name）
-		if filters.BranchTag != nil {
-			// 确保 JOIN branches 表
-			needBranchesJoin := true
-			for _, join := range joins {
-				if strings.Contains(join, "branches") {
-					needBranchesJoin = false
-					break
-				}
-			}
-			if needBranchesJoin {
-				joins = append(joins, "LEFT JOIN branches br ON u.branch_id = br.branch_id")
-			}
-			where = append(where, fmt.Sprintf("br.branch_name = $%d", argN))
-			args = append(args, *filters.BranchTag)
-			argN++
-		}
-
-		// 单元过滤
-		if filters.UnitID != nil {
-			where = append(where, fmt.Sprintf("u.unit_id = $%d", argN))
-			args = append(args, *filters.UnitID)
-			argN++
-		}
+	// 住户 ID → v2 ae.resident_id INET snapshot
+	if filters.ResidentID != nil {
+		where = append(where, fmt.Sprintf("ae.resident_id::text = $%d", argN))
+		args = append(args, *filters.ResidentID)
+		argN++
+	}
+	// 分支标签 → v2 ae.branch_name
+	if filters.BranchTag != nil {
+		where = append(where, fmt.Sprintf("ae.branch_name = $%d", argN))
+		args = append(args, *filters.BranchTag)
+		argN++
+	}
+	// 单元 → v2 ae.unit_name
+	if filters.UnitID != nil {
+		where = append(where, fmt.Sprintf("ae.unit_name = $%d", argN))
+		args = append(args, *filters.UnitID)
+		argN++
 	}
 
 	joinClause := strings.Join(joins, " ")
@@ -266,27 +241,33 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 	}
 	offset := (page - 1) * size
 
-	// 查询数据
+	// v2 SELECT bridge：
+	//   - tenant_id 列已删 → 用 ae.device_addr 反推 /48 host
+	//   - iot_timeseries_id / notified_users / metadata / updated_at 列已删 → NULL/默认占位
+	//   - notes → ae.handler_notes (v2 列名)
+	//   - trigger_data → ae.payload (v2 列名)
+	//   - alarm_level SMALLINT → ::text 适配 domain.AlarmLevel string
+	//   - handler UUID → ::text
 	query := fmt.Sprintf(`
-		SELECT DISTINCT
+		SELECT
 			ae.event_id::text,
-			ae.tenant_id::text,
-			ae.device_id::text,
+			host(network(set_masklen(ae.device_addr, 48)))    AS tenant_id,
+			COALESCE(ae.device_id::text, '')                  AS device_id,
 			ae.event_type,
-			ae.category,
-			ae.alarm_level,
+			COALESCE(ae.category, '')                          AS category,
+			ae.alarm_level::text                               AS alarm_level,
 			ae.alarm_status,
 			ae.triggered_at,
 			ae.hand_time,
-			ae.iot_timeseries_id,
-			ae.trigger_data,
-			ae.handler,
+			NULL::bigint                                       AS iot_timeseries_id,
+			COALESCE(ae.payload, '{}'::jsonb)                  AS trigger_data,
+			ae.handler::text,
 			ae.operation,
-			ae.notes,
-			ae.notified_users,
-			ae.metadata,
+			ae.handler_notes                                   AS notes,
+			'[]'::jsonb                                        AS notified_users,
+			'{}'::jsonb                                        AS metadata,
 			ae.created_at,
-			ae.updated_at
+			ae.created_at                                      AS updated_at
 		FROM alarm_events ae
 		%s
 		%s
@@ -387,30 +368,34 @@ func (r *PostgresAlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenan
 		return nil, fmt.Errorf("event_id is required")
 	}
 
+	// v2 GetAlarmEvent bridge — 与 ListAlarmEvents 同样列映射
+	tenantPrefix := tenantID
+	if !strings.Contains(tenantPrefix, "/") && strings.Contains(tenantPrefix, ":") {
+		tenantPrefix = tenantPrefix + "/48"
+	}
 	query := `
-		SELECT 
-			event_id::text,
-			tenant_id::text,
-			device_id::text,
-			event_type,
-			category,
-			alarm_level,
-			alarm_status,
-			triggered_at,
-			hand_time,
-			iot_timeseries_id,
-			trigger_data,
-			handler,
-			operation,
-			notes,
-			notified_users,
-			metadata,
-			created_at,
-			updated_at
-		FROM alarm_events
-		WHERE event_id = $1
-		  AND tenant_id = $2
-		  AND (metadata->>'deleted_at' IS NULL)
+		SELECT
+			ae.event_id::text,
+			host(network(set_masklen(ae.device_addr, 48)))    AS tenant_id,
+			COALESCE(ae.device_id::text, '')                  AS device_id,
+			ae.event_type,
+			COALESCE(ae.category, '')                          AS category,
+			ae.alarm_level::text                               AS alarm_level,
+			ae.alarm_status,
+			ae.triggered_at,
+			ae.hand_time,
+			NULL::bigint                                       AS iot_timeseries_id,
+			COALESCE(ae.payload, '{}'::jsonb)                  AS trigger_data,
+			ae.handler::text,
+			ae.operation,
+			ae.handler_notes                                   AS notes,
+			'[]'::jsonb                                        AS notified_users,
+			'{}'::jsonb                                        AS metadata,
+			ae.created_at,
+			ae.created_at                                      AS updated_at
+		FROM alarm_events ae
+		WHERE ae.event_id = $1::uuid
+		  AND ae.device_addr <<= $2::INET
 	`
 
 	var event domain.AlarmEvent
@@ -419,7 +404,7 @@ func (r *PostgresAlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenan
 	var handler, operation, notes sql.NullString
 	var triggerData, notifiedUsers, metadata []byte
 
-	err := r.db.QueryRowContext(ctx, query, eventID, tenantID).Scan(
+	err := r.db.QueryRowContext(ctx, query, eventID, tenantPrefix).Scan(
 		&event.EventID,
 		&event.TenantID,
 		&event.DeviceID,
@@ -523,12 +508,15 @@ func (r *PostgresAlarmEventsRepository) UpdateAlarmEvent(ctx context.Context, te
 		argN++
 	}
 
-	// 自动更新 updated_at
-	setParts = append(setParts, "updated_at = CURRENT_TIMESTAMP")
+	// v2: 删 updated_at（v2 alarm_events 不可变 / 无 updated_at 列）
 
-	// 添加 WHERE 条件
-	args = append(args, eventID, tenantID)
-	whereClause := fmt.Sprintf("event_id = $%d AND tenant_id = $%d AND (metadata->>'deleted_at' IS NULL)", argN, argN+1)
+	// 添加 WHERE 条件（v2: tenant_id 列已删，用 device_addr <<= tenant_prefix）
+	tenantPrefix := tenantID
+	if !strings.Contains(tenantPrefix, "/") && strings.Contains(tenantPrefix, ":") {
+		tenantPrefix = tenantPrefix + "/48"
+	}
+	args = append(args, eventID, tenantPrefix)
+	whereClause := fmt.Sprintf("event_id = $%d::uuid AND device_addr <<= $%d::INET", argN, argN+1)
 
 	query := fmt.Sprintf(`
 		UPDATE alarm_events
@@ -568,35 +556,39 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 	// 计算时间阈值
 	thresholdTime := time.Now().Add(-time.Duration(withinMinutes) * time.Minute)
 
+	// v2 GetRecentAlarmEvent bridge
+	tenantPrefix := tenantID
+	if !strings.Contains(tenantPrefix, "/") && strings.Contains(tenantPrefix, ":") {
+		tenantPrefix = tenantPrefix + "/48"
+	}
 	query := `
-		SELECT 
-			event_id::text,
-			tenant_id::text,
-			device_id::text,
-			card_id::text,
-			event_type,
-			category,
-			alarm_level,
-			alarm_status,
-			triggered_at,
-			hand_time,
-			iot_timeseries_id,
-			trigger_data,
-			handler,
-			operation,
-			notes,
-			notified_users,
-			metadata,
-			created_at,
-			updated_at
-		FROM alarm_events
-		WHERE tenant_id = $1
-		  AND device_id = $2
-		  AND event_type = $3
-		  AND triggered_at > $4
-		  AND alarm_status = 'active'
-		  AND (metadata->>'deleted_at' IS NULL)
-		ORDER BY triggered_at DESC
+		SELECT
+			ae.event_id::text,
+			host(network(set_masklen(ae.device_addr, 48)))    AS tenant_id,
+			COALESCE(ae.device_id::text, '')                  AS device_id,
+			COALESCE(ae.card_id::text, '')                    AS card_id,
+			ae.event_type,
+			COALESCE(ae.category, '')                          AS category,
+			ae.alarm_level::text                               AS alarm_level,
+			ae.alarm_status,
+			ae.triggered_at,
+			ae.hand_time,
+			NULL::bigint                                       AS iot_timeseries_id,
+			COALESCE(ae.payload, '{}'::jsonb)                  AS trigger_data,
+			ae.handler::text,
+			ae.operation,
+			ae.handler_notes                                   AS notes,
+			'[]'::jsonb                                        AS notified_users,
+			'{}'::jsonb                                        AS metadata,
+			ae.created_at,
+			ae.created_at                                      AS updated_at
+		FROM alarm_events ae
+		WHERE ae.device_addr <<= $1::INET
+		  AND ae.device_id = $2::uuid
+		  AND ae.event_type = $3
+		  AND ae.triggered_at > $4
+		  AND ae.alarm_status = 'active'
+		ORDER BY ae.triggered_at DESC
 		LIMIT 1
 	`
 
@@ -607,7 +599,7 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 	var handler, operation, notes sql.NullString
 	var triggerData, notifiedUsers, metadata []byte
 
-	err := r.db.QueryRowContext(ctx, query, tenantID, deviceID, eventType, thresholdTime).Scan(
+	err := r.db.QueryRowContext(ctx, query, tenantPrefix, deviceID, eventType, thresholdTime).Scan(
 		&event.EventID,
 		&event.TenantID,
 		&event.DeviceID,
@@ -687,57 +679,27 @@ func (r *PostgresAlarmEventsRepository) CountAlarmEvents(ctx context.Context, te
 	argN := 1
 	where := r.buildWhereClause(tenantID, filters, &args, &argN)
 
-	// 构建 JOIN 子句（如果需要）
+	// v2：CountAlarmEvents 使用 snapshot 列，不 JOIN devices/rooms/units
 	joins := []string{}
-	needDevicesJoin := filters.DeviceName != nil ||
-		filters.ResidentID != nil || filters.BranchTag != nil || filters.UnitID != nil
-
-	if needDevicesJoin {
-		joins = append(joins, "LEFT JOIN devices d ON ae.device_id = d.device_id")
-
-		if filters.DeviceName != nil {
-			where = append(where, fmt.Sprintf("d.device_name ILIKE $%d", argN))
-			args = append(args, "%"+*filters.DeviceName+"%")
-			argN++
-		}
+	if filters.DeviceName != nil {
+		where = append(where, fmt.Sprintf("ae.device_uid ILIKE $%d", argN))
+		args = append(args, "%"+*filters.DeviceName+"%")
+		argN++
 	}
-
-	needLocationJoin := filters.ResidentID != nil || filters.BranchTag != nil || filters.UnitID != nil
-	if needLocationJoin {
-		joins = append(joins, `
-			LEFT JOIN beds b ON d.bound_bed_id = b.bed_id
-			LEFT JOIN rooms r ON (d.bound_room_id = r.room_id OR b.room_id = r.room_id)
-			LEFT JOIN units u ON r.unit_id = u.unit_id
-		`)
-
-		if filters.ResidentID != nil {
-			joins = append(joins, "LEFT JOIN residents res ON (b.bed_id = res.bed_id OR r.room_id = res.room_id OR u.unit_id = res.unit_id)")
-			where = append(where, fmt.Sprintf("res.resident_id = $%d", argN))
-			args = append(args, *filters.ResidentID)
-			argN++
-		}
-		// 分支标签过滤（通过 JOIN branches 表获取 branch_name）
-		if filters.BranchTag != nil {
-			// 确保 JOIN branches 表
-			needBranchesJoin := true
-			for _, join := range joins {
-				if strings.Contains(join, "branches") {
-					needBranchesJoin = false
-					break
-				}
-			}
-			if needBranchesJoin {
-				joins = append(joins, "LEFT JOIN branches br ON u.branch_id = br.branch_id")
-			}
-			where = append(where, fmt.Sprintf("br.branch_name = $%d", argN))
-			args = append(args, *filters.BranchTag)
-			argN++
-		}
-		if filters.UnitID != nil {
-			where = append(where, fmt.Sprintf("u.unit_id = $%d", argN))
-			args = append(args, *filters.UnitID)
-			argN++
-		}
+	if filters.ResidentID != nil {
+		where = append(where, fmt.Sprintf("ae.resident_id::text = $%d", argN))
+		args = append(args, *filters.ResidentID)
+		argN++
+	}
+	if filters.BranchTag != nil {
+		where = append(where, fmt.Sprintf("ae.branch_name = $%d", argN))
+		args = append(args, *filters.BranchTag)
+		argN++
+	}
+	if filters.UnitID != nil {
+		where = append(where, fmt.Sprintf("ae.unit_name = $%d", argN))
+		args = append(args, *filters.UnitID)
+		argN++
 	}
 
 	joinClause := strings.Join(joins, " ")

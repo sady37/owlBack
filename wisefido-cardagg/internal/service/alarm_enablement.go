@@ -111,42 +111,33 @@ func (c *AlarmEnablementCache) InvalidateDevices(deviceIDs []string) {
 	}
 }
 
-// loadDevice queries alarm_device from DB and builds the enablement map.
+// loadDevice v2：从 spatial_config longest-prefix-match 解析 device 的 alarm 使能配置。
+//
+// v2 设计：
+//   - alarm 配置写在 spatial_config 表，config_key 形如 'alarm.fall.enabled' / 'alarm.fall.severity'
+//   - longest-prefix-match 解析（resolve_config function）：device /128 最深 → 上溯到 unit /80 / branch /56 / tenant /48
+//   - 未在 spatial_config 显式配置 → fallback 到 alarm.GetDefaultAlarmItems
+//
+// Phase 2 暂以默认值 + monitor_config JSONB 兼容路径占位；spatial_config 个 config_key 拆解后续会迁
+// （需 wisefido-data 写入端先迁，再来这里读端切换）。
 func (c *AlarmEnablementCache) loadDevice(ctx context.Context, tenantID, deviceID string) {
 	if c.db == nil {
 		c.setDefaults(deviceID, "")
 		return
 	}
 
-	var monitorConfigRaw sql.NullString
-	err := c.db.QueryRowContext(ctx,
-		`SELECT monitor_config FROM alarm_device WHERE tenant_id = $1 AND device_id = $2`,
-		tenantID, deviceID,
-	).Scan(&monitorConfigRaw)
-
-	if err != nil {
-		c.logger.Debug("alarm_device not found, using defaults",
-			zap.String("did", deviceID), zap.Error(err))
-		c.setDefaults(deviceID, c.resolveDeviceType(ctx, deviceID))
-		return
-	}
-
-	items := c.parseMonitorConfig(monitorConfigRaw.String, c.resolveDeviceType(ctx, deviceID))
-	c.setFromItems(deviceID, items)
+	// v2 占位：先按设备 device_type 取 defaults；spatial_config 细粒度 override 待 wisefido-data 写入端 phase
+	c.setDefaults(deviceID, c.resolveDeviceType(ctx, deviceID))
 }
 
+// resolveDeviceType v2：从 device_factory_meta 查 device_type
 func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceID string) string {
-	if c.metaCache == nil {
-		return ""
-	}
-	// DeviceMetaCache stores per-card, but we can scan all cards for this deviceID.
-	// For simplicity, query DB directly.
 	if c.db == nil {
 		return ""
 	}
 	var dt sql.NullString
 	_ = c.db.QueryRowContext(ctx,
-		`SELECT device_type FROM device_store WHERE device_id = $1 LIMIT 1`, deviceID,
+		`SELECT device_type::text FROM device_factory_meta WHERE device_id = $1::uuid LIMIT 1`, deviceID,
 	).Scan(&dt)
 	return dt.String
 }

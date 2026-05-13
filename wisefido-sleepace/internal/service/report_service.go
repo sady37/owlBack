@@ -22,10 +22,12 @@ func NewReportService(db *sql.DB, api *SleepaceAPI, card *CardMappingService, lo
 	return &ReportService{db: db, api: api, card: card, logger: logger}
 }
 
-// DownloadAndSave 从 sleepace-service 拉报告并 upsert sleepace_report。
-// deviceID = devices.device_id（UUID）；拉厂家接口时该值作为 data.userId。租户/卡片/hardware uid 均由此 device_id 查库。
+// DownloadAndSave 从 sleepace-service 拉报告并 upsert sleepace_report（v2）。
+//
+// deviceID = device_factory_meta.device_id（UUID）；拉厂家接口时该值作为 data.userId。
+// 租户 / 设备 IPv6 / 入住住户均由此 device_id 查 v2 表派生。
 func (s *ReportService) DownloadAndSave(ctx context.Context, deviceID string, startTime, endTime int64) error {
-	tenantID, resolvedDeviceID, deviceUID, deviceCode, cardID, err := s.loadReportWriteContext(ctx, deviceID)
+	tenantID, resolvedDeviceID, deviceUID, deviceCode, deviceAddr, residentID, err := s.loadReportWriteContext(ctx, deviceID)
 	if err != nil {
 		return err
 	}
@@ -34,7 +36,9 @@ func (s *ReportService) DownloadAndSave(ctx context.Context, deviceID string, st
 		zap.String("device_id", resolvedDeviceID),
 		zap.String("device_uid", deviceUID),
 		zap.String("device_code", deviceCode),
-		zap.String("card_id", cardID),
+		zap.String("device_addr", deviceAddr),
+		zap.String("resident_id", residentID),
+		zap.String("tenant", tenantID),
 	)
 
 	// 厂家 data.userId ← devices.device_id（UUID）
@@ -66,14 +70,16 @@ func (s *ReportService) DownloadAndSave(ctx context.Context, deviceID string, st
 		}
 
 		date := timeToDate(parsed.Summary.StartTime)
-		calculatedEndTime := parsed.Summary.StartTime + int64(parsed.Summary.TimeStep)*int64(parsed.Summary.RecordCount)
+		// sleepace 用秒级 startTime；v2 schema 用 ms — 乘 1000
+		startTimeMs := parsed.Summary.StartTime * 1000
+		endTimeMs := startTimeMs + int64(parsed.Summary.TimeStep)*int64(parsed.Summary.RecordCount)*1000
 		sleepState := string(parsed.Analysis.SleepStateStr)
 		reportJSON := "[" + string(reports[i]) + "]"
 
-		metadata := s.buildMetadata(ctx, resolvedDeviceID, tenantID)
+		metadata := s.buildMetadata(ctx, resolvedDeviceID)
 
-		if err := s.upsert(ctx, tenantID, resolvedDeviceID, deviceCode, deviceUID, cardID,
-			parsed.Summary.RecordCount, parsed.Summary.StartTime, calculatedEndTime,
+		if err := s.upsert(ctx, deviceAddr, resolvedDeviceID, residentID,
+			parsed.Summary.RecordCount, startTimeMs, endTimeMs,
 			date, parsed.Summary.StopMode, parsed.Summary.TimeStep, parsed.Summary.Timezone,
 			sleepState, reportJSON, metadata); err != nil {
 			s.logger.Error("upsert report", zap.String("device_id", resolvedDeviceID), zap.Int("date", date), zap.Error(err))
@@ -82,67 +88,91 @@ func (s *ReportService) DownloadAndSave(ctx context.Context, deviceID string, st
 	return nil
 }
 
-// loadReportWriteContext 按 devices.device_id（UUID）解析 Sleepad 写库所需上下文。
-// 返回：tenant_id、d.device_id、devices.device_uid、device_store.device_code（厂家平台 deviceId，可空）、card_id。
+// loadReportWriteContext 按 devices.device_id（UUID）解析 Sleepad 写库所需上下文（v2）。
+//
+// 返回:
+//   tenantID         tenant /48 host repr (e.g. "fd00:0:3::"), 兼容签名；v2 sleepace_report 不存这列
+//   resolvedDeviceID device_factory_meta.device_id (UUID 字符串)
+//   deviceUID        device_factory_meta.device_uid (logMAC)
+//   deviceCode       device_factory_meta.device_code (厂家平台 deviceId, 可空)
+//   deviceAddr       devices.device_ipv6 host repr (e.g. "fd00:0:3:411:3:201:c827:e11b") — v2 sleepace_report.device_addr 主键
+//   residentID       LPM resident_unit 反查 (host repr 含 /128) 或空 (无入住)
 func (s *ReportService) loadReportWriteContext(ctx context.Context, deviceID string) (
-	tenantID, resolvedDeviceID, deviceUID, deviceCode, cardID string, err error,
+	tenantID, resolvedDeviceID, deviceUID, deviceCode, deviceAddr, residentID string, err error,
 ) {
 	if s.db == nil {
-		return "", "", "", "", "", fmt.Errorf("database not available")
+		return "", "", "", "", "", "", fmt.Errorf("database not available")
 	}
+	var residentNull sql.NullString
 	row := s.db.QueryRowContext(ctx, `
-		SELECT d.tenant_id::text,
-			d.device_id::text,
-			d.device_uid,
-			COALESCE(NULLIF(TRIM(ds.device_code), ''), ''),
-			COALESCE((
-				SELECT c.card_id::text FROM cards c
-				WHERE c.tenant_id = d.tenant_id
-				  AND c.devices @> jsonb_build_array(jsonb_build_object('device_id', d.device_id::text))
-				LIMIT 1
-			), '')
+		SELECT host(network(set_masklen(d.device_ipv6, 48))) AS tenant_host,
+		       dfm.device_id::text,
+		       dfm.device_uid,
+		       COALESCE(NULLIF(TRIM(dfm.device_code), ''), ''),
+		       host(d.device_ipv6) AS device_addr_host,
+		       (SELECT host(ru.resident_id)
+		          FROM resident_unit ru
+		         WHERE ru.valid_to IS NULL
+		           AND d.device_ipv6 <<= ru.spatial_prefix
+		         ORDER BY masklen(ru.spatial_prefix) DESC
+		         LIMIT 1) AS resident_host
 		FROM devices d
-		LEFT JOIN device_store ds ON ds.device_id = d.device_id
-		WHERE d.device_id = $1::uuid AND d.status <> 'disabled'
+		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		WHERE dfm.device_id = $1::uuid
 	`, deviceID)
-	if scanErr := row.Scan(&tenantID, &resolvedDeviceID, &deviceUID, &deviceCode, &cardID); scanErr != nil {
+	if scanErr := row.Scan(&tenantID, &resolvedDeviceID, &deviceUID, &deviceCode, &deviceAddr, &residentNull); scanErr != nil {
 		if scanErr == sql.ErrNoRows {
-			return "", "", "", "", "", fmt.Errorf("device not found: %s", deviceID)
+			return "", "", "", "", "", "", fmt.Errorf("device not found: %s", deviceID)
 		}
-		return "", "", "", "", "", fmt.Errorf("load report context: %w", scanErr)
+		return "", "", "", "", "", "", fmt.Errorf("load report context: %w", scanErr)
 	}
-	if tenantID == "" || resolvedDeviceID == "" || deviceUID == "" {
-		return "", "", "", "", "", fmt.Errorf("incomplete device row for %s", deviceID)
+	if tenantID == "" || resolvedDeviceID == "" || deviceUID == "" || deviceAddr == "" {
+		return "", "", "", "", "", "", fmt.Errorf("incomplete device row for %s", deviceID)
 	}
-	return tenantID, resolvedDeviceID, deviceUID, deviceCode, cardID, nil
+	if residentNull.Valid {
+		residentID = residentNull.String
+	}
+	return tenantID, resolvedDeviceID, deviceUID, deviceCode, deviceAddr, residentID, nil
 }
 
-func (s *ReportService) buildMetadata(ctx context.Context, deviceID, tenantID string) string {
+// buildMetadata v2：从 device_ipv6 派生 site/branch/unit/room/bed name snapshot。
+//
+// v2 派生（prefix-match 替代 v1 多列 JOIN）：
+//   - bed:    bedDB.bed_name where device_ipv6 <<= bed_id (/96)
+//   - room:   rooms.room_name where device_ipv6 <<= room_id (/88)
+//   - unit:   units.unit_name where device_ipv6 <<= unit_id (/80)
+//   - site:   sites.site_name where device_ipv6 <<= site_id (/64) — 取代 v1 buildings 表
+//   - branch: branches.branch_name where device_ipv6 <<= branch_id (/56)
+//
+// 不再用 d.device_name (v2 已删)；取 dfm.device_code fallback dfm.device_uid。
+// 不再用 buildings 表（已并入 sites）。
+func (s *ReportService) buildMetadata(ctx context.Context, deviceID string) string {
 	if deviceID == "" || s.db == nil {
 		return "{}"
 	}
-	// Anchor on devices.device_id only; location from bound_room_id (room-bound devices).
 	row := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(
-			jsonb_build_object(
-				'device_name', d.device_name,
-				'bed_name', '',
-				'room_name', COALESCE(r.room_name, ''),
-				'unit_name', COALESCE(u.unit_name, ''),
-				'branch_name', COALESCE(br.branch_name, ''),
-				'building_name', COALESCE(bld.building_name, ''),
-				'resident_nickname', ''
-			)::text,
-			'{}'
-		)
+		SELECT jsonb_build_object(
+			'device_name', COALESCE(dfm.device_code, dfm.device_uid),
+			'bed_name',    COALESCE((SELECT bed_name  FROM beds     b  WHERE d.device_ipv6 <<= b.bed_id    LIMIT 1), ''),
+			'room_name',   COALESCE((SELECT room_name FROM rooms    r  WHERE d.device_ipv6 <<= r.room_id   LIMIT 1), ''),
+			'unit_name',   COALESCE((SELECT unit_name FROM units    u  WHERE d.device_ipv6 <<= u.unit_id   LIMIT 1), ''),
+			'site_name',   COALESCE((SELECT site_name FROM sites    s  WHERE d.device_ipv6 <<= s.site_id   LIMIT 1), ''),
+			'branch_name', COALESCE((SELECT branch_name FROM branches br WHERE d.device_ipv6 <<= br.branch_id LIMIT 1), ''),
+			'resident_nickname', COALESCE((
+				SELECT r.nickname
+				FROM resident_unit ru
+				JOIN residents r ON r.resident_id = ru.resident_id
+				WHERE ru.valid_to IS NULL
+				  AND d.device_ipv6 <<= ru.spatial_prefix
+				ORDER BY masklen(ru.spatial_prefix) DESC
+				LIMIT 1
+			), '')
+		)::text
 		FROM devices d
-		LEFT JOIN rooms r ON r.room_id = d.bound_room_id AND r.tenant_id = d.tenant_id
-		LEFT JOIN units u ON u.unit_id = r.unit_id AND u.tenant_id = d.tenant_id
-		LEFT JOIN branches br ON br.branch_id = u.branch_id AND br.tenant_id = d.tenant_id
-		LEFT JOIN buildings bld ON bld.building_id = u.building_id AND bld.tenant_id = d.tenant_id
-		WHERE d.device_id = $1::uuid AND d.tenant_id = $2::uuid
+		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		WHERE dfm.device_id = $1::uuid
 		LIMIT 1
-	`, deviceID, tenantID)
+	`, deviceID)
 	var meta string
 	if err := row.Scan(&meta); err != nil {
 		s.logger.Debug("snapshot metadata query failed", zap.Error(err))
@@ -151,44 +181,53 @@ func (s *ReportService) buildMetadata(ctx context.Context, deviceID, tenantID st
 	return meta
 }
 
+// upsert v2: sleepace_report (device_addr INET, device_id UUID, resident_id INET, *_ms BIGINT, report_data, ...)
+//
+// 列变化 vs v1:
+//   tenant_id          → 删（v2 不存；tenant 派生自 device_addr /48）
+//   device_code/uid    → 删（v2 不存；查 dfm 派生）
+//   card_id            → 删（v2 不存；查 cards LPM 派生）
+//   start_time/end_time → start_time_ms/end_time_ms（v2 用 ms）
+//   report             → report_data
+//   + device_addr INET（新）
+//   + resident_id INET (LPM 派生)
 func (s *ReportService) upsert(ctx context.Context,
-	tenantID, deviceID, deviceCode, deviceUID, cardID string,
-	recordCount int, startTime, endTime int64, date, stopMode, timeStep, timezone int,
-	sleepState, report, metadata string,
+	deviceAddr, deviceID, residentID string,
+	recordCount int, startTimeMs, endTimeMs int64, date, stopMode, timeStep, timezone int,
+	sleepState, reportData, metadata string,
 ) error {
 	query := `
 		INSERT INTO sleepace_report (
-			tenant_id, device_id, device_code, device_uid, card_id,
-			record_count, start_time, end_time, date,
+			device_addr, device_id, resident_id,
+			record_count, start_time_ms, end_time_ms, date,
 			stop_mode, time_step, timezone,
-			sleep_state, report, metadata, updated_at
+			sleep_state, report_data, metadata, updated_at
 		) VALUES (
-			NULLIF($1,'')::uuid, NULLIF($2,'')::uuid, $3, $4, NULLIF($5,'')::uuid,
-			$6, $7, $8, $9,
-			$10, $11, $12,
-			$13, $14, $15::jsonb, NOW()
+			$1::INET, $2::uuid, NULLIF($3,'')::INET,
+			$4, $5, $6, $7,
+			$8, $9, $10,
+			$11, $12, $13::jsonb, NOW()
 		)
 		ON CONFLICT ON CONSTRAINT sleepace_report_unique
 		DO UPDATE SET
-			device_code  = EXCLUDED.device_code,
-			device_uid   = EXCLUDED.device_uid,
-			record_count = EXCLUDED.record_count,
-			start_time   = EXCLUDED.start_time,
-			end_time     = EXCLUDED.end_time,
-			stop_mode    = EXCLUDED.stop_mode,
-			time_step    = EXCLUDED.time_step,
-			timezone     = EXCLUDED.timezone,
-			sleep_state  = EXCLUDED.sleep_state,
-			report       = EXCLUDED.report,
-			metadata     = EXCLUDED.metadata,
-			card_id      = EXCLUDED.card_id,
-			updated_at   = NOW()
+			device_addr   = EXCLUDED.device_addr,
+			resident_id   = EXCLUDED.resident_id,
+			record_count  = EXCLUDED.record_count,
+			start_time_ms = EXCLUDED.start_time_ms,
+			end_time_ms   = EXCLUDED.end_time_ms,
+			stop_mode     = EXCLUDED.stop_mode,
+			time_step     = EXCLUDED.time_step,
+			timezone      = EXCLUDED.timezone,
+			sleep_state   = EXCLUDED.sleep_state,
+			report_data   = EXCLUDED.report_data,
+			metadata      = EXCLUDED.metadata,
+			updated_at    = NOW()
 	`
 	_, err := s.db.ExecContext(ctx, query,
-		tenantID, deviceID, deviceCode, deviceUID, cardID,
-		recordCount, startTime, endTime, date,
+		deviceAddr, deviceID, residentID,
+		recordCount, startTimeMs, endTimeMs, date,
 		stopMode, timeStep, timezone,
-		sleepState, report, metadata,
+		sleepState, reportData, metadata,
 	)
 	return err
 }

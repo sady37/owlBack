@@ -20,11 +20,12 @@ import (
 )
 
 const (
-	platformTrashTenantID       = "00000000-0000-0000-0000-000000000000"
-	platformSystemTenantID      = "00000000-0000-0000-0000-000000000001"
-	platformUnallocatedTenantID = "00000000-0000-0000-0000-000000000002"
-	// authFailureStreamTenantID 认证失败写 Auth Stream 的 tenant_id：设备可能在库，仅占位，不表示 device_store 已改为 Unallocated
-	authFailureStreamTenantID = platformUnallocatedTenantID
+	// v2 tenant /48 host 表示（对齐 owlRD/dbv2/90_seed_tenants.sql 种子）。
+	// 仓库层 SELECT host(network(set_masklen(device_ipv6, 48))) 返回的就是这个 host repr。
+	platformSystemTenantID = "fd00:0:1::" // slot=1, system 默认归属
+	platformTrashTenantID  = "fd00:0:2::" // slot=2, drop 设备 / 待分配回收站
+	// authFailureStreamTenantID 认证失败 Stream 上的 tenant_id 占位（v2: 用 trash 池）
+	authFailureStreamTenantID = platformTrashTenantID
 )
 
 // AuthService 认证服务
@@ -232,53 +233,49 @@ func (s *AuthService) validateDeviceAndGetLocation(ctx context.Context, deviceUI
 // 注意：此类型定义在 repository 包中，此处使用类型别名以保持兼容性
 type DeviceStoreInfo = repository.DeviceStoreInfo
 
-// createDeviceStoreRecord 在 device_store 表中创建新设备记录（当设备不存在时）
-// 状态设为 pending（allow_access = FALSE），让客户在前端处理
+// createDeviceStoreRecord 创建新设备记录（v2：写 device_factory_meta + devices）
+//
+// 状态：access=FALSE（pending），分配到 system /48 池 fd00:0:1::/48，等 platform_admin 调拨。
 func (s *AuthService) createDeviceStoreRecord(ctx context.Context, uid string, req *models.AuthRequest) (*DeviceStoreInfo, error) {
-	// 根据 type 字段确定 device_type
-	deviceType := "Radar" // 默认值
+	deviceType := "Radar"
 	if req.Type == 1 {
 		deviceType = "Radar"
 	}
-
-	// 生成 device_id (UUID)
 	deviceID := uuid.New().String()
 
-	// 插入新记录，分配给系统租户（000...001），allow_access = FALSE（pending 状态）
-	// 系统管理员可以在前端看到这些设备并处理
-	query := `
-		INSERT INTO device_store (
-			device_id, device_uid, device_type, tenant_id, allow_access
-		) VALUES (
-			$1, $2, $3, $4, $5
-		) RETURNING device_id, device_uid, device_type, tenant_id, allow_access
-	`
-
-	var ds DeviceStoreInfo
-
-	err := s.db.QueryRowContext(ctx, query,
-		deviceID, uid, deviceType, platformSystemTenantID, false,
-	).Scan(
-		&ds.DeviceID,
-		&ds.DeviceUID,
-		&ds.DeviceType,
-		&ds.TenantID,
-		&ds.AllowAccess,
-	)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to create device_store record: %w", err)
+	// 委托给 repo（v2 INSERT dfm + devices）
+	stub := &domain.Device{
+		DeviceID:  deviceID,
+		DeviceUID: uid,
+		DeviceType: sql.NullString{String: deviceType, Valid: true},
+	}
+	if err := s.deviceRepo.(interface {
+		CreateDevice(ctx context.Context, device *domain.Device) error
+	}).CreateDevice(ctx, stub); err != nil {
+		return nil, fmt.Errorf("failed to create device factory + devices: %w", err)
 	}
 
-	s.logger.Info("Created new device_store record (pending, assigned to system tenant)",
+	// 回读完整 DeviceStoreInfo（确保后续 caller 拿到一致的 dfm + drs 视图）
+	ds, err := s.deviceRepo.GetDeviceStoreInfo(ctx, uid)
+	if err != nil {
+		// INSERT 已成功但读回失败 — 返回 stub-derived info
+		return &DeviceStoreInfo{
+			DeviceID:    deviceID,
+			DeviceUID:   uid,
+			DeviceType:  deviceType,
+			TenantID:    platformSystemTenantID,
+			AllowAccess: false,
+		}, nil
+	}
+
+	s.logger.Info("Created new device (pending, system tenant pool fd00:0:1::/48)",
 		zap.String("uid", uid),
 		zap.String("device_id", ds.DeviceID),
 		zap.String("device_type", ds.DeviceType),
 		zap.String("tenant_id", ds.TenantID),
 		zap.Bool("allow_access", ds.AllowAccess),
 	)
-
-	return &ds, nil
+	return ds, nil
 }
 
 // generateMQTTConfig 生成 MQTT 连接配置
@@ -361,18 +358,21 @@ func (s *AuthService) publishAuthRequest(ctx context.Context, req *models.AuthRe
 		remoteAddr,
 	)
 
-	// 先查 device_store：在库用真实 tenant_id，未入库则 auth 流用 trash
+	// v2：从 device_factory_meta + devices 派生 tenant_id（/48 host repr）
+	// 未入库（dfm 无记录）→ auth 流上用 trash 池占位
 	resolvedTenantID := platformTrashTenantID
 	var deviceID sql.NullString
 	var storeTenantID sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT device_id::text, tenant_id::text
-		FROM device_store
-		WHERE device_uid = $1
+		SELECT dfm.device_id::text,
+		       COALESCE(host(network(set_masklen(d.device_ipv6, 48))), '') AS tenant_id
+		FROM device_factory_meta dfm
+		LEFT JOIN devices d ON d.device_id = dfm.device_id
+		WHERE dfm.device_uid = $1
 		LIMIT 1
 	`, req.UID).Scan(&deviceID, &storeTenantID)
 	if err != nil && err != sql.ErrNoRows {
-		s.logger.Warn("Failed to query device_store for auth request",
+		s.logger.Warn("Failed to query device_factory_meta for auth request",
 			zap.String("uid", req.UID),
 			zap.Error(err),
 		)
@@ -433,16 +433,16 @@ func (s *AuthService) publishAuthResponseSuccess(
 		fmt.Sprintf("Device authenticated successfully, MQTT server: %s:%d", mqttConfig.Server, mqttConfig.Port),
 	)
 
-	// 查询 device_id（优先从 devices 表，否则使用 device_store）
+	// v2：device_id 直接从 device_factory_meta 查（v1 的 devices.device_uid 列已删）
 	var deviceID sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 		SELECT device_id::text
-		FROM devices
+		FROM device_factory_meta
 		WHERE device_uid = $1
 		LIMIT 1
 	`, uid).Scan(&deviceID)
 	if err != nil && err != sql.ErrNoRows {
-		s.logger.Warn("Failed to query device_id from devices table for auth response success",
+		s.logger.Warn("Failed to query device_id from device_factory_meta for auth response success",
 			zap.String("uid", uid),
 			zap.Error(err),
 		)
@@ -502,15 +502,15 @@ func (s *AuthService) publishAuthResponseFailure(ctx context.Context, uid string
 		deviceIDStr = sql.NullString{String: deviceID[0], Valid: true}
 		authResponse.DeviceID = deviceID[0]
 	} else {
-		// 查询 device_id（通过 device_uid 从 device_store 表查询）
+		// v2: 从 device_factory_meta 反查 device_id
 		err := s.db.QueryRowContext(ctx, `
 			SELECT device_id::text
-			FROM device_store
+			FROM device_factory_meta
 			WHERE device_uid = $1
 			LIMIT 1
 		`, uid).Scan(&deviceIDStr)
 		if err != nil && err != sql.ErrNoRows {
-			s.logger.Warn("Failed to query device_id from device_store for auth response failure",
+			s.logger.Warn("Failed to query device_id from device_factory_meta for auth response failure",
 				zap.String("uid", uid),
 				zap.Error(err),
 			)
@@ -613,11 +613,19 @@ func (s *AuthService) updateDeviceHardwareInfo(ctx context.Context, uid string, 
 	// firmware_version: "2.3-Jun 25 2025 11:33:44"
 	firmwareVersion := fmt.Sprintf("%s-%s", req.Radar.HW, req.Radar.SW)
 
-	// 首先查询当前的所有硬件相关信息（包括mac和imei）
+	// v2: dfm 出厂字段 + drs.firmware_version
 	queryCurrent := `
-		SELECT device_type, device_model, comm_mode, mcu_model, firmware_version, imei, mac
-		FROM device_store 
-		WHERE device_uid = $1
+		SELECT dfm.device_type::text,
+		       dfm.device_model,
+		       dfm.comm_mode,
+		       dfm.mcu_model,
+		       drs.firmware_version,
+		       dfm.imei,
+		       dfm.mac_wifi
+		FROM device_factory_meta dfm
+		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
+		WHERE dfm.device_uid = $1
+		LIMIT 1
 	`
 
 	var currentDeviceType, currentDeviceModel, currentCommMode, currentMcuModel, currentFirmwareVersion sql.NullString
@@ -634,7 +642,7 @@ func (s *AuthService) updateDeviceHardwareInfo(ctx context.Context, uid string, 
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			s.logger.Warn("Device not found in device_store, skipping hardware info update",
+			s.logger.Warn("Device not found in device_factory_meta, skipping hardware info update",
 				zap.String("uid", uid),
 			)
 			return nil
@@ -757,30 +765,49 @@ func (s *AuthService) updateDeviceHardwareInfo(ctx context.Context, uid string, 
 		imeiValue = currentImei.String
 	}
 
-	// 只要有任何一个字段变化，就更新所有字段
-	queryUpdate := `
-		UPDATE device_store 
-		SET device_type = $1,
+	// v2 split write：
+	//   - dfm 出厂字段（device_type/device_model/comm_mode/mcu_model/imei/mac_wifi）
+	//     注：dfm 设计为"导入即不变"，但实际设备首次连接 + 重新 flash 都会上报，需允许覆盖。
+	//   - drs.firmware_version：UPSERT（runtime 高频字段）
+	// 两步事务：dfm UPDATE + drs UPSERT
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	updDfm := `
+		UPDATE device_factory_meta
+		SET device_type = $1::device_type_enum,
 		    device_model = $2,
 		    comm_mode = $3,
 		    mcu_model = $4,
-		    firmware_version = $5,
-		    imei = $6,
-		    mac = $7
-		WHERE device_uid = $8
+		    imei = $5,
+		    mac_wifi = $6
+		WHERE device_uid = $7
 	`
-	params := []interface{}{
-		deviceType,
-		deviceModel,
-		commMode,
-		mcuModel,
-		firmwareVersion,
-		imeiValue,
-		macValue,
-		uid,
+	dfmResult, err := tx.ExecContext(ctx, updDfm, deviceType, deviceModel, commMode, mcuModel, imeiValue, macValue, uid)
+	if err != nil {
+		return fmt.Errorf("failed to update device_factory_meta: %w", err)
 	}
 
-	result, err := s.db.ExecContext(ctx, queryUpdate, params...)
+	// UPSERT drs.firmware_version（按 device_id 查到的 PK）
+	upDrs := `
+		INSERT INTO device_runtime_state (device_id, firmware_version, updated_at)
+		SELECT dfm.device_id, $2, NOW()
+		FROM device_factory_meta dfm
+		WHERE dfm.device_uid = $1
+		ON CONFLICT (device_id) DO UPDATE
+		SET firmware_version = EXCLUDED.firmware_version, updated_at = NOW()
+	`
+	if _, err := tx.ExecContext(ctx, upDrs, uid, firmwareVersion); err != nil {
+		return fmt.Errorf("failed to upsert device_runtime_state: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit tx: %w", err)
+	}
+	result := dfmResult
 
 	if err != nil {
 		s.logger.Error("Failed to update device hardware info",

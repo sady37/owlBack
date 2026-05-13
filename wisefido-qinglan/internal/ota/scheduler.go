@@ -83,28 +83,35 @@ func (s *Scheduler) run(ctx context.Context) {
 	}
 }
 
-// scan queries device_store for devices eligible for OTA and pushes firmware via MQTT
+// scan v2：从 device_ota + devices + dfm 派生可升级设备并推送固件
+//
+// v2 schema：
+//   - device_ota（PK device_ipv6）: target_firmware_version / target_mcu_model / approve_way / schedule / status
+//   - devices.access=TRUE 才允许接入
+//   - 路由 device_uid 用 dfm.device_uid
 func (s *Scheduler) scan(ctx context.Context) {
 	if s.otaPushFn == nil {
 		return
 	}
 
-	// Query approved devices ready for OTA
+	// v2 query：仅 tenant_schedule / tenant_manual + 'idle'/'scheduled' 状态
+	// approve_way 值集：system_schedule / tenant_schedule / system_manual / tenant_manual
 	query := `
-		SELECT device_uid,
-		       COALESCE(ota_way, '') as ota_way,
-		       COALESCE(ota_schedule, '') as ota_schedule,
-		       COALESCE(ota_target_firmware_version, '') as ota_target_fw,
-		       COALESCE(ota_target_mcu_model, '') as ota_target_mcu,
-		       COALESCE(ota_updated_at, NOW()) as ota_updated_at
-		FROM device_store
-		WHERE ota_permit = 'true'
-		  AND ota_way IN ('schedule', 'tenant')
-		  AND ota_tenant_approved = true
-		  AND COALESCE(ota_status, 'idle') IN ('idle', 'pending')
-		  AND allow_access = true
-		  AND (ota_target_firmware_version IS NOT NULL AND ota_target_firmware_version != ''
-		       OR ota_target_mcu_model IS NOT NULL AND ota_target_mcu_model != '')
+		SELECT dfm.device_uid,
+		       COALESCE(o.approve_way, '')                   AS approve_way,
+		       COALESCE(o.schedule::text, '')                AS schedule_ts,
+		       COALESCE(o.target_firmware_version, '')       AS ota_target_fw,
+		       COALESCE(o.target_mcu_model, '')              AS ota_target_mcu,
+		       COALESCE(o.updated_at, NOW())                 AS ota_updated_at
+		FROM device_ota o
+		JOIN devices d ON d.device_ipv6 = o.device_ipv6
+		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		WHERE d.access = TRUE
+		  AND o.approve_way IN ('tenant_schedule', 'tenant_manual')
+		  AND o.approved_at IS NOT NULL
+		  AND COALESCE(o.status, 'idle') IN ('idle', 'scheduled')
+		  AND ((o.target_firmware_version IS NOT NULL AND o.target_firmware_version != '')
+		    OR (o.target_mcu_model IS NOT NULL AND o.target_mcu_model != ''))
 	`
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
@@ -124,8 +131,8 @@ func (s *Scheduler) scan(ctx context.Context) {
 		}
 		count++
 
-		// For schedule mode, check if current time is within the schedule window
-		if way == "schedule" && schedule != "" {
+		// v2: approve_way ∈ {tenant_schedule, tenant_manual}；仅 *_schedule 检查 window
+		if strings.HasSuffix(way, "_schedule") && schedule != "" {
 			if !IsInScheduleWindow(schedule, time.Now(), updatedAt) {
 				log.Printf("[OTA-Scheduler] uid=%s schedule=%s not in window, skipping", uid, schedule)
 				continue
@@ -214,14 +221,19 @@ func (s *Scheduler) scan(ctx context.Context) {
 			pushed_ok = true // MQTT-only device, treat as pushed
 		}
 
-		// Only set 'pushing' when we confirmed delivery (TCP OK or MQTT sent)
+		// v2: device_ota.status = 'downloading'（v1 'pushing' 在 v2 status 集合内不存在）
 		if pushed_ok {
 			_, err = s.db.ExecContext(ctx, `
-				UPDATE device_store SET ota_status = 'pushing', ota_updated_at = NOW()
-				WHERE device_uid = $1
+				UPDATE device_ota
+				SET status = 'downloading', updated_at = NOW(), last_attempted_at = NOW()
+				WHERE device_ipv6 = (
+					SELECT d.device_ipv6 FROM devices d
+					JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+					WHERE dfm.device_uid = $1
+				)
 			`, uid)
 			if err != nil {
-				log.Printf("[OTA-Scheduler] update status failed uid=%s: %v", uid, err)
+				log.Printf("[OTA-Scheduler] update device_ota status failed uid=%s: %v", uid, err)
 			}
 		}
 
