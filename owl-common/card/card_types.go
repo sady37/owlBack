@@ -41,6 +41,39 @@ type ActiveBedRow struct {
 	ResidentID *string `json:"resident_id,omitempty"`
 }
 
+// ShortCodeOf — 6 位 base36 短码：SHA256(spatial_prefix) → mod 36^6 → 0-padded
+// 用于 UI Card 显示 + DDNS FQDN（替代冗长的 hierarchy 编号）。
+// 性质：
+//   - 纯函数：同 spatial_prefix 永得同 code，无 DB 状态
+//   - 空间 36^6 = 21.8 亿，万卡级 tenant 碰撞概率 < 1e-4（生日悖论）
+//   - 不可逆：UI 显示用，不替代 spatial_prefix 主键
+//
+// 例: "fd00:0:3:111:3::/80" → "j0yvp3"
+func ShortCodeOf(spatialPrefix string) string {
+	if spatialPrefix == "" {
+		return ""
+	}
+	h := sha256Sum([]byte(spatialPrefix))
+	// 前 8 byte 作 uint64 big-endian
+	var v uint64
+	for i := 0; i < 8; i++ {
+		v = (v << 8) | uint64(h[i])
+	}
+	const base36 = "0123456789abcdefghijklmnopqrstuvwxyz"
+	const modulo = uint64(36 * 36 * 36 * 36 * 36 * 36) // 36^6
+	v %= modulo
+	out := []byte("000000")
+	for i := 5; i >= 0; i-- {
+		out[i] = base36[v%36]
+		v /= 36
+	}
+	return string(out)
+}
+
+// sha256Sum — 简单包装，避免在 type 文件直接 import crypto（避免循环风险）。
+// 实现见 short_code.go
+func sha256Sum(b []byte) [32]byte { return sha256SumImpl(b) }
+
 // UnitInfo Unit information
 type UnitInfo struct {
 	UnitID       string `json:"unit_id,omitempty"`
@@ -48,6 +81,9 @@ type UnitInfo struct {
 	BranchID     string `json:"branch_id,omitempty"`
 	BranchName   string `json:"branch_name,omitempty"`
 	Building     string `json:"building,omitempty"`
+	BuildingName string `json:"building_name,omitempty"` // sites.site_name (FE Detail 页 Branch/Building/Unit/Room/Bed 路径)
+	RoomName     string `json:"room_name,omitempty"`     // card 锚点所在 room (room/bed 级 card 才非空)
+	BedName      string `json:"bed_name,omitempty"`      // card 锚点所在 bed (bed 级 card 才非空)
 	IsPublic     bool   `json:"is_public,omitempty"`
 	IsSharedUnit bool   `json:"is_shared_unit,omitempty"`
 	UnitType     string `json:"unit_type,omitempty"` // "facility" | "home"
@@ -96,12 +132,19 @@ type CardStatic struct {
 	CardID        string `json:"card_id"`
 	CardType      string `json:"card_type"`
 	CardName      string `json:"card_name"`                 // 'nickname' 有人 / 'NoOne' 无人
-	DNSShortName  string `json:"dns_short_name,omitempty"`  // v2 永久名（bed-stable）：br<branch>-s<site>-u<unit>-r<room>-b<bed>
+	DNSShortName  string `json:"dns_short_name,omitempty"`  // v2: SHA256(spatial_prefix) → 6 位 base36（参 ShortCodeOf）；DDNS FQDN + UI Card 显示同源
 	SpatialPrefix string `json:"spatial_prefix"`            // INET CIDR 字符串
 
 	// 人类可读地址（按最长 mask 派生：Unit-Room-Bed）；空间结构变才变
 	// v2: cards 表无 card_address 列，运行时 LEFT JOIN units/rooms/beds 拼出
 	CardAddress string `json:"card_address,omitempty"` // e.g. "Unit 201 / Room A / Bed 1"
+
+	// CoverageLabel — UI 卡行 2 自适应标签:
+	//   bed card  → ""（FE 自行用 unit.room_name + bed_name 拼）
+	//   room card → ""（FE 自行用 unit.room_name）
+	//   unit card → 装的 device 跨 distinct room 数：
+	//                1 room → 该 room name (如 "Bathroom")；≥2 → "Whole Unit"；0 → ""
+	CoverageLabel string `json:"coverage_label,omitempty"`
 
 	// 同一 card 必属同一 unit/branch（reverse-derive via LPM）
 	Unit *UnitInfo `json:"unit,omitempty"`

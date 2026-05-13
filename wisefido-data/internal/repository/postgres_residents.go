@@ -21,10 +21,28 @@ type PostgresResidentsRepository struct {
 	db      *sql.DB
 	logger  *zap.Logger
 	cryptor *phi.PHICryptor // PHI/contacts 加解密；nil 时跳过加密路径并返回 error
+	// onResidentUnitChange — 写 resident_unit 后触发的回调（main.go 装配 → cardSync.ReconcileCards）
+	// 同步调，commit 后才调。nil 时跳过（测试场景 / 卡同步未装配时）。
+	// 设计：调用方（CreateResident/UpdateResident/SoftDelete/HardDelete）算出受影响的 unit scope（/80 INET）
+	// 传给本回调，避免 caller 重复写 "service 层记得调 ReconcileCards" 的纪律代码。
+	onResidentUnitChange func(ctx context.Context, unitScope string)
 }
 
 func NewPostgresResidentsRepository(db *sql.DB) *PostgresResidentsRepository {
 	return &PostgresResidentsRepository{db: db, logger: zap.NewNop()}
+}
+
+// SetOnResidentUnitChange — main.go 装配 hook：写 resident_unit 后自动调 cardSync.ReconcileCards
+func (r *PostgresResidentsRepository) SetOnResidentUnitChange(cb func(ctx context.Context, unitScope string)) {
+	r.onResidentUnitChange = cb
+}
+
+// fireResidentUnitChange — 内部 helper，nil-check + log warn 失败
+func (r *PostgresResidentsRepository) fireResidentUnitChange(ctx context.Context, unitScope string) {
+	if r.onResidentUnitChange == nil || strings.TrimSpace(unitScope) == "" {
+		return
+	}
+	r.onResidentUnitChange(ctx, unitScope)
 }
 
 // DB — 暴露 *sql.DB 让 service 层做 scope verify 等共用查询（不直接借出更解耦但调用面太广，权衡选这个）
@@ -118,7 +136,7 @@ func (r *PostgresResidentsRepository) ListResidents(
 		       (SELECT u.unit_name FROM units u WHERE u.unit_id = network(set_masklen(active.spatial_prefix, 80))),
 		       CASE WHEN active.m >= 88 THEN (SELECT rm.room_name FROM rooms rm WHERE rm.room_id = network(set_masklen(active.spatial_prefix, 88))) END,
 		       CASE WHEN active.m >= 96 THEN (SELECT bd.bed_name FROM beds bd WHERE bd.bed_id = network(set_masklen(active.spatial_prefix, 96))) END,
-		       (SELECT s.building::text FROM sites s WHERE s.site_id = network(set_masklen(active.spatial_prefix, 64))),
+		       (SELECT s.site_name FROM sites s WHERE s.site_id = network(set_masklen(active.spatial_prefix, 64))),
 		       (SELECT b.branch_name FROM branches b WHERE b.branch_id = network(set_masklen(active.spatial_prefix, 56))),
 		       (SELECT u.unit_type FROM units u WHERE u.unit_id = network(set_masklen(active.spatial_prefix, 80))),
 		       (SELECT t.kind FROM tenants t WHERE t.tenant_id = network(set_masklen(r.resident_id, 48))) AS kind
@@ -272,7 +290,7 @@ func (r *PostgresResidentsRepository) GetResident(
 		       (SELECT CASE WHEN m >= 96 THEN host(network(set_masklen(spatial_prefix, 96))) || '/96' END FROM active),
 		       (SELECT u.unit_type FROM units u, active a WHERE u.unit_id = network(set_masklen(a.spatial_prefix, 80))),
 		       (SELECT b.branch_name FROM branches b, active a WHERE b.branch_id = network(set_masklen(a.spatial_prefix, 56))),
-		       (SELECT s.building::text FROM sites s, active a WHERE s.site_id = network(set_masklen(a.spatial_prefix, 64))),
+		       (SELECT s.site_name FROM sites s, active a WHERE s.site_id = network(set_masklen(a.spatial_prefix, 64))),
 		       (SELECT s.floor FROM sites s, active a WHERE s.site_id = network(set_masklen(a.spatial_prefix, 64))),
 		       (SELECT u.unit_name FROM units u, active a WHERE u.unit_id = network(set_masklen(a.spatial_prefix, 80))),
 		       (SELECT rm.room_name FROM rooms rm, active a WHERE a.m >= 88 AND rm.room_id = network(set_masklen(a.spatial_prefix, 88))),
@@ -327,9 +345,8 @@ func (r *PostgresResidentsRepository) GetResident(
 		d.BranchName = &branchName.String
 	}
 	if buildingName.Valid {
-		// sites.building 是 smallint，转成 "B<N>" 字符串显示
-		bn := "B" + buildingName.String
-		d.BuildingName = &bn
+		// 直接用 sites.site_name (如 "A"、"B" 任意字符串)
+		d.BuildingName = &buildingName.String
 	}
 	if floor.Valid {
 		v := int(floor.Int32)
@@ -541,10 +558,13 @@ func (r *PostgresResidentsRepository) CreateResident(
 		return "", fmt.Errorf("insert resident: %w", err)
 	}
 
-	// 空间分配（取 deepest non-empty prefix）
-	if sp := pickDeepestPrefix(in.BedID, in.RoomID, in.UnitID); sp != "" {
+	// 空间分配（取 deepest non-empty prefix；Bed>Room>Unit>Branch）
+	// 没填 unit/room/bed 时 fallback 到 branch_id (/56 招待状态)，
+	// 否则 staff branch scope check (scope.go VerifyResident) 查不到 resident_unit 行 → 拒访。
+	sp := pickDeepestPrefix(in.BedID, in.RoomID, in.UnitID, in.BranchID)
+	if sp != "" {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO resident_unit (resident_id, spatial_prefix) VALUES ($1::INET, $2::INET)`,
+			`INSERT INTO resident_unit (resident_id, spatial_prefix, move_reason) VALUES ($1::INET, $2::INET, 'initial')`,
 			hoa, sp,
 		); err != nil {
 			return "", fmt.Errorf("insert resident_unit: %w", err)
@@ -606,6 +626,12 @@ func (r *PostgresResidentsRepository) CreateResident(
 
 	if err := tx.Commit(); err != nil {
 		return "", err
+	}
+
+	// Hook: 通知 cards 表 reconcile（commit 后才 fire，回滚不触发）
+	// scope = 新分配的 resident_unit spatial_prefix 所在 unit /80
+	if sp := pickDeepestPrefix(in.BedID, in.RoomID, in.UnitID, in.BranchID); sp != "" {
+		r.fireResidentUnitChange(ctx, narrowPrefixToUnit(sp))
 	}
 	return hoa, nil
 }
@@ -673,9 +699,36 @@ func (r *PostgresResidentsRepository) UpdateResident(
 	}
 
 	// 空间分配（任一字段提供即视为重新分配）
+	// 记录 spatialChanged + oldPrefix/newPrefix 供 commit 后 hook 触发 ReconcileCards
+	var spatialOldPrefix, spatialNewPrefix string
 	if in.UnitID != nil || in.RoomID != nil || in.BedID != nil {
 		r.logger.Info("[UpdateResident] updating spatial assignment", zap.Any("unit_id", in.UnitID), zap.Any("room_id", in.RoomID), zap.Any("bed_id", in.BedID))
+		// 先抓 oldPrefix（hook 用 + branch fallback 用）
+		var oldSpatial sql.NullString
+		_ = tx.QueryRowContext(ctx, `
+			SELECT spatial_prefix::text
+			  FROM resident_unit
+			 WHERE resident_id = $1::INET AND valid_to IS NULL
+			 LIMIT 1`, hoa).Scan(&oldSpatial)
+		if oldSpatial.Valid {
+			spatialOldPrefix = oldSpatial.String
+		}
+
 		newPrefix := pickDeepestPrefix(in.BedID, in.RoomID, in.UnitID)
+		// 解绑 unit 不等于"离开 branch" — 拿老行 /56 fallback，避免 staff scope 突然看不到
+		// （否则 VerifyResident 查不到 active resident_unit 行 → permission denied，
+		//  自己刚操作的 resident 立刻消失，体验和一致性双输）
+		if newPrefix == "" && spatialOldPrefix != "" {
+			// 从 oldPrefix 推 /56 branch
+			var branch56 sql.NullString
+			_ = tx.QueryRowContext(ctx, `SELECT host(network(set_masklen($1::INET, 56))) || '/56'`,
+				spatialOldPrefix).Scan(&branch56)
+			if branch56.Valid && branch56.String != "" {
+				newPrefix = branch56.String
+				r.logger.Info("[UpdateResident] unbind unit fallback to branch /56", zap.String("branch", newPrefix))
+			}
+		}
+		spatialNewPrefix = newPrefix
 		// 终止 active 行
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE resident_unit SET valid_to = NOW() WHERE resident_id = $1::INET AND valid_to IS NULL`,
@@ -684,9 +737,13 @@ func (r *PostgresResidentsRepository) UpdateResident(
 			return fmt.Errorf("end resident_unit: %w", err)
 		}
 		if newPrefix != "" {
+			moveReason := "transfer"
+			if strings.HasSuffix(newPrefix, "/56") {
+				moveReason = "unbind_to_branch"
+			}
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO resident_unit (resident_id, spatial_prefix) VALUES ($1::INET, $2::INET)`,
-				hoa, newPrefix); err != nil {
+				`INSERT INTO resident_unit (resident_id, spatial_prefix, move_reason) VALUES ($1::INET, $2::INET, $3)`,
+				hoa, newPrefix, moveReason); err != nil {
 				r.logger.Error("[UpdateResident] insert resident_unit failed", zap.Error(err))
 				return fmt.Errorf("insert resident_unit: %w", err)
 			}
@@ -757,6 +814,25 @@ func (r *PostgresResidentsRepository) UpdateResident(
 		return err
 	}
 	r.logger.Info("[UpdateResident SUCCESS]", zap.String("hoa", hoa))
+
+	// Hook: 通知 cards 表 reconcile（spatial 变化时 old + new 两次 fire）
+	if spatialOldPrefix != "" {
+		r.fireResidentUnitChange(ctx, narrowPrefixToUnit(spatialOldPrefix))
+	}
+	if spatialNewPrefix != "" && spatialNewPrefix != spatialOldPrefix {
+		r.fireResidentUnitChange(ctx, narrowPrefixToUnit(spatialNewPrefix))
+	}
+	// nickname 改了也要触发 reconcile（card_name 同步）— 此时 spatial 不一定变
+	if spatialOldPrefix == "" && spatialNewPrefix == "" && in.Nickname != nil {
+		// 用 LPM 查当前 active 行算 scope
+		var cur sql.NullString
+		_ = r.db.QueryRowContext(ctx,
+			`SELECT spatial_prefix::text FROM resident_unit WHERE resident_id=$1::INET AND valid_to IS NULL LIMIT 1`,
+			hoa).Scan(&cur)
+		if cur.Valid && cur.String != "" {
+			r.fireResidentUnitChange(ctx, narrowPrefixToUnit(cur.String))
+		}
+	}
 	return nil
 }
 
@@ -1502,13 +1578,26 @@ func (r *PostgresResidentsRepository) upsertPHI(
 }
 
 func (r *PostgresResidentsRepository) SoftDelete(ctx context.Context, hoa string) error {
+	// status='disabled' — 保留 resident_account 占用（audit 一致性）
+	// 关闭 resident_unit active 行 → branch-scoped staff 列表不再显示
+	// 先抓 oldPrefix 供 hook 用
+	var old sql.NullString
+	_ = r.db.QueryRowContext(ctx,
+		`SELECT spatial_prefix::text FROM resident_unit WHERE resident_id=$1::INET AND valid_to IS NULL LIMIT 1`,
+		hoa).Scan(&old)
+
 	if _, err := r.db.ExecContext(ctx,
-		`UPDATE residents SET status = 'deleted', updated_at = NOW() WHERE resident_id = $1::INET`,
+		`UPDATE residents SET status = 'disabled', updated_at = NOW() WHERE resident_id = $1::INET`,
 		hoa); err != nil {
 		return fmt.Errorf("soft delete: %w", err)
 	}
 	_, _ = r.db.ExecContext(ctx,
 		`UPDATE resident_unit SET valid_to = NOW() WHERE resident_id = $1::INET AND valid_to IS NULL`, hoa)
+
+	// Hook: 通知 cards reconcile 旧 unit（resident 走了，cards 表 resident_id 要置空）
+	if old.Valid && old.String != "" {
+		r.fireResidentUnitChange(ctx, narrowPrefixToUnit(old.String))
+	}
 	return nil
 }
 
@@ -1551,9 +1640,19 @@ func (r *PostgresResidentsRepository) HardDelete(ctx context.Context, hoa string
 	if !chk.CanClear {
 		return fmt.Errorf("%s", chk.Reason)
 	}
+	// 先抓 oldPrefix（hook 用），DELETE 后 resident_unit 也被 cascade 删了，查不到
+	var old sql.NullString
+	_ = r.db.QueryRowContext(ctx,
+		`SELECT spatial_prefix::text FROM resident_unit WHERE resident_id=$1::INET AND valid_to IS NULL LIMIT 1`,
+		hoa).Scan(&old)
+
 	if _, err := r.db.ExecContext(ctx,
 		`DELETE FROM residents WHERE resident_id = $1::INET`, hoa); err != nil {
 		return fmt.Errorf("hard delete: %w", err)
+	}
+	// Hook: 通知 cards reconcile 旧 unit
+	if old.Valid && old.String != "" {
+		r.fireResidentUnitChange(ctx, narrowPrefixToUnit(old.String))
 	}
 	return nil
 }
@@ -1611,9 +1710,8 @@ func scanResident(rs rowScannerLite) (*domain.Resident, error) {
 		v.BedName = &bedName.String
 	}
 	if buildingNum.Valid {
-		// sites.building 是 smallint(0..14)；UI 展示 "B<N>"
-		bn := "B" + buildingNum.String
-		v.BuildingName = &bn
+		// 直接用 sites.site_name (如 "A"、"B")
+		v.BuildingName = &buildingNum.String
 	}
 	if branchName.Valid {
 		v.BranchName = &branchName.String
@@ -1667,6 +1765,36 @@ func pickDeepestPrefix(vals ...*string) string {
 		return s
 	}
 	return ""
+}
+
+// narrowPrefixToUnit — 把任意 INET CIDR 截到 unit /80
+//   /48 /56 → "" (跳过，cards 表无这两级 — startup 全 reconcile 自愈)
+//   /80 /88 /96 → 截到 /80（含整 unit 下所有 cards）
+//   /128 → "" (host 地址不是 unit 锚点)
+// Repository hook 用，避免 hook scope 太窄漏 reconcile /80 unit card。
+func narrowPrefixToUnit(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return ""
+	}
+	idx := strings.LastIndex(prefix, "/")
+	if idx <= 0 {
+		return ""
+	}
+	switch prefix[idx:] {
+	case "/96", "/88", "/80":
+		// pass
+	default:
+		return "" // /48 /56 /128 都跳过
+	}
+	addr := prefix[:idx]
+	// 取前 5 个 segment (fd00:0:T:UU:VV) = 80 bit，后置 "::/80"
+	segs := strings.Split(addr, "::")[0]
+	parts := strings.Split(segs, ":")
+	if len(parts) < 5 {
+		return ""
+	}
+	return strings.Join(parts[:5], ":") + "::/80"
 }
 
 // SetPHICryptor — 注入 PHI/contacts 加密器（main.go 启动时调用，从 K 服务派生 tenant key）

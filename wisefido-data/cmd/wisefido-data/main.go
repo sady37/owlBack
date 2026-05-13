@@ -330,14 +330,29 @@ func main() {
 		configPublisher := publisher.NewConfigPublisher(redisClient, logger)
 		deviceService.SetConfigPublisher(configPublisher)
 
-		// Phase F — ResidentService 接 cards 写入路径 (Create/Update/Discharge → cards INSERT/UPDATE + DDNS register)
-		residentSvc.SetCardDeps(cardRepo, configPublisher, ddnsClient, getenvDefault("OWL_DOMAIN", "owl."))
-
-		// 创建 CardSyncService
+		// 创建 CardSyncService — v2 Card 表唯一写入入口（ReconcileCards）
 		cardSyncService = service.NewCardSyncService(cardRepo, configPublisher, cardRealtimeSvc, logger)
 		// Phase F+: 启动 reconcile 路径要 db / DDNS / owlDomain 装配
 		cardSyncService.SetReconcileDeps(db, ddnsClient, getenvDefault("OWL_DOMAIN", "owl."))
 		service.InitGlobalCardSync(cardSyncService)
+
+		// Phase F — ResidentService 接 cards 写入路径（兼容旧 syncCardForResident，渐进迁移期间保留）
+		residentSvc.SetCardDeps(cardRepo, configPublisher, ddnsClient, getenvDefault("OWL_DOMAIN", "owl."), cardSyncService)
+
+		// v2 收敛 — Repository hook：写表后自动 reconcile cards，免去各 service 层"记得调"
+		// 设计：repository 不依赖 service，只持有 callback；闭包桥接 cardSync.ReconcileCards
+		residentsRepo.SetOnResidentUnitChange(func(ctx context.Context, unitScope string) {
+			if err := cardSyncService.ReconcileCards(ctx, unitScope); err != nil {
+				logger.Warn("residents hook → ReconcileCards failed",
+					zap.String("scope", unitScope), zap.Error(err))
+			}
+		})
+		devicesRepo.SetOnDeviceChange(func(ctx context.Context, unitScope string) {
+			if err := cardSyncService.ReconcileCards(ctx, unitScope); err != nil {
+				logger.Warn("devices hook → ReconcileCards failed",
+					zap.String("scope", unitScope), zap.Error(err))
+			}
+		})
 
 		// v2 Phase 1b: slim DeviceMonitorSettingsV2Service — backed by spatial_config (device /128) + tenant snapshot fallback.
 		// v1 service 依赖 alarmDeviceRepo / configVersionsRepo / deviceStoreRepo / residentsRepo 等 v2 已删/重构的表，
@@ -625,49 +640,29 @@ func main() {
 			errorCount := 0
 			totalUnits := 0
 
-			// 为每个租户的所有单元创建/更新卡片
+			// v2: 每个 tenant 单次 ReconcileCards 扫整 /48
+			// 旧"先 CleanupOrphanCards 再 CreateCardsForUnit"流程统一到 ReconcileCards：
+			//   - device monitor-on 才建卡（不再 create→cleanup 来回）
+			//   - resident_id 用 LPM resident_unit (masklen ≥ 80) 反查
 			for _, tenant := range tenants {
-				// 获取该租户的所有单元
-				unitIDs, err := cardRepo.GetAllUnits(tenant.TenantID)
-				if err != nil {
-					logger.Warn("Failed to get units for tenant",
-						zap.String("tenant_id", tenant.TenantID),
-						zap.Error(err),
-					)
-					errorCount++
-					continue
-				}
-
-				totalUnits += len(unitIDs)
-
-				// 为每个单元创建/更新卡片
-				for _, unitID := range unitIDs {
-					select {
-					case <-ctx.Done():
-						logger.Info("Card check interrupted by context cancellation")
-						return
-					default:
-						stats, err := cardSyncService.CreateCardsForUnit(ctx, tenant.TenantID, unitID)
-						if err != nil {
-							logger.Error("Failed to create cards for unit",
-								zap.String("tenant_id", tenant.TenantID),
-								zap.String("unit_id", unitID),
-								zap.Error(err),
-							)
-							errorCount++
-						} else {
-							successCount++
-							if stats != nil {
-								totalStats.ExistingCount += stats.ExistingCount
-								totalStats.DeletedCount += stats.DeletedCount
-								totalStats.CreatedCount += stats.CreatedCount
-								totalStats.UpdatedCount += stats.UpdatedCount
-								totalStats.UnchangedCount += stats.UpdatedCount
-							}
-						}
+				select {
+				case <-ctx.Done():
+					logger.Info("Card check interrupted by context cancellation")
+					return
+				default:
+					if err := cardSyncService.ReconcileCards(ctx, tenant.TenantID); err != nil {
+						logger.Error("Failed to reconcile cards for tenant",
+							zap.String("tenant_id", tenant.TenantID),
+							zap.Error(err),
+						)
+						errorCount++
+					} else {
+						successCount++
 					}
 				}
 			}
+			_ = totalUnits // 旧统计字段 — ReconcileCards 自己已在 log 里输出
+			_ = totalStats
 
 			// v2: DeviceCard 概念已退役（改为 card_type='device' /128 极罕见）；
 			// 孤儿清理由 CleanupOrphanCards 统一处理（v2 LPM 反查无 device 的 card）。

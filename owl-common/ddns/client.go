@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"owl-common/card"
 	"owl-common/spatial"
 )
 
@@ -233,36 +234,20 @@ send
 //	/96 active_bed → "u<unit>-r<room>-b<bed>"  ⭐ 最常见
 //	/128 device    → caller 用 RegisterDevice 走 device shortName
 //
-// 例: SlotsOf(fd00:0:1:112:42:301::) → tenant=1, branch=1, site=18, unit=42, room=3, bed=1
+// v2 新策略：返回 6 位 base36 hash 短码（如 "K7H2M9"），替代原 hierarchy 编号 "br01-s11-u0003-r01-b01"。
+// 理由：
+//   - 容量充足：36^6 = 21.8 亿，单 tenant 4 万张卡碰撞概率 < 1e-6
+//   - 稳定：同 spatial_prefix 永得同 hash，删除-重建复用
+//   - 短：6 字符 vs 旧 ~22 字符，DNS 标签更紧凑
+//   - 助记由 Address 字段（"Denver / A / 101 / Guest / BedA"）承担
 //
-//	prefix /96 → "u42-r03-b01"
+// 实现委托 owl-common/card.ShortCodeOf，保证 cards.dns_short_name 与 short_code 同源。
 func CardShortName(prefix netip.Prefix) (string, error) {
 	if !prefix.IsValid() {
 		return "", fmt.Errorf("ddns: invalid prefix")
 	}
-	tenant, branch, _, unit, room, bed, _, err := spatial.SlotsOf(prefix.Addr())
-	if err != nil {
-		return "", err
-	}
-	// site = bld<<4 | floor (4+4 split)；DNS name 须含 branch+site 才能在多 branch 下唯一
-	siteByte := uint8(prefix.Addr().As16()[7])
-	bld, flr := spatial.UnpackSiteSlot(siteByte)
-	switch prefix.Bits() {
-	case 48:
-		_ = tenant
-		return "t", nil
-	case 56:
-		return fmt.Sprintf("br%02x", branch), nil
-	case 64:
-		return fmt.Sprintf("site%xb%xf", bld, flr), nil
-	case 80:
-		return fmt.Sprintf("br%02x-s%02x-u%04x", branch, siteByte, unit), nil
-	case 88:
-		return fmt.Sprintf("br%02x-s%02x-u%04x-r%02x", branch, siteByte, unit, room), nil
-	case 96:
-		return fmt.Sprintf("br%02x-s%02x-u%04x-r%02x-b%02x", branch, siteByte, unit, room, bed), nil
-	case 128:
+	if prefix.Bits() == 128 {
 		return "", fmt.Errorf("ddns: /128 device prefix should use RegisterDevice")
 	}
-	return "", fmt.Errorf("ddns: unsupported masklen /%d", prefix.Bits())
+	return card.ShortCodeOf(prefix.String()), nil
 }

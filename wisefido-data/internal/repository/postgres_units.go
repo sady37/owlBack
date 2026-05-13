@@ -1165,11 +1165,15 @@ func (r *PostgresUnitsRepository) ListBedsWithResident(ctx context.Context, tena
 		args = append(args, "%"+strings.ToLower(search)+"%")
 		argIdx++
 	}
+	// 只看 unit/room/bed 级（masklen ≥ 80）；branch /56 和 tenant /48 是"招待/转移"过渡态，
+	// 语义上 resident 暂未挂具体 unit，不应被算作占用任何 bed。
+	// （否则一个 /56 哨兵 prefix 会让全 branch 所有 bed 都显示 "binded"）
 	q := `SELECT ` + bedsSelectCols + `,
 		(SELECT host(ru.resident_id)
 		   FROM resident_unit ru
 		  WHERE ru.valid_to IS NULL
 		    AND b.bed_id <<= ru.spatial_prefix
+		    AND masklen(ru.spatial_prefix) >= 80
 		  ORDER BY masklen(ru.spatial_prefix) DESC
 		  LIMIT 1) AS resident_id_text
 		` + bedsFromClause + ` WHERE ` + strings.Join(where, " AND ") + ` ORDER BY b.bed_slot`

@@ -171,10 +171,13 @@ type ResidentCreateInput struct {
 	FamilyAccess    *bool   `json:"family_access,omitempty"`
 	Note            *string `json:"note,omitempty"`
 
-	// 空间分配（值 IPv6 CIDR string）
-	UnitID *string `json:"unit_id,omitempty"` // /80 CIDR
-	RoomID *string `json:"room_id,omitempty"` // /88 CIDR
-	BedID  *string `json:"bed_id,omitempty"`  // /96 CIDR
+	// 空间分配（值 IPv6 CIDR string）；优先级 Bed > Room > Unit > Branch
+	// BranchID = /56 "招待状态"：先建档落到 branch，后续再分到具体 unit/room/bed
+	// （schema 31_resident_unit.sql ru_scope_valid 允许 masklen ∈ {48,56,80,88,96}）
+	UnitID   *string `json:"unit_id,omitempty"`   // /80 CIDR
+	RoomID   *string `json:"room_id,omitempty"`   // /88 CIDR
+	BedID    *string `json:"bed_id,omitempty"`    // /96 CIDR
+	BranchID *string `json:"branch_id,omitempty"` // /56 CIDR — 仅 Admin/Manager；写入 spatial_prefix 让 staff scope 可见
 
 	// 关联
 	CaregiverUserIDs []string `json:"caregiver_user_ids,omitempty"`

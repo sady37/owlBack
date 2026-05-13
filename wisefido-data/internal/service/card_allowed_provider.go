@@ -216,6 +216,11 @@ func (p *AllowedCardIDsProviderImpl) filterCardsForStaff(ctx context.Context, us
 	if strings.EqualFold(user.Role, "Admin") || scope == "ALL" {
 		return p.filterTenantCards(ctx, tenantID, userID)
 	}
+	// Family 角色 — 不论 relegation 都强制走 ASSIGNED（业务定义：family 只看自己亲属相关 cards）
+	// 这避免 admin 误设 relegation=branch 让 family 看到整 branch 卡
+	if strings.EqualFold(user.Role, "Family") || strings.EqualFold(user.Role, "family") {
+		return p.filterByAssignedOnly(ctx, tenantID, userID)
+	}
 	switch scope {
 	case "ASSIGNED_ONLY", "ASSIGNED":
 		return p.filterByAssignedOnly(ctx, tenantID, userID)
@@ -298,19 +303,24 @@ func (p *AllowedCardIDsProviderImpl) filterByBranchOnly(ctx context.Context, ten
 }
 
 // filterByAssignedOnly ASSIGNED_ONLY scope：
-// 1. 查 resident_caregivers 得到该 staff 负责的 resident_id[]
-// 2. 查 cards 中 resident_id = ANY(assigned) 的 ActiveBedCard
-//    + cards 中 residents JSONB 包含 assigned resident 的 UnitCard
-// 直接返回 *CardList
+// 1. 查 resident_caregivers (v2 列式 schema：caregiver_id / family_id / care_team_id) 得到该 user 关联的 resident_id[]
+//    覆盖三条路径：直接 caregiver、family 关系、care_team 成员
+// 2. 返 cards 中 LPM 双向 overlap 到 assigned resident 的所有 cards（不限 active_bed，含 fallback 覆盖的 unit/room cards）
 func (p *AllowedCardIDsProviderImpl) filterByAssignedOnly(ctx context.Context, tenantID, userID string) (*CardList, error) {
-	// Step1: 该 staff 负责的 resident_id[]（user_list JSONB 数组包含该 userID）
+	// Step1: v2 列式 — 该 user 关联的 resident_id[]
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT resident_id::text FROM resident_caregivers
-		 WHERE tenant_id = $1
-		   AND user_list IS NOT NULL
-		   AND EXISTS (
-		     SELECT 1 FROM jsonb_array_elements_text(user_list) elem WHERE elem = $2
-		   )`,
+		`SELECT DISTINCT rc.resident_id::text
+		   FROM resident_caregivers rc
+		  WHERE rc.valid_to IS NULL
+		    AND rc.resident_id <<= $1::INET
+		    AND (
+		      rc.caregiver_id = $2::UUID
+		      OR rc.family_id   = $2::UUID
+		      OR rc.care_team_id IN (
+		        SELECT ctm.team_id FROM care_team_members ctm
+		         WHERE ctm.user_id = $2::UUID AND ctm.valid_to IS NULL
+		      )
+		    )`,
 		tenantID, userID,
 	)
 	if err != nil {
@@ -328,16 +338,25 @@ func (p *AllowedCardIDsProviderImpl) filterByAssignedOnly(ctx context.Context, t
 		return &CardList{UserID: userID, TenantID: tenantID, CardsByBranch: make(map[string][]string)}, nil
 	}
 
-	// Step2: v2 — active_bed cards where cards.resident_id ∈ assigned。
-	// 'unit' / 'public' cards 不再有"含 resident" 概念（data 流不冗余 resident_id；
-	// 走 ts ∈ episode 反查），按业务规则不在 assigned 视图内。
+	// Step2: 返该 resident 涉及的所有 cards
+	//   - 直接：cards.resident_id ∈ assigned (active_bed/room/unit overlay 后命中)
+	//   - 间接：unit-level fallback 命中的 cards（resident 在 /96 但 LPM 跨 prefix 树时由 fallback 关联）
+	//     —— 这部分通过 resident_unit ru ∈ assigned + cards 在 ru 所在 unit /80 范围内联出
+	//   两者用 UNION 合并去重
 	rows2, err := p.db.QueryContext(ctx,
-		`SELECT c.spatial_prefix::text AS card_id,
-		        host(set_masklen(c.spatial_prefix, 56)) || '/56' AS branch_id
-		   FROM cards c
-		  WHERE c.spatial_prefix <<= $1::INET
-		    AND c.card_type = 'active_bed'
-		    AND c.resident_id = ANY($2::INET[])`,
+		`(SELECT c.spatial_prefix::text AS card_id,
+		         host(network(set_masklen(c.spatial_prefix, 56))) || '/56' AS branch_id
+		    FROM cards c
+		   WHERE c.spatial_prefix <<= $1::INET
+		     AND c.resident_id = ANY($2::INET[]))
+		 UNION
+		 (SELECT c.spatial_prefix::text AS card_id,
+		         host(network(set_masklen(c.spatial_prefix, 56))) || '/56' AS branch_id
+		    FROM cards c
+		    JOIN resident_unit ru ON ru.resident_id = ANY($2::INET[])
+		                         AND ru.valid_to IS NULL
+		   WHERE c.spatial_prefix <<= $1::INET
+		     AND c.spatial_prefix <<= network(set_masklen(ru.spatial_prefix, 80)))`,
 		tenantID, pq.Array(rids),
 	)
 	if err != nil {

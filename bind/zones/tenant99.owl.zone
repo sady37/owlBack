@@ -1,5 +1,5 @@
 $TTL 300	; 5 minutes
-tenant1.owl.		IN SOA	ns.owl. admin.owl. (
+tenant99.owl.		IN SOA	ns.owl. admin.owl. (
 				2026051220 ; serial
 				3600       ; refresh
 				600        ; retry
@@ -7,4 +7,4 @@ tenant1.owl.		IN SOA	ns.owl. admin.owl. (
 				300        ; minimum
 				)
 			NS	ns.owl.
-			AAAA	fd00:0:1::
+			AAAA	fd00:0:99::

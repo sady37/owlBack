@@ -43,6 +43,9 @@ type CardSyncService struct {
 	db         *sql.DB
 	ddns       *ddns.Client
 	owlDomain  string
+
+	// ReconcileCards 测试 hook — 每次 commit 后调；生产留 nil
+	reconcileObserver func(scope string, diffs []cardDiff)
 }
 
 // NewCardSyncService 创建卡片同步服务
@@ -108,11 +111,15 @@ func (s *CardSyncService) CreateCardsForUnit(ctx context.Context, tenantPrefix, 
 		return stats, nil
 	}
 
-	// === Step 1: 空间结构驱动 — 每张 bed 一张 active_bed card ===
+	// === Step 1: 空间结构驱动 — 每张 *绑了 device* 的 bed 一张 active_bed card ===
+	// 设计修正：原"每张物理 bed 都建卡"会立刻被 CleanupOrphanCards 删（device 缺失）→
+	// startup 出现 create→delete 来回；且 UI 仍会瞥到无 device 的 NoOne 卡。
+	// 改为 source-of-truth = "bed 绑了至少 1 个 device 才需要 card"。
 	bedRows, err := s.db.QueryContext(ctx, `
 		SELECT b.bed_id::text, COALESCE(b.bed_name, '')
 		  FROM beds b
 		 WHERE b.bed_id <<= $1::INET
+		   AND EXISTS (SELECT 1 FROM devices d WHERE d.device_ipv6 <<= b.bed_id)
 		 ORDER BY b.bed_id
 	`, unitPrefix)
 	if err == nil {
@@ -134,19 +141,25 @@ func (s *CardSyncService) CreateCardsForUnit(ctx context.Context, tenantPrefix, 
 		s.logger.Warn("reconcile: list beds failed", zap.String("unit", unitPrefix), zap.Error(err))
 	}
 
-	// === Step 2: unit /80 是公共区（无 bed）→ 建 unit/public card ===
+	// === Step 2: unit /80 是公共区（无 bed）且 *至少有 1 个 device* → 建 unit/public card ===
+	// 同 Step 1 — 无 device 的公共区不建卡，避免 orphan
 	var hasBed bool
 	_ = s.db.QueryRowContext(ctx,
 		`SELECT EXISTS (SELECT 1 FROM beds WHERE bed_id <<= $1::INET)`,
 		unitPrefix).Scan(&hasBed)
 	if !hasBed {
-		// 整个 unit 无床位 = 公共区域 (LivingRoom/Kitchen/etc) → 建 /80 unit card
-		op, err := s.upsertSpaceCard(ctx, tenantPrefix, unitPrefix, "")
-		if err != nil {
-			s.logger.Warn("reconcile: upsertSpaceCard unit failed",
-				zap.String("unit", unitPrefix), zap.Error(err))
-		} else {
-			countOp(stats, op)
+		var hasDevice bool
+		_ = s.db.QueryRowContext(ctx,
+			`SELECT EXISTS (SELECT 1 FROM devices WHERE device_ipv6 <<= $1::INET)`,
+			unitPrefix).Scan(&hasDevice)
+		if hasDevice {
+			op, err := s.upsertSpaceCard(ctx, tenantPrefix, unitPrefix, "")
+			if err != nil {
+				s.logger.Warn("reconcile: upsertSpaceCard unit failed",
+					zap.String("unit", unitPrefix), zap.Error(err))
+			} else {
+				countOp(stats, op)
+			}
 		}
 	}
 

@@ -18,11 +18,27 @@ import (
 type PostgresDevicesRepository struct {
 	db     *sql.DB
 	logger *zap.Logger
+	// onDeviceChange — 写 devices 后触发的回调（main.go 装配 → cardSync.ReconcileCards）
+	// 同步调，commit 后调。nil 时跳过。
+	// 调用方算出受影响的 unit scope（/80 INET）传给本回调，避免 caller 重复写"记得调 ReconcileCards"。
+	onDeviceChange func(ctx context.Context, unitScope string)
 }
 
 // NewPostgresDevicesRepository 创建设备Repository
 func NewPostgresDevicesRepository(db *sql.DB) *PostgresDevicesRepository {
 	return &PostgresDevicesRepository{db: db}
+}
+
+// SetOnDeviceChange — main.go 装配 hook
+func (r *PostgresDevicesRepository) SetOnDeviceChange(cb func(ctx context.Context, unitScope string)) {
+	r.onDeviceChange = cb
+}
+
+func (r *PostgresDevicesRepository) fireDeviceChange(ctx context.Context, unitScope string) {
+	if r.onDeviceChange == nil || strings.TrimSpace(unitScope) == "" {
+		return
+	}
+	r.onDeviceChange(ctx, unitScope)
 }
 
 // SetLogger 设置日志记录器（可选，用于记录设备连接事件）
@@ -657,11 +673,12 @@ func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, t
 	if !currentAddr.Valid || currentAddr.String == "" {
 		return fmt.Errorf("device has no device_ipv6 (factory-only?)")
 	}
+	oldAddr := currentAddr.String + "/128" // 保留 oldAddr，commit 后 hook 用
+	newAddr := oldAddr                     // 默认未变（access/monitoring 变更也用 oldAddr 作为 scope）
 
 	// 2. 计算新 device_ipv6（仅在 bind/unbind flag 触发时）
 	bindFlag := updateBoundRoomID || updateBoundBedID
 	if bindFlag {
-		var newAddr string
 		switch {
 		case device.BoundBedID.Valid && device.BoundBedID.String != "":
 			// bind 到 bed：bed_prefix(/96) | (current_addr & MAC32 mask)
@@ -720,7 +737,45 @@ func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, t
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Hook: 通知 cards reconcile（commit 后 fire）
+	// scope: oldAddr 和 newAddr 各 narrow 到 /80；若 device 移动跨 unit 会 fire 两次
+	r.fireDeviceChange(ctx, narrowDevicePrefixToUnit(oldAddr))
+	if newAddr != oldAddr {
+		r.fireDeviceChange(ctx, narrowDevicePrefixToUnit(newAddr))
+	}
+	return nil
+}
+
+// narrowDevicePrefixToUnit — device_ipv6 (/128) 截到 unit /80
+// 与 narrowPrefixToUnit 不同：本函数处理 /128 host 地址；不在 unit 范围内（如 trash /48）返 ""
+func narrowDevicePrefixToUnit(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+	idx := strings.LastIndex(addr, "/")
+	if idx <= 0 {
+		// 没 mask，按 /128 处理
+		addr = addr + "/128"
+		idx = strings.LastIndex(addr, "/")
+	}
+	host := addr[:idx]
+	// IPv6 segment 解析：取前 5 段 (fd00:0:T:UU:VV) 作 /80
+	hostHead := strings.Split(host, "::")[0]
+	parts := strings.Split(hostHead, ":")
+	if len(parts) < 5 {
+		return "" // 不在某 unit prefix 范围（如 fd00:0:3::xxxx unbound pool）
+	}
+	// 排除 trash / unbound pool（如 fd00::/32 池中地址，前 5 段不是真实 unit prefix）
+	// 简单判定：第 4 段（building id）是 0 或异常时跳过
+	if parts[3] == "0" || parts[3] == "" {
+		return "" // 未绑定到具体 building/unit
+	}
+	return strings.Join(parts[:5], ":") + "::/80"
 }
 
 // DeleteDevice 删除设备（v2 软删通过 reset_device_prefix() 把 device_ipv6 退回 trash /48）

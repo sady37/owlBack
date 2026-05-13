@@ -163,12 +163,14 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 			COALESCE(br.branch_name, ''),
 			COALESCE(rm.room_name, '') AS room_name,
 			COALESCE(b.bed_name, '')   AS bed_name,
+			COALESCE(s.site_name, '')  AS building_name,
 			COUNT(*) OVER() AS total_count
 		FROM cards c
 		-- 用 network(set_masklen(...)) 真正截断到对应粒度的 network address
 		-- (set_masklen 单用只换 mask 不清 host bits，会 join 不上)
 		LEFT JOIN units    u  ON u.unit_id   = network(set_masklen(c.spatial_prefix, 80))
 		LEFT JOIN branches br ON br.branch_id = network(set_masklen(c.spatial_prefix, 56))
+		LEFT JOIN sites    s  ON s.site_id   = network(set_masklen(c.spatial_prefix, 64))
 		LEFT JOIN rooms    rm ON masklen(c.spatial_prefix) >= 88 AND rm.room_id = network(set_masklen(c.spatial_prefix, 88))
 		LEFT JOIN beds     b  ON masklen(c.spatial_prefix) = 96  AND b.bed_id   = c.spatial_prefix
 		WHERE c.spatial_prefix = ANY($1::inet[])
@@ -183,7 +185,13 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 		argIdx++
 	}
 
-	query += ` ORDER BY c.card_name ASC NULLS LAST`
+	// 排序: Unit > Nickname > Room > Bed
+	//   同 unit 卡聚合在一起；unit 内按 nickname (resident 名，NoOne 排在该层末尾)；
+	//   再按 room / bed 字典序，保证 FE 分页时同 unit 卡不被切散
+	query += ` ORDER BY u.unit_name ASC NULLS LAST,
+	                  c.card_name  ASC NULLS LAST,
+	                  rm.room_name ASC NULLS LAST,
+	                  b.bed_name   ASC NULLS LAST`
 
 	offset := (page - 1) * pageSize
 	query += fmt.Sprintf(` LIMIT $%d OFFSET $%d`, argIdx, argIdx+1)
@@ -200,22 +208,25 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 
 	for rows.Next() {
 		var (
-			cardID, spatialPrefix, cardType, cardName, dnsShortName, residentID string
-			unitID, unitName, timezone, branchName, roomName, bedName           string
+			cardID, spatialPrefix, cardType, cardName, dnsShortName, residentID  string
+			unitID, unitName, timezone, branchName, roomName, bedName, buildName string
 		)
 		if err := rows.Scan(
 			&cardID, &spatialPrefix, &cardType, &cardName, &dnsShortName, &residentID,
-			&unitID, &unitName, &timezone, &branchName, &roomName, &bedName,
+			&unitID, &unitName, &timezone, &branchName, &roomName, &bedName, &buildName,
 			&totalCount,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan card row: %w", err)
 		}
 
 		unit := &commoncard.UnitInfo{
-			UnitID:     unitID,
-			UnitName:   unitName,
-			BranchName: branchName,
-			Timezone:   timezone,
+			UnitID:       unitID,
+			UnitName:     unitName,
+			BranchName:   branchName,
+			BuildingName: buildName, // sites.site_name → Detail 页 Branch/Building/Unit 路径用
+			RoomName:     roomName,  // /88 /96 card 才非空
+			BedName:      bedName,   // /96 card 才非空
+			Timezone:     timezone,
 		}
 		c := commoncard.CardStatic{
 			CardID:        cardID,
@@ -253,18 +264,20 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 	return cards, totalCount, nil
 }
 
-// composeCardAddress 按最长 mask 拼 "Unit X / Room Y / Bed Z" 友好串；空段跳过。
-// /80 → "Unit 101"；/88 → "Unit 101 / Room A"；/96 → "Unit 101 / Room A / Bed 1"
+// composeCardAddress 按最长 mask 拼 "<unit> / <room> / <bed>" 友好串；空段跳过。
+// 去单位词前缀（"Unit/Room/Bed"）— 单位信息由 card_type 暴露；分隔符 " / " 隐含层级。
+// /80 → "101"；/88 → "101 / Guest"；/96 → "101 / Guest / BedA"
+// FE 紧凑视图（grid card）可用独立字段 unit.room_name / unit.bed_name 自由拼接。
 func composeCardAddress(unit, room, bed string) string {
 	parts := []string{}
 	if unit != "" {
-		parts = append(parts, "Unit "+unit)
+		parts = append(parts, unit)
 	}
 	if room != "" {
-		parts = append(parts, "Room "+room)
+		parts = append(parts, room)
 	}
 	if bed != "" {
-		parts = append(parts, "Bed "+bed)
+		parts = append(parts, bed)
 	}
 	return strings.Join(parts, " / ")
 }
@@ -300,42 +313,21 @@ func (s *CardStaticService) enrichResidentsAndDevices(ctx context.Context, cards
 			}
 		}
 	}
-	// === 2. 批量 fill devices via LPM ===
-	prefixes := make([]string, 0, len(cards))
-	for _, c := range cards {
-		prefixes = append(prefixes, c.SpatialPrefix)
+	// === 2. 批量 fill devices via v3 套娃归属规则 ===
+	// 规则:
+	//   bed-anchor (/96) device → 该 bed card
+	//   room-anchor (/88) device:
+	//     ├ room 内 active_bed_count=1 → 归该唯一 bed card (吸收)
+	//     ├ 否则 cards 表有 /88 room card → 归该 /88
+	//     └ 否则 → 归 /80 unit card (兜底)
+	//   unit-anchor (/80) device → /80 unit card
+	//
+	// 实现：一次 SQL 查 device + 三 anchor，Go in-memory join cards 表算 owning_card
+	if err := s.fillDevicesV3(ctx, cards); err != nil {
+		s.logger.Warn("fillDevicesV3 failed", zap.Error(err))
 	}
-	deviceMap := make(map[string][]commoncard.DeviceInfo) // spatial_prefix → []DeviceInfo
-	if len(prefixes) > 0 {
-		drows, err := s.db.QueryContext(ctx, `
-			SELECT c.spatial_prefix::text,
-			       dfm.device_id::text,
-			       dfm.device_uid,
-			       COALESCE(dfm.device_code, ''),
-			       COALESCE(dfm.device_uid, '') AS device_name,
-			       COALESCE(dfm.device_type::text, ''),
-			       COALESCE(dfm.device_model, '')
-			  FROM cards c
-			  JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
-			  JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-			 WHERE c.spatial_prefix = ANY($1::INET[])
-		`, pq.Array(prefixes))
-		if err == nil {
-			defer drows.Close()
-			for drows.Next() {
-				var cardPrefix string
-				var di commoncard.DeviceInfo
-				if drows.Scan(&cardPrefix, &di.DeviceID, &di.DeviceUID, &di.DeviceCode,
-					&di.DeviceName, &di.DeviceType, &di.DeviceModel) == nil {
-					if di.DeviceCode == "" {
-						di.DeviceCode = di.DeviceUID
-					}
-					deviceMap[cardPrefix] = append(deviceMap[cardPrefix], di)
-				}
-			}
-		}
-	}
-	// === 3. apply back ===
+
+	// === 3. apply residents nickname ===
 	for i := range cards {
 		for j := range cards[i].Residents {
 			rid := cards[i].Residents[j].ResidentID
@@ -343,11 +335,184 @@ func (s *CardStaticService) enrichResidentsAndDevices(ctx context.Context, cards
 				cards[i].Residents[j].Nickname = nick
 			}
 		}
+	}
+	return nil
+}
+
+// fillDevicesV3 — 按套娃规则把 device 归到 owning card；同时算 coverage_label（unit card 用）
+// in-memory join 比 SQL CASE WHEN 嵌套清晰：每 device 算 owning_card，按 owning 分组装 cards[].Devices
+func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncard.CardStatic) error {
+	if len(cards) == 0 {
+		return nil
+	}
+	// 索引 cards by prefix（用于 owning_card 反查 是否真实存在）
+	cardByPrefix := map[string]int{} // prefix → index in cards
+	for i, c := range cards {
+		cardByPrefix[c.SpatialPrefix] = i
+	}
+
+	// 查 scope 内所有 monitor-on device + 三个 anchor + device meta
+	prefixes := make([]string, 0, len(cards))
+	for _, c := range cards {
+		prefixes = append(prefixes, c.SpatialPrefix)
+	}
+	// 注意 WHERE: 用 device 的 /80 unit 覆盖（不只是 cards prefix 范围）
+	// 否则 room-anchor device 当对应 /88 room card 不存在（被同 room bed 吸收）时被过滤掉
+	// 例: guest radar 在 /88 guest, 但 guest 只有 1 bed → 不出 /88 guest card → cards 集合无此 prefix
+	//     若 WHERE 限 cards prefix 内，guest radar 落不到任何 cards prefix → 被滤掉 → bed 301 收不到
+	// 修法: 用 set_masklen 把 cards prefix 截到 /80 unit，device 在任一 unit 内即纳入
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT dfm.device_id::text,
+		       dfm.device_uid,
+		       COALESCE(dfm.device_code, ''),
+		       COALESCE(dfm.device_uid, ''),
+		       COALESCE(dfm.device_type::text, ''),
+		       COALESCE(dfm.device_model, ''),
+		       COALESCE((SELECT b.bed_id::text  FROM beds  b  WHERE d.device_ipv6 <<= b.bed_id  LIMIT 1), '') AS bed_anchor,
+		       COALESCE((SELECT rm.room_id::text FROM rooms rm WHERE d.device_ipv6 <<= rm.room_id LIMIT 1), '') AS room_anchor,
+		       COALESCE((SELECT u.unit_id::text FROM units u  WHERE d.device_ipv6 <<= u.unit_id  LIMIT 1), '') AS unit_anchor
+		  FROM devices d
+		  JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		 WHERE d.monitoring_enabled = TRUE
+		   AND EXISTS (
+		     SELECT 1 FROM unnest($1::INET[]) p
+		      WHERE d.device_ipv6 <<= network(set_masklen(p, 80))
+		   )
+	`, pq.Array(prefixes))
+	if err != nil {
+		return fmt.Errorf("query devices: %w", err)
+	}
+	defer rows.Close()
+
+	type devRow struct {
+		info        commoncard.DeviceInfo
+		bedAnchor   string
+		roomAnchor  string
+		unitAnchor  string
+	}
+	devs := []devRow{}
+	for rows.Next() {
+		var dr devRow
+		if err := rows.Scan(&dr.info.DeviceID, &dr.info.DeviceUID, &dr.info.DeviceCode,
+			&dr.info.DeviceName, &dr.info.DeviceType, &dr.info.DeviceModel,
+			&dr.bedAnchor, &dr.roomAnchor, &dr.unitAnchor); err != nil {
+			return fmt.Errorf("scan device: %w", err)
+		}
+		if dr.info.DeviceCode == "" {
+			dr.info.DeviceCode = dr.info.DeviceUID
+		}
+		devs = append(devs, dr)
+	}
+
+	// 算每 room 内 bed card 数 + 该 room 唯一 bed prefix（用于吸收）
+	roomBedCount := map[string]int{}      // room prefix → bed card 数
+	roomSoleBed  := map[string]string{}   // room prefix → 唯一 bed card prefix (仅 count=1 时有意义)
+	for _, c := range cards {
+		if !strings.HasSuffix(c.SpatialPrefix, "/96") {
+			continue
+		}
+		// 算 bed 所属 room
+		roomPrefix := narrowPrefixToRoom(c.SpatialPrefix)
+		if roomPrefix == "" {
+			continue
+		}
+		roomBedCount[roomPrefix]++
+		roomSoleBed[roomPrefix] = c.SpatialPrefix
+	}
+
+	// 索引 unit card / room card 是否真实存在
+	unitCardOf := map[string]string{} // unit prefix → cards 表里那张 /80 (if exists)
+	for _, c := range cards {
+		if strings.HasSuffix(c.SpatialPrefix, "/80") {
+			unitCardOf[c.SpatialPrefix] = c.SpatialPrefix
+		}
+	}
+
+	// 算 device owning card
+	deviceMap := map[string][]commoncard.DeviceInfo{} // card prefix → []DeviceInfo
+	deviceRoomSet := map[string]map[string]bool{}     // card prefix → distinct room set (用于 unit-card coverage_label)
+	for _, dr := range devs {
+		owning := ""
+		// 1. bed anchor
+		if dr.bedAnchor != "" {
+			owning = dr.bedAnchor
+		} else if dr.roomAnchor != "" {
+			// 2. room anchor — 看 room 内 active_bed_count
+			if roomBedCount[dr.roomAnchor] == 1 {
+				// 吸收到唯一 bed
+				owning = roomSoleBed[dr.roomAnchor]
+			} else if _, ok := cardByPrefix[dr.roomAnchor]; ok {
+				// /88 room card 存在
+				owning = dr.roomAnchor
+			} else {
+				// 兜底到 /80 unit
+				owning = dr.unitAnchor
+			}
+		} else if dr.unitAnchor != "" {
+			// 3. unit anchor
+			owning = dr.unitAnchor
+		}
+		if owning == "" {
+			continue
+		}
+		if _, ok := cardByPrefix[owning]; !ok {
+			continue // 该 prefix 没 card → skip
+		}
+		deviceMap[owning] = append(deviceMap[owning], dr.info)
+		// 记 distinct room set for coverage_label（按 device 实际来源 room）
+		var deviceRoom string
+		if dr.roomAnchor != "" {
+			deviceRoom = dr.roomAnchor
+		} else if dr.bedAnchor != "" {
+			deviceRoom = narrowPrefixToRoom(dr.bedAnchor)
+		}
+		if deviceRoom != "" {
+			if deviceRoomSet[owning] == nil {
+				deviceRoomSet[owning] = map[string]bool{}
+			}
+			deviceRoomSet[owning][deviceRoom] = true
+		}
+	}
+
+	// 写回 cards[].Devices + cards[].CoverageLabel
+	for i := range cards {
 		if devs, ok := deviceMap[cards[i].SpatialPrefix]; ok {
 			cards[i].Devices = devs
 		}
+		cards[i].CoverageLabel = s.computeCoverageLabel(ctx, &cards[i], deviceRoomSet[cards[i].SpatialPrefix])
 	}
 	return nil
+}
+
+// computeCoverageLabel — 卡行 2 标签
+//   bed card  → ""（FE 用 unit.room_name + bed_name 拼）
+//   room card → ""（FE 用 unit.room_name）
+//   unit card → 看该卡装的 device 跨多少 distinct room：
+//                 1 room → 该 room name；≥2 room → "Whole Unit"；0 room → ""
+func (s *CardStaticService) computeCoverageLabel(ctx context.Context, c *commoncard.CardStatic, rooms map[string]bool) string {
+	if c.CardType != "unit" {
+		return ""
+	}
+	if len(rooms) == 0 {
+		return ""
+	}
+	if len(rooms) >= 2 {
+		return "Whole Unit"
+	}
+	// 1 room — 反查 room_name
+	var roomPrefix string
+	for r := range rooms {
+		roomPrefix = r
+		break
+	}
+	var roomName sql.NullString
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT room_name FROM rooms WHERE room_id = $1::INET LIMIT 1`,
+		roomPrefix).Scan(&roomName)
+	if roomName.Valid && roomName.String != "" {
+		return roomName.String
+	}
+	return ""
 }
 
 // GetCardCaregivers 查询单张卡片的护理人员（按 residents 聚合）
