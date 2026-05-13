@@ -49,6 +49,9 @@ type Device struct {
 	UnitID sql.NullString `db:"unit_id"`   // 计算字段：通过 room_id 或 bed_id 查询得到
 	CardID sql.NullString `db:"-"`         // 列表/详情：cards.devices 含该 device_id 时的 card_id
 	UnitName sql.NullString `db:"-"`       // 列表：units.unit_name（与 UnitID 对应）
+	DNSShortName sql.NullString `db:"-"`   // 列表：cards.dns_short_name（与 CardID 对应，FE 用于短码展示）
+	BranchID sql.NullString `db:"-"`       // 列表：byte 6 派生 /56；byte 6==0 表示 tenant 池 (NULL)
+	BranchName sql.NullString `db:"-"`     // 列表：branches.branch_name
 
 	// 状态/维护
 	Status            string `db:"status"`              // NOT NULL, default 'offline' (数据库状态：Enabled/Disabled/Error，用于软删除)
@@ -151,6 +154,19 @@ func (d *Device) ToJSON() map[string]any {
 		m["unit_name"] = d.UnitName.String
 	} else {
 		m["unit_name"] = nil
+	}
+	if d.DNSShortName.Valid && d.DNSShortName.String != "" {
+		m["dns_short_name"] = d.DNSShortName.String
+	}
+	if d.BranchID.Valid {
+		m["branch_id"] = d.BranchID.String
+	} else {
+		m["branch_id"] = nil
+	}
+	if d.BranchName.Valid {
+		m["branch_name"] = d.BranchName.String
+	} else {
+		m["branch_name"] = nil
 	}
 	if d.Metadata.Valid {
 		// 尝试解析JSON，如果失败则返回字符串

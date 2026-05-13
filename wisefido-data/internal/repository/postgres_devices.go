@@ -280,11 +280,36 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		  to_char(o.schedule, 'YYYY-MM-DD HH24:MI:SS')                                         AS ota_schedule,
 		  o.status                                                                             AS ota_status,
 		  o.progress                                                                           AS ota_progress,
-		  CASE WHEN o.approve_way LIKE 'tenant_%' THEN TRUE ELSE FALSE END                     AS ota_tenant_approved
+		  CASE WHEN o.approve_way LIKE 'tenant_%' THEN TRUE ELSE FALSE END                     AS ota_tenant_approved,
+		  -- branch_id / branch_name：device_ipv6 byte 6 != 0 时 /56 prefix-match 到 branches
+		  -- byte 6 == 0 时归 tenant 池（FE 显示为空 / "tenant"）
+		  CASE WHEN d.device_ipv6 IS NOT NULL
+		        AND (d.device_ipv6 & '::ff00:0:0:0:0'::INET) <> '::'::INET
+		       THEN host(network(set_masklen(d.device_ipv6, 56))) || '/56'
+		  END                                                                                  AS branch_id,
+		  br.branch_name                                                                       AS branch_name,
+		  -- unit_id / unit_name：device_ipv6 byte 8-9 != 0 时 /80 prefix-match 到 units
+		  CASE WHEN d.device_ipv6 IS NOT NULL
+		        AND (d.device_ipv6 & '::ffff:0:0:0'::INET) <> '::'::INET
+		       THEN host(network(set_masklen(d.device_ipv6, 80))) || '/80'
+		  END                                                                                  AS unit_id,
+		  u.unit_name                                                                          AS unit_name,
+		  -- card_id / dns_short_name：cards.spatial_prefix LPM 覆盖该 device，取最长（最具体）
+		  c.spatial_prefix::text                                                               AS card_id,
+		  c.dns_short_name                                                                     AS dns_short_name
 		FROM device_factory_meta dfm
 		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d                ON d.device_id = dfm.device_id
 		LEFT JOIN device_ota o             ON o.device_ipv6 = d.device_ipv6
+		LEFT JOIN branches br              ON br.branch_id = network(set_masklen(d.device_ipv6, 56))
+		LEFT JOIN units u                  ON u.unit_id = network(set_masklen(d.device_ipv6, 80))
+		LEFT JOIN LATERAL (
+		    SELECT cd.spatial_prefix, cd.dns_short_name
+		      FROM cards cd
+		     WHERE cd.spatial_prefix >>= d.device_ipv6
+		     ORDER BY masklen(cd.spatial_prefix) DESC
+		     LIMIT 1
+		) c ON TRUE
 		` + whereClause + `
 		ORDER BY ` + orderByClauseDevicesV2(sort, direction) + `
 		LIMIT $` + fmt.Sprintf("%d", limitN) + ` OFFSET $` + fmt.Sprintf("%d", offsetN)
@@ -306,6 +331,8 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 			otaTargetFW, otaTargetMCU, otaPermit, otaWay, otaSchedule, otaStatus                sql.NullString
 			otaProgress                                                                         sql.NullInt32
 			otaTenantApproved                                                                   sql.NullBool
+			unitID, unitName, cardID, dnsShortName                                              sql.NullString
+			branchID, branchName                                                                sql.NullString
 		)
 		if err := rows.Scan(
 			&d.DeviceID,
@@ -332,6 +359,12 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 			&otaStatus,
 			&otaProgress,
 			&otaTenantApproved,
+			&branchID,
+			&branchName,
+			&unitID,
+			&unitName,
+			&cardID,
+			&dnsShortName,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan device row: %w", err)
 		}
@@ -354,7 +387,12 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		d.BoundBedID = boundBedID
 		// room_id / unit_id 计算字段 — bound_* 即可代表当前绑定层
 		d.RoomID = boundRoomID
-		// unit_id 暂不展开（需要再 JOIN units 表；FE 列表场景一般不需要 unit_id，详情页另查）
+		d.BranchID = branchID
+		d.BranchName = branchName
+		d.UnitID = unitID
+		d.UnitName = unitName
+		d.CardID = cardID
+		d.DNSShortName = dnsShortName
 		d.Status = status
 		d.Access = access
 		d.MonitoringEnabled = monitoringEnabled

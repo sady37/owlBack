@@ -115,6 +115,68 @@ func NewAuthHandler(db *sql.DB, sessionStore SessionStore, logger *zap.Logger) *
 func (r *Router) RegisterAuthRoutes(h *AuthHandler) {
 	r.Handle("/auth/api/v2/search-tenants", h.HandleSearchTenants)
 	r.Handle("/auth/api/v2/login", h.HandleLogin)
+	// PIN verify — 锁屏解锁 / FE 锁屏复用；保留 v1 路径让 FE 不改
+	// (auth_handler.go-v1 整文件已禁用；本路由独立重建)
+	r.Handle("/auth/api/v1/verify-pin", h.HandleVerifyPIN)
+}
+
+// HandleVerifyPIN POST /auth/api/v1/verify-pin
+//
+// 用于锁屏解锁：FE 已登录态下输入 4 位 PIN，body={"pin_hash": sha256_hex(pin)}，
+// header X-User-Id 由 AuthMiddleware 注入。
+//
+// 写入端（UpdateAccountSettings / ResetPIN）链路：
+//   FE sha256_hex(pin) → service decode 32 bytes → repo bcrypt(hex.EncodeToString(32 bytes))
+//   DB 存 bcrypt(sha256_hex_64chars)
+// 此处 bcrypt.Compare(stored, sha256_hex 64chars) 与之对偶。
+func (h *AuthHandler) HandleVerifyPIN(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	ctx := r.Context()
+
+	var body struct {
+		PinHash string `json:"pin_hash"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusOK, Fail("invalid body"))
+		return
+	}
+	pinHash := strings.TrimSpace(body.PinHash)
+	if pinHash == "" {
+		writeJSON(w, http.StatusOK, Fail("pin_hash is required"))
+		return
+	}
+	userID := strings.TrimSpace(r.Header.Get("X-User-Id"))
+	if userID == "" {
+		writeJSON(w, http.StatusOK, Fail("user not authenticated"))
+		return
+	}
+
+	var storedPinHash sql.NullString
+	err := h.db.QueryRowContext(ctx,
+		`SELECT pin_hash FROM users WHERE user_id::text = $1`,
+		userID,
+	).Scan(&storedPinHash)
+	if err == sql.ErrNoRows {
+		writeJSON(w, http.StatusOK, Ok(map[string]any{"success": false}))
+		return
+	}
+	if err != nil {
+		h.logger.Warn("verify-pin: query failed", zap.String("user_id", userID), zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail("internal error"))
+		return
+	}
+	if !storedPinHash.Valid || storedPinHash.String == "" {
+		writeJSON(w, http.StatusOK, Ok(map[string]any{"success": false}))
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(storedPinHash.String), []byte(pinHash)); err != nil {
+		writeJSON(w, http.StatusOK, Ok(map[string]any{"success": false}))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 }
 
 // =============================================================================

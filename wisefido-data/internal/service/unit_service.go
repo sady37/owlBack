@@ -1680,8 +1680,16 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 		return nil, fmt.Errorf("failed to create unit: %w", err)
 	}
 
-	// public unit 占位 resident 同步逻辑已删除：v2 residents/cards 模块属 Phase D/F，
-	// Phase D 启动时再设计是否需要 synthetic resident（v1 行为不直接复刻）
+	// public unit (unit_type=3): 创建同名 synthetic resident "public-<unit_name>"
+	// 让 card detail / device-monitor-setting 等下游 UI 有 resident_id 可显示，避免空 "—"
+	if unitType == 3 {
+		if err := s.createPublicResident(ctx, req.TenantID, unitID, unit.UnitName); err != nil {
+			s.logger.Warn("createPublicResident failed (unit created OK)",
+				zap.String("tenant_id", req.TenantID),
+				zap.String("unit_id", unitID),
+				zap.Error(err))
+		}
+	}
 
 	// 8. 构建响应
 	s.syncCardsForUnit(ctx, req.TenantID, unitID, "unit_create")
@@ -1689,6 +1697,132 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 	return &CreateUnitResponse{
 		UnitID: unitID,
 	}, nil
+}
+
+// createPublicResident — 为 public unit (unit_type=3) 创建同名 synthetic resident
+//   - nickname = "public-<unit_name>"
+//   - spatial_prefix = unit_id (/80)
+//   - resident_account = NULL (避免占用人类账号)
+// DeleteUnit 时通过同名 + 同 prefix 匹配并删除。
+func (s *unitService) createPublicResident(ctx context.Context, tenantID, unitID, unitName string) error {
+	nickname := "public-" + strings.TrimSpace(unitName)
+	tenantPrefix := strings.TrimSpace(tenantID)
+	if !strings.Contains(tenantPrefix, "/") {
+		tenantPrefix = tenantPrefix + "/48"
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// 分 slot：per-tenant MAX+1（与 PostgresResidentsRepository.CreateResident 一致逻辑）
+	var slot int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(resident_slot), 0) + 1
+		  FROM residents
+		 WHERE network(set_masklen(resident_id, 48)) = $1::INET`, tenantPrefix,
+	).Scan(&slot); err != nil {
+		return fmt.Errorf("alloc slot: %w", err)
+	}
+	if slot < 1 || slot >= 65535 {
+		return fmt.Errorf("slot out of range: %d", slot)
+	}
+
+	// 构造 hoa：tenant /48 host 部分 + ":ff01:<slot hex>::"
+	tenantHost := strings.SplitN(strings.TrimSuffix(tenantPrefix, "/48"), "::", 2)[0]
+	hoa := fmt.Sprintf("%s:ff01:%x::", tenantHost, slot)
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO residents (resident_id, resident_slot, nickname, status)
+		VALUES ($1::INET, $2, $3, 'active')`,
+		hoa, slot, nickname,
+	); err != nil {
+		return fmt.Errorf("insert resident: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO resident_unit (resident_id, spatial_prefix, move_reason)
+		VALUES ($1::INET, $2::INET, 'initial')`,
+		hoa, unitID,
+	); err != nil {
+		return fmt.Errorf("insert resident_unit: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// 触发 CardSync — 让 /80 unit card 立即 LPM 匹配上新建的 public-xxx resident
+	// （绕过了 residentsRepo hook，要手动调）
+	if globalCardSync != nil {
+		if err := globalCardSync.ReconcileCards(ctx, unitID); err != nil {
+			s.logger.Warn("createPublicResident: ReconcileCards failed",
+				zap.String("unit_id", unitID), zap.Error(err))
+		}
+	}
+	s.logger.Info("public-unit synthetic resident created",
+		zap.String("unit_id", unitID), zap.String("nickname", nickname), zap.String("resident_id", hoa))
+	return nil
+}
+
+// renamePublicResidentForUnit — unit_type 保持 3 但 unit_name 变更时同步改 synthetic resident 的 nickname。
+// 通过旧 nickname + 同 prefix 锁定，避免误改其他真实 resident。
+func (s *unitService) renamePublicResidentForUnit(ctx context.Context, unitID, oldUnitName, newUnitName string) error {
+	oldNick := "public-" + strings.TrimSpace(oldUnitName)
+	newNick := "public-" + strings.TrimSpace(newUnitName)
+	if oldNick == newNick {
+		return nil
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE residents r
+		   SET nickname = $1, updated_at = NOW()
+		 WHERE r.nickname = $2
+		   AND EXISTS (
+		     SELECT 1 FROM resident_unit ru
+		      WHERE ru.resident_id = r.resident_id
+		        AND ru.valid_to IS NULL
+		        AND ru.spatial_prefix = $3::INET
+		   )`, newNick, oldNick, unitID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 && globalCardSync != nil {
+		_ = globalCardSync.ReconcileCards(ctx, unitID)
+		s.logger.Info("public-unit synthetic resident renamed",
+			zap.String("unit_id", unitID), zap.String("old", oldNick), zap.String("new", newNick))
+	}
+	return nil
+}
+
+// deletePublicResidentForUnit — DeleteUnit 时清除同名 public-xxx synthetic resident
+// 匹配条件：nickname = 'public-<unit_name>' AND 当前 active 在该 unit /80 prefix 内
+// resident_unit ON DELETE CASCADE 会自动清理空间绑定行。
+func (s *unitService) deletePublicResidentForUnit(ctx context.Context, unitID, unitName string) error {
+	nickname := "public-" + strings.TrimSpace(unitName)
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM residents r
+		 WHERE r.nickname = $1
+		   AND EXISTS (
+		     SELECT 1 FROM resident_unit ru
+		      WHERE ru.resident_id = r.resident_id
+		        AND ru.valid_to IS NULL
+		        AND ru.spatial_prefix = $2::INET
+		   )`, nickname, unitID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		s.logger.Info("public-unit synthetic resident deleted",
+			zap.String("unit_id", unitID), zap.String("nickname", nickname), zap.Int64("count", n))
+		// 同步刷一次 unit card 的 resident_id（discharge → NoOne/Public 回落）
+		if globalCardSync != nil {
+			_ = globalCardSync.ReconcileCards(ctx, unitID)
+		}
+	}
+	return nil
 }
 
 // UpdateUnit 更新单元
@@ -1844,6 +1978,14 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 		newType = 2
 	}
 	if changed {
+		// 3→非3 切换前先清掉自己创建的 public-<old_name> synthetic resident，
+		// 不让它把 collectUnitTypeChangeBlockers 的 residents 检查卡住
+		if currentUnit.UnitType == 3 && newType != 3 {
+			if err := s.deletePublicResidentForUnit(ctx, req.UnitID, currentUnit.UnitName); err != nil {
+				s.logger.Warn("UpdateUnit: deletePublicResidentForUnit failed (continuing)",
+					zap.String("unit_id", req.UnitID), zap.Error(err))
+			}
+		}
 		// unit_type/property 是建模级字段：切换会触发卡片体系按新模型重建，
 		// 已绑 resident/device 的 unit 切换会越权放开 PHI 可见性、错位 cards.residents 绑定。
 		// 因此一旦 unit 已被使用，禁止切换。
@@ -1868,6 +2010,21 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to update unit: %w", err)
+	}
+
+	// public unit (unit_type=3) synthetic resident 同步：
+	//   非3 → 3 : 新建 public-<name>
+	//   3 → 3 且名字变 : 重命名 nickname + cards.card_name
+	if newType == 3 && currentUnit.UnitType != 3 {
+		if err := s.createPublicResident(ctx, req.TenantID, req.UnitID, unit.UnitName); err != nil {
+			s.logger.Warn("UpdateUnit: createPublicResident failed",
+				zap.String("unit_id", req.UnitID), zap.Error(err))
+		}
+	} else if newType == 3 && currentUnit.UnitType == 3 && unit.UnitName != currentUnit.UnitName {
+		if err := s.renamePublicResidentForUnit(ctx, req.UnitID, currentUnit.UnitName, unit.UnitName); err != nil {
+			s.logger.Warn("UpdateUnit: renamePublicResidentForUnit failed",
+				zap.String("unit_id", req.UnitID), zap.Error(err))
+		}
 	}
 
 	s.syncCardsForUnit(ctx, req.TenantID, req.UnitID, "unit_update")
@@ -1901,8 +2058,14 @@ func (s *unitService) DeleteUnit(ctx context.Context, req DeleteUnitRequest) (*D
 		return nil, err
 	}
 
-	// public unit 占位 resident 删除已移除：v2 residents 模块由 Phase D 重做，不复刻 v1 行为
-	_ = unit
+	// public unit (unit_type=3): 先清除 synthetic public-<unit_name> resident，
+	// 避免它把 DeleteUnit 的 "residents not empty" 检查卡住
+	if unit != nil && unit.UnitType == 3 {
+		if err := s.deletePublicResidentForUnit(ctx, req.UnitID, unit.UnitName); err != nil {
+			s.logger.Warn("deletePublicResidentForUnit failed (continuing)",
+				zap.String("unit_id", req.UnitID), zap.Error(err))
+		}
+	}
 
 	// 3. 检查关联数据：residents、devices、rooms
 	var errorDetails []string
