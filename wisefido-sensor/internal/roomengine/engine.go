@@ -1454,12 +1454,18 @@ func (e *Engine) runDailyLayoutReload(ctx context.Context) {
 	if e.dailyReloadDB == nil {
 		return
 	}
+	// v2 schema: layout 在 room_visual_layout 表（PK=spatial_prefix）；
+	// rooms 表无 tenant_id/unit_id 列；tenant_id 由 room_id INET prefix /48 派生；
+	// unit timezone 通过 unit /80 LPM contains room /88 取。
 	rows, err := e.dailyReloadDB.QueryContext(ctx, `
-		SELECT r.room_id::text, r.room_name, r.layout_config::text,
-		       COALESCE(u.timezone, ''), r.tenant_id::text
+		SELECT r.room_id::text,
+		       r.room_name,
+		       rvl.canvas::text AS layout_config,
+		       COALESCE(u.timezone, '') AS timezone,
+		       host(set_masklen(r.room_id, 48))::text || '/48' AS tenant_pref
 		FROM rooms r
-		LEFT JOIN units u ON u.unit_id = r.unit_id
-		WHERE r.layout_config IS NOT NULL`)
+		JOIN room_visual_layout rvl ON rvl.spatial_prefix = r.room_id
+		LEFT JOIN units u ON u.unit_id >>= r.room_id`)
 	if err != nil {
 		e.logger.Warn("daily_reload query failed", zap.Error(err))
 		return

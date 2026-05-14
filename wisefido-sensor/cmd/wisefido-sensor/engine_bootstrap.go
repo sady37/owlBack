@@ -151,19 +151,23 @@ func buildRuntimeConfig(cfg *config.Config, db *sql.DB) roomengine.RuntimeConfig
 }
 
 // registerAllRooms 扫 rooms 表所有 room，逐个 ParseLayoutConfig + Optimize + RegisterRoom；
-// layout_config 为空或解析失败的 room 仍以"无 layout placeholder"注册，让 sleepad-only 流量
+// layout 为空或解析失败的 room 仍以"无 layout placeholder"注册，让 sleepad-only 流量
 // （ProcessSleepadBedEvent 不依赖 grid）能正常路由到 TrackManager，避免被 dropped_unrouted_message 沉默。
 //
-// 顺带 LEFT JOIN units 取该房间所属 unit 的 IANA 时区（IsNightTime 用）。
-// 时区缺失（unit_id 为 null 或 timezone 空）时 cfg.Timezone 留空，engine 会日志警告并退化 UTC。
+// v2 schema: rooms 表无 tenant_id/unit_id/layout_config 列；layout 在 room_visual_layout 表（PK=spatial_prefix）；
+// tenant_id/unit_id 由 room_id INET prefix 派生（/48 / /80）；timezone 从 units LPM (unit /80 contains room /88) 取。
 func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB,
 	logger *zap.Logger) (int, error) {
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT r.room_id::text, r.room_name, r.layout_config::text,
-		       COALESCE(u.timezone, ''), r.tenant_id::text
+		SELECT r.room_id::text,
+		       r.room_name,
+		       COALESCE(rvl.canvas::text, '') AS layout_config,
+		       COALESCE(u.timezone, '') AS timezone,
+		       host(set_masklen(r.room_id, 48))::text || '/48' AS tenant_pref
 		FROM rooms r
-		LEFT JOIN units u ON u.unit_id = r.unit_id
+		LEFT JOIN units u ON u.unit_id >>= r.room_id
+		LEFT JOIN room_visual_layout rvl ON rvl.spatial_prefix = r.room_id
 	`)
 	if err != nil {
 		return 0, err
@@ -214,27 +218,29 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 	return count, rows.Err()
 }
 
-// loadStayAlarmEnablement 扫 alarm_device.monitor_config，找出所有启用 Stay alarm
-// 的设备，把它们的 room_id（直接绑或 via beds）汇总后下发到对应 TrackManager。
+// loadStayAlarmEnablement 列出所有 Stay alarm 启用的 room_id 下发到对应 TrackManager。
 //
 // 用途：still fall position 的并集第三条 — 运维显式启用 Stay alarm 的房间，
 // 即使既不是 cell.AreaToilet/Shower 也不是 room.name=bathroom，也按 bathroom 处理。
+//
+// v2 schema: 旧 alarm_device.monitor_config 已退役；alarm 启用配置在 spatial_config 表
+// (config_key='alarm.cloud_config'，按 tenant /48 存放 device_alarms.Radar.Stay.is_enabled)。
+// LPM 解析后，rooms 落入启用 Stay 的 tenant prefix → 全部 room 算启用。
 //
 // 该状态只在启动时灌一次；运行时配置变更需重启或后续接 Redis 通道（暂未做）。
 func loadStayAlarmEnablement(ctx context.Context, engine *roomengine.Engine, db *sql.DB,
 	logger *zap.Logger) (int, error) {
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT DISTINCT COALESCE(d.bound_room_id, b.room_id)::text AS room_id
-		FROM alarm_device ad
-		JOIN devices d ON d.device_id = ad.device_id
-		LEFT JOIN beds b ON b.bed_id = d.bound_bed_id
-		WHERE COALESCE(d.bound_room_id, b.room_id) IS NOT NULL
-		  AND EXISTS (
-			SELECT 1 FROM jsonb_array_elements(ad.monitor_config->'items') item
-			WHERE item->>'alarm_type' = 'Stay'
-			  AND (item->>'is_enabled')::int = 1
-		  )
+		SELECT DISTINCT r.room_id::text
+		FROM rooms r
+		JOIN spatial_config sc
+		  ON sc.spatial_prefix >>= r.room_id
+		 AND sc.config_key = 'alarm.cloud_config'
+		WHERE COALESCE(
+		    (sc.config_value->'device_alarms'->'Radar'->'Stay'->>'is_enabled')::int,
+		    0
+		) = 1
 	`)
 	if err != nil {
 		return 0, err
@@ -257,27 +263,24 @@ func loadStayAlarmEnablement(ctx context.Context, engine *roomengine.Engine, db 
 	return count, rows.Err()
 }
 
-// mapDevicesToRooms 建 device → room 路由表。
+// mapDevicesToRooms 建 device_addr → room 路由表。
 //
-// 路由解析顺序（per device）：
-//  1. devices.bound_room_id 直接绑（雷达常见）
-//  2. fallback: devices.bound_bed_id → beds.room_id（sleepad 常见，自己绑床而非房间）
+// v2 schema: 旧 devices.bound_room_id / bound_bed_id 列已退役；device 与 room 关系
+// 由 device_ipv6 INET prefix 派生（room_id /88 contains device_ipv6 /128）。
+// device_factory_meta (dfm) 提供 device_type；旧 device_store 表已退役。
 //
-// **不**用 card_id 路由：一个 card 可能跨多 room（例：sleepad + 2 雷达分属不同房间），
-// 用 card 推 room 会路由到错误房间。
+// device_ipv6 单程票（doc/device_ipv6_migration_checklist.md Phase D）后 engine 内部
+// map key 为 canonical IPv6 字符串（addr.String()），与 envelope DeviceAddr 一致。
 func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB,
 	logger *zap.Logger) (int, error) {
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT d.device_id::text,
-		       d.device_uid,
-		       COALESCE(ds.device_type, '') AS device_type,
-		       COALESCE(d.bound_room_id, b.room_id)::text AS room_id
+		SELECT host(d.device_ipv6)::text AS device_addr,
+		       r.room_id::text          AS room_id,
+		       COALESCE(dfm.device_type::text, '') AS device_type
 		FROM devices d
-		LEFT JOIN device_store ds ON ds.device_id = d.device_id
-		LEFT JOIN beds b ON b.bed_id = d.bound_bed_id
-		WHERE d.bound_room_id IS NOT NULL
-		   OR (d.bound_bed_id IS NOT NULL AND b.room_id IS NOT NULL)
+		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		JOIN rooms r                  ON r.room_id >>= d.device_ipv6
 	`)
 	if err != nil {
 		return 0, err
@@ -286,28 +289,21 @@ func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.D
 
 	count := 0
 	for rows.Next() {
-		var deviceID, deviceUID, deviceType, roomID string
-		if err := rows.Scan(&deviceID, &deviceUID, &deviceType, &roomID); err != nil {
+		var deviceAddr, roomID, deviceType string
+		if err := rows.Scan(&deviceAddr, &roomID, &deviceType); err != nil {
 			logger.Warn("scan devices row", zap.Error(err))
 			continue
 		}
-		if roomID == "" {
+		if roomID == "" || deviceAddr == "" {
 			continue
 		}
-		if deviceID != "" {
-			engine.MapDeviceToRoom(deviceID, roomID)
+		// 单程票：addr 是唯一 device key（替代旧的 deviceID UUID + deviceUID MAC 双键）
+		engine.MapDeviceToRoom(deviceAddr, roomID)
+		// 注册 device_addr → device_type，AI publish 用作 envelope.DeviceType
+		if deviceType != "" {
+			engine.MapDeviceIDToType(deviceAddr, deviceType)
 		}
-		if deviceUID != "" {
-			engine.MapDeviceToRoom(deviceUID, roomID)
-		}
-		// PR-8: 反向映射 deviceID UUID → device_uid（AI publish 反查源 radar uid）
-		if deviceID != "" && deviceUID != "" {
-			engine.MapDeviceIDToUID(deviceID, deviceUID)
-		}
-		// 注册 deviceID → device_type，AI publish 时用作 message.DeviceType（不再拼后缀）
-		if deviceID != "" && deviceType != "" {
-			engine.MapDeviceIDToType(deviceID, deviceType)
-		}
+		// MapDeviceIDToUID 单程票后是 identity（addr→addr），无意义，跳过
 		count++
 	}
 	return count, rows.Err()
