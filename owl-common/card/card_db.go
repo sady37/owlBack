@@ -305,6 +305,7 @@ func (c *CardDB) LookupDeviceOnly(ctx context.Context, deviceKey string) (*Devic
 		BusinessAccess:    BusinessAccessDefault,
 		MonitoringEnabled: false,
 	}
+	var addrStr sql.NullString
 	err := c.db.QueryRowContext(ctx, `
 		WITH resolved AS (
 			SELECT COALESCE(
@@ -321,19 +322,25 @@ func (c *CardDB) LookupDeviceOnly(ctx context.Context, deviceKey string) (*Devic
 		    COALESCE(d.monitoring_enabled, false),
 		    COALESCE(dfm.device_code, ''),
 		    COALESCE(dfm.device_type::text, ''),
-		    host(set_masklen(d.device_ipv6, 88))::text AS room_id
+		    host(set_masklen(d.device_ipv6, 88))::text AS room_id,
+		    host(d.device_ipv6)::text AS device_addr
 		FROM resolved r
 		JOIN device_factory_meta dfm
 		  ON `+pgUIDNormExpr("dfm.device_uid")+` = `+pgUIDNormExpr("r.uid")+`
 		JOIN devices d ON d.device_id = dfm.device_id
 		LIMIT 1
 	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.DeviceID,
-		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType, &m.RoomID)
+		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType, &m.RoomID, &addrStr)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not in devices table: %s", deviceKey)
 		}
 		return nil, fmt.Errorf("lookup device: %w", err)
+	}
+	if addrStr.Valid && addrStr.String != "" {
+		if a, perr := netip.ParseAddr(addrStr.String); perr == nil {
+			m.DeviceAddr = a
+		}
 	}
 	// R-009: 不再用 DeviceID UUID 充 CardID；unbound device CardID 留空
 	return &m, nil
@@ -404,7 +411,8 @@ func (c *CardDB) ListAllBaselines(ctx context.Context, deviceTypes []string) ([]
 		    host(set_masklen(d.device_ipv6, 56))::text AS branch_id,
 		    host(set_masklen(d.device_ipv6, 80))::text AS unit_id,
 		    host(set_masklen(d.device_ipv6, 88))::text AS room_id,
-		    host(set_masklen(d.device_ipv6, 96))::text AS bed_id
+		    host(set_masklen(d.device_ipv6, 96))::text AS bed_id,
+		    host(d.device_ipv6)::text AS device_addr
 		FROM device_factory_meta dfm
 		JOIN devices d ON d.device_id = dfm.device_id
 		`+whereClause, args...)
@@ -415,11 +423,17 @@ func (c *CardDB) ListAllBaselines(ctx context.Context, deviceTypes []string) ([]
 	var out []DeviceBaseline
 	for rows.Next() {
 		var b DeviceBaseline
+		var addrStr sql.NullString
 		if err := rows.Scan(&b.DeviceUID, &b.TenantID, &b.DeviceID,
 			&b.DeviceCode, &b.DeviceType,
 			&b.AllowAccess, &b.BusinessAccess, &b.MonitoringEnabled,
-			&b.CardID, &b.BranchID, &b.UnitID, &b.RoomID, &b.BedID); err != nil {
+			&b.CardID, &b.BranchID, &b.UnitID, &b.RoomID, &b.BedID, &addrStr); err != nil {
 			return nil, err
+		}
+		if addrStr.Valid && addrStr.String != "" {
+			if a, perr := netip.ParseAddr(addrStr.String); perr == nil {
+				b.DeviceAddr = a
+			}
 		}
 		out = append(out, b)
 	}

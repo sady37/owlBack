@@ -90,13 +90,8 @@ func (p *StreamPublisher) publish(ctx context.Context, stream rediscommon.Stream
 	if msg.Producer == "" {
 		msg.Producer = rediscommon.BuildDeviceProducer(msg.DeviceAddr)
 	}
-	// device_ipv6 单程票：subject_entity 已绑卡 publisher 端必填；空则丢（cardagg 可走 LPM 反查兜底）
-	if msg.SubjectEntity == "" {
-		p.logger.Error("subject_entity is empty, message dropped",
-			zap.String("stream", stream.Name),
-			zap.String("device_addr", msg.DeviceAddr.String()))
-		return errEmptyCardID
-	}
+	// device_ipv6 单程票 R-009：subject_entity 可空（unbound device，cardagg IotPreparedHandler
+	// 用 LPM 反查 cards 兜底）；只要 device_addr 有效就发。
 	if !msg.DeviceAddr.IsValid() {
 		p.logger.Error("device_addr is invalid, message dropped",
 			zap.String("stream", stream.Name),

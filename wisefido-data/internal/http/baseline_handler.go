@@ -32,9 +32,7 @@ func (h *BaselineHandler) GetDeviceBaseline(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "device not found", http.StatusNotFound)
 		return
 	}
-	if strings.TrimSpace(b.CardID) == "" {
-		b.CardID = strings.TrimSpace(b.DeviceID)
-	}
+	// device_ipv6 单程票 R-009：unbound device CardID 留空（不再用 DeviceID UUID 占位）
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(b)
 }
@@ -56,11 +54,7 @@ func (h *BaselineHandler) ListDeviceBaselines(w http.ResponseWriter, r *http.Req
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	for i := range baselines {
-		if strings.TrimSpace(baselines[i].CardID) == "" {
-			baselines[i].CardID = strings.TrimSpace(baselines[i].DeviceID)
-		}
-	}
+	// device_ipv6 单程票 R-009：unbound device CardID 留空（不再用 DeviceID UUID 占位）
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(baselines)
 }
