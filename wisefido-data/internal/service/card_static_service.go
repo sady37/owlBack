@@ -346,6 +346,8 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 		return nil
 	}
 	// 索引 cards by prefix（用于 owning_card 反查 是否真实存在）
+	// 注意：cardByPrefix 标记"该 prefix 是本次请求要返回的卡"（用于 owning 写回）。
+	// 真实"卡存在性"另用 siblingCardExists 查 DB（避免 single-card 视图误判 merge mode）。
 	cardByPrefix := map[string]int{} // prefix → index in cards
 	for i, c := range cards {
 		cardByPrefix[c.SpatialPrefix] = i
@@ -355,6 +357,31 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 	prefixes := make([]string, 0, len(cards))
 	for _, c := range cards {
 		prefixes = append(prefixes, c.SpatialPrefix)
+	}
+
+	// siblingCardExists：DB 内所有跟本批 cards 同 /80 unit 范围的卡 prefix 集合。
+	// 用于 single-card 视图（cards 切片只有 1 张）时仍能识别同辈 bed/room card 存在 → 不走 merge。
+	siblingCardExists := map[string]bool{}
+	if len(prefixes) > 0 {
+		sibRows, err := s.db.QueryContext(ctx, `
+			SELECT text(spatial_prefix)
+			  FROM cards
+			 WHERE EXISTS (
+			   SELECT 1 FROM unnest($1::INET[]) p
+			    WHERE cards.spatial_prefix <<= network(set_masklen(p, 80))
+			       OR cards.spatial_prefix = network(set_masklen(p, 80))
+			 )
+			   AND card_type <> 'device'
+		`, pq.Array(prefixes))
+		if err == nil {
+			defer sibRows.Close()
+			for sibRows.Next() {
+				var p string
+				if sibRows.Scan(&p) == nil {
+					siblingCardExists[p] = true
+				}
+			}
+		}
 	}
 	// 注意 WHERE: 用 device 的 /80 unit 覆盖（不只是 cards prefix 范围）
 	// 否则 room-anchor device 当对应 /88 room card 不存在（被同 room bed 吸收）时被过滤掉
@@ -405,19 +432,19 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 	}
 
 	// 算每 room 内 bed card 数 + 该 room 唯一 bed prefix（用于吸收）
-	roomBedCount := map[string]int{}      // room prefix → bed card 数
-	roomSoleBed  := map[string]string{}   // room prefix → 唯一 bed card prefix (仅 count=1 时有意义)
-	for _, c := range cards {
-		if !strings.HasSuffix(c.SpatialPrefix, "/96") {
+	// 用 siblingCardExists（DB 实际同辈 bed card），不只看本批 cards 切片
+	roomBedCount := map[string]int{}    // room prefix → bed card 数
+	roomSoleBed := map[string]string{}  // room prefix → 唯一 bed card prefix (仅 count=1 时有意义)
+	for p := range siblingCardExists {
+		if !strings.HasSuffix(p, "/96") {
 			continue
 		}
-		// 算 bed 所属 room
-		roomPrefix := narrowPrefixToRoom(c.SpatialPrefix)
+		roomPrefix := narrowPrefixToRoom(p)
 		if roomPrefix == "" {
 			continue
 		}
 		roomBedCount[roomPrefix]++
-		roomSoleBed[roomPrefix] = c.SpatialPrefix
+		roomSoleBed[roomPrefix] = p
 	}
 
 	// 索引 unit card / room card 是否真实存在
@@ -429,16 +456,19 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 	}
 
 	// 算 device owning card
+	// merge mode 判定改用 siblingCardExists（DB 实际同辈卡），避免 single-card 视图全合并：
+	//   bed-anchor device：DB 有 /96 bed card → 归 bed；否则 → 归 /80 unit
+	//   room-anchor device：room.activeBed==1 → 吸收到 sole bed；否则 DB 有 /88 room card → 归 room；否则 → 归 /80 unit
+	// 最终 owning 必须命中 cardByPrefix 才写入（保留"只填本批次卡的 Devices"）。
 	deviceMap := map[string][]commoncard.DeviceInfo{} // card prefix → []DeviceInfo
 	deviceRoomSet := map[string]map[string]bool{}     // card prefix → distinct room set (用于 unit-card coverage_label)
 	for _, dr := range devs {
 		owning := ""
-		// 1. bed anchor — /96 bed card 不在 batch（merge mode 只有 /80 unit）→ 兜底到 /80 unit
+		// 1. bed anchor — DB 存在 /96 bed card → 归该卡；否则上推 /80 unit
 		if dr.bedAnchor != "" {
-			if _, ok := cardByPrefix[dr.bedAnchor]; ok {
+			if siblingCardExists[dr.bedAnchor] {
 				owning = dr.bedAnchor
-			} else if _, ok := cardByPrefix[dr.unitAnchor]; ok && dr.unitAnchor != "" {
-				// merge mode：bed 卡不存在，bed-anchor device 上推到 /80 unit card
+			} else if dr.unitAnchor != "" {
 				owning = dr.unitAnchor
 			}
 		} else if dr.roomAnchor != "" {
@@ -446,7 +476,7 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 			if roomBedCount[dr.roomAnchor] == 1 {
 				// 吸收到唯一 bed
 				owning = roomSoleBed[dr.roomAnchor]
-			} else if _, ok := cardByPrefix[dr.roomAnchor]; ok {
+			} else if siblingCardExists[dr.roomAnchor] {
 				// /88 room card 存在
 				owning = dr.roomAnchor
 			} else {
@@ -461,7 +491,7 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 			continue
 		}
 		if _, ok := cardByPrefix[owning]; !ok {
-			continue // 该 prefix 没 card → skip
+			continue // owning 不在本次请求的 cards 切片 → 不写回（避免单卡查询把别人的设备塞进来）
 		}
 		deviceMap[owning] = append(deviceMap[owning], dr.info)
 		// 记 distinct room set for coverage_label（按 device 实际来源 room）

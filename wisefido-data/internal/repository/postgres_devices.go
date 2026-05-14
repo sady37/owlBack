@@ -436,41 +436,98 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 		return nil, fmt.Errorf("device_id is required")
 	}
 
-	d := &domain.Device{}
-	var deviceUID, deviceType string
-	var deviceCode, deviceModel, mcuModel, macWifi, imei, commMode sql.NullString
+	// 同 ListDevices 的 JOIN：branches/units/cards/device_ota，让 detail 与 list 返回字段一致
+	// FE 从 monitor detail 点击 device 跳到 /devices?device_id=X 走 GetDeviceDetailApi 单条；
+	// 若缺这些 JOIN，Unit / Card 列在 detail 路径下会空（list 路径正常）。
+	var (
+		d                                                                                   domain.Device
+		deviceUID                                                                           string
+		deviceCode, deviceType, deviceModel, mac, imei, commMode, mcuModel, firmwareVersion sql.NullString
+		tenantIDDB, boundRoomID, boundBedID                                                 sql.NullString
+		branchID, branchName, unitID, unitName, cardID, dnsShortName                        sql.NullString
+		otaTargetFW, otaTargetMCU, otaPermit, otaWay, otaSchedule, otaStatus                sql.NullString
+		otaProgress                                                                         sql.NullInt32
+		otaTenantApproved                                                                   sql.NullBool
+		statusStr                                                                           sql.NullString
+	)
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT
-			d.device_id::text,
-			host(d.device_ipv6),
-			dfm.device_uid,
-			dfm.device_type::text,
-			dfm.device_code,
-			dfm.device_model,
-			dfm.mcu_model,
-			dfm.mac_wifi,
-			dfm.imei,
-			dfm.comm_mode,
-			d.access,
-			d.monitoring_enabled
-		FROM devices d
-		JOIN device_factory_meta dfm USING (device_id)
-		WHERE d.device_id = $1::uuid
+		  dfm.device_id::text                                                                  AS device_id,
+		  COALESCE(host(d.device_ipv6), '')                                                    AS device_ipv6,
+		  dfm.device_uid                                                                       AS device_uid,
+		  dfm.device_code                                                                      AS device_code,
+		  dfm.device_type::text                                                                AS device_type,
+		  dfm.device_model                                                                     AS device_model,
+		  dfm.mac_wifi                                                                         AS mac,
+		  dfm.imei                                                                             AS imei,
+		  dfm.comm_mode                                                                        AS comm_mode,
+		  dfm.mcu_model                                                                        AS mcu_model,
+		  drs.firmware_version                                                                 AS firmware_version,
+		  CASE WHEN d.device_ipv6 IS NOT NULL
+		       THEN host(network(set_masklen(d.device_ipv6, 48))) || '/48'
+		  END                                                                                  AS tenant_id,
+		  CASE WHEN d.device_ipv6 IS NOT NULL
+		        AND (d.device_ipv6 & '::ff00:0:0'::INET) <> '::'::INET
+		        AND (d.device_ipv6 & '::ff:0:0'::INET)   = '::'::INET
+		       THEN host(network(set_masklen(d.device_ipv6, 88))) || '/88'
+		  END                                                                                  AS bound_room_id,
+		  CASE WHEN d.device_ipv6 IS NOT NULL
+		        AND (d.device_ipv6 & '::ff:0:0'::INET) <> '::'::INET
+		       THEN host(network(set_masklen(d.device_ipv6, 96))) || '/96'
+		  END                                                                                  AS bound_bed_id,
+		  CASE WHEN d.device_ipv6 IS NOT NULL THEN 'Enabled' ELSE 'Disabled' END               AS status,
+		  COALESCE(d.access, FALSE)                                                            AS access,
+		  COALESCE(d.monitoring_enabled, FALSE)                                                AS monitoring_enabled,
+		  o.target_firmware_version                                                            AS ota_target_firmware_version,
+		  o.target_mcu_model                                                                   AS ota_target_mcu_model,
+		  CASE WHEN o.approve_way IS NULL THEN 'false' ELSE 'true' END                         AS ota_permit,
+		  CASE
+		    WHEN o.approve_way IS NULL                THEN NULL
+		    WHEN o.approve_way LIKE '%_schedule'      THEN 'schedule'
+		    WHEN o.approve_way LIKE 'tenant_%'        THEN 'tenant'
+		    WHEN o.approve_way LIKE '%_manual'        THEN 'manual'
+		    ELSE NULL
+		  END                                                                                  AS ota_way,
+		  to_char(o.schedule, 'YYYY-MM-DD HH24:MI:SS')                                         AS ota_schedule,
+		  o.status                                                                             AS ota_status,
+		  o.progress                                                                           AS ota_progress,
+		  CASE WHEN o.approve_way LIKE 'tenant_%' THEN TRUE ELSE FALSE END                     AS ota_tenant_approved,
+		  CASE WHEN d.device_ipv6 IS NOT NULL
+		        AND (d.device_ipv6 & '::ff00:0:0:0:0'::INET) <> '::'::INET
+		       THEN host(network(set_masklen(d.device_ipv6, 56))) || '/56'
+		  END                                                                                  AS branch_id,
+		  br.branch_name                                                                       AS branch_name,
+		  CASE WHEN d.device_ipv6 IS NOT NULL
+		        AND (d.device_ipv6 & '::ffff:0:0:0'::INET) <> '::'::INET
+		       THEN host(network(set_masklen(d.device_ipv6, 80))) || '/80'
+		  END                                                                                  AS unit_id,
+		  u.unit_name                                                                          AS unit_name,
+		  c.spatial_prefix::text                                                               AS card_id,
+		  c.dns_short_name                                                                     AS dns_short_name
+		FROM device_factory_meta dfm
+		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
+		LEFT JOIN devices d                ON d.device_id = dfm.device_id
+		LEFT JOIN device_ota o             ON o.device_ipv6 = d.device_ipv6
+		LEFT JOIN branches br              ON br.branch_id = network(set_masklen(d.device_ipv6, 56))
+		LEFT JOIN units u                  ON u.unit_id = network(set_masklen(d.device_ipv6, 80))
+		LEFT JOIN LATERAL (
+		    SELECT cd.spatial_prefix, cd.dns_short_name
+		      FROM cards cd
+		     WHERE cd.spatial_prefix >>= d.device_ipv6
+		     ORDER BY masklen(cd.spatial_prefix) DESC
+		     LIMIT 1
+		) c ON TRUE
+		WHERE dfm.device_id = $1::uuid
 		LIMIT 1
 	`, deviceID).Scan(
-		&d.DeviceID,
-		&d.DeviceIPv6,
-		&deviceUID,
-		&deviceType,
-		&deviceCode,
-		&deviceModel,
-		&mcuModel,
-		&macWifi,
-		&imei,
-		&commMode,
-		&d.Access,
-		&d.MonitoringEnabled,
+		&d.DeviceID, &d.DeviceIPv6, &deviceUID, &deviceCode, &deviceType,
+		&deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion,
+		&tenantIDDB, &boundRoomID, &boundBedID, &statusStr,
+		&d.Access, &d.MonitoringEnabled,
+		&otaTargetFW, &otaTargetMCU, &otaPermit, &otaWay, &otaSchedule, &otaStatus,
+		&otaProgress, &otaTenantApproved,
+		&branchID, &branchName, &unitID, &unitName, &cardID, &dnsShortName,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("device not found: device_id=%s", deviceID)
@@ -479,16 +536,41 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 		return nil, fmt.Errorf("failed to get device: %w", err)
 	}
 
-	// TenantID 由 ipv6 前 48 bit 派生（让上层 tenant 一致性校验通过）
-	d.TenantID = deviceIPv6ToTenantPrefix(d.DeviceIPv6)
 	d.DeviceUID = deviceUID
-	d.DeviceType = sql.NullString{String: deviceType, Valid: deviceType != ""}
 	d.DeviceCode = deviceCode
+	d.DeviceType = deviceType
 	d.DeviceModel = deviceModel
 	d.MCUModel = mcuModel
-	d.MAC = macWifi
+	d.MAC = mac
 	d.IMEI = imei
 	d.CommMode = commMode
+	d.FirmwareVersion = firmwareVersion
+	if tenantIDDB.Valid {
+		d.TenantID = tenantIDDB.String
+	} else {
+		d.TenantID = deviceIPv6ToTenantPrefix(d.DeviceIPv6)
+	}
+	d.BoundRoomID = boundRoomID
+	d.BoundBedID = boundBedID
+	if statusStr.Valid {
+		d.Status = statusStr.String
+	} else {
+		d.Status = "offline"
+	}
+	d.BranchID = branchID
+	d.BranchName = branchName
+	d.UnitID = unitID
+	d.UnitName = unitName
+	d.CardID = cardID
+	d.DNSShortName = dnsShortName
+	d.OTATargetFW = otaTargetFW
+	d.OTATargetMCU = otaTargetMCU
+	d.OTAPermit = otaPermit
+	d.OTAWay = otaWay
+	d.OTASchedule = otaSchedule
+	d.OTAStatus = otaStatus
+	d.OTAProgress = otaProgress
+	d.OTATenantApproved = otaTenantApproved.Valid && otaTenantApproved.Bool
 
 	// DeviceName 取 device_code，回退 device_uid（v2 schema 无独立 device_name 列）
 	if deviceCode.Valid && deviceCode.String != "" {
@@ -497,10 +579,7 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 		d.DeviceName = deviceUID
 	}
 
-	// 默认 status='offline'（数据库语义 = 未被禁用；实时在线由 cardagg 推 Redis）
-	d.Status = "offline"
-
-	return d, nil
+	return &d, nil
 }
 
 // deviceIPv6ToTenantPrefix 把 device 的 /128 ipv6 前 48 bit 拼成 tenant 的 /48 CIDR。
