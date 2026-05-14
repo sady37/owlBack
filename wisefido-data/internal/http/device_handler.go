@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/service"
@@ -464,9 +465,23 @@ func (h *DeviceHandler) ApproveOTA(w http.ResponseWriter, r *http.Request) {
 		approved = *body.Approved
 	}
 
-	_, err := h.db.ExecContext(r.Context(),
-		`UPDATE device_store SET ota_tenant_approved = $1, ota_updated_at = CURRENT_TIMESTAMP WHERE device_id = $2`,
-		approved, deviceID)
+	// v2: tenant approve = device_ota.approve_way 前缀切换 (system_* ↔ tenant_*)。
+	// suffix (_manual/_schedule) 保持现状；approve_way 为 NULL 时无 OTA 计划，跳过。
+	var newPrefix string
+	if approved {
+		newPrefix = "tenant"
+	} else {
+		newPrefix = "system"
+	}
+	_, err := h.db.ExecContext(r.Context(), `
+		UPDATE device_ota o
+		   SET approve_way = $1 || '_' || SPLIT_PART(o.approve_way, '_', 2),
+		       updated_at = NOW()
+		  FROM devices d
+		 WHERE o.device_ipv6 = d.device_ipv6
+		   AND d.device_id = $2::uuid
+		   AND o.approve_way IS NOT NULL
+	`, newPrefix, deviceID)
 	if err != nil {
 		h.logger.Error("ApproveOTA failed", zap.String("device_id", deviceID), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail("failed to update OTA approval"))
@@ -498,17 +513,30 @@ func (h *DeviceHandler) SetOTASchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only allow schedule update when way=tenant
-	var way sql.NullString
-	h.db.QueryRowContext(r.Context(), `SELECT ota_way FROM device_store WHERE device_id = $1`, deviceID).Scan(&way)
-	if !way.Valid || way.String != "tenant" {
+	// v2: 仅当 approve_way LIKE 'tenant_%' 时允许租户改 schedule。
+	var approveWay sql.NullString
+	h.db.QueryRowContext(r.Context(), `
+		SELECT o.approve_way
+		  FROM device_ota o
+		  JOIN devices d ON d.device_ipv6 = o.device_ipv6
+		 WHERE d.device_id = $1::uuid
+	`, deviceID).Scan(&approveWay)
+	if !approveWay.Valid || !strings.HasPrefix(approveWay.String, "tenant_") {
 		writeJSON(w, http.StatusOK, Fail("schedule can only be modified when OTA way is tenant"))
 		return
 	}
 
-	_, err := h.db.ExecContext(r.Context(),
-		`UPDATE device_store SET ota_schedule = $1, ota_updated_at = CURRENT_TIMESTAMP WHERE device_id = $2`,
-		sql.NullString{String: body.Schedule, Valid: body.Schedule != ""}, deviceID)
+	// v1 schedule 形如 "now+3d"/"MMDDHH+xH" — 直接落 text 字段以保持向后兼容会破 v2 CHECK；
+	// 让 wisefido-data Repository 层 mapV1OTAWayToV2 类似函数解析。这里仅做最小切换：
+	// 空串 → NULL（取消）；非空时解析为 timestamptz。
+	schedTime := parseV1OTAScheduleToTimestamp(body.Schedule)
+	_, err := h.db.ExecContext(r.Context(), `
+		UPDATE device_ota o
+		   SET schedule = $1, updated_at = NOW()
+		  FROM devices d
+		 WHERE o.device_ipv6 = d.device_ipv6
+		   AND d.device_id = $2::uuid
+	`, schedTime, deviceID)
 	if err != nil {
 		h.logger.Error("SetOTASchedule failed", zap.String("device_id", deviceID), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail("failed to update schedule"))
@@ -516,6 +544,20 @@ func (h *DeviceHandler) SetOTASchedule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
+}
+
+// parseV1OTAScheduleToTimestamp 接 v1 形 schedule 字串 → sql.NullTime (timestamptz)。
+// 空串 → NULL；不可解析 → NULL（与 repository.parseV1OTAScheduleToTime 同语义，简化版）。
+func parseV1OTAScheduleToTimestamp(v1 string) sql.NullTime {
+	s := strings.TrimSpace(v1)
+	if s == "" {
+		return sql.NullTime{}
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return sql.NullTime{Time: t, Valid: true}
+	}
+	// v1 形态由 wisefido-data Repository 解析；这里 caller 一般传 RFC3339。
+	return sql.NullTime{}
 }
 
 // payloadToDevice 将map[string]any转换为domain.Device

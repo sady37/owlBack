@@ -139,14 +139,15 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceOnlineStatus(w http.ResponseWrit
 	if !ok {
 		return
 	}
-	if _, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceID); err != nil {
+	dev, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceID)
+	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 	status := "offline"
-	if h.stateReader != nil && h.db != nil {
-		m := service.FillDeviceOnlineStatusFromCardagg(ctx, h.stateReader, h.db, []string{deviceID}, h.logger)
-		if m[deviceID] == "online" {
+	if h.stateReader != nil && dev.DeviceIPv6 != "" {
+		m := service.FillDeviceOnlineStatusFromCardagg(ctx, h.stateReader, []string{dev.DeviceIPv6}, h.logger)
+		if m[dev.DeviceIPv6] == "online" {
 			status = "online"
 		}
 	}
@@ -199,9 +200,11 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseW
 	deviceUID := ""
 	deviceName := ""
 	timezone := ""
+	deviceIPv6 := ""
 	if dev, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceID); err == nil {
 		deviceUID = dev.DeviceUID
 		deviceName = dev.DeviceName
+		deviceIPv6 = dev.DeviceIPv6
 		if dev.UnitID.Valid && dev.UnitID.String != "" {
 			if u, err := h.unitsRepo.GetUnit(ctx, tenantID, dev.UnitID.String); err == nil && u.Timezone != "" {
 				timezone = u.Timezone
@@ -223,20 +226,26 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseW
 	}
 
 	onlineStatus := "offline"
-	if h.stateReader != nil && h.db != nil {
-		m := service.FillDeviceOnlineStatusFromCardagg(ctx, h.stateReader, h.db, []string{deviceID}, h.logger)
-		if m[deviceID] == "online" {
+	if h.stateReader != nil && deviceIPv6 != "" {
+		m := service.FillDeviceOnlineStatusFromCardagg(ctx, h.stateReader, []string{deviceIPv6}, h.logger)
+		if m[deviceIPv6] == "online" {
 			onlineStatus = "online"
 		}
 	}
 
 	// 返回 tenant 级 sleepReportTime 默认值，供 UI 在 device 未覆盖时显示。
+	// v2: tenant 级 alarm 配置存 spatial_config(spatial_prefix=tenant_prefix, config_key='alarm.cloud_config')，
+	// metadata.tenant_sleepreport_time 在该 JSONB 内。
 	tenantSleepReportTime := alarm.DefaultSleepReportTime
 	if h.db != nil {
-		var metaRaw sql.NullString
-		if err := h.db.QueryRowContext(ctx, `SELECT metadata FROM alarm_cloud WHERE tenant_id = $1::uuid`, tenantID).Scan(&metaRaw); err == nil && metaRaw.Valid && metaRaw.String != "" {
+		var raw sql.NullString
+		if err := h.db.QueryRowContext(ctx, `
+			SELECT (config_value->'metadata')::text
+			  FROM spatial_config
+			 WHERE spatial_prefix = $1::INET AND config_key = 'alarm.cloud_config'
+		`, tenantID).Scan(&raw); err == nil && raw.Valid && raw.String != "" {
 			var tr alarm.TenantResetTime
-			if json.Unmarshal([]byte(metaRaw.String), &tr) == nil && tr.TenantSleepReportTime >= 1 && tr.TenantSleepReportTime <= 24 {
+			if json.Unmarshal([]byte(raw.String), &tr) == nil && tr.TenantSleepReportTime >= 1 && tr.TenantSleepReportTime <= 24 {
 				tenantSleepReportTime = tr.TenantSleepReportTime
 			}
 		}

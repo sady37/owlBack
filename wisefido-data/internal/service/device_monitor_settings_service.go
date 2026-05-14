@@ -724,7 +724,7 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 
 	// 验证设备类型匹配（安全性检查：防止恶意修改 URL 参数）
 	// deviceType 是前端传入的 "sleepad" 或 "radar"
-	// device.DeviceType 是从 devices 表 JOIN device_store 获取的 device_type（如 "Sleepad", "Radar"）
+	// device.DeviceType 是从 devices 表 JOIN device_factory_meta 获取的 device_type（如 "Sleepad", "Radar"）
 	if !device.DeviceType.Valid {
 		return nil, fmt.Errorf("device has no device_type")
 	}
@@ -2060,8 +2060,8 @@ func (s *deviceMonitorSettingsService) isDeviceTypeMatch(type1, type2 string) bo
 	return normalized1 != "" && normalized1 == normalized2
 }
 
-// getDeviceType 已废弃：不再需要单独查询 device_store
-// device.DeviceType 已经从 GetDevice 查询中通过 JOIN device_store 获取
+// getDeviceType 已废弃：不再需要单独查询 device 元数据表
+// device.DeviceType 已经从 GetDevice 查询中通过 JOIN device_factory_meta 获取
 // 保留此函数仅用于向后兼容（如果其他地方还在使用）
 // TODO: 检查并删除所有调用此函数的地方
 func (s *deviceMonitorSettingsService) getDeviceType(ctx context.Context, device *domain.Device) (string, error) {

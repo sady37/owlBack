@@ -188,6 +188,7 @@ func mapV1OTAWayToV2ApproveWay(otaPermit, otaWay sql.NullString, tenantApproved 
 
 const deviceStoreSelectColumnsV2 = `
   dfm.device_id::text,
+  COALESCE(host(d.device_ipv6), '') AS device_ipv6,
   dfm.device_uid,
   dfm.device_code,
   dfm.device_type::text,
@@ -244,6 +245,7 @@ func scanDeviceStoreRowV2(scan func(...any) error) (*domain.DeviceStore, error) 
 
 	err := scan(
 		&d.DeviceID,
+		&d.DeviceIPv6,
 		&d.DeviceUID,
 		&deviceCode,
 		&d.DeviceType,

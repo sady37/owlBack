@@ -235,6 +235,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 	q := `
 		SELECT
 		  dfm.device_id::text                                                                  AS device_id,
+		  COALESCE(host(d.device_ipv6), '')                                                    AS device_ipv6,
 		  dfm.device_uid                                                                       AS device_uid,
 		  dfm.device_code                                                                      AS device_code,
 		  dfm.device_type::text                                                                AS device_type,
@@ -336,6 +337,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		)
 		if err := rows.Scan(
 			&d.DeviceID,
+			&d.DeviceIPv6,
 			&d.DeviceUID,
 			&deviceCode,
 			&deviceType,
@@ -435,7 +437,7 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 	}
 
 	d := &domain.Device{}
-	var ipv6, deviceUID, deviceType string
+	var deviceUID, deviceType string
 	var deviceCode, deviceModel, mcuModel, macWifi, imei, commMode sql.NullString
 
 	err := r.db.QueryRowContext(ctx, `
@@ -458,7 +460,7 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 		LIMIT 1
 	`, deviceID).Scan(
 		&d.DeviceID,
-		&ipv6,
+		&d.DeviceIPv6,
 		&deviceUID,
 		&deviceType,
 		&deviceCode,
@@ -478,7 +480,7 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 	}
 
 	// TenantID 由 ipv6 前 48 bit 派生（让上层 tenant 一致性校验通过）
-	d.TenantID = deviceIPv6ToTenantPrefix(ipv6)
+	d.TenantID = deviceIPv6ToTenantPrefix(d.DeviceIPv6)
 	d.DeviceUID = deviceUID
 	d.DeviceType = sql.NullString{String: deviceType, Valid: deviceType != ""}
 	d.DeviceCode = deviceCode

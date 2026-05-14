@@ -14,8 +14,6 @@ import (
 	"owl-common/card"
 	rediscommon "owl-common/redis"
 
-	"github.com/google/uuid"
-	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -162,8 +160,8 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 	}, nil
 }
 
-// FillDeviceOnlineStatusFromCardagg 只从 cardagg 读在线状态，返回 device_id -> "online"|"offline"。
-// Phase A：device_status 已迁出 card:state，按 device_id 直读 device:status:{deviceID} 独立 Hash。
+// FillDeviceOnlineStatusFromCardagg 只从 cardagg 读在线状态，返回 ipv6 -> "online"|"offline"。
+// Phase A：device_status 已迁出 card:state，按 device_ipv6 直读 device:status:{IPv6} 独立 Hash。
 //
 // online 判定 = `ds.Offline == 0`（仅网络/心跳维度）。
 // SensorDetached / SignalPoor / AngleAbnormal 是独立的 degraded 标志位，**不**聚合到 offline——
@@ -172,72 +170,35 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 //
 // 仅返回字符串状态；要拿完整 DeviceStatus（含 signal_poor/angle_abnormal/sensor_detached/last_seen_ms）
 // 用 FillDeviceStatusFromCardagg。
-func FillDeviceOnlineStatusFromCardagg(ctx context.Context, stateReader *card.Reader, db *sql.DB, deviceIDs []string, logger *zap.Logger) map[string]string {
-	full := FillDeviceStatusFromCardagg(ctx, stateReader, db, deviceIDs, logger)
-	out := make(map[string]string, len(deviceIDs))
-	for _, id := range deviceIDs {
-		if id == "" {
+//
+// 入参 deviceIPv6s：list of host(device_ipv6) 字符串（cardagg redis key 即此）。
+func FillDeviceOnlineStatusFromCardagg(ctx context.Context, stateReader *card.Reader, deviceIPv6s []string, logger *zap.Logger) map[string]string {
+	full := FillDeviceStatusFromCardagg(ctx, stateReader, deviceIPv6s, logger)
+	out := make(map[string]string, len(deviceIPv6s))
+	for _, addr := range deviceIPv6s {
+		if addr == "" {
 			continue
 		}
-		ds := full[id]
+		ds := full[addr]
 		if ds != nil && ds.Offline == 0 {
-			out[id] = "online"
+			out[addr] = "online"
 		} else {
-			out[id] = "offline"
+			out[addr] = "offline"
 		}
 	}
 	return out
 }
 
-// resolveUUIDsToIPv6 把 UUID 形式的 device_id 批量翻译为 host(device_ipv6) 字符串，返回 uuid → ipv6 映射。
-// device_ipv6 单程票后 cardagg 写 device:status:{IPv6}；wisefido-data Phase 5 仍多处用 UUID，
-// 故在 FillDeviceStatusFromCardagg 入口统一翻译，避免逐 caller 改造。Phase 5 完成后可删此函数。
-//
-// 已是 IPv6 / 非 UUID 的 id 直接 passthrough（uuid.Parse 失败即视为非 UUID）。
-func resolveUUIDsToIPv6(ctx context.Context, db *sql.DB, ids []string) map[string]string {
-	if db == nil || len(ids) == 0 {
-		return nil
-	}
-	uuids := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if _, err := uuid.Parse(id); err == nil {
-			uuids = append(uuids, id)
-		}
-	}
-	if len(uuids) == 0 {
-		return nil
-	}
-	rows, err := db.QueryContext(ctx, `
-		SELECT device_id::text, host(device_ipv6)
-		FROM devices
-		WHERE device_id = ANY($1::uuid[])
-	`, pq.Array(uuids))
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	m := make(map[string]string, len(uuids))
-	for rows.Next() {
-		var u, addr string
-		if err := rows.Scan(&u, &addr); err == nil && addr != "" {
-			m[u] = addr
-		}
-	}
-	return m
-}
-
-// FillDeviceStatusFromCardagg 批量读 device:status:{deviceID} Hash，返回完整 DeviceStatus map。
+// FillDeviceStatusFromCardagg 批量读 device:status:{IPv6} Hash，返回 ipv6 → DeviceStatus map。
 // 缺失/读失败的 device 在 map 中不存在；调用方负责决定 fallback（典型：构造 offline=1 占位）。
 //
-// device_ipv6 单程票：cardagg 写的 redis key 是 device:status:{IPv6}；
-// 本函数若 caller 仍传 UUID，会通过 db 查 devices.device_ipv6 翻译，返回 map key **保持 caller 原样 UUID**
-// 以维持 5 处 caller 的回填语义。Phase 5 wisefido-data 全量切 IPv6 后可删 resolveUUIDsToIPv6。
-func FillDeviceStatusFromCardagg(ctx context.Context, stateReader *card.Reader, db *sql.DB, deviceIDs []string, logger *zap.Logger) map[string]*card.DeviceStatus {
-	if stateReader == nil || len(deviceIDs) == 0 {
+// device_ipv6 单程票：cardagg 写的 redis key 是 device:status:{IPv6}，调用方必须传 IPv6 字符串。
+func FillDeviceStatusFromCardagg(ctx context.Context, stateReader *card.Reader, deviceIPv6s []string, logger *zap.Logger) map[string]*card.DeviceStatus {
+	if stateReader == nil || len(deviceIPv6s) == 0 {
 		return make(map[string]*card.DeviceStatus)
 	}
-	ids := make([]string, 0, len(deviceIDs))
-	for _, id := range deviceIDs {
+	ids := make([]string, 0, len(deviceIPv6s))
+	for _, id := range deviceIPv6s {
 		if id != "" {
 			ids = append(ids, id)
 		}
@@ -245,57 +206,35 @@ func FillDeviceStatusFromCardagg(ctx context.Context, stateReader *card.Reader, 
 	if len(ids) == 0 {
 		return make(map[string]*card.DeviceStatus)
 	}
-	// UUID → IPv6 翻译（Phase 5 临时桥接）
-	uuidToAddr := resolveUUIDsToIPv6(ctx, db, ids)
-	queryIDs := make([]string, 0, len(ids))
-	addrToOriginal := make(map[string]string, len(ids))
-	for _, id := range ids {
-		if addr, ok := uuidToAddr[id]; ok {
-			queryIDs = append(queryIDs, addr)
-			addrToOriginal[addr] = id
-		} else {
-			queryIDs = append(queryIDs, id)
-			addrToOriginal[id] = id
-		}
-	}
-	devStatusBatch, err := stateReader.ReadDeviceStatusByDeviceIDs(ctx, queryIDs)
+	devStatusBatch, err := stateReader.ReadDeviceStatusByDeviceIDs(ctx, ids)
 	if err != nil {
 		if logger != nil {
 			logger.Warn("FillDeviceStatusFromCardagg: ReadDeviceStatusByDeviceIDs failed", zap.Error(err))
 		}
 		return make(map[string]*card.DeviceStatus)
 	}
-	out := make(map[string]*card.DeviceStatus, len(devStatusBatch))
-	for k, v := range devStatusBatch {
-		if orig, ok := addrToOriginal[k]; ok {
-			out[orig] = v
-		} else {
-			out[k] = v
-		}
-	}
-	return out
+	return devStatusBatch
 }
 
 // fillDeviceOnlineStatus 只从 cardagg 读在线状态，使用 FillDeviceOnlineStatusFromCardagg。
+// 用 d.DeviceIPv6 作 cardagg redis key（device:status:{IPv6}）。
 func (s *deviceService) fillDeviceOnlineStatus(ctx context.Context, devices []*domain.Device) {
 	for _, d := range devices {
 		d.OnlineStatus = "offline"
 	}
-	if s.stateReader == nil || s.db == nil {
+	if s.stateReader == nil {
 		return
 	}
-	ids := make([]string, 0, len(devices))
+	ipv6s := make([]string, 0, len(devices))
 	for _, d := range devices {
-		if d.DeviceID != "" {
-			ids = append(ids, d.DeviceID)
+		if d.DeviceIPv6 != "" {
+			ipv6s = append(ipv6s, d.DeviceIPv6)
 		}
 	}
-	m := FillDeviceOnlineStatusFromCardagg(ctx, s.stateReader, s.db, ids, s.logger)
+	m := FillDeviceOnlineStatusFromCardagg(ctx, s.stateReader, ipv6s, s.logger)
 	for _, d := range devices {
-		if d.DeviceID != "" {
-			if m[d.DeviceID] == "online" {
-				d.OnlineStatus = "online"
-			}
+		if d.DeviceIPv6 != "" && m[d.DeviceIPv6] == "online" {
+			d.OnlineStatus = "online"
 		}
 	}
 }

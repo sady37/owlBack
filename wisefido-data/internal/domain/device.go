@@ -10,6 +10,7 @@ import (
 type Device struct {
 	// 主键和租户
 	DeviceID   string `db:"device_id"`
+	DeviceIPv6 string `db:"device_ipv6"` // canonical IPv6 form (host(d.device_ipv6))；用于 cardagg redis device:status key
 	TenantID   string `db:"tenant_id"` // NOT NULL
 
 	// 关联 device_store

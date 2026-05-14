@@ -511,26 +511,20 @@ func (s *sleepaceReportService) DownloadReportByWisefidoDeviceID(ctx context.Con
 	})
 }
 
+// lookupSleepaceReportIdentityByDeviceID — v2: tenant_id 派生自 device_ipv6 前 /48；
+// device_uid / device_code 全在 device_factory_meta；devices 表无 status 列（软删通过 trash /48）。
 func (s *sleepaceReportService) lookupSleepaceReportIdentityByDeviceID(ctx context.Context, deviceID string) (tenantID, devID, sleepaceDeviceID, deviceUID string, err error) {
 	q := `
-		SELECT d.tenant_id::text, d.device_id::text,
-			COALESCE(NULLIF(TRIM(ds.device_code), ''), d.device_uid),
-			d.device_uid
+		SELECT host(network(set_masklen(d.device_ipv6, 48))) || '/48',
+			d.device_id::text,
+			COALESCE(NULLIF(TRIM(dfm.device_code), ''), dfm.device_uid),
+			dfm.device_uid
 		FROM devices d
-		JOIN device_store ds ON ds.device_id = d.device_id
-		WHERE d.device_id = $1::uuid AND d.status <> 'disabled'
+		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		WHERE d.device_id = $1::uuid
 		LIMIT 1
 	`
 	err = s.db.QueryRowContext(ctx, q, deviceID).Scan(&tenantID, &devID, &sleepaceDeviceID, &deviceUID)
-	if err == sql.ErrNoRows {
-		q2 := `
-			SELECT d.tenant_id::text, d.device_id::text, d.device_uid, d.device_uid
-			FROM devices d
-			WHERE d.device_id = $1::uuid AND d.status <> 'disabled'
-			LIMIT 1
-		`
-		err = s.db.QueryRowContext(ctx, q2, deviceID).Scan(&tenantID, &devID, &sleepaceDeviceID, &deviceUID)
-	}
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return "", "", "", "", fmt.Errorf("device not found: device_id=%s", deviceID)
@@ -543,31 +537,21 @@ func (s *sleepaceReportService) lookupSleepaceReportIdentityByDeviceID(ctx conte
 	return tenantID, devID, sleepaceDeviceID, deviceUID, nil
 }
 
+// lookupSleepaceReportIdentityBySleepaceDeviceID — Sleepace 厂家 deviceId（= device_code 或 device_uid）反查 wisefido device。
+// v2: 全部从 device_factory_meta 取标识；tenant 派生 /48；devices 表无 status 列。
 func (s *sleepaceReportService) lookupSleepaceReportIdentityBySleepaceDeviceID(ctx context.Context, sleepaceDeviceID string) (tenantID, devID, sid, uid string, err error) {
 	q := `
-		SELECT d.tenant_id::text, d.device_id::text,
-			COALESCE(NULLIF(TRIM(ds.device_code), ''), d.device_uid),
-			d.device_uid
+		SELECT host(network(set_masklen(d.device_ipv6, 48))) || '/48',
+			d.device_id::text,
+			COALESCE(NULLIF(TRIM(dfm.device_code), ''), dfm.device_uid),
+			dfm.device_uid
 		FROM devices d
-		JOIN device_store ds ON ds.device_id = d.device_id
-		WHERE d.status <> 'disabled'
-		  AND (
-			(NULLIF(TRIM(ds.device_code), '') IS NOT NULL AND TRIM(ds.device_code) = $1)
-			OR d.device_uid = $1
-			OR ds.device_uid = $1
-		  )
+		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		WHERE (NULLIF(TRIM(dfm.device_code), '') IS NOT NULL AND TRIM(dfm.device_code) = $1)
+		   OR dfm.device_uid = $1
 		LIMIT 1
 	`
 	err = s.db.QueryRowContext(ctx, q, sleepaceDeviceID).Scan(&tenantID, &devID, &sid, &uid)
-	if err == sql.ErrNoRows {
-		q2 := `
-			SELECT d.tenant_id::text, d.device_id::text, d.device_uid, d.device_uid
-			FROM devices d
-			WHERE d.status <> 'disabled' AND d.device_uid = $1
-			LIMIT 1
-		`
-		err = s.db.QueryRowContext(ctx, q2, sleepaceDeviceID).Scan(&tenantID, &devID, &sid, &uid)
-	}
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return "", "", "", "", fmt.Errorf("device not found for sleepace deviceId=%s", sleepaceDeviceID)

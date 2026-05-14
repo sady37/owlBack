@@ -9,7 +9,8 @@ import (
 // 基于实际DB表结构：device_store表的所有字段
 type DeviceStore struct {
 	// 主键
-	DeviceID string `db:"device_id"` // PRIMARY KEY (UUID)
+	DeviceID   string `db:"device_id"`   // PRIMARY KEY (UUID)
+	DeviceIPv6 string `db:"device_ipv6"` // canonical IPv6 form (host(d.device_ipv6))；用于 cardagg redis device:status key
 
 	// 设备唯一标识（用于首次连接匹配和查询）
 	DeviceUID  string         `db:"device_uid"`  // UNIQUE; 对应 Sleepace deviceName，如 BM87224601903

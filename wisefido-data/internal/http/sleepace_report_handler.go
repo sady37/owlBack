@@ -336,30 +336,21 @@ func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 }
 
-// getSleepaceDownloadIdentity 解析厂家 deviceId（device_store.device_code 优先）与 deviceName（devices.device_uid）
+// getSleepaceDownloadIdentity 解析厂家 deviceId（device_factory_meta.device_code 优先）与 deviceName（device_factory_meta.device_uid）。
+// v2: tenant scope 用 INET <<= /48 prefix；devices 表已无 status 列，缺该过滤（软删通过 device_ipv6 退回 trash 池）。
 func (h *SleepaceReportHandler) getSleepaceDownloadIdentity(ctx context.Context, tenantID, deviceID string) (sleepaceDeviceID, deviceUID string, err error) {
 	if h.db == nil {
 		return "", "", fmt.Errorf("database connection not available")
 	}
 	q := `
-		SELECT COALESCE(NULLIF(TRIM(ds.device_code), ''), d.device_uid), d.device_uid
+		SELECT COALESCE(NULLIF(TRIM(dfm.device_code), ''), dfm.device_uid), dfm.device_uid
 		FROM devices d
-		JOIN device_store ds ON ds.device_id = d.device_id
-		WHERE d.tenant_id = $1::uuid
+		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		WHERE d.device_ipv6 <<= $1::INET
 		  AND d.device_id = $2::uuid
-		  AND d.status <> 'disabled'
 		LIMIT 1
 	`
 	err = h.db.QueryRowContext(ctx, q, tenantID, deviceID).Scan(&sleepaceDeviceID, &deviceUID)
-	if err == sql.ErrNoRows {
-		q2 := `
-			SELECT d.device_uid, d.device_uid
-			FROM devices d
-			WHERE d.tenant_id = $1::uuid AND d.device_id = $2::uuid AND d.status <> 'disabled'
-			LIMIT 1
-		`
-		err = h.db.QueryRowContext(ctx, q2, tenantID, deviceID).Scan(&sleepaceDeviceID, &deviceUID)
-	}
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return "", "", fmt.Errorf("device not found")

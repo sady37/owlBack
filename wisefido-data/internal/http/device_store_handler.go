@@ -118,9 +118,9 @@ func (h *DeviceStoreHandler) ListDeviceStores(w http.ResponseWriter, r *http.Req
 
 	// 实时健康状态：从 device:status:{deviceID} hash 读完整字段（offline + signal_poor + angle_abnormal + sensor_detached + last_seen_ms）
 	// 设备未绑卡也照样有 hash，admin 视角无差别可见。
-	dsMap := service.FillDeviceStatusFromCardagg(ctx, h.stateReader, h.db, deviceStoreDeviceIDs(items), h.logger)
+	dsMap := service.FillDeviceStatusFromCardagg(ctx, h.stateReader, deviceStoreDeviceIPv6s(items), h.logger)
 	for _, s := range items {
-		if ds := dsMap[s.DeviceID]; ds != nil {
+		if ds := dsMap[s.DeviceIPv6]; ds != nil {
 			s.Offline = ds.Offline
 			s.SignalPoor = ds.SignalPoor
 			s.AngleAbnormal = ds.AngleAbnormal
@@ -148,11 +148,13 @@ func (h *DeviceStoreHandler) ListDeviceStores(w http.ResponseWriter, r *http.Req
 	}))
 }
 
-func deviceStoreDeviceIDs(stores []*domain.DeviceStore) []string {
+// deviceStoreDeviceIPv6s 抽取 host(device_ipv6) 列表 — 用于 cardagg redis device:status:{IPv6} 查询。
+// 缺 ipv6 的 store 行跳过（factory-only / 未分配 trash 池等场景）。
+func deviceStoreDeviceIPv6s(stores []*domain.DeviceStore) []string {
 	ids := make([]string, 0, len(stores))
 	for _, s := range stores {
-		if s.DeviceID != "" {
-			ids = append(ids, s.DeviceID)
+		if s.DeviceIPv6 != "" {
+			ids = append(ids, s.DeviceIPv6)
 		}
 	}
 	return ids
@@ -243,9 +245,9 @@ func (h *DeviceStoreHandler) ExportDeviceStores(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to list device stores: %v", err)))
 		return
 	}
-	dsMap := service.FillDeviceStatusFromCardagg(ctx, h.stateReader, h.db, deviceStoreDeviceIDs(items), h.logger)
+	dsMap := service.FillDeviceStatusFromCardagg(ctx, h.stateReader, deviceStoreDeviceIPv6s(items), h.logger)
 	for _, s := range items {
-		if ds := dsMap[s.DeviceID]; ds != nil {
+		if ds := dsMap[s.DeviceIPv6]; ds != nil {
 			s.Offline = ds.Offline
 			s.SignalPoor = ds.SignalPoor
 			s.AngleAbnormal = ds.AngleAbnormal

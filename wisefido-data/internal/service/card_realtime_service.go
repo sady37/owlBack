@@ -1050,10 +1050,11 @@ func (s *CardRealtimeService) enrichDeviceStatus(ctx context.Context, cardID str
 	//   - 若 enrichDeviceStatus 用严格 <<= /96 查，吸收进来的 D523 查不到 → 默认 offline，与 FE 显示的设备列表不一致
 	//   - 改用 /80 unit pool：返回 unit 内全部 monitor-on 设备的 status；FE 按 device.device_id 在 card.devices 内查找，
 	//     多余的 status entry 自然被忽略（map 查 key 即可）
-	// 返回 dfm.device_id (UUID)：FillDeviceStatusFromCardagg 内部会 UUID→IPv6 翻译查 cardagg redis。
-	// FE 沿用 device.device_id (UUID) 作 key，无需改动。
+	// 同时返回 dfm.device_id (UUID, FE 用作 device_status map key) 与 host(d.device_ipv6) (cardagg redis key)；
+	// device_ipv6 单程票后 cardagg 写 device:status:{IPv6}，但 FE 的 cards.devices[].device_id 仍是 UUID，
+	// 故 redis 用 ipv6 查、map 用 UUID 输出，两者必须 1:1。
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT dfm.device_id::text, COALESCE(dfm.device_type::text, '') AS device_type
+		SELECT dfm.device_id::text, host(d.device_ipv6), COALESCE(dfm.device_type::text, '') AS device_type
 		FROM devices d
 		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
 		WHERE d.device_ipv6 <<= network(set_masklen($1::INET, 80))
@@ -1062,26 +1063,28 @@ func (s *CardRealtimeService) enrichDeviceStatus(ctx context.Context, cardID str
 		return err
 	}
 	defer rows.Close()
-	var devices []struct{ deviceID, deviceType string }
-	var deviceIDs []string
+	var devices []struct{ deviceID, deviceIPv6, deviceType string }
+	var deviceIPv6s []string
 	for rows.Next() {
-		var deviceID, deviceType string
-		if err := rows.Scan(&deviceID, &deviceType); err != nil || deviceID == "" {
+		var deviceID, deviceIPv6, deviceType string
+		if err := rows.Scan(&deviceID, &deviceIPv6, &deviceType); err != nil || deviceID == "" {
 			continue
 		}
-		devices = append(devices, struct{ deviceID, deviceType string }{deviceID, deviceType})
-		deviceIDs = append(deviceIDs, deviceID)
+		devices = append(devices, struct{ deviceID, deviceIPv6, deviceType string }{deviceID, deviceIPv6, deviceType})
+		if deviceIPv6 != "" {
+			deviceIPv6s = append(deviceIPv6s, deviceIPv6)
+		}
 	}
 
 	nowMs := time.Now().UnixMilli()
-	dsMap := FillDeviceStatusFromCardagg(ctx, s.stateReader, s.db, deviceIDs, s.logger)
+	dsMap := FillDeviceStatusFromCardagg(ctx, s.stateReader, deviceIPv6s, s.logger)
 	deviceStatus := make(map[string]interface{}, len(devices))
 	for _, d := range devices {
 		entry := map[string]interface{}{
 			"device_id":   d.deviceID,
 			"device_type": d.deviceType,
 		}
-		if ds := dsMap[d.deviceID]; ds != nil {
+		if ds := dsMap[d.deviceIPv6]; ds != nil {
 			entry["offline"] = ds.Offline
 			if ds.SignalPoor != 0 {
 				entry["signal_poor"] = ds.SignalPoor

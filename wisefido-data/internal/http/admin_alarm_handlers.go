@@ -8,49 +8,41 @@ import (
 	"strings"
 )
 
+// AdminAlarm — admin/api/v1/alarm-cloud GET/PUT
+//
+// v2 schema：tenant 级 alarm 配置存 spatial_config 行 (spatial_prefix=tenant_prefix /48, config_key='alarm.cloud_config')，
+// config_value JSONB 内含 v1 形字段（lowercase）：offlinealarm / lowbattery / devicefailure /
+// device_alarms / conditions / notification_rules / metadata。
+//
+// 与 FE 兼容做大小写兜底：读时回填首字母大写 (OfflineAlarm 等) 让 FE 直接消费；
+// 写时统一存 lowercase（v2 owl_v2 init script 落地的 alarm.cloud_config 已是 lowercase）。
+const alarmCloudConfigKey = "alarm.cloud_config"
+
 func (s *StubHandler) AdminAlarm(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/admin/api/v1/alarm-cloud":
 		if r.Method == http.MethodGet {
 			if s != nil && s.DB != nil {
-				// Get tenant_id from query or header
 				tenantID := r.URL.Query().Get("tenant_id")
 				if tenantID == "" || tenantID == "null" {
 					tenantID = r.Header.Get("X-Tenant-Id")
 				}
-				// Normalize: empty string or "null" means use SystemTenantID
 				if tenantID == "" || tenantID == "null" {
 					tenantID = SystemTenantID()
 				}
-				// Query alarm_cloud table
-				var offlineAlarm, lowBattery, deviceFailure sql.NullString
-				var deviceAlarmsRaw, conditionsRaw, notificationRulesRaw []byte
-				var found bool
-				err := s.DB.QueryRowContext(
-					r.Context(),
-					`SELECT OfflineAlarm, LowBattery, DeviceFailure, device_alarms, conditions, notification_rules
-					 FROM alarm_cloud WHERE tenant_id = $1`,
-					tenantID,
-				).Scan(&offlineAlarm, &lowBattery, &deviceFailure, &deviceAlarmsRaw, &conditionsRaw, &notificationRulesRaw)
-				if err == nil {
-					found = true
-				} else if err == sql.ErrNoRows {
-					// If not found, try SystemTenantID as fallback
-					if tenantID != SystemTenantID() {
-						err = s.DB.QueryRowContext(
-							r.Context(),
-							`SELECT OfflineAlarm, LowBattery, DeviceFailure, device_alarms, conditions, notification_rules
-							 FROM alarm_cloud WHERE tenant_id = $1`,
-							SystemTenantID(),
-						).Scan(&offlineAlarm, &lowBattery, &deviceFailure, &deviceAlarmsRaw, &conditionsRaw, &notificationRulesRaw)
-						if err == nil {
-							found = true
-							tenantID = SystemTenantID() // Update tenant_id to reflect the actual source
-						}
+				cfg, found, err := readAlarmCloudConfig(r, s.DB, tenantID)
+				if err == nil && !found && tenantID != SystemTenantID() {
+					// fallback to system tenant
+					cfg, found, err = readAlarmCloudConfig(r, s.DB, SystemTenantID())
+					if found {
+						tenantID = SystemTenantID()
 					}
 				}
+				if err != nil {
+					writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to read alarm_cloud: %v", err)))
+					return
+				}
 				if !found {
-					// Return empty config if not found (should not happen if init script was run)
 					writeJSON(w, http.StatusOK, Ok(map[string]any{
 						"tenant_id":          tenantID,
 						"OfflineAlarm":       nil,
@@ -62,43 +54,9 @@ func (s *StubHandler) AdminAlarm(w http.ResponseWriter, r *http.Request) {
 					}))
 					return
 				}
-				var deviceAlarms map[string]any
-				if len(deviceAlarmsRaw) > 0 {
-					_ = json.Unmarshal(deviceAlarmsRaw, &deviceAlarms)
-				} else {
-					deviceAlarms = map[string]any{}
-				}
-				var conditions any
-				if len(conditionsRaw) > 0 {
-					_ = json.Unmarshal(conditionsRaw, &conditions)
-				}
-				var notificationRules any
-				if len(notificationRulesRaw) > 0 {
-					_ = json.Unmarshal(notificationRulesRaw, &notificationRules)
-				}
-				result := map[string]any{
-					"tenant_id":     tenantID,
-					"device_alarms": deviceAlarms,
-				}
-				if offlineAlarm.Valid {
-					result["OfflineAlarm"] = offlineAlarm.String
-				}
-				if lowBattery.Valid {
-					result["LowBattery"] = lowBattery.String
-				}
-				if deviceFailure.Valid {
-					result["DeviceFailure"] = deviceFailure.String
-				}
-				if conditions != nil {
-					result["conditions"] = conditions
-				}
-				if notificationRules != nil {
-					result["notification_rules"] = notificationRules
-				}
-				writeJSON(w, http.StatusOK, Ok(result))
+				writeJSON(w, http.StatusOK, Ok(alarmCloudConfigToResponse(tenantID, cfg)))
 				return
 			}
-			// No DB: return stub
 			writeJSON(w, http.StatusOK, Ok(map[string]any{
 				"tenant_id":     nil,
 				"device_alarms": map[string]any{},
@@ -112,7 +70,6 @@ func (s *StubHandler) AdminAlarm(w http.ResponseWriter, r *http.Request) {
 					writeJSON(w, http.StatusOK, Fail("invalid body"))
 					return
 				}
-				// Get tenant_id from payload or header
 				tenantID, _ := payload["tenant_id"].(string)
 				if tenantID == "" {
 					tenantID = r.Header.Get("X-Tenant-Id")
@@ -120,95 +77,30 @@ func (s *StubHandler) AdminAlarm(w http.ResponseWriter, r *http.Request) {
 				if tenantID == "" {
 					tenantID = SystemTenantID()
 				}
-				// Parse fields
-				var offlineAlarm, lowBattery, deviceFailure sql.NullString
-				if val, ok := payload["OfflineAlarm"].(string); ok && val != "" {
-					offlineAlarm = sql.NullString{String: val, Valid: true}
-				}
-				if val, ok := payload["LowBattery"].(string); ok && val != "" {
-					lowBattery = sql.NullString{String: val, Valid: true}
-				}
-				if val, ok := payload["DeviceFailure"].(string); ok && val != "" {
-					deviceFailure = sql.NullString{String: val, Valid: true}
-				}
-				var deviceAlarmsJSON []byte
-				if val, ok := payload["device_alarms"].(map[string]any); ok && val != nil {
-					deviceAlarmsJSON, _ = json.Marshal(val)
-				} else {
-					deviceAlarmsJSON = []byte("{}")
-				}
-				var conditionsJSON []byte
-				if val, ok := payload["conditions"]; ok && val != nil {
-					conditionsJSON, _ = json.Marshal(val)
-				}
-				var notificationRulesJSON []byte
-				if val, ok := payload["notification_rules"]; ok && val != nil {
-					notificationRulesJSON, _ = json.Marshal(val)
-				}
-				// Upsert: INSERT ... ON CONFLICT DO UPDATE
+				cfg := alarmCloudPayloadToConfig(payload)
+				cfgJSON, _ := json.Marshal(cfg)
 				_, err := s.DB.ExecContext(
 					r.Context(),
-					`INSERT INTO alarm_cloud (tenant_id, OfflineAlarm, LowBattery, DeviceFailure, device_alarms, conditions, notification_rules)
-					 VALUES ($1, $2, $3, $4, $5, $6, $7)
-					 ON CONFLICT (tenant_id) DO UPDATE SET
-					   OfflineAlarm = EXCLUDED.OfflineAlarm,
-					   LowBattery = EXCLUDED.LowBattery,
-					   DeviceFailure = EXCLUDED.DeviceFailure,
-					   device_alarms = EXCLUDED.device_alarms,
-					   conditions = EXCLUDED.conditions,
-					   notification_rules = EXCLUDED.notification_rules`,
-					tenantID, offlineAlarm, lowBattery, deviceFailure, deviceAlarmsJSON, conditionsJSON, notificationRulesJSON,
+					`INSERT INTO spatial_config (spatial_prefix, config_key, config_value, source)
+					 VALUES ($1::INET, $2, $3::JSONB, 'manual_ui')
+					 ON CONFLICT (spatial_prefix, config_key) DO UPDATE SET
+					   config_value = EXCLUDED.config_value,
+					   source = 'manual_ui',
+					   updated_at = NOW()`,
+					tenantID, alarmCloudConfigKey, cfgJSON,
 				)
 				if err != nil {
 					writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to update alarm_cloud: %v", err)))
 					return
 				}
-				// Return updated config
-				var resultOfflineAlarm, resultLowBattery, resultDeviceFailure sql.NullString
-				var resultDeviceAlarmsRaw, resultConditionsRaw, resultNotificationRulesRaw []byte
-				_ = s.DB.QueryRowContext(
-					r.Context(),
-					`SELECT OfflineAlarm, LowBattery, DeviceFailure, device_alarms, conditions, notification_rules
-					 FROM alarm_cloud WHERE tenant_id = $1`,
-					tenantID,
-				).Scan(&resultOfflineAlarm, &resultLowBattery, &resultDeviceFailure, &resultDeviceAlarmsRaw, &resultConditionsRaw, &resultNotificationRulesRaw)
-				var resultDeviceAlarms map[string]any
-				if len(resultDeviceAlarmsRaw) > 0 {
-					_ = json.Unmarshal(resultDeviceAlarmsRaw, &resultDeviceAlarms)
-				} else {
-					resultDeviceAlarms = map[string]any{}
+				resultCfg, _, err := readAlarmCloudConfig(r, s.DB, tenantID)
+				if err != nil {
+					writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to read alarm_cloud after update: %v", err)))
+					return
 				}
-				var resultConditions any
-				if len(resultConditionsRaw) > 0 {
-					_ = json.Unmarshal(resultConditionsRaw, &resultConditions)
-				}
-				var resultNotificationRules any
-				if len(resultNotificationRulesRaw) > 0 {
-					_ = json.Unmarshal(resultNotificationRulesRaw, &resultNotificationRules)
-				}
-				result := map[string]any{
-					"tenant_id":     tenantID,
-					"device_alarms": resultDeviceAlarms,
-				}
-				if resultOfflineAlarm.Valid {
-					result["OfflineAlarm"] = resultOfflineAlarm.String
-				}
-				if resultLowBattery.Valid {
-					result["LowBattery"] = resultLowBattery.String
-				}
-				if resultDeviceFailure.Valid {
-					result["DeviceFailure"] = resultDeviceFailure.String
-				}
-				if resultConditions != nil {
-					result["conditions"] = resultConditions
-				}
-				if resultNotificationRules != nil {
-					result["notification_rules"] = resultNotificationRules
-				}
-				writeJSON(w, http.StatusOK, Ok(result))
+				writeJSON(w, http.StatusOK, Ok(alarmCloudConfigToResponse(tenantID, resultCfg)))
 				return
 			}
-			// No DB: return stub
 			writeJSON(w, http.StatusOK, Ok(map[string]any{
 				"tenant_id":     nil,
 				"device_alarms": map[string]any{},
@@ -242,4 +134,81 @@ func (s *StubHandler) AdminAlarm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNotFound)
+}
+
+// readAlarmCloudConfig 读取 tenant 级 alarm 配置 JSONB；返回 nil + found=false 表示无该 tenant 配置。
+func readAlarmCloudConfig(r *http.Request, db *sql.DB, tenantID string) (map[string]any, bool, error) {
+	var raw []byte
+	err := db.QueryRowContext(r.Context(),
+		`SELECT config_value FROM spatial_config WHERE spatial_prefix = $1::INET AND config_key = $2`,
+		tenantID, alarmCloudConfigKey,
+	).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	cfg := map[string]any{}
+	if len(raw) > 0 {
+		if e := json.Unmarshal(raw, &cfg); e != nil {
+			return nil, false, e
+		}
+	}
+	return cfg, true, nil
+}
+
+// alarmCloudConfigToResponse 把 spatial_config JSONB 翻成 v1 alarm_cloud 形（FE 期望的首字母大写键）。
+func alarmCloudConfigToResponse(tenantID string, cfg map[string]any) map[string]any {
+	out := map[string]any{
+		"tenant_id": tenantID,
+	}
+	// JSONB 内字段为 lowercase；FE 期望 OfflineAlarm/LowBattery/DeviceFailure 三键首字母大写
+	if v, ok := cfg["offlinealarm"].(string); ok && v != "" {
+		out["OfflineAlarm"] = v
+	}
+	if v, ok := cfg["lowbattery"].(string); ok && v != "" {
+		out["LowBattery"] = v
+	}
+	if v, ok := cfg["devicefailure"].(string); ok && v != "" {
+		out["DeviceFailure"] = v
+	}
+	if v, ok := cfg["device_alarms"].(map[string]any); ok {
+		out["device_alarms"] = v
+	} else {
+		out["device_alarms"] = map[string]any{}
+	}
+	if v, ok := cfg["conditions"]; ok && v != nil {
+		out["conditions"] = v
+	}
+	if v, ok := cfg["notification_rules"]; ok && v != nil {
+		out["notification_rules"] = v
+	}
+	return out
+}
+
+// alarmCloudPayloadToConfig FE PUT 入参（v1 形）→ spatial_config JSONB（lowercase）。
+func alarmCloudPayloadToConfig(payload map[string]any) map[string]any {
+	cfg := map[string]any{}
+	if v, ok := payload["OfflineAlarm"].(string); ok && v != "" {
+		cfg["offlinealarm"] = v
+	}
+	if v, ok := payload["LowBattery"].(string); ok && v != "" {
+		cfg["lowbattery"] = v
+	}
+	if v, ok := payload["DeviceFailure"].(string); ok && v != "" {
+		cfg["devicefailure"] = v
+	}
+	if v, ok := payload["device_alarms"].(map[string]any); ok && v != nil {
+		cfg["device_alarms"] = v
+	} else {
+		cfg["device_alarms"] = map[string]any{}
+	}
+	if v, ok := payload["conditions"]; ok && v != nil {
+		cfg["conditions"] = v
+	}
+	if v, ok := payload["notification_rules"]; ok && v != nil {
+		cfg["notification_rules"] = v
+	}
+	return cfg
 }
