@@ -83,11 +83,12 @@ func (h *CardChangeHandler) Handle(ctx context.Context, msg interface{}) error {
 	}
 
 	// 同 unit 内多卡联动：失效该 unit 下所有卡片的 meta + 使能缓存
-	if d.TenantID != "" && d.UnitID != "" && h.db != nil {
-		h.metaCache.InvalidateCardsInTenantUnit(ctx, d.TenantID, d.UnitID)
-		dids, _ := service.DeviceKeysInTenantUnit(ctx, h.db, d.TenantID, d.UnitID)
+	// device_ipv6 单程票后 d.UnitID 已是 INET CIDR (/80)，tenant 信息隐含在 prefix /48 内
+	if d.UnitID != "" && h.db != nil {
+		h.metaCache.InvalidateCardsInTenantUnit(ctx, d.UnitID)
+		addrs := service.DeviceAddrsInUnit(ctx, h.db, d.UnitID)
 		if h.enablement != nil {
-			h.enablement.InvalidateDevices(dids)
+			h.enablement.InvalidateDevices(addrs)
 		}
 	}
 

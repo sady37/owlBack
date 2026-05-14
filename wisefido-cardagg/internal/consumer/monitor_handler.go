@@ -90,33 +90,22 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 		h.logger.Warn("parse monitor", zap.Error(err))
 		return nil
 	}
+	ac := service.AddrCtxFromMsg(m)
 
-	// #region agent log
-	dbg := strings.Contains(strings.ToLower(m.SubjectEntity), "d2ba029d") || m.DeviceUID == "BM87224700978" ||
-		strings.EqualFold(m.DeviceUID, "E598A2ACD523") || strings.EqualFold(m.DeviceUID, "E598A2ACD5F7") ||
-		strings.EqualFold(m.DeviceID, "E598A2ACD523") || strings.EqualFold(m.DeviceID, "E598A2ACD5F7")
+	// agent log debug: 老 dbg 用 hard-coded MAC 字符串匹配；device_ipv6 单程票后 envelope 不再带 MAC，
+	// 只保留 SubjectEntity (cardID) 启发式 + dbg 开关靠环境变量更合理。这里改为基于 cardID 的简单匹配。
+	dbg := strings.Contains(strings.ToLower(m.SubjectEntity), "d2ba029d")
 	if dbg {
-		agentDebugLog("H0", "monitor_handler.Handle:parsed", "monitor parsed", map[string]any{"cardID": m.SubjectEntity, "deviceID": m.DeviceID, "deviceUID": m.DeviceUID, "msgTs": m.Timestamp})
+		agentDebugLog("H0", "monitor_handler.Handle:parsed", "monitor parsed", map[string]any{"cardID": m.SubjectEntity, "device_addr": ac.DeviceAddr, "msgTs": m.Timestamp})
 	}
-	// #endregion
 
-	if m.DeviceUID == "" {
-		// #region agent log
+	if !m.DeviceAddr.IsValid() {
 		if dbg {
-			agentDebugLog("H1", "monitor_handler.Handle:drop", "empty device_uid", map[string]any{"cardID": m.SubjectEntity})
+			agentDebugLog("H1", "monitor_handler.Handle:drop", "empty device_addr", map[string]any{"cardID": m.SubjectEntity})
 		}
-		// #endregion
 		return nil
 	}
-	deviceKey := h.metaCache.ResolveDeviceID(ctx, m.SubjectEntity, m.DeviceID, m.DeviceUID)
-	if deviceKey == "" {
-		// #region agent log
-		if dbg {
-			agentDebugLog("H1", "monitor_handler.Handle:drop", "ResolveDeviceID empty", map[string]any{"cardID": m.SubjectEntity, "deviceID": m.DeviceID, "deviceUID": m.DeviceUID})
-		}
-		// #endregion
-		return nil
-	}
+	deviceKey := ac.DeviceAddr
 
 	nowMs := time.Now().UnixMilli()
 	age := nowMs - m.Timestamp
@@ -145,24 +134,24 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg interface{}) error {
 	}
 	// #endregion
 	// PR6: AI override 缓存合并 / tid=88 清理（仅 radar 来源；sleepad 不参与 ghost verdict）
-	if h.aiOverrides != nil && m.DeviceUID != "" {
+	if h.aiOverrides != nil && ac.DeviceAddr != "" {
 		if trackID == observation.TrackInvalid {
 			// firmware no-target heartbeat → 该 device 所有 track 都退场，清空 verdicts
-			h.aiOverrides.ClearDevice(m.DeviceUID)
+			h.aiOverrides.ClearDevice(ac.DeviceAddr)
 			// SleepStage 同步清：device 退场即"事件源消失"，stale Awake 必须清掉
 			if h.state != nil && m.SubjectEntity != "" {
 				_ = h.state.ClearBedStateSleepStage(ctx, m.SubjectEntity)
 			}
 		} else {
 			// 有效 track → 合并 AI verdict 到 fields（release 模式才真覆写 track_confidence）
-			h.aiOverrides.Apply(m.DeviceUID, trackID, fields)
+			h.aiOverrides.Apply(ac.DeviceAddr, trackID, fields)
 		}
 	}
 	h.buffer.Write(m.SubjectEntity, deviceKey, strconv.Itoa(trackID), fields, m.Timestamp)
 	// 正向维护 device:status：sensor 数据是"设备活着"的最强证据，刷新 last_seen_ms 并 offline=0。
 	// 与 alarm Offline 的负向标记互为对偶；看门狗 180s fail-safe 兜底 gateway 故障场景。
 	if h.state != nil {
-		if err := h.state.SetDeviceOnline(ctx, deviceKey, m.DeviceUID, m.DeviceType, true); err != nil {
+		if err := h.state.SetDeviceOnline(ctx, deviceKey, ac.DeviceAddr, m.DeviceType, true); err != nil {
 			h.logger.Warn("monitor touch device", zap.String("device_id", deviceKey), zap.Error(err))
 		}
 	}

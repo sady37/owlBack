@@ -33,11 +33,11 @@ func NewBedEventCoordinator() *BedEventCoordinator {
 }
 
 func bedBoundHasSleepad(meta *CardMeta) bool {
-	if meta == nil || meta.BedID == "" {
+	if meta == nil || meta.BedPref == "" {
 		return false
 	}
-	for _, devID := range meta.BedBoundDeviceIDs() {
-		dm := meta.Devices[devID]
+	for _, addr := range meta.BedBoundDeviceAddrs() {
+		dm := meta.Devices[addr]
 		if dm == nil {
 			continue
 		}
@@ -50,14 +50,14 @@ func bedBoundHasSleepad(meta *CardMeta) bool {
 }
 
 func sleepadInBedTrackCount(buf *MonitorBuffer, meta *CardMeta) int {
-	if buf == nil || meta == nil || meta.CardID == "" || meta.BedID == "" {
+	if buf == nil || meta == nil || meta.CardID == "" || meta.BedPref == "" {
 		return 0
 	}
 	snap := buf.SnapshotCard(meta.CardID)
 	if snap == nil {
 		return 0
 	}
-	return SleepadTrackCountFromSnapshot(snap, meta, meta.BedBoundDeviceIDs())
+	return SleepadTrackCountFromSnapshot(snap, meta, meta.BedBoundDeviceAddrs())
 }
 
 // ClearAll clears all pending bed events (used on reset).
@@ -223,8 +223,8 @@ func (c *BedEventCoordinator) processPendingForCard(ctx context.Context, st *Sta
 			wr, _ := st.PublishBedStateFromEvent(ctx, cardID, alarm.LeftBed, p.deviceType, p.eventTs, 0, &z)
 			if wr {
 				_ = st.ReconcileRoomStateFromBedState(ctx, cardID)
-				if al != nil && meta.TenantID != "" {
-					PersistSuspectedFallPoseLyingIfEnabled(ctx, al, cardID, meta.TenantID, buf, meta, "ImmediateLeftBedFall_lying_pending")
+				if al != nil && meta.TenantPref != "" {
+					PersistSuspectedFallPoseLyingIfEnabled(ctx, al, cardID, meta.TenantPref, buf, meta, "ImmediateLeftBedFall_lying_pending")
 				}
 				if radarID := RadarDeviceIDBoundToBed(meta); radarID != "" {
 					StartLeftBedFall(cardID, radarID)
@@ -242,8 +242,8 @@ func (c *BedEventCoordinator) processPendingForCard(ctx context.Context, st *Sta
 		wr, _ := st.PublishBedStateFromEvent(ctx, cardID, alarm.LeftBed, p.deviceType, p.eventTs, 0, nil)
 		if wr {
 			_ = st.ReconcileRoomStateFromBedState(ctx, cardID)
-			if al != nil && meta.TenantID != "" {
-				PersistSuspectedFallPoseLyingIfEnabled(ctx, al, cardID, meta.TenantID, buf, meta, "ImmediateLeftBedFall_lying_pending_timeout")
+			if al != nil && meta.TenantPref != "" {
+				PersistSuspectedFallPoseLyingIfEnabled(ctx, al, cardID, meta.TenantPref, buf, meta, "ImmediateLeftBedFall_lying_pending_timeout")
 			}
 			if radarID := RadarDeviceIDBoundToBed(meta); radarID != "" {
 				StartLeftBedFall(cardID, radarID)

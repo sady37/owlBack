@@ -13,7 +13,7 @@ func metaLookup(meta *CardMeta, deviceID string) *DeviceMeta {
 }
 
 func IsDeviceHealthy(dm *DeviceMeta) bool {
-	if dm == nil || dm.DeviceUID == "" {
+	if dm == nil || !dm.DeviceAddr.IsValid() {
 		return false
 	}
 	for _, k := range []string{"detached", "angle_abnormal", "signal_poor"} {

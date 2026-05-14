@@ -6,6 +6,7 @@ import (
 
 	"owl-common/alarm"
 	"owl-common/redis"
+	"wisefido-cardagg/internal/service"
 )
 
 // Stay 状态机：武装 pending（S）与解除 pending（R），与 BathRoomState.StayFSM* 同步展示。
@@ -75,12 +76,12 @@ func (h *EventHandler) stayPublishPhase(ctx context.Context, m *redis.IoTStreamM
 		phase = stayPhaseArmWindow
 		armAt = ses.EnterAtMs
 	}
-	_ = h.state.PublishBathRoomStayFSM(ctx, m.SubjectEntity, deviceID, m.DeviceUID, phase, armAt, resolveAt)
+	_ = h.state.PublishBathRoomStayFSM(ctx, m.SubjectEntity, deviceID, service.AddrCtxFromMsg(m).DeviceAddr, phase, armAt, resolveAt)
 }
 
 // stayOnEnter S1/S4：新 Enter 清 Stay pending，重置武装窗。
 func (h *EventHandler) stayOnEnter(ctx context.Context, m *redis.IoTStreamMessage, deviceID string) {
-	if m.TenantID == "" || deviceID == "" {
+	if service.AddrCtxFromMsg(m).TenantPref == "" || deviceID == "" {
 		return
 	}
 	now := m.Timestamp
@@ -88,8 +89,8 @@ func (h *EventHandler) stayOnEnter(ctx context.Context, m *redis.IoTStreamMessag
 		now = time.Now().UnixMilli()
 	}
 	h.staySesMu.Lock()
-	ses := h.ensureStaySessionLocked(m.TenantID, deviceID)
-	_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.SubjectEntity, deviceID, alarm.Stay)
+	ses := h.ensureStaySessionLocked(service.AddrCtxFromMsg(m).TenantPref, deviceID)
+	_ = h.alarms.RemovePendingAlarm(ctx, service.AddrCtxFromMsg(m).TenantPref, m.SubjectEntity, deviceID, alarm.Stay)
 	ses.EnterAtMs = now
 	ses.ArmExpireAtMs = now + stayWindowTTLMs
 	ses.ActivityCount = 0
@@ -104,7 +105,7 @@ func (h *EventHandler) stayOnEnter(ctx context.Context, m *redis.IoTStreamMessag
 
 // stayOnExit R1：开 150s 解除窗。
 func (h *EventHandler) stayOnExit(ctx context.Context, m *redis.IoTStreamMessage, deviceID string) {
-	if m.TenantID == "" || deviceID == "" {
+	if service.AddrCtxFromMsg(m).TenantPref == "" || deviceID == "" {
 		return
 	}
 	now := m.Timestamp
@@ -112,7 +113,7 @@ func (h *EventHandler) stayOnExit(ctx context.Context, m *redis.IoTStreamMessage
 		now = time.Now().UnixMilli()
 	}
 	h.staySesMu.Lock()
-	ses := h.ensureStaySessionLocked(m.TenantID, deviceID)
+	ses := h.ensureStaySessionLocked(service.AddrCtxFromMsg(m).TenantPref, deviceID)
 	ses.ExitAtMs = now
 	ses.ResolveExpireAt = now + stayWindowTTLMs
 	ses.EnterAtMs = 0
@@ -126,7 +127,7 @@ func (h *EventHandler) stayOnExit(ctx context.Context, m *redis.IoTStreamMessage
 
 // stayOnNumberPeople 在 PublishBathRoomStateFromEvent 之后调用：用最新 TotalPeople 推进武装/解除。
 func (h *EventHandler) stayOnNumberPeople(ctx context.Context, m *redis.IoTStreamMessage, deviceID string, totalPeople int) {
-	if m.TenantID == "" || deviceID == "" || h.state == nil {
+	if service.AddrCtxFromMsg(m).TenantPref == "" || deviceID == "" || h.state == nil {
 		return
 	}
 	now := time.Now().UnixMilli()
@@ -135,19 +136,19 @@ func (h *EventHandler) stayOnNumberPeople(ctx context.Context, m *redis.IoTStrea
 		ts = now
 	}
 	h.staySesMu.Lock()
-	ses := h.ensureStaySessionLocked(m.TenantID, deviceID)
+	ses := h.ensureStaySessionLocked(service.AddrCtxFromMsg(m).TenantPref, deviceID)
 
 	if ses.inArmWindow(now) && ts >= ses.EnterAtMs && totalPeople > 0 {
 		ses.NumberPositive = true
 	}
 
 	if totalPeople >= 2 {
-		_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.SubjectEntity, deviceID, alarm.Stay)
+		_ = h.alarms.RemovePendingAlarm(ctx, service.AddrCtxFromMsg(m).TenantPref, m.SubjectEntity, deviceID, alarm.Stay)
 		ses.ArmedPending = false
 	}
 
 	if ses.inResolveWindow(now) && totalPeople == 0 {
-		_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.SubjectEntity, deviceID, alarm.Stay)
+		_ = h.alarms.RemovePendingAlarm(ctx, service.AddrCtxFromMsg(m).TenantPref, m.SubjectEntity, deviceID, alarm.Stay)
 		ses.ArmedPending = false
 		ses.ExitAtMs = 0
 		ses.ResolveExpireAt = 0
@@ -160,16 +161,16 @@ func (h *EventHandler) stayOnNumberPeople(ctx context.Context, m *redis.IoTStrea
 
 // stayOnActivity：武装窗内累计 activity，满足 S2+S3 且 TotalPeople==1 则 AddStayPending。
 func (h *EventHandler) stayOnActivity(ctx context.Context, m *redis.IoTStreamMessage, deviceID string) {
-	if m.TenantID == "" || deviceID == "" || h.state == nil {
+	if service.AddrCtxFromMsg(m).TenantPref == "" || deviceID == "" || h.state == nil {
 		return
 	}
-	_, stayOn := h.enablement.IsEnabled(ctx, m.TenantID, deviceID, alarm.Stay)
+	_, stayOn := h.enablement.IsEnabled(ctx, service.AddrCtxFromMsg(m).TenantPref, deviceID, alarm.Stay)
 	if !stayOn {
 		return
 	}
 	now := time.Now().UnixMilli()
 	h.staySesMu.Lock()
-	ses := h.ensureStaySessionLocked(m.TenantID, deviceID)
+	ses := h.ensureStaySessionLocked(service.AddrCtxFromMsg(m).TenantPref, deviceID)
 	if !ses.inArmWindow(now) {
 		h.staySesMu.Unlock()
 		return
@@ -194,6 +195,6 @@ func (h *EventHandler) tryArmStayPendingLocked(ctx context.Context, m *redis.IoT
 	if curr.BathRoomState.TotalPeople != 1 {
 		return
 	}
-	_ = h.alarms.AddStayPendingIfEnabled(ctx, m.TenantID, deviceID, ses.EnterAtMs)
+	_ = h.alarms.AddStayPendingIfEnabled(ctx, service.AddrCtxFromMsg(m).TenantPref, deviceID, ses.EnterAtMs)
 	ses.ArmedPending = true
 }

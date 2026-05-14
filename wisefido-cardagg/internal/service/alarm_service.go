@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -234,36 +235,37 @@ func (s *AlarmService) PersistAlarmAndPublish(ctx context.Context, msg *redis.Io
 	if eventName == "" || level == "" {
 		return nil
 	}
+	ac := AddrCtxFromMsg(msg)
 	triggerData, _ := json.Marshal(redis.FirstDataValue(msg.DataValue))
 	fhirCategory := alarm.GetFHIRCategory(eventName)
 	triggeredAt := time.UnixMilli(msg.Timestamp)
 	result, cardAlarmState, err := card.InsertAlarmAndUpdateCard(ctx, s.db, msg.SubjectEntity, card.AlarmInsertParams{
-		TenantID:    msg.TenantID,
-		DeviceID:    msg.DeviceID,
+		TenantID:    ac.TenantPref,
+		DeviceID:    ac.DeviceAddr,
 		EventType:   eventName,
 		Category:    fhirCategory,
 		AlarmLevel:  level,
 		TriggeredAt: triggeredAt,
 		TriggerData: triggerData,
-		RoomID:      msg.SemanticLocation, // envelope where 维度；空则 InsertAlarmAndUpdateCard 内部从 device.bound_room_id 兜底
+		RoomID:      ac.RoomPref, // envelope where 维度（v2 = /88 CIDR）；空则 InsertAlarmAndUpdateCard 内部从 device.bound_room_id 兜底
 	})
 	if err != nil {
 		s.logger.Warn("insert alarm failed", zap.String("cid", msg.SubjectEntity), zap.Error(err))
 		return err
 	}
 	if result.Deduped {
-		s.logger.Debug("alarm onset deduped (active exists)", zap.String("cid", msg.SubjectEntity), zap.String("device_id", msg.DeviceID), zap.String("type", eventName), zap.String("active_event_id", result.EventID))
+		s.logger.Debug("alarm onset deduped (active exists)", zap.String("cid", msg.SubjectEntity), zap.String("device_addr", ac.DeviceAddr), zap.String("type", eventName), zap.String("active_event_id", result.EventID))
 		return nil
 	}
 	if result.SkippedNotify {
-		s.logger.Info("device-class alarm audited (skip pop/notify)", zap.String("cid", msg.SubjectEntity), zap.String("device_id", msg.DeviceID), zap.String("event_id", result.EventID), zap.String("type", eventName))
+		s.logger.Info("device-class alarm audited (skip pop/notify)", zap.String("cid", msg.SubjectEntity), zap.String("device_addr", ac.DeviceAddr), zap.String("event_id", result.EventID), zap.String("type", eventName))
 		return nil
 	}
 	s.logger.Info("alarm inserted", zap.String("cid", msg.SubjectEntity), zap.String("event_id", result.EventID), zap.String("level", level), zap.String("type", eventName))
 	if err := s.writeAlarmState(ctx, msg.SubjectEntity, cardAlarmState); err != nil {
 		return err
 	}
-	s.notifyAlarmPushAsync(msg.TenantID, msg.SubjectEntity, msg.DeviceID, result.EventID, eventName, level)
+	s.notifyAlarmPushAsync(ac.TenantPref, msg.SubjectEntity, ac.DeviceAddr, result.EventID, eventName, level)
 	return nil
 }
 
@@ -591,11 +593,12 @@ func (s *AlarmService) TryAddLeftBedPendingAtTrigger(ctx context.Context, msg *r
 	if def == nil {
 		return false
 	}
-	_, level, durationSec, _, _, enabled := s.ResolveEnablementByDevice(ctx, msg.TenantID, msg.DeviceID, eventName)
+	ac := AddrCtxFromMsg(msg)
+	_, level, durationSec, _, _, enabled := s.ResolveEnablementByDevice(ctx, ac.TenantPref, ac.DeviceAddr, eventName)
 	if !enabled || level == "" || durationSec < 10*60 || def.ProcessType != alarm.ProcessTypeTimeBased {
 		return false
 	}
-	params := s.getResetTimeParamsForTenant(ctx, msg.TenantID)
+	params := s.getResetTimeParamsForTenant(ctx, ac.TenantPref)
 	tz := s.getEffectiveTimezoneForCard(ctx, msg.SubjectEntity)
 	if !isWithinResetTimeWindow(time.Now(), params, tz) {
 		s.logger.Debug("LeftBed pending skip: outside ResetTimeParams", zap.String("cid", msg.SubjectEntity))
@@ -625,7 +628,7 @@ func (s *AlarmService) TryAddLeftBedPendingAtTrigger(ctx context.Context, msg *r
 	if def.UpgradeTo != "" {
 		upgradeTo = def.UpgradeTo
 	}
-	if err := s.AddPendingAlarm(ctx, msg.TenantID, msg.DeviceID, eventName, level, msg.Timestamp, durationSec, upgradeTo, triggerData); err != nil {
+	if err := s.AddPendingAlarm(ctx, ac.TenantPref, ac.DeviceAddr, eventName, level, msg.Timestamp, durationSec, upgradeTo, triggerData); err != nil {
 		s.logger.Warn("add LeftBed pending at trigger", zap.String("cid", msg.SubjectEntity), zap.Error(err))
 		return false
 	}
@@ -825,7 +828,13 @@ func (s *AlarmService) ScanPendingAlarms(ctx context.Context) error {
 			_ = s.redisPending.HDel(ctx, redisPendingAlarmKey, field)
 			continue
 		}
-		resolvedCardID, lookupErr := card.LookupCardIDByDeviceID(ctx, s.db, p.DeviceID)
+		var resolvedCardID string
+		var lookupErr error
+		if devAddr, perr := netip.ParseAddr(p.DeviceID); perr == nil {
+			resolvedCardID, lookupErr = card.LookupCardByDeviceAddr(ctx, s.db, devAddr)
+		} else {
+			lookupErr = perr
+		}
 		if lookupErr != nil {
 			s.logger.Warn("pending alarm fired: lookup card_id for stream",
 				zap.String("device_id", p.DeviceID),
@@ -999,7 +1008,8 @@ func (s *AlarmService) HandleRecoveryWithTypes(ctx context.Context, msg *redis.I
 		return nil
 	}
 
-	cardAlarmState, result, err := card.AutoResolveDeviceAlarms(ctx, s.db, msg.SubjectEntity, msg.TenantID, msg.DeviceID, alarmTypes)
+	ac := AddrCtxFromMsg(msg)
+	cardAlarmState, result, err := card.AutoResolveDeviceAlarms(ctx, s.db, msg.SubjectEntity, ac.TenantPref, ac.DeviceAddr, alarmTypes)
 	if err != nil {
 		s.logger.Warn("auto resolve failed", zap.String("cid", msg.SubjectEntity), zap.Error(err))
 		return err

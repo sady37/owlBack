@@ -14,11 +14,14 @@ func ComputeAffinity(a, b *DeviceMeta) int {
 	}
 
 	spatial := 0
-	if a.BoundBedID != "" && b.BoundBedID != "" && a.BoundBedID == b.BoundBedID {
+	aBed, bBed := a.BedPref(), b.BedPref()
+	aRoom, bRoom := a.RoomPref(), b.RoomPref()
+	aUnit, bUnit := a.UnitPref(), b.UnitPref()
+	if aBed != "" && bBed != "" && aBed == bBed {
 		spatial = SpatialSameBed
-	} else if a.BoundRoomID != "" && b.BoundRoomID != "" && a.BoundRoomID == b.BoundRoomID {
+	} else if aRoom != "" && bRoom != "" && aRoom == bRoom {
 		spatial = SpatialSameRoom
-	} else if a.UnitID != "" && b.UnitID != "" && a.UnitID == b.UnitID {
+	} else if aUnit != "" && bUnit != "" && aUnit == bUnit {
 		spatial = SpatialSameUnit
 	}
 

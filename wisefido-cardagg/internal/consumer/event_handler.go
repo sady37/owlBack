@@ -54,12 +54,12 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		h.logger.Warn("parse event", zap.Error(err))
 		return nil
 	}
+	ac := service.AddrCtxFromMsg(m)
 
-	if m.DeviceUID == "" {
-		h.logger.Warn("event dropped (empty did)",
-			zap.String("device_uid", streamFieldStr(raw, "device_uid")),
+	if !m.DeviceAddr.IsValid() {
+		h.logger.Warn("event dropped (empty device_addr)",
+			zap.String("device_addr", streamFieldStr(raw, "device_addr")),
 			zap.String("card_id", streamFieldStr(raw, "card_id")),
-			zap.String("tenant_id", streamFieldStr(raw, "tenant_id")),
 		)
 		return nil
 	}
@@ -73,7 +73,7 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		)...)
 		return nil
 	}
-	resolved := h.metaCache.ResolveDeviceID(ctx, m.SubjectEntity, m.DeviceID, m.DeviceUID)
+	resolved := h.metaCache.ResolveDeviceID(ctx, m.SubjectEntity, ac.DeviceAddr, ac.DeviceAddr)
 	if resolved == "" {
 		h.logger.Info("stream.consume", append(streamLogFields("event", m, ""),
 			zap.String("status", "drop"),
@@ -81,13 +81,13 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		)...)
 		return nil
 	}
-	m.DeviceID = resolved
+	ac.DeviceAddr = resolved
 
 	// 正向维护 device:status：device 直发的 event 同样是"设备活着"的证据。
 	// 与 monitor 流共享语义；alarm 流由 alarm_handler 按事件类型决定正/负向。
 	if h.state != nil {
-		if err := h.state.SetDeviceOnline(ctx, m.DeviceID, m.DeviceUID, m.DeviceType, true); err != nil {
-			h.logger.Warn("event touch device", zap.String("device_id", m.DeviceID), zap.Error(err))
+		if err := h.state.SetDeviceOnline(ctx, ac.DeviceAddr, ac.DeviceAddr, m.DeviceType, true); err != nil {
+			h.logger.Warn("event touch device", zap.String("device_id", ac.DeviceAddr), zap.Error(err))
 		}
 	}
 
@@ -107,8 +107,8 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	h.logger.Debug("stream.payload",
 		zap.String("stream", "event"),
 		zap.String("card_id", m.SubjectEntity),
-		zap.String("device_id", m.DeviceID),
-		zap.String("device_uid", m.DeviceUID),
+		zap.String("device_id", ac.DeviceAddr),
+		zap.String("device_uid", ac.DeviceAddr),
 		zap.String("event", evName),
 		zap.Int64("timestamp", m.Timestamp),
 		zap.ByteString("data", dataJSON))
@@ -119,15 +119,13 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		payload := &redis.IoTStreamMessage{
 			Producer:      m.Producer,
 			SubjectEntity: m.SubjectEntity,
-			DeviceUID:     m.DeviceUID,
+			DeviceAddr:    m.DeviceAddr,
 			DeviceType:    m.DeviceType,
-			TenantID:      m.TenantID,
 			Timestamp:     m.Timestamp,
 			TopicType:     m.TopicType,
 			Category:      m.Category,
 			DataValue:     []interface{}{data},
 		}
-		payload.DeviceID = m.DeviceID
 		alarmPayload = payload
 
 	}
@@ -145,15 +143,15 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	case alarm.EnterRoom:
 		h.logger.Info("room.event.recv",
 			zap.String("cid", m.SubjectEntity),
-			zap.String("device_id", m.DeviceID),
-			zap.String("device_uid", m.DeviceUID),
+			zap.String("device_id", ac.DeviceAddr),
+			zap.String("device_uid", ac.DeviceAddr),
 			zap.String("type", evName),
 			zap.Int("number_people", intFromAny(data[observation.FieldNumberPeople])),
 			zap.Int("track_id", intFromAny(data["track_id"])),
 		)
 		// PR6: 新人进 → 该 device 旧 verdict 全部作废（track_id 可能复用）
-		if h.aiOverrides != nil && m.DeviceUID != "" {
-			h.aiOverrides.ClearDevice(m.DeviceUID)
+		if h.aiOverrides != nil && ac.DeviceAddr != "" {
+			h.aiOverrides.ClearDevice(ac.DeviceAddr)
 		}
 		// SleepStage 是事件式状态：换人入房等价于上一会话结束 → 清掉
 		if h.state != nil && m.SubjectEntity != "" {
@@ -163,15 +161,15 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	case alarm.ExitRoom:
 		h.logger.Info("room.event.recv",
 			zap.String("cid", m.SubjectEntity),
-			zap.String("device_id", m.DeviceID),
-			zap.String("device_uid", m.DeviceUID),
+			zap.String("device_id", ac.DeviceAddr),
+			zap.String("device_uid", ac.DeviceAddr),
 			zap.String("type", evName),
 			zap.Int("number_people", intFromAny(data[observation.FieldNumberPeople])),
 			zap.Int("track_id", intFromAny(data["track_id"])),
 		)
 		// PR6: 房间空了 → 清空该 device 所有 verdicts
-		if h.aiOverrides != nil && m.DeviceUID != "" {
-			h.aiOverrides.ClearDevice(m.DeviceUID)
+		if h.aiOverrides != nil && ac.DeviceAddr != "" {
+			h.aiOverrides.ClearDevice(ac.DeviceAddr)
 		}
 		// 房间空了 → SleepStage 必清（无人何来 sleep state）
 		if h.state != nil && m.SubjectEntity != "" {
@@ -185,12 +183,12 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		// PR6: wisefido-sensor 派生的 track 事后裁决（目前主要是 ghost 判定，confidence=20）
 		// 收入 aiOverrides cache，后续 monitor 流合并 track 字段时套用。
 		// 不参与 alarm 路径——仅影响 UI 渲染（"宁可误报不可漏报"原则）。
-		if h.aiOverrides != nil && m.DeviceUID != "" {
+		if h.aiOverrides != nil && ac.DeviceAddr != "" {
 			tid := intFromAny(data["track_id"])
 			conf := intFromAny(data["track_confidence"])
 			source, _ := data["source"].(string)
 			reason, _ := data["reason"].(string)
-			h.aiOverrides.Set(m.DeviceUID, tid, service.AIVerdict{
+			h.aiOverrides.Set(ac.DeviceAddr, tid, service.AIVerdict{
 				Confidence: conf,
 				Source:     source,
 				Reason:     reason,
@@ -201,29 +199,29 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	case alarm.InBed:
 		h.logger.Info("bed.event.recv",
 			zap.String("cid", m.SubjectEntity),
-			zap.String("device_id", m.DeviceID),
-			zap.String("device_uid", m.DeviceUID),
+			zap.String("device_id", ac.DeviceAddr),
+			zap.String("device_uid", ac.DeviceAddr),
 			zap.String("device_type", m.DeviceType),
 			zap.String("type", evName),
 		)
 		// 记录 InBed 时间，供 LeftBed 计算在床时长（不依赖 BedState.StartTime，它会被 derive 覆盖）
 		h.inBedSinceMu.Lock()
-		h.inBedSince[m.DeviceID] = m.Timestamp
+		h.inBedSince[ac.DeviceAddr] = m.Timestamp
 		h.inBedSinceMu.Unlock()
 		if h.state != nil {
 			deviceType := ""
-			if dm := h.metaCache.GetDeviceMeta(ctx, m.SubjectEntity, m.DeviceID); dm != nil {
+			if dm := h.metaCache.GetDeviceMeta(ctx, m.SubjectEntity, ac.DeviceAddr); dm != nil {
 				deviceType = dm.DeviceType
-			} else if m.DeviceUID != "" {
-				if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.SubjectEntity, m.DeviceUID); dm != nil {
+			} else if ac.DeviceAddr != "" {
+				if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.SubjectEntity, ac.DeviceAddr); dm != nil {
 					deviceType = dm.DeviceType
 				}
 			}
 			skip := false
 			if h.bedCoord != nil {
-				skip, _ = h.bedCoord.InBed(ctx, h.state, h.alarms, h.metaCache, h.buffer, m.SubjectEntity, m.TenantID, m.DeviceID, m.DeviceUID, deviceType, m.Timestamp, func(wr bool) {
+				skip, _ = h.bedCoord.InBed(ctx, h.state, h.alarms, h.metaCache, h.buffer, m.SubjectEntity, ac.TenantPref, ac.DeviceAddr, ac.DeviceAddr, deviceType, m.Timestamp, func(wr bool) {
 					if wr && alarmPayload != nil {
-						_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.SubjectEntity, alarmPayload.DeviceID, alarm.LeftBed)
+						_ = h.alarms.RemovePendingAlarm(ctx, ac.TenantPref, m.SubjectEntity, ac.DeviceAddr, alarm.LeftBed)
 					}
 				})
 			}
@@ -231,7 +229,7 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 				trackOverride := sleepadTrackOverrideForInBed(ctx, h.metaCache, h.buffer, m.SubjectEntity)
 				written, _ := h.state.PublishBedStateFromEvent(ctx, m.SubjectEntity, alarm.InBed, deviceType, m.Timestamp, 0, trackOverride)
 				if written && alarmPayload != nil {
-					_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.SubjectEntity, alarmPayload.DeviceID, alarm.LeftBed)
+					_ = h.alarms.RemovePendingAlarm(ctx, ac.TenantPref, m.SubjectEntity, ac.DeviceAddr, alarm.LeftBed)
 				}
 				_ = h.state.ReconcileRoomStateFromBedState(ctx, m.SubjectEntity)
 			}
@@ -239,14 +237,14 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	case alarm.LeftBed:
 		h.logger.Info("bed.event.recv",
 			zap.String("cid", m.SubjectEntity),
-			zap.String("device_id", m.DeviceID),
-			zap.String("device_uid", m.DeviceUID),
+			zap.String("device_id", ac.DeviceAddr),
+			zap.String("device_uid", ac.DeviceAddr),
 			zap.String("device_type", m.DeviceType),
 			zap.String("type", evName),
 		)
 		payload := alarmPayload
 		if payload == nil {
-			payload = &redis.IoTStreamMessage{Producer: m.Producer, SubjectEntity: m.SubjectEntity, TenantID: m.TenantID, DeviceID: m.DeviceID, DeviceUID: m.DeviceUID, DataValue: []interface{}{data}, Timestamp: m.Timestamp}
+			payload = &redis.IoTStreamMessage{Producer: m.Producer, SubjectEntity: m.SubjectEntity, DeviceAddr: m.DeviceAddr, DataValue: []interface{}{data}, Timestamp: m.Timestamp}
 		}
 		dtLower := strings.ToLower(m.DeviceType)
 		isSleepad := strings.Contains(dtLower, "sleepad") || strings.Contains(dtLower, "sleeppad")
@@ -255,17 +253,17 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		// Sleepace 设备：跳过 pending，仅维护下方 BedState（PublishBedStateFromEvent + ReconcileRoom）。
 		// Radar 设备：保留 pending（无厂家原生 LeftBed 报警，pending 是唯一来源）。
 		if !isSleepad {
-			_, level, durationSec, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, m.TenantID, payload.DeviceID, alarm.LeftBed)
-			inRestWindow := h.alarms.InRestTimeWindow(ctx, m.TenantID, m.SubjectEntity)
+			_, level, durationSec, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, ac.TenantPref, ac.DeviceAddr, alarm.LeftBed)
+			inRestWindow := h.alarms.InRestTimeWindow(ctx, ac.TenantPref, m.SubjectEntity)
 			// 从 inBedSince 取上床时间（不依赖 BedState.StartTime，它会被 derive 覆盖）
 			h.inBedSinceMu.Lock()
-			inBedTs := h.inBedSince[m.DeviceID]
-			delete(h.inBedSince, m.DeviceID) // 用完清除
+			inBedTs := h.inBedSince[ac.DeviceAddr]
+			delete(h.inBedSince, ac.DeviceAddr) // 用完清除
 			h.inBedSinceMu.Unlock()
 			inBedMs := m.Timestamp - inBedTs
 			stableInBed := inBedTs > 0 && inBedMs >= leftBedMinInBedMs
 			h.logger.Info("LeftBed.pending.check",
-				zap.String("device_uid", m.DeviceUID),
+				zap.String("device_uid", ac.DeviceAddr),
 				zap.Bool("enabled", enabled),
 				zap.Bool("inRestWindow", inRestWindow),
 				zap.Bool("stableInBed", stableInBed),
@@ -277,31 +275,31 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 					_ = h.alarms.PersistAlarmAndPublish(ctx, payload, alarm.LeftBed, level)
 				} else {
 					triggerData, _ := json.Marshal(redis.FirstDataValue(payload.DataValue))
-					_ = h.alarms.AddPendingAlarm(ctx, m.TenantID, payload.DeviceID, alarm.LeftBed, level, m.Timestamp, durationSec, "", triggerData)
+					_ = h.alarms.AddPendingAlarm(ctx, ac.TenantPref, ac.DeviceAddr, alarm.LeftBed, level, m.Timestamp, durationSec, "", triggerData)
 				}
 			}
 		} else {
 			// 同时清掉 inBedSince 缓存，避免下次 LeftBed 算出陈旧 inBedMs
 			h.inBedSinceMu.Lock()
-			delete(h.inBedSince, m.DeviceID)
+			delete(h.inBedSince, ac.DeviceAddr)
 			h.inBedSinceMu.Unlock()
 			h.logger.Info("LeftBed.pending.skip.sleepad",
-				zap.String("device_uid", m.DeviceUID),
+				zap.String("device_uid", ac.DeviceAddr),
 				zap.String("reason", "sleepace_native_alarm_151_authoritative"),
 			)
 		}
 		if h.state != nil {
 			deviceType := ""
-			if dm := h.metaCache.GetDeviceMeta(ctx, m.SubjectEntity, m.DeviceID); dm != nil {
+			if dm := h.metaCache.GetDeviceMeta(ctx, m.SubjectEntity, ac.DeviceAddr); dm != nil {
 				deviceType = dm.DeviceType
-			} else if m.DeviceUID != "" {
-				if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.SubjectEntity, m.DeviceUID); dm != nil {
+			} else if ac.DeviceAddr != "" {
+				if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.SubjectEntity, ac.DeviceAddr); dm != nil {
 					deviceType = dm.DeviceType
 				}
 			}
 			skip, written := false, false
 			if h.bedCoord != nil {
-				skip, written = h.bedCoord.LeftBed(ctx, h.state, h.metaCache, h.buffer, m.SubjectEntity, m.TenantID, m.DeviceID, m.DeviceUID, deviceType, m.Timestamp, func() {
+				skip, written = h.bedCoord.LeftBed(ctx, h.state, h.metaCache, h.buffer, m.SubjectEntity, ac.TenantPref, ac.DeviceAddr, ac.DeviceAddr, deviceType, m.Timestamp, func() {
 					meta := h.metaCache.GetOrLoad(ctx, m.SubjectEntity)
 					if meta == nil {
 						return
@@ -338,7 +336,7 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 		h.routeActivityEvent(ctx, m, data)
 
 	case alarm.PressureSensor:
-		h.logger.Debug("pressureSensor event", zap.String("device_uid", m.DeviceUID), zap.String("category", evName))
+		h.logger.Debug("pressureSensor event", zap.String("device_uid", ac.DeviceAddr), zap.String("category", evName))
 
 	// SignalPoor / AngleException / *Recover 已统一切到 iot:alarm:stream（设备类自动恢复原则）。
 	// event 流如收到这四类（兼容旧 publisher 或队列残留）一律静默丢弃。
@@ -354,7 +352,8 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 
 // routeRoomStateEvent EnterRoom/ExitRoom/NumberPeople → 卫生间设备写 BathRoomState，非卫生间（房间）雷达写 RoomState。HasMulti/HasRisk 规则一致；ReconcileRoomStateFromBedState 仅抬升 RoomState，不抬升 BathRoomState。
 func (h *EventHandler) routeRoomStateEvent(ctx context.Context, m *redis.IoTStreamMessage, data map[string]interface{}, evName string) {
-	if m.DeviceUID == "" || h.state == nil {
+	ac := service.AddrCtxFromMsg(m)
+	if ac.DeviceAddr == "" || h.state == nil {
 		return
 	}
 	var kind service.RoomStateEventKind
@@ -371,14 +370,14 @@ func (h *EventHandler) routeRoomStateEvent(ctx context.Context, m *redis.IoTStre
 		return
 	}
 	meta := h.metaCache.GetOrLoad(ctx, m.SubjectEntity)
-	deviceID := m.DeviceID
-	if service.IsBathroomDevice(ctx, meta, deviceID, m.TenantID, h.enablement) {
+	deviceID := ac.DeviceAddr
+	if service.IsBathroomDevice(ctx, meta, deviceID, ac.TenantPref, h.enablement) {
 		var dm *service.DeviceMeta
 		if meta != nil {
 			dm = meta.Devices[deviceID]
 		}
 		rid, rname := service.BathroomRoomFieldsFromDevice(dm)
-		_ = h.state.PublishBathRoomStateFromEvent(ctx, m.SubjectEntity, deviceID, m.DeviceUID, kind, totalPeople, m.Timestamp, rid, rname)
+		_ = h.state.PublishBathRoomStateFromEvent(ctx, m.SubjectEntity, deviceID, ac.DeviceAddr, kind, totalPeople, m.Timestamp, rid, rname)
 		switch kind {
 		case service.RoomStateEventEnter:
 			h.stayOnEnter(ctx, m, deviceID)
@@ -391,13 +390,14 @@ func (h *EventHandler) routeRoomStateEvent(ctx context.Context, m *redis.IoTStre
 			h.stayOnNumberPeople(ctx, m, deviceID, totalPeople)
 		}
 	} else {
-		_ = h.state.PublishRoomStateFromEvent(ctx, m.SubjectEntity, m.DeviceUID, kind, totalPeople, m.Timestamp)
+		_ = h.state.PublishRoomStateFromEvent(ctx, m.SubjectEntity, ac.DeviceAddr, kind, totalPeople, m.Timestamp)
 	}
 }
 
 // routeSleepStageEvent Sleepad(sleep_stage)/Radar(Sleep) 睡眠状态事件统一入口。防静电：当前 BedState.CurrentState=out_of_bed 则 drop；若床绑 Radar+Sleepad 且该 bed 雷达未检测到人（无 track）则 drop 并打告警日志。通过后按 SleepStageSource 置信度更新 BedState.SleepStage。
 func (h *EventHandler) routeSleepStageEvent(ctx context.Context, m *redis.IoTStreamMessage, data map[string]interface{}) {
-	if m.DeviceUID == "" || h.state == nil {
+	ac := service.AddrCtxFromMsg(m)
+	if ac.DeviceAddr == "" || h.state == nil {
 		return
 	}
 	// 1. 当前卡 BedState 为 out_of_bed → drop（以聚合层状态为准，payload 的 BedStatus 有延时且 Radar 无此字段）
@@ -405,9 +405,9 @@ func (h *EventHandler) routeSleepStageEvent(ctx context.Context, m *redis.IoTStr
 	if err == nil && curr != nil && curr.BedState != nil && curr.BedState.BedStatus == 1 {
 		return
 	}
-	dm := h.metaCache.GetDeviceMeta(ctx, m.SubjectEntity, m.DeviceID)
-	if dm == nil && m.DeviceUID != "" {
-		dm = h.metaCache.GetDeviceMetaByUID(ctx, m.SubjectEntity, m.DeviceUID)
+	dm := h.metaCache.GetDeviceMeta(ctx, m.SubjectEntity, ac.DeviceAddr)
+	if dm == nil && ac.DeviceAddr != "" {
+		dm = h.metaCache.GetDeviceMetaByUID(ctx, m.SubjectEntity, ac.DeviceAddr)
 	}
 	bedID := ""
 	if dm != nil {
@@ -431,7 +431,7 @@ func (h *EventHandler) routeSleepStageEvent(ctx context.Context, m *redis.IoTStr
 			reason := "out-of-bed, but report Sleepstage, maybe device_failure or electromagnetic interference"
 			h.logger.Warn(reason,
 				zap.String("card_id", m.SubjectEntity),
-				zap.String("device_uid", m.DeviceUID),
+				zap.String("device_uid", ac.DeviceAddr),
 				zap.String("bed_id", bedID),
 				zap.Any("card_state", curr),
 				zap.Any("monitor_buffer", monitorSnap),
@@ -441,7 +441,7 @@ func (h *EventHandler) routeSleepStageEvent(ctx context.Context, m *redis.IoTStr
 				"card_state":     curr,
 				"monitor_buffer": monitorSnap,
 			})
-			_ = h.alarms.RecordDeviceFailure(ctx, m.SubjectEntity, m.TenantID, m.DeviceID, reason, triggerData)
+			_ = h.alarms.RecordDeviceFailure(ctx, m.SubjectEntity, ac.TenantPref, ac.DeviceAddr, reason, triggerData)
 			return
 		}
 	}
@@ -475,7 +475,8 @@ func (h *EventHandler) routeSleepStageEvent(ctx context.Context, m *redis.IoTStr
 */
 // routeActivityEvent Activity 事件：根据设备绑定地址（Bed/Bathroom/Room）更新 RoomState/BathRoomState 和 Target；卫生间且开启 Stay 时由 stay_fsm 在 Enter 后 150s 武装窗内累计 activity，与 number 条件一起 AddStayPending。
 func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStreamMessage, data map[string]interface{}) {
-	if m.DeviceUID == "" || h.state == nil {
+	ac := service.AddrCtxFromMsg(m)
+	if ac.DeviceAddr == "" || h.state == nil {
 		return
 	}
 	walkDuration := intFromAny(data[observation.FieldWalkDuration])
@@ -484,8 +485,8 @@ func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStrea
 	multiPersonDuration := intFromAny(data[observation.FieldMultiPersonDuration])
 
 	meta := h.metaCache.GetOrLoad(ctx, m.SubjectEntity)
-	deviceID := m.DeviceID
-	isBathroom := service.IsBathroomDevice(ctx, meta, deviceID, m.TenantID, h.enablement)
+	deviceID := ac.DeviceAddr
+	isBathroom := service.IsBathroomDevice(ctx, meta, deviceID, ac.TenantPref, h.enablement)
 	var dm *service.DeviceMeta
 	if meta != nil {
 		dm = meta.Devices[deviceID]
@@ -493,7 +494,7 @@ func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStrea
 	rid, rname := service.BathroomRoomFieldsFromDevice(dm)
 
 	// 行走/站立/多人阈值见 service/weights.go（WalkDistanceMetersThreshold、WalkSecThresholdOR）
-	_, _, _ = h.state.UpdateStateFromActivity(ctx, m.SubjectEntity, deviceID, m.DeviceUID, isBathroom, walkDuration, walkDistance, standDuration, multiPersonDuration, m.Timestamp, rid, rname)
+	_, _, _ = h.state.UpdateStateFromActivity(ctx, m.SubjectEntity, deviceID, ac.DeviceAddr, isBathroom, walkDuration, walkDistance, standDuration, multiPersonDuration, m.Timestamp, rid, rname)
 
 	if service.NeedBedFallCheck(m.SubjectEntity) {
 		trackCount := intFromAny(data[observation.FieldTrackCount])

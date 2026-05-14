@@ -45,6 +45,7 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		h.logger.Warn("parse alarm", zap.Error(err))
 		return nil
 	}
+	ac := service.AddrCtxFromMsg(m)
 	data := redis.FirstDataValue(m.DataValue)
 	if data == nil {
 		data = make(map[string]interface{})
@@ -70,7 +71,7 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		)...)
 		return nil
 	}
-	resolved := h.metaCache.ResolveDeviceID(ctx, m.SubjectEntity, m.DeviceID, m.DeviceUID)
+	resolved := h.metaCache.ResolveDeviceID(ctx, m.SubjectEntity, ac.DeviceAddr, ac.DeviceAddr)
 	if resolved == "" {
 		h.logger.Info("stream.consume", append(streamLogFields("alarm", m, eventName),
 			zap.String("status", "drop"),
@@ -78,7 +79,7 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		)...)
 		return nil
 	}
-	m.DeviceID = resolved
+	ac.DeviceAddr = resolved
 	dt := strings.ToLower(m.DeviceType)
 	isSleepad := strings.Contains(dt, "sleepad") || strings.Contains(dt, "sleeppad")
 	isRadar := strings.Contains(dt, "radar")
@@ -93,16 +94,14 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 	payload := &redis.IoTStreamMessage{
 		Producer:      m.Producer,
 		SubjectEntity: m.SubjectEntity,
-		DeviceUID:     m.DeviceUID,
+		DeviceAddr:    m.DeviceAddr,
 		DeviceType:    m.DeviceType,
-		TenantID:      m.TenantID,
 		Timestamp:     m.Timestamp,
 		TopicType:     m.TopicType,
 		Category:      m.Category,
 		DataValue:     []interface{}{data},
 	}
-	payload.DeviceID = m.DeviceID
-	_, level, _, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, m.TenantID, payload.DeviceID, eventName)
+	_, level, _, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, ac.TenantPref, ac.DeviceAddr, eventName)
 
 	// 集中处理 event_status=end（持续事件解除）：协议层 end 永远不该被当作新报警插入 alarm_events。
 	// 仅对 Registry 中 EndPolicy 显式标注的类型拦截，避免误拦截 *Recover 类型自身的 end 语义
@@ -114,14 +113,14 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			case alarm.EndPolicyAutoResolve:
 				h.logger.Info("alarm.end.auto_resolve",
 					zap.String("cid", m.SubjectEntity),
-					zap.String("device_id", m.DeviceID),
+					zap.String("device_id", ac.DeviceAddr),
 					zap.String("type", eventName),
 				)
 				return h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{eventName})
 			case alarm.EndPolicyManualAck:
 				h.logger.Info("alarm.end.manual_ack_required",
 					zap.String("cid", m.SubjectEntity),
-					zap.String("device_id", m.DeviceID),
+					zap.String("device_id", ac.DeviceAddr),
 					zap.String("type", eventName),
 					zap.String("reason", "high_risk_requires_manual_ack"),
 				)
@@ -138,8 +137,8 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		// gateway 已把 pose / track_id 等业务字段拍平到 data 顶层（Plan B），消费方直接读。
 		h.logger.Info("fall.event.recv",
 			zap.String("cid", m.SubjectEntity),
-			zap.String("device_id", m.DeviceID),
-			zap.String("device_uid", m.DeviceUID),
+			zap.String("device_id", ac.DeviceAddr),
+			zap.String("device_uid", ac.DeviceAddr),
 			zap.String("type", eventName),
 			zap.Int("track_id", intFromAny(data["track_id"])),
 			zap.Int("pose", intFromAny(data["pose"])),
@@ -157,8 +156,8 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 	case alarm.InBed:
 		h.logger.Info("bed.alarm.recv",
 			zap.String("cid", m.SubjectEntity),
-			zap.String("device_id", m.DeviceID),
-			zap.String("device_uid", m.DeviceUID),
+			zap.String("device_id", ac.DeviceAddr),
+			zap.String("device_uid", ac.DeviceAddr),
 			zap.String("type", eventName),
 			zap.String("source", "sleepace_alarm"),
 			zap.Bool("enabled", enabled),
@@ -171,18 +170,18 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		}
 		if h.state != nil {
 			deviceType := ""
-			if dm := h.metaCache.GetDeviceMeta(ctx, m.SubjectEntity, m.DeviceID); dm != nil {
+			if dm := h.metaCache.GetDeviceMeta(ctx, m.SubjectEntity, ac.DeviceAddr); dm != nil {
 				deviceType = dm.DeviceType
-			} else if m.DeviceUID != "" {
-				if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.SubjectEntity, m.DeviceUID); dm != nil {
+			} else if ac.DeviceAddr != "" {
+				if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.SubjectEntity, ac.DeviceAddr); dm != nil {
 					deviceType = dm.DeviceType
 				}
 			}
 			skip := false
 			if h.bedCoord != nil {
-				skip, _ = h.bedCoord.InBed(ctx, h.state, h.alarms, h.metaCache, h.buffer, m.SubjectEntity, m.TenantID, m.DeviceID, m.DeviceUID, deviceType, m.Timestamp, func(wr bool) {
+				skip, _ = h.bedCoord.InBed(ctx, h.state, h.alarms, h.metaCache, h.buffer, m.SubjectEntity, ac.TenantPref, ac.DeviceAddr, ac.DeviceAddr, deviceType, m.Timestamp, func(wr bool) {
 					if wr {
-						_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.SubjectEntity, payload.DeviceID, alarm.LeftBed)
+						_ = h.alarms.RemovePendingAlarm(ctx, ac.TenantPref, m.SubjectEntity, ac.DeviceAddr, alarm.LeftBed)
 					}
 				})
 			}
@@ -190,7 +189,7 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 				trackOverride := sleepadTrackOverrideForInBed(ctx, h.metaCache, h.buffer, m.SubjectEntity)
 				written, _ := h.state.PublishBedStateFromEvent(ctx, m.SubjectEntity, alarm.InBed, deviceType, m.Timestamp, 0, trackOverride)
 				if written {
-					_ = h.alarms.RemovePendingAlarm(ctx, m.TenantID, m.SubjectEntity, payload.DeviceID, alarm.LeftBed)
+					_ = h.alarms.RemovePendingAlarm(ctx, ac.TenantPref, m.SubjectEntity, ac.DeviceAddr, alarm.LeftBed)
 				}
 				_ = h.state.ReconcileRoomStateFromBedState(ctx, m.SubjectEntity)
 			}
@@ -198,8 +197,8 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 	case alarm.LeftBed:
 		h.logger.Info("bed.alarm.recv",
 			zap.String("cid", m.SubjectEntity),
-			zap.String("device_id", m.DeviceID),
-			zap.String("device_uid", m.DeviceUID),
+			zap.String("device_id", ac.DeviceAddr),
+			zap.String("device_uid", ac.DeviceAddr),
 			zap.String("type", eventName),
 			zap.String("source", "sleepace_alarm"),
 			zap.Bool("enabled", enabled),
@@ -212,16 +211,16 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		}
 		if h.state != nil {
 			deviceType := ""
-			if dm := h.metaCache.GetDeviceMeta(ctx, m.SubjectEntity, m.DeviceID); dm != nil {
+			if dm := h.metaCache.GetDeviceMeta(ctx, m.SubjectEntity, ac.DeviceAddr); dm != nil {
 				deviceType = dm.DeviceType
-			} else if m.DeviceUID != "" {
-				if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.SubjectEntity, m.DeviceUID); dm != nil {
+			} else if ac.DeviceAddr != "" {
+				if dm := h.metaCache.GetDeviceMetaByUID(ctx, m.SubjectEntity, ac.DeviceAddr); dm != nil {
 					deviceType = dm.DeviceType
 				}
 			}
 			skip := false
 			if h.bedCoord != nil {
-				skip, _ = h.bedCoord.LeftBed(ctx, h.state, h.metaCache, h.buffer, m.SubjectEntity, m.TenantID, m.DeviceID, m.DeviceUID, deviceType, m.Timestamp, func() {
+				skip, _ = h.bedCoord.LeftBed(ctx, h.state, h.metaCache, h.buffer, m.SubjectEntity, ac.TenantPref, ac.DeviceAddr, ac.DeviceAddr, deviceType, m.Timestamp, func() {
 					meta := h.metaCache.GetOrLoad(ctx, m.SubjectEntity)
 					if meta == nil {
 						return
@@ -257,8 +256,8 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 	// 同时把当前真值写到 device:status:{deviceID} hash，前端无需穿越 alarm_events 反推标志位。
 	// 原则：设备类报警一律自动恢复，不需人工标记。
 	case alarm.SignalPoor:
-		if m.DeviceID != "" && h.state != nil {
-			_ = h.state.PatchDeviceFlag(ctx, m.DeviceID, "signal_poor", 1)
+		if ac.DeviceAddr != "" && h.state != nil {
+			_ = h.state.PatchDeviceFlag(ctx, ac.DeviceAddr, "signal_poor", 1)
 		}
 		if enabled && level != "" {
 			if err := h.alarms.PersistAlarmAndPublish(ctx, payload, eventName, level); err != nil {
@@ -266,8 +265,8 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			}
 		}
 	case alarm.AngleException:
-		if m.DeviceID != "" && h.state != nil {
-			_ = h.state.PatchDeviceFlag(ctx, m.DeviceID, "angle_abnormal", 1)
+		if ac.DeviceAddr != "" && h.state != nil {
+			_ = h.state.PatchDeviceFlag(ctx, ac.DeviceAddr, "angle_abnormal", 1)
 		}
 		if enabled && level != "" {
 			if err := h.alarms.PersistAlarmAndPublish(ctx, payload, eventName, level); err != nil {
@@ -275,13 +274,13 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			}
 		}
 	case alarm.SingalPoorRecover:
-		if m.DeviceID != "" && h.state != nil {
-			_ = h.state.PatchDeviceFlag(ctx, m.DeviceID, "signal_poor", 0)
+		if ac.DeviceAddr != "" && h.state != nil {
+			_ = h.state.PatchDeviceFlag(ctx, ac.DeviceAddr, "signal_poor", 0)
 		}
 		_ = h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.SignalPoor})
 	case alarm.AngleExceptionRecover:
-		if m.DeviceID != "" && h.state != nil {
-			_ = h.state.PatchDeviceFlag(ctx, m.DeviceID, "angle_abnormal", 0)
+		if ac.DeviceAddr != "" && h.state != nil {
+			_ = h.state.PatchDeviceFlag(ctx, ac.DeviceAddr, "angle_abnormal", 0)
 		}
 		_ = h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.AngleException})
 
@@ -317,7 +316,7 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 				}
 			}
 		} else if isRadar {
-			if enabled && level != "" && h.alarms.AHIQueryReady() && payload.DeviceID != "" && h.alarms.CheckAH(ctx, payload.DeviceID) {
+			if enabled && level != "" && h.alarms.AHIQueryReady() && ac.DeviceAddr != "" && h.alarms.CheckAH(ctx, ac.DeviceAddr) {
 				if err := h.alarms.PersistAlarmAndPublish(ctx, payload, eventName, level); err != nil {
 					return err
 				}
@@ -342,12 +341,12 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 				return err
 			}
 		}
-		if m.DeviceUID != "" {
-			h.buffer.RemoveDevice(m.SubjectEntity, m.DeviceID)
+		if ac.DeviceAddr != "" {
+			h.buffer.RemoveDevice(m.SubjectEntity, ac.DeviceAddr)
 			// 负向标记 device:status：alarm Offline 显式 offline=1（不刷 last_seen_ms——
 			// 设备死了不是它活着的证据）。看门狗 fail-safe 兜底 alarm 流自身故障的场景。
-			if m.DeviceID != "" && h.state != nil {
-				_ = h.state.SetDeviceOnline(ctx, m.DeviceID, m.DeviceUID, m.DeviceType, false)
+			if ac.DeviceAddr != "" && h.state != nil {
+				_ = h.state.SetDeviceOnline(ctx, ac.DeviceAddr, ac.DeviceAddr, m.DeviceType, false)
 			}
 		}
 	case alarm.AlarmTypeOfflineRecover:
@@ -357,17 +356,17 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		if err := h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.AlarmTypeOffline, alarm.AlarmTypeDeviceFailure}); err != nil {
 			recoveryOK = false
 			h.logger.Warn("offline_recover.recovery_failed",
-				zap.String("device_uid", m.DeviceUID),
+				zap.String("device_uid", ac.DeviceAddr),
 				zap.String("card_id", m.SubjectEntity),
 				zap.Error(err),
 			)
 		}
 		setOnlineOK, setOnlineSkip := false, false
-		if m.DeviceID == "" || h.state == nil {
+		if ac.DeviceAddr == "" || h.state == nil {
 			setOnlineSkip = true
-		} else if err := h.state.SetDeviceOnline(ctx, m.DeviceID, m.DeviceUID, m.DeviceType, true); err != nil {
+		} else if err := h.state.SetDeviceOnline(ctx, ac.DeviceAddr, ac.DeviceAddr, m.DeviceType, true); err != nil {
 			h.logger.Warn("offline_recover.set_online_failed",
-				zap.String("device_uid", m.DeviceUID),
+				zap.String("device_uid", ac.DeviceAddr),
 				zap.String("card_id", m.SubjectEntity),
 				zap.Error(err),
 			)
@@ -375,7 +374,7 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			setOnlineOK = true
 		}
 		h.logger.Info("offline_recover.done",
-			zap.String("device_uid", m.DeviceUID),
+			zap.String("device_uid", ac.DeviceAddr),
 			zap.String("card_id", m.SubjectEntity),
 			zap.String("device_type", m.DeviceType),
 			zap.Bool("recovery_ok", recoveryOK),
@@ -391,12 +390,12 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 				return err
 			}
 		}
-		if m.DeviceID != "" && h.state != nil {
-			_ = h.state.SetDeviceOnline(ctx, m.DeviceID, m.DeviceUID, m.DeviceType, true)
+		if ac.DeviceAddr != "" && h.state != nil {
+			_ = h.state.SetDeviceOnline(ctx, ac.DeviceAddr, ac.DeviceAddr, m.DeviceType, true)
 		}
 	case alarm.SensorDetached:
-		if m.DeviceID != "" && h.state != nil {
-			_ = h.state.PatchDeviceFlag(ctx, m.DeviceID, "sensor_detached", 1)
+		if ac.DeviceAddr != "" && h.state != nil {
+			_ = h.state.PatchDeviceFlag(ctx, ac.DeviceAddr, "sensor_detached", 1)
 		}
 		if enabled && level != "" {
 			if err := h.alarms.PersistAlarmAndPublish(ctx, payload, eventName, level); err != nil {
@@ -405,8 +404,8 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		}
 	// status=1 时 gateway 发 SensorDetachedRecover；此处仅恢复该设备既有 SensorDetached，不落新告警；同时清除 device:status hash 标志位。
 	case alarm.SensorDetachedRecover:
-		if m.DeviceID != "" && h.state != nil {
-			_ = h.state.PatchDeviceFlag(ctx, m.DeviceID, "sensor_detached", 0)
+		if ac.DeviceAddr != "" && h.state != nil {
+			_ = h.state.PatchDeviceFlag(ctx, ac.DeviceAddr, "sensor_detached", 0)
 		}
 		_ = h.alarms.HandleRecoveryWithTypes(ctx, payload, []string{alarm.SensorDetached})
 
