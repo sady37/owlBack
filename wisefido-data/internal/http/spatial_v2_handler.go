@@ -513,19 +513,23 @@ func (h *SpatialV2Handler) HandleSites(w http.ResponseWriter, r *http.Request) {
 // =============================================================================
 
 type unitRow struct {
-	Prefix       string             `json:"prefix"` // /80 CIDR
-	Slot         int                `json:"slot"`
-	Name         string             `json:"name"`
-	LayoutType   string             `json:"layout_type,omitempty"`
-	Timezone     string             `json:"timezone,omitempty"`
-	UnitProperty int                `json:"unit_property"` // 0=non-residential, 1=residential
-	UnitType     int                `json:"unit_type"`     // 1/2/3
-	CreatedAt    string             `json:"created_at"`
-	UpdatedAt    string             `json:"updated_at"`
-	BranchPrefix string             `json:"branch_prefix"` // derived /56
-	Rooms        []unitRoomItem     `json:"rooms,omitempty"`
-	Beds         []unitBedItem      `json:"beds,omitempty"`
-	Residents    []unitResidentItem `json:"residents,omitempty"` // 当前活跃 binding 到该 unit 的 resident(s)
+	Prefix         string             `json:"prefix"` // /80 CIDR
+	Slot           int                `json:"slot"`
+	Name           string             `json:"name"`
+	LayoutType     string             `json:"layout_type,omitempty"`
+	Timezone       string             `json:"timezone,omitempty"`
+	UnitProperty   int                `json:"unit_property"` // 0=non-residential, 1=residential
+	UnitType       int                `json:"unit_type"`     // 1/2/3
+	CreatedAt      string             `json:"created_at"`
+	UpdatedAt      string             `json:"updated_at"`
+	BranchPrefix   string             `json:"branch_prefix"`             // derived /56
+	BranchName     string             `json:"branch_name,omitempty"`     // 来自 branches join
+	BuildingPrefix string             `json:"building_prefix,omitempty"` // /64 (= site_id), derived
+	BuildingName   string             `json:"building_name,omitempty"`   // 来自 sites.site_name
+	Floor          int                `json:"floor,omitempty"`           // 来自 sites.floor (1..14)
+	Rooms          []unitRoomItem     `json:"rooms,omitempty"`
+	Beds           []unitBedItem      `json:"beds,omitempty"`
+	Residents      []unitResidentItem `json:"residents,omitempty"` // 当前活跃 binding 到该 unit 的 resident(s)
 }
 
 type unitRoomItem struct {
@@ -613,15 +617,23 @@ func (h *SpatialV2Handler) listUnits(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, Fail("permission denied: cross-tenant list requires SystemAdmin"))
 		return
 	}
+	// JOIN sites + branches 派生 building_name/floor/branch_name（v1 FE 需要这些字段做 grouping）
 	rows, err := h.db.QueryContext(r.Context(), `
-		SELECT host(unit_id)||'/'||masklen(unit_id), unit_slot, unit_name,
-		       COALESCE(unit_layout_type,''), COALESCE(timezone,''),
-		       unit_property, unit_type,
-		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
-		       to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
-		       host(network(set_masklen(unit_id, 56)))||'/56'
-		FROM units WHERE unit_id << $1::INET
-		ORDER BY unit_name ASC
+		SELECT host(u.unit_id)||'/'||masklen(u.unit_id), u.unit_slot, u.unit_name,
+		       COALESCE(u.unit_layout_type,''), COALESCE(u.timezone,''),
+		       u.unit_property, u.unit_type,
+		       to_char(u.created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
+		       to_char(u.updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
+		       host(network(set_masklen(u.unit_id, 56)))||'/56' AS branch_prefix,
+		       COALESCE(b.branch_name, '') AS branch_name,
+		       host(network(set_masklen(u.unit_id, 64)))||'/64' AS building_prefix,
+		       COALESCE(s.site_name, '') AS building_name,
+		       COALESCE(s.floor, 0) AS floor
+		FROM units u
+		LEFT JOIN sites s ON u.unit_id << s.site_id
+		LEFT JOIN branches b ON u.unit_id << b.branch_id
+		WHERE u.unit_id << $1::INET
+		ORDER BY u.unit_name ASC
 	`, scope.String())
 	if err != nil {
 		h.logger.Error("v2 spatial: list units failed", zap.Error(err))
@@ -633,7 +645,8 @@ func (h *SpatialV2Handler) listUnits(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var u unitRow
 		if err := rows.Scan(&u.Prefix, &u.Slot, &u.Name, &u.LayoutType, &u.Timezone,
-			&u.UnitProperty, &u.UnitType, &u.CreatedAt, &u.UpdatedAt, &u.BranchPrefix); err != nil {
+			&u.UnitProperty, &u.UnitType, &u.CreatedAt, &u.UpdatedAt, &u.BranchPrefix,
+			&u.BranchName, &u.BuildingPrefix, &u.BuildingName, &u.Floor); err != nil {
 			h.logger.Error("v2 spatial: scan unit row failed", zap.Error(err))
 			writeJSON(w, http.StatusOK, Fail("scan unit row failed: "+err.Error()))
 			return
@@ -705,14 +718,22 @@ func (h *SpatialV2Handler) getUnit(w http.ResponseWriter, r *http.Request, prefi
 	var u unitRow
 	var lt, tz sql.NullString
 	err := h.db.QueryRowContext(r.Context(), `
-		SELECT host(unit_id)||'/'||masklen(unit_id), unit_slot, unit_name,
-		       unit_layout_type, timezone, unit_property, unit_type,
-		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
-		       to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
-		       host(network(set_masklen(unit_id, 56)))||'/56'
-		FROM units WHERE unit_id = $1::INET
+		SELECT host(u.unit_id)||'/'||masklen(u.unit_id), u.unit_slot, u.unit_name,
+		       u.unit_layout_type, u.timezone, u.unit_property, u.unit_type,
+		       to_char(u.created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
+		       to_char(u.updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
+		       host(network(set_masklen(u.unit_id, 56)))||'/56',
+		       COALESCE(b.branch_name, ''),
+		       host(network(set_masklen(u.unit_id, 64)))||'/64',
+		       COALESCE(s.site_name, ''),
+		       COALESCE(s.floor, 0)
+		FROM units u
+		LEFT JOIN sites s ON u.unit_id << s.site_id
+		LEFT JOIN branches b ON u.unit_id << b.branch_id
+		WHERE u.unit_id = $1::INET
 	`, prefix.String()).Scan(&u.Prefix, &u.Slot, &u.Name, &lt, &tz, &u.UnitProperty, &u.UnitType,
-		&u.CreatedAt, &u.UpdatedAt, &u.BranchPrefix)
+		&u.CreatedAt, &u.UpdatedAt, &u.BranchPrefix,
+		&u.BranchName, &u.BuildingPrefix, &u.BuildingName, &u.Floor)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeJSON(w, http.StatusOK, Fail("unit not found: "+prefix.String()))
 		return
