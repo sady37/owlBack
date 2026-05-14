@@ -606,7 +606,34 @@ func (s *StateService) DeriveAndWriteState(
 	return status, nil
 }
 
-// InitCardRoomAndBathroomState Card 初始化时：默认创建 RoomState；存在 isBathroomRadar 时创建 BathRoomState；无上下床事件时写入占位 BedState(bed_status=8)。无房间雷达时 RoomState.TotalPeople = -1，前端仅显示 bed state。
+// hasBedCapableDevice — 卡是否含 bed-capable 设备：
+//   - active_bed 卡按定义有床
+//   - 其它卡（unit/room）：Devices 内含 Sleepad → 视为有床（v3 absorb 模式 UnitCard 也可能直管 sleepad）
+//
+// 非 bed-capable 卡（如纯雷达 UnitCard，覆盖 Bathroom/Kitchen 等无床房间）不应初始化 BedState；
+// 否则 Redis 长期停留 bed_status=8/start_time=init 占位值，FE 计算 `now - start_time` 当离床时长
+// 会显示假的 OOB. 15h+ 之类数据（详见 FE Overview.vue:2131 修复）。
+func hasBedCapableDevice(meta *CardMeta) bool {
+	if meta == nil {
+		return false
+	}
+	if meta.IsActiveBedCard() {
+		return true
+	}
+	for _, dm := range meta.Devices {
+		if dm == nil {
+			continue
+		}
+		if strings.EqualFold(dm.DeviceType, "Sleepad") {
+			return true
+		}
+	}
+	return false
+}
+
+// InitCardRoomAndBathroomState Card 初始化时：默认创建 RoomState；存在 isBathroomRadar 时创建 BathRoomState；
+// 仅 bed-capable 卡（active_bed 或含 Sleepad）写占位 BedState(bed_status=8)。
+// 无房间雷达时 RoomState.TotalPeople = -1，前端仅显示 bed state。
 func (s *StateService) InitCardRoomAndBathroomState(ctx context.Context, cardID string, meta *CardMeta, enablement *AlarmEnablementCache) error {
 	if s.writer == nil || meta == nil || len(meta.Devices) == 0 {
 		return nil
@@ -619,7 +646,9 @@ func (s *StateService) InitCardRoomAndBathroomState(ctx context.Context, cardID 
 	roomState := &card.RoomState{UpdatedAt: now, TotalPeople: totalPeople, HasMulti: false, HasRisk: false}
 	fields := PublishFields{
 		RoomState: roomState,
-		BedState:  &card.BedState{UpdatedAt: now, BedStatus: BedStatusUnchanged, TrackNumber: 0},
+	}
+	if hasBedCapableDevice(meta) {
+		fields.BedState = &card.BedState{UpdatedAt: now, BedStatus: BedStatusUnchanged, TrackNumber: 0}
 	}
 	bathroomDeviceID := PickBathroomDeviceIDForInit(ctx, meta, meta.TenantID, enablement)
 	if bathroomDeviceID != "" {
@@ -660,8 +689,11 @@ func (s *StateService) EnsureCardStatePrepared(ctx context.Context, cardID strin
 		}
 	}
 	needRoom := curr == nil || curr.RoomState == nil
-	needBed := curr == nil || curr.BedState == nil
-	if !needBed && curr != nil && curr.BedState != nil {
+	// bed-capable 才补 BedState；非 bed-capable 卡（纯雷达 UnitCard 覆盖 Bathroom 等）跳过，
+	// 避免长期 bed_status=8 占位被 FE 误判 OOB。
+	bedCapable := hasBedCapableDevice(meta)
+	needBed := bedCapable && (curr == nil || curr.BedState == nil)
+	if bedCapable && !needBed && curr != nil && curr.BedState != nil {
 		bs := curr.BedState
 		if bs.BedStatus == 0 && bs.TrackNumber == 0 && bs.BedEvent == BedEventNone {
 			needBed = true
