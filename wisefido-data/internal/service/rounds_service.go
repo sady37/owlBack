@@ -63,3 +63,11 @@ func (s *RoundsService) ListRounds(ctx context.Context, tenantID string, filters
 	}
 	return s.repo.ListRounds(ctx, tenantID, filters, page, size)
 }
+
+// GetRound 单条详情 — RoundSafetyReport 用
+func (s *RoundsService) GetRound(ctx context.Context, tenantID, roundID string) (*domain.Round, error) {
+	if tenantID == "" || roundID == "" {
+		return nil, errRoundBadRequest
+	}
+	return s.repo.GetRound(ctx, tenantID, roundID)
+}

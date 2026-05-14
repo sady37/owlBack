@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"wisefido-data/internal/domain"
@@ -32,22 +33,40 @@ type CreateRoundRequest struct {
 	ItemsChecked []domain.RoundItemChecked `json:"items_checked"`
 }
 
-// ServeHTTP 路由：POST /rounds 创建，GET /rounds 列表
+// ServeHTTP 路由：
+//   POST /rounds        创建一轮
+//   GET  /rounds        列表（支持 ?branch_id=&executor_id=&status=&...&page=&size=）
+//   GET  /rounds/{id}   单条详情（RoundSafetyReport 用）
 func (h *RoundsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	base := "/data/api/v1/data/vital-focus/rounds"
-	if path != base && path != base+"/" {
-		w.WriteHeader(http.StatusNotFound)
+	// 集合路径
+	if path == base || path == base+"/" {
+		switch r.Method {
+		case http.MethodPost:
+			h.createRound(w, r)
+		case http.MethodGet:
+			h.listRounds(w, r)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
 		return
 	}
-	switch r.Method {
-	case http.MethodPost:
-		h.createRound(w, r)
-	case http.MethodGet:
-		h.listRounds(w, r)
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
+	// 单资源路径 /rounds/{id}
+	if strings.HasPrefix(path, base+"/") {
+		roundID := strings.TrimPrefix(path, base+"/")
+		if roundID == "" || strings.Contains(roundID, "/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		h.getRound(w, r, roundID)
+		return
 	}
+	w.WriteHeader(http.StatusNotFound)
 }
 
 func (h *RoundsHandler) createRound(w http.ResponseWriter, r *http.Request) {
@@ -165,4 +184,41 @@ func (h *RoundsHandler) listRounds(w http.ResponseWriter, r *http.Request) {
 		"page":  page,
 		"size":  size,
 	}))
+}
+
+// getRound — GET /data/api/v1/data/vital-focus/rounds/{round_id}
+// 单条详情：RoundSafetyReport.fetchDetail 调用，返回与 ListItem 同 shape (含 items_checked)
+func (h *RoundsHandler) getRound(w http.ResponseWriter, r *http.Request, roundID string) {
+	ctx := r.Context()
+	_, tenantID, _, _, ok := service.MustSession(ctx)
+	if !ok || tenantID == "" {
+		writeJSON(w, http.StatusUnauthorized, Fail("missing or invalid authorization"))
+		return
+	}
+	rd, err := h.svc.GetRound(ctx, tenantID, roundID)
+	if err != nil {
+		h.logger.Warn("GetRound failed", zap.String("round_id", roundID), zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	row := map[string]interface{}{
+		"round_id":    rd.RoundID,
+		"tenant_id":   rd.TenantID,
+		"round_type":  rd.RoundType,
+		"unit_id":     rd.UnitID,
+		"executor_id": rd.ExecutorID,
+		"round_time":  rd.RoundTime,
+		"notes":       rd.Notes,
+		"status":      rd.Status,
+	}
+	if rd.StartedAt != nil {
+		row["started_at"] = rd.StartedAt.Format(time.RFC3339)
+	}
+	if len(rd.ItemsChecked) > 0 {
+		var arr []domain.RoundItemChecked
+		if _ = json.Unmarshal(rd.ItemsChecked, &arr); len(arr) > 0 {
+			row["items_checked"] = arr
+		}
+	}
+	writeJSON(w, http.StatusOK, Ok(row))
 }
