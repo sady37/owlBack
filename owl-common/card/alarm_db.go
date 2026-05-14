@@ -41,6 +41,10 @@ type AlarmInsertParams struct {
 	Metadata    json.RawMessage // 映射 v2 evidence
 	RoomID      string
 	UnitID      string
+	// 北极星 envelope.Producer：写此 alarm 的 agent 身份；下游 verdict 链通过 parent_span = "<producer>.<seqN>" 复合
+	Producer    string
+	ParentSpan  string // 上游 datagram ID（"<producer>.<seqN>"）
+	TraceID     string // 根 datagram trace
 }
 
 // AlarmInsertResult INSERT 后返回的结果

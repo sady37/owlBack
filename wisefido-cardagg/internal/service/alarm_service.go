@@ -22,6 +22,22 @@ import (
 
 const redisPendingAlarmKey = "alarm:pending"
 
+// cardagg 自身 producer 身份（北极星 envelope.Producer 规范：<role>:<service>[/<instance>]）。
+// 用于 cardagg 内部触发（无上游 msg）的报警来源标识，例：pending 计时到期、RecordDeviceFailure。
+const (
+	cardaggProducerAlarmRouter    = "cardagg:alarm-router"
+	cardaggProducerPendingScanner = "cardagg:pending-scanner"
+)
+
+// buildParentSpan 构造北极星 datagram ref："<producer>.<seqN>"。
+// producer 为空或 seqN=0 时返回空串（下游索引带 WHERE producer IS NOT NULL 兜底）。
+func buildParentSpan(producer string, seqN uint64) string {
+	if producer == "" || seqN == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s.%d", producer, seqN)
+}
+
 // RedisPendingStore 计时型告警待处理存储，由 main 传入 *redis.Client。
 type RedisPendingStore interface {
 	HGetAll(ctx context.Context, key string) (map[string]string, error)
@@ -239,6 +255,7 @@ func (s *AlarmService) PersistAlarmAndPublish(ctx context.Context, msg *redis.Io
 	triggerData, _ := json.Marshal(redis.FirstDataValue(msg.DataValue))
 	fhirCategory := alarm.GetFHIRCategory(eventName)
 	triggeredAt := time.UnixMilli(msg.Timestamp)
+	parentSpan := buildParentSpan(msg.Producer, msg.SequenceNumber) // 北极星 datagram ref
 	result, cardAlarmState, err := card.InsertAlarmAndUpdateCard(ctx, s.db, msg.SubjectEntity, card.AlarmInsertParams{
 		TenantID:    ac.TenantPref,
 		DeviceID:    ac.DeviceAddr,
@@ -248,6 +265,9 @@ func (s *AlarmService) PersistAlarmAndPublish(ctx context.Context, msg *redis.Io
 		TriggeredAt: triggeredAt,
 		TriggerData: triggerData,
 		RoomID:      ac.RoomPref, // envelope where 维度（v2 = /88 CIDR）；空则 InsertAlarmAndUpdateCard 内部从 device.bound_room_id 兜底
+		Producer:    msg.Producer, // 北极星 envelope.Producer 落库
+		ParentSpan:  parentSpan,
+		TraceID:     parentSpan, // 单跳：trace_id == parent_span（多跳由上游链补全）
 	})
 	if err != nil {
 		s.logger.Warn("insert alarm failed", zap.String("cid", msg.SubjectEntity), zap.Error(err))
@@ -288,6 +308,7 @@ func (s *AlarmService) PersistAlarmFromTrack(ctx context.Context, cardID, tenant
 		AlarmLevel:  level,
 		TriggeredAt: triggeredAt,
 		TriggerData: triggerData,
+		Producer:    cardaggProducerAlarmRouter, // cardagg 内部 track 触发，无上游 envelope
 	})
 	if err != nil {
 		s.logger.Warn("insert alarm failed", zap.String("cid", cardID), zap.Error(err))
@@ -333,6 +354,7 @@ func (s *AlarmService) PersistAlarmWithTriggerData(ctx context.Context, cardID, 
 		AlarmLevel:  level,
 		TriggeredAt: triggeredAt,
 		TriggerData: raw,
+		Producer:    cardaggProducerAlarmRouter, // cardagg 内部 trigger（如 LeftBedFallActivity 派生），无上游 envelope
 	})
 	if err != nil {
 		s.logger.Warn("insert alarm failed", zap.String("cid", cardID), zap.Error(err))
@@ -377,6 +399,7 @@ func (s *AlarmService) RecordDeviceFailure(ctx context.Context, cardID, tenantID
 		AlarmLevel:  level,
 		TriggeredAt: triggeredAt,
 		TriggerData: triggerData,
+		Producer:    cardaggProducerAlarmRouter, // device_failure：cardagg 自检/上游 fail 派生
 	})
 	if err != nil {
 		s.logger.Warn("insert device_failure alarm failed", zap.String("cid", cardID), zap.Error(err))
@@ -807,6 +830,7 @@ func (s *AlarmService) ScanPendingAlarms(ctx context.Context) error {
 			AlarmLevel:  p.AlarmLevel,
 			TriggeredAt: triggeredAt,
 			TriggerData: triggerData,
+			Producer:    cardaggProducerPendingScanner, // pending 计时到期由 cardagg 后台扫描器触发
 		})
 		if err != nil {
 			s.logger.Warn("scan pending insert alarm failed",
