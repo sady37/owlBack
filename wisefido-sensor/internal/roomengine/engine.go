@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -261,11 +262,8 @@ func (e *Engine) SetRoutesReloader(fn func(context.Context) error, interval time
 
 // warnUnrouted 路由失败的 device 频率限制告警（同一 key 60s 内一次）。
 // stream：消息来自哪个 stream（"monitor"/"event"/"alarm"）便于排查。
-func (e *Engine) warnUnrouted(stream, cardID, deviceID, deviceUID, deviceType string) {
-	key := deviceUID
-	if key == "" {
-		key = deviceID
-	}
+func (e *Engine) warnUnrouted(stream, cardID, deviceAddr, deviceType string) {
+	key := deviceAddr
 	if key == "" {
 		key = cardID
 	}
@@ -283,8 +281,7 @@ func (e *Engine) warnUnrouted(stream, cardID, deviceID, deviceUID, deviceType st
 	e.unroutedMu.Unlock()
 	e.logger.Warn("dropped_unrouted_message",
 		zap.String("stream", stream),
-		zap.String("device_uid", deviceUID),
-		zap.String("device_id", deviceID),
+		zap.String("device_addr", deviceAddr),
 		zap.String("card_id", cardID),
 		zap.String("device_type", deviceType),
 		zap.String("hint", "device not in deviceRoom/cardToRoom; if just bound after startup, will heal at next routes reload"),
@@ -561,10 +558,10 @@ func (e *Engine) PublishAIAlarm(ctx context.Context, p AIPayload, category strin
 
 func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	category, topicType, streamName string, maxLen int64, retentionSec int, nowMs int64) {
+	// device_ipv6 单程票：p.DeviceID 现为 canonical IPv6 字符串（上游已切；engine 内部 Map 同步切）
+	addr, _ := netip.ParseAddr(p.DeviceID)
 	e.mu.RLock()
-	deviceUID := e.deviceIDToUID[p.DeviceID]
 	baseType := e.deviceIDToType[p.DeviceID]
-	tenantID := e.roomTenants[p.RoomID]
 	defaultSource := e.aiSource
 	mode := e.aiPublishMode
 	g := e.grids[p.RoomID]
@@ -652,7 +649,7 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 		zap.String("source", source), // 节点身份兼审计字段（如 "AI.Caregiver01"）
 		zap.String("mode", mode),
 		zap.String("device_type", deviceType),
-		zap.String("device_uid", deviceUID),
+		zap.String("device_addr", p.DeviceID),
 		zap.String("category", category),
 		zap.String("topic_type", topicType),
 		zap.String("would_publish_to", streamName),
@@ -665,32 +662,28 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 		return
 	}
 
-	// Phase A: Producer = sensor agent 标识（如 "sensor.caregiver01"）；
-	// SubjectEntity 留空——cardagg 反查 device→cards 路由（layer 1 不染卡）。
+	// device_ipv6 单程票：Producer = sensor agent 标识；SubjectEntity 留空（cardagg LPM 反查兜底）；
+	// DeviceAddr = p.DeviceID parse 后的 /128 INET。
 	producer := source
 	if producer == "" {
 		producer = defaultSource
 	}
 	msg := rediscommon.IoTStreamMessage{
-		Producer:         producer,
-		SubjectEntity:    "",
-		SemanticLocation: p.RoomID,
-		DeviceUID:        deviceUID,
-		DeviceID:         p.DeviceID,
-		DeviceType:       deviceType,
-		TenantID:         tenantID,
-		Timestamp:        nowMs,
-		TopicType:        topicType,
-		Category:         category,
-		DataValue:        []interface{}{fields},
+		Producer:      producer,
+		SubjectEntity: "",
+		DeviceAddr:    addr,
+		DeviceType:    deviceType,
+		Timestamp:     nowMs,
+		TopicType:     topicType,
+		Category:      category,
+		DataValue:     []interface{}{fields},
 	}
 	if _, err := rediscommon.PublishToStream(ctx, e.redisClient, streamName, msg.ToStreamMap(), maxLen, retentionSec); err != nil {
 		e.logger.Warn("ai_publish_failed",
 			zap.String("source", source),
 			zap.String("stream", streamName),
 			zap.String("category", category),
-			zap.String("device_uid", deviceUID),
-			zap.String("device_id", p.DeviceID),
+			zap.String("device_addr", p.DeviceID),
 			zap.Error(err),
 		)
 	}
@@ -1007,32 +1000,30 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 		ts = time.Now().UnixMilli()
 	}
 
-	// 路由到房间
+	// 路由到房间（device_ipv6 单程票：addr 是唯一 device 标识）
+	addrStr := m.DeviceAddr.String()
 	e.mu.RLock()
 	roomID := e.cardToRoom[m.SubjectEntity]
 	if roomID == "" {
-		roomID = e.deviceRoom[m.DeviceID]
-	}
-	if roomID == "" {
-		roomID = e.deviceRoom[m.DeviceUID]
+		roomID = e.deviceRoom[addrStr]
 	}
 	tm := e.rooms[roomID]
 	e.mu.RUnlock()
 	if tm == nil {
-		e.warnUnrouted("event", m.SubjectEntity, m.DeviceID, m.DeviceUID, m.DeviceType)
+		e.warnUnrouted("event", m.SubjectEntity, addrStr, m.DeviceType)
 		return
 	}
 
 	switch dt {
 	case "sleepad", "sleeppad":
-		for _, evt := range ParseSleepadBedEvents(m.DataValue, m.DeviceUID, m.Category, ts) {
+		for _, evt := range ParseSleepadBedEvents(m.DataValue, addrStr, m.Category, ts) {
 			tm.ProcessSleepadBedEvent(evt)
 		}
 	case "radar":
 		// 落账 radar EnterRoom/ExitRoom/InBed/LeftBed；同时 InBed/LeftBed 走"事件触发器"
 		// 路径：tm.RecordRadarEvent + tm.Tick(ts) → 段 4/5/6 立即跑一次。
 		// 当前不消费 EnterRoom/ExitRoom 做行为推断，仅落账供未来段 7 使用。
-		evts := ParseRadarTrackEvents(m.DataValue, m.DeviceUID, m.Category, ts)
+		evts := ParseRadarTrackEvents(m.DataValue, addrStr, m.Category, ts)
 		if len(evts) == 0 {
 			return
 		}
@@ -1082,23 +1073,21 @@ func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
 		ts = time.Now().UnixMilli()
 	}
 
-	// 路由
+	// 路由（device_ipv6 单程票：addr 是唯一 device 标识）
+	addrStr := m.DeviceAddr.String()
 	e.mu.RLock()
 	roomID := e.cardToRoom[m.SubjectEntity]
 	if roomID == "" {
-		roomID = e.deviceRoom[m.DeviceID]
-	}
-	if roomID == "" {
-		roomID = e.deviceRoom[m.DeviceUID]
+		roomID = e.deviceRoom[addrStr]
 	}
 	tm := e.rooms[roomID]
 	e.mu.RUnlock()
 	if tm == nil {
-		e.warnUnrouted("alarm", m.SubjectEntity, m.DeviceID, m.DeviceUID, m.DeviceType)
+		e.warnUnrouted("alarm", m.SubjectEntity, addrStr, m.DeviceType)
 		return
 	}
 
-	alarms := ParseRadarFallAlarm(m.DataValue, m.DeviceUID, m.Category, ts)
+	alarms := ParseRadarFallAlarm(m.DataValue, addrStr, m.Category, ts)
 	if len(alarms) == 0 {
 		return
 	}
@@ -1107,7 +1096,7 @@ func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
 		// kind=radar_fall_received: radar firmware 发的 Fall 报警；engine 当前不验证（段 7 待做）。
 		// 未来 verifier 上线后会进一步分流：fake_fall（否决）/ real_fall（确认）/ lost_fall（应报漏报）
 		e.logger.Info("radar_fall_received",
-			zap.String("device_uid", m.DeviceUID),
+			zap.String("device_addr", addrStr),
 			zap.Int("track_id", a.TrackID),
 			zap.String("kind", "radar_firmware_fall"),
 			zap.Int("pose", a.Pose),
@@ -1131,21 +1120,19 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 		return
 	}
 
-	// 路由到房间（radar/sleepad 共用同一路由表）
+	// 路由到房间（device_ipv6 单程票：addr 是唯一 device 标识）
+	addrStr := m.DeviceAddr.String()
 	e.mu.RLock()
 	roomID := e.cardToRoom[m.SubjectEntity]
 	if roomID == "" {
-		roomID = e.deviceRoom[m.DeviceID]
-	}
-	if roomID == "" {
-		roomID = e.deviceRoom[m.DeviceUID]
+		roomID = e.deviceRoom[addrStr]
 	}
 	tm := e.rooms[roomID]
 	mount, hasMount := e.mounts[roomID]
 	e.mu.RUnlock()
 
 	if tm == nil {
-		e.warnUnrouted("monitor", m.SubjectEntity, m.DeviceID, m.DeviceUID, m.DeviceType)
+		e.warnUnrouted("monitor", m.SubjectEntity, addrStr, m.DeviceType)
 		return
 	}
 
@@ -1159,7 +1146,7 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 		if !hasMount {
 			return
 		}
-		frames := ParseRadarTracks(m.DataValue, m.DeviceID, mount, ts)
+		frames := ParseRadarTracks(m.DataValue, addrStr, mount, ts)
 		if len(frames) == 0 {
 			// tid=88 heartbeat / 全零无效帧被 ParseRadarTracks 过滤后，仍要 tick 推进 MissCount，
 			// 否则之前活着的 track 永不进入消失判定 → silent/lost fall pending 不会创建。
@@ -1173,7 +1160,7 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 
 	case "sleepad", "sleeppad":
 		// 多传感器融合：sleepad 帧喂入 TrackManager，silent fall 触发时做 short-circuit
-		obs := ParseSleepadObservations(m.DataValue, m.DeviceID, m.DeviceUID, ts)
+		obs := ParseSleepadObservations(m.DataValue, addrStr, addrStr, ts)
 		for _, o := range obs {
 			tm.ProcessSleepadObservation(o)
 		}
