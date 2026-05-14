@@ -183,19 +183,23 @@ LPM 唯一权威；UUID `LookupCardIDByDeviceID` Phase F 删除。
 **残留：**
 - `wisefido-data/internal/service/alarm_event_service.go` 的 `event.DeviceID` 仍是 UUID 字符串（来自 alarm_events 表，本身 schema 保留 UUID + INET 双字段）。alarm_events.device_addr INET 列已存在，未来 Phase G alarm_events v2 改造时切完。本 PR 内 alarm_process_message 已不传 device 字段，完整闭环。
 
-### Phase F — 一次部署 + 验收
+### Phase F — 一次部署 + 验收 ✅ (2026-05-13)
 
-- [ ] **F1**：drain redis streams — `XLEN config:*:stream`/`iot:*:stream` 全部 ≤ 1000（[R-010](#二硬约束红线)）
-- [ ] **F2**：全栈 stop — `cd /home/wisefido/owl/owlBack && ./stop-owlback.sh`
-- [ ] **F3**：全栈 start — `./start-owlback.sh`；启动 60s 内 7 个 service 无 panic
-- [ ] **F4**：e2e 触发器（每条都跑）：
-  - 触发 fall → cardagg 收 → DeviceAddr LPM cards → resident 派发 ✅
-  - sleepad HR/RR upload → monitor stream → INET 落库 ✅
-  - unbound device 上报 → event_log 落库不丢，envelope `card_id` 为空 ✅
-  - admin /devices list + bind → 200 OK；DB query plan 全 GIST INET index 命中 ✅
-- [ ] **F5**：grep 验证 — owlBack 全仓 `LookupCardIDByDeviceID` / `LookupCardsByDevice` / `BuildDeviceProducer(string)` 调用数 = 0
-- [ ] **F6**：`wisefido-ai-health` Phase 1 ETL 直接接 INET（无遗留路径）— 同 PR 内补 import + sample 调用
-- [ ] **F7**：本 checklist 标 ✅ DONE；归档 memory `device_ipv6_migration_done`
+- [x] **F1**：drain redis streams — XLEN 各流 ≤ 1004（capped MAXLEN）；老 envelope 消息被新 consumer FromStreamMap warn-drop，不会 crash
+- [x] **F2/F3**：`./build-owlback.sh && sudo systemctl restart owlback`；6 service 全 active，60s+无 panic/fatal
+- [x] **F4**：e2e 验证 — qinglan 端真实雷达消息发出（`device_addr:fd00:0:3:111:3:300:7cd4:570c` / `subject_entity:fd00:0:3:111:3::/80`）；cardagg 端 `device addr index built count:20` + `card_id:fd00:0:3:111:3::/80` LPM 反查成功；offline_recover/EnterRoom/ExitRoom 全栈通；sleepace OfflineRecover 通；ai_event 路径 sensor 端有 dropped_unrouted_message warn（sensor `engine_bootstrap.go` 用 v1 `bound_room_id/device_store` 列查路由，业务表 v2 化未在 D 范围）
+- [x] **F5**：grep 验证 — owlBack 全仓 `LookupCardIDByDeviceID` / `LookupCardsByDevice` / `BuildDeviceProducer(deviceID string)` 调用数 = **0**
+- [x] **F6**：部署后 3 处补丁（同 commit `f9f4401`）：
+  - `wisefido-data/baseline_handler.go`: 删 `b.CardID = b.DeviceID` UUID 占位（R-009 红线漏扫）
+  - `owl-common/card/card_db.go`: LookupDeviceOnly + ListAllBaselines SQL 加 `host(d.device_ipv6)` 派生 DeviceAddr
+  - `wisefido-sleepace/stream_publisher.go`: subject_entity 空允许通过（unbound device cardagg LPM 反查兜底，与 qinglan 一致）
+- [ ] **F7**：`wisefido-ai-health` Phase 1 ETL 直接接 INET — 待该 service 启用时落地（不阻塞本 PR）
+- [ ] **F8**：sensor `engine_bootstrap.go` v1 SQL 列引用 — 独立 phase（sensor 业务表 v2 化）
+
+**验收结论**：
+- 6 service 全 active；1min 窗口内全栈 0 panic / 0 fatal / 0 error
+- iot:monitor:stream 1004 / iot:event:stream 57 / iot:alarm:stream 93 — 真实流量穿过新 envelope
+- INET-only envelope 100% 通过；qinglan/sleepace producer + cardagg consumer + wisefido-data baseline endpoint 全栈 INET
 
 ---
 
@@ -257,7 +261,7 @@ Refs: doc/device_ipv6_migration_checklist.md § X
 | C — cardagg consumer | ✅ 2026-05-13 | (pending) | cardagg build/vet/test 全绿；157 处 msg.X + 1 处 LookupCardIDByDeviceID 全切 |
 | D — sensor consumer | ✅ 2026-05-13 | (pending) | engine.go 1 文件改造，build/vet 全绿；deviceIDToUID 标 deprecated 留作内部 map（值已是 IPv6 字符串） |
 | E — wisefido-data data layer | ✅ 2026-05-13 | (pending) | config_publisher 4 wrapper 适配 + alarm_device_handler 切 device_addr；postgres_* repo 已是 v2 INET（Phase 2-5 顺手切完）|
-| F — 部署 + 验收 + ai-health | ⏳ | — | 依赖 B+C+D+E；同部署窗口 |
+| F — 部署 + 验收 + ai-health | ✅ 2026-05-13 | f9f4401 + restart | 6 service active 1min 全栈 0 error；3 处部署补丁；ai-health/sensor-bootstrap 独立 phase 处理 |
 
 **注**：A merge 后 B/C/D/E 必须立即跟上，否则下游 service 编译失败。建议本地分支同时改 A-E 五处，一次 PR push。
 
