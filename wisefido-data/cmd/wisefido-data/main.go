@@ -888,7 +888,7 @@ func registerSpatialV2(router *httpapi.Router, db *sql.DB, ddnsClient *ddns.Clie
 	}
 	backend := ipam.NewPGBackendWithKea(db, keaClient)
 
-	handler := httpapi.NewSpatialV2Handler(backend, ddnsClient, logger)
+	handler := httpapi.NewSpatialV2Handler(backend, db, ddnsClient, logger)
 	router.RegisterSpatialV2Routes(handler)
 	logger.Info("v2 spatial: API registered at /admin/api/v2/spatial/*")
 }
