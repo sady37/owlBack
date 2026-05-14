@@ -20,9 +20,7 @@ func NewAlarmDeviceHandler(enablement *service.AlarmEnablementCache, alarms *ser
 }
 
 type alarmDeviceData struct {
-	TenantID    string `json:"tenant_id"`
-	DeviceID    string `json:"device_id"`
-	DeviceUID   string `json:"device_uid"`
+	DeviceAddr  string `json:"device_addr"` // canonical IPv6；cache key (单程票后取代 device_id UUID)
 	SettingType string `json:"setting_type"`
 }
 
@@ -49,20 +47,22 @@ func (h *AlarmDeviceHandler) Handle(ctx context.Context, msg interface{}) error 
 		return nil
 	}
 
-	if d.DeviceID == "" {
+	if d.DeviceAddr == "" {
 		return nil
 	}
 
-	h.enablement.Invalidate(d.DeviceID)
+	h.enablement.Invalidate(d.DeviceAddr)
 
 	// 配置变更后，对该 device 的 pending 做一次清理：
 	// 凡是新配置里已 disabled 的 alarm_type，旧 pending 一律删除（参考厂家"关闭报警清除统计"逻辑）。
+	// device_ipv6 单程票后 tenant 由 addr.Prefix(48) 派生（PurgeDisabledPendingForDevice 内部 Redis key 仍走 addr 字符串）
 	if h.alarms != nil {
-		h.alarms.PurgeDisabledPendingForDevice(ctx, d.TenantID, d.DeviceID)
+		// addr.Prefix(48).String() 派生 tenantPref；这里直接传 addr 双 key 兼容（Redis hash field 仅按字符串命中）
+		h.alarms.PurgeDisabledPendingForDevice(ctx, "", d.DeviceAddr)
 	}
 
 	h.logger.Info("alarm device config invalidated",
-		zap.String("did", d.DeviceID),
+		zap.String("device_addr", d.DeviceAddr),
 		zap.String("setting", d.SettingType))
 
 	return nil

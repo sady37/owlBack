@@ -2,7 +2,9 @@ package publisher
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"net/netip"
 
 	rediscommon "owl-common/redis"
 
@@ -15,6 +17,7 @@ import (
 type ConfigPublisher struct {
 	redisClient *redis.Client
 	logger      *zap.Logger
+	db          *sql.DB // 反查 device_ipv6 用 (PublishAlarmDeviceMessage 内部 lookup)
 }
 
 // NewConfigPublisher 创建配置变更消息发布器
@@ -25,19 +28,24 @@ func NewConfigPublisher(redisClient *redis.Client, logger *zap.Logger) *ConfigPu
 	}
 }
 
-// PublishAlarmProcessMessage 发送报警处理消息到 config:alarmProcess:stream
-// 供 cardagg 消费用于更新告警显示
+// SetDB 注入 DB 连接（用于内部 device_id → device_ipv6 反查）
+func (p *ConfigPublisher) SetDB(db *sql.DB) {
+	p.db = db
+}
+
+// PublishAlarmProcessMessage 发送报警处理消息到 config:alarmProcess:stream，供 cardagg 消费用于更新告警显示。
+//
+// device_ipv6 单程票后 cardID 是路由 key，device 字段不再传（cardagg 消费侧也只读 cardID/alarmLevel/alarmType/eventID）。
+// tenantID 入参保留作日志，不入 payload。
 func (p *ConfigPublisher) PublishAlarmProcessMessage(
 	ctx context.Context,
 	tenantID, cardID, deviceID, alarmLevel, alarmType, processType, eventID string,
 	alarmTimestamp int64,
 ) error {
-	// 构建报警处理消息
+	_ = deviceID // 单程票后不入 payload；保留入参兼容 caller 签名
 	alarmProcessMsg := rediscommon.BuildAlarmProcessMessage(
 		"wisefido-data",
-		tenantID,
 		cardID,
-		deviceID,
 		alarmLevel,
 		alarmType,
 		processType, // 如 "ack"
@@ -62,7 +70,6 @@ func (p *ConfigPublisher) PublishAlarmProcessMessage(
 		p.logger.Error("Failed to publish alarm process message",
 			zap.String("tenant_id", tenantID),
 			zap.String("card_id", cardID),
-			zap.String("device_id", deviceID),
 			zap.String("alarm_level", alarmLevel),
 			zap.String("process_type", processType),
 			zap.String("stream", streamName),
@@ -74,7 +81,6 @@ func (p *ConfigPublisher) PublishAlarmProcessMessage(
 	p.logger.Info("Published alarm process message",
 		zap.String("tenant_id", tenantID),
 		zap.String("card_id", cardID),
-		zap.String("device_id", deviceID),
 		zap.String("alarm_level", alarmLevel),
 		zap.String("alarm_type", alarmType),
 		zap.String("process_type", processType),
@@ -85,24 +91,30 @@ func (p *ConfigPublisher) PublishAlarmProcessMessage(
 	return nil
 }
 
-// PublishAlarmDeviceMessage 发送设备告警配置变更消息到 config:alarmDevice:stream
-// 供 qinglan 消费用于更新设备告警配置
+// PublishAlarmDeviceMessage 发送设备告警配置变更消息到 config:alarmDevice:stream，供 cardagg 消费用于失效 enablement 缓存。
+//
+// device_ipv6 单程票后 addr 是 cache key；deviceID/deviceUID 入参保留兼容签名 (R-002 外部 API caller 仍传 UUID)，
+// 内部反查 device_ipv6 后填 payload。
 func (p *ConfigPublisher) PublishAlarmDeviceMessage(
 	ctx context.Context,
 	tenantID, deviceID, deviceUID, settingType string,
 	settingData map[string]interface{},
 ) error {
-	// 构建设备告警配置变更消息
+	addr := p.lookupDeviceAddr(ctx, deviceID)
+	if !addr.IsValid() {
+		p.logger.Warn("PublishAlarmDeviceMessage skipped: cannot resolve device_addr",
+			zap.String("tenant_id", tenantID),
+			zap.String("device_id", deviceID),
+			zap.String("device_uid", deviceUID))
+		return nil
+	}
 	settingMsg := rediscommon.BuildAlarmDeviceMessage(
 		"wisefido-data",
-		tenantID,
-		deviceID,
-		deviceUID,
+		addr,
 		settingType,
 		settingData,
 	)
 
-	// 发布到 config:alarmDevice:stream
 	streamName := rediscommon.StreamConfigAlarmDevice.Name
 	maxLen, retentionSeconds := rediscommon.GetStreamConfig(rediscommon.StreamConfigAlarmDevice, nil)
 
@@ -118,8 +130,7 @@ func (p *ConfigPublisher) PublishAlarmDeviceMessage(
 	if err != nil {
 		p.logger.Error("Failed to publish alarm device message",
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
-			zap.String("device_uid", deviceUID),
+			zap.String("device_addr", addr.String()),
 			zap.String("setting_type", settingType),
 			zap.String("stream", streamName),
 			zap.Error(err),
@@ -129,14 +140,30 @@ func (p *ConfigPublisher) PublishAlarmDeviceMessage(
 
 	p.logger.Info("Published alarm device message",
 		zap.String("tenant_id", tenantID),
-		zap.String("device_id", deviceID),
-		zap.String("device_uid", deviceUID),
+		zap.String("device_addr", addr.String()),
 		zap.String("setting_type", settingType),
 		zap.String("stream", streamName),
 		zap.String("stream_id", streamID),
 	)
 
 	return nil
+}
+
+// lookupDeviceAddr 由 deviceID UUID 反查 device_ipv6（device_ipv6 单程票内部 helper）。
+// 失败返回零值 netip.Addr；caller 用 .IsValid() 判断。
+func (p *ConfigPublisher) lookupDeviceAddr(ctx context.Context, deviceID string) netip.Addr {
+	if p.db == nil || deviceID == "" {
+		return netip.Addr{}
+	}
+	var addrStr string
+	err := p.db.QueryRowContext(ctx,
+		`SELECT host(d.device_ipv6)::text FROM devices d WHERE d.device_id = $1::uuid LIMIT 1`,
+		deviceID).Scan(&addrStr)
+	if err != nil {
+		return netip.Addr{}
+	}
+	a, _ := netip.ParseAddr(addrStr)
+	return a
 }
 
 // PublishCardChangeMessage 发送卡片变更消息到 config:card:stream
@@ -199,7 +226,7 @@ func compactDeviceUIDs(uids []string) []string {
 // PublishConfigCardReset 发送 reset 通知到 config:card:stream。
 func (p *ConfigPublisher) PublishConfigCardReset(ctx context.Context) error {
 	resetMsg := rediscommon.BuildCardChangeMessageWithExtraAndType(
-		"wisefido-data", "", "", "", "", rediscommon.ConfigCardChanged,
+		"wisefido-data", "", "", rediscommon.ConfigCardChanged,
 		map[string]interface{}{"op": "reset"},
 	)
 	streamName := rediscommon.StreamConfigCard.Name
@@ -259,21 +286,32 @@ func (p *ConfigPublisher) PublishCardResidentChanged(
 }
 
 // PublishCardChangeMessageWithExtraAndType 发送卡片变更消息到 config:card:stream（支持额外字段和自定义 type 字段）
-// messageType 一般为 ConfigCardChanged；extraData 可含：
-//   - device_id / change_type
-//   - affected_device_uids: []string，网关按 UID 逐项失效 baseline
+//
+// device_ipv6 单程票后 owl-common 的 BuildCardChangeMessageWithExtraAndType 简化为 (source, cardID, spatialPrefix, messageType, extra)。
+// tenantID/unitID/branchID 入参保留兼容 caller 签名；tenantID 走 extra 透传给 cardagg 用于按 tenant 失效；unitID/branchID 弃用。
 func (p *ConfigPublisher) PublishCardChangeMessageWithExtraAndType(
 	ctx context.Context,
 	tenantID, cardID, unitID, branchID, messageType string,
 	extraData map[string]interface{},
 ) error {
-	// 构建卡片变更消息（使用 BuildCardChangeMessageWithExtraAndType）
+	if extraData == nil {
+		extraData = make(map[string]interface{})
+	}
+	if tenantID != "" {
+		extraData["tenant_id"] = tenantID
+	}
+	if unitID != "" {
+		extraData["unit_id"] = unitID
+	}
+	if branchID != "" {
+		extraData["branch_id"] = branchID
+	}
+	// 构建卡片变更消息（spatial_prefix 由 caller 在 extras 中提供，老 caller 暂传空）
+	spatialPrefix, _ := extraData["spatial_prefix"].(string)
 	cardMsg := rediscommon.BuildCardChangeMessageWithExtraAndType(
 		"wisefido-data",
-		tenantID,
 		cardID,
-		unitID,
-		branchID,
+		spatialPrefix,
 		messageType,
 		extraData,
 	)
