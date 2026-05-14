@@ -466,14 +466,21 @@ func (c *DeviceMetaCache) loadFromDB(ctx context.Context, cardID string) *CardMe
 		meta.CardType = cardType.String
 	}
 
-	// 加载 cards.spatial_prefix 下所有 device → DeviceMeta（addr 为 key）
+	// 加载本卡 LPM-拥有的 device → DeviceMeta（addr 为 key）。
+	// v3 owning rule: 设备归 LPM 最长的覆盖卡；UnitCard (/80) 不含被 /96 bed card 拥有的 sleepad。
+	// 之前 SQL "d.device_ipv6 <<= c.spatial_prefix" 让 UnitCard.Devices 含所有 /80 下设备
+	// 包括下层 bed card 拥有的 sleepad → hasBedCapableDevice 误判 → bed_state 反复 init。
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT host(d.device_ipv6)::text,
 		       COALESCE(dfm.device_type::text, '')
-		FROM cards c
-		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
+		FROM devices d
 		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		WHERE c.spatial_prefix = $1::INET
+		WHERE (
+		  SELECT spatial_prefix FROM cards
+		  WHERE spatial_prefix >>= d.device_ipv6
+		  ORDER BY masklen(spatial_prefix) DESC
+		  LIMIT 1
+		) = $1::INET
 	`, cardID)
 	if err != nil {
 		if c.logger != nil {
