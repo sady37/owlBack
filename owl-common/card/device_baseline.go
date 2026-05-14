@@ -1,6 +1,9 @@
 package card
 
-import "strings"
+import (
+	"net/netip"
+	"strings"
+)
 
 // Phase A 后：subject_entity 由 publisher（device-gateway 端）填写，未绑卡用 device_id 占位。
 // 历史的 StreamHeadCardID / EffectiveCardID 助手已删除（不再需要"包头 cardID 兜底回填"），
@@ -27,15 +30,19 @@ const (
 	BaselineFieldUpdatedAtMS        = "updated_at_ms"
 )
 
-// DeviceBaseline 设备身份与策略的统一类型：CardDB 联合查询 Scan、网关流包头、Redis/JSON、进程内缓存均用此结构（原 DeviceCardMapping 已并入）。
+// DeviceBaseline 设备身份与策略的统一类型：CardDB 联合查询 Scan、网关流包头、Redis/JSON、进程内缓存均用此结构。
 // 约定：branch_id / building_id / floor 可选；同房判定以 tenant_id + unit_id（若 room 仅在 unit 内唯一则必填）+ room_id 为准。
-// 未绑卡时 CardID 为空，由 publisher 在构造 envelope.SubjectEntity 时回退为 device_id（cardagg IotPreparedHandler 未绑卡占位规则）。
+//
+// device_ipv6 单程票（doc/device_ipv6_migration_checklist.md）：
+//   - DeviceAddr 是路由层主键；DeviceID/DeviceUID/TenantID 等保留作 admin/外部 API 边界 (R-002/R-003)
+//   - 未绑卡时 CardID 为空，publisher 在构造 envelope.SubjectEntity 时留空（R-009 红线）
 type DeviceBaseline struct {
 	// 硬件身份
-	DeviceID   string `json:"device_id,omitempty"`
-	DeviceUID  string `json:"device_uid,omitempty"`
-	DeviceCode string `json:"device_code,omitempty"`
-	DeviceType string `json:"device_type,omitempty"`
+	DeviceID   string     `json:"device_id,omitempty"`
+	DeviceUID  string     `json:"device_uid,omitempty"`
+	DeviceCode string     `json:"device_code,omitempty"`
+	DeviceType string     `json:"device_type,omitempty"`
+	DeviceAddr netip.Addr `json:"device_addr,omitempty"` // /128 INET，路由层主键
 
 	// 组织（tenant 业务上必填；branch/building/floor 可省略）
 	TenantID   string `json:"tenant_id,omitempty"`

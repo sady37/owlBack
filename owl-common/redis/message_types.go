@@ -3,6 +3,7 @@ package redis
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"strconv"
 	"time"
 
@@ -16,7 +17,6 @@ import (
 //
 // 当前约定：device_type 始终是源 sensor 物理类型（"Radar" / "Sleepad"），
 // AI 派生身份由 dataValue 内 observation.Track.Source 一等公民字段表达。
-// 例：source = "ai_ghost_penalty" / "ai_track_real"。
 // =============================================================================
 
 // =============================================================================
@@ -25,7 +25,7 @@ import (
 // =============================================================================
 
 const (
-	DataCategoryKey = "dataCategory" // dataValue 每项“数据类别”键名；observation 字段名见 observation 包 Field*
+	DataCategoryKey = "dataCategory" // dataValue 每项"数据类别"键名；observation 字段名见 observation 包 Field*
 	DataValueKey    = "dataValue"    // iot:*:stream 顶层键名，与 IoTStreamMessage 的 json 一致
 	EventNameKey    = "event_name"   // dataValue 每项事件名，alarm/event 流必填；NewSingleItemMessage 自动补
 )
@@ -34,73 +34,46 @@ const (
 // 块 2：IoTStreamMessage（iot:*:stream 唯一消息体）
 // =============================================================================
 
-// IoTStreamMessage envelope（Phase A v2，TDPv2 三维度对齐）：
+// IoTStreamMessage envelope（device_ipv6 v2，单程票，2026-05-13）：
 //
-//   - Producer / SubjectEntity / SpatialPath 显式 first-class
-//   - 历史 CardID 字段已弃用，subject 走 SubjectEntity
-//   - DeviceUID 仍保留（Phase D 移除）；wire 不再依赖物理 MAC/SN 做身份
-//
-// 5W where 演进（envelope_protocol_evolution.md）：
-//   - 旧字段 SemanticLocation（单一 room_id/unit_id 字符串）保留兜底，新代码不要再写
-//   - 新字段 SpatialPath / ScopePrefix（IPv6 风格） + RoomID / UnitID（first-class UUID）
-//   - 路径格式 "tenant.branch.building.floor.unit.room.bed" 7 段，缺级用空（".."）
-//   - ScopePrefix 1-7：producer 写到自己有的精度；consumer 用 prefix-match 决定订阅
+//   - DeviceAddr 是设备唯一身份；无 MAC/UUID 字段
+//   - 空间归属由 consumer 用 prefix slice 派生：
+//       addr.Prefix(80) = unit；addr.Prefix(88) = room；addr.Prefix(96) = bed
+//   - tenant 同理：addr.Prefix(48)
 //
 // SubjectEntity 填写责任：
-//   - device-gateway（qinglan/sleepace）：必填——已绑卡=card_id；未绑卡=device_id 占位
+//   - device-gateway（qinglan/sleepace）：已绑卡填 card_id；未绑卡留空（R-009 红线）
 //   - sensor agent（wisefido-sensor 等 layer 1+）：留空，cardagg 反查
+//
+// 详 doc/device_ipv6_migration_checklist.md
 type IoTStreamMessage struct {
-	// TDPv2 三维度
-	Producer       string `json:"producer"`                  // "device:<UUID>" / "sensor.caregiver01"
-	SubjectEntity  string `json:"subject_entity,omitempty"`  // 已绑=card_id；未绑=device_id；AI 留空
+	// TDPv2 envelope
+	Producer       string `json:"producer"`                  // "device:<canonical_ipv6>"，BuildDeviceProducer(addr) 生成
+	SubjectEntity  string `json:"subject_entity,omitempty"`  // card_id (UUID) when bound; 空 = 未绑卡 (R-009)
 	SequenceNumber uint64 `json:"sequence_number,omitempty"` // producer 内单调
 
-	// 5W where（first-class，IPv6 风格）—— 新代码必填，旧 SemanticLocation 保留兜底
-	UnitID      string `json:"unit_id,omitempty"`      // 5W where: unit
-	RoomID      string `json:"room_id,omitempty"`      // 5W where: room
-	BedID       string `json:"bed_id,omitempty"`       // 5W where: bed（可选；床上传感器才填）
-	SpatialPath string `json:"spatial_path,omitempty"` // "tenant.branch.building.floor.unit.room.bed"，缺级空
-	ScopePrefix int    `json:"scope_prefix,omitempty"` // 1-7：producer 写到的精度；consumer prefix-match 用
+	// 5W where：唯一 device 标识；prefix slice 派生 unit/room/bed
+	DeviceAddr netip.Addr `json:"device_addr"` // /128 INET, e.g. fd00:0:3:111:3:101:a2ac:d523
+	DeviceType string     `json:"device_type"` // "Radar" / "Sleepad" — 物理类别
 
-	// Deprecated: 用 RoomID/UnitID/SpatialPath 替代；过渡期内继续兜底反序列化。
-	SemanticLocation string `json:"semantic_location,omitempty"`
-
-	// 物理身份（Phase D 远期淡出）
-	DeviceUID  string `json:"device_uid"`  // 主键，业务逻辑
-	DeviceID   string `json:"device_id"`   // server UUID
-	DeviceType string `json:"device_type"`
-
-	TenantID  string        `json:"tenant_id"`
+	// Envelope wrapper
 	Timestamp int64         `json:"timestamp"`
 	TopicType string        `json:"topic_type"`
 	Category  string        `json:"category"`
-	DataValue []interface{} `json:"dataValue"` // monitor 流为 []Track 形状，字段名见 observation 包
+	DataValue []interface{} `json:"dataValue"`
 }
 
+// IotHead 是 IoTStreamMessage 的 envelope-only 视图（不带 DataValue），用于不需 payload 的快速透传。
 type IotHead struct {
-	Producer       string `json:"producer"`
-	SubjectEntity  string `json:"subject_entity,omitempty"`
-	SequenceNumber uint64 `json:"sequence_number,omitempty"`
-
-	// 5W where 新字段（first-class）
-	UnitID      string `json:"unit_id,omitempty"`
-	RoomID      string `json:"room_id,omitempty"`
-	BedID       string `json:"bed_id,omitempty"`
-	SpatialPath string `json:"spatial_path,omitempty"`
-	ScopePrefix int    `json:"scope_prefix,omitempty"`
-
-	// Deprecated: 用 RoomID/UnitID/SpatialPath
-	SemanticLocation string `json:"semantic_location,omitempty"`
-
-	DeviceUID  string `json:"device_uid"`
-	DeviceID   string `json:"device_id"`
-	DeviceType string `json:"device_type"`
-	TenantID   string `json:"tenant_id"`
-	Timestamp  int64  `json:"timestamp"`
-	TopicType  string `json:"topic_type"`
-	Category   string `json:"category"`
+	Producer       string     `json:"producer"`
+	SubjectEntity  string     `json:"subject_entity,omitempty"`
+	SequenceNumber uint64     `json:"sequence_number,omitempty"`
+	DeviceAddr     netip.Addr `json:"device_addr"`
+	DeviceType     string     `json:"device_type"`
+	Timestamp      int64      `json:"timestamp"`
+	TopicType      string     `json:"topic_type"`
+	Category       string     `json:"category"`
 }
-
 
 func streamStr(v interface{}) string {
 	if v == nil {
@@ -122,40 +95,12 @@ func (m *IoTStreamMessage) ToStreamMap() map[string]interface{} {
 		"producer":        m.Producer,
 		"subject_entity":  m.SubjectEntity,
 		"sequence_number": fmt.Sprintf("%d", m.SequenceNumber),
-		"device_uid":      m.DeviceUID,
+		"device_addr":     m.DeviceAddr.String(), // 无效 addr 序列化为 "invalid IP"，consumer 端 ParseAddr 会失败
 		"device_type":     m.DeviceType,
-		"tenant_id":       m.TenantID,
 		"timestamp":       fmt.Sprintf("%d", m.Timestamp),
 		"topic_type":      m.TopicType,
 		"category":        m.Category,
 		DataValueKey:      string(dataValueJSON),
-	}
-	if m.DeviceID != "" {
-		out["device_id"] = m.DeviceID
-	}
-	// 5W where（first-class）；只写非空字段，省 wire 体积
-	if m.UnitID != "" {
-		out["unit_id"] = m.UnitID
-	}
-	if m.RoomID != "" {
-		out["room_id"] = m.RoomID
-	}
-	if m.BedID != "" {
-		out["bed_id"] = m.BedID
-	}
-	if m.SpatialPath != "" {
-		out["spatial_path"] = m.SpatialPath
-	}
-	if m.ScopePrefix > 0 {
-		out["scope_prefix"] = fmt.Sprintf("%d", m.ScopePrefix)
-	}
-	// Deprecated 兜底：旧消费者仍读 semantic_location（取 RoomID 优先，否则 UnitID）
-	if loc := m.SemanticLocation; loc != "" {
-		out["semantic_location"] = loc
-	} else if m.RoomID != "" {
-		out["semantic_location"] = m.RoomID
-	} else if m.UnitID != "" {
-		out["semantic_location"] = m.UnitID
 	}
 	return out
 }
@@ -164,29 +109,19 @@ func FromStreamMap(values map[string]interface{}) (*IoTStreamMessage, error) {
 	msg := &IoTStreamMessage{}
 	msg.Producer = streamStr(values["producer"])
 	msg.SubjectEntity = streamStr(values["subject_entity"])
-	msg.SemanticLocation = streamStr(values["semantic_location"])
-	// 5W where（first-class）；新字段优先，旧 SemanticLocation 兜底
-	msg.UnitID = streamStr(values["unit_id"])
-	msg.RoomID = streamStr(values["room_id"])
-	msg.BedID = streamStr(values["bed_id"])
-	msg.SpatialPath = streamStr(values["spatial_path"])
-	if sp := streamStr(values["scope_prefix"]); sp != "" {
-		if v, err := strconv.Atoi(sp); err == nil {
-			msg.ScopePrefix = v
-		}
-	}
 	if seq := streamStr(values["sequence_number"]); seq != "" {
 		if v, err := strconv.ParseUint(seq, 10, 64); err == nil {
 			msg.SequenceNumber = v
 		}
 	}
-	msg.DeviceUID = streamStr(values["device_uid"])
-	msg.DeviceID = streamStr(values["device_id"])
-	if msg.DeviceUID == "" {
-		msg.DeviceUID = msg.DeviceID
+	if addrStr := streamStr(values["device_addr"]); addrStr != "" {
+		addr, err := netip.ParseAddr(addrStr)
+		if err != nil {
+			return nil, fmt.Errorf("parse device_addr %q: %w", addrStr, err)
+		}
+		msg.DeviceAddr = addr
 	}
 	msg.DeviceType = streamStr(values["device_type"])
-	msg.TenantID = streamStr(values["tenant_id"])
 	if ts := streamStr(values["timestamp"]); ts != "" {
 		msg.Timestamp, _ = strconv.ParseInt(ts, 10, 64)
 	}
@@ -204,31 +139,26 @@ func FromStreamMap(values map[string]interface{}) (*IoTStreamMessage, error) {
 }
 
 // =============================================================================
-// SpatialPath helpers 已迁移至独立 package owl-common/spatial（2026-05-07）
+// SpatialPath helpers 见独立 package owl-common/spatial（2026-05-07）
 //
-// 调用方请用：
 //   import "owl-common/spatial"
-//   spatial.BuildPath / spatial.MatchPrefix / spatial.MatchAddress / ...
-//   spatial.Address{Tenant:"T", Unit:"U", Room:"R", Bed:"B"}.Path()
-//
-// 见 doc/datagram_envelope.md 与 spatial/spatial.go。
+//   spatial.LongestPrefixMatch / spatial.DeriveDeviceAddr / ...
 // =============================================================================
 
-// BuildDeviceProducer 设备 Producer 标识：用 server UUID（device_id），不用 device_uid (MAC/SN)。
-// 见 doc/TODO.md Phase A: 内网仍有 plain MQTT 1883；MAC 泄露 → 物理追踪 + 位置关联。
-func BuildDeviceProducer(deviceID string) string {
-	if deviceID == "" {
+// BuildDeviceProducer 设备 Producer 标识：用 canonical IPv6（device_addr）。
+// 旧 UUID/MAC 路径已退役（device_ipv6 单程票 R-001）。
+func BuildDeviceProducer(addr netip.Addr) string {
+	if !addr.IsValid() {
 		return ""
 	}
-	return "device:" + deviceID
+	return "device:" + addr.String()
 }
 
-// NewIoTStreamMessageWithData 构造 envelope（Phase A v2）。
-// Producer 留给 caller 自行 msg.Producer = ... 设置（device gateway 用 BuildDeviceProducer(deviceID)；
-// sensor agent 用 "sensor.<name>"），避免参数列表暴涨。
-// subjectEntity 由 caller 明确填：device-gateway 已绑=card_id；未绑=device_id 占位；sensor agent 留空。
-func NewIoTStreamMessageWithData(tenantID, subjectEntity, deviceUID, deviceID, deviceType string, ts int64, topicType, category string, data map[string]interface{}) *IoTStreamMessage {
-	// Stage 1a/1b：在 publish 边界 strip dataCategory + event_name，envelope.Category 是事件类型唯一权威
+// NewIoTStreamMessageWithData 构造 envelope（device_ipv6 v2）。
+// Producer 默认 "device:<addr>"；sensor agent 调用方再覆盖 msg.Producer = "sensor.<name>"。
+// subjectEntity 由 caller 明确填：device-gateway 已绑=card_id；未绑/sensor agent 留空。
+func NewIoTStreamMessageWithData(addr netip.Addr, subjectEntity, deviceType string, ts int64, topicType, category string, data map[string]interface{}) *IoTStreamMessage {
+	// publish 边界 strip dataCategory + event_name；envelope.Category 是事件类型唯一权威
 	if data != nil {
 		delete(data, DataCategoryKey)
 		delete(data, EventNameKey)
@@ -237,31 +167,25 @@ func NewIoTStreamMessageWithData(tenantID, subjectEntity, deviceUID, deviceID, d
 	if data == nil {
 		dataValue = nil
 	}
-	msg := &IoTStreamMessage{
-		Producer:      BuildDeviceProducer(deviceID), // 默认 device-gateway 语义；sensor agent 调用方再覆盖
+	return &IoTStreamMessage{
+		Producer:      BuildDeviceProducer(addr),
 		SubjectEntity: subjectEntity,
-		DeviceUID:     deviceUID,
+		DeviceAddr:    addr,
 		DeviceType:    deviceType,
-		TenantID:      tenantID,
 		Timestamp:     ts,
 		TopicType:     topicType,
 		Category:      category,
 		DataValue:     dataValue,
 	}
-	if deviceID != "" {
-		msg.DeviceID = deviceID
-	}
-	return msg
 }
 
-func BuildIoTStreamMessage(deviceUID, deviceID, deviceType, subjectEntity, tenantID string, timestamp int64, topicType, category string, dataValue []interface{}) IoTStreamMessage {
+// BuildIoTStreamMessage 多 item dataValue 版本。
+func BuildIoTStreamMessage(addr netip.Addr, deviceType, subjectEntity string, timestamp int64, topicType, category string, dataValue []interface{}) IoTStreamMessage {
 	return IoTStreamMessage{
-		Producer:      BuildDeviceProducer(deviceID),
+		Producer:      BuildDeviceProducer(addr),
 		SubjectEntity: subjectEntity,
-		DeviceUID:     deviceUID,
-		DeviceID:      deviceID,
+		DeviceAddr:    addr,
 		DeviceType:    deviceType,
-		TenantID:      tenantID,
 		Timestamp:     timestamp,
 		TopicType:     topicType,
 		Category:      category,
@@ -269,7 +193,7 @@ func BuildIoTStreamMessage(deviceUID, deviceID, deviceType, subjectEntity, tenan
 	}
 }
 
-// FirstDataValue 取 dataValue 首项为 map，无或类型不对返回 nil。单条 payload 时 cardagg 等用此取 data。
+// FirstDataValue 取 dataValue 首项为 map，无或类型不对返回 nil。
 func FirstDataValue(dataValue []interface{}) map[string]interface{} {
 	if len(dataValue) == 0 {
 		return nil
@@ -281,9 +205,8 @@ func FirstDataValue(dataValue []interface{}) map[string]interface{} {
 	return v
 }
 
-// NewSingleItemMessage 构造单条 data 的 IoTStreamMessage。先有 dataCategory（data 内），包头 Category 优先取 data 的 dataCategory，缺省时用参数 category；保证 payload 含 dataCategory。deviceID 可选，非空时写入包头。
-// Producer 默认按 device-gateway 语义自动填充 ("device:<deviceID>")；sensor agent 调用方在拿到结果后覆盖 msg.Producer。
-func NewSingleItemMessage(tenantID, subjectEntity, deviceUID, deviceID, deviceType string, ts int64, topicType, category string, data map[string]interface{}) *IoTStreamMessage {
+// NewSingleItemMessage 构造单条 data 的 IoTStreamMessage，category 兜底从 data["dataCategory"] 提取。
+func NewSingleItemMessage(addr netip.Addr, subjectEntity, deviceType string, ts int64, topicType, category string, data map[string]interface{}) *IoTStreamMessage {
 	if data == nil {
 		data = make(map[string]interface{})
 	}
@@ -293,13 +216,11 @@ func NewSingleItemMessage(tenantID, subjectEntity, deviceUID, deviceID, deviceTy
 	}
 	cat := category
 	if cat == "" {
-		// 兼容老 caller：category 参数为空时从 data["dataCategory"] 提一次进 envelope（提完即剥）
 		if v, ok := withCat[DataCategoryKey].(string); ok {
 			cat = v
 		}
 	}
-	// Stage 1b：dataCategory + event_name 由 NewIoTStreamMessageWithData 边界 strip；envelope.Category 唯一权威
-	return NewIoTStreamMessageWithData(tenantID, subjectEntity, deviceUID, deviceID, deviceType, ts, topicType, cat, withCat)
+	return NewIoTStreamMessageWithData(addr, subjectEntity, deviceType, ts, topicType, cat, withCat)
 }
 
 // =============================================================================
@@ -327,7 +248,7 @@ const (
 	ConfigDeviceAlarmSettingUpdated = "config.alarmDevice"
 	ConfigAlarmProcess              = "config.alarmProcess"
 	ConfigAlarmProcessAck           = "config.alarm.process.ack" // 已弃用
-	ConfigCardChanged = "config.card"
+	ConfigCardChanged               = "config.card"
 )
 
 const (
@@ -336,18 +257,15 @@ const (
 	AlarmStatusResolved     = "resolved"
 	AlarmStatusAutoResolved = "auto_resolved"
 	AlarmStatusExpired      = "expired"
-	AlarmProcessActionAck  = "ack"
+	AlarmProcessActionAck   = "ack"
 )
 
-func BuildDeviceStatusMessage(deviceUID, deviceID, deviceType, subjectEntity, tenantID string, timestamp int64, statuses map[string]int) IoTStreamMessage {
-	// Stage 1b：dataValue 不再带 dataCategory；envelope.Category 是事件类型唯一权威
+func BuildDeviceStatusMessage(addr netip.Addr, subjectEntity, deviceType string, timestamp int64, statuses map[string]int) IoTStreamMessage {
 	return IoTStreamMessage{
-		Producer:      BuildDeviceProducer(deviceID),
+		Producer:      BuildDeviceProducer(addr),
 		SubjectEntity: subjectEntity,
-		DeviceUID:     deviceUID,
-		DeviceID:      deviceID,
+		DeviceAddr:    addr,
 		DeviceType:    deviceType,
-		TenantID:      tenantID,
 		Timestamp:     timestamp,
 		TopicType:     "status",
 		Category:      "deviceStatus",
@@ -357,12 +275,14 @@ func BuildDeviceStatusMessage(deviceUID, deviceID, deviceType, subjectEntity, te
 	}
 }
 
-func BuildAlarmDeviceMessage(source, tenantID, deviceID, deviceUID, settingType string, settingData map[string]interface{}) ConfigChangeMessage {
+// BuildAlarmDeviceMessage 设备告警配置变更通知（config 流）。
+// device_addr 是 v2 路由 key；qinglan/sleepace consumer 用 addr.Prefix(48) 派生 tenant，
+// 物理 MAC 由 consumer 自己 DB 反查 (device_addr → devices.device_id → dfm.device_uid)
+// 后下推到设备（IPv6 只携 MAC 末 32 bit，OUI 段需 DB 补全）。
+func BuildAlarmDeviceMessage(source string, addr netip.Addr, settingType string, settingData map[string]interface{}) ConfigChangeMessage {
 	now := time.Now()
 	data := map[string]interface{}{
-		"tenant_id":    tenantID,
-		"device_id":    deviceID,
-		"device_uid":   deviceUID,
+		"device_addr":  addr.String(),
 		"setting_type": settingType,
 		"timestamp_ms": now.UnixMilli(),
 	}
@@ -379,7 +299,11 @@ func BuildAlarmDeviceMessage(source, tenantID, deviceID, deviceUID, settingType 
 	}
 }
 
-func BuildAlarmProcessMessage(source, tenantID, cardID, deviceID, alarmLevel, alarmType, processType, eventID string, alarmTimestamp int64) ConfigChangeMessage {
+// BuildAlarmProcessMessage 告警处置通知（config 流）；cardID 是路由 key（cards.card_id UUID 仍是 PK）。
+//
+// device_ipv6 单程票后不再带 device_addr/device_id —— consumer (cardagg/alarm_process_handler)
+// 验证只读 cardID + alarmLevel + alarmType + eventID，device 字段是历史冗余。
+func BuildAlarmProcessMessage(source, cardID, alarmLevel, alarmType, processType, eventID string, alarmTimestamp int64) ConfigChangeMessage {
 	now := time.Now()
 	return ConfigChangeMessage{
 		SpecVersion: "1.0",
@@ -388,9 +312,7 @@ func BuildAlarmProcessMessage(source, tenantID, cardID, deviceID, alarmLevel, al
 		Type:        ConfigAlarmProcess,
 		Time:        now.UTC().Format(time.RFC3339),
 		Data: map[string]interface{}{
-			"tenant_id":       tenantID,
 			"card_id":         cardID,
-			"device_id":       deviceID,
 			"alarm_level":     alarmLevel,
 			"alarm_type":      alarmType,
 			"alarm_timestamp": alarmTimestamp,
@@ -400,6 +322,8 @@ func BuildAlarmProcessMessage(source, tenantID, cardID, deviceID, alarmLevel, al
 	}
 }
 
+// DeviceItemForMessage 是 admin/api 后台对设备清单的展示项；保留 device_uid/device_id 字符串字段
+// 给前端 UI 渲染（外部 API 边界 R-002），不进 internal routing。
 type DeviceItemForMessage struct {
 	DeviceID   string      `json:"device_id"`
 	DeviceUID  string      `json:"device_uid"`
@@ -409,32 +333,28 @@ type DeviceItemForMessage struct {
 }
 
 type CardChangeData struct {
-	TenantID    string `json:"tenant_id"`
-	CardID      string `json:"card_id"`
-	BranchID    string `json:"branch_id"`
-	UnitID      string `json:"unit_id"`
-	TimestampMs int64  `json:"timestamp_ms"`
+	CardID         string `json:"card_id"`
+	SpatialPrefix  string `json:"spatial_prefix"` // INET CIDR e.g. "fd00:0:3:111:3:101::/96"
+	TimestampMs    int64  `json:"timestamp_ms"`
 }
 
-func BuildCardChangeMessage(source, tenantID, cardID, unitID, branchID string) ConfigChangeMessage {
-	return BuildCardChangeMessageWithExtraAndType(source, tenantID, cardID, unitID, branchID, ConfigCardChanged, nil)
+func BuildCardChangeMessage(source, cardID, spatialPrefix string) ConfigChangeMessage {
+	return BuildCardChangeMessageWithExtraAndType(source, cardID, spatialPrefix, ConfigCardChanged, nil)
 }
 
-func BuildCardChangeMessageWithExtra(source, tenantID, cardID, unitID, branchID string, extraData map[string]interface{}) ConfigChangeMessage {
-	return BuildCardChangeMessageWithExtraAndType(source, tenantID, cardID, unitID, branchID, ConfigCardChanged, extraData)
+func BuildCardChangeMessageWithExtra(source, cardID, spatialPrefix string, extraData map[string]interface{}) ConfigChangeMessage {
+	return BuildCardChangeMessageWithExtraAndType(source, cardID, spatialPrefix, ConfigCardChanged, extraData)
 }
 
-func BuildCardChangeMessageWithExtraAndType(source, tenantID, cardID, unitID, branchID, messageType string, extraData map[string]interface{}) ConfigChangeMessage {
+func BuildCardChangeMessageWithExtraAndType(source, cardID, spatialPrefix, messageType string, extraData map[string]interface{}) ConfigChangeMessage {
 	if messageType == "" {
 		messageType = ConfigCardChanged
 	}
 	now := time.Now()
 	data := map[string]interface{}{
-		"tenant_id":    tenantID,
-		"card_id":      cardID,
-		"branch_id":    branchID,
-		"unit_id":      unitID,
-		"timestamp_ms": now.UnixMilli(),
+		"card_id":        cardID,
+		"spatial_prefix": spatialPrefix,
+		"timestamp_ms":   now.UnixMilli(),
 	}
 	for k, v := range extraData {
 		data[k] = v
@@ -451,6 +371,10 @@ func BuildCardChangeMessageWithExtraAndType(source, tenantID, cardID, unitID, br
 
 // =============================================================================
 // 块 5：Auth 流
+//
+// AuthMessage 保留 DeviceUID (MAC) — 外部 device 物理 auth 入口（R-002 边界）。
+// 设备 boot 时只持有 MAC（出厂烧录），通过 auth handshake 才能拿到 device_addr。
+// 这里是 IPv6 派生的"upstream 边界"，不能也用 device_addr。
 // =============================================================================
 
 const (
@@ -463,8 +387,8 @@ type AuthMessage struct {
 	Producer      string                 `json:"producer,omitempty"`
 	SubjectEntity string                 `json:"subject_entity,omitempty"`
 
-	DeviceUID  string                 `json:"device_uid"`
-	DeviceID   string                 `json:"device_id,omitempty"`
+	DeviceUID  string                 `json:"device_uid"`            // MAC，外部物理 auth 入口
+	DeviceID   string                 `json:"device_id,omitempty"`   // UUID，DB FK 引用 (R-003 不退役)；handshake 完成后由 gateway 补
 	DeviceType string                 `json:"device_type"`
 	TenantID   string                 `json:"tenant_id"`
 	Timestamp  int64                  `json:"timestamp"`
@@ -473,7 +397,8 @@ type AuthMessage struct {
 	DataValue  map[string]interface{} `json:"dataValue"`
 }
 
-// BuildAuthRequestMessage tenantID 须由 Device gateway 在查 device_store 后传入：在库则用该行 tenant_id，未入库则用平台 trash(000…000)。
+// BuildAuthRequestMessage tenantID 须由 Device gateway 在查 device_store 后传入：
+// 在库则用该行 tenant_id（v2 = INET CIDR），未入库则用平台 trash(000…000)。
 func BuildAuthRequestMessage(deviceUID, deviceType, tenantID, remoteAddr string, deviceInfo map[string]interface{}) AuthMessage {
 	now := time.Now().Unix()
 	dataValue := map[string]interface{}{
@@ -537,33 +462,3 @@ func BuildAuthResponseMessage(deviceUID, deviceType, tenantID, authStatus, mqttS
 type Track = observation.Track
 
 type EventItem = observation.EventItem
-/*
-iot:monitor:stream
-type MonitorTrack struck {
-		DeviceUID:  deviceUID,
-		DeviceType: deviceType,
-		TenantID:   tenantID,
-		Timestamp:  now,
-		TopicType:  AuthTopicType,
-		Category:   AuthCategoryResponse,
-        observation.Track
-		observation.Track
-		observation.Track3
-}
-
-iot:event:stream
-type MonitorTrack struck {
-		DeviceUID:  deviceUID,
-		DeviceType: deviceType,
-		TenantID:   tenantID,
-		Timestamp:  now,
-		TopicType:  AuthTopicType,
-		Category:   AuthCategoryResponse,
-        observation.EventItem
-}
-
-
-
-
-
-*/

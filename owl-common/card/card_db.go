@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/netip"
 
 	"github.com/lib/pq"
 )
@@ -34,6 +35,34 @@ func NewCardDB(db *sql.DB) *CardDB {
 // pgUIDNormExpr PostgreSQL：与 NormalizeDeviceLookupKey 对齐的 UID/MAC 比较（大小写与分隔符不敏感）。
 func pgUIDNormExpr(col string) string {
 	return fmt.Sprintf(`regexp_replace(upper(btrim(COALESCE(%s, ''))), E'[:.\\s-]', '', 'g')`, col)
+}
+
+// LookupCardByDeviceAddr — 内部消费链 v2 唯一公共反查 API：
+// device_addr (/128 INET) → cards.spatial_prefix LPM → card_id (UUID PK)。
+//
+// 命中 → 返回 card_id 字符串；未命中（unbound device，R-009）→ ("", sql.ErrNoRows)。
+//
+// 单 caller 用例：cardagg IotPreparedHandler / sensor consumer / wisefido-data alarm path。
+// 不再走 device_id UUID 路径（device_ipv6 单程票 R-001）。
+func LookupCardByDeviceAddr(ctx context.Context, db *sql.DB, addr netip.Addr) (string, error) {
+	if !addr.IsValid() {
+		return "", fmt.Errorf("device addr invalid")
+	}
+	var cardID sql.NullString
+	err := db.QueryRowContext(ctx, `
+		SELECT card_id::text
+		  FROM cards
+		 WHERE spatial_prefix >>= $1::INET
+		 ORDER BY masklen(spatial_prefix) DESC
+		 LIMIT 1
+	`, addr.String()).Scan(&cardID)
+	if err != nil {
+		return "", err
+	}
+	if !cardID.Valid || cardID.String == "" {
+		return "", sql.ErrNoRows
+	}
+	return cardID.String, nil
 }
 
 // LoadCodeToUIDMap batch loads device_code → device_uid from device_factory_meta.
@@ -126,6 +155,7 @@ func (c *CardDB) LookupCard(ctx context.Context, deviceKey string) (*DeviceBasel
 		BusinessAccess:    BusinessAccessDefault,
 		MonitoringEnabled: false,
 	}
+	var addrStr sql.NullString
 	err := c.db.QueryRowContext(ctx, `
 		WITH resolved AS (
 			SELECT COALESCE(
@@ -146,7 +176,8 @@ func (c *CardDB) LookupCard(ctx context.Context, deviceKey string) (*DeviceBasel
 		    COALESCE(dfm.device_code, ''),
 		    COALESCE(dfm.device_type::text, ''),
 		    host(set_masklen(d.device_ipv6, 96))::text AS bed_id,
-		    host(set_masklen(d.device_ipv6, 88))::text AS room_id
+		    host(set_masklen(d.device_ipv6, 88))::text AS room_id,
+		    host(d.device_ipv6)::text AS device_addr
 		FROM resolved r
 		JOIN device_factory_meta dfm
 		  ON `+pgUIDNormExpr("dfm.device_uid")+` = `+pgUIDNormExpr("r.uid")+`
@@ -154,12 +185,17 @@ func (c *CardDB) LookupCard(ctx context.Context, deviceKey string) (*DeviceBasel
 		LIMIT 1
 	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.BranchID, &m.UnitID, &m.CardID, &m.DeviceID,
 		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType,
-		&m.BedID, &m.RoomID)
+		&m.BedID, &m.RoomID, &addrStr)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not in cards: %s", deviceKey)
 		}
 		return nil, fmt.Errorf("lookup card: %w", err)
+	}
+	if addrStr.Valid && addrStr.String != "" {
+		if a, perr := netip.ParseAddr(addrStr.String); perr == nil {
+			m.DeviceAddr = a
+		}
 	}
 	return &m, nil
 }
@@ -262,7 +298,7 @@ func (c *CardDB) ResolveDeviceBaseline(ctx context.Context, deviceKey string) (D
 	return DeviceBaseline{}, false
 }
 
-// LookupDeviceOnly resolves device key when no card LPM hit; returns DeviceBaseline with CardID = DeviceID (virtual card).
+// LookupDeviceOnly resolves device key when no card LPM hit; CardID 留空（R-009 不再 UUID 占位）。
 func (c *CardDB) LookupDeviceOnly(ctx context.Context, deviceKey string) (*DeviceBaseline, error) {
 	m := DeviceBaseline{
 		AllowAccess:       false,
@@ -299,7 +335,7 @@ func (c *CardDB) LookupDeviceOnly(ctx context.Context, deviceKey string) (*Devic
 		}
 		return nil, fmt.Errorf("lookup device: %w", err)
 	}
-	m.CardID = m.DeviceID
+	// R-009: 不再用 DeviceID UUID 充 CardID；unbound device CardID 留空
 	return &m, nil
 }
 
@@ -338,7 +374,7 @@ func (c *CardDB) LookupDeviceStoreOnly(ctx context.Context, deviceKey string) (*
 		}
 		return nil, fmt.Errorf("lookup device_factory_meta only: %w", err)
 	}
-	m.CardID = m.DeviceID
+	// R-009: 不再用 DeviceID UUID 充 CardID；unbound device CardID 留空
 	return &m, nil
 }
 

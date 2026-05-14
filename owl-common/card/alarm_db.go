@@ -134,29 +134,8 @@ func RecalcCardAlarmState(ctx context.Context, db *sql.DB, cardID, tenantID stri
 	return &CardAlarmState{}, nil
 }
 
-// LookupCardIDByDeviceID v2: 通过 device_id → device_ipv6 → cards LPM。
-func LookupCardIDByDeviceID(ctx context.Context, db *sql.DB, deviceID string) (string, error) {
-	if deviceID == "" {
-		return "", fmt.Errorf("device_id is required")
-	}
-	var cardID sql.NullString
-	err := db.QueryRowContext(ctx, `
-		SELECT find_card_by_device_addr(d.device_ipv6)::text
-		FROM devices d
-		WHERE d.device_id = $1::uuid
-		LIMIT 1
-	`, deviceID).Scan(&cardID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("no devices row for device %s", deviceID)
-		}
-		return "", err
-	}
-	if !cardID.Valid || cardID.String == "" {
-		return "", fmt.Errorf("no card found for device %s", deviceID)
-	}
-	return cardID.String, nil
-}
+// LookupCardIDByDeviceID 已删除（device_ipv6 单程票 R-001）。
+// 使用 LookupCardByDeviceAddr(addr netip.Addr) 替代。
 
 // DeviceSelfRecoveryAlarmTypes 设备恢复时需自动解除的报警类型。
 // Elder care 策略：仅设备类可自动恢复；非设备类必须人工确认。

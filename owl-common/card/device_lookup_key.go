@@ -2,22 +2,16 @@ package card
 
 import "strings"
 
-// IsUUIDString 与 cardagg service.IsUUID 一致：36 字符带四段连字符。
-func IsUUIDString(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	return s[8] == '-' && s[13] == '-' && s[18] == '-' && s[23] == '-'
-}
-
-// NormalizeDeviceLookupKey 解析 device_uid / MAC 时用：去空格、冒号、连字符、点并大写。
-// UUID（36 字符标准形）原样返回，避免破坏 device_id 查库。
+// NormalizeDeviceLookupKey 规范化外部 device 标识（MAC / device_code）：
+// 去空格 / 冒号 / 连字符 / 点并大写。
+//
+// device_ipv6 单程票（doc/device_ipv6_migration_checklist.md）：
+//   - UUID device_id 已不参与 lookup 路径（R-001 删除 UUID 入口）
+//   - 仅外部 device gateway auth handshake (qinglan/sleepace 收 MQTT) 用 MAC/device_code 作 lookup key (R-002 边界)
+//   - 内部消费链一律用 netip.Addr 走 LookupCardByDeviceAddr LPM
 func NormalizeDeviceLookupKey(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return s
-	}
-	if IsUUIDString(s) {
 		return s
 	}
 	var b strings.Builder
