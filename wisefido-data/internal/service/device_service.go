@@ -14,6 +14,8 @@ import (
 	"owl-common/card"
 	rediscommon "owl-common/redis"
 
+	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -171,7 +173,7 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 // 仅返回字符串状态；要拿完整 DeviceStatus（含 signal_poor/angle_abnormal/sensor_detached/last_seen_ms）
 // 用 FillDeviceStatusFromCardagg。
 func FillDeviceOnlineStatusFromCardagg(ctx context.Context, stateReader *card.Reader, db *sql.DB, deviceIDs []string, logger *zap.Logger) map[string]string {
-	full := FillDeviceStatusFromCardagg(ctx, stateReader, deviceIDs, logger)
+	full := FillDeviceStatusFromCardagg(ctx, stateReader, db, deviceIDs, logger)
 	out := make(map[string]string, len(deviceIDs))
 	for _, id := range deviceIDs {
 		if id == "" {
@@ -184,17 +186,53 @@ func FillDeviceOnlineStatusFromCardagg(ctx context.Context, stateReader *card.Re
 			out[id] = "offline"
 		}
 	}
-	_ = db
 	return out
+}
+
+// resolveUUIDsToIPv6 把 UUID 形式的 device_id 批量翻译为 host(device_ipv6) 字符串，返回 uuid → ipv6 映射。
+// device_ipv6 单程票后 cardagg 写 device:status:{IPv6}；wisefido-data Phase 5 仍多处用 UUID，
+// 故在 FillDeviceStatusFromCardagg 入口统一翻译，避免逐 caller 改造。Phase 5 完成后可删此函数。
+//
+// 已是 IPv6 / 非 UUID 的 id 直接 passthrough（uuid.Parse 失败即视为非 UUID）。
+func resolveUUIDsToIPv6(ctx context.Context, db *sql.DB, ids []string) map[string]string {
+	if db == nil || len(ids) == 0 {
+		return nil
+	}
+	uuids := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, err := uuid.Parse(id); err == nil {
+			uuids = append(uuids, id)
+		}
+	}
+	if len(uuids) == 0 {
+		return nil
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT device_id::text, host(device_ipv6)
+		FROM devices
+		WHERE device_id = ANY($1::uuid[])
+	`, pq.Array(uuids))
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	m := make(map[string]string, len(uuids))
+	for rows.Next() {
+		var u, addr string
+		if err := rows.Scan(&u, &addr); err == nil && addr != "" {
+			m[u] = addr
+		}
+	}
+	return m
 }
 
 // FillDeviceStatusFromCardagg 批量读 device:status:{deviceID} Hash，返回完整 DeviceStatus map。
 // 缺失/读失败的 device 在 map 中不存在；调用方负责决定 fallback（典型：构造 offline=1 占位）。
 //
-// 调用方拿到完整 DeviceStatus 后，下发到前端时**必须把 offline 字段聚合**为 (Offline OR SensorDetached) —— API
-// 边界 contract（详见 FillDeviceOnlineStatusFromCardagg 注释）；否则老客户端（owlCare iOS / 老 Swift）只看 raw
-// `offline` 时会把 SensorDetached 设备误判为在线。
-func FillDeviceStatusFromCardagg(ctx context.Context, stateReader *card.Reader, deviceIDs []string, logger *zap.Logger) map[string]*card.DeviceStatus {
+// device_ipv6 单程票：cardagg 写的 redis key 是 device:status:{IPv6}；
+// 本函数若 caller 仍传 UUID，会通过 db 查 devices.device_ipv6 翻译，返回 map key **保持 caller 原样 UUID**
+// 以维持 5 处 caller 的回填语义。Phase 5 wisefido-data 全量切 IPv6 后可删 resolveUUIDsToIPv6。
+func FillDeviceStatusFromCardagg(ctx context.Context, stateReader *card.Reader, db *sql.DB, deviceIDs []string, logger *zap.Logger) map[string]*card.DeviceStatus {
 	if stateReader == nil || len(deviceIDs) == 0 {
 		return make(map[string]*card.DeviceStatus)
 	}
@@ -207,14 +245,35 @@ func FillDeviceStatusFromCardagg(ctx context.Context, stateReader *card.Reader, 
 	if len(ids) == 0 {
 		return make(map[string]*card.DeviceStatus)
 	}
-	devStatusBatch, err := stateReader.ReadDeviceStatusByDeviceIDs(ctx, ids)
+	// UUID → IPv6 翻译（Phase 5 临时桥接）
+	uuidToAddr := resolveUUIDsToIPv6(ctx, db, ids)
+	queryIDs := make([]string, 0, len(ids))
+	addrToOriginal := make(map[string]string, len(ids))
+	for _, id := range ids {
+		if addr, ok := uuidToAddr[id]; ok {
+			queryIDs = append(queryIDs, addr)
+			addrToOriginal[addr] = id
+		} else {
+			queryIDs = append(queryIDs, id)
+			addrToOriginal[id] = id
+		}
+	}
+	devStatusBatch, err := stateReader.ReadDeviceStatusByDeviceIDs(ctx, queryIDs)
 	if err != nil {
 		if logger != nil {
 			logger.Warn("FillDeviceStatusFromCardagg: ReadDeviceStatusByDeviceIDs failed", zap.Error(err))
 		}
 		return make(map[string]*card.DeviceStatus)
 	}
-	return devStatusBatch
+	out := make(map[string]*card.DeviceStatus, len(devStatusBatch))
+	for k, v := range devStatusBatch {
+		if orig, ok := addrToOriginal[k]; ok {
+			out[orig] = v
+		} else {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // fillDeviceOnlineStatus 只从 cardagg 读在线状态，使用 FillDeviceOnlineStatusFromCardagg。

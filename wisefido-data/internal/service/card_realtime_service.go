@@ -1050,6 +1050,8 @@ func (s *CardRealtimeService) enrichDeviceStatus(ctx context.Context, cardID str
 	//   - 若 enrichDeviceStatus 用严格 <<= /96 查，吸收进来的 D523 查不到 → 默认 offline，与 FE 显示的设备列表不一致
 	//   - 改用 /80 unit pool：返回 unit 内全部 monitor-on 设备的 status；FE 按 device.device_id 在 card.devices 内查找，
 	//     多余的 status entry 自然被忽略（map 查 key 即可）
+	// 返回 dfm.device_id (UUID)：FillDeviceStatusFromCardagg 内部会 UUID→IPv6 翻译查 cardagg redis。
+	// FE 沿用 device.device_id (UUID) 作 key，无需改动。
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT dfm.device_id::text, COALESCE(dfm.device_type::text, '') AS device_type
 		FROM devices d
@@ -1072,7 +1074,7 @@ func (s *CardRealtimeService) enrichDeviceStatus(ctx context.Context, cardID str
 	}
 
 	nowMs := time.Now().UnixMilli()
-	dsMap := FillDeviceStatusFromCardagg(ctx, s.stateReader, deviceIDs, s.logger)
+	dsMap := FillDeviceStatusFromCardagg(ctx, s.stateReader, s.db, deviceIDs, s.logger)
 	deviceStatus := make(map[string]interface{}, len(devices))
 	for _, d := range devices {
 		entry := map[string]interface{}{
