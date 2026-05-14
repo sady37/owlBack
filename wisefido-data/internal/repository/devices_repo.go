@@ -22,7 +22,8 @@ type DevicesRepository interface {
 	UpdateDevice(ctx context.Context, tenantID, deviceID string, device *domain.Device) error
 
 	// UpdateDeviceWithFlags 更新设备（带更新标志，用于区分字段是否在 payload 中）
-	UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID, updateAccess, updateMonitoringEnabled bool) error
+	// updateBranchID: tenant_admin rebind device 到指定 branch（仅 bed/room flag 均 false 时生效）
+	UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID, updateAccess, updateMonitoringEnabled, updateBranchID bool) error
 
 
 	// 删除（物理删除，仅当设备未使用时）

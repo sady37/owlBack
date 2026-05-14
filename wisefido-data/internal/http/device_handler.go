@@ -365,6 +365,7 @@ func (h *DeviceHandler) UpdateDevice(w http.ResponseWriter, r *http.Request) {
 	// 如果字段在 payload 中，就需要更新（即使为 null）
 	_, hasBoundRoomID := payload["bound_room_id"]
 	_, hasBoundBedID := payload["bound_bed_id"]
+	_, hasBranchID := payload["branch_id"]
 	_, hasAccess := payload["access"]
 	_, hasMonitoringEnabled := payload["monitoring_enabled"]
 
@@ -377,7 +378,8 @@ func (h *DeviceHandler) UpdateDevice(w http.ResponseWriter, r *http.Request) {
 		// 如果字段在 payload 中（即使为 null），就更新它
 		UpdateBoundRoomID:       hasBoundRoomID,
 		UpdateBoundBedID:        hasBoundBedID,
-		UpdateAccess: hasAccess,
+		UpdateBranchID:          hasBranchID,
+		UpdateAccess:            hasAccess,
 		UpdateMonitoringEnabled: hasMonitoringEnabled,
 	}
 
@@ -593,6 +595,19 @@ func payloadToDevice(payload map[string]any) *domain.Device {
 				device.BoundBedID = sql.NullString{String: v, Valid: true}
 			} else {
 				device.BoundBedID = sql.NullString{Valid: false}
+			}
+		}
+	}
+	// Handle branch_id: tenant_admin 批量 rebind device 到指定 branch（无 bed/room 绑定）
+	// 仅在 bound_room_id / bound_bed_id 都为空时生效；payload 同时给 bed/room 时以 bed/room 为准
+	if val, exists := payload["branch_id"]; exists {
+		if val == nil {
+			device.BranchID = sql.NullString{Valid: false}
+		} else if v, ok := val.(string); ok {
+			if v != "" {
+				device.BranchID = sql.NullString{String: v, Valid: true}
+			} else {
+				device.BranchID = sql.NullString{Valid: false}
 			}
 		}
 	}

@@ -764,12 +764,15 @@ func (r *PostgresDevicesRepository) CreateDevice(ctx context.Context, tenantID s
 //   - 都 NULL → reset_device_prefix(addr, fd00::/32, 32, 'branch') 退回 tenant unbound pool
 //   - 同时 monitoring_enabled 字段直接 update
 func (r *PostgresDevicesRepository) UpdateDevice(ctx context.Context, tenantID, deviceID string, device *domain.Device) error {
-	return r.UpdateDeviceWithFlags(ctx, tenantID, deviceID, device, true, true, true, true)
+	return r.UpdateDeviceWithFlags(ctx, tenantID, deviceID, device, true, true, true, true, false)
 }
 
 // UpdateDeviceWithFlags 同 UpdateDevice，但用 flag 区分字段是否要写
-// 当前实现：bound_room_id / bound_bed_id 任一 flag 为 true 即重新计算 device_ipv6；access / monitoring_enabled flag 控制其更新
-func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID, updateAccess, updateMonitoringEnabled bool) error {
+// 当前实现：
+//   - bound_room_id / bound_bed_id 任一 flag 为 true 即重新计算 device_ipv6
+//   - updateBranchID flag（仅 bed/room flag 均 false 时检查）→ rebind 到 branch 池（清 unit/room/bed 字节，保留 MAC）
+//   - access / monitoring_enabled flag 控制其更新
+func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID, updateAccess, updateMonitoringEnabled, updateBranchID bool) error {
 	if deviceID == "" {
 		return fmt.Errorf("device_id is required")
 	}
@@ -797,6 +800,26 @@ func (r *PostgresDevicesRepository) UpdateDeviceWithFlags(ctx context.Context, t
 
 	// 2. 计算新 device_ipv6（仅在 bind/unbind flag 触发时）
 	bindFlag := updateBoundRoomID || updateBoundBedID
+	// branch-only rebind：仅 updateBranchID 时进入（bed/room flag 都不在 payload）
+	branchOnlyRebind := updateBranchID && !updateBoundRoomID && !updateBoundBedID && device.BranchID.Valid && device.BranchID.String != ""
+	if branchOnlyRebind {
+		// rebind 到指定 branch /56：byte 6-7 = branch slot+0x00；byte 8-11 清零；byte 12-15 保留 MAC
+		// 与 reset_device_prefix(..., 'branch') 不同的地方：不是"退回 tenant 池"而是"重绑到指定 branch"
+		if err := tx.QueryRowContext(ctx, `
+			SELECT host(
+			  set_masklen(network(set_masklen($1::INET, 56)), 128)
+			  | ($2::INET & '::ffff:ffff'::INET)
+			) || '/128'
+		`, device.BranchID.String, currentAddr.String).Scan(&newAddr); err != nil {
+			return fmt.Errorf("compose branch-rebind addr: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE devices SET device_ipv6 = $2::INET, updated_at = NOW()
+			 WHERE device_id = $1::UUID
+		`, deviceID, newAddr); err != nil {
+			return fmt.Errorf("update devices.device_ipv6 (branch rebind): %w", err)
+		}
+	}
 	if bindFlag {
 		switch {
 		case device.BoundBedID.Valid && device.BoundBedID.String != "":

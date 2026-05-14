@@ -292,8 +292,9 @@ type UpdateDeviceRequest struct {
 	Device            *domain.Device // 设备信息（部分更新）
 	UpdateBoundRoomID bool           // 是否更新 bound_room_id（即使为 null）
 	UpdateBoundBedID  bool           // 是否更新 bound_bed_id（即使为 null）
+	UpdateBranchID    bool           // 是否 rebind 到指定 branch（仅在 bed/room 都不指定时生效）
 	// 标记哪些字段在 payload 中（用于部分更新）
-	UpdateAccess    bool // 是否更新 business_access
+	UpdateAccess            bool // 是否更新 business_access
 	UpdateMonitoringEnabled bool // 是否更新 monitoring_enabled
 }
 
@@ -324,7 +325,7 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 	// Service 层只验证 bound_room_id 和 bound_bed_id 的逻辑
 
 	// 4. 调用 Repository（传递更新标志）
-	if err := s.devicesRepo.UpdateDeviceWithFlags(ctx, req.TenantID, req.DeviceID, req.Device, req.UpdateBoundRoomID, req.UpdateBoundBedID, req.UpdateAccess, req.UpdateMonitoringEnabled); err != nil {
+	if err := s.devicesRepo.UpdateDeviceWithFlags(ctx, req.TenantID, req.DeviceID, req.Device, req.UpdateBoundRoomID, req.UpdateBoundBedID, req.UpdateAccess, req.UpdateMonitoringEnabled, req.UpdateBranchID); err != nil {
 		s.logger.Error("UpdateDevice failed",
 			zap.String("tenant_id", req.TenantID),
 			zap.String("device_id", req.DeviceID),
