@@ -54,8 +54,7 @@ const deviceSelectV2 = `
 		     THEN host(network(set_masklen(d.device_ipv6, 96))) || '/96'
 		     ELSE NULL END                                                AS bound_bed_id,
 		CASE WHEN COALESCE(drs.online, false) THEN 'online' ELSE 'offline' END AS status,
-		CASE WHEN COALESCE(d.access, false) THEN 'approved' ELSE 'pending' END AS business_access,
-		COALESCE(d.access, false)                                          AS allow_access,
+		COALESCE(d.access, false)                                          AS access,
 		COALESCE(d.monitoring_enabled, false)                              AS monitoring_enabled,
 		dfm.device_type::text                                              AS device_type,
 		dfm.device_model                                                   AS device_model,
@@ -72,7 +71,7 @@ func scanDeviceRow(row interface {
 	Scan(dest ...interface{}) error
 }) (*domain.Device, error) {
 	var d domain.Device
-	var deviceIPv6, status, businessAccess string
+	var deviceIPv6, status string
 	var boundRoomID, boundBedID sql.NullString
 	var deviceType sql.NullString
 	var deviceModel, imei, commMode, mcuModel, firmwareVersion sql.NullString
@@ -85,8 +84,7 @@ func scanDeviceRow(row interface {
 		&boundRoomID,
 		&boundBedID,
 		&status,
-		&businessAccess,
-		&d.AllowAccess,
+		&d.Access,
 		&d.MonitoringEnabled,
 		&deviceType,
 		&deviceModel,
@@ -102,7 +100,6 @@ func scanDeviceRow(row interface {
 	d.BoundRoomID = boundRoomID
 	d.BoundBedID = boundBedID
 	d.Status = status
-	d.BusinessAccess = businessAccess
 	d.DeviceType = deviceType
 	d.DeviceModel = deviceModel
 	d.IMEI = imei
@@ -239,7 +236,7 @@ func (r *PostgresDeviceRepository) GetAllDeviceStoreInfo(ctx context.Context) ([
 		  dfm.mcu_model,
 		  drs.firmware_version,
 		  COALESCE(host(network(set_masklen(d.device_ipv6, 48))), 'fd00:0:1::') AS tenant_id,
-		  COALESCE(d.access, false) AS allow_access
+		  COALESCE(d.access, false) AS access
 		FROM device_factory_meta dfm
 		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d ON d.device_id = dfm.device_id`
@@ -253,7 +250,7 @@ func (r *PostgresDeviceRepository) GetAllDeviceStoreInfo(ctx context.Context) ([
 		var d DeviceStoreInfo
 		var deviceModel, mac, imei, commMode, mcuModel, firmwareVersion sql.NullString
 		var deviceCode sql.NullString
-		if err := rows.Scan(&d.DeviceID, &d.DeviceUID, &deviceCode, &d.DeviceType, &deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion, &d.TenantID, &d.AllowAccess); err != nil {
+		if err := rows.Scan(&d.DeviceID, &d.DeviceUID, &deviceCode, &d.DeviceType, &deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion, &d.TenantID, &d.Access); err != nil {
 			return nil, fmt.Errorf("failed to scan device row: %w", err)
 		}
 		d.DeviceCode = deviceCode
@@ -345,8 +342,7 @@ func (r *PostgresDeviceRepository) CreateDevice(ctx context.Context, device *dom
 	}
 	device.DeviceIPv6 = deviceIPv6
 	device.TenantID = systemTenantHost
-	device.AllowAccess = false
-	device.BusinessAccess = "pending"
+	device.Access = false
 	device.Status = "offline"
 	return nil
 }
@@ -371,6 +367,8 @@ func deriveSystemDeviceIPv6(deviceUID string) (string, error) {
 //
 // device_uid/device_type 等出厂字段属 dfm，不可改；BoundRoomID/BoundBedID 属空间绑定，
 // 需走 spatial API（device_ipv6 整段重置），不在此简单 UPDATE。
+//
+// v1 business_access string 已合并为单一 access bool；access 字段总是写入（与 monitoring_enabled 对齐）。
 func (r *PostgresDeviceRepository) UpdateDevice(ctx context.Context, device *domain.Device) error {
 	if device.DeviceUID == "" {
 		return fmt.Errorf("device_uid is required")
@@ -378,13 +376,10 @@ func (r *PostgresDeviceRepository) UpdateDevice(ctx context.Context, device *dom
 	updates := []string{}
 	args := []interface{}{}
 	argIdx := 1
-	// access (legacy: business_access)
-	if device.BusinessAccess != "" {
-		approved := device.BusinessAccess == "approved" || device.BusinessAccess == "enable"
-		updates = append(updates, fmt.Sprintf("access = $%d", argIdx))
-		args = append(args, approved)
-		argIdx++
-	}
+	// access：platform_admin 审批位（v1 双字段已合并）
+	updates = append(updates, fmt.Sprintf("access = $%d", argIdx))
+	args = append(args, device.Access)
+	argIdx++
 	// monitoring_enabled 默认总写（v1 行为：bool 字段每次 UPDATE 都覆盖）
 	updates = append(updates, fmt.Sprintf("monitoring_enabled = $%d", argIdx))
 	args = append(args, device.MonitoringEnabled)
@@ -540,7 +535,7 @@ func (r *PostgresDeviceRepository) GetDeviceStoreInfo(ctx context.Context, devic
 		  dfm.mcu_model,
 		  drs.firmware_version,
 		  COALESCE(host(network(set_masklen(d.device_ipv6, 48))) || '/48', 'fd00:0:1::/48') AS tenant_pref,
-		  COALESCE(d.access, false) AS allow_access,
+		  COALESCE(d.access, false) AS access,
 		  host(d.device_ipv6)::text AS device_addr
 		FROM device_factory_meta dfm
 		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
@@ -551,7 +546,7 @@ func (r *PostgresDeviceRepository) GetDeviceStoreInfo(ctx context.Context, devic
 	var ds DeviceStoreInfo
 	var deviceModel, mac, imei, commMode, mcuModel, firmwareVersion sql.NullString
 	var deviceCode, addrStr sql.NullString
-	if err := row.Scan(&ds.DeviceID, &ds.DeviceUID, &deviceCode, &ds.DeviceType, &deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion, &ds.TenantID, &ds.AllowAccess, &addrStr); err != nil {
+	if err := row.Scan(&ds.DeviceID, &ds.DeviceUID, &deviceCode, &ds.DeviceType, &deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion, &ds.TenantID, &ds.Access, &addrStr); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not found in device_store")
 		}
@@ -590,7 +585,7 @@ func (r *PostgresDeviceRepository) GetDeviceStoreByDeviceID(ctx context.Context,
 		  dfm.mcu_model,
 		  drs.firmware_version,
 		  COALESCE(host(network(set_masklen(d.device_ipv6, 48))) || '/48', 'fd00:0:1::/48') AS tenant_pref,
-		  COALESCE(d.access, false) AS allow_access,
+		  COALESCE(d.access, false) AS access,
 		  host(d.device_ipv6)::text AS device_addr
 		FROM device_factory_meta dfm
 		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
@@ -601,7 +596,7 @@ func (r *PostgresDeviceRepository) GetDeviceStoreByDeviceID(ctx context.Context,
 	var ds DeviceStoreInfo
 	var deviceModel, mac, imei, commMode, mcuModel, firmwareVersion sql.NullString
 	var deviceCode, addrStr sql.NullString
-	if err := row.Scan(&ds.DeviceID, &ds.DeviceUID, &deviceCode, &ds.DeviceType, &deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion, &ds.TenantID, &ds.AllowAccess, &addrStr); err != nil {
+	if err := row.Scan(&ds.DeviceID, &ds.DeviceUID, &deviceCode, &ds.DeviceType, &deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion, &ds.TenantID, &ds.Access, &addrStr); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not found in device_store")
 		}

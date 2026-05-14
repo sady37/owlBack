@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"owl-common/card"
 	rediscommon "owl-common/redis"
 
 	"wisefido-sleepace/internal/config"
@@ -54,24 +53,27 @@ func (p *StreamPublisher) ResolveToDeviceUID(ctx context.Context, id string) str
 	return p.cardMappingSvc.ResolveToDeviceUID(ctx, id)
 }
 
-// Resolve 用 device key 查 device_store+cards，返回完整身份（DeviceBaseline），含 allow_access / business_access / monitoring_enabled。
-// 入参可为 device_uid 或 device_code（MQTT 首次可能发 uid，后续可能发 code），GetCardInfo/LookupCard 内部统一解析；未命中时 deviceID/deviceCode/deviceType 为空，业务访问为 BusinessAccessDefault（pending）。
+// Resolve 用 device key 查 device_factory_meta+devices+cards，返回完整身份（DeviceBaseline）。
+// 入参可为 device_uid 或 device_code（MQTT 首次可能发 uid，后续可能发 code），GetCardInfo/LookupCard 内部统一解析；
+// 未命中时 deviceID/deviceCode/deviceType 为空，access=false（默认拒绝）。
 //
 // device_ipv6 单程票后追加 addr 返回值（DeviceBaseline.DeviceAddr）；publisher 直接用 addr 构造 envelope。
+//
+// v1 双字段 (allow_access bool + business_access string) 已合并为单一 access bool。
 func (p *StreamPublisher) Resolve(ctx context.Context, deviceKey string) (
 	tenantID, branchID, unitID, cardID, deviceID, outUID, deviceCode, deviceType string,
-	allowAccess bool, businessAccess string, monitoringEnabled bool, addr netip.Addr,
+	access, monitoringEnabled bool, addr netip.Addr,
 ) {
 	if p.cardMappingSvc == nil {
-		return "", "", "", "", "", deviceKey, "", "", false, card.BusinessAccessDefault, false, netip.Addr{}
+		return "", "", "", "", "", deviceKey, "", "", false, false, netip.Addr{}
 	}
 	info, err := p.cardMappingSvc.GetCardInfo(ctx, deviceKey)
 	if err != nil {
 		p.logger.Debug("card lookup miss", zap.String("device_key", deviceKey), zap.Error(err))
-		return "", "", "", "", "", deviceKey, "", "", false, card.BusinessAccessDefault, false, netip.Addr{}
+		return "", "", "", "", "", deviceKey, "", "", false, false, netip.Addr{}
 	}
 	return info.TenantID, info.BranchID, info.UnitID, info.CardID, info.DeviceID, info.DeviceUID, info.DeviceCode, info.DeviceType,
-		info.AllowAccess, info.BusinessAccess, info.MonitoringEnabled, info.DeviceAddr
+		info.Access, info.MonitoringEnabled, info.DeviceAddr
 }
 
 // PublishMonitor sends an IoTStreamMessage to iot:monitor:stream.

@@ -93,15 +93,6 @@ const (
 	sleepaceTrackPoseConf = 90  // 在床/坐起翻身时 TrackConfidence、PoseConfidence 固定值
 )
 
-func businessAccessApproved(s string) bool {
-	switch s {
-	case "approved", "enable":
-		return true
-	default:
-		return false
-	}
-}
-
 // MQTTConsumer consumes messages from the sleepace MQTT topic,
 // transforms them into observation.Messages, and publishes to Redis Streams.
 type MQTTConsumer struct {
@@ -295,11 +286,11 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		c.logger.Debug("duplicate message skipped", zap.String("device_id", m.DeviceID), zap.String("dataKey", m.DataKey))
 		return
 	}
-	tenantID, _, _, cardID, deviceID, deviceUID, deviceCode, deviceType, allowAccess, businessAccess, monitoringEnabled, addr := c.publisher.Resolve(ctx, m.DeviceID)
+	tenantID, _, _, cardID, deviceID, deviceUID, deviceCode, deviceType, access, monitoringEnabled, addr := c.publisher.Resolve(ctx, m.DeviceID)
 	_ = tenantID
 	_ = deviceID
 	_ = deviceUID
-	canIoT := allowAccess && businessAccessApproved(businessAccess)
+	canIoT := access
 	canMonitor := canIoT && monitoringEnabled
 	if deviceType == "" {
 		deviceType = "Sleepad" // 与 card_mapping.sleepadDeviceTypes 一致，勿改为 SleepPad/sleepad 以外
@@ -340,7 +331,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 		if deviceID == "" {
 			c.logger.Debug("connectionStatus skip alarm (device not in device_store)", zap.String("device_uid", deviceUID))
 		} else if !canIoT {
-			c.logger.Debug("connectionStatus skip alarm (permission)", zap.String("device_uid", deviceUID), zap.Bool("allow_access", allowAccess), zap.String("business_access", businessAccess))
+			c.logger.Debug("connectionStatus skip alarm (permission)", zap.String("device_uid", deviceUID), zap.Bool("access", access))
 		} else {
 			fault := 0
 			if !online {

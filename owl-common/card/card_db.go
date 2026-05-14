@@ -9,9 +9,6 @@ import (
 	"github.com/lib/pq"
 )
 
-// BusinessAccessDefault 无 device runtime / 查库失败时的默认业务访问；非 approved 仍不放行业务数据。
-const BusinessAccessDefault = "pending"
-
 // CardDB wraps *sql.DB for card-related queries.
 // v2: 反查不再依赖 cards.devices JSONB；改走 devices.device_ipv6 + cards.spatial_prefix INET LPM。
 //
@@ -102,7 +99,6 @@ func (c *CardDB) ListSleepadBaselinesForHealth(ctx context.Context, deviceTypes 
 		    dfm.device_id::text,
 		    dfm.device_uid,
 		    COALESCE(d.access, false),
-		    CASE WHEN COALESCE(d.access, false) THEN 'approved' ELSE 'pending' END AS business_access,
 		    COALESCE(d.monitoring_enabled, false),
 		    COALESCE(dfm.device_code, ''),
 		    COALESCE(dfm.device_type::text, ''),
@@ -120,7 +116,7 @@ func (c *CardDB) ListSleepadBaselinesForHealth(ctx context.Context, deviceTypes 
 	for rows.Next() {
 		var b DeviceBaseline
 		if err := rows.Scan(&b.TenantID, &b.DeviceID, &b.DeviceUID,
-			&b.AllowAccess, &b.BusinessAccess, &b.MonitoringEnabled, &b.DeviceCode, &b.DeviceType, &b.CardID); err != nil {
+			&b.Access, &b.MonitoringEnabled, &b.DeviceCode, &b.DeviceType, &b.CardID); err != nil {
 			return nil, err
 		}
 		out = append(out, b)
@@ -151,8 +147,7 @@ func (c *CardDB) ResolveDevice(ctx context.Context, deviceKey string) (deviceUID
 // deviceKey 可以是 device_uid 或 device_code；未绑 device_ipv6 时返回 ErrNoRows。
 func (c *CardDB) LookupCard(ctx context.Context, deviceKey string) (*DeviceBaseline, error) {
 	m := DeviceBaseline{
-		AllowAccess:       false,
-		BusinessAccess:    BusinessAccessDefault,
+		Access:            false,
 		MonitoringEnabled: false,
 	}
 	var addrStr sql.NullString
@@ -171,7 +166,6 @@ func (c *CardDB) LookupCard(ctx context.Context, deviceKey string) (*DeviceBasel
 		    COALESCE(find_card_by_device_addr(d.device_ipv6)::text, '') AS card_id,
 		    dfm.device_id::text,
 		    COALESCE(d.access, false),
-		    CASE WHEN COALESCE(d.access, false) THEN 'approved' ELSE 'pending' END AS business_access,
 		    COALESCE(d.monitoring_enabled, false),
 		    COALESCE(dfm.device_code, ''),
 		    COALESCE(dfm.device_type::text, ''),
@@ -184,7 +178,7 @@ func (c *CardDB) LookupCard(ctx context.Context, deviceKey string) (*DeviceBasel
 		JOIN devices d ON d.device_id = dfm.device_id
 		LIMIT 1
 	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.BranchID, &m.UnitID, &m.CardID, &m.DeviceID,
-		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType,
+		&m.Access, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType,
 		&m.BedID, &m.RoomID, &addrStr)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -301,8 +295,7 @@ func (c *CardDB) ResolveDeviceBaseline(ctx context.Context, deviceKey string) (D
 // LookupDeviceOnly resolves device key when no card LPM hit; CardID 留空（R-009 不再 UUID 占位）。
 func (c *CardDB) LookupDeviceOnly(ctx context.Context, deviceKey string) (*DeviceBaseline, error) {
 	m := DeviceBaseline{
-		AllowAccess:       false,
-		BusinessAccess:    BusinessAccessDefault,
+		Access:            false,
 		MonitoringEnabled: false,
 	}
 	var addrStr sql.NullString
@@ -318,7 +311,6 @@ func (c *CardDB) LookupDeviceOnly(ctx context.Context, deviceKey string) (*Devic
 		    host(set_masklen(d.device_ipv6, 48))::text AS tenant_id,
 		    dfm.device_id::text,
 		    COALESCE(d.access, false),
-		    CASE WHEN COALESCE(d.access, false) THEN 'approved' ELSE 'pending' END AS business_access,
 		    COALESCE(d.monitoring_enabled, false),
 		    COALESCE(dfm.device_code, ''),
 		    COALESCE(dfm.device_type::text, ''),
@@ -330,7 +322,7 @@ func (c *CardDB) LookupDeviceOnly(ctx context.Context, deviceKey string) (*Devic
 		JOIN devices d ON d.device_id = dfm.device_id
 		LIMIT 1
 	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.DeviceID,
-		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType, &m.RoomID, &addrStr)
+		&m.Access, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType, &m.RoomID, &addrStr)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not in devices table: %s", deviceKey)
@@ -349,8 +341,7 @@ func (c *CardDB) LookupDeviceOnly(ctx context.Context, deviceKey string) (*Devic
 // LookupDeviceStoreOnly 仅 device_factory_meta 有记录但无 devices 行（未分配 IPv6）时使用。
 func (c *CardDB) LookupDeviceStoreOnly(ctx context.Context, deviceKey string) (*DeviceBaseline, error) {
 	m := DeviceBaseline{
-		AllowAccess:       false,
-		BusinessAccess:    BusinessAccessDefault,
+		Access:            false,
 		MonitoringEnabled: false,
 	}
 	err := c.db.QueryRowContext(ctx, `
@@ -365,7 +356,6 @@ func (c *CardDB) LookupDeviceStoreOnly(ctx context.Context, deviceKey string) (*
 		    ''::text AS tenant_id,
 		    dfm.device_id::text,
 		    false AS access,
-		    'pending'::text AS business_access,
 		    false AS monitoring_enabled,
 		    COALESCE(dfm.device_code, ''),
 		    COALESCE(dfm.device_type::text, '')
@@ -374,7 +364,7 @@ func (c *CardDB) LookupDeviceStoreOnly(ctx context.Context, deviceKey string) (*
 		  ON `+pgUIDNormExpr("dfm.device_uid")+` = `+pgUIDNormExpr("r.uid")+`
 		LIMIT 1
 	`, deviceKey).Scan(&m.DeviceUID, &m.TenantID, &m.DeviceID,
-		&m.AllowAccess, &m.BusinessAccess, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType)
+		&m.Access, &m.MonitoringEnabled, &m.DeviceCode, &m.DeviceType)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not in device_factory_meta: %s", deviceKey)
@@ -405,7 +395,6 @@ func (c *CardDB) ListAllBaselines(ctx context.Context, deviceTypes []string) ([]
 		    COALESCE(dfm.device_code, ''),
 		    COALESCE(dfm.device_type::text, ''),
 		    COALESCE(d.access, false),
-		    CASE WHEN COALESCE(d.access, false) THEN 'approved' ELSE 'pending' END AS business_access,
 		    COALESCE(d.monitoring_enabled, false),
 		    COALESCE(find_card_by_device_addr(d.device_ipv6)::text, ''),
 		    host(set_masklen(d.device_ipv6, 56))::text AS branch_id,
@@ -426,7 +415,7 @@ func (c *CardDB) ListAllBaselines(ctx context.Context, deviceTypes []string) ([]
 		var addrStr sql.NullString
 		if err := rows.Scan(&b.DeviceUID, &b.TenantID, &b.DeviceID,
 			&b.DeviceCode, &b.DeviceType,
-			&b.AllowAccess, &b.BusinessAccess, &b.MonitoringEnabled,
+			&b.Access, &b.MonitoringEnabled,
 			&b.CardID, &b.BranchID, &b.UnitID, &b.RoomID, &b.BedID, &addrStr); err != nil {
 			return nil, err
 		}

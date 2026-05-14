@@ -175,7 +175,7 @@ func main() {
 	deviceCacheCount := 0
 	for _, device := range allDevices {
 		// 仅缓存允许访问的设备 UID（白名单），避免因为未命中缓存而拒绝认证
-		if device.AllowAccess {
+		if device.Access {
 			domain.AllowAccessCache.Store(device.DeviceUID, true)
 			deviceCacheCount++
 		}

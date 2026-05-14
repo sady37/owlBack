@@ -23,8 +23,7 @@ const (
 	BaselineFieldRoomID             = "room_id"
 	BaselineFieldBedID              = "bed_id"
 	BaselineFieldCardID             = "card_id"
-	BaselineFieldAllowAccess        = "allow_access"
-	BaselineFieldBusinessAccess     = "business_access"
+	BaselineFieldAccess             = "access"           // platform_admin 审批位（devices.access），合并自 v1 allow_access/business_access
 	BaselineFieldMonitoringEnabled  = "monitoring_enabled"
 	BaselineFieldRevision           = "revision"
 	BaselineFieldUpdatedAtMS        = "updated_at_ms"
@@ -58,10 +57,11 @@ type DeviceBaseline struct {
 	// 展示 / 卡聚合
 	CardID string `json:"card_id,omitempty"`
 
-	// 策略（device_store + devices）
-	AllowAccess         bool   `json:"allow_access"`
-	BusinessAccess      string `json:"business_access,omitempty"`
-	MonitoringEnabled   bool   `json:"monitoring_enabled,omitempty"`
+	// 策略（devices 表）
+	// Access = platform_admin 审批位（devices.access）。v1 双字段 AllowAccess(bool) + BusinessAccess(string='approved'|'pending')
+	// 系同源同语义，合并为单一 bool，消除冗余表示。
+	Access            bool `json:"access"`
+	MonitoringEnabled bool `json:"monitoring_enabled,omitempty"`
 
 	// 同步元（可选，用于 cardChange / 对账）
 	Revision    int64 `json:"revision,omitempty"`

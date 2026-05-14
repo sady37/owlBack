@@ -30,17 +30,11 @@ const (
 	DeviceTypeRadar = "Radar"
 )
 
-func businessAccessApproved(s string) bool {
-	switch s {
-	case "approved", "enable":
-		return true
-	default:
-		return false
-	}
-}
-
-// resolveIotPolicy 租户级：business_access 为 approved|enable 才向 iot:* 发 event/alarm/stat；monitor 流另需 monitoring_enabled。
+// resolveIotPolicy 租户级：access=TRUE 才向 iot:* 发 event/alarm/stat；monitor 流另需 monitoring_enabled。
 // tenantID 来自 devices.tenant_id，供写入 iot 流，避免仅 card 解析时 tenant 为空导致 wisefido-iot 缺 tenant_id。
+//
+// Access 是 platform_admin 审批位（devices.access bool）；v1 的 allow_access/business_access 双字段
+// 系同源同语义，已合并为单一 Access。
 func (c *MQTTConsumer) resolveIotPolicy(ctx context.Context, deviceUID string) (canIoT, canMonitor bool, tenantID string) {
 	if c.cardMappingService != nil {
 		if b, ok := c.cardMappingService.BaselineFor(deviceUID); ok {
@@ -48,7 +42,7 @@ func (c *MQTTConsumer) resolveIotPolicy(ctx context.Context, deviceUID string) (
 			if tenantID == "" {
 				return false, false, ""
 			}
-			if !businessAccessApproved(b.BusinessAccess) {
+			if !b.Access {
 				return false, false, tenantID
 			}
 			return true, b.MonitoringEnabled, tenantID
@@ -59,7 +53,7 @@ func (c *MQTTConsumer) resolveIotPolicy(ctx context.Context, deviceUID string) (
 		return false, false, ""
 	}
 	tenantID = strings.TrimSpace(dev.TenantID)
-	if !businessAccessApproved(dev.BusinessAccess) {
+	if !dev.Access {
 		return false, false, tenantID
 	}
 	return true, dev.MonitoringEnabled, tenantID
@@ -403,8 +397,8 @@ func (c *MQTTConsumer) allowAccessFromCacheOrDB(uid string) bool {
 			domain.AllowAccessCache.Store(uid, false)
 			return false
 		}
-		if !ds.AllowAccess {
-			log.Printf("Device %s blocked by device_store: allow_access=FALSE", uid)
+		if !ds.Access {
+			log.Printf("Device %s blocked by device_factory_meta: access=FALSE", uid)
 			domain.AllowAccessCache.Store(uid, false)
 			return false
 		}
@@ -412,7 +406,7 @@ func (c *MQTTConsumer) allowAccessFromCacheOrDB(uid string) bool {
 		return true
 	}
 	if allowedBool, ok := cached.(bool); !ok || !allowedBool {
-		log.Printf("Device %s blocked by cache: allow_access=FALSE", uid)
+		log.Printf("Device %s blocked by cache: access=FALSE", uid)
 		return false
 	}
 	return true
@@ -432,11 +426,11 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 		return nil // 不返回错误，继续处理其他消息
 	}
 
-	// 优先 DeviceBaseline 缓存（web auth / cardChange 后 RefreshBaseline）；未命中再走 AllowAccessCache / DB
+	// 优先 DeviceBaseline 缓存（web auth / cardChange 后 RefreshBaseline）；未命中再走 AccessCache / DB
 	if c.cardMappingService != nil {
 		if b, ok := c.cardMappingService.BaselineFor(uid); ok {
-			if !b.AllowAccess {
-				log.Printf("Device %s blocked by baseline cache: allow_access=FALSE", uid)
+			if !b.Access {
+				log.Printf("Device %s blocked by baseline cache: access=FALSE", uid)
 				return nil
 			}
 		} else if !c.allowAccessFromCacheOrDB(uid) {

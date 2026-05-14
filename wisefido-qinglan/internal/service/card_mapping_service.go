@@ -57,7 +57,7 @@ func (s *CardMappingService) storeBaseline(lookupKey string, b card.DeviceBaseli
 			continue
 		}
 		s.baselineByUID[k] = b
-		domain.AllowAccessCache.Store(k, b.AllowAccess)
+		domain.AllowAccessCache.Store(k, b.Access)
 	}
 }
 

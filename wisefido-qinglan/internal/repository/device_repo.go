@@ -26,7 +26,7 @@ type DeviceStoreInfo struct {
 	MCUModel        sql.NullString
 	FirmwareVersion sql.NullString
 	TenantID        string     // /48 INET CIDR text，e.g. "fd00:0:3::/48"（v2 已替换 UUID）
-	AllowAccess     bool       // devices.access 派生
+	Access          bool       // devices.access — platform_admin 审批位（v1 allow_access/business_access 已合并）
 	DeviceAddr      netip.Addr // /128 INET，路由层主键
 }
 
@@ -64,7 +64,7 @@ type DeviceRepository interface {
 	GetDeviceStoreInfo(ctx context.Context, deviceUID string) (*DeviceStoreInfo, error)
 
 	// GetDeviceStoreByDeviceID 根据设备ID获取 device_store 信息（用于 device_store 变化信号处理）
-	// 返回 DeviceStoreInfo 包含 device_uid 和 allow_access
+	// 返回 DeviceStoreInfo 包含 device_uid 和 access
 	GetDeviceStoreByDeviceID(ctx context.Context, deviceID string) (*DeviceStoreInfo, error)
 
 	// GetAlarmEnablement 获取设备的报警使能配置
@@ -79,10 +79,10 @@ type DeviceRepository interface {
 	PreloadAlarmEnablement(ctx context.Context, tenantID, deviceUID string) error
 
 	// GetAllAccessibleDevices 获取所有可访问的设备（用于启动时主动订阅）
-	// 条件：device_store.allow_access = TRUE 且 devices.business_access = 'approved'
+	// 条件：dfm.device_type='Radar' AND devices.access=TRUE
 	GetAllAccessibleDevices(ctx context.Context) ([]string, error)
 
-	// GetAllDeviceStoreInfo 获取所有device_store记录（用于启动时初始化设备缓存）
-	// 返回所有设备的device_uid和allow_access状态
+	// GetAllDeviceStoreInfo 获取所有 device_factory_meta 记录（用于启动时初始化设备缓存）
+	// 返回所有设备的 device_uid 和 access 状态
 	GetAllDeviceStoreInfo(ctx context.Context) ([]*DeviceStoreInfo, error)
 }

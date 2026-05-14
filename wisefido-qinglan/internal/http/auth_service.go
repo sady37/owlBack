@@ -213,9 +213,9 @@ func (s *AuthService) validateDeviceAndGetLocation(ctx context.Context, deviceUI
 		return nil, err
 	}
 
-	// 1. 系统级接入：allow_access=FALSE 则拒绝认证（不发 MQTT 凭证）
-	if !ds.AllowAccess {
-		log.Printf("auth denied: allow_access=false device_uid=%s", deviceUID)
+	// 1. 系统级接入：access=FALSE 则拒绝认证（不发 MQTT 凭证）
+	if !ds.Access {
+		log.Printf("auth denied: access=false device_uid=%s", deviceUID)
 		return nil, fmt.Errorf("deny")
 	}
 
@@ -223,7 +223,7 @@ func (s *AuthService) validateDeviceAndGetLocation(ctx context.Context, deviceUI
 		return nil, fmt.Errorf("device in trash tenant")
 	}
 	// system (000...001) 和 unallocated (000...002) 均允许通过：
-	// allow_access=TRUE 已视为审批通过，租户分配可在认证后由管理员调整。
+	// access=TRUE 已视为审批通过，租户分配可在认证后由管理员调整。
 
 	return ds, nil
 }
@@ -260,11 +260,11 @@ func (s *AuthService) createDeviceStoreRecord(ctx context.Context, uid string, r
 	if err != nil {
 		// INSERT 已成功但读回失败 — 返回 stub-derived info
 		return &DeviceStoreInfo{
-			DeviceID:    deviceID,
-			DeviceUID:   uid,
-			DeviceType:  deviceType,
-			TenantID:    platformSystemTenantID,
-			AllowAccess: false,
+			DeviceID:   deviceID,
+			DeviceUID:  uid,
+			DeviceType: deviceType,
+			TenantID:   platformSystemTenantID,
+			Access:     false,
 		}, nil
 	}
 
@@ -273,7 +273,7 @@ func (s *AuthService) createDeviceStoreRecord(ctx context.Context, uid string, r
 		zap.String("device_id", ds.DeviceID),
 		zap.String("device_type", ds.DeviceType),
 		zap.String("tenant_id", ds.TenantID),
-		zap.Bool("allow_access", ds.AllowAccess),
+		zap.Bool("access", ds.Access),
 	)
 	return ds, nil
 }

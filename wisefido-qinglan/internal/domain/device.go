@@ -10,10 +10,12 @@ import (
 //
 // v2 schema 映射（详见 owlRD/dbv2/23_devices.sql / 21_device_factory_meta.sql / 22_device_runtime_state.sql）：
 //   - DeviceID/DeviceUID/DeviceType/DeviceModel/IMEI/CommMode/MCUModel: device_factory_meta
-//   - DeviceIPv6/MonitoringEnabled/AllowAccess: devices (PK = device_ipv6)
+//   - DeviceIPv6/MonitoringEnabled/Access: devices (PK = device_ipv6)
 //   - FirmwareVersion/Online/SensorDetached: device_runtime_state
 //   - TenantID/BoundRoomID/BoundBedID/DeviceName: 由 IPv6 prefix-mask / device_code 派生（无独立列）
-//   - BusinessAccess: legacy 字段映射 (access=TRUE → "approved" / FALSE → "pending")
+//
+// v1 allow_access(bool) + business_access(string='approved'|'pending') 双字段已合并为单一 Access bool
+// (devices.access 即 platform_admin 审批位)；MonitoringEnabled 仍独立（tenant 业务开关，不同语义）。
 type Device struct {
 	// 主键 / 身份（dfm）
 	DeviceID  string `db:"device_id"`  // UUID, dfm.device_id
@@ -30,11 +32,10 @@ type Device struct {
 	BoundRoomID sql.NullString `db:"bound_room_id"` // /88 prefix host(...)::text；NULL if mask <88
 	BoundBedID  sql.NullString `db:"bound_bed_id"`  // /96 prefix host(...)::text；NULL if mask <96
 
-	// 运行时状态（drs + devices.access）
+	// 运行时状态（drs + devices）
 	Status            string `db:"status"`             // "online"|"offline"，drs.online 派生
-	BusinessAccess    string `db:"business_access"`    // "approved"|"pending"，devices.access 派生
-	AllowAccess       bool   `db:"allow_access"`       // alias of devices.access
-	MonitoringEnabled bool   `db:"monitoring_enabled"` // devices.monitoring_enabled
+	Access            bool   `db:"access"`             // devices.access — platform_admin 审批位
+	MonitoringEnabled bool   `db:"monitoring_enabled"` // devices.monitoring_enabled — tenant 业务开关
 
 	// 物理属性（dfm + drs）
 	DeviceType      sql.NullString `db:"device_type"`      // dfm.device_type
@@ -129,7 +130,7 @@ func (d *Device) ToJSON() map[string]any {
 		"tenant_id":          d.TenantID,
 		"device_name":        d.DeviceName,
 		"status":             d.Status,
-		"business_access":    d.BusinessAccess,
+		"access":             d.Access,
 		"monitoring_enabled": d.MonitoringEnabled,
 	}
 
