@@ -153,10 +153,10 @@ func (i *AlarmFeedbackIngester) IngestOnce(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("ingester not configured (nil db or engine)")
 	}
 
-	// 1. 读游标
+	// 1. 读游标 (v2 schema: cursor_key VARCHAR PK + last_processed_at；id/processed_total 退役)
 	var cursorTime time.Time
 	err := i.db.QueryRowContext(ctx,
-		`SELECT last_hand_time FROM engine_alarm_feedback_cursor WHERE id = 1`,
+		`SELECT last_processed_at FROM engine_alarm_feedback_cursor WHERE cursor_key = 'engine_alarm_feedback'`,
 	).Scan(&cursorTime)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -167,7 +167,7 @@ func (i *AlarmFeedbackIngester) IngestOnce(ctx context.Context) (int, error) {
 		}
 	}
 
-	// 2. 拉新事件
+	// 2. 拉新事件 (v2 alarm_events: trigger_data → payload；notes → handler_notes)
 	placeholders := make([]string, len(i.eventTypes))
 	args := make([]interface{}, 0, len(i.eventTypes)+1)
 	args = append(args, cursorTime)
@@ -176,8 +176,8 @@ func (i *AlarmFeedbackIngester) IngestOnce(ctx context.Context) (int, error) {
 		args = append(args, et)
 	}
 	q := fmt.Sprintf(`
-		SELECT event_id::text, device_id::text, event_type, operation, triggered_at, hand_time,
-		       trigger_data, COALESCE(notes, '')
+		SELECT event_id::text, host(device_addr)::text, event_type, operation, triggered_at, hand_time,
+		       payload, COALESCE(handler_notes, '')
 		FROM alarm_events
 		WHERE operation IN ('false_alarm', 'verified')
 		  AND event_type IN (%s)
@@ -221,16 +221,16 @@ func (i *AlarmFeedbackIngester) IngestOnce(ctx context.Context) (int, error) {
 		return processed, fmt.Errorf("iterate alarm_events: %w", err)
 	}
 
-	// 3. 推进游标（即使本批为 0，maxHandTime == cursorTime 时也无副作用）
+	// 3. 推进游标（v2: UPSERT cursor_key 主键；processed_total 退役，notes 字段记最近一批 N）
 	if maxHandTime.After(cursorTime) {
 		_, err := i.db.ExecContext(ctx, `
-			UPDATE engine_alarm_feedback_cursor
-			SET last_hand_time  = $1,
-			    last_event_id   = $2::uuid,
-			    processed_total = processed_total + $3,
-			    updated_at      = NOW()
-			WHERE id = 1
-		`, maxHandTime, lastEventID, processed)
+			INSERT INTO engine_alarm_feedback_cursor (cursor_key, last_processed_id, last_processed_at, notes)
+			VALUES ('engine_alarm_feedback', $1::uuid, $2, $3)
+			ON CONFLICT (cursor_key) DO UPDATE
+			SET last_processed_id = EXCLUDED.last_processed_id,
+			    last_processed_at = EXCLUDED.last_processed_at,
+			    notes             = EXCLUDED.notes
+		`, lastEventID, maxHandTime, fmt.Sprintf("processed=%d", processed))
 		if err != nil {
 			return processed, fmt.Errorf("update cursor: %w", err)
 		}
@@ -394,21 +394,23 @@ func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int
 // findRadarPositionAt 在 [triggerMs - lookbackMs, triggerMs + 1000] 区间查 monitor 帧。
 // 优先匹配指定 track_id；若无则取最接近 triggerMs 的任一 track 帧。
 // 返回雷达本地坐标 (h, v, z) 与是否找到。
+//
+// v2 schema: iot_timeseries 退役 → monitor_stream (PK ts TIMESTAMPTZ, device_addr INET);
+// stream_type 替代 topic_type+category 二元组合 ('radar.track')；payload 替代 data_value。
 func (i *AlarmFeedbackIngester) findRadarPositionAt(ctx context.Context,
-	deviceID string, triggerMs int64, wantTrackID int, hasWant bool) (int, int, int, bool) {
+	deviceAddr string, triggerMs int64, wantTrackID int, hasWant bool) (int, int, int, bool) {
 
 	q := `
-		SELECT timestamp, data_value
-		FROM iot_timeseries
-		WHERE device_id = $1::uuid
-		  AND topic_type = 'monitor'
-		  AND category = 'track'
-		  AND timestamp BETWEEN $2 AND $3
-		ORDER BY timestamp DESC
+		SELECT (extract(epoch from ts) * 1000)::bigint AS ts_ms, payload
+		FROM monitor_stream
+		WHERE device_addr = $1::INET
+		  AND stream_type = 'radar.track'
+		  AND ts BETWEEN to_timestamp($2 / 1000.0) AND to_timestamp($3 / 1000.0)
+		ORDER BY ts DESC
 		LIMIT 50
 	`
 	rows, err := i.db.QueryContext(ctx, q,
-		deviceID, triggerMs-i.lookbackMs, triggerMs+1000)
+		deviceAddr, triggerMs-i.lookbackMs, triggerMs+1000)
 	if err != nil {
 		i.logger.Warn("alarm_feedback: lookup iot_timeseries", zap.Error(err))
 		return 0, 0, 0, false

@@ -114,6 +114,12 @@ type Engine struct {
 	deviceIDToUID   map[string]string // deviceID(UUID) → device_uid（IoTStreamMessage.DeviceUID）
 	deviceIDToType  map[string]string // deviceID(UUID) → 源 sensor 类型（"Radar"/"Sleepad"），AI publish 加 ".AI<node>" 后缀
 	roomTenants     map[string]string // roomID → tenant_id（alarm_events 必填）
+
+	// 北极星 reasoning trace 链：每 device 最近 inbound msg 的 envelope.SequenceNumber，
+	// AI verdict publish 时 evidence["trigger_seq_num"] = lastSrcSeq[deviceAddr]。
+	// 多 producer (qinglan/sleepace) 各自有独立 seq counter；本 map 按 deviceAddr 区分。
+	srcSeqMu  sync.RWMutex
+	lastSrcSeq map[string]uint64
 	// 不再维护 roomCards：AI 是 sensor 层 producer，只发 device 标识；card_id (subject_entity)
 	// 由 cardagg IotPreparedHandler 反查 device→cards 路由（多卡共享设备时自然 fan-out）。
 	// 协议层北极星 layer 1 / 2 解耦原则。详 doc/TODO.md 第 0 项。
@@ -224,6 +230,7 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		deviceIDToUID:      make(map[string]string),
 		deviceIDToType:     make(map[string]string),
 		roomTenants:        make(map[string]string),
+		lastSrcSeq:         make(map[string]uint64),
 		aiSource:           "sensor.caregiver01",
 		aiPublishMode:      "log&publish",
 		layoutHashes:       make(map[string]string),
@@ -495,6 +502,27 @@ func (e *Engine) SetRoomTenant(roomID, tenantID string) {
 	e.mu.Unlock()
 }
 
+// recordLastSrcSeq 记录最近一条来自 deviceAddr 的消息 envelope.SequenceNumber。
+// AI verdict publish 时反查作 evidence.trigger_seq_num（reasoning trace 链锚定）。
+func (e *Engine) recordLastSrcSeq(deviceAddr string, seq uint64) {
+	if deviceAddr == "" || seq == 0 {
+		return
+	}
+	e.srcSeqMu.Lock()
+	e.lastSrcSeq[deviceAddr] = seq
+	e.srcSeqMu.Unlock()
+}
+
+// readLastSrcSeq 读取最近 source seq；0 表示无记录或源 producer 未填 SequenceNumber。
+func (e *Engine) readLastSrcSeq(deviceAddr string) uint64 {
+	if deviceAddr == "" {
+		return 0
+	}
+	e.srcSeqMu.RLock()
+	defer e.srcSeqMu.RUnlock()
+	return e.lastSrcSeq[deviceAddr]
+}
+
 // SetAIPublishConfig 注入 AI publish 单点配置：mode + node_id（来自 yaml/env）。
 // 替换旧的 SetAIDeviceType + SetAIPublishEnabled，单一入口避免漂移。
 //
@@ -640,6 +668,11 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	}
 	if len(p.Evidence) > 0 {
 		fields["evidence"] = p.Evidence
+	}
+	// 北极星 reasoning trace：verdict 必带触发它的 source envelope.seq —
+	// 下游审计可一句 grep 把 AI verdict 反向链回 producer 的具体 envelope。
+	if srcSeq := e.readLastSrcSeq(p.DeviceID); srcSeq != 0 {
+		fields["trigger_seq_num"] = srcSeq
 	}
 
 	willPublish := e.redisClient != nil && mode == "log&publish"
@@ -1002,6 +1035,8 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 
 	// 路由到房间（device_ipv6 单程票：addr 是唯一 device 标识）
 	addrStr := m.DeviceAddr.String()
+	// 北极星 reasoning trace：记录这条 envelope.seq → 后续 AI verdict 引用为 trigger_seq_num
+	e.recordLastSrcSeq(addrStr, m.SequenceNumber)
 	e.mu.RLock()
 	roomID := e.cardToRoom[m.SubjectEntity]
 	if roomID == "" {
@@ -1075,6 +1110,8 @@ func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
 
 	// 路由（device_ipv6 单程票：addr 是唯一 device 标识）
 	addrStr := m.DeviceAddr.String()
+	// 北极星 reasoning trace：记录这条 envelope.seq → 后续 AI verdict 引用
+	e.recordLastSrcSeq(addrStr, m.SequenceNumber)
 	e.mu.RLock()
 	roomID := e.cardToRoom[m.SubjectEntity]
 	if roomID == "" {
@@ -1122,6 +1159,8 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 
 	// 路由到房间（device_ipv6 单程票：addr 是唯一 device 标识）
 	addrStr := m.DeviceAddr.String()
+	// 北极星 reasoning trace：记录这条 envelope.seq → 后续 AI verdict 引用
+	e.recordLastSrcSeq(addrStr, m.SequenceNumber)
 	e.mu.RLock()
 	roomID := e.cardToRoom[m.SubjectEntity]
 	if roomID == "" {

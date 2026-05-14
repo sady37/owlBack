@@ -11,7 +11,7 @@ database:
   port: 5432
   user: "postgres"
   password: "postgres"
-  database: "owlrd"
+  database: "owl_v2"
   sslmode: "disable"
 
 redis:

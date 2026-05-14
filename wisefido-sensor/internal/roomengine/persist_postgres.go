@@ -39,18 +39,19 @@ func NewPostgresPersister(db *sql.DB, table string) *PostgresPersister {
 	return &PostgresPersister{db: db, table: table}
 }
 
-// Save UPSERT (room_id) DO UPDATE
+// Save UPSERT (spatial_prefix) DO UPDATE。
+// v2 schema: roomengine_grid_snapshot.room_id (UUID) 已退役 → spatial_prefix INET (room /88 CIDR)。
 func (p *PostgresPersister) Save(ctx context.Context, roomID, layoutHash string, cellCount int, payload []byte) error {
 	// 直接拼表名安全：table 由代码控制不来自用户输入；参数化 SQL 保护数据
 	q := fmt.Sprintf(`
-		INSERT INTO %s (room_id, layout_hash, schema_version, cell_count, payload, updated_at)
-		VALUES ($1, $2, $3, $4, $5::jsonb, NOW())
-		ON CONFLICT (room_id) DO UPDATE
+		INSERT INTO %s (spatial_prefix, layout_hash, schema_version, cell_count, payload, snapshot_at)
+		VALUES ($1::INET, $2, $3, $4, $5::jsonb, NOW())
+		ON CONFLICT (spatial_prefix) DO UPDATE
 		SET layout_hash    = EXCLUDED.layout_hash,
 		    schema_version = EXCLUDED.schema_version,
 		    cell_count     = EXCLUDED.cell_count,
 		    payload        = EXCLUDED.payload,
-		    updated_at     = EXCLUDED.updated_at
+		    snapshot_at    = EXCLUDED.snapshot_at
 	`, p.table)
 	_, err := p.db.ExecContext(ctx, q, roomID, layoutHash, SnapshotSchemaVersion, cellCount, payload)
 	return err
@@ -58,7 +59,7 @@ func (p *PostgresPersister) Save(ctx context.Context, roomID, layoutHash string,
 
 // Load 取回当前 snapshot；found=false 表示首次启动无记录
 func (p *PostgresPersister) Load(ctx context.Context, roomID string) (string, []byte, bool, error) {
-	q := fmt.Sprintf(`SELECT layout_hash, payload FROM %s WHERE room_id = $1`, p.table)
+	q := fmt.Sprintf(`SELECT layout_hash, payload FROM %s WHERE spatial_prefix = $1::INET`, p.table)
 	var hash string
 	var payload []byte
 	err := p.db.QueryRowContext(ctx, q, roomID).Scan(&hash, &payload)
@@ -85,19 +86,23 @@ func NewPostgresHistoryPersister(db *sql.DB, table string) *PostgresHistoryPersi
 	return &PostgresHistoryPersister{db: db, table: table}
 }
 
-// SaveDaily UPSERT (room_id, snapshot_date) DO UPDATE，并按 retainDays 清理超期记录。
+// SaveDaily UPSERT (spatial_prefix, archive_date) DO UPDATE，并按 retainDays 清理超期记录。
 // snapshotDate 通常用 nowLocal.Truncate(24h)（仅取日期部分，时区由调用方决定）。
+//
+// v2 schema: roomengine_grid_snapshot_history 列名变化:
+//   room_id UUID → spatial_prefix INET; snapshot_date → archive_date; taken_at → snapshot_at;
+//   PK 仍是 (snapshot_id UUID auto)；UNIQUE/UPSERT 改 (spatial_prefix, archive_date)
 func (p *PostgresHistoryPersister) SaveDaily(ctx context.Context, roomID, layoutHash string,
 	snapshotDate time.Time, cellCount int, payload []byte, retainDays int) error {
 	q := fmt.Sprintf(`
-		INSERT INTO %s (room_id, snapshot_date, layout_hash, schema_version, cell_count, payload, taken_at)
-		VALUES ($1, $2::date, $3, $4, $5, $6::jsonb, NOW())
-		ON CONFLICT (room_id, snapshot_date) DO UPDATE
+		INSERT INTO %s (spatial_prefix, archive_date, layout_hash, schema_version, cell_count, payload, snapshot_at)
+		VALUES ($1::INET, $2::date, $3, $4, $5, $6::jsonb, NOW())
+		ON CONFLICT (spatial_prefix, archive_date) DO UPDATE
 		SET layout_hash    = EXCLUDED.layout_hash,
 		    schema_version = EXCLUDED.schema_version,
 		    cell_count     = EXCLUDED.cell_count,
 		    payload        = EXCLUDED.payload,
-		    taken_at       = EXCLUDED.taken_at
+		    snapshot_at    = EXCLUDED.snapshot_at
 	`, p.table)
 	if _, err := p.db.ExecContext(ctx, q, roomID, snapshotDate.Format("2006-01-02"),
 		layoutHash, SnapshotSchemaVersion, cellCount, payload); err != nil {
@@ -105,7 +110,7 @@ func (p *PostgresHistoryPersister) SaveDaily(ctx context.Context, roomID, layout
 	}
 	if retainDays > 0 {
 		// 顺手清理过期记录；失败仅返回，不阻挡主写入（已 INSERT 成功）
-		dq := fmt.Sprintf(`DELETE FROM %s WHERE snapshot_date < (NOW() - ($1 || ' days')::interval)::date`, p.table)
+		dq := fmt.Sprintf(`DELETE FROM %s WHERE archive_date < (NOW() - ($1 || ' days')::interval)::date`, p.table)
 		if _, err := p.db.ExecContext(ctx, dq, fmt.Sprintf("%d", retainDays)); err != nil {
 			return fmt.Errorf("retain prune failed: %w", err)
 		}

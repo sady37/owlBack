@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"owl-common/card"
@@ -29,6 +30,8 @@ type StreamPublisher struct {
 	config         *config.Config
 	cardMappingSvc *service.CardMappingService
 	logger         *zap.Logger
+	// seqCounter: TDPv2 envelope sequence_number — publisher 内单调；下游 verdict.evidence.trigger_seq_num 链
+	seqCounter atomic.Uint64
 }
 
 func NewStreamPublisher(redisClient *redis.Client, cfg *config.Config, logger *zap.Logger) *StreamPublisher {
@@ -89,6 +92,10 @@ func (p *StreamPublisher) PublishAlarm(ctx context.Context, msg *rediscommon.IoT
 func (p *StreamPublisher) publish(ctx context.Context, stream rediscommon.StreamDefinition, msg *rediscommon.IoTStreamMessage) error {
 	if msg.Producer == "" {
 		msg.Producer = rediscommon.BuildDeviceProducer(msg.DeviceAddr)
+	}
+	// SequenceNumber 缺省自增（北极星 reasoning trace 链；详 qinglan stream_publisher 同段注释）
+	if msg.SequenceNumber == 0 {
+		msg.SequenceNumber = p.seqCounter.Add(1)
 	}
 	// device_ipv6 单程票 R-009：subject_entity 可空（unbound device，cardagg IotPreparedHandler
 	// 用 LPM 反查 cards 兜底）；只要 device_addr 有效就发。

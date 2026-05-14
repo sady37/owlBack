@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"owl-common/card"
@@ -46,11 +47,16 @@ type CardMappingService interface {
 //
 // device_ipv6 单程票后所有 publish 路径只发 device_addr / subject_entity / category；
 // 不再写 device_id/device_uid/tenant_id/semantic_location 等冗余字段。
+//
+// seqCounter: 协议层北极星 (TDPv2 envelope sequence_number) — publisher 内单调 monotonic uint64，
+// 每条消息自增；下游 sensor 派生 verdict 时把"触发的 source msg seq" 写入 evidence
+// （reasoning trace 链 = qinglan envelope.seq → sensor verdict.evidence.trigger_seq_num）。
 type StreamPublisher struct {
 	redisClient    *redis.Client
 	config         *config.Config
 	cardMappingSvc CardMappingService
 	logger         *zap.Logger
+	seqCounter     atomic.Uint64
 }
 
 // NewStreamPublisher 创建 Stream 发布器。
@@ -135,6 +141,10 @@ func (p *StreamPublisher) publishObservation(ctx context.Context, stream redisco
 	// Producer 缺省按 device-gateway 语义自动填充
 	if msg.Producer == "" {
 		msg.Producer = rediscommon.BuildDeviceProducer(msg.DeviceAddr)
+	}
+	// SequenceNumber 缺省自增（北极星：reasoning trace 链 = envelope.seq → 下游 verdict.evidence.trigger_seq_num）
+	if msg.SequenceNumber == 0 {
+		msg.SequenceNumber = p.seqCounter.Add(1)
 	}
 	if skipQinglanIotHeadPublish(msg.SubjectEntity, msg.DeviceAddr) {
 		if p.logger != nil {
