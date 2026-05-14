@@ -669,14 +669,16 @@ func (s *sleepaceReportService) fillMissingSleepaceReportsFromVendor(ctx context
 }
 
 // validateDevice 验证设备是否存在且属于该租户
+// v2: devices 表已删 tenant_id 列（tenant 派生自 device_ipv6 前 /48）；
+//     也删 status 列（row 存在 = enabled）；
+//     tenantID 入参现为 /48 INET CIDR 字符串。
 func (s *sleepaceReportService) validateDevice(ctx context.Context, tenantID, deviceID string) error {
 	query := `
 		SELECT EXISTS(
 			SELECT 1
 			FROM devices
 			WHERE device_id = $1::uuid
-			  AND tenant_id = $2::uuid
-			  AND status <> 'disabled'
+			  AND device_ipv6 <<= $2::INET
 		)
 	`
 	var exists bool
