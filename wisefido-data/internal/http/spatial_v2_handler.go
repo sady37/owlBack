@@ -65,6 +65,7 @@ func (r *Router) RegisterSpatialV2Routes(h *SpatialV2Handler) {
 	r.Handle("/admin/api/v2/spatial/branches/", h.HandleBranchByPrefix)
 	r.Handle("/admin/api/v2/spatial/sites", h.HandleSites)
 	r.Handle("/admin/api/v2/spatial/units", h.HandleUnits)
+	r.Handle("/admin/api/v2/spatial/units/", h.HandleUnitByPrefix)
 	r.Handle("/admin/api/v2/spatial/rooms", h.HandleRooms)
 	r.Handle("/admin/api/v2/spatial/beds", h.HandleBeds)
 	r.Handle("/admin/api/v2/spatial/devices", h.HandleDevices)
@@ -507,11 +508,63 @@ func (h *SpatialV2Handler) HandleSites(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Ok(allocResp{Prefix: prefix.String()}))
 }
 
+// =============================================================================
+// Units — LIST/GET/PUT/DELETE + alloc (POST)
+// =============================================================================
+
+type unitRow struct {
+	Prefix       string             `json:"prefix"` // /80 CIDR
+	Slot         int                `json:"slot"`
+	Name         string             `json:"name"`
+	LayoutType   string             `json:"layout_type,omitempty"`
+	Timezone     string             `json:"timezone,omitempty"`
+	UnitProperty int                `json:"unit_property"` // 0=non-residential, 1=residential
+	UnitType     int                `json:"unit_type"`     // 1/2/3
+	CreatedAt    string             `json:"created_at"`
+	UpdatedAt    string             `json:"updated_at"`
+	BranchPrefix string             `json:"branch_prefix"` // derived /56
+	Rooms        []unitRoomItem     `json:"rooms,omitempty"`
+	Beds         []unitBedItem      `json:"beds,omitempty"`
+	Residents    []unitResidentItem `json:"residents,omitempty"` // 当前活跃 binding 到该 unit 的 resident(s)
+}
+
+type unitRoomItem struct {
+	RoomPrefix string `json:"room_prefix"` // /88
+	RoomName   string `json:"room_name"`
+	RoomType   string `json:"room_type,omitempty"`
+	IsPrimary  bool   `json:"is_primary"`
+}
+
+type unitBedItem struct {
+	BedPrefix string `json:"bed_prefix"` // /96
+	BedName   string `json:"bed_name"`
+}
+
+type unitResidentItem struct {
+	ResidentHoA string `json:"resident_hoa"`
+	Nickname    string `json:"nickname"`
+}
+
+type updateUnitReq struct {
+	Name         *string `json:"name,omitempty"`
+	LayoutType   *string `json:"layout_type,omitempty"`   // 空字符串 = NULL
+	Timezone     *string `json:"timezone,omitempty"`      // 空字符串 = NULL
+	UnitProperty *int    `json:"unit_property,omitempty"` // 0/1
+	UnitType     *int    `json:"unit_type,omitempty"`     // 1/2/3
+}
+
 func (h *SpatialV2Handler) HandleUnits(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	switch r.Method {
+	case http.MethodPost:
+		h.allocUnit(w, r)
+	case http.MethodGet:
+		h.listUnits(w, r)
+	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
 	}
+}
+
+func (h *SpatialV2Handler) allocUnit(w http.ResponseWriter, r *http.Request) {
 	var body allocUnitReq
 	if !decodeJSON(w, r, &body) {
 		return
@@ -521,6 +574,11 @@ func (h *SpatialV2Handler) HandleUnits(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Fail("invalid parent: "+err.Error()))
 		return
 	}
+	tenant, _ := parent.Addr().Prefix(48)
+	if !h.scopeAllows(r, tenant) {
+		writeJSON(w, http.StatusOK, Fail("permission denied: cross-tenant allocation requires SystemAdmin"))
+		return
+	}
 	prefix, err := h.ipam.AllocateUnit(r.Context(), parent, body.Attrs)
 	if err != nil {
 		h.respondAllocError(w, "AllocateUnit", err)
@@ -528,6 +586,324 @@ func (h *SpatialV2Handler) HandleUnits(w http.ResponseWriter, r *http.Request) {
 	}
 	h.logger.Info("v2 spatial: unit allocated", zap.String("prefix", prefix.String()), zap.String("name", body.Attrs.Name))
 	writeJSON(w, http.StatusOK, Ok(allocResp{Prefix: prefix.String()}))
+}
+
+// listUnits GET /admin/api/v2/spatial/units?branch=<prefix>[&tenant=<prefix>]
+// 优先级 branch > tenant > X-Tenant-Id。
+func (h *SpatialV2Handler) listUnits(w http.ResponseWriter, r *http.Request) {
+	scopeStr := r.URL.Query().Get("branch")
+	if scopeStr == "" {
+		scopeStr = r.URL.Query().Get("tenant")
+	}
+	if scopeStr == "" {
+		scopeStr = r.Header.Get("X-Tenant-Id")
+	}
+	if scopeStr == "" {
+		writeJSON(w, http.StatusBadRequest, Fail("scope required (?branch=, ?tenant=, or X-Tenant-Id header)"))
+		return
+	}
+	scope, err := parsePrefix(scopeStr)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, Fail("invalid scope: "+err.Error()))
+		return
+	}
+	// scope check against caller's tenant
+	tenant, _ := scope.Addr().Prefix(48)
+	if !h.scopeAllows(r, tenant) {
+		writeJSON(w, http.StatusOK, Fail("permission denied: cross-tenant list requires SystemAdmin"))
+		return
+	}
+	rows, err := h.db.QueryContext(r.Context(), `
+		SELECT host(unit_id)||'/'||masklen(unit_id), unit_slot, unit_name,
+		       COALESCE(unit_layout_type,''), COALESCE(timezone,''),
+		       unit_property, unit_type,
+		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
+		       to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
+		       host(network(set_masklen(unit_id, 56)))||'/56'
+		FROM units WHERE unit_id << $1::INET
+		ORDER BY unit_name ASC
+	`, scope.String())
+	if err != nil {
+		h.logger.Error("v2 spatial: list units failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail("list units failed: "+err.Error()))
+		return
+	}
+	defer rows.Close()
+	items := make([]unitRow, 0, 8)
+	for rows.Next() {
+		var u unitRow
+		if err := rows.Scan(&u.Prefix, &u.Slot, &u.Name, &u.LayoutType, &u.Timezone,
+			&u.UnitProperty, &u.UnitType, &u.CreatedAt, &u.UpdatedAt, &u.BranchPrefix); err != nil {
+			h.logger.Error("v2 spatial: scan unit row failed", zap.Error(err))
+			writeJSON(w, http.StatusOK, Fail("scan unit row failed: "+err.Error()))
+			return
+		}
+		items = append(items, u)
+	}
+	rows.Close()
+
+	// 联表 rooms / beds / residents
+	for i := range items {
+		if rs, err := h.fetchUnitRooms(r.Context(), items[i].Prefix); err == nil {
+			items[i].Rooms = rs
+		} else {
+			h.logger.Warn("v2 spatial: fetch unit rooms failed", zap.String("prefix", items[i].Prefix), zap.Error(err))
+		}
+		if bs, err := h.fetchUnitBeds(r.Context(), items[i].Prefix); err == nil {
+			items[i].Beds = bs
+		} else {
+			h.logger.Warn("v2 spatial: fetch unit beds failed", zap.String("prefix", items[i].Prefix), zap.Error(err))
+		}
+		if res, err := h.fetchUnitResidents(r.Context(), items[i].Prefix); err == nil {
+			items[i].Residents = res
+		} else {
+			h.logger.Warn("v2 spatial: fetch unit residents failed", zap.String("prefix", items[i].Prefix), zap.Error(err))
+		}
+	}
+
+	writeJSON(w, http.StatusOK, Ok(map[string]any{
+		"items": items,
+		"total": len(items),
+	}))
+}
+
+// HandleUnitByPrefix dispatches GET/PUT/DELETE on /admin/api/v2/spatial/units/{prefix-encoded}
+func (h *SpatialV2Handler) HandleUnitByPrefix(w http.ResponseWriter, r *http.Request) {
+	const base = "/admin/api/v2/spatial/units/"
+	encoded := strings.TrimPrefix(r.URL.Path, base)
+	if encoded == "" {
+		writeJSON(w, http.StatusBadRequest, Fail("unit prefix required"))
+		return
+	}
+	prefix, err := decodePrefixSegment(encoded, r.URL.Query().Get("prefix"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, Fail("invalid unit prefix: "+err.Error()))
+		return
+	}
+	if prefix.Bits() != 80 {
+		writeJSON(w, http.StatusBadRequest, Fail("unit prefix must be /80, got /"+fmt.Sprint(prefix.Bits())))
+		return
+	}
+	tenant, _ := prefix.Addr().Prefix(48)
+	if !h.scopeAllows(r, tenant) {
+		writeJSON(w, http.StatusOK, Fail("permission denied: cross-tenant access requires SystemAdmin"))
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		h.getUnit(w, r, prefix)
+	case http.MethodPut:
+		h.updateUnit(w, r, prefix)
+	case http.MethodDelete:
+		h.deleteUnit(w, r, prefix)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *SpatialV2Handler) getUnit(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+	var u unitRow
+	var lt, tz sql.NullString
+	err := h.db.QueryRowContext(r.Context(), `
+		SELECT host(unit_id)||'/'||masklen(unit_id), unit_slot, unit_name,
+		       unit_layout_type, timezone, unit_property, unit_type,
+		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
+		       to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
+		       host(network(set_masklen(unit_id, 56)))||'/56'
+		FROM units WHERE unit_id = $1::INET
+	`, prefix.String()).Scan(&u.Prefix, &u.Slot, &u.Name, &lt, &tz, &u.UnitProperty, &u.UnitType,
+		&u.CreatedAt, &u.UpdatedAt, &u.BranchPrefix)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, http.StatusOK, Fail("unit not found: "+prefix.String()))
+		return
+	}
+	if err != nil {
+		h.logger.Error("v2 spatial: get unit failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail("get unit failed: "+err.Error()))
+		return
+	}
+	u.LayoutType = lt.String
+	u.Timezone = tz.String
+	// 附 children
+	if rs, err := h.fetchUnitRooms(r.Context(), u.Prefix); err == nil {
+		u.Rooms = rs
+	}
+	if bs, err := h.fetchUnitBeds(r.Context(), u.Prefix); err == nil {
+		u.Beds = bs
+	}
+	if res, err := h.fetchUnitResidents(r.Context(), u.Prefix); err == nil {
+		u.Residents = res
+	}
+	writeJSON(w, http.StatusOK, Ok(u))
+}
+
+func (h *SpatialV2Handler) updateUnit(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+	var body updateUnitReq
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	sets := make([]string, 0, 5)
+	args := make([]any, 0, 6)
+	args = append(args, prefix.String())
+	idx := 2
+	if body.Name != nil {
+		if *body.Name == "" {
+			writeJSON(w, http.StatusBadRequest, Fail("unit_name cannot be empty"))
+			return
+		}
+		sets = append(sets, fmt.Sprintf("unit_name = $%d", idx))
+		args = append(args, *body.Name)
+		idx++
+	}
+	if body.LayoutType != nil {
+		sets = append(sets, fmt.Sprintf("unit_layout_type = NULLIF($%d, '')", idx))
+		args = append(args, *body.LayoutType)
+		idx++
+	}
+	if body.Timezone != nil {
+		sets = append(sets, fmt.Sprintf("timezone = NULLIF($%d, '')", idx))
+		args = append(args, *body.Timezone)
+		idx++
+	}
+	if body.UnitProperty != nil {
+		if *body.UnitProperty != 0 && *body.UnitProperty != 1 {
+			writeJSON(w, http.StatusBadRequest, Fail("unit_property must be 0 (non-residential) or 1 (residential)"))
+			return
+		}
+		sets = append(sets, fmt.Sprintf("unit_property = $%d", idx))
+		args = append(args, *body.UnitProperty)
+		idx++
+	}
+	if body.UnitType != nil {
+		if *body.UnitType < 1 || *body.UnitType > 3 {
+			writeJSON(w, http.StatusBadRequest, Fail("unit_type must be 1, 2, or 3"))
+			return
+		}
+		sets = append(sets, fmt.Sprintf("unit_type = $%d", idx))
+		args = append(args, *body.UnitType)
+		idx++
+	}
+	if len(sets) == 0 {
+		writeJSON(w, http.StatusBadRequest, Fail("no fields to update"))
+		return
+	}
+	sets = append(sets, "updated_at = NOW()")
+	q := "UPDATE units SET " + strings.Join(sets, ", ") + " WHERE unit_id = $1::INET"
+	res, err := h.db.ExecContext(r.Context(), q, args...)
+	if err != nil {
+		h.logger.Error("v2 spatial: update unit failed", zap.Error(err), zap.String("prefix", prefix.String()))
+		writeJSON(w, http.StatusOK, Fail("update unit failed: "+err.Error()))
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		writeJSON(w, http.StatusOK, Fail("unit not found: "+prefix.String()))
+		return
+	}
+	h.logger.Info("v2 spatial: unit updated", zap.String("prefix", prefix.String()), zap.Int("fields", len(sets)-1))
+	writeJSON(w, http.StatusOK, Ok(map[string]any{"prefix": prefix.String(), "updated": true}))
+}
+
+// deleteUnit — units 表无 status 列；条件硬删（拒绝 if 有 rooms/beds/active resident binding）。
+// 与 v1 BranchList "Empty branch: hard delete / Branch with data: cannot delete" 同语义。
+func (h *SpatialV2Handler) deleteUnit(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+	// children check：rooms + beds + active resident_unit binding
+	var roomCount, bedCount, residentCount int
+	row := h.db.QueryRowContext(r.Context(), `
+		SELECT
+		  (SELECT COUNT(*) FROM rooms WHERE room_id << $1::INET),
+		  (SELECT COUNT(*) FROM beds  WHERE bed_id  << $1::INET),
+		  (SELECT COUNT(*) FROM resident_unit WHERE valid_to IS NULL AND spatial_prefix << $1::INET)
+	`, prefix.String())
+	if err := row.Scan(&roomCount, &bedCount, &residentCount); err != nil {
+		h.logger.Error("v2 spatial: unit child-count failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail("unit child-count failed: "+err.Error()))
+		return
+	}
+	if roomCount+bedCount+residentCount > 0 {
+		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf(
+			"cannot delete unit %s: has %d room(s), %d bed(s), %d active resident(s); remove children first",
+			prefix.String(), roomCount, bedCount, residentCount)))
+		return
+	}
+	res, err := h.db.ExecContext(r.Context(), `DELETE FROM units WHERE unit_id = $1::INET`, prefix.String())
+	if err != nil {
+		h.logger.Error("v2 spatial: delete unit failed", zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail("delete unit failed: "+err.Error()))
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		writeJSON(w, http.StatusOK, Fail("unit not found: "+prefix.String()))
+		return
+	}
+	h.logger.Info("v2 spatial: unit deleted", zap.String("prefix", prefix.String()))
+	writeJSON(w, http.StatusOK, Ok(map[string]any{"prefix": prefix.String(), "deleted": true}))
+}
+
+func (h *SpatialV2Handler) fetchUnitRooms(ctx context.Context, unitPrefix string) ([]unitRoomItem, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT host(room_id)||'/'||masklen(room_id), room_name, COALESCE(room_type,''), is_primary
+		FROM rooms WHERE room_id << $1::INET
+		ORDER BY is_primary DESC, room_slot ASC
+	`, unitPrefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]unitRoomItem, 0, 4)
+	for rows.Next() {
+		var rm unitRoomItem
+		if err := rows.Scan(&rm.RoomPrefix, &rm.RoomName, &rm.RoomType, &rm.IsPrimary); err != nil {
+			return nil, err
+		}
+		out = append(out, rm)
+	}
+	return out, rows.Err()
+}
+
+func (h *SpatialV2Handler) fetchUnitBeds(ctx context.Context, unitPrefix string) ([]unitBedItem, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT host(bed_id)||'/'||masklen(bed_id), bed_name
+		FROM beds WHERE bed_id << $1::INET
+		ORDER BY bed_slot ASC
+	`, unitPrefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]unitBedItem, 0, 4)
+	for rows.Next() {
+		var b unitBedItem
+		if err := rows.Scan(&b.BedPrefix, &b.BedName); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+func (h *SpatialV2Handler) fetchUnitResidents(ctx context.Context, unitPrefix string) ([]unitResidentItem, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT DISTINCT host(r.resident_id)||'/'||masklen(r.resident_id), r.nickname
+		FROM residents r
+		JOIN resident_unit ru ON ru.resident_id = r.resident_id AND ru.valid_to IS NULL
+		WHERE ru.spatial_prefix << $1::INET AND r.status = 'active'
+		ORDER BY r.nickname ASC
+	`, unitPrefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]unitResidentItem, 0, 4)
+	for rows.Next() {
+		var rs unitResidentItem
+		if err := rows.Scan(&rs.ResidentHoA, &rs.Nickname); err != nil {
+			return nil, err
+		}
+		out = append(out, rs)
+	}
+	return out, rows.Err()
 }
 
 func (h *SpatialV2Handler) HandleRooms(w http.ResponseWriter, r *http.Request) {
