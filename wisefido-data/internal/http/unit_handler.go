@@ -606,19 +606,20 @@ func (h *UnitHandler) CreateUnit(w http.ResponseWriter, r *http.Request) {
 	// v2 双维度：unit_property (0=Home, 1=Facility default) + unit_type (0=unknown, 1=single, 2=share, 3=public)
 	// FE 直接发整数；不再用 is_public_space / is_shared_unit / unit_type 字符串
 	req := service.CreateUnitRequest{
-		TenantID:     tenantID,
-		BranchID:     branchID,
-		BranchName:   branchName,
-		UnitName:     getString(payload, "unit_name"),
-		BuildingID:   buildingID,
-		BuildingName: buildingName,
-		Floor:        getString(payload, "floor"),
-		AreaName:     getString(payload, "area_name"),
-		UnitNumber:   getString(payload, "unit_number"),
-		LayoutConfig: getString(payload, "layout_config"),
-		UnitProperty: getInt8(payload, "unit_property"),
-		UnitType:     getInt8(payload, "unit_type"),
-		Timezone:     getString(payload, "timezone"),
+		TenantID:      tenantID,
+		BranchID:      branchID,
+		BranchName:    branchName,
+		UnitName:      getString(payload, "unit_name"),
+		BuildingID:    buildingID,
+		BuildingName:  buildingName,
+		Floor:         getString(payload, "floor"),
+		AreaName:      getString(payload, "area_name"),
+		UnitNumber:    getString(payload, "unit_number"),
+		LayoutConfig:  getString(payload, "layout_config"),
+		UnitProperty:  getInt8(payload, "unit_property"),
+		UnitType:      getInt8(payload, "unit_type"),
+		Timezone:      getString(payload, "timezone"),
+		CurrentUserID: r.Header.Get("X-User-Id"),
 	}
 
 	resp, err := h.unitService.CreateUnit(ctx, req)
@@ -685,20 +686,21 @@ func (h *UnitHandler) UpdateUnit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := service.UpdateUnitRequest{
-		TenantID:     tenantID,
-		UnitID:       unitID,
-		BranchID:     branchID,
-		BranchName:   branchName,
-		UnitName:     getString(payload, "unit_name"),
-		BuildingID:   buildingID,
-		BuildingName: buildingName,
-		Floor:        getString(payload, "floor"),
-		AreaName:     getString(payload, "area_name"),
-		UnitNumber:   getString(payload, "unit_number"),
-		LayoutConfig: getString(payload, "layout_config"),
-		UnitProperty: getInt8Ptr(payload, "unit_property"),
-		UnitType:     getInt8Ptr(payload, "unit_type"),
-		Timezone:     getString(payload, "timezone"),
+		TenantID:      tenantID,
+		UnitID:        unitID,
+		BranchID:      branchID,
+		BranchName:    branchName,
+		UnitName:      getString(payload, "unit_name"),
+		BuildingID:    buildingID,
+		BuildingName:  buildingName,
+		Floor:         getString(payload, "floor"),
+		AreaName:      getString(payload, "area_name"),
+		UnitNumber:    getString(payload, "unit_number"),
+		LayoutConfig:  getString(payload, "layout_config"),
+		UnitProperty:  getInt8Ptr(payload, "unit_property"),
+		UnitType:      getInt8Ptr(payload, "unit_type"),
+		Timezone:      getString(payload, "timezone"),
+		CurrentUserID: r.Header.Get("X-User-Id"),
 	}
 
 	_, err := h.unitService.UpdateUnit(ctx, req)

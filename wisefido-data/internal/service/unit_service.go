@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -70,6 +71,40 @@ func NewUnitService(unitsRepo repository.UnitsRepository, branchesRepo repositor
 		devicesRepo:  devicesRepo,
 		db:           db,
 		logger:       logger,
+	}
+}
+
+// recordPublicResidentAudit — 写一行 audit_log（synthetic public resident 操作专用）。
+// 与 PostgresResidentsRepository.recordAudit 同形：actor 为空 → NULL；payload 失败仅 warn 不阻断业务。
+// tx == nil 时走 s.db；非 nil 时与业务 INSERT/DELETE 同事务。
+func (s *unitService) recordPublicResidentAudit(
+	ctx context.Context, tx *sql.Tx,
+	actorUserID, action, hoa string, payload map[string]any,
+) {
+	var (
+		actorArg any = nil
+		payArg   any = nil
+	)
+	if a := strings.TrimSpace(actorUserID); a != "" {
+		actorArg = a
+	}
+	if payload != nil {
+		if b, err := json.Marshal(payload); err == nil {
+			payArg = b
+		}
+	}
+	const q = `INSERT INTO audit_log (actor_user_id, action, target_kind, target_id, payload, success)
+	           VALUES ($1::UUID, $2, 'resident', $3, $4, TRUE)`
+	args := []any{actorArg, action, hoa, payArg}
+	var err error
+	if tx != nil {
+		_, err = tx.ExecContext(ctx, q, args...)
+	} else {
+		_, err = s.db.ExecContext(ctx, q, args...)
+	}
+	if err != nil {
+		s.logger.Warn("recordPublicResidentAudit failed",
+			zap.String("action", action), zap.String("hoa", hoa), zap.Error(err))
 	}
 }
 
@@ -643,9 +678,10 @@ type CreateUnitRequest struct {
 	UnitNumber   string // 可选（v2 已删除该字段，但 FE 仍可发送，忽略）
 	LayoutConfig string // 可选（JSON 字符串）
 	// v2 双维度 (2026-05-09 重设计)
-	UnitProperty int8 // 0=Home, 1=Facility (default)
-	UnitType     int8 // 0=unknown, 1=single (Private), 2=share (default), 3=public
-	Timezone     string // 必填
+	UnitProperty  int8   // 0=Home, 1=Facility (default)
+	UnitType      int8   // 0=unknown, 1=single (Private), 2=share (default), 3=public
+	Timezone      string // 必填
+	CurrentUserID string // 可选（HIPAA audit_log actor）
 }
 
 type CreateUnitResponse struct {
@@ -665,9 +701,10 @@ type UpdateUnitRequest struct {
 	UnitNumber   string // 可选
 	LayoutConfig string // 可选（JSON 字符串）
 	// v2 双维度 — 指针类型表示"未提供则不更新"
-	UnitProperty *int8
-	UnitType     *int8
-	Timezone     string // 可选
+	UnitProperty  *int8
+	UnitType      *int8
+	Timezone      string // 可选
+	CurrentUserID string // 可选（HIPAA audit_log actor）
 }
 
 type UpdateUnitResponse struct {
@@ -1682,12 +1719,20 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 
 	// public unit (unit_type=3): 创建同名 synthetic resident "public-<unit_name>"
 	// 让 card detail / device-monitor-setting 等下游 UI 有 resident_id 可显示，避免空 "—"
+	//
+	// 失败 → compensate-delete 刚建的 unit row（saga 模式），返错给 user 重试。
+	// 不能让 unit 永久停在"type=3 但缺 synthetic"的飘移状态（cards 会落到 'Public' 兜底而非 nickname）。
 	if unitType == 3 {
-		if err := s.createPublicResident(ctx, req.TenantID, unitID, unit.UnitName); err != nil {
-			s.logger.Warn("createPublicResident failed (unit created OK)",
+		if err := s.createPublicResident(ctx, req.TenantID, unitID, unit.UnitName, req.CurrentUserID); err != nil {
+			s.logger.Error("createPublicResident failed, rolling back unit",
 				zap.String("tenant_id", req.TenantID),
 				zap.String("unit_id", unitID),
 				zap.Error(err))
+			if delErr := s.unitsRepo.DeleteUnit(ctx, req.TenantID, unitID); delErr != nil {
+				s.logger.Error("CreateUnit rollback: DeleteUnit also failed (orphan unit row left)",
+					zap.String("unit_id", unitID), zap.Error(delErr))
+			}
+			return nil, fmt.Errorf("create public synthetic resident failed: %w", err)
 		}
 	}
 
@@ -1704,7 +1749,10 @@ func (s *unitService) CreateUnit(ctx context.Context, req CreateUnitRequest) (*C
 //   - spatial_prefix = unit_id (/80)
 //   - resident_account = NULL (避免占用人类账号)
 // DeleteUnit 时通过同名 + 同 prefix 匹配并删除。
-func (s *unitService) createPublicResident(ctx context.Context, tenantID, unitID, unitName string) error {
+//
+// 不复用 residentsRepo.CreateResident：后者强分配 R0001 account 占人类序号；synthetic 不需。
+// 但写 audit_log + 触发 cards reconcile 必须保留对齐（HIPAA + 卡片自洽）。
+func (s *unitService) createPublicResident(ctx context.Context, tenantID, unitID, unitName, actorUserID string) error {
 	nickname := "public-" + strings.TrimSpace(unitName)
 	tenantPrefix := strings.TrimSpace(tenantID)
 	if !strings.Contains(tenantPrefix, "/") {
@@ -1750,11 +1798,16 @@ func (s *unitService) createPublicResident(ctx context.Context, tenantID, unitID
 		return fmt.Errorf("insert resident_unit: %w", err)
 	}
 
+	// HIPAA: synthetic 也要审计（与真人 resident.create 同 action，payload 标记 synthetic）
+	s.recordPublicResidentAudit(ctx, tx, actorUserID, "resident.create", hoa, map[string]any{
+		"synthetic": true, "unit_id": unitID, "nickname": nickname,
+	})
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 	// 触发 CardSync — 让 /80 unit card 立即 LPM 匹配上新建的 public-xxx resident
-	// （绕过了 residentsRepo hook，要手动调）
+	// （未经 residentsRepo，hook 不会自动 fire，手动调）
 	if globalCardSync != nil {
 		if err := globalCardSync.ReconcileCards(ctx, unitID); err != nil {
 			s.logger.Warn("createPublicResident: ReconcileCards failed",
@@ -1768,13 +1821,30 @@ func (s *unitService) createPublicResident(ctx context.Context, tenantID, unitID
 
 // renamePublicResidentForUnit — unit_type 保持 3 但 unit_name 变更时同步改 synthetic resident 的 nickname。
 // 通过旧 nickname + 同 prefix 锁定，避免误改其他真实 resident。
-func (s *unitService) renamePublicResidentForUnit(ctx context.Context, unitID, oldUnitName, newUnitName string) error {
+func (s *unitService) renamePublicResidentForUnit(ctx context.Context, unitID, oldUnitName, newUnitName, actorUserID string) error {
 	oldNick := "public-" + strings.TrimSpace(oldUnitName)
 	newNick := "public-" + strings.TrimSpace(newUnitName)
 	if oldNick == newNick {
 		return nil
 	}
-	res, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// 先抓将被改名的 hoa（用于 audit_log target_id 精确指向，且确认匹配数）
+	var hoa sql.NullString
+	_ = tx.QueryRowContext(ctx, `
+		SELECT host(r.resident_id)
+		  FROM residents r
+		  JOIN resident_unit ru ON ru.resident_id = r.resident_id
+		 WHERE r.nickname = $1
+		   AND ru.valid_to IS NULL
+		   AND ru.spatial_prefix = $2::INET
+		 LIMIT 1`, oldNick, unitID).Scan(&hoa)
+
+	res, err := tx.ExecContext(ctx, `
 		UPDATE residents r
 		   SET nickname = $1, updated_at = NOW()
 		 WHERE r.nickname = $2
@@ -1788,6 +1858,14 @@ func (s *unitService) renamePublicResidentForUnit(ctx context.Context, unitID, o
 		return err
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 && hoa.Valid {
+		s.recordPublicResidentAudit(ctx, tx, actorUserID, "resident.update", hoa.String, map[string]any{
+			"synthetic": true, "unit_id": unitID, "old_nickname": oldNick, "new_nickname": newNick,
+		})
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
 	if n > 0 && globalCardSync != nil {
 		_ = globalCardSync.ReconcileCards(ctx, unitID)
 		s.logger.Info("public-unit synthetic resident renamed",
@@ -1799,9 +1877,29 @@ func (s *unitService) renamePublicResidentForUnit(ctx context.Context, unitID, o
 // deletePublicResidentForUnit — DeleteUnit 时清除同名 public-xxx synthetic resident
 // 匹配条件：nickname = 'public-<unit_name>' AND 当前 active 在该 unit /80 prefix 内
 // resident_unit ON DELETE CASCADE 会自动清理空间绑定行。
-func (s *unitService) deletePublicResidentForUnit(ctx context.Context, unitID, unitName string) error {
+//
+// 不走 residentsRepo.SoftDelete：synthetic 没 PHI、没人类账号，hard delete 后历史 alarm_events.resident_id
+// (无 FK) 自然 dangle 即可，留着 'disabled' 行反而污染 ListResidents UI。
+func (s *unitService) deletePublicResidentForUnit(ctx context.Context, unitID, unitName, actorUserID string) error {
 	nickname := "public-" + strings.TrimSpace(unitName)
-	res, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// 先抓被删的 hoa（audit_log 用；DELETE 后 resident_unit 也被 cascade 没了）
+	var hoa sql.NullString
+	_ = tx.QueryRowContext(ctx, `
+		SELECT host(r.resident_id)
+		  FROM residents r
+		  JOIN resident_unit ru ON ru.resident_id = r.resident_id
+		 WHERE r.nickname = $1
+		   AND ru.valid_to IS NULL
+		   AND ru.spatial_prefix = $2::INET
+		 LIMIT 1`, nickname, unitID).Scan(&hoa)
+
+	res, err := tx.ExecContext(ctx, `
 		DELETE FROM residents r
 		 WHERE r.nickname = $1
 		   AND EXISTS (
@@ -1814,6 +1912,14 @@ func (s *unitService) deletePublicResidentForUnit(ctx context.Context, unitID, u
 		return err
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 && hoa.Valid {
+		s.recordPublicResidentAudit(ctx, tx, actorUserID, "resident.delete", hoa.String, map[string]any{
+			"synthetic": true, "unit_id": unitID, "nickname": nickname,
+		})
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
 	if n > 0 {
 		s.logger.Info("public-unit synthetic resident deleted",
 			zap.String("unit_id", unitID), zap.String("nickname", nickname), zap.Int64("count", n))
@@ -1979,11 +2085,13 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 	}
 	if changed {
 		// 3→非3 切换前先清掉自己创建的 public-<old_name> synthetic resident，
-		// 不让它把 collectUnitTypeChangeBlockers 的 residents 检查卡住
+		// 不让它把 collectUnitTypeChangeBlockers 的 residents 检查卡住。
+		// 失败 → 直接返错，避免"synthetic 还在 + 类型已变"的不一致。
 		if currentUnit.UnitType == 3 && newType != 3 {
-			if err := s.deletePublicResidentForUnit(ctx, req.UnitID, currentUnit.UnitName); err != nil {
-				s.logger.Warn("UpdateUnit: deletePublicResidentForUnit failed (continuing)",
+			if err := s.deletePublicResidentForUnit(ctx, req.UnitID, currentUnit.UnitName, req.CurrentUserID); err != nil {
+				s.logger.Error("UpdateUnit: deletePublicResidentForUnit failed",
 					zap.String("unit_id", req.UnitID), zap.Error(err))
+				return nil, fmt.Errorf("clear public synthetic resident failed: %w", err)
 			}
 		}
 		// unit_type/property 是建模级字段：切换会触发卡片体系按新模型重建，
@@ -2013,16 +2121,25 @@ func (s *unitService) UpdateUnit(ctx context.Context, req UpdateUnitRequest) (*U
 	}
 
 	// public unit (unit_type=3) synthetic resident 同步：
-	//   非3 → 3 : 新建 public-<name>
-	//   3 → 3 且名字变 : 重命名 nickname + cards.card_name
+	//   非3 → 3 : 新建 public-<name>，失败 → 回滚 unit_type 到旧值
+	//   3 → 3 且名字变 : 重命名 nickname + cards.card_name（best-effort：失败仅 warn，
+	//                    unit_name 已改但 synthetic 名飘移，下次 update 可触发再同步）
 	if newType == 3 && currentUnit.UnitType != 3 {
-		if err := s.createPublicResident(ctx, req.TenantID, req.UnitID, unit.UnitName); err != nil {
-			s.logger.Warn("UpdateUnit: createPublicResident failed",
+		if err := s.createPublicResident(ctx, req.TenantID, req.UnitID, unit.UnitName, req.CurrentUserID); err != nil {
+			s.logger.Error("UpdateUnit: createPublicResident failed, reverting unit_type",
 				zap.String("unit_id", req.UnitID), zap.Error(err))
+			revert := *unit
+			revert.UnitType = currentUnit.UnitType
+			revert.UnitProperty = currentUnit.UnitProperty
+			if revertErr := s.unitsRepo.UpdateUnit(ctx, req.TenantID, req.UnitID, &revert); revertErr != nil {
+				s.logger.Error("UpdateUnit revert: also failed (unit stays type=3 without synthetic)",
+					zap.String("unit_id", req.UnitID), zap.Error(revertErr))
+			}
+			return nil, fmt.Errorf("create public synthetic resident failed: %w", err)
 		}
 	} else if newType == 3 && currentUnit.UnitType == 3 && unit.UnitName != currentUnit.UnitName {
-		if err := s.renamePublicResidentForUnit(ctx, req.UnitID, currentUnit.UnitName, unit.UnitName); err != nil {
-			s.logger.Warn("UpdateUnit: renamePublicResidentForUnit failed",
+		if err := s.renamePublicResidentForUnit(ctx, req.UnitID, currentUnit.UnitName, unit.UnitName, req.CurrentUserID); err != nil {
+			s.logger.Warn("UpdateUnit: renamePublicResidentForUnit failed (unit name updated, synthetic stale)",
 				zap.String("unit_id", req.UnitID), zap.Error(err))
 		}
 	}
@@ -2061,7 +2178,7 @@ func (s *unitService) DeleteUnit(ctx context.Context, req DeleteUnitRequest) (*D
 	// public unit (unit_type=3): 先清除 synthetic public-<unit_name> resident，
 	// 避免它把 DeleteUnit 的 "residents not empty" 检查卡住
 	if unit != nil && unit.UnitType == 3 {
-		if err := s.deletePublicResidentForUnit(ctx, req.UnitID, unit.UnitName); err != nil {
+		if err := s.deletePublicResidentForUnit(ctx, req.UnitID, unit.UnitName, req.CurrentUserID); err != nil {
 			s.logger.Warn("deletePublicResidentForUnit failed (continuing)",
 				zap.String("unit_id", req.UnitID), zap.Error(err))
 		}
