@@ -964,10 +964,11 @@ func (r *PostgresCardRepository) CreateCard(
 // 内部 helpers
 // =====================================================================
 
-// getCardDeviceIDList card LPM 命中的所有 device_id（UUID string list）。
+// getCardDeviceIDList card LPM 命中的所有 device_addr（IPv6 string list；device_ipv6 单程票后唯一标识）。
+// 函数名保留 v1 命名但语义改为 IPv6（避免改动过多 caller）；实际值为 host(device_ipv6)。
 func (r *PostgresCardRepository) getCardDeviceIDList(cardID string) []string {
 	rows, err := r.db.Query(`
-		SELECT d.device_id::text
+		SELECT host(d.device_ipv6)
 		FROM cards c
 		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
 		WHERE c.spatial_prefix = $1::INET
