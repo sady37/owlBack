@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -689,35 +690,41 @@ func (c *MQTTConsumer) handleOTAReturn(uid string, message map[string]interface{
 	}
 }
 
-// resolveDeviceIdentity 统一解析 device_uid → (tid, bid, unitID, cid, did, bedID, roomID)。monitor/stat/event 共用。
-// ok=false 表示无 device_store 或 DeviceID 为空，调用方应直接 return。
-func (c *MQTTConsumer) resolveDeviceIdentity(ctx context.Context, uid string) (tid, bid, unitID, cid, did, bedID, roomID string, ok bool) {
+// resolveDeviceIdentity 统一解析 device_uid → 设备身份。monitor/stat/event 共用。
+// ok=false 表示无 device_store 或 DeviceAddr 无效，调用方应直接 return。
+//
+// device_ipv6 单程票后 addr 是路由层主键；其余 tid/bid/unitID/cid/did/bedID/roomID 多数已可从 addr 派生，
+// 保留作 cardID（cid）与 SubjectEntity 路由 + 旧业务逻辑兼容。
+func (c *MQTTConsumer) resolveDeviceIdentity(ctx context.Context, uid string) (tid, bid, unitID, cid, did, bedID, roomID string, addr netip.Addr, ok bool) {
 	ds, err := c.deviceRepo.GetDeviceStoreInfo(ctx, uid)
 	if err != nil || ds == nil || ds.DeviceID == "" {
-		return "", "", "", "", "", "", "", false
+		return "", "", "", "", "", "", "", netip.Addr{}, false
 	}
 	tid = strings.TrimSpace(ds.TenantID)
 	did = strings.TrimSpace(ds.DeviceID)
-	if tid == "" {
-		return "", "", "", "", "", "", "", false
+	addr = ds.DeviceAddr
+	if tid == "" || !addr.IsValid() {
+		return "", "", "", "", "", "", "", netip.Addr{}, false
 	}
 	if info, err := c.cardMappingService.GetCardIDByDeviceUID(ctx, uid); err == nil && info != nil {
 		bid, unitID, cid = info.BranchID, info.UnitID, info.CardID
 		bedID, roomID = info.BedID, info.RoomID
 	}
-	return tid, bid, unitID, cid, did, bedID, roomID, true
+	return tid, bid, unitID, cid, did, bedID, roomID, addr, true
 }
 
 // publishRadarMonitorHeartbeat monitoring 关闭时发单条 track_id=11（设备级），category=heart，供 cardagg MonitorBuffer 推导在线。
 //
 // 手写 map（不复用 observation.Track.ToFieldMap）：那条路径强制写零值 bed_status，
 // 雷达心跳与床无关，泄漏出去会污染下游协议。
-func (c *MQTTConsumer) publishRadarMonitorHeartbeat(ctx context.Context, tid, cid, uid, did string, ts int64) error {
+//
+// device_ipv6 单程票：addr 是路由层主键；cid 是 SubjectEntity（unbound 时为空，cardagg LPM 反查兜底）。
+func (c *MQTTConsumer) publishRadarMonitorHeartbeat(ctx context.Context, addr netip.Addr, cid string, ts int64) error {
 	data := map[string]any{
 		observation.FieldTrackID:         observation.TrackDevice,
 		observation.FieldTrackConfidence: 80,
 	}
-	msg := rediscommon.NewSingleItemMessage(tid, cid, uid, did, DeviceTypeRadar, ts, "monitor", observation.CategoryHeart, data)
+	msg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "monitor", observation.CategoryHeart, data)
 	return c.streamPublisher.PublishMonitor(ctx, msg)
 }
 
@@ -726,16 +733,13 @@ func (c *MQTTConsumer) publishRadarMonitorHeartbeat(ctx context.Context, tid, ci
 // 流使用 device_uid；无 device_store 记录不发。租户级需 business_access；monitoring_enabled 关闭时仅发 track_id=11 心跳。
 func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]interface{}) error {
 	ctx := context.Background()
-	tid, bid, unitID, cid, did, bedID, roomID, ok := c.resolveDeviceIdentity(ctx, uid)
+	_, _, _, cid, _, bedID, roomID, addr, ok := c.resolveDeviceIdentity(ctx, uid)
 	if !ok {
 		return nil
 	}
-	canIoT, canMonitor, policyTid := c.resolveIotPolicy(ctx, uid)
+	canIoT, canMonitor, _ := c.resolveIotPolicy(ctx, uid)
 	if !canIoT {
 		return nil
-	}
-	if policyTid != "" {
-		tid = policyTid
 	}
 	// card_id comes from resolveDeviceIdentity via CardMappingService
 	dataValue, err := decode.RadarDecoder(message, "monitor")
@@ -775,7 +779,7 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 
 	ts := time.Now().UnixMilli()
 	if canMonitor {
-		msgs := TargetMergeVital(items, ts, tid, bid, unitID, cid, uid, did, bedID, roomID)
+		msgs := TargetMergeVital(items, ts, addr, cid, bedID, roomID)
 		var lastErr error
 		for _, msg := range msgs {
 			if err := c.streamPublisher.PublishMonitor(ctx, msg); err != nil {
@@ -785,7 +789,7 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 		}
 		return lastErr
 	}
-	return c.publishRadarMonitorHeartbeat(ctx, tid, cid, uid, did, ts)
+	return c.publishRadarMonitorHeartbeat(ctx, addr, cid, ts)
 }
 
 // TargetMergeVital 根据 decode 结果合并 vital：仅当本条 MQTT 内「在 Bed 区域」的 track 恰有 1 个时合并到该 track，否则 vital 单独成条 track_id=9。
@@ -793,7 +797,8 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 func TargetMergeVital(
 	items []map[string]interface{},
 	ts int64,
-	tid, bid, unitID, cid, deviceUID, deviceID, bedID, roomID string,
+	addr netip.Addr,
+	cid, bedID, roomID string,
 ) []*rediscommon.IoTStreamMessage {
 	var tracks []map[string]interface{}
 	var vitals []map[string]interface{}
@@ -824,14 +829,14 @@ func TargetMergeVital(
 	if oneTrack != nil && oneVital != nil {
 		data := radarTrackToData(oneTrack)
 		mergeRadarVital(data, oneVital)
-		out = append(out, rediscommon.NewSingleItemMessage(tid, cid, deviceUID, deviceID, DeviceTypeRadar, ts, "monitor", observation.CategoryTrack, data))
+		out = append(out, rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "monitor", observation.CategoryTrack, data))
 	} else {
 		for _, tr := range tracks {
 			data := radarTrackToData(tr)
 			if len(tracks) > 1 {
 				data[observation.FieldTrackCount] = len(tracks)
 			}
-			out = append(out, rediscommon.NewSingleItemMessage(tid, cid, deviceUID, deviceID, DeviceTypeRadar, ts, "monitor", observation.CategoryTrack, data))
+			out = append(out, rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "monitor", observation.CategoryTrack, data))
 		}
 		for _, v := range vitals {
 			data := map[string]any{
@@ -841,7 +846,7 @@ func TargetMergeVital(
 				data[observation.FieldAreaID] = areaID
 			}
 			mergeRadarVital(data, v)
-			out = append(out, rediscommon.NewSingleItemMessage(tid, cid, deviceUID, deviceID, DeviceTypeRadar, ts, "monitor", observation.CategoryTrack, data))
+			out = append(out, rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "monitor", observation.CategoryTrack, data))
 		}
 	}
 	return out
@@ -946,16 +951,13 @@ func asInt(v interface{}) int {
 //   - canMonitor:  stat activity → iot:event:stream; stat sleep → iot:alarm/event + always send heart
 func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interface{}) error {
 	ctx := context.Background()
-	tid, bid, unitID, cid, did, _, _, ok := c.resolveDeviceIdentity(ctx, uid)
+	_, _, _, cid, _, _, _, addr, ok := c.resolveDeviceIdentity(ctx, uid)
 	if !ok {
 		return nil
 	}
-	canIoT, canMonitor, policyTid := c.resolveIotPolicy(ctx, uid)
+	canIoT, canMonitor, _ := c.resolveIotPolicy(ctx, uid)
 	if !canIoT {
 		return nil
-	}
-	if policyTid != "" {
-		tid = policyTid
 	}
 	// card_id comes from resolveDeviceIdentity via CardMappingService
 	dataValue, err := decode.RadarDecoder(message, "stat")
@@ -988,7 +990,7 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 
 	// !canMonitor: drop stat data, only send heart
 	if !canMonitor {
-		return c.publishRadarMonitorHeartbeat(ctx, tid, cid, uid, did, ts)
+		return c.publishRadarMonitorHeartbeat(ctx, addr, cid, ts)
 	}
 
 	// canMonitor: process stat data normally + send heart
@@ -1000,23 +1002,23 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 		}
 		switch cat {
 		case observation.FieldActivity:
-			if err := c.publishStatActivity(ctx, tid, bid, unitID, cid, uid, did, ts, m); err != nil {
+			if err := c.publishStatActivity(ctx, addr, cid, ts, m); err != nil {
 				lastErr = err
 			}
 		case observation.CategorySleep:
-			if err := c.publishStatSleep(ctx, tid, bid, unitID, cid, uid, did, ts, m); err != nil {
+			if err := c.publishStatSleep(ctx, addr, cid, ts, m); err != nil {
 				lastErr = err
 			}
 		}
 	}
-	if err := c.publishRadarMonitorHeartbeat(ctx, tid, cid, uid, did, ts); err != nil {
+	if err := c.publishRadarMonitorHeartbeat(ctx, addr, cid, ts); err != nil {
 		lastErr = err
 	}
 	return lastErr
 }
 
 // publishStatActivity 发布老人活动性状态汇总到 iot:event:stream，payload 符合 EventItem 格式，activity 字段平铺。
-func (c *MQTTConsumer) publishStatActivity(ctx context.Context, tid, bid, unitID, cid, deviceUID, deviceID string, ts int64, m map[string]interface{}) error {
+func (c *MQTTConsumer) publishStatActivity(ctx context.Context, addr netip.Addr, cid string, ts int64, m map[string]interface{}) error {
 	item := observation.NewEventItem(ts, "instant")
 	item.TrackID = observation.TrackUnknownPerson
 	data, err := observation.EventItemToDataMap(&item)
@@ -1044,7 +1046,7 @@ func (c *MQTTConsumer) publishStatActivity(ctx context.Context, tid, bid, unitID
 	if v, ok := m["multi_person_duration"]; ok {
 		data[observation.FieldMultiPersonDuration] = asInt(v)
 	}
-	msg := rediscommon.NewSingleItemMessage(tid, cid, deviceUID, deviceID, DeviceTypeRadar, ts, "event", observation.FieldActivity, data)
+	msg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "event", observation.FieldActivity, data)
 	return c.streamPublisher.PublishEvent(ctx, msg)
 }
 
@@ -1052,7 +1054,7 @@ func (c *MQTTConsumer) publishStatActivity(ctx context.Context, tid, bid, unitID
 // breath: 00=正常 01→RespRateAlertHigh 10→RespRateAlertLow 11→ApneaHypopnea
 // heart: 00=正常 01→HeartRateAlertLow 10→HeartRateAlertHigh 11=未定义不告警
 // vital_signs: 00=正常 11→WeakBiometricSignal
-func (c *MQTTConsumer) publishStatSleep(ctx context.Context, tid, bid, unitID, cid, deviceUID, deviceID string, ts int64, m map[string]interface{}) error {
+func (c *MQTTConsumer) publishStatSleep(ctx context.Context, addr netip.Addr, cid string, ts int64, m map[string]interface{}) error {
 	breathState := asInt(m["breath_state"]) & 0x03
 	heartState := asInt(m["heart_state"]) & 0x03
 	vitalSignsState := asInt(m["vital_signs_state"]) & 0x03
@@ -1077,7 +1079,7 @@ func (c *MQTTConsumer) publishStatSleep(ctx context.Context, tid, bid, unitID, c
 		if weakSignal > 0 {
 			alarmData[observation.FieldWeakBiometricSignal] = weakSignal
 		}
-		alarmMsg := rediscommon.NewSingleItemMessage(tid, cid, deviceUID, deviceID, DeviceTypeRadar, ts, "alarm", category, alarmData)
+		alarmMsg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "alarm", category, alarmData)
 		return c.streamPublisher.PublishAlarm(ctx, alarmMsg)
 	}
 
@@ -1128,7 +1130,7 @@ func (c *MQTTConsumer) publishStatSleep(ctx context.Context, tid, bid, unitID, c
 	data["event_status"] = "instant"
 	data["track_id"] = observation.TrackUnknownPerson
 	cat := alarm.SleepStage // 与 Sleepad sleepStage 统一为 sleep-stage
-	msg := rediscommon.NewSingleItemMessage(tid, cid, deviceUID, deviceID, DeviceTypeRadar, ts, "event", cat, data)
+	msg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "event", cat, data)
 	return c.streamPublisher.PublishEvent(ctx, msg)
 }
 
@@ -1137,16 +1139,13 @@ func (c *MQTTConsumer) publishStatSleep(ctx context.Context, tid, bid, unitID, c
 // canMonitor: decoder 输出 event_name（如 InBed、Fall），按 event_type 分配 track_id，流使用 device_uid。
 func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interface{}) error {
 	ctx := context.Background()
-	tid, _, _, cid, did, _, _, ok := c.resolveDeviceIdentity(ctx, uid)
+	_, _, _, cid, _, _, _, addr, ok := c.resolveDeviceIdentity(ctx, uid)
 	if !ok {
 		return nil
 	}
-	canIoT, canMonitor, policyTid := c.resolveIotPolicy(ctx, uid)
+	canIoT, canMonitor, _ := c.resolveIotPolicy(ctx, uid)
 	if !canIoT {
 		return nil
-	}
-	if policyTid != "" {
-		tid = policyTid
 	}
 	// card_id comes from resolveDeviceIdentity via CardMappingService
 	dataValue, err := decode.RadarDecoder(message, "event")
@@ -1177,7 +1176,7 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 
 	// !canMonitor: drop event/alarm data, only send heart
 	if !canMonitor {
-		return c.publishRadarMonitorHeartbeat(ctx, tid, cid, uid, did, ts)
+		return c.publishRadarMonitorHeartbeat(ctx, addr, cid, ts)
 	}
 
 	// canMonitor: process event/alarm data normally
@@ -1234,7 +1233,7 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 				if alarmData == nil {
 					alarmData = make(map[string]interface{})
 				}
-				evMsg := rediscommon.NewSingleItemMessage(tid, cid, uid, did, DeviceTypeRadar, ts, "alarm", alarmCat, alarmData)
+				evMsg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "alarm", alarmCat, alarmData)
 				if err := c.streamPublisher.PublishAlarm(ctx, evMsg); err != nil {
 					log.Printf("[EVENT_HANDLER] event publish failed device=%s cat=%s: %v", uid, alarmCat, err)
 					lastErr = err
@@ -1256,7 +1255,7 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 			}
 		}
 
-		msg := rediscommon.NewSingleItemMessage(tid, cid, uid, did, DeviceTypeRadar, ts, "event", eventName, data)
+		msg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "event", eventName, data)
 		if err := c.streamPublisher.PublishEvent(ctx, msg); err != nil {
 			log.Printf("[EVENT_HANDLER] publish failed device=%s cat=%s: %v", uid, eventName, err)
 			lastErr = err

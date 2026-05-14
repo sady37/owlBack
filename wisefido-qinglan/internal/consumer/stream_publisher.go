@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -33,13 +34,18 @@ func QinglanHotPathLog(logger *zap.Logger, msg string, fields ...zap.Field) {
 	logger.Debug(msg, fields...)
 }
 
-// CardMappingService 定义卡片映射服务接口（避免导入循环）
+// CardMappingService 定义卡片映射服务接口（避免导入循环）。
+//
+// device_ipv6 单程票：DeviceBaseline.DeviceAddr 是路由层主键。
 type CardMappingService interface {
 	GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*card.DeviceBaseline, error)
 	BaselineFor(deviceUID string) (card.DeviceBaseline, bool)
 }
 
-// StreamPublisher Redis Stream发布器
+// StreamPublisher Redis Stream 发布器。
+//
+// device_ipv6 单程票后所有 publish 路径只发 device_addr / subject_entity / category；
+// 不再写 device_id/device_uid/tenant_id/semantic_location 等冗余字段。
 type StreamPublisher struct {
 	redisClient    *redis.Client
 	config         *config.Config
@@ -47,7 +53,7 @@ type StreamPublisher struct {
 	logger         *zap.Logger
 }
 
-// NewStreamPublisher 创建Stream发布器
+// NewStreamPublisher 创建 Stream 发布器。
 func NewStreamPublisher(redisClient *redis.Client, cfg *config.Config) *StreamPublisher {
 	return &StreamPublisher{
 		redisClient: redisClient,
@@ -55,12 +61,12 @@ func NewStreamPublisher(redisClient *redis.Client, cfg *config.Config) *StreamPu
 	}
 }
 
-// SetCardMappingService 设置卡片映射服务（用于查询 deviceUID → cardID）
+// SetCardMappingService 设置卡片映射服务（用于查询 deviceUID → baseline）。
 func (p *StreamPublisher) SetCardMappingService(cardMappingSvc CardMappingService) {
 	p.cardMappingSvc = cardMappingSvc
 }
 
-// GetCardID 获取设备的 cardID
+// GetCardID 获取设备的 cardID（INET CIDR text）。
 func (p *StreamPublisher) GetCardID(ctx context.Context, deviceUID string) string {
 	if p.cardMappingSvc != nil && deviceUID != "" {
 		if cdi, err := p.cardMappingSvc.GetCardIDByDeviceUID(ctx, deviceUID); err == nil && cdi != nil {
@@ -111,52 +117,30 @@ func streamLabelFrom(streamName string, msg *rediscommon.IoTStreamMessage) strin
 	return "iot:" + xxx + ":" + yyy
 }
 
-// skipQinglanIotHeadPublish 网关不写或写空 subject_entity 时，若 device_uid+device_id 也都空则下游无法 resolve；
-// 此类包不写入 iot:* stream。Phase A：未绑卡 caller 已用 device_id 占位 subject_entity。
-func skipQinglanIotHeadPublish(subjectEntity, deviceID, deviceUID string) bool {
-	s := strings.TrimSpace(subjectEntity)
-	u := strings.TrimSpace(deviceUID)
-	d := strings.TrimSpace(deviceID)
-	if s == "" && u == "" && d == "" {
+// skipQinglanIotHeadPublish — device_ipv6 单程票：subject_entity + device_addr 任一空都丢弃。
+//
+// device_addr 必填（路由层主键）；subject_entity 可空（unbound device 走 cardagg 反查 LPM）。
+func skipQinglanIotHeadPublish(subjectEntity string, deviceAddr netip.Addr) bool {
+	if !deviceAddr.IsValid() {
 		return true
 	}
-	if u == "" && d == "" {
-		return true
-	}
+	// subject_entity 可空（unbound device，cardagg 反查 LPM 后填）
+	_ = subjectEntity
 	return false
 }
 
 var errEmptySubjectEntity = fmt.Errorf("subject_entity is empty, skip publish")
 
 func (p *StreamPublisher) publishObservation(ctx context.Context, stream rediscommon.StreamDefinition, msg *rediscommon.IoTStreamMessage) error {
-	// Phase A: Producer 缺省按 device-gateway 语义自动填充
+	// Producer 缺省按 device-gateway 语义自动填充
 	if msg.Producer == "" {
-		msg.Producer = rediscommon.BuildDeviceProducer(msg.DeviceID)
+		msg.Producer = rediscommon.BuildDeviceProducer(msg.DeviceAddr)
 	}
-	// SemanticLocation: 用 cardMappingService cache（server 启动时 load，server down 仍存活）
-	// 自动填 device 当前 room_id；让 envelope 的 where 维度在 producer 端就齐全，
-	// 边缘自治时本 unit 的 device 仍能据此本地联动。
-	if msg.SemanticLocation == "" && p.cardMappingSvc != nil && msg.DeviceUID != "" {
-		if cdi, _ := p.cardMappingSvc.GetCardIDByDeviceUID(ctx, msg.DeviceUID); cdi != nil {
-			msg.SemanticLocation = cdi.RoomID
-		}
-	}
-	if strings.TrimSpace(msg.SubjectEntity) == "" {
+	if skipQinglanIotHeadPublish(msg.SubjectEntity, msg.DeviceAddr) {
 		if p.logger != nil {
-			QinglanHotPathLog(p.logger, "skip iot publish: empty subject_entity",
+			QinglanHotPathLog(p.logger, "skip iot publish: invalid device_addr",
 				zap.String("stream", stream.Name),
-				zap.String("device_uid", msg.DeviceUID),
-				zap.String("device_id", msg.DeviceID))
-		}
-		return errEmptySubjectEntity
-	}
-	if skipQinglanIotHeadPublish(msg.SubjectEntity, msg.DeviceID, msg.DeviceUID) {
-		if p.logger != nil {
-			QinglanHotPathLog(p.logger, "skip iot publish: empty identity",
-				zap.String("stream", stream.Name),
-				zap.String("subject_entity", msg.SubjectEntity),
-				zap.String("device_uid", msg.DeviceUID),
-				zap.String("device_id", msg.DeviceID))
+				zap.String("subject_entity", msg.SubjectEntity))
 		}
 		return nil
 	}
@@ -177,7 +161,7 @@ func (p *StreamPublisher) publishObservation(ctx context.Context, stream redisco
 		QinglanHotPathLog(p.logger, "publish to redis",
 			zap.String("stream", streamLabel),
 			zap.String("cid", msg.SubjectEntity),
-			zap.String("device_uid", msg.DeviceUID),
+			zap.String("device_addr", msg.DeviceAddr.String()),
 			zap.Int64("ts", msg.Timestamp),
 			zap.ByteString("event", payload))
 	}
@@ -186,7 +170,7 @@ func (p *StreamPublisher) publishObservation(ctx context.Context, stream redisco
 	if err != nil && p.logger != nil {
 		p.logger.Error("publish observation failed",
 			zap.String("stream", stream.Name),
-			zap.String("device_uid", msg.DeviceUID),
+			zap.String("device_addr", msg.DeviceAddr.String()),
 			zap.Error(err))
 	}
 	return err
@@ -197,36 +181,29 @@ func (p *StreamPublisher) SetLogger(logger *zap.Logger) {
 	p.logger = logger
 }
 
-// PublishToStream 发布数据到Redis Stream
-// 使用 owl-common/redis.PublishToStream，直接展开字段到 Redis Stream
+// PublishToStream 发布数据到 Redis Stream
 func (p *StreamPublisher) PublishToStream(ctx context.Context, streamName string, data map[string]interface{}) (string, error) {
-	// 获取Stream配置（兼容旧方式，从配置中获取）
 	maxLen, retentionSeconds := p.config.GetStreamConfig(streamName)
-
-	// 使用 owl-common/redis.PublishToStream，直接展开字段
 	streamID, err := rediscommon.PublishToStream(ctx, p.redisClient, streamName, data, maxLen, retentionSeconds)
 	if err != nil {
 		return "", fmt.Errorf("failed to publish to stream %s: %w", streamName, err)
 	}
-
 	return streamID, nil
 }
 
-// BuildEncodedData 构建 iot:*:stream 输出数据（顶层无 addressInfo，键 dataValue 为数组）
-// subjectEntity 未绑卡可传空（caller 用 device_id 占位）；dataValue 为数组，每项含 category 及对应字段。
+// BuildEncodedData 构建 iot:*:stream 输出数据（顶层无 addressInfo，键 dataValue 为数组）。
+//
+// device_ipv6 单程票：addr 是 device 路由层主键；subjectEntity 已绑卡填 cardID，未绑卡留空。
 func (p *StreamPublisher) BuildEncodedData(
+	addr netip.Addr,
 	subjectEntity string,
-	tenantID string,
-	deviceID string,
 	topicType, category string,
 	dataValue []interface{},
 ) map[string]interface{} {
 	msg := rediscommon.BuildIoTStreamMessage(
-		"",                // device_uid 由 caller 在外层填充（此 helper 只构造 envelope 头部）
-		deviceID,
-		DeviceTypeRadar,   // wisefido-qinglan 网关的所有设备都是 Radar
+		addr,
+		DeviceTypeRadar, // wisefido-qinglan 网关的所有设备都是 Radar
 		subjectEntity,
-		tenantID,
 		time.Now().Unix(),
 		topicType,
 		category,
@@ -235,10 +212,8 @@ func (p *StreamPublisher) BuildEncodedData(
 	return iotStreamMessageToMap(msg)
 }
 
-// iotStreamMessageToMap 将 IoTStreamMessage 转换为 map（用于发布到 Redis Stream）
-// 顶层顺序：device_id, device_type, card_id, tenant_id, timestamp, topic_type, category, dataValue（无 addressInfo）
+// iotStreamMessageToMap 将 IoTStreamMessage 转换为 map（用于发布到 Redis Stream）。
 func iotStreamMessageToMap(msg rediscommon.IoTStreamMessage) map[string]interface{} {
-	// 统一复用 owl-common 的标准序列化，避免手写字段漏传（例如 device_uid）。
 	m := msg
 	return (&m).ToStreamMap()
 }
@@ -259,64 +234,39 @@ func (p *StreamPublisher) GetOutputStreamName(topicType string) string {
 	}
 }
 
-// PublishDeviceStatus 发布设备状态到 iot:event:stream（device 属于 event）
-// deviceUID: 设备UID（用于查询关联的 cardID）
-// statuses: 设备状态 map[string]int，支持字段：
-//   - online: 0=离线, 1=在线
-//   - angle_abnormal: 0=正常, 1=异常
-//   - signal_poor: 0=正常, 1=信号差
-//   - detached: 0=正常, 1=脱落
-//   - device_failure: 0=正常, 1=故障
+// PublishDeviceStatus 发布设备状态到 iot:event:stream（device 属于 event）。
+//
+// device_ipv6 单程票：addr 是路由主键；deviceUID 仅作 cardID 反查用。
+// subject 已绑=card_id；未绑=空（cardagg IotPreparedHandler LPM 反查兜底）。
 func (p *StreamPublisher) PublishDeviceStatus(
 	ctx context.Context,
-	deviceID, deviceType, tenantID, deviceUID string,
+	addr netip.Addr,
+	deviceUID, deviceType string,
 	statuses map[string]int,
 ) error {
-	// 查询 cardID（如果提供了 cardMappingSvc）
 	cardID := ""
 	if p.cardMappingSvc != nil && deviceUID != "" {
 		if cdi, err := p.cardMappingSvc.GetCardIDByDeviceUID(ctx, deviceUID); err == nil && cdi != nil {
 			cardID = cdi.CardID
-			if p.logger != nil {
-				p.logger.Debug("Found cardID for device",
-					zap.String("device_uid", deviceUID),
-					zap.String("card_id", cardID),
-					zap.String("device_id", deviceID))
-			}
-		} else if p.logger != nil {
-			p.logger.Debug("Unable to find cardID for device",
-				zap.String("device_uid", deviceUID),
-				zap.String("device_id", deviceID),
-				zap.Error(err))
 		}
 	}
-
-	subjectEntity := cardID
-	if subjectEntity == "" {
-		subjectEntity = deviceID // Phase A：未绑卡用 device_id 占位
-	}
 	msg := rediscommon.BuildDeviceStatusMessage(
-		deviceUID,
-		deviceID,
+		addr,
+		cardID, // unbound device → 空，cardagg 反查 (R-009 不再 deviceID 占位)
 		deviceType,
-		subjectEntity,
-		tenantID,
 		time.Now().UnixMilli(),
 		statuses,
 	)
 
-	if skipQinglanIotHeadPublish(msg.SubjectEntity, msg.DeviceID, msg.DeviceUID) {
+	if skipQinglanIotHeadPublish(msg.SubjectEntity, msg.DeviceAddr) {
 		if p.logger != nil {
-			QinglanHotPathLog(p.logger, "skip PublishDeviceStatus: empty card_id+device_uid or empty device_uid+device_id",
-				zap.String("cid", msg.SubjectEntity),
-				zap.String("device_uid", msg.DeviceUID),
-				zap.String("device_id", msg.DeviceID))
+			QinglanHotPathLog(p.logger, "skip PublishDeviceStatus: invalid device_addr",
+				zap.String("device_addr", addr.String()))
 		}
 		return nil
 	}
 
 	eventData := iotStreamMessageToMap(msg)
-
 	_, err := p.PublishToStream(ctx, rediscommon.StreamEvent.Name, eventData)
 	return err
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -426,7 +427,7 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 	}
 
 	// auth 成功后，立即发布 online event 到 deviceStatus stream
-	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
+	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceStoreInfo.DeviceAddr, deviceUID, sub.DeviceType, map[string]int{
 		observation.FieldOffline: 0,
 	})
 	// 上线 → 根据 offline=0 推导 category=DeviceRecover
@@ -509,8 +510,12 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 			zap.String("device_id", deviceID),
 		)
 
-		// 重新发布 online 状态
-		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
+		// 重新发布 online 状态：先查 device_addr
+		var addrForReauth netip.Addr
+		if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(ctx, deviceUID); dsErr == nil && dsi != nil {
+			addrForReauth = dsi.DeviceAddr
+		}
+		go m.streamPublisher.PublishDeviceStatus(context.Background(), addrForReauth, deviceUID, sub.DeviceType, map[string]int{
 			observation.FieldOffline: 0,
 		})
 		go m.publishDeviceAlarm(context.Background(), sub.TenantID, deviceID, deviceUID, observation.FieldOffline, 0)
@@ -602,7 +607,7 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 	m.subscriptionsByUID[deviceUID] = sub
 
 	// auth 成功后，立即发布 online event 到 deviceStatus stream
-	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, sub.DeviceType, sub.TenantID, deviceUID, map[string]int{
+	go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceStoreInfo.DeviceAddr, deviceUID, sub.DeviceType, map[string]int{
 		observation.FieldOffline: 0,
 	})
 	// 上线 → 根据 offline=0 推导 category=DeviceRecover
@@ -747,7 +752,12 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 			tenantID := sub.TenantID
 			sub.mu.RUnlock()
 			if deviceID != "" {
-				go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, deviceUID, map[string]int{
+				var addrLocal netip.Addr
+				if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(context.Background(), deviceUID); dsErr == nil && dsi != nil {
+					addrLocal = dsi.DeviceAddr
+				}
+				_ = tenantID
+				go m.streamPublisher.PublishDeviceStatus(context.Background(), addrLocal, deviceUID, deviceType, map[string]int{
 					observation.FieldOffline: 0,
 				})
 				// 与 Sleepace connectionStatus 一致：首条 MQTT 后发 iot:alarm:stream OfflineRecover，cardagg 据此更新 device_status
@@ -761,7 +771,7 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 					}
 					data[observation.FieldOffline] = 0
 					cid := m.streamPublisher.GetCardID(ctx, deviceUID)
-					msg := rediscommon.NewSingleItemMessage(tenantID, cid, deviceUID, deviceID, deviceType, time.Now().UnixMilli(), "alarm", alarm.AlarmTypeOfflineRecover, data)
+					msg := rediscommon.NewSingleItemMessage(addrLocal, cid, deviceType, time.Now().UnixMilli(), "alarm", alarm.AlarmTypeOfflineRecover, data)
 					_ = m.streamPublisher.PublishAlarm(ctx, msg)
 				}()
 			}
@@ -882,7 +892,12 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 	// 这里的实证：本函数被调用本身证明 mqtt_consumer 收到了一条该设备的 MQTT 包；
 	// 不再依赖第二条 MQTT，离线/在线判定立刻反映真实状态。
 	if justCreated && deviceID != "" && m.streamPublisher != nil {
-		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, subDeviceType, subTenantID, deviceUID, map[string]int{
+		var addrJC netip.Addr
+		if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(ctx, deviceUID); dsErr == nil && dsi != nil {
+			addrJC = dsi.DeviceAddr
+		}
+		_ = subTenantID
+		go m.streamPublisher.PublishDeviceStatus(context.Background(), addrJC, deviceUID, subDeviceType, map[string]int{
 			observation.FieldOffline: 0,
 		})
 		go func() {
@@ -895,7 +910,7 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 			}
 			data[observation.FieldOffline] = 0
 			cid := m.streamPublisher.GetCardID(pubCtx, deviceUID)
-			msg := rediscommon.NewSingleItemMessage(subTenantID, cid, deviceUID, deviceID, subDeviceType, time.Now().UnixMilli(), "alarm", alarm.AlarmTypeOfflineRecover, data)
+			msg := rediscommon.NewSingleItemMessage(addrJC, cid, subDeviceType, time.Now().UnixMilli(), "alarm", alarm.AlarmTypeOfflineRecover, data)
 			_ = m.streamPublisher.PublishAlarm(pubCtx, msg)
 		}()
 		m.logger.Info("Device online (first MQTT after subscription create), OfflineRecover published",
@@ -1030,12 +1045,16 @@ func (m *DeviceSubscriptionManager) PublishOnlineForConnectedDevices(ctx context
 			continue
 		}
 		sub.mu.RLock()
-		status, deviceID, deviceType, tenantID := sub.Status, sub.DeviceID, sub.DeviceType, sub.TenantID
+		status, _, deviceType, _ := sub.Status, sub.DeviceID, sub.DeviceType, sub.TenantID
 		sub.mu.RUnlock()
 		if status != "online" {
 			continue
 		}
-		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, deviceType, tenantID, deviceUID, map[string]int{
+		var addrLocal netip.Addr
+		if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(context.Background(), deviceUID); dsErr == nil && dsi != nil {
+			addrLocal = dsi.DeviceAddr
+		}
+		go m.streamPublisher.PublishDeviceStatus(context.Background(), addrLocal, deviceUID, deviceType, map[string]int{
 			observation.FieldOffline: 0,
 		})
 		published++
@@ -1323,7 +1342,11 @@ func (m *DeviceSubscriptionManager) SetTCPDeviceOnline(deviceUID, deviceID strin
 
 	// Publish online status to Redis cardagg (same as MQTT devices)
 	if deviceID != "" && m.streamPublisher != nil {
-		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, "", "", deviceUID, map[string]int{
+		var addrTCP netip.Addr
+		if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(context.Background(), deviceUID); dsErr == nil && dsi != nil {
+			addrTCP = dsi.DeviceAddr
+		}
+		go m.streamPublisher.PublishDeviceStatus(context.Background(), addrTCP, deviceUID, "", map[string]int{
 			observation.FieldOffline: 0,
 		})
 		log.Printf("[TCP] published online status to cardagg: uid=%s deviceID=%s", deviceUID, deviceID)
@@ -1346,7 +1369,11 @@ func (m *DeviceSubscriptionManager) SetTCPDeviceOffline(deviceUID string) {
 
 	// Publish offline status to Redis cardagg
 	if deviceID != "" && m.streamPublisher != nil {
-		go m.streamPublisher.PublishDeviceStatus(context.Background(), deviceID, "", "", deviceUID, map[string]int{
+		var addrTCP netip.Addr
+		if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(context.Background(), deviceUID); dsErr == nil && dsi != nil {
+			addrTCP = dsi.DeviceAddr
+		}
+		go m.streamPublisher.PublishDeviceStatus(context.Background(), addrTCP, deviceUID, "", map[string]int{
 			observation.FieldOffline: 1,
 		})
 		log.Printf("[TCP] published offline status to cardagg: uid=%s", deviceUID)

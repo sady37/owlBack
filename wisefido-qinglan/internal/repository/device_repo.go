@@ -3,13 +3,17 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"net/netip"
 
 	"owl-common/alarm"
 	"wisefido-qinglan/internal/domain"
 )
 
-// DeviceStoreInfo 设备库存信息（用于认证）
-// 对应 device_store 表的完整结构
+// DeviceStoreInfo 设备库存信息（用于认证 + 路由）
+//
+// device_ipv6 单程票 (doc/device_ipv6_migration_checklist.md) 后：
+//   - DeviceAddr 是路由层主键
+//   - DeviceID/DeviceUID/TenantID 保留外部 API + auth 边界使用 (R-002/R-003)
 type DeviceStoreInfo struct {
 	DeviceID        string         // UUID, PRIMARY KEY
 	DeviceUID       string         // VARCHAR(50), UNIQUE
@@ -21,8 +25,9 @@ type DeviceStoreInfo struct {
 	CommMode        sql.NullString
 	MCUModel        sql.NullString
 	FirmwareVersion sql.NullString
-	TenantID        string // UUID, NOT NULL
-	AllowAccess     bool   // BOOLEAN, NOT NULL DEFAULT FALSE
+	TenantID        string     // /48 INET CIDR text，e.g. "fd00:0:3::/48"（v2 已替换 UUID）
+	AllowAccess     bool       // devices.access 派生
+	DeviceAddr      netip.Addr // /128 INET，路由层主键
 }
 
 // DeviceRepository 设备仓库接口

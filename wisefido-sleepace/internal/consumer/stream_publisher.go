@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"time"
 
@@ -52,20 +53,22 @@ func (p *StreamPublisher) ResolveToDeviceUID(ctx context.Context, id string) str
 
 // Resolve 用 device key 查 device_store+cards，返回完整身份（DeviceBaseline），含 allow_access / business_access / monitoring_enabled。
 // 入参可为 device_uid 或 device_code（MQTT 首次可能发 uid，后续可能发 code），GetCardInfo/LookupCard 内部统一解析；未命中时 deviceID/deviceCode/deviceType 为空，业务访问为 BusinessAccessDefault（pending）。
+//
+// device_ipv6 单程票后追加 addr 返回值（DeviceBaseline.DeviceAddr）；publisher 直接用 addr 构造 envelope。
 func (p *StreamPublisher) Resolve(ctx context.Context, deviceKey string) (
 	tenantID, branchID, unitID, cardID, deviceID, outUID, deviceCode, deviceType string,
-	allowAccess bool, businessAccess string, monitoringEnabled bool,
+	allowAccess bool, businessAccess string, monitoringEnabled bool, addr netip.Addr,
 ) {
 	if p.cardMappingSvc == nil {
-		return "", "", "", "", "", deviceKey, "", "", false, card.BusinessAccessDefault, false
+		return "", "", "", "", "", deviceKey, "", "", false, card.BusinessAccessDefault, false, netip.Addr{}
 	}
 	info, err := p.cardMappingSvc.GetCardInfo(ctx, deviceKey)
 	if err != nil {
 		p.logger.Debug("card lookup miss", zap.String("device_key", deviceKey), zap.Error(err))
-		return "", "", "", "", "", deviceKey, "", "", false, card.BusinessAccessDefault, false
+		return "", "", "", "", "", deviceKey, "", "", false, card.BusinessAccessDefault, false, netip.Addr{}
 	}
 	return info.TenantID, info.BranchID, info.UnitID, info.CardID, info.DeviceID, info.DeviceUID, info.DeviceCode, info.DeviceType,
-		info.AllowAccess, info.BusinessAccess, info.MonitoringEnabled
+		info.AllowAccess, info.BusinessAccess, info.MonitoringEnabled, info.DeviceAddr
 }
 
 // PublishMonitor sends an IoTStreamMessage to iot:monitor:stream.
@@ -85,21 +88,20 @@ func (p *StreamPublisher) PublishAlarm(ctx context.Context, msg *rediscommon.IoT
 
 func (p *StreamPublisher) publish(ctx context.Context, stream rediscommon.StreamDefinition, msg *rediscommon.IoTStreamMessage) error {
 	if msg.Producer == "" {
-		msg.Producer = rediscommon.BuildDeviceProducer(msg.DeviceID)
+		msg.Producer = rediscommon.BuildDeviceProducer(msg.DeviceAddr)
 	}
-	// SemanticLocation: 用 cardMappingService cache（server 启动时 load，server down 仍存活）
-	// 自动填 device 当前 room_id；让 envelope 的 where 维度在 producer 端齐全，
-	// 边缘自治时本 unit 的 device 仍能据此本地联动。
-	if msg.SemanticLocation == "" && p.cardMappingSvc != nil && msg.DeviceUID != "" {
-		if info, err := p.cardMappingSvc.GetCardInfo(ctx, msg.DeviceUID); err == nil && info != nil {
-			msg.SemanticLocation = info.RoomID
-		}
-	}
+	// device_ipv6 单程票：subject_entity 已绑卡 publisher 端必填；空则丢（cardagg 可走 LPM 反查兜底）
 	if msg.SubjectEntity == "" {
 		p.logger.Error("subject_entity is empty, message dropped",
 			zap.String("stream", stream.Name),
-			zap.String("device_uid", msg.DeviceUID))
+			zap.String("device_addr", msg.DeviceAddr.String()))
 		return errEmptyCardID
+	}
+	if !msg.DeviceAddr.IsValid() {
+		p.logger.Error("device_addr is invalid, message dropped",
+			zap.String("stream", stream.Name),
+			zap.String("subject_entity", msg.SubjectEntity))
+		return fmt.Errorf("device_addr invalid")
 	}
 	if msg.Timestamp == 0 {
 		msg.Timestamp = time.Now().UnixMilli()
@@ -109,7 +111,7 @@ func (p *StreamPublisher) publish(ctx context.Context, stream rediscommon.Stream
 		p.logger.Debug("publish to redis",
 			zap.String("stream", stream.Name),
 			zap.String("subject_entity", msg.SubjectEntity),
-			zap.String("device_uid", msg.DeviceUID),
+			zap.String("device_addr", msg.DeviceAddr.String()),
 			zap.Int64("ts", msg.Timestamp),
 			zap.ByteString("event", payload))
 	}
@@ -119,7 +121,7 @@ func (p *StreamPublisher) publish(ctx context.Context, stream rediscommon.Stream
 	if err != nil {
 		p.logger.Error("publish failed",
 			zap.String("stream", stream.Name),
-			zap.String("device_uid", msg.DeviceUID),
+			zap.String("device_addr", msg.DeviceAddr.String()),
 			zap.Error(err))
 	}
 	return err

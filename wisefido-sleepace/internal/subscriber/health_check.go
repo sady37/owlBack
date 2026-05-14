@@ -287,7 +287,7 @@ func (h *HealthCheck) probeOne(ctx context.Context, b *card.DeviceBaseline) {
 	} else {
 		alarmData[observation.FieldOffline] = 1
 	}
-	msg := rediscommon.NewIoTStreamMessageWithData(b.TenantID, b.CardID, b.DeviceUID, b.DeviceID, deviceType, nowMs, "alarm", eventName, alarmData)
+	msg := rediscommon.NewIoTStreamMessageWithData(b.DeviceAddr, b.CardID, deviceType, nowMs, "alarm", eventName, alarmData)
 	if err := h.Publisher.PublishAlarm(ctx, msg); err != nil {
 		h.Logger.Warn("connectionStatus publish alarm failed", zap.String("device_uid", b.DeviceUID), zap.Bool("online", online), zap.Error(err))
 		// publish 失败时回滚 lastPublishedOK，下次再试；offline 路径会重发；online 本来就每次发

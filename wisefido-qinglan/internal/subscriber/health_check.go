@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -484,10 +485,19 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 		return
 	}
 	cid := m.streamPublisher.GetCardID(ctx, deviceUID)
+	// device_ipv6 单程票：deviceUID 反查 addr（health_check 不是热路径，多一次 DB 查询可接受）
+	var addr netip.Addr
+	if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(ctx, deviceUID); dsErr == nil && dsi != nil {
+		addr = dsi.DeviceAddr
+	}
+	if !addr.IsValid() {
+		m.logger.Warn("publishDeviceAlarm: invalid device_addr for device", zap.String("device_uid", deviceUID))
+		return
+	}
 	// 健康检查触发的衍生告警（Offline/SignalPoor/AngleException 类）— 落 iot:alarm:stream
 	// 后立刻被 wisefido-iot 写 iot_timeseries，这里再打日志冗余。仅 verbose 时回放。
 	if os.Getenv("QINGLAN_VERBOSE_LOG") == "true" {
-		log.Printf("📢 publishDeviceAlarm: device=%s field=%s value=%d event=%s cid=%s tid=%s did=%s", deviceUID, fieldKey, value, eventName, cid, tid, did)
+		log.Printf("📢 publishDeviceAlarm: device=%s field=%s value=%d event=%s cid=%s addr=%s", deviceUID, fieldKey, value, eventName, cid, addr.String())
 	}
 	ts := time.Now().UnixMilli()
 	eventStatus := "start"
@@ -515,7 +525,7 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 	if directAlarm {
 		topicType = "alarm"
 	}
-	msg := redis.NewSingleItemMessage(tid, cid, deviceUID, did, "Radar", ts, topicType, eventName, data)
+	msg := redis.NewSingleItemMessage(addr, cid, "Radar", ts, topicType, eventName, data)
 	if directAlarm {
 		if err := m.streamPublisher.PublishAlarm(ctx, msg); err != nil {
 			m.logger.Warn("Failed to publish device alarm", zap.String("event_name", eventName), zap.String("device_uid", deviceUID), zap.Error(err))

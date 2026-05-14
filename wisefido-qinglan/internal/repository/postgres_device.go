@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"strings"
 	"sync"
 
@@ -521,13 +522,10 @@ func (r *PostgresDeviceRepository) CountDevicesByStatus(ctx context.Context, ten
 	return counts, nil
 }
 
-// GetDeviceStoreInfo v2：auth 热路径，按 device_uid 查
+// GetDeviceStoreInfo v2：auth 热路径，按 device_uid 查。
 //
-// 字段映射（DeviceStoreInfo 保留 v1 命名 + AllowAccess bool 派生自 devices.access）：
-//   - DeviceID/DeviceUID/DeviceType/DeviceModel/MAC/IMEI/CommMode/MCUModel: dfm
-//   - FirmwareVersion: drs
-//   - TenantID: device_ipv6 反推 /48 host (v2 用 INET 字符串 "fd00:0:T::"，旧 caller 比 UUID 失败需特殊处理)
-//   - AllowAccess: devices.access
+// device_ipv6 单程票后 SELECT 加上 host(d.device_ipv6) 派生 DeviceAddr，
+// publisher 端无须再二次反查 cards/dfm。
 func (r *PostgresDeviceRepository) GetDeviceStoreInfo(ctx context.Context, deviceUID string) (*DeviceStoreInfo, error) {
 	query := `
 		SELECT
@@ -541,8 +539,9 @@ func (r *PostgresDeviceRepository) GetDeviceStoreInfo(ctx context.Context, devic
 		  dfm.comm_mode,
 		  dfm.mcu_model,
 		  drs.firmware_version,
-		  COALESCE(host(network(set_masklen(d.device_ipv6, 48))), 'fd00:0:1::') AS tenant_id,
-		  COALESCE(d.access, false) AS allow_access
+		  COALESCE(host(network(set_masklen(d.device_ipv6, 48))) || '/48', 'fd00:0:1::/48') AS tenant_pref,
+		  COALESCE(d.access, false) AS allow_access,
+		  host(d.device_ipv6)::text AS device_addr
 		FROM device_factory_meta dfm
 		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d ON d.device_id = dfm.device_id
@@ -551,8 +550,8 @@ func (r *PostgresDeviceRepository) GetDeviceStoreInfo(ctx context.Context, devic
 	row := r.db.QueryRowContext(ctx, query, deviceUID)
 	var ds DeviceStoreInfo
 	var deviceModel, mac, imei, commMode, mcuModel, firmwareVersion sql.NullString
-	var deviceCode sql.NullString
-	if err := row.Scan(&ds.DeviceID, &ds.DeviceUID, &deviceCode, &ds.DeviceType, &deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion, &ds.TenantID, &ds.AllowAccess); err != nil {
+	var deviceCode, addrStr sql.NullString
+	if err := row.Scan(&ds.DeviceID, &ds.DeviceUID, &deviceCode, &ds.DeviceType, &deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion, &ds.TenantID, &ds.AllowAccess, &addrStr); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not found in device_store")
 		}
@@ -565,6 +564,11 @@ func (r *PostgresDeviceRepository) GetDeviceStoreInfo(ctx context.Context, devic
 	ds.CommMode = commMode
 	ds.MCUModel = mcuModel
 	ds.FirmwareVersion = firmwareVersion
+	if addrStr.Valid && addrStr.String != "" {
+		if a, perr := netip.ParseAddr(addrStr.String); perr == nil {
+			ds.DeviceAddr = a
+		}
+	}
 	return &ds, nil
 }
 
@@ -585,8 +589,9 @@ func (r *PostgresDeviceRepository) GetDeviceStoreByDeviceID(ctx context.Context,
 		  dfm.comm_mode,
 		  dfm.mcu_model,
 		  drs.firmware_version,
-		  COALESCE(host(network(set_masklen(d.device_ipv6, 48))), 'fd00:0:1::') AS tenant_id,
-		  COALESCE(d.access, false) AS allow_access
+		  COALESCE(host(network(set_masklen(d.device_ipv6, 48))) || '/48', 'fd00:0:1::/48') AS tenant_pref,
+		  COALESCE(d.access, false) AS allow_access,
+		  host(d.device_ipv6)::text AS device_addr
 		FROM device_factory_meta dfm
 		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d ON d.device_id = dfm.device_id
@@ -595,8 +600,8 @@ func (r *PostgresDeviceRepository) GetDeviceStoreByDeviceID(ctx context.Context,
 	row := r.db.QueryRowContext(ctx, query, deviceID)
 	var ds DeviceStoreInfo
 	var deviceModel, mac, imei, commMode, mcuModel, firmwareVersion sql.NullString
-	var deviceCode sql.NullString
-	if err := row.Scan(&ds.DeviceID, &ds.DeviceUID, &deviceCode, &ds.DeviceType, &deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion, &ds.TenantID, &ds.AllowAccess); err != nil {
+	var deviceCode, addrStr sql.NullString
+	if err := row.Scan(&ds.DeviceID, &ds.DeviceUID, &deviceCode, &ds.DeviceType, &deviceModel, &mac, &imei, &commMode, &mcuModel, &firmwareVersion, &ds.TenantID, &ds.AllowAccess, &addrStr); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("device not found in device_store")
 		}
@@ -609,6 +614,11 @@ func (r *PostgresDeviceRepository) GetDeviceStoreByDeviceID(ctx context.Context,
 	ds.CommMode = commMode
 	ds.MCUModel = mcuModel
 	ds.FirmwareVersion = firmwareVersion
+	if addrStr.Valid && addrStr.String != "" {
+		if a, perr := netip.ParseAddr(addrStr.String); perr == nil {
+			ds.DeviceAddr = a
+		}
+	}
 	return &ds, nil
 }
 
