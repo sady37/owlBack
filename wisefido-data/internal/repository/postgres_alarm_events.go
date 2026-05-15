@@ -8,8 +8,19 @@ import (
 	"strings"
 	"time"
 
+	"owl-common/alarm"
 	"wisefido-data/internal/domain"
 )
+
+// alarmLevelToInt — DB 列 ae.alarm_level 是 SMALLINT 优先级数（0=EMERG..7=DEBUG, 8=CANCEL），
+// FE/domain 用字符串名（"EMERG"/"CRITICAL" 等）。filter 时必须 string→int 才能 bind SQL。
+// 未知字符串 → 返回 -1（让 query 永远 0 命中，避免 SQL syntax error）。
+func alarmLevelToInt(s string) int {
+	if v, ok := alarm.AlarmLevelPriority[alarm.NormalizeAlarmLevel(s)]; ok {
+		return v
+	}
+	return -1
+}
 
 // PostgresAlarmEventsRepository 报警事件Repository实现
 // 注意：与 wisefido-sensor 的实现保持一致，但使用 wisefido-data 的 domain 模型
@@ -113,14 +124,14 @@ func (r *PostgresAlarmEventsRepository) buildWhereClause(tenantID string, filter
 	}
 	if filters.AlarmLevel != nil {
 		where = append(where, fmt.Sprintf("ae.alarm_level = $%d", *argN))
-		*args = append(*args, *filters.AlarmLevel)
+		*args = append(*args, alarmLevelToInt(*filters.AlarmLevel))
 		*argN++
 	}
 	if len(filters.AlarmLevels) > 0 {
 		placeholders := make([]string, len(filters.AlarmLevels))
 		for i := range filters.AlarmLevels {
 			placeholders[i] = fmt.Sprintf("$%d", *argN)
-			*args = append(*args, filters.AlarmLevels[i])
+			*args = append(*args, alarmLevelToInt(filters.AlarmLevels[i]))
 			*argN++
 		}
 		where = append(where, fmt.Sprintf("ae.alarm_level IN (%s)", strings.Join(placeholders, ", ")))
