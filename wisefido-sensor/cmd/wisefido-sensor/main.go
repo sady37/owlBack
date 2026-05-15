@@ -70,13 +70,14 @@ func main() {
 		monitorConsumer := consumer.NewMonitorConsumer(engineRedis, monitorBuf, logger)
 		monitorConsumer.Start(ctx)
 
-		// 5.3 Zone Engine 子系统：Bed/Room/Bathroom 状态唯一权威源。
-		//      cardagg 同期仍写同 hash 字段（B+C 组未迁完），race window 内可能被覆盖；
-		//      下一 PR 切 cardagg PublishBedStateFromEvent / routeRoomStateEvent 后闭合 race。
+		// 5.3 Zone Engine 子系统：Bed/Room/Bathroom 状态唯一权威源 + zonealarm 派生 alarm。
+		// 注入 AlarmBackChannel 让 zonealarm 把 derived alarm（Stay/LeftBed/NightAbsence/
+		// BedNightAbsence）经 iot:alarm:stream 回流给 cardagg 落库。
 		zone, err := wiring.Setup(wiring.SetupOptions{
 			DB:            engineDB,
 			Redis:         engineRedis,
 			MonitorBuffer: monitorBuf,
+			BackChannel:   consumer.NewAlarmBackChannel(engineRedis),
 			Logger:        logger,
 		})
 		if err != nil {
