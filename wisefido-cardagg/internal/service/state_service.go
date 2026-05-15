@@ -14,56 +14,33 @@ import (
 	"go.uber.org/zap"
 )
 
-// vitalDeriveRound 单轮：HR/RR 置信度 + Sleepad InBedStatus 推断（inBedConf，正=在床负=离床）。
-type vitalDeriveRound struct {
-	confidence int // vital 置信度
-	inBedConf  int // Sleepad：inBedStatus=0 → +TrackConfidence，=1 → -TrackConfidence
-}
-
-// vitalDeriveRounds 当 bed_status!=0/1 时累计 N 轮 track 的 HR/RR 用于推导在床/离床，N 见 weights.VitalDeriveRoundsNeeded。
-type vitalDeriveRounds struct {
-	rounds []vitalDeriveRound
-}
-
+// StateService cardagg 卡片状态读写服务。
+//
+// **2026-05-14 zone engine cutover**：BedStatus / BedEvent / UpdatedAt / StartTime /
+// DurationSec 已迁出 — 由 wisefido-sensor zone engine RedisAdapter 统一权威。
+// 本服务保留写入：TrackNumber + BedConfidence + SleepStage / SleepConfidence + Target
+// + 卡初始化 + AreaPeople（PublishRoomStateFromEvent）+ Activity 派生。
+//
+// 已删函数（下游显式信号 + zone engine sustain 替代）：
+//   - DeriveBedStateFromRealtime（vital 累积 N 轮推导上下床）
+//   - ReconcileRoomStateFromBedState（zone engine subset_invariant 接管）
+//   - NoteLeftBedCooldown / vitalDeriveRound* / leftBedCooldownUntil 等内部状态
 type StateService struct {
 	writer *card.Writer
 	reader *card.Reader
 	logger *zap.Logger
 
-	vitalDeriveMu     sync.Mutex
-	vitalDeriveRounds map[string]*vitalDeriveRounds // cardID -> N 轮累计（见 weights.VitalDeriveRoundsNeeded）N=5
-	// recoverInBedRounds BedStatus=1 时由 Sleepad 实时强信号累计，满阈纠回在床（与 vitalDeriveRounds 隔离）
-	recoverInBedRounds map[string]*vitalDeriveRounds
-	leftBedCooldownUntil map[string]int64 // cardID -> 冷却结束时间 ms，期内禁止 recover 纠回在床
-	preparedMu        sync.Mutex
-	preparedCards     map[string]struct{} // cardID 已执行过 EnsureCardStatePrepared
+	preparedMu    sync.Mutex
+	preparedCards map[string]struct{} // cardID 已执行过 EnsureCardStatePrepared
 }
 
 func NewStateService(writer *card.Writer, reader *card.Reader, logger *zap.Logger) *StateService {
 	return &StateService{
-		writer:               writer,
-		reader:               reader,
-		logger:               logger,
-		vitalDeriveRounds:    make(map[string]*vitalDeriveRounds),
-		recoverInBedRounds:   make(map[string]*vitalDeriveRounds),
-		leftBedCooldownUntil: make(map[string]int64),
-		preparedCards:        make(map[string]struct{}),
+		writer:        writer,
+		reader:        reader,
+		logger:        logger,
+		preparedCards: make(map[string]struct{}),
 	}
-}
-
-// NoteLeftBedCooldown 离床落库后调用：在 LeftBedDeriveCooldownMs 内禁止 Derive 将 BedStatus=1 纠回在床。
-func (s *StateService) NoteLeftBedCooldown(cardID string) {
-	if s == nil || cardID == "" {
-		return
-	}
-	until := time.Now().UnixMilli() + LeftBedDeriveCooldownMs
-	s.vitalDeriveMu.Lock()
-	if s.leftBedCooldownUntil == nil {
-		s.leftBedCooldownUntil = make(map[string]int64)
-	}
-	s.leftBedCooldownUntil[cardID] = until
-	delete(s.recoverInBedRounds, cardID)
-	s.vitalDeriveMu.Unlock()
 }
 
 // BedConfidence 采用 100 分制：Sleepad 基准 90，Radar 基准 60。
@@ -160,214 +137,105 @@ func bedStatusFromTrackNumber(trackNumber int) int {
 	return 1 // 离床
 }
 
-// PublishBedStateFromEvent 在 event_handler 收到 InBed/LeftBed 时写 BedState。上床/下床彻底分开：有 Sleepad 用 buffer 在床轨数，无则事件 ±1 限制 [0,2]。UpdatedAt=事件时间，BedEvent：0=InBed，1=LeftBed。
+// PublishBedStateFromEvent 在 event_handler 收到 InBed/LeftBed 时写 BedState。
+//
+// **2026-05-14 zone engine cutover**：本函数职责收窄到只写 TrackNumber + BedConfidence
+// （+ LeftBed 时清 SleepStage）。BedStatus / BedEvent / UpdatedAt / StartTime /
+// DurationSec 由 zone engine RedisAdapter 独立写入（read-modify-write 保留 cardagg
+// 写的字段）。
+//
+// 仍保留 timestampMs 入参防签名变化波及 caller，本函数不再直接用它落库（zone engine 写
+// UpdatedAt）；trackNumberOverride 仍生效（决定 TrackNumber 算法）。
 func (s *StateService) PublishBedStateFromEvent(ctx context.Context, cardID, eventName, deviceType string, timestampMs int64, _ int, trackNumberOverride *int) (written bool, err error) {
+	_ = timestampMs // 仅为兼容 caller 签名；engine 写 UpdatedAt
 	switch eventName {
 	case alarm.InBed:
-		return s.publishBedStateInBed(ctx, cardID, deviceType, timestampMs, trackNumberOverride)
+		return s.publishBedStateInBed(ctx, cardID, deviceType, trackNumberOverride)
 	case alarm.LeftBed:
-		return s.publishBedStateLeftBed(ctx, cardID, deviceType, timestampMs, trackNumberOverride)
+		return s.publishBedStateLeftBed(ctx, cardID, deviceType, trackNumberOverride)
 	default:
 		return false, nil
 	}
 }
 
-// publishBedStateInBed 上床简化版：有 Sleepad 用 buffer 在床轨数+Sleepad 置信度；无则 prev+1 cap 2+Radar 置信度，StartTime 若 prev 在床沿用否则 event.ts。
-func (s *StateService) publishBedStateInBed(ctx context.Context, cardID, deviceType string, timestampMs int64, trackNumberOverride *int) (written bool, err error) {
-	var prev *card.BedState
-	if s.reader != nil {
-		if curr, readErr := s.reader.ReadCardStatus(ctx, cardID); readErr == nil && curr != nil && curr.BedState != nil {
-			prev = curr.BedState
-		}
+// publishBedStateInBed read-modify-write 仅修改 TrackNumber + BedConfidence；engine
+// owns 字段（BedStatus / BedEvent / UpdatedAt / StartTime / DurationSec）原样保留。
+//
+// trackNumberOverride 非 nil（Sleepad 路径）→ 直接覆盖 [0, trackNumberMax]；
+// nil（Radar 路径）→ prev.TrackNumber + 1，cap trackNumberMax。
+func (s *StateService) publishBedStateInBed(ctx context.Context, cardID, deviceType string, trackNumberOverride *int) (written bool, err error) {
+	prev := s.readBedState(ctx, cardID)
+	out := &card.BedState{}
+	if prev != nil {
+		*out = *prev // 完整保留 engine owns + SleepStage 等
 	}
-	bedFromPrev := func(b *card.BedState) {
-		if prev != nil {
-			b.SleepStage = prev.SleepStage
-			b.SleepConfidence = prev.SleepConfidence
+
+	if trackNumberOverride != nil {
+		out.BedConfidence = BedConfidenceSleepadBase
+		out.TrackNumber = clampTrackNumber(*trackNumberOverride)
+	} else {
+		out.BedConfidence = BedConfidenceRadarBase
+		if prev == nil || prev.BedStatus != 0 {
+			out.TrackNumber = 1
+		} else {
+			out.TrackNumber = clampTrackNumber(prev.TrackNumber + 1)
 		}
 	}
 
-	var trackNumber int
-	var startTime int64
-	var confidence int
-	if trackNumberOverride != nil {
-		confidence = BedConfidenceSleepadBase
-		trackNumber = *trackNumberOverride
-		if trackNumber < 0 {
-			trackNumber = 0
-		}
-		if trackNumber > trackNumberMax {
-			trackNumber = trackNumberMax
-		}
-		if prev != nil && prev.BedStatus == 0 {
-			startTime = prev.StartTime
-			if startTime == 0 && prev.UpdatedAt > 0 {
-				startTime = prev.UpdatedAt
-			}
-		} else {
-			startTime = timestampMs
-		}
-	} else {
-		confidence = BedConfidenceRadarBase
-		if prev == nil || prev.BedStatus != 0 {
-			trackNumber = 1
-			startTime = timestampMs
-		} else {
-			trackNumber = prev.TrackNumber + 1
-			if trackNumber > trackNumberMax {
-				trackNumber = trackNumberMax
-			}
-			startTime = prev.StartTime
-			if startTime == 0 && prev.UpdatedAt > 0 {
-				startTime = prev.UpdatedAt
-			}
-		}
-	}
-	if startTime == 0 {
-		startTime = timestampMs
-	}
-	status := bedStatusFromTrackNumber(trackNumber)
-	durationSec := int((timestampMs - startTime) / 1000)
-	if durationSec < 0 {
-		durationSec = 0
-	}
-	bs := &card.BedState{
-		UpdatedAt:     timestampMs,
-		BedStatus:     status,
-		TrackNumber:   trackNumber,
-		StartTime:     startTime,
-		DurationSec:   durationSec,
-		BedConfidence: confidence,
-		BedEvent:      BedEventInBed,
-	}
-	bedFromPrev(bs)
-	err = PublishCardStatus(ctx, s.writer, cardID, PublishFields{BedState: bs})
+	err = PublishCardStatus(ctx, s.writer, cardID, PublishFields{BedState: out})
 	return err == nil, err
 }
 
-// publishBedStateLeftBed 离床简化版：有 Sleepad 用 override+Sleepad 置信度；无则 prev-1 floor 0+Radar 置信度；TotalPeople==0 时 StartTime=event.ts。
-
-func (s *StateService) publishBedStateLeftBed(ctx context.Context, cardID, deviceType string, timestampMs int64, trackNumberOverride *int) (written bool, err error) {
-	var prev *card.BedState
-	if s.reader != nil {
-		if curr, readErr := s.reader.ReadCardStatus(ctx, cardID); readErr == nil && curr != nil && curr.BedState != nil {
-			prev = curr.BedState
-		}
+// publishBedStateLeftBed read-modify-write 仅修改 TrackNumber + BedConfidence + 清
+// SleepStage（离床即清，避免"Sleepad 关了仍显示 Awake"）。engine owns 字段保留。
+func (s *StateService) publishBedStateLeftBed(ctx context.Context, cardID, deviceType string, trackNumberOverride *int) (written bool, err error) {
+	prev := s.readBedState(ctx, cardID)
+	out := &card.BedState{}
+	if prev != nil {
+		*out = *prev
 	}
-	// LeftBed 不再继承 SleepStage——离床即清，下一次 InBed 后等 Sleepad/Radar 再上报
-	// （SleepStage 是事件，不是连续量；持有 stale 值会导致"Sleepad 关了仍显示 Awake"）
-	bedFromPrev := func(b *card.BedState) {
-		_ = prev // 占位避免未使用警告
-		b.SleepStage = 0
-		b.SleepConfidence = 0
-	}
+	out.SleepStage = 0
+	out.SleepConfidence = 0
 
-	var trackNumber int
-	var startTime int64
-	var confidence int
 	if trackNumberOverride != nil {
-		confidence = BedConfidenceSleepadBase
-		trackNumber = *trackNumberOverride
-		if trackNumber < 0 {
-			trackNumber = 0
-		}
-		if trackNumber > trackNumberMax {
-			trackNumber = trackNumberMax
-		}
-		if trackNumber == 0 {
-			startTime = timestampMs
-		} else if prev != nil {
-			startTime = prev.StartTime
-			if startTime == 0 && prev.UpdatedAt > 0 {
-				startTime = prev.UpdatedAt
-			}
-		} else {
-			startTime = timestampMs
-		}
+		out.BedConfidence = BedConfidenceSleepadBase
+		out.TrackNumber = clampTrackNumber(*trackNumberOverride)
 	} else {
-		confidence = BedConfidenceRadarBase
+		out.BedConfidence = BedConfidenceRadarBase
+		next := 0
 		if prev != nil && prev.TrackNumber > 0 {
-			trackNumber = prev.TrackNumber - 1
+			next = prev.TrackNumber - 1
 		}
-		if trackNumber < 0 {
-			trackNumber = 0
-		}
-		if trackNumber == 0 {
-			startTime = timestampMs
-		} else if prev != nil {
-			startTime = prev.StartTime
-			if startTime == 0 && prev.UpdatedAt > 0 {
-				startTime = prev.UpdatedAt
-			}
-		} else {
-			startTime = timestampMs
-		}
+		out.TrackNumber = clampTrackNumber(next)
 	}
-	if startTime == 0 {
-		startTime = timestampMs
+
+	err = PublishCardStatus(ctx, s.writer, cardID, PublishFields{BedState: out})
+	return err == nil, err
+}
+
+// readBedState 读取卡当前 BedState；nil-safe。
+func (s *StateService) readBedState(ctx context.Context, cardID string) *card.BedState {
+	if s.reader == nil {
+		return nil
 	}
-	status := bedStatusFromTrackNumber(trackNumber)
-	durationSec := int((timestampMs - startTime) / 1000)
-	if durationSec < 0 {
-		durationSec = 0
+	curr, err := s.reader.ReadCardStatus(ctx, cardID)
+	if err != nil || curr == nil {
+		return nil
 	}
-	bs := &card.BedState{
-		UpdatedAt:     timestampMs,
-		BedStatus:     status,
-		TrackNumber:   trackNumber,
-		StartTime:     startTime,
-		DurationSec:   durationSec,
-		BedConfidence: confidence,
-		BedEvent:      BedEventLeftBed,
+	return curr.BedState
+}
+
+func clampTrackNumber(n int) int {
+	if n < 0 {
+		return 0
 	}
-	bedFromPrev(bs)
-	err = PublishCardStatus(ctx, s.writer, cardID, PublishFields{BedState: bs})
-	written = err == nil
-	if written {
-		// Sleepad 与 monitor 强一致：override==0 表示缓冲里已无在床轨，立即离床 → 不启 Derive 纠回在床冷却。
-		// 不一致经 pending 超时或非 Sleepad 路径（override nil）仍设冷却，抑制第二层误纠偏。
-		strongSleepadAligned := trackNumberOverride != nil && *trackNumberOverride == 0
-		if !strongSleepadAligned {
-			s.NoteLeftBedCooldown(cardID)
-		}
+	if n > trackNumberMax {
+		return trackNumberMax
 	}
-	return written, err
+	return n
 }
 
 const trackNumberMax = 2
-
-// computeBedStateUpdate 返回 (startTime, trackNumber)。TrackNumber 限制在 [0, trackNumberMax]。
-func computeBedStateUpdate(eventName string, prev *card.BedState, timestampMs int64) (startTime int64, trackNumber int) {
-	switch eventName {
-	case alarm.InBed:
-		if prev == nil || prev.BedStatus != 0 {
-			return timestampMs, 1 //inbed, 且原来不在床1或未知8，tracknumber=1
-		}
-		trackNumber = prev.TrackNumber + 1
-		if trackNumber > trackNumberMax {
-			trackNumber = trackNumberMax
-		}
-		startTime = prev.StartTime
-		return startTime, trackNumber
-	case alarm.LeftBed:
-		if prev != nil && prev.TrackNumber > 0 {
-			trackNumber = prev.TrackNumber - 1
-		}
-		if trackNumber < 0 {
-			trackNumber = 0
-		}
-		if trackNumber == 0 {
-			startTime = timestampMs
-		} else if prev != nil {
-			startTime = prev.StartTime
-		} else {
-			startTime = timestampMs
-		}
-		return startTime, trackNumber
-	default:
-		return timestampMs, 0
-	}
-}
 
 // RoomStateEventKind 进出房/人数事件类型，用于 HasMulti/HasRisk 规则。
 type RoomStateEventKind int
@@ -534,46 +402,6 @@ func (s *StateService) PublishBathRoomStayFSM(ctx context.Context, cardID, devic
 func (s *StateService) ResetRoomState(ctx context.Context, cardID string) error {
 	rs := &card.RoomState{UpdatedAt: time.Now().UnixMilli(), TotalPeople: 0, HasMulti: false, HasRisk: false}
 	return PublishCardStatus(ctx, s.writer, cardID, PublishFields{RoomState: rs})
-}
-
-// ReconcileRoomStateFromBedState 若 sum(AreaPeople) < BedState.TrackNumber，则用床上人数抬升 TotalPeople 并写回；AreaPeople 保留。
-func (s *StateService) ReconcileRoomStateFromBedState(ctx context.Context, cardID string) error {
-	if s.reader == nil || s.writer == nil {
-		return nil
-	}
-	curr, err := s.reader.ReadCardStatus(ctx, cardID)
-	if err != nil || curr == nil || curr.BedState == nil || curr.RoomState == nil {
-		return nil
-	}
-	rs := curr.RoomState
-	bs := curr.BedState
-	if rs.TotalPeople < 0 {
-		return nil
-	}
-	sum := sumAreaPeople(rs.AreaPeople)
-	if sum >= bs.TrackNumber {
-		return nil
-	}
-	cur := &card.RoomState{
-		UpdatedAt:     bs.UpdatedAt,
-		TotalPeople:   bs.TrackNumber,
-		LastEnterTime: rs.LastEnterTime,
-		LastExitTime:  rs.LastExitTime,
-	}
-	if rs.AreaPeople != nil {
-		cur.AreaPeople = rs.AreaPeople
-	}
-	if cur.TotalPeople == 0 {
-		cur.HasMulti = false
-		cur.HasRisk = false
-	} else if cur.TotalPeople == 1 {
-		cur.HasMulti = false
-		cur.HasRisk = true
-	} else {
-		cur.HasMulti = true
-		cur.HasRisk = false
-	}
-	return PublishCardStatus(ctx, s.writer, cardID, PublishFields{RoomState: cur})
 }
 
 // DeriveAndWriteState 在 derive 定时点执行：写 Target。
@@ -793,358 +621,19 @@ func (s *StateService) PublishBedStateSleepStage(ctx context.Context, cardID str
 	return PublishCardStatus(ctx, s.writer, cardID, PublishFields{BedState: cur})
 }
 
-// DeriveBedStateFromRealtime 当 bed_status！=0/1 时在 derive 定时点调用：每轮累加置信度，累加和>350 即发布在床（BedConfidence=sum/n）并 Reconcile；满 5 轮仍<350 则发布离床（BedStatus=1，BedConfidence=100-sum/5）并 Reconcile。
-// deriveStartTime 返回 StartTime：状态未变时继承 prev，状态变化时用 now。
-func deriveStartTime(now int64, newBedStatus int, prev *card.BedState) int64 {
-	if prev != nil && prev.BedStatus == newBedStatus && prev.StartTime > 0 {
-		return prev.StartTime
-	}
-	return now
-}
-
-func (s *StateService) DeriveBedStateFromRealtime(ctx context.Context, snap CardSnapshot, meta *CardMeta) {
-	if meta == nil || meta.BedID == "" {
-		return
-	}
-	bedDevs := meta.BedBoundDeviceIDs()
-	if len(bedDevs) == 0 {
-		return
-	}
-	curr, err := s.reader.ReadCardStatus(ctx, snap.CardID)
-	if err != nil {
-		s.vitalDeriveMu.Lock()
-		delete(s.vitalDeriveRounds, snap.CardID)
-		delete(s.recoverInBedRounds, snap.CardID)
-		s.vitalDeriveMu.Unlock()
-		return
-	}
-
-	hasSleepadOnBed := false
-	for _, devID := range bedDevs {
-		if dm := meta.Devices[devID]; dm != nil {
-			t := strings.ToLower(dm.DeviceType)
-			if strings.Contains(t, "sleepad") || strings.Contains(t, "sleeppad") {
-				hasSleepadOnBed = true
-				break
-			}
-		}
-	}
-
-	// 在床(0)：清空累计
-	if curr != nil && curr.BedState != nil && curr.BedState.BedStatus == 0 {
-		s.vitalDeriveMu.Lock()
-		delete(s.vitalDeriveRounds, snap.CardID)
-		delete(s.recoverInBedRounds, snap.CardID)
-		s.vitalDeriveMu.Unlock()
-		return
-	}
-
-	// 离床(1)：Sleepad 床且非 LeftBed 冷却 → 用实时累计尝试纠回在床（与未定态推导隔离）
-	if curr != nil && curr.BedState != nil && curr.BedState.BedStatus == 1 {
-		nowMs := time.Now().UnixMilli()
-		s.vitalDeriveMu.Lock()
-		coolUntil := int64(0)
-		if s.leftBedCooldownUntil != nil {
-			coolUntil = s.leftBedCooldownUntil[snap.CardID]
-		}
-		inCooldown := nowMs < coolUntil
-		if !hasSleepadOnBed || inCooldown {
-			delete(s.vitalDeriveRounds, snap.CardID)
-			delete(s.recoverInBedRounds, snap.CardID)
-			s.vitalDeriveMu.Unlock()
-			return
-		}
-		inBedConf := sleepadInBedConfFromSnapshot(&snap, meta, bedDevs)
-		rv := s.recoverInBedRounds[snap.CardID]
-		if rv == nil {
-			rv = &vitalDeriveRounds{rounds: make([]vitalDeriveRound, 0, VitalDeriveRoundsNeeded)}
-			s.recoverInBedRounds[snap.CardID] = rv
-		}
-		rv.rounds = append(rv.rounds, vitalDeriveRound{inBedConf: inBedConf})
-		var sumRecover int
-		for _, r := range rv.rounds {
-			sumRecover += r.inBedConf
-		}
-		nr := len(rv.rounds)
-		if nr >= VitalDeriveRoundsNeeded {
-			if sumRecover >= DeriveBedStateThreshold {
-				delete(s.recoverInBedRounds, snap.CardID)
-				delete(s.vitalDeriveRounds, snap.CardID)
-				s.vitalDeriveMu.Unlock()
-				now := time.Now().UnixMilli()
-				bedConf := sumRecover / VitalDeriveRoundsNeeded
-				bs := &card.BedState{
-					UpdatedAt:     now,
-					BedStatus:     0,
-					TrackNumber:   1,
-					StartTime:     deriveStartTime(now, 0, curr.BedState),
-					DurationSec:   0,
-					BedEvent:      BedEventNone,
-					BedConfidence: bedConf,
-					SleepStage:    curr.BedState.SleepStage,
-					SleepConfidence: curr.BedState.SleepConfidence,
-				}
-				if err := PublishCardStatus(ctx, s.writer, snap.CardID, PublishFields{BedState: bs}); err != nil {
-					s.logger.Warn("recover in-bed from derive", zap.String("cid", snap.CardID), zap.Error(err))
-					return
-				}
-				_ = s.ReconcileRoomStateFromBedState(ctx, snap.CardID)
-				s.logger.Debug("derive recover bed_state=0 (Sleepad sumInBedConf)", zap.String("cid", snap.CardID), zap.Int("sum", sumRecover))
-				return
-			}
-			if sumRecover <= -DeriveBedStateThreshold {
-				delete(s.recoverInBedRounds, snap.CardID)
-				s.vitalDeriveMu.Unlock()
-				return
-			}
-			delete(s.recoverInBedRounds, snap.CardID)
-			s.vitalDeriveMu.Unlock()
-			return
-		}
-		s.vitalDeriveMu.Unlock()
-		return
-	}
-
-	s.vitalDeriveMu.Lock()
-	delete(s.recoverInBedRounds, snap.CardID)
-	s.vitalDeriveMu.Unlock()
-
-	// nil / 8 / 其它：继续 N=5 轮 vital 推导
-	roundConf := deriveConfidenceFromSnapshot(&snap, meta, bedDevs)
-	s.vitalDeriveMu.Lock()
-	v := s.vitalDeriveRounds[snap.CardID]
-	if v == nil {
-		v = &vitalDeriveRounds{rounds: make([]vitalDeriveRound, 0, VitalDeriveRoundsNeeded)}
-		s.vitalDeriveRounds[snap.CardID] = v
-	}
-	inBedConf := sleepadInBedConfFromSnapshot(&snap, meta, bedDevs)
-	v.rounds = append(v.rounds, vitalDeriveRound{confidence: roundConf, inBedConf: inBedConf})
-	var sumConf, sumInBedConf int
-	for _, r := range v.rounds {
-		sumConf += r.confidence
-		sumInBedConf += r.inBedConf
-	}
-	n := len(v.rounds)
-
-	if hasSleepadOnBed && n >= VitalDeriveRoundsNeeded {
-		if sumInBedConf >= DeriveBedStateThreshold {
-			delete(s.vitalDeriveRounds, snap.CardID)
-			s.vitalDeriveMu.Unlock()
-			now := time.Now().UnixMilli()
-			bedConf := sumInBedConf / VitalDeriveRoundsNeeded
-			var ss int
-			var sc int
-			if curr != nil && curr.BedState != nil {
-				ss = curr.BedState.SleepStage
-				sc = curr.BedState.SleepConfidence
-			}
-			if err := PublishCardStatus(ctx, s.writer, snap.CardID, PublishFields{
-				BedState: &card.BedState{
-					UpdatedAt:       now,
-					BedStatus:       0,
-					TrackNumber:     1,
-					StartTime:       deriveStartTime(now, 0, curr.BedState),
-					DurationSec:     0,
-					BedEvent:        BedEventNone,
-					BedConfidence:   bedConf,
-					SleepStage:      ss,
-					SleepConfidence: sc,
-				},
-			}); err != nil {
-				s.logger.Warn("derive bed state from realtime (Sleepad InBed)", zap.String("cid", snap.CardID), zap.Error(err))
-				return
-			}
-			_ = s.ReconcileRoomStateFromBedState(ctx, snap.CardID)
-			s.logger.Debug("derive bed_state=0 from realtime (Sleepad sumInBedConf>=350)", zap.String("cid", snap.CardID), zap.Int("sumInBedConf", sumInBedConf))
-			return
-		}
-		if sumInBedConf <= -DeriveBedStateThreshold {
-			delete(s.vitalDeriveRounds, snap.CardID)
-			s.vitalDeriveMu.Unlock()
-			now := time.Now().UnixMilli()
-			bedConf := sumInBedConf / VitalDeriveRoundsNeeded
-			if bedConf < 0 {
-				bedConf = -bedConf
-			}
-			var ss int
-			var sc int
-			if curr != nil && curr.BedState != nil {
-				ss = curr.BedState.SleepStage
-				sc = curr.BedState.SleepConfidence
-			}
-			if err := PublishCardStatus(ctx, s.writer, snap.CardID, PublishFields{
-				BedState: &card.BedState{
-					UpdatedAt:       now,
-					BedStatus:       1,
-					TrackNumber:     0,
-					StartTime:       deriveStartTime(now, 1, curr.BedState),
-					DurationSec:     0,
-					BedEvent:        BedEventNone,
-					BedConfidence:   bedConf,
-					SleepStage:      ss,
-					SleepConfidence: sc,
-				},
-			}); err != nil {
-				s.logger.Warn("derive bed state from realtime (Sleepad InBed)", zap.String("cid", snap.CardID), zap.Error(err))
-				return
-			}
-			_ = s.ReconcileRoomStateFromBedState(ctx, snap.CardID)
-			s.logger.Debug("derive bed_state=1 from realtime (Sleepad sumInBedConf<=-350)", zap.String("cid", snap.CardID), zap.Int("sumInBedConf", sumInBedConf))
-			return
-		}
-		delete(s.vitalDeriveRounds, snap.CardID)
-		s.vitalDeriveMu.Unlock()
-		return
-	}
-
-	if sumConf >= DeriveBedStateThreshold {
-		delete(s.vitalDeriveRounds, snap.CardID)
-		s.vitalDeriveMu.Unlock()
-		now := time.Now().UnixMilli()
-		bedConf := sumConf / n
-		var ss int
-		var sc int
-		if curr != nil && curr.BedState != nil {
-			ss = curr.BedState.SleepStage
-			sc = curr.BedState.SleepConfidence
-		}
-		if err := PublishCardStatus(ctx, s.writer, snap.CardID, PublishFields{
-			BedState: &card.BedState{
-				UpdatedAt:       now,
-				BedStatus:       0,
-				TrackNumber:     1,
-				StartTime:       deriveStartTime(now, 0, curr.BedState),
-				DurationSec:     0,
-				BedEvent:        BedEventNone,
-				BedConfidence:   bedConf,
-				SleepStage:      ss,
-				SleepConfidence: sc,
-			},
-		}); err != nil {
-			s.logger.Warn("derive bed state from realtime", zap.String("cid", snap.CardID), zap.Error(err))
-			return
-		}
-		_ = s.ReconcileRoomStateFromBedState(ctx, snap.CardID)
-		s.logger.Debug("derive bed_state=0 from realtime (sum>350)", zap.String("cid", snap.CardID), zap.Int("sumConf", sumConf), zap.Int("n", n))
-		return
-	}
-	if n >= VitalDeriveRoundsNeeded {
-		delete(s.vitalDeriveRounds, snap.CardID)
-		s.vitalDeriveMu.Unlock()
-		now := time.Now().UnixMilli()
-		bedConf := max(100-sumConf/VitalDeriveRoundsNeeded, 50) //50<radar 60, 防止radar 不能更新
-		if bedConf < 0 {
-			bedConf = 0
-		}
-		var ss int
-		var sc int
-		if curr != nil && curr.BedState != nil {
-			ss = curr.BedState.SleepStage
-			sc = curr.BedState.SleepConfidence
-		}
-		if err := PublishCardStatus(ctx, s.writer, snap.CardID, PublishFields{
-			BedState: &card.BedState{
-				UpdatedAt:       now,
-				BedStatus:       1,
-				TrackNumber:     0,
-				StartTime:       deriveStartTime(now, 1, curr.BedState),
-				DurationSec:     0,
-				BedEvent:        BedEventNone,
-				BedConfidence:   bedConf,
-				SleepStage:      ss,
-				SleepConfidence: sc,
-			},
-		}); err != nil {
-			s.logger.Warn("derive bed state from realtime", zap.String("cid", snap.CardID), zap.Error(err))
-			return
-		}
-		_ = s.ReconcileRoomStateFromBedState(ctx, snap.CardID)
-		s.logger.Debug("derive bed_state=1 from realtime (5 rounds sum<=350)", zap.String("cid", snap.CardID), zap.Int("sumConf", sumConf))
-		return
-	}
-	s.vitalDeriveMu.Unlock()
-}
-
-// deriveConfidenceFromSnapshot 按 snapshot 判断有 HR/RR 的设备并取 track.VitalConfidence；无 vital 则置信度 0。同类型取最大，两种都有 100。
-func deriveConfidenceFromSnapshot(snap *CardSnapshot, meta *CardMeta, bedDevs []string) int {
-	if meta == nil || len(bedDevs) == 0 {
-		return 0
-	}
-	var maxRadar, maxSleepad int
-	for _, devID := range bedDevs {
-		if !deviceHasHROrRRInSnapshot(snap, devID) {
-			continue
-		}
-		dm := meta.Devices[devID]
-		if dm == nil {
-			continue
-		}
-		c := deviceVitalConfidenceInSnapshot(snap, devID)
-		if c == 0 {
-			continue
-		}
-		t := strings.ToLower(dm.DeviceType)
-		if strings.Contains(t, "radar") {
-			if c > maxRadar {
-				maxRadar = c
-			}
-		} else if strings.Contains(t, "sleepad") || strings.Contains(t, "sleeppad") {
-			if c > maxSleepad {
-				maxSleepad = c
-			}
-		}
-	}
-	if maxRadar > 0 && maxSleepad > 0 {
-		return 100
-	}
-	if maxRadar > 0 {
-		return maxRadar - 10 //hr/rr有干扰，防止超过Sleepad Inbed 90的置信度
-	}
-	if maxSleepad > 0 {
-		return maxSleepad
-	}
-	return 0
-}
-
-// deviceVitalConfidenceInSnapshot 该设备在 snapshot 的 track 中 VitalConfidence 最大值（网关已下发）。
-func deviceVitalConfidenceInSnapshot(snap *CardSnapshot, deviceKey string) int {
-	if snap == nil {
-		return 0
-	}
-	var max int
-	for _, d := range snap.Devices {
-		if d.DeviceID != deviceKey && d.DeviceUID != deviceKey {
-			continue
-		}
-		for _, fields := range d.Tracks {
-			if v := intFromAny(fields[observation.FieldVitalConfidence]); v > max {
-				max = v
-			}
-		}
-		break
-	}
-	return max
-}
-
-// deviceTrackConfidenceInSnapshot 该设备在 snapshot 的 track 中 TrackConfidence 最大值；无则 0。
-func deviceTrackConfidenceInSnapshot(snap *CardSnapshot, deviceKey string) int {
-	if snap == nil {
-		return 0
-	}
-	var max int
-	for _, d := range snap.Devices {
-		if d.DeviceID != deviceKey && d.DeviceUID != deviceKey {
-			continue
-		}
-		for _, fields := range d.Tracks {
-			if v := intFromAny(fields[observation.FieldTrackConfidence]); v > max {
-				max = v
-			}
-		}
-		break
-	}
-	return max
-}
+// **2026-05-14 zone engine cutover**：DeriveBedStateFromRealtime 已删 — vital 累积
+// N 轮推导上下床的逻辑由 zone engine 的 vital adapter（HR>0+RR>0 sustain，scorer.go
+// case "sustain"）替代：sustain 不直接翻转状态而是维持 score 防 enter decay。失去
+// "事件丢失时 vital 兜底纠偏"能力，靠 sleepace/radar 显式 InBed/LeftBed event 兜底。
+//
+// 同期删的 dead helpers（仅 DeriveBedStateFromRealtime 内部使用）：
+//   - deriveStartTime / deriveConfidenceFromSnapshot / deviceVitalConfidenceInSnapshot
+//   - deviceTrackConfidenceInSnapshot / sleepadDeviceFullyInitializing
+//   - sleepadTrackConfidenceForInBedDerivation / sleepadInBedConfFromSnapshot
+//   - deviceBedStatusInSnapshot / deviceSignalQualityInSnapshot / deviceHasHROrRRInSnapshot
+//
+// 保留的 helpers（仍被 SleepadTrackCountFromSnapshot 等外部调用使用）：
+//   sleepadTrackInitializing / SleepadTrackCountFromSnapshot / intFromAny
 
 func sleepadTrackInitializing(fields map[string]any) bool {
 	if fields == nil {
@@ -1157,119 +646,6 @@ func sleepadTrackInitializing(fields map[string]any) bool {
 	return intFromAny(raw) == 1
 }
 
-// sleepadDeviceFullyInitializing 至少有一条 track 且每条均为 init_status==1（厂家约定此时 bed/生命体征无效）。
-func sleepadDeviceFullyInitializing(snap *CardSnapshot, deviceKey string) bool {
-	if snap == nil {
-		return false
-	}
-	foundAny := false
-	for _, d := range snap.Devices {
-		if d.DeviceID != deviceKey && d.DeviceUID != deviceKey {
-			continue
-		}
-		for _, fields := range d.Tracks {
-			foundAny = true
-			if !sleepadTrackInitializing(fields) {
-				return false
-			}
-		}
-		break
-	}
-	return foundAny
-}
-
-// sleepadTrackConfidenceForInBedDerivation 仅非初始化 track：全无 track_confidence 键 → 90；有键且最大≤0 → 30；否则取已上报最大值。
-func sleepadTrackConfidenceForInBedDerivation(snap *CardSnapshot, deviceKey string) int {
-	if snap == nil {
-		return 90
-	}
-	anyPresent := false
-	maxConf := -1
-	for _, d := range snap.Devices {
-		if d.DeviceID != deviceKey && d.DeviceUID != deviceKey {
-			continue
-		}
-		for _, fields := range d.Tracks {
-			if sleepadTrackInitializing(fields) {
-				continue
-			}
-			raw, ok := fields[observation.FieldTrackConfidence]
-			if !ok {
-				continue
-			}
-			anyPresent = true
-			v := intFromAny(raw)
-			if v > maxConf {
-				maxConf = v
-			}
-		}
-		break
-	}
-	if !anyPresent {
-		return 90
-	}
-	if maxConf <= 0 {
-		return 30
-	}
-	return maxConf
-}
-
-// sleepadInBedConfFromSnapshot 仅当床绑设备含 Sleepad 时：从该设备 track 读 BedStatus（0=在床 1=离床）与 TrackConfidence；inBedStatus=0 → +TrackConfidence，=1 → -TrackConfidence，无数据或非 Sleepad 返回 0。
-func sleepadInBedConfFromSnapshot(snap *CardSnapshot, meta *CardMeta, bedDevs []string) int {
-	if meta == nil || snap == nil || len(bedDevs) == 0 {
-		return 0
-	}
-	for _, devID := range bedDevs {
-		dm := meta.Devices[devID]
-		if dm == nil {
-			continue
-		}
-		t := strings.ToLower(dm.DeviceType)
-		if !strings.Contains(t, "sleepad") && !strings.Contains(t, "sleeppad") {
-			continue
-		}
-		if sleepadDeviceFullyInitializing(snap, devID) {
-			return 0
-		}
-		trackConf := sleepadTrackConfidenceForInBedDerivation(snap, devID)
-		bedStatus := deviceBedStatusInSnapshot(snap, devID)
-		if bedStatus == 0 {
-			return trackConf
-		}
-		if bedStatus == 1 {
-			return -trackConf
-		}
-		return 0
-	}
-	return 0
-}
-
-// deviceBedStatusInSnapshot 该设备 snapshot 中 BedStatus（0/1）；跳过 init_status==1；bed_status 键缺失不当作 0。无则 -1。
-func deviceBedStatusInSnapshot(snap *CardSnapshot, deviceKey string) int {
-	if snap == nil {
-		return -1
-	}
-	for _, d := range snap.Devices {
-		if d.DeviceID != deviceKey && d.DeviceUID != deviceKey {
-			continue
-		}
-		for _, fields := range d.Tracks {
-			if sleepadTrackInitializing(fields) {
-				continue
-			}
-			raw, ok := fields[observation.FieldBedStatus]
-			if !ok {
-				continue
-			}
-			v := intFromAny(raw)
-			if v == 0 || v == 1 {
-				return v
-			}
-		}
-		break
-	}
-	return -1
-}
 
 // SleepadTrackCountFromSnapshot 从 snapshot 统计床绑 Sleepad 设备中 bed_status=0（在床）的 track 数，leftright 最多 2。无 Sleepad 或无数据返回 0。
 func SleepadTrackCountFromSnapshot(snap *CardSnapshot, meta *CardMeta, bedDevs []string) int {
@@ -1310,53 +686,6 @@ func SleepadTrackCountFromSnapshot(snap *CardSnapshot, meta *CardMeta, bedDevs [
 		}
 	}
 	return count
-}
-
-// deviceSignalQualityInSnapshot 该设备在 snapshot 的 track 中 signal_quality 最大值（0~90）。若为 1~5 则乘 18 与 Sleepace 一致。
-func deviceSignalQualityInSnapshot(snap *CardSnapshot, deviceKey string) int {
-	if snap == nil {
-		return 0
-	}
-	var max int
-	for _, d := range snap.Devices {
-		if d.DeviceID != deviceKey && d.DeviceUID != deviceKey {
-			continue
-		}
-		for _, fields := range d.Tracks {
-			n := intFromAny(fields[observation.FieldSignalQuality])
-			if n >= 1 && n <= 5 {
-				n = n * 18
-			}
-			if n > max {
-				max = n
-			}
-		}
-		break
-	}
-	if max > 90 {
-		max = 90
-	}
-	return max
-}
-
-// deviceHasHROrRRInSnapshot 该设备在 snapshot 的任一条 track 上存在 heart_rate 或 respiratory_rate 且 >0。
-// deviceKey 为 device_id（业务主 key）。
-func deviceHasHROrRRInSnapshot(snap *CardSnapshot, deviceKey string) bool {
-	if snap == nil {
-		return false
-	}
-	for _, d := range snap.Devices {
-		if d.DeviceID != deviceKey && d.DeviceUID != deviceKey {
-			continue
-		}
-		for _, fields := range d.Tracks {
-			if intFromAny(fields[observation.FieldHeartRate]) > 0 || intFromAny(fields[observation.FieldRespiratoryRate]) > 0 {
-				return true
-			}
-		}
-		return false
-	}
-	return false
 }
 
 func intFromAny(v any) int {

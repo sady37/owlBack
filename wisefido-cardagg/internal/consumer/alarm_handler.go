@@ -250,7 +250,6 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 				if written {
 					_ = h.alarms.RemovePendingAlarm(ctx, ac.TenantPref, m.SubjectEntity, ac.DeviceAddr, alarm.LeftBed)
 				}
-				_ = h.state.ReconcileRoomStateFromBedState(ctx, m.SubjectEntity)
 			}
 		}
 	case alarm.LeftBed:
@@ -296,7 +295,6 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 				trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.SubjectEntity)
 				pubWritten, _ := h.state.PublishBedStateFromEvent(ctx, m.SubjectEntity, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
 				if pubWritten {
-					_ = h.state.ReconcileRoomStateFromBedState(ctx, m.SubjectEntity)
 					meta := h.metaCache.GetOrLoad(ctx, m.SubjectEntity)
 					if meta != nil {
 						if meta.TenantID != "" && h.alarms != nil {

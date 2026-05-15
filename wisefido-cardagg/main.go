@@ -213,7 +213,8 @@ func runDeriveLoop(ctx context.Context, buf *service.MonitorBuffer, state *servi
 					prevTargets[snap.CardID] = status.Target
 				}
 			}
-			state.DeriveBedStateFromRealtime(ctx, snap, meta)
+			// (DeriveBedStateFromRealtime 已删 — vital 累积派生由 zone engine vital adapter 接管)
+			_ = meta
 		}
 		// card 从 buffer 退场时清 prevTargets，防止 map 长期增长。
 		// device:status offline 由 watchdog/alarm Offline 维护，本循环不再插手。

@@ -231,7 +231,6 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 				if written && alarmPayload != nil {
 					_ = h.alarms.RemovePendingAlarm(ctx, ac.TenantPref, m.SubjectEntity, ac.DeviceAddr, alarm.LeftBed)
 				}
-				_ = h.state.ReconcileRoomStateFromBedState(ctx, m.SubjectEntity)
 			}
 		}
 	case alarm.LeftBed:
@@ -316,7 +315,6 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 				trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.SubjectEntity)
 				pubWritten, _ := h.state.PublishBedStateFromEvent(ctx, m.SubjectEntity, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
 				if pubWritten {
-					_ = h.state.ReconcileRoomStateFromBedState(ctx, m.SubjectEntity)
 					meta := h.metaCache.GetOrLoad(ctx, m.SubjectEntity)
 					if meta != nil {
 						if meta.TenantID != "" && h.alarms != nil {
@@ -350,47 +348,34 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 	return nil
 }
 
-// routeRoomStateEvent EnterRoom/ExitRoom/NumberPeople → 卫生间设备写 BathRoomState，非卫生间（房间）雷达写 RoomState。HasMulti/HasRisk 规则一致；ReconcileRoomStateFromBedState 仅抬升 RoomState，不抬升 BathRoomState。
+// routeRoomStateEvent — **2026-05-14 zone engine cutover** 后职责收窄：仅触发 bathroom
+// 设备的 stay_fsm 三入口（Enter/Exit/NumberPeople）。RoomState/BathRoomState presence
+// 字段（TotalPeople / LastEnterTime / LastExitTime / HasMulti / UpdatedAt）由 zone
+// engine RedisAdapter 接管；BathRoomState.DeviceID / RoomID / RoomName 由
+// InitCardRoomAndBathroomState 一次性写入并由 RedisAdapter read-modify-write 保留。
+//
+// 非 bathroom 设备 / 非 stay_fsm 触发事件 → no-op。Stay alarm 决策路径未来归 zonealarm。
 func (h *EventHandler) routeRoomStateEvent(ctx context.Context, m *redis.IoTStreamMessage, data map[string]interface{}, evName string) {
 	ac := service.AddrCtxFromMsg(m)
 	if ac.DeviceAddr == "" || h.state == nil {
 		return
 	}
-	var kind service.RoomStateEventKind
-	totalPeople := -1
-	switch evName {
-	case alarm.EnterRoom:
-		kind = service.RoomStateEventEnter
-	case alarm.ExitRoom:
-		kind = service.RoomStateEventExit
-	case alarm.NumberPeople:
-		kind = service.RoomStateEventNumberPeople
-		totalPeople = intFromAny(data[observation.FieldNumberPeople])
-	default:
-		return
-	}
 	meta := h.metaCache.GetOrLoad(ctx, m.SubjectEntity)
 	deviceID := ac.DeviceAddr
-	if service.IsBathroomDevice(ctx, meta, deviceID, ac.TenantPref, h.enablement) {
-		var dm *service.DeviceMeta
-		if meta != nil {
-			dm = meta.Devices[deviceID]
+	if !service.IsBathroomDevice(ctx, meta, deviceID, ac.TenantPref, h.enablement) {
+		return
+	}
+	switch evName {
+	case alarm.EnterRoom:
+		h.stayOnEnter(ctx, m, deviceID)
+	case alarm.ExitRoom:
+		h.stayOnExit(ctx, m, deviceID)
+	case alarm.NumberPeople:
+		totalPeople := intFromAny(data[observation.FieldNumberPeople])
+		if totalPeople < 0 {
+			totalPeople = 0
 		}
-		rid, rname := service.BathroomRoomFieldsFromDevice(dm)
-		_ = h.state.PublishBathRoomStateFromEvent(ctx, m.SubjectEntity, deviceID, ac.DeviceAddr, kind, totalPeople, m.Timestamp, rid, rname)
-		switch kind {
-		case service.RoomStateEventEnter:
-			h.stayOnEnter(ctx, m, deviceID)
-		case service.RoomStateEventExit:
-			h.stayOnExit(ctx, m, deviceID)
-		case service.RoomStateEventNumberPeople:
-			if totalPeople < 0 {
-				totalPeople = 0
-			}
-			h.stayOnNumberPeople(ctx, m, deviceID, totalPeople)
-		}
-	} else {
-		_ = h.state.PublishRoomStateFromEvent(ctx, m.SubjectEntity, ac.DeviceAddr, kind, totalPeople, m.Timestamp)
+		h.stayOnNumberPeople(ctx, m, deviceID, totalPeople)
 	}
 }
 

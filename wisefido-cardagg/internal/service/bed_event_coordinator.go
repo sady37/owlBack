@@ -96,9 +96,6 @@ func (c *BedEventCoordinator) InBed(ctx context.Context, st *StateService, al *A
 		if removeLeftBedPending != nil {
 			removeLeftBedPending(wr)
 		}
-		if wr {
-			_ = st.ReconcileRoomStateFromBedState(ctx, cardID)
-		}
 		c.ClearCard(cardID)
 		return true, wr
 	}
@@ -125,11 +122,8 @@ func (c *BedEventCoordinator) LeftBed(ctx context.Context, st *StateService, mc 
 	if count == 0 {
 		z := 0
 		wr, _ := st.PublishBedStateFromEvent(ctx, cardID, alarm.LeftBed, deviceType, ts, 0, &z)
-		if wr {
-			_ = st.ReconcileRoomStateFromBedState(ctx, cardID)
-			if afterLeftBed != nil {
-				afterLeftBed()
-			}
+		if wr && afterLeftBed != nil {
+			afterLeftBed()
 		}
 		c.ClearCard(cardID)
 		return true, wr
@@ -193,9 +187,6 @@ func (c *BedEventCoordinator) processPendingForCard(ctx context.Context, st *Sta
 			if wr && al != nil {
 				_ = al.RemovePendingAlarm(ctx, p.tenantID, cardID, p.deviceID, alarm.LeftBed)
 			}
-			if wr {
-				_ = st.ReconcileRoomStateFromBedState(ctx, cardID)
-			}
 			c.ClearCard(cardID)
 			if logger != nil && wr {
 				logger.Debug("bed pending resolved InBed (aligned)", zap.String("cid", cardID), zap.Int("count", count))
@@ -209,9 +200,6 @@ func (c *BedEventCoordinator) processPendingForCard(ctx context.Context, st *Sta
 		if wr && al != nil {
 			_ = al.RemovePendingAlarm(ctx, p.tenantID, cardID, p.deviceID, alarm.LeftBed)
 		}
-		if wr {
-			_ = st.ReconcileRoomStateFromBedState(ctx, cardID)
-		}
 		c.ClearCard(cardID)
 		if logger != nil {
 			logger.Debug("bed pending resolved InBed (timeout trust event)", zap.String("cid", cardID), zap.Bool("written", wr))
@@ -222,7 +210,6 @@ func (c *BedEventCoordinator) processPendingForCard(ctx context.Context, st *Sta
 			z := 0
 			wr, _ := st.PublishBedStateFromEvent(ctx, cardID, alarm.LeftBed, p.deviceType, p.eventTs, 0, &z)
 			if wr {
-				_ = st.ReconcileRoomStateFromBedState(ctx, cardID)
 				if al != nil && meta.TenantPref != "" {
 					PersistSuspectedFallPoseLyingIfEnabled(ctx, al, cardID, meta.TenantPref, buf, meta, "ImmediateLeftBedFall_lying_pending")
 				}
@@ -241,7 +228,6 @@ func (c *BedEventCoordinator) processPendingForCard(ctx context.Context, st *Sta
 		}
 		wr, _ := st.PublishBedStateFromEvent(ctx, cardID, alarm.LeftBed, p.deviceType, p.eventTs, 0, nil)
 		if wr {
-			_ = st.ReconcileRoomStateFromBedState(ctx, cardID)
 			if al != nil && meta.TenantPref != "" {
 				PersistSuspectedFallPoseLyingIfEnabled(ctx, al, cardID, meta.TenantPref, buf, meta, "ImmediateLeftBedFall_lying_pending_timeout")
 			}
