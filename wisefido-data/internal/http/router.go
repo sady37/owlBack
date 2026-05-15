@@ -54,9 +54,8 @@ func (r *Router) RegisterStubRoutes(s *StubHandler) {
 	// r.Handle("/admin/api/v1/roles", s.AdminRoles)
 	// r.Handle("/admin/api/v1/roles/", s.AdminRoles)
 
-	// role-permissions - 已迁移到 RolePermissionsHandler
-	// 新路由在 RegisterRolePermissionsRoutes 中注册（需要数据库连接）
-	// 旧的 StubHandler.AdminRolePermissions 已删除
+	// role-permissions - v2 已删（schema 改变 + FE redirect /admin/role-permissions → /admin/users）
+	// 6 角色权限固定 seed 不再运行期编辑；sibling 代码改用直查 role_permissions 表
 
 	// service-levels - v2 已删（service_levels 表合并到 residents.service_tier enum）
 	// FE 改用 SERVICE_LEVEL_PRESETS 常量；BE 路由保留会查不存在的表报错，已移除
@@ -234,17 +233,6 @@ func (r *Router) RegisterRolesRoutes(h *RolesHandler) {
 func (r *Router) RegisterBranchesRoutes(h *BranchesHandler) {
 	r.Handle("/admin/api/v1/branches", h.ServeHTTP)
 	r.Handle("/admin/api/v1/branches/", h.ServeHTTP)
-}
-
-// RegisterRolePermissionsRoutes — v2 已停用：
-//   - role_permissions 表 schema 改变（v1 tenant_id/role_code/resource_type/permission_type 列全删
-//     v2 = role_permission_id/role_id/permission/resource_scope INET）
-//   - FE 路由 /admin/role-permissions 已 redirect 到 /admin/users (router/index.ts:255)
-//   - 6 角色权限固定 seed 不再运行期编辑
-// 保留 handler 代码避免删除大量代码；路由不注册 → curl /v1/role-permissions 返 404
-// 而不是 v1-schema SQL 错误。
-func (r *Router) RegisterRolePermissionsRoutes(_ *RolePermissionsHandler) {
-	// no-op
 }
 
 // RegisterAlarmCloudRoutes 注册告警配置管理路由

@@ -105,12 +105,10 @@ func main() {
 		stub.SetLogger(logger) // Set logger for user login logging
 		admin = httpapi.NewAdminAPI(stub, logger)
 
-		// 创建 Role 和 RolePermission Service（仅创建，不保留变量）
+		// 创建 Role Service（仅创建，不保留变量）
 		roleRepo := repository.NewPostgresRolesRepository(db)
-		rolePermRepo := repository.NewPostgresRolePermissionsRepository(db)
 		usersRepo = repository.NewPostgresUsersRepository(db)
 		_ = service.NewRoleService(roleRepo, usersRepo, logger)
-		_ = service.NewRolePermissionService(rolePermRepo, logger)
 
 	} else {
 		// DB不可用时使用简化的处理器
@@ -200,16 +198,12 @@ func main() {
 
 		admin = httpapi.NewAdminAPI(stub, logger)
 
-		// 创建 Role 和 RolePermission Service 和 Handler
+		// 创建 Role Service 和 Handler
 		roleRepo := repository.NewPostgresRolesRepository(db)
-		rolePermRepo := repository.NewPostgresRolePermissionsRepository(db)
 		usersRepo := repository.NewPostgresUsersRepository(db)
 		roleService := service.NewRoleService(roleRepo, usersRepo, logger)
-		rolePermService := service.NewRolePermissionService(rolePermRepo, logger)
 		rolesHandler := httpapi.NewRolesHandler(roleService, logger)
-		rolePermHandler := httpapi.NewRolePermissionsHandler(rolePermService, logger)
 		router.RegisterRolesRoutes(rolesHandler)
-		router.RegisterRolePermissionsRoutes(rolePermHandler)
 
 		// 创建 Card Repository（DB card 数据操作）
 		cardRepo = repository.NewPostgresCardRepository(db, logger)
