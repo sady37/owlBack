@@ -10,6 +10,7 @@ import (
 	"wisefido-sensor/internal/config"
 	"wisefido-sensor/internal/consumer"
 	"wisefido-sensor/internal/service"
+	"wisefido-sensor/internal/zoneengine/wiring"
 
 	logpkg "owl-common/logger"
 
@@ -63,13 +64,29 @@ func main() {
 
 	// 5.2 PR1 (A7): sensor 端 monitor 流消费者 + buffer。
 	//      与 cardagg 用独立 consumer group (wisefido-sensor-monitor)，offset 互不干扰。
-	//      本 PR 仅喂 buffer；后续 B/C 组迁移会接 DeriveAndWriteState / DeriveBedStateFromRealtime。
-	if _, engineRedis, err := openEngineDeps(cfg); err == nil {
-		monitorBuf := service.NewMonitorBuffer()
+	//      Phase 2 (zone engine) 复用本 buffer 喂 vital adapter；故拆出 monitorBuf 跨步骤共享。
+	monitorBuf := service.NewMonitorBuffer()
+	if engineDB, engineRedis, err := openEngineDeps(cfg); err == nil {
 		monitorConsumer := consumer.NewMonitorConsumer(engineRedis, monitorBuf, logger)
 		monitorConsumer.Start(ctx)
+
+		// 5.3 Zone Engine 子系统：Bed/Room/Bathroom 状态唯一权威源。
+		//      cardagg 同期仍写同 hash 字段（B+C 组未迁完），race window 内可能被覆盖；
+		//      下一 PR 切 cardagg PublishBedStateFromEvent / routeRoomStateEvent 后闭合 race。
+		zone, err := wiring.Setup(wiring.SetupOptions{
+			DB:            engineDB,
+			Redis:         engineRedis,
+			MonitorBuffer: monitorBuf,
+			Logger:        logger,
+		})
+		if err != nil {
+			logger.Warn("zone engine subsystem init failed; presence 派生退化为 cardagg 旧路径",
+				zap.Error(err))
+		} else {
+			zone.Start(ctx)
+		}
 	} else {
-		logger.Warn("sensor monitor consumer disabled (redis init failed)", zap.Error(err))
+		logger.Warn("sensor monitor consumer + zone engine disabled (deps init failed)", zap.Error(err))
 	}
 
 	// 6. 启动服务（在 goroutine 中）
