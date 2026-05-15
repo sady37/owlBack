@@ -37,34 +37,70 @@ func (h *ResidentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/admin/api/v2/residents" && r.Method == http.MethodPost:
 		h.create(w, r)
 	case strings.HasPrefix(path, "/admin/api/v2/residents/") && strings.HasSuffix(path, "/clear-check") && r.Method == http.MethodGet:
-		hoa := extractHoa(path, "/clear-check")
+		hoa, err := h.resolveResidentHoA(extractHoa(path, "/clear-check"))
+		if err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
 		h.clearCheck(w, r, hoa)
 	case strings.HasPrefix(path, "/admin/api/v2/residents/") && strings.HasSuffix(path, "/discharge") && r.Method == http.MethodPost:
-		hoa := extractHoa(path, "/discharge")
+		hoa, err := h.resolveResidentHoA(extractHoa(path, "/discharge"))
+		if err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
 		h.discharge(w, r, hoa)
 	// P0 subresources — thin wrappers 折叠到 unified ResidentUpdateInput；
 	// 同样的角色 gate（canEditResident: Admin/Manager/Nurse），admission/discharge 等敏感字段
 	// 不会经由这里（updateInput 里相关字段为 nil）。FE 由 v1 路径迁过来。
 	case strings.HasPrefix(path, "/admin/api/v2/residents/") && strings.HasSuffix(path, "/phi") && r.Method == http.MethodPut:
-		hoa := extractHoa(path, "/phi")
+		hoa, err := h.resolveResidentHoA(extractHoa(path, "/phi"))
+		if err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
 		h.updatePHI(w, r, hoa)
 	case strings.HasPrefix(path, "/admin/api/v2/residents/") && strings.HasSuffix(path, "/contacts") && r.Method == http.MethodPut:
-		hoa := extractHoa(path, "/contacts")
+		hoa, err := h.resolveResidentHoA(extractHoa(path, "/contacts"))
+		if err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
 		h.updateContacts(w, r, hoa)
 	case strings.HasPrefix(path, "/admin/api/v2/residents/") && strings.HasSuffix(path, "/unit-history") && r.Method == http.MethodPost:
-		hoa := extractHoa(path, "/unit-history")
+		hoa, err := h.resolveResidentHoA(extractHoa(path, "/unit-history"))
+		if err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
 		h.assignUnit(w, r, hoa)
 	case strings.HasPrefix(path, "/admin/api/v2/residents/") && strings.HasSuffix(path, "/caregivers") && r.Method == http.MethodPost:
-		hoa := extractHoa(path, "/caregivers")
+		hoa, err := h.resolveResidentHoA(extractHoa(path, "/caregivers"))
+		if err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
 		h.assignCaregivers(w, r, hoa)
 	case strings.HasPrefix(path, "/admin/api/v2/residents/") && r.Method == http.MethodGet:
-		hoa := strings.TrimPrefix(path, "/admin/api/v2/residents/")
+		hoa, err := h.resolveResidentHoA(strings.TrimPrefix(path, "/admin/api/v2/residents/"))
+		if err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
 		h.get(w, r, hoa)
 	case strings.HasPrefix(path, "/admin/api/v2/residents/") && r.Method == http.MethodPut:
-		hoa := strings.TrimPrefix(path, "/admin/api/v2/residents/")
+		hoa, err := h.resolveResidentHoA(strings.TrimPrefix(path, "/admin/api/v2/residents/"))
+		if err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
 		h.update(w, r, hoa)
 	case strings.HasPrefix(path, "/admin/api/v2/residents/") && r.Method == http.MethodDelete:
-		hoa := strings.TrimPrefix(path, "/admin/api/v2/residents/")
+		hoa, err := h.resolveResidentHoA(strings.TrimPrefix(path, "/admin/api/v2/residents/"))
+		if err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
 		h.delete(w, r, hoa)
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -74,6 +110,57 @@ func (h *ResidentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func extractHoa(path, suffix string) string {
 	rest := strings.TrimPrefix(path, "/admin/api/v2/residents/")
 	return strings.TrimSuffix(rest, suffix)
+}
+
+// resolveResidentHoA — path 段可能是：
+//
+//  1. IPv6 CIDR /128 (含 ":" 或 "/"，如 "fd00:0:3:111:1:ff01:10:0/128") — 直接当 hoa
+//  2. dns_short_name 6 位 base36 (a-z0-9，无 ":/")  — 查 residents.dns_short_name 反解为 hoa
+//
+// 短码查不到 → error；非短码格式 + 非 IPv6 → 原样返回（让下游 INET cast 报错）。
+//
+// 同 cards.dns_short_name resolve 模式（[[short-code-alias-resolve-everywhere]]）：
+// 必须在 handler 入口 resolve，service 内部一律假设拿到的是 hoa。
+func (h *ResidentHandler) resolveResidentHoA(idOrShort string) (string, error) {
+	if idOrShort == "" {
+		return "", nil
+	}
+	if strings.ContainsAny(idOrShort, ":/") {
+		return idOrShort, nil
+	}
+	if !isResidentShortCodeFormat(idOrShort) {
+		return idOrShort, nil
+	}
+	var hoa string
+	err := h.db.QueryRow(
+		`SELECT host(resident_id) || '/' || masklen(resident_id) FROM residents WHERE dns_short_name = $1`,
+		idOrShort,
+	).Scan(&hoa)
+	if err == sql.ErrNoRows {
+		return "", &residentNotFoundErr{shortName: idOrShort}
+	}
+	if err != nil {
+		return "", err
+	}
+	return hoa, nil
+}
+
+func isResidentShortCodeFormat(s string) bool {
+	if len(s) != 6 {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+type residentNotFoundErr struct{ shortName string }
+
+func (e *residentNotFoundErr) Error() string {
+	return "resident not found (short_name=" + e.shortName + ")"
 }
 
 // ============================================================================

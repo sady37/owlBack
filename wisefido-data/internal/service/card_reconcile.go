@@ -272,7 +272,28 @@ func (s *CardSyncService) ReconcileCards(ctx context.Context, scopePrefix string
 		cardName := CardNameNoResident
 		var ridArg interface{} = nil
 		newHoA := ""
-		if residentID.Valid && residentID.String != "" {
+
+		// public unit (unit_type=3) 显示固定 "public"，**无视绑定的合成 resident nickname**
+		// （public 区有占位 resident 如 'public-LivingRoom' 用于 spatial_addr 寻址，但 UI 显示
+		//  这些占位太长且无意义；public 卡用固定短标签 "public"）。仅 /80 unit 卡适用。
+		isPublicUnit := false
+		if strings.HasSuffix(p, "/80") {
+			var unitType sql.NullInt32
+			_ = tx.QueryRowContext(ctx,
+				`SELECT unit_type FROM units WHERE unit_id = $1::INET`, p).Scan(&unitType)
+			if unitType.Valid && unitType.Int32 == 3 {
+				isPublicUnit = true
+			}
+		}
+
+		if isPublicUnit {
+			cardName = CardNamePublic
+			// resident_id 仍然写（DDNS/API 链路需要），只是 card_name 不取 nickname
+			if residentID.Valid && residentID.String != "" {
+				ridArg = residentID.String
+				newHoA = residentID.String
+			}
+		} else if residentID.Valid && residentID.String != "" {
 			var nick sql.NullString
 			_ = tx.QueryRowContext(ctx,
 				`SELECT COALESCE(nickname, '') FROM residents WHERE host(resident_id) = $1`,
@@ -282,20 +303,8 @@ func (s *CardSyncService) ReconcileCards(ctx context.Context, scopePrefix string
 			}
 			ridArg = residentID.String
 			newHoA = residentID.String
-		} else {
-			// 无 resident 时按 unit_type 区分默认 name：
-			//   public (unit_type=3) → "Public"（如 LivingRoom 等公共区，无入住人）
-			//   其他 (single/share)   → "NoOne"（保留 v1 语义：空房 / 待入住）
-			// 仅 /80 unit card 适用；/96 /88 子卡未占用仍为 NoOne。
-			if strings.HasSuffix(p, "/80") {
-				var unitType sql.NullInt32
-				_ = tx.QueryRowContext(ctx,
-					`SELECT unit_type FROM units WHERE unit_id = $1::INET`, p).Scan(&unitType)
-				if unitType.Valid && unitType.Int32 == 3 {
-					cardName = CardNamePublic
-				}
-			}
 		}
+		// 其它情况（非 public 且无 resident）→ cardName 保持 CardNameNoResident
 
 		cardType, err := cardTypeForPrefix(p)
 		if err != nil {

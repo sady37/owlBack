@@ -26,6 +26,7 @@ type Resident struct {
 	BranchID        string  `json:"branch_id,omitempty"`
 	ResidentSlot    int     `json:"resident_slot"`
 	ResidentAccount string  `json:"resident_account,omitempty"`
+	DnsShortName    string  `json:"dns_short_name,omitempty"` // 6 位 base36，URL 友好替代 IPv6/128
 	Nickname        string  `json:"nickname"`
 	Status          string  `json:"status"`
 	ServiceLevel    *string `json:"service_level,omitempty"`

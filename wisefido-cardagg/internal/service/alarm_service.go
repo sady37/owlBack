@@ -1387,17 +1387,11 @@ func (s *AlarmService) assessDevicePresence(ctx context.Context, tenantID, devic
 			return presenceYes
 		}
 
-		// 2b. alarm_events 有 InBed 事件（v2: device_id snapshot 列保留；tenant_id 列已删）
-		var inBedCnt int
-		_ = s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM alarm_events ae
-			WHERE ae.device_id = $1::uuid
-			  AND ae.event_type = $2
-			  AND ae.triggered_at >= $3 AND ae.triggered_at < $4
-		`, deviceID, alarm.InBed, nightStart_ts, nightEnd_ts).Scan(&inBedCnt)
-		if inBedCnt > 0 {
-			return presenceYes
-		}
+		// 2b. (removed 2026-05-15) — alarm_events 找 InBed 是 dead code：
+		//     InBed/LeftBed 在 v2 事件流拆分后**只走 redis iot:event:stream + monitor_stream**，
+		//     不会落 alarm_events（那只放真正的 alarm 类型如 Fall/HeartRateAlert）。这段 query 永远 = 0。
+		//     2a (monitor_stream bed_status/HR/RR) 已覆盖 in-bed 判定；保留 2c 作 sleep report 兜底。
+		//     如果将来 event_log 表（schema 已建）启用并接 InBed/LeftBed，再加一段 query event_log。
 
 		// 2c. sleepace_report 兜底（v2: 用 device_id 直接查；start_time_ms ms 单位）
 		nightStartMs := nightStart.UnixMilli()

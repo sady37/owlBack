@@ -21,7 +21,11 @@ type DeviceStoreService struct {
 	unitsRepo       repository.UnitsRepository
 	sleepaceGateway *SleepaceGatewayClient
 	configPublisher *publisher.ConfigPublisher
-	logger          *zap.Logger
+	// onSleepadVendorBound — sleepad 在厂家成功 bind+InitializeDevice 之后调（applyDefaultSleepadRealtime success）。
+	// 用于通知 SleepaceIntervalScheduler 立即清掉 1h vendor-unbound backoff cache，
+	// 让重新 bind 后下次 60s tick 就能 push interval（不等 1h TTL）。可空（未注入即 noop）。
+	onSleepadVendorBound func(deviceID string)
+	logger               *zap.Logger
 }
 
 // NewDeviceStoreService 创建设备库存 Service。sleepaceGateway 可为 nil（未配置时不执行绑定相关逻辑）。
@@ -43,6 +47,12 @@ func NewDeviceStoreService(
 
 func (s *DeviceStoreService) SetConfigPublisher(pub *publisher.ConfigPublisher) {
 	s.configPublisher = pub
+}
+
+// SetOnSleepadVendorBound — 注入 sleepad 厂家 bind 成功回调。
+// main.go wire scheduler 时调一次：deviceStoreService.SetOnSleepadVendorBound(intervalScheduler.InvalidateUnbound)
+func (s *DeviceStoreService) SetOnSleepadVendorBound(cb func(deviceID string)) {
+	s.onSleepadVendorBound = cb
 }
 
 // BatchUpdateDeviceStoresNotify 批量更新 device_store 成功后发 config.card。
@@ -333,6 +343,9 @@ func (s *DeviceStoreService) applyDefaultSleepadRealtime(ctx context.Context, ds
 			zap.String("device_uid", ds.DeviceUID),
 			zap.String("device_id", ds.DeviceID),
 			zap.Error(err))
+	} else if s.onSleepadVendorBound != nil {
+		// bind+init 成功 → 通知 scheduler 清 unbound backoff，下次 tick 立即重新评估 push（不等 1h TTL）
+		s.onSleepadVendorBound(ds.DeviceID)
 	}
 
 	if !sleepadSupportsRealtimeMode(ds) {

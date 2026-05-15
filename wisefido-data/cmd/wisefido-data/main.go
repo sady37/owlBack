@@ -354,6 +354,7 @@ func main() {
 		// 其它 9 个（OTA / firmware / resync）返回 NotImplemented 错误，等具体场景再 v2 化。
 		deviceMonitorSettingsService = service.NewDeviceMonitorSettingsV2Service(db, alarmCloudRepo, logger)
 
+		var intervalScheduler *service.SleepaceIntervalScheduler
 		if cfg.SleepaceGateway.APIBaseURL != "" {
 			sleepaceGateway = service.NewSleepaceGatewayClient(cfg.SleepaceGateway.APIBaseURL, logger)
 			if svc, ok := deviceMonitorSettingsService.(interface {
@@ -374,11 +375,24 @@ func main() {
 				logger.Info("Sleepace gateway connected",
 					zap.String("api_base_url", cfg.SleepaceGateway.APIBaseURL))
 			}
+
+			// SleepaceIntervalScheduler — 按 rest/nap 时段自动切换 realtime_interval
+			// 进入窗口前 10min 切 2s 高频；离开窗口后 2min 切回 10s。
+			// 用户在 device monitor settings 设了 interval >= 10 视为明确选择低频，scheduler 跳过。
+			intervalScheduler = service.NewSleepaceIntervalScheduler(db, redisClient, sleepaceGateway, alarmCloudRepo, logger)
+			go intervalScheduler.Start(context.Background())
 		} else {
 			logger.Warn("Sleepace gateway client not initialized (SLEEPACE_GATEWAY_API_BASE_URL not set)")
 		}
 		deviceStoreService := service.NewDeviceStoreService(deviceStoreRepo, devicesRepo, unitsRepo, sleepaceGateway, logger)
 		deviceStoreService.SetConfigPublisher(configPublisher)
+		// 让 sleepad 厂家 bind 成功后立即清掉 scheduler 的 unbound backoff cache（不等 1h TTL），
+		// 下次 60s tick 即可重新评估并 push interval。
+		if intervalScheduler != nil {
+			deviceStoreService.SetOnSleepadVendorBound(func(deviceID string) {
+				intervalScheduler.InvalidateUnbound(context.Background(), deviceID)
+			})
+		}
 		deviceStoreHandler.SetDeviceStoreService(deviceStoreService)
 
 		// 设置 QinglanClient 到 DeviceMonitorSettingsService（用于下发雷达监控设置：工作模式、跌倒/呼吸心率参数）
@@ -450,6 +464,14 @@ func main() {
 
 		// 创建 Sleepace Report Service
 		router.RegisterSleepaceReportRoutes(sleepaceReportHandler)
+
+		// SleepaceReportBackfillScheduler — 后台周期 backfill vendor 缺失 reports，
+		// 替代原来 list/detail 入口同步等 vendor 阻塞 5-30s 的问题。
+		// 仅 sleepaceGateway 可用 + reportService 已注入 gateway 时才启 scheduler。
+		if sleepaceGateway != nil {
+			backfillScheduler := service.NewSleepaceReportBackfillScheduler(db, sleepaceReportService, logger)
+			go backfillScheduler.Start(context.Background())
+		}
 
 		// Rounds（Automatic Rounds 完成落库与审计列表）
 		roundsRepo := repository.NewPostgresRoundsRepository(db)

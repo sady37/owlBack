@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 
+	commoncard "owl-common/card"
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/phi"
 
@@ -126,6 +127,7 @@ func (r *PostgresResidentsRepository) ListResidents(
 		       host(network(set_masklen(r.resident_id, 56))) || '/56' AS branch_prefix,
 		       r.resident_slot,
 		       COALESCE(r.resident_account, ''),
+		       r.dns_short_name,
 		       r.nickname,
 		       r.status,
 		       r.service_level,
@@ -258,6 +260,7 @@ func (r *PostgresResidentsRepository) GetResident(
 		branchName, buildingName           sql.NullString
 		floor                               sql.NullInt32
 		unitName, roomName, bedName        sql.NullString
+		dnsShortName                       sql.NullString
 	)
 
 	// 关键：hoa byte 6=0xFF (subject namespace)，**branch 不能从 hoa 反推**
@@ -277,6 +280,7 @@ func (r *PostgresResidentsRepository) GetResident(
 		       ) AS branch_prefix,
 		       r.resident_slot,
 		       COALESCE(r.resident_account, ''),
+		       r.dns_short_name,
 		       r.nickname,
 		       r.status,
 		       r.service_level,
@@ -300,7 +304,7 @@ func (r *PostgresResidentsRepository) GetResident(
 		   AND network(set_masklen(r.resident_id, 48)) = $2::INET
 		`, hoa, tenantPrefix,
 	).Scan(&d.ResidentID, &d.TenantID, &d.BranchID, &d.ResidentSlot,
-		&d.ResidentAccount, &d.Nickname, &d.Status,
+		&d.ResidentAccount, &dnsShortName, &d.Nickname, &d.Status,
 		&serviceTier, &moveIn, &moveOut, &notes, &familyAccess,
 		&unitPrefix, &roomPrefix, &bedPrefix, &unitType,
 		&branchName, &buildingName, &floor, &unitName, &roomName, &bedName)
@@ -312,6 +316,9 @@ func (r *PostgresResidentsRepository) GetResident(
 		return nil, fmt.Errorf("get resident: %w", err)
 	}
 
+	if dnsShortName.Valid {
+		d.DnsShortName = dnsShortName.String
+	}
 	if serviceTier.Valid {
 		d.ServiceLevel = &serviceTier.String
 	}
@@ -544,14 +551,21 @@ func (r *PostgresResidentsRepository) CreateResident(
 		account = fmt.Sprintf("R%04d", slot)
 	}
 
+	// dns_short_name = ShortCodeOf(host(hoa) || "/128")
+	// hoa 此时形如 "fd00:0:T:ff01:S::"（无 mask），加 "/128" 与回填脚本对齐
+	shortName := commoncard.ShortCodeOf(hoa + "/128")
+
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO residents (resident_id, resident_slot, nickname, resident_account,
+		                       dns_short_name,
 		                       service_level, admission_date, note,
 		                       status)
 		VALUES ($1::INET, $2, $3, $4,
-		        $5, $6, $7,
+		        $5,
+		        $6, $7, $8,
 		        'active')`,
 		hoa, slot, in.Nickname, account,
+		shortName,
 		nullStr(in.ServiceLevel),
 		nullStr(in.AdmissionDate), nullStr(in.Note),
 	); err != nil {
@@ -1680,14 +1694,18 @@ func scanResident(rs rowScannerLite) (*domain.Resident, error) {
 		branchName                                       sql.NullString
 		unitType                                         sql.NullInt32
 		tenantKind                                       sql.NullString
+		dnsShortName                                     sql.NullString
 	)
 	if err := rs.Scan(&v.ResidentID, &v.TenantID, &v.BranchID, &v.ResidentSlot,
-		&v.ResidentAccount, &v.Nickname, &v.Status,
+		&v.ResidentAccount, &dnsShortName, &v.Nickname, &v.Status,
 		&serviceTier, &moveIn, &moveOut, &notes,
 		&familyAccess,
 		&unitName, &roomName, &bedName, &buildingNum,
 		&branchName, &unitType, &tenantKind); err != nil {
 		return nil, err
+	}
+	if dnsShortName.Valid {
+		v.DnsShortName = dnsShortName.String
 	}
 	if serviceTier.Valid {
 		v.ServiceLevel = &serviceTier.String

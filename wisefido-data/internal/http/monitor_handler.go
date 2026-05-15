@@ -145,6 +145,8 @@ func (h *MonitorHandler) GetCardInfo(w http.ResponseWriter, r *http.Request, car
 }
 
 // GET /data/api/v1/data/vital-focus/card/{id}/status
+// cardID 路径参数接收 IPv6 CIDR 或 dns_short_name；下游 realtime/Redis key 必须是 IPv6 spatial_prefix，
+// 所以**必须**用 GetCardInfo 返回的 card.CardID（已解析为 IPv6）调下游，不要直接用原始 cardID 字符串。
 func (h *MonitorHandler) GetCardStatus(w http.ResponseWriter, r *http.Request, cardID string) {
 	ctx := r.Context()
 	currentUserID, tenantID, _, _, ok := service.MustSession(ctx)
@@ -156,18 +158,21 @@ func (h *MonitorHandler) GetCardStatus(w http.ResponseWriter, r *http.Request, c
 		writeJSON(w, http.StatusOK, Fail("realtime service not available"))
 		return
 	}
-	// Phase 3 scope check: cardID 必须在 user 可见的 cardList 内（含 Current Branch 过滤）
-	if h.cardService != nil {
-		card, err := h.cardService.GetCardInfo(ctx, tenantID, currentUserID, cardID)
-		if err != nil || card == nil {
-			writeJSON(w, http.StatusOK, Fail("permission denied: card not in your scope"))
-			return
-		}
+	if h.cardService == nil {
+		writeJSON(w, http.StatusOK, Fail("card service not available"))
+		return
 	}
-	data, err := h.realtime.GetCardStatus(ctx, cardID)
+	// Phase 3 scope check + 短码解析（GetCardInfo 内部 resolveCardID 把 dns_short_name 解为 spatial_prefix）
+	card, err := h.cardService.GetCardInfo(ctx, tenantID, currentUserID, cardID)
+	if err != nil || card == nil {
+		writeJSON(w, http.StatusOK, Fail("permission denied: card not in your scope"))
+		return
+	}
+	resolvedCardID := card.CardID // IPv6 spatial_prefix CIDR
+	data, err := h.realtime.GetCardStatus(ctx, resolvedCardID)
 	if err != nil {
 		h.logger.Warn("[API] GetCardStatus redis read failed",
-			zap.String("card_id", cardID), zap.Error(err))
+			zap.String("card_id", resolvedCardID), zap.Error(err))
 		writeJSON(w, http.StatusOK, Ok(map[string]interface{}(nil)))
 		return
 	}
@@ -517,12 +522,14 @@ func (h *MonitorHandler) UpdateSSEWatch(w http.ResponseWriter, r *http.Request) 
 }
 
 // SubscribeRealtimeStream 转发到 CardRealtimeService.SubscribeRealtimeStream（SSE 由 Service 负责）
+// cardID 路径参数支持 IPv6 CIDR 或 dns_short_name；下游 realtime/Redis key 必须是 IPv6 spatial_prefix，
+// 必须经 GetCardInfo 解析后再用 card.CardID 调下游。
 func (h *MonitorHandler) SubscribeRealtimeStream(w http.ResponseWriter, r *http.Request, cardID string) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if cardID == "" || strings.Contains(cardID, "/") {
+	if cardID == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -531,9 +538,15 @@ func (h *MonitorHandler) SubscribeRealtimeStream(w http.ResponseWriter, r *http.
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	if h.realtime == nil {
+	if h.realtime == nil || h.cardService == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	h.realtime.SubscribeRealtimeStream(r.Context(), w, cardID, tenantID, currentUserID)
+	// 解析短码 + 权限校验
+	card, err := h.cardService.GetCardInfo(r.Context(), tenantID, currentUserID, cardID)
+	if err != nil || card == nil {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	h.realtime.SubscribeRealtimeStream(r.Context(), w, card.CardID, tenantID, currentUserID)
 }

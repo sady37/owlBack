@@ -117,6 +117,7 @@ type ServiceLevelInfo struct {
 // ResidentInfo resident information
 type ResidentInfo struct {
 	ResidentID       string            `json:"resident_id"`
+	DNSShortName     string            `json:"dns_short_name,omitempty"` // 6 位 base36，URL 友好替代 IPv6 hoa（与 cards.dns_short_name 同语义）
 	LastName         string            `json:"last_name,omitempty"`
 	FirstName        string            `json:"first_name,omitempty"`
 	Nickname         string            `json:"nickname,omitempty"`

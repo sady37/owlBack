@@ -351,6 +351,27 @@ const (
 	ParamSensitivity = "sensitivity"
 )
 
+// Radar (qinglan/HC2) HR/RR 阈值范围 — 厂家文档允许 vs TI mmWave 实测有效。
+//
+// 厂家 HC2 文档（heart_breath_param 字节 0-3）的"设置范围"是协议字段宽度，不等于雷达硬件
+// 实际能测到的范围；TI mmWave vital signs 算法 BPF 通带 HR 0.8-2 Hz / RR 0.1-0.5 Hz，
+// 因此实测有效区间窄得多。设置超出 TI 实测的阈值不会被设备拒绝，但永远触发不了告警。
+//
+// 默认值取厂家文档默认（HR low=50/high=90 / RR low=8/high=24），FE 用 Effective 区间作 UI 边界。
+const (
+	// 厂家 HC2 协议允许（设备不会拒绝，但 TI 实测打不到）
+	RadarHrHardMin = 1   // 心率低阈值最小可设
+	RadarHrHardMax = 255 // 心率高阈值最大可设
+	RadarRrHardMin = 1   // 呼吸低阈值最小可设
+	RadarRrHardMax = 100 // 呼吸高阈值最大可设
+
+	// TI mmWave 实测有效（Vital Signs Lab 文档：HR 60-110 ±10 BPM；RR 6-30 rpm）
+	RadarHrEffectiveMin = 60  // 设了 60 以下也测不到 → low alarm 永不触发
+	RadarHrEffectiveMax = 110 // 设了 110 以上也测不到 → high alarm 永不触发
+	RadarRrEffectiveMin = 6
+	RadarRrEffectiveMax = 30
+)
+
 const (
 	MonitoringModePeopleTracking  = 3  // People Tracking
 	MonitoringModeFallMonitoring  = 7  // Fall Monitoring
@@ -752,7 +773,9 @@ var DefaultAlarmSetting = struct {
 			IsEnabled:  intPtr(IsEnabledOn),
 			AlarmLevel: strPtr(AlarmLevelCrit),
 			AlarmParams: map[string]interface{}{
-				ParamMin:            8,
+				// 厂家 sleepace 接受范围 9-30 rpm；写小于 9 的值会被静默 clamp，
+				// UI 也按 9-30 出选项，所以默认 min=9（不要回 8 否则 UI/厂家不一致）
+				ParamMin:            9,
 				ParamMax:            24,
 				"slow_duration_sec": 120,
 				"fast_duration_sec": 120,
@@ -864,15 +887,22 @@ var DefaultAlarmSetting = struct {
 			IsEnabled:  intPtr(IsEnabledOn),
 			AlarmLevel: nil,
 			AlarmParams: map[string]interface{}{
-				"mode": 15,
+				// mode=7 → MonitoringModeFallMonitoring（不是 Full Function=15）：
+				// Radar 主用途防跌倒；HR/RR mmWave 精度不足（见 HeartRateAlert/RespRateAlert 默认注释），
+				// 默认开 Full 会让用户误以为 sleep monitoring 数据可信。
+				"mode": 7,
 			},
 			DisplaySetting: DisplayAlarmDevice,
 		},
 		{
-			AlarmType:  HeartRateAlert,
-			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelCrit),
+			AlarmType: HeartRateAlert,
+			IsEnabled: intPtr(IsEnabledOn),
+			// Radar HR 只能 WARNING，不能 CRITICAL：mmWave (TI/Calterah CAL60S244-AB) HR
+			// 精度 ±5-10 BPM，不足以支撑临床 CRITICAL；Sleepad 接触式压电精度高得多 → 仍可 CRITICAL。
+			AlarmLevel: strPtr(AlarmLevelWarn),
 			AlarmParams: map[string]interface{}{
+				// low=50 (与 HC2 文档默认一致), high=95 (老人静息 HR 在 90-100 是正常区间，
+				// 阈值卡 90 会高频误报；卡 95 + WARNING 才是合理告警)。范围说明见 Radar*Hard/Effective 常量。
 				ParamMin: 50,
 				ParamMax: 95,
 			},
@@ -883,6 +913,8 @@ var DefaultAlarmSetting = struct {
 			IsEnabled:  intPtr(IsEnabledOn),
 			AlarmLevel: strPtr(AlarmLevelCrit),
 			AlarmParams: map[string]interface{}{
+				// Radar 走 qinglan/HC2（与 sleepace 厂家无关），HC2 文档默认 low=8 / high=24，
+				// 不要照抄 Sleepad 的 9（那是 sleepace 厂家硬限）。
 				ParamMin: 8,
 				ParamMax: 24,
 			},

@@ -43,6 +43,11 @@ type SleepaceReportService interface {
 	DownloadReportByDeviceCode(ctx context.Context, sleepaceDeviceID string, startTime, endTime int64) error
 	// DownloadReportByWisefidoDeviceID 按厂家 data.userId（= devices.device_id UUID）拉取并入库
 	DownloadReportByWisefidoDeviceID(ctx context.Context, deviceID string, startTime, endTime int64) error
+
+	// BackfillFromVendor 区间内按日对比 DB，缺失的连续段各调一次厂家拉取落库。
+	// 由 SleepaceReportBackfillScheduler 周期调用；不应在用户即时路径同步等待
+	// （新 device / 长时间未访问的 device 30 天 missing 串行多段 vendor download 会阻塞 5-30s）。
+	BackfillFromVendor(ctx context.Context, tenantID, deviceID string, startDate, endDate int) error
 }
 
 // sleepaceReportService 实现
@@ -197,18 +202,12 @@ func (s *sleepaceReportService) GetSleepaceReports(ctx context.Context, req GetS
 		startDate = dateToInt(now.AddDate(0, 0, -30))
 	}
 
-	// 仅首页：对比日历区间内缺失日，向 wisefido-sleepace / 厂家拉取并落库后再列表
-	if page == 1 && s.reportGateway != nil {
-		if err := s.fillMissingSleepaceReportsFromVendor(ctx, req.TenantID, req.DeviceID, startDate, endDate); err != nil {
-			s.logger.Warn("fill missing sleepace reports from vendor failed",
-				zap.String("tenant_id", req.TenantID),
-				zap.String("device_id", req.DeviceID),
-				zap.Int("start_date", startDate),
-				zap.Int("end_date", endDate),
-				zap.Error(err),
-			)
-		}
-	}
+	// (2026-05-15) vendor fill 已从这里 **移到独立 SleepaceReportBackfillScheduler**：
+	// 即时路径 (用户进入页面) 只读 cached DB，不再阻塞等厂家 N 段串行 download (新 device 30 天 missing 实测 5-30s)。
+	// 后台 scheduler 周期跑 fillMissingSleepaceReportsFromVendor (即下面 line 631 那个函数)，
+	// 对所有 bound sleepad device 自动 backfill。新 device 第一次进入可能看到不完整列表，
+	// 下次进入或手动刷新 (next scheduler tick 之后) 即可补齐。
+	// 见 internal/service/sleepace_report_backfill_scheduler.go + memory: sleepace-interval-scheduler 同模式。
 
 	// 查询报告列表
 	reports, total, err := s.reportsRepo.ListReports(ctx, req.TenantID, req.DeviceID, startDate, endDate, page, size)
@@ -292,17 +291,10 @@ func (s *sleepaceReportService) GetSleepaceReportDetail(ctx context.Context, req
 	lastWeekMon := addDaysYYYYMMDD(thisWeekMon, -7)
 	thisWeekSun := addDaysYYYYMMDD(thisWeekMon, 6)
 
-	if s.reportGateway != nil {
-		if err := s.fillMissingSleepaceReportsFromVendor(ctx, req.TenantID, req.DeviceID, lastWeekMon, thisWeekSun); err != nil {
-			s.logger.Warn("fill missing sleepace reports for weekly efficiency failed",
-				zap.String("tenant_id", req.TenantID),
-				zap.String("device_id", req.DeviceID),
-				zap.Int("from", lastWeekMon),
-				zap.Int("to", thisWeekSun),
-				zap.Error(err),
-			)
-		}
-	}
+	// (2026-05-15) detail 页"周效率"原同步等 vendor 拉 lastWeekMon~thisWeekSun 缺失天，已挪到
+	// SleepaceReportBackfillScheduler 周期补；正常情况 backfill scheduler 30 天回溯已覆盖周窗口。
+	// 极端情况（前一日刚生成 + 当前小时 scheduler 还没跑）weekly efficiency 可能少 1 天数据 —
+	// trade-off 接受，详详情页打开速度（删除前 detail 也可能 1-3s vendor 等待）。
 
 	rangeReports, err := s.reportsRepo.ListReportsAllInRange(ctx, req.TenantID, req.DeviceID, lastWeekMon, thisWeekSun)
 	if err != nil {
@@ -627,8 +619,9 @@ func yyyymmddLocalEndUnix(d int) int64 {
 	return t.Unix()
 }
 
-// fillMissingSleepaceReportsFromVendor 区间内按日对比库表，缺失的连续段各调一次厂家拉取落库
-func (s *sleepaceReportService) fillMissingSleepaceReportsFromVendor(ctx context.Context, tenantID, deviceID string, startDate, endDate int) error {
+// BackfillFromVendor 区间内按日对比库表，缺失的连续段各调一次厂家拉取落库。
+// 公开给 SleepaceReportBackfillScheduler 调；旧名 fillMissingSleepaceReportsFromVendor 已 rename。
+func (s *sleepaceReportService) BackfillFromVendor(ctx context.Context, tenantID, deviceID string, startDate, endDate int) error {
 	existing, err := s.reportsRepo.GetValidDatesInRange(ctx, tenantID, deviceID, startDate, endDate)
 	if err != nil {
 		return fmt.Errorf("get valid dates in range: %w", err)

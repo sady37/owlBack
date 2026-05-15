@@ -32,10 +32,11 @@ import (
 // 在 main.go 里仍是条件 wire（service != nil），现在 service 不再 nil，调用方会到达这里并拿到错误，
 // 而非 nil panic — 这是符合 v2 cutover 安全方向（fail-loud > nil-deref）。
 type DeviceMonitorSettingsV2Service struct {
-	db             *sql.DB
-	alarmCloudRepo repository.AlarmCloudRepository // tenant 层 spatial_config 读取 (Phase 1a 已 v2)
-	qinglanClient  *QinglanClient                  // 雷达在线检查 / device push (Phase 1c 用)
-	logger         *zap.Logger
+	db              *sql.DB
+	alarmCloudRepo  repository.AlarmCloudRepository // tenant 层 spatial_config 读取 (Phase 1a 已 v2)
+	qinglanClient   *QinglanClient                  // 雷达在线检查 / device push (Phase 1c 用)
+	sleepaceGateway *SleepaceGatewayClient          // sleepad 厂家 HTTP 下发；nil = 不可下发，UI 会看到 device_write=false
+	logger          *zap.Logger
 }
 
 const deviceAlarmConfigKey = "alarm.device_config"
@@ -60,6 +61,12 @@ func NewDeviceMonitorSettingsV2Service(
 
 func (s *DeviceMonitorSettingsV2Service) SetQinglanClient(c *QinglanClient) {
 	s.qinglanClient = c
+}
+
+// SetSleepaceGatewayClient — main.go 在 startup 时通过 type assertion 调用此方法注入。
+// 不实现这个方法 sleepad 配置就不会下发到厂家（device_write 永远 false）。
+func (s *DeviceMonitorSettingsV2Service) SetSleepaceGatewayClient(c *SleepaceGatewayClient) {
+	s.sleepaceGateway = c
 }
 
 // 编译期保证实现了完整接口（13 个方法）
@@ -88,6 +95,69 @@ func (s *DeviceMonitorSettingsV2Service) resolveDeviceIPv6(ctx context.Context, 
 		return "", fmt.Errorf("failed to resolve device ipv6: %w", err)
 	}
 	return ipv6, nil
+}
+
+// resolveDeviceCode 由 device_id (UUID) 查 device_factory_meta.device_code（合作方 deviceId）。
+// 取不到 device_code 不算 hard error — 返回空串，由调用方根据 deviceType 决定是否需要。
+func (s *DeviceMonitorSettingsV2Service) resolveDeviceCode(ctx context.Context, deviceID string) (string, error) {
+	if deviceID == "" {
+		return "", fmt.Errorf("device_id is required")
+	}
+	var code sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT device_code FROM device_factory_meta WHERE device_id = $1::uuid`,
+		deviceID,
+	).Scan(&code)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("device_factory_meta not found: %s", deviceID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve device_code: %w", err)
+	}
+	if !code.Valid {
+		return "", nil
+	}
+	return code.String, nil
+}
+
+// resolveDeviceUID 由 device_id (UUID) 查 device_factory_meta.device_uid（雷达走 qinglan 时的入参）。
+// device_uid 是 NOT NULL 字段，缺失即 hard error。
+func (s *DeviceMonitorSettingsV2Service) resolveDeviceUID(ctx context.Context, deviceID string) (string, error) {
+	if deviceID == "" {
+		return "", fmt.Errorf("device_id is required")
+	}
+	var uid string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT device_uid FROM device_factory_meta WHERE device_id = $1::uuid`,
+		deviceID,
+	).Scan(&uid)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("device_factory_meta not found: %s", deviceID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve device_uid: %w", err)
+	}
+	return uid, nil
+}
+
+// resolveTenantResetTime 从 alarm_cloud.metadata 取租户作息（rest 时段）。
+// 缺失返回 nil — ConvertAlarmItemsToSleepaceConfig 收到 nil 时不会写 leftBedStart/End 字段。
+func (s *DeviceMonitorSettingsV2Service) resolveTenantResetTime(ctx context.Context, tenantID string) *alarm.ResetTimeParams {
+	if s.alarmCloudRepo == nil || tenantID == "" {
+		return nil
+	}
+	ac, err := s.alarmCloudRepo.GetAlarmCloud(ctx, tenantID)
+	if err != nil || ac == nil || len(ac.Metadata) == 0 {
+		return nil
+	}
+	var tr alarm.TenantResetTime
+	if json.Unmarshal(ac.Metadata, &tr) != nil {
+		return nil
+	}
+	if tr.ResetTime.InBedTime == "" || tr.ResetTime.OutBedTime == "" {
+		return nil
+	}
+	return &tr.ResetTime
 }
 
 // readDeviceConfig 读 device 自己的 spatial_config 行。返回 (nil, sql.ErrNoRows) 表示未保存。
@@ -203,13 +273,19 @@ func (s *DeviceMonitorSettingsV2Service) GetDeviceMonitorSettings(ctx context.Co
 	return alarm.GetDefaultAlarmItems(deviceType), nil
 }
 
-// UpdateDeviceMonitorSettings — Phase 1b 仅写 DB；device push（qinglan/sleepace）推迟。
+// UpdateDeviceMonitorSettings — 写 spatial_config + 推到硬件（sleepad 走 sleepace gateway）。
 //
 // 返回值兼容 v1 handler 期望：
-//   - radar → *UpdateRadarResult (DBWriteSuccess=true, DeviceWriteSuccess=false 表示"已存DB，未推设备")
-//   - sleepad → map[string]interface{}{"success": true, "device_write": false, ...}
+//   - radar → *UpdateRadarResult (radar push 仍是 Phase 1c TODO)
+//   - sleepad → map[string]interface{}{"success", "device_write", "db_write", "no_change"}
 //
-// TODO Phase 1c: 调 s.qinglanClient (radar) / sleepaceGateway (sleepad) 把 alarmItems 实际下发到设备硬件。
+// 注：v2 字段名升级 "db_write" → "database_write"；FE 也已同步读 database_write。
+// 历史 v1 仍输出 db_write，那一段是死代码（main.go 已只 wire v2 service）。
+//
+// 与 v1 区别：
+//   - 不做 diff（每次全量下发，sleepace updatealarmnotifyconfig 是幂等替换语义）
+//   - 不读 v1 的 alarm_device 表对比 — 该表已 drop，DB 现在是 spatial_config 单一来源
+//   - 错误处理：硬件下发失败仍写 DB（v1 是先推硬件再写库，失败回滚；v2 改为先写库再推，让 UI 有 partial 状态可显示）
 func (s *DeviceMonitorSettingsV2Service) UpdateDeviceMonitorSettings(
 	ctx context.Context, tenantID, deviceID, deviceType, userID string,
 	alarmItems []alarm.AlarmItem, progressCallback ProgressCallback,
@@ -251,22 +327,201 @@ func (s *DeviceMonitorSettingsV2Service) UpdateDeviceMonitorSettings(
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert device alarm config: %w", err)
 	}
+	dbWrite := true
 
 	switch deviceType {
 	case "radar", "Radar":
-		return &UpdateRadarResult{
-			DeviceWriteSuccess: false, // Phase 1c TODO
-			DBWriteSuccess:     true,
+		deviceWrite, pushErr := s.pushRadarToHardware(ctx, deviceID, alarmItems, progressCallback)
+		result := &UpdateRadarResult{
+			DeviceWriteSuccess: deviceWrite,
+			DBWriteSuccess:     dbWrite,
 			FailedAlarmTypes:   nil,
 			NoChange:           false,
-		}, nil
+		}
+		if pushErr != nil {
+			s.logger.Error("[RADAR_WRITE_V2] qinglan push failed",
+				zap.String("device_id", deviceID),
+				zap.Error(pushErr),
+			)
+			// device 推失败，但 DB 已写：返回 result 让 handler 透传到 FE 显示半失败状态；
+			// error 字段保留给上游做 log 用，不影响 dbWrite=true 的事实
+		}
+		return result, nil
 	default:
-		return map[string]interface{}{
-			"success":        true,
-			"device_write":   false, // Phase 1c TODO
-			"database_write": true,
+		// sleepad / Sleepad / sleepace
+		deviceWrite, pushErr := s.pushSleepadToHardware(ctx, tenantID, deviceID, alarmItems, progressCallback)
+		result := map[string]interface{}{
+			"success":        dbWrite, // 与 v1 一致：success 反映 DB 状态
+			"device_write":   deviceWrite,
+			"database_write": dbWrite,
 			"no_change":      false,
-		}, nil
+		}
+		if pushErr != nil {
+			result["device_write_error"] = pushErr.Error()
+		}
+		return result, nil
+	}
+}
+
+// pushRadarToHardware 调 qinglan client 把 alarmItems 整体下发到 HC2 雷达。
+// wisefido-qinglan 自己解析 _alarm_items_json 并构造 fall_param / heart_breath_param / radar_func_ctrl
+// 三组属性按 100ms 间隔分批 PUT 到设备，所以这里只需一次调用。
+//
+// 返回 (deviceWrite, error)：error 仅作 log 用，调用方根据 deviceWrite=false 决定 UI 提示。
+func (s *DeviceMonitorSettingsV2Service) pushRadarToHardware(
+	ctx context.Context, deviceID string,
+	alarmItems []alarm.AlarmItem, progressCallback ProgressCallback,
+) (bool, error) {
+	if s.qinglanClient == nil {
+		return false, fmt.Errorf("qinglan client not configured")
+	}
+	deviceUID, err := s.resolveDeviceUID(ctx, deviceID)
+	if err != nil {
+		return false, err
+	}
+	if deviceUID == "" {
+		return false, fmt.Errorf("device_uid missing for device_id=%s", deviceID)
+	}
+
+	if progressCallback != nil {
+		progressCallback(30, "pushing alarm config to radar...")
+	}
+
+	alarmItemsJSON, err := json.Marshal(alarmItems)
+	if err != nil {
+		return false, fmt.Errorf("marshal alarm items: %w", err)
+	}
+
+	s.logger.Info("[RADAR_WRITE_V2] sending alarm items to device",
+		zap.String("device_id", deviceID),
+		zap.String("device_uid", deviceUID),
+		zap.Int("alarm_items_count", len(alarmItems)),
+	)
+
+	// qinglanClient 内部按 fall_param / heart_breath_param / radar_func_ctrl 分组并加 100ms 间隔
+	if _, err := s.qinglanClient.SetDeviceProperties(ctx, deviceUID, map[string]interface{}{
+		"_alarm_items_json": string(alarmItemsJSON),
+	}); err != nil {
+		return false, fmt.Errorf("qinglan SetDeviceProperties: %w", err)
+	}
+
+	if progressCallback != nil {
+		progressCallback(100, "radar config pushed")
+	}
+	s.logger.Info("[RADAR_WRITE_V2] device push succeeded",
+		zap.String("device_id", deviceID),
+		zap.String("device_uid", deviceUID),
+	)
+	return true, nil
+}
+
+// pushSleepadToHardware 把 alarmItems 翻译成厂家协议并下发：
+//  1. updatealarmnotifyconfig — 报警阈值（heart/breath/leftBed/onbed/...）
+//  2. SleepadSetting/MaterialSetting 项的辅助 set 接口（realtime_interval / leave_sensibility / ...）
+//
+// 任意一步失败都返回 deviceWrite=false + error，让 UI 能显式告警。
+func (s *DeviceMonitorSettingsV2Service) pushSleepadToHardware(
+	ctx context.Context, tenantID, deviceID string,
+	alarmItems []alarm.AlarmItem, progressCallback ProgressCallback,
+) (bool, error) {
+	if s.sleepaceGateway == nil {
+		return false, fmt.Errorf("sleepace gateway not configured")
+	}
+	deviceCode, err := s.resolveDeviceCode(ctx, deviceID)
+	if err != nil {
+		return false, err
+	}
+	if deviceCode == "" {
+		return false, fmt.Errorf("device_code missing for device_id=%s (device_factory_meta.device_code is null)", deviceID)
+	}
+
+	if progressCallback != nil {
+		progressCallback(30, "pushing alarm config to sleepad hardware...")
+	}
+
+	resetTime := s.resolveTenantResetTime(ctx, tenantID)
+	sleepaceConfig := ConvertAlarmItemsToSleepaceConfig(deviceCode, deviceID, alarmItems, resetTime)
+
+	s.logger.Info("[SLEEPAD_WRITE_V2] sending alarm config to hardware",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_id", deviceID),
+		zap.String("device_code", deviceCode),
+		zap.Any("leftBedFlag", sleepaceConfig["leftBedFlag"]),
+		zap.Any("leftBedDuration", sleepaceConfig["leftBedDuration"]),
+	)
+
+	if err := s.sleepaceGateway.UpdateAlarmConfig(ctx, sleepaceConfig); err != nil {
+		s.logger.Error("[SLEEPAD_WRITE_V2] updatealarmnotifyconfig failed",
+			zap.String("device_id", deviceID),
+			zap.String("device_code", deviceCode),
+			zap.Error(err),
+		)
+		return false, fmt.Errorf("updatealarmnotifyconfig: %w", err)
+	}
+
+	if progressCallback != nil {
+		progressCallback(60, "alarm config pushed; pushing device settings...")
+	}
+
+	// SleepadSetting / MaterialSetting 各项辅助参数（best-effort：单项失败 warn 但不阻断主结果）
+	s.pushSleepadSettings(ctx, deviceID, deviceCode, alarmItems)
+
+	if progressCallback != nil {
+		progressCallback(100, "device push completed")
+	}
+	return true, nil
+}
+
+// pushSleepadSettings — SleepadSetting / MaterialSetting 项的非 alarm-config 设置（realtime/leaveSens/床垫…）。
+// 走多个独立 set 接口，单项失败不算整体失败（与 v1 行为一致）。
+func (s *DeviceMonitorSettingsV2Service) pushSleepadSettings(
+	ctx context.Context, deviceID, deviceCode string, items []alarm.AlarmItem,
+) {
+	for _, item := range items {
+		switch item.AlarmType {
+		case alarm.SleepadSetting:
+			p := item.AlarmParams
+			if len(p) == 0 {
+				continue
+			}
+			if v, ok := toIntParam(p["realtime_interval"]); ok && v > 0 {
+				if err := s.sleepaceGateway.SetRealtimeInterval(ctx, deviceID, deviceCode, v); err != nil {
+					s.logger.Warn("[SLEEPAD_WRITE_V2] SetRealtimeInterval", zap.Error(err))
+				}
+			}
+			sensV, sensOk := toIntParam(p["Bed_Exit_Sensitivity"])
+			if !sensOk {
+				sensV, sensOk = toIntParam(p["leave_sensibility"])
+			}
+			if sensOk {
+				if err := s.sleepaceGateway.SetLeaveSensibility(ctx, deviceID, deviceCode, sensV); err != nil {
+					s.logger.Warn("[SLEEPAD_WRITE_V2] SetLeaveSensibility", zap.Error(err))
+				}
+			}
+			if v, ok := toIntParam(p["Empty_Bed_Monitor"]); ok && (v == 0 || v == 1) {
+				if err := s.sleepaceGateway.SetRealtimeModeAfterLeave(ctx, deviceID, deviceCode, v); err != nil {
+					s.logger.Warn("[SLEEPAD_WRITE_V2] SetRealtimeModeAfterLeave", zap.Error(err))
+				}
+			}
+			if v, ok := toIntParam(p["report_upload_type"]); ok {
+				if err := s.sleepaceGateway.SetReportUploadType(ctx, deviceID, deviceCode, v); err != nil {
+					s.logger.Warn("[SLEEPAD_WRITE_V2] SetReportUploadType", zap.Error(err))
+				}
+				// report_upload_time 由 SleepaceReportTimeScheduler 独占管理，不在这里下发。
+			}
+		case alarm.MaterialSetting:
+			p := item.AlarmParams
+			if len(p) == 0 {
+				continue
+			}
+			thickness, tOk := toIntParam(p["thickness"])
+			material, mOk := toIntParam(p["material_type"])
+			if tOk && mOk {
+				if err := s.sleepaceGateway.SetBedParameters(ctx, deviceCode, deviceID, thickness, material); err != nil {
+					s.logger.Warn("[SLEEPAD_WRITE_V2] SetBedParameters", zap.Error(err))
+				}
+			}
+		}
 	}
 }
 

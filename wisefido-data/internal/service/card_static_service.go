@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -85,7 +84,17 @@ func (s *CardStaticService) GetCardList(ctx context.Context, tenantID, userID, u
 }
 
 // GetCardInfo 根据 cardID 查询单个卡片信息（带安全检查）
+// cardID 接受两种格式：
+//  1. spatial_prefix INET CIDR (含 ":" 或 "/")，如 "fd00:0:3:111:3:301::/96"
+//  2. dns_short_name 6 位 base36 (无 ":"/"/")，如 "poqfqu" — URL 友好，不暴露 IPv6 拓扑
+//
+// 短码先查 cards.dns_short_name 解析为 spatial_prefix，再走原权限/查询路径。
 func (s *CardStaticService) GetCardInfo(ctx context.Context, tenantID, userID, cardID string) (*commoncard.CardStatic, error) {
+	resolvedID, err := s.resolveCardID(ctx, cardID)
+	if err != nil {
+		return nil, err
+	}
+
 	_, _, userType, _, _ := GetSessionFromContext(ctx)
 	if userType == "" {
 		userType = "staff"
@@ -98,10 +107,10 @@ func (s *CardStaticService) GetCardInfo(ctx context.Context, tenantID, userID, c
 	for _, id := range cardList.AllCardIDs() {
 		allowed[id] = true
 	}
-	if !allowed[cardID] {
+	if !allowed[resolvedID] {
 		return nil, fmt.Errorf("card not found or no permission")
 	}
-	cards, _, err := s.queryCardsByIDs(ctx, []string{cardID}, nil, 1, 1)
+	cards, _, err := s.queryCardsByIDs(ctx, []string{resolvedID}, nil, 1, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -109,6 +118,47 @@ func (s *CardStaticService) GetCardInfo(ctx context.Context, tenantID, userID, c
 		return nil, fmt.Errorf("card not found")
 	}
 	return &cards[0], nil
+}
+
+// resolveCardID 把 dns_short_name (6 位 base36) 解析回 spatial_prefix CIDR；
+// IPv6 形式（含 ":"/"/"）原样返回。短码查不到 → error，不静默 fallback。
+func (s *CardStaticService) resolveCardID(ctx context.Context, cardID string) (string, error) {
+	if cardID == "" {
+		return "", fmt.Errorf("card_id required")
+	}
+	// 含 ":" 或 "/" 必是 IPv6 CIDR；纯 6 位字母数字才走短码解析
+	if strings.ContainsAny(cardID, ":/") {
+		return cardID, nil
+	}
+	if !isShortCodeFormat(cardID) {
+		// 既不像 IPv6 也不像 6 位短码，留给后续 allow check 报 "not found"
+		return cardID, nil
+	}
+	var spatialPrefix string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT host(spatial_prefix) || '/' || masklen(spatial_prefix) FROM cards WHERE dns_short_name = $1`,
+		cardID,
+	).Scan(&spatialPrefix)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("card not found (short_name=%s)", cardID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolve dns_short_name: %w", err)
+	}
+	return spatialPrefix, nil
+}
+
+// isShortCodeFormat 6 位 base36 (a-z + 0-9)；与 owl-common/card.ShortCodeOf 输出格式一致
+func isShortCodeFormat(s string) bool {
+	if len(s) != 6 {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 // GetCardsByCardIDs 根据 cardID 列表直接查询 CardStatic（无分页）
@@ -297,18 +347,22 @@ func (s *CardStaticService) enrichResidentsAndDevices(ctx context.Context, cards
 			}
 		}
 	}
-	residentMap := make(map[string]string) // resident_id → nickname
+	type residentMeta struct {
+		nickname     string
+		dnsShortName string
+	}
+	residentMap := make(map[string]residentMeta) // resident_id → {nickname, dns_short_name}
 	if len(residentIDs) > 0 {
 		rows, err := s.db.QueryContext(ctx,
-			`SELECT resident_id::text, COALESCE(nickname, '') FROM residents WHERE resident_id = ANY($1::INET[])`,
+			`SELECT resident_id::text, COALESCE(nickname, ''), COALESCE(dns_short_name, '') FROM residents WHERE resident_id = ANY($1::INET[])`,
 			pq.Array(residentIDs),
 		)
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {
-				var rid, nick string
-				if rows.Scan(&rid, &nick) == nil {
-					residentMap[rid] = nick
+				var rid, nick, short string
+				if rows.Scan(&rid, &nick, &short) == nil {
+					residentMap[rid] = residentMeta{nickname: nick, dnsShortName: short}
 				}
 			}
 		}
@@ -327,12 +381,13 @@ func (s *CardStaticService) enrichResidentsAndDevices(ctx context.Context, cards
 		s.logger.Warn("fillDevicesV3 failed", zap.Error(err))
 	}
 
-	// === 3. apply residents nickname ===
+	// === 3. apply residents nickname + dns_short_name ===
 	for i := range cards {
 		for j := range cards[i].Residents {
 			rid := cards[i].Residents[j].ResidentID
-			if nick, ok := residentMap[rid]; ok {
-				cards[i].Residents[j].Nickname = nick
+			if meta, ok := residentMap[rid]; ok {
+				cards[i].Residents[j].Nickname = meta.nickname
+				cards[i].Residents[j].DNSShortName = meta.dnsShortName
 			}
 		}
 	}
@@ -551,17 +606,25 @@ func (s *CardStaticService) computeCoverageLabel(ctx context.Context, c *commonc
 }
 
 // GetCardCaregivers 查询单张卡片的护理人员（按 residents 聚合）
-// Detail 页进入时调用，不在列表查询中批量加载
+// Detail 页进入时调用，不在列表查询中批量加载。
+//
+// v2 schema:
+//   - resident_id 是 INET (HoA /128)，不是 UUID
+//   - resident_caregivers 拆成 caregiver_id / care_team_id / family_id 三列（一行只 set 一种），
+//     不再有 v1 的 group_list / user_list jsonb 字段
+//   - care_team_id → care_teams.team_id 取 team_name 当 group label
+//   - caregiver_id / family_id → users.user_id 取详情
 func (s *CardStaticService) GetCardCaregivers(ctx context.Context, residentIDs []string) (groups []string, caregivers []commoncard.CaregiverInfo, err error) {
 	if len(residentIDs) == 0 {
 		return nil, nil, nil
 	}
 
-	// 1. 查 resident_caregivers
+	// 1. 查 resident_caregivers — v2: 三列分别 caregiver / team / family；只取 active (valid_to IS NULL)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT group_list, user_list
-		 FROM resident_caregivers
-		 WHERE resident_id = ANY($1::uuid[])`,
+		`SELECT caregiver_id::text, care_team_id::text, family_id::text
+		   FROM resident_caregivers
+		  WHERE resident_id = ANY($1::inet[])
+		    AND valid_to IS NULL`,
 		pq.Array(residentIDs),
 	)
 	if err != nil {
@@ -569,34 +632,46 @@ func (s *CardStaticService) GetCardCaregivers(ctx context.Context, residentIDs [
 	}
 	defer rows.Close()
 
-	groupSet := map[string]bool{}
-	userIDSet := map[string]bool{}
+	teamIDSet := map[string]bool{}
+	userIDSet := map[string]bool{} // caregiver_id ∪ family_id → users
 	for rows.Next() {
-		var groupJSON, userJSON []byte
-		if rows.Scan(&groupJSON, &userJSON) != nil {
+		var cgID, teamID, famID sql.NullString
+		if rows.Scan(&cgID, &teamID, &famID) != nil {
 			continue
 		}
-		var gl, ul []string
-		if len(groupJSON) > 0 {
-			json.Unmarshal(groupJSON, &gl)
+		if teamID.Valid && teamID.String != "" {
+			teamIDSet[teamID.String] = true
 		}
-		if len(userJSON) > 0 {
-			json.Unmarshal(userJSON, &ul)
+		if cgID.Valid && cgID.String != "" {
+			userIDSet[cgID.String] = true
 		}
-		for _, g := range gl {
-			groupSet[g] = true
-		}
-		for _, uid := range ul {
-			userIDSet[uid] = true
+		if famID.Valid && famID.String != "" {
+			userIDSet[famID.String] = true
 		}
 	}
 
-	// 2. groups 去重输出
-	for g := range groupSet {
-		groups = append(groups, g)
+	// 2. care_teams.team_name 作为 group label 输出
+	if len(teamIDSet) > 0 {
+		tids := make([]string, 0, len(teamIDSet))
+		for tid := range teamIDSet {
+			tids = append(tids, tid)
+		}
+		tRows, tErr := s.db.QueryContext(ctx,
+			`SELECT COALESCE(team_name, '') FROM care_teams WHERE team_id = ANY($1::uuid[])`,
+			pq.Array(tids),
+		)
+		if tErr == nil {
+			defer tRows.Close()
+			for tRows.Next() {
+				var name string
+				if tRows.Scan(&name) == nil && name != "" {
+					groups = append(groups, name)
+				}
+			}
+		}
 	}
 
-	// 3. 查 users 详情
+	// 3. caregiver/family users 详情
 	if len(userIDSet) > 0 {
 		uids := make([]string, 0, len(userIDSet))
 		for uid := range userIDSet {

@@ -32,7 +32,7 @@ import (
 // 空间维度由 dns_short_name (Unit-Room-Bed) 承载，不混入 card_name。
 const (
 	CardNameNoResident = "NoOne"  // 单人/share unit 未入住时（待分配）
-	CardNamePublic     = "Public" // public unit (unit_type=3) 公共区，无 resident 概念
+	CardNamePublic     = "public" // public unit (unit_type=3) 公共区；不显示合成 resident 的 nickname（如 'public-LivingRoom'），覆盖为短的 'public'
 )
 
 type CardSyncService struct {
