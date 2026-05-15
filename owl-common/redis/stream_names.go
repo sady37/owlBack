@@ -99,6 +99,17 @@ var (
 		MaxLen:           5000,
 		RetentionSeconds: 30,
 	}
+
+	// StreamAITrackVerdict sensor 派生的 track verdict（ghost 判定等）。
+	// 来源：wisefido-sensor (RoomEngine 内 PublishAIEvent category="track_verdict")
+	// 消费：wisefido-cardagg (ai_verdict_handler) 喂入 aiOverrides cache → monitor_handler.Apply 合并到 realtime
+	// 切走原因：sensor → cardagg 反向桥独立化（不再走 iot:event:stream 通用通道）；
+	//          为 event 流"cardagg 不再订阅"扫清障碍（B 组迁移前置）。
+	StreamAITrackVerdict = StreamDefinition{
+		Name:             "ai:track:verdict:stream",
+		MaxLen:           500,
+		RetentionSeconds: 30, // 短 TTL：verdict 是瞬时事实，超时即过期；cardagg cache 本地保留 TTL 独立
+	}
 )
 
 // GetStreamConfig 获取 stream 配置（支持从配置覆盖）

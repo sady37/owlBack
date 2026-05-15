@@ -139,6 +139,11 @@ func main() {
 		AlarmDevice:  alarmDeviceHandler,
 	})
 
+	// PR1 (A10): 订阅 ai:track:verdict:stream（sensor 派生 ghost 判定专用流）。
+	// 此前 sensor 把 track_verdict 写到 iot:event:stream，cardagg event_handler 兼带消费；
+	// 现切到独立流以便 B 组迁移 cardagg 完全退订 iot:event:stream。
+	consumer.NewAIVerdictHandler(redisClient, aiOverrides, logger).Start(ctx)
+
 	go runPendingAlarmScan(ctx, alarmSvc, logger)
 	go runNightAbsenceCheck(ctx, alarmSvc, metaCache, logger)
 

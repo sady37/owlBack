@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -102,6 +103,64 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 		DataValue:     []interface{}{data},
 	}
 	_, level, _, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, ac.TenantPref, ac.DeviceAddr, eventName)
+
+	// PR1 (A9): sensor → cardagg 回流通道，event_status=pending_arm/pending_cancel。
+	// 协议见 wisefido-sensor/internal/consumer/alarm_back_channel.go（同期 PR1）。
+	// 由 sensor 端 Stay / LeftBed-timer / Suspected→Real 升格 等延迟报警决策时触发。
+	// cardagg 不参与决策，仅按 sensor 给定 alarmType/level/duration 套用现有 pending 机制。
+	if eventStatus, _ := data["event_status"].(string); eventStatus == "pending_arm" || eventStatus == "pending_cancel" {
+		alarmType := eventName
+		if alarmType == "" {
+			if v, ok := data["event_name"].(string); ok {
+				alarmType = v
+			}
+		}
+		if alarmType == "" {
+			h.logger.Warn("pending.signal.drop", append(streamLogFields("alarm", m, eventName),
+				zap.String("reason", "empty_alarm_type"),
+				zap.String("event_status", eventStatus),
+			)...)
+			return nil
+		}
+		switch eventStatus {
+		case "pending_arm":
+			alarmLevel, _ := data["alarm_level"].(string)
+			durationSec := intFromAny(data["duration_sec"])
+			upgradeTo, _ := data["upgrade_to"].(string)
+			eventSinceMs := int64(intFromAny(data["event_since_ms"]))
+			if eventSinceMs == 0 {
+				eventSinceMs = m.Timestamp
+			}
+			triggerData, _ := json.Marshal(data)
+			if err := h.alarms.AddPendingAlarm(ctx, ac.TenantPref, ac.DeviceAddr, alarmType, alarmLevel, eventSinceMs, durationSec, upgradeTo, triggerData); err != nil {
+				h.logger.Warn("pending.arm.failed", append(streamLogFields("alarm", m, eventName),
+					zap.String("alarm_type", alarmType),
+					zap.Error(err))...)
+				return err
+			}
+			h.logger.Info("pending.arm.from_sensor",
+				zap.String("cid", m.SubjectEntity),
+				zap.String("device", ac.DeviceAddr),
+				zap.String("alarm_type", alarmType),
+				zap.String("level", alarmLevel),
+				zap.Int("duration_sec", durationSec),
+				zap.String("upgrade_to", upgradeTo),
+			)
+		case "pending_cancel":
+			if err := h.alarms.RemovePendingAlarm(ctx, ac.TenantPref, m.SubjectEntity, ac.DeviceAddr, alarmType); err != nil {
+				h.logger.Warn("pending.cancel.failed", append(streamLogFields("alarm", m, eventName),
+					zap.String("alarm_type", alarmType),
+					zap.Error(err))...)
+				return err
+			}
+			h.logger.Info("pending.cancel.from_sensor",
+				zap.String("cid", m.SubjectEntity),
+				zap.String("device", ac.DeviceAddr),
+				zap.String("alarm_type", alarmType),
+			)
+		}
+		return nil
+	}
 
 	// 集中处理 event_status=end（持续事件解除）：协议层 end 永远不该被当作新报警插入 alarm_events。
 	// 仅对 Registry 中 EndPolicy 显式标注的类型拦截，避免误拦截 *Recover 类型自身的 end 语义

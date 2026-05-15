@@ -77,6 +77,9 @@ func NewAlarmService(cfg *config.Config, logger *zap.Logger, tenantID string) (*
 	stateManager := consumer.NewStateManager(cfg, redisClient, logger)
 
 	// 5. 创建 Evaluator 层
+	// PR1 (A11): evaluator 不再直插 alarm_events 表，改 publish 到 iot:alarm:stream
+	// 由 cardagg 统一持久化。alarmBackChannel 注入 redis client 即可。
+	alarmBackChannel := consumer.NewAlarmBackChannel(redisClient)
 	eval := evaluator.NewEvaluator(
 		cfg,
 		db,
@@ -89,6 +92,7 @@ func NewAlarmService(cfg *config.Config, logger *zap.Logger, tenantID string) (*
 		alarmEventsRepo,
 		iotRepo,
 		configVersionRepo,
+		alarmBackChannel,
 		logger,
 	)
 

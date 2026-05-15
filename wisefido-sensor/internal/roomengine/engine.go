@@ -554,8 +554,16 @@ func (e *Engine) publishEnabled() bool {
 	return e.aiPublishMode == "log&publish"
 }
 
-// PublishAIEvent 发布 AI 派生 event 到 iot:event:stream。
-// 当前用例：category="track_verdict"（PR5 后 ghost 走这条；旧代码可能仍传 "ghost" 兼容）。
+// PublishAIEvent 发布 AI 派生 event。
+//
+// 路由（PR1 A10 后）：
+//   - category=="track_verdict" → 走专用流 ai:track:verdict:stream（短 TTL=30s）
+//     cardagg 端用 ai_verdict_handler 单独消费，喂入 aiOverrides cache
+//   - 其他 category → 仍走 iot:event:stream（兼容历史路径）
+//
+// 旧路径：所有 category 都走 iot:event:stream，cardagg event_handler 统一消费 —
+// 已切走以便后续 cardagg 整体停订阅 iot:event:stream（B 组迁移前置）。
+// 旧代码可能仍传 "ghost" 兼容（按 track_verdict 等价处理）。
 //
 // 消息字段（Phase A v2 envelope）：
 //   Producer:        e.aiSource（如 "sensor.caregiver01"），sensor agent layer 1 标识
@@ -569,9 +577,12 @@ func (e *Engine) publishEnabled() bool {
 // 推送失败仅 warn 日志，不阻塞调用方。任何模式都打 ai_emit 结构化日志，作演示
 // 与审计追溯依据；mode=log 时 published=false 仅 log，mode=log&publish 时尝试推流。
 func (e *Engine) PublishAIEvent(ctx context.Context, p AIPayload, category string, nowMs int64) {
+	streamDef := rediscommon.StreamEvent
+	if category == "track_verdict" || category == "ghost" {
+		streamDef = rediscommon.StreamAITrackVerdict
+	}
 	e.publishAIMessage(ctx, p, category, "event",
-		rediscommon.StreamEvent.Name,
-		rediscommon.StreamEvent.MaxLen, rediscommon.StreamEvent.RetentionSeconds, nowMs)
+		streamDef.Name, streamDef.MaxLen, streamDef.RetentionSeconds, nowMs)
 }
 
 // PublishAIAlarm 发布 AI 派生 alarm 到 iot:alarm:stream。

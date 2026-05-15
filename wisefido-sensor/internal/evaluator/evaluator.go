@@ -4,13 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/netip"
 	"wisefido-sensor/internal/config"
 	"wisefido-sensor/internal/consumer"
 	"wisefido-sensor/internal/models"
-	"wisefido-sensor/internal/alarmpush"
 	"wisefido-sensor/internal/repository"
-
-	commoncard "owl-common/card"
 
 	"go.uber.org/zap"
 )
@@ -28,6 +26,9 @@ type Evaluator struct {
 	alarmEventsRepo   *repository.AlarmEventsRepository
 	iotRepo           *repository.IoTTimeSeriesRepository
 	configVersionRepo *repository.ConfigVersionRepository
+	// PR1 (A11): 不再直插 alarm_events 表，改 publish 到 iot:alarm:stream
+	// 让 cardagg 统一持久化（cardagg = data 对接层，单 writer）。
+	alarmBackChannel  *consumer.AlarmBackChannel
 	logger            *zap.Logger
 
 	// 事件评估器
@@ -38,6 +39,9 @@ type Evaluator struct {
 }
 
 // NewEvaluator 创建评估器
+//
+// PR1 (A11): alarmBackChannel 为 nil 时降级为"仅评估不报警"（dev/test 模式）；
+// 生产环境必须传入有效的 back channel（redis 已建连），否则评估输出无处发送。
 func NewEvaluator(
 	cfg *config.Config,
 	db *sql.DB,
@@ -50,6 +54,7 @@ func NewEvaluator(
 	alarmEventsRepo *repository.AlarmEventsRepository,
 	iotRepo *repository.IoTTimeSeriesRepository,
 	configVersionRepo *repository.ConfigVersionRepository,
+	alarmBackChannel *consumer.AlarmBackChannel,
 	logger *zap.Logger,
 ) *Evaluator {
 	e := &Evaluator{
@@ -64,6 +69,7 @@ func NewEvaluator(
 		alarmEventsRepo:   alarmEventsRepo,
 		iotRepo:           iotRepo,
 		configVersionRepo: configVersionRepo,
+		alarmBackChannel:  alarmBackChannel,
 		logger:            logger,
 	}
 
@@ -108,53 +114,49 @@ func (e *Evaluator) Evaluate(tenantID string, card repository.CardInfo, realtime
 	// 注意：事件4（雷达检测到人突然消失）已移除
 	// 设备直接报警由 wisefido-card-aggregator 处理
 
-	// 写入报警事件到 PostgreSQL（通过 owl-common 原子操作：INSERT alarm + UPDATE card counts）
-	// AI 使用虚拟 device_id，findCardIDByDevice 查不到；
-	// 必须在 metadata 中注入 card_id，供后续 UpdateAlarmAndUpdateCard fallback 使用。
+	// PR1 (A11): 不再直插 alarm_events 表 / 不再调 alarmpush 推送。
+	// 改 publish 到 iot:alarm:stream，由 cardagg 现有 alarm_handler 统一持久化 + 推送 +
+	// device_flags Redis 投影。dedup / SkippedNotify / NotifyWisefidoData 全部由 cardagg 端
+	// PersistAlarmAndPublish + notifyAlarmPushAsync 负责。
+	if e.alarmBackChannel == nil {
+		e.logger.Warn("alarm back channel nil; alarms silently dropped",
+			zap.String("card_id", card.CardID),
+			zap.Int("alarm_count", len(alarms)),
+		)
+		return alarms, nil
+	}
 	ctx := context.Background()
-	for i, alarm := range alarms {
-		metadata := ensureMetadataCardID(alarm.Metadata, card.CardID)
-		params := commoncard.AlarmInsertParams{
-			TenantID:    alarm.TenantID,
-			DeviceID:    alarm.DeviceID,
-			EventType:   alarm.EventType,
-			Category:    alarm.Category,
-			AlarmLevel:  alarm.AlarmLevel,
-			TriggeredAt: alarm.TriggeredAt,
-			TriggerData: alarm.TriggerData,
-			Metadata:    metadata,
-		}
-		result, _, err := commoncard.InsertAlarmAndUpdateCard(ctx, e.db, card.CardID, params)
-		if err != nil {
-			e.logger.Error("Failed to insert alarm and update card",
-				zap.String("event_type", alarm.EventType),
-				zap.String("card_id", card.CardID),
-				zap.Error(err),
+	for i, al := range alarms {
+		deviceAddr, parseErr := netip.ParseAddr(al.DeviceID)
+		if parseErr != nil {
+			e.logger.Warn("alarm device_id parse failed",
+				zap.String("event_type", al.EventType),
+				zap.String("device_id", al.DeviceID),
+				zap.Error(parseErr),
 			)
 			continue
 		}
-		alarms[i].EventID = result.EventID
-		if result.Deduped {
-			e.logger.Debug("Alarm onset deduped (active exists)",
-				zap.String("event_type", alarm.EventType),
+		trigger := map[string]interface{}{}
+		if len(al.TriggerData) > 0 {
+			_ = json.Unmarshal(al.TriggerData, &trigger)
+		}
+		trigger = ensureTriggerCardID(trigger, card.CardID)
+		// AlarmCategory 走 envelope.category（eventName）；alarm_level 字段在 trigger map。
+		streamID, publishErr := e.alarmBackChannel.PublishAlarmFire(
+			ctx, deviceAddr, card.CardID, al.EventType, al.AlarmLevel, al.TriggeredAt.UnixMilli(), trigger)
+		if publishErr != nil {
+			e.logger.Error("publish alarm to stream failed",
+				zap.String("event_type", al.EventType),
 				zap.String("card_id", card.CardID),
-				zap.String("active_event_id", result.EventID),
+				zap.Error(publishErr),
 			)
 			continue
 		}
-		if result.SkippedNotify {
-			e.logger.Info("Device-class alarm audited (skip pop/notify)",
-				zap.String("event_type", alarm.EventType),
-				zap.String("card_id", card.CardID),
-				zap.String("event_id", result.EventID),
-			)
-			continue
-		}
-		alarmpush.NotifyWisefidoData(e.logger, alarm.TenantID, card.CardID, alarm.DeviceID, result.EventID, alarm.EventType, alarm.AlarmLevel)
-		e.logger.Info("Alarm event created and card updated",
-			zap.String("event_id", result.EventID),
-			zap.String("event_type", alarm.EventType),
-			zap.String("alarm_level", alarm.AlarmLevel),
+		alarms[i].EventID = streamID // 调用方若依赖 EventID 仅作发布回执（非 DB row id）
+		e.logger.Info("alarm published to stream",
+			zap.String("stream_id", streamID),
+			zap.String("event_type", al.EventType),
+			zap.String("alarm_level", al.AlarmLevel),
 			zap.String("card_id", card.CardID),
 		)
 	}
@@ -162,7 +164,24 @@ func (e *Evaluator) Evaluate(tenantID string, card repository.CardInfo, realtime
 	return alarms, nil
 }
 
-// ensureMetadataCardID 确保 metadata 中包含 card_id（AI 虚拟设备 fallback 必需）
+// ensureTriggerCardID 注入 card_id 到 trigger map（AI 虚拟设备 fallback 必需）。
+func ensureTriggerCardID(m map[string]interface{}, cardID string) map[string]interface{} {
+	if cardID == "" {
+		return m
+	}
+	if m == nil {
+		m = map[string]interface{}{}
+	}
+	if _, ok := m["card_id"]; !ok {
+		m["card_id"] = cardID
+	}
+	return m
+}
+
+// ensureMetadataCardID 旧 alarm_events.metadata fallback。PR1 (A11) 改 publish 后不再使用，
+// 函数保留作为旧契约文档；后续 PR 删除。
+var _ = ensureMetadataCardID
+
 func ensureMetadataCardID(raw json.RawMessage, cardID string) json.RawMessage {
 	if cardID == "" {
 		return raw

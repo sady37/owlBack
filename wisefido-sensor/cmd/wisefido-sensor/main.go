@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 	"wisefido-sensor/internal/config"
+	"wisefido-sensor/internal/consumer"
 	"wisefido-sensor/internal/service"
 
 	logpkg "owl-common/logger"
@@ -58,6 +59,17 @@ func main() {
 		if _, err := startRoomEngine(ctx, cfg, engineDB, engineRedis, logger); err != nil {
 			logger.Warn("roomengine startup failed; engine disabled", zap.Error(err))
 		}
+	}
+
+	// 5.2 PR1 (A7): sensor 端 monitor 流消费者 + buffer。
+	//      与 cardagg 用独立 consumer group (wisefido-sensor-monitor)，offset 互不干扰。
+	//      本 PR 仅喂 buffer；后续 B/C 组迁移会接 DeriveAndWriteState / DeriveBedStateFromRealtime。
+	if _, engineRedis, err := openEngineDeps(cfg); err == nil {
+		monitorBuf := service.NewMonitorBuffer()
+		monitorConsumer := consumer.NewMonitorConsumer(engineRedis, monitorBuf, logger)
+		monitorConsumer.Start(ctx)
+	} else {
+		logger.Warn("sensor monitor consumer disabled (redis init failed)", zap.Error(err))
 	}
 
 	// 6. 启动服务（在 goroutine 中）
