@@ -1,0 +1,119 @@
+# zone_rules.yaml — Spatial Occupancy Engine 参数配置
+#
+# 数值是 provisional placeholder（参考 Bed 段的相对关系外推），用户最终 calibrate。
+# 来源与理由见 doc/zone_rules_eval.md。
+#
+# Hot reload：sensor 监听 config:zone_rules:stream（待实现），改 yaml + 发流即生效。
+# 租户级覆盖：spatial_config(tenant_prefix, namespace='zone_rules') JSON 列长前缀匹配（待实现）。
+
+# ========================================================================
+# Bed zone — 床占用判定
+# ========================================================================
+zone_bed:
+  # 推 score 上行（→ occupied）。strength 数值是 confidence 绝对值，方向由分类决定。
+  enter_evidence:
+    sleepace:
+      strength: 90       # 厂家权威（sleepace alarmOnBed）
+      latch_sec: 10      # 10s 内不被 radar 低优先级覆盖
+    radar:
+      strength: 80       # radar 派生 InBed（无 sleepad 时主源）
+      latch_sec: 10
+
+  # 维持 occupied 不单独翻转的持续证据。
+  sustain_evidence:
+    hr_rr_present_any:
+      strength: 80       # 任意源 (sleepad / radar) HR > 0 且 RR > 0 → 视为在床
+      sources: [sleepad, radar]
+    recent_enter_bonus:
+      window_sec: 60     # enter event 后 60s 内
+      bonus: 15          # 额外 +15 confidence
+
+  # 推 score 下行（→ vacant），按床型分档（小床 sleepad 覆盖全 → 强；大床覆盖不全 → 降到 radar 同档）。
+  leave_evidence:
+    bed_size_dependent: true
+    small_bed:
+      bed_kinds: [standard, hospital, twin]   # standard = default (beds.size_kind 未配置时)
+      sources:
+        sleepace: {strength: 80, latch_sec: 2}
+        radar:    {strength: 70, latch_sec: 2}
+    large_bed:
+      bed_kinds: [full, queen, king, california_king]
+      sources:
+        sleepace: {strength: 70, latch_sec: 2}  # 大床 sleepad 覆盖不全 → 降权
+        radar:    {strength: 70, latch_sec: 2}
+
+  state_machine:
+    enter_threshold: 50    # score ≥ +50 且 prev=vacant → 翻转 occupied
+    exit_threshold:  -50   # score ≤ -50 且 prev=occupied → 翻转 vacant
+    hysteresis_sec:  3     # 翻转后 3s 冷却
+
+# ========================================================================
+# Room zone — 房间占用判定
+#
+# 注：NumberPeople 信号统一走 Kind="count_change" 旁路（只改 Count，不动 occupied）；
+# 故 leave_evidence 不配 number_people_0。原因：count=0 不等于"人离开"——可能只是
+# 静止 / 检测失败 / 雷达盲区。若未来要利用持续 count=0 辅助判离，应在 Tick 中加
+# 复合规则（如"连续 60s count=0 且无 sustain 证据"），不能简单 leave。
+# ========================================================================
+zone_room:
+  enter_evidence:
+    radar:
+      strength: 80         # firmware EnterRoom
+      latch_sec: 2
+    polygon:
+      strength: 70         # 自实现多边形穿越（后期上线）
+      latch_sec: 2
+
+  leave_evidence:
+    default:
+      radar:   {strength: 80, latch_sec: 2}
+      polygon: {strength: 70, latch_sec: 2}
+
+  state_machine:
+    enter_threshold: 50
+    exit_threshold:  -50
+    hysteresis_sec:  2
+
+# ========================================================================
+# Bathroom zone — 卫生间占用判定（结构同 Room，参数可调）
+# ========================================================================
+zone_bathroom:
+  enter_evidence:
+    radar:   {strength: 80, latch_sec: 2}
+    polygon: {strength: 70, latch_sec: 2}
+
+  leave_evidence:
+    default:
+      radar:   {strength: 80, latch_sec: 2}
+      polygon: {strength: 70, latch_sec: 2}
+
+  state_machine:
+    enter_threshold: 50
+    exit_threshold:  -50
+    hysteresis_sec:  2
+
+# ========================================================================
+# 负反馈规则（MVP 只有 2 个；后期加 cell_history / operator_feedback / baseline）
+# ========================================================================
+negative_feedback:
+  # 翻转后短窗内 score 未维持到指定水平 → rollback prev state +
+  # 触发本次翻转的信号源临时降权。
+  self_contradiction:
+    window_sec: 15
+    require_sustain_at: 30        # 翻转后 15s 内 score 必须 ≥ 30，否则视为矛盾
+    penalty_weight: 5             # 该信号源 confidence 临时 -5
+    penalty_duration_min: 60      # 持续 60min
+
+  # bed⊆room 子集关系违反 → 自动 reconcile。
+  # mode=lift_parent: bed=IsPresent 但 room=Vacant → 抬升 room=Occupied
+  # mode=drop_child:  room=Vacant 但 bed=Occupied → 砍 bed=Vacant（保守，不推荐）
+  #
+  # 周期巡检 (repair_interval_sec) 双向修复：
+  #   bed.IsPresent + room.Vacant 时，
+  #     bed.UpdatedAt > stale_bed_threshold_sec → 信 room，强制降 bed=Vacant
+  #     否则 → 信 bed，抬升 room=Occupied
+  subset_invariant:
+    enabled: true
+    mode: lift_parent
+    repair_interval_sec: 10           # 每 10s 周期巡检；0 禁用
+    stale_bed_threshold_sec: 300      # bed UpdatedAt 超过 5min 视为 stale
