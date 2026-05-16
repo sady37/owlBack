@@ -162,18 +162,20 @@ func (s *Supervisor) Tick(nowMs int64) {
 	}
 }
 
-// zoneLeftArmStatus 判断 zone NewState 是否表示"真正离开" arm status（用于清 fired 标记）。
+// zoneLeftArmStatus 判断 zone NewState 是否表示"真正完成"离开 arm status（用于清 fired 标记）。
 //
-//	arm=Occupied 的规则（Stay）：仅 NewState=Vacant 算离开；
-//	    Leaving 是"软离开"中间态（人可能短暂动一下又回 Occupied），不清 fired 防重 fire。
-//	arm=Vacant 的规则（LeftBed / NightAbsence / BedNightAbsence）：
-//	    NewState=Occupied 或 Leaving 都算"人回来了"（Leaving IsPresent=true），都清 fired。
+// 原则（2026-05-15 用户拍板）：Leaving 是 zone engine 软离开中间态，**未完成确认**，不参与
+// zonealarm 决策。只有完成态（Vacant 或 Occupied）才视为转换完成。
+//
+//	arm=Occupied 的规则（Stay）：仅 NewState=Vacant 算真离开。
+//	arm=Vacant 的规则（LeftBed / NightAbsence / BedNightAbsence）：仅 NewState=Occupied 算人真回来。
+//	Leaving 在两种方向上都被忽略 — 保持现有 fired 标记。
 func zoneLeftArmStatus(armStatus, newStatus zoneengine.ZoneStatus) bool {
 	switch armStatus {
 	case zoneengine.StatusOccupied:
 		return newStatus == zoneengine.StatusVacant
 	case zoneengine.StatusVacant:
-		return newStatus != zoneengine.StatusVacant
+		return newStatus == zoneengine.StatusOccupied
 	}
 	return false
 }

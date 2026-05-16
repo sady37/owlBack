@@ -335,8 +335,8 @@ func TestSupervisor_StayFireOnceUntilBathroomVacant(t *testing.T) {
 	}
 }
 
-// 13. fire-once-until-zone-leave — LeftBed (arm=Vacant) 已 fire 后，bed→Occupied 或 →Leaving 都清 fired
-func TestSupervisor_LeftBedFireOnceClearedByBedOccupiedOrLeaving(t *testing.T) {
+// 13. fire-once-until-zone-leave — LeftBed (arm=Vacant) 已 fire 后，仅 bed→Occupied (完成确认) 才清 fired
+func TestSupervisor_LeftBedFireOnceClearedOnlyByBedOccupied(t *testing.T) {
 	cap := &captureFirer{}
 	s := NewSupervisor(DefaultRules(), cap, nil)
 	now := time.Now().UnixMilli()
@@ -352,31 +352,37 @@ func TestSupervisor_LeftBedFireOnceClearedByBedOccupiedOrLeaving(t *testing.T) {
 	// bed→Vacant 再触发不应 arm (fired set)
 	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBed, zoneengine.StatusVacant,
 		zoneengine.TransitionVacant, "card-1", "fd00::/96", 0, now+1900_000))
-	armCountBefore := 0
-	for _, p := range cap.snapArms() {
-		if p.Key.AlarmType == alarm.LeftBed {
-			armCountBefore++
+	armCount := func() int {
+		n := 0
+		for _, p := range cap.snapArms() {
+			if p.Key.AlarmType == alarm.LeftBed {
+				n++
+			}
 		}
+		return n
 	}
-	if armCountBefore != 1 {
-		t.Fatalf("LeftBed should not re-arm while fired, got %d arms", armCountBefore)
+	if armCount() != 1 {
+		t.Fatalf("LeftBed should not re-arm while fired, got %d arms", armCount())
 	}
 
-	// bed→Leaving (IsPresent=true，人回来了) → 清 fired
+	// bed→Leaving (未完成确认) → 不清 fired
 	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBed, zoneengine.StatusLeaving,
 		zoneengine.TransitionVacant, "card-1", "fd00::/96", 1, now+2000_000))
-
-	// bed→Vacant 再次离床 → 可以重新 arm
 	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBed, zoneengine.StatusVacant,
-		zoneengine.TransitionVacant, "card-1", "fd00::/96", 0, now+2100_000))
-	armCountAfter := 0
-	for _, p := range cap.snapArms() {
-		if p.Key.AlarmType == alarm.LeftBed {
-			armCountAfter++
-		}
+		zoneengine.TransitionVacant, "card-1", "fd00::/96", 0, now+2050_000))
+	if armCount() != 1 {
+		t.Fatalf("bed→Leaving should NOT clear fired (incomplete), got %d arms", armCount())
 	}
-	if armCountAfter != 2 {
-		t.Fatalf("LeftBed should re-arm after bed→Leaving clears fired, got %d arms", armCountAfter)
+
+	// bed→Occupied (完成确认人回床) → 清 fired
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBed, zoneengine.StatusOccupied,
+		zoneengine.TransitionOccupied, "card-1", "fd00::/96", 1, now+2200_000))
+
+	// 再次离床 → 可以重新 arm
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBed, zoneengine.StatusVacant,
+		zoneengine.TransitionVacant, "card-1", "fd00::/96", 0, now+2300_000))
+	if armCount() != 2 {
+		t.Fatalf("LeftBed should re-arm after bed→Occupied clears fired, got %d arms", armCount())
 	}
 }
 
