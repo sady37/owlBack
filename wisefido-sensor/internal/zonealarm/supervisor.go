@@ -15,13 +15,23 @@ import (
 // 线程模型：
 //   - OnZoneEvent 写 / Tick 写 共用一把锁
 //   - AlarmFirer 调用在锁外 emit，避免 publish slow path 挡 ZoneEvent 流入
+//
+// **fire-once-until-zone-leave 语义（2026-05-15 用户拍板）**：
+//   - 已 fire 过的 (cardID, alarmType) 在 fired map 中标记
+//   - 标记存在期间不再 arm 同一规则（同一段 occupancy 期内最多 1 条 alarm_events）
+//   - arm zone "真正离开" arm status 时清除标记，允许下次重新 arm
+//     · arm=Occupied 规则（Stay）：仅 zone→Vacant 才清（Leaving 不算，可能软离开后回弹）
+//     · arm=Vacant 规则（LeftBed/NightAbsence/BedNightAbsence）：zone→Occupied 或 zone→Leaving 都清
+//       （Leaving IsPresent=true 已表示人回来了）
+//   - 设计动机：alarm 是警报通知不是状态轮询；且 fire 之前 still_fall 等更紧急规则已先触发
 type Supervisor struct {
 	rules  []Rule
 	firer  AlarmFirer
 	logger *zap.Logger
 
-	mu       sync.Mutex
-	pending  map[PendingKey]*Pending
+	mu      sync.Mutex
+	pending map[PendingKey]*Pending
+	fired   map[PendingKey]bool // fire-once-until-zone-leave gate
 
 	// fireCtxFactory 每次 fire / arm / cancel 操作生成新的 ctx 用 — 默认 2s timeout
 	timeout time.Duration
@@ -40,6 +50,7 @@ func NewSupervisor(rules []Rule, firer AlarmFirer, logger *zap.Logger) *Supervis
 		firer:   firer,
 		logger:  logger,
 		pending: make(map[PendingKey]*Pending),
+		fired:   make(map[PendingKey]bool),
 		timeout: 2 * time.Second,
 	}
 }
@@ -69,8 +80,24 @@ func (s *Supervisor) OnZoneEvent(e zoneengine.ZoneEvent) {
 	var cancelKeys []PendingKey
 	for i := range s.rules {
 		r := &s.rules[i]
+		key := PendingKey{CardID: e.CardID, AlarmType: r.AlarmType}
+
+		// fire-once-until-zone-leave: arm zone "真正离开" arm status → 清 fired 标记
+		// （允许下一段 occupancy 重新 arm）
+		if e.ZoneType == r.ArmZone && s.fired[key] && zoneLeftArmStatus(r.ArmStatus, e.NewState.Status) {
+			delete(s.fired, key)
+			s.logger.Debug("zonealarm fired flag cleared",
+				zap.String("alarm", r.AlarmType),
+				zap.String("cid", e.CardID),
+				zap.String("new_status", e.NewState.Status.String()))
+		}
+
 		// arm 检查
 		if matchesArm(r, e) {
+			// fire-once-until-zone-leave: 已 fired 则跳过 arm（同段 occupancy 不重复报）
+			if s.fired[key] {
+				continue
+			}
 			if r.TimeWindow.Active(time.UnixMilli(now)) {
 				p := s.armPendingLocked(r, e, now)
 				if p != nil {
@@ -78,6 +105,7 @@ func (s *Supervisor) OnZoneEvent(e zoneengine.ZoneEvent) {
 						// 立即 fire
 						fires = append(fires, *p)
 						delete(s.pending, p.Key)
+						s.fired[p.Key] = true // fire-once: 锁内标记
 					} else {
 						arms = append(arms, *p)
 					}
@@ -87,12 +115,13 @@ func (s *Supervisor) OnZoneEvent(e zoneengine.ZoneEvent) {
 		// cancel 检查（每条规则可能有多个 cancel trigger，任一命中即 cancel）
 		for j := range r.Cancels {
 			if matchesCancel(&r.Cancels[j], e) {
-				key := PendingKey{CardID: e.CardID, AlarmType: r.AlarmType}
 				if p, ok := s.pending[key]; ok {
 					cancels = append(cancels, *p)
 					cancelKeys = append(cancelKeys, key)
 					delete(s.pending, key)
 				}
+				// cancel 不清 fired 标记 — fired 仅在 arm zone "真正离开" arm status 时清
+				// （cancel 可能由 peer-zone 触发，此时 arm zone 还在 arm status，不该解锁重 fire）
 				break // 同 rule 多 cancel trigger 命中一次足够
 			}
 		}
@@ -123,6 +152,7 @@ func (s *Supervisor) Tick(nowMs int64) {
 		if nowMs >= p.DueAt {
 			due = append(due, *p)
 			delete(s.pending, k)
+			s.fired[k] = true // fire-once: 锁内标记，避免与 callFire 之间 race re-arm
 		}
 	}
 	s.mu.Unlock()
@@ -130,6 +160,22 @@ func (s *Supervisor) Tick(nowMs int64) {
 	for _, p := range due {
 		s.callFire(p)
 	}
+}
+
+// zoneLeftArmStatus 判断 zone NewState 是否表示"真正离开" arm status（用于清 fired 标记）。
+//
+//	arm=Occupied 的规则（Stay）：仅 NewState=Vacant 算离开；
+//	    Leaving 是"软离开"中间态（人可能短暂动一下又回 Occupied），不清 fired 防重 fire。
+//	arm=Vacant 的规则（LeftBed / NightAbsence / BedNightAbsence）：
+//	    NewState=Occupied 或 Leaving 都算"人回来了"（Leaving IsPresent=true），都清 fired。
+func zoneLeftArmStatus(armStatus, newStatus zoneengine.ZoneStatus) bool {
+	switch armStatus {
+	case zoneengine.StatusOccupied:
+		return newStatus == zoneengine.StatusVacant
+	case zoneengine.StatusVacant:
+		return newStatus != zoneengine.StatusVacant
+	}
+	return false
 }
 
 // armPendingLocked 创建 pending 实例。若已有同 key 的 pending（之前的 arm 未 fire 也未 cancel），

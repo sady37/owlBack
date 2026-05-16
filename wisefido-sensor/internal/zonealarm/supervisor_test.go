@@ -292,7 +292,121 @@ func TestSupervisor_CountChangeNotArm(t *testing.T) {
 	}
 }
 
-// 12. ReloadRules 替换规则集
+// 12. fire-once-until-zone-leave — Stay 已 fire 后，bathroom 仍 Occupied 期间不再 arm
+func TestSupervisor_StayFireOnceUntilBathroomVacant(t *testing.T) {
+	cap := &captureFirer{}
+	s := NewSupervisor(DefaultRules(), cap, nil)
+	now := time.Now().UnixMilli()
+
+	// arm + fire (10min later)
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBathroom, zoneengine.StatusOccupied,
+		zoneengine.TransitionOccupied, "card-1", "fd00::/88", 1, now))
+	s.Tick(now + 600_000 + 1)
+	if len(cap.snapFires()) != 1 {
+		t.Fatalf("want 1 fire, got %d", len(cap.snapFires()))
+	}
+
+	// bathroom 仍 Occupied — 再来一条 Occupied 事件（zone re-trigger），不应再 arm
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBathroom, zoneengine.StatusOccupied,
+		zoneengine.TransitionOccupied, "card-1", "fd00::/88", 1, now+700_000))
+	if len(cap.snapArms()) != 1 {
+		t.Fatalf("should not re-arm while fired, got %d arms", len(cap.snapArms()))
+	}
+
+	// bathroom→Leaving（软离开）也不应清 fired
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBathroom, zoneengine.StatusLeaving,
+		zoneengine.TransitionVacant, "card-1", "fd00::/88", 0, now+800_000))
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBathroom, zoneengine.StatusOccupied,
+		zoneengine.TransitionOccupied, "card-1", "fd00::/88", 1, now+810_000))
+	if len(cap.snapArms()) != 1 {
+		t.Fatalf("Leaving→Occupied bounce should NOT re-arm (fired still set), got %d arms",
+			len(cap.snapArms()))
+	}
+
+	// bathroom→Vacant — 真正离开，清 fired
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBathroom, zoneengine.StatusVacant,
+		zoneengine.TransitionVacant, "card-1", "fd00::/88", 0, now+1_200_000))
+
+	// 重新进入 bathroom → arm OK
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBathroom, zoneengine.StatusOccupied,
+		zoneengine.TransitionOccupied, "card-1", "fd00::/88", 1, now+1_300_000))
+	if len(cap.snapArms()) != 2 {
+		t.Fatalf("after Vacant clear should re-arm, got %d arms", len(cap.snapArms()))
+	}
+}
+
+// 13. fire-once-until-zone-leave — LeftBed (arm=Vacant) 已 fire 后，bed→Occupied 或 →Leaving 都清 fired
+func TestSupervisor_LeftBedFireOnceClearedByBedOccupiedOrLeaving(t *testing.T) {
+	cap := &captureFirer{}
+	s := NewSupervisor(DefaultRules(), cap, nil)
+	now := time.Now().UnixMilli()
+
+	// arm + fire (30min later)
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBed, zoneengine.StatusVacant,
+		zoneengine.TransitionVacant, "card-1", "fd00::/96", 0, now))
+	s.Tick(now + 1800_000 + 1)
+	if !hasFire(cap.snapFires(), alarm.LeftBed) {
+		t.Fatalf("LeftBed should fire after 30min")
+	}
+
+	// bed→Vacant 再触发不应 arm (fired set)
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBed, zoneengine.StatusVacant,
+		zoneengine.TransitionVacant, "card-1", "fd00::/96", 0, now+1900_000))
+	armCountBefore := 0
+	for _, p := range cap.snapArms() {
+		if p.Key.AlarmType == alarm.LeftBed {
+			armCountBefore++
+		}
+	}
+	if armCountBefore != 1 {
+		t.Fatalf("LeftBed should not re-arm while fired, got %d arms", armCountBefore)
+	}
+
+	// bed→Leaving (IsPresent=true，人回来了) → 清 fired
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBed, zoneengine.StatusLeaving,
+		zoneengine.TransitionVacant, "card-1", "fd00::/96", 1, now+2000_000))
+
+	// bed→Vacant 再次离床 → 可以重新 arm
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBed, zoneengine.StatusVacant,
+		zoneengine.TransitionVacant, "card-1", "fd00::/96", 0, now+2100_000))
+	armCountAfter := 0
+	for _, p := range cap.snapArms() {
+		if p.Key.AlarmType == alarm.LeftBed {
+			armCountAfter++
+		}
+	}
+	if armCountAfter != 2 {
+		t.Fatalf("LeftBed should re-arm after bed→Leaving clears fired, got %d arms", armCountAfter)
+	}
+}
+
+// 14. fire-once — cancel 不该清 fired（peer-zone cancel 时 arm zone 还在 arm state）
+func TestSupervisor_StayCancelByPeerZoneDoesNotClearFired(t *testing.T) {
+	cap := &captureFirer{}
+	s := NewSupervisor(DefaultRules(), cap, nil)
+	now := time.Now().UnixMilli()
+
+	// arm Stay + fire
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBathroom, zoneengine.StatusOccupied,
+		zoneengine.TransitionOccupied, "card-1", "fd00::/88", 1, now))
+	s.Tick(now + 600_000 + 1)
+	if len(cap.snapFires()) != 1 {
+		t.Fatalf("expect 1 fire")
+	}
+
+	// bed→Occupied (peer-zone cancel trigger)，但 bathroom 还在 Occupied
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBed, zoneengine.StatusOccupied,
+		zoneengine.TransitionOccupied, "card-1", "fd00::/96", 1, now+700_000))
+
+	// bathroom 再触发 Occupied → 不应该 re-arm（fired 仍标记，因 bathroom 没真离开过）
+	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBathroom, zoneengine.StatusOccupied,
+		zoneengine.TransitionOccupied, "card-1", "fd00::/88", 1, now+800_000))
+	if len(cap.snapArms()) != 1 {
+		t.Fatalf("peer-zone cancel should NOT clear fired; got %d arms (want 1)", len(cap.snapArms()))
+	}
+}
+
+// 15. ReloadRules 替换规则集
 func TestSupervisor_ReloadRules(t *testing.T) {
 	cap := &captureFirer{}
 	s := NewSupervisor(DefaultRules(), cap, nil)
