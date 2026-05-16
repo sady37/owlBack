@@ -913,7 +913,9 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 			msg := rediscommon.NewSingleItemMessage(addrJC, cid, subDeviceType, time.Now().UnixMilli(), "alarm", alarm.AlarmTypeOfflineRecover, data)
 			_ = m.streamPublisher.PublishAlarm(pubCtx, msg)
 		}()
-		m.logger.Info("Device online (first MQTT after subscription create), OfflineRecover published",
+		// device 上线是常规事件（startup 时一次性触发 60+ 条），降级到 Debug；
+		// 真正异常（Offline onset）走 publishHealthIfChanged 仍是 Info（仅 fail 时 log）。
+		m.logger.Debug("Device online (first MQTT after subscription create), OfflineRecover published",
 			zap.String("device_uid", deviceUID),
 			zap.String("device_id", deviceID),
 		)

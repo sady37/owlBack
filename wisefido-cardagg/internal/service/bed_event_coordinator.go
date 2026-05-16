@@ -209,14 +209,6 @@ func (c *BedEventCoordinator) processPendingForCard(ctx context.Context, st *Sta
 		if count == 0 {
 			z := 0
 			wr, _ := st.PublishBedStateFromEvent(ctx, cardID, alarm.LeftBed, p.deviceType, p.eventTs, 0, &z)
-			if wr {
-				if al != nil && meta.TenantPref != "" {
-					PersistSuspectedFallPoseLyingIfEnabled(ctx, al, cardID, meta.TenantPref, buf, meta, "ImmediateLeftBedFall_lying_pending")
-				}
-				if radarID := RadarDeviceIDBoundToBed(meta); radarID != "" {
-					StartLeftBedFall(cardID, radarID)
-				}
-			}
 			c.ClearCard(cardID)
 			if logger != nil && wr {
 				logger.Debug("bed pending resolved LeftBed (aligned)", zap.String("cid", cardID))
@@ -227,14 +219,6 @@ func (c *BedEventCoordinator) processPendingForCard(ctx context.Context, st *Sta
 			return
 		}
 		wr, _ := st.PublishBedStateFromEvent(ctx, cardID, alarm.LeftBed, p.deviceType, p.eventTs, 0, nil)
-		if wr {
-			if al != nil && meta.TenantPref != "" {
-				PersistSuspectedFallPoseLyingIfEnabled(ctx, al, cardID, meta.TenantPref, buf, meta, "ImmediateLeftBedFall_lying_pending_timeout")
-			}
-			if radarID := RadarDeviceIDBoundToBed(meta); radarID != "" {
-				StartLeftBedFall(cardID, radarID)
-			}
-		}
 		c.ClearCard(cardID)
 		if logger != nil {
 			logger.Debug("bed pending resolved LeftBed (timeout trust event)", zap.String("cid", cardID), zap.Bool("written", wr))

@@ -221,6 +221,16 @@ const (
 type AIPublisher interface {
 	PublishAIEvent(ctx context.Context, p AIPayload, category string, nowMs int64)
 	PublishAIAlarm(ctx context.Context, p AIPayload, category string, nowMs int64)
+	// DeviceUIDHex 反查 device addr → hex MAC（log 双格式人眼可读）；缺失返回空字符串
+	DeviceUIDHex(deviceAddr string) string
+}
+
+// devUIDHex helper：track_manager 内部调用 aiPublisher 反查；nil-safe（nil publisher 返回空）
+func (tm *TrackManager) devUIDHex(deviceAddr string) string {
+	if tm.aiPublisher == nil {
+		return ""
+	}
+	return tm.aiPublisher.DeviceUIDHex(deviceAddr)
 }
 
 // BedsideFallConfig R4 床边晕倒参数。
@@ -629,22 +639,30 @@ func (tm *TrackManager) SetBedsideFallConfig(c BedsideFallConfig) {
 	}
 }
 
-// RecordRadarAlarm 落账 radar 来源的 alarm（当前阶段仅 Fall）+ 跑 verifier 评分。
-// 调用方（engine.handleAlarmMessage）应当紧跟 tm.Tick(alarm.TMs) 触发段 4-6 立即跑一次。
+// RecordRadarAlarm 落账 radar 来源的 alarm（当前阶段仅 Fall + SittingOnGround）+ 跑 verifier 评分
+// + 默认转发回 iot:alarm:stream（producer="wisefido-sensor"，让 cardagg 落库）。
+// 调用方（engine.handleEventMessage 的 radar Fall 分支 / handleAlarmMessage 兼容路径）
+// 应当紧跟 tm.Tick(alarm.TMs) 触发段 4-6 立即跑一次。
 //
-// PR-5：增加 verifier。仅 log 评分结果（fake/suspect/real），不否决固件 alarm 流程
-// （alarm_events 表已由 wisefido-data 落账）。下游 cardagg 可订阅 ai.log 决定降级 risk。
+// 2026-05-15 cardagg_sensor_split：firmware radar Fall 走 event stream → sensor 接管。
+// 当前阶段 verifier 仅 log（fake/suspect/real），不 gate；status="start" 时无条件转发到 alarm stream。
+// 转发后 cardagg.alarm_handler case alarm.Fall 自动落库；verifier verdict 进 Evidence.fall_verdict 供审计。
+//
+// 未来 PR-段7：verifier verdict="ghost" 时不转发（真正成为 fall gate）。
 func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 	tm.mu.Lock()
-	defer tm.mu.Unlock()
 	cp := a
 	tm.recentRadarAlarms[a.TMs] = &cp
 	tm.evictOldRadarAlarms(a.TMs)
 
-	// 仅 status="start" 的 fall 评分（end 是固件解除报警，不需要 verify）
+	// 仅 status="start" 的 fall 评分 + 转发（end 是固件解除报警）
+	verdict := ""
+	score := 0
 	if a.Status == "start" || a.Status == "" {
 		result := tm.verifyRadarFall(a, a.TMs)
 		tm.logFallVerify(a, result)
+		verdict = result.Verdict
+		score = result.Score
 		switch result.Verdict {
 		case "ghost":
 			tm.fallVerifyGhostCount++
@@ -654,6 +672,33 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 			tm.fallVerifyRealCount++
 		}
 	}
+	// 解锁后 emit（emit 内部走 redis publish，不能持锁；tm.aiPublisher 自身 thread-safe）
+	tm.mu.Unlock()
+
+	if a.Status != "start" && a.Status != "" {
+		return // end / 其它非触发态不转发
+	}
+	if tm.aiPublisher == nil {
+		return // playback / 测试场景
+	}
+
+	// 构造 forward payload。track 信息从 firmware Fall 直接抄；位置/HR/RR 现阶段不从 firmware 携带。
+	payload := AIPayload{
+		DeviceID: a.DeviceUID, // = canonical IPv6 string（device_ipv6 单程票）
+		RoomID:   tm.roomID,
+		Track: observation.Track{
+			TrackID: a.TrackID,
+			Pose:    a.Pose,
+		},
+		Reason: "firmware_radar_fall",
+		Evidence: map[string]interface{}{
+			"context":         "qinglan_publisher_event_stream_passthrough",
+			"firmware_status": a.Status,
+			"fall_verdict":    verdict, // 当前 verifier 不 gate，verdict 仅作审计
+			"fall_score":      score,
+		},
+	}
+	tm.aiPublisher.PublishAIAlarm(context.Background(), payload, alarm.Fall, a.TMs)
 }
 
 // RecordRadarEvent 落账 radar 来源的事件（EnterRoom/ExitRoom/InBed/LeftBed）。
@@ -1180,6 +1225,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		}, alarm.Fall, replayAnchorMs) // alarm Timestamp = anchor，让列表显示真正发生时刻
 		tm.logger.Info("real_fall",
 			zap.String("device_uid", p.DeviceID),
+			zap.String("device_uid_hex", tm.devUIDHex(p.DeviceID)),
 			zap.Int("track_id", p.OriginalTrackID),
 			zap.String("kind", "engine_lost_fall"),
 			zap.Int("score", p.LastScore),
@@ -1192,6 +1238,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			zap.Int("x", p.LastX), zap.Int("y", p.LastY), zap.Int("z", p.LastZ),
 			zap.Int64("anchor_ms", replayAnchorMs), // = alarm.triggered_at
 			zap.Int64("ts_ms", nowMs),              // engine 推断时刻
+			zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
 		)
 		out := TrackOutput{
 			TrackID:  p.OriginalTrackID,
@@ -1251,6 +1298,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 					tm.grid.MarkFallEvent(px, py, nowMs)
 					tm.logger.Info("real_fall",
 						zap.String("device_uid", soleReal.DeviceID),
+						zap.String("device_uid_hex", tm.devUIDHex(soleReal.DeviceID)),
 						zap.Int("track_id", soleReal.TrackID),
 						zap.String("kind", "engine_bed_fall"),
 						zap.Int("score", soleReal.Score),
@@ -1258,6 +1306,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 						zap.String("reason", "radar_in_bed_cell_but_sleepad_off_bed_solo"),
 						zap.Int("x", px), zap.Int("y", py),
 						zap.Int64("ts_ms", nowMs),
+						zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
 					)
 				}
 			}
@@ -1415,6 +1464,7 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 			}, alarm.Fall, s.LeftBedAtMs) // alarm Timestamp = LeftBed 时刻
 			tm.logger.Info("real_fall",
 				zap.String("device_uid", deviceID),
+				zap.String("device_uid_hex", tm.devUIDHex(deviceID)),
 				zap.String("kind", "engine_silent_leftbed"),
 				zap.String("sleepad_uid", s.DeviceUID),
 				zap.Int("score", scoreVal),
@@ -1427,6 +1477,7 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 				zap.Int("x", x), zap.Int("y", y), zap.Int("z", z),
 				zap.Int64("anchor_ms", s.LeftBedAtMs), // = alarm.triggered_at
 				zap.Int64("ts_ms", nowMs),             // engine 推断时刻
+				zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
 			)
 			out = append(out, TrackOutput{
 				DeviceID: deviceID,
@@ -2253,6 +2304,7 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 						tm.emitAIAlarm(stillP, alarm.Fall, nowMs)
 						tm.logger.Info("real_fall",
 							zap.String("device_uid", ts.DeviceID),
+							zap.String("device_uid_hex", tm.devUIDHex(ts.DeviceID)),
 							zap.Int("track_id", ts.TrackID),
 							zap.String("kind", "engine_still_fall"),
 							zap.Int("score", ts.Score),
@@ -2265,6 +2317,7 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 							zap.String("room_name", tm.roomName),
 							zap.Int("x", x), zap.Int("y", y),
 							zap.Int64("ts_ms", nowMs),
+							zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
 						)
 					}
 				}
@@ -2337,6 +2390,7 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 				tm.emitAIAlarm(bedsideP, alarm.Fall, nowMs)
 				tm.logger.Info("real_fall",
 					zap.String("device_uid", ts.DeviceID),
+					zap.String("device_uid_hex", tm.devUIDHex(ts.DeviceID)),
 					zap.Int("track_id", ts.TrackID),
 					zap.String("kind", "engine_bedside_fall_R4"),
 					zap.Int("score", ts.Score),
@@ -2345,6 +2399,7 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 					zap.Int("x", x), zap.Int("y", y),
 					zap.Int("still_sec", stillSec),
 					zap.Int64("ts_ms", nowMs),
+					zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
 				)
 			}
 		}
@@ -2441,6 +2496,7 @@ func (tm *TrackManager) updateLieStateMachine(ts *TrackState, pose, x, y, z int,
 			ts.CurrentAnomaly = AnomalyFall
 			tm.logger.Info("real_fall",
 				zap.String("device_uid", ts.DeviceID),
+				zap.String("device_uid_hex", tm.devUIDHex(ts.DeviceID)),
 				zap.Int("track_id", ts.TrackID),
 				zap.String("kind", "engine_z_drop"),
 				zap.Int("score", ts.Score),

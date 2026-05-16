@@ -46,8 +46,10 @@ func LookupCardByDeviceAddr(ctx context.Context, db *sql.DB, addr netip.Addr) (s
 		return "", fmt.Errorf("device addr invalid")
 	}
 	var cardID sql.NullString
+	// v2 cards PK 是 spatial_prefix（INET CIDR），不是 card_id 列；旧 SQL `card_id::text` 报
+	// "column card_id does not exist"。修正为 spatial_prefix::text。
 	err := db.QueryRowContext(ctx, `
-		SELECT card_id::text
+		SELECT spatial_prefix::text
 		  FROM cards
 		 WHERE spatial_prefix >>= $1::INET
 		 ORDER BY masklen(spatial_prefix) DESC

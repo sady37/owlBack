@@ -59,10 +59,15 @@ type RadarTrackEvent struct {
 	NumberPeople int    // 仅 EventName=="NumberPeople" 时有效
 }
 
-// ParseRadarFallAlarm 解析 alarm:stream 一条消息的 data_value 为 RadarFallAlarm 列表。
-// 仅当 envelopeCat="Fall" 才返回（envelope.Category 是事件类型唯一权威）。
+// ParseRadarFallAlarm 解析 alarm:stream 或 event:stream 一条消息的 data_value 为 RadarFallAlarm 列表。
+// 接受 envelope.Category="Fall" 或 "SittingOnGround"。
+//
+// 2026-05-15 起：qinglan publisher 把 radar firmware 直发的 Fall/SittingOnGround 改走 event stream
+// （cardagg_sensor_split.md gateway 分流），sensor.handleEventMessage 检测到这些 category 时
+// 调用本函数解析。alarm stream 路径仍兼容（producer="wisefido-sensor" 的派生 Fall 通过本函数
+// 不会进 verifier，因为派生 Fall 已是确认态，roomengine 内部不再二次评分）。
 func ParseRadarFallAlarm(dv interface{}, deviceUID, envelopeCat string, fallbackTs int64) []RadarFallAlarm {
-	if envelopeCat != "Fall" {
+	if envelopeCat != "Fall" && envelopeCat != "SittingOnGround" {
 		return nil
 	}
 	arr := jsonArrayOfObjects(dv)

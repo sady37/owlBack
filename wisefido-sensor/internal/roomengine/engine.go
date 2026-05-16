@@ -492,6 +492,19 @@ func (e *Engine) MapDeviceIDToType(deviceID, deviceType string) {
 	e.mu.Unlock()
 }
 
+// DeviceUIDHex 反查 device addr (IPv6 字符串) → device_uid hex MAC（人眼可读）。
+// 用于 log 双格式（IPv6 字符串机器友好 / hex MAC 人眼对照设备贴纸）。
+// 缺失返回空字符串（caller 用 zap.String 仍可写空，不会 panic）。
+func (e *Engine) DeviceUIDHex(deviceAddr string) string {
+	if deviceAddr == "" {
+		return ""
+	}
+	e.mu.RLock()
+	hex := e.deviceIDToUID[deviceAddr]
+	e.mu.RUnlock()
+	return hex
+}
+
 // SetRoomTenant 注入 roomID → tenant_id（alarm_events.tenant_id 必填，从 rooms 表查）。
 func (e *Engine) SetRoomTenant(roomID, tenantID string) {
 	if roomID == "" {
@@ -689,17 +702,21 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	willPublish := e.redisClient != nil && mode == "log&publish"
 
 	// 任何模式都打 ai_emit 审计日志：sandbox 演示靠这条 log 看 AI 在思考
+	// device_uid_hex + ts_human 是 user 调试用人眼可读字段（2026-05-15 加）
 	e.logger.Info("ai_emit",
 		zap.String("source", source), // 节点身份兼审计字段（如 "AI.Caregiver01"）
 		zap.String("mode", mode),
 		zap.String("device_type", deviceType),
 		zap.String("device_addr", p.DeviceID),
+		zap.String("device_uid_hex", e.DeviceUIDHex(p.DeviceID)),
 		zap.String("category", category),
 		zap.String("topic_type", topicType),
 		zap.String("would_publish_to", streamName),
 		zap.Bool("published", willPublish),
 		zap.Int("track_id", p.Track.TrackID),
 		zap.Int("track_confidence", p.Track.TrackConfidence),
+		zap.Int64("ts_ms", nowMs),
+		zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
 	)
 
 	if !willPublish {
@@ -1066,6 +1083,27 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 			tm.ProcessSleepadBedEvent(evt)
 		}
 	case "radar":
+		// 2026-05-15 起 radar firmware Fall/SittingOnGround 也走 event stream（gateway 分流）。
+		// 见 doc/cardagg_sensor_split.md：cardagg 不再处理 radar producer Fall；sensor 接管 verifier。
+		if m.Category == "Fall" || m.Category == "SittingOnGround" {
+			alarms := ParseRadarFallAlarm(m.DataValue, addrStr, m.Category, ts)
+			for _, a := range alarms {
+				tm.RecordRadarAlarm(a)
+				e.logger.Info("radar_fall_received_via_event_stream",
+					zap.String("device_addr", addrStr),
+					zap.String("device_uid_hex", e.DeviceUIDHex(addrStr)),
+					zap.String("category", m.Category),
+					zap.Int("track_id", a.TrackID),
+					zap.Int("pose", a.Pose),
+					zap.String("status", a.Status),
+					zap.String("room_id", roomID),
+					zap.Int64("ts_ms", a.TMs),
+					zap.String("ts_human", time.UnixMilli(a.TMs).Format("15:04:05.000")),
+				)
+			}
+			tm.Tick(ts)
+			return
+		}
 		// 落账 radar EnterRoom/ExitRoom/InBed/LeftBed；同时 InBed/LeftBed 走"事件触发器"
 		// 路径：tm.RecordRadarEvent + tm.Tick(ts) → 段 4/5/6 立即跑一次。
 		// 当前不消费 EnterRoom/ExitRoom 做行为推断，仅落账供未来段 7 使用。
@@ -1103,12 +1141,20 @@ func (e *Engine) runAlarmLoop(ctx context.Context, stream, group string) {
 	}
 }
 
-// handleAlarmMessage 处理 iot:alarm:stream 一条消息（仅 radar Fall）。
-// 当前阶段：仅落账 + 立即 Tick；不否决 / 不延迟 / 不 verify。
-// 未来段 7 (radar fall verify) 在 TrackManager 内消费 recentRadarAlarms 做 narrative。
+// handleAlarmMessage 处理 iot:alarm:stream 一条消息。
+//
+// 2026-05-15 gateway 分流后：alarm stream 上的 radar Fall 几乎全是 sensor 自己 emit 的回声
+// （RecordRadarAlarm 转发回 alarm stream，producer="sensor.caregiver01"）。
+// 必须 guard 防自循环：检测到 producer 是 sensor 自身 emit 时直接跳过，不再 RecordRadarAlarm + emit。
+//
+// 真正的 firmware radar Fall 现在走 iot:event:stream → handleEventMessage 接管。
 func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
 	m, err := rediscommon.FromStreamMap(msg.Values)
 	if err != nil {
+		return
+	}
+	// 自循环 guard：sensor 自身 emit 的 alarm 不重新处理（否则 RecordRadarAlarm → 再 emit → 再消费 → 无限循环）
+	if m.Producer == "sensor.caregiver01" || m.Producer == "wisefido-sensor" {
 		return
 	}
 	if !strings.EqualFold(m.DeviceType, "radar") {
@@ -1145,12 +1191,14 @@ func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
 		// 未来 verifier 上线后会进一步分流：fake_fall（否决）/ real_fall（确认）/ lost_fall（应报漏报）
 		e.logger.Info("radar_fall_received",
 			zap.String("device_addr", addrStr),
+			zap.String("device_uid_hex", e.DeviceUIDHex(addrStr)),
 			zap.Int("track_id", a.TrackID),
 			zap.String("kind", "radar_firmware_fall"),
 			zap.Int("pose", a.Pose),
 			zap.String("status", a.Status),
 			zap.String("room_id", roomID),
 			zap.Int64("ts_ms", a.TMs),
+			zap.String("ts_human", time.UnixMilli(a.TMs).Format("15:04:05.000")),
 		)
 	}
 	tm.Tick(ts)

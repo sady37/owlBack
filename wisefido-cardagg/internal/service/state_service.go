@@ -91,34 +91,6 @@ func (s *StateService) UpdateTargetPose(ctx context.Context, cardID string, trac
 	return PublishCardStatus(ctx, s.writer, cardID, PublishFields{Target: ts})
 }
 
-// UpdateTargetLastActive 当 moveSec >= moveSecThreshold 或 danceMin >= danceMinThreshold 时更新 Target.LastActiveTs。阈值由调用方传入（如 10/20 秒，1/2 分钟）。
-func (s *StateService) UpdateTargetLastActive(ctx context.Context, cardID string, tsMs int64, moveSec, moveSecThreshold int, danceMin, danceMinThreshold int) error {
-	if s.writer == nil || s.reader == nil || cardID == "" {
-		return nil
-	}
-	if moveSecThreshold <= 0 && danceMinThreshold <= 0 {
-		return nil
-	}
-	if moveSec < moveSecThreshold && (danceMinThreshold <= 0 || danceMin < danceMinThreshold) {
-		return nil
-	}
-	curr, err := s.reader.ReadCardStatus(ctx, cardID)
-	if err != nil || curr == nil {
-		return nil
-	}
-	target := curr.Target
-	if target == nil {
-		// 推断出的活动，无具体 track，用 9(未知人) 见 observation.TrackUnknownPerson
-		target = &card.TargetState{TrackID: observation.TrackUnknownPerson, UpdatedAt: time.Now().UnixMilli()}
-	} else {
-		t := *target
-		target = &t
-	}
-	target.LastActiveTs = tsMs
-	target.UpdatedAt = time.Now().UnixMilli()
-	return PublishCardStatus(ctx, s.writer, cardID, PublishFields{Target: target})
-}
-
 // BedEvent 常量：与 card.BedState.BedEvent 及事件语义一致
 const (
 	BedEventNone    = 8 // 无事件或保持不变

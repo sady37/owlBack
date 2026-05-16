@@ -86,16 +86,7 @@ const (
 	VisitorMinThreshold        = 10  // 访客停留 >= 10 分钟才计 HasVisitorToday
 )
 
-// ---- 5. LeftBedFall（离床跌倒）累计与判定 ----
-
-const (
-	LeftBedFallMaxActivityCount  = 5   // 只处理离床后前 N 个 Activity
-	LeftBedFallSumStandThreshold = 260 // 离床跌倒慢速兜底：5 条 Activity 累计站立 ≥260s（久站）；与 monitor pose==卧床 的 C&I 路径并行
-	LeftBedFallSumMoveUpdateSec = 10  // sum_move >= 10 秒则更新 target lastActive
-	LeftBedFallDanceUpdateMin   = 1   // dance >= 1 分钟则更新 target lastActive
-)
-
-// ---- 6. Derive 时间点 / 阈值（在床/离床推导） ----
+// ---- 5. Derive 时间点 / 阈值（在床/离床推导） ----
 
 const (
 	VitalDeriveRoundsNeeded = 5   // bed_status!=0/1 时累计 N 轮 track 再判定

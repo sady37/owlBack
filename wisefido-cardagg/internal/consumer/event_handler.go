@@ -296,37 +296,13 @@ func (h *EventHandler) Handle(ctx context.Context, msg interface{}) error {
 					deviceType = dm.DeviceType
 				}
 			}
-			skip, written := false, false
+			skip := false
 			if h.bedCoord != nil {
-				skip, written = h.bedCoord.LeftBed(ctx, h.state, h.metaCache, h.buffer, m.SubjectEntity, ac.TenantPref, ac.DeviceAddr, ac.DeviceAddr, deviceType, m.Timestamp, func() {
-					meta := h.metaCache.GetOrLoad(ctx, m.SubjectEntity)
-					if meta == nil {
-						return
-					}
-					if meta.TenantID != "" && h.alarms != nil {
-						service.PersistSuspectedFallPoseLyingIfEnabled(ctx, h.alarms, m.SubjectEntity, meta.TenantID, h.buffer, meta, "ImmediateLeftBedFall_lying_coord")
-					}
-					if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
-						service.StartLeftBedFall(m.SubjectEntity, radarID)
-					}
-				})
+				skip, _ = h.bedCoord.LeftBed(ctx, h.state, h.metaCache, h.buffer, m.SubjectEntity, ac.TenantPref, ac.DeviceAddr, ac.DeviceAddr, deviceType, m.Timestamp, nil)
 			}
 			if !skip {
 				trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.SubjectEntity)
-				pubWritten, _ := h.state.PublishBedStateFromEvent(ctx, m.SubjectEntity, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
-				if pubWritten {
-					meta := h.metaCache.GetOrLoad(ctx, m.SubjectEntity)
-					if meta != nil {
-						if meta.TenantID != "" && h.alarms != nil {
-							service.PersistSuspectedFallPoseLyingIfEnabled(ctx, h.alarms, m.SubjectEntity, meta.TenantID, h.buffer, meta, "ImmediateLeftBedFall_lying_event")
-						}
-						if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
-							service.StartLeftBedFall(m.SubjectEntity, radarID)
-						}
-					}
-				}
-			} else if !written {
-				// pending：等 buffer 对齐或超时后再落离床与 StartLeftBedFall
+				_, _ = h.state.PublishBedStateFromEvent(ctx, m.SubjectEntity, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
 			}
 		}
 
@@ -441,24 +417,10 @@ func (h *EventHandler) routeSleepStageEvent(ctx context.Context, m *redis.IoTStr
 	_ = h.state.PublishBedStateSleepStage(ctx, m.SubjectEntity, sleep, source)
 }
 
-// routeActivityEvent Activity 事件：根据设备绑定地址（Bed/Bathroom/Room）更新 RoomState/BathRoomState 和 Target；卫生间且开启 Stay 时维护 alarm pending。
-/*
-1. 前置与解析（299–310）
-无 DeviceUID 或无 state 直接返回。从 data 取出行走距离/时长、站立时长、multi_person_duration 等，用 meta 判断当前设备是否卫生间 isBathroom。
-
-2. 状态与跌倒（312–330）
-调用 UpdateStateFromActivity：按绑定区域把本次 activity 合并进 Redis 里的 RoomState / BathRoomState（含站立累计、多人时长等），并可能触发推送。
-若 NeedBedFallCheck(card)，用站立/行走/轨迹等跑 LeftBedFallActivity，满足条件则落库 SuspectedFall 告警。
-
-3. Stay pending（332–352，仅卫生间）
-
-非卫生间：上面状态更新完就结束。
-是卫生间且租户对该设备开启了 alarm.Stay：再看 Stay 窗口（由 routeRoomStateEvent 里 Enter/Exit 打开的 90s）。
-窗口未开：直接 return，不加也不删 Stay pending。
-窗口开：读当前卡片的 BathRoomState.TotalPeople：== 1 则 AddStayPendingIfEnabled，否则 RemovePendingAlarm(Stay)。
-要点：activity 流负责改 bathroom 人数等状态；Stay pending 的增删只在「窗口仍有效」时根据当前已合并后的 total_people 做一次同步；multi_person_duration 仍传给 UpdateStateFromActivity，但不再单独用来算 Stay pending（那段已迁到「窗口 + total_people」）。
-*/
-// routeActivityEvent Activity 事件：根据设备绑定地址（Bed/Bathroom/Room）更新 RoomState/BathRoomState 和 Target；卫生间且开启 Stay 时由 stay_fsm 在 Enter 后 150s 武装窗内累计 activity，与 number 条件一起 AddStayPending。
+// routeActivityEvent Activity 事件：根据设备绑定地址更新 RoomState/BathRoomState；卫生间且开启 Stay 时由 stay_fsm 在 Enter 后 150s 武装窗内累计 activity，与 number 条件一起 AddStayPending。
+//
+// 离床跌倒判定（v1 LeftBedFallActivity / SuspectedFall 派生）已迁到 wisefido-sensor，
+// 本入口不再做 Fall 决策。
 func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStreamMessage, data map[string]interface{}) {
 	ac := service.AddrCtxFromMsg(m)
 	if ac.DeviceAddr == "" || h.state == nil {
@@ -480,23 +442,6 @@ func (h *EventHandler) routeActivityEvent(ctx context.Context, m *redis.IoTStrea
 
 	// 行走/站立/多人阈值见 service/weights.go（WalkDistanceMetersThreshold、WalkSecThresholdOR）
 	_, _, _ = h.state.UpdateStateFromActivity(ctx, m.SubjectEntity, deviceID, ac.DeviceAddr, isBathroom, walkDuration, walkDistance, standDuration, multiPersonDuration, m.Timestamp, rid, rname)
-
-	if service.NeedBedFallCheck(m.SubjectEntity) {
-		trackCount := intFromAny(data[observation.FieldTrackCount])
-		done, suspectedFall, reportDeviceID, fallPath := service.LeftBedFallActivity(ctx, m.SubjectEntity, deviceID, standDuration, walkDuration, 0, trackCount, h.state, h.buffer, meta)
-		if done && suspectedFall && reportDeviceID != "" {
-			meta2 := h.metaCache.GetOrLoad(ctx, m.SubjectEntity)
-			if meta2 != nil && meta2.TenantID != "" {
-				_, level, _, _, _, enabled := h.alarms.ResolveEnablementByDevice(ctx, meta2.TenantID, reportDeviceID, alarm.SuspectedFall)
-				if !enabled || level == "" {
-					level = alarm.AlarmLevelWarn
-				}
-				nowMs := time.Now().UnixMilli()
-				triggerData := map[string]interface{}{"source": "LeftBedFallActivity", "path": fallPath, "ts": nowMs}
-				_ = h.alarms.PersistAlarmWithTriggerData(ctx, m.SubjectEntity, meta2.TenantID, reportDeviceID, alarm.SuspectedFall, level, time.UnixMilli(nowMs), triggerData)
-			}
-		}
-	}
 
 	if isBathroom {
 		h.stayOnActivity(ctx, m, deviceID)

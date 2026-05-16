@@ -278,33 +278,11 @@ func (h *AlarmHandler) Handle(ctx context.Context, msg interface{}) error {
 			}
 			skip := false
 			if h.bedCoord != nil {
-				skip, _ = h.bedCoord.LeftBed(ctx, h.state, h.metaCache, h.buffer, m.SubjectEntity, ac.TenantPref, ac.DeviceAddr, ac.DeviceAddr, deviceType, m.Timestamp, func() {
-					meta := h.metaCache.GetOrLoad(ctx, m.SubjectEntity)
-					if meta == nil {
-						return
-					}
-					if meta.TenantID != "" && h.alarms != nil {
-						service.PersistSuspectedFallPoseLyingIfEnabled(ctx, h.alarms, m.SubjectEntity, meta.TenantID, h.buffer, meta, "ImmediateLeftBedFall_lying_coord")
-					}
-					if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
-						service.StartLeftBedFall(m.SubjectEntity, radarID)
-					}
-				})
+				skip, _ = h.bedCoord.LeftBed(ctx, h.state, h.metaCache, h.buffer, m.SubjectEntity, ac.TenantPref, ac.DeviceAddr, ac.DeviceAddr, deviceType, m.Timestamp, nil)
 			}
 			if !skip {
 				trackOverride := sleepadTrackOverride(ctx, h.metaCache, h.buffer, m.SubjectEntity)
-				pubWritten, _ := h.state.PublishBedStateFromEvent(ctx, m.SubjectEntity, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
-				if pubWritten {
-					meta := h.metaCache.GetOrLoad(ctx, m.SubjectEntity)
-					if meta != nil {
-						if meta.TenantID != "" && h.alarms != nil {
-							service.PersistSuspectedFallPoseLyingIfEnabled(ctx, h.alarms, m.SubjectEntity, meta.TenantID, h.buffer, meta, "ImmediateLeftBedFall_lying_alarm")
-						}
-						if radarID := service.RadarDeviceIDBoundToBed(meta); radarID != "" {
-							service.StartLeftBedFall(m.SubjectEntity, radarID)
-						}
-					}
-				}
+				_, _ = h.state.PublishBedStateFromEvent(ctx, m.SubjectEntity, alarm.LeftBed, deviceType, m.Timestamp, 0, trackOverride)
 			}
 		}
 

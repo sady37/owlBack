@@ -24,7 +24,8 @@ import (
 //     device_uid + resident_id INET / device_id UUID）— trigger 时刻一次 SELECT 锁住
 //   - 北极星：producer / parent_span / trace_id 三列承载 datagram 因果链
 //   - cards 表 v2 无 alarm counter 列；CardAlarmState 由 alarm_events 实时聚合（GROUP BY alarm_level）
-//   - card_id UUID 列保留 NULL（v2 cards PK 是 spatial_prefix INET，类型不匹配；TODO 后期 schema 改 INET 或删）
+//   - card_id INET 列（v2 schema 已是 INET，等同 cards.spatial_prefix CIDR）：INSERT 时填入 cardID
+//     （由 cardagg IotPreparedHandler LPM 反查 device_addr → cards.spatial_prefix；空时仍写 NULL）
 //
 // 详 doc/alarm_v2_phase_g.md（待补）
 // ====================================================================
@@ -256,16 +257,16 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 		  device_addr, triggered_at, event_type, category, alarm_level,
 		  tenant_name, branch_name, unit_name, room_name, bed_name,
 		  resident_nickname, device_uid,
-		  resident_id, device_id,
+		  resident_id, device_id, card_id,
 		  trace_id, parent_span, producer,
 		  alarm_status, payload, evidence
 		) VALUES (
 		  $1::INET, $2, $3, $4, $5,
 		  $6, $7, $8, $9, $10,
 		  $11, $12,
-		  NULLIF($13, '')::INET, NULLIF($14, '')::UUID,
-		  NULLIF($15, ''), NULLIF($16, ''), NULLIF($17, ''),
-		  'active', $18::JSONB, $19::JSONB
+		  NULLIF($13, '')::INET, NULLIF($14, '')::UUID, NULLIF($15, '')::INET,
+		  NULLIF($16, ''), NULLIF($17, ''), NULLIF($18, ''),
+		  'active', $19::JSONB, $20::JSONB
 		)
 		RETURNING event_id::text, triggered_at
 	`
@@ -281,7 +282,7 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 		addr.String(), params.TriggeredAt, params.EventType, nullStringOrNil(params.Category), alarmLevelToInt(params.AlarmLevel),
 		snap.TenantName, snap.BranchName, snap.UnitName, snap.RoomName, snap.BedName,
 		snap.ResidentNickname, snap.DeviceUID,
-		residentIDStr, deviceIDStr,
+		residentIDStr, deviceIDStr, cardID,
 		params.TraceID, params.ParentSpan, params.Producer,
 		string(payload), string(evidence),
 	).Scan(&eventID, &triggeredAt)

@@ -330,7 +330,7 @@ func (s *AlarmService) PersistAlarmFromTrack(ctx context.Context, cardID, tenant
 	return nil
 }
 
-// PersistAlarmWithTriggerData 落库告警，TriggeredAt=triggeredAt，TriggerData=triggerData（如 source 标明 LeftBedFallActivity 产生）。triggerData 为 nil 时写 {}。
+// PersistAlarmWithTriggerData 落库告警，TriggeredAt=triggeredAt，TriggerData=triggerData。triggerData 为 nil 时写 {}。当前唯一 caller 是 NightAbsence 派生路径。
 func (s *AlarmService) PersistAlarmWithTriggerData(ctx context.Context, cardID, tenantID, deviceID, eventName, level string, triggeredAt time.Time, triggerData map[string]interface{}) error {
 	if s.db == nil {
 		s.logger.Warn("no DB, alarm not persisted", zap.String("cid", cardID))
@@ -354,7 +354,7 @@ func (s *AlarmService) PersistAlarmWithTriggerData(ctx context.Context, cardID, 
 		AlarmLevel:  level,
 		TriggeredAt: triggeredAt,
 		TriggerData: raw,
-		Producer:    cardaggProducerAlarmRouter, // cardagg 内部 trigger（如 LeftBedFallActivity 派生），无上游 envelope
+		Producer:    cardaggProducerAlarmRouter, // cardagg 内部派生（如 NightAbsence），无上游 envelope
 	})
 	if err != nil {
 		s.logger.Warn("insert alarm failed", zap.String("cid", cardID), zap.Error(err))

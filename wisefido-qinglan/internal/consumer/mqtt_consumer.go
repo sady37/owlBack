@@ -1210,7 +1210,10 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 			// area_type 写入 data，供下游区分区域（床区/感应区等）
 
 		case 2:
-			// Fall/SittingOnGround 走 alarm cardagg event_handler 按使能落库
+			// Fall/SittingOnGround 走 event stream，由 sensor (wisefido-sensor) verifier 接管。
+			// 见 doc/cardagg_sensor_split.md：radar firmware 容易误报，必须经 sensor 验证；
+			// sensor verify 通过后通过 alarm_back_channel 转发到 alarm stream → cardagg 落库。
+			// cardagg 不再直接处理 radar producer 的 Fall/SittingOnGround。
 			alarmCat := ""
 			switch eventName {
 			case alarm.Fall, alarm.SuspectedFall:
@@ -1220,17 +1223,22 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 			}
 			if alarmCat != "" {
 				// Plan B：业务字段 first-class 平铺（TrackID / Pose 都是 EventItem 字段）。
-				alarmItem := observation.NewEventItem(ts, "start")
-				alarmItem.TrackID = asInt(m["track_id"])
-				alarmItem.Pose = asInt(m["pose"])
-				alarmData, _ := observation.EventItemToDataMap(&alarmItem)
-				if alarmData == nil {
-					alarmData = make(map[string]interface{})
+				eventItem := observation.NewEventItem(ts, "start")
+				eventItem.TrackID = asInt(m["track_id"])
+				eventItem.Pose = asInt(m["pose"])
+				eventData, _ := observation.EventItemToDataMap(&eventItem)
+				if eventData == nil {
+					eventData = make(map[string]interface{})
 				}
-				evMsg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "alarm", alarmCat, alarmData)
-				if err := c.streamPublisher.PublishAlarm(ctx, evMsg); err != nil {
-					log.Printf("[EVENT_HANDLER] event publish failed device=%s cat=%s: %v", uid, alarmCat, err)
+				// topic_type=event；category 保留 alarm.Fall / alarm.SittingOnGround 让 sensor 路由识别
+				evMsg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "event", alarmCat, eventData)
+				if err := c.streamPublisher.PublishEvent(ctx, evMsg); err != nil {
+					log.Printf("[EVENT_HANDLER] fall event publish failed device=%s cat=%s: %v", uid, alarmCat, err)
 					lastErr = err
+				} else {
+					// 业务关键事件（Fall/SittingOnGround 含 Suspected）— 必 log（用户要求 2026-05-15）
+					log.Printf("[FALL_PUBLISH] device=%s category=%s event_name=%s track_id=%d pose=%d ts_ms=%d ts=%s",
+						uid, alarmCat, eventName, asInt(m["track_id"]), asInt(m["pose"]), ts, time.UnixMilli(ts).Format("15:04:05.000"))
 				}
 				continue
 			}
@@ -1253,6 +1261,10 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 		if err := c.streamPublisher.PublishEvent(ctx, msg); err != nil {
 			log.Printf("[EVENT_HANDLER] publish failed device=%s cat=%s: %v", uid, eventName, err)
 			lastErr = err
+		} else if eventType == 1 || eventType == 3 {
+			// 业务关键事件 — Enter/ExitRoom (eventType=1) / NumberPeople (eventType=3) 必 log（用户要求 2026-05-15）
+			log.Printf("[EVENT_PUBLISH] device=%s event_type=%d event_name=%s track_id=%d number_people=%d ts_ms=%d ts=%s",
+				uid, eventType, eventName, asInt(m["track_id"]), asInt(m[observation.FieldNumberPeople]), ts, time.UnixMilli(ts).Format("15:04:05.000"))
 		}
 	}
 	return lastErr

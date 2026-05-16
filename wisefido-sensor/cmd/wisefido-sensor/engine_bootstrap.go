@@ -277,7 +277,8 @@ func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.D
 	rows, err := db.QueryContext(ctx, `
 		SELECT host(d.device_ipv6)::text AS device_addr,
 		       r.room_id::text          AS room_id,
-		       COALESCE(dfm.device_type::text, '') AS device_type
+		       COALESCE(dfm.device_type::text, '') AS device_type,
+		       COALESCE(dfm.device_uid, '') AS device_uid_hex
 		FROM devices d
 		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
 		JOIN rooms r                  ON r.room_id >>= d.device_ipv6
@@ -289,8 +290,8 @@ func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.D
 
 	count := 0
 	for rows.Next() {
-		var deviceAddr, roomID, deviceType string
-		if err := rows.Scan(&deviceAddr, &roomID, &deviceType); err != nil {
+		var deviceAddr, roomID, deviceType, deviceUIDHex string
+		if err := rows.Scan(&deviceAddr, &roomID, &deviceType, &deviceUIDHex); err != nil {
 			logger.Warn("scan devices row", zap.Error(err))
 			continue
 		}
@@ -303,7 +304,11 @@ func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.D
 		if deviceType != "" {
 			engine.MapDeviceIDToType(deviceAddr, deviceType)
 		}
-		// MapDeviceIDToUID 单程票后是 identity（addr→addr），无意义，跳过
+		// MapDeviceIDToUID 单程票后语义重定向：addr (IPv6) → device_uid hex MAC
+		// 用于 log 双格式 + 人眼可读（zap field "device_uid_hex"）
+		if deviceUIDHex != "" {
+			engine.MapDeviceIDToUID(deviceAddr, deviceUIDHex)
+		}
 		count++
 	}
 	return count, rows.Err()
