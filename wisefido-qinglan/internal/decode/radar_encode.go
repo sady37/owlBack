@@ -3,7 +3,6 @@ package decode
 import (
 	"encoding/base64"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 
@@ -157,14 +156,14 @@ func EncodeAlarmItemsToDeviceProps(items []alarm.AlarmItem) (map[string]interfac
 	if fallParamBase64, err := EncodeFallParam(items); err == nil {
 		props["fall_param"] = fallParamBase64
 	} else {
-		log.Printf("[ENCODER] ⚠️ Failed to encode fall_param: %v", err)
+		return props, fmt.Errorf("encode fall_param: %w", err)
 	}
 
 	// 3. 构建 heart_breath_param base64（无需转换，单位已一致）
 	if heartBreathParamBase64, err := EncodeHeartBreathParam(items); err == nil {
 		props["heart_breath_param"] = heartBreathParamBase64
 	} else {
-		log.Printf("[ENCODER] ⚠️ Failed to encode heart_breath_param: %v", err)
+		return props, fmt.Errorf("encode heart_breath_param: %w", err)
 	}
 
 	return props, nil

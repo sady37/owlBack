@@ -114,7 +114,7 @@ func (h *RadarHandler) GetCardDevicesByDeviceID(w http.ResponseWriter, r *http.R
 			return
 		}
 	}
-	cardID, roomID, list, layoutConfig, err := h.radarInstall.ListCardDevicesByDeviceID(r.Context(), tenantID, deviceID)
+	cardID, roomID, spatialPrefix, list, layoutConfig, err := h.radarInstall.ListCardDevicesByDeviceID(r.Context(), tenantID, deviceID)
 	if err != nil {
 		h.logger.Error("GetCardDevicesByDeviceID", zap.String("device_id", deviceID), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
@@ -137,16 +137,23 @@ func (h *RadarHandler) GetCardDevicesByDeviceID(w http.ResponseWriter, r *http.R
 		}
 	}
 
+	// spatial_prefix = 本 canvas 的 save target；当前 URL 是 device 切入，故为该 device 的 /128 CIDR。
+	// roomID (/88) 保留作 layout 加载的 fallback 锚 + 老 FE 兼容。
 	writeJSON(w, http.StatusOK, Ok(struct {
-		CardID       string                      `json:"card_id"`
-		RoomID       string                      `json:"room_id"`
-		Devices      []repository.CardDeviceItem `json:"devices"`
-		LayoutConfig json.RawMessage             `json:"layout_config"`
-	}{CardID: cardID, RoomID: roomID, Devices: list, LayoutConfig: layoutConfig}))
+		CardID        string                      `json:"card_id"`
+		RoomID        string                      `json:"room_id"`
+		SpatialPrefix string                      `json:"spatial_prefix"`
+		Devices       []repository.CardDeviceItem `json:"devices"`
+		LayoutConfig  json.RawMessage             `json:"layout_config"`
+	}{CardID: cardID, RoomID: roomID, SpatialPrefix: spatialPrefix, Devices: list, LayoutConfig: layoutConfig}))
 }
 
-// PutRoomLayout 保存房间布局到 config_versions（config_type=room_layout, entity_id=room_id）。Body 为 config_data JSON。
+// PutRoomLayout 保存房间布局到 room_visual_layout（spatial_prefix 三档作用域）。Body 为 canvas JSON。
 // PUT /radar-device/api/v1/radar-device/room/:roomId/layout
+//
+// 三档作用域优先级（高 → 低）：
+//  1. body.spatial_prefix 字段（FE 显式 CIDR，权威；用于 /80 unit 与 /128 device 明确指定）
+//  2. URL path roomID（host-only IPv6，backend 按 host bits 推断 /88 vs /128；无法表达 /80）
 func (h *RadarHandler) PutRoomLayout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -166,8 +173,16 @@ func (h *RadarHandler) PutRoomLayout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid or empty body", http.StatusBadRequest)
 		return
 	}
-	if err := h.radarInstall.SaveRoomLayout(r.Context(), tenantID, roomID, body); err != nil {
-		h.logger.Error("PutRoomLayout", zap.String("room_id", roomID), zap.Error(err))
+	// body 优先：解析 spatial_prefix 字段（如有），覆盖 path roomID
+	saveTarget := roomID
+	var bodyPeek struct {
+		SpatialPrefix string `json:"spatial_prefix"`
+	}
+	if jerr := json.Unmarshal(body, &bodyPeek); jerr == nil && bodyPeek.SpatialPrefix != "" {
+		saveTarget = bodyPeek.SpatialPrefix
+	}
+	if err := h.radarInstall.SaveRoomLayout(r.Context(), tenantID, saveTarget, body); err != nil {
+		h.logger.Error("PutRoomLayout", zap.String("save_target", saveTarget), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
@@ -342,7 +357,7 @@ func (h *RadarHandler) SubscribeRealtimeStream(w http.ResponseWriter, r *http.Re
 
 	// 获取该设备所属的 card_id
 	// SSE 推送基于 card_id，不需要检查 device 的绑定状态
-	cardID, _, _, _, err := h.radarInstall.ListCardDevicesByDeviceID(ctx, tenantID, actualDeviceID)
+	cardID, _, _, _, _, err := h.radarInstall.ListCardDevicesByDeviceID(ctx, tenantID, actualDeviceID)
 	if err != nil {
 		h.logger.Error("[RADAR_STREAM_SSE] failed to get card_id",
 			zap.String("device_id", actualDeviceID),

@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"owl-common/alarm"
 	"owl-common/radarutils"
 )
 
@@ -61,7 +62,7 @@ func NewAlarmFeedbackIngester(db *sql.DB, engine *Engine, logger *zap.Logger) *A
 		engine:     engine,
 		logger:     logger,
 		lookbackMs: 90_000,
-		eventTypes: []string{"Fall", "SittingOnGround", "Stay"},
+		eventTypes: []string{alarm.Fall, alarm.SittingOnGround, alarm.Stay},
 	}
 }
 

@@ -28,16 +28,12 @@ type AlarmEvent struct {
 	HandTime    *time.Time `db:"hand_time"`     // TIMESTAMPTZ, nullable
 
 	// 触发数据
-	IoTTimeSeriesID *int64         `db:"iot_timeseries_id"` // BIGINT, nullable
-	TriggerData     json.RawMessage `db:"trigger_data"`      // JSONB
+	TriggerData json.RawMessage `db:"trigger_data"` // JSONB
 
 	// 处理信息
 	Handler   *string `db:"handler"`   // UUID, nullable, REFERENCES users(user_id)
 	Operation *string `db:"operation"` // VARCHAR(30), nullable
 	Notes     *string `db:"notes"`     // TEXT, nullable
-
-	// 通知信息
-	NotifiedUsers json.RawMessage `db:"notified_users"` // JSONB, DEFAULT '[]'::JSONB
 
 	// 元数据
 	Metadata json.RawMessage `db:"metadata"` // JSONB, DEFAULT '{}'::JSONB

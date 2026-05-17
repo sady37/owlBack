@@ -7,13 +7,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // OTAPushFn is the function signature for pushing OTA via MQTT
@@ -30,13 +31,17 @@ type Scheduler struct {
 	interval  time.Duration
 	fwDir     string
 	fwURL     string
+	logger    *zap.Logger
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
 // NewScheduler creates a new OTA scheduler
-func NewScheduler(db *sql.DB, otaPushFn OTAPushFn, tcpPushFn TCPPushFn, interval time.Duration, fwDir, fwURL string) *Scheduler {
+func NewScheduler(db *sql.DB, otaPushFn OTAPushFn, tcpPushFn TCPPushFn, interval time.Duration, fwDir, fwURL string, logger *zap.Logger) *Scheduler {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &Scheduler{
 		db:        db,
 		otaPushFn: otaPushFn,
@@ -44,6 +49,7 @@ func NewScheduler(db *sql.DB, otaPushFn OTAPushFn, tcpPushFn TCPPushFn, interval
 		interval:  interval,
 		fwDir:     fwDir,
 		fwURL:     fwURL,
+		logger:    logger,
 	}
 }
 
@@ -53,7 +59,10 @@ func (s *Scheduler) Start() {
 	s.cancel = cancel
 	s.wg.Add(1)
 	go s.run(ctx)
-	log.Printf("[OTA-Scheduler] started, interval=%v fwDir=%s", s.interval, s.fwDir)
+	s.logger.Info("ota scheduler started",
+		zap.Duration("interval", s.interval),
+		zap.String("fw_dir", s.fwDir),
+	)
 }
 
 // Stop stops the scheduler
@@ -62,7 +71,7 @@ func (s *Scheduler) Stop() {
 		s.cancel()
 	}
 	s.wg.Wait()
-	log.Printf("[OTA-Scheduler] stopped")
+	s.logger.Info("ota scheduler stopped")
 }
 
 func (s *Scheduler) run(ctx context.Context) {
@@ -115,7 +124,7 @@ func (s *Scheduler) scan(ctx context.Context) {
 	`
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
-		log.Printf("[OTA-Scheduler] query failed: %v", err)
+		s.logger.Warn("ota scheduler query", zap.Error(err))
 		return
 	}
 	defer rows.Close()
@@ -126,23 +135,23 @@ func (s *Scheduler) scan(ctx context.Context) {
 		var uid, way, schedule, targetFW, targetMCU string
 		var updatedAt time.Time
 		if err := rows.Scan(&uid, &way, &schedule, &targetFW, &targetMCU, &updatedAt); err != nil {
-			log.Printf("[OTA-Scheduler] scan row failed: %v", err)
+			s.logger.Warn("ota scheduler scan row", zap.Error(err))
 			continue
 		}
 		count++
 
-		// v2: approve_way ∈ {tenant_schedule, tenant_manual}；仅 *_schedule 检查 window
 		if strings.HasSuffix(way, "_schedule") && schedule != "" {
 			if !IsInScheduleWindow(schedule, time.Now(), updatedAt) {
-				log.Printf("[OTA-Scheduler] uid=%s schedule=%s not in window, skipping", uid, schedule)
+				s.logger.Debug("schedule not in window",
+					zap.String("uid", uid),
+					zap.String("schedule", schedule),
+				)
 				continue
 			}
 		}
 
-		// target_mcu → esp* 字段 (主控固件)；target_fw → radar* 字段 (雷达固件)
-		// 见 Radar_MQTT_v3.0.md §3.8.4：一条 OTA 消息可同时带两组字段
 		if targetFW == "" && targetMCU == "" {
-			log.Printf("[OTA-Scheduler] uid=%s no target firmware set, skipping", uid)
+			s.logger.Debug("no target firmware set", zap.String("uid", uid))
 			continue
 		}
 
@@ -154,7 +163,11 @@ func (s *Scheduler) scan(ctx context.Context) {
 			localPath := filepath.Join(s.fwDir, targetMCU)
 			sz, err := getFileSize(localPath)
 			if err != nil {
-				log.Printf("[OTA-Scheduler] uid=%s mcu not found: %s: %v", uid, localPath, err)
+				s.logger.Warn("mcu firmware not found",
+					zap.String("uid", uid),
+					zap.String("path", localPath),
+					zap.Error(err),
+				)
 				continue
 			}
 			sha, _ := getFileSHA256(localPath)
@@ -176,7 +189,11 @@ func (s *Scheduler) scan(ctx context.Context) {
 			localPath := filepath.Join(s.fwDir, targetFW)
 			sz, err := getFileSize(localPath)
 			if err != nil {
-				log.Printf("[OTA-Scheduler] uid=%s fw not found: %s: %v", uid, localPath, err)
+				s.logger.Warn("radar firmware not found",
+					zap.String("uid", uid),
+					zap.String("path", localPath),
+					zap.Error(err),
+				)
 				continue
 			}
 			sha, _ := getFileSHA256(localPath)
@@ -193,35 +210,41 @@ func (s *Scheduler) scan(ctx context.Context) {
 			pushReq.RadarSHA256 = sha
 		}
 
-		log.Printf("[OTA-Scheduler] pushing OTA to uid=%s mcu=%s(v%s) fw=%s(v%s)", uid, targetMCU, verInfo.EspVer, targetFW, verInfo.RadarVer)
+		s.logger.Info("pushing ota",
+			zap.String("uid", uid),
+			zap.String("mcu", targetMCU),
+			zap.String("mcu_ver", verInfo.EspVer),
+			zap.String("fw", targetFW),
+			zap.String("fw_ver", verInfo.RadarVer),
+		)
 
-		// Try TCP push first (old MCU), fall back to MQTT
 		pushed_ok := false
 		if s.tcpPushFn != nil {
 			result := s.tcpPushFn(pushReq)
 			if result.Success {
-				log.Printf("[OTA-Scheduler] TCP push OK uid=%s", uid)
+				s.logger.Info("tcp push ok", zap.String("uid", uid))
 				pushed_ok = true
 			} else {
-				log.Printf("[OTA-Scheduler] TCP push failed (%s), trying MQTT uid=%s", result.Message, uid)
+				s.logger.Info("tcp push failed, trying mqtt",
+					zap.String("uid", uid),
+					zap.String("msg", result.Message),
+				)
 				if s.otaPushFn != nil {
 					if err := s.otaPushFn(uid, data); err != nil {
-						log.Printf("[OTA-Scheduler] MQTT fallback failed uid=%s: %v", uid, err)
+						s.logger.Warn("mqtt fallback failed", zap.String("uid", uid), zap.Error(err))
 					} else {
-						// MQTT 已发出。标 pushing 避免下轮重推；若设备未收到/拒绝，依赖 ota_return 改 status。
 						pushed_ok = true
 					}
 				}
 			}
 		} else if s.otaPushFn != nil {
 			if err := s.otaPushFn(uid, data); err != nil {
-				log.Printf("[OTA-Scheduler] MQTT push failed uid=%s: %v", uid, err)
+				s.logger.Warn("mqtt push failed", zap.String("uid", uid), zap.Error(err))
 				continue
 			}
-			pushed_ok = true // MQTT-only device, treat as pushed
+			pushed_ok = true
 		}
 
-		// v2: device_ota.status = 'downloading'（v1 'pushing' 在 v2 status 集合内不存在）
 		if pushed_ok {
 			_, err = s.db.ExecContext(ctx, `
 				UPDATE device_ota
@@ -233,7 +256,7 @@ func (s *Scheduler) scan(ctx context.Context) {
 				)
 			`, uid)
 			if err != nil {
-				log.Printf("[OTA-Scheduler] update device_ota status failed uid=%s: %v", uid, err)
+				s.logger.Warn("device_ota status update", zap.String("uid", uid), zap.Error(err))
 			}
 		}
 
@@ -241,7 +264,10 @@ func (s *Scheduler) scan(ctx context.Context) {
 	}
 
 	if count > 0 {
-		log.Printf("[OTA-Scheduler] scan complete: %d eligible, %d pushed", count, pushed)
+		s.logger.Info("ota scan complete",
+			zap.Int("eligible", count),
+			zap.Int("pushed", pushed),
+		)
 	}
 }
 

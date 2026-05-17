@@ -1,11 +1,9 @@
-# wisefido-cardagg 配置文件
-
 database:
-  host: "127.0.0.1"
+  host: "localhost"
   port: 5432
   user: "postgres"
-  password: "postgres"
-  database: "owlrd"
+  password: "TeLunSu-36kr"
+  database: "owl_v2"
   sslmode: "disable"
 
 redis:
@@ -22,4 +20,4 @@ logging:
 streams:
   default:
     max_len: 1000
-    retention_seconds: 86400  # 24小时
+    retention_seconds: 86400

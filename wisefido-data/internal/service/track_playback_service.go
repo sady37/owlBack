@@ -88,14 +88,14 @@ func ValidatePlaybackWindow(start, end time.Time, kind PlaybackKind, lookback ti
 	return nil
 }
 
-// TrackPlaybackService 轨迹历史回放：iot_timeseries 原始 monitor 行 → 前端自行解析
+// TrackPlaybackService 轨迹历史回放：monitor_stream 原始 monitor 行 → 前端自行解析
 type TrackPlaybackService struct {
 	devices repository.DevicesRepository
-	iot     repository.IoTTimeSeriesRepository
+	iot     repository.MonitorPlaybackRepository
 	log     *zap.Logger
 }
 
-func NewTrackPlaybackService(devices repository.DevicesRepository, iot repository.IoTTimeSeriesRepository, log *zap.Logger) *TrackPlaybackService {
+func NewTrackPlaybackService(devices repository.DevicesRepository, iot repository.MonitorPlaybackRepository, log *zap.Logger) *TrackPlaybackService {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -135,33 +135,32 @@ func (s *TrackPlaybackService) RadarTrackPlayback(ctx context.Context, tenantID,
 		s.log.Warn("RadarTrackPlayback device lookup failed", zap.String("tenant_id", tenantID), zap.String("device_id", deviceID), zap.Error(err))
 		return nil, fmt.Errorf("device not found or access denied")
 	}
-	if dev.DeviceUID == "" {
-		s.log.Warn("RadarTrackPlayback device_uid empty", zap.String("device_id", deviceID))
-		return nil, fmt.Errorf("device_uid missing")
+	if dev.DeviceIPv6 == "" {
+		s.log.Warn("RadarTrackPlayback device_ipv6 empty", zap.String("device_id", deviceID))
+		return nil, fmt.Errorf("device_ipv6 missing")
 	}
 
-	s.log.Info("RadarTrackPlayback querying iot_timeseries raw",
+	s.log.Info("RadarTrackPlayback querying monitor_stream",
 		zap.String("tenant_id", tenantID),
 		zap.String("device_id", deviceID),
-		zap.String("device_uid", dev.DeviceUID),
+		zap.String("device_addr", dev.DeviceIPv6),
 		zap.Time("filter_start", start),
 		zap.Time("filter_end", end),
 	)
 
-	rows, err := s.iot.GetPlaybackRawMonitorRowsForDevice(ctx, tenantID, dev.DeviceUID, start, end, playbackRawMaxRows)
+	rows, err := s.iot.GetMonitorRowsByAddr(ctx, dev.DeviceIPv6, start, end, playbackRawMaxRows)
 	if err != nil {
-		s.log.Warn("RadarTrackPlayback iot_timeseries raw error",
+		s.log.Warn("RadarTrackPlayback monitor_stream error",
 			zap.Error(err),
-			zap.String("tenant_id", tenantID),
-			zap.String("device_uid", dev.DeviceUID),
+			zap.String("device_addr", dev.DeviceIPv6),
 			zap.Time("start", start),
 			zap.Time("end", end),
 		)
-		return nil, fmt.Errorf("query iot_timeseries failed")
+		return nil, fmt.Errorf("query monitor_stream failed")
 	}
-	s.log.Info("RadarTrackPlayback iot_timeseries raw ok",
+	s.log.Info("RadarTrackPlayback monitor_stream ok",
 		zap.Int("row_count", len(rows)),
-		zap.String("device_uid", dev.DeviceUID),
+		zap.String("device_addr", dev.DeviceIPv6),
 	)
 
 	pages := chunkPlaybackPages(rows, playbackPageSize)
@@ -177,7 +176,7 @@ func (s *TrackPlaybackService) RadarTrackPlayback(ctx context.Context, tenantID,
 	return out, nil
 }
 
-// VitalPlaybackPoint 一条 vital 数据点：来自 iot_timeseries data_value 中的 heart_rate / respiratory_rate / sleep_stage。
+// VitalPlaybackPoint 一条 vital 数据点：来自 monitor_stream payload 中的 heart_rate / respiratory_rate / sleep_stage。
 // 时间戳毫秒级；空值字段以 0 表示（前端会过滤 0 不画图）。
 type VitalPlaybackPoint struct {
 	Timestamp  int64 `json:"timestamp"`
@@ -186,7 +185,7 @@ type VitalPlaybackPoint struct {
 	SleepStage int   `json:"sleepStage"`
 }
 
-// RadarVitalPlayback 从 iot_timeseries 抽出 HR/RR/sleep_stage 数据点（Sleepad 主源；Radar 暂未发 vital MQTT）。
+// RadarVitalPlayback 从 monitor_stream 抽出 HR/RR/sleep_stage 数据点（Sleepad 主源；Radar 暂未发 vital MQTT）。
 // 与 RadarTrackPlayback 同样走 ValidatePlaybackWindow + 设备解析；返回 { points: [...], total: N }。
 func (s *TrackPlaybackService) RadarVitalPlayback(ctx context.Context, tenantID, deviceID string, startMs, endMs int64, userRole string) (map[string]interface{}, error) {
 	start := time.UnixMilli(startMs).UTC()
@@ -210,18 +209,18 @@ func (s *TrackPlaybackService) RadarVitalPlayback(ctx context.Context, tenantID,
 		s.log.Warn("RadarVitalPlayback device lookup failed", zap.String("tenant_id", tenantID), zap.String("device_id", deviceID), zap.Error(err))
 		return nil, fmt.Errorf("device not found or access denied")
 	}
-	if dev.DeviceUID == "" {
-		return nil, fmt.Errorf("device_uid missing")
+	if dev.DeviceIPv6 == "" {
+		return nil, fmt.Errorf("device_ipv6 missing")
 	}
 
-	rows, err := s.iot.GetPlaybackRawMonitorRowsForDevice(ctx, tenantID, dev.DeviceUID, start, end, playbackRawMaxRows)
+	rows, err := s.iot.GetMonitorRowsByAddr(ctx, dev.DeviceIPv6, start, end, playbackRawMaxRows)
 	if err != nil {
-		return nil, fmt.Errorf("query iot_timeseries failed")
+		return nil, fmt.Errorf("query monitor_stream failed")
 	}
 
 	points := extractVitalPoints(rows)
 	s.log.Info("RadarVitalPlayback ok",
-		zap.String("device_uid", dev.DeviceUID),
+		zap.String("device_addr", dev.DeviceIPv6),
 		zap.Int("rows_scanned", len(rows)),
 		zap.Int("points_extracted", len(points)),
 	)
@@ -234,7 +233,7 @@ func (s *TrackPlaybackService) RadarVitalPlayback(ctx context.Context, tenantID,
 	}, nil
 }
 
-// extractVitalPoints 解析 iot_timeseries 行的 data_value（数组或单 obj），保留含 HR/RR/sleep_stage 的项。
+// extractVitalPoints 解析 monitor_stream 行的 data_value（数组或单 obj），保留含 HR/RR/sleep_stage 的项。
 func extractVitalPoints(rows []map[string]interface{}) []VitalPlaybackPoint {
 	out := make([]VitalPlaybackPoint, 0, len(rows))
 	for _, row := range rows {

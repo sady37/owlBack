@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"net/netip"
 	"strings"
 	"sync"
@@ -92,7 +91,7 @@ func NewDeviceSubscriptionManager(
 	logger *zap.Logger,
 	messageHandler MessageHandler, // MQTT消息处理器
 ) *DeviceSubscriptionManager {
-	mqttPublisher := publisher.NewMQTTPublisher(cfg, mqttClient)
+	mqttPublisher := publisher.NewMQTTPublisher(cfg, mqttClient, logger)
 	return &DeviceSubscriptionManager{
 		config:                   cfg,
 		mqttClient:               mqttClient,
@@ -137,31 +136,13 @@ func (m *DeviceSubscriptionManager) SetRadarService(radarService RadarService) {
 
 // Start 启动订阅管理器
 func (m *DeviceSubscriptionManager) Start(ctx context.Context) error {
-	log.Println("Starting device subscription manager...")
-
-	// 注意：不自动恢复已认证设备的MQTT订阅
-	// 原因：
-	// 1. 设备侧有自己的重连逻辑：如果 MQTT 连接失败，设备会重试；如果 10 分钟内无法连接，设备会重启
-	// 2. 设备会重新进行 HTTPS 认证，认证成功后服务端会订阅设备的 MQTT 主题
-	// 3. 服务重启时无法判断设备是什么时候断线的，如果设备已经断线很久，恢复订阅没有意义
-	// 4. 如果设备刚断线，设备会自己重连并重新认证，认证成功后服务端再订阅
-	// 因此，依赖设备重新认证来触发订阅，而不是在服务重启时自动恢复
-
-	// 启动心跳监测goroutine
 	m.wg.Add(1)
 	go m.heartbeatMonitor(ctx)
-
-	// 启动订阅续期goroutine
 	m.wg.Add(1)
 	go m.subscriptionRenewal(ctx)
-
-	// 启动设备健康检查goroutine（每10分钟检查一次）
 	m.wg.Add(1)
 	go m.healthCheckMonitor(ctx)
-
-	// 启动 1 分钟后检查 MQTT 队列、所有 func 并发布上线：由 mqtt_consumer.publishOnlineForConnectedAfterStartup 统一处理
-
-	log.Println("Device subscription manager started")
+	m.logger.Info("device subscription manager started")
 	return nil
 }
 
@@ -170,7 +151,7 @@ func (m *DeviceSubscriptionManager) Start(ctx context.Context) error {
 // 注意：wisefido-qinglan 只管理 Radar 设备，不管理 Sleepace 设备
 // 简化逻辑：不检查内存中的状态记录，直接从DB重新订阅所有已认证的 Radar 设备
 func (m *DeviceSubscriptionManager) restoreAuthenticatedDeviceSubscriptions(ctx context.Context) {
-	log.Println("Restoring MQTT subscriptions for authenticated Radar devices from database...")
+	m.logger.Info("restoring authenticated Radar subscriptions from db")
 
 	// v2: 已认证 Radar = dfm.device_type='Radar' AND devices.access=TRUE
 	// 注意：wisefido-qinglan 只管理 Radar 设备，Sleepace 设备由其他服务管理
@@ -184,10 +165,7 @@ func (m *DeviceSubscriptionManager) restoreAuthenticatedDeviceSubscriptions(ctx 
 
 	rows, err := m.db.QueryContext(ctx, query)
 	if err != nil {
-		m.logger.Error("Failed to query authenticated devices",
-			zap.Error(err),
-		)
-		log.Printf("❌ Failed to query authenticated devices: %v", err)
+		m.logger.Error("query authenticated devices", zap.Error(err))
 		return
 	}
 	defer rows.Close()
@@ -233,17 +211,15 @@ func (m *DeviceSubscriptionManager) restoreAuthenticatedDeviceSubscriptions(ctx 
 			// 订阅设备的6个MQTT主题（不使用通配符，仅订阅该设备的主题）
 			if m.mqttConsumer != nil {
 				if err := m.mqttConsumer.SubscribeDeviceTopics(uid); err != nil {
-					m.logger.Warn("Failed to restore device MQTT topics subscription",
+					m.logger.Warn("restore device MQTT topics subscription",
 						zap.String("device_uid", uid),
 						zap.Error(err),
 					)
-					log.Printf("⚠️ Failed to restore MQTT topics subscription for device %s: %v", uid, err)
 				} else {
-					m.logger.Info("Restored device MQTT topics subscription",
+					m.logger.Info("restored device MQTT topics subscription",
 						zap.String("device_uid", uid),
 						zap.String("device_id", id),
 					)
-					log.Printf("✅ Restored MQTT topics subscription for device %s", uid)
 				}
 			}
 
@@ -264,25 +240,21 @@ func (m *DeviceSubscriptionManager) restoreAuthenticatedDeviceSubscriptions(ctx 
 	}
 
 	if err := rows.Err(); err != nil {
-		m.logger.Error("Error iterating authenticated devices",
-			zap.Error(err),
-		)
-		log.Printf("❌ Error iterating authenticated devices: %v", err)
+		m.logger.Error("iterate authenticated devices", zap.Error(err))
 		return
 	}
-
-	log.Printf("✅ Restored subscription records for %d authenticated Radar devices (monitor command on first MQTT message)", restoredCount)
-	m.logger.Info("Restoring MQTT subscriptions for authenticated Radar devices",
+	m.logger.Info("restored subscriptions",
 		zap.Int("count", restoredCount),
+		zap.String("note", "monitor cmd sent on first mqtt message"),
 	)
 }
 
 // Stop 停止订阅管理器
 func (m *DeviceSubscriptionManager) Stop(ctx context.Context) error {
-	log.Println("Stopping device subscription manager...")
+	m.logger.Info("device subscription manager stopping")
 	close(m.stopChan)
 	m.wg.Wait()
-	log.Println("Device subscription manager stopped")
+	m.logger.Info("device subscription manager stopped")
 	return nil
 }
 
@@ -316,15 +288,13 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 				}
 				m.mu.Unlock()
 			}
-			log.Printf("Device %s already subscribed (valid until %v), updating subscription info", deviceUID, monitorSubTime.Add(m.monitorMaxAge))
-
-			// 注意：不在这里发送monitor订阅命令
-			// 参考wisefido-radar的实现：在收到设备的第一条MQTT消息时再发送（见UpdateLastSeen方法）
-			// 这样可以确保设备已经连接MQTT并准备好接收命令
+			m.logger.Debug("device already subscribed",
+				zap.String("device_uid", deviceUID),
+				zap.Time("valid_until", monitorSubTime.Add(m.monitorMaxAge)),
+			)
 			return nil
 		}
-		// 订阅即将过期，需要续订
-		log.Printf("Device %s subscription expiring soon, renewing...", deviceUID)
+		m.logger.Info("device subscription expiring, renewing", zap.String("device_uid", deviceUID))
 	}
 
 	// 注意：不在这里发送monitor订阅命令
@@ -342,13 +312,12 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 			if err := m.mqttConsumer.SubscribeDeviceTopics(deviceUID); err != nil {
 				subscribeErr = err
 				if i < maxRetries-1 {
-					m.logger.Info("MQTT subscription failed, retrying",
+					m.logger.Warn("MQTT subscription failed, retrying",
 						zap.String("device_uid", deviceUID),
 						zap.Int("retry", i+1),
 						zap.Int("max_retries", maxRetries),
 						zap.Error(err),
 					)
-					log.Printf("⚠️ MQTT subscription failed for device %s, retrying (%d/%d): %v", deviceUID, i+1, maxRetries, err)
 					time.Sleep(retryDelay)
 					continue
 				}
@@ -359,12 +328,11 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 		}
 
 		if subscribeErr != nil {
-			m.logger.Warn("Failed to subscribe device MQTT topics after retries",
+			m.logger.Warn("subscribe device MQTT topics after retries failed",
 				zap.String("device_uid", deviceUID),
 				zap.Int("retries", maxRetries),
 				zap.Error(subscribeErr),
 			)
-			log.Printf("⚠️ Failed to subscribe MQTT topics for device %s after %d retries: %v", deviceUID, maxRetries, subscribeErr)
 		} else {
 			m.logger.Info("Subscribed device MQTT topics",
 				zap.String("device_uid", deviceUID),
@@ -448,26 +416,20 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 		zap.Int("duration", m.defaultDuration),
 		zap.Int("content", m.defaultContent),
 	)
-	log.Printf("✅ Device subscription recorded for %s (device_id: %s). Sending monitor command.", deviceUID, deviceID)
-
-	// 立即发送 monitor 订阅命令（设备已经收到认证响应，应该很快会连接 MQTT）
-	// 使用 goroutine 异步发送，避免阻塞认证流程
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := m.mqttPublisher.SubscribeRealtimeData(ctx, deviceUID, m.defaultContent, m.defaultDuration); err != nil {
-			m.logger.Warn("Failed to send monitor subscription command after device subscription",
+			m.logger.Warn("send monitor subscription command failed",
 				zap.String("device_uid", deviceUID),
 				zap.String("device_id", deviceID),
 				zap.Error(err),
 			)
-			log.Printf("⚠️ Failed to send monitor subscription command to device %s: %v", deviceUID, err)
 		} else {
-			m.logger.Info("Sent monitor subscription command after device subscription",
+			m.logger.Info("sent monitor subscription command",
 				zap.String("device_uid", deviceUID),
 				zap.String("device_id", deviceID),
 			)
-			log.Printf("✅ Sent monitor subscription command to device %s", deviceUID)
 		}
 	}()
 
@@ -504,8 +466,7 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 			}
 			m.mu.Unlock()
 		}
-		log.Printf("Device %s re-authenticated, LastSeen reset, sending monitor with retry", deviceUID)
-		m.logger.Info("Device subscription record updated, LastSeen reset",
+		m.logger.Info("device re-authenticated, lastseen reset",
 			zap.String("device_uid", deviceUID),
 			zap.String("device_id", deviceID),
 		)
@@ -535,28 +496,22 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 	// 如果未订阅MQTT主题，则订阅
 	if !isMQTTSubscribed {
 		if m.mqttConsumer != nil {
-			log.Printf("Device %s MQTT topics not subscribed, subscribing now...", deviceUID)
 			if err := m.mqttConsumer.SubscribeDeviceTopics(deviceUID); err != nil {
-				m.logger.Warn("Failed to subscribe device MQTT topics",
+				m.logger.Warn("subscribe device mqtt topics",
 					zap.String("device_uid", deviceUID),
 					zap.Error(err),
 				)
-				log.Printf("⚠️ Failed to subscribe MQTT topics for device %s: %v", deviceUID, err)
-				// 继续创建订阅记录，即使订阅失败
 			} else {
-				m.logger.Info("Subscribed device MQTT topics",
-					zap.String("device_uid", deviceUID),
-				)
-				log.Printf("✅ Subscribed MQTT topics for device %s", deviceUID)
+				m.logger.Info("subscribed device mqtt topics", zap.String("device_uid", deviceUID))
 			}
 		}
 	} else {
-		log.Printf("Device %s MQTT topics already subscribed, skipping subscription", deviceUID)
-		m.logger.Info("Device MQTT topics already subscribed, skipping",
-			zap.String("device_uid", deviceUID),
-		)
+		m.logger.Debug("device mqtt topics already subscribed", zap.String("device_uid", deviceUID))
 	}
-	log.Printf("[AUTH_FLOW] uid=%s step=mqtt_topics_ready already_subscribed=%t", deviceUID, isMQTTSubscribed)
+	m.logger.Info("auth_flow mqtt_topics_ready",
+		zap.String("uid", deviceUID),
+		zap.Bool("already_subscribed", isMQTTSubscribed),
+	)
 
 	// 查询 device_type 和 tenant_id
 	deviceType := ""
@@ -618,17 +573,16 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 		zap.String("status", "online"),
 	)
 
-	m.logger.Info("Periodic subscription enabled, sending monitor command",
+	m.logger.Info("periodic subscription enabled",
 		zap.String("device_uid", deviceUID),
 		zap.String("device_id", deviceID),
+		zap.String("monitor_topic", monitorTopic),
+		zap.String("tenant_id", tenantID),
 		zap.Bool("mqtt_already_subscribed", isMQTTSubscribed),
 		zap.Time("monitor_sub_time", now),
 		zap.Int("duration", m.defaultDuration),
 		zap.Int("content", m.defaultContent),
 	)
-	log.Printf("✅ Periodic subscription enabled for %s (device_id: %s, MQTT already subscribed: %v). Sending monitor command.", deviceUID, deviceID, isMQTTSubscribed)
-	log.Printf("[AUTH_FLOW] uid=%s step=periodic_subscription_enabled device_id=%s monitor_topic=%s duration=%d content=%d tenant_id=%s",
-		deviceUID, deviceID, monitorTopic, m.defaultDuration, m.defaultContent, tenantID)
 
 	// 延迟重试发送 monitor 订阅命令：设备 auth 后需要时间连接 MQTT，立即发会丢失
 	go m.sendMonitorWithRetry(deviceUID, deviceID)
@@ -642,21 +596,24 @@ func (m *DeviceSubscriptionManager) sendMonitorWithRetry(deviceUID, deviceID str
 	delays := []time.Duration{3 * time.Second, 6 * time.Second, 12 * time.Second}
 	for i, delay := range delays {
 		time.Sleep(delay)
-		log.Printf("[AUTH_FLOW] uid=%s step=monitor_retry_attempt attempt=%d delay_seconds=%d", deviceUID, i, int(delay/time.Second))
+		m.logger.Debug("monitor retry attempt",
+			zap.String("uid", deviceUID),
+			zap.Int("attempt", i),
+			zap.Duration("delay", delay),
+		)
 
-		// 检查设备是否已经在发 monitor 数据（LastMonitorTime 非零 = 收到过 monitor 消息）
 		m.mu.RLock()
 		sub, exists := m.subscriptionsByUID[deviceUID]
 		m.mu.RUnlock()
 		if !exists {
-			log.Printf("⚠️ sendMonitorWithRetry: device %s no longer in subscription map, abort", deviceUID)
+			m.logger.Warn("monitor retry abort: device no longer in subscription map", zap.String("uid", deviceUID))
 			return
 		}
 		sub.mu.RLock()
 		hasMonitorData := !sub.LastMonitorTime.IsZero()
 		sub.mu.RUnlock()
 		if hasMonitorData {
-			log.Printf("✅ sendMonitorWithRetry: device %s already sending monitor data, no more retries", deviceUID)
+			m.logger.Info("monitor retry stopped: already receiving monitor data", zap.String("uid", deviceUID))
 			return
 		}
 
@@ -664,9 +621,17 @@ func (m *DeviceSubscriptionManager) sendMonitorWithRetry(deviceUID, deviceID str
 		err := m.mqttPublisher.SubscribeRealtimeData(ctx, deviceUID, m.defaultContent, m.defaultDuration)
 		cancel()
 		if err != nil {
-			log.Printf("⚠️ sendMonitorWithRetry[%d]: device %s failed: %v", i, deviceUID, err)
+			m.logger.Warn("monitor retry failed",
+				zap.String("uid", deviceUID),
+				zap.Int("attempt", i),
+				zap.Error(err),
+			)
 		} else {
-			log.Printf("✅ sendMonitorWithRetry[%d]: monitor command sent to %s (retry after %v)", i, deviceUID, delay)
+			m.logger.Info("monitor command sent",
+				zap.String("uid", deviceUID),
+				zap.Int("attempt", i),
+				zap.Duration("after", delay),
+			)
 		}
 	}
 }
@@ -1083,21 +1048,16 @@ func (m *DeviceSubscriptionManager) unsubscribeDevice(deviceUID string) {
 		sub.Status = "unsubscribed"
 		sub.mu.Unlock()
 
-		log.Printf("🚫 Device %s unsubscribed (180s no messages)", deviceUID)
-		m.logger.Info("Device status changed",
+		m.logger.Info("device unsubscribed (180s silence)",
 			zap.String("device_uid", deviceUID),
 			zap.String("old_status", "offline"),
 			zap.String("new_status", "unsubscribed"),
 		)
 
-		// 2. 取消MQTT订阅
 		if m.mqttConsumer != nil {
 			go func() {
 				m.mqttConsumer.UnsubscribeDeviceTopics(deviceUID)
-				log.Printf("✅ Unsubscribed MQTT topics for device %s", deviceUID)
-				m.logger.Info("Unsubscribed device MQTT topics",
-					zap.String("device_uid", deviceUID),
-				)
+				m.logger.Info("unsubscribed device mqtt topics", zap.String("device_uid", deviceUID))
 			}()
 		}
 
@@ -1166,13 +1126,12 @@ func (m *DeviceSubscriptionManager) renewSubscriptions(ctx context.Context) {
 				sub.mu.Lock()
 				sub.MonitorSubTime = now
 				sub.mu.Unlock()
-				m.logger.Info("Renewed monitor subscription command",
+				m.logger.Info("renewed monitor subscription",
 					zap.String("device_uid", deviceUID),
 					zap.String("device_id", deviceID),
 					zap.Duration("age", now.Sub(monitorSubTime)),
 					zap.Int("duration", m.defaultDuration),
 				)
-				log.Printf("✅ Renewed monitor subscription command for device %s (device_id: %s)", deviceUID, deviceID)
 			}
 		}
 	}
@@ -1339,10 +1298,9 @@ func (m *DeviceSubscriptionManager) SetTCPDeviceOnline(deviceUID, deviceID strin
 			m.subscriptionsByID[deviceID] = sub
 		}
 		m.mu.Unlock()
-		log.Printf("[TCP] device %s marked online in subscription manager", deviceUID)
+		m.logger.Info("tcp device online", zap.String("uid", deviceUID))
 	}
 
-	// Publish online status to Redis cardagg (same as MQTT devices)
 	if deviceID != "" && m.streamPublisher != nil {
 		var addrTCP netip.Addr
 		if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(context.Background(), deviceUID); dsErr == nil && dsi != nil {
@@ -1351,7 +1309,10 @@ func (m *DeviceSubscriptionManager) SetTCPDeviceOnline(deviceUID, deviceID strin
 		go m.streamPublisher.PublishDeviceStatus(context.Background(), addrTCP, deviceUID, "", map[string]int{
 			observation.FieldOffline: 0,
 		})
-		log.Printf("[TCP] published online status to cardagg: uid=%s deviceID=%s", deviceUID, deviceID)
+		m.logger.Info("tcp online published to cardagg",
+			zap.String("uid", deviceUID),
+			zap.String("device_id", deviceID),
+		)
 	}
 }
 
@@ -1365,11 +1326,10 @@ func (m *DeviceSubscriptionManager) SetTCPDeviceOffline(deviceUID string) {
 		sub.Status = "offline"
 		deviceID = sub.DeviceID
 		sub.mu.Unlock()
-		log.Printf("[TCP] device %s marked offline in subscription manager", deviceUID)
+		m.logger.Info("tcp device offline", zap.String("uid", deviceUID))
 	}
 	m.mu.Unlock()
 
-	// Publish offline status to Redis cardagg
 	if deviceID != "" && m.streamPublisher != nil {
 		var addrTCP netip.Addr
 		if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(context.Background(), deviceUID); dsErr == nil && dsi != nil {
@@ -1378,6 +1338,6 @@ func (m *DeviceSubscriptionManager) SetTCPDeviceOffline(deviceUID string) {
 		go m.streamPublisher.PublishDeviceStatus(context.Background(), addrTCP, deviceUID, "", map[string]int{
 			observation.FieldOffline: 1,
 		})
-		log.Printf("[TCP] published offline status to cardagg: uid=%s", deviceUID)
+		m.logger.Info("tcp offline published to cardagg", zap.String("uid", deviceUID))
 	}
 }

@@ -361,7 +361,7 @@ const (
 const (
 	// 厂家 HC2 协议允许（设备不会拒绝，但 TI 实测打不到）
 	RadarHrHardMin = 1   // 心率低阈值最小可设
-	RadarHrHardMax = 255 // 心率高阈值最大可设
+	RadarHrHardMax = 130// 心率高阈值最大可设
 	RadarRrHardMin = 1   // 呼吸低阈值最小可设
 	RadarRrHardMax = 100 // 呼吸高阈值最大可设
 
@@ -948,6 +948,7 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayNone,
 		},
 		{
+			// firmware pose=5 (Fall confirmed): pose=2 持续 fall_alarm_duration（30~90s）后 firmware 升级
 			AlarmType:  Fall,
 			IsEnabled:  intPtr(IsEnabledOn),
 			AlarmLevel: strPtr(AlarmLevelCrit),
@@ -957,6 +958,9 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
 		{
+			// SuspectedFall (pose=2) 不是 alarm 配置项 — 只入 event_log 供审计回放（Option C 2026-05-17）
+			// 保留此条目 IsEnabledOff + DisplayNone 是为了 alarm_config schema 完整性，
+			// 未来若想恢复 WARNING 告警，前端切换 IsEnabled 即可启用
 			AlarmType:      SuspectedFall,
 			IsEnabled:      intPtr(IsEnabledOff),
 			AlarmLevel:     strPtr(AlarmLevelWarn),
@@ -964,9 +968,10 @@ var DefaultAlarmSetting = struct {
 			DisplaySetting: DisplayNone,
 		},
 		{
+			// firmware pose=8 (SittingOnGround confirmed): 跌坐在地，临床紧急度等同 Fall → CRITICAL
 			AlarmType:  SittingOnGround,
 			IsEnabled:  intPtr(IsEnabledOn),
-			AlarmLevel: strPtr(AlarmLevelWarn),
+			AlarmLevel: strPtr(AlarmLevelCrit),
 			AlarmParams: map[string]interface{}{
 				ParamDurationSec: 90,
 			},
@@ -1214,19 +1219,26 @@ var Enter2OutMap = map[int]map[int]string{
 }
 
 // PoseMap type=2 姿态变化：[pose] → AlarmType
-// 报警映射独立于 protocol.go 的 PoseNumToDisplay（显示用途），
-// 此处根据业务语义映射：厂家 pose=2(SuspectedFall) 在 event topic 发出时
-// 已经过固件内部等待，应直接映射为 Fall alarm。
+// 报警映射独立于 protocol.go 的 PoseNumToDisplay（显示用途）。
+//
+// Per Option C (2026-05-17)：保留 firmware 的 suspected/confirmed 区分。
+// 厂家 pose=2/7 是 30~90s qualification 前的预警态，pose=5/8 是 confirmed；
+// server 端不再 collapse — Suspected* 只入 event_log 审计，confirmed 入 alarm_events。
+//
+// 当前 firmware 行为：30s 内的 SuspectedFall 根本不发 /event/，pose=2/7 只是 firmware 内部状态，
+// 在 /monitor/ 流 track.pose 可查。但 PoseMap 仍保留 SuspectedFall/SuspectedSittingOnGround 映射作
+// **未来兼容**——若 firmware 升级后改发 /event/ SuspectedFall，server 已就位，无需再改 decoder。
+// 见 memory firmware_fall_qualification。
 var PoseMap = map[int]string{
 	0:  Initialization,
 	1:  Walking,
-	2:  Fall, // 厂家 SuspectedFall → 我方 Fall
+	2:  SuspectedFall, // 当前 firmware 不发；保留映射为未来兼容（Option C）
 	3:  Sitting,
 	4:  Standing,
-	5:  Fall,
+	5:  Fall, // 厂家 pose=5，confirmed → event_log + alarm_events
 	6:  Lying,
-	7:  SittingOnGround,
-	8:  SittingOnGround,
+	7:  SuspectedSittingOnGround, // 当前 firmware 不发；保留映射为未来兼容（Option C）
+	8:  SittingOnGround,          // 厂家 pose=8，confirmed → event_log + alarm_events
 	9:  BedSitUp,
 	10: BedSitUp, // BedSitUpConfirm → BedSitUp
 	11: BedSitUp,

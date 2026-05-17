@@ -66,21 +66,21 @@ func (d *DeviceMeta) AddrStr() string  { return d.DeviceID }
 
 // CardMeta holds all device metadata for one card.
 //
-// CardID = cards.spatial_prefix INET CIDR；TenantID/TenantPref = /48 prefix CIDR；BedID/BedPref = /96 (active_bed) 或同 CardID。
+// CardID = cards.spatial_prefix INET CIDR；TenantID/TenantPref = /48 prefix CIDR；BedID/BedPref = /96 (bed) 或同 CardID。
 //
 // TenantID/BedID 兼容字段保留，值同 TenantPref/BedPref；老 caller 不必 rename。
 type CardMeta struct {
 	CardID     string                 // INET CIDR e.g. "fd00:0:3:111:3:101::/96"
 	TenantID   string                 // 兼容字段：== TenantPref
 	TenantPref string                 // /48 CIDR e.g. "fd00:0:3::/48"
-	CardType   string                 // "active_bed" | "unit" | "room" | "public" | ...
+	CardType   string                 // "bed" | "unit" | "room" | "public" | ...
 	BedID      string                 // 兼容字段：== BedPref
 	BedPref    string                 // 当 CardID 是 /96 时 == CardID；否则空
 	Devices    map[string]*DeviceMeta // key = device_addr canonical IPv6 string
 	dbLoaded   bool
 }
 
-func (m *CardMeta) IsActiveBedCard() bool { return m != nil && m.CardType == "active_bed" }
+func (m *CardMeta) IsBedCard() bool { return m != nil && m.CardType == "bed" }
 func (m *CardMeta) IsUnitCard() bool      { return m != nil && m.CardType == "unit" }
 
 // BedBoundDeviceAddrs 返回绑定到该卡床位（/96）下的设备 addr 列表。

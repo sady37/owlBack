@@ -31,7 +31,6 @@ type Config struct {
 	MQTT            MQTTConfig            `yaml:"mqtt"`
 	Radar           RadarConfig           `yaml:"radar"`
 	Qinglan         QinglanConfig         `yaml:"qinglan"`
-	IoTTimeSeries   IoTTimeSeriesConfig   `yaml:"iot_timeseries"`
 }
 
 // QinglanConfig wisefido-qinglan HTTP API 配置（雷达设备交互）
@@ -66,11 +65,6 @@ type MQTTConfig struct {
 // RadarConfig Radar 服务配置（用于调用 wisefido-radar 内部 API）
 type RadarConfig struct {
 	InternalAPIBaseURL string `yaml:"internal_api_base_url"` // wisefido-radar 内部 API 地址（如 "http://localhost:8443"）
-}
-
-// IoTTimeSeriesConfig IoT 时序数据服务配置（用于调用 wisefido-iot-timeseries 内部 API）
-type IoTTimeSeriesConfig struct {
-	InternalAPIBaseURL string `yaml:"internal_api_base_url"` // wisefido-iot-timeseries 内部 API 地址（如 "http://localhost:8083"）
 }
 
 func Load() *Config {
@@ -126,9 +120,6 @@ func (c *Config) setDefaults() {
 	if c.Radar.InternalAPIBaseURL == "" {
 		c.Radar.InternalAPIBaseURL = "http://localhost:8443"
 	}
-	if c.IoTTimeSeries.InternalAPIBaseURL == "" {
-		c.IoTTimeSeries.InternalAPIBaseURL = "http://localhost:8085"
-	}
 	if c.SleepaceGateway.APIBaseURL == "" {
 		c.SleepaceGateway.APIBaseURL = "http://127.0.0.1:8083"
 	}
@@ -164,7 +155,6 @@ func LoadFromEnv() *Config {
 	// 本机开发：wisefido-sleepace 默认 8083，与 sleepace-dev.yaml 一致；生产用 env 覆盖
 	cfg.SleepaceGateway.APIBaseURL = getEnv("SLEEPACE_GATEWAY_API_BASE_URL", "http://127.0.0.1:8083")
 	cfg.Qinglan.APIBaseURL = getEnv("QINGLAN_API_BASE_URL", "http://127.0.0.1:8081")
-	cfg.IoTTimeSeries.InternalAPIBaseURL = getEnv("IOT_TIMESERIES_INTERNAL_API_BASE_URL", "http://localhost:8085")
 	return cfg
 }
 

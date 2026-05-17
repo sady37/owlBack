@@ -78,8 +78,10 @@ func NewAlarmService(cfg *config.Config, logger *zap.Logger, tenantID string) (*
 
 	// 5. 创建 Evaluator 层
 	// PR1 (A11): evaluator 不再直插 alarm_events 表，改 publish 到 iot:alarm:stream
-	// 由 cardagg 统一持久化。alarmBackChannel 注入 redis client 即可。
-	alarmBackChannel := consumer.NewAlarmBackChannel(redisClient)
+	// 由 cardagg 统一持久化。alarmBackChannel 注入 redis client + identity 即可。
+	// 此处的 evaluator 是 wisefido-ai legacy alarm 路径（vital threshold 等），
+	// 未来移除；identity 取空 — Phase B 主路径在 cmd/main.go 的 zonealarm 那侧。
+	alarmBackChannel := consumer.NewAlarmBackChannel(redisClient, consumer.AgentIdentity{AgentName: "wisefido-sensor"})
 	eval := evaluator.NewEvaluator(
 		cfg,
 		db,

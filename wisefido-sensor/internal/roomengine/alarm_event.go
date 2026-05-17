@@ -13,6 +13,8 @@ package roomengine
 
 import (
 	"encoding/json"
+
+	"owl-common/alarm"
 )
 
 // RadarFallAlarm radar 固件直接发的 Fall 报警（来自 iot:alarm:stream）。
@@ -36,6 +38,7 @@ type RadarFallAlarm struct {
 	Pose      int    // EventItem.Pose（顶层；老数据从 event_payload.pose 兜底）
 	EventType int    // event_payload.event_type（仅历史数据；新数据无此字段，envelope.Category 已是事件类型权威）
 	Status    string // "start" / "end"
+	Category  string // envelope.Category：alarm.Fall / alarm.SuspectedFall / alarm.SittingOnGround / alarm.SuspectedSittingOnGround
 }
 
 // RadarTrackEvent radar 固件发的 EnterRoom/ExitRoom/InBed/LeftBed/NumberPeople（来自 iot:event:stream）。
@@ -60,14 +63,14 @@ type RadarTrackEvent struct {
 }
 
 // ParseRadarFallAlarm 解析 alarm:stream 或 event:stream 一条消息的 data_value 为 RadarFallAlarm 列表。
-// 接受 envelope.Category="Fall" 或 "SittingOnGround"。
+// 仅接受 confirmed 类 envelope.Category：alarm.Fall / alarm.SittingOnGround。
+// Suspected*（pose=2/7）由 engine 早返过滤掉（Option C 2026-05-17）— 它们只入 event_log，不进 verifier。
 //
-// 2026-05-15 起：qinglan publisher 把 radar firmware 直发的 Fall/SittingOnGround 改走 event stream
-// （cardagg_sensor_split.md gateway 分流），sensor.handleEventMessage 检测到这些 category 时
-// 调用本函数解析。alarm stream 路径仍兼容（producer="wisefido-sensor" 的派生 Fall 通过本函数
-// 不会进 verifier，因为派生 Fall 已是确认态，roomengine 内部不再二次评分）。
+// 2026-05-15 gateway 分流：qinglan 把 firmware 直发的 Fall/SittingOnGround 改走 event stream（见
+// cardagg_sensor_split.md），sensor.handleEventMessage 检测到 confirmed category 时调用本函数。
+// alarm stream 路径仍兼容（producer="wisefido-sensor" 的派生 Fall 不进 verifier，已是确认态）。
 func ParseRadarFallAlarm(dv interface{}, deviceUID, envelopeCat string, fallbackTs int64) []RadarFallAlarm {
-	if envelopeCat != "Fall" && envelopeCat != "SittingOnGround" {
+	if envelopeCat != alarm.Fall && envelopeCat != alarm.SittingOnGround {
 		return nil
 	}
 	arr := jsonArrayOfObjects(dv)
@@ -87,6 +90,7 @@ func ParseRadarFallAlarm(dv interface{}, deviceUID, envelopeCat string, fallback
 			Status:    st,
 			TrackID:   jsonInt(m["track_id"]),
 			Pose:      jsonInt(m["pose"]),
+			Category:  envelopeCat,
 		}
 		// 兼容历史 wire 数据（Plan B 前）：event_payload 嵌套 JSON 字符串。
 		// 顶层未取到值时才从 event_payload 兜底。
@@ -123,8 +127,8 @@ func ParseRadarTrackEvents(dv interface{}, deviceUID, envelopeCat string, fallba
 	// number_people（小写下划线）是 envelope 形式，统一规整成 EventName="NumberPeople" 便于内部判断。
 	canonical := envelopeCat
 	switch envelopeCat {
-	case "EnterRoom", "ExitRoom", "InBed", "LeftBed":
-	case "number_people", "NumberPeople":
+	case alarm.EnterRoom, alarm.ExitRoom, alarm.InBed, alarm.LeftBed:
+	case alarm.NumberPeople, "NumberPeople":
 		canonical = "NumberPeople"
 	default:
 		return nil

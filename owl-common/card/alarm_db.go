@@ -265,7 +265,7 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 		  $6, $7, $8, $9, $10,
 		  $11, $12,
 		  NULLIF($13, '')::INET, NULLIF($14, '')::UUID, NULLIF($15, '')::INET,
-		  NULLIF($16, ''), NULLIF($17, ''), NULLIF($18, ''),
+		  NULLIF($16, ''), NULLIF($17, ''), NULLIF($18, '')::INET,
 		  'active', $19::JSONB, $20::JSONB
 		)
 		RETURNING event_id::text, triggered_at
@@ -303,20 +303,24 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 	}, cas, nil
 }
 
-// QueryCardAlarmState 实时聚合：device_addr LPM 落在 cardID 内的 active alarms。
+// QueryCardAlarmState 实时聚合：**精确归属本卡** 的 active alarms（不 fan-out 到父卡）。
 //
-// cardID 为 cards.spatial_prefix CIDR 字符串；空时返回零状态。
-// 若 cardID 不是合法 INET（如旧 UUID 兼容路径），返回零状态而非报错。
+// 2026-05-16 修：旧实现用 `device_addr <<= cardID` prefix 匹配，导致 unit /80 卡聚合所有子卡
+// (room /88, bed /96) 设备的 alarms — 违反用户拍板「alarm 只在 card_id 精确匹配的卡上出现」。
+// 改用 `ae.card_id = cardID::INET` 精确匹配，依赖 InsertAlarmAndUpdateCard 在写入时由
+// cards GiST LPM 锁定的 ae.card_id 列值。
+//
+// cardID 为 cards.spatial_prefix CIDR 字符串；空 / 非法 INET 时返回零状态。
 func QueryCardAlarmState(ctx context.Context, db *sql.DB, cardID string) (*CardAlarmState, error) {
 	cas := &CardAlarmState{}
 	if cardID == "" {
 		return cas, nil
 	}
-	// 计数：按 alarm_level GROUP BY，仅 active
+	// 计数：按 alarm_level GROUP BY，仅 active；精确 card_id 匹配（不 fan-out）
 	rows, err := db.QueryContext(ctx, `
 		SELECT alarm_level, COUNT(*)
 		FROM alarm_events
-		WHERE device_addr <<= $1::INET
+		WHERE card_id = $1::INET
 		  AND alarm_status = 'active'
 		GROUP BY alarm_level
 	`, cardID)
@@ -346,7 +350,7 @@ func QueryCardAlarmState(ctx context.Context, db *sql.DB, cardID string) (*CardA
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// pop alarm：最高优先级 (level 数字最小) 的 active 行
+	// pop alarm：最高优先级 (level 数字最小) 的 active 行；精确 card_id 匹配
 	var popLvl int16
 	var popType string
 	var popEvent string
@@ -354,7 +358,7 @@ func QueryCardAlarmState(ctx context.Context, db *sql.DB, cardID string) (*CardA
 	err = db.QueryRowContext(ctx, `
 		SELECT alarm_level, event_type, event_id::text, triggered_at
 		FROM alarm_events
-		WHERE device_addr <<= $1::INET
+		WHERE card_id = $1::INET
 		  AND alarm_status = 'active'
 		ORDER BY alarm_level ASC, triggered_at DESC
 		LIMIT 1
@@ -442,7 +446,7 @@ func RecalcCardAlarmState(ctx context.Context, db *sql.DB, cardID, tenantID stri
 // DeviceSelfRecoveryAlarmTypes 设备恢复时需自动解除的报警类型。
 // Elder care 策略：仅设备类可自动恢复；非设备类必须人工确认。
 var DeviceSelfRecoveryAlarmTypes = []string{
-	"Offline", "DeviceFailure", "AngleException", "SignalPoor", "SensorDetached",
+	alarm.AlarmTypeOffline, alarm.AlarmTypeDeviceFailure, alarm.AngleException, alarm.SignalPoor, alarm.SensorDetached,
 }
 
 // AutoResolveResult 设备自恢复返回结果

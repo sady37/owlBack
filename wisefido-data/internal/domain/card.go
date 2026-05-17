@@ -18,7 +18,7 @@ import (
 type Card struct {
 	CardID        string         `db:"card_id"`        // UUID PK
 	SpatialPrefix string         `db:"spatial_prefix"` // INET CIDR 字符串（业务身份；mask 决定 card_type）
-	CardType      string         `db:"card_type"`      // 'tenant'|'branch'|'site'|'unit'|'public'|'room'|'active_bed'|'device'
+	CardType      string         `db:"card_type"`      // 'tenant'|'branch'|'site'|'unit'|'public'|'room'|'bed'|'device'
 	CardName      sql.NullString `db:"card_name"`
 	DNSShortName  sql.NullString `db:"dns_short_name"` // 永久 DNS 名，如 "u42-r03-b01.tenant1.owl"
 	ResidentID    sql.NullString `db:"resident_id"`    // INET HoA；NULL = 空床
@@ -42,7 +42,7 @@ type CardOverviewItem struct {
 	// 基础信息
 	CardID        string  `json:"card_id"`
 	SpatialPrefix string  `json:"spatial_prefix"`         // INET CIDR
-	CardType      string  `json:"card_type"`              // 'active_bed' | 'unit' | 'public' | ...
+	CardType      string  `json:"card_type"`              // 'bed' | 'unit' | 'public' | ...
 	CardName      string  `json:"card_name"`
 	DNSShortName  string  `json:"dns_short_name,omitempty"`
 	ResidentID    *string `json:"resident_id,omitempty"`

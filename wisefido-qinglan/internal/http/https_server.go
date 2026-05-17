@@ -6,8 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -26,19 +24,8 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/soheilhy/cmux"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
-
-// tlsErrorFilter 过滤 TLS handshake error 刷屏（外网扫描不信任自签名证书）
-type tlsErrorFilter struct {
-	w io.Writer
-}
-
-func (f *tlsErrorFilter) Write(p []byte) (n int, err error) {
-	if strings.Contains(string(p), "TLS handshake error") {
-		return len(p), nil
-	}
-	return f.w.Write(p)
-}
 
 // HTTPSServer HTTPS 服务器（用于设备认证）
 // 参考 wisefido-radar/internal/http/server.go 的实现
@@ -67,7 +54,7 @@ func NewHTTPSServer(
 	// Create firmware directory
 	fwDir := filepath.Join("..", "ota")
 	if err := os.MkdirAll(fwDir, 0755); err != nil {
-		log.Printf("Warning: failed to create firmware dir %s: %v", fwDir, err)
+		logger.Warn("create firmware dir", zap.String("dir", fwDir), zap.Error(err))
 	}
 
 	// Initialize TCP server for device connections (shares the HTTPS port via cmux)
@@ -136,9 +123,10 @@ func NewHTTPSServer(
 		return nil, fmt.Errorf("failed to load TLS certificate from %s: %w", certFile, err)
 	}
 	tlsConfig.Certificates = []tls.Certificate{cert}
-	log.Printf("Loaded TLS certificate: %s, key: %s", certFile, keyFile)
+	logger.Info("loaded tls cert", zap.String("cert", certFile), zap.String("key", keyFile))
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
+	tlsErrLogger, _ := zap.NewStdLogAt(logger.With(zap.String("comp", "http_tls")), zapcore.WarnLevel)
 	s := &http.Server{
 		Addr:              addr,
 		Handler:           router,
@@ -146,7 +134,7 @@ func NewHTTPSServer(
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
-		ErrorLog:          log.New(&tlsErrorFilter{w: os.Stderr}, "", 0),
+		ErrorLog:          tlsErrLogger,
 	}
 
 	return &HTTPSServer{
@@ -176,11 +164,10 @@ func (s *HTTPSServer) AuthService() *AuthService {
 
 // Start 启动 HTTPS 服务器 (cmux: TLS connections go to HTTPS, raw TCP to the TCP server)
 func (s *HTTPSServer) Start() error {
-	s.logger.Info("Starting HTTPS+TCP server (cmux)",
+	s.logger.Info("starting https+tcp server (cmux)",
 		zap.String("addr", s.server.Addr),
 		zap.Int("port", s.config.Port),
 	)
-	log.Printf("Starting HTTPS+TCP server (cmux) on %s", s.server.Addr)
 
 	// 必须使用 TLS，禁止回退到 HTTP
 	if s.server.TLSConfig == nil || len(s.server.TLSConfig.Certificates) == 0 {
@@ -206,17 +193,17 @@ func (s *HTTPSServer) Start() error {
 
 	// Start HTTPS server
 	go func() {
-		log.Printf("HTTPS server serving on %s (TLS via cmux)", s.server.Addr)
+		s.logger.Info("https serving on cmux", zap.String("addr", s.server.Addr))
 		if err := s.server.Serve(tlsListener); err != nil && err != http.ErrServerClosed {
-			log.Printf("HTTPS server error: %v", err)
+			s.logger.Warn("https server", zap.Error(err))
 		}
 	}()
 
 	// Start TCP server
 	go func() {
-		log.Printf("TCP server serving on %s (raw via cmux)", s.server.Addr)
+		s.logger.Info("tcp serving on cmux", zap.String("addr", s.server.Addr))
 		if err := s.tcpServer.Serve(tcpLn); err != nil {
-			log.Printf("TCP server error: %v", err)
+			s.logger.Warn("tcp server", zap.Error(err))
 		}
 	}()
 
@@ -238,30 +225,21 @@ type AuthHTTPSHandler struct {
 
 // handleAuth 处理设备认证请求
 func (h *AuthHTTPSHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
-	log.Printf("Received HTTPS auth request from %s", r.RemoteAddr)
-	if h.logger != nil {
-		h.logger.Info("http auth request",
-			zap.String("method", r.Method),
-			zap.String("path", r.URL.Path),
-			zap.String("remote_addr", r.RemoteAddr),
-			zap.String("x_forwarded_for", r.Header.Get("X-Forwarded-For")),
-		)
-	}
+	h.logger.Info("http auth request",
+		zap.String("method", r.Method),
+		zap.String("path", r.URL.Path),
+		zap.String("remote_addr", r.RemoteAddr),
+		zap.String("x_forwarded_for", r.Header.Get("X-Forwarded-For")),
+	)
 
 	var req models.AuthRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("Failed to decode auth request body: %v", err)
-		if h.logger != nil {
-			h.logger.Warn("http auth decode failed", zap.Error(err))
-		}
+		h.logger.Warn("http auth decode failed", zap.Error(err))
 		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("Processing HTTPS auth request for device UID: %s", req.UID)
-	if h.logger != nil {
-		h.logger.Info("http auth body decoded", zap.String("uid", req.UID), zap.Int("type", req.Type))
-	}
+	h.logger.Info("http auth body decoded", zap.String("uid", req.UID), zap.Int("type", req.Type))
 
 	ctx := r.Context()
 	remoteAddr := r.RemoteAddr
@@ -271,47 +249,28 @@ func (h *AuthHTTPSHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 
 	response, err := h.authService.AuthenticateDevice(ctx, &req, remoteAddr)
 	if err != nil {
-		log.Printf("Authentication failed for device %s: %v", req.UID, err)
-		if h.logger != nil {
-			h.logger.Error("http auth AuthenticateDevice error", zap.String("uid", req.UID), zap.Error(err))
-		}
+		h.logger.Error("http auth AuthenticateDevice", zap.String("uid", req.UID), zap.Error(err))
 		http.Error(w, fmt.Sprintf("Authentication failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("HTTPS authentication completed for device %s, response code: %d", req.UID, response.Code)
-	if h.logger != nil {
-		h.logger.Info("http auth response",
-			zap.String("uid", req.UID),
-			zap.Int("code", response.Code),
-			zap.String("msg", response.Msg),
-		)
-	}
-	
-	// 将响应序列化为 JSON 并原封不动地打印到 log（用于检查真实发送的信息）
-	responseJSON, err := json.MarshalIndent(response, "", "  ")
-	if err != nil {
-		log.Printf("⚠️ Failed to marshal response to JSON: %v", err)
-	} else {
-		log.Printf("📤 [HTTPS Response to Device] Complete JSON response for device %s:\n%s", req.UID, string(responseJSON))
-	}
-	
-	// 输出返回给设备的完整响应内容（用于调试）
+	h.logger.Info("http auth response",
+		zap.String("uid", req.UID),
+		zap.Int("code", response.Code),
+		zap.String("msg", response.Msg),
+	)
+
 	if response.Data != nil && response.Data.MQTT != nil {
-		log.Printf("📤 Returning auth response to device %s: msg=%s, code=%d, server=%s, port=%d, protocol=%s, prefix=%s, productId=%s, clientId=%s, account=%s",
-			req.UID,
-			response.Msg,
-			response.Code,
-			response.Data.MQTT.Server,
-			response.Data.MQTT.Port,
-			response.Data.MQTT.Protocol,
-			response.Data.MQTT.Prefix,
-			response.Data.MQTT.ProductID,
-			response.Data.MQTT.ClientID,
-			response.Data.MQTT.Account,
+		h.logger.Debug("https auth response payload",
+			zap.String("uid", req.UID),
+			zap.String("server", response.Data.MQTT.Server),
+			zap.Int("port", response.Data.MQTT.Port),
+			zap.String("protocol", response.Data.MQTT.Protocol),
+			zap.String("client_id", response.Data.MQTT.ClientID),
+			zap.String("account", response.Data.MQTT.Account),
 		)
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }

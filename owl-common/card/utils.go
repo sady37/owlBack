@@ -1,6 +1,10 @@
 package card
 
-import "strconv"
+import (
+	"strconv"
+
+	"owl-common/alarm"
+)
 
 // poseStringToInt 将 firmware pose 字符串转换为内部 int 编码。
 func poseStringToInt(pose string) int {
@@ -15,18 +19,18 @@ func poseStringToInt(pose string) int {
 	}
 
 	poseMap := map[string]int{
-		"Initialization":           0,
-		"Walking":                  1,
-		"SuspectedFall":            2,
-		"Sitting position":         3,
-		"Standing position":        4,
-		"Fall":                     5,
-		"Lying position":           6,
-		"SuspectedSittingOnGround": 7,
-		"SittingOnGround":          8,
-		"Sitting up in bed":        9,
-		"SuspectedBedSitUp":        10,
-		"BedSitUp":                 11,
+		alarm.Initialization:           0,
+		alarm.Walking:                  1,
+		alarm.SuspectedFall:            2,
+		"Sitting position":             3,
+		"Standing position":            4,
+		alarm.Fall:                     5,
+		"Lying position":               6,
+		alarm.SuspectedSittingOnGround: 7,
+		alarm.SittingOnGround:          8,
+		"Sitting up in bed":            9,
+		alarm.SuspectedBedSitUp:        10,
+		alarm.BedSitUp:                 11,
 	}
 
 	if v, ok := poseMap[pose]; ok {

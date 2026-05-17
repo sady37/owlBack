@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 
@@ -105,13 +104,6 @@ func (m *Manager) PushToDevice(req PushRequest) PushResult {
 		return PushResult{UID: req.UID, Success: false, Message: err.Error()}
 	}
 
-	if otaReq.ESPFileUrl != "" {
-		log.Printf("[OTA] ESP push: UID=%s ver=%s url=%s size=%d sha256=%s", req.UID, otaReq.Espsfver, otaReq.ESPFileUrl, otaReq.ESPFileSize, otaReq.ESPFileSHA256)
-	}
-	if otaReq.RadarFileUrl != "" {
-		log.Printf("[OTA] Radar push: UID=%s ver=%s url=%s size=%d sha256=%s", req.UID, otaReq.Radarsfver, otaReq.RadarFileUrl, otaReq.RadarFileSize, otaReq.RadarFileSHA256)
-	}
-	log.Printf("[OTA] OTA push sent: UID=%s ESP=%s Radar=%s", req.UID, req.EspFirmware, req.RadarFirmware)
 	return PushResult{UID: req.UID, Success: true, Message: "OTA push sent"}
 }
 

@@ -510,36 +510,47 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 		}
 	}
 
-	// 算 device owning card
-	// merge mode 判定改用 siblingCardExists（DB 实际同辈卡），避免 single-card 视图全合并：
-	//   bed-anchor device：DB 有 /96 bed card → 归 bed；否则 → 归 /80 unit
-	//   room-anchor device：room.activeBed==1 → 吸收到 sole bed；否则 DB 有 /88 room card → 归 room；否则 → 归 /80 unit
+	// 算 device owning card — 与 card_reconcile.go 2026-05-17 新规则一致：
+	//
+	//   bed-anchor device:
+	//     DB 有 /96 bed card  → 归 /96
+	//     else DB 有 /88 room card → 归 /88   ⭐ (room absorb bed 新规则)
+	//     else                → 归 /80 unit
+	//
+	//   room-anchor device:
+	//     DB 有 /88 room card → 归 /88   (room=1+hasRoomDev: /88 absorb bed)
+	//     else 有 sole /96 bed → 归 /96   (room=1, no roomDev: /96 absorb room)
+	//     else                → 归 /80 unit  (bed=0 case 上推)
+	//
+	//   unit-anchor device:
+	//     归 /80 unit
+	//
 	// 最终 owning 必须命中 cardByPrefix 才写入（保留"只填本批次卡的 Devices"）。
 	deviceMap := map[string][]commoncard.DeviceInfo{} // card prefix → []DeviceInfo
 	deviceRoomSet := map[string]map[string]bool{}     // card prefix → distinct room set (用于 unit-card coverage_label)
 	for _, dr := range devs {
 		owning := ""
-		// 1. bed anchor — DB 存在 /96 bed card → 归该卡；否则上推 /80 unit
-		if dr.bedAnchor != "" {
-			if siblingCardExists[dr.bedAnchor] {
+		switch {
+		case dr.bedAnchor != "":
+			roomPrefix := narrowPrefixToRoom(dr.bedAnchor)
+			switch {
+			case siblingCardExists[dr.bedAnchor]:
 				owning = dr.bedAnchor
-			} else if dr.unitAnchor != "" {
+			case roomPrefix != "" && siblingCardExists[roomPrefix]:
+				owning = roomPrefix
+			default:
 				owning = dr.unitAnchor
 			}
-		} else if dr.roomAnchor != "" {
-			// 2. room anchor — 看 room 内 active_bed_count
-			if roomBedCount[dr.roomAnchor] == 1 {
-				// 吸收到唯一 bed
-				owning = roomSoleBed[dr.roomAnchor]
-			} else if siblingCardExists[dr.roomAnchor] {
-				// /88 room card 存在
+		case dr.roomAnchor != "":
+			switch {
+			case siblingCardExists[dr.roomAnchor]:
 				owning = dr.roomAnchor
-			} else {
-				// 兜底到 /80 unit
+			case roomBedCount[dr.roomAnchor] == 1:
+				owning = roomSoleBed[dr.roomAnchor]
+			default:
 				owning = dr.unitAnchor
 			}
-		} else if dr.unitAnchor != "" {
-			// 3. unit anchor
+		case dr.unitAnchor != "":
 			owning = dr.unitAnchor
 		}
 		if owning == "" {

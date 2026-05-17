@@ -12,7 +12,18 @@
 # env 覆盖：AI_PUBLISH_MODE / AI_SOURCE（env 名暂保留兼容；下个 PR 改 SENSOR_PUBLISH_MODE / SENSOR_SOURCE）
 ai_publish:
   mode: "log&publish"
-  source: "sensor.caregiver01"
+  # source 进 envelope.Producer，必 INET 格式（alarm_events.producer 列是 INET 类型）。
+  # 与下方 identity.ipv6 同值；display 用途见 wire fields["source"]。
+  source: "fd00:0:fff1::1"
+
+# Platform agent IPv6 身份（per owlBack/doc/platform_agent_addressing.md）
+# 启动时优先级：ENV(SENSOR_IPV6/SENSOR_UID) > config.yaml > 默认 fd00:0:fff1::1。
+# UID 派生规则（uuid_v5）：
+#   uid = uuid_v5(NAMESPACE=8d52a4c3-1d28-516a-86df-6e6b1b3f6e6e, "wisefido-sensor:" + ipv6)
+# 派生后写入 .env 固化；改 IPv6 必须同步 regenerate UID，否则历史 trace 链断。
+identity:
+  ipv6: "fd00:0:fff1::1"
+  uid:  "a893ff12-7d72-58dc-a26c-ce724e6007da"
 
 database:
   host: "localhost"

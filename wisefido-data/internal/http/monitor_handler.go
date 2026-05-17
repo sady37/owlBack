@@ -88,12 +88,6 @@ func (h *MonitorHandler) GetCards(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, Fail("card service not available"))
 		return
 	}
-	h.logger.Info("[API] GetCards request",
-		zap.String("user_id", currentUserID),
-		zap.String("tenant_id", tenantID),
-		zap.String("role", claimedUserRole),
-		zap.Int("page", page),
-		zap.Int("pageSize", pageSize))
 	cards, pagination, err := h.cardService.GetCardList(ctx, tenantID, currentUserID, claimedUserRole, branchIDs, page, pageSize)
 	if err != nil {
 		h.logger.Error("GetCardList failed", zap.String("user_id", currentUserID), zap.Error(err))
@@ -103,12 +97,16 @@ func (h *MonitorHandler) GetCards(w http.ResponseWriter, r *http.Request) {
 	if pagination == nil {
 		pagination = &models.BackendPagination{}
 	}
-	// 打印返回的 card_id 列表
+	// 单行 Info 带请求 + 响应字段（不再 dual-log entry/exit）
 	cardIDs := make([]string, len(cards))
 	for i, c := range cards {
 		cardIDs[i] = c.CardID
 	}
-	h.logger.Info("[API] GetCards response",
+	h.logger.Info("[API] GetCards",
+		zap.String("user_id", currentUserID),
+		zap.String("role", claimedUserRole),
+		zap.Int("page", page),
+		zap.Int("page_size", pageSize),
 		zap.Int("count", len(cards)),
 		zap.Strings("card_ids", cardIDs))
 	writeJSON(w, http.StatusOK, Ok(map[string]interface{}{
@@ -129,16 +127,14 @@ func (h *MonitorHandler) GetCardInfo(w http.ResponseWriter, r *http.Request, car
 		writeJSON(w, http.StatusOK, Fail("card service not available"))
 		return
 	}
-	h.logger.Info("[API] GetCardInfo request",
-		zap.String("user_id", currentUserID),
-		zap.String("card_id", cardID))
 	card, err := h.cardService.GetCardInfo(ctx, tenantID, currentUserID, cardID)
 	if err != nil {
 		h.logger.Error("[API] GetCardInfo failed", zap.String("card_id", cardID), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-	h.logger.Info("[API] GetCardInfo response",
+	h.logger.Info("[API] GetCardInfo",
+		zap.String("user_id", currentUserID),
 		zap.String("card_id", cardID),
 		zap.Bool("found", card != nil))
 	writeJSON(w, http.StatusOK, Ok(card))
@@ -324,9 +320,6 @@ func (h *MonitorHandler) GetCardsByCardIDs(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	h.logger.Info("[API] GetCardsByCardIDs request",
-		zap.String("user_id", currentUserID),
-		zap.Strings("card_ids", body.CardIDs))
 	cards, err := h.cardService.GetCardsByCardIDs(ctx, tenantID, currentUserID, body.CardIDs)
 	if err != nil {
 		h.logger.Error("[API] GetCardsByCardIDs failed", zap.String("user_id", currentUserID), zap.Error(err))
@@ -340,7 +333,9 @@ func (h *MonitorHandler) GetCardsByCardIDs(w http.ResponseWriter, r *http.Reques
 	for i, c := range cards {
 		retIDs[i] = c.CardID
 	}
-	h.logger.Info("[API] GetCardsByCardIDs response",
+	h.logger.Info("[API] GetCardsByCardIDs",
+		zap.String("user_id", currentUserID),
+		zap.Strings("requested_ids", body.CardIDs),
 		zap.Int("requested", len(body.CardIDs)),
 		zap.Int("returned", len(cards)),
 		zap.Strings("returned_ids", retIDs))

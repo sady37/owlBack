@@ -2,9 +2,10 @@ package tcp
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Server TCP server for V2 qinglan device connections
@@ -25,13 +26,22 @@ func NewServer(serverAddr string, serverPort uint32) *Server {
 	}
 }
 
+// SetLogger injects the zap logger into the underlying SessionManager and frame handlers.
+func (s *Server) SetLogger(logger *zap.Logger) {
+	s.Sessions.SetLogger(logger)
+}
+
 // Serve accepts connections from a listener (cmux mode)
 func (s *Server) Serve(listener net.Listener) error {
-	log.Printf("[TCP] TCP OTA server started, dispatch addr: %s:%d", s.ServerAddr, s.ServerPort)
+	lg := s.Sessions.logger
+	lg.Info("tcp ota server started",
+		zap.String("dispatch_addr", s.ServerAddr),
+		zap.Uint32("dispatch_port", s.ServerPort),
+	)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Printf("[TCP] accept connection failed: %v", err)
+			lg.Warn("tcp accept", zap.Error(err))
 			continue
 		}
 		go s.handleConnection(conn)
@@ -39,12 +49,13 @@ func (s *Server) Serve(listener net.Listener) error {
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
+	lg := s.Sessions.logger
 	defer func() {
 		uid := s.Sessions.GetUIDByConn(conn)
 		s.Sessions.Disconnect(conn)
 		conn.Close()
 		if uid != "" {
-			log.Printf("[TCP] connection closed: UID=%s", uid)
+			lg.Info("tcp connection closed", zap.String("uid", uid))
 		}
 	}()
 
@@ -55,11 +66,17 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 
 	if firstFrame.Type != TypeGetServer && firstFrame.Type != TypeRegister {
-		log.Printf("[TCP] invalid first frame type=%d, closing: %s", firstFrame.Type, conn.RemoteAddr())
+		lg.Warn("tcp invalid first frame",
+			zap.Uint8("type", firstFrame.Type),
+			zap.String("remote", conn.RemoteAddr().String()),
+		)
 		return
 	}
 
-	log.Printf("[TCP] new connection: %s (first frame type=%d)", conn.RemoteAddr(), firstFrame.Type)
+	lg.Info("tcp new connection",
+		zap.String("remote", conn.RemoteAddr().String()),
+		zap.Uint8("first_type", firstFrame.Type),
+	)
 	s.Sessions.UpdateHeartbeat(conn)
 	HandleFrame(conn, firstFrame, s.Sessions, s.ServerAddr, s.ServerPort, s.OnProgress, s.OnRegister)
 
@@ -79,7 +96,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		if err != nil {
 			uid := s.Sessions.GetUIDByConn(conn)
 			if uid != "" {
-				log.Printf("[TCP] disconnect: UID=%s reason=%v", uid, err)
+				lg.Info("tcp disconnect", zap.String("uid", uid), zap.Error(err))
 			}
 			return
 		}

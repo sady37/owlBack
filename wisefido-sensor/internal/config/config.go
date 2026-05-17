@@ -30,7 +30,6 @@ type Config struct {
 		IoTStream struct {
 			Enabled       bool   `yaml:"enabled"`
 			Monitor       string `yaml:"monitor"`
-			Stat          string `yaml:"stat"`
 			Event         string `yaml:"event"`
 			Alarm         string `yaml:"alarm"`
 			ConsumerGroup string `yaml:"consumer_group"`
@@ -47,6 +46,22 @@ type Config struct {
 	RoomEngine RoomEngineConfig `yaml:"roomengine"`
 
 	AIPublish AIPublishConfig `yaml:"ai_publish"`
+
+	Identity IdentityConfig `yaml:"identity"`
+}
+
+// IdentityConfig — wisefido-sensor 进程的 platform agent IPv6 身份（v2 第一次落地）。
+//
+// 权威 doc：owlBack/doc/platform_agent_addressing.md
+// 派生规则：uid = uuid_v5(spatial.PlatformAgentNamespace, "wisefido-sensor:" + ipv6)
+//
+// 启动行为：
+//   - 优先级 ENV(SENSOR_IPV6/SENSOR_UID) > config.yaml > 默认值
+//   - 必须显式 pin（写 .env 或 yaml），避免 IPv6 重新分配后 UID 漂移导致历史 trace 断链
+//   - 若 UID 不匹配 IPv6 派生值，启动 log WARN 但不 fail（dev 友好；生产应监控）
+type IdentityConfig struct {
+	IPv6 string `yaml:"ipv6"` // /128 IPv6 地址，slot fd00:0:fff1::/48
+	UID  string `yaml:"uid"`  // uuid_v5 派生，写 .env 固化（见 doc §3.2）
 }
 
 // AIPublishConfig 控制 AI 派生 event/alarm 的发布行为。
@@ -196,9 +211,6 @@ func (c *Config) setDefaults() {
 	if c.Alarm.IoTStream.Monitor == "" {
 		c.Alarm.IoTStream.Monitor = "iot:monitor:stream"
 	}
-	if c.Alarm.IoTStream.Stat == "" {
-		c.Alarm.IoTStream.Stat = "iot:stat:stream"
-	}
 	if c.Alarm.IoTStream.Event == "" {
 		c.Alarm.IoTStream.Event = "iot:event:stream"
 	}
@@ -222,6 +234,24 @@ func (c *Config) setDefaults() {
 	}
 	c.setRoomEngineDefaults()
 	c.setAIPublishDefaults()
+	c.setIdentityDefaults()
+}
+
+// setIdentityDefaults — wisefido-sensor 的 platform agent IPv6 + UID。
+// ENV > yaml > 默认；详见 IdentityConfig 注释。
+func (c *Config) setIdentityDefaults() {
+	id := &c.Identity
+	if v := os.Getenv("SENSOR_IPV6"); v != "" {
+		id.IPv6 = v
+	}
+	if v := os.Getenv("SENSOR_UID"); v != "" {
+		id.UID = v
+	}
+	if id.IPv6 == "" {
+		id.IPv6 = "fd00:0:fff1::1" // slot SlotSensor 默认 node-1
+	}
+	// UID 不在此 default 派生——交给 main.go 用 owl-common spatial.DerivePlatformUID
+	// 校验/补全，便于 import cycle 解耦（config 包不依赖 owl-common）。
 }
 
 func (c *Config) setAIPublishDefaults() {
@@ -384,7 +414,6 @@ func LoadFromEnv() (*Config, error) {
 	cfg.Alarm.Evaluation.BatchSize = 10
 	cfg.Alarm.IoTStream.Enabled = getEnv("AI_IOT_STREAM_ENABLED", "true") == "true"
 	cfg.Alarm.IoTStream.Monitor = getEnv("AI_STREAM_MONITOR", "iot:monitor:stream")
-	cfg.Alarm.IoTStream.Stat = getEnv("AI_STREAM_STAT", "iot:stat:stream")
 	cfg.Alarm.IoTStream.Event = getEnv("AI_STREAM_EVENT", "iot:event:stream")
 	cfg.Alarm.IoTStream.Alarm = getEnv("AI_STREAM_ALARM", "iot:alarm:stream")
 	cfg.Alarm.IoTStream.ConsumerGroup = getEnv("AI_IOT_CONSUMER_GROUP", "wisefido-alarm-events")

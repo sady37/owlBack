@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"wisefido-sensor/internal/config"
 	"wisefido-sensor/internal/consumer"
@@ -13,11 +15,53 @@ import (
 	"wisefido-sensor/internal/zoneengine/wiring"
 
 	logpkg "owl-common/logger"
+	"owl-common/spatial"
 
 	_ "github.com/lib/pq"
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
+
+// sensorAgentIdentity 解析 wisefido-sensor 进程的 platform agent IPv6 + UID
+// 身份，校验 UID 与 IPv6 派生值一致（不一致 log WARN 但不 fail，dev 友好）。
+//
+// 详见 owlBack/doc/platform_agent_addressing.md §3。
+func sensorAgentIdentity(cfg *config.Config, logger *zap.Logger) consumer.AgentIdentity {
+	const agentName = "wisefido-sensor"
+	id := consumer.AgentIdentity{AgentName: agentName}
+
+	ipv6Str := strings.TrimSpace(cfg.Identity.IPv6)
+	if ipv6Str == "" {
+		logger.Warn("platform identity ipv6 empty; envelope.producer will be NULL — pin SENSOR_IPV6 in .env",
+			zap.String("agent", agentName))
+		return id
+	}
+	addr, err := netip.ParseAddr(ipv6Str)
+	if err != nil {
+		logger.Warn("platform identity ipv6 invalid; envelope.producer will be NULL",
+			zap.String("agent", agentName), zap.String("ipv6", ipv6Str), zap.Error(err))
+		return id
+	}
+	id.IPv6 = addr
+
+	// 校验 UID（如已配置）与派生值一致；不一致 warn（pin 错了别静默漂移）
+	derived, derr := spatial.DerivePlatformUID(agentName, addr.String())
+	if derr != nil {
+		logger.Warn("platform identity UID derivation failed", zap.Error(derr))
+	} else if pinned := strings.TrimSpace(cfg.Identity.UID); pinned != "" && pinned != derived.String() {
+		logger.Warn("platform identity UID mismatch — pinned .env value differs from derived value",
+			zap.String("pinned", pinned), zap.String("derived", derived.String()),
+			zap.String("hint", "regenerate via spatial.DerivePlatformUID and update .env / config.yaml"))
+	} else if pinned == "" {
+		logger.Info("platform identity UID not pinned; using derived value (please pin in .env)",
+			zap.String("derived", derived.String()))
+	}
+	logger.Info("platform identity wired",
+		zap.String("agent", agentName),
+		zap.String("ipv6", addr.String()),
+		zap.String("uid", derived.String()))
+	return id
+}
 
 func main() {
 	// 1. 加载配置
@@ -77,7 +121,7 @@ func main() {
 			DB:            engineDB,
 			Redis:         engineRedis,
 			MonitorBuffer: monitorBuf,
-			BackChannel:   consumer.NewAlarmBackChannel(engineRedis),
+			BackChannel:   consumer.NewAlarmBackChannel(engineRedis, sensorAgentIdentity(cfg, logger)),
 			Logger:        logger,
 		})
 		if err != nil {

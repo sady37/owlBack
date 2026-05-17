@@ -3,7 +3,6 @@ package subscriber
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/netip"
 	"os"
 	"strconv"
@@ -13,7 +12,6 @@ import (
 	"owl-common/alarm"
 	"owl-common/observation"
 	"owl-common/redis"
-	"wisefido-qinglan/internal/consumer"
 
 	"go.uber.org/zap"
 )
@@ -47,7 +45,7 @@ func (m *DeviceSubscriptionManager) healthCheckMonitor(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
 
-	log.Println("Device health check monitor started")
+	m.logger.Info("device health check monitor started")
 
 	for {
 		select {
@@ -184,8 +182,12 @@ func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, devic
 	m.validateDeviceHealth(health, deviceUID)
 
 	if health.SignalPoor == 1 || health.AngleAbnormal == 1 {
-		log.Printf("⚠️ Device %s health: signal_poor=%d(rssi=%d) angle_abnormal=%d",
-			deviceUID, health.SignalPoor, health.WifiRSSI, health.AngleAbnormal)
+		m.logger.Warn("device health degraded",
+			zap.String("device_uid", deviceUID),
+			zap.Int("signal_poor", health.SignalPoor),
+			zap.Int("rssi", health.WifiRSSI),
+			zap.Int("angle_abnormal", health.AngleAbnormal),
+		)
 	}
 
 	// 按 iot:alarm:stream 标准格式：每个 status 一条 alarm，category/eventName 用 dataCategoryFromFieldAndValue 的准确值。
@@ -258,6 +260,17 @@ func (m *DeviceSubscriptionManager) publishHealthIfChanged(ctx context.Context, 
 	}
 	m.prevHealth[deviceUID] = prev
 	m.mu.Unlock()
+
+	state := "recover"
+	if value == 1 {
+		state = "fail"
+	}
+	m.logger.Info("device health transition",
+		zap.String("device_uid", deviceUID),
+		zap.String("field", fieldKey),
+		zap.String("state", state),
+		zap.Bool("first_observation", !initialized),
+	)
 
 	m.publishDeviceAlarm(ctx, tenantID, deviceID, deviceUID, fieldKey, value)
 }
@@ -367,8 +380,14 @@ func (m *DeviceSubscriptionManager) validateDeviceHealth(health *DeviceHealthSta
 
 	x, y, z, calibrated := m.parseAccelerator(health.AcceleraRaw)
 	if os.Getenv("QINGLAN_VERBOSE_LOG") == "true" {
-		log.Printf("[HEALTH_DEBUG] device=%s accelera=%q install_style=%d x=%.2f y=%.2f calibrated=%v",
-			deviceUID, health.AcceleraRaw, health.InstallStyle, x, y, calibrated)
+		m.logger.Debug("health accelera",
+			zap.String("device", deviceUID),
+			zap.String("accelera", health.AcceleraRaw),
+			zap.Int("install_style", health.InstallStyle),
+			zap.Float64("x", x),
+			zap.Float64("y", y),
+			zap.Bool("calibrated", calibrated),
+		)
 	}
 	if !calibrated {
 		// V == 0，未校准
@@ -469,7 +488,11 @@ func toIntFromInterface(v interface{}) int {
 // fieldKey：observation 字段（FieldOffline/FieldSignalPoor/FieldAngleAbnormal/FieldDetached）。
 func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tenantID, deviceID, deviceUID, fieldKey string, value int) {
 	if m.streamPublisher == nil {
-		log.Printf("⚠️ publishDeviceAlarm: streamPublisher is nil, device=%s field=%s value=%d", deviceUID, fieldKey, value)
+		m.logger.Warn("publishDeviceAlarm: stream publisher nil",
+			zap.String("device_uid", deviceUID),
+			zap.String("field", fieldKey),
+			zap.Int("value", value),
+		)
 		return
 	}
 	tid := strings.TrimSpace(tenantID)
@@ -481,7 +504,11 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 	}
 	eventName := dataCategoryFromFieldAndValue(fieldKey, value)
 	if eventName == "" {
-		log.Printf("⚠️ publishDeviceAlarm: empty eventName, device=%s field=%s value=%d", deviceUID, fieldKey, value)
+		m.logger.Warn("publishDeviceAlarm: empty event name",
+			zap.String("device_uid", deviceUID),
+			zap.String("field", fieldKey),
+			zap.Int("value", value),
+		)
 		return
 	}
 	cid := m.streamPublisher.GetCardID(ctx, deviceUID)
@@ -494,10 +521,15 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 		m.logger.Warn("publishDeviceAlarm: invalid device_addr for device", zap.String("device_uid", deviceUID))
 		return
 	}
-	// 健康检查触发的衍生告警（Offline/SignalPoor/AngleException 类）— 落 iot:alarm:stream
-	// 后立刻被 wisefido-iot 写 iot_timeseries，这里再打日志冗余。仅 verbose 时回放。
 	if os.Getenv("QINGLAN_VERBOSE_LOG") == "true" {
-		log.Printf("📢 publishDeviceAlarm: device=%s field=%s value=%d event=%s cid=%s addr=%s", deviceUID, fieldKey, value, eventName, cid, addr.String())
+		m.logger.Debug("publishDeviceAlarm",
+			zap.String("device", deviceUID),
+			zap.String("field", fieldKey),
+			zap.Int("value", value),
+			zap.String("event", eventName),
+			zap.String("cid", cid),
+			zap.String("addr", addr.String()),
+		)
 	}
 	ts := time.Now().UnixMilli()
 	eventStatus := "start"
@@ -530,13 +562,13 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 		if err := m.streamPublisher.PublishAlarm(ctx, msg); err != nil {
 			m.logger.Warn("Failed to publish device alarm", zap.String("event_name", eventName), zap.String("device_uid", deviceUID), zap.Error(err))
 		} else {
-			consumer.QinglanHotPathLog(m.logger, "Published device alarm → iot:alarm:stream", zap.String("device_uid", deviceUID), zap.String("event_name", eventName), zap.String("field", fieldKey), zap.Int("value", value))
+			m.logger.Debug("Published device alarm → iot:alarm:stream", zap.String("device_uid", deviceUID), zap.String("event_name", eventName), zap.String("field", fieldKey), zap.Int("value", value))
 		}
 	} else {
 		if err := m.streamPublisher.PublishEvent(ctx, msg); err != nil {
 			m.logger.Warn("Failed to publish device event", zap.String("event_name", eventName), zap.String("device_uid", deviceUID), zap.Error(err))
 		} else {
-			consumer.QinglanHotPathLog(m.logger, "Published device event → iot:event:stream", zap.String("device_uid", deviceUID), zap.String("event_name", eventName), zap.String("field", fieldKey), zap.Int("value", value))
+			m.logger.Debug("Published device event → iot:event:stream", zap.String("device_uid", deviceUID), zap.String("event_name", eventName), zap.String("field", fieldKey), zap.Int("value", value))
 		}
 	}
 }

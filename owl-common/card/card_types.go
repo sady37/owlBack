@@ -127,7 +127,7 @@ type ResidentInfo struct {
 }
 
 // CardStatic 卡片静态+动态视图（v2：基于 cards 表 + LPM 实时查询，非 JSONB snapshot）
-// CardType v2 枚举：'tenant'|'branch'|'site'|'unit'|'public'|'room'|'active_bed'|'device'
+// CardType v2 枚举：'tenant'|'branch'|'site'|'unit'|'public'|'room'|'bed'|'device'
 type CardStatic struct {
 	// 基础信息（cards 表权威）
 	CardID        string `json:"card_id"`
@@ -301,14 +301,14 @@ type CardStatus struct {
 // ========== v2 Card Type 枚举（与 cards.card_type CHECK 一致） ==========
 
 const (
-	CardTypeTenant    = "tenant"     // /48
-	CardTypeBranch    = "branch"     // /56
-	CardTypeSite      = "site"       // /64
-	CardTypeUnit      = "unit"       // /80
-	CardTypePublic    = "public"     // /80 公共区域
-	CardTypeRoom      = "room"       // /88
-	CardTypeActiveBed = "active_bed" // /96 ⭐ 最常见
-	CardTypeDevice    = "device"     // /128 fallback
+	CardTypeTenant = "tenant" // /48
+	CardTypeBranch = "branch" // /56
+	CardTypeSite   = "site"   // /64
+	CardTypeUnit   = "unit"   // /80
+	CardTypePublic = "public" // /80 公共区域
+	CardTypeRoom   = "room"   // /88
+	CardTypeBed    = "bed"    // /96 ⭐ 居住空间最细层
+	CardTypeDevice = "device" // /128 fallback
 )
 
 // MasklenForCardType v2 cards.card_type ↔ masklen 强绑定（CHECK 约束）
@@ -324,7 +324,7 @@ func MasklenForCardType(cardType string) int {
 		return 80
 	case CardTypeRoom:
 		return 88
-	case CardTypeActiveBed:
+	case CardTypeBed:
 		return 96
 	case CardTypeDevice:
 		return 128
@@ -332,7 +332,7 @@ func MasklenForCardType(cardType string) int {
 	return 0
 }
 
-// CardTypeForMasklen 反向解析（/96 默认为 active_bed；/80 默认为 unit；调用方按业务自选 public）
+// CardTypeForMasklen 反向解析（/96 默认 bed；/80 默认 unit；调用方按业务自选 public）
 func CardTypeForMasklen(masklen int) string {
 	switch masklen {
 	case 48:
@@ -346,7 +346,7 @@ func CardTypeForMasklen(masklen int) string {
 	case 88:
 		return CardTypeRoom
 	case 96:
-		return CardTypeActiveBed
+		return CardTypeBed
 	case 128:
 		return CardTypeDevice
 	}

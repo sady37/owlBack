@@ -464,13 +464,14 @@ func (c *CardDB) RoomIdentifiersForCard(ctx context.Context, tenantID, cardID st
 }
 
 // UpdateDeviceStoreReportedVersion 设备上报固件版本时：更新 device_runtime_state.firmware_version。
+// 返回 changed=true 表示版本真的写入了；false 表示与当前一致 no-op（caller 据此决定是否 Info-log）。
 // v2: firmware_version 已从 device_store 迁出到 device_runtime_state；OTA target 字段独立到 device_ota 表。
-func (c *CardDB) UpdateDeviceStoreReportedVersion(ctx context.Context, deviceKey, reportedVersion string) error {
+func (c *CardDB) UpdateDeviceStoreReportedVersion(ctx context.Context, deviceKey, reportedVersion string) (changed bool, err error) {
 	if deviceKey == "" || reportedVersion == "" {
-		return nil
+		return false, nil
 	}
 	var currentFirmware sql.NullString
-	err := c.db.QueryRowContext(ctx, `
+	err = c.db.QueryRowContext(ctx, `
 		SELECT drs.firmware_version
 		FROM device_factory_meta dfm
 		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
@@ -480,16 +481,16 @@ func (c *CardDB) UpdateDeviceStoreReportedVersion(ctx context.Context, deviceKey
 	`, deviceKey).Scan(&currentFirmware)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("query device_factory_meta: %w", err)
+		return false, fmt.Errorf("query device_factory_meta: %w", err)
 	}
 	current := ""
 	if currentFirmware.Valid {
 		current = currentFirmware.String
 	}
 	if current == reportedVersion {
-		return nil
+		return false, nil
 	}
 	_, err = c.db.ExecContext(ctx, `
 		INSERT INTO device_runtime_state (device_id, firmware_version, updated_at)
@@ -500,7 +501,7 @@ func (c *CardDB) UpdateDeviceStoreReportedVersion(ctx context.Context, deviceKey
 		ON CONFLICT (device_id) DO UPDATE SET firmware_version = EXCLUDED.firmware_version, updated_at = NOW()
 	`, reportedVersion, deviceKey)
 	if err != nil {
-		return fmt.Errorf("update device_runtime_state version: %w", err)
+		return false, fmt.Errorf("update device_runtime_state version: %w", err)
 	}
-	return nil
+	return true, nil
 }

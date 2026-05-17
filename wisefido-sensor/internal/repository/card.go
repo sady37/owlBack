@@ -47,7 +47,7 @@ type CardInfo struct {
 // v2CardTypeToV1 v2 lowercase → v1 PascalCase（caller 既有 == "ActiveBedCard" 比较保留）
 func v2CardTypeToV1(v2 string) string {
 	switch v2 {
-	case "active_bed":
+	case "bed":
 		return "ActiveBedCard"
 	case "unit":
 		return "UnitCard"

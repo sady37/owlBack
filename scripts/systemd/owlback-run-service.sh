@@ -70,6 +70,27 @@ owlback_go_exec() {
   if [[ "$stale" -eq 0 ]] && find "$dir" -name '*.go' -newer "$bin" -print -quit 2>/dev/null | grep -q .; then
     stale=1
   fi
+  # 跨 module stale-check：解析 go.mod 的 `replace xxx => ../yyy` 本地依赖
+  # （e.g. wisefido-cardagg 依赖 ../owl-common；owl-common 改了 cardagg 也要重建）
+  if [[ "$stale" -eq 0 && -f "$dir/go.mod" ]]; then
+    local replace_targets
+    replace_targets=$(awk '
+      /^replace[[:space:]]+/ {
+        for (i=1;i<=NF;i++) if ($i=="=>") { print $(i+1); break }
+      }
+    ' "$dir/go.mod")
+    local target resolved
+    for target in $replace_targets; do
+      # 只处理本地相对路径（以 . 或 / 开头）
+      [[ "$target" =~ ^(\.|/) ]] || continue
+      resolved="$dir/$target"
+      [[ -d "$resolved" ]] || continue
+      if find "$resolved" -name '*.go' -newer "$bin" -print -quit 2>/dev/null | grep -q .; then
+        stale=1
+        break
+      fi
+    done
+  fi
   if [[ "$stale" -eq 1 ]]; then
     go build -o "$bin" "$build_pkg"
   fi
@@ -107,25 +128,11 @@ case "$MODULE" in
     owlback_go_exec "$OWLBACK/wisefido-sleepace" "./cmd/wisefido-sleepace" "wisefido-sleepace" "$LOG_DIR/wisefido-sleepace.log" -env dev
     ;;
   wisefido-iot)
-    export HTTP_ADDR="${HTTP_ADDR:-:8085}"
     export REDIS_DB="${REDIS_DB:-0}"
     export STREAM_IOT_MONITOR="${STREAM_IOT_MONITOR:-iot:monitor:stream}"
-    export STREAM_IOT_STAT="${STREAM_IOT_STAT:-iot:stat:stream}"
     export STREAM_IOT_EVENT="${STREAM_IOT_EVENT:-iot:event:stream}"
-    export STREAM_IOT_ALARM="${STREAM_IOT_ALARM:-iot:alarm:stream}"
-    export STREAM_IOT_AUTH="${STREAM_IOT_AUTH:-iot:auth:stream}"
-    export STREAM_RADAR_MONITOR="${STREAM_RADAR_MONITOR:-iot:monitor:stream}"
-    export STREAM_RADAR_STAT="${STREAM_RADAR_STAT:-iot:stat:stream}"
-    export STREAM_RADAR_EVENT="${STREAM_RADAR_EVENT:-iot:event:stream}"
-    export STREAM_RADAR_ALARM="${STREAM_RADAR_ALARM:-iot:alarm:stream}"
-    export STREAM_RADAR_AUTH="${STREAM_RADAR_AUTH:-iot:auth:stream}"
-    export STREAM_SLEEPACE_MONITOR="${STREAM_SLEEPACE_MONITOR:-iot:monitor:stream}"
-    export STREAM_SLEEPACE_STAT="${STREAM_SLEEPACE_STAT:-iot:stat:stream}"
-    export STREAM_SLEEPACE_EVENT="${STREAM_SLEEPACE_EVENT:-iot:event:stream}"
-    export STREAM_SLEEPACE_ALARM="${STREAM_SLEEPACE_ALARM:-iot:alarm:stream}"
-    export STREAM_SLEEPACE_AUTH="${STREAM_SLEEPACE_AUTH:-iot:auth:stream}"
-    export CONSUMER_GROUP="${CONSUMER_GROUP:-iot-timeseries-group}"
-    export CONSUMER_NAME="${CONSUMER_NAME:-iot-timeseries-1}"
+    export CONSUMER_GROUP="${CONSUMER_GROUP:-wisefido-iot}"
+    export CONSUMER_NAME="${CONSUMER_NAME:-wisefido-iot-1}"
     owlback_go_exec "$OWLBACK/wisefido-iot" "./cmd/wisefido-iot" "wisefido-iot" "$LOG_DIR/wisefido-iot.log"
     ;;
   wisefido-sensor)

@@ -20,6 +20,8 @@ package roomengine
 import (
 	"encoding/json"
 	"strconv"
+
+	"owl-common/alarm"
 )
 
 // SleepadObservation 一帧 sleepad 观测（与 radar TrackFrame 平行）
@@ -118,9 +120,9 @@ func ParseSleepadBedEvents(dv interface{}, deviceUID, envelopeCat string, fallba
 	}
 	var isInBed bool
 	switch envelopeCat {
-	case "InBed":
+	case alarm.InBed:
 		isInBed = true
-	case "LeftBed":
+	case alarm.LeftBed:
 		isInBed = false
 	default:
 		return nil

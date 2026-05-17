@@ -1,3 +1,35 @@
+// card_reconcile.go — Card 表唯一权威写入入口（v2 收敛）。
+//
+// 调用方（业务事件触发）：
+//   - device on/off（新增/绑定/解绑）
+//   - resident create/update/delete/transfer
+//   - 启动时全量 reconcile（一 tenant 一次）
+//
+// 责任：让 cards 表与 (devices, residents) 当前真相对齐 + Redis CloudEvent 通知下游
+// （cardagg / sensor / device-gateway 各订配置流），失败重试由下次 reconcile 兜底。
+//
+// Split 规则（user 拍板 2026-05-17）：
+//
+//	Unit 层：
+//	  bed > 1   → split: 进 Room 层 + (有 device 上推 unit 时) 1 张 /80
+//	  bed ≤ 1   → merge: 仅 1 张 /80 unit card (room + bed device 全装这一张)
+//
+//	Room 层（仅 Unit split 时进入）— 按 (bedN, hasRoomDevice) 二维：
+//	  bed > 1 + hasRoomDev → /88 room + N /96 bed
+//	  bed > 1, no roomDev  → N /96 bed only       (room 内无设备 LPM 到 /88)
+//	  bed = 1 + hasRoomDev → /88 room (absorb bed)
+//	  bed = 1, no roomDev  → /96 bed (absorb room)
+//	  bed = 0 + hasRoomDev → 不建，device 上推 unit
+//	  bed = 0, no roomDev  → 跳过
+//
+//	Unit card 存在条件（split 模式下）：
+//	  有 device 上推 unit (bed=0+hasRoomDev room 或 unit-level /80 anchor) → 出 unit
+//	  否则 → 不建 unit card (empty unit card 必删，Step 3 DELETE 兜底)
+//
+// IPv6 LPM 设计要点：/88 mask 仅检高字节，:300: 与 :301: 同高字节 0x03 同落 /88；
+// 故 bed-level :301: 设备能 LPM 命中 /88 room card。
+// 若 /96 bed card 也存在（bedN>1），longer prefix wins，bed 设备精确落 /96。
+
 package service
 
 import (
@@ -13,44 +45,15 @@ import (
 	"go.uber.org/zap"
 )
 
-// ReconcileCards — Card 表唯一写入入口（v2 收敛）。
-//
-// 业务事件（device on/off / resident create/update/delete / startup）都调它，幂等。
-//
-// 规则：
-//
-//	1) Card EXISTS 的条件：scope 内有 device 绑到 unit/room/bed 且 monitoring_enabled=TRUE
-//	2) Card.resident_id ⟺ LPM(resident_unit active, masklen ≥ 80) — /48/56 哨兵不算占用
-//	3) Card.card_name ⟺ resident.nickname / "NoOne"
-//
-// Private unit 规则（单向阀：merge → split 不可逆，split 后增减都保持 split）：
-//
-//	初始 (cards 中无 /96):
-//	  bedCount == 0 + 有 non-bed device → 1 张 /80
-//	  bedCount == 1 → merge: 1 张 /80（bed 与 non-bed device 都在这一张）
-//	  bedCount >= 2 → 触发 split: 每 bed 一张 /96 + 1 张 /80
-//
-//	已 split (cards 中 /96 数 >= 1):
-//	  bedCount >= 1 → 持续 split: 每 bed /96 + /80（即使减到 1 bed 也不合并回 merge）
-//	  bedCount == 0 → 只剩 /80（如有 non-bed device），/96 全删
-//
-// 单向阀语义来源：split 后再合并回 merge 会让原本独立的 bed card 消失 → 下游 DDNS/cardagg
-// 缓存失效。卡稳定 > 拓扑精确。判定依赖 cards 表当前状态（非纯函数；接受路径依赖）。
-//
-// Share/Public unit 不应用这套规则：device anchor 自然层级 (/96 /88 /80) → 自然 card 集合。
-//
-// ACL **不**由本函数维护 — per-request 现场算（scope.go）。
-//
-// 事务：独立 tx；reconcile 失败仅 log warn，调用方业务 tx 不回滚（下次 reconcile 自愈）。
-// scope: INET CIDR 任意级。
-func (s *CardSyncService) ReconcileCards(ctx context.Context, scopePrefix string) error {
+// ReconcileCards 入口；scope=INET CIDR (/48 tenant / /80 unit 任意级)。
+func (s *CardSyncService) ReconcileCards(ctx context.Context, scope string) error {
 	if s.db == nil {
 		s.logger.Debug("ReconcileCards skipped (db not wired)")
 		return nil
 	}
-	scopePrefix = strings.TrimSpace(scopePrefix)
-	if scopePrefix == "" {
-		return fmt.Errorf("scopePrefix required")
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return fmt.Errorf("scope required")
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -59,10 +62,63 @@ func (s *CardSyncService) ReconcileCards(ctx context.Context, scopePrefix string
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// === Step 1: 算 expected ===
-	// 1a) 每个 monitor-on device 反推 (unit_prefix, anchor_prefix)
-	//     anchor 优先级: bed > room > unit；同时记下 unit 用于 Layer 2 聚合
-	expRows, err := tx.QueryContext(ctx, `
+	expected, err := buildExpected(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
+	current, err := loadCurrent(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
+	diffs, err := s.applyDiffs(ctx, tx, expected, current)
+	if err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	s.logger.Info("ReconcileCards done",
+		zap.String("scope", scope),
+		zap.Int("expected", len(expected)),
+		zap.Int("current_before", len(current)),
+		zap.Int("diffs", len(diffs)))
+
+	if s.reconcileObserver != nil {
+		s.reconcileObserver(scope, diffs)
+	}
+	s.emitDiffs(ctx, scope, diffs)
+	s.ensureDDNSForExpected(ctx, scope, expected)
+	return nil
+}
+
+// ============================================================================
+// Step 1 — 算 expected
+// ============================================================================
+
+type unitInfo struct {
+	bedAnchors    map[string]bool // /96 anchors
+	nonBedAnchors map[string]bool // /80 or /88 anchors
+}
+
+// buildExpected 查 device 反推 unit anchors，per unit 应用 split 规则。
+func buildExpected(ctx context.Context, tx *sql.Tx, scope string) (map[string]bool, error) {
+	units, err := queryUnitAnchors(ctx, tx, scope)
+	if err != nil {
+		return nil, err
+	}
+	expected := map[string]bool{}
+	for unitPrefix, info := range units {
+		applyUnitSplitRule(unitPrefix, info, expected)
+	}
+	return expected, nil
+}
+
+// queryUnitAnchors scope 内每 monitor-on device 取 (unit_prefix, anchor_prefix)；
+// anchor 优先 bed > room > unit。
+func queryUnitAnchors(ctx context.Context, tx *sql.Tx, scope string) (map[string]*unitInfo, error) {
+	rows, err := tx.QueryContext(ctx, `
 		SELECT DISTINCT
 		  (SELECT u.unit_id::text FROM units u WHERE d.device_ipv6 <<= u.unit_id LIMIT 1) AS unit_prefix,
 		  COALESCE(
@@ -73,21 +129,17 @@ func (s *CardSyncService) ReconcileCards(ctx context.Context, scopePrefix string
 		  FROM devices d
 		 WHERE d.monitoring_enabled = TRUE
 		   AND d.device_ipv6 <<= $1::INET
-	`, scopePrefix)
+	`, scope)
 	if err != nil {
-		return fmt.Errorf("query expected: %w", err)
+		return nil, fmt.Errorf("query device anchors: %w", err)
 	}
-	// 按 unit 聚合：每 unit 收集所有 bed/non-bed anchors
-	type unitInfo struct {
-		bedAnchors    map[string]bool // /96 anchors
-		nonBedAnchors map[string]bool // /80 /88 anchors (room or unit-level device)
-	}
+	defer rows.Close()
+
 	units := map[string]*unitInfo{}
-	for expRows.Next() {
+	for rows.Next() {
 		var unitPrefix, anchor sql.NullString
-		if err := expRows.Scan(&unitPrefix, &anchor); err != nil {
-			_ = expRows.Close()
-			return fmt.Errorf("scan expected: %w", err)
+		if err := rows.Scan(&unitPrefix, &anchor); err != nil {
+			return nil, fmt.Errorf("scan device anchors: %w", err)
 		}
 		if !unitPrefix.Valid || unitPrefix.String == "" || !anchor.Valid || anchor.String == "" {
 			continue
@@ -103,386 +155,424 @@ func (s *CardSyncService) ReconcileCards(ctx context.Context, scopePrefix string
 			u.nonBedAnchors[anchor.String] = true
 		}
 	}
-	_ = expRows.Close()
-	if err := expRows.Err(); err != nil {
-		return fmt.Errorf("iter expected: %w", err)
+	return units, rows.Err()
+}
+
+// applyUnitSplitRule 把一个 unit 的 split 决策结果写入 expected。
+func applyUnitSplitRule(unitPrefix string, info *unitInfo, expected map[string]bool) {
+	bedCount := len(info.bedAnchors)
+	hasNonBed := len(info.nonBedAnchors) > 0
+	if bedCount == 0 && !hasNonBed {
+		return
 	}
 
-	// 1b) Layer 2 — 分层 split 规则（按 unit / room 两级递归 activeBed > 1 判定）
-	//
-	// **决策规则**（已与用户对齐 2026-05-13）：
-	//
-	//   Layer-1 Unit：
-	//     unit 内 activeBed > 1 → split:
-	//       - 进 Layer-2 计算 room 归宿
-	//       - 若 unit 内有 "Room 之外的 device"（即 device 在 activeBed=0 room 或 unit 层），出 1 张 unitCard
-	//     unit 内 activeBed ≤ 1 → merge:
-	//       - 仅 1 张 /80 unit card，装所有 device（bed + room + unit 层）
-	//
-	//   Layer-2 Room（仅在 Unit split 时进入）:
-	//     room 内 activeBed > 1 → split:
-	//       - N 张 /96 bed card（每 active bed 一张）
-	//       - 若 room 内有 room-level device（byte11=0，无 bed 绑定），出 1 张 /88 roomCard
-	//     room 内 activeBed = 1 → /96 bed card 吸收所有 room 内 device（room radar 也归入）
-	//     room 内 activeBed = 0 → 不出 roomCard，device 上推到 Layer-1 unitCard
-	//
-	// **单向阀**: split 仅由 activeBed > 1 触发；activeBed ≤ 1 时永远 merge（取消旧的 alreadySplit latching）。
-	//             已存在的 split 同级卡：新设备磁吸进同级卡（不重建结构）。
-	expected := map[string]bool{}
-	for unitPrefix, info := range units {
-		bedCount := len(info.bedAnchors)
-		hasNonBed := len(info.nonBedAnchors) > 0
-		if bedCount == 0 && !hasNonBed {
-			continue
-		}
+	// Merge mode
+	if bedCount <= 1 {
+		expected[unitPrefix] = true
+		return
+	}
 
-		// Merge mode：unit 内 activeBed ≤ 1 → 1 张 /80 unit card
-		if bedCount <= 1 {
-			expected[unitPrefix] = true
-			continue
-		}
-
-		// Split mode (activeBed > 1) — 每 active bed 必出 /96
-		for a := range info.bedAnchors {
-			expected[a] = true
-		}
-
-		// 算每 room 内 active_bed_count
-		roomBedCount := map[string]int{}
-		for bedPrefix := range info.bedAnchors {
-			roomPrefix := narrowPrefixToRoom(bedPrefix)
-			if roomPrefix != "" {
-				roomBedCount[roomPrefix]++
+	// Split mode — 算 per-room bed count + per-room 是否有 room-level device
+	roomBeds := map[string]map[string]bool{} // room /88 → set of bed /96 prefixes
+	for bed := range info.bedAnchors {
+		if room := narrowPrefixToRoom(bed); room != "" {
+			if roomBeds[room] == nil {
+				roomBeds[room] = map[string]bool{}
 			}
+			roomBeds[room][bed] = true
 		}
-
-		// L2/L1: 决定每个 non-bed anchor 归宿
-		needUnitCard := false
-		for anchor := range info.nonBedAnchors {
-			switch {
-			case strings.HasSuffix(anchor, "/88"):
-				// room-level device
-				switch {
-				case roomBedCount[anchor] >= 2:
-					// activeBed > 1 → room 自己 split + 出 /88 roomCard 装 room-level device
-					expected[anchor] = true
-				case roomBedCount[anchor] == 1:
-					// 唯一 bed 吸收 — 不创建 /88 room card；device 归该 bed card
-				default:
-					// activeBed = 0 → 不出 /88，device 上推到 unitCard
-					needUnitCard = true
-				}
-			default:
-				// /80 直挂 device → /80 unit card 出现
-				needUnitCard = true
-			}
-		}
-		if needUnitCard {
-			expected[unitPrefix] = true
+	}
+	roomHasDev := map[string]bool{}
+	for anchor := range info.nonBedAnchors {
+		if strings.HasSuffix(anchor, "/88") {
+			roomHasDev[anchor] = true
 		}
 	}
 
-	// === Step 2: current — scope 内现有 cards (prefix + resident_id + card_name) ===
-	// 多查 resident_id 和 card_name 用于 diff 判定 admission/discharge/transfer/name_changed
-	curRows, err := tx.QueryContext(ctx, `
+	// 集合所有需决策的 room
+	rooms := map[string]bool{}
+	for r := range roomBeds {
+		rooms[r] = true
+	}
+	for r := range roomHasDev {
+		rooms[r] = true
+	}
+
+	needUnit := false
+	for room := range rooms {
+		beds := roomBeds[room]
+		bedN := len(beds)
+		hasDev := roomHasDev[room]
+
+		switch {
+		case bedN > 1 && hasDev:
+			// /88 room + 每 bed /96
+			expected[room] = true
+			for b := range beds {
+				expected[b] = true
+			}
+		case bedN > 1 && !hasDev:
+			// 仅 N /96
+			for b := range beds {
+				expected[b] = true
+			}
+		case bedN == 1 && hasDev:
+			// /88 room (absorb bed)
+			expected[room] = true
+		case bedN == 1 && !hasDev:
+			// /96 bed (absorb room)
+			for b := range beds {
+				expected[b] = true
+			}
+		case bedN == 0 && hasDev:
+			// device 上推 unit
+			needUnit = true
+		}
+	}
+
+	// /80 unit-level device → unit card 必须
+	for anchor := range info.nonBedAnchors {
+		if !strings.HasSuffix(anchor, "/88") {
+			needUnit = true
+		}
+	}
+
+	if needUnit {
+		expected[unitPrefix] = true
+	}
+	// else: split 模式下无 device 上推 → 不建 unit card；applyDiffs DELETE 兜底清旧 empty unit。
+}
+
+// ============================================================================
+// Step 2 — 加载 current
+// ============================================================================
+
+type currentCard struct {
+	residentID string
+	cardName   string
+}
+
+func loadCurrent(ctx context.Context, tx *sql.Tx, scope string) (map[string]currentCard, error) {
+	rows, err := tx.QueryContext(ctx, `
 		SELECT spatial_prefix::text, COALESCE(host(resident_id), ''), COALESCE(card_name, '')
 		  FROM cards
 		 WHERE spatial_prefix <<= $1::INET
-	`, scopePrefix)
+	`, scope)
 	if err != nil {
-		return fmt.Errorf("query current: %w", err)
+		return nil, fmt.Errorf("query current cards: %w", err)
 	}
-	type currentCard struct {
-		residentID string
-		cardName   string
-	}
-	current := map[string]currentCard{}
-	for curRows.Next() {
+	defer rows.Close()
+	out := map[string]currentCard{}
+	for rows.Next() {
 		var p, rid, name string
-		if err := curRows.Scan(&p, &rid, &name); err != nil {
-			_ = curRows.Close()
-			return fmt.Errorf("scan current: %w", err)
+		if err := rows.Scan(&p, &rid, &name); err != nil {
+			return nil, fmt.Errorf("scan current card: %w", err)
 		}
-		current[p] = currentCard{residentID: rid, cardName: name}
+		out[p] = currentCard{residentID: rid, cardName: name}
 	}
-	_ = curRows.Close()
-	if err := curRows.Err(); err != nil {
-		return fmt.Errorf("iter current: %w", err)
-	}
+	return out, rows.Err()
+}
 
-	// === Step 3: diff & DELETE 多余 ===
-	// 同时记录 diff，commit 后 emit CloudEvent 给下游（device_gateway / wisefido-sensor / cardagg）
+// ============================================================================
+// Step 3 — DELETE 多余 + UPSERT 缺失/变更
+// ============================================================================
+
+func (s *CardSyncService) applyDiffs(ctx context.Context, tx *sql.Tx, expected map[string]bool, current map[string]currentCard) ([]cardDiff, error) {
 	diffs := []cardDiff{}
 
-	toDelete := []string{}
+	// DELETE: current 里 expected 没有的卡
 	for p, cur := range current {
-		if !expected[p] {
-			toDelete = append(toDelete, p)
-			diffs = append(diffs, cardDiff{prefix: p, op: "delete", prevHoA: cur.residentID})
-		}
-	}
-	for _, p := range toDelete {
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM cards WHERE spatial_prefix = $1::INET`, p); err != nil {
-			return fmt.Errorf("delete card %s: %w", p, err)
-		}
-	}
-
-	// === Step 4: INSERT 缺失 + Step 5: overlay resident_id/card_name（合并在一个 UPSERT）===
-	// 对 expected 集合每个 prefix：
-	//   - 查 LPM resident_unit active @ masklen>=80 → resident_id（可空）
-	//   - 查 residents.nickname → card_name（resident_id 为空时 "NoOne"）
-	//   - INSERT ... ON CONFLICT DO UPDATE
-	//   - 同时记录 diff（create / admission / discharge / transfer / name_changed）
-	for p := range expected {
-		var residentID sql.NullString
-		// 两阶段 overlay：
-		//   1) LPM 双向 overlap：card prefix 与 ru.spatial_prefix 任一包含对方
-		//      处理 Private unit /80 找子级 resident，或 bed card 找父级 unit resident
-		//   2) Unit fallback：若阶段 1 找不到，看该 card 所在 /80 unit 内是否唯一 active resident
-		//      命中此 fallback 的常见场景：Private unit 1 个 resident 但绑在 /96 specific bed，
-		//      同 unit 的其他 room/bathroom cards (/88) 与 bed prefix 不在同一 prefix 树 → LPM 单点找不到
-		//      此 fallback 保证 "Private unit 整 unit 归一人" 语义（不需 unit_type 分支即可成立）；
-		//      Share unit 多 resident 时 fallback 不命中（cnt != 1），保持 NoOne
-		_ = tx.QueryRowContext(ctx, `
-			SELECT COALESCE(
-			  -- 阶段 1: LPM 双向 overlap
-			  (SELECT host(ru.resident_id)
-			     FROM resident_unit ru
-			    WHERE ru.valid_to IS NULL
-			      AND ($1::INET <<= ru.spatial_prefix OR ru.spatial_prefix <<= $1::INET)
-			      AND masklen(ru.spatial_prefix) >= 80
-			    ORDER BY masklen(ru.spatial_prefix) DESC
-			    LIMIT 1),
-			  -- 阶段 2: unit-level fallback — 该 unit 内唯一 active resident 时命中
-			  (SELECT host(ru.resident_id)
-			     FROM resident_unit ru
-			    WHERE ru.valid_to IS NULL
-			      AND ru.spatial_prefix <<= network(set_masklen($1::INET, 80))
-			      AND masklen(ru.spatial_prefix) >= 80
-			      AND (SELECT COUNT(DISTINCT ru2.resident_id)
-			             FROM resident_unit ru2
-			            WHERE ru2.valid_to IS NULL
-			              AND ru2.spatial_prefix <<= network(set_masklen($1::INET, 80))
-			              AND masklen(ru2.spatial_prefix) >= 80) = 1
-			    LIMIT 1)
-			)
-		`, p).Scan(&residentID)
-
-		cardName := CardNameNoResident
-		var ridArg interface{} = nil
-		newHoA := ""
-
-		// public unit (unit_type=3) 显示固定 "public"，**无视绑定的合成 resident nickname**
-		// （public 区有占位 resident 如 'public-LivingRoom' 用于 spatial_addr 寻址，但 UI 显示
-		//  这些占位太长且无意义；public 卡用固定短标签 "public"）。仅 /80 unit 卡适用。
-		isPublicUnit := false
-		if strings.HasSuffix(p, "/80") {
-			var unitType sql.NullInt32
-			_ = tx.QueryRowContext(ctx,
-				`SELECT unit_type FROM units WHERE unit_id = $1::INET`, p).Scan(&unitType)
-			if unitType.Valid && unitType.Int32 == 3 {
-				isPublicUnit = true
-			}
-		}
-
-		if isPublicUnit {
-			cardName = CardNamePublic
-			// resident_id 仍然写（DDNS/API 链路需要），只是 card_name 不取 nickname
-			if residentID.Valid && residentID.String != "" {
-				ridArg = residentID.String
-				newHoA = residentID.String
-			}
-		} else if residentID.Valid && residentID.String != "" {
-			var nick sql.NullString
-			_ = tx.QueryRowContext(ctx,
-				`SELECT COALESCE(nickname, '') FROM residents WHERE host(resident_id) = $1`,
-				residentID.String).Scan(&nick)
-			if nick.Valid && nick.String != "" {
-				cardName = nick.String
-			}
-			ridArg = residentID.String
-			newHoA = residentID.String
-		}
-		// 其它情况（非 public 且无 resident）→ cardName 保持 CardNameNoResident
-
-		cardType, err := cardTypeForPrefix(p)
-		if err != nil {
-			s.logger.Warn("ReconcileCards: skip prefix (unknown card_type)",
-				zap.String("prefix", p), zap.Error(err))
+		if expected[p] {
 			continue
 		}
-		// dns_short_name: br01-s11-u0003[-r03[-b01]] 助记词；按 prefix masklen 自然展开
-		shortName := ""
-		if parsed, perr := netip.ParsePrefix(p); perr == nil {
-			if sn, snerr := ddns.CardShortName(parsed); snerr == nil {
-				shortName = sn
-			}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM cards WHERE spatial_prefix = $1::INET`, p); err != nil {
+			return nil, fmt.Errorf("delete card %s: %w", p, err)
 		}
+		diffs = append(diffs, cardDiff{prefix: p, op: "delete", prevHoA: cur.residentID})
+	}
 
-		// 判 diff：本次是 INSERT 还是 UPDATE，UPDATE 又分 admission/discharge/transfer/name_changed
-		cur, existed := current[p]
-		if !existed {
-			diffs = append(diffs, cardDiff{prefix: p, op: "create", newHoA: newHoA})
-			if newHoA != "" {
-				diffs = append(diffs, cardDiff{prefix: p, op: "admission", newHoA: newHoA})
-			}
-		} else if cur.residentID != newHoA {
-			switch {
-			case cur.residentID == "":
-				diffs = append(diffs, cardDiff{prefix: p, op: "admission", prevHoA: "", newHoA: newHoA})
-			case newHoA == "":
-				diffs = append(diffs, cardDiff{prefix: p, op: "discharge", prevHoA: cur.residentID, newHoA: ""})
-			default:
-				diffs = append(diffs, cardDiff{prefix: p, op: "transfer", prevHoA: cur.residentID, newHoA: newHoA})
-			}
-		} else if cur.cardName != cardName {
-			// resident_id 不变但 nickname 变了
-			diffs = append(diffs, cardDiff{prefix: p, op: "name_changed", prevHoA: newHoA, newHoA: newHoA})
+	// UPSERT: expected 每个 prefix → 算 resident_id + card_name + dns_short → INSERT/UPDATE
+	for p := range expected {
+		diff, err := s.upsertCard(ctx, tx, p, current)
+		if err != nil {
+			return nil, err
 		}
+		if diff != nil {
+			diffs = append(diffs, *diff)
+		}
+	}
+	return diffs, nil
+}
 
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO cards (spatial_prefix, card_type, card_name, dns_short_name, resident_id, is_active, enabled_at)
-			VALUES ($1::INET, $2, $3, NULLIF($4,''), $5::INET, TRUE, NOW())
-			ON CONFLICT (spatial_prefix) DO UPDATE SET
-				card_name      = EXCLUDED.card_name,
-				dns_short_name = COALESCE(EXCLUDED.dns_short_name, cards.dns_short_name),
-				resident_id    = EXCLUDED.resident_id,
-				is_active      = TRUE,
-				updated_at     = NOW()
-			WHERE cards.card_name      IS DISTINCT FROM EXCLUDED.card_name
-			   OR cards.dns_short_name IS DISTINCT FROM EXCLUDED.dns_short_name
-			   OR cards.resident_id    IS DISTINCT FROM EXCLUDED.resident_id
-			   OR cards.is_active      IS DISTINCT FROM TRUE
-		`, p, cardType, cardName, shortName, ridArg); err != nil {
-			return fmt.Errorf("upsert card %s: %w", p, err)
+// upsertCard 单 card 的 INSERT/UPDATE，返回 diff 用于 emit CloudEvent。
+//
+// resident_id 解析两阶段 LPM：
+//
+//	阶段 1: LPM 双向 overlap（card prefix ↔ resident_unit.spatial_prefix 任一包含另一）
+//	阶段 2: unit fallback（card 所在 /80 unit 内唯一 active resident，handle Private unit 整 unit 归一人）
+//
+// card_name 来源：
+//
+//	public unit (unit_type=3) → 固定 "public" 标签（占位 resident nickname 太长无意义）
+//	其他       → residents.nickname / CardNameNoResident
+func (s *CardSyncService) upsertCard(ctx context.Context, tx *sql.Tx, p string, current map[string]currentCard) (*cardDiff, error) {
+	cardType, err := cardTypeForPrefix(p)
+	if err != nil {
+		s.logger.Warn("upsertCard: skip prefix (unknown card_type)",
+			zap.String("prefix", p), zap.Error(err))
+		return nil, nil
+	}
+
+	residentID, err := resolveResidentForCard(ctx, tx, p)
+	if err != nil {
+		return nil, err
+	}
+
+	cardName := CardNameNoResident
+	newHoA := ""
+	var ridArg interface{} = nil
+
+	isPublic, err := isPublicUnit(ctx, tx, p)
+	if err != nil {
+		return nil, err
+	}
+
+	if isPublic {
+		cardName = CardNamePublic
+		if residentID != "" {
+			ridArg = residentID
+			newHoA = residentID
+		}
+	} else if residentID != "" {
+		nick, err := lookupResidentNick(ctx, tx, residentID)
+		if err != nil {
+			return nil, err
+		}
+		if nick != "" {
+			cardName = nick
+		}
+		ridArg = residentID
+		newHoA = residentID
+	}
+
+	shortName := ""
+	if parsed, perr := netip.ParsePrefix(p); perr == nil {
+		if sn, snerr := ddns.CardShortName(parsed); snerr == nil {
+			shortName = sn
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
+	// 算 diff（在 INSERT 前算，否则 ON CONFLICT 后看不到差异）
+	diff := computeCardDiff(p, current[p], newHoA, cardName)
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO cards (spatial_prefix, card_type, card_name, dns_short_name, resident_id, is_active, enabled_at)
+		VALUES ($1::INET, $2, $3, NULLIF($4,''), $5::INET, TRUE, NOW())
+		ON CONFLICT (spatial_prefix) DO UPDATE SET
+		    card_name      = EXCLUDED.card_name,
+		    dns_short_name = COALESCE(EXCLUDED.dns_short_name, cards.dns_short_name),
+		    resident_id    = EXCLUDED.resident_id,
+		    is_active      = TRUE,
+		    updated_at     = NOW()
+		WHERE cards.card_name      IS DISTINCT FROM EXCLUDED.card_name
+		   OR cards.dns_short_name IS DISTINCT FROM EXCLUDED.dns_short_name
+		   OR cards.resident_id    IS DISTINCT FROM EXCLUDED.resident_id
+		   OR cards.is_active      IS DISTINCT FROM TRUE
+	`, p, cardType, cardName, shortName, ridArg); err != nil {
+		return nil, fmt.Errorf("upsert card %s: %w", p, err)
 	}
 
-	s.logger.Info("ReconcileCards done",
-		zap.String("scope", scopePrefix),
-		zap.Int("expected", len(expected)),
-		zap.Int("current_before", len(current)),
-		zap.Int("deleted", len(toDelete)),
-		zap.Int("diffs", len(diffs)))
+	return diff, nil
+}
 
-	// === Step 6: 测试 observer + emit CloudEvent (commit 后才发，事务回滚则一次都不发) ===
-	// 下游订阅方:
-	//   - device_gateway: 接 create/delete 更新设备→prefix 路由
-	//   - wisefido-sensor: 接 create/delete 订阅/退订监测流
-	//   - cardagg: 接 admission/discharge/transfer 失效 resident 视图缓存
-	if s.reconcileObserver != nil {
-		s.reconcileObserver(scopePrefix, diffs)
+// resolveResidentForCard 两阶段 LPM 找 resident_id（host 格式 / "" 表无 resident）
+func resolveResidentForCard(ctx context.Context, tx *sql.Tx, prefix string) (string, error) {
+	var rid sql.NullString
+	err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(
+		  -- 阶段 1: LPM 双向 overlap
+		  (SELECT host(ru.resident_id)
+		     FROM resident_unit ru
+		    WHERE ru.valid_to IS NULL
+		      AND ($1::INET <<= ru.spatial_prefix OR ru.spatial_prefix <<= $1::INET)
+		      AND masklen(ru.spatial_prefix) >= 80
+		    ORDER BY masklen(ru.spatial_prefix) DESC
+		    LIMIT 1),
+		  -- 阶段 2: unit fallback — 该 /80 unit 内唯一 active resident
+		  (SELECT host(ru.resident_id)
+		     FROM resident_unit ru
+		    WHERE ru.valid_to IS NULL
+		      AND ru.spatial_prefix <<= network(set_masklen($1::INET, 80))
+		      AND masklen(ru.spatial_prefix) >= 80
+		      AND (SELECT COUNT(DISTINCT ru2.resident_id)
+		             FROM resident_unit ru2
+		            WHERE ru2.valid_to IS NULL
+		              AND ru2.spatial_prefix <<= network(set_masklen($1::INET, 80))
+		              AND masklen(ru2.spatial_prefix) >= 80) = 1
+		    LIMIT 1)
+		)
+	`, prefix).Scan(&rid)
+	if err != nil && err != sql.ErrNoRows {
+		return "", fmt.Errorf("lookup resident for %s: %w", prefix, err)
 	}
-	s.emitDiffs(ctx, scopePrefix, diffs)
+	if rid.Valid {
+		return rid.String, nil
+	}
+	return "", nil
+}
 
-	// === Step 7: DDNS ensure register for ALL expected prefixes (force-sync) ===
-	// 不仅 create diff 调 register，每次 reconcile 都对当前 expected 集合 ensure DNS 记录
-	// nsupdate "add AAAA" 同名同值是 noop / 同名不同值是替换 → 天然 idempotent
-	// 这样保证：DB cards 列与 bind9 zone 双向同步，即使中间 bind9 重启或网络抖动也能自愈
-	s.ensureDDNSForExpected(ctx, scopePrefix, expected)
+// isPublicUnit 判 /80 unit 是否 unit_type=3（公共区）— 仅 /80 prefix 适用。
+func isPublicUnit(ctx context.Context, tx *sql.Tx, prefix string) (bool, error) {
+	if !strings.HasSuffix(prefix, "/80") {
+		return false, nil
+	}
+	var ut sql.NullInt32
+	err := tx.QueryRowContext(ctx,
+		`SELECT unit_type FROM units WHERE unit_id = $1::INET`, prefix).Scan(&ut)
+	if err != nil && err != sql.ErrNoRows {
+		return false, err
+	}
+	return ut.Valid && ut.Int32 == 3, nil
+}
+
+func lookupResidentNick(ctx context.Context, tx *sql.Tx, residentHostID string) (string, error) {
+	var n sql.NullString
+	err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(nickname, '') FROM residents WHERE host(resident_id) = $1`,
+		residentHostID).Scan(&n)
+	if err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+	if n.Valid {
+		return n.String, nil
+	}
+	return "", nil
+}
+
+func computeCardDiff(prefix string, prev currentCard, newHoA, newName string) *cardDiff {
+	if prev.residentID == "" && prev.cardName == "" {
+		// 不在 current 集合 = 新卡
+		if newHoA != "" {
+			return &cardDiff{prefix: prefix, op: "admission", newHoA: newHoA}
+		}
+		return &cardDiff{prefix: prefix, op: "create", newHoA: newHoA}
+	}
+	if prev.residentID != newHoA {
+		switch {
+		case prev.residentID == "":
+			return &cardDiff{prefix: prefix, op: "admission", newHoA: newHoA}
+		case newHoA == "":
+			return &cardDiff{prefix: prefix, op: "discharge", prevHoA: prev.residentID}
+		default:
+			return &cardDiff{prefix: prefix, op: "transfer", prevHoA: prev.residentID, newHoA: newHoA}
+		}
+	}
+	if prev.cardName != newName {
+		return &cardDiff{prefix: prefix, op: "name_changed", prevHoA: newHoA, newHoA: newHoA}
+	}
 	return nil
 }
 
-// ensureDDNSForExpected — 对 expected 集合的每个 prefix 做 DDNS register（idempotent）
-// 与 emitDiffs 的区别：emitDiffs 只对 create/delete 触发；本函数对所有 expected 全量 ensure。
-// 失败仅 log warn，不影响 cards 表已 commit 的状态。
-func (s *CardSyncService) ensureDDNSForExpected(ctx context.Context, scopePrefix string, expected map[string]bool) {
+// ============================================================================
+// CloudEvent emit + DDNS sync
+// ============================================================================
+
+// cardDiff — ReconcileCards 算出的单卡变化记录，commit 后用于 emit CloudEvent。
+type cardDiff struct {
+	prefix  string
+	op      string // create / delete / admission / discharge / transfer / name_changed
+	prevHoA string
+	newHoA  string
+}
+
+// SetReconcileObserver — 测试 hook，每次 ReconcileCards commit 后调一次。生产留 nil。
+func (s *CardSyncService) SetReconcileObserver(fn func(scope string, diffs []cardDiff)) {
+	s.reconcileObserver = fn
+}
+
+// emitDiffs commit 后 1) bind9 DDNS sync (create/delete) 2) Redis CloudEvent 通知下游。
+// 失败仅 log warn（cards 表已 commit，bind9/Redis 失败下次 reconcile 兜底）。
+func (s *CardSyncService) emitDiffs(ctx context.Context, scope string, diffs []cardDiff) {
+	if len(diffs) == 0 {
+		return
+	}
+	tenantPrefix := tenantPrefixOf(scope)
+	tenantSlot := tenantSlotOf(scope)
+	for _, d := range diffs {
+		if s.ddns != nil && tenantSlot > 0 {
+			s.syncDDNSForDiff(ctx, d, tenantSlot)
+		}
+		if s.publisher != nil {
+			s.publishDiff(ctx, tenantPrefix, d)
+		}
+	}
+}
+
+func (s *CardSyncService) syncDDNSForDiff(ctx context.Context, d cardDiff, tenantSlot uint16) {
+	parsed, err := netip.ParsePrefix(d.prefix)
+	if err != nil {
+		return
+	}
+	shortName := card.ShortCodeOf(d.prefix)
+	zone := ddns.ZoneForTenant(tenantSlot, s.owlDomain)
+	switch d.op {
+	case "create":
+		if err := s.ddns.RegisterCardName(ctx, parsed, shortName, zone); err != nil {
+			s.logger.Warn("DDNS register",
+				zap.String("fqdn", shortName+"."+zone), zap.Error(err))
+		}
+	case "delete":
+		if err := s.ddns.UnregisterCardName(ctx, parsed, shortName, zone); err != nil {
+			s.logger.Warn("DDNS unregister",
+				zap.String("fqdn", shortName+"."+zone), zap.Error(err))
+		}
+	}
+}
+
+func (s *CardSyncService) publishDiff(ctx context.Context, tenantPrefix string, d cardDiff) {
+	var err error
+	switch d.op {
+	case "create", "delete":
+		err = s.publisher.PublishCardChanged(ctx, tenantPrefix, d.prefix, d.op, d.prefix, "")
+	case "admission", "discharge", "transfer", "name_changed":
+		err = s.publisher.PublishCardResidentChanged(ctx, tenantPrefix, d.prefix, d.op, d.prevHoA, d.newHoA, d.prefix)
+	}
+	if err != nil {
+		s.logger.Warn("publish card diff",
+			zap.String("prefix", d.prefix), zap.String("op", d.op), zap.Error(err))
+	}
+}
+
+// ensureDDNSForExpected 对当前 expected 集合每个 prefix ensure DNS 记录（idempotent）。
+// 跟 emitDiffs 区别：emitDiffs 只 create/delete 触发；本函数对全 expected force-sync。
+func (s *CardSyncService) ensureDDNSForExpected(ctx context.Context, scope string, expected map[string]bool) {
 	if s.ddns == nil || len(expected) == 0 {
 		return
 	}
-	tenantSlot := tenantSlotOf(scopePrefix)
+	tenantSlot := tenantSlotOf(scope)
 	if tenantSlot == 0 {
 		return
 	}
 	zone := ddns.ZoneForTenant(tenantSlot, s.owlDomain)
 	for p := range expected {
-		parsed, perr := netip.ParsePrefix(p)
-		if perr != nil {
+		parsed, err := netip.ParsePrefix(p)
+		if err != nil {
 			continue
 		}
 		shortName := card.ShortCodeOf(p)
 		if err := s.ddns.RegisterCardName(ctx, parsed, shortName, zone); err != nil {
-			s.logger.Warn("ensureDDNSForExpected: register failed",
+			s.logger.Warn("ensureDDNS",
 				zap.String("fqdn", shortName+"."+zone),
-				zap.String("prefix", p),
-				zap.Error(err))
+				zap.String("prefix", p), zap.Error(err))
 		}
 	}
 }
 
-// cardDiff — ReconcileCards 算出的单卡变化记录，commit 后用于 emit CloudEvent
-type cardDiff struct {
-	prefix  string // spatial_prefix
-	op      string // "create" / "delete" / "admission" / "discharge" / "transfer" / "name_changed"
-	prevHoA string // 旧 resident_id（host 格式，无 /128 后缀）
-	newHoA  string // 新 resident_id
-}
+// ============================================================================
+// 小工具：prefix 解析
+// ============================================================================
 
-// SetReconcileObserver — 测试 hook，每次 ReconcileCards commit 后调一次。生产留 nil。
-// 比拦截 ConfigPublisher 简单：直接看 diffs slice 内容，与 publisher 实现解耦。
-func (s *CardSyncService) SetReconcileObserver(fn func(scope string, diffs []cardDiff)) {
-	s.reconcileObserver = fn
-}
-
-// emitDiffs — commit 之后做两件事：
-//   1. DDNS register/deregister 同步 bind9（仅 create/delete）
-//   2. Redis CloudEvent 通知下游 cardagg / sensor / device_gateway
-// 失败仅 log warn（cards 表已 commit，bind9 / Redis 失败下次 reconcile 自然兜底）
-func (s *CardSyncService) emitDiffs(ctx context.Context, scopePrefix string, diffs []cardDiff) {
-	if len(diffs) == 0 {
-		return
-	}
-	tenantPrefix := tenantPrefixOf(scopePrefix)
-	tenantSlot := tenantSlotOf(scopePrefix) // 推 zone name 用
-	for _, d := range diffs {
-		// === 1. DDNS sync ===
-		if s.ddns != nil && tenantSlot > 0 {
-			parsed, perr := netip.ParsePrefix(d.prefix)
-			if perr == nil {
-				shortName := card.ShortCodeOf(d.prefix) // 与 cards.dns_short_name 同源
-				zone := ddns.ZoneForTenant(tenantSlot, s.owlDomain)
-				switch d.op {
-				case "create":
-					if err := s.ddns.RegisterCardName(ctx, parsed, shortName, zone); err != nil {
-						s.logger.Warn("emitDiffs: DDNS register failed",
-							zap.String("fqdn", shortName+"."+zone), zap.Error(err))
-					}
-				case "delete":
-					if err := s.ddns.UnregisterCardName(ctx, parsed, shortName, zone); err != nil {
-						s.logger.Warn("emitDiffs: DDNS unregister failed",
-							zap.String("fqdn", shortName+"."+zone), zap.Error(err))
-					}
-				}
-			}
-		}
-
-		// === 2. Redis CloudEvent ===
-		if s.publisher == nil {
-			continue
-		}
-		var err error
-		switch d.op {
-		case "create", "delete":
-			err = s.publisher.PublishCardChanged(ctx, tenantPrefix, d.prefix, d.op, d.prefix, "")
-		case "admission", "discharge", "transfer", "name_changed":
-			err = s.publisher.PublishCardResidentChanged(ctx, tenantPrefix, d.prefix, d.op, d.prevHoA, d.newHoA, d.prefix)
-		}
-		if err != nil {
-			s.logger.Warn("emitDiffs: publish failed",
-				zap.String("prefix", d.prefix),
-				zap.String("op", d.op),
-				zap.Error(err))
-		}
-	}
-}
-
-// tenantSlotOf — 从 INET CIDR 推 tenant slot (第 3 段 hex 转 uint16)
-//   "fd00:0:3:..." → 3；用于 ddns.ZoneForTenant
+// tenantSlotOf 从 INET CIDR 推 tenant slot — "fd00:0:3:..." → 3
 func tenantSlotOf(prefix string) uint16 {
 	idx := strings.LastIndex(prefix, "/")
 	if idx <= 0 {
@@ -492,59 +582,69 @@ func tenantSlotOf(prefix string) uint16 {
 	if len(parts) < 3 {
 		return 0
 	}
-	var v uint64
-	for _, ch := range parts[2] {
-		var d uint64
-		switch {
-		case ch >= '0' && ch <= '9':
-			d = uint64(ch - '0')
-		case ch >= 'a' && ch <= 'f':
-			d = uint64(ch-'a') + 10
-		case ch >= 'A' && ch <= 'F':
-			d = uint64(ch-'A') + 10
-		default:
-			return 0
-		}
-		v = v*16 + d
+	v, err := parseHex(parts[2])
+	if err != nil {
+		return 0
 	}
 	return uint16(v)
 }
 
-// tenantPrefixOf — 把任意 INET CIDR 截到 /48 tenant prefix
-//   "fd00:0:3:112:3::/80" → "fd00:0:3::/48"
-//   "fd00:0:3::/48"       → "fd00:0:3::/48"
+// tenantPrefixOf 任意 INET CIDR 截到 /48 — "fd00:0:3:112:3::/80" → "fd00:0:3::/48"
 func tenantPrefixOf(prefix string) string {
 	idx := strings.LastIndex(prefix, "/")
 	if idx <= 0 {
 		return prefix
 	}
-	addr := prefix[:idx]
-	// 取前 3 段（fd00:0:T）= 48 bit
-	parts := strings.Split(strings.Split(addr, "::")[0], ":")
+	parts := strings.Split(strings.Split(prefix[:idx], "::")[0], ":")
 	if len(parts) < 3 {
 		return prefix
 	}
 	return strings.Join(parts[:3], ":") + "::/48"
 }
 
-// narrowPrefixToRoom — 把 /96 bed prefix 截到 /88 room；其他原样返回
-// IPv6 第 6 段（uint16）= room_slot(8 bit) << 8 | bed_slot(8 bit)
-// /96 lock 整 16 bit；/88 lock 高 8 bit（room），低 8 bit（bed）清零
+// narrowPrefixToRoom /96 bed → /88 room；其他原样空串。
+// IPv6 第 6 段 (uint16) = room_slot(高 8 bit) << 8 | bed_slot(低 8 bit)
+// /96 lock 整 16 bit；/88 lock 高 8 bit (room)，低 8 bit 清零。
+//
 // 例: "fd00:0:3:111:3:101::/96" → "fd00:0:3:111:3:100::/88"
-//     (segment 0x0101 → 高 byte 0x01 → 新 segment 0x0100，IPv6 显示 "100")
 func narrowPrefixToRoom(prefix string) string {
-	idx := strings.LastIndex(prefix, "/")
-	if idx <= 0 || !strings.HasSuffix(prefix, "/96") {
+	if !strings.HasSuffix(prefix, "/96") {
 		return ""
 	}
-	addr := prefix[:idx]
-	parts := strings.Split(strings.Split(addr, "::")[0], ":")
+	idx := strings.LastIndex(prefix, "/")
+	if idx <= 0 {
+		return ""
+	}
+	parts := strings.Split(strings.Split(prefix[:idx], "::")[0], ":")
 	if len(parts) < 6 {
 		return ""
 	}
-	// 解析第 6 段为 uint16（容忍 leading-zero 缩写：fmt.Sprintf("%x", ...) 后无前导 0）
-	var seg uint64
-	for _, ch := range parts[5] {
+	seg, err := parseHex(parts[5])
+	if err != nil {
+		return ""
+	}
+	roomSeg := (seg >> 8) << 8
+	parts[5] = fmt.Sprintf("%x", roomSeg)
+	return strings.Join(parts[:6], ":") + "::/88"
+}
+
+// cardTypeForPrefix 按 masklen 判 card_type；不支持的 masklen 返错。
+func cardTypeForPrefix(prefix string) (string, error) {
+	switch {
+	case strings.HasSuffix(prefix, "/96"):
+		return "bed", nil
+	case strings.HasSuffix(prefix, "/88"):
+		return "room", nil
+	case strings.HasSuffix(prefix, "/80"):
+		return "unit", nil
+	}
+	return "", fmt.Errorf("unsupported masklen for card_type: %s", prefix)
+}
+
+// parseHex 解析单段 hex，避开 strconv 引入。
+func parseHex(s string) (uint64, error) {
+	var v uint64
+	for _, ch := range s {
 		var d uint64
 		switch {
 		case ch >= '0' && ch <= '9':
@@ -554,30 +654,9 @@ func narrowPrefixToRoom(prefix string) string {
 		case ch >= 'A' && ch <= 'F':
 			d = uint64(ch-'A') + 10
 		default:
-			return ""
+			return 0, fmt.Errorf("invalid hex char: %c", ch)
 		}
-		seg = seg*16 + d
+		v = v*16 + d
 	}
-	roomByte := seg >> 8           // 高 8 bit = room slot
-	newSeg := roomByte << 8        // 低 8 bit 清零
-	// IPv6 segment 缩写格式（无前导 0）
-	parts[5] = fmt.Sprintf("%x", newSeg)
-	return strings.Join(parts[:6], ":") + "::/88"
-}
-
-// cardTypeForPrefix — 按 masklen 决定 card_type
-//   /80 → unit；/88 → room；/96 → active_bed
-//   其他 masklen（如 /56 /128）不应作为 card prefix
-func cardTypeForPrefix(prefixStr string) (string, error) {
-	// 简单按 "/N" 后缀判定，避开引入 netip 解析依赖
-	switch {
-	case strings.HasSuffix(prefixStr, "/96"):
-		return "active_bed", nil
-	case strings.HasSuffix(prefixStr, "/88"):
-		return "room", nil
-	case strings.HasSuffix(prefixStr, "/80"):
-		return "unit", nil
-	default:
-		return "", fmt.Errorf("unsupported masklen for card_type: %s", prefixStr)
-	}
+	return v, nil
 }

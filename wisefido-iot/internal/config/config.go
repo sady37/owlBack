@@ -9,17 +9,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config IoT 时序数据服务配置
 type Config struct {
 	Database config.DatabaseConfig `yaml:"database"`
 	Redis    config.RedisConfig    `yaml:"redis"`
 
 	Streams struct {
 		Monitor string `yaml:"monitor"`
-		Stat    string `yaml:"stat"`
 		Event   string `yaml:"event"`
-		Alarm   string `yaml:"alarm"`
-		Auth    string `yaml:"auth"`
 	} `yaml:"streams"`
 	ConsumerGroup string `yaml:"consumer_group"`
 	ConsumerName  string `yaml:"consumer_name"`
@@ -29,11 +25,8 @@ type Config struct {
 		Level  string `yaml:"level"`
 		Format string `yaml:"format"`
 	} `yaml:"logging"`
-
-	HTTPAddr string `yaml:"http_addr"`
 }
 
-// Load 加载配置
 func Load() (*Config, error) {
 	configPath := "config.yaml"
 	if path := os.Getenv("CONFIG_PATH"); path != "" {
@@ -63,29 +56,17 @@ func (c *Config) setDefaults() {
 	if c.Streams.Monitor == "" {
 		c.Streams.Monitor = "iot:monitor:stream"
 	}
-	if c.Streams.Stat == "" {
-		c.Streams.Stat = "iot:stat:stream"
-	}
 	if c.Streams.Event == "" {
 		c.Streams.Event = "iot:event:stream"
 	}
-	if c.Streams.Alarm == "" {
-		c.Streams.Alarm = "iot:alarm:stream"
-	}
-	if c.Streams.Auth == "" {
-		c.Streams.Auth = "iot:auth:stream"
-	}
 	if c.ConsumerGroup == "" {
-		c.ConsumerGroup = "iot-timeseries-group"
+		c.ConsumerGroup = "wisefido-iot"
 	}
 	if c.ConsumerName == "" {
-		c.ConsumerName = "iot-timeseries-1"
+		c.ConsumerName = "wisefido-iot-1"
 	}
 	if c.BatchSize == 0 {
 		c.BatchSize = 10
-	}
-	if c.HTTPAddr == "" {
-		c.HTTPAddr = ":8085"
 	}
 	if c.Log.Level == "" {
 		c.Log.Level = "info"
@@ -109,20 +90,16 @@ func LoadFromEnv() (*Config, error) {
 	}
 	cfg.Database.User = getEnv("DB_USER", "postgres")
 	cfg.Database.Password = getEnv("DB_PASSWORD", "")
-	cfg.Database.Database = getEnv("DB_NAME", "owlrd")
+	cfg.Database.Database = getEnv("DB_NAME", "owl_v2")
 	cfg.Database.SSLMode = getEnv("DB_SSLMODE", "disable")
 	cfg.Redis.Addr = getEnv("REDIS_ADDR", "localhost:6379")
 	cfg.Redis.Password = getEnv("REDIS_PASSWORD", "")
 	cfg.Redis.DB = 0
 	cfg.Streams.Monitor = getEnv("STREAM_IOT_MONITOR", "iot:monitor:stream")
-	cfg.Streams.Stat = getEnv("STREAM_IOT_STAT", "iot:stat:stream")
 	cfg.Streams.Event = getEnv("STREAM_IOT_EVENT", "iot:event:stream")
-	cfg.Streams.Alarm = getEnv("STREAM_IOT_ALARM", "iot:alarm:stream")
-	cfg.Streams.Auth = getEnv("STREAM_IOT_AUTH", "iot:auth:stream")
-	cfg.ConsumerGroup = getEnv("CONSUMER_GROUP", "iot-timeseries-group")
-	cfg.ConsumerName = getEnv("CONSUMER_NAME", "iot-timeseries-1")
+	cfg.ConsumerGroup = getEnv("CONSUMER_GROUP", "wisefido-iot")
+	cfg.ConsumerName = getEnv("CONSUMER_NAME", "wisefido-iot-1")
 	cfg.BatchSize = 10
-	cfg.HTTPAddr = getEnv("HTTP_ADDR", ":8085")
 	cfg.Log.Level = getEnv("LOG_LEVEL", "info")
 	cfg.Log.Format = getEnv("LOG_FORMAT", "json")
 	return cfg, nil

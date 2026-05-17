@@ -20,11 +20,6 @@ var (
 		MaxLen:           1000, // 可根据实际需求调整
 		RetentionSeconds: 30,   // 30秒（架构要求：Maxtime: 30秒）
 	}
-	StreamStat = StreamDefinition{
-		Name:             "iot:stat:stream",
-		MaxLen:           1000, // 可根据实际需求调整
-		RetentionSeconds: 300,  // 5分钟（架构要求：Maxtime: 5min，仅Radar支持，1分钟/次）
-	}
 	StreamEvent = StreamDefinition{
 		Name:             "iot:event:stream",
 		MaxLen:           500,   // event数量有限，减小MaxLen
@@ -109,6 +104,18 @@ var (
 		Name:             "ai:track:verdict:stream",
 		MaxLen:           500,
 		RetentionSeconds: 30, // 短 TTL：verdict 是瞬时事实，超时即过期；cardagg cache 本地保留 TTL 独立
+	}
+
+	// StreamSensorDerived sensor 派生的 per-card 输出（bed/room/bathroom/target/...），多 category 共流。
+	// 来源：wisefido-sensor stream_publisher（payload 已是 card.BedState/RoomState/BathRoomState/TargetState 格式）
+	// 消费：wisefido-cardagg sensor_state_projector → card:status:<addr> hash 单 writer 投影
+	// 不入库：瞬态投影，CLAUDE.md 规则 #2.1 = 专用流 + 零持久化（iot 不订阅）
+	// category：bed.state / room.state / bathroom.state / target.state（未来可扩展 vital 派生 / motion 派生）
+	// 命名：'derived' 反映 sensor 在 cardagg_sensor_responsibility_split 里的 "派生 + 融合 + 时间窗" 职责。
+	StreamSensorDerived = StreamDefinition{
+		Name:             "sensor:derived:stream",
+		MaxLen:           2000,
+		RetentionSeconds: 300, // 5min：短时窗回放（cardagg 重启冷启动 replay）；超时即过期
 	}
 )
 

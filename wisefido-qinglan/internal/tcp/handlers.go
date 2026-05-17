@@ -4,11 +4,11 @@ package tcp
 
 import (
 	"fmt"
-	"log"
 	"net"
 
 	pb "wisefido-qinglan/proto/gen"
 
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -33,29 +33,34 @@ const (
 
 // HandleFrame handles a single TCP frame
 func HandleFrame(conn net.Conn, frame *Frame, sm *SessionManager, serverAddr string, serverPort uint32, onProgress OTAProgressCallback, onRegister OnRegisterCallback) {
+	lg := sm.logger
 	switch frame.Type {
 
 	case TypeGetServer:
 		req := &pb.GetServerReq{}
 		if err := proto.Unmarshal(frame.Data, req); err != nil {
-			log.Printf("[TCP] type 1 decode failed: %v", err)
+			lg.Warn("tcp type 1 decode", zap.Error(err))
 			return
 		}
-		log.Printf("[TCP] dispatch request: UID=%s type=%s", req.Uid, req.Type)
+		lg.Info("tcp dispatch request", zap.String("uid", req.Uid), zap.String("type", req.Type))
 		resp := &pb.GetServerResponse{Seq: 2, Result: 0, Server: serverAddr, Port: serverPort}
 		sendProto(conn, TypeGetServerResp, resp)
 
 	case TypeRegister:
 		req := &pb.RegisterReq{}
 		if err := proto.Unmarshal(frame.Data, req); err != nil {
-			log.Printf("[TCP] type 3 decode failed: %v", err)
+			lg.Warn("tcp type 3 decode", zap.Error(err))
 			return
 		}
-		log.Printf("[TCP] register: UID=%s type=%s ver=%s HW=%s", req.Uid, req.Type, req.Sfver, req.Hwver)
+		lg.Info("tcp register",
+			zap.String("uid", req.Uid),
+			zap.String("type", req.Type),
+			zap.String("sf_ver", req.Sfver),
+			zap.String("hw_ver", req.Hwver),
+		)
 		sm.Connect(conn, req.Uid, req.Type, req.Sfver, req.Hwver)
 		resp := &pb.RegisterResponse{Seq: 4, Result: 0}
 		sendProto(conn, TypeRegisterResp, resp)
-		// Callback: update device_store with firmware version + online status
 		if onRegister != nil {
 			onRegister(req.Uid, req.Type, req.Sfver, req.Hwver)
 		}
@@ -68,17 +73,21 @@ func HandleFrame(conn net.Conn, frame *Frame, sm *SessionManager, serverAddr str
 	case TypeOTAResp:
 		msg := &pb.OtaResponse{}
 		if err := proto.Unmarshal(frame.Data, msg); err != nil {
-			log.Printf("[TCP] type 17 decode failed: %v", err)
+			lg.Warn("tcp type 17 decode", zap.Error(err))
 			return
 		}
 		uid := sm.GetUIDByConn(conn)
 		if msg.Result == 0 {
-			log.Printf("[TCP] OTA response: UID=%s device accepted OTA", uid)
+			lg.Info("tcp ota response: accepted", zap.String("uid", uid))
 			if onProgress != nil {
 				onProgress(uid, 0, "device accepted OTA")
 			}
 		} else {
-			log.Printf("[TCP] OTA response: UID=%s rejected result=%d errmsg=%s", uid, msg.Result, msg.Errmsg)
+			lg.Info("tcp ota response: rejected",
+				zap.String("uid", uid),
+				zap.Int32("result", msg.Result),
+				zap.String("err_msg", msg.Errmsg),
+			)
 			if onProgress != nil {
 				onProgress(uid, -1, fmt.Sprintf("device rejected: %s", msg.Errmsg))
 			}
@@ -87,29 +96,29 @@ func HandleFrame(conn net.Conn, frame *Frame, sm *SessionManager, serverAddr str
 	case TypeOTAProgress:
 		msg := &pb.OTAProgress{}
 		if err := proto.Unmarshal(frame.Data, msg); err != nil {
-			log.Printf("[TCP] type 18 decode failed: %v", err)
+			lg.Warn("tcp type 18 decode", zap.Error(err))
 			return
 		}
 		uid := sm.GetUIDByConn(conn)
 		progressMsg := ""
 		switch msg.Progress {
 		case -1:
-			log.Printf("[TCP] OTA failed: UID=%s %s", uid, msg.ErrMsg)
+			lg.Warn("tcp ota failed", zap.String("uid", uid), zap.String("err_msg", msg.ErrMsg))
 			progressMsg = fmt.Sprintf("OTA failed: %s", msg.ErrMsg)
 		case 10:
-			log.Printf("[TCP] OTA: UID=%s radar FW download complete", uid)
+			lg.Info("tcp ota: radar fw download complete", zap.String("uid", uid))
 			progressMsg = "radar FW download complete"
 		case 25:
-			log.Printf("[TCP] OTA: UID=%s radar FW upgrade complete", uid)
+			lg.Info("tcp ota: radar fw upgrade complete", zap.String("uid", uid))
 			progressMsg = "radar FW upgrade complete"
 		case 56:
-			log.Printf("[TCP] OTA: UID=%s ESP FW download complete", uid)
+			lg.Info("tcp ota: esp fw download complete", zap.String("uid", uid))
 			progressMsg = "ESP FW download complete"
 		case 100:
-			log.Printf("[TCP] OTA: UID=%s upgrade complete, device rebooting", uid)
+			lg.Info("tcp ota: upgrade complete, device rebooting", zap.String("uid", uid))
 			progressMsg = "upgrade complete, device rebooting"
 		default:
-			log.Printf("[TCP] OTA: UID=%s progress=%d", uid, msg.Progress)
+			lg.Info("tcp ota progress", zap.String("uid", uid), zap.Int32("progress", msg.Progress))
 			progressMsg = fmt.Sprintf("progress=%d", msg.Progress)
 		}
 		if onProgress != nil {
@@ -118,7 +127,11 @@ func HandleFrame(conn net.Conn, frame *Frame, sm *SessionManager, serverAddr str
 
 	default:
 		uid := sm.GetUIDByConn(conn)
-		log.Printf("[TCP] unhandled type=%d UID=%s len=%d", frame.Type, uid, len(frame.Data))
+		lg.Warn("tcp unhandled frame",
+			zap.Uint8("type", frame.Type),
+			zap.String("uid", uid),
+			zap.Int("len", len(frame.Data)),
+		)
 	}
 }
 

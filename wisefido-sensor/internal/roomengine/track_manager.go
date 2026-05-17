@@ -698,7 +698,13 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 			"fall_score":      score,
 		},
 	}
-	tm.aiPublisher.PublishAIAlarm(context.Background(), payload, alarm.Fall, a.TMs)
+	// 保留 envelope.Category：SuspectedFall / Fall / SuspectedSittingOnGround / SittingOnGround 各自独立
+	// （firmware 自带 30~90s qualification 区分 Suspected→Confirmed，server 不再 collapse）
+	emitCat := a.Category
+	if emitCat == "" {
+		emitCat = alarm.Fall // 兜底：旧路径无 Category 字段时
+	}
+	tm.aiPublisher.PublishAIAlarm(context.Background(), payload, emitCat, a.TMs)
 }
 
 // RecordRadarEvent 落账 radar 来源的事件（EnterRoom/ExitRoom/InBed/LeftBed）。
@@ -717,10 +723,10 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	cp := e
 	tm.recentRadarEvents[e.TMs] = &cp
 	tm.evictOldRadarEvents(e.TMs)
-	if e.EventName == "LeftBed" && e.TMs > tm.lastLeftBedAt {
+	if e.EventName == alarm.LeftBed && e.TMs > tm.lastLeftBedAt {
 		tm.lastLeftBedAt = e.TMs
 	}
-	if e.EventName == "InBed" && e.TMs > tm.lastRadarInBedMs {
+	if e.EventName == alarm.InBed && e.TMs > tm.lastRadarInBedMs {
 		tm.lastRadarInBedMs = e.TMs
 		// PR-14 副作用 1：mark 当前 track 位置 cell 为 AreaBed
 		tm.markRadarInBedCell(e)
@@ -741,7 +747,7 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	}
 	// ExitRoom 事件 → 取消所有挂起的 lost-fall（人正常走出房间，不再悬念）
 	// 注：silent fall 不取消（其语义是床上方遮挡，与 ExitRoom 无关）
-	if e.EventName == "ExitRoom" && len(tm.pendingLostFalls) > 0 {
+	if e.EventName == alarm.ExitRoom && len(tm.pendingLostFalls) > 0 {
 		for pid, p := range tm.pendingLostFalls {
 			tm.lostFallPendingCancelled++
 			tm.logger.Info("lost_fall_cancelled_by_exit_room",
@@ -2064,7 +2070,7 @@ func (tm *TrackManager) nearestEnterRoomMs(tMs int64, windowMs int64) (int64, bo
 	bestDelta := windowMs + 1
 	found := false
 	for k, e := range tm.recentRadarEvents {
-		if e.EventName != "EnterRoom" {
+		if e.EventName != alarm.EnterRoom {
 			continue
 		}
 		delta := tMs - k
@@ -2096,7 +2102,7 @@ func (tm *TrackManager) hasRecentEnterRoomBetween(fromMs, toMs int64) bool {
 		if k < fromMs || k > toMs {
 			continue
 		}
-		if e.EventName == "EnterRoom" {
+		if e.EventName == alarm.EnterRoom {
 			return true
 		}
 	}

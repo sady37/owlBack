@@ -183,7 +183,6 @@ func ReadFromMultipleStreamsWithBlock(ctx context.Context, client *redis.Client,
 func AllStreams() []StreamDefinition {
 	return []StreamDefinition{
 		StreamMonitor,
-		StreamStat,
 		StreamEvent,
 		StreamAlarm,
 		StreamAuth,

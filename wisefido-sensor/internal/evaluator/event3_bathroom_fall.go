@@ -8,6 +8,8 @@ import (
 	"wisefido-sensor/internal/models"
 	"wisefido-sensor/internal/repository"
 
+	"owl-common/alarm"
+
 	"go.uber.org/zap"
 )
 
@@ -271,10 +273,10 @@ func (e *Event3Evaluator) triggerFallAlarm(
 		postureDisplay = posture.PostureDisplay
 	}
 	snomedCode := "248220002"
-	snomedDisplay := "Fall"
+	snomedDisplay := alarm.Fall
 	durationSec := int(stillDuration)
 	triggerData := BuildTriggerData(
-		"Fall",
+		alarm.Fall,
 		"Radar",
 		realtimeData.Heart,
 		realtimeData.Breath,
@@ -296,8 +298,8 @@ func (e *Event3Evaluator) triggerFallAlarm(
 		"reason":          "No one can stand still for more than 10 minutes, likely fall due to room interference",
 	}
 
-	alarm, err := builder.BuildAlarmEvent(
-		"Fall",
+	alarmEvent, err := builder.BuildAlarmEvent(
+		alarm.Fall,
 		"safety",
 		"ALERT", // ALERT 级别
 		triggerData,
@@ -307,7 +309,7 @@ func (e *Event3Evaluator) triggerFallAlarm(
 		return nil, fmt.Errorf("failed to build alarm: %w", err)
 	}
 
-	return alarm, nil
+	return alarmEvent, nil
 }
 
 // triggerSuspectedFallAlarm 触发 SuspectedFall 报警（WARNING 级别）
@@ -338,7 +340,7 @@ func (e *Event3Evaluator) triggerSuspectedFallAlarm(
 	snomedDisplay := "Suspected Fall"
 	durationSec := int(standingDuration)
 	triggerData := BuildTriggerData(
-		"SuspectedFall",
+		alarm.SuspectedFall,
 		"Radar",
 		realtimeData.Heart,
 		realtimeData.Breath,
@@ -359,8 +361,8 @@ func (e *Event3Evaluator) triggerSuspectedFallAlarm(
 		"position_change":   state.PositionChange,
 	}
 
-	alarm, err := builder.BuildAlarmEvent(
-		"SuspectedFall",
+	alarmEvent, err := builder.BuildAlarmEvent(
+		alarm.SuspectedFall,
 		"safety",
 		"WARNING", // WARNING 级别
 		triggerData,
@@ -370,7 +372,7 @@ func (e *Event3Evaluator) triggerSuspectedFallAlarm(
 		return nil, fmt.Errorf("failed to build alarm: %w", err)
 	}
 
-	return alarm, nil
+	return alarmEvent, nil
 }
 
 // getEvent3State 获取事件3的状态

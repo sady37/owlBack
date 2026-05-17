@@ -207,10 +207,14 @@ func buildAlarmEventsListPayload(resp *service.ListAlarmEventsResponse) map[stri
 			"category":     item.Category,
 			"alarm_level":  item.AlarmLevel,
 			"alarm_status": item.AlarmStatus,
-			"triggered_at": item.TriggeredAt,
+			"triggered_at":    item.TriggeredAt,
+			"triggered_at_ms": item.TriggeredAtMs,
 		}
 		if item.HandledAt != nil {
 			itemMap["handled_at"] = *item.HandledAt
+		}
+		if item.HandledAtMs != nil {
+			itemMap["handled_at_ms"] = *item.HandledAtMs
 		}
 		if item.HandlingState != nil {
 			itemMap["handling_state"] = *item.HandlingState
@@ -280,9 +284,6 @@ func buildAlarmEventsListPayload(resp *service.ListAlarmEventsResponse) map[stri
 		}
 		if item.TriggerData != nil {
 			itemMap["trigger_data"] = item.TriggerData
-		}
-		if item.NotifiedUsers != nil {
-			itemMap["notified_users"] = item.NotifiedUsers
 		}
 		if item.Metadata != nil {
 			itemMap["metadata"] = item.Metadata

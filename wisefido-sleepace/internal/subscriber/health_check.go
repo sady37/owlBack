@@ -226,13 +226,24 @@ func (h *HealthCheck) probeOne(ctx context.Context, b *card.DeviceBaseline) {
 		return
 	}
 	online := status != 0
+	// transition-only Info：稳态周期 tick 走 Debug，避免 60 设备 × 健康检查频率刷屏
+	prevOnline, hadPrev := false, false
 	if h.StatusTracker != nil {
-		h.StatusTracker.UpdateConnection(b.DeviceUID, online)
+		prevOnline, hadPrev = h.StatusTracker.UpdateConnection(b.DeviceUID, online)
 	}
-	h.Logger.Info("health_check connectionStatus",
-		zap.String("device_uid", b.DeviceUID),
-		zap.String("device_code", b.DeviceCode),
-		zap.Bool("online", online))
+	if !hadPrev || prevOnline != online {
+		h.Logger.Info("health_check connectionStatus transition",
+			zap.String("device_uid", b.DeviceUID),
+			zap.String("device_code", b.DeviceCode),
+			zap.Bool("online", online),
+			zap.Bool("first_observation", !hadPrev),
+		)
+	} else {
+		h.Logger.Debug("health_check connectionStatus tick",
+			zap.String("device_uid", b.DeviceUID),
+			zap.String("device_code", b.DeviceCode),
+			zap.Bool("online", online))
+	}
 	// 在线时顺手 sync device_store.firmware_version；MQTT connectionStatus 只在 TCP 状态变化时推一次，
 	// 已在线设备不会重新触发 sync，所以这里 probe 时也补一刀。函数自带 current==reported 短路，幂等。
 	if online && h.CardDB != nil {
@@ -311,9 +322,12 @@ func (h *HealthCheck) syncDeviceStoreVersion(ctx context.Context, deviceCode str
 	if info == nil || info.Version == "" {
 		return
 	}
-	if err := h.CardDB.UpdateDeviceStoreReportedVersion(ctx, deviceCode, info.Version); err != nil {
+	changed, err := h.CardDB.UpdateDeviceStoreReportedVersion(ctx, deviceCode, info.Version)
+	if err != nil {
 		h.Logger.Warn("health_check version sync: update device_store", zap.String("device_code", deviceCode), zap.String("version", info.Version), zap.Error(err))
 		return
 	}
-	h.Logger.Info("device_store version synced (health_check)", zap.String("device_code", deviceCode), zap.String("version", info.Version))
+	if changed {
+		h.Logger.Info("device_store version synced (health_check)", zap.String("device_code", deviceCode), zap.String("version", info.Version))
+	}
 }

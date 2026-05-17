@@ -143,14 +143,16 @@ type AlarmEventDTO struct {
 	Category    string `json:"category"`     // 类别（safety, clinical, behavioral, device）
 	AlarmLevel  string `json:"alarm_level"`  // 报警级别
 	AlarmStatus string `json:"alarm_status"` // 报警状态（'active','acked','resolved','auto_resolved','expired'）
-	TriggeredAt int64  `json:"triggered_at"` // timestamp（触发时间）
+	TriggeredAt   string `json:"triggered_at"`    // RFC3339 带 unit_timezone offset；unit_timezone 未知时回退 UTC（Z 结尾）
+	TriggeredAtMs int64  `json:"triggered_at_ms"` // UTC unix milliseconds，FE 想在 viewer-local TZ 显示时用 new Date(ms)
 
 	// 处理信息
 	HandlingState   *string `json:"handling_state,omitempty"`   // 'verified' | 'false_alarm' | 'test'（从 operation 映射）
 	HandlingDetails *string `json:"handling_details,omitempty"` // 备注（从 notes 获取）
 	HandlerID       *string `json:"handler_id,omitempty"`       // 处理人ID（从 handler 获取）
 	HandlerName     *string `json:"handler_name,omitempty"`     // 处理人名称（通过 JOIN users 获取）
-	HandledAt       *int64  `json:"handled_at,omitempty"`       // timestamp（处理时间，从 hand_time 获取）
+	HandledAt       *string `json:"handled_at,omitempty"`       // RFC3339 带 unit_timezone offset；处理时间（hand_time）
+	HandledAtMs     *int64  `json:"handled_at_ms,omitempty"`    // UTC unix milliseconds
 
 	// 关联数据（通过 JOIN 查询）
 	CardID     *string `json:"card_id,omitempty"`     // 卡片ID（通过 device_id JOIN cards 获取）
@@ -180,9 +182,8 @@ type AlarmEventDTO struct {
 	UnitTimezone *string `json:"unit_timezone,omitempty"`
 
 	// JSONB 字段（解析后返回）
-	TriggerData   map[string]interface{} `json:"trigger_data,omitempty"`   // 触发数据快照
-	NotifiedUsers []interface{}          `json:"notified_users,omitempty"` // 通知接收者列表
-	Metadata      map[string]interface{} `json:"metadata,omitempty"`       // 元数据
+	TriggerData map[string]interface{} `json:"trigger_data,omitempty"` // 触发数据快照
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`     // 元数据
 }
 
 // HandleAlarmEventRequest 处理报警事件请求
@@ -382,13 +383,19 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 		}
 		filters.DeviceIDs = deviceIDs
 	case req.CardID != "":
-		deviceIDs, err := s.getCardDeviceIDs(ctx, req.TenantID, req.CardID)
-		if err != nil || len(deviceIDs) == 0 {
-			s.logger.Warn("card_id resolved to no devices — fail-secure empty",
+		// 2026-05-15 拍板：alarm 只在 card_id 精确匹配的卡上出现，不再走 "unit 卡 aggregate 子卡" fan-out。
+		// req.CardID 直接进 EventCardID（精确匹配 ae.card_id），不再走 getCardDeviceIDs 把整个 unit prefix 内
+		// 所有设备的 alarm 都返回。这样 unit 卡只能看到 LPM 时锁定到 unit 卡的 alarm，bed 卡只看自己。
+		//
+		// dns_short_name (6 位 base36) 解析为 spatial_prefix CIDR；防止 FE 传短码直接 INET cast 失败
+		// （memory short_code_alias_resolve_everywhere 提醒：短码必须全 callsite resolve）。
+		resolved, err := s.resolveCardIDToCIDR(ctx, req.CardID)
+		if err != nil {
+			s.logger.Warn("card_id short-code resolve failed — fail-secure empty",
 				zap.String("card_id", req.CardID), zap.Error(err))
 			return emptyResp(), nil
 		}
-		filters.DeviceIDs = deviceIDs
+		filters.EventCardID = &resolved
 	}
 
 	// 权限过滤（根据用户角色）
@@ -913,13 +920,16 @@ func (s *alarmEventService) convertAlarmEventToDTO(ctx context.Context, tenantID
 		Category:    event.Category,
 		AlarmLevel:  event.AlarmLevel,
 		AlarmStatus: event.AlarmStatus,
-		TriggeredAt: event.TriggeredAt.Unix(),
+		TriggeredAt:   event.TriggeredAt.UTC().Format(time.RFC3339),
+		TriggeredAtMs: event.TriggeredAt.UnixMilli(),
 	}
 
 	// 处理信息
 	if event.HandTime != nil {
-		handledAt := event.HandTime.Unix()
+		handledAt := event.HandTime.UTC().Format(time.RFC3339)
 		dto.HandledAt = &handledAt
+		handledAtMs := event.HandTime.UnixMilli()
+		dto.HandledAtMs = &handledAtMs
 	}
 	if event.Handler != nil {
 		dto.HandlerID = event.Handler
@@ -944,12 +954,6 @@ func (s *alarmEventService) convertAlarmEventToDTO(ctx context.Context, tenantID
 		var triggerData map[string]interface{}
 		if err := json.Unmarshal(event.TriggerData, &triggerData); err == nil {
 			dto.TriggerData = triggerData
-		}
-	}
-	if len(event.NotifiedUsers) > 0 {
-		var notifiedUsers []interface{}
-		if err := json.Unmarshal(event.NotifiedUsers, &notifiedUsers); err == nil {
-			dto.NotifiedUsers = notifiedUsers
 		}
 	}
 	if len(event.Metadata) > 0 {
@@ -1057,8 +1061,90 @@ func (s *alarmEventService) enrichAlarmEventDTO(ctx context.Context, tenantID st
 	}
 
 	s.ensureUnitTimezone(ctx, tenantID, dto)
+	s.applyUnitTimezoneToTimestamps(event, dto)
+	buildAddressDisplay(dto)
 
 	return nil
+}
+
+// buildAddressDisplay derive address_display 字段（"branch-building-floor-unit-room-bed"），跳过空段。
+// 各 snapshot 字段已经在 enrichFromSnapshot / fallback 路径里填好；本函数纯字符串拼装。
+func buildAddressDisplay(dto *AlarmEventDTO) {
+	if dto.AddressDisplay != nil && *dto.AddressDisplay != "" {
+		return
+	}
+	parts := []string{}
+	push := func(p *string) {
+		if p != nil {
+			s := strings.TrimSpace(*p)
+			if s != "" {
+				parts = append(parts, s)
+			}
+		}
+	}
+	push(dto.BranchName)
+	push(dto.BuildingName)
+	if dto.Floor != nil && *dto.Floor > 0 {
+		parts = append(parts, fmt.Sprintf("F%d", *dto.Floor))
+	}
+	push(dto.UnitName)
+	push(dto.RoomName)
+	push(dto.BedName)
+	if len(parts) == 0 {
+		return
+	}
+	addr := strings.Join(parts, " / ")
+	dto.AddressDisplay = &addr
+}
+
+// resolveCardIDToCIDR 把 cardID 入参规范成 spatial_prefix CIDR：
+//   - 含 ":" 或 "/" 当 IPv6 / CIDR 原样返回（caller 自负）
+//   - 6 位 base36 短码 → SELECT cards WHERE dns_short_name 反查 spatial_prefix
+//   - 其他形态 → 报错（短码 alias 必须 resolve，per memory short_code_alias_resolve_everywhere）
+func (s *alarmEventService) resolveCardIDToCIDR(ctx context.Context, cardID string) (string, error) {
+	cardID = strings.TrimSpace(cardID)
+	if cardID == "" {
+		return "", fmt.Errorf("card_id required")
+	}
+	if strings.ContainsAny(cardID, ":/") {
+		return cardID, nil
+	}
+	if !isShortCodeFormat(cardID) {
+		return "", fmt.Errorf("card_id %q is not a valid IPv6/CIDR or 6-char short code", cardID)
+	}
+	var spatialPrefix string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT host(spatial_prefix) || '/' || masklen(spatial_prefix) FROM cards WHERE dns_short_name = $1`,
+		cardID,
+	).Scan(&spatialPrefix)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("card not found (short_name=%s)", cardID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolve dns_short_name: %w", err)
+	}
+	return spatialPrefix, nil
+}
+
+// applyUnitTimezoneToTimestamps 用 unit_timezone 把 triggered_at / handled_at 重格式化为 RFC3339（带本地 offset），
+// FE 直接显示字符串即可，不再做时区换算。unit_timezone 缺失或解析失败时保留 convertAlarmEventToDTO 时填的 UTC 值。
+func (s *alarmEventService) applyUnitTimezoneToTimestamps(event *domain.AlarmEvent, dto *AlarmEventDTO) {
+	if dto.UnitTimezone == nil {
+		return
+	}
+	tz := strings.TrimSpace(*dto.UnitTimezone)
+	if tz == "" {
+		return
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return
+	}
+	dto.TriggeredAt = event.TriggeredAt.In(loc).Format(time.RFC3339)
+	if event.HandTime != nil {
+		t := event.HandTime.In(loc).Format(time.RFC3339)
+		dto.HandledAt = &t
+	}
 }
 
 // ensureUnitTimezone 补全 units.timezone（snapshot / 上面分支未写入时）

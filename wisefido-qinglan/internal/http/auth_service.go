@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	commonredis "owl-common/redis"
 	"sync"
 	"wisefido-qinglan/internal/config"
@@ -56,11 +55,7 @@ func NewAuthService(cfg *config.Config, db *sql.DB, deviceRepo repository.Device
 }
 
 func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRequest, remoteAddr string) (*models.AuthResponse, error) {
-	// 输出到标准输出，确保总是可见
-	log.Printf("=== Auth Request === Device UID: %s, Type: %d, MCU_HW: %s, Radar_HW: %s, RemoteAddr: %s",
-		req.UID, req.Type, req.MCU.HW, req.Radar.HW, remoteAddr)
-
-	s.logger.Info("Device authentication request",
+	s.logger.Info("device auth request",
 		zap.String("uid", req.UID),
 		zap.Int("type", req.Type),
 		zap.String("mcu_hw", req.MCU.HW),
@@ -76,8 +71,7 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 	if err != nil {
 		// 如果 device_store 中没有记录，创建新记录（pending 状态）
 		if err.Error() == "device not found in device_store" {
-			log.Printf("❌ Device %s not found in device_store, creating new record (pending)", req.UID)
-			s.logger.Info("Device not found in device_store, creating new record (pending)",
+			s.logger.Info("device not in device_store, creating pending record",
 				zap.String("uid", req.UID),
 			)
 
@@ -110,8 +104,7 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 				Data: nil,
 			}, nil
 		} else {
-			log.Printf("❌ Device validation failed for %s: %v", req.UID, err)
-			s.logger.Warn("Device validation failed",
+			s.logger.Warn("device validation failed",
 				zap.String("uid", req.UID),
 				zap.Error(err),
 			)
@@ -162,42 +155,37 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 		},
 	}
 
-	s.logger.Info("Device authenticated successfully",
+	s.logger.Info("device authenticated",
 		zap.String("uid", req.UID),
 		zap.String("tenant_id", device.TenantID),
+		zap.String("device_id", device.DeviceID),
 		zap.String("device_type", device.DeviceType),
 		zap.String("mqtt_server", mqttConfig.Server),
 		zap.Int("mqtt_port", mqttConfig.Port),
 		zap.String("auth_url", authURL),
 	)
-	log.Printf("[AUTH_FLOW] uid=%s step=device_validated tenant_id=%s device_id=%s device_type=%s mqtt_server=%s mqtt_port=%d",
-		req.UID, device.TenantID, device.DeviceID, device.DeviceType, mqttConfig.Server, mqttConfig.Port)
 
 	if s.cardMapping != nil {
 		s.cardMapping.RefreshBaseline(ctx, req.UID)
 	}
 
 	// 6. 发布认证成功事件到 Redis Stream
-	log.Printf("✅ Auth success for device %s, publishing success response", req.UID)
 	s.publishAuthResponseSuccess(ctx, req.UID, device, mqttConfig)
 
 	// 7. 认证成功后仅开启周期性订阅（不立即订阅MQTT主题，因为启动时已订阅）
 	// 创建订阅记录，让周期性订阅机制来处理monitor订阅命令
 	if s.subscriptionManager != nil {
 		if err := s.subscriptionManager.EnablePeriodicSubscription(ctx, req.UID, device.DeviceID); err != nil {
-			s.logger.Warn("Failed to enable periodic subscription after authentication",
+			s.logger.Warn("enable periodic subscription failed",
 				zap.String("uid", req.UID),
 				zap.String("device_id", device.DeviceID),
 				zap.Error(err),
 			)
-			log.Printf("⚠️ Failed to enable periodic subscription for device %s after authentication: %v", req.UID, err)
-			// 不返回错误，认证仍然成功，订阅失败不影响认证结果
 		} else {
-			s.logger.Info("Enabled periodic subscription after authentication",
+			s.logger.Info("enabled periodic subscription",
 				zap.String("uid", req.UID),
 				zap.String("device_id", device.DeviceID),
 			)
-			log.Printf("✅ Enabled periodic subscription for device %s after authentication", req.UID)
 		}
 	}
 
@@ -215,7 +203,7 @@ func (s *AuthService) validateDeviceAndGetLocation(ctx context.Context, deviceUI
 
 	// 1. 系统级接入：access=FALSE 则拒绝认证（不发 MQTT 凭证）
 	if !ds.Access {
-		log.Printf("auth denied: access=false device_uid=%s", deviceUID)
+		s.logger.Info("auth denied: access=false", zap.String("device_uid", deviceUID))
 		return nil, fmt.Errorf("deny")
 	}
 
@@ -285,11 +273,10 @@ func (s *AuthService) generateMQTTConfig(uid string) *models.MQTTConfig {
 
 	// 检查服务器地址是否为本地回环地址（设备无法连接）
 	if cfg.Server == "127.0.0.1" || cfg.Server == "localhost" || cfg.Server == "::1" {
-		s.logger.Warn("⚠️ MQTT server address is localhost, devices cannot connect! Please set RADAR_MQTT_SERVER environment variable",
+		s.logger.Warn("mqtt server is localhost — devices cannot connect; set RADAR_MQTT_SERVER",
 			zap.String("current_server", cfg.Server),
 			zap.String("device_uid", uid),
 		)
-		log.Printf("⚠️ WARNING: MQTT server address is %s, devices cannot connect! Please set RADAR_MQTT_SERVER environment variable", cfg.Server)
 	}
 
 	// 生成 clientId（使用 uid 作为标识）
@@ -403,15 +390,13 @@ func (s *AuthService) publishAuthRequest(ctx context.Context, req *models.AuthRe
 		return
 	}
 
-	s.logger.Info("Published auth request to Redis Stream",
+	s.logger.Info("auth request published",
 		zap.String("uid", req.UID),
 		zap.String("stream", streamName),
 		zap.String("stream_id", streamID),
+		zap.String("tenant_id", resolvedTenantID),
+		zap.String("device_id", deviceID.String),
 	)
-	// 输出到标准输出，便于在终端查看
-	log.Printf("Published auth request to stream %s (stream_id: %s) for device %s", streamName, streamID, req.UID)
-	log.Printf("[AUTH_FLOW] uid=%s step=auth_request_stream_published stream=%s stream_id=%s tenant_id=%s device_id=%s",
-		req.UID, streamName, streamID, resolvedTenantID, deviceID.String)
 }
 
 // publishAuthResponseSuccess 发布认证成功响应到 Redis Stream
@@ -471,16 +456,13 @@ func (s *AuthService) publishAuthResponseSuccess(
 		return
 	}
 
-	s.logger.Info("Published auth response (success) to Redis Stream",
+	s.logger.Info("auth success response published",
 		zap.String("uid", uid),
 		zap.String("tenant_id", device.TenantID),
 		zap.String("stream", streamName),
 		zap.String("stream_id", streamID),
+		zap.String("device_id", authResponse.DeviceID),
 	)
-	// 输出到标准输出，便于在终端查看
-	log.Printf("Published auth response (success) to stream %s (stream_id: %s) for device %s", streamName, streamID, uid)
-	log.Printf("[AUTH_FLOW] uid=%s step=auth_response_success_stream_published stream=%s stream_id=%s tenant_id=%s device_id=%s",
-		uid, streamName, streamID, device.TenantID, authResponse.DeviceID)
 }
 
 // publishAuthResponseFailure 发布认证失败响应到 Redis Stream
@@ -537,15 +519,13 @@ func (s *AuthService) publishAuthResponseFailure(ctx context.Context, uid string
 		return
 	}
 
-	s.logger.Info("Published auth response (failure) to Redis Stream",
+	s.logger.Info("auth failure response published",
 		zap.String("uid", uid),
 		zap.String("stream", streamName),
 		zap.String("stream_id", streamID),
+		zap.String("device_id", authResponse.DeviceID),
+		zap.String("error", errorMsg),
 	)
-	// 输出到标准输出，便于在终端查看
-	log.Printf("Published auth response (failure) to stream %s (stream_id: %s) for device %s", streamName, streamID, uid)
-	log.Printf("[AUTH_FLOW] uid=%s step=auth_response_failure_stream_published stream=%s stream_id=%s device_id=%s error=%s",
-		uid, streamName, streamID, authResponse.DeviceID, errorMsg)
 }
 
 // updateDeviceHardwareInfo 更新设备硬件信息到 device_store 表

@@ -50,11 +50,16 @@ func (t *DeviceStatusTracker) getOrCreate(deviceCode string) *DeviceStatusEntry 
 	return e
 }
 
-func (t *DeviceStatusTracker) UpdateConnection(deviceCode string, online bool) {
+// UpdateConnection 更新设备 online 状态。返回 prev 状态 + hadPrev（用于 caller 的 transition-only 日志）。
+func (t *DeviceStatusTracker) UpdateConnection(deviceCode string, online bool) (prevOnline bool, hadPrev bool) {
 	t.mu.Lock()
+	defer t.mu.Unlock()
+	if e, ok := t.devices[deviceCode]; ok {
+		prevOnline, hadPrev = e.Online, true
+	}
 	e := t.getOrCreate(deviceCode)
 	e.Online = online
-	t.mu.Unlock()
+	return
 }
 
 func (t *DeviceStatusTracker) UpdateRealtime(deviceCode string, heart, breath, bedStatus, turnOver, bodyMove, sitUp, initStatus, signalQuality int) {

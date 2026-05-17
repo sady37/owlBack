@@ -45,6 +45,11 @@ type AlarmEventFilters struct {
 	EventUnitID *string // 直接过滤 ae.unit_id（5W where snapshot）
 	EventRoomID *string // 直接过滤 ae.room_id（5W where snapshot）
 
+	// 精确 card_id 匹配（用户拍板 2026-05-15：alarm 只应在 card_id 精确匹配的卡上出现，
+	// 不再走"unit 卡 aggregate 子卡 alarm"的 fan-out。alarm_events.card_id 在 InsertAlarmAndUpdateCard
+	// 时由 cards GiST LPM 锁定到 trigger 瞬时最长前缀匹配卡，本字段 = 精确等于该值）
+	EventCardID *string // 直接过滤 ae.card_id = $1::INET
+
 	// 设备过滤
 	DeviceID     *string   // 设备ID（直接过滤 ae.device_id）
 	DeviceName   *string   // 设备名称（通过 device_id JOIN devices.device_name 获取，支持模糊匹配）

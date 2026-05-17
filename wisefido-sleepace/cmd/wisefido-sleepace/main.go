@@ -28,6 +28,9 @@ import (
 )
 
 func main() {
+	// stdlib log 用 UTC + 微秒 + 长日期，与 zap 模块对齐（per server_internal_utc_only memory）
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.LUTC)
+
 	env := flag.String("env", "dev", "Environment (dev, prod, test)")
 	flag.Parse()
 

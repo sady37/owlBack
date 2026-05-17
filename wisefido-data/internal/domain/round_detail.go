@@ -17,7 +17,7 @@ type RoundDetail struct {
 	BedID      string `db:"bed_id"`      // UUID, nullable, FK to beds
 	UnitID     string `db:"unit_id"`     // UUID, nullable, FK to units
 
-	// 自动获取的状态数据（从 iot_timeseries 获取）
+	// 自动获取的状态数据（从 monitor_stream 获取）
 	BedStatus string `db:"bed_status"` // VARCHAR(20) - 'in_bed'/'out_of_bed'/'unknown'
 
 	// 睡眠状态（仅当在床时有效）

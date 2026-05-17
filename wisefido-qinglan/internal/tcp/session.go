@@ -1,10 +1,11 @@
 package tcp
 
 import (
-	"log"
 	"net"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // DeviceSession 设备会话，维护UID与TCP连接的映射
@@ -23,10 +24,8 @@ type SessionManager struct {
 	mu       sync.RWMutex
 	sessions map[string]*DeviceSession // key: UID
 	connMap  map[net.Conn]string       // key: conn → UID (反向索引)
+	logger   *zap.Logger
 	// v12.2 P1: 设备断线回调（在Connect()关闭旧连接时主动触发）
-	// 根因: Connect()→delete(connMap, oldConn)→oldConn.Close()→旧goroutine的defer
-	//       调用GetUIDByConn(oldConn)→返回""(已被删除)→NotifyDisconnect永远不触发
-	// 修复: 在Connect()中关闭旧连接前，先通过回调通知OTA可靠性服务设备断线
 	OnDisconnect func(uid string)
 }
 
@@ -35,6 +34,14 @@ func NewSessionManager() *SessionManager {
 	return &SessionManager{
 		sessions: make(map[string]*DeviceSession),
 		connMap:  make(map[net.Conn]string),
+		logger:   zap.NewNop(),
+	}
+}
+
+// SetLogger injects the zap logger (default is no-op).
+func (sm *SessionManager) SetLogger(logger *zap.Logger) {
+	if logger != nil {
+		sm.logger = logger
 	}
 }
 
@@ -45,9 +52,11 @@ func (sm *SessionManager) Connect(conn net.Conn, uid, deviceType, sfVer, hwVer s
 
 	sm.mu.Lock()
 
-	// 如果UID已存在旧连接，先关闭
 	if old, ok := sm.sessions[uid]; ok {
-		log.Printf("⚠️ 设备 %s 重复注册，关闭旧连接 %s", uid, old.Conn.RemoteAddr())
+		sm.logger.Warn("device duplicate register, closing old conn",
+			zap.String("uid", uid),
+			zap.String("old_addr", old.Conn.RemoteAddr().String()),
+		)
 		// v12.2 P1: 在删除旧连接前，记录需要通知断线的UID
 		// 根因: 如果先delete(connMap)再Close()，旧goroutine的defer中GetUIDByConn返回""
 		//       导致NotifyDisconnect永远不被调用，OTA monitor永远检测不到断线
@@ -73,7 +82,13 @@ func (sm *SessionManager) Connect(conn net.Conn, uid, deviceType, sfVer, hwVer s
 
 	sm.sessions[uid] = session
 	sm.connMap[conn] = uid
-	log.Printf("✅ 设备注册成功: UID=%s 类型=%s 版本=%s HW=%s 地址=%s", uid, deviceType, sfVer, hwVer, conn.RemoteAddr())
+	sm.logger.Info("device registered",
+		zap.String("uid", uid),
+		zap.String("type", deviceType),
+		zap.String("sf_ver", sfVer),
+		zap.String("hw_ver", hwVer),
+		zap.String("addr", conn.RemoteAddr().String()),
+	)
 	sm.mu.Unlock()
 
 	// v12.2 P1: 释放锁后调用断线回调（避免持锁调用外部函数导致潜在死锁）
@@ -105,9 +120,16 @@ func (sm *SessionManager) Disconnect(conn net.Conn) {
 	if session, exists := sm.sessions[uid]; exists {
 		if session.Conn == conn {
 			delete(sm.sessions, uid)
-			log.Printf("🔌 设备断开: UID=%s 地址=%s", uid, conn.RemoteAddr())
+			sm.logger.Info("device disconnected",
+				zap.String("uid", uid),
+				zap.String("addr", conn.RemoteAddr().String()),
+			)
 		} else {
-			log.Printf("🔌 旧连接断开(已被新连接替换,保留session): UID=%s 旧=%s 新=%s", uid, conn.RemoteAddr(), session.Conn.RemoteAddr())
+			sm.logger.Info("stale conn closed, session retained for newer conn",
+				zap.String("uid", uid),
+				zap.String("old_addr", conn.RemoteAddr().String()),
+				zap.String("new_addr", session.Conn.RemoteAddr().String()),
+			)
 		}
 	}
 	// 无论如何都清除 connMap 中的旧连接映射
@@ -169,7 +191,10 @@ func (sm *SessionManager) DisconnectByUID(uid string) bool {
 	sm.mu.Unlock()
 
 	conn.Close()
-	log.Printf("🔌 [安全] 按UID强制断开TCP连接: UID=%s 地址=%s", uid, conn.RemoteAddr())
+	sm.logger.Info("force disconnect by uid (security)",
+		zap.String("uid", uid),
+		zap.String("addr", conn.RemoteAddr().String()),
+	)
 
 	// 通知OTA可靠性服务设备断线
 	if sm.OnDisconnect != nil {

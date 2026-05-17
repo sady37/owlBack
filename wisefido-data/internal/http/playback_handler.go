@@ -11,6 +11,8 @@ import (
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/service"
 
+	"owl-common/alarm"
+
 	"go.uber.org/zap"
 )
 
@@ -43,9 +45,9 @@ type radarPlaybackBody struct {
 
 func replayKindFromAlarmEventType(et string) string {
 	switch strings.TrimSpace(et) {
-	case "Fall", "SittingOnGround":
+	case alarm.Fall, alarm.SittingOnGround:
 		return "track"
-	case "HeartRateAlert", "RespRateAlert", "ApneaHypopnea", "WeakBiometricSignal":
+	case alarm.HeartRateAlert, alarm.RespRateAlert, alarm.ApneaHypopnea, alarm.WeakBiometricSignal:
 		return "vital"
 	default:
 		return "unknown"
@@ -173,7 +175,7 @@ func (h *PlaybackHandler) PostRadarPlayback(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, Ok(result))
 }
 
-// PostVitalPlayback POST /api/vital/playback — 与 track 相同时间窗校验；业务查询可后续接 iot_timeseries
+// PostVitalPlayback POST /api/vital/playback — 与 track 相同时间窗校验；业务查询走 monitor_stream
 func (h *PlaybackHandler) PostVitalPlayback(w http.ResponseWriter, r *http.Request) {
 	reqTime := time.Now().UTC()
 	if r.Method != http.MethodPost {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"wisefido-qinglan/internal/service"
 
 	"github.com/gorilla/mux"
+	"go.uber.org/zap"
 )
 
 // DeviceStatusManager 设备状态管理器接口
@@ -28,13 +28,18 @@ type DeviceStatusManager interface {
 type APIHandler struct {
 	radarService        *service.RadarService
 	deviceStatusManager DeviceStatusManager
+	logger              *zap.Logger
 }
 
 // NewAPIHandler 创建API处理器
-func NewAPIHandler(radarService *service.RadarService, deviceStatusManager DeviceStatusManager) *APIHandler {
+func NewAPIHandler(radarService *service.RadarService, deviceStatusManager DeviceStatusManager, logger *zap.Logger) *APIHandler {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &APIHandler{
 		radarService:        radarService,
 		deviceStatusManager: deviceStatusManager,
+		logger:              logger,
 	}
 }
 
@@ -70,20 +75,29 @@ func (h *APIHandler) GetDeviceProperties(w http.ResponseWriter, r *http.Request)
 		keys = strings.Split(keysParam, ",")
 	}
 
-	log.Printf("🔍 [HTTP_API] GetDeviceProperties request: uid=%s, keys=%v", uid, keys)
+	h.logger.Debug("get device properties request",
+		zap.String("uid", uid),
+		zap.Strings("keys", keys),
+	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	properties, err := h.radarService.GetDeviceProperties(ctx, uid, keys)
 	if err != nil {
-		log.Printf("[HTTP_API] GetDeviceProperties FAILED: uid=%s, keys=%v, error=%v", uid, keys, err)
+		h.logger.Warn("get device properties failed",
+			zap.String("uid", uid),
+			zap.Strings("keys", keys),
+			zap.Error(err),
+		)
 		h.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to get device properties: %v", err))
 		return
 	}
 
-	dataJSON, _ := json.Marshal(properties)
-	log.Printf("🏁 [HTTP_API] GetDeviceProperties SUCCESS: uid=%s, keys=%v, properties_count=%d, data=%s", uid, keys, len(properties), string(dataJSON))
+	h.logger.Debug("get device properties success",
+		zap.String("uid", uid),
+		zap.Int("count", len(properties)),
+	)
 	h.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"data":    properties,
@@ -114,7 +128,10 @@ func (h *APIHandler) SetDeviceProperties(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	log.Printf("🔧 [HTTP_API] SetDeviceProperties request: uid=%s, raw_payload=%s", uid, string(body))
+	h.logger.Info("set device properties request",
+		zap.String("uid", uid),
+		zap.String("payload", string(body)),
+	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -130,7 +147,10 @@ func (h *APIHandler) SetDeviceProperties(w http.ResponseWriter, r *http.Request)
 		})
 		return
 	}
-	log.Printf("🏁 [HTTP_API] SetDeviceProperties SUCCESS: uid=%s, device_code=%d", uid, deviceCode)
+	h.logger.Info("set device properties success",
+		zap.String("uid", uid),
+		zap.Int("device_code", deviceCode),
+	)
 	h.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"success":     true,
 		"message":     "Device properties set successfully",
@@ -303,9 +323,8 @@ func (h *APIHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 func (h *APIHandler) sendJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Printf("Failed to encode JSON response: %v", err)
+		h.logger.Warn("encode json response", zap.Error(err))
 	}
 }
 

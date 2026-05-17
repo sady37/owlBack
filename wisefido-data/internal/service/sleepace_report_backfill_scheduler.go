@@ -97,6 +97,15 @@ func (s *SleepaceReportBackfillScheduler) tick(ctx context.Context) {
 		}
 		processed++
 	}
+	// no-op tick（无设备处理、无错误）走 Debug；有处理或错误才 Info（运维需看的真事件）
+	if processed == 0 && errored == 0 {
+		s.logger.Debug("[REPORT_BACKFILL_SCHEDULER] tick done (no-op)",
+			zap.Int("devices", len(devices)),
+			zap.Int("start_date", startDate),
+			zap.Int("end_date", endDate),
+		)
+		return
+	}
 	s.logger.Info("[REPORT_BACKFILL_SCHEDULER] tick done",
 		zap.Int("devices", len(devices)),
 		zap.Int("processed", processed),

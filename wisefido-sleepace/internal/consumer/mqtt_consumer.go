@@ -193,11 +193,14 @@ func (c *MQTTConsumer) syncDeviceStoreVersion(ctx context.Context, deviceCode st
 	if info == nil || info.Version == "" {
 		return
 	}
-	if err := c.cardDB.UpdateDeviceStoreReportedVersion(ctx, deviceCode, info.Version); err != nil {
+	changed, err := c.cardDB.UpdateDeviceStoreReportedVersion(ctx, deviceCode, info.Version)
+	if err != nil {
 		c.logger.Warn("update device_store reported version", zap.String("device_code", deviceCode), zap.String("version", info.Version), zap.Error(err))
 		return
 	}
-	c.logger.Info("device_store version synced", zap.String("device_code", deviceCode), zap.String("version", info.Version))
+	if changed {
+		c.logger.Info("device_store version synced", zap.String("device_code", deviceCode), zap.String("version", info.Version))
+	}
 }
 
 // MessageHandler returns the mqtt.MessageHandler to be used with mqtt.Client.Subscribe.

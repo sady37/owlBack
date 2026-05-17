@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -247,7 +246,7 @@ func LoadFromEnv() (*Config, error) {
 	cfg.MQTT.RadarDeviceMQTT.Server = getEnv("RADAR_MQTT_SERVER", "127.0.0.1")
 	// 检查服务器地址是否为本地回环地址（设备无法连接）
 	if cfg.MQTT.RadarDeviceMQTT.Server == "127.0.0.1" || cfg.MQTT.RadarDeviceMQTT.Server == "localhost" || cfg.MQTT.RadarDeviceMQTT.Server == "::1" {
-		log.Printf("⚠️ WARNING: RADAR_MQTT_SERVER is set to %s (localhost), devices cannot connect! Please set RADAR_MQTT_SERVER environment variable to a reachable IP address or hostname", cfg.MQTT.RadarDeviceMQTT.Server)
+		fmt.Fprintf(os.Stderr, "WARNING: RADAR_MQTT_SERVER=%s (localhost), devices cannot connect; set env to a reachable address\n", cfg.MQTT.RadarDeviceMQTT.Server)
 	}
 	cfg.MQTT.RadarDeviceMQTT.Port = parseInt(getEnv("RADAR_MQTT_PORT", "8883"), 8883) // 默认加密端口
 	cfg.MQTT.RadarDeviceMQTT.Account = getEnv("RADAR_MQTT_ACCOUNT", "wfiot")

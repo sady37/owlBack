@@ -141,6 +141,7 @@ func (d *DoctorHandler) Ready(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetLatestIotTimeseries GET /doctor/iot-timeseries/latest?device_uid=... 需 X-Tenant-Id（UUID 或 tenant_name）
+// v2: 查 monitor_stream 最新一行（按 devices.device_uid → device_addr 反查）。
 func (d *DoctorHandler) GetLatestIotTimeseries(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -160,29 +161,28 @@ func (d *DoctorHandler) GetLatestIotTimeseries(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusOK, Fail("tenant_id is required"))
 		return
 	}
-	tenantID, err := ResolveTenantIDFromHeader(r.Context(), d.tenants, tenantRaw)
-	if err != nil {
+	if _, err := ResolveTenantIDFromHeader(r.Context(), d.tenants, tenantRaw); err != nil {
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-	const q = `SELECT id, tenant_id::text, device_id::text, device_uid, "timestamp", topic_type, category, data_value,
-		branch_name, building_name, unit_name, room_name, bed_name
-		FROM iot_timeseries WHERE tenant_id = $1::uuid AND device_uid = $2 ORDER BY "timestamp" DESC LIMIT 1`
+	const q = `
+		SELECT ms.ts, host(ms.device_addr) AS device_addr, ms.device_type, ms.stream_type, ms.payload, ms.trace_id
+		FROM monitor_stream ms
+		JOIN devices d ON d.device_ipv6 = ms.device_addr
+		WHERE d.device_uid = $1
+		ORDER BY ms.ts DESC LIMIT 1
+	`
 	var (
-		id                           int64
-		tid, did, duid               sql.NullString
-		tsMs                         int64
-		topicType, category          sql.NullString
-		dataValue                    []byte
-		branchName, buildingName     sql.NullString
-		unitName, roomName, bedName  sql.NullString
+		ts                                       time.Time
+		deviceAddr                               string
+		deviceType, streamType, traceID          sql.NullString
+		payload                                  []byte
 	)
-	err = d.db.QueryRowContext(r.Context(), q, tenantID, deviceUID).Scan(
-		&id, &tid, &did, &duid, &tsMs, &topicType, &category, &dataValue,
-		&branchName, &buildingName, &unitName, &roomName, &bedName,
+	err := d.db.QueryRowContext(r.Context(), q, deviceUID).Scan(
+		&ts, &deviceAddr, &deviceType, &streamType, &payload, &traceID,
 	)
 	if err == sql.ErrNoRows {
-		writeJSON(w, http.StatusOK, Fail("no row for tenant_id and device_uid"))
+		writeJSON(w, http.StatusOK, Fail("no monitor_stream row for device_uid"))
 		return
 	}
 	if err != nil {
@@ -190,28 +190,18 @@ func (d *DoctorHandler) GetLatestIotTimeseries(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusOK, Fail("query failed"))
 		return
 	}
-	var dv any
-	if len(dataValue) > 0 {
-		_ = json.Unmarshal(dataValue, &dv)
+	var pl any
+	if len(payload) > 0 {
+		_ = json.Unmarshal(payload, &pl)
 	}
-	out := map[string]any{
-		"id":            id,
-		"tenant_id":     tid.String,
-		"device_uid":    nullStr(duid),
-		"timestamp":     tsMs,
-		"topic_type":    nullStr(topicType),
-		"category":      nullStr(category),
-		"data_value":    dv,
-		"branch_name":   nullStr(branchName),
-		"building_name": nullStr(buildingName),
-		"unit_name":     nullStr(unitName),
-		"room_name":     nullStr(roomName),
-		"bed_name":      nullStr(bedName),
-	}
-	if did.Valid {
-		out["device_id"] = did.String
-	}
-	writeJSON(w, http.StatusOK, Ok(out))
+	writeJSON(w, http.StatusOK, Ok(map[string]any{
+		"ts":          ts.UnixMilli(),
+		"device_addr": deviceAddr,
+		"device_type": nullStr(deviceType),
+		"stream_type": nullStr(streamType),
+		"trace_id":    nullStr(traceID),
+		"payload":     pl,
+	}))
 }
 
 func nullStr(ns sql.NullString) string {

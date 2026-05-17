@@ -2,16 +2,16 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"reflect"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 	"wisefido-data/internal/config"
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/repository"
@@ -22,13 +22,15 @@ import (
 
 // RadarInstall Radar 安装配置服务
 // 雷达设备的查询与设置仅通过 qinglan_client（PUT/GET wisefido-qinglan /api/v1/radar/devices/{uid}/properties 等），无其他设备路径。
-// 画布 layout 从 config_versions(config_type=room_layout, entity_id=room_id) 读写；无则回退到 rooms.layout_config。
+// 画布 layout 走 room_visual_layout 表（PK=spatial_prefix，canvas JSONB）；
+// 2026-05-16 cutover：废弃 v1 的 rooms.layout_config 列 + config_versions 表（v2 都不存在）。
 type RadarInstall struct {
 	config            *config.Config
+	db                *sql.DB
 	devicesRepo       repository.DevicesRepository
 	cardsRepo         repository.CardsRepository
-	configVersionsRepo repository.ConfigVersionsRepository
-	unitsRepo         repository.UnitsRepository // 用于 layout 回退：config_versions 无数据时读 rooms.layout_config
+	configVersionsRepo repository.ConfigVersionsRepository // 保留参数兼容；layout 路径已不再用
+	unitsRepo         repository.UnitsRepository
 	qinglanClient     *QinglanClient
 	logger            *zap.Logger
 	// 订阅管理器：记录哪些设备需要订阅（device_id -> bool）
@@ -38,9 +40,10 @@ type RadarInstall struct {
 }
 
 // NewRadarInstall 创建 Radar 安装配置服务
-func NewRadarInstall(cfg *config.Config, devicesRepo repository.DevicesRepository, cardsRepo repository.CardsRepository, configVersionsRepo repository.ConfigVersionsRepository, unitsRepo repository.UnitsRepository, qinglanClient *QinglanClient, logger *zap.Logger) *RadarInstall {
+func NewRadarInstall(cfg *config.Config, db *sql.DB, devicesRepo repository.DevicesRepository, cardsRepo repository.CardsRepository, configVersionsRepo repository.ConfigVersionsRepository, unitsRepo repository.UnitsRepository, qinglanClient *QinglanClient, logger *zap.Logger) *RadarInstall {
 	return &RadarInstall{
 		config:            cfg,
+		db:                db,
 		devicesRepo:       devicesRepo,
 		cardsRepo:         cardsRepo,
 		configVersionsRepo: configVersionsRepo,
@@ -59,29 +62,50 @@ func (s *RadarInstall) ListCardDevices(ctx context.Context, tenantID, cardID str
 	return s.cardsRepo.GetCardDevices(ctx, tenantID, cardID)
 }
 
-// ListCardDevicesByDeviceID 通过 device_id 查找所属卡片，返回 card_id、room_id、该卡设备列表及 room 的 layout 配置（初始化时一次返回，供画布 Bind 与加载 layout）
-// room_id 来自 devices；layout_config 优先从 rooms.layout_config（当前布局），无则从 config_versions（历史）取最新一条。
-func (s *RadarInstall) ListCardDevicesByDeviceID(ctx context.Context, tenantID, deviceID string) (cardID, roomID string, devices []repository.CardDeviceItem, layoutConfig json.RawMessage, err error) {
+// ListCardDevicesByDeviceID 通过 device_id 查找所属卡片，返回 card_id、room_id (/88 fallback 锚)、
+// spatialPrefix (/128 device CIDR，本 canvas 的 save target)、该卡设备列表及 layout 配置（三层 fallback 取到的最具体一份）。
+//
+// scope 来源 = URL 切入点：当前 URL 是 device 切入，故 spatialPrefix 即该 device 的 /128 CIDR。
+// 未来若新增 room/unit 切入 URL，新 handler 负责返回相应 /88 或 /80 prefix。
+func (s *RadarInstall) ListCardDevicesByDeviceID(ctx context.Context, tenantID, deviceID string) (cardID, roomID, spatialPrefix string, devices []repository.CardDeviceItem, layoutConfig json.RawMessage, err error) {
 	if s.cardsRepo == nil {
-		return "", "", nil, nil, fmt.Errorf("cards repository not available")
+		return "", "", "", nil, nil, fmt.Errorf("cards repository not available")
 	}
 	cardID, err = s.cardsRepo.GetCardIDByDeviceID(ctx, tenantID, deviceID)
 	if err != nil {
-		return "", "", nil, nil, err
+		return "", "", "", nil, nil, err
 	}
 	devices, err = s.cardsRepo.GetCardDevices(ctx, tenantID, cardID)
 	if err != nil {
-		return "", "", nil, nil, err
+		return "", "", "", nil, nil, err
 	}
+	// 入参 deviceIPv6 (host /128) 直接喂给 layout 查询；三档 fallback 走
+	//   /128 device 局部 → /88 room → /80 unit
+	// 都没命中再 fallback 到 repo 老 stub。
 	roomID = ""
+	spatialPrefix = ""
+	devLookup := ""
 	if s.devicesRepo != nil {
 		dev, e := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
-		if e == nil && dev.RoomID.Valid && dev.RoomID.String != "" {
-			roomID = dev.RoomID.String
+		if e == nil && dev != nil {
+			if dev.DeviceIPv6 != "" {
+				devLookup = dev.DeviceIPv6 // 完整 /128，让 getCurrentLayoutByRoomID 三层 fallback
+				// API 返给 FE：
+				//   - spatial_prefix = /128 device CIDR（save target，URL 切入点决定 scope）
+				//   - room_id        = /88 room CIDR（layout 加载 fallback 锚 + 老 FE 兼容）
+				spatialPrefix = dev.DeviceIPv6 + "/128"
+				if rc, perr := normalizeRoomPrefix88(dev.DeviceIPv6); perr == nil {
+					roomID = rc
+				}
+			}
+			if roomID == "" && dev.RoomID.Valid && dev.RoomID.String != "" {
+				roomID = dev.RoomID.String
+				devLookup = roomID
+			}
 		}
 	}
-	if roomID != "" {
-		layoutConfig = s.getCurrentLayoutByRoomID(ctx, tenantID, roomID)
+	if devLookup != "" {
+		layoutConfig = s.getCurrentLayoutByRoomID(ctx, tenantID, devLookup)
 	}
 
 	// Inject device bindings into layout for unit-level templates that contain
@@ -90,7 +114,7 @@ func (s *RadarInstall) ListCardDevicesByDeviceID(ctx context.Context, tenantID, 
 		layoutConfig = injectDeviceBindingsIntoLayout(layoutConfig, devices, s.logger)
 	}
 
-	return cardID, roomID, devices, layoutConfig, nil
+	return cardID, roomID, spatialPrefix, devices, layoutConfig, nil
 }
 
 // injectDeviceBindingsIntoLayout 对 layout 中 device_id 为空的 Radar/Sleepad/Sensor 对象，
@@ -217,91 +241,221 @@ func nestedString(m map[string]any, keys ...string) (string, bool) {
 	return "", false
 }
 
-// getCurrentLayoutByRoomID 取房间当前布局：优先 rooms.layout_config，再回退 units.layout_config（统一楼层布局），最后 config_versions 最新一条（历史）。
+// getCurrentLayoutByRoomID 取房间当前布局：直接读 room_visual_layout.canvas（PK=spatial_prefix）。
+//
+// 2026-05-16 cutover：废弃 v1 的 rooms.layout_config / units.layout_config / config_versions 链
+// （v2 schema 这三处都不存在；旧实现写入静默失败、读永远 nil）。详 owlBack/doc/AI_fall_detect 与
+// schema 27_room_visual_layout.sql。
+//
+// roomID 应是 /88 CIDR 文本（如 "fd00:0:3:111:3:300::/88"）。room /88 找不到时回退 unit /80
+// （unit-level 共享布局；schema rvl_prefix_scope CHECK 允许 80/88 两种 masklen）。
 func (s *RadarInstall) getCurrentLayoutByRoomID(ctx context.Context, tenantID, roomID string) json.RawMessage {
-	if s.unitsRepo != nil {
-		room, err := s.unitsRepo.GetRoom(ctx, tenantID, roomID)
-		if err == nil {
-			if room.LayoutConfig.Valid && room.LayoutConfig.String != "" {
-				return json.RawMessage(room.LayoutConfig.String)
-			}
-			// 房间无独立布局时，回退到单元级布局（统一楼层布局）
-			if room.UnitID != "" {
-				unit, uErr := s.unitsRepo.GetUnit(ctx, tenantID, room.UnitID)
-				if uErr == nil && unit.LayoutConfig.Valid && unit.LayoutConfig.String != "" {
-					return json.RawMessage(unit.LayoutConfig.String)
-				}
+	if s.db == nil || roomID == "" {
+		return nil
+	}
+	startCIDR, err := normalizeLayoutPrefix(roomID)
+	if err != nil {
+		return nil
+	}
+	// 三档 fallback：longest-prefix-wins (device /128 → room /88 → unit /80)
+	// 起点视入参 masklen 而定；广 scope 入参（/80）不会回看 device 局部，避免越权。
+	startBits, _ := masklenOfCIDR(startCIDR)
+	for _, m := range []int{128, 88, 80} {
+		if m > startBits {
+			continue // 不向更精确层试探
+		}
+		var lookup string
+		if m == startBits {
+			lookup = startCIDR
+		} else {
+			lookup = truncateCIDRToMask(startCIDR, m)
+			if lookup == "" {
+				continue
 			}
 		}
-	}
-	if s.configVersionsRepo != nil {
-		cv, err := s.configVersionsRepo.GetConfigVersionAtTime(ctx, tenantID, "room_layout", roomID, time.Now())
-		if err == nil && len(cv.ConfigData) > 0 {
-			return cv.ConfigData
+		if canvas := s.queryRoomVisualLayoutCanvas(ctx, lookup); len(canvas) > 0 {
+			return canvas
 		}
 	}
 	return nil
 }
 
-// GetLayoutConfigByRoomID 按 room_id 查询 config_versions 中 config_type='room_layout' 的最新生效配置（用于按时间取历史）；当前布局请用 getCurrentLayoutByRoomID / ListCardDevicesByDeviceID。
-func (s *RadarInstall) GetLayoutConfigByRoomID(ctx context.Context, tenantID, roomID string) (json.RawMessage, error) {
-	if s.configVersionsRepo == nil || roomID == "" {
-		return nil, nil
-	}
-	cv, err := s.configVersionsRepo.GetConfigVersionAtTime(ctx, tenantID, "room_layout", roomID, time.Now())
+// masklenOfCIDR 取 CIDR 的 masklen；失败返回 0。
+func masklenOfCIDR(cidr string) (int, error) {
+	p, err := netip.ParsePrefix(cidr)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
+		return 0, err
 	}
-	return cv.ConfigData, nil
+	return p.Bits(), nil
 }
 
-// SaveRoomLayout 保存房间布局：更新 rooms.layout_config（当前布局），并写入 config_versions（历史版本）。
+// normalizeRoomPrefix88 任意 IPv6 (host 或 CIDR) → /88 room CIDR，用于 API 返给 FE 显示的 room_id。
+// 与 normalizeLayoutPrefix 不同：本函数永远输出 /88，忽略 host bits（用于 FE 上下文识别 room）。
+func normalizeRoomPrefix88(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", fmt.Errorf("empty")
+	}
+	if idx := strings.IndexByte(s, '/'); idx >= 0 {
+		s = s[:idx]
+	}
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
+		return "", err
+	}
+	return netip.PrefixFrom(addr, 88).Masked().String(), nil
+}
+
+// queryRoomVisualLayoutCanvas 一次 SELECT canvas FROM room_visual_layout WHERE spatial_prefix。
+func (s *RadarInstall) queryRoomVisualLayoutCanvas(ctx context.Context, spatialPrefix string) json.RawMessage {
+	var canvas []byte
+	err := s.db.QueryRowContext(ctx,
+		`SELECT canvas FROM room_visual_layout WHERE spatial_prefix = $1::INET`,
+		spatialPrefix,
+	).Scan(&canvas)
+	if err != nil {
+		if err != sql.ErrNoRows && s.logger != nil {
+			s.logger.Debug("room_visual_layout SELECT failed",
+				zap.String("spatial_prefix", spatialPrefix), zap.Error(err))
+		}
+		return nil
+	}
+	return canvas
+}
+
+// sha256HexString sha256 hex 64 字符；用于 room_visual_layout.canvas_hash 检测改动。
+func sha256HexString(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// truncateCIDRToMask 把 CIDR 文本截短到 newMask 位并 mask 出 network 地址。
+//   "fd00:0:3:111:3:300::/88" + 80 → "fd00:0:3:111:3::/80"
+// 输入非法 / 已等于或更短 mask → 返回空。
+func truncateCIDRToMask(cidr string, newMask int) string {
+	p, err := netip.ParsePrefix(strings.TrimSpace(cidr))
+	if err != nil {
+		return ""
+	}
+	if p.Bits() <= newMask {
+		return ""
+	}
+	return netip.PrefixFrom(p.Addr(), newMask).Masked().String()
+}
+
+// GetLayoutConfigByRoomID 公有版本 layout query；与 getCurrentLayoutByRoomID 等价。
+//
+// 2026-05-16 cutover：废弃 v1 config_versions 历史时间点 query；当前 schema
+// (room_visual_layout) 不保留版本历史，每次 SaveRoomLayout UPDATE 同一行（version++）。
+// 时间点 query 语义不再支持；caller 想要历史需另设 room_visual_layout_history。
+func (s *RadarInstall) GetLayoutConfigByRoomID(ctx context.Context, tenantID, roomID string) (json.RawMessage, error) {
+	_ = tenantID // tenantID 隐含在 roomID 的 /48 prefix；保留参数兼容
+	if roomID == "" {
+		return nil, nil
+	}
+	return s.getCurrentLayoutByRoomID(ctx, tenantID, roomID), nil
+}
+
+// SaveRoomLayout UPSERT 房间布局到 room_visual_layout 表（PK=spatial_prefix）。
+//
+// 2026-05-16 cutover：废弃 v1 的 rooms.layout_config 列 + config_versions 表（schema 都不存在；
+// 旧实现写入静默失败）。new schema 27_room_visual_layout：spatial_prefix + canvas JSONB + canvas_hash
+// + version。canvas 与既有 SHA256 一致时跳过（不增 version），否则 UPSERT，version 自增。
+//
+// roomID 接受：
+//   - host-only IPv6 (FE 常用，URL path 不能含 "/")：默认追加 /88 (room scope)
+//   - 已带 /80 或 /88 mask 的 CIDR
+// schema CHECK rvl_prefix_scope 仅允许 /80 (unit) 或 /88 (room) masklen。
 func (s *RadarInstall) SaveRoomLayout(ctx context.Context, tenantID, roomID string, configData []byte) error {
+	_ = tenantID // tenantID 隐含在 roomID 的 /48 prefix，schema CHECK 校验
 	if roomID == "" {
 		return fmt.Errorf("room_id is required")
 	}
 	if len(configData) == 0 {
 		return fmt.Errorf("config_data is required")
 	}
-
-	// 1) 当前布局写入 rooms 表
-	if s.unitsRepo != nil {
-		room, _ := s.unitsRepo.GetRoom(ctx, tenantID, roomID)
-		if room != nil {
-			room.LayoutConfig = sql.NullString{String: string(configData), Valid: true}
-			if err := s.unitsRepo.UpdateRoom(ctx, tenantID, roomID, room); err != nil {
-				s.logger.Warn("SaveRoomLayout: update rooms.layout_config failed", zap.String("room_id", roomID), zap.Error(err))
-			}
-		}
+	if s.db == nil {
+		return fmt.Errorf("db not available")
+	}
+	spatialPrefix, err := normalizeLayoutPrefix(roomID)
+	if err != nil {
+		return fmt.Errorf("room_id invalid: %w", err)
 	}
 
-	// 2) 历史版本写入 config_versions（与当前一致则跳过）
-	if s.configVersionsRepo != nil {
-		cv, err := s.configVersionsRepo.GetConfigVersionAtTime(ctx, tenantID, "room_layout", roomID, time.Now())
-		if err == nil && len(cv.ConfigData) > 0 {
-			var a, b interface{}
-			if errA := json.Unmarshal(configData, &a); errA == nil {
-				if errB := json.Unmarshal(cv.ConfigData, &b); errB == nil && reflect.DeepEqual(a, b) {
-					s.logger.Debug("SaveRoomLayout: config unchanged, skip config_versions insert", zap.String("room_id", roomID))
-					return nil
-				}
-			}
-		}
-		cfg := &domain.ConfigVersion{
-			ConfigType:       "room_layout",
-			EntityID:         roomID,
-			CurrentEntityID:  roomID,
-			ConfigData:       configData,
-			ValidFrom:        time.Now(),
-		}
-		if _, err := s.configVersionsRepo.CreateConfigVersion(ctx, tenantID, cfg); err != nil {
-			s.logger.Warn("SaveRoomLayout: create config_version failed", zap.String("room_id", roomID), zap.Error(err))
-		}
+	canvasHash := sha256HexString(configData)
+
+	// 比对 hash：与已存一致则跳过（不增 version、不更新 updated_at）
+	var existingHash sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT canvas_hash FROM room_visual_layout WHERE spatial_prefix = $1::INET`,
+		spatialPrefix,
+	).Scan(&existingHash); err == nil && existingHash.Valid && existingHash.String == canvasHash {
+		s.logger.Debug("SaveRoomLayout: canvas unchanged, skip", zap.String("spatial_prefix", spatialPrefix))
+		return nil
 	}
+
+	// UPSERT：INSERT ... ON CONFLICT DO UPDATE（version + 1, updated_at = NOW()）
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO room_visual_layout (spatial_prefix, canvas, canvas_hash, version, updated_at)
+		VALUES ($1::INET, $2::JSONB, $3, 1, NOW())
+		ON CONFLICT (spatial_prefix) DO UPDATE
+		SET canvas = EXCLUDED.canvas,
+		    canvas_hash = EXCLUDED.canvas_hash,
+		    version = room_visual_layout.version + 1,
+		    updated_at = NOW()
+	`, spatialPrefix, string(configData), canvasHash)
+	if err != nil {
+		s.logger.Warn("SaveRoomLayout: upsert room_visual_layout failed",
+			zap.String("spatial_prefix", spatialPrefix), zap.Error(err))
+		return fmt.Errorf("save room layout: %w", err)
+	}
+	s.logger.Info("SaveRoomLayout: upserted",
+		zap.String("spatial_prefix", spatialPrefix), zap.String("canvas_hash", canvasHash))
 	return nil
+}
+
+// normalizeLayoutPrefix 把入参 roomID/deviceID 规范成 spatial_prefix CIDR（/80, /88 或 /128）。
+//
+// 三档作用域：
+//   - /80  unit 公共布局：caller 显式传 "fd00:0:3:111:3::/80"
+//   - /88  room 默认布局：host-only 不带 mask 时默认补 /88
+//   - /128 device 局部布局：caller 显式传 "fd00:0:3:111:3:300:7cd4:570c/128" 或带任何 mask 但 host bits 非零
+//
+// host-only 入参（不含 "/")时的默认推断：host bits 全 0 → /88 room；host bits 非零 → /128 device
+//
+//   - "fd00:0:3:111:3::"                 → "fd00:0:3:111:3::/88"  (room)
+//   - "fd00:0:3:111:3:300::"             → "fd00:0:3:111:3:300::/88" (room)
+//   - "fd00:0:3:111:3:300:7cd4:570c"     → "fd00:0:3:111:3:300:7cd4:570c/128" (device)
+//   - "fd00:0:3:111:3:300::/88"          → 原样
+//   - "fd00:0:3:111:3::/80"              → 原样 (unit 公共)
+//   - 其他 masklen / 非法 IPv6            → error
+func normalizeLayoutPrefix(roomID string) (string, error) {
+	s := strings.TrimSpace(roomID)
+	if s == "" {
+		return "", fmt.Errorf("empty")
+	}
+	if !strings.Contains(s, "/") {
+		// host-only：host bits 非零认作 device (/128)，否则 /88 room
+		addr, err := netip.ParseAddr(s)
+		if err != nil {
+			return "", fmt.Errorf("parse addr %q: %w", roomID, err)
+		}
+		// 判断 /88 mask 之下还有非零 bits → device 局部
+		room88 := netip.PrefixFrom(addr, 88).Masked()
+		if room88.Addr() != addr {
+			s = s + "/128"
+		} else {
+			s = s + "/88"
+		}
+	}
+	p, err := netip.ParsePrefix(s)
+	if err != nil {
+		return "", fmt.Errorf("parse cidr %q: %w", roomID, err)
+	}
+	if p.Bits() != 80 && p.Bits() != 88 && p.Bits() != 128 {
+		return "", fmt.Errorf("masklen %d not in {80,88,128} (room_visual_layout schema CHECK)", p.Bits())
+	}
+	return p.Masked().String(), nil
 }
 
 // GetDeviceUID 根据 device_id 和 tenant_id 获取设备 UID；设备不存在、未绑定或非雷达类型时返回明确错误

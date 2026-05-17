@@ -3,16 +3,13 @@ package decode
 import (
 	"encoding/base64"
 	"fmt"
-	"log"
 	"math"
-	"os"
 	"strconv"
 	"strings"
 
 	"owl-common/alarm"
 	"owl-common/observation"
 	"owl-common/radar"
-	//"owl-common/utils"
 )
 
 // RadarDecoder 解码 Radar 数据（与订阅无关，负责把所有收到的 MQTT 做统一转换）
@@ -510,10 +507,6 @@ items 是 []interface{}，每个元素是一个 map[string]interface{}。
 */
 func decodeRadarEvent(data map[string]interface{}) ([]interface{}, error) {
 	eventType := toInt(data["type"])
-	if os.Getenv("QINGLAN_VERBOSE_LOG") == "true" {
-		log.Printf("[DECODE_EVENT_DEBUG] raw data: type=%v, data=%v", eventType, data["data"])
-	}
-
 	var items []interface{}
 
 	dataField, hasData := data["data"]

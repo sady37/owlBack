@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -34,12 +33,13 @@ type DeviceSubscriptionManager interface {
 
 // Server HTTP服务器
 type Server struct {
-	config             *commonconfig.HTTPConfig
-	radarService       *service.RadarService
-	authService        *AuthService
+	config              *commonconfig.HTTPConfig
+	radarService        *service.RadarService
+	authService         *AuthService
 	subscriptionManager DeviceSubscriptionManager
-	server             *http.Server
-	otaHandler         *OTAHandler
+	server              *http.Server
+	otaHandler          *OTAHandler
+	logger              *zap.Logger
 }
 
 // SetOTAHandler sets the OTA handler for the HTTP server
@@ -59,37 +59,37 @@ func NewServer(
 	subscriptionManager DeviceSubscriptionManager,
 	cardMapping *service.CardMappingService,
 ) *Server {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	authService := NewAuthService(appConfig, db, deviceRepo, redisClient, logger, subscriptionManager, cardMapping)
 	return &Server{
-		config:             cfg,
-		radarService:       radarService,
-		authService:        authService,
+		config:              cfg,
+		radarService:        radarService,
+		authService:         authService,
 		subscriptionManager: subscriptionManager,
+		logger:              logger,
 	}
 }
 
 // Start 启动HTTP服务器
 func (s *Server) Start() error {
 	router := mux.NewRouter()
-	
-	// 创建API处理器（传入 subscriptionManager 用于设备状态查询）
-	apiHandler := NewAPIHandler(s.radarService, s.subscriptionManager)
+
+	apiHandler := NewAPIHandler(s.radarService, s.subscriptionManager, s.logger)
 	apiHandler.RegisterRoutes(router)
 
-	// Register OTA routes if handler is set
 	if s.otaHandler != nil {
 		s.otaHandler.RegisterRoutes(router)
 	}
 
-	// HTTP firmware download for TCP (old MCU) devices
-	// Old ESP32 MCU downloads firmware via HTTP (not HTTPS)
 	fwDir := filepath.Join("..", "ota")
 	router.PathPrefix("/firmware/").Handler(http.StripPrefix("/firmware/", http.FileServer(http.Dir(fwDir))))
-	log.Printf("HTTP firmware server: /firmware/ → %s", fwDir)
+	s.logger.Info("firmware http server",
+		zap.String("path", "/firmware/"),
+		zap.String("dir", fwDir),
+	)
 
-	// 注意：auth 路由已移至独立的 HTTPS 服务器，此处不再注册
-	
-	// 创建HTTP服务器
 	s.server = &http.Server{
 		Addr:         s.config.GetAddr(),
 		Handler:      router,
@@ -97,29 +97,26 @@ func (s *Server) Start() error {
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-	
-	log.Printf("Starting HTTP server on %s", s.config.GetAddr())
-	
-	// 启动服务器
+
+	s.logger.Info("starting http server", zap.String("addr", s.config.GetAddr()))
 	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("HTTP server error: %w", err)
 	}
-	
 	return nil
 }
 
 // handleAuth 处理设备认证请求
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
-	log.Printf("Received auth request from %s", r.RemoteAddr)
-	
+	s.logger.Debug("auth request received", zap.String("remote", r.RemoteAddr))
+
 	var req models.AuthRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("Failed to decode auth request body: %v", err)
+		s.logger.Warn("decode auth body", zap.Error(err))
 		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("Processing auth request for device UID: %s", req.UID)
+	s.logger.Info("processing auth request", zap.String("uid", req.UID))
 
 	ctx := r.Context()
 	remoteAddr := r.RemoteAddr
@@ -129,12 +126,12 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 
 	response, err := s.authService.AuthenticateDevice(ctx, &req, remoteAddr)
 	if err != nil {
-		log.Printf("Authentication failed for device %s: %v", req.UID, err)
+		s.logger.Warn("auth failed", zap.String("uid", req.UID), zap.Error(err))
 		http.Error(w, fmt.Sprintf("Authentication failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Authentication completed for device %s, response code: %d", req.UID, response.Code)
+	s.logger.Info("auth complete", zap.String("uid", req.UID), zap.Int("code", response.Code))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }

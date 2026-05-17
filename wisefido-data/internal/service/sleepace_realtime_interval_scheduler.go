@@ -188,7 +188,8 @@ func (s *SleepaceIntervalScheduler) checkDevice(ctx context.Context, d sleepadDe
 		// 加 1h backoff 缓存（只 log 一次）。bind 流程成功时会调 InvalidateUnbound 清此 key。
 		if isSleepaceUserNotFound(err) {
 			_ = s.redisClient.Set(ctx, intervalUnboundKey+":"+d.deviceID, "1", intervalUnboundTTL).Err()
-			s.logger.Info("[INTERVAL_SCHEDULER] device not bound at sleepace vendor, backoff",
+			// per-device 1h backoff，bind 流程 InvalidateUnbound 时才会重新尝试 — Debug 即可
+			s.logger.Debug("[INTERVAL_SCHEDULER] device not bound at sleepace vendor, backoff",
 				zap.String("device_id", d.deviceID),
 				zap.String("device_uid", d.deviceUID),
 				zap.Duration("ttl", intervalUnboundTTL))

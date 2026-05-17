@@ -48,7 +48,7 @@ const (
 // 详 doc/device_ipv6_migration_checklist.md
 type IoTStreamMessage struct {
 	// TDPv2 envelope
-	Producer       string `json:"producer"`                  // "device:<canonical_ipv6>"，BuildDeviceProducer(addr) 生成
+	Producer       string `json:"producer"`                  // canonical /128 IPv6（device-direct = device_addr；agent-derived = agent slot 内 IP）
 	SubjectEntity  string `json:"subject_entity,omitempty"`  // card_id (UUID) when bound; 空 = 未绑卡 (R-009)
 	SequenceNumber uint64 `json:"sequence_number,omitempty"` // producer 内单调
 
@@ -145,13 +145,18 @@ func FromStreamMap(values map[string]interface{}) (*IoTStreamMessage, error) {
 //   spatial.LongestPrefixMatch / spatial.DeriveDeviceAddr / ...
 // =============================================================================
 
-// BuildDeviceProducer 设备 Producer 标识：用 canonical IPv6（device_addr）。
-// 旧 UUID/MAC 路径已退役（device_ipv6 单程票 R-001）。
+// BuildDeviceProducer 设备 Producer 标识：返回设备自己的 canonical IPv6 /128 字符串。
+//
+// 2026-05-15 platform-agent cutover：
+//   - producer 列改 INET 类型；不再带 "device:" 前缀字符串
+//   - device-direct alarm 的 producer == device_addr（同一 /128），用 producer==device_addr 区分
+//     "设备直发" vs "agent 派生"（agent producer 在 fd00:0:fff0::/44 platform slot）
+//   - 详见 owlBack/doc/platform_agent_addressing.md §4.2 / §5.2
 func BuildDeviceProducer(addr netip.Addr) string {
 	if !addr.IsValid() {
 		return ""
 	}
-	return "device:" + addr.String()
+	return addr.String()
 }
 
 // NewIoTStreamMessageWithData 构造 envelope（device_ipv6 v2）。

@@ -1,97 +1,134 @@
-package consumer
-
-// 订阅的流与消费者（cardagg-group）：
+// stream_subscriber.go — 6 流订阅，按消息形态分两类 handler：
 //
-//	iot:monitor:stream         → consumer-monitor         → MonitorHandler
-//	iot:event:stream           → consumer-event           → EventHandler
-//	iot:alarm:stream           → consumer-alarm            → AlarmHandler
-//	config:alarmProcess:stream → consumer-alarm-process    → AlarmProcessHandler
-//	config:card:stream         → consumer-card-change      → CardChangeHandler
-//	config:alarmDevice:stream  → consumer-alarm-device     → AlarmDeviceHandler
+//   iot:monitor / iot:alarm / sensor:derived              → IoTHandler（解析后传 IoTStreamMessage）
+//   config:card / config:alarmDevice / config:alarmProcess → RawHandler（CloudEvents envelope，传 raw map）
+
+package consumer
 
 import (
 	"context"
 	"time"
 
-	rediscommon "owl-common/redis"
+	owlredis "owl-common/redis"
 
 	redislib "github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
 
-// StreamHandler 处理单条 stream 消息
-type StreamHandler interface {
-	Handle(ctx context.Context, msg interface{}) error
+type IoTHandler interface {
+	Handle(ctx context.Context, msg *owlredis.IoTStreamMessage) error
 }
 
-// Handlers 各流对应的 handler，由 main 构造后传入
+type RawHandler interface {
+	Handle(ctx context.Context, raw map[string]interface{}) error
+}
+
 type Handlers struct {
-	Monitor       StreamHandler // iot:monitor:stream
-	Event         StreamHandler // iot:event:stream
-	Alarm         StreamHandler // iot:alarm:stream
-	AlarmProcess  StreamHandler // config:alarmProcess:stream
-	CardChange    StreamHandler // config:card:stream
-	AlarmDevice   StreamHandler // config:alarmDevice:stream
+	Monitor      IoTHandler // iot:monitor:stream
+	Alarm        IoTHandler // iot:alarm:stream
+	SensorState  IoTHandler // sensor:state:stream
+	CardChange   RawHandler // config:card:stream
+	AlarmDevice  RawHandler // config:alarmDevice:stream
+	AlarmProcess RawHandler // config:alarmProcess:stream
 }
-
-const consumerGroup = "$cons-cardagg" // 与 state_service.go 一致
 
 const (
-	readCount = 10
-	readBlock = 5 * time.Second
+	consumerGroup = "$cons-cardagg"
+	readCount     = 10
+	readBlock     = 5 * time.Second
 )
 
-
-// SubscribeAll 在本包内直接订阅上述 5 个流，收到后调用 h 中对应 Handler。
 func SubscribeAll(ctx context.Context, logger *zap.Logger, client *redislib.Client, h Handlers) {
-	subs := []struct {
-		stream   string
-		consumer string
-		handler  StreamHandler
+	iotSubs := []struct {
+		stream, consumer string
+		handler          IoTHandler
 	}{
-		{rediscommon.StreamMonitor.Name, "consumer-monitor", h.Monitor},
-		{rediscommon.StreamEvent.Name, "consumer-event", h.Event},
-		{rediscommon.StreamAlarm.Name, "consumer-alarm", h.Alarm},
-		{rediscommon.StreamConfigAlarmProcess.Name, "consumer-alarm-process", h.AlarmProcess},
-		{rediscommon.StreamConfigCard.Name, "consumer-card-change", h.CardChange},
-		{rediscommon.StreamConfigAlarmDevice.Name, "consumer-alarm-device", h.AlarmDevice},
+		{owlredis.StreamMonitor.Name, "consumer-monitor", h.Monitor},
+		{owlredis.StreamAlarm.Name, "consumer-alarm", h.Alarm},
+		{owlredis.StreamSensorDerived.Name, "consumer-sensor-derived", h.SensorState},
 	}
-	for _, s := range subs {
-		if err := rediscommon.CreateConsumerGroup(ctx, client, s.stream, consumerGroup); err != nil {
+	rawSubs := []struct {
+		stream, consumer string
+		handler          RawHandler
+	}{
+		{owlredis.StreamConfigCard.Name, "consumer-card-change", h.CardChange},
+		{owlredis.StreamConfigAlarmDevice.Name, "consumer-alarm-device", h.AlarmDevice},
+		{owlredis.StreamConfigAlarmProcess.Name, "consumer-alarm-process", h.AlarmProcess},
+	}
+	for _, s := range iotSubs {
+		if err := owlredis.CreateConsumerGroup(ctx, client, s.stream, consumerGroup); err != nil {
 			logger.Warn("create consumer group", zap.String("stream", s.stream), zap.Error(err))
 		}
 	}
-	for _, s := range subs {
+	for _, s := range rawSubs {
+		if err := owlredis.CreateConsumerGroup(ctx, client, s.stream, consumerGroup); err != nil {
+			logger.Warn("create consumer group", zap.String("stream", s.stream), zap.Error(err))
+		}
+	}
+	for _, s := range iotSubs {
 		stream, consumer, handler := s.stream, s.consumer, s.handler
-		go runSubscriber(ctx, logger, client, consumerGroup, stream, consumer, handler)
+		go runIoTSubscriber(ctx, logger, client, stream, consumer, handler)
+	}
+	for _, s := range rawSubs {
+		stream, consumer, handler := s.stream, s.consumer, s.handler
+		go runRawSubscriber(ctx, logger, client, stream, consumer, handler)
 	}
 }
 
-func runSubscriber(ctx context.Context, logger *zap.Logger, client *redislib.Client, group, stream, consumer string, handler StreamHandler) {
-	logger.Info("subscriber started", zap.String("stream", stream))
+func runIoTSubscriber(ctx context.Context, logger *zap.Logger, client *redislib.Client, stream, consumer string, handler IoTHandler) {
+	logger.Info("iot subscriber started", zap.String("stream", stream))
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
-
-		msgs, err := rediscommon.ReadFromStreamWithBlock(ctx, client, stream, group, consumer, readCount, readBlock)
+		msgs, err := owlredis.ReadFromStreamWithBlock(ctx, client, stream, consumerGroup, consumer, readCount, readBlock)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			logger.Warn("read stream", zap.String("stream", stream), zap.Error(err))
+			logger.Warn("read iot stream", zap.String("stream", stream), zap.Error(err))
 			time.Sleep(time.Second)
 			continue
 		}
-
 		for _, m := range msgs {
-			if err := handler.Handle(ctx, m.Values); err != nil {
-				logger.Warn("handle error", zap.String("stream", stream), zap.Error(err))
+			parsed, err := owlredis.FromStreamMap(m.Values)
+			if err != nil {
+				logger.Warn("parse iot msg", zap.String("stream", stream), zap.Error(err))
+				client.XAck(ctx, stream, consumerGroup, m.ID)
+				continue
 			}
-			client.XAck(ctx, stream, group, m.ID)
+			if err := handler.Handle(ctx, parsed); err != nil {
+				logger.Warn("handle iot msg", zap.String("stream", stream), zap.Error(err))
+			}
+			client.XAck(ctx, stream, consumerGroup, m.ID)
 		}
 	}
 }
 
+func runRawSubscriber(ctx context.Context, logger *zap.Logger, client *redislib.Client, stream, consumer string, handler RawHandler) {
+	logger.Info("raw subscriber started", zap.String("stream", stream))
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		msgs, err := owlredis.ReadFromStreamWithBlock(ctx, client, stream, consumerGroup, consumer, readCount, readBlock)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			logger.Warn("read raw stream", zap.String("stream", stream), zap.Error(err))
+			time.Sleep(time.Second)
+			continue
+		}
+		for _, m := range msgs {
+			if err := handler.Handle(ctx, m.Values); err != nil {
+				logger.Warn("handle raw msg", zap.String("stream", stream), zap.Error(err))
+			}
+			client.XAck(ctx, stream, consumerGroup, m.ID)
+		}
+	}
+}

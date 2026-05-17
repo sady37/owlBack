@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
-	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -18,22 +17,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// QINGLAN_VERBOSE_LOG=true 时热路径用 Info / log.Printf；默认 Debug 或静默。
-func isQinglanVerboseLog() bool {
-	return os.Getenv("QINGLAN_VERBOSE_LOG") == "true"
-}
-
-// QinglanHotPathLog 供 subscriber 等包复用：默认 Debug，verbose 时 Info。
-func QinglanHotPathLog(logger *zap.Logger, msg string, fields ...zap.Field) {
-	if logger == nil {
-		return
-	}
-	if isQinglanVerboseLog() {
-		logger.Info(msg, fields...)
-		return
-	}
-	logger.Debug(msg, fields...)
-}
 
 // CardMappingService 定义卡片映射服务接口（避免导入循环）。
 //
@@ -85,11 +68,6 @@ func (p *StreamPublisher) GetCardID(ctx context.Context, deviceUID string) strin
 // PublishMonitor sends a redis.StreamMessage to iot:monitor:stream.
 func (p *StreamPublisher) PublishMonitor(ctx context.Context, msg *rediscommon.IoTStreamMessage) error {
 	return p.publishObservation(ctx, rediscommon.StreamMonitor, msg)
-}
-
-// PublishStat sends a redis.StreamMessage to iot:stat:stream.
-func (p *StreamPublisher) PublishStat(ctx context.Context, msg *rediscommon.IoTStreamMessage) error {
-	return p.publishObservation(ctx, rediscommon.StreamStat, msg)
 }
 
 // PublishEvent sends a redis.StreamMessage to iot:event:stream.
@@ -148,7 +126,7 @@ func (p *StreamPublisher) publishObservation(ctx context.Context, stream redisco
 	}
 	if skipQinglanIotHeadPublish(msg.SubjectEntity, msg.DeviceAddr) {
 		if p.logger != nil {
-			QinglanHotPathLog(p.logger, "skip iot publish: invalid device_addr",
+			p.logger.Debug("skip iot publish: invalid device_addr",
 				zap.String("stream", stream.Name),
 				zap.String("subject_entity", msg.SubjectEntity))
 		}
@@ -165,10 +143,12 @@ func (p *StreamPublisher) publishObservation(ctx context.Context, stream redisco
 		}
 	}
 	data := msg.ToStreamMap()
+	traceID := fmt.Sprintf("%s.%d", msg.Producer, msg.SequenceNumber)
 	if p.logger != nil {
 		streamLabel := streamLabelFrom(stream.Name, msg)
 		payload, _ := json.Marshal(msg.DataValue)
-		QinglanHotPathLog(p.logger, "publish to redis",
+		p.logger.Debug("publish to redis",
+			zap.String("trace_id", traceID),
 			zap.String("stream", streamLabel),
 			zap.String("cid", msg.SubjectEntity),
 			zap.String("device_addr", msg.DeviceAddr.String()),
@@ -179,6 +159,7 @@ func (p *StreamPublisher) publishObservation(ctx context.Context, stream redisco
 	_, err := rediscommon.PublishToStream(ctx, p.redisClient, stream.Name, data, maxLen, retention)
 	if err != nil && p.logger != nil {
 		p.logger.Error("publish observation failed",
+			zap.String("trace_id", traceID),
 			zap.String("stream", stream.Name),
 			zap.String("device_addr", msg.DeviceAddr.String()),
 			zap.Error(err))
@@ -228,22 +209,6 @@ func iotStreamMessageToMap(msg rediscommon.IoTStreamMessage) map[string]interfac
 	return (&m).ToStreamMap()
 }
 
-// GetOutputStreamName 获取输出流名称
-func (p *StreamPublisher) GetOutputStreamName(topicType string) string {
-	switch topicType {
-	case "monitor":
-		return rediscommon.StreamMonitor.Name
-	case "stat":
-		return rediscommon.StreamStat.Name
-	case "event":
-		return rediscommon.StreamEvent.Name
-	case "alarm":
-		return rediscommon.StreamAlarm.Name
-	default:
-		return rediscommon.StreamOther.Name
-	}
-}
-
 // PublishDeviceStatus 发布设备状态到 iot:event:stream（device 属于 event）。
 //
 // device_ipv6 单程票：addr 是路由主键；deviceUID 仅作 cardID 反查用。
@@ -270,7 +235,7 @@ func (p *StreamPublisher) PublishDeviceStatus(
 
 	if skipQinglanIotHeadPublish(msg.SubjectEntity, msg.DeviceAddr) {
 		if p.logger != nil {
-			QinglanHotPathLog(p.logger, "skip PublishDeviceStatus: invalid device_addr",
+			p.logger.Debug("skip PublishDeviceStatus: invalid device_addr",
 				zap.String("device_addr", addr.String()))
 		}
 		return nil
@@ -279,24 +244,6 @@ func (p *StreamPublisher) PublishDeviceStatus(
 	eventData := iotStreamMessageToMap(msg)
 	_, err := p.PublishToStream(ctx, rediscommon.StreamEvent.Name, eventData)
 	return err
-}
-
-// GetOutputStreamConfig 获取输出流配置
-func (p *StreamPublisher) GetOutputStreamConfig(topicType string) (maxLen int64, retentionSeconds int) {
-	var stream rediscommon.StreamDefinition
-	switch topicType {
-	case "monitor":
-		stream = rediscommon.StreamMonitor
-	case "stat":
-		stream = rediscommon.StreamStat
-	case "event":
-		stream = rediscommon.StreamEvent
-	case "alarm":
-		stream = rediscommon.StreamAlarm
-	default:
-		stream = rediscommon.StreamOther
-	}
-	return rediscommon.GetStreamConfig(stream, &p.config.Streams)
 }
 
 // StoreCommandResponse 存储命令响应

@@ -42,33 +42,13 @@ func NewConfigSubscriber(
 	}
 }
 
-// Start 启动配置变更订阅器
+// Start 仅日志：消费协程由 main.go runConfigCardStreamReader 启动 + XReadGroup MKSTREAM 隐式建组。
 func (s *ConfigSubscriber) Start(ctx context.Context) error {
-	// 订阅配置变更流（wisefido-data 发送）：
-	// config:card:stream - 卡片配置（BuildCardChangeMessage）
-	streams := []string{
-		rediscommon.StreamConfigCard.Name, // config:card:stream
-	}
-
-	// 创建 Consumer Group（如果不存在）
-	for _, stream := range streams {
-		if err := s.createConsumerGroupIfNotExists(ctx, stream); err != nil {
-			s.logger.Warn("Failed to create consumer group, will use XRead instead",
-				zap.String("stream", stream),
-				zap.Error(err),
-			)
-		}
-	}
-
 	s.logger.Info("Starting config change subscriber",
-		zap.Strings("streams", streams),
+		zap.String("stream", rediscommon.StreamConfigCard.Name),
 		zap.String("consumer_group", s.consumerGroup),
 		zap.String("consumer_name", s.consumerName),
 	)
-
-	// 注意：消费协程现在由 main.go 的 subscribeConfigStream 函数启动
-	// 这里仅做消费者组的初始化
-
 	return nil
 }
 
@@ -79,23 +59,14 @@ func (s *ConfigSubscriber) HandleConfigChangeMessage(ctx context.Context, stream
 		zap.String("message_id", message.ID),
 	)
 
-	// 解析消息数据（支持展开格式和包装格式）
+	// 包装格式（wisefido-data PublishJSONToStream）：从 "data" 字段解析整个 JSON envelope
+	dataStr, ok := message.Values["data"].(string)
+	if !ok || dataStr == "" {
+		return fmt.Errorf("config change message missing 'data' field")
+	}
 	var configMsg rediscommon.ConfigChangeMessage
-
-	// 优先尝试包装格式（由 PublishJSONToStream 发送）
-	if len(message.Values) > 0 {
-		// 检查是否有 "data" 字段（包装格式，由 PublishJSONToStream 发送）
-		if dataStr, ok := message.Values["data"].(string); ok {
-			// 包装格式：从 "data" 字段解析 JSON（JSON 字符串）
-			if err := json.Unmarshal([]byte(dataStr), &configMsg); err != nil {
-				return fmt.Errorf("failed to parse config change message from 'data' field: %w", err)
-			}
-		} else {
-			// 展开格式：直接使用 message.Values（字段直接展开，需要转换类型）
-			configMsg = parseConfigMessageFromValues(message.Values)
-		}
-	} else {
-		return fmt.Errorf("invalid message format: empty message values")
+	if err := json.Unmarshal([]byte(dataStr), &configMsg); err != nil {
+		return fmt.Errorf("parse config change envelope: %w", err)
 	}
 
 	// 根据事件类型处理配置变更
@@ -111,9 +82,8 @@ func (s *ConfigSubscriber) HandleConfigChangeMessage(ctx context.Context, stream
 	return nil
 }
 
-// Stop 停止配置变更订阅器
+// Stop 停止配置变更订阅器。subscriber goroutine 由 main 通过 ctx 取消，本方法仅日志。
 func (s *ConfigSubscriber) Stop() error {
-	// TODO: 实现优雅关闭逻辑
 	s.logger.Info("Config change subscriber stopped")
 	return nil
 }
@@ -252,20 +222,3 @@ func affectedDeviceUIDsFromCardData(data map[string]interface{}) []string {
 	}
 }
 
-// createConsumerGroupIfNotExists 创建消费者组（如果不存在）
-func (s *ConfigSubscriber) createConsumerGroupIfNotExists(ctx context.Context, stream string) error {
-	// TODO: 实现消费者组创建逻辑
-	return nil
-}
-
-// consumeConfigChanges 消费配置变更消息
-// TODO: 实现消息消费循环
-func (s *ConfigSubscriber) consumeConfigChanges(ctx context.Context, streams []string) {
-	// TODO: 实现消费逻辑
-}
-
-// parseConfigMessageFromValues 从 Redis 消息值中解析配置消息
-func parseConfigMessageFromValues(values map[string]interface{}) rediscommon.ConfigChangeMessage {
-	// TODO: 实现解析逻辑
-	return rediscommon.ConfigChangeMessage{}
-}

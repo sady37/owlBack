@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"owl-common/alarm"
 	rediscommon "owl-common/redis"
 	"strings"
 	"time"
@@ -232,21 +233,21 @@ func (c *EventConsumer) mapEventType(eventType string) string {
 	// 事件类型映射表
 	eventTypeMap := map[string]string{
 		// 离床事件
-		"Left bed":     "BED_LEFT",
-		"LeftBed":      "BED_LEFT",
-		"left_bed":     "BED_LEFT",
+		"Left bed":   "BED_LEFT",
+		alarm.LeftBed: "BED_LEFT",
+		"left_bed":   "BED_LEFT",
 		// 进入房间事件
 		"Enter room":   "ENTER_ROOM",
-		"EnterRoom":    "ENTER_ROOM",
+		alarm.EnterRoom: "ENTER_ROOM",
 		"enter_room":   "ENTER_ROOM",
 		// 离开房间事件
-		"Leave room":   "LEFT_ROOM",
-		"LeaveRoom":    "LEFT_ROOM",
-		"leave_room":   "LEFT_ROOM",
+		"Leave room": "LEFT_ROOM",
+		"LeaveRoom":  "LEFT_ROOM",
+		"leave_room": "LEFT_ROOM",
 		// 人数变化事件
-		"number-people": "PERSON_COUNT_CHANGED",
-		"NumberPeople":  "PERSON_COUNT_CHANGED",
-		"number_people": "PERSON_COUNT_CHANGED",
+		"number-people":     "PERSON_COUNT_CHANGED",
+		"NumberPeople":      "PERSON_COUNT_CHANGED",
+		alarm.NumberPeople:  "PERSON_COUNT_CHANGED",
 	}
 
 	if mapped, ok := eventTypeMap[eventType]; ok {

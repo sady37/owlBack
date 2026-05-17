@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"owl-common/alarm"
 	"owl-common/observation"
 	"owl-common/radarutils"
 	rediscommon "owl-common/redis"
@@ -536,6 +538,21 @@ func (e *Engine) readLastSrcSeq(deviceAddr string) uint64 {
 	return e.lastSrcSeq[deviceAddr]
 }
 
+// nextAgentSeq sensor 作为 platform agent producer 的单调 sequence number。
+// 跨重启不重置（Redis INCR），让 trace_id = "<producer>.<seqN>" 全局唯一可追溯。
+// Redis 不可用时 degrade 返 0（不阻塞 alarm 链；trace_id 会暂时为空，下次 publish 自愈）。
+func (e *Engine) nextAgentSeq(ctx context.Context, producer string) int64 {
+	if e.redisClient == nil || producer == "" {
+		return 0
+	}
+	key := "wisefido-sensor:seq:" + producer
+	v, err := e.redisClient.Incr(ctx, key).Result()
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
 // SetAIPublishConfig 注入 AI publish 单点配置：mode + node_id（来自 yaml/env）。
 // 替换旧的 SetAIDeviceType + SetAIPublishEnabled，单一入口避免漂移。
 //
@@ -618,8 +635,8 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	mode := e.aiPublishMode
 	g := e.grids[p.RoomID]
 	e.mu.RUnlock()
-	// SubjectEntity 留空：AI 是 sensor 层 producer，只发 device 标识；cardagg
-	// IotPreparedHandler 反查 device→cards 路由（多卡共享设备时 fan-out）。
+	// SubjectEntity 留空：sensor 不做 device→card 反查（非其职责）；
+	// cardagg alarm_router 在 SubjectEntity 空时调 metaCache.LookupCardByDeviceAddr LPM 兜底。
 
 	if baseType == "" {
 		baseType = "Radar" // 兜底：路由表缺失时默认按 radar 派生
@@ -701,10 +718,19 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 
 	willPublish := e.redisClient != nil && mode == "log&publish"
 
+	// 预先取 producer + seq，让 ai_emit log 带 trace_id（"<producer>.<seqN>"），
+	// 跨服务 grep trace_id 即可 join sensor→cardagg→data 整条链。
+	producer := source
+	if producer == "" {
+		producer = defaultSource
+	}
+	seq := e.nextAgentSeq(ctx, producer)
+	traceID := fmt.Sprintf("%s.%d", producer, seq)
+
 	// 任何模式都打 ai_emit 审计日志：sandbox 演示靠这条 log 看 AI 在思考
-	// device_uid_hex + ts_human 是 user 调试用人眼可读字段（2026-05-15 加）
 	e.logger.Info("ai_emit",
-		zap.String("source", source), // 节点身份兼审计字段（如 "AI.Caregiver01"）
+		zap.String("trace_id", traceID),
+		zap.String("source", source),
 		zap.String("mode", mode),
 		zap.String("device_type", deviceType),
 		zap.String("device_addr", p.DeviceID),
@@ -716,28 +742,25 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 		zap.Int("track_id", p.Track.TrackID),
 		zap.Int("track_confidence", p.Track.TrackConfidence),
 		zap.Int64("ts_ms", nowMs),
-		zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
 	)
 
 	if !willPublish {
 		return
 	}
 
-	// device_ipv6 单程票：Producer = sensor agent 标识；SubjectEntity 留空（cardagg LPM 反查兜底）；
-	// DeviceAddr = p.DeviceID parse 后的 /128 INET。
-	producer := source
-	if producer == "" {
-		producer = defaultSource
-	}
+	// device_ipv6 单程票：Producer = sensor agent /128 INET；
+	// SubjectEntity 留空（cardagg LPM 反查兜底，见上注释）；
+	// DeviceAddr = p.DeviceID parse 后 /128。
 	msg := rediscommon.IoTStreamMessage{
-		Producer:      producer,
-		SubjectEntity: "",
-		DeviceAddr:    addr,
-		DeviceType:    deviceType,
-		Timestamp:     nowMs,
-		TopicType:     topicType,
-		Category:      category,
-		DataValue:     []interface{}{fields},
+		Producer:       producer,
+		SequenceNumber: uint64(seq),
+		SubjectEntity:  "",
+		DeviceAddr:     addr,
+		DeviceType:     deviceType,
+		Timestamp:      nowMs,
+		TopicType:      topicType,
+		Category:       category,
+		DataValue:      []interface{}{fields},
 	}
 	if _, err := rediscommon.PublishToStream(ctx, e.redisClient, streamName, msg.ToStreamMap(), maxLen, retentionSec); err != nil {
 		e.logger.Warn("ai_publish_failed",
@@ -1085,7 +1108,19 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 	case "radar":
 		// 2026-05-15 起 radar firmware Fall/SittingOnGround 也走 event stream（gateway 分流）。
 		// 见 doc/cardagg_sensor_split.md：cardagg 不再处理 radar producer Fall；sensor 接管 verifier。
-		if m.Category == "Fall" || m.Category == "SittingOnGround" {
+		// Suspected* (pose=2/7) 是 firmware qualification 前的预警态，30~90s 后自动升级到 Fall/SittingOnGround。
+		// Per Option C (2026-05-17): server 不双层 — Suspected* 只让 iot 自动写 event_log（审计链不丢），
+		// 不进 verifier / 不 forward 到 iot:alarm:stream / 不入 alarm_events。
+		// 见 memory firmware_fall_qualification + doc/cardagg_sensor_split.md
+		if m.Category == alarm.SuspectedFall || m.Category == alarm.SuspectedSittingOnGround {
+			e.logger.Debug("radar suspected (event_log only, no alarm forward)",
+				zap.String("device_addr", addrStr),
+				zap.String("category", m.Category),
+				zap.Int64("ts_ms", ts),
+			)
+			return
+		}
+		if m.Category == alarm.Fall || m.Category == alarm.SittingOnGround {
 			alarms := ParseRadarFallAlarm(m.DataValue, addrStr, m.Category, ts)
 			for _, a := range alarms {
 				tm.RecordRadarAlarm(a)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +14,7 @@ import (
 	"wisefido-qinglan/internal/tcp"
 
 	"github.com/gorilla/mux"
+	"go.uber.org/zap"
 )
 
 // DeviceCommander is the interface for sending MQTT commands to devices.
@@ -33,10 +33,11 @@ type MQTTOTAPusher interface {
 
 // OTAHandler handles OTA-related HTTP API requests
 type OTAHandler struct {
-	otaManager  *ota.Manager
-	tcpServer   *tcp.Server
-	commander   DeviceCommander
-	mqttOTA     MQTTOTAPusher
+	otaManager *ota.Manager
+	tcpServer  *tcp.Server
+	commander  DeviceCommander
+	mqttOTA    MQTTOTAPusher
+	logger     *zap.Logger
 }
 
 // NewOTAHandler creates a new OTA handler
@@ -44,6 +45,14 @@ func NewOTAHandler(otaManager *ota.Manager, tcpServer *tcp.Server) *OTAHandler {
 	return &OTAHandler{
 		otaManager: otaManager,
 		tcpServer:  tcpServer,
+		logger:     zap.NewNop(),
+	}
+}
+
+// SetLogger injects the zap logger.
+func (h *OTAHandler) SetLogger(logger *zap.Logger) {
+	if logger != nil {
+		h.logger = logger
 	}
 }
 
@@ -99,12 +108,12 @@ func (h *OTAHandler) TriggerOTA(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("[OTA-API] trigger OTA: uid=%s esp=%s(v%s) radar=%s(v%s)", uid, req.EspFirmware, req.EspVersion, req.RadarFirmware, req.RadarVersion)
+	h.logger.Info("ota trigger", zap.String("uid", uid), zap.String("esp", req.EspFirmware), zap.String("esp_ver", req.EspVersion), zap.String("radar", req.RadarFirmware), zap.String("radar_ver", req.RadarVersion))
 
 	// Try TCP push first
 	result := h.otaManager.PushToDevice(req)
 	if result.Success {
-		log.Printf("[OTA-API] TCP push OK: uid=%s", uid)
+		h.logger.Info("ota tcp push ok", zap.String("uid", uid))
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 		return
@@ -112,7 +121,7 @@ func (h *OTAHandler) TriggerOTA(w http.ResponseWriter, r *http.Request) {
 
 	// TCP failed, try MQTT push
 	if h.mqttOTA != nil {
-		log.Printf("[OTA-API] TCP failed (%s), trying MQTT: uid=%s", result.Message, uid)
+		h.logger.Info("ota tcp failed, trying mqtt", zap.String("uid", uid), zap.String("msg", result.Message))
 		// 按协议同时支持 esp (主控) 与 radar (雷达) 两组字段，互相独立
 		data := map[string]interface{}{}
 		if req.EspFirmware != "" {
@@ -143,7 +152,7 @@ func (h *OTAHandler) TriggerOTA(w http.ResponseWriter, r *http.Request) {
 			if err := h.mqttOTA.PublishOTA(r.Context(), uid, data); err != nil {
 				result.Message = fmt.Sprintf("TCP: %s, MQTT: %s", result.Message, err.Error())
 			} else {
-				log.Printf("[OTA-API] MQTT push OK: uid=%s", uid)
+				h.logger.Info("ota mqtt push ok", zap.String("uid", uid))
 				result.Success = true
 				result.Message = "OTA pushed via MQTT"
 			}
@@ -165,7 +174,7 @@ func (h *OTAHandler) TriggerBatchOTA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[OTA-API] batch trigger OTA: %d devices", len(reqs))
+	h.logger.Info("ota batch trigger", zap.Int("count", len(reqs)))
 
 	var results []ota.PushResult
 	for _, req := range reqs {
@@ -265,7 +274,7 @@ func (h *OTAHandler) UploadFirmware(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[OTA-API] firmware uploaded: vendor=%s file=%s size=%d", vendor, header.Filename, header.Size)
+	h.logger.Info("firmware uploaded", zap.String("vendor", vendor), zap.String("file", header.Filename), zap.Int64("size", header.Size))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -292,7 +301,7 @@ func (h *OTAHandler) DeleteFirmware(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[OTA-API] firmware deleted: vendor=%s file=%s", vendor, filename)
+	h.logger.Info("firmware deleted", zap.String("vendor", vendor), zap.String("file", filename))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -337,7 +346,7 @@ func (h *OTAHandler) UploadFirmwareRoot(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, fmt.Sprintf("save file failed: %v", err), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("[OTA-API] firmware uploaded: file=%s size=%d", header.Filename, header.Size)
+	h.logger.Info("firmware uploaded (root)", zap.String("file", header.Filename), zap.Int64("size", header.Size))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"message": "uploaded", "filename": header.Filename, "size": header.Size})
 }
@@ -353,7 +362,7 @@ func (h *OTAHandler) DeleteFirmwareRoot(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, fmt.Sprintf("delete failed: %v", err), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("[OTA-API] firmware deleted: file=%s", filename)
+	h.logger.Info("firmware deleted (root)", zap.String("file", filename))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"message": "deleted", "filename": filename})
 }
@@ -381,7 +390,7 @@ func (h *OTAHandler) BatchRestart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
 		return
 	}
-	log.Printf("[Device-API] batch restart: %d devices", len(req.UIDs))
+	h.logger.Info("device batch restart", zap.Int("count", len(req.UIDs)))
 
 	results := make([]batchResult, 0, len(req.UIDs))
 	for _, uid := range req.UIDs {
@@ -425,7 +434,7 @@ func (h *OTAHandler) BatchControl(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("invalid dev value: %d (allowed: 0/1/2/100/101/102)", req.Dev), http.StatusBadRequest)
 		return
 	}
-	log.Printf("[Device-API] batch control dev=%d (%s): %d devices", req.Dev, desc, len(req.UIDs))
+	h.logger.Info("device batch control", zap.Int("dev", req.Dev), zap.String("desc", desc), zap.Int("count", len(req.UIDs)))
 
 	results := make([]batchResult, 0, len(req.UIDs))
 	for _, uid := range req.UIDs {
@@ -458,7 +467,7 @@ func (h *OTAHandler) BatchSetWiFi(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ssid is required", http.StatusBadRequest)
 		return
 	}
-	log.Printf("[Device-API] batch set-wifi: %d devices ssid=%s", len(req.UIDs), req.SSID)
+	h.logger.Info("device batch set-wifi", zap.Int("count", len(req.UIDs)), zap.String("ssid", req.SSID))
 
 	props := map[string]interface{}{
 		"wifi_ssid": req.SSID,
@@ -495,7 +504,7 @@ func (h *OTAHandler) BatchSetIoTServer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "server and port are required", http.StatusBadRequest)
 		return
 	}
-	log.Printf("[Device-API] batch set-iotserver: %d devices server=%s:%d", len(req.UIDs), req.Server, req.Port)
+	h.logger.Info("device batch set-iotserver", zap.Int("count", len(req.UIDs)), zap.String("server", req.Server), zap.Int("port", req.Port))
 
 	props := map[string]interface{}{
 		"ip_port": fmt.Sprintf("%s:%d", req.Server, req.Port),

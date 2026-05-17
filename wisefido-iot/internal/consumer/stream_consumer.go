@@ -1,15 +1,22 @@
+// stream_consumer.go — wisefido-iot v2 唯一持久化边界。
+//
+// 路由 (CLAUDE.md 规则 #2)：
+//   iot:monitor:stream → monitor_stream (90d)
+//   iot:event:stream   → event_log      (90d)
+//   iot:alarm:stream   → skip (cardagg alarm_router 单 writer 写 alarm_events)
+//   iot:stat:stream    → skip (sleepace 自己 DB；当前 owl_v2 无统一 stat 表)
+//   iot:auth:stream    → skip (auth 走 device-gateway 自己处理)
+//
+// envelope 解析走 owl-common/redis.FromStreamMap 单一入口 (规则 #1.3)。
+
 package consumer
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	"wisefido-iot/internal/config"
-	"wisefido-iot/internal/publisher"
 	"wisefido-iot/internal/repository"
 
 	rediscommon "owl-common/redis"
@@ -18,133 +25,84 @@ import (
 	"go.uber.org/zap"
 )
 
-// StreamConsumer Redis Streams 消费者
 type StreamConsumer struct {
 	config      *config.Config
 	redisClient *redis.Client
-	iotRepo     *repository.IoTTimeSeriesRepository
-	publisher   *publisher.StreamPublisher
+	streamRepo  *repository.StreamRepo
 	logger      *zap.Logger
 }
 
-// NewStreamConsumer 创建 Streams 消费者
 func NewStreamConsumer(
 	cfg *config.Config,
 	redisClient *redis.Client,
-	iotRepo *repository.IoTTimeSeriesRepository,
-	publisher *publisher.StreamPublisher,
+	streamRepo *repository.StreamRepo,
 	logger *zap.Logger,
 ) *StreamConsumer {
 	return &StreamConsumer{
 		config:      cfg,
 		redisClient: redisClient,
-		iotRepo:     iotRepo,
-		publisher:   publisher,
+		streamRepo:  streamRepo,
 		logger:      logger,
 	}
 }
 
-// Start 启动消费者
 func (c *StreamConsumer) Start(ctx context.Context) error {
-	// 创建消费者组 - 订阅统一 IoT streams（所有设备类型）
 	streams := []string{
-		c.config.Streams.Monitor, // iot:monitor:stream - 所有设备的实时数据
-		c.config.Streams.Stat,    // iot:stat:stream    - 所有设备的统计数据
-		c.config.Streams.Event,   // iot:event:stream   - 所有设备的事件数据
-		c.config.Streams.Alarm,   // iot:alarm:stream   - 所有设备的告警数据
-		c.config.Streams.Auth,    // iot:auth:stream    - 所有设备的认证数据
+		c.config.Streams.Monitor,
+		c.config.Streams.Event,
 	}
 
 	for _, stream := range streams {
 		if err := rediscommon.CreateConsumerGroup(ctx, c.redisClient, stream, c.config.ConsumerGroup); err != nil {
-			c.logger.Warn("Failed to create consumer group for stream, will retry",
+			c.logger.Warn("create consumer group failed (will retry on read)",
 				zap.String("stream", stream),
 				zap.Error(err),
 			)
-			// 继续处理其他 streams，不中断
 		}
 	}
 
-	c.logger.Info("Stream consumer started",
+	c.logger.Info("stream consumer started",
 		zap.String("consumer_group", c.config.ConsumerGroup),
 		zap.String("consumer_name", c.config.ConsumerName),
 		zap.Strings("streams", streams),
 	)
 
-	// 启动消费循环
-	backoffDuration := time.Second // 初始退避时间
-	maxBackoff := 30 * time.Second // 最大退避时间
+	backoff := time.Second
+	const maxBackoff = 30 * time.Second
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		default:
-			// 并行消费统一 IoT streams
 			monitorErr := c.consumeStream(ctx, c.config.Streams.Monitor)
-			statErr := c.consumeStream(ctx, c.config.Streams.Stat)
 			eventErr := c.consumeStream(ctx, c.config.Streams.Event)
-			alarmErr := c.consumeStream(ctx, c.config.Streams.Alarm)
-			authErr := c.consumeStream(ctx, c.config.Streams.Auth)
 
-			// 收集所有错误
-			errors := []error{
-				monitorErr, statErr, eventErr, alarmErr, authErr,
-			}
-
-			// 如果所有流都出错，才进行退避
-			allFailed := true
-			for _, err := range errors {
-				if err == nil {
-					allFailed = false
-					break
-				}
-			}
-
-			if allFailed {
-				c.logger.Error("Failed to consume all streams",
-					zap.Duration("backoff", backoffDuration),
-				)
-
-				// 指数退避：等待后重试
+			if monitorErr != nil && eventErr != nil {
+				c.logger.Error("all streams failed", zap.Duration("backoff", backoff))
 				select {
 				case <-ctx.Done():
 					return nil
-				case <-time.After(backoffDuration):
-					// 指数退避，但不超过最大值
-					backoffDuration *= 2
-					if backoffDuration > maxBackoff {
-						backoffDuration = maxBackoff
+				case <-time.After(backoff):
+					backoff *= 2
+					if backoff > maxBackoff {
+						backoff = maxBackoff
 					}
 				}
-			} else {
-				// 至少一个流成功时重置退避时间
-				backoffDuration = time.Second
-
-				// 记录单个流的错误（但不中断）
-				if monitorErr != nil {
-					c.logger.Error("Failed to consume monitor stream", zap.Error(monitorErr))
-				}
-				if statErr != nil {
-					c.logger.Error("Failed to consume stat stream", zap.Error(statErr))
-				}
-				if eventErr != nil {
-					c.logger.Error("Failed to consume event stream", zap.Error(eventErr))
-				}
-				if alarmErr != nil {
-					c.logger.Error("Failed to consume alarm stream", zap.Error(alarmErr))
-				}
-				if authErr != nil {
-					c.logger.Error("Failed to consume auth stream", zap.Error(authErr))
-				}
+				continue
+			}
+			backoff = time.Second
+			if monitorErr != nil {
+				c.logger.Error("monitor stream consume failed", zap.Error(monitorErr))
+			}
+			if eventErr != nil {
+				c.logger.Error("event stream consume failed", zap.Error(eventErr))
 			}
 		}
 	}
 }
 
-// consumeStream 消费单个 Stream（非阻塞：block=500ms，避免空闲 stream 拖慢整体吞吐）
 func (c *StreamConsumer) consumeStream(ctx context.Context, streamName string) error {
-	// 短 block 避免空闲 stream 阻塞：5 个 stream 串行读取，block 过长会饿死 monitor
 	messages, err := rediscommon.ReadFromStreamWithBlock(
 		ctx,
 		c.redisClient,
@@ -154,133 +112,41 @@ func (c *StreamConsumer) consumeStream(ctx context.Context, streamName string) e
 		c.config.BatchSize,
 		500*time.Millisecond,
 	)
-
 	if err != nil {
-		return fmt.Errorf("failed to read from stream %s: %w", streamName, err)
+		return fmt.Errorf("read stream %s: %w", streamName, err)
 	}
 
-	// 处理消息并 ACK
-	for _, msg := range messages {
-		if err := c.processMessage(ctx, streamName, msg); err != nil {
-			c.logger.Error("Failed to process message",
+	for _, raw := range messages {
+		if err := c.processMessage(ctx, streamName, raw); err != nil {
+			c.logger.Error("process message failed",
 				zap.String("stream", streamName),
-				zap.String("device_uid", streamFieldStr(msg.Values, "device_uid")),
-				zap.String("message_id", msg.ID),
+				zap.String("message_id", raw.ID),
 				zap.Error(err),
 			)
-			// 继续处理下一条消息，不中断
 		}
-		// ACK：无论处理成功或失败（skip），都确认消息以防 pending 堆积
-		if err := c.redisClient.XAck(ctx, streamName, c.config.ConsumerGroup, msg.ID).Err(); err != nil {
-			c.logger.Warn("Failed to ACK message",
+		if err := c.redisClient.XAck(ctx, streamName, c.config.ConsumerGroup, raw.ID).Err(); err != nil {
+			c.logger.Warn("XAck failed",
 				zap.String("stream", streamName),
-				zap.String("message_id", msg.ID),
+				zap.String("message_id", raw.ID),
 				zap.Error(err),
 			)
 		}
 	}
-
 	return nil
 }
 
-// streamFieldStr 从解析后的 map 取字段用于日志（兼容 string / 非 string）。
-func streamFieldStr(m map[string]interface{}, key string) string {
-	if m == nil {
-		return ""
-	}
-	v, ok := m[key]
-	if !ok || v == nil {
-		return ""
-	}
-	switch s := v.(type) {
-	case string:
-		return strings.TrimSpace(s)
-	case []byte:
-		return strings.TrimSpace(string(s))
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", s))
-	}
-}
-
-// processMessage 处理单条消息
-func (c *StreamConsumer) processMessage(ctx context.Context, streamName string, msg rediscommon.StreamMessage) error {
-	// 解析数据：支持两种格式
-	// 1. 展开格式（推荐）：字段在 msg.Values（device_id, device_uid, tenant_id, timestamp, topic_type, category, dataValue, ...）
-	// 2. 包装格式（兼容）：整包在 msg.Values["data"]（JSON 字符串）
-	var data map[string]interface{}
-
-	// 优先尝试展开格式（直接使用 msg.Values）
-	if len(msg.Values) > 0 {
-		// 检查是否有 "data" 字段（包装格式）
-		if dataStr, ok := msg.Values["data"].(string); ok {
-			// 包装格式：从 "data" 字段解析 JSON
-			if err := json.Unmarshal([]byte(dataStr), &data); err != nil {
-				return fmt.Errorf("failed to unmarshal data from 'data' field: %w", err)
-			}
-		} else {
-			// 展开格式：直接使用 msg.Values（需要转换类型）
-			// Redis Stream 返回的值都是字符串（由 PublishToStream 转换）
-			data = make(map[string]interface{})
-			for k, v := range msg.Values {
-				if strVal, ok := v.(string); ok {
-					// 尝试解析 JSON 字符串（键名规范：dataValue）
-					if k == rediscommon.DataValueKey {
-						var jsonVal interface{}
-						if err := json.Unmarshal([]byte(strVal), &jsonVal); err == nil {
-							data[k] = jsonVal
-						} else {
-							data[k] = strVal
-						}
-					} else if k == "timestamp" {
-						// timestamp 可能是 int64 字符串，尝试转换
-						if ts, err := strconv.ParseInt(strVal, 10, 64); err == nil {
-							data[k] = ts
-						} else {
-							data[k] = strVal
-						}
-					} else {
-						data[k] = strVal
-					}
-				} else {
-					// 非字符串类型直接使用（理论上不应该出现，但兼容处理）
-					data[k] = v
-				}
-			}
-		}
-	} else {
-		return fmt.Errorf("invalid data format: empty message values")
-	}
-
-	// 写入 PostgreSQL；tenant_id 须由 Device gateway 带齐，缺则 Insert 报错本处 skip
-	id, err := c.iotRepo.Insert(data)
+func (c *StreamConsumer) processMessage(ctx context.Context, streamName string, raw rediscommon.StreamMessage) error {
+	msg, err := rediscommon.FromStreamMap(raw.Values)
 	if err != nil {
-		// 如果遇到 db 与 stream 不一致，记录并跳过（根据用户要求）
-		deviceID := streamFieldStr(data, "device_id")
-		c.logger.Warn("Failed to insert to iot_timeseries, skipping message",
-			zap.String("stream", streamName),
-			zap.String("device_id", deviceID),
-			zap.String("device_uid", streamFieldStr(data, "device_uid")),
-			zap.String("tenant_id", streamFieldStr(data, "tenant_id")),
-			zap.String("card_id", streamFieldStr(data, "card_id")),
-			zap.String("topic_type", streamFieldStr(data, "topic_type")),
-			zap.String("category", streamFieldStr(data, "category")),
-			zap.String("message_id", msg.ID),
-			zap.Error(err),
-		)
-		// 返回 nil 以跳过此消息，继续处理下一条
+		return fmt.Errorf("parse envelope: %w", err)
+	}
+
+	switch streamName {
+	case c.config.Streams.Monitor:
+		return c.streamRepo.InsertMonitor(ctx, msg)
+	case c.config.Streams.Event:
+		return c.streamRepo.InsertEvent(ctx, msg)
+	default:
 		return nil
 	}
-
-	// 提取 deviceID 用于日志
-	deviceID := streamFieldStr(data, "device_id")
-	c.logger.Debug("Successfully inserted to iot_timeseries",
-		zap.String("stream", streamName),
-		zap.String("device_id", deviceID),
-		zap.String("device_uid", streamFieldStr(data, "device_uid")),
-		zap.Int64("iot_timeseries_id", id),
-	)
-
-	// 不再发布到 iot:data:stream（已移除）
-
-	return nil
 }

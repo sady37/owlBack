@@ -1,11 +1,11 @@
 package consumer
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/netip"
 	"strings"
 	"sync"
@@ -23,6 +23,7 @@ import (
 	"wisefido-qinglan/internal/repository"
 
 	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 )
 
 const (
@@ -85,6 +86,7 @@ type MQTTConsumer struct {
 	subscribedTopics    map[string]struct{}   // 保存已订阅的设备主题（key: topic, value: struct{}）
 	mu                  sync.RWMutex
 	db                  *sql.DB // database for OTA status updates
+	logger              *zap.Logger
 }
 
 // SetDB sets the database connection for OTA operations
@@ -111,7 +113,11 @@ func NewMQTTConsumer(
 	cardMappingService CardIDProvider,
 	streamPublisher *StreamPublisher,
 	subscriptionManager DeviceLastSeenUpdater,
+	logger *zap.Logger,
 ) (*MQTTConsumer, error) {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &MQTTConsumer{
 		config:              cfg,
 		mqttClient:          mqttClient,
@@ -121,27 +127,16 @@ func NewMQTTConsumer(
 		streamPublisher:     streamPublisher,
 		subscriptionManager: subscriptionManager,
 		subscribedTopics:    make(map[string]struct{}),
+		logger:              logger,
 	}, nil
 }
 
 // Start 启动消费者
 // 启动时主动订阅所有符合条件的设备（allow_access=TRUE 且 business_access='approved'）
 func (c *MQTTConsumer) Start(ctx context.Context) error {
-	log.Println("Starting MQTT consumer...")
-
-	// 启动连接监控goroutine，检测重连后重新订阅已认证设备
 	go c.monitorConnection(ctx)
-
-	// 启动时主动订阅所有符合条件的设备
 	go c.subscribeAllAccessibleDevices(ctx)
-
-	// 上线通知由 autoSubscribeOnFirstMessage 在首条 MQTT 时 inline publish OfflineRecover；
-	// 旧的 publishOnlineForConnectedAfterStartup 启动+1min fan-out 已删除——它扫的是
-	// subscribedTopics（qinglan 自己订阅的 topic 列表），与"设备真在发包"无关，
-	// 会给所有允许设备无差别发 OfflineRecover，导致离线设备被假阳标 online。
-
-	log.Println("MQTT consumer started")
-
+	c.logger.Info("mqtt consumer started")
 	return nil
 }
 
@@ -158,35 +153,30 @@ func (c *MQTTConsumer) subscribeAllAccessibleDevices(ctx context.Context) {
 	}
 
 	if !c.mqttClient.IsConnected() {
-		log.Printf("⚠️ MQTT client not connected after %v, skipping initial device subscription", maxWaitTime)
+		c.logger.Warn("mqtt not connected, skip initial subscription", zap.Duration("waited", maxWaitTime))
 		return
 	}
 
-	// 查询所有可访问的设备
 	deviceUIDs, err := c.deviceRepo.GetAllAccessibleDevices(ctx)
 	if err != nil {
-		log.Printf("❌ Failed to get accessible devices: %v", err)
+		c.logger.Error("get accessible devices", zap.Error(err))
 		return
 	}
-
 	if len(deviceUIDs) == 0 {
-		log.Println("No accessible devices found, skipping subscription")
+		c.logger.Info("no accessible devices, skip subscription")
 		return
 	}
-
-	// 打印被允许的设备列表（不打印每条订阅信息）；启动即监听所有允许设备，1 分钟内有 MQTT 则置 online，超时则 offline 并取消订阅
-	log.Printf("Allowed devices (%d): %v", len(deviceUIDs), deviceUIDs)
+	c.logger.Info("allowed devices", zap.Int("count", len(deviceUIDs)), zap.Strings("uids", deviceUIDs))
 
 	successCount := 0
 	for _, deviceUID := range deviceUIDs {
 		if err := c.SubscribeDeviceTopics(deviceUID); err != nil {
-			log.Printf("❌ Failed to subscribe to device %s: %v", deviceUID, err)
+			c.logger.Error("subscribe device topics", zap.String("device_uid", deviceUID), zap.Error(err))
 		} else {
 			successCount++
 		}
 	}
-
-	log.Printf("Subscribed to topics for %d/%d allowed devices", successCount, len(deviceUIDs))
+	c.logger.Info("subscribed", zap.Int("success", successCount), zap.Int("total", len(deviceUIDs)))
 }
 
 // monitorConnection 监控MQTT连接状态，重连后重新订阅
@@ -203,9 +193,8 @@ func (c *MQTTConsumer) monitorConnection(ctx context.Context) {
 		case <-ticker.C:
 			isConnected := c.mqttClient.IsConnected()
 
-			// 仅当从断开变为已连接时才 resubscribe（真实重连）
 			if !wasConnected && isConnected {
-				log.Println("MQTT client reconnected, resubscribing to topics...")
+				c.logger.Info("mqtt reconnected, resubscribing")
 				c.resubscribeTopics()
 			}
 
@@ -225,16 +214,16 @@ func (c *MQTTConsumer) resubscribeTopics() {
 
 	for _, topic := range topics {
 		if err := c.mqttClient.Subscribe(topic, c.handleMessage); err != nil {
-			log.Printf("Failed to resubscribe to topic %s: %v", topic, err)
+			c.logger.Warn("resubscribe topic", zap.String("topic", topic), zap.Error(err))
 		}
 	}
-	log.Printf("Resubscribed to %d device topics (reconnected)", len(topics))
+	c.logger.Info("resubscribed", zap.Int("count", len(topics)))
 }
 
 // SubscribeDeviceTopics 订阅指定设备的 6 个主题（不打印每条订阅，由调用方打印允许设备列表）
 func (c *MQTTConsumer) SubscribeDeviceTopics(deviceUID string) error {
 	if !c.mqttClient.IsConnected() {
-		log.Printf("❌ MQTT client not connected, cannot subscribe for %s", deviceUID)
+		c.logger.Warn("mqtt not connected, cannot subscribe", zap.String("device_uid", deviceUID))
 		return fmt.Errorf("MQTT client is not connected, cannot subscribe to device topics for %s", deviceUID)
 	}
 
@@ -259,7 +248,7 @@ func (c *MQTTConsumer) SubscribeDeviceTopics(deviceUID string) error {
 			continue
 		}
 		if err := c.mqttClient.Subscribe(topic, c.handleMessage); err != nil {
-			log.Printf("❌ Failed to subscribe to topic %s: %v", topic, err)
+			c.logger.Warn("subscribe topic", zap.String("topic", topic), zap.Error(err))
 			return fmt.Errorf("failed to subscribe to topic %s: %w", topic, err)
 		}
 		c.subscribedTopics[topic] = struct{}{}
@@ -322,16 +311,13 @@ func (c *MQTTConsumer) UnsubscribeDeviceTopics(deviceUID string) error {
 		}
 
 		if err := c.mqttClient.Unsubscribe(topic); err != nil {
-			log.Printf("Failed to unsubscribe from topic %s: %v", topic, err)
-			// 继续尝试取消订阅其他主题
+			c.logger.Warn("unsubscribe topic", zap.String("topic", topic), zap.Error(err))
 			continue
 		}
-
 		delete(c.subscribedTopics, topic)
-		log.Printf("✅ Unsubscribed from device topic: %s", topic)
+		c.logger.Debug("unsubscribed topic", zap.String("topic", topic))
 	}
-
-	log.Printf("Unsubscribed from %d topics for device %s", len(topics), deviceUID)
+	c.logger.Info("unsubscribed device", zap.String("device_uid", deviceUID), zap.Int("count", len(topics)))
 	return nil
 }
 
@@ -353,8 +339,7 @@ func buildWildcardTopic(prefix, productID, topicType string) string {
 
 // Stop 停止消费者
 func (c *MQTTConsumer) Stop(ctx context.Context) error {
-	log.Println("Stopping MQTT consumer...")
-	// 这里应该实现取消订阅的逻辑
+	c.logger.Info("mqtt consumer stopping")
 	return nil
 }
 
@@ -393,12 +378,12 @@ func (c *MQTTConsumer) allowAccessFromCacheOrDB(uid string) bool {
 	if !ok {
 		ds, err := c.deviceRepo.GetDeviceStoreInfo(context.Background(), uid)
 		if err != nil {
-			log.Printf("Device %s not in cache, rejecting message (device not authenticated): db lookup failed: %v", uid, err)
+			c.logger.Warn("device not in cache, db lookup failed", zap.String("uid", uid), zap.Error(err))
 			domain.AllowAccessCache.Store(uid, false)
 			return false
 		}
 		if !ds.Access {
-			log.Printf("Device %s blocked by device_factory_meta: access=FALSE", uid)
+			c.logger.Warn("device blocked by dfm: access=FALSE", zap.String("uid", uid))
 			domain.AllowAccessCache.Store(uid, false)
 			return false
 		}
@@ -406,7 +391,7 @@ func (c *MQTTConsumer) allowAccessFromCacheOrDB(uid string) bool {
 		return true
 	}
 	if allowedBool, ok := cached.(bool); !ok || !allowedBool {
-		log.Printf("Device %s blocked by cache: access=FALSE", uid)
+		c.logger.Debug("device blocked by cache", zap.String("uid", uid))
 		return false
 	}
 	return true
@@ -415,22 +400,37 @@ func (c *MQTTConsumer) allowAccessFromCacheOrDB(uid string) bool {
 // handleMessage 处理 MQTT 消息（仅 .../post）
 // 注意：现在只订阅已认证设备的主题，未认证设备无法发送消息到服务端
 func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
-	if isQinglanVerboseLog() {
-		log.Printf("[MQTT_RX] topic=%s payload=%s", topic, string(payload))
-	}
-
-	// 解析主题，提取设备UID
 	uid, err := c.extractUIDFromTopic(topic)
 	if err != nil {
-		log.Printf("Failed to extract UID from topic %s: %v", topic, err)
-		return nil // 不返回错误，继续处理其他消息
+		c.logger.Warn("extract uid from topic", zap.String("topic", topic), zap.Error(err))
+		return nil
+	}
+	topicType := c.extractTopicType(topic)
+
+	// Info 给人看：用 rxSummary 翻成人话，不带 raw payload（payload 想看走 Debug，或查 event_log/monitor_stream）。
+	//   event_type=1  → EnterRoom/ExitRoom/InBed/LeftBed
+	//   event_type=2  → Fall/SittingOnGround（含 Suspected*）+ pose 名称
+	//   prop topic    → 设备属性查询/设置应答（key=value）
+	// 其它（monitor/stat 周期流 + number_people + 设备状态 + func 应答）→ Debug 带 raw payload
+	if rxIsAlarmClass(topicType, payload) {
+		c.logger.Info("mqtt rx",
+			zap.String("uid", uid),
+			zap.String("type", topicType),
+			zap.String("info", rxSummary(topicType, payload)),
+		)
+	} else {
+		c.logger.Debug("mqtt rx",
+			zap.String("uid", uid),
+			zap.String("type", topicType),
+			zap.String("topic", topic),
+			zap.ByteString("payload", payload),
+		)
 	}
 
-	// 优先 DeviceBaseline 缓存（web auth / cardChange 后 RefreshBaseline）；未命中再走 AccessCache / DB
 	if c.cardMappingService != nil {
 		if b, ok := c.cardMappingService.BaselineFor(uid); ok {
 			if !b.Access {
-				log.Printf("Device %s blocked by baseline cache: access=FALSE", uid)
+				c.logger.Debug("blocked by baseline cache", zap.String("uid", uid))
 				return nil
 			}
 		} else if !c.allowAccessFromCacheOrDB(uid) {
@@ -440,24 +440,13 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 		return nil
 	}
 
-	// 解析消息体
 	var message map[string]interface{}
 	if err := json.Unmarshal(payload, &message); err != nil {
-		log.Printf("Failed to parse MQTT message: %v", err)
+		c.logger.Warn("parse mqtt payload", zap.Error(err))
 		return nil
 	}
 
-	// 根据主题类型处理消息
-	topicType := c.extractTopicType(topic)
-
-	// if topicType == "event" || topicType == "alarm" || topicType == "stat" {
-	// 	log.Printf("[MQTT_RAW] topic=%s uid=%s payload=%s", topic, uid, string(payload))
-	// }
-
-	// 更新设备最后收到消息的时间（根据消息类型）
-	// 参考wisefido-radar的实现：UpdateLastSeenByType会检测首次连接并自动发送monitor订阅命令
 	if c.subscriptionManager != nil {
-		// 只更新 monitor/stat/event/alarm 类型的消息时间戳
 		if topicType == "monitor" || topicType == "stat" || topicType == "event" || topicType == "alarm" {
 			c.subscriptionManager.UpdateLastSeenByType(uid, topicType)
 		}
@@ -474,7 +463,7 @@ func (c *MQTTConsumer) handleMessage(topic string, payload []byte) error {
 	case "event", "alarm":
 		return c.handleEventMessage(uid, message)
 	default:
-		log.Printf("Unknown topic type: %s", topicType)
+		c.logger.Debug("unknown topic type", zap.String("type", topicType))
 		return nil
 	}
 }
@@ -512,14 +501,117 @@ func (c *MQTTConsumer) extractTopicType(topic string) string {
 	return "unknown"
 }
 
-// DEPRECATED: publishDecodedData — 已被 observation.Message 模式替代，monitor/stat/event 均已迁移。
-// 保留备查，待确认无遗漏后删除。
-/*
-func (c *MQTTConsumer) publishDecodedData(
-	ctx context.Context, cardID, tenantID, deviceID, topicType, category string,
-	dataValue interface{}, originalMessage map[string]interface{},
-) error { ... }
-*/
+// rxSummary 把原始 MQTT payload 翻译成人话，供 Info-level mqtt rx log 的 summary 字段。
+// 失败返回空串（payload 已在 ByteString 字段保留，不丢信息）。
+func rxSummary(topicType string, payload []byte) string {
+	var msg map[string]interface{}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return ""
+	}
+	switch topicType {
+	case "prop":
+		// {"data":{"<key>":"<value>"}, "cmd":"read|update", "code":200, "requestId":"..."}
+		cmd, _ := msg["cmd"].(string)
+		code := asInt(msg["code"])
+		parts := []string{}
+		if cmd != "" {
+			parts = append(parts, fmt.Sprintf("cmd=%s", cmd))
+		}
+		if code != 0 {
+			parts = append(parts, fmt.Sprintf("code=%d", code))
+		}
+		if data, ok := msg["data"].(map[string]interface{}); ok {
+			for k, v := range data {
+				parts = append(parts, fmt.Sprintf("%s=%v", k, v))
+			}
+		}
+		return strings.Join(parts, " ")
+	case "event", "alarm":
+		eventType := asInt(msg["type"])
+		switch eventType {
+		case 1:
+			// {"data":[{"track_id":N,"event":N,"area_type":N,"area_id":N}]}
+			arr, _ := msg["data"].([]interface{})
+			if len(arr) == 0 {
+				return fmt.Sprintf("event_type=1")
+			}
+			m, _ := arr[0].(map[string]interface{})
+			ev := asInt(m["event"])
+			areaType := asInt(m["area_type"])
+			cat, _ := alarm.LookupEnter2Out(ev, areaType)
+			if cat == "" {
+				cat = "?"
+			}
+			return fmt.Sprintf("%s track=%v area_id=%v area_type=%d", cat, m["track_id"], m["area_id"], areaType)
+		case 2:
+			// {"data":[{"track_id":N,"pose":N,"last_pose":N}]}
+			arr, _ := msg["data"].([]interface{})
+			if len(arr) == 0 {
+				return "event_type=2"
+			}
+			m, _ := arr[0].(map[string]interface{})
+			pose := asInt(m["pose"])
+			lastPose := asInt(m["last_pose"])
+			cat, _ := alarm.LookupPose(pose)
+			if cat == "" {
+				cat = "?"
+			}
+			return fmt.Sprintf("%s pose=%d(%s) last_pose=%d(%s) track=%v",
+				cat, pose, poseDisplay(pose), lastPose, poseDisplay(lastPose), m["track_id"])
+		case 3:
+			data, _ := msg["data"].(map[string]interface{})
+			return fmt.Sprintf("number_people=%v", data["number_people"])
+		case 5, 7, 8:
+			cat := alarm.DeviceEventMap[eventType]
+			return fmt.Sprintf("device_status=%s", cat)
+		}
+		return fmt.Sprintf("event_type=%d", eventType)
+	}
+	return ""
+}
+
+// poseDisplay pose 数值 → 友好名（observation.EnumPose）
+func poseDisplay(p int) string {
+	if p >= 0 && p < len(observation.EnumPose) {
+		return observation.EnumPose[p]
+	}
+	return "unknown"
+}
+
+// rxIsAlarmClass 只 Info-log 关注路径，其它走 Debug：
+//   prop topic                     → Info（设备属性查询/设置应答）
+//   event/alarm + event_type=1     → Info（Enter/ExitRoom + InBed/LeftBed）
+//   event/alarm + event_type=2     → Info（Fall/SittingOnGround）
+// 其它：monitor/stat 周期流、number_people (type=3)、device-status (type=5/7/8)、func 命令应答 → Debug
+// 注：device healthcheck fail/recover 跃迁不在此处 — 那是 outbound（health_check.go publishHealthIfChanged 加 Info）
+//
+// 用 string-scan 而非 json.Unmarshal，避免每条 MQTT 入站都付完整解码代价。
+func rxIsAlarmClass(topicType string, payload []byte) bool {
+	if topicType == "prop" {
+		return true
+	}
+	if topicType != "event" && topicType != "alarm" {
+		return false
+	}
+	// 协议 firmware 顶层 "type": N（见 Radar_MQTT_v3.0.md §3.8）
+	idx := bytes.Index(payload, []byte(`"type"`))
+	if idx < 0 {
+		return false
+	}
+	// 跳过 `"type"` + 可空格 + `:` + 可空格 + 数字
+	tail := payload[idx+len(`"type"`):]
+	for len(tail) > 0 && (tail[0] == ' ' || tail[0] == '\t' || tail[0] == ':') {
+		tail = tail[1:]
+	}
+	if len(tail) == 0 {
+		return false
+	}
+	switch tail[0] {
+	case '1', '2':
+		return true
+	}
+	return false
+}
 
 // handlePropertyMessage 处理属性响应消息（/prop/.../post）：读/写回包共用，根据 cmd 区分日志
 func (c *MQTTConsumer) handlePropertyMessage(uid string, message map[string]interface{}) error {
@@ -538,8 +630,13 @@ func (c *MQTTConsumer) handlePropertyMessage(uid string, message map[string]inte
 	}
 	// 属性读其实是高频（30s × 设备数 → 数百行/小时），轮询的设备原始回包仅 verbose 时打。
 	// SetDeviceProperties 是低频（手动配置触发），始终打。
-	if cmd != "read" || isQinglanVerboseLog() {
-		log.Printf("%s receive MQTT (device raw): device=%s, requestId=%s, msg=%+v", logLabel, uid, requestIDRaw, message)
+	if cmd != "read" {
+		c.logger.Debug("device prop raw",
+			zap.String("op", logLabel),
+			zap.String("device", uid),
+			zap.String("request_id", requestIDRaw),
+			zap.Any("msg", message),
+		)
 	}
 
 	decoded, err := decode.RadarDecoder(message, "prop")
@@ -575,12 +672,23 @@ func (c *MQTTConsumer) handlePropertyMessage(uid string, message map[string]inte
 	if requestID != "" {
 		ctx := context.Background()
 		if err := c.streamPublisher.StoreCommandResponse(ctx, requestID, payload); err != nil {
-			log.Printf("❌ %s store Redis: requestId=%s: %v", logLabel, requestID, err)
-		} else if cmd != "read" || isQinglanVerboseLog() {
-			log.Printf("✅ %s send Redis: device=%s, requestId=%s, payload=%+v", logLabel, uid, requestID, payload)
+			c.logger.Warn("prop response store redis",
+				zap.String("op", logLabel),
+				zap.String("request_id", requestID),
+				zap.Error(err),
+			)
+		} else if cmd != "read" {
+			c.logger.Debug("prop response stored",
+				zap.String("op", logLabel),
+				zap.String("device", uid),
+				zap.String("request_id", requestID),
+			)
 		}
 	} else {
-		log.Printf("⚠️ %s: no requestId, device=%s", logLabel, uid)
+		c.logger.Warn("prop response missing requestId",
+			zap.String("op", logLabel),
+			zap.String("device", uid),
+		)
 	}
 
 	return nil
@@ -591,9 +699,6 @@ func (c *MQTTConsumer) handlePropertyMessage(uid string, message map[string]inte
 // RadarService 发 MQTT 到 /func/.../get 并轮询 Redis；设备在 /func/.../post 回包后，此处提取
 // requestId 并存 Redis，RadarService 方能取到响应并返回给 HTTP 调用方。
 func (c *MQTTConsumer) handleFunctionMessage(uid string, message map[string]interface{}) error {
-	log.Printf("Handling function message for device %s", uid)
-
-	// Check for OTA return message
 	if cmd, ok := message["cmd"].(string); ok && cmd == "ota_return" {
 		c.handleOTAReturn(uid, message)
 		return nil
@@ -610,12 +715,12 @@ func (c *MQTTConsumer) handleFunctionMessage(uid string, message map[string]inte
 	if requestID != "" {
 		ctx := context.Background()
 		if err := c.streamPublisher.StoreCommandResponse(ctx, requestID, message); err != nil {
-			log.Printf("Failed to store function response for requestId %s: %v", requestID, err)
+			c.logger.Warn("function response store redis", zap.String("request_id", requestID), zap.Error(err))
 		} else {
-			log.Printf("Stored function response for requestId %s from device %s", requestID, uid)
+			c.logger.Debug("function response stored", zap.String("request_id", requestID), zap.String("device", uid))
 		}
 	} else {
-		log.Printf("Function message from device %s has no requestId, treating as function status notification", uid)
+		c.logger.Debug("function status notification (no requestId)", zap.String("device", uid))
 	}
 	return nil
 }
@@ -626,7 +731,7 @@ func (c *MQTTConsumer) handleFunctionMessage(uid string, message map[string]inte
 func (c *MQTTConsumer) handleOTAReturn(uid string, message map[string]interface{}) {
 	data, _ := message["data"].(map[string]interface{})
 	if data == nil {
-		log.Printf("[OTA-RETURN] uid=%s no data in ota_return message", uid)
+		c.logger.Warn("ota_return missing data", zap.String("uid", uid))
 		return
 	}
 
@@ -641,12 +746,16 @@ func (c *MQTTConsumer) handleOTAReturn(uid string, message map[string]interface{
 		errMsg = v
 	}
 
-	log.Printf("[OTA-RETURN] uid=%s progress=%d errMsg=%s progressSet=%v", uid, progress, errMsg, progressSet)
+	c.logger.Info("ota return",
+		zap.String("uid", uid),
+		zap.Int("progress", progress),
+		zap.String("err_msg", errMsg),
+		zap.Bool("progress_set", progressSet),
+	)
 
-	// 协议偏差：设备拒绝 OTA 时可能只发 errMsg 不发 progress。有 errMsg 即视为 failed，否则跳过。
 	if !progressSet {
 		if errMsg == "" {
-			log.Printf("[OTA-RETURN] uid=%s missing progress + empty errMsg, skip db update", uid)
+			c.logger.Warn("ota_return missing progress + errMsg, skip", zap.String("uid", uid))
 			return
 		}
 		progress = -1
@@ -677,9 +786,13 @@ func (c *MQTTConsumer) handleOTAReturn(uid string, message map[string]interface{
 			)
 		`, status, progress, errMsg, uid)
 		if err != nil {
-			log.Printf("[OTA-RETURN] failed to update device_ota status for uid=%s: %v", uid, err)
+			c.logger.Warn("ota_return device_ota update failed", zap.String("uid", uid), zap.Error(err))
 		} else {
-			log.Printf("[OTA-RETURN] updated device_ota status=%s progress=%d for uid=%s", status, progress, uid)
+			c.logger.Info("ota_return device_ota updated",
+				zap.String("uid", uid),
+				zap.String("status", status),
+				zap.Int("progress", progress),
+			)
 		}
 	}
 }
@@ -757,16 +870,6 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 		return nil
 	}
 
-	if len(items) > 0 && canMonitor && isQinglanVerboseLog() {
-		for _, it := range items {
-			if dc, _ := it["dataCategory"].(string); dc == "track" {
-				log.Printf("[MONITOR_TRACK] device_uid=%s track_id=%v position_x=%v position_y=%v position_z=%v remaining_time=%v area_id=%v pose=%v event=%v",
-					uid, it["track_id"], it["position_x"], it["position_y"], it["position_z"],
-					it["remaining_time"], it["area_id"], it["pose"], it["event"])
-			}
-		}
-	}
-
 	if len(items) == 0 {
 		return nil
 	}
@@ -777,7 +880,7 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 		var lastErr error
 		for _, msg := range msgs {
 			if err := c.streamPublisher.PublishMonitor(ctx, msg); err != nil {
-				log.Printf("Failed to publish monitor for device %s: %v", uid, err)
+				c.logger.Warn("publish monitor", zap.String("device", uid), zap.Error(err))
 				lastErr = err
 			}
 		}
@@ -956,7 +1059,7 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 	// card_id comes from resolveDeviceIdentity via CardMappingService
 	dataValue, err := decode.RadarDecoder(message, "stat")
 	if err != nil {
-		log.Printf("[STAT_HANDLER] decode failed for device %s: %v", uid, err)
+		c.logger.Warn("stat decode", zap.String("device", uid), zap.Error(err))
 		return nil
 	}
 
@@ -1144,7 +1247,7 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 	// card_id comes from resolveDeviceIdentity via CardMappingService
 	dataValue, err := decode.RadarDecoder(message, "event")
 	if err != nil {
-		log.Printf("[EVENT_DECODE_ERROR] device=%s: %v", uid, err)
+		c.logger.Warn("event decode", zap.String("device", uid), zap.Error(err))
 		return nil
 	}
 
@@ -1210,16 +1313,17 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 			// area_type 写入 data，供下游区分区域（床区/感应区等）
 
 		case 2:
-			// Fall/SittingOnGround 走 event stream，由 sensor (wisefido-sensor) verifier 接管。
-			// 见 doc/cardagg_sensor_split.md：radar firmware 容易误报，必须经 sensor 验证；
-			// sensor verify 通过后通过 alarm_back_channel 转发到 alarm stream → cardagg 落库。
-			// cardagg 不再直接处理 radar producer 的 Fall/SittingOnGround。
+			// 4 个 pose-class category 各自保留（不再合并 SuspectedFall→Fall）：
+			//   - SuspectedFall          (pose=2)  firmware 第一帧检测 → 下游 WARNING
+			//   - Fall                   (pose=5)  firmware 30~90s qualification 通过 → 下游 ALERT/CRITICAL
+			//   - SuspectedSittingOnGround (pose=7) 同理 WARNING
+			//   - SittingOnGround        (pose=8)  同理 ALERT
+			// 都走 event stream，由 sensor verifier 接管 → alarm_back_channel → cardagg 落库。
+			// 见 doc/cardagg_sensor_split.md + memory firmware_fall_qualification。
 			alarmCat := ""
 			switch eventName {
-			case alarm.Fall, alarm.SuspectedFall:
-				alarmCat = alarm.Fall
-			case alarm.SittingOnGround, alarm.SuspectedSittingOnGround:
-				alarmCat = alarm.SittingOnGround
+			case alarm.Fall, alarm.SuspectedFall, alarm.SittingOnGround, alarm.SuspectedSittingOnGround:
+				alarmCat = eventName
 			}
 			if alarmCat != "" {
 				// Plan B：业务字段 first-class 平铺（TrackID / Pose 都是 EventItem 字段）。
@@ -1233,12 +1337,8 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 				// topic_type=event；category 保留 alarm.Fall / alarm.SittingOnGround 让 sensor 路由识别
 				evMsg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "event", alarmCat, eventData)
 				if err := c.streamPublisher.PublishEvent(ctx, evMsg); err != nil {
-					log.Printf("[EVENT_HANDLER] fall event publish failed device=%s cat=%s: %v", uid, alarmCat, err)
+					c.logger.Warn("publish fall event", zap.String("device", uid), zap.String("cat", alarmCat), zap.Error(err))
 					lastErr = err
-				} else {
-					// 业务关键事件（Fall/SittingOnGround 含 Suspected）— 必 log（用户要求 2026-05-15）
-					log.Printf("[FALL_PUBLISH] device=%s category=%s event_name=%s track_id=%d pose=%d ts_ms=%d ts=%s",
-						uid, alarmCat, eventName, asInt(m["track_id"]), asInt(m["pose"]), ts, time.UnixMilli(ts).Format("15:04:05.000"))
 				}
 				continue
 			}
@@ -1259,12 +1359,8 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 
 		msg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "event", eventName, data)
 		if err := c.streamPublisher.PublishEvent(ctx, msg); err != nil {
-			log.Printf("[EVENT_HANDLER] publish failed device=%s cat=%s: %v", uid, eventName, err)
+			c.logger.Warn("publish event", zap.String("device", uid), zap.String("cat", eventName), zap.Error(err))
 			lastErr = err
-		} else if eventType == 1 || eventType == 3 {
-			// 业务关键事件 — Enter/ExitRoom (eventType=1) / NumberPeople (eventType=3) 必 log（用户要求 2026-05-15）
-			log.Printf("[EVENT_PUBLISH] device=%s event_type=%d event_name=%s track_id=%d number_people=%d ts_ms=%d ts=%s",
-				uid, eventType, eventName, asInt(m["track_id"]), asInt(m[observation.FieldNumberPeople]), ts, time.UnixMilli(ts).Format("15:04:05.000"))
 		}
 	}
 	return lastErr

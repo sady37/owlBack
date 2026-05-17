@@ -151,7 +151,6 @@ type MessageHandler func(topic string, payload []byte) error
 // DefaultMessageHandler 默认消息处理器
 func DefaultMessageHandler(handler MessageHandler) mqttcommon.MessageHandler {
 	return func(topic string, payload []byte) error {
-		// log.Printf("Received MQTT message on topic: %s", topic) // 已关闭，减少刷屏
 		return handler(topic, payload)
 	}
 }

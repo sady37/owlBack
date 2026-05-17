@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"time"
@@ -24,10 +23,11 @@ import (
 	"wisefido-qinglan/internal/repository"
 
 	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 )
 
-// qlVerbose 与 consumer.isQinglanVerboseLog 同源；service 包内的 log.Printf
-// 热路径用它做闸门——属性轮询每 30s × 设备数 = 频次很高，默认应静默。
+// qlVerbose 与 consumer.isQinglanVerboseLog 同源；service 包内的热路径用它做闸门
+// ——属性轮询每 30s × 设备数 = 频次很高，默认应静默。
 func qlVerbose() bool { return os.Getenv("QINGLAN_VERBOSE_LOG") == "true" }
 
 // 设备响应错误码常量
@@ -58,6 +58,7 @@ type RadarService struct {
 	streamPublisher *consumer.StreamPublisher
 	mqttConsumer    *consumer.MQTTConsumer
 	healthRefresher HealthRefresher // 由 main 在 subscriptionManager 创建后注入；nil 时行为退化为旧路径
+	logger          *zap.Logger
 }
 
 // NewRadarService 创建雷达服务
@@ -68,7 +69,11 @@ func NewRadarService(
 	deviceRepo repository.DeviceRepository,
 	streamPublisher *consumer.StreamPublisher,
 	mqttConsumer *consumer.MQTTConsumer,
+	logger *zap.Logger,
 ) (*RadarService, error) {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &RadarService{
 		config:          cfg,
 		mqttClient:      mqttClient,
@@ -76,6 +81,7 @@ func NewRadarService(
 		deviceRepo:      deviceRepo,
 		streamPublisher: streamPublisher,
 		mqttConsumer:    mqttConsumer,
+		logger:          logger,
 	}, nil
 }
 
@@ -87,27 +93,19 @@ func (s *RadarService) SetHealthRefresher(refresher HealthRefresher) {
 
 // Start 启动服务
 func (s *RadarService) Start(ctx context.Context) error {
-	log.Println("Starting radar service...")
-
-	// 启动MQTT消费者
 	if err := s.mqttConsumer.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start MQTT consumer: %w", err)
 	}
-
-	log.Println("Radar service started successfully")
+	s.logger.Info("radar service started")
 	return nil
 }
 
 // Stop 停止服务
 func (s *RadarService) Stop(ctx context.Context) error {
-	log.Println("Stopping radar service...")
-
-	// 停止MQTT消费者
 	if err := s.mqttConsumer.Stop(ctx); err != nil {
-		log.Printf("Error stopping MQTT consumer: %v", err)
+		s.logger.Warn("stop mqtt consumer", zap.Error(err))
 	}
-
-	log.Println("Radar service stopped")
+	s.logger.Info("radar service stopped")
 	return nil
 }
 
@@ -163,7 +161,11 @@ func (s *RadarService) readOneBatch(ctx context.Context, deviceUID string, keys 
 		command["data"] = map[string]interface{}{"key": []string{}}
 	}
 	if qlVerbose() {
-		log.Printf("📤 Read Command: device=%s, requestId=%s, command=%+v", deviceUID, requestID, command)
+		s.logger.Debug("read command",
+			zap.String("device", deviceUID),
+			zap.String("request_id", requestID),
+			zap.Any("command", command),
+		)
 	}
 	commandJSON, err := json.Marshal(command)
 	if err != nil {
@@ -174,21 +176,28 @@ func (s *RadarService) readOneBatch(ctx context.Context, deviceUID string, keys 
 		return nil, fmt.Errorf("failed to publish command: %w", err)
 	}
 	if qlVerbose() {
-		log.Printf("Send MQTT: device=%s, requestId=%s, keys: %v", deviceUID, requestID, keys)
-		log.Printf("Wait device response: ⏳ device=%s, requestId=%s, GetDeviceProperties", deviceUID, requestID)
+		s.logger.Debug("read command sent, waiting response",
+			zap.String("device", deviceUID),
+			zap.String("request_id", requestID),
+			zap.Strings("keys", keys),
+		)
 	}
 	response, err := s.waitForResponse(ctx, requestID, 10*time.Second)
 	if err != nil {
-		log.Printf("❌ GetDeviceProperties: failed to get response - device: %s, requestId: [%s], error: %v", deviceUID, requestID, err)
+		s.logger.Warn("get device properties no response",
+			zap.String("device", deviceUID),
+			zap.String("request_id", requestID),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("failed to get response: %w", err)
 	}
 	if data, ok := response["data"].(map[string]interface{}); ok {
 		if qlVerbose() {
-			if b, err := json.Marshal(data); err == nil {
-				log.Printf("✅ GetDeviceProperties: device=%s, requestId=%s, data=%s", deviceUID, requestID, string(b))
-			} else {
-				log.Printf("✅ GetDeviceProperties: device=%s, requestId=%s, data=%+v", deviceUID, requestID, data)
-			}
+			s.logger.Debug("get device properties ok",
+				zap.String("device", deviceUID),
+				zap.String("request_id", requestID),
+				zap.Any("data", data),
+			)
 		}
 		return data, nil
 	}
@@ -209,22 +218,22 @@ func (s *RadarService) SetDeviceProperties(ctx context.Context, deviceUID string
 		if err := json.Unmarshal([]byte(alarmItemsJSON), &alarmItems); err == nil {
 			built, encErr := decode.EncodeAlarmItemsToDeviceProps(alarmItems)
 			if encErr != nil {
-				log.Printf("[CONFIG_WRITE] ❌ EncodeAlarmItemsToDeviceProps: %v", encErr)
+				s.logger.Warn("config_write encode alarm items", zap.Error(encErr))
 			}
 			if v, ok := built["radar_func_ctrl"]; ok {
 				convertedProperties["radar_func_ctrl"] = v
-				log.Printf("[CONFIG_WRITE] ✅ Built radar_func_ctrl=%v from AlarmItems.MonitoringMode", v)
+				s.logger.Info("config_write built radar_func_ctrl", zap.Any("value", v))
 			}
 			if v, ok := built["fall_param"]; ok {
 				convertedProperties["fall_param"] = v
-				log.Printf("[CONFIG_WRITE] ✅ Built fall_param base64 from AlarmItems")
+				s.logger.Info("config_write built fall_param")
 			}
 			if v, ok := built["heart_breath_param"]; ok {
 				convertedProperties["heart_breath_param"] = v
-				log.Printf("[CONFIG_WRITE] ✅ Built heart_breath_param base64 from AlarmItems")
+				s.logger.Info("config_write built heart_breath_param")
 			}
 		} else {
-			log.Printf("[CONFIG_WRITE] ❌ Failed to unmarshal _alarm_items_json: %v", err)
+			s.logger.Warn("config_write unmarshal _alarm_items_json", zap.Error(err))
 		}
 	}
 
@@ -238,11 +247,9 @@ func (s *RadarService) SetDeviceProperties(ctx context.Context, deviceUID string
 		// 否则，如果直接传递了这些字段，直接添加到 convertedProperties
 		if key == "fall_param" || key == "heart_breath_param" {
 			if _, exists := convertedProperties[key]; !exists {
-				// 直接传递的 base64 值，直接使用
 				convertedProperties[key] = value
-				log.Printf("[CONFIG_WRITE] ✅ Using %s directly from properties (already base64 encoded)", key)
+				s.logger.Info("config_write using key directly", zap.String("key", key))
 			}
-			// 如果已存在（从 _alarm_items_json 构建），跳过
 			continue
 		}
 
@@ -298,18 +305,30 @@ func (s *RadarService) sendOneSetProperties(ctx context.Context, deviceUID strin
 	}
 	commandJSON, err := json.Marshal(command)
 	if err != nil {
-		log.Printf("❌ SetDeviceProperties: failed to marshal command, device=%s: %v", deviceUID, err)
+		s.logger.Warn("set device properties marshal", zap.String("device", deviceUID), zap.Error(err))
 		return 0, fmt.Errorf("failed to marshal command: %w", err)
 	}
 	topic := s.mqttClient.BuildCommandTopic("prop", deviceUID)
-	log.Printf("📤 SetDeviceProperties send MQTT: device=%s, requestId=%s, payload=%s", deviceUID, requestID, string(commandJSON))
+	s.logger.Info("set device properties sent",
+		zap.String("device", deviceUID),
+		zap.String("request_id", requestID),
+		zap.String("payload", string(commandJSON)),
+	)
 	if err := s.mqttClient.Publish(topic, 1, false, commandJSON); err != nil {
-		log.Printf("❌ SetDeviceProperties: failed to publish, device=%s, topic=%s: %v", deviceUID, topic, err)
+		s.logger.Warn("set device properties publish",
+			zap.String("device", deviceUID),
+			zap.String("topic", topic),
+			zap.Error(err),
+		)
 		return 0, fmt.Errorf("failed to publish command: %w", err)
 	}
 	response, err := s.waitForResponse(ctx, requestID, 10*time.Second)
 	if err != nil {
-		log.Printf("❌ SetDeviceProperties: no response, device=%s, requestId=%s: %v", deviceUID, requestID, err)
+		s.logger.Warn("set device properties no response",
+			zap.String("device", deviceUID),
+			zap.String("request_id", requestID),
+			zap.Error(err),
+		)
 		return 0, fmt.Errorf("failed to get response: %w", err)
 	}
 	code := 0
@@ -386,7 +405,11 @@ func (s *RadarService) SubscribeRealtimeData(ctx context.Context, deviceUID stri
 	topic := s.mqttClient.BuildCommandTopic("monitor", deviceUID)
 
 	if err := s.mqttClient.Publish(topic, 1, false, commandJSON); err != nil {
-		log.Printf("❌ Monitor Subscription: failed to publish to device %s, topic: %s, error: %v", deviceUID, topic, err)
+		s.logger.Warn("monitor subscription publish",
+			zap.String("device", deviceUID),
+			zap.String("topic", topic),
+			zap.Error(err),
+		)
 		return fmt.Errorf("failed to publish command: %w", err)
 	}
 
@@ -438,7 +461,12 @@ func (s *RadarService) CallDeviceFunction(ctx context.Context, deviceUID string,
 		return fmt.Errorf("failed to publish command: %w", err)
 	}
 
-	log.Printf("Device function command sent: %s, requestId: %s, topic: %s, dev: %d", deviceUID, requestID, topic, dev)
+	s.logger.Info("device function command sent",
+		zap.String("device", deviceUID),
+		zap.String("request_id", requestID),
+		zap.String("topic", topic),
+		zap.Int("dev", dev),
+	)
 
 	// 等待响应（重启操作需要更长时间）
 	timeout := 10 * time.Second
@@ -487,7 +515,11 @@ func (s *RadarService) waitForResponse(ctx context.Context, requestID string, ti
 	truncatedRequestID := requestID
 	if len(requestID) > 19 {
 		truncatedRequestID = requestID[:19]
-		log.Printf("⚠️ waitForResponse: original requestId [%s] (length: %d) may be truncated by device to [%s] (length: %d)", requestID, len(requestID), truncatedRequestID, len(truncatedRequestID))
+		s.logger.Warn("requestId may be truncated by device",
+			zap.String("original", requestID),
+			zap.Int("orig_len", len(requestID)),
+			zap.String("truncated", truncatedRequestID),
+		)
 	}
 
 	for {

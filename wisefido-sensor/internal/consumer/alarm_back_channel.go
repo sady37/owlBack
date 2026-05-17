@@ -24,9 +24,6 @@ import (
 	redislib "github.com/go-redis/redis/v8"
 )
 
-// AlarmBackChannelProducer Producer 字段标识，cardagg 据此区分 sensor 回流 vs 厂家原始消息。
-const AlarmBackChannelProducer = "wisefido-sensor"
-
 // EventStatusStart / PendingArm / PendingCancel envelope.event_status 的 PR1 sentinel。
 const (
 	EventStatusStart         = "start"
@@ -34,13 +31,48 @@ const (
 	EventStatusPendingCancel = "pending_cancel"
 )
 
-// AlarmBackChannel sensor → cardagg 回流 publisher。
-type AlarmBackChannel struct {
-	client *redislib.Client
+// AgentIdentity sensor 进程作为 platform agent 的 IPv6 + UID 身份。
+// 详见 owlBack/doc/platform_agent_addressing.md §3。
+type AgentIdentity struct {
+	IPv6      netip.Addr // /128, slot fd00:0:fff1::/48
+	AgentName string     // 'wisefido-sensor'
 }
 
-func NewAlarmBackChannel(client *redislib.Client) *AlarmBackChannel {
-	return &AlarmBackChannel{client: client}
+// AlarmBackChannel sensor → cardagg 回流 publisher。
+type AlarmBackChannel struct {
+	client   *redislib.Client
+	identity AgentIdentity
+	seqKey   string // Redis INCR key for envelope.sequence_number
+}
+
+// NewAlarmBackChannel 构造 publisher。identity 必须有效（IPv6 非零）；否则 publish 时退化为 anonymous。
+func NewAlarmBackChannel(client *redislib.Client, identity AgentIdentity) *AlarmBackChannel {
+	seqKey := ""
+	if identity.IPv6.IsValid() {
+		name := identity.AgentName
+		if name == "" {
+			name = "agent"
+		}
+		seqKey = fmt.Sprintf("%s:seq:%s", name, identity.IPv6.String())
+	}
+	return &AlarmBackChannel{
+		client:   client,
+		identity: identity,
+		seqKey:   seqKey,
+	}
+}
+
+// nextSeq 从 Redis INCR 取下一个 envelope sequence_number；失败返回 0（degrade 不阻断 alarm publish）。
+// key 跨重启单调（不重置），让 parent_span/trace_id 在 process restart 后仍唯一。
+func (a *AlarmBackChannel) nextSeq(ctx context.Context) int64 {
+	if a == nil || a.client == nil || a.seqKey == "" {
+		return 0
+	}
+	v, err := a.client.Incr(ctx, a.seqKey).Result()
+	if err != nil {
+		return 0 // degrade（不能因 Redis 暂时不可用阻断 alarm 链）
+	}
+	return v
 }
 
 // PublishAlarmFire 触发即时 alarm。cardagg alarm_handler 收到后走 PersistAlarmAndPublish 路径。
@@ -114,10 +146,17 @@ func (a *AlarmBackChannel) publishAlarm(
 	if err != nil {
 		return "", fmt.Errorf("marshal dataValue: %w", err)
 	}
+	// envelope.producer = sensor 的 platform agent /128（per platform_agent_addressing.md §4.1）；
+	// 未配置 identity 时 fallback 空串 — cardagg 端会 NULL 落库（兼容首次部署 .env 未配的过渡）
+	producerStr := ""
+	if a.identity.IPv6.IsValid() {
+		producerStr = a.identity.IPv6.String()
+	}
+	seq := a.nextSeq(ctx)
 	values := map[string]interface{}{
-		"producer":        AlarmBackChannelProducer,
+		"producer":        producerStr,
 		"subject_entity":  subjectEntity,
-		"sequence_number": "0",
+		"sequence_number": fmt.Sprintf("%d", seq),
 		"device_addr":     deviceAddr.String(),
 		"device_type":     "",
 		"timestamp":       fmt.Sprintf("%d", tsMs),

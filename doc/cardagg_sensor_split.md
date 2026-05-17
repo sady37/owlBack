@@ -226,3 +226,4 @@ sensor 现在已经订阅 `iot:alarm:stream` 跑 RecordRadarAlarm verifier，需
 - ❌ sensor 写 alarm_events 表（PR1 A11 红线，仍然有效）
 - ❌ cardagg 处理 radar producer 的 Fall（必须经 sensor verifier）
 - ❌ "为了过渡期保 fail-safe" 在 cardagg 留 radar Fall 直处理 — 终态目标必须明确，过渡期可以软落地但不要忘
+- ❌ **cardagg 任何路径设 `producer = cardagg.*` 或自己的 IPv6** — cardagg 永远是 envelope 翻译器不是 producer；timer-based alarm 由 sensor 自己 fire；具体红线 + slot 分配见 [platform_agent_addressing.md](platform_agent_addressing.md)（2026-05-15 拍板）

@@ -7,7 +7,6 @@ import (
 	"os"
 	"time"
 
-	rediscommon "owl-common/redis"
 	"wisefido-sensor/internal/consumer"
 	"wisefido-sensor/internal/service"
 	"wisefido-sensor/internal/zonealarm"
@@ -26,7 +25,7 @@ type Subsystem struct {
 	RadarAdapter    *zoneengine.RadarAdapter
 	SleepaceAdapter *zoneengine.SleepaceAdapter
 	VitalAdapter    *zoneengine.VitalAdapter
-	RedisAdapter    *zoneengine.RedisAdapter
+	StreamPublisher *zoneengine.StreamPublisher
 
 	BedSizeLookup  *BedSizeLookup
 	BathroomLookup *BathroomLookup
@@ -98,13 +97,11 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 	bathLookup := NewBathroomLookup(opts.DB, opts.Logger)
 	vitalSrc := NewMonitorVitalSource(opts.MonitorBuffer)
 
-	// 3) engine + redis listener
+	// 3) engine + stream publisher（替代旧 RedisAdapter 直写 card:status；
+	//    cardagg 是 card:status 单 writer，sensor 通过 sensor:derived:stream 推消息）
 	engine := zoneengine.NewEngine(rules, bedLookup, opts.Logger)
-	redisAdapter := zoneengine.NewRedisAdapter(opts.Redis,
-		rediscommon.StreamCardStatus.MaxLen,
-		rediscommon.StreamCardRealTime.MaxLen,
-		0, opts.Logger)
-	engine.AddListener(redisAdapter)
+	streamPublisher := zoneengine.NewStreamPublisher(opts.Redis, opts.Logger)
+	engine.AddListener(streamPublisher)
 
 	// 4) input adapters
 	radar := zoneengine.NewRadarAdapter(opts.Redis, engine, bathLookup, opts.Logger)
@@ -135,10 +132,26 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 			zap.String("path", alarmRulesPath))
 	}
 
+	bedDeviceLookup := NewBedDeviceLookup(opts.DB, opts.Logger)
+
+	// 启动时清空 Redis alarm:pending Hash（platform-agent cutover 安全网）。
+	// 详见 owlBack/doc/platform_agent_addressing.md §6/§7：
+	// sensor.Supervisor 用 in-memory pending map + timer，不做 HA recovery；
+	// cardagg 端的 Redis Hash 已不再读写，启动 cleanup 防上次崩溃残留导致 stale state。
+	if opts.Redis != nil {
+		const alarmPendingKey = "alarm:pending"
+		if err := opts.Redis.Del(context.Background(), alarmPendingKey).Err(); err != nil {
+			opts.Logger.Warn("startup cleanup alarm:pending failed (non-fatal)",
+				zap.String("key", alarmPendingKey), zap.Error(err))
+		} else {
+			opts.Logger.Info("startup cleanup alarm:pending done", zap.String("key", alarmPendingKey))
+		}
+	}
+
 	var firer *BackChannelAlarmFirer
 	var supervisor *zonealarm.Supervisor
 	if opts.BackChannel != nil {
-		firer = NewBackChannelAlarmFirer(opts.BackChannel, opts.Logger)
+		firer = NewBackChannelAlarmFirer(opts.BackChannel, bedDeviceLookup, opts.Logger)
 		supervisor = zonealarm.NewSupervisor(alarmRules, firer, opts.Logger)
 		engine.AddListener(zoneAlarmListenerAdapter{sup: supervisor})
 	} else {
@@ -150,7 +163,7 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 		RadarAdapter:    radar,
 		SleepaceAdapter: sleepace,
 		VitalAdapter:    vital,
-		RedisAdapter:    redisAdapter,
+		StreamPublisher: streamPublisher,
 		BedSizeLookup:   bedLookup,
 		BathroomLookup:  bathLookup,
 		VitalSource:     vitalSrc,

@@ -1,9 +1,14 @@
+// wisefido-iot — Redis Streams → PG v2 持久化边界（CLAUDE.md 规则 #2）。
+//
+//   iot:monitor:stream → monitor_stream
+//   iot:event:stream   → event_log
+//   (alarm 由 cardagg alarm_router 单 writer 写 alarm_events，本服务不消费)
+
 package main
 
 import (
 	"context"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,108 +19,58 @@ import (
 
 	"wisefido-iot/internal/config"
 	"wisefido-iot/internal/consumer"
-	httphandler "wisefido-iot/internal/http"
-	"wisefido-iot/internal/publisher"
 	"wisefido-iot/internal/repository"
 
 	"go.uber.org/zap"
 )
 
 func main() {
-	// 加载配置
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		log.Fatalf("load config: %v", err)
 	}
 
-	// 初始化 Logger
 	logger, err := logpkg.NewLogger(cfg.Log.Level, cfg.Log.Format, "wisefido-iot")
 	if err != nil {
-		log.Fatalf("Failed to initialize logger: %v", err)
+		log.Fatalf("init logger: %v", err)
 	}
 	defer logger.Sync()
 
-	logger.Info("Starting wisefido-iot service",
-		zap.String("version", "1.0.0"),
+	logger.Info("starting wisefido-iot",
 		zap.String("monitor_stream", cfg.Streams.Monitor),
-		zap.String("stat_stream", cfg.Streams.Stat),
 		zap.String("event_stream", cfg.Streams.Event),
-		zap.String("alarm_stream", cfg.Streams.Alarm),
-		zap.String("auth_stream", cfg.Streams.Auth),
 		zap.String("consumer_group", cfg.ConsumerGroup),
 		zap.String("consumer_name", cfg.ConsumerName),
 		zap.Int64("batch_size", cfg.BatchSize),
 	)
 
-	// 初始化数据库连接
 	db, err := database.NewPostgresDB(&cfg.Database)
 	if err != nil {
-		logger.Fatal("Failed to connect to database", zap.Error(err))
+		logger.Fatal("connect db", zap.Error(err))
 	}
 	defer database.Close(db)
 
-	logger.Info("Database connection established")
-
-	// 初始化 Redis 连接
 	redisClient := redis.NewRedisClient(&cfg.Redis)
 	defer redis.Close(redisClient)
-
-	// 测试 Redis 连接
 	if err := redis.Ping(context.Background(), redisClient); err != nil {
-		logger.Fatal("Failed to ping Redis", zap.Error(err))
+		logger.Fatal("ping redis", zap.Error(err))
 	}
 
-	logger.Info("Redis connection established")
+	streamRepo := repository.NewStreamRepo(db, logger)
+	streamConsumer := consumer.NewStreamConsumer(cfg, redisClient, streamRepo, logger)
 
-	// 初始化 Repository
-	iotRepo := repository.NewIoTTimeSeriesRepository(db, logger)
-
-	// 初始化 Publisher
-	streamPublisher := publisher.NewStreamPublisher(redisClient, logger)
-
-	// 初始化 Consumer
-	streamConsumer := consumer.NewStreamConsumer(
-		cfg,
-		redisClient,
-		iotRepo,
-		streamPublisher,
-		logger,
-	)
-
-	// 启动 HTTP 服务（8085，供 wisefido-data 调 InvalidateLocationCache 等）
-	mux := http.NewServeMux()
-	mux.HandleFunc("/internal/api/v1/iot-timeseries/cache/invalidate", httphandler.NewHandler(iotRepo, logger).InvalidateLocationCache)
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: mux}
-	go func() {
-		logger.Info("HTTP server listening", zap.String("addr", cfg.HTTPAddr))
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Warn("HTTP server error", zap.Error(err))
-		}
-	}()
-
-	// 启动服务
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 在 goroutine 中启动 Stream Consumer
 	go func() {
 		if err := streamConsumer.Start(ctx); err != nil {
-			logger.Fatal("Failed to start stream consumer", zap.Error(err))
+			logger.Fatal("stream consumer exited", zap.Error(err))
 		}
 	}()
 
-	// 等待中断信号
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
 	sig := <-sigChan
-	logger.Info("Received signal, shutting down", zap.String("signal", sig.String()))
-
-	// 优雅关闭
+	logger.Info("shutting down", zap.String("signal", sig.String()))
 	cancel()
-	if err := srv.Shutdown(context.Background()); err != nil {
-		logger.Warn("HTTP server shutdown", zap.Error(err))
-	}
-	logger.Info("Service stopped")
 }
-

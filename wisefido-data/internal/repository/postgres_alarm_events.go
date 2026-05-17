@@ -76,6 +76,13 @@ func (r *PostgresAlarmEventsRepository) buildWhereClause(tenantID string, filter
 		*args = append(*args, *filters.EventRoomID)
 		*argN++
 	}
+	// 精确 card_id 匹配（fan-out 修复，2026-05-15）：alarm 只属于 LPM 锁定的那张卡，
+	// 父卡（unit/branch）不再 aggregate 子卡 alarm。
+	if filters.EventCardID != nil {
+		where = append(where, fmt.Sprintf("ae.card_id = $%d::INET", *argN))
+		*args = append(*args, *filters.EventCardID)
+		*argN++
+	}
 
 	// 设备过滤（v2 仍存 ae.device_id snapshot 列）
 	if filters.DeviceID != nil {
@@ -252,13 +259,6 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 	}
 	offset := (page - 1) * size
 
-	// v2 SELECT bridge：
-	//   - tenant_id 列已删 → 用 ae.device_addr 反推 /48 host
-	//   - iot_timeseries_id / notified_users / metadata / updated_at 列已删 → NULL/默认占位
-	//   - notes → ae.handler_notes (v2 列名)
-	//   - trigger_data → ae.payload (v2 列名)
-	//   - alarm_level SMALLINT → ::text 适配 domain.AlarmLevel string
-	//   - handler UUID → ::text
 	query := fmt.Sprintf(`
 		SELECT
 			ae.event_id::text,
@@ -270,13 +270,27 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 			ae.alarm_status,
 			ae.triggered_at,
 			ae.hand_time,
-			NULL::bigint                                       AS iot_timeseries_id,
 			COALESCE(ae.payload, '{}'::jsonb)                  AS trigger_data,
 			ae.handler::text,
 			ae.operation,
 			ae.handler_notes                                   AS notes,
-			'[]'::jsonb                                        AS notified_users,
-			'{}'::jsonb                                        AS metadata,
+			jsonb_build_object(
+			  'snapshot', jsonb_strip_nulls(jsonb_build_object(
+			    'device_name',    ae.device_uid,
+			    'tenant_name',    ae.tenant_name,
+			    'branch_name',    ae.branch_name,
+			    'unit_name',      ae.unit_name,
+			    'room_name',      ae.room_name,
+			    'bed_name',       ae.bed_name,
+			    'resident_name',  ae.resident_nickname,
+			    'resident_id',    CASE WHEN ae.resident_id IS NULL THEN NULL ELSE host(ae.resident_id) END,
+			    'card_id',        CASE WHEN ae.card_id IS NULL THEN NULL ELSE host(ae.card_id) END,
+			    'unit_id',        host(network(set_masklen(ae.device_addr, 80))),
+			    'room_id',        host(network(set_masklen(ae.device_addr, 88))),
+			    'bed_id',         host(network(set_masklen(ae.device_addr, 96))),
+			    'unit_timezone',  (SELECT NULLIF(TRIM(timezone), '') FROM units WHERE unit_id = network(set_masklen(ae.device_addr, 80)))
+			  ))
+			)                                                  AS metadata,
 			ae.created_at,
 			ae.created_at                                      AS updated_at
 		FROM alarm_events ae
@@ -298,9 +312,8 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 	for rows.Next() {
 		var event domain.AlarmEvent
 		var handTimePtr sql.NullTime
-		var iotTimeSeriesID sql.NullInt64
 		var handler, operation, notes sql.NullString
-		var triggerData, notifiedUsers, metadata []byte
+		var triggerData, metadata []byte
 
 		err := rows.Scan(
 			&event.EventID,
@@ -312,12 +325,10 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 			&event.AlarmStatus,
 			&event.TriggeredAt,
 			&handTimePtr,
-			&iotTimeSeriesID,
 			&triggerData,
 			&handler,
 			&operation,
 			&notes,
-			&notifiedUsers,
 			&metadata,
 			&event.CreatedAt,
 			&event.UpdatedAt,
@@ -326,12 +337,8 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 			return nil, 0, fmt.Errorf("failed to scan alarm event: %w", err)
 		}
 
-		// 处理可空字段
 		if handTimePtr.Valid {
 			event.HandTime = &handTimePtr.Time
-		}
-		if iotTimeSeriesID.Valid {
-			event.IoTTimeSeriesID = &iotTimeSeriesID.Int64
 		}
 		if handler.Valid {
 			event.Handler = &handler.String
@@ -343,16 +350,10 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 			event.Notes = &notes.String
 		}
 
-		// 处理 JSONB 字段（统一使用 json.RawMessage）
 		if len(triggerData) > 0 {
 			event.TriggerData = triggerData
 		} else {
 			event.TriggerData = json.RawMessage("{}")
-		}
-		if len(notifiedUsers) > 0 {
-			event.NotifiedUsers = notifiedUsers
-		} else {
-			event.NotifiedUsers = json.RawMessage("[]")
 		}
 		if len(metadata) > 0 {
 			event.Metadata = metadata
@@ -395,12 +396,10 @@ func (r *PostgresAlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenan
 			ae.alarm_status,
 			ae.triggered_at,
 			ae.hand_time,
-			NULL::bigint                                       AS iot_timeseries_id,
 			COALESCE(ae.payload, '{}'::jsonb)                  AS trigger_data,
 			ae.handler::text,
 			ae.operation,
 			ae.handler_notes                                   AS notes,
-			'[]'::jsonb                                        AS notified_users,
 			'{}'::jsonb                                        AS metadata,
 			ae.created_at,
 			ae.created_at                                      AS updated_at
@@ -411,9 +410,8 @@ func (r *PostgresAlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenan
 
 	var event domain.AlarmEvent
 	var handTimePtr sql.NullTime
-	var iotTimeSeriesID sql.NullInt64
 	var handler, operation, notes sql.NullString
-	var triggerData, notifiedUsers, metadata []byte
+	var triggerData, metadata []byte
 
 	err := r.db.QueryRowContext(ctx, query, eventID, tenantPrefix).Scan(
 		&event.EventID,
@@ -425,12 +423,10 @@ func (r *PostgresAlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenan
 		&event.AlarmStatus,
 		&event.TriggeredAt,
 		&handTimePtr,
-		&iotTimeSeriesID,
 		&triggerData,
 		&handler,
 		&operation,
 		&notes,
-		&notifiedUsers,
 		&metadata,
 		&event.CreatedAt,
 		&event.UpdatedAt,
@@ -443,12 +439,8 @@ func (r *PostgresAlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenan
 		return nil, fmt.Errorf("failed to get alarm event: %w", err)
 	}
 
-	// 处理可空字段
 	if handTimePtr.Valid {
 		event.HandTime = &handTimePtr.Time
-	}
-	if iotTimeSeriesID.Valid {
-		event.IoTTimeSeriesID = &iotTimeSeriesID.Int64
 	}
 	if handler.Valid {
 		event.Handler = &handler.String
@@ -460,16 +452,10 @@ func (r *PostgresAlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenan
 		event.Notes = &notes.String
 	}
 
-	// 处理 JSONB 字段（统一使用 json.RawMessage）
 	if len(triggerData) > 0 {
 		event.TriggerData = triggerData
 	} else {
 		event.TriggerData = json.RawMessage("{}")
-	}
-	if len(notifiedUsers) > 0 {
-		event.NotifiedUsers = notifiedUsers
-	} else {
-		event.NotifiedUsers = json.RawMessage("[]")
 	}
 	if len(metadata) > 0 {
 		event.Metadata = metadata
@@ -497,17 +483,14 @@ func (r *PostgresAlarmEventsRepository) UpdateAlarmEvent(ctx context.Context, te
 	args := []interface{}{}
 	argN := 1
 
-	// 允许更新的字段
 	allowedFields := map[string]bool{
-		"alarm_status":      true,
-		"hand_time":         true,
-		"handler":           true,
-		"operation":         true,
-		"notes":             true,
-		"notified_users":    true,
-		"metadata":          true,
-		"trigger_data":      true,
-		"iot_timeseries_id": true,
+		"alarm_status": true,
+		"hand_time":    true,
+		"handler":      true,
+		"operation":    true,
+		"notes":        true,
+		"metadata":     true,
+		"trigger_data": true,
 	}
 
 	for field, value := range updates {
@@ -584,12 +567,10 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 			ae.alarm_status,
 			ae.triggered_at,
 			ae.hand_time,
-			NULL::bigint                                       AS iot_timeseries_id,
 			COALESCE(ae.payload, '{}'::jsonb)                  AS trigger_data,
 			ae.handler::text,
 			ae.operation,
 			ae.handler_notes                                   AS notes,
-			'[]'::jsonb                                        AS notified_users,
 			'{}'::jsonb                                        AS metadata,
 			ae.created_at,
 			ae.created_at                                      AS updated_at
@@ -606,9 +587,8 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 	var event domain.AlarmEvent
 	var cardID sql.NullString
 	var handTimePtr sql.NullTime
-	var iotTimeSeriesID sql.NullInt64
 	var handler, operation, notes sql.NullString
-	var triggerData, notifiedUsers, metadata []byte
+	var triggerData, metadata []byte
 
 	err := r.db.QueryRowContext(ctx, query, tenantPrefix, deviceID, eventType, thresholdTime).Scan(
 		&event.EventID,
@@ -621,12 +601,10 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 		&event.AlarmStatus,
 		&event.TriggeredAt,
 		&handTimePtr,
-		&iotTimeSeriesID,
 		&triggerData,
 		&handler,
 		&operation,
 		&notes,
-		&notifiedUsers,
 		&metadata,
 		&event.CreatedAt,
 		&event.UpdatedAt,
@@ -634,20 +612,16 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, nil // 没有找到最近的报警事件
+			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to query recent alarm event: %w", err)
 	}
 
-	// 处理可空字段
 	if cardID.Valid {
 		event.CardID = &cardID.String
 	}
 	if handTimePtr.Valid {
 		event.HandTime = &handTimePtr.Time
-	}
-	if iotTimeSeriesID.Valid {
-		event.IoTTimeSeriesID = &iotTimeSeriesID.Int64
 	}
 	if handler.Valid {
 		event.Handler = &handler.String
@@ -659,16 +633,10 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 		event.Notes = &notes.String
 	}
 
-	// 处理 JSONB 字段（统一使用 json.RawMessage）
 	if len(triggerData) > 0 {
 		event.TriggerData = triggerData
 	} else {
 		event.TriggerData = json.RawMessage("{}")
-	}
-	if len(notifiedUsers) > 0 {
-		event.NotifiedUsers = notifiedUsers
-	} else {
-		event.NotifiedUsers = json.RawMessage("[]")
 	}
 	if len(metadata) > 0 {
 		event.Metadata = metadata
