@@ -124,8 +124,15 @@ func (t *Track) ToFieldMap() map[string]any {
 	if t.VitalConfidence != 0 {
 		m[FieldVitalConfidence] = t.VitalConfidence
 	}
-	// 0 为有效值（如 bed_status 0=未离床），始终写入
-	m[FieldBedStatus] = t.BedStatus
+	// bed_status 0=未离床有语义，但 omit-if-zero 是其它 int 字段统一约定，且
+	// 真正需要 0 语义的路径（sleepace 床事件 / silent_fall alarm）都不走 ToFieldMap：
+	//   - sleepace 床事件直接 build 手写 map（bed_status 在 monitor frame 顶层 from decode）
+	//   - silent_fall alarm 在 engine.publishAIMessage 走 `if BedStatus != 0` 同样 omit-when-zero
+	// 唯一历史 caller 是雷达 heartbeat / radarTrackToData，bed_status=0 是无意义噪声
+	// （[[track_tofieldmap_bedstatus_leak]]）。强制写零反污染下游协议，改 omit。
+	if t.BedStatus != 0 {
+		m[FieldBedStatus] = t.BedStatus
+	}
 	if t.BodyMove != 0 {
 		m[FieldBodyMove] = t.BodyMove
 	}

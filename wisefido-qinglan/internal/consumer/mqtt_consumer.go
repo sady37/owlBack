@@ -822,16 +822,10 @@ func (c *MQTTConsumer) resolveDeviceIdentity(ctx context.Context, uid string) (t
 
 // publishRadarMonitorHeartbeat monitoring 关闭时发单条 track_id=11（设备级），category=heart，供 cardagg MonitorBuffer 推导在线。
 //
-// 手写 map（不复用 observation.Track.ToFieldMap）：那条路径强制写零值 bed_status，
-// 雷达心跳与床无关，泄漏出去会污染下游协议。
-//
 // device_ipv6 单程票：addr 是路由层主键；cid 是 SubjectEntity（unbound 时为空，cardagg LPM 反查兜底）。
 func (c *MQTTConsumer) publishRadarMonitorHeartbeat(ctx context.Context, addr netip.Addr, cid string, ts int64) error {
-	data := map[string]any{
-		observation.FieldTrackID:         observation.TrackDevice,
-		observation.FieldTrackConfidence: 80,
-	}
-	msg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "monitor", observation.CategoryHeart, data)
+	hb := observation.Track{TrackID: observation.TrackDevice, TrackConfidence: 80}
+	msg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "monitor", observation.CategoryHeart, hb.ToFieldMap())
 	return c.streamPublisher.PublishMonitor(ctx, msg)
 }
 
