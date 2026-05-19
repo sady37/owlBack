@@ -209,6 +209,35 @@ func (t targetAggregatorListenerAdapter) OnZoneEvent(e zoneengine.ZoneEvent) {
 	t.agg.OnZoneEvent(e.CardID, e.ZoneID, e.NewState.Count, e.NewState.UpdatedAt)
 }
 
+// sleepStageClearListenerAdapter (D) — consumer.SleepStageConsumer 通过 zone bed FSM
+// transition 触发清零。filter ZoneType=Bed + Transition∈{Leaving, Vacant} 后调用
+// OnBedVacant 清本地 ladder state + emit bed.sleepstage(0,0)。
+//
+// Leaving 也触发：人开始离床的瞬间就清 SleepStage，避免 leaving 过渡期 sleepace 还在
+// 假报 SleepStage（设备脱床 / 干扰）污染 FE 显示。
+type sleepStageClearListenerAdapter struct {
+	c   *consumer.SleepStageConsumer
+	ctx context.Context
+}
+
+func (s sleepStageClearListenerAdapter) OnZoneEvent(e zoneengine.ZoneEvent) {
+	if e.ZoneType != zoneengine.ZoneTypeBed {
+		return
+	}
+	if e.Transition != zoneengine.TransitionLeaving && e.Transition != zoneengine.TransitionVacant {
+		return
+	}
+	s.c.OnBedVacant(s.ctx, e.ZoneID, e.Ts)
+}
+
+// NewSleepStageClearAdapter (D) main wiring 用：让 SleepStageConsumer 注册到 engine 听 bed FSM
+// transition。返回值实现 zoneengine.ZoneEventListener，caller 调 engine.AddListener。
+//
+// ctx 是长生命周期 context（与 sensor 进程同寿命）；publish failure 仅 warn 不阻塞。
+func NewSleepStageClearAdapter(ctx context.Context, c *consumer.SleepStageConsumer) zoneengine.ZoneEventListener {
+	return sleepStageClearListenerAdapter{c: c, ctx: ctx}
+}
+
 // Start 启动 4 adapter + Engine.Tick 1s 周期 + zonealarm Supervisor.Tick（如已 wire）
 //        + TargetStateAggregator + StreamPublisher 60s tick。
 // 返回后子系统全跑起来；ctx 取消时全部退出。

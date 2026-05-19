@@ -54,15 +54,32 @@ type SleepStageSink interface {
 	PublishBedSleepStage(ctx context.Context, cardID string, sleepStage, sleepConfidence int) error
 }
 
+// BedOccupancyChecker (C OOB 守卫): zoneengine.Engine 隐式满足；nil 注入 = 不做 OOB 检查。
+type BedOccupancyChecker interface {
+	IsBedOccupied(spatialPrefix string) bool
+}
+
+// DeviceFailureEmitter (C device_failure publish): AlarmBackChannel.PublishAlarmFire 隐式满足；
+// nil 注入 = 不发 device_failure alarm（只 drop event，不上报）。primitive 参数避免反向 import。
+type DeviceFailureEmitter interface {
+	PublishAlarmFire(ctx context.Context, deviceAddr netip.Addr, subjectEntity, eventName, level string,
+		tsMs int64, triggerData map[string]interface{}) (string, error)
+}
+
 type SleepStageConsumer struct {
 	client     *redislib.Client
 	sink       SleepStageSink
+	bedChecker BedOccupancyChecker  // C: OOB 守卫；nil = disable
+	failEmit   DeviceFailureEmitter // C: device_failure alarm publish；nil = disable
 	sensorSlot netip.Prefix
 	logger     *zap.Logger
 
-	mu    sync.Mutex
-	state map[string]sleepStageEntry // cardID → 当前 ladder 态
+	mu              sync.Mutex
+	state           map[string]sleepStageEntry // cardID → 当前 ladder 态
+	failDedupTs     map[string]int64           // C: spatialPrefix → 最近 device_failure emit tsMs（5min dedup 防 spam）
 }
+
+const deviceFailureDedupMs int64 = 5 * 60 * 1000 // 5min
 
 type sleepStageEntry struct {
 	sleepStage int
@@ -73,12 +90,29 @@ type sleepStageEntry struct {
 func NewSleepStageConsumer(client *redislib.Client, sink SleepStageSink, logger *zap.Logger) *SleepStageConsumer {
 	slot, _ := netip.ParsePrefix(spatial.SlotSensor)
 	return &SleepStageConsumer{
-		client:     client,
-		sink:       sink,
-		sensorSlot: slot,
-		logger:     logger,
-		state:      make(map[string]sleepStageEntry),
+		client:      client,
+		sink:        sink,
+		sensorSlot:  slot,
+		logger:      logger,
+		state:       make(map[string]sleepStageEntry),
+		failDedupTs: make(map[string]int64),
 	}
+}
+
+// SetBedChecker (C) main wire 注入 bed FSM occupancy 查询；nil = 跳过 OOB 守卫（保持兼容）。
+func (c *SleepStageConsumer) SetBedChecker(b BedOccupancyChecker) {
+	if c == nil {
+		return
+	}
+	c.bedChecker = b
+}
+
+// SetDeviceFailureEmitter (C) main wire 注入 alarm publisher；nil = OOB 时仅 drop 不报警。
+func (c *SleepStageConsumer) SetDeviceFailureEmitter(e DeviceFailureEmitter) {
+	if c == nil {
+		return
+	}
+	c.failEmit = e
 }
 
 func (c *SleepStageConsumer) Start(ctx context.Context) {
@@ -143,6 +177,13 @@ func (c *SleepStageConsumer) handleRaw(ctx context.Context, raw map[string]inter
 	if confidence == 0 {
 		return // 非 sleepad / radar 来源忽略
 	}
+	// C OOB 守卫：sensor 自家 bed FSM 已离床（Vacant）→ sleepace 报 SleepStage 是异常
+	// （设备脱床 / 接触不良 / 电磁干扰）。drop event + emit device_failure alarm（5min dedup
+	// 防 spam）让运维主动定位。bedChecker nil 或 Engine 无该 prefix entry → 视作 Occupied 放行。
+	if c.bedChecker != nil && !c.bedChecker.IsBedOccupied(msg.SubjectEntity) {
+		c.emitOOBDeviceFailure(ctx, msg, sleepStage)
+		return
+	}
 	if !c.ladderAdmits(msg.SubjectEntity, sleepStage, confidence, msg.Timestamp) {
 		return
 	}
@@ -154,6 +195,79 @@ func (c *SleepStageConsumer) handleRaw(ctx context.Context, raw map[string]inter
 			zap.Error(err))
 		// publish 失败：回退本地 state 让下次重试（仍是当前 ladder 等待更高 confidence）
 		c.rollbackEntry(msg.SubjectEntity, sleepStage, confidence)
+	}
+}
+
+// OnBedVacant (D): bed FSM transition Leaving/Vacant 时 wiring adapter 调本方法。
+//
+// 触发清零：
+//   1. 本地 ladder state 清掉（让下次 SleepStage event 重新走 ladder，不被旧 confidence 卡）
+//   2. publish bed.sleepstage(0, 0) 让 cardagg 端 BedState.SleepStage / SleepConfidence 归零
+//      （避免 sleepace 关机 / 老人起床后 FE Section2.left 仍显示 "Deep Sleep" 等 stale 值）
+//
+// spatialPrefix = ZoneEvent.ZoneID（/96 bed CIDR）。
+func (c *SleepStageConsumer) OnBedVacant(ctx context.Context, spatialPrefix string, tsMs int64) {
+	if c == nil || spatialPrefix == "" {
+		return
+	}
+	c.mu.Lock()
+	_, had := c.state[spatialPrefix]
+	delete(c.state, spatialPrefix)
+	c.mu.Unlock()
+	if !had {
+		return // 没在床过，no-op
+	}
+	c.logger.Info("sleepstage cleared on bed vacant",
+		zap.String("spatial_prefix", spatialPrefix),
+		zap.Int64("ts_ms", tsMs))
+	if c.sink == nil {
+		return
+	}
+	if err := c.sink.PublishBedSleepStage(ctx, spatialPrefix, 0, 0); err != nil {
+		c.logger.Warn("sleepstage clear: publish bed.sleepstage(0,0) failed",
+			zap.String("spatial_prefix", spatialPrefix),
+			zap.Error(err))
+	}
+}
+
+// emitOOBDeviceFailure (C): sleepace 报 SleepStage 但 bed FSM 已离床 → drop event +
+// publish device_failure alarm（5min dedup 防同设备 spam）。
+//
+// alarm 由 cardagg AlarmRouter 派发持久化；sensor 通过 AlarmBackChannel 走 iot:alarm:stream。
+// 若 failEmit 未注入 → 仅 log 不报警（保持兼容；运维 log 仍可见 OOB drop 事件）。
+func (c *SleepStageConsumer) emitOOBDeviceFailure(ctx context.Context, msg *rediscommon.IoTStreamMessage, sleepStage int) {
+	c.logger.Warn("sleepstage OOB drop",
+		zap.String("device_addr", msg.DeviceAddr.String()),
+		zap.String("subject_entity", msg.SubjectEntity),
+		zap.String("device_type", msg.DeviceType),
+		zap.Int("sleep_stage", sleepStage),
+		zap.String("reason", "bed FSM Vacant but sleepStage event received — likely SensorDetached / 干扰 / 设备故障"),
+	)
+
+	if c.failEmit == nil || !msg.DeviceAddr.IsValid() {
+		return
+	}
+	// 5min dedup：同 spatial prefix 在窗内只 publish 一次（防 sleepace spam 把 alarm log 灌满）
+	c.mu.Lock()
+	last := c.failDedupTs[msg.SubjectEntity]
+	if msg.Timestamp-last < deviceFailureDedupMs {
+		c.mu.Unlock()
+		return
+	}
+	c.failDedupTs[msg.SubjectEntity] = msg.Timestamp
+	c.mu.Unlock()
+
+	triggerData := map[string]interface{}{
+		"reason":         "sleepstage_out_of_bed",
+		"sleep_stage":    sleepStage,
+		"device_type":    msg.DeviceType,
+		"subject_entity": msg.SubjectEntity,
+	}
+	if _, err := c.failEmit.PublishAlarmFire(ctx, msg.DeviceAddr, msg.SubjectEntity,
+		alarm.AlarmTypeDeviceFailure, alarm.AlarmLevelErr, msg.Timestamp, triggerData); err != nil {
+		c.logger.Warn("sleepstage OOB: publish device_failure failed",
+			zap.String("device_addr", msg.DeviceAddr.String()),
+			zap.Error(err))
 	}
 }
 

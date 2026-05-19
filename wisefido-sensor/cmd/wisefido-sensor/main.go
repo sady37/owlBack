@@ -177,6 +177,11 @@ func main() {
 	activityConsumer := consumer.NewActivityConsumer(engineRedis, zone.TargetAggregator, logger)
 	activityConsumer.Start(ctx)
 	sleepStageConsumer := consumer.NewSleepStageConsumer(engineRedis, zone.StreamPublisher, logger)
+	// C OOB 守卫: bed FSM Vacant 时 sleepace 报 SleepStage 视作 device_failure
+	// D SleepStage clear on bed transition: 通过 wiring adapter 注册 ZoneEventListener
+	sleepStageConsumer.SetBedChecker(zone.Engine)
+	sleepStageConsumer.SetDeviceFailureEmitter(backChannel)
+	zone.Engine.AddListener(wiring.NewSleepStageClearAdapter(ctx, sleepStageConsumer))
 	sleepStageConsumer.Start(ctx)
 	logger.Info("v2 fall detection wired — all 3 layers armed",
 		zap.String("warning_floor", "zonealarm.Supervisor Stay rule (10min bathroom)"),

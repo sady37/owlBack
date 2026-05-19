@@ -13,6 +13,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
+	"strconv"
 	"testing"
 
 	"owl-common/alarm"
@@ -126,16 +128,16 @@ func TestLadderAdmits_LowerConfidenceRejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func buildSleepRawFields(producer, subject, deviceType string, ts int64, sleepStage int) map[string]interface{} {
-	_ = ts // 用 timestamp string 不用 int64
 	data := map[string]interface{}{observation.FieldSleepStage: float64(sleepStage)}
 	dvBytes, _ := json.Marshal([]interface{}{data})
+	tsStr := strconv.FormatInt(ts, 10)
 	return map[string]interface{}{
 		"producer":               producer,
 		"subject_entity":         subject,
 		"sequence_number":        "1",
 		"device_addr":            "fd00:0:3:111:3:101::1",
 		"device_type":            deviceType,
-		"timestamp":              "1700000000000",
+		"timestamp":              tsStr,
 		"topic_type":             "event",
 		"category":               alarm.SleepStage,
 		rediscommon.DataValueKey: string(dvBytes),
@@ -242,6 +244,216 @@ func TestHandleRaw_UnknownDeviceTypeDropped(t *testing.T) {
 	c.handleRaw(context.Background(), raw)
 	if len(sink.calls) != 0 {
 		t.Errorf("unknown device_type should drop, got %d", len(sink.calls))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// C: OOB drop + device_failure emit
+// ---------------------------------------------------------------------------
+
+type fakeBedChecker struct {
+	occupied map[string]bool
+}
+
+func (f *fakeBedChecker) IsBedOccupied(sp string) bool {
+	if f == nil || f.occupied == nil {
+		return false
+	}
+	return f.occupied[sp]
+}
+
+type fakeFailEmitter struct {
+	calls []fakeFailCall
+}
+
+type fakeFailCall struct {
+	deviceAddr    netip.Addr
+	subjectEntity string
+	eventName     string
+	level         string
+	tsMs          int64
+	triggerData   map[string]interface{}
+}
+
+func (f *fakeFailEmitter) PublishAlarmFire(ctx context.Context, deviceAddr netip.Addr, subjectEntity, eventName, level string, tsMs int64, triggerData map[string]interface{}) (string, error) {
+	f.calls = append(f.calls, fakeFailCall{deviceAddr, subjectEntity, eventName, level, tsMs, triggerData})
+	return "1-0", nil
+}
+
+// 编译期验证 interface 兼容
+var (
+	_ BedOccupancyChecker  = (*fakeBedChecker)(nil)
+	_ DeviceFailureEmitter = (*fakeFailEmitter)(nil)
+)
+
+func TestHandleRaw_OOB_DropsAndEmitsDeviceFailure(t *testing.T) {
+	sink := &fakeSleepSink{}
+	c := newTestSleepConsumer(sink)
+	bedChecker := &fakeBedChecker{occupied: map[string]bool{}} // 全部 Vacant
+	failEmit := &fakeFailEmitter{}
+	c.SetBedChecker(bedChecker)
+	c.SetDeviceFailureEmitter(failEmit)
+
+	raw := buildSleepRawFields("fd00:0:3:111:3:101::1", "fd00:0:3:111:3:101::/96",
+		"sleepad", 1700000000000, 2)
+	c.handleRaw(context.Background(), raw)
+
+	if len(sink.calls) != 0 {
+		t.Errorf("OOB should drop publish: got %d sink calls", len(sink.calls))
+	}
+	if len(failEmit.calls) != 1 {
+		t.Fatalf("OOB should emit device_failure once: got %d", len(failEmit.calls))
+	}
+	got := failEmit.calls[0]
+	if got.eventName != alarm.AlarmTypeDeviceFailure {
+		t.Errorf("eventName = %q, want DeviceFailure", got.eventName)
+	}
+	if got.level != alarm.AlarmLevelErr {
+		t.Errorf("level = %q, want Err", got.level)
+	}
+	if got.triggerData["reason"] != "sleepstage_out_of_bed" {
+		t.Errorf("triggerData.reason = %v, want sleepstage_out_of_bed", got.triggerData["reason"])
+	}
+}
+
+func TestHandleRaw_OOB_DedupWithin5min(t *testing.T) {
+	sink := &fakeSleepSink{}
+	c := newTestSleepConsumer(sink)
+	c.SetBedChecker(&fakeBedChecker{occupied: map[string]bool{}}) // 全 Vacant
+	failEmit := &fakeFailEmitter{}
+	c.SetDeviceFailureEmitter(failEmit)
+
+	c.handleRaw(context.Background(),
+		buildSleepRawFields("fd00:0:3:111:3:101::1", "fd00:0:3:111:3:101::/96",
+			"sleepad", 1700000000000, 2))
+	// 同 spatial 30s 后再触发 OOB：dedup 拦截
+	c.handleRaw(context.Background(),
+		buildSleepRawFields("fd00:0:3:111:3:101::1", "fd00:0:3:111:3:101::/96",
+			"sleepad", 1700000030000, 4))
+
+	if len(failEmit.calls) != 1 {
+		t.Errorf("OOB within 5min: should dedup to 1 alarm, got %d", len(failEmit.calls))
+	}
+}
+
+func TestHandleRaw_OOB_AdmitAfter5min(t *testing.T) {
+	sink := &fakeSleepSink{}
+	c := newTestSleepConsumer(sink)
+	c.SetBedChecker(&fakeBedChecker{occupied: map[string]bool{}})
+	failEmit := &fakeFailEmitter{}
+	c.SetDeviceFailureEmitter(failEmit)
+
+	c.handleRaw(context.Background(),
+		buildSleepRawFields("fd00:0:3:111:3:101::1", "fd00:0:3:111:3:101::/96",
+			"sleepad", 1700000000000, 2))
+	// 5min+ 后再触发：放行
+	c.handleRaw(context.Background(),
+		buildSleepRawFields("fd00:0:3:111:3:101::1", "fd00:0:3:111:3:101::/96",
+			"sleepad", 1700000000000+5*60*1000, 4))
+
+	if len(failEmit.calls) != 2 {
+		t.Errorf("OOB after 5min dedup window: should admit second alarm, got %d", len(failEmit.calls))
+	}
+}
+
+func TestHandleRaw_BedOccupied_NormalLadder(t *testing.T) {
+	sink := &fakeSleepSink{}
+	c := newTestSleepConsumer(sink)
+	c.SetBedChecker(&fakeBedChecker{occupied: map[string]bool{
+		"fd00:0:3:111:3:101::/96": true,
+	}})
+	c.SetDeviceFailureEmitter(&fakeFailEmitter{})
+
+	c.handleRaw(context.Background(),
+		buildSleepRawFields("fd00:0:3:111:3:101::1", "fd00:0:3:111:3:101::/96",
+			"sleepad", 1700000000000, 2))
+
+	if len(sink.calls) != 1 {
+		t.Errorf("bed occupied: should publish normally, got %d", len(sink.calls))
+	}
+}
+
+func TestHandleRaw_BedCheckerNil_BackwardCompat(t *testing.T) {
+	sink := &fakeSleepSink{}
+	c := newTestSleepConsumer(sink) // 不 SetBedChecker
+
+	c.handleRaw(context.Background(),
+		buildSleepRawFields("fd00:0:3:111:3:101::1", "fd00:0:3:111:3:101::/96",
+			"sleepad", 1700000000000, 2))
+
+	if len(sink.calls) != 1 {
+		t.Errorf("no bedChecker: should fall back to normal ladder, got %d publishes", len(sink.calls))
+	}
+}
+
+func TestHandleRaw_OOB_NoEmitterStillDrops(t *testing.T) {
+	sink := &fakeSleepSink{}
+	c := newTestSleepConsumer(sink)
+	c.SetBedChecker(&fakeBedChecker{occupied: map[string]bool{}})
+	// 不 SetDeviceFailureEmitter
+
+	c.handleRaw(context.Background(),
+		buildSleepRawFields("fd00:0:3:111:3:101::1", "fd00:0:3:111:3:101::/96",
+			"sleepad", 1700000000000, 2))
+
+	if len(sink.calls) != 0 {
+		t.Errorf("OOB still drops even without emitter: got %d publishes", len(sink.calls))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// D: SleepStage clear on bed transition
+// ---------------------------------------------------------------------------
+
+func TestOnBedVacant_ClearsStateAndEmitsZero(t *testing.T) {
+	sink := &fakeSleepSink{}
+	c := newTestSleepConsumer(sink)
+
+	// 先填 state
+	c.handleRaw(context.Background(),
+		buildSleepRawFields("fd00:0:3:111:3:101::1", "fd00:0:3:111:3:101::/96",
+			"sleepad", 1700000000000, 4))
+	if len(sink.calls) != 1 {
+		t.Fatalf("setup: expected 1 publish, got %d", len(sink.calls))
+	}
+
+	// 触发 vacant
+	c.OnBedVacant(context.Background(), "fd00:0:3:111:3:101::/96", 1700000060000)
+
+	if len(sink.calls) != 2 {
+		t.Fatalf("OnBedVacant should emit clear publish, got %d total", len(sink.calls))
+	}
+	got := sink.calls[1]
+	if got.sleepStage != 0 || got.confidence != 0 {
+		t.Errorf("clear publish should be (0,0), got (%d,%d)", got.sleepStage, got.confidence)
+	}
+
+	// state 应已清掉：下一个 lower-confidence radar event 也应能 admit
+	c.handleRaw(context.Background(),
+		buildSleepRawFields("fd00:0:3:111:3:101::1", "fd00:0:3:111:3:101::/96",
+			"Radar", 1700000120000, 2))
+	if len(sink.calls) != 3 {
+		t.Errorf("after clear, radar=60 should admit (state cleared); got %d total", len(sink.calls))
+	}
+}
+
+func TestOnBedVacant_NoPriorState_NoOp(t *testing.T) {
+	sink := &fakeSleepSink{}
+	c := newTestSleepConsumer(sink)
+
+	c.OnBedVacant(context.Background(), "fd00:0:3:111:3:101::/96", 1700000000000)
+
+	if len(sink.calls) != 0 {
+		t.Errorf("OnBedVacant with no prior state: should be no-op, got %d publishes", len(sink.calls))
+	}
+}
+
+func TestOnBedVacant_EmptyPrefix_NoOp(t *testing.T) {
+	sink := &fakeSleepSink{}
+	c := newTestSleepConsumer(sink)
+	c.OnBedVacant(context.Background(), "", 1700000000000)
+	if len(sink.calls) != 0 {
+		t.Errorf("empty prefix: should be no-op")
 	}
 }
 

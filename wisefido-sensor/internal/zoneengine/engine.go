@@ -123,6 +123,25 @@ func (e *Engine) GetState(key StateKey) (ZoneState, bool) {
 	return ZoneState{}, false
 }
 
+// IsBedOccupied 查 spatial prefix（/96 bed CIDR text）的 bed FSM 是否在床（含 Leaving 过渡）。
+// 无该 prefix entry → false（无信息 = 不假设 occupied）。
+//
+// SleepStageConsumer 用：sleepace 报 SleepStage 时若 bed FSM 已离床（Vacant），视作 OOB 异常
+// → drop event + emit device_failure alarm（C 项 deferred 收口；详 [[cardagg_v1_to_v2_migration_audit]] S4）。
+func (e *Engine) IsBedOccupied(spatialPrefix string) bool {
+	if spatialPrefix == "" {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for k, z := range e.states {
+		if k.ZoneType == ZoneTypeBed && k.ZoneID == spatialPrefix {
+			return z.state.IsPresent()
+		}
+	}
+	return false
+}
+
 // Apply 引擎主入口：接收一条 SignalEvidence，可能触发翻转沿。
 //
 // 流程：
