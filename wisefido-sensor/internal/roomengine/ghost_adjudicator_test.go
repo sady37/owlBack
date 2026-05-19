@@ -11,6 +11,8 @@ package roomengine
 import (
 	"testing"
 
+	"owl-common/card"
+
 	"go.uber.org/zap"
 )
 
@@ -122,13 +124,13 @@ func TestPickAdjudicator_RoomKindDispatch(t *testing.T) {
 	bath := NewBathroomGhostAdjudicator(census, nil, nil, zap.NewNop())
 	e.SetGhostAdjudicators(general, bath)
 
-	if got := e.pickAdjudicator("bathroom"); got != bath {
+	if got := e.pickAdjudicator(card.RoomTypeBathroom); got != bath {
 		t.Fatalf("bathroom room should pick bathroom adjudicator, got %T", got)
 	}
-	if got := e.pickAdjudicator(""); got != general {
-		t.Fatalf("empty kind (default bedroom) should pick general, got %T", got)
+	if got := e.pickAdjudicator(card.RoomTypeDefault); got != general {
+		t.Fatalf("default room type should pick general, got %T", got)
 	}
-	if got := e.pickAdjudicator("livingroom"); got != general {
+	if got := e.pickAdjudicator(card.RoomTypeKitchen); got != general {
 		t.Fatalf("non-bathroom kind should pick general, got %T", got)
 	}
 }
@@ -136,7 +138,7 @@ func TestPickAdjudicator_RoomKindDispatch(t *testing.T) {
 // pickAdjudicator 未注入时 fallback Noop。
 func TestPickAdjudicator_UninitializedFallsBackToNoop(t *testing.T) {
 	e := &Engine{logger: zap.NewNop()}
-	got := e.pickAdjudicator("bathroom")
+	got := e.pickAdjudicator(card.RoomTypeBathroom)
 	if _, ok := got.(NoopGhostAdjudicator); !ok {
 		t.Fatalf("uninitialized engine should fallback to Noop, got %T", got)
 	}

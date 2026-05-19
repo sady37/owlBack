@@ -2,6 +2,8 @@ package roomengine
 
 import (
 	"testing"
+
+	"owl-common/card"
 )
 
 const (
@@ -143,7 +145,7 @@ func TestBathroomGateTransition(t *testing.T) {
 		t.Fatal("setup: resident upgrade failed")
 	}
 	if p.AnchorRoomType != card.RoomTypeDefault {
-		t.Errorf("initial AnchorRoomType want bedroom, got %s", p.AnchorRoomType)
+		t.Errorf("initial AnchorRoomType want bedroom, got %d", p.AnchorRoomType)
 	}
 
 	// resident 经 BathroomGate 进 bathroom
@@ -155,7 +157,7 @@ func TestBathroomGateTransition(t *testing.T) {
 		t.Errorf("BathroomCount want 1, got %d", c.BathroomCount)
 	}
 	if c.Persons[testResident].AnchorRoomType != card.RoomTypeBathroom {
-		t.Errorf("AnchorRoomType want bathroom after exit, got %s", c.Persons[testResident].AnchorRoomType)
+		t.Errorf("AnchorRoomType want bathroom after exit, got %d", c.Persons[testResident].AnchorRoomType)
 	}
 
 	// 返回 bedroom
@@ -167,7 +169,7 @@ func TestBathroomGateTransition(t *testing.T) {
 		t.Errorf("BathroomCount want 0 after return, got %d", c.BathroomCount)
 	}
 	if c.Persons[testResident].AnchorRoomType != card.RoomTypeDefault {
-		t.Errorf("AnchorRoomType want bedroom after return, got %s", c.Persons[testResident].AnchorRoomType)
+		t.Errorf("AnchorRoomType want bedroom after return, got %d", c.Persons[testResident].AnchorRoomType)
 	}
 }
 

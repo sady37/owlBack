@@ -13,6 +13,8 @@ package roomengine
 import (
 	"testing"
 
+	"owl-common/card"
+
 	"go.uber.org/zap"
 
 	"github.com/go-redis/redis/v8"
@@ -33,7 +35,7 @@ func TestRegisterRoom_PublicBathroom_MarksCensus(t *testing.T) {
 	e.RegisterRoom(RoomConfig{
 		RoomID:           pubBathroomRoom,
 		RoomName:         "public bathroom #1F",
-		RoomKind:         "bathroom",
+		RoomType:         card.RoomTypeBathroom,
 		IsPublicBathroom: true,
 		SuiteID:          pubBathroomSuite,
 		RoomW:            200,
@@ -59,7 +61,7 @@ func TestRegisterRoom_NonBathroomIgnoresPublicFlag(t *testing.T) {
 	e.RegisterRoom(RoomConfig{
 		RoomID:           bedroomID,
 		RoomName:         "bedroom A",
-		RoomKind:         "", // default bedroom
+		RoomType:         card.RoomTypeDefault, // default bedroom
 		IsPublicBathroom: true, // 配置错误：bedroom 不能 public
 		SuiteID:          "fd00:0:3:444::/80",
 		RoomW:            200,
@@ -81,7 +83,7 @@ func TestRegisterRoom_PublicBathroom_NoCensusGraceful(t *testing.T) {
 	e.RegisterRoom(RoomConfig{
 		RoomID:           pubBathroomRoom,
 		RoomName:         "public bathroom",
-		RoomKind:         "bathroom",
+		RoomType:         card.RoomTypeBathroom,
 		IsPublicBathroom: true,
 		SuiteID:          pubBathroomSuite,
 		RoomW:            200,

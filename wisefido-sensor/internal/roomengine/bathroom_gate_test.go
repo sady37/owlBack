@@ -51,7 +51,7 @@ func TestBathroomGate_EntryIncrementsCount(t *testing.T) {
 		t.Errorf("BathroomCount want 1, got %d", c.BathroomCount)
 	}
 	if c.Persons[testResidentB].AnchorRoomType != card.RoomTypeBathroom {
-		t.Errorf("AnchorRoomType want bathroom after entry, got %s",
+		t.Errorf("AnchorRoomType want bathroom after entry, got %d",
 			c.Persons[testResidentB].AnchorRoomType)
 	}
 	if gate.MembersCount() != 1 {
@@ -82,7 +82,7 @@ func TestBathroomGate_TimeoutExitDecrements(t *testing.T) {
 		t.Errorf("BathroomCount want 0 after timeout exit, got %d", c.BathroomCount)
 	}
 	if c.Persons[testResidentB].AnchorRoomType != card.RoomTypeDefault {
-		t.Errorf("AnchorRoomType want bedroom after exit, got %s",
+		t.Errorf("AnchorRoomType want bedroom after exit, got %d",
 			c.Persons[testResidentB].AnchorRoomType)
 	}
 	if gate.MembersCount() != 0 {
@@ -108,7 +108,7 @@ func TestBathroomGate_MultipleEntries_SingleAnchorFlip(t *testing.T) {
 	}
 	// AnchorRoomType 在 0→1 第一次跨 0 时已翻转；第二个 track 跨 1→2 不再触发 flip
 	if c.Persons[testResidentB].AnchorRoomType != card.RoomTypeBathroom {
-		t.Errorf("AnchorRoomType want bathroom, got %s",
+		t.Errorf("AnchorRoomType want bathroom, got %d",
 			c.Persons[testResidentB].AnchorRoomType)
 	}
 }
@@ -134,11 +134,11 @@ func TestBathroomGate_MultiResident_AnchorFlipSkipped(t *testing.T) {
 	}
 	// 两 resident 都应保留 bedroom anchor（multi-resident 路径不 flip）
 	if c.Persons[testResidentB].AnchorRoomType != card.RoomTypeDefault {
-		t.Errorf("multi-resident anchor should not auto-flip, B got %s",
+		t.Errorf("multi-resident anchor should not auto-flip, B got %d",
 			c.Persons[testResidentB].AnchorRoomType)
 	}
 	if c.Persons[testResidentC].AnchorRoomType != card.RoomTypeDefault {
-		t.Errorf("multi-resident anchor should not auto-flip, C got %s",
+		t.Errorf("multi-resident anchor should not auto-flip, C got %d",
 			c.Persons[testResidentC].AnchorRoomType)
 	}
 }

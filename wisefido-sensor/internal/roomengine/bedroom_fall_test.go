@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"owl-common/card"
+
 	"go.uber.org/zap"
 )
 
@@ -75,7 +77,7 @@ func upgradeResidentInBedroom(t *testing.T, m *SuiteCensusManager, suiteID, resi
 		t.Fatal("setup: resident upgrade failed")
 	}
 	if p.AnchorRoomType != card.RoomTypeDefault {
-		t.Fatalf("setup: anchor want bedroom, got %s", p.AnchorRoomType)
+		t.Fatalf("setup: anchor want bedroom, got %d", p.AnchorRoomType)
 	}
 	return p
 }
