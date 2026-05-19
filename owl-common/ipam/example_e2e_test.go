@@ -32,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	"owl-common/card"
 	"owl-common/ddns"
 	"owl-common/ipam"
 
@@ -133,7 +134,7 @@ func TestE2E_IPAM_DDNS(t *testing.T) {
 	// Step 4: AllocateRoom
 	room, err := pg.AllocateRoom(ctx, unit, ipam.RoomAttrs{
 		Name:      "Bedroom",
-		RoomType:  "bedroom",
+		RoomType:  card.RoomTypeDefault, // v2 简化：bedroom 合并到 Default
 		IsPrimary: true,
 	})
 	if err != nil {

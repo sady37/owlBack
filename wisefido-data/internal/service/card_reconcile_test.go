@@ -649,7 +649,7 @@ func TestReconcile_D5_DevicesRepoMonitoringToggle(t *testing.T) {
 	// 关 monitoring → cards 应消失（device 不算 active）
 	dev := &domain.Device{MonitoringEnabled: false, Access: true}
 	if err := devicesRepo.UpdateDeviceWithFlags(context.Background(), tTenant, devID, dev,
-		false, false, false, true); err != nil {
+		false, false, false, true, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(hookCalls) == 0 {

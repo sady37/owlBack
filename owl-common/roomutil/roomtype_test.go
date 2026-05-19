@@ -1,28 +1,33 @@
 package roomutil
 
-import "testing"
+import (
+	"testing"
+
+	"owl-common/card"
+)
 
 func TestClassifyRoomType(t *testing.T) {
 	cases := []struct {
 		in   string
-		want string
+		want int
 	}{
-		{"Bathroom", RoomTypeBathroom},
-		{"BATHROOM 1F", RoomTypeBathroom},
-		{"WC", RoomTypeBathroom},
-		{"wc1F", RoomTypeBathroom},
-		{"Restroom A", RoomTypeBathroom},
-		{"Toilet", RoomTypeBathroom},
-		{"Master Bedroom", RoomTypeBedroom},
-		{"bed room 2", RoomTypeBedroom},
-		{"Kitchen", RoomTypeKitchen},
-		{"Living Room", RoomTypeOther},
-		{"", RoomTypeOther},
-		{"Garage", RoomTypeOther},
+		{"Bathroom", card.RoomTypeBathroom},
+		{"BATHROOM 1F", card.RoomTypeBathroom},
+		{"WC", card.RoomTypeBathroom},
+		{"wc1F", card.RoomTypeBathroom},
+		{"Restroom A", card.RoomTypeBathroom},
+		{"Toilet", card.RoomTypeBathroom},
+		// v2 简化：Bedroom / LivingRoom / Garage / 空名 全合并 Default
+		{"Master Bedroom", card.RoomTypeDefault},
+		{"bed room 2", card.RoomTypeDefault},
+		{"Kitchen", card.RoomTypeKitchen},
+		{"Living Room", card.RoomTypeDefault},
+		{"", card.RoomTypeDefault},
+		{"Garage", card.RoomTypeDefault},
 	}
 	for _, c := range cases {
 		if got := ClassifyRoomType(c.in); got != c.want {
-			t.Errorf("ClassifyRoomType(%q) = %q, want %q", c.in, got, c.want)
+			t.Errorf("ClassifyRoomType(%q) = %d, want %d", c.in, got, c.want)
 		}
 	}
 }
