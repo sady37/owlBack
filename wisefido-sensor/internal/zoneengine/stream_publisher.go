@@ -27,20 +27,105 @@ import (
 )
 
 // StreamPublisher 实现 ZoneEventListener 把 ZoneEvent 翻译并发 sensor:derived:stream。
+//
+// 现在两条触发路径（都走 publishCardState 单一出口，单 writer 不破）：
+//
+//	1) OnZoneEvent       — zoneengine state machine 触发
+//	2) Run 60s ticker    — 主动 pull TargetStateAggregator 拿 StandingMin/Visitor/WeakBio/LastActive
+//	                       合并 zone state 后 publish（per-card dirty 检查跳过无变化）
+//
+// 详 [[target_state_aggregator]] design doc：aggregator 是纯 state holder，
+// publisher 是唯一发往 sensor:derived:stream 的 writer。
 type StreamPublisher struct {
-	reader  *card.Reader
-	client  *redislib.Client
-	logger  *zap.Logger
-	timeout time.Duration
+	reader     *card.Reader
+	client     *redislib.Client
+	logger     *zap.Logger
+	timeout    time.Duration
+	aggregator AggregatorPuller // 可空：未注入时 ticker 路径退化为 no-op
+	tickEvery  time.Duration
+}
+
+// AggregatorPuller StreamPublisher 60s tick 时 pull aggregator 数据用的接口。
+// 由 service.TargetStateAggregator 实现（multi-return 避免 service 反向导入 zoneengine）。
+//
+// 返回值:
+//   target      Target.LastActiveTs / WeakBiometricSignal / Visitor* — 写到 card.target Hash
+//   standingMin RoomState.StandingContinuousMin —— 写到 card.room_state Hash
+//   dirty       自上次 MarkPublished 是否变化（false → publisher skip 该卡 publish）
+//   ok          卡是否有 accumulator entry（false → 跳过）
+type AggregatorPuller interface {
+	ActiveCardIDs() []string
+	GetSnapshot(cardID string) (target *card.TargetState, standingMin int, dirty bool, ok bool)
+	MarkPublished(cardID string, tsMs int64)
 }
 
 func NewStreamPublisher(client *redislib.Client, logger *zap.Logger) *StreamPublisher {
 	return &StreamPublisher{
-		reader:  card.NewReader(client),
-		client:  client,
-		logger:  logger,
-		timeout: 2 * time.Second,
+		reader:    card.NewReader(client),
+		client:    client,
+		logger:    logger,
+		timeout:   2 * time.Second,
+		tickEvery: 60 * time.Second,
 	}
+}
+
+// SetAggregator 注入 aggregator（main wiring 调）。可选；不调时 Run ticker 跳过 pull。
+func (p *StreamPublisher) SetAggregator(a AggregatorPuller) {
+	p.aggregator = a
+}
+
+// Run 60s ticker 主循环：遍历 aggregator.ActiveCardIDs，dirty 卡走 publishMergedFromAggregator。
+// ctx done 时退出；P2 scaffold 不发实际 publish（仅日志 stub），P3/P4 接上业务后启用。
+func (p *StreamPublisher) Run(ctx context.Context) {
+	if p.tickEvery <= 0 {
+		p.tickEvery = 60 * time.Second
+	}
+	t := time.NewTicker(p.tickEvery)
+	defer t.Stop()
+	p.logger.Info("stream_publisher: tick loop started",
+		zap.Duration("interval", p.tickEvery))
+	for {
+		select {
+		case <-ctx.Done():
+			p.logger.Info("stream_publisher: tick loop stopped")
+			return
+		case <-t.C:
+			if p.aggregator == nil {
+				continue
+			}
+			p.tickPullAndPublish(ctx)
+		}
+	}
+}
+
+// tickPullAndPublish 60s 周期被调；遍历 dirty cards，pull aggregator + 合并 zone state + publish。
+// P2 scaffold：仅记录"哪些卡 dirty 待 publish"日志，不实际写流（业务字段未填，发也没意义）。
+func (p *StreamPublisher) tickPullAndPublish(ctx context.Context) {
+	cardIDs := p.aggregator.ActiveCardIDs()
+	if len(cardIDs) == 0 {
+		return
+	}
+	dirty := 0
+	for _, cid := range cardIDs {
+		target, standingMin, isDirty, ok := p.aggregator.GetSnapshot(cid)
+		if !ok || !isDirty {
+			continue
+		}
+		// TODO P3/P4: read prev RoomState/Target from redis,
+		//             merge standingMin into RoomState,
+		//             use target as Target,
+		//             publish RoomState + Target.
+		// P2: 只标记 dirty 处理过；真实 publish 等业务字段填齐再开。
+		_ = target
+		_ = standingMin
+		p.aggregator.MarkPublished(cid, time.Now().UnixMilli())
+		dirty++
+	}
+	if dirty > 0 {
+		p.logger.Debug("stream_publisher: tick processed dirty cards",
+			zap.Int("count", dirty))
+	}
+	_ = ctx
 }
 
 // OnZoneEvent satisfy ZoneEventListener — 替代 RedisAdapter 同名方法。

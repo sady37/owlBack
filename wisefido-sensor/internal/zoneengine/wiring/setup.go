@@ -27,6 +27,10 @@ type Subsystem struct {
 	VitalAdapter    *zoneengine.VitalAdapter
 	StreamPublisher *zoneengine.StreamPublisher
 
+	// TargetAggregator P2 scaffold：纯 state holder，StreamPublisher 60s tick 主动 pull。
+	// 监听 ZoneEvent (TotalPeople gate) + 后续 P3/P4 接 monitor / alarm 流。
+	TargetAggregator *service.TargetStateAggregator
+
 	BedSizeLookup  *BedSizeLookup
 	BathroomLookup *BathroomLookup
 	VitalSource    *MonitorVitalSource
@@ -103,6 +107,12 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 	streamPublisher := zoneengine.NewStreamPublisher(opts.Redis, opts.Logger)
 	engine.AddListener(streamPublisher)
 
+	// 3.1) TargetStateAggregator（P2 scaffold）：纯 state holder，订阅 ZoneEvent 缓存 TotalPeople；
+	//      monitor / alarm 流消费 P3/P4 接；escalation alarm publisher P4 注入。
+	aggregator := service.NewTargetStateAggregator(nil /* publisher P4 注入 */, opts.Redis, opts.Logger)
+	engine.AddListener(targetAggregatorListenerAdapter{agg: aggregator})
+	streamPublisher.SetAggregator(aggregator)
+
 	// 4) input adapters
 	radar := zoneengine.NewRadarAdapter(opts.Redis, engine, bathLookup, opts.Logger)
 	sleepace := zoneengine.NewSleepaceAdapter(opts.Redis, engine, opts.Logger)
@@ -159,19 +169,20 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 	}
 
 	return &Subsystem{
-		Engine:          engine,
-		RadarAdapter:    radar,
-		SleepaceAdapter: sleepace,
-		VitalAdapter:    vital,
-		StreamPublisher: streamPublisher,
-		BedSizeLookup:   bedLookup,
-		BathroomLookup:  bathLookup,
-		VitalSource:     vitalSrc,
-		Zonealarm:       supervisor,
-		AlarmFirer:      firer,
-		AlarmRulesPath:  alarmRulesPath,
-		RulesPath:       rulesPath,
-		logger:          opts.Logger,
+		Engine:           engine,
+		RadarAdapter:     radar,
+		SleepaceAdapter:  sleepace,
+		VitalAdapter:     vital,
+		StreamPublisher:  streamPublisher,
+		TargetAggregator: aggregator,
+		BedSizeLookup:    bedLookup,
+		BathroomLookup:   bathLookup,
+		VitalSource:      vitalSrc,
+		Zonealarm:        supervisor,
+		AlarmFirer:       firer,
+		AlarmRulesPath:   alarmRulesPath,
+		RulesPath:        rulesPath,
+		logger:           opts.Logger,
 	}, nil
 }
 
@@ -182,17 +193,34 @@ type zoneAlarmListenerAdapter struct{ sup *zonealarm.Supervisor }
 
 func (z zoneAlarmListenerAdapter) OnZoneEvent(e zoneengine.ZoneEvent) { z.sup.OnZoneEvent(e) }
 
-// Start 启动 4 adapter + Engine.Tick 1s 周期 + zonealarm Supervisor.Tick（如已 wire）。
+// targetAggregatorListenerAdapter — service.TargetStateAggregator 通过窄接口订阅 ZoneEvent。
+// Aggregator 的 OnZoneEvent 是 (cardID, zoneID, totalPeople, ts) 四参数（避免反向依赖 zoneengine 类型），
+// 此 adapter 做翻译。
+type targetAggregatorListenerAdapter struct{ agg *service.TargetStateAggregator }
+
+func (t targetAggregatorListenerAdapter) OnZoneEvent(e zoneengine.ZoneEvent) {
+	t.agg.OnZoneEvent(e.CardID, e.ZoneID, e.NewState.Count, e.NewState.UpdatedAt)
+}
+
+// Start 启动 4 adapter + Engine.Tick 1s 周期 + zonealarm Supervisor.Tick（如已 wire）
+//        + TargetStateAggregator + StreamPublisher 60s tick。
 // 返回后子系统全跑起来；ctx 取消时全部退出。
 func (s *Subsystem) Start(ctx context.Context) {
 	s.RadarAdapter.Start(ctx)
 	s.SleepaceAdapter.Start(ctx)
 	s.VitalAdapter.Start(ctx)
 	go s.runTickLoop(ctx)
+
+	// TargetStateAggregator 主循环（消费 monitor/alarm/zone push channel）
+	go s.TargetAggregator.Run(ctx)
+	// StreamPublisher 60s tick：pull aggregator + 合并 publish RoomState/Target
+	go s.StreamPublisher.Run(ctx)
+
 	s.logger.Info("zone engine subsystem started",
 		zap.String("rules_path", s.RulesPath),
 		zap.Bool("zonealarm_wired", s.Zonealarm != nil),
 		zap.String("alarm_rules_path", s.AlarmRulesPath),
+		zap.Bool("target_aggregator_wired", s.TargetAggregator != nil),
 	)
 }
 
