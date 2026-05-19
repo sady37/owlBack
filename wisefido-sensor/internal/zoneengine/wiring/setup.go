@@ -47,12 +47,13 @@ type Subsystem struct {
 
 // SetupOptions Setup 入参。
 type SetupOptions struct {
-	DB            *sql.DB                // 用于 BedSizeLookup / BathroomLookup
-	Redis         *redislib.Client       // 用于 4 adapter
-	MonitorBuffer *service.MonitorBuffer // 用于 VitalSource
-	RulesPath     string                 // zone_rules.yaml 绝对路径；空则查 ZONE_RULES_PATH env，再回退默认 "config/zone_rules.yaml"
-	AlarmRulesPath string                // zone_alarm.yaml 绝对路径；空则查 ZONE_ALARM_PATH env，再回退默认 "config/zone_alarm.yaml"
+	DB             *sql.DB                    // 用于 BedSizeLookup / BathroomLookup
+	Redis          *redislib.Client           // 用于 4 adapter
+	MonitorBuffer  *service.MonitorBuffer     // 用于 VitalSource
+	RulesPath      string                     // zone_rules.yaml 绝对路径；空则查 ZONE_RULES_PATH env，再回退默认 "config/zone_rules.yaml"
+	AlarmRulesPath string                     // zone_alarm.yaml 绝对路径；空则查 ZONE_ALARM_PATH env，再回退默认 "config/zone_alarm.yaml"
 	BackChannel    *consumer.AlarmBackChannel // sensor 现成的 alarm 回流；nil 禁用 zonealarm fire
+	Identity       consumer.AgentIdentity     // sensor agent IPv6 + name；StreamPublisher 写 envelope.Producer 用
 	Logger         *zap.Logger
 }
 
@@ -105,6 +106,7 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 	//    cardagg 是 card:status 单 writer，sensor 通过 sensor:derived:stream 推消息）
 	engine := zoneengine.NewEngine(rules, bedLookup, opts.Logger)
 	streamPublisher := zoneengine.NewStreamPublisher(opts.Redis, opts.Logger)
+	streamPublisher.SetIdentity(opts.Identity)
 	engine.AddListener(streamPublisher)
 
 	// 3.1) TargetStateAggregator：纯 state holder，订阅 ZoneEvent 缓存 TotalPeople；

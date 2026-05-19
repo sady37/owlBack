@@ -100,26 +100,41 @@ func NewTargetMerger(metaCache *DeviceMetaCache) *TargetMerger {
 	}
 }
 
-// OnDeviceTarget 收到 sensor 派的 per-device TargetState；返回 owning cardID +
-// max-merge 后的 card.TargetState；cardID 空 → caller 跳过（unbound device）。
+// OnDeviceTarget 收到 sensor 派的 TargetState；返回 owning cardID + max-merge 后的 card.TargetState；
+// cardID 空 → caller 跳过（unbound）。
 //
-// deviceAddr 期望为 /128 IPv6 canonical 字符串（不是 CIDR）。
-// 若解析失败或 device 未绑卡，返回 ("", nil)。
-func (m *TargetMerger) OnDeviceTarget(ctx context.Context, deviceAddr string, ts *card.TargetState) (string, *card.TargetState) {
-	if deviceAddr == "" || ts == nil {
+// subject 双形态（v2/v3 演进）：
+//   - v2 entity-keyed (当前)：subject 是 CIDR（/96 bed 或 /88 room）；entity IS card_id；
+//     单 snapshot per entity，无跨 device max-merge（cards.spatial_prefix 上的所有 device 共享一份）
+//   - v3 device-keyed (未来 [[target_state_per_device]])：subject 是 /128 device IPv6；
+//     需 LookupCardByDeviceAddr 反查 owning card；max-merge 同 card 下多 device snapshot
+//
+// deviceSnapshots map 统一存 (subject 字符串 → snapshot)，subject 可能是 CIDR 或 /128；
+// mergeForCard 会同时遍历 (a) meta.Devices 下 /128 keyed (v3) 和 (b) cardID 自身 keyed (v2)。
+//
+// 若 subject 解析失败或 device 未绑卡，返回 ("", nil)。
+func (m *TargetMerger) OnDeviceTarget(ctx context.Context, subject string, ts *card.TargetState) (string, *card.TargetState) {
+	if subject == "" || ts == nil {
 		return "", nil
 	}
-	addr, err := netip.ParseAddr(deviceAddr)
-	if err != nil {
-		return "", nil
-	}
-	cardID := m.metaCache.LookupCardByDeviceAddr(ctx, addr)
-	if cardID == "" {
-		return "", nil
+	var cardID string
+	if _, err := netip.ParsePrefix(subject); err == nil {
+		// v2 path: subject is CIDR (entity prefix); entity itself IS the cardID
+		cardID = subject
+	} else {
+		// v3 path: subject is /128 device addr; reverse-lookup owning card
+		addr, err := netip.ParseAddr(subject)
+		if err != nil {
+			return "", nil
+		}
+		cardID = m.metaCache.LookupCardByDeviceAddr(ctx, addr)
+		if cardID == "" {
+			return "", nil
+		}
 	}
 
 	m.mu.Lock()
-	m.deviceSnapshots[deviceAddr] = ts
+	m.deviceSnapshots[subject] = ts
 	visitor := m.cardVisitor[cardID]
 	m.mu.Unlock()
 
@@ -197,6 +212,7 @@ func (m *TargetMerger) mergeForCard(ctx context.Context, cardID string, v visito
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// v3 path: /128 device-keyed snapshots（同 card 下多 radar max-merge）
 	for addr := range meta.Devices {
 		ts := m.deviceSnapshots[addr]
 		if ts == nil {
@@ -221,6 +237,23 @@ func (m *TargetMerger) mergeForCard(ctx context.Context, cardID string, v visito
 		}
 		if ts.UpdatedAt > out.UpdatedAt {
 			out.UpdatedAt = ts.UpdatedAt
+		}
+	}
+	// v2 path: entity-keyed snapshot（cardID 自身 prefix CIDR）；当 sensor v2 按 entity 聚合发 target.state 时进
+	// 这里 — 单 source per card 无 max-merge 含义，但 Standing staleness 仍按 2min UpdatedAt 守护。
+	if entityTs := m.deviceSnapshots[cardID]; entityTs != nil {
+		if entityTs.LastActiveTs > out.LastActiveTs {
+			out.LastActiveTs = entityTs.LastActiveTs
+		}
+		entityStandingFresh := entityTs.UpdatedAt > 0 && nowMs-entityTs.UpdatedAt <= StandingSnapshotStaleMs
+		if entityStandingFresh && entityTs.StandingContinuousMin > out.StandingContinuousMin {
+			out.StandingContinuousMin = entityTs.StandingContinuousMin
+		}
+		if entityTs.WeakBiometricSignal > out.WeakBiometricSignal {
+			out.WeakBiometricSignal = entityTs.WeakBiometricSignal
+		}
+		if entityTs.UpdatedAt > out.UpdatedAt {
+			out.UpdatedAt = entityTs.UpdatedAt
 		}
 	}
 	return out

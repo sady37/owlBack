@@ -21,6 +21,8 @@ import (
 	"owl-common/card"
 	owlredis "owl-common/redis"
 
+	"wisefido-sensor/internal/consumer"
+
 	redislib "github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
@@ -29,18 +31,23 @@ import (
 //
 // 现在两条触发路径（都走 publishCardState 单一出口，单 writer 不破）：
 //
-//	1) OnZoneEvent       — zoneengine state machine 触发
-//	2) Run 60s ticker    — 主动 pull TargetStateAggregator 拿 StandingMin/Visitor/WeakBio/LastActive
-//	                       合并 zone state 后 publish（per-card dirty 检查跳过无变化）
+//	1) OnZoneEvent       — zoneengine state machine 触发 bed.state / room.state
+//	2) Run 60s ticker    — 主动 pull TargetStateAggregator 拿 LastActiveTs / StandingMin /
+//	                       WeakBioScore，per-entity 发 target.state（dirty 检查跳过无变化）
 //
 // 详 [[target_state_aggregator]] design doc：aggregator 是纯 state holder，
 // publisher 是唯一发往 sensor:derived:stream 的 writer。
+//
+// envelope.Producer = sensor agent /128 IPv6（slot fd00:0:fff1::/48，per
+// [[platform_agent_addressing]]）；通过 SetIdentity 注入。未注入时退化为 entity addr
+// （兼容老 wiring，但 cardagg side 无法按 Producer "属 sensor" 路由）。
 type StreamPublisher struct {
 	client     *redislib.Client
 	logger     *zap.Logger
 	timeout    time.Duration
 	aggregator AggregatorPuller // 可空：未注入时 ticker 路径退化为 no-op
 	tickEvery  time.Duration
+	producer   string // sensor agent IPv6 canonical 文本；SetIdentity 注入
 }
 
 // AggregatorPuller StreamPublisher 60s tick 时 pull aggregator 数据用的接口。
@@ -74,6 +81,14 @@ func (p *StreamPublisher) SetAggregator(a AggregatorPuller) {
 	p.aggregator = a
 }
 
+// SetIdentity 注入 sensor agent /128 IPv6（main wiring 调）。空 / 无效时 publish 时
+// 退化为 entity addr — 不推荐生产用（cardagg 端 Producer 防 loop 会失效）。
+func (p *StreamPublisher) SetIdentity(id consumer.AgentIdentity) {
+	if id.IPv6.IsValid() {
+		p.producer = id.IPv6.String()
+	}
+}
+
 // Run 60s ticker 主循环：遍历 aggregator.ActiveCardIDs，dirty 卡走 publishMergedFromAggregator。
 // ctx done 时退出；P2 scaffold 不发实际 publish（仅日志 stub），P3/P4 接上业务后启用。
 func (p *StreamPublisher) Run(ctx context.Context) {
@@ -98,8 +113,16 @@ func (p *StreamPublisher) Run(ctx context.Context) {
 	}
 }
 
-// tickPullAndPublish 60s 周期被调；遍历 dirty 物理实体，pull aggregator + 合并 zone state + publish。
-// P2 scaffold：仅记录"哪些实体 dirty 待 publish"日志，不实际写流（业务字段未填，发也没意义）。
+// tickPullAndPublish 60s 周期被调；遍历 dirty 物理实体，pull aggregator + publish target.state。
+//
+// v2 实施：subject_entity = spatial_prefix（CIDR，/96 bed 或 /88 room；cardID == spatial_prefix）。
+// 字段 owner（[[target_state_per_device]]）：
+//   - LastActiveTs / WeakBiometricSignal — aggregator GetSnapshot.target 已填
+//   - StandingContinuousMin              — GetSnapshot.standingMin 单返；这里合进 target struct
+//
+// Visitor 三字段不在 sensor 范围（cardagg VisitorDeriver 拥有；merger.mergeForCard 合并）。
+//
+// 失败不 MarkPublished — 下一 tick 继续重试（dirty 仍 true）。
 func (p *StreamPublisher) tickPullAndPublish(ctx context.Context) {
 	prefixes := p.aggregator.ActiveSpatialPrefixes()
 	if len(prefixes) == 0 {
@@ -108,24 +131,22 @@ func (p *StreamPublisher) tickPullAndPublish(ctx context.Context) {
 	dirty := 0
 	for _, sp := range prefixes {
 		target, standingMin, isDirty, ok := p.aggregator.GetSnapshot(sp)
-		if !ok || !isDirty {
+		if !ok || !isDirty || target == nil {
 			continue
 		}
-		// TODO P3/P4: read prev RoomState/Target from redis,
-		//             merge standingMin into RoomState,
-		//             use target as Target,
-		//             publish RoomState + Target.
-		// P2: 只标记 dirty 处理过；真实 publish 等业务字段填齐再开。
-		_ = target
-		_ = standingMin
+		target.StandingContinuousMin = standingMin
+		if err := p.PublishTargetState(ctx, sp, target); err != nil {
+			p.logger.Warn("stream_publisher: publish target.state failed",
+				zap.String("spatial_prefix", sp), zap.Error(err))
+			continue
+		}
 		p.aggregator.MarkPublished(sp, time.Now().UnixMilli())
 		dirty++
 	}
 	if dirty > 0 {
-		p.logger.Debug("stream_publisher: tick processed dirty spatial entities",
+		p.logger.Debug("stream_publisher: tick published target.state",
 			zap.Int("count", dirty))
 	}
-	_ = ctx
 }
 
 // OnZoneEvent satisfy ZoneEventListener。
@@ -182,6 +203,11 @@ func (p *StreamPublisher) publish(ctx context.Context, cardID, category string, 
 	}
 	addr := parseCardAddr(cardID)
 	msg := owlredis.NewSingleItemMessage(addr, cardID, "sensor", time.Now().UnixMilli(), "derived", category, data)
+	// Producer 覆写为 sensor agent /128 IPv6（platform agent slot fd00:0:fff1::/48）。
+	// NewSingleItemMessage 默认 producer=entity addr，cardagg side 看 Producer 防 loop / 路由会失效。
+	if p.producer != "" {
+		msg.Producer = p.producer
+	}
 	return p.client.XAdd(ctx, &redislib.XAddArgs{
 		Stream: owlredis.StreamSensorDerived.Name,
 		MaxLen: owlredis.StreamSensorDerived.MaxLen,
