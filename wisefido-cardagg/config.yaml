@@ -21,3 +21,12 @@ streams:
   default:
     max_len: 1000
     retention_seconds: 86400
+
+# AI 派生 track verdict 合并行为（S5a AIOverrideCache）。
+# 部署约定（域名区分）：
+#   test.wisefido.com  → sandbox（仅 log，不动 track_confidence）
+#   owl.wisefido.com   → release（覆写 track_confidence + ai_source）
+# env override：CARDAGG_AI_OVERRIDE_MODE
+ai:
+  override_mode: "sandbox"
+  override_ttl_sec: 60

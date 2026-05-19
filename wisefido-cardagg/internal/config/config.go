@@ -15,6 +15,19 @@ type Config struct {
 	Redis   commonconfig.RedisConfig    `yaml:"redis"`
 	Logging commonconfig.LogConfig      `yaml:"logging"`
 	Streams commonconfig.StreamsConfig  `yaml:"streams"`
+	AI      AIConfig                    `yaml:"ai"`
+}
+
+// AIConfig — AI 派生 verdict 合并行为配置。
+//
+// 部署约定（[[deploy_mode_by_domain]]）：
+//   - test.wisefido.com  → mode=sandbox（仅 log，不动 track_confidence；演示"AI 在思考"）
+//   - owl.wisefido.com   → mode=release（覆写 track_confidence + ai_source，UI 渲染 AI 调整后值）
+//
+// override 优先级：env CARDAGG_AI_OVERRIDE_MODE > config.yaml ai.override_mode > 默认 sandbox。
+type AIConfig struct {
+	OverrideMode  string `yaml:"override_mode"`     // "sandbox" | "release"
+	OverrideTTLSec int   `yaml:"override_ttl_sec"`  // verdict cache TTL；≤0 默认 60s
 }
 
 func Load() (*Config, error) {
@@ -50,6 +63,9 @@ func (c *Config) applyEnvOverrides() {
 	}
 	c.Redis.LoadFromEnv("REDIS")
 	c.Logging.LoadFromEnv("LOG")
+	if v := os.Getenv("CARDAGG_AI_OVERRIDE_MODE"); v != "" {
+		c.AI.OverrideMode = v
+	}
 }
 
 func (c *Config) setDefaults() {
@@ -85,6 +101,13 @@ func (c *Config) setDefaults() {
 	}
 	if c.Streams.Default.RetentionSeconds == 0 {
 		c.Streams.Default.RetentionSeconds = 86400
+	}
+	// AI 默认 sandbox + 60s TTL；生产 deploy 通过 yaml/env 切 release
+	if c.AI.OverrideMode == "" {
+		c.AI.OverrideMode = "sandbox"
+	}
+	if c.AI.OverrideTTLSec <= 0 {
+		c.AI.OverrideTTLSec = 60
 	}
 }
 

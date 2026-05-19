@@ -104,9 +104,12 @@ func main() {
 	bedPeopleTracker.SetOnlineChecker(deviceTracker.IsOnline)
 	eventHandler := consumer.NewEventHandler(bedPeopleTracker, logger)
 	// AIOverrideCache (S5a): sensor 派生 track verdict (ghost 判定等) 缓存 + 合并到
-	// realtime publish。sandbox 默认仅 log，release 模式覆写 track_confidence。
-	// 清理触发：a) tid=88 (monitor) b) EnterRoom/ExitRoom (event) c) TTL 60s GC d) (后续) device offline。
-	aiOverrides := service.NewAIOverrideCache(string(service.AIOverrideModeSandbox), 60, logger)
+	// realtime publish。mode 按部署环境配置（[[deploy_mode_by_domain]]）：
+	//   test.wisefido.com  → sandbox（仅 log，不动 track_confidence）
+	//   owl.wisefido.com   → release（覆写 track_confidence + ai_source）
+	// 配置优先级：env CARDAGG_AI_OVERRIDE_MODE > config.yaml ai.override_mode > 默认 sandbox
+	// 清理触发：a) tid=88 (monitor) b) EnterRoom/ExitRoom (event) c) TTL GC d) (后续) device offline。
+	aiOverrides := service.NewAIOverrideCache(cfg.AI.OverrideMode, cfg.AI.OverrideTTLSec, logger)
 	monitorHandler.SetAIOverrides(aiOverrides)
 	eventHandler.SetAIOverrides(aiOverrides)
 	go aiOverrides.RunGCLoop(ctx.Done(), 30*time.Second)
