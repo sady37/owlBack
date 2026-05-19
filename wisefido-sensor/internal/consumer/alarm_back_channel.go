@@ -1,18 +1,19 @@
 package consumer
 
-// PR1 (A8): sensor → cardagg 回流通道。
+// sensor → cardagg alarm 回流通道。
 //
-// sensor 决策出"该报警 / pending 起 / pending 取消"后通过本 helper publish 到 iot:alarm:stream，
-// cardagg 现有 alarm_handler.go 路由完成实际写库 / 推送 / Redis pending 增删。原则：
+// sensor 决策出"确认 alarm"后通过本 helper publish 到 iot:alarm:stream，cardagg
+// AlarmRouter 完成实际写库 / 推送。原则：
 //
-//   - sensor 内不写 alarm_events DB，不写 cardagg 内部 Redis pending hash
+//   - sensor 内不写 alarm_events DB，不写 cardagg 内部 Redis state
 //   - **sensor 在此处统一做 enablement gate**（按 device /128 LPM 查 spatial_config alarm.cloud_config）。
 //     未启用的 alarm 在 sensor 源头丢弃，不发往 cardagg；cardagg platform-agent trust bypass 保留，
 //     视为 second-line（产 + 消两端都不漏 + 不重复 gate）。
-//   - envelope.event_status 协议沿用：start / pending_arm / pending_cancel
+//   - envelope.event_status = "start"（确认态）
 //
-// "pending_arm" / "pending_cancel" 是 PR1 新增的 sensor→cardagg sentinel；
-// 配套 cardagg alarm_handler.go A9 分支接收，调用现有 AddPendingAlarm / RemovePendingAlarm。
+// **pending state v2 在 sensor 内部**：zonealarm.Supervisor 维护 pending map + 自动 cancel
+// + Tick 到期 fire confirmed alarm（PublishAlarmFire）。PR1 时代的 PublishPendingArm /
+// PublishPendingCancel sentinel 已删（cardagg 端从未消费；E 收口 dead code）。
 
 import (
 	"context"
@@ -30,12 +31,10 @@ import (
 // 接口而非 *service.AlarmEnablementCache，避免 consumer→service 导入环）。
 type EnablementGate func(ctx context.Context, deviceAddr, alarmType string) bool
 
-// EventStatusStart / PendingArm / PendingCancel envelope.event_status 的 PR1 sentinel。
-const (
-	EventStatusStart         = "start"
-	EventStatusPendingArm    = "pending_arm"
-	EventStatusPendingCancel = "pending_cancel"
-)
+// EventStatusStart envelope.event_status 标记本条是 alarm 起始事件（confirmed）。
+// v2 sensor 内部 zonealarm.Supervisor 自维护 pending state，不外发 pending_arm/pending_cancel
+// sentinel — PR1 时代的 PublishPendingArm/PublishPendingCancel 已删（E 收口 dead code）。
+const EventStatusStart = "start"
 
 // AgentIdentity sensor 进程作为 platform agent 的 IPv6 + UID 身份。
 // 详见 owlBack/doc/platform_agent_addressing.md §3。
@@ -126,55 +125,7 @@ func (a *AlarmBackChannel) PublishAlarmFire(
 	if !a.gate(ctx, deviceAddr, eventName) {
 		return "", nil // 未启用 → 静默丢弃
 	}
-	data := mergeTriggerData(eventName, EventStatusStart, level, 0, "", 0, triggerData)
-	return a.publishAlarm(ctx, deviceAddr, subjectEntity, eventName, tsMs, data)
-}
-
-// PublishPendingArm 起 pending（Suspected→Real 升级 / LeftBed duration_sec timer / Stay 等）。
-// 接收方为 cardagg alarm_handler.go A9 分支：根据 event_status=pending_arm 调 AddPendingAlarm。
-//
-//	durationSec  到期时间（秒）
-//	upgradeTo    到期后升格的 eventName；空表示直接 fire 当前 eventName
-//	eventSinceMs 触发时间戳，cardagg 用来计算到期点；0 时填 tsMs
-func (a *AlarmBackChannel) PublishPendingArm(
-	ctx context.Context,
-	deviceAddr netip.Addr,
-	subjectEntity, eventName, level string,
-	durationSec int,
-	upgradeTo string,
-	eventSinceMs int64,
-	tsMs int64,
-	triggerData map[string]interface{},
-) (string, error) {
-	if a == nil || a.client == nil {
-		return "", fmt.Errorf("AlarmBackChannel not initialized")
-	}
-	if !a.gate(ctx, deviceAddr, eventName) {
-		return "", nil
-	}
-	if eventSinceMs == 0 {
-		eventSinceMs = tsMs
-	}
-	data := mergeTriggerData(eventName, EventStatusPendingArm, level, durationSec, upgradeTo, eventSinceMs, triggerData)
-	return a.publishAlarm(ctx, deviceAddr, subjectEntity, eventName, tsMs, data)
-}
-
-// PublishPendingCancel 取消 pending（如 InBed 抵消 LeftBed pending）。
-// cardagg alarm_handler.go A9 分支据此调 RemovePendingAlarm。
-//
-// 注：cancel 不查 enablement gate —— 若 alarm 类型本来就没被 enable，sensor 也没发过
-// pending_arm，cardagg pending hash 里也没对应行，cancel 自然 no-op；万一上游配置中途
-// 变更，cancel 还是能清掉残留 pending（gate cancel 反而可能留毒）。
-func (a *AlarmBackChannel) PublishPendingCancel(
-	ctx context.Context,
-	deviceAddr netip.Addr,
-	subjectEntity, eventName string,
-	tsMs int64,
-) (string, error) {
-	if a == nil || a.client == nil {
-		return "", fmt.Errorf("AlarmBackChannel not initialized")
-	}
-	data := mergeTriggerData(eventName, EventStatusPendingCancel, "", 0, "", 0, nil)
+	data := mergeTriggerData(eventName, EventStatusStart, level, triggerData)
 	return a.publishAlarm(ctx, deviceAddr, subjectEntity, eventName, tsMs, data)
 }
 
@@ -214,10 +165,13 @@ func (a *AlarmBackChannel) publishAlarm(
 		rediscommon.StreamAlarm.MaxLen, rediscommon.StreamAlarm.RetentionSeconds)
 }
 
-// mergeTriggerData 将 envelope 必带字段（event_name / event_status / level / duration / upgrade_to / event_since_ms）
+// mergeTriggerData 将 envelope 必带字段（event_name / event_status / alarm_level）
 // 合并到 trigger data map，cardagg alarm_handler 读取时按 key 取值。
-func mergeTriggerData(eventName, eventStatus, level string, durationSec int, upgradeTo string, eventSinceMs int64, extra map[string]interface{}) map[string]interface{} {
-	out := make(map[string]interface{}, 6+len(extra))
+//
+// duration_sec / upgrade_to / event_since_ms 三字段 PR1 时代为 PublishPendingArm sentinel 服务，
+// v2 zonealarm.Supervisor 内部维护 pending（不外发 sentinel）后这些字段无 producer → 一并删除。
+func mergeTriggerData(eventName, eventStatus, level string, extra map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, 3+len(extra))
 	for k, v := range extra {
 		out[k] = v
 	}
@@ -227,15 +181,6 @@ func mergeTriggerData(eventName, eventStatus, level string, durationSec int, upg
 	}
 	if level != "" {
 		out["alarm_level"] = level
-	}
-	if durationSec > 0 {
-		out["duration_sec"] = durationSec
-	}
-	if upgradeTo != "" {
-		out["upgrade_to"] = upgradeTo
-	}
-	if eventSinceMs > 0 {
-		out["event_since_ms"] = eventSinceMs
 	}
 	return out
 }

@@ -106,8 +106,10 @@ type PendingKey struct {
 
 // AlarmFirer zonealarm 的 fire 出口接口；wiring 层包装 alarm_back_channel 实现。
 //
-// arm 阶段亦通过本接口（Method Arm）发"pending_arm" 给 cardagg；cancel 阶段发
-// "pending_cancel"。如果调用方只关心 fire 不关心 arm 状态可空实现 Arm/Cancel。
+// **Arm / Cancel 是 sensor 内部 lifecycle 钩子**（仅 log / metric / 审计用），不外发 cardagg；
+// 真正的 sensor→cardagg 路径只有 Fire（PublishAlarmFire confirmed alarm）。
+// PR1 时代的 pending_arm / pending_cancel sentinel 已删 — pending state v2 完全在 Supervisor
+// 内部 maintain，外部不可见。
 type AlarmFirer interface {
 	Arm(ctx context.Context, p Pending) error
 	Cancel(ctx context.Context, key PendingKey, reason zoneengine.ZoneEvent) error
