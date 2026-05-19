@@ -137,6 +137,12 @@ func main() {
 		return ok
 	})
 
+	// 5.2.2 alarm.cloud_config 失效订阅：wisefido-data 改 spatial_config 后 publish 精确
+	// device_addr → 本 consumer 调 enablementCache.Invalidate；与 cardagg AlarmDeviceHandler 对称。
+	// 详 [[alarm_enablement_invalidate_design]]。
+	alarmDeviceConsumer := consumer.NewAlarmDeviceConfigConsumer(engineRedis, enablementCache, logger)
+	alarmDeviceConsumer.Start(ctx)
+
 	// S6: DeviceFitnessTracker — per-device 健康状态 gate；AlarmConsumer fan-out 设备类 alarm
 	// 写 fitness state；adapter_radar / adapter_sleepace handleMsg 入口查 IsFit → unfit skip
 	// 防 SensorDetached/AngleException 后垃圾数据污染 zone FSM 决策。
