@@ -154,15 +154,18 @@ func main() {
 	}
 	zone.Start(ctx)
 
-	// 5.3.1 alarm/activity consumer wire 到同一 zone.TargetAggregator (S1/S2 producer wire)
-	//   S1 alarm: 旁路读 iot:alarm:stream WeakBio 关联 → score 累加
-	//   S2 activity: 旁路读 iot:event:stream category=activity → LastActive/Standing
-	// 两 consumer 用独立 consumer group，与 roomengine "roomengine" group 隔离；
+	// 5.3.1 producer-side consumer wire (S1/S2/S4)
+	//   S1 alarm:    iot:alarm:stream WeakBio 关联 → aggregator score 累加
+	//   S2 activity: iot:event:stream category=activity → aggregator LastActive/Standing
+	//   S4 sleepstage: iot:event:stream category=SleepStage → confidence ladder → bed.sleepstage publish
+	// 各 consumer 用独立 consumer group，与 roomengine "roomengine" group 隔离；
 	// Producer 在 fd00:0:fff1::/48 slot 的自家派生消息跳过防 loop。
 	alarmConsumer := consumer.NewAlarmConsumer(engineRedis, zone.TargetAggregator, logger)
 	alarmConsumer.Start(ctx)
 	activityConsumer := consumer.NewActivityConsumer(engineRedis, zone.TargetAggregator, logger)
 	activityConsumer.Start(ctx)
+	sleepStageConsumer := consumer.NewSleepStageConsumer(engineRedis, zone.StreamPublisher, logger)
+	sleepStageConsumer.Start(ctx)
 	logger.Info("v2 fall detection wired — all 3 layers armed",
 		zap.String("warning_floor", "zonealarm.Supervisor Stay rule (10min bathroom)"),
 		zap.String("critical_bathroom", "BathroomFallRules §6.A 4 rules"),

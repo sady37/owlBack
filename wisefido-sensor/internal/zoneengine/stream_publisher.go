@@ -189,6 +189,23 @@ func (p *StreamPublisher) PublishTargetState(ctx context.Context, cardID string,
 	return p.publish(ctx, cardID, "target.state", ts)
 }
 
+// PublishBedSleepStage category=bed.sleepstage — 仅写 SleepStage / SleepConfidence /
+// UpdatedAt（projector 字段级 merge 不动其他 BedState owner 字段）。
+//
+// S4: SleepStage 由 sensor SleepStageConsumer confidence ladder 写出（Sleepad=90 / Radar=60）；
+// 详 [[cardagg_v1_to_v2_migration_audit]]。
+func (p *StreamPublisher) PublishBedSleepStage(ctx context.Context, cardID string, sleepStage, sleepConfidence int) error {
+	if cardID == "" {
+		return nil
+	}
+	bs := &card.BedState{
+		UpdatedAt:       time.Now().UnixMilli(),
+		SleepStage:      sleepStage,
+		SleepConfidence: sleepConfidence,
+	}
+	return p.publish(ctx, cardID, "bed.sleepstage", bs)
+}
+
 func (p *StreamPublisher) publish(ctx context.Context, cardID, category string, payload interface{}) error {
 	if cardID == "" || payload == nil {
 		return nil

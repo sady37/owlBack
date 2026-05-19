@@ -7,9 +7,15 @@
 // 字段 ownership（sensor 只发自己 owner 的，非 sensor owner 字段在 zero value，cardagg
 // 按字段级 merge 保留 prev）：
 //
-//   BedState   sensor owner: UpdatedAt / BedStatus / BedEvent / StartTime / DurationSec
-//              non-sensor:   TrackNumber / BedConfidence / SleepStage / SleepConfidence
-//                            （由 sleepad consumer 走另条路径写入，本 projector 不动）
+//   BedState 双 category 写入（sensor 全 owner，分 category 写不同字段族）：
+//     bed.state       sensor owner: UpdatedAt / BedStatus / BedEvent / StartTime / DurationSec
+//                                   （zoneengine bed FSM 写；projector 保留其他字段 prev）
+//     bed.sleepstage  sensor owner: UpdatedAt / SleepStage / SleepConfidence
+//                                   （S4 SleepStageConsumer confidence ladder 写；
+//                                    projector 保留其他字段 prev）
+//     **2026-05-19 owner 标记订正**：SleepStage / SleepConfidence 从 v1 时代"非 sensor owner"
+//     改为 sensor owner（详 [[cardagg_v1_to_v2_migration_audit]] S4）
+//     **deferred**: TrackNumber / BedConfidence 待 S5b 决策（bed FSM 写或删字段）
 //
 //   RoomState  sensor owner: 全部字段（v2 拍板后无第三方写者）
 //
@@ -35,9 +41,10 @@ import (
 )
 
 const (
-	CategoryBedState    = "bed.state"
-	CategoryRoomState   = "room.state"
-	CategoryTargetState = "target.state"
+	CategoryBedState      = "bed.state"
+	CategoryBedSleepStage = "bed.sleepstage"
+	CategoryRoomState     = "room.state"
+	CategoryTargetState   = "target.state"
 )
 
 type SensorStateProjector struct {
@@ -79,9 +86,19 @@ func (p *SensorStateProjector) Handle(ctx context.Context, msg *owlredis.IoTStre
 			p.logger.Warn("bed.state unmarshal", zap.String("trace_id", traceID), zap.String("cid", destCardID), zap.Error(err))
 			return nil
 		}
-		// 字段级 merge：保留 prev 的 SleepStage / TrackNumber / BedConfidence / SleepConfidence
+		// 字段级 merge：保留 prev 的 SleepStage / SleepConfidence / TrackNumber / BedConfidence
+		// （SleepStage/SleepConfidence 走 bed.sleepstage 独立 category；TrackNumber/BedConfidence S5b 决策中）
 		prevBed := p.readPrevBedState(ctx, destCardID)
 		status.BedState = mergeBedStateSensorOwner(prevBed, &bs)
+	case CategoryBedSleepStage:
+		var bs card.BedState
+		if err := json.Unmarshal(payload, &bs); err != nil {
+			p.logger.Warn("bed.sleepstage unmarshal", zap.String("trace_id", traceID), zap.String("cid", destCardID), zap.Error(err))
+			return nil
+		}
+		// 字段级 merge：仅更 SleepStage / SleepConfidence / UpdatedAt，保留 BedStatus 等
+		prevBed := p.readPrevBedState(ctx, destCardID)
+		status.BedState = mergeBedStateSleepStage(prevBed, &bs)
 	case CategoryRoomState:
 		var rs card.RoomState
 		if err := json.Unmarshal(payload, &rs); err != nil {
@@ -144,10 +161,11 @@ func (p *SensorStateProjector) readPrevBedState(ctx context.Context, cardID stri
 	return prev.BedState
 }
 
-// mergeBedStateSensorOwner 字段级合并：sensor owner 字段从 incoming 取，其他字段保留 prev。
+// mergeBedStateSensorOwner 字段级合并 bed.state category：sensor zoneengine bed FSM owner 字段
+// （UpdatedAt / BedStatus / BedEvent / StartTime / DurationSec）从 incoming 取，其他字段保留 prev。
 //
-// sensor owner: UpdatedAt / BedStatus / BedEvent / StartTime / DurationSec
-// non-sensor:   TrackNumber / BedConfidence / SleepStage / SleepConfidence（由 sleepad 路径写）
+// 与 mergeBedStateSleepStage 配套：bed.state 路径不动 SleepStage/SleepConfidence；
+// bed.sleepstage 路径不动 BedStatus 等。详 sensor_state_projector.go §"BedState 双 category 写入"。
 func mergeBedStateSensorOwner(prev, incoming *card.BedState) *card.BedState {
 	if incoming == nil {
 		return prev
@@ -161,6 +179,24 @@ func mergeBedStateSensorOwner(prev, incoming *card.BedState) *card.BedState {
 	out.BedEvent = incoming.BedEvent
 	out.StartTime = incoming.StartTime
 	out.DurationSec = incoming.DurationSec
+	return out
+}
+
+// mergeBedStateSleepStage 字段级合并 bed.sleepstage category：仅 SleepStage / SleepConfidence /
+// UpdatedAt 从 incoming 取，其他字段保留 prev（不动 BedStatus 等 bed.state owner 字段）。
+//
+// 与 mergeBedStateSensorOwner 配套；分 category 写让两个 publisher 路径不互相覆盖。
+func mergeBedStateSleepStage(prev, incoming *card.BedState) *card.BedState {
+	if incoming == nil {
+		return prev
+	}
+	out := &card.BedState{}
+	if prev != nil {
+		*out = *prev
+	}
+	out.UpdatedAt = incoming.UpdatedAt
+	out.SleepStage = incoming.SleepStage
+	out.SleepConfidence = incoming.SleepConfidence
 	return out
 }
 
