@@ -293,9 +293,9 @@ type TargetState struct {
 	LogicID             string `json:"logic_id,omitempty"`
 	LastActiveTs        int64  `json:"last_active_ts,omitempty"`
 	WeakBiometricSignal int    `json:"weak_biometric_signal"`
-	VisitorStartTs      int64  `json:"VisitorStartTs,omitempty"`
-	TodayMaxVisitorMin  int    `json:"TodayMaxVisitorMin,omitempty"`
-	HasVisitorToday     bool   `json:"HasVisitorToday,omitempty"`
+	VisitorStartTs      int64  `json:"visitor_start_ts,omitempty"`
+	TodayMaxVisitorMin  int    `json:"today_max_visitor_min,omitempty"`
+	HasVisitorToday     bool   `json:"has_visitor_today,omitempty"`
 }
 
 // AlarmState 告警摘要（v2：cards 表无 alarm 列，counter/pop 由 alarm_events 实时聚合得出）

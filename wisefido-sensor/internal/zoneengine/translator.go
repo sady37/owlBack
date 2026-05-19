@@ -53,10 +53,15 @@ func TranslateBedState(e ZoneEvent, prev *card.BedState) *card.BedState {
 	return out
 }
 
-// TranslateRoomState engine 字段 + prev 保留 AreaPeople/StaySec/StandingContinuousMin/RiskLevel。
-// kind 决定 risk 阈值族（bathroom 较短 stay 即触发 risk，bedroom 不触发）。
+// TranslateRoomState engine 字段 + prev 保留 StandingContinuousMin/RiskLevel。
+// roomType 决定 risk 阈值族（bathroom 较短 stay 即触发 risk）。
 // count_change 直写路径不走 StateMachine，但 0↔N 跨越仍是逻辑 enter/exit，必须更新时间戳，
 // 否则 FE OOR 计时永远停在最初 Vacant 时刻（per-card 长期 stale 的根因）。
+//
+// StaySec 累积语义（zone event 触发时即时算）：
+//   - 占用期间（TotalPeople > 0 且 LastEnterTime > 0）：(UpdatedAt - LastEnterTime) / 1000
+//   - 空房：0
+//   - 进房瞬间（Occupied/Returned/0→N）：LastEnterTime 重置成新 enter 时戳，StaySec 同帧算下来=0
 func TranslateRoomState(e ZoneEvent, prev *card.RoomState, roomType int) *card.RoomState {
 	out := &card.RoomState{}
 	if prev != nil {
@@ -79,6 +84,14 @@ func TranslateRoomState(e ZoneEvent, prev *card.RoomState, roomType int) *card.R
 			out.LastExitTime = e.NewState.UpdatedAt
 		}
 	}
+
+	// StaySec：占用即时计算（risk_evaluator 同帧读到一致值）
+	if out.TotalPeople > 0 && out.LastEnterTime > 0 && out.UpdatedAt >= out.LastEnterTime {
+		out.StaySec = int((out.UpdatedAt - out.LastEnterTime) / 1000)
+	} else {
+		out.StaySec = 0
+	}
+
 	out.RiskLevel = EvaluateRoomRiskLevel(out, e.NewState.UpdatedAt, nil)
 	return out
 }
