@@ -92,9 +92,10 @@ func TestBedroomFall_BedsideFall_FiresWithLeftBedAndStatic(t *testing.T) {
 	state := r.getOrCreateState(tbRoom)
 	state.EverObserved = true
 
-	// track 距 bed cell ≤ 100cm + 静止 16min
+	// track 距 bed cell ≤ 100cm 但 NOT 在 bed cell 上（X=50 不在 AreaBed col 8..12 范围内，最近 bed
+	// 距离 ~25cm）+ 静止 16min。on-bed 场景由 AreaBed exempt 总闸接管，不应触发 bedside_fall。
 	bases := []TrackStatusBase{
-		{TrackID: 7, RoomID: tbRoom, X: 0, Y: 100, StillSec: 16 * 60, Verdict: VerdictReal},
+		{TrackID: 7, RoomID: tbRoom, X: 50, Y: 100, StillSec: 16 * 60, Verdict: VerdictReal},
 	}
 	beds := []BedSessionLatch{
 		{DeviceUID: "sleepad-1", InBedSinceMs: nowMs - 30*60_000, LeftBedAtMs: nowMs - 16*60_000},
@@ -158,7 +159,7 @@ func TestBedroomFall_BedsideFall_DedupPerLeftBedSession(t *testing.T) {
 	state.EverObserved = true
 
 	bases := []TrackStatusBase{
-		{TrackID: 7, RoomID: tbRoom, X: 0, Y: 100, StillSec: 16 * 60, Verdict: VerdictReal},
+		{TrackID: 7, RoomID: tbRoom, X: 50, Y: 100, StillSec: 16 * 60, Verdict: VerdictReal},
 	}
 	beds := []BedSessionLatch{
 		{DeviceUID: "sleepad-1", LeftBedAtMs: nowMs - 16*60_000},
@@ -178,6 +179,26 @@ func TestBedroomFall_BedsideFall_DedupPerLeftBedSession(t *testing.T) {
 	r.Evaluate(tbRoom, bases, beds2, nowMs+4000)
 	if pub.countByReason(ReasonBedroomBedsideStatic) != 2 {
 		t.Errorf("new LeftBed session should allow re-fire, got %d", pub.countByReason(ReasonBedroomBedsideStatic))
+	}
+}
+
+// Track 落在人工 AreaBed cell 上 (X=0,Y=100 命中 makeBedroomGrid 的 SourceHuman+AreaBed) →
+// 总闸豁免（bed exempt），不触发 bedside_fall。
+func TestBedroomFall_BedsideFall_Exempt_TrackOnHumanBed(t *testing.T) {
+	nowMs := nightMs(t, 0)
+	r, m, pub := makeBedroomFallRules(t)
+	upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
+	state := r.getOrCreateState(tbRoom)
+	state.EverObserved = true
+
+	// X=0,Y=100 落在 makeBedroomGrid 的 AreaBed SourceHuman 区
+	bases := []TrackStatusBase{
+		{TrackID: 7, RoomID: tbRoom, X: 0, Y: 100, StillSec: 16 * 60, Verdict: VerdictReal},
+	}
+	beds := []BedSessionLatch{{DeviceUID: "sleepad-1", LeftBedAtMs: nowMs - 16*60_000}}
+	r.Evaluate(tbRoom, bases, beds, nowMs+1000)
+	if pub.countByReason(ReasonBedroomBedsideStatic) != 0 {
+		t.Errorf("track on human-set AreaBed must be exempt, got %d", pub.countByReason(ReasonBedroomBedsideStatic))
 	}
 }
 

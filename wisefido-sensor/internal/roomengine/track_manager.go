@@ -1418,11 +1418,24 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 		}
 		// 等待窗满 — 检查 radar 是否仍在 Bed 邻域
 		if tm.anyActiveTrackNearBed(param.BedNeighborhood) {
+			// 矛盾 → 候选 silent fall；但需先过 AreaBed 人工标定躺区豁免（详 fall_exempt.go）
+			x, y, z, scoreVal, verdict, deviceID := tm.pickActiveTrackNearBed(param.BedNeighborhood)
+			if isHumanBedAt(tm.grid, x, y) {
+				// 人就在人工标定的床上 — 不报；按 cancel 路径收尾（sleepad miscalibration 假阳）
+				tm.silentFallLeftbedCancelled++
+				tm.logger.Info("silent_fall_leftbed_exempt_human_bed",
+					zap.String("sleepad_uid", s.DeviceUID),
+					zap.String("device_uid", deviceID),
+					zap.Int64("leftbed_ms", s.LeftBedAtMs),
+					zap.Int("x", x), zap.Int("y", y),
+				)
+				s.SilentFallAlerted = true
+				s.InBedSinceMs = 0
+				continue
+			}
 			// 矛盾 → 报 silent fall
 			s.SilentFallAlerted = true
 			tm.silentFallLeftbedReported++
-			// 选用「最近 Bed 的 active track」位置作为告警坐标
-			x, y, z, scoreVal, verdict, deviceID := tm.pickActiveTrackNearBed(param.BedNeighborhood)
 			tm.grid.MarkFallEvent(x, y, nowMs)
 			// PR5c: alarm.Fall + Reason 区分子类型；BedStatus=1 反映 sleepad LeftBed 触发。
 			// fall 已确认，不发 track_confidence；fall 严重度进 Evidence.fall_score。

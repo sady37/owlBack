@@ -257,6 +257,15 @@ func (r *BedroomFallRules) evaluateBedsideFall(
 	if anchor == nil {
 		return
 	}
+	// 人工标定躺区豁免：track 实际就在 AreaBed cell 上 = 人在床上不动（sleepad LeftBed 矛盾归
+	// silent_fall 路径处理；此处不应再 fire bedside）。详 fall_exempt.go。
+	if isHumanBedAt(grid, anchor.X, anchor.Y) {
+		r.logger.Debug("bedroom_bedside_fall_exempt_human_bed",
+			zap.String("room_id", roomID),
+			zap.Int("track_id", anchor.TrackID),
+		)
+		return
+	}
 	r.fireFall(anchor, roomID, suiteID, ReasonBedroomBedsideStatic, map[string]interface{}{
 		"context":         "bedside_static_after_leftbed",
 		"still_sec":       anchor.StillSec,
@@ -328,12 +337,11 @@ func (r *BedroomFallRules) evaluateLostFall(
 			if cell := grid.CellAt(anchor.X, anchor.Y); cell != nil {
 				bel := cell.Belief[0]
 				cellAreaType, cellSource = bel.Type, bel.Source
-				// 人工标定的休息区 — 直接 exempt（用户原则：100% 置信度人工设置区不报 fall）
-				if bel.Source == SourceHuman && isHumanExemptArea(bel.Type) {
-					r.logger.Debug("bedroom_lost_fall_exempt_human_rest_zone",
+				// 人工标定的躺区 — 总闸豁免（详 fall_exempt.go）
+				if isHumanBedAt(grid, anchor.X, anchor.Y) {
+					r.logger.Debug("bedroom_lost_fall_exempt_human_bed",
 						zap.String("room_id", roomID),
 						zap.String("person_id", person.PersonID),
-						zap.Int("area_type", int(bel.Type)),
 					)
 					return
 				}
@@ -378,14 +386,6 @@ func (r *BedroomFallRules) evaluateLostFall(
 		"last_active_ms": person.LastActiveMs,
 	}, nowMs)
 	state.LostFallFired[person.PersonID] = true
-}
-
-// isHumanExemptArea 仅人工标定的躺区（AreaBed: 床 / long-sofa）免触发 BedroomLostFall。
-// 老人在床/长沙发上久躺不动 = normal use case。
-// 其它区域（AreaSit 坐姿 / AreaToilet 马桶 / AreaShower 淋浴）静止不动反而是真跌倒高发场景，
-// 不享 exempt — 走 cell-typed 阈值正常评估。
-func isHumanExemptArea(t AreaType) bool {
-	return t == AreaBed
 }
 
 // lostFallSilentSecForArea 按 cell AreaType 返回 lost_fall 静默阈值（秒）。
