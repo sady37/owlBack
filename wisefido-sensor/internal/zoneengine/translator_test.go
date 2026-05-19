@@ -231,3 +231,99 @@ func TestTranslateBedState_BedEvent(t *testing.T) {
 		})
 	}
 }
+
+// S5b TrackNumber + BedConfidence —— TranslateBedState 端到端取值
+func TestTranslateBedState_TrackNumberAndBedConfidence(t *testing.T) {
+	tests := []struct {
+		name              string
+		event             ZoneEvent
+		wantTrackNumber   int
+		wantBedConfidence int
+	}{
+		{
+			name: "occupied by sleepace: TrackNumber=1 / BedConfidence=90",
+			event: ZoneEvent{
+				Transition: TransitionOccupied,
+				NewState: ZoneState{
+					Count: 1, Status: StatusOccupied,
+					LastEnterTs: 1_700_000_000_000, UpdatedAt: 1_700_000_000_000,
+					LastSource: "sleepace",
+				},
+			},
+			wantTrackNumber:   1,
+			wantBedConfidence: 90,
+		},
+		{
+			name: "occupied by radar: TrackNumber=1 / BedConfidence=60",
+			event: ZoneEvent{
+				Transition: TransitionOccupied,
+				NewState: ZoneState{
+					Count: 1, Status: StatusOccupied,
+					LastEnterTs: 1_700_000_000_000, UpdatedAt: 1_700_000_000_000,
+					LastSource: "radar",
+				},
+			},
+			wantTrackNumber:   1,
+			wantBedConfidence: 60,
+		},
+		{
+			name: "vacant: TrackNumber=0 / BedConfidence 仍由 LastSource 决定（不清零）",
+			event: ZoneEvent{
+				Transition: TransitionVacant,
+				NewState: ZoneState{
+					Count: 0, Status: StatusVacant,
+					LastEnterTs: 1_700_000_000_000, LastExitTs: 1_700_000_120_000,
+					UpdatedAt:  1_700_000_120_000,
+					LastSource: "sleepace",
+				},
+			},
+			wantTrackNumber:   0,
+			wantBedConfidence: 90,
+		},
+		{
+			name: "unknown source: BedConfidence=0 (兜底)",
+			event: ZoneEvent{
+				Transition: TransitionOccupied,
+				NewState: ZoneState{
+					Count: 1, Status: StatusOccupied,
+					LastEnterTs: 1_700_000_000_000, UpdatedAt: 1_700_000_000_000,
+					LastSource: "polygon",
+				},
+			},
+			wantTrackNumber:   1,
+			wantBedConfidence: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := TranslateBedState(tc.event)
+			if out.TrackNumber != tc.wantTrackNumber {
+				t.Errorf("TrackNumber = %d, want %d", out.TrackNumber, tc.wantTrackNumber)
+			}
+			if out.BedConfidence != tc.wantBedConfidence {
+				t.Errorf("BedConfidence = %d, want %d", out.BedConfidence, tc.wantBedConfidence)
+			}
+		})
+	}
+}
+
+func TestBedConfidenceForSource(t *testing.T) {
+	tests := []struct {
+		in   string
+		want int
+	}{
+		{"sleepace", 90},
+		{"radar", 60},
+		{"polygon", 0},
+		{"", 0},
+		{"unknown", 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := bedConfidenceForSource(tc.in); got != tc.want {
+				t.Errorf("bedConfidenceForSource(%q) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}

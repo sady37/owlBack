@@ -38,6 +38,7 @@ import (
 type SleepaceAdapter struct {
 	client *redislib.Client
 	engine *Engine
+	dedup  *BedEventDedup // S5b: per-device per-kind 10s dedup（防 firmware spam）
 	logger *zap.Logger
 }
 
@@ -50,7 +51,7 @@ const (
 )
 
 func NewSleepaceAdapter(client *redislib.Client, engine *Engine, logger *zap.Logger) *SleepaceAdapter {
-	return &SleepaceAdapter{client: client, engine: engine, logger: logger}
+	return &SleepaceAdapter{client: client, engine: engine, dedup: NewBedEventDedup(), logger: logger}
 }
 
 func (a *SleepaceAdapter) Start(ctx context.Context) {
@@ -134,6 +135,11 @@ func (a *SleepaceAdapter) handleMsg(msg *rediscommon.IoTStreamMessage) {
 		kind = "leave"
 	default:
 		// BedSitUp / 其他 sleepace alarm 不入 zone engine —— presence 信号通道纯净。
+		return
+	}
+
+	// S5b 10s 同类 dedup：防 firmware spam（同一 device 短窗内重发 InBed/LeftBed）
+	if !a.dedup.Admit(msg.DeviceAddr.String(), kind, msg.Timestamp) {
 		return
 	}
 

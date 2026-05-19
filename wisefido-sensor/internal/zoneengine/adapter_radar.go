@@ -39,10 +39,11 @@ type BathroomLookup interface {
 
 // RadarAdapter 订阅 iot:event:stream 并把 radar 事件翻译为 SignalEvidence 喂 engine。
 type RadarAdapter struct {
-	client   *redislib.Client
-	engine   *Engine
-	bathroom BathroomLookup
-	logger   *zap.Logger
+	client    *redislib.Client
+	engine    *Engine
+	bathroom  BathroomLookup
+	bedDedup  *BedEventDedup // S5b: InBed/LeftBed per-device 10s 同类 dedup
+	logger    *zap.Logger
 }
 
 const (
@@ -55,7 +56,7 @@ const (
 
 // NewRadarAdapter 构造。bathroom 可为 nil（退化为全部按 Room 处理，仅日志路径用）。
 func NewRadarAdapter(client *redislib.Client, engine *Engine, bathroom BathroomLookup, logger *zap.Logger) *RadarAdapter {
-	return &RadarAdapter{client: client, engine: engine, bathroom: bathroom, logger: logger}
+	return &RadarAdapter{client: client, engine: engine, bathroom: bathroom, bedDedup: NewBedEventDedup(), logger: logger}
 }
 
 // Start 起独立 goroutine 跑读流循环，consumer group 与 cardagg/sensor 现有消费者隔离。
@@ -139,9 +140,13 @@ func (a *RadarAdapter) handleMsg(msg *rediscommon.IoTStreamMessage) {
 		count := intFromAny(fields[observation.FieldNumberPeople])
 		a.applyCount(msg.SubjectEntity, roomPref, count, msg.Timestamp, fields)
 	case alarm.InBed:
-		a.applyBed(msg.SubjectEntity, bedPref, "enter", msg.Timestamp, fields)
+		if a.bedDedup.Admit(msg.DeviceAddr.String(), "enter", msg.Timestamp) {
+			a.applyBed(msg.SubjectEntity, bedPref, "enter", msg.Timestamp, fields)
+		}
 	case alarm.LeftBed:
-		a.applyBed(msg.SubjectEntity, bedPref, "leave", msg.Timestamp, fields)
+		if a.bedDedup.Admit(msg.DeviceAddr.String(), "leave", msg.Timestamp) {
+			a.applyBed(msg.SubjectEntity, bedPref, "leave", msg.Timestamp, fields)
+		}
 	default:
 		// 忽略其它 event_name
 	}

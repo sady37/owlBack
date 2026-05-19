@@ -8,14 +8,15 @@
 // 按字段级 merge 保留 prev）：
 //
 //   BedState 双 category 写入（sensor 全 owner，分 category 写不同字段族）：
-//     bed.state       sensor owner: UpdatedAt / BedStatus / BedEvent / StartTime / DurationSec
-//                                   （zoneengine bed FSM 写；projector 保留其他字段 prev）
+//     bed.state       sensor owner: UpdatedAt / BedStatus / BedEvent / StartTime / DurationSec /
+//                                   TrackNumber (S5b) / BedConfidence (S5b)
+//                                   （zoneengine bed FSM + 10s dedup 后写；projector 保留 SleepStage/SleepConfidence prev）
 //     bed.sleepstage  sensor owner: UpdatedAt / SleepStage / SleepConfidence
 //                                   （S4 SleepStageConsumer confidence ladder 写；
 //                                    projector 保留其他字段 prev）
-//     **2026-05-19 owner 标记订正**：SleepStage / SleepConfidence 从 v1 时代"非 sensor owner"
-//     改为 sensor owner（详 [[cardagg_v1_to_v2_migration_audit]] S4）
-//     **deferred**: TrackNumber / BedConfidence 待 S5b 决策（bed FSM 写或删字段）
+//     **2026-05-19 owner 全栈订正**：v1 时代标"非 sensor owner"的 4 个字段
+//     （SleepStage/SleepConfidence/TrackNumber/BedConfidence）全部归 sensor，分 category 路径写
+//     （详 [[cardagg_v1_to_v2_migration_audit]] S4+S5b）
 //
 //   RoomState  sensor owner: 全部字段（v2 拍板后无第三方写者）
 //
@@ -162,7 +163,8 @@ func (p *SensorStateProjector) readPrevBedState(ctx context.Context, cardID stri
 }
 
 // mergeBedStateSensorOwner 字段级合并 bed.state category：sensor zoneengine bed FSM owner 字段
-// （UpdatedAt / BedStatus / BedEvent / StartTime / DurationSec）从 incoming 取，其他字段保留 prev。
+// （UpdatedAt / BedStatus / BedEvent / StartTime / DurationSec / TrackNumber (S5b) /
+// BedConfidence (S5b)）从 incoming 取，其他字段保留 prev。
 //
 // 与 mergeBedStateSleepStage 配套：bed.state 路径不动 SleepStage/SleepConfidence；
 // bed.sleepstage 路径不动 BedStatus 等。详 sensor_state_projector.go §"BedState 双 category 写入"。
@@ -179,6 +181,8 @@ func mergeBedStateSensorOwner(prev, incoming *card.BedState) *card.BedState {
 	out.BedEvent = incoming.BedEvent
 	out.StartTime = incoming.StartTime
 	out.DurationSec = incoming.DurationSec
+	out.TrackNumber = incoming.TrackNumber
+	out.BedConfidence = incoming.BedConfidence
 	return out
 }
 

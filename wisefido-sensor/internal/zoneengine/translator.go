@@ -3,12 +3,14 @@
 // 设计原则：sensor 只输出自己负责的 engine 字段（"sensor 不读 card:state"，
 // 不传 prev 进来；跨进程合并/保留非 sensor owner 字段是 cardagg 端职责）。
 //
-// Sensor owner 字段：
-//   · BedState:  UpdatedAt / BedStatus / BedEvent / StartTime / DurationSec
+// Sensor owner 字段（2026-05-19 S4+S5b 扩展）：
+//   · BedState (via bed.state category): UpdatedAt / BedStatus / BedEvent / StartTime /
+//                                         DurationSec / TrackNumber (S5b) / BedConfidence (S5b)
+//   · BedState (via bed.sleepstage category, separate publish path):
+//                                         SleepStage / SleepConfidence (S4)
 //   · RoomState: UpdatedAt / RoomType / TotalPeople / LastEnterTime / LastExitTime / StaySec / RiskLevel
 //
 // 非 sensor owner 字段（zero value 输出，cardagg projector 字段级 merge 时不覆盖）：
-//   · BedState:  TrackNumber / SleepStage / BedConfidence / SleepConfidence
 //   · RoomState: LastExitToOutside / StandingContinuousMin
 //
 // 关键：BedState.StartTime + DurationSec 跨 Vacant transition 仍可正确计算，
@@ -56,7 +58,25 @@ func TranslateBedState(e ZoneEvent) *card.BedState {
 		}
 	}
 
+	// S5b: TrackNumber + BedConfidence
+	//   TrackNumber  = NewState.Count（bed FSM 0/1；多人共床 v2 不建模，cap 0..2 是 v1 历史）
+	//   BedConfidence = source-based 数据可信度（v1 真意 [[cardagg_v1_to_v2_migration_audit]]）：
+	//                    sleepace → 90 / radar → 60 / 其它/未知 → 0
+	out.TrackNumber = e.NewState.Count
+	out.BedConfidence = bedConfidenceForSource(e.NewState.LastSource)
+
 	return out
+}
+
+// bedConfidenceForSource 信号源 → 数据可信度（与 v1 PublishBedStateFromEvent 同口径）。
+func bedConfidenceForSource(source string) int {
+	switch source {
+	case "sleepace":
+		return 90
+	case "radar":
+		return 60
+	}
+	return 0
 }
 
 // TranslateRoomState 仅填 sensor owner 字段（不读外部 prev）。
