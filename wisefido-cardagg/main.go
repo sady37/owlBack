@@ -103,6 +103,15 @@ func main() {
 	bedPeopleTracker := service.NewBedPeopleTracker(metaCache)
 	bedPeopleTracker.SetOnlineChecker(deviceTracker.IsOnline)
 	eventHandler := consumer.NewEventHandler(bedPeopleTracker, logger)
+	// AIOverrideCache (S5a): sensor 派生 track verdict (ghost 判定等) 缓存 + 合并到
+	// realtime publish。sandbox 默认仅 log，release 模式覆写 track_confidence。
+	// 清理触发：a) tid=88 (monitor) b) EnterRoom/ExitRoom (event) c) TTL 60s GC d) (后续) device offline。
+	aiOverrides := service.NewAIOverrideCache(string(service.AIOverrideModeSandbox), 60, logger)
+	monitorHandler.SetAIOverrides(aiOverrides)
+	eventHandler.SetAIOverrides(aiOverrides)
+	go aiOverrides.RunGCLoop(ctx.Done(), 30*time.Second)
+	aiVerdictHandler := consumer.NewAIVerdictHandler(redisClient, aiOverrides, logger)
+	aiVerdictHandler.Start(ctx)
 	sensorStateProjector := consumer.NewSensorStateProjector(writer, reader, unitPicker, logger)
 	sensorStateProjector.SetTargetMerger(targetMerger)
 	cardLifecycle := consumer.NewCardLifecycle(db, writer, metaCache, enablementCache, unitPicker, logger)

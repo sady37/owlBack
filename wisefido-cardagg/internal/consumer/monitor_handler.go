@@ -1,11 +1,16 @@
 // monitor_handler.go — iot:monitor:stream 消费者。
 //
-// 三件薄事（CLAUDE.md 规则 #2.4 maintainer 模式）：
-//   1. buffer.Write 把 sample 累入 MonitorBuffer（12s TTL，per-card per-device per-track）
-//   2. deviceTracker.TouchLastSeen 触刷设备活跃（180s 看门狗输入）
-//   3. RunLoop 1s tick → buffer.Flush snapshot → card.Writer.PublishMonitor → card:realtime:stream
+// 四件薄事（CLAUDE.md 规则 #2.4 maintainer 模式）：
+//   1. tid=88 (TrackInvalid) → AIOverrideCache.ClearDevice（firmware no-target heartbeat
+//      = 该 device 当前无 track；旧 verdict 全部作废避免新 track_id 复用旧 ghost 判定）
+//   2. AIOverrideCache.Apply 把 sensor verdict (confidence/source) 合到 track fields
+//      （release 模式生效；sandbox 模式仅 log）— **必须在 buffer.Write 前**，让合并值进 snapshot
+//   3. buffer.Write 把 sample 累入 MonitorBuffer（12s TTL，per-card per-device per-track）
+//   4. deviceTracker.TouchLastSeen 触刷设备活跃（180s 看门狗输入）
 //
-// 不做：派生 / 融合 / Stay FSM / bed event 协调 / AI override（全 sensor 或 data SSE 层管）
+// RunLoop 1s tick → buffer.Flush snapshot → card.Writer.PublishMonitor → card:realtime:stream
+//
+// 不做：派生 / 融合 / Stay FSM / bed event 协调（全 sensor 或 data SSE 层管）
 
 package consumer
 
@@ -38,10 +43,11 @@ type DeviceLivenessTouch interface {
 }
 
 type MonitorHandler struct {
-	buffer    *service.MonitorBuffer
-	writer    *card.Writer
-	devTouch  DeviceLivenessTouch
-	logger    *zap.Logger
+	buffer      *service.MonitorBuffer
+	writer      *card.Writer
+	devTouch    DeviceLivenessTouch
+	aiOverrides *service.AIOverrideCache // 可 nil（未 wire 时 Apply 退化为 no-op）
+	logger      *zap.Logger
 }
 
 func NewMonitorHandler(buffer *service.MonitorBuffer, writer *card.Writer, devTouch DeviceLivenessTouch, logger *zap.Logger) *MonitorHandler {
@@ -51,6 +57,14 @@ func NewMonitorHandler(buffer *service.MonitorBuffer, writer *card.Writer, devTo
 		devTouch: devTouch,
 		logger:   logger,
 	}
+}
+
+// SetAIOverrides main wiring 注入 AI 裁决合并缓存；nil 时本 handler 不做 verdict 合并。
+func (h *MonitorHandler) SetAIOverrides(c *service.AIOverrideCache) {
+	if h == nil {
+		return
+	}
+	h.aiOverrides = c
 }
 
 // RunLoop 1s snapshot + 4s prune。
@@ -99,6 +113,14 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg *owlredis.IoTStreamMess
 	}
 	deviceAddr := msg.DeviceAddr.String()
 	trackID := resolveTrackID(fields)
+	if h.aiOverrides != nil {
+		if trackID == observation.TrackInvalid {
+			// firmware no-target heartbeat：当前 device 无 track，旧 verdict 全清
+			h.aiOverrides.ClearDevice(deviceAddr)
+		} else {
+			h.aiOverrides.Apply(deviceAddr, trackID, fields)
+		}
+	}
 	h.buffer.Write(msg.SubjectEntity, deviceAddr, strconv.Itoa(trackID), fields, msg.Timestamp)
 	h.devTouch.TouchLastSeen(ctx, deviceAddr, msg.DeviceType)
 	return nil
