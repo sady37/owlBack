@@ -24,8 +24,9 @@ type Track struct {
 	Temperature      float64 `json:"temperature,omitempty"`
 	VitalConfidence  int     `json:"vital_confidence,omitempty"`
 
-	// 周期≤5min 上报视为实时；Sleepad 持续更新，保留供后续使用
-	BedStatus int `json:"bed_status"` // 0=未离床, 1=离床
+	// 周期≤5min 上报视为实时；Sleepad 持续更新。
+	// nil = 未知 / 不适用（雷达无床概念时即如此）；*0 = 在床；*1 = 离床。
+	BedStatus *int `json:"bed_status,omitempty"`
 
 	// 次数（int），非动作枚举：body_move 适用于 BM8701-2 固件≥5.x 及 M901L；turn_over 适用于 BM8701-2 固件≤2.x
 	BodyMove int `json:"body_move,omitempty"` // 体动次数
@@ -74,7 +75,7 @@ func (t *Track) FromFieldMap(m map[string]any) {
 		t.VitalConfidence = v
 	}
 	if v, ok := intVal(m, FieldBedStatus); ok {
-		t.BedStatus = v
+		t.BedStatus = &v
 	}
 	if v, ok := intVal(m, FieldBodyMove); ok {
 		t.BodyMove = v
@@ -124,14 +125,9 @@ func (t *Track) ToFieldMap() map[string]any {
 	if t.VitalConfidence != 0 {
 		m[FieldVitalConfidence] = t.VitalConfidence
 	}
-	// bed_status 0=未离床有语义，但 omit-if-zero 是其它 int 字段统一约定，且
-	// 真正需要 0 语义的路径（sleepace 床事件 / silent_fall alarm）都不走 ToFieldMap：
-	//   - sleepace 床事件直接 build 手写 map（bed_status 在 monitor frame 顶层 from decode）
-	//   - silent_fall alarm 在 engine.publishAIMessage 走 `if BedStatus != 0` 同样 omit-when-zero
-	// 唯一历史 caller 是雷达 heartbeat / radarTrackToData，bed_status=0 是无意义噪声
-	// （[[track_tofieldmap_bedstatus_leak]]）。强制写零反污染下游协议，改 omit。
-	if t.BedStatus != 0 {
-		m[FieldBedStatus] = t.BedStatus
+	// bed_status：nil = 未知 / 不适用 → omit；*0=在床 / *1=离床 → 写出 *value。
+	if t.BedStatus != nil {
+		m[FieldBedStatus] = *t.BedStatus
 	}
 	if t.BodyMove != 0 {
 		m[FieldBodyMove] = t.BodyMove

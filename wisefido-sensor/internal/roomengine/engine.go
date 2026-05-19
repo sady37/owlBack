@@ -1077,9 +1077,9 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	if p.Track.TrackConfidence != 0 {
 		fields[observation.FieldTrackConfidence] = p.Track.TrackConfidence
 	}
-	// AI 派生 track_verdict 与床状态无关；仅 sleepad_radar_conflict 显式传 BedStatus=1 才保留。
-	if p.Track.BedStatus != 0 {
-		fields[observation.FieldBedStatus] = p.Track.BedStatus
+	// AI 派生 track_verdict 与床状态无关；仅 sleepad_radar_conflict 显式传 BedStatus 才保留。
+	if p.Track.BedStatus != nil {
+		fields[observation.FieldBedStatus] = *p.Track.BedStatus
 	}
 	// area_type engine 自己算（observation.Track 的 AreaType 是字符串，engine 这边类型不同）
 	if g != nil {

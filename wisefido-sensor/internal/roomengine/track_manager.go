@@ -1446,7 +1446,7 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 					PositionX: intPtr(x),
 					PositionY: intPtr(y),
 					PositionZ: intPtr(z),
-					BedStatus: 1, // sleepad 报 LeftBed
+					BedStatus: intPtr(1), // sleepad 报 LeftBed
 				},
 				Reason: ReasonSleepadRadarConflict,
 				Evidence: map[string]interface{}{
