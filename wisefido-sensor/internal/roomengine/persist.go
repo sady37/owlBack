@@ -32,7 +32,8 @@ import (
 // v5 (2026-04-29): Counters 加 GhostCount（GC）+ RestZoneConfirmed（RZC）+ RealFallCount（RFC）—
 //                  PR-6 结构化人类反馈（False Alarm Reason / Observed Conditions checkbox）
 // v6 (2026-04-29): Counters 加 AutoDenyQualifiedSinceMs（ADS）— PR-15.3 Auto-Deny 15 天时间门控状态
-const SnapshotSchemaVersion = 6
+// v7 (2026-05-18): sensor_v2 决定 15+20 — Cell 加 EnterTarget 字符串 + InsideEnterEvidenceN + InsideEnterLearned
+const SnapshotSchemaVersion = 7
 
 // CellSnapshot 单 cell 的可持久化字段（紧凑 JSON，short keys 节省空间）
 type CellSnapshot struct {
@@ -65,6 +66,11 @@ type Counters struct {
 	RZC int       `json:"rzc,omitempty"` // RestZoneConfirmed (schema_v ≥ 5)
 	RFC int       `json:"rfc,omitempty"` // RealFallCount (schema_v ≥ 5)
 	ADS int64     `json:"ads,omitempty"` // AutoDenyQualifiedSinceMs (schema_v ≥ 6)
+
+	// sensor_v2 v7 (决定 15+20):
+	ET  string    `json:"et,omitempty"`  // EnterTarget ""/"outside"/"bathroom" (schema_v ≥ 7)
+	IEN int       `json:"ien,omitempty"` // InsideEnterEvidenceN (schema_v ≥ 7)
+	IEL bool      `json:"iel,omitempty"` // InsideEnterLearned (schema_v ≥ 7)
 }
 
 // GridSnapshot 顶层 payload 结构（写入 JSONB 字段）
@@ -92,6 +98,8 @@ func LayoutHash(cfg RoomConfig) string {
 	_ = enc.Encode(cfg.WallPolygon)
 	_ = enc.Encode(cfg.Enters)
 	_ = enc.Encode(cfg.EnterHeights)
+	_ = enc.Encode(cfg.EnterTargets) // sensor_v2 决定 15：EnterTarget 变更视作 layout 变更，invalidate grid
+	_ = enc.Encode(cfg.RoomType)     // sensor_v2 决定 16：RoomType 变更（default↔bathroom）触发完整重学
 	_ = enc.Encode(cfg.Beds)
 	_ = enc.Encode(cfg.BedHeights)
 	_ = enc.Encode(cfg.Toilets)
@@ -164,12 +172,16 @@ func buildCounters(c *Cell) *Counters {
 		RZC: c.RestZoneConfirmed,
 		RFC: c.RealFallCount,
 		ADS: c.AutoDenyQualifiedSinceMs,
+		ET:  c.EnterTarget,
+		IEN: c.InsideEnterEvidenceN,
+		IEL: c.InsideEnterLearned,
 	}
 	if ct.RD == 0 && ct.GD == 0 &&
 		ct.AT == [4]uint16{} &&
 		ct.TC == 0 && ct.NTC == 0 && ct.LR == 0 && ct.FE == 0 && ct.LA == 0 && ct.LS == 0 &&
 		ct.SIB == 0 && ct.SLB == 0 && ct.DE == 0 && ct.FX == 0 && ct.FY == 0 && ct.DW == 0 &&
-		ct.FA == 0 && ct.TS == 0 && ct.BSR == 0 && ct.ADS == 0 {
+		ct.FA == 0 && ct.TS == 0 && ct.BSR == 0 && ct.ADS == 0 &&
+		ct.ET == "" && ct.IEN == 0 && !ct.IEL {
 		return nil
 	}
 	return &ct
@@ -245,6 +257,9 @@ func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
 			c.RestZoneConfirmed = cs.C.RZC
 			c.RealFallCount = cs.C.RFC
 			c.AutoDenyQualifiedSinceMs = cs.C.ADS
+			c.EnterTarget = cs.C.ET
+			c.InsideEnterEvidenceN = cs.C.IEN
+			c.InsideEnterLearned = cs.C.IEL
 		}
 	}
 	return nil

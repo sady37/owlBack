@@ -29,7 +29,7 @@ func renderLayoutAsPNG(t *testing.T, layoutPath, outPath string) {
 		grid.StampRoomPolygon(cfg.WallPolygon)
 	}
 	grid.StampRadar(cfg.Radar)
-	grid.StampEnters(cfg.Enters)
+	grid.StampEnters(cfg.Enters, cfg.EnterTargets)
 
 	for _, r := range cfg.Enters {
 		grid.SetPrior(r, AreaEnter, 99, SourceHuman)

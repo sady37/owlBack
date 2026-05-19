@@ -116,10 +116,16 @@ func (g *RoomGrid) StampRadar(mount radarutils.RadarMount) {
 	}
 }
 
-// StampEnters 记录 Enter 矩形集合，覆写矩形内 cell 的 InRoom=true（门洞可穿越）
-func (g *RoomGrid) StampEnters(rects []radarutils.Rect) {
+// StampEnters 记录 Enter 矩形集合，覆写矩形内 cell 的 InRoom=true（门洞可穿越）。
+// sensor_v2 决定 15: 同时把 enterTargets[i] 对应的 EnterTarget 字符串盖到 cell 上。
+// enterTargets 长度可不等于 rects（缺失或更短时按 "" 填充——视作 inside_enter 默认）。
+func (g *RoomGrid) StampEnters(rects []radarutils.Rect, enterTargets []string) {
 	g.Enters = rects
-	for _, rect := range rects {
+	for i, rect := range rects {
+		target := ""
+		if i < len(enterTargets) {
+			target = enterTargets[i]
+		}
 		rect = rect.Norm()
 		c1, r1 := g.ToIndex(rect.X1, rect.Y1)
 		c2, r2 := g.ToIndex(rect.X2, rect.Y2)
@@ -131,7 +137,9 @@ func (g *RoomGrid) StampEnters(rects []radarutils.Rect) {
 				if col < 0 || col >= g.Width {
 					continue
 				}
-				g.Cells[row*g.Width+col].InRoom = true
+				c := &g.Cells[row*g.Width+col]
+				c.InRoom = true
+				c.EnterTarget = target
 			}
 		}
 	}
@@ -374,13 +382,45 @@ func (g *RoomGrid) MarkSleepadLeftBed(x, y int, nowMs int64) {
 	c.LastUpdateMs = nowMs
 }
 
-// MarkDoorEvent Enter/Exit 门事件
+// MarkDoorEvent Enter/Exit 门事件（决定 20：v2 复活此 caller — runEventLoop EnterRoom/ExitRoom 触发）
+// 注：与 MarkInsideEnterCandidate 是两个独立信号源：
+//   - MarkDoorEvent：firmware Enter/Exit 事件落到 layout 标注的物理门 cell（priorTypeScore 用）
+//   - MarkInsideEnterCandidate：track 失锁/重生 推断 L 型 room 内部盲区入口（决定 20 inside_enter 自学习）
 func (g *RoomGrid) MarkDoorEvent(x, y int, nowMs int64) {
 	c := g.CellAt(x, y)
 	if c == nil {
 		return
 	}
 	c.DoorEventCount++
+	c.LastUpdateMs = nowMs
+}
+
+// MarkInsideEnterCandidate inside_enter 自学习信号（sensor_v2 决定 20）。
+//
+// 调用位点：runEventLoop / processFrameAt 中检测到
+//   "track 在 cell_x 失锁 + Δt < 3s 内 cell_x 附近 ≤30cm 有新 track 出生"
+// 此时调用 g.MarkInsideEnterCandidate(cell_x.X, cell_x.Y, nowMs)
+//
+// 累计 ≥ InsideEnterLearnThreshold（默认 5）次后升格 InsideEnterLearned=true，
+// 写 ai.log 给运维审核（不自动写 layout，决定 15）。
+//
+// 物理含义：L 型 room 雷达盲区 / 雷达 FOV 边界但 room 内部，人能自由进出但雷达看不到。
+// 学到后：该 cell 上方的 track 出生/消失不再触发 ghost penalty / lost_fall pending。
+//
+// 与 outside_enter / bathroom_enter 学习的区别（决定 20）：
+//   v2 单 device-layout 坐标系内**只能学 inside_enter**；跨 device 没有公共坐标系，
+//   outside / bathroom 必须人工标（layout 编辑器 EnterTarget dropdown）。
+func (g *RoomGrid) MarkInsideEnterCandidate(x, y int, nowMs int64) {
+	c := g.CellAt(x, y)
+	if c == nil {
+		return
+	}
+	c.InsideEnterEvidenceN++
+	if c.InsideEnterEvidenceN >= InsideEnterLearnThreshold && !c.InsideEnterLearned {
+		c.InsideEnterLearned = true
+		// 注：实际升格 cell.AreaType=AreaEnter 不在此处做，由 cell_learning 周期 promoteCell 消费 InsideEnterLearned flag。
+		// 这里仅写状态 + 计数。
+	}
 	c.LastUpdateMs = nowMs
 }
 

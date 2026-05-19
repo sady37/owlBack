@@ -145,18 +145,6 @@ func DefaultRules() []Rule {
 			},
 			TimeWindow: &TimeWindow{StartH: 21, StartM: 0, EndH: 7, EndM: 0},
 		},
-		// 4. BedNightAbsence (Night Out-of-Bed) — bed→vacant 持续 N min（21-7 时段）
-		{
-			AlarmType:    alarm.BedNightAbsence,
-			Level:        alarm.AlarmLevelWarn,
-			ArmZoneStr:   "bed",
-			ArmStatusStr: "vacant",
-			DurationSec:  1800, // 30 min
-			Cancels: []CancelTrigger{
-				{ZoneStr: "bed", StatusStr: "occupied"}, // InBed
-			},
-			TimeWindow: &TimeWindow{StartH: 21, StartM: 0, EndH: 7, EndM: 0},
-		},
 	}
 	for i := range rules {
 		_ = resolveRule(&rules[i]) // 默认值都合法，错忽略

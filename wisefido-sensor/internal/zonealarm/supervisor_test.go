@@ -216,34 +216,7 @@ func TestSupervisor_NightAbsenceCancelByNumberPeople(t *testing.T) {
 	}
 }
 
-// 8. BedNightAbsence — bed→vacant 凌晨 arm；InBed cancel
-func TestSupervisor_BedNightAbsenceArmCancel(t *testing.T) {
-	cap := &captureFirer{}
-	s := NewSupervisor(DefaultRules(), cap, nil)
-	earlyMorning := time.Date(2026, 5, 14, 3, 0, 0, 0, time.Local).UnixMilli()
-
-	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBed, zoneengine.StatusVacant,
-		zoneengine.TransitionVacant, "card-1", "fd00::/96", 0, earlyMorning))
-	if !hasArmFor(cap.snapArms(), alarm.BedNightAbsence, "card-1") {
-		t.Fatalf("BedNightAbsence should arm 03:00, got %v", cap.snapArms())
-	}
-	// 也应同时 arm LeftBed（同一 ZoneEvent 命中两规则）
-	if !hasArmFor(cap.snapArms(), alarm.LeftBed, "card-1") {
-		t.Fatalf("LeftBed should also arm same event, got %v", cap.snapArms())
-	}
-
-	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeBed, zoneengine.StatusOccupied,
-		zoneengine.TransitionOccupied, "card-1", "fd00::/96", 1, earlyMorning+1000))
-	// 两个 alarm 都应 cancel
-	if !hasCancel(cap.snapCancels(), alarm.BedNightAbsence) {
-		t.Fatalf("BedNightAbsence not canceled by InBed, got %v", cap.snapCancels())
-	}
-	if !hasCancel(cap.snapCancels(), alarm.LeftBed) {
-		t.Fatalf("LeftBed not canceled by InBed, got %v", cap.snapCancels())
-	}
-}
-
-// 9. TimeWindow.Active 跨午夜
+// 8. TimeWindow.Active 跨午夜
 func TestTimeWindow_Active(t *testing.T) {
 	w := &TimeWindow{StartH: 21, StartM: 0, EndH: 7, EndM: 0}
 	cases := []struct {
@@ -416,8 +389,8 @@ func TestSupervisor_StayCancelByPeerZoneDoesNotClearFired(t *testing.T) {
 func TestSupervisor_ReloadRules(t *testing.T) {
 	cap := &captureFirer{}
 	s := NewSupervisor(DefaultRules(), cap, nil)
-	if len(s.rules) != 4 {
-		t.Fatalf("default rules should be 4, got %d", len(s.rules))
+	if len(s.rules) != 3 {
+		t.Fatalf("default rules should be 3, got %d", len(s.rules))
 	}
 	s.ReloadRules([]Rule{}) // empty
 	if len(s.rules) != 0 {

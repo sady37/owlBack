@@ -137,7 +137,10 @@ case "$MODULE" in
     ;;
   wisefido-sensor)
     export REDIS_DB="${REDIS_DB:-0}"
-    owlback_go_exec "$OWLBACK/wisefido-sensor" "./cmd/wisefido-sensor" "wisefido-sensor" "$LOG_DIR/wisefido-sensor.log"
+    # sensor_v2 cutover 完成（2026-05-17 Phase C + PR-Bootstrap）：默认指 v2 (wisefido-sensor)；
+    # 回退 v1 显式覆盖：SENSOR_DIR=wisefido-sensor-v1 systemctl restart owlback.sensor
+    SENSOR_DIR="${SENSOR_DIR:-wisefido-sensor}"
+    owlback_go_exec "$OWLBACK/$SENSOR_DIR" "./cmd/wisefido-sensor" "wisefido-sensor" "$LOG_DIR/wisefido-sensor.log"
     ;;
   *)
     echo "unknown module: $MODULE" >&2

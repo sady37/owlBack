@@ -15,10 +15,10 @@ func TestLoadFromFile_DefaultYaml(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFromFile %s: %v", path, err)
 	}
-	if len(rules) != 4 {
-		t.Fatalf("want 4 rules in default yaml, got %d", len(rules))
+	if len(rules) != 3 {
+		t.Fatalf("want 3 rules in default yaml, got %d", len(rules))
 	}
-	wants := []string{alarm.Stay, alarm.LeftBed, alarm.NightAbsence, alarm.BedNightAbsence}
+	wants := []string{alarm.Stay, alarm.LeftBed, alarm.NightAbsence}
 	for i, want := range wants {
 		if rules[i].AlarmType != want {
 			t.Errorf("rule[%d] AlarmType: want %s, got %s", i, want, rules[i].AlarmType)

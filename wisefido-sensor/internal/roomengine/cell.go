@@ -148,6 +148,20 @@ type Cell struct {
 	SleepadLeftBedCount int
 	DoorEventCount      int
 
+	// ---- sensor_v2 决定 15: EnterTarget 入口类型标注 ----
+	// 仅当 cell.AreaType==AreaEnter 时有意义。取值：
+	//   ""          → inside_enter（默认）
+	//   "outside"   → 通向 unit 外（必须人工标）
+	//   "bathroom"  → 通向 bathroom（必须人工标；v2 单 bathroom 无需 id）
+	// 由 layout 编辑器写入；自动学习仅产 inside_enter（决定 20，决不写 outside/bathroom）
+	EnterTarget string
+
+	// ---- sensor_v2 决定 20: inside_enter 自学习 ----
+	// InsideEnterEvidenceN: "track 失锁 + 3s 内同位置 ≤30cm 内重生" 累计次数（仅单 device 内可观测）
+	// InsideEnterLearned:   累计 ≥ N (默认 5) 即升格 inside_enter，写 ai.log 给运维审核
+	InsideEnterEvidenceN int
+	InsideEnterLearned   bool
+
 	// ---- Cell history integral（自适应阈值反馈，详见 fall_rules_param.go）----
 	// FakeAlarmCount: 在该 cell 触发的 fall 报警被人工标 false_alarm 累计次数（"Other" 兜底）
 	// ToleratedStillCount: track 在该 cell 长时间 stand-static 但最终自己离开（无 fall 报警）累计次数

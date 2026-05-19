@@ -154,7 +154,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		grid.StampRoomPolygon(cfg.WallPolygon)
 	}
 	grid.StampRadar(cfg.Radar)
-	grid.StampEnters(cfg.Enters)
+	grid.StampEnters(cfg.Enters, cfg.EnterTargets)
 	for _, r := range cfg.Enters {
 		grid.SetPrior(r, roomengine.AreaEnter, 99, roomengine.SourceHuman)
 	}
@@ -438,7 +438,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 
 	lostStats := tm.LostFallStatsSnapshot()
 	leftBedStats := tm.SilentFallLeftBedStatsSnapshot()
-	stillStats := tm.StillFallStatsSnapshot()
+	// PR-Bootstrap: StillFallStatsSnapshot 删除（v1 fire path 退役）；playback still 报表用 ai.log 重建
 	res := &Result{
 		Snapshots:                  snapshots,
 		TotalRows:                  totalRows,
@@ -451,7 +451,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		LostFallOutstanding:        lostStats.Outstanding,
 		SilentFallLeftBedReported:  leftBedStats.Reported,
 		SilentFallLeftBedCancelled: leftBedStats.Cancelled,
-		StillFallReported:          stillStats.Reported,
+		// StillFallReported 字段保留作 schema 稳定（playback 报表 JSON 输出契约），值固定 0
 	}
 	// 可选：dump 矩形内 cell 统计（debug 学习异常）
 	if opts.DumpRect != [4]int{0, 0, 0, 0} {

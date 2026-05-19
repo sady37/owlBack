@@ -63,31 +63,24 @@ type TrackManager struct {
 	// key = sleepad device_uid。详见 BedSession 结构体。
 	bedSessions map[string]*BedSession
 
-	// bathroomRealCount：当前帧 ProcessFrame 起点时，所在 cell 为 AreaToilet/AreaShower 的 Real track 数。
-	// 用途：≥2 时视为护工陪同，scoreMovement 跳过 long-still 15min 超时报警。
-	// 由 ProcessFrame 入口刷新，scoreMovement 读取（同步在锁内，无竞态）。
-	bathroomRealCount int
-
 	// sleepadStates：同房间 sleepad 设备的最新观测（device_uid → obs）
 	// 由 ProcessSleepadObservation 写入。
 	sleepadStates map[string]*SleepadObservation
 
-	// bedPersonCount：每张床（device_uid → 人数）当前在床人数计数。
-	// 由 ProcessSleepadBedEvent 增减：InBed +1，LeftBed -1（floor 0）。
-	// 用途：bed-fall 触发前判断"仅 1 人"避免家属/护工陪同时误报。
-	bedPersonCount map[string]int
+	// PR-9: v1 4 fall 计数器全部删除（bathroomRealCount / bedPersonCount / lastLeftBedAt / lastNumberPeopleZeroMs）。
+	// Phase C (PR-10/11) 用 SuiteCensus.BathroomCount + SuitePerson.AnchorRoomType + BedSession 重写。
 
 	// Lost fall 统计
 	lostFallPendingCreated   int
-	lostFallPendingCancelled int // 含 birth-recovery / ExitRoom / NumberPeople 三类取消
+	lostFallPendingCancelled int // 含 birth-recovery / ExitRoom 两类取消（PR-9 删除 NumberPeople 路径）
 	lostFallReported         int
 
 	// Silent fall（LeftBed 矛盾路径）统计
 	silentFallLeftbedReported  int
 	silentFallLeftbedCancelled int // wait 满但 radar 已离开 Bed 邻域 → 取消（人正常起床）
 
-	// Still fall 统计（bathroom + pose=Stand + 15/18min 持续静止）
-	stillFallReportCount int
+	// PR-Bootstrap: v1 stillFallReportCount 已删除（v1 fire path 同时删除）。
+	// PR-10 BathroomFallRules 的统计走 ai.log audit 路径。
 
 	// Firmware Fall verifier 累计（PR-5；仅打分，不否决 alarm）
 	fallVerifyGhostCount   int
@@ -106,19 +99,7 @@ type TrackManager struct {
 	lastSleepadInBedMs int64
 	lastRadarInBedMs   int64
 
-	// lastLeftBedAt：任意来源（sleepad event / sleepad bed_status 转换 / 未来 radar event）
-	// 最近一次 LeftBed 事件的时间戳。R4（AnomalyBedsideFall）开窗判定用。
-	// 0 = 从未有 LeftBed 事件（或上次 InBed 后又被 InBed 抹掉）。
-	lastLeftBedAt int64
-
-	// lastNumberPeopleZeroMs：最近一次 firmware number_people=0 事件时间戳。
-	// 部分 firmware（如 D523）在 FOV 边角离场不发 ExitRoom，但会发 number_people=0
-	// （实测早 track_id=88 心跳 36-44ms）。当 track 终止入 pendingLostFall 池前，
-	// 检查 ±NumberPeopleZeroFallbackMs 窗口内有无 number_people=0 → 视作 ExitRoom 兜底，
-	// 跳过 pending 创建（避免人正常离场误报 lost_fall）。同时也用于取消已存在的 pending。
-	lastNumberPeopleZeroMs int64
-
-	// bedsideFallCfg：R4（床边晕倒）参数；由 SetBedsideFallConfig 注入。
+	// bedsideFallCfg：R4（床边晕倒）参数；PR-9 v1 R4 触发已删，字段保留供 PR-10/11 BathroomBedsideFall 复用。
 	// 全 0 = 用默认（180s / 100cm / 900s）。
 	bedsideFallCfg BedsideFallConfig
 
@@ -141,11 +122,8 @@ type TrackManager struct {
 	// Still fall 触发时与 cell.Belief[0].Type 取并集判 bathroom 语义（见 owl-common/roomutil.ClassifyRoomType）。
 	roomName string
 
-	// stayAlarmEnabled：本房间任一设备是否启用 Stay alarm（alarm_device.monitor_config Stay.is_enabled=1）。
-	// 启用 = 运维明确表达「需要长时间静止检测」 → still fall 视为 bathroom 类型。
-	// 与 cell.AreaToilet/Shower、room.name 三者取并集；任一命中即触发 still fall。
-	// 由 engine.RegisterRoom 启动时注入（查 DB），运行时变更需重启或加 Redis 通道（暂未做）。
-	stayAlarmEnabled bool
+	// PR-Bootstrap: v1 stayAlarmEnabled 字段已删除（loadStayAlarmEnablement DB 路径同时删除）。
+	// PR-10 BathroomStillFall 用 room.kind=="bathroom" 分支替代"运维显式启用 Stay alarm"语义。
 
 	// interferes：本房间镜面/反射区矩形（cfg.Interferes：mirror、glass-tv、metal、curtain）。
 	// 用于因子 7（镜面对称 ghost 检测）：对当前 track 求关于 interfere 长轴的镜像位置，
@@ -215,6 +193,16 @@ const (
 	ReasonStillInBathroom      = "still_in_bathroom"      // 浴室长时间静止 still-fall
 	ReasonBedsideSilent        = "bedside_silent"         // LeftBed 后床边静止过久 R4
 	ReasonSleepadRadarConflict = "sleepad_radar_conflict" // sleepad LeftBed + radar 仍在床
+
+	// sensor_v2 PR-10 BathroomFallRules（§6.A）— SuitePerson 主语 fall：
+	ReasonBathroomStill              = "bathroom_still"                        // §6.A.1 cell Toilet/Shower + Stand + 10/12min
+	ReasonBathroomLongStatic         = "bathroom_long_static"                  // §6.A.2 90s grace + 任意位置 8min（非 Toilet/Shower）
+	ReasonSuitePersonCompletelyLost  = "suite_person_completely_lost_no_ghost" // §6.A.3 最强档 bathroom 内活 track==0 ≥ 30s
+	ReasonSuitePersonSilentWithGhost = "suite_person_silent_with_ghost_proxy"  // §6.A.3 次强档 SuitePerson static ≥ 7min
+
+	// sensor_v2 PR-11 BedroomFallRules（§6.B）— SuitePerson 主语 bedroom fall：
+	ReasonBedroomBedsideStatic = "bedroom_bedside_static"  // §6.B.3 BedState→Vacant + 床边 ≤100cm 静止 ≥15min
+	ReasonBedroomPersonSilent  = "bedroom_person_silent"   // §6.B.2 SuitePerson AnchorRoomType=bedroom + LastActiveMs > threshold
 )
 
 // AIPublisher PR-8 解耦：TrackManager 不直接持有 redis client，由 engine 实现接口注入。
@@ -259,7 +247,6 @@ func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 		pendingLostFalls:   make(map[int]*PendingLostFall),
 		bedSessions:        make(map[string]*BedSession),
 		sleepadStates:      make(map[string]*SleepadObservation),
-		bedPersonCount:     make(map[string]int),
 		moveSpeedCms:       20, // 默认值（与 DefaultLearnParams.MoveSpeedCms 一致）
 		bedsideFallCfg:     defaultBedsideFallCfg,
 		recentRadarAlarms:  make(map[int64]*RadarFallAlarm),
@@ -296,15 +283,6 @@ func (tm *TrackManager) SetRoomName(name string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	tm.roomName = name
-}
-
-// SetStayAlarmEnabled 注入本房间是否有任一设备启用 Stay alarm。
-// 由 engine.RegisterRoom 启动时查 alarm_device 后调用。
-// true 时 still fall 视该房间为 bathroom-like（与 cell ∪ room.name 取并集）。
-func (tm *TrackManager) SetStayAlarmEnabled(enabled bool) {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	tm.stayAlarmEnabled = enabled
 }
 
 // SetInterferes 注入本房间镜面/反射区矩形（cfg.Interferes）。
@@ -413,8 +391,12 @@ func (tm *TrackManager) IsBathroomByRoomName() bool {
 }
 
 // ProcessSleepadBedEvent 接收 sleepad InBed/LeftBed 事件。
-//   - 维护 bedPersonCount + lastLeftBedAt（旧逻辑）
-//   - 维护 BedSession（新版 silent fall 状态机）
+// 维护 BedSession（silent fall 状态机入口）+ PR-14 双源入场门控。
+//
+// PR-9: v1 bedPersonCount + lastLeftBedAt 维护已删除。
+//   - 多人床场景由 SuiteCensus (PR-2) 在 person 维度处理，不再 per-bed-device counter
+//   - LeftBedMaxPeople latch 保留为字段但 PR-9 阶段无源（值固定 0）；
+//     PR-11 silent_fall 重写时改用 SuiteCensus.BathroomCount 或其它人维度信号
 //
 // 由 Engine 路由 iot:event:stream 中 device_type=Sleepad 时调用。
 func (tm *TrackManager) ProcessSleepadBedEvent(evt SleepadBedEvent) {
@@ -422,12 +404,11 @@ func (tm *TrackManager) ProcessSleepadBedEvent(evt SleepadBedEvent) {
 	defer tm.mu.Unlock()
 
 	if evt.IsInBed {
-		tm.bedPersonCount[evt.DeviceUID]++
 		// PR-11: 记录 sleepad InBed ts 用于 radar/sleepad 一致期判定
 		if evt.TMs > tm.lastSleepadInBedMs {
 			tm.lastSleepadInBedMs = evt.TMs
 		}
-		// BedSession：首次 InBed 启动会话；重复 InBed 仅更新 MaxPeople
+		// BedSession：首次 InBed 启动会话
 		s := tm.bedSessions[evt.DeviceUID]
 		if s == nil || s.InBedSinceMs == 0 {
 			s = &BedSession{DeviceUID: evt.DeviceUID, InBedSinceMs: evt.TMs}
@@ -436,11 +417,9 @@ func (tm *TrackManager) ProcessSleepadBedEvent(evt SleepadBedEvent) {
 		// 任意 InBed → 清掉之前的等待状态（视为新一轮上床）
 		s.LeftBedAtMs = 0
 		s.SilentFallAlerted = false
-		if cnt := tm.bedPersonCount[evt.DeviceUID]; cnt > s.MaxPeople {
-			s.MaxPeople = cnt
-		}
-		// PR-14：入场门控——若 radar InBed 在 ±15s 内已到，标记双源一致确认
-		if tm.lastRadarInBedMs > 0 && tm.lastRadarInBedMs > tm.lastLeftBedAt {
+		// PR-14：入场门控——若 radar InBed 在 ±15s 内已到，标记双源一致确认。
+		// PR-9: lastLeftBedAt 新鲜度守卫已删；delta ≤ 15s 隐式保证 radar InBed 是最近的。
+		if tm.lastRadarInBedMs > 0 {
 			delta := evt.TMs - tm.lastRadarInBedMs
 			if delta < 0 {
 				delta = -delta
@@ -452,43 +431,23 @@ func (tm *TrackManager) ProcessSleepadBedEvent(evt SleepadBedEvent) {
 		return
 	}
 
-	// LeftBed
-	c := tm.bedPersonCount[evt.DeviceUID] - 1
-	if c < 0 {
-		c = 0
-	}
-	tm.bedPersonCount[evt.DeviceUID] = c
-	if evt.TMs > tm.lastLeftBedAt {
-		tm.lastLeftBedAt = evt.TMs
-	}
-
-	// BedSession：人数归 0 时进入「等待矛盾」状态，要求满足 5min precondition
-	if c > 0 {
-		return
-	}
+	// LeftBed：BedSession 进入「等待矛盾」状态，要求满足 5min precondition。
+	// PR-9: 删除多人床 c>0 guard（依赖 bedPersonCount）；任意 LeftBed event 都视作 session 终结。
 	s := tm.bedSessions[evt.DeviceUID]
 	if s == nil || s.InBedSinceMs == 0 {
-		return // 没有有效 in-bed 历史，可能 LeftBed 来得太早或重复事件
+		return // 没有有效 in-bed 历史
 	}
 	if evt.TMs-s.InBedSinceMs < int64(FallRulesParam.Silent.MinInBedSec)*1000 {
 		// 在床时间不足 5min，不进入等待；直接结束 session
 		s.InBedSinceMs = 0
 		s.HasHRRR = false
-		s.MaxPeople = 0
 		return
 	}
 	s.LeftBedAtMs = evt.TMs
 	s.LeftBedHadHRRR = s.HasHRRR
-	s.LeftBedMaxPeople = s.MaxPeople
-}
-
-// totalBedPeople 同房间所有 sleepad 床的总人数（多床房间累加）
-func (tm *TrackManager) totalBedPeople() int {
-	n := 0
-	for _, c := range tm.bedPersonCount {
-		n += c
-	}
-	return n
+	// LeftBedMaxPeople 在 PR-9 阶段无 source（bedPersonCount 已删），保留字段值 0；
+	// PR-11 silent_fall 重写时改用 SuiteCensus 派生
+	s.LeftBedMaxPeople = 0
 }
 
 // ProcessSleepadObservation 接收 sleepad 一帧观测，按设备 UID 保留最新状态。
@@ -501,11 +460,10 @@ func (tm *TrackManager) ProcessSleepadObservation(obs SleepadObservation) {
 	defer tm.mu.Unlock()
 	cur, ok := tm.sleepadStates[obs.DeviceUID]
 	if !ok || obs.TMs > cur.TMs {
-		// 状态转换 InBed=true → InBed=false 视为 LeftBed（与 ProcessSleepadBedEvent 等价）
-		// 单独的 event 流不一定到（部分固件只发 monitor），所以这里也要打开 R4 窗口。
-		if ok && cur.InBed && !obs.InBed && obs.TMs > tm.lastLeftBedAt {
-			tm.lastLeftBedAt = obs.TMs
-		}
+		// PR-9: 状态转换 InBed=true → InBed=false 不再更新 lastLeftBedAt（字段已删）。
+		// BedSession.LeftBedAtMs latch 仍由 ProcessSleepadBedEvent event 路径维护；
+		// 仅 monitor 路径未带 LeftBed event 的 firmware 会 miss session 终结，
+		// PR-11 silent_fall 重写时如有需要再走 monitor→event 归一化。
 		copyObs := obs
 		tm.sleepadStates[obs.DeviceUID] = &copyObs
 	}
@@ -563,12 +521,11 @@ func (tm *TrackManager) markRadarInBedCell(e RadarTrackEvent) {
 // consistentBedInBed PR-11：检查 sleepad 与 radar 的 InBed 事件是否在 ±15s 内一致。
 // 一致性窗口语义：双方独立确认"床上有人"，sleepad HR/RR 此刻可信，可作为 AreaBed cell ground truth。
 // 调用方持锁。
+//
+// PR-9: 删除 lastLeftBedAt 新鲜度守卫 — delta ≤ bedInBedConsistencyMs(15s) 已隐式保证
+// "两个 InBed ts 都是最近的"（陈旧 InBed 与新 InBed 不可能 delta < 15s）。
 func (tm *TrackManager) consistentBedInBed(nowMs int64) bool {
 	if tm.lastSleepadInBedMs == 0 || tm.lastRadarInBedMs == 0 {
-		return false
-	}
-	// 必须都晚于 lastLeftBedAt（防止旧的 InBed 与新的 LeftBed 后又一致）
-	if tm.lastSleepadInBedMs <= tm.lastLeftBedAt || tm.lastRadarInBedMs <= tm.lastLeftBedAt {
 		return false
 	}
 	delta := tm.lastSleepadInBedMs - tm.lastRadarInBedMs
@@ -708,30 +665,26 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 }
 
 // RecordRadarEvent 落账 radar 来源的事件（EnterRoom/ExitRoom/InBed/LeftBed）。
-// 仅落账。InBed/LeftBed 也"复用 sleepad 通道"更新 lastLeftBedAt（R4 开窗 + 床压计数）：
-//   - LeftBed → 更新 tm.lastLeftBedAt（任意来源都开 R4 窗口）
-//
-// 注：radar 的 InBed/LeftBed 不更新 bedPersonCount——bedPersonCount 是 sleepad 床压传感器累计的"在床人数"，
-// radar event 是空间检测，两者语义不同；混用会导致 bed-fall 段 5 的"仅 1 人"判定错乱。
-//
-// PR-14: radar InBed 触发两个副作用：
+// 仅落账。PR-14: radar InBed 触发两个副作用：
 //   1) 当前 track 位置 cell 锁为 AreaBed（"床区自学"——radar 有事件即给出空间证据）
 //   2) 若同房 sleepad InBed 已在 ±15s 内到达，标记 BedSession.RadarInBedConfirmedMs（双源一致门控）
+//
+// PR-9: 删除 LeftBed → lastLeftBedAt 更新路径（字段已删）。
+//   - silent_fall 的 LeftBed latch 仍由 ProcessSleepadBedEvent 维护 BedSession.LeftBedAtMs
+//   - PR-14 双源门控的"radar InBed > lastLeftBedAt"新鲜度守卫 → 仅靠 delta ≤ 15s 隐式保证
 func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	cp := e
 	tm.recentRadarEvents[e.TMs] = &cp
 	tm.evictOldRadarEvents(e.TMs)
-	if e.EventName == alarm.LeftBed && e.TMs > tm.lastLeftBedAt {
-		tm.lastLeftBedAt = e.TMs
-	}
 	if e.EventName == alarm.InBed && e.TMs > tm.lastRadarInBedMs {
 		tm.lastRadarInBedMs = e.TMs
 		// PR-14 副作用 1：mark 当前 track 位置 cell 为 AreaBed
 		tm.markRadarInBedCell(e)
-		// PR-14 副作用 2：若 sleepad InBed 在 ±15s 内已到，标记双源确认
-		if tm.lastSleepadInBedMs > 0 && tm.lastSleepadInBedMs > tm.lastLeftBedAt {
+		// PR-14 副作用 2：若 sleepad InBed 在 ±15s 内已到，标记双源确认。
+		// PR-9: lastLeftBedAt 新鲜度守卫已删；delta ≤ 15s 已隐式保证 sleepad InBed 是最近的。
+		if tm.lastSleepadInBedMs > 0 {
 			delta := e.TMs - tm.lastSleepadInBedMs
 			if delta < 0 {
 				delta = -delta
@@ -760,39 +713,9 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 			delete(tm.pendingLostFalls, pid)
 		}
 	}
-	// NumberPeople=0 → ExitRoom 兜底：① 记录时间戳供入池前查 ② 取消已存在的 non-frozen pending。
-	// 实测 D523 firmware 在 FOV 边角离场不发 ExitRoom，但 number_people=0 始终发，
-	// 且早 track_id=88 心跳 36-44ms，是更可靠的"屋空"信号。
-	//
-	// frozen 互斥：firmware 进入 frozen 残影状态时认为屋内有人（持续发同帧），
-	// 绝不会发 number_people=0。若 pending.FrozenStartMs > 0（track 失锁前已 frozen），
-	// 即使后来收到 number_people=0 也不取消——这是盲区返回 case（CD2B 类型），
-	// 应保留 pending 等 birth-recovery 取消或正常超时报警。
-	if e.EventName == "NumberPeople" && e.NumberPeople == 0 {
-		if e.TMs > tm.lastNumberPeopleZeroMs {
-			tm.lastNumberPeopleZeroMs = e.TMs
-		}
-		for pid, p := range tm.pendingLostFalls {
-			if p.FrozenStartMs > 0 {
-				tm.logger.Info("lost_fall_pending_kept_frozen_vs_number_people_zero",
-					zap.String("device_uid", p.DeviceID),
-					zap.Int("track_id", p.OriginalTrackID),
-					zap.Int64("frozen_start_ms", p.FrozenStartMs),
-					zap.Int64("number_people_zero_ms", e.TMs),
-				)
-				continue
-			}
-			tm.lostFallPendingCancelled++
-			tm.logger.Info("lost_fall_cancelled_by_number_people_zero",
-				zap.String("device_uid", p.DeviceID),
-				zap.Int("track_id", p.OriginalTrackID),
-				zap.String("room_id", p.RoomID),
-				zap.Int64("pending_age_ms", e.TMs-p.DisappearMs),
-				zap.Int64("number_people_zero_ms", e.TMs),
-			)
-			delete(tm.pendingLostFalls, pid)
-		}
-	}
+	// PR-9: v1 NumberPeople=0 → ExitRoom 兜底（依赖 lastNumberPeopleZeroMs）已删除。
+	// pending 取消现在仅依赖 ExitRoom event / 多人入屋 / birth-recovery 三路径。
+	// firmware D523-specific 信号若仍需，应由 cardagg 上游归一化成 ExitRoom event 后下发。
 }
 
 // evictOldRadarAlarms / evictOldRadarEvents：删除超出 recentBufferMs 的旧记录。
@@ -834,6 +757,116 @@ func (tm *TrackManager) SetSleepadInBedCount(count int) {
 	tm.mu.Unlock()
 }
 
+// TrackStatusBase 单 track 的 Layer 1 原始投影（不含 PersonID / Zone enrichment）。
+// SnapshotTrackStatuses 返回 base 列表，engine 层进一步 enrich 成 TrackStatus 再 publish。
+type TrackStatusBase struct {
+	TrackID       int
+	DeviceID      string
+	RoomID        string
+	Verdict       TrackVerdict
+	GhostPenalty  int
+	X, Y, Z       int
+	Pose          int
+	StillSec      int
+	CellAreaType  AreaType
+	EnterTarget   string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
+	MoveActive    bool   // 本次快照是否"非静止"（StillSince==0 OR LastObservedMs == nowMs）
+	TraverseDelta int    // 自上次 SnapshotTrackStatuses 累计的 traverse cells（用于 SuiteCensus 升格判定）
+	SleepadInBed  bool   // 同房间最近一帧任一 sleepad InBed 视作 true（resident 强升格判据）
+}
+
+// SnapshotTrackStatuses 返回当前所有 live track 的 Layer 1 原始投影。
+// 调用时机：engine.handleMessage 调 tm.ProcessFrame 之后；nowMs 用同一帧时间戳。
+//
+// 锁语义：内部加 tm.mu；返回值是值拷贝，调用方可在锁外读。
+// TraverseDelta 通过 track 内部 lastTraverseSnapshotCount 字段差分（首次快照视为 0）。
+func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	// 同房间 sleepad InBed 状态（任一 sleepad inbed 即 true；多 sleepad 取或）
+	sleepadInBed := false
+	for _, obs := range tm.sleepadStates {
+		if obs != nil && obs.InBed {
+			sleepadInBed = true
+			break
+		}
+	}
+
+	out := make([]TrackStatusBase, 0, len(tm.tracks))
+	for _, ts := range tm.tracks {
+		pxF, pyF := ts.Kalman.Position()
+		px := int(math.Round(pxF))
+		py := int(math.Round(pyF))
+
+		base := TrackStatusBase{
+			TrackID:      ts.TrackID,
+			DeviceID:     ts.DeviceID,
+			RoomID:       ts.RoomID,
+			Verdict:      ts.Verdict,
+			GhostPenalty: ts.GhostPenalty,
+			X:            px,
+			Y:            py,
+			Z:            ts.LastZ,
+			Pose:         ts.LastPose,
+			MoveActive:   ts.StillSince == 0 || ts.LastObservedMs == nowMs,
+			SleepadInBed: sleepadInBed,
+		}
+		// StillSec：StillSince==0 表示非静止；否则 (nowMs - StillSince) / 1000。
+		if ts.StillSince > 0 && nowMs > ts.StillSince {
+			base.StillSec = int((nowMs - ts.StillSince) / 1000)
+		}
+		// LongSurvival / StartupGrace 锚定 → 升格 Anchored verdict（v2 §10.1.1）
+		if base.Verdict == VerdictReal && (ts.LongSurvivalAnchored || ts.StartupGrace) {
+			base.Verdict = VerdictAnchored
+		}
+		if c := tm.grid.CellAt(px, py); c != nil {
+			base.CellAreaType = c.Belief[0].Type
+			if c.Belief[0].Type == AreaEnter {
+				base.EnterTarget = c.EnterTarget
+			}
+		}
+		// TraverseDelta：差分本 track 的 LifetimeTraverse 累计（无字段时退化为 0）。
+		// PR-3 暂用 FrameCount 近似单调累计；PR-5 (BathroomGate) 接入后换实际 grid.MarkTraverse 计数。
+		base.TraverseDelta = 0 // 留待 PR-5 wire 精确 delta；当前阶段 SuiteCensus traverse 升格走 sleepad 强锚 + 时长门
+		out = append(out, base)
+	}
+	return out
+}
+
+// BedSessionLatch BedSession 状态对外快照（PR-11 BedroomFallRules 消费）。
+// 仅含 fall 决策必要字段，不暴露 BedSession 全部 internal 状态。
+type BedSessionLatch struct {
+	DeviceUID             string
+	InBedSinceMs          int64
+	LeftBedAtMs           int64
+	HasHRRR               bool
+	LeftBedHadHRRR        bool
+	RadarInBedConfirmedMs int64
+	SilentFallAlerted     bool
+}
+
+// SnapshotBedSessions BedSession 状态值拷贝快照。
+// 用途：PR-11 BedroomFallRules.Evaluate 读 LeftBedAtMs 作 bedside_fall 起点。
+// 锁语义：内部加 tm.mu；返回值是值拷贝，调用方可在锁外读。
+func (tm *TrackManager) SnapshotBedSessions() []BedSessionLatch {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	out := make([]BedSessionLatch, 0, len(tm.bedSessions))
+	for _, s := range tm.bedSessions {
+		out = append(out, BedSessionLatch{
+			DeviceUID:             s.DeviceUID,
+			InBedSinceMs:          s.InBedSinceMs,
+			LeftBedAtMs:           s.LeftBedAtMs,
+			HasHRRR:               s.HasHRRR,
+			LeftBedHadHRRR:        s.LeftBedHadHRRR,
+			RadarInBedConfirmedMs: s.RadarInBedConfirmedMs,
+			SilentFallAlerted:     s.SilentFallAlerted,
+		})
+	}
+	return out
+}
+
 // ========================================================================
 // ProcessFrame：每帧双维度喂（即时流 + 历史流）
 // ========================================================================
@@ -854,21 +887,8 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 
 	activeIDs := make(map[int]bool)
 
-	// 入口先盘点 bathroom 内 real track 数（caregiver 例外用）
-	tm.bathroomRealCount = 0
-	for _, t := range tm.tracks {
-		if t.Verdict != VerdictReal {
-			continue
-		}
-		pxF, pyF := t.Kalman.Position()
-		c := tm.grid.CellAt(int(math.Round(pxF)), int(math.Round(pyF)))
-		if c == nil {
-			continue
-		}
-		if c.Belief[0].Type == AreaToilet || c.Belief[0].Type == AreaShower {
-			tm.bathroomRealCount++
-		}
-	}
+	// PR-9: v1 bathroomRealCount 入口盘点已删除（caregiver 例外抑制 dropped）。
+	// PR-10 BathroomStillFall 将通过 SuiteCensus.BathroomCount + AnchorRoomType 重新引入。
 
 	// ========== 段 1: 观测到的 track ==========
 	for _, f := range frames {
@@ -1000,40 +1020,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 					zap.Int64("ts_ms", nowMs),
 				)
 			} else if (ts.Verdict == VerdictReal || ts.Verdict == VerdictPending) && tm.checkLostFall(ts) {
-				// NumberPeople=0 ExitRoom 兜底：firmware 不发 ExitRoom 但发 number_people=0
-				// （实测 D523 三个样本 100% 命中且早 track_id=88 36-44ms）→ 视作正常离场。
-				//
-				// 三道关卡：
-				//   ① ts.FrozenRunStart == 0：track 失锁前未进入 frozen 残影状态。
-				//      frozen ↔ number_people=0 互斥（firmware 状态机产物）：frozen 期间
-				//      firmware 维持"屋内有人"判定，不发 number_people=0；若 track 经历过
-				//      frozen 期才失锁，说明这是盲区残影 case（CD2B 类），应进 pending 池
-				//      等 birth-recovery 取消或正常超时报警，不能被 number_people=0 抑制。
-				//   ② lastNumberPeopleZeroMs > 0 && ts.LastObservedMs > 0：两个时间戳都有效。
-				//   ③ |lastNumberPeopleZeroMs − LastObservedMs| ≤ NumberPeopleZeroFallbackMs(60s)：
-				//      number_people=0 与 track 最后真实帧时间差在窗口内。
-				//      比对基准是 LastObservedMs 不是 nowMs：后者因 MaxMissCount=10 会比
-				//      number_people=0 晚约 10s，落不进窗口；前者紧贴 number_people=0
-				//      （实测 ~1s 内）。
-				if ts.FrozenRunStart == 0 && tm.lastNumberPeopleZeroMs > 0 && ts.LastObservedMs > 0 {
-					gapMs := tm.lastNumberPeopleZeroMs - ts.LastObservedMs
-					if gapMs < 0 {
-						gapMs = -gapMs
-					}
-					if gapMs <= FallRulesParam.Lost.NumberPeopleZeroFallbackMs {
-						tm.logger.Info("lost_fall_pending_skipped_by_number_people_zero",
-							zap.String("device_uid", ts.DeviceID),
-							zap.Int("track_id", id),
-							zap.Int64("number_people_zero_ms", tm.lastNumberPeopleZeroMs),
-							zap.Int64("last_observed_ms", ts.LastObservedMs),
-							zap.Int64("gap_ms", gapMs),
-							zap.Int64("ts_ms", nowMs),
-						)
-						tm.lostFallPendingCancelled++
-						delete(tm.tracks, id)
-						continue
-					}
-				}
+				// PR-9: v1 NumberPeople=0 ExitRoom 兜底（依赖 lastNumberPeopleZeroMs）已删除。
+				// PR-10 BathroomLostFall + PR-11 bedroom lost_fall 将以 SuiteCensus.BathroomCount
+				// + SuitePerson.AnchorRoomType 作离场判定主源；D523 firmware-specific 兜底（如仍需）
+				// 走 cardagg ExitRoom event 路径（不再 sensor 内置）。
 				pxF, pyF := ts.Kalman.Position()
 				px := int(math.Round(pxF))
 				py := int(math.Round(pyF))
@@ -1270,54 +1260,9 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	// 否则取消（人正常起床，radar 也离床区）。
 	results = append(results, tm.scanSilentFallLeftBed(nowMs)...)
 
-	// ========== 段 5: Bed-Fall 物理矛盾检测 ==========
-	// 物理意义：人从床上跌落到地面/床边，但雷达因坐标精度仍认为人在床
-	// 触发条件：
-	//   1. 雷达仍 track 着，坐标在 AreaBed cell
-	//   2. sleepad 30s 内有数据且全部显示离床
-	//   3. 房间总人数 == 1（避免家属/护工陪同时误报）
-	// 房间总人数 = max(realTrackCount, totalBedPeople)
-	//   - radar 多 track 即多人（雷达本来就追多人）
-	//   - sleepad 床上有 ≥2 人即多人（连续 InBed 事件累计）
-	if tm.sleepadOffBed(nowMs) {
-		realCount := 0
-		var soleReal *TrackState
-		for _, ts := range tm.tracks {
-			if ts.Verdict == VerdictReal {
-				realCount++
-				soleReal = ts
-			}
-		}
-		bedPeople := tm.totalBedPeople()
-		totalPeople := realCount
-		if bedPeople > totalPeople {
-			totalPeople = bedPeople
-		}
-		if totalPeople == 1 && realCount == 1 && soleReal != nil {
-			pxF, pyF := soleReal.Kalman.Position()
-			px, py := int(math.Round(pxF)), int(math.Round(pyF))
-			cell := tm.grid.CellAt(px, py)
-			if cell != nil && cell.Belief[0].Type == AreaBed {
-				// 矛盾确认：雷达说在床 + sleepad 说离床 + 房间仅 1 人 → bed-fall
-				if soleReal.CurrentAnomaly != AnomalyBedFall {
-					soleReal.CurrentAnomaly = AnomalyBedFall
-					tm.grid.MarkFallEvent(px, py, nowMs)
-					tm.logger.Info("real_fall",
-						zap.String("device_uid", soleReal.DeviceID),
-						zap.String("device_uid_hex", tm.devUIDHex(soleReal.DeviceID)),
-						zap.Int("track_id", soleReal.TrackID),
-						zap.String("kind", "engine_bed_fall"),
-						zap.Int("score", soleReal.Score),
-						zap.Int("risk", 100),
-						zap.String("reason", "radar_in_bed_cell_but_sleepad_off_bed_solo"),
-						zap.Int("x", px), zap.Int("y", py),
-						zap.Int64("ts_ms", nowMs),
-						zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
-					)
-				}
-			}
-		}
-	}
+	// PR-9: v1 段 5 Bed-Fall 物理矛盾检测整段删除（依赖 totalBedPeople / bedPersonCount）。
+	// PR-11 silent_fall 重写时用 BedSession + SuiteCensus 重新表达"床上方矛盾"语义，
+	// 不再走 per-bed-device 人数累计路径（多人床的"陪同"由 SuitePerson AnchorRoomType 表达）。
 
 	// ========== 段 6: 构建输出 ==========
 	for _, ts := range tm.tracks {
@@ -1571,14 +1516,8 @@ func (tm *TrackManager) SilentFallLeftBedStatsSnapshot() SilentFallLeftBedStats 
 	}
 }
 
-// StillFallStats Still Fall（bathroom + Stand 静止 ≥ 15/18min）统计
-type StillFallStats struct {
-	Reported int
-}
-
-func (tm *TrackManager) StillFallStatsSnapshot() StillFallStats {
-	return StillFallStats{Reported: tm.stillFallReportCount}
-}
+// PR-Bootstrap: StillFallStats + stillFallReportCount 已删除（v1 fire path 删除后无 source）。
+// PR-10 BathroomStillFall 的统计走 ai.log audit 路径，不再 per-TrackManager 计数。
 
 // FallVerifyStats firmware Fall verifier 三档累计（PR-5）
 type FallVerifyStats struct {
@@ -2262,72 +2201,25 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 			ts.AdjustScore(-3)
 		}
 		// 静止超时（综合 cell history 的自适应阈值）
+		// PR-9: 删除 bathroomRealCount caregiver 例外抑制 — Phase C 期 v1 抑制 dropped；
+		// PR-10 BathroomStillFall 用 census.BathroomCount + AnchorRoomType 重新引入 caregiver 例外。
 		if cell != nil {
 			isRiskTime := IsNightTime(nowMs, tm.timezone)
 			timeout := cell.EffectiveStillTimeoutSec(isRiskTime)
 			if timeout > 0 {
-				// Bathroom caregiver 例外：本 cell 在 toilet/shower + ≥2 real track 同在 bathroom
-				// → 第二个 track 大概率是护工陪同，长时间静止合理（如老人坐马桶、护工旁边照看）
-				inBathroom := cell.Belief[0].Type == AreaToilet || cell.Belief[0].Type == AreaShower
-				skipTimeout := inBathroom && tm.bathroomRealCount >= 2
-				if !skipTimeout {
-					stillSec := int((nowMs - ts.StillSince) / 1000)
-					if stillSec > timeout {
-						ts.CurrentAnomaly = AnomalyStillTooLong
-						if !ts.LongStillReported {
-							tm.grid.MarkLongStill(x, y, nowMs)
-							ts.LongStillReported = true
-						}
+				stillSec := int((nowMs - ts.StillSince) / 1000)
+				if stillSec > timeout {
+					ts.CurrentAnomaly = AnomalyStillTooLong
+					if !ts.LongStillReported {
+						tm.grid.MarkLongStill(x, y, nowMs)
+						ts.LongStillReported = true
 					}
 				}
 			}
 
-			// 升级 → Still Fall（bathroom + pose=Stand + 15/18min 持续静止）。
-			// 触发位置语义：cell.Belief[0].Type ∈ {AreaToilet, AreaShower} 或 room.name 含 bathroom/restroom/toilet（取并集）。
-			// 阈值：cell 是 toilet/shower 时用 cell.EffectiveStillTimeoutSec（含 cell history 自适应）；
-			//       cell 未学到但 room name 是 bathroom 时用 FallRulesParam.Still.ToiletShowerSec（无 cell 容忍）。
-			// pose=Stand：避免坐马桶（pose=Sit）误报。caregiver 例外同上。
-			if !ts.StillFallReported && RadarPoseToCore(pose) == CorePoseStand {
-				stillFallTimeoutSec := tm.stillFallTimeoutSec(cell, isRiskTime)
-				if stillFallTimeoutSec > 0 && tm.bathroomRealCount < 2 {
-					stillSec := int((nowMs - ts.StillSince) / 1000)
-					if stillSec > stillFallTimeoutSec {
-						ts.CurrentAnomaly = AnomalyFall
-						ts.StillFallReported = true
-						tm.stillFallReportCount++
-						tm.grid.MarkFallEvent(x, y, nowMs)
-						// PR5c: alarm.Fall + Reason=still_in_bathroom；时长进 Evidence。
-						// fall 已确认，清零 TrackConfidence（payloadFromTrack 默认带 conf 值）。
-						stillP := tm.payloadFromTrack(ts)
-						stillP.Track.TrackConfidence = 0
-						stillP.Reason = ReasonStillInBathroom
-						stillP.Evidence = map[string]interface{}{
-							"context":           "still_in_bathroom_over_threshold",
-							"still_seconds":     stillSec,
-							"still_timeout_sec": stillFallTimeoutSec,
-							"cell_area_type":    int(cell.Belief[0].Type),
-						}
-						tm.emitAIAlarm(stillP, alarm.Fall, nowMs)
-						tm.logger.Info("real_fall",
-							zap.String("device_uid", ts.DeviceID),
-							zap.String("device_uid_hex", tm.devUIDHex(ts.DeviceID)),
-							zap.Int("track_id", ts.TrackID),
-							zap.String("kind", "engine_still_fall"),
-							zap.Int("score", ts.Score),
-							zap.Int("risk", 100),
-							zap.String("reason", "bathroom_stand_static_too_long"),
-							zap.Int("still_sec", stillSec),
-							zap.Int("threshold_sec", stillFallTimeoutSec),
-							zap.Bool("is_risk_time", isRiskTime),
-							zap.Int("cell_area", int(cell.Belief[0].Type)),
-							zap.String("room_name", tm.roomName),
-							zap.Int("x", x), zap.Int("y", y),
-							zap.Int64("ts_ms", nowMs),
-							zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
-						)
-					}
-				}
-			}
+			// PR-Bootstrap: v1 TrackManager still-fall fire path 已删除，由 PR-10 BathroomStillFall
+			// (§6.A.1) 在 bathroom room.kind 分支替代。stillFallTimeoutSec 谓词保留作"bathroom-like
+			// 位置过滤器"（line 1971 + 2294 AreaSit 学习 gate），不再驱动 alarm 发射。
 
 			// PR-7.2: stand-static 自学习 → AreaSit
 			// 触发条件:
@@ -2365,50 +2257,9 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 			}
 		}
 
-		// R4: 床边晕倒（升级 AnomalyStillTooLong → AnomalyBedsideFall）
-		// 触发：风险时段 + 最近 WindowSec 内有 LeftBed + 当前位置距 AreaBed ≤ BedsideMarginCm
-		//       + 静止 > StillTimeoutSec
-		// 物理意义：人离床去卫生间途中在床边滑倒/晕倒，雷达失锁前最后位置仍在床边。
-		// 与 R2(BedFall) 区别：R2 是"仍在床矛盾"，R4 是"离床后到不了远方"。
-		if tm.lastLeftBedAt > 0 &&
-			nowMs-tm.lastLeftBedAt < int64(tm.bedsideFallCfg.WindowSec)*1000 &&
-			IsNightTime(nowMs, tm.timezone) &&
-			tm.grid.IsNearPriorType(x, y, AreaBed, tm.bedsideFallCfg.BedsideMarginCm) {
-			stillSec := int((nowMs - ts.StillSince) / 1000)
-			if stillSec > tm.bedsideFallCfg.StillTimeoutSec && ts.CurrentAnomaly != AnomalyBedsideFall {
-				ts.CurrentAnomaly = AnomalyBedsideFall
-				tm.grid.MarkFallEvent(x, y, nowMs)
-				ts.LongStillReported = true   // 复用 flag 防 LongStill 重复 mark
-				ts.BedsideFallReported = true // 防双报：后续若 track 失锁，跳过 lost_fall pending 入池
-				// PR5c: alarm.Fall + Reason=bedside_silent（R4 床边晕倒）。
-				// fall 已确认，清零 TrackConfidence（payloadFromTrack 默认带 conf 值）。
-				bedsideP := tm.payloadFromTrack(ts)
-				bedsideP.Track.TrackConfidence = 0
-				bedsideP.Reason = ReasonBedsideSilent
-				bedsideP.Evidence = map[string]interface{}{
-					"context":            "bedside_still_after_leftbed",
-					"still_seconds":      stillSec,
-					"window_sec":         tm.bedsideFallCfg.WindowSec,
-					"still_timeout_sec":  tm.bedsideFallCfg.StillTimeoutSec,
-					"bedside_margin_cm":  tm.bedsideFallCfg.BedsideMarginCm,
-					"leftbed_at_ms":      tm.lastLeftBedAt,
-				}
-				tm.emitAIAlarm(bedsideP, alarm.Fall, nowMs)
-				tm.logger.Info("real_fall",
-					zap.String("device_uid", ts.DeviceID),
-					zap.String("device_uid_hex", tm.devUIDHex(ts.DeviceID)),
-					zap.Int("track_id", ts.TrackID),
-					zap.String("kind", "engine_bedside_fall_R4"),
-					zap.Int("score", ts.Score),
-					zap.Int("risk", 100),
-					zap.String("reason", "night_left_bed_then_bedside_still_15min"),
-					zap.Int("x", x), zap.Int("y", y),
-					zap.Int("still_sec", stillSec),
-					zap.Int64("ts_ms", nowMs),
-					zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
-				)
-			}
-		}
+		// PR-9: v1 R4 bedside_fall 触发块整段删除（依赖 lastLeftBedAt）。
+		// PR-10/11 BathroomBedsideFall + bedroom bedside_fall 将以 SuiteCensus + BedSession 重写，
+		// 触发主体改为 SuitePerson（决定 8），用 90s grace + 任意位置静止 ≥ 8 min（决定 18 真多人不 fire）。
 	} else {
 		// 在动：刚从静止恢复，记 Dwell EMA
 		if ts.StillSince > 0 {
@@ -2678,16 +2529,14 @@ func (tm *TrackManager) occupancyFactor() float64 {
 	return 1.0
 }
 
-// stillFallTimeoutSec 当前 cell + room 上下文下 still-fall 的有效阈值（秒）。
+// stillFallTimeoutSec "bathroom-like 位置过滤器"（不再驱动 alarm 发射，PR-Bootstrap 拆走 fire path）。
+// 仅作 AreaSit 自学习 gate 用（line 1971 + 2294 处）：bathroom 内长时间 stand 不应被误学为坐位。
 //
-//	cell.AreaToilet/AreaShower → cell.EffectiveStillTimeoutSec（含 cell history 自适应）
-//	否则 (room.name 是 bathroom) ∪ (Stay alarm 启用) → FallRulesParam.Still.ToiletShowerSec
-//	                                                  × NonRiskTimeFactor (non-risk-time 时)
-//	都不匹配 → 0（不报 still fall）
+//	cell.AreaToilet/AreaShower → cell.EffectiveStillTimeoutSec
+//	cell 未学到但 room.name 是 bathroom → FallRulesParam.Still.ToiletShowerSec × NonRiskTimeFactor
+//	都不匹配 → 0
 //
-// 三路并集：cell 学到 / room 命名 / 运维显式启用 Stay alarm。
-// 任一命中即按 bathroom 处理；Stay alarm 启用语义="操作员明确需要长时间静止检测"。
-//
+// PR-Bootstrap：删除 stayAlarmEnabled 分支（loadStayAlarmEnablement 已删，stayAlarmEnabled 永 false）。
 // 调用方持锁。
 func (tm *TrackManager) stillFallTimeoutSec(cell *Cell, isRiskTime bool) int {
 	if cell == nil {
@@ -2695,11 +2544,9 @@ func (tm *TrackManager) stillFallTimeoutSec(cell *Cell, isRiskTime bool) int {
 	}
 	cellType := cell.Belief[0].Type
 	if cellType == AreaToilet || cellType == AreaShower {
-		// cell 已学到 toilet/shower：完全用 cell.EffectiveStillTimeoutSec（已含 risk-time 与 tolerance）
 		return cell.EffectiveStillTimeoutSec(isRiskTime)
 	}
-	// cell 未学到但 (room.name 是 bathroom) 或 (Stay alarm 启用) → 用基线时长（无 cell history）
-	if roomutil.IsBathroom(tm.roomName) || tm.stayAlarmEnabled {
+	if roomutil.IsBathroom(tm.roomName) {
 		base := FallRulesParam.Still.ToiletShowerSec
 		if !isRiskTime {
 			base = int(float64(base) * FallRulesParam.Still.NonRiskTimeFactor)

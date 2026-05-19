@@ -6,9 +6,9 @@ package zoneengine
 // 把 firmware 发的 EnterRoom / ExitRoom / NumberPeople / InBed / LeftBed 翻成 SignalEvidence
 // 喂 Engine.Apply。SignalEvidence.Source 固定 "radar"。
 //
-// Bathroom 是 Room 的子集 / 特例（同 /88 prefix）：当 BathroomLookup.IsBathroom(roomPref)
-// 命中时 EnterRoom/ExitRoom/NumberPeople 仅触发 ZoneTypeBathroom，不再发 ZoneTypeRoom，
-// 避免 stay alarm enable 路径双计。bed 父级 zone 始终是 Room（床不在 bathroom）。
+// Bathroom 是 Room 的子集 / 特例（同 /88 prefix）：BathroomLookup.IsBathroom(roomPref)
+// 命中时 EnterRoom/ExitRoom/NumberPeople 走 ZoneTypeBathroom（FSM/risk 阈值族不同），
+// 输出仍走 card.RoomState 带 Kind=bathroom。bed 父级 zone 始终是 Room（床不在 bathroom）。
 //
 // 设计约束（来自上游 memory）：
 //   - 未绑卡 device（subject_entity 空）不入 zone engine（zone 状态以 cardID 为主键）。
@@ -32,7 +32,7 @@ import (
 // BathroomLookup 询问某 /88 RoomPref 是否属 bathroom 类。
 //
 // 由 wiring 层注入实现（典型实现读 rooms.room_name + 缓存）。空实现 / nil 时退化为
-// 全部按 Room 处理 —— Engine 仍然能工作，但 BathRoomState 永不更新。
+// 全部按 Room 处理 —— RoomState.Kind 不会标 bathroom，risk 阈值族退化为通用。
 type BathroomLookup interface {
 	IsBathroom(roomPref string) bool
 }

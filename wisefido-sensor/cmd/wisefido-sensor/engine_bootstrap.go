@@ -25,6 +25,15 @@ import (
 )
 
 // startRoomEngine 创建 + 配置 + 注册房间 + 启动主循环；返回的 cancelFunc 用于优雅关闭。
+//
+// sensor_v2 wiring（详 sensor_v2.md §6.A 设计原则 #3 + sensor_v2_known_limitations.md L4）：
+//   - SuiteCensus: PR-2 单例进程级 census
+//   - GhostAdjudicators: PR-4 接口 + PR-6 bathroom 实现 + PR-7 General Noop
+//   - BathroomFallRules: PR-10 §6.A 4 类规则
+//   - BedroomFallRules: PR-11 §6.B 11b/11c
+//
+// 顺序：census 必须先注入（adjudicator/fall rules 都依赖），然后注册 rooms（rooms 注入时
+// PR-7 检测 IsPublicBathroom 调 census.MarkPublicBathroom），最后接 adjudicator + fall rules。
 func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB,
 	rdb *redis.Client, logger *zap.Logger) (*roomengine.Engine, error) {
 
@@ -33,14 +42,18 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB,
 	// 1. 注入 yaml 运行时参数 + Persister
 	engine.Configure(buildRuntimeConfig(cfg, db))
 
-	// 1b. 注入 AI publish 单点配置（mode + source）；
-	//     mode="log" 仅写 ai.log，"log&publish" 推到 iot:event/alarm:stream。
+	// 1b. 注入 AI publish 单点配置（mode + source）
 	engine.SetAIPublishConfig(cfg.AIPublish.Mode, cfg.AIPublish.Source)
 	logger.Info("roomengine: ai_publish configured",
 		zap.String("mode", cfg.AIPublish.Mode),
 		zap.String("source", cfg.AIPublish.Source))
 
-	// 2. 注册所有有 layout 的房间
+	// 1c. PR-2 SuiteCensusManager：单例 + Redis 持久化。先注入再注册 rooms
+	//     （PR-7 RegisterRoom 内检测 IsPublicBathroom 调 census.MarkPublicBathroom 需要 census 在场）。
+	census := roomengine.NewSuiteCensusManager(rdb, roomengine.DefaultSuiteCensusConfig(), logger)
+	engine.SetSuiteCensus(census)
+
+	// 2. 注册所有有 layout 的房间（PR-7：IsPublicBathroom=true 自动 MarkPublicBathroom）
 	registered, err := registerAllRooms(ctx, engine, db, logger)
 	if err != nil {
 		return nil, fmt.Errorf("register rooms: %w", err)
@@ -54,23 +67,49 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB,
 	}
 	logger.Info("roomengine: devices mapped", zap.Int("count", mapped))
 
-	// 3a. 注入 Stay alarm 启用状态（still fall 第三条 bathroom 路径）
-	stayRooms, err := loadStayAlarmEnablement(ctx, engine, db, logger)
-	if err != nil {
-		logger.Warn("roomengine: load Stay alarm enablement failed", zap.Error(err))
-	} else {
-		logger.Info("roomengine: rooms with Stay alarm enabled", zap.Int("count", stayRooms))
-	}
-
 	// 3b. PR-15：每日 22:00 (local) 重读 layout，hash 变即重置该 room → 从 0 重学
 	engine.SetDailyLayoutReload(22, db)
 
-	// 3c. 路由表周期热加载（60s）——修复"启动后才绑定的 device 永远沉默"bug。
-	// reloader 闭包共享同一个 db handle，在线运行时安全调用。
+	// 3c. 路由表周期热加载（60s）
 	engine.SetRoutesReloader(func(rctx context.Context) error {
 		_, err := mapDevicesToRooms(rctx, engine, db, logger)
 		return err
 	}, 60*time.Second)
+
+	// 3d. PR-4/6/7 GhostAdjudicators 二件套
+	//     - General (§4.B Noop, PR-7 留待实现)
+	//     - Bathroom (§4.A 真实实现, PR-6) — 注入 census + grid/suite lookup
+	general := roomengine.NewGeneralGhostAdjudicator(logger)
+	bathroomGhost := roomengine.NewBathroomGhostAdjudicator(
+		census,
+		engine.GridForRoom,
+		engine.SuiteIDForRoom,
+		logger,
+	)
+	engine.SetGhostAdjudicators(general, bathroomGhost)
+	logger.Info("roomengine: ghost adjudicators wired",
+		zap.String("general", "NoopGhostAdjudicator (PR-7 留待 §4.B 实现)"),
+		zap.String("bathroom", "BathroomGhostAdjudicator (§4.A 4 规则 + Rule 4 fallback)"))
+
+	// 3e. PR-10 BathroomFallRules（§6.A 4 类 Critical fall）
+	bathroomFall := roomengine.NewBathroomFallRules(
+		census,
+		engine.GridForRoom,
+		engine.SuiteIDForRoom,
+		engine, // Engine 实现 AIPublisher
+		logger,
+	)
+	engine.SetBathroomFallRules(bathroomFall)
+
+	// 3f. PR-11 BedroomFallRules（§6.B 11b BedsideFall + 11c LostFall + PR-11.1 sleepad gating）
+	bedroomFall := roomengine.NewBedroomFallRules(
+		census,
+		engine.GridForRoom,
+		engine.SuiteIDForRoom,
+		engine,
+		logger,
+	)
+	engine.SetBedroomFallRules(bedroomFall)
 
 	// 4. 启动主循环（消费 monitor + event 流，跑学习+持久化定时器）
 	go func() {
@@ -156,15 +195,43 @@ func buildRuntimeConfig(cfg *config.Config, db *sql.DB) roomengine.RuntimeConfig
 //
 // v2 schema: rooms 表无 tenant_id/unit_id/layout_config 列；layout 在 room_visual_layout 表（PK=spatial_prefix）；
 // tenant_id/unit_id 由 room_id INET prefix 派生（/48 / /80）；timezone 从 units LPM (unit /80 contains room /88) 取。
+//
+// sensor_v2 PR-Bootstrap：SQL 加 4 个 v2 RoomConfig 字段：
+//   - room_type → RoomKind（决定 16 复用 PG 列；空串 = 默认 bedroom）
+//   - is_public_bathroom → IsPublicBathroom（PR-7 决定 24 / migration 2026-05-17）
+//   - SuiteID 计算（PR-7 SuiteID 取值约定）：
+//       public bathroom (room_type=bathroom + is_public_bathroom=true) → 自身 /128
+//       其他（含 suite bathroom） → unit /80
+//   - ResidentID LPM 查询：resident_unit valid_to IS NULL + spatial_prefix 与 room_id 重叠
+//     LPM order by masklen DESC 取最 specific 绑定（/96 bed > /88 room > /80 unit）
+//     multi-resident 场景下返回任意一个（决定 19 留 PR-X，详 sensor_v2.md §10.4 注释）。
 func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB,
 	logger *zap.Logger) (int, error) {
 
+	// SQL 注：multi-resident bedroom 场景（同 /80 多 resident 各绑 /96 bed）下，
+	// LIMIT 1 返回任意一个 — 决定 19 留 PR-X，需要 sleepad device_uid → resident.id 静态映射。
+	// 单 resident 部署（v2 主目标）下结果确定。
 	rows, err := db.QueryContext(ctx, `
-		SELECT r.room_id::text,
+		SELECT r.room_id::text                                       AS room_id,
 		       r.room_name,
-		       COALESCE(rvl.canvas::text, '') AS layout_config,
-		       COALESCE(u.timezone, '') AS timezone,
-		       host(set_masklen(r.room_id, 48))::text || '/48' AS tenant_pref
+		       COALESCE(r.room_type, 0)                              AS room_type,
+		       COALESCE(r.is_public_bathroom, FALSE)                 AS is_public_bathroom,
+		       CASE
+		         WHEN r.room_type = 1 AND COALESCE(r.is_public_bathroom, FALSE)
+		           THEN r.room_id::text
+		         ELSE host(set_masklen(r.room_id, 80))::text || '/80'
+		       END                                                   AS suite_id,
+		       COALESCE(rvl.canvas::text, '')                        AS layout_config,
+		       COALESCE(u.timezone, '')                              AS timezone,
+		       host(set_masklen(r.room_id, 48))::text || '/48'       AS tenant_pref,
+		       (SELECT ru.resident_id::text
+		        FROM resident_unit ru
+		        WHERE ru.valid_to IS NULL
+		          AND (ru.spatial_prefix >>= r.room_id
+		               OR ru.spatial_prefix <<= r.room_id
+		               OR ru.spatial_prefix = r.room_id)
+		        ORDER BY masklen(ru.spatial_prefix) DESC
+		        LIMIT 1)                                              AS resident_id
 		FROM rooms r
 		LEFT JOIN units u ON u.unit_id >>= r.room_id
 		LEFT JOIN room_visual_layout rvl ON rvl.spatial_prefix = r.room_id
@@ -177,25 +244,29 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 	count := 0
 	placeholderCount := 0
 	for rows.Next() {
-		var roomID, roomName, tenantID string
+		var roomID, roomName, suiteID, tenantID string
+		var roomType int
+		var isPublicBathroom bool
 		var layoutStr sql.NullString
+		var residentIDOpt sql.NullString
 		var timezone string
-		if err := rows.Scan(&roomID, &roomName, &layoutStr, &timezone, &tenantID); err != nil {
+		if err := rows.Scan(&roomID, &roomName, &roomType, &isPublicBathroom,
+			&suiteID, &layoutStr, &timezone, &tenantID, &residentIDOpt); err != nil {
 			logger.Warn("scan rooms row", zap.Error(err))
 			continue
+		}
+		residentID := ""
+		if residentIDOpt.Valid {
+			residentID = residentIDOpt.String
 		}
 
 		var cfg roomengine.RoomConfig
 		if !layoutStr.Valid || layoutStr.String == "" {
-			// 无 layout：minimal placeholder。RegisterRoom 内部 RoomW/RoomH=0 会兜底成 Max；
-			// WallPolygon/Radar/Beds 等全空 → grid 全是空 cell，雷达派生事件天然走不通；
-			// sleepad ProcessSleepadBedEvent 仅用 tm 内部 maps，不查 grid，可正常工作。
 			cfg = roomengine.RoomConfig{RoomID: roomID, RoomName: roomName, Timezone: timezone}
 			placeholderCount++
 		} else {
 			cfg, err = roomengine.ParseLayoutConfig(roomID, []byte(layoutStr.String))
 			if err != nil {
-				// 解析失败也降级成 placeholder，与"无 layout"同等待遇——保 sleepad 能通
 				logger.Warn("parse layout failed; registering as placeholder",
 					zap.String("room_id", roomID), zap.Error(err))
 				cfg = roomengine.RoomConfig{RoomID: roomID, RoomName: roomName, Timezone: timezone}
@@ -206,8 +277,14 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 				roomengine.ApplyOptimizedExtent(&cfg)
 			}
 		}
+		// sensor_v2 v2 字段填入：RoomType / IsPublicBathroom / SuiteID / ResidentID
+		// （RegisterRoom 内部检测 IsPublicBathroom + 调 MarkPublicBathroom — 见 PR-7）
+		cfg.RoomType = roomType
+		cfg.IsPublicBathroom = isPublicBathroom
+		cfg.SuiteID = suiteID
+		cfg.ResidentID = residentID
+
 		engine.RegisterRoom(cfg)
-		// PR-8: 注入 roomID → tenant_id（AI 派生 alarm 发布需要）
 		engine.SetRoomTenant(roomID, tenantID)
 		count++
 	}
@@ -218,50 +295,11 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 	return count, rows.Err()
 }
 
-// loadStayAlarmEnablement 列出所有 Stay alarm 启用的 room_id 下发到对应 TrackManager。
-//
-// 用途：still fall position 的并集第三条 — 运维显式启用 Stay alarm 的房间，
-// 即使既不是 cell.AreaToilet/Shower 也不是 room.name=bathroom，也按 bathroom 处理。
-//
-// v2 schema: 旧 alarm_device.monitor_config 已退役；alarm 启用配置在 spatial_config 表
-// (config_key='alarm.cloud_config'，按 tenant /48 存放 device_alarms.Radar.Stay.is_enabled)。
-// LPM 解析后，rooms 落入启用 Stay 的 tenant prefix → 全部 room 算启用。
-//
-// 该状态只在启动时灌一次；运行时配置变更需重启或后续接 Redis 通道（暂未做）。
-func loadStayAlarmEnablement(ctx context.Context, engine *roomengine.Engine, db *sql.DB,
-	logger *zap.Logger) (int, error) {
-
-	rows, err := db.QueryContext(ctx, `
-		SELECT DISTINCT r.room_id::text
-		FROM rooms r
-		JOIN spatial_config sc
-		  ON sc.spatial_prefix >>= r.room_id
-		 AND sc.config_key = 'alarm.cloud_config'
-		WHERE COALESCE(
-		    (sc.config_value->'device_alarms'->'Radar'->'Stay'->>'is_enabled')::int,
-		    0
-		) = 1
-	`)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-
-	count := 0
-	for rows.Next() {
-		var roomID string
-		if err := rows.Scan(&roomID); err != nil {
-			logger.Warn("scan stay enablement row", zap.Error(err))
-			continue
-		}
-		if roomID == "" {
-			continue
-		}
-		engine.SetRoomStayAlarmEnabled(roomID, true)
-		count++
-	}
-	return count, rows.Err()
-}
+// PR-Bootstrap: loadStayAlarmEnablement 已删除（v1 dead code）。
+// 原用途："运维显式启用 Stay alarm 的房间按 bathroom 处理" — PR-10 BathroomStillFall 用
+// room.kind=="bathroom" 分支替代，决定 16 的显式配置取代了"间接通过 Stay alarm 标志判断"路径。
+// zonealarm.Supervisor 的 Stay rule（Warning 兜底，§6.A 设计原则 #1）仍由 DefaultRules + yaml
+// 始终 armed，与本函数无关。
 
 // mapDevicesToRooms 建 device_addr → room 路由表。
 //

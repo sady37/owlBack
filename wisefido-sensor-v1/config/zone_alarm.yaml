@@ -1,0 +1,62 @@
+# zone_alarm.yaml — zonealarm 派生规则配置
+#
+# 4 条 alarm 都是 zone state 的"持续时长"派生：某 zone 翻转到指定 status →
+# arm pending → duration_sec 内被 cancel triggers 取消即不发；超时 fire。
+#
+# AlarmType 与 owl-common/alarm 常量对齐（cardagg alarm_handler 接收侧识别）。
+# duration_sec 是 placeholder，最终由用户对照真实信号 calibrate（未来加 tenant override）。
+#
+# Hot reload：调用 wiring.Subsystem.ReloadZoneAlarmRulesFromFile（待实现，仅 admin tool 直接调）。
+
+rules:
+  # ============================================================
+  # 1. Stay — bathroom 持续占用过久（如老人在卫生间晕倒/久蹲）
+  # ============================================================
+  - alarm_type: Stay
+    level: WARNING
+    arm_zone: bathroom
+    arm_status: occupied
+    duration_sec: 600        # 10 min（cardagg 历史值是 45min；此处偏短，便于测试）
+    cancels:
+      - {zone: bathroom, status: vacant}    # 离开 bathroom
+      - {zone: room,     status: occupied}  # 进入其它房间
+      - {zone: bed,      status: occupied}  # 去躺床
+
+  # ============================================================
+  # 2. LeftBed — 离床过久（默认 30min）
+  # ============================================================
+  - alarm_type: LeftBed
+    level: WARNING
+    arm_zone: bed
+    arm_status: vacant
+    duration_sec: 1800       # 30 min
+    cancels:
+      - {zone: bed,  status: occupied}      # 回床
+      - {zone: room, status: occupied}      # 人回房算回床区域（用户拍板 2026-05-14）
+    # 注：rest_window（如 22:00-07:00）建议靠 tenant 级 yaml 覆盖；本默认全天
+
+  # ============================================================
+  # 3. NightAbsence — 整夜不在房间（21-7 时段）
+  # ============================================================
+  - alarm_type: NightAbsence
+    level: WARNING
+    arm_zone: room
+    arm_status: vacant
+    duration_sec: 1800       # 30 min
+    cancels:
+      - {zone: room, status: occupied}                 # EnterRoom
+      - {zone: bed,  status: occupied}                 # InBed（必然在房间）
+      - {zone: room, count_gt_zero: true}              # NumberPeople > 0 确认
+    time_window: {start_h: 21, start_m: 0, end_h: 7, end_m: 0}
+
+  # ============================================================
+  # 4. BedNightAbsence — 整夜不在床（21-7 时段）
+  # ============================================================
+  - alarm_type: BedNightAbsence
+    level: WARNING
+    arm_zone: bed
+    arm_status: vacant
+    duration_sec: 1800       # 30 min
+    cancels:
+      - {zone: bed, status: occupied}                  # InBed
+    time_window: {start_h: 21, start_m: 0, end_h: 7, end_m: 0}

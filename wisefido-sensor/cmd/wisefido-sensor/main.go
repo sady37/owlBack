@@ -96,43 +96,55 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 5.1 RoomEngine 实时学习（独立 db/redis 连接，避免与 alarm service 共享状态）
-	//      Phase 5（家属反馈接入 RecordGroundTruth）暂未开启 —— winner 用 yaml 默认 balanced
-	if engineDB, engineRedis, err := openEngineDeps(cfg); err != nil {
-		logger.Warn("roomengine deps init failed; engine disabled", zap.Error(err))
-	} else {
-		if _, err := startRoomEngine(ctx, cfg, engineDB, engineRedis, logger); err != nil {
-			logger.Warn("roomengine startup failed; engine disabled", zap.Error(err))
-		}
+	// 5.1 RoomEngine + Zone Engine + Fall rules — 三层 wire 不变量（sensor_v2 §6.A 设计原则 #3）：
+	//   - zoneengine.Supervisor: Warning 兜底 (Stay rule 10min armed)
+	//   - BathroomFallRules: Critical bathroom (§6.A 4 类)
+	//   - BedroomFallRules:  Critical bedroom (§6.B 11b/11c + PR-11.1 sleepad gating)
+	// 任一缺失 log.Fatal 拒启动（不接受降级运行，sensor_v2_known_limitations.md L4）。
+	engineDB, engineRedis, err := openEngineDeps(cfg)
+	if err != nil {
+		logger.Fatal("roomengine deps init failed — refusing to start",
+			zap.Error(err),
+			zap.String("hint", "DB or Redis unreachable; check config + connectivity"))
+	}
+
+	engine, err := startRoomEngine(ctx, cfg, engineDB, engineRedis, logger)
+	if err != nil {
+		logger.Fatal("roomengine startup failed — refusing to start",
+			zap.Error(err))
+	}
+
+	// PR-Bootstrap invariant 检查：3 层 wire 都必须 armed
+	if engine.BathroomFallRulesWired() == false {
+		logger.Fatal("BathroomFallRules not wired — refusing to start (sensor_v2_known_limitations.md L4)")
+	}
+	if engine.BedroomFallRulesWired() == false {
+		logger.Fatal("BedroomFallRules not wired — refusing to start (sensor_v2_known_limitations.md L4)")
 	}
 
 	// 5.2 PR1 (A7): sensor 端 monitor 流消费者 + buffer。
-	//      与 cardagg 用独立 consumer group (wisefido-sensor-monitor)，offset 互不干扰。
-	//      Phase 2 (zone engine) 复用本 buffer 喂 vital adapter；故拆出 monitorBuf 跨步骤共享。
 	monitorBuf := service.NewMonitorBuffer()
-	if engineDB, engineRedis, err := openEngineDeps(cfg); err == nil {
-		monitorConsumer := consumer.NewMonitorConsumer(engineRedis, monitorBuf, logger)
-		monitorConsumer.Start(ctx)
+	monitorConsumer := consumer.NewMonitorConsumer(engineRedis, monitorBuf, logger)
+	monitorConsumer.Start(ctx)
 
-		// 5.3 Zone Engine 子系统：Bed/Room/Bathroom 状态唯一权威源 + zonealarm 派生 alarm。
-		// 注入 AlarmBackChannel 让 zonealarm 把 derived alarm（Stay/LeftBed/NightAbsence/
-		// BedNightAbsence）经 iot:alarm:stream 回流给 cardagg 落库。
-		zone, err := wiring.Setup(wiring.SetupOptions{
-			DB:            engineDB,
-			Redis:         engineRedis,
-			MonitorBuffer: monitorBuf,
-			BackChannel:   consumer.NewAlarmBackChannel(engineRedis, sensorAgentIdentity(cfg, logger)),
-			Logger:        logger,
-		})
-		if err != nil {
-			logger.Warn("zone engine subsystem init failed; presence 派生退化为 cardagg 旧路径",
-				zap.Error(err))
-		} else {
-			zone.Start(ctx)
-		}
-	} else {
-		logger.Warn("sensor monitor consumer + zone engine disabled (deps init failed)", zap.Error(err))
+	// 5.3 Zone Engine 子系统：Bed/Room/Bathroom 状态唯一权威源 + zonealarm Warning 兜底
+	zone, err := wiring.Setup(wiring.SetupOptions{
+		DB:            engineDB,
+		Redis:         engineRedis,
+		MonitorBuffer: monitorBuf,
+		BackChannel:   consumer.NewAlarmBackChannel(engineRedis, sensorAgentIdentity(cfg, logger)),
+		Logger:        logger,
+	})
+	if err != nil {
+		logger.Fatal("zone engine subsystem init failed — Warning floor lost, refusing to start",
+			zap.Error(err),
+			zap.String("hint", "sensor_v2_known_limitations.md L4 — zonealarm.Supervisor Stay rule is Warning 兜底"))
 	}
+	zone.Start(ctx)
+	logger.Info("v2 fall detection wired — all 3 layers armed",
+		zap.String("warning_floor", "zonealarm.Supervisor Stay rule (10min bathroom)"),
+		zap.String("critical_bathroom", "BathroomFallRules §6.A 4 rules"),
+		zap.String("critical_bedroom", "BedroomFallRules §6.B 11b+11c"))
 
 	// 6. 启动服务（在 goroutine 中）
 	serviceErrChan := make(chan error, 1)

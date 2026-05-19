@@ -598,8 +598,8 @@ func (c *DeviceMetaCache) UpdateStatus(cardID, deviceAddr, key, value string) {
 	dm.RuntimeStatus[key] = value
 }
 
-// ClassifyRoomType 根据 room_name 推断房间语义类型。
-func ClassifyRoomType(roomName string) string {
+// ClassifyRoomType 根据 room_name 推断 room_type（返回 card.RoomType*）。
+func ClassifyRoomType(roomName string) int {
 	return roomutil.ClassifyRoomType(roomName)
 }
 

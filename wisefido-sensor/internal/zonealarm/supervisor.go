@@ -21,7 +21,7 @@ import (
 //   - 标记存在期间不再 arm 同一规则（同一段 occupancy 期内最多 1 条 alarm_events）
 //   - arm zone "真正离开" arm status 时清除标记，允许下次重新 arm
 //     · arm=Occupied 规则（Stay）：仅 zone→Vacant 才清（Leaving 不算，可能软离开后回弹）
-//     · arm=Vacant 规则（LeftBed/NightAbsence/BedNightAbsence）：zone→Occupied 或 zone→Leaving 都清
+//     · arm=Vacant 规则（LeftBed/NightAbsence）：zone→Occupied 或 zone→Leaving 都清
 //       （Leaving IsPresent=true 已表示人回来了）
 //   - 设计动机：alarm 是警报通知不是状态轮询；且 fire 之前 still_fall 等更紧急规则已先触发
 type Supervisor struct {
@@ -168,7 +168,7 @@ func (s *Supervisor) Tick(nowMs int64) {
 // zonealarm 决策。只有完成态（Vacant 或 Occupied）才视为转换完成。
 //
 //	arm=Occupied 的规则（Stay）：仅 NewState=Vacant 算真离开。
-//	arm=Vacant 的规则（LeftBed / NightAbsence / BedNightAbsence）：仅 NewState=Occupied 算人真回来。
+//	arm=Vacant 的规则（LeftBed / NightAbsence）：仅 NewState=Occupied 算人真回来。
 //	Leaving 在两种方向上都被忽略 — 保持现有 fired 标记。
 func zoneLeftArmStatus(armStatus, newStatus zoneengine.ZoneStatus) bool {
 	switch armStatus {

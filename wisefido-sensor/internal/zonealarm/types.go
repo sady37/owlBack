@@ -17,7 +17,7 @@
 //                          room.EnterRoom（人回房算回床区域，用户拍板）
 //   3. NightAbsence      — room→vacant 持续 N min（21-7 时段） → fire；cancel:
 //                          room.EnterRoom / bed.InBed / room.NumberPeople>0
-//   4. BedNightAbsence   — bed→vacant 持续 N min（21-7 时段） → fire；cancel: bed.InBed
+//                          （bed-scope NightAbsence 已删除：床上无人不等于风险，可用 LeftBed 长时长替代）
 package zonealarm
 
 import (
@@ -30,7 +30,7 @@ import (
 // Rule 一条 alarm 派生规则。同一规则可以匹配多张卡，每张卡独立 pending。
 type Rule struct {
 	// AlarmType cardagg alarm_handler 接收时识别的 event_name；
-	// 取自 owl-common/alarm 常量（Stay / LeftBed / NightAbsence / BedNightAbsence）。
+	// 取自 owl-common/alarm 常量（Stay / LeftBed / NightAbsence）。
 	AlarmType string `yaml:"alarm_type"`
 
 	// Level cardagg PersistAlarmAndPublish 用的 alarm_level（"WARN" / "CRIT" 等）。

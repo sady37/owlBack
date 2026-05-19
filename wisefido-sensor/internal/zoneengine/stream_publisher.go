@@ -3,13 +3,13 @@
 // 替代旧 adapter_redis.go 直写 card:status hash 的方式（CLAUDE.md 规则 #1.3 单 writer：
 // cardagg sensor_state_projector 是 card:status 唯一 writer，sensor 通过流推消息让 cardagg 写）。
 //
-// 4 个发送接口：
-//   PublishBedState / PublishRoomState / PublishBathRoomState  — zoneengine.OnZoneEvent 自动调
-//   PublishTargetState                                          — 留接口，sensor 内部 Target 派生
-//                                                                 实现后调（当前为空）
+// 3 个发送接口：
+//   PublishBedState / PublishRoomState  — zoneengine.OnZoneEvent 自动调
+//   PublishTargetState                  — 留接口，sensor 内部 Target 派生实现后调
 //
-// 设计：sensor 读 card:status 取 prev 字段保留（TrackNumber/SleepStage/AreaPeople/StayFSMPhase
-// 等非 engine 字段），merge engine 翻译后的字段后发完整 JSON；cardagg projector blindly 写 hash。
+// 设计：bathroom 不再独立流，bathroom zone 翻译为 RoomState 带 Kind=bathroom。
+// sensor 读 card:status 取 prev 字段保留（TrackNumber/SleepStage/AreaPeople 等非 engine 字段），
+// merge engine 翻译后的字段后发完整 JSON；cardagg projector blindly 写 hash。
 
 package zoneengine
 
@@ -44,29 +44,32 @@ func NewStreamPublisher(client *redislib.Client, logger *zap.Logger) *StreamPubl
 }
 
 // OnZoneEvent satisfy ZoneEventListener — 替代 RedisAdapter 同名方法。
+// 输出 cardID = e.ZoneID（physical /88 room / /96 bed），与 radar 的 SubjectEntity 解耦：
+// 多 radar 同绑 /80 unit card 时 bedroom + bathroom 数据落各自 /88 hash 不互相覆盖。
+// /80 unit 没有自己的 state 块；FE unit 卡按 /80 prefix 找子 /88，挑最近 UpdatedAt 渲染。
 func (p *StreamPublisher) OnZoneEvent(e ZoneEvent) {
-	if e.CardID == "" {
+	if e.ZoneID == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 	defer cancel()
 
-	cur, err := p.reader.ReadCardStatus(ctx, e.CardID)
+	cur, err := p.reader.ReadCardStatus(ctx, e.ZoneID)
 	if err != nil {
-		p.logger.Warn("read card status", zap.String("cid", e.CardID), zap.Error(err))
-		cur = &card.CardStatus{CardID: e.CardID}
+		p.logger.Warn("read card status", zap.String("zone", e.ZoneID), zap.Error(err))
+		cur = &card.CardStatus{CardID: e.ZoneID}
 	}
 
 	switch e.ZoneType {
 	case ZoneTypeBed:
 		bs := TranslateBedState(e, cur.BedState)
-		_ = p.PublishBedState(ctx, e.CardID, bs)
+		_ = p.PublishBedState(ctx, e.ZoneID, bs)
 	case ZoneTypeRoom:
-		rs := TranslateRoomState(e, cur.RoomState)
-		_ = p.PublishRoomState(ctx, e.CardID, rs)
+		rs := TranslateRoomState(e, cur.RoomState, card.RoomTypeDefault)
+		_ = p.PublishRoomState(ctx, e.ZoneID, rs)
 	case ZoneTypeBathroom:
-		br := TranslateBathRoomState(e, cur.BathRoomState)
-		_ = p.PublishBathRoomState(ctx, e.CardID, br)
+		rs := TranslateRoomState(e, cur.RoomState, card.RoomTypeBathroom)
+		_ = p.PublishRoomState(ctx, e.ZoneID, rs)
 	}
 }
 
@@ -75,14 +78,9 @@ func (p *StreamPublisher) PublishBedState(ctx context.Context, cardID string, bs
 	return p.publish(ctx, cardID, "bed.state", bs)
 }
 
-// PublishRoomState category=room.state。
+// PublishRoomState category=room.state（bathroom kind 也走这条，由 RoomState.Kind 区分）。
 func (p *StreamPublisher) PublishRoomState(ctx context.Context, cardID string, rs *card.RoomState) error {
 	return p.publish(ctx, cardID, "room.state", rs)
-}
-
-// PublishBathRoomState category=bathroom.state。
-func (p *StreamPublisher) PublishBathRoomState(ctx context.Context, cardID string, br *card.BathRoomState) error {
-	return p.publish(ctx, cardID, "bathroom.state", br)
 }
 
 // PublishTargetState category=target.state。

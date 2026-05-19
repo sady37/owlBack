@@ -148,6 +148,18 @@ func (g *RoomGrid) LearnCellAreas(p LearnParams, nowMs int64) {
 			continue
 		}
 
+		// sensor_v2 决定 20: inside_enter 自学习升格路径
+		// MarkInsideEnterCandidate 累计 ≥ InsideEnterLearnThreshold → InsideEnterLearned=true
+		// 此处消费 flag 升格 cell.AreaType = AreaEnter (Source=SourceLearned)
+		// 注：仅对 inside_enter 自学习路径解锁 AreaEnter 升格；outside / bathroom 仍由 layout 锁定（决定 15/20）
+		// promoteCell 自己不会越过 SourceHuman（layout 人标的 outside/bathroom 入口安全）
+		if c.InsideEnterLearned && c.Belief[0].Type != AreaEnter {
+			promoteCell(c, AreaEnter, p.ConfFloor)
+			// 注：cell.EnterTarget 保留 ""（inside_enter 默认）；不写 outside / bathroom
+			// 这与决定 20 "v2 单 device 内不可学跨 device enter target" 一致
+			continue
+		}
+
 		// PR-15: AreaSit 升格已禁用此简单规则。
 		// 旧规则 ActiveType[Sit] >= 15s 触发 → 雷达近场常误判 pose=Sit 累积；
 		// 实测在 D523 bookroom 雷达下方 (~1.5m 近场) 学出假的 Sit 区。

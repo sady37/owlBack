@@ -20,7 +20,7 @@ import (
 // fallback 给 ZoneID prefix（zero host）导致下游 snapshot JOIN 全 NULL 的 bug。
 //
 // 策略（v1）：
-//   - LeftBed / BedNightAbsence / InBed / Fall / SuspectedFall /
+//   - LeftBed / InBed / Fall / SuspectedFall /
 //     SittingOnGround / SuspectedSittingOnGround → 优先 Radar
 //     (用户拍板 leftBed 以 09E7 雷达为主、fall 以 D523 雷达为主，per memory
 //      track_fusion_and_gate_cardid + d5f7_ghost_cases 等)
@@ -160,7 +160,7 @@ func (l *BedDeviceLookup) InvalidateAll() {
 // 注：alarm 名跟 owl-common/alarm 包对齐。新增 alarm 类型时同步扩展。
 func preferredDeviceTypeForAlarm(alarmType string) string {
 	switch alarmType {
-	case alarm.LeftBed, alarm.InBed, alarm.BedNightAbsence:
+	case alarm.LeftBed, alarm.InBed:
 		return "Radar" // 用户拍板：床位 alarm 主源 radar
 	case alarm.Fall, alarm.SuspectedFall, alarm.SittingOnGround, alarm.SuspectedSittingOnGround:
 		return "Radar" // fall 类必走 radar

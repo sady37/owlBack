@@ -49,14 +49,3 @@ rules:
       - {zone: room, count_gt_zero: true}              # NumberPeople > 0 确认
     time_window: {start_h: 21, start_m: 0, end_h: 7, end_m: 0}
 
-  # ============================================================
-  # 4. BedNightAbsence — 整夜不在床（21-7 时段）
-  # ============================================================
-  - alarm_type: BedNightAbsence
-    level: WARNING
-    arm_zone: bed
-    arm_status: vacant
-    duration_sec: 1800       # 30 min
-    cancels:
-      - {zone: bed, status: occupied}                  # InBed
-    time_window: {start_h: 21, start_m: 0, end_h: 7, end_m: 0}

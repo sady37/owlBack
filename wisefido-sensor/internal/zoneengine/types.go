@@ -2,17 +2,18 @@
 //
 // 设计原则：
 //   - 一个 engine 一套核心逻辑；ZoneType 只是 parameter，不是分支。
-//   - 内部模型用统一 ZoneState；外部 Redis 投影（BedState/RoomState/BathRoomState）
+//   - 内部模型用统一 ZoneState；外部 Redis 投影（BedState/RoomState）
 //     由 RedisAdapter 翻译输出（zone-type-specific extras 由 satellite supervisor 维护）。
+//     bathroom 不再有独立 state，翻译为 RoomState 带 Kind=bathroom。
 //   - 所有阈值/权重外置 yaml（zone_rules.yaml），支持 hot reload + spatial_config 覆盖。
 //   - 负反馈源 MVP 只有 2 个：self_contradiction（自相矛盾秒级 rollback）+
 //     subset_invariant（bed⊆room 跨 zone reconcile）。cell_history / operator_feedback /
 //     behavioral_baseline 三类是后期。
 //
 // 与 owl-common/card.CardStatus 关系：
-//   - card.BedState/RoomState/BathRoomState 是给前端的 JSON contract，保留不动。
+//   - card.BedState/RoomState 是给前端的 JSON contract。
 //   - zoneengine.ZoneState 是引擎内部模型，唯一真相源。
-//   - RedisAdapter 写 card.* 时做翻译；翻译丢失的字段（SleepStage / StayFSMPhase 等）
+//   - RedisAdapter 写 card.* 时做翻译；翻译丢失的字段（SleepStage / StaySec 等）
 //     由独立的 satellite supervisor 在收到 ZoneEvent 后写入。
 package zoneengine
 

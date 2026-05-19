@@ -9,12 +9,11 @@ import (
 // PublishFields 待发布的 CardStatus 各块，均为可选；只传需要发布的块（一项或多项）。
 // device:status:{deviceID} 独立 Hash 由 monitor/event/alarm 流事件驱动 + 看门狗 fail-safe，不在此发布。
 type PublishFields struct {
-	Target        *card.TargetState
-	RoomState     *card.RoomState
-	BathRoomState *card.BathRoomState
-	BedState      *card.BedState
-	AlarmState    *card.AlarmState
-	Message       map[string]interface{}
+	Target     *card.TargetState
+	RoomState  *card.RoomState
+	BedState   *card.BedState
+	AlarmState *card.AlarmState
+	Message    map[string]interface{}
 }
 
 // PublishCardStatus 统一发布入口：按 PublishFields 只写传入的非 nil 块到 Hash 并推 card:status:stream。
@@ -25,9 +24,6 @@ func PublishCardStatus(ctx context.Context, w *card.Writer, cardID string, field
 	}
 	if fields.RoomState != nil {
 		status.RoomState = fields.RoomState
-	}
-	if fields.BathRoomState != nil {
-		status.BathRoomState = fields.BathRoomState
 	}
 	if fields.BedState != nil {
 		status.BedState = fields.BedState
@@ -49,9 +45,6 @@ func PublishCardStatusSilent(ctx context.Context, w *card.Writer, cardID string,
 	}
 	if fields.RoomState != nil {
 		status.RoomState = fields.RoomState
-	}
-	if fields.BathRoomState != nil {
-		status.BathRoomState = fields.BathRoomState
 	}
 	if fields.BedState != nil {
 		status.BedState = fields.BedState

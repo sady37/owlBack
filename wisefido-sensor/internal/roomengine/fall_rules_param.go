@@ -118,6 +118,11 @@ type fallRulesParam struct {
 	CellHistory cellHistoryParam
 }
 
+// InsideEnterLearnThreshold sensor_v2 决定 20：inside_enter 自学习升格门槛。
+// 累计 "track 失锁 + 3s 内同 cell 重生" 事件 ≥ 此值 → InsideEnterLearned=true。
+// 默认 5，prod 校准。
+const InsideEnterLearnThreshold = 5
+
 // FallRulesParam 全局单例。所有跌倒规则统一引用此变量。
 //
 // 约定：只读。修改值须改本文件并重编。运行时不修改字段。

@@ -46,11 +46,12 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 
 	for _, objRaw := range layout.Objects {
 		var hdr struct {
-			TypeName string          `json:"typeName"`
-			Geometry json.RawMessage `json:"geometry"`
-			Angle    *float64        `json:"angle,omitempty"`
-			Device   json.RawMessage `json:"device,omitempty"`
-			Height   *int            `json:"height,omitempty"` // 物体顶部高度 cm；缺失时按 typeName 默认值
+			TypeName    string          `json:"typeName"`
+			Geometry    json.RawMessage `json:"geometry"`
+			Angle       *float64        `json:"angle,omitempty"`
+			Device      json.RawMessage `json:"device,omitempty"`
+			Height      *int            `json:"height,omitempty"`      // 物体顶部高度 cm；缺失时按 typeName 默认值
+			EnterTarget string          `json:"enter_target,omitempty"` // sensor_v2 决定 15：""/inside_enter / "outside" / "bathroom"
 		}
 		if err := json.Unmarshal(objRaw, &hdr); err != nil {
 			continue
@@ -80,6 +81,7 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
 				cfg.Enters = append(cfg.Enters, *rect)
 				cfg.EnterHeights = append(cfg.EnterHeights, objHeight)
+				cfg.EnterTargets = append(cfg.EnterTargets, hdr.EnterTarget) // sensor_v2 决定 15
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 

@@ -1,12 +1,10 @@
-// translator.go — ZoneEvent → card.BedState/RoomState/BathRoomState 纯函数翻译。
+// translator.go — ZoneEvent → card.BedState/RoomState 纯函数翻译。
 //
-// Engine-owned 字段（types.go 注释明确）：
-//   · BedState:      BedStatus / BedEvent / UpdatedAt / StartTime / DurationSec
-//   · RoomState:     TotalPeople / LastEnterTime / LastExitTime / UpdatedAt / HasMulti
-//   · BathRoomState: TotalPeople / LastEnterTime / LastExitTime / UpdatedAt / HasMulti
+// Engine-owned 字段：
+//   · BedState:  BedStatus / BedEvent / UpdatedAt / StartTime / DurationSec
+//   · RoomState: TotalPeople / LastEnterTime / LastExitTime / UpdatedAt / HasMulti / Kind
 //
-// 其余字段（TrackNumber / SleepStage / AreaPeople / StayFSMPhase / RoomName 等）由 prev
-// 保留 —— stream_publisher 调时传入 prev。
+// 其余字段（TrackNumber / SleepStage / AreaPeople / StaySec 等）由 prev 保留。
 
 package zoneengine
 
@@ -51,32 +49,21 @@ func TranslateBedState(e ZoneEvent, prev *card.BedState) *card.BedState {
 			out.DurationSec = int((e.NewState.UpdatedAt - out.StartTime) / 1000)
 		}
 	}
+
 	return out
 }
 
-// TranslateRoomState engine 字段 + prev 保留 AreaPeople/StandingContinuousMin/HasRisk。
-func TranslateRoomState(e ZoneEvent, prev *card.RoomState) *card.RoomState {
+// TranslateRoomState engine 字段 + prev 保留 AreaPeople/StaySec/StandingContinuousMin/RiskLevel。
+// kind 决定 risk 阈值族（bathroom 较短 stay 即触发 risk，bedroom 不触发）。
+// count_change 直写路径不走 StateMachine，但 0↔N 跨越仍是逻辑 enter/exit，必须更新时间戳，
+// 否则 FE OOR 计时永远停在最初 Vacant 时刻（per-card 长期 stale 的根因）。
+func TranslateRoomState(e ZoneEvent, prev *card.RoomState, roomType int) *card.RoomState {
 	out := &card.RoomState{}
 	if prev != nil {
 		*out = *prev
 	}
-	out.UpdatedAt = e.NewState.UpdatedAt
-	out.TotalPeople = e.NewState.Count
-	switch e.Transition {
-	case TransitionOccupied, TransitionReturned:
-		out.LastEnterTime = e.NewState.LastEnterTs
-	case TransitionVacant:
-		out.LastExitTime = e.NewState.LastExitTs
-	}
-	out.HasMulti = out.TotalPeople > 1
-	return out
-}
-
-// TranslateBathRoomState engine 字段 + prev 保留 StayFSMPhase/Stay*/DeviceID/RoomName 等。
-func TranslateBathRoomState(e ZoneEvent, prev *card.BathRoomState) *card.BathRoomState {
-	out := &card.BathRoomState{}
-	if prev != nil {
-		*out = *prev
+	if roomType != card.RoomTypeDefault {
+		out.RoomType = roomType
 	}
 	out.UpdatedAt = e.NewState.UpdatedAt
 	out.TotalPeople = e.NewState.Count
@@ -85,7 +72,13 @@ func TranslateBathRoomState(e ZoneEvent, prev *card.BathRoomState) *card.BathRoo
 		out.LastEnterTime = e.NewState.LastEnterTs
 	case TransitionVacant:
 		out.LastExitTime = e.NewState.LastExitTs
+	case TransitionCountChange:
+		if e.PrevState.Count == 0 && e.NewState.Count > 0 {
+			out.LastEnterTime = e.NewState.UpdatedAt
+		} else if e.PrevState.Count > 0 && e.NewState.Count == 0 {
+			out.LastExitTime = e.NewState.UpdatedAt
+		}
 	}
-	out.HasMulti = out.TotalPeople > 1
+	out.RiskLevel = EvaluateRoomRiskLevel(out, e.NewState.UpdatedAt, nil)
 	return out
 }

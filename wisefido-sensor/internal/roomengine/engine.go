@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"owl-common/alarm"
+	"owl-common/card"
 	"owl-common/observation"
 	"owl-common/radarutils"
 	rediscommon "owl-common/redis"
@@ -27,7 +28,8 @@ import (
 // RoomConfig 房间配置（全 int 化 + 对齐 radarutils 类型）
 type RoomConfig struct {
 	RoomID   string
-	RoomName string // rooms.room_name；wisefido-sensor 用 owl-common/roomutil.ClassifyRoomType 判 still fall 区
+	RoomName string // rooms.room_name；保留兼容；sensor_v2 决定 16 后只用 RoomType 做分支判定，不再用 RoomName 字符串匹配
+	RoomType int    // owl-common/card.RoomType*: 0=Default / 1=Bathroom / 2=Kitchen
 	RoomW    int    // 画布宽（cm）
 	RoomH    int    // 画布深（cm）
 	OriginX  int    // grid[0][0] 左上角的画布坐标 X（让 grid 覆盖物体 bbox）
@@ -59,6 +61,15 @@ type RoomConfig struct {
 	FurnitureHeights []int
 	InterfereHeights []int
 
+	// sensor_v2 决定 15: EnterTargets 与 Enters 同长度平行 slice。
+	// 取值：
+	//   ""         → inside_enter (默认；不强制标识)
+	//   "outside"  → 通向 unit 外（必须人工标）
+	//   "bathroom" → 通向 bathroom（必须人工标；v2 单 bathroom 无需 id）
+	// vue 编辑器 dropdown 三选项，写入 layout JSON 每个 enter 对象的 enter_target 字段。
+	// 缺失或为 "" → 视作 inside_enter。
+	EnterTargets []string
+
 	// 雷达安装
 	Radar radarutils.RadarMount
 
@@ -69,6 +80,31 @@ type RoomConfig struct {
 	// 用于 IsNightTime 判定 risk-time（默认 23:30-07:30 本地时间）。
 	// 空值 → engine 退化为 UTC（错位风险，必须设置）。
 	Timezone string
+
+	// sensor_v2 PR-3 wiring：
+	// SuiteID    = census bucket key；取值规则按 IsPublicBathroom 分两路（决定 24 / PR-7）：
+	//                public bathroom (IsPublicBathroom=true)  → bathroom_spatial_prefix /128（自身）
+	//                suite bathroom / bedroom / 其他           → unit_spatial_prefix /80
+	//              bootstrap 责任：按下面规则计算 SuiteID 传入 RegisterRoom。
+	// ResidentID = bedroom 关联的 resident.id；bathroom 不必填；PR-2 SuiteCensusManager 升格用。
+	// 空值 = bootstrap 未配置 → TrackStatus.PersonID/PersonRole 一律空。
+	//
+	// **当前是单 resident 字段，multi-resident bedroom 暂未支持**：
+	//   PR-3 范围内 caller 责任传入"该 room 的预期 resident"（单 resident unit 直接传 residents[0]）。
+	//   决定 19 multi-resident 场景（dual sleepad bedroom）的正解 = sleepad device_uid → resident.id
+	//   静态映射，未来扩展为 []ResidentBinding 或 ResidentLookup func；
+	//   PR-5/6 BathroomGate + 实测 multi-resident fixture 时再决（详 sensor_v2.md 决定 19）。
+	SuiteID    string
+	ResidentID string
+
+	// sensor_v2 决定 24 / PR-7 Public Bathroom Standalone Mode：
+	// 仅当 RoomType==card.RoomTypeBathroom 时有意义：
+	//   true  = public bathroom（楼层共用，多人不识别身份）→ RegisterRoom 触发 census.MarkPublicBathroom，
+	//           BathroomGate.Process / BathroomGhostAdjudicator 规则 2/3 因 IsPublicBathroom 自动降级
+	//   false = suite bathroom（附属某 bedroom，elder 私用）→ 走完整 §4.A 判定 + BathroomGate 入口流量
+	// 来源：rooms.is_public_bathroom 列（migration 2026-05-17_rooms_add_is_public_bathroom.sql）
+	// 显式配置不推断（详 sensor_v2.md §4.A.6 触发条件 + 拒绝拓扑推断的理由）
+	IsPublicBathroom bool
 }
 
 // ========================================================================
@@ -187,6 +223,51 @@ type Engine struct {
 	logger      *zap.Logger
 
 	onOutput func(roomID string, outputs []TrackOutput)
+
+	// sensor v2 PR-3 wiring：
+	//   - suiteCensus 进程级共享 census manager（nil = PR-3 未启用，TrackStatus.PersonID 空）
+	//   - roomSuiteID    roomID → SuiteID（unit spatial_prefix INET 字符串）；bootstrap 注入
+	//   - roomResidentID roomID → resident.id（PR-2 升格用；bathroom room 不必填）
+	//   - roomType       roomID → card.RoomType* (0=Default / 1=Bathroom / 2=Kitchen)
+	// 单 reader（handleMessage 调 SnapshotTrackStatuses 后 publish）；上述 map 在 RegisterRoom
+	// + SetSuiteCensus 时写入，运行时只读，无并发风险。
+	suiteCensus    *SuiteCensusManager
+	roomSuiteID    map[string]string
+	roomResidentID map[string]string
+	roomType       map[string]int
+
+	// trackLastSeen 是 publishTrackStatuses 的失锁判定状态：roomID → trackID → 上次出现的 nowMs。
+	// 用途：firmware track_id 复用场景下，SuiteCensus.AnchorTrackID 必须在 track 真正失锁后清空，
+	// 否则新 track 复用旧 trackID 会被当成"同一人活动"持续 update LastActiveMs。
+	// 判据：当前 snapshot 未含 trackID 且 (nowMs - lastSeenMs) ≥ 60s → 调 ClearAnchorOnLostTrack。
+	// 60s 偏保守（远大于 MaxMissCount=10 帧的 coast 期），避免 firmware coast 期间误清。
+	// 写者：publishTrackStatuses（per-room 串行，与 handleMessage 同 goroutine）；无锁需要。
+	trackLastSeen map[string]map[int]int64
+
+	// sensor_v2 PR-4 ghost adjudicator 分支选择（决定 16 / §10.3.1）：
+	//   bathroomGhostAdj → room_type == card.RoomTypeBathroom
+	//   generalGhostAdj  → 默认（含 bedroom / living / kitchen / ...）
+	// nil = 用 NoopGhostAdjudicator（行为 == v1，PR-4 默认）；bootstrap 调 SetGhostAdjudicators 注入真实实现。
+	// 读取走 e.mu.RLock；写入仅在 SetGhostAdjudicators 一次（无 hot swap 需求）。
+	bathroomGhostAdj GhostAdjudicator
+	generalGhostAdj  GhostAdjudicator
+
+	// sensor_v2 PR-5 BathroomGate 入口流量子模块（§4.A.2）：
+	//   每 bathroom room 一个 gate（key = roomID），lazy 创建在 publishTrackStatuses。
+	//   census + suiteID 为空时不创建（fallback noop）。
+	//   单 goroutine 读写（publishTrackStatuses per-room 串行），无锁需要。
+	bathroomGates map[string]*BathroomGate
+
+	// sensor_v2 PR-10 BathroomFallRules（§6.A）：
+	//   实例级单例（所有 bathroom rooms 共用一个 rules，内部 per-roomID 状态分桶）；
+	//   bootstrap 调 SetBathroomFallRules 注入；nil = 跳过 bathroom fall 判定（PR-9 后 v1 路径已删，
+	//   不注入意味着 dev 阶段 fall 检测降级）。
+	bathroomFall *BathroomFallRules
+
+	// sensor_v2 PR-11 BedroomFallRules（§6.B 11b + 11c）：
+	//   仅 non-bathroom room（bedroom 默认 + 其他 room.kind）入；
+	//   silent_fall (11a) 仍由 TrackManager.scanSilentFallLeftBed 处理（PR-9 后已对齐 §6.B.1）。
+	bedroomFall *BedroomFallRules
 }
 
 // RuntimeConfig 与 wisefido-sensor/internal/config::RoomEngineConfig 一一对应；
@@ -252,6 +333,11 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		unrouted:             make(map[string]int64),
 		redisClient:          redisClient,
 		logger:               logger,
+		roomSuiteID:          make(map[string]string),
+		roomResidentID:       make(map[string]string),
+		roomType:             make(map[string]int),
+		trackLastSeen:        make(map[string]map[int]int64),
+		bathroomGates:        make(map[string]*BathroomGate),
 	}
 }
 
@@ -405,20 +491,6 @@ func (e *Engine) MapCardToRoom(cardID, roomID string) {
 	e.mu.Lock()
 	e.cardToRoom[cardID] = roomID
 	e.mu.Unlock()
-}
-
-// SetRoomStayAlarmEnabled 注入指定房间的 Stay alarm 启用状态。
-// 由 bootstrap 查 alarm_device.monitor_config 后调用。
-// 房间不存在或未注册 → 静默丢弃（warn 日志）。
-func (e *Engine) SetRoomStayAlarmEnabled(roomID string, enabled bool) {
-	e.mu.RLock()
-	tm := e.rooms[roomID]
-	e.mu.RUnlock()
-	if tm == nil {
-		e.logger.Warn("SetRoomStayAlarmEnabled: room not registered", zap.String("room_id", roomID))
-		return
-	}
-	tm.SetStayAlarmEnabled(enabled)
 }
 
 // RoomForDevice 查 deviceKey（device_id 或 device_uid）对应的 room_id。
@@ -582,6 +654,294 @@ func (e *Engine) publishEnabled() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.aiPublishMode == "log&publish"
+}
+
+// SetSuiteCensus 注入进程级共享 SuiteCensusManager（sensor_v2 PR-2 数据结构 + PR-3 publish 关联）。
+// nil = 禁用 PR-3 PersonID 关联（TrackStatus.PersonID 一律空）；
+// bootstrap 调用方负责生命周期（含 SaveToRedis 定时任务）。
+func (e *Engine) SetSuiteCensus(m *SuiteCensusManager) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.suiteCensus = m
+}
+
+// SetBathroomFallRules 注入 PR-10 BathroomFallRules（§6.A 4 类 fall）。
+// nil → 跳过 bathroom fall 判定（PR-9 后 v1 路径已删，相当于 fall 检测降级）。
+// 实例级单例：所有 bathroom rooms 共用，内部 per-roomID 分桶状态。
+func (e *Engine) SetBathroomFallRules(r *BathroomFallRules) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.bathroomFall = r
+}
+
+// SetBedroomFallRules 注入 PR-11 BedroomFallRules（§6.B 11b + 11c）。
+// 仅 non-bathroom room 入；silent_fall 11a 仍走 TrackManager.scanSilentFallLeftBed。
+func (e *Engine) SetBedroomFallRules(r *BedroomFallRules) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.bedroomFall = r
+}
+
+// BathroomFallRulesWired bootstrap invariant 检查（sensor_v2_known_limitations.md L4）。
+// main.go 启动后调用；false → log.Fatal 拒启动。
+func (e *Engine) BathroomFallRulesWired() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.bathroomFall != nil
+}
+
+// BedroomFallRulesWired bootstrap invariant 检查（同上）。
+func (e *Engine) BedroomFallRulesWired() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.bedroomFall != nil
+}
+
+// SetGhostAdjudicators 注入 ghost 判定器二件套（sensor_v2 PR-4，决定 16 + §10.3.1）。
+// general nil → fallback NoopGhostAdjudicator（PR-7 §4.B 落地前 = v1 行为）；
+// bathroom nil → fallback NoopGhostAdjudicator（未注入真实 BathroomGhostAdjudicator 时不做 §4.A 判定）。
+// 任一调用都是幂等替换，没有 hot swap 边界 —— PR-X 想换实现请重启 engine。
+func (e *Engine) SetGhostAdjudicators(general, bathroom GhostAdjudicator) {
+	if general == nil {
+		general = NoopGhostAdjudicator{}
+	}
+	if bathroom == nil {
+		bathroom = NoopGhostAdjudicator{}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.generalGhostAdj = general
+	e.bathroomGhostAdj = bathroom
+}
+
+// GridForRoom 暴露 grid 给 BathroomGhostAdjudicator 用（lookup callback）。
+// 走 RLock 读 e.grids — 与 RegisterRoom 加锁路径互斥但快速通过。
+// 返回 nil = room 未注册（caller 据此 noop）。
+func (e *Engine) GridForRoom(roomID string) *RoomGrid {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.grids[roomID]
+}
+
+// SuiteIDForRoom 暴露 roomID → suiteID 给 BathroomGhostAdjudicator 用。
+func (e *Engine) SuiteIDForRoom(roomID string) string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.roomSuiteID[roomID]
+}
+
+// pickAdjudicator 按 room_type binary 分类挑选 adjudicator。读锁内调用。
+// nil-safe：未调 SetGhostAdjudicators 时退化 Noop（保 PR-4 默认行为 == v1）。
+func (e *Engine) pickAdjudicator(roomType int) GhostAdjudicator {
+	if roomType == card.RoomTypeBathroom {
+		if e.bathroomGhostAdj != nil {
+			return e.bathroomGhostAdj
+		}
+	} else {
+		if e.generalGhostAdj != nil {
+			return e.generalGhostAdj
+		}
+	}
+	return NoopGhostAdjudicator{}
+}
+
+// applyVerdictDeltas 应用 GhostAdjudicator 输出到 TrackStatus 副本（**唯一 verdict 写点**）。
+//
+// 不变量守卫（sensor_v2 决定 21 / Q4 review）：
+//   Anchored → Ghost 转换被拒绝；verdict 字段保持 Anchored，penalty 仍累加供 PR-6 BathroomGhost
+//   "持续疑似"审计观察。未来若需真正 unanchor，必须走显式重置路径（重启 / FeedbackEvent 清
+//   LongSurvival/StartupGrace），不能在单帧 delta 里悄悄做。
+//
+// 边界：
+//   - PenaltyDelta clamp 到 [0, 100]
+//   - delta 引用不存在的 TrackID → 静默丢弃（adjudicator 看到的 base 是当前帧 snapshot，
+//     长生命周期 stale delta 应当不会出现；warn log 留给单测验证）
+//   - delta.Reason 为空时仍应用（PR-4 默认 Noop 不返 reason；PR-6 之后 adjudicator 必填）
+func (e *Engine) applyVerdictDeltas(statuses []*TrackStatus, deltas []VerdictDelta) {
+	if len(deltas) == 0 {
+		return
+	}
+	byID := make(map[int]*TrackStatus, len(statuses))
+	for _, s := range statuses {
+		byID[s.TrackID] = s
+	}
+	for _, d := range deltas {
+		s, ok := byID[d.TrackID]
+		if !ok {
+			continue
+		}
+		if d.NewVerdict != nil {
+			newV := *d.NewVerdict
+			if s.Verdict == VerdictAnchored && newV == VerdictGhost {
+				e.logger.Warn("adjudicator_anchored_to_ghost_rejected",
+					zap.Int("track_id", d.TrackID),
+					zap.String("device_id", s.DeviceID),
+					zap.String("room_id", s.RoomID),
+					zap.String("reason", d.Reason),
+				)
+			} else {
+				s.Verdict = newV
+			}
+		}
+		if d.PenaltyDelta != 0 {
+			next := s.GhostPenalty + d.PenaltyDelta
+			if next < 0 {
+				next = 0
+			}
+			if next > 100 {
+				next = 100
+			}
+			s.GhostPenalty = next
+		}
+	}
+}
+
+// trackLostAnchorMs 失锁判定阈值：snapshot 未含某 trackID 持续 ≥ 60s → 视为真失锁，
+// 调 SuiteCensusManager.ClearAnchorOnLostTrack。偏保守的取值（MaxMissCount=10 帧 coast
+// 期之外再加足够 buffer），避免 firmware track coast 期间误清。
+// 详见 suite_census.go ClearAnchorOnLostTrack 注释 "PR-3 wire 失锁判定建议"。
+const trackLostAnchorMs int64 = 60_000
+
+// publishTrackStatuses 把 TrackManager 的 Layer 1 投影 enrich 成 TrackStatus 列表，
+// 跑 GhostAdjudicator → apply deltas → 推流。调用时机：handleMessage 在 tm.ProcessFrame 之后。
+//
+// 流水线（PR-4）：
+//   1) 失锁清理：上一帧出现但本帧未出现且 ≥ 60s 的 trackID → census.ClearAnchorOnLostTrack（PR-3）
+//   2) Build：bases → []*TrackStatus 副本（含 PR-3 PersonID 关联 / zone 占位推断）
+//   3) Adjudicate：按 room.kind 挑 GhostAdjudicator（决定 16），调 Adjudicate(bases, nowMs)
+//   4) Apply：applyVerdictDeltas 执行 Anchored 守卫 + penalty clamp（决定 21 / Q4）
+//   5) Publish：每条 TrackStatus 推 sensor:track:status:stream
+//
+// PersonID 写入规则（sensor_v2 PR-3 review）：
+//   if person, upgraded := suiteCensus.UpdatePersonFromTrack(...); upgraded && person != nil {
+//       status.PersonID, status.PersonRole = person.PersonID, person.Role
+//   } // else 一律空
+//
+// Bathroom room 不调 UpdatePersonFromTrack —— bathroom 内 person 关联由 PR-5 BathroomGate
+// 入口流量 + suiteCensus.MarkPersonExitToBathroom/Return 维护，bathroom 帧只读 AnchorRoomType。
+func (e *Engine) publishTrackStatuses(ctx context.Context, roomID string, bases []TrackStatusBase, nowMs int64) {
+	if e.redisClient == nil {
+		return
+	}
+
+	e.mu.RLock()
+	suiteID := e.roomSuiteID[roomID]
+	residentID := e.roomResidentID[roomID]
+	roomType := e.roomType[roomID]
+	census := e.suiteCensus
+	adjudicator := e.pickAdjudicator(roomType)
+	e.mu.RUnlock()
+
+	isBathroom := roomType == card.RoomTypeBathroom
+
+	// 步骤 1：失锁清理（trackLastSeen 仅在本 goroutine 读写，无锁需要）。
+	seen := e.trackLastSeen[roomID]
+	if seen == nil {
+		seen = make(map[int]int64)
+		e.trackLastSeen[roomID] = seen
+	}
+	curIDs := make(map[int]struct{}, len(bases))
+	for i := range bases {
+		curIDs[bases[i].TrackID] = struct{}{}
+	}
+	for tid, lastMs := range seen {
+		if _, alive := curIDs[tid]; alive {
+			continue
+		}
+		if nowMs-lastMs < trackLostAnchorMs {
+			continue
+		}
+		if census != nil && suiteID != "" {
+			census.ClearAnchorOnLostTrack(suiteID, tid)
+		}
+		delete(seen, tid)
+	}
+
+	// 步骤 1.5：PR-5 BathroomGate（仅 bathroom room + 已挂 census + suiteID 三条件齐备）。
+	// gate 自己处理空 bases（依然要扫成员表做 timeout exit），所以放在 Build 之前调。
+	if isBathroom && census != nil && suiteID != "" {
+		gate, ok := e.bathroomGates[roomID]
+		if !ok {
+			gate = NewBathroomGate(roomID, suiteID, census, e.logger)
+			e.bathroomGates[roomID] = gate
+		}
+		gate.Process(bases, nowMs)
+	}
+
+	// 步骤 1.6：PR-10 BathroomFallRules（gate 之后 fall 之前，保 BathroomCount 已最新）。
+	// 仅 bathroom room 入；空 bases 也调（10c 最强档需要扫上帧 anchor）。
+	if isBathroom && e.bathroomFall != nil {
+		e.bathroomFall.Evaluate(roomID, bases, nowMs)
+	}
+
+	// 步骤 1.7：PR-11 BedroomFallRules（non-bathroom room 入；含 bedroom 默认 + 未来 living/kitchen）。
+	// 11b BedsideFall 依赖 BedSession.LeftBedAtMs latch；从 TrackManager 取 snapshot 后传入。
+	if !isBathroom && e.bedroomFall != nil {
+		var beds []BedSessionLatch
+		e.mu.RLock()
+		tm := e.rooms[roomID]
+		e.mu.RUnlock()
+		if tm != nil {
+			beds = tm.SnapshotBedSessions()
+		}
+		e.bedroomFall.Evaluate(roomID, bases, beds, nowMs)
+	}
+
+	// 步骤 2：Build TrackStatus 副本 + PR-3 PersonID 关联。
+	statuses := make([]*TrackStatus, 0, len(bases))
+	for i := range bases {
+		b := &bases[i]
+		seen[b.TrackID] = nowMs
+		status := &TrackStatus{
+			TrackID:      b.TrackID,
+			DeviceID:     b.DeviceID,
+			RoomID:       b.RoomID,
+			Verdict:      b.Verdict,
+			GhostPenalty: b.GhostPenalty,
+			X:            b.X,
+			Y:            b.Y,
+			Z:            b.Z,
+			Pose:         b.Pose,
+			StillSec:     b.StillSec,
+			CellAreaType: b.CellAreaType,
+			EnterTarget:  b.EnterTarget,
+			InRoomZoneID: roomID,
+			UpdatedAtMs:  nowMs,
+		}
+		switch b.CellAreaType {
+		case AreaBed:
+			status.InBedZoneID = roomID
+		case AreaToilet, AreaShower:
+			status.InBathroomZoneID = roomID
+		}
+		if isBathroom {
+			status.InBathroomZoneID = roomID
+		}
+
+		if census != nil && suiteID != "" && !isBathroom {
+			person, upgraded := census.UpdatePersonFromTrack(
+				suiteID, residentID,
+				b.TrackID, b.SleepadInBed,
+				b.TraverseDelta, b.MoveActive,
+				nowMs,
+			)
+			if upgraded && person != nil {
+				status.PersonID = person.PersonID
+				status.PersonRole = person.Role
+			}
+		}
+		statuses = append(statuses, status)
+	}
+
+	// 步骤 3-4：Adjudicator 跑 + apply delta（Anchored 守卫 + penalty clamp）。
+	// PR-4 默认 adjudicator 是 Noop → deltas 空 → applyVerdictDeltas 直接 return。
+	deltas := adjudicator.Adjudicate(bases, nowMs)
+	e.applyVerdictDeltas(statuses, deltas)
+
+	// 步骤 5：推流。
+	for _, status := range statuses {
+		PublishTrackStatus(ctx, e.redisClient, e.logger, status)
+	}
 }
 
 // PublishAIEvent 发布 AI 派生 event。
@@ -841,7 +1201,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	grid.StampRadar(cfg.Radar)
 
 	// 4. Stamp Enters → 记 Enters 列表 + 覆写矩形内 InRoom=true（门洞可穿）
-	grid.StampEnters(cfg.Enters)
+	grid.StampEnters(cfg.Enters, cfg.EnterTargets)
 
 	// 5. SetPrior 人标矩形（AreaType + Confidence + Source）
 	for _, r := range cfg.Enters {
@@ -891,6 +1251,22 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 			zap.String("room_id", cfg.RoomID))
 	}
 	e.rooms[cfg.RoomID] = tm
+
+	// sensor_v2 PR-3 wiring：记录 room → (suite_id, resident_id, room_type)。
+	e.roomSuiteID[cfg.RoomID] = cfg.SuiteID
+	e.roomResidentID[cfg.RoomID] = cfg.ResidentID
+	e.roomType[cfg.RoomID] = cfg.RoomType
+
+	// sensor_v2 PR-7：public bathroom 显式标记 census bucket。
+	// 仅当 RoomType==Bathroom 且 IsPublicBathroom=true 才触发，其它 room 即使 IsPublicBathroom=true 也忽略。
+	// 幂等：MarkPublicBathroom 多次调同 SuiteID 等价（PR-2 实现）。
+	if cfg.RoomType == card.RoomTypeBathroom && cfg.IsPublicBathroom && e.suiteCensus != nil && cfg.SuiteID != "" {
+		e.suiteCensus.MarkPublicBathroom(cfg.SuiteID)
+		e.logger.Info("room_registered_as_public_bathroom",
+			zap.String("room_id", cfg.RoomID),
+			zap.String("suite_id", cfg.SuiteID),
+		)
+	}
 
 	// 计算 layout hash 并保存（snapshot save/load 都按此 hash 比对）
 	hash := LayoutHash(cfg)
@@ -1290,6 +1666,11 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 		if e.onOutput != nil && len(outputs) > 0 {
 			e.onOutput(roomID, outputs)
 		}
+		// sensor_v2 PR-3：Layer 1 → Layer 2 TrackStatus 投影。
+		// 只在 radar 帧后派生（sleepad 帧不带 track 几何）；
+		// SnapshotTrackStatuses 自带 tm.mu，与 ProcessFrame 串行无竞态。
+		bases := tm.SnapshotTrackStatuses(ts)
+		e.publishTrackStatuses(context.Background(), roomID, bases, ts)
 
 	case "sleepad", "sleeppad":
 		// 多传感器融合：sleepad 帧喂入 TrackManager，silent fall 触发时做 short-circuit

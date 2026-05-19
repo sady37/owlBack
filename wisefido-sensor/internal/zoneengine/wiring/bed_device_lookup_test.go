@@ -13,7 +13,6 @@ func TestPreferredDeviceTypeForAlarm(t *testing.T) {
 	}{
 		{"LeftBed", "Radar"},
 		{"InBed", "Radar"},
-		{"BedNightAbsence", "Radar"},
 		{"Fall", "Radar"},
 		{"SuspectedFall", "Radar"},
 		{"SittingOnGround", "Radar"},

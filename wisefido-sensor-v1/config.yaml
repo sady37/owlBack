@@ -1,0 +1,105 @@
+# wisefido-sensor 配置文件（Phase B：原 wisefido-ai 改名）
+
+# Sensor agent 派生 event/alarm 发布开关。单点配置同时管两件事：推送模式 + 节点身份。
+# mode: "log"          仅写 sensor.log（每条带 source + would_publish_to + published=false）
+# mode: "log&publish"  写 log + 推送 iot:event/alarm:stream（默认，商业演示场景）
+# source：完整节点身份字符串，同时进 envelope.Producer + wire fields["source"] + 审计日志。
+#   Phase B 命名规范：sensor.<role><实例号>
+#     - sensor.caregiver01（safety / fall / ghost，本进程默认）
+#     - sensor.caregiver02 ...（多实例横向扩展）
+#   layer 2 cognitive agent 启动后用 cognitive.<role><实例号>，"AI" 标签让给 cognitive 层。
+# alarm 永远 fire（"宁可误报不可漏报"），mode 仅控制 publish 路径，不影响告警。
+# env 覆盖：AI_PUBLISH_MODE / AI_SOURCE（env 名暂保留兼容；下个 PR 改 SENSOR_PUBLISH_MODE / SENSOR_SOURCE）
+ai_publish:
+  mode: "log&publish"
+  # source 进 envelope.Producer，必 INET 格式（alarm_events.producer 列是 INET 类型）。
+  # 与下方 identity.ipv6 同值；display 用途见 wire fields["source"]。
+  source: "fd00:0:fff1::1"
+
+# Platform agent IPv6 身份（per owlBack/doc/platform_agent_addressing.md）
+# 启动时优先级：ENV(SENSOR_IPV6/SENSOR_UID) > config.yaml > 默认 fd00:0:fff1::1。
+# UID 派生规则（uuid_v5）：
+#   uid = uuid_v5(NAMESPACE=8d52a4c3-1d28-516a-86df-6e6b1b3f6e6e, "wisefido-sensor:" + ipv6)
+# 派生后写入 .env 固化；改 IPv6 必须同步 regenerate UID，否则历史 trace 链断。
+identity:
+  ipv6: "fd00:0:fff1::1"
+  uid:  "a893ff12-7d72-58dc-a26c-ce724e6007da"
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "postgres"
+  password: "postgres"
+  database: "owl_v2"
+  sslmode: "disable"
+
+redis:
+  addr: "localhost:6379"
+  password: "TeLunSu-36kr"
+  db: 0
+
+alarm:
+  cache:
+    realtime_key_prefix: "vital-focus:card:"
+    realtime_suffix: ":realtime"
+    alarm_key_prefix: "vital-focus:card:"
+    alarm_suffix: ":alarms"
+    alarm_ttl: 30
+    state_key_prefix: "alarm:state:"
+  poll_interval: 10
+  evaluation:
+    batch_size: 10
+  iot_stream:
+    enabled: true
+    monitor: "iot:monitor:stream"
+    stat: "iot:stat:stream"
+    event: "iot:event:stream"
+    alarm: "iot:alarm:stream"
+    consumer_group: "wisefido-alarm-events"
+    consumer_name: "alarm-consumer-1"
+    batch_size: 10
+
+logging:
+  level: "info"
+  format: "json"
+
+# RoomEngine 网格学习参数。所有字段都可省略走默认值（见 internal/config/config.go::setRoomEngineDefaults）
+# 调参思路：分字段半衰期反映该字段的"语义时间尺度"：
+#   - 床/沙发（Lie）：人不挪 → 半衰期长
+#   - 椅子（Sit）：偶尔搬 → 24h 还能保留昨天的影响
+#   - 走道（Walk）：路径稳定但易污染 → 3d 折中
+#   - 即时态（Real/Ghost/Flow/Stand）：反映"最近一段在干嘛" → 15min
+#   - 事件类（Fall/Sleepad/Door/Traverse）：稀疏 → 7d 跨天累计
+roomengine:
+  decay:
+    immediate_sec:  900       # 15 min  — Real/Ghost/Flow/DwellEMA/ActiveType[Stand]
+    walk_sec:       259200    # 3 d     — ActiveType[Move]
+    sit_sec:        86400     # 24 h    — ActiveType[Sit]
+    lie_sec:        604800    # 7 d     — ActiveType[Lie]
+    event_sec:      604800    # 7 d     — Traverse/Fall/Retract/Sleepad/Door/LongStill/LieAnomaly
+  learn:
+    walk_active_x10:     20    # 2 s × 10  — Move 单帧门槛
+    walk_traverse:       2     # 单 cell 累计穿越次数（配合 speed 兜底，2 次走过即升格）
+    sit_active_x10:      150   # 15 s × 10  — 连续坐 15s 升格 AreaSit
+    lie_anomaly_x10:     50    # 5 s × 10   — 床外躺 5s 计 LieAnomaly
+    bed_tolerance_cm:    30
+    toilet_tolerance_cm: 20
+    shower_tolerance_cm: 20
+    move_speed_cms:      20    # Kalman 速度阈值（cm/s）；> 此速度即使 pose=Stand 也算 Move（救慢走老人 pose 不准）
+    near_traverse_walk:  5     # 邻居被穿越 ≥ 此值 + 本 cell 至少 1 次直接 Move 触碰 → 确认 Walk（"一次经过就确认"）
+    near_traverse_deny:  20    # 邻居被穿越 ≥ 此值 + 本 cell 完全无直接触碰 → 反转为 Deny（"20 次都没经过 = 系统绕开 = 障碍"）
+  belief:
+    decay_interval_sec:  3600    # 每小时跑一次衰减
+    scan_interval_sec:   300     # 每 5min 跑一次 LearnCellAreas + UpdateBelief
+    winner_eval_sec:     86400   # 每 24h 重新评估 winner ParamSet
+    confidence_floor:    60      # promoteCell 起跑置信度（刚过阈值）
+    confidence_full:     95      # promoteCell 上限置信度（饱和）
+  paramsets:                     # 三组并行参数（Engine 自选 winner）
+    - {name: conservative, alpha: 0.01, beta: 0.2, flip_th: 10}
+    - {name: balanced,     alpha: 0.02, beta: 0.5, flip_th: 20}
+    - {name: aggressive,   alpha: 0.05, beta: 1.0, flip_th: 30}
+  persist:
+    enabled:              true
+    snapshot_interval_sec: 300                         # 每 5min dump grid 状态
+    storage:              postgres                     # postgres | file（暂仅 postgres）
+    table:                roomengine_grid_snapshot     # 见 owlRD/db/36_roomengine_grid_snapshot.sql

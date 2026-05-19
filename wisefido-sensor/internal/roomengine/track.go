@@ -3,13 +3,33 @@ package roomengine
 import "math"
 
 // TrackVerdict track 判定结果
+//
+// sensor_v2 §10.1.1：Verdict 是 Layer 1 → Layer 2 契约字段。
+// VerdictAnchored 与 VerdictReal 平级（"真人"语义），但 LongSurvival/StartupGrace
+// 锚定后不可翻 Ghost；下游可借此区分"可信真人"与"普通真人"。
+// 数值非连续是为兼容存量（Ghost=2 已在 v1 全量使用，Anchored 追加在 3 位）；
+// 流序列化用 VerdictName 走字符串契约，避免下游耦合 int。
 type TrackVerdict uint8
 
 const (
-	VerdictPending TrackVerdict = 0
-	VerdictReal    TrackVerdict = 1
-	VerdictGhost   TrackVerdict = 2
+	VerdictPending  TrackVerdict = 0
+	VerdictReal     TrackVerdict = 1
+	VerdictGhost    TrackVerdict = 2
+	VerdictAnchored TrackVerdict = 3
 )
+
+// VerdictName 流序列化字符串契约（不暴露 int 给下游）。
+func VerdictName(v TrackVerdict) string {
+	switch v {
+	case VerdictReal:
+		return "real"
+	case VerdictGhost:
+		return "ghost"
+	case VerdictAnchored:
+		return "anchored"
+	}
+	return "pending"
+}
 
 // Anomaly track 异常类型
 type Anomaly uint8
@@ -116,8 +136,8 @@ type TrackState struct {
 	// 最近一次为该 track 计算/预测过的时间"。不能用作"最后真正看到 track 的时间"。
 	LastUpdateMs int64
 	// LastObservedMs：最近一次真实收到帧（PushPoint）的时间。miss tick 不更新。
-	// 用途：lost-fall 入池时与 lastNumberPeopleZeroMs 比对，判断 number_people=0 是否在
-	// "track 实际失踪后"短窗口内到达（PR-C ExitRoom 兜底）。
+	// 用途：track 真实失踪点 ms。PR-9 前曾用于 number_people=0 ExitRoom 兜底比对（已删）。
+	// 字段保留供 PR-10 BathroomLostFall + PR-11 bedroom lost_fall 重写时作"失锁时刻"基准。
 	LastObservedMs int64
 
 	// ---- cell 穿越追踪（Walk 学习用）----
@@ -194,15 +214,16 @@ const (
 //   重新 InBed                          → 重置 session
 //
 // LeftBedHadHRRR / LeftBedMaxPeople 在 LeftBed 时刻 latch，不受后续观测影响。
+// PR-9: MaxPeople 中间状态删除（依赖 bedPersonCount 已删）；LeftBedMaxPeople latch 字段保留
+// 但 PR-9 阶段无 source 值固定 0，PR-11 silent_fall 重写时改由 SuiteCensus 派生。
 type BedSession struct {
 	DeviceUID             string // sleepad device_uid
 	InBedSinceMs          int64  // 首次 InBed 到达的时间戳；0 = 未在床
 	RadarInBedConfirmedMs int64  // PR-14：sleepad+radar InBed ±15s 一致确认时刻；0 = 未双源确认
-	MaxPeople             int    // 该 session 期间见过的最大 bedPersonCount[device]
 	HasHRRR               bool   // in-bed 期间是否观测到 HR/RR > 0
 	LeftBedAtMs           int64  // 0 = 仍在床；>0 = 等待矛盾窗口
 	LeftBedHadHRRR        bool   // LeftBed 时刻的 HasHRRR latch
-	LeftBedMaxPeople      int    // LeftBed 时刻的 MaxPeople latch
+	LeftBedMaxPeople      int    // LeftBed 时刻的"多人床"latch；PR-9 阶段无 source 固定 0，PR-11 重写
 	SilentFallAlerted     bool   // 防重复触发
 }
 
