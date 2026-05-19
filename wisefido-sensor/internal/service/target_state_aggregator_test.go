@@ -49,19 +49,24 @@ func TestAggregator_ZoneEvent_TotalPeopleCache(t *testing.T) {
 	defer cancel()
 	go a.Run(ctx)
 
-	cardID := "fd00:0:3:111:3:101::/96"
-	a.OnZoneEvent(cardID, cardID, 1, 1_700_000_000_000)
-	// 等 channel drain（select 单次循环够）
+	spatialPrefix := "fd00:0:3:111:3:101::/96"
+	a.OnZoneEvent(spatialPrefix, spatialPrefix, 1, 1_700_000_000_000)
 	time.Sleep(20 * time.Millisecond)
 
 	a.mu.RLock()
-	acc, ok := a.accums[cardID]
+	acc, ok := a.accums[spatialPrefix]
 	a.mu.RUnlock()
 	if !ok {
-		t.Fatal("accumulator not created for cardID after ZoneEvent push")
+		t.Fatal("accumulator not created for spatialPrefix after ZoneEvent push")
 	}
 	if acc.totalPeople != 1 {
 		t.Errorf("totalPeople cache = %d, want 1", acc.totalPeople)
+	}
+	// /80 unit prefix 应该自动派生（纯 IPv6 运算）
+	// /96 fd00:0:3:111:3:101 截到 /80 = 前 5 段 = fd00:0:3:111:3
+	wantUnit := "fd00:0:3:111:3::/80"
+	if acc.unitPrefix != wantUnit {
+		t.Errorf("unitPrefix = %q, want %q (派生自 spatialPrefix /96 截 /80)", acc.unitPrefix, wantUnit)
 	}
 }
 
@@ -70,7 +75,7 @@ func TestAggregator_GetSnapshot_Empty(t *testing.T) {
 	a := newTestAggregator(t)
 	_, _, _, ok := a.GetSnapshot("fd00:0:3:nonexistent::/96")
 	if ok {
-		t.Error("GetSnapshot should return ok=false for nonexistent cardID")
+		t.Error("GetSnapshot should return ok=false for nonexistent spatialPrefix")
 	}
 }
 
@@ -82,11 +87,11 @@ func TestAggregator_GetSnapshot_AfterZoneEvent(t *testing.T) {
 	defer cancel()
 	go a.Run(ctx)
 
-	cardID := "fd00:0:3:111:3:101::/96"
-	a.OnZoneEvent(cardID, cardID, 2, 1_700_000_000_000)
+	spatialPrefix := "fd00:0:3:111:3:101::/96"
+	a.OnZoneEvent(spatialPrefix, spatialPrefix, 2, 1_700_000_000_000)
 	time.Sleep(20 * time.Millisecond)
 
-	target, standingMin, _, ok := a.GetSnapshot(cardID)
+	target, standingMin, _, ok := a.GetSnapshot(spatialPrefix)
 	if !ok {
 		t.Fatal("GetSnapshot ok=false after ZoneEvent")
 	}
@@ -98,8 +103,8 @@ func TestAggregator_GetSnapshot_AfterZoneEvent(t *testing.T) {
 	}
 }
 
-// TestAggregator_ActiveCardIDs 返回所有 entry 的 cardID。
-func TestAggregator_ActiveCardIDs(t *testing.T) {
+// TestAggregator_ActiveSpatialPrefixes 返回所有 entry 的物理地址。
+func TestAggregator_ActiveSpatialPrefixes(t *testing.T) {
 	a := newTestAggregator(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -109,25 +114,23 @@ func TestAggregator_ActiveCardIDs(t *testing.T) {
 	a.OnZoneEvent("fd00:0:3:111:3:102::/96", "fd00:0:3:111:3:102::/96", 1, 1_700_000_000_000)
 	time.Sleep(20 * time.Millisecond)
 
-	ids := a.ActiveCardIDs()
+	ids := a.ActiveSpatialPrefixes()
 	if len(ids) != 2 {
-		t.Errorf("ActiveCardIDs len = %d, want 2", len(ids))
+		t.Errorf("ActiveSpatialPrefixes len = %d, want 2", len(ids))
 	}
 }
 
 // TestAggregator_PushAlarmEvent_DropOwnEscalation 自家产 alarm 不再入队（防 loop）。
 func TestAggregator_PushAlarmEvent_DropOwnEscalation(t *testing.T) {
 	a := newTestAggregator(t)
-	cardID := "fd00:0:3:111:3:101::/96"
-	// 模拟自家 escalation alarm 回传
+	spatialPrefix := "fd00:0:3:111:3:101::/96"
 	a.PushAlarmEvent(AlarmEventSnapshot{
-		CardID:    cardID,
-		AlarmType: "WeakBiometricSignal",
-		Producer:  EscalationProducerTag,
-		RawValue:  60,
+		SpatialPrefix: spatialPrefix,
+		AlarmType:     "WeakBiometricSignal",
+		Producer:      EscalationProducerTag,
+		RawValue:      60,
 	})
-	// 不会创建 accumulator
-	if _, ok := a.accums[cardID]; ok {
+	if _, ok := a.accums[spatialPrefix]; ok {
 		t.Error("own escalation alarm should not create accumulator entry")
 	}
 }
@@ -135,18 +138,45 @@ func TestAggregator_PushAlarmEvent_DropOwnEscalation(t *testing.T) {
 // TestAggregator_MarkPublished_ClearsDirty publish 完后 dirty=false。
 func TestAggregator_MarkPublished_ClearsDirty(t *testing.T) {
 	a := newTestAggregator(t)
-	cardID := "fd00:0:3:111:3:101::/96"
-	// 用 internal helper 直建 entry + 标 dirty（P2 scaffold；P3 走 frame 路径自然标 dirty）
+	spatialPrefix := "fd00:0:3:111:3:101::/96"
 	a.mu.Lock()
-	acc := a.getOrCreateLocked(cardID)
+	acc := a.getOrCreateLocked(spatialPrefix)
 	acc.dirty = true
 	a.mu.Unlock()
 
-	if _, _, dirty, _ := a.GetSnapshot(cardID); !dirty {
+	if _, _, dirty, _ := a.GetSnapshot(spatialPrefix); !dirty {
 		t.Error("dirty should be true before MarkPublished")
 	}
-	a.MarkPublished(cardID, time.Now().UnixMilli())
-	if _, _, dirty, _ := a.GetSnapshot(cardID); dirty {
+	a.MarkPublished(spatialPrefix, time.Now().UnixMilli())
+	if _, _, dirty, _ := a.GetSnapshot(spatialPrefix); dirty {
 		t.Error("dirty should be false after MarkPublished")
+	}
+}
+
+// TestAggregator_UnitMetaLookup_FillsUnitType callback 注入后 unit_type 被填入。
+// 验证 sensor 通过 units 表（物理属性）拿 unit_type，不查 cards 表。
+func TestAggregator_UnitMetaLookup_FillsUnitType(t *testing.T) {
+	a := newTestAggregator(t)
+	// mock unitMetaLookup（实际 wiring 时由 wiring 注入查 units 表的实现）
+	a.SetUnitMetaLookup(func(unitPrefix string) int {
+		if unitPrefix == "fd00:0:3:111:3::/80" {
+			return 1 // UnitTypePrivate
+		}
+		return 0
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.Run(ctx)
+
+	spatialPrefix := "fd00:0:3:111:3:101::/96"
+	a.OnZoneEvent(spatialPrefix, spatialPrefix, 1, 1_700_000_000_000)
+	time.Sleep(20 * time.Millisecond)
+
+	a.mu.RLock()
+	acc := a.accums[spatialPrefix]
+	a.mu.RUnlock()
+	if acc.unitType != 1 {
+		t.Errorf("unitType = %d, want 1 (Private; via unitMetaLookup callback)", acc.unitType)
 	}
 }
