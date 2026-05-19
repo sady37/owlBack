@@ -1,17 +1,19 @@
-// target_state_aggregator.go — sensor 端 Target/RoomState 派生字段聚合器（card_display_projector Task 2）。
+// target_state_aggregator.go — sensor 端 Target/RoomState 派生字段聚合器（card_display_projector Task 2A）。
 //
 // 分层原则（用户拍板 2026-05-18）：
-//   - unit / room / bed / device 都是**物理实体**（有 spatial_prefix / 表数据描述真实物理事实）
-//   - card 是纯**展示逻辑**（FE UI 渲染配置），sensor 永远不读 cards 表
-//   - 本聚合器按"物理地址"（spatial_prefix INET CIDR）做 key，不按 cardID 概念
-//   - unit_type / room_type 等是**物理属性**（来自 units/rooms 表），sensor 可读可判断
+//   - unit / room / bed / device 都是**物理实体**；card 是 UI/展示逻辑层，零物理存在
+//   - sensor 只做**单实体内**判断（fall / standing / lastActive / weakBio）
+//   - 跨实体合并（visitor 等）归 cardagg 职责（详 memory [[visitor_belongs_to_cardagg]]）
+//   - sensor 不读 cards 表；本聚合器按"物理地址"（spatial_prefix INET CIDR）做 key
 //
-// 职责（per spatial_prefix 累加 4 个字段，sensor 端判断）：
+// 职责（per spatial_prefix，sensor 单实体判断，3 个字段）：
 //   - Target.LastActiveTs                       — radar walk≥2m OR walk_duration≥6s + total_people==1
 //   - Target.weak_biometric_signal              — 30min lazy 滑窗 weak/HR/RR/ApneaH alarm 累加 0-100
-//   - Target.visitor_start_ts / has_visitor_today / today_max_visitor_min
-//                                               — TotalPeople≥2 持续≥5min 算 visitor（仅 unit_type=Private）
 //   - RoomState.StandingContinuousMin           — stand_duration≥55s 累+1 封顶 8（仅 TotalPeople==1）
+//
+// 已挪出 sensor（2026-05-18 后归 cardagg `VisitorDeriver`）：
+//   - Target.visitor_start_ts / has_visitor_today / today_max_visitor_min
+//     原因：visitor 跨多 /88 room 合并；Private gate 需查 unit_type；sensor 不做跨实体合并
 //
 // 架构（详 [[target_state_aggregator]] design doc）：
 //   Aggregator = 纯 state holder（不 publish）；
@@ -21,13 +23,12 @@
 // Escalation alarm（WeakBiometricSignal score 跨 80 提级 Critical）由 aggregator 自己直接 publishAlarm
 // 到 iot:alarm:stream，不走 StreamPublisher（不同流，alarm pipeline 自身多源）。
 //
-// P2 scaffold：struct + lifecycle + 接口面；4 个累加器内部逻辑 stub（P3/P4 填）。
+// P2 scaffold：struct + lifecycle + 接口面；3 个累加器内部逻辑 stub（P3/P4 填）。
 
 package service
 
 import (
 	"context"
-	"net/netip"
 	"sync"
 	"time"
 
@@ -45,11 +46,6 @@ type AggregatorPublisher interface {
 	// alarmType 当前固定 "WeakBiometricSignal"；level=AlarmLevelCrit；contributorDeviceAddr 可空。
 	PublishEscalationAlarm(ctx context.Context, spatialPrefix, alarmType string, score int, contributorDeviceAddr string) error
 }
-
-// UnitMetaLookup 查 /80 unit 物理属性（unit_type）。
-// 注：实现方应查 `units` 表（物理实体），不查 `cards` 表（展示逻辑）。
-// wiring 时由调用方注入（P3/P4 接 DB cache）；未注入时 unit_type 保持 0=Unknown，visitor 不触发。
-type UnitMetaLookup func(unitPrefix string) (unitType int)
 
 // ZoneEventSnapshot aggregator 关心的最小 ZoneEvent 子集（解耦 zoneengine 类型）。
 // StreamPublisher 把 ZoneEvent 翻译成这个 push 给 aggregator。
@@ -90,10 +86,9 @@ type AlarmEventSnapshot struct {
 // 输入：3 条 push channel（monitor / alarm / zone event）；
 // 输出：GetSnapshot pull（StreamPublisher 60s 用）+ PublishEscalationAlarm（即时）。
 type TargetStateAggregator struct {
-	publisher      AggregatorPublisher
-	unitMetaLookup UnitMetaLookup // 可选；nil 时 unit_type 保持 0=Unknown，visitor 不触发
-	logger         *zap.Logger
-	redis          *redislib.Client // 订阅 monitor / alarm 流用；P2 scaffold 允许 nil（无订阅）
+	publisher AggregatorPublisher
+	logger    *zap.Logger
+	redis     *redislib.Client // 订阅 monitor / alarm 流用；P2 scaffold 允许 nil（无订阅）
 
 	mu     sync.RWMutex
 	accums map[string]*spatialAccumulator // key = spatial_prefix INET CIDR (物理实体地址)
@@ -104,16 +99,13 @@ type TargetStateAggregator struct {
 	zoneCh    chan ZoneEventSnapshot
 }
 
-// spatialAccumulator per spatial_prefix 累加状态（物理实体维度，非 card）。
+// spatialAccumulator per spatial_prefix 累加状态（物理实体维度，非 card；单实体内判断）。
 type spatialAccumulator struct {
 	spatialPrefix string // INET CIDR；物理地址（/88 room / /96 bed / /128 device 之一）
-	unitPrefix    string // 父 /80 unit prefix；visitor 跨实体写用（IPv6 prefix 派生，非查表）
-	unitType      int    // 来自 units 表（物理属性）；Visitor 仅 unit_type==Private 计
 
-	// 4 个 sub-accumulator
+	// 3 个 sub-accumulator（单实体内判断；visitor 跨 room 合并归 cardagg，不在此）
 	lastActive lastActiveState
 	standing   standingState
-	visitor    visitorState
 	weakBio    weakBioWindow
 
 	// 来自 ZoneEvent 的缓存（gate 用）
@@ -136,14 +128,6 @@ type standingState struct {
 	lastIncrementTs int64
 }
 
-type visitorState struct {
-	multiSegmentStartTs int64  // 当前持续多人段起始 (0 = 不在段中)
-	visitorStartTs      int64  // 当日首次跨 5min 阈值时刻 → Target.visitor_start_ts
-	todayMaxMin         int    // → Target.today_max_visitor_min
-	hasVisitorToday     bool   // → Target.has_visitor_today
-	dayKey              string // "2026-05-18" (unit timezone)；用于午夜 lazy reset
-}
-
 type weakBioWindow struct {
 	events []weakBioEvent // 时序队列，30min 外 lazy drop
 	score  int            // 缓存当前 score（0..100）
@@ -156,7 +140,7 @@ type weakBioEvent struct {
 	rawValue  int // 仅 WeakBiometricSignal 0/20/40/60
 }
 
-// New 构造。publisher 可空（测试 / 无 escalation 场景）；unitMetaLookup 通过 SetUnitMetaLookup 注入。
+// New 构造。publisher 可空（测试 / 无 escalation 场景）。
 func NewTargetStateAggregator(publisher AggregatorPublisher, redis *redislib.Client, logger *zap.Logger) *TargetStateAggregator {
 	if logger == nil {
 		logger = zap.NewNop()
@@ -170,14 +154,6 @@ func NewTargetStateAggregator(publisher AggregatorPublisher, redis *redislib.Cli
 		alarmCh:   make(chan AlarmEventSnapshot, 256),
 		zoneCh:    make(chan ZoneEventSnapshot, 256),
 	}
-}
-
-// SetUnitMetaLookup 注入 unit_type 查询回调（由 wiring 给，封装 units 表查询）。
-// 在 accumulator lazy 创建时立刻调一次填 unitType；nil 时 visitor 永不触发。
-func (a *TargetStateAggregator) SetUnitMetaLookup(fn UnitMetaLookup) {
-	a.mu.Lock()
-	a.unitMetaLookup = fn
-	a.mu.Unlock()
 }
 
 // Run 主循环（单 reader 多 channel select）。
@@ -245,13 +221,11 @@ func (a *TargetStateAggregator) GetSnapshot(spatialPrefix string) (target *card.
 	if !found {
 		return nil, 0, false, false
 	}
+	// 仅 3 个 sensor 单实体内判断字段；visitor 已挪到 cardagg VisitorDeriver。
 	target = &card.TargetState{
 		UpdatedAt:           time.Now().UnixMilli(),
 		LastActiveTs:        acc.lastActive.lastActiveTs,
 		WeakBiometricSignal: acc.weakBio.score,
-		VisitorStartTs:      acc.visitor.visitorStartTs,
-		TodayMaxVisitorMin:  acc.visitor.todayMaxMin,
-		HasVisitorToday:     acc.visitor.hasVisitorToday,
 	}
 	return target, acc.standing.continuousMin, acc.dirty, true
 }
@@ -309,7 +283,8 @@ func (a *TargetStateAggregator) handleAlarmEvent(ctx context.Context, e AlarmEve
 	_ = ctx
 }
 
-// handleZoneEvent P4 填：更新 totalPeople cache + visitor 5min 段判定。
+// handleZoneEvent 更新 totalPeople cache（给 lastActive / standing gate 用）。
+// 注：visitor 跨 room 合并已挪到 cardagg VisitorDeriver，本 handler 不再做 visitor 判定。
 func (a *TargetStateAggregator) handleZoneEvent(z ZoneEventSnapshot) {
 	if z.SpatialPrefix == "" {
 		return
@@ -319,30 +294,15 @@ func (a *TargetStateAggregator) handleZoneEvent(z ZoneEventSnapshot) {
 	acc := a.getOrCreateLocked(z.SpatialPrefix)
 	acc.totalPeople = z.TotalPeople
 	acc.lastZoneTs = z.UpdatedAtMs
-	// TODO P4: visitor 段跟踪
-	//   if totalPeople>=2: 若 multiSegmentStartTs==0 → 设为 z.UpdatedAtMs
-	//     elapsed≥5min 时设 visitor_start_ts + has_visitor_today, todayMaxMin = max
-	//   else: multiSegmentStartTs = 0
-	// 注：visitor 判定还要看 acc.unitType == card.UnitTypePrivate（物理属性，从 units 表）
 }
 
 // getOrCreateLocked accumulator lazy 创建。需在 a.mu 写锁下调。
-//   - unitPrefix 通过纯 IPv6 prefix 运算派生（截到 /80），不查表
-//   - unitType 通过 unitMetaLookup 回调查 units 表（物理属性）；nil 时保持 0=Unknown
 func (a *TargetStateAggregator) getOrCreateLocked(spatialPrefix string) *spatialAccumulator {
 	if acc, ok := a.accums[spatialPrefix]; ok {
 		return acc
 	}
 	acc := &spatialAccumulator{
 		spatialPrefix: spatialPrefix,
-	}
-	// 派生 /80 unit prefix（纯 IPv6 运算）
-	if pfx, err := netip.ParsePrefix(spatialPrefix); err == nil {
-		acc.unitPrefix = netip.PrefixFrom(pfx.Addr(), 80).Masked().String()
-	}
-	// 查 units 表填 unitType（unitMetaLookup nil 时 unitType=0，visitor 不触发）
-	if a.unitMetaLookup != nil && acc.unitPrefix != "" {
-		acc.unitType = a.unitMetaLookup(acc.unitPrefix)
 	}
 	a.accums[spatialPrefix] = acc
 	return acc

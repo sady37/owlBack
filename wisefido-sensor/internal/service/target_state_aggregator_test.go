@@ -4,9 +4,9 @@
 // P3/P4 业务字段填入后，按累加器分组补完整 table-driven test：
 //   - TestAggregator_LastActive_*    (P3)
 //   - TestAggregator_StandingMin_*   (P3)
-//   - TestAggregator_Visitor_*       (P4)
 //   - TestAggregator_WeakBio_*       (P4，含 80+ escalation rising edge)
-//   - TestAggregator_DailyReset      (P5)
+//
+// 注：Visitor 累加器已挪到 cardagg VisitorDeriver，不在此 sensor 模块测试范围。
 
 package service
 
@@ -61,12 +61,6 @@ func TestAggregator_ZoneEvent_TotalPeopleCache(t *testing.T) {
 	}
 	if acc.totalPeople != 1 {
 		t.Errorf("totalPeople cache = %d, want 1", acc.totalPeople)
-	}
-	// /80 unit prefix 应该自动派生（纯 IPv6 运算）
-	// /96 fd00:0:3:111:3:101 截到 /80 = 前 5 段 = fd00:0:3:111:3
-	wantUnit := "fd00:0:3:111:3::/80"
-	if acc.unitPrefix != wantUnit {
-		t.Errorf("unitPrefix = %q, want %q (派生自 spatialPrefix /96 截 /80)", acc.unitPrefix, wantUnit)
 	}
 }
 
@@ -153,30 +147,3 @@ func TestAggregator_MarkPublished_ClearsDirty(t *testing.T) {
 	}
 }
 
-// TestAggregator_UnitMetaLookup_FillsUnitType callback 注入后 unit_type 被填入。
-// 验证 sensor 通过 units 表（物理属性）拿 unit_type，不查 cards 表。
-func TestAggregator_UnitMetaLookup_FillsUnitType(t *testing.T) {
-	a := newTestAggregator(t)
-	// mock unitMetaLookup（实际 wiring 时由 wiring 注入查 units 表的实现）
-	a.SetUnitMetaLookup(func(unitPrefix string) int {
-		if unitPrefix == "fd00:0:3:111:3::/80" {
-			return 1 // UnitTypePrivate
-		}
-		return 0
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go a.Run(ctx)
-
-	spatialPrefix := "fd00:0:3:111:3:101::/96"
-	a.OnZoneEvent(spatialPrefix, spatialPrefix, 1, 1_700_000_000_000)
-	time.Sleep(20 * time.Millisecond)
-
-	a.mu.RLock()
-	acc := a.accums[spatialPrefix]
-	a.mu.RUnlock()
-	if acc.unitType != 1 {
-		t.Errorf("unitType = %d, want 1 (Private; via unitMetaLookup callback)", acc.unitType)
-	}
-}
