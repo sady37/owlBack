@@ -64,10 +64,39 @@ func BuildCardDisplay(s *card.CardStatus) *card.CardDisplay {
 	// ===== Section3.up.right SceneState =====
 	d.SceneState, d.SceneAnchorMs = pickScene(s, bedHas, roomHas)
 
-	// ===== Section3.down VisitorState =====
+	// ===== Section3.down.left VisitorState =====
 	d.VisitorState, d.VisitorAnchorMs = pickVisitor(s)
 
+	// ===== Section3.down.right VitalTrendLevel (W2 WeakBio 横条) =====
+	d.VitalTrendLevel = pickVitalTrendLevel(s)
+
 	return d
+}
+
+// pickVitalTrendLevel 把 Target.WeakBiometricSignal score 映射到 4 档配色
+// （详 [[target_state_weak_bio_signal_design]] §"阈值表"）：
+//
+//	0-29  → 0 None (hide)
+//	30-59 → 1 Gray (Attention)
+//	60-79 → 2 Yellow (Watch)
+//	80-100→ 3 Red (Alert)
+//
+// staleness 已由 target_merger 在 merge 层过滤（offline + 30min UpdatedAt）；
+// builder 信任 s.Target.WeakBiometricSignal 是 fresh 值。
+func pickVitalTrendLevel(s *card.CardStatus) int {
+	if s.Target == nil {
+		return card.VitalTrendLevelNone
+	}
+	score := s.Target.WeakBiometricSignal
+	switch {
+	case score >= 80:
+		return card.VitalTrendLevelRed
+	case score >= 60:
+		return card.VitalTrendLevelYellow
+	case score >= 30:
+		return card.VitalTrendLevelGray
+	}
+	return card.VitalTrendLevelNone
 }
 
 // pickSection2Left 选 Section2.left 显示模式。Risk 优先 > 最新优先。

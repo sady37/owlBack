@@ -49,6 +49,16 @@ import (
 // 跟 sensor 端 standing 每分钟心跳 push 契约耦合（FollowUp-4）：1 push 容错。
 const StandingSnapshotStaleMs int64 = 2 * 60 * 1000
 
+// WeakBioSnapshotStaleMs WeakBio 字段允许的最大 snapshot 静默间隔（30min，对齐 sensor
+// aggregator weakBioWindowMs lazy 滑窗）。
+//
+// 设计意图（W3，[[target_state_weak_bio_signal_design]]）：
+//   - sensor aggregator lazy drop 30min 外事件，空闲老人卡 30min 后 score 自然回 0
+//   - 但 lazy 设计依赖下次 event 触发；空闲长时间 sensor 不 push → cardagg 卡老值
+//   - cardagg 端 30min staleness 自治：UpdatedAt 老于 30min → 视为 stale 不参与 max
+//   - 等效"如果 30min 内无新 vital alarm，FE 横条应回 None"
+const WeakBioSnapshotStaleMs int64 = 30 * 60 * 1000
+
 // DeviceOnlineChecker main wiring 注入 closure，返回 device 是否在线。
 // 避免 service → consumer 反向导入；签名接收 device addr canonical IPv6 string。
 type DeviceOnlineChecker func(deviceAddr string) bool
@@ -231,8 +241,10 @@ func (m *TargetMerger) mergeForCard(ctx context.Context, cardID string, v visito
 		if standingFresh && ts.StandingContinuousMin > out.StandingContinuousMin {
 			out.StandingContinuousMin = ts.StandingContinuousMin
 		}
-		// WeakBio 暂不加过滤（独立议题 followup）
-		if ts.WeakBiometricSignal > out.WeakBiometricSignal {
+		// WeakBio: offline 过滤 + 30min UpdatedAt staleness（贴 sensor aggregator lazy 滑窗；W3）。
+		// 空闲老人卡 sensor 不 push → cardagg 不能卡老值显示 Red 横条。
+		weakBioFresh := online && ts.UpdatedAt > 0 && nowMs-ts.UpdatedAt <= WeakBioSnapshotStaleMs
+		if weakBioFresh && ts.WeakBiometricSignal > out.WeakBiometricSignal {
 			out.WeakBiometricSignal = ts.WeakBiometricSignal
 		}
 		if ts.UpdatedAt > out.UpdatedAt {
@@ -240,7 +252,7 @@ func (m *TargetMerger) mergeForCard(ctx context.Context, cardID string, v visito
 		}
 	}
 	// v2 path: entity-keyed snapshot（cardID 自身 prefix CIDR）；当 sensor v2 按 entity 聚合发 target.state 时进
-	// 这里 — 单 source per card 无 max-merge 含义，但 Standing staleness 仍按 2min UpdatedAt 守护。
+	// 这里 — 单 source per card 无 max-merge 含义，但 Standing/WeakBio staleness 仍按各自阈值守护。
 	if entityTs := m.deviceSnapshots[cardID]; entityTs != nil {
 		if entityTs.LastActiveTs > out.LastActiveTs {
 			out.LastActiveTs = entityTs.LastActiveTs
@@ -249,7 +261,8 @@ func (m *TargetMerger) mergeForCard(ctx context.Context, cardID string, v visito
 		if entityStandingFresh && entityTs.StandingContinuousMin > out.StandingContinuousMin {
 			out.StandingContinuousMin = entityTs.StandingContinuousMin
 		}
-		if entityTs.WeakBiometricSignal > out.WeakBiometricSignal {
+		entityWeakBioFresh := entityTs.UpdatedAt > 0 && nowMs-entityTs.UpdatedAt <= WeakBioSnapshotStaleMs
+		if entityWeakBioFresh && entityTs.WeakBiometricSignal > out.WeakBiometricSignal {
 			out.WeakBiometricSignal = entityTs.WeakBiometricSignal
 		}
 		if entityTs.UpdatedAt > out.UpdatedAt {

@@ -168,3 +168,34 @@ func TestMergeForCard_NoSnapshot_ReturnsEmptyVisitorOnly(t *testing.T) {
 		t.Error("visitor should still apply")
 	}
 }
+
+// W3: WeakBio 30min staleness — 老 snapshot (>30min) 不参与 merge
+func TestMergeForCard_EntityKeyed_WeakBioStaleFiltered(t *testing.T) {
+	cardID := "fd00:0:3:111:3:101::/96"
+	mc := newTestMetaCache(t, cardID, nil)
+	m := NewTargetMerger(mc)
+
+	now := time.Now().UnixMilli()
+	ts := &card.TargetState{WeakBiometricSignal: 85, UpdatedAt: now - 31*60*1000} // 31min stale > 30min 阈值
+	m.OnDeviceTarget(context.Background(), cardID, ts)
+
+	merged := m.mergeForCard(context.Background(), cardID, visitorFields{})
+	if merged.WeakBiometricSignal != 0 {
+		t.Errorf("stale WeakBio (31min) should be filtered to 0, got %d", merged.WeakBiometricSignal)
+	}
+}
+
+func TestMergeForCard_EntityKeyed_WeakBioFreshApplies(t *testing.T) {
+	cardID := "fd00:0:3:111:3:101::/96"
+	mc := newTestMetaCache(t, cardID, nil)
+	m := NewTargetMerger(mc)
+
+	now := time.Now().UnixMilli()
+	ts := &card.TargetState{WeakBiometricSignal: 85, UpdatedAt: now - 25*60*1000} // 25min fresh < 30min
+	m.OnDeviceTarget(context.Background(), cardID, ts)
+
+	merged := m.mergeForCard(context.Background(), cardID, visitorFields{})
+	if merged.WeakBiometricSignal != 85 {
+		t.Errorf("fresh WeakBio (25min) should apply 85, got %d", merged.WeakBiometricSignal)
+	}
+}

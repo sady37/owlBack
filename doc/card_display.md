@@ -23,7 +23,9 @@
 │ Section3.up.left      Section3.up.right       │
 │ ActiveState +Time     SceneState + Time       │
 ├──────────────────────────────────────────────┤
-│ Section3.down: Visitor 或 Bed timing fallback│
+│ Section3.down.left          Section3.down.right│
+│ Visitor 或 Bed timing       VitalTrend 横条    │
+│ fallback                    (WeakBio 风险描述)  │
 └──────────────────────────────────────────────┘
 ```
 
@@ -40,7 +42,8 @@
 | Section2.right (postures) | realtime stream | wisefido-data realtime SSE | 否 |
 | Section3.up.left (ActiveState + Time) | display.`active_state` + `active_anchor_ms` | UnitPicker / SensorStateProjector | **是** |
 | Section3.up.right (SceneState + Time) | display.`scene_state` + `scene_anchor_ms` | UnitPicker / SensorStateProjector | **是** |
-| Section3.down (Visitor 或 Bed timing) | display.`visitor_state` + `visitor_anchor_ms` + `bed_anchor_ms` | **VisitorDeriver (cardagg)** 写 /88 room card (visitor 仅父 unit Private) / SensorStateProjector (bed timing leaf) | **是** |
+| Section3.down.left (Visitor 或 Bed timing) | display.`visitor_state` + `visitor_anchor_ms` + `bed_anchor_ms` | **VisitorDeriver (cardagg)** 写 /88 room card (visitor 仅父 unit Private) / SensorStateProjector (bed timing leaf) | **是** |
+| Section3.down.right (VitalTrend 横条) | display.`vital_trend_level` (0/1/2/3) | cardagg `card_display_builder.pickVitalTrendLevel` 从 `Target.WeakBiometricSignal` 阈值派生（§3.5b） | **是** |
 
 **约定**：
 - `display` 是 FE 渲染的唯一契约
@@ -84,7 +87,7 @@
 | `SceneState` | `scene_state` | int | `0`=OOR / `1`=InRoom / `2`=InBath / `3`=InBed / `4`=OOB；算法见 §4.2 |
 | `SceneAnchorMs` | `scene_anchor_ms` | int64 | 按 SceneState 取墙钟：InRoom/InBath→`rs.last_enter_time`；InBed/OOB→`bs.start_time`；OOR→`rs.last_exit_time` |
 
-### 3.5 Section3.down（Visitor + Bed timing fallback）
+### 3.5 Section3.down.left（Visitor + Bed timing fallback）
 
 | 字段 | JSON | 类型 | 取值方式 |
 |---|---|---|---|
@@ -102,6 +105,35 @@ else:                      // fallback bed timing
   elif BedStatus == 1:           "LeftBed " + (serverNow - BedAnchorMs)
   else:                          "-"
 ```
+
+### 3.5b Section3.down.right（VitalTrend 横条 — WeakBio 风险描述符）
+
+| 字段 | JSON | 类型 | 取值方式 |
+|---|---|---|---|
+| `VitalTrendLevel` | `vital_trend_level` | int | `0`=None (hide) / `1`=Gray (Attention) / `2`=Yellow (Watch) / `3`=Red (Alert)；从 `Target.WeakBiometricSignal` 阈值派生 |
+
+**阈值映射**（详 [[target_state_weak_bio_signal_design]] §"阈值表"）：
+
+| WeakBio score | VitalTrendLevel | 横条配色 |
+|---|---|---|
+| 0-29  | 0 None    | 不显示 |
+| 30-59 | 1 Gray    | 灰（Attention） |
+| 60-79 | 2 Yellow  | 黄（Watch） |
+| 80-100| 3 Red     | 红（Alert） |
+
+**staleness 守护**（W3）：
+- cardagg `target_merger` 在 merge WeakBio 时按 **offline 过滤 + 30min UpdatedAt staleness**（贴 sensor aggregator lazy 滑窗 weakBioWindowMs）
+- 空闲老人卡 30min 后 score 自然回 0（避免 sensor 不再 push 时 cardagg 卡老值显示 Red 横条）
+
+**FE 渲染逻辑**：
+```
+if VitalTrendLevel == 0:  hide 横条
+elif == 1:                bar bg=#888  // gray
+elif == 2:                bar bg=#FFC107  // yellow
+elif == 3:                bar bg=#F44336  // red
+```
+
+**不独立触发 alarm**：score ≥80 仅作风险描述符；后续由风险放大消费者（cardagg AlarmRouter / sensor fall verifier / zonealarm Supervisor）读 `Target.WeakBiometricSignal` 在 Warn alarm 上提级 Critical 或缩短阈值（详 weakBio 设计 §"风险放大消费者"）。
 
 ## 4. 决策算法
 

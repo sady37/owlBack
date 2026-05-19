@@ -398,6 +398,21 @@ const (
 	VisitorStateToday = 2 // "Visitor today · <DisplayTime>"
 )
 
+// VitalTrendLevel — Section3.down.right 横条配色（S4/W1 WeakBio 风险描述符 UI）。
+// 由 cardagg card_display_builder 按 Target.WeakBiometricSignal score 阈值派生
+// （详 [[target_state_weak_bio_signal_design]]）：
+//
+//	0-29  → None (hide 横条)
+//	30-59 → Gray (Attention)
+//	60-79 → Yellow (Watch)
+//	80-100→ Red (Alert) — 不独立触发 alarm，由风险放大消费者按 ≥80 提级
+const (
+	VitalTrendLevelNone   = 0
+	VitalTrendLevelGray   = 1
+	VitalTrendLevelYellow = 2
+	VitalTrendLevelRed    = 3
+)
+
 // CardDisplay — 写入 card:state hash 的 `display` JSON 字段。
 type CardDisplay struct {
 	UpdatedAt int64 `json:"updated_at"`
@@ -418,9 +433,12 @@ type CardDisplay struct {
 	SceneState    int   `json:"scene_state"`
 	SceneAnchorMs int64 `json:"scene_anchor_ms,omitempty"`
 
-	// Section3.down
+	// Section3.down.left (Visitor / Bed timing)
 	VisitorState    int   `json:"visitor_state"`
 	VisitorAnchorMs int64 `json:"visitor_anchor_ms,omitempty"`
+
+	// Section3.down.right (WeakBio 横条配色；VitalTrendLevel* 0=hide/1=Gray/2=Yellow/3=Red)
+	VitalTrendLevel int `json:"vital_trend_level,omitempty"`
 }
 
 // CardStatus 卡片状态数据
