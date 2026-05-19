@@ -137,6 +137,14 @@ func main() {
 		return ok
 	})
 
+	// 5.2.2 TargetStateAggregator + alarm consumer (S1/FU3)
+	// 旁路读 iot:alarm:stream 把 WeakBio 关联 alarm 喂给 aggregator 累加 score。
+	// Producer 在 fd00:0:fff1::/48 slot 的自家派生 alarm 跳过防 loop。
+	targetAggregator := service.NewTargetStateAggregator(engineRedis, logger)
+	go targetAggregator.Run(ctx)
+	alarmConsumer := consumer.NewAlarmConsumer(engineRedis, targetAggregator, logger)
+	alarmConsumer.Start(ctx)
+
 	// 5.3 Zone Engine 子系统：Bed/Room/Bathroom 状态唯一权威源 + zonealarm Warning 兜底
 	zone, err := wiring.Setup(wiring.SetupOptions{
 		DB:            engineDB,

@@ -33,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"owl-common/alarm"
 	"owl-common/card"
 	"owl-common/observation"
 
@@ -183,6 +184,18 @@ func (a *TargetStateAggregator) PushAlarmEvent(e AlarmEventSnapshot) {
 	}
 }
 
+// PushAlarmFields primitive-form 入口，供外部 consumer 用（避免 caller 反向 import service.AlarmEventSnapshot
+// 形成包环：service→consumer 已存在，consumer→service 通过此 interface-friendly API 解耦）。
+func (a *TargetStateAggregator) PushAlarmFields(spatialPrefix, alarmType, producer string, tsMs int64, rawValue int) {
+	a.PushAlarmEvent(AlarmEventSnapshot{
+		SpatialPrefix: spatialPrefix,
+		AlarmType:     alarmType,
+		TsMs:          tsMs,
+		Producer:      producer,
+		RawValue:      rawValue,
+	})
+}
+
 // OnZoneEvent 实现 zoneengine.ZoneEventListener（通过 wiring 注册）。
 // 拿到 ZoneEvent 后立刻翻译成 ZoneEventSnapshot 入队，不阻塞 engine。
 // spatialPrefix = ZoneEvent.CardID（v2 实现里同 INET CIDR）；从 aggregator 视角是物理实体地址。
@@ -297,9 +310,10 @@ func (a *TargetStateAggregator) handleAlarmEvent(ctx context.Context, e AlarmEve
 const weakBioWindowMs int64 = 30 * 60 * 1000 // 30min
 
 // isWeakBioRelatedAlarm 4 种关联 alarm 进 weakBio 计算（其它一律忽略）。
+// caller（AlarmConsumer）已把 .High/.Low 变体规整到 base name。
 func isWeakBioRelatedAlarm(t string) bool {
 	switch t {
-	case "WeakBiometricSignal", "HeartRateAlert", "RespRateAlert", "ApneaHypopnea":
+	case alarm.WeakBiometricSignal, alarm.HeartRateAlert, alarm.RespRateAlert, alarm.ApneaHypopnea:
 		return true
 	}
 	return false
@@ -318,15 +332,15 @@ func computeWeakBioScore(events []weakBioEvent) int {
 	var maxRaw, hrCount, rrCount, apneaCount int
 	for _, ev := range events {
 		switch ev.alarmType {
-		case "WeakBiometricSignal":
+		case alarm.WeakBiometricSignal:
 			if ev.rawValue > maxRaw {
 				maxRaw = ev.rawValue
 			}
-		case "HeartRateAlert":
+		case alarm.HeartRateAlert:
 			hrCount++
-		case "RespRateAlert":
+		case alarm.RespRateAlert:
 			rrCount++
-		case "ApneaHypopnea":
+		case alarm.ApneaHypopnea:
 			apneaCount++
 		}
 	}
