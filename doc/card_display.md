@@ -40,7 +40,7 @@
 | Section2.right (postures) | realtime stream | wisefido-data realtime SSE | 否 |
 | Section3.up.left (ActiveState + Time) | display.`active_state` + `active_anchor_ms` | UnitPicker / SensorStateProjector | **是** |
 | Section3.up.right (SceneState + Time) | display.`scene_state` + `scene_anchor_ms` | UnitPicker / SensorStateProjector | **是** |
-| Section3.down (Visitor 或 Bed timing) | display.`visitor_state` + `visitor_anchor_ms` + `bed_anchor_ms` | UnitPicker (visitor 仅 /80 private) / SensorStateProjector (bed timing leaf) | **是** |
+| Section3.down (Visitor 或 Bed timing) | display.`visitor_state` + `visitor_anchor_ms` + `bed_anchor_ms` | **VisitorDeriver (cardagg)** 写 /88 room card (visitor 仅父 unit Private) / SensorStateProjector (bed timing leaf) | **是** |
 
 **约定**：
 - `display` 是 FE 渲染的唯一契约
@@ -88,7 +88,7 @@
 
 | 字段 | JSON | 类型 | 取值方式 |
 |---|---|---|---|
-| `VisitorState` | `visitor_state` | int | `0`=None / `1`=Now / `2`=Today；**仅 /80 卡 AND `unit_type==1`(private) 才可能非 0**，算法见 §4.4 |
+| `VisitorState` | `visitor_state` | int | `0`=None / `1`=Now / `2`=Today；**仅 /88 room 卡 AND 父 unit `unit_type==1`(Private) 才可能非 0**，算法见 §4.4 |
 | `VisitorAnchorMs` | `visitor_anchor_ms` | int64 | VisitorState ≠ None 时 = `Target.VisitorStartTs` |
 | `BedAnchorMs` | `bed_anchor_ms` | int64 | = `bs.start_time`（FE 在 VisitorState=None 时渲 "InBed/LeftBed Xm ago"，配合 Section2.BedStatus） |
 
@@ -171,9 +171,20 @@ else:
 
 leaf 卡读自己的 Target.LastActiveTs。/80 unit 卡：picker 把 winner 的 Target.LastActiveTs 投到 /80 display。
 
-### 4.4 VisitorState picker（仅 /80 unit private）
+### 4.4 VisitorState 算法（per /88 room card，由 cardagg VisitorDeriver 写）
 
-**前置条件**：当前卡是 /80 unit 卡 AND `unit_type == 1` (private/single)。否则永远 `VisitorState = None`。
+**架构原则**（2026-05-18 拍板）：
+- Sensor 不做 visitor 跨 room 合并 —— sensor 只发 RoomState (含 TotalPeople)，per /88 物理实体
+- 跨实体合并是 card 层职责 → **cardagg `VisitorDeriver` 模块负责**
+- Visitor 显示在**发生多人的那个 /88 room card 上**（不是 /80 unit card）
+- 不同 room 触发的 visitor 各自独立 tracking（roomX 触发显 roomX 卡，roomY 触发显 roomY 卡）
+
+**前置条件 (Private gate)**：
+- VisitorDeriver 仅处理父 unit 满足 `unit_type == card.UnitTypePrivate (=1)` 的 /88 room cards
+- Share / Public unit 全部跳过（多 resident 同住时多人是常态，无法判定是 visitor 还是室友）
+- 物理原因：sensor 无身份识别能力，仅单 resident unit 才能确定"多出来一人=visitor"
+
+**FE 渲染（per /88 room card）**：
 
 ```
 if Target.VisitorStartTs > 0 AND (now - VisitorStartTs < 2h):
@@ -186,11 +197,20 @@ else:
     → None
 ```
 
-**Visitor 检测**（sensor 侧）：
-- 任一 radar 上报 `multi_person_duration ≥ 30s`（`MultiPersonDurationSec`，sensor weights.go）
-- 写到该 unit /80 的 Target.VisitorStartTs（不写子卡）
-- 持续 ≥ 10min 时（`VisitorMinThreshold`）累加到 Target.TodayMaxVisitorMin
-- 当日午夜 reset `HasVisitorToday`
+**Visitor 检测（cardagg VisitorDeriver 算法，60s tick）**：
+
+1. **遍历 /88 room cards**：仅父 /80 unit 的 `unit_type == Private` 的子 /88
+2. **每分钟 tick** 读 `card:state:{room_id}.room_state.total_people`
+3. **per-/88 room 累加段持续时间**：
+   - `TotalPeople ≥ 2` → segment_duration_min += 1
+   - `TotalPeople < 2` → segment_duration_min = 0 (段结束)
+4. **跨 5 min 阈值** (`VisitorMinThreshold`)：
+   - 此 /88 room card 设 `Target.VisitorStartTs = segment_start_ts`
+   - `Target.HasVisitorToday = true`
+   - `Target.TodayMaxVisitorMin = max(prev, segment_duration_min)`
+5. **当日午夜 reset**（按 parent unit timezone）：清三字段 + 重置 segment_start_ts
+
+**Sensor 侧**：完全不参与 visitor 累加 —— 只通过现有 RoomState publish 把 TotalPeople 喂给 cardagg。
 
 ## 5. /80 UnitPicker 优先级算法
 
@@ -283,7 +303,9 @@ HasVisitorToday     bool   // 当日是否曾有 visitor
 TodayMaxVisitorMin  int    // 当日最长 visitor 时长
 ```
 
-**注**：JSON tag 当前是 `VisitorStartTs / HasVisitorToday / TodayMaxVisitorMin`（PascalCase）——违反 owlBack CLAUDE.md 规则 #1.1（snake_case）。需独立 PR 改名为 `visitor_start_ts / has_visitor_today / today_max_visitor_min`。
+**注**：JSON tag 已统一 snake_case（`visitor_start_ts / has_visitor_today / today_max_visitor_min`），2026-05-18 Task 2.5 落地 (commit `8e8732e`)。
+
+**注（架构）**：这 3 个 visitor 字段的 **writer 在 cardagg `VisitorDeriver`**（非 sensor），算法见 §4.4。Sensor 端不做 visitor 累加。
 
 ## 8. 命名约定
 
@@ -292,11 +314,20 @@ TodayMaxVisitorMin  int    // 当日最长 visitor 时长
 
 ## 9. 已知 wiring gap（producer 待修）
 
+**Sensor 侧 (单实体内判断)**：
+
 | 字段 | 现状 | 待修 |
 |---|---|---|
 | `Target.LastActiveTs` | `UpdateTargetLastActive` 函数有，**零 caller** | sensor 收 radar 帧时按 §4.3 条件调用 |
-| `Target.VisitorStartTs` / `HasVisitorToday` / `TodayMaxVisitorMin` | 字段定义在，**全栈无 writer** | sensor 按 §4.4 条件累加 |
-| `RoomState.StaySec` | risk_evaluator 读，**无 writer** | sensor 进房=0 起累，空房复位 |
+| `RoomState.StandingContinuousMin` | risk_evaluator 读，**无 writer** | sensor 按 stand_duration ≥ 55s + total_people==1 累 +1 封顶 8 |
+| `RoomState.StaySec` | risk_evaluator 读，**已修**（commit `8e8732e` translator 即时算）| ✅ done |
+| `Target.WeakBiometricSignal` | 字段定义在，**全栈无 writer** | sensor TargetStateAggregator 订阅 iot:alarm:stream 累加 30min 滑窗（见 [[target_state_weak_bio_signal_design]]） |
+
+**Cardagg 侧 (跨实体合并)**：
+
+| 字段 | 现状 | 待修 |
+|---|---|---|
+| `Target.VisitorStartTs` / `HasVisitorToday` / `TodayMaxVisitorMin` | sensor 不再负责；**cardagg 无 VisitorDeriver** | 新建 cardagg `VisitorDeriver` per §4.4：60s tick + Private gate + per /88 room 累加 + 5min 阈值写 /88 room card target |
 | `RoomState.StandingContinuousMin` | risk_evaluator 读，**无 writer** | sensor 按 stand_duration ≥ 55s 累 +1，封顶 8 |
 
 修复顺序（按当前讨论的约定）：
