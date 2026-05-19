@@ -148,3 +148,78 @@ func TestVerify_WeakBioOverridesGhostPenalty(t *testing.T) {
 
 // fakeWeakBioSource 隐式满足 roomengine.WeakBioSource interface 编译期校验。
 var _ WeakBioSource = (*fakeWeakBioSource)(nil)
+
+// ---- Cell.FallSuppressUntilMs 拦截点（FE "Lying Area" 反馈临时禁报窗）----
+
+// track 落在 cell 上、FallSuppressUntilMs 在未来 → verifier 短路 verdict=ghost
+func TestVerify_CellFallSuppressActive_ShortCircuitGhost(t *testing.T) {
+	tm, g := newTestTM()
+	tm.tracks[7] = &TrackState{
+		TrackID:    7,
+		Verdict:    VerdictReal,
+		Score:      ScoreConfirmTh,
+		FrameCount: 20,
+		Kalman:     NewKalmanFilter2D(50, 50),
+	}
+	const nowMs = int64(1_700_000_000_000)
+	// 给 (50, 50) cell 写 2H 禁报窗
+	cell := g.CellAt(50, 50)
+	if cell == nil {
+		t.Fatal("setup: cell (50,50) out of grid")
+	}
+	cell.FallSuppressUntilMs = nowMs + 2*60*60_000
+
+	a := RadarFallAlarm{TrackID: 7, TMs: nowMs}
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	r := tm.verifyRadarFall(a, nowMs)
+	if r.Verdict != "ghost" || r.Reason != "cell_fall_suppress_window" {
+		t.Errorf("active suppress window must short-circuit ghost, got verdict=%q reason=%q breakdown=%+v",
+			r.Verdict, r.Reason, r.Breakdown)
+	}
+	if _, ok := r.Breakdown["cell_fall_suppress_until"]; !ok {
+		t.Error("breakdown should record remaining suppress duration")
+	}
+}
+
+// FallSuppressUntilMs 已过期 → 正常评分路径，不短路
+func TestVerify_CellFallSuppressExpired_NoShortCircuit(t *testing.T) {
+	tm, g := newTestTM()
+	tm.tracks[7] = &TrackState{
+		TrackID:    7,
+		Verdict:    VerdictReal,
+		Score:      ScoreConfirmTh,
+		FrameCount: 20,
+		Kalman:     NewKalmanFilter2D(50, 50),
+	}
+	const nowMs = int64(1_700_000_000_000)
+	cell := g.CellAt(50, 50)
+	cell.FallSuppressUntilMs = nowMs - 1000 // 1s 前已过期
+
+	a := RadarFallAlarm{TrackID: 7, TMs: nowMs}
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	r := tm.verifyRadarFall(a, nowMs)
+	if r.Reason == "cell_fall_suppress_window" {
+		t.Errorf("expired suppress must NOT short-circuit, got reason=%q", r.Reason)
+	}
+}
+
+// FallSuppressUntilMs == 0 (默认/unset) → 不短路
+func TestVerify_CellFallSuppressUnset_NoShortCircuit(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.tracks[7] = &TrackState{
+		TrackID:    7,
+		Verdict:    VerdictReal,
+		Score:      ScoreConfirmTh,
+		FrameCount: 20,
+		Kalman:     NewKalmanFilter2D(50, 50),
+	}
+	a := RadarFallAlarm{TrackID: 7, TMs: 1_700_000_000_000}
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	r := tm.verifyRadarFall(a, a.TMs)
+	if r.Reason == "cell_fall_suppress_window" {
+		t.Errorf("unset suppress (default 0) must NOT short-circuit, got reason=%q", r.Reason)
+	}
+}

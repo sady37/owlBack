@@ -196,6 +196,12 @@ type Cell struct {
 	RestZoneConfirmed  int
 	RealFallCount      int
 
+	// FallSuppressUntilMs: FE false_alarm 反馈勾"Lying Area" 时由 cardagg/RPC 写入的临时禁报窗。
+	// fall verifier (fall_verify.go) 在 nowMs < FallSuppressUntilMs 期间将 firmware Fall 直接判 ghost。
+	// 设计：未标注的 long-sofa / 临时躺区由人工 handle 时打"2H 禁报"窗，覆盖 layout 漏标场景。
+	// 写入路径 PR 接线后实施；当前仅 verifier 拦截点已就绪。
+	FallSuppressUntilMs int64
+
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState
 

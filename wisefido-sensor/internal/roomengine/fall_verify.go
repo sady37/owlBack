@@ -120,10 +120,20 @@ func (tm *TrackManager) verifyRadarFall(a RadarFallAlarm, nowMs int64) FallVerif
 
 	// === 辅助减分 ===
 
-	// cell.FakeAlarmCount：自学习的历史误报点（PR-4 false_alarm 反馈链产物）
+	// Cell 查询：先过 FallSuppressUntilMs 拦截点（FE 反馈"Lying Area" 临时禁报窗），
+	// 命中即短路 verdict=ghost；否则按 FakeAlarmCount 累计扣分。
 	pxF, pyF := ts.Kalman.Position()
 	px, py := int(math.Round(pxF)), int(math.Round(pyF))
 	if cell := tm.grid.CellAt(px, py); cell != nil {
+		if cell.FallSuppressUntilMs > 0 && nowMs < cell.FallSuppressUntilMs {
+			breakdown["cell_fall_suppress_until"] = int(cell.FallSuppressUntilMs - nowMs)
+			return FallVerifyResult{
+				Score:     0,
+				Verdict:   "ghost",
+				Reason:    "cell_fall_suppress_window",
+				Breakdown: breakdown,
+			}
+		}
 		if fc := cell.FakeAlarmCount; fc > 0 {
 			d := -fc * 3
 			if d < -15 {
