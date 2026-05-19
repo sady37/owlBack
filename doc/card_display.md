@@ -262,20 +262,36 @@ final = min(100, score)
 
 **注**：v2 max-merge 违反 VitalWeight 加权意图（Sleepad=8 > Radar=4），但因为不再触发 alarm，false positive 代价从"误叫救护车"降到"FE 横条假红"——可接受；v3 vital 融合时再上加权策略（FollowUp-1）。
 
-### 4.4 VisitorState 算法（per /88 room card，由 cardagg VisitorDeriver 写）
+### 4.4 VisitorState 算法（cardagg VisitorDeriver 写；2026-05-19 加 bed-bound radar 路径）
 
 **架构原则**（2026-05-18 拍板）：
 - Sensor 不做 visitor 跨 room 合并 —— sensor 只发 RoomState (含 TotalPeople)，per /88 物理实体
 - 跨实体合并是 card 层职责 → **cardagg `VisitorDeriver` 模块负责**
-- Visitor 显示在**发生多人的那个 /88 room card 上**（不是 /80 unit card）
-- 不同 room 触发的 visitor 各自独立 tracking（roomX 触发显 roomX 卡，roomY 触发显 roomY 卡）
+- 不同 room 触发的 visitor 各自独立 tracking
 
-**前置条件 (Private gate)**：
-- VisitorDeriver 仅处理父 unit 满足 `unit_type == card.UnitTypePrivate (=1)` 的 /88 room cards
-- Share / Public unit 全部跳过（多 resident 同住时多人是常态，无法判定是 visitor 还是室友）
-- 物理原因：sensor 无身份识别能力，仅单 resident unit 才能确定"多出来一人=visitor"
+**双路径判定矩阵（2026-05-19 拍板）**：
 
-**FE 渲染（per /88 room card）**：
+| unit_type | room level (/88 room card)| bed level (/96 bed card with bed-bound radar) | 净结果 |
+|---|---|---|---|
+| Private (1) | ✅ 兜底 | ✅ 优先（写 /96 bed card） | 双路径；bed level 优先 |
+| **Share (2)** | ❌（多 resident 常态）| ✅ 唯一路径（解锁 share）| 仅 bed level |
+| Public (3) | ❌ | ❌ | 跳过 |
+
+bed level 解锁 Share unit visitor 归因——以前 Share 完全跳过（"多人是常态无法判定"），现在 bed-bound radar 视野受 firmware boundary 物理限制到该床区域，看到 2 人=床主+访客。
+
+**bed-bound radar 判定**：
+- cardagg 端判定：`card.CardType == "bed" AND card.Devices` 含 `device_type == "Radar"` 的 device
+- 物理基础：device IPv6 绑到 /96 bed prefix 即视为 bed-bound radar
+- **firmware 自带 boundary 物理裁剪**——share 双床各自 boundary 设到自己床区，cardagg 不查物理安装、只信 IPAM 绑定 + firmware 部署纪律
+
+**优先级冲突处理**：
+- bed level 触发了某 /96 bed card visitor → 对应 /88 父 room card 本轮跳过（避免父子双显）
+
+**写入位置**：
+- bed level 触发 → `/96 bed card` target
+- room level 触发 → `/88 room card` target
+
+**FE 渲染**（统一逻辑，per card 读自己 target）：
 
 ```
 if Target.VisitorStartTs > 0 AND (now - VisitorStartTs < 2h):
@@ -288,17 +304,52 @@ else:
     → None
 ```
 
-**Visitor 检测（cardagg VisitorDeriver 算法，60s tick）**：
+**Visitor 检测算法（cardagg VisitorDeriver 60s tick）**：
 
-1. **遍历 /88 room cards**：仅父 /80 unit 的 `unit_type == Private` 的子 /88
-2. **每分钟 tick** 读 `card:state:{room_id}.room_state.total_people`
-3. **per-/88 room 累加段持续时间**：
-   - `TotalPeople ≥ 2` → segment_duration_min += 1
-   - `TotalPeople < 2` → segment_duration_min = 0 (段结束)
-4. **跨 5 min 阈值** (`VisitorMinThreshold`)：
-   - 此 /88 room card 设 `Target.VisitorStartTs = segment_start_ts`
-   - `Target.HasVisitorToday = true`
-   - `Target.TodayMaxVisitorMin = max(prev, segment_duration_min)`
+```
+for each card in tracked cards:
+    case 1: bed level （/96 bed + bed-bound radar）
+        peopleCount = bed-bound radar 视野内 people count（per-bed in-memory tracker）
+    case 2: room level（/88 + parent unit_type == Private）
+        peopleCount = card:state.room_state.total_people
+    
+    if peopleCount >= 2:
+        segment_duration_min += 1
+        if segment_duration_min >= 5:
+            Target.VisitorStartTs = segment_start_ts
+            Target.HasVisitorToday = true
+            Target.TodayMaxVisitorMin = max(prev, segment_duration_min)
+    else:
+        segment_duration_min = 0
+    
+midnight reset (parent unit timezone): 清三字段 + segment_start_ts
+```
+
+**bed level 数据流**：
+
+```
+radar monitor frame (含 number_people)
+     ↓
+iot:monitor:stream
+     ↓
+cardagg monitor handler（已订阅）
+     ↓ 检查 device 是否 bed-bound（card.CardType=="bed" + Radar device）
+cardagg per-bed PeopleCount in-memory tracker
+     ↓
+VisitorDeriver 60s tick 读
+     ↓
+判定 + 写 /96 bed card target
+```
+
+**已接受的边界限制**：
+
+| 边界 | 处理 |
+|---|---|
+| 视野中央盲区漏报（visitor 站两床之间）| 接受；5min 阈值过滤短时——visitor 真长时间停留就会走到某床边触发 |
+| segment 不连续（访客离开 bed 几分钟又回来）| 严格 5min 连续；不做间断容忍——短时离开即视作 visit 结束 |
+| 路过他床 / 巡房 | 5min 阈值天然过滤 |
+
+**Sensor 侧**：完全不参与 visitor 累加 —— 只通过现有 RoomState publish（/88 total_people）+ monitor 流（per-radar number_people）喂给 cardagg。
 5. **当日午夜 reset**（按 parent unit timezone）：清三字段 + 重置 segment_start_ts
 
 **Sensor 侧**：完全不参与 visitor 累加 —— 只通过现有 RoomState publish 把 TotalPeople 喂给 cardagg。
