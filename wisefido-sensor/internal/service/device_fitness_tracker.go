@@ -34,13 +34,26 @@ const (
 	FitnessReasonSignalPoor     uint8 = 1 << 3
 )
 
+// UnfitCallback device 从 fit → unfit 边沿触发；各持 per-device in-memory state 的组件
+// 注册自己的 clear 函数（"device offline = 内存 state 重启"原则，用户 2026-05-19 拍板）。
+//
+// 已 fire 入 DB 的 alarm 不丢（DB 单写者）；只清没 fire 的 pending / cache / accumulator。
+//
+// 注册方：
+//   - TrackManager.ClearDevice (via Engine.OnDeviceUnfit) — bedSessions / sleepadStates
+//   - TargetStateAggregator.ForgetDevice — weakBio score / standing / lastActive accumulator
+//   - SleepStageConsumer.OnDeviceUnfit — ladder state + emit bed.sleepstage(0,0)
+//   - BedEventDedup.Forget — 10s 同类 dedup map
+type UnfitCallback func(deviceAddr string)
+
 // DeviceFitnessTracker per-device 健康状态。线程安全。
 //
 // state map: deviceAddr (canonical IPv6 string) → fitnessFlags。0 = fit；非 0 = 至少 1 类 unfit。
 type DeviceFitnessTracker struct {
-	mu     sync.RWMutex
-	flags  map[string]uint8
-	logger *zap.Logger
+	mu        sync.RWMutex
+	flags     map[string]uint8
+	callbacks []UnfitCallback
+	logger    *zap.Logger
 }
 
 func NewDeviceFitnessTracker(logger *zap.Logger) *DeviceFitnessTracker {
@@ -53,7 +66,24 @@ func NewDeviceFitnessTracker(logger *zap.Logger) *DeviceFitnessTracker {
 	}
 }
 
-// MarkUnfit 标 device 为 unfit（OR 入 reason flag）。
+// RegisterUnfitCallback 注册 device fit→unfit 边沿回调（仅首次 unfit 触发，避免重复 mark spam）。
+// main wiring 调；callback 应 idempotent（被重复调不破）。
+func (t *DeviceFitnessTracker) RegisterUnfitCallback(fn UnfitCallback) {
+	if t == nil || fn == nil {
+		return
+	}
+	t.mu.Lock()
+	t.callbacks = append(t.callbacks, fn)
+	t.mu.Unlock()
+}
+
+// MarkUnfit 标 device 为 unfit（OR 入 reason flag）+ 在 fit→unfit 边沿广播 clear callback。
+//
+// 边沿检测：prev==0 → non-zero 时为首次 unfit，broadcast 给所有 callbacks 清 device-related
+// state（"device offline = 内存重启"原则）。后续重复 Mark（不同 reason 累加）不再 broadcast，
+// state 已清没必要再清。
+//
+// 注：broadcast 在锁外执行 — callback 可能反向调 IsFit / 持自己锁，必须避免死锁。
 func (t *DeviceFitnessTracker) MarkUnfit(deviceAddr string, reason uint8) {
 	if t == nil || deviceAddr == "" || reason == 0 {
 		return
@@ -61,9 +91,23 @@ func (t *DeviceFitnessTracker) MarkUnfit(deviceAddr string, reason uint8) {
 	t.mu.Lock()
 	prev := t.flags[deviceAddr]
 	t.flags[deviceAddr] = prev | reason
+	var firstEdge []UnfitCallback
+	if prev == 0 {
+		firstEdge = make([]UnfitCallback, len(t.callbacks))
+		copy(firstEdge, t.callbacks)
+	}
 	t.mu.Unlock()
-	if prev&reason == 0 { // 新增 unfit 才记 log（避免 dedup 噪声）
-		t.logger.Info("device fitness: marked unfit",
+
+	if prev == 0 {
+		t.logger.Info("device fitness: marked unfit (first edge → broadcast clear)",
+			zap.String("device_addr", deviceAddr),
+			zap.Uint8("reason", reason),
+		)
+		for _, fn := range firstEdge {
+			fn(deviceAddr)
+		}
+	} else if prev&reason == 0 {
+		t.logger.Info("device fitness: marked unfit (additional reason, state already cleared)",
 			zap.String("device_addr", deviceAddr),
 			zap.Uint8("reason", reason),
 			zap.Uint8("flags_after", prev|reason),

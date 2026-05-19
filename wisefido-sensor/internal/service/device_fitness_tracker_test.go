@@ -136,4 +136,100 @@ func TestFitness_NilReceiver(t *testing.T) {
 	tr.MarkUnfit("dev-a", FitnessReasonOffline)
 	tr.ClearReason("dev-a", FitnessReasonOffline)
 	tr.Forget("dev-a")
+	tr.RegisterUnfitCallback(func(string) {}) // 防 panic
+}
+
+// ---------------------------------------------------------------------------
+// UnfitCallback broadcast (fit→unfit edge)
+// ---------------------------------------------------------------------------
+
+func TestFitness_FirstEdgeBroadcastsCallback(t *testing.T) {
+	tr := newTestFitnessTracker()
+	var called []string
+	tr.RegisterUnfitCallback(func(addr string) { called = append(called, addr) })
+
+	tr.MarkUnfit("dev-a", FitnessReasonOffline)
+
+	if len(called) != 1 || called[0] != "dev-a" {
+		t.Errorf("first edge should broadcast: got %v", called)
+	}
+}
+
+func TestFitness_AdditionalReasonNoBroadcast(t *testing.T) {
+	tr := newTestFitnessTracker()
+	var count int
+	tr.RegisterUnfitCallback(func(string) { count++ })
+
+	tr.MarkUnfit("dev-a", FitnessReasonOffline)        // first edge → 1
+	tr.MarkUnfit("dev-a", FitnessReasonSensorDetached) // 累加 reason，state 已清，不再 broadcast
+	tr.MarkUnfit("dev-a", FitnessReasonAngleException)
+
+	if count != 1 {
+		t.Errorf("only first edge broadcasts; got %d", count)
+	}
+}
+
+func TestFitness_DuplicateMarkNoBroadcast(t *testing.T) {
+	tr := newTestFitnessTracker()
+	var count int
+	tr.RegisterUnfitCallback(func(string) { count++ })
+
+	tr.MarkUnfit("dev-a", FitnessReasonOffline)
+	tr.MarkUnfit("dev-a", FitnessReasonOffline) // 重复 mark 同 reason
+
+	if count != 1 {
+		t.Errorf("duplicate mark same reason: 1 broadcast, got %d", count)
+	}
+}
+
+func TestFitness_ReFitThenUnfitBroadcastsAgain(t *testing.T) {
+	tr := newTestFitnessTracker()
+	var count int
+	tr.RegisterUnfitCallback(func(string) { count++ })
+
+	tr.MarkUnfit("dev-a", FitnessReasonOffline) // 1
+	tr.ClearReason("dev-a", FitnessReasonOffline)
+	if !tr.IsFit("dev-a") {
+		t.Fatal("setup: should be fit after Clear")
+	}
+	tr.MarkUnfit("dev-a", FitnessReasonOffline) // 又一次 fit→unfit edge → 2
+
+	if count != 2 {
+		t.Errorf("after recover + unfit again, should broadcast twice; got %d", count)
+	}
+}
+
+func TestFitness_MultiCallbacksAllCalled(t *testing.T) {
+	tr := newTestFitnessTracker()
+	var got1, got2, got3 string
+	tr.RegisterUnfitCallback(func(a string) { got1 = a })
+	tr.RegisterUnfitCallback(func(a string) { got2 = a })
+	tr.RegisterUnfitCallback(func(a string) { got3 = a })
+
+	tr.MarkUnfit("dev-a", FitnessReasonSensorDetached)
+
+	if got1 != "dev-a" || got2 != "dev-a" || got3 != "dev-a" {
+		t.Errorf("3 callbacks all should fire: %q / %q / %q", got1, got2, got3)
+	}
+}
+
+func TestFitness_NilCallbackIgnored(t *testing.T) {
+	tr := newTestFitnessTracker()
+	tr.RegisterUnfitCallback(nil) // 不应 panic 也不入队
+	// 后续 MarkUnfit 不 panic
+	tr.MarkUnfit("dev-a", FitnessReasonOffline)
+}
+
+func TestFitness_DifferentDevicesEachBroadcast(t *testing.T) {
+	tr := newTestFitnessTracker()
+	var called []string
+	tr.RegisterUnfitCallback(func(a string) { called = append(called, a) })
+
+	tr.MarkUnfit("dev-a", FitnessReasonOffline)
+	tr.MarkUnfit("dev-b", FitnessReasonOffline)
+	tr.MarkUnfit("dev-c", FitnessReasonOffline)
+
+	if len(called) != 3 {
+		t.Errorf("3 different devices: 3 broadcasts, got %d (%v)", len(called), called)
+	}
 }

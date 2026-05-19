@@ -457,6 +457,40 @@ func TestOnBedVacant_EmptyPrefix_NoOp(t *testing.T) {
 	}
 }
 
+// "device offline = 内存重启" — OnDeviceUnfit 路径
+func TestOnDeviceUnfit_ClearsStateAndEmitsZero(t *testing.T) {
+	sink := &fakeSleepSink{}
+	c := newTestSleepConsumer(sink)
+
+	// 先填 state（sp = /96 of dev addr）
+	c.handleRaw(context.Background(),
+		buildSleepRawFields("fd00:0:3:111:3:101::abcd", "fd00:0:3:111:3:101::/96",
+			"sleepad", 1700000000000, 4))
+	if len(sink.calls) != 1 {
+		t.Fatalf("setup: 1 publish, got %d", len(sink.calls))
+	}
+
+	// 触发 device unfit
+	c.OnDeviceUnfit("fd00:0:3:111:3:101::abcd")
+
+	if len(sink.calls) != 2 {
+		t.Fatalf("OnDeviceUnfit should emit clear (0,0): got %d publishes", len(sink.calls))
+	}
+	got := sink.calls[1]
+	if got.sleepStage != 0 || got.confidence != 0 {
+		t.Errorf("clear publish should be (0,0), got (%d,%d)", got.sleepStage, got.confidence)
+	}
+}
+
+func TestOnDeviceUnfit_InvalidAddrNoOp(t *testing.T) {
+	sink := &fakeSleepSink{}
+	c := newTestSleepConsumer(sink)
+	c.OnDeviceUnfit("garbage")
+	if len(sink.calls) != 0 {
+		t.Errorf("invalid addr: no-op")
+	}
+}
+
 func TestHandleRaw_PublishFailRollsBackState(t *testing.T) {
 	sink := &fakeSleepSink{errOnce: errors.New("redis fail")}
 	c := newTestSleepConsumer(sink)

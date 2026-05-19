@@ -675,6 +675,30 @@ func (e *Engine) SetWeakBioSource(s WeakBioSource) {
 	}
 }
 
+// OnDeviceUnfit 实现 DeviceFitnessTracker UnfitCallback —— device offline / SensorDetached
+// 等触发时清该 device 在 engine 内的所有 in-memory state（"device offline = 内存重启"原则，
+// 用户 2026-05-19 拍板）。
+//
+// 通过 deviceRoom 反查 device 所在 room → 调 tm.ClearDevice。device 跨多 room 不存在（v2
+// device→room LPM 命中唯一），单 room dispatch 足够。
+func (e *Engine) OnDeviceUnfit(deviceAddr string) {
+	if e == nil || deviceAddr == "" {
+		return
+	}
+	e.mu.RLock()
+	roomID := e.deviceRoom[deviceAddr]
+	tm := e.rooms[roomID]
+	e.mu.RUnlock()
+	if tm == nil {
+		return
+	}
+	tm.ClearDevice(deviceAddr)
+	e.logger.Info("engine cleared device on unfit",
+		zap.String("device_addr", deviceAddr),
+		zap.String("room_id", roomID),
+	)
+}
+
 func (e *Engine) SetSuiteCensus(m *SuiteCensusManager) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

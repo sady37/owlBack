@@ -12,6 +12,7 @@ package service
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -426,6 +427,77 @@ func TestEventFrame_EmptySpatialPrefixIgnored(t *testing.T) {
 	a.mu.RUnlock()
 	if n != 0 {
 		t.Errorf("empty SpatialPrefix should not create accumulator, got %d entries", n)
+	}
+}
+
+// ============================================================================
+// ForgetDevice — "device offline = 内存重启"
+// ============================================================================
+
+func TestForgetDevice_Clears96And88(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	deviceAddr := "fd00:0:3:111:3:101::1"
+	// 用 netip canonical form 算 sp96 / sp88（与 ForgetDevice 内部算法一致）
+	addr, err := netip.ParseAddr(deviceAddr)
+	if err != nil {
+		t.Fatalf("setup: parse %q: %v", deviceAddr, err)
+	}
+	sp96 := netip.PrefixFrom(addr, 96).Masked().String()
+	sp88 := netip.PrefixFrom(addr, 88).Masked().String()
+	t0 := int64(1_700_000_000_000)
+
+	// 在 /96 和 /88 都填 accumulator entry
+	setTotalPeople(a, sp96, 1, t0)
+	a.handleEventFrame(EventFrame{SpatialPrefix: sp96, TsMs: t0, WalkDistanceMeters: 5})
+	setTotalPeople(a, sp88, 1, t0)
+	a.handleEventFrame(EventFrame{SpatialPrefix: sp88, TsMs: t0, WalkDistanceMeters: 5})
+
+	if snapshotLastActive(a, sp96) == 0 || snapshotLastActive(a, sp88) == 0 {
+		t.Fatalf("setup: expected entries in both /96 (%s) and /88 (%s)", sp96, sp88)
+	}
+
+	a.ForgetDevice(deviceAddr)
+
+	if _, ok := a.accums[sp96]; ok {
+		t.Errorf("ForgetDevice: sp96 (%s) entry should be cleared", sp96)
+	}
+	if _, ok := a.accums[sp88]; ok {
+		t.Errorf("ForgetDevice: sp88 (%s) entry should be cleared", sp88)
+	}
+}
+
+func TestForgetDevice_InvalidAddrNoOp(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	sp := "fd00:0:3:111:3:101::/96"
+	t0 := int64(1_700_000_000_000)
+	setTotalPeople(a, sp, 1, t0)
+	a.handleEventFrame(EventFrame{SpatialPrefix: sp, TsMs: t0, WalkDistanceMeters: 5})
+
+	a.ForgetDevice("garbage")
+
+	if snapshotLastActive(a, sp) == 0 {
+		t.Error("invalid addr: should not affect existing entries")
+	}
+}
+
+func TestForgetDevice_OtherSpatialUntouched(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	t0 := int64(1_700_000_000_000)
+
+	// dev-a 在 /96 sp-a
+	setTotalPeople(a, "fd00:0:3:111:3:101::/96", 1, t0)
+	a.handleEventFrame(EventFrame{SpatialPrefix: "fd00:0:3:111:3:101::/96", TsMs: t0, WalkDistanceMeters: 5})
+	// dev-b 在 /96 sp-b（不同房间）
+	setTotalPeople(a, "fd00:0:3:222:3:101::/96", 1, t0)
+	a.handleEventFrame(EventFrame{SpatialPrefix: "fd00:0:3:222:3:101::/96", TsMs: t0, WalkDistanceMeters: 5})
+
+	a.ForgetDevice("fd00:0:3:111:3:101::1") // 只清 dev-a
+
+	if _, ok := a.accums["fd00:0:3:111:3:101::/96"]; ok {
+		t.Error("dev-a sp should be cleared")
+	}
+	if _, ok := a.accums["fd00:0:3:222:3:101::/96"]; !ok {
+		t.Error("dev-b sp should be untouched")
 	}
 }
 

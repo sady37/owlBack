@@ -269,6 +269,30 @@ func (tm *TrackManager) SetWeakBioSource(s WeakBioSource) {
 	tm.weakBioSource = s
 }
 
+// ClearDevice 清空 device 在本 tm 内的所有 in-memory state（"device offline = 内存重启"原则）。
+//
+// 清：
+//   - bedSessions[deviceAddr] — sleepad InBed/LeftBed session（G2 误抑制根因：offline 后
+//     stale BedSession 永久挡 BedroomLostFall；清掉后 fall-through 让 lost-fall 正常评估）
+//   - sleepadStates[deviceAddr] — sleepad 最新观测（fall verifier sleepadInBed() 读它，
+//     stale 让 fall 评分错偏）
+//
+// 不清：
+//   - tracks[trackID] — 按 trackID 索引非 deviceAddr，且 firmware 复用 trackID 常见，
+//     自然 evict 走 MaxMissCount timeout 更安全；offline 后 radar 不再喂新帧，stale tracks
+//     最多 coast 后自动 evict
+//
+// 已 fire 入 DB 的 alarm 不丢（DB 单写者）；只清没 fire 的 pending / cache。
+func (tm *TrackManager) ClearDevice(deviceAddr string) {
+	if tm == nil || deviceAddr == "" {
+		return
+	}
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	delete(tm.bedSessions, deviceAddr)
+	delete(tm.sleepadStates, deviceAddr)
+}
+
 // SetLogger 注入 zap logger（engine.Run 启动时调用）。
 // nil 输入会被替换为 NopLogger（防止后续 nil deref）。
 func (tm *TrackManager) SetLogger(l *zap.Logger) {

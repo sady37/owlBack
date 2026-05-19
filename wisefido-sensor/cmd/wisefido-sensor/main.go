@@ -183,6 +183,13 @@ func main() {
 	sleepStageConsumer.SetDeviceFailureEmitter(backChannel)
 	zone.Engine.AddListener(wiring.NewSleepStageClearAdapter(ctx, sleepStageConsumer))
 	sleepStageConsumer.Start(ctx)
+
+	// "device offline = 内存重启"原则（用户 2026-05-19 拍板）：fit→unfit 边沿广播清各
+	// 持 per-device in-memory state 的组件。已 fire 入 DB 的 alarm 不丢；只清没 fire 的
+	// pending / cache / accumulator → 同设备恢复后从干净起点累积。
+	fitnessTracker.RegisterUnfitCallback(engine.OnDeviceUnfit) // roomengine: clear bedSessions/sleepadStates
+	fitnessTracker.RegisterUnfitCallback(zone.TargetAggregator.ForgetDevice)
+	fitnessTracker.RegisterUnfitCallback(sleepStageConsumer.OnDeviceUnfit)
 	logger.Info("v2 fall detection wired — all 3 layers armed",
 		zap.String("warning_floor", "zonealarm.Supervisor Stay rule (10min bathroom)"),
 		zap.String("critical_bathroom", "BathroomFallRules §6.A 4 rules"),

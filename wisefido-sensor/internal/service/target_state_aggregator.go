@@ -30,6 +30,7 @@ package service
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -222,6 +223,34 @@ func (a *TargetStateAggregator) OnZoneEvent(spatialPrefix, zoneID string, totalP
 	}:
 	default:
 	}
+}
+
+// ForgetDevice 清空 device 派生的 accumulator（"device offline = 内存重启"原则）。
+//
+// 实现：把 device addr 推到 /96 bed prefix 和 /88 room prefix（v2 cards.spatial_prefix
+// 在这两层）→ 清 accums 对应 entry。多 device 共 spatial 罕见但理论存在（如 share room
+// 多 radar），over-clear 视为可接受（offline 本来就丢数据）。
+//
+// 不参与 weakBio.events 细粒度清理（events 按 ts 自然 30min 滑窗 lazy drop，全量清更简单）。
+func (a *TargetStateAggregator) ForgetDevice(deviceAddr string) {
+	if a == nil || deviceAddr == "" {
+		return
+	}
+	addr, err := netip.ParseAddr(deviceAddr)
+	if err != nil {
+		return
+	}
+	sp96 := netip.PrefixFrom(addr, 96).Masked().String()
+	sp88 := netip.PrefixFrom(addr, 88).Masked().String()
+	a.mu.Lock()
+	delete(a.accums, sp96)
+	delete(a.accums, sp88)
+	a.mu.Unlock()
+	a.logger.Info("aggregator forgot device accums",
+		zap.String("device_addr", deviceAddr),
+		zap.String("sp96", sp96),
+		zap.String("sp88", sp88),
+	)
 }
 
 // WeakBioScore 返回 spatial 实体当前 WeakBio 累加 score（0-100）。

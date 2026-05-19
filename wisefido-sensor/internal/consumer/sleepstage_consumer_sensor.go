@@ -198,6 +198,21 @@ func (c *SleepStageConsumer) handleRaw(ctx context.Context, raw map[string]inter
 	}
 }
 
+// OnDeviceUnfit (S6+): device offline/SensorDetached 时 DeviceFitnessTracker broadcast 调用。
+// 把 device /96 当作 spatial prefix 调 OnBedVacant 等价处理（清 ladder state + emit (0,0)）。
+// "device offline = 内存重启"原则：未 fire 的 cache 清掉，下次 device 上线从干净起点累积。
+func (c *SleepStageConsumer) OnDeviceUnfit(deviceAddr string) {
+	if c == nil || deviceAddr == "" {
+		return
+	}
+	addr, err := netip.ParseAddr(deviceAddr)
+	if err != nil {
+		return
+	}
+	sp := netip.PrefixFrom(addr, 96).Masked().String()
+	c.OnBedVacant(context.Background(), sp, time.Now().UnixMilli())
+}
+
 // OnBedVacant (D): bed FSM transition Leaving/Vacant 时 wiring adapter 调本方法。
 //
 // 触发清零：
