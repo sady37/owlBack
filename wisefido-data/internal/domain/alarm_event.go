@@ -20,8 +20,9 @@ type AlarmEvent struct {
 	Category   string `db:"category"`   // VARCHAR(50), CHECK IN ('safety', 'clinical', 'behavioral', 'device')
 	AlarmLevel string `db:"alarm_level"` // VARCHAR(20), NOT NULL
 
-	// 报警状态（active→acked→resolved | auto_resolved | expired）
-	AlarmStatus string `db:"alarm_status"` // VARCHAR(20), DEFAULT 'active', CHECK IN ('active','acked','resolved','auto_resolved','expired')
+	// 报警状态（active→acked→resolved | auto_resolved→acked_auto_resolved | expired）
+	// sensor_v2 决定 17：Critical auto_resolved 必须人工 handle 后转 acked_auto_resolved 才归 Resolved
+	AlarmStatus string `db:"alarm_status"` // VARCHAR(20), DEFAULT 'active', CHECK IN ('active','acked','resolved','auto_resolved','expired','acked_auto_resolved')
 
 	// 时间信息
 	TriggeredAt time.Time  `db:"triggered_at"` // TIMESTAMPTZ, NOT NULL

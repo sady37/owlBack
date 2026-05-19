@@ -38,10 +38,10 @@ var StateFields = []*StateField{
 	// ---- cardagg ----
 	{Key: "target", Owner: OwnerCardAgg, Default: ""}, // 单 Target，当前仅一个
 	{Key: "room_state", Owner: OwnerCardAgg, Default: "{}"},
-	{Key: "bathroom_state", Owner: OwnerCardAgg, Default: "{}"},
 	{Key: "bed_state", Owner: OwnerCardAgg, Default: "{}"},
 	// Phase A：device_status 已迁出 card:state，独立到 device:status:{deviceID} Hash（详 keys.go）
 	{Key: "alarm_state", Owner: OwnerCardAgg, Default: "{}", Indexed: true},
+	{Key: "display", Owner: OwnerCardAgg, Default: "{}"}, // CardDisplay 投影（FE Overview dumb render）
 	{Key: "message", Owner: OwnerCardAgg, Default: "{}"}, // 与 CardStatus.Message 对应
 
 	// ---- AI 层（带 TTL） ----

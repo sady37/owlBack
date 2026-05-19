@@ -76,19 +76,23 @@ const staleAlarmMs = 30_000 // gateway 时钟漂移 / 消息积压上限
 type AlarmRouter struct {
 	db        *sql.DB
 	writer    *card.Writer
+	reader    *card.Reader
 	enable    EnablementResolver
 	meta      MetaResolver
 	devSignal DeviceSignal
+	picker    *UnitPicker
 	logger    *zap.Logger
 }
 
-func NewAlarmRouter(db *sql.DB, writer *card.Writer, enable EnablementResolver, meta MetaResolver, devSignal DeviceSignal, logger *zap.Logger) *AlarmRouter {
+func NewAlarmRouter(db *sql.DB, writer *card.Writer, reader *card.Reader, enable EnablementResolver, meta MetaResolver, devSignal DeviceSignal, picker *UnitPicker, logger *zap.Logger) *AlarmRouter {
 	return &AlarmRouter{
 		db:        db,
 		writer:    writer,
+		reader:    reader,
 		enable:    enable,
 		meta:      meta,
 		devSignal: devSignal,
+		picker:    picker,
 		logger:    logger,
 	}
 }
@@ -237,12 +241,31 @@ func (r *AlarmRouter) autoResolve(ctx context.Context, msg *owlredis.IoTStreamMe
 	return r.writeAlarmState(ctx, cardID, cas)
 }
 
+// writeAlarmState 写 AlarmState 的同时合并 prev 状态重算 Display，单次 WriteCardStatus 落两块。
+// Display 由 BuildCardDisplay 从 AlarmState.PopAlarm 派生 Section1DownRight 简称。
+// 写完后触发 /80 父卡 picker 重算（子卡 alarm 翻转影响 unit 视图）。
 func (r *AlarmRouter) writeAlarmState(ctx context.Context, cardID string, cas *card.CardAlarmState) error {
 	if cas == nil {
 		return nil
 	}
-	return r.writer.WriteCardStatus(ctx, &card.CardStatus{
+	as := cas.ToAlarmState()
+	merged := &card.CardStatus{CardID: cardID, AlarmState: as}
+	if prev, err := r.reader.ReadCardStatus(ctx, cardID); err == nil && prev != nil {
+		merged.RoomState = prev.RoomState
+		merged.BedState = prev.BedState
+		merged.Target = prev.Target
+	}
+	out := &card.CardStatus{
 		CardID:     cardID,
-		AlarmState: cas.ToAlarmState(),
-	})
+		AlarmState: as,
+		Display:    BuildCardDisplay(merged),
+	}
+	if err := r.writer.WriteCardStatus(ctx, out); err != nil {
+		return err
+	}
+	if r.picker != nil {
+		r.picker.RefreshParent(ctx, cardID)
+		r.picker.RefreshSelf(ctx, cardID)
+	}
+	return nil
 }

@@ -87,8 +87,7 @@ const (
 	WeakBiometricSignal      = "WeakBiometricSignal"
 	InBed                    = "InBed"
 	Stay                     = "Stay"
-	NightAbsence             = "NightAbsence"    // Radar 用：整夜不在 room（房间层面）
-	BedNightAbsence          = "BedNightAbsence" // Sleepad 用：整夜不在床（床层面；床上没人 ≠ 房间没人）
+	NightAbsence             = "NightAbsence"    // Radar 用：整夜不在 room（房间层面；真风险）
 	WarningArea              = "WarningArea"
 	EnterRoom                = "EnterRoom"
 	ExitRoom                 = "ExitRoom"
@@ -169,7 +168,6 @@ var Registry = map[string]*AlarmDef{
 	AlarmTypeUnknown:         {Key: AlarmTypeUnknown, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Unknown alarm type"},
 	Stay:                     {Key: Stay, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 45 * 60}, Description: "Stay (e.g. 45min)", Display: "Prolonged Stay"},
 	NightAbsence:             {Key: NightAbsence, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, AlarmParams: map[string]interface{}{ParamDurationSec: 24 * 60 * 60}, Description: "Night-long absence from the room (Radar)", Display: "Night Absence"},
-	BedNightAbsence:          {Key: BedNightAbsence, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, AlarmParams: map[string]interface{}{ParamDurationSec: 24 * 60 * 60}, Description: "Night-long absence from the bed (Sleepad)", Display: "Bed Night Absence"},
 	WeakBiometricSignal:      {Key: WeakBiometricSignal, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Weak vitals", Display: "Weak Biometric Signal"},
 	LeftBed:                  {Key: LeftBed, ProcessType: ProcessTypeTimeBased, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 0}, Description: "Left bed: duration_sec=0 immediate, >=30min timer", Display: "Bed Exit", EndPolicy: EndPolicyAutoResolve},
 	InBed:                    {Key: InBed, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "In bed", Display: "In Bed", EndPolicy: EndPolicyAutoResolve},
@@ -273,7 +271,6 @@ var AlarmTypeToFHIRCategory = map[string]string{
 	SuspectedSittingOnGround: FHIRCategorySafety,
 	Stay:                     FHIRCategorySafety,
 	NightAbsence:             FHIRCategorySafety,
-	BedNightAbsence:          FHIRCategorySafety,
 
 	// clinical: 生命体征异常
 	HeartRateAlert:       FHIRCategoryClinical,
@@ -791,13 +788,6 @@ var DefaultAlarmSetting = struct {
 			},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
-		{ // BedNightAbsence(Sleepad): 9PM-7AM 床上无人；实际由早上7点（或 RestTime 结束后）查 IoT 统计得出
-			AlarmType:      BedNightAbsence,
-			IsEnabled:      intPtr(IsEnabledOn),
-			AlarmLevel:     strPtr(AlarmLevelWarn),
-			AlarmParams:    map[string]interface{}{},
-			DisplaySetting: DisplayAlarmCloudAndDevice,
-		},
 		{ // RestTime 期间，上床5分钟后，启用离床检测：0立即， 30min,45min,1h,1h30h,2h
 			// Default disabled — Sleepad bed-exit triggers too frequently for casual restroom trips.
 			AlarmType:  LeftBed,
@@ -808,7 +798,7 @@ var DefaultAlarmSetting = struct {
 			},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
-		{ // InBed: 实时在床（如上床、在床满5分钟）。9PM-7AM 床上有没有由 NightAbsence 在 7 点查 IoT 统计判断
+		{ // InBed: 实时在床（如上床、在床满5分钟）
 			AlarmType:  InBed,
 			IsEnabled:  intPtr(IsEnabledOff),
 			AlarmLevel: strPtr(AlarmLevelWarn),
@@ -1053,9 +1043,9 @@ func GetRadarAlarmTypes() []string {
 
 // GetSleepPadAlarmTypes 获取 SleepPad 设备的报警类型列表
 // 注意：报警类型已统一，不再区分设备前缀，设备类型通过 device_type 字段区分
-// Sleepad 用 BedNightAbsence（床层面）；Radar 用 NightAbsence（房间层面）
+// 床层面的整夜未归不单独报警（LeftBed 持续时长可由 FE OOB.Xh 显示）；房间层面用 NightAbsence
 func GetSleepPadAlarmTypes() []string {
-	return []string{AlarmTypeOffline, AlarmTypeDeviceFailure, SensorDetached, ApneaHypopnea, HeartRateAlert, RespRateAlert, LeftBed, BedSitUp, InBed, BedNightAbsence, AbnormalBodyMovement, NoBodyMove, NoTurnOver, ResetTime, NapTime, SleepadSetting, MaterialSetting}
+	return []string{AlarmTypeOffline, AlarmTypeDeviceFailure, SensorDetached, ApneaHypopnea, HeartRateAlert, RespRateAlert, LeftBed, BedSitUp, InBed, AbnormalBodyMovement, NoBodyMove, NoTurnOver, ResetTime, NapTime, SleepadSetting, MaterialSetting}
 }
 
 // GetSupportedAlarmTypes 根据设备类型获取支持的报警类型列表

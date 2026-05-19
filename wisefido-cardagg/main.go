@@ -3,7 +3,7 @@
 // 职责（详 owlBack/CLAUDE.md 规则 #1.3 / 规则 #2）：
 //   1. iot:alarm:stream → alarm_events PG INSERT + card:status.AlarmState
 //   2. iot:monitor:stream → MonitorBuffer 累积 + 1s snapshot 发 card:realtime:stream + device 活跃触刷
-//   3. sensor:zone:state:stream → card:status.BedState/RoomState/BathRoomState 投影
+//   3. sensor:zone:state:stream → card:status.BedState/RoomState 投影（unit /80 不在此层）
 //   4. config:card / config:alarmDevice / config:alarmProcess → cache invalidate + AlarmState 刷新
 //   5. 180s 看门狗 fail-safe device:status offline
 //
@@ -76,6 +76,7 @@ func main() {
 	dbCancel()
 
 	writer := card.NewWriter(redisClient, owlredis.StreamCardStatus.MaxLen, owlredis.StreamCardRealTime.MaxLen)
+	reader := card.NewReader(redisClient)
 
 	monitorBuf := service.NewMonitorBuffer()
 	metaCache := service.NewDeviceMetaCache(db, logger)
@@ -90,9 +91,10 @@ func main() {
 	monitorHandler := consumer.NewMonitorHandler(monitorBuf, writer, deviceTracker, logger)
 	go monitorHandler.RunLoop(ctx)
 
-	alarmRouter := consumer.NewAlarmRouter(db, writer, enablementCache, metaCache, deviceTracker, logger)
-	sensorStateProjector := consumer.NewSensorStateProjector(writer, logger)
-	cardLifecycle := consumer.NewCardLifecycle(db, writer, metaCache, enablementCache, logger)
+	unitPicker := consumer.NewUnitPicker(db, redisClient, writer, reader, logger)
+	alarmRouter := consumer.NewAlarmRouter(db, writer, reader, enablementCache, metaCache, deviceTracker, unitPicker, logger)
+	sensorStateProjector := consumer.NewSensorStateProjector(writer, reader, unitPicker, logger)
+	cardLifecycle := consumer.NewCardLifecycle(db, writer, metaCache, enablementCache, unitPicker, logger)
 	alarmDeviceHandler := consumer.NewAlarmDeviceHandler(enablementCache, logger)
 	alarmProcessHandler := consumer.NewAlarmProcessHandler(db, writer, logger)
 

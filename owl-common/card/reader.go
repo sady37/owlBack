@@ -21,7 +21,7 @@ func NewReader(client *redis.Client) *Reader {
 func (r *Reader) ReadCardStatus(ctx context.Context, cardID string) (*CardStatus, error) {
 	// Phase A：device_status 已迁出 card:state，独立到 device:status:{deviceID}（详 ReadDeviceStatusByDeviceIDs）。
 	vals, err := r.client.HMGet(ctx, HashKey(cardID),
-		"target", "room_state", "bathroom_state", "bed_state", "alarm_state", "message",
+		"target", "room_state", "bed_state", "alarm_state", "display", "message",
 	).Result()
 	if err != nil {
 		return nil, err
@@ -40,21 +40,21 @@ func (r *Reader) ReadCardStatus(ctx context.Context, cardID string) (*CardStatus
 		}
 	}
 	if s, ok := vals[2].(string); ok && s != "" && s != "{}" {
-		var br BathRoomState
-		if json.Unmarshal([]byte(s), &br) == nil {
-			status.BathRoomState = &br
-		}
-	}
-	if s, ok := vals[3].(string); ok && s != "" && s != "{}" {
 		var bs BedState
 		if json.Unmarshal([]byte(s), &bs) == nil {
 			status.BedState = &bs
 		}
 	}
-	if s, ok := vals[4].(string); ok && s != "" && s != "{}" {
+	if s, ok := vals[3].(string); ok && s != "" && s != "{}" {
 		var as AlarmState
 		if json.Unmarshal([]byte(s), &as) == nil {
 			status.AlarmState = &as
+		}
+	}
+	if s, ok := vals[4].(string); ok && s != "" && s != "{}" {
+		var d CardDisplay
+		if json.Unmarshal([]byte(s), &d) == nil {
+			status.Display = &d
 		}
 	}
 	if s, ok := vals[5].(string); ok && s != "" && s != "{}" {

@@ -67,16 +67,21 @@ type AlarmUpdateParams struct {
 	ResolveSnapshot json.RawMessage // 写入 evidence.resolve_snapshot
 }
 
-// CardAlarmState v2 实时聚合：GROUP BY alarm_level 计数 + 最高优先级 (level 数值最小) 行作 pop。
-// 字段名沿用 v1 兼容，但内部计算来自 alarm_events 实时聚合，无 cards 表 counter 列依赖。
+// CardAlarmState v2 实时聚合：按 sensor_v2.md §6.7 三级告警状态机（决定 17）—
+//   Critical 级别（0/1/2）计入 status ∈ {active, acked, auto_resolved}（acked_auto_resolved 终态不计）；
+//   Error/Warning（3/4）仅计入 status=active；
+//   PopAlarm 仅从 status=active 行挑选（acked/auto_resolved 不参与 popAlarm 显示，但仍维持 Bell）。
+//
+// 字段名沿用 v1 但语义升级：v1 "UnhandledAlarm" 含义模糊（"未处理"），v2 明确按 §6.7 规则分级；
+// 改字段名跨服务影响大，注释明示语义即可。
 type CardAlarmState struct {
-	UnhandledAlarm0  int    // EMERG  (level 0)
-	UnhandledAlarm1  int    // ALERT  (level 1)
-	UnhandledAlarm2  int    // CRIT   (level 2)
-	UnhandledAlarm3  int    // ERROR  (level 3)
-	UnhandledAlarm4  int    // WARN   (level 4)
-	PopAlarmLevel    string // 最高优先级 (level 数字最小) 的 active alarm 字符串名
-	PopAlarmType     string // 最高优先级 active alarm 的 event_type
+	UnhandledAlarm0  int    // EMERG  (lvl 0) — Critical：count(status ∈ {active, acked, auto_resolved})
+	UnhandledAlarm1  int    // ALERT  (lvl 1) — Critical：同上
+	UnhandledAlarm2  int    // CRIT   (lvl 2) — Critical：同上
+	UnhandledAlarm3  int    // ERROR  (lvl 3) — Warning 语义：count(status = active)
+	UnhandledAlarm4  int    // WARN   (lvl 4) — Warning 语义：同上
+	PopAlarmLevel    string // 最高优先级 (lvl 数字最小) + 最新 active 行的字符串级别
+	PopAlarmType     string // 同行 event_type
 	PopAlarmEventId  string
 	PopTriggeredAtMs int64
 	HandTime         time.Time
@@ -311,17 +316,35 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 // cards GiST LPM 锁定的 ae.card_id 列值。
 //
 // cardID 为 cards.spatial_prefix CIDR 字符串；空 / 非法 INET 时返回零状态。
+//
+// SQL 计数策略（sensor_v2.md §6.7 决定 17，2026-05-18 migration acked_auto_resolved 已生效）：
+//
+//	level 0/1/2 (Critical：Emerg/Alert/Crit)
+//	  → count(alarm_status IN ('active', 'acked', 'auto_resolved'))
+//	  → 'acked_auto_resolved' 是终态，不计入（已离开 Pending+AlarmBell 进 Resolved 历史）
+//
+//	level 3/4 (Error/Warning)
+//	  → count(alarm_status = 'active')
+//	  → 'auto_resolved' 自动归 Resolved（不强制人工 ack）；'acked' 此分支理论不出现（不强制）
+//
+// 一条 SQL 用 CASE 表达级别相关的 status 子集，比 5 个 UNION ALL 子查询更清晰：
 func QueryCardAlarmState(ctx context.Context, db *sql.DB, cardID string) (*CardAlarmState, error) {
 	cas := &CardAlarmState{}
 	if cardID == "" {
 		return cas, nil
 	}
-	// 计数：按 alarm_level GROUP BY，仅 active；精确 card_id 匹配（不 fan-out）
+	// 计数：按 alarm_level GROUP BY；level 相关的 alarm_status 过滤用 CASE 在 WHERE 子句表达。
+	// Critical (0/1/2) 含 acked/auto_resolved（决定 17 — Critical 必须人工 ack 才离开 Pending+Bell）；
+	// Error/Warning (3/4) 仅 active（auto_resolved 自动归 Resolved）。
 	rows, err := db.QueryContext(ctx, `
 		SELECT alarm_level, COUNT(*)
 		FROM alarm_events
 		WHERE card_id = $1::INET
-		  AND alarm_status = 'active'
+		  AND (
+		    (alarm_level IN (0, 1, 2) AND alarm_status IN ('active', 'acked', 'auto_resolved'))
+		    OR
+		    (alarm_level IN (3, 4) AND alarm_status = 'active')
+		  )
 		GROUP BY alarm_level
 	`, cardID)
 	if err != nil {
@@ -350,7 +373,9 @@ func QueryCardAlarmState(ctx context.Context, db *sql.DB, cardID string) (*CardA
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// pop alarm：最高优先级 (level 数字最小) 的 active 行；精确 card_id 匹配
+	// PopAlarm pick：仅从 alarm_status='active' 行挑选（acked/auto_resolved 不参与 popAlarm 显示，
+	// 但仍维持 AlarmBell — 由上面 counter 表达）。
+	// 排序：alarm_level ASC（高优先级先 — 0=EMERG 优先）, triggered_at DESC（新 cover 旧）。
 	var popLvl int16
 	var popType string
 	var popEvent string

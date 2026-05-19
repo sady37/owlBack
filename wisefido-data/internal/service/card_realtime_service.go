@@ -19,6 +19,15 @@ import (
 	"go.uber.org/zap"
 )
 
+// writeServerTick SSE keepalive：每 ~30s 推 server_ts 给前端维护 serverTimeRef。
+// FE 用 serverTimeRef - section.anchor_ms 渲 DisplayTime（不用浏览器本地时钟），
+// 解耦 monitor 流后卡静默时也能持续更新时长显示。
+func writeServerTick(w io.Writer, flusher http.Flusher) {
+	payload := `{"kind":"tick","server_ts":` + fmt.Sprintf("%d", time.Now().UnixMilli()) + `}`
+	io.WriteString(w, "event: tick\ndata: "+payload+"\n\n")
+	flusher.Flush()
+}
+
 // sseHotPathLog：SSE 高频路径默认 Debug；设置 SSE_VERBOSE_LOG=true 时在 Info 级别可见（便于不改全局 level 排障）。
 func (s *CardRealtimeService) sseHotPathLog(msg string, fields ...zap.Field) {
 	if os.Getenv("SSE_VERBOSE_LOG") == "true" {
@@ -616,8 +625,7 @@ func (s *CardRealtimeService) SubscribeRealtimeStream(ctx context.Context, w htt
 			s.logger.Info("SSE connection closed", zap.String("card_id", cardID), zap.String("tenant_id", tenantID))
 			return
 		case <-tickerHeart.C:
-			io.WriteString(w, ": heartbeat\n\n")
-			flusher.Flush()
+			writeServerTick(w, flusher)
 		case <-tickerData.C:
 			// 实时数据：从 DataStreamSubscriber 缓存取
 			cachedRealtime := s.streamProvider.GetCardRealtimeData(cardID)
@@ -725,8 +733,7 @@ waitInit:
 			flusher.Flush()
 			return
 		case <-tickerWait.C:
-			io.WriteString(w, ": heartbeat\n\n")
-			flusher.Flush()
+			writeServerTick(w, flusher)
 		case initData = <-initCh:
 			break waitInit
 		}
@@ -778,8 +785,7 @@ waitInit:
 			return
 
 		case <-tickerHeart.C:
-			io.WriteString(w, ": heartbeat\n\n")
-			flusher.Flush()
+			writeServerTick(w, flusher)
 
 		case newViewIDs := <-viewIDsCh:
 			currentViewIDs = newViewIDs
@@ -941,7 +947,7 @@ func (s *CardRealtimeService) pushStatusSnapshot(w http.ResponseWriter, flusher 
 	count := 0
 	serverTs := time.Now().UnixMilli()
 	// CardStatus 各字段 key，与 card_types.go 一致，便于前端按 key 合并
-	dataKeys := []string{"target", "room_state", "bathroom_state", "bed_state", "alarm_state", "device_status", "message"}
+	dataKeys := []string{"target", "room_state", "bed_state", "alarm_state", "device_status", "message"}
 	for _, cardID := range watchIDs {
 		data := s.streamProvider.ReadCardStateSnapshot(ctx, cardID)
 		if data == nil {
@@ -1002,7 +1008,7 @@ func (s *CardRealtimeService) GetCardStatus(ctx context.Context, cardID string) 
 func (s *CardRealtimeService) getCardStatusFromQuery(ctx context.Context, cardID string) (map[string]interface{}, error) {
 	nowMs := time.Now().UnixMilli()
 	var out map[string]interface{}
-	// 以 cardagg 全量 CardStatus 为基准：targets/room_state/bathroom_state/bed_state/message 来自 Redis，不再动；仅下面对 device_status / alarm_state 覆盖
+	// 以 cardagg 全量 CardStatus 为基准：targets/room_state/bed_state/message 来自 Redis，不再动；仅下面对 device_status / alarm_state 覆盖
 	if s.stateReader != nil {
 		status, err := s.stateReader.ReadCardStatus(ctx, cardID)
 		if err == nil && status != nil {

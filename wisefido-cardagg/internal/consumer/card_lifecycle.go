@@ -29,15 +29,17 @@ type CardLifecycle struct {
 	writer     *card.Writer
 	metaCache  *service.DeviceMetaCache
 	enablement *service.AlarmEnablementCache
+	picker     *UnitPicker
 	logger     *zap.Logger
 }
 
-func NewCardLifecycle(db *sql.DB, writer *card.Writer, meta *service.DeviceMetaCache, enable *service.AlarmEnablementCache, logger *zap.Logger) *CardLifecycle {
+func NewCardLifecycle(db *sql.DB, writer *card.Writer, meta *service.DeviceMetaCache, enable *service.AlarmEnablementCache, picker *UnitPicker, logger *zap.Logger) *CardLifecycle {
 	return &CardLifecycle{
 		db:         db,
 		writer:     writer,
 		metaCache:  meta,
 		enablement: enable,
+		picker:     picker,
 		logger:     logger,
 	}
 }
@@ -70,6 +72,9 @@ func (h *CardLifecycle) Handle(ctx context.Context, raw map[string]interface{}) 
 			h.logger.Warn("rebuild device index", zap.Error(err))
 		}
 		h.enablement.InvalidateAll()
+		if h.picker != nil {
+			h.picker.InvalidateAll()
+		}
 	case "deleted", "delete":
 		h.metaCache.Remove(d.CardID)
 		h.metaCache.RefreshDeviceIndexForCard(ctx, d.CardID)
@@ -85,6 +90,9 @@ func (h *CardLifecycle) Handle(ctx context.Context, raw map[string]interface{}) 
 		h.metaCache.InvalidateCardsInTenantUnit(ctx, d.UnitID)
 		addrs := service.DeviceAddrsInUnit(ctx, h.db, d.UnitID)
 		h.enablement.InvalidateDevices(addrs)
+		if h.picker != nil {
+			h.picker.InvalidateUnit(d.UnitID)
+		}
 	}
 
 	// card 改/增 → 刷新 AlarmState（实时聚合 alarm_events 写 card:status）

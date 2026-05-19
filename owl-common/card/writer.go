@@ -51,11 +51,6 @@ func (w *Writer) WriteCardStatus(ctx context.Context, status *CardStatus) error 
 		hsetArgs = append(hsetArgs, "room_state", string(b))
 		changedFields = append(changedFields, "room_state")
 	}
-	if status.BathRoomState != nil {
-		b, _ := json.Marshal(status.BathRoomState)
-		hsetArgs = append(hsetArgs, "bathroom_state", string(b))
-		changedFields = append(changedFields, "bathroom_state")
-	}
 	if status.BedState != nil {
 		normalizeBedStateForWrite(status.BedState)
 		b, _ := json.Marshal(status.BedState)
@@ -66,6 +61,11 @@ func (w *Writer) WriteCardStatus(ctx context.Context, status *CardStatus) error 
 		b, _ := json.Marshal(status.AlarmState)
 		hsetArgs = append(hsetArgs, "alarm_state", string(b))
 		changedFields = append(changedFields, "alarm_state")
+	}
+	if status.Display != nil {
+		b, _ := json.Marshal(status.Display)
+		hsetArgs = append(hsetArgs, "display", string(b))
+		changedFields = append(changedFields, "display")
 	}
 	if status.Message != nil {
 		b, _ := json.Marshal(status.Message)
@@ -117,10 +117,6 @@ func (w *Writer) WriteCardStatusSilent(ctx context.Context, status *CardStatus) 
 		b, _ := json.Marshal(status.RoomState)
 		args = append(args, "room_state", string(b))
 	}
-	if status.BathRoomState != nil {
-		b, _ := json.Marshal(status.BathRoomState)
-		args = append(args, "bathroom_state", string(b))
-	}
 	if status.BedState != nil {
 		normalizeBedStateForWrite(status.BedState)
 		b, _ := json.Marshal(status.BedState)
@@ -129,6 +125,10 @@ func (w *Writer) WriteCardStatusSilent(ctx context.Context, status *CardStatus) 
 	if status.AlarmState != nil {
 		b, _ := json.Marshal(status.AlarmState)
 		args = append(args, "alarm_state", string(b))
+	}
+	if status.Display != nil {
+		b, _ := json.Marshal(status.Display)
+		args = append(args, "display", string(b))
 	}
 	if status.Message != nil {
 		b, _ := json.Marshal(status.Message)
@@ -241,12 +241,25 @@ func (w *Writer) DeleteCardState(ctx context.Context, cardID string) error {
 }
 
 // PublishMonitor sends ephemeral device data to card:realtime:stream (no Hash write).
+//
+// data 内自动注入 "ts_ms" = 当前 server unix ms（2026-05-17 增强）：
+//   - 该值同时承载 "per-card 最新活跃时刻" 与 "server 时钟锚" 双语义
+//   - 前端用此值更新 lastRealtimeTs (per-card) + applyServerClock (全局时钟同步)，省去独立对时心跳
+//   - 1Hz monitor 流自带高频心跳，drift 几乎瞬时纠偏
+// FE handleRealtimeData 已存在 "非 device key 过滤"逻辑（card_id/timestamp），ts_ms 同样被排除出 devices 迭代。
 func (w *Writer) PublishMonitor(ctx context.Context, cardID, deviceUID string, data map[string]any) error {
 	if len(data) == 0 || cardID == "" {
 		return nil
 	}
 
-	dataJSON, err := json.Marshal(data)
+	// 注入 server timestamp（先 clone 避免污染调用方传入的 data 引用）
+	enriched := make(map[string]any, len(data)+1)
+	for k, v := range data {
+		enriched[k] = v
+	}
+	enriched["ts_ms"] = time.Now().UnixMilli()
+
+	dataJSON, err := json.Marshal(enriched)
 	if err != nil {
 		return fmt.Errorf("marshal monitor data: %w", err)
 	}

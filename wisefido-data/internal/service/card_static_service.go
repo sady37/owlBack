@@ -222,7 +222,8 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 		LEFT JOIN branches br ON br.branch_id = network(set_masklen(c.spatial_prefix, 56))
 		LEFT JOIN sites    s  ON s.site_id   = network(set_masklen(c.spatial_prefix, 64))
 		LEFT JOIN rooms    rm ON masklen(c.spatial_prefix) >= 88 AND rm.room_id = network(set_masklen(c.spatial_prefix, 88))
-		LEFT JOIN beds     b  ON masklen(c.spatial_prefix) = 96  AND b.bed_id   = c.spatial_prefix
+		-- LPM 反推唯一后裔床：v2 create-time 不变量 (card_sync_service.go) 保证任一卡 spatial_prefix 下 beds count ∈ {0,1}
+		LEFT JOIN beds     b  ON b.bed_id <<= c.spatial_prefix
 		WHERE c.spatial_prefix = ANY($1::inet[])
 		  AND c.card_type <> 'device'
 	`
@@ -576,6 +577,7 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 	}
 
 	// 写回 cards[].Devices + cards[].CoverageLabel
+	// （FE Section2 Middle 占格直接从 bed_id / devices[].bound_bed_id 派生，无需独立 flag）
 	for i := range cards {
 		if devs, ok := deviceMap[cards[i].SpatialPrefix]; ok {
 			cards[i].Devices = devs
