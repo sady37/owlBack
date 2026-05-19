@@ -98,6 +98,11 @@ func main() {
 	// 注入 deviceTracker.IsOnline 作为 LastActive merge 的 offline 过滤器。
 	targetMerger := service.NewTargetMerger(metaCache)
 	targetMerger.SetOnlineChecker(deviceTracker.IsOnline)
+	// BedPeopleTracker：firmware NumberPeople event → per /96 bed-bound radar device snapshot。
+	// VisitorDeriver bed-level path 读它判定 share/private bed 卡 visitor（doc §4.4）。
+	bedPeopleTracker := service.NewBedPeopleTracker(metaCache)
+	bedPeopleTracker.SetOnlineChecker(deviceTracker.IsOnline)
+	eventHandler := consumer.NewEventHandler(bedPeopleTracker, logger)
 	sensorStateProjector := consumer.NewSensorStateProjector(writer, reader, unitPicker, logger)
 	sensorStateProjector.SetTargetMerger(targetMerger)
 	cardLifecycle := consumer.NewCardLifecycle(db, writer, metaCache, enablementCache, unitPicker, logger)
@@ -107,6 +112,7 @@ func main() {
 
 	consumer.SubscribeAll(ctx, logger, redisClient, consumer.Handlers{
 		Monitor:      monitorHandler,
+		Event:        eventHandler,
 		Alarm:        alarmRouter,
 		SensorState:  sensorStateProjector,
 		CardChange:   cardLifecycle,
@@ -114,9 +120,9 @@ func main() {
 		AlarmProcess: alarmProcessHandler,
 	})
 
-	// VisitorDeriver 60s tick：per Private 父下 /88 room cards 计算 visitor 累积。
+	// VisitorDeriver 60s tick：双路径（bed-bound radar bed cards 优先 / Private /88 room cards 兜底）。
 	// 详 doc/card_display.md §4.4 + [[visitor_belongs_to_cardagg]]。
-	visitorDeriver := consumer.NewVisitorDeriver(metaCache, reader, targetMerger, 0, logger)
+	visitorDeriver := consumer.NewVisitorDeriver(metaCache, reader, targetMerger, bedPeopleTracker, 0, logger)
 	go visitorDeriver.Run(ctx)
 
 	sigCh := make(chan os.Signal, 1)

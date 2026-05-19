@@ -1,26 +1,29 @@
-// visitor_deriver.go — cardagg 端 visitor 累加器（per /88 room card）。
+// visitor_deriver.go — cardagg 端 visitor 累加器（双路径：bed-bound radar / Private room）。
 //
 // 设计参照 doc/card_display.md §4.4 + memory [[visitor_belongs_to_cardagg]]：
 //
-//   - 60s tick（不依赖任何事件流），遍历父 unit 是 Private (unit_type=1) 的 /88 room cards
-//   - 读各卡 card:state.room_state.total_people
+//   - 60s tick，不依赖事件流
+//   - Path A（优先）：bed cards 且其 /96 prefix 下绑有 bed-bound radar；读 BedPeopleTracker
+//     拿 per-card people count；firmware boundary 已物理裁剪视野到该床区域，count≥2 ≡ 床主+访客
+//   - Path B（兜底）：父 unit_type=Private (1) 的 /88 room cards；读 card:state.room_state.total_people
+//   - 优先级冲突：若某 /88 room card 下任一子 bed card 命中 Path A，本轮跳过该 room（避免父子双显）
 //   - per-card segment 累加（≥2 推进；<2 重置）；segment 跨 5min 阈值即触发 visitor
-//   - 写入路径走 TargetMerger.ApplyVisitor（per-card visitor 字段 inject 进 max-merge result）
-//   - 本地午夜（按 unit timezone）reset today 三字段；新一天重新计算
+//   - 通过 TargetMerger.ApplyVisitor 注入 visitor 三字段，最终由 SensorStateProjector 写 hash
+//   - 本地午夜（按 unit timezone，当前用 UTC）reset today 三字段
 //
 // 物理实体 vs card 视图：visitor 是跨 device/room 的"组合人数"派生 → 属 card 层语义，
 // sensor 不参与（[[visitor_belongs_to_cardagg]] §"Visitor 职责分工"）。
 //
 // **5min 阈值的物理意义**：进房 5min 才算 visitor，过滤"快闪进出"假阳；段断（人离开）
-// 也不立即清 today 字段——同一天再来还是同一 visitor 概念。
+// 立刻清 segment，同一天再来重新累加；today 三字段保留至午夜。
 //
 // 时区：当前用 UTC 算午夜（unit timezone 配置后续补；详 doc/card_display.md §4.4 与
 // memory [[server_internal_utc_only.md]]：UTC 内部 + TZ 仅 API 边界）。
-
 package consumer
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -32,40 +35,33 @@ import (
 )
 
 const (
-	visitorThresholdMin       = 5  // segment ≥ 5min 触发 visitor
-	visitorStandingCapMin     = 0  // unused; standing 由 sensor 算
-	visitorDefaultTickEvery   = 60 // tick interval seconds
-	visitorPrivateUnitType    = 1  // matches card.UnitTypePrivate; 复制常量值避免 import 循环（card 包定义 card_types.go）
+	visitorThresholdMin     = 5  // segment ≥ 5min 触发 visitor
+	visitorDefaultTickEvery = 60 // tick interval seconds
 )
 
-// VisitorDeriver 60s tick 任务，给每张 Private 父 unit 下 /88 room card 计算 visitor 状态。
+// VisitorDeriver 60s tick 任务：bed level + room level 双路径计算 visitor。
 type VisitorDeriver struct {
-	metaCache *service.DeviceMetaCache
-	reader    *card.Reader
-	merger    *service.TargetMerger
-	logger    *zap.Logger
+	metaCache  *service.DeviceMetaCache
+	reader     *card.Reader
+	merger     *service.TargetMerger
+	bedPeople  *service.BedPeopleTracker
+	logger     *zap.Logger
 
 	interval time.Duration
 
 	mu       sync.Mutex
-	segments map[string]*visitorSegment // key = /88 room cardID
+	segments map[string]*visitorSegment // key = cardID (/88 room 或 /96 bed)
 }
 
 // visitorSegment per-card 段累积态。
 type visitorSegment struct {
-	cardID           string
-	segmentStartTs   int64 // ms; 0 = 当前无 ongoing visitor segment
-	segDurationMin   int   // 当前段累积分钟（≥2 持续命中累加）
-	todayMaxMin      int   // 当日跨段最大
-	hasToday         bool  // 当日是否曾达 5min 阈值
-	visitorStartTs   int64 // 最近一次达阈值时的 segment_start_ts（写到 Target.VisitorStartTs）
-	lastTickDateUTC  string // YYYY-MM-DD（UTC）；跨日 reset
-}
-
-// PrivateRoomCardLister VisitorDeriver 从 metaCache 拉"父 unit_type=Private 的 /88 room cards"。
-// 实现：service.DeviceMetaCache.ListPrivateRoomCardIDs。
-type PrivateRoomCardLister interface {
-	ListPrivateRoomCardIDs(ctx context.Context) []string
+	cardID          string
+	segmentStartTs  int64  // ms; 0 = 当前无 ongoing visitor segment
+	segDurationMin  int    // 当前段累积分钟（≥2 持续命中累加）
+	todayMaxMin     int    // 当日跨段最大
+	hasToday        bool   // 当日是否曾达 5min 阈值
+	visitorStartTs  int64  // 最近一次达阈值时的 segment_start_ts（写到 Target.VisitorStartTs）
+	lastTickDateUTC string // YYYY-MM-DD（UTC）；跨日 reset
 }
 
 // NewVisitorDeriver 构造。interval=0 走默认 60s。
@@ -73,6 +69,7 @@ func NewVisitorDeriver(
 	metaCache *service.DeviceMetaCache,
 	reader *card.Reader,
 	merger *service.TargetMerger,
+	bedPeople *service.BedPeopleTracker,
 	interval time.Duration,
 	logger *zap.Logger,
 ) *VisitorDeriver {
@@ -86,6 +83,7 @@ func NewVisitorDeriver(
 		metaCache: metaCache,
 		reader:    reader,
 		merger:    merger,
+		bedPeople: bedPeople,
 		logger:    logger,
 		interval:  interval,
 		segments:  make(map[string]*visitorSegment),
@@ -112,24 +110,39 @@ func (v *VisitorDeriver) Run(ctx context.Context) {
 	}
 }
 
-// tick 一次扫描所有 Private 父下的 /88 room cards。
+// tick 一轮：先跑 Path A（bed-bound radar bed cards），记录被覆盖的 parent room；
+// 再跑 Path B（Private /88 rooms），跳过已被 Path A 覆盖的。
 func (v *VisitorDeriver) tick(ctx context.Context, now time.Time) {
-	cardIDs := v.metaCache.ListPrivateRoomCardIDs(ctx)
-	if len(cardIDs) == 0 {
-		return
-	}
 	nowMs := now.UnixMilli()
 	dateUTC := now.UTC().Format("2006-01-02")
 
-	for _, cardID := range cardIDs {
-		v.tickCard(ctx, cardID, nowMs, dateUTC)
+	// Path A — bed-bound radar bed cards (优先)
+	bedCardIDs := v.metaCache.ListBedCardsWithBedBoundRadar(ctx)
+	skipParents := make(map[string]struct{})
+	for _, bedCardID := range bedCardIDs {
+		peopleCount := 0
+		if v.bedPeople != nil {
+			peopleCount = v.bedPeople.CardPeopleCount(ctx, bedCardID)
+		}
+		v.tickCard(ctx, bedCardID, peopleCount, nowMs, dateUTC)
+		if pr := parentRoomCardID(bedCardID); pr != "" {
+			skipParents[pr] = struct{}{}
+		}
+	}
+
+	// Path B — Private /88 room cards (兜底)
+	roomCardIDs := v.metaCache.ListPrivateRoomCardIDs(ctx)
+	for _, roomCardID := range roomCardIDs {
+		if _, skip := skipParents[roomCardID]; skip {
+			continue
+		}
+		peopleCount := v.readTotalPeople(ctx, roomCardID)
+		v.tickCard(ctx, roomCardID, peopleCount, nowMs, dateUTC)
 	}
 }
 
-// tickCard 处理单 /88 room card 的累加 + 阈值 + midnight reset。
-func (v *VisitorDeriver) tickCard(ctx context.Context, cardID string, nowMs int64, dateUTC string) {
-	totalPeople := v.readTotalPeople(ctx, cardID)
-
+// tickCard 处理单 card 的累加 + 阈值 + midnight reset。
+func (v *VisitorDeriver) tickCard(ctx context.Context, cardID string, peopleCount int, nowMs int64, dateUTC string) {
 	v.mu.Lock()
 	seg, ok := v.segments[cardID]
 	if !ok {
@@ -147,7 +160,7 @@ func (v *VisitorDeriver) tickCard(ctx context.Context, cardID string, nowMs int6
 	}
 	seg.lastTickDateUTC = dateUTC
 
-	if totalPeople >= 2 {
+	if peopleCount >= 2 {
 		if seg.segmentStartTs == 0 {
 			seg.segmentStartTs = nowMs
 			seg.segDurationMin = 1
@@ -163,7 +176,7 @@ func (v *VisitorDeriver) tickCard(ctx context.Context, cardID string, nowMs int6
 			}
 		}
 	} else {
-		// segment 断（人离开 / 房间空）：reset segment but 保留 today 状态
+		// segment 断：reset segment but 保留 today 状态
 		seg.segmentStartTs = 0
 		seg.segDurationMin = 0
 	}
@@ -173,12 +186,9 @@ func (v *VisitorDeriver) tickCard(ctx context.Context, cardID string, nowMs int6
 	hasToday := seg.hasToday
 	v.mu.Unlock()
 
-	// 通过 TargetMerger 注入 visitor 字段（merger 合并 device + visitor 后写 hash）
+	// 注入 TargetMerger（visitor 字段下次 target.state 触发时合到 hash）
 	if v.merger != nil {
-		merged := v.merger.ApplyVisitor(ctx, cardID, service.MakeVisitorFields(visitorStartTs, todayMax, hasToday))
-		_ = merged // 写入由 merger 内部处理；当前我们只保证累积态注入了
-		// 若需要立即触发 card:state hash 写入，可在此调 writer；当前依赖下次 target.state
-		// 消息触发 SensorStateProjector 整段写。VisitorDeriver 不直接写 hash 避免 race。
+		v.merger.ApplyVisitor(ctx, cardID, service.MakeVisitorFields(visitorStartTs, todayMax, hasToday))
 	}
 }
 
@@ -192,4 +202,13 @@ func (v *VisitorDeriver) readTotalPeople(ctx context.Context, cardID string) int
 		return 0
 	}
 	return status.RoomState.TotalPeople
+}
+
+// parentRoomCardID 由 /96 bed cardID 派生 /88 父 room cardID。非 /96 输入返空。
+func parentRoomCardID(bedCardID string) string {
+	pref, err := netip.ParsePrefix(bedCardID)
+	if err != nil || pref.Bits() != 96 {
+		return ""
+	}
+	return netip.PrefixFrom(pref.Addr(), 88).Masked().String()
 }

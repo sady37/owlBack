@@ -117,6 +117,27 @@ func (m *CardMeta) BedBoundDeviceAddrs() []string {
 // BedBoundDeviceIDs 兼容 alias — 返回 device_addr 字符串列表（== BedBoundDeviceAddrs）。
 func (m *CardMeta) BedBoundDeviceIDs() []string { return m.BedBoundDeviceAddrs() }
 
+// HasBedBoundRadar 是否 bed card 且其 /96 bed prefix 下绑有 Radar 设备。
+// VisitorDeriver bed-level path 激活条件——firmware boundary 已物理裁剪视野到该床区域。
+func (m *CardMeta) HasBedBoundRadar() bool {
+	if m == nil || !m.IsBedCard() || m.BedPref == "" {
+		return false
+	}
+	bedNet, err := netip.ParsePrefix(m.BedPref)
+	if err != nil {
+		return false
+	}
+	for _, dm := range m.Devices {
+		if dm == nil || !dm.DeviceAddr.IsValid() || !bedNet.Contains(dm.DeviceAddr) {
+			continue
+		}
+		if strings.Contains(strings.ToLower(dm.DeviceType), "radar") {
+			return true
+		}
+	}
+	return false
+}
+
 // DeviceMetaCache is a lazy-loading, card_change-invalidated in-memory cache.
 //
 // 反向索引（启动 BuildDeviceIndex 全量 load + cardChange 事件触发增量重建）：
@@ -322,6 +343,42 @@ func (c *DeviceMetaCache) ListPrivateRoomCardIDs(ctx context.Context) []string {
 	if err != nil {
 		if c.logger != nil {
 			c.logger.Warn("ListPrivateRoomCardIDs failed", zap.Error(err))
+		}
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// ListBedCardsWithBedBoundRadar 列出 /96 bed cards 且其 prefix 下绑有 Radar 设备的 cardID。
+// VisitorDeriver bed-level path 用——firmware boundary 已物理裁剪到床区，count>=2 ≡ 床主+访客。
+//
+// LPM ownership 在 v3 owning rule 下保证一致：device 归 LPM 最长覆盖卡；/96 是 cards 表最长 mask，
+// 因此 device <<= /96 bed prefix ↔ device 实际归该 bed card。
+func (c *DeviceMetaCache) ListBedCardsWithBedBoundRadar(ctx context.Context) []string {
+	if c.db == nil {
+		return nil
+	}
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT DISTINCT c.spatial_prefix::text
+		  FROM cards c
+		  JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
+		  JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		 WHERE c.card_type = 'bed'
+		   AND masklen(c.spatial_prefix) = 96
+		   AND lower(dfm.device_type::text) LIKE '%radar%'
+	`)
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Warn("ListBedCardsWithBedBoundRadar failed", zap.Error(err))
 		}
 		return nil
 	}

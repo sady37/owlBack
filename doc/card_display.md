@@ -325,20 +325,22 @@ for each card in tracked cards:
 midnight reset (parent unit timezone): 清三字段 + segment_start_ts
 ```
 
-**bed level 数据流**：
+**bed level 数据流**（2026-05-19 修订：number_people 走 event 流不是 monitor 流）：
 
 ```
-radar monitor frame (含 number_people)
+radar firmware type=3 NumberPeople event
      ↓
-iot:monitor:stream
+qinglan radar_decoder.go: buildPeopleNumber → category="number_people"
      ↓
-cardagg monitor handler（已订阅）
-     ↓ 检查 device 是否 bed-bound（card.CardType=="bed" + Radar device）
-cardagg per-bed PeopleCount in-memory tracker
+iot:event:stream
      ↓
-VisitorDeriver 60s tick 读
+cardagg EventHandler（filter category=number_people）
+     ↓ Update(deviceAddr, count, ts)
+cardagg BedPeopleTracker per-device snapshot（仅 offline 过滤；无时间窗 staleness）
      ↓
-判定 + 写 /96 bed card target
+VisitorDeriver 60s tick：ListBedCardsWithBedBoundRadar → CardPeopleCount
+     ↓
+判定 + 写 /96 bed card target；记录 parent room 跳过本轮
 ```
 
 **已接受的边界限制**：
@@ -348,11 +350,10 @@ VisitorDeriver 60s tick 读
 | 视野中央盲区漏报（visitor 站两床之间）| 接受；5min 阈值过滤短时——visitor 真长时间停留就会走到某床边触发 |
 | segment 不连续（访客离开 bed 几分钟又回来）| 严格 5min 连续；不做间断容忍——短时离开即视作 visit 结束 |
 | 路过他床 / 巡房 | 5min 阈值天然过滤 |
+| number_people 仅在变化时上报（不是周期心跳）| BedPeopleTracker 不做时间窗 staleness——静态 2 人不变 firmware 就不再报，加 staleness 反误 reset 真实 visitor；仅靠 IsOnline 过滤 device 失联 |
 
-**Sensor 侧**：完全不参与 visitor 累加 —— 只通过现有 RoomState publish（/88 total_people）+ monitor 流（per-radar number_people）喂给 cardagg。
-5. **当日午夜 reset**（按 parent unit timezone）：清三字段 + 重置 segment_start_ts
-
-**Sensor 侧**：完全不参与 visitor 累加 —— 只通过现有 RoomState publish 把 TotalPeople 喂给 cardagg。
+**Sensor 侧**：完全不参与 visitor 累加 —— 只通过现有 RoomState publish（/88 total_people）喂给 cardagg；
+radar number_people 由 qinglan 直发 iot:event:stream，cardagg 自己订阅消费。
 
 ## 5. /80 UnitPicker 优先级算法
 
@@ -496,6 +497,7 @@ type TargetState struct {
 | main wiring：TargetMerger + VisitorDeriver + cardChange invalidate | ✅ 2026-05-19 |
 | LastActive offline 过滤（`DeviceStatusTracker.IsOnline` 注入）| ✅ 2026-05-19 |
 | Standing 双重过滤（offline + 2min UpdatedAt staleness）| ✅ 2026-05-19 |
+| Visitor-v2 bed-bound radar 路径（Share unit 解锁；`BedPeopleTracker` + `EventHandler` 订阅 iot:event:stream NumberPeople + `VisitorDeriver` 双路径）| ✅ 2026-05-19 |
 
 ### 9.2 待做（Step2）
 

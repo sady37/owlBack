@@ -1,6 +1,6 @@
-// stream_subscriber.go — 6 流订阅，按消息形态分两类 handler：
+// stream_subscriber.go — 7 流订阅，按消息形态分两类 handler：
 //
-//   iot:monitor / iot:alarm / sensor:derived              → IoTHandler（解析后传 IoTStreamMessage）
+//   iot:monitor / iot:event / iot:alarm / sensor:derived  → IoTHandler（解析后传 IoTStreamMessage）
 //   config:card / config:alarmDevice / config:alarmProcess → RawHandler（CloudEvents envelope，传 raw map）
 
 package consumer
@@ -25,6 +25,7 @@ type RawHandler interface {
 
 type Handlers struct {
 	Monitor      IoTHandler // iot:monitor:stream
+	Event        IoTHandler // iot:event:stream
 	Alarm        IoTHandler // iot:alarm:stream
 	SensorState  IoTHandler // sensor:state:stream
 	CardChange   RawHandler // config:card:stream
@@ -44,6 +45,7 @@ func SubscribeAll(ctx context.Context, logger *zap.Logger, client *redislib.Clie
 		handler          IoTHandler
 	}{
 		{owlredis.StreamMonitor.Name, "consumer-monitor", h.Monitor},
+		{owlredis.StreamEvent.Name, "consumer-event", h.Event},
 		{owlredis.StreamAlarm.Name, "consumer-alarm", h.Alarm},
 		{owlredis.StreamSensorDerived.Name, "consumer-sensor-derived", h.SensorState},
 	}
