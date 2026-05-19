@@ -158,18 +158,44 @@ else:
 
 **注**：OOU 状态已删除——unit 是不是空可以由"所有子卡都 OOR"间接表达，picker 不需特别区分。`rs.last_exit_to_outside` 字段保留作 risk/alarm 的原始信号，**不参与 SceneState 派生**。
 
-### 4.3 ActiveState 数据源（统一公式）
+### 4.3 ActiveState 数据源 — per-device TargetState 模型（v2 拍板 2026-05-18）
 
-三类卡（/80 unit、/88 room、/96 bed）公式相同：
-- `ActiveAnchorMs = Target.LastActiveTs`
-- `ActiveState = (now - ActiveAnchorMs < 60_000) ? Now : Inactive`
+**架构**：
+- Sensor 按 **per radar device (/128)** 维护 TargetState；不按 room/card 合并
+- Cardagg 按 card 组成（card 包含的 device 列表）汇聚多 device → 单 card 显示值
+- v3 未来引入 logicID 实现 cross-radar 真融合；v2 暂以 max(deviceTarget) 近似
 
-`Target.LastActiveTs` 由 sensor 在以下条件更新：
-- radar 帧自带 `walk_distance ≥ 2m` **OR** `walk_duration ≥ 6s`
-- **AND** 当前 room `total_people == 1`（多人时不更新——无法区分 caregiver / resident）
-- 写到 radar 所在 cardID（/88 room 或 /96 bed）的 Target.LastActiveTs
+**Sensor 端（per radar device）**：
+- 每条 radar 维护自己的 TargetState 实例
+- `TargetState.LastActiveTs` 更新条件（per device）：
+  - radar 帧自带 `walk_distance ≥ 2m` **OR** `walk_duration ≥ 6s`
+  - **AND** 该 radar 所在 room `total_people == 1`（多人时不更新——无法区分 caregiver / resident）
+  - 60s 节流（同 device 已 60s 内更新过则跳过 Redis IO）
+- Sensor 发布到 `sensor:derived:stream` per device，category=`target.state`，key=device_addr (/128)
 
-leaf 卡读自己的 Target.LastActiveTs。/80 unit 卡：picker 把 winner 的 Target.LastActiveTs 投到 /80 display。
+**Cardagg 端（per card 合并）**：
+- 维护 per device target snapshot in-memory map
+- card.lastActiveTs = **max(deviceTarget.LastActiveTs across all radars in this card)**
+- card:state.target Hash 写**合并后**的单 `TargetState`（FE 看到的还是 1 个）
+- 显示规则：`ActiveState = (now - card.lastActiveTs < 60_000) ? Now : Inactive`
+
+**示例（同卡 2 个 radar）**：
+
+| 时刻 | 事件 | R1.lastActive | R2.lastActive | card.lastActive = max | card 显示 |
+|---|---|---|---|---|---|
+| T=0 | R1 active | T=0 | 0 | T=0 | active now |
+| T=3m | R2 active | T=0 (停) | T=3m | T=3m | active now |
+| T=5m | R2 停 / R1 续 | T=5m | T=3m | T=5m | active now |
+| T=10m | R1 停 | T=10m | T=3m | T=10m | active 0s ago |
+| T=12m | （无更新）| T=10m | T=3m | T=10m | active 2min ago |
+
+### 4.3a StandingContinuousMin（per-device，cardagg 合并）
+
+**已不在 RoomState**，移到 `TargetState.StandingContinuousMin`（per radar device）：
+- Sensor per radar：`stand_duration ≥ 55s` + 该 radar 所在 room `total_people == 1` → +1（封顶 8）
+- 坐/走/躺 / 多人 / 空房 → reset 0
+- Cardagg：card.standingMin = max(deviceTarget.StandingContinuousMin across radars)
+- risk_evaluator 不再读 RoomState.StandingContinuousMin —— 改读 card 合并后的（待 cardagg 改造）
 
 ### 4.4 VisitorState 算法（per /88 room card，由 cardagg VisitorDeriver 写）
 
@@ -294,18 +320,34 @@ type RoomState struct {
 
 ### 7.2 BedState（无字段变更）
 
-### 7.3 TargetState（关键字段）
+### 7.3 TargetState（per-device, v2 拍板 2026-05-18）
+
+**Sensor 发布粒度**：per radar device（key=/128 device_addr），每条 radar 独立一条 TargetState 消息发到 `sensor:derived:stream` (category=`target.state`)。
 
 ```go
-LastActiveTs        int64  // resident 最后身体活动时刻（详 §4.3）
-VisitorStartTs      int64  // 当前 visitor 进入时刻
-HasVisitorToday     bool   // 当日是否曾有 visitor
-TodayMaxVisitorMin  int    // 当日最长 visitor 时长
+type TargetState struct {
+    TrackID               int    // radar 当前 active track (per device 维度)
+    LogicID               string // 跨 radar 融合 ID 占位（v3 上线）
+    LastActiveTs          int64  // per device, sensor 维护（§4.3）
+    StandingContinuousMin int    // per device, sensor 维护（§4.3a）— ⭐ 已从 RoomState 移到这
+    WeakBiometricSignal   int    // per device, sensor 维护（30min 滑窗，详 [[target_state_weak_bio_signal_design]]）
+    VisitorStartTs        int64  // ⭐ 现归 cardagg `VisitorDeriver` 写到 /88 room card target（§4.4）
+    TodayMaxVisitorMin    int    // 同上
+    HasVisitorToday       bool   // 同上
+}
 ```
 
-**注**：JSON tag 已统一 snake_case（`visitor_start_ts / has_visitor_today / today_max_visitor_min`），2026-05-18 Task 2.5 落地 (commit `8e8732e`)。
+**JSON tag**：snake_case（2026-05-18 Task 2.5 落地 commit `8e8732e`）。
 
-**注（架构）**：这 3 个 visitor 字段的 **writer 在 cardagg `VisitorDeriver`**（非 sensor），算法见 §4.4。Sensor 端不做 visitor 累加。
+**单 vs 多**：
+- Sensor 输出：每个 radar device 一条 TargetState（同 unit 多 radar → 多条消息）
+- Cardagg 入库：per card 合并多 device target → 单 `CardStatus.Target`（FE 看到的还是 1 个）
+- 合并规则：LastActiveTs/StandingContinuousMin/WeakBiometricSignal 全部取 max(across devices in card)
+
+**Visitor 三字段例外**：
+- 不由 sensor 写
+- cardagg `VisitorDeriver` 在 60s tick 时**直接写**对应 /88 room card 的 target.visitor_*（不走"sensor 发→cardagg 合并"路径）
+- 详 §4.4
 
 ## 8. 命名约定
 
@@ -314,20 +356,21 @@ TodayMaxVisitorMin  int    // 当日最长 visitor 时长
 
 ## 9. 已知 wiring gap（producer 待修）
 
-**Sensor 侧 (单实体内判断)**：
+**Sensor 侧 (per radar device)**：
 
 | 字段 | 现状 | 待修 |
 |---|---|---|
-| `Target.LastActiveTs` | `UpdateTargetLastActive` 函数有，**零 caller** | sensor 收 radar 帧时按 §4.3 条件调用 |
-| `RoomState.StandingContinuousMin` | risk_evaluator 读，**无 writer** | sensor 按 stand_duration ≥ 55s + total_people==1 累 +1 封顶 8 |
+| `TargetState.LastActiveTs` (per device) | `UpdateTargetLastActive` 函数有，**零 caller**；当前是 per-cardID 不是 per-device | P3：TargetStateAggregator 改 per device 寻址；收 radar 帧时按 §4.3 条件调用 |
+| `TargetState.StandingContinuousMin` (per device) | **字段不在 TargetState 上（在 RoomState）**；需迁移 + writer | P3：① card_types.go 把 `StandingContinuousMin` 从 RoomState 挪到 TargetState；② sensor per device 累加 |
+| `TargetState.WeakBiometricSignal` (per device) | 字段定义在，**全栈无 writer** | P4：sensor TargetStateAggregator 订阅 iot:alarm:stream 累加 30min 滑窗（见 [[target_state_weak_bio_signal_design]]）；per device 计 |
 | `RoomState.StaySec` | risk_evaluator 读，**已修**（commit `8e8732e` translator 即时算）| ✅ done |
-| `Target.WeakBiometricSignal` | 字段定义在，**全栈无 writer** | sensor TargetStateAggregator 订阅 iot:alarm:stream 累加 30min 滑窗（见 [[target_state_weak_bio_signal_design]]） |
 
-**Cardagg 侧 (跨实体合并)**：
+**Cardagg 侧 (per card 跨 device/room 合并)**：
 
-| 字段 | 现状 | 待修 |
+| 任务 | 现状 | 待修 |
 |---|---|---|
-| `Target.VisitorStartTs` / `HasVisitorToday` / `TodayMaxVisitorMin` | sensor 不再负责；**cardagg 无 VisitorDeriver** | 新建 cardagg `VisitorDeriver` per §4.4：60s tick + Private gate + per /88 room 累加 + 5min 阈值写 /88 room card target |
+| 多 device TargetState → 单 card.Target 合并 | 当前 cardagg 假设 1 卡 1 target；多 radar 同卡时只看最后写入的，丢另一个 radar 数据 | P4：cardagg `SensorStateProjector` 接收 per device target，per card 维护 device map，写 card:state 时合并（LastActiveTs/Standing/WeakBio 各取 max）|
+| `VisitorDeriver` 新模块 | sensor 不再负责；cardagg 无此模块 | P4：新建 per §4.4：60s tick + Private gate + per /88 room 累加 + 5min 阈值写 /88 room card target |
 | `RoomState.StandingContinuousMin` | risk_evaluator 读，**无 writer** | sensor 按 stand_duration ≥ 55s 累 +1，封顶 8 |
 
 修复顺序（按当前讨论的约定）：
