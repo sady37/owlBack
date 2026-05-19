@@ -160,6 +160,11 @@ func main() {
 	}
 	zone.Start(ctx)
 
+	// 5.3.0 A 风险放大消费者: roomengine fall verifier 查 zone.TargetAggregator WeakBio≥80
+	// → 强制 verdict=real（短路三档评分）。WeakBio 30min 滑窗 score 由 S1 alarm consumer
+	// 累加；engine 转发给所有 TrackManager（已注册 + 新 RegisterRoom）。
+	engine.SetWeakBioSource(zone.TargetAggregator)
+
 	// 5.3.1 producer-side consumer wire (S1/S2/S4)
 	//   S1 alarm:    iot:alarm:stream WeakBio 关联 → aggregator score 累加
 	//   S2 activity: iot:event:stream category=activity → aggregator LastActive/Standing

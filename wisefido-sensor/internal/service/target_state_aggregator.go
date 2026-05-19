@@ -224,6 +224,24 @@ func (a *TargetStateAggregator) OnZoneEvent(spatialPrefix, zoneID string, totalP
 	}
 }
 
+// WeakBioScore 返回 spatial 实体当前 WeakBio 累加 score（0-100）。
+// 无 entry 返回 0；roomengine fall verifier "WeakBio≥80 force real" 提级路径用。
+//
+// 实现 roomengine.WeakBioSource interface（解耦：sensor service ← roomengine 单向消费 score；
+// 不引 service 类型，零 import cycle 风险）。
+func (a *TargetStateAggregator) WeakBioScore(spatialPrefix string) int {
+	if a == nil || spatialPrefix == "" {
+		return 0
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	acc, found := a.accums[spatialPrefix]
+	if !found {
+		return 0
+	}
+	return acc.weakBio.score
+}
+
 // GetSnapshot StreamPublisher 60s tick pull 用（multi-return 实现 zoneengine.AggregatorPuller）。
 // 若该 spatial 实体无 accumulator entry 返回 ok=false。
 func (a *TargetStateAggregator) GetSnapshot(spatialPrefix string) (target *card.TargetState, standingMin int, dirty bool, ok bool) {

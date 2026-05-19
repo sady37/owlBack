@@ -110,6 +110,10 @@ type TrackManager struct {
 	recentRadarEvents map[int64]*RadarTrackEvent // key = TMs
 	recentBufferMs    int64                      // 默认 5 min
 
+	// weakBioSource: fall verifier "WeakBio≥80 force real" 短路用（A 风险放大消费者）。
+	// 默认 nil（verifier 走原三档评分）；engine.SetWeakBioSource 注入。
+	weakBioSource WeakBioSource
+
 	// logger：用于 ai.log 输出 ghost / fall 结构化事件。
 	// 默认 zap.NewNop()，engine.Run 会调 SetLogger 注入真 logger。
 	logger *zap.Logger
@@ -255,6 +259,14 @@ func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 		logger:             zap.NewNop(),
 		startupMs:          time.Now().UnixMilli(),
 	}
+}
+
+// SetWeakBioSource 注入 fall verifier 的 WeakBio 提级 source（engine.SetWeakBioSource 转发）。
+// nil 允许（verifier 短路 disable，走原三档评分）。
+func (tm *TrackManager) SetWeakBioSource(s WeakBioSource) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.weakBioSource = s
 }
 
 // SetLogger 注入 zap logger（engine.Run 启动时调用）。

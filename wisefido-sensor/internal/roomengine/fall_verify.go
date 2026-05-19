@@ -53,7 +53,18 @@ type FallVerifyResult struct {
 const (
 	FallVerifyGhostThreshold = 30 // < 此分 → 视为 ghost-induced false fall
 	FallVerifyRealThreshold  = 70 // > 此分 → 视为高信心真 fall
+
+	// WeakBioForceRealThreshold WeakBio score ≥ 此值 → fall verifier 短路提级 real。
+	// 设计：老人体征长期弱（WeakBio≥80=Red 横条），任何 fall 报警都按真处理（"宁可
+	// 误报不可漏报" + WeakBio 是风险放大系数；详 [[target_state_weak_bio_signal_design]]）。
+	WeakBioForceRealThreshold = 80
 )
+
+// WeakBioSource fall verifier 查询 spatial 实体当前 WeakBio score；service.TargetStateAggregator 隐式满足。
+// nil 注入或 score=0 时 verifier 走原 ghost/suspect/real 三档评分（无短路）。
+type WeakBioSource interface {
+	WeakBioScore(spatialPrefix string) int
+}
 
 // VerifyRadarFall 对 firmware Fall 进行后验评分。调用方持锁。
 //
@@ -156,6 +167,25 @@ func (tm *TrackManager) verifyRadarFall(a RadarFallAlarm, nowMs int64) FallVerif
 	if tm.hasRecentEnterRoomBetween(nowMs-recentEnterMs, nowMs) {
 		score += 10
 		breakdown["recent_enter_room"] = 10
+	}
+
+	// === WeakBio force real 短路（A 风险放大消费者）===
+	// 老人长期体征弱（aggregator WeakBio 30min 滑窗 score ≥ 80 = Red 横条）→ fall
+	// 无论原 score 多少都强制 "real"；breakdown 留审计标记。
+	//
+	// v2 简化 spatial 查询：tm.roomID（/88 room CIDR）作 key，aggregator 不在 /88 时
+	// 返 0 自然回到原评分路径（无副作用）。v3 logicID 真融合可优化为 fall device 推
+	// 到的具体 /96 bed prefix 查询。
+	if tm.weakBioSource != nil {
+		if wb := tm.weakBioSource.WeakBioScore(tm.roomID); wb >= WeakBioForceRealThreshold {
+			breakdown["weak_bio_force_real"] = wb
+			return FallVerifyResult{
+				Score:     100,
+				Verdict:   "real",
+				Reason:    "weak_bio_force_real",
+				Breakdown: breakdown,
+			}
+		}
 	}
 
 	return finalizeFallVerifyResult(score, breakdown)

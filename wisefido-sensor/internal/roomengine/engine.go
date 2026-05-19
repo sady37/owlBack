@@ -222,6 +222,10 @@ type Engine struct {
 	redisClient *redis.Client
 	logger      *zap.Logger
 
+	// weakBioSource: fall verifier "WeakBio≥80 force real" 短路；engine 持有 + RegisterRoom 时
+	// 转发给每个 TrackManager（默认 nil，verifier 走原三档评分）。详 fall_verify.go 注释。
+	weakBioSource WeakBioSource
+
 	onOutput func(roomID string, outputs []TrackOutput)
 
 	// sensor v2 PR-3 wiring：
@@ -659,6 +663,18 @@ func (e *Engine) publishEnabled() bool {
 // SetSuiteCensus 注入进程级共享 SuiteCensusManager（sensor_v2 PR-2 数据结构 + PR-3 publish 关联）。
 // nil = 禁用 PR-3 PersonID 关联（TrackStatus.PersonID 一律空）；
 // bootstrap 调用方负责生命周期（含 SaveToRedis 定时任务）。
+// SetWeakBioSource 注入 fall verifier 的 WeakBio 提级 source（A 风险放大消费者）。
+// 已注册的 TrackManager 同步转发；新 RegisterRoom 创建的 TrackManager 启动时同样注入。
+// nil 允许（短路 disable）。详 fall_verify.go §"WeakBioForceRealThreshold"。
+func (e *Engine) SetWeakBioSource(s WeakBioSource) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.weakBioSource = s
+	for _, tm := range e.rooms {
+		tm.SetWeakBioSource(s)
+	}
+}
+
 func (e *Engine) SetSuiteCensus(m *SuiteCensusManager) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1236,6 +1252,11 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetInterferes(cfg.Interferes)
 	// PR-8: 注入 AI 派生事件 / 告警发布器（engine 实现 AIPublisher 接口）
 	tm.SetAIPublisher(e)
+	// A 风险放大消费者: WeakBio≥80 force real 短路 source（engine 在 SetWeakBioSource 时
+	// 同步转发给已注册 tm；新 RegisterRoom 在这里补设。nil 允许 — verifier 走原三档评分）
+	if e.weakBioSource != nil {
+		tm.SetWeakBioSource(e.weakBioSource)
+	}
 	// 注入 IANA 时区（IsNightTime 用）；空串保持 nil → IsNightTime 退化 UTC
 	if cfg.Timezone != "" {
 		if loc, err := time.LoadLocation(cfg.Timezone); err == nil {
