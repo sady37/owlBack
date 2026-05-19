@@ -247,3 +247,156 @@ func TestHandleRaw_EmptySubjectEntity_Skipped(t *testing.T) {
 		t.Fatalf("expected 0 push (empty subject_entity), got %d", len(sink.calls))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// S6 设备类 alarm fan-out → FitnessSink
+// ---------------------------------------------------------------------------
+
+type fakeFitnessSink struct {
+	marks   []fitnessCall
+	clears  []fitnessCall
+}
+
+type fitnessCall struct {
+	deviceAddr string
+	reason     uint8
+}
+
+func (f *fakeFitnessSink) MarkUnfit(addr string, reason uint8) {
+	f.marks = append(f.marks, fitnessCall{addr, reason})
+}
+
+func (f *fakeFitnessSink) ClearReason(addr string, reason uint8) {
+	f.clears = append(f.clears, fitnessCall{addr, reason})
+}
+
+func TestClassifyDeviceFitnessAlarm(t *testing.T) {
+	tests := []struct {
+		cat       string
+		wantR     uint8
+		wantUnfit bool
+		wantRec   bool
+	}{
+		{alarm.AlarmTypeOffline, fitnessReasonOffline, true, false},
+		{alarm.AlarmTypeOfflineRecover, fitnessReasonOffline, false, true},
+		{alarm.SensorDetached, fitnessReasonSensorDetached, true, false},
+		{alarm.SensorDetachedRecover, fitnessReasonSensorDetached, false, true},
+		{alarm.AngleException, fitnessReasonAngleException, true, false},
+		{alarm.AngleExceptionRecover, fitnessReasonAngleException, false, true},
+		{alarm.SignalPoor, fitnessReasonSignalPoor, true, false},
+		{alarm.SingalPoorRecover, fitnessReasonSignalPoor, false, true},
+		{alarm.WeakBiometricSignal, 0, false, false},
+		{alarm.Fall, 0, false, false},
+		{"", 0, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.cat, func(t *testing.T) {
+			r, u, rec := classifyDeviceFitnessAlarm(tc.cat)
+			if r != tc.wantR || u != tc.wantUnfit || rec != tc.wantRec {
+				t.Errorf("classify(%q) = (%d, %v, %v), want (%d, %v, %v)",
+					tc.cat, r, u, rec, tc.wantR, tc.wantUnfit, tc.wantRec)
+			}
+		})
+	}
+}
+
+func TestHandleRaw_DeviceClassMarkUnfit(t *testing.T) {
+	tests := []struct {
+		category   string
+		wantReason uint8
+	}{
+		{alarm.AlarmTypeOffline, fitnessReasonOffline},
+		{alarm.SensorDetached, fitnessReasonSensorDetached},
+		{alarm.AngleException, fitnessReasonAngleException},
+		{alarm.SignalPoor, fitnessReasonSignalPoor},
+	}
+	for _, tc := range tests {
+		t.Run(tc.category, func(t *testing.T) {
+			sink := &fakeSink{}
+			fs := &fakeFitnessSink{}
+			c := newTestAlarmConsumer(sink)
+			c.SetFitnessSink(fs)
+			raw := buildRawStreamFields(
+				"fd00:0:3:111:3:101::1",
+				"fd00:0:3:111:3:101::/96",
+				tc.category,
+				1700000000000,
+				map[string]interface{}{},
+			)
+			c.handleRaw(raw)
+			if len(fs.marks) != 1 || fs.marks[0].reason != tc.wantReason {
+				t.Errorf("%s should MarkUnfit reason=%d, got %+v", tc.category, tc.wantReason, fs.marks)
+			}
+			if len(fs.clears) != 0 {
+				t.Errorf("%s should not Clear; got %+v", tc.category, fs.clears)
+			}
+			if len(sink.calls) != 0 {
+				t.Errorf("device class should not enter WeakBio path, got %d sink calls", len(sink.calls))
+			}
+		})
+	}
+}
+
+func TestHandleRaw_DeviceClassRecoverClearReason(t *testing.T) {
+	tests := []struct {
+		category   string
+		wantReason uint8
+	}{
+		{alarm.AlarmTypeOfflineRecover, fitnessReasonOffline},
+		{alarm.SensorDetachedRecover, fitnessReasonSensorDetached},
+		{alarm.AngleExceptionRecover, fitnessReasonAngleException},
+		{alarm.SingalPoorRecover, fitnessReasonSignalPoor},
+	}
+	for _, tc := range tests {
+		t.Run(tc.category, func(t *testing.T) {
+			sink := &fakeSink{}
+			fs := &fakeFitnessSink{}
+			c := newTestAlarmConsumer(sink)
+			c.SetFitnessSink(fs)
+			raw := buildRawStreamFields(
+				"fd00:0:3:111:3:101::1",
+				"fd00:0:3:111:3:101::/96",
+				tc.category,
+				1700000000000,
+				map[string]interface{}{},
+			)
+			c.handleRaw(raw)
+			if len(fs.clears) != 1 || fs.clears[0].reason != tc.wantReason {
+				t.Errorf("%s should ClearReason=%d, got %+v", tc.category, tc.wantReason, fs.clears)
+			}
+			if len(fs.marks) != 0 {
+				t.Errorf("%s should not Mark; got %+v", tc.category, fs.marks)
+			}
+		})
+	}
+}
+
+func TestHandleRaw_DeviceClassSelfProducerSkipped(t *testing.T) {
+	fs := &fakeFitnessSink{}
+	c := newTestAlarmConsumer(&fakeSink{})
+	c.SetFitnessSink(fs)
+	raw := buildRawStreamFields(
+		"fd00:0:fff1::1", // self sensor agent slot
+		"fd00:0:3:111:3:101::/96",
+		alarm.SensorDetached,
+		1700000000000,
+		map[string]interface{}{},
+	)
+	c.handleRaw(raw)
+	if len(fs.marks) != 0 {
+		t.Errorf("self producer should skip fitness fan-out; got %+v", fs.marks)
+	}
+}
+
+func TestHandleRaw_NoFitnessSinkNoOp(t *testing.T) {
+	c := newTestAlarmConsumer(&fakeSink{}) // no fitness sink wired
+	raw := buildRawStreamFields(
+		"fd00:0:3:111:3:101::1",
+		"fd00:0:3:111:3:101::/96",
+		alarm.AlarmTypeOffline,
+		1700000000000,
+		map[string]interface{}{},
+	)
+	// 不应 panic；device class 在没 wire 时直接 return
+	c.handleRaw(raw)
+}

@@ -47,13 +47,14 @@ type Subsystem struct {
 
 // SetupOptions Setup 入参。
 type SetupOptions struct {
-	DB             *sql.DB                    // 用于 BedSizeLookup / BathroomLookup
-	Redis          *redislib.Client           // 用于 4 adapter
-	MonitorBuffer  *service.MonitorBuffer     // 用于 VitalSource
-	RulesPath      string                     // zone_rules.yaml 绝对路径；空则查 ZONE_RULES_PATH env，再回退默认 "config/zone_rules.yaml"
-	AlarmRulesPath string                     // zone_alarm.yaml 绝对路径；空则查 ZONE_ALARM_PATH env，再回退默认 "config/zone_alarm.yaml"
-	BackChannel    *consumer.AlarmBackChannel // sensor 现成的 alarm 回流；nil 禁用 zonealarm fire
-	Identity       consumer.AgentIdentity     // sensor agent IPv6 + name；StreamPublisher 写 envelope.Producer 用
+	DB             *sql.DB                       // 用于 BedSizeLookup / BathroomLookup
+	Redis          *redislib.Client              // 用于 4 adapter
+	MonitorBuffer  *service.MonitorBuffer        // 用于 VitalSource
+	RulesPath      string                        // zone_rules.yaml 绝对路径；空则查 ZONE_RULES_PATH env，再回退默认 "config/zone_rules.yaml"
+	AlarmRulesPath string                        // zone_alarm.yaml 绝对路径；空则查 ZONE_ALARM_PATH env，再回退默认 "config/zone_alarm.yaml"
+	BackChannel    *consumer.AlarmBackChannel    // sensor 现成的 alarm 回流；nil 禁用 zonealarm fire
+	Identity       consumer.AgentIdentity        // sensor agent IPv6 + name；StreamPublisher 写 envelope.Producer 用
+	Fitness        *service.DeviceFitnessTracker // S6: per-device 健康状态 gate；nil 时 adapter 不做 fitness 过滤
 	Logger         *zap.Logger
 }
 
@@ -118,6 +119,10 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 	// 4) input adapters
 	radar := zoneengine.NewRadarAdapter(opts.Redis, engine, bathLookup, opts.Logger)
 	sleepace := zoneengine.NewSleepaceAdapter(opts.Redis, engine, opts.Logger)
+	if opts.Fitness != nil {
+		radar.SetFitnessChecker(opts.Fitness)
+		sleepace.SetFitnessChecker(opts.Fitness)
+	}
 	vital := zoneengine.NewVitalAdapter(vitalSrc, engine, opts.Logger)
 
 	// 5) zonealarm — zone-derived alarm 子系统（4 条规则订阅 ZoneEvent）

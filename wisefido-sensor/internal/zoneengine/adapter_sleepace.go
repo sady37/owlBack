@@ -36,10 +36,11 @@ import (
 
 // SleepaceAdapter 订阅 iot:alarm:stream 并把 sleepace 床垫 alarm 翻译为 SignalEvidence 喂 engine。
 type SleepaceAdapter struct {
-	client *redislib.Client
-	engine *Engine
-	dedup  *BedEventDedup // S5b: per-device per-kind 10s dedup（防 firmware spam）
-	logger *zap.Logger
+	client  *redislib.Client
+	engine  *Engine
+	dedup   *BedEventDedup       // S5b: per-device per-kind 10s dedup（防 firmware spam）
+	fitness DeviceFitnessChecker // S6: 设备类 alarm gate
+	logger  *zap.Logger
 }
 
 const (
@@ -52,6 +53,14 @@ const (
 
 func NewSleepaceAdapter(client *redislib.Client, engine *Engine, logger *zap.Logger) *SleepaceAdapter {
 	return &SleepaceAdapter{client: client, engine: engine, dedup: NewBedEventDedup(), logger: logger}
+}
+
+// SetFitnessChecker main wiring 注入；不调时退化为"所有 device 都 fit"。
+func (a *SleepaceAdapter) SetFitnessChecker(c DeviceFitnessChecker) {
+	if a == nil {
+		return
+	}
+	a.fitness = c
 }
 
 func (a *SleepaceAdapter) Start(ctx context.Context) {
@@ -100,6 +109,11 @@ func (a *SleepaceAdapter) handleRaw(raw map[string]interface{}) {
 
 func (a *SleepaceAdapter) handleMsg(msg *rediscommon.IoTStreamMessage) {
 	if msg == nil || !msg.DeviceAddr.IsValid() {
+		return
+	}
+	// S6 fitness gate：unfit sleepace（SensorDetached 是 P0 风险——detached 后床垫会乱发数据）
+	// 不喂 engine 防 bed FSM 被假数据污染。详 service.DeviceFitnessTracker。
+	if a.fitness != nil && !a.fitness.IsFit(msg.DeviceAddr.String()) {
 		return
 	}
 	if msg.SubjectEntity == "" {

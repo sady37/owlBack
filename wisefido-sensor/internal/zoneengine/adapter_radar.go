@@ -38,12 +38,19 @@ type BathroomLookup interface {
 }
 
 // RadarAdapter 订阅 iot:event:stream 并把 radar 事件翻译为 SignalEvidence 喂 engine。
+// DeviceFitnessChecker adapter 入口 gate：unfit device 的事件不喂 engine 防垃圾数据污染 FSM。
+// service.DeviceFitnessTracker 隐式满足；nil 注入时全部 device 视作 fit（兼容未 wire 场景）。
+type DeviceFitnessChecker interface {
+	IsFit(deviceAddr string) bool
+}
+
 type RadarAdapter struct {
-	client    *redislib.Client
-	engine    *Engine
-	bathroom  BathroomLookup
-	bedDedup  *BedEventDedup // S5b: InBed/LeftBed per-device 10s 同类 dedup
-	logger    *zap.Logger
+	client   *redislib.Client
+	engine   *Engine
+	bathroom BathroomLookup
+	bedDedup *BedEventDedup       // S5b: InBed/LeftBed per-device 10s 同类 dedup
+	fitness  DeviceFitnessChecker // S6: 设备类 alarm gate
+	logger   *zap.Logger
 }
 
 const (
@@ -57,6 +64,14 @@ const (
 // NewRadarAdapter 构造。bathroom 可为 nil（退化为全部按 Room 处理，仅日志路径用）。
 func NewRadarAdapter(client *redislib.Client, engine *Engine, bathroom BathroomLookup, logger *zap.Logger) *RadarAdapter {
 	return &RadarAdapter{client: client, engine: engine, bathroom: bathroom, bedDedup: NewBedEventDedup(), logger: logger}
+}
+
+// SetFitnessChecker main wiring 注入；不调时退化为"所有 device 都 fit"。
+func (a *RadarAdapter) SetFitnessChecker(c DeviceFitnessChecker) {
+	if a == nil {
+		return
+	}
+	a.fitness = c
 }
 
 // Start 起独立 goroutine 跑读流循环，consumer group 与 cardagg/sensor 现有消费者隔离。
@@ -108,6 +123,11 @@ func (a *RadarAdapter) handleRaw(raw map[string]interface{}) {
 // handleMsg 单条 envelope → SignalEvidence。
 func (a *RadarAdapter) handleMsg(msg *rediscommon.IoTStreamMessage) {
 	if msg == nil || !msg.DeviceAddr.IsValid() {
+		return
+	}
+	// S6 fitness gate：unfit device（SensorDetached/AngleException/Offline/SignalPoor）发的数据
+	// 可能是垃圾，不喂 engine 防 FSM 污染（详 service.DeviceFitnessTracker）。
+	if a.fitness != nil && !a.fitness.IsFit(msg.DeviceAddr.String()) {
 		return
 	}
 	// 未绑卡 device 不入 zone engine（zone 状态以 cardID 为主键）。

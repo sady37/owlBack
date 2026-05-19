@@ -137,6 +137,11 @@ func main() {
 		return ok
 	})
 
+	// S6: DeviceFitnessTracker — per-device 健康状态 gate；AlarmConsumer fan-out 设备类 alarm
+	// 写 fitness state；adapter_radar / adapter_sleepace handleMsg 入口查 IsFit → unfit skip
+	// 防 SensorDetached/AngleException 后垃圾数据污染 zone FSM 决策。
+	fitnessTracker := service.NewDeviceFitnessTracker(logger)
+
 	// 5.3 Zone Engine 子系统：Bed/Room/Bathroom 状态唯一权威源 + zonealarm Warning 兜底
 	// （含 TargetStateAggregator 构造 + ZoneEvent 订阅 + StreamPublisher 60s tick 主循环）
 	zone, err := wiring.Setup(wiring.SetupOptions{
@@ -145,6 +150,7 @@ func main() {
 		MonitorBuffer: monitorBuf,
 		BackChannel:   backChannel,
 		Identity:      sensorAgentIdentity(cfg, logger),
+		Fitness:       fitnessTracker,
 		Logger:        logger,
 	})
 	if err != nil {
@@ -161,6 +167,7 @@ func main() {
 	// 各 consumer 用独立 consumer group，与 roomengine "roomengine" group 隔离；
 	// Producer 在 fd00:0:fff1::/48 slot 的自家派生消息跳过防 loop。
 	alarmConsumer := consumer.NewAlarmConsumer(engineRedis, zone.TargetAggregator, logger)
+	alarmConsumer.SetFitnessSink(fitnessTracker) // S6: 设备类 alarm fan-out 到 fitness state
 	alarmConsumer.Start(ctx)
 	activityConsumer := consumer.NewActivityConsumer(engineRedis, zone.TargetAggregator, logger)
 	activityConsumer.Start(ctx)
