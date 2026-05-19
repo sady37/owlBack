@@ -202,11 +202,9 @@ func (p *PGBackend) AllocateUnit(ctx context.Context, site netip.Prefix, attrs U
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO units (unit_id, unit_slot, unit_name, unit_type,
-		                   unit_layout_type, is_public, is_shared_unit, timezone)
-		VALUES ($1::INET, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6, $7, NULLIF($8, ''))
-	`, unitPrefix.String(), nextSlot, attrs.Name, attrs.UnitType,
-		attrs.LayoutType, attrs.IsPublic, attrs.IsShared, attrs.Timezone)
+		INSERT INTO units (unit_id, unit_slot, unit_name, unit_type, timezone)
+		VALUES ($1::INET, $2, $3, $4, NULLIF($5, ''))
+	`, unitPrefix.String(), nextSlot, attrs.Name, attrs.UnitType, attrs.Timezone)
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("insert unit: %w", err)
 	}
@@ -259,7 +257,7 @@ func (p *PGBackend) AllocateRoom(ctx context.Context, unit netip.Prefix, attrs R
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO rooms (room_id, room_slot, room_name, room_type, is_primary)
-		VALUES ($1::INET, $2, $3, NULLIF($4, ''), $5)
+		VALUES ($1::INET, $2, $3, $4, $5)
 	`, roomPrefix.String(), nextSlot, attrs.Name, attrs.RoomType, attrs.IsPrimary)
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("insert room: %w", err)

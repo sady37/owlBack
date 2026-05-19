@@ -515,9 +515,9 @@ func (r *PostgresUnitsRepository) ListUnits(ctx context.Context, tenantID string
 		args = append(args, filters.UnitName)
 		argIdx++
 	}
-	if filters.UnitType != "" {
-		where = append(where, fmt.Sprintf("COALESCE(u.unit_type,'') = $%d", argIdx))
-		args = append(args, filters.UnitType)
+	if filters.UnitType != nil {
+		where = append(where, fmt.Sprintf("u.unit_type = $%d", argIdx))
+		args = append(args, *filters.UnitType)
 		argIdx++
 	}
 	if filters.Search != "" {
@@ -1033,8 +1033,8 @@ func (r *PostgresUnitsRepository) ListRoomsByBranch(ctx context.Context, tenantI
 		  COALESCE(s.site_name, '') AS building_name,
 		  s.floor AS floor_int,
 		  r.room_name,
-		  CASE u.unit_property WHEN 0 THEN 'Home' ELSE 'Facility' END AS unit_type,
-		  CASE u.unit_type WHEN 1 THEN 'Private' WHEN 2 THEN 'Share' WHEN 3 THEN 'Public' ELSE '' END AS facility_type,
+		  COALESCE(u.unit_property, 0) AS unit_property,
+		  COALESCE(u.unit_type, 0)     AS unit_type,
 		  CASE u.unit_type
 		    WHEN 1 THEN EXISTS (
 		      SELECT 1 FROM resident_unit ru
@@ -1075,7 +1075,7 @@ func (r *PostgresUnitsRepository) ListRoomsByBranch(ctx context.Context, tenantI
 		var rwa RoomWithAvailability
 		var floorInt int
 		if err := rows.Scan(&rwa.RoomID, &rwa.TenantID, &rwa.UnitID, &rwa.UnitName,
-			&rwa.BuildingName, &floorInt, &rwa.RoomName, &rwa.UnitType, &rwa.FacilityType,
+			&rwa.BuildingName, &floorInt, &rwa.RoomName, &rwa.UnitProperty, &rwa.UnitType,
 			&rwa.IsBound); err != nil {
 			return nil, err
 		}

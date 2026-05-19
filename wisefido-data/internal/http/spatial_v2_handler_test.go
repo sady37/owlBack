@@ -137,7 +137,7 @@ func TestSpatialV2_HTTP_E2E(t *testing.T) {
 	// === Step 2: AllocateUnit ===
 	status, resp = post("/admin/api/v2/spatial/units", map[string]any{
 		"parent": site,
-		"attrs":  map[string]any{"name": "V2HTTPUnit", "unit_type": "residential", "layout_type": "1br_bath"},
+		"attrs":  map[string]any{"name": "V2HTTPUnit", "unit_type": 1},
 	})
 	if status != 200 || resp["type"] != "success" {
 		t.Fatalf("unit: %+v", resp)

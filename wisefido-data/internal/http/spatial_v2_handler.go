@@ -518,9 +518,8 @@ type unitRow struct {
 	Prefix         string             `json:"prefix"` // /80 CIDR
 	Slot           int                `json:"slot"`
 	Name           string             `json:"name"`
-	LayoutType     string             `json:"layout_type,omitempty"`
 	Timezone       string             `json:"timezone,omitempty"`
-	UnitProperty   int                `json:"unit_property"` // 0=non-residential, 1=residential
+	UnitProperty   int                `json:"unit_property"` // 0=Home, 1=Facility
 	UnitType       int                `json:"unit_type"`     // 1/2/3
 	CreatedAt      string             `json:"created_at"`
 	UpdatedAt      string             `json:"updated_at"`
@@ -537,7 +536,7 @@ type unitRow struct {
 type unitRoomItem struct {
 	RoomPrefix string `json:"room_prefix"` // /88
 	RoomName   string `json:"room_name"`
-	RoomType   string `json:"room_type,omitempty"`
+	RoomType   int    `json:"room_type,omitempty"` // 0=Default, 1=Bathroom, 2=Kitchen
 	IsPrimary  bool   `json:"is_primary"`
 }
 
@@ -553,7 +552,6 @@ type unitResidentItem struct {
 
 type updateUnitReq struct {
 	Name         *string `json:"name,omitempty"`
-	LayoutType   *string `json:"layout_type,omitempty"`   // 空字符串 = NULL
 	Timezone     *string `json:"timezone,omitempty"`      // 空字符串 = NULL
 	UnitProperty *int    `json:"unit_property,omitempty"` // 0/1
 	UnitType     *int    `json:"unit_type,omitempty"`     // 1/2/3
@@ -622,7 +620,7 @@ func (h *SpatialV2Handler) listUnits(w http.ResponseWriter, r *http.Request) {
 	// JOIN sites + branches 派生 building_name/floor/branch_name（v1 FE 需要这些字段做 grouping）
 	rows, err := h.db.QueryContext(r.Context(), `
 		SELECT host(u.unit_id)||'/'||masklen(u.unit_id), u.unit_slot, u.unit_name,
-		       COALESCE(u.unit_layout_type,''), COALESCE(u.timezone,''),
+		       COALESCE(u.timezone,''),
 		       u.unit_property, u.unit_type,
 		       to_char(u.created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
 		       to_char(u.updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
@@ -646,7 +644,7 @@ func (h *SpatialV2Handler) listUnits(w http.ResponseWriter, r *http.Request) {
 	items := make([]unitRow, 0, 8)
 	for rows.Next() {
 		var u unitRow
-		if err := rows.Scan(&u.Prefix, &u.Slot, &u.Name, &u.LayoutType, &u.Timezone,
+		if err := rows.Scan(&u.Prefix, &u.Slot, &u.Name, &u.Timezone,
 			&u.UnitProperty, &u.UnitType, &u.CreatedAt, &u.UpdatedAt, &u.BranchPrefix,
 			&u.BranchName, &u.BuildingPrefix, &u.BuildingName, &u.Floor); err != nil {
 			h.logger.Error("v2 spatial: scan unit row failed", zap.Error(err))
@@ -718,10 +716,10 @@ func (h *SpatialV2Handler) HandleUnitByPrefix(w http.ResponseWriter, r *http.Req
 
 func (h *SpatialV2Handler) getUnit(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	var u unitRow
-	var lt, tz sql.NullString
+	var tz sql.NullString
 	err := h.db.QueryRowContext(r.Context(), `
 		SELECT host(u.unit_id)||'/'||masklen(u.unit_id), u.unit_slot, u.unit_name,
-		       u.unit_layout_type, u.timezone, u.unit_property, u.unit_type,
+		       u.timezone, u.unit_property, u.unit_type,
 		       to_char(u.created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
 		       to_char(u.updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
 		       host(network(set_masklen(u.unit_id, 56)))||'/56',
@@ -733,7 +731,7 @@ func (h *SpatialV2Handler) getUnit(w http.ResponseWriter, r *http.Request, prefi
 		LEFT JOIN sites s ON u.unit_id << s.site_id
 		LEFT JOIN branches b ON u.unit_id << b.branch_id
 		WHERE u.unit_id = $1::INET
-	`, prefix.String()).Scan(&u.Prefix, &u.Slot, &u.Name, &lt, &tz, &u.UnitProperty, &u.UnitType,
+	`, prefix.String()).Scan(&u.Prefix, &u.Slot, &u.Name, &tz, &u.UnitProperty, &u.UnitType,
 		&u.CreatedAt, &u.UpdatedAt, &u.BranchPrefix,
 		&u.BranchName, &u.BuildingPrefix, &u.BuildingName, &u.Floor)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -745,7 +743,6 @@ func (h *SpatialV2Handler) getUnit(w http.ResponseWriter, r *http.Request, prefi
 		writeJSON(w, http.StatusOK, Fail("get unit failed: "+err.Error()))
 		return
 	}
-	u.LayoutType = lt.String
 	u.Timezone = tz.String
 	// 附 children
 	if rs, err := h.fetchUnitRooms(r.Context(), u.Prefix); err == nil {
@@ -776,11 +773,6 @@ func (h *SpatialV2Handler) updateUnit(w http.ResponseWriter, r *http.Request, pr
 		}
 		sets = append(sets, fmt.Sprintf("unit_name = $%d", idx))
 		args = append(args, *body.Name)
-		idx++
-	}
-	if body.LayoutType != nil {
-		sets = append(sets, fmt.Sprintf("unit_layout_type = NULLIF($%d, '')", idx))
-		args = append(args, *body.LayoutType)
 		idx++
 	}
 	if body.Timezone != nil {
@@ -866,7 +858,7 @@ func (h *SpatialV2Handler) deleteUnit(w http.ResponseWriter, r *http.Request, pr
 
 func (h *SpatialV2Handler) fetchUnitRooms(ctx context.Context, unitPrefix string) ([]unitRoomItem, error) {
 	rows, err := h.db.QueryContext(ctx, `
-		SELECT host(room_id)||'/'||masklen(room_id), room_name, COALESCE(room_type,''), is_primary
+		SELECT host(room_id)||'/'||masklen(room_id), room_name, COALESCE(room_type, 0), is_primary
 		FROM rooms WHERE room_id << $1::INET
 		ORDER BY is_primary DESC, room_slot ASC
 	`, unitPrefix)
@@ -937,7 +929,7 @@ type roomRow struct {
 	Prefix       string             `json:"prefix"` // /88 CIDR
 	Slot         int                `json:"slot"`
 	Name         string             `json:"name"`
-	RoomType     string             `json:"room_type,omitempty"`
+	RoomType     int                `json:"room_type,omitempty"` // 0=Default, 1=Bathroom, 2=Kitchen
 	IsPrimary    bool               `json:"is_primary"`
 	Description  string             `json:"description,omitempty"`
 	CreatedAt    string             `json:"created_at"`
@@ -962,7 +954,7 @@ type roomResidentItem struct {
 
 type updateRoomReq struct {
 	Name        *string `json:"name,omitempty"`
-	RoomType    *string `json:"room_type,omitempty"`   // 空字符串=NULL
+	RoomType    *int    `json:"room_type,omitempty"`   // 0=Default, 1=Bathroom, 2=Kitchen
 	IsPrimary   *bool   `json:"is_primary,omitempty"`
 	Description *string `json:"description,omitempty"` // 空字符串=NULL
 }
@@ -1030,7 +1022,7 @@ func (h *SpatialV2Handler) listRooms(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := h.db.QueryContext(r.Context(), `
 		SELECT host(rm.room_id)||'/'||masklen(rm.room_id), rm.room_slot, rm.room_name,
-		       COALESCE(rm.room_type,''), rm.is_primary, COALESCE(rm.description,''),
+		       COALESCE(rm.room_type, 0), rm.is_primary, COALESCE(rm.description,''),
 		       to_char(rm.created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
 		       to_char(rm.updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
 		       host(network(set_masklen(rm.room_id, 80)))||'/80' AS unit_prefix,
@@ -1113,7 +1105,8 @@ func (h *SpatialV2Handler) HandleRoomByPrefix(w http.ResponseWriter, r *http.Req
 
 func (h *SpatialV2Handler) getRoom(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	var rm roomRow
-	var rt, desc, unitName, branchName sql.NullString
+	var rt sql.NullInt32
+	var desc, unitName, branchName sql.NullString
 	err := h.db.QueryRowContext(r.Context(), `
 		SELECT host(rm.room_id)||'/'||masklen(rm.room_id), rm.room_slot, rm.room_name,
 		       rm.room_type, rm.is_primary, rm.description,
@@ -1138,7 +1131,7 @@ func (h *SpatialV2Handler) getRoom(w http.ResponseWriter, r *http.Request, prefi
 		writeJSON(w, http.StatusOK, Fail("get room failed: "+err.Error()))
 		return
 	}
-	rm.RoomType = rt.String
+	rm.RoomType = int(rt.Int32)
 	rm.Description = desc.String
 	rm.UnitName = unitName.String
 	rm.BranchName = branchName.String
@@ -1169,7 +1162,11 @@ func (h *SpatialV2Handler) updateRoom(w http.ResponseWriter, r *http.Request, pr
 		idx++
 	}
 	if body.RoomType != nil {
-		sets = append(sets, fmt.Sprintf("room_type = NULLIF($%d, '')", idx))
+		if *body.RoomType < 0 || *body.RoomType > 2 {
+			writeJSON(w, http.StatusBadRequest, Fail("room_type must be 0 (Default), 1 (Bathroom), or 2 (Kitchen)"))
+			return
+		}
+		sets = append(sets, fmt.Sprintf("room_type = $%d", idx))
 		args = append(args, *body.RoomType)
 		idx++
 	}

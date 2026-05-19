@@ -398,7 +398,7 @@ func (h *UnitHandler) ListUnits(w http.ResponseWriter, r *http.Request) {
 		Building:   stringPtrOrNil(buildingName),
 		Floor:      stringPtrOrNil(r.URL.Query().Get("floor")),
 		UnitName:   stringPtrOrNil(r.URL.Query().Get("unit_name")),
-		UnitType:   stringPtrOrNil(r.URL.Query().Get("unit_type")),
+		UnitType:   intPtrFromQuery(r.URL.Query().Get("unit_type")),
 		Search:     stringPtrOrNil(r.URL.Query().Get("search")),
 		Page:       parseInt(r.URL.Query().Get("page"), 1),
 		Size:       parseInt(r.URL.Query().Get("size"), 100),
@@ -454,7 +454,7 @@ func (h *UnitHandler) ListUnitsWithAvailability(w http.ResponseWriter, r *http.R
 		Building:   stringPtrOrNil(buildingName),
 		Floor:      stringPtrOrNil(r.URL.Query().Get("floor")),
 		UnitName:   stringPtrOrNil(r.URL.Query().Get("unit_name")),
-		UnitType:   stringPtrOrNil(r.URL.Query().Get("unit_type")),
+		UnitType:   intPtrFromQuery(r.URL.Query().Get("unit_type")),
 		Search:     stringPtrOrNil(r.URL.Query().Get("search")),
 		Page:       parseInt(r.URL.Query().Get("page"), 1),
 		Size:       parseInt(r.URL.Query().Get("size"), 100),
@@ -616,8 +616,8 @@ func (h *UnitHandler) CreateUnit(w http.ResponseWriter, r *http.Request) {
 		AreaName:      getString(payload, "area_name"),
 		UnitNumber:    getString(payload, "unit_number"),
 		LayoutConfig:  getString(payload, "layout_config"),
-		UnitProperty:  getInt8(payload, "unit_property"),
-		UnitType:      getInt8(payload, "unit_type"),
+		UnitProperty:  getIntVal(payload, "unit_property"),
+		UnitType:      getIntVal(payload, "unit_type"),
 		Timezone:      getString(payload, "timezone"),
 		CurrentUserID: r.Header.Get("X-User-Id"),
 	}
@@ -697,8 +697,8 @@ func (h *UnitHandler) UpdateUnit(w http.ResponseWriter, r *http.Request) {
 		AreaName:      getString(payload, "area_name"),
 		UnitNumber:    getString(payload, "unit_number"),
 		LayoutConfig:  getString(payload, "layout_config"),
-		UnitProperty:  getInt8Ptr(payload, "unit_property"),
-		UnitType:      getInt8Ptr(payload, "unit_type"),
+		UnitProperty:  getIntPtr(payload, "unit_property"),
+		UnitType:      getIntPtr(payload, "unit_type"),
 		Timezone:      getString(payload, "timezone"),
 		CurrentUserID: r.Header.Get("X-User-Id"),
 	}
@@ -856,8 +856,8 @@ func (h *UnitHandler) ListRoomsByBranch(w http.ResponseWriter, r *http.Request) 
 			"building_name":  item.BuildingName,
 			"floor":          item.Floor,
 			"room_name":      item.RoomName,
-			"unit_type":      item.UnitType,
-			"facility_type":  item.FacilityType,
+			"unit_property":  item.UnitProperty, // 0=Home, 1=Facility
+			"unit_type":      item.UnitType,     // 1=Private, 2=Share, 3=Public
 			"is_full":        item.IsFull,
 			"is_bound":       item.IsBound,
 		}
@@ -1330,6 +1330,18 @@ func stringPtrOrNil(s string) *string {
 	return &s
 }
 
+// intPtrFromQuery 解析 URL query 整数；空字符串或解析失败 → nil。
+func intPtrFromQuery(s string) *int {
+	if s == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return nil
+	}
+	return &n
+}
+
 // tenantIDFromReq 从请求中获取 tenant_id（复用 DeviceHandler 的逻辑）
 func (h *UnitHandler) tenantIDFromReq(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if tid := r.URL.Query().Get("tenant_id"); tid != "" {
@@ -1364,35 +1376,35 @@ func getString(payload map[string]any, key string) string {
 	return ""
 }
 
-// 辅助函数：从 map 中获取 int8（用于 unit_property/unit_type 等枚举字段）
+// 辅助函数：从 map 中获取 int（用于 unit_property/unit_type 等枚举字段）
 // 兼容数字（float64/int）和数字字符串
-func getInt8(payload map[string]any, key string) int8 {
+func getIntVal(payload map[string]any, key string) int {
 	if v, ok := payload[key]; ok {
 		switch n := v.(type) {
 		case float64:
-			return int8(n)
+			return int(n)
 		case int:
-			return int8(n)
+			return n
 		case int64:
-			return int8(n)
+			return int(n)
 		case string:
 			if n == "" {
 				return 0
 			}
 			var i int
 			_, _ = fmt.Sscanf(n, "%d", &i)
-			return int8(i)
+			return i
 		}
 	}
 	return 0
 }
 
-// 辅助函数：从 map 中获取 int8 指针（可选字段）
-func getInt8Ptr(payload map[string]any, key string) *int8 {
+// 辅助函数：从 map 中获取 int 指针（可选字段）
+func getIntPtr(payload map[string]any, key string) *int {
 	if _, ok := payload[key]; !ok {
 		return nil
 	}
-	v := getInt8(payload, key)
+	v := getIntVal(payload, key)
 	return &v
 }
 

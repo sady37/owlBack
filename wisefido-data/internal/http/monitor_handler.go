@@ -194,7 +194,7 @@ func (h *MonitorHandler) GetCardCaregivers(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	// facility 下只允许 staff（Admin/Manager/Caregiver/Nurse）查看
-	if card.Unit != nil && card.Unit.UnitType == "facility" {
+	if card.Unit != nil && card.Unit.UnitProperty == commoncard.UnitPropertyFacility {
 		if userType == "resident" {
 			writeJSON(w, http.StatusForbidden, Fail("no permission"))
 			return

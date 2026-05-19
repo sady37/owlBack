@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	commoncard "owl-common/card"
 	"wisefido-data/internal/repository"
 	"wisefido-data/internal/store"
 
@@ -118,17 +119,17 @@ func (p *AllowedCardIDsProviderImpl) filterCardsForResident(ctx context.Context,
 		return nil, nil
 	}
 
-	// unit_type=home → 该 unit 下全部 card
-	if unitInfo.UnitType == "home" {
+	// Home unit → 该 unit 下全部 card
+	if unitInfo.UnitProperty == commoncard.UnitPropertyHome {
 		return p.cardIDsByUnit(ctx, tenantID, *resident.UnitID, residentID)
 	}
 
-	// unit_type=facility + is_public → nil
+	// Facility + public → nil
 	if unitInfo.IsPublic {
 		return nil, nil
 	}
 
-	// facility + not public + not shared → 该 unit 下全部 card
+	// Facility + not public + not shared → 该 unit 下全部 card
 	if !unitInfo.IsSharedUnit {
 		return p.cardIDsByUnit(ctx, tenantID, *resident.UnitID, residentID)
 	}

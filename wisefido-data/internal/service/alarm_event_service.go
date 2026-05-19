@@ -1256,20 +1256,25 @@ func (s *alarmEventService) enrichResidentInfo(ctx context.Context, tenantID str
 		return
 	}
 
-	var unitType string
-	var isPublic, isSharedUnit bool
+	// v2 schema: units 表无 tenant_id / is_public / is_shared_unit 列，is_public/is_shared 由 unit_type 派生。
+	// 按 unit_id (INET /80) 直查 unit_property + unit_type。
+	_ = tenantID
+	var unitProperty, unitType int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT unit_type, is_public, is_shared_unit FROM units
-		WHERE tenant_id = $1 AND unit_id = $2
-	`, tenantID, unitID).Scan(&unitType, &isPublic, &isSharedUnit)
+		SELECT COALESCE(unit_property, 0), COALESCE(unit_type, 0) FROM units
+		WHERE unit_id = $1::INET
+	`, unitID).Scan(&unitProperty, &unitType)
 	if err != nil {
 		return
 	}
 
 	canResolve := false
-	if strings.EqualFold(unitType, "home") {
+	if unitProperty == commoncard.UnitPropertyHome {
 		canResolve = true
-	} else if strings.EqualFold(unitType, "facility") && !isPublic && !isSharedUnit {
+	} else if unitProperty == commoncard.UnitPropertyFacility &&
+		unitType != commoncard.UnitTypePublic &&
+		unitType != commoncard.UnitTypeShare {
+		// Facility + Private（单人 facility unit） → single-resident, 可推断 ResidentID
 		canResolve = true
 	}
 	if !canResolve {
@@ -1278,9 +1283,10 @@ func (s *alarmEventService) enrichResidentInfo(ctx context.Context, tenantID str
 
 	err = s.db.QueryRowContext(ctx, `
 		SELECT r.resident_id::text, r.nickname FROM residents r
-		WHERE r.tenant_id = $1 AND r.unit_id = $2
+		JOIN resident_unit ru ON ru.resident_id = r.resident_id AND ru.valid_to IS NULL
+		WHERE ru.spatial_prefix <<= $1::INET AND r.status = 'active'
 		ORDER BY r.created_at ASC LIMIT 1
-	`, tenantID, unitID).Scan(&residentID, &nickname)
+	`, unitID).Scan(&residentID, &nickname)
 	if err == nil {
 		dto.ResidentID = &residentID
 		dto.ResidentName = &nickname
@@ -1305,23 +1311,23 @@ func (s *alarmEventService) checkHandlePermission(ctx context.Context, tenantID,
 		return nil
 	}
 
-	// 2. 查询卡片的 unit_type
-	unitType, err := s.getCardUnitType(ctx, tenantID, cardID)
+	// 2. 查询卡片的 unit_property (Home/Facility)
+	unitProperty, err := s.getCardUnitProperty(ctx, tenantID, cardID)
 	if err != nil {
-		// 如果找不到 unit_type，允许处理（fallback）
+		// 如果找不到 unit_property，允许处理（fallback）
 		return nil
 	}
 
-	// 3. Facility 类型卡片：只有 Admin/Manager/Nurse/Caregiver 可以处理
-	if strings.EqualFold(unitType, "facility") {
+	// 3. Facility 单元：只有 Admin/Manager/Nurse/Caregiver 可以处理
+	if unitProperty == commoncard.UnitPropertyFacility {
 		allowed := map[string]bool{"Admin": true, "Manager": true, "Nurse": true, "Caregiver": true}
 		if !allowed[userRole] {
 			return fmt.Errorf("permission denied: only staff with Admin/Manager/Nurse/Caregiver role can handle alarms for Facility cards")
 		}
 	}
 
-	// 4. Home 类型卡片：检查 assigned_only 和 branch_only 权限
-	if strings.EqualFold(unitType, "home") {
+	// 4. Home 单元：检查 assigned_only 和 branch_only 权限
+	if unitProperty == commoncard.UnitPropertyHome {
 		// 通过 device_id 获取关联的住户信息
 		residentInfo, err := s.getResidentByDeviceID(ctx, tenantID, deviceID)
 		if err != nil {
@@ -2158,24 +2164,25 @@ func (s *alarmEventService) getCardIDByDeviceID(ctx context.Context, tenantID, d
 	return cardID.String, nil
 }
 
-// getCardUnitType 查询卡片的 unit_type（v2: 由 spatial_prefix /80 派生 unit）
-func (s *alarmEventService) getCardUnitType(ctx context.Context, tenantID, cardID string) (string, error) {
+// getCardUnitProperty 查询卡片所属 unit 的 unit_property（0=Home, 1=Facility）。
+// v2: cards.spatial_prefix /80 mask → units.unit_id LEFT JOIN。
+func (s *alarmEventService) getCardUnitProperty(ctx context.Context, tenantID, cardID string) (int, error) {
 	_ = tenantID
 	query := `
-		SELECT COALESCE(u.unit_type::text, 'Home') AS unit_type
+		SELECT COALESCE(u.unit_property, 0) AS unit_property
 		FROM cards c
 		LEFT JOIN units u ON u.unit_id = set_masklen(c.spatial_prefix, 80)
 		WHERE c.spatial_prefix = $1::INET
 		LIMIT 1
 	`
 
-	var unitType string
-	err := s.db.QueryRowContext(ctx, query, cardID).Scan(&unitType)
+	var unitProperty int
+	err := s.db.QueryRowContext(ctx, query, cardID).Scan(&unitProperty)
 	if err != nil {
-		return "", fmt.Errorf("failed to get card unit_type: %w", err)
+		return 0, fmt.Errorf("failed to get card unit_property: %w", err)
 	}
 
-	return unitType, nil
+	return unitProperty, nil
 }
 
 // getUnitIDByBedID 通过 bed_id 查询 unit_id

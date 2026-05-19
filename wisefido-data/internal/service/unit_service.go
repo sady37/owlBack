@@ -591,7 +591,7 @@ type ListUnitsRequest struct {
 	AreaName   *string // 可选（nil 表示未提供）
 	UnitNumber *string // 可选（nil 表示未提供）
 	UnitName   *string // 可选（nil 表示未提供）
-	UnitType   *string // 可选（nil 表示未提供）
+	UnitType   *int    // 可选（nil 表示未提供）；1=Private/2=Share/3=Public
 	Search     *string // 可选（nil 表示未提供，模糊搜索 unit_name, unit_number）
 	Page       int     // 可选，默认 1
 	Size       int     // 可选，默认 100
@@ -625,7 +625,7 @@ type ListUnitsWithFullHierarchyRequest struct {
 	BuildingID    *string // 可选（优先使用，UUID 类型，如果提供则忽略 Building）
 	Building      *string // 可选（向后兼容，如果 BuildingID 未提供则使用此字段）
 	Floor         *string // 可选
-	UnitType      *string // 可选
+	UnitType      *int    // 可选；1=Private/2=Share/3=Public
 	Search        *string // 可选（模糊搜索 unit_name）
 	// 注意：不分页，返回所有匹配的 units（因为前端需要完整层级结构）
 }
@@ -677,9 +677,9 @@ type CreateUnitRequest struct {
 	AreaName     string // 可选
 	UnitNumber   string // 可选（v2 已删除该字段，但 FE 仍可发送，忽略）
 	LayoutConfig string // 可选（JSON 字符串）
-	// v2 双维度 (2026-05-09 重设计)
-	UnitProperty  int8   // 0=Home, 1=Facility (default)
-	UnitType      int8   // 0=unknown, 1=single (Private), 2=share (default), 3=public
+	// v2 双维度（与 owl-common/card.UnitProperty* / UnitType* 一致）
+	UnitProperty  int    // 0=Home, 1=Facility (default)
+	UnitType      int    // 1=Private, 2=Share (default for Facility), 3=Public
 	Timezone      string // 必填
 	CurrentUserID string // 可选（HIPAA audit_log actor）
 }
@@ -701,8 +701,8 @@ type UpdateUnitRequest struct {
 	UnitNumber   string // 可选
 	LayoutConfig string // 可选（JSON 字符串）
 	// v2 双维度 — 指针类型表示"未提供则不更新"
-	UnitProperty  *int8
-	UnitType      *int8
+	UnitProperty  *int
+	UnitType      *int
 	Timezone      string // 可选
 	CurrentUserID string // 可选（HIPAA audit_log actor）
 }
@@ -1213,7 +1213,7 @@ func (s *unitService) ListUnits(ctx context.Context, req ListUnitsRequest) (*Lis
 		AreaName:   stringValueOrEmpty(req.AreaName),
 		UnitNumber: stringValueOrEmpty(req.UnitNumber),
 		UnitName:   stringValueOrEmpty(req.UnitName),
-		UnitType:   stringValueOrEmpty(req.UnitType),
+		UnitType:   req.UnitType,
 		Search:     stringValueOrEmpty(req.Search),
 		ResidentID: req.ResidentID,
 	}
@@ -1354,7 +1354,7 @@ func (s *unitService) ListUnitsWithFullHierarchy(ctx context.Context, req ListUn
 		BuildingID: buildingID,
 		Building:   building,
 		Floor:      stringValueOrEmpty(req.Floor),
-		UnitType:   stringValueOrEmpty(req.UnitType),
+		UnitType:   req.UnitType,
 		Search:     stringValueOrEmpty(req.Search),
 	}
 

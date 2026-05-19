@@ -61,7 +61,7 @@ type UnitsRepository interface {
 	GetUnitAvailability(ctx context.Context, tenantID string, unitIDs []string) (hasAvailableBed, isBound map[string]bool, err error)
 }
 
-// RoomWithAvailability 按 branch 列 room 时的项：含 building、floor、unit、room、unit_type、facility_type、is_full、is_bound
+// RoomWithAvailability 按 branch 列 room 时的项：含 building、floor、unit、room、unit_property、unit_type、is_full、is_bound
 type RoomWithAvailability struct {
 	RoomID       string
 	TenantID     string
@@ -70,10 +70,10 @@ type RoomWithAvailability struct {
 	BuildingName string // 楼栋名，便于前端展示
 	Floor        string // 楼层
 	RoomName     string
-	UnitType     string // Home / Facility
-	FacilityType string // Share / Public / Private
-	IsFull       bool   // room 下所有 bed 均已被绑定
-	IsBound      bool   // 有住户绑定了该 room（room_id 或该 room 下 bed）
+	UnitProperty int  // 0=Home, 1=Facility（与 owl-common/card.UnitProperty* 对齐）
+	UnitType     int  // 1=Private, 2=Share, 3=Public（与 owl-common/card.UnitType* 对齐）
+	IsFull       bool // room 下所有 bed 均已被绑定
+	IsBound      bool // 有住户绑定了该 room（room_id 或该 room 下 bed）
 }
 
 // UnitFilters 单元查询过滤器
@@ -87,7 +87,7 @@ type UnitFilters struct {
 	AreaName   string
 	UnitNumber string
 	UnitName   string
-	UnitType   string
+	UnitType   *int // UnitType*: 1=Private/2=Share/3=Public；nil=不过滤
 	Search     string // 模糊搜索 unit_name, unit_number
 	// ResidentID: 非 nil 表示住户绑定时，Private 单元仅返回未被其他住户占用的（nil=不过滤）
 	ResidentID *string

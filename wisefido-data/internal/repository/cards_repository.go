@@ -179,7 +179,7 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 
 		var residentIDStr, unitIDStr, unitName, timezone, branchName, buildingName, layoutConfig string
 		var floorStr string
-		var unitType int8
+		var unitType int
 
 		if err := rows.Scan(
 			&card.CardID,

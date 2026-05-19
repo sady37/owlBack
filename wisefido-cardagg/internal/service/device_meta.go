@@ -69,15 +69,25 @@ func (d *DeviceMeta) AddrStr() string  { return d.DeviceID }
 // CardID = cards.spatial_prefix INET CIDR；TenantID/TenantPref = /48 prefix CIDR；BedID/BedPref = /96 (bed) 或同 CardID。
 //
 // TenantID/BedID 兼容字段保留，值同 TenantPref/BedPref；老 caller 不必 rename。
+//
+// UnitType / UnitProperty 来自 unit (/80) join — picker 用于 visitor section 等私域决策。
+// 值域见 owl-common/card.UnitType*（0/1/2/3）+ UnitProperty*（0/1）。
 type CardMeta struct {
-	CardID     string                 // INET CIDR e.g. "fd00:0:3:111:3:101::/96"
-	TenantID   string                 // 兼容字段：== TenantPref
-	TenantPref string                 // /48 CIDR e.g. "fd00:0:3::/48"
-	CardType   string                 // "bed" | "unit" | "room" | "public" | ...
-	BedID      string                 // 兼容字段：== BedPref
-	BedPref    string                 // 当 CardID 是 /96 时 == CardID；否则空
-	Devices    map[string]*DeviceMeta // key = device_addr canonical IPv6 string
-	dbLoaded   bool
+	CardID       string                 // INET CIDR e.g. "fd00:0:3:111:3:101::/96"
+	TenantID     string                 // 兼容字段：== TenantPref
+	TenantPref   string                 // /48 CIDR e.g. "fd00:0:3::/48"
+	CardType     string                 // "bed" | "unit" | "room" | "public" | ...
+	BedID        string                 // 兼容字段：== BedPref
+	BedPref      string                 // 当 CardID 是 /96 时 == CardID；否则空
+	UnitType     int                    // 0=Unknown / 1=Private / 2=Share / 3=Public（合并自 unit (/80)）
+	UnitProperty int                    // 0=Home / 1=Facility
+	Devices      map[string]*DeviceMeta // key = device_addr canonical IPv6 string
+	dbLoaded     bool
+}
+
+// IsPrivateUnit — 是否私人居住单元（unit_type=1）；UnitPicker visitor section 才走 private 路径。
+func (m *CardMeta) IsPrivateUnit() bool {
+	return m != nil && m.UnitType == 1
 }
 
 func (m *CardMeta) IsBedCard() bool { return m != nil && m.CardType == "bed" }
@@ -166,6 +176,8 @@ func (c *DeviceMetaCache) GetOrLoad(ctx context.Context, cardID string) *CardMet
 		existing.BedPref = dbMeta.BedPref
 		existing.BedID = dbMeta.BedPref
 		existing.CardType = dbMeta.CardType
+		existing.UnitType = dbMeta.UnitType
+		existing.UnitProperty = dbMeta.UnitProperty
 		existing.dbLoaded = true
 		for addr, dbDev := range dbMeta.Devices {
 			if exDev, ok := existing.Devices[addr]; ok {
@@ -432,13 +444,15 @@ func (c *DeviceMetaCache) loadFromDB(ctx context.Context, cardID string) *CardMe
 		return nil
 	}
 
-	// v2 unified: card_id ≡ spatial_prefix；从 cards 取 cardType，spatial_prefix 派生 tenant /48 + bed /96
+	// v2 unified: card_id ≡ spatial_prefix；从 cards 取 cardType + LPM unit (/80) 拿 unit_type/property。
 	var spatialPrefix, cardType sql.NullString
+	var unitType, unitProperty sql.NullInt32
 	err := c.db.QueryRowContext(ctx, `
-		SELECT spatial_prefix::text, card_type
-		  FROM cards
-		 WHERE spatial_prefix = $1::INET
-	`, cardID).Scan(&spatialPrefix, &cardType)
+		SELECT c.spatial_prefix::text, c.card_type, u.unit_type, u.unit_property
+		  FROM cards c
+		  LEFT JOIN units u ON u.unit_id = set_masklen(c.spatial_prefix, 80)
+		 WHERE c.spatial_prefix = $1::INET
+	`, cardID).Scan(&spatialPrefix, &cardType, &unitType, &unitProperty)
 	if err != nil {
 		if err != sql.ErrNoRows && c.logger != nil {
 			c.logger.Warn("load device meta", zap.String("cid", cardID), zap.Error(err))
@@ -464,6 +478,12 @@ func (c *DeviceMetaCache) loadFromDB(ctx context.Context, cardID string) *CardMe
 	}
 	if cardType.Valid {
 		meta.CardType = cardType.String
+	}
+	if unitType.Valid {
+		meta.UnitType = int(unitType.Int32)
+	}
+	if unitProperty.Valid {
+		meta.UnitProperty = int(unitProperty.Int32)
 	}
 
 	// 加载本卡 LPM-拥有的 device → DeviceMeta（addr 为 key）。
@@ -598,8 +618,8 @@ func (c *DeviceMetaCache) UpdateStatus(cardID, deviceAddr, key, value string) {
 	dm.RuntimeStatus[key] = value
 }
 
-// ClassifyRoomType 根据 room_name 推断房间语义类型。
-func ClassifyRoomType(roomName string) string {
+// ClassifyRoomType 根据 room_name 推断 room_type（返回 card.RoomType*）。
+func ClassifyRoomType(roomName string) int {
 	return roomutil.ClassifyRoomType(roomName)
 }
 

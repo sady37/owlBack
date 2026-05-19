@@ -101,8 +101,9 @@ func (s *StubHandler) AdminUnits(w http.ResponseWriter, r *http.Request) {
 				"unit_id":     "stub-unit",
 				"tenant_id":   "",
 				"unit_name":   "stub",
-				"unit_number": "stub",
-				"unit_type":   "Facility",
+				"unit_number":   "stub",
+				"unit_property": 1, // Facility
+				"unit_type":     2, // Share
 			}))
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -120,16 +121,18 @@ func (s *StubHandler) AdminUnits(w http.ResponseWriter, r *http.Request) {
 				"unit_id":     id,
 				"tenant_id":   "",
 				"unit_name":   "stub-" + id,
-				"unit_number": "stub",
-				"unit_type":   "Facility",
+				"unit_number":   "stub",
+				"unit_property": 1, // Facility
+				"unit_type":     2, // Share
 			}))
 		case http.MethodPut:
 			writeJSON(w, http.StatusOK, Ok(map[string]any{
 				"unit_id":     id,
 				"tenant_id":   "",
 				"unit_name":   "stub-" + id,
-				"unit_number": "stub",
-				"unit_type":   "Facility",
+				"unit_number":   "stub",
+				"unit_property": 1, // Facility
+				"unit_type":     2, // Share
 			}))
 		case http.MethodDelete:
 			writeJSON(w, http.StatusOK, Ok[any](nil))

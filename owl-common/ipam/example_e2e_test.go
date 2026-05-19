@@ -122,9 +122,8 @@ func TestE2E_IPAM_DDNS(t *testing.T) {
 
 	// Step 3: AllocateUnit
 	unit, err := pg.AllocateUnit(ctx, site, ipam.UnitAttrs{
-		Name:       "Test101",
-		UnitType:   "residential",
-		LayoutType: "1br_bath",
+		Name:     "Test101",
+		UnitType: 1, // Private
 	})
 	if err != nil {
 		t.Fatalf("AllocateUnit: %v", err)

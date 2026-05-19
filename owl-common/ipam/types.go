@@ -28,20 +28,20 @@ type SiteAttrs struct {
 }
 
 // UnitAttrs are passed to AllocateUnit.
+// UnitType 与 units.unit_type SMALLINT 同语义；常量在 owl-common/card.UnitType*.
+// is_public / is_shared 由 unit_type 派生（=3 / =2），不单独存。
 type UnitAttrs struct {
-	Name        string // e.g. "201"
-	UnitType    string // 'residential' / 'public' / 'shared'
-	LayoutType  string // 'studio' / '1br_bath' / '2br_bath' / 'shared_dorm' / 'public_area' / 'custom'
-	IsPublic    bool
-	IsShared    bool
-	Timezone    string // IANA tz; 空 = 继承 site/branch/tenant
+	Name     string // e.g. "201"
+	UnitType int    // 0=Unknown / 1=Private / 2=Share / 3=Public
+	Timezone string // IANA tz; 空 = 继承 site/branch/tenant
 }
 
 // RoomAttrs are passed to AllocateRoom.
+// RoomType 取 owl-common/card.RoomType*（0=Default / 1=Bathroom / 2=Kitchen）。
 type RoomAttrs struct {
-	Name      string // e.g. "Bedroom" / "Bathroom"
-	RoomType  string // 'bedroom' / 'bathroom' / 'livingroom' / 'kitchen' / ...
-	IsPrimary bool   // unit 内每 unit 仅 1 primary
+	Name      string
+	RoomType  int  // 0=Default / 1=Bathroom / 2=Kitchen
+	IsPrimary bool // unit 内每 unit 仅 1 primary
 }
 
 // BedAttrs are passed to AllocateBed.

@@ -161,7 +161,8 @@ func (r *PostgresCardRepository) GetCardRowForCache(ctx context.Context, tenantI
 		LEFT JOIN branches br ON br.branch_id = (CASE WHEN masklen(c.spatial_prefix) >= 56 THEN set_masklen(c.spatial_prefix, 56) ELSE NULL END)
 		LEFT JOIN units    u  ON u.unit_id   = (CASE WHEN masklen(c.spatial_prefix) >= 80 THEN set_masklen(c.spatial_prefix, 80) ELSE NULL END)
 		LEFT JOIN rooms    rm ON rm.room_id  = (CASE WHEN masklen(c.spatial_prefix) >= 88 THEN set_masklen(c.spatial_prefix, 88) ELSE NULL END)
-		LEFT JOIN beds     b  ON b.bed_id    = (CASE WHEN masklen(c.spatial_prefix) = 96  THEN set_masklen(c.spatial_prefix, 96) ELSE NULL END)
+		-- LPM 反推唯一后裔床：v2 create-time 不变量 (card_sync_service.go) 保证任一卡 spatial_prefix 下 beds count ∈ {0,1}
+		LEFT JOIN beds     b  ON b.bed_id <<= c.spatial_prefix
 		WHERE c.spatial_prefix = $1::INET
 	`
 
@@ -330,8 +331,9 @@ func (r *PostgresCardRepository) GetUnitInfo(tenantID, unitID string) (*card.Uni
 			-- v2 unit_type: 1=single, 2=share, 3=public; is_public = (unit_type=3)
 			(u.unit_type = 3) AS is_public,
 			(u.unit_type = 2) AS is_shared_unit,
-			CASE u.unit_property WHEN 0 THEN 'home' ELSE 'facility' END AS unit_type_kind,
-			COALESCE(u.timezone, 'UTC') AS timezone
+			COALESCE(u.unit_type, 0)     AS unit_type,
+			COALESCE(u.unit_property, 0) AS unit_property,
+			COALESCE(u.timezone, 'UTC')  AS timezone
 		FROM units u
 		LEFT JOIN branches br ON br.branch_id = set_masklen(u.unit_id, 56)
 		WHERE u.unit_id = $1::inet
@@ -346,6 +348,7 @@ func (r *PostgresCardRepository) GetUnitInfo(tenantID, unitID string) (*card.Uni
 		&unit.IsPublic,
 		&unit.IsSharedUnit,
 		&unit.UnitType,
+		&unit.UnitProperty,
 		&unit.Timezone,
 	)
 	if err != nil {
