@@ -37,9 +37,17 @@ import (
 
 // PR-11 阈值常量（PR-12 引入 risk_factor 矩阵后可调）
 const (
-	bedroomBedsideMarginCm       = 100      // §6.B.3 床边距离阈值
-	bedroomBedsideNightStaticSec = 15 * 60  // §6.B.3 夜间静止时长（PR-12 引入 risk_factor 后 day=22.5min）
-	bedroomLostFallSilentSec     = 10 * 60  // §6.B.2 SuitePerson 静默时长（cell-typed PR-X，PR-11 用固定 10min）
+	bedroomBedsideMarginCm       = 100     // §6.B.3 床边距离阈值
+	bedroomBedsideNightStaticSec = 15 * 60 // §6.B.3 夜间静止时长（PR-12 引入 risk_factor 后 day=22.5min）
+
+	// §6.B.2 BedroomLostFall cell-typed 静默时长（PR-X 补强）。
+	// 落到老人在不同 cell 上的合理"无动作"时长：床上 2h、沙发 30min、走道 5min、未知 10min。
+	// 人工标定（SourceHuman）的 AreaBed/Sit/Toilet/Shower 直接 exempt — 老人在床/沙发静止
+	// 是 normal use case；该路径专给"沙发久坐/未知 cell 久站"等不可控场景。
+	bedroomLostFallSilentSecBed     = 2 * 60 * 60 // AreaBed: 2h（学习/几何来源）
+	bedroomLostFallSilentSecSit     = 30 * 60     // AreaSit: 30min
+	bedroomLostFallSilentSecActive  = 5 * 60      // AreaActive: 5min（走道伫立）
+	bedroomLostFallSilentSecDefault = 10 * 60     // 默认 / AreaUnknown: 10min
 )
 
 // BedroomFallRules 实现 §6.B 11b + 11c。
@@ -81,7 +89,10 @@ func NewBedroomFallRules(
 		zap.String("ruleset", "decision_8+14"),
 		zap.Int("bedside_margin_cm", bedroomBedsideMarginCm),
 		zap.Int("bedside_night_static_sec", bedroomBedsideNightStaticSec),
-		zap.Int("lost_fall_silent_sec", bedroomLostFallSilentSec),
+		zap.Int("lost_fall_silent_sec_bed", bedroomLostFallSilentSecBed),
+		zap.Int("lost_fall_silent_sec_sit", bedroomLostFallSilentSecSit),
+		zap.Int("lost_fall_silent_sec_active", bedroomLostFallSilentSecActive),
+		zap.Int("lost_fall_silent_sec_default", bedroomLostFallSilentSecDefault),
 		zap.String("silent_fall_path", "TrackManager.scanSilentFallLeftBed (PR-9 dependency cleanup)"),
 	)
 	return &BedroomFallRules{
@@ -258,21 +269,20 @@ func (r *BedroomFallRules) evaluateBedsideFall(
 
 // evaluateLostFall §6.B.2 BedroomLostFall。
 //
-// 触发：sole resident in bedroom + LastActiveMs > 10min (PR-11 baseline 固定阈值)。
+// 触发：sole resident in bedroom + LastActiveMs > cell-typed 静默阈值。
+//
+// **Cell-typed 阈值 (PR-X)**：anchor cell 的 Belief[0].Type 决定 idle 阈值——
+// AreaBed 2h / AreaSit 30min / AreaActive 5min / 未知 10min。学习/几何来源 cell 才走阈值；
+// 人工标定 (SourceHuman) 的 AreaBed/Sit/Toilet/Shower 直接 exempt — 老人在床/沙发久躺
+// 是 normal use case，不报。
 //
 // **Sleepad 主源 gating (PR-11.1)**：当任一 BedSession 处于 active in-bed 状态
 // （InBedSinceMs > 0 AND LeftBedAtMs == 0），意味着 sleepad 床压传感器当前判定有人在床 ——
-// 此时 LastActiveMs 不更新是预期行为（睡眠静止），fall 必须抑制。
-// 这是夜间最重要的 anti-false-positive guard：22:00 上床后 LastActiveMs 自然冻结，
-// 不加此守卫的话 22:10 就误报 lost_fall（每晚 noise）。
+// 此时 LastActiveMs 不更新是预期行为（睡眠静止），fall 必须抑制。即使 cell-typed AreaBed
+// exempt 已覆盖大多数床场景，sleepad gating 仍作第二道保险（覆盖 cell 未被标床但人在床上的情况）。
 //
 // 取消（dedup reset）：person.AnchorRoomType 变（走到 bathroom）→ LostFallFired flag 重置；
 //   下次 person 回 bedroom 静默时允许再 fire。
-//
-// 已知 limitation（PR-X 补强）：
-//   - cell-typed 阈值（spec §6.B.2 "5min walkway / 60min bed"）未实现：sleepad gating
-//     已覆盖 bed 主导场景；其它 cell（沙发久坐 / 走廊伫立）走统一 10min。
-//   - sleepad 失联时 InBedSinceMs 可能 stale（PR-X 加 ts 新鲜度守卫）。
 func (r *BedroomFallRules) evaluateLostFall(
 	bases []TrackStatusBase, beds []BedSessionLatch, roomID, suiteID string,
 	c *SuiteBedroomCensus, state *bedroomFallState, nowMs int64,
@@ -294,20 +304,7 @@ func (r *BedroomFallRules) evaluateLostFall(
 	if person.LastActiveMs == 0 {
 		return // 数据完整性问题，等下一次 active 更新
 	}
-	idleMs := nowMs - person.LastActiveMs
-	if idleMs < int64(bedroomLostFallSilentSec)*1000 {
-		return
-	}
-	// Sleepad 主源 gating：当前任一 BedSession active in-bed → 抑制（决定 14 共生律的睡眠场景表达）
-	if hasActiveBedSession(beds) {
-		r.logger.Debug("bedroom_lost_fall_suppressed_by_sleepad",
-			zap.String("room_id", roomID),
-			zap.String("person_id", person.PersonID),
-			zap.Int64("idle_ms", idleMs),
-			zap.String("reason", "active_bed_session"),
-		)
-		return
-	}
+
 	// 取 anchor：bedroom 内任一 non-ghost track 当作位置载体；无则用 LastBases 头
 	var anchor *TrackStatusBase
 	for i := range bases {
@@ -319,6 +316,48 @@ func (r *BedroomFallRules) evaluateLostFall(
 	if anchor == nil && len(state.LastBases) > 0 {
 		anchor = &state.LastBases[0]
 	}
+
+	// Cell 查询：决定 exempt + cell-typed 阈值。anchor 缺失时退化为 default 阈值。
+	silentSec := bedroomLostFallSilentSecDefault
+	var (
+		cellAreaType AreaType = AreaUnknown
+		cellSource   Source   = SourceUnset
+	)
+	if anchor != nil && r.gridLookup != nil {
+		if grid := r.gridLookup(roomID); grid != nil {
+			if cell := grid.CellAt(anchor.X, anchor.Y); cell != nil {
+				bel := cell.Belief[0]
+				cellAreaType, cellSource = bel.Type, bel.Source
+				// 人工标定的休息区 — 直接 exempt（用户原则：100% 置信度人工设置区不报 fall）
+				if bel.Source == SourceHuman && isHumanExemptArea(bel.Type) {
+					r.logger.Debug("bedroom_lost_fall_exempt_human_rest_zone",
+						zap.String("room_id", roomID),
+						zap.String("person_id", person.PersonID),
+						zap.Int("area_type", int(bel.Type)),
+					)
+					return
+				}
+				silentSec = lostFallSilentSecForArea(bel.Type)
+			}
+		}
+	}
+
+	idleMs := nowMs - person.LastActiveMs
+	if idleMs < int64(silentSec)*1000 {
+		return
+	}
+
+	// Sleepad 主源 gating：当前任一 BedSession active in-bed → 抑制（决定 14 共生律的睡眠场景表达）
+	if hasActiveBedSession(beds) {
+		r.logger.Debug("bedroom_lost_fall_suppressed_by_sleepad",
+			zap.String("room_id", roomID),
+			zap.String("person_id", person.PersonID),
+			zap.Int64("idle_ms", idleMs),
+			zap.String("reason", "active_bed_session"),
+		)
+		return
+	}
+
 	if anchor == nil {
 		// 兜底：无 track 几何信息 — 仅 log，下游 cardagg 反查 device 拿位置
 		r.logger.Warn("bedroom_lost_fall_no_anchor",
@@ -329,14 +368,40 @@ func (r *BedroomFallRules) evaluateLostFall(
 		return
 	}
 	r.fireFall(anchor, roomID, suiteID, ReasonBedroomPersonSilent, map[string]interface{}{
-		"context":         "suite_person_silent_in_bedroom",
-		"person_id":       person.PersonID,
-		"person_role":     person.Role,
-		"idle_ms":         idleMs,
-		"timeout_sec":     bedroomLostFallSilentSec,
-		"last_active_ms":  person.LastActiveMs,
+		"context":        "suite_person_silent_in_bedroom",
+		"person_id":      person.PersonID,
+		"person_role":    person.Role,
+		"idle_ms":        idleMs,
+		"timeout_sec":    silentSec,
+		"cell_area_type": int(cellAreaType),
+		"cell_source":    int(cellSource),
+		"last_active_ms": person.LastActiveMs,
 	}, nowMs)
 	state.LostFallFired[person.PersonID] = true
+}
+
+// isHumanExemptArea 人工标定（layout 配置/反馈）的休息区免触发 BedroomLostFall。
+// 老人在床/沙发/卫浴久留是 normal use case；该路径专给"不可控"的 active/unknown cell。
+func isHumanExemptArea(t AreaType) bool {
+	switch t {
+	case AreaBed, AreaSit, AreaToilet, AreaShower:
+		return true
+	}
+	return false
+}
+
+// lostFallSilentSecForArea 按 cell AreaType 返回 lost_fall 静默阈值（秒）。
+// 学习/几何来源 cell 使用；SourceHuman + 休息区已在 evaluateLostFall exempt 不到此。
+func lostFallSilentSecForArea(t AreaType) int {
+	switch t {
+	case AreaBed:
+		return bedroomLostFallSilentSecBed
+	case AreaSit:
+		return bedroomLostFallSilentSecSit
+	case AreaActive:
+		return bedroomLostFallSilentSecActive
+	}
+	return bedroomLostFallSilentSecDefault
 }
 
 // hasActiveBedSession 任一 BedSession 处于 active in-bed 状态（PR-11.1 sleepad 主源 gating）。

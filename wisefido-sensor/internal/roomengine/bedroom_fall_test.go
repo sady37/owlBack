@@ -448,3 +448,272 @@ func TestBedroomFall_PublicMode_Noop(t *testing.T) {
 		t.Errorf("public mode bedroom should noop (rule shouldn't even reach here, but defensive), got %+v", pub.fired)
 	}
 }
+
+// ---- PR-X: cell-typed lost_fall 阈值 + Source-aware exempt ----
+
+// stampCellArea 把 (x, y) 所在 cell 的 Belief[0] 改写为指定 (type, source)。
+// 用 grid.CellAt 反查指针写入；越界返回 nil 时测试自身 fail。
+func stampCellArea(t *testing.T, g *RoomGrid, x, y int, ty AreaType, src Source) {
+	t.Helper()
+	cell := g.CellAt(x, y)
+	if cell == nil {
+		t.Fatalf("stampCellArea: cell (%d,%d) out of grid", x, y)
+	}
+	cell.Belief[0] = BeliefState{Type: ty, Confidence: 99, Source: src}
+	cell.AreaType = ty
+}
+
+// makeBedroomFallRulesWithGrid 暴露 grid 引用以便测试在 anchor 位置打标。
+func makeBedroomFallRulesWithGrid(t *testing.T) (*BedroomFallRules, *SuiteCensusManager, *captureFallPublisher, *RoomGrid) {
+	t.Helper()
+	m := NewSuiteCensusManager(nil, DefaultSuiteCensusConfig(), nil)
+	g := makeBedroomGrid(t)
+	pub := &captureFallPublisher{}
+	r := NewBedroomFallRules(
+		m,
+		func(_ string) *RoomGrid { return g },
+		func(_ string) string { return tbSuite },
+		pub,
+		zap.NewNop(),
+	)
+	r.SetTimezone(time.UTC)
+	return r, m, pub, g
+}
+
+// 人工标定 AreaBed (SourceHuman) → 不报 lost_fall（老人在床上久躺是 normal use case）
+func TestBedroomFall_LostFall_Exempt_HumanAreaBed(t *testing.T) {
+	nowMs := nightMs(t, 0)
+	r, m, pub, g := makeBedroomFallRulesWithGrid(t)
+	p := upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
+	p.LastActiveMs = nowMs - 4*60*60_000 // 4h 静默（远超任何阈值）
+
+	state := r.getOrCreateState(tbRoom)
+	state.EverObserved = true
+
+	stampCellArea(t, g, 50, 50, AreaBed, SourceHuman)
+	bases := []TrackStatusBase{
+		{TrackID: 7, RoomID: tbRoom, X: 50, Y: 50, Verdict: VerdictReal},
+	}
+	r.Evaluate(tbRoom, bases, nil, nowMs)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 0 {
+		t.Errorf("human-set AreaBed should be exempt, got %d fires", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+}
+
+func TestBedroomFall_LostFall_Exempt_HumanAreaSit(t *testing.T) {
+	nowMs := nightMs(t, 0)
+	r, m, pub, g := makeBedroomFallRulesWithGrid(t)
+	p := upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
+	p.LastActiveMs = nowMs - 90*60_000 // 90min 静默
+
+	state := r.getOrCreateState(tbRoom)
+	state.EverObserved = true
+
+	stampCellArea(t, g, 50, 50, AreaSit, SourceHuman)
+	bases := []TrackStatusBase{{TrackID: 7, RoomID: tbRoom, X: 50, Y: 50, Verdict: VerdictReal}}
+	r.Evaluate(tbRoom, bases, nil, nowMs)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 0 {
+		t.Errorf("human-set AreaSit should be exempt, got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+}
+
+func TestBedroomFall_LostFall_Exempt_HumanAreaToilet(t *testing.T) {
+	nowMs := nightMs(t, 0)
+	r, m, pub, g := makeBedroomFallRulesWithGrid(t)
+	p := upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
+	p.LastActiveMs = nowMs - 30*60_000
+
+	state := r.getOrCreateState(tbRoom)
+	state.EverObserved = true
+
+	stampCellArea(t, g, 50, 50, AreaToilet, SourceHuman)
+	bases := []TrackStatusBase{{TrackID: 7, RoomID: tbRoom, X: 50, Y: 50, Verdict: VerdictReal}}
+	r.Evaluate(tbRoom, bases, nil, nowMs)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 0 {
+		t.Errorf("human-set AreaToilet should be exempt, got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+}
+
+func TestBedroomFall_LostFall_Exempt_HumanAreaShower(t *testing.T) {
+	nowMs := nightMs(t, 0)
+	r, m, pub, g := makeBedroomFallRulesWithGrid(t)
+	p := upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
+	p.LastActiveMs = nowMs - 30*60_000
+
+	state := r.getOrCreateState(tbRoom)
+	state.EverObserved = true
+
+	stampCellArea(t, g, 50, 50, AreaShower, SourceHuman)
+	bases := []TrackStatusBase{{TrackID: 7, RoomID: tbRoom, X: 50, Y: 50, Verdict: VerdictReal}}
+	r.Evaluate(tbRoom, bases, nil, nowMs)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 0 {
+		t.Errorf("human-set AreaShower should be exempt, got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+}
+
+// 学习来源 AreaBed → 2h 阈值（学习值最高 80 conf，不享 exempt）
+func TestBedroomFall_LostFall_LearnedAreaBed_FiresAfter2h(t *testing.T) {
+	nowMs := nightMs(t, 0)
+	r, m, pub, g := makeBedroomFallRulesWithGrid(t)
+	p := upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
+
+	state := r.getOrCreateState(tbRoom)
+	state.EverObserved = true
+
+	stampCellArea(t, g, 50, 50, AreaBed, SourceLearned)
+	bases := []TrackStatusBase{{TrackID: 7, RoomID: tbRoom, X: 50, Y: 50, Verdict: VerdictReal}}
+
+	// 1h59min 静默 — 不到 2h 阈值
+	p.LastActiveMs = nowMs - (2*60-1)*60_000
+	r.Evaluate(tbRoom, bases, nil, nowMs)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 0 {
+		t.Errorf("learned AreaBed @119min: should not fire (<2h), got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+
+	// 2h1min 静默 — 越阈值
+	p.LastActiveMs = nowMs - (2*60+1)*60_000
+	r.Evaluate(tbRoom, bases, nil, nowMs+1000)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 1 {
+		t.Errorf("learned AreaBed @121min: should fire (>2h), got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+}
+
+// 学习来源 AreaSit → 30min 阈值
+func TestBedroomFall_LostFall_LearnedAreaSit_FiresAfter30min(t *testing.T) {
+	nowMs := nightMs(t, 0)
+	r, m, pub, g := makeBedroomFallRulesWithGrid(t)
+	p := upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
+
+	state := r.getOrCreateState(tbRoom)
+	state.EverObserved = true
+
+	stampCellArea(t, g, 50, 50, AreaSit, SourceLearned)
+	bases := []TrackStatusBase{{TrackID: 7, RoomID: tbRoom, X: 50, Y: 50, Verdict: VerdictReal}}
+
+	// 29min 静默 — 不到 30min
+	p.LastActiveMs = nowMs - 29*60_000
+	r.Evaluate(tbRoom, bases, nil, nowMs)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 0 {
+		t.Errorf("learned AreaSit @29min: should not fire (<30min), got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+
+	// 31min 静默 — 越阈值
+	p.LastActiveMs = nowMs - 31*60_000
+	r.Evaluate(tbRoom, bases, nil, nowMs+1000)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 1 {
+		t.Errorf("learned AreaSit @31min: should fire (>30min), got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+}
+
+// AreaActive cell（走道）→ 5min 阈值（短：走廊伫立异常）
+func TestBedroomFall_LostFall_AreaActive_FiresAfter5min(t *testing.T) {
+	nowMs := nightMs(t, 0)
+	r, m, pub, g := makeBedroomFallRulesWithGrid(t)
+	p := upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
+
+	state := r.getOrCreateState(tbRoom)
+	state.EverObserved = true
+
+	stampCellArea(t, g, 50, 50, AreaActive, SourceLearned)
+	bases := []TrackStatusBase{{TrackID: 7, RoomID: tbRoom, X: 50, Y: 50, Verdict: VerdictReal}}
+
+	// 4min 静默 — 不到
+	p.LastActiveMs = nowMs - 4*60_000
+	r.Evaluate(tbRoom, bases, nil, nowMs)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 0 {
+		t.Errorf("AreaActive @4min: should not fire, got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+
+	// 6min 静默 — 越阈值
+	p.LastActiveMs = nowMs - 6*60_000
+	r.Evaluate(tbRoom, bases, nil, nowMs+1000)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 1 {
+		t.Errorf("AreaActive @6min: should fire (>5min), got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+}
+
+// AreaUnknown / 未打标 → 10min 默认阈值（向后兼容原 PR-11 baseline）
+func TestBedroomFall_LostFall_AreaUnknown_DefaultThreshold(t *testing.T) {
+	nowMs := nightMs(t, 0)
+	r, m, pub, g := makeBedroomFallRulesWithGrid(t)
+	_ = g // 默认不打标 → AreaUnknown
+	p := upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
+
+	state := r.getOrCreateState(tbRoom)
+	state.EverObserved = true
+
+	bases := []TrackStatusBase{{TrackID: 7, RoomID: tbRoom, X: 50, Y: 50, Verdict: VerdictReal}}
+
+	// 9min 静默 — 不到 10min
+	p.LastActiveMs = nowMs - 9*60_000
+	r.Evaluate(tbRoom, bases, nil, nowMs)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 0 {
+		t.Errorf("AreaUnknown @9min: should not fire, got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+
+	// 11min 静默 — 越阈值（默认 10min）
+	p.LastActiveMs = nowMs - 11*60_000
+	r.Evaluate(tbRoom, bases, nil, nowMs+1000)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 1 {
+		t.Errorf("AreaUnknown @11min: should fire (>10min default), got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+}
+
+// 学习来源 AreaBed (NOT SourceHuman) 不享 exempt — 走 2h 阈值（防"学到 AreaBed 就永远不报"）
+func TestBedroomFall_LostFall_LearnedAreaBed_NotExempt(t *testing.T) {
+	nowMs := nightMs(t, 0)
+	r, m, pub, g := makeBedroomFallRulesWithGrid(t)
+	p := upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
+	p.LastActiveMs = nowMs - 3*60*60_000 // 3h 静默 — 超 2h 阈值
+
+	state := r.getOrCreateState(tbRoom)
+	state.EverObserved = true
+
+	stampCellArea(t, g, 50, 50, AreaBed, SourceLearned)
+	bases := []TrackStatusBase{{TrackID: 7, RoomID: tbRoom, X: 50, Y: 50, Verdict: VerdictReal}}
+
+	r.Evaluate(tbRoom, bases, nil, nowMs)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 1 {
+		t.Errorf("SourceLearned AreaBed @3h should fire (2h threshold, not exempt), got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+}
+
+// 边界：grid 越界 → cell == nil → 退化为 default 10min（防 nil panic）
+func TestBedroomFall_LostFall_CellOutOfGrid_DefaultThreshold(t *testing.T) {
+	nowMs := nightMs(t, 0)
+	r, m, pub, _ := makeBedroomFallRulesWithGrid(t)
+	p := upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
+	p.LastActiveMs = nowMs - 11*60_000
+
+	state := r.getOrCreateState(tbRoom)
+	state.EverObserved = true
+
+	// (X=9999) 远超 grid 范围 → CellAt 返回 nil
+	bases := []TrackStatusBase{{TrackID: 7, RoomID: tbRoom, X: 9999, Y: 9999, Verdict: VerdictReal}}
+	r.Evaluate(tbRoom, bases, nil, nowMs)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 1 {
+		t.Errorf("out-of-grid cell @11min should fall back to default 10min and fire, got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+}
+
+// Sleepad gating 仍然 active 时优先于 cell-typed 阈值（即使 cell 是 AreaActive 5min 阈值，
+// sleepad 在床 → 抑制）。验证 PR-11.1 守卫不会因 cell-typed 改造而被绕过。
+func TestBedroomFall_LostFall_SleepadGate_TrumpsCellThreshold(t *testing.T) {
+	nowMs := nightMs(t, 0)
+	r, m, pub, g := makeBedroomFallRulesWithGrid(t)
+	p := upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
+	p.LastActiveMs = nowMs - 30*60_000
+
+	state := r.getOrCreateState(tbRoom)
+	state.EverObserved = true
+
+	// cell 是 AreaActive（5min 阈值 — 短）+ 30min 静默 → 过阈值
+	stampCellArea(t, g, 50, 50, AreaActive, SourceLearned)
+	bases := []TrackStatusBase{{TrackID: 7, RoomID: tbRoom, X: 50, Y: 50, Verdict: VerdictReal}}
+	// 但 sleepad active in-bed → 抑制
+	beds := []BedSessionLatch{{DeviceUID: "sleepad-1", InBedSinceMs: nowMs - 30*60_000, LeftBedAtMs: 0}}
+	r.Evaluate(tbRoom, bases, beds, nowMs)
+	if pub.countByReason(ReasonBedroomPersonSilent) != 0 {
+		t.Errorf("active sleepad must suppress even when cell threshold exceeded, got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	}
+}
