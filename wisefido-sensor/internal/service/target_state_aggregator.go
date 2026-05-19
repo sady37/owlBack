@@ -35,7 +35,6 @@ import (
 
 	"owl-common/alarm"
 	"owl-common/card"
-	"owl-common/observation"
 
 	redislib "github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -50,18 +49,18 @@ type ZoneEventSnapshot struct {
 	UpdatedAtMs   int64
 }
 
-// MonitorFrame 单帧 radar/sleepad observation（aggregator 关心的统计字段子集）。
-// 由 monitor consumer 翻译成此结构后 push。
-type MonitorFrame struct {
+// EventFrame radar 分钟级 activity stat（aggregator 关心的统计字段子集）。
+// 来源：iot:event:stream category=activity（详 [[radar_activity_stats_on_event_stream]]）。
+// **不是** monitor 流——monitor 是 1Hz raw track XY/HR/RR，不进 aggregator。
+// 由 activity consumer 翻译成此结构后 push。
+type EventFrame struct {
 	SpatialPrefix          string // INET CIDR (radar/sleepad 所在物理实体的地址，通常 /96 bed 或 /88 room)
 	DeviceAddr             string
 	TsMs                   int64
-	WalkDistanceMeters     int    // FieldWalkDistance
-	WalkDurationSec        int    // FieldWalkDuration
-	StandDurationSec       int    // FieldStandDuration
-	MultiPersonDurationSec int    // FieldMultiPersonDuration（备用，当前主信号源用 ZoneEvent.TotalPeople）
-	Pose                   int    // FieldPose
-	WeakBioSignalRaw       int    // FieldWeakBiometricSignal 0-3
+	WalkDistanceMeters     int // FieldWalkDistance (m, 1min)
+	WalkDurationSec        int // FieldWalkDuration (s, 1min cap 900)
+	StandDurationSec       int // FieldStandDuration (s, 1min cap 600)
+	MultiPersonDurationSec int // FieldMultiPersonDuration (s, 1min)
 }
 
 // AlarmEventSnapshot iot:alarm:stream 单条事件的 aggregator 关心子集。
@@ -87,7 +86,7 @@ type TargetStateAggregator struct {
 	accums map[string]*spatialAccumulator // key = spatial_prefix INET CIDR (物理实体地址)
 
 	// Push channels（main loop 单 reader 防 race）
-	monitorCh chan MonitorFrame
+	eventCh chan EventFrame
 	alarmCh   chan AlarmEventSnapshot
 	zoneCh    chan ZoneEventSnapshot
 }
@@ -141,7 +140,7 @@ func NewTargetStateAggregator(redis *redislib.Client, logger *zap.Logger) *Targe
 		logger:    logger,
 		redis:     redis,
 		accums:    make(map[string]*spatialAccumulator),
-		monitorCh: make(chan MonitorFrame, 1024),
+		eventCh:   make(chan EventFrame, 1024),
 		alarmCh:   make(chan AlarmEventSnapshot, 256),
 		zoneCh:    make(chan ZoneEventSnapshot, 256),
 	}
@@ -157,8 +156,8 @@ func (a *TargetStateAggregator) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case f := <-a.monitorCh:
-			a.handleMonitorFrame(f)
+		case f := <-a.eventCh:
+			a.handleEventFrame(f)
 		case e := <-a.alarmCh:
 			a.handleAlarmEvent(ctx, e)
 		case z := <-a.zoneCh:
@@ -167,13 +166,27 @@ func (a *TargetStateAggregator) Run(ctx context.Context) {
 	}
 }
 
-// PushMonitorFrame 由 monitor consumer 调，非阻塞（满队列时 drop）。
-func (a *TargetStateAggregator) PushMonitorFrame(f MonitorFrame) {
+// PushEventFrame 由 activity consumer 调，非阻塞（满队列时 drop）。
+func (a *TargetStateAggregator) PushEventFrame(f EventFrame) {
 	select {
-	case a.monitorCh <- f:
+	case a.eventCh <- f:
 	default:
 		// 队列满，drop（这条 frame 的累加丢失；监控指标记 lag 后续加）
 	}
+}
+
+// PushEventFields primitive-form 入口，供外部 consumer 用（避免 caller 反向 import service.EventFrame）。
+func (a *TargetStateAggregator) PushEventFields(spatialPrefix, deviceAddr string, tsMs int64,
+	walkDistanceMeters, walkDurationSec, standDurationSec, multiPersonDurationSec int) {
+	a.PushEventFrame(EventFrame{
+		SpatialPrefix:          spatialPrefix,
+		DeviceAddr:             deviceAddr,
+		TsMs:                   tsMs,
+		WalkDistanceMeters:     walkDistanceMeters,
+		WalkDurationSec:        walkDurationSec,
+		StandDurationSec:       standDurationSec,
+		MultiPersonDurationSec: multiPersonDurationSec,
+	})
 }
 
 // PushAlarmEvent 由 alarm consumer 调。
@@ -255,17 +268,48 @@ func (a *TargetStateAggregator) MarkPublished(spatialPrefix string, tsMs int64) 
 // Internal: handler stubs (P3/P4 fill)
 // ===================================================================
 
-// handleMonitorFrame P3 填：解析 walk/stand 累加 lastActive + standing。
-func (a *TargetStateAggregator) handleMonitorFrame(f MonitorFrame) {
+// handleEventFrame 解析 radar 分钟级 activity stat → LastActiveTs + StandingContinuousMin。
+//
+// 输入来源：iot:event:stream category=activity（firmware 每分钟一发；详
+// [[radar_activity_stats_on_event_stream]]）。**心跳契约** = firmware 分钟级 push 既有事实，
+// 不另造心跳——只要 firmware 每分钟发，aggregator 就每分钟 dirty。
+//
+// 规则：
+//   - LastActiveTs：WalkDistance≥2m OR WalkDuration≥6s → 触发活跃；60s 节流（防同一分钟重复刷）
+//   - StandingContinuousMin：TotalPeople==1 + StandDurationSec≥55s + MultiPersonDuration==0
+//     → 累 +1 封顶 8；不满足条件 reset 0
+//
+// 多人 / 站立<55s（人坐/走/躺）→ standing reset；让 cardagg side risk_evaluator 看到 0 不误报。
+func (a *TargetStateAggregator) handleEventFrame(f EventFrame) {
 	if f.SpatialPrefix == "" {
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	acc := a.getOrCreateLocked(f.SpatialPrefix)
-	_ = acc
-	// TODO P3: lastActive 60s 节流 (walk_distance≥2m OR walk_duration≥6s + totalPeople==1)
-	// TODO P3: standing 累加 (stand_duration≥55s + totalPeople==1, 封顶 8, 多人/坐走躺 reset 0)
+
+	// LastActive: walk≥2m OR walk_duration≥6s → 活跃；60s 节流避免同一分钟双写
+	if f.WalkDistanceMeters >= 2 || f.WalkDurationSec >= 6 {
+		if f.TsMs-acc.lastActive.lastActiveTs >= 60_000 {
+			acc.lastActive.lastActiveTs = f.TsMs
+			acc.dirty = true
+		}
+	}
+
+	// Standing: gate（totalPeople==1 + 单人持续站≥55s + 无多人事件）→ +1 cap 8；否则 reset 0
+	if acc.totalPeople == 1 && f.StandDurationSec >= 55 && f.MultiPersonDurationSec == 0 {
+		if f.TsMs-acc.standing.lastIncrementTs >= 60_000 {
+			if acc.standing.continuousMin < 8 {
+				acc.standing.continuousMin++
+			}
+			acc.standing.lastIncrementTs = f.TsMs
+			acc.dirty = true
+		}
+	} else if acc.standing.continuousMin > 0 {
+		acc.standing.continuousMin = 0
+		acc.standing.lastIncrementTs = 0
+		acc.dirty = true
+	}
 }
 
 // handleAlarmEvent 累加 WeakBio 30min 滑窗 score（[[target_state_weak_bio_signal_design]]）。
@@ -376,5 +420,3 @@ func (a *TargetStateAggregator) getOrCreateLocked(spatialPrefix string) *spatial
 	return acc
 }
 
-// 防 dead-import 编译 warning（observation 字段常量后续 P3 用）。
-var _ = observation.FieldWalkDistance

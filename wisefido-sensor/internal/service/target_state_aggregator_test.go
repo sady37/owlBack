@@ -261,3 +261,171 @@ func TestWeakBio_UnrelatedAlarmIgnored(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// S2/FU4 handleEventFrame — LastActive + StandingContinuousMin
+// ============================================================================
+
+// 测试辅助：直接 ack totalPeople（不走 channel 避免 goroutine race）
+func setTotalPeople(a *TargetStateAggregator, spatial string, count int, tsMs int64) {
+	a.handleZoneEvent(ZoneEventSnapshot{SpatialPrefix: spatial, TotalPeople: count, UpdatedAtMs: tsMs})
+}
+
+func snapshotLastActive(a *TargetStateAggregator, spatial string) int64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	acc := a.accums[spatial]
+	if acc == nil {
+		return -1
+	}
+	return acc.lastActive.lastActiveTs
+}
+
+func snapshotStanding(a *TargetStateAggregator, spatial string) int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	acc := a.accums[spatial]
+	if acc == nil {
+		return -1
+	}
+	return acc.standing.continuousMin
+}
+
+func TestEventFrame_LastActive_WalkDistanceTriggers(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	spatial := "fd00:0:3:111:3:101::/96"
+	now := int64(1_700_000_000_000)
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: now, WalkDistanceMeters: 2})
+	if got := snapshotLastActive(a, spatial); got != now {
+		t.Errorf("walk_distance≥2m should trigger lastActive=now=%d, got %d", now, got)
+	}
+}
+
+func TestEventFrame_LastActive_WalkDurationTriggers(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	spatial := "fd00:0:3:111:3:101::/96"
+	now := int64(1_700_000_000_000)
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: now, WalkDurationSec: 6})
+	if got := snapshotLastActive(a, spatial); got != now {
+		t.Errorf("walk_duration≥6s should trigger lastActive=now, got %d", got)
+	}
+}
+
+func TestEventFrame_LastActive_BelowThresholdNoTrigger(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	spatial := "fd00:0:3:111:3:101::/96"
+	now := int64(1_700_000_000_000)
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: now, WalkDistanceMeters: 1, WalkDurationSec: 5})
+	if got := snapshotLastActive(a, spatial); got != 0 {
+		t.Errorf("walk<2m & duration<6s should NOT trigger lastActive, got %d", got)
+	}
+}
+
+func TestEventFrame_LastActive_60sThrottle(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	spatial := "fd00:0:3:111:3:101::/96"
+	t1 := int64(1_700_000_000_000)
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t1, WalkDistanceMeters: 5})
+	// 30s 后再 push：被节流
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t1 + 30_000, WalkDistanceMeters: 5})
+	if got := snapshotLastActive(a, spatial); got != t1 {
+		t.Errorf("within 60s throttle: lastActive should stay at t1=%d, got %d", t1, got)
+	}
+	// 60s+ 后 push：通过
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t1 + 60_000, WalkDistanceMeters: 5})
+	if got := snapshotLastActive(a, spatial); got != t1+60_000 {
+		t.Errorf("after 60s: lastActive should update, got %d", got)
+	}
+}
+
+func TestEventFrame_Standing_AccumulateWithGate(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	spatial := "fd00:0:3:111:3:101::/96"
+	t0 := int64(1_700_000_000_000)
+	setTotalPeople(a, spatial, 1, t0)
+
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 60_000, StandDurationSec: 58})
+	if got := snapshotStanding(a, spatial); got != 1 {
+		t.Errorf("first stand≥55 with tp=1: standing want 1, got %d", got)
+	}
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 120_000, StandDurationSec: 58})
+	if got := snapshotStanding(a, spatial); got != 2 {
+		t.Errorf("second stand≥55: standing want 2, got %d", got)
+	}
+}
+
+func TestEventFrame_Standing_Cap8(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	spatial := "fd00:0:3:111:3:101::/96"
+	t0 := int64(1_700_000_000_000)
+	setTotalPeople(a, spatial, 1, t0)
+	for i := 1; i <= 10; i++ {
+		a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + int64(i)*60_000, StandDurationSec: 58})
+	}
+	if got := snapshotStanding(a, spatial); got != 8 {
+		t.Errorf("standing should cap at 8 after 10 increments, got %d", got)
+	}
+}
+
+func TestEventFrame_Standing_ResetOnShortStand(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	spatial := "fd00:0:3:111:3:101::/96"
+	t0 := int64(1_700_000_000_000)
+	setTotalPeople(a, spatial, 1, t0)
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 60_000, StandDurationSec: 58})
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 120_000, StandDurationSec: 58})
+	// stand<55 → reset
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 180_000, StandDurationSec: 10})
+	if got := snapshotStanding(a, spatial); got != 0 {
+		t.Errorf("short stand should reset standing to 0, got %d", got)
+	}
+}
+
+func TestEventFrame_Standing_ResetOnMultiPerson(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	spatial := "fd00:0:3:111:3:101::/96"
+	t0 := int64(1_700_000_000_000)
+	setTotalPeople(a, spatial, 1, t0)
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 60_000, StandDurationSec: 58})
+	// MultiPersonDuration > 0 → reset 即便 stand≥55
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 120_000, StandDurationSec: 58, MultiPersonDurationSec: 30})
+	if got := snapshotStanding(a, spatial); got != 0 {
+		t.Errorf("multi_person_duration>0 should reset standing, got %d", got)
+	}
+}
+
+func TestEventFrame_Standing_GateTotalPeopleZero(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	spatial := "fd00:0:3:111:3:101::/96"
+	t0 := int64(1_700_000_000_000)
+	// 不调 setTotalPeople（默认 0）→ standing 不累加
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0, StandDurationSec: 58})
+	if got := snapshotStanding(a, spatial); got != 0 {
+		t.Errorf("tp=0 (no one in room): standing should stay 0, got %d", got)
+	}
+}
+
+func TestEventFrame_Standing_GateTotalPeopleTwo(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	spatial := "fd00:0:3:111:3:101::/96"
+	t0 := int64(1_700_000_000_000)
+	setTotalPeople(a, spatial, 1, t0)
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 60_000, StandDurationSec: 58})
+	// 切到 2 人 → standing reset
+	setTotalPeople(a, spatial, 2, t0+90_000)
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 120_000, StandDurationSec: 58})
+	if got := snapshotStanding(a, spatial); got != 0 {
+		t.Errorf("tp=2: standing should reset, got %d", got)
+	}
+}
+
+func TestEventFrame_EmptySpatialPrefixIgnored(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	a.handleEventFrame(EventFrame{SpatialPrefix: "", TsMs: 1_700_000_000_000, WalkDistanceMeters: 5})
+	a.mu.RLock()
+	n := len(a.accums)
+	a.mu.RUnlock()
+	if n != 0 {
+		t.Errorf("empty SpatialPrefix should not create accumulator, got %d entries", n)
+	}
+}
+
