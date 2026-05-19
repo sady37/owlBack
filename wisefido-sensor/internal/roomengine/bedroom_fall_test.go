@@ -500,11 +500,12 @@ func TestBedroomFall_LostFall_Exempt_HumanAreaBed(t *testing.T) {
 	}
 }
 
-func TestBedroomFall_LostFall_Exempt_HumanAreaSit(t *testing.T) {
+// SourceHuman + AreaSit/Toilet/Shower 不享 exempt — 坐姿/卫浴突然静止是真跌倒高发场景
+func TestBedroomFall_LostFall_HumanAreaSit_NotExempt_FiresAt30min(t *testing.T) {
 	nowMs := nightMs(t, 0)
 	r, m, pub, g := makeBedroomFallRulesWithGrid(t)
 	p := upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
-	p.LastActiveMs = nowMs - 90*60_000 // 90min 静默
+	p.LastActiveMs = nowMs - 31*60_000 // 31min — 超 AreaSit 30min 阈值
 
 	state := r.getOrCreateState(tbRoom)
 	state.EverObserved = true
@@ -512,16 +513,16 @@ func TestBedroomFall_LostFall_Exempt_HumanAreaSit(t *testing.T) {
 	stampCellArea(t, g, 50, 50, AreaSit, SourceHuman)
 	bases := []TrackStatusBase{{TrackID: 7, RoomID: tbRoom, X: 50, Y: 50, Verdict: VerdictReal}}
 	r.Evaluate(tbRoom, bases, nil, nowMs)
-	if pub.countByReason(ReasonBedroomPersonSilent) != 0 {
-		t.Errorf("human-set AreaSit should be exempt, got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	if pub.countByReason(ReasonBedroomPersonSilent) != 1 {
+		t.Errorf("SourceHuman AreaSit must NOT be exempt — sitting still ≥30min should fire, got %d", pub.countByReason(ReasonBedroomPersonSilent))
 	}
 }
 
-func TestBedroomFall_LostFall_Exempt_HumanAreaToilet(t *testing.T) {
+func TestBedroomFall_LostFall_HumanAreaToilet_NotExempt(t *testing.T) {
 	nowMs := nightMs(t, 0)
 	r, m, pub, g := makeBedroomFallRulesWithGrid(t)
 	p := upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
-	p.LastActiveMs = nowMs - 30*60_000
+	p.LastActiveMs = nowMs - 11*60_000 // 11min — 超默认 10min 阈值
 
 	state := r.getOrCreateState(tbRoom)
 	state.EverObserved = true
@@ -529,16 +530,16 @@ func TestBedroomFall_LostFall_Exempt_HumanAreaToilet(t *testing.T) {
 	stampCellArea(t, g, 50, 50, AreaToilet, SourceHuman)
 	bases := []TrackStatusBase{{TrackID: 7, RoomID: tbRoom, X: 50, Y: 50, Verdict: VerdictReal}}
 	r.Evaluate(tbRoom, bases, nil, nowMs)
-	if pub.countByReason(ReasonBedroomPersonSilent) != 0 {
-		t.Errorf("human-set AreaToilet should be exempt, got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	if pub.countByReason(ReasonBedroomPersonSilent) != 1 {
+		t.Errorf("SourceHuman AreaToilet must NOT be exempt — sitting on toilet motionless ≥10min should fire (晕厥/突发疾病高风险场景), got %d", pub.countByReason(ReasonBedroomPersonSilent))
 	}
 }
 
-func TestBedroomFall_LostFall_Exempt_HumanAreaShower(t *testing.T) {
+func TestBedroomFall_LostFall_HumanAreaShower_NotExempt(t *testing.T) {
 	nowMs := nightMs(t, 0)
 	r, m, pub, g := makeBedroomFallRulesWithGrid(t)
 	p := upgradeResidentInBedroom(t, m, tbSuite, tbRes, nowMs)
-	p.LastActiveMs = nowMs - 30*60_000
+	p.LastActiveMs = nowMs - 11*60_000
 
 	state := r.getOrCreateState(tbRoom)
 	state.EverObserved = true
@@ -546,8 +547,8 @@ func TestBedroomFall_LostFall_Exempt_HumanAreaShower(t *testing.T) {
 	stampCellArea(t, g, 50, 50, AreaShower, SourceHuman)
 	bases := []TrackStatusBase{{TrackID: 7, RoomID: tbRoom, X: 50, Y: 50, Verdict: VerdictReal}}
 	r.Evaluate(tbRoom, bases, nil, nowMs)
-	if pub.countByReason(ReasonBedroomPersonSilent) != 0 {
-		t.Errorf("human-set AreaShower should be exempt, got %d", pub.countByReason(ReasonBedroomPersonSilent))
+	if pub.countByReason(ReasonBedroomPersonSilent) != 1 {
+		t.Errorf("SourceHuman AreaShower must NOT be exempt — 淋浴间滑倒是真跌倒高发场景, got %d", pub.countByReason(ReasonBedroomPersonSilent))
 	}
 }
 

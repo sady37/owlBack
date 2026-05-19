@@ -42,8 +42,8 @@ const (
 
 	// §6.B.2 BedroomLostFall cell-typed 静默时长（PR-X 补强）。
 	// 落到老人在不同 cell 上的合理"无动作"时长：床上 2h、沙发 30min、走道 5min、未知 10min。
-	// 人工标定（SourceHuman）的 AreaBed/Sit/Toilet/Shower 直接 exempt — 老人在床/沙发静止
-	// 是 normal use case；该路径专给"沙发久坐/未知 cell 久站"等不可控场景。
+	// 仅人工标定（SourceHuman）的 AreaBed（床/long-sofa 躺区）直接 exempt — 老人在床上
+	// 久躺是 normal use case；坐姿/马桶/淋浴突然不动是真跌倒，不豁免。
 	bedroomLostFallSilentSecBed     = 2 * 60 * 60 // AreaBed: 2h（学习/几何来源）
 	bedroomLostFallSilentSecSit     = 30 * 60     // AreaSit: 30min
 	bedroomLostFallSilentSecActive  = 5 * 60      // AreaActive: 5min（走道伫立）
@@ -272,9 +272,9 @@ func (r *BedroomFallRules) evaluateBedsideFall(
 // 触发：sole resident in bedroom + LastActiveMs > cell-typed 静默阈值。
 //
 // **Cell-typed 阈值 (PR-X)**：anchor cell 的 Belief[0].Type 决定 idle 阈值——
-// AreaBed 2h / AreaSit 30min / AreaActive 5min / 未知 10min。学习/几何来源 cell 才走阈值；
-// 人工标定 (SourceHuman) 的 AreaBed/Sit/Toilet/Shower 直接 exempt — 老人在床/沙发久躺
-// 是 normal use case，不报。
+// AreaBed 2h / AreaSit 30min / AreaActive 5min / 未知 10min。
+// 仅 SourceHuman + AreaBed（人工标定的躺区，床/long-sofa）直接 exempt — 老人在床上久躺
+// 是 normal use case，不报。坐姿/马桶/淋浴突然静止反而是真跌倒高发场景，不豁免。
 //
 // **Sleepad 主源 gating (PR-11.1)**：当任一 BedSession 处于 active in-bed 状态
 // （InBedSinceMs > 0 AND LeftBedAtMs == 0），意味着 sleepad 床压传感器当前判定有人在床 ——
@@ -380,14 +380,12 @@ func (r *BedroomFallRules) evaluateLostFall(
 	state.LostFallFired[person.PersonID] = true
 }
 
-// isHumanExemptArea 人工标定（layout 配置/反馈）的休息区免触发 BedroomLostFall。
-// 老人在床/沙发/卫浴久留是 normal use case；该路径专给"不可控"的 active/unknown cell。
+// isHumanExemptArea 仅人工标定的躺区（AreaBed: 床 / long-sofa）免触发 BedroomLostFall。
+// 老人在床/长沙发上久躺不动 = normal use case。
+// 其它区域（AreaSit 坐姿 / AreaToilet 马桶 / AreaShower 淋浴）静止不动反而是真跌倒高发场景，
+// 不享 exempt — 走 cell-typed 阈值正常评估。
 func isHumanExemptArea(t AreaType) bool {
-	switch t {
-	case AreaBed, AreaSit, AreaToilet, AreaShower:
-		return true
-	}
-	return false
+	return t == AreaBed
 }
 
 // lostFallSilentSecForArea 按 cell AreaType 返回 lost_fall 静默阈值（秒）。
