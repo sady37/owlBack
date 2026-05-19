@@ -15,6 +15,7 @@ import (
 	"context"
 	"testing"
 
+	"owl-common/card"
 	"owl-common/observation"
 
 	"go.uber.org/zap"

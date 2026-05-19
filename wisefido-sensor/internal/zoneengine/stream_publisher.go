@@ -1,15 +1,14 @@
-// stream_publisher.go — sensor 派生 per-card 状态发到 sensor:derived:stream。
+// stream_publisher.go — sensor 派生物理实体状态发到 sensor:derived:stream。
 //
-// 替代旧 adapter_redis.go 直写 card:status hash 的方式（CLAUDE.md 规则 #1.3 单 writer：
-// cardagg sensor_state_projector 是 card:status 唯一 writer，sensor 通过流推消息让 cardagg 写）。
+// 单向流原则（CLAUDE.md 规则 #1.3）：
+//   - sensor 不读 card:state hash（那是 cardagg 维护的视图）
+//   - sensor 只输出自己 owner 的 engine 字段，按物理实体地址（/88 room / /96 bed / /128 device）寻址
+//   - 跨字段合并（保留 SleepStage 等非 sensor owner 字段）由 cardagg projector 字段级 merge 完成
+//   - 跨实体合并（多 device target → 单 card target）由 cardagg TargetMerger 完成
 //
 // 3 个发送接口：
 //   PublishBedState / PublishRoomState  — zoneengine.OnZoneEvent 自动调
-//   PublishTargetState                  — 留接口，sensor 内部 Target 派生实现后调
-//
-// 设计：bathroom 不再独立流，bathroom zone 翻译为 RoomState 带 Kind=bathroom。
-// sensor 读 card:status 取 prev 字段保留（TrackNumber/SleepStage/AreaPeople 等非 engine 字段），
-// merge engine 翻译后的字段后发完整 JSON；cardagg projector blindly 写 hash。
+//   PublishTargetState                  — sensor 内部 Target 累加器实现后调
 
 package zoneengine
 
@@ -37,7 +36,6 @@ import (
 // 详 [[target_state_aggregator]] design doc：aggregator 是纯 state holder，
 // publisher 是唯一发往 sensor:derived:stream 的 writer。
 type StreamPublisher struct {
-	reader     *card.Reader
 	client     *redislib.Client
 	logger     *zap.Logger
 	timeout    time.Duration
@@ -64,7 +62,6 @@ type AggregatorPuller interface {
 
 func NewStreamPublisher(client *redislib.Client, logger *zap.Logger) *StreamPublisher {
 	return &StreamPublisher{
-		reader:    card.NewReader(client),
 		client:    client,
 		logger:    logger,
 		timeout:   2 * time.Second,
@@ -131,10 +128,10 @@ func (p *StreamPublisher) tickPullAndPublish(ctx context.Context) {
 	_ = ctx
 }
 
-// OnZoneEvent satisfy ZoneEventListener — 替代 RedisAdapter 同名方法。
-// 输出 cardID = e.ZoneID（physical /88 room / /96 bed），与 radar 的 SubjectEntity 解耦：
-// 多 radar 同绑 /80 unit card 时 bedroom + bathroom 数据落各自 /88 hash 不互相覆盖。
-// /80 unit 没有自己的 state 块；FE unit 卡按 /80 prefix 找子 /88，挑最近 UpdatedAt 渲染。
+// OnZoneEvent satisfy ZoneEventListener。
+// 输出消息 SubjectEntity = 物理实体地址（/88 room CIDR / /96 bed CIDR；e.ZoneID）。
+// sensor 不读 card:state，不查 card 视图——cardagg projector 收到后按字段级 merge
+// 保留非 sensor owner 字段（SleepStage / TrackNumber 等）。
 func (p *StreamPublisher) OnZoneEvent(e ZoneEvent) {
 	if e.ZoneID == "" {
 		return
@@ -142,21 +139,15 @@ func (p *StreamPublisher) OnZoneEvent(e ZoneEvent) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 	defer cancel()
 
-	cur, err := p.reader.ReadCardStatus(ctx, e.ZoneID)
-	if err != nil {
-		p.logger.Warn("read card status", zap.String("zone", e.ZoneID), zap.Error(err))
-		cur = &card.CardStatus{CardID: e.ZoneID}
-	}
-
 	switch e.ZoneType {
 	case ZoneTypeBed:
-		bs := TranslateBedState(e, cur.BedState)
+		bs := TranslateBedState(e)
 		_ = p.PublishBedState(ctx, e.ZoneID, bs)
 	case ZoneTypeRoom:
-		rs := TranslateRoomState(e, cur.RoomState, card.RoomTypeDefault)
+		rs := TranslateRoomState(e, card.RoomTypeDefault)
 		_ = p.PublishRoomState(ctx, e.ZoneID, rs)
 	case ZoneTypeBathroom:
-		rs := TranslateRoomState(e, cur.RoomState, card.RoomTypeBathroom)
+		rs := TranslateRoomState(e, card.RoomTypeBathroom)
 		_ = p.PublishRoomState(ctx, e.ZoneID, rs)
 	}
 }

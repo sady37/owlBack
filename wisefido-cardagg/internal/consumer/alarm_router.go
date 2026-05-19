@@ -133,8 +133,11 @@ func (r *AlarmRouter) Handle(ctx context.Context, msg *owlredis.IoTStreamMessage
 
 	level, enabled := r.enable.Resolve(ctx, ac.TenantPref, resolvedAddr, eventName)
 
-	// platform-agent trust：sensor 派生 alarm 内部已 gate（enablement + verifier + 时间窗）
+	// platform-agent trust：sensor 已在 AlarmBackChannel.gate 源头按 spatial_config LPM 查
+	// alarm.cloud_config（per device /128 + alarmType）；未启用直接 drop，不会到达此处。
+	// 因此 cardagg 端不重复 gate，trust producer 自带 level + 直接放行。
 	// 详 owlBack/doc/platform_agent_addressing.md §6 + cardagg_sensor_split.md §2.3
+	// + sensor consumer/alarm_back_channel.go (gate 源)。
 	if spatial.IsPlatformAgentAddr(msg.Producer) {
 		enabled = true
 		if lvl, ok := data["alarm_level"].(string); ok && lvl != "" {

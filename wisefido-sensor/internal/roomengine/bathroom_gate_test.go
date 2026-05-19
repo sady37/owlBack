@@ -12,6 +12,8 @@ package roomengine
 import (
 	"testing"
 
+	"owl-common/card"
+
 	"go.uber.org/zap"
 )
 

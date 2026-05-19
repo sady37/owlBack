@@ -20,10 +20,11 @@
 //   StreamPublisher 60s ticker 主动 pull GetSnapshot 合并进 RoomState/Target publish；
 //   零依赖反向（aggregator 不引用 zoneengine 包）—— 通过 ZoneEvent listener 单向 push。
 //
-// Escalation alarm（WeakBiometricSignal score 跨 80 提级 Critical）由 aggregator 自己直接 publishAlarm
-// 到 iot:alarm:stream，不走 StreamPublisher（不同流，alarm pipeline 自身多源）。
-//
-// P2 scaffold：struct + lifecycle + 接口面；3 个累加器内部逻辑 stub（P3/P4 填）。
+// **WeakBio 设计修订 2026-05-19**（[[target_state_weak_bio_signal_design]]）：
+//   原"score 跨 80 触发 Critical escalation alarm"砍掉——WeakBio 是**长期状态/风险描述符**，
+//   不是事件源。firmware 已经直发 HR/RR/ApneaH/WeakBio raw alarm 进 alarm pipeline；
+//   sensor 累计 score 仅作"风险放大系数"+ FE 横条显示（Section3.down.right），
+//   不再 publish escalation alarm。AggregatorPublisher 接口废止；aggregator 退化为纯 holder。
 
 package service
 
@@ -38,14 +39,6 @@ import (
 	redislib "github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
-
-// AggregatorPublisher 允许 aggregator 反向触发 escalation alarm（不依赖 zoneengine 包）。
-// 实现方持有 iot:alarm:stream client。
-type AggregatorPublisher interface {
-	// PublishEscalationAlarm 在 weakBio score 跨 80 上升沿调用。
-	// alarmType 当前固定 "WeakBiometricSignal"；level=AlarmLevelCrit；contributorDeviceAddr 可空。
-	PublishEscalationAlarm(ctx context.Context, spatialPrefix, alarmType string, score int, contributorDeviceAddr string) error
-}
 
 // ZoneEventSnapshot aggregator 关心的最小 ZoneEvent 子集（解耦 zoneengine 类型）。
 // StreamPublisher 把 ZoneEvent 翻译成这个 push 给 aggregator。
@@ -84,11 +77,10 @@ type AlarmEventSnapshot struct {
 // TargetStateAggregator 主结构。
 //
 // 输入：3 条 push channel（monitor / alarm / zone event）；
-// 输出：GetSnapshot pull（StreamPublisher 60s 用）+ PublishEscalationAlarm（即时）。
+// 输出：GetSnapshot pull（StreamPublisher 60s 用）。纯 state holder，不 publish。
 type TargetStateAggregator struct {
-	publisher AggregatorPublisher
-	logger    *zap.Logger
-	redis     *redislib.Client // 订阅 monitor / alarm 流用；P2 scaffold 允许 nil（无订阅）
+	logger *zap.Logger
+	redis  *redislib.Client // 订阅 monitor / alarm 流用；P2 scaffold 允许 nil（无订阅）
 
 	mu     sync.RWMutex
 	accums map[string]*spatialAccumulator // key = spatial_prefix INET CIDR (物理实体地址)
@@ -131,7 +123,6 @@ type standingState struct {
 type weakBioWindow struct {
 	events []weakBioEvent // 时序队列，30min 外 lazy drop
 	score  int            // 缓存当前 score（0..100）
-	last80 bool           // 上次 score 是否 ≥80；用于检测上升沿（避免每帧重复 escalation）
 }
 
 type weakBioEvent struct {
@@ -140,13 +131,12 @@ type weakBioEvent struct {
 	rawValue  int // 仅 WeakBiometricSignal 0/20/40/60
 }
 
-// New 构造。publisher 可空（测试 / 无 escalation 场景）。
-func NewTargetStateAggregator(publisher AggregatorPublisher, redis *redislib.Client, logger *zap.Logger) *TargetStateAggregator {
+// NewTargetStateAggregator 构造（纯 state holder，不 publish；2026-05-19 砍 escalation 路径后无 publisher 入参）。
+func NewTargetStateAggregator(redis *redislib.Client, logger *zap.Logger) *TargetStateAggregator {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	return &TargetStateAggregator{
-		publisher: publisher,
 		logger:    logger,
 		redis:     redis,
 		accums:    make(map[string]*spatialAccumulator),
@@ -187,10 +177,6 @@ func (a *TargetStateAggregator) PushMonitorFrame(f MonitorFrame) {
 
 // PushAlarmEvent 由 alarm consumer 调。
 func (a *TargetStateAggregator) PushAlarmEvent(e AlarmEventSnapshot) {
-	// 防 escalation loop：自家产的 alarm 不再喂回 aggregator
-	if e.Producer == EscalationProducerTag {
-		return
-	}
 	select {
 	case a.alarmCh <- e:
 	default:
@@ -269,18 +255,86 @@ func (a *TargetStateAggregator) handleMonitorFrame(f MonitorFrame) {
 	// TODO P3: standing 累加 (stand_duration≥55s + totalPeople==1, 封顶 8, 多人/坐走躺 reset 0)
 }
 
-// handleAlarmEvent P4 填：累加 weakBio 30min 滑窗 + 跨 80 escalation。
+// handleAlarmEvent 累加 WeakBio 30min 滑窗 score（[[target_state_weak_bio_signal_design]]）。
+//
+// score = max(weakBio_raw) + 5×|HR| + 5×|RR| + 15×|ApneaH|，封顶 100。
+// 30min 外的 event lazy drop（下次 event 到来时清；空闲累加器自然回 0）。
+//
+// 2026-05-19 砍 escalation：score 仅作"风险描述符"+ FE Section3.down.right 横条显示
+// （30/60/80 三档配色），**不再独立触发 Critical alarm**。原 firmware 直发的 HR/RR/ApneaH/
+// WeakBio raw alarm 仍正常进 alarm pipeline，score 只是聚合摘要供 FE / 风险评估读。
 func (a *TargetStateAggregator) handleAlarmEvent(ctx context.Context, e AlarmEventSnapshot) {
-	if e.SpatialPrefix == "" {
+	if e.SpatialPrefix == "" || !isWeakBioRelatedAlarm(e.AlarmType) {
 		return
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	acc := a.getOrCreateLocked(e.SpatialPrefix)
-	_ = acc
-	a.mu.Unlock()
-	// TODO P4: append to weakBio.events; drop ≥30min old; recompute score
-	//          if score crosses 80 (rising edge): a.publisher.PublishEscalationAlarm(...)
+	cutoff := e.TsMs - weakBioWindowMs
+
+	// lazy drop 窗外事件
+	kept := acc.weakBio.events[:0]
+	for _, ev := range acc.weakBio.events {
+		if ev.tsMs >= cutoff {
+			kept = append(kept, ev)
+		}
+	}
+	acc.weakBio.events = kept
+
+	// 加入本次 event
+	acc.weakBio.events = append(acc.weakBio.events, weakBioEvent{
+		tsMs:      e.TsMs,
+		alarmType: e.AlarmType,
+		rawValue:  e.RawValue,
+	})
+
+	// 重算 score 缓存
+	acc.weakBio.score = computeWeakBioScore(acc.weakBio.events)
+	acc.dirty = true
 	_ = ctx
+}
+
+const weakBioWindowMs int64 = 30 * 60 * 1000 // 30min
+
+// isWeakBioRelatedAlarm 4 种关联 alarm 进 weakBio 计算（其它一律忽略）。
+func isWeakBioRelatedAlarm(t string) bool {
+	switch t {
+	case "WeakBiometricSignal", "HeartRateAlert", "RespRateAlert", "ApneaHypopnea":
+		return true
+	}
+	return false
+}
+
+// computeWeakBioScore 按 [[target_state_weak_bio_signal_design]] 修订权重：
+//   score = max(weakBio_raw) + 5×|HR| + 5×|RR| + 15×|ApneaH|，封顶 100。
+//
+// 权重调整理由（2026-05-19）：
+//   - HR/RR 单次异常常见（睡眠/翻身边缘漂移），降权 5 让单 1-2 条噪声不达 30 阈值
+//   - ApneaH 单次仍有临床意义但不应单条触红，15 让 2 条以上才显示
+//   - WeakBio raw 保持 max（firmware 已分严重等级，不累加）
+//
+// raw 0/20/40/60 由 firmware state×20 给出；同窗多源不去重（雷达+sleepad 各自计）。
+func computeWeakBioScore(events []weakBioEvent) int {
+	var maxRaw, hrCount, rrCount, apneaCount int
+	for _, ev := range events {
+		switch ev.alarmType {
+		case "WeakBiometricSignal":
+			if ev.rawValue > maxRaw {
+				maxRaw = ev.rawValue
+			}
+		case "HeartRateAlert":
+			hrCount++
+		case "RespRateAlert":
+			rrCount++
+		case "ApneaHypopnea":
+			apneaCount++
+		}
+	}
+	score := maxRaw + 5*hrCount + 5*rrCount + 15*apneaCount
+	if score > 100 {
+		score = 100
+	}
+	return score
 }
 
 // handleZoneEvent 更新 totalPeople cache（给 lastActive / standing gate 用）。
@@ -307,9 +361,6 @@ func (a *TargetStateAggregator) getOrCreateLocked(spatialPrefix string) *spatial
 	a.accums[spatialPrefix] = acc
 	return acc
 }
-
-// EscalationProducerTag aggregator 自家产 alarm 用此 producer 字段，防 loop。
-const EscalationProducerTag = "sensor:target-state-aggregator"
 
 // 防 dead-import 编译 warning（observation 字段常量后续 P3 用）。
 var _ = observation.FieldWalkDistance

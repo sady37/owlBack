@@ -175,9 +175,20 @@ else:
 
 **Cardagg 端（per card 合并）**：
 - 维护 per device target snapshot in-memory map
-- card.lastActiveTs = **max(deviceTarget.LastActiveTs across all radars in this card)**
+- card.lastActiveTs = **max(deviceTarget.LastActiveTs across all online radars in this card)**
 - card:state.target Hash 写**合并后**的单 `TargetState`（FE 看到的还是 1 个）
 - 显示规则：`ActiveState = (now - card.lastActiveTs < 60_000) ? Now : Inactive`
+
+**Offline 过滤（2026-05-19 落地）**：
+- merge 时跳过 offline device 的 snapshot
+- 避免"device 失联 24h，FE 永远显示 Active 24h ago"误导
+- 通过 `TargetMerger.SetOnlineChecker(deviceTracker.IsOnline)` 注入 callback
+- LastActive 不加时间阈值——历史时间戳是真实事实，配合 SceneState 让 nurse 正确解读（"InRoom + Active 25min ago" = "在房静止 25min"，可能正常可能危险，结合其他线索）
+
+**护士需求语义（2026-05-19 拍板）**：
+- 旧含义"resident 步行时刻"过严——多人场景下 sensor `total_people==1` gate 不更新，丢失"房间有人能动 → 互助能力"的安全信号
+- v3 改语义为"房间内任一人最后一次步行时刻"（去 single-person gate；visitor 归因走 [[unit_visitor_attribution]]，未来 bed-bound radar 检测床主访客）
+- v2 阶段 sensor 仍 single-person gate（FollowUp 暂不动）
 
 **示例（同卡 2 个 radar）**：
 
@@ -191,11 +202,65 @@ else:
 
 ### 4.3a StandingContinuousMin（per-device，cardagg 合并）
 
-**已不在 RoomState**，移到 `TargetState.StandingContinuousMin`（per radar device）：
+**已不在 RoomState**（schema 2026-05-19 已迁），移到 `TargetState.StandingContinuousMin`（per radar device）：
 - Sensor per radar：`stand_duration ≥ 55s` + 该 radar 所在 room `total_people == 1` → +1（封顶 8）
 - 坐/走/躺 / 多人 / 空房 → reset 0
-- Cardagg：card.standingMin = max(deviceTarget.StandingContinuousMin across radars)
+- Cardagg：card.standingMin = max(deviceTarget.StandingContinuousMin across online + fresh radars)
 - risk_evaluator 不再读 RoomState.StandingContinuousMin —— 改读 card 合并后的（待 cardagg 改造）
+
+**Cardagg 双重过滤（2026-05-19 落地）**：
+- **offline**：跳过 offline device snapshot
+- **2min UpdatedAt staleness**：snapshot 老于 2min 视为 push 异常，不参与 max
+- 必要性：standing 是瞬时态，stale 直接进 risk_evaluator → false Attention/Risk → 误报 alarm
+
+**Sensor 心跳契约（必约束）**：sensor 必须每分钟 push 一次 standing 值（即使无变化），让 cardagg 2min 阈值不误判正常持续站立为 stale。FollowUp-4 sensor `handleMonitorFrame` 实施时必须保证。
+
+**v3 双 radar AND 规则（follow-up）**：
+- 用户拍板（[[standing_dual_radar_and_rule]]）：同 card 多 radar 都 standing>0 才信 max；任一报 0 → 整体 0
+- 物理前提：同一老人不可能在两个 radar 下一个动一个静；冲突说明信号有问题
+- 但 v2 区分不了"sit"和"视野盲区"（snapshot 只有 standing 一个数值），AND 规则会导致盲区配置漏报
+- 推后到 v3 sensor logicID 真融合 + device-level visibility 信号时再做；v2 阶段保持简单 max
+- 同 room 多 radar 在 v2 是小概率配置，max 偏激进可接受
+
+### 4.3b WeakBiometricSignal — 风险描述符（2026-05-19 设计修订）
+
+**核心修订**：WeakBio score 是**长期状态 / 风险放大系数**，不是事件源——**不独立触发 alarm**。
+
+理由：firmware 已经直发 HR/RR/ApneaH/WeakBio raw alarm 进 alarm pipeline；二次造一个 escalation Critical 是冗余且不可降级（lazy 设计 + 上升沿 → 永远要 ack）。WeakBio 类比温度计：38℃ 不会触发"高温警报"，温度是**上下文**让其他判断更精准。
+
+**计算公式（修订权重）**：
+
+```
+score = max(weakBio_raw_in_30min_window)    # 0..60 (state×20)
+      + count(HeartRateAlert)   × 5         # 旧 15 → 新 5（HR/RR 单条噪声居多）
+      + count(RespRateAlert)    × 5         # 旧 15 → 新 5
+      + count(ApneaHypopnea)    × 15        # 旧 25 → 新 15（单条仍有意义但不应单条触红）
+final = min(100, score)
+```
+
+**临床校准依据**（AASM AHI 标准 5/15/30 = 轻/中/重）：
+- 30min 内 6 次 ApneaH = AHI≈12 = 轻度 → score 90 → 红 ✓
+- 30min 内 4 次 ApneaH = AHI≈8 = 临界轻度 → score 60 → 黄 ✓
+- 12 次 HR alert (持续真异常) → score 60 → 黄 ✓
+- 单条 ApneaH = 15 → 不显示（避免单条噪声）
+
+**FE 横条阈值（Section3.down.right，Step2 实施）**：
+
+| score | UI 横条 |
+|---|---|
+| 0-29 | 不显示 |
+| 30-59 | 灰（Attention）|
+| 60-79 | 黄（Watch）|
+| ≥80 | 红（Alert）|
+
+**风险放大消费者**（待 follow-up）：
+- cardagg AlarmRouter 收 Warn alarm 时查 card.Target.WeakBio，超阈值提级 Critical
+- sensor roomengine fall verifier：WeakBio≥80 → 跳过 verifier 直接 Confirmed
+- sensor zonealarm Supervisor：WeakBio≥80 → 缩短 LeftBed/Stay DurationSec
+
+**Cardagg merge 待做（Step2）**：offline 过滤 + 30min UpdatedAt staleness（贴 sensor 滑窗）。
+
+**注**：v2 max-merge 违反 VitalWeight 加权意图（Sleepad=8 > Radar=4），但因为不再触发 alarm，false positive 代价从"误叫救护车"降到"FE 横条假红"——可接受；v3 vital 融合时再上加权策略（FollowUp-1）。
 
 ### 4.4 VisitorState 算法（per /88 room card，由 cardagg VisitorDeriver 写）
 
@@ -354,28 +419,64 @@ type TargetState struct {
 - Go 常量：复用 `owl-common/card/card_types.go` 已定义的 `Section2LeftMode*` / `RoomIconKind*` / `ActiveState*` / `SceneState*` / `VisitorState*`、`SleepStage*`、`RiskLevel*`、`RoomKind*`
 - JSON tag：snake_case，可选字段加 `omitempty`
 
-## 9. 已知 wiring gap（producer 待修）
+## 9. 进度跟踪（2026-05-19 更新）
 
-**Sensor 侧 (per radar device)**：
+### 9.1 已完成
 
-| 字段 | 现状 | 待修 |
-|---|---|---|
-| `TargetState.LastActiveTs` (per device) | `UpdateTargetLastActive` 函数有，**零 caller**；当前是 per-cardID 不是 per-device | P3：TargetStateAggregator 改 per device 寻址；收 radar 帧时按 §4.3 条件调用 |
-| `TargetState.StandingContinuousMin` (per device) | **字段不在 TargetState 上（在 RoomState）**；需迁移 + writer | P3：① card_types.go 把 `StandingContinuousMin` 从 RoomState 挪到 TargetState；② sensor per device 累加 |
-| `TargetState.WeakBiometricSignal` (per device) | 字段定义在，**全栈无 writer** | P4：sensor TargetStateAggregator 订阅 iot:alarm:stream 累加 30min 滑窗（见 [[target_state_weak_bio_signal_design]]）；per device 计 |
-| `RoomState.StaySec` | risk_evaluator 读，**已修**（commit `8e8732e` translator 即时算）| ✅ done |
+**Sensor 侧**：
+| 项 | 状态 |
+|---|---|
+| `RoomState.StaySec` 即时累加（translator） | ✅ commit `8e8732e` |
+| `StandingContinuousMin` schema 从 RoomState 挪到 TargetState | ✅ 2026-05-19 |
+| `risk_evaluator` 签名加 standingMin 参数（解耦 RoomState 字段）| ✅ 2026-05-19 |
+| sensor 清除 card 知识（删 device_meta.go / state_service.go / derive_helpers.go）| ✅ 2026-05-19 |
+| sensor `alarm_enablement.go` 改 spatial_config LPM（不依赖 card 概念）| ✅ 2026-05-19 |
+| AlarmBackChannel 加 enablement gate（所有 alarm 出口源头查使能）| ✅ 2026-05-19 |
+| sensor stream_publisher 去 ReadCardStatus + translator 去 prev 参数 | ✅ 2026-05-19 |
+| sensor `TargetStateAggregator.handleAlarmEvent` WeakBio 累加（30min 滑窗 + 修订权重 5/5/15）| ✅ 2026-05-19 |
+| WeakBio 砍 escalation alarm 路径（改风险描述符模型）| ✅ 2026-05-19 |
 
-**Cardagg 侧 (per card 跨 device/room 合并)**：
+**Cardagg 侧**：
+| 项 | 状态 |
+|---|---|
+| `SensorStateProjector` bed.state 字段级 merge（保留 SleepStage / TrackNumber 等非 sensor owner）| ✅ 2026-05-19 |
+| `TargetMerger` per-device → owning card max-merge（LastActive / Standing / WeakBio）| ✅ 2026-05-19 |
+| `VisitorDeriver` 新模块（60s tick + Private gate + 5min 阈值，§4.4）| ✅ 2026-05-19 |
+| main wiring：TargetMerger + VisitorDeriver + cardChange invalidate | ✅ 2026-05-19 |
+| LastActive offline 过滤（`DeviceStatusTracker.IsOnline` 注入）| ✅ 2026-05-19 |
+| Standing 双重过滤（offline + 2min UpdatedAt staleness）| ✅ 2026-05-19 |
 
-| 任务 | 现状 | 待修 |
-|---|---|---|
-| 多 device TargetState → 单 card.Target 合并 | 当前 cardagg 假设 1 卡 1 target；多 radar 同卡时只看最后写入的，丢另一个 radar 数据 | P4：cardagg `SensorStateProjector` 接收 per device target，per card 维护 device map，写 card:state 时合并（LastActiveTs/Standing/WeakBio 各取 max）|
-| `VisitorDeriver` 新模块 | sensor 不再负责；cardagg 无此模块 | P4：新建 per §4.4：60s tick + Private gate + per /88 room 累加 + 5min 阈值写 /88 room card target |
-| `RoomState.StandingContinuousMin` | risk_evaluator 读，**无 writer** | sensor 按 stand_duration ≥ 55s 累 +1，封顶 8 |
+### 9.2 待做（Step2）
 
-修复顺序（按当前讨论的约定）：
-1. 修 producer（sensor + RoomState / Target）
-2. 再修 consumer（cardagg picker / display_builder）
+| 项 | 内容 |
+|---|---|
+| FE 横条 | `CardDisplay.VitalTrendLevel int` 字段 + `card_display_builder` 派生 30/60/80 阈值 |
+| Section3.down 布局拆 left/right | doc §1 ASCII + §3.5 更新 |
+| WeakBio merger staleness | offline + 30min UpdatedAt（贴 sensor 滑窗）|
+
+### 9.3 Follow-up backlog
+
+**Sensor 端**：
+- `TargetStateAggregator` 订阅 iot:alarm:stream wire 接上（PushAlarmEvent 当前无 producer）
+- `handleMonitorFrame` 填实 LastActive / Standing 累加 + **每分钟心跳 push 契约**
+- `StreamPublisher.tickPullAndPublish` 真发 target.state（当前 stub）
+- vital 融合（Q1=B）：sensor 订阅 SleepStage event + VitalWeight 加权写 BedState.SleepStage；BedState 4 个非 sensor owner 字段当前全栈 0 writer
+- WeakBio max-merge → VitalWeight 加权（合到 vital 融合 PR）
+- WeakBio sensor 端补主动 expire push（30min 滑窗到期主动 push score=0）或每分钟 tick recompute
+
+**Cardagg 端**：
+- pending_arm/cancel sentinel 拆到专用流（违反 CLAUDE.md 规则 #2.1）
+- VisitorDeriver 直接写 hash（当前依赖下次 target.state 触发，stale 1 tick）
+- `mergeForCard` 锁内调 GetOrLoad（lock-on-IO 重构锁外）
+- WeakBio AlarmRouter 提级（风险放大系数消费）
+- VisitorDeriver 单测（接口化 metaCache/reader + mock）
+
+**跨模块**：
+- alarm_device flow invalidate 信号传到 sensor enablement（当前 cardagg 投到自己 enablement，sensor 不知）
+- v3 同 room 双 radar Standing AND 规则（需 sensor 区分 sit vs 盲区）
+
+**遗留破损**：
+- roomengine pre-existing test：bathroom_fall_test / bedroom_fall_test / ghost_adjudicator_test / public_bathroom_test 在 v2 cutover 时遗留 import / field 不匹配，独立 PR 修
 
 ## 10. unit_type schema 校准（独立 task）
 

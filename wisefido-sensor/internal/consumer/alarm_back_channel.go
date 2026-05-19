@@ -6,7 +6,9 @@ package consumer
 // cardagg 现有 alarm_handler.go 路由完成实际写库 / 推送 / Redis pending 增删。原则：
 //
 //   - sensor 内不写 alarm_events DB，不写 cardagg 内部 Redis pending hash
-//   - 不绕过 cardagg 的 enablement gate（cardagg 端按 producer 判定信任级别）
+//   - **sensor 在此处统一做 enablement gate**（按 device /128 LPM 查 spatial_config alarm.cloud_config）。
+//     未启用的 alarm 在 sensor 源头丢弃，不发往 cardagg；cardagg platform-agent trust bypass 保留，
+//     视为 second-line（产 + 消两端都不漏 + 不重复 gate）。
 //   - envelope.event_status 协议沿用：start / pending_arm / pending_cancel
 //
 // "pending_arm" / "pending_cancel" 是 PR1 新增的 sensor→cardagg sentinel；
@@ -24,6 +26,10 @@ import (
 	redislib "github.com/go-redis/redis/v8"
 )
 
+// EnablementGate sensor 决定 alarm 是否启用的回调（main wiring 传 closure 注入；
+// 接口而非 *service.AlarmEnablementCache，避免 consumer→service 导入环）。
+type EnablementGate func(ctx context.Context, deviceAddr, alarmType string) bool
+
 // EventStatusStart / PendingArm / PendingCancel envelope.event_status 的 PR1 sentinel。
 const (
 	EventStatusStart         = "start"
@@ -39,10 +45,15 @@ type AgentIdentity struct {
 }
 
 // AlarmBackChannel sensor → cardagg 回流 publisher。
+//
+// 内部持 enablement gate callback：所有 publish 在源头按 device /128 + alarmType 查使能；
+// 未启用直接 drop（不发流不入 cardagg）。gate=nil 时退化为 always-allow
+// （用于早期 boot 期 / 测试，生产 wiring 应注入）。
 type AlarmBackChannel struct {
 	client   *redislib.Client
 	identity AgentIdentity
 	seqKey   string // Redis INCR key for envelope.sequence_number
+	gateFn   EnablementGate
 }
 
 // NewAlarmBackChannel 构造 publisher。identity 必须有效（IPv6 非零）；否则 publish 时退化为 anonymous。
@@ -60,6 +71,31 @@ func NewAlarmBackChannel(client *redislib.Client, identity AgentIdentity) *Alarm
 		identity: identity,
 		seqKey:   seqKey,
 	}
+}
+
+// SetEnablement 注入 enablement gate callback（sensor main wiring 调）。
+// 不调时退化为 always-allow（兼容老 wiring + 单测）。
+func (a *AlarmBackChannel) SetEnablement(gate EnablementGate) {
+	if a == nil {
+		return
+	}
+	a.gateFn = gate
+}
+
+// gate 在 publish 入口查 device 的 alarm 使能；未启用返回 false → caller 直接退出。
+// gateFn=nil 或 deviceAddr 无效时返回 true（allow，避免 boot 期所有 alarm 静默丢）。
+//
+// 注：deviceAddr 是 alarm 归因的物理设备 /128；alarmType 已是 owl-common/alarm 常量字符串。
+// 设备类报警（Offline / SignalPoor 等）也走这条 gate —— 客户禁用了就不该报；若需强制审计
+// 不受 enablement 影响的报警，由 caller 不走 BackChannel 而走另一专用 publisher。
+func (a *AlarmBackChannel) gate(ctx context.Context, deviceAddr netip.Addr, alarmType string) bool {
+	if a == nil || a.gateFn == nil {
+		return true
+	}
+	if !deviceAddr.IsValid() {
+		return true // 无 device 归因时不阻断（兜底兼容）
+	}
+	return a.gateFn(ctx, deviceAddr.String(), alarmType)
 }
 
 // nextSeq 从 Redis INCR 取下一个 envelope sequence_number；失败返回 0（degrade 不阻断 alarm publish）。
@@ -87,6 +123,9 @@ func (a *AlarmBackChannel) PublishAlarmFire(
 	if a == nil || a.client == nil {
 		return "", fmt.Errorf("AlarmBackChannel not initialized")
 	}
+	if !a.gate(ctx, deviceAddr, eventName) {
+		return "", nil // 未启用 → 静默丢弃
+	}
 	data := mergeTriggerData(eventName, EventStatusStart, level, 0, "", 0, triggerData)
 	return a.publishAlarm(ctx, deviceAddr, subjectEntity, eventName, tsMs, data)
 }
@@ -110,6 +149,9 @@ func (a *AlarmBackChannel) PublishPendingArm(
 	if a == nil || a.client == nil {
 		return "", fmt.Errorf("AlarmBackChannel not initialized")
 	}
+	if !a.gate(ctx, deviceAddr, eventName) {
+		return "", nil
+	}
 	if eventSinceMs == 0 {
 		eventSinceMs = tsMs
 	}
@@ -119,6 +161,10 @@ func (a *AlarmBackChannel) PublishPendingArm(
 
 // PublishPendingCancel 取消 pending（如 InBed 抵消 LeftBed pending）。
 // cardagg alarm_handler.go A9 分支据此调 RemovePendingAlarm。
+//
+// 注：cancel 不查 enablement gate —— 若 alarm 类型本来就没被 enable，sensor 也没发过
+// pending_arm，cardagg pending hash 里也没对应行，cancel 自然 no-op；万一上游配置中途
+// 变更，cancel 还是能清掉残留 pending（gate cancel 反而可能留毒）。
 func (a *AlarmBackChannel) PublishPendingCancel(
 	ctx context.Context,
 	deviceAddr netip.Addr,

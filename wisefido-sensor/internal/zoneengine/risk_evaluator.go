@@ -65,7 +65,13 @@ func isNightTime(nowMs int64, loc *time.Location) bool {
 //   · Default(其它，含 Kitchen): 仅看 standing（5min attention / 8min risk）；multi 降一档
 //
 // 注：public 单元的 room 不应进入本函数 —— 应由 caller 按 unit_type==Public 直接跳过。
-func EvaluateRoomRiskLevel(rs *card.RoomState, nowMs int64, loc *time.Location) int {
+//
+// standingMin 是该 room 内 standing 累计分钟数；2026-05-18 后从 RoomState 字段挪到 TargetState
+// （per-device），sensor 在 zoneengine 翻转点没有 card 视图，传 0 即可——standing risk 分支
+// 退化为永远不触发（与挪动前 RoomState.StandingContinuousMin 无 writer 的真实行为一致）。
+// cardagg 端 TargetMerger 合并后 max(devices) 可派生卡视图 standing，但 sensor 本评估在卡视图
+// 之前——若未来需要 standing-driven risk，应由 cardagg 二次评估覆盖 RiskLevel。
+func EvaluateRoomRiskLevel(rs *card.RoomState, standingMin int, nowMs int64, loc *time.Location) int {
 	if rs == nil || rs.TotalPeople <= 0 {
 		return card.RiskNormal
 	}
@@ -76,10 +82,10 @@ func EvaluateRoomRiskLevel(rs *card.RoomState, nowMs int64, loc *time.Location) 
 		if multi {
 			return card.RiskNormal
 		}
-		if rs.StandingContinuousMin >= 8 {
+		if standingMin >= 8 {
 			return card.RiskRisk
 		}
-		if rs.StandingContinuousMin >= 5 {
+		if standingMin >= 5 {
 			return card.RiskAttention
 		}
 		if isNight {
@@ -101,13 +107,13 @@ func EvaluateRoomRiskLevel(rs *card.RoomState, nowMs int64, loc *time.Location) 
 	}
 
 	// Default / Kitchen / 其它 — standing-only
-	if rs.StandingContinuousMin >= 8 {
+	if standingMin >= 8 {
 		if multi {
 			return card.RiskAttention
 		}
 		return card.RiskRisk
 	}
-	if rs.StandingContinuousMin >= 5 {
+	if standingMin >= 5 {
 		if multi {
 			return card.RiskNormal
 		}

@@ -93,8 +93,15 @@ func main() {
 
 	unitPicker := consumer.NewUnitPicker(db, redisClient, writer, reader, logger)
 	alarmRouter := consumer.NewAlarmRouter(db, writer, reader, enablementCache, metaCache, deviceTracker, unitPicker, logger)
+	// TargetMerger：per-device → owning card max-merge（LastActive / Standing / WeakBio）。
+	// 详 [[target_state_per_device]]。VisitorDeriver 通过 ApplyVisitor 注入 visitor 三字段。
+	// 注入 deviceTracker.IsOnline 作为 LastActive merge 的 offline 过滤器。
+	targetMerger := service.NewTargetMerger(metaCache)
+	targetMerger.SetOnlineChecker(deviceTracker.IsOnline)
 	sensorStateProjector := consumer.NewSensorStateProjector(writer, reader, unitPicker, logger)
+	sensorStateProjector.SetTargetMerger(targetMerger)
 	cardLifecycle := consumer.NewCardLifecycle(db, writer, metaCache, enablementCache, unitPicker, logger)
+	cardLifecycle.SetTargetMerger(targetMerger) // 卡变更 / 设备解绑时清 device snapshot
 	alarmDeviceHandler := consumer.NewAlarmDeviceHandler(enablementCache, logger)
 	alarmProcessHandler := consumer.NewAlarmProcessHandler(db, writer, logger)
 
@@ -106,6 +113,11 @@ func main() {
 		AlarmDevice:  alarmDeviceHandler,
 		AlarmProcess: alarmProcessHandler,
 	})
+
+	// VisitorDeriver 60s tick：per Private 父下 /88 room cards 计算 visitor 累积。
+	// 详 doc/card_display.md §4.4 + [[visitor_belongs_to_cardagg]]。
+	visitorDeriver := consumer.NewVisitorDeriver(metaCache, reader, targetMerger, 0, logger)
+	go visitorDeriver.Run(ctx)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

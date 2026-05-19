@@ -116,6 +116,19 @@ func (t *DeviceStatusTracker) OnDeviceConnectivity(ctx context.Context, deviceAd
 	t.mu.Unlock()
 }
 
+// IsOnline 查询某 device 当前内存判定的在线状态。
+// 未见过的 device 返回 false（保守：不曾出现的 device 视作离线，避免它的 stale snapshot
+// 参与下游卡级 merge）。
+func (t *DeviceStatusTracker) IsOnline(deviceAddr string) bool {
+	if t == nil || deviceAddr == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	dl := t.state[deviceAddr]
+	return dl != nil && dl.online
+}
+
 // TouchLastSeen monitor 流每条 sample 调；纯内存 RMW，仅 offline→online transition 写 Redis。
 func (t *DeviceStatusTracker) TouchLastSeen(ctx context.Context, deviceAddr, deviceType string) {
 	now := time.Now().UnixMilli()

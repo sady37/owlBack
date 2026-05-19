@@ -275,27 +275,33 @@ const (
 // 注：unit /80 没有 unit_state — unit 卡 FE 自己按 /80 prefix 列子 /88 room，挑最近 UpdatedAt
 // 的那个显示。sensor 内部 unit-scope risk（如 NightAbsence of Room）走自己的 counter，不入此 hash。
 type RoomState struct {
-	RoomType              int    `json:"room_type,omitempty"` // RoomType*: 0=Default, 1=Bathroom, 2=Kitchen
-	UpdatedAt             int64  `json:"updated_at,omitempty"`
-	TotalPeople           int    `json:"total_people"` // 当前证据推断的人数（radar number_people + sleepad in_bed），不是绝对真实总人数；监控盲区/识别误差会偏移
-	LastEnterTime         int64  `json:"last_enter_time,omitempty"`
-	LastExitTime          int64  `json:"last_exit_time,omitempty"`
-	LastExitToOutside     bool   `json:"last_exit_to_outside,omitempty"` // 最近 Vacant 由 EnterArea==outside 触发；不参与 SceneState 派生，仅留作 risk/alarm 原始信号
-	StaySec               int    `json:"stay_sec,omitempty"`
-	StandingContinuousMin int    `json:"standing_continuous_min,omitempty"`
-	RiskLevel             int    `json:"risk_level,omitempty"` // 0=Normal 1=Muted 2=Attention 3=Risk；kind-specific 阈值 + night/multi-people 由 sensor 评估
+	RoomType          int   `json:"room_type,omitempty"` // RoomType*: 0=Default, 1=Bathroom, 2=Kitchen
+	UpdatedAt         int64 `json:"updated_at,omitempty"`
+	TotalPeople       int   `json:"total_people"` // 当前证据推断的人数（radar number_people + sleepad in_bed），不是绝对真实总人数；监控盲区/识别误差会偏移
+	LastEnterTime     int64 `json:"last_enter_time,omitempty"`
+	LastExitTime      int64 `json:"last_exit_time,omitempty"`
+	LastExitToOutside bool  `json:"last_exit_to_outside,omitempty"` // 最近 Vacant 由 EnterArea==outside 触发；不参与 SceneState 派生，仅留作 risk/alarm 原始信号
+	StaySec           int   `json:"stay_sec,omitempty"`
+	RiskLevel         int   `json:"risk_level,omitempty"` // 0=Normal 1=Muted 2=Attention 3=Risk；kind-specific 阈值 + night/multi-people 由 sensor 评估
 }
 
-// TargetState 单 Target 汇总（老人维度）
+// TargetState 单 Target 汇总（老人维度）。
+//
+// per-device 维度（v2 拍板 [[target_state_per_device]]）：sensor 每个 radar /128 维护自己
+// 一份；cardagg max-merge 到单 card.target Hash 写入。
+//
+// StandingContinuousMin 2026-05-18 已从 RoomState 挪到此处：单 device 内（属同 radar 的物理
+// 占用）的连续站立分钟，sensor 累加封顶 8；cardagg max-merge across devices in card。
 type TargetState struct {
-	UpdatedAt           int64  `json:"updated_at,omitempty"`
-	TrackID             int    `json:"track_id"`
-	LogicID             string `json:"logic_id,omitempty"`
-	LastActiveTs        int64  `json:"last_active_ts,omitempty"`
-	WeakBiometricSignal int    `json:"weak_biometric_signal"`
-	VisitorStartTs      int64  `json:"visitor_start_ts,omitempty"`
-	TodayMaxVisitorMin  int    `json:"today_max_visitor_min,omitempty"`
-	HasVisitorToday     bool   `json:"has_visitor_today,omitempty"`
+	UpdatedAt             int64  `json:"updated_at,omitempty"`
+	TrackID               int    `json:"track_id"`
+	LogicID               string `json:"logic_id,omitempty"`
+	LastActiveTs          int64  `json:"last_active_ts,omitempty"`
+	StandingContinuousMin int    `json:"standing_continuous_min,omitempty"`
+	WeakBiometricSignal   int    `json:"weak_biometric_signal"`
+	VisitorStartTs        int64  `json:"visitor_start_ts,omitempty"`
+	TodayMaxVisitorMin    int    `json:"today_max_visitor_min,omitempty"`
+	HasVisitorToday       bool   `json:"has_visitor_today,omitempty"`
 }
 
 // AlarmState 告警摘要（v2：cards 表无 alarm 列，counter/pop 由 alarm_events 实时聚合得出）

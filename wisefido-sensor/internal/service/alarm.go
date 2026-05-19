@@ -81,7 +81,16 @@ func NewAlarmService(cfg *config.Config, logger *zap.Logger, tenantID string) (*
 	// 由 cardagg 统一持久化。alarmBackChannel 注入 redis client + identity 即可。
 	// 此处的 evaluator 是 wisefido-ai legacy alarm 路径（vital threshold 等），
 	// 未来移除；identity 取空 — Phase B 主路径在 cmd/main.go 的 zonealarm 那侧。
+	//
+	// enablement gate：legacy 路径同样按 device /128 LPM 查 spatial_config alarm.cloud_config，
+	// 未启用直接 drop。cache 私有（与 cmd/main.go 那个独立）—— 两 instance 各自 lazy load，
+	// invalidate 信号目前不互通，初期可接受（cardChange 触发 InvalidateAll 即可手动同步）。
+	enablementCache := NewAlarmEnablementCache(db, logger)
 	alarmBackChannel := consumer.NewAlarmBackChannel(redisClient, consumer.AgentIdentity{AgentName: "wisefido-sensor"})
+	alarmBackChannel.SetEnablement(func(ctx context.Context, deviceAddr, alarmType string) bool {
+		_, ok := enablementCache.IsEnabled(ctx, deviceAddr, alarmType)
+		return ok
+	})
 	eval := evaluator.NewEvaluator(
 		cfg,
 		db,

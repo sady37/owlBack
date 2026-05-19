@@ -127,12 +127,22 @@ func main() {
 	monitorConsumer := consumer.NewMonitorConsumer(engineRedis, monitorBuf, logger)
 	monitorConsumer.Start(ctx)
 
+	// 5.2.1 Alarm enablement cache + BackChannel gate
+	// sensor 在源头按 device /128 LPM 查 spatial_config alarm.cloud_config，未启用的 alarm
+	// 在此处统一 drop，不发往 cardagg。closure 注入 BackChannel，避免 consumer→service 导入环。
+	enablementCache := service.NewAlarmEnablementCache(engineDB, logger)
+	backChannel := consumer.NewAlarmBackChannel(engineRedis, sensorAgentIdentity(cfg, logger))
+	backChannel.SetEnablement(func(ctx context.Context, deviceAddr, alarmType string) bool {
+		_, ok := enablementCache.IsEnabled(ctx, deviceAddr, alarmType)
+		return ok
+	})
+
 	// 5.3 Zone Engine 子系统：Bed/Room/Bathroom 状态唯一权威源 + zonealarm Warning 兜底
 	zone, err := wiring.Setup(wiring.SetupOptions{
 		DB:            engineDB,
 		Redis:         engineRedis,
 		MonitorBuffer: monitorBuf,
-		BackChannel:   consumer.NewAlarmBackChannel(engineRedis, sensorAgentIdentity(cfg, logger)),
+		BackChannel:   backChannel,
 		Logger:        logger,
 	})
 	if err != nil {

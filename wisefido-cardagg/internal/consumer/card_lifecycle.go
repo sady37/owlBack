@@ -30,6 +30,7 @@ type CardLifecycle struct {
 	metaCache  *service.DeviceMetaCache
 	enablement *service.AlarmEnablementCache
 	picker     *UnitPicker
+	merger     *service.TargetMerger // 卡变更时清 visitor 累积；deleted 时连带 device snapshot
 	logger     *zap.Logger
 }
 
@@ -42,6 +43,14 @@ func NewCardLifecycle(db *sql.DB, writer *card.Writer, meta *service.DeviceMetaC
 		picker:     picker,
 		logger:     logger,
 	}
+}
+
+// SetTargetMerger 注入 merger 以便卡删/变更时清相应 cache（main wiring 调）。
+func (h *CardLifecycle) SetTargetMerger(m *service.TargetMerger) {
+	if h == nil {
+		return
+	}
+	h.merger = m
 }
 
 func (h *CardLifecycle) Handle(ctx context.Context, raw map[string]interface{}) error {
@@ -75,11 +84,19 @@ func (h *CardLifecycle) Handle(ctx context.Context, raw map[string]interface{}) 
 		if h.picker != nil {
 			h.picker.InvalidateAll()
 		}
+		// merger 的 device snapshot 不主动清空——device 重建后旧 snapshot 自然被新 OnDeviceTarget
+		// 覆盖；visitor 累积全清（重置即重置）。
+		if h.merger != nil {
+			h.merger.ResetAllVisitor()
+		}
 	case "deleted", "delete":
 		h.metaCache.Remove(d.CardID)
 		h.metaCache.RefreshDeviceIndexForCard(ctx, d.CardID)
 		if err := h.writer.DeleteCardState(ctx, d.CardID); err != nil {
 			h.logger.Warn("delete card state", zap.String("cid", d.CardID), zap.Error(err))
+		}
+		if h.merger != nil {
+			h.merger.ForgetCard(d.CardID)
 		}
 	default:
 		h.metaCache.Remove(d.CardID)

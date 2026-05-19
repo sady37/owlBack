@@ -107,9 +107,9 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 	streamPublisher := zoneengine.NewStreamPublisher(opts.Redis, opts.Logger)
 	engine.AddListener(streamPublisher)
 
-	// 3.1) TargetStateAggregator（P2 scaffold）：纯 state holder，订阅 ZoneEvent 缓存 TotalPeople；
-	//      monitor / alarm 流消费 P3/P4 接；escalation alarm publisher P4 注入。
-	aggregator := service.NewTargetStateAggregator(nil /* publisher P4 注入 */, opts.Redis, opts.Logger)
+	// 3.1) TargetStateAggregator：纯 state holder，订阅 ZoneEvent 缓存 TotalPeople；
+	//      monitor / alarm 流消费 FollowUp 接；WeakBio score 仅作风险描述符，不 publish escalation。
+	aggregator := service.NewTargetStateAggregator(opts.Redis, opts.Logger)
 	engine.AddListener(targetAggregatorListenerAdapter{agg: aggregator})
 	streamPublisher.SetAggregator(aggregator)
 

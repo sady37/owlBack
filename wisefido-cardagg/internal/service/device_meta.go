@@ -303,6 +303,40 @@ func (c *DeviceMetaCache) ResolveDeviceID(ctx context.Context, cardID, deviceID,
 	return deviceUID
 }
 
+// ListPrivateRoomCardIDs 列出所有父 unit_type=Private (1) 的 /88 room cards。
+// VisitorDeriver 60s tick 用：仅 Private 单元的 /88 才计算 visitor（[[visitor_belongs_to_cardagg]]
+// "Share/Public 多人是常态，无法判定 visitor"）。
+//
+// 直接 SQL，不依赖 cards cache（per-call 拉一次，60s tick 频率可接受；后续若 N 大可加 TTL cache）。
+func (c *DeviceMetaCache) ListPrivateRoomCardIDs(ctx context.Context) []string {
+	if c.db == nil {
+		return nil
+	}
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT c.spatial_prefix::text
+		  FROM cards c
+		  JOIN units u ON u.unit_id = set_masklen(c.spatial_prefix, 80)
+		 WHERE masklen(c.spatial_prefix) = 88
+		   AND u.unit_type = 1
+	`)
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Warn("ListPrivateRoomCardIDs failed", zap.Error(err))
+		}
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // LookupCardByDeviceAddr 反查 device_addr → cardID（O(1) 内存索引；空时回退 SQL LPM）。
 //
 // 命中返回单一 cardID（cards.spatial_prefix INET CIDR text）；
