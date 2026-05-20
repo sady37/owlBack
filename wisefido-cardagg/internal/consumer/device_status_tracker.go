@@ -53,12 +53,16 @@ type deviceLiveness struct {
 	online     bool
 }
 
+// OfflineCallback online→offline 边沿广播。alarm-driven 与 watchdog 双源都可触发，callback 必须 idempotent。
+type OfflineCallback func(deviceAddr string)
+
 type DeviceStatusTracker struct {
 	writer          *card.Writer
 	mu              sync.Mutex
 	state           map[string]*deviceLiveness // deviceAddr → liveness
 	staleAfter      time.Duration
 	scanInterval    time.Duration
+	offlineCBs      []OfflineCallback
 	logger          *zap.Logger
 }
 
@@ -70,6 +74,38 @@ func NewDeviceStatusTracker(writer *card.Writer, logger *zap.Logger) *DeviceStat
 		scanInterval: DefaultWatchdogInterval,
 		logger:       logger,
 	}
+}
+
+// RegisterOfflineCallback 注册 online→offline 边沿回调。main wire 调；非线程安全（启动期一次性注册）。
+func (t *DeviceStatusTracker) RegisterOfflineCallback(fn OfflineCallback) {
+	if t == nil || fn == nil {
+		return
+	}
+	t.offlineCBs = append(t.offlineCBs, fn)
+}
+
+func (t *DeviceStatusTracker) fireOffline(deviceAddr string) {
+	for _, fn := range t.offlineCBs {
+		fn(deviceAddr)
+	}
+}
+
+// recordOffline 内存中标 device 为 offline 并返回是否是 online→offline 边沿（用于决定是否广播）。
+// 未见过的 device 不视作 edge（无 prior 状态可"重启"）。
+func (t *DeviceStatusTracker) recordOffline(deviceAddr, deviceType string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	dl := t.state[deviceAddr]
+	wasOnline := dl != nil && dl.online
+	if dl == nil {
+		dl = &deviceLiveness{}
+		t.state[deviceAddr] = dl
+	}
+	dl.online = false
+	if deviceType != "" {
+		dl.deviceType = deviceType
+	}
+	return wasOnline
 }
 
 // OnDeviceAlarm 设备类 alarm onset（SignalPoor / AngleException / SensorDetached）。
@@ -102,18 +138,22 @@ func (t *DeviceStatusTracker) OnDeviceConnectivity(ctx context.Context, deviceAd
 		t.logger.Warn("device_status connectivity", zap.String("addr", deviceAddr), zap.Bool("online", online), zap.Error(err))
 		return
 	}
-	t.mu.Lock()
-	dl := t.state[deviceAddr]
-	if dl == nil {
-		dl = &deviceLiveness{}
-		t.state[deviceAddr] = dl
-	}
-	dl.online = online
-	dl.deviceType = deviceType
 	if online {
+		t.mu.Lock()
+		dl := t.state[deviceAddr]
+		if dl == nil {
+			dl = &deviceLiveness{}
+			t.state[deviceAddr] = dl
+		}
+		dl.online = true
+		dl.deviceType = deviceType
 		dl.lastSeenMs = time.Now().UnixMilli()
+		t.mu.Unlock()
+		return
 	}
-	t.mu.Unlock()
+	if t.recordOffline(deviceAddr, deviceType) {
+		t.fireOffline(deviceAddr)
+	}
 }
 
 // IsOnline 查询某 device 当前内存判定的在线状态。
@@ -194,5 +234,6 @@ func (t *DeviceStatusTracker) scanStale(ctx context.Context) {
 			continue
 		}
 		t.logger.Info("watchdog marked offline", zap.String("addr", s.addr))
+		t.fireOffline(s.addr)
 	}
 }

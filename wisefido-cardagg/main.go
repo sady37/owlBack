@@ -108,10 +108,11 @@ func main() {
 	//   test.wisefido.com  → sandbox（仅 log，不动 track_confidence）
 	//   owl.wisefido.com   → release（覆写 track_confidence + ai_source）
 	// 配置优先级：env CARDAGG_AI_OVERRIDE_MODE > config.yaml ai.override_mode > 默认 sandbox
-	// 清理触发：a) tid=88 (monitor) b) EnterRoom/ExitRoom (event) c) TTL GC d) (后续) device offline。
+	// 清理触发：a) tid=88 (monitor) b) EnterRoom/ExitRoom (event) c) TTL GC d) device offline (RegisterOfflineCallback)。
 	aiOverrides := service.NewAIOverrideCache(cfg.AI.OverrideMode, cfg.AI.OverrideTTLSec, logger)
 	monitorHandler.SetAIOverrides(aiOverrides)
 	eventHandler.SetAIOverrides(aiOverrides)
+	deviceTracker.RegisterOfflineCallback(aiOverrides.ClearDevice)
 	go aiOverrides.RunGCLoop(ctx.Done(), 30*time.Second)
 	aiVerdictHandler := consumer.NewAIVerdictHandler(redisClient, aiOverrides, logger)
 	aiVerdictHandler.Start(ctx)
