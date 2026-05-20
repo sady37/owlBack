@@ -225,8 +225,9 @@ func applyUnitSplitRule(unitPrefix string, info *unitInfo, expected map[string]b
 				expected[b] = true
 			}
 		case bedN == 0 && hasDev:
-			// device 上推 unit
-			needUnit = true
+			// 独立 /88 room 卡（split 模式下，0-bed-with-device room 不上推 unit，
+			// 保持卡片粒度与 split 模式一致 —— 否则 /80 与 /96 混杂语义混乱）
+			expected[room] = true
 		}
 	}
 

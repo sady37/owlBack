@@ -6,7 +6,7 @@
 // 测试隔离：用 fd00:0:99::/48 测试 tenant（demo 数据在 fd00:0:3，互不干扰）。
 // 每个 testcase 自己 cleanTestTenant 重置；不依赖跑顺序。
 //
-// 覆盖度：A (规则) / B (单向阀) / C (LPM) / D (Repository hook) /
+// 覆盖度：A (规则) / B (split↔merge 切换) / C (LPM) / D (Repository hook) /
 //        E (CloudEvent emit) / F (幂等) / G (edge cases)。共 ~38 cases。
 
 package service
@@ -312,8 +312,8 @@ func TestReconcile_A1_EmptyScope(t *testing.T) {
 
 func TestReconcile_A2_ShareUnitOneBedMerge(t *testing.T) {
 	resetTestTenantState(t)
-	// v3 统一规则: Share unit 1 bed device + alreadySplit=false → merge mode → /80 unit card
-	// （v2 中 Share 永远 split 的特殊行为被取消，与 Private 共用单向阀）
+	// v3 统一规则: Share unit 1 bed device → merge mode → /80 unit card
+	// （v2 中 Share 永远 split 的特殊行为已取消，Share / Private 统一走 activeBed>1 才 split）
 	seedDevice(t, tBedShareA, true)
 	reconcile(t, tUnitShare)
 	assertCards(t, tUnitShare, tUnitShare)
@@ -366,7 +366,7 @@ func TestReconcile_A7_MonitoringDisabled(t *testing.T) {
 func TestReconcile_A8_PrivateOneBedPlusBathroom(t *testing.T) {
 	resetTestTenantState(t)
 	// Private + 1 bed device + 1 bathroom radar (room 级)
-	// alreadySplit=false (cards 空) + bedCount=1 → merge: 1 张 /80（bed + bathroom 都隐含其中）
+	// activeBed=1 → merge mode → 1 张 /80（bed + bathroom 都隐含其中）
 	seedDevice(t, tBedPrivA, true)
 	seedDevice(t, tRoomPrivBathroom, true)
 	reconcile(t, tUnitPrivate)
@@ -374,7 +374,7 @@ func TestReconcile_A8_PrivateOneBedPlusBathroom(t *testing.T) {
 }
 
 // =========================================================================
-// 组 B：单向阀（merge → split 不可逆，split 后增减保持 split）
+// 组 B：split↔merge 双向切换（stateless rule：activeBed>1 split / ≤1 merge，无 latching）
 // =========================================================================
 
 func TestReconcile_B1_MergeToSplit(t *testing.T) {
@@ -390,21 +390,21 @@ func TestReconcile_B1_MergeToSplit(t *testing.T) {
 	assertCards(t, tUnitPrivate, tBedPrivA, tBedPrivB)
 }
 
-func TestReconcile_B2_SplitMinusOneStaysSplit(t *testing.T) {
+func TestReconcile_B2_SplitMinusOneFallsBackToMerge(t *testing.T) {
 	resetTestTenantState(t)
-	// 2 bed → split (alreadySplit 一旦置位，1 bed 也维持 split)
+	// 2 bed → split (2 张 /96)
 	d1 := seedDevice(t, tBedPrivA, true)
 	seedDevice(t, tBedPrivB, true)
 	reconcile(t, tUnitPrivate)
 	assertCards(t, tUnitPrivate, tBedPrivA, tBedPrivB)
 
-	// 删 1 bed device → cards 表仍有 /96（alreadySplit=true）→ 维持 split 模式
-	// raw=1 + alreadySplit → 套娃，仅剩 1 张 /96
+	// 删 1 bed device → 剩 activeBed=1 → 无单向阀 latching ([[card_split_rule_v3]])
+	// → 回退到 MERGE 模式 → 仅 /80 unit card
 	if _, err := tDB.Exec(`DELETE FROM devices WHERE device_id=$1::UUID`, d1); err != nil {
 		t.Fatal(err)
 	}
 	reconcile(t, tUnitPrivate)
-	assertCards(t, tUnitPrivate, tBedPrivB)
+	assertCards(t, tUnitPrivate, tUnitPrivate)
 }
 
 func TestReconcile_B3_SplitMinusAllBeds(t *testing.T) {
@@ -602,7 +602,7 @@ func TestReconcile_D2_ResidentsRepoUpdateMoveUnit(t *testing.T) {
 	if len(hookCalls) < 2 {
 		t.Errorf("UpdateResident hook should fire 2x (old+new scope), got %d: %v", len(hookCalls), hookCalls)
 	}
-	// v3: Private unit /80 仍 merge mode (cards 表无 /96 → alreadySplit=false; bed device 还在) → /80 NoOne
+	// v3: Private unit activeBed=1（bed device 还在）→ merge mode → /80 NoOne（resident 已搬走）
 	if c := findCard(t, cardsInScope(t, tUnitPrivate), tUnitPrivate); c.ResidentID != "" {
 		t.Errorf("after move: Private /80 should be NoOne, got %q", c.ResidentID)
 	}
@@ -775,17 +775,19 @@ func TestReconcile_E7_NoEmitOnIdempotent(t *testing.T) {
 func TestReconcile_E8_MultipleDiffsOneReconcile(t *testing.T) {
 	resetTestTenantState(t)
 	got := captureDiffs(t)
-	// 一次 reconcile 产生多个 diff：新建 2 张 card + 2 个 admission
+	// 一次 reconcile 产生多个 diff：2 张新 card 各带 resident → 2 admission（computeCardDiff
+	// 对"新卡 + 有 resident"直接 emit admission 单 op，不分别 emit create+admission）
 	seedDevice(t, tBedShareA, true)
 	seedDevice(t, tBedShareB, true)
 	seedResidentUnit(t, tRes1, tBedShareA)
 	seedResidentUnit(t, tRes2, tBedShareB)
 	reconcile(t, tUnitShare)
-	if countDiffOp(*got, "create") != 2 {
-		t.Errorf("expect 2 create, got %d (all=%v)", countDiffOp(*got, "create"), *got)
-	}
 	if countDiffOp(*got, "admission") != 2 {
 		t.Errorf("expect 2 admission, got %d (all=%v)", countDiffOp(*got, "admission"), *got)
+	}
+	// create 不应出现（每张新卡只 emit 一种 op；有 resident 走 admission 分支）
+	if countDiffOp(*got, "create") != 0 {
+		t.Errorf("expect 0 create (admission absorbs create for new-card-with-resident), got %d", countDiffOp(*got, "create"))
 	}
 }
 
@@ -903,32 +905,31 @@ func TestReconcile_H1_RoomMultipleBedKeepsRoomCard(t *testing.T) {
 	assertCards(t, tUnitPrivate, tBedPrivA, tBedPrivB, tRoomPrivBedroom)
 }
 
-func TestReconcile_H2_RoomSingleBedAbsorbsRoomDevice(t *testing.T) {
+func TestReconcile_H2_SplitMinusOneAddRoomDeviceMerges(t *testing.T) {
 	resetTestTenantState(t)
-	// 先 seed 2 bed + reconcile → 触发 alreadySplit
+	// 起点：2 bed → split (2 张 /96)
 	seedDevice(t, tBedPrivA, true)
 	bedB := seedDevice(t, tBedPrivB, true)
 	reconcile(t, tUnitPrivate)
-	// 删 bedB → PrivBedroom 内 active_bed=1 (剩 bedA)；cards 表 /96 仍 ≥1 → alreadySplit=true
+	// 删 bedB + 加 PrivBedroom room-level radar
 	_, _ = tDB.Exec(`DELETE FROM devices WHERE device_id=$1::UUID`, bedB)
-	// 加 PrivBedroom 的 room-level radar
 	seedDevice(t, tRoomPrivBedroom, true)
 	reconcile(t, tUnitPrivate)
-	// PrivBedroom active_bed=1 → room radar 归并到 bedA card；不出 /88
-	// 期望: 仅 1 张 /96 (bedA) — 套娃吸收
-	assertCards(t, tUnitPrivate, tBedPrivA)
+	// 无单向阀 latching：unit activeBed=1 → MERGE → 仅 /80 unit card
+	// （bed device 与 room device 都隐含其中；split 状态消失）
+	assertCards(t, tUnitPrivate, tUnitPrivate)
 }
 
 func TestReconcile_H3_RoomZeroBedKeepsRoomCard(t *testing.T) {
 	resetTestTenantState(t)
-	// 先触发 alreadySplit
+	// 2 bed → unit activeBed=2 → split mode
 	seedDevice(t, tBedPrivA, true)
 	seedDevice(t, tBedPrivB, true)
 	reconcile(t, tUnitPrivate)
-	// 再加 PrivBathroom radar（不同 room，无 bed）
+	// 加 PrivBathroom radar（不同 room，无 bed）
 	seedDevice(t, tRoomPrivBathroom, true)
 	reconcile(t, tUnitPrivate)
-	// PrivBathroom active_bed=0 → /88 room card 出（孤立 room device）
+	// split 模式下 PrivBathroom activeBed=0 + hasDev → 独立 /88 room card（不上推 /80）
 	assertCards(t, tUnitPrivate, tBedPrivA, tBedPrivB, tRoomPrivBathroom)
 }
 
