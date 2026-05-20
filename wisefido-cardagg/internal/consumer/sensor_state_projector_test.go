@@ -101,3 +101,31 @@ func TestMergeBedStateSleepStage_PreservesBedStatus(t *testing.T) {
 			out.TrackNumber, out.BedConfidence)
 	}
 }
+
+// 防回归：bed.state 在 T=100 写后，bed.sleepstage 带较早采样时间 T=95 到达，
+// UpdatedAt 必须保留 T=100（max 语义），不能被 sleepstage event 时间倒推。
+// 否则 FE 用 UpdatedAt 算 bed transition anchor 会拿到 stale 时间。
+func TestMergeBedStateSleepStage_DoesNotRegressUpdatedAt(t *testing.T) {
+	prev := &card.BedState{
+		UpdatedAt:     1_700_000_100_000, // bed.state 刚写
+		BedStatus:     1,
+		BedEvent:      1,
+		StartTime:     1_700_000_100_000,
+		DurationSec:   0,
+		TrackNumber:   1,
+		BedConfidence: 80,
+	}
+	incoming := &card.BedState{
+		UpdatedAt:       1_700_000_095_000, // sleepstage 采样时间早 5s
+		SleepStage:      3,
+		SleepConfidence: 90,
+	}
+	out := mergeBedStateSleepStage(prev, incoming)
+
+	if out.UpdatedAt != 1_700_000_100_000 {
+		t.Errorf("UpdatedAt must not regress: got %d, want %d", out.UpdatedAt, 1_700_000_100_000)
+	}
+	if out.SleepStage != 3 || out.SleepConfidence != 90 {
+		t.Errorf("SleepStage path should still update: stage=%d conf=%d", out.SleepStage, out.SleepConfidence)
+	}
+}

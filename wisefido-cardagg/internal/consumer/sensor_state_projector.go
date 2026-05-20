@@ -186,8 +186,9 @@ func mergeBedStateSensorOwner(prev, incoming *card.BedState) *card.BedState {
 	return out
 }
 
-// mergeBedStateSleepStage 字段级合并 bed.sleepstage category：仅 SleepStage / SleepConfidence /
-// UpdatedAt 从 incoming 取，其他字段保留 prev（不动 BedStatus 等 bed.state owner 字段）。
+// mergeBedStateSleepStage 字段级合并 bed.sleepstage category：仅 SleepStage / SleepConfidence
+// 从 incoming 取；UpdatedAt 取 max(prev, incoming) 防 sleepstage event 携带较早采样时间倒推
+// bed transition anchor。其他字段保留 prev（不动 BedStatus 等 bed.state owner 字段）。
 //
 // 与 mergeBedStateSensorOwner 配套；分 category 写让两个 publisher 路径不互相覆盖。
 func mergeBedStateSleepStage(prev, incoming *card.BedState) *card.BedState {
@@ -198,7 +199,9 @@ func mergeBedStateSleepStage(prev, incoming *card.BedState) *card.BedState {
 	if prev != nil {
 		*out = *prev
 	}
-	out.UpdatedAt = incoming.UpdatedAt
+	if incoming.UpdatedAt > out.UpdatedAt {
+		out.UpdatedAt = incoming.UpdatedAt
+	}
 	out.SleepStage = incoming.SleepStage
 	out.SleepConfidence = incoming.SleepConfidence
 	return out
