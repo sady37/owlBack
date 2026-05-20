@@ -33,7 +33,8 @@ import (
 //                  PR-6 结构化人类反馈（False Alarm Reason / Observed Conditions checkbox）
 // v6 (2026-04-29): Counters 加 AutoDenyQualifiedSinceMs（ADS）— PR-15.3 Auto-Deny 15 天时间门控状态
 // v7 (2026-05-18): sensor_v2 决定 15+20 — Cell 加 EnterTarget 字符串 + InsideEnterEvidenceN + InsideEnterLearned
-const SnapshotSchemaVersion = 7
+// v8 (2026-05-19): L1 mirror pair 自学习 — Cell 加 MirrorBounceCount + LastMirrorMs
+const SnapshotSchemaVersion = 8
 
 // CellSnapshot 单 cell 的可持久化字段（紧凑 JSON，short keys 节省空间）
 type CellSnapshot struct {
@@ -71,6 +72,10 @@ type Counters struct {
 	ET  string    `json:"et,omitempty"`  // EnterTarget ""/"outside"/"bathroom" (schema_v ≥ 7)
 	IEN int       `json:"ien,omitempty"` // InsideEnterEvidenceN (schema_v ≥ 7)
 	IEL bool      `json:"iel,omitempty"` // InsideEnterLearned (schema_v ≥ 7)
+
+	// L1 mirror pair 自学习 (schema_v ≥ 8):
+	MBC int   `json:"mbc,omitempty"` // MirrorBounceCount
+	LMM int64 `json:"lmm,omitempty"` // LastMirrorMs
 }
 
 // GridSnapshot 顶层 payload 结构（写入 JSONB 字段）
@@ -175,13 +180,16 @@ func buildCounters(c *Cell) *Counters {
 		ET:  c.EnterTarget,
 		IEN: c.InsideEnterEvidenceN,
 		IEL: c.InsideEnterLearned,
+		MBC: c.MirrorBounceCount,
+		LMM: c.LastMirrorMs,
 	}
 	if ct.RD == 0 && ct.GD == 0 &&
 		ct.AT == [4]uint16{} &&
 		ct.TC == 0 && ct.NTC == 0 && ct.LR == 0 && ct.FE == 0 && ct.LA == 0 && ct.LS == 0 &&
 		ct.SIB == 0 && ct.SLB == 0 && ct.DE == 0 && ct.FX == 0 && ct.FY == 0 && ct.DW == 0 &&
 		ct.FA == 0 && ct.TS == 0 && ct.BSR == 0 && ct.ADS == 0 &&
-		ct.ET == "" && ct.IEN == 0 && !ct.IEL {
+		ct.ET == "" && ct.IEN == 0 && !ct.IEL &&
+		ct.MBC == 0 && ct.LMM == 0 {
 		return nil
 	}
 	return &ct
@@ -260,6 +268,8 @@ func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
 			c.EnterTarget = cs.C.ET
 			c.InsideEnterEvidenceN = cs.C.IEN
 			c.InsideEnterLearned = cs.C.IEL
+			c.MirrorBounceCount = cs.C.MBC
+			c.LastMirrorMs = cs.C.LMM
 		}
 	}
 	return nil

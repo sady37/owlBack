@@ -135,6 +135,12 @@ type TrackManager struct {
 	// 由 engine.RegisterRoom 调 SetInterferes 注入；nil 时因子 7 不参与。
 	interferes []radarutils.Rect
 
+	// L1 mirror pair 检测：跨 track 几何对称（无需 layout 镜面坐标先验）。
+	// 详 mirror_detect.go。SetRadarMount 由 engine.RegisterRoom 注入。
+	radarMount         radarutils.RadarMount
+	mirrorBuffer       map[mirrorPairKey]*mirrorPairBuffer
+	mirrorCooldownMs   int64 // 单 pair 命中后 60s 内不重复 paint + 加 penalty（防同一 pair 持续命中刷分）
+
 	// startupMs：TrackManager 创建时间。用于"service 启动 5min grace"反 ghost 兜底
 	// （grace 内 first-seen 的 track 视为已存在，birth filter 不打 ghost）。
 	startupMs int64
@@ -258,7 +264,17 @@ func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 		recentBufferMs:     5 * 60 * 1000, // 5 min
 		logger:             zap.NewNop(),
 		startupMs:          time.Now().UnixMilli(),
+		mirrorBuffer:       make(map[mirrorPairKey]*mirrorPairBuffer),
+		mirrorCooldownMs:   60_000,
 	}
+}
+
+// SetRadarMount 注入本房间雷达安装坐标（cfg.Radar），用于 L1 mirror pair tiebreaker
+// （距 radar 远者 = ghost）+ bounce point 计算。由 engine.RegisterRoom 调用。
+func (tm *TrackManager) SetRadarMount(m radarutils.RadarMount) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.radarMount = m
 }
 
 // SetWeakBioSource 注入 fall verifier 的 WeakBio 提级 source（engine.SetWeakBioSource 转发）。
@@ -1295,6 +1311,11 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	//       超时仍有任一活 track 在 AreaBed ±BedNeighborhood cm 内 → 矛盾报警。
 	// 否则取消（人正常起床，radar 也离床区）。
 	results = append(results, tm.scanSilentFallLeftBed(nowMs)...)
+
+	// ========== 段 4d: L1 mirror pair 检测 + 自学习 ==========
+	// 跨 track 几何对称检测（无 layout 镜面坐标先验），命中 → ghost 端 GhostPenalty +50
+	// + 5 帧 bounce 点 grid.MarkMirrorBounce（2×2 微块累 MBC，≥3 升 AreaDeny+SourceLearned）。
+	tm.scanMirrorGhostPairs(nowMs)
 
 	// PR-9: v1 段 5 Bed-Fall 物理矛盾检测整段删除（依赖 totalBedPeople / bedPersonCount）。
 	// PR-11 silent_fall 重写时用 BedSession + SuiteCensus 重新表达"床上方矛盾"语义，

@@ -202,6 +202,12 @@ type Cell struct {
 	// 写入路径 PR 接线后实施；当前仅 verifier 拦截点已就绪。
 	FallSuppressUntilMs int64
 
+	// MirrorBounceCount: L1 mirror pair 检测命中后在 bounce point 周围 2×2 微块累加。
+	// ≥ MirrorPromoteThreshold (3) 即升 Belief[0]=AreaDeny+SourceLearned（人工 SourceHuman 不覆盖）。
+	// LastMirrorMs: 最近一次累加时戳，Decay 用。
+	MirrorBounceCount int
+	LastMirrorMs      int64
+
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState
 
@@ -527,6 +533,10 @@ func (c *Cell) Decay(dtSec float64, p DecayParams) {
 	c.GhostCount = scaleInt(c.GhostCount, fEv)
 	c.RestZoneConfirmed = scaleInt(c.RestZoneConfirmed, fEv)
 	c.RealFallCount = scaleInt(c.RealFallCount, fEv)
+
+	// L1 mirror bounce 同 EventSec 半衰期；持续累不到 promote 阈值的 cell 自然衰退归零，
+	// 避免一次性误报永久污染 grid。
+	c.MirrorBounceCount = scaleInt(c.MirrorBounceCount, fEv)
 
 	// PR-11: Belief[0].Confidence 按 AreaType 分档衰减（半衰期 BeliefHalfLifeByType[type]）
 	// 衰减后 Confidence < 10 → 降级 AreaUnknown + Source=Unset（不再贡献 IsRestZone 等判定）。
