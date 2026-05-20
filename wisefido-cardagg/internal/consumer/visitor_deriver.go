@@ -65,12 +65,28 @@ type visitorMergerApplier interface {
 	ApplyVisitor(ctx context.Context, cardID string, v service.VisitorFields) *card.TargetState
 }
 
+// visitorMetaSource 抽象 metaCache 的 tick 用接口（测试可 mock）。*service.DeviceMetaCache 隐式满足。
+type visitorMetaSource interface {
+	ListBedCardsWithBedBoundRadar(ctx context.Context) []string
+	ListPrivateRoomCardIDs(ctx context.Context) []string
+}
+
+// visitorBedPeopleSource 抽象 bed-level people count（测试可 mock）。*service.BedPeopleTracker 隐式满足。
+type visitorBedPeopleSource interface {
+	CardPeopleCount(ctx context.Context, cardID string) int
+}
+
+// visitorCardStatusReader 抽象 card:state hash 读（测试可 mock）。*card.Reader 隐式满足。
+type visitorCardStatusReader interface {
+	ReadCardStatus(ctx context.Context, cardID string) (*card.CardStatus, error)
+}
+
 // VisitorDeriver 60s tick 任务：bed level + room level 双路径计算 visitor。
 type VisitorDeriver struct {
-	metaCache *service.DeviceMetaCache
-	reader    *card.Reader
+	metaCache visitorMetaSource
+	reader    visitorCardStatusReader
 	merger    visitorMergerApplier
-	bedPeople *service.BedPeopleTracker
+	bedPeople visitorBedPeopleSource
 	store     visitorHistoryStore // 可 nil（未 wire DB 时退化为纯内存累加）
 	writer    cardStatusWriter    // 可 nil；用于午夜 reset 时主动落 hash 清残留
 	picker    parentRefresher     // 可 nil；午夜 reset 写 hash 后同步刷父 unit 卡
@@ -96,10 +112,10 @@ type visitorSegment struct {
 // NewVisitorDeriver 构造。interval=0 走默认 60s。store/writer/picker=nil 时退化（兼容测试）。
 // 非午夜场景 hash 字段沿用 sensor target.state 自然带的路径；writer/picker 仅午夜跨日 reset 时主动写。
 func NewVisitorDeriver(
-	metaCache *service.DeviceMetaCache,
-	reader *card.Reader,
+	metaCache visitorMetaSource,
+	reader visitorCardStatusReader,
 	merger visitorMergerApplier,
-	bedPeople *service.BedPeopleTracker,
+	bedPeople visitorBedPeopleSource,
 	store visitorHistoryStore,
 	writer cardStatusWriter,
 	picker parentRefresher,

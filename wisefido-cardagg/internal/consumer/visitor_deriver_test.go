@@ -60,6 +60,38 @@ func (r *fakeRefresher) RefreshParent(_ context.Context, cardID string) {
 	r.calls = append(r.calls, cardID)
 }
 
+// fakeMetaSource 给 tick() 喂 cardID 列表（Path A / Path B 范围）。
+type fakeMetaSource struct {
+	bedCards     []string
+	privateRooms []string
+}
+
+func (m *fakeMetaSource) ListBedCardsWithBedBoundRadar(_ context.Context) []string {
+	return m.bedCards
+}
+
+func (m *fakeMetaSource) ListPrivateRoomCardIDs(_ context.Context) []string {
+	return m.privateRooms
+}
+
+// fakeBedPeople 按 cardID 查表返 peopleCount。
+type fakeBedPeople struct {
+	counts map[string]int
+}
+
+func (b *fakeBedPeople) CardPeopleCount(_ context.Context, cardID string) int {
+	return b.counts[cardID]
+}
+
+// fakeReader Path B 用：按 cardID 返 CardStatus（带 RoomState.TotalPeople）。
+type fakeReader struct {
+	statuses map[string]*card.CardStatus
+}
+
+func (r *fakeReader) ReadCardStatus(_ context.Context, cardID string) (*card.CardStatus, error) {
+	return r.statuses[cardID], nil
+}
+
 type fakeStoreCall struct {
 	op            string // "insert" / "close"
 	cardID        string
@@ -398,6 +430,150 @@ func TestEpisode_NilStoreTolerant(t *testing.T) {
 	}
 	if seg.visitorStartTs != baseMs {
 		t.Errorf("visitorStartTs should be set even without store, got %d", seg.visitorStartTs)
+	}
+}
+
+// =============================================================================
+// FU11 — tick() 主循环：Path A / Path B scope + skipParents 父子去重
+// =============================================================================
+
+// Path A：bed-bound radar bed cards 范围内每张卡按 BedPeopleTracker 喂 peopleCount。
+func TestTick_PathA_BedBoundRadar(t *testing.T) {
+	bedA := "fd00:0:99:101:65:101::/96"
+	bedB := "fd00:0:99:101:65:102::/96"
+	bedC := "fd00:0:99:101:65:103::/96"
+
+	v := newTestVisitorDeriver(newFakeStore())
+	v.metaCache = &fakeMetaSource{bedCards: []string{bedA, bedB, bedC}}
+	v.bedPeople = &fakeBedPeople{counts: map[string]int{
+		bedA: 2, // ≥2 → segment 起步
+		bedB: 1, // <2 → segment 不起
+		bedC: 3, // ≥2 → segment 起步
+	}}
+	merger := &fakeMerger{}
+	v.merger = merger
+
+	now := time.Unix(1_700_000_000, 0).UTC() // 2023-11-14T22:13:20Z 任意非午夜
+	v.tick(context.Background(), now)
+
+	// 三张 bed card 都被 tick（segment entry 创建）
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.segments[bedA] == nil || v.segments[bedA].segmentStartTs == 0 {
+		t.Errorf("bedA should have segment started, got %+v", v.segments[bedA])
+	}
+	if v.segments[bedB] == nil || v.segments[bedB].segmentStartTs != 0 {
+		t.Errorf("bedB peopleCount<2 → segment should NOT start, got %+v", v.segments[bedB])
+	}
+	if v.segments[bedC] == nil || v.segments[bedC].segmentStartTs == 0 {
+		t.Errorf("bedC should have segment started, got %+v", v.segments[bedC])
+	}
+	if merger.calls != 3 {
+		t.Errorf("merger.ApplyVisitor calls want 3 (one per bed card), got %d", merger.calls)
+	}
+}
+
+// Path B：Private /88 room cards 用 reader.ReadCardStatus 拿 room_state.total_people。
+func TestTick_PathB_PrivateRoom(t *testing.T) {
+	room1 := "fd00:0:99:101:65:200::/88"
+	room2 := "fd00:0:99:101:65:201::/88"
+
+	v := newTestVisitorDeriver(newFakeStore())
+	v.metaCache = &fakeMetaSource{privateRooms: []string{room1, room2}}
+	v.reader = &fakeReader{statuses: map[string]*card.CardStatus{
+		room1: {RoomState: &card.RoomState{TotalPeople: 3}}, // ≥2
+		room2: {RoomState: &card.RoomState{TotalPeople: 0}}, // <2
+	}}
+	v.merger = &fakeMerger{}
+
+	now := time.Unix(1_700_000_000, 0).UTC()
+	v.tick(context.Background(), now)
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.segments[room1] == nil || v.segments[room1].segmentStartTs == 0 {
+		t.Errorf("room1 totalPeople=3 → segment should start, got %+v", v.segments[room1])
+	}
+	if v.segments[room2] == nil || v.segments[room2].segmentStartTs != 0 {
+		t.Errorf("room2 totalPeople=0 → segment should NOT start, got %+v", v.segments[room2])
+	}
+}
+
+// skipParents：bed card 命中 Path A 时，其父 /88 room 在 Path B 必须跳过（防父子双显）。
+func TestTick_SkipParents_BedCoveredRoomSkipped(t *testing.T) {
+	bedA := "fd00:0:99:101:65:101::/96"
+	parentRoom := "fd00:0:99:101:65:100::/88" // bedA 的父 /88（保留 6 组高 8 位）
+	otherRoom := "fd00:0:99:101:65:200::/88"  // 不同 /88，无 bed 覆盖
+
+	v := newTestVisitorDeriver(newFakeStore())
+	v.metaCache = &fakeMetaSource{
+		bedCards:     []string{bedA},
+		privateRooms: []string{parentRoom, otherRoom},
+	}
+	v.bedPeople = &fakeBedPeople{counts: map[string]int{bedA: 2}}
+	v.reader = &fakeReader{statuses: map[string]*card.CardStatus{
+		parentRoom: {RoomState: &card.RoomState{TotalPeople: 5}}, // 即便 ≥2 也要被跳过
+		otherRoom:  {RoomState: &card.RoomState{TotalPeople: 4}},
+	}}
+	v.merger = &fakeMerger{}
+
+	now := time.Unix(1_700_000_000, 0).UTC()
+	v.tick(context.Background(), now)
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.segments[bedA] == nil {
+		t.Errorf("bedA Path A should be processed")
+	}
+	if _, exists := v.segments[parentRoom]; exists {
+		t.Errorf("parentRoom should be skipped (its child bedA already covered in Path A), got %+v", v.segments[parentRoom])
+	}
+	if v.segments[otherRoom] == nil {
+		t.Errorf("otherRoom should be processed (no child bed in Path A)")
+	}
+}
+
+// parentRoomCardID util：/96 → /88（保留 6 组高 8 位）；非 /96 输入返空。
+func TestParentRoomCardID(t *testing.T) {
+	// fd00:0:99:101:65:101::/96 → 第 6 组 0101 高 8 位 = 01 → /88 = fd00:0:99:101:65:100::/88
+	if got := parentRoomCardID("fd00:0:99:101:65:101::/96"); got != "fd00:0:99:101:65:100::/88" {
+		t.Errorf("parentRoomCardID(/96 with 0x0101) want fd00:0:99:101:65:100::/88, got %s", got)
+	}
+	// 第 6 组 0200 高 8 位 = 02 → /88 = fd00:0:99:101:65:200::/88
+	if got := parentRoomCardID("fd00:0:99:101:65:201::/96"); got != "fd00:0:99:101:65:200::/88" {
+		t.Errorf("parentRoomCardID(/96 with 0x0201) want fd00:0:99:101:65:200::/88, got %s", got)
+	}
+	if got := parentRoomCardID("fd00:0:99:101:65::/88"); got != "" {
+		t.Errorf("parentRoomCardID(/88 input) want empty (not /96), got %s", got)
+	}
+	if got := parentRoomCardID("not-an-ipv6"); got != "" {
+		t.Errorf("parentRoomCardID(invalid) want empty, got %s", got)
+	}
+}
+
+// readTotalPeople：reader=nil 安全 / status=nil 安全 / 正常路径。
+func TestReadTotalPeople(t *testing.T) {
+	room := "fd00:0:99:101:65:200::/88"
+
+	// nil reader
+	v := newTestVisitorDeriver(nil)
+	v.reader = nil
+	if got := v.readTotalPeople(context.Background(), room); got != 0 {
+		t.Errorf("nil reader want 0, got %d", got)
+	}
+
+	// reader 返 nil status
+	v.reader = &fakeReader{statuses: map[string]*card.CardStatus{}}
+	if got := v.readTotalPeople(context.Background(), room); got != 0 {
+		t.Errorf("nil status want 0, got %d", got)
+	}
+
+	// 正常
+	v.reader = &fakeReader{statuses: map[string]*card.CardStatus{
+		room: {RoomState: &card.RoomState{TotalPeople: 7}},
+	}}
+	if got := v.readTotalPeople(context.Background(), room); got != 7 {
+		t.Errorf("want 7, got %d", got)
 	}
 }
 
