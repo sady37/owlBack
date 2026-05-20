@@ -96,9 +96,8 @@ func (m *TargetMerger) isDeviceOnline(deviceAddr string) bool {
 
 // visitorFields VisitorDeriver 注入的字段（card.TargetState 子集）。
 type visitorFields struct {
-	visitorStartTs     int64
-	todayMaxVisitorMin int
-	hasVisitorToday    bool
+	visitorStartTs  int64
+	hasVisitorToday bool
 }
 
 // NewTargetMerger 构造。metaCache 必填（device→card 反查 + 列同 card devices）。
@@ -165,11 +164,11 @@ func (m *TargetMerger) ApplyVisitor(ctx context.Context, cardID string, v visito
 }
 
 // CurrentVisitor 读 VisitorDeriver 累积态（segment reset 用，避免重复触发午夜清理）。
-func (m *TargetMerger) CurrentVisitor(cardID string) (int64, int, bool) {
+func (m *TargetMerger) CurrentVisitor(cardID string) (int64, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	v := m.cardVisitor[cardID]
-	return v.visitorStartTs, v.todayMaxVisitorMin, v.hasVisitorToday
+	return v.visitorStartTs, v.hasVisitorToday
 }
 
 // ForgetDevice 解绑 / Cleanup 时清 device snapshot。
@@ -213,9 +212,8 @@ func (m *TargetMerger) mergeForCard(ctx context.Context, cardID string, v visito
 	}
 
 	out := &card.TargetState{
-		VisitorStartTs:     v.visitorStartTs,
-		TodayMaxVisitorMin: v.todayMaxVisitorMin,
-		HasVisitorToday:    v.hasVisitorToday,
+		VisitorStartTs:  v.visitorStartTs,
+		HasVisitorToday: v.hasVisitorToday,
 	}
 
 	nowMs := time.Now().UnixMilli()
@@ -275,11 +273,10 @@ func (m *TargetMerger) mergeForCard(ctx context.Context, cardID string, v visito
 // VisitorFields VisitorDeriver 调 ApplyVisitor 时构造此结构。
 type VisitorFields = visitorFields
 
-// MakeVisitorFields VisitorDeriver 构造 visitor 三字段（避免暴露 unexported struct）。
-func MakeVisitorFields(startTs int64, maxMin int, today bool) VisitorFields {
+// MakeVisitorFields VisitorDeriver 构造 visitor 字段（避免暴露 unexported struct）。
+func MakeVisitorFields(startTs int64, today bool) VisitorFields {
 	return visitorFields{
-		visitorStartTs:     startTs,
-		todayMaxVisitorMin: maxMin,
-		hasVisitorToday:    today,
+		visitorStartTs:  startTs,
+		hasVisitorToday: today,
 	}
 }

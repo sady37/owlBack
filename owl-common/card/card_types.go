@@ -300,7 +300,6 @@ type TargetState struct {
 	StandingContinuousMin int    `json:"standing_continuous_min,omitempty"`
 	WeakBiometricSignal   int    `json:"weak_biometric_signal"`
 	VisitorStartTs        int64  `json:"visitor_start_ts,omitempty"`
-	TodayMaxVisitorMin    int    `json:"today_max_visitor_min,omitempty"`
 	HasVisitorToday       bool   `json:"has_visitor_today,omitempty"`
 }
 

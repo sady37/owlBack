@@ -83,7 +83,6 @@ const (
 	StandingContinuousSec      = 55  // stand_duration >= 55 则累计 StandingContinuousMin，否则清零
 	StandingContinuousMin      = 8   // 累计达到此后封顶为 8 并 push RoomState（与 Overview 黄/红 5/8 档一致）
 	MultiPersonDurationSec     = 30  // multi_person_duration >= 30 → HasMulti/访客逻辑
-	VisitorMinThreshold        = 10  // 访客停留 >= 10 分钟才计 HasVisitorToday
 )
 
 // ---- 5. LeftBedFall（离床跌倒）累计与判定 ----

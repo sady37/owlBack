@@ -12,8 +12,9 @@
 //   - RoomState.StandingContinuousMin           — stand_duration≥55s 累+1 封顶 8（仅 TotalPeople==1）
 //
 // 已挪出 sensor（2026-05-18 后归 cardagg `VisitorDeriver`）：
-//   - Target.visitor_start_ts / has_visitor_today / today_max_visitor_min
+//   - Target.visitor_start_ts / has_visitor_today
 //     原因：visitor 跨多 /88 room 合并；Private gate 需查 unit_type；sensor 不做跨实体合并
+//     （today_max_visitor_min 字段 2026-05-19 全栈删除，改 visitor_history 表持久化）
 //
 // 架构（详 [[target_state_aggregator]] design doc）：
 //   Aggregator = 纯 state holder（不 publish）；

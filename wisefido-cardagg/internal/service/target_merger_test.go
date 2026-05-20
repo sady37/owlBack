@@ -145,11 +145,11 @@ func TestMergeForCard_VisitorInjected(t *testing.T) {
 	ts := &card.TargetState{LastActiveTs: now - 60_000, UpdatedAt: now}
 	m.OnDeviceTarget(context.Background(), cardID, ts)
 
-	merged := m.ApplyVisitor(context.Background(), cardID, MakeVisitorFields(now-300_000, 7, true))
+	merged := m.ApplyVisitor(context.Background(), cardID, MakeVisitorFields(now-300_000, true))
 	if merged.LastActiveTs != now-60_000 {
 		t.Errorf("LastActive lost after visitor apply: %d", merged.LastActiveTs)
 	}
-	if !merged.HasVisitorToday || merged.TodayMaxVisitorMin != 7 {
+	if !merged.HasVisitorToday || merged.VisitorStartTs != now-300_000 {
 		t.Errorf("visitor not applied: %+v", merged)
 	}
 }
@@ -160,7 +160,7 @@ func TestMergeForCard_NoSnapshot_ReturnsEmptyVisitorOnly(t *testing.T) {
 	m := NewTargetMerger(mc)
 
 	// 仅 visitor，无 sensor snapshot
-	merged := m.ApplyVisitor(context.Background(), cardID, MakeVisitorFields(1_700_000_000_000, 6, true))
+	merged := m.ApplyVisitor(context.Background(), cardID, MakeVisitorFields(1_700_000_000_000, true))
 	if merged.LastActiveTs != 0 || merged.StandingContinuousMin != 0 || merged.WeakBiometricSignal != 0 {
 		t.Errorf("no sensor snapshot but sensor fields populated: %+v", merged)
 	}
