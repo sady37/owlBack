@@ -259,35 +259,69 @@ func (a *TargetStateAggregator) ForgetDevice(deviceAddr string) {
 //
 // 实现 roomengine.WeakBioSource interface（解耦：sensor service ← roomengine 单向消费 score；
 // 不引 service 类型，零 import cycle 风险）。
+//
+// expire-on-read：调用前先 lazy drop 窗外 events + 重算 score（防 score 卡老值）。
 func (a *TargetStateAggregator) WeakBioScore(spatialPrefix string) int {
 	if a == nil || spatialPrefix == "" {
 		return 0
 	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
+	nowMs := time.Now().UnixMilli()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	acc, found := a.accums[spatialPrefix]
 	if !found {
 		return 0
 	}
+	a.expireWeakBioLocked(acc, nowMs)
 	return acc.weakBio.score
 }
 
 // GetSnapshot StreamPublisher 60s tick pull 用（multi-return 实现 zoneengine.AggregatorPuller）。
 // 若该 spatial 实体无 accumulator entry 返回 ok=false。
+//
+// expire-on-read：先 lazy drop weakBio 窗外 events + 重算 score；score 实际变化时 dirty=true，
+// 触发本 tick publisher 推新 score 到 cardagg（防"WeakBio 卡老值随 LastActive 心跳偷渡"）。
 func (a *TargetStateAggregator) GetSnapshot(spatialPrefix string) (target *card.TargetState, standingMin int, dirty bool, ok bool) {
-	a.mu.RLock()
+	nowMs := time.Now().UnixMilli()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	acc, found := a.accums[spatialPrefix]
-	a.mu.RUnlock()
 	if !found {
 		return nil, 0, false, false
 	}
+	a.expireWeakBioLocked(acc, nowMs)
 	// 仅 3 个 sensor 单实体内判断字段；visitor 已挪到 cardagg VisitorDeriver。
 	target = &card.TargetState{
-		UpdatedAt:           time.Now().UnixMilli(),
+		UpdatedAt:           nowMs,
 		LastActiveTs:        acc.lastActive.lastActiveTs,
 		WeakBiometricSignal: acc.weakBio.score,
 	}
 	return target, acc.standing.continuousMin, acc.dirty, true
+}
+
+// expireWeakBioLocked 丢弃 30min 窗外 events + 重算 score；score 变化时设 dirty=true。
+// caller 必须持 write lock。
+func (a *TargetStateAggregator) expireWeakBioLocked(acc *spatialAccumulator, nowMs int64) {
+	if len(acc.weakBio.events) == 0 {
+		return
+	}
+	cutoff := nowMs - weakBioWindowMs
+	// 队列按 ts 单调追加（handleAlarmEvent 顺序入队），首位未过期则全部未过期。
+	if acc.weakBio.events[0].tsMs >= cutoff {
+		return
+	}
+	kept := acc.weakBio.events[:0]
+	for _, ev := range acc.weakBio.events {
+		if ev.tsMs >= cutoff {
+			kept = append(kept, ev)
+		}
+	}
+	acc.weakBio.events = kept
+	newScore := computeWeakBioScore(acc.weakBio.events)
+	if newScore != acc.weakBio.score {
+		acc.weakBio.score = newScore
+		acc.dirty = true
+	}
 }
 
 // ActiveSpatialPrefixes StreamPublisher tick 用：返回当前有 accumulator entry 的所有物理地址。

@@ -247,6 +247,98 @@ func TestWeakBio_WindowLazyDrop(t *testing.T) {
 	}
 }
 
+// TestWeakBio_ExpireOnRead_WeakBioScore: WeakBioScore 调用时 lazy drop 窗外 events + 重算 score。
+// 验证「sensor 主动 expire」修：score 不再卡老值随心跳偷渡到 cardagg。
+func TestWeakBio_ExpireOnRead_WeakBioScore(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	spatial := "fd00:0:3:111:3:101::/96"
+
+	// alarm 31min ago — 已在 30min 窗外
+	pastMs := time.Now().UnixMilli() - 31*60*1000
+	a.handleAlarmEvent(context.Background(), AlarmEventSnapshot{
+		SpatialPrefix: spatial, AlarmType: "HeartRateAlert", TsMs: pastMs,
+	})
+
+	// handleAlarmEvent 用 e.TsMs 自身作 cutoff 参考，单条 event 入队 score=5
+	a.mu.RLock()
+	initialScore := a.accums[spatial].weakBio.score
+	a.mu.RUnlock()
+	if initialScore != 5 {
+		t.Fatalf("initial score after handleAlarmEvent want 5, got %d", initialScore)
+	}
+
+	// 读：expire-on-read 用 wall-clock now 作 cutoff，过期 event 被丢
+	score := a.WeakBioScore(spatial)
+	if score != 0 {
+		t.Errorf("after expire-on-read 31min stale event, score want 0, got %d", score)
+	}
+
+	a.mu.RLock()
+	eventCount := len(a.accums[spatial].weakBio.events)
+	dirty := a.accums[spatial].dirty
+	a.mu.RUnlock()
+	if eventCount != 0 {
+		t.Errorf("events after expire want 0, got %d", eventCount)
+	}
+	if !dirty {
+		t.Error("dirty should be true after score decay (publisher 下次 tick 需推新 score=0)")
+	}
+}
+
+// TestWeakBio_ExpireOnRead_GetSnapshot: GetSnapshot 也走 expire-on-read，并标 dirty。
+// 这是关键路径——publisher tick 时通过此 path 拿到 target；防 weakBio 老值随 LastActive 心跳"偷渡"。
+func TestWeakBio_ExpireOnRead_GetSnapshot(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	spatial := "fd00:0:3:111:3:101::/96"
+
+	pastMs := time.Now().UnixMilli() - 31*60*1000
+	a.handleAlarmEvent(context.Background(), AlarmEventSnapshot{
+		SpatialPrefix: spatial, AlarmType: "ApneaHypopnea", TsMs: pastMs,
+	})
+	// 入队 score = 15
+
+	// 模拟 publisher 已 publish 过：清 dirty
+	a.mu.Lock()
+	a.accums[spatial].dirty = false
+	a.mu.Unlock()
+
+	target, _, dirty, ok := a.GetSnapshot(spatial)
+	if !ok {
+		t.Fatal("snapshot should exist")
+	}
+	if target.WeakBiometricSignal != 0 {
+		t.Errorf("snapshot weakBio want 0 after expire, got %d", target.WeakBiometricSignal)
+	}
+	if !dirty {
+		t.Error("dirty should be set after score decayed via GetSnapshot expire")
+	}
+}
+
+// TestWeakBio_FreshEventsNoSpuriousDirty: 窗内 events 读时不应触发 spurious dirty=true。
+// 否则 publisher 会被无意义唤醒推同样的 score。
+func TestWeakBio_FreshEventsNoSpuriousDirty(t *testing.T) {
+	a := NewTargetStateAggregator(nil, zap.NewNop())
+	spatial := "fd00:0:3:111:3:101::/96"
+
+	nowMs := time.Now().UnixMilli()
+	a.handleAlarmEvent(context.Background(), AlarmEventSnapshot{
+		SpatialPrefix: spatial, AlarmType: "HeartRateAlert", TsMs: nowMs,
+	})
+
+	a.mu.Lock()
+	a.accums[spatial].dirty = false
+	a.mu.Unlock()
+
+	_ = a.WeakBioScore(spatial)
+
+	a.mu.RLock()
+	dirty := a.accums[spatial].dirty
+	a.mu.RUnlock()
+	if dirty {
+		t.Error("fresh events should not cause spurious dirty=true on read")
+	}
+}
+
 // TestWeakBio_UnrelatedAlarmIgnored 非 4 种关联 alarm 不进累加。
 func TestWeakBio_UnrelatedAlarmIgnored(t *testing.T) {
 	a := NewTargetStateAggregator(nil, zap.NewNop())
