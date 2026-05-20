@@ -136,8 +136,9 @@ func main() {
 	// VisitorDeriver 60s tick：双路径（bed-bound radar bed cards 优先 / Private /88 room cards 兜底）。
 	// 详 doc/card_display.md §4.4 + [[visitor_belongs_to_cardagg]]。
 	// visitor_history 持久化：上升沿 INSERT / 下降沿/午夜 close UPDATE。
+	// writer/picker 用于午夜跨日时主动落 hash（凌晨无 activity event 时 hash 会卡昨日字段）。
 	visitorStore := consumer.NewVisitorHistorySQLStore(db)
-	visitorDeriver := consumer.NewVisitorDeriver(metaCache, reader, targetMerger, bedPeopleTracker, visitorStore, 0, logger)
+	visitorDeriver := consumer.NewVisitorDeriver(metaCache, reader, targetMerger, bedPeopleTracker, visitorStore, writer, unitPicker, 0, logger)
 	go visitorDeriver.Run(ctx)
 
 	sigCh := make(chan os.Signal, 1)

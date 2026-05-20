@@ -12,8 +12,53 @@ import (
 	"testing"
 	"time"
 
+	"owl-common/card"
+
+	"wisefido-cardagg/internal/service"
+
 	"go.uber.org/zap"
 )
+
+// fakeMerger 记录 ApplyVisitor 调用，按需返回 merged。
+type fakeMerger struct {
+	mu             sync.Mutex
+	calls          int
+	lastVisitor    service.VisitorFields
+	mergedToReturn *card.TargetState
+}
+
+func (m *fakeMerger) ApplyVisitor(_ context.Context, _ string, v service.VisitorFields) *card.TargetState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	m.lastVisitor = v
+	return m.mergedToReturn
+}
+
+// fakeWriter 记录 WriteCardStatus 调用。
+type fakeWriter struct {
+	mu    sync.Mutex
+	calls []*card.CardStatus
+}
+
+func (w *fakeWriter) WriteCardStatus(_ context.Context, status *card.CardStatus) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.calls = append(w.calls, status)
+	return nil
+}
+
+// fakeRefresher 记录 RefreshParent 调用。
+type fakeRefresher struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (r *fakeRefresher) RefreshParent(_ context.Context, cardID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, cardID)
+}
 
 type fakeStoreCall struct {
 	op            string // "insert" / "close"
@@ -237,6 +282,87 @@ func TestEpisode_MidnightClosesOngoing(t *testing.T) {
 	}
 	if seg.currentEpisode != "" {
 		t.Errorf("currentEpisode should be cleared after midnight reset, got %s", seg.currentEpisode)
+	}
+}
+
+// 午夜 hash 写：midnight 跨日时主动落 hash 清残留（修「凌晨无 activity event sensor 不推 → hash 卡昨日字段」）。
+func TestEpisode_MidnightWritesHashAndRefreshesParent(t *testing.T) {
+	store := newFakeStore()
+	mergedTS := &card.TargetState{LastActiveTs: 1_700_000_000_000, UpdatedAt: 1_700_000_000_000}
+	merger := &fakeMerger{mergedToReturn: mergedTS}
+	writer := &fakeWriter{}
+	refresher := &fakeRefresher{}
+
+	v := newTestVisitorDeriver(store)
+	v.merger = merger
+	v.writer = writer
+	v.picker = refresher
+
+	cardID := "fd00:0:3:111:3:101::/96"
+	day1 := "2026-05-19"
+	day2 := "2026-05-20"
+	startMs := mustParseTime(t, "2026-05-19T22:00:00Z")
+
+	// 第 1 天累加超阈值 + 持续 → segment open
+	for i := 0; i < 6; i++ {
+		v.tickCard(context.Background(), cardID, 2, startMs+int64(i)*60_000, day1)
+	}
+	// 写 hash 不应在这之前被触发（非午夜 tick）
+	if len(writer.calls) != 0 {
+		t.Errorf("non-midnight tick should not write hash, got %d writes", len(writer.calls))
+	}
+
+	// 第 7 tick 跨日（day2） — midnight reset 触发
+	v.tickCard(context.Background(), cardID, 2, mustParseTime(t, "2026-05-20T00:00:00Z"), day2)
+
+	// 验证 midnight 写发生
+	if len(writer.calls) != 1 {
+		t.Fatalf("midnight should trigger exactly 1 write, got %d", len(writer.calls))
+	}
+	w := writer.calls[0]
+	if w.CardID != cardID {
+		t.Errorf("write CardID got %s want %s", w.CardID, cardID)
+	}
+	if w.Target != mergedTS {
+		t.Errorf("write Target should be merger's returned merged TS")
+	}
+
+	// 验证 ApplyVisitor 收到的是 reset 后的字段（visitorStartTs=0, hasToday=false）
+	if merger.lastVisitor != (service.MakeVisitorFields(0, false)) {
+		t.Errorf("midnight ApplyVisitor should receive cleared fields, got %+v", merger.lastVisitor)
+	}
+
+	// 验证 RefreshParent 跟着调
+	if len(refresher.calls) != 1 || refresher.calls[0] != cardID {
+		t.Errorf("RefreshParent should be called once with cardID, got %v", refresher.calls)
+	}
+}
+
+// 非午夜 tick 不写 hash（沿用 sensor target.state 自然带的路径）。
+func TestEpisode_NonMidnightDoesNotWriteHash(t *testing.T) {
+	merger := &fakeMerger{mergedToReturn: &card.TargetState{}}
+	writer := &fakeWriter{}
+
+	v := newTestVisitorDeriver(newFakeStore())
+	v.merger = merger
+	v.writer = writer
+
+	cardID := "fd00:0:3:111:3:101::/96"
+	date := "2026-05-19"
+	baseMs := int64(1_700_000_000_000)
+
+	// 同日内大量 tick（上升沿 + 持续 + 下降沿都不应触发 hash 写）
+	for i := 0; i < 10; i++ {
+		v.tickCard(context.Background(), cardID, 2, baseMs+int64(i)*60_000, date)
+	}
+	v.tickCard(context.Background(), cardID, 1, baseMs+10*60_000, date)
+
+	if len(writer.calls) != 0 {
+		t.Errorf("non-midnight ticks should not write hash, got %d (calls=%v)", len(writer.calls), writer.calls)
+	}
+	// 但 merger.ApplyVisitor 每 tick 都调
+	if merger.calls != 11 {
+		t.Errorf("ApplyVisitor should be called every tick: got %d want 11", merger.calls)
 	}
 }
 

@@ -50,13 +50,30 @@ type visitorHistoryStore interface {
 	closeEpisode(ctx context.Context, episodeID string, endedAtMs int64, durationSec int) error
 }
 
+// cardStatusWriter 抽象 hash 写（测试可 mock）。*card.Writer 隐式满足。
+type cardStatusWriter interface {
+	WriteCardStatus(ctx context.Context, status *card.CardStatus) error
+}
+
+// parentRefresher 抽象父 unit 卡刷新（测试可 mock）。*UnitPicker 隐式满足。
+type parentRefresher interface {
+	RefreshParent(ctx context.Context, cardID string)
+}
+
+// visitorMergerApplier 抽象 merger 接口（测试可 mock）。*service.TargetMerger 隐式满足。
+type visitorMergerApplier interface {
+	ApplyVisitor(ctx context.Context, cardID string, v service.VisitorFields) *card.TargetState
+}
+
 // VisitorDeriver 60s tick 任务：bed level + room level 双路径计算 visitor。
 type VisitorDeriver struct {
 	metaCache *service.DeviceMetaCache
 	reader    *card.Reader
-	merger    *service.TargetMerger
+	merger    visitorMergerApplier
 	bedPeople *service.BedPeopleTracker
 	store     visitorHistoryStore // 可 nil（未 wire DB 时退化为纯内存累加）
+	writer    cardStatusWriter    // 可 nil；用于午夜 reset 时主动落 hash 清残留
+	picker    parentRefresher     // 可 nil；午夜 reset 写 hash 后同步刷父 unit 卡
 	logger    *zap.Logger
 
 	interval time.Duration
@@ -76,13 +93,16 @@ type visitorSegment struct {
 	lastTickDateUTC string // YYYY-MM-DD（UTC）；跨日 reset
 }
 
-// NewVisitorDeriver 构造。interval=0 走默认 60s。store=nil 时不写 DB（兼容测试 / 未 wire 场景）。
+// NewVisitorDeriver 构造。interval=0 走默认 60s。store/writer/picker=nil 时退化（兼容测试）。
+// 非午夜场景 hash 字段沿用 sensor target.state 自然带的路径；writer/picker 仅午夜跨日 reset 时主动写。
 func NewVisitorDeriver(
 	metaCache *service.DeviceMetaCache,
 	reader *card.Reader,
-	merger *service.TargetMerger,
+	merger visitorMergerApplier,
 	bedPeople *service.BedPeopleTracker,
 	store visitorHistoryStore,
+	writer cardStatusWriter,
+	picker parentRefresher,
 	interval time.Duration,
 	logger *zap.Logger,
 ) *VisitorDeriver {
@@ -98,6 +118,8 @@ func NewVisitorDeriver(
 		merger:    merger,
 		bedPeople: bedPeople,
 		store:     store,
+		writer:    writer,
+		picker:    picker,
 		logger:    logger,
 		interval:  interval,
 		segments:  make(map[string]*visitorSegment),
@@ -168,7 +190,9 @@ func (v *VisitorDeriver) tickCard(ctx context.Context, cardID string, peopleCoun
 	var midnightCloseID string
 	var midnightCloseEndMs int64
 	var midnightCloseDur int
+	midnightHappened := false
 	if seg.lastTickDateUTC != "" && seg.lastTickDateUTC != dateUTC {
+		midnightHappened = true
 		if seg.currentEpisode != "" && seg.segmentStartTs > 0 {
 			midnightCloseEndMs = midnightMsForDate(seg.lastTickDateUTC)
 			midnightCloseID = seg.currentEpisode
@@ -243,9 +267,21 @@ func (v *VisitorDeriver) tickCard(ctx context.Context, cardID string, peopleCoun
 		}
 	}
 
-	// 注入 TargetMerger（visitor 字段下次 target.state 触发时合到 hash）
+	// 注入 TargetMerger（非午夜场景：visitor 字段沿用 sensor target.state 自然带的路径，
+	// ~60s 内自然刷新到 hash；活动事件源源不断时延迟可忽略）。
+	// 午夜跨日例外：凌晨可能无 activity event 推送，sensor target.state 不发，hash 会卡
+	// 昨日 hasToday=true / visitorStartTs 数小时不变 —— 主动写一次 hash 清残留。
 	if v.merger != nil {
-		v.merger.ApplyVisitor(ctx, cardID, service.MakeVisitorFields(visitorStartTs, hasToday))
+		merged := v.merger.ApplyVisitor(ctx, cardID, service.MakeVisitorFields(visitorStartTs, hasToday))
+		if midnightHappened && merged != nil && v.writer != nil {
+			status := &card.CardStatus{CardID: cardID, Target: merged}
+			if err := v.writer.WriteCardStatus(ctx, status); err != nil {
+				v.logger.Warn("visitor_deriver: midnight hash write failed",
+					zap.String("cid", cardID), zap.Error(err))
+			} else if v.picker != nil {
+				v.picker.RefreshParent(ctx, cardID)
+			}
+		}
 	}
 }
 
