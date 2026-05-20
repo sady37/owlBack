@@ -188,22 +188,27 @@ func makeMirrorGrid(t *testing.T) *RoomGrid {
 	return g
 }
 
-func TestMarkMirrorBounce_2x2_BlockMarked(t *testing.T) {
+func TestMarkMirrorBounce_SingleCellMarked(t *testing.T) {
 	g := makeMirrorGrid(t)
-	// (X=100, Y=100) → col=(100-(-250))/10=35, row=10 cell 中心 (-250+35*10+5, 0+10*10+5) = (105, 105)
-	// 点 (100, 100) 在 cell 中心左下 → dx=-1, dy=-1 → 4 cells: (35,10),(34,10),(35,9),(34,9)
+	// (X=100, Y=100) → col=(100-(-250))/10=35, row=10；只命中中心 cell
 	g.MarkMirrorBounce(100, 100, 1_000_000)
-	for _, idx := range [][2]int{{35, 10}, {34, 10}, {35, 9}, {34, 9}} {
-		c := &g.Cells[idx[1]*g.Width+idx[0]]
-		if c.MirrorBounceCount != 1 {
-			t.Errorf("cell (col=%d,row=%d): want MBC=1, got %d", idx[0], idx[1], c.MirrorBounceCount)
+	col, row := 35, 10
+	c := &g.Cells[row*g.Width+col]
+	if c.MirrorBounceCount != 1 {
+		t.Errorf("center cell MBC: want 1, got %d", c.MirrorBounceCount)
+	}
+	// 邻居 cells 不应被涂（单 cell 涂法）
+	for _, idx := range [][2]int{{34, 10}, {36, 10}, {35, 9}, {35, 11}} {
+		nc := &g.Cells[idx[1]*g.Width+idx[0]]
+		if nc.MirrorBounceCount != 0 {
+			t.Errorf("neighbor (col=%d,row=%d) must not be painted; got MBC=%d", idx[0], idx[1], nc.MirrorBounceCount)
 		}
 	}
 }
 
 func TestMarkMirrorBounce_PromoteAfter3Hits(t *testing.T) {
 	g := makeMirrorGrid(t)
-	// 同一 bounce 点 3 次累 → 4 个 cells 全部 MBC=3 → 晋升 AreaDeny+SourceLearned
+	// 同一 cell 命中 3 次（模拟 3 次独立配对 bounce 落在同一 cell）→ 晋升 AreaDeny+SourceLearned
 	for i := 0; i < 3; i++ {
 		g.MarkMirrorBounce(100, 100, int64(1_000_000+i*1000))
 	}
@@ -215,6 +220,21 @@ func TestMarkMirrorBounce_PromoteAfter3Hits(t *testing.T) {
 	if c.Belief[0].Type != AreaDeny || c.Belief[0].Source != SourceLearned {
 		t.Errorf("expected promoted to AreaDeny+SourceLearned, got type=%d source=%d",
 			c.Belief[0].Type, c.Belief[0].Source)
+	}
+}
+
+// 2 次命中不晋升（边界：阈值 = 3 才升）
+func TestMarkMirrorBounce_NoPromoteBelowThreshold(t *testing.T) {
+	g := makeMirrorGrid(t)
+	for i := 0; i < 2; i++ {
+		g.MarkMirrorBounce(100, 100, int64(1_000_000+i*1000))
+	}
+	c := &g.Cells[10*g.Width+35]
+	if c.MirrorBounceCount != 2 {
+		t.Errorf("MBC want 2, got %d", c.MirrorBounceCount)
+	}
+	if c.Belief[0].Source == SourceLearned {
+		t.Error("must not promote below threshold")
 	}
 }
 

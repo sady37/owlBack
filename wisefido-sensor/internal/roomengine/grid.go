@@ -363,41 +363,24 @@ func (g *RoomGrid) MarkLongStill(x, y int, nowMs int64) {
 }
 
 // MirrorPromoteThreshold L1 mirror cell 晋升 AreaDeny+SourceLearned 的 MBC 阈值。
-// "≥3 次独立配对命中"——单次 mirror pair 多 cell 沾染不构成 3，需多次独立运动累积。
+// "≥3 次独立配对命中"——单 cell 涂法下每次配对单 bounce 点 +1，需 3 次独立运动累积。
 const MirrorPromoteThreshold = 3
 
-// MarkMirrorBounce L1 mirror pair 反射点累加。
-// bounce point (x, y) 周围 2×2 微块各 +=1（中心 cell + 朝远离 cell 中心方向的 3 邻居），
-// 越界 cell 跳过。命中达 MirrorPromoteThreshold 即 promote Belief[0]=AreaDeny+SourceLearned
-// （已是 SourceHuman 的不动，layout 人工真相不被 runtime 改）。
+// MarkMirrorBounce L1 mirror pair 反射点累加：单 cell（10×10cm）+=1。
+// 雷达 XY 精度本来就 ±5-10cm 与 cell 同量级，不再 2×2 涂抹（避免单次配对 5 bounce
+// 点共 20 次 cell++ 假性达阈值）。命中达 MirrorPromoteThreshold 即 promote
+// Belief[0]=AreaDeny+SourceLearned（已是 SourceHuman 的不动）。
 func (g *RoomGrid) MarkMirrorBounce(x, y int, nowMs int64) {
-	col, row := g.ToIndex(x, y)
-	if col < 0 || col >= g.Width || row < 0 || row >= g.Height {
+	c := g.CellAt(x, y)
+	if c == nil {
 		return
 	}
-	// 2×2 块朝向：bounce point 在 cell 内的偏移决定 dx/dy 方向
-	cx, cy := g.ToCanvas(col, row)
-	dx, dy := 1, 1
-	if x < cx {
-		dx = -1
-	}
-	if y < cy {
-		dy = -1
-	}
-	for _, off := range [4][2]int{{0, 0}, {dx, 0}, {0, dy}, {dx, dy}} {
-		cc, rr := col+off[0], row+off[1]
-		if cc < 0 || cc >= g.Width || rr < 0 || rr >= g.Height {
-			continue
-		}
-		c := &g.Cells[rr*g.Width+cc]
-		c.MirrorBounceCount++
-		c.LastMirrorMs = nowMs
-		c.LastUpdateMs = nowMs
-		// 晋升：MBC ≥ 阈值 且 当前 Belief 非人工标定 → 升 AreaDeny + SourceLearned
-		if c.MirrorBounceCount >= MirrorPromoteThreshold && c.Belief[0].Source != SourceHuman {
-			c.Belief[0] = BeliefState{Type: AreaDeny, Confidence: 70, Source: SourceLearned}
-			c.AreaType = AreaDeny
-		}
+	c.MirrorBounceCount++
+	c.LastMirrorMs = nowMs
+	c.LastUpdateMs = nowMs
+	if c.MirrorBounceCount >= MirrorPromoteThreshold && c.Belief[0].Source != SourceHuman {
+		c.Belief[0] = BeliefState{Type: AreaDeny, Confidence: 70, Source: SourceLearned}
+		c.AreaType = AreaDeny
 	}
 }
 
