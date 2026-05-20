@@ -54,6 +54,13 @@ func main() {
 	})
 	kv := store.NewRedisKV(redisClient)
 
+	// 重启清残留：data 启动时清空 card:state:* hash，让 cardagg/sensor 从空白起点重建。
+	// 配合 wisefido-sensor 启动时 publishInitialResetState 主动重发 vacant 初态，
+	// 整套冷启动后 OOR/OOB anchor 都从 now 起算，杜绝跨重启 stale 显示（如「OOR 29h」）。
+	// 启动顺序由 start-owlback-full.sh 保证：data → 10s → cardagg/sensor，
+	// 所以 sensor publish 时 cardagg 已挂上 Redis stream，本次 clear 不会被覆盖。
+	clearCardStateOnStartup(context.Background(), redisClient, logger)
+
 	// Tenants management (platform-level)
 	var tenantsRepo repository.TenantsRepository
 	authStore := httpapi.NewAuthStore()

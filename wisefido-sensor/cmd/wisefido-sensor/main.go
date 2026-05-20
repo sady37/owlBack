@@ -201,6 +201,11 @@ func main() {
 		zap.String("critical_bathroom", "BathroomFallRules §6.A 4 rules"),
 		zap.String("critical_bedroom", "BedroomFallRules §6.B 11b+11c"))
 
+	// 重启清残留：sensor 启动后主动 publish 所有 room/bed 的 vacant 初始态，
+	// OOR/OOB anchor 重置为 now，避免 cardagg card:state hash 保留昨日 LastExitTime
+	// （如「OOR 29h」残留显示）。详 initial_publish.go。
+	publishInitialResetState(ctx, engineDB, zone.StreamPublisher, logger)
+
 	// 6. 启动服务（在 goroutine 中）
 	serviceErrChan := make(chan error, 1)
 	go func() {
