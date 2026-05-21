@@ -95,7 +95,7 @@ func main() {
 		}
 	}
 
-	// DDNS client — 一次性装配 (BIND_HOST 缺失 = nil)；同时供 registerSpatialV2 + ResidentService Phase F 写卡路径用
+	// DDNS client — 一次性装配 (BIND_HOST 缺失 = nil)；同时供 registerSpatial + ResidentService Phase F 写卡路径用
 	ddnsClient := initDDNSClient(logger)
 
 	if db != nil {
@@ -354,11 +354,9 @@ func main() {
 			}
 		})
 
-		// v2 Phase 1b: slim DeviceMonitorSettingsV2Service — backed by spatial_config (device /128) + tenant snapshot fallback.
-		// v1 service 依赖 alarmDeviceRepo / configVersionsRepo / deviceStoreRepo / residentsRepo 等 v2 已删/重构的表，
-		// 整段跳过；slim v2 仅实现 Get/Update/GetDefault/CheckOnline 4 个核心方法，
-		// 其它 9 个（OTA / firmware / resync）返回 NotImplemented 错误，等具体场景再 v2 化。
-		deviceMonitorSettingsService = service.NewDeviceMonitorSettingsV2Service(db, alarmCloudRepo, logger)
+		// DeviceMonitorSettingsService — backed by spatial_config (device /128) + tenant snapshot fallback.
+		// 实现 Get/Update/GetDefault/CheckOnline 4 个核心方法；其它 9 个（OTA / firmware / resync）返回 NotImplemented。
+		deviceMonitorSettingsService = service.NewDeviceMonitorSettingsService(db, alarmCloudRepo, logger)
 
 		var intervalScheduler *service.SleepaceIntervalScheduler
 		if cfg.SleepaceGateway.APIBaseURL != "" {
@@ -521,7 +519,7 @@ func main() {
 	// 注册 v2 spatial IPAM/DDNS API（owl_v2 IPv6 体系）— 独立于 v1
 	// owl-common/ipam.PGBackend 直接走 dbv2 spatial 表 + 可选 kea audit
 	if db != nil {
-		registerSpatialV2(router, db, ddnsClient, logger)
+		registerSpatial(router, db, ddnsClient, logger)
 	}
 
 	// 注册内部 baseline API（供 gate/cardagg 查询 device→card 映射，/internal/ 跳过 auth）
@@ -878,7 +876,7 @@ func subscribeDataStream(ctx context.Context, logger *zap.Logger, redisClient *r
 	}
 }
 
-// registerSpatialV2 wire up owl_v2 IPAM/DDNS REST API on /admin/api/v2/spatial/...
+// registerSpatial wire up owl_v2 IPAM/DDNS REST API on /admin/api/v2/spatial/...
 //
 // 配置（环境变量；缺失则跳过相应组件）：
 //   KEA_CTRL_URL  http://localhost:8000   (空 = 不接 kea audit，仅 PG)
@@ -890,7 +888,7 @@ func subscribeDataStream(ctx context.Context, logger *zap.Logger, redisClient *r
 //   DDNS_ALGO     hmac-sha256
 //   DDNS_TSIG_SECRET  base64
 //   OWL_DOMAIN    owl.
-func registerSpatialV2(router *httpapi.Router, db *sql.DB, ddnsClient *ddns.Client, logger *zap.Logger) {
+func registerSpatial(router *httpapi.Router, db *sql.DB, ddnsClient *ddns.Client, logger *zap.Logger) {
 	// kea audit (可选)
 	var keaClient *ipam.KeaClient
 	if url := os.Getenv("KEA_CTRL_URL"); url != "" {
@@ -910,13 +908,13 @@ func registerSpatialV2(router *httpapi.Router, db *sql.DB, ddnsClient *ddns.Clie
 	}
 	backend := ipam.NewPGBackendWithKea(db, keaClient)
 
-	handler := httpapi.NewSpatialV2Handler(backend, db, ddnsClient, logger)
-	router.RegisterSpatialV2Routes(handler)
+	handler := httpapi.NewSpatialHandler(backend, db, ddnsClient, logger)
+	router.RegisterSpatialRoutes(handler)
 	logger.Info("v2 spatial: API registered at /admin/api/v2/spatial/*")
 }
 
 // initDDNSClient 启动期一次性装配 DDNS client（BIND_HOST 缺失 → 返回 nil 静默跳过）。
-// 同时供 registerSpatialV2 + ResidentService Phase F 写卡路径复用。
+// 同时供 registerSpatial + ResidentService Phase F 写卡路径复用。
 func initDDNSClient(logger *zap.Logger) *ddns.Client {
 	host := os.Getenv("BIND_HOST")
 	if host == "" {

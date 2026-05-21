@@ -1041,7 +1041,7 @@ func (s *CardRealtimeService) getCardStatusFromQuery(ctx context.Context, cardID
 	return out, nil
 }
 
-// enrichDeviceStatus 把 cards.devices 列表 × device:status:{deviceID} hash 拼成完整 device_status map，
+// enrichDeviceStatus 把 cards.devices 列表 × device:status:{ipv6} hash 拼成完整 device_status map，
 // 写入 data["device_status"]。供 SSE init (pushStatusSnapshot) 与 HTTP polling (getCardStatusFromQuery) 共用。
 //
 // 字段单一职责：`offline` 仅反映网络/心跳维度（= raw `ds.Offline`）；signal_poor / angle_abnormal /

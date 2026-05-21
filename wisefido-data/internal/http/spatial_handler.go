@@ -1,6 +1,6 @@
 package httpapi
 
-// SpatialV2Handler 提供 owl_v2 IPAM/DDNS REST API。
+// SpatialHandler 提供 owl_v2 IPAM/DDNS REST API。
 //
 // 设计：
 //   - 不接现有 v1 service 层 (BranchService/UnitService 等基于 db1.0 UUID schema)
@@ -30,19 +30,19 @@ import (
 	"go.uber.org/zap"
 )
 
-// SpatialV2Handler 是 v2 spatial IPAM API 处理器。
+// SpatialHandler 是 v2 spatial IPAM API 处理器。
 // ipam 必填；db 必填（LIST/GET/PUT/DELETE 直 SQL，绕过 ipam allocation 抽象）；
 // ddns 为 nil 时跳过 DNS 注册（仍正常分配 prefix）。
-type SpatialV2Handler struct {
+type SpatialHandler struct {
 	ipam   ipam.Backend
 	db     *sql.DB
 	ddns   *ddns.Client // 可选
 	logger *zap.Logger
 }
 
-// NewSpatialV2Handler 构造。
-func NewSpatialV2Handler(backend ipam.Backend, db *sql.DB, ddnsClient *ddns.Client, logger *zap.Logger) *SpatialV2Handler {
-	return &SpatialV2Handler{
+// NewSpatialHandler 构造。
+func NewSpatialHandler(backend ipam.Backend, db *sql.DB, ddnsClient *ddns.Client, logger *zap.Logger) *SpatialHandler {
+	return &SpatialHandler{
 		ipam:   backend,
 		db:     db,
 		ddns:   ddnsClient,
@@ -54,13 +54,13 @@ func NewSpatialV2Handler(backend ipam.Backend, db *sql.DB, ddnsClient *ddns.Clie
 // 路由注册
 // =============================================================================
 
-// RegisterSpatialV2Routes 把 v2 spatial 路由注册到 router。
+// RegisterSpatialRoutes 把 v2 spatial 路由注册到 router。
 //
 // Path 形态：
 //   - /spatial/<entity>          POST=alloc, GET=list (tenant scope via query/header)
 //   - /spatial/<entity>/{prefix} GET=detail, PUT=update, DELETE=soft-delete
 //     prefix 用 `_` 替代 `:`，斜杠用 `_` (URL safe)，例如 fd00_0_3_100___56 = fd00:0:3:100::/56
-func (r *Router) RegisterSpatialV2Routes(h *SpatialV2Handler) {
+func (r *Router) RegisterSpatialRoutes(h *SpatialHandler) {
 	r.Handle("/admin/api/v2/spatial/branches", h.HandleBranches)
 	r.Handle("/admin/api/v2/spatial/branches/", h.HandleBranchByPrefix)
 	r.Handle("/admin/api/v2/spatial/sites", h.HandleSites)
@@ -161,7 +161,7 @@ type updateBranchReq struct {
 	Status   *string `json:"status,omitempty"`   // active / suspended / deleted
 }
 
-func (h *SpatialV2Handler) HandleBranches(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) HandleBranches(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		h.allocBranch(w, r)
@@ -172,7 +172,7 @@ func (h *SpatialV2Handler) HandleBranches(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func (h *SpatialV2Handler) allocBranch(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) allocBranch(w http.ResponseWriter, r *http.Request) {
 	var body allocBranchReq
 	if !decodeJSON(w, r, &body) {
 		return
@@ -197,7 +197,7 @@ func (h *SpatialV2Handler) allocBranch(w http.ResponseWriter, r *http.Request) {
 
 // listBranches GET /admin/api/v2/spatial/branches?tenant=fd00:0:3::/48[&include_deleted=true]
 // 不传 tenant 时回退到 X-Tenant-Id header；SystemAdmin 可显式跨 tenant 查；其它角色被 gate。
-func (h *SpatialV2Handler) listBranches(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) listBranches(w http.ResponseWriter, r *http.Request) {
 	tenantStr := r.URL.Query().Get("tenant")
 	if tenantStr == "" {
 		tenantStr = r.Header.Get("X-Tenant-Id")
@@ -277,7 +277,7 @@ func (h *SpatialV2Handler) listBranches(w http.ResponseWriter, r *http.Request) 
 }
 
 // fetchBranchUnits — units 在该 branch /56 下（unit_id /80 << branch /56）
-func (h *SpatialV2Handler) fetchBranchUnits(ctx context.Context, branchPrefix string) ([]branchUnitItem, error) {
+func (h *SpatialHandler) fetchBranchUnits(ctx context.Context, branchPrefix string) ([]branchUnitItem, error) {
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT host(unit_id)||'/'||masklen(unit_id), unit_name
 		FROM units WHERE unit_id << $1::INET
@@ -300,7 +300,7 @@ func (h *SpatialV2Handler) fetchBranchUnits(ctx context.Context, branchPrefix st
 
 // fetchBranchResidents — residents 当前活跃绑定到该 branch /56 下的 unit（resident_unit + units 联表）
 // 注意：residents.resident_id 在 subject namespace 不直接 prefix-match branch；用 resident_unit.spatial_prefix 反查。
-func (h *SpatialV2Handler) fetchBranchResidents(ctx context.Context, branchPrefix string) ([]branchResidentItem, error) {
+func (h *SpatialHandler) fetchBranchResidents(ctx context.Context, branchPrefix string) ([]branchResidentItem, error) {
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT DISTINCT host(r.resident_id)||'/'||masklen(r.resident_id), r.nickname
 		FROM residents r
@@ -324,7 +324,7 @@ func (h *SpatialV2Handler) fetchBranchResidents(ctx context.Context, branchPrefi
 }
 
 // fetchBranchUsers — users 通过 user_roles.scope 关联该 branch /56；scope NULL = tenant-wide (不算入 branch 列)
-func (h *SpatialV2Handler) fetchBranchUsers(ctx context.Context, branchPrefix string) ([]branchUserItem, error) {
+func (h *SpatialHandler) fetchBranchUsers(ctx context.Context, branchPrefix string) ([]branchUserItem, error) {
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT DISTINCT u.user_id::text, u.user_account, COALESCE(u.nickname,'')
 		FROM users u
@@ -348,7 +348,7 @@ func (h *SpatialV2Handler) fetchBranchUsers(ctx context.Context, branchPrefix st
 }
 
 // HandleBranchByPrefix dispatches GET/PUT/DELETE on /admin/api/v2/spatial/branches/{prefix-encoded}
-func (h *SpatialV2Handler) HandleBranchByPrefix(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) HandleBranchByPrefix(w http.ResponseWriter, r *http.Request) {
 	const base = "/admin/api/v2/spatial/branches/"
 	encoded := strings.TrimPrefix(r.URL.Path, base)
 	if encoded == "" {
@@ -383,7 +383,7 @@ func (h *SpatialV2Handler) HandleBranchByPrefix(w http.ResponseWriter, r *http.R
 	}
 }
 
-func (h *SpatialV2Handler) getBranch(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+func (h *SpatialHandler) getBranch(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	var b branchRow
 	var addr, tz sql.NullString
 	err := h.db.QueryRowContext(r.Context(), `
@@ -407,7 +407,7 @@ func (h *SpatialV2Handler) getBranch(w http.ResponseWriter, r *http.Request, pre
 	writeJSON(w, http.StatusOK, Ok(b))
 }
 
-func (h *SpatialV2Handler) updateBranch(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+func (h *SpatialHandler) updateBranch(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	var body updateBranchReq
 	if !decodeJSON(w, r, &body) {
 		return
@@ -468,7 +468,7 @@ func (h *SpatialV2Handler) updateBranch(w http.ResponseWriter, r *http.Request, 
 }
 
 // deleteBranch 软删 — status='deleted'。R-002: HIPAA + 业务恢复，不硬删。
-func (h *SpatialV2Handler) deleteBranch(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+func (h *SpatialHandler) deleteBranch(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	res, err := h.db.ExecContext(r.Context(), `
 		UPDATE branches SET status='deleted', updated_at=NOW()
 		WHERE branch_id = $1::INET AND status <> 'deleted'
@@ -487,7 +487,7 @@ func (h *SpatialV2Handler) deleteBranch(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, Ok(map[string]any{"prefix": prefix.String(), "status": "deleted"}))
 }
 
-func (h *SpatialV2Handler) HandleSites(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) HandleSites(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -523,10 +523,12 @@ type unitRow struct {
 	UnitType       int                `json:"unit_type"`     // 1/2/3
 	CreatedAt      string             `json:"created_at"`
 	UpdatedAt      string             `json:"updated_at"`
-	BranchPrefix   string             `json:"branch_prefix"`             // derived /56
+	BranchPrefix   string             `json:"branch_prefix"`             // /56 (branch 段，byte 6)
 	BranchName     string             `json:"branch_name,omitempty"`     // 来自 branches join
-	BuildingPrefix string             `json:"building_prefix,omitempty"` // /64 (= site_id), derived
+	BuildingPrefix string             `json:"building_prefix,omitempty"` // /60 (building 段，byte 7 高 4 bit)；跨 floor 稳定
 	BuildingName   string             `json:"building_name,omitempty"`   // 来自 sites.site_name
+	FloorPrefix    string             `json:"floor_prefix,omitempty"`    // /64 (= site_id, building<<4|floor)；per-floor 唯一
+	FloorName      string             `json:"floor_name,omitempty"`      // FE 显示用 "1F"/"2F" 等
 	Floor          int                `json:"floor,omitempty"`           // 来自 sites.floor (1..14)
 	Rooms          []unitRoomItem     `json:"rooms,omitempty"`
 	Beds           []unitBedItem      `json:"beds,omitempty"`
@@ -557,7 +559,7 @@ type updateUnitReq struct {
 	UnitType     *int    `json:"unit_type,omitempty"`     // 1/2/3
 }
 
-func (h *SpatialV2Handler) HandleUnits(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) HandleUnits(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		h.allocUnit(w, r)
@@ -568,7 +570,7 @@ func (h *SpatialV2Handler) HandleUnits(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *SpatialV2Handler) allocUnit(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) allocUnit(w http.ResponseWriter, r *http.Request) {
 	var body allocUnitReq
 	if !decodeJSON(w, r, &body) {
 		return
@@ -594,7 +596,7 @@ func (h *SpatialV2Handler) allocUnit(w http.ResponseWriter, r *http.Request) {
 
 // listUnits GET /admin/api/v2/spatial/units?branch=<prefix>[&tenant=<prefix>]
 // 优先级 branch > tenant > X-Tenant-Id。
-func (h *SpatialV2Handler) listUnits(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) listUnits(w http.ResponseWriter, r *http.Request) {
 	scopeStr := r.URL.Query().Get("branch")
 	if scopeStr == "" {
 		scopeStr = r.URL.Query().Get("tenant")
@@ -617,7 +619,10 @@ func (h *SpatialV2Handler) listUnits(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, Fail("permission denied: cross-tenant list requires SystemAdmin"))
 		return
 	}
-	// JOIN sites + branches 派生 building_name/floor/branch_name（v1 FE 需要这些字段做 grouping）
+	// JOIN sites + branches 派生 building_name/floor/branch_name。
+	// IPv6 byte 7 = site_slot = (building<<4 | floor)，所以：
+	//   /60 = branch + building (跨 floor 稳定，FE building 聚合 key)
+	//   /64 = branch + building + floor (= site_id)
 	rows, err := h.db.QueryContext(r.Context(), `
 		SELECT host(u.unit_id)||'/'||masklen(u.unit_id), u.unit_slot, u.unit_name,
 		       COALESCE(u.timezone,''),
@@ -626,7 +631,8 @@ func (h *SpatialV2Handler) listUnits(w http.ResponseWriter, r *http.Request) {
 		       to_char(u.updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
 		       host(network(set_masklen(u.unit_id, 56)))||'/56' AS branch_prefix,
 		       COALESCE(b.branch_name, '') AS branch_name,
-		       host(network(set_masklen(u.unit_id, 64)))||'/64' AS building_prefix,
+		       host(network(set_masklen(u.unit_id, 60)))||'/60' AS building_prefix,
+		       host(network(set_masklen(u.unit_id, 64)))||'/64' AS floor_prefix,
 		       COALESCE(s.site_name, '') AS building_name,
 		       COALESCE(s.floor, 0) AS floor
 		FROM units u
@@ -646,10 +652,13 @@ func (h *SpatialV2Handler) listUnits(w http.ResponseWriter, r *http.Request) {
 		var u unitRow
 		if err := rows.Scan(&u.Prefix, &u.Slot, &u.Name, &u.Timezone,
 			&u.UnitProperty, &u.UnitType, &u.CreatedAt, &u.UpdatedAt, &u.BranchPrefix,
-			&u.BranchName, &u.BuildingPrefix, &u.BuildingName, &u.Floor); err != nil {
+			&u.BranchName, &u.BuildingPrefix, &u.FloorPrefix, &u.BuildingName, &u.Floor); err != nil {
 			h.logger.Error("v2 spatial: scan unit row failed", zap.Error(err))
 			writeJSON(w, http.StatusOK, Fail("scan unit row failed: "+err.Error()))
 			return
+		}
+		if u.Floor > 0 {
+			u.FloorName = fmt.Sprintf("%dF", u.Floor)
 		}
 		items = append(items, u)
 	}
@@ -681,7 +690,7 @@ func (h *SpatialV2Handler) listUnits(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleUnitByPrefix dispatches GET/PUT/DELETE on /admin/api/v2/spatial/units/{prefix-encoded}
-func (h *SpatialV2Handler) HandleUnitByPrefix(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) HandleUnitByPrefix(w http.ResponseWriter, r *http.Request) {
 	const base = "/admin/api/v2/spatial/units/"
 	encoded := strings.TrimPrefix(r.URL.Path, base)
 	if encoded == "" {
@@ -714,7 +723,7 @@ func (h *SpatialV2Handler) HandleUnitByPrefix(w http.ResponseWriter, r *http.Req
 	}
 }
 
-func (h *SpatialV2Handler) getUnit(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+func (h *SpatialHandler) getUnit(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	var u unitRow
 	var tz sql.NullString
 	err := h.db.QueryRowContext(r.Context(), `
@@ -724,6 +733,7 @@ func (h *SpatialV2Handler) getUnit(w http.ResponseWriter, r *http.Request, prefi
 		       to_char(u.updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),
 		       host(network(set_masklen(u.unit_id, 56)))||'/56',
 		       COALESCE(b.branch_name, ''),
+		       host(network(set_masklen(u.unit_id, 60)))||'/60',
 		       host(network(set_masklen(u.unit_id, 64)))||'/64',
 		       COALESCE(s.site_name, ''),
 		       COALESCE(s.floor, 0)
@@ -733,7 +743,7 @@ func (h *SpatialV2Handler) getUnit(w http.ResponseWriter, r *http.Request, prefi
 		WHERE u.unit_id = $1::INET
 	`, prefix.String()).Scan(&u.Prefix, &u.Slot, &u.Name, &tz, &u.UnitProperty, &u.UnitType,
 		&u.CreatedAt, &u.UpdatedAt, &u.BranchPrefix,
-		&u.BranchName, &u.BuildingPrefix, &u.BuildingName, &u.Floor)
+		&u.BranchName, &u.BuildingPrefix, &u.FloorPrefix, &u.BuildingName, &u.Floor)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeJSON(w, http.StatusOK, Fail("unit not found: "+prefix.String()))
 		return
@@ -744,6 +754,9 @@ func (h *SpatialV2Handler) getUnit(w http.ResponseWriter, r *http.Request, prefi
 		return
 	}
 	u.Timezone = tz.String
+	if u.Floor > 0 {
+		u.FloorName = fmt.Sprintf("%dF", u.Floor)
+	}
 	// 附 children
 	if rs, err := h.fetchUnitRooms(r.Context(), u.Prefix); err == nil {
 		u.Rooms = rs
@@ -757,7 +770,7 @@ func (h *SpatialV2Handler) getUnit(w http.ResponseWriter, r *http.Request, prefi
 	writeJSON(w, http.StatusOK, Ok(u))
 }
 
-func (h *SpatialV2Handler) updateUnit(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+func (h *SpatialHandler) updateUnit(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	var body updateUnitReq
 	if !decodeJSON(w, r, &body) {
 		return
@@ -821,7 +834,7 @@ func (h *SpatialV2Handler) updateUnit(w http.ResponseWriter, r *http.Request, pr
 
 // deleteUnit — units 表无 status 列；条件硬删（拒绝 if 有 rooms/beds/active resident binding）。
 // 与 v1 BranchList "Empty branch: hard delete / Branch with data: cannot delete" 同语义。
-func (h *SpatialV2Handler) deleteUnit(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+func (h *SpatialHandler) deleteUnit(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	// children check：rooms + beds + active resident_unit binding
 	var roomCount, bedCount, residentCount int
 	row := h.db.QueryRowContext(r.Context(), `
@@ -856,7 +869,7 @@ func (h *SpatialV2Handler) deleteUnit(w http.ResponseWriter, r *http.Request, pr
 	writeJSON(w, http.StatusOK, Ok(map[string]any{"prefix": prefix.String(), "deleted": true}))
 }
 
-func (h *SpatialV2Handler) fetchUnitRooms(ctx context.Context, unitPrefix string) ([]unitRoomItem, error) {
+func (h *SpatialHandler) fetchUnitRooms(ctx context.Context, unitPrefix string) ([]unitRoomItem, error) {
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT host(room_id)||'/'||masklen(room_id), room_name, COALESCE(room_type, 0), is_primary
 		FROM rooms WHERE room_id << $1::INET
@@ -877,7 +890,7 @@ func (h *SpatialV2Handler) fetchUnitRooms(ctx context.Context, unitPrefix string
 	return out, rows.Err()
 }
 
-func (h *SpatialV2Handler) fetchUnitBeds(ctx context.Context, unitPrefix string) ([]unitBedItem, error) {
+func (h *SpatialHandler) fetchUnitBeds(ctx context.Context, unitPrefix string) ([]unitBedItem, error) {
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT host(bed_id)||'/'||masklen(bed_id), bed_name
 		FROM beds WHERE bed_id << $1::INET
@@ -898,7 +911,7 @@ func (h *SpatialV2Handler) fetchUnitBeds(ctx context.Context, unitPrefix string)
 	return out, rows.Err()
 }
 
-func (h *SpatialV2Handler) fetchUnitResidents(ctx context.Context, unitPrefix string) ([]unitResidentItem, error) {
+func (h *SpatialHandler) fetchUnitResidents(ctx context.Context, unitPrefix string) ([]unitResidentItem, error) {
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT DISTINCT host(r.resident_id)||'/'||masklen(r.resident_id), r.nickname
 		FROM residents r
@@ -959,7 +972,7 @@ type updateRoomReq struct {
 	Description *string `json:"description,omitempty"` // 空字符串=NULL
 }
 
-func (h *SpatialV2Handler) HandleRooms(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) HandleRooms(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		h.allocRoom(w, r)
@@ -970,7 +983,7 @@ func (h *SpatialV2Handler) HandleRooms(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *SpatialV2Handler) allocRoom(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) allocRoom(w http.ResponseWriter, r *http.Request) {
 	var body allocRoomReq
 	if !decodeJSON(w, r, &body) {
 		return
@@ -995,7 +1008,7 @@ func (h *SpatialV2Handler) allocRoom(w http.ResponseWriter, r *http.Request) {
 }
 
 // listRooms GET /admin/api/v2/spatial/rooms?unit=<prefix>|?branch=<prefix>|?tenant=<prefix>
-func (h *SpatialV2Handler) listRooms(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) listRooms(w http.ResponseWriter, r *http.Request) {
 	scopeStr := r.URL.Query().Get("unit")
 	if scopeStr == "" {
 		scopeStr = r.URL.Query().Get("branch")
@@ -1070,7 +1083,7 @@ func (h *SpatialV2Handler) listRooms(w http.ResponseWriter, r *http.Request) {
 	}))
 }
 
-func (h *SpatialV2Handler) HandleRoomByPrefix(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) HandleRoomByPrefix(w http.ResponseWriter, r *http.Request) {
 	const base = "/admin/api/v2/spatial/rooms/"
 	encoded := strings.TrimPrefix(r.URL.Path, base)
 	if encoded == "" {
@@ -1103,7 +1116,7 @@ func (h *SpatialV2Handler) HandleRoomByPrefix(w http.ResponseWriter, r *http.Req
 	}
 }
 
-func (h *SpatialV2Handler) getRoom(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+func (h *SpatialHandler) getRoom(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	var rm roomRow
 	var rt sql.NullInt32
 	var desc, unitName, branchName sql.NullString
@@ -1144,7 +1157,7 @@ func (h *SpatialV2Handler) getRoom(w http.ResponseWriter, r *http.Request, prefi
 	writeJSON(w, http.StatusOK, Ok(rm))
 }
 
-func (h *SpatialV2Handler) updateRoom(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+func (h *SpatialHandler) updateRoom(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	var body updateRoomReq
 	if !decodeJSON(w, r, &body) {
 		return
@@ -1202,7 +1215,7 @@ func (h *SpatialV2Handler) updateRoom(w http.ResponseWriter, r *http.Request, pr
 }
 
 // deleteRoom — rooms 表无 status 列；条件硬删（拒绝 if 有 beds 或 active resident binding）。
-func (h *SpatialV2Handler) deleteRoom(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+func (h *SpatialHandler) deleteRoom(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	var bedCount, residentCount int
 	if err := h.db.QueryRowContext(r.Context(), `
 		SELECT
@@ -1234,7 +1247,7 @@ func (h *SpatialV2Handler) deleteRoom(w http.ResponseWriter, r *http.Request, pr
 	writeJSON(w, http.StatusOK, Ok(map[string]any{"prefix": prefix.String(), "deleted": true}))
 }
 
-func (h *SpatialV2Handler) fetchRoomBeds(ctx context.Context, roomPrefix string) ([]roomBedItem, error) {
+func (h *SpatialHandler) fetchRoomBeds(ctx context.Context, roomPrefix string) ([]roomBedItem, error) {
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT host(bed_id)||'/'||masklen(bed_id), bed_name
 		FROM beds WHERE bed_id << $1::INET
@@ -1257,7 +1270,7 @@ func (h *SpatialV2Handler) fetchRoomBeds(ctx context.Context, roomPrefix string)
 
 // fetchRoomResidents — resident_unit.spatial_prefix 是 /96(bed) 或 /88(room) 或更高，
 // 用 <<= room_prefix 抓所有挂到本 room 或其子 bed 的活跃 resident。
-func (h *SpatialV2Handler) fetchRoomResidents(ctx context.Context, roomPrefix string) ([]roomResidentItem, error) {
+func (h *SpatialHandler) fetchRoomResidents(ctx context.Context, roomPrefix string) ([]roomResidentItem, error) {
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT DISTINCT host(r.resident_id)||'/'||masklen(r.resident_id), r.nickname
 		FROM residents r
@@ -1310,7 +1323,7 @@ type updateBedReq struct {
 	Description *string `json:"description,omitempty"`
 }
 
-func (h *SpatialV2Handler) HandleBeds(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) HandleBeds(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		h.allocBed(w, r)
@@ -1321,7 +1334,7 @@ func (h *SpatialV2Handler) HandleBeds(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *SpatialV2Handler) allocBed(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) allocBed(w http.ResponseWriter, r *http.Request) {
 	var body allocBedReq
 	if !decodeJSON(w, r, &body) {
 		return
@@ -1346,7 +1359,7 @@ func (h *SpatialV2Handler) allocBed(w http.ResponseWriter, r *http.Request) {
 }
 
 // listBeds GET /admin/api/v2/spatial/beds?room=<prefix>|?unit=<prefix>|?branch=<prefix>|?tenant=<prefix>
-func (h *SpatialV2Handler) listBeds(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) listBeds(w http.ResponseWriter, r *http.Request) {
 	scopeStr := r.URL.Query().Get("room")
 	if scopeStr == "" {
 		scopeStr = r.URL.Query().Get("unit")
@@ -1424,7 +1437,7 @@ func (h *SpatialV2Handler) listBeds(w http.ResponseWriter, r *http.Request) {
 	}))
 }
 
-func (h *SpatialV2Handler) HandleBedByPrefix(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) HandleBedByPrefix(w http.ResponseWriter, r *http.Request) {
 	const base = "/admin/api/v2/spatial/beds/"
 	encoded := strings.TrimPrefix(r.URL.Path, base)
 	if encoded == "" {
@@ -1457,7 +1470,7 @@ func (h *SpatialV2Handler) HandleBedByPrefix(w http.ResponseWriter, r *http.Requ
 	}
 }
 
-func (h *SpatialV2Handler) getBed(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+func (h *SpatialHandler) getBed(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	var bd bedRow
 	var desc, roomName, unitName, branchName sql.NullString
 	err := h.db.QueryRowContext(r.Context(), `
@@ -1498,7 +1511,7 @@ func (h *SpatialV2Handler) getBed(w http.ResponseWriter, r *http.Request, prefix
 	writeJSON(w, http.StatusOK, Ok(bd))
 }
 
-func (h *SpatialV2Handler) updateBed(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+func (h *SpatialHandler) updateBed(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	var body updateBedReq
 	if !decodeJSON(w, r, &body) {
 		return
@@ -1542,7 +1555,7 @@ func (h *SpatialV2Handler) updateBed(w http.ResponseWriter, r *http.Request, pre
 }
 
 // deleteBed — beds 表无 status 列；条件硬删（拒绝 if 有 active resident binding 在该 bed）。
-func (h *SpatialV2Handler) deleteBed(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
+func (h *SpatialHandler) deleteBed(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	var residentCount int
 	if err := h.db.QueryRowContext(r.Context(), `
 		SELECT COUNT(*) FROM resident_unit WHERE valid_to IS NULL AND spatial_prefix <<= $1::INET
@@ -1572,7 +1585,7 @@ func (h *SpatialV2Handler) deleteBed(w http.ResponseWriter, r *http.Request, pre
 	writeJSON(w, http.StatusOK, Ok(map[string]any{"prefix": prefix.String(), "deleted": true}))
 }
 
-func (h *SpatialV2Handler) fetchBedResident(ctx context.Context, bedPrefix string) (*bedResidentItem, error) {
+func (h *SpatialHandler) fetchBedResident(ctx context.Context, bedPrefix string) (*bedResidentItem, error) {
 	var rs bedResidentItem
 	err := h.db.QueryRowContext(ctx, `
 		SELECT host(r.resident_id)||'/'||masklen(r.resident_id), r.nickname
@@ -1591,7 +1604,7 @@ func (h *SpatialV2Handler) fetchBedResident(ctx context.Context, bedPrefix strin
 }
 
 // HandleDevices 注册 device + 可选 DDNS 推 BIND。
-func (h *SpatialV2Handler) HandleDevices(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) HandleDevices(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -1647,7 +1660,7 @@ func (h *SpatialV2Handler) HandleDevices(w http.ResponseWriter, r *http.Request)
 
 // HandleLookupTenant GET /admin/api/v2/spatial/tenants/{prefix-encoded}
 // 约定：客户端 URL-encode prefix (`encodeURIComponent`)；net/http 解码 path 后即原 CIDR。
-func (h *SpatialV2Handler) HandleLookupTenant(w http.ResponseWriter, r *http.Request) {
+func (h *SpatialHandler) HandleLookupTenant(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -1714,7 +1727,7 @@ func decodePrefixSegment(pathSeg, queryPrefix string) (netip.Prefix, error) {
 
 // scopeAllows checks whether the current caller may operate within `scope`.
 // SystemAdmin / SystemOperator pass; others must X-Tenant-Id ⊇ scope.
-func (h *SpatialV2Handler) scopeAllows(r *http.Request, scope netip.Prefix) bool {
+func (h *SpatialHandler) scopeAllows(r *http.Request, scope netip.Prefix) bool {
 	role := r.Header.Get("X-User-Role")
 	if strings.EqualFold(role, "SystemAdmin") || strings.EqualFold(role, "SystemOperator") {
 		return true
@@ -1741,7 +1754,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 
 // respondAllocError 把 ipam 错误映射到 HTTP 响应。
 // 全部用 200+Fail (与现有 handler 风格一致)。
-func (h *SpatialV2Handler) respondAllocError(w http.ResponseWriter, op string, err error) {
+func (h *SpatialHandler) respondAllocError(w http.ResponseWriter, op string, err error) {
 	switch {
 	case errors.Is(err, ipam.ErrInvalidParent):
 		writeJSON(w, http.StatusBadRequest, Fail(op+": "+err.Error()))

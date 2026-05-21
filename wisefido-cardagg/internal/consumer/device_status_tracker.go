@@ -1,10 +1,10 @@
-// device_status_tracker.go — device:status:{addr} Hash 单 writer 守门。
+// device_status_tracker.go — device:status:{ipv6} Hash 单 writer 守门。
 //
 // 输入端：
 //   - alarm_router.DeviceSignal 接口（设备类 alarm/recover/connectivity）
 //   - monitor_buffer 入口（每条 monitor sample 触刷 last_seen）
 //
-// 输出：device:status:{deviceAddr} Hash 增量字段 + 180s 看门狗 fail-safe。
+// 输出：device:status:{ipv6} Hash 增量字段 + 180s 看门狗 fail-safe。
 //
 // 性能优化（vs v1）：
 //   - monitor 每条 sample 走 TouchLastSeen，纯内存 map RMW（不写 Redis）

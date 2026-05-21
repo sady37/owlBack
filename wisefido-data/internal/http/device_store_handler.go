@@ -116,7 +116,7 @@ func (h *DeviceStoreHandler) ListDeviceStores(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// 实时健康状态：从 device:status:{deviceID} hash 读完整字段（offline + signal_poor + angle_abnormal + sensor_detached + last_seen_ms）
+	// 实时健康状态：从 device:status:{ipv6} hash 读完整字段（offline + signal_poor + angle_abnormal + sensor_detached + last_seen_ms）
 	// 设备未绑卡也照样有 hash，admin 视角无差别可见。
 	dsMap := service.FillDeviceStatusFromCardagg(ctx, h.stateReader, deviceStoreDeviceIPv6s(items), h.logger)
 	for _, s := range items {

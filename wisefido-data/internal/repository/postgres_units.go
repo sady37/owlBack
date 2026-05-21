@@ -148,7 +148,7 @@ func zeroSuffix(prefixCIDR string, byteIdx int) (net.IP, error) {
 // =============================================================================
 
 const buildingsSelectCols = `
-		host(s.site_id) || '/64' AS building_id,
+		host(network(set_masklen(s.site_id, 60))) || '/60' AS building_id,
 		network(set_masklen(s.site_id, 48))::text AS tenant_id,
 		network(set_masklen(s.site_id, 56))::text AS branch_id,
 		COALESCE(b.branch_name, '') AS branch_name,
@@ -427,11 +427,7 @@ const unitsSelectCols = `
 		network(set_masklen(u.unit_id, 56))::text AS branch_id,
 		COALESCE(b.branch_name, '') AS branch_name,
 		u.unit_name,
-		(SELECT host(s2.site_id) || '/64'
-		   FROM sites s2
-		  WHERE s2.site_id <<= network(set_masklen(u.unit_id, 56))
-		    AND s2.building = s.building
-		  ORDER BY s2.floor LIMIT 1) AS building_id,
+		host(network(set_masklen(u.unit_id, 60))) || '/60' AS building_id,
 		COALESCE(s.site_name, '') AS building_name,
 		s.floor AS floor_int,
 		u.unit_property,

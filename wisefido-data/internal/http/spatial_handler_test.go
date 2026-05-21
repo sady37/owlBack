@@ -83,9 +83,9 @@ func TestSpatialV2_HTTP_E2E(t *testing.T) {
 	}
 
 	logger := zap.NewNop()
-	handler := NewSpatialV2Handler(backend, db, ddnsClient, logger)
+	handler := NewSpatialHandler(backend, db, ddnsClient, logger)
 	router := NewRouter(logger)
-	router.RegisterSpatialV2Routes(handler)
+	router.RegisterSpatialRoutes(handler)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

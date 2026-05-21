@@ -5,59 +5,49 @@ import (
 	"time"
 )
 
-// DeviceStore 设备库存领域模型（对应 device_store 表）
-// 基于实际DB表结构：device_store表的所有字段
+// DeviceStore 设备库存领域模型。v2 没有 device_store 表 — 该 struct 是
+// device_factory_meta + devices + device_ota 三表 JOIN 的扁平视图（v1 兼容 wire format）。
+// 字段是 SELECT alias 派生，不对应单一物理列。
 type DeviceStore struct {
-	// 主键
-	DeviceID   string `db:"device_id"`   // PRIMARY KEY (UUID)
-	DeviceIPv6 string `db:"device_ipv6"` // canonical IPv6 form (host(d.device_ipv6))；用于 cardagg redis device:status key
+	DeviceID   string `db:"device_id"`   // dfm.device_id UUID
+	DeviceIPv6 string `db:"device_ipv6"` // devices.device_ipv6 INET /128；同时是 redis device:status key
 
-	// 设备唯一标识（用于首次连接匹配和查询）
-	DeviceUID  string         `db:"device_uid"`  // UNIQUE; 对应 Sleepace deviceName，如 BM87224601903
-	DeviceCode sql.NullString `db:"device_code"` // nullable; 对应 Sleepace device_id（平台侧 ID），如 1ua3erivl9pv1；绑定时传此值给 Sleepace
+	DeviceUID  string         `db:"device_uid"`  // dfm.device_uid (logMAC)，如 BM87224601903
+	DeviceCode sql.NullString `db:"device_code"` // dfm.device_code（厂家会话 ID）
 
-	// 设备类型（必填）
-	DeviceType  string         `db:"device_type"`  // NOT NULL
-	DeviceModel sql.NullString `db:"device_model"` // nullable
+	DeviceType  string         `db:"device_type"`  // dfm.device_type
+	DeviceModel sql.NullString `db:"device_model"` // dfm.device_model
 
-	// 设备显示名称（可选，导入/分配时若为空则默认 DeviceModel 或 DeviceType + - + UID 后4位，如 Radar-0523）
-	DeviceName sql.NullString `db:"device_name"` // nullable
+	DeviceName sql.NullString `db:"-"` // v2 无 device_name 列；派生 COALESCE(device_code, device_uid)
 
-	// MAC/IMEI
-	MAC  sql.NullString `db:"mac"`  // nullable, mac address for wifi devices
-	IMEI sql.NullString `db:"imei"` // nullable, 4G device IMEI
+	MAC  sql.NullString `db:"mac"`  // SELECT alias 自 dfm.mac_wifi
+	IMEI sql.NullString `db:"imei"` // dfm.imei
 
-	// 物理属性
-	CommMode sql.NullString `db:"comm_mode"` // nullable
-	MCUModel sql.NullString `db:"mcu_model"` // nullable
+	CommMode sql.NullString `db:"comm_mode"` // dfm.comm_mode
+	MCUModel sql.NullString `db:"mcu_model"` // dfm.mcu_model
 
-	// 固件版本
-	FirmwareVersion          sql.NullString `db:"firmware_version"`            // nullable
-	OTATargetFirmwareVersion sql.NullString `db:"ota_target_firmware_version"` // nullable
-	OTATargetMCUModel        sql.NullString `db:"ota_target_mcu_model"`        // nullable
+	FirmwareVersion          sql.NullString `db:"firmware_version"`            // dfm.firmware_version
+	OTATargetFirmwareVersion sql.NullString `db:"ota_target_firmware_version"` // device_ota.target_firmware_version
+	OTATargetMCUModel        sql.NullString `db:"ota_target_mcu_model"`        // device_ota.target_mcu_model
 
-	// OTA 管理字段
 	OTAPermit      sql.NullString `db:"ota_permit"`
 	OTAWay         sql.NullString `db:"ota_way"`
 	OTASchedule    sql.NullString `db:"ota_schedule"`
 	OTAStatus      sql.NullString `db:"ota_status"`
 	OTAProgress    sql.NullInt32  `db:"ota_progress"`
-	OTAError       sql.NullString `db:"ota_error"`
-	OTAUpdatedAt   sql.NullTime   `db:"ota_updated_at"`
-	OTAFirmwareURL sql.NullString `db:"ota_firmware_url"`
-	OTAFirmwareSHA sql.NullString `db:"ota_firmware_sha256"`
-	OTAFirmwareSize sql.NullInt64 `db:"ota_firmware_size"`
+	OTAError       sql.NullString `db:"-"` // v2 device_ota 无此列
+	OTAUpdatedAt   sql.NullTime   `db:"-"` // v2 device_ota 无此列
+	OTAFirmwareURL sql.NullString `db:"-"` // v2 update.ini 管，不入库
+	OTAFirmwareSHA sql.NullString `db:"-"` // v2 update.ini 管，不入库
+	OTAFirmwareSize sql.NullInt64 `db:"-"` // v2 update.ini 管，不入库
 	OTATenantApproved bool       `db:"ota_tenant_approved"`
 
-	// 租户分配
-	TenantID string `db:"tenant_id"` // NOT NULL default Unallocated 002; 000 trash 001 system
+	TenantID string `db:"-"` // v2 派生：host(network(set_masklen(devices.device_ipv6, 48)))
 
-	// 时间戳
-	ImportDate   sql.NullTime `db:"import_date"`   // NOT NULL, default CURRENT_TIMESTAMP
-	AllocateTime sql.NullTime `db:"allocate_time"` // nullable
+	ImportDate   sql.NullTime `db:"import_date"`
+	AllocateTime sql.NullTime `db:"-"` // v2 无此列
 
-	// 系统级访问权限
-	AllowAccess bool `db:"allow_access"` // NOT NULL, default false
+	AllowAccess bool `db:"-"` // v2 改名 devices.access；wire format 兼容用
 
 	// Batch PATCH：仅当为 true 时更新对应列（避免只改 device_code 时误把 allow_access 写成 false）
 	DeviceCodeSet  bool `db:"-" json:"-"`
@@ -69,13 +59,11 @@ type DeviceStore struct {
 	OTATargetFWSet  bool `db:"-" json:"-"`
 	OTATargetMCUSet bool `db:"-" json:"-"`
 
-	// 关联租户名称（查询时JOIN获取，不存储在device_store表）
-	TenantName sql.NullString `db:"tenant_name"` // 仅用于查询结果
+	TenantName sql.NullString `db:"-"` // v2 无：派生 + JOIN 取
 
-	// 实时在线状态（从 Redis 读取，不存储到数据库）
-	OnlineStatus string `db:"-"` // 实时在线状态（online/offline/unsubscribed），从 Redis 读取
+	OnlineStatus string `db:"-"` // Redis device:status:{ipv6} 读
 
-	// 实时健康标志位（从 device:status:{deviceID} hash 读取，不存数据库）
+	// 实时健康标志位（从 device:status:{ipv6} hash 读取，不存数据库）
 	// 不论设备是否绑卡都会写入 hash，admin 视角无差别可见
 	Offline        int   `db:"-"` // 0/1 网络/心跳维度（与 OnlineStatus 互补，前端展示用）
 	SignalPoor     int   `db:"-"` // 0/1 WiFi 弱（设备仍能上行）

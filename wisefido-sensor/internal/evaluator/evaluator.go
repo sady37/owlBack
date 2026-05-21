@@ -22,7 +22,6 @@ type Evaluator struct {
 	deviceRepo        *repository.DeviceRepository
 	roomRepo          *repository.RoomRepository
 	alarmCloudRepo    *repository.AlarmCloudRepository
-	alarmDeviceRepo   *repository.AlarmDeviceRepository
 	alarmEventsRepo   *repository.AlarmEventsRepository
 	iotRepo           *repository.IoTTimeSeriesRepository
 	configVersionRepo *repository.ConfigVersionRepository
@@ -50,7 +49,6 @@ func NewEvaluator(
 	deviceRepo *repository.DeviceRepository,
 	roomRepo *repository.RoomRepository,
 	alarmCloudRepo *repository.AlarmCloudRepository,
-	alarmDeviceRepo *repository.AlarmDeviceRepository,
 	alarmEventsRepo *repository.AlarmEventsRepository,
 	iotRepo *repository.IoTTimeSeriesRepository,
 	configVersionRepo *repository.ConfigVersionRepository,
@@ -65,7 +63,6 @@ func NewEvaluator(
 		deviceRepo:        deviceRepo,
 		roomRepo:          roomRepo,
 		alarmCloudRepo:    alarmCloudRepo,
-		alarmDeviceRepo:   alarmDeviceRepo,
 		alarmEventsRepo:   alarmEventsRepo,
 		iotRepo:           iotRepo,
 		configVersionRepo: configVersionRepo,

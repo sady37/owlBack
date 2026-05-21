@@ -461,7 +461,7 @@ func (h *DeviceMonitorSettingsHandler) UpdateDeviceMonitorSettings(w http.Respon
 }
 
 // GetDefaultDeviceMonitorSettings 获取默认设备监控配置
-// v2 service (DeviceMonitorSettingsV2Service) 直接返回 owl-common/alarm.GetDefaultAlarmItems；
+// v2 service (DeviceMonitorSettingsService) 直接返回 owl-common/alarm.GetDefaultAlarmItems；
 // 不再从 alarm_cloud 读 override（租户级 override 由独立的 alarm-cloud 端点提供）。
 func (h *DeviceMonitorSettingsHandler) GetDefaultDeviceMonitorSettings(w http.ResponseWriter, r *http.Request, deviceType string) {
 	ctx := r.Context()

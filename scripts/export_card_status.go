@@ -43,7 +43,7 @@ func main() {
 		os.Exit(1)
 	}
 	key := "card:state:" + cardID
-	// Phase A：device_status 已迁出 card:state，独立到 device:status:{deviceID} Hash。
+	// device_status 不在 card:state；独立到 device:status:{ipv6} Hash。
 	fields := []string{"target", "room_state", "bed_state", "alarm_state", "message"}
 	fmt.Printf("card_id=%s\nredis_key=%s\n---\n", cardID, key)
 	for _, f := range fields {

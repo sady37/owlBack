@@ -30,7 +30,6 @@ type AlarmService struct {
 	deviceRepo      *repository.DeviceRepository
 	roomRepo        *repository.RoomRepository
 	alarmCloudRepo     *repository.AlarmCloudRepository
-	alarmDeviceRepo    *repository.AlarmDeviceRepository
 	alarmEventsRepo    *repository.AlarmEventsRepository
 	configVersionRepo  *repository.ConfigVersionRepository
 	evaluator          *evaluator.Evaluator
@@ -67,7 +66,6 @@ func NewAlarmService(cfg *config.Config, logger *zap.Logger, tenantID string) (*
 	deviceRepo := repository.NewDeviceRepository(db, logger)
 	roomRepo := repository.NewRoomRepository(db, logger)
 	alarmCloudRepo := repository.NewAlarmCloudRepository(db, logger)
-	alarmDeviceRepo := repository.NewAlarmDeviceRepository(db, logger)
 	alarmEventsRepo := repository.NewAlarmEventsRepository(db, logger)
 	iotRepo := repository.NewIoTTimeSeriesRepository(db, logger)
 	configVersionRepo := repository.NewConfigVersionRepository(db, logger)
@@ -99,7 +97,6 @@ func NewAlarmService(cfg *config.Config, logger *zap.Logger, tenantID string) (*
 		deviceRepo,
 		roomRepo,
 		alarmCloudRepo,
-		alarmDeviceRepo,
 		alarmEventsRepo,
 		iotRepo,
 		configVersionRepo,
@@ -129,7 +126,6 @@ func NewAlarmService(cfg *config.Config, logger *zap.Logger, tenantID string) (*
 		deviceRepo:      deviceRepo,
 		roomRepo:        roomRepo,
 		alarmCloudRepo:    alarmCloudRepo,
-		alarmDeviceRepo:   alarmDeviceRepo,
 		alarmEventsRepo:   alarmEventsRepo,
 		configVersionRepo: configVersionRepo,
 		evaluator:         eval,

@@ -5,63 +5,55 @@ import (
 	"encoding/json"
 )
 
-// Device 设备领域模型（对应 devices 表）
-// 基于实际DB表结构：devices表的所有字段
+// Device 设备领域模型。v2 schema：devices (device_ipv6 PK, device_id UUID FK, access, monitoring_enabled, card_id)。
+// 其余字段由 JOIN device_factory_meta / device_ota 取，或由 device_ipv6 prefix 派生。
 type Device struct {
-	// 主键和租户
-	DeviceID   string `db:"device_id"`
-	DeviceIPv6 string `db:"device_ipv6"` // canonical IPv6 form (host(d.device_ipv6))；用于 cardagg redis device:status key
-	TenantID   string `db:"tenant_id"` // NOT NULL
+	DeviceID   string `db:"device_id"`   // UUID，devices.device_id
+	DeviceIPv6 string `db:"device_ipv6"` // INET /128，devices.device_ipv6；同时是 redis device:status key
+	TenantID   string `db:"-"`           // 派生：host(network(set_masklen(device_ipv6, 48)))
 
-	// 关联 device_store
-	DeviceUID string `db:"device_uid"` // NOT NULL, REFERENCES device_store(device_uid)
+	DeviceUID string `db:"-"` // 来自 JOIN device_factory_meta.device_uid
 
-	// 物理属性（从 device_store 表获取，只读）
-	DeviceType  sql.NullString `db:"device_type"`  // from device_store.device_type
-	DeviceModel sql.NullString `db:"device_model"` // from device_store.device_model
-	DeviceCode  sql.NullString `db:"device_code"`  // from device_store.device_code
-	MAC         sql.NullString `db:"mac"`          // from device_store.mac
-	IMEI        sql.NullString `db:"imei"`         // from device_store.imei
-	CommMode    sql.NullString `db:"comm_mode"`    // from device_store.comm_mode
-	MCUModel    sql.NullString `db:"mcu_model"`    // from device_store.mcu_model
-	FirmwareVersion sql.NullString `db:"firmware_version"` // from device_store.firmware_version
+	// 物理属性（JOIN device_factory_meta 取）
+	DeviceType  sql.NullString `db:"-"`
+	DeviceModel sql.NullString `db:"-"`
+	DeviceCode  sql.NullString `db:"-"`
+	MAC         sql.NullString `db:"-"` // 来自 dfm.mac_wifi
+	IMEI        sql.NullString `db:"-"`
+	CommMode    sql.NullString `db:"-"`
+	MCUModel    sql.NullString `db:"-"`
+	FirmwareVersion sql.NullString `db:"-"`
 
-	// OTA 字段（从 device_store 获取，只读）
-	OTATargetFW  sql.NullString `db:"ota_target_firmware_version"`
-	OTATargetMCU sql.NullString `db:"ota_target_mcu_model"`
-	OTAPermit    sql.NullString `db:"ota_permit"`
-	OTAWay       sql.NullString `db:"ota_way"`
-	OTASchedule  sql.NullString `db:"ota_schedule"`
-	OTAStatus    sql.NullString `db:"ota_status"`
-	OTAProgress  sql.NullInt32  `db:"ota_progress"`
-	OTATenantApproved bool     `db:"ota_tenant_approved"`
+	// OTA 字段（JOIN device_ota 取）
+	OTATargetFW  sql.NullString `db:"-"`
+	OTATargetMCU sql.NullString `db:"-"`
+	OTAPermit    sql.NullString `db:"-"`
+	OTAWay       sql.NullString `db:"-"`
+	OTASchedule  sql.NullString `db:"-"`
+	OTAStatus    sql.NullString `db:"-"`
+	OTAProgress  sql.NullInt32  `db:"-"`
+	OTATenantApproved bool      `db:"-"`
 
-	// 标识/资产
-	DeviceName string `db:"device_name"` // NOT NULL
+	DeviceName string `db:"-"` // 派生：COALESCE(dfm.device_code, dfm.device_uid)
 
-	// 位置绑定（互斥）
-	BoundRoomID sql.NullString `db:"bound_room_id"` // nullable
-	BoundBedID  sql.NullString `db:"bound_bed_id"`  // nullable
-	
-	// 位置信息（通过 JOIN 查询得到，用于返回给前端）
-	// 如果绑定到 room：room_id = bound_room_id, unit_id 通过 rooms.unit_id 查询
-	// 如果绑定到 bed：room_id 通过 beds.room_id 查询, unit_id 通过 rooms.unit_id 查询
-	RoomID sql.NullString `db:"room_id"`   // 计算字段：COALESCE(bound_room_id, bed_room_id)
-	UnitID sql.NullString `db:"unit_id"`   // 计算字段：通过 room_id 或 bed_id 查询得到
-	CardID sql.NullString `db:"-"`         // 列表/详情：cards.devices 含该 device_id 时的 card_id
-	UnitName sql.NullString `db:"-"`       // 列表：units.unit_name（与 UnitID 对应）
-	DNSShortName sql.NullString `db:"-"`   // 列表：cards.card_dns（与 CardID 对应，FE 用于短码展示）
-	BranchID sql.NullString `db:"-"`       // 列表：byte 6 派生 /56；byte 6==0 表示 tenant 池 (NULL)
-	BranchName sql.NullString `db:"-"`     // 列表：branches.branch_name
+	// 位置绑定 — 派生自 device_ipv6 字节段
+	BoundRoomID sql.NullString `db:"-"` // /88 prefix when byte 10 != 0
+	BoundBedID  sql.NullString `db:"-"` // /96 prefix when byte 11 != 0
+	RoomID      sql.NullString `db:"-"`
+	UnitID      sql.NullString `db:"-"`
+	CardID      sql.NullString `db:"-"`
+	UnitName    sql.NullString `db:"-"`
+	DNSShortName sql.NullString `db:"-"`
+	BranchID    sql.NullString `db:"-"`
+	BranchName  sql.NullString `db:"-"`
 
-	// 状态/维护
-	Status            string `db:"status"`              // NOT NULL, default 'offline' (数据库状态：Enabled/Disabled/Error，用于软删除)
-	OnlineStatus      string `db:"-"`                   // 实时在线状态（online/offline/unsubscribed），从 Redis 读取，不存储到数据库
-	Access            bool   `db:"access"`              // platform_admin 审批位
-	MonitoringEnabled bool   `db:"monitoring_enabled"`  // tenant 业务开关
+	// 状态
+	Status            string `db:"-"` // SELECT alias 派生：'Enabled' / 'Disabled' 软删用；非物理列
+	OnlineStatus      string `db:"-"` // Redis device:status:{ipv6} 读
+	Access            bool   `db:"access"`
+	MonitoringEnabled bool   `db:"monitoring_enabled"`
 
-	// 元数据
-	Metadata sql.NullString `db:"metadata"` // nullable, JSONB
+	Metadata sql.NullString `db:"-"` // v1 devices.metadata JSONB 已 drop；保留字段供 ToJSON 兼容
 }
 
 // ToJSON 转换为JSON格式（用于HTTP响应）
