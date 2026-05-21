@@ -14,63 +14,110 @@ import (
 	"owl-common/card"
 )
 
-// BuildCardDisplay 从 CardStatus 派生 CardDisplay（自身视角，不含 /80 unit picker）。
-// 调用方：SensorStateProjector 收到 /88 room 或 /96 bed 事件后立即调用。
+// BuildCardDisplay 从 CardStatus + 卡静态属性派生 CardDisplay（自身视角，不含 /80 unit picker）。
+// 调用方：SensorStateProjector / UnitPicker / AlarmRouter 收到事件后调用。
 //
-// Section1.DownLeft = ""（/88 /96 卡无 room_label 自显需；/80 unit 卡 picker 时另填）
-// Section1.DownRight = ""（alarmEvent 由 AlarmRouter 路径填）
-// Section2.left mode picker：
-//   - no bed_state + no room_state → mode=None
-//   - room_state.risk_level > 0 → RoomStatus（Risk 优先）
-//   - bed_state.bed_status == 0 → SleepStage
-//   - otherwise → recency pick by updated_at
-func BuildCardDisplay(s *card.CardStatus) *card.CardDisplay {
+// hasBedDevice / isBathroom 都从 CardMeta 派生（静态属性，DB 静态查 + config:card:stream 失效）：
+//   - hasBedDevice = CardMeta.HasBed()         物理上有 sleepad 床设备
+//   - isBathroom   = CardMeta.IsBathroom()     room_type=1（rooms.room_type LPM /88）
+func BuildCardDisplay(s *card.CardStatus, hasBedDevice bool, isBathroom bool) *card.CardDisplay {
 	if s == nil {
 		return nil
 	}
 	now := time.Now().UnixMilli()
 	d := &card.CardDisplay{UpdatedAt: now}
 
-	bedHas := s.BedState != nil && s.BedState.UpdatedAt > 0
-	roomHas := s.RoomState != nil && s.RoomState.UpdatedAt > 0
+	bedHas := s.BedState != nil && s.BedState.MaxTs() > 0
+	roomHas := s.RoomState != nil && s.RoomState.MaxTs() > 0
 
 	// ===== Section2.left =====
+	// section2_left_mode 是辅助 hint；raw 字段族（BedStatus / RoomIconKind / RoomPersonCount /
+	// RoomRiskLevel / StayAlarmEnabled）必须永远反映底层 state，不受 mode 门控——
+	// FE 用 CardPriority 单 switch 派生 icon（spec §3.2），其余字段用作 icon 变体细化。
 	d.Section2LeftMode = pickSection2Left(s, bedHas, roomHas)
-	switch d.Section2LeftMode {
-	case card.Section2LeftModeSleepStage:
+	if bedHas {
+		bs := s.BedState.BedStatus
+		d.BedStatus = &bs // *int 跟 observation/track.go 同惯例；nil=未知/不适用
 		d.SleepStage = s.BedState.SleepStage
-	case card.Section2LeftModeRoomStatus:
+	}
+	if roomHas {
 		d.RoomPersonCount = s.RoomState.TotalPeople
-		if s.RoomState.RoomType == card.RoomTypeBathroom {
+		if isBathroom {
 			d.RoomIconKind = card.RoomIconKindBathroom
 		} else {
 			d.RoomIconKind = card.RoomIconKindRoom
 		}
 		d.RoomRiskLevel = s.RoomState.RiskLevel
-		// RoomName 由调用方根据 spatial_prefix 反查（builder 无 DB access）；
-		// 本 builder 留空，由 SensorStateProjector 注入。
+		d.StayAlarmEnabled = true
 	}
+	d.CardPriority = pickCardPriority(d, hasBedDevice)
 
 	// ===== Section3.up.left ActiveState =====
-	// /88 /96 卡的 active_anchor_ms = max(bed_state.updated_at, room_state.updated_at)。
-	// /80 unit picker 时另算（取 active child 的 anchor）。
-	d.ActiveAnchorMs = maxUpdatedAt(s)
-	if d.ActiveAnchorMs > 0 && now-d.ActiveAnchorMs < 60_000 {
-		d.ActiveState = card.ActiveStateNow
-	} else {
-		d.ActiveState = card.ActiveStateInactive
+	// active_anchor_ms = TargetState.LastActiveTs（用户 walk/stand **真实活动** anchor）。
+	// **不要** 用 bed/room state UpdatedAt 凑数（那是状态写入时刻，跟活动无关）。
+	// 没有 Target 或 LastActiveTs=0 → active_anchor=0，FE 显 "—" 不显假活跃。
+	if s.Target != nil && s.Target.LastActiveTs > 0 {
+		d.ActiveAnchorMs = s.Target.LastActiveTs
+		if now-d.ActiveAnchorMs < 60_000 {
+			d.ActiveState = card.ActiveStateNow
+		} else {
+			d.ActiveState = card.ActiveStateInactive
+		}
 	}
 
 	// ===== Section3.up.right SceneState =====
-	d.SceneState, d.SceneAnchorMs = pickScene(s, bedHas, roomHas)
+	d.SceneState, d.SceneAnchorMs = pickScene(s, bedHas, roomHas, isBathroom)
 
-	// ===== Section3.down.left VisitorState =====
+	// ===== Section3.down.left VisitorState + BedAnchorMs fallback =====
 	d.VisitorState, d.VisitorAnchorMs = pickVisitor(s)
+	if bedHas {
+		d.BedAnchorMs = s.BedState.BedStatusTs
+	}
 
 	// ===== Section3.down.right VitalTrendLevel (W2 WeakBio 横条) =====
 	d.VitalTrendLevel = pickVitalTrendLevel(s)
 
 	return d
+}
+
+// pickCardPriority 按 spec card_display.md §3.2 优先级派生 CardPriority 标量。
+// 高值优先（/80 UnitPicker 取 MAX(child)）。
+//
+// 输入：已填好 raw 字段族的 display，加 hasBedDevice（卡是否物理上绑了 sleepad 床设备）。
+// 注：hasBedDevice 来自 CardMeta（卡静态属性），不是 bed_state 是否在 Redis 写过——
+// 空床久了 sensor 不再 emit bed_state，但卡"有床"事实不变，应仍走 BedInUse 分支。
+func pickCardPriority(d *card.CardDisplay, hasBedDevice bool) int {
+	isBath := d.RoomIconKind == card.RoomIconKindBathroom
+	count := d.RoomPersonCount
+	risk := d.RoomRiskLevel
+
+	// risk=3（红/危险）
+	if count > 0 && risk >= card.RiskRisk {
+		if isBath {
+			return card.CardPriorityBathroomRisk
+		}
+		return card.CardPriorityRoomRisk
+	}
+	// risk=2（黄/attention）
+	if count > 0 && risk == card.RiskAttention {
+		if isBath {
+			return card.CardPriorityBathroomAttention
+		}
+		return card.CardPriorityRoomAttention
+	}
+	// bathroom 占用，无 risk
+	if isBath && count > 0 {
+		return card.CardPriorityBathroomNormal
+	}
+	// 有床（卡上绑了 sleepad 设备）—— in/out 由 bed_status / sleep_stage 决定 icon 变体
+	if hasBedDevice {
+		return card.CardPriorityBedInUse
+	}
+	// 非 bathroom 非 bed 房间有人 + stay 监控启用
+	if count > 0 && d.StayAlarmEnabled {
+		return card.CardPriorityRoomNormal
+	}
+	return card.CardPriorityEmpty
 }
 
 // pickVitalTrendLevel 把 Target.WeakBiometricSignal score 映射到 4 档配色
@@ -116,9 +163,9 @@ func pickSection2Left(s *card.CardStatus, bedHas, roomHas bool) int {
 	if roomHas && s.RoomState.TotalPeople > 0 {
 		return card.Section2LeftModeRoomStatus
 	}
-	// 都无人 → 按 recency 选
+	// 都无人 → 按 recency 选（用各 state 的 max ts）
 	if bedHas && roomHas {
-		if s.BedState.UpdatedAt >= s.RoomState.UpdatedAt {
+		if s.BedState.MaxTs() >= s.RoomState.MaxTs() {
 			return card.Section2LeftModeSleepStage
 		}
 		return card.Section2LeftModeRoomStatus
@@ -138,21 +185,26 @@ func pickSection2Left(s *card.CardStatus, bedHas, roomHas bool) int {
 //	room 无人 + last_exit_to_outside → OOU, anchor = last_exit_time
 //	room 无人 → OOR, anchor = last_exit_time
 //	无信号 → OOR, anchor = 0
-func pickScene(s *card.CardStatus, bedHas, roomHas bool) (int, int64) {
+func pickScene(s *card.CardStatus, bedHas, roomHas, isBathroom bool) (int, int64) {
 	if roomHas && s.RoomState.TotalPeople > 0 {
-		if s.RoomState.RoomType == card.RoomTypeBathroom {
-			return card.SceneStateInBath, s.RoomState.LastEnterTime
+		if isBathroom {
+			return card.SceneStateInBath, s.RoomState.LastEnterTs
 		}
 		if bedHas && s.BedState.BedStatus == 0 {
-			return card.SceneStateInBed, s.BedState.StartTime
+			return card.SceneStateInBed, s.BedState.BedStatusTs
 		}
-		return card.SceneStateInRoom, s.RoomState.LastEnterTime
+		return card.SceneStateInRoom, s.RoomState.LastEnterTs
+	}
+	// bed-only path（典型场景：/80 unit 卡无 /88 子卡，bed_state 直接落 /80；或 unit-level
+	// 单 bed 视图）—— 仅看 BedStatus 决定 InBed/OOB
+	if bedHas && s.BedState.BedStatus == 0 {
+		return card.SceneStateInBed, s.BedState.BedStatusTs
 	}
 	if bedHas && s.BedState.BedStatus == 1 {
-		return card.SceneStateOOB, s.BedState.StartTime
+		return card.SceneStateOOB, s.BedState.BedStatusTs
 	}
 	if roomHas {
-		return card.SceneStateOOR, s.RoomState.LastExitTime
+		return card.SceneStateOOR, s.RoomState.LastExitTs
 	}
 	return card.SceneStateOOR, 0
 }
@@ -176,19 +228,6 @@ func pickVisitor(s *card.CardStatus) (int, int64) {
 	return card.VisitorStateNone, 0
 }
 
-func maxUpdatedAt(s *card.CardStatus) int64 {
-	var m int64
-	if s.BedState != nil && s.BedState.UpdatedAt > m {
-		m = s.BedState.UpdatedAt
-	}
-	if s.RoomState != nil && s.RoomState.UpdatedAt > m {
-		m = s.RoomState.UpdatedAt
-	}
-	if s.AlarmState != nil && s.AlarmState.UpdatedAt > m {
-		m = s.AlarmState.UpdatedAt
-	}
-	if s.Target != nil && s.Target.UpdatedAt > m {
-		m = s.Target.UpdatedAt
-	}
-	return m
-}
+// maxUpdatedAt 已废弃 — active_anchor_ms 现在直接读 TargetState.LastActiveTs
+// （per-state UpdatedAt 不再当 active anchor，避免假活跃问题）。
+// 保留函数空壳兼容老 caller；返回 0。

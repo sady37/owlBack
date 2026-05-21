@@ -14,7 +14,7 @@ func TestMonitorVitalSource_EmitsForFreshHRRR(t *testing.T) {
 
 	now := time.Now().UnixMilli()
 	deviceAddr := "fd00:0:3:111:3:101:a2ac:d523"
-	buf.Write("card-1", deviceAddr, "0", map[string]any{
+	buf.Write("card-1", deviceAddr, "Sleepad", "0", map[string]any{
 		observation.FieldHeartRate:       float64(72),
 		observation.FieldRespiratoryRate: float64(15),
 	}, now)
@@ -48,7 +48,7 @@ func TestMonitorVitalSource_SkipStale(t *testing.T) {
 	src := NewMonitorVitalSource(buf)
 
 	stale := time.Now().UnixMilli() - 60_000 // 60s 前
-	buf.Write("card-1", "fd00:0:3:111:3:101:a2ac:d523", "0", map[string]any{
+	buf.Write("card-1", "fd00:0:3:111:3:101:a2ac:d523", "Sleepad", "0", map[string]any{
 		observation.FieldHeartRate:       float64(72),
 		observation.FieldRespiratoryRate: float64(15),
 	}, stale)
@@ -66,15 +66,15 @@ func TestMonitorVitalSource_RequiresBothHRandRR(t *testing.T) {
 	now := time.Now().UnixMilli()
 
 	// 仅 HR
-	buf.Write("card-hr", "fd00:0:3:111:3:101:a2ac:d523", "0", map[string]any{
+	buf.Write("card-hr", "fd00:0:3:111:3:101:a2ac:d523", "Sleepad", "0", map[string]any{
 		observation.FieldHeartRate: float64(72),
 	}, now)
 	// 仅 RR
-	buf.Write("card-rr", "fd00:0:3:111:3:102:a2ac:d524", "0", map[string]any{
+	buf.Write("card-rr", "fd00:0:3:111:3:102:a2ac:d524", "Sleepad", "0", map[string]any{
 		observation.FieldRespiratoryRate: float64(15),
 	}, now)
 	// HR=0 RR=0
-	buf.Write("card-zero", "fd00:0:3:111:3:103:a2ac:d525", "0", map[string]any{
+	buf.Write("card-zero", "fd00:0:3:111:3:103:a2ac:d525", "Sleepad", "0", map[string]any{
 		observation.FieldHeartRate:       float64(0),
 		observation.FieldRespiratoryRate: float64(0),
 	}, now)
@@ -83,6 +83,22 @@ func TestMonitorVitalSource_RequiresBothHRandRR(t *testing.T) {
 	src.ScanActiveBedVitals(now+1000, 30_000, func(_, _ string, _ int64) { got++ })
 	if got != 0 {
 		t.Errorf("none should emit (need both HR>0 AND RR>0), got %d", got)
+	}
+}
+
+func TestMonitorVitalSource_RadarSkipped(t *testing.T) {
+	// 设计约束（2026-05-20）：radar HR/RR ≠ in-bed 信号，不发 sustain
+	buf := service.NewMonitorBuffer()
+	src := NewMonitorVitalSource(buf)
+	now := time.Now().UnixMilli()
+	buf.Write("card-radar", "fd00:0:3:111:3:101:a2ac:d523", "Radar", "0", map[string]any{
+		observation.FieldHeartRate:       float64(72),
+		observation.FieldRespiratoryRate: float64(15),
+	}, now)
+	var got int
+	src.ScanActiveBedVitals(now+1000, 30_000, func(_, _ string, _ int64) { got++ })
+	if got != 0 {
+		t.Errorf("radar HR/RR should NOT emit bed sustain, got %d emits", got)
 	}
 }
 

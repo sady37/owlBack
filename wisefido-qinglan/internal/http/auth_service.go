@@ -593,17 +593,16 @@ func (s *AuthService) updateDeviceHardwareInfo(ctx context.Context, uid string, 
 	// firmware_version: "2.3-Jun 25 2025 11:33:44"
 	firmwareVersion := fmt.Sprintf("%s-%s", req.Radar.HW, req.Radar.SW)
 
-	// v2: dfm 出厂字段 + drs.firmware_version
+	// v2.5: dfm 出厂字段 + firmware_version（drs 已退役）
 	queryCurrent := `
 		SELECT dfm.device_type::text,
 		       dfm.device_model,
 		       dfm.comm_mode,
 		       dfm.mcu_model,
-		       drs.firmware_version,
+		       dfm.firmware_version,
 		       dfm.imei,
 		       dfm.mac_wifi
 		FROM device_factory_meta dfm
-		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		WHERE dfm.device_uid = $1
 		LIMIT 1
 	`
@@ -746,16 +745,8 @@ func (s *AuthService) updateDeviceHardwareInfo(ctx context.Context, uid string, 
 	}
 
 	// v2 split write：
-	//   - dfm 出厂字段（device_type/device_model/comm_mode/mcu_model/imei/mac_wifi）
-	//     注：dfm 设计为"导入即不变"，但实际设备首次连接 + 重新 flash 都会上报，需允许覆盖。
-	//   - drs.firmware_version：UPSERT（runtime 高频字段）
-	// 两步事务：dfm UPDATE + drs UPSERT
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
+	//   - dfm 出厂字段（device_type/device_model/comm_mode/mcu_model/imei/mac_wifi/firmware_version）
+	//     注：dfm 设计为"导入即不变"，但实际设备首次连接 + 重新 flash 都会上报，需允许覆盖（含 firmware）。
 	updDfm := `
 		UPDATE device_factory_meta
 		SET device_type = $1::device_type_enum,
@@ -763,31 +754,14 @@ func (s *AuthService) updateDeviceHardwareInfo(ctx context.Context, uid string, 
 		    comm_mode = $3,
 		    mcu_model = $4,
 		    imei = $5,
-		    mac_wifi = $6
-		WHERE device_uid = $7
+		    mac_wifi = $6,
+		    firmware_version = $7
+		WHERE device_uid = $8
 	`
-	dfmResult, err := tx.ExecContext(ctx, updDfm, deviceType, deviceModel, commMode, mcuModel, imeiValue, macValue, uid)
+	result, err := s.db.ExecContext(ctx, updDfm, deviceType, deviceModel, commMode, mcuModel, imeiValue, macValue, firmwareVersion, uid)
 	if err != nil {
 		return fmt.Errorf("failed to update device_factory_meta: %w", err)
 	}
-
-	// UPSERT drs.firmware_version（按 device_id 查到的 PK）
-	upDrs := `
-		INSERT INTO device_runtime_state (device_id, firmware_version, updated_at)
-		SELECT dfm.device_id, $2, NOW()
-		FROM device_factory_meta dfm
-		WHERE dfm.device_uid = $1
-		ON CONFLICT (device_id) DO UPDATE
-		SET firmware_version = EXCLUDED.firmware_version, updated_at = NOW()
-	`
-	if _, err := tx.ExecContext(ctx, upDrs, uid, firmwareVersion); err != nil {
-		return fmt.Errorf("failed to upsert device_runtime_state: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit tx: %w", err)
-	}
-	result := dfmResult
 
 	if err != nil {
 		s.logger.Error("Failed to update device hardware info",

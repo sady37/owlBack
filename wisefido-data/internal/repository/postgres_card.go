@@ -6,7 +6,7 @@ package repository
 //   - cards 主键 card_id UUID；业务身份 spatial_prefix INET（mask 决定 card_type）
 //   - 删除字段：tenant_id / branch_id / bed_id / unit_id / card_address / timezone /
 //     devices JSONB / residents JSONB / unhandled_alarm_* / pop_alarm_*
-//   - device 反查走 INET LPM：c.spatial_prefix >>= d.device_ipv6 / d.device_ipv6 <<= c.spatial_prefix
+//   - device 反查走 INET LPM：c.card_id >>= d.device_ipv6 / d.device_ipv6 <<= c.card_id
 //   - tenant/branch/unit/bed 全部从 spatial_prefix 派生（set_masklen 截断），不再做 ID JOIN
 //   - "tenantID" 参数语义：v2 中是 INET CIDR (/48) 字符串；保留参数位以最小化 caller 改动
 //
@@ -45,7 +45,7 @@ type RepositoryInterface interface {
 }
 
 // PostgresCardRepository v2 实现：仅依赖 cards + spatial 层（units/rooms/beds/branches）
-// + devices + device_factory_meta + device_runtime_state + residents + resident_unit。
+// + devices + device_factory_meta + residents + resident_unit（drs 已退役，online 在 Redis）。
 type PostgresCardRepository struct {
 	db         *sql.DB
 	logger     *zap.Logger
@@ -104,10 +104,10 @@ func (r *PostgresCardRepository) appendRecorded(op, tenantID, cardID, unitPrefix
 // CardRowForCache 卡片缓存视图（v2：字段化，不再有 JSONB）
 //
 // v2 派生：
-//   - TenantID = set_masklen(spatial_prefix, 48)  CIDR
-//   - BranchID = set_masklen(spatial_prefix, 56)  CIDR（仅 mask >= 56 时有意义）
-//   - UnitID   = set_masklen(spatial_prefix, 80)  CIDR（仅 mask >= 80 时有意义）
-//   - BedID    = set_masklen(spatial_prefix, 96)  CIDR（仅 mask = 96 时有意义）
+//   - TenantID = set_masklen(card_id, 48)  CIDR
+//   - BranchID = set_masklen(card_id, 56)  CIDR（仅 mask >= 56 时有意义）
+//   - UnitID   = set_masklen(card_id, 80)  CIDR（仅 mask >= 80 时有意义）
+//   - BedID    = set_masklen(card_id, 96)  CIDR（仅 mask = 96 时有意义）
 type CardRowForCache struct {
 	CardID        string
 	SpatialPrefix string  // INET CIDR
@@ -135,35 +135,30 @@ type CardRowForCache struct {
 //
 // 注意：tenantID 参数在 v2 是 /48 INET CIDR，仅做 sanity check（cards 表无 tenant_id 列）。
 func (r *PostgresCardRepository) GetCardRowForCache(ctx context.Context, tenantID, cardID string) (*CardRowForCache, error) {
-	// v2 unified: card_id ≡ spatial_prefix；按 prefix 查
+	// v2.5: card_type/is_active 列已删；rooms/beds 经 card_id FK 反挂（不再 LPM）
 	query := `
 		SELECT
-			c.spatial_prefix::text AS card_id,
-			c.spatial_prefix::text,
-			c.card_type,
+			c.card_id::text AS card_id,
+			c.card_id::text,
+			'card'::text AS card_type,            -- v2.5: 派生（cards 列已删；FE 不再分细卡型）
 			COALESCE(c.card_name, ''),
-			COALESCE(c.dns_short_name, ''),
+			COALESCE(c.card_dns, ''),
 			c.resident_id::text,
-			c.is_active,
-			-- 派生 prefix
-			set_masklen(c.spatial_prefix, 48)::text AS tenant_prefix,
-			CASE WHEN masklen(c.spatial_prefix) >= 56 THEN set_masklen(c.spatial_prefix, 56)::text ELSE '' END AS branch_prefix,
-			CASE WHEN masklen(c.spatial_prefix) >= 80 THEN set_masklen(c.spatial_prefix, 80)::text ELSE '' END AS unit_prefix,
-			CASE WHEN masklen(c.spatial_prefix) >= 88 THEN set_masklen(c.spatial_prefix, 88)::text ELSE NULL END AS room_prefix,
-			CASE WHEN masklen(c.spatial_prefix) = 96 THEN set_masklen(c.spatial_prefix, 96)::text ELSE NULL END AS bed_prefix,
-			-- 反查名字
+			TRUE AS is_active,                    -- v2.5: 列已删；存在即 active
+			set_masklen(c.card_id, 48)::text AS tenant_prefix,
+			CASE WHEN masklen(c.card_id) >= 56 THEN set_masklen(c.card_id, 56)::text ELSE '' END AS branch_prefix,
+			COALESCE(c.unit_id::text, '') AS unit_prefix,
+			(SELECT room_id::text FROM rooms WHERE card_id = c.card_id ORDER BY room_slot LIMIT 1) AS room_prefix,
+			(SELECT b.bed_id::text FROM rooms rm JOIN beds b ON b.bed_id <<= rm.room_id WHERE rm.card_id = c.card_id ORDER BY b.bed_id LIMIT 1) AS bed_prefix,
 			COALESCE(br.branch_name, ''),
 			COALESCE(u.unit_name, ''),
 			COALESCE(u.timezone, 'UTC'),
-			rm.room_name,
-			b.bed_name
+			(SELECT room_name FROM rooms WHERE card_id = c.card_id ORDER BY room_slot LIMIT 1) AS room_name,
+			(SELECT b.bed_name FROM rooms rm JOIN beds b ON b.bed_id <<= rm.room_id WHERE rm.card_id = c.card_id ORDER BY b.bed_id LIMIT 1) AS bed_name
 		FROM cards c
-		LEFT JOIN branches br ON br.branch_id = (CASE WHEN masklen(c.spatial_prefix) >= 56 THEN set_masklen(c.spatial_prefix, 56) ELSE NULL END)
-		LEFT JOIN units    u  ON u.unit_id   = (CASE WHEN masklen(c.spatial_prefix) >= 80 THEN set_masklen(c.spatial_prefix, 80) ELSE NULL END)
-		LEFT JOIN rooms    rm ON rm.room_id  = (CASE WHEN masklen(c.spatial_prefix) >= 88 THEN set_masklen(c.spatial_prefix, 88) ELSE NULL END)
-		-- LPM 反推唯一后裔床：v2 create-time 不变量 (card_sync_service.go) 保证任一卡 spatial_prefix 下 beds count ∈ {0,1}
-		LEFT JOIN beds     b  ON b.bed_id <<= c.spatial_prefix
-		WHERE c.spatial_prefix = $1::INET
+		LEFT JOIN branches br ON br.branch_id = network(set_masklen(c.card_id, 56))
+		LEFT JOIN units    u  ON u.unit_id    = c.unit_id
+		WHERE c.card_id = $1::INET
 	`
 
 	// 防止 unused variable warning（保留 tenantID 参数位）
@@ -226,11 +221,11 @@ func (r *PostgresCardRepository) GetBranchIDByCard(ctx context.Context, tenantID
 	}
 	var branchPrefix sql.NullString
 	err := r.db.QueryRowContext(ctx,
-		`SELECT CASE WHEN masklen(spatial_prefix) >= 56
-		             THEN set_masklen(spatial_prefix, 56)::text
+		`SELECT CASE WHEN masklen(card_id) >= 56
+		             THEN set_masklen(card_id, 56)::text
 		             ELSE ''
 		        END
-		   FROM cards WHERE spatial_prefix = $1::INET`,
+		   FROM cards WHERE card_id = $1::INET`,
 		cardID,
 	).Scan(&branchPrefix)
 	if err != nil {
@@ -326,8 +321,6 @@ func (r *PostgresCardRepository) GetUnitInfo(tenantID, unitID string) (*card.Uni
 			u.unit_id::text,
 			u.unit_name,
 			COALESCE(br.branch_name, '') AS branch_name,
-			-- v2 无 buildings 表，留空
-			''::text AS building,
 			-- v2 unit_type: 1=single, 2=share, 3=public; is_public = (unit_type=3)
 			(u.unit_type = 3) AS is_public,
 			(u.unit_type = 2) AS is_shared_unit,
@@ -344,7 +337,6 @@ func (r *PostgresCardRepository) GetUnitInfo(tenantID, unitID string) (*card.Uni
 		&unit.UnitID,
 		&unit.UnitName,
 		&unit.BranchName,
-		&unit.Building,
 		&unit.IsPublic,
 		&unit.IsSharedUnit,
 		&unit.UnitType,
@@ -370,21 +362,16 @@ func (r *PostgresCardRepository) GetDevicesByBed(tenantID, bedID string) ([]card
 	query := `
 		SELECT
 			d.device_id::text,
+			d.device_ipv6::text            AS device_ipv6,
 			COALESCE(dfm.device_uid, '')   AS device_uid,
 			COALESCE(dfm.device_code, '')  AS device_code,
 			''::text                       AS device_name,
 			COALESCE(dfm.device_type::text, '') AS device_type,
 			COALESCE(dfm.device_model, '') AS device_model,
-			set_masklen(d.device_ipv6, 96)::text AS bound_bed,
-			CASE WHEN masklen(d.device_ipv6) >= 88
-			     THEN set_masklen(d.device_ipv6, 88)::text
-			     ELSE NULL END             AS bound_room,
-			set_masklen(d.device_ipv6, 80)::text AS unit_prefix,
 			d.monitoring_enabled,
-			CASE WHEN drs.online IS TRUE THEN 'online' ELSE 'offline' END AS status
+			'offline'::text AS status
 		FROM devices d
 		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		LEFT JOIN device_runtime_state drs ON drs.device_id = d.device_id
 		WHERE d.device_ipv6 <<= $1::inet
 		  AND d.monitoring_enabled = TRUE
 		ORDER BY d.device_ipv6
@@ -405,23 +392,16 @@ func (r *PostgresCardRepository) GetUnboundDevicesByUnit(tenantID, unitID string
 	query := `
 		SELECT
 			d.device_id::text,
+			d.device_ipv6::text            AS device_ipv6,
 			COALESCE(dfm.device_uid, '')   AS device_uid,
 			COALESCE(dfm.device_code, '')  AS device_code,
 			''::text                       AS device_name,
 			COALESCE(dfm.device_type::text, '') AS device_type,
 			COALESCE(dfm.device_model, '') AS device_model,
-			CASE WHEN masklen(d.device_ipv6) = 128
-			     THEN set_masklen(d.device_ipv6, 96)::text
-			     ELSE NULL END             AS bound_bed,
-			CASE WHEN masklen(d.device_ipv6) >= 88
-			     THEN set_masklen(d.device_ipv6, 88)::text
-			     ELSE NULL END             AS bound_room,
-			set_masklen(d.device_ipv6, 80)::text AS unit_prefix,
 			d.monitoring_enabled,
-			CASE WHEN drs.online IS TRUE THEN 'online' ELSE 'offline' END AS status
+			'offline'::text AS status
 		FROM devices d
 		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		LEFT JOIN device_runtime_state drs ON drs.device_id = d.device_id
 		WHERE d.device_ipv6 <<= $1::inet
 		  AND d.monitoring_enabled = TRUE
 		  AND find_card_by_device_addr(d.device_ipv6) IS NULL
@@ -440,30 +420,18 @@ func scanDevices(rows *sql.Rows) ([]card.DeviceInfo, error) {
 	var devices []card.DeviceInfo
 	for rows.Next() {
 		var di card.DeviceInfo
-		var boundBed, boundRoom, unitPrefix sql.NullString
 		if err := rows.Scan(
 			&di.DeviceID,
+			&di.DeviceIPv6,
 			&di.DeviceUID,
 			&di.DeviceCode,
 			&di.DeviceName,
 			&di.DeviceType,
 			&di.DeviceModel,
-			&boundBed,
-			&boundRoom,
-			&unitPrefix,
 			&di.MonitoringEnabled,
 			&di.Status,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan device: %w", err)
-		}
-		if boundBed.Valid {
-			di.BoundBedID = &boundBed.String
-		}
-		if boundRoom.Valid {
-			di.BoundRoomID = &boundRoom.String
-		}
-		if unitPrefix.Valid {
-			di.UnitID = unitPrefix.String
 		}
 		devices = append(devices, di)
 	}
@@ -482,7 +450,7 @@ func (r *PostgresCardRepository) GetResidentByBed(tenantID, bedID string) (*card
 		SELECT
 			r.resident_id::text,
 			COALESCE(r.nickname, '') AS nickname,
-			ru.spatial_prefix::text  AS bed_prefix
+			ru.card_id::text  AS bed_prefix
 		FROM residents r
 		JOIN resident_unit ru ON ru.resident_id = r.resident_id
 		WHERE ru.spatial_prefix = $1::inet
@@ -516,7 +484,7 @@ func (r *PostgresCardRepository) GetResidentsByUnit(tenantID, unitID string) ([]
 		SELECT
 			r.resident_id::text,
 			COALESCE(r.nickname, ''),
-			ru.spatial_prefix::text
+			ru.card_id::text
 		FROM residents r
 		JOIN resident_unit ru ON ru.resident_id = r.resident_id
 		WHERE set_masklen(ru.spatial_prefix, 80) = $1::inet
@@ -607,12 +575,12 @@ func (r *PostgresCardRepository) GetCardsByUnit(tenantID, unitID string) ([]doma
 	_ = tenantID
 	// v2 unified: card_id ≡ spatial_prefix
 	query := `
-		SELECT spatial_prefix::text AS card_id, spatial_prefix::text, card_type,
+		SELECT card_id::text AS card_id, card_id::text, card_type,
 		       card_name, dns_short_name, resident_id::text,
 		       is_active, enabled_at, disabled_at, created_at, updated_at
 		FROM cards
-		WHERE spatial_prefix <<= $1::inet
-		ORDER BY masklen(spatial_prefix), spatial_prefix
+		WHERE card_id <<= $1::inet
+		ORDER BY masklen(card_id), card_id
 	`
 	rows, err := r.db.Query(query, unitID)
 	if err != nil {
@@ -648,7 +616,7 @@ func (r *PostgresCardRepository) DeleteCard(tenantID, cardID string) error {
 	spatialPrefix := cardID
 	// Sanity check exists
 	var existsRow sql.NullString
-	err := r.db.QueryRow(`SELECT spatial_prefix::text FROM cards WHERE spatial_prefix = $1::INET`, cardID).Scan(&existsRow)
+	err := r.db.QueryRow(`SELECT card_id::text FROM cards WHERE card_id = $1::INET`, cardID).Scan(&existsRow)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil
@@ -659,13 +627,13 @@ func (r *PostgresCardRepository) DeleteCard(tenantID, cardID string) error {
 	deviceIDs := r.getCardDeviceIDList(cardID)
 
 	if len(deviceIDs) > 0 {
-		if err := card.ExpireAlarmsByDeviceIDs(context.Background(), r.db, tenantID, deviceIDs, "card_delete"); err != nil {
+		if err := card.ExpireAlarmsByDeviceAddrs(context.Background(), r.db, tenantID, deviceIDs, "card_delete"); err != nil {
 			r.logger.Warn("DeleteCard: failed to expire alarms",
 				zap.String("card_id", cardID), zap.Error(err))
 		}
 	}
 
-	if _, err := r.db.Exec(`DELETE FROM cards WHERE spatial_prefix = $1::INET`, cardID); err != nil {
+	if _, err := r.db.Exec(`DELETE FROM cards WHERE card_id = $1::INET`, cardID); err != nil {
 		return fmt.Errorf("delete card: %w", err)
 	}
 
@@ -679,9 +647,9 @@ func (r *PostgresCardRepository) DeleteCard(tenantID, cardID string) error {
 // v2: 无 tenant_id 列；TenantID 字段由 spatial_prefix /48 派生。
 func (r *PostgresCardRepository) ListAllCardsForClear(ctx context.Context) ([]domain.CardSyncAffected, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT set_masklen(spatial_prefix, 48)::text AS tenant_prefix,
-		       spatial_prefix::text AS card_id,
-		       spatial_prefix::text
+		SELECT set_masklen(card_id, 48)::text AS tenant_prefix,
+		       card_id::text AS card_id,
+		       card_id::text
 		FROM cards
 	`)
 	if err != nil {
@@ -703,13 +671,13 @@ func (r *PostgresCardRepository) ListAllCardsForClear(ctx context.Context) ([]do
 // ListOrphanCards orphan = 没有任何 device LPM 命中的 card（且不是 tenant/branch/site 这种宏卡）。
 func (r *PostgresCardRepository) ListOrphanCards(ctx context.Context) ([]domain.CardSyncAffected, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT set_masklen(c.spatial_prefix, 48)::text AS tenant_prefix,
-		       c.spatial_prefix::text AS card_id,
-		       c.spatial_prefix::text
+		SELECT set_masklen(c.card_id, 48)::text AS tenant_prefix,
+		       c.card_id::text AS card_id,
+		       c.card_id::text
 		FROM cards c
-		LEFT JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
-		WHERE c.card_type IN ('active_bed','room','device','public','unit')
-		GROUP BY c.spatial_prefix
+		LEFT JOIN devices d ON d.device_ipv6 <<= c.card_id
+		WHERE TRUE  -- v2.5: card_type 列删，所有 cards 都参与孤儿扫描
+		GROUP BY c.card_id
 		HAVING COUNT(d.device_id) = 0
 	`)
 	if err != nil {
@@ -744,7 +712,7 @@ func (r *PostgresCardRepository) ClearAllCards() error {
 func (r *PostgresCardRepository) DeleteCardsByUnit(tenantID, unitID string) error {
 	// 先收集 card_id 列表（v2: ≡ spatial_prefix），记录到 recorded（含 device_uid）
 	rows, err := r.db.Query(
-		`SELECT spatial_prefix::text FROM cards WHERE spatial_prefix <<= $1::inet`,
+		`SELECT card_id::text FROM cards WHERE card_id <<= $1::inet`,
 		unitID,
 	)
 	if err != nil {
@@ -768,7 +736,7 @@ func (r *PostgresCardRepository) DeleteCardsByUnit(tenantID, unitID string) erro
 		r.appendRecorded("deleted", tenantID, cid, unitID, r.getCardDeviceUIDList(tenantID, cid))
 	}
 
-	if _, err := r.db.Exec(`DELETE FROM cards WHERE spatial_prefix <<= $1::inet`, unitID); err != nil {
+	if _, err := r.db.Exec(`DELETE FROM cards WHERE card_id <<= $1::inet`, unitID); err != nil {
 		return fmt.Errorf("failed to delete cards: %w", err)
 	}
 	return nil
@@ -782,7 +750,7 @@ func (r *PostgresCardRepository) CountCardsByTenant(tenantID string) (int, error
 		err = r.db.QueryRow(`SELECT COUNT(*) FROM cards`).Scan(&count)
 	} else {
 		err = r.db.QueryRow(
-			`SELECT COUNT(*) FROM cards WHERE spatial_prefix <<= $1::inet`,
+			`SELECT COUNT(*) FROM cards WHERE card_id <<= $1::inet`,
 			tenantID,
 		).Scan(&count)
 	}
@@ -839,7 +807,7 @@ func (r *PostgresCardRepository) UpdateCard(
 
 	// v2 unified: cardID is INET CIDR (= spatial_prefix)
 	args = append(args, cardID)
-	query := fmt.Sprintf(`UPDATE cards SET %s WHERE spatial_prefix = $%d::INET`,
+	query := fmt.Sprintf(`UPDATE cards SET %s WHERE card_id = $%d::INET`,
 		strings.Join(sets, ", "), idx)
 
 	result, err := r.db.Exec(query, args...)
@@ -883,9 +851,9 @@ func (r *PostgresCardRepository) GetResidentCardIDByPrefix(ctx context.Context, 
 	}
 	var found sql.NullString
 	err := r.db.QueryRowContext(ctx, `
-		SELECT spatial_prefix::text
+		SELECT card_id::text
 		  FROM cards
-		 WHERE spatial_prefix = $1::INET
+		 WHERE card_id = $1::INET
 		 LIMIT 1
 	`, prefix).Scan(&found)
 	if err != nil {
@@ -933,34 +901,15 @@ func (r *PostgresCardRepository) CreateCard(
 		dnsArg = dnsShortName
 	}
 
-	// v2 unified: card_id ≡ spatial_prefix；UPSERT 用 ON CONFLICT (spatial_prefix)
-	query := `
-		INSERT INTO cards (
-			spatial_prefix, card_type, card_name, dns_short_name, resident_id, is_active, enabled_at
-		) VALUES ($1::inet, $2, $3, $4, $5::inet, TRUE, NOW())
-		ON CONFLICT (spatial_prefix) DO UPDATE SET
-			card_name      = COALESCE(EXCLUDED.card_name, cards.card_name),
-			dns_short_name = COALESCE(EXCLUDED.dns_short_name, cards.dns_short_name),
-			resident_id    = EXCLUDED.resident_id,
-			is_active      = TRUE,
-			enabled_at     = COALESCE(cards.enabled_at, NOW()),
-			updated_at     = NOW()
-		RETURNING spatial_prefix::text
-	`
-
-	var cardID string
-	err := r.db.QueryRow(query, spatialPrefix, cardType, cardName, dnsArg, residentArg).Scan(&cardID)
-	if err != nil {
-		return "", fmt.Errorf("failed to create card: %w", err)
-	}
-
-	// derive tenant prefix
-	var tenantPrefix string
-	_ = r.db.QueryRow(`SELECT set_masklen($1::inet, 48)::text`, spatialPrefix).Scan(&tenantPrefix)
-
-	uids := r.getCardDeviceUIDList(tenantPrefix, cardID)
-	r.appendRecorded("created", tenantPrefix, cardID, spatialPrefix, uids)
-	return cardID, nil
+	// v2.5 stub: 旧 INSERT 不再可行（cards 表无 spatial_prefix/card_type/is_active/enabled_at，
+	// 改用 card_id/card_slot/unit_id，card_dns）。
+	// 完整 INSERT 需 IPAM card slot allocator + unit_id 解析；待 card_sync_service 重写。
+	_ = dnsArg
+	_ = residentArg
+	_ = cardType
+	_ = cardName
+	_ = spatialPrefix
+	return "", fmt.Errorf("CreateCard stubbed: v2.5 schema migration WIP (card_sync_service rewrite)")
 }
 
 // =====================================================================
@@ -973,8 +922,8 @@ func (r *PostgresCardRepository) getCardDeviceIDList(cardID string) []string {
 	rows, err := r.db.Query(`
 		SELECT host(d.device_ipv6)
 		FROM cards c
-		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
-		WHERE c.spatial_prefix = $1::INET
+		JOIN devices d ON d.device_ipv6 <<= c.card_id
+		WHERE c.card_id = $1::INET
 	`, cardID)
 	if err != nil {
 		return nil
@@ -999,9 +948,9 @@ func (r *PostgresCardRepository) getCardDeviceUIDList(tenantID, cardID string) [
 	rows, err := r.db.Query(`
 		SELECT dfm.device_uid
 		FROM cards c
-		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
+		JOIN devices d ON d.device_ipv6 <<= c.card_id
 		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		WHERE c.spatial_prefix = $1::INET
+		WHERE c.card_id = $1::INET
 	`, cardID)
 	if err != nil {
 		return nil

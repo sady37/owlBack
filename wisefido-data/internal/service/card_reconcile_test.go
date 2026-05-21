@@ -164,7 +164,7 @@ func setupTestTopology() error {
 // teardownTestTenant — 测试结束清理（保留 schema 骨架以便 -count=N 多次跑）
 // 只清 mutating 表：cards / devices / device_factory_meta / resident_unit；residents/units/rooms/beds 骨架保留
 func teardownTestTenant() {
-	_, _ = tDB.Exec(`DELETE FROM cards WHERE spatial_prefix <<= $1::INET`, tTenant)
+	_, _ = tDB.Exec(`DELETE FROM cards WHERE card_id <<= $1::INET`, tTenant)
 	_, _ = tDB.Exec(`DELETE FROM resident_unit WHERE resident_id <<= $1::INET`, tTenant)
 	// devices.device_id 是 FK 到 device_factory_meta；删 factory_meta 触发 CASCADE 删 devices
 	_, _ = tDB.Exec(`DELETE FROM device_factory_meta WHERE device_id IN (SELECT device_id FROM devices WHERE device_ipv6 <<= $1::INET)`, tTenant)
@@ -234,11 +234,21 @@ type cardRow struct {
 func cardsInScope(t *testing.T, scope string) []cardRow {
 	t.Helper()
 	rows, err := tDB.Query(`
-		SELECT spatial_prefix::text, card_type, COALESCE(card_name, ''),
+		SELECT card_id::text,
+		       CASE masklen(card_id)
+		           WHEN  48 THEN 'tenant'
+		           WHEN  56 THEN 'branch'
+		           WHEN  64 THEN 'site'
+		           WHEN  80 THEN CASE WHEN card_name = 'public' THEN 'public' ELSE 'unit' END
+		           WHEN  88 THEN 'room'
+		           WHEN  96 THEN 'bed'
+		           WHEN 128 THEN 'device'
+		       END AS card_type,
+		       COALESCE(card_name, ''),
 		       COALESCE(host(resident_id), '')
 		  FROM cards
-		 WHERE spatial_prefix <<= $1::INET
-		 ORDER BY spatial_prefix
+		 WHERE card_id <<= $1::INET
+		 ORDER BY card_id
 	`, scope)
 	if err != nil {
 		t.Fatalf("cardsInScope: %v", err)

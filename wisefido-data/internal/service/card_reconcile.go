@@ -37,6 +37,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/netip"
+	"sort"
 	"strings"
 
 	"owl-common/card"
@@ -46,6 +47,14 @@ import (
 )
 
 // ReconcileCards 入口；scope=INET CIDR (/48 tenant / /80 unit 任意级)。
+//
+// 流程（原 v2 split 规则保留 — user 2026-05-21 确认未变）：
+//   1. buildExpected: 用 device → anchor 反推 + per-unit split rule v3 算 expected anchor set
+//   2. loadCurrent:    读 cards 表当前内容
+//   3. applyDiffs:     DELETE 多余 / UPSERT 新增或变更
+//
+// v2.5 schema 适配：upsertCard / applyDiffs 内部已切到新 INSERT 字段（card_id /88 slot + card_slot
+// + unit_id + has_bed snapshot）；anchor → card_id slot 的映射在 upsertCard 内分配并 store。
 func (s *CardSyncService) ReconcileCards(ctx context.Context, scope string) error {
 	if s.db == nil {
 		s.logger.Debug("ReconcileCards skipped (db not wired)")
@@ -253,11 +262,14 @@ type currentCard struct {
 	cardName   string
 }
 
+// loadCurrent map key = card_id CIDR text（== anchor，原 doc 模型）
 func loadCurrent(ctx context.Context, tx *sql.Tx, scope string) (map[string]currentCard, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT spatial_prefix::text, COALESCE(host(resident_id), ''), COALESCE(card_name, '')
+		SELECT host(card_id)||'/'||masklen(card_id),
+		       COALESCE(host(resident_id), ''),
+		       COALESCE(card_name, '')
 		  FROM cards
-		 WHERE spatial_prefix <<= $1::INET
+		 WHERE card_id <<= $1::INET
 	`, scope)
 	if err != nil {
 		return nil, fmt.Errorf("query current cards: %w", err)
@@ -278,23 +290,39 @@ func loadCurrent(ctx context.Context, tx *sql.Tx, scope string) (map[string]curr
 // Step 3 — DELETE 多余 + UPSERT 缺失/变更
 // ============================================================================
 
+// applyDiffs 原 doc 方案：card_id ≡ anchor prefix（无 slot 分配）
+//   1. DELETE current 里不在 expected 的 card
+//   2. UPSERT each anchor: card_id = anchor 直接，has_bed 由 anchor mask 派生
+//   3. 子表 FK: 按 anchor mask DESC 最具体优先挂 rooms.card_id / devices.card_id
 func (s *CardSyncService) applyDiffs(ctx context.Context, tx *sql.Tx, expected map[string]bool, current map[string]currentCard) ([]cardDiff, error) {
 	diffs := []cardDiff{}
 
-	// DELETE: current 里 expected 没有的卡
-	for p, cur := range current {
-		if expected[p] {
+	// Step 1: DELETE current 里 expected 没有的卡（current map 的 key 是 card_id == anchor）
+	for cardID, cur := range current {
+		if expected[cardID] {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM cards WHERE spatial_prefix = $1::INET`, p); err != nil {
-			return nil, fmt.Errorf("delete card %s: %w", p, err)
+		if _, err := tx.ExecContext(ctx, `DELETE FROM cards WHERE card_id = $1::INET`, cardID); err != nil {
+			return nil, fmt.Errorf("delete card %s: %w", cardID, err)
 		}
-		diffs = append(diffs, cardDiff{prefix: p, op: "delete", prevHoA: cur.residentID})
+		diffs = append(diffs, cardDiff{prefix: cardID, op: "delete", prevHoA: cur.residentID})
 	}
 
-	// UPSERT: expected 每个 prefix → 算 resident_id + card_name + dns_short → INSERT/UPDATE
-	for p := range expected {
-		diff, err := s.upsertCard(ctx, tx, p, current)
+	// Step 2: UPSERT each anchor (anchor 就是 card_id)
+	type assignEntry struct{ anchor, unitPref string }
+	var assigns []assignEntry
+	for anchor := range expected {
+		ap, perr := netip.ParsePrefix(anchor)
+		if perr != nil {
+			s.logger.Warn("applyDiffs: skip bad anchor", zap.String("anchor", anchor))
+			continue
+		}
+		unitPref := ""
+		if ap.Bits() >= 80 {
+			unitPref = netip.PrefixFrom(ap.Addr(), 80).Masked().String()
+		}
+		assigns = append(assigns, assignEntry{anchor: anchor, unitPref: unitPref})
+		diff, err := s.upsertCard(ctx, tx, anchor, unitPref, current)
 		if err != nil {
 			return nil, err
 		}
@@ -302,27 +330,43 @@ func (s *CardSyncService) applyDiffs(ctx context.Context, tx *sql.Tx, expected m
 			diffs = append(diffs, *diff)
 		}
 	}
+
+	// Step 3: 子表 FK 重新挂——按 anchor mask DESC 最具体优先
+	sort.Slice(assigns, func(i, j int) bool {
+		ai, _ := netip.ParsePrefix(assigns[i].anchor)
+		aj, _ := netip.ParsePrefix(assigns[j].anchor)
+		return ai.Bits() > aj.Bits()
+	})
+	// 清 scope 内 card_id（让 SET 重新生效）
+	scopeForClear := map[string]bool{}
+	for _, a := range assigns {
+		if a.unitPref != "" {
+			scopeForClear[a.unitPref] = true
+		}
+	}
+	for unit := range scopeForClear {
+		_, _ = tx.ExecContext(ctx, `UPDATE rooms SET card_id = NULL WHERE room_id <<= $1::INET`, unit)
+		_, _ = tx.ExecContext(ctx, `UPDATE devices SET card_id = NULL WHERE device_ipv6 <<= $1::INET`, unit)
+	}
+	// 按 mask 从细到粗填，最具体优先（已 sort）
+	for _, a := range assigns {
+		_, _ = tx.ExecContext(ctx,
+			`UPDATE rooms SET card_id = $1::INET WHERE room_id <<= $2::INET AND card_id IS NULL`,
+			a.anchor, a.anchor)
+		_, _ = tx.ExecContext(ctx,
+			`UPDATE devices SET card_id = $1::INET WHERE device_ipv6 <<= $2::INET AND card_id IS NULL`,
+			a.anchor, a.anchor)
+	}
+
 	return diffs, nil
 }
 
-// upsertCard 单 card 的 INSERT/UPDATE，返回 diff 用于 emit CloudEvent。
-//
-// resident_id 解析两阶段 LPM：
-//
-//	阶段 1: LPM 双向 overlap（card prefix ↔ resident_unit.spatial_prefix 任一包含另一）
-//	阶段 2: unit fallback（card 所在 /80 unit 内唯一 active resident，handle Private unit 整 unit 归一人）
-//
-// card_name 来源：
-//
-//	public unit (unit_type=3) → 固定 "public" 标签（占位 resident nickname 太长无意义）
-//	其他       → residents.nickname / CardNameNoResident
-func (s *CardSyncService) upsertCard(ctx context.Context, tx *sql.Tx, p string, current map[string]currentCard) (*cardDiff, error) {
-	cardType, err := cardTypeForPrefix(p)
-	if err != nil {
-		s.logger.Warn("upsertCard: skip prefix (unknown card_type)",
-			zap.String("prefix", p), zap.Error(err))
-		return nil, nil
-	}
+// upsertCard 原 doc 方案：card_id ≡ anchor prefix
+//   p:        anchor CIDR (/96 /88 /80 等) — 同时就是 card_id
+//   unitPref: anchor 所在 unit /80（denormalize；/48..../80 卡为空）
+func (s *CardSyncService) upsertCard(ctx context.Context, tx *sql.Tx,
+	p, unitPref string,
+	current map[string]currentCard) (*cardDiff, error) {
 
 	residentID, err := resolveResidentForCard(ctx, tx, p)
 	if err != nil {
@@ -356,30 +400,48 @@ func (s *CardSyncService) upsertCard(ctx context.Context, tx *sql.Tx, p string, 
 		newHoA = residentID
 	}
 
-	shortName := ""
-	if parsed, perr := netip.ParsePrefix(p); perr == nil {
-		if sn, snerr := ddns.CardShortName(parsed); snerr == nil {
-			shortName = sn
-		}
-	}
+	cardDNS := card.ShortCodeOf(p)
 
-	// 算 diff（在 INSERT 前算，否则 ON CONFLICT 后看不到差异）
+	// has_bed: anchor scope 内是否有 bed (beds 表 LPM)
+	//   /96 anchor → 自身就是 bed → true
+	//   /88 anchor → room 内可能有 bed
+	//   /80 anchor (merge mode) → unit 内任一 bed
+	var hasBed bool
+	_ = tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM beds WHERE bed_id <<= $1::INET)`, p,
+	).Scan(&hasBed)
+
+	// has_bathroom / has_kitchen: anchor scope 内是否有 room_type=1/2 的 room
+	var hasBath, hasKitchen bool
+	_ = tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM rooms WHERE room_id <<= $1::INET AND room_type=1)`, p,
+	).Scan(&hasBath)
+	_ = tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM rooms WHERE room_id <<= $1::INET AND room_type=2)`, p,
+	).Scan(&hasKitchen)
+
 	diff := computeCardDiff(p, current[p], newHoA, cardName)
 
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO cards (spatial_prefix, card_type, card_name, dns_short_name, resident_id, is_active, enabled_at)
-		VALUES ($1::INET, $2, $3, NULLIF($4,''), $5::INET, TRUE, NOW())
-		ON CONFLICT (spatial_prefix) DO UPDATE SET
-		    card_name      = EXCLUDED.card_name,
-		    dns_short_name = COALESCE(EXCLUDED.dns_short_name, cards.dns_short_name),
-		    resident_id    = EXCLUDED.resident_id,
-		    is_active      = TRUE,
-		    updated_at     = NOW()
-		WHERE cards.card_name      IS DISTINCT FROM EXCLUDED.card_name
-		   OR cards.dns_short_name IS DISTINCT FROM EXCLUDED.dns_short_name
-		   OR cards.resident_id    IS DISTINCT FROM EXCLUDED.resident_id
-		   OR cards.is_active      IS DISTINCT FROM TRUE
-	`, p, cardType, cardName, shortName, ridArg); err != nil {
+	var unitArg interface{} = nil
+	if unitPref != "" {
+		unitArg = unitPref
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO cards (card_id, unit_id, card_name, card_dns, resident_id,
+		                   has_bed, has_bathroom, has_kitchen)
+		VALUES ($1::INET, $2::INET, $3, $4, $5::INET, $6, $7, $8)
+		ON CONFLICT (card_id) DO UPDATE SET
+		    card_name    = EXCLUDED.card_name,
+		    card_dns     = EXCLUDED.card_dns,
+		    resident_id  = EXCLUDED.resident_id,
+		    has_bed      = EXCLUDED.has_bed,
+		    has_bathroom = EXCLUDED.has_bathroom,
+		    has_kitchen  = EXCLUDED.has_kitchen,
+		    updated_at   = NOW()
+	`, p, unitArg, cardName, cardDNS, ridArg,
+		hasBed, hasBath, hasKitchen)
+	if err != nil {
 		return nil, fmt.Errorf("upsert card %s: %w", p, err)
 	}
 

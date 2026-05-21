@@ -116,6 +116,14 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 	engine.AddListener(targetAggregatorListenerAdapter{agg: aggregator})
 	streamPublisher.SetAggregator(aggregator)
 
+	// 3.2) RoomState people count dedup ([[bed_presence_fusion]])：
+	//        radarRoomCount  = adapter_radar applyCount 旁路记 raw Z
+	//        bedPresence     = adapter_sleepace/radar bed enter/leave 旁路记 X/Y
+	//      publisher OnZoneEvent ZoneTypeRoom 用 (Z + Σ X where !Y) 覆写 TotalPeople。
+	radarRoomCount := service.NewRadarRoomCountCache()
+	bedPresence := service.NewBedPresenceFusion()
+	streamPublisher.SetRoomDedup(radarRoomCount, bedPresence)
+
 	// 4) input adapters
 	radar := zoneengine.NewRadarAdapter(opts.Redis, engine, bathLookup, opts.Logger)
 	sleepace := zoneengine.NewSleepaceAdapter(opts.Redis, engine, opts.Logger)
@@ -123,6 +131,9 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 		radar.SetFitnessChecker(opts.Fitness)
 		sleepace.SetFitnessChecker(opts.Fitness)
 	}
+	radar.SetBedPresence(bedPresence)
+	radar.SetRoomCountSink(radarRoomCount)
+	sleepace.SetBedPresence(bedPresence)
 	vital := zoneengine.NewVitalAdapter(vitalSrc, engine, opts.Logger)
 
 	// 5) zonealarm — zone-derived alarm 子系统（4 条规则订阅 ZoneEvent）
@@ -288,8 +299,7 @@ func (s *Subsystem) ReloadRulesFromFile() error {
 		return fmt.Errorf("reload %s: %w", s.RulesPath, err)
 	}
 	s.Engine.ReloadRules(r)
-	s.BedSizeLookup.InvalidateAll()
-	s.BathroomLookup.InvalidateAll()
+	// BedSizeLookup / BathroomLookup 用 60s TTL 自动收敛，hot-reload 时不需手动清。
 	s.logger.Info("zone engine rules reloaded", zap.String("path", s.RulesPath))
 	return nil
 }

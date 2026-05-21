@@ -50,12 +50,12 @@ func TestSpatialV2_HTTP_E2E(t *testing.T) {
 	// 清理上一次测试残留 (test branch slot=98 = 0x62 专用 v2 HTTP test)
 	cleanup := func() {
 		_, _ = db.ExecContext(context.Background(), `
-			DELETE FROM devices WHERE spatial_addr << 'fd00:0:3:6200::/56'::INET;
-			DELETE FROM beds WHERE spatial_prefix << 'fd00:0:3:6200::/56'::INET;
-			DELETE FROM rooms WHERE spatial_prefix << 'fd00:0:3:6200::/56'::INET;
-			DELETE FROM units WHERE spatial_prefix << 'fd00:0:3:6200::/56'::INET;
-			DELETE FROM sites WHERE spatial_prefix << 'fd00:0:3:6200::/56'::INET;
-			DELETE FROM branches WHERE spatial_prefix = 'fd00:0:3:6200::/56'::INET;
+			DELETE FROM devices WHERE device_ipv6 << 'fd00:0:3:6200::/56'::INET;
+			DELETE FROM beds WHERE bed_id << 'fd00:0:3:6200::/56'::INET;
+			DELETE FROM rooms WHERE room_id << 'fd00:0:3:6200::/56'::INET;
+			DELETE FROM units WHERE unit_id << 'fd00:0:3:6200::/56'::INET;
+			DELETE FROM sites WHERE site_id << 'fd00:0:3:6200::/56'::INET;
+			DELETE FROM branches WHERE branch_id = 'fd00:0:3:6200::/56'::INET;
 		`)
 	}
 	cleanup()
@@ -63,7 +63,7 @@ func TestSpatialV2_HTTP_E2E(t *testing.T) {
 
 	// 直接 INSERT test branch (不能用 AllocateBranch 因为它取 MAX+1 不让我控制 slot=98)
 	if _, err := db.Exec(`
-		INSERT INTO branches (spatial_prefix, branch_slot, branch_name, timezone)
+		INSERT INTO branches (branch_id, branch_slot, branch_name, timezone)
 		VALUES ('fd00:0:3:6200::/56', 98, 'V2-HTTP-Test', 'America/Denver')
 	`); err != nil {
 		t.Fatalf("seed test branch: %v", err)

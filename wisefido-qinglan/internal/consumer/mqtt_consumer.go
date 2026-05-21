@@ -800,8 +800,8 @@ func (c *MQTTConsumer) handleOTAReturn(uid string, message map[string]interface{
 // resolveDeviceIdentity 统一解析 device_uid → 设备身份。monitor/stat/event 共用。
 // ok=false 表示无 device_store 或 DeviceAddr 无效，调用方应直接 return。
 //
-// device_ipv6 单程票后 addr 是路由层主键；其余 tid/bid/unitID/cid/did/bedID/roomID 多数已可从 addr 派生，
-// 保留作 cardID（cid）与 SubjectEntity 路由 + 旧业务逻辑兼容。
+// 返回字段：tid (tenant CIDR text)、did (UUID)、bedID/roomID/unitID/bid（从 addr prefix 派生）、
+// addr (/128 IPv6 路由主键)。SubjectEntity 永远空——cardagg LPM 反查（R-009 单源真相）。
 func (c *MQTTConsumer) resolveDeviceIdentity(ctx context.Context, uid string) (tid, bid, unitID, cid, did, bedID, roomID string, addr netip.Addr, ok bool) {
 	ds, err := c.deviceRepo.GetDeviceStoreInfo(ctx, uid)
 	if err != nil || ds == nil || ds.DeviceID == "" {
@@ -813,11 +813,15 @@ func (c *MQTTConsumer) resolveDeviceIdentity(ctx context.Context, uid string) (t
 	if tid == "" || !addr.IsValid() {
 		return "", "", "", "", "", "", "", netip.Addr{}, false
 	}
-	if info, err := c.cardMappingService.GetCardIDByDeviceUID(ctx, uid); err == nil && info != nil {
-		bid, unitID, cid = info.BranchID, info.UnitID, info.CardID
-		bedID, roomID = info.BedID, info.RoomID
+	// 空间字段从 addr prefix 派生（无 DB / 无 cache 查询；byte 11 = bed slot, =0 表示非床设备）
+	bid = netip.PrefixFrom(addr, 56).String()
+	unitID = netip.PrefixFrom(addr, 80).String()
+	roomID = netip.PrefixFrom(addr, 88).String()
+	if a16 := addr.As16(); a16[11] != 0 {
+		bedID = netip.PrefixFrom(addr, 96).String()
 	}
-	return tid, bid, unitID, cid, did, bedID, roomID, addr, true
+	// cid 永远空（R-009）；publish 入口已不再使用 cid，签名保留兼容 caller。
+	return tid, bid, unitID, "", did, bedID, roomID, addr, true
 }
 
 // publishRadarMonitorHeartbeat monitoring 关闭时发单条 track_id=11（设备级），category=heart，供 cardagg MonitorBuffer 推导在线。

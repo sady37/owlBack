@@ -1114,7 +1114,7 @@ func (s *alarmEventService) resolveCardIDToCIDR(ctx context.Context, cardID stri
 	}
 	var spatialPrefix string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT host(spatial_prefix) || '/' || masklen(spatial_prefix) FROM cards WHERE dns_short_name = $1`,
+		`SELECT host(card_id) || '/' || masklen(card_id) FROM cards WHERE card_dns = $1`,
 		cardID,
 	).Scan(&spatialPrefix)
 	if err == sql.ErrNoRows {
@@ -2165,14 +2165,13 @@ func (s *alarmEventService) getCardIDByDeviceID(ctx context.Context, tenantID, d
 }
 
 // getCardUnitProperty 查询卡片所属 unit 的 unit_property（0=Home, 1=Facility）。
-// v2: cards.spatial_prefix /80 mask → units.unit_id LEFT JOIN。
 func (s *alarmEventService) getCardUnitProperty(ctx context.Context, tenantID, cardID string) (int, error) {
 	_ = tenantID
 	query := `
 		SELECT COALESCE(u.unit_property, 0) AS unit_property
 		FROM cards c
-		LEFT JOIN units u ON u.unit_id = set_masklen(c.spatial_prefix, 80)
-		WHERE c.spatial_prefix = $1::INET
+		LEFT JOIN units u ON u.unit_id = set_masklen(c.card_id, 80)
+		WHERE c.card_id = $1::INET
 		LIMIT 1
 	`
 

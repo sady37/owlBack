@@ -19,7 +19,7 @@ func NewReader(client *redis.Client) *Reader {
 }
 
 func (r *Reader) ReadCardStatus(ctx context.Context, cardID string) (*CardStatus, error) {
-	// Phase A：device_status 已迁出 card:state，独立到 device:status:{deviceID}（详 ReadDeviceStatusByDeviceIDs）。
+	// Phase A：device_status 已迁出 card:state，独立到 device:status:{ipv6}（详 ReadDeviceStatusByDeviceAddrs）。
 	vals, err := r.client.HMGet(ctx, HashKey(cardID),
 		"target", "room_state", "bed_state", "alarm_state", "display", "message",
 	).Result()
@@ -116,30 +116,30 @@ func (r *Reader) ReadAIFields(ctx context.Context, cardID string) (map[string]st
 	return result, nil
 }
 
-// ReadDeviceStatus 读单个设备状态（device:status:{deviceID} Hash）。
-func (r *Reader) ReadDeviceStatus(ctx context.Context, deviceID string) (*DeviceStatus, error) {
-	if deviceID == "" {
+// ReadDeviceStatus 读单个设备状态（device:status:{ipv6} Hash）。
+func (r *Reader) ReadDeviceStatus(ctx context.Context, deviceAddr string) (*DeviceStatus, error) {
+	if deviceAddr == "" {
 		return nil, nil
 	}
-	vals, err := r.client.HGetAll(ctx, DeviceStatusHashKey(deviceID)).Result()
+	vals, err := r.client.HGetAll(ctx, DeviceStatusHashKey(deviceAddr)).Result()
 	if err != nil {
 		return nil, err
 	}
 	if len(vals) == 0 {
 		return nil, nil
 	}
-	return parseDeviceStatusHash(deviceID, vals), nil
+	return parseDeviceStatusHash(deviceAddr, vals), nil
 }
 
-// ReadDeviceStatusByDeviceIDs 批量读多个设备状态（pipeline，按 deviceID 列表）。
-// 用于卡片详情聚合：调用方先从 cards.devices JSONB 拿 deviceID 列表，再调本接口。
-func (r *Reader) ReadDeviceStatusByDeviceIDs(ctx context.Context, deviceIDs []string) (map[string]*DeviceStatus, error) {
-	if len(deviceIDs) == 0 {
+// ReadDeviceStatusByDeviceAddrs 批量读多个设备状态（pipeline，按 IPv6 列表）。
+// 用于卡片详情聚合：调用方先拿 device_ipv6 列表，再调本接口。
+func (r *Reader) ReadDeviceStatusByDeviceAddrs(ctx context.Context, deviceAddrs []string) (map[string]*DeviceStatus, error) {
+	if len(deviceAddrs) == 0 {
 		return nil, nil
 	}
-	seen := make(map[string]struct{}, len(deviceIDs))
-	unique := make([]string, 0, len(deviceIDs))
-	for _, d := range deviceIDs {
+	seen := make(map[string]struct{}, len(deviceAddrs))
+	unique := make([]string, 0, len(deviceAddrs))
+	for _, d := range deviceAddrs {
 		if d == "" {
 			continue
 		}
@@ -172,7 +172,7 @@ func (r *Reader) ReadDeviceStatusByDeviceIDs(ctx context.Context, deviceIDs []st
 	return out, nil
 }
 
-func parseDeviceStatusHash(deviceID string, vals map[string]string) *DeviceStatus {
+func parseDeviceStatusHash(deviceAddr string, vals map[string]string) *DeviceStatus {
 	atoi := func(k string) int {
 		s, ok := vals[k]
 		if !ok || s == "" {
@@ -189,13 +189,9 @@ func parseDeviceStatusHash(deviceID string, vals map[string]string) *DeviceStatu
 		v, _ := strconv.ParseInt(s, 10, 64)
 		return v
 	}
-	got := vals["device_id"]
-	if got == "" {
-		got = deviceID
-	}
 	return &DeviceStatus{
 		DeviceUID:      vals["device_uid"],
-		DeviceID:       got,
+		DeviceIPv6:     deviceAddr,
 		DeviceType:     vals["device_type"],
 		UpdatedAt:      atoi64("updated_at"),
 		LastSeenMs:     atoi64("last_seen_ms"),

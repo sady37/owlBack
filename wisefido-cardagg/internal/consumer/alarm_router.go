@@ -33,11 +33,13 @@ type EnablementResolver interface {
 	Resolve(ctx context.Context, tenantPref, deviceAddr, alarmType string) (level string, enabled bool)
 }
 
-// MetaResolver cardID + addr hint → 解析后的 device_addr；device_addr → cardID LPM 反查。
-// service.DeviceMetaCache 实现。
+// MetaResolver cardID + addr hint → 解析后的 device_addr；device_addr → cardID LPM 反查；
+// HasBed/IsBathroom 反查卡静态属性。service.DeviceMetaCache 实现。
 type MetaResolver interface {
 	ResolveDeviceAddr(ctx context.Context, cardID, hint string) string
 	LookupCardByDevice(ctx context.Context, deviceAddr string) string
+	CardHasBed(ctx context.Context, cardID string) bool
+	CardIsBathroom(ctx context.Context, cardID string) bool
 }
 
 // DeviceSignal device 类 alarm/recovery 通知；service.DeviceStatusTracker 实现。
@@ -196,7 +198,7 @@ func (r *AlarmRouter) persist(ctx context.Context, msg *owlredis.IoTStreamMessag
 
 	result, cas, err := card.InsertAlarmAndUpdateCard(ctx, r.db, cardID, card.AlarmInsertParams{
 		TenantID:    ac.TenantPref,
-		DeviceID:    ac.DeviceAddr,
+		DeviceAddr:  ac.DeviceAddr,
 		EventType:   eventName,
 		Category:    alarm.GetFHIRCategory(eventName),
 		AlarmLevel:  level,
@@ -261,7 +263,9 @@ func (r *AlarmRouter) writeAlarmState(ctx context.Context, cardID string, cas *c
 	out := &card.CardStatus{
 		CardID:     cardID,
 		AlarmState: as,
-		Display:    BuildCardDisplay(merged),
+		Display: BuildCardDisplay(merged,
+			r.meta != nil && r.meta.CardHasBed(ctx, cardID),
+			r.meta != nil && r.meta.CardIsBathroom(ctx, cardID)),
 	}
 	if err := r.writer.WriteCardStatus(ctx, out); err != nil {
 		return err

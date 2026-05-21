@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"owl-common/card"
+	"wisefido-cardagg/internal/service"
 
 	redislib "github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -51,18 +52,20 @@ type UnitPicker struct {
 	client *redislib.Client
 	writer *card.Writer
 	reader *card.Reader
+	meta   *service.DeviceMetaCache
 	logger *zap.Logger
 
 	mu       sync.Mutex
 	children map[string]*unitChildrenEntry
 }
 
-func NewUnitPicker(db *sql.DB, client *redislib.Client, writer *card.Writer, reader *card.Reader, logger *zap.Logger) *UnitPicker {
+func NewUnitPicker(db *sql.DB, client *redislib.Client, writer *card.Writer, reader *card.Reader, meta *service.DeviceMetaCache, logger *zap.Logger) *UnitPicker {
 	return &UnitPicker{
 		db:       db,
 		client:   client,
 		writer:   writer,
 		reader:   reader,
+		meta:     meta,
 		logger:   logger,
 		children: make(map[string]*unitChildrenEntry),
 	}
@@ -113,7 +116,15 @@ func (p *UnitPicker) refresh(ctx context.Context, unitPref string) {
 	prevSelf, _ := p.reader.ReadCardStatus(ctx, unitPref)
 
 	winner, roomName := pickActiveChild(children, states)
-	display := buildUnitDisplay(unitPref, winner, roomName, states, prevSelf)
+	// unit /80 hasBed / isBathroom = winner 子卡静态属性（winner 是 bed/room 卡 → 从 meta 取）
+	hasBed := false
+	isBath := false
+	if winner != "" && p.meta != nil {
+		m := p.meta.GetOrLoad(ctx, winner)
+		hasBed = m.HasBed()
+		isBath = m.IsBathroom()
+	}
+	display := buildUnitDisplay(unitPref, winner, roomName, states, prevSelf, hasBed, isBath)
 	if display == nil {
 		return
 	}
@@ -144,15 +155,13 @@ func (p *UnitPicker) getChildren(ctx context.Context, unitPref string) []unitChi
 }
 
 func (p *UnitPicker) queryChildren(ctx context.Context, unitPref string) []unitChild {
+	// v2.5: cards 都是 /88，住在 unit /80 下；rooms.card_id FK 反挂
 	rows, err := p.db.QueryContext(ctx, `
-		SELECT c.spatial_prefix::text,
-		       masklen(c.spatial_prefix),
-		       COALESCE(r.room_name, '')
+		SELECT c.card_id::text,
+		       masklen(c.card_id),
+		       COALESCE((SELECT room_name FROM rooms WHERE card_id = c.card_id ORDER BY room_slot LIMIT 1), '')
 		  FROM cards c
-		  LEFT JOIN rooms r
-		    ON r.room_id = network(set_masklen(c.spatial_prefix, 88))
-		 WHERE c.spatial_prefix << $1::INET
-		   AND masklen(c.spatial_prefix) IN (88, 96)`, unitPref)
+		 WHERE c.unit_id = $1::INET`, unitPref)
 	if err != nil {
 		p.logger.Warn("query unit children", zap.String("unit", unitPref), zap.Error(err))
 		return nil
@@ -169,8 +178,8 @@ func (p *UnitPicker) queryChildren(ctx context.Context, unitPref string) []unitC
 	return out
 }
 
-// batchReadChildStates pipeline 读子卡 room_state + bed_state JSON。
-// 返回 cardID → 解析后的 CardStatus（只填了 RoomState/BedState）。
+// batchReadChildStates pipeline 读子卡 room_state + bed_state + display JSON。
+// 返回 cardID → 解析后的 CardStatus（填 RoomState/BedState/Display）。
 func (p *UnitPicker) batchReadChildStates(ctx context.Context, children []unitChild) map[string]*card.CardStatus {
 	if len(children) == 0 {
 		return nil
@@ -181,7 +190,7 @@ func (p *UnitPicker) batchReadChildStates(ctx context.Context, children []unitCh
 	pipe := p.client.Pipeline()
 	cmds := make([]*redislib.SliceCmd, 0, len(children))
 	for _, ch := range children {
-		cmds = append(cmds, pipe.HMGet(ctx, card.HashKey(ch.CardID), "room_state", "bed_state"))
+		cmds = append(cmds, pipe.HMGet(ctx, card.HashKey(ch.CardID), "room_state", "bed_state", "display"))
 	}
 	if _, err := pipe.Exec(ctx); err != nil && err != redislib.Nil {
 		p.logger.Warn("pipeline child states", zap.Error(err))
@@ -190,7 +199,7 @@ func (p *UnitPicker) batchReadChildStates(ctx context.Context, children []unitCh
 	out := make(map[string]*card.CardStatus, len(children))
 	for i, ch := range children {
 		vals, err := cmds[i].Result()
-		if err != nil || len(vals) != 2 {
+		if err != nil || len(vals) != 3 {
 			continue
 		}
 		s := &card.CardStatus{CardID: ch.CardID}
@@ -206,76 +215,36 @@ func (p *UnitPicker) batchReadChildStates(ctx context.Context, children []unitCh
 				s.BedState = &bs
 			}
 		}
+		if str, ok := vals[2].(string); ok && str != "" && str != "{}" {
+			var dd card.CardDisplay
+			if json.Unmarshal([]byte(str), &dd) == nil {
+				s.Display = &dd
+			}
+		}
 		out[ch.CardID] = s
 	}
 	return out
 }
 
-// pickActiveChild 子卡挑选：
-//
-//	P1: RoomState.RiskLevel > 0 + TotalPeople > 0  → 最高 risk + 最近 updated_at
-//	P2: RoomState.TotalPeople > 0                    → 最近 updated_at
-//	P3: BedState.BedStatus == 0 (在床)               → 最近 updated_at
-//	P4: 最近 updated_at（任意 state 信号）
-//	无任何信号 → ("", "")
+// pickActiveChild 子卡挑选：按 display.card_priority 取 MAX（spec card_display.md §3.2）；
+// 同 priority 按 updated_at 取最新。无 display 或 priority=0 的子卡参与兜底（priority=0 默认）。
 func pickActiveChild(children []unitChild, states map[string]*card.CardStatus) (string, string) {
 	var pickID, pickRoom string
-	var bestRisk int
+	var bestPriority int = -1
 	var bestUpdated int64
-	var pickPriority int // 1..4
 
 	for _, ch := range children {
 		s := states[ch.CardID]
 		if s == nil {
 			continue
 		}
+		var prio int
+		if s.Display != nil {
+			prio = s.Display.CardPriority
+		}
 		updated := stateUpdatedAt(s)
-
-		// P1
-		if s.RoomState != nil && s.RoomState.RiskLevel > 0 && s.RoomState.TotalPeople > 0 {
-			if pickPriority > 1 ||
-				s.RoomState.RiskLevel > bestRisk ||
-				(s.RoomState.RiskLevel == bestRisk && updated > bestUpdated) {
-				pickPriority = 1
-				bestRisk = s.RoomState.RiskLevel
-				bestUpdated = updated
-				pickID = ch.CardID
-				pickRoom = ch.RoomName
-			}
-			continue
-		}
-		if pickPriority == 1 {
-			continue
-		}
-		// P2
-		if s.RoomState != nil && s.RoomState.TotalPeople > 0 {
-			if pickPriority > 2 || updated > bestUpdated {
-				pickPriority = 2
-				bestUpdated = updated
-				pickID = ch.CardID
-				pickRoom = ch.RoomName
-			}
-			continue
-		}
-		if pickPriority <= 2 && pickPriority > 0 {
-			continue
-		}
-		// P3
-		if s.BedState != nil && s.BedState.BedStatus == 0 {
-			if pickPriority > 3 || updated > bestUpdated {
-				pickPriority = 3
-				bestUpdated = updated
-				pickID = ch.CardID
-				pickRoom = ch.RoomName
-			}
-			continue
-		}
-		if pickPriority > 0 && pickPriority <= 3 {
-			continue
-		}
-		// P4
-		if updated > bestUpdated {
-			pickPriority = 4
+		if prio > bestPriority || (prio == bestPriority && updated > bestUpdated) {
+			bestPriority = prio
 			bestUpdated = updated
 			pickID = ch.CardID
 			pickRoom = ch.RoomName
@@ -288,7 +257,7 @@ func pickActiveChild(children []unitChild, states map[string]*card.CardStatus) (
 //   - 拿 winner 的 RoomState/BedState 作为 Section2.left/Section3.right 派生输入
 //   - /80 自身的 AlarmState/Target 仍用（visitor / Section1DownRight）
 //   - Section1DownLeft = winner.room_name 或 "WholeUnit"
-func buildUnitDisplay(unitPref, winnerID, roomName string, states map[string]*card.CardStatus, prevSelf *card.CardStatus) *card.CardDisplay {
+func buildUnitDisplay(unitPref, winnerID, roomName string, states map[string]*card.CardStatus, prevSelf *card.CardStatus, hasBedDevice bool, isBathroom bool) *card.CardDisplay {
 	merged := &card.CardStatus{CardID: unitPref}
 	if prevSelf != nil {
 		merged.AlarmState = prevSelf.AlarmState
@@ -301,7 +270,7 @@ func buildUnitDisplay(unitPref, winnerID, roomName string, states map[string]*ca
 		}
 	}
 
-	d := BuildCardDisplay(merged)
+	d := BuildCardDisplay(merged, hasBedDevice, isBathroom)
 	if d == nil {
 		return nil
 	}
@@ -330,13 +299,18 @@ func isUnitPrefix(cardID string) bool {
 	return pfx.Bits() == 80
 }
 
+// stateUpdatedAt 用 max(per-field ts) 派生"最新刷新时刻"，用于 UnitPicker tie-break。
 func stateUpdatedAt(s *card.CardStatus) int64 {
 	var m int64
-	if s.RoomState != nil && s.RoomState.UpdatedAt > m {
-		m = s.RoomState.UpdatedAt
+	if s.RoomState != nil {
+		if v := s.RoomState.MaxTs(); v > m {
+			m = v
+		}
 	}
-	if s.BedState != nil && s.BedState.UpdatedAt > m {
-		m = s.BedState.UpdatedAt
+	if s.BedState != nil {
+		if v := s.BedState.MaxTs(); v > m {
+			m = v
+		}
 	}
 	return m
 }

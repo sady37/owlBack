@@ -91,7 +91,7 @@ func main() {
 	monitorHandler := consumer.NewMonitorHandler(monitorBuf, writer, deviceTracker, logger)
 	go monitorHandler.RunLoop(ctx)
 
-	unitPicker := consumer.NewUnitPicker(db, redisClient, writer, reader, logger)
+	unitPicker := consumer.NewUnitPicker(db, redisClient, writer, reader, metaCache, logger)
 	alarmRouter := consumer.NewAlarmRouter(db, writer, reader, enablementCache, metaCache, deviceTracker, unitPicker, logger)
 	// TargetMerger：per-device → owning card max-merge（LastActive / Standing / WeakBio）。
 	// 详 [[target_state_per_device]]。VisitorDeriver 通过 ApplyVisitor 注入 visitor 三字段。
@@ -116,12 +116,16 @@ func main() {
 	go aiOverrides.RunGCLoop(ctx.Done(), 30*time.Second)
 	aiVerdictHandler := consumer.NewAIVerdictHandler(redisClient, aiOverrides, logger)
 	aiVerdictHandler.Start(ctx)
-	sensorStateProjector := consumer.NewSensorStateProjector(writer, reader, unitPicker, logger)
+	sensorStateProjector := consumer.NewSensorStateProjector(writer, reader, unitPicker, metaCache, logger)
 	sensorStateProjector.SetTargetMerger(targetMerger)
 	cardLifecycle := consumer.NewCardLifecycle(db, writer, metaCache, enablementCache, unitPicker, logger)
 	cardLifecycle.SetTargetMerger(targetMerger) // 卡变更 / 设备解绑时清 device snapshot
 	alarmDeviceHandler := consumer.NewAlarmDeviceHandler(enablementCache, logger)
 	alarmProcessHandler := consumer.NewAlarmProcessHandler(db, writer, logger)
+
+	// 启动时全量重 build display，让升级后存量卡的 display 立即贴新 schema/算法
+	// （cardagg 只在 state 变化时 republish display，长时间无事件的卡会 stale 跨重启）。
+	consumer.RebuildAllDisplays(ctx, redisClient, reader, writer, unitPicker, metaCache, logger)
 
 	consumer.SubscribeAll(ctx, logger, redisClient, consumer.Handlers{
 		Monitor:      monitorHandler,
@@ -132,6 +136,12 @@ func main() {
 		AlarmDevice:  alarmDeviceHandler,
 		AlarmProcess: alarmProcessHandler,
 	})
+
+	// 周期性全量重 build display，兜底"cardagg 只在 state 变化时 push"导致的
+	// 跨重启 stale display（详 display_rebuilder.go）。
+	// 默认 300s（生产）；dev 可在 config.yaml display.rebuild_interval_sec 调低加速验证。
+	displayRebuildInterval := time.Duration(cfg.Display.RebuildIntervalSec) * time.Second
+	go consumer.RunPeriodicRebuild(ctx, displayRebuildInterval, redisClient, reader, writer, unitPicker, metaCache, logger)
 
 	// VisitorDeriver 60s tick：双路径（bed-bound radar bed cards 优先 / Private /88 room cards 兜底）。
 	// 详 doc/card_display.md §4.4 + [[visitor_belongs_to_cardagg]]。

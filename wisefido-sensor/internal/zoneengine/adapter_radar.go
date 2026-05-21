@@ -44,13 +44,29 @@ type DeviceFitnessChecker interface {
 	IsFit(deviceAddr string) bool
 }
 
+// BedPresenceSink — adapter_radar / adapter_sleepace 在 bed enter/leave 翻转时旁路回调。
+// service.BedPresenceFusion 实现；供 stream_publisher 做 RoomState dedup 时查 (X,Y)。
+// BedZone FSM 把两源 fuse 成单一 enter/leave，源信息丢失——这条 sink 是旁路保留。
+type BedPresenceSink interface {
+	SetSleepad(bedCIDR string, inBed bool, ts int64)
+	SetRadar(bedCIDR string, inBed bool, ts int64)
+}
+
+// RadarRoomCountSink — adapter_radar NumberPeople 写入时旁路记账。
+// service.RadarRoomCountCache 实现；供 publisher 读 raw Z（不被 subset_invariant lift 污染）。
+type RadarRoomCountSink interface {
+	SetZ(roomCIDR string, count int, ts int64)
+}
+
 type RadarAdapter struct {
-	client   *redislib.Client
-	engine   *Engine
-	bathroom BathroomLookup
-	bedDedup *BedEventDedup       // S5b: InBed/LeftBed per-device 10s 同类 dedup
-	fitness  DeviceFitnessChecker // S6: 设备类 alarm gate
-	logger   *zap.Logger
+	client    *redislib.Client
+	engine    *Engine
+	bathroom  BathroomLookup
+	bedDedup  *BedEventDedup       // S5b: InBed/LeftBed per-device 10s 同类 dedup
+	fitness   DeviceFitnessChecker // S6: 设备类 alarm gate
+	presence  BedPresenceSink      // RoomState dedup：bed-area Y 跟踪
+	roomCount RadarRoomCountSink   // RoomState dedup：raw Z 缓存
+	logger    *zap.Logger
 }
 
 const (
@@ -72,6 +88,22 @@ func (a *RadarAdapter) SetFitnessChecker(c DeviceFitnessChecker) {
 		return
 	}
 	a.fitness = c
+}
+
+// SetBedPresence main wiring 注入；不调时 dedup 旁路 disable（兼容未 wire）。
+func (a *RadarAdapter) SetBedPresence(s BedPresenceSink) {
+	if a == nil {
+		return
+	}
+	a.presence = s
+}
+
+// SetRoomCountSink main wiring 注入；不调时 raw Z 不缓存（publisher 退化到 e.NewState.Count）。
+func (a *RadarAdapter) SetRoomCountSink(s RadarRoomCountSink) {
+	if a == nil {
+		return
+	}
+	a.roomCount = s
 }
 
 // Start 起独立 goroutine 跑读流循环，consumer group 与 cardagg/sensor 现有消费者隔离。
@@ -204,6 +236,9 @@ func (a *RadarAdapter) applyCount(cardID, roomPref string, count int, ts int64, 
 		Ts:          ts,
 		TriggerData: fields,
 	})
+	if a.roomCount != nil {
+		a.roomCount.SetZ(roomPref, count, ts)
+	}
 }
 
 func (a *RadarAdapter) applyBed(cardID, bedPref, kind string, ts int64, fields map[string]interface{}) {
@@ -219,6 +254,9 @@ func (a *RadarAdapter) applyBed(cardID, bedPref, kind string, ts int64, fields m
 		Ts:          ts,
 		TriggerData: fields,
 	})
+	if a.presence != nil {
+		a.presence.SetRadar(bedPref, kind == "enter", ts)
+	}
 }
 
 func (a *RadarAdapter) routeRoomZoneType(roomPref string) ZoneType {

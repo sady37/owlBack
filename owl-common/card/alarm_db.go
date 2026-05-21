@@ -33,7 +33,7 @@ import (
 // AlarmInsertParams INSERT alarm_events 所需参数
 type AlarmInsertParams struct {
 	TenantID    string
-	DeviceID    string          // device_addr 字符串（IPv6 /128）
+	DeviceAddr  string          // IPv6 /128 canonical host text（device_ipv6 单程票）
 	EventType   string          // 映射 alarm_events.event_type
 	Category    string
 	AlarmLevel  string          // 字符串名（EMERG/ALERT/...）；写库前 normalize → SMALLINT
@@ -147,8 +147,8 @@ func snapshotForAlarm(ctx context.Context, db *sql.DB, addr netip.Addr) (alarmSn
 		LEFT JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
 		LEFT JOIN LATERAL (
 		  SELECT resident_id FROM cards
-		  WHERE x.addr <<= spatial_prefix AND is_active = true
-		  ORDER BY masklen(spatial_prefix) DESC
+		  WHERE x.addr <<= card_id
+		  ORDER BY masklen(card_id) DESC
 		  LIMIT 1
 		) c ON true
 		LEFT JOIN residents res ON res.resident_id = c.resident_id
@@ -208,14 +208,14 @@ func findActiveAlarmEventID(ctx context.Context, db *sql.DB, addr netip.Addr, ev
 //   5. cards 表无 counter 列；返回 QueryCardAlarmState 实时聚合
 //
 // cardID 仅作日志/snapshot 参考；不更新 cards 表（v2 无 counter 列）。
-// 入参 params.DeviceID 必须是 IPv6 /128 字符串（device_ipv6 单程票后唯一标识）。
+// 入参 params.DeviceAddr 必须是 IPv6 /128 canonical host text。
 func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, params AlarmInsertParams) (*AlarmInsertResult, *CardAlarmState, error) {
-	if params.DeviceID == "" {
-		return nil, nil, fmt.Errorf("device_id (addr) is required")
+	if params.DeviceAddr == "" {
+		return nil, nil, fmt.Errorf("device_addr is required")
 	}
-	addr, err := netip.ParseAddr(params.DeviceID)
+	addr, err := netip.ParseAddr(params.DeviceAddr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("device_id %q is not a valid IPv6: %w", params.DeviceID, err)
+		return nil, nil, fmt.Errorf("device_addr %q is not a valid IPv6: %w", params.DeviceAddr, err)
 	}
 	if params.EventType == "" {
 		return nil, nil, fmt.Errorf("event_type is required")
@@ -482,14 +482,14 @@ type AutoResolveResult struct {
 }
 
 // AutoResolveDeviceAlarms 设备恢复时批量 auto_resolved：device_addr + event_type ∈ alarmTypes + active。
-// 入参 deviceID 是 IPv6 /128 字符串。
-func AutoResolveDeviceAlarms(ctx context.Context, db *sql.DB, cardID, tenantID, deviceID string, alarmTypes []string) (*CardAlarmState, *AutoResolveResult, error) {
-	if deviceID == "" || len(alarmTypes) == 0 {
+// 入参 deviceAddr 是 IPv6 /128 canonical host text。
+func AutoResolveDeviceAlarms(ctx context.Context, db *sql.DB, cardID, tenantID, deviceAddr string, alarmTypes []string) (*CardAlarmState, *AutoResolveResult, error) {
+	if deviceAddr == "" || len(alarmTypes) == 0 {
 		return &CardAlarmState{}, &AutoResolveResult{}, nil
 	}
-	addr, err := netip.ParseAddr(deviceID)
+	addr, err := netip.ParseAddr(deviceAddr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("AutoResolveDeviceAlarms: device_id %q not IPv6: %w", deviceID, err)
+		return nil, nil, fmt.Errorf("AutoResolveDeviceAlarms: device_addr %q not IPv6: %w", deviceAddr, err)
 	}
 	// 先取 top（用于返回 TopEventId/TopAlarmLevel），再 UPDATE
 	res := &AutoResolveResult{}
@@ -530,14 +530,14 @@ func AutoResolveDeviceAlarms(ctx context.Context, db *sql.DB, cardID, tenantID, 
 	return cas, res, nil
 }
 
-// ExpireAlarmsByDeviceIDs 设备删除/解绑时把该 device 下所有 active alarm 标 expired。
-// deviceIDs 元素必须是 IPv6 /128 字符串（device_ipv6 单程票）。
-func ExpireAlarmsByDeviceIDs(ctx context.Context, db *sql.DB, tenantID string, deviceIDs []string, reason string) error {
-	if len(deviceIDs) == 0 {
+// ExpireAlarmsByDeviceAddrs 设备删除/解绑时把该 device 下所有 active alarm 标 expired。
+// deviceAddrs 元素是 IPv6 /128 canonical host text。
+func ExpireAlarmsByDeviceAddrs(ctx context.Context, db *sql.DB, tenantID string, deviceAddrs []string, reason string) error {
+	if len(deviceAddrs) == 0 {
 		return nil
 	}
-	addrs := make([]string, 0, len(deviceIDs))
-	for _, id := range deviceIDs {
+	addrs := make([]string, 0, len(deviceAddrs))
+	for _, id := range deviceAddrs {
 		if a, err := netip.ParseAddr(id); err == nil {
 			addrs = append(addrs, a.String())
 		}
@@ -560,12 +560,12 @@ func ExpireAlarmsByDeviceIDs(ctx context.Context, db *sql.DB, tenantID string, d
 	return nil
 }
 
-// ActiveAlarmRow alarm_events 单条 active 行（API 兼容）
+// ActiveAlarmRow alarm_events 单条 active 行
 type ActiveAlarmRow struct {
 	EventID     string
 	EventType   string
 	AlarmLevel  string
-	DeviceID    string // device_addr 字符串
+	DeviceAddr  string // IPv6 /128 canonical host text
 	TriggeredAt int64  // ms
 }
 
@@ -597,7 +597,7 @@ func GetActiveAlarmsByCardID(ctx context.Context, db *sql.DB, cardID string) ([]
 	for rows.Next() {
 		var a ActiveAlarmRow
 		var lvl int16
-		if err := rows.Scan(&a.EventID, &a.EventType, &lvl, &a.DeviceID, &a.TriggeredAt); err != nil {
+		if err := rows.Scan(&a.EventID, &a.EventType, &lvl, &a.DeviceAddr, &a.TriggeredAt); err != nil {
 			return nil, fmt.Errorf("scan alarm row: %w", err)
 		}
 		a.AlarmLevel = intToAlarmLevelStr(lvl)
@@ -639,7 +639,7 @@ func ListAllActiveAlarms(ctx context.Context, db *sql.DB, tenantID string) ([]Al
 	for rows.Next() {
 		var a AlarmWithCardInfo
 		var lvl int16
-		if err := rows.Scan(&a.CardID, &a.EventID, &a.EventType, &lvl, &a.DeviceID, &a.TriggeredAt); err != nil {
+		if err := rows.Scan(&a.CardID, &a.EventID, &a.EventType, &lvl, &a.DeviceAddr, &a.TriggeredAt); err != nil {
 			return nil, fmt.Errorf("scan alarm row: %w", err)
 		}
 		a.AlarmLevel = intToAlarmLevelStr(lvl)

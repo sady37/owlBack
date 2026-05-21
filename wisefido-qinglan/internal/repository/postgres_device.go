@@ -15,12 +15,11 @@ import (
 
 // PostgresDeviceRepository 设备 Repository 的 PostgreSQL 实现（v2）
 //
-// v2 数据源（详 owlRD/dbv2/21_device_factory_meta.sql / 22_device_runtime_state.sql / 23_devices.sql）：
-//   - device_factory_meta (dfm)：出厂元数据（不变）device_uid/device_type/device_model/imei/comm_mode/mcu_model
-//   - device_runtime_state (drs)：运行时（高频 UPDATE）online/firmware_version/sensor_detached/rssi
+// v2.5 数据源（详 owlRD/dbv2/21_device_factory_meta.sql / 23_devices.sql；drs 已退役）：
+//   - device_factory_meta (dfm)：出厂元数据 + firmware_version；device_uid/device_type/device_model/imei/comm_mode/mcu_model
 //   - devices (d)：业务绑定（PK = device_ipv6 INET /128） access/monitoring_enabled
 //
-// 1:1 关系（device_id UUID 三表 join）；UID/Type 永远来自 dfm；online/firmware 来自 drs。
+// 1:1 关系（device_id UUID 双表 join）；online 走 Redis device:status:{ipv6}（cardagg 维护）。
 type PostgresDeviceRepository struct {
 	db              *sql.DB
 	enablementCache *sync.Map // legacy 缓存槽位（v2 spatial_config 迁移后可移除）
@@ -40,7 +39,8 @@ var _ DeviceRepository = (*PostgresDeviceRepository)(nil)
 // 自动注册的未授权设备落入此池，待 platform_admin 调拨。
 const systemTenantPrefix = "fd00:0:1::/48"
 
-// deviceSelectV2 v2 三表 join 的标准列出参顺序；scanDeviceRow 与之配对。
+// deviceSelectV2 v2.5 双表 join 标准列出参顺序；scanDeviceRow 与之配对。
+// drs 已退役 — online status SQL 层占位 'offline'，service 层用 Redis device:status:{ipv6} 覆盖。
 const deviceSelectV2 = `
 		dfm.device_id::text                                              AS device_id,
 		dfm.device_uid                                                    AS device_uid,
@@ -53,7 +53,7 @@ const deviceSelectV2 = `
 		CASE WHEN d.device_ipv6 IS NOT NULL
 		     THEN host(network(set_masklen(d.device_ipv6, 96))) || '/96'
 		     ELSE NULL END                                                AS bound_bed_id,
-		CASE WHEN COALESCE(drs.online, false) THEN 'online' ELSE 'offline' END AS status,
+		'offline'::text                                                   AS status,
 		COALESCE(d.access, false)                                          AS access,
 		COALESCE(d.monitoring_enabled, false)                              AS monitoring_enabled,
 		dfm.device_type::text                                              AS device_type,
@@ -61,10 +61,9 @@ const deviceSelectV2 = `
 		dfm.imei                                                           AS imei,
 		dfm.comm_mode                                                      AS comm_mode,
 		dfm.mcu_model                                                      AS mcu_model,
-		drs.firmware_version                                               AS firmware_version
+		dfm.firmware_version                                               AS firmware_version
 	FROM device_factory_meta dfm
-	LEFT JOIN devices d ON d.device_id = dfm.device_id
-	LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id`
+	LEFT JOIN devices d ON d.device_id = dfm.device_id`
 
 // scanDeviceRow 与 deviceSelectV2 列序对齐的 scan helper
 func scanDeviceRow(row interface {
@@ -143,14 +142,13 @@ func (r *PostgresDeviceRepository) UpdateDeviceMonitoring(ctx context.Context, u
 	return nil
 }
 
-// GetDeviceProperties v2：firmware_version / sensor_detached 等 drs 字段；不再有 JSONB metadata
+// GetDeviceProperties v2.5：firmware_version 已迁到 dfm；返回 dfm 列即可。
 //
-// 兼容 v1 调用：返回 drs.firmware_version 等已知键；未知键返回 nil。
+// 兼容 v1 调用：返回已知键；未知键返回 nil。
 func (r *PostgresDeviceRepository) GetDeviceProperties(ctx context.Context, uid string, keys []string) (map[string]interface{}, error) {
 	query := `
-		SELECT drs.firmware_version, dfm.mcu_model, dfm.device_model, dfm.imei, dfm.comm_mode
+		SELECT dfm.firmware_version, dfm.mcu_model, dfm.device_model, dfm.imei, dfm.comm_mode
 		FROM device_factory_meta dfm
-		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		WHERE dfm.device_uid = $1
 		LIMIT 1`
 	var fw, mcuModel, deviceModel, imei, commMode sql.NullString
@@ -179,14 +177,13 @@ func (r *PostgresDeviceRepository) GetDeviceProperties(ctx context.Context, uid 
 	return out, nil
 }
 
-// SetDeviceProperties v2：写 device_runtime_state（firmware_version 等）
+// SetDeviceProperties v2.5：firmware_version 写 device_factory_meta（drs 已退役）。
 //
-// v1 把任意 JSON 写 devices.metadata；v2 不再有该列。已知键写 drs，未知键忽略并 warn。
+// v1 把任意 JSON 写 devices.metadata；v2 不再有该列。已知键写 dfm，未知键忽略并 warn。
 func (r *PostgresDeviceRepository) SetDeviceProperties(ctx context.Context, uid string, properties map[string]interface{}) error {
 	if len(properties) == 0 {
 		return nil
 	}
-	// 解析支持的键
 	var fw sql.NullString
 	for k, v := range properties {
 		s, ok := v.(string)
@@ -196,23 +193,15 @@ func (r *PostgresDeviceRepository) SetDeviceProperties(ctx context.Context, uid 
 		if k == "firmware_version" {
 			fw = sql.NullString{String: s, Valid: true}
 		}
-		// 其它键暂不持久化（mcu_model/imei/comm_mode/device_model 由 device_factory_meta 出厂时写入）
 	}
 	if !fw.Valid {
-		// 没有 v2 持久化字段需要更新，noop
 		return nil
 	}
-	// UPSERT device_runtime_state
-	query := `
-		INSERT INTO device_runtime_state (device_id, firmware_version, updated_at)
-		SELECT dfm.device_id, $2, NOW()
-		FROM device_factory_meta dfm
-		WHERE dfm.device_uid = $1
-		ON CONFLICT (device_id) DO UPDATE
-		SET firmware_version = EXCLUDED.firmware_version, updated_at = NOW()`
-	result, err := r.db.ExecContext(ctx, query, uid, fw.String)
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE device_factory_meta SET firmware_version = $2 WHERE device_uid = $1`,
+		uid, fw.String)
 	if err != nil {
-		return fmt.Errorf("failed to upsert device runtime state: %w", err)
+		return fmt.Errorf("failed to update dfm firmware_version: %w", err)
 	}
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
@@ -234,11 +223,10 @@ func (r *PostgresDeviceRepository) GetAllDeviceStoreInfo(ctx context.Context) ([
 		  dfm.imei,
 		  dfm.comm_mode,
 		  dfm.mcu_model,
-		  drs.firmware_version,
+		  dfm.firmware_version,
 		  COALESCE(host(network(set_masklen(d.device_ipv6, 48))), 'fd00:0:1::') AS tenant_id,
 		  COALESCE(d.access, false) AS access
 		FROM device_factory_meta dfm
-		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d ON d.device_id = dfm.device_id`
 	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
@@ -421,13 +409,8 @@ func (r *PostgresDeviceRepository) SearchDevices(ctx context.Context, criteria m
 		args = append(args, prefix)
 		argIdx++
 	}
-	if status, ok := criteria["status"].(string); ok && status != "" {
-		if status == "online" {
-			whereClauses = append(whereClauses, "COALESCE(drs.online, false) = true")
-		} else if status == "offline" {
-			whereClauses = append(whereClauses, "COALESCE(drs.online, false) = false")
-		}
-	}
+	// v2.5: status filter 在 SQL 层取消（drs.online 列删；status 在 Redis）；caller 想按 status 过滤自己加 Redis 后处理
+	_ = criteria["status"]
 	if businessAccess, ok := criteria["business_access"].(string); ok && businessAccess != "" {
 		approved := businessAccess == "approved" || businessAccess == "enable"
 		whereClauses = append(whereClauses, fmt.Sprintf("COALESCE(d.access, false) = $%d", argIdx))
@@ -480,7 +463,8 @@ func (r *PostgresDeviceRepository) SearchDevices(ctx context.Context, criteria m
 	return devices, nil
 }
 
-// CountDevicesByStatus v2：按 tenant /48 prefix 聚合 drs.online → "online"/"offline"
+// CountDevicesByStatus v2.5：按 tenant /48 prefix 聚合 — online status 在 Redis 不在 SQL；
+// 此 SQL 路径退化为返回 {"offline": <total>}；caller 需 Redis 统计真 online 数请自行实现。
 func (r *PostgresDeviceRepository) CountDevicesByStatus(ctx context.Context, tenantID string) (map[string]int, error) {
 	if !strings.Contains(tenantID, ":") {
 		return map[string]int{}, nil
@@ -490,11 +474,9 @@ func (r *PostgresDeviceRepository) CountDevicesByStatus(ctx context.Context, ten
 		prefix = prefix + "/48"
 	}
 	query := `
-		SELECT CASE WHEN COALESCE(drs.online, false) THEN 'online' ELSE 'offline' END AS status,
-		       COUNT(*) AS count
+		SELECT 'offline'::text AS status, COUNT(*) AS count
 		FROM devices d
 		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		LEFT JOIN device_runtime_state drs ON drs.device_id = d.device_id
 		WHERE d.device_ipv6 <<= $1::INET
 		GROUP BY 1`
 	rows, err := r.db.QueryContext(ctx, query, prefix)
@@ -533,12 +515,11 @@ func (r *PostgresDeviceRepository) GetDeviceStoreInfo(ctx context.Context, devic
 		  dfm.imei,
 		  dfm.comm_mode,
 		  dfm.mcu_model,
-		  drs.firmware_version,
+		  dfm.firmware_version,
 		  COALESCE(host(network(set_masklen(d.device_ipv6, 48))) || '/48', 'fd00:0:1::/48') AS tenant_pref,
 		  COALESCE(d.access, false) AS access,
 		  host(d.device_ipv6)::text AS device_addr
 		FROM device_factory_meta dfm
-		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d ON d.device_id = dfm.device_id
 		WHERE dfm.device_uid = $1
 		LIMIT 1`
@@ -583,12 +564,11 @@ func (r *PostgresDeviceRepository) GetDeviceStoreByDeviceID(ctx context.Context,
 		  dfm.imei,
 		  dfm.comm_mode,
 		  dfm.mcu_model,
-		  drs.firmware_version,
+		  dfm.firmware_version,
 		  COALESCE(host(network(set_masklen(d.device_ipv6, 48))) || '/48', 'fd00:0:1::/48') AS tenant_pref,
 		  COALESCE(d.access, false) AS access,
 		  host(d.device_ipv6)::text AS device_addr
 		FROM device_factory_meta dfm
-		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d ON d.device_id = dfm.device_id
 		WHERE dfm.device_id = $1::uuid
 		LIMIT 1`

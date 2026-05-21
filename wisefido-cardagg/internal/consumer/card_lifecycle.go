@@ -17,11 +17,12 @@ import (
 )
 
 type cardChangeData struct {
-	CardID   string `json:"card_id"`
-	Op       string `json:"op"`
-	TenantID string `json:"tenant_id"`
-	UnitID   string `json:"unit_id"`
-	BranchID string `json:"branch_id"`
+	CardID              string   `json:"card_id"`
+	Op                  string   `json:"op"`
+	TenantID            string   `json:"tenant_id"`
+	UnitID              string   `json:"unit_id"`
+	BranchID            string   `json:"branch_id"`
+	AffectedDeviceAddrs []string `json:"affected_device_addrs"` // wisefido-data publisher 在 tx commit 后 LPM 查得；consumer 不再二次查 DB
 }
 
 type CardLifecycle struct {
@@ -105,11 +106,12 @@ func (h *CardLifecycle) Handle(ctx context.Context, raw map[string]interface{}) 
 
 	if d.UnitID != "" {
 		h.metaCache.InvalidateCardsInTenantUnit(ctx, d.UnitID)
-		addrs := service.DeviceAddrsInUnit(ctx, h.db, d.UnitID)
-		h.enablement.InvalidateDevices(addrs)
 		if h.picker != nil {
 			h.picker.InvalidateUnit(d.UnitID)
 		}
+	}
+	if len(d.AffectedDeviceAddrs) > 0 {
+		h.enablement.InvalidateDevices(d.AffectedDeviceAddrs)
 	}
 
 	// card 改/增 → 刷新 AlarmState（实时聚合 alarm_events 写 card:status）

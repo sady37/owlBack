@@ -16,6 +16,13 @@ type Config struct {
 	Logging commonconfig.LogConfig      `yaml:"logging"`
 	Streams commonconfig.StreamsConfig  `yaml:"streams"`
 	AI      AIConfig                    `yaml:"ai"`
+	Display DisplayConfig               `yaml:"display"`
+}
+
+// DisplayConfig — display 重建周期。事件触发是主路径；本 ticker 是兜底，避免长时间
+// 无 state 变化的卡跨重启 stale。默认 300s（生产）；dev 可调低加速验证。
+type DisplayConfig struct {
+	RebuildIntervalSec int `yaml:"rebuild_interval_sec"`
 }
 
 // AIConfig — AI 派生 verdict 合并行为配置。
@@ -108,6 +115,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.AI.OverrideTTLSec <= 0 {
 		c.AI.OverrideTTLSec = 60
+	}
+	if c.Display.RebuildIntervalSec <= 0 {
+		c.Display.RebuildIntervalSec = 300 // 5 分钟
 	}
 }
 

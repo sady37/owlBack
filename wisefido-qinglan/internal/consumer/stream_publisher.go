@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"owl-common/card"
 	rediscommon "owl-common/redis"
 	"wisefido-qinglan/internal/config"
 
@@ -18,28 +17,19 @@ import (
 )
 
 
-// CardMappingService 定义卡片映射服务接口（避免导入循环）。
-//
-// device_ipv6 单程票：DeviceBaseline.DeviceAddr 是路由层主键。
-type CardMappingService interface {
-	GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*card.DeviceBaseline, error)
-	BaselineFor(deviceUID string) (card.DeviceBaseline, bool)
-}
-
 // StreamPublisher Redis Stream 发布器。
 //
-// device_ipv6 单程票后所有 publish 路径只发 device_addr / subject_entity / category；
-// 不再写 device_id/device_uid/tenant_id/semantic_location 等冗余字段。
+// device_ipv6 单程票后所有 publish 路径只发 device_addr / category；subject_entity 永远空，
+// 由 cardagg IotPreparedHandler 按 device_addr LPM 反查解析（R-009 单源真相）。
 //
 // seqCounter: 协议层北极星 (TDPv2 envelope sequence_number) — publisher 内单调 monotonic uint64，
 // 每条消息自增；下游 sensor 派生 verdict 时把"触发的 source msg seq" 写入 evidence
 // （reasoning trace 链 = qinglan envelope.seq → sensor verdict.evidence.trigger_seq_num）。
 type StreamPublisher struct {
-	redisClient    *redis.Client
-	config         *config.Config
-	cardMappingSvc CardMappingService
-	logger         *zap.Logger
-	seqCounter     atomic.Uint64
+	redisClient *redis.Client
+	config      *config.Config
+	logger      *zap.Logger
+	seqCounter  atomic.Uint64
 }
 
 // NewStreamPublisher 创建 Stream 发布器。
@@ -48,21 +38,6 @@ func NewStreamPublisher(redisClient *redis.Client, cfg *config.Config) *StreamPu
 		redisClient: redisClient,
 		config:      cfg,
 	}
-}
-
-// SetCardMappingService 设置卡片映射服务（用于查询 deviceUID → baseline）。
-func (p *StreamPublisher) SetCardMappingService(cardMappingSvc CardMappingService) {
-	p.cardMappingSvc = cardMappingSvc
-}
-
-// GetCardID 获取设备的 cardID（INET CIDR text）。
-func (p *StreamPublisher) GetCardID(ctx context.Context, deviceUID string) string {
-	if p.cardMappingSvc != nil && deviceUID != "" {
-		if cdi, err := p.cardMappingSvc.GetCardIDByDeviceUID(ctx, deviceUID); err == nil && cdi != nil {
-			return cdi.CardID
-		}
-	}
-	return ""
 }
 
 // PublishMonitor sends a redis.StreamMessage to iot:monitor:stream.
@@ -212,22 +187,17 @@ func iotStreamMessageToMap(msg rediscommon.IoTStreamMessage) map[string]interfac
 // PublishDeviceStatus 发布设备状态到 iot:event:stream（device 属于 event）。
 //
 // device_ipv6 单程票：addr 是路由主键；deviceUID 仅作 cardID 反查用。
-// subject 已绑=card_id；未绑=空（cardagg IotPreparedHandler LPM 反查兜底）。
+// subject_entity 永远空：cardagg IotPreparedHandler 按 device_addr LPM 反查解析。
 func (p *StreamPublisher) PublishDeviceStatus(
 	ctx context.Context,
 	addr netip.Addr,
 	deviceUID, deviceType string,
 	statuses map[string]int,
 ) error {
-	cardID := ""
-	if p.cardMappingSvc != nil && deviceUID != "" {
-		if cdi, err := p.cardMappingSvc.GetCardIDByDeviceUID(ctx, deviceUID); err == nil && cdi != nil {
-			cardID = cdi.CardID
-		}
-	}
+	_ = deviceUID
 	msg := rediscommon.BuildDeviceStatusMessage(
 		addr,
-		cardID, // unbound device → 空，cardagg 反查 (R-009 不再 deviceID 占位)
+		"",
 		deviceType,
 		time.Now().UnixMilli(),
 		statuses,

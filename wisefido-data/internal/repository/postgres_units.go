@@ -4,9 +4,9 @@ package repository
 //
 // v2 schema 不向后兼容（IPv6 prefix 派生取代 UUID 多 FK）：
 //   - buildings 表已删 → 并入 sites（site_slot = building<<4 | floor，IPv6 /64）
-//   - units 表用 spatial_prefix /80 PK；父级 sites /64 通过 prefix-match + trigger 校验
-//   - rooms 表用 spatial_prefix /88 PK；父级 unit /80
-//   - beds 表用 spatial_prefix /96 PK；父级 room /88
+//   - units.unit_id INET /80 PK；父级 sites /64 通过 prefix-match + trigger 校验
+//   - rooms.room_id INET /88 PK；父级 unit /80
+//   - beds.bed_id   INET /96 PK；父级 room /88
 //   - 删除 trigger 不级联，删 site/unit 之前必须先删下游
 //
 // 兼容策略：UnitsRepository interface 不变；domain.Building/Unit/Room/Bed 字段不动；

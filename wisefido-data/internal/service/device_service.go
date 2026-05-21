@@ -206,10 +206,10 @@ func FillDeviceStatusFromCardagg(ctx context.Context, stateReader *card.Reader, 
 	if len(ids) == 0 {
 		return make(map[string]*card.DeviceStatus)
 	}
-	devStatusBatch, err := stateReader.ReadDeviceStatusByDeviceIDs(ctx, ids)
+	devStatusBatch, err := stateReader.ReadDeviceStatusByDeviceAddrs(ctx, ids)
 	if err != nil {
 		if logger != nil {
-			logger.Warn("FillDeviceStatusFromCardagg: ReadDeviceStatusByDeviceIDs failed", zap.Error(err))
+			logger.Warn("FillDeviceStatusFromCardagg: ReadDeviceStatusByDeviceAddrs failed", zap.Error(err))
 		}
 		return make(map[string]*card.DeviceStatus)
 	}

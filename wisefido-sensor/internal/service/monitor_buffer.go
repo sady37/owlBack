@@ -17,8 +17,9 @@ type TrackBuffer struct {
 }
 
 type DeviceBuffer struct {
-	Tracks map[string]*TrackBuffer // track_id 字符串, e.g. "0"~"11"（88 不入库）
-	LastTs int64                   // ms, 该 device 下任意 track 最大 LastTs，用于 device 级在线判定
+	Tracks     map[string]*TrackBuffer // track_id 字符串, e.g. "0"~"11"（88 不入库）
+	LastTs     int64                   // ms, 该 device 下任意 track 最大 LastTs，用于 device 级在线判定
+	DeviceType string                  // "Radar" / "Sleepad" / "SleepPad" — 用于下游过滤（sustain 只信 sleepad）
 }
 
 type CardBuffer struct {
@@ -44,7 +45,10 @@ const DefaultTrackID = "0"
 
 // Write updates fields for a card:device:track. Only fields present in the
 // incoming map are touched; each field gets the message timestamp.
-func (b *MonitorBuffer) Write(cardID, deviceID, trackID string, fields map[string]any, ts int64) {
+//
+// deviceType 可空（兼容旧 caller / 测试），传入时记录到 DeviceBuffer 供下游 vital_source
+// 等按 device_type 过滤（如 "sleepad" 才作 bed sustain，"radar" 不作）。
+func (b *MonitorBuffer) Write(cardID, deviceID, deviceType, trackID string, fields map[string]any, ts int64) {
 	if cardID == "" || deviceID == "" || len(fields) == 0 {
 		return
 	}
@@ -66,6 +70,9 @@ func (b *MonitorBuffer) Write(cardID, deviceID, trackID string, fields map[strin
 		db = &DeviceBuffer{Tracks: make(map[string]*TrackBuffer)}
 		cb.Devices[deviceID] = db
 	}
+	if deviceType != "" {
+		db.DeviceType = deviceType
+	}
 
 	tb := db.Tracks[trackID]
 	if tb == nil {
@@ -86,9 +93,10 @@ func (b *MonitorBuffer) Write(cardID, deviceID, trackID string, fields map[strin
 
 // DeviceSnapshot is the flush output for one device: per-track fields (track_id -> fields+ts).
 type DeviceSnapshot struct {
-	DeviceID  string // 业务主 key（与 buffer key 一致）
-	DeviceUID string // 仅 log 等用
-	Tracks    map[string]map[string]any // track_id -> { ...fields..., "ts": maxTs }
+	DeviceID   string                    // 业务主 key（与 buffer key 一致）
+	DeviceUID  string                    // 仅 log 等用
+	DeviceType string                    // "Radar" / "Sleepad" / "SleepPad" — vital_source 用于 sustain 过滤
+	Tracks     map[string]map[string]any // track_id -> { ...fields..., "ts": maxTs }
 }
 
 // CardSnapshot is the flush output for one card.
@@ -145,7 +153,7 @@ func (b *MonitorBuffer) SnapshotCard(cardID string) *CardSnapshot {
 		if len(tracks) == 0 {
 			continue
 		}
-		devSnaps = append(devSnaps, DeviceSnapshot{DeviceID: devID, DeviceUID: devID, Tracks: tracks})
+		devSnaps = append(devSnaps, DeviceSnapshot{DeviceID: devID, DeviceUID: devID, DeviceType: db.DeviceType, Tracks: tracks})
 	}
 	if len(devSnaps) == 0 {
 		return nil
@@ -183,7 +191,7 @@ func (b *MonitorBuffer) flushLocked(nowMs int64) []CardSnapshot {
 			if len(tracks) == 0 {
 				continue
 			}
-			devSnaps = append(devSnaps, DeviceSnapshot{DeviceID: devID, DeviceUID: devID, Tracks: tracks})
+			devSnaps = append(devSnaps, DeviceSnapshot{DeviceID: devID, DeviceUID: devID, DeviceType: db.DeviceType, Tracks: tracks})
 		}
 		if len(devSnaps) > 0 {
 			result = append(result, CardSnapshot{CardID: cardID, Devices: devSnaps})

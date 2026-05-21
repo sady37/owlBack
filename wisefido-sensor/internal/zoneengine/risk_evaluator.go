@@ -71,14 +71,14 @@ func isNightTime(nowMs int64, loc *time.Location) bool {
 // 退化为永远不触发（与挪动前 RoomState.StandingContinuousMin 无 writer 的真实行为一致）。
 // cardagg 端 TargetMerger 合并后 max(devices) 可派生卡视图 standing，但 sensor 本评估在卡视图
 // 之前——若未来需要 standing-driven risk，应由 cardagg 二次评估覆盖 RiskLevel。
-func EvaluateRoomRiskLevel(rs *card.RoomState, standingMin int, nowMs int64, loc *time.Location) int {
+func EvaluateRoomRiskLevel(rs *card.RoomState, roomType int, standingMin int, nowMs int64, loc *time.Location) int {
 	if rs == nil || rs.TotalPeople <= 0 {
 		return card.RiskNormal
 	}
 	isNight := isNightTime(nowMs, loc)
 	multi := rs.TotalPeople >= 2
 
-	if rs.RoomType == card.RoomTypeBathroom {
+	if roomType == card.RoomTypeBathroom {
 		if multi {
 			return card.RiskNormal
 		}
@@ -88,18 +88,23 @@ func EvaluateRoomRiskLevel(rs *card.RoomState, standingMin int, nowMs int64, loc
 		if standingMin >= 5 {
 			return card.RiskAttention
 		}
+		// 独居时长（state-change-anchored）：仅在 AloneSinceTs > 0 时计算，避免 0 anchor 算出 huge 值
+		aloneSec := 0
+		if rs.AloneSinceTs > 0 && nowMs >= rs.AloneSinceTs {
+			aloneSec = int((nowMs - rs.AloneSinceTs) / 1000)
+		}
 		if isNight {
-			if rs.StaySec >= 30*60 {
+			if aloneSec >= 30*60 {
 				return card.RiskRisk
 			}
-			if rs.StaySec >= 20*60 {
+			if aloneSec >= 20*60 {
 				return card.RiskAttention
 			}
 		} else {
-			if rs.StaySec >= 45*60 {
+			if aloneSec >= 45*60 {
 				return card.RiskRisk
 			}
-			if rs.StaySec >= 30*60 {
+			if aloneSec >= 30*60 {
 				return card.RiskAttention
 			}
 		}

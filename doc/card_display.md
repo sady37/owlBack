@@ -14,7 +14,7 @@
 │ Section1.down.left        Section1.down.right│
 │ active_room/"WholeUnit"   alarmEvent 简称    │
 ├──────────────────────────────────────────────┤
-│ Section2.left   Section2.middle  Section2.right│
+│ Section2.left   Section2.center  Section2.right│
 │ Status 区        Vital 区          Posture 区  │
 │ sleepstage 或    HR/BR             前 3 + badge│
 │ RoomStatus       (仅 bed_id!=null) PoseDisplay │
@@ -36,9 +36,9 @@
 | Section1.up.left (unit + card_name) | `cards` 表 + `residents` JOIN（静态） | wisefido-data card_static API | 否 |
 | Section1.up.right (alarmBell 颜色) | `alarm_state.active_emerg/alert/crit/err/warning` 计数器 | AlarmRouter | 否 |
 | Section1.down.left (active room 名) | FE 业务侧自决（card.bed_id == null 时） | — | 否 |
-| Section1.down.right (alarmEvent 简称) | `alarm_state.pop_alarm`（FE 查 `alarm.GetAlarmDisplayName`） | AlarmRouter | 否 |
+| Section1.down.right (alarmEvent 简称，**仅 app 紧凑布局**) | `alarm_state.pop_alarm`（FE 查 `alarm.GetAlarmDisplayName`） | AlarmRouter | 否 |
 | Section2.left (icon + badge) | display 内 `section2_left_mode` + `bed_status` + `sleep_stage` + `room_*` 字段族 | UnitPicker (/80) / SensorStateProjector (leaf) | **是** |
-| Section2.middle (HR / BR) | realtime stream | wisefido-data realtime SSE | 否 |
+| Section2.center (HR / BR) | realtime stream | wisefido-data realtime SSE | 否 |
 | Section2.right (postures) | realtime stream | wisefido-data realtime SSE | 否 |
 | Section3.up.left (ActiveState + Time) | display.`active_state` + `active_anchor_ms` | UnitPicker / SensorStateProjector | **是** |
 | Section3.up.right (SceneState + Time) | display.`scene_state` + `scene_anchor_ms` | UnitPicker / SensorStateProjector | **是** |
@@ -49,6 +49,7 @@
 - `display` 是 FE 渲染的唯一契约
 - `alarm_state` 由 AlarmRouter 独立写，不进 display
 - `room_state` / `bed_state` / `target` 是 BE 内部 state，**FE Overview 不直接消费**（Detail / RadarCanvas 等诊断视图另走专属 API）
+- **alarm 短名 UI 位置**：app（空间紧）渲染在 Section1.down.right header 行内；web（Overview 卡片）渲染在卡片底部 actionable 浮条（红/黄背景 + Handle 按钮），数据源都是 alarm record 派生，不进 display
 
 ## 3. CardDisplay struct 字段表
 
@@ -62,16 +63,76 @@
 |---|---|---|---|
 | `UpdatedAt` | `updated_at` | int64 (unix ms) | 写入时取 `time.Now().UnixMilli()` |
 
-### 3.2 Section2.left（status 区）
+### 3.2 Section2.left（Status 区）
+
+**渲染契约（铁律）**：Section2.left **永远渲染**——layout §1 三栏永远三栏存在；空 fallback 也要有 icon（不能空白）。
+
+**核心字段 `card_priority`**（2026-05-20 重构）：BE 把多字段（risk_level / room_icon_kind / room_person_count / bed_status / stay_alarm_enabled）压成单 int 标量；FE 单 switch 派生 icon，/80 UnitPicker `MAX(child.card_priority)` 挑 winner。
+
+| 值 | 常量 | 场景 | FE icon |
+|---|---|---|---|
+| 0 | `CardPriorityEmpty` | room 内无人，无 bed 设备 | `room-gray.svg` |
+| 1 | `CardPriorityRoomNormal` | 非 bathroom 非 bed 房间 + stay_alarm 启用 + 有人 | `room-green.svg` |
+| 2 | `CardPriorityBedInUse` | hasBed（有 bed 设备） | bed_status=0 → sleep_stage 变体 (awake/light/deep/Analysing)；=1 → `outofbed.svg` |
+| 3 | `CardPriorityBathroomNormal` | bathroom 有人，无 risk | `bathroom-green.svg` |
+| 4 | `CardPriorityRoomAttention` | 非 bathroom risk=2 | `room-yellow.svg` |
+| 5 | `CardPriorityBathroomAttention` | bathroom risk=2 | `bathroom-yellow.svg` |
+| 6 | `CardPriorityRoomRisk` | 非 bathroom risk=3 | `room-red.svg` |
+| 7 | `CardPriorityBathroomRisk` | bathroom risk=3 | `bathroom-red.svg` |
+
+**BE 派生算法**（`pickCardPriority` in `card_display_builder.go`）：
+
+```
+isBath = room_icon_kind == Bathroom
+count  = room_person_count
+risk   = room_risk_level
+hasBed = CardMeta.HasBed()  // 卡 device 列表中任一 Sleepad → true
+                           // ⚠ 不是"bed_state 是否存在于 Redis"——空床久了 sensor 不再 emit
+                           //   bed_state，但卡"有床"事实不变
+
+if count > 0 and risk >= 3:   return isBath ? 7 : 6
+if count > 0 and risk == 2:   return isBath ? 5 : 4
+if isBath and count > 0:      return 3
+if hasBed:                    return 2
+if count > 0 and stay_alarm:  return 1
+return 0
+```
+
+**Risk_level=1 (Muted)** 当前与 risk=0 同档；如需 muted-specific icon 后续扩展用 value 0/1 之间或独立字段。
 
 | 字段 | JSON | 类型 | 取值方式 |
 |---|---|---|---|
 | `Section2LeftMode` | `section2_left_mode` | int | `0`=None / `1`=SleepStage / `2`=RoomStatus，picker 算法见 §4.1 |
-| `BedStatus` | `bed_status` | int | `0`=InBed / `1`=NotInBed / `8`=Unknown；直接 copy `bs.bed_status`；FE 仅在 `CardStatic.bed_id != null` 时消费 |
+| `BedStatus` | `bed_status` | *int | `*0`=InBed / `*1`=NotInBed / `nil`=未知/不适用（无 bed 设备）；bedHas 时 `&bs.bed_status`；与 `observation/track.go` 同 *int 惯例（nil=未知，0/1 一律序列化）|
 | `SleepStage` | `sleep_stage` | int | `0/1/2/4/8`（复用 owl-common `SleepStage*`）；mode=SleepStage AND BedStatus=0 时 = `bs.sleep_stage` |
 | `RoomPersonCount` | `room_person_count` | int | mode=RoomStatus 时 = `rs.total_people`（右上角 badge）|
 | `RoomIconKind` | `room_icon_kind` | int | `0`=Room / `1`=Bathroom；按 `rs.kind == "bathroom"` 决定 |
 | `RoomRiskLevel` | `room_risk_level` | int | mode=RoomStatus 时 = `rs.risk_level`（0/1/2/3，由 sensor `risk_evaluator.go` 算）|
+| `StayAlarmEnabled` | `stay_alarm_enabled` | bool | 房间是否启用 stay-time / standing 类长时长 alarm；roomHas 时由 cardagg 从 alarm_enablement 派生 |
+
+### 3.2b Section2.center（Vital 区）
+
+**渲染契约**：仅在卡有 vital-capable 设备（`cardHasVitalDevice` = devices 含 Sleepad 或 Radar，两类都能送 HR/BR）时渲染；无设备卡此区**消失**，空间让给 Section2.right。
+
+**分支**（仅 2 种状态，v1 视觉一致）：
+
+| 条件 | 显示 |
+|---|---|
+| 有 Sleepad + `bed_status = 1` (离床) | "Not In Bed" 文本 |
+| 其它（在床 / undefined / Radar-only） | Vital：HR 图标 + 数字 + BR 图标 + 数字。无值时 `getHeartImgUrl(0)` 返灰色图、数字显 `--` |
+
+**数据源**：HR/BR 来自 realtime SSE（owl-data wisefido-data，**不进 display**）；`bed_status` 来自 `display.bed_status`。
+
+### 3.2c Section2.right（Posture 区）
+
+**渲染契约**：永远渲染；无床卡时占用 Section2.center 让出的空间。
+
+**内容**：
+- **人数** badge（来自 realtime stream 派生，**不进 display**）
+- **最多 3 个 posture icon**（前 3 + "+N" 角标表示溢出）
+- **优先级**：高风险 posture 排前面（复用现有 `PoseDisplayPriority`）
+
+**数据源**：postures 全部来自 realtime SSE，**不进 display**。
 
 ### 3.3 Section3.up.left（ActiveState）
 
@@ -530,14 +591,14 @@ type TargetState struct {
 | LastActive offline 过滤（`DeviceStatusTracker.IsOnline` 注入）| ✅ 2026-05-19 |
 | Standing 双重过滤（offline + 2min UpdatedAt staleness）| ✅ 2026-05-19 |
 | Visitor-v2 bed-bound radar 路径（Share unit 解锁；`BedPeopleTracker` + `EventHandler` 订阅 iot:event:stream NumberPeople + `VisitorDeriver` 双路径）| ✅ 2026-05-19 |
+| `CardDisplay.BedAnchorMs` 字段 + builder 填 `bs.start_time`（FE Section3.down VisitorState=None 时 fallback 渲 InBed/LeftBed Xm）| ✅ 2026-05-19 |
 
 ### 9.2 待做（Step2）
 
 | 项 | 内容 |
 |---|---|
-| FE 横条 | `CardDisplay.VitalTrendLevel int` 字段 + `card_display_builder` 派生 30/60/80 阈值 |
-| Section3.down 布局拆 left/right | doc §1 ASCII + §3.5 更新 |
 | WeakBio merger staleness | offline + 30min UpdatedAt（贴 sensor 滑窗）|
+| FE 切换 dumb renderer | Overview.vue Section2/3 改读 display 字段；删 N Person + 自维护 winner picker（详 [[card_display_fe_cutover]]）|
 
 ### 9.3 Follow-up backlog
 

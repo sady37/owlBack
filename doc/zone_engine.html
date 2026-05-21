@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Zone Engine 业务逻辑设计 v2</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'default', flowchart: { useMaxWidth: false, htmlLabels: true } });
+</script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1200px; margin: 24px auto; padding: 0 20px; color: #222; line-height: 1.6; }
+  h1 { border-bottom: 3px solid #116876; padding-bottom: 8px; }
+  h2 { color: #116876; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin-top: 32px; }
+  h3 { color: #444; }
+  .meta { background: #f5f5f5; border-left: 4px solid #116876; padding: 12px 16px; margin: 16px 0; font-size: 14px; }
+  .mermaid { background: #fafafa; border: 1px solid #e0e0e0; padding: 16px; margin: 16px 0; border-radius: 4px; text-align: center; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { border: 1px solid #ccc; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f0f7f9; }
+  code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", Consolas, monospace; font-size: 13px; }
+  pre { background: #2d2d2d; color: #f8f8f2; padding: 12px 16px; border-radius: 4px; overflow-x: auto; font-size: 13px; }
+  .callout { background: #fff8e1; border-left: 4px solid #f9a825; padding: 12px 16px; margin: 12px 0; }
+  .callout.bug { background: #ffe4e4; border-color: #c62828; }
+  .callout.fix { background: #e8f5e9; border-color: #2e7d32; }
+  .ref { font-size: 12px; color: #666; }
+</style>
+</head>
+<body>
+
+<h1>Zone Engine 业务逻辑设计（v2）</h1>
+
+<div class="meta">
+<b>状态</b>：2026-05-20 整理（落 Bug 2 dedup + Vacant trust 守卫后回补）<br>
+<b>代码入口</b>：<code>wisefido-sensor/internal/zoneengine/</code><br>
+<b>关联 memory</b>：<code>zoneengine_phase1_done</code> · <code>zoneengine_adapters_done</code> · <code>bed_presence_fusion</code> · <code>feedback_read_design_before_modify</code>
+</div>
+
+<h2>1. 顶层架构</h2>
+<p>Zone Engine 是 sensor 的统一空间占用状态机，把"床/房间/卫生间"三类空间的多源信号融合成
+<b>三态 ZoneState</b>（Vacant / Occupied / Leaving），下游派生消费。</p>
+
+<div class="mermaid">
+flowchart TB
+    subgraph Inputs ["📥 Inputs (Redis streams)"]
+        EvtStream["iot:event:stream<br/>━━━━━━━━━━━━━━━<br/>radar: EnterRoom / ExitRoom /<br/>NumberPeople / InBed / LeftBed<br/>━━━━━━━━━━━━━━━<br/>sleepace: InBed / LeftBed<br/>+ sleep-stage（连续证据，<br/>当 stage∈{1,2,4} 时发 sustain）<br/>(2026-05-20 新增 sleep-stage 消费)"]
+        MonStream["iot:monitor:stream<br/>━━━━━━━━━━━━━━━<br/>realtime raw track + bed_status<br/>(sensor zoneengine 不消费)"]
+        AlarmStream["iot:alarm:stream<br/>━━━━━━━━━━━━━━━<br/>sleepace native alarmInBed / LeftBed<br/>(sensor zoneengine v2 不消费<br/>2026-05-20 改路径)"]
+    end
+
+    subgraph Adapters ["🔄 Adapters (both subscribe iot:event:stream)"]
+        AR["adapter_radar<br/>device_type=radar"]
+        ASP["adapter_sleepace<br/>device_type=sleepad/sleeppad"]
+    end
+
+    subgraph Bypass ["📊 旁路记账 (Bug 2 dedup)"]
+        BPF["BedPresenceFusion<br/>per-/96 X(sleepad) / Y(radar)"]
+        RRC["RadarRoomCountCache<br/>per-/88 raw Z"]
+    end
+
+    subgraph EngineBlock ["⚙️ Engine"]
+        Eng["Engine<br/>states: StateKey → zoneInstance<br/>━━━━━━━━━━━━━━<br/>Scorer<br/>StateMachine<br/>subset_invariant<br/>self_contradiction"]
+    end
+
+    subgraph Listeners ["📡 Listeners"]
+        SP["StreamPublisher"]
+        TSA["TargetStateAggregator"]
+        ZA["Zonealarm.Supervisor"]
+        SSC["SleepStageClearAdapter"]
+    end
+
+    Out1["sensor:derived:stream<br/>room.state / bed.state / target.state"]
+    Out2["iot:alarm:stream<br/>Stay / LeftBed / NightAbsence / BedNightAbsence"]
+
+    EvtStream --> AR
+    EvtStream --> ASP
+    AR -- "SetRadar" --> BPF
+    AR -- "SetZ" --> RRC
+    ASP -- "SetSleepad" --> BPF
+    AR -- "Apply" --> Eng
+    ASP -- "Apply" --> Eng
+    Eng -- "emit ZoneEvent" --> SP
+    Eng --> TSA
+    Eng --> ZA
+    Eng --> SSC
+    BPF -. "GetExtraPeople" .-> SP
+    RRC -. "GetZ" .-> SP
+    SP --> Out1
+    ZA --> Out2
+
+    classDef inputClass fill:#fff3e0,stroke:#e65100
+    classDef bypassClass fill:#f3e5f5,stroke:#6a1b9a
+    classDef engineClass fill:#e3f2fd,stroke:#0d47a1,stroke-width:3px
+    classDef listenerClass fill:#e8f5e9,stroke:#1b5e20
+    class EvtStream,AlarmStream inputClass
+    class BPF,RRC bypassClass
+    class Eng engineClass
+    class SP,TSA,ZA,SSC listenerClass
+</div>
+
+<p><b>4 个 listener 全部订阅同一 ZoneEvent 流</b>，各自派生自己的下游产物。</p>
+
+<h2>2. 三态状态机（核心）</h2>
+<p class="ref"><code>types.go ZoneStatus</code></p>
+
+<div class="mermaid">
+stateDiagram-v2
+    direction LR
+    [*] --> Vacant: 初始
+
+    Vacant --> Occupied: enter ≥ +threshold<br/>TransitionOccupied
+
+    Occupied --> Leaving: leave ≤ -threshold<br/>(老人坐起 / 下床信号)<br/>TransitionLeaving
+
+    Leaving --> Occupied: enter ≥ +threshold<br/>(老人坐回)<br/>TransitionReturned
+
+    Leaving --> Vacant: timer 超时<br/>(无回弹)<br/>TransitionVacant
+
+    note right of Leaving
+        IsPresent() = true
+        subset_invariant 仍算占用
+        Count 保留（不归零）
+    end note
+
+    note left of Vacant
+        Count = 0 (显式 set)
+        LastExitTs 更新
+        ground truth — 不可被
+        stale cache 推翻
+    end note
+</div>
+
+<div class="callout">
+<b>Leaving 的意义（老人友好）</b>：老人坐起 / 试探下床 / 短时压感消失，几秒内回弹的话不该
+误报 LeftBed。Leaving 是 Occupied 与 Vacant 之间的<b>软离开</b>中间态，timer 窗内可回滚。
+</div>
+
+<h2>3. Score 模型（Scorer）</h2>
+<p class="ref"><code>scorer.go</code> · 详 <code>zone_rules_eval.md</code></p>
+
+<pre>pos = max(enter.strength_decayed, sustain.strength_decayed)
+       + recent_enter_bonus (只 sustain 活时加 +15)
+neg = leave.strength_decayed
+score = pos - neg     ∈ [-100, +100+bonus]</pre>
+
+<table>
+<tr><th>设计</th><th>规则</th><th>为什么</th></tr>
+<tr><td>多源同方向</td><td>取 <b>max 不 sum</b></td><td>防 sleepace + radar 同向叠加假强</td></tr>
+<tr><td>反向 latch</td><td>高优先级 evidence 10s 拒反向</td><td>厂家压感 90 / radar 80 是权威窗口</td></tr>
+<tr><td>decay</td><td>120s 线性走完一档</td><td>signal 自然老化避免永远 latch</td></tr>
+<tr><td>enter / leave</td><td>互斥清零</td><td>一方触发清另一方累积</td></tr>
+<tr><td>sustain</td><td>独立通道 (HR+RR>0)</td><td>"在床"持续证据，与 enter 同档 80</td></tr>
+</table>
+
+<h2>4. 三种关键 transition path</h2>
+
+<h3>4.1 enter / leave / sustain（走 Scorer + StateMachine）</h3>
+<div class="mermaid">
+flowchart LR
+    A["SignalEvidence<br/>{Source, Kind, Delta}"] --> B["Scorer.Apply"]
+    B --> C["newScore<br/>= pos - neg"]
+    C --> D["StateMachine.Evaluate"]
+    D -->|Flipped| E["applyTransitionToState<br/>+ emit ZoneEvent"]
+    D -->|不翻| F["score 更新返回"]
+</div>
+
+<h4>4.1.1 sustain 信号源（关键 — 决定 LastEvidenceTs 刷新）</h4>
+
+<div class="callout">
+<b>设计不变量（2026-05-20 用户拍板）</b>：<br>
+① sleepad vital（HR/RR / sleep-stage）= <b>in-bed 信号</b>（接触式压感证据，可发 sustain）<br>
+② sleepad vital 缺失 ≠ 反证不在床（sustain 是 positive-only 通道，不进 leave 路径）<br>
+③ <b>radar HR/RR ≠ in-bed 信号</b>（雷达可在床外 detect 到坐沙发的人 HR/RR；不发 bed sustain）<br>
+④ radar in-bed 由 firmware 的 InBed/LeftBed alarm（已 in-bed-area 判定）走 adapter_radar
+</div>
+
+<table>
+<tr><th>Source</th><th>触发条件</th><th>是否发 bed sustain</th><th>说明</th></tr>
+<tr><td><code>adapter_vital</code> (HR/RR)</td><td><b>仅 sleepad</b> device_type + HR>0 AND RR>0 fresh</td><td>✅</td><td>2026-05-20 修订：过滤 radar 排除（vital_source.go isSleepad gate）</td></tr>
+<tr style="background:#e8f5e9"><td><b><code>adapter_sleepace</code> (sleep-stage)</b></td><td>sleepad 报 sleep_stage ∈ {1,2,4}</td><td>✅</td><td>2026-05-20 新增：覆盖 HR/RR=-1 配置的 sleepad（BM87225200677 类）</td></tr>
+<tr><td>radar HR/RR</td><td>—</td><td>❌</td><td>不进 bed zone；radar firmware 自己的 InBed alarm 才是床上证据</td></tr>
+<tr><td>sleepad vital 缺失</td><td>—</td><td>❌（不进 leave）</td><td>"缺证据 ≠ 反证据"；离床判定由 sleepad LeftBed event 或 sleepad sustain stale 决定</td></tr>
+</table>
+
+<div class="callout bug">
+<b>历史 bug（已修复 2026-05-20）</b>：BM87225200677 之类的 sleepad 配置只发 sleep_stage（HR/RR=-1），
+不发 HR/RR。sensor 重启后 startup_initial_publish 设 bed_status=1，sleepad 不重新发 InBed
+（只在 transition 时发），sleep-stage 事件被 adapter_sleepace 忽略 → scorer.LastEvidenceTs 卡死 →
+5min 后 repairSubsetInvariant force Vacant → "LeftBed 15m" stale。
+<br><br>
+<b>双修复</b>：
+<ul>
+<li>① adapter_sleepace 消费 sleep-stage event 转 sustain（覆盖 HR/RR=-1 sleepad）</li>
+<li>② adapter_vital 加 sleepad device_type 过滤（radar HR/RR 不再误算 bed sustain）</li>
+</ul>
+</div>
+
+<h3>4.2 count_change（<b>直写，不经过 Scorer / StateMachine</b>）</h3>
+<p class="ref"><code>engine.go:163-181</code></p>
+
+<div class="mermaid">
+flowchart LR
+    A["SignalEvidence<br/>{Kind=count_change, Count=N}"] --> B["z.state.Count = N<br/>z.state.UpdatedAt = now"]
+    B --> C["emit ZoneEvent<br/>{Transition=count_change}"]
+</div>
+
+<div class="callout">
+count_change <b>不影响 Status</b>（Occupied / Vacant / Leaving），只更 Count 字段。
+NumberPeople 2→1 同房间内不算"新进/新离"。
+</div>
+
+<h3>4.3 Vacant transition 的 Count 强 set</h3>
+<p class="ref"><code>engine.go applyTransitionToState</code> 强语义：</p>
+
+<pre>case TransitionVacant:
+    s.LastExitTs   = nowMs
+    s.LeavingSince = 0
+    s.Count        = 0    ← 显式归零，无视外部输入</pre>
+
+<div class="callout fix">
+<b>Vacant 是 ground truth — engine 内部权威</b>。任何下游消费者都不能用 stale cache 推翻它
+（参 §6 Vacant trust 守卫）。
+</div>
+
+<h2>5. 子集不变量 + 自相矛盾反馈</h2>
+
+<h3>5.1 subset_invariant — bed ⊆ room</h3>
+<p class="ref"><code>engine.go maybeReconcileSubset</code></p>
+
+<div class="mermaid">
+flowchart TD
+    A["bed transitions"] --> B{"bed.IsPresent?<br/>(Occupied 或 Leaving)"}
+    B -- no --> Z1["pass (无须 reconcile)"]
+    B -- yes --> C{"room.IsPresent?"}
+    C -- yes --> Z2["一致，pass"]
+    C -- no --> D["强抬 room → Occupied<br/>room.Count = max(prev, 1)<br/>emit ZoneEvent{Room, occupied}"]
+
+    classDef action fill:#fff8e1,stroke:#f9a825
+    class D action
+</div>
+
+<h3>5.2 反向周期巡检（repairSubsetInvariant）</h3>
+<p>持续 bed.IsPresent + room.Vacant 不一致时：</p>
+<table>
+<tr><th>bed evidence</th><th>动作</th></tr>
+<tr><td>staleness（无新 evidence > N 秒）</td><td>强降 bed = Vacant</td></tr>
+<tr><td>新鲜</td><td>抬 room = Occupied</td></tr>
+</table>
+
+<h3>5.3 self_contradiction — 翻转后短窗内自打脸</h3>
+
+<div class="mermaid">
+flowchart TD
+    A["zone 翻 Occupied"] --> B["登记 pendingValidation"]
+    B --> C{"window_sec 内<br/>score ≥ require_sustain_at?"}
+    C -- yes --> D["通过"]
+    C -- no --> E["ROLLBACK<br/>+ emit FeedbackEvent<br/>(Affected 信号源 Penalty 临时降权)"]
+
+    classDef action fill:#ffe4e4,stroke:#c62828
+    class E action
+</div>
+
+<div class="callout">
+<b>仅 Occupied 方向登记</b>（review fix P0-1）：Vacant 是默认安全态，证据自然老化不视为矛盾。
+</div>
+
+<h2>6. Bug 2 dedup pathway（2026-05-20 新增）</h2>
+
+<p>旁路解决"radar NumberPeople 漏数床上人"的偏差，<b>不进 engine 状态决策</b>，仅在 publish 时修正发到下游的 TotalPeople。</p>
+
+<div class="mermaid">
+flowchart TB
+    subgraph WriteSide ["写入端 (adapter 旁路)"]
+        ASP_E["adapter_sleepace<br/>InBed / LeftBed"]
+        AR_B["adapter_radar<br/>applyBed (InBed/LeftBed)"]
+        AR_C["adapter_radar<br/>applyCount (NumberPeople)"]
+    end
+
+    BPF["BedPresenceFusion<br/>per-/96 bed<br/>X(sleepad) + Y(radar)"]
+    RRC["RadarRoomCountCache<br/>per-/88 raw Z"]
+
+    subgraph ReadSide ["读取端 (publish 时)"]
+        SP_R["StreamPublisher<br/>applyRoomDedupInPlace"]
+    end
+
+    Decision{"rs.TotalPeople == 0?"}
+    VacantTrust["✅ Vacant trust 守卫<br/>直接 return<br/>(engine 是权威)"]
+    Apply["Z = cache.GetZ()<br/>extras = fusion.ExtraPeopleInRoom()<br/>rs.TotalPeople = Z + extras"]
+    Publish["publish sensor:derived:stream"]
+
+    ASP_E -- "SetSleepad(bedCIDR, X)" --> BPF
+    AR_B -- "SetRadar(bedCIDR, Y)" --> BPF
+    AR_C -- "SetZ(roomCIDR, count)" --> RRC
+
+    SP_R --> Decision
+    Decision -- yes --> VacantTrust
+    Decision -- no --> Apply
+    BPF -. "GetExtra" .-> Apply
+    RRC -. "GetZ" .-> Apply
+    VacantTrust --> Publish
+    Apply --> Publish
+
+    classDef bypass fill:#f3e5f5,stroke:#6a1b9a
+    classDef fix fill:#e8f5e9,stroke:#2e7d32,stroke-width:3px
+    class BPF,RRC bypass
+    class VacantTrust fix
+</div>
+
+<h3>dedup 公式</h3>
+<ul>
+<li><code>Z</code> = radar NumberPeople（raw，来自 cache）</li>
+<li><code>X</code> = sleepad InBed bool（per /96 bed）</li>
+<li><code>Y</code> = radar bed-area InBed bool（per /96 bed）</li>
+<li><b><code>published TotalPeople = Z + Σ(X for bed where X && !Y)</code></b></li>
+</ul>
+
+<div class="callout bug">
+<b>Vacant 守卫的必要性（实测 bug）</b>：radar EnterRoom / ExitRoom alarm 路径不带 NumberPeople=0
+心跳，cache.Z 留 1 stale；engine 处理 Vacant 后 Count=0，但旧 dedup 用 stale cache 反向覆写。
+实测 f61e8o bathroom 6min stale → 守卫修复后立即归零。
+</div>
+
+<h2>6.5 cardagg display 派生（pickScene）</h2>
+
+<p>cardagg <code>card_display_builder.pickScene</code> 把 RoomState/BedState 翻译成 <code>display.scene_state</code>
+（FE Section3.upper.right 渲 InBath/InBed/InRoom/OOR/OOB 文案）：</p>
+
+<div class="mermaid">
+flowchart TD
+    Start["pickScene(s, bedHas, roomHas)"]
+    Start --> C1{"roomHas AND<br/>TotalPeople > 0?"}
+    C1 -- yes --> C2{"RoomType =<br/>Bathroom?"}
+    C2 -- yes --> R1["InBath<br/>anchor=LastEnterTime"]
+    C2 -- no --> C3{"bedHas AND<br/>bed_status=0?"}
+    C3 -- yes --> R2["InBed<br/>anchor=bed.StartTime"]
+    C3 -- no --> R3["InRoom<br/>anchor=LastEnterTime"]
+    C1 -- no --> C4{"bedHas AND<br/>bed_status=0?"}
+    C4 -- yes --> R4["✅ InBed<br/>anchor=bed.StartTime<br/>(bed-only path, 2026-05-20 新增)"]
+    C4 -- no --> C5{"bedHas AND<br/>bed_status=1?"}
+    C5 -- yes --> R5["OOB<br/>anchor=bed.StartTime"]
+    C5 -- no --> C6{"roomHas?"}
+    C6 -- yes --> R6["OOR<br/>anchor=LastExitTime"]
+    C6 -- no --> R7["OOR, anchor=0"]
+
+    classDef fix fill:#e8f5e9,stroke:#2e7d32,stroke-width:3px
+    class R4 fix
+</div>
+
+<div class="callout fix">
+<b>bed-only 路径修复（2026-05-20）</b>：myroh1 一类 unit 只有 /80 unit card + 无 /88 room card 时，
+sensor_state_projector 经 LPM fallback 把 bed_state 直接落 /80。/80 card_status 只有 bed_state
+没 room_state（roomHas=false），旧 pickScene 走第一分支不命中后直接落 OOR；漏看"bedHas AND bed_status=0"
+应该是 InBed。新增的 C4 分支补这个空。
+</div>
+
+<h2>7. Listener 输出契约</h2>
+
+<h3>7.1 StreamPublisher → sensor:derived:stream</h3>
+<table>
+<tr><th>Category</th><th>触发</th><th>Subject</th><th>内容</th></tr>
+<tr><td><code>room.state</code></td><td>OnZoneEvent (Room/Bathroom transition)</td><td>/88 room CIDR</td><td><code>card.RoomState{TotalPeople, RoomType, LastEnter/Exit, StaySec, RiskLevel}</code></td></tr>
+<tr><td><code>bed.state</code></td><td>OnZoneEvent (Bed transition)</td><td>/96 bed CIDR</td><td><code>card.BedState{BedStatus 0/1, BedEvent, StartTime, DurationSec, TrackNumber, BedConfidence}</code></td></tr>
+<tr><td><code>bed.sleepstage</code></td><td>SleepStageConsumer ladder</td><td>/96 bed CIDR</td><td><code>card.BedState{SleepStage, SleepConfidence}</code> 仅这两字段</td></tr>
+<tr><td><code>target.state</code></td><td>60s ticker pull aggregator</td><td>/88 或 /96</td><td><code>card.TargetState{LastActiveTs, StandingMin, WeakBio}</code></td></tr>
+</table>
+
+<div class="callout">
+<b>触发模式</b>：OnZoneEvent 是 <b>event-driven 触发</b>（zone transition 瞬间）；
+target.state 是 <b>60s 周期 pull</b>（聚合器纯 state holder，dirty 检查跳过无变化）。
+</div>
+
+<h3>7.2 Zonealarm.Supervisor → iot:alarm:stream</h3>
+<p>派生 4 条 zone-level alarm（不重做 engine 工作）：</p>
+<ul>
+<li><code>Stay</code> — 停留超时</li>
+<li><code>LeftBed</code> — 离床超时</li>
+<li><code>NightAbsence</code> — 整夜未归</li>
+<li><code>BedNightAbsence</code> — 床上整夜未归</li>
+</ul>
+<p>订阅 ZoneEvent + alarm-firer 按 yaml 规则配 timer / threshold。</p>
+
+<h2>8. 边界场景 cheat-sheet（改 zone engine 前必看）</h2>
+
+<table>
+<tr><th>场景</th><th>期望行为</th><th>触发路径</th></tr>
+<tr>
+  <td>老人坐起→压感消失 5s→坐回</td>
+  <td>不报 LeftBed（Leaving timer 内回弹）</td>
+  <td>Leaving timer 内 enter signal → TransitionReturned</td>
+</tr>
+<tr>
+  <td>老人下床 30min 没回</td>
+  <td>报 LeftBed（Vacant transition）</td>
+  <td>Leaving timer 超时 → TransitionVacant</td>
+</tr>
+<tr>
+  <td>sleepad 离线，radar 仍报 InBed</td>
+  <td>bed 仍 Occupied（radar 80 evidence 足）</td>
+  <td>adapter_radar InBed → Score → StateMachine</td>
+</tr>
+<tr>
+  <td>床有人，radar 报 NumberPeople=0</td>
+  <td>room subset_invariant lift 到 Occupied Count=1</td>
+  <td>bed.IsPresent + room.Vacant → maybeReconcileSubset</td>
+</tr>
+<tr style="background:#e8f5e9">
+  <td><b>浴室人走 → radar ExitRoom + NumberPeople=0</b></td>
+  <td><b>TransitionVacant，Count=0，dedup 守卫确保 publish=0</b></td>
+  <td>applyCount → engine → OnZoneEvent → applyRoomDedupInPlace skip</td>
+</tr>
+<tr style="background:#e8f5e9">
+  <td><b>sleepad 持续在床（无 transition）+ sensor 重启</b></td>
+  <td><b>sleep-stage event 转 sustain → 30s 内 bed→Occupied</b></td>
+  <td>adapter_sleepace.handleMsg case alarm.SleepStage → sustain SignalEvidence → Scorer.Apply sustainStrength=80</td>
+</tr>
+<tr style="background:#e8f5e9">
+  <td><b>radar 在沙发 detect HR/RR（人在床外）</b></td>
+  <td><b>不发 bed sustain（vital_source.go isSleepad gate）</b></td>
+  <td>MonitorBuffer.DeviceType=Radar 时 ScanActiveBedVitals 直接 continue 跳过</td>
+</tr>
+<tr style="background:#e8f5e9">
+  <td><b>sleepad 短暂数据丢失（HR/RR=0 几秒）</b></td>
+  <td><b>不进 leave 路径（sustain positive-only）</b></td>
+  <td>Scorer 不把缺 sustain 当 negative；离床判定靠 sleepad LeftBed event 或 sustain stale 自然衰减</td>
+</tr>
+<tr style="background:#e8f5e9">
+  <td><b>/80 unit 只有 bed_state 无 room_state</b></td>
+  <td><b>scene_state=InBed/OOB（bed-only path）不是 OOR</b></td>
+  <td>cardagg pickScene C4/C5 分支</td>
+</tr>
+<tr>
+  <td>ghost track 让 radar Count=1 持续</td>
+  <td>engine Count=1，dedup +extras（如有 sleepad InBed 矛盾）</td>
+  <td>待 Layer 1 ghost adjudicator 接入（v2 决定 1）</td>
+</tr>
+</table>
+
+<h2>9. Startup 行为</h2>
+
+<p><code>cmd/wisefido-sensor/initial_publish.go</code> 在 sensor 启动后做一次性初始 publish：</p>
+
+<div class="mermaid">
+flowchart TD
+    Start["sensor 启动"]
+    Start --> A["扫 rooms 表"]
+    A --> B["每个 room 发<br/>room.state<br/>{TotalPeople=0, LastExitTime=now, RoomType=...}"]
+    Start --> C["扫 beds 表"]
+    C --> D["每个 bed 发<br/>bed.state<br/>{BedStatus=1 (LeftBed), StartTime=now}"]
+    C --> E["每个 bed 发<br/>bed.sleepstage<br/>{SleepStage=0, SleepConfidence=0}"]
+    B --> F["zoneengine zoneInstance 仍空<br/>等待真实信号驱动"]
+    D --> F
+    E --> F
+</div>
+
+<div class="callout">
+<b>意义</b>：杜绝重启前的 stale anchor 跨重启遗留（如"OOR 29h"），让"重启即刚开始观察"语义生效。
+</div>
+
+<div class="callout bug">
+<b>启动后第一个真实事件之前的真空期</b>：sleepad 只在状态翻转时发 InBed/LeftBed；如果人重启前
+就在床，重启后 sleepad 不会自动重发 InBed → engine zoneInstance 不创建 → bed 永远停 startup
+默认 LeftBed。
+<br><br>
+<b>修复（§4.1.1）</b>：adapter_sleepace 消费 sleep-stage 事件作 sustain SignalEvidence，让
+持续监测中的 sleepad（每分钟发 sleep-stage）在 60s 内把 bed 拉回 Occupied。
+</div>
+
+<h2>10. 改前必读清单（feedback rule）</h2>
+
+<div class="callout">
+<code>feedback_read_design_before_modify</code>：改 zone engine 任何代码前先读：
+<ol>
+<li><code>types.go</code> 顶部（三态机 ASCII + Transition 常量定义）</li>
+<li><code>engine.go applyTransitionToState</code>（字段更新规则，特别是 Vacant Count=0 强 set）</li>
+<li><code>translator.go TranslateRoomState / TranslateBedState</code>（发到 stream 前的字段填充）</li>
+<li>本文档 §8 边界场景 cheat-sheet</li>
+</ol>
+改完枚举 §8 每行场景人工走一遍验证。Bug 2 dedup 当时漏看 Vacant Count=0 强语义，
+导致 bathroom 卡 6min 才被发现。
+</div>
+
+</body>
+</html>

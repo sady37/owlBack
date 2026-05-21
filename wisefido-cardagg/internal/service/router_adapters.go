@@ -28,6 +28,17 @@ func (c *DeviceMetaCache) LookupCardByDevice(ctx context.Context, deviceAddr str
 	return c.LookupCardByDeviceAddr(ctx, addr)
 }
 
+// CardHasBed 给 alarm_router MetaResolver 用：判 card 是否绑了 sleepad 床设备。
+// 详 CardMeta.HasBed()。
+func (c *DeviceMetaCache) CardHasBed(ctx context.Context, cardID string) bool {
+	return c.GetOrLoad(ctx, cardID).HasBed()
+}
+
+// CardIsBathroom 判 card 所属 room (/88) 是否 RoomType=Bathroom。
+func (c *DeviceMetaCache) CardIsBathroom(ctx context.Context, cardID string) bool {
+	return c.GetOrLoad(ctx, cardID).IsBathroom()
+}
+
 // Resolve 给 alarm_router 的 EnablementResolver 接口用。
 // 缺省 level 取 alarm.Registry.DefaultLevel；DefaultLevel 仍空视为未配置。
 func (c *AlarmEnablementCache) Resolve(ctx context.Context, tenantPref, deviceAddr, alarmType string) (level string, enabled bool) {

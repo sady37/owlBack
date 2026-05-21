@@ -142,11 +142,11 @@ func (p *AllowedCardIDsProviderImpl) filterCardsForResident(ctx context.Context,
 // v2 unified: card_id ≡ spatial_prefix；tenantID 是 /48 INET，unitID 是 /80 INET
 func (p *AllowedCardIDsProviderImpl) cardIDsByUnit(ctx context.Context, tenantID, unitID, userID string) (*CardList, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT c.spatial_prefix::text AS card_id,
-		        host(set_masklen(c.spatial_prefix, 56)) || '/56' AS branch_id
+		`SELECT c.card_id::text AS card_id,
+		        host(set_masklen(c.card_id, 56)) || '/56' AS branch_id
 		   FROM cards c
-		  WHERE c.spatial_prefix <<= $1::INET
-		    AND c.spatial_prefix <<= $2::INET`,
+		  WHERE c.card_id <<= $1::INET
+		    AND c.card_id <<= $2::INET`,
 		tenantID, unitID,
 	)
 	if err != nil {
@@ -170,12 +170,12 @@ func (p *AllowedCardIDsProviderImpl) cardIDsByUnit(ctx context.Context, tenantID
 // v2: cards.resident_id 是 INET HoA pointer；不再走 residents JSONB；unitID 是 INET /80 CIDR。
 func (p *AllowedCardIDsProviderImpl) ActiveBedcardIDsByUnitShared(ctx context.Context, tenantID, unitID, residentID string) (*CardList, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT c.spatial_prefix::text AS card_id,
-		        host(set_masklen(c.spatial_prefix, 56)) || '/56' AS branch_id
+		`SELECT c.card_id::text AS card_id,
+		        host(set_masklen(c.card_id, 56)) || '/56' AS branch_id
 		   FROM cards c
-		  WHERE c.spatial_prefix <<= $1::INET
-		    AND c.spatial_prefix <<= $2::INET
-		    AND c.card_type = 'active_bed'
+		  WHERE c.card_id <<= $1::INET
+		    AND c.card_id <<= $2::INET
+		    AND c.has_bed = TRUE
 		    AND c.resident_id = $3::INET`,
 		tenantID, unitID, residentID,
 	)
@@ -239,11 +239,10 @@ func (p *AllowedCardIDsProviderImpl) filterCardsForStaff(ctx context.Context, us
 // v2: tenant_id INET CIDR /48；branch /56 由 spatial_prefix 派生。
 func (p *AllowedCardIDsProviderImpl) filterTenantCards(ctx context.Context, tenantID, userID string) (*CardList, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT c.spatial_prefix::text AS card_id,
-		        host(set_masklen(c.spatial_prefix, 56)) || '/56' AS branch_id
+		`SELECT c.card_id::text AS card_id,
+		        host(set_masklen(c.card_id, 56)) || '/56' AS branch_id
 		   FROM cards c
-		  WHERE c.spatial_prefix <<= $1::INET
-		    AND c.card_type <> 'device'`,
+		  WHERE c.card_id <<= $1::INET`,
 		tenantID,
 	)
 	if err != nil {
@@ -270,17 +269,17 @@ func (p *AllowedCardIDsProviderImpl) filterTenantCards(ctx context.Context, tena
 // v2 schema：cards 没冗余 branch_id 列；用 spatial_prefix /56 反推 + user_branches.is_primary INET 过滤
 func (p *AllowedCardIDsProviderImpl) filterByBranchOnly(ctx context.Context, tenantID, userID string) (*CardList, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT c.spatial_prefix::text AS card_id,
-		        host(network(set_masklen(c.spatial_prefix, 56))) || '/56' AS branch_id
+		`SELECT c.card_id::text AS card_id,
+		        host(network(set_masklen(c.card_id, 56))) || '/56' AS branch_id
 		   FROM cards c
-		  WHERE c.spatial_prefix <<= $1::INET
-		    AND c.card_type <> 'device'
+		  WHERE c.card_id <<= $1::INET
+		    AND masklen(c.card_id) <> 128
 		    AND EXISTS (
 		      SELECT 1 FROM user_branches ub
 		       WHERE ub.user_id = $2::UUID
 		         AND ub.is_primary = TRUE
 		         AND ub.valid_to IS NULL
-		         AND c.spatial_prefix <<= ub.branch_prefix
+		         AND c.card_id <<= ub.branch_prefix
 		    )`,
 		tenantID, userID,
 	)
@@ -345,19 +344,19 @@ func (p *AllowedCardIDsProviderImpl) filterByAssignedOnly(ctx context.Context, t
 	//     —— 这部分通过 resident_unit ru ∈ assigned + cards 在 ru 所在 unit /80 范围内联出
 	//   两者用 UNION 合并去重
 	rows2, err := p.db.QueryContext(ctx,
-		`(SELECT c.spatial_prefix::text AS card_id,
-		         host(network(set_masklen(c.spatial_prefix, 56))) || '/56' AS branch_id
+		`(SELECT c.card_id::text AS card_id,
+		         host(network(set_masklen(c.card_id, 56))) || '/56' AS branch_id
 		    FROM cards c
-		   WHERE c.spatial_prefix <<= $1::INET
+		   WHERE c.card_id <<= $1::INET
 		     AND c.resident_id = ANY($2::INET[]))
 		 UNION
-		 (SELECT c.spatial_prefix::text AS card_id,
-		         host(network(set_masklen(c.spatial_prefix, 56))) || '/56' AS branch_id
+		 (SELECT c.card_id::text AS card_id,
+		         host(network(set_masklen(c.card_id, 56))) || '/56' AS branch_id
 		    FROM cards c
 		    JOIN resident_unit ru ON ru.resident_id = ANY($2::INET[])
 		                         AND ru.valid_to IS NULL
-		   WHERE c.spatial_prefix <<= $1::INET
-		     AND c.spatial_prefix <<= network(set_masklen(ru.spatial_prefix, 80)))`,
+		   WHERE c.card_id <<= $1::INET
+		     AND c.card_id <<= network(set_masklen(ru.spatial_prefix, 80)))`,
 		tenantID, pq.Array(rids),
 	)
 	if err != nil {

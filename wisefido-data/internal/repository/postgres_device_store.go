@@ -17,10 +17,9 @@ import (
 
 // PostgresDeviceStoreRepository 设备库存Repository实现（v2 schema）。
 //
-// v2 把 v1 的 device_store 表拆为 4 张表：
-//   - device_factory_meta — 出厂元数据（device_id PK UUID, device_uid UNIQUE, mac_wifi/mac_ble, etc.）
-//   - device_runtime_state — 运行时状态（device_id PK FK→factory_meta, online, firmware_version, last_heartbeat_at, ...）
-//   - devices — 业务空间绑定（device_ipv6 INET /128 PK, device_id FK UNIQUE, monitoring_enabled）
+// v2.5 把 v1 的 device_store 表拆为 3 张表（drs 已退役，online/last_seen 走 Redis device:status）：
+//   - device_factory_meta — 出厂元数据 + firmware_version（device_id PK UUID, device_uid UNIQUE, mac_wifi/mac_ble, ...）
+//   - devices — 业务空间绑定（device_ipv6 INET /128 PK, device_id FK UNIQUE, card_id INET, monitoring_enabled）
 //   - device_ota — OTA 升级计划（device_ipv6 PK FK→devices, target_firmware_version, approve_way enum, schedule, status, ...）
 //
 // FE 期望的 v1 字段（OTAPermit/OTAWay/OTASchedule/AllowAccess 等）由本 repo 在读写两端做映射。
@@ -60,7 +59,7 @@ func tenantNamesOrIDsByPrefix(ctx context.Context, tx *sql.Tx, p1, p2 string) (s
 }
 
 // ----------------------------------------------------------------------------
-// 排序白名单 — v2 表名映射（dfm/drs/d/t/o）
+// 排序白名单 — v2.5 表名映射（dfm/d/t/o；drs 已退役）
 // ----------------------------------------------------------------------------
 
 func orderByClauseDeviceStoreV2(sortKey, direction string) string {
@@ -70,12 +69,10 @@ func orderByClauseDeviceStoreV2(sortKey, direction string) string {
 	}
 	col := strings.TrimSpace(strings.ToLower(sortKey))
 	switch col {
-	case "device_uid", "device_code", "device_type", "device_model", "imei", "comm_mode", "mcu_model":
+	case "device_uid", "device_code", "device_type", "device_model", "imei", "comm_mode", "mcu_model", "firmware_version":
 		return "dfm." + col + " " + dir
 	case "mac":
 		return "dfm.mac_wifi " + dir
-	case "firmware_version":
-		return "drs.firmware_version " + dir
 	case "import_date":
 		return "dfm.import_date " + dir
 	case "allocate_time":
@@ -197,7 +194,7 @@ const deviceStoreSelectColumnsV2 = `
   dfm.imei,
   dfm.comm_mode,
   dfm.mcu_model,
-  drs.firmware_version,
+  dfm.firmware_version,
   -- OTA 字段：v2 表 device_ota → v1 形
   o.target_firmware_version AS ota_target_firmware_version,
   o.target_mcu_model        AS ota_target_mcu_model,
@@ -223,7 +220,7 @@ const deviceStoreSelectColumnsV2 = `
   COALESCE(t.tenant_name, '') AS tenant_name,
   d.created_at AS allocate_time,
   dfm.import_date,
-  CASE WHEN drs.online IS TRUE THEN 'online' ELSE 'offline' END AS online_status,
+  'offline'::text AS online_status,
   COALESCE(d.access, FALSE) AS allow_access
 `
 
@@ -352,7 +349,7 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 		argN++
 	}
 	if fv := strings.TrimSpace(filters.FirmwareVersion); fv != "" {
-		where = append(where, fmt.Sprintf("drs.firmware_version ILIKE $%d", argN))
+		where = append(where, fmt.Sprintf("dfm.firmware_version ILIKE $%d", argN))
 		args = append(args, "%"+fv+"%")
 		argN++
 	}
@@ -389,7 +386,6 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 	countQ := `
 		SELECT COUNT(*)
 		  FROM device_factory_meta dfm
-		  LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		  LEFT JOIN devices d ON d.device_id = dfm.device_id
 		  LEFT JOIN device_ota o ON o.device_ipv6 = d.device_ipv6
 		  ` + whereClause
@@ -414,7 +410,6 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 	q := `
 		SELECT ` + expandSelectColumnsV2() + `
 		FROM device_factory_meta dfm
-		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d ON d.device_id = dfm.device_id
 		LEFT JOIN device_ota o ON o.device_ipv6 = d.device_ipv6
 		LEFT JOIN tenants t ON t.tenant_id = network(set_masklen(d.device_ipv6, 48))
@@ -447,7 +442,6 @@ func (r *PostgresDeviceStoreRepository) GetDeviceStore(ctx context.Context, devi
 	q := `
 		SELECT ` + expandSelectColumnsV2() + `
 		FROM device_factory_meta dfm
-		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d ON d.device_id = dfm.device_id
 		LEFT JOIN device_ota o ON o.device_ipv6 = d.device_ipv6
 		LEFT JOIN tenants t ON t.tenant_id = network(set_masklen(d.device_ipv6, 48))
@@ -469,7 +463,6 @@ func (r *PostgresDeviceStoreRepository) GetDeviceStoreByDeviceID(ctx context.Con
 	q := `
 		SELECT ` + expandSelectColumnsV2() + `
 		FROM device_factory_meta dfm
-		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d ON d.device_id = dfm.device_id
 		LEFT JOIN device_ota o ON o.device_ipv6 = d.device_ipv6
 		LEFT JOIN tenants t ON t.tenant_id = network(set_masklen(d.device_ipv6, 48))
@@ -539,8 +532,8 @@ func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, d
 	insertMeta := `
 		INSERT INTO device_factory_meta (
 			device_id, device_uid, device_code, device_type, device_model,
-			mcu_model, mac_wifi, mac_ble, imei, comm_mode
-		) VALUES ($1::uuid, $2, $3, $4::device_type_enum, $5, $6, $7, $8, $9, $10)
+			mcu_model, mac_wifi, mac_ble, imei, comm_mode, firmware_version
+		) VALUES ($1::uuid, $2, $3, $4::device_type_enum, $5, $6, $7, $8, $9, $10, $11)
 	`
 	if _, err := tx.ExecContext(ctx, insertMeta,
 		deviceID,
@@ -553,22 +546,12 @@ func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, d
 		nil,                              // mac_ble: 不接 v1 字段
 		nullStringToAny(deviceStore.IMEI),
 		nullStringToAny(deviceStore.CommMode),
+		nullStringToAny(deviceStore.FirmwareVersion),
 	); err != nil {
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
 			return "", fmt.Errorf("device already exists (duplicate device_uid)")
 		}
 		return "", fmt.Errorf("failed to insert device_factory_meta: %w", err)
-	}
-
-	// 5. INSERT device_runtime_state（默认 offline；firmware_version 可写入）
-	insertRuntime := `
-		INSERT INTO device_runtime_state (device_id, online, firmware_version)
-		VALUES ($1::uuid, FALSE, $2)
-	`
-	if _, err := tx.ExecContext(ctx, insertRuntime,
-		deviceID, nullStringToAny(deviceStore.FirmwareVersion),
-	); err != nil {
-		return "", fmt.Errorf("failed to insert device_runtime_state: %w", err)
 	}
 
 	// 6. INSERT devices —— device_ipv6 = tenant_id host bytes 全 0 ++ MAC32
@@ -842,7 +825,7 @@ func (r *PostgresDeviceStoreRepository) DeleteDeviceStore(ctx context.Context, d
 	); err != nil {
 		return fmt.Errorf("failed to delete devices: %w", err)
 	}
-	// device_factory_meta CASCADE 删 device_runtime_state（FK ON DELETE CASCADE 在 22_*.sql 里）
+	// 删 device_factory_meta
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM device_factory_meta WHERE device_id = $1::uuid`, deviceID,
 	); err != nil {
@@ -949,10 +932,10 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 				errs = append(errs, item)
 				continue
 			}
-			// firmware_version 若提供则同步到 runtime_state
+			// firmware_version 若提供则同步到 device_factory_meta
 			if item.FirmwareVersion.Valid && item.FirmwareVersion.String != "" {
 				if _, e := tx.ExecContext(ctx, `
-					UPDATE device_runtime_state SET firmware_version = $1, updated_at = NOW()
+					UPDATE device_factory_meta SET firmware_version = $1
 					 WHERE device_id = $2::uuid
 				`, item.FirmwareVersion.String, deviceID); e != nil {
 					errs = append(errs, item)
@@ -982,8 +965,8 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 		if _, e := tx.ExecContext(ctx, `
 			INSERT INTO device_factory_meta (
 				device_id, device_uid, device_code, device_type, device_model,
-				mcu_model, mac_wifi, imei, comm_mode
-			) VALUES ($1::uuid, $2, $3, $4::device_type_enum, $5, $6, $7, $8, $9)
+				mcu_model, mac_wifi, imei, comm_mode, firmware_version
+			) VALUES ($1::uuid, $2, $3, $4::device_type_enum, $5, $6, $7, $8, $9, $10)
 		`,
 			deviceID,
 			normUID,
@@ -994,14 +977,8 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 			nullStringToAny(item.MAC),
 			nullStringToAny(item.IMEI),
 			nullStringToAny(item.CommMode),
+			nullStringToAny(item.FirmwareVersion),
 		); e != nil {
-			errs = append(errs, item)
-			continue
-		}
-		if _, e := tx.ExecContext(ctx, `
-			INSERT INTO device_runtime_state (device_id, online, firmware_version)
-			VALUES ($1::uuid, FALSE, $2)
-		`, deviceID, nullStringToAny(item.FirmwareVersion)); e != nil {
 			errs = append(errs, item)
 			continue
 		}
@@ -1046,13 +1023,10 @@ func (r *PostgresDeviceStoreRepository) UpdateDeviceCode(ctx context.Context, de
 	return err
 }
 
-// UpdateFirmwareVersion 仅更新 firmware_version — 写 device_runtime_state
+// UpdateFirmwareVersion 仅更新 firmware_version — 写 device_factory_meta
 func (r *PostgresDeviceStoreRepository) UpdateFirmwareVersion(ctx context.Context, deviceID, firmwareVersion string) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO device_runtime_state (device_id, firmware_version)
-		VALUES ($1::uuid, $2)
-		ON CONFLICT (device_id) DO UPDATE
-		SET firmware_version = EXCLUDED.firmware_version, updated_at = NOW()
-	`, deviceID, firmwareVersion)
+		UPDATE device_factory_meta SET firmware_version = $1 WHERE device_id = $2::uuid
+	`, firmwareVersion, deviceID)
 	return err
 }

@@ -88,36 +88,56 @@ const (
 	UnitPropertyFacility = 1 // B2B
 )
 
-// UnitInfo Unit information
+// UnitInfo — Unit (/80) 静态属性（2026-05-20 重设计：扁平化，仅 unit 级字段；不含 RoomName/BedName）。
+// 跨层关系（room/bed/device）由 IPv6 prefix containment 派生，不在 struct 里嵌套。
 type UnitInfo struct {
-	UnitID       string `json:"unit_id,omitempty"`
+	UnitID       string `json:"unit_id,omitempty"`       // INET CIDR /80
 	UnitName     string `json:"unit_name,omitempty"`
-	BranchID     string `json:"branch_id,omitempty"`
+	UnitType     int    `json:"unit_type,omitempty"`     // 0=Unknown 1=Private 2=Share 3=Public
+	UnitProperty int    `json:"unit_property,omitempty"` // 0=Home (B2C) 1=Facility (B2B)
+	BranchID     string `json:"branch_id,omitempty"`     // INET CIDR /56
 	BranchName   string `json:"branch_name,omitempty"`
-	Building     string `json:"building,omitempty"`
-	BuildingName string `json:"building_name,omitempty"` // sites.site_name (FE Detail 页 Branch/Building/Unit/Room/Bed 路径)
-	RoomName     string `json:"room_name,omitempty"`     // card 锚点所在 room (room/bed 级 card 才非空)
-	BedName      string `json:"bed_name,omitempty"`      // card 锚点所在 bed (bed 级 card 才非空)
-	IsPublic     bool   `json:"is_public,omitempty"`
-	IsSharedUnit bool   `json:"is_shared_unit,omitempty"`
-	UnitType     int    `json:"unit_type,omitempty"`     // UnitType*: 0=Unknown, 1=Private, 2=Share, 3=Public
-	UnitProperty int    `json:"unit_property,omitempty"` // UnitProperty*: 0=Home, 1=Facility
+	BuildingID   string `json:"building_id,omitempty"`   // INET CIDR /64 (site)
+	BuildingName string `json:"building_name,omitempty"`
 	Timezone     string `json:"timezone,omitempty"`      // IANA
+	IsPublic     bool   `json:"is_public,omitempty"`     // = (UnitType == UnitTypePublic)
+	IsSharedUnit bool   `json:"is_shared_unit,omitempty"`// = (UnitType == UnitTypeShare)
 }
 
-// DeviceInfo device information（来自 devices/device_store JOIN，非 JSONB snapshot）
+// RoomInfo — Room (/88) 静态属性（2026-05-20 新增）。
+// RoomType 从 RoomState 挪到这里 —— room_type 是 room 的固有静态属性（不动态变化），
+// 跟"当前房内多少人"这种状态正交。
+type RoomInfo struct {
+	RoomID   string `json:"room_id,omitempty"`   // INET CIDR /88
+	RoomName string `json:"room_name,omitempty"`
+	RoomType int    `json:"room_type,omitempty"` // 0=Default 1=Bathroom 2=Kitchen
+}
+
+// BedInfo — Bed (/96) 静态属性（2026-05-20 新增）。
+type BedInfo struct {
+	BedID   string `json:"bed_id,omitempty"`   // INET CIDR /96
+	BedName string `json:"bed_name,omitempty"`
+}
+
+// DeviceInfo device information（2026-05-20 重设计：扁平化）。
+//
+// 双 ID（[[feedback_api_ids_ipv6_only]]）：
+//   - DeviceID  = UUID，仅作 owlcare 外部对接（sleepace SDK、第三方）
+//   - DeviceIPv6 = INET host 文本，owlcare 内部 lookup 用
+//
+// 删除字段（IPv6 prefix containment 自然派生，不需要存）：
+//   - BoundBedID / BoundRoomID：FE 用 device_ipv6 跟 RoomInfo.RoomID/BedInfo.BedID 做 prefix.Contains() 判
+//   - UnitID：同上，从 device_ipv6 /80 mask 派生
 type DeviceInfo struct {
-	DeviceID          string  `json:"device_id"`
-	DeviceUID         string  `json:"-"`           // HIPAA 不向前端暴露
-	DeviceCode        string  `json:"device_code"` // device_store.device_code
-	DeviceName        string  `json:"device_name"`
-	DeviceType        string  `json:"device_type"`
-	DeviceModel       string  `json:"device_model"`
-	UnitID            string  `json:"unit_id"`
-	BoundBedID        *string `json:"bound_bed_id,omitempty"`
-	BoundRoomID       *string `json:"bound_room_id,omitempty"`
-	MonitoringEnabled bool    `json:"monitoring_enabled"`
-	Status            string  `json:"status"` // "online" | "offline" | "error" | "disabled"
+	DeviceID          string `json:"device_id"`             // UUID
+	DeviceIPv6        string `json:"device_ipv6,omitempty"` // INET host 文本
+	DeviceUID         string `json:"-"`                     // HIPAA 不向前端暴露
+	DeviceCode        string `json:"device_code"`
+	DeviceName        string `json:"device_name"`
+	DeviceType        string `json:"device_type"` // "Radar" / "Sleepad"
+	DeviceModel       string `json:"device_model"`
+	MonitoringEnabled bool   `json:"monitoring_enabled"`
+	Status            string `json:"status"` // "online" | "offline" | "error" | "disabled"
 }
 
 type ServiceLevelInfo struct {
@@ -141,34 +161,28 @@ type ResidentInfo struct {
 	BedID            *string           `json:"bed_id,omitempty"`
 }
 
-// CardStatic 卡片静态+动态视图（v2：基于 cards 表 + LPM 实时查询，非 JSONB snapshot）
-// CardType v2 枚举：'tenant'|'branch'|'site'|'unit'|'public'|'room'|'bed'|'device'
+// CardStatic 卡片静态视图（v2.5）。
+//
+// 设计：
+//   - card_id 即 cards.card_id（/88 INET，住 unit 下 card slot 段 [0xF0..0xFE]）
+//   - 跟 spatial 实体（room/bed/device）的关系靠 *.card_id FK 反查 + 卡内 snapshot bool 派生
+//   - struct 平铺 *Info（unit/room/bed），不嵌套；FE 按需取非空
+//
+// CardType v2.5：只区分 'card'（业务） / 'public'（公共）二态；由 cards_display view 派生
 type CardStatic struct {
 	// 基础信息（cards 表权威）
-	CardID        string `json:"card_id"`
-	CardType      string `json:"card_type"`
-	CardName      string `json:"card_name"`                 // 'nickname' 有人 / 'NoOne' 无人
-	DNSShortName  string `json:"dns_short_name,omitempty"`  // v2: SHA256(spatial_prefix) → 6 位 base36（参 ShortCodeOf）；DDNS FQDN + UI Card 显示同源
-	SpatialPrefix string `json:"spatial_prefix"`            // INET CIDR 字符串
+	CardID       string `json:"card_id"`
+	CardType     string `json:"card_type"`                  // 派生自 masklen + card_name：'tenant'|'branch'|'site'|'unit'|'public'|'room'|'bed'|'device'
+	CardName     string `json:"card_name"`                  // nickname / NoOne / public
+	DNSShortName string `json:"card_dns,omitempty"`         // = cards.card_dns（DB 列已重命名；Go 字段名保留）
 
-	// 人类可读地址（按最长 mask 派生：Unit-Room-Bed）；空间结构变才变
-	// v2: cards 表无 card_address 列，运行时 LEFT JOIN units/rooms/beds 拼出
-	CardAddress string `json:"card_address,omitempty"` // e.g. "Unit 201 / Room A / Bed 1"
-
-	// CoverageLabel — UI 卡行 2 自适应标签:
-	//   bed card  → ""（FE 自行用 unit.room_name + bed_name 拼）
-	//   room card → ""（FE 自行用 unit.room_name）
-	//   unit card → 装的 device 跨 distinct room 数：
-	//                1 room → 该 room name (如 "Bathroom")；≥2 → "Whole Unit"；0 → ""
-	CoverageLabel string `json:"coverage_label,omitempty"`
-
-	// 同一 card 必属同一 unit/branch（reverse-derive via LPM）
+	// 静态属性（平铺；按 card 下 has_bed/has_bathroom/has_kitchen 决定哪个非空）：
+	//   bed card  → Bed 非空 + Room 非空 (含 Unit)
+	//   room card → Room 非空 (含 Unit)
+	//   unit/public card → Unit 非空
 	Unit *UnitInfo `json:"unit,omitempty"`
-
-	// 房间/床位（reverse-derive via LPM）
-	Rooms   []RoomIdentifier `json:"rooms,omitempty"`
-	BedID   *string          `json:"bed_id,omitempty"`
-	BedName *string          `json:"bed_name,omitempty"`
+	Room *RoomInfo `json:"room,omitempty"`
+	Bed  *BedInfo  `json:"bed,omitempty"`
 
 	// 住户和设备（实时查询，非 JSONB snapshot）
 	Residents []ResidentInfo `json:"residents"`
@@ -208,10 +222,11 @@ type CardRealTime struct {
 
 // ========== Card Status (card:state / card:status:stream) ==========
 
-// DeviceStatus 单个设备运行时真相（独立 Hash device:status:{device_id}）
+// DeviceStatus 单个设备运行时真相（独立 Hash device:status:{ipv6}）。
+// 仅 backend 内部使用——data 层把字段重 pack 给 FE，不直接 JSON marshal 本 struct。
 type DeviceStatus struct {
 	DeviceUID  string `json:"-"`
-	DeviceID   string `json:"device_id"`
+	DeviceIPv6 string `json:"device_ipv6"`
 	DeviceType string `json:"device_type"`
 
 	UpdatedAt  int64 `json:"updated_at,omitempty"`
@@ -228,16 +243,62 @@ const BedStateDurationNotSet int = -1
 // BedState 在/离床状态。
 // 注：OOB 不构成独立 risk（单源不够）；OOB 作为输入证据喂到 sensor fall 链路
 // （BedsideFall / BedroomLostFall / Still fall），不再有 BedState.RiskLevel 字段。
+//
+// **字段-时刻配对约定（2026-05-20 重设计）**：
+//
+//   每个值 `<field>` 配 ts `<field>_ts`（unix ms）— 该值变更到当前内容的时刻。
+//   **state-change-anchored**：
+//     - 值不变 → ts 不变（重复观测不刷新）
+//     - 值翻转 → ts 更新为翻转时刻
+//   消费者派生：
+//     - 时长   = now - <field>_ts （不存 DurationSec）
+//     - "整体 UpdatedAt" = max(各 *_ts) （不存独立字段）
+//     - 用户活动 anchor = TargetState.LastActiveTs（不在 BedState 里）
+//   omitempty: ts=0 表示"该字段从未被观测过"（startup placeholder 等）。
 type BedState struct {
-	UpdatedAt       int64 `json:"updated_at,omitempty"`
-	BedStatus       int   `json:"bed_status"`
-	TrackNumber     int   `json:"track_number"`
-	StartTime       int64 `json:"start_time,omitempty"`
-	DurationSec     int   `json:"duration_sec"`
-	BedConfidence   int   `json:"bed_confidence"`
-	BedEvent        int   `json:"bed_event"`
-	SleepStage      int   `json:"sleep_stage"`
-	SleepConfidence int   `json:"sleep_confidence"`
+	// BedStatus — 在/离床二态。**直接信号，不反推**。
+	//   0 = InBed（在床；sleepad 压感或 radar firmware bed-area track 触发）
+	//   1 = NotInBed/LeftBed（离床）
+	BedStatus int `json:"bed_status"`
+	// BedStatusTs — BedStatus **翻转到当前值** 时刻；值不变时不刷新。
+	// FE 显 "InBed Xm" / "LeftBed Xm" 的 anchor = now - BedStatusTs。
+	BedStatusTs int64 `json:"bed_status_ts,omitempty"`
+
+	// TrackNumber — bed FSM 当前 Count（zoneengine ZoneState.Count）。
+	//   bed zone：0 或 1（不建模"多人共床"）
+	TrackNumber int `json:"track_number"`
+	// TrackNumberTs — TrackNumber 变到当前值时刻；值不变不刷新。
+	TrackNumberTs int64 `json:"track_number_ts,omitempty"`
+
+	// BedConfidence — 驱动当前 BedStatus 的信号源信任档：
+	//   0  = 无数据 / 60 = radar 派生 / 90 = sleepad 原生
+	BedConfidence int `json:"bed_confidence"`
+	// BedConfidenceTs — BedConfidence 变到当前档时刻；值不变不刷新。
+	BedConfidenceTs int64 `json:"bed_confidence_ts,omitempty"`
+
+	// BedEvent — 最近 transition **event** 类型（非 state；每次 transition 都更新 Ts）：
+	//   0 = Occupied/Returned（刚 InBed）
+	//   1 = Vacant（刚 LeftBed）
+	//   8 = None（Leaving / CountChange 中间过渡，不算明确 event）
+	// state-change-anchored 例外：BedEvent 是 event，每次发生都刷新 BedEventTs。
+	BedEvent int `json:"bed_event"`
+	// BedEventTs — 最近 transition event 发生时刻。
+	BedEventTs int64 `json:"bed_event_ts,omitempty"`
+
+	// SleepStage — 睡眠阶段（仅 sleepad 自带睡眠分类时有）：
+	//   0 = Initial / 1 = Awake / 2 = LightSleep / 4 = DeepSleep / 8 = Unknown
+	// 由 sensor SleepStageConsumer 走 bed.sleepstage 独立 category 写（confidence ladder）。
+	// **bed.state category 不动此字段**（projector 字段级 merge 保留 prev）。
+	SleepStage int `json:"sleep_stage"`
+	// SleepStageTs — SleepStage **变到当前值** 时刻；值不变不刷新。
+	SleepStageTs int64 `json:"sleep_stage_ts,omitempty"`
+
+	// SleepConfidence — SleepStage 的置信度（信号源信任档）：
+	//   0  = 无数据 / 60 = radar 推断（不准）/ 90 = sleepad 原生（权威）
+	// confidence ladder 详 [[cardagg_v1_to_v2_migration_audit]] S4。
+	SleepConfidence int `json:"sleep_confidence"`
+	// SleepConfidenceTs — SleepConfidence 变到当前档时刻。
+	SleepConfidenceTs int64 `json:"sleep_confidence_ts,omitempty"`
 }
 
 const (
@@ -247,6 +308,52 @@ const (
 	SleepStageDeep    = 4
 	SleepStageUnknown = 8
 )
+
+// MaxTs BedState 内所有 per-field ts 的最大值 — 派生"最新更新时刻"。
+// 用途：consumer 端 stale 判定 / "整体 UpdatedAt" 派生。
+func (b *BedState) MaxTs() int64 {
+	if b == nil {
+		return 0
+	}
+	m := b.BedStatusTs
+	if b.TrackNumberTs > m {
+		m = b.TrackNumberTs
+	}
+	if b.BedConfidenceTs > m {
+		m = b.BedConfidenceTs
+	}
+	if b.BedEventTs > m {
+		m = b.BedEventTs
+	}
+	if b.SleepStageTs > m {
+		m = b.SleepStageTs
+	}
+	if b.SleepConfidenceTs > m {
+		m = b.SleepConfidenceTs
+	}
+	return m
+}
+
+// MaxTs RoomState 内所有 per-field ts 的最大值。
+func (r *RoomState) MaxTs() int64 {
+	if r == nil {
+		return 0
+	}
+	m := r.TotalPeopleTs
+	if r.LastEnterTs > m {
+		m = r.LastEnterTs
+	}
+	if r.LastExitTs > m {
+		m = r.LastExitTs
+	}
+	if r.AloneSinceTs > m {
+		m = r.AloneSinceTs
+	}
+	if r.RiskLevelTs > m {
+		m = r.RiskLevelTs
+	}
+	return m
+}
 
 // RiskLevel 风险等级 — RoomState.RiskLevel 用；FE 据此配色。
 // 由 sensor zoneengine 按 room_type + risk-time + 多人陪伴评估。
@@ -272,17 +379,54 @@ const (
 
 // RoomState per-physical-room (/88) 聚合状态。所有 kind 共用一个 shape，risk 语义由 Kind 区分。
 //
-// 注：unit /80 没有 unit_state — unit 卡 FE 自己按 /80 prefix 列子 /88 room，挑最近 UpdatedAt
-// 的那个显示。sensor 内部 unit-scope risk（如 NightAbsence of Room）走自己的 counter，不入此 hash。
+// **字段-时刻配对约定（同 BedState，2026-05-20 重设计）**：
+//   每个状态值配 `<field>_ts`，state-change-anchored（值不变 ts 不变）。
+//   消费者派生时长 = now - <field>_ts；不存 StaySec。
+//   max(各 *_ts) = "整体 UpdatedAt"，不存独立字段。
+//
+// 注：unit /80 没有 unit_state — unit 卡 FE 自己按 /80 prefix 列子 /88 room，挑最新 ts 的显示。
+// sensor 内部 unit-scope risk（如 NightAbsence of Room）走自己的 counter，不入此 hash。
 type RoomState struct {
-	RoomType          int   `json:"room_type,omitempty"` // RoomType*: 0=Default, 1=Bathroom, 2=Kitchen
-	UpdatedAt         int64 `json:"updated_at,omitempty"`
-	TotalPeople       int   `json:"total_people"` // 当前证据推断的人数（radar number_people + sleepad in_bed），不是绝对真实总人数；监控盲区/识别误差会偏移
-	LastEnterTime     int64 `json:"last_enter_time,omitempty"`
-	LastExitTime      int64 `json:"last_exit_time,omitempty"`
-	LastExitToOutside bool  `json:"last_exit_to_outside,omitempty"` // 最近 Vacant 由 EnterArea==outside 触发；不参与 SceneState 派生，仅留作 risk/alarm 原始信号
-	StaySec           int   `json:"stay_sec,omitempty"`
-	RiskLevel         int   `json:"risk_level,omitempty"` // 0=Normal 1=Muted 2=Attention 3=Risk；kind-specific 阈值 + night/multi-people 由 sensor 评估
+	// 注：RoomType 是静态属性 → 已迁出本 hash，由 cardagg CardMeta (rooms.room_type LPM /88) 派生，
+	// FE 从 CardStatic.Room.RoomType 取。sensor / cardagg 内部走各自 cache，不进 RoomState。
+
+	// TotalPeople — 当前房内人数（radar number_people + sleepad in_bed 融合推断）；
+	// 不是绝对真实总人数，监控盲区/识别误差会偏移。
+	TotalPeople int `json:"total_people"`
+	// TotalPeopleTs — TotalPeople **数值变到当前值** 时刻；任意值变化都刷新（含 1→2 / 2→1）。
+	// **不是 stay anchor**！stay 时长用 LastEnterTs 算。本 ts 仅供"最近一次人数变化"独立查询。
+	TotalPeopleTs int64 `json:"total_people_ts,omitempty"`
+
+	// LastEnterTs — **最近一次 0→N+ 进房 transition** 时刻（房间从空 (0) 变占用 (>0) 瞬间）。
+	// 用途：判 "今日有人进过房" / visitor 派生 / 进入冷启动后第一次进入等。
+	// 1→2 / 2→1 等占用期内人数波动 **不更新此字段**。
+	// **不是 stay 锚点**（stay 锚 = AloneSinceTs，独居语义）。
+	LastEnterTs int64 `json:"last_enter_ts,omitempty"`
+
+	// LastExitTs — 最近一次 N→0 离房 transition 时刻（房间变空瞬间）。
+	// 房间再变占用后 LastExitTs 保持上次离开的时刻（"上一段空房结束时刻"语义）。
+	LastExitTs int64 `json:"last_exit_ts,omitempty"`
+
+	// AloneSinceTs — **最近一次 TotalPeople 变到 1 的时刻**（独居开始锚点）。
+	// **stay 时长唯一锚点（独居语义）**：
+	//   消费者 stay = (TotalPeople==1) ? now - AloneSinceTs : 0
+	//
+	// 触发更新的 transition：0→1（独自进入）/ 2→1（同伴离开剩单人）/ N→1（任意降到 1）
+	// 不触发更新：1→2 / 1→3 等"变多"（独居结束）/ 1→0 / 2→3（始终非 1）
+	//
+	// 业务意义：bathroom "alone too long" 风险评估、卧室"独睡太久"等都基于此锚点。
+	// 1 人独居 + 时长超阈值 = 风险；多人陪伴（count>1）期间 stay 不计。
+	AloneSinceTs int64 `json:"alone_since_ts,omitempty"`
+
+	// LastExitToOutside — 最近 Vacant 是否由 EnterArea==outside 触发；不参与 SceneState 派生，
+	// 仅留作 risk/alarm 原始信号。bool 字段无 ts（变更频率低，由 LastExitTs 同期判定）。
+	LastExitToOutside bool `json:"last_exit_to_outside,omitempty"`
+
+	// RiskLevel — 风险等级：0=Normal 1=Muted 2=Attention 3=Risk；
+	// kind-specific 阈值 + night/multi-people 由 sensor 评估。
+	RiskLevel int `json:"risk_level,omitempty"`
+	// RiskLevelTs — RiskLevel 变到当前等级时刻；值不变不刷新。
+	RiskLevelTs int64 `json:"risk_level_ts,omitempty"`
 }
 
 // TargetState 单 Target 汇总（老人维度）。
@@ -378,6 +522,27 @@ const (
 	RoomIconKindBathroom = 1
 )
 
+// BedStatus 二态枚举（与 BedState.BedStatus / observation.Track.BedStatus 同语义）。
+// "未知/不适用"约定用 nil 指针表示（参考 observation/track.go），不引入 8 这种 sentinel。
+const (
+	BedStatusInBed    = 0 // 在床
+	BedStatusNotInBed = 1 // 离床
+)
+
+// CardPriority — Section2.left icon 选择 + /80 UnitPicker winner 排序的统一标量。
+// 高值 = 更应被选中作为 unit winner；FE icon 单 switch 映射。
+// 详 spec card_display.md §3.2。
+const (
+	CardPriorityEmpty             = 0 // 无人（room 内无人 + 无 bed 设备）
+	CardPriorityRoomNormal        = 1 // 非 bathroom 非 bed 房间 + stay_alarm 启用 + 有人
+	CardPriorityBedInUse          = 2 // hasBed（具体 sleep_stage / left-bed 由 bed_status + sleep_stage 派生 icon 变体）
+	CardPriorityBathroomNormal    = 3 // bathroom 占用，无 risk
+	CardPriorityRoomAttention     = 4 // 非 bathroom risk=2 (yellow)
+	CardPriorityBathroomAttention = 5 // bathroom risk=2
+	CardPriorityRoomRisk          = 6 // 非 bathroom risk=3 (red；缺 room-red 资产时 FE cap to yellow)
+	CardPriorityBathroomRisk      = 7 // bathroom risk=3
+)
+
 const (
 	ActiveStateInactive = 0 // FE 渲 "Active <DisplayTime> ago"
 	ActiveStateNow      = 1 // FE 渲 "Active now"（DisplayTime 不参与）
@@ -417,12 +582,14 @@ type CardDisplay struct {
 	UpdatedAt int64 `json:"updated_at"`
 
 	// Section2.left
-	Section2LeftMode int `json:"section2_left_mode"`           // Section2LeftMode*
-	BedStatus        int `json:"bed_status,omitempty"`         // 0=InBed, 1=NotInBed, 8=Unknown；FE 仅在 CardStatic.bed_id != null 时消费
-	SleepStage       int `json:"sleep_stage,omitempty"`        // 0/1/2/4/8 (复用 SleepStage*；仅 BedStatus=0 时有效)
-	RoomPersonCount  int `json:"room_person_count,omitempty"`  // 右上角 badge
-	RoomIconKind     int `json:"room_icon_kind,omitempty"`     // RoomIconKind*
-	RoomRiskLevel    int `json:"room_risk_level,omitempty"`    // 0/1/2/3 → FE 配色（复用 RiskLevel*）
+	Section2LeftMode int  `json:"section2_left_mode"`           // Section2LeftMode*
+	BedStatus        *int `json:"bed_status,omitempty"`         // 0=InBed / 1=NotInBed / nil=未知/不适用（无 bed 设备）；pointer 走 omitempty——nil→省略，*0 / *1 都序列化（与 observation/track.go 同模式）
+	SleepStage       int  `json:"sleep_stage,omitempty"`        // 0/1/2/4/8 (复用 SleepStage*；仅 BedStatus=*0 时有效)
+	RoomPersonCount  int  `json:"room_person_count,omitempty"`  // 右上角 badge
+	RoomIconKind     int  `json:"room_icon_kind,omitempty"`     // RoomIconKind*
+	RoomRiskLevel    int  `json:"room_risk_level,omitempty"`    // 0/1/2/3 → FE 配色（复用 RiskLevel*）
+	StayAlarmEnabled bool `json:"stay_alarm_enabled,omitempty"` // 房间是否启用 stay-time / standing 类长时长 alarm；roomHas 时由 cardagg 从 alarm_enablement 派生
+	CardPriority     int  `json:"card_priority"`                // CardPriority* 统一排序标量；0 (Empty) 是合法值不能省略，故无 omitempty
 
 	// Section3.up.left
 	ActiveState    int   `json:"active_state"`
@@ -432,9 +599,10 @@ type CardDisplay struct {
 	SceneState    int   `json:"scene_state"`
 	SceneAnchorMs int64 `json:"scene_anchor_ms,omitempty"`
 
-	// Section3.down.left (Visitor / Bed timing)
+	// Section3.down.left (Visitor / Bed timing fallback — bed_anchor_ms 在 VisitorState=None 时配合 BedStatus 渲 InBed/LeftBed Xm)
 	VisitorState    int   `json:"visitor_state"`
 	VisitorAnchorMs int64 `json:"visitor_anchor_ms,omitempty"`
+	BedAnchorMs     int64 `json:"bed_anchor_ms,omitempty"` // = bs.start_time；leaf 卡 BedState 存在时填
 
 	// Section3.down.right (WeakBio 横条配色；VitalTrendLevel* 0=hide/1=Gray/2=Yellow/3=Red)
 	VitalTrendLevel int `json:"vital_trend_level,omitempty"`
@@ -454,57 +622,10 @@ type CardStatus struct {
 	Message    map[string]interface{} `json:"message,omitempty"`
 }
 
-// ========== v2 Card Type 枚举（与 cards.card_type CHECK 一致） ==========
-
+// CardType v2.5：cards 表不再存 card_type 列（masklen + card_name 派生）。
+// 业务层若需要"卡型字符串"调 view cards_display.card_type；Go 代码用下面两个常量
+// 区分 public 卡 vs 业务卡。
 const (
-	CardTypeTenant = "tenant" // /48
-	CardTypeBranch = "branch" // /56
-	CardTypeSite   = "site"   // /64
-	CardTypeUnit   = "unit"   // /80
-	CardTypePublic = "public" // /80 公共区域
-	CardTypeRoom   = "room"   // /88
-	CardTypeBed    = "bed"    // /96 ⭐ 居住空间最细层
-	CardTypeDevice = "device" // /128 fallback
+	CardTypeCard   = "card"   // 业务卡（active_bed / room / etc.）
+	CardTypePublic = "public" // 公共区卡（card_name = 'public'）
 )
-
-// MasklenForCardType v2 cards.card_type ↔ masklen 强绑定（CHECK 约束）
-func MasklenForCardType(cardType string) int {
-	switch cardType {
-	case CardTypeTenant:
-		return 48
-	case CardTypeBranch:
-		return 56
-	case CardTypeSite:
-		return 64
-	case CardTypeUnit, CardTypePublic:
-		return 80
-	case CardTypeRoom:
-		return 88
-	case CardTypeBed:
-		return 96
-	case CardTypeDevice:
-		return 128
-	}
-	return 0
-}
-
-// CardTypeForMasklen 反向解析（/96 默认 bed；/80 默认 unit；调用方按业务自选 public）
-func CardTypeForMasklen(masklen int) string {
-	switch masklen {
-	case 48:
-		return CardTypeTenant
-	case 56:
-		return CardTypeBranch
-	case 64:
-		return CardTypeSite
-	case 80:
-		return CardTypeUnit
-	case 88:
-		return CardTypeRoom
-	case 96:
-		return CardTypeBed
-	case 128:
-		return CardTypeDevice
-	}
-	return ""
-}

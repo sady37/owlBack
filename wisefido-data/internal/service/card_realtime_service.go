@@ -154,6 +154,11 @@ func (s *CardRealtimeService) SetGetCardStatusDeps(stateReader *card.Reader, db 
 	s.db = db
 }
 
+// StateReader 暴露注入的 cardagg state reader（card_static_service 给设备读 Redis device:status 用）
+func (s *CardRealtimeService) StateReader() *card.Reader {
+	return s.stateReader
+}
+
 // SetStatusEventChan 注入 status 事件 channel（由 main.go 桥接 subscriber → service）
 func (s *CardRealtimeService) SetStatusEventChan(ch <-chan StatusEvent) {
 	s.statusEventCh = ch

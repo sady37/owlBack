@@ -258,7 +258,158 @@ Refs: doc/cards_v2_migration_checklist.md § X
 
 测试账号已验证：admin/Ts123@123（tenant Demo, fd00:0:3::/48）。
 
-## 七、Phase F session summary（2026-05-12）
+## 七、Schema v2.5 重新设计（2026-05-20，未落地，doc 内讨论中）
+
+### 8.1 背景
+
+Phase F 完成事件驱动 admission/transfer/discharge 后，发现两个 gap：
+
+1. **pickCardPriority 走 Sleepad-only 错语义**（CardMeta.HasBed 看 device 类型）—— Radar-only 床卡 priority=Empty 显灰
+2. **CardMeta 内存缓存层冗余**——cards 表本身就是持久化 CardMeta，应直接 PK 读取代替 cache
+
+根因是 cards 表当前**缺 schema-level 汇总列**（has_bed / has_bathroom 等），逼使 CardMeta 在内存里反推。
+
+### 8.2 完整字段表（最终）
+
+| # | 字段 | 类型 | NULL | 默认 | 说明 |
+|---|---|---|---|---|---|
+| 1 | `card_id` | INET | NOT NULL | — | **PK**。= spatial_prefix（Phase F.6+ 共识）；mask ∈ {48,56,64,80,88,96,128} |
+| 2 | `card_type` | VARCHAR(20) | NOT NULL | — | `'tenant'`/`'branch'`/`'site'`/`'unit'`/`'public'`/`'room'`/`'active_bed'`/`'device'` |
+| 3 | `unit_id` | INET | NULL | NULL | FK → units.unit_id；/48..../80 卡 NULL；ON DELETE CASCADE |
+| 4 | `card_name` | VARCHAR(100) | NULL | NULL | **snapshot**：`<nickname>` / `'NoOne'` / `'public'`；admission/discharge/改名时同步 |
+| 5 | `card_dns` | VARCHAR(255) | NULL | NULL | UNIQUE；6 位 base36 hash(card_id) = ShortCodeOf；纯函数永不变 |
+| 6 | `resident_id` | INET | NULL | NULL | FK → residents.resident_id；current pointer；ON DELETE SET NULL |
+| 7 | `has_bed` | BOOLEAN | NOT NULL | FALSE | snapshot：`EXISTS(beds.card_id = card_id)` |
+| 8 | `has_bathroom` | BOOLEAN | NOT NULL | FALSE | snapshot：`EXISTS(rooms WHERE card_id AND room_type=1)` |
+| 9 | `has_kitchen` | BOOLEAN | NOT NULL | FALSE | snapshot：`EXISTS(rooms WHERE card_id AND room_type=2)` |
+| 10 | `created_at` | TIMESTAMPTZ | NOT NULL | NOW() | 审计 |
+| 11 | `updated_at` | TIMESTAMPTZ | NOT NULL | NOW() | 审计 |
+
+**共 11 列**。
+
+#### 字段三维度 + view 派生 `card_address`
+
+| 维度 | 字段 / 来源 | 形态 | 何时变 |
+|---|---|---|---|
+| ID | `card_id` | INET CIDR e.g. `fd00:0:3:111:3:101::/96` | spatial_prefix 物理删/重建才变 |
+| 占用者（who） | `card_name` snapshot | `nickname` / `NoOne` / `public` | admission/discharge/nickname 改 |
+| 空间位置（where） | `card_address` **view 派生** | `"Denver / Branch A / Bld 1 / Unit 101 / Guest / Bed A"` | tenant/branch/building/unit/room/bed 任一改名（view 自动算） |
+| URL/DNS | `card_dns` | 6 字符 base36 hash | 永不变 |
+
+`card_address` **不作为列**，由 `cards_display` view 用 6 级 LEFT JOIN 拼名字（详 §8.4）。
+理由：6 个数据源 → snapshot 传播链太深；view 6 PK 等值 join 仅 µs 级，性能足。
+
+#### 砍掉的（vs 现行 [50_cards.sql](../../owlRD/dbv2/50_cards.sql) + [50b](../../owlRD/dbv2/50b_card_id_unify.sql)）
+
+| 旧列/约束 | 砍因 |
+|---|---|
+| `spatial_prefix` 字段名 | 改名 `card_id`（值不变） |
+| `is_active` BOOLEAN | doc §一.2 删卡是硬删，无软删 |
+| `enabled_at` / `disabled_at` | 用 created_at + updated_at 足够 |
+| `card_id` UUID | 50b 已删 |
+| `UNIQUE(spatial_prefix, card_type)` | PK 已唯一 |
+| `idx_cards_active` | 无 is_active 列 |
+
+### 8.3 子表新增 `card_id` FK（3 张表）
+
+| 表 | 列 | NULL | ON DELETE | 性质 |
+|---|---|---|---|---|
+| `rooms` | `card_id` INET | NOT NULL | CASCADE | **parent FK**（层级关系：unit > card > room > bed） |
+| `beds` | `card_id` INET | NOT NULL | CASCADE | denormalize（routing perf；理论 = `bed.room.card_id`） |
+| `devices` | `card_id` INET | NULL | SET NULL | denormalize（alarm/sensor 入站一跳查 card）；NULL=未 bind |
+
+子表索引：`idx_{rooms,beds,devices}_card_id`。
+
+**未挂 card_id** 的表：
+- `residents`：`SELECT card_id FROM cards WHERE resident_id=$r` 反查即可（已有 `idx_cards_resident_id`）
+- `units`：`SELECT FROM cards WHERE unit_id=$u AND card_type='public'` 反查
+- `users`：staff 焦点卡是 session 偏好，不是结构关系 —— FE sessionStorage 或独立 `user_preferences` 表
+
+### 8.4 `cards_display` view 草案
+
+```sql
+CREATE VIEW cards_display AS
+SELECT
+    c.card_id, c.card_type, c.card_name, c.card_dns,
+    c.has_bed, c.has_bathroom, c.has_kitchen,
+    c.resident_id,
+    concat_ws(' / ',
+        NULLIF(t.tenant_name, ''),
+        NULLIF(br.branch_name, ''),
+        NULLIF(bld.building_name, ''),
+        NULLIF(u.unit_name, ''),
+        NULLIF(r.room_name, ''),
+        NULLIF(b.bed_name, '')
+    ) AS card_address
+FROM cards c
+LEFT JOIN tenants  t   ON t.tenant_id  = network(set_masklen(c.card_id, 48))
+LEFT JOIN branches br  ON br.branch_id = network(set_masklen(c.card_id, 56))
+LEFT JOIN sites    bld ON bld.site_id  = network(set_masklen(c.card_id, 64))
+LEFT JOIN units    u   ON u.unit_id    = c.unit_id
+LEFT JOIN rooms    r   ON r.card_id    = c.card_id AND masklen(c.card_id) >= 88
+LEFT JOIN beds     b   ON b.card_id    = c.card_id AND masklen(c.card_id) >= 96;
+```
+
+### 8.5 view + function 改写
+
+| 名称 | 旧实现 | 新实现 | 理由 |
+|---|---|---|---|
+| `card_hr_source` | LPM `d.device_ipv6 <<= c.spatial_prefix` | `WHERE d.card_id = c.card_id` PK 等值 | devices.card_id 已存，LPM 多余 |
+| `card_current_resident` | spatial_prefix 字段名 | card_id 字段名 | 仅名字改 |
+| `find_card_by_device_addr(addr INET)` | 扫 cards LPM | `SELECT card_id FROM devices WHERE device_ipv6 = addr` | devices.card_id 已存，一跳查完 |
+
+### 8.6 Snapshot 列 propagation 规则
+
+`card_sync_service` 唯一入口（CLAUDE.md #1.3 单源）：
+
+| 触发事件 | 影响 | SQL 草案 |
+|---|---|---|
+| Edit Unit: `UPDATE rooms.room_type` (Bathroom checkbox) | `cards.has_bathroom` / `has_kitchen` | `UPDATE cards SET has_bathroom = EXISTS(...), has_kitchen = EXISTS(...) WHERE card_id IN (SELECT card_id FROM rooms WHERE room_id=$room_id)` |
+| `INSERT bed` | 影响 cards.has_bed | `UPDATE cards SET has_bed = TRUE WHERE card_id = $bed.card_id` |
+| `DELETE bed` | 影响 cards.has_bed（重算） | `UPDATE cards SET has_bed = EXISTS(SELECT 1 FROM beds WHERE card_id = cards.card_id) WHERE card_id IN (...)` |
+| `INSERT/UPDATE/DELETE device` (bind/unbind) | 路由层 devices.card_id；可能触发 INSERT/DELETE cards（per doc §一.6） | 走现有 card_sync_service 路径 |
+| `UPDATE residents.nickname` | `cards.card_name` | `UPDATE cards SET card_name = $new_nick WHERE resident_id = $r` |
+
+### 8.7 待 user 确认（Open Qs in markdown discussion）
+
+#### Q1: dns_short_name → card_dns 重命名？
+
+跟 `card_id` / `card_name` / `card_type` 同前缀，更顺眼。  
+代价：grep replace ~几十处（FE + BE）。 doc R-001 不向后兼容允许直接换。
+
+- [ ] 改 → 顺手  
+- [ ] 不改 → 保留 `dns_short_name`
+
+#### Q2: card_address 走 view 还是列？
+
+§8.2 表里我列的是 view 派生（理由：6 数据源传播链复杂）。但若你倾向"读路径绝对一致"——cards 表所有 UI 字段一列搞定——也可以做 snapshot 列。
+
+- [ ] view (`cards_display`) — 推荐
+- [ ] 列存 (cards.card_address) — 增加传播 hook
+
+#### Q3: `users.card_id` / `units.card_id` / `residents.card_id` —— 确认全砍？
+
+我之前列了这三个，user 已 push back 应反查。最终方案 §8.3 已删。  
+唯一边角：`units` 多卡时 FE 选 "默认进哪张" 需要 SELECT WHERE card_type='public'，OK 吗？还是要给 unit 一个明确 default pointer？
+
+- [ ] 全砍（反查）— 推荐
+- [ ] 仅 `units.card_id` 保留作 default pointer
+
+#### Q4: card_address 拼接格式
+
+```
+"Denver / Branch A / Bld 1 / Unit 101 / Guest / Bed A"
+```
+分隔符是 `" / "`，跳过 NULL 级。是否合适？或者要：
+- 多级 array（FE 自己拼）
+- 不同 separator（`-` / `,` / `>`）
+- 倒序（细→粗 / 粗→细）
+
+请直接在 doc 这条 list 上勾选/批注。
+
+---
+
+## 八、Phase F session summary（2026-05-12）
 
 | Commit (pending) | Repo | Phase | Files | Notes |
 |---|---|---|---|---|

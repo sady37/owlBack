@@ -60,21 +60,30 @@ func v2CardTypeToV1(v2 string) string {
 	}
 }
 
-// cardSelectExpr v2 cards 行 → CardInfo 字段的派生表达式（INET CIDR 文本）。
-// caller 直接 SELECT cardSelectExpr 后 Scan 8 个字段。
+// cardSelectExpr v2.5 cards 行 → CardInfo 字段的派生表达式（INET CIDR 文本）。
+// caller 直接 SELECT cardSelectExpr 后 Scan 7 个字段。
+// v2.5: card_id INET PK；card_type 列删除，按 masklen+card_name 派生。
 const cardSelectExpr = `
-		c.spatial_prefix::text                                                                                AS card_id,
-		host(network(set_masklen(c.spatial_prefix, 48)))::text || '/48'                                       AS tenant_id,
-		c.card_type                                                                                            AS card_type,
-		CASE WHEN masklen(c.spatial_prefix) >= 96
-		     THEN host(network(set_masklen(c.spatial_prefix, 96)))::text || '/96'
+		c.card_id::text                                                                                        AS card_id,
+		host(network(set_masklen(c.card_id, 48)))::text || '/48'                                               AS tenant_id,
+		CASE masklen(c.card_id)
+		    WHEN  48 THEN 'tenant'
+		    WHEN  56 THEN 'branch'
+		    WHEN  64 THEN 'site'
+		    WHEN  80 THEN CASE WHEN c.card_name = 'public' THEN 'public' ELSE 'unit' END
+		    WHEN  88 THEN 'room'
+		    WHEN  96 THEN 'bed'
+		    WHEN 128 THEN 'device'
+		END                                                                                                    AS card_type,
+		CASE WHEN masklen(c.card_id) >= 96
+		     THEN host(network(set_masklen(c.card_id, 96)))::text || '/96'
 		END                                                                                                    AS bed_id,
-		CASE WHEN masklen(c.spatial_prefix) >= 80
-		     THEN host(network(set_masklen(c.spatial_prefix, 80)))::text || '/80'
+		CASE WHEN masklen(c.card_id) >= 80
+		     THEN host(network(set_masklen(c.card_id, 80)))::text || '/80'
 		END                                                                                                    AS unit_id,
 		c.card_name                                                                                            AS card_name,
-		CASE WHEN masklen(c.spatial_prefix) >= 88
-		     THEN host(network(set_masklen(c.spatial_prefix, 88)))::text || '/88'
+		CASE WHEN masklen(c.card_id) >= 88
+		     THEN host(network(set_masklen(c.card_id, 88)))::text || '/88'
 		END                                                                                                    AS room_id`
 
 // scanCard 把 8 列扫到 CardInfo（v1 兼容字段名 + CardType v2→v1 映射）。
@@ -106,8 +115,8 @@ func scanCard(scanner interface {
 func (r *CardRepository) GetCardByID(tenantID, cardID string) (*CardInfo, error) {
 	query := `SELECT ` + cardSelectExpr + `
 		FROM cards c
-		WHERE c.spatial_prefix = $1::INET
-		  AND network(set_masklen(c.spatial_prefix, 48)) = $2::INET
+		WHERE c.card_id = $1::INET
+		  AND network(set_masklen(c.card_id, 48)) = $2::INET
 		LIMIT 1`
 	row := r.db.QueryRow(query, cardID, tenantID)
 	c, err := scanCard(row)
@@ -156,8 +165,8 @@ func (r *CardRepository) GetCardDevices(cardID string) ([]DeviceInfo, error) {
 func (r *CardRepository) GetAllCards(tenantID string) ([]CardInfo, error) {
 	query := `SELECT ` + cardSelectExpr + `
 		FROM cards c
-		WHERE network(set_masklen(c.spatial_prefix, 48)) = $1::INET
-		ORDER BY c.spatial_prefix`
+		WHERE network(set_masklen(c.card_id, 48)) = $1::INET
+		ORDER BY c.card_id`
 	rows, err := r.db.Query(query, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query cards: %w", err)
@@ -189,9 +198,9 @@ func (r *CardRepository) GetCardByDeviceID(tenantID, deviceID string) (*CardInfo
 	}
 	query := `SELECT ` + cardSelectExpr + `
 		FROM cards c
-		WHERE c.spatial_prefix >>= $1::INET
-		  AND network(set_masklen(c.spatial_prefix, 48)) = $2::INET
-		ORDER BY masklen(c.spatial_prefix) DESC
+		WHERE c.card_id >>= $1::INET
+		  AND network(set_masklen(c.card_id, 48)) = $2::INET
+		ORDER BY masklen(c.card_id) DESC
 		LIMIT 1`
 	row := r.db.QueryRow(query, addr.String(), tenantID)
 	c, err := scanCard(row)

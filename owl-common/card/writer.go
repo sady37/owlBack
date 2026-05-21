@@ -20,14 +20,10 @@ func NewWriter(client *redis.Client, statusMaxLen, realtimeMaxLen int64) *Writer
 	return &Writer{client: client, statusMaxLen: statusMaxLen, realtimeMaxLen: realtimeMaxLen}
 }
 
-// normalizeBedStateForWrite 写入前仅规范 DurationSec：<0 时置为 -1（未设置）。
+// normalizeBedStateForWrite 写入前的规范化（2026-05-20 起 BedState 改 per-field ts 模式后
+// 无需 normalize；保留空函数兼容 caller）。
 func normalizeBedStateForWrite(bs *BedState) {
-	if bs == nil {
-		return
-	}
-	if bs.DurationSec < 0 {
-		bs.DurationSec = BedStateDurationNotSet
-	}
+	// DurationSec 已删除 — 消费者用 now - BedStatusTs 自己算
 }
 
 // WriteCardStatus atomically writes non-nil CardStatus blocks to Hash
@@ -141,27 +137,27 @@ func (w *Writer) WriteCardStatusSilent(ctx context.Context, status *CardStatus) 
 	return w.client.HSet(ctx, hashKey, args...).Err()
 }
 
-// PatchDeviceStatus 增量更新 device:status:{deviceID} Hash 的部分字段（仅写传入的非空 string/int 字段）。
-// fields 中的 key 应为 Hash 字段名（"offline" / "signal_poor" / "last_seen_ms" 等）。
-func (w *Writer) PatchDeviceStatus(ctx context.Context, deviceID string, fields map[string]interface{}) error {
-	if deviceID == "" || len(fields) == 0 {
+// PatchDeviceStatus 增量更新 device:status:{ipv6} Hash 的部分字段（仅写传入的非空 string/int 字段）。
+// deviceAddr = /128 IPv6 canonical host text。fields key 为 Hash 字段名（"offline" / "signal_poor" / "last_seen_ms" 等）。
+func (w *Writer) PatchDeviceStatus(ctx context.Context, deviceAddr string, fields map[string]interface{}) error {
+	if deviceAddr == "" || len(fields) == 0 {
 		return nil
 	}
 	args := make([]interface{}, 0, len(fields)*2+2)
-	args = append(args, "device_id", deviceID)
+	args = append(args, "device_ipv6", deviceAddr)
 	for k, v := range fields {
 		args = append(args, k, v)
 	}
 	if _, ok := fields["updated_at"]; !ok {
 		args = append(args, "updated_at", fmt.Sprintf("%d", time.Now().UnixMilli()))
 	}
-	return w.client.HSet(ctx, DeviceStatusHashKey(deviceID), args...).Err()
+	return w.client.HSet(ctx, DeviceStatusHashKey(deviceAddr), args...).Err()
 }
 
-// SetDeviceOnline 改写为 device:status:{deviceID} Hash 的部分更新（Phase A）。
-// 上线：offline=0 + last_seen_ms=now；下线：offline=1 + 保留 device_id 用于追踪。
-func (w *Writer) SetDeviceOnline(ctx context.Context, deviceID, deviceUID, deviceType string, online bool) error {
-	if deviceID == "" {
+// SetDeviceOnline 改写为 device:status:{ipv6} Hash 的部分更新。
+// 上线：offline=0 + last_seen_ms=now；下线：offline=1。
+func (w *Writer) SetDeviceOnline(ctx context.Context, deviceAddr, deviceUID, deviceType string, online bool) error {
+	if deviceAddr == "" {
 		return nil
 	}
 	now := time.Now().UnixMilli()
@@ -176,15 +172,15 @@ func (w *Writer) SetDeviceOnline(ctx context.Context, deviceID, deviceUID, devic
 	} else {
 		fields["offline"] = "1"
 	}
-	return w.PatchDeviceStatus(ctx, deviceID, fields)
+	return w.PatchDeviceStatus(ctx, deviceAddr, fields)
 }
 
-// DeleteDeviceStatus 删除 device:status:{deviceID} Hash（设备从 cards 解绑/卸载时调用）。
-func (w *Writer) DeleteDeviceStatus(ctx context.Context, deviceID string) error {
-	if deviceID == "" {
+// DeleteDeviceStatus 删除 device:status:{ipv6} Hash（设备从 cards 解绑/卸载时调用）。
+func (w *Writer) DeleteDeviceStatus(ctx context.Context, deviceAddr string) error {
+	if deviceAddr == "" {
 		return nil
 	}
-	return w.client.Del(ctx, DeviceStatusHashKey(deviceID)).Err()
+	return w.client.Del(ctx, DeviceStatusHashKey(deviceAddr)).Err()
 }
 
 // WriteAI writes AI-derived flat fields to Hash with TTL timestamps, then publishes notification.

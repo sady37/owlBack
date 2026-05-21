@@ -12,10 +12,9 @@ import (
 // CardDB wraps *sql.DB for card-related queries.
 // v2: 反查不再依赖 cards.devices JSONB；改走 devices.device_ipv6 + cards.spatial_prefix INET LPM。
 //
-//	device_factory_meta (device_id PK, device_uid UNIQUE, device_code, device_type, device_model, ...)
-//	devices             (device_ipv6 PK INET /128, device_id, monitoring_enabled, access)
-//	device_runtime_state(device_id PK, online, firmware_version, last_heartbeat_at, ...)
-//	cards               (card_id UUID PK, spatial_prefix INET, card_type, resident_id INET, dns_short_name, ...)
+//	device_factory_meta (device_id PK, device_uid UNIQUE, device_code, device_type, device_model, firmware_version, ...)
+//	devices             (device_ipv6 PK INET /128, device_id, card_id, monitoring_enabled, access)
+//	cards               (card_id INET PK, card_name, card_dns, resident_id INET, has_bed/has_bathroom/has_kitchen)
 //
 // 反查链：device_uid|device_code → device_factory_meta → device_id
 //
@@ -463,18 +462,16 @@ func (c *CardDB) RoomIdentifiersForCard(ctx context.Context, tenantID, cardID st
 	return out, nil
 }
 
-// UpdateDeviceStoreReportedVersion 设备上报固件版本时：更新 device_runtime_state.firmware_version。
+// UpdateDeviceStoreReportedVersion 设备上报固件版本时：更新 device_factory_meta.firmware_version。
 // 返回 changed=true 表示版本真的写入了；false 表示与当前一致 no-op（caller 据此决定是否 Info-log）。
-// v2: firmware_version 已从 device_store 迁出到 device_runtime_state；OTA target 字段独立到 device_ota 表。
 func (c *CardDB) UpdateDeviceStoreReportedVersion(ctx context.Context, deviceKey, reportedVersion string) (changed bool, err error) {
 	if deviceKey == "" || reportedVersion == "" {
 		return false, nil
 	}
 	var currentFirmware sql.NullString
 	err = c.db.QueryRowContext(ctx, `
-		SELECT drs.firmware_version
+		SELECT dfm.firmware_version
 		FROM device_factory_meta dfm
-		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		WHERE `+pgUIDNormExpr("dfm.device_uid")+` = regexp_replace(upper(btrim($1::text)), E'[:.\\s-]', '', 'g')
 		   OR dfm.device_code = $1
 		LIMIT 1
@@ -493,15 +490,13 @@ func (c *CardDB) UpdateDeviceStoreReportedVersion(ctx context.Context, deviceKey
 		return false, nil
 	}
 	_, err = c.db.ExecContext(ctx, `
-		INSERT INTO device_runtime_state (device_id, firmware_version, updated_at)
-		SELECT dfm.device_id, $1, NOW()
-		FROM device_factory_meta dfm
-		WHERE `+pgUIDNormExpr("dfm.device_uid")+` = regexp_replace(upper(btrim($2::text)), E'[:.\\s-]', '', 'g')
-		   OR dfm.device_code = $2
-		ON CONFLICT (device_id) DO UPDATE SET firmware_version = EXCLUDED.firmware_version, updated_at = NOW()
+		UPDATE device_factory_meta
+		   SET firmware_version = $1
+		 WHERE `+pgUIDNormExpr("device_uid")+` = regexp_replace(upper(btrim($2::text)), E'[:.\\s-]', '', 'g')
+		    OR device_code = $2
 	`, reportedVersion, deviceKey)
 	if err != nil {
-		return false, fmt.Errorf("update device_runtime_state version: %w", err)
+		return false, fmt.Errorf("update dfm firmware_version: %w", err)
 	}
 	return true, nil
 }

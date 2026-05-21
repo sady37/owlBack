@@ -735,8 +735,7 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 						data = make(map[string]interface{})
 					}
 					data[observation.FieldOffline] = 0
-					cid := m.streamPublisher.GetCardID(ctx, deviceUID)
-					msg := rediscommon.NewSingleItemMessage(addrLocal, cid, deviceType, time.Now().UnixMilli(), "alarm", alarm.AlarmTypeOfflineRecover, data)
+					msg := rediscommon.NewSingleItemMessage(addrLocal, "", deviceType, time.Now().UnixMilli(), "alarm", alarm.AlarmTypeOfflineRecover, data)
 					_ = m.streamPublisher.PublishAlarm(ctx, msg)
 				}()
 			}
@@ -874,8 +873,7 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 				data = make(map[string]interface{})
 			}
 			data[observation.FieldOffline] = 0
-			cid := m.streamPublisher.GetCardID(pubCtx, deviceUID)
-			msg := rediscommon.NewSingleItemMessage(addrJC, cid, subDeviceType, time.Now().UnixMilli(), "alarm", alarm.AlarmTypeOfflineRecover, data)
+			msg := rediscommon.NewSingleItemMessage(addrJC, "", subDeviceType, time.Now().UnixMilli(), "alarm", alarm.AlarmTypeOfflineRecover, data)
 			_ = m.streamPublisher.PublishAlarm(pubCtx, msg)
 		}()
 		// device 上线是常规事件（startup 时一次性触发 60+ 条），降级到 Debug；

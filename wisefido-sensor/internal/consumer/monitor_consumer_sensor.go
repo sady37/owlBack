@@ -35,7 +35,7 @@ const (
 // BufferWriter 仅声明 sensor MonitorConsumer 所需的 buffer 写入面，便于注入而不引入 service 包依赖。
 // service.MonitorBuffer.Write 满足此接口。
 type BufferWriter interface {
-	Write(cardID, deviceID, trackKey string, fields map[string]any, tsMs int64)
+	Write(cardID, deviceID, deviceType, trackKey string, fields map[string]any, tsMs int64)
 }
 
 // MonitorConsumer 喂 sensor 端 MonitorBuffer 的薄消费者。
@@ -104,7 +104,7 @@ func (c *MonitorConsumer) handleRaw(raw map[string]interface{}) {
 	}
 	deviceKey := msg.DeviceAddr.String()
 	trackID := sensorResolveTrackID(fields)
-	c.buffer.Write(msg.SubjectEntity, deviceKey, strconv.Itoa(trackID), fields, msg.Timestamp)
+	c.buffer.Write(msg.SubjectEntity, deviceKey, msg.DeviceType, strconv.Itoa(trackID), fields, msg.Timestamp)
 }
 
 // sensorResolveTrackID 与 cardagg consumer.resolveTrackID 同语义；无效返回 observation.TrackInvalid。

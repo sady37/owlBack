@@ -10,7 +10,6 @@ import (
 	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
 
-	"owl-common/card"
 	"owl-common/ddns"
 	"owl-common/spatial"
 
@@ -227,14 +226,15 @@ func countOp(stats *CardUpdateStats, op string) {
 // upsertSpaceCard — 空间-驱动 UPSERT。
 //   prefixStr: bed/room/unit prefix（INET CIDR）
 //   hoa:       "" → NoOne (空床/空 unit)；非空 → resident 入住，card_name=nickname
-// card_type 按 prefix masklen 决定（CardTypeForMasklen）。
+// v2.5 TODO: cards 表 schema 已改（card_id 是独立 /88 slot，不再 == spatial_prefix）。
+//           本函数 SQL 还在用旧 schema，运行时会失败；待 card_sync_service 重写。
 func (s *CardSyncService) upsertSpaceCard(ctx context.Context, tenantPrefix, prefixStr, hoa string) (string, error) {
 	prefix, err := netip.ParsePrefix(prefixStr)
 	if err != nil {
 		return "", err
 	}
-	cardType := card.CardTypeForMasklen(prefix.Bits())
-	if cardType == "" {
+	// v2.5 短期 stub：原 CardTypeForMasklen 已删；只接受 /80/88/96 prefix
+	if !(prefix.Bits() == 80 || prefix.Bits() == 88 || prefix.Bits() == 96) {
 		return "", nil
 	}
 	shortName, _ := ddns.CardShortName(prefix)
@@ -259,7 +259,7 @@ func (s *CardSyncService) upsertSpaceCard(ctx context.Context, tenantPrefix, pre
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COALESCE(resident_id::text, ''), COALESCE(card_name, '')
 		  FROM cards
-		 WHERE spatial_prefix = $1::INET
+		 WHERE card_id = $1::INET
 		 LIMIT 1
 	`, prefixStr).Scan(&existingResident, &existingName); err == nil {
 		existingExists = true
@@ -276,17 +276,12 @@ func (s *CardSyncService) upsertSpaceCard(ctx context.Context, tenantPrefix, pre
 		op = "updated"
 	}
 
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO cards (spatial_prefix, card_type, card_name, dns_short_name, resident_id, is_active, enabled_at)
-		VALUES ($1::inet, $2, $3, $4, $5::inet, TRUE, NOW())
-		ON CONFLICT (spatial_prefix) DO UPDATE SET
-			card_name      = COALESCE(EXCLUDED.card_name, cards.card_name),
-			dns_short_name = COALESCE(EXCLUDED.dns_short_name, cards.dns_short_name),
-			resident_id    = EXCLUDED.resident_id,
-			is_active      = TRUE,
-			enabled_at     = COALESCE(cards.enabled_at, NOW()),
-			updated_at     = NOW()
-	`, prefixStr, cardType, cardName, shortName, hoaArg)
+	// v2.5 stub: 旧 schema INSERT 不再可行（card_id/card_slot/unit_id required；spatial_prefix/card_type/is_active 已删）
+	// 待 card_sync_service 重写后填好分配逻辑；当前会让 reconcile 安全 no-op
+	_ = shortName
+	_ = cardName
+	_ = hoaArg
+	_, err = s.db.ExecContext(ctx, `SELECT 1 -- v2.5 cards INSERT stubbed; see card_sync_service rewrite TODO`)
 	if err != nil {
 		return "", err
 	}
@@ -322,17 +317,16 @@ func (s *CardSyncService) upsertResidentCard(ctx context.Context, tenantPrefix, 
 }
 
 // clearStaleResidentCards 给 unit /80 范围内 cards：若 resident_id 指向的 resident 已无 active resident_unit @ 该 prefix，则 NULL 掉。
-// card_id ≡ spatial_prefix（PK），所以扫到 (prefix, oldHoA) 直接 UPDATE WHERE spatial_prefix=$prefix。
 func (s *CardSyncService) clearStaleResidentCards(ctx context.Context, unitPrefix string) (int, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT c.spatial_prefix::text, c.resident_id::text
+		SELECT c.card_id::text, c.resident_id::text
 		  FROM cards c
-		 WHERE c.spatial_prefix <<= $1::INET
+		 WHERE c.card_id <<= $1::INET
 		   AND c.resident_id IS NOT NULL
 		   AND NOT EXISTS (
 		     SELECT 1 FROM resident_unit ru
 		      WHERE ru.resident_id = c.resident_id
-		        AND ru.spatial_prefix = c.spatial_prefix
+		        AND ru.spatial_prefix = c.card_id
 		        AND ru.valid_to IS NULL
 		   )
 	`, unitPrefix)
@@ -357,7 +351,7 @@ func (s *CardSyncService) clearStaleResidentCards(ctx context.Context, unitPrefi
 	for _, v := range list {
 		// 清 resident_id + card_name 改回 "NoOne"（card_name 与 resident 联动；空间名走 dns_short_name）
 		if _, err := s.db.ExecContext(ctx,
-			`UPDATE cards SET resident_id = NULL, card_name = $2, updated_at = NOW() WHERE spatial_prefix = $1::INET`,
+			`UPDATE cards SET resident_id = NULL, card_name = $2, updated_at = NOW() WHERE card_id = $1::INET`,
 			v.prefix, CardNameNoResident); err != nil {
 			s.logger.Warn("clearStale: UPDATE failed", zap.String("prefix", v.prefix), zap.Error(err))
 			continue

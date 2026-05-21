@@ -12,7 +12,7 @@ import (
 
 // BathroomLookup 实现 zoneengine.BathroomLookup —— 查 rooms.room_type='bathroom' 推导。
 //
-// 缓存策略同 [[BedSizeLookup]]：进程内永久缓存，房间类型不会频繁变化。
+// 缓存策略：60s TTL（admin 改 room_type 异步生效，最坏 60s 收敛）。
 //
 // 判定优先级：
 //  1. rooms.room_type 命中 'bathroom' / 'restroom' → bathroom
@@ -25,17 +25,24 @@ type BathroomLookup struct {
 	logger *zap.Logger
 
 	mu    sync.RWMutex
-	cache map[string]bool // roomZoneID(/88 CIDR) → isBathroom
+	cache map[string]bathroomCacheEntry // roomZoneID(/88 CIDR) → entry
 
 	queryTimeout time.Duration
+	ttl          time.Duration
+}
+
+type bathroomCacheEntry struct {
+	isBathroom bool
+	expireAt   time.Time
 }
 
 func NewBathroomLookup(db *sql.DB, logger *zap.Logger) *BathroomLookup {
 	return &BathroomLookup{
 		db:           db,
 		logger:       logger,
-		cache:        make(map[string]bool),
+		cache:        make(map[string]bathroomCacheEntry),
 		queryTimeout: 2 * time.Second,
+		ttl:          60 * time.Second,
 	}
 }
 
@@ -44,17 +51,18 @@ func (l *BathroomLookup) IsBathroom(roomZoneID string) bool {
 	if roomZoneID == "" {
 		return false
 	}
+	now := time.Now()
 	l.mu.RLock()
-	if v, ok := l.cache[roomZoneID]; ok {
+	if v, ok := l.cache[roomZoneID]; ok && now.Before(v.expireAt) {
 		l.mu.RUnlock()
-		return v
+		return v.isBathroom
 	}
 	l.mu.RUnlock()
 
 	is := l.queryIsBathroom(roomZoneID)
 
 	l.mu.Lock()
-	l.cache[roomZoneID] = is
+	l.cache[roomZoneID] = bathroomCacheEntry{isBathroom: is, expireAt: now.Add(l.ttl)}
 	l.mu.Unlock()
 	return is
 }
@@ -99,15 +107,3 @@ func (l *BathroomLookup) queryIsBathroom(roomZoneID string) bool {
 	return false
 }
 
-// Invalidate / InvalidateAll 同 BedSizeLookup。
-func (l *BathroomLookup) Invalidate(roomZoneID string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	delete(l.cache, roomZoneID)
-}
-
-func (l *BathroomLookup) InvalidateAll() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.cache = make(map[string]bool)
-}

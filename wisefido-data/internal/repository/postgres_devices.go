@@ -74,8 +74,9 @@ func orderByClause(sort, direction string) string {
 	return "d.device_name " + dir
 }
 
-// orderByClauseDevicesV2 v2 表名映射的排序白名单（dfm/drs/d/o/t）。
+// orderByClauseDevicesV2 v2.5 表名映射的排序白名单（dfm/d/o/t；drs 已退役）。
 // 默认 import_date DESC（保持 v1 行为：新导入的库存先排在前面）。
+// online_status 排序在 SQL 层不再支持（drs.online 列已删；FE 想按 online 排可改 client-side）。
 func orderByClauseDevicesV2(sortKey, direction string) string {
 	dir := "ASC"
 	if strings.TrimSpace(strings.ToUpper(direction)) == "DESC" {
@@ -83,12 +84,10 @@ func orderByClauseDevicesV2(sortKey, direction string) string {
 	}
 	col := strings.TrimSpace(strings.ToLower(sortKey))
 	switch col {
-	case "device_uid", "device_code", "device_type", "device_model", "imei", "comm_mode", "mcu_model":
+	case "device_uid", "device_code", "device_type", "device_model", "imei", "comm_mode", "mcu_model", "firmware_version":
 		return "dfm." + col + " " + dir
 	case "mac":
 		return "dfm.mac_wifi " + dir
-	case "firmware_version":
-		return "drs.firmware_version " + dir
 	case "import_date":
 		return "dfm.import_date " + dir
 	case "allocate_time":
@@ -105,8 +104,6 @@ func orderByClauseDevicesV2(sortKey, direction string) string {
 		return "o.status " + dir
 	case "ota_progress":
 		return "o.progress " + dir
-	case "online_status":
-		return "drs.online " + dir
 	case "device_name":
 		// v2 没 device_name 列；让 device_uid 充当 device_name 的排序代理
 		return "dfm.device_uid " + dir
@@ -125,10 +122,9 @@ func orderByClauseDevicesV2(sortKey, direction string) string {
 //   - tenantID != ""：WHERE devices.device_ipv6 <<= $tenantID::INET
 //     调用方（DeviceHandler）负责决定是否传 ""，本层不做 admin 检测。
 //
-// v2 schema JOIN（已纯位掩码化，详见 owlBack/doc/spatial_query_patterns.md）：
+// v2.5 schema JOIN（详见 owlBack/doc/spatial_query_patterns.md；drs 已退役，online 在 Redis）：
 //
-//	device_factory_meta dfm  (PK device_id, 出厂元数据：device_uid/device_code/device_type/mac_wifi/imei/...)
-//	    LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id  (online/firmware_version/...)
+//	device_factory_meta dfm  (PK device_id, 出厂元数据 + firmware_version：device_uid/device_code/device_type/mac_wifi/imei/...)
 //	    LEFT JOIN devices d              ON d.device_id = dfm.device_id      (device_ipv6 → tenant/room/bed 反推)
 //	    LEFT JOIN device_ota o           ON o.device_ipv6 = d.device_ipv6  (OTA 计划)
 //
@@ -181,22 +177,9 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		argN++
 	}
 
-	// online/offline 状态过滤：drs.online IS TRUE / FALSE
-	if len(filters.Status) > 0 {
-		ors := []string{}
-		for _, st := range filters.Status {
-			s := strings.ToLower(strings.TrimSpace(st))
-			switch s {
-			case "online":
-				ors = append(ors, "drs.online IS TRUE")
-			case "offline":
-				ors = append(ors, "(drs.online IS FALSE OR drs.online IS NULL)")
-			}
-		}
-		if len(ors) > 0 {
-			where = append(where, "("+strings.Join(ors, " OR ")+")")
-		}
-	}
+	// v2.5: online/offline 状态过滤 SQL 层取消；status 在 Redis device:status:{ipv6}，
+	// FE 要按 online 过滤可改 client-side（拿到列表后用 device.status 字段筛）。
+	_ = filters.Status
 
 	whereClause := ""
 	if len(where) > 0 {
@@ -207,7 +190,6 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 	countQ := `
 		SELECT COUNT(*)
 		  FROM device_factory_meta dfm
-		  LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		  LEFT JOIN devices d                ON d.device_id = dfm.device_id
 		  LEFT JOIN device_ota o             ON o.device_ipv6 = d.device_ipv6
 		  ` + whereClause
@@ -244,7 +226,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		  dfm.imei                                                                             AS imei,
 		  dfm.comm_mode                                                                        AS comm_mode,
 		  dfm.mcu_model                                                                        AS mcu_model,
-		  drs.firmware_version                                                                 AS firmware_version,
+		  dfm.firmware_version                                                                 AS firmware_version,
 		  -- tenant /48 反推（无 devices 行时为 NULL，由扫描层兜底为 unbound prefix）
 		  CASE WHEN d.device_ipv6 IS NOT NULL
 		       THEN host(network(set_masklen(d.device_ipv6, 48))) || '/48'
@@ -295,20 +277,19 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		       THEN host(network(set_masklen(d.device_ipv6, 80))) || '/80'
 		  END                                                                                  AS unit_id,
 		  u.unit_name                                                                          AS unit_name,
-		  -- card_id / dns_short_name：cards.spatial_prefix LPM 覆盖该 device，取最长（最具体）
-		  c.spatial_prefix::text                                                               AS card_id,
-		  c.dns_short_name                                                                     AS dns_short_name
+		  -- card_id / dns_short_name：cards.card_id LPM 覆盖该 device，取最长（最具体）
+		  c.card_id::text                                                               AS card_id,
+		  c.card_dns                                                                     AS dns_short_name
 		FROM device_factory_meta dfm
-		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d                ON d.device_id = dfm.device_id
 		LEFT JOIN device_ota o             ON o.device_ipv6 = d.device_ipv6
 		LEFT JOIN branches br              ON br.branch_id = network(set_masklen(d.device_ipv6, 56))
 		LEFT JOIN units u                  ON u.unit_id = network(set_masklen(d.device_ipv6, 80))
 		LEFT JOIN LATERAL (
-		    SELECT cd.spatial_prefix, cd.dns_short_name
+		    SELECT cd.card_id, cd.card_dns
 		      FROM cards cd
-		     WHERE cd.spatial_prefix >>= d.device_ipv6
-		     ORDER BY masklen(cd.spatial_prefix) DESC
+		     WHERE cd.card_id >>= d.device_ipv6
+		     ORDER BY masklen(cd.card_id) DESC
 		     LIMIT 1
 		) c ON TRUE
 		` + whereClause + `
@@ -463,7 +444,7 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 		  dfm.imei                                                                             AS imei,
 		  dfm.comm_mode                                                                        AS comm_mode,
 		  dfm.mcu_model                                                                        AS mcu_model,
-		  drs.firmware_version                                                                 AS firmware_version,
+		  dfm.firmware_version                                                                 AS firmware_version,
 		  CASE WHEN d.device_ipv6 IS NOT NULL
 		       THEN host(network(set_masklen(d.device_ipv6, 48))) || '/48'
 		  END                                                                                  AS tenant_id,
@@ -503,19 +484,18 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 		       THEN host(network(set_masklen(d.device_ipv6, 80))) || '/80'
 		  END                                                                                  AS unit_id,
 		  u.unit_name                                                                          AS unit_name,
-		  c.spatial_prefix::text                                                               AS card_id,
-		  c.dns_short_name                                                                     AS dns_short_name
+		  c.card_id::text                                                               AS card_id,
+		  c.card_dns                                                                     AS dns_short_name
 		FROM device_factory_meta dfm
-		LEFT JOIN device_runtime_state drs ON drs.device_id = dfm.device_id
 		LEFT JOIN devices d                ON d.device_id = dfm.device_id
 		LEFT JOIN device_ota o             ON o.device_ipv6 = d.device_ipv6
 		LEFT JOIN branches br              ON br.branch_id = network(set_masklen(d.device_ipv6, 56))
 		LEFT JOIN units u                  ON u.unit_id = network(set_masklen(d.device_ipv6, 80))
 		LEFT JOIN LATERAL (
-		    SELECT cd.spatial_prefix, cd.dns_short_name
+		    SELECT cd.card_id, cd.card_dns
 		      FROM cards cd
-		     WHERE cd.spatial_prefix >>= d.device_ipv6
-		     ORDER BY masklen(cd.spatial_prefix) DESC
+		     WHERE cd.card_id >>= d.device_ipv6
+		     ORDER BY masklen(cd.card_id) DESC
 		     LIMIT 1
 		) c ON TRUE
 		WHERE dfm.device_id = $1::uuid

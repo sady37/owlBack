@@ -511,7 +511,6 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 		)
 		return
 	}
-	cid := m.streamPublisher.GetCardID(ctx, deviceUID)
 	// device_ipv6 单程票：deviceUID 反查 addr（health_check 不是热路径，多一次 DB 查询可接受）
 	var addr netip.Addr
 	if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(ctx, deviceUID); dsErr == nil && dsi != nil {
@@ -527,7 +526,6 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 			zap.String("field", fieldKey),
 			zap.Int("value", value),
 			zap.String("event", eventName),
-			zap.String("cid", cid),
 			zap.String("addr", addr.String()),
 		)
 	}
@@ -557,7 +555,7 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 	if directAlarm {
 		topicType = "alarm"
 	}
-	msg := redis.NewSingleItemMessage(addr, cid, "Radar", ts, topicType, eventName, data)
+	msg := redis.NewSingleItemMessage(addr, "", "Radar", ts, topicType, eventName, data)
 	if directAlarm {
 		if err := m.streamPublisher.PublishAlarm(ctx, msg); err != nil {
 			m.logger.Warn("Failed to publish device alarm", zap.String("event_name", eventName), zap.String("device_uid", deviceUID), zap.Error(err))

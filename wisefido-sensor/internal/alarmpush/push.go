@@ -8,7 +8,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -60,16 +59,23 @@ func NotifyWisefidoData(logger *zap.Logger, tenantID, cardID, deviceID, eventID,
 	}()
 }
 
-// LookupCardIDByDevice 与 owl-common/card findCardIDByDevice 一致（无事务版）
+// LookupCardIDByDevice v2: deviceID 是 canonical IPv6 (device_ipv6 单程票)，
+// 直读 devices.card_id（FE 已显式绑定）。
 func LookupCardIDByDevice(ctx context.Context, db *sql.DB, deviceID string) (string, error) {
 	if db == nil || deviceID == "" {
 		return "", sql.ErrNoRows
 	}
-	var cardID string
+	var cardID sql.NullString
 	err := db.QueryRowContext(ctx, `
-		SELECT card_id FROM cards
-		WHERE devices @> $1::jsonb
-		LIMIT 1
-	`, fmt.Sprintf(`[{"device_id":"%s"}]`, deviceID)).Scan(&cardID)
-	return cardID, err
+		SELECT card_id::text FROM devices
+		 WHERE device_ipv6 = $1::INET
+		 LIMIT 1
+	`, deviceID).Scan(&cardID)
+	if err != nil {
+		return "", err
+	}
+	if !cardID.Valid {
+		return "", sql.ErrNoRows
+	}
+	return cardID.String, nil
 }

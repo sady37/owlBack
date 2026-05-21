@@ -166,6 +166,29 @@ func (p *ConfigPublisher) lookupDeviceAddr(ctx context.Context, deviceID string)
 	return a
 }
 
+// lookupDeviceAddrsByPrefix 查 spatial_prefix（INET CIDR）下所有 devices.device_ipv6 host text 列表。
+// 用于 config:card publish 时附带 affected_device_addrs；consumer 直接读 payload 不再做 DB query。
+func (p *ConfigPublisher) lookupDeviceAddrsByPrefix(ctx context.Context, prefix string) []string {
+	if p.db == nil || prefix == "" {
+		return nil
+	}
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT DISTINCT host(d.device_ipv6)::text FROM devices d WHERE d.device_ipv6 <<= $1::inet`,
+		prefix)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]string, 0, 8)
+	for rows.Next() {
+		var addr string
+		if err := rows.Scan(&addr); err == nil && addr != "" {
+			out = append(out, addr)
+		}
+	}
+	return out
+}
+
 // PublishCardChangeMessage 发送卡片变更消息到 config:card:stream
 // 供 qinglan 和其他服务消费用于更新卡片相关配置
 func (p *ConfigPublisher) PublishCardChangeMessage(
@@ -186,7 +209,8 @@ func (p *ConfigPublisher) PublishCardChangeMessageWithExtra(
 	return p.PublishCardChangeMessageWithExtraAndType(ctx, tenantID, cardID, unitID, branchID, rediscommon.ConfigCardChanged, extraData)
 }
 
-// PublishCardChangeForDevice 发送 config.card，data 含 device_id、change_type；可选 deviceUIDs 写入 affected_device_uids 供网关精确失效。
+// PublishCardChangeForDevice 发送 config.card，data 含 device_id、change_type、affected_device_addrs（精确 /128）+
+// 可选 affected_device_uids 供 gateway 按 uid 失效。
 func (p *ConfigPublisher) PublishCardChangeForDevice(ctx context.Context, tenantID, deviceID, changeType string, deviceUIDs ...string) error {
 	if p == nil || deviceID == "" {
 		return nil
@@ -195,10 +219,22 @@ func (p *ConfigPublisher) PublishCardChangeForDevice(ctx context.Context, tenant
 		"device_id":   deviceID,
 		"change_type": changeType,
 	}
+	if addr := p.lookupDeviceAddr(ctx, deviceID); addr.IsValid() {
+		extra["affected_device_addrs"] = []string{addr.String()}
+	}
 	if u := compactDeviceUIDs(deviceUIDs); len(u) > 0 {
 		extra["affected_device_uids"] = u
 	}
 	return p.PublishCardChangeMessageWithExtraAndType(ctx, tenantID, "", "", "", rediscommon.ConfigCardChanged, extra)
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func compactDeviceUIDs(uids []string) []string {
@@ -308,6 +344,16 @@ func (p *ConfigPublisher) PublishCardChangeMessageWithExtraAndType(
 	}
 	// 构建卡片变更消息（spatial_prefix 由 caller 在 extras 中提供，老 caller 暂传空）
 	spatialPrefix, _ := extraData["spatial_prefix"].(string)
+
+	// 派生 affected_device_addrs：caller 未提供时按 cardID/unitID/spatial_prefix 任一 INET CIDR 查 LPM
+	if _, ok := extraData["affected_device_addrs"]; !ok {
+		if scope := firstNonEmpty(cardID, spatialPrefix, unitID); scope != "" {
+			if addrs := p.lookupDeviceAddrsByPrefix(ctx, scope); len(addrs) > 0 {
+				extraData["affected_device_addrs"] = addrs
+			}
+		}
+	}
+
 	cardMsg := rediscommon.BuildCardChangeMessageWithExtraAndType(
 		"wisefido-data",
 		cardID,

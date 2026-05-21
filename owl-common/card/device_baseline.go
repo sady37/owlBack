@@ -5,9 +5,9 @@ import (
 	"strings"
 )
 
-// Phase A 后：subject_entity 由 publisher（device-gateway 端）填写，未绑卡用 device_id 占位。
-// 历史的 StreamHeadCardID / EffectiveCardID 助手已删除（不再需要"包头 cardID 兜底回填"），
-// 业务路径直接读 envelope.SubjectEntity。
+// subject_entity 契约：已绑卡 = card_id (INET CIDR text)；未绑卡 = 空（R-009 红线）。
+// device-gateway publisher 直接 inline 处理（qinglan/sleepace mqtt_consumer），不再有 owl-common helper。
+// 业务路径读 envelope.SubjectEntity；空字符串由 consumer 端 LPM 反查解析。
 
 // BaselineField 基准结构在 JSON / Redis map / 配置里的统一键名，与各网关、流包头对齐。
 const (
@@ -66,18 +66,6 @@ type DeviceBaseline struct {
 	// 同步元（可选，用于 cardChange / 对账）
 	Revision    int64 `json:"revision,omitempty"`
 	UpdatedAtMS int64 `json:"updated_at_ms,omitempty"`
-}
-
-// SubjectEntityForBaseline 计算 envelope.SubjectEntity：已绑=card_id；未绑=device_id 占位。
-// device-gateway publisher 在构造 envelope 时统一调用本 helper（替代 Phase A 之前的 StreamHeadCardID）。
-func SubjectEntityForBaseline(b *DeviceBaseline) string {
-	if b == nil {
-		return ""
-	}
-	if s := strings.TrimSpace(b.CardID); s != "" {
-		return s
-	}
-	return strings.TrimSpace(b.DeviceID)
 }
 
 // SameRoomScopeKey 同房粗判：tenant|unit|room（unit 在 room 全局唯一时可传空 unit，由数据模型保证）。

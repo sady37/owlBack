@@ -19,7 +19,6 @@ package service
 
 import (
 	"context"
-	"net/netip"
 	"strings"
 	"sync"
 )
@@ -84,13 +83,10 @@ func (t *BedPeopleTracker) ForgetDevice(deviceAddr string) {
 // 单床多 radar 是冗余安装，max 也是正确合并。
 func (t *BedPeopleTracker) CardPeopleCount(ctx context.Context, cardID string) int {
 	meta := t.metaCache.GetOrLoad(ctx, cardID)
-	if meta == nil || !meta.HasBedBoundRadar() || meta.BedPref == "" {
+	if meta == nil || !meta.HasBedBoundRadar() {
 		return 0
 	}
-	bedNet, err := netip.ParsePrefix(meta.BedPref)
-	if err != nil {
-		return 0
-	}
+	// v2.5: meta.Devices 已是 devices.card_id FK 归属本卡集合，无需 bedNet 二次过滤
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	max := 0
@@ -99,9 +95,6 @@ func (t *BedPeopleTracker) CardPeopleCount(ctx context.Context, cardID string) i
 			continue
 		}
 		if !strings.Contains(strings.ToLower(dm.DeviceType), "radar") {
-			continue
-		}
-		if !bedNet.Contains(dm.DeviceAddr) {
 			continue
 		}
 		addrStr := dm.AddrStr()

@@ -28,20 +28,26 @@ import (
 //   - 严格 bed_id /96 prefix 查；查不到再扩 room_id /88（同房 radar 兼容多床）；
 //     都没有 return zero Addr，由 caller fallback。
 //
-// 缓存策略：进程内永久（设备绑定一般不动），新增/迁移 device 后 Invalidate。
+// 缓存策略：60s TTL（admin device rebind 异步生效，最坏 60s 收敛；hot path 频率低，DB 查也便宜）。
 type BedDeviceLookup struct {
 	db     *sql.DB
 	logger *zap.Logger
 
 	mu    sync.RWMutex
-	cache map[bedDeviceCacheKey]netip.Addr // zoneID+deviceType → /128 Addr
+	cache map[bedDeviceCacheKey]bedDeviceCacheEntry
 
 	queryTimeout time.Duration
+	ttl          time.Duration
 }
 
 type bedDeviceCacheKey struct {
 	zoneID     string // bed_id /96 CIDR 文本
 	deviceType string // "Radar" / "Sleepad" / ""
+}
+
+type bedDeviceCacheEntry struct {
+	addr     netip.Addr
+	expireAt time.Time
 }
 
 func NewBedDeviceLookup(db *sql.DB, logger *zap.Logger) *BedDeviceLookup {
@@ -51,8 +57,9 @@ func NewBedDeviceLookup(db *sql.DB, logger *zap.Logger) *BedDeviceLookup {
 	return &BedDeviceLookup{
 		db:           db,
 		logger:       logger,
-		cache:        make(map[bedDeviceCacheKey]netip.Addr),
+		cache:        make(map[bedDeviceCacheKey]bedDeviceCacheEntry),
 		queryTimeout: 2 * time.Second,
+		ttl:          60 * time.Second,
 	}
 }
 
@@ -82,17 +89,18 @@ func (l *BedDeviceLookup) FindPrimaryDevice(zoneID, alarmType string) netip.Addr
 
 func (l *BedDeviceLookup) lookupCached(zoneID, deviceType string) netip.Addr {
 	key := bedDeviceCacheKey{zoneID: zoneID, deviceType: deviceType}
+	now := time.Now()
 	l.mu.RLock()
-	if v, ok := l.cache[key]; ok {
+	if v, ok := l.cache[key]; ok && now.Before(v.expireAt) {
 		l.mu.RUnlock()
-		return v
+		return v.addr
 	}
 	l.mu.RUnlock()
 
 	addr := l.query(zoneID, deviceType)
 
 	l.mu.Lock()
-	l.cache[key] = addr
+	l.cache[key] = bedDeviceCacheEntry{addr: addr, expireAt: now.Add(l.ttl)}
 	l.mu.Unlock()
 	return addr
 }
@@ -136,23 +144,6 @@ func (l *BedDeviceLookup) query(zoneID, deviceType string) netip.Addr {
 		return netip.Addr{}
 	}
 	return addr
-}
-
-// Invalidate / InvalidateAll —— 设备 rebind / 新设备入网后调用。
-func (l *BedDeviceLookup) Invalidate(zoneID string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for k := range l.cache {
-		if k.zoneID == zoneID {
-			delete(l.cache, k)
-		}
-	}
-}
-
-func (l *BedDeviceLookup) InvalidateAll() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.cache = make(map[bedDeviceCacheKey]netip.Addr)
 }
 
 // preferredDeviceTypeForAlarm 决定一个 alarm 类型应该归因到哪种 device。

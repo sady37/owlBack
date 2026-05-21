@@ -5,26 +5,20 @@ import (
 	"time"
 )
 
-// Card 卡片领域模型（v2: 对应新 cards 表 schema）
+// Card 卡片领域模型（v2.5: card_id INET PK，无 card_type/is_active/enabled_at/disabled_at 列）
 //
-// 三层身份：
-//   - spatial_prefix INET — 业务身份（北极星）
-//   - card_id UUID        — DB PK 稳定性 / FK
-//   - dns_short_name      — 永久人类可读名（bed-stable，无 PHI）
-//
-// 删除的 v1 字段：tenant_id / branch_id / bed_id / unit_id / card_address / timezone /
-// devices JSONB / residents JSONB / unhandled_alarm_0..4 / pop_alarm_level / pop_alarm_type /
-// pop_alarm_event_id（counter / pop 由 alarm_events 实时聚合）。
+// v2 列：card_id / unit_id / card_name / card_dns / resident_id / has_bed / has_bathroom / has_kitchen
+// 派生字段（无 DB 列，由 SELECT 别名注入）：SpatialPrefix=CardID / CardType=masklen+name CASE / IsActive=TRUE
 type Card struct {
-	CardID        string         `db:"card_id"`        // UUID PK
-	SpatialPrefix string         `db:"spatial_prefix"` // INET CIDR 字符串（业务身份；mask 决定 card_type）
-	CardType      string         `db:"card_type"`      // 'tenant'|'branch'|'site'|'unit'|'public'|'room'|'bed'|'device'
+	CardID        string         `db:"card_id"`
+	SpatialPrefix string         `db:"-"` // 派生：等于 CardID（v2 无独立列）
+	CardType      string         `db:"-"` // 派生：masklen + card_name CASE
 	CardName      sql.NullString `db:"card_name"`
-	DNSShortName  sql.NullString `db:"dns_short_name"` // 永久 DNS 名，如 "u42-r03-b01.tenant1.owl"
-	ResidentID    sql.NullString `db:"resident_id"`    // INET HoA；NULL = 空床
-	IsActive      bool           `db:"is_active"`
-	EnabledAt     sql.NullTime   `db:"enabled_at"`
-	DisabledAt    sql.NullTime   `db:"disabled_at"`
+	DNSShortName  sql.NullString `db:"card_dns"`
+	ResidentID    sql.NullString `db:"resident_id"`
+	IsActive      bool           `db:"-"` // 派生：v2.5 无 is_active 列，always TRUE
+	EnabledAt     sql.NullTime   `db:"-"` // v2.5 无列
+	DisabledAt    sql.NullTime   `db:"-"` // v2.5 无列
 	CreatedAt     time.Time      `db:"created_at"`
 	UpdatedAt     time.Time      `db:"updated_at"`
 }

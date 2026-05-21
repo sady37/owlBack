@@ -318,7 +318,7 @@ func (s *AlarmEventService) CreateAlarmEvent(
 	// 通过 owl-common 原子操作：INSERT alarm + UPDATE card counts
 	params := commoncard.AlarmInsertParams{
 		TenantID:    event.TenantID,
-		DeviceID:    event.DeviceID,
+		DeviceAddr:  event.DeviceID,
 		EventType:   event.EventType,
 		Category:    event.Category,
 		AlarmLevel:  event.AlarmLevel,

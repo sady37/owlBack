@@ -119,7 +119,7 @@ func extractHoa(path, suffix string) string {
 //
 // 短码查不到 → error；非短码格式 + 非 IPv6 → 原样返回（让下游 INET cast 报错）。
 //
-// 同 cards.dns_short_name resolve 模式（[[short-code-alias-resolve-everywhere]]）：
+// 同 cards.card_dns resolve 模式（[[short-code-alias-resolve-everywhere]]）：
 // 必须在 handler 入口 resolve，service 内部一律假设拿到的是 hoa。
 func (h *ResidentHandler) resolveResidentHoA(idOrShort string) (string, error) {
 	if idOrShort == "" {

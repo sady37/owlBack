@@ -24,13 +24,52 @@ import (
 	"go.uber.org/zap"
 )
 
-// DefaultStaleAfter / DefaultWatchdogInterval 看门狗参数。
-// staleAfter = 180s ≈ 2 × sleepace OfflineRecover 80s 周期 + 余量；
-// qinglan radar 1Hz monitor 流远在阈值之内。
+// 看门狗参数（per-deviceType 分档）：
+//   - Radar 1Hz monitor heartbeat → 60s 即 60 missed samples，足够稳健且 FE 响应快
+//   - Sleepad 心跳 8-10s（rest/nap 切档）→ 180s ≈ 18 missed + sleepace OfflineRecover 80s 余量
+//   - Default fallback（未知 type）= 180s 保守
+// scanInterval 10s：与 radar fast-path 匹配，最坏检测延迟 = staleAfter + scanInterval。
 const (
-	DefaultStaleAfter        = 180 * time.Second
-	DefaultWatchdogInterval  = 30 * time.Second
+	DefaultStaleAfterRadar   = 60 * time.Second
+	DefaultStaleAfterSleepad = 180 * time.Second
+	DefaultStaleAfterFallback = 180 * time.Second
+	DefaultWatchdogInterval  = 10 * time.Second
 )
+
+// staleThresholdForDeviceType 按 deviceType 大小写不敏感匹配；未知 type 走 fallback。
+func staleThresholdForDeviceType(deviceType string) time.Duration {
+	switch {
+	case deviceType == "" :
+		return DefaultStaleAfterFallback
+	case equalFoldAny(deviceType, "radar"):
+		return DefaultStaleAfterRadar
+	case equalFoldAny(deviceType, "sleepad", "sleeppad", "sleepace"):
+		return DefaultStaleAfterSleepad
+	default:
+		return DefaultStaleAfterFallback
+	}
+}
+
+func equalFoldAny(s string, candidates ...string) bool {
+	for _, c := range candidates {
+		if len(s) == len(c) && toLowerASCII(s) == toLowerASCII(c) {
+			return true
+		}
+	}
+	return false
+}
+
+func toLowerASCII(s string) string {
+	b := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 32
+		}
+		b[i] = c
+	}
+	return string(b)
+}
 
 // alarmType → device:status 字段名（除 Offline 外的设备健康类）
 var deviceFlagMap = map[string]string{
@@ -57,20 +96,18 @@ type deviceLiveness struct {
 type OfflineCallback func(deviceAddr string)
 
 type DeviceStatusTracker struct {
-	writer          *card.Writer
-	mu              sync.Mutex
-	state           map[string]*deviceLiveness // deviceAddr → liveness
-	staleAfter      time.Duration
-	scanInterval    time.Duration
-	offlineCBs      []OfflineCallback
-	logger          *zap.Logger
+	writer       *card.Writer
+	mu           sync.Mutex
+	state        map[string]*deviceLiveness // deviceAddr → liveness
+	scanInterval time.Duration
+	offlineCBs   []OfflineCallback
+	logger       *zap.Logger
 }
 
 func NewDeviceStatusTracker(writer *card.Writer, logger *zap.Logger) *DeviceStatusTracker {
 	return &DeviceStatusTracker{
 		writer:       writer,
 		state:        make(map[string]*deviceLiveness),
-		staleAfter:   DefaultStaleAfter,
 		scanInterval: DefaultWatchdogInterval,
 		logger:       logger,
 	}
@@ -198,7 +235,8 @@ func (t *DeviceStatusTracker) Run(ctx context.Context) {
 	ticker := time.NewTicker(t.scanInterval)
 	defer ticker.Stop()
 	t.logger.Info("device_status_tracker started",
-		zap.Duration("stale_after", t.staleAfter),
+		zap.Duration("stale_after_radar", DefaultStaleAfterRadar),
+		zap.Duration("stale_after_sleepad", DefaultStaleAfterSleepad),
 		zap.Duration("interval", t.scanInterval),
 	)
 	for {
@@ -212,14 +250,18 @@ func (t *DeviceStatusTracker) Run(ctx context.Context) {
 }
 
 func (t *DeviceStatusTracker) scanStale(ctx context.Context) {
-	threshold := time.Now().UnixMilli() - t.staleAfter.Milliseconds()
+	nowMs := time.Now().UnixMilli()
 	var stale []struct {
 		addr       string
 		deviceType string
 	}
 	t.mu.Lock()
 	for addr, dl := range t.state {
-		if dl.online && dl.lastSeenMs < threshold {
+		if !dl.online {
+			continue
+		}
+		threshold := nowMs - staleThresholdForDeviceType(dl.deviceType).Milliseconds()
+		if dl.lastSeenMs < threshold {
 			stale = append(stale, struct {
 				addr       string
 				deviceType string
@@ -233,7 +275,10 @@ func (t *DeviceStatusTracker) scanStale(ctx context.Context) {
 			t.logger.Warn("watchdog set offline", zap.String("addr", s.addr), zap.Error(err))
 			continue
 		}
-		t.logger.Info("watchdog marked offline", zap.String("addr", s.addr))
+		t.logger.Info("watchdog marked offline",
+			zap.String("addr", s.addr),
+			zap.String("device_type", s.deviceType),
+		)
 		t.fireOffline(s.addr)
 	}
 }

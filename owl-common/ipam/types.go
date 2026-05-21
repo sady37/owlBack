@@ -39,9 +39,9 @@ type UnitAttrs struct {
 // RoomAttrs are passed to AllocateRoom.
 // RoomType 取 owl-common/card.RoomType*（0=Default / 1=Bathroom / 2=Kitchen）。
 type RoomAttrs struct {
-	Name      string
-	RoomType  int  // 0=Default / 1=Bathroom / 2=Kitchen
-	IsPrimary bool // unit 内每 unit 仅 1 primary
+	Name      string `json:"name"`
+	RoomType  int    `json:"room_type"`  // 0=Default / 1=Bathroom / 2=Kitchen
+	IsPrimary bool   `json:"is_primary"` // unit 内每 unit 仅 1 primary
 }
 
 // BedAttrs are passed to AllocateBed.

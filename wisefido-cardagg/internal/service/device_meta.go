@@ -14,7 +14,7 @@ import (
 // device_ipv6 单程票（doc/device_ipv6_migration_checklist.md）落地后：
 //
 //   - device 业务身份唯一为 device_addr (IPv6 /128)
-//   - cardID = cards.spatial_prefix (INET CIDR text，e.g. "fd00:0:3:111:3:101::/96")
+//   - cardID = cards.card_id (INET CIDR text，e.g. "fd00:0:3:111:3:101::/96")
 //   - 反向索引由原 deviceIDIndex/deviceUIDIndex 双索引合并为 deviceAddrIndex 单索引
 //   - DeviceMeta 内部不再保留 DeviceID/DeviceUID 字段；空间归属字段 (UnitID/RoomID/BedID)
 //     从 DeviceAddr.Prefix(80/88/96) 派生，accessor 提供
@@ -66,40 +66,51 @@ func (d *DeviceMeta) AddrStr() string  { return d.DeviceID }
 
 // CardMeta holds all device metadata for one card.
 //
-// CardID = cards.spatial_prefix INET CIDR；TenantID/TenantPref = /48 prefix CIDR；BedID/BedPref = /96 (bed) 或同 CardID。
+// CardID = cards.card_id INET CIDR；TenantID/TenantPref = /48 prefix CIDR；BedID/BedPref = /96 (bed) 或同 CardID。
 //
 // TenantID/BedID 兼容字段保留，值同 TenantPref/BedPref；老 caller 不必 rename。
 //
 // UnitType / UnitProperty 来自 unit (/80) join — picker 用于 visitor section 等私域决策。
 // 值域见 owl-common/card.UnitType*（0/1/2/3）+ UnitProperty*（0/1）。
 type CardMeta struct {
-	CardID       string                 // INET CIDR e.g. "fd00:0:3:111:3:101::/96"
-	TenantID     string                 // 兼容字段：== TenantPref
-	TenantPref   string                 // /48 CIDR e.g. "fd00:0:3::/48"
-	CardType     string                 // "bed" | "unit" | "room" | "public" | ...
-	BedID        string                 // 兼容字段：== BedPref
-	BedPref      string                 // 当 CardID 是 /96 时 == CardID；否则空
-	UnitType     int                    // 0=Unknown / 1=Private / 2=Share / 3=Public（合并自 unit (/80)）
-	UnitProperty int                    // 0=Home / 1=Facility
-	Devices      map[string]*DeviceMeta // key = device_addr canonical IPv6 string
-	dbLoaded     bool
+	CardID          string                 // INET CIDR (v2.5: /88 card_id slot 段 [0xF0..0xFE])
+	TenantID        string                 // 兼容字段：== TenantPref
+	TenantPref      string                 // /48 CIDR e.g. "fd00:0:3::/48"
+	CardName        string                 // 'nickname' / 'NoOne' / 'public'（v2.5：决定 IsPublicCard）
+	UnitType        int                    // 0=Unknown / 1=Private / 2=Share / 3=Public（合并自 unit (/80)）
+	UnitProperty    int                    // 0=Home / 1=Facility
+	HasBedSnap      bool                   // v2.5 cards.has_bed snapshot（驱动 pickCardPriority BedInUse）
+	HasBathroomSnap bool                   // v2.5 cards.has_bathroom snapshot
+	HasKitchenSnap  bool                   // v2.5 cards.has_kitchen snapshot
+	Devices         map[string]*DeviceMeta // key = device_addr canonical IPv6 string；devices.card_id FK 归属本卡
+	dbLoaded        bool
 }
+
+// IsBathroom — v2.5 改读 cards.has_bathroom snapshot（多 room 卡 OR-aggregate）。
+func (m *CardMeta) IsBathroom() bool { return m != nil && m.HasBathroomSnap }
 
 // IsPrivateUnit — 是否私人居住单元（unit_type=1）；UnitPicker visitor section 才走 private 路径。
-func (m *CardMeta) IsPrivateUnit() bool {
-	return m != nil && m.UnitType == 1
-}
+func (m *CardMeta) IsPrivateUnit() bool { return m != nil && m.UnitType == 1 }
 
-func (m *CardMeta) IsBedCard() bool { return m != nil && m.CardType == "bed" }
-func (m *CardMeta) IsUnitCard() bool      { return m != nil && m.CardType == "unit" }
+// IsPublicCard — v2.5：card_name == 'public'，承载 unit_type=3 公共区卡的语义。
+func (m *CardMeta) IsPublicCard() bool { return m != nil && m.CardName == "public" }
 
-// BedBoundDeviceAddrs 返回绑定到该卡床位（/96）下的设备 addr 列表。
+// IsBedCard / IsUnitCard — v2.5：所有 card_id 都是 /88，没有 "/96 bed card" 概念。
+// IsBedCard 现等价 HasBed snapshot（卡下有床位）；IsUnitCard 保留兼容但永远 false。
+func (m *CardMeta) IsBedCard() bool  { return m != nil && m.HasBedSnap }
+func (m *CardMeta) IsUnitCard() bool { return false }
+
+// HasBed — v2.5 改读 cards.has_bed snapshot（card_sync_service 维护）。
+// 该字段为 TRUE 即"卡下任一 room 下有任一 bed"，跟 device 类型完全无关。
+// 这是 pickCardPriority 决定 CardPriorityBedInUse=2 的唯一依据。
+//
+// 旧 v1/v2 语义"devices 含 Sleepad" 已废弃（Radar-only 床也算有床）。
+func (m *CardMeta) HasBed() bool { return m != nil && m.HasBedSnap }
+
+// BedBoundDeviceAddrs 返回卡下所有 device addr（v2.5: devices.card_id FK 归属本卡）。
+// 旧 v2 用 /96 bedNet.Contains 过滤；v2.5 m.Devices 本身已是 card-scoped，全返。
 func (m *CardMeta) BedBoundDeviceAddrs() []string {
-	if m == nil || m.BedPref == "" || m.Devices == nil {
-		return nil
-	}
-	bedNet, err := netip.ParsePrefix(m.BedPref)
-	if err != nil {
+	if m == nil || m.Devices == nil {
 		return nil
 	}
 	var out []string
@@ -107,9 +118,7 @@ func (m *CardMeta) BedBoundDeviceAddrs() []string {
 		if dm == nil || !dm.DeviceAddr.IsValid() {
 			continue
 		}
-		if bedNet.Contains(dm.DeviceAddr) {
-			out = append(out, addrStr)
-		}
+		out = append(out, addrStr)
 	}
 	return out
 }
@@ -117,18 +126,14 @@ func (m *CardMeta) BedBoundDeviceAddrs() []string {
 // BedBoundDeviceIDs 兼容 alias — 返回 device_addr 字符串列表（== BedBoundDeviceAddrs）。
 func (m *CardMeta) BedBoundDeviceIDs() []string { return m.BedBoundDeviceAddrs() }
 
-// HasBedBoundRadar 是否 bed card 且其 /96 bed prefix 下绑有 Radar 设备。
-// VisitorDeriver bed-level path 激活条件——firmware boundary 已物理裁剪视野到该床区域。
+// HasBedBoundRadar — v2.5: 卡有床（has_bed）且 device 列表内任一 Radar；
+// VisitorDeriver bed-level path 激活条件。
 func (m *CardMeta) HasBedBoundRadar() bool {
-	if m == nil || !m.IsBedCard() || m.BedPref == "" {
-		return false
-	}
-	bedNet, err := netip.ParsePrefix(m.BedPref)
-	if err != nil {
+	if m == nil || !m.HasBedSnap || m.Devices == nil {
 		return false
 	}
 	for _, dm := range m.Devices {
-		if dm == nil || !dm.DeviceAddr.IsValid() || !bedNet.Contains(dm.DeviceAddr) {
+		if dm == nil || !dm.DeviceAddr.IsValid() {
 			continue
 		}
 		if strings.Contains(strings.ToLower(dm.DeviceType), "radar") {
@@ -144,7 +149,7 @@ func (m *CardMeta) HasBedBoundRadar() bool {
 //
 //	deviceAddrIndex: device_addr (canonical IPv6) → cardID
 //
-// 因 cards.spatial_prefix LPM 命中唯一，per device 至多 1 cardID（不再 fan-out）。
+// 因 cards.card_id LPM 命中唯一，per device 至多 1 cardID（不再 fan-out）。
 type DeviceMetaCache struct {
 	mu     sync.RWMutex
 	cards  map[string]*CardMeta // cardID →
@@ -194,9 +199,10 @@ func (c *DeviceMetaCache) GetOrLoad(ctx context.Context, cardID string) *CardMet
 		// Merge: DB static fields into existing shell, preserve RuntimeStatus
 		existing.TenantPref = dbMeta.TenantPref
 		existing.TenantID = dbMeta.TenantPref
-		existing.BedPref = dbMeta.BedPref
-		existing.BedID = dbMeta.BedPref
-		existing.CardType = dbMeta.CardType
+		existing.CardName = dbMeta.CardName
+		existing.HasBedSnap = dbMeta.HasBedSnap
+		existing.HasBathroomSnap = dbMeta.HasBathroomSnap
+		existing.HasKitchenSnap = dbMeta.HasKitchenSnap
 		existing.UnitType = dbMeta.UnitType
 		existing.UnitProperty = dbMeta.UnitProperty
 		existing.dbLoaded = true
@@ -248,7 +254,7 @@ func (c *DeviceMetaCache) InvalidateCardsInTenantUnit(ctx context.Context, unitP
 		prefix = prefix + "/80"
 	}
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT c.spatial_prefix::text FROM cards c WHERE c.spatial_prefix <<= $1::INET`,
+		`SELECT c.card_id::text FROM cards c WHERE c.card_id <<= $1::INET`,
 		prefix)
 	if err != nil {
 		if c.logger != nil {
@@ -265,40 +271,6 @@ func (c *DeviceMetaCache) InvalidateCardsInTenantUnit(ctx context.Context, unitP
 		}
 		c.Invalidate(cid)
 	}
-}
-
-// DeviceAddrsInUnit 返回 unit (/80) 下所有 device_addr 字符串（去重）。
-func DeviceAddrsInUnit(ctx context.Context, db *sql.DB, unitPref string) []string {
-	if db == nil || unitPref == "" {
-		return nil
-	}
-	prefix := unitPref
-	if !strings.Contains(prefix, "/") && strings.Contains(prefix, ":") {
-		prefix = prefix + "/80"
-	}
-	rows, err := db.QueryContext(ctx, `
-		SELECT DISTINCT host(d.device_ipv6)::text
-		FROM devices d
-		WHERE d.device_ipv6 <<= $1::INET`,
-		prefix)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	seen := make(map[string]struct{})
-	out := []string{}
-	for rows.Next() {
-		var addr string
-		if err := rows.Scan(&addr); err != nil || addr == "" {
-			continue
-		}
-		if _, ok := seen[addr]; ok {
-			continue
-		}
-		seen[addr] = struct{}{}
-		out = append(out, addr)
-	}
-	return out
 }
 
 // GetDeviceMeta returns metadata for a specific device within a card (key = device_addr canonical IPv6 string).
@@ -333,12 +305,12 @@ func (c *DeviceMetaCache) ListPrivateRoomCardIDs(ctx context.Context) []string {
 	if c.db == nil {
 		return nil
 	}
+	// v2.5: cards.unit_id 直接 FK，无需 set_masklen 推；所有 cards 都是 /88，无需 mask 过滤
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT c.spatial_prefix::text
+		SELECT c.card_id::text
 		  FROM cards c
-		  JOIN units u ON u.unit_id = set_masklen(c.spatial_prefix, 80)
-		 WHERE masklen(c.spatial_prefix) = 88
-		   AND u.unit_type = 1
+		  JOIN units u ON u.unit_id = c.unit_id
+		 WHERE u.unit_type = 1
 	`)
 	if err != nil {
 		if c.logger != nil {
@@ -367,13 +339,13 @@ func (c *DeviceMetaCache) ListBedCardsWithBedBoundRadar(ctx context.Context) []s
 	if c.db == nil {
 		return nil
 	}
+	// v2.5: card_type 列删；改用 has_bed snapshot；device→card 走 devices.card_id FK
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT DISTINCT c.spatial_prefix::text
+		SELECT DISTINCT c.card_id::text
 		  FROM cards c
-		  JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
+		  JOIN devices d ON d.card_id = c.card_id
 		  JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		 WHERE c.card_type = 'bed'
-		   AND masklen(c.spatial_prefix) = 96
+		 WHERE c.has_bed = TRUE
 		   AND lower(dfm.device_type::text) LIKE '%radar%'
 	`)
 	if err != nil {
@@ -394,9 +366,37 @@ func (c *DeviceMetaCache) ListBedCardsWithBedBoundRadar(ctx context.Context) []s
 	return out
 }
 
+// LookupCardByPrefix 任意 IPv6 prefix → LPM 最近父 cardID（cards.card_id 包含该 prefix 的最长匹配）。
+// 用于 bed.state 等 sensor event 的 subject_entity 在 DB 无精确卡时回退到父卡（典型: /96 床事件 → 落到 /88 房间卡）。
+// 输入 prefix 是 INET CIDR text（如 "fd00:0:3:111:3:301::/96"）；未命中返空字符串。
+func (c *DeviceMetaCache) LookupCardByPrefix(ctx context.Context, prefixCIDR string) string {
+	if prefixCIDR == "" || c.db == nil {
+		return ""
+	}
+	var cid sql.NullString
+	err := c.db.QueryRowContext(ctx, `
+		SELECT c.card_id::text
+		  FROM cards c
+		 WHERE c.card_id >>= $1::INET
+		 ORDER BY masklen(c.card_id) DESC
+		 LIMIT 1
+	`, prefixCIDR).Scan(&cid)
+	if err != nil {
+		if err != sql.ErrNoRows && c.logger != nil {
+			c.logger.Warn("LookupCardByPrefix LPM failed",
+				zap.String("prefix", prefixCIDR), zap.Error(err))
+		}
+		return ""
+	}
+	if cid.Valid {
+		return cid.String
+	}
+	return ""
+}
+
 // LookupCardByDeviceAddr 反查 device_addr → cardID（O(1) 内存索引；空时回退 SQL LPM）。
 //
-// 命中返回单一 cardID（cards.spatial_prefix INET CIDR text）；
+// 命中返回单一 cardID（cards.card_id INET CIDR text）；
 // 未命中（unbound device，R-009）返回空字符串，caller 走"无卡 device 状态"分支。
 //
 // 与原 LookupCardsByDevice (返回 []string) 不同：device_ipv6 LPM 命中唯一，per device
@@ -416,17 +416,14 @@ func (c *DeviceMetaCache) LookupCardByDeviceAddr(ctx context.Context, addr netip
 	if c.db == nil {
 		return ""
 	}
+	// v2.5: devices.card_id FK 直接读，不再 LPM cards
 	var cid sql.NullString
 	err := c.db.QueryRowContext(ctx, `
-		SELECT c.spatial_prefix::text
-		  FROM cards c
-		 WHERE c.spatial_prefix >>= $1::INET
-		 ORDER BY masklen(c.spatial_prefix) DESC
-		 LIMIT 1
+		SELECT host(card_id)::text || '/88' FROM devices WHERE device_ipv6 = $1::INET AND card_id IS NOT NULL
 	`, addrStr).Scan(&cid)
 	if err != nil {
 		if err != sql.ErrNoRows && c.logger != nil {
-			c.logger.Warn("LookupCardByDeviceAddr LPM failed",
+			c.logger.Warn("LookupCardByDeviceAddr failed",
 				zap.String("device_addr", addrStr), zap.Error(err))
 		}
 		return ""
@@ -445,17 +442,12 @@ func (c *DeviceMetaCache) BuildDeviceIndex(ctx context.Context) error {
 	if c.db == nil {
 		return nil
 	}
+	// v2.5: devices.card_id 直接读，不再 LPM cards
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT host(d.device_ipv6)::text AS device_addr,
-		       c.spatial_prefix::text     AS card_id
+		       host(d.card_id)::text || '/88' AS card_id
 		FROM devices d
-		JOIN LATERAL (
-		  SELECT spatial_prefix
-		    FROM cards
-		   WHERE spatial_prefix >>= d.device_ipv6
-		   ORDER BY masklen(spatial_prefix) DESC
-		   LIMIT 1
-		) c ON TRUE
+		WHERE d.card_id IS NOT NULL
 	`)
 	if err != nil {
 		return err
@@ -501,8 +493,8 @@ func (c *DeviceMetaCache) RefreshDeviceIndexForCard(ctx context.Context, cardID 
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT host(d.device_ipv6)::text
 		FROM cards c
-		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
-		WHERE c.spatial_prefix = $1::INET
+		JOIN devices d ON d.device_ipv6 <<= c.card_id
+		WHERE c.card_id = $1::INET
 	`, cardID)
 	if err != nil {
 		if c.logger != nil {
@@ -535,15 +527,17 @@ func (c *DeviceMetaCache) loadFromDB(ctx context.Context, cardID string) *CardMe
 		return nil
 	}
 
-	// v2 unified: card_id ≡ spatial_prefix；从 cards 取 cardType + LPM unit (/80) 拿 unit_type/property。
-	var spatialPrefix, cardType sql.NullString
+	// v2.5: 从 cards 取 card_name + has_bed/has_bathroom/has_kitchen snapshot + unit JOIN 拿 unit_type/property
+	var cardName sql.NullString
+	var hasBed, hasBathroom, hasKitchen sql.NullBool
 	var unitType, unitProperty sql.NullInt32
 	err := c.db.QueryRowContext(ctx, `
-		SELECT c.spatial_prefix::text, c.card_type, u.unit_type, u.unit_property
+		SELECT COALESCE(c.card_name, ''), c.has_bed, c.has_bathroom, c.has_kitchen,
+		       u.unit_type, u.unit_property
 		  FROM cards c
-		  LEFT JOIN units u ON u.unit_id = set_masklen(c.spatial_prefix, 80)
-		 WHERE c.spatial_prefix = $1::INET
-	`, cardID).Scan(&spatialPrefix, &cardType, &unitType, &unitProperty)
+		  LEFT JOIN units u ON u.unit_id = c.unit_id
+		 WHERE c.card_id = $1::INET
+	`, cardID).Scan(&cardName, &hasBed, &hasBathroom, &hasKitchen, &unitType, &unitProperty)
 	if err != nil {
 		if err != sql.ErrNoRows && c.logger != nil {
 			c.logger.Warn("load device meta", zap.String("cid", cardID), zap.Error(err))
@@ -556,19 +550,22 @@ func (c *DeviceMetaCache) loadFromDB(ctx context.Context, cardID string) *CardMe
 		Devices:  make(map[string]*DeviceMeta),
 		dbLoaded: true,
 	}
-	if spatialPrefix.Valid {
-		// 派生 tenant /48 prefix；bed_pref 当 mask=96 时 == cardID
-		if pref, perr := netip.ParsePrefix(spatialPrefix.String); perr == nil {
-			meta.TenantPref = netip.PrefixFrom(pref.Addr(), 48).Masked().String()
-			meta.TenantID = meta.TenantPref
-			if pref.Bits() == 96 {
-				meta.BedPref = spatialPrefix.String
-				meta.BedID = spatialPrefix.String
-			}
-		}
+	// 派生 tenant /48 prefix 从 cardID（cards.card_id 是 /88，掩到 /48 拿 tenant）
+	if pref, perr := netip.ParsePrefix(cardID); perr == nil {
+		meta.TenantPref = netip.PrefixFrom(pref.Addr(), 48).Masked().String()
+		meta.TenantID = meta.TenantPref
 	}
-	if cardType.Valid {
-		meta.CardType = cardType.String
+	if cardName.Valid {
+		meta.CardName = cardName.String
+	}
+	if hasBed.Valid {
+		meta.HasBedSnap = hasBed.Bool
+	}
+	if hasBathroom.Valid {
+		meta.HasBathroomSnap = hasBathroom.Bool
+	}
+	if hasKitchen.Valid {
+		meta.HasKitchenSnap = hasKitchen.Bool
 	}
 	if unitType.Valid {
 		meta.UnitType = int(unitType.Int32)
@@ -579,19 +576,15 @@ func (c *DeviceMetaCache) loadFromDB(ctx context.Context, cardID string) *CardMe
 
 	// 加载本卡 LPM-拥有的 device → DeviceMeta（addr 为 key）。
 	// v3 owning rule: 设备归 LPM 最长的覆盖卡；UnitCard (/80) 不含被 /96 bed card 拥有的 sleepad。
-	// 之前 SQL "d.device_ipv6 <<= c.spatial_prefix" 让 UnitCard.Devices 含所有 /80 下设备
+	// 之前 SQL "d.device_ipv6 <<= c.card_id" 让 UnitCard.Devices 含所有 /80 下设备
 	// 包括下层 bed card 拥有的 sleepad → hasBedCapableDevice 误判 → bed_state 反复 init。
+	// v2.5: devices.card_id FK 直接匹配
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT host(d.device_ipv6)::text,
 		       COALESCE(dfm.device_type::text, '')
 		FROM devices d
 		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		WHERE (
-		  SELECT spatial_prefix FROM cards
-		  WHERE spatial_prefix >>= d.device_ipv6
-		  ORDER BY masklen(spatial_prefix) DESC
-		  LIMIT 1
-		) = $1::INET
+		WHERE d.card_id = $1::INET
 	`, cardID)
 	if err != nil {
 		if c.logger != nil {

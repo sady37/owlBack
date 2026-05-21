@@ -58,6 +58,8 @@ func (p *StreamPublisher) ResolveToDeviceUID(ctx context.Context, id string) str
 // 未命中时 deviceID/deviceCode/deviceType 为空，access=false（默认拒绝）。
 //
 // device_ipv6 单程票后追加 addr 返回值（DeviceBaseline.DeviceAddr）；publisher 直接用 addr 构造 envelope。
+// cardID 永远返回空（R-009 单源真相）—— SubjectEntity 由 cardagg IotPreparedHandler 按 addr LPM 反查解析；
+// 返回签名保留 cardID 字段是 caller 签名兼容（site 全用 "" 调用 NewIoTStreamMessageWithData）。
 //
 // v1 双字段 (allow_access bool + business_access string) 已合并为单一 access bool。
 func (p *StreamPublisher) Resolve(ctx context.Context, deviceKey string) (
@@ -72,7 +74,7 @@ func (p *StreamPublisher) Resolve(ctx context.Context, deviceKey string) (
 		p.logger.Debug("card lookup miss", zap.String("device_key", deviceKey), zap.Error(err))
 		return "", "", "", "", "", deviceKey, "", "", false, false, netip.Addr{}
 	}
-	return info.TenantID, info.BranchID, info.UnitID, info.CardID, info.DeviceID, info.DeviceUID, info.DeviceCode, info.DeviceType,
+	return info.TenantID, info.BranchID, info.UnitID, "", info.DeviceID, info.DeviceUID, info.DeviceCode, info.DeviceType,
 		info.Access, info.MonitoringEnabled, info.DeviceAddr
 }
 

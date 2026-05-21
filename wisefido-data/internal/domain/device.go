@@ -50,7 +50,7 @@ type Device struct {
 	UnitID sql.NullString `db:"unit_id"`   // 计算字段：通过 room_id 或 bed_id 查询得到
 	CardID sql.NullString `db:"-"`         // 列表/详情：cards.devices 含该 device_id 时的 card_id
 	UnitName sql.NullString `db:"-"`       // 列表：units.unit_name（与 UnitID 对应）
-	DNSShortName sql.NullString `db:"-"`   // 列表：cards.dns_short_name（与 CardID 对应，FE 用于短码展示）
+	DNSShortName sql.NullString `db:"-"`   // 列表：cards.card_dns（与 CardID 对应，FE 用于短码展示）
 	BranchID sql.NullString `db:"-"`       // 列表：byte 6 派生 /56；byte 6==0 表示 tenant 池 (NULL)
 	BranchName sql.NullString `db:"-"`     // 列表：branches.branch_name
 

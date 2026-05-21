@@ -71,7 +71,7 @@ func NewPostgresCardsRepository(db *sql.DB) *PostgresCardsRepository {
 //
 // v2 查询：cards 表只剩 spatial_prefix INET 一根独立空间柱。Unit 信息通过
 //
-//	set_masklen(c.spatial_prefix, 80) → units.unit_id 反查；branch 同理 (/56)。
+//	set_masklen(c.card_id, 80) → units.unit_id 反查；branch 同理 (/56)。
 //
 // 权限过滤：active_bed 卡 = 直接比 c.resident_id；unit/public 卡 = 当前 (tenant level) 看
 // 数据流不冗余 resident_id；business intent 让该 unit 范围内有 active resident 的 family 可见。
@@ -84,17 +84,25 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 	var args []any
 	argIdx := 1
 
-	// v2 unified: card_id ≡ spatial_prefix
+	// v2.5: card_type/is_active 列已删；用 CASE on card_name / TRUE 派生
 	query.WriteString(`
 		SELECT
-			text(c.spatial_prefix) AS card_id,
-			text(c.spatial_prefix) AS spatial_prefix,
-			c.card_type,
+			text(c.card_id) AS card_id,
+			text(c.card_id) AS spatial_prefix,
+			CASE masklen(c.card_id)
+				WHEN  48 THEN 'tenant'
+				WHEN  56 THEN 'branch'
+				WHEN  64 THEN 'site'
+				WHEN  80 THEN CASE WHEN c.card_name = 'public' THEN 'public' ELSE 'unit' END
+				WHEN  88 THEN 'room'
+				WHEN  96 THEN 'bed'
+				WHEN 128 THEN 'device'
+			END AS card_type,
 			COALESCE(c.card_name, ''),
-			COALESCE(c.dns_short_name, ''),
+			COALESCE(c.card_dns, ''),
 			COALESCE(text(c.resident_id), ''),
-			c.is_active,
-			COALESCE(u.unit_id::text, ''),
+			TRUE AS is_active,
+			COALESCE(c.unit_id::text, ''),
 			COALESCE(u.unit_name, ''),
 			COALESCE(u.timezone, ''),
 			COALESCE(u.unit_type, 0),
@@ -103,35 +111,41 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 			''::text AS floor,
 			''::text AS layout_config
 		FROM cards c
-		LEFT JOIN units u ON u.unit_id = set_masklen(c.spatial_prefix, 80)
-		LEFT JOIN branches br ON br.branch_id = set_masklen(c.spatial_prefix, 56)
-		WHERE c.spatial_prefix <<= $` + fmt.Sprintf("%d", argIdx) + `::inet
+		LEFT JOIN units u ON u.unit_id = c.unit_id
+		LEFT JOIN branches br ON br.branch_id = network(set_masklen(c.card_id, 56))
+		WHERE c.card_id <<= $` + fmt.Sprintf("%d", argIdx) + `::inet
 	`)
 	args = append(args, req.TenantID)
 	argIdx++
 
 	if req.CardID != "" {
-		query.WriteString(` AND c.spatial_prefix = $` + fmt.Sprintf("%d", argIdx) + `::INET `)
+		query.WriteString(` AND c.card_id = $` + fmt.Sprintf("%d", argIdx) + `::INET `)
 		args = append(args, req.CardID)
 		argIdx++
 	}
 
 	if req.Search != "" {
-		query.WriteString(` AND (c.card_name ILIKE $` + fmt.Sprintf("%d", argIdx) + ` OR c.dns_short_name ILIKE $` + fmt.Sprintf("%d", argIdx) + `) `)
+		query.WriteString(` AND (c.card_name ILIKE $` + fmt.Sprintf("%d", argIdx) + ` OR c.card_dns ILIKE $` + fmt.Sprintf("%d", argIdx) + `) `)
 		args = append(args, "%"+req.Search+"%")
 		argIdx++
 	}
 
+	// v2.5: card_type 列删；FE filter 'active_bed' 改用 has_bed=TRUE，'public' 用 card_name='public'
 	if req.CardType != "" {
-		query.WriteString(` AND c.card_type = $` + fmt.Sprintf("%d", argIdx) + ` `)
-		args = append(args, req.CardType)
-		argIdx++
+		switch req.CardType {
+		case "active_bed":
+			query.WriteString(` AND c.has_bed = TRUE `)
+		case "public":
+			query.WriteString(` AND c.card_name = 'public' `)
+		case "card":
+			query.WriteString(` AND c.card_name <> 'public' `)
+		}
 	}
 
 	// PermissionFilter — UserID (resident) self-view
 	if req.PermissionFilter != nil && req.PermissionFilter.UserID != "" {
 		query.WriteString(` AND (
-			c.card_type = 'active_bed' AND c.resident_id::text = $` + fmt.Sprintf("%d", argIdx) + `
+			c.has_bed = TRUE AND c.resident_id::text = $` + fmt.Sprintf("%d", argIdx) + `
 		) `)
 		args = append(args, req.PermissionFilter.UserID)
 		argIdx++
@@ -148,7 +162,7 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 	if req.PermissionFilter != nil && req.PermissionFilter.UserBranchTag != nil {
 		bt := *req.PermissionFilter.UserBranchTag
 		if bt != "" {
-			query.WriteString(` AND c.spatial_prefix <<= $` + fmt.Sprintf("%d", argIdx) + `::inet `)
+			query.WriteString(` AND c.card_id <<= $` + fmt.Sprintf("%d", argIdx) + `::inet `)
 			args = append(args, bt)
 			argIdx++
 		}
@@ -240,7 +254,7 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 	return results, nil
 }
 
-// GetCardDevices 获取卡片上所有设备（v2: cards.spatial_prefix LPM device.device_ipv6）。
+// GetCardDevices 获取卡片上所有设备（v2: cards.card_id LPM device.device_ipv6）。
 func (r *PostgresCardsRepository) GetCardDevices(ctx context.Context, tenantID, cardID string) ([]CardDeviceItem, error) {
 	if cardID == "" {
 		return nil, nil
@@ -253,9 +267,9 @@ func (r *PostgresCardsRepository) GetCardDevices(ctx context.Context, tenantID, 
 			COALESCE(dfm.device_code, ''),
 			dfm.device_uid AS device_name
 		FROM cards c
-		JOIN devices d ON d.device_ipv6 <<= c.spatial_prefix
+		JOIN devices d ON d.device_ipv6 <<= c.card_id
 		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		WHERE c.spatial_prefix = $1::INET
+		WHERE c.card_id = $1::INET
 		ORDER BY d.device_ipv6
 	`
 	rows, err := r.db.QueryContext(ctx, q, cardID)

@@ -95,7 +95,6 @@ func main() {
 	cardAPIClient := card.NewCardAPIClient(dataAPIURL)
 	cardMappingSvc := service.NewCardMappingService(cardAPIClient, logger)
 
-	streamPublisher.SetCardMappingService(cardMappingSvc)
 	streamPublisher.SetLogger(logger)
 
 	mqttConsumer, err := consumer.NewMQTTConsumer(

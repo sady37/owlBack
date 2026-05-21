@@ -21,26 +21,31 @@ import (
 
 // BedSizeLookup 实现 zoneengine.BedSizeLookup —— 查 beds.size_kind 列推导 small/large bucket。
 //
-// 缓存策略：
-//   - 命中后无 TTL，进程内永久缓存（床型迁移极罕见，新增床走默认 'standard'=small）
-//   - 未命中 / 查询失败默认 "small"（与 zoneengine.BedSizeBucket() 兜底一致）
-//   - bedZoneID 不存在的 db 行（罕见，可能 device 派生 /96 不对应真实床）→ 默认 small
+// 缓存策略：60s TTL（admin 改 size_kind 异步生效，最坏 60s 收敛）；
+// 未命中 / 查询失败默认 "small"（与 zoneengine.BedSizeBucket() 兜底一致）。
 type BedSizeLookup struct {
 	db     *sql.DB
 	logger *zap.Logger
 
 	mu    sync.RWMutex
-	cache map[string]string // bedZoneID(/96 CIDR) → bucket "small"/"large"
+	cache map[string]bedSizeCacheEntry
 
 	queryTimeout time.Duration
+	ttl          time.Duration
+}
+
+type bedSizeCacheEntry struct {
+	bucket   string // "small" / "large"
+	expireAt time.Time
 }
 
 func NewBedSizeLookup(db *sql.DB, logger *zap.Logger) *BedSizeLookup {
 	return &BedSizeLookup{
 		db:           db,
 		logger:       logger,
-		cache:        make(map[string]string),
+		cache:        make(map[string]bedSizeCacheEntry),
 		queryTimeout: 2 * time.Second,
+		ttl:          60 * time.Second,
 	}
 }
 
@@ -49,20 +54,18 @@ func (l *BedSizeLookup) BedSizeBucket(bedZoneID string) string {
 	if bedZoneID == "" {
 		return "small"
 	}
-
-	// fast path: cache hit
+	now := time.Now()
 	l.mu.RLock()
-	if v, ok := l.cache[bedZoneID]; ok {
+	if v, ok := l.cache[bedZoneID]; ok && now.Before(v.expireAt) {
 		l.mu.RUnlock()
-		return v
+		return v.bucket
 	}
 	l.mu.RUnlock()
 
-	// slow path: db query
 	bucket := l.queryBucket(bedZoneID)
 
 	l.mu.Lock()
-	l.cache[bedZoneID] = bucket
+	l.cache[bedZoneID] = bedSizeCacheEntry{bucket: bucket, expireAt: now.Add(l.ttl)}
 	l.mu.Unlock()
 	return bucket
 }
@@ -92,16 +95,3 @@ func (l *BedSizeLookup) queryBucket(bedZoneID string) string {
 	return zoneengine.BedSizeBucket(sizeKind)
 }
 
-// Invalidate 清除指定 bed 的缓存（床型 schema 变化时调用，目前几乎用不到）。
-func (l *BedSizeLookup) Invalidate(bedZoneID string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	delete(l.cache, bedZoneID)
-}
-
-// InvalidateAll 清空整个缓存（hot reload 用）。
-func (l *BedSizeLookup) InvalidateAll() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.cache = make(map[string]string)
-}
