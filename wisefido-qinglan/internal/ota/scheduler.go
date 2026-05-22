@@ -103,18 +103,17 @@ func (s *Scheduler) scan(ctx context.Context) {
 		return
 	}
 
-	// v2 query：仅 tenant_schedule / tenant_manual + 'idle'/'scheduled' 状态
+	// Phase 2: device_ota PK = device_uid (logMAC)；直接 JOIN devices(device_uid) 查 access
 	// approve_way 值集：system_schedule / tenant_schedule / system_manual / tenant_manual
 	query := `
-		SELECT dfm.device_uid,
+		SELECT o.device_uid,
 		       COALESCE(o.approve_way, '')                   AS approve_way,
 		       COALESCE(o.schedule::text, '')                AS schedule_ts,
 		       COALESCE(o.target_firmware_version, '')       AS ota_target_fw,
 		       COALESCE(o.target_mcu_model, '')              AS ota_target_mcu,
 		       COALESCE(o.updated_at, NOW())                 AS ota_updated_at
 		FROM device_ota o
-		JOIN devices d ON d.device_ipv6 = o.device_ipv6
-		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		JOIN devices d ON d.device_uid = o.device_uid
 		WHERE d.access = TRUE
 		  AND o.approve_way IN ('tenant_schedule', 'tenant_manual')
 		  AND o.approved_at IS NOT NULL
@@ -249,11 +248,7 @@ func (s *Scheduler) scan(ctx context.Context) {
 			_, err = s.db.ExecContext(ctx, `
 				UPDATE device_ota
 				SET status = 'downloading', updated_at = NOW(), last_attempted_at = NOW()
-				WHERE device_ipv6 = (
-					SELECT d.device_ipv6 FROM devices d
-					JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-					WHERE dfm.device_uid = $1
-				)
+				WHERE device_uid = $1
 			`, uid)
 			if err != nil {
 				s.logger.Warn("device_ota status update", zap.String("uid", uid), zap.Error(err))

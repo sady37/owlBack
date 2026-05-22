@@ -707,7 +707,7 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 				`, update.TenantID, resetAddr).Scan(&newAddr); err != nil {
 					return fmt.Errorf("compose new tenant addr: %w", err)
 				}
-				// UPDATE devices.device_addr — FK 已设 ON UPDATE CASCADE，device_ota.device_addr 自动同步
+				// UPDATE devices.device_addr — device_ota PK=device_uid 不受 device_addr 变更影响
 				if _, err := tx.ExecContext(ctx, `
 					UPDATE devices SET device_addr = $2::INET, updated_at = NOW()
 					 WHERE device_addr = $1::INET
@@ -765,12 +765,12 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 			}
 			otaSet = append(otaSet, "updated_at = NOW()")
 
-			// UPSERT
+			// UPSERT — Phase 2: device_ota PK = device_uid (logMAC)；通过 devices.device_addr 反查 device_uid
 			otaArgs = append(otaArgs, currentAddr.String)
 			q := fmt.Sprintf(`
-				INSERT INTO device_ota (device_addr, status, updated_at)
-				VALUES ($%d::INET, 'idle', NOW())
-				ON CONFLICT (device_addr) DO UPDATE SET %s
+				INSERT INTO device_ota (device_uid, status, updated_at)
+				SELECT device_uid, 'idle', NOW() FROM devices WHERE device_addr = $%d::INET
+				ON CONFLICT (device_uid) DO UPDATE SET %s
 			`, oN, strings.Join(otaSet, ", "))
 			if _, err := tx.ExecContext(ctx, q, otaArgs...); err != nil {
 				return fmt.Errorf("upsert device_ota: %w", err)

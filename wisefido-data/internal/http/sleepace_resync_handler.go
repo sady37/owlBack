@@ -139,7 +139,7 @@ func (h *SleepaceResyncHandler) lookupTenantID(r *http.Request, deviceID string)
 	}
 	var tenantID string
 	err := h.db.QueryRowContext(r.Context(),
-		`SELECT tenant_id::text FROM devices WHERE device_id = $1::uuid`, deviceID).Scan(&tenantID)
+		`SELECT tenant_id::text FROM devices WHERE device_addr = $1::INET`, deviceID).Scan(&tenantID)
 	if err != nil {
 		return "", err
 	}

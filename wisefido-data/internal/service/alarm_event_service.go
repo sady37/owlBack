@@ -1479,7 +1479,8 @@ type residentInfo struct {
 	UnitID     sql.NullString
 }
 
-// getResidentByDeviceID 通过 device_id 获取关联的住户信息
+// getResidentByDeviceID 通过 device_addr 获取关联的住户信息
+// Phase 2: deviceID 入参承载 device_addr (INET text)。
 // 查询路径：devices → beds → residents 或 devices → rooms → units → residents
 func (s *alarmEventService) getResidentByDeviceID(ctx context.Context, tenantID, deviceID string) (*residentInfo, error) {
 	// 查询设备关联的住户（优先通过 bed，其次通过 room）
@@ -1494,7 +1495,7 @@ func (s *alarmEventService) getResidentByDeviceID(ctx context.Context, tenantID,
 		LEFT JOIN units u ON rm.unit_id = u.unit_id
 		LEFT JOIN residents r ON (r.bed_id = b.bed_id OR r.room_id = rm.room_id OR r.unit_id = u.unit_id)
 		WHERE d.tenant_id = $1::uuid
-		  AND d.device_id = $2::uuid
+		  AND d.device_addr = $2::INET
 		  AND r.resident_id IS NOT NULL
 		LIMIT 1
 	`
@@ -1579,7 +1580,7 @@ func (s *alarmEventService) getCardDeviceIDs(ctx context.Context, tenantID, card
 	case bedID.Valid:
 		// ActiveBedCard：bed sleepad + 该 bed 所在 room 的 radar（窄 scope，不 fan-out 整 unit）
 		query = `
-			SELECT DISTINCT device_id::text
+			SELECT DISTINCT host(device_addr)
 			FROM devices
 			WHERE tenant_id = $1
 			  AND (
@@ -1593,7 +1594,7 @@ func (s *alarmEventService) getCardDeviceIDs(ctx context.Context, tenantID, card
 	case unitID.Valid:
 		// UnitCard：整 unit 全 rooms 的 radar（公共区域卡）
 		query = `
-			SELECT DISTINCT device_id::text
+			SELECT DISTINCT host(device_addr)
 			FROM devices
 			WHERE tenant_id = $1
 			  AND bound_room_id IN (
@@ -1630,7 +1631,7 @@ func (s *alarmEventService) getCardDeviceIDs(ctx context.Context, tenantID, card
 //   - bound_bed_id IN (该 room 下所有 bed) → 床上传感器（sleepad）
 func (s *alarmEventService) getRoomDeviceIDs(ctx context.Context, tenantID, roomID string) ([]string, error) {
 	query := `
-		SELECT DISTINCT device_id::text
+		SELECT DISTINCT host(device_addr)
 		FROM devices
 		WHERE tenant_id = $1
 		  AND (
@@ -1690,7 +1691,7 @@ func (s *alarmEventService) getDeviceIDsForResident(ctx context.Context, tenantI
 			return []string{}, nil
 		}
 		query = `
-			SELECT DISTINCT d.device_id::text
+			SELECT DISTINCT host(d.device_addr)
 			FROM devices d
 			WHERE d.tenant_id = $1
 			  AND d.bound_bed_id = $2
@@ -1706,7 +1707,7 @@ func (s *alarmEventService) getDeviceIDsForResident(ctx context.Context, tenantI
 
 		// 查询该 unit 下所有的 device（无论绑定到 bed 还是 room）
 		query = `
-				SELECT DISTINCT d.device_id::text
+				SELECT DISTINCT host(d.device_addr)
 				FROM devices d
 				LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND b.tenant_id = $1
 				LEFT JOIN rooms r1 ON b.room_id = r1.room_id AND r1.tenant_id = $1
@@ -1944,7 +1945,7 @@ func (s *alarmEventService) getDeviceIDsByUnitIDs(ctx context.Context, tenantID 
 	}
 
 	query := fmt.Sprintf(`
-		SELECT DISTINCT d.device_id::text
+		SELECT DISTINCT host(d.device_addr)
 		FROM devices d
 		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id AND b.tenant_id = $1
 		LEFT JOIN rooms r1 ON b.room_id = r1.room_id AND r1.tenant_id = $1
@@ -2143,14 +2144,15 @@ func (s *alarmEventService) getUnitIDsByResidentIDs(ctx context.Context, tenantI
 	return unitIDs, nil
 }
 
-// getCardIDByDeviceID 通过 device_id 查询 card_id（直接查 DB）
+// getCardIDByDeviceID 通过 device_addr 查询 card_id（直接查 DB）
+// Phase 2: deviceID 入参承载 device_addr (INET text)。
 func (s *alarmEventService) getCardIDByDeviceID(ctx context.Context, tenantID, deviceID string) (string, error) {
-	// v2 unified: card_id ≡ spatial_prefix；LPM 反查（先 device_id → device_ipv6，再 LPM cards）
+	// v2 unified: card_id ≡ spatial_prefix；LPM 反查 (device_addr → cards)
 	_ = tenantID
 	query := `
-		SELECT find_card_by_device_addr(d.device_ipv6)::text
+		SELECT find_card_by_device_addr(d.device_addr)::text
 		FROM devices d
-		WHERE d.device_id = $1::UUID
+		WHERE d.device_addr = $1::INET
 		LIMIT 1
 	`
 	var cardID sql.NullString

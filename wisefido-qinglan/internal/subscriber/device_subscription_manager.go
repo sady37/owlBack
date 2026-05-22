@@ -764,16 +764,17 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 
 // autoSubscribeOnFirstMessage 在收到设备第一条消息时自动发送monitor订阅命令
 func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Context, deviceUID string) {
-	// v2: device_id 来自 dfm；access=TRUE 来自 devices；device_type 来自 dfm
+	// Phase 2: device identity = device_uid；access=TRUE 来自 devices；device_type 来自 dfm
+	// 仅校验该 device_uid 在 dfm + devices 双表存在且 access=TRUE 且 device_type=Radar
 	query := `
-		SELECT dfm.device_id::text
+		SELECT dfm.device_uid
 		FROM device_factory_meta dfm
-		JOIN devices d ON d.device_id = dfm.device_id
+		JOIN devices d ON d.device_uid = dfm.device_uid
 		WHERE dfm.device_uid = $1 AND d.access = TRUE AND dfm.device_type = 'Radar'`
 	var deviceID string
 	err := m.db.QueryRowContext(ctx, query, deviceUID).Scan(&deviceID)
 	if err != nil {
-		m.logger.Warn("Failed to get device_id for auto-subscribe",
+		m.logger.Warn("Failed to verify device for auto-subscribe",
 			zap.String("device_uid", deviceUID),
 			zap.Error(err),
 		)
@@ -1137,10 +1138,11 @@ func (m *DeviceSubscriptionManager) renewSubscriptions(ctx context.Context) {
 
 // getDeviceStatus 获取设备当前状态（仅用于 disabled 检查；on/offline 不存 DB）
 //
-// v2: devices.access=FALSE → "disabled"（platform 拒绝接入）；TRUE → "active"
+// Phase 2: devices.access=FALSE → "disabled"（platform 拒绝接入）；TRUE → "active"
+// deviceID 入参承载 device_uid (logMAC)。
 func (m *DeviceSubscriptionManager) getDeviceStatus(ctx context.Context, deviceID string) (string, error) {
 	var access bool
-	query := `SELECT access FROM devices WHERE device_id = $1::uuid`
+	query := `SELECT access FROM devices WHERE device_uid = $1`
 	err := m.db.QueryRowContext(ctx, query, deviceID).Scan(&access)
 	if err != nil {
 		return "", err
@@ -1169,9 +1171,9 @@ func (m *DeviceSubscriptionManager) ClearForceUnsubscribed(deviceUID string) {
 // GetDeviceOnlineStatus 获取设备的在线状态（online/offline/unsubscribed）
 // 用于其他服务查询设备的实时在线状态
 // 注意：状态由 checkDeviceHeartbeat 定期检查并更新（每90秒），这里直接返回内存中的状态
-// 自动判断传入的是 device_uid 还是 device_id：
-//   - 如果是 UUID 格式（36个字符，4个连字符），认为是 device_id，从 subscriptionsByID 查找
-//   - 否则认为是 device_uid，从 subscriptionsByUID 查找
+// Phase 2: API ID 体系统一为 IPv6；本函数仍兼容 device_uid 直接查询。
+//   - 包含 ':' (IPv6 地址) → 从 subscriptionsByID 查找
+//   - 否则当作 device_uid（短字符串 logMAC），从 subscriptionsByUID 查找
 //
 // 不查数据库，完全基于内存
 func (m *DeviceSubscriptionManager) GetDeviceOnlineStatus(identifier string) string {
@@ -1180,17 +1182,15 @@ func (m *DeviceSubscriptionManager) GetDeviceOnlineStatus(identifier string) str
 	var deviceUID string
 
 	m.mu.RLock()
-	// 自动判断是 device_id (UUID格式) 还是 device_uid (短字符串格式)
-	// UUID格式: 8-4-4-4-12 (例如: 791fc634-69de-4987-b7eb-803c17e545a5)
-	// device_uid格式: 通常12个字符，如 E598A2ACD523
-	if len(identifier) == 36 && strings.Count(identifier, "-") == 4 {
-		// 是 device_id (UUID格式)，从 subscriptionsByID 查找
+	// 自动判断是 device_addr (IPv6) 还是 device_uid (短字符串 logMAC)
+	if strings.Contains(identifier, ":") {
+		// IPv6 (device_addr)，从 subscriptionsByID 查找
 		sub, exists = m.subscriptionsByID[identifier]
 		if exists {
 			deviceUID = sub.DeviceUID
 		}
 	} else {
-		// 是 device_uid (短字符串格式)，从 subscriptionsByUID 查找
+		// device_uid（短字符串），从 subscriptionsByUID 查找
 		sub, exists = m.subscriptionsByUID[identifier]
 		if exists {
 			deviceUID = identifier
@@ -1219,11 +1219,10 @@ func (m *DeviceSubscriptionManager) GetDeviceOnlineStatus(identifier string) str
 	return status
 }
 
-// GetDeviceOnlineStatusByDeviceID 通过 device_id 获取设备的在线状态
-// 需要先通过 device_id 查询 device_uid
+// GetDeviceOnlineStatusByDeviceID 通过 device_addr (INET) 获取设备的在线状态
+// Phase 2: device_id UUID 列退役；入参承载 device_addr，反查 devices.device_uid。
 func (m *DeviceSubscriptionManager) GetDeviceOnlineStatusByDeviceID(ctx context.Context, deviceID string) (string, error) {
-	// v2: device_uid 来自 dfm
-	query := `SELECT device_uid FROM device_factory_meta WHERE device_id = $1::uuid`
+	query := `SELECT device_uid FROM devices WHERE device_addr = $1::INET`
 	var deviceUID string
 	err := m.db.QueryRowContext(ctx, query, deviceID).Scan(&deviceUID)
 	if err != nil {

@@ -125,15 +125,18 @@ func (s *deviceMonitorSettingsService) resolveDeviceIPv6(ctx context.Context, de
 	return ipv6, nil
 }
 
-// resolveDeviceCode 由 device_id (UUID) 查 device_factory_meta.device_code（合作方 deviceId）。
+// resolveDeviceCode 由 device_addr (INET text) 查 device_factory_meta.device_code（合作方 deviceId）。
 // 取不到 device_code 不算 hard error — 返回空串，由调用方根据 deviceType 决定是否需要。
 func (s *deviceMonitorSettingsService) resolveDeviceCode(ctx context.Context, deviceID string) (string, error) {
 	if deviceID == "" {
-		return "", fmt.Errorf("device_id is required")
+		return "", fmt.Errorf("device_addr is required")
 	}
 	var code sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT device_code FROM device_factory_meta WHERE device_id = $1::uuid`,
+		`SELECT dfm.device_code
+		   FROM device_factory_meta dfm
+		   JOIN devices d ON d.device_uid = dfm.device_uid
+		  WHERE d.device_addr = $1::INET`,
 		deviceID,
 	).Scan(&code)
 	if err == sql.ErrNoRows {
@@ -148,19 +151,19 @@ func (s *deviceMonitorSettingsService) resolveDeviceCode(ctx context.Context, de
 	return code.String, nil
 }
 
-// resolveDeviceUID 由 device_id (UUID) 查 device_factory_meta.device_uid（雷达走 qinglan 时的入参）。
+// resolveDeviceUID 由 device_addr (INET text) 查 devices.device_uid（雷达走 qinglan 时的入参）。
 // device_uid 是 NOT NULL 字段，缺失即 hard error。
 func (s *deviceMonitorSettingsService) resolveDeviceUID(ctx context.Context, deviceID string) (string, error) {
 	if deviceID == "" {
-		return "", fmt.Errorf("device_id is required")
+		return "", fmt.Errorf("device_addr is required")
 	}
 	var uid string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT device_uid FROM device_factory_meta WHERE device_id = $1::uuid`,
+		`SELECT device_uid FROM devices WHERE device_addr = $1::INET`,
 		deviceID,
 	).Scan(&uid)
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("device_factory_meta not found: %s", deviceID)
+		return "", fmt.Errorf("device not found: %s", deviceID)
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve device_uid: %w", err)

@@ -531,14 +531,15 @@ func (s *sleepaceReportService) lookupSleepaceReportIdentityByDeviceAddr(ctx con
 
 // lookupSleepaceReportIdentityBySleepaceDeviceID — Sleepace 厂家 deviceId（= device_code 或 device_uid）反查 wisefido device。
 // v2: 全部从 device_factory_meta 取标识；tenant 派生 /48；devices 表无 status 列。
+// Phase 2: device_id UUID 列已退役；返回 devID = host(device_addr) 文本。
 func (s *sleepaceReportService) lookupSleepaceReportIdentityBySleepaceDeviceID(ctx context.Context, sleepaceDeviceID string) (tenantID, devID, sid, uid string, err error) {
 	q := `
-		SELECT host(network(set_masklen(d.device_ipv6, 48))) || '/48',
-			d.device_id::text,
+		SELECT host(network(set_masklen(d.device_addr, 48))) || '/48',
+			host(d.device_addr),
 			COALESCE(NULLIF(TRIM(dfm.device_code), ''), dfm.device_uid),
 			dfm.device_uid
 		FROM devices d
-		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
 		WHERE (NULLIF(TRIM(dfm.device_code), '') IS NOT NULL AND TRIM(dfm.device_code) = $1)
 		   OR dfm.device_uid = $1
 		LIMIT 1
@@ -662,16 +663,17 @@ func (s *sleepaceReportService) BackfillFromVendor(ctx context.Context, tenantID
 }
 
 // validateDevice 验证设备是否存在且属于该租户
-// v2: devices 表已删 tenant_id 列（tenant 派生自 device_ipv6 前 /48）；
+// v2: devices 表已删 tenant_id 列（tenant 派生自 device_addr 前 /48）；
 //     也删 status 列（row 存在 = enabled）；
 //     tenantID 入参现为 /48 INET CIDR 字符串。
+// Phase 2: deviceID 入参 = device_addr (INET /128 canonical text)。
 func (s *sleepaceReportService) validateDevice(ctx context.Context, tenantID, deviceID string) error {
 	query := `
 		SELECT EXISTS(
 			SELECT 1
 			FROM devices
-			WHERE device_id = $1::uuid
-			  AND device_ipv6 <<= $2::INET
+			WHERE device_addr = $1::INET
+			  AND device_addr <<= $2::INET
 		)
 	`
 	var exists bool

@@ -179,8 +179,9 @@ func main() {
 				zap.String("sf_ver", sfVer),
 				zap.String("hw_ver", hwVer),
 			)
+			// Phase 2: device_store 表退役，firmware_version/mcu_model 列已合入 device_factory_meta
 			_, err := db.ExecContext(context.Background(), `
-				UPDATE device_store SET
+				UPDATE device_factory_meta SET
 					firmware_version = COALESCE(NULLIF($2, ''), firmware_version),
 					mcu_model = COALESCE(NULLIF($3, ''), mcu_model)
 				WHERE device_uid = $1
@@ -188,9 +189,9 @@ func main() {
 			if err != nil {
 				logger.Warn("tcp register writeback failed", zap.String("uid", uid), zap.Error(err))
 			}
-			var deviceID string
-			_ = db.QueryRowContext(context.Background(), `SELECT device_id FROM device_store WHERE device_uid = $1`, uid).Scan(&deviceID)
-			subscriptionManager.SetTCPDeviceOnline(uid, deviceID)
+			var deviceAddr string
+			_ = db.QueryRowContext(context.Background(), `SELECT host(device_addr) FROM devices WHERE device_uid = $1`, uid).Scan(&deviceAddr)
+			subscriptionManager.SetTCPDeviceOnline(uid, deviceAddr)
 		}
 
 		httpsServer.TCPServer().Sessions.OnDisconnect = func(uid string) {

@@ -240,8 +240,8 @@ func (s *SleepaceIntervalScheduler) readUserConfiguredInterval(ctx context.Conte
 	err := s.db.QueryRowContext(ctx, `
 		SELECT sc.config_value
 		  FROM spatial_config sc, devices d
-		 WHERE d.device_id = $1::uuid
-		   AND sc.spatial_prefix = d.device_ipv6
+		 WHERE d.device_addr = $1::INET
+		   AND sc.spatial_prefix = d.device_addr
 		   AND sc.config_key = 'alarm.device_config'
 	`, deviceID).Scan(&raw)
 	if err != nil || len(raw) == 0 {

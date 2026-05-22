@@ -65,7 +65,8 @@ func orderByClause(sort, direction string) string {
 	case "access":
 		return "d.access " + dir
 	case "device_id":
-		return "d.device_id " + dir
+		// Phase 2: device_id 列已退役；alias 到 device_addr 排序
+		return "d.device_addr " + dir
 	case "device_code":
 		return "ds.device_code " + dir
 	case "device_name":
@@ -95,7 +96,8 @@ func orderByClauseDevicesV2(sortKey, direction string) string {
 	case "tenant_name":
 		return "t.tenant_name " + dir
 	case "device_id":
-		return "dfm.device_id " + dir
+		// Phase 2: dfm.device_id 列已退役；alias 到 device_uid（identity 排序）
+		return "dfm.device_uid " + dir
 	case "ota_target_firmware_version":
 		return "o.target_firmware_version " + dir
 	case "ota_target_mcu_model":
@@ -168,11 +170,12 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		argN++
 	}
 
-	// 搜索关键词：device_uid / device_code / mac_wifi / imei / device_id::text 模糊匹配
+	// 搜索关键词：device_uid / device_code / mac_wifi / imei 模糊匹配
+	// Phase 2: dfm.device_id 列已退役；device_uid 已含 logMAC 搜索覆盖
 	if kw := strings.TrimSpace(filters.SearchKeyword); kw != "" {
 		where = append(where, fmt.Sprintf(
-			"(dfm.device_uid ILIKE $%d OR dfm.device_code ILIKE $%d OR dfm.mac_wifi ILIKE $%d OR dfm.imei ILIKE $%d OR dfm.device_id::text ILIKE $%d)",
-			argN, argN, argN, argN, argN))
+			"(dfm.device_uid ILIKE $%d OR dfm.device_code ILIKE $%d OR dfm.mac_wifi ILIKE $%d OR dfm.imei ILIKE $%d)",
+			argN, argN, argN, argN))
 		args = append(args, "%"+kw+"%")
 		argN++
 	}

@@ -271,17 +271,18 @@ type deviceRecord struct {
 }
 
 func lookupDevice(ctx context.Context, db *sql.DB, uid, code string) (*deviceRecord, error) {
+	// Phase 2: device_store 退役；device_code/device_model/firmware_version 合入 device_factory_meta
 	q := `
-		SELECT d.device_id::text,
+		SELECT host(d.device_addr) AS device_id,
 		       COALESCE(d.device_uid, '') AS device_uid,
-		       COALESCE(NULLIF(TRIM(ds.device_code), ''), '') AS device_code,
-		       COALESCE(ds.device_model, '') AS device_model,
-		       COALESCE(ds.firmware_version, '') AS firmware_version
+		       COALESCE(NULLIF(TRIM(dfm.device_code), ''), '') AS device_code,
+		       COALESCE(dfm.device_model, '') AS device_model,
+		       COALESCE(dfm.firmware_version, '') AS firmware_version
 		FROM devices d
-		JOIN device_store ds ON ds.device_id = d.device_id
-		WHERE LOWER(COALESCE(ds.device_type, '')) = 'sleepad'
+		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
+		WHERE dfm.device_type = 'Sleepad'
 		  AND ($1 = '' OR d.device_uid = $1)
-		  AND ($2 = '' OR ds.device_code = $2)
+		  AND ($2 = '' OR dfm.device_code = $2)
 		LIMIT 2`
 	rows, err := db.QueryContext(ctx, q, uid, code)
 	if err != nil {
@@ -310,18 +311,19 @@ func lookupDevice(ctx context.Context, db *sql.DB, uid, code string) (*deviceRec
 }
 
 // listSleepadDevices 列出所有需要纳入采样调度的 sleepad 设备（device_code 非空、未禁用）。
+// Phase 2: device_store 退役；devices 表无 status 列（access=TRUE 视为可用）。
 func listSleepadDevices(ctx context.Context, db *sql.DB) ([]deviceRecord, error) {
 	q := `
-		SELECT d.device_id::text,
+		SELECT host(d.device_addr) AS device_id,
 		       COALESCE(d.device_uid, '') AS device_uid,
-		       COALESCE(NULLIF(TRIM(ds.device_code), ''), '') AS device_code,
-		       COALESCE(ds.device_model, '') AS device_model,
-		       COALESCE(ds.firmware_version, '') AS firmware_version
+		       COALESCE(NULLIF(TRIM(dfm.device_code), ''), '') AS device_code,
+		       COALESCE(dfm.device_model, '') AS device_model,
+		       COALESCE(dfm.firmware_version, '') AS firmware_version
 		FROM devices d
-		JOIN device_store ds ON ds.device_id = d.device_id
-		WHERE LOWER(COALESCE(ds.device_type, '')) = 'sleepad'
-		  AND COALESCE(d.status, '') NOT IN ('disabled', 'removed')
-		  AND COALESCE(NULLIF(TRIM(ds.device_code), ''), '') <> ''
+		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
+		WHERE dfm.device_type = 'Sleepad'
+		  AND d.access = TRUE
+		  AND COALESCE(NULLIF(TRIM(dfm.device_code), ''), '') <> ''
 		ORDER BY d.device_uid`
 	rows, err := db.QueryContext(ctx, q)
 	if err != nil {

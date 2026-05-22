@@ -774,16 +774,11 @@ func (c *MQTTConsumer) handleOTAReturn(uid string, message map[string]interface{
 	}
 
 	if c.db != nil {
-		// v2: device_ota PK = device_ipv6；UPDATE 走 dfm → devices.device_ipv6 反查
+		// Phase 2: device_ota PK = device_uid (logMAC)；直接键入 uid
 		_, err := c.db.ExecContext(context.Background(), `
 			UPDATE device_ota
 			SET status = $1, progress = $2, error = $3, updated_at = NOW()
-			WHERE device_ipv6 = (
-				SELECT d.device_ipv6
-				FROM devices d
-				JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-				WHERE dfm.device_uid = $4
-			)
+			WHERE device_uid = $4
 		`, status, progress, errMsg, uid)
 		if err != nil {
 			c.logger.Warn("ota_return device_ota update failed", zap.String("uid", uid), zap.Error(err))

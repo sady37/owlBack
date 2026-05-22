@@ -77,11 +77,12 @@ func (r *AlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenantID, eve
 		return nil, fmt.Errorf("event_id is required")
 	}
 
+	// Phase 2: alarm_events.device_id 列退役；device_addr (INET /128) 是新业务侧主键
 	query := `
-		SELECT 
+		SELECT
 			event_id,
 			tenant_id,
-			device_id,
+			host(device_addr),
 			event_type,
 			category,
 			alarm_level,
@@ -270,7 +271,7 @@ func (r *AlarmEventsRepository) buildWhereClause(tenantID string, filters AlarmE
 
 	// 设备过滤
 	if filters.DeviceID != nil {
-		where = append(where, fmt.Sprintf("ae.device_id = $%d", *argN))
+		where = append(where, fmt.Sprintf("ae.device_addr = $%d::INET", *argN))
 		*args = append(*args, *filters.DeviceID)
 		*argN++
 	}
@@ -443,12 +444,12 @@ func (r *AlarmEventsRepository) ListAlarmEvents(ctx context.Context, tenantID st
 	}
 	offset := (page - 1) * size
 
-	// 查询数据
+	// 查询数据 — Phase 2: device_id 列退役 → device_addr
 	query := fmt.Sprintf(`
 		SELECT DISTINCT
 			ae.event_id,
 			ae.tenant_id,
-			ae.device_id,
+			host(ae.device_addr),
 			ae.event_type,
 			ae.category,
 			ae.alarm_level,
@@ -571,11 +572,12 @@ func (r *AlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context, tenantI
 	// 计算时间阈值（使用参数化查询避免 SQL 注入）
 	thresholdTime := time.Now().Add(-time.Duration(withinMinutes) * time.Minute)
 
+	// Phase 2: alarm_events.device_id 列退役；deviceID 入参 = device_addr (INET text)
 	query := `
-		SELECT 
+		SELECT
 			event_id,
 			tenant_id,
-			device_id,
+			host(device_addr),
 			event_type,
 			category,
 			alarm_level,
@@ -593,7 +595,7 @@ func (r *AlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context, tenantI
 			updated_at
 		FROM alarm_events
 		WHERE tenant_id = $1
-		  AND device_id = $2
+		  AND device_addr = $2::INET
 		  AND event_type = $3
 		  AND triggered_at > $4
 		  AND alarm_status = 'active'
