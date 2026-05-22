@@ -304,7 +304,6 @@ func (c *SleepaceGatewayClient) persistVendorSleepaceReports(ctx context.Context
 		sleepState := string(parsed.Analysis.SleepStateStr)
 		reportJSON := "[" + string(raw) + "]"
 		rep := &domain.SleepaceReport{
-			DeviceID:    deviceID,
 			DeviceCode:  deviceCode,
 			DeviceUID:   deviceUID,
 			RecordCount: parsed.Summary.RecordCount,

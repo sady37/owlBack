@@ -327,10 +327,9 @@ func BuildAlarmProcessMessage(source, cardID, alarmLevel, alarmType, processType
 	}
 }
 
-// DeviceItemForMessage 是 admin/api 后台对设备清单的展示项；保留 device_uid/device_id 字符串字段
-// 给前端 UI 渲染（外部 API 边界 R-002），不进 internal routing。
+// DeviceItemForMessage 是 admin/api 后台对设备清单的展示项（外部 API 边界 R-002，不进 internal routing）。
+// Phase 2 一刀切后：identity 字段只剩 device_uid；业务侧请用 device_addr 单独字段。
 type DeviceItemForMessage struct {
-	DeviceID   string      `json:"device_id"`
 	DeviceUID  string      `json:"device_uid"`
 	DeviceCode string      `json:"device_code,omitempty"`
 	DeviceName string      `json:"device_name,omitempty"`
@@ -392,8 +391,9 @@ type AuthMessage struct {
 	Producer      string                 `json:"producer,omitempty"`
 	SubjectEntity string                 `json:"subject_entity,omitempty"`
 
-	DeviceUID  string                 `json:"device_uid"`            // MAC，外部物理 auth 入口
-	DeviceID   string                 `json:"device_id,omitempty"`   // UUID，DB FK 引用 (R-003 不退役)；handshake 完成后由 gateway 补
+	// Phase 2: identity 收口到 device_uid (logMAC)；handshake 后业务侧路由用 device_addr (handshake response 补)
+	DeviceUID  string                 `json:"device_uid"`              // logMAC，外部物理 auth 入口
+	DeviceAddr string                 `json:"device_addr,omitempty"`   // INET /128 canonical text，handshake 完成后 gateway 补
 	DeviceType string                 `json:"device_type"`
 	TenantID   string                 `json:"tenant_id"`
 	Timestamp  int64                  `json:"timestamp"`

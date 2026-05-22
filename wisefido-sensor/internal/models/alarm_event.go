@@ -10,7 +10,7 @@ import (
 type AlarmEvent struct {
 	EventID          string          `json:"event_id" db:"event_id"`
 	TenantID         string          `json:"tenant_id" db:"tenant_id"`
-	DeviceID         string          `json:"device_id" db:"device_id"`
+	DeviceID         string          `json:"device_addr" db:"device_addr"`
 	EventType        string          `json:"event_type" db:"event_type"`
 	Category         string          `json:"category" db:"category"` // safety, clinical, behavioral, device
 	AlarmLevel       string          `json:"alarm_level" db:"alarm_level"` // EMERG, ALERT, CRITICAL, ERROR, WARNING, ...

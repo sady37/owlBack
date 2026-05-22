@@ -32,11 +32,11 @@ func NewPostgresSleepaceReportsRepository(db *sql.DB) *PostgresSleepaceReportsRe
 // 确保实现了接口
 var _ SleepaceReportsRepository = (*PostgresSleepaceReportsRepository)(nil)
 
-// sleepaceReportSelectColumns — 共用 SELECT 列表，v2 schema → v1 domain.SleepaceReport
+// sleepaceReportSelectColumns Phase 2 一刀切：sleepace_report.device_uid + device_addr。
 const sleepaceReportSelectColumns = `
 	sr.report_id::text,
-	host(network(set_masklen(d.device_ipv6, 48))) || '/48' AS tenant_id,
-	sr.device_id::text,
+	host(network(set_masklen(d.device_addr, 48))) || '/48' AS tenant_id,
+	host(sr.device_addr) AS device_addr,
 	COALESCE(dfm.device_code, '') AS device_code,
 	dfm.device_uid,
 	sr.record_count,
@@ -54,15 +54,15 @@ const sleepaceReportSelectColumns = `
 
 const sleepaceReportJoinClause = `
 	FROM sleepace_report sr
-	JOIN devices d                  ON d.device_id = sr.device_id
-	JOIN device_factory_meta dfm    ON dfm.device_id = sr.device_id
+	JOIN devices d                  ON d.device_uid = sr.device_uid
+	JOIN device_factory_meta dfm    ON dfm.device_uid = sr.device_uid
 `
 
 func scanSleepaceReport(scan func(...any) error, report *domain.SleepaceReport) error {
 	return scan(
 		&report.ReportID,
 		&report.TenantID,
-		&report.DeviceID,
+		&report.DeviceAddr,
 		&report.DeviceCode,
 		&report.DeviceUID,
 		&report.RecordCount,
@@ -79,16 +79,16 @@ func scanSleepaceReport(scan func(...any) error, report *domain.SleepaceReport) 
 	)
 }
 
-// GetReport 根据 device_id 和 date 获取报告详情。
-// tenantID 校验：device_ipv6 必须落在 tenantID prefix 内（防越权）。
+// GetReport Phase 2 一刀切：deviceID 入参承载 device_uid (sleepace.userId == owl device_uid logMAC)。
+// tenantID 校验：device_addr 必须落在 tenantID prefix 内（防越权）。
 func (r *PostgresSleepaceReportsRepository) GetReport(ctx context.Context, tenantID, deviceID string, date int) (*domain.SleepaceReport, error) {
 	if tenantID == "" || deviceID == "" || date == 0 {
-		return nil, fmt.Errorf("tenant_id, device_id and date are required")
+		return nil, fmt.Errorf("tenant_id, device_uid and date are required")
 	}
 
 	query := `SELECT ` + sleepaceReportSelectColumns + sleepaceReportJoinClause + `
-		WHERE d.device_ipv6 <<= $1::INET
-		  AND sr.device_id  = $2::uuid
+		WHERE d.device_addr <<= $1::INET
+		  AND sr.device_uid = $2
 		  AND sr.date       = $3
 	`
 
@@ -104,18 +104,18 @@ func (r *PostgresSleepaceReportsRepository) GetReport(ctx context.Context, tenan
 	return &report, nil
 }
 
-// ListReports 查询报告列表（支持分页）
+// ListReports 查询报告列表（支持分页）。deviceID 入参承载 device_uid。
 func (r *PostgresSleepaceReportsRepository) ListReports(ctx context.Context, tenantID, deviceID string, startDate, endDate int, page, size int) ([]*domain.SleepaceReport, int, error) {
 	if tenantID == "" || deviceID == "" {
-		return nil, 0, fmt.Errorf("tenant_id and device_id are required")
+		return nil, 0, fmt.Errorf("tenant_id and device_uid are required")
 	}
 
 	countQuery := `
 		SELECT COUNT(*)
 		FROM sleepace_report sr
-		JOIN devices d ON d.device_id = sr.device_id
-		WHERE d.device_ipv6 <<= $1::INET
-		  AND sr.device_id  = $2::uuid
+		JOIN devices d ON d.device_uid = sr.device_uid
+		WHERE d.device_addr <<= $1::INET
+		  AND sr.device_uid = $2
 		  AND sr.date >= $3
 		  AND sr.date <= $4
 	`
@@ -134,8 +134,8 @@ func (r *PostgresSleepaceReportsRepository) ListReports(ctx context.Context, ten
 	offset := (page - 1) * size
 
 	query := `SELECT ` + sleepaceReportSelectColumns + sleepaceReportJoinClause + `
-		WHERE d.device_ipv6 <<= $1::INET
-		  AND sr.device_id  = $2::uuid
+		WHERE d.device_addr <<= $1::INET
+		  AND sr.device_uid = $2
 		  AND sr.date >= $3
 		  AND sr.date <= $4
 		ORDER BY sr.date DESC
@@ -170,12 +170,13 @@ func (r *PostgresSleepaceReportsRepository) GetValidDates(ctx context.Context, t
 		return nil, fmt.Errorf("tenant_id and device_id are required")
 	}
 
+	// Phase 2: deviceID 入参承载 device_uid
 	query := `
 		SELECT sr.date
 		FROM sleepace_report sr
-		JOIN devices d ON d.device_id = sr.device_id
-		WHERE d.device_ipv6 <<= $1::INET
-		  AND sr.device_id  = $2::uuid
+		JOIN devices d ON d.device_uid = sr.device_uid
+		WHERE d.device_addr <<= $1::INET
+		  AND sr.device_uid = $2
 		ORDER BY sr.date DESC
 	`
 
@@ -210,8 +211,8 @@ func (r *PostgresSleepaceReportsRepository) ListReportsAllInRange(ctx context.Co
 		return nil, fmt.Errorf("start_date must be <= end_date")
 	}
 	query := `SELECT ` + sleepaceReportSelectColumns + sleepaceReportJoinClause + `
-		WHERE d.device_ipv6 <<= $1::INET
-		  AND sr.device_id  = $2::uuid
+		WHERE d.device_addr <<= $1::INET
+		  AND sr.device_uid = $2
 		  AND sr.date >= $3
 		  AND sr.date <= $4
 		ORDER BY sr.date ASC
@@ -246,9 +247,9 @@ func (r *PostgresSleepaceReportsRepository) GetValidDatesInRange(ctx context.Con
 	query := `
 		SELECT sr.date
 		FROM sleepace_report sr
-		JOIN devices d ON d.device_id = sr.device_id
-		WHERE d.device_ipv6 <<= $1::INET
-		  AND sr.device_id  = $2::uuid
+		JOIN devices d ON d.device_uid = sr.device_uid
+		WHERE d.device_addr <<= $1::INET
+		  AND sr.device_uid = $2
 		  AND sr.date >= $3
 		  AND sr.date <= $4
 		ORDER BY sr.date ASC
@@ -272,62 +273,56 @@ func (r *PostgresSleepaceReportsRepository) GetValidDatesInRange(ctx context.Con
 	return dates, nil
 }
 
-// GetDeviceIDByDeviceUID — v2: tenant 用 INET /48 scope；device_uid 在 device_factory_meta。
-// devices 表无 status 列（软删通过 trash /48），不再加 status filter。
+// GetDeviceUIDByDeviceUID Phase 2 一刀切：identity = device_uid；本函数保留 idempotent 校验入参 device_uid 存在性。
 func (r *PostgresSleepaceReportsRepository) GetDeviceIDByDeviceUID(ctx context.Context, tenantID, deviceUID string) (string, error) {
 	if tenantID == "" || deviceUID == "" {
 		return "", fmt.Errorf("tenant_id and device_uid are required")
 	}
 
 	query := `
-		SELECT d.device_id::text
-		FROM devices d
-		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		WHERE d.device_ipv6 <<= $1::INET
+		SELECT dfm.device_uid
+		FROM device_factory_meta dfm
+		JOIN devices d ON d.device_uid = dfm.device_uid
+		WHERE d.device_addr <<= $1::INET
 		  AND dfm.device_uid = $2
 		LIMIT 1
 	`
 
-	var deviceID string
-	err := r.db.QueryRowContext(ctx, query, tenantID, deviceUID).Scan(&deviceID)
+	var uid string
+	err := r.db.QueryRowContext(ctx, query, tenantID, deviceUID).Scan(&uid)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return "", fmt.Errorf("device not found: device_uid=%s", deviceUID)
 		}
-		return "", fmt.Errorf("failed to get device_id by device_uid: %w", err)
+		return "", fmt.Errorf("failed to verify device_uid: %w", err)
 	}
 
-	return deviceID, nil
+	return uid, nil
 }
 
-// SaveReport — v2 UPSERT 用 (device_id, date) UNIQUE 约束。
-// device_addr 派生：取 devices.device_ipv6（report 与 device 强绑定，FK 已 enforce device_id 存在）。
+// SaveReport Phase 2 一刀切：UPSERT 用 (device_uid, date) UNIQUE 约束。
+// device_addr 从 devices 派生写入。
+// TODO Phase 2.1: sleepace SDK userId format verify — report.DeviceUID 现在 == sleepace.userId
 func (r *PostgresSleepaceReportsRepository) SaveReport(ctx context.Context, tenantID string, report *domain.SleepaceReport) error {
 	if tenantID == "" || report == nil {
 		return fmt.Errorf("tenant_id and report are required")
 	}
 
-	deviceID := report.DeviceID
-	if deviceID == "" && report.DeviceUID != "" {
-		var err error
-		deviceID, err = r.GetDeviceIDByDeviceUID(ctx, tenantID, report.DeviceUID)
-		if err != nil {
-			return fmt.Errorf("failed to get device_id from device_uid: %w", err)
-		}
-		report.DeviceID = deviceID
+	deviceUID := report.DeviceUID
+	if deviceUID == "" {
+		return fmt.Errorf("device_uid is required")
 	}
-
-	if deviceID == "" {
-		return fmt.Errorf("device_id is required (either provide device_id or device_uid)")
+	if _, err := r.GetDeviceIDByDeviceUID(ctx, tenantID, deviceUID); err != nil {
+		return err
 	}
+	report.DeviceUID = deviceUID
 
 	now := time.Now()
 
-	// v2 schema: device_addr NOT NULL — 从 devices.device_ipv6 查出当前 /128
 	upsert := `
 		INSERT INTO sleepace_report (
 			device_addr,
-			device_id,
+			device_uid,
 			record_count,
 			start_time_ms,
 			end_time_ms,
@@ -341,8 +336,8 @@ func (r *PostgresSleepaceReportsRepository) SaveReport(ctx context.Context, tena
 			updated_at
 		)
 		SELECT
-			d.device_ipv6,
-			$1::uuid,
+			d.device_addr,
+			$1,
 			$2,
 			$3,
 			$4,
@@ -355,8 +350,8 @@ func (r *PostgresSleepaceReportsRepository) SaveReport(ctx context.Context, tena
 			$11,
 			$12
 		FROM devices d
-		WHERE d.device_id = $1::uuid
-		ON CONFLICT (device_id, date) DO UPDATE SET
+		WHERE d.device_uid = $1
+		ON CONFLICT (device_uid, date) DO UPDATE SET
 			record_count  = EXCLUDED.record_count,
 			start_time_ms = EXCLUDED.start_time_ms,
 			end_time_ms   = EXCLUDED.end_time_ms,
@@ -369,7 +364,7 @@ func (r *PostgresSleepaceReportsRepository) SaveReport(ctx context.Context, tena
 		RETURNING report_id::text, EXTRACT(EPOCH FROM created_at)::bigint, EXTRACT(EPOCH FROM updated_at)::bigint
 	`
 	err := r.db.QueryRowContext(ctx, upsert,
-		deviceID,
+		deviceUID,
 		report.RecordCount,
 		report.StartTime,
 		report.EndTime,

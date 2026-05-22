@@ -4,10 +4,10 @@ package domain
 // 参考：wisefido-backend/wisefido-Sleepad/models/report.go
 type SleepaceReport struct {
 	ReportID    string `json:"report_id"`    // UUID
-	TenantID    string `json:"tenant_id"`   // UUID
-	DeviceID   string `json:"device_id"`   // UUID（如果为空，可通过 DeviceUID 匹配 devices.device_uid）
-	DeviceCode string `json:"device_code"` // device_store.device_code（厂家 API deviceId 密文）
-	DeviceUID  string `json:"device_uid"`  // devices.device_uid（硬件标识；非厂家 report 内 deviceId）
+	TenantID    string `json:"tenant_id"`    // INET /48 CIDR
+	DeviceAddr  string `json:"device_addr"`  // INET /128 canonical text，业务侧寻址
+	DeviceCode  string `json:"device_code"`  // device_store.device_code（厂家 API deviceId 密文）
+	DeviceUID   string `json:"device_uid"`   // devices.device_uid logMAC = sleepace.userId (Phase 2)
 	
 	// 报告基本信息
 	RecordCount int    `json:"record_count"` // 记录数量

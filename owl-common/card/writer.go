@@ -144,7 +144,7 @@ func (w *Writer) PatchDeviceStatus(ctx context.Context, deviceAddr string, field
 		return nil
 	}
 	args := make([]interface{}, 0, len(fields)*2+2)
-	args = append(args, "device_ipv6", deviceAddr)
+	args = append(args, "device_addr", deviceAddr)
 	for k, v := range fields {
 		args = append(args, k, v)
 	}

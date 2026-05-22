@@ -38,7 +38,7 @@ func (n *NetBoxBackend) AllocateRoom(ctx context.Context, unit netip.Prefix, att
 func (n *NetBoxBackend) AllocateBed(ctx context.Context, room netip.Prefix, attrs BedAttrs) (netip.Prefix, error) {
 	return netip.Prefix{}, ErrNotImplemented
 }
-func (n *NetBoxBackend) RegisterDevice(ctx context.Context, base netip.Prefix, deviceID, deviceUID string) (netip.Addr, error) {
+func (n *NetBoxBackend) RegisterDevice(ctx context.Context, base netip.Prefix, deviceUID string) (netip.Addr, error) {
 	return netip.Addr{}, ErrNotImplemented
 }
 func (n *NetBoxBackend) LookupTenant(ctx context.Context, tenant netip.Prefix) (*TenantInfo, error) {

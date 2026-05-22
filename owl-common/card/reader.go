@@ -191,7 +191,7 @@ func parseDeviceStatusHash(deviceAddr string, vals map[string]string) *DeviceSta
 	}
 	return &DeviceStatus{
 		DeviceUID:      vals["device_uid"],
-		DeviceIPv6:     deviceAddr,
+		DeviceAddr:     deviceAddr,
 		DeviceType:     vals["device_type"],
 		UpdatedAt:      atoi64("updated_at"),
 		LastSeenMs:     atoi64("last_seen_ms"),

@@ -14,7 +14,7 @@ import (
 // CardDeviceItem 卡片上的设备项，供 vue-radar 画布 Bind 使用。
 // v2: device_code、device_uid 来自 device_factory_meta；name 来自 device_factory_meta.device_uid（待 Phase F 引入 device_label 列）。
 type CardDeviceItem struct {
-	DeviceID   string `json:"device_id"`
+	DeviceID   string `json:"device_addr"`
 	DeviceType string `json:"device_type"`
 	DeviceUID  string `json:"device_uid"`
 	DeviceCode string `json:"device_code"`
@@ -261,16 +261,16 @@ func (r *PostgresCardsRepository) GetCardDevices(ctx context.Context, tenantID, 
 	}
 	q := `
 		SELECT
-			dfm.device_id::text,
+			host(d.device_addr),
 			COALESCE(dfm.device_type::text, ''),
 			dfm.device_uid,
 			COALESCE(dfm.device_code, ''),
 			dfm.device_uid AS device_name
 		FROM cards c
-		JOIN devices d ON d.device_ipv6 <<= c.card_id
-		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		JOIN devices d ON d.device_addr <<= c.card_id
+		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
 		WHERE c.card_id = $1::INET
-		ORDER BY d.device_ipv6
+		ORDER BY d.device_addr
 	`
 	rows, err := r.db.QueryContext(ctx, q, cardID)
 	if err != nil {
@@ -292,16 +292,16 @@ func (r *PostgresCardsRepository) GetCardDevices(ctx context.Context, tenantID, 
 	return out, rows.Err()
 }
 
-// GetCardIDByDeviceID 根据 device_id 查找其所属卡片的 card_id（v2: LPM）
+// GetCardIDByDeviceID Phase 2 一刀切：deviceID 入参承载 device_addr (INET text)。
 func (r *PostgresCardsRepository) GetCardIDByDeviceID(ctx context.Context, tenantID, deviceID string) (string, error) {
 	if deviceID == "" {
-		return "", fmt.Errorf("device_id is required")
+		return "", fmt.Errorf("device_addr is required")
 	}
 	var cardID sql.NullString
 	err := r.db.QueryRowContext(ctx, `
-		SELECT find_card_by_device_addr(d.device_ipv6)::text
+		SELECT find_card_by_device_addr(d.device_addr)::text
 		FROM devices d
-		WHERE d.device_id = $1::uuid
+		WHERE d.device_addr = $1::INET
 		LIMIT 1
 	`, deviceID).Scan(&cardID)
 	if err != nil {

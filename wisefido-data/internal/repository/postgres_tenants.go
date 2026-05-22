@@ -428,7 +428,7 @@ func (r *PostgresTenantsRepository) isTenantEmpty(ctx context.Context, tenantPre
 		  UNION ALL
 		  SELECT 1 FROM residents WHERE hoa IS NOT NULL AND hoa <<= $1::INET
 		  UNION ALL
-		  SELECT 1 FROM devices   WHERE device_ipv6 IS NOT NULL AND device_ipv6 <<= $1::INET
+		  SELECT 1 FROM devices   WHERE device_addr IS NOT NULL AND device_addr <<= $1::INET
 		)
 	`, tenantPrefix).Scan(&hasData)
 	if err != nil {

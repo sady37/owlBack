@@ -103,9 +103,9 @@ type GetSleepaceReportsResponse struct {
 // SleepaceReportOutlineDTO 报告概要 DTO（列表项，不包含完整 report 字段）
 type SleepaceReportOutlineDTO struct {
 	ID          string `json:"id"`         // report_id
-	DeviceID    string `json:"deviceId"`   // device_id
+	DeviceAddr  string `json:"deviceAddr"` // INET /128 canonical text, 业务侧寻址
 	DeviceCode  string `json:"deviceCode"` // device_store.device_code（厂家 deviceId）
-	DeviceUID   string `json:"deviceUid"` // devices.device_uid
+	DeviceUID   string `json:"deviceUid"`  // devices.device_uid logMAC
 	RecordCount int    `json:"recordCount"`
 	StartTime   int64  `json:"startTime"` // Unix 时间戳（秒）
 	EndTime     int64  `json:"endTime"`   // Unix 时间戳（秒）
@@ -126,9 +126,9 @@ type GetSleepaceReportDetailRequest struct {
 // GetSleepaceReportDetailResponse 获取报告详情响应
 type GetSleepaceReportDetailResponse struct {
 	ID                      string                       `json:"id"`         // report_id
-	DeviceID                string                       `json:"deviceId"`   // device_id
+	DeviceAddr              string                       `json:"deviceAddr"` // INET /128 canonical text, 业务侧寻址
 	DeviceCode              string                       `json:"deviceCode"` // device_store.device_code（厂家 deviceId）
-	DeviceUID               string                       `json:"deviceUid"`  // devices.device_uid
+	DeviceUID               string                       `json:"deviceUid"`  // devices.device_uid logMAC
 	RecordCount             int                          `json:"recordCount"`
 	StartTime               int64                        `json:"startTime"` // Unix 时间戳（秒）
 	EndTime                 int64                        `json:"endTime"`   // Unix 时间戳（秒）
@@ -225,7 +225,7 @@ func (s *sleepaceReportService) GetSleepaceReports(ctx context.Context, req GetS
 	for _, report := range reports {
 		items = append(items, &SleepaceReportOutlineDTO{
 			ID:          report.ReportID,
-			DeviceID:    report.DeviceID,
+			DeviceAddr:  report.DeviceAddr,
 			DeviceCode:  report.DeviceCode,
 			DeviceUID:   report.DeviceUID,
 			RecordCount: report.RecordCount,
@@ -318,7 +318,7 @@ func (s *sleepaceReportService) GetSleepaceReportDetail(ctx context.Context, req
 
 	return &GetSleepaceReportDetailResponse{
 		ID:                    report.ReportID,
-		DeviceID:              report.DeviceID,
+		DeviceAddr:            report.DeviceAddr,
 		DeviceCode:            report.DeviceCode,
 		DeviceUID:             report.DeviceUID,
 		RecordCount:           report.RecordCount,

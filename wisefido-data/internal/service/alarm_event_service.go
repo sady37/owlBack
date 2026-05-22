@@ -138,7 +138,7 @@ type AlarmEventDTO struct {
 	// 基础字段（来自 alarm_events 表）
 	EventID     string `json:"event_id"`     // UUID
 	TenantID    string `json:"tenant_id"`    // 租户ID
-	DeviceID    string `json:"device_id"`    // 设备ID
+	DeviceID    string `json:"device_addr"`    // 设备ID
 	EventType   string `json:"event_type"`   // 事件类型
 	Category    string `json:"category"`     // 类别（safety, clinical, behavioral, device）
 	AlarmLevel  string `json:"alarm_level"`  // 报警级别
@@ -207,7 +207,7 @@ type HandleAlarmEventResponse struct {
 	Success        bool   `json:"success"`                   // 处理是否成功
 	EventID        string `json:"event_id,omitempty"`        // 报警事件ID
 	CardID         string `json:"card_id,omitempty"`         // 卡片ID
-	DeviceID       string `json:"device_id,omitempty"`       // 设备ID
+	DeviceID       string `json:"device_addr,omitempty"`       // 设备ID
 	AlarmLevel     string `json:"alarm_level,omitempty"`     // 报警级别
 	AlarmType      string `json:"alarm_type,omitempty"`      // 报警类型
 	AlarmTimestamp int64  `json:"alarm_timestamp,omitempty"` // 处理时间(hand_time)

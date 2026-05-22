@@ -800,15 +800,16 @@ func (c *MQTTConsumer) handleOTAReturn(uid string, message map[string]interface{
 // resolveDeviceIdentity 统一解析 device_uid → 设备身份。monitor/stat/event 共用。
 // ok=false 表示无 device_store 或 DeviceAddr 无效，调用方应直接 return。
 //
-// 返回字段：tid (tenant CIDR text)、did (UUID)、bedID/roomID/unitID/bid（从 addr prefix 派生）、
+// Phase 2 一刀切：identity = device_uid (logMAC)；did 返回 device_uid（取代 v1 UUID）。
+// 返回字段：tid (tenant CIDR text)、did (device_uid)、bedID/roomID/unitID/bid（从 addr prefix 派生）、
 // addr (/128 IPv6 路由主键)。SubjectEntity 永远空——cardagg LPM 反查（R-009 单源真相）。
 func (c *MQTTConsumer) resolveDeviceIdentity(ctx context.Context, uid string) (tid, bid, unitID, cid, did, bedID, roomID string, addr netip.Addr, ok bool) {
 	ds, err := c.deviceRepo.GetDeviceStoreInfo(ctx, uid)
-	if err != nil || ds == nil || ds.DeviceID == "" {
+	if err != nil || ds == nil || ds.DeviceUID == "" {
 		return "", "", "", "", "", "", "", netip.Addr{}, false
 	}
 	tid = strings.TrimSpace(ds.TenantID)
-	did = strings.TrimSpace(ds.DeviceID)
+	did = strings.TrimSpace(ds.DeviceUID)
 	addr = ds.DeviceAddr
 	if tid == "" || !addr.IsValid() {
 		return "", "", "", "", "", "", "", netip.Addr{}, false

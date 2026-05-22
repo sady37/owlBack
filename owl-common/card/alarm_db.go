@@ -68,7 +68,7 @@ type AlarmUpdateParams struct {
 }
 
 // CardAlarmState v2 实时聚合：按 sensor_v2.md §6.7 三级告警状态机（决定 17）—
-//   Critical 级别（0/1/2）计入 status ∈ {active, acked, auto_resolved}（acked_auto_resolved 终态不计）；
+//   Critical 级别（0/1/2）计入 status ∈ {active, acked, auto_resolved}（resolved 终态不计）；
 //   Error/Warning（3/4）仅计入 status=active；
 //   PopAlarm 仅从 status=active 行挑选（acked/auto_resolved 不参与 popAlarm 显示，但仍维持 Bell）。
 //
@@ -110,7 +110,7 @@ func (c *CardAlarmState) ToAlarmState() *AlarmState {
 	return s
 }
 
-// alarmSnapshotRow snapshot 一次 SELECT 得到的 9 个 denormalization 字段
+// alarmSnapshotRow snapshot 一次 SELECT 得到的 denormalization 字段
 type alarmSnapshotRow struct {
 	TenantName       sql.NullString
 	BranchName       sql.NullString
@@ -120,10 +120,9 @@ type alarmSnapshotRow struct {
 	ResidentNickname sql.NullString
 	DeviceUID        sql.NullString
 	ResidentID       sql.NullString // INET 文本
-	DeviceID         sql.NullString // UUID 文本
 }
 
-// snapshotForAlarm trigger 时刻一次 SELECT 锁住 9 个 denormalization 字段。
+// snapshotForAlarm trigger 时刻一次 SELECT 锁住 denormalization 字段。
 // device_addr 必须 valid /128；返回值各字段允许 NULL（spatial 层级未对齐 / 设备未导入工厂表 / 未绑卡 / 未住人 都正常）。
 func snapshotForAlarm(ctx context.Context, db *sql.DB, addr netip.Addr) (alarmSnapshotRow, error) {
 	var snap alarmSnapshotRow
@@ -135,27 +134,26 @@ func snapshotForAlarm(ctx context.Context, db *sql.DB, addr netip.Addr) (alarmSn
 		SELECT
 		  t.tenant_name, b.branch_name, u.unit_name, r.room_name, bd.bed_name,
 		  res.nickname, dfm.device_uid,
-		  CASE WHEN res.resident_id IS NULL THEN NULL ELSE host(res.resident_id) END,
-		  CASE WHEN d.device_id    IS NULL THEN NULL ELSE d.device_id::text  END
+		  CASE WHEN res.resident_id IS NULL THEN NULL ELSE host(res.resident_id) END
 		FROM (SELECT $1::INET AS addr) x
 		LEFT JOIN tenants  t  ON t.tenant_id  = network(set_masklen(x.addr, 48))
 		LEFT JOIN branches b  ON b.branch_id  = network(set_masklen(x.addr, 56))
 		LEFT JOIN units    u  ON u.unit_id    = network(set_masklen(x.addr, 80))
 		LEFT JOIN rooms    r  ON r.room_id    = network(set_masklen(x.addr, 88))
 		LEFT JOIN beds     bd ON bd.bed_id    = network(set_masklen(x.addr, 96))
-		LEFT JOIN devices  d  ON d.device_ipv6 = x.addr
-		LEFT JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		LEFT JOIN devices  d  ON d.device_addr = x.addr
+		LEFT JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
 		LEFT JOIN LATERAL (
 		  SELECT resident_id FROM cards
-		  WHERE x.addr <<= card_id
-		  ORDER BY masklen(card_id) DESC
+		  WHERE x.addr <<= spatial_prefix
+		  ORDER BY masklen(spatial_prefix) DESC
 		  LIMIT 1
 		) c ON true
 		LEFT JOIN residents res ON res.resident_id = c.resident_id
 	`
 	err := db.QueryRowContext(ctx, q, addr.String()).Scan(
 		&snap.TenantName, &snap.BranchName, &snap.UnitName, &snap.RoomName, &snap.BedName,
-		&snap.ResidentNickname, &snap.DeviceUID, &snap.ResidentID, &snap.DeviceID,
+		&snap.ResidentNickname, &snap.DeviceUID, &snap.ResidentID,
 	)
 	if err != nil && err != sql.ErrNoRows {
 		return snap, fmt.Errorf("snapshotForAlarm: %w", err)
@@ -262,16 +260,16 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 		  device_addr, triggered_at, event_type, category, alarm_level,
 		  tenant_name, branch_name, unit_name, room_name, bed_name,
 		  resident_nickname, device_uid,
-		  resident_id, device_id, card_id,
+		  resident_id, card_id,
 		  trace_id, parent_span, producer,
 		  alarm_status, payload, evidence
 		) VALUES (
 		  $1::INET, $2, $3, $4, $5,
 		  $6, $7, $8, $9, $10,
 		  $11, $12,
-		  NULLIF($13, '')::INET, NULLIF($14, '')::UUID, NULLIF($15, '')::INET,
-		  NULLIF($16, ''), NULLIF($17, ''), NULLIF($18, '')::INET,
-		  'active', $19::JSONB, $20::JSONB
+		  NULLIF($13, '')::INET, NULLIF($14, '')::INET,
+		  NULLIF($15, ''), NULLIF($16, ''), NULLIF($17, '')::INET,
+		  'active', $18::JSONB, $19::JSONB
 		)
 		RETURNING event_id::text, triggered_at
 	`
@@ -279,15 +277,11 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 	if snap.ResidentID.Valid {
 		residentIDStr = snap.ResidentID.String
 	}
-	deviceIDStr := ""
-	if snap.DeviceID.Valid {
-		deviceIDStr = snap.DeviceID.String
-	}
 	err = db.QueryRowContext(ctx, insertSQL,
 		addr.String(), params.TriggeredAt, params.EventType, nullStringOrNil(params.Category), alarmLevelToInt(params.AlarmLevel),
 		snap.TenantName, snap.BranchName, snap.UnitName, snap.RoomName, snap.BedName,
 		snap.ResidentNickname, snap.DeviceUID,
-		residentIDStr, deviceIDStr, cardID,
+		residentIDStr, cardID,
 		params.TraceID, params.ParentSpan, params.Producer,
 		string(payload), string(evidence),
 	).Scan(&eventID, &triggeredAt)
@@ -317,11 +311,11 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 //
 // cardID 为 cards.spatial_prefix CIDR 字符串；空 / 非法 INET 时返回零状态。
 //
-// SQL 计数策略（sensor_v2.md §6.7 决定 17，2026-05-18 migration acked_auto_resolved 已生效）：
+// SQL 计数策略（sensor_v2.md §6.7 决定 17）：
 //
 //	level 0/1/2 (Critical：Emerg/Alert/Crit)
 //	  → count(alarm_status IN ('active', 'acked', 'auto_resolved'))
-//	  → 'acked_auto_resolved' 是终态，不计入（已离开 Pending+AlarmBell 进 Resolved 历史）
+//	  → 'resolved' 是终态，不计入（已离开 Pending+AlarmBell 进 Resolved 历史）
 //
 //	level 3/4 (Error/Warning)
 //	  → count(alarm_status = 'active')

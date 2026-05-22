@@ -217,7 +217,7 @@ func FillDeviceStatusFromCardagg(ctx context.Context, stateReader *card.Reader, 
 }
 
 // fillDeviceOnlineStatus 只从 cardagg 读在线状态，使用 FillDeviceOnlineStatusFromCardagg。
-// 用 d.DeviceIPv6 作 cardagg redis key（device:status:{IPv6}）。
+// 用 d.DeviceAddr 作 cardagg redis key（device:status:{addr}）。
 func (s *deviceService) fillDeviceOnlineStatus(ctx context.Context, devices []*domain.Device) {
 	for _, d := range devices {
 		d.OnlineStatus = "offline"
@@ -225,15 +225,15 @@ func (s *deviceService) fillDeviceOnlineStatus(ctx context.Context, devices []*d
 	if s.stateReader == nil {
 		return
 	}
-	ipv6s := make([]string, 0, len(devices))
+	addrs := make([]string, 0, len(devices))
 	for _, d := range devices {
-		if d.DeviceIPv6 != "" {
-			ipv6s = append(ipv6s, d.DeviceIPv6)
+		if d.DeviceAddr != "" {
+			addrs = append(addrs, d.DeviceAddr)
 		}
 	}
-	m := FillDeviceOnlineStatusFromCardagg(ctx, s.stateReader, ipv6s, s.logger)
+	m := FillDeviceOnlineStatusFromCardagg(ctx, s.stateReader, addrs, s.logger)
 	for _, d := range devices {
-		if d.DeviceIPv6 != "" && m[d.DeviceIPv6] == "online" {
+		if d.DeviceAddr != "" && m[d.DeviceAddr] == "online" {
 			d.OnlineStatus = "online"
 		}
 	}

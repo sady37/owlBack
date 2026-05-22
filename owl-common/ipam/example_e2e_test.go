@@ -150,20 +150,20 @@ func TestE2E_IPAM_DDNS(t *testing.T) {
 	t.Logf("✓ bed %s", bed)
 
 	// Step 6: 找一个未绑定的 device_factory_meta record (HC2) 派生 device
-	var deviceID, deviceUID string
+	var deviceUID string
 	err = db.QueryRowContext(ctx, `
-		SELECT dfm.device_id::text, dfm.device_uid
+		SELECT dfm.device_uid
 		FROM device_factory_meta dfm
-		LEFT JOIN devices d ON d.device_id = dfm.device_id
-		WHERE dfm.device_model = 'HC2' AND d.device_id IS NULL
+		LEFT JOIN devices d ON d.device_uid = dfm.device_uid
+		WHERE dfm.device_model = 'HC2' AND d.device_uid IS NULL
 		LIMIT 1
-	`).Scan(&deviceID, &deviceUID)
+	`).Scan(&deviceUID)
 	if err != nil {
 		t.Fatalf("find unbound device: %v", err)
 	}
 	t.Logf("  using device_uid=%s", deviceUID)
 
-	deviceAddr, err := pg.RegisterDevice(ctx, bed, deviceID, deviceUID)
+	deviceAddr, err := pg.RegisterDevice(ctx, bed, deviceUID)
 	if err != nil {
 		t.Fatalf("RegisterDevice: %v", err)
 	}

@@ -34,7 +34,7 @@ import (
 // 详 sensor_v2 §10.1.1。
 type TrackStatus struct {
 	TrackID  int    `json:"track_id"`
-	DeviceID string `json:"device_id"` // radar IPv6 /128
+	DeviceID string `json:"device_addr"` // radar IPv6 /128
 	RoomID   string `json:"room_id"`   // room spatial_prefix
 
 	Verdict      TrackVerdict `json:"-"`             // 内部 int，wire 用 verdict 字段（字符串）

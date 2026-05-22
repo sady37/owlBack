@@ -137,9 +137,8 @@ func (c *AlarmEnablementCache) loadDevice(ctx context.Context, tenantID, deviceI
 	c.setFromItems(deviceID, items)
 }
 
-// resolveDeviceType v2 IPv6 单程票：cardagg 调用方传入的 deviceID 是 IPv6 字符串（device_ipv6），
-// 用 devices JOIN device_factory_meta 反查 device_type。
-// 旧实现 `device_id = $1::uuid` 在 v2 cutover 后 cast 失败被静默吞，导致 device_type="" → defaults nil → 全 alarm 静默 drop。
+// resolveDeviceType Phase 2 一刀切：deviceID 入参是 IPv6 字符串（device_addr），
+// 用 devices JOIN device_factory_meta(device_uid) 反查 device_type。
 func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceID string) string {
 	if c.db == nil || deviceID == "" {
 		return ""
@@ -148,8 +147,8 @@ func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceID s
 	_ = c.db.QueryRowContext(ctx,
 		`SELECT dfm.device_type::text
 		 FROM device_factory_meta dfm
-		 JOIN devices d ON d.device_id = dfm.device_id
-		 WHERE d.device_ipv6 = $1::inet
+		 JOIN devices d ON d.device_uid = dfm.device_uid
+		 WHERE d.device_addr = $1::inet
 		 LIMIT 1`, deviceID,
 	).Scan(&dt)
 	return dt.String

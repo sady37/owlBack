@@ -471,8 +471,7 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 	// 与 card:realtime:stream.devices map key + device:status:{IPv6} 一致）
 	// [[feedback_api_ids_ipv6_only]]
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT dfm.device_id::text,
-		       host(d.device_ipv6) AS device_ipv6,
+		SELECT host(d.device_addr) AS device_addr,
 		       dfm.device_uid,
 		       COALESCE(dfm.device_code, ''),
 		       COALESCE(dfm.device_uid, ''),
@@ -480,15 +479,15 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 		       COALESCE(dfm.device_model, ''),
 		       d.monitoring_enabled,
 		       'offline'::text AS status,
-		       COALESCE((SELECT b.bed_id::text  FROM beds  b  WHERE d.device_ipv6 <<= b.bed_id  LIMIT 1), '') AS bed_anchor,
-		       COALESCE((SELECT rm.room_id::text FROM rooms rm WHERE d.device_ipv6 <<= rm.room_id LIMIT 1), '') AS room_anchor,
-		       COALESCE((SELECT u.unit_id::text FROM units u  WHERE d.device_ipv6 <<= u.unit_id  LIMIT 1), '') AS unit_anchor
+		       COALESCE((SELECT b.bed_id::text  FROM beds  b  WHERE d.device_addr <<= b.bed_id  LIMIT 1), '') AS bed_anchor,
+		       COALESCE((SELECT rm.room_id::text FROM rooms rm WHERE d.device_addr <<= rm.room_id LIMIT 1), '') AS room_anchor,
+		       COALESCE((SELECT u.unit_id::text FROM units u  WHERE d.device_addr <<= u.unit_id  LIMIT 1), '') AS unit_anchor
 		  FROM devices d
-		  JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		  JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
 		 WHERE d.monitoring_enabled = TRUE
 		   AND EXISTS (
 		     SELECT 1 FROM unnest($1::INET[]) p
-		      WHERE d.device_ipv6 <<= network(set_masklen(p, 80))
+		      WHERE d.device_addr <<= network(set_masklen(p, 80))
 		   )
 	`, pq.Array(prefixes))
 	if err != nil {
@@ -505,7 +504,7 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 	devs := []devRow{}
 	for rows.Next() {
 		var dr devRow
-		if err := rows.Scan(&dr.info.DeviceID, &dr.info.DeviceIPv6, &dr.info.DeviceUID, &dr.info.DeviceCode,
+		if err := rows.Scan(&dr.info.DeviceAddr, &dr.info.DeviceUID, &dr.info.DeviceCode,
 			&dr.info.DeviceName, &dr.info.DeviceType, &dr.info.DeviceModel,
 			&dr.info.MonitoringEnabled, &dr.info.Status,
 			&dr.bedAnchor, &dr.roomAnchor, &dr.unitAnchor); err != nil {
@@ -517,18 +516,18 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 		devs = append(devs, dr)
 	}
 
-	// 用 Redis device:status:{ipv6} 覆盖 SQL 占位 'offline' status（cardagg 是真相源）
+	// 用 Redis device:status:{addr} 覆盖 SQL 占位 'offline' status（cardagg 是真相源）
 	if s.realtime != nil {
 		if reader := s.realtime.StateReader(); reader != nil {
-			ipv6s := make([]string, 0, len(devs))
+			addrs := make([]string, 0, len(devs))
 			for _, dr := range devs {
-				if dr.info.DeviceIPv6 != "" {
-					ipv6s = append(ipv6s, dr.info.DeviceIPv6)
+				if dr.info.DeviceAddr != "" {
+					addrs = append(addrs, dr.info.DeviceAddr)
 				}
 			}
-			online := FillDeviceOnlineStatusFromCardagg(ctx, reader, ipv6s, s.logger)
+			online := FillDeviceOnlineStatusFromCardagg(ctx, reader, addrs, s.logger)
 			for i := range devs {
-				if st, ok := online[devs[i].info.DeviceIPv6]; ok {
+				if st, ok := online[devs[i].info.DeviceAddr]; ok {
 					devs[i].info.Status = st
 				}
 			}

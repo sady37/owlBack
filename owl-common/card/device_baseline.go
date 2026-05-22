@@ -12,8 +12,8 @@ import (
 // BaselineField 基准结构在 JSON / Redis map / 配置里的统一键名，与各网关、流包头对齐。
 const (
 	BaselineFieldTenantID           = "tenant_id"
-	BaselineFieldDeviceID           = "device_id"
 	BaselineFieldDeviceUID          = "device_uid"
+	BaselineFieldDeviceAddr         = "device_addr"
 	BaselineFieldDeviceCode         = "device_code"    //device--server communite id,not uid
 	BaselineFieldDeviceType         = "device_type"
 	BaselineFieldBranchID           = "branch_id"
@@ -32,12 +32,12 @@ const (
 // DeviceBaseline 设备身份与策略的统一类型：CardDB 联合查询 Scan、网关流包头、Redis/JSON、进程内缓存均用此结构。
 // 约定：branch_id / building_id / floor 可选；同房判定以 tenant_id + unit_id（若 room 仅在 unit 内唯一则必填）+ room_id 为准。
 //
-// device_ipv6 单程票（doc/device_ipv6_migration_checklist.md）：
-//   - DeviceAddr 是路由层主键；DeviceID/DeviceUID/TenantID 等保留作 admin/外部 API 边界 (R-002/R-003)
+// Phase 2 一刀切：device_id UUID 合成层退役。
+//   - DeviceAddr INET /128 路由层主键（业务侧寻址）
+//   - DeviceUID  VARCHAR(50) logMAC identity 不变量（dfm PK）
 //   - 未绑卡时 CardID 为空，publisher 在构造 envelope.SubjectEntity 时留空（R-009 红线）
 type DeviceBaseline struct {
 	// 硬件身份
-	DeviceID   string     `json:"device_id,omitempty"`
 	DeviceUID  string     `json:"device_uid,omitempty"`
 	DeviceCode string     `json:"device_code,omitempty"`
 	DeviceType string     `json:"device_type,omitempty"`

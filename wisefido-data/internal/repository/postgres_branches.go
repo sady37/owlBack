@@ -441,7 +441,7 @@ func (r *PostgresBranchesRepository) isBranchEmpty(ctx context.Context, branchPr
 		  UNION ALL
 		  SELECT 1 FROM residents WHERE resident_id IS NOT NULL AND resident_id <<= $1::INET
 		  UNION ALL
-		  SELECT 1 FROM devices   WHERE device_ipv6 IS NOT NULL AND device_ipv6 <<= $1::INET
+		  SELECT 1 FROM devices   WHERE device_addr IS NOT NULL AND device_addr <<= $1::INET
 		)
 	`, branchPrefix).Scan(&hasData)
 	if err != nil {

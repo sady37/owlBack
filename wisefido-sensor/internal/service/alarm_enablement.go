@@ -143,7 +143,7 @@ func (c *AlarmEnablementCache) loadDevice(ctx context.Context, deviceAddr string
 	c.setFromItems(deviceAddr, items)
 }
 
-// resolveDeviceType 按 device_ipv6 反查 device_type（v2 IPv6 单程票）。
+// resolveDeviceType 按 device_addr 反查 device_type（Phase 2 一刀切）。
 func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceAddr string) string {
 	if c.db == nil || deviceAddr == "" {
 		return ""
@@ -152,8 +152,8 @@ func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceAddr
 	_ = c.db.QueryRowContext(ctx,
 		`SELECT dfm.device_type::text
 		 FROM device_factory_meta dfm
-		 JOIN devices d ON d.device_id = dfm.device_id
-		 WHERE d.device_ipv6 = $1::inet
+		 JOIN devices d ON d.device_uid = dfm.device_uid
+		 WHERE d.device_addr = $1::inet
 		 LIMIT 1`, deviceAddr,
 	).Scan(&dt)
 	return dt.String

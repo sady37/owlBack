@@ -11,13 +11,10 @@ import (
 
 // DeviceStoreInfo 设备库存信息（用于认证 + 路由）
 //
-// device_ipv6 单程票 (doc/device_ipv6_migration_checklist.md) 后：
-//   - DeviceAddr 是路由层主键
-//   - DeviceID/DeviceUID/TenantID 保留外部 API + auth 边界使用 (R-002/R-003)
+// Phase 2 一刀切：device_id UUID 退役；identity = device_uid VARCHAR(50)；业务寻址 = device_addr INET /128。
 type DeviceStoreInfo struct {
-	DeviceID        string         // UUID, PRIMARY KEY
-	DeviceUID       string         // VARCHAR(50), UNIQUE
-	DeviceCode      sql.NullString // device_store.device_code
+	DeviceUID       string         // VARCHAR(50)，dfm PK，硬件 identity 不变量
+	DeviceCode      sql.NullString // device_factory_meta.device_code
 	DeviceType      string         // VARCHAR(50), NOT NULL
 	DeviceModel     sql.NullString
 	MAC             sql.NullString
@@ -25,9 +22,17 @@ type DeviceStoreInfo struct {
 	CommMode        sql.NullString
 	MCUModel        sql.NullString
 	FirmwareVersion sql.NullString
-	TenantID        string     // /48 INET CIDR text，e.g. "fd00:0:3::/48"（v2 已替换 UUID）
-	Access          bool       // devices.access — platform_admin 审批位（v1 allow_access/business_access 已合并）
+	TenantID        string     // /48 INET CIDR text，e.g. "fd00:0:3::/48"
+	Access          bool       // devices.access — platform_admin 审批位
 	DeviceAddr      netip.Addr // /128 INET，路由层主键
+}
+
+// DeviceAddrText 返回 device_addr canonical text（auth 流 / Redis key 用）
+func (d *DeviceStoreInfo) DeviceAddrText() string {
+	if d == nil || !d.DeviceAddr.IsValid() {
+		return ""
+	}
+	return d.DeviceAddr.String()
 }
 
 // DeviceRepository 设备仓库接口
@@ -63,9 +68,8 @@ type DeviceRepository interface {
 	// GetDeviceStoreInfo 根据设备UID获取 device_store 信息（含 device_code）
 	GetDeviceStoreInfo(ctx context.Context, deviceUID string) (*DeviceStoreInfo, error)
 
-	// GetDeviceStoreByDeviceID 根据设备ID获取 device_store 信息（用于 device_store 变化信号处理）
-	// 返回 DeviceStoreInfo 包含 device_uid 和 access
-	GetDeviceStoreByDeviceID(ctx context.Context, deviceID string) (*DeviceStoreInfo, error)
+	// GetDeviceStoreByDeviceAddr Phase 2 一刀切：device_id UUID 退役，业务键改 device_addr。
+	GetDeviceStoreByDeviceAddr(ctx context.Context, deviceAddr string) (*DeviceStoreInfo, error)
 
 	// GetAlarmEnablement 获取设备的报警使能配置
 	// 从 alarm_device.monitor_config.alarms 中解析报警项，返回 []AlarmEnablementItem

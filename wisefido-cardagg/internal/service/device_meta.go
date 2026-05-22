@@ -344,7 +344,7 @@ func (c *DeviceMetaCache) ListBedCardsWithBedBoundRadar(ctx context.Context) []s
 		SELECT DISTINCT c.card_id::text
 		  FROM cards c
 		  JOIN devices d ON d.card_id = c.card_id
-		  JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		  JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
 		 WHERE c.has_bed = TRUE
 		   AND lower(dfm.device_type::text) LIKE '%radar%'
 	`)
@@ -419,7 +419,7 @@ func (c *DeviceMetaCache) LookupCardByDeviceAddr(ctx context.Context, addr netip
 	// v2.5: devices.card_id FK 直接读，不再 LPM cards
 	var cid sql.NullString
 	err := c.db.QueryRowContext(ctx, `
-		SELECT host(card_id)::text || '/88' FROM devices WHERE device_ipv6 = $1::INET AND card_id IS NOT NULL
+		SELECT host(card_id)::text || '/88' FROM devices WHERE device_addr = $1::INET AND card_id IS NOT NULL
 	`, addrStr).Scan(&cid)
 	if err != nil {
 		if err != sql.ErrNoRows && c.logger != nil {
@@ -444,7 +444,7 @@ func (c *DeviceMetaCache) BuildDeviceIndex(ctx context.Context) error {
 	}
 	// v2.5: devices.card_id 直接读，不再 LPM cards
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT host(d.device_ipv6)::text AS device_addr,
+		SELECT host(d.device_addr)::text AS device_addr,
 		       host(d.card_id)::text || '/88' AS card_id
 		FROM devices d
 		WHERE d.card_id IS NOT NULL
@@ -491,9 +491,9 @@ func (c *DeviceMetaCache) RefreshDeviceIndexForCard(ctx context.Context, cardID 
 		return
 	}
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT host(d.device_ipv6)::text
+		SELECT host(d.device_addr)::text
 		FROM cards c
-		JOIN devices d ON d.device_ipv6 <<= c.card_id
+		JOIN devices d ON d.device_addr <<= c.card_id
 		WHERE c.card_id = $1::INET
 	`, cardID)
 	if err != nil {
@@ -576,14 +576,14 @@ func (c *DeviceMetaCache) loadFromDB(ctx context.Context, cardID string) *CardMe
 
 	// 加载本卡 LPM-拥有的 device → DeviceMeta（addr 为 key）。
 	// v3 owning rule: 设备归 LPM 最长的覆盖卡；UnitCard (/80) 不含被 /96 bed card 拥有的 sleepad。
-	// 之前 SQL "d.device_ipv6 <<= c.card_id" 让 UnitCard.Devices 含所有 /80 下设备
+	// 之前 SQL "d.device_addr <<= c.card_id" 让 UnitCard.Devices 含所有 /80 下设备
 	// 包括下层 bed card 拥有的 sleepad → hasBedCapableDevice 误判 → bed_state 反复 init。
 	// v2.5: devices.card_id FK 直接匹配
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT host(d.device_ipv6)::text,
+		SELECT host(d.device_addr)::text,
 		       COALESCE(dfm.device_type::text, '')
 		FROM devices d
-		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
 		WHERE d.card_id = $1::INET
 	`, cardID)
 	if err != nil {

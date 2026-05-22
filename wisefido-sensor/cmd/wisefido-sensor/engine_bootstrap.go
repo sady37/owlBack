@@ -313,13 +313,13 @@ func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.D
 	logger *zap.Logger) (int, error) {
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT host(d.device_ipv6)::text AS device_addr,
+		SELECT host(d.device_addr)::text AS device_addr,
 		       r.room_id::text          AS room_id,
 		       COALESCE(dfm.device_type::text, '') AS device_type,
-		       COALESCE(dfm.device_uid, '') AS device_uid_hex
+		       dfm.device_uid AS device_uid_hex
 		FROM devices d
-		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		JOIN rooms r                  ON r.room_id >>= d.device_ipv6
+		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
+		JOIN rooms r                  ON r.room_id >>= d.device_addr
 	`)
 	if err != nil {
 		return 0, err

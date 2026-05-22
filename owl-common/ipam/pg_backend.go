@@ -84,7 +84,7 @@ func (p *PGBackend) AllocateBranch(ctx context.Context, tenant netip.Prefix, att
 		return netip.Prefix{}, err
 	}
 
-	// branch_slot 1..254：0 = unbound 哨兵（device.device_ipv6 byte 6=0 表示未绑 branch）；
+	// branch_slot 1..254：0 = unbound 哨兵（device.device_addr byte 6=0 表示未绑 branch）；
 	// 0xFF (255) 保留作 subject namespace（resident HoA / caregiver 等）
 	var nextSlot int
 	err = tx.QueryRowContext(ctx, `
@@ -328,12 +328,12 @@ func (p *PGBackend) AllocateBed(ctx context.Context, room netip.Prefix, attrs Be
 // RegisterDevice — base prefix (/96 bed 或 /88 room 或 /80 unit) + device_uid → /128
 // =============================================================================
 
-func (p *PGBackend) RegisterDevice(ctx context.Context, base netip.Prefix, deviceID, deviceUID string) (netip.Addr, error) {
+func (p *PGBackend) RegisterDevice(ctx context.Context, base netip.Prefix, deviceUID string) (netip.Addr, error) {
 	if base.Bits() < spatial.PrefixLenUnit || base.Bits() > spatial.PrefixLenBed {
 		return netip.Addr{}, fmt.Errorf("%w: device base must be /80~/96, got /%d", ErrInvalidParent, base.Bits())
 	}
-	if deviceID == "" || deviceUID == "" {
-		return netip.Addr{}, fmt.Errorf("%w: device_id and device_uid required", ErrInvalidAttrs)
+	if deviceUID == "" {
+		return netip.Addr{}, fmt.Errorf("%w: device_uid required", ErrInvalidAttrs)
 	}
 
 	addr, err := spatial.DeriveDeviceAddr(base, deviceUID)
@@ -344,27 +344,27 @@ func (p *PGBackend) RegisterDevice(ctx context.Context, base netip.Prefix, devic
 	// device 是 stateless 派生，理论上无并发冲突；用 INSERT ... ON CONFLICT DO NOTHING + 检查行数
 	// PG INET cast 对 IPv6 host address 默认 /128 (无需显式 suffix)
 	res, err := p.db.ExecContext(ctx, `
-		INSERT INTO devices (device_ipv6, device_id, monitoring_enabled)
+		INSERT INTO devices (device_addr, device_uid, monitoring_enabled)
 		VALUES ($1::INET, $2, TRUE)
-		ON CONFLICT (device_ipv6) DO NOTHING
-	`, addr.String(), deviceID)
+		ON CONFLICT (device_addr) DO NOTHING
+	`, addr.String(), deviceUID)
 	if err != nil {
 		return netip.Addr{}, fmt.Errorf("insert device: %w", err)
 	}
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
-		// 已存在 — 校验绑定的 device_id 一致
+		// 已存在 — 校验绑定的 device_uid 一致
 		var existing string
-		err := p.db.QueryRowContext(ctx, `SELECT device_id::text FROM devices WHERE device_ipv6 = $1::INET`, addr.String()).Scan(&existing)
+		err := p.db.QueryRowContext(ctx, `SELECT device_uid FROM devices WHERE device_addr = $1::INET`, addr.String()).Scan(&existing)
 		if err != nil {
 			return netip.Addr{}, fmt.Errorf("read existing device: %w", err)
 		}
-		if existing != deviceID {
-			return netip.Addr{}, fmt.Errorf("%w: addr %s already bound to device %s", ErrAlreadyExists, addr, existing)
+		if existing != deviceUID {
+			return netip.Addr{}, fmt.Errorf("%w: addr %s already bound to device_uid %s", ErrAlreadyExists, addr, existing)
 		}
-		// 同 device_id 重复 register 是幂等 OK
+		// 同 device_uid 重复 register 是幂等 OK
 	}
-	p.recordKeaAddrLease(ctx, addr, "device:"+deviceID)
+	p.recordKeaAddrLease(ctx, addr, "device:"+deviceUID)
 	return addr, nil
 }
 

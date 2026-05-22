@@ -114,10 +114,10 @@ func (s *DeviceStoreService) SyncSleepaceBind(ctx context.Context) (*SyncSleepac
 	var synced, skipped, failed int
 	var errMsgs []string
 	for _, row := range items {
-		if row.DeviceUID == "" || row.DeviceID == "" {
+		if row.DeviceUID == "" {
 			continue
 		}
-		status, _, bindItems, getErr := s.sleepaceGateway.GetBindInfo(ctx, row.DeviceID)
+		status, _, bindItems, getErr := s.sleepaceGateway.GetBindInfo(ctx, row.DeviceUID)
 		if getErr != nil {
 			failed++
 			msg := getErr.Error()
@@ -131,13 +131,13 @@ func (s *DeviceStoreService) SyncSleepaceBind(ctx context.Context) (*SyncSleepac
 			skipped++
 			continue
 		}
-		tz := s.getTimezoneForDevice(ctx, row.TenantID, row.DeviceID)
+		tz := s.getTimezoneForDevice(ctx, row.TenantID, row.DeviceUID)
 		if !row.DeviceCode.Valid || row.DeviceCode.String == "" {
 			failed++
 			errMsgs = append(errMsgs, row.DeviceUID+": device_code required for bind (from import)")
 			continue
 		}
-		_, initErr := s.sleepaceGateway.InitializeDevice(ctx, row.DeviceCode.String, row.DeviceID, &tz)
+		_, initErr := s.sleepaceGateway.InitializeDevice(ctx, row.DeviceCode.String, row.DeviceUID, &tz)
 		if initErr != nil {
 			failed++
 			msg := initErr.Error()
@@ -183,10 +183,10 @@ func (s *DeviceStoreService) InitialAllSleepad(ctx context.Context) (*InitialAll
 	var errMsgs []string
 	var noDataList []string
 	for _, row := range items {
-		if row.DeviceID == "" {
+		if row.DeviceUID == "" {
 			continue
 		}
-		status, msg, bindItems, getErr := s.sleepaceGateway.GetBindInfo(ctx, row.DeviceID)
+		status, msg, bindItems, getErr := s.sleepaceGateway.GetBindInfo(ctx, row.DeviceUID)
 		if getErr != nil {
 			failed++
 			errMsgs = append(errMsgs, row.DeviceUID+": "+getErr.Error())
@@ -203,13 +203,13 @@ func (s *DeviceStoreService) InitialAllSleepad(ctx context.Context) (*InitialAll
 		if len(bindItems) == 0 {
 			noData++
 			noDataList = append(noDataList, row.DeviceUID)
-			tz := s.getTimezoneForDevice(ctx, row.TenantID, row.DeviceID)
+			tz := s.getTimezoneForDevice(ctx, row.TenantID, row.DeviceUID)
 			if !row.DeviceCode.Valid || row.DeviceCode.String == "" {
 				noDataBindFailed++
 				errMsgs = append(errMsgs, row.DeviceUID+": device_code required for bind (from import)")
 				continue
 			}
-			_, initErr := s.sleepaceGateway.InitializeDevice(ctx, row.DeviceCode.String, row.DeviceID, &tz)
+			_, initErr := s.sleepaceGateway.InitializeDevice(ctx, row.DeviceCode.String, row.DeviceUID, &tz)
 			if initErr != nil {
 				noDataBindFailed++
 				initMsg := initErr.Error()
@@ -225,13 +225,13 @@ func (s *DeviceStoreService) InitialAllSleepad(ctx context.Context) (*InitialAll
 		}
 		first := bindItems[0]
 		fwVer := fmt.Sprintf("%.2f", first.DeviceVersion)
-		if err := s.deviceStoreRepo.UpdateFirmwareVersion(ctx, row.DeviceID, fwVer); err != nil {
+		if err := s.deviceStoreRepo.UpdateFirmwareVersion(ctx, row.DeviceUID, fwVer); err != nil {
 			failed++
 			errMsgs = append(errMsgs, row.DeviceUID+": update firmware "+err.Error())
 			continue
 		}
-		if s.configPublisher != nil && row.DeviceID != "" {
-			_ = s.configPublisher.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceID, "device_store_firmware_updated", row.DeviceUID)
+		if s.configPublisher != nil && row.DeviceUID != "" {
+			_ = s.configPublisher.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceUID, "device_store_firmware_updated", row.DeviceUID)
 		}
 		synced++
 		successDetails = append(successDetails, map[string]any{
@@ -250,12 +250,13 @@ func (s *DeviceStoreService) InitialAllSleepad(ctx context.Context) (*InitialAll
 	}, nil
 }
 
-// BindSleepadOne 单条 Sleepad 绑定：调用 initialize(device_code, device_id)。Sleepace device_id = wisefido device_code（如 1ua3erivl9pv1），Sleepace deviceName = wisefido device_uid（如 BM87224601903）。当前仅绑定在 left（leftRight=0）。
-func (s *DeviceStoreService) BindSleepadOne(ctx context.Context, deviceID string) error {
+// BindSleepadOne 单条 Sleepad 绑定：调用 initialize(device_code, device_uid)。Sleepace device_id = wisefido device_code（如 1ua3erivl9pv1），Sleepace deviceName = wisefido device_uid（如 BM87224601903）。当前仅绑定在 left（leftRight=0）。
+// TODO Phase 2.1: sleepace SDK userId format verify — 现在 userId=device_uid (logMAC) 而不是 dfm.device_id UUID。
+func (s *DeviceStoreService) BindSleepadOne(ctx context.Context, deviceUID string) error {
 	if s.sleepaceGateway == nil {
 		return fmt.Errorf("sleepace gateway not configured")
 	}
-	ds, err := s.deviceStoreRepo.GetDeviceStoreByDeviceID(ctx, deviceID)
+	ds, err := s.deviceStoreRepo.GetDeviceStore(ctx, deviceUID)
 	if err != nil || ds == nil {
 		return fmt.Errorf("device not found")
 	}
@@ -265,24 +266,24 @@ func (s *DeviceStoreService) BindSleepadOne(ctx context.Context, deviceID string
 	if !ds.DeviceCode.Valid || ds.DeviceCode.String == "" {
 		return fmt.Errorf("device_code required for bind (from import)")
 	}
-	tz := s.getTimezoneForDevice(ctx, ds.TenantID, ds.DeviceID)
-	_, initErr := s.sleepaceGateway.InitializeDevice(ctx, ds.DeviceCode.String, ds.DeviceID, &tz)
+	tz := s.getTimezoneForDevice(ctx, ds.TenantID, ds.DeviceUID)
+	_, initErr := s.sleepaceGateway.InitializeDevice(ctx, ds.DeviceCode.String, ds.DeviceUID, &tz)
 	if initErr != nil {
 		return initErr
 	}
 	s.applyDefaultSleepadRealtime(ctx, ds)
-	if s.configPublisher != nil && ds.DeviceID != "" {
-		_ = s.configPublisher.PublishCardChangeForDevice(ctx, ds.TenantID, ds.DeviceID, "sleepad_bind", ds.DeviceUID)
+	if s.configPublisher != nil && ds.DeviceUID != "" {
+		_ = s.configPublisher.PublishCardChangeForDevice(ctx, ds.TenantID, ds.DeviceUID, "sleepad_bind", ds.DeviceUID)
 	}
 	return nil
 }
 
 // UnbindSleepadOne 单条 Sleepad 解绑：仅调用 Sleepace unbind(device_code)。不清空 device_code。
-func (s *DeviceStoreService) UnbindSleepadOne(ctx context.Context, deviceID string) error {
+func (s *DeviceStoreService) UnbindSleepadOne(ctx context.Context, deviceUID string) error {
 	if s.sleepaceGateway == nil {
 		return fmt.Errorf("sleepace gateway not configured")
 	}
-	ds, err := s.deviceStoreRepo.GetDeviceStoreByDeviceID(ctx, deviceID)
+	ds, err := s.deviceStoreRepo.GetDeviceStore(ctx, deviceUID)
 	if err != nil || ds == nil {
 		return fmt.Errorf("device not found")
 	}
@@ -295,8 +296,8 @@ func (s *DeviceStoreService) UnbindSleepadOne(ctx context.Context, deviceID stri
 	if err := s.sleepaceGateway.UnbindDevice(ctx, ds.DeviceCode.String); err != nil {
 		return err
 	}
-	if s.configPublisher != nil && ds.DeviceID != "" {
-		_ = s.configPublisher.PublishCardChangeForDevice(ctx, ds.TenantID, ds.DeviceID, "sleepad_unbind", ds.DeviceUID)
+	if s.configPublisher != nil && ds.DeviceUID != "" {
+		_ = s.configPublisher.PublishCardChangeForDevice(ctx, ds.TenantID, ds.DeviceUID, "sleepad_unbind", ds.DeviceUID)
 	}
 	return nil
 }
@@ -316,8 +317,8 @@ func (s *DeviceStoreService) DeleteDeviceStoreAndNotify(ctx context.Context, dev
 	if err := s.deviceStoreRepo.DeleteDeviceStore(ctx, deviceUID); err != nil {
 		return err
 	}
-	if s.configPublisher != nil && row.DeviceID != "" {
-		_ = s.configPublisher.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceID, "device_store_deleted", row.DeviceUID)
+	if s.configPublisher != nil && row.DeviceUID != "" {
+		_ = s.configPublisher.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceUID, "device_store_deleted", row.DeviceUID)
 	}
 	return nil
 }
@@ -338,23 +339,23 @@ func (s *DeviceStoreService) applyDefaultSleepadRealtime(ctx context.Context, ds
 	const targetInterval = 2
 	const targetMode = 1
 
-	if err := setIntervalWithRetry(ctx, s.sleepaceGateway, ds.DeviceID, ds.DeviceCode.String, targetInterval); err != nil {
+	if err := setIntervalWithRetry(ctx, s.sleepaceGateway, ds.DeviceUID, ds.DeviceCode.String, targetInterval); err != nil {
 		s.logger.Warn("post-bind SetRealtimeInterval failed",
 			zap.String("device_uid", ds.DeviceUID),
-			zap.String("device_id", ds.DeviceID),
+			zap.String("device_id", ds.DeviceUID),
 			zap.Error(err))
 	} else if s.onSleepadVendorBound != nil {
 		// bind+init 成功 → 通知 scheduler 清 unbound backoff，下次 tick 立即重新评估 push（不等 1h TTL）
-		s.onSleepadVendorBound(ds.DeviceID)
+		s.onSleepadVendorBound(ds.DeviceUID)
 	}
 
 	if !sleepadSupportsRealtimeMode(ds) {
 		return
 	}
-	if err := setRealtimeModeWithRetry(ctx, s.sleepaceGateway, ds.DeviceID, ds.DeviceCode.String, targetMode); err != nil {
+	if err := setRealtimeModeWithRetry(ctx, s.sleepaceGateway, ds.DeviceUID, ds.DeviceCode.String, targetMode); err != nil {
 		s.logger.Warn("post-bind SetRealtimeModeAfterLeave failed",
 			zap.String("device_uid", ds.DeviceUID),
-			zap.String("device_id", ds.DeviceID),
+			zap.String("device_id", ds.DeviceUID),
 			zap.Error(err))
 	}
 }
@@ -428,7 +429,7 @@ func (s *DeviceStoreService) PostImportSleepadBind(ctx context.Context, inserted
 		return
 	}
 	for _, row := range inserted {
-		if row.DeviceUID == "" || row.DeviceID == "" {
+		if row.DeviceUID == "" {
 			continue
 		}
 		if !strings.EqualFold(row.DeviceType, "Sleepad") {
@@ -437,12 +438,12 @@ func (s *DeviceStoreService) PostImportSleepadBind(ctx context.Context, inserted
 		if !row.DeviceCode.Valid || row.DeviceCode.String == "" {
 			continue
 		}
-		tz := s.getTimezoneForDevice(ctx, row.TenantID, row.DeviceID)
-		_, initErr := s.sleepaceGateway.InitializeDevice(ctx, row.DeviceCode.String, row.DeviceID, &tz)
+		tz := s.getTimezoneForDevice(ctx, row.TenantID, row.DeviceUID)
+		_, initErr := s.sleepaceGateway.InitializeDevice(ctx, row.DeviceCode.String, row.DeviceUID, &tz)
 		if initErr != nil {
 			s.logger.Warn("Sleepace initialize failed for imported Sleepad",
 				zap.String("device_uid", row.DeviceUID),
-				zap.String("device_id", row.DeviceID),
+				zap.String("device_id", row.DeviceUID),
 				zap.Error(initErr))
 			continue
 		}

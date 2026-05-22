@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 )
 
-// Device 设备领域模型。v2 schema：devices (device_ipv6 PK, device_id UUID FK, access, monitoring_enabled, card_id)。
-// 其余字段由 JOIN device_factory_meta / device_ota 取，或由 device_ipv6 prefix 派生。
+// Device 设备领域模型（Phase 2 一刀切后）：
+//   - devices PK = device_addr INET /128
+//   - 硬件 identity = device_uid VARCHAR(50)（dfm PK；FK devices.device_uid）
+//   - 其余字段由 JOIN device_factory_meta / device_ota 取，或由 device_addr prefix 派生。
 type Device struct {
-	DeviceID   string `db:"device_id"`   // UUID，devices.device_id
-	DeviceIPv6 string `db:"device_ipv6"` // INET /128，devices.device_ipv6；同时是 redis device:status key
-	TenantID   string `db:"-"`           // 派生：host(network(set_masklen(device_ipv6, 48)))
-
-	DeviceUID string `db:"-"` // 来自 JOIN device_factory_meta.device_uid
+	DeviceAddr string `db:"device_addr"` // INET /128，devices.device_addr；同时是 redis device:status key
+	DeviceUID  string `db:"device_uid"`  // logMAC，硬件 identity 不变量（dfm PK）
+	TenantID   string `db:"-"`           // 派生：host(network(set_masklen(device_addr, 48)))
 
 	// 物理属性（JOIN device_factory_meta 取）
 	DeviceType  sql.NullString `db:"-"`
@@ -36,7 +36,7 @@ type Device struct {
 
 	DeviceName string `db:"-"` // 派生：COALESCE(dfm.device_code, dfm.device_uid)
 
-	// 位置绑定 — 派生自 device_ipv6 字节段
+	// 位置绑定 — 派生自 device_addr 字节段
 	BoundRoomID sql.NullString `db:"-"` // /88 prefix when byte 10 != 0
 	BoundBedID  sql.NullString `db:"-"` // /96 prefix when byte 11 != 0
 	RoomID      sql.NullString `db:"-"`
@@ -49,7 +49,7 @@ type Device struct {
 
 	// 状态
 	Status            string `db:"-"` // SELECT alias 派生：'Enabled' / 'Disabled' 软删用；非物理列
-	OnlineStatus      string `db:"-"` // Redis device:status:{ipv6} 读
+	OnlineStatus      string `db:"-"` // Redis device:status:{addr} 读
 	Access            bool   `db:"access"`
 	MonitoringEnabled bool   `db:"monitoring_enabled"`
 
@@ -59,7 +59,8 @@ type Device struct {
 // ToJSON 转换为JSON格式（用于HTTP响应）
 func (d *Device) ToJSON() map[string]any {
 	m := map[string]any{
-		"device_id":          d.DeviceID,
+		"device_addr":        d.DeviceAddr,
+		"device_uid":         d.DeviceUID,
 		"tenant_id":          d.TenantID,
 		"device_name":        d.DeviceName,
 		"status":             d.Status,        // 数据库状态（Enabled/Disabled/Error）
@@ -67,7 +68,6 @@ func (d *Device) ToJSON() map[string]any {
 		"access":             d.Access,
 		"monitoring_enabled": d.MonitoringEnabled,
 	}
-	m["device_uid"] = d.DeviceUID
 	// 物理属性（从 device_store 获取）
 	if d.DeviceType.Valid {
 		m["device_type"] = d.DeviceType.String
@@ -172,4 +172,3 @@ func (d *Device) ToJSON() map[string]any {
 	}
 	return m
 }
-

@@ -362,8 +362,9 @@ func (r *AlarmEventsRepository) ListAlarmEvents(ctx context.Context, tenantID st
 		filters.ResidentID != nil || filters.BranchName != nil || filters.UnitID != nil
 
 	if needDevicesJoin {
-		joins = append(joins, "LEFT JOIN devices d ON ae.device_id = d.device_id")
-		joins = append(joins, "LEFT JOIN device_store ds ON d.device_id = ds.device_id")
+		// Phase 2 一刀切：alarm_events.device_addr → devices.device_addr → dfm.device_uid
+		joins = append(joins, "LEFT JOIN devices d ON ae.device_addr = d.device_addr")
+		joins = append(joins, "LEFT JOIN device_factory_meta ds ON d.device_uid = ds.device_uid")
 
 		// 设备名称过滤
 		if filters.DeviceName != nil {
@@ -697,8 +698,9 @@ func (r *AlarmEventsRepository) CountAlarmEvents(ctx context.Context, tenantID s
 		filters.ResidentID != nil || filters.BranchName != nil || filters.UnitID != nil
 
 	if needDevicesJoin {
-		joins = append(joins, "LEFT JOIN devices d ON ae.device_id = d.device_id")
-		joins = append(joins, "LEFT JOIN device_store ds ON d.device_id = ds.device_id")
+		// Phase 2 一刀切：alarm_events.device_addr → devices.device_addr → dfm.device_uid
+		joins = append(joins, "LEFT JOIN devices d ON ae.device_addr = d.device_addr")
+		joins = append(joins, "LEFT JOIN device_factory_meta ds ON d.device_uid = ds.device_uid")
 
 		if filters.DeviceName != nil {
 			where = append(where, fmt.Sprintf("d.device_name ILIKE $%d", argN))

@@ -114,14 +114,14 @@ func (l *BedDeviceLookup) query(zoneID, deviceType string) netip.Addr {
 
 	// 同 prefix 内取第一条 access+monitoring 全开的指定类型 device
 	const q = `
-		SELECT d.device_ipv6
+		SELECT d.device_addr
 		FROM devices d
-		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		WHERE d.device_ipv6 <<= $1::INET
+		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
+		WHERE d.device_addr <<= $1::INET
 		  AND dfm.device_type = $2::device_type_enum
 		  AND d.access = true
 		  AND d.monitoring_enabled = true
-		ORDER BY d.device_ipv6
+		ORDER BY d.device_addr
 		LIMIT 1
 	`
 	var addrStr string

@@ -57,8 +57,8 @@ type ActiveAlarm struct {
 	EventID     string `json:"event_id"`
 	EventType   string `json:"event_type"`
 	AlarmLevel  string `json:"alarm_level"`
-	DeviceUID   string `json:"-"`           // 内部用，不向前端暴露（HIPAA）
-	DeviceID    string `json:"device_id"`   // 前端展示用
+	DeviceUID   string `json:"-"`            // logMAC, HIPAA 不向前端暴露
+	DeviceAddr  string `json:"device_addr"`  // INET /128 canonical text, 前端展示用
 	TriggeredAt int64  `json:"triggered_at"`
 }
 

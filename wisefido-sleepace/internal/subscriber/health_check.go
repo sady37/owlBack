@@ -249,7 +249,7 @@ func (h *HealthCheck) probeOne(ctx context.Context, b *card.DeviceBaseline) {
 	if online && h.CardDB != nil {
 		go h.syncDeviceStoreVersion(context.Background(), b.DeviceCode)
 	}
-	if b.DeviceID == "" {
+	if b.DeviceUID == "" {
 		return
 	}
 

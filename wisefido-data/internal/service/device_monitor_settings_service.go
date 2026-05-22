@@ -106,20 +106,21 @@ func errNotImplemented(method string) error {
 
 // resolveDeviceIPv6 用 device_id (UUID) 查 devices.device_ipv6 (INET /128)。
 // 返回 host(...) 文本表示（不带 mask），用作 spatial_config.spatial_prefix 入参。
+// Phase 2 一刀切：deviceID 入参承载 device_addr (INET text)。
 func (s *deviceMonitorSettingsService) resolveDeviceIPv6(ctx context.Context, deviceID string) (string, error) {
 	if deviceID == "" {
-		return "", fmt.Errorf("device_id is required")
+		return "", fmt.Errorf("device_addr is required")
 	}
 	var ipv6 string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT host(device_ipv6) FROM devices WHERE device_id = $1::uuid`,
+		`SELECT host(device_addr) FROM devices WHERE device_addr = $1::INET`,
 		deviceID,
 	).Scan(&ipv6)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("device not found: %s", deviceID)
 	}
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve device ipv6: %w", err)
+		return "", fmt.Errorf("failed to resolve device addr: %w", err)
 	}
 	return ipv6, nil
 }

@@ -116,14 +116,15 @@ func (s *SleepaceIntervalScheduler) tick(ctx context.Context) {
 // 未 bind 的库存 device（device_ipv6 不在任何 unit /80 内）跳过 — 否则厂家 API 会报
 // "user not found" (status 5)，每分钟刷一遍 log。同时一次 query 拿到 unit timezone，省后续 lookup。
 func (s *SleepaceIntervalScheduler) listSleepadDevices(ctx context.Context) ([]sleepadDeviceRow, error) {
+	// Phase 2 一刀切：identity = device_uid，deviceID 字段承载 device_uid
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT dfm.device_id::text, dfm.device_uid, COALESCE(dfm.device_code, ''),
-		       host(network(set_masklen(d.device_ipv6, 48))) || '/48' AS tenant_id,
-		       host(network(set_masklen(d.device_ipv6, 80))) || '/80' AS unit_id,
+		SELECT dfm.device_uid, dfm.device_uid, COALESCE(dfm.device_code, ''),
+		       host(network(set_masklen(d.device_addr, 48))) || '/48' AS tenant_id,
+		       host(network(set_masklen(d.device_addr, 80))) || '/80' AS unit_id,
 		       COALESCE(u.timezone, '') AS tz
 		  FROM device_factory_meta dfm
-		  JOIN devices d ON d.device_id = dfm.device_id
-		  JOIN units u   ON u.unit_id   = network(set_masklen(d.device_ipv6, 80))
+		  JOIN devices d ON d.device_uid = dfm.device_uid
+		  JOIN units u   ON u.unit_id   = network(set_masklen(d.device_addr, 80))
 		 WHERE dfm.device_type = 'Sleepad'
 		   AND COALESCE(dfm.device_code, '') <> ''
 	`)

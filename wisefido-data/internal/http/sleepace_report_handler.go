@@ -192,7 +192,7 @@ func (h *SleepaceReportHandler) GetSleepaceReportDetail(w http.ResponseWriter, r
 	// 转换为前端格式（兼容 v1.0）
 	result := map[string]any{
 		"id":                       resp.ID,
-		"deviceId":                 resp.DeviceID,
+		"deviceAddr":               resp.DeviceAddr,
 		"deviceUid":                resp.DeviceUID,
 		"recordCount":              resp.RecordCount,
 		"startTime":                resp.StartTime,
@@ -342,12 +342,13 @@ func (h *SleepaceReportHandler) getSleepaceDownloadIdentity(ctx context.Context,
 	if h.db == nil {
 		return "", "", fmt.Errorf("database connection not available")
 	}
+	// Phase 2 一刀切：deviceID 入参承载 device_addr (INET text)
 	q := `
 		SELECT COALESCE(NULLIF(TRIM(dfm.device_code), ''), dfm.device_uid), dfm.device_uid
 		FROM devices d
-		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		WHERE d.device_ipv6 <<= $1::INET
-		  AND d.device_id = $2::uuid
+		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
+		WHERE d.device_addr <<= $1::INET
+		  AND d.device_addr = $2::INET
 		LIMIT 1
 	`
 	err = h.db.QueryRowContext(ctx, q, tenantID, deviceID).Scan(&sleepaceDeviceID, &deviceUID)
@@ -495,23 +496,21 @@ type residentInfo struct {
 	UnitID     sql.NullString
 }
 
-// getResidentByDeviceID 通过 device_id 获取关联的住户信息
-// 查询路径：devices → beds → residents 或 devices → rooms → units → residents
+// getResidentByDeviceID Phase 2 一刀切：deviceID 入参承载 device_addr (INET text)。
+// 查询路径：device_addr → resident_unit.spatial_prefix LPM → residents。
 func (h *SleepaceReportHandler) getResidentByDeviceID(ctx context.Context, tenantID, deviceID string) (*residentInfo, error) {
-	// 查询设备关联的住户（优先通过 bed，其次通过 room）
 	query := `
-		SELECT DISTINCT
-			r.resident_id::text,
-			u.branch_tag,
-			u.unit_id::text
+		SELECT host(r.resident_id),
+		       NULL::text AS branch_tag,
+		       host(network(set_masklen(d.device_addr, 80))) || '/80' AS unit_id
 		FROM devices d
-		LEFT JOIN beds b ON d.bound_bed_id = b.bed_id
-		LEFT JOIN rooms rm ON (d.bound_room_id = rm.room_id OR b.room_id = rm.room_id)
-		LEFT JOIN units u ON rm.unit_id = u.unit_id
-		LEFT JOIN residents r ON (r.bed_id = b.bed_id OR r.room_id = rm.room_id OR r.unit_id = u.unit_id)
-		WHERE d.tenant_id = $1::uuid
-		  AND d.device_id = $2::uuid
-		  AND r.resident_id IS NOT NULL
+		JOIN resident_unit ru
+		  ON ru.valid_to IS NULL
+		 AND d.device_addr <<= ru.spatial_prefix
+		JOIN residents r ON r.resident_id = ru.resident_id
+		WHERE d.device_addr <<= $1::INET
+		  AND d.device_addr = $2::INET
+		ORDER BY masklen(ru.spatial_prefix) DESC
 		LIMIT 1
 	`
 

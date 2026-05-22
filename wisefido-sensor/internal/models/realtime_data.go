@@ -28,7 +28,7 @@ type RealtimeData struct {
 
 // Posture 姿态数据
 type Posture struct {
-	DeviceID       string `json:"device_id"`       // 设备ID
+	DeviceID       string `json:"device_addr"`       // 设备ID
 	TrackingID     string `json:"tracking_id"`     // Radar tracking_id
 	PostureCode    string `json:"posture_code"`    // SNOMED 编码
 	PostureDisplay string `json:"posture_display"` // 显示名称

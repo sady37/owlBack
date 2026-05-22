@@ -8,11 +8,13 @@ import (
 // DeviceStore 设备库存领域模型。v2 没有 device_store 表 — 该 struct 是
 // device_factory_meta + devices + device_ota 三表 JOIN 的扁平视图（v1 兼容 wire format）。
 // 字段是 SELECT alias 派生，不对应单一物理列。
+//
+// Phase 2 一刀切：device_id UUID 退役 → identity = device_uid VARCHAR(50)；
+//                业务寻址 = device_addr INET /128（devices PK）。
 type DeviceStore struct {
-	DeviceID   string `db:"device_id"`   // dfm.device_id UUID
-	DeviceIPv6 string `db:"device_ipv6"` // devices.device_ipv6 INET /128；同时是 redis device:status key
+	DeviceAddr string `db:"device_addr"` // devices.device_addr INET /128；同时是 redis device:status key
 
-	DeviceUID  string         `db:"device_uid"`  // dfm.device_uid (logMAC)，如 BM87224601903
+	DeviceUID  string         `db:"device_uid"`  // dfm.device_uid (logMAC)，如 BM87224601903；硬件 identity 不变量
 	DeviceCode sql.NullString `db:"device_code"` // dfm.device_code（厂家会话 ID）
 
 	DeviceType  string         `db:"device_type"`  // dfm.device_type
@@ -42,7 +44,7 @@ type DeviceStore struct {
 	OTAFirmwareSize sql.NullInt64 `db:"-"` // v2 update.ini 管，不入库
 	OTATenantApproved bool       `db:"ota_tenant_approved"`
 
-	TenantID string `db:"-"` // v2 派生：host(network(set_masklen(devices.device_ipv6, 48)))
+	TenantID string `db:"-"` // v2 派生：host(network(set_masklen(devices.device_addr, 48)))
 
 	ImportDate   sql.NullTime `db:"import_date"`
 	AllocateTime sql.NullTime `db:"-"` // v2 无此列
@@ -61,9 +63,9 @@ type DeviceStore struct {
 
 	TenantName sql.NullString `db:"-"` // v2 无：派生 + JOIN 取
 
-	OnlineStatus string `db:"-"` // Redis device:status:{ipv6} 读
+	OnlineStatus string `db:"-"` // Redis device:status:{addr} 读
 
-	// 实时健康标志位（从 device:status:{ipv6} hash 读取，不存数据库）
+	// 实时健康标志位（从 device:status:{addr} hash 读取，不存数据库）
 	// 不论设备是否绑卡都会写入 hash，admin 视角无差别可见
 	Offline        int   `db:"-"` // 0/1 网络/心跳维度（与 OnlineStatus 互补，前端展示用）
 	SignalPoor     int   `db:"-"` // 0/1 WiFi 弱（设备仍能上行）
@@ -75,7 +77,7 @@ type DeviceStore struct {
 // ToJSON 转换为JSON格式（用于HTTP响应）
 func (d *DeviceStore) ToJSON() map[string]any {
 	m := map[string]any{
-		"device_id":    d.DeviceID,
+		"device_addr":  d.DeviceAddr,
 		"device_uid":   d.DeviceUID,
 		"device_type":  d.DeviceType,
 		"tenant_id":    d.TenantID,

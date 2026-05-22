@@ -145,9 +145,9 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceOnlineStatus(w http.ResponseWrit
 		return
 	}
 	status := "offline"
-	if h.stateReader != nil && dev.DeviceIPv6 != "" {
-		m := service.FillDeviceOnlineStatusFromCardagg(ctx, h.stateReader, []string{dev.DeviceIPv6}, h.logger)
-		if m[dev.DeviceIPv6] == "online" {
+	if h.stateReader != nil && dev.DeviceAddr != "" {
+		m := service.FillDeviceOnlineStatusFromCardagg(ctx, h.stateReader, []string{dev.DeviceAddr}, h.logger)
+		if m[dev.DeviceAddr] == "online" {
 			status = "online"
 		}
 	}
@@ -204,7 +204,7 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseW
 	if dev, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceID); err == nil {
 		deviceUID = dev.DeviceUID
 		deviceName = dev.DeviceName
-		deviceIPv6 = dev.DeviceIPv6
+		deviceIPv6 = dev.DeviceAddr
 		if dev.UnitID.Valid && dev.UnitID.String != "" {
 			if u, err := h.unitsRepo.GetUnit(ctx, tenantID, dev.UnitID.String); err == nil && u.Timezone != "" {
 				timezone = u.Timezone

@@ -32,7 +32,7 @@ type alarmDeviceData struct {
 type alarmProcessData struct {
 	TenantID    string `json:"tenant_id"`
 	CardID      string `json:"card_id"`
-	DeviceID    string `json:"device_id"`
+	DeviceID    string `json:"device_addr"`
 	AlarmLevel  string `json:"alarm_level"`
 	AlarmType   string `json:"alarm_type"`
 	ProcessType string `json:"process_type"`

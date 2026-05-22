@@ -59,18 +59,18 @@ func NotifyWisefidoData(logger *zap.Logger, tenantID, cardID, deviceID, eventID,
 	}()
 }
 
-// LookupCardIDByDevice v2: deviceID 是 canonical IPv6 (device_ipv6 单程票)，
+// LookupCardIDByDevice Phase 2 一刀切：deviceAddr 是 canonical IPv6 (devices.device_addr)，
 // 直读 devices.card_id（FE 已显式绑定）。
-func LookupCardIDByDevice(ctx context.Context, db *sql.DB, deviceID string) (string, error) {
-	if db == nil || deviceID == "" {
+func LookupCardIDByDevice(ctx context.Context, db *sql.DB, deviceAddr string) (string, error) {
+	if db == nil || deviceAddr == "" {
 		return "", sql.ErrNoRows
 	}
 	var cardID sql.NullString
 	err := db.QueryRowContext(ctx, `
 		SELECT card_id::text FROM devices
-		 WHERE device_ipv6 = $1::INET
+		 WHERE device_addr = $1::INET
 		 LIMIT 1
-	`, deviceID).Scan(&cardID)
+	`, deviceAddr).Scan(&cardID)
 	if err != nil {
 		return "", err
 	}

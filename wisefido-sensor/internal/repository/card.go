@@ -129,27 +129,27 @@ func (r *CardRepository) GetCardByID(tenantID, cardID string) (*CardInfo, error)
 	return c, nil
 }
 
-// GetCardDevices 获取卡片下的设备列表（v2: cards.devices JSONB 退役，改 JOIN devices LPM 反查）。
+// GetCardDevices 获取卡片下的设备列表（Phase 2 一刀切：JOIN devices LPM by device_addr）。
 //
-// cardID = cards.spatial_prefix INET CIDR；devices.device_ipv6 <<= spatial_prefix 命中即归属该卡。
+// cardID = cards.card_id INET CIDR；devices.device_addr <<= card_id 命中即归属该卡。
 // device_factory_meta (dfm) 提供 device_uid/device_type/device_model；rooms LEFT JOIN 取 room_name 给
 // bathroom 判断。
 func (r *CardRepository) GetCardDevices(cardID string) ([]DeviceInfo, error) {
 	query := `
 		SELECT COALESCE(json_agg(json_build_object(
-		    'device_id',    dfm.device_id::text,
+		    'device_addr',  host(d.device_addr),
 		    'device_uid',   dfm.device_uid,
 		    'device_type',  COALESCE(dfm.device_type::text, ''),
 		    'device_model', COALESCE(dfm.device_model, ''),
-		    'bed_id',       host(network(set_masklen(d.device_ipv6, 96)))::text || '/96',
-		    'room_id',      host(network(set_masklen(d.device_ipv6, 88)))::text || '/88',
+		    'bed_id',       host(network(set_masklen(d.device_addr, 96)))::text || '/96',
+		    'room_id',      host(network(set_masklen(d.device_addr, 88)))::text || '/88',
 		    'room_name',    r.room_name,
-		    'unit_id',      host(network(set_masklen(d.device_ipv6, 80)))::text || '/80'
+		    'unit_id',      host(network(set_masklen(d.device_addr, 80)))::text || '/80'
 		)), '[]'::json)
 		FROM devices d
-		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		LEFT JOIN rooms r            ON r.room_id = network(set_masklen(d.device_ipv6, 88))
-		WHERE d.device_ipv6 <<= $1::INET`
+		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
+		LEFT JOIN rooms r            ON r.room_id = network(set_masklen(d.device_addr, 88))
+		WHERE d.device_addr <<= $1::INET`
 	var devicesJSON json.RawMessage
 	if err := r.db.QueryRow(query, cardID).Scan(&devicesJSON); err != nil {
 		return nil, fmt.Errorf("failed to query card devices: %w", err)
@@ -215,13 +215,13 @@ func (r *CardRepository) GetCardByDeviceID(tenantID, deviceID string) (*CardInfo
 
 // DeviceInfo 设备信息（cards 下的 device 列表）。
 //
-// device_ipv6 单程票后所有 *ID 字段为 INET CIDR text 派生（device_addr / bed_id /96 / room_id /88 / unit_id /80）。
+// Phase 2 一刀切：identity = device_uid VARCHAR(50)；业务寻址 = device_addr INET /128。
 type DeviceInfo struct {
-	DeviceID    string  `json:"device_id"`            // dfm.device_id UUID（FK 稳定）
+	DeviceAddr  string  `json:"device_addr"`          // devices.device_addr /128（业务侧主键）
 	DeviceName  string  `json:"device_name"`          // 当前 v2 schema 暂无 device_name 列；保留字段
 	DeviceType  string  `json:"device_type"`
 	DeviceModel string  `json:"device_model"`
-	DeviceUID   string  `json:"device_uid,omitempty"` // dfm.device_uid (MAC)
+	DeviceUID   string  `json:"device_uid,omitempty"` // dfm.device_uid (logMAC)
 	BedID       *string `json:"bed_id,omitempty"`     // /96 CIDR
 	BedName     *string `json:"bed_name,omitempty"`
 	RoomID      *string `json:"room_id,omitempty"`    // /88 CIDR

@@ -93,18 +93,17 @@ func (p *ConfigPublisher) PublishAlarmProcessMessage(
 
 // PublishAlarmDeviceMessage 发送设备告警配置变更消息到 config:alarmDevice:stream，供 cardagg 消费用于失效 enablement 缓存。
 //
-// device_ipv6 单程票后 addr 是 cache key；deviceID/deviceUID 入参保留兼容签名 (R-002 外部 API caller 仍传 UUID)，
-// 内部反查 device_ipv6 后填 payload。
+// Phase 2 一刀切：deviceAddr 直接传入；deviceUID 用于日志/审计。
 func (p *ConfigPublisher) PublishAlarmDeviceMessage(
 	ctx context.Context,
-	tenantID, deviceID, deviceUID, settingType string,
+	tenantID, deviceAddr, deviceUID, settingType string,
 	settingData map[string]interface{},
 ) error {
-	addr := p.lookupDeviceAddr(ctx, deviceID)
+	addr := p.lookupDeviceAddr(ctx, deviceAddr)
 	if !addr.IsValid() {
 		p.logger.Warn("PublishAlarmDeviceMessage skipped: cannot resolve device_addr",
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.String("device_uid", deviceUID))
 		return nil
 	}
@@ -149,16 +148,16 @@ func (p *ConfigPublisher) PublishAlarmDeviceMessage(
 	return nil
 }
 
-// lookupDeviceAddr 由 deviceID UUID 反查 device_ipv6（device_ipv6 单程票内部 helper）。
+// lookupDeviceAddr Phase 2 一刀切：deviceAddr 入参直接是 INET text；校验存在性并 normalize。
 // 失败返回零值 netip.Addr；caller 用 .IsValid() 判断。
-func (p *ConfigPublisher) lookupDeviceAddr(ctx context.Context, deviceID string) netip.Addr {
-	if p.db == nil || deviceID == "" {
+func (p *ConfigPublisher) lookupDeviceAddr(ctx context.Context, deviceAddr string) netip.Addr {
+	if p.db == nil || deviceAddr == "" {
 		return netip.Addr{}
 	}
 	var addrStr string
 	err := p.db.QueryRowContext(ctx,
-		`SELECT host(d.device_ipv6)::text FROM devices d WHERE d.device_id = $1::uuid LIMIT 1`,
-		deviceID).Scan(&addrStr)
+		`SELECT host(d.device_addr)::text FROM devices d WHERE d.device_addr = $1::INET LIMIT 1`,
+		deviceAddr).Scan(&addrStr)
 	if err != nil {
 		return netip.Addr{}
 	}
@@ -166,14 +165,14 @@ func (p *ConfigPublisher) lookupDeviceAddr(ctx context.Context, deviceID string)
 	return a
 }
 
-// lookupDeviceAddrsByPrefix 查 spatial_prefix（INET CIDR）下所有 devices.device_ipv6 host text 列表。
+// lookupDeviceAddrsByPrefix 查 spatial_prefix（INET CIDR）下所有 devices.device_addr host text 列表。
 // 用于 config:card publish 时附带 affected_device_addrs；consumer 直接读 payload 不再做 DB query。
 func (p *ConfigPublisher) lookupDeviceAddrsByPrefix(ctx context.Context, prefix string) []string {
 	if p.db == nil || prefix == "" {
 		return nil
 	}
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT DISTINCT host(d.device_ipv6)::text FROM devices d WHERE d.device_ipv6 <<= $1::inet`,
+		`SELECT DISTINCT host(d.device_addr)::text FROM devices d WHERE d.device_addr <<= $1::inet`,
 		prefix)
 	if err != nil {
 		return nil
@@ -209,17 +208,17 @@ func (p *ConfigPublisher) PublishCardChangeMessageWithExtra(
 	return p.PublishCardChangeMessageWithExtraAndType(ctx, tenantID, cardID, unitID, branchID, rediscommon.ConfigCardChanged, extraData)
 }
 
-// PublishCardChangeForDevice 发送 config.card，data 含 device_id、change_type、affected_device_addrs（精确 /128）+
-// 可选 affected_device_uids 供 gateway 按 uid 失效。
-func (p *ConfigPublisher) PublishCardChangeForDevice(ctx context.Context, tenantID, deviceID, changeType string, deviceUIDs ...string) error {
-	if p == nil || deviceID == "" {
+// PublishCardChangeForDevice Phase 2 一刀切：deviceAddr 入参直接是 device_addr (INET text)。
+// data 含 device_addr、change_type、affected_device_addrs（精确 /128）+ 可选 affected_device_uids。
+func (p *ConfigPublisher) PublishCardChangeForDevice(ctx context.Context, tenantID, deviceAddr, changeType string, deviceUIDs ...string) error {
+	if p == nil || deviceAddr == "" {
 		return nil
 	}
 	extra := map[string]interface{}{
-		"device_id":   deviceID,
+		"device_addr": deviceAddr,
 		"change_type": changeType,
 	}
-	if addr := p.lookupDeviceAddr(ctx, deviceID); addr.IsValid() {
+	if addr := p.lookupDeviceAddr(ctx, deviceAddr); addr.IsValid() {
 		extra["affected_device_addrs"] = []string{addr.String()}
 	}
 	if u := compactDeviceUIDs(deviceUIDs); len(u) > 0 {

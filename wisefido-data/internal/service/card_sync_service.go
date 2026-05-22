@@ -121,7 +121,7 @@ func (s *CardSyncService) CreateCardsForUnit(ctx context.Context, tenantPrefix, 
 		SELECT b.bed_id::text, COALESCE(b.bed_name, '')
 		  FROM beds b
 		 WHERE b.bed_id <<= $1::INET
-		   AND EXISTS (SELECT 1 FROM devices d WHERE d.device_ipv6 <<= b.bed_id)
+		   AND EXISTS (SELECT 1 FROM devices d WHERE d.device_addr <<= b.bed_id)
 		 ORDER BY b.bed_id
 	`, unitPrefix)
 	if err == nil {
@@ -152,7 +152,7 @@ func (s *CardSyncService) CreateCardsForUnit(ctx context.Context, tenantPrefix, 
 	if !hasBed {
 		var hasDevice bool
 		_ = s.db.QueryRowContext(ctx,
-			`SELECT EXISTS (SELECT 1 FROM devices WHERE device_ipv6 <<= $1::INET)`,
+			`SELECT EXISTS (SELECT 1 FROM devices WHERE device_addr <<= $1::INET)`,
 			unitPrefix).Scan(&hasDevice)
 		if hasDevice {
 			op, err := s.upsertSpaceCard(ctx, tenantPrefix, unitPrefix, "")

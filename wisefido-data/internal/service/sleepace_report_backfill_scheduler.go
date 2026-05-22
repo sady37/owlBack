@@ -117,12 +117,13 @@ func (s *SleepaceReportBackfillScheduler) tick(ctx context.Context) {
 
 // listSleepadDevices — 同 SleepaceIntervalScheduler 过滤策略：INNER JOIN units 排除库存 + device_code 非空。
 func (s *SleepaceReportBackfillScheduler) listSleepadDevices(ctx context.Context) ([]backfillDeviceRow, error) {
+	// Phase 2 一刀切：identity = device_uid；deviceID 字段承载 device_uid
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT dfm.device_id::text,
-		       host(network(set_masklen(d.device_ipv6, 48))) || '/48' AS tenant_id
+		SELECT dfm.device_uid,
+		       host(network(set_masklen(d.device_addr, 48))) || '/48' AS tenant_id
 		  FROM device_factory_meta dfm
-		  JOIN devices d ON d.device_id = dfm.device_id
-		  JOIN units u   ON u.unit_id   = network(set_masklen(d.device_ipv6, 80))
+		  JOIN devices d ON d.device_uid = dfm.device_uid
+		  JOIN units u   ON u.unit_id   = network(set_masklen(d.device_addr, 80))
 		 WHERE dfm.device_type = 'Sleepad'
 		   AND COALESCE(dfm.device_code, '') <> ''
 	`)

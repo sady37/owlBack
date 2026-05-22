@@ -14,7 +14,6 @@ import (
 	"wisefido-qinglan/internal/service"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -92,12 +91,12 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 			// 新创建的设备已分配给系统租户（000...001），allow_access = FALSE，需要管理员处理
 			s.logger.Info("Device created in device_store (pending approval, assigned to system tenant)",
 				zap.String("uid", req.UID),
-				zap.String("device_id", device.DeviceID),
+				zap.String("device_id", device.DeviceUID),
 				zap.String("tenant_id", device.TenantID),
 			)
 			// 新设备需要管理员审批，直接返回 pending 响应
-			// 传递刚创建的 device.DeviceID，避免重新查询
-			s.publishAuthResponseFailure(ctx, req.UID, "device access pending approval (assigned to system tenant)", device.DeviceID)
+			// 传递刚创建的 device.DeviceUID，避免重新查询
+			s.publishAuthResponseFailure(ctx, req.UID, "device access pending approval (assigned to system tenant)", device.DeviceUID)
 			return &models.AuthResponse{
 				Msg:  "Device pending administrator approval",
 				Code: 401,
@@ -158,7 +157,7 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 	s.logger.Info("device authenticated",
 		zap.String("uid", req.UID),
 		zap.String("tenant_id", device.TenantID),
-		zap.String("device_id", device.DeviceID),
+		zap.String("device_id", device.DeviceUID),
 		zap.String("device_type", device.DeviceType),
 		zap.String("mqtt_server", mqttConfig.Server),
 		zap.Int("mqtt_port", mqttConfig.Port),
@@ -175,16 +174,16 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 	// 7. 认证成功后仅开启周期性订阅（不立即订阅MQTT主题，因为启动时已订阅）
 	// 创建订阅记录，让周期性订阅机制来处理monitor订阅命令
 	if s.subscriptionManager != nil {
-		if err := s.subscriptionManager.EnablePeriodicSubscription(ctx, req.UID, device.DeviceID); err != nil {
+		if err := s.subscriptionManager.EnablePeriodicSubscription(ctx, req.UID, device.DeviceUID); err != nil {
 			s.logger.Warn("enable periodic subscription failed",
 				zap.String("uid", req.UID),
-				zap.String("device_id", device.DeviceID),
+				zap.String("device_id", device.DeviceUID),
 				zap.Error(err),
 			)
 		} else {
 			s.logger.Info("enabled periodic subscription",
 				zap.String("uid", req.UID),
-				zap.String("device_id", device.DeviceID),
+				zap.String("device_id", device.DeviceUID),
 			)
 		}
 	}
@@ -221,7 +220,7 @@ func (s *AuthService) validateDeviceAndGetLocation(ctx context.Context, deviceUI
 // 注意：此类型定义在 repository 包中，此处使用类型别名以保持兼容性
 type DeviceStoreInfo = repository.DeviceStoreInfo
 
-// createDeviceStoreRecord 创建新设备记录（v2：写 device_factory_meta + devices）
+// createDeviceStoreRecord 创建新设备记录（Phase 2: 写 device_factory_meta + devices）
 //
 // 状态：access=FALSE（pending），分配到 system /48 池 fd00:0:1::/48，等 platform_admin 调拨。
 func (s *AuthService) createDeviceStoreRecord(ctx context.Context, uid string, req *models.AuthRequest) (*DeviceStoreInfo, error) {
@@ -229,12 +228,10 @@ func (s *AuthService) createDeviceStoreRecord(ctx context.Context, uid string, r
 	if req.Type == 1 {
 		deviceType = "Radar"
 	}
-	deviceID := uuid.New().String()
 
-	// 委托给 repo（v2 INSERT dfm + devices）
+	// 委托给 repo（Phase 2: INSERT dfm + devices，identity = device_uid）
 	stub := &domain.Device{
-		DeviceID:  deviceID,
-		DeviceUID: uid,
+		DeviceUID:  uid,
 		DeviceType: sql.NullString{String: deviceType, Valid: true},
 	}
 	if err := s.deviceRepo.(interface {
@@ -243,12 +240,10 @@ func (s *AuthService) createDeviceStoreRecord(ctx context.Context, uid string, r
 		return nil, fmt.Errorf("failed to create device factory + devices: %w", err)
 	}
 
-	// 回读完整 DeviceStoreInfo（确保后续 caller 拿到一致的 dfm + drs 视图）
+	// 回读完整 DeviceStoreInfo
 	ds, err := s.deviceRepo.GetDeviceStoreInfo(ctx, uid)
 	if err != nil {
-		// INSERT 已成功但读回失败 — 返回 stub-derived info
 		return &DeviceStoreInfo{
-			DeviceID:   deviceID,
 			DeviceUID:  uid,
 			DeviceType: deviceType,
 			TenantID:   platformSystemTenantID,
@@ -258,7 +253,7 @@ func (s *AuthService) createDeviceStoreRecord(ctx context.Context, uid string, r
 
 	s.logger.Info("Created new device (pending, system tenant pool fd00:0:1::/48)",
 		zap.String("uid", uid),
-		zap.String("device_id", ds.DeviceID),
+		zap.String("device_uid", ds.DeviceUID),
 		zap.String("device_type", ds.DeviceType),
 		zap.String("tenant_id", ds.TenantID),
 		zap.Bool("access", ds.Access),
@@ -345,19 +340,18 @@ func (s *AuthService) publishAuthRequest(ctx context.Context, req *models.AuthRe
 		remoteAddr,
 	)
 
-	// v2：从 device_factory_meta + devices 派生 tenant_id（/48 host repr）
-	// 未入库（dfm 无记录）→ auth 流上用 trash 池占位
+	// Phase 2 一刀切：identity 收口到 device_uid；从 dfm + devices 派生 tenant_id 和 device_addr
 	resolvedTenantID := platformTrashTenantID
-	var deviceID sql.NullString
+	var deviceAddr sql.NullString
 	var storeTenantID sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT dfm.device_id::text,
-		       COALESCE(host(network(set_masklen(d.device_ipv6, 48))), '') AS tenant_id
+		SELECT COALESCE(host(d.device_addr), '') AS device_addr,
+		       COALESCE(host(network(set_masklen(d.device_addr, 48))), '') AS tenant_id
 		FROM device_factory_meta dfm
-		LEFT JOIN devices d ON d.device_id = dfm.device_id
+		LEFT JOIN devices d ON d.device_uid = dfm.device_uid
 		WHERE dfm.device_uid = $1
 		LIMIT 1
-	`, req.UID).Scan(&deviceID, &storeTenantID)
+	`, req.UID).Scan(&deviceAddr, &storeTenantID)
 	if err != nil && err != sql.ErrNoRows {
 		s.logger.Warn("Failed to query device_factory_meta for auth request",
 			zap.String("uid", req.UID),
@@ -369,13 +363,12 @@ func (s *AuthService) publishAuthRequest(ctx context.Context, req *models.AuthRe
 	}
 
 	authRequest := commonredis.BuildAuthRequestMessage(req.UID, "Radar", resolvedTenantID, remoteAddr, deviceInfo)
-	if deviceID.Valid {
-		authRequest.DeviceID = deviceID.String
+	if deviceAddr.Valid {
+		authRequest.DeviceAddr = deviceAddr.String
 	}
 
 	// 将 AuthMessage 转换为 map（用于发布到 Redis Stream）
-	// 使用 owl-common/redis 中的 AuthMessage 类型定义
-	encodedData := authMessageToMap(authRequest, deviceID)
+	encodedData := authMessageToMap(authRequest, deviceAddr)
 
 	// 发布到 Redis Stream（使用该 stream 的配置）
 	streamName := commonredis.StreamAuth.Name
@@ -395,7 +388,7 @@ func (s *AuthService) publishAuthRequest(ctx context.Context, req *models.AuthRe
 		zap.String("stream", streamName),
 		zap.String("stream_id", streamID),
 		zap.String("tenant_id", resolvedTenantID),
-		zap.String("device_id", deviceID.String),
+		zap.String("device_addr", deviceAddr.String),
 	)
 }
 
@@ -418,30 +411,32 @@ func (s *AuthService) publishAuthResponseSuccess(
 		fmt.Sprintf("Device authenticated successfully, MQTT server: %s:%d", mqttConfig.Server, mqttConfig.Port),
 	)
 
-	// v2：device_id 直接从 device_factory_meta 查（v1 的 devices.device_uid 列已删）
-	var deviceID sql.NullString
+	// Phase 2 一刀切：identity = device_uid；查 device_addr 用作 handshake response
+	var deviceAddr sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT device_id::text
-		FROM device_factory_meta
-		WHERE device_uid = $1
+		SELECT COALESCE(host(d.device_addr), '')
+		FROM device_factory_meta dfm
+		LEFT JOIN devices d ON d.device_uid = dfm.device_uid
+		WHERE dfm.device_uid = $1
 		LIMIT 1
-	`, uid).Scan(&deviceID)
+	`, uid).Scan(&deviceAddr)
 	if err != nil && err != sql.ErrNoRows {
-		s.logger.Warn("Failed to query device_id from device_factory_meta for auth response success",
+		s.logger.Warn("Failed to query device_addr for auth response success",
 			zap.String("uid", uid),
 			zap.Error(err),
 		)
 	}
-	if !deviceID.Valid {
-		deviceID = sql.NullString{String: device.DeviceID, Valid: true}
+	if !deviceAddr.Valid {
+		if addrText := device.DeviceAddrText(); addrText != "" {
+			deviceAddr = sql.NullString{String: addrText, Valid: true}
+		}
 	}
-	if deviceID.Valid {
-		authResponse.DeviceID = deviceID.String
+	if deviceAddr.Valid {
+		authResponse.DeviceAddr = deviceAddr.String
 	}
 
 	// 将 AuthMessage 转换为 map（用于发布到 Redis Stream）
-	// 使用 owl-common/redis 中的 AuthMessage 类型定义
-	encodedData := authMessageToMap(authResponse, deviceID)
+	encodedData := authMessageToMap(authResponse, deviceAddr)
 
 	// 发布到 Redis Stream（使用该 stream 的配置）
 	streamName := commonredis.StreamAuth.Name
@@ -461,50 +456,47 @@ func (s *AuthService) publishAuthResponseSuccess(
 		zap.String("tenant_id", device.TenantID),
 		zap.String("stream", streamName),
 		zap.String("stream_id", streamID),
-		zap.String("device_id", authResponse.DeviceID),
+		zap.String("device_addr", authResponse.DeviceAddr),
 	)
 }
 
 // publishAuthResponseFailure 发布认证失败响应到 Redis Stream
-func (s *AuthService) publishAuthResponseFailure(ctx context.Context, uid string, errorMsg string, deviceID ...string) {
-	// 认证失败：设备仍可能在 device_store；Stream 上 tenant_id 用 Unallocated 占位，不表示库内 tenant 已改为 002。
+// Phase 2 一刀切：deviceAddr 替代旧 deviceID 参数（device_id UUID 退役）。
+func (s *AuthService) publishAuthResponseFailure(ctx context.Context, uid string, errorMsg string, deviceAddrHint ...string) {
 	authResponse := commonredis.BuildAuthResponseMessage(
 		uid,
 		"Radar",
 		authFailureStreamTenantID,
 		"failure",
-		"", // 失败时无 MQTT 服务器
-		0,  // 失败时无 MQTT 端口
+		"",
+		0,
 		errorMsg,
 	)
 
-	// 如果提供了 deviceID 参数，直接使用；否则查询数据库
-	var deviceIDStr sql.NullString
-	if len(deviceID) > 0 && deviceID[0] != "" {
-		deviceIDStr = sql.NullString{String: deviceID[0], Valid: true}
-		authResponse.DeviceID = deviceID[0]
+	var deviceAddrStr sql.NullString
+	if len(deviceAddrHint) > 0 && deviceAddrHint[0] != "" {
+		deviceAddrStr = sql.NullString{String: deviceAddrHint[0], Valid: true}
+		authResponse.DeviceAddr = deviceAddrHint[0]
 	} else {
-		// v2: 从 device_factory_meta 反查 device_id
 		err := s.db.QueryRowContext(ctx, `
-			SELECT device_id::text
-			FROM device_factory_meta
-			WHERE device_uid = $1
+			SELECT COALESCE(host(d.device_addr), '')
+			FROM device_factory_meta dfm
+			LEFT JOIN devices d ON d.device_uid = dfm.device_uid
+			WHERE dfm.device_uid = $1
 			LIMIT 1
-		`, uid).Scan(&deviceIDStr)
+		`, uid).Scan(&deviceAddrStr)
 		if err != nil && err != sql.ErrNoRows {
-			s.logger.Warn("Failed to query device_id from device_factory_meta for auth response failure",
+			s.logger.Warn("Failed to query device_addr for auth response failure",
 				zap.String("uid", uid),
 				zap.Error(err),
 			)
 		}
-		if deviceIDStr.Valid {
-			authResponse.DeviceID = deviceIDStr.String
+		if deviceAddrStr.Valid {
+			authResponse.DeviceAddr = deviceAddrStr.String
 		}
 	}
 
-	// 将 AuthMessage 转换为 map（用于发布到 Redis Stream）
-	// 使用 owl-common/redis 中的 AuthMessage 类型定义
-	encodedData := authMessageToMap(authResponse, deviceIDStr)
+	encodedData := authMessageToMap(authResponse, deviceAddrStr)
 
 	// 发布到 Redis Stream（使用该 stream 的配置）
 	streamName := commonredis.StreamAuth.Name
@@ -523,7 +515,7 @@ func (s *AuthService) publishAuthResponseFailure(ctx context.Context, uid string
 		zap.String("uid", uid),
 		zap.String("stream", streamName),
 		zap.String("stream_id", streamID),
-		zap.String("device_id", authResponse.DeviceID),
+		zap.String("device_addr", authResponse.DeviceAddr),
 		zap.String("error", errorMsg),
 	)
 }
@@ -839,28 +831,20 @@ func getStringOrNullFromNullString(s sql.NullString) interface{} {
 // 	SetOTAReconfig(ctx context.Context, uid string, props map[string]interface{}) error
 // }
 
-// authMessageToMap 将 AuthMessage 转换为 map（用于发布到 Redis Stream）
-// 使用 IoTStreamMessage 格式（与 iot:monitor:stream 等保持一致）
-// 字段顺序：device_id, device_uid, device_type, tenant_id, timestamp, topic_type, category, data_value
-// 注意：Go 的 map 是无序的，所以 Redis Stream 中字段顺序可能随机，但不影响功能（通过字段名访问）
-func authMessageToMap(msg commonredis.AuthMessage, deviceID sql.NullString) map[string]interface{} {
-	// 确定 device_id
-	actualDeviceID := ""
-	if deviceID.Valid && deviceID.String != "" {
-		actualDeviceID = deviceID.String
-	} else if msg.DeviceID != "" {
-		actualDeviceID = msg.DeviceID
+// authMessageToMap 将 AuthMessage 转换为 map（Phase 2: device_addr 替代旧 device_id）。
+func authMessageToMap(msg commonredis.AuthMessage, deviceAddr sql.NullString) map[string]interface{} {
+	actualDeviceAddr := ""
+	if deviceAddr.Valid && deviceAddr.String != "" {
+		actualDeviceAddr = deviceAddr.String
+	} else if msg.DeviceAddr != "" {
+		actualDeviceAddr = msg.DeviceAddr
 	}
 
-	// 序列化 dataValue 为 JSON 字符串（PublishToStream 需要字符串值）
 	dataValueJSON, _ := json.Marshal(msg.DataValue)
 
 	result := make(map[string]interface{})
-
-	// 按 IoTStreamMessage 定义顺序添加字段（与 iot:monitor:stream 等格式一致）
-	// 注意：虽然代码中按顺序添加，但 Go map 是无序的，Redis Stream 中显示顺序可能随机
-	if actualDeviceID != "" {
-		result["device_id"] = actualDeviceID
+	if actualDeviceAddr != "" {
+		result["device_addr"] = actualDeviceAddr
 	}
 	result["device_uid"] = msg.DeviceUID
 	result["device_type"] = msg.DeviceType

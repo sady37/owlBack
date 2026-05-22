@@ -264,7 +264,7 @@ func (r *PostgresCardRepository) GetBranchIDByUnit(ctx context.Context, tenantID
 }
 
 // GetActiveBedsByUnit 列出 unit 下所有"活跃床位"：
-// 床下 device_ipv6 <<= bed_id (/96)，monitoring_enabled=TRUE，且有 device 命中。
+// 床下 device_addr <<= bed_id (/96)，monitoring_enabled=TRUE，且有 device 命中。
 func (r *PostgresCardRepository) GetActiveBedsByUnit(tenantID, unitID string) ([]card.ActiveBedRow, error) {
 	_ = tenantID
 	query := `
@@ -276,14 +276,14 @@ func (r *PostgresCardRepository) GetActiveBedsByUnit(tenantID, unitID string) ([
 		FROM beds b
 		INNER JOIN rooms rm ON rm.room_id = set_masklen(b.bed_id, 88)
 		INNER JOIN devices d
-		   ON d.device_ipv6 <<= b.bed_id
+		   ON d.device_addr <<= b.bed_id
 		  AND d.monitoring_enabled = TRUE
 		LEFT JOIN resident_unit ru
 		   ON ru.spatial_prefix = b.bed_id
 		  AND ru.valid_to IS NULL
 		WHERE set_masklen(b.bed_id, 80) = $1::inet
 		GROUP BY b.bed_id, b.bed_name, rm.room_name
-		HAVING COUNT(DISTINCT d.device_id) > 0
+		HAVING COUNT(DISTINCT d.device_uid) > 0
 		ORDER BY bed_name ASC, b.bed_id ASC
 	`
 
@@ -361,8 +361,7 @@ func (r *PostgresCardRepository) GetDevicesByBed(tenantID, bedID string) ([]card
 	_ = tenantID
 	query := `
 		SELECT
-			d.device_id::text,
-			d.device_ipv6::text            AS device_ipv6,
+			host(d.device_addr)            AS device_addr,
 			COALESCE(dfm.device_uid, '')   AS device_uid,
 			COALESCE(dfm.device_code, '')  AS device_code,
 			''::text                       AS device_name,
@@ -371,10 +370,10 @@ func (r *PostgresCardRepository) GetDevicesByBed(tenantID, bedID string) ([]card
 			d.monitoring_enabled,
 			'offline'::text AS status
 		FROM devices d
-		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		WHERE d.device_ipv6 <<= $1::inet
+		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
+		WHERE d.device_addr <<= $1::inet
 		  AND d.monitoring_enabled = TRUE
-		ORDER BY d.device_ipv6
+		ORDER BY d.device_addr
 	`
 	rows, err := r.db.Query(query, bedID)
 	if err != nil {
@@ -391,8 +390,7 @@ func (r *PostgresCardRepository) GetUnboundDevicesByUnit(tenantID, unitID string
 	_ = tenantID
 	query := `
 		SELECT
-			d.device_id::text,
-			d.device_ipv6::text            AS device_ipv6,
+			host(d.device_addr)            AS device_addr,
 			COALESCE(dfm.device_uid, '')   AS device_uid,
 			COALESCE(dfm.device_code, '')  AS device_code,
 			''::text                       AS device_name,
@@ -401,11 +399,11 @@ func (r *PostgresCardRepository) GetUnboundDevicesByUnit(tenantID, unitID string
 			d.monitoring_enabled,
 			'offline'::text AS status
 		FROM devices d
-		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		WHERE d.device_ipv6 <<= $1::inet
+		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
+		WHERE d.device_addr <<= $1::inet
 		  AND d.monitoring_enabled = TRUE
-		  AND find_card_by_device_addr(d.device_ipv6) IS NULL
-		ORDER BY d.device_ipv6
+		  AND find_card_by_device_addr(d.device_addr) IS NULL
+		ORDER BY d.device_addr
 	`
 	rows, err := r.db.Query(query, unitID)
 	if err != nil {
@@ -421,8 +419,7 @@ func scanDevices(rows *sql.Rows) ([]card.DeviceInfo, error) {
 	for rows.Next() {
 		var di card.DeviceInfo
 		if err := rows.Scan(
-			&di.DeviceID,
-			&di.DeviceIPv6,
+			&di.DeviceAddr,
 			&di.DeviceUID,
 			&di.DeviceCode,
 			&di.DeviceName,
@@ -675,10 +672,10 @@ func (r *PostgresCardRepository) ListOrphanCards(ctx context.Context) ([]domain.
 		       c.card_id::text AS card_id,
 		       c.card_id::text
 		FROM cards c
-		LEFT JOIN devices d ON d.device_ipv6 <<= c.card_id
+		LEFT JOIN devices d ON d.device_addr <<= c.card_id
 		WHERE TRUE  -- v2.5: card_type 列删，所有 cards 都参与孤儿扫描
 		GROUP BY c.card_id
-		HAVING COUNT(d.device_id) = 0
+		HAVING COUNT(d.device_uid) = 0
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("list orphan cards: %w", err)
@@ -916,13 +913,12 @@ func (r *PostgresCardRepository) CreateCard(
 // 内部 helpers
 // =====================================================================
 
-// getCardDeviceIDList card LPM 命中的所有 device_addr（IPv6 string list；device_ipv6 单程票后唯一标识）。
-// 函数名保留 v1 命名但语义改为 IPv6（避免改动过多 caller）；实际值为 host(device_ipv6)。
+// getCardDeviceIDList card LPM 命中的所有 device_addr（IPv6 string list；Phase 2 一刀切后唯一寻址）。
 func (r *PostgresCardRepository) getCardDeviceIDList(cardID string) []string {
 	rows, err := r.db.Query(`
-		SELECT host(d.device_ipv6)
+		SELECT host(d.device_addr)
 		FROM cards c
-		JOIN devices d ON d.device_ipv6 <<= c.card_id
+		JOIN devices d ON d.device_addr <<= c.card_id
 		WHERE c.card_id = $1::INET
 	`, cardID)
 	if err != nil {
@@ -948,8 +944,8 @@ func (r *PostgresCardRepository) getCardDeviceUIDList(tenantID, cardID string) [
 	rows, err := r.db.Query(`
 		SELECT dfm.device_uid
 		FROM cards c
-		JOIN devices d ON d.device_ipv6 <<= c.card_id
-		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
+		JOIN devices d ON d.device_addr <<= c.card_id
+		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
 		WHERE c.card_id = $1::INET
 	`, cardID)
 	if err != nil {

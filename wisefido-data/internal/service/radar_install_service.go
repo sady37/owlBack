@@ -88,13 +88,13 @@ func (s *RadarInstall) ListCardDevicesByDeviceID(ctx context.Context, tenantID, 
 	if s.devicesRepo != nil {
 		dev, e := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
 		if e == nil && dev != nil {
-			if dev.DeviceIPv6 != "" {
-				devLookup = dev.DeviceIPv6 // 完整 /128，让 getCurrentLayoutByRoomID 三层 fallback
+			if dev.DeviceAddr != "" {
+				devLookup = dev.DeviceAddr // 完整 /128，让 getCurrentLayoutByRoomID 三层 fallback
 				// API 返给 FE：
 				//   - spatial_prefix = /128 device CIDR（save target，URL 切入点决定 scope）
 				//   - room_id        = /88 room CIDR（layout 加载 fallback 锚 + 老 FE 兼容）
-				spatialPrefix = dev.DeviceIPv6 + "/128"
-				if rc, perr := normalizeRoomPrefix88(dev.DeviceIPv6); perr == nil {
+				spatialPrefix = dev.DeviceAddr + "/128"
+				if rc, perr := normalizeRoomPrefix88(dev.DeviceAddr); perr == nil {
 					roomID = rc
 				}
 			}
@@ -641,7 +641,7 @@ func (s *RadarInstall) InitializeSubscriptionsFromLayout(ctx context.Context, te
 		Objects []struct {
 			TypeName      string `json:"typeName"`
 			BindedDeviceID string `json:"bindedDeviceId,omitempty"`
-			DeviceID      string `json:"device_id,omitempty"`
+			DeviceID      string `json:"device_addr,omitempty"`
 		} `json:"objects"`
 	}
 	

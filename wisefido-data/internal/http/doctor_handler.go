@@ -168,7 +168,7 @@ func (d *DoctorHandler) GetLatestIotTimeseries(w http.ResponseWriter, r *http.Re
 	const q = `
 		SELECT ms.ts, host(ms.device_addr) AS device_addr, ms.device_type, ms.stream_type, ms.payload, ms.trace_id
 		FROM monitor_stream ms
-		JOIN devices d ON d.device_ipv6 = ms.device_addr
+		JOIN devices d ON d.device_addr = ms.device_addr
 		WHERE d.device_uid = $1
 		ORDER BY ms.ts DESC LIMIT 1
 	`

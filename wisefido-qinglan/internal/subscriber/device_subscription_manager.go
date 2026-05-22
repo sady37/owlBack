@@ -153,12 +153,12 @@ func (m *DeviceSubscriptionManager) Start(ctx context.Context) error {
 func (m *DeviceSubscriptionManager) restoreAuthenticatedDeviceSubscriptions(ctx context.Context) {
 	m.logger.Info("restoring authenticated Radar subscriptions from db")
 
-	// v2: 已认证 Radar = dfm.device_type='Radar' AND devices.access=TRUE
-	// 注意：wisefido-qinglan 只管理 Radar 设备，Sleepace 设备由其他服务管理
+	// Phase 2 一刀切：已认证 Radar = dfm.device_type='Radar' AND devices.access=TRUE
+	// identity = device_uid (logMAC)；订阅内部用 device_addr 作为 deviceID 占位（保留字段名兼容）。
 	query := `
-		SELECT dfm.device_uid, dfm.device_id::text
+		SELECT dfm.device_uid, COALESCE(host(d.device_addr), '')
 		FROM device_factory_meta dfm
-		JOIN devices d ON d.device_id = dfm.device_id
+		JOIN devices d ON d.device_uid = dfm.device_uid
 		WHERE d.access = TRUE
 		  AND dfm.device_type = 'Radar'
 	`
@@ -1263,10 +1263,10 @@ func (m *DeviceSubscriptionManager) GetAllDeviceStatuses(tenantID string) []doma
 			status = "unsubscribed"
 		}
 		result = append(result, domain.DeviceStatusItem{
-			DeviceUID: deviceUID,
-			DeviceID:  deviceID,
-			TenantID:  subTenantID,
-			Status:    status,
+			DeviceUID:  deviceUID,
+			DeviceAddr: deviceID, // Phase 2: deviceID 内部承载 device_addr (canonical IPv6 text)
+			TenantID:   subTenantID,
+			Status:     status,
 		})
 	}
 	return result

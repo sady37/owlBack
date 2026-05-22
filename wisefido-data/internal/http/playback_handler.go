@@ -257,7 +257,7 @@ func (h *PlaybackHandler) PostVitalPlayback(w http.ResponseWriter, r *http.Reque
 
 // alarmReplayContextBody WaveMonitor 从 alarm_records 点 RePlay 时上报，供后端查询/审计（与回放数据面解耦）
 type alarmReplayContextBody struct {
-	DeviceID      string `json:"device_id"`
+	DeviceID      string `json:"device_addr"`
 	DeviceName    string `json:"device_name"`
 	AlarmTimeSec  int64  `json:"alarm_time_sec"`
 	EventID       string `json:"event_id"`

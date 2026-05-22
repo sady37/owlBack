@@ -107,8 +107,7 @@ type allocBedReq struct {
 
 type registerDeviceReq struct {
 	Base       string `json:"base"`        // bed /96 (also unit /80 / room /88 acceptable for public area device)
-	DeviceID   string `json:"device_id"`   // UUID 必须先在 device_factory_meta 已存在
-	DeviceUID  string `json:"device_uid"`  // logMAC，末 32bit 派生 /128 host part
+	DeviceUID  string `json:"device_uid"`  // logMAC，末 32bit 派生 /128 host part；必须先在 device_factory_meta 已存在（Phase 2 一刀切 PK）
 	DNSName    string `json:"dns_name"`    // optional 短名 (e.g. "john-bed")，传则同步 DDNS 注册
 	DNSZone    string `json:"dns_zone"`    // 同上必填，e.g. "tenant3.owl."
 }
@@ -939,20 +938,25 @@ func (h *SpatialHandler) fetchUnitResidents(ctx context.Context, unitPrefix stri
 // =============================================================================
 
 type roomRow struct {
-	Prefix       string             `json:"prefix"` // /88 CIDR
-	Slot         int                `json:"slot"`
-	Name         string             `json:"name"`
-	RoomType     int                `json:"room_type,omitempty"` // 0=Default, 1=Bathroom, 2=Kitchen
-	IsPrimary    bool               `json:"is_primary"`
-	Description  string             `json:"description,omitempty"`
-	CreatedAt    string             `json:"created_at"`
-	UpdatedAt    string             `json:"updated_at"`
-	UnitPrefix   string             `json:"unit_prefix"`             // derived /80
-	UnitName     string             `json:"unit_name,omitempty"`
-	BranchPrefix string             `json:"branch_prefix"`           // derived /56
-	BranchName   string             `json:"branch_name,omitempty"`
-	Beds         []roomBedItem      `json:"beds,omitempty"`
-	Residents    []roomResidentItem `json:"residents,omitempty"`     // 当前活跃绑定到该 room 或其子 bed 的 resident
+	Prefix         string             `json:"prefix"` // /88 CIDR
+	Slot           int                `json:"slot"`
+	Name           string             `json:"name"`
+	RoomType       int                `json:"room_type,omitempty"` // 0=Default, 1=Bathroom, 2=Kitchen
+	IsPrimary      bool               `json:"is_primary"`
+	Description    string             `json:"description,omitempty"`
+	CreatedAt      string             `json:"created_at"`
+	UpdatedAt      string             `json:"updated_at"`
+	UnitPrefix     string             `json:"unit_prefix"`               // derived /80
+	UnitName       string             `json:"unit_name,omitempty"`
+	BranchPrefix   string             `json:"branch_prefix"`             // derived /56
+	BranchName     string             `json:"branch_name,omitempty"`
+	BuildingPrefix string             `json:"building_prefix,omitempty"` // derived /60 (building 段；跨 floor 稳定)
+	BuildingName   string             `json:"building_name,omitempty"`   // sites.site_name
+	FloorPrefix    string             `json:"floor_prefix,omitempty"`    // derived /64 (= site_id)
+	FloorName      string             `json:"floor_name,omitempty"`      // "1F"/"2F"…
+	Floor          int                `json:"floor,omitempty"`           // sites.floor (1..14)
+	Beds           []roomBedItem      `json:"beds,omitempty"`
+	Residents      []roomResidentItem `json:"residents,omitempty"`       // 当前活跃绑定到该 room 或其子 bed 的 resident
 }
 
 type roomBedItem struct {
@@ -1041,10 +1045,15 @@ func (h *SpatialHandler) listRooms(w http.ResponseWriter, r *http.Request) {
 		       host(network(set_masklen(rm.room_id, 80)))||'/80' AS unit_prefix,
 		       COALESCE(u.unit_name, '') AS unit_name,
 		       host(network(set_masklen(rm.room_id, 56)))||'/56' AS branch_prefix,
-		       COALESCE(b.branch_name, '') AS branch_name
+		       COALESCE(b.branch_name, '') AS branch_name,
+		       host(network(set_masklen(rm.room_id, 60)))||'/60' AS building_prefix,
+		       host(network(set_masklen(rm.room_id, 64)))||'/64' AS floor_prefix,
+		       COALESCE(s.site_name, '') AS building_name,
+		       COALESCE(s.floor, 0) AS floor
 		FROM rooms rm
 		LEFT JOIN units u    ON rm.room_id << u.unit_id
 		LEFT JOIN branches b ON rm.room_id << b.branch_id
+		LEFT JOIN sites s    ON rm.room_id << s.site_id
 		WHERE rm.room_id << $1::INET
 		ORDER BY rm.room_name ASC
 	`, scope.String())
@@ -1059,10 +1068,14 @@ func (h *SpatialHandler) listRooms(w http.ResponseWriter, r *http.Request) {
 		var rm roomRow
 		if err := rows.Scan(&rm.Prefix, &rm.Slot, &rm.Name, &rm.RoomType, &rm.IsPrimary,
 			&rm.Description, &rm.CreatedAt, &rm.UpdatedAt, &rm.UnitPrefix, &rm.UnitName,
-			&rm.BranchPrefix, &rm.BranchName); err != nil {
+			&rm.BranchPrefix, &rm.BranchName,
+			&rm.BuildingPrefix, &rm.FloorPrefix, &rm.BuildingName, &rm.Floor); err != nil {
 			h.logger.Error("v2 spatial: scan room row failed", zap.Error(err))
 			writeJSON(w, http.StatusOK, Fail("scan room row failed: "+err.Error()))
 			return
+		}
+		if rm.Floor > 0 {
+			rm.FloorName = fmt.Sprintf("%dF", rm.Floor)
 		}
 		items = append(items, rm)
 	}
@@ -1119,7 +1132,8 @@ func (h *SpatialHandler) HandleRoomByPrefix(w http.ResponseWriter, r *http.Reque
 func (h *SpatialHandler) getRoom(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	var rm roomRow
 	var rt sql.NullInt32
-	var desc, unitName, branchName sql.NullString
+	var desc, unitName, branchName, buildingName sql.NullString
+	var floor sql.NullInt32
 	err := h.db.QueryRowContext(r.Context(), `
 		SELECT host(rm.room_id)||'/'||masklen(rm.room_id), rm.room_slot, rm.room_name,
 		       rm.room_type, rm.is_primary, rm.description,
@@ -1128,13 +1142,19 @@ func (h *SpatialHandler) getRoom(w http.ResponseWriter, r *http.Request, prefix 
 		       host(network(set_masklen(rm.room_id, 80)))||'/80',
 		       u.unit_name,
 		       host(network(set_masklen(rm.room_id, 56)))||'/56',
-		       b.branch_name
+		       b.branch_name,
+		       host(network(set_masklen(rm.room_id, 60)))||'/60',
+		       host(network(set_masklen(rm.room_id, 64)))||'/64',
+		       s.site_name,
+		       s.floor
 		FROM rooms rm
 		LEFT JOIN units u    ON rm.room_id << u.unit_id
 		LEFT JOIN branches b ON rm.room_id << b.branch_id
+		LEFT JOIN sites s    ON rm.room_id << s.site_id
 		WHERE rm.room_id = $1::INET
 	`, prefix.String()).Scan(&rm.Prefix, &rm.Slot, &rm.Name, &rt, &rm.IsPrimary, &desc,
-		&rm.CreatedAt, &rm.UpdatedAt, &rm.UnitPrefix, &unitName, &rm.BranchPrefix, &branchName)
+		&rm.CreatedAt, &rm.UpdatedAt, &rm.UnitPrefix, &unitName, &rm.BranchPrefix, &branchName,
+		&rm.BuildingPrefix, &rm.FloorPrefix, &buildingName, &floor)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeJSON(w, http.StatusOK, Fail("room not found: "+prefix.String()))
 		return
@@ -1148,6 +1168,11 @@ func (h *SpatialHandler) getRoom(w http.ResponseWriter, r *http.Request, prefix 
 	rm.Description = desc.String
 	rm.UnitName = unitName.String
 	rm.BranchName = branchName.String
+	rm.BuildingName = buildingName.String
+	rm.Floor = int(floor.Int32)
+	if rm.Floor > 0 {
+		rm.FloorName = fmt.Sprintf("%dF", rm.Floor)
+	}
 	if bs, err := h.fetchRoomBeds(r.Context(), rm.Prefix); err == nil {
 		rm.Beds = bs
 	}
@@ -1298,19 +1323,24 @@ func (h *SpatialHandler) fetchRoomResidents(ctx context.Context, roomPrefix stri
 // =============================================================================
 
 type bedRow struct {
-	Prefix       string            `json:"prefix"` // /96 CIDR
-	Slot         int               `json:"slot"`
-	Name         string            `json:"name"`
-	Description  string            `json:"description,omitempty"`
-	CreatedAt    string            `json:"created_at"`
-	UpdatedAt    string            `json:"updated_at"`
-	RoomPrefix   string            `json:"room_prefix"`             // derived /88
-	RoomName     string            `json:"room_name,omitempty"`
-	UnitPrefix   string            `json:"unit_prefix"`             // derived /80
-	UnitName     string            `json:"unit_name,omitempty"`
-	BranchPrefix string            `json:"branch_prefix"`           // derived /56
-	BranchName   string            `json:"branch_name,omitempty"`
-	Resident     *bedResidentItem  `json:"resident,omitempty"`      // 当前活跃绑定的 resident（resident_unit.spatial_prefix <<= bed）
+	Prefix         string            `json:"prefix"` // /96 CIDR
+	Slot           int               `json:"slot"`
+	Name           string            `json:"name"`
+	Description    string            `json:"description,omitempty"`
+	CreatedAt      string            `json:"created_at"`
+	UpdatedAt      string            `json:"updated_at"`
+	RoomPrefix     string            `json:"room_prefix"`               // derived /88
+	RoomName       string            `json:"room_name,omitempty"`
+	UnitPrefix     string            `json:"unit_prefix"`               // derived /80
+	UnitName       string            `json:"unit_name,omitempty"`
+	BranchPrefix   string            `json:"branch_prefix"`             // derived /56
+	BranchName     string            `json:"branch_name,omitempty"`
+	BuildingPrefix string            `json:"building_prefix,omitempty"` // derived /60 (building 段；跨 floor 稳定)
+	BuildingName   string            `json:"building_name,omitempty"`   // sites.site_name
+	FloorPrefix    string            `json:"floor_prefix,omitempty"`    // derived /64 (= site_id)
+	FloorName      string            `json:"floor_name,omitempty"`      // "1F"/"2F"…
+	Floor          int               `json:"floor,omitempty"`           // sites.floor (1..14)
+	Resident       *bedResidentItem  `json:"resident,omitempty"`        // 当前活跃绑定的 resident
 }
 
 type bedResidentItem struct {
@@ -1397,11 +1427,16 @@ func (h *SpatialHandler) listBeds(w http.ResponseWriter, r *http.Request) {
 		       host(network(set_masklen(bd.bed_id, 80)))||'/80' AS unit_prefix,
 		       COALESCE(u.unit_name, '') AS unit_name,
 		       host(network(set_masklen(bd.bed_id, 56)))||'/56' AS branch_prefix,
-		       COALESCE(b.branch_name, '') AS branch_name
+		       COALESCE(b.branch_name, '') AS branch_name,
+		       host(network(set_masklen(bd.bed_id, 60)))||'/60' AS building_prefix,
+		       host(network(set_masklen(bd.bed_id, 64)))||'/64' AS floor_prefix,
+		       COALESCE(s.site_name, '') AS building_name,
+		       COALESCE(s.floor, 0) AS floor
 		FROM beds bd
 		LEFT JOIN rooms    rm ON bd.bed_id << rm.room_id
 		LEFT JOIN units    u  ON bd.bed_id << u.unit_id
 		LEFT JOIN branches b  ON bd.bed_id << b.branch_id
+		LEFT JOIN sites    s  ON bd.bed_id << s.site_id
 		WHERE bd.bed_id << $1::INET
 		ORDER BY bd.bed_slot ASC
 	`, scope.String())
@@ -1416,10 +1451,14 @@ func (h *SpatialHandler) listBeds(w http.ResponseWriter, r *http.Request) {
 		var bd bedRow
 		if err := rows.Scan(&bd.Prefix, &bd.Slot, &bd.Name, &bd.Description,
 			&bd.CreatedAt, &bd.UpdatedAt, &bd.RoomPrefix, &bd.RoomName,
-			&bd.UnitPrefix, &bd.UnitName, &bd.BranchPrefix, &bd.BranchName); err != nil {
+			&bd.UnitPrefix, &bd.UnitName, &bd.BranchPrefix, &bd.BranchName,
+			&bd.BuildingPrefix, &bd.FloorPrefix, &bd.BuildingName, &bd.Floor); err != nil {
 			h.logger.Error("v2 spatial: scan bed row failed", zap.Error(err))
 			writeJSON(w, http.StatusOK, Fail("scan bed row failed: "+err.Error()))
 			return
+		}
+		if bd.Floor > 0 {
+			bd.FloorName = fmt.Sprintf("%dF", bd.Floor)
 		}
 		items = append(items, bd)
 	}
@@ -1472,7 +1511,8 @@ func (h *SpatialHandler) HandleBedByPrefix(w http.ResponseWriter, r *http.Reques
 
 func (h *SpatialHandler) getBed(w http.ResponseWriter, r *http.Request, prefix netip.Prefix) {
 	var bd bedRow
-	var desc, roomName, unitName, branchName sql.NullString
+	var desc, roomName, unitName, branchName, buildingName sql.NullString
+	var floor sql.NullInt32
 	err := h.db.QueryRowContext(r.Context(), `
 		SELECT host(bd.bed_id)||'/'||masklen(bd.bed_id), bd.bed_slot, bd.bed_name,
 		       bd.description,
@@ -1483,15 +1523,21 @@ func (h *SpatialHandler) getBed(w http.ResponseWriter, r *http.Request, prefix n
 		       host(network(set_masklen(bd.bed_id, 80)))||'/80',
 		       u.unit_name,
 		       host(network(set_masklen(bd.bed_id, 56)))||'/56',
-		       b.branch_name
+		       b.branch_name,
+		       host(network(set_masklen(bd.bed_id, 60)))||'/60',
+		       host(network(set_masklen(bd.bed_id, 64)))||'/64',
+		       s.site_name,
+		       s.floor
 		FROM beds bd
 		LEFT JOIN rooms    rm ON bd.bed_id << rm.room_id
 		LEFT JOIN units    u  ON bd.bed_id << u.unit_id
 		LEFT JOIN branches b  ON bd.bed_id << b.branch_id
+		LEFT JOIN sites    s  ON bd.bed_id << s.site_id
 		WHERE bd.bed_id = $1::INET
 	`, prefix.String()).Scan(&bd.Prefix, &bd.Slot, &bd.Name, &desc,
 		&bd.CreatedAt, &bd.UpdatedAt, &bd.RoomPrefix, &roomName,
-		&bd.UnitPrefix, &unitName, &bd.BranchPrefix, &branchName)
+		&bd.UnitPrefix, &unitName, &bd.BranchPrefix, &branchName,
+		&bd.BuildingPrefix, &bd.FloorPrefix, &buildingName, &floor)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeJSON(w, http.StatusOK, Fail("bed not found: "+prefix.String()))
 		return
@@ -1505,6 +1551,11 @@ func (h *SpatialHandler) getBed(w http.ResponseWriter, r *http.Request, prefix n
 	bd.RoomName = roomName.String
 	bd.UnitName = unitName.String
 	bd.BranchName = branchName.String
+	bd.BuildingName = buildingName.String
+	bd.Floor = int(floor.Int32)
+	if bd.Floor > 0 {
+		bd.FloorName = fmt.Sprintf("%dF", bd.Floor)
+	}
 	if res, err := h.fetchBedResident(r.Context(), bd.Prefix); err == nil {
 		bd.Resident = res
 	}
@@ -1618,11 +1669,11 @@ func (h *SpatialHandler) HandleDevices(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Fail("invalid base: "+err.Error()))
 		return
 	}
-	if body.DeviceID == "" || body.DeviceUID == "" {
-		writeJSON(w, http.StatusBadRequest, Fail("device_id and device_uid required"))
+	if body.DeviceUID == "" {
+		writeJSON(w, http.StatusBadRequest, Fail("device_uid required"))
 		return
 	}
-	addr, err := h.ipam.RegisterDevice(r.Context(), base, body.DeviceID, body.DeviceUID)
+	addr, err := h.ipam.RegisterDevice(r.Context(), base, body.DeviceUID)
 	if err != nil {
 		h.respondAllocError(w, "RegisterDevice", err)
 		return
@@ -1653,7 +1704,7 @@ func (h *SpatialHandler) HandleDevices(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.Info("v2 spatial: device registered",
 		zap.String("addr", addr.String()),
-		zap.String("device_id", body.DeviceID),
+		zap.String("device_uid", body.DeviceUID),
 		zap.String("dns_fqdn", resp.DNSFQDN))
 	writeJSON(w, http.StatusOK, Ok(resp))
 }

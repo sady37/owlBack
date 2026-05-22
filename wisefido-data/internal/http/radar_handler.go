@@ -352,7 +352,7 @@ func (h *RadarHandler) SubscribeRealtimeStream(w http.ResponseWriter, r *http.Re
 			io.WriteString(w, "event: error\ndata: {\"error\":\"Device not found\"}\n\n")
 			return
 		}
-		actualDeviceID = device.DeviceID
+		actualDeviceID = device.DeviceAddr
 	}
 
 	// 获取该设备所属的 card_id

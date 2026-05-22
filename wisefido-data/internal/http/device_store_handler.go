@@ -120,7 +120,7 @@ func (h *DeviceStoreHandler) ListDeviceStores(w http.ResponseWriter, r *http.Req
 	// 设备未绑卡也照样有 hash，admin 视角无差别可见。
 	dsMap := service.FillDeviceStatusFromCardagg(ctx, h.stateReader, deviceStoreDeviceIPv6s(items), h.logger)
 	for _, s := range items {
-		if ds := dsMap[s.DeviceIPv6]; ds != nil {
+		if ds := dsMap[s.DeviceAddr]; ds != nil {
 			s.Offline = ds.Offline
 			s.SignalPoor = ds.SignalPoor
 			s.AngleAbnormal = ds.AngleAbnormal
@@ -153,8 +153,8 @@ func (h *DeviceStoreHandler) ListDeviceStores(w http.ResponseWriter, r *http.Req
 func deviceStoreDeviceIPv6s(stores []*domain.DeviceStore) []string {
 	ids := make([]string, 0, len(stores))
 	for _, s := range stores {
-		if s.DeviceIPv6 != "" {
-			ids = append(ids, s.DeviceIPv6)
+		if s.DeviceAddr != "" {
+			ids = append(ids, s.DeviceAddr)
 		}
 	}
 	return ids
@@ -247,7 +247,7 @@ func (h *DeviceStoreHandler) ExportDeviceStores(w http.ResponseWriter, r *http.R
 	}
 	dsMap := service.FillDeviceStatusFromCardagg(ctx, h.stateReader, deviceStoreDeviceIPv6s(items), h.logger)
 	for _, s := range items {
-		if ds := dsMap[s.DeviceIPv6]; ds != nil {
+		if ds := dsMap[s.DeviceAddr]; ds != nil {
 			s.Offline = ds.Offline
 			s.SignalPoor = ds.SignalPoor
 			s.AngleAbnormal = ds.AngleAbnormal
@@ -404,7 +404,7 @@ func (h *DeviceStoreHandler) BindSleepadOne(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var body struct {
-		DeviceID string `json:"device_id"`
+		DeviceID string `json:"device_addr"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceID == "" {
 		writeJSON(w, http.StatusOK, Fail("device_id required"))
@@ -424,7 +424,7 @@ func (h *DeviceStoreHandler) UnbindSleepadOne(w http.ResponseWriter, r *http.Req
 		return
 	}
 	var body struct {
-		DeviceID string `json:"device_id"`
+		DeviceID string `json:"device_addr"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceID == "" {
 		writeJSON(w, http.StatusOK, Fail("device_id required"))

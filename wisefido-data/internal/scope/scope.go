@@ -262,9 +262,10 @@ func (sc *ScopeContext) VerifyCard(ctx context.Context, db *sql.DB, cardID strin
 	return nil
 }
 
-// VerifyDevice — 校验 user 能查看该 deviceID
-func (sc *ScopeContext) VerifyDevice(ctx context.Context, db *sql.DB, deviceID string) error {
-	if sc == nil || db == nil || strings.TrimSpace(deviceID) == "" {
+// VerifyDevice — 校验 user 能查看该 deviceAddr (INET /128 canonical text)
+// Phase 2 一刀切：业务键改为 device_addr，原 device_id UUID 退役。
+func (sc *ScopeContext) VerifyDevice(ctx context.Context, db *sql.DB, deviceAddr string) error {
+	if sc == nil || db == nil || strings.TrimSpace(deviceAddr) == "" {
 		return nil
 	}
 	if sc.IsTenantWide() {
@@ -279,9 +280,9 @@ func (sc *ScopeContext) VerifyDevice(ctx context.Context, db *sql.DB, deviceID s
 			  JOIN resident_unit ru
 			    ON ru.resident_id = rc.resident_id
 			   AND ru.valid_to IS NULL
-			 WHERE d.device_id = $2::UUID
-			   AND d.device_ipv6 <<= ru.spatial_prefix
-			)`, sc.UserID, deviceID).Scan(&ok)
+			 WHERE d.device_addr = $2::INET
+			   AND d.device_addr <<= ru.spatial_prefix
+			)`, sc.UserID, deviceAddr).Scan(&ok)
 		if err != nil {
 			return fmt.Errorf("verify device family link: %w", err)
 		}
@@ -297,9 +298,9 @@ func (sc *ScopeContext) VerifyDevice(ctx context.Context, db *sql.DB, deviceID s
 	err := db.QueryRowContext(ctx, `
 		SELECT EXISTS (
 		  SELECT 1 FROM devices d
-		 WHERE d.device_id = $1::UUID
-		   AND d.device_ipv6 <<= $2::INET
-		)`, deviceID, sc.CurrentBranchID).Scan(&ok)
+		 WHERE d.device_addr = $1::INET
+		   AND d.device_addr <<= $2::INET
+		)`, deviceAddr, sc.CurrentBranchID).Scan(&ok)
 	if err != nil {
 		return fmt.Errorf("verify device branch: %w", err)
 	}

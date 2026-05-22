@@ -43,7 +43,11 @@ func effectiveCardIDFromBaseline(b card.DeviceBaseline) string {
 	if c := strings.TrimSpace(b.CardID); c != "" {
 		return c
 	}
-	return strings.TrimSpace(b.DeviceID)
+	// Phase 2 一刀切：device_id UUID 退役；fallback 用 DeviceAddr canonical text
+	if b.DeviceAddr.IsValid() {
+		return b.DeviceAddr.String()
+	}
+	return ""
 }
 
 // storeBaseline 须在持锁下调用；写入 room/bed 已合并后的快照。

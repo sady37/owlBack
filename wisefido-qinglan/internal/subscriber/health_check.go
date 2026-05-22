@@ -119,9 +119,9 @@ func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, devic
 			return
 		}
 		tid = strings.TrimSpace(ds.TenantID)
-		did = strings.TrimSpace(ds.DeviceID)
+		did = ds.DeviceAddrText() // Phase 2: did 承载 device_addr canonical IPv6 text
 		if tid == "" || did == "" {
-			m.logger.Warn("health check skip stream publish: device_store missing tenant_id or device_id",
+			m.logger.Warn("health check skip stream publish: device_store missing tenant_id or device_addr",
 				zap.String("device_uid", deviceUID))
 			return
 		}
@@ -362,7 +362,7 @@ func (m *DeviceSubscriptionManager) resolveTenantDevice(ctx context.Context, dev
 		return "", "", false
 	}
 	tid := strings.TrimSpace(ds.TenantID)
-	did := strings.TrimSpace(ds.DeviceID)
+	did := ds.DeviceAddrText() // Phase 2: did 承载 device_addr canonical IPv6 text
 	if tid == "" || did == "" {
 		return "", "", false
 	}

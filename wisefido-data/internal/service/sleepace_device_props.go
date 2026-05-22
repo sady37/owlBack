@@ -199,16 +199,18 @@ func UpdateSleepaceSettingsToHardware(ctx context.Context, gateway *SleepaceGate
 		return fmt.Errorf("device has no device_code")
 	}
 	deviceCode := device.DeviceCode.String
-	hardwareSettings := ConvertFlatSettingsToSleepaceFormat(deviceCode, device.DeviceID, settings)
+	// TODO Phase 2.1: sleepace SDK userId format verify — Phase 2 一刀切后 userId=device_uid (logMAC)，原值 dfm.device_id UUID 已退役。
+	hardwareSettings := ConvertFlatSettingsToSleepaceFormat(deviceCode, device.DeviceUID, settings)
 	return gateway.UpdateAlarmConfig(ctx, hardwareSettings)
 }
 
 // ConvertFlatSettingsToSleepaceFormat converts flat snake_case settings to sleepad hardware API format.
-// userId = wisefido devices.device_id (UUID)，deviceId = device_store.device_code。
-func ConvertFlatSettingsToSleepaceFormat(deviceCode, deviceID string, settings map[string]interface{}) map[string]interface{} {
+// userId = wisefido device_uid (logMAC)，deviceId = device_store.device_code。
+// TODO Phase 2.1: sleepace SDK userId format verify — 从 UUID 切到 VARCHAR(50)。
+func ConvertFlatSettingsToSleepaceFormat(deviceCode, deviceUID string, settings map[string]interface{}) map[string]interface{} {
 	hardwareSettings := make(map[string]interface{})
 
-	hardwareSettings["userId"] = deviceID
+	hardwareSettings["userId"] = deviceUID
 	hardwareSettings["deviceId"] = deviceCode
 
 	// 离床时间配置

@@ -135,24 +135,24 @@ func (s *TrackPlaybackService) RadarTrackPlayback(ctx context.Context, tenantID,
 		s.log.Warn("RadarTrackPlayback device lookup failed", zap.String("tenant_id", tenantID), zap.String("device_id", deviceID), zap.Error(err))
 		return nil, fmt.Errorf("device not found or access denied")
 	}
-	if dev.DeviceIPv6 == "" {
-		s.log.Warn("RadarTrackPlayback device_ipv6 empty", zap.String("device_id", deviceID))
-		return nil, fmt.Errorf("device_ipv6 missing")
+	if dev.DeviceAddr == "" {
+		s.log.Warn("RadarTrackPlayback device_addr empty", zap.String("device_id", deviceID))
+		return nil, fmt.Errorf("device_addr missing")
 	}
 
 	s.log.Info("RadarTrackPlayback querying monitor_stream",
 		zap.String("tenant_id", tenantID),
 		zap.String("device_id", deviceID),
-		zap.String("device_addr", dev.DeviceIPv6),
+		zap.String("device_addr", dev.DeviceAddr),
 		zap.Time("filter_start", start),
 		zap.Time("filter_end", end),
 	)
 
-	rows, err := s.iot.GetMonitorRowsByAddr(ctx, dev.DeviceIPv6, start, end, playbackRawMaxRows)
+	rows, err := s.iot.GetMonitorRowsByAddr(ctx, dev.DeviceAddr, start, end, playbackRawMaxRows)
 	if err != nil {
 		s.log.Warn("RadarTrackPlayback monitor_stream error",
 			zap.Error(err),
-			zap.String("device_addr", dev.DeviceIPv6),
+			zap.String("device_addr", dev.DeviceAddr),
 			zap.Time("start", start),
 			zap.Time("end", end),
 		)
@@ -160,7 +160,7 @@ func (s *TrackPlaybackService) RadarTrackPlayback(ctx context.Context, tenantID,
 	}
 	s.log.Info("RadarTrackPlayback monitor_stream ok",
 		zap.Int("row_count", len(rows)),
-		zap.String("device_addr", dev.DeviceIPv6),
+		zap.String("device_addr", dev.DeviceAddr),
 	)
 
 	pages := chunkPlaybackPages(rows, playbackPageSize)
@@ -209,18 +209,18 @@ func (s *TrackPlaybackService) RadarVitalPlayback(ctx context.Context, tenantID,
 		s.log.Warn("RadarVitalPlayback device lookup failed", zap.String("tenant_id", tenantID), zap.String("device_id", deviceID), zap.Error(err))
 		return nil, fmt.Errorf("device not found or access denied")
 	}
-	if dev.DeviceIPv6 == "" {
+	if dev.DeviceAddr == "" {
 		return nil, fmt.Errorf("device_ipv6 missing")
 	}
 
-	rows, err := s.iot.GetMonitorRowsByAddr(ctx, dev.DeviceIPv6, start, end, playbackRawMaxRows)
+	rows, err := s.iot.GetMonitorRowsByAddr(ctx, dev.DeviceAddr, start, end, playbackRawMaxRows)
 	if err != nil {
 		return nil, fmt.Errorf("query monitor_stream failed")
 	}
 
 	points := extractVitalPoints(rows)
 	s.log.Info("RadarVitalPlayback ok",
-		zap.String("device_addr", dev.DeviceIPv6),
+		zap.String("device_addr", dev.DeviceAddr),
 		zap.Int("rows_scanned", len(rows)),
 		zap.Int("points_extracted", len(points)),
 	)

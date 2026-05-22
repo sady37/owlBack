@@ -5,7 +5,7 @@ package models
 // 注意：现在直接从设备 streams 读取，不再使用 iot:data:stream
 type IoTDataMessage struct {
 	IoTTimeSeriesID int64   `json:"iot_timeseries_id"`
-	DeviceID        string  `json:"device_id"`
+	DeviceID        string  `json:"device_addr"`
 	TenantID        string  `json:"tenant_id"`
 	DeviceType      string  `json:"device_type"` // "Radar" 或 "Sleepace"（从设备表查询）
 	Timestamp       int64   `json:"timestamp"`

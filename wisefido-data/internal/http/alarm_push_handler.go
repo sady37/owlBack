@@ -54,7 +54,7 @@ func (h *AlarmPushHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TenantID   string `json:"tenant_id"`
 		CardID     string `json:"card_id"`
-		DeviceID   string `json:"device_id"`
+		DeviceID   string `json:"device_addr"`
 		EventID    string `json:"event_id"`
 		EventType  string `json:"event_type"`
 		AlarmLevel string `json:"alarm_level"`

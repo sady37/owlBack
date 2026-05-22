@@ -6,21 +6,21 @@ import (
 	"sync"
 )
 
-// Device 设备领域模型。v2 schema：devices (device_ipv6 PK, device_id UUID FK, access, monitoring_enabled)。
-// 其余字段由 JOIN device_factory_meta 取，或由 device_ipv6 prefix 派生。
+// Device 设备领域模型（Phase 2 一刀切后）：
+//   - devices PK = device_addr INET /128
+//   - 硬件 identity = device_uid VARCHAR(50)（dfm PK；FK devices.device_uid）
 type Device struct {
-	DeviceID  string `db:"device_id"`  // UUID, dfm.device_id
-	DeviceUID string `db:"device_uid"` // VARCHAR(50), dfm.device_uid (logMAC)
+	DeviceUID string `db:"device_uid"` // VARCHAR(50)，dfm.device_uid (logMAC)，硬件 identity 不变量
 
-	DeviceIPv6 string `db:"device_ipv6"` // INET /128, devices.device_ipv6 (text repr)
-	TenantID   string `db:"-"`           // 派生：host(network(set_masklen(device_ipv6, 48)))
+	DeviceAddr string `db:"device_addr"` // INET /128, devices.device_addr (text repr)
+	TenantID   string `db:"-"`           // 派生：host(network(set_masklen(device_addr, 48)))
 
 	DeviceName string `db:"-"` // 派生：COALESCE(dfm.device_code, dfm.device_uid)
 
 	BoundRoomID sql.NullString `db:"-"` // /88 prefix 派生 host(...)::text；mask <88 时 NULL
 	BoundBedID  sql.NullString `db:"-"` // /96 prefix 派生 host(...)::text；mask <96 时 NULL
 
-	Status            string `db:"-"` // online/offline；Redis device:status:{ipv6} 读
+	Status            string `db:"-"` // online/offline；Redis device:status:{addr} 读
 	Access            bool   `db:"access"`
 	MonitoringEnabled bool   `db:"monitoring_enabled"`
 
@@ -34,32 +34,27 @@ type Device struct {
 	Metadata sql.NullString `db:"-"` // 非持久化扩展槽
 }
 
-// DeviceStatusItem 设备在线状态项（用于批量查询 API）
-// device_id 与 device_uid 均保留，前端可能持其一查询，结构保持一致
+// DeviceStatusItem 设备在线状态项（用于批量查询 API）。
+// Phase 2 一刀切：DeviceAddr (INET /128) 是业务侧寻址；DeviceUID 是硬件 identity。
 type DeviceStatusItem struct {
-	DeviceUID string `json:"device_uid"`
-	DeviceID  string `json:"device_id"`
-	TenantID  string `json:"tenant_id"`
-	Status    string `json:"status"` // "online", "offline", "unsubscribed"
+	DeviceUID  string `json:"device_uid"`
+	DeviceAddr string `json:"device_addr,omitempty"`
+	TenantID   string `json:"tenant_id"`
+	Status     string `json:"status"` // "online", "offline", "unsubscribed"
 }
-
-
 
 var (
 	// DeviceCache 设备缓存（key: uid, value: *DeviceWithLocation）
-	// 在 Auth 时填充，供 MQTT Consumer 使用，避免重复查询数据库
 	DeviceCache = &sync.Map{}
 
 	// AllowAccessCache 设备认证状态缓存（key: uid, value: bool）
-	// true = 设备已认证允许访问，false = 设备未认证或认证失败
-	// 由 auth_service 维护，mqtt_consumer 仅查询此缓存以决定是否处理消息
 	AllowAccessCache = &sync.Map{}
 )
 
 // ToJSON 转换为JSON格式（用于HTTP响应）
 func (d *Device) ToJSON() map[string]any {
 	m := map[string]any{
-		"device_id":          d.DeviceID,
+		"device_addr":        d.DeviceAddr,
 		"device_uid":         d.DeviceUID,
 		"tenant_id":          d.TenantID,
 		"device_name":        d.DeviceName,

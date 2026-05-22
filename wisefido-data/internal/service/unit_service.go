@@ -646,14 +646,14 @@ type UnitWithFullHierarchy struct {
 type RoomWithBedsAndDevices struct {
 	*domain.Room                   // Room 基本信息
 	Beds         []*BedWithDevices `json:"beds"`
-	DeviceIDs    []string          `json:"device_ids"`   // 绑定到 room 的 device IDs（用于前端选中并向后端传递）
+	DeviceIDs    []string          `json:"device_addrs"`   // 绑定到 room 的 device IDs（用于前端选中并向后端传递）
 	DeviceNames  []string          `json:"device_names"` // 绑定到 room 的 device names（用于前端显示）
 }
 
 // BedWithDevices 床位及其设备
 type BedWithDevices struct {
 	*domain.Bed          // Bed 基本信息
-	DeviceIDs   []string `json:"device_ids"`   // 绑定到 bed 的 device IDs（用于前端选中并向后端传递）
+	DeviceIDs   []string `json:"device_addrs"`   // 绑定到 bed 的 device IDs（用于前端选中并向后端传递）
 	DeviceNames []string `json:"device_names"` // 绑定到 bed 的 device names（用于前端显示）
 }
 
@@ -2674,7 +2674,7 @@ func (s *unitService) DeleteRoom(ctx context.Context, req DeleteRoomRequest) (*D
 			} else if device.DeviceUID != "" {
 				deviceNames = append(deviceNames, device.DeviceUID)
 			} else {
-				deviceNames = append(deviceNames, device.DeviceID)
+				deviceNames = append(deviceNames, device.DeviceAddr)
 			}
 		}
 		errorDetails = append(errorDetails, fmt.Sprintf("devices: %s", strings.Join(deviceNames, ", ")))
@@ -3103,7 +3103,7 @@ func (s *unitService) DeleteBed(ctx context.Context, req DeleteBedRequest) (*Del
 			} else if device.DeviceUID != "" {
 				deviceNames = append(deviceNames, device.DeviceUID)
 			} else {
-				deviceNames = append(deviceNames, device.DeviceID)
+				deviceNames = append(deviceNames, device.DeviceAddr)
 			}
 		}
 		errorDetails = append(errorDetails, fmt.Sprintf("devices: %s", strings.Join(deviceNames, ", ")))

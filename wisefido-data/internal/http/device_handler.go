@@ -132,14 +132,14 @@ func (h *DeviceHandler) ResetDevicePrefix(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// 4. UPDATE devices 用 reset_device_prefix() 派生新 addr
+	// 4. UPDATE devices 用 reset_device_prefix() 派生新 addr（Phase 2: device_ipv6 已 rename device_addr）
 	var newAddr string
 	err = h.db.QueryRowContext(r.Context(), `
 		UPDATE devices
-		   SET device_ipv6 = reset_device_prefix(device_ipv6, $2::INET, $3::SMALLINT, $4),
+		   SET device_addr = reset_device_prefix(device_addr, $2::INET, $3::SMALLINT, $4),
 		       updated_at = NOW()
-		 WHERE device_ipv6 = $1::INET
-		RETURNING host(device_ipv6) || '/128'`,
+		 WHERE device_addr = $1::INET
+		RETURNING host(device_addr) || '/128'`,
 		spatialAddr, sessionPrefix, scopeLen, layer).Scan(&newAddr)
 	if err == sql.ErrNoRows {
 		writeJSON(w, http.StatusOK, Fail("device not found: "+spatialAddr))
@@ -475,13 +475,12 @@ func (h *DeviceHandler) ApproveOTA(w http.ResponseWriter, r *http.Request) {
 	} else {
 		newPrefix = "system"
 	}
+	// Phase 2 一刀切：deviceID 入参承载 device_addr (INET text)
 	_, err := h.db.ExecContext(r.Context(), `
 		UPDATE device_ota o
 		   SET approve_way = $1 || '_' || SPLIT_PART(o.approve_way, '_', 2),
 		       updated_at = NOW()
-		  FROM devices d
-		 WHERE o.device_ipv6 = d.device_ipv6
-		   AND d.device_id = $2::uuid
+		 WHERE o.device_addr = $2::INET
 		   AND o.approve_way IS NOT NULL
 	`, newPrefix, deviceID)
 	if err != nil {
@@ -515,13 +514,12 @@ func (h *DeviceHandler) SetOTASchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// v2: 仅当 approve_way LIKE 'tenant_%' 时允许租户改 schedule。
+	// Phase 2: 仅当 approve_way LIKE 'tenant_%' 时允许租户改 schedule。deviceID 入参承载 device_addr。
 	var approveWay sql.NullString
 	h.db.QueryRowContext(r.Context(), `
 		SELECT o.approve_way
 		  FROM device_ota o
-		  JOIN devices d ON d.device_ipv6 = o.device_ipv6
-		 WHERE d.device_id = $1::uuid
+		 WHERE o.device_addr = $1::INET
 	`, deviceID).Scan(&approveWay)
 	if !approveWay.Valid || !strings.HasPrefix(approveWay.String, "tenant_") {
 		writeJSON(w, http.StatusOK, Fail("schedule can only be modified when OTA way is tenant"))
@@ -535,9 +533,7 @@ func (h *DeviceHandler) SetOTASchedule(w http.ResponseWriter, r *http.Request) {
 	_, err := h.db.ExecContext(r.Context(), `
 		UPDATE device_ota o
 		   SET schedule = $1, updated_at = NOW()
-		  FROM devices d
-		 WHERE o.device_ipv6 = d.device_ipv6
-		   AND d.device_id = $2::uuid
+		 WHERE o.device_addr = $2::INET
 	`, schedTime, deviceID)
 	if err != nil {
 		h.logger.Error("SetOTASchedule failed", zap.String("device_id", deviceID), zap.Error(err))

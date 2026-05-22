@@ -129,15 +129,15 @@ func buildExpected(ctx context.Context, tx *sql.Tx, scope string) (map[string]bo
 func queryUnitAnchors(ctx context.Context, tx *sql.Tx, scope string) (map[string]*unitInfo, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT DISTINCT
-		  (SELECT u.unit_id::text FROM units u WHERE d.device_ipv6 <<= u.unit_id LIMIT 1) AS unit_prefix,
+		  (SELECT u.unit_id::text FROM units u WHERE d.device_addr <<= u.unit_id LIMIT 1) AS unit_prefix,
 		  COALESCE(
-		    (SELECT b.bed_id::text  FROM beds  b  WHERE d.device_ipv6 <<= b.bed_id  LIMIT 1),
-		    (SELECT rm.room_id::text FROM rooms rm WHERE d.device_ipv6 <<= rm.room_id LIMIT 1),
-		    (SELECT u.unit_id::text FROM units u  WHERE d.device_ipv6 <<= u.unit_id  LIMIT 1)
+		    (SELECT b.bed_id::text  FROM beds  b  WHERE d.device_addr <<= b.bed_id  LIMIT 1),
+		    (SELECT rm.room_id::text FROM rooms rm WHERE d.device_addr <<= rm.room_id LIMIT 1),
+		    (SELECT u.unit_id::text FROM units u  WHERE d.device_addr <<= u.unit_id  LIMIT 1)
 		  ) AS anchor_prefix
 		  FROM devices d
 		 WHERE d.monitoring_enabled = TRUE
-		   AND d.device_ipv6 <<= $1::INET
+		   AND d.device_addr <<= $1::INET
 	`, scope)
 	if err != nil {
 		return nil, fmt.Errorf("query device anchors: %w", err)
@@ -346,7 +346,7 @@ func (s *CardSyncService) applyDiffs(ctx context.Context, tx *sql.Tx, expected m
 	}
 	for unit := range scopeForClear {
 		_, _ = tx.ExecContext(ctx, `UPDATE rooms SET card_id = NULL WHERE room_id <<= $1::INET`, unit)
-		_, _ = tx.ExecContext(ctx, `UPDATE devices SET card_id = NULL WHERE device_ipv6 <<= $1::INET`, unit)
+		_, _ = tx.ExecContext(ctx, `UPDATE devices SET card_id = NULL WHERE device_addr <<= $1::INET`, unit)
 	}
 	// 按 mask 从细到粗填，最具体优先（已 sort）
 	for _, a := range assigns {
@@ -354,7 +354,7 @@ func (s *CardSyncService) applyDiffs(ctx context.Context, tx *sql.Tx, expected m
 			`UPDATE rooms SET card_id = $1::INET WHERE room_id <<= $2::INET AND card_id IS NULL`,
 			a.anchor, a.anchor)
 		_, _ = tx.ExecContext(ctx,
-			`UPDATE devices SET card_id = $1::INET WHERE device_ipv6 <<= $2::INET AND card_id IS NULL`,
+			`UPDATE devices SET card_id = $1::INET WHERE device_addr <<= $2::INET AND card_id IS NULL`,
 			a.anchor, a.anchor)
 	}
 

@@ -26,19 +26,16 @@ type BranchIdentifier struct {
 	BranchName string `json:"branch_name"`
 }
 
-type DeviceIdentifier struct {
-	DeviceID   string `json:"device_id"`
-	DeviceName string `json:"device_name,omitempty"`
-}
-
 // ========== 静态数据结构体 ==========
 
 // ActiveBedRow 活跃床位信息（用于卡片创建）
 type ActiveBedRow struct {
 	BedID      string  `json:"bed_id"`
 	BedName    string  `json:"bed_name"`
+	RoomID     string  `json:"room_id,omitempty"`
 	RoomName   string  `json:"room_name"`
 	ResidentID *string `json:"resident_id,omitempty"`
+	Nickname   *string `json:"nickname,omitempty"`
 }
 
 // ShortCodeOf — 6 位 base36 短码：SHA256(spatial_prefix) → mod 36^6 → 0-padded
@@ -97,8 +94,11 @@ type UnitInfo struct {
 	UnitProperty int    `json:"unit_property,omitempty"` // 0=Home (B2C) 1=Facility (B2B)
 	BranchID     string `json:"branch_id,omitempty"`     // INET CIDR /56
 	BranchName   string `json:"branch_name,omitempty"`
-	BuildingID   string `json:"building_id,omitempty"`   // INET CIDR /64 (site)
+	BuildingID   string `json:"building_id,omitempty"`   // INET CIDR /60 (building 段；跨 floor 稳定)
 	BuildingName string `json:"building_name,omitempty"`
+	FloorID      string `json:"floor_id,omitempty"`      // INET CIDR /64 (= site_id；per-floor 唯一)
+	FloorName    string `json:"floor_name,omitempty"`    // "1F"/"2F"…
+	Floor        int    `json:"floor,omitempty"`         // sites.floor (1..14)
 	Timezone     string `json:"timezone,omitempty"`      // IANA
 	IsPublic     bool   `json:"is_public,omitempty"`     // = (UnitType == UnitTypePublic)
 	IsSharedUnit bool   `json:"is_shared_unit,omitempty"`// = (UnitType == UnitTypeShare)
@@ -119,19 +119,18 @@ type BedInfo struct {
 	BedName string `json:"bed_name,omitempty"`
 }
 
-// DeviceInfo device information（2026-05-20 重设计：扁平化）。
+// DeviceInfo device information（Phase 2 一刀切后）。
 //
-// 双 ID（[[feedback_api_ids_ipv6_only]]）：
-//   - DeviceID  = UUID，仅作 owlcare 外部对接（sleepace SDK、第三方）
-//   - DeviceIPv6 = INET host 文本，owlcare 内部 lookup 用
+// 命名收口：
+//   - DeviceAddr = INET /128 canonical text，业务侧寻址 (devices.device_addr，spatial 可重分配)
+//   - DeviceUID  = logMAC，硬件 identity 不变量 (HIPAA 不向前端暴露)
 //
 // 删除字段（IPv6 prefix containment 自然派生，不需要存）：
-//   - BoundBedID / BoundRoomID：FE 用 device_ipv6 跟 RoomInfo.RoomID/BedInfo.BedID 做 prefix.Contains() 判
-//   - UnitID：同上，从 device_ipv6 /80 mask 派生
+//   - BoundBedID / BoundRoomID：FE 用 device_addr 跟 RoomInfo.RoomID/BedInfo.BedID 做 prefix.Contains() 判
+//   - UnitID：同上，从 device_addr /80 mask 派生
 type DeviceInfo struct {
-	DeviceID          string `json:"device_id"`             // UUID
-	DeviceIPv6        string `json:"device_ipv6,omitempty"` // INET host 文本
-	DeviceUID         string `json:"-"`                     // HIPAA 不向前端暴露
+	DeviceAddr        string `json:"device_addr"` // INET /128 canonical text，业务侧主键
+	DeviceUID         string `json:"-"`           // logMAC，HIPAA 不向前端暴露
 	DeviceCode        string `json:"device_code"`
 	DeviceName        string `json:"device_name"`
 	DeviceType        string `json:"device_type"` // "Radar" / "Sleepad"
@@ -159,6 +158,7 @@ type ResidentInfo struct {
 	ServiceLevel     string            `json:"service_level,omitempty"`
 	ServiceLevelInfo *ServiceLevelInfo `json:"service_level_info,omitempty"`
 	BedID            *string           `json:"bed_id,omitempty"`
+	BedName          *string           `json:"bed_name,omitempty"`
 }
 
 // CardStatic 卡片静态视图（v2.5）。
@@ -222,11 +222,11 @@ type CardRealTime struct {
 
 // ========== Card Status (card:state / card:status:stream) ==========
 
-// DeviceStatus 单个设备运行时真相（独立 Hash device:status:{ipv6}）。
+// DeviceStatus 单个设备运行时真相（独立 Hash device:status:{addr}）。
 // 仅 backend 内部使用——data 层把字段重 pack 给 FE，不直接 JSON marshal 本 struct。
 type DeviceStatus struct {
 	DeviceUID  string `json:"-"`
-	DeviceIPv6 string `json:"device_ipv6"`
+	DeviceAddr string `json:"device_addr"`
 	DeviceType string `json:"device_type"`
 
 	UpdatedAt  int64 `json:"updated_at,omitempty"`
@@ -457,7 +457,7 @@ type TargetState struct {
 //	│ Critical (Emerg/     │ {active, acked, auto_resolved}                              │
 //	│  Alert/Crit, lvl0-2) │ — 必须人工 ack 才离开 Pending+AlarmBell；                    │
 //	│                      │   auto_resolved 不离开（等待人工 handle）；                   │
-//	│                      │   终态 = acked_auto_resolved → 不计入                        │
+//	│                      │   终态 = resolved → 不计入                                  │
 //	├──────────────────────┼─────────────────────────────────────────────────────────────┤
 //	│ Error (lvl 3)        │ {active} 仅                                                  │
 //	│ Warning (lvl 4)      │ {active} 仅                                                  │
@@ -474,7 +474,7 @@ type TargetState struct {
 // UI 渲染三件套（owlFront Overview.vue 消费）：
 //   - PopAlarm bar：仅当 PopAlarm != "" 显示（active 才上 bar）
 //   - AlarmBell 着色：由 Active* counter 任一 > 0 触发（Critical auto_resolved 保持 Bell 红）
-//   - Pending 列表：详情页查询，覆盖 active + acked + auto_resolved（未到 acked_auto_resolved 终态）
+//   - Pending 列表：详情页查询，覆盖 active + acked + auto_resolved（未到 resolved 终态）
 type AlarmState struct {
 	UpdatedAt   int64 `json:"updated_at,omitempty"`
 	TriggeredAt int64 `json:"triggered_at,omitempty"`
