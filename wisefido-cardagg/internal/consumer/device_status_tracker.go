@@ -249,16 +249,25 @@ func (t *DeviceStatusTracker) Run(ctx context.Context) {
 	}
 }
 
+// DeadAfter offline 超过此长度 → 内存 + Redis 双清。
+// 防止：device 解绑/重绑后 OLD addr 残留 + 早删导致短暂网络抖动误清。
+const DeadAfter = 1 * time.Hour
+
 func (t *DeviceStatusTracker) scanStale(ctx context.Context) {
 	nowMs := time.Now().UnixMilli()
 	type devEntry struct {
 		addr       string
 		deviceType string
 	}
-	var stale, healthy []devEntry
+	var stale, healthy, dead []devEntry
+	deadThreshold := nowMs - DeadAfter.Milliseconds()
 	t.mu.Lock()
 	for addr, dl := range t.state {
 		if !dl.online {
+			// offline 且 lastSeen 超 DeadAfter → 标记清死
+			if dl.lastSeenMs < deadThreshold {
+				dead = append(dead, devEntry{addr, dl.deviceType})
+			}
 			continue
 		}
 		threshold := nowMs - staleThresholdForDeviceType(dl.deviceType).Milliseconds()
@@ -268,6 +277,10 @@ func (t *DeviceStatusTracker) scanStale(ctx context.Context) {
 		} else {
 			healthy = append(healthy, devEntry{addr, dl.deviceType})
 		}
+	}
+	// 内存清死（持锁内一次完成）
+	for _, d := range dead {
+		delete(t.state, d.addr)
 	}
 	t.mu.Unlock()
 	for _, s := range stale {
@@ -288,5 +301,16 @@ func (t *DeviceStatusTracker) scanStale(ctx context.Context) {
 		if err := t.writer.SetDeviceOnline(ctx, h.addr, h.addr, h.deviceType, true); err != nil {
 			t.logger.Warn("watchdog self-heal online", zap.String("addr", h.addr), zap.Error(err))
 		}
+	}
+	// 清死：device 解绑/重绑后残留的 OLD addr，1h 不再有消息即 DEL Redis key + 删内存
+	for _, d := range dead {
+		if err := t.writer.DeleteDeviceStatus(ctx, d.addr); err != nil {
+			t.logger.Warn("watchdog cleanup dead", zap.String("addr", d.addr), zap.Error(err))
+			continue
+		}
+		t.logger.Info("watchdog cleaned dead device",
+			zap.String("addr", d.addr),
+			zap.String("device_type", d.deviceType),
+		)
 	}
 }
