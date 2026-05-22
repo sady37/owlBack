@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"wisefido-data/internal/domain"
@@ -12,51 +13,64 @@ import (
 	"go.uber.org/zap"
 )
 
-var errRoundBadRequest = errors.New("tenant_id and executor_id are required")
+var errRoundBadRequest = errors.New("user_id is required")
 
-// RoundsService 巡房记录服务（Automatic Rounds 完成时落库、审计列表与导出）
+// RoundsService 巡房记录服务
 type RoundsService struct {
 	repo   repository.RoundsRepository
 	logger *zap.Logger
 }
 
-// NewRoundsService 创建巡房记录服务
 func NewRoundsService(repo repository.RoundsRepository, logger *zap.Logger) *RoundsService {
 	return &RoundsService{repo: repo, logger: logger}
 }
 
 // CreateRoundRequest 创建一轮请求（Overview Complete Rounds 调用）
+//
+// ReportSnapshot 是 FE 构造的不透明 JSONB blob（schema_version / stats / rows / shift_start /
+// completed_at / tenant_tz 等），BE 不解析直接持久化。items_checked 单独拍进 blob 顶层。
 type CreateRoundRequest struct {
-	StartedAt    *time.Time           `json:"started_at"`    // 可选，本轮开始时间
-	ItemsChecked []domain.RoundItemChecked `json:"items_checked"` // 勾选项快照
+	StartedAt      *time.Time                `json:"started_at"`
+	Notes          string                    `json:"notes"`
+	ItemsChecked   []domain.RoundItemChecked `json:"items_checked"`
+	ReportSnapshot json.RawMessage           `json:"report_snapshot,omitempty"`
 }
 
-// CreateRound 创建一轮巡房记录（round_type=manual）
-func (s *RoundsService) CreateRound(ctx context.Context, tenantID, executorID string, req *CreateRoundRequest) (string, error) {
-	if tenantID == "" || executorID == "" {
+// CreateRound 创建一轮巡房记录（round_type=manual，status=completed）
+// items_checked merge 进 report_snapshot blob 落 rounds_report_snapshot.snapshot 单列。
+func (s *RoundsService) CreateRound(ctx context.Context, userID string, req *CreateRoundRequest) (string, error) {
+	if userID == "" {
 		return "", errRoundBadRequest
 	}
+	now := time.Now()
 	round := &domain.Round{
-		TenantID:   tenantID,
-		RoundType:  "manual",
-		ExecutorID: executorID,
-		RoundTime:  time.Now(),
-		Status:     "completed",
+		RoundType: "manual",
+		Status:    "completed",
+		EndedAt:   &now,
 	}
 	if req != nil {
 		round.StartedAt = req.StartedAt
+		round.Notes = req.Notes
+		snap := map[string]any{}
+		if len(req.ReportSnapshot) > 0 {
+			if err := json.Unmarshal(req.ReportSnapshot, &snap); err != nil {
+				return "", fmt.Errorf("invalid report_snapshot: %w", err)
+			}
+		}
 		if len(req.ItemsChecked) > 0 {
-			data, err := json.Marshal(req.ItemsChecked)
+			snap["items_checked"] = req.ItemsChecked
+		}
+		if len(snap) > 0 {
+			data, err := json.Marshal(snap)
 			if err != nil {
 				return "", err
 			}
-			round.ItemsChecked = data
+			round.Snapshot = data
 		}
 	}
-	return s.repo.CreateRound(ctx, tenantID, round)
+	return s.repo.CreateRound(ctx, userID, round)
 }
 
-// ListRounds 分页列表（审计用）
 func (s *RoundsService) ListRounds(ctx context.Context, tenantID string, filters *repository.RoundFilters, page, size int) ([]*domain.Round, int, error) {
 	if tenantID == "" {
 		return nil, 0, nil
@@ -64,7 +78,6 @@ func (s *RoundsService) ListRounds(ctx context.Context, tenantID string, filters
 	return s.repo.ListRounds(ctx, tenantID, filters, page, size)
 }
 
-// GetRound 单条详情 — RoundSafetyReport 用
 func (s *RoundsService) GetRound(ctx context.Context, tenantID, roundID string) (*domain.Round, error) {
 	if tenantID == "" || roundID == "" {
 		return nil, errRoundBadRequest

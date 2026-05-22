@@ -10,93 +10,87 @@ import (
 	"wisefido-data/internal/domain"
 )
 
-// PostgresRoundsRepository 巡房记录 Repository — v2 schema 重写 (2026-05-14)
+// PostgresRoundsRepository 巡房记录 Repository
 //
-// v1→v2 列名映射：
-//   tenant_id (UUID)   → 派生 host(set_masklen(caregiver_id, 48))||'/48'；scope 过滤用 caregiver_id <<= $tenant::INET
-//   executor_id (UUID) → caregiver_id INET；FE 入参仍传 user_id UUID，repo 内部查 users.hoa 转 INET 后写入
-//                        SELECT 时反向 LEFT JOIN users 还原 user_id 给 FE
-//   unit_id (UUID)     → unit_prefix INET；FE 现在传 INET CIDR（unit pilot 后），直接落
-//   round_time         → 用 ended_at 落（完成时刻）；FE 仍读 round_time 字段（SQL alias）
-//   started_at         → 保留 v2 同名列
-//   items_checked      → 拆到 rounds_report_snapshot.snapshot.items_checked JSONB（v2 新表）
-//   notes / round_type / status → 保留
+// rounds.user_id UUID FK users(user_id) — 任意 user 都可记录
+// rounds.tenant_id INET — create 时从 users.tenant_id /48 snapshot
+// snapshot JSONB blob (rounds_report_snapshot.snapshot) 含 items_checked / rows / schema_version 等
 type PostgresRoundsRepository struct {
 	db *sql.DB
 }
 
-// NewPostgresRoundsRepository 创建巡房记录 Repository
 func NewPostgresRoundsRepository(db *sql.DB) *PostgresRoundsRepository {
 	return &PostgresRoundsRepository{db: db}
 }
 
 var _ RoundsRepository = (*PostgresRoundsRepository)(nil)
 
-// 公共 SELECT 子句：v2 列 → v1-style alias，FE 不感知 schema 变化
-//
-// caregiver_id INET → executor_id UUID via LEFT JOIN users（user_id::text）
-// unit_prefix INET → unit_id::text
-// ended_at TIMESTAMPTZ → round_time（完成时刻；fallback started_at 给 in_progress 行）
-// snapshot JSONB → items_checked（从 rounds_report_snapshot LEFT JOIN）
 const roundSelectV2 = `
 	SELECT
 	    r.round_id::text                                       AS round_id,
-	    host(network(set_masklen(r.caregiver_id, 48)))||'/48'  AS tenant_id,
+	    host(r.tenant_id)||'/'||masklen(r.tenant_id)           AS tenant_id,
+	    r.user_id::text                                        AS user_id,
 	    r.round_type                                           AS round_type,
 	    COALESCE(host(r.unit_prefix)||'/'||masklen(r.unit_prefix), '') AS unit_id,
-	    COALESCE(u.user_id::text, '')                          AS executor_id,
-	    COALESCE(r.ended_at, r.started_at)                     AS round_time,
 	    r.started_at                                           AS started_at,
-	    COALESCE(rrs.snapshot->>'items_checked', '')           AS items_checked,
+	    r.ended_at                                             AS ended_at,
 	    COALESCE(r.notes, '')                                  AS notes,
-	    r.status                                               AS status
+	    r.status                                               AS status,
+	    COALESCE(rrs.snapshot::text, '')                       AS snapshot,
+	    COALESCE(NULLIF(u.nickname, ''), u.full_name, '')      AS executor_display,
+	    COALESCE(t.tenant_name, '')                            AS facility_name,
+	    COALESCE(un.unit_name, '')                             AS unit_name
 	FROM rounds r
-	LEFT JOIN users u ON u.hoa = r.caregiver_id
 	LEFT JOIN rounds_report_snapshot rrs ON rrs.round_id = r.round_id
+	LEFT JOIN users u   ON u.user_id = r.user_id
+	LEFT JOIN tenants t ON t.tenant_id = r.tenant_id
+	LEFT JOIN units un  ON un.unit_id = r.unit_prefix
 `
 
-// scanRoundRow 公共 row.Scan helper（GetRound 单行 + ListRounds 批量复用）
 func scanRoundRow(row interface{ Scan(...any) error }) (*domain.Round, error) {
 	var round domain.Round
-	var unitID, executorID, items, notes sql.NullString
-	var startedAt sql.NullTime
-	var roundTime sql.NullTime
+	var unitID, snapshot, notes, executorDisplay, facilityName, unitName sql.NullString
+	var startedAt, endedAt sql.NullTime
 
 	if err := row.Scan(
 		&round.RoundID,
 		&round.TenantID,
+		&round.UserID,
 		&round.RoundType,
 		&unitID,
-		&executorID,
-		&roundTime,
 		&startedAt,
-		&items,
+		&endedAt,
 		&notes,
 		&round.Status,
+		&snapshot,
+		&executorDisplay,
+		&facilityName,
+		&unitName,
 	); err != nil {
 		return nil, err
 	}
 	round.UnitID = unitID.String
-	round.ExecutorID = executorID.String
 	round.Notes = notes.String
-	if roundTime.Valid {
-		round.RoundTime = roundTime.Time
-	}
+	round.ExecutorDisplay = executorDisplay.String
+	round.FacilityName = facilityName.String
+	round.UnitName = unitName.String
 	if startedAt.Valid {
 		round.StartedAt = &startedAt.Time
 	}
-	if items.Valid && items.String != "" {
-		round.ItemsChecked = []byte(items.String)
+	if endedAt.Valid {
+		round.EndedAt = &endedAt.Time
+	}
+	if snapshot.Valid && snapshot.String != "" {
+		round.Snapshot = []byte(snapshot.String)
 	}
 	return &round, nil
 }
 
-// GetRound 获取巡房记录
 func (r *PostgresRoundsRepository) GetRound(ctx context.Context, tenantID, roundID string) (*domain.Round, error) {
 	if tenantID == "" || roundID == "" {
 		return nil, sql.ErrNoRows
 	}
-	query := roundSelectV2 + ` WHERE r.round_id = $1::UUID AND r.caregiver_id <<= $2::INET`
+	query := roundSelectV2 + ` WHERE r.round_id = $1::UUID AND r.tenant_id <<= $2::INET`
 	row := r.db.QueryRowContext(ctx, query, roundID, tenantID)
 	rd, err := scanRoundRow(row)
 	if err != nil {
@@ -108,21 +102,18 @@ func (r *PostgresRoundsRepository) GetRound(ctx context.Context, tenantID, round
 	return rd, nil
 }
 
-// ListRounds 批量查询巡房记录（支持过滤和分页）
 func (r *PostgresRoundsRepository) ListRounds(ctx context.Context, tenantID string, filters *RoundFilters, page, size int) ([]*domain.Round, int, error) {
 	if tenantID == "" {
 		return []*domain.Round{}, 0, nil
 	}
-	// scope：tenant /48 via caregiver_id <<= tenant；同时 unit_prefix <<= tenant 兜底 (caregiver_id 在 ff01: subject ns 也在同 tenant /48 内)
-	where := []string{"r.caregiver_id <<= $1::INET"}
+	where := []string{"r.tenant_id <<= $1::INET"}
 	args := []any{tenantID}
 	argN := 2
 
 	if filters != nil {
-		if filters.ExecutorID != "" {
-			// executor_id 是 user_id UUID；转 hoa INET 后过滤 r.caregiver_id
-			where = append(where, fmt.Sprintf("r.caregiver_id = (SELECT hoa FROM users WHERE user_id = $%d::UUID)", argN))
-			args = append(args, filters.ExecutorID)
+		if filters.UserID != "" {
+			where = append(where, fmt.Sprintf("r.user_id = $%d::UUID", argN))
+			args = append(args, filters.UserID)
 			argN++
 		}
 		if filters.UnitID != "" {
@@ -158,7 +149,6 @@ func (r *PostgresRoundsRepository) ListRounds(ctx context.Context, tenantID stri
 		}
 	}
 
-	// COUNT
 	countQ := `SELECT COUNT(*) FROM rounds r WHERE ` + strings.Join(where, " AND ")
 	var total int
 	if err := r.db.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
@@ -198,15 +188,12 @@ func (r *PostgresRoundsRepository) ListRounds(ctx context.Context, tenantID stri
 	return out, total, nil
 }
 
-// CreateRound 创建巡房记录
-// v2: executor_id UUID → 查 users.hoa 后落 caregiver_id INET；
-//     items_checked 拆到 rounds_report_snapshot.snapshot JSONB。
-func (r *PostgresRoundsRepository) CreateRound(ctx context.Context, tenantID string, round *domain.Round) (string, error) {
-	if tenantID == "" {
-		return "", fmt.Errorf("tenant_id is required")
-	}
-	if round.ExecutorID == "" {
-		return "", fmt.Errorf("executor_id is required")
+// CreateRound 创建巡房记录。userID = session 的 users.user_id (UUID)。
+// tenant_id 从 users.tenant_id snapshot — user 调岗不影响历史归属。
+// round.Snapshot 是已 merge 好的 JSONB blob，由 service 层组装。
+func (r *PostgresRoundsRepository) CreateRound(ctx context.Context, userID string, round *domain.Round) (string, error) {
+	if userID == "" {
+		return "", fmt.Errorf("userID is required")
 	}
 	if round.RoundType == "" {
 		round.RoundType = "manual"
@@ -214,29 +201,23 @@ func (r *PostgresRoundsRepository) CreateRound(ctx context.Context, tenantID str
 	if round.Status == "" {
 		round.Status = "completed"
 	}
-	if round.RoundTime.IsZero() {
-		round.RoundTime = time.Now()
-	}
 
-	// 1. 查 user_id UUID → hoa INET（caregiver_id）
-	var caregiverID sql.NullString
+	var tenantPrefix sql.NullString
 	if err := r.db.QueryRowContext(ctx,
-		`SELECT host(hoa) FROM users WHERE user_id = $1::UUID AND hoa IS NOT NULL`,
-		round.ExecutorID).Scan(&caregiverID); err != nil {
+		`SELECT host(tenant_id)||'/'||masklen(tenant_id) FROM users WHERE user_id = $1::UUID AND tenant_id IS NOT NULL`,
+		userID).Scan(&tenantPrefix); err != nil {
 		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("executor_id %s has no hoa (only resident-tied users can create rounds in v2 schema)", round.ExecutorID)
+			return "", fmt.Errorf("user %s has no tenant_id (platform-level users cannot create tenant-scoped rounds)", userID)
 		}
-		return "", fmt.Errorf("lookup caregiver hoa: %w", err)
+		return "", fmt.Errorf("lookup user tenant: %w", err)
 	}
 
-	// 2. 事务：rounds INSERT + 可选 rounds_report_snapshot
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	// 准备 nullable 字段
 	var unitPrefix interface{}
 	if round.UnitID != "" {
 		unitPrefix = round.UnitID
@@ -245,34 +226,33 @@ func (r *PostgresRoundsRepository) CreateRound(ctx context.Context, tenantID str
 	if round.Notes != "" {
 		notes = round.Notes
 	}
-	// started_at fallback: 若 caller 没给，用 round_time（完成时刻）
-	startedAt := round.RoundTime
+	startedAt := time.Now()
 	if round.StartedAt != nil {
 		startedAt = *round.StartedAt
 	}
-	// ended_at: 仅 status=completed/cancelled 时填
 	var endedAt interface{}
-	if round.Status == "completed" || round.Status == "cancelled" {
-		endedAt = round.RoundTime
+	if round.Status == "completed" || round.Status == "aborted" {
+		if round.EndedAt != nil {
+			endedAt = *round.EndedAt
+		} else {
+			endedAt = time.Now()
+		}
 	}
 
 	var roundID string
 	if err := tx.QueryRowContext(ctx, `
-		INSERT INTO rounds (caregiver_id, unit_prefix, started_at, ended_at, round_type, status, notes)
-		VALUES ($1::INET, $2::INET, $3, $4, $5, $6, $7)
+		INSERT INTO rounds (tenant_id, user_id, unit_prefix, started_at, ended_at, round_type, status, notes)
+		VALUES ($1::INET, $2::UUID, $3::INET, $4, $5, $6, $7, $8)
 		RETURNING round_id::text
-	`, caregiverID.String, unitPrefix, startedAt, endedAt, round.RoundType, round.Status, notes).Scan(&roundID); err != nil {
+	`, tenantPrefix.String, userID, unitPrefix, startedAt, endedAt, round.RoundType, round.Status, notes).Scan(&roundID); err != nil {
 		return "", fmt.Errorf("failed to create round: %w", err)
 	}
 
-	// items_checked → rounds_report_snapshot
-	if len(round.ItemsChecked) > 0 {
-		// snapshot JSONB 用 {"items_checked": [...]} 形态包一层
-		snapshot := fmt.Sprintf(`{"items_checked": %s}`, string(round.ItemsChecked))
+	if len(round.Snapshot) > 0 {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO rounds_report_snapshot (round_id, snapshot)
 			VALUES ($1::UUID, $2::JSONB)
-		`, roundID, snapshot); err != nil {
+		`, roundID, string(round.Snapshot)); err != nil {
 			return "", fmt.Errorf("failed to insert rounds_report_snapshot: %w", err)
 		}
 	}
@@ -281,95 +261,4 @@ func (r *PostgresRoundsRepository) CreateRound(ctx context.Context, tenantID str
 		return "", fmt.Errorf("commit tx: %w", err)
 	}
 	return roundID, nil
-}
-
-// UpdateRound 更新巡房记录（v2: 仅支持 unit/started_at/notes/status 更新；不动 caregiver_id/round_type）
-func (r *PostgresRoundsRepository) UpdateRound(ctx context.Context, tenantID, roundID string, round *domain.Round) error {
-	if tenantID == "" || roundID == "" {
-		return fmt.Errorf("tenant_id and round_id are required")
-	}
-	var unitPrefix interface{}
-	if round.UnitID != "" {
-		unitPrefix = round.UnitID
-	}
-	var notes interface{}
-	if round.Notes != "" {
-		notes = round.Notes
-	}
-	startedAt := round.RoundTime
-	if round.StartedAt != nil {
-		startedAt = *round.StartedAt
-	}
-	var endedAt interface{}
-	if round.Status == "completed" || round.Status == "cancelled" {
-		endedAt = round.RoundTime
-	}
-
-	res, err := r.db.ExecContext(ctx, `
-		UPDATE rounds
-		SET unit_prefix = $3::INET,
-		    started_at = $4,
-		    ended_at = $5,
-		    status = $6,
-		    notes = $7
-		WHERE round_id = $1::UUID AND caregiver_id <<= $2::INET
-	`, roundID, tenantID, unitPrefix, startedAt, endedAt, round.Status, notes)
-	if err != nil {
-		return fmt.Errorf("failed to update round: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("round not found")
-	}
-	return nil
-}
-
-// DeleteRound 删除巡房记录（rounds_report_snapshot ON DELETE CASCADE 自动跟删）
-func (r *PostgresRoundsRepository) DeleteRound(ctx context.Context, tenantID, roundID string) error {
-	if tenantID == "" || roundID == "" {
-		return fmt.Errorf("tenant_id and round_id are required")
-	}
-	res, err := r.db.ExecContext(ctx, `
-		DELETE FROM rounds
-		WHERE round_id = $1::UUID AND caregiver_id <<= $2::INET
-	`, roundID, tenantID)
-	if err != nil {
-		return fmt.Errorf("failed to delete round: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("round not found")
-	}
-	return nil
-}
-
-// SetRoundStatus 更新巡房记录状态（in_progress/completed/cancelled — v2 status check constraint 实际允许值）
-func (r *PostgresRoundsRepository) SetRoundStatus(ctx context.Context, tenantID, roundID, status string) error {
-	if tenantID == "" || roundID == "" {
-		return fmt.Errorf("tenant_id and round_id are required")
-	}
-	switch status {
-	case "in_progress", "completed", "cancelled", "draft":
-		// 接受 draft 作 v1 兼容（FE 可能仍传 draft）
-	default:
-		return fmt.Errorf("invalid status: %s", status)
-	}
-	// completed/cancelled 时同步设 ended_at = now()
-	var endedAt interface{}
-	if status == "completed" || status == "cancelled" {
-		endedAt = time.Now()
-	}
-	res, err := r.db.ExecContext(ctx, `
-		UPDATE rounds
-		SET status = $3, ended_at = COALESCE($4, ended_at)
-		WHERE round_id = $1::UUID AND caregiver_id <<= $2::INET
-	`, roundID, tenantID, status, endedAt)
-	if err != nil {
-		return fmt.Errorf("failed to set round status: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("round not found")
-	}
-	return nil
 }

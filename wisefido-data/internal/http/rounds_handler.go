@@ -15,32 +15,32 @@ import (
 	"go.uber.org/zap"
 )
 
-// RoundsHandler 巡房记录 HTTP（Automatic Rounds 完成、审计列表）
+// RoundsHandler 巡房记录 HTTP
 type RoundsHandler struct {
 	svc    *service.RoundsService
-	db     *sql.DB // 用于 Phase 3 Current Branch scope 查询
+	db     *sql.DB
 	logger *zap.Logger
 }
 
-// NewRoundsHandler 创建 handler
 func NewRoundsHandler(svc *service.RoundsService, db *sql.DB, logger *zap.Logger) *RoundsHandler {
 	return &RoundsHandler{svc: svc, db: db, logger: logger}
 }
 
 // CreateRoundRequest 与 service.CreateRoundRequest 一致，供 JSON 绑定
 type CreateRoundRequest struct {
-	StartedAt    *time.Time                 `json:"started_at"`
-	ItemsChecked []domain.RoundItemChecked `json:"items_checked"`
+	StartedAt      *time.Time                `json:"started_at"`
+	Notes          string                    `json:"notes"`
+	ItemsChecked   []domain.RoundItemChecked `json:"items_checked"`
+	ReportSnapshot json.RawMessage           `json:"report_snapshot,omitempty"`
 }
 
 // ServeHTTP 路由：
 //   POST /rounds        创建一轮
-//   GET  /rounds        列表（支持 ?branch_id=&executor_id=&status=&...&page=&size=）
+//   GET  /rounds        列表（支持 ?user_id=&status=&...&page=&size=）
 //   GET  /rounds/{id}   单条详情（RoundSafetyReport 用）
 func (h *RoundsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	base := "/data/api/v1/data/vital-focus/rounds"
-	// 集合路径
 	if path == base || path == base+"/" {
 		switch r.Method {
 		case http.MethodPost:
@@ -52,7 +52,6 @@ func (h *RoundsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	// 单资源路径 /rounds/{id}
 	if strings.HasPrefix(path, base+"/") {
 		roundID := strings.TrimPrefix(path, base+"/")
 		if roundID == "" || strings.Contains(roundID, "/") {
@@ -69,6 +68,50 @@ func (h *RoundsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotFound)
 }
 
+func roundToWire(rd *domain.Round) map[string]interface{} {
+	row := map[string]interface{}{
+		"round_id":   rd.RoundID,
+		"round_type": rd.RoundType,
+		"unit_id":    rd.UnitID,
+		"user_id":    rd.UserID,
+		"notes":      rd.Notes,
+		"status":     rd.Status,
+	}
+	if rd.StartedAt != nil {
+		row["started_at"] = rd.StartedAt.Format(time.RFC3339)
+	}
+	if rd.EndedAt != nil {
+		row["ended_at"] = rd.EndedAt.Format(time.RFC3339)
+	}
+	if rd.ExecutorDisplay != "" {
+		row["executor_display"] = rd.ExecutorDisplay
+	}
+	if rd.FacilityName != "" {
+		row["facility_name"] = rd.FacilityName
+	}
+	if rd.UnitName != "" {
+		row["unit_name"] = rd.UnitName
+	}
+	// snapshot JSONB: 拆 items_checked 到顶层（FE 列表/汇总用），
+	// 其余字段（rows / schema_version / facility_license）整体出在 report_snapshot 给 detail 视图。
+	if len(rd.Snapshot) > 0 {
+		var snap map[string]json.RawMessage
+		if json.Unmarshal(rd.Snapshot, &snap) == nil {
+			if raw, ok := snap["items_checked"]; ok {
+				var arr []domain.RoundItemChecked
+				if json.Unmarshal(raw, &arr) == nil && len(arr) > 0 {
+					row["items_checked"] = arr
+				}
+			}
+			delete(snap, "items_checked")
+			if len(snap) > 0 {
+				row["report_snapshot"] = snap
+			}
+		}
+	}
+	return row
+}
+
 func (h *RoundsHandler) createRound(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	userID, tenantID, _, _, ok := service.MustSession(ctx)
@@ -82,10 +125,12 @@ func (h *RoundsHandler) createRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := &service.CreateRoundRequest{
-		StartedAt:    body.StartedAt,
-		ItemsChecked: body.ItemsChecked,
+		StartedAt:      body.StartedAt,
+		Notes:          body.Notes,
+		ItemsChecked:   body.ItemsChecked,
+		ReportSnapshot: body.ReportSnapshot,
 	}
-	roundID, err := h.svc.CreateRound(ctx, tenantID, userID, req)
+	roundID, err := h.svc.CreateRound(ctx, userID, req)
 	if err != nil {
 		h.logger.Warn("CreateRound failed", zap.String("user_id", userID), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
@@ -102,7 +147,6 @@ func (h *RoundsHandler) listRounds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filters := &repository.RoundFilters{}
-	// Phase 3: 按 user Current Branch (is_primary) 过滤；admin/sysadmin 无挂载 → 不限制
 	if currentUserID != "" && h.db != nil {
 		var bp sql.NullString
 		_ = h.db.QueryRowContext(ctx, `
@@ -114,8 +158,8 @@ func (h *RoundsHandler) listRounds(w http.ResponseWriter, r *http.Request) {
 			filters.BranchPrefix = bp.String
 		}
 	}
-	if v := r.URL.Query().Get("executor_id"); v != "" {
-		filters.ExecutorID = v
+	if v := r.URL.Query().Get("user_id"); v != "" {
+		filters.UserID = v
 	}
 	if v := r.URL.Query().Get("round_type"); v != "" {
 		filters.RoundType = v
@@ -154,29 +198,9 @@ func (h *RoundsHandler) listRounds(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-	// 将 items_checked JSON 转为前端可读
 	items := make([]map[string]interface{}, 0, len(rounds))
 	for _, rd := range rounds {
-		row := map[string]interface{}{
-			"round_id":     rd.RoundID,
-			"tenant_id":    rd.TenantID,
-			"round_type":   rd.RoundType,
-			"unit_id":      rd.UnitID,
-			"executor_id":  rd.ExecutorID,
-			"round_time":   rd.RoundTime,
-			"notes":        rd.Notes,
-			"status":       rd.Status,
-		}
-		if rd.StartedAt != nil {
-			row["started_at"] = rd.StartedAt.Format(time.RFC3339)
-		}
-		if len(rd.ItemsChecked) > 0 {
-			var arr []domain.RoundItemChecked
-			if _ = json.Unmarshal(rd.ItemsChecked, &arr); len(arr) > 0 {
-				row["items_checked"] = arr
-			}
-		}
-		items = append(items, row)
+		items = append(items, roundToWire(rd))
 	}
 	writeJSON(w, http.StatusOK, Ok(map[string]interface{}{
 		"items": items,
@@ -186,8 +210,6 @@ func (h *RoundsHandler) listRounds(w http.ResponseWriter, r *http.Request) {
 	}))
 }
 
-// getRound — GET /data/api/v1/data/vital-focus/rounds/{round_id}
-// 单条详情：RoundSafetyReport.fetchDetail 调用，返回与 ListItem 同 shape (含 items_checked)
 func (h *RoundsHandler) getRound(w http.ResponseWriter, r *http.Request, roundID string) {
 	ctx := r.Context()
 	_, tenantID, _, _, ok := service.MustSession(ctx)
@@ -201,24 +223,5 @@ func (h *RoundsHandler) getRound(w http.ResponseWriter, r *http.Request, roundID
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-	row := map[string]interface{}{
-		"round_id":    rd.RoundID,
-		"tenant_id":   rd.TenantID,
-		"round_type":  rd.RoundType,
-		"unit_id":     rd.UnitID,
-		"executor_id": rd.ExecutorID,
-		"round_time":  rd.RoundTime,
-		"notes":       rd.Notes,
-		"status":      rd.Status,
-	}
-	if rd.StartedAt != nil {
-		row["started_at"] = rd.StartedAt.Format(time.RFC3339)
-	}
-	if len(rd.ItemsChecked) > 0 {
-		var arr []domain.RoundItemChecked
-		if _ = json.Unmarshal(rd.ItemsChecked, &arr); len(arr) > 0 {
-			row["items_checked"] = arr
-		}
-	}
-	writeJSON(w, http.StatusOK, Ok(row))
+	writeJSON(w, http.StatusOK, Ok(roundToWire(rd)))
 }
