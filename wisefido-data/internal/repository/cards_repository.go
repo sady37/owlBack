@@ -130,11 +130,9 @@ func (r *PostgresCardsRepository) ListCards(ctx context.Context, req ListCardsRe
 		argIdx++
 	}
 
-	// v2.5: card_type 列删；FE filter 'active_bed' 改用 has_bed=TRUE，'public' 用 card_name='public'
+	// v2.5: card_type 列删；FE 用 has_bed=TRUE / card_name='public' 过滤
 	if req.CardType != "" {
 		switch req.CardType {
-		case "active_bed":
-			query.WriteString(` AND c.has_bed = TRUE `)
 		case "public":
 			query.WriteString(` AND c.card_name = 'public' `)
 		case "card":

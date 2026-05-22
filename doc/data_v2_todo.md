@@ -79,10 +79,12 @@ Step 2: 每个含 bed 的 room
 
 整段删 + card_create_service.go 整文件删；详 Walk A 落地清单。
 
-### S2. cardagg 过时变量名 / 注释
+### ~~S2. cardagg 过时变量名 / 注释~~（2026-05-23 audit done）
 
-- [card_display_builder.go:21](owlBack/wisefido-cardagg/internal/consumer/card_display_builder.go#L21) `hasBedDevice = ... 物理上有 sleepad 床设备` —— 现在 `has_bed` 改 ActiveBed 后语义对了，注释保留 OK；变量名 `hasBedDevice` 也仍准确
-- 其他文件 grep "active_bed" 残留同步改 "bed_card"（schema doc 已统一）
+audit 结论：
+- `card_display_builder.go:21` 注释保留 OK（has_bed 改 ActiveBed 后语义对了）
+- 其他 `active_bed` 字面量全部在 doc/comment 历史 reference，无运行时影响
+- **唯一死代码** [cards_repository.go:136](owlBack/wisefido-data/internal/repository/cards_repository.go#L136) `case "active_bed"`：FE CardType 已改 `'bed'` 但仅本地过滤，**0 处发 `?card_type=` API 请求**，switch 永不命中 → **已清**
 
 ### S3. devices_pkey 测试 fixture MAC 重复
 
@@ -96,9 +98,11 @@ Step 2: 每个含 bed 的 room
 
 按 [[qinglan_sleepace_access_gate_consolidation]]，3 字段（`allow_access` / `business_access` / `monitoring_enabled`）合并成单一 `devices.access` bool。主线 #2 是 device identity 重构，跟 access gate 字段合并是两件事；可在 #3 重写窗口顺手做也可单独 PR。
 
-### S6. SSE fan-out 维护点 audit
+### ~~S6. SSE fan-out 维护点 audit~~（2026-05-23 audit done）
 
-`card_realtime_service` 的 `cardIndex` / `userIndex` 维护点 grep 一遍是否有 device 字段引用（按主线 #2 字段重命名要扫一遍）。
+audit 结论：
+- cardIndex/userIndex 按 cardID / userKey 索引，**本身无 device 字段引用**，post Phase 2 干净
+- 唯一遗留 [card_realtime_service.go:1046](owlBack/wisefido-data/internal/service/card_realtime_service.go#L1046) 输出 `entry["device_id"] = d.deviceAddr` 是兼容历史命名；FE 全工程 grep 0 处读 `device_id` 字段（map key 已带 device_addr），注释陈旧 → **已清**
 
 ### S10. FE v1↔v2 字段别名 shim 拆除（C 类，跨视图主线）
 
@@ -158,9 +162,13 @@ Q1 实测 pfmb02 has_bed = TRUE ✓。详 Walk A 落地清单 §1。
 
 ---
 
-### S9. `find_card_by_device_addr` 函数
+### ~~S9. `find_card_by_device_addr` 函数~~（2026-05-23 audit done）
 
-[50_cards.sql:212-217](owlRD/dbv2/50_cards.sql#L212-L217) 当前实现 `SELECT card_id FROM devices WHERE device_ipv6 = addr`。主线 #2 device_ipv6 改稳定身份后，此函数语义和入参不变（仍按 device IPv6 查），但要确认 alarm 流里传的 device_addr 是新 IPv6 还是空间编码 IPv6。
+audit 结论：
+- 函数 [50_cards.sql:227-230](owlRD/dbv2/50_cards.sql#L227-L230) 已改为 `SELECT card_id FROM devices WHERE device_addr = addr LIMIT 1`，依赖 devices.card_id（denormalized）
+- devices.card_id 由 [card_reconcile.applyDiffs:355-360](owlBack/wisefido-data/internal/service/card_reconcile.go#L355-L360) 按 mask DESC sort 后逐 anchor 更新，最具体优先
+- 实测 101 五设备 LPM 完美：room radar→/88 Bedroom / bed device→/88 Bedroom / Bathroom radar→/80
+- 无需 fix
 
 ---
 

@@ -1043,7 +1043,6 @@ func (s *CardRealtimeService) enrichDeviceStatus(ctx context.Context, cardID str
 	deviceStatus := make(map[string]interface{}, len(devices))
 	for _, d := range devices {
 		entry := map[string]interface{}{
-			"device_id":   d.deviceAddr, // FE map key 兼容历史命名（B1 待 FE 同步窗口改 device_addr）
 			"device_type": d.deviceType,
 		}
 		if ds := dsMap[d.deviceAddr]; ds != nil {
