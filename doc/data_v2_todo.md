@@ -93,20 +93,55 @@
 
 `card_realtime_service` 的 `cardIndex` / `userIndex` 维护点 grep 一遍是否有 device 字段引用（按主线 #2 字段重命名要扫一遍）。
 
-### S7. Pending Alarm Records — Critical auto_resolved 漏入 list（2026-05-22 用户报）
+### S10. FE v1↔v2 字段别名 shim 拆除（C 类，跨视图主线）
 
-**Why**：FE alarmBell（alarm_level 统计 icon）显示有未处理 Critical alarm，但点开 Pending Alarm Records list 为空。设计契约：
+owlFront 在 v2 cutover 期间留了 alias 回填层让未迁视图继续读 v1 字段：
+- `api/units/unit.ts` `fillV1RoomAliases` / `fillV1UnitAliases`（v2 `prefix` → v1 `unit_id` / `room_id` / `bed_id`）
+- `api/admin/branch/branch.ts` v1 `branch_id` UUID 别名 = v2 `prefix` /56
+- `utils/http/axios/index.ts:277` X-Tenant-Id 兼容期注释
+
+要拆需先把所有读 v1 别名的视图（UnitList / ResidentProfileContent / CareTeamList 等约 10 个）逐个迁到 v2 字段，再统一拆 shim。**主线 #3 v2 cutover 收尾环节**，跨 ~10 视图 + 大回归测试。
+
+### S11. role 命名 v1/v2 双轨 + case 混乱（D 类，架构级）
+
+**现状**：
+- PG users 表 9 种 role 值：TitleCase v2 (`Caregiver/Nurse/Admin/Manager/Family`) + lowercase v1 (`platform_admin/tenant_admin/family/manager`) 混存
+- backend 仍在用 v1 名：[auth_handler.go:443-444,544](owlBack/wisefido-data/internal/http/auth_handler.go) `u.role='platform_admin'`；[user_handler.go:542](owlBack/wisefido-data/internal/http/user_handler.go#L542) `tenant_admin`；[admin_tenants_handlers.go:65](owlBack/wisefido-data/internal/http/admin_tenants_handlers.go#L65) `role='tenant_admin'`
+- FE [UserList.vue:1227-1229](owlFront/src/views/admin/users/UserList.vue#L1227-L1229) `.toLowerCase()` + 6 个名 (`systemadmin/platform_admin/admin/tenant_admin/manager/branchmanager`) 双套兜底 — **不能盲删**，盲删会让 platform_admin / tenant_admin / branchmanager 老账号丢管理权限
+
+**需要**：
+1. 拍板 role 标准化方案（统一 v2 TitleCase？保留 v1 兼容？）
+2. PG 数据迁移（lowercase → TitleCase + v1 名 → v2 名）
+3. backend SQL/代码统一
+4. FE 清 v1 双名兜底
+
+属于架构级决策 + 数据迁移，**不能在 v2 cutover 边缘子任务中顺手做**。
+
+### ~~S7. Pending Alarm Records — Critical auto_resolved 漏入 list~~（2026-05-22 落地 + 修正）
+
+**Why**：FE alarmBell 显示有未处理 Critical alarm，但点开 Pending list 为空。设计契约：
 - `popAlarm` (浮动横幅) **不含** `operation='auto_resolved'`
-- `alarmBell` (统计 icon) + `Pending Records` (list) **应含** Critical (`alarm_level <= 3`) 的 `auto_resolved`（[[alarm_status_no_acked_auto_resolved]] A3 规则）
+- `Pending Records` (list) **应含** active + Critical(level<=2, EMERG/ALERT/CRITICAL) 已物理自动恢复但护理尚未 review 的 auto_resolved，"确保护理人员确认收到 alarm 消息"
+- **acked 不入 Pending**（staff 已 ack=已确认收到，task done，进 Resolved tab）
 
-当前 Pending list query 过严，把 Critical auto_resolved 也过滤掉了。
+**落地**：AlarmEventFilters 加 `Pending bool`；repo Pending=true 拼 `(alarm_status='active' OR (operation='auto_resolved' AND handler IS NULL AND alarm_level <= CRITICAL(2)))`；service `req.Status=="active"` 改设 `filters.Pending=true`。popAlarm 路径（GetRecentAlarmEvent）保留 `alarm_status='active'` 不动。
 
-**How to apply**：
-- 检查 alarm_event_service.go 里 Pending list 的 WHERE 子句
-- 改成：`alarm_status IN ('active','acked') OR (operation='auto_resolved' AND handler IS NULL AND alarm_level <= 3)`
-- 注意 popAlarm endpoint 保持现有逻辑不动
+**初版误区**（2026-05-22 第一次落地用 acked + level<=3，被用户纠正）：把 acked 纳入 Pending 导致已 ack 的 alarm 反复回到 Pending；FE Handle modal 硬编码提交 `alarm_status='acked'`，对已 acked 是 no-op → 用户无法从 FE 移出 → 表现"卡住"。修正方案改回 active + Critical(level≤2)。
 
-来源：用户 2026-05-22 实测 / [[alarm_status_no_acked_auto_resolved]] / rule.md A3
+**Critical auto_resolved Handle 路径**（同次落地）：
+- service.HandleAlarmEvent guard 加 `event.AlarmStatus == "auto_resolved"` 分支：强制 target=`resolved`（跳 acked 按 A3），operation 保留 `auto_resolved`（KPI `operation='auto_resolved' AND handler IS NOT NULL` 仍能识别"物理自动恢复后人工 review"）
+- FE AlarmRecordList.vue handleConfirmHandle：源是 auto_resolved 提交 `alarm_status='resolved'`，否则提交 `'acked'`
+- 闭环：Critical auto_resolved 留 Pending → staff 点 Handle → backend coerce → 进 Resolved tab，operation='auto_resolved' + handler 双标记
+
+**alarmBell counter ↔ Pending list 对齐**（同次落地）：QueryCardAlarmState SQL 改 `Critical(0/1/2): active OR (auto_resolved AND handler IS NULL); Error/Warning(3/4): active`，与 Pending list 谓词完全一致；acked 不计入 alarmBell（与 Pending 一致 — acked=task done）。owl-common 改完 cardagg/data/qinglan/sleepace/sensor 5 个服务全 restart。
+
+**alarm 锚定卡规则**（同次落地，事件级语义）：
+- 不变：alarm.card_id 是 trigger 瞬间 GiST LPM snapshot，**device 迁走 alarm 不动**（留作历史，新 card 看不到、原 card 仍能查 Resolved tab）
+- 新增：cards row 真正删除 → 同 card_id 上所有非终态 alarm（active/acked/auto_resolved）自动 UPDATE 'expired'。"空间集合改变 → card_id 失指 → expired"
+- owl-common 加 `ExpireAlarmsByCardID` (单卡精确) + `ExpireAlarmsByCardPrefix` (`<<=` 批量)；移除旧 `ExpireAlarmsByDeviceAddrs`（按 device_addr 过严，迁走 device 漏过）
+- 三处 card 删除路径全接：`postgres_card.DeleteCard` / `DeleteCardsByUnit` / `card_reconcile.applyDiffs`（事务内调 tx）
+
+来源：用户 2026-05-22 实测 + 纠正 / [[alarm_status_no_acked_auto_resolved]] / rule.md A3
 
 ---
 

@@ -327,9 +327,13 @@ func (s *CardSyncService) applyDiffs(ctx context.Context, tx *sql.Tx, expected m
 	diffs := []cardDiff{}
 
 	// Step 1: DELETE current 里 expected 没有的卡（current map 的 key 是 card_id == anchor）
+	// 按 alarm 锚定卡规则：card 删 → 同 card_id 上非终态 alarm 一并 expired（事务内原子）
 	for cardID, cur := range current {
 		if expected[cardID] {
 			continue
+		}
+		if err := card.ExpireAlarmsByCardID(ctx, tx, cardID, "reconcile_delete"); err != nil {
+			return nil, fmt.Errorf("expire alarms for card %s: %w", cardID, err)
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM cards WHERE card_id = $1::INET`, cardID); err != nil {
 			return nil, fmt.Errorf("delete card %s: %w", cardID, err)

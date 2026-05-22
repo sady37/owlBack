@@ -145,12 +145,21 @@ func (r *PostgresAlarmEventsRepository) buildWhereClause(tenantID string, filter
 	}
 
 	// 状态过滤
-	if filters.AlarmStatus != nil {
+	if filters.Pending {
+		// active + 未 review 的 Critical(EMERG/ALERT/CRITICAL, level<=2) auto_resolved。
+		// 物理自动恢复但护理人员尚未确认收到（HR/RR 复正常、Fall 自起立 3min 后），需保留在 Pending。
+		where = append(where, fmt.Sprintf(
+			"(ae.alarm_status = 'active' OR (ae.operation = 'auto_resolved' AND ae.handler IS NULL AND ae.alarm_level <= $%d))",
+			*argN,
+		))
+		*args = append(*args, alarm.AlarmLevelIntCrit)
+		*argN++
+	} else if filters.AlarmStatus != nil {
 		where = append(where, fmt.Sprintf("ae.alarm_status = $%d", *argN))
 		*args = append(*args, *filters.AlarmStatus)
 		*argN++
 	}
-	if len(filters.AlarmStatuses) > 0 {
+	if !filters.Pending && len(filters.AlarmStatuses) > 0 {
 		placeholders := make([]string, len(filters.AlarmStatuses))
 		for i := range filters.AlarmStatuses {
 			placeholders[i] = fmt.Sprintf("$%d", *argN)

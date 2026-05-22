@@ -275,8 +275,9 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 
 	// 状态过滤
 	if req.Status == "active" {
-		status := "active"
-		filters.AlarmStatus = &status
+		// Pending tab：active + 未 review 的 Critical(level<=2) auto_resolved。
+		// acked 不入 Pending（staff 已确认收到=task done，进 Resolved tab）。
+		filters.Pending = true
 	} else if req.Status == "acked" {
 		status := "acked"
 		filters.AlarmStatus = &status
@@ -826,12 +827,20 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 	}
 
 	// 原子操作：更新 alarm_events + cards（单事务，owl-common 内部自动查找 cardID）
-	if event.AlarmStatus != "active" && event.AlarmStatus != "acked" {
-		return nil, fmt.Errorf("can only handle active or acked alarms, current status: %s", event.AlarmStatus)
+	if event.AlarmStatus != "active" && event.AlarmStatus != "acked" && event.AlarmStatus != "auto_resolved" {
+		return nil, fmt.Errorf("can only handle active/acked/auto_resolved alarms, current status: %s", event.AlarmStatus)
 	}
-	operation := mapHandleTypeToOperation(req.HandleType)
-	if operation == "" {
-		return nil, fmt.Errorf("invalid handle_type: %s", req.HandleType)
+	// auto_resolved 源：A3 跳过 acked 直接 resolved；operation 保留 'auto_resolved' 让 KPI
+	// `WHERE operation='auto_resolved' AND handler IS NOT NULL` 仍能识别"物理自动恢复后人工 review"
+	var operation string
+	if event.AlarmStatus == "auto_resolved" {
+		req.AlarmStatus = "resolved"
+		operation = "auto_resolved"
+	} else {
+		operation = mapHandleTypeToOperation(req.HandleType)
+		if operation == "" {
+			return nil, fmt.Errorf("invalid handle_type: %s", req.HandleType)
+		}
 	}
 	var notes *string
 	if req.Remarks != "" {

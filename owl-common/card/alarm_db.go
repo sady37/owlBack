@@ -311,31 +311,28 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 //
 // cardID 为 cards.card_id CIDR 字符串；空 / 非法 INET 时返回零状态。
 //
-// SQL 计数策略（sensor_v2.md §6.7 决定 17）：
+// SQL 计数策略（2026-05-22 修正，与 Pending list 语义对齐 — [[alarm_status_no_acked_auto_resolved]]）：
 //
 //	level 0/1/2 (Critical：Emerg/Alert/Crit)
-//	  → count(alarm_status IN ('active', 'acked', 'auto_resolved'))
-//	  → 'resolved' 是终态，不计入（已离开 Pending+AlarmBell 进 Resolved 历史）
+//	  → count(alarm_status = 'active' OR (operation = 'auto_resolved' AND handler IS NULL))
+//	  → acked = staff 已确认收到 = task done，不计；resolved 终态不计；reviewed auto_resolved 已 handler 不计
 //
 //	level 3/4 (Error/Warning)
 //	  → count(alarm_status = 'active')
-//	  → 'auto_resolved' 自动归 Resolved（不强制人工 ack）；'acked' 此分支理论不出现（不强制）
+//	  → auto_resolved 自动归 Resolved（不强制人工 review）；acked 此分支理论不出现
 //
-// 一条 SQL 用 CASE 表达级别相关的 status 子集，比 5 个 UNION ALL 子查询更清晰：
+// alarmBell counter 必须 == Pending list 计数（同一 WHERE 谓词），否则 icon 亮但 Pending 空 = 误导护理。
 func QueryCardAlarmState(ctx context.Context, db *sql.DB, cardID string) (*CardAlarmState, error) {
 	cas := &CardAlarmState{}
 	if cardID == "" {
 		return cas, nil
 	}
-	// 计数：按 alarm_level GROUP BY；level 相关的 alarm_status 过滤用 CASE 在 WHERE 子句表达。
-	// Critical (0/1/2) 含 acked/auto_resolved（决定 17 — Critical 必须人工 ack 才离开 Pending+Bell）；
-	// Error/Warning (3/4) 仅 active（auto_resolved 自动归 Resolved）。
 	rows, err := db.QueryContext(ctx, `
 		SELECT alarm_level, COUNT(*)
 		FROM alarm_events
 		WHERE card_id = $1::INET
 		  AND (
-		    (alarm_level IN (0, 1, 2) AND alarm_status IN ('active', 'acked', 'auto_resolved'))
+		    (alarm_level IN (0, 1, 2) AND (alarm_status = 'active' OR (operation = 'auto_resolved' AND handler IS NULL)))
 		    OR
 		    (alarm_level IN (3, 4) AND alarm_status = 'active')
 		  )
@@ -524,32 +521,46 @@ func AutoResolveDeviceAlarms(ctx context.Context, db *sql.DB, cardID, tenantID, 
 	return cas, res, nil
 }
 
-// ExpireAlarmsByDeviceAddrs 设备删除/解绑时把该 device 下所有 active alarm 标 expired。
-// deviceAddrs 元素是 IPv6 /128 canonical host text。
-func ExpireAlarmsByDeviceAddrs(ctx context.Context, db *sql.DB, tenantID string, deviceAddrs []string, reason string) error {
-	if len(deviceAddrs) == 0 {
+// sqlExecutor 兼容 *sql.DB 与 *sql.Tx，让 expire 函数能在事务内或外调用。
+type sqlExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+}
+
+// ExpireAlarmsByCardID 把指定 card 上所有非终态 alarm 标 expired（card_id 精确匹配）。
+// 用于单卡删除（事件锚定卡，card 不在则 alarm 失指）。preserve operation/handler 保留历史。
+func ExpireAlarmsByCardID(ctx context.Context, exec sqlExecutor, cardID, reason string) error {
+	if cardID == "" {
 		return nil
 	}
-	addrs := make([]string, 0, len(deviceAddrs))
-	for _, id := range deviceAddrs {
-		if a, err := netip.ParseAddr(id); err == nil {
-			addrs = append(addrs, a.String())
-		}
-	}
-	if len(addrs) == 0 {
-		return nil
-	}
-	_, err := db.ExecContext(ctx, `
+	_, err := exec.ExecContext(ctx, `
 		UPDATE alarm_events
 		SET alarm_status  = 'expired',
 		    hand_time     = NOW(),
-		    operation     = 'auto_resolved',
 		    handler_notes = COALESCE(NULLIF(handler_notes, ''), $2)
-		WHERE device_addr = ANY($1::INET[])
-		  AND alarm_status = 'active'
-	`, pq.Array(addrs), reason)
+		WHERE card_id = $1::INET
+		  AND alarm_status IN ('active', 'acked', 'auto_resolved')
+	`, cardID, reason)
 	if err != nil {
-		return fmt.Errorf("expire alarms by device addrs: %w", err)
+		return fmt.Errorf("expire alarms by card_id %s: %w", cardID, err)
+	}
+	return nil
+}
+
+// ExpireAlarmsByCardPrefix LPM 版（card_id <<= prefix），用于 unit / branch 批量删除。
+func ExpireAlarmsByCardPrefix(ctx context.Context, exec sqlExecutor, cardPrefix, reason string) error {
+	if cardPrefix == "" {
+		return nil
+	}
+	_, err := exec.ExecContext(ctx, `
+		UPDATE alarm_events
+		SET alarm_status  = 'expired',
+		    hand_time     = NOW(),
+		    handler_notes = COALESCE(NULLIF(handler_notes, ''), $2)
+		WHERE card_id <<= $1::INET
+		  AND alarm_status IN ('active', 'acked', 'auto_resolved')
+	`, cardPrefix, reason)
+	if err != nil {
+		return fmt.Errorf("expire alarms by card_prefix %s: %w", cardPrefix, err)
 	}
 	return nil
 }

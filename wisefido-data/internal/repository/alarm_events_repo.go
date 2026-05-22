@@ -67,6 +67,14 @@ type AlarmEventFilters struct {
 	AlarmStatus *string   // 报警状态（active, acked, resolved, auto_resolved, expired）
 	AlarmStatuses []string // 报警状态列表（IN 查询）
 
+	// Pending 语义：FE Pending tab 用。等价于
+	//   alarm_status = 'active'
+	//   OR (operation='auto_resolved' AND handler IS NULL AND alarm_level <= CRITICAL(2))
+	// 目标：active + Critical(EMERG/ALERT/CRITICAL) 物理自动恢复但护理人员尚未 review 确认收到的 auto_resolved。
+	// acked 不入 Pending（staff 已 ack=已确认收到，task 完成进 Resolved tab）。
+	// 与 AlarmStatus / AlarmStatuses 互斥；置 true 时后两者被忽略。
+	Pending bool
+
 	// 操作结果过滤
 	Operation *string   // 操作结果
 	Operations []string // 操作结果列表（IN 查询）

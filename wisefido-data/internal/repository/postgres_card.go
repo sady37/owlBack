@@ -605,13 +605,12 @@ func (r *PostgresCardRepository) GetCardsByUnit(tenantID, unitID string) ([]doma
 	return cards, rows.Err()
 }
 
-// DeleteCard 删除卡片；同时 expire 该 card LPM 命中的所有 device 的 active alarms。
+// DeleteCard 删除卡片；按 alarm 锚定卡的规则，先把该 card_id 下所有非终态 alarm 标 expired
+// （包含已迁走 device 留下的孤儿 alarm — 按 card_id 精确匹配，不是 device_addr）。
 func (r *PostgresCardRepository) DeleteCard(tenantID, cardID string) error {
 	_ = tenantID
 
-	// v2 unified: cardID is INET CIDR (= spatial_prefix)
 	spatialPrefix := cardID
-	// Sanity check exists
 	var existsRow sql.NullString
 	err := r.db.QueryRow(`SELECT card_id::text FROM cards WHERE card_id = $1::INET`, cardID).Scan(&existsRow)
 	if err != nil {
@@ -621,13 +620,10 @@ func (r *PostgresCardRepository) DeleteCard(tenantID, cardID string) error {
 		return fmt.Errorf("query card before delete: %w", err)
 	}
 	uids := r.getCardDeviceUIDList(tenantID, cardID)
-	deviceIDs := r.getCardDeviceIDList(cardID)
 
-	if len(deviceIDs) > 0 {
-		if err := card.ExpireAlarmsByDeviceAddrs(context.Background(), r.db, tenantID, deviceIDs, "card_delete"); err != nil {
-			r.logger.Warn("DeleteCard: failed to expire alarms",
-				zap.String("card_id", cardID), zap.Error(err))
-		}
+	if err := card.ExpireAlarmsByCardID(context.Background(), r.db, cardID, "card_delete"); err != nil {
+		r.logger.Warn("DeleteCard: failed to expire alarms",
+			zap.String("card_id", cardID), zap.Error(err))
 	}
 
 	if _, err := r.db.Exec(`DELETE FROM cards WHERE card_id = $1::INET`, cardID); err != nil {
@@ -731,6 +727,12 @@ func (r *PostgresCardRepository) DeleteCardsByUnit(tenantID, unitID string) erro
 
 	for _, cid := range cardIDs {
 		r.appendRecorded("deleted", tenantID, cid, unitID, r.getCardDeviceUIDList(tenantID, cid))
+	}
+
+	// 按 alarm 锚定卡规则：unit 下任意 card 删 → 该 prefix 命中所有非终态 alarm expired
+	if err := card.ExpireAlarmsByCardPrefix(context.Background(), r.db, unitID, "unit_delete"); err != nil {
+		r.logger.Warn("DeleteCardsByUnit: failed to expire alarms",
+			zap.String("unit_id", unitID), zap.Error(err))
 	}
 
 	if _, err := r.db.Exec(`DELETE FROM cards WHERE card_id <<= $1::inet`, unitID); err != nil {
@@ -912,28 +914,6 @@ func (r *PostgresCardRepository) CreateCard(
 // =====================================================================
 // 内部 helpers
 // =====================================================================
-
-// getCardDeviceIDList card LPM 命中的所有 device_addr（IPv6 string list；Phase 2 一刀切后唯一寻址）。
-func (r *PostgresCardRepository) getCardDeviceIDList(cardID string) []string {
-	rows, err := r.db.Query(`
-		SELECT host(d.device_addr)
-		FROM cards c
-		JOIN devices d ON d.device_addr <<= c.card_id
-		WHERE c.card_id = $1::INET
-	`, cardID)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err == nil && id != "" {
-			ids = append(ids, id)
-		}
-	}
-	return ids
-}
 
 // getCardDeviceUIDList card LPM 命中的所有 device_uid（来自 device_factory_meta）。
 func (r *PostgresCardRepository) getCardDeviceUIDList(tenantID, cardID string) []string {
