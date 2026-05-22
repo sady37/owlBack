@@ -251,10 +251,11 @@ func (t *DeviceStatusTracker) Run(ctx context.Context) {
 
 func (t *DeviceStatusTracker) scanStale(ctx context.Context) {
 	nowMs := time.Now().UnixMilli()
-	var stale []struct {
+	type devEntry struct {
 		addr       string
 		deviceType string
 	}
+	var stale, healthy []devEntry
 	t.mu.Lock()
 	for addr, dl := range t.state {
 		if !dl.online {
@@ -262,11 +263,10 @@ func (t *DeviceStatusTracker) scanStale(ctx context.Context) {
 		}
 		threshold := nowMs - staleThresholdForDeviceType(dl.deviceType).Milliseconds()
 		if dl.lastSeenMs < threshold {
-			stale = append(stale, struct {
-				addr       string
-				deviceType string
-			}{addr, dl.deviceType})
+			stale = append(stale, devEntry{addr, dl.deviceType})
 			dl.online = false
+		} else {
+			healthy = append(healthy, devEntry{addr, dl.deviceType})
 		}
 	}
 	t.mu.Unlock()
@@ -280,5 +280,13 @@ func (t *DeviceStatusTracker) scanStale(ctx context.Context) {
 			zap.String("device_type", s.deviceType),
 		)
 		t.fireOffline(s.addr)
+	}
+	// Self-heal: idempotent re-write online to Redis；修复 TouchLastSeen transition-only
+	// 首次失败 + 内存 online 后无重试 + Redis 与内存 drift 的 case
+	// （如 direct PG UPDATE 绕 config publish / SetDeviceOnline 瞬时 Redis 错误等）
+	for _, h := range healthy {
+		if err := t.writer.SetDeviceOnline(ctx, h.addr, h.addr, h.deviceType, true); err != nil {
+			t.logger.Warn("watchdog self-heal online", zap.String("addr", h.addr), zap.Error(err))
+		}
 	}
 }
