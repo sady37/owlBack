@@ -442,7 +442,7 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 	// 用于 single-card 视图（cards 切片只有 1 张）时仍能识别同辈 bed/room card 存在 → 不走 merge。
 	siblingCardExists := map[string]bool{}
 	if len(prefixes) > 0 {
-		// v2.5: cards.spatial_prefix → cards.card_id；card_type 列移除（cards 都是 /88，无 device 卡）
+		// 同 /80 unit 范围内的兄弟卡集合（single-card 视图识别用）
 		sibRows, err := s.db.QueryContext(ctx, `
 			SELECT text(card_id)
 			  FROM cards

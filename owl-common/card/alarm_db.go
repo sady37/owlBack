@@ -24,8 +24,8 @@ import (
 //     device_uid + resident_id INET / device_id UUID）— trigger 时刻一次 SELECT 锁住
 //   - 北极星：producer / parent_span / trace_id 三列承载 datagram 因果链
 //   - cards 表 v2 无 alarm counter 列；CardAlarmState 由 alarm_events 实时聚合（GROUP BY alarm_level）
-//   - card_id INET 列（v2 schema 已是 INET，等同 cards.spatial_prefix CIDR）：INSERT 时填入 cardID
-//     （由 cardagg IotPreparedHandler LPM 反查 device_addr → cards.spatial_prefix；空时仍写 NULL）
+//   - card_id INET 列：INSERT 时填入 cardID
+//     （由 cardagg IotPreparedHandler LPM 反查 device_addr → cards.card_id；空时仍写 NULL）
 //
 // 详 doc/alarm_v2_phase_g.md（待补）
 // ====================================================================
@@ -145,8 +145,8 @@ func snapshotForAlarm(ctx context.Context, db *sql.DB, addr netip.Addr) (alarmSn
 		LEFT JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
 		LEFT JOIN LATERAL (
 		  SELECT resident_id FROM cards
-		  WHERE x.addr <<= spatial_prefix
-		  ORDER BY masklen(spatial_prefix) DESC
+		  WHERE x.addr <<= card_id
+		  ORDER BY masklen(card_id) DESC
 		  LIMIT 1
 		) c ON true
 		LEFT JOIN residents res ON res.resident_id = c.resident_id
@@ -309,7 +309,7 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 // 改用 `ae.card_id = cardID::INET` 精确匹配，依赖 InsertAlarmAndUpdateCard 在写入时由
 // cards GiST LPM 锁定的 ae.card_id 列值。
 //
-// cardID 为 cards.spatial_prefix CIDR 字符串；空 / 非法 INET 时返回零状态。
+// cardID 为 cards.card_id CIDR 字符串；空 / 非法 INET 时返回零状态。
 //
 // SQL 计数策略（sensor_v2.md §6.7 决定 17）：
 //
@@ -565,7 +565,7 @@ type ActiveAlarmRow struct {
 
 // AlarmWithCardInfo 含 card 归属的 alarm 行（API 兼容）
 type AlarmWithCardInfo struct {
-	CardID string // cards.spatial_prefix CIDR 字符串
+	CardID string // cards.card_id CIDR 字符串
 	ActiveAlarmRow
 }
 
@@ -605,10 +605,10 @@ func ListAllActiveAlarms(ctx context.Context, db *sql.DB, tenantID string) ([]Al
 	q := `
 		SELECT
 		  COALESCE((
-		    SELECT host(c.spatial_prefix) || '/' || masklen(c.spatial_prefix)
+		    SELECT host(c.card_id) || '/' || masklen(c.card_id)
 		    FROM cards c
-		    WHERE ae.device_addr <<= c.spatial_prefix AND c.is_active = true
-		    ORDER BY masklen(c.spatial_prefix) DESC
+		    WHERE ae.device_addr <<= c.card_id
+		    ORDER BY masklen(c.card_id) DESC
 		    LIMIT 1
 		  ), '') AS card_id,
 		  ae.event_id::text, ae.event_type, ae.alarm_level,

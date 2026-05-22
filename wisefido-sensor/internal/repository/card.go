@@ -13,7 +13,7 @@ import (
 //
 // v2 schema: cards 表只有 spatial_prefix INET PK + card_type + card_name；
 // tenant_id/unit_id/bed_id/room_id/devices JSONB 全部退役，由 spatial_prefix 派生 +
-// JOIN devices LPM (devices.device_ipv6 <<= cards.spatial_prefix) 反查设备列表。
+// JOIN devices LPM (devices.device_addr <<= cards.card_id) 反查设备列表。
 //
 // CardType 兼容映射：v2 lowercase ('active_bed'/'unit') ↔ v1 PascalCase ('ActiveBedCard'/'UnitCard')
 // 内部存 v1 风格供 evaluator/event_consumer 既有 string 比较直接复用。
@@ -32,7 +32,7 @@ func NewCardRepository(db *sql.DB, logger *zap.Logger) *CardRepository {
 
 // CardInfo 卡片信息（v2 派生形态）。
 //
-// CardID = cards.spatial_prefix INET CIDR text，e.g. "fd00:0:3:111:3:101::/96"
+// CardID = cards.card_id INET CIDR text，e.g. "fd00:0:3:111:3:101::/96"
 // 其余 BedID/UnitID/RoomID/TenantID 也都是 INET CIDR text，按 mask 长度派生。
 type CardInfo struct {
 	CardID   string  // spatial_prefix INET CIDR
@@ -189,8 +189,8 @@ func (r *CardRepository) GetAllCards(tenantID string) ([]CardInfo, error) {
 
 // GetCardByDeviceID 根据 device 标识查所属卡（v2 = device_addr canonical IPv6 string）。
 //
-// device_ipv6 单程票后 deviceID 入参是 canonical IPv6 (e.g. "fd00:0:3:111:3:101:a2ac:d523")；
-// LPM cards.spatial_prefix >>= device_ipv6 命中。
+// deviceID 入参是 canonical IPv6 (e.g. "fd00:0:3:111:3:101:a2ac:d523")；
+// LPM cards.card_id >>= device_addr 命中。
 func (r *CardRepository) GetCardByDeviceID(tenantID, deviceID string) (*CardInfo, error) {
 	addr, perr := netip.ParseAddr(deviceID)
 	if perr != nil {

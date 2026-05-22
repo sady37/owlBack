@@ -114,7 +114,7 @@ func NewTargetMerger(metaCache *DeviceMetaCache) *TargetMerger {
 //
 // subject 双形态（v2/v3 演进）：
 //   - v2 entity-keyed (当前)：subject 是 CIDR（/96 bed 或 /88 room）；entity IS card_id；
-//     单 snapshot per entity，无跨 device max-merge（cards.spatial_prefix 上的所有 device 共享一份）
+//     单 snapshot per entity，无跨 device max-merge（cards.card_id 上的所有 device 共享一份）
 //   - v3 device-keyed (未来 [[target_state_per_device]])：subject 是 /128 device IPv6；
 //     需 LookupCardByDeviceAddr 反查 owning card；max-merge 同 card 下多 device snapshot
 //

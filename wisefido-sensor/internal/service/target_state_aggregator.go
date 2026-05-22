@@ -228,7 +228,7 @@ func (a *TargetStateAggregator) OnZoneEvent(spatialPrefix, zoneID string, totalP
 
 // ForgetDevice 清空 device 派生的 accumulator（"device offline = 内存重启"原则）。
 //
-// 实现：把 device addr 推到 /96 bed prefix 和 /88 room prefix（v2 cards.spatial_prefix
+// 实现：把 device addr 推到 /96 bed prefix 和 /88 room prefix（cards.card_id
 // 在这两层）→ 清 accums 对应 entry。多 device 共 spatial 罕见但理论存在（如 share room
 // 多 radar），over-clear 视为可接受（offline 本来就丢数据）。
 //
