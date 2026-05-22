@@ -11,7 +11,6 @@ import (
 	"os"
 	"sync"
 	"time"
-	"unsafe"
 
 	"owl-common/card"
 	"wisefido-data/internal/store"
@@ -614,10 +613,7 @@ func (s *CardRealtimeService) SubscribeRealtimeStream(ctx context.Context, w htt
 		zap.String("tenant_id", tenantID),
 		zap.String("user_id", userID))
 
-	var lastRealtimeRef unsafe.Pointer
-	var lastStatusRef unsafe.Pointer
-	var lastPushMu sync.Mutex
-	var messageCounter int64
+	var lastRealtimeVer, lastStatusVer uint64
 
 	// 心跳 + 数据推送都在同一个 goroutine，避免并发写 ResponseWriter
 	tickerHeart := time.NewTicker(30 * time.Second)
@@ -632,41 +628,22 @@ func (s *CardRealtimeService) SubscribeRealtimeStream(ctx context.Context, w htt
 		case <-tickerHeart.C:
 			writeServerTick(w, flusher)
 		case <-tickerData.C:
-			// 实时数据：从 DataStreamSubscriber 缓存取
-			cachedRealtime := s.streamProvider.GetCardRealtimeData(cardID)
-			if cachedRealtime != nil {
-				lastPushMu.Lock()
-				ref := unsafe.Pointer(&cachedRealtime)
-				if ref != lastRealtimeRef {
-					messageCounter++
-					if messageCounter%2 == 0 {
-						lastRealtimeRef = ref
-						lastPushMu.Unlock()
-						jsonData, _ := json.Marshal(cachedRealtime)
+			if curVer := s.streamProvider.GetCardRealtimeVersion(cardID); curVer > lastRealtimeVer {
+				if data := s.streamProvider.GetCardRealtimeData(cardID); data != nil {
+					if jsonData, err := json.Marshal(data); err == nil {
 						io.WriteString(w, "data: "+string(jsonData)+"\n\n")
 						flusher.Flush()
-					} else {
-						lastPushMu.Unlock()
+						lastRealtimeVer = curVer
 					}
-				} else {
-					lastPushMu.Unlock()
 				}
 			}
-
-			cachedStatus := s.streamProvider.GetCardStatusData(cardID)
-			if cachedStatus != nil {
-				lastPushMu.Lock()
-				ref := unsafe.Pointer(&cachedStatus)
-				if ref != lastStatusRef {
-					lastStatusRef = ref
-					lastPushMu.Unlock()
-					jsonData, err := json.Marshal(cachedStatus)
-					if err == nil {
+			if curVer := s.streamProvider.GetCardStatusVersion(cardID); curVer > lastStatusVer {
+				if data := s.streamProvider.GetCardStatusData(cardID); data != nil {
+					if jsonData, err := json.Marshal(data); err == nil {
 						io.WriteString(w, "event: card_status\ndata: "+string(jsonData)+"\n\n")
 						flusher.Flush()
+						lastStatusVer = curVer
 					}
-				} else {
-					lastPushMu.Unlock()
 				}
 			}
 		}
@@ -874,7 +851,7 @@ waitInit:
 				if sseEvt.Status == nil || len(sseEvt.Status.Data) == 0 {
 					continue
 				}
-				// device_status 已由 cardagg 以 device_id 为 key 写入，直接下发；附加 server_ts 供前端时钟同步（毫秒）
+				// device_status 由 cardagg 写入 device:status:{device_addr} hash；直接下发并附 server_ts 供前端时钟同步（毫秒）
 				sendData := make(map[string]interface{}, len(sseEvt.Status.Data)+1)
 				for k, v := range sseEvt.Status.Data {
 					sendData[k] = v
@@ -986,28 +963,10 @@ func (s *CardRealtimeService) pushStatusSnapshot(w http.ResponseWriter, flusher 
 	}
 }
 
-// GetCardStatus Detail 页每 30 秒查询：device online 复用 FillDeviceOnlineStatusFromCardagg，alarm 用 alarm_db
+// GetCardStatus Detail 页每 30 秒查询：device online 复用 FillDeviceOnlineStatusFromCardagg，alarm 用 alarm_db。
+// 依赖（stateReader / db）由 main.go SetGetCardStatusDeps 启动期 wire。
 func (s *CardRealtimeService) GetCardStatus(ctx context.Context, cardID string) (map[string]interface{}, error) {
-	if s.stateReader != nil && s.db != nil {
-		return s.getCardStatusFromQuery(ctx, cardID)
-	}
-	// 无依赖时回退老 key
-	key := "vital-focus:card:" + cardID + ":status"
-	val, err := s.kv.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, store.ErrMiss) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if val == "" {
-		return nil, nil
-	}
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(val), &data); err != nil {
-		return nil, err
-	}
-	return data, nil
+	return s.getCardStatusFromQuery(ctx, cardID)
 }
 
 func (s *CardRealtimeService) getCardStatusFromQuery(ctx context.Context, cardID string) (map[string]interface{}, error) {
@@ -1053,17 +1012,13 @@ func (s *CardRealtimeService) enrichDeviceStatus(ctx context.Context, cardID str
 	if s.db == nil {
 		return nil
 	}
-	// v2 unified: card_id ≡ spatial_prefix。
-	//
-	// 范围必须用 /80 unit pool（不能用 c.spatial_prefix），与 card_static_service.fillDevicesV3 对齐：
-	//   - fillDevicesV3 套娃归属：bed-anchor → room-anchor 吸收唯一 bed → /80 兜底
-	//   - 例：room "Main" 只有 1 bed card /96 "John.Y"，同 room 内 byte11=00 的设备 D523 被吸收到该 /96
-	//   - 若 enrichDeviceStatus 用严格 <<= /96 查，吸收进来的 D523 查不到 → 默认 offline，与 FE 显示的设备列表不一致
-	//   - 改用 /80 unit pool：返回 unit 内全部 monitor-on 设备的 status；FE 按 device.device_id 在 card.devices 内查找，
-	//     多余的 status entry 自然被忽略（map 查 key 即可）
-	// Phase 2 一刀切：identity = device_uid；FE map key 改 device_addr (canonical IPv6 text)。
+	// 范围用 /80 unit pool（不严格 LPM 到 /96），与 card_static_service.fillDevicesV3 对齐：
+	//   fillDevicesV3 套娃归属：bed-anchor → room-anchor 吸收唯一 bed → /80 收口。
+	//   例：room "Main" 只 1 bed card /96 "John.Y"；同 room 内 byte11=00 的 device D523 被吸收到该 /96。
+	//   若 enrichDeviceStatus 严格 <<= /96 查，吸收进来的 D523 查不到 → 默认 offline，跟 FE 设备列表不一致。
+	//   改 /80：返回 unit 内全部 monitor-on 设备的 status；FE 按 device_addr 查 map，多余 entry 自然忽略。
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT host(d.device_addr) AS device_addr_text, host(d.device_addr), COALESCE(dfm.device_type::text, '') AS device_type
+		SELECT host(d.device_addr), COALESCE(dfm.device_type::text, '') AS device_type
 		FROM devices d
 		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
 		WHERE d.device_addr <<= network(set_masklen($1::INET, 80))
@@ -1072,28 +1027,26 @@ func (s *CardRealtimeService) enrichDeviceStatus(ctx context.Context, cardID str
 		return err
 	}
 	defer rows.Close()
-	var devices []struct{ deviceID, deviceIPv6, deviceType string }
-	var deviceIPv6s []string
+	var devices []struct{ deviceAddr, deviceType string }
+	var deviceAddrs []string
 	for rows.Next() {
-		var deviceID, deviceIPv6, deviceType string
-		if err := rows.Scan(&deviceID, &deviceIPv6, &deviceType); err != nil || deviceID == "" {
-			continue
+		var addr, deviceType string
+		if err := rows.Scan(&addr, &deviceType); err != nil {
+			return err
 		}
-		devices = append(devices, struct{ deviceID, deviceIPv6, deviceType string }{deviceID, deviceIPv6, deviceType})
-		if deviceIPv6 != "" {
-			deviceIPv6s = append(deviceIPv6s, deviceIPv6)
-		}
+		devices = append(devices, struct{ deviceAddr, deviceType string }{addr, deviceType})
+		deviceAddrs = append(deviceAddrs, addr)
 	}
 
 	nowMs := time.Now().UnixMilli()
-	dsMap := FillDeviceStatusFromCardagg(ctx, s.stateReader, deviceIPv6s, s.logger)
+	dsMap := FillDeviceStatusFromCardagg(ctx, s.stateReader, deviceAddrs, s.logger)
 	deviceStatus := make(map[string]interface{}, len(devices))
 	for _, d := range devices {
 		entry := map[string]interface{}{
-			"device_id":   d.deviceID,
+			"device_id":   d.deviceAddr, // FE map key 兼容历史命名（B1 待 FE 同步窗口改 device_addr）
 			"device_type": d.deviceType,
 		}
-		if ds := dsMap[d.deviceIPv6]; ds != nil {
+		if ds := dsMap[d.deviceAddr]; ds != nil {
 			entry["offline"] = ds.Offline
 			if ds.SignalPoor != 0 {
 				entry["signal_poor"] = ds.SignalPoor
@@ -1117,7 +1070,7 @@ func (s *CardRealtimeService) enrichDeviceStatus(ctx context.Context, cardID str
 			entry["offline"] = 1
 			entry["updated_at"] = nowMs
 		}
-		deviceStatus[d.deviceID] = entry
+		deviceStatus[d.deviceAddr] = entry
 	}
 	data["device_status"] = deviceStatus
 	return nil
