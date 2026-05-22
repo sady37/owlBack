@@ -9,28 +9,37 @@
 
 ## 主线 TODO
 
-### ~~1. 重新规划 card 创建 / 维护规则~~（2026-05-22 Walk A → 2026-05-23 简化重写完成）
+### ~~1. 重新规划 card 创建 / 维护规则~~（2026-05-22 Walk A → 2026-05-23 三轮迭代终版）
 
 **最终规则（2026-05-23 拍板，权威 [rule.md C9](owlBack/doc/rule.md)）**：
 
 ```
-N = bedCount_in_unit
+N = bedCount_in_unit          (整 unit 床数 /96 候选)
+M = noBedRoomCount_in_unit    (不含 bed 的 room 数 /88 候选)
 
-N > 1   → 出 N 张 /96 + 1 张 /80    (split)
-N ≤ 1   → 出 1 张 /80               (merge，吸所有 device + alarm)
-无 room → 无 card                    (card 下无空间则删)
+Step 0: unit 无 room → 无卡
+Step 1: Unit
+  N ≤ 1 → /80 only (merge，吸所有)
+  N > 1 → split：M > 0 时预创建 /80（装 noBed room 的 device）
+Step 2: 每个含 bed 的 room
+  Room.N ≤ 1 → /88 卡（吸 bed + room device）
+  Room.N > 1 → N 张 /96 + room device → /80（M=0 时 lazy create /80）
 ```
 
-仅 /80 + /96 两种卡，**永不出 /88**。device/alarm 路由 = PG GiST `<<=` LPM 自动；alarm.producer 列保留发起设备身份。
+三种实卡 **/80 + /88 + /96**。device/alarm 路由 = PG GiST `<<=` LPM 自动；alarm.producer 列保留发起设备身份。
 
-**演进路径**：
-- Walk A (2026-05-22) 拍板"bed 恒建 /96"，与 cardagg consumer `has_bed=ActiveBed` 对齐 — 但 `scanBedAnchors` 强加 /96 在 merge 模式（Bed≤1）产生空 /96 卡，违反 [[card_split_rule_v3]] memory 原 spec
-- 2026-05-23 用户提出 MoM 1-bed unit 出 2 张卡（/80 + /96 80wkds）异常，audit 后发现 Walk A 与 rule v3 memory 冲突
-- 用户简化规则到 N>1 / N≤1 二分律 + 砍 Layer-2 per-room + 砍 /88 — 比原 v3 更简
-- 实施：删 `scanBedAnchors` / `queryUnitAnchors` / `applyUnitSplitRule` / `unitInfo` struct；重写 `buildExpected` 用单 SQL 取 unit (room_count, bed_count, beds[]) 一次决策
-- 实测 tenant fd00:0:3：17→14 cards（回收 3 张 Walk A 多出的空 /96）；MoM 收敛到 1 张 /80 ✓；其他 11 unit 也全符合新规则
+**演进 3 版**：
+- Walk A (2026-05-22) "bed 恒建 /96" — 在 merge 模式产生空 /96，违反原 spec
+- 简化版 `37e413a` (2026-05-23 早) "N>1 split N /96 + /80 / N≤1 merge" — **砍 /88 太狠**，101 Bedroom radar E598A2ACD523 与 BedA device 分卡（落 /80），same-room 拓扑断裂
+- 终版 (2026-05-23) — /88 回归，2-step + M + lazy /80 平衡 same-room 拓扑 vs 卡最少化
 
-**has_bed 语义保留 ActiveBed**（C3，给 sensor 用），与卡结构 split 解耦 — [card_reconcile.go upsertCard](owlBack/wisefido-data/internal/service/card_reconcile.go) SQL `EXISTS(devices d JOIN beds b ON d.device_addr <<= b.bed_id WHERE b.bed_id <<= card_id AND d.monitoring_enabled=TRUE)` 不变。
+**关键修复**：
+- [card_reconcile.go buildExpected](owlBack/wisefido-data/internal/service/card_reconcile.go) 重写 — 单 SQL 取每 unit 的 (room_count, bed_count, per-room beds[], per-room has-non-bed-device)，Go 端按 Step 0/1/2 决策含 lazy /80
+- [card_static_service.go LATERAL JOIN](owlBack/wisefido-data/internal/service/card_static_service.go) 按 card_id mask 分级查 room/bed：/80 不查（room=NULL, bed=NULL），/88 取 exact room，/96 取 exact bed + parent room。修复 j0yvp3（/80）误显示"Denver/A/101/Bedroom/BedA"的 bug
+
+**实测 tenant fd00:0:3 终态 12 unit**：MoM N=1 → 1 张 /80；101 N=2 M=1 → /80 + 2 /88（E598 与 BedA 同 /88 Bedroom ✓）；202 N=2 M=0 → 2 /96 无 /80；纯 bed unit → 多 /88 无 /80；空 unit → 无卡。所有 case 符合规则。
+
+**has_bed 语义保留 ActiveBed**（C3，给 sensor 用），与卡结构 split 解耦 — upsertCard `EXISTS(devices JOIN beds <<= bed_id AND monitoring_enabled=TRUE)` 不变。
 
 ---
 

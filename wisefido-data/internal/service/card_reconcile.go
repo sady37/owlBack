@@ -40,6 +40,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/lib/pq"
+
 	"owl-common/card"
 	"owl-common/ddns"
 
@@ -106,53 +108,147 @@ func (s *CardSyncService) ReconcileCards(ctx context.Context, scope string) erro
 // Step 1 — 算 expected
 // ============================================================================
 
-// buildExpected — 纯空间结构驱动算 expected card 集合。
+// buildExpected — 纯空间结构驱动算 expected card 集合（rule.md C9 / 2026-05-23 终版）。
 //
-// 规则（2026-05-22 拍板，仅 /80 + /96 两种卡，无 Layer-2 per-room）：
+// 规则：
 //
-//	N = bedCount in unit
-//	N > 1 → N 张 /96 + 1 张 /80    （split：每 bed 出 /96，/80 兜底 + 装非 bed device）
-//	N ≤ 1 → 1 张 /80               （merge：所有 device 落 /80）
-//	unit 无 room → 不出卡            （"card 下无空间则删"）
+//	N = bedCount_in_unit          (整 unit 床数 /96 候选)
+//	M = noBedRoomCount_in_unit    (不含 bed 的 room 数，含 0-device 空 room)
 //
-// device / alarm 路由：PostgreSQL GiST `<<=` LPM 自动 — 存在 /96 且 device <<= /96 → 落 /96；否则 /80。
-// 无 /96 时所有 alarm 自然 fallback /80；alarm.producer 列保留发起设备身份。
+//	Step 0: unit 无 room → 无卡
+//	Step 1: Unit
+//	  N ≤ 1 → /80 only (merge，吸所有)
+//	  N > 1 → split：M > 0 时预创建 /80（装 noBed room device）
+//	Step 2: 每个含 bed 的 room (split 模式)
+//	  Room.N ≤ 1 → /88 卡 (吸 bed + room device)
+//	  Room.N > 1 → N 张 /96 + room device 上推 /80（M=0 时 lazy create /80）
+//
+// device / alarm 路由：PG GiST `<<=` LPM 自动 — device <<= 现存 /96 落 /96；<<= 现存 /88 落 /88；否则 /80。
+// alarm.producer 列保留发起设备身份。
 func buildExpected(ctx context.Context, tx *sql.Tx, scope string) (map[string]bool, error) {
 	expected := map[string]bool{}
 
-	// 一次扫 scope 内所有 unit，LEFT JOIN beds 拿到每 (unit, bed) 配对 + 整 unit 的 room/bed count。
-	// 无 bed 的 unit 也返回一行（bed_prefix=NULL），保证 0-bed unit /80 也能进 expected。
+	// 一次扫 scope 内所有 unit，LEFT JOIN rooms 拿到每 (unit, room) 配对 + 整 unit 的 room/bed count
+	// + per-room bed count、beds 列表、是否有非 bed device（用于 split 模式 lazy /80 触发）
 	rows, err := tx.QueryContext(ctx, `
 		SELECT
 		    host(u.unit_id)||'/'||masklen(u.unit_id) AS unit_prefix,
-		    (SELECT COUNT(*) FROM rooms r WHERE r.room_id <<= u.unit_id) AS room_count,
-		    (SELECT COUNT(*) FROM beds  b WHERE b.bed_id  <<= u.unit_id) AS bed_count,
-		    host(b.bed_id)||'/'||masklen(b.bed_id) AS bed_prefix
+		    (SELECT COUNT(*) FROM beds  WHERE bed_id  <<= u.unit_id) AS unit_bed_count,
+		    (SELECT COUNT(*) FROM rooms WHERE room_id <<= u.unit_id) AS unit_room_count,
+		    CASE WHEN r.room_id IS NULL THEN NULL
+		         ELSE host(r.room_id)||'/'||masklen(r.room_id)
+		    END AS room_prefix,
+		    COALESCE((SELECT COUNT(*) FROM beds WHERE bed_id <<= r.room_id), 0) AS room_bed_count,
+		    COALESCE((
+		        SELECT array_agg(host(b.bed_id)||'/'||masklen(b.bed_id))
+		          FROM beds b WHERE b.bed_id <<= r.room_id
+		    ), ARRAY[]::text[]) AS room_beds,
+		    COALESCE((
+		        SELECT EXISTS(
+		            SELECT 1 FROM devices d
+		             WHERE d.device_addr <<= r.room_id
+		               AND NOT EXISTS(
+		                 SELECT 1 FROM beds b
+		                  WHERE b.bed_id <<= r.room_id
+		                    AND d.device_addr <<= b.bed_id
+		               )
+		        )
+		    ), FALSE) AS room_has_nonbed_device
 		  FROM units u
-		  LEFT JOIN beds b ON b.bed_id <<= u.unit_id
+		  LEFT JOIN rooms r ON r.room_id <<= u.unit_id
 		 WHERE u.unit_id <<= $1::INET
+		 ORDER BY u.unit_id
 	`, scope)
 	if err != nil {
 		return nil, fmt.Errorf("query unit structure: %w", err)
 	}
 	defer rows.Close()
 
+	type roomData struct {
+		prefix       string
+		bedCount     int
+		beds         []string
+		hasNonBedDev bool
+	}
+	type unitData struct {
+		prefix    string
+		bedCount  int
+		roomCount int
+		rooms     []roomData
+	}
+	units := map[string]*unitData{}
+
 	for rows.Next() {
 		var unitPrefix string
-		var roomCount, bedCount int
-		var bedPrefix sql.NullString
-		if err := rows.Scan(&unitPrefix, &roomCount, &bedCount, &bedPrefix); err != nil {
-			return nil, fmt.Errorf("scan unit row: %w", err)
+		var unitBedCount, unitRoomCount, roomBedCount int
+		var roomPrefix sql.NullString
+		var roomBeds pq.StringArray
+		var roomHasNonBedDev bool
+		if err := rows.Scan(&unitPrefix, &unitBedCount, &unitRoomCount, &roomPrefix, &roomBedCount, &roomBeds, &roomHasNonBedDev); err != nil {
+			return nil, fmt.Errorf("scan row: %w", err)
 		}
-		if roomCount == 0 {
-			continue
+		u, ok := units[unitPrefix]
+		if !ok {
+			u = &unitData{prefix: unitPrefix, bedCount: unitBedCount, roomCount: unitRoomCount}
+			units[unitPrefix] = u
 		}
-		expected[unitPrefix] = true
-		if bedCount > 1 && bedPrefix.Valid && bedPrefix.String != "" {
-			expected[bedPrefix.String] = true
+		if roomPrefix.Valid {
+			u.rooms = append(u.rooms, roomData{
+				prefix:       roomPrefix.String,
+				bedCount:     roomBedCount,
+				beds:         []string(roomBeds),
+				hasNonBedDev: roomHasNonBedDev,
+			})
 		}
 	}
-	return expected, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iter rows: %w", err)
+	}
+
+	for _, u := range units {
+		// Step 0: unit 无 room → 无卡
+		if u.roomCount == 0 {
+			continue
+		}
+		// Step 1: Unit
+		if u.bedCount <= 1 {
+			// merge: /80 only
+			expected[u.prefix] = true
+			continue
+		}
+		// split mode (N > 1)
+		// M = bed-less room count
+		m := 0
+		for _, r := range u.rooms {
+			if r.bedCount == 0 {
+				m++
+			}
+		}
+		has80 := m > 0 // M>0 → 预创建 /80
+
+		// Step 2: per room with bed
+		for _, r := range u.rooms {
+			if r.bedCount == 0 {
+				continue // bed-less room device 经 LPM 自动落 /80（has80 已 by M>0 触发）
+			}
+			if r.bedCount <= 1 {
+				// /88 leaf 吸 bed + room device
+				expected[r.prefix] = true
+			} else {
+				// Room.N > 1 → split：N 张 /96 + room device → /80
+				for _, bed := range r.beds {
+					expected[bed] = true
+				}
+				if r.hasNonBedDev {
+					has80 = true // lazy create /80（M=0 时也兜底）
+				}
+			}
+		}
+		if has80 {
+			expected[u.prefix] = true
+		}
+	}
+	return expected, nil
 }
 
 // ============================================================================

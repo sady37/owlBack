@@ -235,21 +235,21 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 		LEFT JOIN units    u  ON u.unit_id    = c.unit_id
 		LEFT JOIN branches br ON br.branch_id = network(set_masklen(c.unit_id, 56))
 		LEFT JOIN sites    s  ON s.site_id    = network(set_masklen(c.unit_id, 64))
-		-- room/bed lookup: card_id 跟 spatial_prefix overlap（任一方向 contain）
-		--   /80 card 含多 room → 取首个；/88 card = room 自己；/96 card 在某 /88 room 内
+		-- room/bed lookup 按 card_id mask 严格分级（rule.md C9 终版三种卡）：
+		--   /80 unit card: room=NULL bed=NULL  (FE 显示到 unit 层即止)
+		--   /88 room card: room=自己 bed=NULL  (FE 显示到 room 层)
+		--   /96 bed  card: room=parent /88 bed=自己 (FE 显示到 bed 层)
 		LEFT JOIN LATERAL (
 			SELECT room_id, room_name, room_type
 			  FROM rooms
-			 WHERE room_id <<= c.card_id OR room_id >>= c.card_id
-			 ORDER BY masklen(room_id) DESC, room_slot
+			 WHERE (masklen(c.card_id) = 88 AND room_id = c.card_id)
+			    OR (masklen(c.card_id) = 96 AND room_id >>= c.card_id)
 			 LIMIT 1
 		) rm ON TRUE
-		--   /80 card 含多 bed → 取首个；/88 card 含 room 内 bed；/96 card = bed 自己
 		LEFT JOIN LATERAL (
 			SELECT bed_id, bed_name
 			  FROM beds
-			 WHERE bed_id <<= c.card_id
-			 ORDER BY bed_id
+			 WHERE masklen(c.card_id) = 96 AND bed_id = c.card_id
 			 LIMIT 1
 		) b ON TRUE
 		WHERE c.card_id = ANY($1::inet[])
