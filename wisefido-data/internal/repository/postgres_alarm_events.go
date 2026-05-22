@@ -84,20 +84,20 @@ func (r *PostgresAlarmEventsRepository) buildWhereClause(tenantID string, filter
 		*argN++
 	}
 
-	// 设备过滤（v2 仍存 ae.device_id snapshot 列）
+	// 设备过滤（Phase 2: ae.device_id UUID 列已删，改用 device_addr INET 过滤）
 	if filters.DeviceID != nil {
-		where = append(where, fmt.Sprintf("ae.device_id = $%d::uuid", *argN))
+		where = append(where, fmt.Sprintf("ae.device_addr = $%d::INET", *argN))
 		*args = append(*args, *filters.DeviceID)
 		*argN++
 	}
 	if len(filters.DeviceIDs) > 0 {
 		placeholders := make([]string, len(filters.DeviceIDs))
 		for i := range filters.DeviceIDs {
-			placeholders[i] = fmt.Sprintf("$%d", *argN)
+			placeholders[i] = fmt.Sprintf("$%d::INET", *argN)
 			*args = append(*args, filters.DeviceIDs[i])
 			*argN++
 		}
-		where = append(where, fmt.Sprintf("ae.device_id IN (%s)", strings.Join(placeholders, ", ")))
+		where = append(where, fmt.Sprintf("ae.device_addr IN (%s)", strings.Join(placeholders, ", ")))
 	}
 
 	// 事件类型和级别过滤
@@ -263,7 +263,7 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 		SELECT
 			ae.event_id::text,
 			host(network(set_masklen(ae.device_addr, 48)))    AS tenant_id,
-			COALESCE(ae.device_id::text, '')                  AS device_id,
+			host(ae.device_addr)                              AS device_addr,
 			ae.event_type,
 			COALESCE(ae.category, '')                          AS category,
 			ae.alarm_level::text                               AS alarm_level,
@@ -389,7 +389,7 @@ func (r *PostgresAlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenan
 		SELECT
 			ae.event_id::text,
 			host(network(set_masklen(ae.device_addr, 48)))    AS tenant_id,
-			COALESCE(ae.device_id::text, '')                  AS device_id,
+			host(ae.device_addr)                              AS device_addr,
 			ae.event_type,
 			COALESCE(ae.category, '')                          AS category,
 			ae.alarm_level::text                               AS alarm_level,
@@ -559,7 +559,7 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 		SELECT
 			ae.event_id::text,
 			host(network(set_masklen(ae.device_addr, 48)))    AS tenant_id,
-			COALESCE(ae.device_id::text, '')                  AS device_id,
+			host(ae.device_addr)                              AS device_addr,
 			COALESCE(ae.card_id::text, '')                    AS card_id,
 			ae.event_type,
 			COALESCE(ae.category, '')                          AS category,
@@ -576,7 +576,7 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 			ae.created_at                                      AS updated_at
 		FROM alarm_events ae
 		WHERE ae.device_addr <<= $1::INET
-		  AND ae.device_id = $2::uuid
+		  AND ae.device_addr = $2::INET
 		  AND ae.event_type = $3
 		  AND ae.triggered_at > $4
 		  AND ae.alarm_status = 'active'
