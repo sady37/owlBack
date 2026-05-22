@@ -648,22 +648,9 @@ func main() {
 				zap.Int("tenant_count", len(tenants)),
 			)
 
-			// 统计信息
-			totalStats := struct {
-				ExistingCount  int
-				DeletedCount   int
-				CreatedCount   int
-				UpdatedCount   int
-				UnchangedCount int
-			}{}
 			successCount := 0
 			errorCount := 0
-			totalUnits := 0
 
-			// v2: 每个 tenant 单次 ReconcileCards 扫整 /48
-			// 旧"先 CleanupOrphanCards 再 CreateCardsForUnit"流程统一到 ReconcileCards：
-			//   - device monitor-on 才建卡（不再 create→cleanup 来回）
-			//   - resident_id 用 LPM resident_unit (masklen ≥ 80) 反查
 			for _, tenant := range tenants {
 				select {
 				case <-ctx.Done():
@@ -681,76 +668,21 @@ func main() {
 					}
 				}
 			}
-			_ = totalUnits // 旧统计字段 — ReconcileCards 自己已在 log 里输出
-			_ = totalStats
-
-			// v2: DeviceCard 概念已退役（改为 card_type='device' /128 极罕见）；
-			// 孤儿清理由 CleanupOrphanCards 统一处理（v2 LPM 反查无 device 的 card）。
-			_ = cardRepo // keep alive for downstream references
-
-			// 为未绑定 card 的设备创建 DeviceCard（card_id = device_id）
-			totalDeviceCards := 0
-			for _, tenant := range tenants {
-				dcCount, dcErr := cardSyncService.SyncDeviceCards(ctx, tenant.TenantID)
-				if dcErr != nil {
-					logger.Warn("Failed to sync device cards",
-						zap.String("tenant_id", tenant.TenantID),
-						zap.Error(dcErr),
-					)
-				} else {
-					totalDeviceCards += dcCount
-				}
-			}
-			if totalDeviceCards > 0 {
-				logger.Info("DeviceCards synced on startup", zap.Int("created", totalDeviceCards))
-			}
-
-			// 启动时按 alarm_events 重算并写回 cards（unhandled_alarm_*、pop_alarm_*），与 alarm_events 一致
-			// 在 CreateCardsForUnit 之后执行，直接调用内部 CardSyncService
-			recalcOk, recalcFail, err := cardSyncService.RecalcAllCardsAlarmState(ctx, db)
-			if err != nil {
-				logger.Warn("Failed to recalc all cards alarm state", zap.Error(err))
-			} else {
-				logger.Info("Cards alarm state recalc on startup", zap.Int("ok", recalcOk), zap.Int("fail", recalcFail))
-			}
-
-			// 输出统计信息到 stdout 和日志
-			updateCount := totalStats.DeletedCount + totalStats.CreatedCount + totalStats.UpdatedCount
 			summaryMsg := fmt.Sprintf(
-				"\n=== Card Check/Update Statistics (Startup) ===\n"+
-					"Tenants processed: %d\n"+
-					"Units processed: %d (success: %d, failed: %d)\n"+
-					"Existing card count: %d\n"+
-					"Updated card count: %d (deleted: %d, created: %d, content updated: %d)\n"+
-					"Unchanged cards: %d\n"+
+				"\n=== Card Reconcile Statistics (Startup) ===\n"+
+					"Tenants processed: %d (success: %d, failed: %d)\n"+
+					"Per-tenant diff counts in service logs.\n"+
 					"==========================================\n",
-				len(tenants),
-				totalUnits,
-				successCount,
-				errorCount,
-				totalStats.ExistingCount,
-				updateCount,
-				totalStats.DeletedCount,
-				totalStats.CreatedCount,
-				totalStats.UpdatedCount,
-				totalStats.UnchangedCount,
+				len(tenants), successCount, errorCount,
 			)
 
 			// 输出到 stdout
 			os.Stdout.WriteString(summaryMsg)
 
-			// 同时记录到日志
-			logger.Info("Completed full card check/update on startup",
+			logger.Info("Completed startup card reconcile",
 				zap.Int("tenant_count", len(tenants)),
-				zap.Int("unit_count", totalUnits),
 				zap.Int("success_count", successCount),
 				zap.Int("error_count", errorCount),
-				zap.Int("existing_count", totalStats.ExistingCount),
-				zap.Int("updated_count", updateCount),
-				zap.Int("deleted_count", totalStats.DeletedCount),
-				zap.Int("created_count", totalStats.CreatedCount),
-				zap.Int("content_updated_count", totalStats.UpdatedCount),
-				zap.Int("unchanged_count", totalStats.UnchangedCount),
 			)
 		}()
 	}

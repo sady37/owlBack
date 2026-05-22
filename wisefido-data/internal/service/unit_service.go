@@ -492,9 +492,17 @@ func (s *unitService) verifyBedPermission(ctx context.Context, tenantID, bedID s
 	return bed, room, unit, nil
 }
 
-// syncCardsForUnit 单元层级（unit/room/bed）或展示字段变化后刷新该 unit 下卡片
+// syncCardsForUnit 单元层级（unit/room/bed）或展示字段变化后刷新该 unit 下卡片。
+// Walk A 后：unit/room/bed CRUD 触发对该 unit /80 scope 的 ReconcileCards 重算。
 func (s *unitService) syncCardsForUnit(ctx context.Context, tenantID, unitID, _ string) {
-	SyncUnitCards(ctx, tenantID, unitID)
+	_ = tenantID
+	if globalCardSync == nil || strings.TrimSpace(unitID) == "" {
+		return
+	}
+	if err := globalCardSync.ReconcileCards(ctx, unitID); err != nil {
+		s.logger.Warn("syncCardsForUnit: ReconcileCards failed",
+			zap.String("unit_id", unitID), zap.Error(err))
+	}
 }
 
 // collectUnitTypeChangeBlockers 检查 unit 下是否已有 resident，

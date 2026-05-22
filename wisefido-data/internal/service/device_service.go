@@ -355,18 +355,18 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 	}
 
 	if err == nil && newDevice != nil {
-		// card sync：新旧 unit 都同步
-		if oldDevice != nil && oldDevice.UnitID.Valid {
-			SyncUnitCards(ctx, req.TenantID, oldDevice.UnitID.String)
+		// 新旧 unit 都重算（device bind 跨 unit 时 has_bed/split rule 双向受影响）
+		if oldDevice != nil && oldDevice.UnitID.Valid && oldDevice.UnitID.String != "" {
+			if rerr := globalCardSync.ReconcileCards(ctx, oldDevice.UnitID.String); rerr != nil {
+				s.logger.Warn("UpdateDevice: ReconcileCards (old unit) failed",
+					zap.String("unit_id", oldDevice.UnitID.String), zap.Error(rerr))
+			}
 		}
-		if newDevice.UnitID.Valid {
-			SyncUnitCards(ctx, req.TenantID, newDevice.UnitID.String)
-		}
-		// DeviceCard 管理
 		if newDevice.UnitID.Valid && newDevice.UnitID.String != "" {
-			CleanupDeviceCardGlobal(ctx, req.TenantID, req.DeviceID)
-		} else {
-			EnsureDeviceCardGlobal(ctx, req.TenantID, *newDevice)
+			if rerr := globalCardSync.ReconcileCards(ctx, newDevice.UnitID.String); rerr != nil {
+				s.logger.Warn("UpdateDevice: ReconcileCards (new unit) failed",
+					zap.String("unit_id", newDevice.UnitID.String), zap.Error(rerr))
+			}
 		}
 	}
 
@@ -455,8 +455,12 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 		return nil, fmt.Errorf("failed to delete device: %w", err)
 	}
 
-	SyncUnitCards(ctx, req.TenantID, unitID)
-	CleanupDeviceCardGlobal(ctx, req.TenantID, req.DeviceID)
+	if unitID != "" && globalCardSync != nil {
+		if rerr := globalCardSync.ReconcileCards(ctx, unitID); rerr != nil {
+			s.logger.Warn("DeleteDevice: ReconcileCards failed",
+				zap.String("unit_id", unitID), zap.Error(rerr))
+		}
+	}
 
 	// 发送 device_store 变化信号（device_deleted）
 	if s.configPublisher != nil {

@@ -111,17 +111,46 @@ type unitInfo struct {
 	nonBedAnchors map[string]bool // /80 or /88 anchors
 }
 
-// buildExpected 查 device 反推 unit anchors，per unit 应用 split 规则。
+// buildExpected — Walk A 两步合算 expected anchor set。
+//
+// Step A：scope 内每 bed → /96 anchor 强制进 expected（bed 寿命独立 device）。
+// Step B：scope 内每 monitor-on device → unit/room/bed anchor，喂 split rule 决 /88 /80 粒度。
+//
+// /96 在两步可能重复出现，map 去重；/88 /80 仍 device-driven。
 func buildExpected(ctx context.Context, tx *sql.Tx, scope string) (map[string]bool, error) {
+	expected := map[string]bool{}
+	if err := scanBedAnchors(ctx, tx, scope, expected); err != nil {
+		return nil, err
+	}
 	units, err := queryUnitAnchors(ctx, tx, scope)
 	if err != nil {
 		return nil, err
 	}
-	expected := map[string]bool{}
 	for unitPrefix, info := range units {
 		applyUnitSplitRule(unitPrefix, info, expected)
 	}
 	return expected, nil
+}
+
+// scanBedAnchors — scope 内 beds 表全扫，每行 bed_id 直接进 expected（/96 已含在 INET 表示）。
+func scanBedAnchors(ctx context.Context, tx *sql.Tx, scope string, expected map[string]bool) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT host(bed_id)||'/'||masklen(bed_id)
+		  FROM beds
+		 WHERE bed_id <<= $1::INET
+	`, scope)
+	if err != nil {
+		return fmt.Errorf("scan bed anchors: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return fmt.Errorf("scan bed anchor row: %w", err)
+		}
+		expected[p] = true
+	}
+	return rows.Err()
 }
 
 // queryUnitAnchors scope 内每 monitor-on device 取 (unit_prefix, anchor_prefix)；
@@ -402,13 +431,19 @@ func (s *CardSyncService) upsertCard(ctx context.Context, tx *sql.Tx,
 
 	cardDNS := card.ShortCodeOf(p)
 
-	// has_bed: anchor scope 内是否有 bed (beds 表 LPM)
-	//   /96 anchor → 自身就是 bed → true
-	//   /88 anchor → room 内可能有 bed
-	//   /80 anchor (merge mode) → unit 内任一 bed
+	// has_bed: ActiveBed 精细语义 — 卡 scope 内任一 bed 上有 monitor-on device。
+	//   device_addr <<= bed_id 隐含 "device 绑在某 bed 上"（IPv6 /96 包含 = bind 状态）
+	//   monitoring_enabled = TRUE 过滤 monitor=off
+	//   例：room-level device C(on) + bed_A(on) + bed_B(off) → TRUE
+	//       room-level device C(on) + bed_A(off) + bed_B(off) → FALSE
 	var hasBed bool
-	_ = tx.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM beds WHERE bed_id <<= $1::INET)`, p,
+	_ = tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+		  SELECT 1 FROM devices d
+		    JOIN beds b ON d.device_addr <<= b.bed_id
+		   WHERE b.bed_id <<= $1::INET
+		     AND d.monitoring_enabled = TRUE
+		)`, p,
 	).Scan(&hasBed)
 
 	// has_bathroom / has_kitchen: anchor scope 内是否有 room_type=1/2 的 room
