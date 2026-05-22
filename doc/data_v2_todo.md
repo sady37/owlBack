@@ -9,30 +9,28 @@
 
 ## 主线 TODO
 
-### ~~1. 重新规划 card 创建 / 维护规则~~（2026-05-22 Walk A 完成）
+### ~~1. 重新规划 card 创建 / 维护规则~~（2026-05-22 Walk A → 2026-05-23 简化重写完成）
 
-**Why**：
-- 当前 [card_reconcile.go:115-141 buildExpected](owlBack/wisefido-data/internal/service/card_reconcile.go#L115-L141) 全 device-driven，仅 `monitoring_enabled=TRUE` 的 device 才反推出 anchor → **空 bed / 空 room / 空 unit 无卡**
-- 当前 [card_reconcile.go:405-412](owlBack/wisefido-data/internal/service/card_reconcile.go#L405-L412) `has_bed` 走 structural `EXISTS(beds...)`；但 cardagg consumer（[device_meta.go:103](owlBack/wisefido-cardagg/internal/service/device_meta.go#L103) / [card_display_builder.go:21](owlBack/wisefido-cardagg/internal/consumer/card_display_builder.go#L21) / alarm_router）按 ActiveBed 语义读 → **producer/consumer 反向 drift**
-- card 寿命系 device 上违反空间集合本质；[50_cards.sql](owlRD/dbv2/50_cards.sql) 已改文档规则但 Go 还没跟
-- [`card_sync_service.upsertSpaceCard`](owlBack/wisefido-data/internal/service/card_sync_service.go#L226) 是 stub，真正写入在 [`card_reconcile.go`](owlBack/wisefido-data/internal/service/card_reconcile.go) —— 两套 writer 路径并存
+**最终规则（2026-05-23 拍板，权威 [rule.md C9](owlBack/doc/rule.md)）**：
 
-**How to apply**：
-- **lifecycle == space lifecycle**：bed/room/unit 存在即建对应 /96 / /88 / /80 卡，删 space 才删卡；与 device/resident 双解耦
-- **has_bed 改 ActiveBed**：`EXISTS(devices d JOIN beds b ON d.device_ipv6 <<= b.bed_id WHERE b.bed_id <<= card_id)`；设备 bind/unbind/monitor flip 触发重算
-- **buildExpected 改空间驱动**：每 bed → /96；split rule 决定 /88 / /80 聚合粒度（device 仅作 split 输入，不作 anchor gate）
-- **bind/unbind 不动 card 行集合**：只更新 `has_bed` snapshot + `devices.card_id` FK
+```
+N = bedCount_in_unit
 
-**实际落地（Walk A）**：
-- ✅ buildExpected 加 `scanBedAnchors` 一步，bed 全扫 /96 强进 expected
-- ✅ upsertCard.has_bed 改 ActiveBed SQL: `EXISTS(devices d JOIN beds b ON d.device_addr <<= b.bed_id WHERE b.bed_id <<= card_id AND d.monitoring_enabled=TRUE)`
-- ✅ 11 个 v2 no-op stub 全删（card_sync_service 496→154 行 / card_create_service.go 整文件删）
-- ✅ 9 个 caller 改直调 ReconcileCards（unit_service / device_service / main.go）
-- ✅ 50_cards.sql lifecycle doc 精确化（Walk A 拍板 /96 == bed 寿命 / /88 /80 仍 split rule + device 触发）
-- ✅ FE Overview.vue 加 `isCardMonitored` 过滤
-- ✅ 实测 Card pfmb02 has_bed = TRUE（tenant fd00:0:3 卡 11→17）
+N > 1   → 出 N 张 /96 + 1 张 /80    (split)
+N ≤ 1   → 出 1 张 /80               (merge，吸所有 device + alarm)
+无 room → 无 card                    (card 下无空间则删)
+```
 
-详 commit `feat(data/cards): Walk A`。Walk B 不上（瘦 /88 /80 由 device 触发的简洁性 > Walk B 全空间 orphan 卡的彻底性）。
+仅 /80 + /96 两种卡，**永不出 /88**。device/alarm 路由 = PG GiST `<<=` LPM 自动；alarm.producer 列保留发起设备身份。
+
+**演进路径**：
+- Walk A (2026-05-22) 拍板"bed 恒建 /96"，与 cardagg consumer `has_bed=ActiveBed` 对齐 — 但 `scanBedAnchors` 强加 /96 在 merge 模式（Bed≤1）产生空 /96 卡，违反 [[card_split_rule_v3]] memory 原 spec
+- 2026-05-23 用户提出 MoM 1-bed unit 出 2 张卡（/80 + /96 80wkds）异常，audit 后发现 Walk A 与 rule v3 memory 冲突
+- 用户简化规则到 N>1 / N≤1 二分律 + 砍 Layer-2 per-room + 砍 /88 — 比原 v3 更简
+- 实施：删 `scanBedAnchors` / `queryUnitAnchors` / `applyUnitSplitRule` / `unitInfo` struct；重写 `buildExpected` 用单 SQL 取 unit (room_count, bed_count, beds[]) 一次决策
+- 实测 tenant fd00:0:3：17→14 cards（回收 3 张 Walk A 多出的空 /96）；MoM 收敛到 1 张 /80 ✓；其他 11 unit 也全符合新规则
+
+**has_bed 语义保留 ActiveBed**（C3，给 sensor 用），与卡结构 split 解耦 — [card_reconcile.go upsertCard](owlBack/wisefido-data/internal/service/card_reconcile.go) SQL `EXISTS(devices d JOIN beds b ON d.device_addr <<= b.bed_id WHERE b.bed_id <<= card_id AND d.monitoring_enabled=TRUE)` 不变。
 
 ---
 

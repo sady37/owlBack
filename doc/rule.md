@@ -23,16 +23,26 @@
 
 ## §C — Card
 
-- **C1**　`card_id ≡ spatial_prefix`（INET），mask 即卡型：/48 tenant / /56 branch / /64 site / /80 unit·public / /88 room / /96 bed_card / /128 device。`Why:` mask 长度自描述卡型，prefix-match 零成本（INET <<=）。
-- **C2**　card 寿命跟 space 寿命；与 device、resident 双解耦。具体哪些 mask 层级出独立卡由 C9 split shape 决定：**/80 unitCard 永随 unit space 同生死**；/96 bedCard / /88 roomCard 仅在 split shape 触发时与对应 space 同生死（merge shape 下 bed/room space 存在但被 /80 吸收，不独立出卡）。`Why:` device/resident 任一缺位都不该让卡消失；2026-05-21 重定。
+- **C1**　`card_id ≡ spatial_prefix`（INET），mask 即卡型：**仅 /80 unit·public + /96 bed_card 两种实际卡**（/48 tenant、/56 branch、/64 site 只用作权限 scope，不出 card 行；/88 room、/128 device 永不出 card）。`Why:` 2026-05-22 简化定型 — 两种粒度足覆盖 sensor / display 需求；/88 room 中间层无独立运行时价值，所有 non-bed device 自然 LPM fallback /80。
+- **C2**　card 寿命跟 space 寿命；与 device、resident 双解耦。具体哪些 mask 层级出独立卡由 C9 split shape 决定：**/80 unitCard 永随 unit space 同生死（前提 unit 有 room）**；/96 bedCard 仅在 split shape 触发时与对应 bed space 同生死（merge shape 下 bed space 存在但被 /80 吸收，不独立出卡）。`Why:` device/resident 任一缺位都不该让卡消失；2026-05-22 重定（unit 无 room 不出 /80，"card 下无空间则删"）。
 - **C3**　`has_bed` = ActiveBed 语义：scope 下任一 bed 上**已绑 device** 才 TRUE；空 bed_card has_bed=FALSE。`Why:` has_bed 是给 sensor 消费的运行时 flag（"scope 内是否有可用 bed 设备"），不是空间结构标记；structural"是否有 bed 空间"由 split 规则的 Bed count 隐含表达。
 - **C4**　card 唯一写入口在 `wisefido-data`；其他模块只读。`Why:` 多写源 → 状态发散；见 §X。
 - **C5**　alarm_events / event_log **不存** card_id；归属反查走 `device_addr + ts ∈ episode`。`Why:` card 重组不污染历史审计；episode 时段反查即得。
 - **C6**　device-card 1:1 绑定；公共区域用 public 卡（不属任何住户）；不做 fan-out；多卡命中 = 数据异常 warn 兜底。`Why:` fan-out 复杂度不值；public 卡承"无主"语义。
 - **C7**　未绑卡 device 用 device_id 兜底（`owl-common.StreamHeadCardID`）；0 卡分支不再 drop。`Why:` 卡缺失时不能 drop 实时流。
 - ~~**C8**　`has_bed` = structural：scope 下有 bed 结构即 TRUE；与 device 绑定状态无关。~~（2026-05-21 当日撤销 — has_bed 是 sensor 消费的运行时 flag，应为 ActiveBed 语义，方向定反；恢复 C3）
-- **C9**　card 是纯空间集合；不存在 activeBed 触发的动态 split/merge；旧 `alreadySplit` latching 与 reconcile 动态 split 模型全部砍掉。`Why:` 卡型 = spatial mask（C1），结构由 space 决定（C2），不由设备绑定状态翻转；split 在 space 建模时一次定型。**Bed count 只决定 shape（split vs merge），不决定卡是否创建**：/80 unitCard 随 unit space 永远存在；/96 bedCard、/88 roomCard 仅在对应 split shape 下出（Bed>1 触发）；merge 模式下 bed/room device 数据落 /80 不另出子卡。device 绑定/解绑、非 bed device 有无**永远不**影响 /80 是否存在。
-- **C10**　Card 创建/删除触发 = space DDL：`unit INSERT` → /80 立建（永远）；`bed/room INSERT/DELETE` → 触发整 unit scope 按 C9 split shape 重算（Bed count 跨阈值 1→2 split / 2→1 merge 时，多张 /96/88 一并 create 或 delete，含未直接被改的 bed/room）；`unit DELETE` → 级联删本 unit 全部卡。device 绑定/解绑、resident_unit 变更**只更新 snapshot 字段**（card_name/resident_id/has_*），不创建不删除卡。`Why:` 落实 C2+C9，card 寿命跟 space 不跟 device/resident；旧"device 离开即删卡"模型废，reconcile hook 需从 device/resident 改挂到 space DDL（入 data_v2_todo）。
+- **C9**　card 是纯空间集合，split shape 由 unit 内**结构性 bed 总数**一次定型（不是 ActiveBed runtime）。规则（2026-05-22 拍板）：
+
+  ```
+  N = bedCount_in_unit  (整 unit 床数)
+
+  N > 1   → 出 N 张 /96 + 1 张 /80     (≥3 张)
+  N ≤ 1   → 出 1 张 /80               (merge，吸所有 device + alarm)
+  无 room → 无 card                    (card 下无空间则删)
+  ```
+
+  仅 /80 + /96 两种卡，**永不出 /88**。device/alarm 路由 = PG GiST `<<=` LPM 自动（device <<= /96 落 /96，否则 /80）；无 /96 时 alarm 自然归 /80，`alarm.producer` 保留发起设备身份。`Why:` 卡型 = spatial mask（C1），结构由 space 决定（C2），不由设备绑定状态翻转；旧 `alreadySplit` latching / per-room 决策 / activeBed 触发的动态 split 模型全部砍掉。
+- **C10**　Card 创建/删除触发 = space DDL：`unit INSERT` → unit 有 room 才出 /80；`bed INSERT/DELETE` → 跨阈值 1→2 split 触发 N 张 /96 一并 create，2→1 merge 触发全 /96 delete；`room INSERT/DELETE` → 影响 /80 寿命（首个 room 创建时 /80 出生，末个 room 删除时 /80 消亡）；`unit DELETE` → 级联删本 unit 全部卡。device 绑定/解绑、resident_unit 变更**只更新 snapshot 字段**（card_name/resident_id/has_*），不创建不删除卡。Card delete 时同 card_id 上非终态 alarm 自动 → `expired`（见 [[alarm_anchored_to_card]] 规则）。`Why:` 落实 C2+C9，card 寿命跟 space 不跟 device/resident。
 - **C11**　Public 卡 = `units.unit_type=3` 的 /80 卡：`card_name='public'`、`resident_id=NULL`；公共区域 device 落 public 卡（C6）。普通 unit /80 卡 `card_name`=resident nickname。`Why:` public 是 unit 属性不是独立卡型，简化模型。
 - **C12**　Card 字段填充：INSERT 时 `card_id`=spatial_prefix（C1）/ `card_name`=resident nickname or `'public'` / `card_dns`=`card.ShortCodeOf(card_id)` / `resident_id`=LPM(`resident_unit.spatial_prefix`) or NULL。`has_bed` (C3 ActiveBed 语义) / `has_bathroom` / `has_kitchen` 在 **device 绑定/解绑** 事件上更新（room/bed 内有无绑 device），不在 INSERT 时一次性 EXISTS。`Why:` 字段单源；snapshot 读快免 JOIN；has_* 是运行时 flag 跟绑定状态走（C3），不是结构标记；LPM 由 IPv6 prefix 直接得出（I1）。
 

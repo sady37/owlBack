@@ -106,180 +106,53 @@ func (s *CardSyncService) ReconcileCards(ctx context.Context, scope string) erro
 // Step 1 — 算 expected
 // ============================================================================
 
-type unitInfo struct {
-	bedAnchors    map[string]bool // /96 anchors
-	nonBedAnchors map[string]bool // /80 or /88 anchors
-}
-
-// buildExpected — Walk A 两步合算 expected anchor set。
+// buildExpected — 纯空间结构驱动算 expected card 集合。
 //
-// Step A：scope 内每 bed → /96 anchor 强制进 expected（bed 寿命独立 device）。
-// Step B：scope 内每 monitor-on device → unit/room/bed anchor，喂 split rule 决 /88 /80 粒度。
+// 规则（2026-05-22 拍板，仅 /80 + /96 两种卡，无 Layer-2 per-room）：
 //
-// /96 在两步可能重复出现，map 去重；/88 /80 仍 device-driven。
+//	N = bedCount in unit
+//	N > 1 → N 张 /96 + 1 张 /80    （split：每 bed 出 /96，/80 兜底 + 装非 bed device）
+//	N ≤ 1 → 1 张 /80               （merge：所有 device 落 /80）
+//	unit 无 room → 不出卡            （"card 下无空间则删"）
+//
+// device / alarm 路由：PostgreSQL GiST `<<=` LPM 自动 — 存在 /96 且 device <<= /96 → 落 /96；否则 /80。
+// 无 /96 时所有 alarm 自然 fallback /80；alarm.producer 列保留发起设备身份。
 func buildExpected(ctx context.Context, tx *sql.Tx, scope string) (map[string]bool, error) {
 	expected := map[string]bool{}
-	if err := scanBedAnchors(ctx, tx, scope, expected); err != nil {
-		return nil, err
-	}
-	units, err := queryUnitAnchors(ctx, tx, scope)
-	if err != nil {
-		return nil, err
-	}
-	for unitPrefix, info := range units {
-		applyUnitSplitRule(unitPrefix, info, expected)
-	}
-	return expected, nil
-}
 
-// scanBedAnchors — scope 内 beds 表全扫，每行 bed_id 直接进 expected（/96 已含在 INET 表示）。
-func scanBedAnchors(ctx context.Context, tx *sql.Tx, scope string, expected map[string]bool) error {
+	// 一次扫 scope 内所有 unit，LEFT JOIN beds 拿到每 (unit, bed) 配对 + 整 unit 的 room/bed count。
+	// 无 bed 的 unit 也返回一行（bed_prefix=NULL），保证 0-bed unit /80 也能进 expected。
 	rows, err := tx.QueryContext(ctx, `
-		SELECT host(bed_id)||'/'||masklen(bed_id)
-		  FROM beds
-		 WHERE bed_id <<= $1::INET
+		SELECT
+		    host(u.unit_id)||'/'||masklen(u.unit_id) AS unit_prefix,
+		    (SELECT COUNT(*) FROM rooms r WHERE r.room_id <<= u.unit_id) AS room_count,
+		    (SELECT COUNT(*) FROM beds  b WHERE b.bed_id  <<= u.unit_id) AS bed_count,
+		    host(b.bed_id)||'/'||masklen(b.bed_id) AS bed_prefix
+		  FROM units u
+		  LEFT JOIN beds b ON b.bed_id <<= u.unit_id
+		 WHERE u.unit_id <<= $1::INET
 	`, scope)
 	if err != nil {
-		return fmt.Errorf("scan bed anchors: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			return fmt.Errorf("scan bed anchor row: %w", err)
-		}
-		expected[p] = true
-	}
-	return rows.Err()
-}
-
-// queryUnitAnchors scope 内每 monitor-on device 取 (unit_prefix, anchor_prefix)；
-// anchor 优先 bed > room > unit。
-func queryUnitAnchors(ctx context.Context, tx *sql.Tx, scope string) (map[string]*unitInfo, error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT DISTINCT
-		  (SELECT u.unit_id::text FROM units u WHERE d.device_addr <<= u.unit_id LIMIT 1) AS unit_prefix,
-		  COALESCE(
-		    (SELECT b.bed_id::text  FROM beds  b  WHERE d.device_addr <<= b.bed_id  LIMIT 1),
-		    (SELECT rm.room_id::text FROM rooms rm WHERE d.device_addr <<= rm.room_id LIMIT 1),
-		    (SELECT u.unit_id::text FROM units u  WHERE d.device_addr <<= u.unit_id  LIMIT 1)
-		  ) AS anchor_prefix
-		  FROM devices d
-		 WHERE d.monitoring_enabled = TRUE
-		   AND d.device_addr <<= $1::INET
-	`, scope)
-	if err != nil {
-		return nil, fmt.Errorf("query device anchors: %w", err)
+		return nil, fmt.Errorf("query unit structure: %w", err)
 	}
 	defer rows.Close()
 
-	units := map[string]*unitInfo{}
 	for rows.Next() {
-		var unitPrefix, anchor sql.NullString
-		if err := rows.Scan(&unitPrefix, &anchor); err != nil {
-			return nil, fmt.Errorf("scan device anchors: %w", err)
+		var unitPrefix string
+		var roomCount, bedCount int
+		var bedPrefix sql.NullString
+		if err := rows.Scan(&unitPrefix, &roomCount, &bedCount, &bedPrefix); err != nil {
+			return nil, fmt.Errorf("scan unit row: %w", err)
 		}
-		if !unitPrefix.Valid || unitPrefix.String == "" || !anchor.Valid || anchor.String == "" {
+		if roomCount == 0 {
 			continue
 		}
-		u, ok := units[unitPrefix.String]
-		if !ok {
-			u = &unitInfo{bedAnchors: map[string]bool{}, nonBedAnchors: map[string]bool{}}
-			units[unitPrefix.String] = u
-		}
-		if strings.HasSuffix(anchor.String, "/96") {
-			u.bedAnchors[anchor.String] = true
-		} else {
-			u.nonBedAnchors[anchor.String] = true
-		}
-	}
-	return units, rows.Err()
-}
-
-// applyUnitSplitRule 把一个 unit 的 split 决策结果写入 expected。
-func applyUnitSplitRule(unitPrefix string, info *unitInfo, expected map[string]bool) {
-	bedCount := len(info.bedAnchors)
-	hasNonBed := len(info.nonBedAnchors) > 0
-	if bedCount == 0 && !hasNonBed {
-		return
-	}
-
-	// Merge mode
-	if bedCount <= 1 {
 		expected[unitPrefix] = true
-		return
-	}
-
-	// Split mode — 算 per-room bed count + per-room 是否有 room-level device
-	roomBeds := map[string]map[string]bool{} // room /88 → set of bed /96 prefixes
-	for bed := range info.bedAnchors {
-		if room := narrowPrefixToRoom(bed); room != "" {
-			if roomBeds[room] == nil {
-				roomBeds[room] = map[string]bool{}
-			}
-			roomBeds[room][bed] = true
+		if bedCount > 1 && bedPrefix.Valid && bedPrefix.String != "" {
+			expected[bedPrefix.String] = true
 		}
 	}
-	roomHasDev := map[string]bool{}
-	for anchor := range info.nonBedAnchors {
-		if strings.HasSuffix(anchor, "/88") {
-			roomHasDev[anchor] = true
-		}
-	}
-
-	// 集合所有需决策的 room
-	rooms := map[string]bool{}
-	for r := range roomBeds {
-		rooms[r] = true
-	}
-	for r := range roomHasDev {
-		rooms[r] = true
-	}
-
-	needUnit := false
-	for room := range rooms {
-		beds := roomBeds[room]
-		bedN := len(beds)
-		hasDev := roomHasDev[room]
-
-		switch {
-		case bedN > 1 && hasDev:
-			// /88 room + 每 bed /96
-			expected[room] = true
-			for b := range beds {
-				expected[b] = true
-			}
-		case bedN > 1 && !hasDev:
-			// 仅 N /96
-			for b := range beds {
-				expected[b] = true
-			}
-		case bedN == 1 && hasDev:
-			// /88 room (absorb bed)
-			expected[room] = true
-		case bedN == 1 && !hasDev:
-			// /96 bed (absorb room)
-			for b := range beds {
-				expected[b] = true
-			}
-		case bedN == 0 && hasDev:
-			// 独立 /88 room 卡（split 模式下，0-bed-with-device room 不上推 unit，
-			// 保持卡片粒度与 split 模式一致 —— 否则 /80 与 /96 混杂语义混乱）
-			expected[room] = true
-		}
-	}
-
-	// /80 unit-level device → unit card 必须
-	for anchor := range info.nonBedAnchors {
-		if !strings.HasSuffix(anchor, "/88") {
-			needUnit = true
-		}
-	}
-
-	if needUnit {
-		expected[unitPrefix] = true
-	}
-	// else: split 模式下无 device 上推 → 不建 unit card；applyDiffs DELETE 兜底清旧 empty unit。
+	return expected, rows.Err()
 }
 
 // ============================================================================
