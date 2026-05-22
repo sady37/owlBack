@@ -9,7 +9,7 @@
 
 ## 主线 TODO
 
-### 1. 重新规划 card 创建 / 维护规则
+### ~~1. 重新规划 card 创建 / 维护规则~~（2026-05-22 Walk A 完成）
 
 **Why**：
 - 当前 [card_reconcile.go:115-141 buildExpected](owlBack/wisefido-data/internal/service/card_reconcile.go#L115-L141) 全 device-driven，仅 `monitoring_enabled=TRUE` 的 device 才反推出 anchor → **空 bed / 空 room / 空 unit 无卡**
@@ -23,13 +23,16 @@
 - **buildExpected 改空间驱动**：每 bed → /96；split rule 决定 /88 / /80 聚合粒度（device 仅作 split 输入，不作 anchor gate）
 - **bind/unbind 不动 card 行集合**：只更新 `has_bed` snapshot + `devices.card_id` FK
 
-**Walk A vs Walk B 待定**：
-- Walk A：每 bed 永远 /96，/88 / /80 维持 device 触发（推荐 / 保守）
-- Walk B：每空间都建对应卡，display 层挑粒度（彻底但 orphan 多）
+**实际落地（Walk A）**：
+- ✅ buildExpected 加 `scanBedAnchors` 一步，bed 全扫 /96 强进 expected
+- ✅ upsertCard.has_bed 改 ActiveBed SQL: `EXISTS(devices d JOIN beds b ON d.device_addr <<= b.bed_id WHERE b.bed_id <<= card_id AND d.monitoring_enabled=TRUE)`
+- ✅ 11 个 v2 no-op stub 全删（card_sync_service 496→154 行 / card_create_service.go 整文件删）
+- ✅ 9 个 caller 改直调 ReconcileCards（unit_service / device_service / main.go）
+- ✅ 50_cards.sql lifecycle doc 精确化（Walk A 拍板 /96 == bed 寿命 / /88 /80 仍 split rule + device 触发）
+- ✅ FE Overview.vue 加 `isCardMonitored` 过滤
+- ✅ 实测 Card pfmb02 has_bed = TRUE（tenant fd00:0:3 卡 11→17）
 
-**前提依赖**：无（先行）
-
-来源：本会话 §card_reconcile 诊断 / [50_cards.sql:10-11](owlRD/dbv2/50_cards.sql#L10-L11) 文档已改 / [[card_sync_service / has_bed drift]]
+详 commit `feat(data/cards): Walk A`。Walk B 不上（瘦 /88 /80 由 device 触发的简洁性 > Walk B 全空间 orphan 卡的彻底性）。
 
 ---
 
@@ -41,29 +44,23 @@
 
 ---
 
-### 3. 重写 wisefido-data card / device 模块
+### ~~3. 重写 wisefido-data card / device 模块~~（2026-05-22 重新定义 scope，写路径基本完成）
 
-**Why**：
-- #1 + #2 落地需要 data 内部 card/device 写路径成片改，逐函数 short-circuit 已被证明不可行（[[v2_cutover_lessons]]）
-- 既有 stub 路径（card_sync_service）+ 事实路径（card_reconcile）并存 → 必须二选一统一
-- repository / service / handler 三层都有遗留 v1/v2 双轨残骸
+**Walk A 后的现实 scope**：
 
-**How to apply**：
-- 先 #1 + #2 dbv2 CREATE 改完用户审过（按 [[feedback_schema_review_via_dbv2]]）
-- 整段重写不逐函数 short-circuit（按 [[v2_cutover_lessons]]）
-- 单写主入口：`card_sync_service`（card 生命周期） / `device_service`（device 业务态）
-- 边界：cards 表 100% data 写；devices 表外部写点（ipam / qinglan）同窗口跟字段，但不重写其代码结构
-- 下游只读模块（cardagg / sensor / iot / sleepace / qinglan）跟着改字段名，不改结构
+原 #3 写"重写 card / device 模块"指意是把"write path 整段重写、不逐函数 short-circuit"（按 [[v2_cutover_lessons]]）。Walk A 后 **写路径核心债已清完**：
+- ✅ stub 全删（11 个 no-op）
+- ✅ card_sync_service.go 瘦成 156 行（service 外壳 + globalCardSync hook）
+- ✅ card_reconcile.go 算法层独立（buildExpected → diff → upsert → emit）
+- ✅ has_bed producer/consumer 反向 drift 消除（核心 #1 案例）
+- ✅ device_id UUID 收口（#2 完成）
 
-**重写涉及文件清单**：
-- [owlBack/wisefido-data/internal/domain/](owlBack/wisefido-data/internal/domain/) ：`card.go` / `device.go` / `card_sync.go`
-- [owlBack/wisefido-data/internal/service/](owlBack/wisefido-data/internal/service/) ：`card_sync_service.go` / `card_reconcile.go` / `device_service.go` / `device_store_service.go` 全部
-- [owlBack/wisefido-data/internal/repository/](owlBack/wisefido-data/internal/repository/) ：`postgres_devices.go` / `postgres_cards.go` / `postgres_device_store.go` / `cards_repository.go`
-- [owlBack/wisefido-data/internal/http/](owlBack/wisefido-data/internal/http/) ：`device_handler.go` / `unit_handler.go` / `vital_focus_handler.go` / `radar_handler.go`
+**没动 / 真正剩的**（独立可单做，不再视作主线 #3 阻塞）：
+- `device_service.go` 业务路径 v2 cutover 残留（独立 PR；现状已可工作）
+- `postgres_devices.go` / `postgres_card.go` repository 层 audit（spatial_prefix→card_id 已扫，剩下做 schema diff 二次过滤）
+- `device_store_service.go` / `cards_repository.go` 全删条件（看是否还有 caller）
 
-**前提依赖**：#1 + #2
-
-来源：本会话 §三层 stub/inverted 现象 / [[v2_cutover_lessons]] / [[feedback_producer_first]]
+详见下方 **§Card 模块 5 文件清单**。
 
 ---
 
@@ -71,9 +68,9 @@
 
 各项独立。做支线时**不要**修改、拆并、删除主线条目；返回主线就按原 #1 / #2 / #3 顺序接续。
 
-### S1. `card_sync_service.upsertSpaceCard` stub 清理
+### ~~S1. `card_sync_service.upsertSpaceCard` stub 清理~~（2026-05-22 Walk A 完成）
 
-[card_sync_service.go:226-309](owlBack/wisefido-data/internal/service/card_sync_service.go#L226-L309) 整段 `SELECT 1 -- v2.5 cards INSERT stubbed` no-op。重写时整段删，不留 deprecated wrapper（按 [[v2_cutover_lessons]] 整段重写规则）。
+整段删 + card_create_service.go 整文件删；详 Walk A 落地清单。
 
 ### S2. cardagg 过时变量名 / 注释
 
@@ -84,11 +81,9 @@
 
 种子数据里 17 个设备末 32 bit 全 `::1`，#2 落地前任何 unbind 都 PK 冲突。**主线 #2 完成后此问题自然消失**（device_ipv6 不再重写）；在那之前要测 unbind 路径只能临时手动改 MAC。
 
-### S4. Overview.vue 加 monitor=off 卡片过滤
+### ~~S4. Overview.vue 加 monitor=off 卡片过滤~~（2026-05-22 完成）
 
-按本会话讨论：SSE 全发，FE Overview 页 favor 视图过滤 `card.devices.some(d => d.monitoring_enabled)`。详 [Overview.vue:466 周边](owlFront/src/views/monitoring/overview/Overview.vue#L466)。
-
-需要 `/vital-focus/cards` 接口响应里 card 必带 `devices[].monitoring_enabled` —— 先 verify 一下接口是否已带。
+落地：[Overview.vue](owlFront/src/views/monitoring/overview/Overview.vue) 加 `isCardMonitored` helper，`effectiveCardIds` 末端 filter。API 已带 `devices[].monitoring_enabled`（card_types.go:139）无需补。
 
 ### S5. qinglan `UpdateDeviceMonitoring` 并入 `devices.access`
 
@@ -115,21 +110,113 @@
 
 ---
 
-### S8. card_reconcile has_bed projection bug（2026-05-22 用户报）
+### ~~S8. card_reconcile has_bed projection bug~~（2026-05-22 Walk A 修复）
 
-**Why**：用户实测 Card `pfmb02` (Denver/A/101/GuestRoom/BedA) 有 bed + 已 bind device (`BM87224601903` 现 addr `fd00:0:3:111:3:201::1`)，但 has_bed 显示错。这是主线 #1 的具体案例 — Z-002 producer/consumer drift 仍有遗留。
-
-**How to apply**：
-- 在主线 #1 card_reconcile 重写时一并修：has_bed 走 ActiveBed (EXISTS device JOIN bed)
-- 修完后跑 `card pfmb02` 验证 has_bed = TRUE
-
-来源：用户 2026-05-22 实测 / [[z002_has_bed_producer_consumer_drift]] / 重复主线 #1 中已记的 has_bed drift（保留此项作 specific repro fixture）
+Q1 实测 pfmb02 has_bed = TRUE ✓。详 Walk A 落地清单 §1。
 
 ---
 
 ### S9. `find_card_by_device_addr` 函数
 
 [50_cards.sql:212-217](owlRD/dbv2/50_cards.sql#L212-L217) 当前实现 `SELECT card_id FROM devices WHERE device_ipv6 = addr`。主线 #2 device_ipv6 改稳定身份后，此函数语义和入参不变（仍按 device IPv6 查），但要确认 alarm 流里传的 device_addr 是新 IPv6 还是空间编码 IPv6。
+
+---
+
+## Card 模块 5 文件清单（2026-05-22 Walk A 后盘点）
+
+> 主线 #3 的 "重写 card / device 模块" 在 Walk A 落地后 scope 已收紧为**只动写路径** —— 4 个 service + 1 个算法文件并非全部都需要重写。下面是 5 个文件各自的职责定位、IPv6 touch points、去留判定，作为今后调整的参照表。
+
+```
+              ┌──────────────────────────────┐
+              │  card_allowed_provider.go    │  权限：WHO 能看 WHICH 卡
+              │  (378 lines)                  │
+              └──────────────┬────────────────┘
+                             ↓ CardList
+              ┌──────────────────────────────┐
+              │  card_static_service.go      │  读：HTTP CardStatic 装配
+              │  (723 lines)                  │
+              └──────────────────────────────┘
+                             ↑ 读
+                             │
+              ┌──────────────────────────────┐    ┌──────────────────────────┐
+              │  card_sync_service.go        │ →  │  card_reconcile.go       │
+              │  (154 lines, Walk A 后)       │    │  (760 lines)              │
+              │  service 外壳 / globalCardSync│    │  ReconcileCards 算法层    │
+              └──────────────┬────────────────┘    └──────────────────────────┘
+                             ↓ emit CardChange
+              ┌──────────────────────────────┐
+              │  card_realtime_service.go    │  推送：SSE 长连接 + CardList diff
+              │  (~1270 lines)                │
+              └──────────────────────────────┘
+```
+
+### 1. `card_allowed_provider.go` — 留
+
+**职责**：根据 user role 算"可见卡 ID 列表"。
+- Family role → 只看自家 resident 所在 unit 的卡（`filterCardsForResident` LPM 反查 cards.resident_id）
+- Staff role (Admin / Manager / Nurse / Caregiver) → 按 branch 分组（`cardIDsByUnit` 走 cards.unit_id /80）
+- Share unit 特殊处理（`ActiveBedcardIDsByUnitShared`）
+- 返回 `CardList` (按 /56 branch 分组)
+
+**IPv6 touch**：tenantID /48 INET / unitID /80 LPM cards.card_id <<= unit_id / branchID /56 分组 / resident_id /128 反查
+
+**判定**：单一职责清晰、跟其他服务零代码重复、与 IPv6 prefix 模型天然契合。**no rewrite needed**。
+
+### 2. `card_static_service.go` — 留
+
+**职责**：HTTP 读路径，把 cards 行装配成 `CardStatic`（含 unit/room/bed/devices/residents/caregivers）。
+- `GetCardList` 分页 + 权限过滤
+- `GetCardInfo` / `GetCardsByCardIDs` 单卡 / 批量
+- `enrichResidentsAndDevices` + `fillDevicesV3`（350 行 / 总 723 行）— device LPM + resident + device sibling 决断
+- `GetCardCaregivers` 聚合 resident_caregivers
+- `resolveCardID` 接受 `card_dns` 短码 / IPv6 CIDR 双形态
+
+**IPv6 touch**：card_id INET / device_addr INET / bed_id INET / room_id INET / unit_id INET；LPM `d.device_addr <<= bed_id <<= room_id <<= unit_id`
+
+**判定**：装配复杂度是 FE 业务必须，不是债。**留**。fillDevicesV3 偏大但是真复杂度。
+
+### 3. `card_sync_service.go` — 留（Walk A 后已 154 行 service 外壳）
+
+**职责**：写路径瘦壳 + 全局 hook。Walk A 后只剩：
+- `PublishConfigCardReset` / `SetReconcileDeps` — wiring
+- `CleanupOrphanCards` — 启动期清孤儿卡
+- `ClearAllCards` — 灾难恢复（dormant，无 caller）
+- `emitCardChange` — CloudEvent emit helper
+- `globalCardSync` + `InitGlobalCardSync` — 包级单例 → unit_service / device_service hook 用
+
+**IPv6 touch**：card_id INET（间接）—— 实际 SQL 都在 card_reconcile.go
+
+**判定**：跟 card_reconcile.go 一起构成写路径，自身已 154 行无 stub。**留**。
+
+### 4. `card_reconcile.go` — 留（Walk A 后已稳定）
+
+**职责**：cards 表唯一权威写入入口（算法层）。
+- `ReconcileCards` 入口（scope=INET CIDR）
+- `buildExpected` → `scanBedAnchors`（Walk A 新增）+ `queryUnitAnchors` + `applyUnitSplitRule`
+- `loadCurrent` + `applyDiffs` + `upsertCard`（含 has_bed ActiveBed 计算）
+- `resolveResidentForCard` / `isPublicUnit` / `lookupResidentNick`
+- `emitDiffs` + `syncDDNSForDiff` + `publishDiff` + `ensureDDNSForExpected`
+
+**IPv6 touch**：贯穿全文件 —— scope /48 / unit /80 / room /88 / bed /96 anchor + device LPM
+
+**判定**：Walk A 已落地，算法层独立性好。**留**。760 行可考虑拆 emit/DDNS 到独立 file（nice-to-have 不是必须）。
+
+### 5. `card_realtime_service.go` — 留（2026-05-22 已 A1+A2+A3 清理）
+
+**职责**：SSE 长连接 + 每 user CardList diff 推送。
+- SSE 连接生命周期（registerSSE / activateSSE / unregisterSSE / supersedePrevious）
+- `StartStatusFanout` — `StatusEvent` 推送到各 SSE
+- `UpdateCardList` / `UpdateByBranch` / `diffCardList` — CardList 变化 diff 然后推 CardChange
+- `getCardList` / `cardIndex` per-user cache
+- `pull-realtime` endpoint
+- `SubscribeRealtimeStream` (单卡 SSE) / `SubscribeCardsStream` (多卡 SSE) / `InitSSE` / `UpdateSSEView` / `UpdateSSEWatch`
+- `GetCardStatus` (Detail 页 30s polling) + `enrichDeviceStatus`
+
+**IPv6 touch**：cardID INET 字符串（cache key / index key），不直接做 LPM；enrichDeviceStatus SQL 走 /80 unit pool
+
+**判定**：~1270 行偏大但是 4 个并列子模块（SSE/connection / Realtime pull / Status fanout / Card list diff）的合理体量。**留**。瘦身（拆 sse_connection.go / cardlist_diff.go / fanout.go）是 nice-to-have。
+
+**遗留 B1（待 FE 同步窗口）**：`enrichDeviceStatus.entry["device_id"]` map field key 实际存的是 device_addr (IPv6 文本)，命名误导。改成 `device_addr` 需 FE 同步。
 
 ---
 
