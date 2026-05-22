@@ -480,7 +480,7 @@ func (h *DeviceHandler) ApproveOTA(w http.ResponseWriter, r *http.Request) {
 		UPDATE device_ota o
 		   SET approve_way = $1 || '_' || SPLIT_PART(o.approve_way, '_', 2),
 		       updated_at = NOW()
-		 WHERE o.device_addr = $2::INET
+		 WHERE o.device_uid IN (SELECT device_uid FROM devices WHERE device_addr = $2::INET)
 		   AND o.approve_way IS NOT NULL
 	`, newPrefix, deviceID)
 	if err != nil {
@@ -519,7 +519,7 @@ func (h *DeviceHandler) SetOTASchedule(w http.ResponseWriter, r *http.Request) {
 	h.db.QueryRowContext(r.Context(), `
 		SELECT o.approve_way
 		  FROM device_ota o
-		 WHERE o.device_addr = $1::INET
+		 WHERE o.device_uid IN (SELECT device_uid FROM devices WHERE device_addr = $1::INET)
 	`, deviceID).Scan(&approveWay)
 	if !approveWay.Valid || !strings.HasPrefix(approveWay.String, "tenant_") {
 		writeJSON(w, http.StatusOK, Fail("schedule can only be modified when OTA way is tenant"))
@@ -533,7 +533,7 @@ func (h *DeviceHandler) SetOTASchedule(w http.ResponseWriter, r *http.Request) {
 	_, err := h.db.ExecContext(r.Context(), `
 		UPDATE device_ota o
 		   SET schedule = $1, updated_at = NOW()
-		 WHERE o.device_addr = $2::INET
+		 WHERE o.device_uid IN (SELECT device_uid FROM devices WHERE device_addr = $2::INET)
 	`, schedTime, deviceID)
 	if err != nil {
 		h.logger.Error("SetOTASchedule failed", zap.String("device_id", deviceID), zap.Error(err))

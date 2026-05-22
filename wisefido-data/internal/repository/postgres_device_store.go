@@ -387,7 +387,7 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 		SELECT COUNT(*)
 		  FROM device_factory_meta dfm
 		  LEFT JOIN devices d ON d.device_uid = dfm.device_uid
-		  LEFT JOIN device_ota o ON o.device_addr = d.device_addr
+		  LEFT JOIN device_ota o ON o.device_uid = d.device_uid
 		  ` + whereClause
 	var total int
 	if err := r.db.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
@@ -411,7 +411,7 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 		SELECT ` + expandSelectColumnsV2() + `
 		FROM device_factory_meta dfm
 		LEFT JOIN devices d ON d.device_uid = dfm.device_uid
-		LEFT JOIN device_ota o ON o.device_addr = d.device_addr
+		LEFT JOIN device_ota o ON o.device_uid = d.device_uid
 		LEFT JOIN tenants t ON t.tenant_id = network(set_masklen(d.device_addr, 48))
 		` + whereClause + `
 		ORDER BY ` + orderByClauseDeviceStoreV2(sort, direction) + `
@@ -443,7 +443,7 @@ func (r *PostgresDeviceStoreRepository) GetDeviceStore(ctx context.Context, devi
 		SELECT ` + expandSelectColumnsV2() + `
 		FROM device_factory_meta dfm
 		LEFT JOIN devices d ON d.device_uid = dfm.device_uid
-		LEFT JOIN device_ota o ON o.device_addr = d.device_addr
+		LEFT JOIN device_ota o ON o.device_uid = d.device_uid
 		LEFT JOIN tenants t ON t.tenant_id = network(set_masklen(d.device_addr, 48))
 		WHERE dfm.device_uid = $1
 		LIMIT 1
@@ -465,7 +465,7 @@ func (r *PostgresDeviceStoreRepository) GetDeviceStoreByDeviceAddr(ctx context.C
 		SELECT ` + expandSelectColumnsV2() + `
 		FROM device_factory_meta dfm
 		LEFT JOIN devices d ON d.device_uid = dfm.device_uid
-		LEFT JOIN device_ota o ON o.device_addr = d.device_addr
+		LEFT JOIN device_ota o ON o.device_uid = d.device_uid
 		LEFT JOIN tenants t ON t.tenant_id = network(set_masklen(d.device_addr, 48))
 		WHERE d.device_addr = $1::INET
 		LIMIT 1

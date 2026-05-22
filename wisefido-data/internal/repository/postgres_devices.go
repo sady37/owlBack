@@ -126,7 +126,7 @@ func orderByClauseDevicesV2(sortKey, direction string) string {
 //
 //	device_factory_meta dfm  (PK device_id, 出厂元数据 + firmware_version：device_uid/device_code/device_type/mac_wifi/imei/...)
 //	    LEFT JOIN devices d              ON d.device_uid = dfm.device_uid      (device_ipv6 → tenant/room/bed 反推)
-//	    LEFT JOIN device_ota o           ON o.device_addr = d.device_addr  (OTA 计划)
+//	    LEFT JOIN device_ota o           ON o.device_uid = d.device_uid  (OTA 计划)
 //
 // rooms/beds 不再 JOIN：legacy slot=0 已迁移，byte 10/11 != 0 唯一含义 = 绑定到该层。
 //
@@ -191,7 +191,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		SELECT COUNT(*)
 		  FROM device_factory_meta dfm
 		  LEFT JOIN devices d                ON d.device_uid = dfm.device_uid
-		  LEFT JOIN device_ota o             ON o.device_addr = d.device_addr
+		  LEFT JOIN device_ota o             ON o.device_uid = d.device_uid
 		  ` + whereClause
 	var total int
 	if err := r.db.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
@@ -281,7 +281,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		  c.card_dns                                                                     AS dns_short_name
 		FROM device_factory_meta dfm
 		LEFT JOIN devices d                ON d.device_uid = dfm.device_uid
-		LEFT JOIN device_ota o             ON o.device_addr = d.device_addr
+		LEFT JOIN device_ota o             ON o.device_uid = d.device_uid
 		LEFT JOIN branches br              ON br.branch_id = network(set_masklen(d.device_addr, 56))
 		LEFT JOIN units u                  ON u.unit_id = network(set_masklen(d.device_addr, 80))
 		LEFT JOIN LATERAL (
@@ -483,7 +483,7 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 		  c.card_dns                                                                     AS dns_short_name
 		FROM device_factory_meta dfm
 		LEFT JOIN devices d                ON d.device_uid = dfm.device_uid
-		LEFT JOIN device_ota o             ON o.device_addr = d.device_addr
+		LEFT JOIN device_ota o             ON o.device_uid = d.device_uid
 		LEFT JOIN branches br              ON br.branch_id = network(set_masklen(d.device_addr, 56))
 		LEFT JOIN units u                  ON u.unit_id = network(set_masklen(d.device_addr, 80))
 		LEFT JOIN LATERAL (
