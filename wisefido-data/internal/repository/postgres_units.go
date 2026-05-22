@@ -224,7 +224,10 @@ func (r *PostgresUnitsRepository) GetBuilding(ctx context.Context, tenantID, bui
 	if buildingID == "" || !looksLikeINETPrefix(buildingID) {
 		return nil, fmt.Errorf("invalid building_id")
 	}
-	q := `SELECT ` + buildingsSelectCols + buildingsFromClause + ` WHERE s.site_id = $1::INET`
+	// building_id 是 /60 prefix，sites 存 /64；用 <<= 取该 building 任一 site (取最小 floor 与 ListBuildings 一致)
+	q := `SELECT ` + buildingsSelectCols + buildingsFromClause + `
+		WHERE s.site_id <<= $1::INET
+		ORDER BY s.floor, s.site_id LIMIT 1`
 	rows, err := r.db.QueryContext(ctx, q, buildingID)
 	if err != nil {
 		return nil, fmt.Errorf("get building: %w", err)
@@ -243,13 +246,13 @@ func (r *PostgresUnitsRepository) GetBuildingUnits(ctx context.Context, tenantID
 	if buildingID == "" || !looksLikeINETPrefix(buildingID) {
 		return nil, nil
 	}
-	// 跨 floor 拿同 (branch, building_int) 下的所有 units
+	// 跨 floor 拿同 (branch, building_int) 下的所有 units；buildingID 是 /60 prefix
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT host(u.unit_id) || '/80', u.unit_name, s.floor
 		  FROM units u
 		  JOIN sites s ON s.site_id = network(set_masklen(u.unit_id, 64))
 		 WHERE u.unit_id <<= network(set_masklen($1::INET, 56))
-		   AND s.building = (SELECT building FROM sites WHERE site_id = $1::INET)
+		   AND s.building = (SELECT building FROM sites WHERE site_id <<= $1::INET LIMIT 1)
 		 ORDER BY s.floor, u.unit_slot`, buildingID)
 	if err != nil {
 		return nil, err
@@ -368,10 +371,11 @@ func (r *PostgresUnitsRepository) UpdateBuilding(ctx context.Context, tenantID, 
 	if building == nil || building.BuildingName == "" {
 		return fmt.Errorf("building_name required")
 	}
+	// building_id 是 /60 prefix；子查询用 <<= 找属于该 building 的任一 site 取 building int
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE sites SET site_name = $2, updated_at = NOW()
 		 WHERE site_id <<= network(set_masklen($1::INET, 56))
-		   AND building = (SELECT building FROM sites WHERE site_id = $1::INET)`,
+		   AND building = (SELECT building FROM sites WHERE site_id <<= $1::INET LIMIT 1)`,
 		buildingID, building.BuildingName)
 	if err != nil {
 		return fmt.Errorf("update site: %w", err)
@@ -389,13 +393,14 @@ func (r *PostgresUnitsRepository) DeleteBuilding(ctx context.Context, tenantID, 
 	if buildingID == "" || !looksLikeINETPrefix(buildingID) {
 		return fmt.Errorf("invalid building_id")
 	}
+	// building_id 是 /60 prefix；用 <<= 找属于该 building 的任一 site 取 building int
 	var hasUnits bool
 	if err := r.db.QueryRowContext(ctx, `
 		SELECT EXISTS (
 		  SELECT 1 FROM units u
 		   WHERE u.unit_id <<= network(set_masklen($1::INET, 56))
 		     AND (SELECT s.building FROM sites s WHERE s.site_id = network(set_masklen(u.unit_id, 64)))
-		         = (SELECT building FROM sites WHERE site_id = $1::INET)
+		         = (SELECT building FROM sites WHERE site_id <<= $1::INET LIMIT 1)
 		)`, buildingID).Scan(&hasUnits); err != nil {
 		return fmt.Errorf("check building empty: %w", err)
 	}
@@ -405,7 +410,7 @@ func (r *PostgresUnitsRepository) DeleteBuilding(ctx context.Context, tenantID, 
 	res, err := r.db.ExecContext(ctx, `
 		DELETE FROM sites
 		 WHERE site_id <<= network(set_masklen($1::INET, 56))
-		   AND building = (SELECT building FROM sites WHERE site_id = $1::INET)`, buildingID)
+		   AND building = (SELECT building FROM sites WHERE site_id <<= $1::INET LIMIT 1)`, buildingID)
 	if err != nil {
 		return fmt.Errorf("delete sites: %w", err)
 	}
@@ -601,12 +606,12 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 	// 派生 sitePrefix：根据输入决定 (branch, building_int, floor) 三元组
 	var sitePrefix string
 	if unit.BuildingID.Valid && looksLikeINETPrefix(unit.BuildingID.String) {
-		// 从已有 site /64 拿出 (branch, building_int)，target_floor 走 unit.Floor 输入
+		// 从 building /60 prefix 拿任一 site 取 (branch, building_int)，target_floor 走 unit.Floor 输入
 		var branchPrefix string
 		var buildingInt int
 		if err := tx.QueryRowContext(ctx, `
 			SELECT network(set_masklen(site_id, 56))::text, building
-			  FROM sites WHERE site_id = $1::INET`, unit.BuildingID.String).Scan(&branchPrefix, &buildingInt); err != nil {
+			  FROM sites WHERE site_id <<= $1::INET LIMIT 1`, unit.BuildingID.String).Scan(&branchPrefix, &buildingInt); err != nil {
 			return "", fmt.Errorf("resolve building: %w", err)
 		}
 		// lookup-or-create (branch, building_int, floor)
@@ -622,7 +627,7 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 			siteSlot := (buildingInt << 4) | floorInt
 			// 拿原 building 的 site_name 用作新 floor site 的 name
 			var siteName string
-			_ = tx.QueryRowContext(ctx, `SELECT COALESCE(site_name,'') FROM sites WHERE site_id = $1::INET`, unit.BuildingID.String).Scan(&siteName)
+			_ = tx.QueryRowContext(ctx, `SELECT COALESCE(site_name,'') FROM sites WHERE site_id <<= $1::INET ORDER BY floor LIMIT 1`, unit.BuildingID.String).Scan(&siteName)
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO sites (site_id, site_slot, building, floor, site_name)
 				VALUES ($1::INET, $2, $3, $4, $5)`,
