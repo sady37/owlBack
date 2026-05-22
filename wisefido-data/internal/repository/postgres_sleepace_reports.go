@@ -79,21 +79,21 @@ func scanSleepaceReport(scan func(...any) error, report *domain.SleepaceReport) 
 	)
 }
 
-// GetReport Phase 2 一刀切：deviceID 入参承载 device_uid (sleepace.userId == owl device_uid logMAC)。
-// tenantID 校验：device_addr 必须落在 tenantID prefix 内（防越权）。
-func (r *PostgresSleepaceReportsRepository) GetReport(ctx context.Context, tenantID, deviceID string, date int) (*domain.SleepaceReport, error) {
-	if tenantID == "" || deviceID == "" || date == 0 {
-		return nil, fmt.Errorf("tenant_id, device_uid and date are required")
+// GetReport Phase 2: deviceAddr 入参承载 INET /128 canonical text (业务侧统一标识)；
+// 内部 JOIN devices.device_uid 关联 sleepace_report；tenantID 校验防越权。
+func (r *PostgresSleepaceReportsRepository) GetReport(ctx context.Context, tenantID, deviceAddr string, date int) (*domain.SleepaceReport, error) {
+	if tenantID == "" || deviceAddr == "" || date == 0 {
+		return nil, fmt.Errorf("tenant_id, device_addr and date are required")
 	}
 
 	query := `SELECT ` + sleepaceReportSelectColumns + sleepaceReportJoinClause + `
 		WHERE d.device_addr <<= $1::INET
-		  AND sr.device_uid = $2
+		  AND d.device_addr = $2::INET
 		  AND sr.date       = $3
 	`
 
 	var report domain.SleepaceReport
-	err := scanSleepaceReport(r.db.QueryRowContext(ctx, query, tenantID, deviceID, date).Scan, &report)
+	err := scanSleepaceReport(r.db.QueryRowContext(ctx, query, tenantID, deviceAddr, date).Scan, &report)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -104,10 +104,10 @@ func (r *PostgresSleepaceReportsRepository) GetReport(ctx context.Context, tenan
 	return &report, nil
 }
 
-// ListReports 查询报告列表（支持分页）。deviceID 入参承载 device_uid。
-func (r *PostgresSleepaceReportsRepository) ListReports(ctx context.Context, tenantID, deviceID string, startDate, endDate int, page, size int) ([]*domain.SleepaceReport, int, error) {
-	if tenantID == "" || deviceID == "" {
-		return nil, 0, fmt.Errorf("tenant_id and device_uid are required")
+// ListReports 查询报告列表（支持分页）。deviceAddr 入参承载 INET /128 canonical text。
+func (r *PostgresSleepaceReportsRepository) ListReports(ctx context.Context, tenantID, deviceAddr string, startDate, endDate int, page, size int) ([]*domain.SleepaceReport, int, error) {
+	if tenantID == "" || deviceAddr == "" {
+		return nil, 0, fmt.Errorf("tenant_id and device_addr are required")
 	}
 
 	countQuery := `
@@ -115,12 +115,12 @@ func (r *PostgresSleepaceReportsRepository) ListReports(ctx context.Context, ten
 		FROM sleepace_report sr
 		JOIN devices d ON d.device_uid = sr.device_uid
 		WHERE d.device_addr <<= $1::INET
-		  AND sr.device_uid = $2
+		  AND d.device_addr = $2::INET
 		  AND sr.date >= $3
 		  AND sr.date <= $4
 	`
 	var total int
-	err := r.db.QueryRowContext(ctx, countQuery, tenantID, deviceID, startDate, endDate).Scan(&total)
+	err := r.db.QueryRowContext(ctx, countQuery, tenantID, deviceAddr, startDate, endDate).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to count sleepace reports: %w", err)
 	}
@@ -135,14 +135,14 @@ func (r *PostgresSleepaceReportsRepository) ListReports(ctx context.Context, ten
 
 	query := `SELECT ` + sleepaceReportSelectColumns + sleepaceReportJoinClause + `
 		WHERE d.device_addr <<= $1::INET
-		  AND sr.device_uid = $2
+		  AND d.device_addr = $2::INET
 		  AND sr.date >= $3
 		  AND sr.date <= $4
 		ORDER BY sr.date DESC
 		LIMIT $5 OFFSET $6
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, tenantID, deviceID, startDate, endDate, size, offset)
+	rows, err := r.db.QueryContext(ctx, query, tenantID, deviceAddr, startDate, endDate, size, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list sleepace reports: %w", err)
 	}
@@ -176,7 +176,7 @@ func (r *PostgresSleepaceReportsRepository) GetValidDates(ctx context.Context, t
 		FROM sleepace_report sr
 		JOIN devices d ON d.device_uid = sr.device_uid
 		WHERE d.device_addr <<= $1::INET
-		  AND sr.device_uid = $2
+		  AND d.device_addr = $2::INET
 		ORDER BY sr.date DESC
 	`
 
@@ -212,7 +212,7 @@ func (r *PostgresSleepaceReportsRepository) ListReportsAllInRange(ctx context.Co
 	}
 	query := `SELECT ` + sleepaceReportSelectColumns + sleepaceReportJoinClause + `
 		WHERE d.device_addr <<= $1::INET
-		  AND sr.device_uid = $2
+		  AND d.device_addr = $2::INET
 		  AND sr.date >= $3
 		  AND sr.date <= $4
 		ORDER BY sr.date ASC
@@ -249,7 +249,7 @@ func (r *PostgresSleepaceReportsRepository) GetValidDatesInRange(ctx context.Con
 		FROM sleepace_report sr
 		JOIN devices d ON d.device_uid = sr.device_uid
 		WHERE d.device_addr <<= $1::INET
-		  AND sr.device_uid = $2
+		  AND d.device_addr = $2::INET
 		  AND sr.date >= $3
 		  AND sr.date <= $4
 		ORDER BY sr.date ASC

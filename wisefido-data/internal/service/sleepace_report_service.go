@@ -489,13 +489,13 @@ func (s *sleepaceReportService) DownloadReportByWisefidoDeviceID(ctx context.Con
 	if startTime == 0 || endTime == 0 {
 		return fmt.Errorf("start_time and end_time are required")
 	}
-	tenantID, devID, sid, uid, err := s.lookupSleepaceReportIdentityByDeviceID(ctx, deviceID)
+	tenantID, devAddr, sid, uid, err := s.lookupSleepaceReportIdentityByDeviceAddr(ctx, deviceID)
 	if err != nil {
 		return err
 	}
 	return s.DownloadReport(ctx, DownloadReportRequest{
 		TenantID:         tenantID,
-		DeviceID:         devID,
+		DeviceID:         devAddr,
 		SleepaceDeviceID: sid,
 		DeviceUID:        uid,
 		StartTime:        startTime,
@@ -503,30 +503,30 @@ func (s *sleepaceReportService) DownloadReportByWisefidoDeviceID(ctx context.Con
 	})
 }
 
-// lookupSleepaceReportIdentityByDeviceID — v2: tenant_id 派生自 device_ipv6 前 /48；
-// device_uid / device_code 全在 device_factory_meta；devices 表无 status 列（软删通过 trash /48）。
-func (s *sleepaceReportService) lookupSleepaceReportIdentityByDeviceID(ctx context.Context, deviceID string) (tenantID, devID, sleepaceDeviceID, deviceUID string, err error) {
+// lookupSleepaceReportIdentityByDeviceAddr — Phase 2: 入参 deviceAddr (INET /128 canonical text)；
+// tenant_id 派生自 device_addr 前 /48；device_uid / device_code 全在 device_factory_meta。
+func (s *sleepaceReportService) lookupSleepaceReportIdentityByDeviceAddr(ctx context.Context, deviceAddr string) (tenantID, devAddrOut, sleepaceDeviceID, deviceUID string, err error) {
 	q := `
-		SELECT host(network(set_masklen(d.device_ipv6, 48))) || '/48',
-			d.device_id::text,
+		SELECT host(network(set_masklen(d.device_addr, 48))) || '/48',
+			host(d.device_addr),
 			COALESCE(NULLIF(TRIM(dfm.device_code), ''), dfm.device_uid),
 			dfm.device_uid
 		FROM devices d
-		JOIN device_factory_meta dfm ON dfm.device_id = d.device_id
-		WHERE d.device_id = $1::uuid
+		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
+		WHERE d.device_addr = $1::INET
 		LIMIT 1
 	`
-	err = s.db.QueryRowContext(ctx, q, deviceID).Scan(&tenantID, &devID, &sleepaceDeviceID, &deviceUID)
+	err = s.db.QueryRowContext(ctx, q, deviceAddr).Scan(&tenantID, &devAddrOut, &sleepaceDeviceID, &deviceUID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return "", "", "", "", fmt.Errorf("device not found: device_id=%s", deviceID)
+			return "", "", "", "", fmt.Errorf("device not found: device_addr=%s", deviceAddr)
 		}
 		return "", "", "", "", fmt.Errorf("lookup device: %w", err)
 	}
 	if sleepaceDeviceID == "" || deviceUID == "" {
-		return "", "", "", "", fmt.Errorf("device identifiers incomplete for device_id=%s", deviceID)
+		return "", "", "", "", fmt.Errorf("device identifiers incomplete for device_addr=%s", deviceAddr)
 	}
-	return tenantID, devID, sleepaceDeviceID, deviceUID, nil
+	return tenantID, devAddrOut, sleepaceDeviceID, deviceUID, nil
 }
 
 // lookupSleepaceReportIdentityBySleepaceDeviceID — Sleepace 厂家 deviceId（= device_code 或 device_uid）反查 wisefido device。
@@ -640,7 +640,7 @@ func (s *sleepaceReportService) BackfillFromVendor(ctx context.Context, tenantID
 	if len(missing) == 0 {
 		return nil
 	}
-	_, _, sid, uid, err := s.lookupSleepaceReportIdentityByDeviceID(ctx, deviceID)
+	_, _, sid, uid, err := s.lookupSleepaceReportIdentityByDeviceAddr(ctx, deviceID)
 	if err != nil {
 		return fmt.Errorf("lookup sleepace identity: %w", err)
 	}
