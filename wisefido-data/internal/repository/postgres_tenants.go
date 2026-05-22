@@ -426,7 +426,7 @@ func (r *PostgresTenantsRepository) isTenantEmpty(ctx context.Context, tenantPre
 		  SELECT 1 FROM branches  WHERE branch_id <<= $1::INET
 		    AND COALESCE(branch_name, '') <> 'default'
 		  UNION ALL
-		  SELECT 1 FROM residents WHERE hoa IS NOT NULL AND hoa <<= $1::INET
+		  SELECT 1 FROM residents WHERE resident_id IS NOT NULL AND resident_id <<= $1::INET
 		  UNION ALL
 		  SELECT 1 FROM devices   WHERE device_addr IS NOT NULL AND device_addr <<= $1::INET
 		)
