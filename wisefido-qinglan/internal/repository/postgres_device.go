@@ -347,12 +347,12 @@ func deriveSystemDeviceAddr(deviceUID string) (string, error) {
 	return fmt.Sprintf("fd00:0:1:0:0:0:%s:%s/128", suffix[:4], suffix[4:]), nil
 }
 
-// UpdateDevice v2：仅支持 v2 业务可变字段（access / monitoring_enabled）
+// UpdateDevice v2：仅支持业务可变字段（access / monitoring_enabled）
 //
 // device_uid/device_type 等出厂字段属 dfm，不可改；BoundRoomID/BoundBedID 属空间绑定，
 // 需走 spatial API（device_ipv6 整段重置），不在此简单 UPDATE。
 //
-// v1 business_access string 已合并为单一 access bool；access 字段总是写入（与 monitoring_enabled 对齐）。
+// access / monitoring_enabled 均为 bool 字段，每次 UPDATE 总是覆盖（不做 partial update）。
 func (r *PostgresDeviceRepository) UpdateDevice(ctx context.Context, device *domain.Device) error {
 	if device.DeviceUID == "" {
 		return fmt.Errorf("device_uid is required")
@@ -360,11 +360,10 @@ func (r *PostgresDeviceRepository) UpdateDevice(ctx context.Context, device *dom
 	updates := []string{}
 	args := []interface{}{}
 	argIdx := 1
-	// access：platform_admin 审批位（v1 双字段已合并）
+	// access：platform_admin 审批位
 	updates = append(updates, fmt.Sprintf("access = $%d", argIdx))
 	args = append(args, device.Access)
 	argIdx++
-	// monitoring_enabled 默认总写（v1 行为：bool 字段每次 UPDATE 都覆盖）
 	updates = append(updates, fmt.Sprintf("monitoring_enabled = $%d", argIdx))
 	args = append(args, device.MonitoringEnabled)
 	argIdx++
@@ -386,10 +385,8 @@ func (r *PostgresDeviceRepository) UpdateDevice(ctx context.Context, device *dom
 	return nil
 }
 
-// SearchDevices v2：按 v2 列过滤；支持 tenant_id / status / device_type / search_keyword
-//
-// v1 criteria business_access 字符串改为 access bool；status 字符串改 drs.online 派生；
-// metadata 字段 v2 不支持。
+// SearchDevices 按 criteria 过滤；支持 tenant_id / access / monitoring_enabled / device_type / search_keyword。
+// status 不在 SQL 层（drs.online 已删；status 在 Redis），caller 想按 status 过滤自己读 Redis 后处理。
 func (r *PostgresDeviceRepository) SearchDevices(ctx context.Context, criteria map[string]interface{}) ([]*domain.Device, error) {
 	query := `SELECT ` + deviceSelectV2
 	whereClauses := []string{}
@@ -404,12 +401,10 @@ func (r *PostgresDeviceRepository) SearchDevices(ctx context.Context, criteria m
 		args = append(args, prefix)
 		argIdx++
 	}
-	// v2.5: status filter 在 SQL 层取消（drs.online 列删；status 在 Redis）；caller 想按 status 过滤自己加 Redis 后处理
 	_ = criteria["status"]
-	if businessAccess, ok := criteria["business_access"].(string); ok && businessAccess != "" {
-		approved := businessAccess == "approved" || businessAccess == "enable"
+	if access, ok := criteria["access"].(bool); ok {
 		whereClauses = append(whereClauses, fmt.Sprintf("COALESCE(d.access, false) = $%d", argIdx))
-		args = append(args, approved)
+		args = append(args, access)
 		argIdx++
 	}
 	if monitoringEnabled, ok := criteria["monitoring_enabled"].(bool); ok {

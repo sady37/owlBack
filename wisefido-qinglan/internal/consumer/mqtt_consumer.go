@@ -33,9 +33,6 @@ const (
 
 // resolveIotPolicy 租户级：access=TRUE 才向 iot:* 发 event/alarm/stat；monitor 流另需 monitoring_enabled。
 // tenantID 来自 devices.tenant_id，供写入 iot 流，避免仅 card 解析时 tenant 为空导致 wisefido-iot 缺 tenant_id。
-//
-// Access 是 platform_admin 审批位（devices.access bool）；v1 的 allow_access/business_access 双字段
-// 系同源同语义，已合并为单一 Access。
 func (c *MQTTConsumer) resolveIotPolicy(ctx context.Context, deviceUID string) (canIoT, canMonitor bool, tenantID string) {
 	if c.cardMappingService != nil {
 		if b, ok := c.cardMappingService.BaselineFor(deviceUID); ok {
@@ -132,7 +129,7 @@ func NewMQTTConsumer(
 }
 
 // Start 启动消费者
-// 启动时主动订阅所有符合条件的设备（allow_access=TRUE 且 business_access='approved'）
+// 启动时主动订阅所有符合条件的设备（devices.access=TRUE）
 func (c *MQTTConsumer) Start(ctx context.Context) error {
 	go c.monitorConnection(ctx)
 	go c.subscribeAllAccessibleDevices(ctx)
@@ -374,20 +371,20 @@ func (c *MQTTConsumer) buildTopics() []string {
 //     谁在发：internal/service/radar_service.go — GetDeviceProperties/SetDeviceProperties 发布到 prop/get，
 //     CallDeviceFunction 发布到 func/get；设备收到后回复到 .../post，由本 consumer 的 handlePropertyMessage、handleFunctionMessage 处理并存 Redis。
 func (c *MQTTConsumer) allowAccessFromCacheOrDB(uid string) bool {
-	cached, ok := domain.AllowAccessCache.Load(uid)
+	cached, ok := domain.AccessCache.Load(uid)
 	if !ok {
 		ds, err := c.deviceRepo.GetDeviceStoreInfo(context.Background(), uid)
 		if err != nil {
 			c.logger.Warn("device not in cache, db lookup failed", zap.String("uid", uid), zap.Error(err))
-			domain.AllowAccessCache.Store(uid, false)
+			domain.AccessCache.Store(uid, false)
 			return false
 		}
 		if !ds.Access {
 			c.logger.Warn("device blocked by dfm: access=FALSE", zap.String("uid", uid))
-			domain.AllowAccessCache.Store(uid, false)
+			domain.AccessCache.Store(uid, false)
 			return false
 		}
-		domain.AllowAccessCache.Store(uid, true)
+		domain.AccessCache.Store(uid, true)
 		return true
 	}
 	if allowedBool, ok := cached.(bool); !ok || !allowedBool {
@@ -831,7 +828,7 @@ func (c *MQTTConsumer) publishRadarMonitorHeartbeat(ctx context.Context, addr ne
 
 // handleMonitorMessage 处理实时数据消息 (target 模式)
 // 解码后经 TargetMergeVital 合并/拆分，每条发到 iot:monitor:stream，category 均为 track（与 field/type 一致）。
-// 流使用 device_uid；无 device_store 记录不发。租户级需 business_access；monitoring_enabled 关闭时仅发 track_id=11 心跳。
+// 流使用 device_uid；无 device_store 记录不发。租户级需 access；monitoring_enabled 关闭时仅发 track_id=11 心跳。
 func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]interface{}) error {
 	ctx := context.Background()
 	_, _, _, cid, _, bedID, roomID, addr, ok := c.resolveDeviceIdentity(ctx, uid)

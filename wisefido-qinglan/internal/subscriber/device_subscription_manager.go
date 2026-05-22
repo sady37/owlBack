@@ -147,7 +147,7 @@ func (m *DeviceSubscriptionManager) Start(ctx context.Context) error {
 }
 
 // restoreAuthenticatedDeviceSubscriptions 恢复已认证设备的MQTT订阅
-// 服务重启后，从DB查询所有已认证的 Radar 设备（allow_access = TRUE AND device_type = 'Radar'），重新订阅并发送monitor命令
+// 服务重启后，从DB查询所有已认证的 Radar 设备（access = TRUE AND device_type = 'Radar'），重新订阅并发送monitor命令
 // 注意：wisefido-qinglan 只管理 Radar 设备，不管理 Sleepace 设备
 // 简化逻辑：不检查内存中的状态记录，直接从DB重新订阅所有已认证的 Radar 设备
 func (m *DeviceSubscriptionManager) restoreAuthenticatedDeviceSubscriptions(ctx context.Context) {

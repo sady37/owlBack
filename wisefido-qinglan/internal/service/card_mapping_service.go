@@ -61,16 +61,16 @@ func (s *CardMappingService) storeBaseline(lookupKey string, b card.DeviceBaseli
 			continue
 		}
 		s.baselineByUID[k] = b
-		domain.AllowAccessCache.Store(k, b.Access)
+		domain.AccessCache.Store(k, b.Access)
 	}
 }
 
 func (s *CardMappingService) evictDeviceKey(k string) {
 	delete(s.baselineByUID, k)
-	domain.AllowAccessCache.Delete(k)
+	domain.AccessCache.Delete(k)
 }
 
-// BaselineFor 返回已缓存的 DeviceBaseline（MQTT allow_access / resolveIotPolicy 快路径）。
+// BaselineFor 返回已缓存的 DeviceBaseline（MQTT access / resolveIotPolicy 快路径）。
 func (s *CardMappingService) BaselineFor(deviceUID string) (card.DeviceBaseline, bool) {
 	if deviceUID == "" {
 		return card.DeviceBaseline{}, false
@@ -82,7 +82,7 @@ func (s *CardMappingService) BaselineFor(deviceUID string) (card.DeviceBaseline,
 	return b, ok
 }
 
-// RefreshBaseline 从 API 重算并写入 baseline + AllowAccessCache。
+// RefreshBaseline 从 API 重算并写入 baseline + AccessCache。
 func (s *CardMappingService) RefreshBaseline(ctx context.Context, lookupKey string) {
 	if s == nil || s.api == nil || lookupKey == "" {
 		return
@@ -92,7 +92,7 @@ func (s *CardMappingService) RefreshBaseline(ctx context.Context, lookupKey stri
 	defer s.mu.Unlock()
 	if err != nil || b == nil {
 		s.evictDeviceKey(lookupKey)
-		domain.AllowAccessCache.Store(lookupKey, false)
+		domain.AccessCache.Store(lookupKey, false)
 		return
 	}
 	s.storeBaseline(lookupKey, *b)

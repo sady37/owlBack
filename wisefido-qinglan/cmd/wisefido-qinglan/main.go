@@ -136,7 +136,7 @@ func main() {
 	deviceCacheCount := 0
 	for _, device := range allDevices {
 		if device.Access {
-			domain.AllowAccessCache.Store(device.DeviceUID, true)
+			domain.AccessCache.Store(device.DeviceUID, true)
 			deviceCacheCount++
 		}
 	}

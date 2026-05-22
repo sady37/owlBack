@@ -47,8 +47,8 @@ var (
 	// DeviceCache 设备缓存（key: uid, value: *DeviceWithLocation）
 	DeviceCache = &sync.Map{}
 
-	// AllowAccessCache 设备认证状态缓存（key: uid, value: bool）
-	AllowAccessCache = &sync.Map{}
+	// AccessCache 设备审批位缓存（key: uid, value: bool = devices.access）
+	AccessCache = &sync.Map{}
 )
 
 // ToJSON 转换为JSON格式（用于HTTP响应）

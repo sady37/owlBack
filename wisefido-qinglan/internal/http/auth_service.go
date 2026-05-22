@@ -88,7 +88,7 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 				}, nil
 			}
 
-			// 新创建的设备已分配给系统租户（000...001），allow_access = FALSE，需要管理员处理
+			// 新创建的设备已分配给系统租户（000...001），access = FALSE，需要管理员处理
 			s.logger.Info("Device created in device_store (pending approval, assigned to system tenant)",
 				zap.String("uid", req.UID),
 				zap.String("device_id", device.DeviceUID),
@@ -127,7 +127,7 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 	}
 
 	// 验证已在 validateDeviceAndGetLocation() 中完成
-	// 如果执行到这里，说明设备已验证通过（allow_access = true 且已分配给租户）
+	// 如果执行到这里，说明设备已验证通过（access = true 且已分配给租户）
 
 	// 3. 检查并更新设备硬件信息到 device_store 表
 	if err := s.updateDeviceHardwareInfo(ctx, req.UID, req); err != nil {

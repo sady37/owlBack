@@ -280,7 +280,7 @@ func (c *MQTTConsumer) isDuplicate(m *ReceivedMessage) bool {
 
 // dispatch routes a single ReceivedMessage by constructing IoTStreamMessage and publishing to iot: streams.
 // 权限策略：
-// - allow_access 且 business_access 为 approved|enable => canIoT
+// - devices.access=TRUE => canIoT
 // - monitoring_enabled=TRUE => canMonitor
 // - monitor=off（canMonitor=false）时，仅保留连通性最小信号（connectionStatus 与 monitor 心跳），不发布生理/行为 event/alarm。
 // MQTT 的 deviceId 首次可能为 device_uid、后续可能为 device_code，统一传 Resolve(deviceKey) 由 DB 解析；三元组由 DeviceBaseline 带回。device_code 以 DB 为准，空则不兜底 MQTT 的 deviceId，便于暴露配置/数据问题。
