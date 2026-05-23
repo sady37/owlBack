@@ -177,24 +177,32 @@ func (c *SleepStageConsumer) handleRaw(ctx context.Context, raw map[string]inter
 	if confidence == 0 {
 		return // 非 sleepad / radar 来源忽略
 	}
+	// 边界派生：raw event envelope.SubjectEntity 装 device_uid (CE 主体=设备)；sensor 内部一切
+	// 按 /96 床 spatial prefix 索引（zone FSM 查询、ladder state、出口 publish subject）。device_addr
+	// 不效 → 不能派生 → 丢弃（防御性，理论上 FromStreamMap 已 validate）。
+	if !msg.DeviceAddr.IsValid() {
+		return
+	}
+	bedSpatialPrefix := netip.PrefixFrom(msg.DeviceAddr, 96).Masked().String()
+
 	// C OOB 守卫：sensor 自家 bed FSM 已离床（Vacant）→ sleepace 报 SleepStage 是异常
 	// （设备脱床 / 接触不良 / 电磁干扰）。drop event + emit device_failure alarm（5min dedup
 	// 防 spam）让运维主动定位。bedChecker nil 或 Engine 无该 prefix entry → 视作 Occupied 放行。
-	if c.bedChecker != nil && !c.bedChecker.IsBedOccupied(msg.SubjectEntity) {
-		c.emitOOBDeviceFailure(ctx, msg, sleepStage)
+	if c.bedChecker != nil && !c.bedChecker.IsBedOccupied(bedSpatialPrefix) {
+		c.emitOOBDeviceFailure(ctx, msg, bedSpatialPrefix, sleepStage)
 		return
 	}
-	if !c.ladderAdmits(msg.SubjectEntity, sleepStage, confidence, msg.Timestamp) {
+	if !c.ladderAdmits(bedSpatialPrefix, sleepStage, confidence, msg.Timestamp) {
 		return
 	}
-	if err := c.sink.PublishBedSleepStage(ctx, msg.SubjectEntity, sleepStage, confidence); err != nil {
+	if err := c.sink.PublishBedSleepStage(ctx, bedSpatialPrefix, sleepStage, confidence); err != nil {
 		c.logger.Warn("sensor sleepstage: publish failed",
-			zap.String("card_id", msg.SubjectEntity),
+			zap.String("spatial_prefix", bedSpatialPrefix),
 			zap.Int("sleep_stage", sleepStage),
 			zap.Int("confidence", confidence),
 			zap.Error(err))
 		// publish 失败：回退本地 state 让下次重试（仍是当前 ladder 等待更高 confidence）
-		c.rollbackEntry(msg.SubjectEntity, sleepStage, confidence)
+		c.rollbackEntry(bedSpatialPrefix, sleepStage, confidence)
 	}
 }
 
@@ -250,10 +258,11 @@ func (c *SleepStageConsumer) OnBedVacant(ctx context.Context, spatialPrefix stri
 //
 // alarm 由 cardagg AlarmRouter 派发持久化；sensor 通过 AlarmBackChannel 走 iot:alarm:stream。
 // 若 failEmit 未注入 → 仅 log 不报警（保持兼容；运维 log 仍可见 OOB drop 事件）。
-func (c *SleepStageConsumer) emitOOBDeviceFailure(ctx context.Context, msg *rediscommon.IoTStreamMessage, sleepStage int) {
+func (c *SleepStageConsumer) emitOOBDeviceFailure(ctx context.Context, msg *rediscommon.IoTStreamMessage, bedSpatialPrefix string, sleepStage int) {
 	c.logger.Warn("sleepstage OOB drop",
 		zap.String("device_addr", msg.DeviceAddr.String()),
 		zap.String("subject_entity", msg.SubjectEntity),
+		zap.String("spatial_prefix", bedSpatialPrefix),
 		zap.String("device_type", msg.DeviceType),
 		zap.Int("sleep_stage", sleepStage),
 		zap.String("reason", "bed FSM Vacant but sleepStage event received — likely SensorDetached / 干扰 / 设备故障"),
@@ -262,14 +271,16 @@ func (c *SleepStageConsumer) emitOOBDeviceFailure(ctx context.Context, msg *redi
 	if c.failEmit == nil || !msg.DeviceAddr.IsValid() {
 		return
 	}
-	// 5min dedup：同 spatial prefix 在窗内只 publish 一次（防 sleepace spam 把 alarm log 灌满）
+	// 5min dedup 按 device_addr：device_failure 是 per-device 现象（哪个 sleepad/radar 数据异常），
+	// 同一设备的 spam 才是要抑制的目标；不按床合并（同床上 sleepad+radar 同时 OOB 时各自独立报）。
+	deviceKey := msg.DeviceAddr.String()
 	c.mu.Lock()
-	last := c.failDedupTs[msg.SubjectEntity]
+	last := c.failDedupTs[deviceKey]
 	if msg.Timestamp-last < deviceFailureDedupMs {
 		c.mu.Unlock()
 		return
 	}
-	c.failDedupTs[msg.SubjectEntity] = msg.Timestamp
+	c.failDedupTs[deviceKey] = msg.Timestamp
 	c.mu.Unlock()
 
 	triggerData := map[string]interface{}{
@@ -278,6 +289,8 @@ func (c *SleepStageConsumer) emitOOBDeviceFailure(ctx context.Context, msg *redi
 		"device_type":    msg.DeviceType,
 		"subject_entity": msg.SubjectEntity,
 	}
+	// alarm 出口 subject = msg.SubjectEntity (device_uid)：device_failure 是 alarm 类，按规约 subject =
+	// device_uid（cardagg alarm_router 走 device_addr LPM 找归属卡，subject 提供 device 身份标识）。
 	if _, err := c.failEmit.PublishAlarmFire(ctx, msg.DeviceAddr, msg.SubjectEntity,
 		alarm.AlarmTypeDeviceFailure, alarm.AlarmLevelErr, msg.Timestamp, triggerData); err != nil {
 		c.logger.Warn("sleepstage OOB: publish device_failure failed",

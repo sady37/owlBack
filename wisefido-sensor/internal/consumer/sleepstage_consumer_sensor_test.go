@@ -491,6 +491,69 @@ func TestOnDeviceUnfit_InvalidAddrNoOp(t *testing.T) {
 	}
 }
 
+// TestHandleRaw_DeviceUidSubject_DerivesSpatialPrefix 锁住 7826455 NEW binary 修复：
+// sleepace producer 发 sleepStage 时 SubjectEntity = device_uid (BM-string)。consumer
+// 必须从 msg.DeviceAddr 派生 /96 spatial prefix 做 bed FSM 查询，不能把 device_uid 当
+// spatial key（IsBedOccupied("BM87224700978") 永远 miss → 误报 OOB → drop event）。
+//
+// 实证 bug: 2026-05-23 22:18 UTC，978 上床后 sleepace publish InBed→sleepStage，
+// sensor.log 连续 "sleepstage OOB drop" 误报，bed.sleepstage 永不出 sensor:derived。
+//
+// 期望（修后）：subject_entity=device_uid 时仍能正确路由到 /96 床 FSM，
+// 不误报 OOB，正常 ladder + publish bed.sleepstage。
+func TestHandleRaw_DeviceUidSubject_DerivesSpatialPrefix(t *testing.T) {
+	sink := &fakeSleepSink{}
+	c := newTestSleepConsumer(sink)
+	// Bed FSM 报告 /96 prefix Occupied (in bed) — 应 ladder 通过不触发 OOB
+	c.SetBedChecker(&fakeBedChecker{occupied: map[string]bool{
+		"fd00:0:3:111:3:101::/96": true,
+	}})
+	failEmit := &fakeFailEmitter{}
+	c.SetDeviceFailureEmitter(failEmit)
+
+	// 模拟 NEW binary：subject_entity = device_uid (BM-string)，device_addr = /128 IPv6
+	raw := buildSleepRawFields(
+		"fd00:0:3:111:3:101:2470:978", // producer = device /128
+		"BM87224700978",               // subject_entity = device_uid (NEW binary 实际格式)
+		"Sleepad", 1700000000000, 2)
+	c.handleRaw(context.Background(), raw)
+
+	if len(failEmit.calls) != 0 {
+		t.Errorf("device_uid subject 必须派生 /96 prefix；不应误报 OOB: got %d failure emits", len(failEmit.calls))
+	}
+	if len(sink.calls) != 1 {
+		t.Errorf("bed Occupied + ladder admit 应正常 publish: got %d sink calls", len(sink.calls))
+	}
+	if len(sink.calls) > 0 && sink.calls[0].cardID != "fd00:0:3:111:3:101::/96" {
+		t.Errorf("publish 出口 cardID 应为派生的 /96 prefix, got %q", sink.calls[0].cardID)
+	}
+}
+
+// TestHandleRaw_DeviceUidSubject_OOB_StillFires 上一个 case 反向：bed FSM Vacant 时仍能
+// 触发 OOB（device_failure 仍正常 fire），只是不再因为 subject 格式而误报。
+func TestHandleRaw_DeviceUidSubject_OOB_StillFires(t *testing.T) {
+	sink := &fakeSleepSink{}
+	c := newTestSleepConsumer(sink)
+	c.SetBedChecker(&fakeBedChecker{occupied: map[string]bool{}}) // 全 Vacant
+	failEmit := &fakeFailEmitter{}
+	c.SetDeviceFailureEmitter(failEmit)
+
+	raw := buildSleepRawFields(
+		"fd00:0:3:111:3:101:2470:978",
+		"BM87224700978",
+		"Sleepad", 1700000000000, 2)
+	c.handleRaw(context.Background(), raw)
+
+	if len(failEmit.calls) != 1 {
+		t.Errorf("bed FSM Vacant 时应正常 fire device_failure: got %d", len(failEmit.calls))
+	}
+	// alarm output subject_entity 应保留 device_uid（alarm 规约: subject=device_uid）
+	if len(failEmit.calls) > 0 && failEmit.calls[0].subjectEntity != "BM87224700978" {
+		t.Errorf("device_failure alarm subject_entity 应为 device_uid, got %q",
+			failEmit.calls[0].subjectEntity)
+	}
+}
+
 func TestHandleRaw_PublishFailRollsBackState(t *testing.T) {
 	sink := &fakeSleepSink{errOnce: errors.New("redis fail")}
 	c := newTestSleepConsumer(sink)
