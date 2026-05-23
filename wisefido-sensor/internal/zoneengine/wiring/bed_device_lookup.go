@@ -87,6 +87,16 @@ func (l *BedDeviceLookup) FindPrimaryDevice(zoneID, alarmType string) netip.Addr
 	return netip.Addr{}
 }
 
+// InvalidateAll 全清 cache（config.changed 订阅器在 monitor/bind 变化时调）。
+func (l *BedDeviceLookup) InvalidateAll() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.cache = make(map[bedDeviceCacheKey]bedDeviceCacheEntry)
+	l.mu.Unlock()
+}
+
 func (l *BedDeviceLookup) lookupCached(zoneID, deviceType string) netip.Addr {
 	key := bedDeviceCacheKey{zoneID: zoneID, deviceType: deviceType}
 	now := time.Now()

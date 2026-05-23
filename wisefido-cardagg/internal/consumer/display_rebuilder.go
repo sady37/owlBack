@@ -12,96 +12,96 @@ package consumer
 
 import (
 	"context"
-	"strings"
+	"database/sql"
 	"time"
 
-	redislib "github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 
 	"owl-common/card"
 	"wisefido-cardagg/internal/service"
 )
 
-// RebuildAllDisplays 扫所有 card:state:* hash，重新派生 display 写回。Idempotent。
-// 用 SCAN 不用 KEYS——避免大 keyspace 阻塞 Redis；batch 200。
-func RebuildAllDisplays(
+// RebuildAllFromDB 从 PG cards 表枚举所有卡，逐张重 build display 写回 Redis。
+//
+// 适用场景：
+//   - cardagg 启动 boot-time 一次（main.go）— Redis 可能有上一代 schema 的 stale display
+//   - 收到 op=reset 信号（data 重启了，in-memory cache 全失效）
+//   - periodic safety net（5min 一次）— 兜底事件丢失
+//
+// DB 是真相源（vs 旧 RebuildAllDisplays 走 Redis SCAN）— 启动场景 Redis 可能为空 / stale，
+// 必须以 DB 为准。
+func RebuildAllFromDB(
 	ctx context.Context,
-	client *redislib.Client,
+	db *sql.DB,
 	reader *card.Reader,
 	writer *card.Writer,
 	picker *UnitPicker,
 	meta *service.DeviceMetaCache,
 	logger *zap.Logger,
 ) {
-	const scanBatch = 200
-	const matchPattern = "card:state:*"
-	const prefix = "card:state:"
-
 	t0 := time.Now()
-	var cursor uint64
-	scanned := 0
+	rows, err := db.QueryContext(ctx, `SELECT host(card_id)||'/'||masklen(card_id), masklen(card_id) FROM cards`)
+	if err != nil {
+		logger.Warn("RebuildAllFromDB: query cards", zap.Error(err))
+		return
+	}
+	defer rows.Close()
+
 	rebuilt := 0
-
-	for {
-		keys, next, err := client.Scan(ctx, cursor, matchPattern, scanBatch).Result()
-		if err != nil {
-			logger.Error("RebuildAllDisplays: scan failed", zap.Error(err))
-			return
+	for rows.Next() {
+		var cardID string
+		var mask int
+		if err := rows.Scan(&cardID, &mask); err != nil {
+			continue
 		}
-		for _, key := range keys {
-			cardID := strings.TrimPrefix(key, prefix)
-			scanned++
-
-			status, err := reader.ReadCardStatus(ctx, cardID)
-			if err != nil || status == nil {
-				continue
-			}
-
-			hasBed := false
-			isBath := false
-			if meta != nil {
-				m := meta.GetOrLoad(ctx, cardID)
-				hasBed = m.HasBed()
-				isBath = m.IsBathroom()
-			}
-			display := BuildCardDisplay(status, hasBed, isBath)
-			if display == nil {
-				continue
-			}
-
-			if err := writer.WriteCardStatus(ctx, &card.CardStatus{
-				CardID:  cardID,
-				Display: display,
-			}); err != nil {
-				logger.Warn("RebuildAllDisplays: write failed",
-					zap.String("card", cardID), zap.Error(err))
-				continue
+		// 读现有 Redis state（可能 nil）作为 RoomState/BedState/Target 输入；BuildCardDisplay
+		// 容忍空 status——pickCardPriority 仍可基于 CardMeta.hasBed 决定 BedInUse=2。
+		status, _ := reader.ReadCardStatus(ctx, cardID)
+		if status == nil {
+			status = &card.CardStatus{CardID: cardID}
+		}
+		// /80 走 picker 路径（unit display 合成）；/88 /96 走 BuildCardDisplay 单卡视角。
+		if mask == 80 {
+			if picker != nil {
+				picker.RefreshSelf(ctx, cardID)
 			}
 			rebuilt++
-
-			// leaf 卡（/88 /96）触发父 /80 unit display 重算。
-			if picker != nil {
-				picker.RefreshParent(ctx, cardID)
-			}
+			continue
 		}
-		if next == 0 {
-			break
+		hasBed := false
+		isBath := false
+		if meta != nil {
+			m := meta.GetOrLoad(ctx, cardID)
+			hasBed = m.HasBed()
+			isBath = m.IsBathroom()
 		}
-		cursor = next
+		display := BuildCardDisplay(status, hasBed, isBath)
+		if display == nil {
+			continue
+		}
+		if err := writer.WriteCardStatus(ctx, &card.CardStatus{
+			CardID:  cardID,
+			Display: display,
+		}); err != nil {
+			logger.Warn("RebuildAllFromDB: write", zap.String("card", cardID), zap.Error(err))
+			continue
+		}
+		if picker != nil {
+			picker.RefreshParent(ctx, cardID)
+		}
+		rebuilt++
 	}
-
-	logger.Info("RebuildAllDisplays done",
-		zap.Int("scanned", scanned),
+	logger.Info("RebuildAllFromDB done",
 		zap.Int("rebuilt", rebuilt),
 		zap.Duration("elapsed", time.Since(t0)))
 }
 
-// RunPeriodicRebuild ctx done 之前每 interval 跑一次 RebuildAllDisplays。
+// RunPeriodicRebuild ctx done 之前每 interval 跑一次 RebuildAllFromDB。
 // interval <= 0 时跑一次后退出（等价于 boot-time rebuild）。
 func RunPeriodicRebuild(
 	ctx context.Context,
 	interval time.Duration,
-	client *redislib.Client,
+	db *sql.DB,
 	reader *card.Reader,
 	writer *card.Writer,
 	picker *UnitPicker,
@@ -109,7 +109,7 @@ func RunPeriodicRebuild(
 	logger *zap.Logger,
 ) {
 	if interval <= 0 {
-		RebuildAllDisplays(ctx, client, reader, writer, picker, meta, logger)
+		RebuildAllFromDB(ctx, db, reader, writer, picker, meta, logger)
 		return
 	}
 	logger.Info("display periodic rebuilder started", zap.Duration("interval", interval))
@@ -121,7 +121,7 @@ func RunPeriodicRebuild(
 			logger.Info("display periodic rebuilder stopped")
 			return
 		case <-ticker.C:
-			RebuildAllDisplays(ctx, client, reader, writer, picker, meta, logger)
+			RebuildAllFromDB(ctx, db, reader, writer, picker, meta, logger)
 		}
 	}
 }

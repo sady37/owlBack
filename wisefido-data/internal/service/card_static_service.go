@@ -37,7 +37,8 @@ func NewCardStaticService(
 	}
 }
 
-// ListCardStatic 后端专用：从 database 获取静态卡片列表，仅按 tenant/branch/unit 过滤，不做用户权限校验
+// ListCardStatic 后端专用：从 database 获取静态卡片列表，仅按 tenant/branch/unit 过滤，不做用户权限校验。
+// 返回每卡的**完整 device 列表**（含 monitor=off），FE 凭 `device.monitoring_enabled` 自己决定显隐。
 func (s *CardStaticService) GetCardList(ctx context.Context, tenantID, userID, userRole string, branchIDs []string, page, pageSize int) ([]commoncard.CardStatic, *models.BackendPagination, error) {
 	// 1. 从 context 取 userType
 	_, _, userType, _, _ := GetSessionFromContext(ctx)
@@ -353,7 +354,19 @@ func (s *CardStaticService) queryCardsByIDs(ctx context.Context, cardIDs []strin
 			zap.Error(err))
 	}
 
-	return cards, totalCount, nil
+	// 过滤掉 0 device 卡（"empty card"）：unbind 后 cards 行还在但 LPM 范围内 0 个 device，
+	// 这种卡对 FE 无价值（既不能 Focus 也无法管理 device），统一在 BE 滤掉。
+	filtered := cards[:0]
+	for _, c := range cards {
+		if len(c.Devices) > 0 {
+			filtered = append(filtered, c)
+		}
+	}
+	dropped := len(cards) - len(filtered)
+	if dropped > 0 && totalCount > dropped {
+		totalCount -= dropped
+	}
+	return filtered, totalCount, nil
 }
 
 // enrichResidentsAndDevices 批量补 residents.nickname / devices LPM 列表。
@@ -470,6 +483,8 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 	// device_id = UUID (外部对接) / device_ipv6 = INET host 文本（owlcare 内部 lookup 用，
 	// 与 card:realtime:stream.devices map key + device:status:{IPv6} 一致）
 	// [[feedback_api_ids_ipv6_only]]
+	// device 列表**不再按 monitoring_enabled 过滤** — 返回完整列表，由 FE 凭 device.monitoring_enabled
+	// 自己决定显隐（"hide empty card" 默认 + "only monitor=off" 切换）。BE 只管空间归属 + LPM。
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT host(d.device_addr) AS device_addr,
 		       dfm.device_uid,
@@ -484,8 +499,7 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 		       COALESCE((SELECT u.unit_id::text FROM units u  WHERE d.device_addr <<= u.unit_id  LIMIT 1), '') AS unit_anchor
 		  FROM devices d
 		  JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
-		 WHERE d.monitoring_enabled = TRUE
-		   AND EXISTS (
+		 WHERE EXISTS (
 		     SELECT 1 FROM unnest($1::INET[]) p
 		      WHERE d.device_addr <<= network(set_masklen(p, 80))
 		   )

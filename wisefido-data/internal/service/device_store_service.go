@@ -231,7 +231,7 @@ func (s *DeviceStoreService) InitialAllSleepad(ctx context.Context) (*InitialAll
 			continue
 		}
 		if s.configPublisher != nil && row.DeviceUID != "" {
-			_ = s.configPublisher.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceUID, "device_store_firmware_updated", row.DeviceUID)
+			_ = s.configPublisher.PublishConfigChanged(ctx, "update", nil, nil, []string{row.DeviceUID})
 		}
 		synced++
 		successDetails = append(successDetails, map[string]any{
@@ -273,7 +273,7 @@ func (s *DeviceStoreService) BindSleepadOne(ctx context.Context, deviceUID strin
 	}
 	s.applyDefaultSleepadRealtime(ctx, ds)
 	if s.configPublisher != nil && ds.DeviceUID != "" {
-		_ = s.configPublisher.PublishCardChangeForDevice(ctx, ds.TenantID, ds.DeviceUID, "sleepad_bind", ds.DeviceUID)
+		_ = s.configPublisher.PublishConfigChanged(ctx, "update", nil, nil, []string{ds.DeviceUID})
 	}
 	return nil
 }
@@ -297,12 +297,12 @@ func (s *DeviceStoreService) UnbindSleepadOne(ctx context.Context, deviceUID str
 		return err
 	}
 	if s.configPublisher != nil && ds.DeviceUID != "" {
-		_ = s.configPublisher.PublishCardChangeForDevice(ctx, ds.TenantID, ds.DeviceUID, "sleepad_unbind", ds.DeviceUID)
+		_ = s.configPublisher.PublishConfigChanged(ctx, "update", nil, nil, []string{ds.DeviceUID})
 	}
 	return nil
 }
 
-// DeleteDeviceStoreAndNotify 删除 device_store 行并发送 config.card（device_store_deleted）。
+// DeleteDeviceStoreAndNotify 删除 device_store 行并发送 config.changed。
 func (s *DeviceStoreService) DeleteDeviceStoreAndNotify(ctx context.Context, deviceUID string) error {
 	if deviceUID == "" {
 		return fmt.Errorf("device_uid required")
@@ -318,7 +318,7 @@ func (s *DeviceStoreService) DeleteDeviceStoreAndNotify(ctx context.Context, dev
 		return err
 	}
 	if s.configPublisher != nil && row.DeviceUID != "" {
-		_ = s.configPublisher.PublishCardChangeForDevice(ctx, row.TenantID, row.DeviceUID, "device_store_deleted", row.DeviceUID)
+		_ = s.configPublisher.PublishConfigChanged(ctx, "update", nil, nil, []string{row.DeviceUID})
 	}
 	return nil
 }

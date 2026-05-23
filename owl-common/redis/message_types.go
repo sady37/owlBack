@@ -336,40 +336,40 @@ type DeviceItemForMessage struct {
 	DeviceType interface{} `json:"device_type,omitempty"`
 }
 
-type CardChangeData struct {
-	CardID         string `json:"card_id"`
-	SpatialPrefix  string `json:"spatial_prefix"` // INET CIDR e.g. "fd00:0:3:111:3:101::/96"
-	TimestampMs    int64  `json:"timestamp_ms"`
+// ConfigChangedData — config:card:stream 唯一消息格式（type=ConfigCardChanged）。
+//
+// op:
+//   - "reset"  → data startup 重对账信号；scope 三数组应为空
+//   - "delete" → 卡物理删除（cardagg DeleteCardState + DDNS unregister 等清理）
+//   - "update" → 其他任何变化（spatial create / monitor / bind / resident / name / alarm config）
+//
+// scope 三数组按 affected 范围给：
+//   - Cards       : card_id CIDR  → cardagg.metaCache.Remove + UnitPicker.InvalidateUnit
+//   - DeviceAddrs : device_addr /128 → cardagg.enablement.InvalidateDevices
+//   - DeviceUIDs  : device_uid → qinglan/sleepace.InvalidateByDeviceUID
+//
+// "card 变更很少"设计哲学：不做字段级 incremental hint，evict 范围 + lazy reload。
+type ConfigChangedData struct {
+	Op           string   `json:"op"`            // reset / delete / update
+	Cards        []string `json:"cards"`         // INET CIDR (/80, /88, /96)
+	DeviceAddrs  []string `json:"device_addrs"`  // INET /128
+	DeviceUIDs   []string `json:"device_uids"`   // device_uid (gateway 用)
 }
 
-func BuildCardChangeMessage(source, cardID, spatialPrefix string) ConfigChangeMessage {
-	return BuildCardChangeMessageWithExtraAndType(source, cardID, spatialPrefix, ConfigCardChanged, nil)
-}
-
-func BuildCardChangeMessageWithExtra(source, cardID, spatialPrefix string, extraData map[string]interface{}) ConfigChangeMessage {
-	return BuildCardChangeMessageWithExtraAndType(source, cardID, spatialPrefix, ConfigCardChanged, extraData)
-}
-
-func BuildCardChangeMessageWithExtraAndType(source, cardID, spatialPrefix, messageType string, extraData map[string]interface{}) ConfigChangeMessage {
-	if messageType == "" {
-		messageType = ConfigCardChanged
-	}
+func BuildConfigChangedMessage(source, op string, cards, deviceAddrs, deviceUIDs []string) ConfigChangeMessage {
 	now := time.Now()
-	data := map[string]interface{}{
-		"card_id":        cardID,
-		"spatial_prefix": spatialPrefix,
-		"timestamp_ms":   now.UnixMilli(),
-	}
-	for k, v := range extraData {
-		data[k] = v
-	}
 	return ConfigChangeMessage{
 		SpecVersion: "1.0",
 		ID:          uuid.New().String(),
 		Source:      source,
-		Type:        messageType,
+		Type:        ConfigCardChanged,
 		Time:        now.UTC().Format(time.RFC3339),
-		Data:        data,
+		Data: map[string]interface{}{
+			"op":            op,
+			"cards":         cards,
+			"device_addrs":  deviceAddrs,
+			"device_uids":   deviceUIDs,
+		},
 	}
 }
 

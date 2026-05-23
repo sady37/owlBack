@@ -12,7 +12,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// ConfigSubscriber 订阅 config:card:stream：失效 cardMapping 并触发 HealthCheck 探测。
+// ConfigSubscriber 订阅 config:card:stream — 按 op + 受影响范围失效 cardMapping + 探测 Sleepad health。
 type ConfigSubscriber struct {
 	redisClient *redis.Client
 	cardMapping *service.CardMappingService
@@ -44,51 +44,29 @@ func (s *ConfigSubscriber) HandleConfigMessage(ctx context.Context, stream strin
 		s.logger.Warn("unmarshal config CloudEvent", zap.Error(err))
 		return nil
 	}
-
-	switch configMsg.Type {
-	case rediscommon.ConfigCardChanged:
-		s.handleCardLike(ctx, configMsg)
-	default:
-		s.logger.Debug("skip config event type", zap.String("type", configMsg.Type))
+	if configMsg.Type != rediscommon.ConfigCardChanged {
+		return nil
 	}
-	return nil
-}
 
-func (s *ConfigSubscriber) handleCardLike(ctx context.Context, configMsg rediscommon.ConfigChangeMessage) {
-	data := configMsg.Data
-	if data == nil {
-		return
-	}
-	op, _ := data["op"].(string)
-	cardID, _ := data["card_id"].(string)
-	deviceID, _ := data["device_id"].(string)
+	op, _ := configMsg.Data["op"].(string)
+	uids := stringArrayFromData(configMsg.Data, "device_uids")
 
-	// op=="reset" → full cache invalidation
 	if op == "reset" {
 		s.cardMapping.InvalidateCache(ctx)
 		if s.healthCheck != nil {
 			s.healthCheck.ProbeAfterCardChange(ctx, "", "", "", "", nil)
 		}
-		return
+		return nil
 	}
 
-	// Invalidate affected device UIDs from the event payload
-	affectedUIDs := affectedDeviceUIDsFromConfigData(data)
-	for _, uid := range affectedUIDs {
+	for _, uid := range uids {
 		s.cardMapping.InvalidateByDeviceUID(uid)
-		// Reload the baseline for each affected device
 		s.cardMapping.GetCardInfo(ctx, uid)
 	}
-
-	if cardID != "" {
-		s.cardMapping.InvalidateByCardID(cardID)
-	}
-
 	if s.healthCheck != nil {
-		// 把 affectedUIDs 一并传下去：HealthCheck 优先按 UID 列表只探目标 Sleepad，
-		// 避免 deviceID 留空时 fallback 到 scanAll 引发风暴（启动 backlog 28 条 → 同一台 1s 17 次）。
-		s.healthCheck.ProbeAfterCardChange(ctx, "", "", cardID, deviceID, affectedUIDs)
+		s.healthCheck.ProbeAfterCardChange(ctx, "", "", "", "", uids)
 	}
+	return nil
 }
 
 // SubscribeLoop 阻塞消费 config:card:stream。
@@ -135,11 +113,11 @@ func SubscribeLoop(ctx context.Context, logger *zap.Logger, redisClient *redis.C
 	}
 }
 
-func affectedDeviceUIDsFromConfigData(data map[string]interface{}) []string {
+func stringArrayFromData(data map[string]interface{}, key string) []string {
 	if data == nil {
 		return nil
 	}
-	raw, ok := data["affected_device_uids"]
+	raw, ok := data[key]
 	if !ok || raw == nil {
 		return nil
 	}
@@ -154,7 +132,6 @@ func affectedDeviceUIDsFromConfigData(data map[string]interface{}) []string {
 			}
 		}
 		return out
-	default:
-		return nil
 	}
+	return nil
 }

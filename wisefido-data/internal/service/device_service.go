@@ -12,7 +12,6 @@ import (
 	"wisefido-data/internal/scope"
 
 	"owl-common/card"
-	rediscommon "owl-common/redis"
 
 	"go.uber.org/zap"
 )
@@ -348,14 +347,21 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 		s.logger.Warn("Failed to get updated device for card sync", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID))
 	}
 
-	// 任意 devices 字段更新均发 config.card，供网关刷新 baseline / health（在读到新行后带 device_uid）
+	// 任意 devices 字段更新均发 config.changed，供网关刷新 baseline / health。
+	// device_uid 优先取 newDevice；bind 后 device_addr 变化导致 GetDevice(req.DeviceID) 找不到
+	// 时（newDevice=nil），回退用 oldDevice.DeviceUID（device_uid 是稳定身份，bind 不变）。
+	// device_addrs 故意用 req.DeviceID（pre-bind addr）：cardagg.enablement cache 持有的就是旧
+	// addr，invalidate 旧 addr 正是要的语义；新 addr 还没有 cache 条目，无需特意带。
 	if s.configPublisher != nil {
-		var uid string
-		if newDevice != nil {
-			uid = newDevice.DeviceUID
+		var uids []string
+		switch {
+		case newDevice != nil && newDevice.DeviceUID != "":
+			uids = []string{newDevice.DeviceUID}
+		case oldDevice != nil && oldDevice.DeviceUID != "":
+			uids = []string{oldDevice.DeviceUID}
 		}
-		if err := s.configPublisher.PublishCardChangeForDevice(ctx, req.TenantID, req.DeviceID, "devices_updated", uid); err != nil {
-			s.logger.Warn("PublishCardChangeForDevice failed",
+		if err := s.configPublisher.PublishConfigChanged(ctx, "update", nil, []string{req.DeviceID}, uids); err != nil {
+			s.logger.Warn("PublishConfigChanged failed",
 				zap.String("tenant_id", req.TenantID),
 				zap.String("device_id", req.DeviceID),
 				zap.Error(err))
@@ -470,17 +476,14 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 		}
 	}
 
-	// 发送 device_store 变化信号（device_deleted）
+	// 发送 device 删除变化信号
 	if s.configPublisher != nil {
-		extraData := map[string]interface{}{
-			"device_id":   req.DeviceID,
-			"change_type": "device_deleted",
-		}
+		var uids []string
 		if deviceUID != "" {
-			extraData["affected_device_uids"] = []string{deviceUID}
+			uids = []string{deviceUID}
 		}
-		if err := s.configPublisher.PublishCardChangeMessageWithExtraAndType(ctx, req.TenantID, "", unitID, "", rediscommon.ConfigCardChanged, extraData); err != nil {
-			s.logger.Warn("Failed to publish device_store change signal for device deletion",
+		if err := s.configPublisher.PublishConfigChanged(ctx, "update", nil, []string{req.DeviceID}, uids); err != nil {
+			s.logger.Warn("Failed to publish device deletion signal",
 				zap.String("device_id", req.DeviceID),
 				zap.Error(err),
 			)

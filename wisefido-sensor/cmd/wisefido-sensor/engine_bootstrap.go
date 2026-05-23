@@ -70,11 +70,8 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB,
 	// 3b. PR-15：每日 22:00 (local) 重读 layout，hash 变即重置该 room → 从 0 重学
 	engine.SetDailyLayoutReload(22, db)
 
-	// 3c. 路由表周期热加载（60s）
-	engine.SetRoutesReloader(func(rctx context.Context) error {
-		_, err := mapDevicesToRooms(rctx, engine, db, logger)
-		return err
-	}, 60*time.Second)
+	// 3c. config:card:stream 事件驱动 reload —— 见 main.go configCardConsumer wire。
+	// (旧 60s SetRoutesReloader 已废弃；事件驱动延迟 < 1s，10 次/天可忽略)
 
 	// 3d. PR-4/6/7 GhostAdjudicators 二件套
 	//     - General (§4.B Noop, PR-7 留待实现)
@@ -187,6 +184,25 @@ func buildRuntimeConfig(cfg *config.Config, db *sql.DB) roomengine.RuntimeConfig
 	}
 
 	return rc
+}
+
+// engineReloader 把 registerAllRooms + mapDevicesToRooms 包装成 consumer.ConfigChangedReloader。
+// 用于 config_card_consumer 收到 config.changed 时触发 sensor 端 incremental reload。
+type engineReloader struct {
+	ctx    context.Context
+	engine *roomengine.Engine
+	db     *sql.DB
+	logger *zap.Logger
+}
+
+func (r *engineReloader) ReloadRooms(ctx context.Context) error {
+	_, err := registerAllRooms(ctx, r.engine, r.db, r.logger)
+	return err
+}
+
+func (r *engineReloader) ReloadDevices(ctx context.Context) error {
+	_, err := mapDevicesToRooms(ctx, r.engine, r.db, r.logger)
+	return err
 }
 
 // registerAllRooms 扫 rooms 表所有 room，逐个 ParseLayoutConfig + Optimize + RegisterRoom；

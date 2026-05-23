@@ -59,9 +59,9 @@ func NewCardSyncService(
 	}
 }
 
-// PublishConfigCardReset 发送 configCard reset 通知，委托给 ConfigPublisher。
-func (s *CardSyncService) PublishConfigCardReset(ctx context.Context) error {
-	return s.publisher.PublishConfigCardReset(ctx)
+// PublishConfigReset 发送 config.changed reset 通知（startup 重对账）。
+func (s *CardSyncService) PublishConfigReset(ctx context.Context) error {
+	return s.publisher.PublishConfigChanged(ctx, "reset", nil, nil, nil)
 }
 
 // SetReconcileDeps 装配启动 reconcile 所需依赖（db / DDNS / owlDomain）。
@@ -134,11 +134,15 @@ func (s *CardSyncService) emitCardChange(ctx context.Context, a domain.CardSyncA
 	if len(uids) == 0 && a.CardID != "" {
 		uids = s.cardRepo.GetDeviceUIDsForCard(a.TenantID, a.CardID)
 	}
-	extra := map[string]interface{}{"op": a.Op}
-	if len(uids) > 0 {
-		extra["affected_device_uids"] = uids
+	op := "update"
+	if a.Op == "delete" || a.Op == "deleted" {
+		op = "delete"
 	}
-	if err := s.publisher.PublishCardChangeMessageWithExtra(ctx, a.TenantID, a.CardID, a.UnitID, branchID, extra); err != nil {
+	cards := []string(nil)
+	if a.CardID != "" {
+		cards = []string{a.CardID}
+	}
+	if err := s.publisher.PublishConfigChanged(ctx, op, cards, nil, uids); err != nil {
 		return err
 	}
 	if s.realtime != nil && branchID != "" {

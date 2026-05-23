@@ -54,10 +54,9 @@ func main() {
 	})
 	kv := store.NewRedisKV(redisClient)
 
-	// 重启清残留：data 启动时清 card:state:* + device:status:* hashes，让 cardagg/sensor 从空白重建。
-	// 配合 wisefido-sensor publishInitialResetState 主动重发 vacant 初态；device:status 由 cardagg
-	// DeviceStatusTracker 看门狗 + alarm 事件流自然填回。
-	// 启动顺序由 start-owlback-full.sh 保证：data → 10s → cardagg/sensor。
+	// 重启清残留：data 启动时清 card:state:* + device:status:* hashes，让 cardagg 收到 op=reset 后
+	// 从 DB 全量重 build（clean slate + DB 重读 ＞ in-place 增量同步）。
+	// 非 HA 场景下重启罕见，accept 短暂 rebuild 窗口换 consistency。
 	clearRedisOnStartup(context.Background(), redisClient, logger)
 
 	// Tenants management (platform-level)
@@ -616,8 +615,8 @@ func main() {
 				logger.Info("stream trim on startup", zap.String("stream", stream), zap.String("result", result))
 			}
 			// 通知所有下游服务：stream 已裁剪，需回 data 重查映射
-			if err := cardSyncService.PublishConfigCardReset(ctx); err != nil {
-				logger.Warn("Failed to publish configCard reset", zap.Error(err))
+			if err := cardSyncService.PublishConfigReset(ctx); err != nil {
+				logger.Warn("Failed to publish config reset", zap.Error(err))
 			}
 
 			// card_id 已与底层物理实体 UUID 一体化（ActiveBedCard.card_id=bed_id, UnitCard.card_id=unit_id,

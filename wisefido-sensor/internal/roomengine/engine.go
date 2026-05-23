@@ -209,11 +209,6 @@ type Engine struct {
 	dailyReloadHour int
 	dailyReloadDB   *sql.DB // 用于 SELECT layout_config；nil 时跳过
 
-	// 路由表周期热加载（启动后才绑 device→room 的设备永远进不来——见 handleMessage tm==nil）
-	// 注入方式：bootstrap 调 SetRoutesReloader 传入"重新跑 mapDevicesToRooms"的闭包
-	routesReloader       func(context.Context) error
-	routesReloadInterval time.Duration
-
 	// 路由失败的 device 频率限制告警（避免每条 frame 都 warn 一次）。
 	// 同一 device key 60s 内只 warn 一次，确保 deviceRoom 缺失能被发现而不淹日志。
 	unroutedMu sync.Mutex
@@ -333,7 +328,6 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		dailySnapshotHour:    11, // 每天 11:50 local 归档 daily history
 		dailySnapshotMinute:  50,
 		historyRetainDays:    365, // 一年滚动清理
-		routesReloadInterval: 60 * time.Second, // 路由表周期热加载默认 60s
 		unrouted:             make(map[string]int64),
 		redisClient:          redisClient,
 		logger:               logger,
@@ -343,20 +337,6 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		trackLastSeen:        make(map[string]map[int]int64),
 		bathroomGates:        make(map[string]*BathroomGate),
 	}
-}
-
-// SetRoutesReloader 注入路由表（device→room、card→room）周期热加载闭包。
-// 解决 handleMessage 在 deviceRoom 缺失时静默丢帧的问题——启动后才绑定/重绑的
-// device 不再永远沉默。reloader 通常是"重跑 mapDevicesToRooms"的 wrapper。
-// interval ≤ 0 时取默认 60s。
-func (e *Engine) SetRoutesReloader(fn func(context.Context) error, interval time.Duration) {
-	if interval <= 0 {
-		interval = 60 * time.Second
-	}
-	e.mu.Lock()
-	e.routesReloader = fn
-	e.routesReloadInterval = interval
-	e.mu.Unlock()
 }
 
 // warnUnrouted 路由失败的 device 频率限制告警（同一 key 60s 内一次）。
@@ -383,31 +363,8 @@ func (e *Engine) warnUnrouted(stream, cardID, deviceAddr, deviceType string) {
 		zap.String("device_addr", deviceAddr),
 		zap.String("card_id", cardID),
 		zap.String("device_type", deviceType),
-		zap.String("hint", "device not in deviceRoom/cardToRoom; if just bound after startup, will heal at next routes reload"),
+		zap.String("hint", "device not in deviceRoom/cardToRoom; config:card:stream subscriber should heal on next event"),
 	)
-}
-
-// routesReloadLoop 周期调用 routesReloader 热加载路由表。
-func (e *Engine) routesReloadLoop(ctx context.Context) {
-	e.mu.RLock()
-	interval := e.routesReloadInterval
-	reloader := e.routesReloader
-	e.mu.RUnlock()
-	if reloader == nil || interval <= 0 {
-		return
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := reloader(ctx); err != nil {
-				e.logger.Warn("routes_reload_failed", zap.Error(err))
-			}
-		}
-	}
 }
 
 // SetDailyLayoutReload 注入 daily layout reload 配置。
@@ -1227,6 +1184,30 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	rawW, rawH := cfg.RoomW, cfg.RoomH
 	ApplyOptimizedExtent(&cfg)
 
+	// 幂等 short-circuit：room 已注册 + layout 未变 → 仅刷 soft 字段，**不**重建 TrackManager/grid。
+	// 否则 config:card.changed 触发的 ReloadRooms 会把所有 17 个 room 的 bedSessions / fall pending /
+	// trackLastSeen / sleepadStates 等 in-memory 状态归零，导致正在床上 / 跌倒判定窗口丢失。
+	// layout 真的改了（用户编辑了 wall/bed/radar 等）→ 通过 hash 比对触发完整重建（旧行为）。
+	newHash := LayoutHash(cfg)
+	if tm, exists := e.rooms[cfg.RoomID]; exists && e.layoutHashes[cfg.RoomID] == newHash {
+		// soft-only：room name / timezone / 静态归属（resident_id / suite_id / room_type）+ public bathroom 标记
+		if cfg.RoomName != "" {
+			tm.SetRoomName(cfg.RoomName)
+		}
+		if cfg.Timezone != "" {
+			if loc, err := time.LoadLocation(cfg.Timezone); err == nil {
+				tm.SetTimezone(loc)
+			}
+		}
+		e.roomSuiteID[cfg.RoomID] = cfg.SuiteID
+		e.roomResidentID[cfg.RoomID] = cfg.ResidentID
+		e.roomType[cfg.RoomID] = cfg.RoomType
+		if cfg.RoomType == card.RoomTypeBathroom && cfg.IsPublicBathroom && e.suiteCensus != nil && cfg.SuiteID != "" {
+			e.suiteCensus.MarkPublicBathroom(cfg.SuiteID) // 幂等
+		}
+		return
+	}
+
 	// 1. 创建空 grid，覆盖优化后的 RoomW × RoomH
 	grid := NewRoomGrid(cfg.RoomW, cfg.RoomH, radarutils.CellSize)
 	grid.OriginX = cfg.OriginX
@@ -1314,9 +1295,9 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		)
 	}
 
-	// 计算 layout hash 并保存（snapshot save/load 都按此 hash 比对）
-	hash := LayoutHash(cfg)
-	e.layoutHashes[cfg.RoomID] = hash
+	// 保存 layout hash（snapshot save/load 都按此 hash 比对）— 上面 short-circuit 已算过
+	e.layoutHashes[cfg.RoomID] = newHash
+	hash := newHash
 
 	e.logger.Info("room registered",
 		zap.String("room_id", cfg.RoomID),
@@ -1425,10 +1406,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	go e.runEventLoop(ctx, eventStream, group)
 	// 单独 goroutine 消费 alarm 流（radar Fall 等）
 	go e.runAlarmLoop(ctx, alarmStream, group)
-	// 路由表周期热加载（启动后才绑定的 device 不再永远沉默）
-	if e.routesReloader != nil {
-		go e.routesReloadLoop(ctx)
-	}
+	// 路由表 reload 由 config:card:stream subscriber 事件驱动（cmd/wisefido-sensor main.go configCardConsumer）。
 
 	e.logger.Info("room engine started",
 		zap.String("monitor_stream", monitorStream),

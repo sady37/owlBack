@@ -201,6 +201,14 @@ func main() {
 		zap.String("critical_bathroom", "BathroomFallRules §6.A 4 rules"),
 		zap.String("critical_bedroom", "BedroomFallRules §6.B 11b+11c"))
 
+	// 5.2.3 config:card:stream 订阅：wisefido-data PublishConfigChanged 后失效 + reload。
+	// 替代旧 60s SetRoutesReloader 轮询；事件驱动，monitor toggle 1s 内同步到 bed_device_lookup。
+	configCardConsumer := consumer.NewConfigCardConsumer(engineRedis,
+		&engineReloader{ctx: ctx, engine: engine, db: engineDB, logger: logger},
+		zone.BedDeviceLookup,
+		logger)
+	configCardConsumer.Start(ctx)
+
 	// 重启清残留：sensor 启动后主动 publish 所有 room/bed 的 vacant 初始态，
 	// OOR/OOB anchor 重置为 now，避免 cardagg card:state hash 保留昨日 LastExitTime
 	// （如「OOR 29h」残留显示）。详 initial_publish.go。

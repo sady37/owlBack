@@ -256,8 +256,11 @@ func buildExpected(ctx context.Context, tx *sql.Tx, scope string) (map[string]bo
 // ============================================================================
 
 type currentCard struct {
-	residentID string
-	cardName   string
+	residentID  string
+	cardName    string
+	hasBed      bool
+	hasBathroom bool
+	hasKitchen  bool
 }
 
 // loadCurrent map key = card_id CIDR text（== anchor，原 doc 模型）
@@ -265,7 +268,8 @@ func loadCurrent(ctx context.Context, tx *sql.Tx, scope string) (map[string]curr
 	rows, err := tx.QueryContext(ctx, `
 		SELECT host(card_id)||'/'||masklen(card_id),
 		       COALESCE(host(resident_id), ''),
-		       COALESCE(card_name, '')
+		       COALESCE(card_name, ''),
+		       has_bed, has_bathroom, has_kitchen
 		  FROM cards
 		 WHERE card_id <<= $1::INET
 	`, scope)
@@ -276,10 +280,14 @@ func loadCurrent(ctx context.Context, tx *sql.Tx, scope string) (map[string]curr
 	out := map[string]currentCard{}
 	for rows.Next() {
 		var p, rid, name string
-		if err := rows.Scan(&p, &rid, &name); err != nil {
+		var hasBed, hasBath, hasKit bool
+		if err := rows.Scan(&p, &rid, &name, &hasBed, &hasBath, &hasKit); err != nil {
 			return nil, fmt.Errorf("scan current card: %w", err)
 		}
-		out[p] = currentCard{residentID: rid, cardName: name}
+		out[p] = currentCard{
+			residentID: rid, cardName: name,
+			hasBed: hasBed, hasBathroom: hasBath, hasKitchen: hasKit,
+		}
 	}
 	return out, rows.Err()
 }
@@ -360,6 +368,63 @@ func (s *CardSyncService) applyDiffs(ctx context.Context, tx *sql.Tx, expected m
 			a.anchor, a.anchor)
 	}
 
+	// Step 4: recompute 三 flag per anchor — 必须在 Step 3 rooms/devices.card_id reassign 之后。
+	//
+	// has_bed: IPv6 bed_slot 字节（bit 88-95）非 0 ⟺ device 绑某床。用
+	//   `host(network(/96)) != host(network(/88))` 判定（inet != 含 masklen，要 host() 去掉）。
+	//   不 JOIN beds 表 — 地址编码本身即真相，beds 表只是命名索引。
+	// has_bathroom / has_kitchen: 卡归属的 rooms 里有 room_type=1/2。
+	//   按 rooms.card_id = anchor 判定（Step 3 LPM 结果），保证 /80 lazy 卡只算自己拿到的 room。
+	//
+	// 翻转 → emit "*_changed" diff 让 publishDiff 推 cards=[anchor] 供 cardagg metaCache 失效。
+	// 否则 bind/room-rebind 不改 card 结构时 metaCache 持 stale flag，FE card_priority 错。
+	diffByPrefix := map[string]bool{}
+	for _, d := range diffs {
+		diffByPrefix[d.prefix] = true
+	}
+	for _, a := range assigns {
+		var newHasBed, newHasBath, newHasKitchen bool
+		err := tx.QueryRowContext(ctx, `
+			UPDATE cards SET
+			    has_bed = EXISTS(
+			        SELECT 1 FROM devices d
+			         WHERE d.card_id = $1::INET
+			           AND d.monitoring_enabled = TRUE
+			           AND host(network(set_masklen(d.device_addr, 96))) != host(network(set_masklen(d.device_addr, 88)))
+			    ),
+			    has_bathroom = EXISTS(
+			        SELECT 1 FROM rooms r
+			         WHERE r.card_id = $1::INET AND r.room_type = 1
+			    ),
+			    has_kitchen = EXISTS(
+			        SELECT 1 FROM rooms r
+			         WHERE r.card_id = $1::INET AND r.room_type = 2
+			    )
+			WHERE card_id = $1::INET
+			RETURNING has_bed, has_bathroom, has_kitchen`, a.anchor,
+		).Scan(&newHasBed, &newHasBath, &newHasKitchen)
+		if err != nil {
+			return nil, fmt.Errorf("recompute flags %s: %w", a.anchor, err)
+		}
+		if diffByPrefix[a.anchor] {
+			continue // 已有结构性 diff，flag 变化自然包含其中
+		}
+		prev := current[a.anchor]
+		var op string
+		switch {
+		case prev.hasBed != newHasBed:
+			op = "has_bed_changed"
+		case prev.hasBathroom != newHasBath:
+			op = "has_bathroom_changed"
+		case prev.hasKitchen != newHasKitchen:
+			op = "has_kitchen_changed"
+		}
+		if op != "" {
+			diffs = append(diffs, cardDiff{prefix: a.anchor, op: op})
+			diffByPrefix[a.anchor] = true
+		}
+	}
+
 	return diffs, nil
 }
 
@@ -404,29 +469,10 @@ func (s *CardSyncService) upsertCard(ctx context.Context, tx *sql.Tx,
 
 	cardDNS := card.ShortCodeOf(p)
 
-	// has_bed: ActiveBed 精细语义 — 卡 scope 内任一 bed 上有 monitor-on device。
-	//   device_addr <<= bed_id 隐含 "device 绑在某 bed 上"（IPv6 /96 包含 = bind 状态）
-	//   monitoring_enabled = TRUE 过滤 monitor=off
-	//   例：room-level device C(on) + bed_A(on) + bed_B(off) → TRUE
-	//       room-level device C(on) + bed_A(off) + bed_B(off) → FALSE
-	var hasBed bool
-	_ = tx.QueryRowContext(ctx, `
-		SELECT EXISTS(
-		  SELECT 1 FROM devices d
-		    JOIN beds b ON d.device_addr <<= b.bed_id
-		   WHERE b.bed_id <<= $1::INET
-		     AND d.monitoring_enabled = TRUE
-		)`, p,
-	).Scan(&hasBed)
-
-	// has_bathroom / has_kitchen: anchor scope 内是否有 room_type=1/2 的 room
-	var hasBath, hasKitchen bool
-	_ = tx.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM rooms WHERE room_id <<= $1::INET AND room_type=1)`, p,
-	).Scan(&hasBath)
-	_ = tx.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM rooms WHERE room_id <<= $1::INET AND room_type=2)`, p,
-	).Scan(&hasKitchen)
+	// has_bed / has_bathroom / has_kitchen 三 flag 全在 Step 4 统一 recompute
+	//（Step 3 rooms/devices.card_id reassign 后按 card_id = anchor 精确归属判定）。
+	// 此处占位 false，避免 /80 lazy 卡误吸 /88 子卡的床/卫/厨。
+	hasBed, hasBath, hasKitchen := false, false, false
 
 	diff := computeCardDiff(p, current[p], newHoA, cardName)
 
@@ -601,16 +647,48 @@ func (s *CardSyncService) syncDDNSForDiff(ctx context.Context, d cardDiff, tenan
 }
 
 func (s *CardSyncService) publishDiff(ctx context.Context, tenantPrefix string, d cardDiff) {
-	var err error
+	var op string
 	switch d.op {
-	case "create", "delete":
-		err = s.publisher.PublishCardChanged(ctx, tenantPrefix, d.prefix, d.op, d.prefix, "")
-	case "admission", "discharge", "transfer", "name_changed":
-		err = s.publisher.PublishCardResidentChanged(ctx, tenantPrefix, d.prefix, d.op, d.prevHoA, d.newHoA, d.prefix)
+	case "delete":
+		op = "delete"
+	case "create", "admission", "discharge", "transfer", "name_changed",
+		"has_bed_changed", "has_bathroom_changed", "has_kitchen_changed":
+		op = "update"
+	default:
+		return
 	}
-	if err != nil {
+	// 补齐 affected device 范围 — 让 gateway (qinglan/sleepace) 也能按 device_uid 精确失效 baseline cache，
+	// cardagg 也能用 device_addrs 失效 enablement cache。否则 gateway 拿到 cards-only payload 啥也做不了。
+	// delete op：用 publishDiff 之前的 prefix 范围查（DB row 还在；但 caller 已在 Step1 ExpireAlarms 后 DELETE
+	// FROM cards，devices.card_id 也已被 Step3 reassign 到别处或 NULL）—— 此处先查 device_addr <<= prefix 而非
+	// d.card_id = prefix，覆盖被搬走的 device。
+	var devAddrs, devUIDs []string
+	if s.db != nil {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT host(d.device_addr), dfm.device_uid
+			  FROM devices d
+			  JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
+			 WHERE d.device_addr <<= $1::INET
+		`, d.prefix)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var addr, uid string
+				if err := rows.Scan(&addr, &uid); err == nil {
+					if addr != "" {
+						devAddrs = append(devAddrs, addr)
+					}
+					if uid != "" {
+						devUIDs = append(devUIDs, uid)
+					}
+				}
+			}
+		}
+	}
+	if err := s.publisher.PublishConfigChanged(ctx, op, []string{d.prefix}, devAddrs, devUIDs); err != nil {
 		s.logger.Warn("publish card diff",
-			zap.String("prefix", d.prefix), zap.String("op", d.op), zap.Error(err))
+			zap.String("prefix", d.prefix), zap.String("op", d.op),
+			zap.String("tenant", tenantPrefix), zap.Error(err))
 	}
 }
 

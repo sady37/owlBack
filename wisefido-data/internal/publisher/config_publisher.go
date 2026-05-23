@@ -12,15 +12,13 @@ import (
 	"go.uber.org/zap"
 )
 
-// ConfigPublisher 配置变更消息发布器
-// 统一管理所有 config:* 消息的发送
+// ConfigPublisher — config:* 流的统一 publish 入口。
 type ConfigPublisher struct {
 	redisClient *redis.Client
 	logger      *zap.Logger
-	db          *sql.DB // 反查 device_ipv6 用 (PublishAlarmDeviceMessage 内部 lookup)
+	db          *sql.DB
 }
 
-// NewConfigPublisher 创建配置变更消息发布器
 func NewConfigPublisher(redisClient *redis.Client, logger *zap.Logger) *ConfigPublisher {
 	return &ConfigPublisher{
 		redisClient: redisClient,
@@ -28,72 +26,84 @@ func NewConfigPublisher(redisClient *redis.Client, logger *zap.Logger) *ConfigPu
 	}
 }
 
-// SetDB 注入 DB 连接（用于内部 device_id → device_ipv6 反查）
 func (p *ConfigPublisher) SetDB(db *sql.DB) {
 	p.db = db
 }
 
-// PublishAlarmProcessMessage 发送报警处理消息到 config:alarmProcess:stream，供 cardagg 消费用于更新告警显示。
+// PublishConfigChanged — config:card:stream 唯一 publish 入口（统一替代历史 5 个 variant）。
 //
-// device_ipv6 单程票后 cardID 是路由 key，device 字段不再传（cardagg 消费侧也只读 cardID/alarmLevel/alarmType/eventID）。
-// tenantID 入参保留作日志，不入 payload。
+//	op = "reset"  → startup 重对账信号；cards/devAddrs/devUIDs 应为空
+//	op = "delete" → 卡物理删除（cardagg DeleteCardState + DDNS unregister 等清理）
+//	op = "update" → 其他变化（spatial / monitor / bind / resident / name / alarm config）
+//
+// scope 三数组按 affected 范围给：
+//   - cards       : card_id CIDR  → cardagg.metaCache.Remove + UnitPicker.InvalidateUnit
+//   - deviceAddrs : device_addr /128 → cardagg.enablement.InvalidateDevices
+//   - deviceUIDs  : device_uid → qinglan/sleepace.InvalidateByDeviceUID
+//
+// "card 变更很少"设计哲学：不做字段级 incremental hint；evict 范围 + lazy reload。
+func (p *ConfigPublisher) PublishConfigChanged(
+	ctx context.Context,
+	op string,
+	cards, deviceAddrs, deviceUIDs []string,
+) error {
+	msg := rediscommon.BuildConfigChangedMessage("wisefido-data", op, cards, deviceAddrs, deviceUIDs)
+	stream := rediscommon.StreamConfigCard.Name
+	maxLen, retention := rediscommon.GetStreamConfig(rediscommon.StreamConfigCard, nil)
+
+	streamID, err := rediscommon.PublishJSONToStream(ctx, p.redisClient, stream, msg, int64(maxLen), retention)
+	if err != nil {
+		p.logger.Error("publish config.changed",
+			zap.String("op", op),
+			zap.Int("cards", len(cards)),
+			zap.Int("device_addrs", len(deviceAddrs)),
+			zap.Int("device_uids", len(deviceUIDs)),
+			zap.Error(err))
+		return fmt.Errorf("publish config.changed: %w", err)
+	}
+	p.logger.Info("config.changed",
+		zap.String("op", op),
+		zap.Int("cards", len(cards)),
+		zap.Int("device_addrs", len(deviceAddrs)),
+		zap.Int("device_uids", len(deviceUIDs)),
+		zap.String("stream_id", streamID))
+	return nil
+}
+
+// PublishAlarmProcessMessage — alarm 处置通知（config:alarmProcess:stream）。
+// 跟 PublishConfigChanged 是不同流不同 schema，不合并。
 func (p *ConfigPublisher) PublishAlarmProcessMessage(
 	ctx context.Context,
 	tenantID, cardID, deviceID, alarmLevel, alarmType, processType, eventID string,
 	alarmTimestamp int64,
 ) error {
-	_ = deviceID // 单程票后不入 payload；保留入参兼容 caller 签名
-	alarmProcessMsg := rediscommon.BuildAlarmProcessMessage(
-		"wisefido-data",
-		cardID,
-		alarmLevel,
-		alarmType,
-		processType, // 如 "ack"
-		eventID,
-		alarmTimestamp,
-	)
+	_ = deviceID
+	msg := rediscommon.BuildAlarmProcessMessage("wisefido-data", cardID, alarmLevel, alarmType, processType, eventID, alarmTimestamp)
+	stream := rediscommon.StreamConfigAlarmProcess.Name
+	maxLen, retention := rediscommon.GetStreamConfig(rediscommon.StreamConfigAlarmProcess, nil)
 
-	// 发布到 config:alarmProcess:stream
-	streamName := rediscommon.StreamConfigAlarmProcess.Name
-	maxLen, retentionSeconds := rediscommon.GetStreamConfig(rediscommon.StreamConfigAlarmProcess, nil)
-
-	streamID, err := rediscommon.PublishJSONToStream(
-		ctx,
-		p.redisClient,
-		streamName,
-		alarmProcessMsg,
-		int64(maxLen),
-		retentionSeconds,
-	)
-
+	streamID, err := rediscommon.PublishJSONToStream(ctx, p.redisClient, stream, msg, int64(maxLen), retention)
 	if err != nil {
-		p.logger.Error("Failed to publish alarm process message",
+		p.logger.Error("publish alarm.process",
 			zap.String("tenant_id", tenantID),
 			zap.String("card_id", cardID),
 			zap.String("alarm_level", alarmLevel),
 			zap.String("process_type", processType),
-			zap.String("stream", streamName),
-			zap.Error(err),
-		)
-		return fmt.Errorf("failed to publish alarm process message: %w", err)
+			zap.Error(err))
+		return fmt.Errorf("publish alarm.process: %w", err)
 	}
-
-	p.logger.Info("Published alarm process message",
+	p.logger.Info("alarm.process",
 		zap.String("tenant_id", tenantID),
 		zap.String("card_id", cardID),
 		zap.String("alarm_level", alarmLevel),
 		zap.String("alarm_type", alarmType),
 		zap.String("process_type", processType),
-		zap.String("stream", streamName),
-		zap.String("stream_id", streamID),
-	)
-
+		zap.String("stream_id", streamID))
 	return nil
 }
 
-// PublishAlarmDeviceMessage 发送设备告警配置变更消息到 config:alarmDevice:stream，供 cardagg 消费用于失效 enablement 缓存。
-//
-// Phase 2 一刀切：deviceAddr 直接传入；deviceUID 用于日志/审计。
+// PublishAlarmDeviceMessage — 设备 alarm 使能配置变更（config:alarmDevice:stream）。
+// sensor / cardagg 端 enablement cache 按 device_addr 失效；与 config:card 是不同流。
 func (p *ConfigPublisher) PublishAlarmDeviceMessage(
 	ctx context.Context,
 	tenantID, deviceAddr, deviceUID, settingType string,
@@ -107,49 +117,28 @@ func (p *ConfigPublisher) PublishAlarmDeviceMessage(
 			zap.String("device_uid", deviceUID))
 		return nil
 	}
-	settingMsg := rediscommon.BuildAlarmDeviceMessage(
-		"wisefido-data",
-		addr,
-		settingType,
-		settingData,
-	)
+	msg := rediscommon.BuildAlarmDeviceMessage("wisefido-data", addr, settingType, settingData)
+	stream := rediscommon.StreamConfigAlarmDevice.Name
+	maxLen, retention := rediscommon.GetStreamConfig(rediscommon.StreamConfigAlarmDevice, nil)
 
-	streamName := rediscommon.StreamConfigAlarmDevice.Name
-	maxLen, retentionSeconds := rediscommon.GetStreamConfig(rediscommon.StreamConfigAlarmDevice, nil)
-
-	streamID, err := rediscommon.PublishJSONToStream(
-		ctx,
-		p.redisClient,
-		streamName,
-		settingMsg,
-		int64(maxLen),
-		retentionSeconds,
-	)
-
+	streamID, err := rediscommon.PublishJSONToStream(ctx, p.redisClient, stream, msg, int64(maxLen), retention)
 	if err != nil {
-		p.logger.Error("Failed to publish alarm device message",
+		p.logger.Error("publish alarm.device",
 			zap.String("tenant_id", tenantID),
 			zap.String("device_addr", addr.String()),
 			zap.String("setting_type", settingType),
-			zap.String("stream", streamName),
-			zap.Error(err),
-		)
-		return fmt.Errorf("failed to publish alarm device message: %w", err)
+			zap.Error(err))
+		return fmt.Errorf("publish alarm.device: %w", err)
 	}
-
-	p.logger.Info("Published alarm device message",
+	p.logger.Info("alarm.device",
 		zap.String("tenant_id", tenantID),
 		zap.String("device_addr", addr.String()),
 		zap.String("setting_type", settingType),
-		zap.String("stream", streamName),
-		zap.String("stream_id", streamID),
-	)
-
+		zap.String("stream_id", streamID))
 	return nil
 }
 
-// lookupDeviceAddr Phase 2 一刀切：deviceAddr 入参直接是 INET text；校验存在性并 normalize。
-// 失败返回零值 netip.Addr；caller 用 .IsValid() 判断。
+// lookupDeviceAddr 校验 device_addr 存在并 normalize；失败返回零值。
 func (p *ConfigPublisher) lookupDeviceAddr(ctx context.Context, deviceAddr string) netip.Addr {
 	if p.db == nil || deviceAddr == "" {
 		return netip.Addr{}
@@ -165,9 +154,8 @@ func (p *ConfigPublisher) lookupDeviceAddr(ctx context.Context, deviceAddr strin
 	return a
 }
 
-// lookupDeviceAddrsByPrefix 查 spatial_prefix（INET CIDR）下所有 devices.device_addr host text 列表。
-// 用于 config:card publish 时附带 affected_device_addrs；consumer 直接读 payload 不再做 DB query。
-func (p *ConfigPublisher) lookupDeviceAddrsByPrefix(ctx context.Context, prefix string) []string {
+// LookupDeviceAddrsByPrefix 查 INET CIDR 下所有 devices.device_addr host text；供 caller 派生 affected 范围。
+func (p *ConfigPublisher) LookupDeviceAddrsByPrefix(ctx context.Context, prefix string) []string {
 	if p.db == nil || prefix == "" {
 		return nil
 	}
@@ -186,216 +174,4 @@ func (p *ConfigPublisher) lookupDeviceAddrsByPrefix(ctx context.Context, prefix 
 		}
 	}
 	return out
-}
-
-// PublishCardChangeMessage 发送卡片变更消息到 config:card:stream
-// 供 qinglan 和其他服务消费用于更新卡片相关配置
-func (p *ConfigPublisher) PublishCardChangeMessage(
-	ctx context.Context,
-	tenantID, cardID, unitID, branchID string,
-) error {
-	return p.PublishCardChangeMessageWithExtra(ctx, tenantID, cardID, unitID, branchID, nil)
-}
-
-// PublishCardChangeMessageWithExtra 发送卡片变更消息到 config:card:stream（支持额外字段）
-// 用于处理 card 变化导致的卡片变更（消息类型为 config.card）
-// extraData 可以包含额外字段
-func (p *ConfigPublisher) PublishCardChangeMessageWithExtra(
-	ctx context.Context,
-	tenantID, cardID, unitID, branchID string,
-	extraData map[string]interface{},
-) error {
-	return p.PublishCardChangeMessageWithExtraAndType(ctx, tenantID, cardID, unitID, branchID, rediscommon.ConfigCardChanged, extraData)
-}
-
-// PublishCardChangeForDevice Phase 2 一刀切：deviceAddr 入参直接是 device_addr (INET text)。
-// data 含 device_addr、change_type、affected_device_addrs（精确 /128）+ 可选 affected_device_uids。
-func (p *ConfigPublisher) PublishCardChangeForDevice(ctx context.Context, tenantID, deviceAddr, changeType string, deviceUIDs ...string) error {
-	if p == nil || deviceAddr == "" {
-		return nil
-	}
-	extra := map[string]interface{}{
-		"device_addr": deviceAddr,
-		"change_type": changeType,
-	}
-	if addr := p.lookupDeviceAddr(ctx, deviceAddr); addr.IsValid() {
-		extra["affected_device_addrs"] = []string{addr.String()}
-	}
-	if u := compactDeviceUIDs(deviceUIDs); len(u) > 0 {
-		extra["affected_device_uids"] = u
-	}
-	return p.PublishCardChangeMessageWithExtraAndType(ctx, tenantID, "", "", "", rediscommon.ConfigCardChanged, extra)
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func compactDeviceUIDs(uids []string) []string {
-	if len(uids) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(uids))
-	out := make([]string, 0, len(uids))
-	for _, s := range uids {
-		if s == "" {
-			continue
-		}
-		if _, ok := seen[s]; ok {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// PublishConfigCardReset 发送 reset 通知到 config:card:stream。
-func (p *ConfigPublisher) PublishConfigCardReset(ctx context.Context) error {
-	resetMsg := rediscommon.BuildCardChangeMessageWithExtraAndType(
-		"wisefido-data", "", "", rediscommon.ConfigCardChanged,
-		map[string]interface{}{"op": "reset"},
-	)
-	streamName := rediscommon.StreamConfigCard.Name
-	maxLen, retentionSeconds := rediscommon.GetStreamConfig(rediscommon.StreamConfigCard, nil)
-	streamID, err := rediscommon.PublishJSONToStream(ctx, p.redisClient, streamName, resetMsg, int64(maxLen), retentionSeconds)
-	if err != nil {
-		p.logger.Error("Failed to publish configCard reset", zap.String("stream", streamName), zap.Error(err))
-		return fmt.Errorf("failed to publish configCard reset: %w", err)
-	}
-	p.logger.Info("Published configCard reset", zap.String("stream", streamName), zap.String("stream_id", streamID))
-	return nil
-}
-
-// PublishCardChanged — 结构变更（card 增/删；v2 cards 表行的产生与消亡）。
-//
-// 当前实现：仍发 ConfigCardChanged stream 单 type（消费者已识别）；语义解耦体现在 extras.op：
-//
-//	op = "create" : card 新建（首个 device bind 触发 / admission 触发 active_bed 新建）
-//	op = "delete" : card 删除（spatial_prefix 下所有 device unbind 触发；保留 resident_id 历史归属由 view 反查）
-//
-// 与 PublishCardResidentChanged 的区别：本方法表示 cards 表 INSERT/DELETE；resident 流入/流出
-// 同一 card 不动 cards 行的 op，应该用 PublishCardResidentChanged。
-//
-// 详 [doc/cards_v2_migration_checklist.md] § 一.7。
-func (p *ConfigPublisher) PublishCardChanged(
-	ctx context.Context,
-	tenantID, cardID, op, spatialPrefix, dnsShortName string,
-) error {
-	extra := map[string]interface{}{
-		"op":             op,
-		"spatial_prefix": spatialPrefix,
-		"dns_short_name": dnsShortName,
-	}
-	return p.PublishCardChangeMessageWithExtraAndType(ctx, tenantID, cardID, "", "", rediscommon.ConfigCardChanged, extra)
-}
-
-// PublishCardResidentChanged — resident 在 cards.resident_id 指针的迁移（admission/discharge/transfer）。
-//
-// 不动 cards 表行本身；只动 resident_id 列。供 cardagg 失效 resident 视图缓存 + 历史归属反查侧 trigger。
-//
-//	op = "admission" : 空床 → resident（prevHoA=""）
-//	op = "discharge" : resident → 空床（newHoA=""）
-//	op = "transfer"  : 同一 resident 跨 prefix（prevHoA/newHoA 同 HoA，不同 spatial_prefix）
-//
-// 详 [doc/cards_v2_migration_checklist.md] § 一.7。
-func (p *ConfigPublisher) PublishCardResidentChanged(
-	ctx context.Context,
-	tenantID, cardID, op, prevHoA, newHoA, spatialPrefix string,
-) error {
-	extra := map[string]interface{}{
-		"op":               op,
-		"prev_resident_id": prevHoA,
-		"new_resident_id":  newHoA,
-		"spatial_prefix":   spatialPrefix,
-	}
-	return p.PublishCardChangeMessageWithExtraAndType(ctx, tenantID, cardID, "", "", rediscommon.ConfigCardChanged, extra)
-}
-
-// PublishCardChangeMessageWithExtraAndType 发送卡片变更消息到 config:card:stream（支持额外字段和自定义 type 字段）
-//
-// device_ipv6 单程票后 owl-common 的 BuildCardChangeMessageWithExtraAndType 简化为 (source, cardID, spatialPrefix, messageType, extra)。
-// tenantID/unitID/branchID 入参保留兼容 caller 签名；tenantID 走 extra 透传给 cardagg 用于按 tenant 失效；unitID/branchID 弃用。
-func (p *ConfigPublisher) PublishCardChangeMessageWithExtraAndType(
-	ctx context.Context,
-	tenantID, cardID, unitID, branchID, messageType string,
-	extraData map[string]interface{},
-) error {
-	if extraData == nil {
-		extraData = make(map[string]interface{})
-	}
-	if tenantID != "" {
-		extraData["tenant_id"] = tenantID
-	}
-	if unitID != "" {
-		extraData["unit_id"] = unitID
-	}
-	if branchID != "" {
-		extraData["branch_id"] = branchID
-	}
-	// 构建卡片变更消息（spatial_prefix 由 caller 在 extras 中提供，老 caller 暂传空）
-	spatialPrefix, _ := extraData["spatial_prefix"].(string)
-
-	// 派生 affected_device_addrs：caller 未提供时按 cardID/unitID/spatial_prefix 任一 INET CIDR 查 LPM
-	if _, ok := extraData["affected_device_addrs"]; !ok {
-		if scope := firstNonEmpty(cardID, spatialPrefix, unitID); scope != "" {
-			if addrs := p.lookupDeviceAddrsByPrefix(ctx, scope); len(addrs) > 0 {
-				extraData["affected_device_addrs"] = addrs
-			}
-		}
-	}
-
-	cardMsg := rediscommon.BuildCardChangeMessageWithExtraAndType(
-		"wisefido-data",
-		cardID,
-		spatialPrefix,
-		messageType,
-		extraData,
-	)
-
-	// 发布到 config:card:stream
-	streamName := rediscommon.StreamConfigCard.Name
-	maxLen, retentionSeconds := rediscommon.GetStreamConfig(rediscommon.StreamConfigCard, nil)
-
-	streamID, err := rediscommon.PublishJSONToStream(
-		ctx,
-		p.redisClient,
-		streamName,
-		cardMsg,
-		int64(maxLen),
-		retentionSeconds,
-	)
-
-	if err != nil {
-		p.logger.Error("Failed to publish card change message",
-			zap.String("tenant_id", tenantID),
-			zap.String("card_id", cardID),
-			zap.String("unit_id", unitID),
-			zap.String("branch_id", branchID),
-			zap.String("message_type", messageType),
-			zap.String("stream", streamName),
-			zap.Error(err),
-		)
-		return fmt.Errorf("failed to publish card change message: %w", err)
-	}
-
-	p.logger.Info("Published card change message",
-		zap.String("tenant_id", tenantID),
-		zap.String("card_id", cardID),
-		zap.String("unit_id", unitID),
-		zap.String("branch_id", branchID),
-		zap.String("message_type", messageType),
-		zap.String("stream", streamName),
-		zap.String("stream_id", streamID),
-	)
-
-	return nil
 }

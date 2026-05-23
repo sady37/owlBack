@@ -31,9 +31,10 @@ type Subsystem struct {
 	// 监听 ZoneEvent (TotalPeople gate) + 后续 P3/P4 接 monitor / alarm 流。
 	TargetAggregator *service.TargetStateAggregator
 
-	BedSizeLookup  *BedSizeLookup
-	BathroomLookup *BathroomLookup
-	VitalSource    *MonitorVitalSource
+	BedSizeLookup   *BedSizeLookup
+	BathroomLookup  *BathroomLookup
+	BedDeviceLookup *BedDeviceLookup
+	VitalSource     *MonitorVitalSource
 
 	// Zonealarm zone-derived alarm 子系统（4 条规则订阅 ZoneEvent）。
 	// nil 时表示禁用（AlarmBackChannel 未注入或 yaml 加载失败）。
@@ -195,6 +196,7 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 		TargetAggregator: aggregator,
 		BedSizeLookup:    bedLookup,
 		BathroomLookup:   bathLookup,
+		BedDeviceLookup:  bedDeviceLookup,
 		VitalSource:      vitalSrc,
 		Zonealarm:        supervisor,
 		AlarmFirer:       firer,

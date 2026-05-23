@@ -86,7 +86,19 @@ var deviceFlagRecoverMap = map[string]string{
 }
 
 // deviceLiveness 内存中的设备活跃记录。
+//
+// 双索引语义（"device:status 与 card 解耦"原则）：
+//   - state map 按 deviceAddr keyed（Redis hash key 同步用，FE/data 读 device:status:{addr} 不变）
+//   - 每条 entry 携带 deviceUID（稳定身份，绑定变化不变）
+//   - uidIndex 反向索引 uid → current addr，供 config:card 事件触发的 rebind migration 用
+//
+// 这样：
+//   - Watchdog / TouchLastSeen 路径不变（按 addr）
+//   - rebind 时 CardLifecycle 调 MigrateDevice(uid, oldAddr) → tracker 凭 uid 找到旧 entry → 清 Redis + 内存
+//   - 不会再有"老 addr 60s 没心跳 → 误标 offline"的伪报警
 type deviceLiveness struct {
+	deviceAddr string
+	deviceUID  string // 稳定硬件身份；"" 表示尚未被 config:card 事件绑定
 	lastSeenMs int64
 	deviceType string
 	online     bool
@@ -99,6 +111,7 @@ type DeviceStatusTracker struct {
 	writer       *card.Writer
 	mu           sync.Mutex
 	state        map[string]*deviceLiveness // deviceAddr → liveness
+	uidIndex     map[string]string          // deviceUID → current deviceAddr
 	scanInterval time.Duration
 	offlineCBs   []OfflineCallback
 	logger       *zap.Logger
@@ -108,9 +121,55 @@ func NewDeviceStatusTracker(writer *card.Writer, logger *zap.Logger) *DeviceStat
 	return &DeviceStatusTracker{
 		writer:       writer,
 		state:        make(map[string]*deviceLiveness),
+		uidIndex:     make(map[string]string),
 		scanInterval: DefaultWatchdogInterval,
 		logger:       logger,
 	}
+}
+
+// MigrateDevice CardLifecycle 收到 config:card.changed 时调（uid + 老 addr 都来自 publish）。
+//   - currentAddr == "" 或 == oldAddr → no-op（device 还在原 addr 或彻底删除）
+//   - currentAddr != oldAddr → rebind 发生：清旧 addr 的 Redis hash + 内存 entry，迁移 uid → currentAddr 索引
+//
+// 防的就是"老 addr 在 tracker 里 60s 没心跳被 watchdog 误标 offline"的伪报警链路。
+func (t *DeviceStatusTracker) MigrateDevice(ctx context.Context, deviceUID, oldAddr, currentAddr string) {
+	if t == nil || deviceUID == "" {
+		return
+	}
+	if currentAddr == oldAddr {
+		// 仅刷 uid → addr 索引（首次绑 uid 时也走这里，addr 未变）
+		if oldAddr != "" {
+			t.mu.Lock()
+			if dl := t.state[oldAddr]; dl != nil {
+				dl.deviceUID = deviceUID
+			}
+			t.uidIndex[deviceUID] = oldAddr
+			t.mu.Unlock()
+		}
+		return
+	}
+	// rebind / delete：清掉 oldAddr 的所有痕迹
+	t.mu.Lock()
+	delete(t.state, oldAddr)
+	if currentAddr != "" {
+		t.uidIndex[deviceUID] = currentAddr
+		if dl := t.state[currentAddr]; dl != nil {
+			dl.deviceUID = deviceUID
+		}
+	} else {
+		delete(t.uidIndex, deviceUID)
+	}
+	t.mu.Unlock()
+	if oldAddr != "" {
+		if err := t.writer.DeleteDeviceStatus(ctx, oldAddr); err != nil {
+			t.logger.Warn("MigrateDevice DeleteDeviceStatus old addr",
+				zap.String("uid", deviceUID), zap.String("old_addr", oldAddr), zap.Error(err))
+		}
+	}
+	t.logger.Info("device_status migrated",
+		zap.String("uid", deviceUID),
+		zap.String("old_addr", oldAddr),
+		zap.String("current_addr", currentAddr))
 }
 
 // RegisterOfflineCallback 注册 online→offline 边沿回调。main wire 调；非线程安全（启动期一次性注册）。
@@ -135,7 +194,7 @@ func (t *DeviceStatusTracker) recordOffline(deviceAddr, deviceType string) bool 
 	dl := t.state[deviceAddr]
 	wasOnline := dl != nil && dl.online
 	if dl == nil {
-		dl = &deviceLiveness{}
+		dl = &deviceLiveness{deviceAddr: deviceAddr}
 		t.state[deviceAddr] = dl
 	}
 	dl.online = false
@@ -179,7 +238,7 @@ func (t *DeviceStatusTracker) OnDeviceConnectivity(ctx context.Context, deviceAd
 		t.mu.Lock()
 		dl := t.state[deviceAddr]
 		if dl == nil {
-			dl = &deviceLiveness{}
+			dl = &deviceLiveness{deviceAddr: deviceAddr}
 			t.state[deviceAddr] = dl
 		}
 		dl.online = true
@@ -213,7 +272,7 @@ func (t *DeviceStatusTracker) TouchLastSeen(ctx context.Context, deviceAddr, dev
 	dl := t.state[deviceAddr]
 	wasOffline := dl == nil || !dl.online
 	if dl == nil {
-		dl = &deviceLiveness{}
+		dl = &deviceLiveness{deviceAddr: deviceAddr}
 		t.state[deviceAddr] = dl
 	}
 	dl.lastSeenMs = now

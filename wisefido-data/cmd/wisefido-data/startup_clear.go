@@ -8,11 +8,11 @@ import (
 )
 
 // clearRedisOnStartup data 启动时清两类 Hash：
-//   - card:state:*   让 cardagg/sensor 从空白重建；与 wisefido-sensor publishInitialResetState 配套
-//   - device:status:* 让 cardagg DeviceStatusTracker 从看门狗 / 心跳重建（避开存量旧字段名遗留）
+//   - card:state:*    cardagg 收到 op=reset 后从 DB 重 build；clear 是保 consistency 的前提
+//   - device:status:* cardagg DeviceStatusTracker 看门狗 + 心跳重建
 //
+// 设计意图（非 HA 场景）：重启罕见，clean slate + DB 重读 比 in-place 增量同步更稳。
 // 用 SCAN 批量取 keys 再 DEL（避免 KEYS 锁库）。失败仅 log warning 不阻塞启动。
-// 启动顺序由 start-owlback-full.sh 保证（data → 10s → cardagg/sensor）。
 func clearRedisOnStartup(ctx context.Context, rdb *redis.Client, logger *zap.Logger) {
 	clearHashPattern(ctx, rdb, logger, "card:state:*")
 	clearHashPattern(ctx, rdb, logger, "device:status:*")
