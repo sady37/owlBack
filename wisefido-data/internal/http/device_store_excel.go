@@ -186,7 +186,7 @@ func generateDeviceStoreExcel(headers []string, data []map[string]any, includeAl
 			case "Tenant Name":
 				value = getStringValue(item, "tenant_name")
 			case "Allow Access":
-				if val, ok := item["allow_access"].(bool); ok {
+				if val, ok := item["access"].(bool); ok {
 					if val {
 						value = "Yes"
 					} else {

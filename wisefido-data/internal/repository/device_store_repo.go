@@ -39,7 +39,6 @@ type DeviceStoreFilters struct {
 	DeviceCode      string
 	DeviceName      string
 	FirmwareVersion string
-	AllowAccess     string
 	OTAStatus       string
 	OTAPermit       string
 	OTAWay          string

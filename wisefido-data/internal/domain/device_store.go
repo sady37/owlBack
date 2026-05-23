@@ -49,11 +49,11 @@ type DeviceStore struct {
 	ImportDate   sql.NullTime `db:"import_date"`
 	AllocateTime sql.NullTime `db:"-"` // v2 无此列
 
-	AllowAccess bool `db:"-"` // v2 改名 devices.access；wire format 兼容用
+	Access bool `db:"-"` // platform_admin 审批位，来自 devices.access
 
-	// Batch PATCH：仅当为 true 时更新对应列（避免只改 device_code 时误把 allow_access 写成 false）
-	DeviceCodeSet  bool `db:"-" json:"-"`
-	AllowAccessSet bool `db:"-" json:"-"`
+	// Batch PATCH：仅当为 true 时更新对应列（避免只改 device_code 时误把 access 写成 false）
+	DeviceCodeSet bool `db:"-" json:"-"`
+	AccessSet     bool `db:"-" json:"-"`
 	OTAPermitSet   bool `db:"-" json:"-"`
 	OTAWaySet      bool `db:"-" json:"-"`
 	OTAScheduleSet bool `db:"-" json:"-"`
@@ -81,7 +81,7 @@ func (d *DeviceStore) ToJSON() map[string]any {
 		"device_uid":   d.DeviceUID,
 		"device_type":  d.DeviceType,
 		"tenant_id":    d.TenantID,
-		"allow_access": d.AllowAccess,
+		"access":      d.Access,
 	}
 	if d.DeviceCode.Valid {
 		m["device_code"] = d.DeviceCode.String

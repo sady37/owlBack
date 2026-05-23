@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"fmt"
 	"regexp"
 	"sort"
@@ -24,7 +23,8 @@ import (
 //
 // Phase 2 一刀切：device_id UUID 退役；identity 收口到 device_uid，业务寻址走 device_addr。
 //
-// FE 期望的 v1 字段（OTAPermit/OTAWay/OTASchedule/AllowAccess 等）由本 repo 在读写两端做映射。
+// FE 期望的 v1 字段（OTAPermit/OTAWay/OTASchedule 等）由本 repo 在读写两端做映射。
+// access 已与 schema 同名（devices.access），不再做名称映射。
 type PostgresDeviceStoreRepository struct {
 	db *sql.DB
 }
@@ -222,7 +222,7 @@ const deviceStoreSelectColumnsV2 = `
   d.created_at AS allocate_time,
   dfm.import_date,
   'offline'::text AS online_status,
-  COALESCE(d.access, FALSE) AS allow_access
+  COALESCE(d.access, FALSE) AS access
 `
 
 // scanDeviceStoreRowV2 共用 row 扫描（List/Get 都用）。
@@ -239,7 +239,7 @@ func scanDeviceStoreRowV2(scan func(...any) error) (*domain.DeviceStore, error) 
 	var allocateTime sql.NullTime
 	var importDate sql.NullTime
 	var tenantID, onlineStatus string
-	var allowAccess bool
+	var access bool
 
 	err := scan(
 		&d.DeviceAddr,
@@ -270,7 +270,7 @@ func scanDeviceStoreRowV2(scan func(...any) error) (*domain.DeviceStore, error) 
 		&allocateTime,
 		&importDate,
 		&onlineStatus,
-		&allowAccess,
+		&access,
 	)
 	if err != nil {
 		return nil, err
@@ -302,8 +302,8 @@ func scanDeviceStoreRowV2(scan func(...any) error) (*domain.DeviceStore, error) 
 	d.AllocateTime = allocateTime
 	d.ImportDate = importDate
 	d.OnlineStatus = onlineStatus
-	// v2: devicestore Access toggle = devices.access (platform 审批位，platform_admin 管)
-	d.AllowAccess = allowAccess
+	// platform_admin 审批位（devices.access）
+	d.Access = access
 	return &d, nil
 }
 
@@ -515,7 +515,7 @@ func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, d
 	}
 
 	// 3. 派生 device_addr：tenant_id + 0:0:0:0:MAC32（最后 32bit 取自 MAC 或 device_uid）
-	mac32 := deriveMAC32Suffix(deviceStore.MAC, deviceStore.DeviceUID)
+	mac32 := deriveUIDSuffix(deviceStore.DeviceUID)
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -568,40 +568,32 @@ func (r *PostgresDeviceStoreRepository) CreateDeviceStore(ctx context.Context, d
 	return deviceAddr, nil
 }
 
-// deriveMAC32Suffix 从 MAC 取低 32bit（"::ffff:ffff" 形式 hex 字符串），不可用则 hash device_uid。
+// deriveUIDSuffix 从 device_uid 取末 32 bit 作 IPv6 host suffix（按 doc/datagram_envelope.md §2.2）。
 //
-// 返回 IPv6 host suffix 字面量片段（不含 "::"），形如 "abcd:1234"（=最后 4 字节）。
-func deriveMAC32Suffix(mac sql.NullString, deviceUID string) string {
-	hexBytes := func(s string) []byte {
-		// 接受 "AA:BB:CC:DD:EE:FF" / "aabbccddeeff" / 任意分隔符
-		clean := strings.Map(func(r rune) rune {
-			switch {
-			case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
-				return r
-			default:
-				return -1
-			}
-		}, s)
-		b, err := hex.DecodeString(clean)
-		if err != nil {
-			return nil
+// 规则：
+//  1. 剥非 hex 字符（如 "BM87224700978" 中的 M）；B/0-9/A-F/a-f 保留
+//  2. 取末 8 hex 字符；不足 8 字符左侧补 0
+//  3. 返回 "HHHH:HHHH" 形式（无 "::" 前缀）
+//
+// 例：
+//
+//	"E598A2ACD523" → "a2ac:d523"
+//	"BM87224700978" → strip M → "B87224700978" → 末 8 → "04700978" → "0470:0978"
+//	"9923003AB197" → 末 8 → "003AB197" → "003a:b197"
+func deriveUIDSuffix(deviceUID string) string {
+	clean := strings.Map(func(r rune) rune {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
+			return r
+		default:
+			return -1
 		}
-		return b
+	}, deviceUID)
+	if len(clean) < 8 {
+		clean = strings.Repeat("0", 8-len(clean)) + clean
 	}
-	var b []byte
-	if mac.Valid {
-		b = hexBytes(mac.String)
-	}
-	if len(b) < 4 {
-		// fallback: 用 device_uid 生成可重复的 4 字节
-		b = hexBytes(deviceUID)
-	}
-	if len(b) < 4 {
-		// 极端情况：填 0
-		b = []byte{0, 0, 0, 0}
-	}
-	last4 := b[len(b)-4:]
-	return fmt.Sprintf("%x%x:%x%x", last4[0], last4[1], last4[2], last4[3])
+	last8 := strings.ToLower(clean[len(clean)-8:])
+	return last8[:4] + ":" + last8[4:]
 }
 
 // ----------------------------------------------------------------------------
@@ -668,8 +660,24 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 			}
 		}
 
-		// 2) tenant 迁移 — 用 reset_device_prefix 把 branch+下层全清零，再用 string-substitute 替换 tenant /48 头部
-		if update.TenantID != "" && currentAddr.Valid {
+		// 2) tenant 迁移：
+		//    - factory-only (无 devices 行) → INSERT 入 target tenant pool (bytes 6-11=0, suffix=UID 派生)
+		//    - 已有 devices 行 → reset_device_prefix 清 branch+下层 + 替换 tenant /48 头
+		if update.TenantID != "" && !currentAddr.Valid {
+			mac32 := deriveUIDSuffix(deviceUID)
+			var newAddr string
+			if err := tx.QueryRowContext(ctx, `
+				INSERT INTO devices (device_addr, device_uid, monitoring_enabled)
+				VALUES (
+				  set_masklen(network(set_masklen($1::INET, 48)), 128) | ('::' || $2)::INET,
+				  $3, TRUE
+				)
+				RETURNING host(device_addr) || '/128'
+			`, update.TenantID, mac32, deviceUID).Scan(&newAddr); err != nil {
+				return fmt.Errorf("insert devices for factory-only %s: %w", deviceUID, err)
+			}
+			currentAddr = sql.NullString{String: newAddr, Valid: true}
+		} else if update.TenantID != "" && currentAddr.Valid {
 			// 当前 tenant /48
 			var currentTenantPrefix string
 			if err := tx.QueryRowContext(ctx, `
@@ -777,12 +785,12 @@ func (r *PostgresDeviceStoreRepository) BatchUpdateDeviceStores(ctx context.Cont
 			}
 		}
 
-		// 4) allow_access → devices.access (platform 审批位)
-		if update.AllowAccessSet && currentAddr.Valid {
+		// 4) access (platform 审批位)
+		if update.AccessSet && currentAddr.Valid {
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE devices SET access = $2, updated_at = NOW()
 				 WHERE device_addr = $1::INET
-			`, currentAddr.String, update.AllowAccess); err != nil {
+			`, currentAddr.String, update.Access); err != nil {
 				return fmt.Errorf("update devices.access: %w", err)
 			}
 		}
@@ -971,7 +979,7 @@ func (r *PostgresDeviceStoreRepository) ImportDeviceStores(ctx context.Context, 
 			errs = append(errs, item)
 			continue
 		}
-		mac32 := deriveMAC32Suffix(item.MAC, normUID)
+		mac32 := deriveUIDSuffix(normUID)
 		if _, e := tx.ExecContext(ctx, `
 			INSERT INTO devices (device_addr, device_uid, monitoring_enabled)
 			VALUES (

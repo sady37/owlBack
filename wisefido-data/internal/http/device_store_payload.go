@@ -59,8 +59,8 @@ func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
 			ds.TenantID = str
 		}
 	}
-	if v, ok := payload["allow_access"].(bool); ok {
-		ds.AllowAccess = v
+	if v, ok := payload["access"].(bool); ok {
+		ds.Access = v
 	}
 	if v, ok := payload["ota_permit"]; ok {
 		if s, isStr := v.(string); isStr && s != "" {
@@ -94,7 +94,7 @@ func payloadToDeviceStore(payload map[string]any) *domain.DeviceStore {
 	return ds
 }
 
-// payloadToDeviceStorePatch 批量更新：仅当 JSON 显式出现 device_code / allow_access 时才更新对应列；
+// payloadToDeviceStorePatch 批量更新：仅当 JSON 显式出现 device_code / access 时才更新对应列；
 // device_code 可为 null 或 "" 表示置为 NULL。
 func payloadToDeviceStorePatch(payload map[string]any) *domain.DeviceStore {
 	ds := payloadToDeviceStore(payload)
@@ -113,10 +113,10 @@ func payloadToDeviceStorePatch(payload map[string]any) *domain.DeviceStore {
 			}
 		}
 	}
-	if _, ok := payload["allow_access"]; ok {
-		ds.AllowAccessSet = true
-		if v, ok := payload["allow_access"].(bool); ok {
-			ds.AllowAccess = v
+	if _, ok := payload["access"]; ok {
+		ds.AccessSet = true
+		if v, ok := payload["access"].(bool); ok {
+			ds.Access = v
 		}
 	}
 	if _, ok := payload["ota_permit"]; ok {

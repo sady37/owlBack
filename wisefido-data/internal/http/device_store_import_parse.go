@@ -27,7 +27,7 @@ func deviceStoreImportHeaderToField() map[string]string {
 		"OTA Target MCU Model":        "ota_target_mcu_model",
 		"Tenant ID":                   "tenant_id",
 		"Tenant Name":                 "tenant_name",
-		"Allow Access":                "allow_access",
+		"Allow Access":                "access",
 		"Import Date":                 "import_date",
 		"Allocate Time":               "allocate_time",
 	}
