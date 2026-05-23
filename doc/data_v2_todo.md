@@ -86,17 +86,35 @@ audit 结论：
 - 其他 `active_bed` 字面量全部在 doc/comment 历史 reference，无运行时影响
 - **唯一死代码** [cards_repository.go:136](owlBack/wisefido-data/internal/repository/cards_repository.go#L136) `case "active_bed"`：FE CardType 已改 `'bed'` 但仅本地过滤，**0 处发 `?card_type=` API 请求**，switch 永不命中 → **已清**
 
-### S3. devices_pkey 测试 fixture MAC 重复
+### ~~S3. devices_pkey 测试 fixture MAC 重复~~（2026-05-22 audit — Phase 2 没自动消失，code 修复）
 
-种子数据里 17 个设备末 32 bit 全 `::1`，#2 落地前任何 unbind 都 PK 冲突。**主线 #2 完成后此问题自然消失**（device_ipv6 不再重写）；在那之前要测 unbind 路径只能临时手动改 MAC。
+**原 claim 错**："Phase 2 完成后此问题自然消失" — Phase 2 只重命名 device_ipv6→device_addr，没改 `reset_device_prefix` PG function（仍保 MAC32 + 清中间字节）。冲突根因还在。
+
+**真根因 2 件**：
+1. **`deriveMAC32Suffix` 偏离设计**：[doc/datagram_envelope.md §2.2](owlBack/doc/datagram_envelope.md) 规定 host 段 32 bit 派生自 device_uid 末 8 hex（剥非 hex + 不足左补 0）；code 实际是 MAC-first 偏离设计
+2. **Seed fixture 完全无视派生**：[seed_demo_data.sql](owlBack/scripts/seed_demo_data.sql) 16 条设备硬编码 `::1`/`::2` 计数器，reset 后撞 PK
+
+**修复落地（commit 待）**：
+- `deriveMAC32Suffix` → `deriveUIDSuffix(deviceUID)` 单参数；按设计 strip 非 hex + 末 8 hex + 左补 0 + 小写归一
+- 加单元测试 `postgres_device_store_test.go::TestDeriveUIDSuffix` 覆盖 doc 例子（E598A2ACD523 / BM87224700978 / 4D8710D5CABB / 不足左补 0 / 含分隔符）
+- 现存 16 seed 数据保留（改动会波及 cards/alarms 历史指针）—— fixture exception，不影响真设备
+- API 新建设备从此走正确 UID 派生
 
 ### ~~S4. Overview.vue 加 monitor=off 卡片过滤~~（2026-05-22 完成）
 
 落地：[Overview.vue](owlFront/src/views/monitoring/overview/Overview.vue) 加 `isCardMonitored` helper，`effectiveCardIds` 末端 filter。API 已带 `devices[].monitoring_enabled`（card_types.go:139）无需补。
 
-### S5. qinglan `UpdateDeviceMonitoring` 并入 `devices.access`
+### ~~S5. qinglan `UpdateDeviceMonitoring` 并入 `devices.access`~~（2026-05-22 完成）
 
-按 [[qinglan_sleepace_access_gate_consolidation]]，3 字段（`allow_access` / `business_access` / `monitoring_enabled`）合并成单一 `devices.access` bool。主线 #2 是 device identity 重构，跟 access gate 字段合并是两件事；可在 #3 重写窗口顺手做也可单独 PR。
+终态：**2 字段非 3 字段** — v1 `allow_access + business_access` 合并为 `devices.access` bool；`monitoring_enabled` 故意保留独立语义（access=平台审批 / monitoring_enabled=租户业务开关）。
+
+落地清理（commit `86297f6`）：
+- `domain.AllowAccessCache` → `AccessCache`（8 callsites + 1 var）
+- 8 处 stale 注释字眼 "allow_access" / "business_access"
+- `postgres_device.SearchDevices` 内 `business_access` criteria 死代码改 `access` bool
+- owl-common `DeviceBaseline` 注释精简
+
+详 [[qinglan_sleepace_access_gate_consolidation]]。
 
 ### ~~S6. SSE fan-out 维护点 audit~~（2026-05-23 audit done）
 
@@ -266,7 +284,7 @@ audit 结论：
 
 **判定**：~1270 行偏大但是 4 个并列子模块（SSE/connection / Realtime pull / Status fanout / Card list diff）的合理体量。**留**。瘦身（拆 sse_connection.go / cardlist_diff.go / fanout.go）是 nice-to-have。
 
-**遗留 B1（待 FE 同步窗口）**：`enrichDeviceStatus.entry["device_id"]` map field key 实际存的是 device_addr (IPv6 文本)，命名误导。改成 `device_addr` 需 FE 同步。
+~~**遗留 B1**：`enrichDeviceStatus.entry["device_id"]` map field~~（2026-05-22 commit `ca52e4f` S6 已删 — FE 全工程不读该字段，map outer key 已是 device_addr 文本）。
 
 ---
 

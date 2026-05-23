@@ -217,61 +217,86 @@ ON CONFLICT (user_id, role_id, scope) DO NOTHING;
 --   /96 bed prefix       — sleepad (床上) + bed-scoped radar
 --   /88 room prefix      — room-level radar (浴室 / 公共空间 / 卧室通用)
 --
--- /128 device_ipv6 派生：
---   bed-bound : bed_prefix(/96) + 16 bit zero (group7) + 16 bit dev_seq → fd00:...:101:0:1/128
---   room-bound: room_prefix(/88) + 8 bit byte11=0x00 (no bed) + 32 bit dev_seq → fd00:...:300::1/128
+-- /128 device_addr 派生（doc datagram_envelope.md §2.2）：
+--   末 32 bit = uid_to_inet_suffix(device_uid)：strip 非 hex + 末 8 hex + 左补 0
+--   高 96 bit = anchor_prefix（/96 bed 或 /88 room，byte 11=00 表示 room-bound）
+--   最终 = set_masklen(anchor, 128) | uid_to_inet_suffix(uid)
 --
 -- 设备从 device_factory_meta 池里按 device_uid 顺序取（前 11 HC2 + 前 8 BM8701-2）。
 --
 -- 注：ShenZhen-102 device label 'Hunzi_*' 与现 resident 'Frand' 不一致；
 -- 此为 device-side label，不影响 resident_unit 绑定（用户后续可决定是否改 102 resident）。
 -- =========================================================================
+
+-- uid_to_inet_suffix 函数已由 migration 2026-05-23_uid_derived_device_addr.sql 创建；
+-- 此处 CREATE OR REPLACE 兜底确保 seed 在 fresh DB（迁移未跑过）也能工作。
+CREATE OR REPLACE FUNCTION uid_to_inet_suffix(uid TEXT) RETURNS INET AS $$
+DECLARE
+    clean TEXT;
+    last8 TEXT;
+BEGIN
+    clean := REGEXP_REPLACE(uid, '[^0-9a-fA-F]', '', 'g');
+    IF LENGTH(clean) < 8 THEN
+        clean := LPAD(clean, 8, '0');
+    END IF;
+    last8 := LOWER(RIGHT(clean, 8));
+    RETURN ('::' || SUBSTRING(last8, 1, 4) || ':' || SUBSTRING(last8, 5, 4))::INET;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
 WITH
 selected_radars AS (
-    SELECT device_id, ROW_NUMBER() OVER (ORDER BY device_uid) AS n
+    SELECT device_uid, ROW_NUMBER() OVER (ORDER BY device_uid) AS n
     FROM device_factory_meta WHERE device_model = 'HC2' LIMIT 11
 ),
 selected_sleepads AS (
-    SELECT device_id, ROW_NUMBER() OVER (ORDER BY device_uid) AS n
+    SELECT device_uid, ROW_NUMBER() OVER (ORDER BY device_uid) AS n
     FROM device_factory_meta WHERE device_model = 'BM8701-2' LIMIT 8
 ),
-radar_bindings (n, device_ipv6, label) AS (VALUES
+-- anchor_prefix 是 /96 (bed-bound) 或 /88 (room-bound, byte 11=00)；末 32 bit 由 UID 派生
+radar_bindings (n, anchor_prefix, label) AS (VALUES
     -- Denver
-    (1::INT, 'fd00:0:3:101:65:101:0:1'::INET, '101_Bedroom_radar'),     -- 101 Room1.bedA
-    (2,      'fd00:0:3:101:65:300::1'::INET,  '101_Bathroom_radar'),    -- 101 Bathroom (room-level)
-    (3,      'fd00:0:3:101:1:100::1'::INET,   'LivingRoom_radar'),      -- public LivingRoom
-    (4,      'fd00:0:3:101:1:200::1'::INET,   '101corn_radar'),         -- public ReadingRoom
-    (5,      'fd00:0:3:101:1:300::1'::INET,   'Kitchen_radar'),         -- public Kitchen
-    (6,      'fd00:0:3:101:c9:100::1'::INET,  '201_bedroom_radar'),     -- 201 Bedroom (room-level)
-    (7,      'fd00:0:3:101:c9:200::1'::INET,  '201_bathroom_radar'),    -- 201 Bathroom (room-level)
+    (1::INT, 'fd00:0:3:101:65:101::/96'::INET, '101_Bedroom_radar'),    -- 101 Room1.bedA
+    (2,      'fd00:0:3:101:65:300::/88'::INET, '101_Bathroom_radar'),   -- 101 Bathroom (room-level)
+    (3,      'fd00:0:3:101:1:100::/88'::INET,  'LivingRoom_radar'),     -- public LivingRoom
+    (4,      'fd00:0:3:101:1:200::/88'::INET,  '101corn_radar'),        -- public ReadingRoom
+    (5,      'fd00:0:3:101:1:300::/88'::INET,  'Kitchen_radar'),        -- public Kitchen
+    (6,      'fd00:0:3:101:c9:100::/88'::INET, '201_bedroom_radar'),    -- 201 Bedroom (room-level)
+    (7,      'fd00:0:3:101:c9:200::/88'::INET, '201_bathroom_radar'),   -- 201 Bathroom (room-level)
     -- Spring
-    (8,      'fd00:0:3:201:cc:101:0:1'::INET, 'DannaFa_Radar'),         -- 204 BedA radar
+    (8,      'fd00:0:3:201:cc:101::/96'::INET, 'DannaFa_Radar'),        -- 204 BedA radar
     -- SanDiego
-    (9,      'fd00:0:3:301:1:100::1'::INET,   'San_Diego_Radar'),       -- BlueOcean MainHall
+    (9,      'fd00:0:3:301:1:100::/88'::INET,  'San_Diego_Radar'),      -- BlueOcean MainHall
     -- ShenZhen
-    (10,     'fd00:0:3:401:65:200::1'::INET,  'Mom_radar'),             -- ShenZhen 101 Bathroom
-    (11,     'fd00:0:3:401:66:200::1'::INET,  'Hunzi_Radar')            -- ShenZhen 102 Bathroom
+    (10,     'fd00:0:3:401:65:200::/88'::INET, 'Mom_radar'),            -- ShenZhen 101 Bathroom
+    (11,     'fd00:0:3:401:66:200::/88'::INET, 'Hunzi_Radar')           -- ShenZhen 102 Bathroom
 ),
-sleepad_bindings (n, device_ipv6, label) AS (VALUES
+sleepad_bindings (n, anchor_prefix, label) AS (VALUES
     -- Denver
-    (1::INT, 'fd00:0:3:101:65:101:0:2'::INET, '101_Bedroom_sleepad'),   -- 101 Room1.bedA sleepad
-    (2,      'fd00:0:3:101:65:201:0:1'::INET, 'GuestRoom_sleepad'),     -- 101 Room2.bedA sleepad
-    (3,      'fd00:0:3:101:c9:101:0:1'::INET, '201_BeadA_sleepad'),     -- 201 BedA
-    (4,      'fd00:0:3:101:ca:101:0:1'::INET, '202_sleepad'),           -- 202 BedA
-    (5,      'fd00:0:3:101:ca:102:0:1'::INET, '203_sleepad'),           -- 202 BedB (label per user)
+    (1::INT, 'fd00:0:3:101:65:101::/96'::INET, '101_Bedroom_sleepad'),  -- 101 Room1.bedA sleepad
+    (2,      'fd00:0:3:101:65:201::/96'::INET, 'GuestRoom_sleepad'),    -- 101 Room2.bedA sleepad
+    (3,      'fd00:0:3:101:c9:101::/96'::INET, '201_BeadA_sleepad'),    -- 201 BedA
+    (4,      'fd00:0:3:101:ca:101::/96'::INET, '202_sleepad'),          -- 202 BedA
+    (5,      'fd00:0:3:101:ca:102::/96'::INET, '203_sleepad'),          -- 202 BedB (label per user)
     -- Spring
-    (6,      'fd00:0:3:201:cc:101:0:2'::INET, 'DannaFa_sleepad'),       -- 204 BedA sleepad
+    (6,      'fd00:0:3:201:cc:101::/96'::INET, 'DannaFa_sleepad'),      -- 204 BedA sleepad
     -- ShenZhen
-    (7,      'fd00:0:3:401:65:101:0:1'::INET, 'MoM_sleepad'),           -- ShenZhen 101 BedA
-    (8,      'fd00:0:3:401:66:101:0:1'::INET, 'Hunzi_Sleepad')          -- ShenZhen 102 BedA
+    (7,      'fd00:0:3:401:65:101::/96'::INET, 'MoM_sleepad'),          -- ShenZhen 101 BedA
+    (8,      'fd00:0:3:401:66:101::/96'::INET, 'Hunzi_Sleepad')         -- ShenZhen 102 BedA
 )
-INSERT INTO devices (device_ipv6, device_id, monitoring_enabled)
-SELECT b.device_ipv6, r.device_id, TRUE
+INSERT INTO devices (device_addr, device_uid, monitoring_enabled)
+SELECT
+    (set_masklen(b.anchor_prefix, 128) | uid_to_inet_suffix(r.device_uid))::INET,
+    r.device_uid,
+    TRUE
 FROM radar_bindings b JOIN selected_radars r ON r.n = b.n
 UNION ALL
-SELECT b.device_ipv6, s.device_id, TRUE
+SELECT
+    (set_masklen(b.anchor_prefix, 128) | uid_to_inet_suffix(s.device_uid))::INET,
+    s.device_uid,
+    TRUE
 FROM sleepad_bindings b JOIN selected_sleepads s ON s.n = b.n
-ON CONFLICT (device_ipv6) DO NOTHING;
+ON CONFLICT (device_addr) DO NOTHING;
 
 -- 把 device label 写到 device_factory_meta.notes（追加到 import note 后）
 UPDATE device_factory_meta dfm
@@ -279,11 +304,11 @@ SET notes = COALESCE(NULLIF(dfm.notes, ''), '') || ' | label=' || lbl.label
 FROM (
     WITH
     selected_radars AS (
-        SELECT device_id, ROW_NUMBER() OVER (ORDER BY device_uid) AS n
+        SELECT device_uid, ROW_NUMBER() OVER (ORDER BY device_uid) AS n
         FROM device_factory_meta WHERE device_model = 'HC2' LIMIT 11
     ),
     selected_sleepads AS (
-        SELECT device_id, ROW_NUMBER() OVER (ORDER BY device_uid) AS n
+        SELECT device_uid, ROW_NUMBER() OVER (ORDER BY device_uid) AS n
         FROM device_factory_meta WHERE device_model = 'BM8701-2' LIMIT 8
     ),
     radar_bindings (n, label) AS (VALUES
@@ -297,11 +322,11 @@ FROM (
         (4,'202_sleepad'),(5,'203_sleepad'),(6,'DannaFa_sleepad'),
         (7,'MoM_sleepad'),(8,'Hunzi_Sleepad')
     )
-    SELECT r.device_id, b.label FROM radar_bindings b JOIN selected_radars r ON r.n=b.n
+    SELECT r.device_uid, b.label FROM radar_bindings b JOIN selected_radars r ON r.n=b.n
     UNION ALL
-    SELECT s.device_id, b.label FROM sleepad_bindings b JOIN selected_sleepads s ON s.n=b.n
+    SELECT s.device_uid, b.label FROM sleepad_bindings b JOIN selected_sleepads s ON s.n=b.n
 ) AS lbl
-WHERE dfm.device_id = lbl.device_id
+WHERE dfm.device_uid = lbl.device_uid
   AND COALESCE(dfm.notes, '') NOT LIKE '%label=%';
 
 -- =========================================================================
