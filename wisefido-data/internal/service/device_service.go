@@ -66,6 +66,7 @@ type ListDevicesRequest struct {
 	DeviceType    string   // 可选：设备类型
 	SearchType    string   // 可选：搜索类型（device_name, device_uid）
 	SearchKeyword string   // 可选：搜索关键词
+	BranchID      string   // 可选：显式 branch /56 CIDR 过滤（FE 列头筛选）；非空时覆盖 session 默认 BranchPrefix
 	Page          int      // 可选，默认 1
 	Size          int      // 可选，默认 20
 	Sort          string   // 可选：排序字段（device_name, device_type, device_model, device_uid, ...）
@@ -104,22 +105,29 @@ func (s *deviceService) ListDevices(ctx context.Context, req ListDevicesRequest)
 		IsSystemAdmin: req.IsSystemAdmin,
 	}
 
-	// Phase 3: Current Branch scope via scope.ScopeContext (middleware 注入)
-	if !req.IsSystemAdmin {
+	// FE 列头显式 branch 过滤优先：用户从下拉选了 branch_id 则直接使用，覆盖 session 默认
+	// 多值（"id1,id2"）取第一段；后续如需多 branch OR 过滤再加 BranchPrefixes []string。
+	if bid := strings.TrimSpace(req.BranchID); bid != "" {
+		if idx := strings.Index(bid, ","); idx > 0 {
+			bid = strings.TrimSpace(bid[:idx])
+		}
+		filters.BranchPrefix = bid
+	} else if !req.IsSystemAdmin {
+		// Phase 3: 无显式 branch_id 时走 Current Branch scope via scope.ScopeContext
 		if sc := scope.MustFromContext(ctx); sc != nil {
 			if !sc.IsTenantWide() && sc.HasCurrentBranch() {
 				filters.BranchPrefix = sc.CurrentBranchID
 			}
 		} else if strings.TrimSpace(req.CurrentUserID) != "" {
 			// fallback：ctx 没注入时旧 SQL 路径
-			var bid sql.NullString
+			var bid2 sql.NullString
 			err := s.db.QueryRowContext(ctx, `
 				SELECT host(branch_prefix) || '/56'
 				  FROM user_branches
 				 WHERE user_id = $1::UUID AND is_primary = TRUE AND valid_to IS NULL
-				 LIMIT 1`, req.CurrentUserID).Scan(&bid)
-			if err == nil && bid.Valid && bid.String != "" {
-				filters.BranchPrefix = bid.String
+				 LIMIT 1`, req.CurrentUserID).Scan(&bid2)
+			if err == nil && bid2.Valid && bid2.String != "" {
+				filters.BranchPrefix = bid2.String
 			}
 		}
 	}

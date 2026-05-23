@@ -250,6 +250,7 @@ func (h *DeviceHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
 
 	// 2. 调用 Service
 	// 严格限制：所有用户（包括 SystemAdmin）只能查看/编辑本 tenant 的设备
+	// branch_id 显式过滤（FE 列头多选）：传入则覆盖 session 默认 BranchPrefix；多值用 ',' 分隔（取第一段；多 branch 真正过滤待后续）
 	req := service.ListDevicesRequest{
 		TenantID:       tenantID,
 		IsSystemAdmin:  false, // 始终按 tenant 过滤
@@ -258,6 +259,7 @@ func (h *DeviceHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
 		DeviceType:     r.URL.Query().Get("device_type"),
 		SearchType:     r.URL.Query().Get("search_type"),
 		SearchKeyword:  r.URL.Query().Get("search_keyword"),
+		BranchID:       strings.TrimSpace(r.URL.Query().Get("branch_id")),
 		Page:           page,
 		Size:           size,
 		Sort:           sort,
