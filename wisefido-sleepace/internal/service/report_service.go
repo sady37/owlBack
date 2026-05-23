@@ -22,10 +22,9 @@ func NewReportService(db *sql.DB, api *SleepaceAPI, card *CardMappingService, lo
 	return &ReportService{db: db, api: api, card: card, logger: logger}
 }
 
-// DownloadAndSave 从 sleepace-service 拉报告并 upsert sleepace_report（Phase 2 一刀切）。
+// DownloadAndSave 从 sleepace-service 拉报告并 upsert sleepace_report。
 //
 // 入参 deviceUIDIn = device_factory_meta.device_uid (logMAC)；拉厂家接口时该值作为 data.userId。
-// TODO Phase 2.1: sleepace SDK userId format verify — userId 从 UUID 切到 VARCHAR(50)。
 func (s *ReportService) DownloadAndSave(ctx context.Context, deviceUIDIn string, startTime, endTime int64) error {
 	tenantID, deviceUID, deviceCode, deviceAddr, residentID, err := s.loadReportWriteContext(ctx, deviceUIDIn)
 	if err != nil {
@@ -40,7 +39,6 @@ func (s *ReportService) DownloadAndSave(ctx context.Context, deviceUIDIn string,
 		zap.String("tenant", tenantID),
 	)
 
-	// TODO Phase 2.1: sleepace SDK userId format verify — userId 现在 = device_uid logMAC
 	reports, err := s.api.Get24HourDailyWithMaxReport(DailyMaxReportQuery{
 		UserID:    deviceUID,
 		StartTime: startTime,

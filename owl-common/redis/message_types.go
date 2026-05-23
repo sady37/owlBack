@@ -41,15 +41,22 @@ const (
 //       addr.Prefix(80) = unit；addr.Prefix(88) = room；addr.Prefix(96) = bed
 //   - tenant 同理：addr.Prefix(48)
 //
-// SubjectEntity 填写责任：
-//   - device-gateway（qinglan/sleepace）：已绑卡填 card_id；未绑卡留空（R-009 红线）
-//   - sensor agent（wisefido-sensor 等 layer 1+）：留空，cardagg 反查
+// SubjectEntity 语义（CloudEvents spec subject = "事件的主体/被观测对象"）：
+//   - device-gateway（qinglan/sleepace）raw 事件：填 device_uid（事件主体 = 观测设备本身；
+//     radar/sleepad 物理上 privacy-respecting，识别不到 person，device 就是合理 CE subject）
+//   - sensor agent（wisefido-sensor）derived 状态事件：填空间 prefix（BedState=/96，RoomState=/88，
+//     TargetState=/128；事件主体 = 被派生状态描述的空间实体）
+//   - 未绑/未知：留空（unbound device 走下游 LPM 兜底）
+//
+// 注意：SubjectEntity 不是 cardID。下游消费者需要 cardID 时走自己的 device_addr → card LPM
+// （cards 表归 cardagg 所属域，不该污染上游 producer）。card 显示聚合是 FE 视图概念，
+// 跟 CE subject "事件主体" 是两个层次。
 //
 // 详 doc/device_ipv6_migration_checklist.md
 type IoTStreamMessage struct {
 	// TDPv2 envelope
 	Producer       string `json:"producer"`                  // canonical /128 IPv6（device-direct = device_addr；agent-derived = agent slot 内 IP）
-	SubjectEntity  string `json:"subject_entity,omitempty"`  // card_id (UUID) when bound; 空 = 未绑卡 (R-009)
+	SubjectEntity  string `json:"subject_entity,omitempty"`  // CloudEvents subject：raw=device_uid / derived=spatial prefix / 未知=空
 	SequenceNumber uint64 `json:"sequence_number,omitempty"` // producer 内单调
 
 	// 5W where：唯一 device 标识；prefix slice 派生 unit/room/bed
@@ -64,9 +71,10 @@ type IoTStreamMessage struct {
 }
 
 // IotHead 是 IoTStreamMessage 的 envelope-only 视图（不带 DataValue），用于不需 payload 的快速透传。
+// SubjectEntity 语义见 IoTStreamMessage 上方说明。
 type IotHead struct {
 	Producer       string     `json:"producer"`
-	SubjectEntity  string     `json:"subject_entity,omitempty"`
+	SubjectEntity  string     `json:"subject_entity,omitempty"` // CloudEvents subject：raw=device_uid / derived=spatial prefix
 	SequenceNumber uint64     `json:"sequence_number,omitempty"`
 	DeviceAddr     netip.Addr `json:"device_addr"`
 	DeviceType     string     `json:"device_type"`
@@ -161,7 +169,7 @@ func BuildDeviceProducer(addr netip.Addr) string {
 
 // NewIoTStreamMessageWithData 构造 envelope（device_ipv6 v2）。
 // Producer 默认 "device:<addr>"；sensor agent 调用方再覆盖 msg.Producer = "sensor.<name>"。
-// subjectEntity 由 caller 明确填：device-gateway 已绑=card_id；未绑/sensor agent 留空。
+// subjectEntity = CloudEvents subject：raw 事件填 device_uid；sensor derived 填 spatial prefix；未知留空。
 func NewIoTStreamMessageWithData(addr netip.Addr, subjectEntity, deviceType string, ts int64, topicType, category string, data map[string]interface{}) *IoTStreamMessage {
 	// publish 边界 strip dataCategory + event_name；envelope.Category 是事件类型唯一权威
 	if data != nil {

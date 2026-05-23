@@ -732,7 +732,11 @@ var DefaultAlarmSetting = struct {
 			AlarmLevel: nil,
 			AlarmParams: map[string]interface{}{
 				"SensorNumber":         0,  // //  单人Single 0，two 1   (左=0, 右=1)
-				"realtime_interval":    2,  //测量间隔2秒/ 4G 30sec  1-254
+				// realtime_interval: 默认 10s（低频省电）；仅 scheduler 在 reset_time + post-meal(12:00-14:00) 窗口内切 2s。
+				// post-meal 窗口在 scheduler 端固定常量，不依赖 nap_time —— nap_time 只是 sleep report 概念，
+				// 我们要抓的是更宽口径的"老人饭后躺一会儿"生理数据。
+				// FE 里看到此值仅作展示——不参与 cloud 下发；scheduler 是 cloud 端 interval 的唯一写入方。
+				"realtime_interval":    10,
 				"Bed_Exit_Sensitivity": 1,  // 0:Low(15-20s) 1:Medium(5-8s) 2:High(3-5s)
 				"report_upload_type":   0,  //0 24H 1=自动结束
 				"report_upload_time":   8,  //AM8出报告（统一字段名，与厂家 setReportUploadTime / wisefido-sleepace YAML 一致；雷达 sleep monitor 也复用此名）

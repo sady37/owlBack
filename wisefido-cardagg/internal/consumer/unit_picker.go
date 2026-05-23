@@ -116,14 +116,17 @@ func (p *UnitPicker) refresh(ctx context.Context, unitPref string) {
 	prevSelf, _ := p.reader.ReadCardStatus(ctx, unitPref)
 
 	winner, roomName := pickActiveChild(children, states)
-	// unit /80 hasBed / isBathroom 读 /80 卡自己的 CardMeta（cards 表 has_bed/has_bathroom）。
-	// 不读 winner 子卡 —— 否则 split 模式下 /80 lazy 卡（专门盛装 non-bed Bathroom/Kitchen）
-	// 会继承子卡 /88 的 has_bed=true，FE s2.left 错误显示 lying-bed icon。
-	// has_bed / has_bathroom 在 ReconcileCards Step 4 已按 d.card_id = anchor 精确计算。
+	// room_icon_kind / hasBedDevice 跟 winner 走（"事件所在地的 room type"），不读 /80 静态属性。
+	// 反例：/80 has_bathroom=true 但 winner 是 bedroom 子卡 → 不应显 bathroom icon。
+	// winner 为空（无候选）回退 /80 own meta，保持 single-card unit 模式可工作。
 	hasBed := false
 	isBath := false
 	if p.meta != nil {
-		m := p.meta.GetOrLoad(ctx, unitPref)
+		target := winner
+		if target == "" {
+			target = unitPref
+		}
+		m := p.meta.GetOrLoad(ctx, target)
 		hasBed = m.HasBed()
 		isBath = m.IsBathroom()
 	}

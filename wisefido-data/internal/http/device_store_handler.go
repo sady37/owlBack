@@ -329,15 +329,13 @@ func (h *DeviceStoreHandler) ImportDeviceStores(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusOK, Fail("device store service not configured"))
 		return
 	}
-	successCount, inserted, skipped, errors, err := h.deviceStoreSvc.ImportDeviceStoresNotify(ctx, items)
+	// Sleepace bind 由 ImportDeviceStoresNotify 内部按 tenant-transition 规则自动触发（转入真实 tenant 才 bind），
+	// handler 这里不再需要 inserted 行。
+	successCount, _, skipped, errors, err := h.deviceStoreSvc.ImportDeviceStoresNotify(ctx, items)
 	if err != nil {
 		h.logger.Error("ImportDeviceStores failed", zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to import: %v", err)))
 		return
-	}
-
-	if len(inserted) > 0 {
-		h.deviceStoreSvc.PostImportSleepadBind(ctx, inserted)
 	}
 
 	// Convert errors and skipped to JSON format

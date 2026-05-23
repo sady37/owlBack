@@ -61,7 +61,7 @@ func (s *ConfigSubscriber) HandleConfigMessage(ctx context.Context, stream strin
 
 	for _, uid := range uids {
 		s.cardMapping.InvalidateByDeviceUID(uid)
-		s.cardMapping.GetCardInfo(ctx, uid)
+		s.cardMapping.GetBaseline(ctx, uid)
 	}
 	if s.healthCheck != nil {
 		s.healthCheck.ProbeAfterCardChange(ctx, "", "", "", "", uids)

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"sync"
 
@@ -39,15 +38,11 @@ func (s *CardMappingService) WaitReady() {
 	<-s.readyCh
 }
 
+// effectiveCardIDFromBaseline 返回 baseline 上的 CardID（空则空）。
+// 仅在 InvalidateByCardID 中比对使用——caller 传入的 cardID 是真 cards.card_id CIDR，
+// 未绑卡 baseline 的 CardID 为空，相互比较自然不匹配；无需 device_addr fallback。
 func effectiveCardIDFromBaseline(b card.DeviceBaseline) string {
-	if c := strings.TrimSpace(b.CardID); c != "" {
-		return c
-	}
-	// Phase 2 一刀切：device_id UUID 退役；fallback 用 DeviceAddr canonical text
-	if b.DeviceAddr.IsValid() {
-		return b.DeviceAddr.String()
-	}
-	return ""
+	return strings.TrimSpace(b.CardID)
 }
 
 // storeBaseline 须在持锁下调用；写入 room/bed 已合并后的快照。
@@ -144,30 +139,3 @@ func (s *CardMappingService) InvalidateByDeviceUID(deviceUID string) {
 	}
 }
 
-// GetCardIDByDeviceUID resolves deviceUID → DeviceBaseline（懒加载；字段含 card_id 等，与 CardAPIClient 一致）。
-func (s *CardMappingService) GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*card.DeviceBaseline, error) {
-	if deviceUID == "" {
-		return nil, fmt.Errorf("empty device uid")
-	}
-	s.mu.RLock()
-	b, ok := s.baselineByUID[deviceUID]
-	s.mu.RUnlock()
-	if ok {
-		out := b
-		return &out, nil
-	}
-
-	if s.api == nil {
-		return nil, fmt.Errorf("card api not configured")
-	}
-	bp, err := s.api.LookupBaseline(ctx, deviceUID)
-	if err != nil || bp == nil {
-		return nil, fmt.Errorf("device not in cards: %s", deviceUID)
-	}
-
-	s.mu.Lock()
-	s.storeBaseline(deviceUID, *bp)
-	s.mu.Unlock()
-
-	return bp, nil
-}

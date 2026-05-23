@@ -2,7 +2,7 @@ database:
   host: "localhost"
   port: 5432
   user: "postgres"
-  password: "TeLunSu-36kr"
+  password: "postgres"
   database: "owl_v2"
   sslmode: "disable"
 

@@ -275,33 +275,98 @@ func (s *deviceMonitorSettingsService) tenantSnapshot(ctx context.Context, tenan
 
 // ---- DeviceMonitorSettingsService interface ----
 
-// GetDeviceMonitorSettings — 派生时快照模型：
-//  1. 先读 device 自己的 spatial_config；
-//  2. 行不存在 → 取 tenant snapshot 当 "首次默认"（不持久化）；
-//  3. tenant 也无 → 返回 owl-common/alarm 硬编码。
+// GetDeviceMonitorSettings — 三层 merge（low→high）：
+//   1. alarm.go GetDefaultAlarmItems(deviceType)  ← 出厂默认（必有，完整字段）
+//   2. tenant alarm_cloud snapshot（如有）         ← 租户级 override
+//   3. device spatial_config（如有）               ← user 显式保存的 per-device override
+//
+// 每一层按 alarm_type + per-key 覆盖上一层；后一层显式给的字段才覆盖。
+// FE 拿到的 alarm_items 永远完整，模板里 hardcoded fallback 只是 BE 出错时的 emergency safety net。
 func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Context, tenantID, deviceID, deviceType string) ([]alarm.AlarmItem, error) {
 	deviceIPv6, err := s.resolveDeviceIPv6(ctx, deviceID)
 	if err != nil {
 		return nil, err
 	}
 
-	items, err := s.readDeviceConfig(ctx, deviceIPv6)
-	if err == nil {
-		return items, nil
-	}
-	if err != sql.ErrNoRows {
-		// JSON 解析失败或其它 SQL 错误 — 用 warn 记录后退回 tenant 快照，避免 page 完全无法加载
-		s.logger.Warn("failed to read device alarm config; falling back to tenant snapshot",
+	// Layer 1+2: default + tenant snapshot（与 GetDefaultDeviceMonitorSettings 同源，保证 "Load Defaults" 视图与正常视图共用 base）
+	result := s.buildTenantDefaultLayer(ctx, tenantID, deviceType)
+
+	// Layer 3: user device override（spatial_config 行存在才叠）
+	if items, err := s.readDeviceConfig(ctx, deviceIPv6); err == nil {
+		result = mergeAlarmItemsOverDefaults(result, items)
+	} else if err != sql.ErrNoRows {
+		// JSON 解析失败或其它 SQL 错误 — warn 记录，不阻塞 page；前两层已足以渲染。
+		s.logger.Warn("failed to read device alarm config; tenant-default layer used",
 			zap.String("device_id", deviceID),
 			zap.String("device_ipv6", deviceIPv6),
 			zap.Error(err),
 		)
 	}
+	return result, nil
+}
 
+// buildTenantDefaultLayer 复合 alarm.go 默认 + tenant snapshot —— "Load Defaults" 按钮和正常 page load 共用此 base。
+// 没有 tenant snapshot 时退回纯 alarm.go 默认。
+func (s *deviceMonitorSettingsService) buildTenantDefaultLayer(ctx context.Context, tenantID, deviceType string) []alarm.AlarmItem {
+	defaults := alarm.GetDefaultAlarmItems(deviceType)
 	if snapshot, ok := s.tenantSnapshot(ctx, tenantID, deviceType); ok {
-		return snapshot, nil
+		return mergeAlarmItemsOverDefaults(defaults, snapshot)
 	}
-	return alarm.GetDefaultAlarmItems(deviceType), nil
+	return defaults
+}
+
+// mergeAlarmItemsOverDefaults 把 user override 叠在 alarm.go 默认之上，按 alarm_type 一一合并；
+// alarm_params 内部按 key 合并（user 显式 set 的覆盖；user 未给的 key 取 default）。
+// is_enabled / alarm_level / display_setting：user 给了非零/非 nil 则用 user 的，否则用 default。
+//
+// 为什么放服务层做：FE 拿到的 alarm_items 永远完整 → 模板里 getAlarmParam(..., hardcoded) 的 hardcoded
+// 兜底永远不触发（防御性保留即可），alarm.go 任何时候改默认 FE 自动跟。
+func mergeAlarmItemsOverDefaults(defaults, overrides []alarm.AlarmItem) []alarm.AlarmItem {
+	if len(defaults) == 0 {
+		return overrides
+	}
+	overrideMap := make(map[string]alarm.AlarmItem, len(overrides))
+	for _, it := range overrides {
+		overrideMap[it.AlarmType] = it
+	}
+	out := make([]alarm.AlarmItem, 0, len(defaults)+len(overrides))
+	seen := make(map[string]struct{}, len(defaults))
+	for _, def := range defaults {
+		seen[def.AlarmType] = struct{}{}
+		ov, ok := overrideMap[def.AlarmType]
+		if !ok {
+			out = append(out, def)
+			continue
+		}
+		merged := def
+		if ov.IsEnabled != nil {
+			merged.IsEnabled = ov.IsEnabled
+		}
+		if ov.AlarmLevel != nil {
+			merged.AlarmLevel = ov.AlarmLevel
+		}
+		if ov.DisplaySetting != 0 {
+			merged.DisplaySetting = ov.DisplaySetting
+		}
+		// alarm_params: per-key merge — default 是底，user 给的 key 覆盖。
+		params := make(map[string]interface{}, len(def.AlarmParams)+len(ov.AlarmParams))
+		for k, v := range def.AlarmParams {
+			params[k] = v
+		}
+		for k, v := range ov.AlarmParams {
+			params[k] = v
+		}
+		merged.AlarmParams = params
+		out = append(out, merged)
+	}
+	// override 里若有 default 没有的 alarm_type（向前兼容老数据），原样追加。
+	for _, ov := range overrides {
+		if _, dup := seen[ov.AlarmType]; dup {
+			continue
+		}
+		out = append(out, ov)
+	}
+	return out
 }
 
 // UpdateDeviceMonitorSettings — 写 spatial_config + 推到硬件（sleepad 走 sleepace gateway）。
@@ -465,17 +530,25 @@ func (s *deviceMonitorSettingsService) pushSleepadToHardware(
 	if deviceCode == "" {
 		return false, fmt.Errorf("device_code missing for device_id=%s (device_factory_meta.device_code is null)", deviceID)
 	}
+	deviceUID, err := s.resolveDeviceUID(ctx, deviceID)
+	if err != nil {
+		return false, err
+	}
+	if deviceUID == "" {
+		return false, fmt.Errorf("device_uid missing for device_id=%s", deviceID)
+	}
 
 	if progressCallback != nil {
 		progressCallback(30, "pushing alarm config to sleepad hardware...")
 	}
 
 	resetTime := s.resolveTenantResetTime(ctx, tenantID)
-	sleepaceConfig := ConvertAlarmItemsToSleepaceConfig(deviceCode, deviceID, alarmItems, resetTime)
+	sleepaceConfig := ConvertAlarmItemsToSleepaceConfig(deviceCode, deviceUID, alarmItems, resetTime)
 
 	s.logger.Info("[SLEEPAD_WRITE_V2] sending alarm config to hardware",
 		zap.String("tenant_id", tenantID),
 		zap.String("device_id", deviceID),
+		zap.String("device_uid", deviceUID),
 		zap.String("device_code", deviceCode),
 		zap.Any("leftBedFlag", sleepaceConfig["leftBedFlag"]),
 		zap.Any("leftBedDuration", sleepaceConfig["leftBedDuration"]),
@@ -483,7 +556,7 @@ func (s *deviceMonitorSettingsService) pushSleepadToHardware(
 
 	if err := s.sleepaceGateway.UpdateAlarmConfig(ctx, sleepaceConfig); err != nil {
 		s.logger.Error("[SLEEPAD_WRITE_V2] updatealarmnotifyconfig failed",
-			zap.String("device_id", deviceID),
+			zap.String("device_uid", deviceUID),
 			zap.String("device_code", deviceCode),
 			zap.Error(err),
 		)
@@ -495,7 +568,7 @@ func (s *deviceMonitorSettingsService) pushSleepadToHardware(
 	}
 
 	// SleepadSetting / MaterialSetting 各项辅助参数（best-effort：单项失败 warn 但不阻断主结果）
-	s.pushSleepadSettings(ctx, deviceID, deviceCode, alarmItems)
+	s.pushSleepadSettings(ctx, deviceUID, deviceCode, alarmItems)
 
 	if progressCallback != nil {
 		progressCallback(100, "device push completed")
@@ -505,8 +578,9 @@ func (s *deviceMonitorSettingsService) pushSleepadToHardware(
 
 // pushSleepadSettings — SleepadSetting / MaterialSetting 项的非 alarm-config 设置（realtime/leaveSens/床垫…）。
 // 走多个独立 set 接口，单项失败不算整体失败（与 v1 行为一致）。
+// deviceUID = device_factory_meta.device_uid (logMAC)，作 Sleepace API userId。
 func (s *deviceMonitorSettingsService) pushSleepadSettings(
-	ctx context.Context, deviceID, deviceCode string, items []alarm.AlarmItem,
+	ctx context.Context, deviceUID, deviceCode string, items []alarm.AlarmItem,
 ) {
 	for _, item := range items {
 		switch item.AlarmType {
@@ -515,27 +589,24 @@ func (s *deviceMonitorSettingsService) pushSleepadSettings(
 			if len(p) == 0 {
 				continue
 			}
-			if v, ok := toIntParam(p["realtime_interval"]); ok && v > 0 {
-				if err := s.sleepaceGateway.SetRealtimeInterval(ctx, deviceID, deviceCode, v); err != nil {
-					s.logger.Warn("[SLEEPAD_WRITE_V2] SetRealtimeInterval", zap.Error(err))
-				}
-			}
+			// realtime_interval 由 SleepaceIntervalScheduler 独占（默认 10s，在 reset_time + post-meal(12:00-14:00) 窗口内切 2s）；
+			// FE save 路径若也 push 会与 scheduler 抢，覆盖窗口外的 10 → 永远卡在用户值，scheduler 因 dedup 不会自愈。
 			sensV, sensOk := toIntParam(p["Bed_Exit_Sensitivity"])
 			if !sensOk {
 				sensV, sensOk = toIntParam(p["leave_sensibility"])
 			}
 			if sensOk {
-				if err := s.sleepaceGateway.SetLeaveSensibility(ctx, deviceID, deviceCode, sensV); err != nil {
+				if err := s.sleepaceGateway.SetLeaveSensibility(ctx, deviceUID, deviceCode, sensV); err != nil {
 					s.logger.Warn("[SLEEPAD_WRITE_V2] SetLeaveSensibility", zap.Error(err))
 				}
 			}
 			if v, ok := toIntParam(p["Empty_Bed_Monitor"]); ok && (v == 0 || v == 1) {
-				if err := s.sleepaceGateway.SetRealtimeModeAfterLeave(ctx, deviceID, deviceCode, v); err != nil {
+				if err := s.sleepaceGateway.SetRealtimeModeAfterLeave(ctx, deviceUID, deviceCode, v); err != nil {
 					s.logger.Warn("[SLEEPAD_WRITE_V2] SetRealtimeModeAfterLeave", zap.Error(err))
 				}
 			}
 			if v, ok := toIntParam(p["report_upload_type"]); ok {
-				if err := s.sleepaceGateway.SetReportUploadType(ctx, deviceID, deviceCode, v); err != nil {
+				if err := s.sleepaceGateway.SetReportUploadType(ctx, deviceUID, deviceCode, v); err != nil {
 					s.logger.Warn("[SLEEPAD_WRITE_V2] SetReportUploadType", zap.Error(err))
 				}
 				// report_upload_time 由 SleepaceReportTimeScheduler 独占管理，不在这里下发。
@@ -548,7 +619,7 @@ func (s *deviceMonitorSettingsService) pushSleepadSettings(
 			thickness, tOk := toIntParam(p["thickness"])
 			material, mOk := toIntParam(p["material_type"])
 			if tOk && mOk {
-				if err := s.sleepaceGateway.SetBedParameters(ctx, deviceCode, deviceID, thickness, material); err != nil {
+				if err := s.sleepaceGateway.SetBedParameters(ctx, deviceUID, deviceCode, thickness, material); err != nil {
 					s.logger.Warn("[SLEEPAD_WRITE_V2] SetBedParameters", zap.Error(err))
 				}
 			}
@@ -556,9 +627,10 @@ func (s *deviceMonitorSettingsService) pushSleepadSettings(
 	}
 }
 
-// GetDefaultDeviceMonitorSettings — 直接返回硬编码默认，与 handler 中的旁路逻辑等价。
+// GetDefaultDeviceMonitorSettings — "Load Defaults" 按钮调用：alarm.go 默认 + tenant snapshot，
+// 不叠加 user device override（按设计就是要给出"还原成默认/租户标准"的视图，跟当前 user 保存值无关）。
 func (s *deviceMonitorSettingsService) GetDefaultDeviceMonitorSettings(ctx context.Context, tenantID, deviceType string) ([]alarm.AlarmItem, error) {
-	return alarm.GetDefaultAlarmItems(deviceType), nil
+	return s.buildTenantDefaultLayer(ctx, tenantID, deviceType), nil
 }
 
 // CheckDeviceOnlineStatus — 调 qinglan 检查雷达在线（Sleepad 走另一条路径，但 v1 这里只覆盖雷达）。

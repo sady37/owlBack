@@ -155,6 +155,8 @@ func main() {
 	var sleepaceGateway *service.SleepaceGatewayClient
 	// 同上：/internal/sleepace/device/* resync 端点需要在 if db != nil 块外引用
 	var deviceMonitorSettingsService service.DeviceMonitorSettingsService
+	// 外部引用：registerSpatial 的 onDeviceMoved 回调把 device 落位 → sleepace bind 桥接到 deviceStoreService。
+	var deviceStoreService *service.DeviceStoreService
 
 	if db != nil {
 		// DB bootstrap: ensure System tenant + sysadmin exist in DB for UI pages that query users/roles.
@@ -387,7 +389,7 @@ func main() {
 		} else {
 			logger.Warn("Sleepace gateway client not initialized (SLEEPACE_GATEWAY_API_BASE_URL not set)")
 		}
-		deviceStoreService := service.NewDeviceStoreService(deviceStoreRepo, devicesRepo, unitsRepo, sleepaceGateway, logger)
+		deviceStoreService = service.NewDeviceStoreService(db, deviceStoreRepo, devicesRepo, unitsRepo, sleepaceGateway, logger)
 		deviceStoreService.SetConfigPublisher(configPublisher)
 		// 让 sleepad 厂家 bind 成功后立即清掉 scheduler 的 unbound backoff cache（不等 1h TTL），
 		// 下次 60s tick 即可重新评估并 push interval。

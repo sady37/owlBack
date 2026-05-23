@@ -199,14 +199,12 @@ func UpdateSleepaceSettingsToHardware(ctx context.Context, gateway *SleepaceGate
 		return fmt.Errorf("device has no device_code")
 	}
 	deviceCode := device.DeviceCode.String
-	// TODO Phase 2.1: sleepace SDK userId format verify — Phase 2 一刀切后 userId=device_uid (logMAC)，原值 dfm.device_id UUID 已退役。
 	hardwareSettings := ConvertFlatSettingsToSleepaceFormat(deviceCode, device.DeviceUID, settings)
 	return gateway.UpdateAlarmConfig(ctx, hardwareSettings)
 }
 
 // ConvertFlatSettingsToSleepaceFormat converts flat snake_case settings to sleepad hardware API format.
-// userId = wisefido device_uid (logMAC)，deviceId = device_store.device_code。
-// TODO Phase 2.1: sleepace SDK userId format verify — 从 UUID 切到 VARCHAR(50)。
+// userId = device_factory_meta.device_uid (logMAC)；deviceId = device_factory_meta.device_code。
 func ConvertFlatSettingsToSleepaceFormat(deviceCode, deviceUID string, settings map[string]interface{}) map[string]interface{} {
 	hardwareSettings := make(map[string]interface{})
 
@@ -518,9 +516,9 @@ var alarmTypeParamMapping = map[string]map[string]string{
 }
 
 // ConvertAlarmItemsToSleepaceConfig converts AlarmItem[] to sleepad cloud API format.
-// userId = wisefido devices.device_id，deviceId = device_store.device_code。
+// userId = device_factory_meta.device_uid (logMAC)，deviceId = device_factory_meta.device_code。
 // resetTime 为租户作息（alarm_cloud.metadata），非 nil 且存在 LeftBed 时写入 left_bed_start/end 下发设备。
-func ConvertAlarmItemsToSleepaceConfig(deviceCode, deviceID string, alarmItems []alarm.AlarmItem, resetTime *alarm.ResetTimeParams) map[string]interface{} {
+func ConvertAlarmItemsToSleepaceConfig(deviceCode, deviceUID string, alarmItems []alarm.AlarmItem, resetTime *alarm.ResetTimeParams) map[string]interface{} {
 	flat := make(map[string]interface{})
 
 	for _, item := range alarmItems {
@@ -555,5 +553,5 @@ func ConvertAlarmItemsToSleepaceConfig(deviceCode, deviceID string, alarmItems [
 		}
 	}
 
-	return ConvertFlatSettingsToSleepaceFormat(deviceCode, deviceID, flat)
+	return ConvertFlatSettingsToSleepaceFormat(deviceCode, deviceUID, flat)
 }

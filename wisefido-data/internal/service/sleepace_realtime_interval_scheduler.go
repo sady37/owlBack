@@ -18,8 +18,9 @@ import (
 // SleepaceIntervalScheduler — 按时段切换 sleepad realtime_interval。
 //
 // 默认策略：
-//   - rest 窗口内（默认 21:30~07:30）= 2s 高频，监测 sleep stages
-//   - nap 窗口内（默认 12:00~14:00）= 2s 高频
+//   - rest 窗口内（tenant 配置，默认 21:30~07:30）= 2s 高频，监测 sleep stages
+//   - post-meal 窗口内（固定 12:00~14:00）= 2s 高频，捕捉饭后上床/午休/小憩的生理数据
+//     （broader than nap_time；nap_time 只是 sleep report 概念，不是采样窗口）
 //   - 其它时段 = 10s（省电、降低 broker 流量）
 //
 // 提前/延后 padding：
@@ -47,6 +48,9 @@ const (
 	intervalHighFreq          = 2                            // 窗口内 interval (秒)
 	intervalNormal            = 10                           // 窗口外 interval (秒)
 	intervalUserSkipThreshold = 10                           // 用户 device-settings interval >= 此值 → 跳过 scheduler 干预
+	// 饭后上床（午休/小憩）采样窗口：宽于 nap_time，意图是抓"老人饭后躺一会儿"的 HR/RR，不依赖 tenant nap 配置。
+	intervalPostMealStart = "12:00"
+	intervalPostMealEnd   = "14:00"
 )
 
 func NewSleepaceIntervalScheduler(
@@ -284,26 +288,24 @@ func (s *SleepaceIntervalScheduler) resolveTenantResetTime(ctx context.Context, 
 		def := alarm.DefaultTenantResetTime
 		return &def
 	}
-	// reset_time 缺字段时用 default fallback
+	// reset_time 缺字段时用 default fallback；NapTime scheduler 不再消费，无需 fallback。
 	if tr.ResetTime.InBedTime == "" || tr.ResetTime.OutBedTime == "" {
 		tr.ResetTime = alarm.DefaultTenantResetTime.ResetTime
-	}
-	if tr.NapTime.InBedTime == "" || tr.NapTime.OutBedTime == "" {
-		tr.NapTime = alarm.DefaultTenantResetTime.NapTime
 	}
 	return &tr
 }
 
-// isInSleepWindow — now (local time) 是否在 rest 或 nap 的 padded 窗口内。
-// rest 跨午夜（21:30→07:30）需 wrap 处理；nap 不跨午夜。
+// isInSleepWindow — now (local time) 是否在 rest 或 post-meal 的 padded 窗口内。
+// rest 跨午夜（tenant 配，默认 21:30→07:30）需 wrap 处理；post-meal (12:00→14:00) 不跨午夜。
+// 注意：post-meal 是固定常量，不读 tenant nap_time —— nap_time 只服务 sleep report 概念，
+// 我们要抓的是更宽口径的"饭后上床"生理数据，不一定是真正的午睡。
 func isInSleepWindow(now time.Time, params *alarm.TenantResetTime) bool {
-	if params == nil {
-		return false
+	if params != nil {
+		if isInPaddedWindow(now, params.ResetTime.InBedTime, params.ResetTime.OutBedTime, intervalEnterPadMin, intervalLeavePadMin) {
+			return true
+		}
 	}
-	if isInPaddedWindow(now, params.ResetTime.InBedTime, params.ResetTime.OutBedTime, intervalEnterPadMin, intervalLeavePadMin) {
-		return true
-	}
-	if isInPaddedWindow(now, params.NapTime.InBedTime, params.NapTime.OutBedTime, intervalEnterPadMin, intervalLeavePadMin) {
+	if isInPaddedWindow(now, intervalPostMealStart, intervalPostMealEnd, intervalEnterPadMin, intervalLeavePadMin) {
 		return true
 	}
 	return false

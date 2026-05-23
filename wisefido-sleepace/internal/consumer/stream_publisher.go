@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/netip"
 	"os"
 	"sync/atomic"
 	"time"
 
+	"owl-common/card"
 	rediscommon "owl-common/redis"
 
 	"wisefido-sleepace/internal/config"
@@ -53,26 +53,23 @@ func (p *StreamPublisher) ResolveToDeviceUID(ctx context.Context, id string) str
 	return p.cardMappingSvc.ResolveToDeviceUID(ctx, id)
 }
 
-// Resolve 用 device key 查 device_factory_meta+devices+cards，返回完整身份（DeviceBaseline）。
-// 入参可为 device_uid 或 device_code（MQTT 首次可能发 uid，后续可能发 code），GetCardInfo/LookupCard 内部统一解析；
-// 未命中时 deviceID/deviceCode/deviceType 为空，access=false（默认拒绝）。
+// Resolve 把 sleepace 厂家 MQTT 报文里的 deviceId（可能是 device_uid 或 device_code）翻译成 owl 内部
+// 设备身份 DeviceBaseline（tenant/branch/unit + device_uid/code/type + access + device_addr）。
 //
-// Phase 2 一刀切：返回值 deviceID 现承载 device_uid（identity 收口；UUID device_id 已退役）；addr = device_addr /128。
-// cardID 永远返回空（R-009 单源真相）—— SubjectEntity 由 cardagg IotPreparedHandler 按 addr LPM 反查解析。
-func (p *StreamPublisher) Resolve(ctx context.Context, deviceKey string) (
-	tenantID, branchID, unitID, cardID, deviceID, outUID, deviceCode, deviceType string,
-	access, monitoringEnabled bool, addr netip.Addr,
-) {
+// 始终返回非 nil（未命中时 stub: DeviceUID=deviceKey, 其它字段 0 值；caller 用 access==false 过滤）。
+// 不再返回 v1 deviceID(UUID)——identity 一刀切走 device_uid (logMAC)。
+// envelope SubjectEntity 由 caller 直接传 info.DeviceUID（CloudEvents subject = 观测设备）。
+// cardagg 需要 cardID 走自己 device_addr → card LPM（cards 表归 cardagg 自家域，不污染上游）。
+func (p *StreamPublisher) Resolve(ctx context.Context, deviceKey string) *card.DeviceBaseline {
 	if p.cardMappingSvc == nil {
-		return "", "", "", "", "", deviceKey, "", "", false, false, netip.Addr{}
+		return &card.DeviceBaseline{DeviceUID: deviceKey}
 	}
-	info, err := p.cardMappingSvc.GetCardInfo(ctx, deviceKey)
-	if err != nil {
+	info, err := p.cardMappingSvc.GetBaseline(ctx, deviceKey)
+	if err != nil || info == nil {
 		p.logger.Debug("card lookup miss", zap.String("device_key", deviceKey), zap.Error(err))
-		return "", "", "", "", "", deviceKey, "", "", false, false, netip.Addr{}
+		return &card.DeviceBaseline{DeviceUID: deviceKey}
 	}
-	return info.TenantID, info.BranchID, info.UnitID, "", info.DeviceUID, info.DeviceUID, info.DeviceCode, info.DeviceType,
-		info.Access, info.MonitoringEnabled, info.DeviceAddr
+	return info
 }
 
 // PublishMonitor sends an IoTStreamMessage to iot:monitor:stream.

@@ -57,9 +57,10 @@ func (c *MQTTConsumer) resolveIotPolicy(ctx context.Context, deviceUID string) (
 	return true, dev.MonitoringEnabled, tenantID
 }
 
-// CardIDProvider 定义获取设备卡片映射信息的接口
-type CardIDProvider interface {
-	GetCardIDByDeviceUID(ctx context.Context, deviceUID string) (*card.DeviceBaseline, error)
+// BaselineProvider 定义设备身份 (DeviceBaseline) 查询接口。
+// 仅暴露内存 cache fast-path（BaselineFor）——qinglan 内部所有 device 解析都走 cache 命中。
+// cache miss 时 fallback 行为由 CardMappingService 自家逻辑决定 (RefreshBaseline 等)，不在此 interface。
+type BaselineProvider interface {
 	BaselineFor(deviceUID string) (card.DeviceBaseline, bool)
 }
 
@@ -77,7 +78,7 @@ type MQTTConsumer struct {
 	mqttClient          *mqtt.Client
 	redisClient         *redis.Client
 	deviceRepo          repository.DeviceRepository
-	cardMappingService  CardIDProvider // CardIDProvider用于获取deviceUID对应的cardID
+	cardMappingService  BaselineProvider // BaselineProvider用于获取deviceUID对应的cardID
 	streamPublisher     *StreamPublisher
 	subscriptionManager DeviceLastSeenUpdater // 设备最后收到消息时间更新器接口
 	subscribedTopics    map[string]struct{}   // 保存已订阅的设备主题（key: topic, value: struct{}）
@@ -107,7 +108,7 @@ func NewMQTTConsumer(
 	mqttClient *mqtt.Client,
 	redisClient *redis.Client,
 	deviceRepo repository.DeviceRepository,
-	cardMappingService CardIDProvider,
+	cardMappingService BaselineProvider,
 	streamPublisher *StreamPublisher,
 	subscriptionManager DeviceLastSeenUpdater,
 	logger *zap.Logger,
@@ -794,7 +795,11 @@ func (c *MQTTConsumer) handleOTAReturn(uid string, message map[string]interface{
 //
 // Phase 2 一刀切：identity = device_uid (logMAC)；did 返回 device_uid（取代 v1 UUID）。
 // 返回字段：tid (tenant CIDR text)、did (device_uid)、bedID/roomID/unitID/bid（从 addr prefix 派生）、
-// addr (/128 IPv6 路由主键)。SubjectEntity 永远空——cardagg LPM 反查（R-009 单源真相）。
+// addr (/128 IPv6 路由主键)、cid (CloudEvents subject = device_uid，"事件主体 = 观测设备" 的语义)。
+//
+// cid 历史上留空让 cardagg LPM 反查，但 owl 现实里 SubjectEntity 一直没人接，下游消费混乱。
+// 现在统一填 device_uid——CE spec 合规（subject = source-defined identifier for the entity the event pertains to），
+// privacy-respecting（不假装能识别人）；下游需要 cardID 走自己的 device_addr → card LPM。
 func (c *MQTTConsumer) resolveDeviceIdentity(ctx context.Context, uid string) (tid, bid, unitID, cid, did, bedID, roomID string, addr netip.Addr, ok bool) {
 	ds, err := c.deviceRepo.GetDeviceStoreInfo(ctx, uid)
 	if err != nil || ds == nil || ds.DeviceUID == "" {
@@ -807,14 +812,14 @@ func (c *MQTTConsumer) resolveDeviceIdentity(ctx context.Context, uid string) (t
 		return "", "", "", "", "", "", "", netip.Addr{}, false
 	}
 	// 空间字段从 addr prefix 派生（无 DB / 无 cache 查询；byte 11 = bed slot, =0 表示非床设备）
-	bid = netip.PrefixFrom(addr, 56).String()
-	unitID = netip.PrefixFrom(addr, 80).String()
-	roomID = netip.PrefixFrom(addr, 88).String()
+	bid = netip.PrefixFrom(addr, 56).Masked().String()
+	unitID = netip.PrefixFrom(addr, 80).Masked().String()
+	roomID = netip.PrefixFrom(addr, 88).Masked().String()
 	if a16 := addr.As16(); a16[11] != 0 {
-		bedID = netip.PrefixFrom(addr, 96).String()
+		bedID = netip.PrefixFrom(addr, 96).Masked().String()
 	}
-	// cid 永远空（R-009）；publish 入口已不再使用 cid，签名保留兼容 caller。
-	return tid, bid, unitID, "", did, bedID, roomID, addr, true
+	// cid (SubjectEntity) = device_uid：CloudEvents subject = "事件的观测设备"。
+	return tid, bid, unitID, did, did, bedID, roomID, addr, true
 }
 
 // publishRadarMonitorHeartbeat monitoring 关闭时发单条 track_id=11（设备级），category=heart，供 cardagg MonitorBuffer 推导在线。

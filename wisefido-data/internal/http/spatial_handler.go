@@ -41,6 +41,8 @@ type SpatialHandler struct {
 }
 
 // NewSpatialHandler 构造。
+// 注意：spatial RegisterDevice 只在 tenant 内移位（/48 永远不变），不触发 Sleepace bind/unbind；
+// Sleepace 厂家 bind 唯一时机 = tenant 边界转移（device_store_service.BatchUpdateDeviceStoresNotify）。
 func NewSpatialHandler(backend ipam.Backend, db *sql.DB, ddnsClient *ddns.Client, logger *zap.Logger) *SpatialHandler {
 	return &SpatialHandler{
 		ipam:   backend,

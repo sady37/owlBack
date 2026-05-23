@@ -1,6 +1,6 @@
 $TTL 300	; 5 minutes
 tenant3.owl.		IN SOA	ns.owl. admin.owl. (
-				2026051313 ; serial
+				2026051332 ; serial
 				3600       ; refresh (1 hour)
 				600        ; retry (10 minutes)
 				604800     ; expire (1 week)
@@ -9,13 +9,16 @@ tenant3.owl.		IN SOA	ns.owl. admin.owl. (
 			NS	ns.owl.
 			AAAA	fd00:0:3::
 23sjw7.tenant3.owl.	AAAA	fd00:0:3:411:3:f000::
+2rhp5u.tenant3.owl.	AAAA	fd00:0:3:6a11:1::
 2ryumc.tenant3.owl.	AAAA	fd00:0:3:112:4:f800::
-3kai4v.tenant3.owl.	AAAA	fd00:0:3:111:3:101::
 3kqbic.tenant3.owl.	AAAA	fd00:0:3:311:1::
 3t1iln.tenant3.owl.	AAAA	fd00:0:3:111:1:f000::
 4m2yvx.tenant3.owl.	AAAA	fd00:0:3:411:2:f000::
 5nop5m.tenant3.owl.	AAAA	fd00:0:3:112:3:f000::
 5oi0n5.tenant3.owl.	AAAA	fd00:0:3:112:3::
+9fqz2i.tenant3.owl.	AAAA	fd00:0:3:211:1:101::
+aolr6c.tenant3.owl.	AAAA	fd00:0:3:111:3:100::
+axaq9b.tenant3.owl.	AAAA	fd00:0:3:411:2:101::
 eqfnt0.tenant3.owl.	AAAA	fd00:0:3:211:1::
 f61e8o.tenant3.owl.	AAAA	fd00:0:3:111:3:200::
 j0yvp3.tenant3.owl.	AAAA	fd00:0:3:111:3::
@@ -27,9 +30,7 @@ myroh1.tenant3.owl.	AAAA	fd00:0:3:411:3::
 n7bh9p.tenant3.owl.	AAAA	fd00:0:3:211:1:f000::
 nl4kj0.tenant3.owl.	AAAA	fd00:0:3:111:2::
 nnae16.tenant3.owl.	AAAA	fd00:0:3:111:2:f000::
-ojfpci.tenant3.owl.	AAAA	fd00:0:3:111:3:300::
 oplre2.tenant3.owl.	AAAA	fd00:0:3:112:4:f000::
-pfmb02.tenant3.owl.	AAAA	fd00:0:3:111:3:201::
 pyf1v5.tenant3.owl.	AAAA	fd00:0:3:111:3:f000::
 rge801.tenant3.owl.	AAAA	fd00:0:3:112:1:101::
 tz8978.tenant3.owl.	AAAA	fd00:0:3:311:1:f000::

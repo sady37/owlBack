@@ -11,18 +11,25 @@ import (
 
 var sleepadDeviceTypes = []string{"Sleepad", "SleepPad", "sleepad"}
 
-// CardMappingService provides MQTT deviceId → card info lookup.
+// CardMappingService — sleepace MQTT 报文 deviceId 字段 → DeviceBaseline 解析层。
 //
-// Two layers of in-memory cache:
-//   - codeToUID: device_code → device_uid (loaded at startup, refreshed on config event)
-//   - cardCache: device_uid → DeviceBaseline (populated on first lookup, cleared on config event)
+// MQTT deviceId 实际值：
+//   - 正常路径（bind 完成后）= device_code（sleepace 平台密文 ID，如 "r0nqo00b34vtf"）
+//   - 兼容路径（pre-bind 早期）= device_uid（logMAC，如 "BM87225200672"）
+//
+// 两层 in-memory cache：
+//   - codeToUID:     device_code → device_uid（启动 bulk 加载 + invalidate 重载）
+//   - baselineCache: device_uid → *DeviceBaseline（懒查 + invalidate 清空）
+//
+// 上游事实源：wisefido-data /internal/device-baseline HTTP API (经 CardAPIClient)。
+// 失效触发：config:card:stream 事件 → InvalidateCache / InvalidateByDeviceUID / InvalidateByCardID。
 type CardMappingService struct {
 	api    *card.CardAPIClient
 	logger *zap.Logger
 
-	mu        sync.RWMutex
-	codeToUID map[string]string              // device_code → device_uid
-	cardCache map[string]*card.DeviceBaseline // device_uid → full identity
+	mu            sync.RWMutex
+	codeToUID     map[string]string               // device_code → device_uid
+	baselineCache map[string]*card.DeviceBaseline // device_uid → full identity (DeviceBaseline)
 
 	readyCh chan struct{} // closed when cache is ready; re-created on invalidate
 }
@@ -31,11 +38,11 @@ func NewCardMappingService(api *card.CardAPIClient, logger *zap.Logger) *CardMap
 	ch := make(chan struct{})
 	close(ch) // initially ready
 	return &CardMappingService{
-		api:       api,
-		logger:    logger,
-		codeToUID: make(map[string]string),
-		cardCache: make(map[string]*card.DeviceBaseline),
-		readyCh:   ch,
+		api:           api,
+		logger:        logger,
+		codeToUID:     make(map[string]string),
+		baselineCache: make(map[string]*card.DeviceBaseline),
+		readyCh:       ch,
 	}
 }
 
@@ -63,7 +70,7 @@ func (s *CardMappingService) InvalidateCache(ctx context.Context) {
 	ch := make(chan struct{})
 	s.mu.Lock()
 	s.readyCh = ch
-	s.cardCache = make(map[string]*card.DeviceBaseline)
+	s.baselineCache = make(map[string]*card.DeviceBaseline)
 	s.mu.Unlock()
 
 	if err := s.LoadCodeToUIDMap(ctx); err != nil {
@@ -73,13 +80,13 @@ func (s *CardMappingService) InvalidateCache(ctx context.Context) {
 	s.logger.Info("card cache invalidated")
 }
 
-// InvalidateByDeviceUID 删除单设备在 cardCache 中的条目（device_uid 键）。
+// InvalidateByDeviceUID 删除单设备在 baselineCache 中的条目（device_uid 键）。
 func (s *CardMappingService) InvalidateByDeviceUID(deviceUID string) {
 	if deviceUID == "" {
 		return
 	}
 	s.mu.Lock()
-	delete(s.cardCache, deviceUID)
+	delete(s.baselineCache, deviceUID)
 	s.mu.Unlock()
 }
 
@@ -87,9 +94,9 @@ func (s *CardMappingService) InvalidateByDeviceUID(deviceUID string) {
 func (s *CardMappingService) InvalidateByCardID(cardID string) int {
 	s.mu.Lock()
 	n := 0
-	for uid, m := range s.cardCache {
+	for uid, m := range s.baselineCache {
 		if m.CardID == cardID {
-			delete(s.cardCache, uid)
+			delete(s.baselineCache, uid)
 			n++
 		}
 	}
@@ -129,54 +136,56 @@ func (s *CardMappingService) UIDToCode(uid string) string {
 	return ""
 }
 
-// ResolveToDeviceUID 将 device_code 或 device_id 转为 device_uid，内部业务统一用 device_uid。
-func (s *CardMappingService) ResolveToDeviceUID(ctx context.Context, id string) string {
-	if id == "" {
+// ResolveToDeviceUID 将 MQTT deviceId 入参（device_code 或 device_uid 二选一）规范化为 device_uid。
+// 内部所有业务统一以 device_uid 为 identity key（v1 deviceID/UUID 概念已退役）。
+func (s *CardMappingService) ResolveToDeviceUID(ctx context.Context, deviceKey string) string {
+	if deviceKey == "" {
 		return ""
 	}
-	if u := s.CodeToUID(id); u != "" {
+	if u := s.CodeToUID(deviceKey); u != "" {
 		return u
 	}
 	// Fallback: ask the API
-	b, err := s.api.LookupBaseline(ctx, id)
+	b, err := s.api.LookupBaseline(ctx, deviceKey)
 	if err != nil {
 		return ""
 	}
 	return b.DeviceUID
 }
 
-// GetCardInfo resolves MQTT deviceId → DeviceBaseline.
-// Uses in-memory cache; API is only hit on first lookup per device_uid.
-func (s *CardMappingService) GetCardInfo(ctx context.Context, mqttDeviceID string) (*card.DeviceBaseline, error) {
+// GetBaseline resolves MQTT deviceId（device_code 或 device_uid 二选一）→ *DeviceBaseline。
+// 缓存命中走内存；miss 走 CardAPIClient.LookupBaseline 拉一次并写 baselineCache。
+func (s *CardMappingService) GetBaseline(ctx context.Context, deviceKey string) (*card.DeviceBaseline, error) {
 	s.mu.RLock()
-	uid := s.codeToUID[mqttDeviceID]
+	uid := s.codeToUID[deviceKey]
 	s.mu.RUnlock()
 
-	key := uid
-	if key == "" {
-		key = mqttDeviceID
+	cacheKey := uid
+	if cacheKey == "" {
+		cacheKey = deviceKey
 	}
 
 	s.mu.RLock()
-	cached, ok := s.cardCache[key]
+	cached, ok := s.baselineCache[cacheKey]
 	s.mu.RUnlock()
 	if ok {
 		return cached, nil
 	}
 
-	info, err := s.api.LookupBaseline(ctx, key)
+	info, err := s.api.LookupBaseline(ctx, cacheKey)
 	if err != nil {
 		return nil, err
 	}
 
 	s.mu.Lock()
-	s.cardCache[info.DeviceUID] = info
+	s.baselineCache[info.DeviceUID] = info
 	s.mu.Unlock()
 
 	return info, nil
 }
 
-// ResolveBaseline 供 health_check 等按 device_id / device_uid 解析策略与 device_code。
+// ResolveBaseline 供 health_check 等场景按 device_uid（或 device_code）直查 API、**不写 baselineCache**，
+// 避免 health-check 的临时性查询污染主缓存。命中失败时返回零值 + false。
 func (s *CardMappingService) ResolveBaseline(ctx context.Context, deviceKey string) (card.DeviceBaseline, bool) {
 	if s.api == nil || deviceKey == "" {
 		return card.DeviceBaseline{}, false

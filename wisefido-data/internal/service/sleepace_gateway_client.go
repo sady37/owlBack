@@ -71,13 +71,13 @@ func (c *SleepaceGatewayClient) SetSleepaceReportPersistence(repo repository.Sle
 }
 
 // InitializeDevice 调用 Sleepace 绑定。仅需两参数，与 Sleepace API 一致：
-//   - Sleepace device_id = device_code (wisefido device_store.device_code，厂家导入)
-//   - Sleepace userid    = deviceID (wisefido device_store.device_id UUID)
+//   - Sleepace device_id = device_code (wisefido device_factory_meta.device_code，厂家导入)
+//   - Sleepace userid    = deviceUID (wisefido device_factory_meta.device_uid logMAC)
 //
 // timezoneSeconds 可选。
-func (c *SleepaceGatewayClient) InitializeDevice(ctx context.Context, deviceCode, deviceID string, timezoneSeconds *int) (outCode string, err error) {
+func (c *SleepaceGatewayClient) InitializeDevice(ctx context.Context, deviceCode, deviceUID string, timezoneSeconds *int) (outCode string, err error) {
 	url := c.apiBaseURL + "/api/v1/sleepace/device/initialize"
-	payload := map[string]interface{}{"device_code": deviceCode, "user_id": deviceID}
+	payload := map[string]interface{}{"device_code": deviceCode, "user_id": deviceUID}
 	if timezoneSeconds != nil {
 		payload["timezone"] = *timezoneSeconds
 	}
@@ -90,7 +90,7 @@ func (c *SleepaceGatewayClient) InitializeDevice(ctx context.Context, deviceCode
 		return "", fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	c.logger.Debug("sleepace initialize call", zap.String("url", url), zap.String("device_code", deviceCode), zap.String("user_id", deviceID))
+	c.logger.Debug("sleepace initialize call", zap.String("url", url), zap.String("device_code", deviceCode), zap.String("user_id", deviceUID))
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.logger.Warn("sleepace initialize request failed", zap.String("device_code", deviceCode), zap.String("url", url), zap.Error(err))
@@ -129,7 +129,7 @@ func (c *SleepaceGatewayClient) InitializeDevice(ctx context.Context, deviceCode
 		if strings.Contains(strings.ToLower(msg), "device not found") {
 			msg = "device not found in Sleepace (not in sleepace-service imported device list)"
 		}
-		c.logger.Warn("sleepace initialize success=false", zap.String("device_code", deviceCode), zap.String("error", msg))
+		c.logger.Warn("sleepace initialize success=false", zap.String("device_code", deviceCode), zap.String("user_id", deviceUID), zap.String("error", msg))
 		return "", fmt.Errorf("sleepace initialize failed: %s", msg)
 	}
 	return out.DeviceCode, nil
@@ -170,10 +170,10 @@ type BindInfoItem struct {
 	Timezone      *int    `json:"timezone,omitempty"` // 用户所在时区，单位秒；空则用 DefaultTimezoneOffsetSeconds (Denver)
 }
 
-// GetBindInfo 查询用户绑定信息（Sleepace bindInfo），userId 为 device_id (UUID)。
-func (c *SleepaceGatewayClient) GetBindInfo(ctx context.Context, userID string) (status int, msg string, items []BindInfoItem, err error) {
+// GetBindInfo 查询用户绑定信息（Sleepace bindInfo），userId = device_uid (logMAC)。
+func (c *SleepaceGatewayClient) GetBindInfo(ctx context.Context, deviceUID string) (status int, msg string, items []BindInfoItem, err error) {
 	url := c.apiBaseURL + "/api/v1/proxy/sleepace/bindInfo"
-	payload := map[string]string{"userId": userID}
+	payload := map[string]string{"userId": deviceUID}
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return 0, "", nil, fmt.Errorf("marshal request: %w", err)
@@ -210,26 +210,26 @@ func (c *SleepaceGatewayClient) SetPushType(ctx context.Context) error {
 }
 
 // DownloadReportPersist 经 wisefido-sleepace 透明代理 POST /api/v1/proxy/sleepace/get24HourDailyWithMaxReport → sleepace-service，
-// 与 wisefido-sleepace SleepaceAPI 一致；sleepace.deviceID=devices.device_id（UUID）作厂家 data.userId。
-// deviceCode 不参与厂家该接口；落库写入 sleepace_report.device_code。
-func (c *SleepaceGatewayClient) DownloadReportPersist(ctx context.Context, tenantID, deviceID, deviceCode, deviceUID string, startTime, endTime int64) error {
+// 与 wisefido-sleepace SleepaceAPI 一致；userId = device_uid (logMAC)。
+// deviceCode 不参与厂家该接口；落库写入 sleepace_report.device_uid + device_code (metadata)。
+func (c *SleepaceGatewayClient) DownloadReportPersist(ctx context.Context, tenantID, deviceCode, deviceUID string, startTime, endTime int64) error {
 	if c.reportsRepo == nil {
 		return fmt.Errorf("sleepace report repo not set on gateway (SetSleepaceReportPersistence)")
 	}
-	reports, err := c.get24HourDailyWithMaxReportViaProxy(ctx, deviceID, startTime, endTime)
+	reports, err := c.get24HourDailyWithMaxReportViaProxy(ctx, deviceUID, startTime, endTime)
 	if err != nil {
 		return err
 	}
-	return c.persistVendorSleepaceReports(ctx, tenantID, deviceID, deviceCode, deviceUID, reports)
+	return c.persistVendorSleepaceReports(ctx, tenantID, deviceCode, deviceUID, reports)
 }
 
-func (c *SleepaceGatewayClient) get24HourDailyWithMaxReportViaProxy(ctx context.Context, deviceID string, startTime, endTime int64) ([]json.RawMessage, error) {
-	if deviceID == "" {
-		return nil, fmt.Errorf("device_id required for get24HourDailyWithMaxReport")
+func (c *SleepaceGatewayClient) get24HourDailyWithMaxReportViaProxy(ctx context.Context, deviceUID string, startTime, endTime int64) ([]json.RawMessage, error) {
+	if deviceUID == "" {
+		return nil, fmt.Errorf("device_uid required for get24HourDailyWithMaxReport")
 	}
 	proxyURL := fmt.Sprintf("%s/api/v1/proxy/sleepace/get24HourDailyWithMaxReport", c.apiBaseURL)
 	payload := map[string]interface{}{
-		"userId":    deviceID,
+		"userId":    deviceUID,
 		"startTime": startTime,
 		"endTime":   endTime,
 	}
@@ -277,7 +277,7 @@ func vendorSleepaceReportDateUTC(sec int64) int {
 	return tm.Year()*10000 + int(tm.Month())*100 + tm.Day()
 }
 
-func (c *SleepaceGatewayClient) persistVendorSleepaceReports(ctx context.Context, tenantID, deviceID, deviceCode, deviceUID string, reports []json.RawMessage) error {
+func (c *SleepaceGatewayClient) persistVendorSleepaceReports(ctx context.Context, tenantID, deviceCode, deviceUID string, reports []json.RawMessage) error {
 	if len(reports) == 0 {
 		return nil
 	}
@@ -318,7 +318,7 @@ func (c *SleepaceGatewayClient) persistVendorSleepaceReports(ctx context.Context
 		}
 		if err := c.reportsRepo.SaveReport(ctx, tenantID, rep); err != nil {
 			c.logger.Warn("save vendor sleepace report",
-				zap.String("device_id", deviceID), zap.Int("date", date), zap.Error(err))
+				zap.String("device_uid", deviceUID), zap.Int("date", date), zap.Error(err))
 		}
 	}
 	return nil
@@ -385,17 +385,17 @@ func (c *SleepaceGatewayClient) UpdateAlarmConfig(ctx context.Context, sleepaceD
 }
 
 // SetRealtimeInterval pushes realtime data interval via wisefido-sleepace proxy.
-// userId = wisefido devices.device_id (UUID), deviceId = device_store.device_code.
-func (c *SleepaceGatewayClient) SetRealtimeInterval(ctx context.Context, deviceID, deviceCode string, interval int) error {
+// userId = device_uid (logMAC), deviceId = device_factory_meta.device_code.
+func (c *SleepaceGatewayClient) SetRealtimeInterval(ctx context.Context, deviceUID, deviceCode string, interval int) error {
 	return c.postProxy(ctx, "/sleepace/device/updateconfig", map[string]interface{}{
-		"userId": deviceID, "deviceId": deviceCode, "leftRight": 0, "interval": interval,
+		"userId": deviceUID, "deviceId": deviceCode, "leftRight": 0, "interval": interval,
 	})
 }
 
 // SetLeaveSensibility pushes leave-bed sensitivity via wisefido-sleepace proxy.
-func (c *SleepaceGatewayClient) SetLeaveSensibility(ctx context.Context, deviceID, deviceCode string, mode int) error {
+func (c *SleepaceGatewayClient) SetLeaveSensibility(ctx context.Context, deviceUID, deviceCode string, mode int) error {
 	return c.postProxy(ctx, "/sleepace/device/updateAlgMode", map[string]interface{}{
-		"userId": deviceID, "deviceId": deviceCode, "leftRight": 0, "mode": mode,
+		"userId": deviceUID, "deviceId": deviceCode, "leftRight": 0, "mode": mode,
 	})
 }
 
@@ -572,16 +572,16 @@ func (c *SleepaceGatewayClient) GetRealtimeModeAfterLeave(ctx context.Context, d
 }
 
 // SetBedParameters pushes mattress thickness/material via wisefido-sleepace proxy.
-func (c *SleepaceGatewayClient) SetBedParameters(ctx context.Context, deviceID, deviceCode string, thickness, material int) error {
+func (c *SleepaceGatewayClient) SetBedParameters(ctx context.Context, deviceUID, deviceCode string, thickness, material int) error {
 	return c.postProxy(ctx, "/sleepace/updateSetting", map[string]interface{}{
-		"userId": deviceID, "deviceId": deviceCode, "leftRight": 0, "thickness": thickness, "material": material,
+		"userId": deviceUID, "deviceId": deviceCode, "leftRight": 0, "thickness": thickness, "material": material,
 	})
 }
 
 // SetReportUploadType pushes report upload type via wisefido-sleepace proxy.
-func (c *SleepaceGatewayClient) SetReportUploadType(ctx context.Context, deviceID, deviceCode string, uploadType int) error {
+func (c *SleepaceGatewayClient) SetReportUploadType(ctx context.Context, deviceUID, deviceCode string, uploadType int) error {
 	return c.postProxy(ctx, "/sleepace/reportUploadType/set", map[string]interface{}{
-		"userId": deviceID, "deviceId": deviceCode, "reportUploadType": uploadType,
+		"userId": deviceUID, "deviceId": deviceCode, "reportUploadType": uploadType,
 	})
 }
 
@@ -592,11 +592,11 @@ func (c *SleepaceGatewayClient) SetReportUploadType(ctx context.Context, deviceI
 // 厂家 MySQL `user_device` 以 userId+deviceId 为主键 upsert，重复调用幂等。
 // gender 1=男 2=女；age 按养老业务规则由调用方按 5 的倍数向上取整（最小 60）。
 // timezone 单位秒，含 DST；参考 IANAToOffsetSeconds 的"call-time quirk + 厂家忽略"说明。
-func (c *SleepaceGatewayClient) BindDevice(ctx context.Context, deviceID, deviceCode string, timezoneSeconds, gender, age int) error {
+func (c *SleepaceGatewayClient) BindDevice(ctx context.Context, deviceUID, deviceCode string, timezoneSeconds, gender, age int) error {
 	return c.postProxy(ctx, "/sleepace/bind", map[string]interface{}{
 		"deviceId":  deviceCode,
 		"leftRight": 0,
-		"userId":    deviceID,
+		"userId":    deviceUID,
 		"gender":    gender,
 		"age":       age,
 		"timezone":  timezoneSeconds,

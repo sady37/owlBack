@@ -296,7 +296,7 @@ func (a *SleepaceAPI) GetReportUploadTime(deviceCode, userID string) (int, error
 
 // DailyMaxReportQuery 对应厂家 get24HourDailyWithMaxReport 的 data 段（键名 userId / startTime / endTime）。
 type DailyMaxReportQuery struct {
-	// UserID 即厂家 data.userId；取值必须是 devices.device_id（UUID），不是 device_uid、不是 device_store.device_code。
+	// UserID 即厂家 data.userId = device_factory_meta.device_uid (logMAC)。
 	UserID    string
 	StartTime int64
 	EndTime   int64
@@ -305,7 +305,7 @@ type DailyMaxReportQuery struct {
 // Get24HourDailyWithMaxReport 调用 sleepace-service POST /sleepace/get24HourDailyWithMaxReport。
 func (a *SleepaceAPI) Get24HourDailyWithMaxReport(q DailyMaxReportQuery) ([]json.RawMessage, error) {
 	if q.UserID == "" {
-		return nil, errors.New("DailyMaxReportQuery.UserID required (devices.device_id UUID → manufacturer data.userId)")
+		return nil, errors.New("DailyMaxReportQuery.UserID required (= device_uid logMAC → manufacturer data.userId)")
 	}
 	data := map[string]any{
 		"userId":    q.UserID,
@@ -527,7 +527,7 @@ func (a *SleepaceAPI) GetDeviceInfoByDeviceId(deviceId string) (*SleepaceDeviceI
 	return &info, nil
 }
 
-// InitializeDeviceByCode 绑定设备。Sleepace API 仅需：device_id = device_code (wisefido), userid = userID (wisefido device_id UUID)。
+// InitializeDeviceByCode 绑定设备。Sleepace API 仅需：device_id = device_code (wisefido), userid = device_uid (logMAC)。
 // 使用 device_code 调用 bind 并做后续配置，返回 device_code。
 func (a *SleepaceAPI) InitializeDeviceByCode(deviceCode, userID string, timezoneSeconds int) (string, error) {
 	tz := timezoneSeconds

@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	"owl-common/alarm"
 	"wisefido-data/internal/domain"
 	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
@@ -16,6 +19,7 @@ import (
 // DeviceStoreService 设备库存业务：Sleepace 绑定/解绑、InitialAll 查询回写等。
 // Handler 只做请求解析与响应写入，业务逻辑在此层。
 type DeviceStoreService struct {
+	db              *sql.DB
 	deviceStoreRepo repository.DeviceStoreRepository
 	devicesRepo     repository.DevicesRepository
 	unitsRepo       repository.UnitsRepository
@@ -29,7 +33,9 @@ type DeviceStoreService struct {
 }
 
 // NewDeviceStoreService 创建设备库存 Service。sleepaceGateway 可为 nil（未配置时不执行绑定相关逻辑）。
+// db 用于 bind-init 时读 spatial_config 的 user-configured realtime_interval；nil 时落 alarm.go 默认。
 func NewDeviceStoreService(
+	db *sql.DB,
 	deviceStoreRepo repository.DeviceStoreRepository,
 	devicesRepo repository.DevicesRepository,
 	unitsRepo repository.UnitsRepository,
@@ -37,6 +43,7 @@ func NewDeviceStoreService(
 	logger *zap.Logger,
 ) *DeviceStoreService {
 	return &DeviceStoreService{
+		db:              db,
 		deviceStoreRepo: deviceStoreRepo,
 		devicesRepo:     devicesRepo,
 		unitsRepo:       unitsRepo,
@@ -55,22 +62,121 @@ func (s *DeviceStoreService) SetOnSleepadVendorBound(cb func(deviceID string)) {
 	s.onSleepadVendorBound = cb
 }
 
-// BatchUpdateDeviceStoresNotify 批量更新 device_store 成功后发 config.card。
+// BatchUpdateDeviceStoresNotify 批量更新 device_store 成功后发 config.card，并按 tenant 边界转移触发 Sleepace bind/unbind。
+//
+// Sleepace 厂家 bind 规则（业务约定，与 v2 pivot tenants 配合）：
+//   - 转入 **真实 tenant**（非 System fd00:0:1::/48、非 Trash fd00:0:2::/48）→ 触发 BindSleepadOne
+//   - 转入 **Trash** (fd00:0:2::/48) → 触发 UnbindSleepadOne
+//   - 转入 System 或 tenant 内部移位（pool ↔ unit/bed）→ noop（Sleepace 端不动）
+//
+// 调用方按 update.TenantID 设置目标 /48；本函数 update 前抓 old tenant /48 做差分。
 func (s *DeviceStoreService) BatchUpdateDeviceStoresNotify(ctx context.Context, updates []*domain.DeviceStore) error {
+	// update 前抓每个 device 的旧 tenant /48（仅对 Sleepad 关心）。
+	type transition struct {
+		oldTenant string
+		newTenant string
+	}
+	transitions := make(map[string]transition)
+	for _, u := range updates {
+		if u == nil || u.DeviceUID == "" || u.TenantID == "" {
+			continue
+		}
+		old := s.lookupCurrentTenantPrefix(ctx, u.DeviceUID)
+		if old == u.TenantID {
+			continue
+		}
+		transitions[u.DeviceUID] = transition{oldTenant: old, newTenant: u.TenantID}
+	}
+
 	if err := s.deviceStoreRepo.BatchUpdateDeviceStores(ctx, updates); err != nil {
 		return err
 	}
 	NotifyDeviceStoreBatchAfterUpdate(ctx, s.deviceStoreRepo, s.configPublisher, updates, s.logger)
+
+	// 异步触发 Sleepace bind/unbind（不阻塞调用方；失败 Debug log 不报错给用户）。
+	for uid, tr := range transitions {
+		uidCopy, oldCopy, newCopy := uid, tr.oldTenant, tr.newTenant
+		go s.applyTenantTransitionToSleepace(context.Background(), uidCopy, oldCopy, newCopy)
+	}
 	return nil
 }
 
-// ImportDeviceStoresNotify 导入成功后按插入行发 config.card。
+// lookupCurrentTenantPrefix 取 device 当前 device_addr 的 /48 host repr+"/48"；查不到（factory-only）返 ""。
+func (s *DeviceStoreService) lookupCurrentTenantPrefix(ctx context.Context, deviceUID string) string {
+	if s.db == nil || deviceUID == "" {
+		return ""
+	}
+	var prefix sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT host(network(set_masklen(device_addr, 48))) || '/48'
+		  FROM devices
+		 WHERE device_uid = $1
+	`, deviceUID).Scan(&prefix)
+	if err != nil || !prefix.Valid {
+		return ""
+	}
+	return prefix.String
+}
+
+// applyTenantTransitionToSleepace 根据 tenant /48 转移方向决定 Sleepace bind / unbind / noop。
+// 调用方需在 repo update 成功后再调，确保 device_addr 已是 newTenant。
+func (s *DeviceStoreService) applyTenantTransitionToSleepace(ctx context.Context, deviceUID, oldTenant, newTenant string) {
+	if s.sleepaceGateway == nil {
+		return
+	}
+	const trashTenant = "fd00:0:2::/48"
+	newIsTrash := newTenant == trashTenant
+	newIsReal := newTenant != "" && !newIsTrash && !isSystemOrTrashTenant(newTenant)
+	oldIsReal := oldTenant != "" && !isSystemOrTrashTenant(oldTenant)
+
+	switch {
+	case newIsReal && !oldIsReal:
+		// 转入真实 tenant（从 factory-only / system / trash 进来）→ bind
+		if err := s.BindSleepadOne(ctx, deviceUID); err != nil {
+			s.logger.Debug("tenant-transition: BindSleepadOne skipped/failed",
+				zap.String("device_uid", deviceUID),
+				zap.String("from", oldTenant), zap.String("to", newTenant),
+				zap.Error(err))
+		}
+	case newIsTrash && oldIsReal:
+		// 真实 tenant → trash → unbind
+		if err := s.UnbindSleepadOne(ctx, deviceUID); err != nil {
+			s.logger.Debug("tenant-transition: UnbindSleepadOne skipped/failed",
+				zap.String("device_uid", deviceUID),
+				zap.String("from", oldTenant), zap.String("to", newTenant),
+				zap.Error(err))
+		}
+	}
+	// 其他组合（真实↔真实需经 pivot；system 中转；tenant 内部移位）都不动 Sleepace。
+}
+
+// isSystemOrTrashTenant 判 pivot tenant（系统保留 slot 1/2，业务不在此 bind/unbind）。
+func isSystemOrTrashTenant(prefix string) bool {
+	p := strings.TrimSpace(prefix)
+	return p == "fd00:0:1::/48" || p == "fd00:0:2::/48"
+}
+
+// ImportDeviceStoresNotify 导入成功后按插入行发 config.card；若目标 tenant 是真实 tenant 顺手触发 Sleepace bind。
+// 导入路径默认 tenant = System (fd00:0:1::/48)，此时 newIsReal=false，bind 不会触发——admin 后续调拨到真实 tenant 时
+// 由 BatchUpdateDeviceStoresNotify 的 tenant-transition 逻辑负责 bind。
 func (s *DeviceStoreService) ImportDeviceStoresNotify(ctx context.Context, items []*domain.DeviceStore) (successCount int, inserted []*domain.DeviceStore, skipped []*domain.DeviceStore, errors []*domain.DeviceStore, err error) {
 	successCount, inserted, skipped, errors, err = s.deviceStoreRepo.ImportDeviceStores(ctx, items)
 	if err != nil {
 		return
 	}
 	NotifyDeviceStoreFromStores(ctx, s.configPublisher, inserted, "device_store_imported", s.logger)
+	// 直接导入到真实 tenant 的 Sleepad → bind（factory-only 是没有 oldTenant 的转入）
+	for _, ds := range inserted {
+		if ds == nil || ds.DeviceUID == "" {
+			continue
+		}
+		newTenant := strings.TrimSpace(ds.TenantID)
+		if newTenant == "" || isSystemOrTrashTenant(newTenant) {
+			continue
+		}
+		uidCopy, newCopy := ds.DeviceUID, newTenant
+		go s.applyTenantTransitionToSleepace(context.Background(), uidCopy, "", newCopy)
+	}
 	return
 }
 
@@ -100,7 +206,7 @@ type SyncSleepaceBindResult struct {
 	Errors  []string
 }
 
-// SyncSleepaceBind 先查 bindInfo(userId=device_id)，仅对未绑定的 Sleepad 执行绑定。
+// SyncSleepaceBind 先查 bindInfo(userId=device_uid)，仅对未绑定的 Sleepad 执行绑定。
 func (s *DeviceStoreService) SyncSleepaceBind(ctx context.Context) (*SyncSleepaceBindResult, error) {
 	if s.sleepaceGateway == nil {
 		return nil, fmt.Errorf("sleepace gateway not configured")
@@ -250,8 +356,9 @@ func (s *DeviceStoreService) InitialAllSleepad(ctx context.Context) (*InitialAll
 	}, nil
 }
 
-// BindSleepadOne 单条 Sleepad 绑定：调用 initialize(device_code, device_uid)。Sleepace device_id = wisefido device_code（如 1ua3erivl9pv1），Sleepace deviceName = wisefido device_uid（如 BM87224601903）。当前仅绑定在 left（leftRight=0）。
-// TODO Phase 2.1: sleepace SDK userId format verify — 现在 userId=device_uid (logMAC) 而不是 dfm.device_id UUID。
+// BindSleepadOne 单条 Sleepad 绑定：调用 initialize(device_code, device_uid)。
+// 厂家映射：Sleepace device_id = device_factory_meta.device_code，Sleepace userid = device_factory_meta.device_uid。
+// 当前仅绑定在 left（leftRight=0）。
 func (s *DeviceStoreService) BindSleepadOne(ctx context.Context, deviceUID string) error {
 	if s.sleepaceGateway == nil {
 		return fmt.Errorf("sleepace gateway not configured")
@@ -323,12 +430,13 @@ func (s *DeviceStoreService) DeleteDeviceStoreAndNotify(ctx context.Context, dev
 	return nil
 }
 
-// applyDefaultSleepadRealtime 在 Sleepace bind 成功后下发默认实时上报配置：
-//   - SetRealtimeInterval(2)  —— 在床期 2 秒高频，所有 Sleepad 型号支持
+// applyDefaultSleepadRealtime 在 Sleepace bind 成功后下发实时上报配置：
+//   - SetRealtimeInterval —— 取值优先：spatial_config (FE 保存值) > alarm.go SleepadSetting 默认 (10)
 //   - SetRealtimeModeAfterLeave(1) —— 离床后停止上报；仅 BM8701-2 + 固件 ≥ 6.67 支持
 //
 // 任何错误降级为 Warn 日志，不阻塞 bind 流程。偶发瞬时错误（实测厂家 status:3 空 msg）做一次重试。
 // 这是 bind 后的"最后一公里"配置，失败也不影响绑定成功；后续可由 cmd/sleepace-set-realtime -apply-all 兜底。
+// 运行期 SleepaceIntervalScheduler 在 reset_time + post-meal(12:00-14:00) 窗口内会切 2s 高频，离开窗口切回 user/default 值。
 func (s *DeviceStoreService) applyDefaultSleepadRealtime(ctx context.Context, ds *domain.DeviceStore) {
 	if s.sleepaceGateway == nil || ds == nil {
 		return
@@ -336,7 +444,7 @@ func (s *DeviceStoreService) applyDefaultSleepadRealtime(ctx context.Context, ds
 	if !ds.DeviceCode.Valid || ds.DeviceCode.String == "" {
 		return
 	}
-	const targetInterval = 2
+	targetInterval := s.resolveSleepadRealtimeInterval(ctx, ds.DeviceUID)
 	const targetMode = 1
 
 	if err := setIntervalWithRetry(ctx, s.sleepaceGateway, ds.DeviceUID, ds.DeviceCode.String, targetInterval); err != nil {
@@ -358,6 +466,73 @@ func (s *DeviceStoreService) applyDefaultSleepadRealtime(ctx context.Context, ds
 			zap.String("device_id", ds.DeviceUID),
 			zap.Error(err))
 	}
+}
+
+// resolveSleepadRealtimeInterval 取 bind-init 时 cloud 应下发的 realtime_interval：
+//   1. spatial_config alarm.device_config (FE 保存值)  ←—— 优先
+//   2. alarm.go SleepadSetting 默认 10                  ←—— 缺失/解析失败时兜底
+//
+// scheduler 运行期会在窗口内切 2s 高频；此函数只决定 bind-init 的初始值。
+func (s *DeviceStoreService) resolveSleepadRealtimeInterval(ctx context.Context, deviceUID string) int {
+	fallback := sleepadDefaultRealtimeInterval()
+	if s.db == nil || deviceUID == "" {
+		return fallback
+	}
+	var raw []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT sc.config_value
+		  FROM spatial_config sc
+		  JOIN devices d ON d.device_addr = sc.spatial_prefix
+		 WHERE d.device_uid = $1
+		   AND sc.config_key = 'alarm.device_config'
+	`, deviceUID).Scan(&raw)
+	if err != nil || len(raw) == 0 {
+		return fallback
+	}
+	var packed struct {
+		AlarmItems []alarm.AlarmItem `json:"alarm_items"`
+	}
+	if json.Unmarshal(raw, &packed) != nil {
+		return fallback
+	}
+	for _, item := range packed.AlarmItems {
+		if item.AlarmType != alarm.SleepadSetting || item.AlarmParams == nil {
+			continue
+		}
+		switch v := item.AlarmParams["realtime_interval"].(type) {
+		case float64:
+			if int(v) > 0 {
+				return int(v)
+			}
+		case int:
+			if v > 0 {
+				return v
+			}
+		case json.Number:
+			if n, err := v.Int64(); err == nil && n > 0 {
+				return int(n)
+			}
+		}
+		return fallback
+	}
+	return fallback
+}
+
+// sleepadDefaultRealtimeInterval 从 alarm.go 默认 SleepadSetting 提 realtime_interval（10）。
+// 单一来源：始终跟着 alarm.go 变，不在此处硬编码 10。
+func sleepadDefaultRealtimeInterval() int {
+	for _, item := range alarm.GetDefaultAlarmItemsSleepPad() {
+		if item.AlarmType != alarm.SleepadSetting || item.AlarmParams == nil {
+			continue
+		}
+		switch v := item.AlarmParams["realtime_interval"].(type) {
+		case float64:
+			return int(v)
+		case int:
+			return v
+		}
+	}
+	return 10
 }
 
 func setIntervalWithRetry(ctx context.Context, gw *SleepaceGatewayClient, deviceID, deviceCode string, interval int) error {
@@ -423,30 +598,3 @@ func atoiAllDigits(s string) (int, bool) {
 	return n, true
 }
 
-// PostImportSleepadBind 导入后对新插入的 Sleepad 调用 Sleepace initialize 绑定。device_code 来自厂家导入，不在此写回。
-func (s *DeviceStoreService) PostImportSleepadBind(ctx context.Context, inserted []*domain.DeviceStore) {
-	if s.sleepaceGateway == nil || len(inserted) == 0 {
-		return
-	}
-	for _, row := range inserted {
-		if row.DeviceUID == "" {
-			continue
-		}
-		if !strings.EqualFold(row.DeviceType, "Sleepad") {
-			continue
-		}
-		if !row.DeviceCode.Valid || row.DeviceCode.String == "" {
-			continue
-		}
-		tz := s.getTimezoneForDevice(ctx, row.TenantID, row.DeviceUID)
-		_, initErr := s.sleepaceGateway.InitializeDevice(ctx, row.DeviceCode.String, row.DeviceUID, &tz)
-		if initErr != nil {
-			s.logger.Warn("Sleepace initialize failed for imported Sleepad",
-				zap.String("device_uid", row.DeviceUID),
-				zap.String("device_id", row.DeviceUID),
-				zap.Error(initErr))
-			continue
-		}
-		s.applyDefaultSleepadRealtime(ctx, row)
-	}
-}

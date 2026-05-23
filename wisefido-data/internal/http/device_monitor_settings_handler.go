@@ -205,17 +205,31 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseW
 		deviceUID = dev.DeviceUID
 		deviceName = dev.DeviceName
 		deviceIPv6 = dev.DeviceAddr
-		if dev.UnitID.Valid && dev.UnitID.String != "" {
-			if u, err := h.unitsRepo.GetUnit(ctx, tenantID, dev.UnitID.String); err == nil && u.Timezone != "" {
-				timezone = u.Timezone
-			}
+	}
+	// timezone 级联：unit → branch → tenant（spatial-prefix 派生）。
+	// tenant.timezone NOT NULL DEFAULT，三级一起 NULL/空概率为 0；保留下一级 alarmItems 兜底是为了健壮性。
+	if deviceIPv6 != "" && h.db != nil {
+		var tz sql.NullString
+		if err := h.db.QueryRowContext(ctx, `
+			SELECT COALESCE(
+			         NULLIF(u.timezone,  ''),
+			         NULLIF(br.timezone, ''),
+			         NULLIF(t.timezone,  '')
+			       )
+			  FROM devices d
+			  LEFT JOIN units    u  ON u.unit_id    = network(set_masklen(d.device_addr, 80))
+			  LEFT JOIN branches br ON br.branch_id = network(set_masklen(d.device_addr, 56))
+			  LEFT JOIN tenants  t  ON t.tenant_id  = network(set_masklen(d.device_addr, 48))
+			 WHERE d.device_addr = $1::INET
+		`, deviceIPv6).Scan(&tz); err == nil && tz.Valid {
+			timezone = tz.String
 		}
 	}
 	if timezone == "" {
 		for _, it := range alarmItems {
 			if it.AlarmType == alarm.SleepadSetting && it.AlarmParams != nil {
-				if tz, ok := it.AlarmParams["timezone"].(string); ok && tz != "" {
-					timezone = tz
+				if v, ok := it.AlarmParams["timezone"].(string); ok && v != "" {
+					timezone = v
 					break
 				}
 			}

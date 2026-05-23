@@ -437,9 +437,12 @@ const unitsSelectCols = `
 		s.floor AS floor_int,
 		u.unit_property,
 		u.unit_type,
-		COALESCE(u.timezone, 'UTC') AS timezone
+		COALESCE(u.timezone, '') AS timezone
 `
 
+// units repo 故意只返回 raw u.timezone（NULL→''）—— FE Edit modal 需要知道是"用户显式 override"还是"沿用 branch"。
+// 需要 cascade 的 display 上下文（sleepad/radar 监控页、scheduler 计算）请在调用方各自 COALESCE 三级（见
+// device_monitor_settings_handler.go）。
 // JOIN 用 network(set_masklen(...)) 而非 set_masklen — 后者不清 host bits 会让 INET 比较失败。
 const unitsFromClause = `
 	FROM units u

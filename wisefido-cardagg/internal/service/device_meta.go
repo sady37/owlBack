@@ -417,9 +417,11 @@ func (c *DeviceMetaCache) LookupCardByDeviceAddr(ctx context.Context, addr netip
 		return ""
 	}
 	// v2.5: devices.card_id FK 直接读，不再 LPM cards
+	// masklen 取 DB 真实值（跟 BuildDeviceIndex 一致）。
 	var cid sql.NullString
 	err := c.db.QueryRowContext(ctx, `
-		SELECT host(card_id)::text || '/88' FROM devices WHERE device_addr = $1::INET AND card_id IS NOT NULL
+		SELECT host(card_id)::text || '/' || masklen(card_id)::text
+		  FROM devices WHERE device_addr = $1::INET AND card_id IS NOT NULL
 	`, addrStr).Scan(&cid)
 	if err != nil {
 		if err != sql.ErrNoRows && c.logger != nil {
@@ -443,9 +445,11 @@ func (c *DeviceMetaCache) BuildDeviceIndex(ctx context.Context) error {
 		return nil
 	}
 	// v2.5: devices.card_id 直接读，不再 LPM cards
+	// masklen 取 DB 真实值（/80 unit / /88 room / /96 bed），不能硬编码 /88——
+	// card:state hash key 必须跟 cards 表 row 的 CIDR 完全一致才能命中。
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT host(d.device_addr)::text AS device_addr,
-		       host(d.card_id)::text || '/88' AS card_id
+		       host(d.card_id)::text || '/' || masklen(d.card_id)::text AS card_id
 		FROM devices d
 		WHERE d.card_id IS NOT NULL
 	`)

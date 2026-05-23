@@ -46,16 +46,20 @@ type MonitorHandler struct {
 	buffer      *service.MonitorBuffer
 	writer      *card.Writer
 	devTouch    DeviceLivenessTouch
+	deviceMeta  *service.DeviceMetaCache // device_addr → cardID LPM（cardagg 自家域，不依赖 envelope）
 	aiOverrides *service.AIOverrideCache // 可 nil（未 wire 时 Apply 退化为 no-op）
 	logger      *zap.Logger
 }
 
-func NewMonitorHandler(buffer *service.MonitorBuffer, writer *card.Writer, devTouch DeviceLivenessTouch, logger *zap.Logger) *MonitorHandler {
+// NewMonitorHandler 注入 deviceMeta —— envelope.SubjectEntity 现按新约定承载 device_uid (CloudEvents subject)，
+// 不是 cardID；cardagg buffer 聚合按 cardID 索引，因此自己 LPM。
+func NewMonitorHandler(buffer *service.MonitorBuffer, writer *card.Writer, devTouch DeviceLivenessTouch, deviceMeta *service.DeviceMetaCache, logger *zap.Logger) *MonitorHandler {
 	return &MonitorHandler{
-		buffer:   buffer,
-		writer:   writer,
-		devTouch: devTouch,
-		logger:   logger,
+		buffer:     buffer,
+		writer:     writer,
+		devTouch:   devTouch,
+		deviceMeta: deviceMeta,
+		logger:     logger,
 	}
 }
 
@@ -121,7 +125,19 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg *owlredis.IoTStreamMess
 			h.aiOverrides.Apply(deviceAddr, trackID, fields)
 		}
 	}
-	h.buffer.Write(msg.SubjectEntity, deviceAddr, strconv.Itoa(trackID), fields, msg.Timestamp)
+	// buffer 按 cardID 聚合：envelope.SubjectEntity = device_uid (CloudEvents subject)，不是 cardID。
+	// cards 表归 cardagg 自家域，这里走 DeviceMeta 的 device_addr → cardID O(1) 索引（未命中 SQL 兜底）。
+	cardID := ""
+	if h.deviceMeta != nil {
+		cardID = h.deviceMeta.LookupCardByDeviceAddr(ctx, msg.DeviceAddr)
+	}
+	if cardID == "" {
+		// 未绑卡（pool 设备、unbound）— monitor 数据无 card 可归属，跳 buffer.Write。
+		// 仍触发 liveness 让 device 状态正常更新。
+		h.devTouch.TouchLastSeen(ctx, deviceAddr, msg.DeviceType)
+		return nil
+	}
+	h.buffer.Write(cardID, deviceAddr, strconv.Itoa(trackID), fields, msg.Timestamp)
 	h.devTouch.TouchLastSeen(ctx, deviceAddr, msg.DeviceType)
 	return nil
 }

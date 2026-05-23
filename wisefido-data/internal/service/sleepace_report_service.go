@@ -15,14 +15,15 @@ import (
 )
 
 // 厂家 Sleepace 与 wisefido 库表对应（HTTP/MQTT 报文）：
-//   sleepace.deviceId    ↔ device_store.device_code（空则 COALESCE 用 devices.device_uid）
-//   sleepace.userId      ↔ devices.device_id（UUID）
-//   sleepace.deviceName  ↔ devices.device_uid
+//   sleepace.deviceId    ↔ device_factory_meta.device_code
+//   sleepace.userId      ↔ device_factory_meta.device_uid (logMAC)
+//   sleepace.deviceName  ↔ device_factory_meta.device_uid
 
 // sleepaceReportGateway 经 wisefido-sleepace 透明代理调厂家并本进程落库；测试可注入 mock。
 type sleepaceReportGateway interface {
-	// deviceID=devices.device_id；deviceCode=device_store.device_code（厂家 MQTT/API deviceId）；deviceUID=devices.device_uid。
-	DownloadReportPersist(ctx context.Context, tenantID, deviceID, deviceCode, deviceUID string, startTime, endTime int64) error
+	// deviceCode=device_factory_meta.device_code（厂家 MQTT/API deviceId）；
+	// deviceUID=device_factory_meta.device_uid (logMAC, 作厂家 userId)。
+	DownloadReportPersist(ctx context.Context, tenantID, deviceCode, deviceUID string, startTime, endTime int64) error
 }
 
 // SleepaceReportService Sleepace 睡眠报告服务接口
@@ -445,8 +446,8 @@ func (s *sleepaceReportService) DownloadReport(ctx context.Context, req Download
 	if err := s.validateDevice(ctx, req.TenantID, req.DeviceID); err != nil {
 		return err
 	}
-	// req.DeviceID = devices.device_id（UUID），作厂家 data.userId；SleepaceDeviceID 仅校验用。
-	if err := s.reportGateway.DownloadReportPersist(ctx, req.TenantID, req.DeviceID, req.SleepaceDeviceID, req.DeviceUID, req.StartTime, req.EndTime); err != nil {
+	// req.DeviceUID = device_uid logMAC，作厂家 data.userId；SleepaceDeviceID 仅校验用。
+	if err := s.reportGateway.DownloadReportPersist(ctx, req.TenantID, req.SleepaceDeviceID, req.DeviceUID, req.StartTime, req.EndTime); err != nil {
 		s.logger.Error("report download via gateway failed",
 			zap.String("tenant_id", req.TenantID),
 			zap.String("device_id", req.DeviceID),
@@ -651,9 +652,10 @@ func (s *sleepaceReportService) BackfillFromVendor(ctx context.Context, tenantID
 		}
 		st := yyyymmddLocalStartUnix(run[0])
 		et := yyyymmddLocalEndUnix(run[len(run)-1])
-		if err := s.reportGateway.DownloadReportPersist(ctx, tenantID, deviceID, sid, uid, st, et); err != nil {
+		if err := s.reportGateway.DownloadReportPersist(ctx, tenantID, sid, uid, st, et); err != nil {
 			s.logger.Warn("sleepace vendor download for date gap failed",
 				zap.String("device_id", deviceID),
+				zap.String("device_uid", uid),
 				zap.Ints("date_run", run),
 				zap.Error(err),
 			)

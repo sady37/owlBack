@@ -39,6 +39,11 @@ func BuildCardDisplay(s *card.CardStatus, hasBedDevice bool, isBathroom bool) *c
 		bs := s.BedState.BedStatus
 		d.BedStatus = &bs // *int 跟 observation/track.go 同惯例；nil=未知/不适用
 		d.SleepStage = s.BedState.SleepStage
+	} else if hasBedDevice {
+		// 无 fresh BedState 时默认 NotInBed：在床需要证据（Sleepace InBed event / radar vital signs），
+		// 缺省视为不在床。FE 按 bed_status=1 渲 outofbed icon，避免 lying-bed-black 假状态。
+		bs := card.BedStatusNotInBed
+		d.BedStatus = &bs
 	}
 	if roomHas {
 		d.RoomPersonCount = s.RoomState.TotalPeople

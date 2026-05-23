@@ -88,7 +88,7 @@ func main() {
 	deviceTracker := consumer.NewDeviceStatusTracker(writer, logger)
 	go deviceTracker.Run(ctx)
 
-	monitorHandler := consumer.NewMonitorHandler(monitorBuf, writer, deviceTracker, logger)
+	monitorHandler := consumer.NewMonitorHandler(monitorBuf, writer, deviceTracker, metaCache, logger)
 	go monitorHandler.RunLoop(ctx)
 
 	unitPicker := consumer.NewUnitPicker(db, redisClient, writer, reader, metaCache, logger)
