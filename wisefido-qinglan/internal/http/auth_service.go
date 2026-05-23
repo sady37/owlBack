@@ -88,7 +88,7 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 				}, nil
 			}
 
-			// 新创建的设备已分配给系统租户（000...001），access = FALSE，需要管理员处理
+			// 新创建的设备已分配给 Trash 租户（fd00:0:2::/48），access = FALSE，需要管理员审核
 			s.logger.Info("Device created in device_store (pending approval, assigned to system tenant)",
 				zap.String("uid", req.UID),
 				zap.String("device_id", device.DeviceUID),
@@ -222,7 +222,9 @@ type DeviceStoreInfo = repository.DeviceStoreInfo
 
 // createDeviceStoreRecord 创建新设备记录（Phase 2: 写 device_factory_meta + devices）
 //
-// 状态：access=FALSE（pending），分配到 system /48 池 fd00:0:1::/48，等 platform_admin 调拨。
+// 状态：access=FALSE（pending），分配到 trash /48 池 fd00:0:2::/48，
+// 等 platform_admin 决定接受（迁 System / 真 tenant）或保持丢弃。
+// 业务约定：未知 UID MQTT 来源 → Trash；已知 UID 经 wisefido-data 导入 → System。
 func (s *AuthService) createDeviceStoreRecord(ctx context.Context, uid string, req *models.AuthRequest) (*DeviceStoreInfo, error) {
 	deviceType := "Radar"
 	if req.Type == 1 {
@@ -246,12 +248,12 @@ func (s *AuthService) createDeviceStoreRecord(ctx context.Context, uid string, r
 		return &DeviceStoreInfo{
 			DeviceUID:  uid,
 			DeviceType: deviceType,
-			TenantID:   platformSystemTenantID,
+			TenantID:   platformTrashTenantID,
 			Access:     false,
 		}, nil
 	}
 
-	s.logger.Info("Created new device (pending, system tenant pool fd00:0:1::/48)",
+	s.logger.Info("Created new device (pending, trash tenant pool fd00:0:2::/48)",
 		zap.String("uid", uid),
 		zap.String("device_uid", ds.DeviceUID),
 		zap.String("device_type", ds.DeviceType),

@@ -294,10 +294,12 @@ func (r *PostgresDeviceRepository) GetDevicesByTenant(ctx context.Context, tenan
 
 // CreateDevice Phase 2 一刀切：写 device_factory_meta + devices；自动注册未授权设备
 //
-// 用法：auth_service 在设备首次连上来且 dfm 无记录时调用，分配到 system tenant pool
-// (fd00:0:1::/48)，access=FALSE 等 admin 在前端调拨。
+// 业务约定：未知 UID 从 MQTT 来认证 → 落 Trash pool (fd00:0:2::/48)，access=FALSE，
+// 待 platform_admin 决定接受（迁 System / 真 tenant）或保持丢弃。
 //
-// device_addr 派生：bytes 0-5=system /48 + bytes 6-11=0 (未分配) + bytes 12-15=device_uid 末 32 bit
+// 区分于 wisefido-data 导入路径——后者是已知设备 (CSV/Excel/UI)，落 System。
+//
+// device_addr 派生：bytes 0-5=trash /48 + bytes 6-11=0 (未分配) + bytes 12-15=device_uid 末 32 bit
 func (r *PostgresDeviceRepository) CreateDevice(ctx context.Context, device *domain.Device) error {
 	if device.DeviceUID == "" {
 		return fmt.Errorf("device_uid is required")
@@ -314,8 +316,8 @@ func (r *PostgresDeviceRepository) CreateDevice(ctx context.Context, device *dom
 	if _, err := r.db.ExecContext(ctx, dfmQuery, device.DeviceUID, deviceType); err != nil {
 		return fmt.Errorf("failed to insert device_factory_meta: %w", err)
 	}
-	// 派生 device_addr：system /48 + 0 bytes + MAC 末 32 bit
-	deviceAddr, err := deriveSystemDeviceAddr(device.DeviceUID)
+	// 派生 device_addr：trash /48 + 0 bytes + UID 末 32 bit
+	deviceAddr, err := deriveTrashDeviceAddr(device.DeviceUID)
 	if err != nil {
 		return fmt.Errorf("failed to derive device_addr: %w", err)
 	}
@@ -328,23 +330,31 @@ func (r *PostgresDeviceRepository) CreateDevice(ctx context.Context, device *dom
 		return fmt.Errorf("failed to insert devices: %w", err)
 	}
 	device.DeviceAddr = deviceAddr
-	device.TenantID = systemTenantHost
+	device.TenantID = trashTenantHost
 	device.Access = false
 	device.Status = "offline"
 	return nil
 }
 
-// systemTenantHost 等价 'fd00:0:1::' 的 host 字符串
-const systemTenantHost = "fd00:0:1::"
+// trashTenantHost 等价 'fd00:0:2::' 的 host 字符串
+const trashTenantHost = "fd00:0:2::"
 
-// deriveSystemDeviceAddr 给系统 tenant 池中的新设备派生 /128
-func deriveSystemDeviceAddr(deviceUID string) (string, error) {
-	hex := strings.ReplaceAll(strings.TrimSpace(deviceUID), ":", "")
-	if len(hex) < 8 {
-		return "", fmt.Errorf("device_uid too short: %q", deviceUID)
+// deriveTrashDeviceAddr 给 Trash tenant 池中的新设备派生 /128。
+// UID 末 32 bit 派生规则 doc/datagram_envelope.md §2.2：strip 非 hex + 末 8 hex + 不足左补 0。
+func deriveTrashDeviceAddr(deviceUID string) (string, error) {
+	clean := strings.Map(func(r rune) rune {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
+			return r
+		default:
+			return -1
+		}
+	}, deviceUID)
+	if len(clean) < 8 {
+		clean = strings.Repeat("0", 8-len(clean)) + clean
 	}
-	suffix := hex[len(hex)-8:]
-	return fmt.Sprintf("fd00:0:1:0:0:0:%s:%s/128", suffix[:4], suffix[4:]), nil
+	last8 := strings.ToLower(clean[len(clean)-8:])
+	return fmt.Sprintf("fd00:0:2:0:0:0:%s:%s/128", last8[:4], last8[4:]), nil
 }
 
 // UpdateDevice v2：仅支持业务可变字段（access / monitoring_enabled）

@@ -34,8 +34,11 @@ func NewPostgresDeviceStoreRepository(db *sql.DB) *PostgresDeviceStoreRepository
 	return &PostgresDeviceStoreRepository{db: db}
 }
 
-// v2 默认未分配 tenant prefix（trash/2 号 slot；FE/import 不指定 TenantID 时落入此池）。
-const defaultUnboundTenantPrefix = "fd00:0:2::/48"
+// v2 默认未分配 tenant prefix（System/1 号 slot；导入但未指派 tenant 的设备落入此池）。
+// 业务约定：
+//   - 导入路径（CSV/Excel/UI CreateDeviceStore）→ System（已知/可信，等 admin 调拨）
+//   - 认证失败路径（wisefido-qinglan MQTT 来源 unknown UID）→ Trash（需人工审核）
+const defaultUnboundTenantPrefix = "fd00:0:1::/48"
 
 // v2 pivot tenants（system + trash）— device 调拨业务规则（v1 R-001 保留）：
 // 跨 tenant 转移必须经 pivot 中转（System 是合法跳板，trash 是丢弃入口）。
