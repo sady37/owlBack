@@ -34,7 +34,9 @@ func NewMonitorVitalSource(buf *service.MonitorBuffer) *MonitorVitalSource {
 }
 
 // ScanActiveBedVitals satisfy zoneengine.VitalSource。
-func (s *MonitorVitalSource) ScanActiveBedVitals(nowMs, freshnessMs int64, emit func(cardID, bedZoneID string, ts int64)) {
+// 物理寻址：emit (bed /96 CIDR, ts)，不依赖 card 概念。MonitorBuffer 的内部按 card 聚合
+// 仍是 v1 残留 —— v2 zone engine 只需要 device→/96 派生。
+func (s *MonitorVitalSource) ScanActiveBedVitals(nowMs, freshnessMs int64, emit func(bedZoneID string, ts int64)) {
 	if s.buf == nil || emit == nil {
 		return
 	}
@@ -70,7 +72,7 @@ func (s *MonitorVitalSource) ScanActiveBedVitals(nowMs, freshnessMs int64, emit 
 			if bedZoneID == "" {
 				continue
 			}
-			emit(cardID, bedZoneID, devLastTs)
+			emit(bedZoneID, devLastTs)
 		}
 	}
 }

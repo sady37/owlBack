@@ -51,7 +51,7 @@ func TestAggregator_ZoneEvent_TotalPeopleCache(t *testing.T) {
 	go a.Run(ctx)
 
 	spatialPrefix := "fd00:0:3:111:3:101::/96"
-	a.OnZoneEvent(spatialPrefix, spatialPrefix, 1, 1_700_000_000_000)
+	a.OnZoneEvent(spatialPrefix, 1, 1_700_000_000_000)
 	time.Sleep(20 * time.Millisecond)
 
 	a.mu.RLock()
@@ -83,7 +83,7 @@ func TestAggregator_GetSnapshot_AfterZoneEvent(t *testing.T) {
 	go a.Run(ctx)
 
 	spatialPrefix := "fd00:0:3:111:3:101::/96"
-	a.OnZoneEvent(spatialPrefix, spatialPrefix, 2, 1_700_000_000_000)
+	a.OnZoneEvent(spatialPrefix, 2, 1_700_000_000_000)
 	time.Sleep(20 * time.Millisecond)
 
 	target, standingMin, _, ok := a.GetSnapshot(spatialPrefix)
@@ -105,8 +105,8 @@ func TestAggregator_ActiveSpatialPrefixes(t *testing.T) {
 	defer cancel()
 	go a.Run(ctx)
 
-	a.OnZoneEvent("fd00:0:3:111:3:101::/96", "fd00:0:3:111:3:101::/96", 1, 1_700_000_000_000)
-	a.OnZoneEvent("fd00:0:3:111:3:102::/96", "fd00:0:3:111:3:102::/96", 1, 1_700_000_000_000)
+	a.OnZoneEvent("fd00:0:3:111:3:101::/96", 1, 1_700_000_000_000)
+	a.OnZoneEvent("fd00:0:3:111:3:102::/96", 1, 1_700_000_000_000)
 	time.Sleep(20 * time.Millisecond)
 
 	ids := a.ActiveSpatialPrefixes()

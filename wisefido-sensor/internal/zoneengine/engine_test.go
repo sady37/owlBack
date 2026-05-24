@@ -50,7 +50,7 @@ func TestEngine_SleepaceInBedFlipsBedOccupied(t *testing.T) {
 
 	now := int64(1_000_000_000_000)
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: "fd00:0:3:111:3:101::/96",
+		ZoneType: ZoneTypeBed, ZoneID: "fd00:0:3:111:3:101::/96",
 		Source: "sleepace", Kind: "enter", Ts: now,
 	})
 
@@ -74,7 +74,7 @@ func TestEngine_SubsetInvariantLiftsParentRoom(t *testing.T) {
 
 	now := int64(1_000_000_000_000)
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: "fd00:0:3:111:3:101::/96",
+		ZoneType: ZoneTypeBed, ZoneID: "fd00:0:3:111:3:101::/96",
 		Source: "sleepace", Kind: "enter", Ts: now,
 	})
 
@@ -113,7 +113,7 @@ func TestEngine_SelfContradictionRollback(t *testing.T) {
 	now := int64(1_000_000_000_000)
 	// 用 radar enter 80 触发 bed flip occupied（之后无 sustain → 会衰减）
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: "fd00:0:3:111:3:101::/96",
+		ZoneType: ZoneTypeBed, ZoneID: "fd00:0:3:111:3:101::/96",
 		Source: "radar", Kind: "enter", Ts: now,
 	})
 
@@ -148,7 +148,7 @@ func TestEngine_TickFlipsVacantOnDecay(t *testing.T) {
 	now := int64(1_000_000_000_000)
 	// radar enter (80 strength, decay 120s) → 翻 occupied
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: "fd00:0:3:111:3:101::/96",
+		ZoneType: ZoneTypeBed, ZoneID: "fd00:0:3:111:3:101::/96",
 		Source: "radar", Kind: "enter", Ts: now,
 	})
 
@@ -182,14 +182,14 @@ func TestEngine_LeftBedFlipsVacantAfterHysteresis(t *testing.T) {
 
 	// 先翻 occupied
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "radar", Kind: "enter", Ts: now,
 	})
 
 	// 等过 hysteresis_sec=3 + enter_latch=10 → 用 11s
 	leaveTs := now + 11*1000
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "sleepace", Kind: "leave", Ts: leaveTs,
 	})
 
@@ -231,7 +231,7 @@ func TestEngine_NumberPeopleCountChange(t *testing.T) {
 	roomID := "fd00:0:3:111:3:100::/88"
 
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeRoom, ZoneID: roomID,
+		ZoneType: ZoneTypeRoom, ZoneID: roomID,
 		Source: "radar", Kind: "count_change", Count: 3, Ts: now,
 	})
 
@@ -266,13 +266,13 @@ func TestEngine_VacantFlipDoesNotTriggerGhostRollback(t *testing.T) {
 
 	// 先翻 occupied
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "radar", Kind: "enter", Ts: now,
 	})
 	// 跳过 latch + hysteresis 后翻 vacant
 	leaveTs := now + 11*1000
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "sleepace", Kind: "leave", Ts: leaveTs,
 	})
 
@@ -301,7 +301,7 @@ func TestEngine_VacantFlipDoesNotTriggerGhostRollback(t *testing.T) {
 	}
 
 	// 3. 最终 bed 状态应仍为 vacant
-	st, ok := e.GetState(StateKey{CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID})
+	st, ok := e.GetState(StateKey{ZoneType: ZoneTypeBed, ZoneID: bedID})
 	if !ok {
 		t.Fatalf("bed state missing")
 	}
@@ -326,7 +326,7 @@ func TestEngine_OccupiedFlipStillTriggersRollbackOnUnsustainedScore(t *testing.T
 	bedID := "fd00:0:3:111:3:101::/96"
 	// radar enter 80 → score=80, flip occupied
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "radar", Kind: "enter", Ts: now,
 	})
 	// 60s 后 Tick: enterEff = 80*(120-60)/120 = 40 < require_sustain_at 60 → 应 rollback
@@ -352,21 +352,21 @@ func TestEngine_ElderlySitUpThenLayBackDoesNotFlipVacant(t *testing.T) {
 
 	// 老人 InBed
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "sleepace", Kind: "enter", Ts: now,
 	})
 
 	// 11s 后 latch 过 + hysteresis 过，sleepace LeftBed（老人坐起）
 	t1 := now + 11_000
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "sleepace", Kind: "leave", Ts: t1,
 	})
 
 	// 4s 后老人躺回 → InBed（4s < leaving_window_sec=8s）
 	t2 := t1 + 4_000
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "sleepace", Kind: "enter", Ts: t2,
 	})
 
@@ -396,7 +396,7 @@ func TestEngine_ElderlySitUpThenLayBackDoesNotFlipVacant(t *testing.T) {
 	}
 
 	// 最终状态 = Occupied
-	st, _ := e.GetState(StateKey{CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID})
+	st, _ := e.GetState(StateKey{ZoneType: ZoneTypeBed, ZoneID: bedID})
 	if st.Status != StatusOccupied {
 		t.Errorf("final status should be Occupied, got %v", st.Status)
 	}
@@ -413,24 +413,24 @@ func TestEngine_BedLeavingStillLiftsRoomOccupied(t *testing.T) {
 
 	// 触发 bed Leaving（先 occupied 再 leave）
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "sleepace", Kind: "enter", Ts: now,
 	})
 	t1 := now + 11_000
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "sleepace", Kind: "leave", Ts: t1,
 	})
 
 	// 验证 bed 现在是 Leaving 但 room 仍是 Occupied（subset_invariant 在 Leaving 期间不 drop）
-	bedSt, _ := e.GetState(StateKey{CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID})
+	bedSt, _ := e.GetState(StateKey{ZoneType: ZoneTypeBed, ZoneID: bedID})
 	if bedSt.Status != StatusLeaving {
 		t.Errorf("bed should be in Leaving, got %v", bedSt.Status)
 	}
 	if !bedSt.IsPresent() {
 		t.Errorf("bed Leaving should still IsPresent=true (老人在房间未离开)")
 	}
-	roomSt, ok := e.GetState(StateKey{CardID: "card1", ZoneType: ZoneTypeRoom, ZoneID: "fd00:0:3:111:3:100::/88"})
+	roomSt, ok := e.GetState(StateKey{ZoneType: ZoneTypeRoom, ZoneID: "fd00:0:3:111:3:100::/88"})
 	if !ok {
 		t.Fatalf("room state missing")
 	}
@@ -452,14 +452,14 @@ func TestEngine_P1_1_RepairLiftsRoomWhenBedFresh(t *testing.T) {
 
 	// bed → Occupied，subset 抬 room=Occupied
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "sleepace", Kind: "enter", Ts: now,
 	})
 
 	// 模拟 room 被人为打成 Vacant（如 radar ExitRoom 误报）。
 	// 直接操作内部状态模拟（实际场景由 leave 事件触发，但本测试聚焦修复路径）。
 	e.mu.Lock()
-	if roomInst, ok := e.states[StateKey{CardID: "card1", ZoneType: ZoneTypeRoom, ZoneID: roomID}]; ok {
+	if roomInst, ok := e.states[StateKey{ZoneType: ZoneTypeRoom, ZoneID: roomID}]; ok {
 		roomInst.state.Status = StatusVacant
 		roomInst.state.Occupied = false
 		roomInst.state.LastSource = "test_force_vacant"
@@ -483,7 +483,7 @@ func TestEngine_P1_1_RepairLiftsRoomWhenBedFresh(t *testing.T) {
 		t.Errorf("invariant repair should lift room back to Occupied")
 	}
 
-	st, _ := e.GetState(StateKey{CardID: "card1", ZoneType: ZoneTypeRoom, ZoneID: roomID})
+	st, _ := e.GetState(StateKey{ZoneType: ZoneTypeRoom, ZoneID: roomID})
 	if st.Status != StatusOccupied {
 		t.Errorf("room should be Occupied after repair, got %v", st.Status)
 	}
@@ -507,12 +507,12 @@ func TestEngine_P1_1_RepairDropsStaleBed(t *testing.T) {
 
 	// bed → Occupied @ t=0
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "sleepace", Kind: "enter", Ts: now,
 	})
 	// 人为打 room Vacant
 	e.mu.Lock()
-	if roomInst, ok := e.states[StateKey{CardID: "card1", ZoneType: ZoneTypeRoom, ZoneID: roomID}]; ok {
+	if roomInst, ok := e.states[StateKey{ZoneType: ZoneTypeRoom, ZoneID: roomID}]; ok {
 		roomInst.state.Status = StatusVacant
 		roomInst.state.Occupied = false
 		roomInst.stateMachine.ForceSet(StatusVacant, now)
@@ -536,13 +536,13 @@ func TestEngine_P1_1_RepairDropsStaleBed(t *testing.T) {
 		t.Errorf("stale bed (UpdatedAt > 5s) should be force-vacated by repair, not lift room")
 	}
 
-	st, _ := e.GetState(StateKey{CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID})
+	st, _ := e.GetState(StateKey{ZoneType: ZoneTypeBed, ZoneID: bedID})
 	if st.Status != StatusVacant {
 		t.Errorf("stale bed should be Vacant after repair, got %v", st.Status)
 	}
 
 	// room 应保持 Vacant（巡检信 room 而不是抬升）
-	rst, _ := e.GetState(StateKey{CardID: "card1", ZoneType: ZoneTypeRoom, ZoneID: roomID})
+	rst, _ := e.GetState(StateKey{ZoneType: ZoneTypeRoom, ZoneID: roomID})
 	if rst.IsPresent() {
 		t.Errorf("room should remain Vacant (we trusted room over stale bed)")
 	}
@@ -576,7 +576,7 @@ func TestEngine_P1_2_HotReloadPropagatesToExistingZones(t *testing.T) {
 
 	// 触发 bed 实例化 + flip occupied
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "sleepace", Kind: "enter", Ts: now,
 	})
 
@@ -589,7 +589,7 @@ func TestEngine_P1_2_HotReloadPropagatesToExistingZones(t *testing.T) {
 	// 验证已有 bed zone 的 stateMachine 用了新阈值：把 bed force 回 vacant + 再来一次 sleepace InBed
 	// 用新规则 enter_threshold=99，sleepace 90 不够，不翻 occupied。
 	e.mu.Lock()
-	if z, ok := e.states[StateKey{CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID}]; ok {
+	if z, ok := e.states[StateKey{ZoneType: ZoneTypeBed, ZoneID: bedID}]; ok {
 		z.stateMachine.ForceSet(StatusVacant, now+1000)
 		z.state.Status = StatusVacant
 		z.state.Occupied = false
@@ -598,11 +598,11 @@ func TestEngine_P1_2_HotReloadPropagatesToExistingZones(t *testing.T) {
 
 	// 用新规则尝试 enter（90 strength，但新 threshold=99）→ 不应翻 occupied
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "sleepace", Kind: "enter", Ts: now + 20_000, // 远超 latch
 	})
 
-	st, _ := e.GetState(StateKey{CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID})
+	st, _ := e.GetState(StateKey{ZoneType: ZoneTypeBed, ZoneID: bedID})
 	if st.Status == StatusOccupied {
 		t.Errorf("after hot reload to enter_threshold=99, sleepace 90 should NOT flip; got Occupied")
 	}
@@ -616,7 +616,7 @@ func TestEngine_P1_2_HotReloadPreservesScoreState(t *testing.T) {
 
 	// 喂 enter，scorer 内部 enterStrength=90, enterTs=now
 	e.Apply(SignalEvidence{
-		CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "sleepace", Kind: "enter", Ts: now,
 	})
 
@@ -626,7 +626,7 @@ func TestEngine_P1_2_HotReloadPreservesScoreState(t *testing.T) {
 
 	// 验证：scorer 内部 evidence ts 没被清
 	e.mu.Lock()
-	z := e.states[StateKey{CardID: "card1", ZoneType: ZoneTypeBed, ZoneID: bedID}]
+	z := e.states[StateKey{ZoneType: ZoneTypeBed, ZoneID: bedID}]
 	lastEv := z.scorer.LastEvidenceTs()
 	e.mu.Unlock()
 	if lastEv != now {

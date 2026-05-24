@@ -2,6 +2,7 @@ package zonealarm
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -9,6 +10,20 @@ import (
 
 	"go.uber.org/zap"
 )
+
+// unitPrefixOfZoneID 从 ZoneID（CIDR 文本，/88 或 /96）派生 /80 unit prefix。
+// 用于 peer-zone cancel 匹配：同 unit 内的 bathroom /88 + bed /96 + room /88 共享 /80 unit。
+// 解析失败 → 返原值（不阻断流程；同字面值的 ZoneID 等效"自比较"）。
+func unitPrefixOfZoneID(zoneID string) string {
+	if zoneID == "" {
+		return ""
+	}
+	pfx, err := netip.ParsePrefix(zoneID)
+	if err != nil {
+		return zoneID
+	}
+	return netip.PrefixFrom(pfx.Addr(), 80).Masked().String()
+}
 
 // Supervisor 实现 zoneengine.ZoneEventListener，按 Rules 派生 alarm。
 //
@@ -67,7 +82,7 @@ func (s *Supervisor) ReloadRules(rules []Rule) {
 //
 // 单条 event 可能命中多条规则的 arm 或 cancel：先收集所有动作，释放锁后再调 firer。
 func (s *Supervisor) OnZoneEvent(e zoneengine.ZoneEvent) {
-	if e.CardID == "" {
+	if e.ZoneID == "" {
 		return
 	}
 	now := e.Ts
@@ -80,7 +95,7 @@ func (s *Supervisor) OnZoneEvent(e zoneengine.ZoneEvent) {
 	var cancelKeys []PendingKey
 	for i := range s.rules {
 		r := &s.rules[i]
-		key := PendingKey{CardID: e.CardID, AlarmType: r.AlarmType}
+		key := PendingKey{ZoneID: e.ZoneID, AlarmType: r.AlarmType}
 
 		// fire-once-until-zone-leave: arm zone "真正离开" arm status → 清 fired 标记
 		// （允许下一段 occupancy 重新 arm）
@@ -88,7 +103,7 @@ func (s *Supervisor) OnZoneEvent(e zoneengine.ZoneEvent) {
 			delete(s.fired, key)
 			s.logger.Debug("zonealarm fired flag cleared",
 				zap.String("alarm", r.AlarmType),
-				zap.String("cid", e.CardID),
+				zap.String("zone_id", e.ZoneID),
 				zap.String("new_status", e.NewState.Status.String()))
 		}
 
@@ -113,12 +128,22 @@ func (s *Supervisor) OnZoneEvent(e zoneengine.ZoneEvent) {
 			}
 		}
 		// cancel 检查（每条规则可能有多个 cancel trigger，任一命中即 cancel）
+		// 同 rule 任一 cancel trigger 命中 → 取消同 /80 unit 内同 AlarmType 的 pending
+		// （peer-zone cancel：Stay 在 /88 bathroom，InBed 在 /96 bed，但同 unit；
+		// 物理寻址用 netip 子网包含运算判"同 unit"，不依赖 card 概念）。
 		for j := range r.Cancels {
 			if matchesCancel(&r.Cancels[j], e) {
-				if p, ok := s.pending[key]; ok {
+				incomingUnit := unitPrefixOfZoneID(e.ZoneID)
+				for pkey, p := range s.pending {
+					if pkey.AlarmType != r.AlarmType {
+						continue
+					}
+					if unitPrefixOfZoneID(pkey.ZoneID) != incomingUnit {
+						continue
+					}
 					cancels = append(cancels, *p)
-					cancelKeys = append(cancelKeys, key)
-					delete(s.pending, key)
+					cancelKeys = append(cancelKeys, pkey)
+					delete(s.pending, pkey)
 				}
 				// cancel 不清 fired 标记 — fired 仅在 arm zone "真正离开" arm status 时清
 				// （cancel 可能由 peer-zone 触发，此时 arm zone 还在 arm status，不该解锁重 fire）
@@ -186,7 +211,7 @@ func zoneLeftArmStatus(armStatus, newStatus zoneengine.ZoneStatus) bool {
 //
 // caller 必须已持锁。
 func (s *Supervisor) armPendingLocked(r *Rule, e zoneengine.ZoneEvent, now int64) *Pending {
-	key := PendingKey{CardID: e.CardID, AlarmType: r.AlarmType}
+	key := PendingKey{ZoneID: e.ZoneID, AlarmType: r.AlarmType}
 	p := &Pending{
 		Key:     key,
 		ArmedAt: now,
@@ -237,7 +262,7 @@ func (s *Supervisor) callArm(p Pending) {
 	if err := s.firer.Arm(ctx, p); err != nil {
 		s.logger.Warn("zonealarm arm failed",
 			zap.String("alarm", p.Key.AlarmType),
-			zap.String("cid", p.Key.CardID),
+			zap.String("zone_id", p.Key.ZoneID),
 			zap.Error(err))
 	}
 }
@@ -248,7 +273,7 @@ func (s *Supervisor) callCancel(key PendingKey, reason zoneengine.ZoneEvent) {
 	if err := s.firer.Cancel(ctx, key, reason); err != nil {
 		s.logger.Warn("zonealarm cancel failed",
 			zap.String("alarm", key.AlarmType),
-			zap.String("cid", key.CardID),
+			zap.String("zone_id", key.ZoneID),
 			zap.Error(err))
 	}
 }
@@ -259,7 +284,7 @@ func (s *Supervisor) callFire(p Pending) {
 	if err := s.firer.Fire(ctx, p); err != nil {
 		s.logger.Warn("zonealarm fire failed",
 			zap.String("alarm", p.Key.AlarmType),
-			zap.String("cid", p.Key.CardID),
+			zap.String("zone_id", p.Key.ZoneID),
 			zap.Error(err))
 	}
 }

@@ -27,7 +27,7 @@ import (
 // emit 回调对每个 fresh (card, bed) 二元组调一次；caller 不应假设顺序或频次。
 // freshnessMs：bedZoneID 上一次见到 HR+RR 同时存在的时间不能超过这个窗口。
 type VitalSource interface {
-	ScanActiveBedVitals(nowMs, freshnessMs int64, emit func(cardID, bedZoneID string, ts int64))
+	ScanActiveBedVitals(nowMs, freshnessMs int64, emit func(bedZoneID string, ts int64))
 }
 
 // VitalAdapter 周期 tick 把 fresh HR/RR 翻译为 sustain SignalEvidence 喂 engine。
@@ -104,12 +104,11 @@ func (a *VitalAdapter) tickOnce(nowMs int64) {
 	if a.src == nil {
 		return
 	}
-	a.src.ScanActiveBedVitals(nowMs, a.freshnessMs, func(cardID, bedZoneID string, ts int64) {
-		if cardID == "" || bedZoneID == "" {
+	a.src.ScanActiveBedVitals(nowMs, a.freshnessMs, func(bedZoneID string, ts int64) {
+		if bedZoneID == "" {
 			return
 		}
 		a.engine.Apply(SignalEvidence{
-			CardID:   cardID,
 			ZoneType: ZoneTypeBed,
 			ZoneID:   bedZoneID,
 			Source:   "vital",

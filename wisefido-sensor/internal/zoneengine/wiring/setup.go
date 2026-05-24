@@ -214,12 +214,12 @@ type zoneAlarmListenerAdapter struct{ sup *zonealarm.Supervisor }
 func (z zoneAlarmListenerAdapter) OnZoneEvent(e zoneengine.ZoneEvent) { z.sup.OnZoneEvent(e) }
 
 // targetAggregatorListenerAdapter — service.TargetStateAggregator 通过窄接口订阅 ZoneEvent。
-// Aggregator 的 OnZoneEvent 是 (cardID, zoneID, totalPeople, ts) 四参数（避免反向依赖 zoneengine 类型），
+// Aggregator 的 OnZoneEvent 是 (spatialPrefix, totalPeople, ts) 三参数（避免反向依赖 zoneengine 类型），
 // 此 adapter 做翻译。
 type targetAggregatorListenerAdapter struct{ agg *service.TargetStateAggregator }
 
 func (t targetAggregatorListenerAdapter) OnZoneEvent(e zoneengine.ZoneEvent) {
-	t.agg.OnZoneEvent(e.CardID, e.ZoneID, e.NewState.Count, e.NewState.UpdatedAt)
+	t.agg.OnZoneEvent(e.ZoneID, e.NewState.Count, e.NewState.UpdatedAt)
 }
 
 // sleepStageClearListenerAdapter (D) — consumer.SleepStageConsumer 通过 zone bed FSM

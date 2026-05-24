@@ -89,7 +89,7 @@ func (w *TimeWindow) Active(t time.Time) bool {
 	return cur >= start || cur < end
 }
 
-// Pending arm 中的 alarm 实例（per cardID + alarmType）。
+// Pending arm 中的 alarm 实例（per zone + alarmType）。
 type Pending struct {
 	Key       PendingKey
 	ArmedAt   int64       // ms
@@ -98,9 +98,10 @@ type Pending struct {
 	Trigger   zoneengine.ZoneEvent // 触发 arm 的 event；fire 时作 trigger_data
 }
 
-// PendingKey 用于 supervisor 内部 map 主键 — 一张卡一种 alarmType 同时只能有一个 pending。
+// PendingKey 用于 supervisor 内部 map 主键 — 一个 spatial zone 一种 alarmType 同时只能有一个 pending。
+// 物理寻址：ZoneID = CIDR 文本（/96 床 / /88 房）；与 card 概念解耦（card 是 cardagg/FE 域）。
 type PendingKey struct {
-	CardID    string
+	ZoneID    string
 	AlarmType string
 }
 

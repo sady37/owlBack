@@ -45,7 +45,7 @@ type BedSizeLookup interface {
 	BedSizeBucket(bedZoneID string) string // "small" / "large"
 }
 
-// zoneInstance 单 (cardID, zoneType, zoneID) 的运行时实例。
+// zoneInstance 单 (zoneType, zoneID) 的运行时实例。物理寻址，多源同 FSM。
 type zoneInstance struct {
 	key          StateKey
 	scorer       *Scorer
@@ -157,7 +157,7 @@ func (e *Engine) Apply(ev SignalEvidence) {
 	now := ev.Ts
 
 	e.mu.Lock()
-	z := e.getOrCreate(ev.CardID, ev.ZoneType, ev.ZoneID)
+	z := e.getOrCreate(ev.ZoneType, ev.ZoneID)
 	rules := e.rulesStore.Get()
 
 	// count_change 直写
@@ -170,7 +170,6 @@ func (e *Engine) Apply(ev SignalEvidence) {
 		listeners := append([]ZoneEventListener(nil), e.listeners...)
 		e.mu.Unlock()
 		e.emitEvent(listeners, ZoneEvent{
-			CardID:     ev.CardID,
 			ZoneType:   ev.ZoneType,
 			ZoneID:     ev.ZoneID,
 			Transition: "count_change",
@@ -204,7 +203,6 @@ func (e *Engine) Apply(ev SignalEvidence) {
 	if res.Flipped {
 		applyTransitionToState(&z.state, res, now)
 		flippedEvent = &ZoneEvent{
-			CardID:     ev.CardID,
 			ZoneType:   ev.ZoneType,
 			ZoneID:     ev.ZoneID,
 			Transition: res.Transition,
@@ -230,7 +228,7 @@ func (e *Engine) Apply(ev SignalEvidence) {
 	}
 
 	listeners := append([]ZoneEventListener(nil), e.listeners...)
-	subsetEvents := e.maybeReconcileSubset(ev.CardID, ev.ZoneType, z.state, now, rules)
+	subsetEvents := e.maybeReconcileSubset(ev.ZoneType, z.state, now, rules)
 	e.mu.Unlock()
 
 	if flippedEvent != nil {
@@ -264,7 +262,6 @@ func (e *Engine) Tick(nowMs int64) {
 			z.state.UpdatedAt = nowMs
 			applyTransitionToState(&z.state, res, nowMs)
 			flippedEvents = append(flippedEvents, ZoneEvent{
-				CardID:     z.key.CardID,
 				ZoneType:   z.key.ZoneType,
 				ZoneID:     z.key.ZoneID,
 				Transition: res.Transition,
@@ -324,7 +321,6 @@ func (e *Engine) Tick(nowMs int64) {
 					Transition: TransitionVacant,
 				}, nowMs)
 				flippedEvents = append(flippedEvents, ZoneEvent{
-					CardID:     key.CardID,
 					ZoneType:   key.ZoneType,
 					ZoneID:     key.ZoneID,
 					Transition: TransitionVacant,
@@ -334,7 +330,6 @@ func (e *Engine) Tick(nowMs int64) {
 					Ts:         nowMs,
 				})
 				feedbackEvents = append(feedbackEvents, FeedbackEvent{
-					CardID:      key.CardID,
 					ZoneType:    key.ZoneType,
 					ZoneID:      key.ZoneID,
 					Reason:      "self_contradiction",
@@ -414,10 +409,10 @@ func (e *Engine) repairSubsetInvariant(nowMs int64, rules *Rules) []ZoneEvent {
 		if roomZoneID == "" {
 			continue
 		}
-		roomKey := StateKey{CardID: bedKey.CardID, ZoneType: ZoneTypeRoom, ZoneID: roomZoneID}
+		roomKey := StateKey{ZoneType: ZoneTypeRoom, ZoneID: roomZoneID}
 		roomInst, ok := e.states[roomKey]
 		if !ok {
-			roomInst = e.getOrCreate(bedKey.CardID, ZoneTypeRoom, roomZoneID)
+			roomInst = e.getOrCreate(ZoneTypeRoom, roomZoneID)
 		}
 		if roomInst.state.IsPresent() {
 			continue // 一致，无须修复
@@ -440,7 +435,6 @@ func (e *Engine) repairSubsetInvariant(nowMs int64, rules *Rules) []ZoneEvent {
 				Transition: TransitionVacant,
 			}, nowMs)
 			events = append(events, ZoneEvent{
-				CardID:     bedKey.CardID,
 				ZoneType:   ZoneTypeBed,
 				ZoneID:     bedKey.ZoneID,
 				Transition: TransitionVacant,
@@ -460,7 +454,6 @@ func (e *Engine) repairSubsetInvariant(nowMs int64, rules *Rules) []ZoneEvent {
 				Transition: TransitionOccupied,
 			}, nowMs)
 			events = append(events, ZoneEvent{
-				CardID:     bedKey.CardID,
 				ZoneType:   ZoneTypeRoom,
 				ZoneID:     roomZoneID,
 				Transition: TransitionOccupied,
@@ -475,8 +468,9 @@ func (e *Engine) repairSubsetInvariant(nowMs int64, rules *Rules) []ZoneEvent {
 }
 
 // getOrCreate 取或建 zoneInstance。caller 必须已持锁。
-func (e *Engine) getOrCreate(cardID string, zt ZoneType, zid string) *zoneInstance {
-	key := StateKey{CardID: cardID, ZoneType: zt, ZoneID: zid}
+// 物理寻址：(zone_type, zone_id) 唯一标识一个 FSM；同一 /96 床上多个 device 喂同一 instance。
+func (e *Engine) getOrCreate(zt ZoneType, zid string) *zoneInstance {
+	key := StateKey{ZoneType: zt, ZoneID: zid}
 	if z, ok := e.states[key]; ok {
 		return z
 	}
@@ -493,7 +487,6 @@ func (e *Engine) getOrCreate(cardID string, zt ZoneType, zid string) *zoneInstan
 		state: ZoneState{
 			ZoneType: zt,
 			ZoneID:   zid,
-			CardID:   cardID,
 		},
 	}
 	e.states[key] = z
@@ -524,7 +517,7 @@ func (e *Engine) zoneStateMachineRules(r *Rules, zt ZoneType) *StateMachineRules
 // 注意 Leaving 也算 IsPresent=true（老人正在离床仍在房间），同样触发抬升。
 //
 // caller 必须已持锁；返回需要 emit 的事件（caller 在释放锁后 emit）。
-func (e *Engine) maybeReconcileSubset(cardID string, zt ZoneType, changed ZoneState, now int64, r *Rules) []ZoneEvent {
+func (e *Engine) maybeReconcileSubset(zt ZoneType, changed ZoneState, now int64, r *Rules) []ZoneEvent {
 	if !r.Feedback.SubsetInvariant.Enabled {
 		return nil
 	}
@@ -539,10 +532,10 @@ func (e *Engine) maybeReconcileSubset(cardID string, zt ZoneType, changed ZoneSt
 	if roomZoneID == "" {
 		return nil
 	}
-	roomKey := StateKey{CardID: cardID, ZoneType: ZoneTypeRoom, ZoneID: roomZoneID}
+	roomKey := StateKey{ZoneType: ZoneTypeRoom, ZoneID: roomZoneID}
 	roomInst, ok := e.states[roomKey]
 	if !ok {
-		roomInst = e.getOrCreate(cardID, ZoneTypeRoom, roomZoneID)
+		roomInst = e.getOrCreate(ZoneTypeRoom, roomZoneID)
 	}
 	if roomInst.state.IsPresent() {
 		return nil // room 已 IsPresent (Occupied / Leaving)，无需调整
@@ -560,7 +553,6 @@ func (e *Engine) maybeReconcileSubset(cardID string, zt ZoneType, changed ZoneSt
 		roomInst.state.Count = 1
 	}
 	return []ZoneEvent{{
-		CardID:     cardID,
 		ZoneType:   ZoneTypeRoom,
 		ZoneID:     roomZoneID,
 		Transition: TransitionOccupied,

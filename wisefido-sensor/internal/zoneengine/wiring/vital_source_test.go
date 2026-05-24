@@ -20,20 +20,17 @@ func TestMonitorVitalSource_EmitsForFreshHRRR(t *testing.T) {
 	}, now)
 
 	var got []struct {
-		cardID, bedZoneID string
-		ts                int64
+		bedZoneID string
+		ts        int64
 	}
-	src.ScanActiveBedVitals(now+1000, 30_000, func(cid, bid string, ts int64) {
+	src.ScanActiveBedVitals(now+1000, 30_000, func(bid string, ts int64) {
 		got = append(got, struct {
-			cardID, bedZoneID string
-			ts                int64
-		}{cid, bid, ts})
+			bedZoneID string
+			ts        int64
+		}{bid, ts})
 	})
 	if len(got) != 1 {
 		t.Fatalf("want 1 emit, got %d (%v)", len(got), got)
-	}
-	if got[0].cardID != "card-1" {
-		t.Errorf("cardID: %q", got[0].cardID)
 	}
 	if got[0].bedZoneID != "fd00:0:3:111:3:101::/96" {
 		t.Errorf("bedZoneID: %q", got[0].bedZoneID)
@@ -54,7 +51,7 @@ func TestMonitorVitalSource_SkipStale(t *testing.T) {
 	}, stale)
 
 	var got int
-	src.ScanActiveBedVitals(time.Now().UnixMilli(), 30_000, func(_, _ string, _ int64) { got++ })
+	src.ScanActiveBedVitals(time.Now().UnixMilli(), 30_000, func(_ string, _ int64) { got++ })
 	if got != 0 {
 		t.Errorf("stale (>30s) should be skipped, got %d emits", got)
 	}
@@ -80,7 +77,7 @@ func TestMonitorVitalSource_RequiresBothHRandRR(t *testing.T) {
 	}, now)
 
 	var got int
-	src.ScanActiveBedVitals(now+1000, 30_000, func(_, _ string, _ int64) { got++ })
+	src.ScanActiveBedVitals(now+1000, 30_000, func(_ string, _ int64) { got++ })
 	if got != 0 {
 		t.Errorf("none should emit (need both HR>0 AND RR>0), got %d", got)
 	}
@@ -96,7 +93,7 @@ func TestMonitorVitalSource_RadarSkipped(t *testing.T) {
 		observation.FieldRespiratoryRate: float64(15),
 	}, now)
 	var got int
-	src.ScanActiveBedVitals(now+1000, 30_000, func(_, _ string, _ int64) { got++ })
+	src.ScanActiveBedVitals(now+1000, 30_000, func(_ string, _ int64) { got++ })
 	if got != 0 {
 		t.Errorf("radar HR/RR should NOT emit bed sustain, got %d emits", got)
 	}
@@ -104,7 +101,7 @@ func TestMonitorVitalSource_RadarSkipped(t *testing.T) {
 
 func TestMonitorVitalSource_NilBufferIsNoOp(t *testing.T) {
 	src := NewMonitorVitalSource(nil)
-	src.ScanActiveBedVitals(time.Now().UnixMilli(), 30_000, func(_, _ string, _ int64) {
+	src.ScanActiveBedVitals(time.Now().UnixMilli(), 30_000, func(_ string, _ int64) {
 		t.Error("nil buffer should not emit")
 	})
 }

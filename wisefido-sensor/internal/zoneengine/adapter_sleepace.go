@@ -172,7 +172,6 @@ func (a *SleepaceAdapter) handleMsg(msg *rediscommon.IoTStreamMessage) {
 			return
 		}
 		a.engine.Apply(SignalEvidence{
-			CardID:      msg.SubjectEntity,
 			ZoneType:    ZoneTypeBed,
 			ZoneID:      bedPref,
 			Source:      "sleepace",
@@ -192,7 +191,6 @@ func (a *SleepaceAdapter) handleMsg(msg *rediscommon.IoTStreamMessage) {
 	}
 
 	a.engine.Apply(SignalEvidence{
-		CardID:      msg.SubjectEntity,
 		ZoneType:    ZoneTypeBed,
 		ZoneID:      bedPref,
 		Source:      "sleepace",

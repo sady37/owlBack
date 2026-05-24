@@ -185,19 +185,19 @@ func (a *RadarAdapter) handleMsg(msg *rediscommon.IoTStreamMessage) {
 
 	switch msg.Category {
 	case alarm.EnterRoom:
-		a.applyRoomLike(msg.SubjectEntity, roomPref, "enter", msg.Timestamp, fields)
+		a.applyRoomLike(roomPref, "enter", msg.Timestamp, fields)
 	case alarm.ExitRoom:
-		a.applyRoomLike(msg.SubjectEntity, roomPref, "leave", msg.Timestamp, fields)
+		a.applyRoomLike(roomPref, "leave", msg.Timestamp, fields)
 	case alarm.NumberPeople:
 		count := intFromAny(fields[observation.FieldNumberPeople])
-		a.applyCount(msg.SubjectEntity, roomPref, count, msg.Timestamp, fields)
+		a.applyCount(roomPref, count, msg.Timestamp, fields)
 	case alarm.InBed:
 		if a.bedDedup.Admit(msg.DeviceAddr.String(), "enter", msg.Timestamp) {
-			a.applyBed(msg.SubjectEntity, bedPref, "enter", msg.Timestamp, fields)
+			a.applyBed(bedPref, "enter", msg.Timestamp, fields)
 		}
 	case alarm.LeftBed:
 		if a.bedDedup.Admit(msg.DeviceAddr.String(), "leave", msg.Timestamp) {
-			a.applyBed(msg.SubjectEntity, bedPref, "leave", msg.Timestamp, fields)
+			a.applyBed(bedPref, "leave", msg.Timestamp, fields)
 		}
 	default:
 		// 忽略其它 event_name
@@ -205,13 +205,12 @@ func (a *RadarAdapter) handleMsg(msg *rediscommon.IoTStreamMessage) {
 }
 
 // applyRoomLike — bathroom 命中即仅发 ZoneTypeBathroom（不再发 ZoneTypeRoom），由 stay alarm enable 侧消费。
-func (a *RadarAdapter) applyRoomLike(cardID, roomPref, kind string, ts int64, fields map[string]interface{}) {
-	if cardID == "" || roomPref == "" {
+func (a *RadarAdapter) applyRoomLike(roomPref, kind string, ts int64, fields map[string]interface{}) {
+	if roomPref == "" {
 		return
 	}
 	zt := a.routeRoomZoneType(roomPref)
 	a.engine.Apply(SignalEvidence{
-		CardID:      cardID,
 		ZoneType:    zt,
 		ZoneID:      roomPref,
 		Source:      "radar",
@@ -221,13 +220,12 @@ func (a *RadarAdapter) applyRoomLike(cardID, roomPref, kind string, ts int64, fi
 	})
 }
 
-func (a *RadarAdapter) applyCount(cardID, roomPref string, count int, ts int64, fields map[string]interface{}) {
-	if cardID == "" || roomPref == "" {
+func (a *RadarAdapter) applyCount(roomPref string, count int, ts int64, fields map[string]interface{}) {
+	if roomPref == "" {
 		return
 	}
 	zt := a.routeRoomZoneType(roomPref)
 	a.engine.Apply(SignalEvidence{
-		CardID:      cardID,
 		ZoneType:    zt,
 		ZoneID:      roomPref,
 		Source:      "radar",
@@ -241,12 +239,11 @@ func (a *RadarAdapter) applyCount(cardID, roomPref string, count int, ts int64, 
 	}
 }
 
-func (a *RadarAdapter) applyBed(cardID, bedPref, kind string, ts int64, fields map[string]interface{}) {
-	if cardID == "" || bedPref == "" {
+func (a *RadarAdapter) applyBed(bedPref, kind string, ts int64, fields map[string]interface{}) {
+	if bedPref == "" {
 		return
 	}
 	a.engine.Apply(SignalEvidence{
-		CardID:      cardID,
 		ZoneType:    ZoneTypeBed,
 		ZoneID:      bedPref,
 		Source:      "radar",

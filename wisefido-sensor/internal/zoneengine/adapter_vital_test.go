@@ -5,14 +5,14 @@ import (
 	"time"
 )
 
-// stubVitalSource 测试用 VitalSource，固定返回一组 (cardID, bedZoneID, ts)。
+// stubVitalSource 测试用 VitalSource，固定返回一组 (bedZoneID, ts)。
 type stubVitalSource struct {
-	readings []struct{ cardID, bedZoneID string; ts int64 }
+	readings []struct{ bedZoneID string; ts int64 }
 }
 
-func (s *stubVitalSource) ScanActiveBedVitals(_, _ int64, emit func(string, string, int64)) {
+func (s *stubVitalSource) ScanActiveBedVitals(_, _ int64, emit func(string, int64)) {
 	for _, r := range s.readings {
-		emit(r.cardID, r.bedZoneID, r.ts)
+		emit(r.bedZoneID, r.ts)
 	}
 }
 
@@ -26,16 +26,16 @@ func TestVitalAdapter_SustainHoldsBedAcrossDecay(t *testing.T) {
 
 	// 1) 直接发 enter（无 sleepace 来源会被 latch 阻塞，所以构造一条干净的 enter）
 	engine.Apply(SignalEvidence{
-		CardID: "card-1", ZoneType: ZoneTypeBed, ZoneID: bedID,
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
 		Source: "sleepace", Kind: "enter", Ts: now,
 	})
 
 	// 2) 经过 60s（远超 enter strength 衰减一半，但 < DecayWindowMs=120s），靠 sustain 维持
 	src := &stubVitalSource{readings: []struct {
-		cardID, bedZoneID string
-		ts                int64
+		bedZoneID string
+		ts        int64
 	}{
-		{cardID: "card-1", bedZoneID: bedID, ts: now + 60_000},
+		{bedZoneID: bedID, ts: now + 60_000},
 	}}
 	a := NewVitalAdapter(src, engine, nil)
 	a.tickOnce(now + 60_000)
@@ -44,7 +44,7 @@ func TestVitalAdapter_SustainHoldsBedAcrossDecay(t *testing.T) {
 	engine.Tick(now + 60_000)
 
 	// 期望：bed 仍然 occupied（不应回落）
-	state, ok := engine.GetState(StateKey{CardID: "card-1", ZoneType: ZoneTypeBed, ZoneID: bedID})
+	state, ok := engine.GetState(StateKey{ZoneType: ZoneTypeBed, ZoneID: bedID})
 	if !ok {
 		t.Fatalf("bed state missing")
 	}
@@ -65,11 +65,10 @@ func TestVitalAdapter_SkipEmptyKeys(t *testing.T) {
 	cap := &captureListener{}
 	engine.AddListener(cap)
 	src := &stubVitalSource{readings: []struct {
-		cardID, bedZoneID string
-		ts                int64
+		bedZoneID string
+		ts        int64
 	}{
-		{cardID: "", bedZoneID: "fd00::/96", ts: 100},
-		{cardID: "card-1", bedZoneID: "", ts: 100},
+		{bedZoneID: "", ts: 100}, // empty bedZoneID 应被 skip
 	}}
 	a := NewVitalAdapter(src, engine, nil)
 	a.tickOnce(time.Now().UnixMilli())

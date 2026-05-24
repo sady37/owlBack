@@ -380,19 +380,19 @@ func (p *StreamPublisher) republishRoomAfterBed(ctx context.Context, e ZoneEvent
 }
 
 // PublishBedState 发完整 card.BedState 到 sensor:derived:stream，category=bed.state。
-func (p *StreamPublisher) PublishBedState(ctx context.Context, cardID string, bs *card.BedState) error {
-	return p.publish(ctx, cardID, "bed.state", bs)
+func (p *StreamPublisher) PublishBedState(ctx context.Context, spatialPrefix string, bs *card.BedState) error {
+	return p.publish(ctx, spatialPrefix, "bed.state", bs)
 }
 
 // PublishRoomState category=room.state（bathroom kind 也走这条，由 RoomState.Kind 区分）。
-func (p *StreamPublisher) PublishRoomState(ctx context.Context, cardID string, rs *card.RoomState) error {
-	return p.publish(ctx, cardID, "room.state", rs)
+func (p *StreamPublisher) PublishRoomState(ctx context.Context, spatialPrefix string, rs *card.RoomState) error {
+	return p.publish(ctx, spatialPrefix, "room.state", rs)
 }
 
 // PublishTargetState category=target.state。
 // 接口先到位；sensor 内部 Target 派生（Pose/Visitor/WeakBio/LogicID）实现后调。
-func (p *StreamPublisher) PublishTargetState(ctx context.Context, cardID string, ts *card.TargetState) error {
-	return p.publish(ctx, cardID, "target.state", ts)
+func (p *StreamPublisher) PublishTargetState(ctx context.Context, spatialPrefix string, ts *card.TargetState) error {
+	return p.publish(ctx, spatialPrefix, "target.state", ts)
 }
 
 // PublishBedSleepStage category=bed.sleepstage — 仅写 SleepStage / SleepConfidence /
@@ -406,8 +406,8 @@ func (p *StreamPublisher) PublishTargetState(ctx context.Context, cardID string,
 // cardagg `mergeBedStateSleepStage` max-merge 会把 bed_state.UpdatedAt 钉死在 startup 时刻 →
 // FE active_anchor 全卡同步显示"Active Xm ago"假活跃。Initial 时 ts=0，让 cardagg
 // 端 state-change merge 跳过（值不变 ts 保 prev）。
-func (p *StreamPublisher) PublishBedSleepStage(ctx context.Context, cardID string, sleepStage, sleepConfidence int) error {
-	if cardID == "" {
+func (p *StreamPublisher) PublishBedSleepStage(ctx context.Context, spatialPrefix string, sleepStage, sleepConfidence int) error {
+	if spatialPrefix == "" {
 		return nil
 	}
 	bs := &card.BedState{
@@ -420,11 +420,11 @@ func (p *StreamPublisher) PublishBedSleepStage(ctx context.Context, cardID strin
 		bs.SleepStageTs = now
 		bs.SleepConfidenceTs = now
 	}
-	return p.publish(ctx, cardID, "bed.sleepstage", bs)
+	return p.publish(ctx, spatialPrefix, "bed.sleepstage", bs)
 }
 
-func (p *StreamPublisher) publish(ctx context.Context, cardID, category string, payload interface{}) error {
-	if cardID == "" || payload == nil {
+func (p *StreamPublisher) publish(ctx context.Context, spatialPrefix, category string, payload interface{}) error {
+	if spatialPrefix == "" || payload == nil {
 		return nil
 	}
 	body, err := json.Marshal(payload)
@@ -435,8 +435,8 @@ func (p *StreamPublisher) publish(ctx context.Context, cardID, category string, 
 	if err := json.Unmarshal(body, &data); err != nil {
 		return err
 	}
-	addr := parseCardAddr(cardID)
-	msg := owlredis.NewSingleItemMessage(addr, cardID, "sensor", time.Now().UnixMilli(), "derived", category, data)
+	addr := parseSpatialAddr(spatialPrefix)
+	msg := owlredis.NewSingleItemMessage(addr, spatialPrefix, "sensor", time.Now().UnixMilli(), "derived", category, data)
 	// Producer 覆写为 sensor agent /128 IPv6（platform agent slot fd00:0:fff1::/48）。
 	// NewSingleItemMessage 默认 producer=entity addr，cardagg side 看 Producer 防 loop / 路由会失效。
 	if p.producer != "" {
@@ -450,12 +450,12 @@ func (p *StreamPublisher) publish(ctx context.Context, cardID, category string, 
 	}).Err()
 }
 
-// parseCardAddr cardID 现为 INET CIDR 文本（v2）；解析失败返 zero netip.Addr。
-func parseCardAddr(cardID string) netip.Addr {
-	if pfx, err := netip.ParsePrefix(cardID); err == nil {
+// parseSpatialAddr spatial prefix CIDR text → netip.Addr；解析失败返 zero netip.Addr。
+func parseSpatialAddr(spatialPrefix string) netip.Addr {
+	if pfx, err := netip.ParsePrefix(spatialPrefix); err == nil {
 		return pfx.Addr()
 	}
-	if a, err := netip.ParseAddr(cardID); err == nil {
+	if a, err := netip.ParseAddr(spatialPrefix); err == nil {
 		return a
 	}
 	return netip.Addr{}

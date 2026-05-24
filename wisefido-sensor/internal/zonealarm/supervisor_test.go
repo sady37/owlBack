@@ -59,9 +59,10 @@ func (c *captureFirer) snapFires() []Pending {
 }
 
 // helper：构造 ZoneEvent，省略字段填默认。
+// cardID 参数保留作 test 兼容（旧签名），实际已不再写入 envelope。
 func mkEv(zt zoneengine.ZoneType, status zoneengine.ZoneStatus, transition string, cardID, zoneID string, count int, ts int64) zoneengine.ZoneEvent {
+	_ = cardID
 	return zoneengine.ZoneEvent{
-		CardID:     cardID,
 		ZoneType:   zt,
 		ZoneID:     zoneID,
 		Transition: transition,
@@ -190,8 +191,8 @@ func TestSupervisor_NightAbsenceWindowArmingOnly(t *testing.T) {
 	earlyMorning := time.Date(2026, 5, 14, 3, 0, 0, 0, time.Local).UnixMilli()
 	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeRoom, zoneengine.StatusVacant,
 		zoneengine.TransitionVacant, "card-2", "fd00::/88", 0, earlyMorning))
-	if !hasArmFor(cap.snapArms(), alarm.NightAbsence, "card-2") {
-		t.Fatalf("NightAbsence should arm at 03:00 for card-2, got %v", cap.snapArms())
+	if !hasArmFor(cap.snapArms(), alarm.NightAbsence, "fd00::/88") {
+		t.Fatalf("NightAbsence should arm at 03:00, got %v", cap.snapArms())
 	}
 }
 
@@ -203,7 +204,7 @@ func TestSupervisor_NightAbsenceCancelByNumberPeople(t *testing.T) {
 
 	s.OnZoneEvent(mkEv(zoneengine.ZoneTypeRoom, zoneengine.StatusVacant,
 		zoneengine.TransitionVacant, "card-1", "fd00::/88", 0, earlyMorning))
-	if !hasArmFor(cap.snapArms(), alarm.NightAbsence, "card-1") {
+	if !hasArmFor(cap.snapArms(), alarm.NightAbsence, "fd00::/88") {
 		t.Fatalf("precondition: NightAbsence should arm, got %v", cap.snapArms())
 	}
 
@@ -408,9 +409,10 @@ func hasArm(arms []Pending, alarmType string) bool {
 	return false
 }
 
-func hasArmFor(arms []Pending, alarmType, cardID string) bool {
+// hasArmFor 旧签名 (alarmType, cardID)；CardID 拆除后用 zoneID 等效（test 数据里 cardID==zoneID）
+func hasArmFor(arms []Pending, alarmType, zoneID string) bool {
 	for _, p := range arms {
-		if p.Key.AlarmType == alarmType && p.Key.CardID == cardID {
+		if p.Key.AlarmType == alarmType && p.Key.ZoneID == zoneID {
 			return true
 		}
 	}

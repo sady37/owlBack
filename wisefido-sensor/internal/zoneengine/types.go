@@ -93,7 +93,6 @@ const (
 type ZoneState struct {
 	ZoneType    ZoneType   `json:"zone_type"`
 	ZoneID      string     `json:"zone_id"` // CIDR text，e.g. "fd00:0:3:111:3:101::/96" (bed) / /88 (room)
-	CardID      string     `json:"card_id"`
 	Status      ZoneStatus `json:"status"`           // Vacant / Occupied / Leaving 三态
 	Occupied    bool       `json:"occupied"`         // 兼容字段：== (Status != Vacant)，下游消费者保留无感
 	Count       int        `json:"count"`            // Room: total_people；Bed: 0/1
@@ -115,8 +114,10 @@ func (s ZoneState) IsPresent() bool { return s.Status != StatusVacant }
 // Source / Kind 是审计字段，决定优先级（latch）和负反馈降权对象。Delta 由
 // Scorer 按 yaml 规则计算后填入；如果 Source 是 NumberPeople 这类直写信号，
 // Delta 为 0、Count 字段携带新值。
+//
+// sensor 内部只用 (ZoneType, ZoneID) 物理寻址；ZoneID = CIDR 文本，下游想判
+// "同 bed/room/unit" 用 netip.Prefix.Contains() 做子网包含运算，不依赖 card 概念。
 type SignalEvidence struct {
-	CardID      string                 `json:"card_id"`
 	ZoneType    ZoneType               `json:"zone_type"`
 	ZoneID      string                 `json:"zone_id"`
 	Source      string                 `json:"source"` // "sleepace" / "radar" / "polygon" / "hr_rr" / "number_people" ...
@@ -133,7 +134,6 @@ type SignalEvidence struct {
 // 注意 Transition="count_change" 时 Occupied 可能不变（同房间 1→2 人不算新 enter）。
 // Trace 保留触发本次翻转的最近 N 条 SignalEvidence，供 audit + replay。
 type ZoneEvent struct {
-	CardID     string           `json:"card_id"`
 	ZoneType   ZoneType         `json:"zone_type"`
 	ZoneID     string           `json:"zone_id"`
 	Transition string           `json:"transition"` // "occupied" / "vacant" / "count_change"
@@ -153,7 +153,6 @@ type ZoneEvent struct {
 //
 // 后期 cell_history / operator_feedback / behavioral_baseline 走相同结构。
 type FeedbackEvent struct {
-	CardID      string   `json:"card_id"`
 	ZoneType    ZoneType `json:"zone_type"`
 	ZoneID      string   `json:"zone_id"`
 	Reason      string   `json:"reason"` // "self_contradiction" / "subset_invariant"
@@ -163,9 +162,10 @@ type FeedbackEvent struct {
 	Ts          int64    `json:"ts"`
 }
 
-// StateKey engine 内部状态表的主键。一个 (card, zone_type, zone_id) 唯一对应一个 ZoneState。
+// StateKey engine 内部状态表的主键。物理寻址：(zone_type, zone_id) 唯一对应一个 ZoneState。
+// 不引入 card 概念 —— sensor 只处理物理层；同一 /96 床的多源 sleepad+radar 喂同一 FSM，
+// Scorer 合并 evidence 自然多源融合。card 是 cardagg/FE 域，下游按 device_addr LPM 投影。
 type StateKey struct {
-	CardID   string
 	ZoneType ZoneType
 	ZoneID   string
 }

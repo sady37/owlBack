@@ -55,6 +55,9 @@ func (f *BackChannelAlarmFirer) Cancel(ctx context.Context, key zonealarm.Pendin
 //
 // triggered_at = p.Trigger.Ts (bed→vacant / room→vacant 等实际瞬时)；
 // engine_fire_ms = time.Now() 进 evidence，记录 30min 定时到期那一刻。
+//
+// subject_entity 留空：sensor 物理层不持 card 概念；cardagg alarm_router 拿 device_addr
+// 走 LPM 反查 cards 表自家归属。详 owlBack/doc/platform_agent_addressing.md §4.1。
 func (f *BackChannelAlarmFirer) Fire(ctx context.Context, p zonealarm.Pending) error {
 	devAddr := f.pickDeviceAddr(p.Trigger, p.Key.AlarmType)
 	triggerTsMs := p.Trigger.Ts
@@ -62,7 +65,7 @@ func (f *BackChannelAlarmFirer) Fire(ctx context.Context, p zonealarm.Pending) e
 		// 边界场景兜底（理论上 ZoneEvent 总带 Ts）
 		triggerTsMs = p.ArmedAt
 	}
-	_, err := f.channel.PublishAlarmFire(ctx, devAddr, p.Key.CardID, p.Key.AlarmType, p.Level, triggerTsMs,
+	_, err := f.channel.PublishAlarmFire(ctx, devAddr, "", p.Key.AlarmType, p.Level, triggerTsMs,
 		buildTriggerData(p))
 	return err
 }

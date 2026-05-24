@@ -46,7 +46,6 @@ import (
 // StreamPublisher 把 ZoneEvent 翻译成这个 push 给 aggregator。
 type ZoneEventSnapshot struct {
 	SpatialPrefix string // INET CIDR (物理实体地址；可能是 /88 room 或 /96 bed)
-	ZoneID        string
 	TotalPeople   int
 	UpdatedAtMs   int64
 }
@@ -213,12 +212,11 @@ func (a *TargetStateAggregator) PushAlarmFields(spatialPrefix, alarmType, produc
 
 // OnZoneEvent 实现 zoneengine.ZoneEventListener（通过 wiring 注册）。
 // 拿到 ZoneEvent 后立刻翻译成 ZoneEventSnapshot 入队，不阻塞 engine。
-// spatialPrefix = ZoneEvent.CardID（v2 实现里同 INET CIDR）；从 aggregator 视角是物理实体地址。
-func (a *TargetStateAggregator) OnZoneEvent(spatialPrefix, zoneID string, totalPeople int, updatedAtMs int64) {
+// spatialPrefix = ZoneEvent.ZoneID（物理实体地址，CIDR 文本）。
+func (a *TargetStateAggregator) OnZoneEvent(spatialPrefix string, totalPeople int, updatedAtMs int64) {
 	select {
 	case a.zoneCh <- ZoneEventSnapshot{
 		SpatialPrefix: spatialPrefix,
-		ZoneID:        zoneID,
 		TotalPeople:   totalPeople,
 		UpdatedAtMs:   updatedAtMs,
 	}:
