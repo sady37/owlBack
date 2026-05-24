@@ -1,0 +1,68 @@
+=== card:state:fd00:0:3:112:3::/80 (Yang.R unit) ===
+target
+{"track_id":0,"weak_biometric_signal":0}
+bed_state
+{"bed_status":1,"bed_status_ts":1779583379348,"track_number":0,"track_number_ts":1779583379348,"bed_confidence":0,"bed_confidence_ts":1779582988000,"bed_event":1,"bed_event_ts":1779583379348,"sleep_stage":2,"sleep_stage_ts":1779583353828,"sleep_confidence":90,"sleep_confidence_ts":1779582121994}
+display
+{"updated_at":1779583379351,"section2_left_mode":1,"bed_status":1,"sleep_stage":2,"card_priority":2,"active_state":0,"scene_state":4,"scene_anchor_ms":1779583379348,"visitor_state":0,"bed_anchor_ms":1779583379348}
+
+=== card:state:fd00:0:3:112:3:100::/88 (bedroom) ===
+display
+{"updated_at":1779583356355,"section2_left_mode":2,"room_person_count":1,"stay_alarm_enabled":true,"card_priority":1,"active_state":0,"scene_state":1,"scene_anchor_ms":1779582108785,"visitor_state":0}
+room_state
+{"total_people":1,"total_people_ts":1779582988000,"last_enter_ts":1779582108785,"last_exit_ts":1779582078762}
+
+=== card:state:fd00:0:3:112:3:200::/88 (bathroom) ===
+display
+{"updated_at":1779582996384,"section2_left_mode":2,"stay_alarm_enabled":true,"card_priority":0,"active_state":0,"scene_state":0,"visitor_state":0}
+room_state
+{"total_people":0,"total_people_ts":1779582039974}
+
+=== device:status:* for 1641/cd2b/333b ===
+--- fd00:0:3:112:3:101:2460:1641 ---
+device_addr
+fd00:0:3:112:3:101:2460:1641
+last_seen_ms
+1779583381005
+device_uid
+fd00:0:3:112:3:101:2460:1641
+device_type
+Sleepad
+updated_at
+1779583381005
+offline
+0
+--- fd00:0:3:112:3:100:32a1:cd2b ---
+device_addr
+fd00:0:3:112:3:100:32a1:cd2b
+offline
+0
+last_seen_ms
+1779583375773
+device_uid
+fd00:0:3:112:3:100:32a1:cd2b
+device_type
+Radar
+updated_at
+1779583375773
+signal_poor
+0
+angle_abnormal
+0
+--- fd00:0:3:112:3:200:59b8:333b ---
+device_addr
+fd00:0:3:112:3:200:59b8:333b
+device_uid
+fd00:0:3:112:3:200:59b8:333b
+device_type
+Radar
+updated_at
+1779583375774
+offline
+0
+last_seen_ms
+1779583375774
+signal_poor
+0
+angle_abnormal
+0

@@ -1,0 +1,4 @@
+ERROR:  column "trigger_data" does not exist
+LINE 8:   'trigger_data', trigger_data,
+                          ^
+HINT:  Perhaps you meant to reference the column "alarm_events.triggered_at".
