@@ -48,13 +48,13 @@ func (w *fakeWriter) WriteCardStatus(_ context.Context, status *card.CardStatus)
 	return nil
 }
 
-// fakeRefresher 记录 RefreshParent 调用。
+// fakeRefresher 记录 RebuildDisplay 调用。
 type fakeRefresher struct {
 	mu    sync.Mutex
 	calls []string
 }
 
-func (r *fakeRefresher) RefreshParent(_ context.Context, cardID string) {
+func (r *fakeRefresher) Rebuild(_ context.Context, cardID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, cardID)
@@ -364,9 +364,9 @@ func TestEpisode_MidnightWritesHashAndRefreshesParent(t *testing.T) {
 		t.Errorf("midnight ApplyVisitor should receive cleared fields, got %+v", merger.lastVisitor)
 	}
 
-	// 验证 RefreshParent 跟着调
+	// 验证 RebuildDisplay 跟着调
 	if len(refresher.calls) != 1 || refresher.calls[0] != cardID {
-		t.Errorf("RefreshParent should be called once with cardID, got %v", refresher.calls)
+		t.Errorf("RebuildDisplay should be called once with cardID, got %v", refresher.calls)
 	}
 }
 

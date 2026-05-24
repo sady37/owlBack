@@ -3,7 +3,7 @@
 // 数据流（doc/card_display.md §4.4 修订版）：
 //
 //   radar firmware type=3 number_people event
-//        ↓ iot:event:stream（不是 monitor 流：qinglan radar_decoder.go:578 type=3 走 event）
+//        ↓ iot:event:stream
 //   cardagg EventHandler filter category=number_people
 //        ↓ Update(deviceAddr, count, ts)
 //   BedPeopleTracker per-device snapshot
@@ -19,13 +19,14 @@ package service
 
 import (
 	"context"
+	"net/netip"
 	"strings"
 	"sync"
 )
 
 type BedPeopleTracker struct {
-	metaCache *DeviceMetaCache
-	online    DeviceOnlineChecker
+	cache  *SpatialCache
+	online DeviceOnlineChecker
 
 	mu        sync.RWMutex
 	perDevice map[string]bedPeopleDeviceState // key = device addr canonical IPv6 string
@@ -36,9 +37,9 @@ type bedPeopleDeviceState struct {
 	updatedAt   int64 // ms
 }
 
-func NewBedPeopleTracker(metaCache *DeviceMetaCache) *BedPeopleTracker {
+func NewBedPeopleTracker(cache *SpatialCache) *BedPeopleTracker {
 	return &BedPeopleTracker{
-		metaCache: metaCache,
+		cache:     cache,
 		perDevice: make(map[string]bedPeopleDeviceState),
 	}
 }
@@ -66,38 +67,24 @@ func (t *BedPeopleTracker) Update(deviceAddr string, peopleCount int, tsMs int64
 	t.perDevice[deviceAddr] = bedPeopleDeviceState{peopleCount: peopleCount, updatedAt: tsMs}
 }
 
-// ForgetDevice 解绑 / Cleanup 调用。
-func (t *BedPeopleTracker) ForgetDevice(deviceAddr string) {
-	if deviceAddr == "" {
-		return
-	}
-	t.mu.Lock()
-	delete(t.perDevice, deviceAddr)
-	t.mu.Unlock()
-}
-
-// CardPeopleCount 返回 cardID（/96 bed card）下所有 bed-bound radar device 的 max people count。
+// CardPeopleCount 返回 cardID 下所有 bed-bound radar device 的 max people count。
 // offline device 不参与；从未上报 number_people 的 device 也不参与（视作 0）。
 //
 // max 而非 sum：share 双床场景下，两 radar boundary 不重叠——任一 radar 见 2 人即视作"该 bed 卡 2 人"。
 // 单床多 radar 是冗余安装，max 也是正确合并。
-func (t *BedPeopleTracker) CardPeopleCount(ctx context.Context, cardID string) int {
-	meta := t.metaCache.GetOrLoad(ctx, cardID)
-	if meta == nil || !meta.HasBedBoundRadar() {
+func (t *BedPeopleTracker) CardPeopleCount(_ context.Context, cardID string) int {
+	pfx, err := netip.ParsePrefix(cardID)
+	if err != nil || !t.cache.HasBedBoundRadar(pfx) {
 		return 0
 	}
-	// v2.5: meta.Devices 已是 devices.card_id FK 归属本卡集合，无需 bedNet 二次过滤
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	max := 0
-	for _, dm := range meta.Devices {
-		if dm == nil || !dm.DeviceAddr.IsValid() {
-			continue
-		}
+	for _, dm := range t.cache.DevicesByCard(pfx) {
 		if !strings.Contains(strings.ToLower(dm.DeviceType), "radar") {
 			continue
 		}
-		addrStr := dm.AddrStr()
+		addrStr := dm.DeviceAddr.String()
 		st, ok := t.perDevice[addrStr]
 		if !ok {
 			continue

@@ -387,6 +387,11 @@ const (
 // 注：unit /80 没有 unit_state — unit 卡 FE 自己按 /80 prefix 列子 /88 room，挑最新 ts 的显示。
 // sensor 内部 unit-scope risk（如 NightAbsence of Room）走自己的 counter，不入此 hash。
 type RoomState struct {
+	// RoomIdentifier — sensor producer 端填 RoomID = /88 prefix (envelope.subject_entity)；
+	// cardagg 派生 display 时按 RoomID 反查 entry 决定 room_icon_kind 等（保证 latest event 同源）。
+	// RoomName 由 cardagg 反查 rooms.room_name 填。
+	RoomIdentifier
+
 	// 注：RoomType 是静态属性 → 已迁出本 hash，由 cardagg CardMeta (rooms.room_type LPM /88) 派生，
 	// FE 从 CardStatic.Room.RoomType 取。sensor / cardagg 内部走各自 cache，不进 RoomState。
 
@@ -438,6 +443,7 @@ type RoomState struct {
 // 占用）的连续站立分钟，sensor 累加封顶 8；cardagg max-merge across devices in card。
 type TargetState struct {
 	UpdatedAt             int64  `json:"updated_at,omitempty"`
+	SpatialAnchor         string `json:"spatial_anchor"`		  //描述当前目标的空间锚点， CDIR 格式
 	TrackID               int    `json:"track_id"`
 	LogicID               string `json:"logic_id,omitempty"`
 	LastActiveTs          int64  `json:"last_active_ts,omitempty"`
@@ -511,36 +517,24 @@ type AlarmState struct {
 //
 // 详 owlBack/doc/card_display.md。
 
-const (
-	Section2LeftModeNone       = 0 // 无可显
-	Section2LeftModeSleepStage = 1 // 显 sleep_stage / bed_status icon set
-	Section2LeftModeRoomStatus = 2 // 显 room/bathroom icon set
-)
-
-const (
-	RoomIconKindRoom     = 0
-	RoomIconKindBathroom = 1
-)
-
-// BedStatus 二态枚举（与 BedState.BedStatus / observation.Track.BedStatus 同语义）。
-// "未知/不适用"约定用 nil 指针表示（参考 observation/track.go），不引入 8 这种 sentinel。
+// BedStatus 二态枚举（保留 — sensor/cardagg 内部 BedState.BedStatus 仍用）。
 const (
 	BedStatusInBed    = 0 // 在床
 	BedStatusNotInBed = 1 // 离床
 )
 
-// CardPriority — Section2.left icon 选择 + /80 UnitPicker winner 排序的统一标量。
-// 高值 = 更应被选中作为 unit winner；FE icon 单 switch 映射。
-// 详 spec card_display.md §3.2。
+// Section2LeftIcon — FE 单 switch 决定 base icon；cardagg 派生填这个数。
+// 床 sub-variant（Awake/LightSleep/DeepSleep/Empty）由 FE 端从 BedState 或 monitor stream
+// 自家派生（sleep_stage / bed_status），不在 display schema 暴露。
 const (
-	CardPriorityEmpty             = 0 // 无人（room 内无人 + 无 bed 设备）
-	CardPriorityRoomNormal        = 1 // 非 bathroom 非 bed 房间 + stay_alarm 启用 + 有人
-	CardPriorityBedInUse          = 2 // hasBed（具体 sleep_stage / left-bed 由 bed_status + sleep_stage 派生 icon 变体）
-	CardPriorityBathroomNormal    = 3 // bathroom 占用，无 risk
-	CardPriorityRoomAttention     = 4 // 非 bathroom risk=2 (yellow)
-	CardPriorityBathroomAttention = 5 // bathroom risk=2
-	CardPriorityRoomRisk          = 6 // 非 bathroom risk=3 (red；缺 room-red 资产时 FE cap to yellow)
-	CardPriorityBathroomRisk      = 7 // bathroom risk=3
+	Section2IconEmpty             = 0 // 无 event 且无床 — FE 渲灰底
+	Section2IconRoomNormal        = 1 // 普通房间有人，无 risk
+	Section2IconBedInUse          = 2 // 床卡（FE 自渲 InBed/LeftBed/Sleep 变体）
+	Section2IconBathroomNormal    = 3 // 卫生间占用，无 risk
+	Section2IconRoomAttention     = 4 // 普通房间 + Risk=2 黄
+	Section2IconBathroomAttention = 5 // 卫生间 + Risk=2 黄
+	Section2IconRoomRisk          = 6 // 普通房间 + Risk=3 红
+	Section2IconBathroomRisk      = 7 // 卫生间 + Risk=3 红Section2IconEmpty
 )
 
 const (
@@ -581,15 +575,14 @@ const (
 type CardDisplay struct {
 	UpdatedAt int64 `json:"updated_at"`
 
-	// Section2.left
-	Section2LeftMode int  `json:"section2_left_mode"`           // Section2LeftMode*
-	BedStatus        *int `json:"bed_status,omitempty"`         // 0=InBed / 1=NotInBed / nil=未知/不适用（无 bed 设备）；pointer 走 omitempty——nil→省略，*0 / *1 都序列化（与 observation/track.go 同模式）
-	SleepStage       int  `json:"sleep_stage,omitempty"`        // 0/1/2/4/8 (复用 SleepStage*；仅 BedStatus=*0 时有效)
-	RoomPersonCount  int  `json:"room_person_count,omitempty"`  // 右上角 badge
-	RoomIconKind     int  `json:"room_icon_kind,omitempty"`     // RoomIconKind*
-	RoomRiskLevel    int  `json:"room_risk_level,omitempty"`    // 0/1/2/3 → FE 配色（复用 RiskLevel*）
-	StayAlarmEnabled bool `json:"stay_alarm_enabled,omitempty"` // 房间是否启用 stay-time / standing 类长时长 alarm；roomHas 时由 cardagg 从 alarm_enablement 派生
-	CardPriority     int  `json:"card_priority"`                // CardPriority* 统一排序标量；0 (Empty) 是合法值不能省略，故无 omitempty
+	// Section1.down.left — 空间 scope 标签（"GuestRoom" / "Bedroom" / "Bathroom" / "Whole Unit"）
+	Section1DownLeft string `json:"section1_down_left,omitempty"`
+
+	// Section2.left — FE dumb-renderer 3+1 字段；cardagg 完成全部派生
+	Section2LeftIcon int    `json:"section2_left_icon"`           // 单 switch 决定 icon 资源（枚举见 Section2Icon*）
+	Section2LeftUp string `json:"section2_left_uptext,omitempty"` // icon 顶部小标签：room source X>1 "RoomName:XP" / X<=1 "RoomName"；bed source ""（隐私）
+	Section2LeftDown string `json:"section2_left_downtext,omitempty"` //icon 顶部小标签 显示room内 StandingContinuousMin静止站立时长 /Alonetime 独处时长 
+	Section2LeftRisk int    `json:"section2_left_risk,omitempty"` // 0/1/2/3 → FE 配色（复用 RiskLevel*）
 
 	// Section3.up.left
 	ActiveState    int   `json:"active_state"`

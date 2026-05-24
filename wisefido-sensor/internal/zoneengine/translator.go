@@ -87,10 +87,11 @@ func bedConfidenceForSource(source string) int {
 func TranslateRoomState(e ZoneEvent, roomType int) *card.RoomState {
 	nowMs := e.NewState.UpdatedAt
 	out := &card.RoomState{
-		TotalPeople:   e.NewState.Count,
-		TotalPeopleTs: nowMs,
-		LastEnterTs:   e.NewState.LastEnterTs,
-		LastExitTs:    e.NewState.LastExitTs,
+		RoomIdentifier: card.RoomIdentifier{RoomID: e.ZoneID},
+		TotalPeople:    e.NewState.Count,
+		TotalPeopleTs:  nowMs,
+		LastEnterTs:    e.NewState.LastEnterTs,
+		LastExitTs:     e.NewState.LastExitTs,
 	}
 
 	// AloneSinceTs：当前 Count==1 时输出"刚才"为可能锚点；

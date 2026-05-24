@@ -51,7 +51,7 @@ func TestBuildCardDisplay_VitalTrendLevelFromTarget(t *testing.T) {
 		CardID: "fd00:0:3:111:3:101::/96",
 		Target: &card.TargetState{WeakBiometricSignal: 65, UpdatedAt: 1_700_000_000_000},
 	}
-	d := BuildCardDisplay(s, false, false)
+	d := BuildCardDisplay(s, nil)
 	if d == nil {
 		t.Fatal("display nil")
 	}
@@ -62,7 +62,7 @@ func TestBuildCardDisplay_VitalTrendLevelFromTarget(t *testing.T) {
 
 func TestBuildCardDisplay_VitalTrendLevel_NoTargetNoTrend(t *testing.T) {
 	s := &card.CardStatus{CardID: "fd00:0:3:111:3:101::/96"}
-	d := BuildCardDisplay(s, false, false)
+	d := BuildCardDisplay(s, nil)
 	if d.VitalTrendLevel != card.VitalTrendLevelNone {
 		t.Errorf("no Target should be None, got %d", d.VitalTrendLevel)
 	}

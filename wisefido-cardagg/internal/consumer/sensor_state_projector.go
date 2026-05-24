@@ -32,6 +32,7 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"net/netip"
 
 	"owl-common/card"
 	owlredis "owl-common/redis"
@@ -49,34 +50,16 @@ const (
 )
 
 type SensorStateProjector struct {
-	writer *card.Writer
-	reader *card.Reader
-	picker *UnitPicker
-	merger *service.TargetMerger      // nil 时 target.state 分支退化为直写（per-device 不合并）
-	meta   *service.DeviceMetaCache   // 决定 BuildCardDisplay 的 hasBedDevice
-	logger *zap.Logger
+	writer    *card.Writer
+	reader    *card.Reader
+	rebuilder *DisplayRebuilder
+	merger    *service.TargetMerger // nil 时 target.state 分支退化为直写（per-device 不合并）
+	cache     *service.SpatialCache
+	logger    *zap.Logger
 }
 
-func NewSensorStateProjector(writer *card.Writer, reader *card.Reader, picker *UnitPicker, meta *service.DeviceMetaCache, logger *zap.Logger) *SensorStateProjector {
-	return &SensorStateProjector{writer: writer, reader: reader, picker: picker, meta: meta, logger: logger}
-}
-
-// hasBedDevice 查 metaCache 看卡是否绑 sleepad 设备；metaCache=nil 时返 false（保守）。
-func (p *SensorStateProjector) hasBedDevice(ctx context.Context, cardID string) bool {
-	if p.meta == nil {
-		return false
-	}
-	m := p.meta.GetOrLoad(ctx, cardID)
-	return m.HasBed()
-}
-
-// isBathroom 查 metaCache 看卡所属 room (/88) 是否 RoomType=Bathroom；nil → false。
-func (p *SensorStateProjector) isBathroom(ctx context.Context, cardID string) bool {
-	if p.meta == nil {
-		return false
-	}
-	m := p.meta.GetOrLoad(ctx, cardID)
-	return m.IsBathroom()
+func NewSensorStateProjector(writer *card.Writer, reader *card.Reader, rebuilder *DisplayRebuilder, cache *service.SpatialCache, logger *zap.Logger) *SensorStateProjector {
+	return &SensorStateProjector{writer: writer, reader: reader, rebuilder: rebuilder, cache: cache, logger: logger}
 }
 
 // SetTargetMerger 注入 per-device → owning card max-merge 合并器。未注入时 target.state 直写。
@@ -101,14 +84,15 @@ func (p *SensorStateProjector) Handle(ctx context.Context, msg *owlredis.IoTStre
 
 	switch msg.Category {
 	case CategoryBedState, CategoryBedSleepStage:
-		// bed.state / bed.sleepstage：sensor 把事件按 /96 bed prefix 发；cards 表可能没有
-		// 该 /96 卡（典型场景：private unit 只建了 /88 room 卡，/96 床未单独建卡）。
-		// LPM 解析到最近父卡（一般是 /88 room），让 bed_state 落地到正确卡。
-		// 若 SubjectEntity 已有精确卡，LPM 返同值；都没找到则丢弃。
-		if p.meta != nil {
-			if resolved := p.meta.LookupCardByPrefix(ctx, msg.SubjectEntity); resolved != "" {
-				destCardID = resolved
+		// bed.state / bed.sleepstage：sensor 发 /96 bed prefix；通过 entry 表精确等值反查 owning card_id。
+		// entry 未注册（schema 缺对应 bed 行）→ 丢弃，不做 LPM 父卡兜底。
+		if pfx, err := netip.ParsePrefix(msg.SubjectEntity); err == nil {
+			if ent := p.cache.LookupEntry(pfx); ent != nil {
+				destCardID = ent.CardID.String()
 				status.CardID = destCardID
+			} else {
+				p.logger.Warn("bed.state entry not in cache", zap.String("subject", msg.SubjectEntity))
+				return nil
 			}
 		}
 		var bs card.BedState
@@ -125,13 +109,22 @@ func (p *SensorStateProjector) Handle(ctx context.Context, msg *owlredis.IoTStre
 			status.BedState = mergeBedStateSleepStage(prevBed, &bs)
 		}
 	case CategoryRoomState:
+		// room.state：sensor 发 /88 room prefix；entry 表精确等值反查 owning card_id。
+		if pfx, err := netip.ParsePrefix(msg.SubjectEntity); err == nil {
+			if ent := p.cache.LookupEntry(pfx); ent != nil {
+				destCardID = ent.CardID.String()
+				status.CardID = destCardID
+			} else {
+				p.logger.Warn("room.state entry not in cache", zap.String("subject", msg.SubjectEntity))
+				return nil
+			}
+		}
 		var rs card.RoomState
 		if err := json.Unmarshal(payload, &rs); err != nil {
 			p.logger.Warn("room.state unmarshal", zap.String("trace_id", traceID), zap.String("cid", destCardID), zap.Error(err))
 			return nil
 		}
 		// RoomState 字段级 merge（state-change-anchored）：值不变 ts 保 prev。
-		// v2 sensor 全 owner（无第三方写者），但仍需 merge 以避免值未变时的假活跃 ts 刷新。
 		prevRoom := p.readPrevRoomState(ctx, destCardID)
 		status.RoomState = mergeRoomState(prevRoom, &rs)
 	case CategoryTargetState:
@@ -157,23 +150,12 @@ func (p *SensorStateProjector) Handle(ctx context.Context, msg *owlredis.IoTStre
 		return nil
 	}
 
-	// 派生 CardDisplay 与 state 一并写入。读 prev 取其他字段（room+bed 共存场景）。
-	hasBed := p.hasBedDevice(ctx, destCardID)
-	isBath := p.isBathroom(ctx, destCardID)
-	prev, err := p.reader.ReadCardStatus(ctx, destCardID)
-	if err == nil && prev != nil {
-		merged := mergeForDisplay(prev, status)
-		status.Display = BuildCardDisplay(merged, hasBed, isBath)
-	} else {
-		status.Display = BuildCardDisplay(status, hasBed, isBath)
-	}
-
+	// 写 own state，display 派生交给 DisplayRebuilder（读 fresh hash 自然拿到合并状态）。
 	if err := p.writer.WriteCardStatus(ctx, status); err != nil {
 		return err
 	}
-	// 子卡（/88 /96）写完，立刻重算父 /80 unit display；/80 自身写则 no-op（unit-level state 走 RefreshSelf）。
-	if p.picker != nil {
-		p.picker.RefreshParent(ctx, destCardID)
+	if p.rebuilder != nil {
+		p.rebuilder.Rebuild(ctx, destCardID)
 	}
 	return nil
 }
@@ -267,6 +249,10 @@ func mergeRoomState(prev, incoming *card.RoomState) *card.RoomState {
 	if prev != nil {
 		*out = *prev
 	}
+	// RoomID 跟 latest event（incoming.subject_entity 标定的 room）；display 派生靠它决定 room_icon_kind。
+	if incoming.RoomID != "" {
+		out.RoomID = incoming.RoomID
+	}
 
 	prevPeople := 0
 	if prev != nil {
@@ -315,21 +301,3 @@ func (p *SensorStateProjector) readPrevRoomState(ctx context.Context, cardID str
 	return prev.RoomState
 }
 
-// mergeForDisplay 合并 prev 已存字段 + 本次 update，避免本次只更 bed 时 display 丢 room 数据。
-func mergeForDisplay(prev, cur *card.CardStatus) *card.CardStatus {
-	out := &card.CardStatus{CardID: cur.CardID}
-	out.RoomState = prev.RoomState
-	out.BedState = prev.BedState
-	out.AlarmState = prev.AlarmState
-	out.Target = prev.Target
-	if cur.RoomState != nil {
-		out.RoomState = cur.RoomState
-	}
-	if cur.BedState != nil {
-		out.BedState = cur.BedState
-	}
-	if cur.Target != nil {
-		out.Target = cur.Target
-	}
-	return out
-}

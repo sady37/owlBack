@@ -86,9 +86,8 @@ func (b *MonitorBuffer) Write(cardID, deviceID, trackID string, fields map[strin
 
 // DeviceSnapshot is the flush output for one device: per-track fields (track_id -> fields+ts).
 type DeviceSnapshot struct {
-	DeviceID  string // 业务主 key（与 buffer key 一致）
-	DeviceUID string // 仅 log 等用
-	Tracks    map[string]map[string]any // track_id -> { ...fields..., "ts": maxTs }
+	DeviceID string                    // device_addr canonical IPv6 text
+	Tracks   map[string]map[string]any // track_id -> { ...fields..., "ts": maxTs }
 }
 
 // CardSnapshot is the flush output for one card.
@@ -112,45 +111,6 @@ func (b *MonitorBuffer) PruneFields(nowMs, fieldTTLMs int64) {
 			}
 		}
 	}
-}
-
-// SnapshotCard 返回指定 card 当前 buffer 快照（只读，供告警日志等使用）。
-func (b *MonitorBuffer) SnapshotCard(cardID string) *CardSnapshot {
-	if cardID == "" {
-		return nil
-	}
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	cb := b.cards[cardID]
-	if cb == nil || len(cb.Devices) == 0 {
-		return nil
-	}
-	var devSnaps []DeviceSnapshot
-	for devID, db := range cb.Devices {
-		if len(db.Tracks) == 0 {
-			continue
-		}
-		tracks := make(map[string]map[string]any)
-		for trackID, tb := range db.Tracks {
-			if len(tb.Fields) == 0 {
-				continue
-			}
-			m := make(map[string]any, len(tb.Fields)+1)
-			for k, fv := range tb.Fields {
-				m[k] = fv.Value
-			}
-			m["ts"] = tb.LastTs
-			tracks[trackID] = m
-		}
-		if len(tracks) == 0 {
-			continue
-		}
-		devSnaps = append(devSnaps, DeviceSnapshot{DeviceID: devID, DeviceUID: devID, Tracks: tracks})
-	}
-	if len(devSnaps) == 0 {
-		return nil
-	}
-	return &CardSnapshot{CardID: cardID, Devices: devSnaps}
 }
 
 // Flush 仅根据当前 buffer 构建 snapshot，不删除 field。用 RLock，与 Write（Lock）不互斥时写可优先插入。
@@ -183,95 +143,11 @@ func (b *MonitorBuffer) flushLocked(nowMs int64) []CardSnapshot {
 			if len(tracks) == 0 {
 				continue
 			}
-			devSnaps = append(devSnaps, DeviceSnapshot{DeviceID: devID, DeviceUID: devID, Tracks: tracks})
+			devSnaps = append(devSnaps, DeviceSnapshot{DeviceID: devID, Tracks: tracks})
 		}
 		if len(devSnaps) > 0 {
 			result = append(result, CardSnapshot{CardID: cardID, Devices: devSnaps})
 		}
-	}
-	return result
-}
-
-// FlushAndPrune 先 PruneFields 再 Flush。兼容旧用法；主循环建议用 秒数%4==0 时 PruneFields + 每秒 Flush。
-func (b *MonitorBuffer) FlushAndPrune(nowMs, fieldTTLMs int64) []CardSnapshot {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for _, cb := range b.cards {
-		for _, db := range cb.Devices {
-			for _, tb := range db.Tracks {
-				for k, fv := range tb.Fields {
-					if nowMs-fv.Ts > fieldTTLMs {
-						delete(tb.Fields, k)
-					}
-				}
-			}
-		}
-	}
-	return b.flushLocked(nowMs)
-}
-
-// PruneStaleDevices removes devices (and empty cards) where (nowMs - db.LastTs) > deviceTTLMs.
-// Intended to run periodically (e.g. every 90s); devices that go offline never hit Write again.
-func (b *MonitorBuffer) PruneStaleDevices(nowMs, deviceTTLMs int64) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	for cardID, cb := range b.cards {
-		for devID, db := range cb.Devices {
-			if nowMs-db.LastTs > deviceTTLMs {
-				delete(cb.Devices, devID)
-			}
-		}
-		if len(cb.Devices) == 0 {
-			delete(b.cards, cardID)
-		}
-	}
-}
-
-// RemoveDevice removes all fields for a specific device from the buffer.
-// Called when a message exceeds the hard stale timeout.
-func (b *MonitorBuffer) RemoveDevice(cardID, deviceID string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	cb := b.cards[cardID]
-	if cb == nil {
-		return
-	}
-	delete(cb.Devices, deviceID)
-	if len(cb.Devices) == 0 {
-		delete(b.cards, cardID)
-	}
-}
-
-// ActiveCardIDs returns card IDs currently in the buffer.
-func (b *MonitorBuffer) ActiveCardIDs() []string {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	ids := make([]string, 0, len(b.cards))
-	for cid := range b.cards {
-		ids = append(ids, cid)
-	}
-	return ids
-}
-
-// ActiveDevicesByCard returns cardID → deviceID set based on device-level
-// entries in the buffer (survives 90s device TTL, independent of field TTL).
-func (b *MonitorBuffer) ActiveDevicesByCard() map[string]map[string]bool {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	result := make(map[string]map[string]bool, len(b.cards))
-	for cid, cb := range b.cards {
-		if len(cb.Devices) == 0 {
-			continue
-		}
-		devs := make(map[string]bool, len(cb.Devices))
-		for did := range cb.Devices {
-			devs[did] = true
-		}
-		result[cid] = devs
 	}
 	return result
 }

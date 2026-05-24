@@ -653,8 +653,49 @@ func (s *deviceMonitorSettingsService) ResyncDeviceTimezone(ctx context.Context,
 	return "", 0, errNotImplemented("ResyncDeviceTimezone")
 }
 
+// ResyncDeviceReportTime 把 tenant 配的 sleepreport_time (unit local hour 1-24) 下发到 sleepace 设备。
+//
+// timezone 设计：reportUploadTime 是 device 本地时钟触发（设备 RTC 跟用户走，DST 由 device 端自动跟随），
+// server 直接传 unit local hour 整数即可，无须 server↔device 时区换算。Sleepace 厂家也不保存 timezone
+// （见 sleepace_gateway_client.go IANAToOffsetSeconds 注释）。
+//
+// 调用路径：POST /internal/sleepace/device/{device_id}/resync-report-time
+// 外部 DST 脚本不再需要（device 端自治）；保留 endpoint 仅作"手动 resync" / UI trigger 用。
 func (s *deviceMonitorSettingsService) ResyncDeviceReportTime(ctx context.Context, tenantID, deviceID string) (int, error) {
-	return 0, errNotImplemented("ResyncDeviceReportTime")
+	if s.sleepaceGateway == nil {
+		return 0, fmt.Errorf("sleepace gateway not wired")
+	}
+	if tenantID == "" || deviceID == "" {
+		return 0, fmt.Errorf("tenant_id and device_id are required")
+	}
+
+	hour := alarm.DefaultSleepReportTime
+	if s.alarmCloudRepo != nil {
+		if ac, err := s.alarmCloudRepo.GetAlarmCloud(ctx, tenantID); err == nil && ac != nil && len(ac.Metadata) > 0 {
+			var tr alarm.TenantResetTime
+			if json.Unmarshal(ac.Metadata, &tr) == nil && tr.TenantSleepReportTime >= 1 && tr.TenantSleepReportTime <= 24 {
+				hour = tr.TenantSleepReportTime
+			}
+		}
+	}
+
+	deviceCode, err := s.resolveDeviceCode(ctx, deviceID)
+	if err != nil {
+		return 0, fmt.Errorf("resolve device_code: %w", err)
+	}
+	deviceUID, err := s.resolveDeviceUID(ctx, deviceID)
+	if err != nil {
+		return 0, fmt.Errorf("resolve device_uid: %w", err)
+	}
+
+	if err := s.sleepaceGateway.SetReportUploadTime(ctx, deviceUID, deviceCode, hour); err != nil {
+		return 0, fmt.Errorf("sleepace SetReportUploadTime: %w", err)
+	}
+	s.logger.Info("ResyncDeviceReportTime done",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_id", deviceID),
+		zap.Int("report_upload_time_hour", hour))
+	return hour, nil
 }
 
 func (s *deviceMonitorSettingsService) TriggerSleepaceUpgrade(ctx context.Context, tenantID, deviceID, version string) error {

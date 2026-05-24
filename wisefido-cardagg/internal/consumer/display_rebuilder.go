@@ -1,18 +1,13 @@
-// display_rebuilder.go — cardagg 周期性全量重 build `card:state.display`。
+// display_rebuilder.go — display 重派单一入口。
 //
-// Why: cardagg 只在 state 变化时通过 SensorStateProjector republish display；
-// 长时间无事件的卡，display 会保留旧 schema/算法的 JSON 跨重启滞留，违反
-// 「hard reload 永远拿到正确 state」契约。周期 rebuild 兜底，确保 display
-// 始终贴当前 cardagg 代码逻辑。
-//
-// 周期间隔通过 RunPeriodicRebuild 参数注入；生产建议 5min，开发期可缩到 30s
-// 加速验证。
+// 各层各算，无 winner proxy，无 trigger parent。sensor event 已经按 entry 精确路由到
+// 唯一 card，caller 写完 own state 后调 `Rebuild(cardID)`：读 fresh hash + 卡级 snapshot →
+// BuildCardDisplay → 写 display field。每张 card 独立派生，互不影响。
 
 package consumer
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"go.uber.org/zap"
@@ -21,107 +16,69 @@ import (
 	"wisefido-cardagg/internal/service"
 )
 
-// RebuildAllFromDB 从 PG cards 表枚举所有卡，逐张重 build display 写回 Redis。
-//
-// 适用场景：
-//   - cardagg 启动 boot-time 一次（main.go）— Redis 可能有上一代 schema 的 stale display
-//   - 收到 op=reset 信号（data 重启了，in-memory cache 全失效）
-//   - periodic safety net（5min 一次）— 兜底事件丢失
-//
-// DB 是真相源（vs 旧 RebuildAllDisplays 走 Redis SCAN）— 启动场景 Redis 可能为空 / stale，
-// 必须以 DB 为准。
-func RebuildAllFromDB(
-	ctx context.Context,
-	db *sql.DB,
-	reader *card.Reader,
-	writer *card.Writer,
-	picker *UnitPicker,
-	meta *service.DeviceMetaCache,
-	logger *zap.Logger,
-) {
-	t0 := time.Now()
-	rows, err := db.QueryContext(ctx, `SELECT host(card_id)||'/'||masklen(card_id), masklen(card_id) FROM cards`)
-	if err != nil {
-		logger.Warn("RebuildAllFromDB: query cards", zap.Error(err))
+type DisplayRebuilder struct {
+	cache  *service.SpatialCache
+	reader *card.Reader
+	writer *card.Writer
+	logger *zap.Logger
+}
+
+func NewDisplayRebuilder(cache *service.SpatialCache, reader *card.Reader, writer *card.Writer, logger *zap.Logger) *DisplayRebuilder {
+	return &DisplayRebuilder{cache: cache, reader: reader, writer: writer, logger: logger}
+}
+
+// Rebuild 派生指定 card 的 display 并写 hash。
+// caller 写完 own state 后调一次即可——内部读 fresh hash 自然拿到合并后的全状态。
+func (r *DisplayRebuilder) Rebuild(ctx context.Context, cardID string) {
+	if cardID == "" {
 		return
 	}
-	defer rows.Close()
-
-	rebuilt := 0
-	for rows.Next() {
-		var cardID string
-		var mask int
-		if err := rows.Scan(&cardID, &mask); err != nil {
-			continue
-		}
-		// 读现有 Redis state（可能 nil）作为 RoomState/BedState/Target 输入；BuildCardDisplay
-		// 容忍空 status——pickCardPriority 仍可基于 CardMeta.hasBed 决定 BedInUse=2。
-		status, _ := reader.ReadCardStatus(ctx, cardID)
-		if status == nil {
-			status = &card.CardStatus{CardID: cardID}
-		}
-		// /80 走 picker 路径（unit display 合成）；/88 /96 走 BuildCardDisplay 单卡视角。
-		if mask == 80 {
-			if picker != nil {
-				picker.RefreshSelf(ctx, cardID)
-			}
-			rebuilt++
-			continue
-		}
-		hasBed := false
-		isBath := false
-		if meta != nil {
-			m := meta.GetOrLoad(ctx, cardID)
-			hasBed = m.HasBed()
-			isBath = m.IsBathroom()
-		}
-		display := BuildCardDisplay(status, hasBed, isBath)
-		if display == nil {
-			continue
-		}
-		if err := writer.WriteCardStatus(ctx, &card.CardStatus{
-			CardID:  cardID,
-			Display: display,
-		}); err != nil {
-			logger.Warn("RebuildAllFromDB: write", zap.String("card", cardID), zap.Error(err))
-			continue
-		}
-		if picker != nil {
-			picker.RefreshParent(ctx, cardID)
-		}
-		rebuilt++
+	status, _ := r.reader.ReadCardStatus(ctx, cardID)
+	if status == nil {
+		status = &card.CardStatus{CardID: cardID}
 	}
-	logger.Info("RebuildAllFromDB done",
-		zap.Int("rebuilt", rebuilt),
+	display := BuildCardDisplay(status, r.cache)
+	if display == nil {
+		return
+	}
+	if err := r.writer.WriteCardStatus(ctx, &card.CardStatus{
+		CardID:  cardID,
+		Display: display,
+	}); err != nil {
+		r.logger.Warn("rebuild display write", zap.String("card", cardID), zap.Error(err))
+	}
+}
+
+// RebuildAll 遍历 cards 表（cache 内）逐张 Rebuild。
+// 适用：cardagg 启动 boot-time 一次；config:card:stream op=reset；periodic safety net。
+func (r *DisplayRebuilder) RebuildAll(ctx context.Context) {
+	t0 := time.Now()
+	cardIDs := r.cache.AllCardIDs()
+	for _, cid := range cardIDs {
+		r.Rebuild(ctx, cid.String())
+	}
+	r.logger.Info("RebuildAll done",
+		zap.Int("rebuilt", len(cardIDs)),
 		zap.Duration("elapsed", time.Since(t0)))
 }
 
-// RunPeriodicRebuild ctx done 之前每 interval 跑一次 RebuildAllFromDB。
-// interval <= 0 时跑一次后退出（等价于 boot-time rebuild）。
-func RunPeriodicRebuild(
-	ctx context.Context,
-	interval time.Duration,
-	db *sql.DB,
-	reader *card.Reader,
-	writer *card.Writer,
-	picker *UnitPicker,
-	meta *service.DeviceMetaCache,
-	logger *zap.Logger,
-) {
+// RunPeriodic ctx done 之前每 interval 跑一次 RebuildAll。
+// interval <= 0 时跑一次后退出（等价 boot-time）。
+func (r *DisplayRebuilder) RunPeriodic(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
-		RebuildAllFromDB(ctx, db, reader, writer, picker, meta, logger)
+		r.RebuildAll(ctx)
 		return
 	}
-	logger.Info("display periodic rebuilder started", zap.Duration("interval", interval))
+	r.logger.Info("display periodic rebuilder started", zap.Duration("interval", interval))
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info("display periodic rebuilder stopped")
+			r.logger.Info("display periodic rebuilder stopped")
 			return
 		case <-ticker.C:
-			RebuildAllFromDB(ctx, db, reader, writer, picker, meta, logger)
+			r.RebuildAll(ctx)
 		}
 	}
 }

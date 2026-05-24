@@ -50,7 +50,8 @@ func publishInitialResetState(ctx context.Context, db *sql.DB, p *zoneengine.Str
 		// 保 prev；下游 maxTs 派生 = 0 → FE 显示"—"无假活跃。
 		// RoomType 已挪静态属性（CardMeta/CardStatic.Room.RoomType），此处不发。
 		rs := &card.RoomState{
-			TotalPeople: 0,
+			RoomIdentifier: card.RoomIdentifier{RoomID: cardID},
+			TotalPeople:    0,
 		}
 		if err := p.PublishRoomState(ctx, cardID, rs); err != nil {
 			logger.Warn("initial_reset: publish room.state failed",

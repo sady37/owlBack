@@ -175,6 +175,7 @@ func (p *StreamPublisher) tickPullAndPublish(ctx context.Context) {
 			continue
 		}
 		target.StandingContinuousMin = standingMin
+		target.SpatialAnchor = sp // anchor = aggregator key（zoneengine 派好的 /88 或 /96 entity）
 		if err := p.PublishTargetState(ctx, sp, target); err != nil {
 			p.logger.Warn("stream_publisher: publish target.state failed",
 				zap.String("spatial_prefix", sp), zap.Error(err))

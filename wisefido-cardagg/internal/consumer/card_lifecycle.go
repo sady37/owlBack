@@ -11,7 +11,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"net/netip"
 
 	"owl-common/card"
 
@@ -33,23 +32,23 @@ type CardLifecycle struct {
 	writer      *card.Writer
 	reader      *card.Reader
 	redisClient *redislib.Client
-	metaCache   *service.DeviceMetaCache
+	cache       *service.SpatialCache
 	enablement  *service.AlarmEnablementCache
-	picker      *UnitPicker
+	rebuilder   *DisplayRebuilder
 	merger      *service.TargetMerger
 	tracker     *DeviceStatusTracker
 	logger      *zap.Logger
 }
 
-func NewCardLifecycle(db *sql.DB, writer *card.Writer, reader *card.Reader, redisClient *redislib.Client, meta *service.DeviceMetaCache, enable *service.AlarmEnablementCache, picker *UnitPicker, logger *zap.Logger) *CardLifecycle {
+func NewCardLifecycle(db *sql.DB, writer *card.Writer, reader *card.Reader, redisClient *redislib.Client, cache *service.SpatialCache, enable *service.AlarmEnablementCache, rebuilder *DisplayRebuilder, logger *zap.Logger) *CardLifecycle {
 	return &CardLifecycle{
 		db:          db,
 		writer:      writer,
 		reader:      reader,
 		redisClient: redisClient,
-		metaCache:   meta,
+		cache:       cache,
 		enablement:  enable,
-		picker:      picker,
+		rebuilder:   rebuilder,
 		logger:      logger,
 	}
 }
@@ -90,37 +89,25 @@ func (h *CardLifecycle) Handle(ctx context.Context, raw map[string]interface{}) 
 
 	switch d.Op {
 	case "reset":
-		// data 重启了，in-memory lookup cache 全失效；从 DB 重 build 所有卡 display 兜消息丢失边界。
-		// data 端不再清 Redis card:state（保留），所以这里是平滑 overwrite，不是 fill-empty。
-		defer RebuildAllFromDB(ctx, h.db, h.reader, h.writer, h.picker, h.metaCache, h.logger)
-
-		h.metaCache.InvalidateAll()
-		if err := h.metaCache.BuildDeviceIndex(ctx); err != nil {
-			h.logger.Warn("rebuild device index", zap.Error(err))
-		}
+		// schema 全失效：cache 全量 reload + display 全量重 build。
+		h.cache.Invalidate(ctx)
 		h.enablement.InvalidateAll()
-		if h.picker != nil {
-			h.picker.InvalidateAll()
-		}
 		if h.merger != nil {
 			h.merger.ResetAllVisitor()
+		}
+		if h.rebuilder != nil {
+			h.rebuilder.RebuildAll(ctx)
 		}
 		return nil
 
 	case "delete":
+		h.cache.Invalidate(ctx)
 		for _, cardID := range d.Cards {
-			h.metaCache.Remove(cardID)
-			h.metaCache.RefreshDeviceIndexForCard(ctx, cardID)
 			if err := h.writer.DeleteCardState(ctx, cardID); err != nil {
 				h.logger.Warn("delete card state", zap.String("cid", cardID), zap.Error(err))
 			}
 			if h.merger != nil {
 				h.merger.ForgetCard(cardID)
-			}
-			if h.picker != nil {
-				if unitPref, ok := parentUnitPrefix(cardID); ok {
-					h.picker.InvalidateUnit(unitPref)
-				}
 			}
 		}
 		if len(d.DeviceAddrs) > 0 {
@@ -129,14 +116,8 @@ func (h *CardLifecycle) Handle(ctx context.Context, raw map[string]interface{}) 
 		return nil
 
 	default: // update
+		h.cache.Invalidate(ctx)
 		for _, cardID := range d.Cards {
-			h.metaCache.Remove(cardID)
-			h.metaCache.RefreshDeviceIndexForCard(ctx, cardID)
-			if h.picker != nil {
-				if unitPref, ok := parentUnitPrefix(cardID); ok {
-					h.picker.InvalidateUnit(unitPref)
-				}
-			}
 			cas, err := card.QueryCardAlarmState(ctx, h.db, cardID)
 			if err != nil {
 				h.logger.Warn("query alarm state", zap.String("cid", cardID), zap.Error(err))
@@ -148,9 +129,10 @@ func (h *CardLifecycle) Handle(ctx context.Context, raw map[string]interface{}) 
 					h.logger.Warn("write alarm state", zap.String("cid", cardID), zap.Error(err))
 				}
 			}
-			// has_bed_changed / has_bathroom_changed 等 flag 翻转 → display 必须重 build；
-			// 否则 sensor 没下条事件来重 derive，display 一直停在旧 has_bed 时的 card_priority。
-			h.rebuildDisplay(ctx, cardID)
+			// has_bed_changed / has_bathroom_changed 等 flag 翻转 → display 必须重 build。
+			if h.rebuilder != nil {
+				h.rebuilder.Rebuild(ctx, cardID)
+			}
 		}
 		if len(d.DeviceAddrs) > 0 {
 			h.enablement.InvalidateDevices(d.DeviceAddrs)
@@ -186,85 +168,3 @@ func (h *CardLifecycle) Handle(ctx context.Context, raw map[string]interface{}) 
 	}
 }
 
-// parentUnitPrefix derive /80 unit prefix from card_id CIDR (/80/88/96)。
-// /80 returns itself; /88 /96 truncate；其他 returns ok=false。
-func parentUnitPrefix(cardID string) (string, bool) {
-	p, err := netip.ParsePrefix(cardID)
-	if err != nil {
-		return "", false
-	}
-	if p.Bits() == 80 {
-		return cardID, true
-	}
-	if p.Bits() != 88 && p.Bits() != 96 {
-		return "", false
-	}
-	unit := netip.PrefixFrom(p.Addr(), 80).Masked()
-	return unit.String(), true
-}
-
-// rebuildAllFromDB 从 cards 表枚举所有卡，逐张 rebuildDisplay。
-// op=reset 时调（data startup_clear 把 card:state:* 都 DEL 了，Redis SCAN 取不到，必须走 DB）。
-func (h *CardLifecycle) rebuildAllFromDB(ctx context.Context) {
-	rows, err := h.db.QueryContext(ctx,
-		`SELECT host(card_id)||'/'||masklen(card_id) FROM cards`)
-	if err != nil {
-		h.logger.Warn("rebuildAllFromDB: query cards failed", zap.Error(err))
-		return
-	}
-	defer rows.Close()
-	count := 0
-	for rows.Next() {
-		var cardID string
-		if err := rows.Scan(&cardID); err != nil {
-			continue
-		}
-		h.rebuildDisplay(ctx, cardID)
-		count++
-	}
-	h.logger.Info("rebuildAllFromDB done", zap.Int("cards", count))
-}
-
-// rebuildDisplay 单卡重 build card:state.display —— has_bed/has_bathroom flag 翻转后，
-// 用最新 CardMeta + 现有 Redis 里的 RoomState/BedState/Target 重派生 CardPriority 等字段。
-//
-// 不同 mask 路径：
-//   - /80 → picker.RefreshSelf（用 children 算 unit display，含 /80 自家 alarm/visitor）
-//   - /88 /96 → 直接调 BuildCardDisplay 单卡视角；再 RefreshParent 让 /80 跟着算
-func (h *CardLifecycle) rebuildDisplay(ctx context.Context, cardID string) {
-	pfx, err := netip.ParsePrefix(cardID)
-	if err != nil {
-		return
-	}
-	if pfx.Bits() == 80 {
-		if h.picker != nil {
-			h.picker.RefreshSelf(ctx, cardID)
-		}
-		return
-	}
-	if pfx.Bits() != 88 && pfx.Bits() != 96 {
-		return
-	}
-	status, _ := h.reader.ReadCardStatus(ctx, cardID)
-	if status == nil {
-		status = &card.CardStatus{CardID: cardID}
-	}
-	hasBed, isBath := false, false
-	if h.metaCache != nil {
-		m := h.metaCache.GetOrLoad(ctx, cardID)
-		hasBed = m.HasBed()
-		isBath = m.IsBathroom()
-	}
-	display := BuildCardDisplay(status, hasBed, isBath)
-	if display != nil {
-		if err := h.writer.WriteCardStatus(ctx, &card.CardStatus{
-			CardID:  cardID,
-			Display: display,
-		}); err != nil {
-			h.logger.Warn("rebuildDisplay write", zap.String("cid", cardID), zap.Error(err))
-		}
-	}
-	if h.picker != nil {
-		h.picker.RefreshParent(ctx, cardID)
-	}
-}

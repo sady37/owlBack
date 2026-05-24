@@ -67,8 +67,8 @@ type DeviceOnlineChecker func(deviceAddr string) bool
 // 给 SensorStateProjector target.state 分支用：传入 device-level TargetState 返回
 // owning cardID + merged card.TargetState（合并该 card 下所有 device 的快照）。
 type TargetMerger struct {
-	metaCache *DeviceMetaCache
-	online    DeviceOnlineChecker // nil 时退化为 "总在线"（兼容老测试 / 未 wire 阶段）
+	cache  *SpatialCache
+	online DeviceOnlineChecker // nil 时退化为 "总在线"（兼容老测试 / 未 wire 阶段）
 
 	mu sync.Mutex
 	// deviceAddr canonical IPv6 string → 最近 sensor 发的 device-level TargetState
@@ -100,10 +100,10 @@ type visitorFields struct {
 	hasVisitorToday bool
 }
 
-// NewTargetMerger 构造。metaCache 必填（device→card 反查 + 列同 card devices）。
-func NewTargetMerger(metaCache *DeviceMetaCache) *TargetMerger {
+// NewTargetMerger 构造。cache 必填（device→card 反查 + 列同 card devices）。
+func NewTargetMerger(cache *SpatialCache) *TargetMerger {
 	return &TargetMerger{
-		metaCache:       metaCache,
+		cache:           cache,
 		deviceSnapshots: make(map[string]*card.TargetState),
 		cardVisitor:     make(map[string]visitorFields),
 	}
@@ -136,10 +136,11 @@ func (m *TargetMerger) OnDeviceTarget(ctx context.Context, subject string, ts *c
 		if err != nil {
 			return "", nil
 		}
-		cardID = m.metaCache.LookupCardByDeviceAddr(ctx, addr)
-		if cardID == "" {
+		ownerCard := m.cache.LookupCardByDevice(addr)
+		if !ownerCard.IsValid() {
 			return "", nil
 		}
+		cardID = ownerCard.String()
 	}
 
 	m.mu.Lock()
@@ -206,10 +207,11 @@ func (m *TargetMerger) ResetAllVisitor() {
 //
 // UpdatedAt 取参与合并字段的最大 ts（不强制 now，让下游 anchor 计算可重现）。
 func (m *TargetMerger) mergeForCard(ctx context.Context, cardID string, v visitorFields) *card.TargetState {
-	meta := m.metaCache.GetOrLoad(ctx, cardID)
-	if meta == nil {
+	pfx, err := netip.ParsePrefix(cardID)
+	if err != nil {
 		return nil
 	}
+	devices := m.cache.DevicesByCard(pfx)
 
 	out := &card.TargetState{
 		VisitorStartTs:  v.visitorStartTs,
@@ -220,33 +222,36 @@ func (m *TargetMerger) mergeForCard(ctx context.Context, cardID string, v visito
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// SpatialAnchor 跟最新 UpdatedAt 的 snapshot 走（target 物理位置跟最新 event）
+	var anchorWinnerTs int64
 	// v3 path: /128 device-keyed snapshots（同 card 下多 radar max-merge）
-	for addr := range meta.Devices {
+	for _, dm := range devices {
+		addr := dm.DeviceAddr.String()
 		ts := m.deviceSnapshots[addr]
 		if ts == nil {
 			continue
 		}
 		online := m.isDeviceOnline(addr)
 		// LastActiveTs：offline device 的 snapshot 不参与 max（避免"Active 24h ago"误显）。
-		// 在线 device 的 LastActiveTs 即便很久（老人静坐看电视）也保留——是真实历史事实，
-		// 配合 SceneState 让护士能正确解读。
 		if online && ts.LastActiveTs > out.LastActiveTs {
 			out.LastActiveTs = ts.LastActiveTs
 		}
-		// Standing：offline 过滤 + snapshot UpdatedAt 短窗 staleness（防 false Attention/Risk）。
-		// 进入 risk_evaluator 的阈值字段必须严防 stale；契约要求 sensor 每分钟心跳 push。
+		// Standing：offline 过滤 + snapshot UpdatedAt 短窗 staleness。
 		standingFresh := online && ts.UpdatedAt > 0 && nowMs-ts.UpdatedAt <= StandingSnapshotStaleMs
 		if standingFresh && ts.StandingContinuousMin > out.StandingContinuousMin {
 			out.StandingContinuousMin = ts.StandingContinuousMin
 		}
-		// WeakBio: offline 过滤 + 30min UpdatedAt staleness（贴 sensor aggregator lazy 滑窗；W3）。
-		// 空闲老人卡 sensor 不 push → cardagg 不能卡老值显示 Red 横条。
+		// WeakBio: offline 过滤 + 30min UpdatedAt staleness。
 		weakBioFresh := online && ts.UpdatedAt > 0 && nowMs-ts.UpdatedAt <= WeakBioSnapshotStaleMs
 		if weakBioFresh && ts.WeakBiometricSignal > out.WeakBiometricSignal {
 			out.WeakBiometricSignal = ts.WeakBiometricSignal
 		}
 		if ts.UpdatedAt > out.UpdatedAt {
 			out.UpdatedAt = ts.UpdatedAt
+		}
+		if online && ts.UpdatedAt > anchorWinnerTs && ts.SpatialAnchor != "" {
+			anchorWinnerTs = ts.UpdatedAt
+			out.SpatialAnchor = ts.SpatialAnchor
 		}
 	}
 	// v2 path: entity-keyed snapshot（cardID 自身 prefix CIDR）；当 sensor v2 按 entity 聚合发 target.state 时进
@@ -265,6 +270,9 @@ func (m *TargetMerger) mergeForCard(ctx context.Context, cardID string, v visito
 		}
 		if entityTs.UpdatedAt > out.UpdatedAt {
 			out.UpdatedAt = entityTs.UpdatedAt
+		}
+		if entityTs.UpdatedAt > anchorWinnerTs && entityTs.SpatialAnchor != "" {
+			out.SpatialAnchor = entityTs.SpatialAnchor
 		}
 	}
 	return out

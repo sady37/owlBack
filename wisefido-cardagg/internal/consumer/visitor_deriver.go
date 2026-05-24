@@ -55,9 +55,9 @@ type cardStatusWriter interface {
 	WriteCardStatus(ctx context.Context, status *card.CardStatus) error
 }
 
-// parentRefresher 抽象父 unit 卡刷新（测试可 mock）。*UnitPicker 隐式满足。
-type parentRefresher interface {
-	RefreshParent(ctx context.Context, cardID string)
+// displayRebuilder 抽象 display 重派（测试可 mock）。*DisplayRebuilder 隐式满足。
+type displayRebuilder interface {
+	Rebuild(ctx context.Context, cardID string)
 }
 
 // visitorMergerApplier 抽象 merger 接口（测试可 mock）。*service.TargetMerger 隐式满足。
@@ -89,7 +89,7 @@ type VisitorDeriver struct {
 	bedPeople visitorBedPeopleSource
 	store     visitorHistoryStore // 可 nil（未 wire DB 时退化为纯内存累加）
 	writer    cardStatusWriter    // 可 nil；用于午夜 reset 时主动落 hash 清残留
-	picker    parentRefresher     // 可 nil；午夜 reset 写 hash 后同步刷父 unit 卡
+	picker    displayRebuilder     // 可 nil；午夜 reset 写 hash 后同步刷父 unit 卡
 	logger    *zap.Logger
 
 	interval time.Duration
@@ -118,7 +118,7 @@ func NewVisitorDeriver(
 	bedPeople visitorBedPeopleSource,
 	store visitorHistoryStore,
 	writer cardStatusWriter,
-	picker parentRefresher,
+	picker displayRebuilder,
 	interval time.Duration,
 	logger *zap.Logger,
 ) *VisitorDeriver {
@@ -295,7 +295,7 @@ func (v *VisitorDeriver) tickCard(ctx context.Context, cardID string, peopleCoun
 				v.logger.Warn("visitor_deriver: midnight hash write failed",
 					zap.String("cid", cardID), zap.Error(err))
 			} else if v.picker != nil {
-				v.picker.RefreshParent(ctx, cardID)
+				v.picker.Rebuild(ctx, cardID)
 			}
 		}
 	}

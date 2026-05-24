@@ -26,11 +26,10 @@ type EnabledAlarm struct {
 // Load path: alarm_device.monitor_config → parse → filter enabled.
 // Fallback: alarm.DefaultAlarmSetting by device type.
 type AlarmEnablementCache struct {
-	mu        sync.RWMutex
-	cache     map[string]*deviceEnablement
-	db        *sql.DB
-	metaCache *DeviceMetaCache
-	logger    *zap.Logger
+	mu     sync.RWMutex
+	cache  map[string]*deviceEnablement
+	db     *sql.DB
+	logger *zap.Logger
 }
 
 type deviceEnablement struct {
@@ -38,12 +37,11 @@ type deviceEnablement struct {
 	enabled map[string]*EnabledAlarm // alarm_type → item
 }
 
-func NewAlarmEnablementCache(db *sql.DB, metaCache *DeviceMetaCache, logger *zap.Logger) *AlarmEnablementCache {
+func NewAlarmEnablementCache(db *sql.DB, logger *zap.Logger) *AlarmEnablementCache {
 	return &AlarmEnablementCache{
-		cache:     make(map[string]*deviceEnablement),
-		db:        db,
-		metaCache: metaCache,
-		logger:    logger,
+		cache:  make(map[string]*deviceEnablement),
+		db:     db,
+		logger: logger,
 	}
 }
 

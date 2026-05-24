@@ -18,22 +18,21 @@ import (
 	"go.uber.org/zap"
 )
 
-func newTestMetaCache(t *testing.T, cardID string, deviceAddrs []string) *DeviceMetaCache {
+func newTestMetaCache(t *testing.T, cardID string, deviceAddrs []string) *SpatialCache {
 	t.Helper()
-	mc := NewDeviceMetaCache(nil, zap.NewNop())
-	devs := make(map[string]*DeviceMeta, len(deviceAddrs))
+	sc := NewSpatialCache(nil, zap.NewNop())
+	cardPfx, err := netip.ParsePrefix(cardID)
+	if err != nil {
+		t.Fatalf("parse cardID %q: %v", cardID, err)
+	}
+	sc.cards[cardPfx] = &CardMeta{CardID: cardPfx}
 	for _, addrStr := range deviceAddrs {
 		addr, _ := netip.ParseAddr(addrStr)
-		dm := &DeviceMeta{DeviceAddr: addr, RuntimeStatus: make(map[string]string)}
-		dm.fillFromAddr()
-		devs[addrStr] = dm
+		devPfx := netip.PrefixFrom(addr, 128)
+		sc.entries[devPfx] = &Entry{Prefix: devPfx, CardID: cardPfx}
+		sc.devices[addr] = &DeviceMeta{DeviceAddr: addr}
 	}
-	mc.cards[cardID] = &CardMeta{
-		CardID:   cardID,
-		Devices:  devs,
-		dbLoaded: true,
-	}
-	return mc
+	return sc
 }
 
 // -----------------------------------------------------------------------------
@@ -61,7 +60,7 @@ func TestOnDeviceTarget_CIDRSubject_TreatsAsCardID(t *testing.T) {
 }
 
 func TestOnDeviceTarget_EmptySubject_ReturnsEmpty(t *testing.T) {
-	m := NewTargetMerger(NewDeviceMetaCache(nil, zap.NewNop()))
+	m := NewTargetMerger(NewSpatialCache(nil, zap.NewNop()))
 	gotID, merged := m.OnDeviceTarget(context.Background(), "", &card.TargetState{})
 	if gotID != "" || merged != nil {
 		t.Errorf("empty subject should return (\"\", nil), got (%q, %+v)", gotID, merged)
@@ -69,7 +68,7 @@ func TestOnDeviceTarget_EmptySubject_ReturnsEmpty(t *testing.T) {
 }
 
 func TestOnDeviceTarget_InvalidSubject_ReturnsEmpty(t *testing.T) {
-	m := NewTargetMerger(NewDeviceMetaCache(nil, zap.NewNop()))
+	m := NewTargetMerger(NewSpatialCache(nil, zap.NewNop()))
 	gotID, merged := m.OnDeviceTarget(context.Background(), "garbage", &card.TargetState{})
 	if gotID != "" || merged != nil {
 		t.Errorf("invalid subject should return (\"\", nil), got (%q, %+v)", gotID, merged)
@@ -77,7 +76,7 @@ func TestOnDeviceTarget_InvalidSubject_ReturnsEmpty(t *testing.T) {
 }
 
 func TestOnDeviceTarget_NilTs_ReturnsEmpty(t *testing.T) {
-	m := NewTargetMerger(NewDeviceMetaCache(nil, zap.NewNop()))
+	m := NewTargetMerger(NewSpatialCache(nil, zap.NewNop()))
 	gotID, merged := m.OnDeviceTarget(context.Background(), "fd00:0:3:111:3:101::/96", nil)
 	if gotID != "" || merged != nil {
 		t.Errorf("nil ts should return (\"\", nil), got (%q, %+v)", gotID, merged)

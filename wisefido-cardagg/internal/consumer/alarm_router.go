@@ -33,14 +33,6 @@ type EnablementResolver interface {
 	Resolve(ctx context.Context, tenantPref, deviceAddr, alarmType string) (level string, enabled bool)
 }
 
-// MetaResolver cardID + addr hint → 解析后的 device_addr；device_addr → cardID LPM 反查；
-// HasBed/IsBathroom 反查卡静态属性。service.DeviceMetaCache 实现。
-type MetaResolver interface {
-	ResolveDeviceAddr(ctx context.Context, cardID, hint string) string
-	LookupCardByDevice(ctx context.Context, deviceAddr string) string
-	CardHasBed(ctx context.Context, cardID string) bool
-	CardIsBathroom(ctx context.Context, cardID string) bool
-}
 
 // DeviceSignal device 类 alarm/recovery 通知；service.DeviceStatusTracker 实现。
 // alarm_router 不直接改 device:status hash，由 tracker 单 writer 守门。
@@ -80,21 +72,21 @@ type AlarmRouter struct {
 	writer    *card.Writer
 	reader    *card.Reader
 	enable    EnablementResolver
-	meta      MetaResolver
+	cache     *service.SpatialCache
 	devSignal DeviceSignal
-	picker    *UnitPicker
+	rebuilder *DisplayRebuilder
 	logger    *zap.Logger
 }
 
-func NewAlarmRouter(db *sql.DB, writer *card.Writer, reader *card.Reader, enable EnablementResolver, meta MetaResolver, devSignal DeviceSignal, picker *UnitPicker, logger *zap.Logger) *AlarmRouter {
+func NewAlarmRouter(db *sql.DB, writer *card.Writer, reader *card.Reader, enable EnablementResolver, cache *service.SpatialCache, devSignal DeviceSignal, rebuilder *DisplayRebuilder, logger *zap.Logger) *AlarmRouter {
 	return &AlarmRouter{
 		db:        db,
 		writer:    writer,
 		reader:    reader,
 		enable:    enable,
-		meta:      meta,
+		cache:     cache,
 		devSignal: devSignal,
-		picker:    picker,
+		rebuilder: rebuilder,
 		logger:    logger,
 	}
 }
@@ -112,14 +104,18 @@ func (r *AlarmRouter) Handle(ctx context.Context, msg *owlredis.IoTStreamMessage
 	}
 
 	ac := service.AddrCtxFromMsg(msg)
-	resolvedAddr := r.meta.ResolveDeviceAddr(ctx, msg.SubjectEntity, ac.DeviceAddr)
+	resolvedAddr := ac.DeviceAddr
 	if resolvedAddr == "" {
 		return nil
 	}
-	// cardID 解析一次：sensor 等 producer 留 SubjectEntity 空时走 cardagg LPM 兜底
+	// cardID 解析：sensor producer 留 SubjectEntity 空时通过 entry 反查 device → card_id
 	cardID := msg.SubjectEntity
 	if cardID == "" {
-		cardID = r.meta.LookupCardByDevice(ctx, resolvedAddr)
+		if addr := msg.DeviceAddr; addr.IsValid() {
+			if owner := r.cache.LookupCardByDevice(addr); owner.IsValid() {
+				cardID = owner.String()
+			}
+		}
 	}
 
 	if strings.Contains(strings.ToLower(msg.DeviceType), "radar") {
@@ -248,31 +244,20 @@ func (r *AlarmRouter) autoResolve(ctx context.Context, msg *owlredis.IoTStreamMe
 
 // writeAlarmState 写 AlarmState 的同时合并 prev 状态重算 Display，单次 WriteCardStatus 落两块。
 // Display 由 BuildCardDisplay 从 AlarmState.PopAlarm 派生 Section1DownRight 简称。
-// 写完后触发 /80 父卡 picker 重算（子卡 alarm 翻转影响 unit 视图）。
+// writeAlarmState 写 alarm state，display + 父卡重算交给 picker.RebuildDisplay。
 func (r *AlarmRouter) writeAlarmState(ctx context.Context, cardID string, cas *card.CardAlarmState) error {
 	if cas == nil {
 		return nil
 	}
-	as := cas.ToAlarmState()
-	merged := &card.CardStatus{CardID: cardID, AlarmState: as}
-	if prev, err := r.reader.ReadCardStatus(ctx, cardID); err == nil && prev != nil {
-		merged.RoomState = prev.RoomState
-		merged.BedState = prev.BedState
-		merged.Target = prev.Target
-	}
 	out := &card.CardStatus{
 		CardID:     cardID,
-		AlarmState: as,
-		Display: BuildCardDisplay(merged,
-			r.meta != nil && r.meta.CardHasBed(ctx, cardID),
-			r.meta != nil && r.meta.CardIsBathroom(ctx, cardID)),
+		AlarmState: cas.ToAlarmState(),
 	}
 	if err := r.writer.WriteCardStatus(ctx, out); err != nil {
 		return err
 	}
-	if r.picker != nil {
-		r.picker.RefreshParent(ctx, cardID)
-		r.picker.RefreshSelf(ctx, cardID)
+	if r.rebuilder != nil {
+		r.rebuilder.Rebuild(ctx, cardID)
 	}
 	return nil
 }

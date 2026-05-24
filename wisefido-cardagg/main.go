@@ -79,28 +79,25 @@ func main() {
 	reader := card.NewReader(redisClient)
 
 	monitorBuf := service.NewMonitorBuffer()
-	metaCache := service.NewDeviceMetaCache(db, logger)
-	if err := metaCache.BuildDeviceIndex(ctx); err != nil {
-		logger.Warn("device index build", zap.Error(err))
+	spatialCache := service.NewSpatialCache(db, logger)
+	if err := spatialCache.LoadAll(ctx); err != nil {
+		logger.Warn("spatial cache load", zap.Error(err))
 	}
-	enablementCache := service.NewAlarmEnablementCache(db, metaCache, logger)
+	enablementCache := service.NewAlarmEnablementCache(db, logger)
 
 	deviceTracker := consumer.NewDeviceStatusTracker(writer, logger)
 	go deviceTracker.Run(ctx)
 
-	monitorHandler := consumer.NewMonitorHandler(monitorBuf, writer, deviceTracker, metaCache, logger)
+	monitorHandler := consumer.NewMonitorHandler(monitorBuf, writer, deviceTracker, spatialCache, logger)
 	go monitorHandler.RunLoop(ctx)
 
-	unitPicker := consumer.NewUnitPicker(db, redisClient, writer, reader, metaCache, logger)
-	alarmRouter := consumer.NewAlarmRouter(db, writer, reader, enablementCache, metaCache, deviceTracker, unitPicker, logger)
+	displayRebuilder := consumer.NewDisplayRebuilder(spatialCache, reader, writer, logger)
+	alarmRouter := consumer.NewAlarmRouter(db, writer, reader, enablementCache, spatialCache, deviceTracker, displayRebuilder, logger)
 	// TargetMerger：per-device → owning card max-merge（LastActive / Standing / WeakBio）。
-	// 详 [[target_state_per_device]]。VisitorDeriver 通过 ApplyVisitor 注入 visitor 三字段。
-	// 注入 deviceTracker.IsOnline 作为 LastActive merge 的 offline 过滤器。
-	targetMerger := service.NewTargetMerger(metaCache)
+	targetMerger := service.NewTargetMerger(spatialCache)
 	targetMerger.SetOnlineChecker(deviceTracker.IsOnline)
 	// BedPeopleTracker：firmware NumberPeople event → per /96 bed-bound radar device snapshot。
-	// VisitorDeriver bed-level path 读它判定 share/private bed 卡 visitor（doc §4.4）。
-	bedPeopleTracker := service.NewBedPeopleTracker(metaCache)
+	bedPeopleTracker := service.NewBedPeopleTracker(spatialCache)
 	bedPeopleTracker.SetOnlineChecker(deviceTracker.IsOnline)
 	eventHandler := consumer.NewEventHandler(bedPeopleTracker, logger)
 	// AIOverrideCache (S5a): sensor 派生 track verdict (ghost 判定等) 缓存 + 合并到
@@ -116,17 +113,16 @@ func main() {
 	go aiOverrides.RunGCLoop(ctx.Done(), 30*time.Second)
 	aiVerdictHandler := consumer.NewAIVerdictHandler(redisClient, aiOverrides, logger)
 	aiVerdictHandler.Start(ctx)
-	sensorStateProjector := consumer.NewSensorStateProjector(writer, reader, unitPicker, metaCache, logger)
+	sensorStateProjector := consumer.NewSensorStateProjector(writer, reader, displayRebuilder, spatialCache, logger)
 	sensorStateProjector.SetTargetMerger(targetMerger)
-	cardLifecycle := consumer.NewCardLifecycle(db, writer, reader, redisClient, metaCache, enablementCache, unitPicker, logger)
-	cardLifecycle.SetTargetMerger(targetMerger)        // 卡变更 / 设备解绑时清 device snapshot
-	cardLifecycle.SetDeviceStatusTracker(deviceTracker) // rebind 时清旧 addr device:status，防止 watchdog 误标 offline
+	cardLifecycle := consumer.NewCardLifecycle(db, writer, reader, redisClient, spatialCache, enablementCache, displayRebuilder, logger)
+	cardLifecycle.SetTargetMerger(targetMerger)
+	cardLifecycle.SetDeviceStatusTracker(deviceTracker)
 	alarmDeviceHandler := consumer.NewAlarmDeviceHandler(enablementCache, logger)
 	alarmProcessHandler := consumer.NewAlarmProcessHandler(db, writer, logger)
 
-	// cardagg 启动 boot-time rebuild：从 PG cards 表枚举所有卡，每张 BuildCardDisplay 后写 Redis。
-	// DB 是真相源；Redis 可能持上一代 schema 的 stale display 跨重启遗留，必须覆盖。
-	consumer.RebuildAllFromDB(ctx, db, reader, writer, unitPicker, metaCache, logger)
+	// cardagg 启动 boot-time rebuild：从 spatialCache 枚举所有卡，每张 Rebuild 写 display。
+	displayRebuilder.RebuildAll(ctx)
 
 	consumer.SubscribeAll(ctx, logger, redisClient, consumer.Handlers{
 		Monitor:      monitorHandler,
@@ -142,14 +138,14 @@ func main() {
 	// 跨重启 stale display（详 display_rebuilder.go）。
 	// 默认 300s（生产）；dev 可在 config.yaml display.rebuild_interval_sec 调低加速验证。
 	displayRebuildInterval := time.Duration(cfg.Display.RebuildIntervalSec) * time.Second
-	go consumer.RunPeriodicRebuild(ctx, displayRebuildInterval, db, reader, writer, unitPicker, metaCache, logger)
+	go displayRebuilder.RunPeriodic(ctx, displayRebuildInterval)
 
 	// VisitorDeriver 60s tick：双路径（bed-bound radar bed cards 优先 / Private /88 room cards 兜底）。
 	// 详 doc/card_display.md §4.4 + [[visitor_belongs_to_cardagg]]。
 	// visitor_history 持久化：上升沿 INSERT / 下降沿/午夜 close UPDATE。
 	// writer/picker 用于午夜跨日时主动落 hash（凌晨无 activity event 时 hash 会卡昨日字段）。
 	visitorStore := consumer.NewVisitorHistorySQLStore(db)
-	visitorDeriver := consumer.NewVisitorDeriver(metaCache, reader, targetMerger, bedPeopleTracker, visitorStore, writer, unitPicker, 0, logger)
+	visitorDeriver := consumer.NewVisitorDeriver(spatialCache, reader, targetMerger, bedPeopleTracker, visitorStore, writer, displayRebuilder, 0, logger)
 	go visitorDeriver.Run(ctx)
 
 	sigCh := make(chan os.Signal, 1)
