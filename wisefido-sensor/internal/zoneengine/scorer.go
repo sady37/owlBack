@@ -47,8 +47,12 @@ type Scorer struct {
 // 时间尺度匹配。HR/RR sustain 自然会持续补强，不会跑到衰减完。
 const DecayWindowMs = 120_000
 
-// SustainStaleMs sustain evidence（HR/RR）超过这个时间没刷新即视为停。
-const SustainStaleMs = 10_000
+// SustainStaleMs sustain evidence 超过这个时间没刷新即视为停。
+//
+// 60s = sleepad 4G 设备最大上报周期 30s + 一次丢包余量。WiFi 设备 ~2-5s 一帧远小于此。
+// 2026-05-24 从 10s 改 60s：旧值小于设备上报间隔，导致 sustain 必然 stale；配合 self_contradiction
+// window 15s 必触发 rollback Vacant，造成 bed FSM 5-7s 周期翻转（见 doc/cases/yang-r-flip-0524）。
+const SustainStaleMs = 60_000
 
 // NewScorer 创建 scorer。bedBucket 仅在 Bed zone + LeaveRules.SizeDependent=true 时使用，
 // 其他 zone 传 "" 即可。
@@ -81,6 +85,13 @@ type ScoreSnapshot struct {
 	EnterSource  string
 	LeaveSource  string
 	SustainAlive bool
+}
+
+// lastSustainTsForDebug 供 debug log 用，读 sustainTs 加锁。
+func (s *Scorer) lastSustainTsForDebug() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sustainTs
 }
 
 // LastEvidenceTs 最近一次"被接受的 evidence"时间戳（max(enterTs, leaveTs, sustainTs)）。

@@ -634,6 +634,154 @@ func TestEngine_P1_2_HotReloadPreservesScoreState(t *testing.T) {
 	}
 }
 
+// stubBedMode 测试用 BedModeLookup，返回固定 mode。
+type stubBedMode struct{ m BedMode }
+
+func (s stubBedMode) BedMode(string) BedMode { return s.m }
+
+// TestEngine_Bayesian_SleepaceInBedFlipsOccupied — 验证 Bayesian 路径下 sleepace InBed → bed Occupied。
+func TestEngine_Bayesian_SleepaceInBedFlipsOccupied(t *testing.T) {
+	e := newTestEngine()
+	e.SetUseBedBayesian(true, stubBedMode{m: BedModeFacility})
+	cap := &captureListener{}
+	e.AddListener(cap)
+
+	now := int64(1_000_000_000_000)
+	bedID := "fd00:0:3:111:3:101::/96"
+	e.Apply(SignalEvidence{
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
+		Source: "sleepace", Kind: "enter", Ts: now,
+	})
+
+	events := cap.Events()
+	if len(events) < 1 {
+		t.Fatalf("expected ≥1 bed flip event, got %d", len(events))
+	}
+	var bedFlip *ZoneEvent
+	for i := range events {
+		if events[i].ZoneType == ZoneTypeBed && events[i].Transition == TransitionOccupied {
+			bedFlip = &events[i]
+			break
+		}
+	}
+	if bedFlip == nil {
+		t.Fatalf("no bed Occupied event captured; got %+v", events)
+	}
+	if bedFlip.NewState.Score < 70 {
+		t.Errorf("bayesian bed flip should report Confidence ≥ 70, got %d", bedFlip.NewState.Score)
+	}
+}
+
+// TestEngine_Bayesian_RepairDropsStaleBed — Bayesian path 下 stale_bed 巡检走 LastEvidenceTs() 而非 z.scorer。
+// 验证 §6.3 audit item："repairSubsetInvariant 改用 bedBayesian.LastEvidenceTs() 后语义一致"。
+func TestEngine_Bayesian_RepairDropsStaleBed(t *testing.T) {
+	rules := DefaultRules()
+	rules.Feedback.SubsetInvariant.StaleBedThresholdSec = 5
+	rules.Feedback.SubsetInvariant.RepairIntervalSec = 1
+	e := NewEngine(rules, StaticBedSizeLookup{Bucket: "small"}, zap.NewNop())
+	e.SetUseBedBayesian(true, stubBedMode{m: BedModeFacility})
+	cap := &captureListener{}
+	e.AddListener(cap)
+
+	now := int64(1_000_000_000_000)
+	bedID := "fd00:0:3:111:3:101::/96"
+	roomID := "fd00:0:3:111:3:100::/88"
+
+	// bed → Occupied via Bayesian path
+	e.Apply(SignalEvidence{
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
+		Source: "sleepace", Kind: "enter", Ts: now,
+	})
+	// 人为打 room Vacant（room 仍走 legacy）
+	e.mu.Lock()
+	if roomInst, ok := e.states[StateKey{ZoneType: ZoneTypeRoom, ZoneID: roomID}]; ok {
+		roomInst.state.Status = StatusVacant
+		roomInst.state.Occupied = false
+		roomInst.stateMachine.ForceSet(StatusVacant, now)
+	}
+	e.mu.Unlock()
+
+	// 等 10s，远超 stale_threshold=5s
+	tickTs := now + 10_000
+	e.Tick(tickTs)
+
+	hasStaleVacate := false
+	for _, ev := range cap.Events() {
+		if ev.ZoneType == ZoneTypeBed && ev.Transition == TransitionVacant &&
+			ev.NewState.LastSource == "invariant_repair_stale_bed" {
+			hasStaleVacate = true
+			break
+		}
+	}
+	if !hasStaleVacate {
+		t.Errorf("Bayesian stale bed should be force-vacated by repair via bedBayesian.LastEvidenceTs()")
+	}
+
+	st, _ := e.GetState(StateKey{ZoneType: ZoneTypeBed, ZoneID: bedID})
+	if st.Status != StatusVacant {
+		t.Errorf("stale Bayesian bed should be Vacant after repair, got %v", st.Status)
+	}
+}
+
+// TestEngine_Bayesian_HomeModeUsesHigherInBedThreshold — home 模式用 0.75 阈值，单 InBed event L=+2.20 (P=0.90) 仍可过；
+// 但需确认 facility 单 InBed event L=+2.94 (P=0.95) > 0.75 同样过。这里测 home 模式 single InBed → InBed 仍成立。
+func TestEngine_Bayesian_HomeModeUsesHigherInBedThreshold(t *testing.T) {
+	e := newTestEngine()
+	e.SetUseBedBayesian(true, stubBedMode{m: BedModeHome})
+	cap := &captureListener{}
+	e.AddListener(cap)
+
+	now := int64(1_000_000_000_000)
+	bedID := "fd00:0:3:111:3:101::/96"
+	e.Apply(SignalEvidence{
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
+		Source: "sleepace", Kind: "enter", Ts: now,
+	})
+
+	st, _ := e.GetState(StateKey{ZoneType: ZoneTypeBed, ZoneID: bedID})
+	// Home mode: LR=2.20 → P=sigmoid(2.20)=0.900 > 0.75 → InBed
+	if st.Status != StatusOccupied {
+		t.Errorf("home mode single sleepad InBed (P=0.90 > 0.75) should flip Occupied, got %v", st.Status)
+	}
+	if st.BayesianProb < 0.75 {
+		t.Errorf("home mode P should be ≥ 0.75 to trigger InBed, got %.4f", st.BayesianProb)
+	}
+}
+
+// TestEngine_Bayesian_DualLeaveFlipsVacant — sleepad + radar LeftBed 同时 → 立即 Vacant（facility，case 4 风格）。
+func TestEngine_Bayesian_DualLeaveFlipsVacant(t *testing.T) {
+	e := newTestEngine()
+	e.SetUseBedBayesian(true, stubBedMode{m: BedModeFacility})
+	cap := &captureListener{}
+	e.AddListener(cap)
+
+	now := int64(1_000_000_000_000)
+	bedID := "fd00:0:3:111:3:101::/96"
+	// 先 InBed 让床进入 Occupied
+	e.Apply(SignalEvidence{
+		ZoneType: ZoneTypeBed, ZoneID: bedID, Source: "sleepace", Kind: "enter", Ts: now,
+	})
+	// 6 分钟后双源 LeftBed
+	leftTs := now + 360_000
+	e.Apply(SignalEvidence{
+		ZoneType: ZoneTypeBed, ZoneID: bedID, Source: "sleepace", Kind: "leave", Ts: leftTs,
+	})
+	e.Apply(SignalEvidence{
+		ZoneType: ZoneTypeBed, ZoneID: bedID, Source: "radar", Kind: "leave", Ts: leftTs,
+	})
+
+	var lastBedFlip *ZoneEvent
+	for _, ev := range cap.Events() {
+		if ev.ZoneType == ZoneTypeBed {
+			tmp := ev
+			lastBedFlip = &tmp
+		}
+	}
+	if lastBedFlip == nil || lastBedFlip.Transition != TransitionVacant {
+		t.Fatalf("expected last bed flip = Vacant, got %+v", lastBedFlip)
+	}
+}
+
 func TestEngine_DeriveRoomZoneIDFromBed(t *testing.T) {
 	cases := []struct {
 		bed  string

@@ -67,6 +67,13 @@ func (l *BathroomLookup) IsBathroom(roomZoneID string) bool {
 	return is
 }
 
+// InvalidateAll 清空整个 cache（hot-reload / schema 变更后用）。
+func (l *BathroomLookup) InvalidateAll() {
+	l.mu.Lock()
+	l.cache = make(map[string]bathroomCacheEntry)
+	l.mu.Unlock()
+}
+
 func (l *BathroomLookup) queryIsBathroom(roomZoneID string) bool {
 	if l.db == nil {
 		return false

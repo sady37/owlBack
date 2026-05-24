@@ -24,7 +24,9 @@ import (
 type Engine struct {
 	rulesStore        *RulesStore
 	logger            *zap.Logger
-	bedSizeLookup     BedSizeLookup // 注入：根据 bedZoneID 查床型 bucket
+	bedSizeLookup     BedSizeLookup // 注入：根据 bedZoneID 查床型 bucket（legacy bed FSM 用）
+	bedModeLookup     BedModeLookup // 注入：根据 bedZoneID 查 BedMode（Bayesian 用）；nil → Facility
+	useBedBayesian    bool          // 切到贝叶斯 bed FSM；默认 false 用 legacy Scorer/StateMachine
 	listeners         []ZoneEventListener
 	feedbackListeners []FeedbackListener
 
@@ -39,6 +41,12 @@ type Engine struct {
 	lastInvariantRepairTs int64
 }
 
+// BedModeLookup 按 /96 bed prefix 查 BedMode（Facility=hospital bed / Home=B2C 大床）。
+// 实现：UnitPropertyLookup 包一层（bed → /80 unit prefix → unit_property → BedMode）。
+type BedModeLookup interface {
+	BedMode(bedZoneID string) BedMode
+}
+
 // BedSizeLookup bed zone 的床型查询接口；engine 用它决定 Scorer 的 bedBucket。
 // 实现侧（如 sensor 主进程）注入查 DB / cache 的具体逻辑；测试侧注入 stub。
 type BedSizeLookup interface {
@@ -46,10 +54,14 @@ type BedSizeLookup interface {
 }
 
 // zoneInstance 单 (zoneType, zoneID) 的运行时实例。物理寻址，多源同 FSM。
+//
+// bed zone 在 engine.useBedBayesian=true 时使用 bedBayesian 字段，scorer/stateMachine 留 nil；
+// 否则使用 legacy scorer/stateMachine 路径。
 type zoneInstance struct {
 	key          StateKey
 	scorer       *Scorer
 	stateMachine *StateMachine
+	bedBayesian  *BedBayesianScorer // 仅 bed + useBedBayesian=true 时非 nil
 	state        ZoneState
 	recentTrace  []SignalEvidence // 最近 N 条 evidence，供 ZoneEvent.Trace
 }
@@ -83,6 +95,15 @@ func (e *Engine) AddListener(l ZoneEventListener) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.listeners = append(e.listeners, l)
+}
+
+// SetUseBedBayesian 切 bed FSM 引擎。enabled=true → ZoneTypeBed 走 BedBayesianScorer；
+// modeLookup nil → 所有 bed 默认 Facility。仅启动期调用一次。
+func (e *Engine) SetUseBedBayesian(enabled bool, modeLookup BedModeLookup) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.useBedBayesian = enabled
+	e.bedModeLookup = modeLookup
 }
 
 // AddFeedbackListener 注册 FeedbackEvent 监听者。
@@ -129,17 +150,23 @@ func (e *Engine) GetState(key StateKey) (ZoneState, bool) {
 // SleepStageConsumer 用：sleepace 报 SleepStage 时若 bed FSM 已离床（Vacant），视作 OOB 异常
 // → drop event + emit device_failure alarm（C 项 deferred 收口；详 [[cardagg_v1_to_v2_migration_audit]] S4）。
 func (e *Engine) IsBedOccupied(spatialPrefix string) bool {
+	return e.IsZoneOccupied(ZoneTypeBed, spatialPrefix)
+}
+
+// IsZoneOccupied 通用查询：(zoneType, spatial prefix) 对应的 FSM 是否在 IsPresent 态。
+// 无该 entry → false。home-mode sleepad LeftBed 协同等用：判 room 还在不在用，决定是否 suppress
+// sleepad 假阳 LeftBed。
+func (e *Engine) IsZoneOccupied(zoneType ZoneType, spatialPrefix string) bool {
 	if spatialPrefix == "" {
 		return false
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	for k, z := range e.states {
-		if k.ZoneType == ZoneTypeBed && k.ZoneID == spatialPrefix {
-			return z.state.IsPresent()
-		}
+	z, ok := e.states[StateKey{ZoneType: zoneType, ZoneID: spatialPrefix}]
+	if !ok {
+		return false
 	}
-	return false
+	return z.state.IsPresent()
 }
 
 // Apply 引擎主入口：接收一条 SignalEvidence，可能触发翻转沿。
@@ -178,6 +205,30 @@ func (e *Engine) Apply(ev SignalEvidence) {
 			Trace:      []SignalEvidence{ev},
 			Ts:         now,
 		})
+		return
+	}
+
+	// Bayesian bed FSM 路径
+	if z.bedBayesian != nil {
+		z.appendTrace(ev)
+		if !z.bedBayesian.IngestEvidence(ev) {
+			e.mu.Unlock()
+			return
+		}
+		prev := z.state
+		z.state.LastSource = ev.Source // FE BedConfidence ladder 依赖 LastSource (sleepace=90/radar=60)
+		bayesianEvent := e.applyBedBayesianLocked(z, now)
+		listeners := append([]ZoneEventListener(nil), e.listeners...)
+		subsetEvents := e.maybeReconcileSubset(ev.ZoneType, z.state, now, rules)
+		e.mu.Unlock()
+		if bayesianEvent != nil {
+			bayesianEvent.PrevState = prev
+			bayesianEvent.Trace = z.copyTrace()
+			e.emitEvent(listeners, *bayesianEvent)
+		}
+		for _, sub := range subsetEvents {
+			e.emitEvent(listeners, sub)
+		}
 		return
 	}
 
@@ -254,6 +305,16 @@ func (e *Engine) Tick(nowMs int64) {
 	var feedbackEvents []FeedbackEvent
 
 	for _, z := range e.states {
+		if z.bedBayesian != nil {
+			prev := z.state
+			ev := e.applyBedBayesianLocked(z, nowMs)
+			if ev != nil {
+				ev.PrevState = prev
+				ev.Trace = z.copyTrace()
+				flippedEvents = append(flippedEvents, *ev)
+			}
+			continue
+		}
 		newScore := z.scorer.Score(nowMs)
 		res := z.stateMachine.Evaluate(newScore, nowMs)
 		if res.Flipped {
@@ -419,21 +480,38 @@ func (e *Engine) repairSubsetInvariant(nowMs int64, rules *Rules) []ZoneEvent {
 		}
 
 		// 不一致：bed.IsPresent + room.Vacant
-		// 注意：用 scorer.LastEvidenceTs() 不用 z.state.UpdatedAt —— 后者每秒被 Tick 刷新，
+		// 注意：用 LastEvidenceTs() 不用 z.state.UpdatedAt —— 后者每秒被 Tick 刷新，
 		// 永远显示新鲜。真正的 staleness 看是否真有 evidence 进来。
-		bedAgeMs := nowMs - z.scorer.LastEvidenceTs()
+		var lastEvidenceTs int64
+		if z.bedBayesian != nil {
+			lastEvidenceTs = z.bedBayesian.LastEvidenceTs()
+		} else {
+			lastEvidenceTs = z.scorer.LastEvidenceTs()
+		}
+		bedAgeMs := nowMs - lastEvidenceTs
 		stale := staleThresholdMs > 0 && bedAgeMs > staleThresholdMs
 
 		if stale {
 			// stale 路径：信 room，强制降 bed=Vacant
 			prev := z.state
-			z.stateMachine.ForceSet(StatusVacant, nowMs)
+			if z.stateMachine != nil {
+				z.stateMachine.ForceSet(StatusVacant, nowMs)
+			}
 			z.state.UpdatedAt = nowMs
 			z.state.LastSource = "invariant_repair_stale_bed"
 			applyTransitionToState(&z.state, TransitionResult{
 				NewStatus:  StatusVacant,
 				Transition: TransitionVacant,
 			}, nowMs)
+			// DEBUG: subset_invariant 强制 Vacant trace
+			if e.logger != nil {
+				e.logger.Info("zone bed flip (subset_invariant stale_bed)",
+					zap.String("zone_id", bedKey.ZoneID),
+					zap.Int64("bed_age_ms", bedAgeMs),
+					zap.Int64("stale_threshold_ms", staleThresholdMs),
+					zap.Int64("ts_ms", nowMs),
+				)
+			}
 			events = append(events, ZoneEvent{
 				ZoneType:   ZoneTypeBed,
 				ZoneID:     bedKey.ZoneID,
@@ -476,18 +554,26 @@ func (e *Engine) getOrCreate(zt ZoneType, zid string) *zoneInstance {
 	}
 	rules := e.rulesStore.Get()
 	zoneRules := e.zoneRulesFor(rules, zt)
-	bedBucket := ""
-	if zt == ZoneTypeBed && e.bedSizeLookup != nil {
-		bedBucket = e.bedSizeLookup.BedSizeBucket(zid)
-	}
 	z := &zoneInstance{
-		key:          key,
-		scorer:       NewScorer(zoneRules, bedBucket),
-		stateMachine: NewStateMachine(&zoneRules.StateMachine),
+		key: key,
 		state: ZoneState{
 			ZoneType: zt,
 			ZoneID:   zid,
 		},
+	}
+	if zt == ZoneTypeBed && e.useBedBayesian {
+		z.bedBayesian = NewBedBayesianScorer()
+		if e.bedModeLookup != nil {
+			z.bedBayesian.SetMode(e.bedModeLookup.BedMode(zid))
+		}
+		// 注：InitPriorByHour 由 wiring 注入 UnitContextLookup 后单独调用，这里不依赖时区。
+	} else {
+		bedBucket := ""
+		if zt == ZoneTypeBed && e.bedSizeLookup != nil {
+			bedBucket = e.bedSizeLookup.BedSizeBucket(zid)
+		}
+		z.scorer = NewScorer(zoneRules, bedBucket)
+		z.stateMachine = NewStateMachine(&zoneRules.StateMachine)
 	}
 	e.states[key] = z
 	return z
@@ -577,6 +663,49 @@ func deriveRoomZoneIDFromBed(bedCIDR string) string {
 		return ""
 	}
 	return netip.PrefixFrom(p.Addr(), 88).Masked().String()
+}
+
+// applyBedBayesianLocked 评估 Bayesian bed FSM 并把 Decision 投射到 ZoneState；
+// 若 Status 翻转返回 ZoneEvent（caller 补 PrevState/Trace 后 emit），否则 nil。caller 必须持锁。
+func (e *Engine) applyBedBayesianLocked(z *zoneInstance, nowMs int64) *ZoneEvent {
+	z.bedBayesian.Tick(nowMs)
+	decision := z.bedBayesian.Decision(nowMs)
+
+	prevStatus := z.state.Status
+	var newStatus ZoneStatus
+	var transition string
+	switch decision {
+	case BedDecisionInBed:
+		newStatus = StatusOccupied
+		transition = TransitionOccupied
+	case BedDecisionLeftBed:
+		newStatus = StatusVacant
+		transition = TransitionVacant
+	default:
+		newStatus = prevStatus
+	}
+
+	z.state.Score = z.bedBayesian.Confidence()
+	z.state.UpdatedAt = nowMs
+	z.state.BayesianLogOdds = z.bedBayesian.LogOdds()
+	z.state.BayesianProb = z.bedBayesian.Probability()
+	z.state.BayesianGamma = z.bedBayesian.Gamma(nowMs)
+
+	if newStatus == prevStatus {
+		return nil
+	}
+	applyTransitionToState(&z.state, TransitionResult{
+		NewStatus:  newStatus,
+		Transition: transition,
+	}, nowMs)
+
+	return &ZoneEvent{
+		ZoneType:   ZoneTypeBed,
+		ZoneID:     z.key.ZoneID,
+		Transition: transition,
+		NewState:   z.state,
+		Ts:         nowMs,
+	}
 }
 
 // applyTransitionToState 把 StateMachine TransitionResult 投射到 ZoneState。

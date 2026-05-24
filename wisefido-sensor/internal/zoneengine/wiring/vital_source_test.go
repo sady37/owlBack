@@ -57,7 +57,9 @@ func TestMonitorVitalSource_SkipStale(t *testing.T) {
 	}
 }
 
-func TestMonitorVitalSource_RequiresBothHRandRR(t *testing.T) {
+// 2026-05-24 修订：HR>0 OR RR>0 OR body_move>0 OR turn_over>0 OR bed_status==0 任一成立都算压感证据。
+// 单 HR / 单 RR / 单 body_move 都应 emit；全 0 不 emit。
+func TestMonitorVitalSource_AnyPresenceEvidenceEmits(t *testing.T) {
 	buf := service.NewMonitorBuffer()
 	src := NewMonitorVitalSource(buf)
 	now := time.Now().UnixMilli()
@@ -70,7 +72,7 @@ func TestMonitorVitalSource_RequiresBothHRandRR(t *testing.T) {
 	buf.Write("card-rr", "fd00:0:3:111:3:102:a2ac:d524", "Sleepad", "0", map[string]any{
 		observation.FieldRespiratoryRate: float64(15),
 	}, now)
-	// HR=0 RR=0
+	// 全 0 → 不 emit
 	buf.Write("card-zero", "fd00:0:3:111:3:103:a2ac:d525", "Sleepad", "0", map[string]any{
 		observation.FieldHeartRate:       float64(0),
 		observation.FieldRespiratoryRate: float64(0),
@@ -78,8 +80,8 @@ func TestMonitorVitalSource_RequiresBothHRandRR(t *testing.T) {
 
 	var got int
 	src.ScanActiveBedVitals(now+1000, 30_000, func(_ string, _ int64) { got++ })
-	if got != 0 {
-		t.Errorf("none should emit (need both HR>0 AND RR>0), got %d", got)
+	if got != 2 {
+		t.Errorf("HR-only + RR-only should both emit (2 emit), got %d", got)
 	}
 }
 

@@ -70,6 +70,13 @@ func (l *BedSizeLookup) BedSizeBucket(bedZoneID string) string {
 	return bucket
 }
 
+// InvalidateAll 清空整个 cache（hot-reload / schema 变更后用）。
+func (l *BedSizeLookup) InvalidateAll() {
+	l.mu.Lock()
+	l.cache = make(map[string]bedSizeCacheEntry)
+	l.mu.Unlock()
+}
+
 func (l *BedSizeLookup) queryBucket(bedZoneID string) string {
 	if l.db == nil {
 		return "small"

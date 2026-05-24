@@ -31,10 +31,11 @@ type Subsystem struct {
 	// 监听 ZoneEvent (TotalPeople gate) + 后续 P3/P4 接 monitor / alarm 流。
 	TargetAggregator *service.TargetStateAggregator
 
-	BedSizeLookup   *BedSizeLookup
-	BathroomLookup  *BathroomLookup
-	BedDeviceLookup *BedDeviceLookup
-	VitalSource     *MonitorVitalSource
+	BedSizeLookup      *BedSizeLookup
+	BathroomLookup     *BathroomLookup
+	BedDeviceLookup    *BedDeviceLookup
+	UnitPropertyLookup *UnitPropertyLookup // Bayesian bed FSM: BedMode (Home/Facility) by unit_property
+	VitalSource        *MonitorVitalSource
 
 	// Zonealarm zone-derived alarm 子系统（4 条规则订阅 ZoneEvent）。
 	// nil 时表示禁用（AlarmBackChannel 未注入或 yaml 加载失败）。
@@ -102,11 +103,15 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 	// 2) lookups
 	bedLookup := NewBedSizeLookup(opts.DB, opts.Logger)
 	bathLookup := NewBathroomLookup(opts.DB, opts.Logger)
+	unitPropLookup := NewUnitPropertyLookup(opts.DB, opts.Logger)
 	vitalSrc := NewMonitorVitalSource(opts.MonitorBuffer)
 
 	// 3) engine + stream publisher（替代旧 RedisAdapter 直写 card:status；
 	//    cardagg 是 card:status 单 writer，sensor 通过 sensor:derived:stream 推消息）
 	engine := zoneengine.NewEngine(rules, bedLookup, opts.Logger)
+	// Bayesian bed FSM 启用：unit_property 驱动 Facility/Home LR 档 + 0.70/0.75 阈值。
+	// legacy Scorer+StateMachine 仅 room/bathroom 用。
+	engine.SetUseBedBayesian(true, unitPropLookup)
 	streamPublisher := zoneengine.NewStreamPublisher(opts.Redis, opts.Logger)
 	streamPublisher.SetIdentity(opts.Identity)
 	engine.AddListener(streamPublisher)
@@ -194,10 +199,11 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 		VitalAdapter:     vital,
 		StreamPublisher:  streamPublisher,
 		TargetAggregator: aggregator,
-		BedSizeLookup:    bedLookup,
-		BathroomLookup:   bathLookup,
-		BedDeviceLookup:  bedDeviceLookup,
-		VitalSource:      vitalSrc,
+		BedSizeLookup:      bedLookup,
+		BathroomLookup:     bathLookup,
+		BedDeviceLookup:    bedDeviceLookup,
+		UnitPropertyLookup: unitPropLookup,
+		VitalSource:        vitalSrc,
 		Zonealarm:        supervisor,
 		AlarmFirer:       firer,
 		AlarmRulesPath:   alarmRulesPath,

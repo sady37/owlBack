@@ -10,18 +10,22 @@ import (
 
 // MonitorVitalSource 实现 zoneengine.VitalSource —— 包装 service.MonitorBuffer。
 //
-// 扫描逻辑（2026-05-20 修订设计约束）：
+// 扫描逻辑（2026-05-24 修订）：
 //   1. 遍历所有 active card
 //   2. 对每个 card snapshot，按 device 看：
 //      a) device_type ∈ {Sleepad, SleepPad}（**仅 sleepad；radar 排除**）
-//      b) 任一 track 同时有 HR>0 且 RR>0
-//   3. device 的 LastTs 在 freshness 窗内 → emit (cardID, devAddr/96 bedZoneID, ts)
+//      b) **任一 track 有任一压感衍生信号**：HR>0 OR RR>0 OR body_move>0 OR turn_over>0 OR bed_status==0
+//   3. device 的 LastTs 在 freshness 窗内 → emit (bedZoneID, ts)
 //
-// **设计约束** —— 2026-05-20 用户拍板：
-//   - sleepad HR/RR 是接触式压感证据 → in-bed 信号（可发 sustain）
-//   - sleepad HR/RR 缺失 ≠ 反证不在床（zoneengine sustain 是 positive-only 通道，不影响 leave）
-//   - **radar HR/RR ≠ in-bed 信号**（radar 可在床外 detect 到坐沙发的人 HR/RR；不发 sustain）
-//   - radar in-bed 由 firmware 的 InBed/LeftBed alarm（已 in-bed-area 判定）走 adapter_radar
+// **设计约束**：
+//   - sleepad 是接触式压感设备；HR/RR/body_move/turn_over 任一为正 + firmware bed_status==0 = 在床
+//   - 任一字段缺失 ≠ 反证不在床（2026-05-20 拍板）；故合取改成析取
+//   - **radar 排除**（radar 可在床外 detect 到坐沙发的人 HR/RR；不发 sustain）
+//   - radar in-bed 由 firmware 的 InBed/LeftBed alarm 走 adapter_radar
+//
+// **历史 bug**（2026-05-24 修复）：
+//   - 原 `HR>0 AND RR>0` 太严格 → 实际 sleepad 帧常单 HR 无 RR / 仅 body_move → 漏判
+//   - 加 SustainStaleMs 60s 配合 4G 上报周期 30s（详 scorer.go const 注释）
 //
 // **Bed 派生约束**：device addr /96 = bed prefix，假设 device 物理上绑床。
 // Non-bed-bound sleepad 应该不存在（sleepad 物理上就贴床）；如有 sustain 进 zone 不污染状态。
@@ -53,16 +57,16 @@ func (s *MonitorVitalSource) ScanActiveBedVitals(nowMs, freshnessMs int64, emit 
 			}
 			// device-level freshness：dev 在 snapshot 里的所有 track 取 max ts；用 track 里嵌的 "ts" 字段
 			var devLastTs int64
-			var hasHRRR bool
+			var hasPresence bool
 			for _, fields := range dev.Tracks {
 				if ts := tsFromTrackMap(fields); ts > devLastTs {
 					devLastTs = ts
 				}
-				if hrRRPresent(fields) {
-					hasHRRR = true
+				if anyPresenceEvidence(fields) {
+					hasPresence = true
 				}
 			}
-			if !hasHRRR {
+			if !hasPresence {
 				continue
 			}
 			if nowMs-devLastTs > freshnessMs {
@@ -83,11 +87,40 @@ func isSleepad(deviceType string) bool {
 	return dt == "sleepad" || dt == "sleeppad" || dt == "sleepace"
 }
 
-// hrRRPresent 单条 track fields 是否同时有 heart_rate>0 && respiratory_rate>0。
-func hrRRPresent(fields map[string]any) bool {
-	hr := positiveInt(fields[observation.FieldHeartRate])
-	rr := positiveInt(fields[observation.FieldRespiratoryRate])
-	return hr > 0 && rr > 0
+// anyPresenceEvidence 单条 track fields 是否有任一"床上有人持续压力"证据。
+// sleepad 是接触式压感设备：心率/呼吸/体动/翻身任一为正 + firmware bed_status==0 都是在床信号。
+// 单字段缺失常见（呼吸幅度小测不到 / 静卧只压感无动作），故合取改成析取。
+func anyPresenceEvidence(fields map[string]any) bool {
+	if positiveInt(fields[observation.FieldHeartRate]) > 0 {
+		return true
+	}
+	if positiveInt(fields[observation.FieldRespiratoryRate]) > 0 {
+		return true
+	}
+	if positiveInt(fields[observation.FieldBodyMove]) > 0 {
+		return true
+	}
+	if positiveInt(fields[observation.FieldTurnOver]) > 0 {
+		return true
+	}
+	// bed_status==0 (firmware 显式 "在床"，最直接信号)；==1 是离床，==8 是待机。
+	if v, ok := fields[observation.FieldBedStatus]; ok {
+		switch x := v.(type) {
+		case int:
+			if x == 0 {
+				return true
+			}
+		case int64:
+			if x == 0 {
+				return true
+			}
+		case float64:
+			if int(x) == 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func positiveInt(v any) int {

@@ -39,13 +39,20 @@ import (
 	"go.uber.org/zap"
 )
 
-// SleepaceAdapter 订阅 iot:alarm:stream 并把 sleepace 床垫 alarm 翻译为 SignalEvidence 喂 engine。
+// UnitModeChecker 查 unit /80 prefix 是否 Home 模式 (unit_property=0)。
+// wiring.UnitPropertyLookup 实现。nil 注入 → 全部按 Facility 处理（默认行为）。
+type UnitModeChecker interface {
+	IsHomeMode(unitPrefix string) bool
+}
+
+// SleepaceAdapter 订阅 iot:event:stream 并把 sleepace 床垫 alarm 翻译为 SignalEvidence 喂 engine。
 type SleepaceAdapter struct {
 	client   *redislib.Client
 	engine   *Engine
 	dedup    *BedEventDedup       // S5b: per-device per-kind 10s dedup（防 firmware spam）
 	fitness  DeviceFitnessChecker // S6: 设备类 alarm gate
 	presence BedPresenceSink      // RoomState dedup 旁路：sleepad InBed/LeftBed → X
+	unitMode UnitModeChecker      // home-mode: 大床场景 LeftBed 协同 gate；nil = facility-only
 	logger   *zap.Logger
 }
 

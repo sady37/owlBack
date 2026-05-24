@@ -103,6 +103,12 @@ type ZoneState struct {
 	LeavingSince int64     `json:"leaving_since,omitempty"` // Status==Leaving 时记录进入时间，timer 用
 	LastSource  string     `json:"last_source,omitempty"`   // 最近翻转的决定信号源
 	UpdatedAt   int64      `json:"updated_at"`
+
+	// Bayesian debug 字段（仅 bed zone + useBedBayesian=true 时填）。
+	// 不入 FE bedstate；仅供 zoneengine 运维观测 / log / 测试断言。
+	BayesianLogOdds float64 `json:"bayesian_log_odds,omitempty"`
+	BayesianProb    float64 `json:"bayesian_prob,omitempty"`
+	BayesianGamma   float64 `json:"bayesian_gamma,omitempty"`
 }
 
 // IsPresent zone 是否被占用（Vacant 之外都算）。

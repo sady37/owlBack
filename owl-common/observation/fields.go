@@ -71,7 +71,7 @@ const (
 	// ---- Status（周期≤5min 上报时视为实时，可出现在 monitor/track 中） ----
 	FieldOffline             = "offline"     // 1=离线(异常) 0=在线
 	FieldBedStatus           = "bed_status"  // int: 0=在床, 1=离床, 8=未改变/待机
-	FieldSleepStage          = "sleep_stage" // 睡眠阶段，统一 Sleepad 标准：1=清醒, 2=浅睡, 4=深睡, 8=未知
+	FieldSleepStage          = "sleep_stage" // 睡眠阶段：0=无数据/已清, 1=清醒, 2=浅睡, 4=深睡, 8=未知。厂家 MQTT 入口仅 1/2/4/8；0 是 sensor 内部投影"已清"语义（initial publish / OnBedVacant 清零，详 card.SleepStageInitial）。
 	FieldInitStatus          = "init_status"
 	FieldDeviceFailure       = "device_failure"
 	FieldDetached            = "detached"
