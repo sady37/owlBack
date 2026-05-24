@@ -145,7 +145,7 @@ func (c *AlarmConsumer) handleRaw(raw map[string]interface{}) {
 	}
 
 	// Fan-out 2: WeakBio 4 类 → aggregator score 累加
-	if msg.SubjectEntity == "" {
+	if !msg.DeviceAddr.IsValid() {
 		return
 	}
 	base, ok := normalizeWeakBioCategory(msg.Category)
@@ -160,7 +160,10 @@ func (c *AlarmConsumer) handleRaw(raw map[string]interface{}) {
 			rawValue = intFromAlarmField(fields["state"]) * 20
 		}
 	}
-	c.sink.PushAlarmFields(msg.SubjectEntity, base, msg.Producer, msg.Timestamp, rawValue)
+	// WeakBio 是 per-sleepad 信号 → aggregator key 用 /96 bed spatial prefix
+	// （raw envelope SubjectEntity = device_uid，sensor 内部按物理 spatial 索引）。
+	bedPrefix := netip.PrefixFrom(msg.DeviceAddr, 96).Masked().String()
+	c.sink.PushAlarmFields(bedPrefix, base, msg.Producer, msg.Timestamp, rawValue)
 }
 
 // classifyDeviceFitnessAlarm 把 alarm category 映射到 fitness reason flag。

@@ -11,6 +11,7 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -104,7 +105,11 @@ func (c *MonitorConsumer) handleRaw(raw map[string]interface{}) {
 	}
 	deviceKey := msg.DeviceAddr.String()
 	trackID := sensorResolveTrackID(fields)
-	c.buffer.Write(msg.SubjectEntity, deviceKey, msg.DeviceType, strconv.Itoa(trackID), fields, msg.Timestamp)
+	// MonitorBuffer 历史 API 第一参数叫 cardID，sensor 物理寻址用 /96 bed spatial prefix 替代
+	// （raw envelope SubjectEntity = device_uid，不进入 sensor 内部索引）；VitalSource 扫描时
+	// 仍按"groupKey"迭代，键名是 spatial 而非 card，与 sensor-Card 解耦原则一致。
+	bedPrefix := netip.PrefixFrom(msg.DeviceAddr, 96).Masked().String()
+	c.buffer.Write(bedPrefix, deviceKey, msg.DeviceType, strconv.Itoa(trackID), fields, msg.Timestamp)
 }
 
 // sensorResolveTrackID 与 cardagg consumer.resolveTrackID 同语义；无效返回 observation.TrackInvalid。

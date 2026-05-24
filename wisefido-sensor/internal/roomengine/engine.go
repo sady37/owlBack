@@ -146,8 +146,7 @@ type Engine struct {
 	rooms      map[string]*TrackManager         // roomID → TrackManager
 	grids      map[string]*RoomGrid             // roomID → Grid
 	mounts     map[string]radarutils.RadarMount // roomID → Radar 安装参数（坐标转换用）
-	cardToRoom map[string]string                // cardID → roomID
-	deviceRoom map[string]string                // deviceUID/deviceID → roomID
+	deviceRoom map[string]string                // deviceAddr → roomID (sensor 唯一物理寻址)
 	// PR-8: AI publish 用 — 源 radar UUID 反查 deviceUID + room 反查 tenant/card
 	deviceIDToUID   map[string]string // deviceID(UUID) → device_uid（IoTStreamMessage.DeviceUID）
 	deviceIDToType  map[string]string // deviceID(UUID) → 源 sensor 类型（"Radar"/"Sleepad"），AI publish 加 ".AI<node>" 后缀
@@ -307,7 +306,6 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		rooms:              make(map[string]*TrackManager),
 		grids:              make(map[string]*RoomGrid),
 		mounts:             make(map[string]radarutils.RadarMount),
-		cardToRoom:         make(map[string]string),
 		deviceRoom:         make(map[string]string),
 		deviceIDToUID:      make(map[string]string),
 		deviceIDToType:     make(map[string]string),
@@ -363,7 +361,7 @@ func (e *Engine) warnUnrouted(stream, cardID, deviceAddr, deviceType string) {
 		zap.String("device_addr", deviceAddr),
 		zap.String("card_id", cardID),
 		zap.String("device_type", deviceType),
-		zap.String("hint", "device not in deviceRoom/cardToRoom; config:card:stream subscriber should heal on next event"),
+		zap.String("hint", "device not in deviceRoom; config:card:stream subscriber should heal on next event"),
 	)
 }
 
@@ -445,13 +443,6 @@ func (e *Engine) Configure(cfg RuntimeConfig) {
 // SetOutputCallback 设置 track 输出回调（发 alarm 等下游）
 func (e *Engine) SetOutputCallback(fn func(roomID string, outputs []TrackOutput)) {
 	e.onOutput = fn
-}
-
-// MapCardToRoom / MapDeviceToRoom 路由表（启动时从 card/device meta 灌入）
-func (e *Engine) MapCardToRoom(cardID, roomID string) {
-	e.mu.Lock()
-	e.cardToRoom[cardID] = roomID
-	e.mu.Unlock()
 }
 
 // RoomForDevice 查 deviceKey（device_id 或 device_uid）对应的 room_id。
@@ -1489,10 +1480,7 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 	// 北极星 reasoning trace：记录这条 envelope.seq → 后续 AI verdict 引用为 trigger_seq_num
 	e.recordLastSrcSeq(addrStr, m.SequenceNumber)
 	e.mu.RLock()
-	roomID := e.cardToRoom[m.SubjectEntity]
-	if roomID == "" {
-		roomID = e.deviceRoom[addrStr]
-	}
+	roomID := e.deviceRoom[addrStr]
 	tm := e.rooms[roomID]
 	e.mu.RUnlock()
 	if tm == nil {
@@ -1605,10 +1593,7 @@ func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
 	// 北极星 reasoning trace：记录这条 envelope.seq → 后续 AI verdict 引用
 	e.recordLastSrcSeq(addrStr, m.SequenceNumber)
 	e.mu.RLock()
-	roomID := e.cardToRoom[m.SubjectEntity]
-	if roomID == "" {
-		roomID = e.deviceRoom[addrStr]
-	}
+	roomID := e.deviceRoom[addrStr]
 	tm := e.rooms[roomID]
 	e.mu.RUnlock()
 	if tm == nil {
@@ -1656,10 +1641,7 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 	// 北极星 reasoning trace：记录这条 envelope.seq → 后续 AI verdict 引用
 	e.recordLastSrcSeq(addrStr, m.SequenceNumber)
 	e.mu.RLock()
-	roomID := e.cardToRoom[m.SubjectEntity]
-	if roomID == "" {
-		roomID = e.deviceRoom[addrStr]
-	}
+	roomID := e.deviceRoom[addrStr]
 	tm := e.rooms[roomID]
 	mount, hasMount := e.mounts[roomID]
 	e.mu.RUnlock()

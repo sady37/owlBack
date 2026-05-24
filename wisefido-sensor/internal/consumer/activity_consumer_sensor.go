@@ -106,7 +106,7 @@ func (c *ActivityConsumer) handleRaw(raw map[string]interface{}) {
 	if msg.Category != alarm.Activity {
 		return
 	}
-	if msg.SubjectEntity == "" {
+	if !msg.DeviceAddr.IsValid() {
 		return
 	}
 	fields := rediscommon.FirstDataValue(msg.DataValue)
@@ -114,8 +114,11 @@ func (c *ActivityConsumer) handleRaw(raw map[string]interface{}) {
 		return
 	}
 	deviceAddr := msg.DeviceAddr.String()
+	// activity 是 radar 房间级 walk/stand 累积统计 → aggregator key 用 /88 room spatial prefix
+	// （raw envelope SubjectEntity = device_uid，sensor 内部按物理 spatial 索引）。
+	roomPrefix := netip.PrefixFrom(msg.DeviceAddr, 88).Masked().String()
 	c.sink.PushEventFields(
-		msg.SubjectEntity,
+		roomPrefix,
 		deviceAddr,
 		msg.Timestamp,
 		intFromActivityField(fields[observation.FieldWalkDistance]),

@@ -232,19 +232,24 @@ func TestHandleRaw_NonWeakBioCategory_Skipped(t *testing.T) {
 	}
 }
 
-func TestHandleRaw_EmptySubjectEntity_Skipped(t *testing.T) {
+// sensor 物理层化后 envelope SubjectEntity 不参与 routing。WeakBio aggregator key 从
+// DeviceAddr 派生 /96 bed prefix，与 SubjectEntity 空/非空无关。
+func TestHandleRaw_EmptySubjectEntity_StillAdmitted(t *testing.T) {
 	sink := &fakeSink{}
 	c := newTestAlarmConsumer(sink)
 	raw := buildRawStreamFields(
 		"fd00:0:3:111:3:101::1",
-		"", // 缺 SubjectEntity（cardagg 未绑卡 / R-009）
+		"", // SubjectEntity 空不再阻断
 		alarm.WeakBiometricSignal,
 		1700000000000,
 		map[string]interface{}{"state": float64(3)},
 	)
 	c.handleRaw(raw)
-	if len(sink.calls) != 0 {
-		t.Fatalf("expected 0 push (empty subject_entity), got %d", len(sink.calls))
+	if len(sink.calls) != 1 {
+		t.Fatalf("empty SubjectEntity should still admit (sensor 物理层不依赖 envelope SubjectEntity), got %d", len(sink.calls))
+	}
+	if sink.calls[0].spatialPrefix != "fd00:0:3:111:3:101::/96" {
+		t.Errorf("aggregator key 应派生 /96 bed prefix, got %q", sink.calls[0].spatialPrefix)
 	}
 }
 

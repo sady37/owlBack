@@ -99,8 +99,9 @@ func TestActivityHandleRaw_PushesAllFields(t *testing.T) {
 		t.Fatalf("expected 1 push, got %d", len(sink.calls))
 	}
 	got := sink.calls[0]
-	if got.spatialPrefix != "fd00:0:3:111:3:101::/96" {
-		t.Errorf("spatialPrefix=%q", got.spatialPrefix)
+	// activity 是 radar 房间级统计 → spatialPrefix 派生为 /88 room（不是 fixture 里的 /96 subject）
+	if got.spatialPrefix != "fd00:0:3:111:3:100::/88" {
+		t.Errorf("spatialPrefix=%q want /88 room", got.spatialPrefix)
 	}
 	if got.walkDistanceMeters != 3 || got.walkDurationSec != 12 ||
 		got.standDurationSec != 55 || got.multiPersonSec != 0 {
@@ -139,17 +140,22 @@ func TestActivityHandleRaw_NonActivityCategoryDropped(t *testing.T) {
 	}
 }
 
-func TestActivityHandleRaw_EmptySubjectDropped(t *testing.T) {
+// sensor 物理层化后 envelope SubjectEntity 不参与 routing —— 不依赖它是空还是 device_uid。
+// 唯一 gate = msg.DeviceAddr.IsValid()。SubjectEntity 空也能放行（spatial prefix 从 DeviceAddr 派生）。
+func TestActivityHandleRaw_EmptySubjectStillAdmitted(t *testing.T) {
 	sink := &fakeActivitySink{}
 	c := newTestActivityConsumer(sink)
 	raw := buildActivityRawFields(
 		"fd00:0:3:111:3:101::1",
-		"", // 缺 SubjectEntity
+		"", // 缺 SubjectEntity 不再阻断
 		alarm.Activity,
 		map[string]interface{}{observation.FieldWalkDistance: float64(3)},
 	)
 	c.handleRaw(raw)
-	if len(sink.calls) != 0 {
-		t.Fatalf("empty subject_entity should be dropped, got %d calls", len(sink.calls))
+	if len(sink.calls) != 1 {
+		t.Fatalf("empty subject_entity should still admit (sensor 物理层不依赖 envelope SubjectEntity), got %d calls", len(sink.calls))
+	}
+	if sink.calls[0].spatialPrefix != "fd00:0:3:111:3:100::/88" {
+		t.Errorf("spatialPrefix=%q want /88 room", sink.calls[0].spatialPrefix)
 	}
 }
