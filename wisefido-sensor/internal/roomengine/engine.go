@@ -16,6 +16,7 @@ import (
 	"owl-common/observation"
 	"owl-common/radarutils"
 	rediscommon "owl-common/redis"
+	"owl-common/spatial"
 
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -997,7 +998,14 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	// EventItem 提供生命周期 + first-class 业务字段（TrackID/Pose/HeartRate/RespiratoryRate）；
 	// 其余 sensor-specific 字段（position / track_confidence / area_type / source / reason / evidence）
 	// 作为 dataValue map 同级平铺补充。
-	item := observation.NewEventItem(nowMs, "instant")
+	//
+	// EventStatus：默认 "instant"；payload 显式指定（如 RecordRadarAlarm forward Initialization→end）
+	// 时覆盖，让下游 cardagg AlarmRouter 按 EndPolicy=AutoResolve 关 alarm。
+	eventStatus := p.EventStatus
+	if eventStatus == "" {
+		eventStatus = "instant"
+	}
+	item := observation.NewEventItem(nowMs, eventStatus)
 	item.TrackID = p.Track.TrackID
 	if p.Track.Pose != 0 {
 		item.Pose = p.Track.Pose
@@ -1577,7 +1585,10 @@ func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
 		return
 	}
 	// 自循环 guard：sensor 自身 emit 的 alarm 不重新处理（否则 RecordRadarAlarm → 再 emit → 再消费 → 无限循环）
-	if m.Producer == "sensor.caregiver01" || m.Producer == "wisefido-sensor" {
+	// 2026-05-25 修：sensor publish 用 platform-agent IP (fd00:0:fff1::1) 作 producer
+	// （见 memory platform_agent_addressing），旧字符串 "sensor.caregiver01"/"wisefido-sensor"
+	// 已不再使用 → 必须用 IsPlatformAgentAddr 识别，否则 self-loop guard 失效 (实测放大 43729×)。
+	if spatial.IsPlatformAgentAddr(m.Producer) {
 		return
 	}
 	if !strings.EqualFold(m.DeviceType, "radar") {

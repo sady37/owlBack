@@ -180,6 +180,11 @@ type AIPayload struct {
 
 	// Evidence 证据 KV map（score / penalty / context 等审计字段，下游不解析）。
 	Evidence map[string]interface{}
+
+	// EventStatus 事件生命周期阶段（"start" / "end" / "instant"）。空 = "instant"（默认）。
+	// 用于 firmware 撤销链路：qinglan 收到 Initialization (last_pose=2/7) → forward end →
+	// sensor 透传 → cardagg AlarmRouter 按 Registry[Fall/SittingOnGround].EndPolicy=AutoResolve 关 alarm。
+	EventStatus string
 }
 
 // CategoryTrackVerdict 是 track verdict 的 category 路由键（事件 TYPE，不是 verdict label）。
@@ -664,10 +669,11 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 	tm.recentRadarAlarms[a.TMs] = &cp
 	tm.evictOldRadarAlarms(a.TMs)
 
-	// 仅 status="start" 的 fall 评分 + 转发（end 是固件解除报警）
+	// start: 跑 fall verifier 评分；end: 跳过评分但仍转发（让 cardagg auto-resolve）
 	verdict := ""
 	score := 0
-	if a.Status == "start" || a.Status == "" {
+	isStart := a.Status == "start" || a.Status == ""
+	if isStart {
 		result := tm.verifyRadarFall(a, a.TMs)
 		tm.logFallVerify(a, result)
 		verdict = result.Verdict
@@ -684,17 +690,22 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 	// 解锁后 emit（emit 内部走 redis publish，不能持锁；tm.aiPublisher 自身 thread-safe）
 	tm.mu.Unlock()
 
-	if a.Status != "start" && a.Status != "" {
-		return // end / 其它非触发态不转发
-	}
 	if tm.aiPublisher == nil {
 		return // playback / 测试场景
 	}
 
-	// 构造 forward payload。track 信息从 firmware Fall 直接抄；位置/HR/RR 现阶段不从 firmware 携带。
+	// emit status：start/instant 触发新 alarm；end 让 cardagg AlarmRouter 按 EndPolicy 关 alarm。
+	// qinglan 收到 firmware Initialization (last_pose=2/7) 时 forward status="end"，必须透传到 alarm stream。
+	emitStatus := a.Status
+	if emitStatus == "" {
+		emitStatus = "start"
+	}
+
+	// 构造 forward payload。track 信息从 firmware 抄；位置/HR/RR 现阶段不从 firmware 携带。
 	payload := AIPayload{
-		DeviceID: a.DeviceUID, // = canonical IPv6 string（device_ipv6 单程票）
-		RoomID:   tm.roomID,
+		DeviceID:    a.DeviceUID, // = canonical IPv6 string
+		RoomID:      tm.roomID,
+		EventStatus: emitStatus,
 		Track: observation.Track{
 			TrackID: a.TrackID,
 			Pose:    a.Pose,
@@ -703,12 +714,11 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 		Evidence: map[string]interface{}{
 			"context":         "qinglan_publisher_event_stream_passthrough",
 			"firmware_status": a.Status,
-			"fall_verdict":    verdict, // 当前 verifier 不 gate，verdict 仅作审计
+			"fall_verdict":    verdict, // end 时为空（无评分）
 			"fall_score":      score,
 		},
 	}
-	// 保留 envelope.Category：SuspectedFall / Fall / SuspectedSittingOnGround / SittingOnGround 各自独立
-	// （firmware 自带 30~90s qualification 区分 Suspected→Confirmed，server 不再 collapse）
+	// envelope.Category：Fall / SittingOnGround（qinglan 已 collapse Suspected→Confirmed）
 	emitCat := a.Category
 	if emitCat == "" {
 		emitCat = alarm.Fall // 兜底：旧路径无 Category 字段时

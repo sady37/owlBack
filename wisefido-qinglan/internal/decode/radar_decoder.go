@@ -557,21 +557,24 @@ func buildEnter2OutTrack(m map[string]interface{}) map[string]interface{} {
 	return map[string]interface{}{
 		"event_name": dataCategory,
 		"event_type": 1,
-		"track_id":   toInt(m["track-id"]),
+		"track_id":   toInt(m["track_id"]),
 		"event":      event,
 		"area_type":  areaType,
 	}
 }
 
 // buildPoseTrack type=2 姿态事件
+// last_pose 透传给 mqtt_consumer：firmware Initialization (pose=0, last_pose=2/7) 是
+// "上一段 fall/sitOnGround 状态结束" 的撤销信号，下游 case 2 用 last_pose 决定 end 路由。
 func buildPoseTrack(m map[string]interface{}) map[string]interface{} {
 	pose := toInt(m["pose"])
 	dataCategory, _ := alarm.LookupPose(pose)
 	return map[string]interface{}{
 		"event_name": dataCategory,
 		"event_type": 2,
-		"track_id":   toInt(m["track-id"]),
+		"track_id":   toInt(m["track_id"]),
 		"pose":       pose,
+		"last_pose":  toInt(m["last_pose"]),
 	}
 }
 

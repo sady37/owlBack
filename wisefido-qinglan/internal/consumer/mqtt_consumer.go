@@ -1314,26 +1314,54 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 			//   - Fall                   (pose=5)  firmware 30~90s qualification 通过 → 下游 ALERT/CRITICAL
 			//   - SuspectedSittingOnGround (pose=7) 同理 WARNING
 			//   - SittingOnGround        (pose=8)  同理 ALERT
-			// 都走 event stream，由 sensor verifier 接管 → alarm_back_channel → cardagg 落库。
-			// 见 doc/cardagg_sensor_split.md + memory firmware_fall_qualification。
+			// 2026-05-25 修订：collapse Suspected→Confirmed + Initialization 撤销=end。
+			//
+			// firmware 行为实测：fall_alarm_duration 计时通过后才发 type=2 event，
+			// 但 event_name 仍叫 SuspectedFall（pose=2）不发 Fall (pose=5)；
+			// 撤销则发 Initialization (pose=0, last_pose=2/7)。
+			// 即 firmware 命名误导：发出来时已是 confirmed Fall。
+			//
+			// server 适配语义（不沿厂家命名）：
+			//   SuspectedFall (pose=2)        → category=Fall            + pose=5 + status=start
+			//   SuspectedSittingOnGround (=7) → category=SittingOnGround + pose=8 + status=start
+			//   Initialization (last_pose=2)  → category=Fall            + status=end
+			//   Initialization (last_pose=7)  → category=SittingOnGround + status=end
+			//   其他姿态（Walking/Sitting/Standing/Lying/...）→ 透传走默认 PublishEvent
+			//
+			// end → cardagg AlarmRouter 按 Registry[Fall].EndPolicy=AutoResolve 关 alarm。
 			alarmCat := ""
+			alarmPose := 0
+			alarmStatus := "start"
 			switch eventName {
-			case alarm.Fall, alarm.SuspectedFall, alarm.SittingOnGround, alarm.SuspectedSittingOnGround:
-				alarmCat = eventName
+			case alarm.Fall, alarm.SuspectedFall:
+				alarmCat = alarm.Fall
+				alarmPose = 5
+			case alarm.SittingOnGround, alarm.SuspectedSittingOnGround:
+				alarmCat = alarm.SittingOnGround
+				alarmPose = 8
+			case alarm.Initialization:
+				switch asInt(m["last_pose"]) {
+				case 2:
+					alarmCat = alarm.Fall
+					alarmPose = 5
+					alarmStatus = "end"
+				case 7:
+					alarmCat = alarm.SittingOnGround
+					alarmPose = 8
+					alarmStatus = "end"
+				}
 			}
 			if alarmCat != "" {
-				// Plan B：业务字段 first-class 平铺（TrackID / Pose 都是 EventItem 字段）。
-				eventItem := observation.NewEventItem(ts, "start")
+				eventItem := observation.NewEventItem(ts, alarmStatus)
 				eventItem.TrackID = asInt(m["track_id"])
-				eventItem.Pose = asInt(m["pose"])
+				eventItem.Pose = alarmPose
 				eventData, _ := observation.EventItemToDataMap(&eventItem)
 				if eventData == nil {
 					eventData = make(map[string]interface{})
 				}
-				// topic_type=event；category 保留 alarm.Fall / alarm.SittingOnGround 让 sensor 路由识别
 				evMsg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "event", alarmCat, eventData)
 				if err := c.streamPublisher.PublishEvent(ctx, evMsg); err != nil {
-					c.logger.Warn("publish fall event", zap.String("device", uid), zap.String("cat", alarmCat), zap.Error(err))
+					c.logger.Warn("publish fall event", zap.String("device", uid), zap.String("cat", alarmCat), zap.String("status", alarmStatus), zap.Error(err))
 					lastErr = err
 				}
 				continue

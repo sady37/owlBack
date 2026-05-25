@@ -152,9 +152,12 @@ type AlarmDef struct {
 
 // Registry 全量报警/事件注册表，Key = alarm_type。与 EventStatToAlarmMap 语义一致，便于按类型查元数据与 AlarmParams。
 var Registry = map[string]*AlarmDef{
-	Fall:                     {Key: Fall, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelEmerg, Description: "Confirmed fall", Display: "Fall Alert"},
+	// Fall/SittingOnGround EndPolicy=AutoResolve：firmware 发 Initialization (last_pose=2/7) 撤销
+	// → qinglan collapse 成 envelope event_status="end" → cardagg AlarmRouter 自动关 active alarm。
+	// DedupWhileActive=true：active 期间同 (device, event_type) 不重复 insert（防上游 fan-out / amp 灌满 DB）。
+	Fall:                     {Key: Fall, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelEmerg, Description: "Confirmed fall", Display: "Fall Alert", EndPolicy: EndPolicyAutoResolve, DedupWhileActive: true},
 	SuspectedFall:            {Key: SuspectedFall, ProcessType: ProcessTypeTimeBased, DurationSec: 60, UpgradeTo: Fall, DefaultLevel: AlarmLevelAlert, AlarmParams: map[string]interface{}{ParamDurationSec: 60}, Description: "Suspected fall, upgrade after 60s", Display: "Potential Fall"},
-	SittingOnGround:          {Key: SittingOnGround, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, Description: "Sitting on ground", Display: "On Floor Alert"},
+	SittingOnGround:          {Key: SittingOnGround, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelAlert, Description: "Sitting on ground", Display: "On Floor Alert", EndPolicy: EndPolicyAutoResolve, DedupWhileActive: true},
 	SuspectedSittingOnGround: {Key: SuspectedSittingOnGround, ProcessType: ProcessTypeTimeBased, DurationSec: 60, UpgradeTo: SittingOnGround, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 60}, Description: "Suspected sitting on ground", Display: "Potential On Floor Alert"},
 	BedSitUp:                 {Key: BedSitUp, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelWarn, Description: "Bed sit-up", Display: "Bed Sit-up", EndPolicy: EndPolicyAutoResolve},
 	SuspectedBedSitUp:        {Key: SuspectedBedSitUp, ProcessType: ProcessTypeTimeBased, DurationSec: 60, UpgradeTo: BedSitUp, DefaultLevel: AlarmLevelWarn, AlarmParams: map[string]interface{}{ParamDurationSec: 60}, Description: "Suspected bed sit-up", Display: "Potential Bed Sit-up"},
