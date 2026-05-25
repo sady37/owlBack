@@ -158,6 +158,31 @@ func (r *Router) RegisterRadarRoutes(h *RadarHandler) {
 			h.Control(w, req)
 			return
 		}
+		// GET  /radar-device/api/v1/radar-device/device/{deviceId}/measure/tracks
+		if strings.HasSuffix(path, "/measure/tracks") && req.Method == http.MethodGet {
+			h.GetTracks(w, req)
+			return
+		}
+		// POST /radar-device/api/v1/radar-device/device/{deviceId}/measure/fit-polygon
+		if strings.HasSuffix(path, "/measure/fit-polygon") && req.Method == http.MethodPost {
+			h.FitPolygon(w, req)
+			return
+		}
+		// POST /radar-device/api/v1/radar-device/device/{deviceId}/measure/fit-rectangle
+		if strings.HasSuffix(path, "/measure/fit-rectangle") && req.Method == http.MethodPost {
+			h.FitRectangle(w, req)
+			return
+		}
+		// POST /radar-device/api/v1/radar-device/device/{deviceId}/measure/fit-entry-lines
+		if strings.HasSuffix(path, "/measure/fit-entry-lines") && req.Method == http.MethodPost {
+			h.FitEntryLines(w, req)
+			return
+		}
+		// POST /radar-device/api/v1/radar-device/device/{deviceId}/measure/detection-rectangle
+		if strings.HasSuffix(path, "/measure/detection-rectangle") && req.Method == http.MethodPost {
+			h.ComputeDetectionRectangle(w, req)
+			return
+		}
 		http.NotFound(w, req)
 	})
 
