@@ -189,16 +189,16 @@ func (h *RadarHandler) PutRoomLayout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Ok("ok"))
 }
 
-// BindDevice 绑定设备（通知需要订阅该设备的数据）
-// POST /radar-device/api/v1/radar-device/device/:id/bind
+// BindDevice 标记订阅 radar 数据。POST /radar-device/api/v1/radar-device/device/:id/bind
+// :id = device_uid (firmware MCU 寻址)；subscription 跟 firmware 不跟 spatial。
 func (h *RadarHandler) BindDevice(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	deviceID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/bind")
-	if !validateRadarDeviceID(deviceID) {
-		http.Error(w, "Invalid device ID", http.StatusBadRequest)
+	deviceUID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/bind")
+	if !validateRadarDeviceID(deviceUID) {
+		http.Error(w, "Invalid device UID", http.StatusBadRequest)
 		return
 	}
 	tenantID, ok := h.tenantIDFromReq(w, r)
@@ -207,12 +207,12 @@ func (h *RadarHandler) BindDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.logger.Info("[RADAR_BIND_API] bind request received",
-		zap.String("device_id", deviceID),
+		zap.String("device_uid", deviceUID),
 		zap.String("tenant_id", tenantID))
 
-	if err := h.radarInstall.BindDevice(r.Context(), tenantID, deviceID); err != nil {
+	if err := h.radarInstall.BindDevice(r.Context(), tenantID, deviceUID); err != nil {
 		h.logger.Error("[RADAR_BIND_API] bind failed",
-			zap.String("device_id", deviceID),
+			zap.String("device_uid", deviceUID),
 			zap.String("tenant_id", tenantID),
 			zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
@@ -220,21 +220,21 @@ func (h *RadarHandler) BindDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.logger.Info("[RADAR_BIND_API] bind success",
-		zap.String("device_id", deviceID),
+		zap.String("device_uid", deviceUID),
 		zap.String("tenant_id", tenantID))
 	writeJSON(w, http.StatusOK, Ok("ok"))
 }
 
-// UnbindDevice 解绑设备（取消订阅该设备的数据）
-// POST /radar-device/api/v1/radar-device/device/:id/unbind
+// UnbindDevice 取消订阅 radar 数据。POST /radar-device/api/v1/radar-device/device/:id/unbind
+// :id = device_uid。
 func (h *RadarHandler) UnbindDevice(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	deviceID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/unbind")
-	if !validateRadarDeviceID(deviceID) {
-		http.Error(w, "Invalid device ID", http.StatusBadRequest)
+	deviceUID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/unbind")
+	if !validateRadarDeviceID(deviceUID) {
+		http.Error(w, "Invalid device UID", http.StatusBadRequest)
 		return
 	}
 	tenantID, ok := h.tenantIDFromReq(w, r)
@@ -243,12 +243,12 @@ func (h *RadarHandler) UnbindDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.logger.Info("[RADAR_UNBIND_API] unbind request received",
-		zap.String("device_id", deviceID),
+		zap.String("device_uid", deviceUID),
 		zap.String("tenant_id", tenantID))
 
-	if err := h.radarInstall.UnbindDevice(r.Context(), tenantID, deviceID); err != nil {
+	if err := h.radarInstall.UnbindDevice(r.Context(), tenantID, deviceUID); err != nil {
 		h.logger.Error("[RADAR_UNBIND_API] unbind failed",
-			zap.String("device_id", deviceID),
+			zap.String("device_uid", deviceUID),
 			zap.String("tenant_id", tenantID),
 			zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
@@ -256,7 +256,7 @@ func (h *RadarHandler) UnbindDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.logger.Info("[RADAR_UNBIND_API] unbind success",
-		zap.String("device_id", deviceID),
+		zap.String("device_uid", deviceUID),
 		zap.String("tenant_id", tenantID))
 	writeJSON(w, http.StatusOK, Ok("ok"))
 }
@@ -471,28 +471,35 @@ func (h *RadarHandler) GetOriginalProperties(w http.ResponseWriter, r *http.Requ
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	deviceID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/original-properties")
-	if !validateRadarDeviceID(deviceID) {
-		http.Error(w, "Invalid device ID", http.StatusBadRequest)
+	deviceUID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/original-properties")
+	if !validateRadarDeviceID(deviceUID) {
+		http.Error(w, "Invalid device UID", http.StatusBadRequest)
 		return
 	}
 	tenantID, ok := h.tenantIDFromReq(w, r)
 	if !ok {
 		return
 	}
+	// FE 直接传 firmware uid（不变量）；查 device 拿到当前 device_addr 用于 scope check
+	device, err := h.radarInstall.GetDeviceByUID(r.Context(), tenantID, deviceUID)
+	if err != nil {
+		h.logger.Warn("GetOriginalProperties: device not found", zap.String("uid", deviceUID), zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
 	// Phase 3: device 必须在 user scope 内（staff = Current Branch；family = own residents space）
 	if h.stubHandler != nil && h.stubHandler.DB != nil {
-		uid := r.Header.Get("X-User-Id")
+		callerUID := r.Header.Get("X-User-Id")
 		role := r.Header.Get("X-User-Role")
-		if err := VerifyDeviceInScope(h.stubHandler.DB, r.Context(), uid, role, deviceID); err != nil {
+		if err := VerifyDeviceInScope(h.stubHandler.DB, r.Context(), callerUID, role, device.DeviceAddr); err != nil {
 			writeJSON(w, http.StatusOK, Fail(err.Error()))
 			return
 		}
 	}
 	if strings.TrimSpace(r.URL.Query().Get("source")) == "db" {
-		propertiesJSON, err := h.radarInstall.GetOriginalPropertiesFromDB(r.Context(), tenantID, deviceID)
+		propertiesJSON, err := h.radarInstall.GetOriginalPropertiesFromDB(r.Context(), tenantID, device.DeviceAddr)
 		if err != nil {
-			h.logger.Error("GetOriginalPropertiesFromDB", zap.String("device_id", deviceID), zap.Error(err))
+			h.logger.Error("GetOriginalPropertiesFromDB", zap.String("uid", deviceUID), zap.Error(err))
 			writeJSON(w, http.StatusOK, Fail(err.Error()))
 			return
 		}
@@ -509,10 +516,10 @@ func (h *RadarHandler) GetOriginalProperties(w http.ResponseWriter, r *http.Requ
 			}
 		}
 	}
-	propertiesJSON, err := h.radarInstall.GetOriginalProperties(r.Context(), tenantID, deviceID, keys)
+	propertiesJSON, err := h.radarInstall.GetOriginalProperties(r.Context(), deviceUID, keys)
 	if err != nil {
 		h.logger.Error("Failed to get device original properties",
-			zap.String("device_id", deviceID),
+			zap.String("uid", deviceUID),
 			zap.Error(err),
 		)
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
@@ -531,14 +538,28 @@ func (h *RadarHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	deviceID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/config")
-	if !validateRadarDeviceID(deviceID) {
-		http.Error(w, "Invalid device ID", http.StatusBadRequest)
+	deviceUID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/config")
+	if !validateRadarDeviceID(deviceUID) {
+		http.Error(w, "Invalid device UID", http.StatusBadRequest)
 		return
 	}
 	tenantID, ok := h.tenantIDFromReq(w, r)
 	if !ok {
 		return
+	}
+	device, err := h.radarInstall.GetDeviceByUID(r.Context(), tenantID, deviceUID)
+	if err != nil {
+		h.logger.Warn("UpdateConfig: device not found", zap.String("uid", deviceUID), zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	if h.stubHandler != nil && h.stubHandler.DB != nil {
+		callerUID := r.Header.Get("X-User-Id")
+		role := r.Header.Get("X-User-Role")
+		if err := VerifyDeviceInScope(h.stubHandler.DB, r.Context(), callerUID, role, device.DeviceAddr); err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
 	}
 	var config map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
@@ -561,7 +582,7 @@ func (h *RadarHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	for k := range config {
 		configKeys = append(configKeys, k)
 	}
-	logFields := []zap.Field{zap.String("device_id", deviceID), zap.Int("keys", len(config)), zap.Strings("keys_list", configKeys)}
+	logFields := []zap.Field{zap.String("uid", deviceUID), zap.Int("keys", len(config)), zap.Strings("keys_list", configKeys)}
 	if v := config["declare_area"]; v != nil {
 		if s, ok := v.(string); ok {
 			logFields = append(logFields, zap.String("declare_area", s))
@@ -573,10 +594,10 @@ func (h *RadarHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		logFields = append(logFields, zap.Any("rectangle", v))
 	}
 	h.logger.Info("UpdateConfig: received config", logFields...)
-	deviceCode, err := h.radarInstall.UpdateConfig(r.Context(), tenantID, deviceID, config)
+	deviceCode, err := h.radarInstall.UpdateConfig(r.Context(), deviceUID, config)
 	if err != nil {
 		h.logger.Error("Failed to update device config",
-			zap.String("device_id", deviceID),
+			zap.String("uid", deviceUID),
 			zap.Int("device_code", deviceCode),
 			zap.Error(err),
 		)
@@ -593,14 +614,28 @@ func (h *RadarHandler) Control(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	deviceID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/control")
-	if !validateRadarDeviceID(deviceID) {
-		http.Error(w, "Invalid device ID", http.StatusBadRequest)
+	deviceUID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/control")
+	if !validateRadarDeviceID(deviceUID) {
+		http.Error(w, "Invalid device UID", http.StatusBadRequest)
 		return
 	}
 	tenantID, ok := h.tenantIDFromReq(w, r)
 	if !ok {
 		return
+	}
+	device, err := h.radarInstall.GetDeviceByUID(r.Context(), tenantID, deviceUID)
+	if err != nil {
+		h.logger.Warn("Control: device not found", zap.String("uid", deviceUID), zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	if h.stubHandler != nil && h.stubHandler.DB != nil {
+		callerUID := r.Header.Get("X-User-Id")
+		role := r.Header.Get("X-User-Role")
+		if err := VerifyDeviceInScope(h.stubHandler.DB, r.Context(), callerUID, role, device.DeviceAddr); err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
 	}
 	var body struct {
 		Dev *int `json:"dev"`
@@ -615,14 +650,8 @@ func (h *RadarHandler) Control(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid dev, must be 0|1|2|100|101|102", http.StatusBadRequest)
 		return
 	}
-	uid, err := h.radarInstall.GetDeviceUID(r.Context(), tenantID, deviceID)
-	if err != nil {
-		h.logger.Error("Control: get device UID", zap.String("device_id", deviceID), zap.Error(err))
-		writeJSON(w, http.StatusOK, Fail(err.Error()))
-		return
-	}
-	if err := h.radarInstall.CallDeviceFunction(r.Context(), uid, dev); err != nil {
-		h.logger.Error("Control: call device function", zap.String("device_id", deviceID), zap.Int("dev", dev), zap.Error(err))
+	if err := h.radarInstall.CallDeviceFunction(r.Context(), deviceUID, dev); err != nil {
+		h.logger.Error("Control: call device function", zap.String("uid", deviceUID), zap.Int("dev", dev), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}

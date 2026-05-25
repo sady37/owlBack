@@ -465,16 +465,17 @@ func (s *RadarInstall) GetDeviceUID(ctx context.Context, tenantID, deviceID stri
 	}
 	device, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
 	if err != nil {
-		return "", fmt.Errorf("设备不存在或未绑定(device_id=%s)，请先在画布中 Bind 真实雷达设备: %w", deviceID, err)
+		return "", fmt.Errorf("device not bound (device_id=%s) — please bind a real radar in the canvas first: %w", deviceID, err)
 	}
 	if !device.DeviceType.Valid || !strings.EqualFold(device.DeviceType.String, "radar") {
-		return "", fmt.Errorf("该设备不是雷达类型，无法操作")
+		return "", fmt.Errorf("device is not a radar, operation not allowed")
 	}
 	if device.DeviceUID == "" {
 		return "", fmt.Errorf("device UID not found for device_id: %s", deviceID)
 	}
 	return device.DeviceUID, nil
 }
+
 
 // GetDeviceByUID 根据 device_uid 和 tenant_id 获取设备信息
 // 用于从 device_uid 转换为 device_id（用于订阅检查等场景）
@@ -519,15 +520,10 @@ func (s *RadarInstall) CallDeviceFunction(ctx context.Context, uid string, dev i
 }
 
 // GetOriginalProperties 获取设备原始属性（v1.0 API 格式）
+// uid 为 firmware MAC（不变量），handler 已通过 GetDeviceByUID 完成 scope check 后传入。
 // keys 为空时读全部；有则按序只查这些 key，wisefido-qinglan 内分笔 MQTT、指令间 50ms。
 // 返回 JSON 字符串，包含雷达配置参数
-func (s *RadarInstall) GetOriginalProperties(ctx context.Context, tenantID, deviceID string, keys []string) (string, error) {
-	// 1. 获取设备 UID
-	uid, err := s.GetDeviceUID(ctx, tenantID, deviceID)
-	if err != nil {
-		return "", err
-	}
-	// 2. 读取属性：keys 为空读全部，否则按序查指定 key
+func (s *RadarInstall) GetOriginalProperties(ctx context.Context, uid string, keys []string) (string, error) {
 	properties, err := s.GetDeviceProperties(ctx, uid, keys)
 	if err != nil {
 		return "", err
@@ -556,17 +552,11 @@ func (s *RadarInstall) GetOriginalPropertiesFromDB(ctx context.Context, tenantID
 // config 与 radarMqttConfig 输出对齐：dm（画布 cm/10），install_model 统一 0/1/2，
 // boundary_left/right/front/rear，可选 area_{i}_id/type/x1..y4；经 encode.EncodeV1ConfigToDeviceProps 转成
 // radar_install_style、rectangle、declare_area 等后通过 qinglan 写入（安装/边界/区域可能触发重启）。
-// 返回设备响应码（200=成功）和错误，供 HTTP 层透传 device_code 给前端。
-func (s *RadarInstall) UpdateConfig(ctx context.Context, tenantID, deviceID string, config map[string]interface{}) (deviceCode int, err error) {
-	// 1. 获取设备 UID
-	uid, err := s.GetDeviceUID(ctx, tenantID, deviceID)
-	if err != nil {
-		return 0, err
-	}
-
-	// 2. 前端已完成格式转换（cm→dm、boundary→rectangle 等），此处透传
+// 返回设备响应码（200=成功）和错误，供 HTTP 层透传 device_id 给前端。
+func (s *RadarInstall) UpdateConfig(ctx context.Context, uid string, config map[string]interface{}) (deviceCode int, err error) {
+	// 前端已完成格式转换（cm→dm、boundary→rectangle 等），此处透传
 	properties := config
-	encodeLogFields := []zap.Field{zap.String("device_id", deviceID), zap.Int("config_keys", len(config)), zap.Int("properties_keys", len(properties))}
+	encodeLogFields := []zap.Field{zap.String("uid", uid), zap.Int("config_keys", len(config)), zap.Int("properties_keys", len(properties))}
 	if v := properties["declare_area"]; v != nil {
 		if s, ok := v.(string); ok {
 			encodeLogFields = append(encodeLogFields, zap.String("declare_area", s))
@@ -588,92 +578,96 @@ func (s *RadarInstall) UpdateConfig(ctx context.Context, tenantID, deviceID stri
 	return s.SetDeviceProperties(ctx, uid, properties)
 }
 
-// BindDevice 绑定设备（通知需要订阅该设备的数据）
-// 当 vue-radar 画布中 bind 设备时调用
-func (s *RadarInstall) BindDevice(ctx context.Context, tenantID, deviceID string) error {
-	// 验证设备是否存在且为雷达类型
-	device, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
+// BindDevice 绑定设备（标记订阅该设备数据）。当 vue-radar 画布中 bind 设备时调用。
+// 入参 deviceUID = firmware MCU 寻址不变量 (logMAC)；subscription 跟着 firmware 不跟 spatial。
+func (s *RadarInstall) BindDevice(ctx context.Context, tenantID, deviceUID string) error {
+	device, err := s.devicesRepo.GetDeviceByUID(ctx, tenantID, deviceUID)
 	if err != nil {
-		return fmt.Errorf("设备不存在: %w", err)
+		return fmt.Errorf("device not found or not bound in tenant: %w", err)
 	}
 	if !device.DeviceType.Valid || !strings.EqualFold(device.DeviceType.String, "radar") {
-		return fmt.Errorf("该设备不是雷达类型，无法订阅")
+		return fmt.Errorf("device is not a radar, cannot subscribe: device_uid=%s", deviceUID)
 	}
-	
-	// 标记为需要订阅（加锁保护）
+
 	s.subscribedMutex.Lock()
-	s.subscribedDevices[deviceID] = true
+	s.subscribedDevices[deviceUID] = true
 	s.subscribedMutex.Unlock()
-	
+
 	s.logger.Info("[RADAR_BIND] device bound, subscription enabled",
-		zap.String("device_id", deviceID),
+		zap.String("device_uid", deviceUID),
 		zap.String("tenant_id", tenantID))
 	return nil
 }
 
-// UnbindDevice 解绑设备（取消订阅该设备的数据）
-// 当 vue-radar 画布中 unbind 设备时调用
-func (s *RadarInstall) UnbindDevice(ctx context.Context, tenantID, deviceID string) error {
-	// 移除订阅标记（加锁保护）
+// UnbindDevice 解绑设备（移除订阅）。入参 deviceUID = firmware MCU 寻址。
+func (s *RadarInstall) UnbindDevice(ctx context.Context, tenantID, deviceUID string) error {
 	s.subscribedMutex.Lock()
-	delete(s.subscribedDevices, deviceID)
+	delete(s.subscribedDevices, deviceUID)
 	s.subscribedMutex.Unlock()
-	
-	s.logger.Info("Device unbound, subscription disabled", zap.String("device_id", deviceID), zap.String("tenant_id", tenantID))
+
+	s.logger.Info("[RADAR_UNBIND] device unbound, subscription disabled",
+		zap.String("device_uid", deviceUID),
+		zap.String("tenant_id", tenantID))
 	return nil
 }
 
-// IsDeviceSubscribed 检查设备是否需要订阅
-func (s *RadarInstall) IsDeviceSubscribed(deviceID string) bool {
+// IsDeviceSubscribed 检查设备是否在订阅集合中。入参 deviceUID。
+func (s *RadarInstall) IsDeviceSubscribed(deviceUID string) bool {
 	s.subscribedMutex.RLock()
 	defer s.subscribedMutex.RUnlock()
-	return s.subscribedDevices[deviceID]
+	return s.subscribedDevices[deviceUID]
 }
 
-// InitializeSubscriptionsFromLayout 从 layout 配置初始化订阅
-// 解析 layout 中的 objects，找出所有已绑定的雷达设备，自动订阅
+// InitializeSubscriptionsFromLayout 从 layout 配置初始化订阅。
+// 当前 layout JSON 仍以 device_addr (IPv6) 标识雷达 (字段 bindedDeviceId / device_addr)；
+// C 阶段 layout 字段会迁移到 device_uid 后此 bridge 移除。
 func (s *RadarInstall) InitializeSubscriptionsFromLayout(ctx context.Context, tenantID string, layoutConfig json.RawMessage) error {
 	if len(layoutConfig) == 0 {
 		return nil
 	}
-	
+
 	var layout struct {
 		Objects []struct {
-			TypeName      string `json:"typeName"`
+			TypeName       string `json:"typeName"`
 			BindedDeviceID string `json:"bindedDeviceId,omitempty"`
-			DeviceID      string `json:"device_addr,omitempty"`
+			DeviceAddr     string `json:"device_addr,omitempty"`
 		} `json:"objects"`
 	}
-	
+
 	if err := json.Unmarshal(layoutConfig, &layout); err != nil {
-		s.logger.Warn("Failed to parse layout config for subscription initialization", zap.Error(err))
-		return nil // 不阻塞初始化流程
+		s.logger.Warn("[RADAR_INIT] failed to parse layout config", zap.Error(err))
+		return nil
 	}
-	
-	// 找出所有已绑定的雷达设备
+
 	for _, obj := range layout.Objects {
-		if obj.TypeName == "Radar" {
-			deviceID := obj.BindedDeviceID
-			if deviceID == "" {
-				deviceID = obj.DeviceID
-			}
-			if deviceID != "" {
-				// 自动订阅
-				if err := s.BindDevice(ctx, tenantID, deviceID); err != nil {
-					s.logger.Warn("Failed to subscribe device from layout", 
-						zap.String("device_id", deviceID), 
-						zap.Error(err))
-					// 继续处理其他设备，不中断
-				}
-			}
+		if obj.TypeName != "Radar" {
+			continue
+		}
+		deviceAddr := obj.BindedDeviceID
+		if deviceAddr == "" {
+			deviceAddr = obj.DeviceAddr
+		}
+		if deviceAddr == "" {
+			continue
+		}
+		// addr→uid bridge: layout 还是 addr，但 subscription 要 uid。C 阶段 layout 迁移后此查找移除。
+		device, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceAddr)
+		if err != nil {
+			s.logger.Warn("[RADAR_INIT] device not found for layout addr",
+				zap.String("device_addr", deviceAddr), zap.Error(err))
+			continue
+		}
+		if err := s.BindDevice(ctx, tenantID, device.DeviceUID); err != nil {
+			s.logger.Warn("[RADAR_INIT] failed to subscribe device from layout",
+				zap.String("device_uid", device.DeviceUID), zap.Error(err))
 		}
 	}
-	
+
 	s.subscribedMutex.RLock()
 	count := len(s.subscribedDevices)
 	s.subscribedMutex.RUnlock()
-	
-	s.logger.Info("[RADAR_INIT] initialized subscriptions from layout", 
+
+	s.logger.Info("[RADAR_INIT] initialized subscriptions from layout",
 		zap.Int("subscribed_count", count))
 	return nil
 }

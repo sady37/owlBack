@@ -580,10 +580,38 @@ func deviceAddrToTenantPrefix(ipv6 string) string {
 	return (&net.IPNet{IP: t, Mask: net.CIDRMask(48, 128)}).String()
 }
 
-// GetDeviceByUID 根据 device_uid 和 tenant_id 获取设备信息
-// v2 stub: Phase E.2 will rewrite using devices.device_ipv6 + reset_device_prefix()
+// GetDeviceByUID 根据 device_uid 和 tenant scope 查设备；返回 DeviceAddr + DeviceUID + DeviceType
+// 供 radar firmware handler 做 scope check 后再调 qinglan。device_uid = dfm.device_uid (logMAC，硬件 identity 不变量)。
+// scope: devices.device_addr 必须 <<= tenantID::INET（tenantID 是 /48 CIDR）。
 func (r *PostgresDevicesRepository) GetDeviceByUID(ctx context.Context, tenantID, deviceUID string) (*domain.Device, error) {
-	return nil, fmt.Errorf("device not found: tenant_id=%s, device_uid=%s", tenantID, deviceUID)
+	if deviceUID == "" {
+		return nil, fmt.Errorf("device_uid is required")
+	}
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	var (
+		d          domain.Device
+		deviceAddr string
+		deviceType sql.NullString
+	)
+	err := r.db.QueryRowContext(ctx, `
+		SELECT host(d.device_addr), dfm.device_uid, dfm.device_type::text
+		  FROM device_factory_meta dfm
+		  JOIN devices d ON d.device_uid = dfm.device_uid
+		 WHERE dfm.device_uid = $1
+		   AND d.device_addr <<= $2::INET
+		 LIMIT 1`, deviceUID, tenantID).Scan(&deviceAddr, &d.DeviceUID, &deviceType)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("device not bound in tenant: tenant_id=%s, device_uid=%s", tenantID, deviceUID)
+		}
+		return nil, fmt.Errorf("GetDeviceByUID query failed: %w", err)
+	}
+	d.DeviceAddr = deviceAddr
+	d.DeviceType = deviceType
+	d.TenantID = tenantID
+	return &d, nil
 }
 
 // GetDevicesBoundToRoom 查询绑定到指定 room 的设备（仅 id/name，用于删除前检查）
