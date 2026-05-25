@@ -157,6 +157,7 @@ func main() {
 		BackChannel:   backChannel,
 		Identity:      sensorAgentIdentity(cfg, logger),
 		Fitness:       fitnessTracker,
+		Enablement:    enablementCache,
 		Logger:        logger,
 	})
 	if err != nil {
@@ -197,15 +198,15 @@ func main() {
 	fitnessTracker.RegisterUnfitCallback(zone.TargetAggregator.ForgetDevice)
 	fitnessTracker.RegisterUnfitCallback(sleepStageConsumer.OnDeviceUnfit)
 	logger.Info("v2 fall detection wired — all 3 layers armed",
-		zap.String("warning_floor", "zonealarm.Supervisor Stay rule (10min bathroom)"),
+		zap.String("warning_floor", "zonealarm.Supervisor Stay rule (alone-anchored: day 45min / night 30min)"),
 		zap.String("critical_bathroom", "BathroomFallRules §6.A 4 rules"),
 		zap.String("critical_bedroom", "BedroomFallRules §6.B 11b+11c"))
 
 	// 5.2.3 config:card:stream 订阅：wisefido-data PublishConfigChanged 后失效 + reload。
-	// 替代旧 60s SetRoutesReloader 轮询；事件驱动，monitor toggle 1s 内同步到 bed_device_lookup。
+	// 替代旧 60s SetRoutesReloader 轮询；事件驱动，monitor toggle 1s 内同步到 spatial cache。
 	configCardConsumer := consumer.NewConfigCardConsumer(engineRedis,
 		&engineReloader{ctx: ctx, engine: engine, db: engineDB, logger: logger},
-		zone.BedDeviceLookup,
+		zone.Spatial,
 		logger)
 	configCardConsumer.Start(ctx)
 

@@ -3,12 +3,12 @@
 // 数据流：wisefido-data PublishConfigChanged → 本 consumer 解析 op/cards/device_addrs →
 // 按 op 触发 reload 闭包：
 //   - reset/delete/update → 重 load rooms (registerAllRooms) + device→room 映射 (mapDevicesToRooms)
-//   - 任何 op → BedDeviceLookup.InvalidateAll() (monitor toggle 立即生效)
+//   - 任何 op → SpatialCache.InvalidateAll() (清 per-unit cache，下次 query lazy reload)
 //
 // "card 变更很少"原则：不区分 affected 范围，每次全量 reload；rooms ≈ 13 + devices ≈ 22 全
 // reload < 200ms，10 次/天可忽略。换来 0 引入新概念 / 无 incremental 复杂度。
 //
-// 替代 engine.SetRoutesReloader 的 60s 轮询：事件驱动，monitor toggle 1s 内同步到 bed_device_lookup。
+// 替代 engine.SetRoutesReloader 的 60s 轮询：事件驱动，monitor toggle 1s 内同步到 SpatialCache。
 
 package consumer
 
@@ -35,29 +35,29 @@ type ConfigChangedReloader interface {
 	ReloadDevices(ctx context.Context) error
 }
 
-// BedLookupInvalidator BedDeviceLookup 失效接口（wiring.BedDeviceLookup 隐式实现）。
-type BedLookupInvalidator interface {
+// SpatialInvalidator SpatialCache 失效接口（wiring.SpatialCache 隐式实现）。
+type SpatialInvalidator interface {
 	InvalidateAll()
 }
 
 type ConfigCardConsumer struct {
-	client    *redislib.Client
-	reloader  ConfigChangedReloader
-	bedLookup BedLookupInvalidator
-	logger    *zap.Logger
+	client   *redislib.Client
+	reloader ConfigChangedReloader
+	spatial  SpatialInvalidator
+	logger   *zap.Logger
 }
 
 func NewConfigCardConsumer(
 	client *redislib.Client,
 	reloader ConfigChangedReloader,
-	bedLookup BedLookupInvalidator,
+	spatial SpatialInvalidator,
 	logger *zap.Logger,
 ) *ConfigCardConsumer {
 	return &ConfigCardConsumer{
-		client:    client,
-		reloader:  reloader,
-		bedLookup: bedLookup,
-		logger:    logger,
+		client:   client,
+		reloader: reloader,
+		spatial:  spatial,
+		logger:   logger,
 	}
 }
 
@@ -130,8 +130,8 @@ func (c *ConfigCardConsumer) handleRaw(ctx context.Context, raw map[string]inter
 			c.logger.Warn("sensor config-card: reload devices", zap.Error(err))
 		}
 	}
-	if c.bedLookup != nil {
-		c.bedLookup.InvalidateAll()
+	if c.spatial != nil {
+		c.spatial.InvalidateAll()
 	}
 
 	c.logger.Info("sensor config-card processed",

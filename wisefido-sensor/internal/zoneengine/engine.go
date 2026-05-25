@@ -193,6 +193,7 @@ func (e *Engine) Apply(ev SignalEvidence) {
 		z.state.Count = ev.Count
 		z.state.UpdatedAt = now
 		z.state.LastSource = ev.Source
+		maintainAloneContinuousTs(&z.state, prev.Count, now)
 		newState := z.state
 		listeners := append([]ZoneEventListener(nil), e.listeners...)
 		e.mu.Unlock()
@@ -711,6 +712,7 @@ func (e *Engine) applyBedBayesianLocked(z *zoneInstance, nowMs int64) *ZoneEvent
 // applyTransitionToState 把 StateMachine TransitionResult 投射到 ZoneState。
 // 处理 4 种 transition：occupied / vacant / leaving / returned 各自的字段更新。
 func applyTransitionToState(s *ZoneState, res TransitionResult, nowMs int64) {
+	prevCount := s.Count
 	s.Status = res.NewStatus
 	s.Occupied = (res.NewStatus != StatusVacant) // 兼容字段
 	s.SinceTs = nowMs
@@ -728,6 +730,20 @@ func applyTransitionToState(s *ZoneState, res TransitionResult, nowMs int64) {
 		s.LastExitTs = nowMs
 		s.LeavingSince = 0
 		s.Count = 0
+	}
+	maintainAloneContinuousTs(s, prevCount, nowMs)
+}
+
+// maintainAloneContinuousTs 维护 ZoneState.AloneContinuousTs 锚点：
+//   - Count == 1 且 prevCount != 1 → AloneContinuousTs = nowMs（新独居开始）
+//   - Count != 1                   → AloneContinuousTs = 0    （独居结束）
+//   - Count == 1 且 prevCount == 1 → 保 prev anchor          （独居延续）
+func maintainAloneContinuousTs(s *ZoneState, prevCount int, nowMs int64) {
+	switch {
+	case s.Count != 1:
+		s.AloneContinuousTs = 0
+	case prevCount != 1:
+		s.AloneContinuousTs = nowMs
 	}
 }
 

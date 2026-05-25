@@ -373,14 +373,15 @@ func snapshotLastActive(a *TargetStateAggregator, spatial string) int64 {
 	return acc.lastActive.lastActiveTs
 }
 
-func snapshotStanding(a *TargetStateAggregator, spatial string) int {
+// snapshotStandingTs 取 standing 起始 TS（0 = 当前未站立）；测试断言用。
+func snapshotStandingTs(a *TargetStateAggregator, spatial string) int64 {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	acc := a.accums[spatial]
 	if acc == nil {
 		return -1
 	}
-	return acc.standing.continuousMin
+	return acc.standing.continuousTs
 }
 
 func TestEventFrame_LastActive_WalkDistanceTriggers(t *testing.T) {
@@ -430,32 +431,20 @@ func TestEventFrame_LastActive_60sThrottle(t *testing.T) {
 	}
 }
 
-func TestEventFrame_Standing_AccumulateWithGate(t *testing.T) {
+func TestEventFrame_Standing_FirstFrameSetsTs(t *testing.T) {
 	a := NewTargetStateAggregator(nil, zap.NewNop())
 	spatial := "fd00:0:3:111:3:101::/96"
 	t0 := int64(1_700_000_000_000)
 	setTotalPeople(a, spatial, 1, t0)
 
 	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 60_000, StandDurationSec: 58})
-	if got := snapshotStanding(a, spatial); got != 1 {
-		t.Errorf("first stand≥55 with tp=1: standing want 1, got %d", got)
+	if got := snapshotStandingTs(a, spatial); got != t0+60_000 {
+		t.Errorf("first qualifying frame: TS want %d, got %d", t0+60_000, got)
 	}
+	// 后续合格帧：TS 保持不变（独居段连续）
 	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 120_000, StandDurationSec: 58})
-	if got := snapshotStanding(a, spatial); got != 2 {
-		t.Errorf("second stand≥55: standing want 2, got %d", got)
-	}
-}
-
-func TestEventFrame_Standing_Cap8(t *testing.T) {
-	a := NewTargetStateAggregator(nil, zap.NewNop())
-	spatial := "fd00:0:3:111:3:101::/96"
-	t0 := int64(1_700_000_000_000)
-	setTotalPeople(a, spatial, 1, t0)
-	for i := 1; i <= 10; i++ {
-		a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + int64(i)*60_000, StandDurationSec: 58})
-	}
-	if got := snapshotStanding(a, spatial); got != 8 {
-		t.Errorf("standing should cap at 8 after 10 increments, got %d", got)
+	if got := snapshotStandingTs(a, spatial); got != t0+60_000 {
+		t.Errorf("subsequent qualifying frame: TS should stay %d, got %d", t0+60_000, got)
 	}
 }
 
@@ -465,11 +454,10 @@ func TestEventFrame_Standing_ResetOnShortStand(t *testing.T) {
 	t0 := int64(1_700_000_000_000)
 	setTotalPeople(a, spatial, 1, t0)
 	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 60_000, StandDurationSec: 58})
-	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 120_000, StandDurationSec: 58})
-	// stand<55 → reset
-	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 180_000, StandDurationSec: 10})
-	if got := snapshotStanding(a, spatial); got != 0 {
-		t.Errorf("short stand should reset standing to 0, got %d", got)
+	// stand<55 → reset TS=0
+	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 120_000, StandDurationSec: 10})
+	if got := snapshotStandingTs(a, spatial); got != 0 {
+		t.Errorf("short stand should reset TS to 0, got %d", got)
 	}
 }
 
@@ -481,8 +469,8 @@ func TestEventFrame_Standing_ResetOnMultiPerson(t *testing.T) {
 	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 60_000, StandDurationSec: 58})
 	// MultiPersonDuration > 0 → reset 即便 stand≥55
 	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 120_000, StandDurationSec: 58, MultiPersonDurationSec: 30})
-	if got := snapshotStanding(a, spatial); got != 0 {
-		t.Errorf("multi_person_duration>0 should reset standing, got %d", got)
+	if got := snapshotStandingTs(a, spatial); got != 0 {
+		t.Errorf("multi_person_duration>0 should reset TS, got %d", got)
 	}
 }
 
@@ -490,10 +478,10 @@ func TestEventFrame_Standing_GateTotalPeopleZero(t *testing.T) {
 	a := NewTargetStateAggregator(nil, zap.NewNop())
 	spatial := "fd00:0:3:111:3:101::/96"
 	t0 := int64(1_700_000_000_000)
-	// 不调 setTotalPeople（默认 0）→ standing 不累加
+	// 不调 setTotalPeople（默认 0）→ standing TS 不起
 	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0, StandDurationSec: 58})
-	if got := snapshotStanding(a, spatial); got != 0 {
-		t.Errorf("tp=0 (no one in room): standing should stay 0, got %d", got)
+	if got := snapshotStandingTs(a, spatial); got != 0 {
+		t.Errorf("tp=0 (no one in room): TS should stay 0, got %d", got)
 	}
 }
 
@@ -506,8 +494,28 @@ func TestEventFrame_Standing_GateTotalPeopleTwo(t *testing.T) {
 	// 切到 2 人 → standing reset
 	setTotalPeople(a, spatial, 2, t0+90_000)
 	a.handleEventFrame(EventFrame{SpatialPrefix: spatial, TsMs: t0 + 120_000, StandDurationSec: 58})
-	if got := snapshotStanding(a, spatial); got != 0 {
-		t.Errorf("tp=2: standing should reset, got %d", got)
+	if got := snapshotStandingTs(a, spatial); got != 0 {
+		t.Errorf("tp=2: standing TS should reset, got %d", got)
+	}
+}
+
+// MIN 派生测试 — GetSnapshot 通过 deriveStandingMinFromTs(now - ts) cap 8
+func TestDeriveStandingMinFromTs(t *testing.T) {
+	cases := []struct {
+		ts, now int64
+		want    int
+	}{
+		{0, 1_000_000, 0},                  // 未站立
+		{1_000_000, 999_999, 0},            // now < ts (clock skew)
+		{1_000_000, 1_000_000, 0},          // 刚开始
+		{1_000_000, 1_000_000 + 60_000, 1}, // 1min
+		{1_000_000, 1_000_000 + 8*60_000, 8},
+		{1_000_000, 1_000_000 + 15*60_000, 8}, // cap 8
+	}
+	for _, c := range cases {
+		if got := deriveStandingMinFromTs(c.ts, c.now); got != c.want {
+			t.Errorf("deriveStandingMinFromTs(ts=%d, now=%d): want %d, got %d", c.ts, c.now, c.want, got)
+		}
 	}
 }
 

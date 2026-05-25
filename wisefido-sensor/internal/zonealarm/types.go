@@ -1,69 +1,130 @@
-// Package zonealarm — zone state 派生 alarm 引擎。
+// Package zonealarm — state-anchored zone-derived alarm 引擎。
 //
-// 订阅 zoneengine.Engine 的 ZoneEvent 流，按 yaml 规则集 arm pending alarm；timer
-// 到期 fire；中途收到 cancel trigger 即 cancel pending。
+// 不订阅 ZoneEvent 流；Supervisor.Tick 周期从 sensor StreamPublisher 拿 RoomState/BedState
+// 快照，按规则比阈值 → fire（fire-once-until-anchor-invalidates）。
 //
 // 跟 zoneengine 的关系：
-//   - zonealarm 是 zoneengine 的下游消费者，**不修改** zone state
-//   - 通过 ZoneEventListener 接口反向注册到 Engine，跟 RedisAdapter 平级
-//   - 不直接 publish iot:alarm:stream — 通过 AlarmFirer 接口由 wiring 层注入
-//     （wiring 包装 sensor consumer.AlarmBackChannel + 解析 device_addr）
+//   - zonealarm 是 sensor 派生 state 的纯快照消费者，**不修改** zone state
+//   - 不实现 ZoneEventListener 接口（旧 OnZoneEvent 路径已废）
+//   - fire 唯一出口 = AlarmFirer.Fire（wiring 包装 sensor consumer.AlarmBackChannel）
 //
-// 当前规则集（4 条；硬约束在 [[zoneengine_adapters_done]] memory）：
-//
-//   1. Stay              — bathroom 持续 N min →  fire；cancel: bathroom→vacant /
-//                          其它 room.EnterRoom / bed.InBed
-//   2. LeftBed           — bed→vacant 持续 N min → fire；cancel: bed.InBed /
-//                          room.EnterRoom（人回房算回床区域，用户拍板）
-//   3. NightAbsence      — room→vacant 持续 N min（21-7 时段） → fire；cancel:
-//                          room.EnterRoom / bed.InBed / room.NumberPeople>0
-//                          （bed-scope NightAbsence 已删除：床上无人不等于风险，可用 LeftBed 长时长替代）
+// 三条 rule 同 shape（statee-anchored）：
+//   1. Stay         — bathroom alone 锚 AloneContinuousMin，day 45min / night 30min；
+//                     KeepCounting=[bathroom.Alone] → multi/vacant 即清 fired
+//   2. LeftBed      — bed 锚 BedStatusTs（NotInBed 时），30min；
+//                     KeepCounting=[bed.Vacant, room.Vacant] → 床或房任一占用即清
+//   3. NightAbsence — room 锚 LastExitTs，30min + 21-7 时段；
+//                     KeepCounting=[room.Vacant, bed.Vacant] → 房或床任一占用即清
 package zonealarm
 
 import (
 	"context"
+	"fmt"
 	"time"
-
-	"wisefido-sensor/internal/zoneengine"
 )
 
-// Rule 一条 alarm 派生规则。同一规则可以匹配多张卡，每张卡独立 pending。
-type Rule struct {
-	// AlarmType cardagg alarm_handler 接收时识别的 event_name；
-	// 取自 owl-common/alarm 常量（Stay / LeftBed / NightAbsence）。
-	AlarmType string `yaml:"alarm_type"`
+// EntityKind 规则锚定 / KeepCounting 条件指向哪类 entity。
+//
+//	EntityBed       /96 床 — sensor StreamPublisher.SnapshotBedStates
+//	EntityRoom      /88 普通 room — SnapshotRoomStates Kind=RoomTypeDefault
+//	EntityBathroom  /88 卫生间 — SnapshotRoomStates Kind=RoomTypeBathroom
+type EntityKind int
 
-	// Level cardagg PersistAlarmAndPublish 用的 alarm_level（"WARN" / "CRIT" 等）。
-	Level string `yaml:"level"`
+const (
+	EntityBed EntityKind = iota
+	EntityRoom
+	EntityBathroom
+)
 
-	// ArmZone / ArmStatus arm 触发条件：当指定 ZoneType 翻转到指定 status 时启 pending。
-	ArmZone   zoneengine.ZoneType   `yaml:"-"` // yaml 字符串通过 ArmZoneStr 转
-	ArmStatus zoneengine.ZoneStatus `yaml:"-"`
-
-	ArmZoneStr   string `yaml:"arm_zone"`   // "bed" / "room" / "bathroom"
-	ArmStatusStr string `yaml:"arm_status"` // "occupied" / "vacant" / "leaving"
-
-	// Duration arm 后多久 fire（秒）。0 = 立即 fire（不走 pending）。
-	DurationSec int `yaml:"duration_sec"`
-
-	// Cancels arm 后哪些 ZoneEvent 取消本条 pending（任一命中即 cancel）。
-	Cancels []CancelTrigger `yaml:"cancels"`
-
-	// TimeWindow 仅在指定本地时段内允许 arm（cancel 不受窗口限制）。nil = 24h 任何时间。
-	TimeWindow *TimeWindow `yaml:"time_window,omitempty"`
+func (k EntityKind) String() string {
+	switch k {
+	case EntityBed:
+		return "bed"
+	case EntityRoom:
+		return "room"
+	case EntityBathroom:
+		return "bathroom"
+	default:
+		return fmt.Sprintf("EntityKind(%d)", int(k))
+	}
 }
 
-// CancelTrigger arm 中 pending 的取消条件。
+// EntityState 规则 KeepCounting 条件描述 entity 必须处于的状态。
 //
-//	Zone / Status — 哪种 ZoneEvent 触发 cancel
-//	CountGtZero   — true 时仅当 NewState.Count > 0 才命中（Night Out-of-Room 用 NumberPeople 确认）
-type CancelTrigger struct {
-	ZoneStr     string                `yaml:"zone"`           // "bed" / "room" / "bathroom"
-	StatusStr   string                `yaml:"status"`         // "occupied" / "vacant" / "leaving"; 空 = 任意
-	CountGtZero bool                  `yaml:"count_gt_zero,omitempty"`
-	Zone        zoneengine.ZoneType   `yaml:"-"`
-	Status      zoneengine.ZoneStatus `yaml:"-"`
-	StatusAny   bool                  `yaml:"-"` // StatusStr 空时为 true
+//	StateVacant     room.TotalPeople==0 / bed.BedStatus==NotInBed
+//	StateOccupied   inverse of Vacant
+//	StateAlone      room.TotalPeople==1（仅 room/bathroom 适用）
+type EntityState int
+
+const (
+	StateVacant EntityState = iota
+	StateOccupied
+	StateAlone
+)
+
+func (s EntityState) String() string {
+	switch s {
+	case StateVacant:
+		return "vacant"
+	case StateOccupied:
+		return "occupied"
+	case StateAlone:
+		return "alone"
+	default:
+		return fmt.Sprintf("EntityState(%d)", int(s))
+	}
+}
+
+// AnchorField 规则计时起点。两种语义：
+//
+//	AnchorAloneContinuousMin  RoomState.AloneContinuousMin (Stay) — MIN 整数，sensor 算好 push
+//	AnchorLastExitTs          RoomState.LastExitTs (NightAbsence) — TS，evaluator 现算 elapsed
+//	AnchorBedStatusTs         BedState.BedStatusTs（NotInBed 起点）— TS，evaluator 现算 elapsed
+//
+// evaluator 端 readElapsedSec 统一返 elapsed 秒数（MIN 类乘 60），threshold 仍以 sec 比。
+const (
+	AnchorAloneContinuousMin = "AloneContinuousMin"
+	AnchorLastExitTs         = "LastExitTs"
+	AnchorBedStatusTs        = "BedStatusTs"
+)
+
+// Condition KeepCounting 单条条件（全 true 才视 timer 有效）。
+type Condition struct {
+	EntityStr string `yaml:"entity"` // "bed" / "room" / "bathroom"；空 = Self（同 rule.Anchor）
+	StateStr  string `yaml:"state"`  // "vacant" / "occupied" / "alone"
+
+	// 解析后字段（LoadFromFile / DefaultRules resolveRule 填）
+	Entity    EntityKind  `yaml:"-"`
+	State     EntityState `yaml:"-"`
+	UsesSelf  bool        `yaml:"-"` // EntityStr 空时 true（运行时用 rule.Anchor）
+}
+
+// Rule 一条 state-anchored alarm 规则。
+type Rule struct {
+	// AlarmType cardagg alarm_handler 接收 event_name；取自 owl-common/alarm 常量。
+	AlarmType string `yaml:"alarm_type"`
+
+	// Level cardagg PersistAlarmAndPublish 用的 alarm_level（"WARN" / "CRIT"）。
+	Level string `yaml:"level"`
+
+	// Anchor 锚定 entity 类型 — 决定 Tick 时遍历哪个 snapshot map。
+	AnchorStr string     `yaml:"anchor"` // "bed" / "room" / "bathroom"
+	Anchor    EntityKind `yaml:"-"`
+
+	// AnchorField 从 anchor entity 上读哪个 ts 字段当计时起点（const AnchorXxx）。
+	AnchorField string `yaml:"anchor_field"`
+
+	// KeepCounting 计时有效条件：所有 condition 全 true 才计；任一 false 即清 fired。
+	KeepCounting []Condition `yaml:"keep_counting"`
+
+	// ThresholdDaySec 白天阈值（秒，超过即 fire）。必填。
+	ThresholdDaySec int `yaml:"threshold_day_sec"`
+
+	// ThresholdNightSec 夜间（card.IsRiskTime 21-08）阈值；0 表示沿用 Day。
+	ThresholdNightSec int `yaml:"threshold_night_sec,omitempty"`
+
+	// NightOnly 仅本地时段内允许 fire（NightAbsence 用 21-7）。nil = 全天。
+	NightOnly *TimeWindow `yaml:"night_only,omitempty"`
 }
 
 // TimeWindow 本地时段（HH:MM）。支持跨午夜（如 21:00-07:00）。
@@ -89,37 +150,60 @@ func (w *TimeWindow) Active(t time.Time) bool {
 	return cur >= start || cur < end
 }
 
-// Pending arm 中的 alarm 实例（per zone + alarmType）。
-type Pending struct {
-	Key       PendingKey
-	ArmedAt   int64       // ms
-	DueAt     int64       // ms
-	Level     string
-	Trigger   zoneengine.ZoneEvent // 触发 arm 的 event；fire 时作 trigger_data
-}
-
-// PendingKey 用于 supervisor 内部 map 主键 — 一个 spatial zone 一种 alarmType 同时只能有一个 pending。
-// 物理寻址：ZoneID = CIDR 文本（/96 床 / /88 房）；与 card 概念解耦（card 是 cardagg/FE 域）。
-type PendingKey struct {
+// FireKey fire-once gate map 主键 — 同 zone 内同 AlarmType 同时只允许一条 fire。
+// 物理寻址：ZoneID = CIDR 文本（/96 床 / /88 房）。
+type FireKey struct {
 	ZoneID    string
 	AlarmType string
 }
 
-// AlarmFirer zonealarm 的 fire 出口接口；wiring 层包装 alarm_back_channel 实现。
-//
-// **Arm / Cancel 是 sensor 内部 lifecycle 钩子**（仅 log / metric / 审计用），不外发 cardagg；
-// 真正的 sensor→cardagg 路径只有 Fire（PublishAlarmFire confirmed alarm）。
-// PR1 时代的 pending_arm / pending_cancel sentinel 已删 — pending state v2 完全在 Supervisor
-// 内部 maintain，外部不可见。
-type AlarmFirer interface {
-	Arm(ctx context.Context, p Pending) error
-	Cancel(ctx context.Context, key PendingKey, reason zoneengine.ZoneEvent) error
-	Fire(ctx context.Context, p Pending) error
+// FireEvent fire 出口的载荷 — evaluator 触发 fire 时填，传给 AlarmFirer.Fire。
+type FireEvent struct {
+	Key       FireKey
+	Level     string
+	AnchorTs  int64 // 锚点 ts ms（计时起点）
+	NowMs     int64 // fire 时刻 ms
+	Snapshot  any   // 引用快照（*card.RoomState / *card.BedState；wiring 端按需做 device 路由）
 }
 
-// nopFirer 测试 / 兜底用。
+// AlarmFirer zonealarm fire 出口接口；wiring 层包装 alarm_back_channel 实现。
+//
+// state-anchored 重构后 Arm/Cancel 概念消失（无 pending FSM），仅保 Fire。
+type AlarmFirer interface {
+	Fire(ctx context.Context, e FireEvent) error
+}
+
+// NopFirer 测试 / 兜底用。
 type NopFirer struct{}
 
-func (NopFirer) Arm(context.Context, Pending) error                                 { return nil }
-func (NopFirer) Cancel(context.Context, PendingKey, zoneengine.ZoneEvent) error      { return nil }
-func (NopFirer) Fire(context.Context, Pending) error                                 { return nil }
+func (NopFirer) Fire(context.Context, FireEvent) error { return nil }
+
+// DeviceLookup zone CIDR → device /128 canonical IPv6 字符串。
+// wiring 层包装 BedDeviceLookup 实现；nil 时退化 zone CIDR host=0。
+type DeviceLookup interface {
+	// FindPrimaryDevice 与 AlarmFirer 同语义（per [[track_fusion_and_gate_cardid]]）：
+	// LeftBed→Radar / Stay→Bathroom radar / NightAbsence→Room radar。
+	// 返空字符串 = 找不到（用 zone CIDR fallback）。
+	FindPrimaryDevice(zoneID, alarmType string) string
+}
+
+// ThresholdResolver per-device alarm 阈值 + 使能查询接口。
+//
+// wiring 层包装 service.AlarmEnablementCache + DeviceLookup 实现。
+//
+// Resolve 返回：
+//   - sec       生效的阈值（秒）；spatial_config 有则用之，否则 fallback
+//   - enabled   该 alarm 在 device 级是否启用；false → Evaluator 应清 fired 不 fire
+//
+// 实现端从 AlarmEnablementCache.IsEnabled 拿 EnabledAlarm.AlarmParams 解析
+// duration_sec / duration_min*60 任意一个；都没有就回 fallback。
+type ThresholdResolver interface {
+	Resolve(ctx context.Context, deviceAddr, alarmType string, fallbackSec int) (sec int, enabled bool)
+}
+
+// NopResolver 测试 / 未注入时用：永远返 (fallback, true) — 即按 yaml 默认全启用。
+type NopResolver struct{}
+
+func (NopResolver) Resolve(_ context.Context, _, _ string, fallbackSec int) (int, bool) {
+	return fallbackSec, true
+}

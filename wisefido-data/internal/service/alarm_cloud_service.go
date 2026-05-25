@@ -115,7 +115,8 @@ type AlarmCloudService interface {
 	UpdateAlarmCloudConfig(ctx context.Context, req UpdateAlarmCloudConfigRequest) (*alarm.AlarmCloudConfig, error)
 }
 
-// alarmCloudService 实现
+// alarmCloudService 实现 — tenant 级 alarm.cloud_config 是给 UI（模板 / reset to default）用的，
+// 与 sensor/cardagg 运行时无关；故不持有 ConfigPublisher，写后不需 fan-out invalidate。
 type alarmCloudService struct {
 	alarmCloudRepo     repository.AlarmCloudRepository
 	configVersionsRepo repository.ConfigVersionsRepository // 配置版本仓库（用于审计）
@@ -559,6 +560,10 @@ func (s *alarmCloudService) UpdateAlarmCloudConfig(ctx context.Context, req Upda
 	if err := s.alarmCloudRepo.UpsertAlarmCloud(ctx, req.TenantID, alarmCloud); err != nil {
 		return nil, fmt.Errorf("failed to upsert alarm cloud: %w", err)
 	}
+
+	// 不 fan-out invalidate device cache：tenant 级 alarm.cloud_config 是 UI 模板（给新设备
+	// bind 和"reset to default"按钮用），sensor/cardagg 运行时只读 alarm.device_config /128，
+	// 与 cloud_config 解耦（用户拍板：snapshot model，不级联）。
 
 	// 返回最新配置（走 GET 路径 = 一次 round-trip 验证）
 	return s.GetAlarmCloudConfig(ctx, GetAlarmCloudConfigRequest{

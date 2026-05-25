@@ -313,9 +313,9 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 
 // PR-Bootstrap: loadStayAlarmEnablement 已删除（v1 dead code）。
 // 原用途："运维显式启用 Stay alarm 的房间按 bathroom 处理" — PR-10 BathroomStillFall 用
-// room.kind=="bathroom" 分支替代，决定 16 的显式配置取代了"间接通过 Stay alarm 标志判断"路径。
-// zonealarm.Supervisor 的 Stay rule（Warning 兜底，§6.A 设计原则 #1）仍由 DefaultRules + yaml
-// 始终 armed，与本函数无关。
+// room.kind=="bathroom" 分支替代。zonealarm.Supervisor 的 Stay rule（state-anchored，
+// 消费 RoomState.AloneSinceTs，day 45min / night 30min）由 DefaultRules + yaml 加载，
+// 与本函数无关。
 
 // mapDevicesToRooms 建 device_addr → room 路由表。
 //

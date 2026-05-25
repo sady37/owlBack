@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"owl-common/alarm"
-	"wisefido-sensor/internal/zoneengine"
+	"owl-common/card"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,7 +16,7 @@ type Config struct {
 	Rules []Rule `yaml:"rules"`
 }
 
-// LoadFromFile 从 yaml 加载 + 字符串字段（zone/status）→ enum 解析。
+// LoadFromFile 从 yaml 加载 + 字符串字段（anchor/state/entity）→ enum 解析。
 //
 // 不存在文件 / 加载失败时返回 (DefaultRules(), nil) — 让 wiring 层日志后兜底。
 func LoadFromFile(path string) ([]Rule, error) {
@@ -36,114 +36,112 @@ func LoadFromFile(path string) ([]Rule, error) {
 	return cfg.Rules, nil
 }
 
-// resolveRule 把 yaml 字符串字段（ArmZoneStr / ArmStatusStr / CancelTrigger.ZoneStr / StatusStr）
-// 转换为 enum 类型，便于 supervisor 主路径用 == 判断。
+// resolveRule 把 yaml 字符串字段（AnchorStr / KeepCounting.EntityStr/StateStr）转换为 enum。
 func resolveRule(r *Rule) error {
-	zt, err := parseZoneType(r.ArmZoneStr)
-	if err != nil {
-		return fmt.Errorf("arm_zone: %w", err)
+	if r.AlarmType == "" {
+		return fmt.Errorf("alarm_type required")
 	}
-	r.ArmZone = zt
-
-	st, err := parseZoneStatus(r.ArmStatusStr)
-	if err != nil {
-		return fmt.Errorf("arm_status: %w", err)
+	if r.AnchorField == "" {
+		return fmt.Errorf("anchor_field required")
 	}
-	r.ArmStatus = st
+	if r.ThresholdDaySec <= 0 {
+		return fmt.Errorf("threshold_day_sec must be > 0")
+	}
+	ek, err := parseEntityKind(r.AnchorStr)
+	if err != nil {
+		return fmt.Errorf("anchor: %w", err)
+	}
+	r.Anchor = ek
 
-	for j := range r.Cancels {
-		c := &r.Cancels[j]
-		ct, err := parseZoneType(c.ZoneStr)
-		if err != nil {
-			return fmt.Errorf("cancels[%d].zone: %w", j, err)
-		}
-		c.Zone = ct
-		if strings.TrimSpace(c.StatusStr) == "" {
-			c.StatusAny = true
+	for j := range r.KeepCounting {
+		c := &r.KeepCounting[j]
+		if strings.TrimSpace(c.EntityStr) == "" {
+			c.UsesSelf = true
+			c.Entity = r.Anchor
 		} else {
-			cs, err := parseZoneStatus(c.StatusStr)
+			e, err := parseEntityKind(c.EntityStr)
 			if err != nil {
-				return fmt.Errorf("cancels[%d].status: %w", j, err)
+				return fmt.Errorf("keep_counting[%d].entity: %w", j, err)
 			}
-			c.Status = cs
+			c.Entity = e
 		}
+		st, err := parseEntityState(c.StateStr)
+		if err != nil {
+			return fmt.Errorf("keep_counting[%d].state: %w", j, err)
+		}
+		c.State = st
 	}
 	return nil
 }
 
-func parseZoneType(s string) (zoneengine.ZoneType, error) {
+func parseEntityKind(s string) (EntityKind, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "bed":
-		return zoneengine.ZoneTypeBed, nil
+		return EntityBed, nil
 	case "room":
-		return zoneengine.ZoneTypeRoom, nil
+		return EntityRoom, nil
 	case "bathroom":
-		return zoneengine.ZoneTypeBathroom, nil
+		return EntityBathroom, nil
 	default:
-		return 0, fmt.Errorf("unknown zone type %q (expect bed/room/bathroom)", s)
+		return 0, fmt.Errorf("unknown entity %q (expect bed/room/bathroom)", s)
 	}
 }
 
-func parseZoneStatus(s string) (zoneengine.ZoneStatus, error) {
+func parseEntityState(s string) (EntityState, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "vacant":
-		return zoneengine.StatusVacant, nil
+		return StateVacant, nil
 	case "occupied":
-		return zoneengine.StatusOccupied, nil
-	case "leaving":
-		return zoneengine.StatusLeaving, nil
+		return StateOccupied, nil
+	case "alone":
+		return StateAlone, nil
 	default:
-		return 0, fmt.Errorf("unknown zone status %q (expect vacant/occupied/leaving)", s)
+		return 0, fmt.Errorf("unknown state %q (expect vacant/occupied/alone)", s)
 	}
 }
 
-// DefaultRules — 4 条 provisional alarm rules，硬约束来自用户拍板（[[zoneengine_adapters_done]] memory）。
+// DefaultRules — 3 条 state-anchored 规则（[[zoneengine_adapters_done]]+ Stay alone-only 修正）。
 //
-// 数值（duration / time window）是 placeholder，最终由用户对照真实信号 trace + tenant
-// 配置 calibrate；yaml hot reload 经 Supervisor.ReloadRules 即可。
+// 阈值取自 owl-common/card/risk_thresholds.go BathroomAlone（Stay 与 cardagg display RiskLevel
+// 共用同一份阈值，避免 sensor/cardagg 漂移）；LeftBed/NightAbsence 沿用原 30min。
 //
-// AlarmType 取自 owl-common/alarm 常量，与 cardagg alarm_handler 接收侧严格对齐。
+// yaml hot reload 经 Supervisor.ReloadRules 即可（运行时 fired map 不动）。
 func DefaultRules() []Rule {
 	rules := []Rule{
-		// 1. Stay — bathroom 持续占用 N min →  fire
+		// 1. Stay — bathroom 独居超阈 → fire（仅 1 人才算滞留）
 		{
-			AlarmType:    alarm.Stay,
-			Level:        alarm.AlarmLevelWarn,
-			ArmZoneStr:   "bathroom",
-			ArmStatusStr: "occupied",
-			DurationSec:  600, // 10 min
-			Cancels: []CancelTrigger{
-				{ZoneStr: "bathroom", StatusStr: "vacant"},
-				{ZoneStr: "room", StatusStr: "occupied"}, // 进其它房间
-				{ZoneStr: "bed", StatusStr: "occupied"},  // 去躺床
-			},
+			AlarmType:         alarm.Stay,
+			Level:             alarm.AlarmLevelWarn,
+			AnchorStr:         "bathroom",
+			AnchorField:       AnchorAloneContinuousMin,
+			KeepCounting:      []Condition{{StateStr: "alone"}}, // Self=bathroom Alone
+			ThresholdDaySec:   card.BathroomAlone.DayRiskMin * 60,       // 45*60 = 2700
+			ThresholdNightSec: card.BathroomAlone.RiskTimeRiskMin * 60,  // 30*60 = 1800
 		},
-		// 2. LeftBed — bed 离床持续 N min →  fire（rest window 内）
+		// 2. LeftBed — bed 离床 30min + 同 /80 unit 内 room 也得空（人回房算回床区域）
 		{
-			AlarmType:    alarm.LeftBed,
-			Level:        alarm.AlarmLevelWarn,
-			ArmZoneStr:   "bed",
-			ArmStatusStr: "vacant",
-			DurationSec:  1800, // 30 min
-			Cancels: []CancelTrigger{
-				{ZoneStr: "bed", StatusStr: "occupied"},
-				{ZoneStr: "room", StatusStr: "occupied"}, // 人回房算回床区域（用户拍板）
+			AlarmType:       alarm.LeftBed,
+			Level:           alarm.AlarmLevelWarn,
+			AnchorStr:       "bed",
+			AnchorField:     AnchorBedStatusTs,
+			KeepCounting: []Condition{
+				{StateStr: "vacant"},                       // Self=bed Vacant
+				{EntityStr: "room", StateStr: "vacant"},    // 同 unit room 也空
 			},
-			// LeftBed 默认 24h；rest window 由 tenant 级 yaml 覆盖
+			ThresholdDaySec: 30 * 60,
 		},
-		// 3. NightAbsence (Night Out-of-Room) — room→vacant 持续 N min（21-7 时段）
+		// 3. NightAbsence — room 空 30min + 21-7 时段 + bed 也得空
 		{
-			AlarmType:    alarm.NightAbsence,
-			Level:        alarm.AlarmLevelWarn,
-			ArmZoneStr:   "room",
-			ArmStatusStr: "vacant",
-			DurationSec:  1800, // 30 min
-			Cancels: []CancelTrigger{
-				{ZoneStr: "room", StatusStr: "occupied"}, // EnterRoom
-				{ZoneStr: "bed", StatusStr: "occupied"},  // InBed
-				{ZoneStr: "room", CountGtZero: true},     // NumberPeople>0
+			AlarmType:       alarm.NightAbsence,
+			Level:           alarm.AlarmLevelWarn,
+			AnchorStr:       "room",
+			AnchorField:     AnchorLastExitTs,
+			KeepCounting: []Condition{
+				{StateStr: "vacant"},                       // Self=room Vacant
+				{EntityStr: "bed", StateStr: "vacant"},     // 同 unit bed 也空
 			},
-			TimeWindow: &TimeWindow{StartH: 21, StartM: 0, EndH: 7, EndM: 0},
+			ThresholdDaySec: 30 * 60,
+			NightOnly:       &TimeWindow{StartH: 21, StartM: 0, EndH: 7, EndM: 0},
 		},
 	}
 	for i := range rules {

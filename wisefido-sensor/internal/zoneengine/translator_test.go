@@ -1,11 +1,7 @@
 // translator_test.go — TranslateRoomState / TranslateBedState 纯函数表驱动测试。
 //
-// **2026-05-20 per-field ts 重构后**：sensor 不再计算 StaySec / DurationSec
-// （消费者用 now - <field>_ts 现算）。本测试仅覆盖 sensor owner 字段 + 关键 ts 选取：
-//   - BedStatusTs: InBed→LastEnterTs / LeftBed→LastExitTs（state-change-anchored 起点）
-//   - LastEnterTs / LastExitTs: engine NewState 直 forward
-//   - AloneSinceTs: Count==1 时输出 UpdatedAt
-//   - BedEvent / BedEventTs / TrackNumber / BedConfidence 与旧测试相同语义
+// **AloneSinceTs / RiskLevel / RiskLevelTs 已挪出本函数**（stream_publisher.applyAloneAndRisk
+// 用 prev cache 统一写入），本测试不再断言这三项。
 
 package zoneengine
 
@@ -15,59 +11,44 @@ import (
 	"owl-common/card"
 )
 
-func TestTranslateRoomState_Anchors(t *testing.T) {
+func TestTranslateRoomState_BasicFields(t *testing.T) {
 	const t1 = int64(1_700_000_000_000)
 	const t2 = int64(1_700_000_120_000)
 
 	tests := []struct {
-		name             string
-		event            ZoneEvent
-		wantTotal        int
-		wantLastEnter    int64
-		wantLastExit     int64
-		wantAloneSinceTs int64
+		name          string
+		event         ZoneEvent
+		wantTotal     int
+		wantLastEnter int64
+		wantLastExit  int64
 	}{
 		{
-			name: "0→1 进房 — LastEnterTs 设；AloneSinceTs = UpdatedAt (count==1)",
+			name: "0→1 进房 — LastEnterTs 设",
 			event: ZoneEvent{
 				Transition: TransitionOccupied,
 				NewState:   ZoneState{Count: 1, LastEnterTs: t1, UpdatedAt: t1},
 			},
-			wantTotal:        1,
-			wantLastEnter:    t1,
-			wantAloneSinceTs: t1,
+			wantTotal:     1,
+			wantLastEnter: t1,
 		},
 		{
-			name: "count_change 1→2 — count!=1，AloneSinceTs=0（独居结束）",
+			name: "count_change 1→2",
 			event: ZoneEvent{
 				Transition: TransitionCountChange,
 				PrevState:  ZoneState{Count: 1},
 				NewState:   ZoneState{Count: 2, LastEnterTs: t1, UpdatedAt: t2},
 			},
-			wantTotal:        2,
-			wantLastEnter:    t1,
-			wantAloneSinceTs: 0,
+			wantTotal:     2,
+			wantLastEnter: t1,
 		},
 		{
-			name: "Vacant — LastExitTs 设；AloneSinceTs=0",
+			name: "Vacant — LastExitTs 设",
 			event: ZoneEvent{
 				Transition: TransitionVacant,
 				NewState:   ZoneState{Count: 0, LastExitTs: t2, UpdatedAt: t2},
 			},
-			wantTotal:        0,
-			wantLastExit:     t2,
-			wantAloneSinceTs: 0,
-		},
-		{
-			name: "count_change N→1 — count==1，AloneSinceTs 设（独居重启）",
-			event: ZoneEvent{
-				Transition: TransitionCountChange,
-				PrevState:  ZoneState{Count: 3},
-				NewState:   ZoneState{Count: 1, LastEnterTs: t1, UpdatedAt: t2},
-			},
-			wantTotal:        1,
-			wantLastEnter:    t1,
-			wantAloneSinceTs: t2,
+			wantTotal:    0,
+			wantLastExit: t2,
 		},
 	}
 
@@ -83,28 +64,13 @@ func TestTranslateRoomState_Anchors(t *testing.T) {
 			if tc.wantLastExit > 0 && out.LastExitTs != tc.wantLastExit {
 				t.Errorf("LastExitTs = %d, want %d", out.LastExitTs, tc.wantLastExit)
 			}
-			if out.AloneSinceTs != tc.wantAloneSinceTs {
-				t.Errorf("AloneSinceTs = %d, want %d", out.AloneSinceTs, tc.wantAloneSinceTs)
+			if out.AloneContinuousMin != 0 {
+				t.Errorf("AloneContinuousMin should be 0 from translator, got %d", out.AloneContinuousMin)
+			}
+			if out.RiskLevel != 0 || out.RiskLevelTs != 0 {
+				t.Errorf("RiskLevel/Ts should be 0 from translator, got %d/%d", out.RiskLevel, out.RiskLevelTs)
 			}
 		})
-	}
-}
-
-// RoomType 已挪静态属性（不在 RoomState）；TranslateRoomState 的 roomType 参数仅供 RiskLevel 计算。
-// bathroom 单人非 night 阈值未到 → 仍 RiskNormal；该 test 验证 roomType 走到 risk 分支即可。
-func TestTranslateRoomState_BathroomRoomType(t *testing.T) {
-	out := TranslateRoomState(
-		ZoneEvent{
-			Transition: TransitionOccupied,
-			NewState:   ZoneState{Count: 1, UpdatedAt: 1_700_000_000_000, LastEnterTs: 1_700_000_000_000},
-		},
-		card.RoomTypeBathroom,
-	)
-	if out.TotalPeople != 1 {
-		t.Errorf("TotalPeople = %d, want 1", out.TotalPeople)
-	}
-	if out.RiskLevelTs == 0 {
-		t.Errorf("RiskLevelTs should be set")
 	}
 }
 

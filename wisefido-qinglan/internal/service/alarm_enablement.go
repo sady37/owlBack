@@ -1,19 +1,21 @@
-// alarm_enablement.go — sensor 端 per-device alarm 使能缓存。
+// alarm_enablement.go — qinglan 端 per-device alarm 使能缓存。
 //
+// 复用 sensor (wisefido-sensor/internal/service/alarm_enablement.go) 同形态实现：
 // **唯一数据源**：spatial_config (config_key='alarm.device_config', spatial_prefix=device /128)。
 // JSONB schema：{alarm_items: []alarm.AlarmItem, updated_at: ts}。
 //
-// **不读 alarm.cloud_config**（tenant 级模板）—— 那是 wisefido-data 给 UI"reset to default"和
-// 新设备 bind 时取 snapshot 用的，与运行时无关。device 一旦有 alarm.device_config row 即独立，
-// tenant 模板改动不影响已配置 device（用户拍板：snapshot model，不级联）。
+// 不读 alarm.cloud_config（tenant 模板）—— 那是 wisefido-data UI 用的，与运行时无关。
+// device 一旦有 alarm.device_config row 即独立，tenant 模板改动不影响已配置 device。
 //
-// 用途：sensor 内部所有 alarm 出口（zonealarm.Supervisor / fall firers / aiPublisher）
-// 在 publish 前 IsEnabled 检查；未启用直接丢弃，不发往 cardagg。
-// 阈值 (duration_sec/duration_min) 也从此处取（zonealarm.ThresholdResolver 包装 IsEnabled）。
+// 用途：qinglan StreamPublisher.PublishAlarm 在源头按 device /128 + alarmType 查使能；
+// 未启用直接 drop（不发 iot:alarm:stream，cardagg 端不再收到）。把 enablement gate 收到
+// producer 端，符合 [[platform_agent_addressing]] trust-platform-agent 原则。
 //
-// 注：sensor 不查 cards 表 / 不引 CardMeta；按"sensor 不知 card"原则，
-// enablement 完全按物理实体地址（device /128 spatial_config 精确匹配）。
-// 无 row → 用 alarm.GetDefaultAlarmItems(deviceType) 兜底（新设备未经 UI 配置场景）。
+// 阈值 (duration_sec / duration_min) 也存在 EnabledAlarm.AlarmParams 里，
+// 当前 qinglan 只用 on/off（IsEnabled 二值）；threshold 主要给 sensor zonealarm 用。
+//
+// 注：qinglan 不查 cards 表 / 不引 CardMeta；enablement 完全按物理实体地址（device /128
+// spatial_config 精确匹配）。无 row → 用 alarm.GetDefaultAlarmItems(deviceType) 兜底。
 
 package service
 
@@ -62,8 +64,7 @@ func NewAlarmEnablementCache(db *sql.DB, logger *zap.Logger) *AlarmEnablementCac
 	}
 }
 
-// IsEnabled 检查 device 是否启用了某条 alarm。
-// 返回 (enabledAlarm, ok)；ok=false 表示未启用或未配置。
+// IsEnabled 检查 device 是否启用了某条 alarm。返 (enabledAlarm, ok)；ok=false 表示未启用或未配置。
 func (c *AlarmEnablementCache) IsEnabled(ctx context.Context, deviceAddr, alarmType string) (*EnabledAlarm, bool) {
 	if deviceAddr == "" || alarmType == "" {
 		return nil, false
@@ -97,7 +98,7 @@ func (c *AlarmEnablementCache) IsEnabled(ctx context.Context, deviceAddr, alarmT
 	return ea, ea != nil
 }
 
-// Invalidate 失效单个 device 的使能缓存（spatial_config 改了 / device 解绑时调）。
+// Invalidate 失效单 device cache（spatial_config 改了 → consumer 调）。
 func (c *AlarmEnablementCache) Invalidate(deviceAddr string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -132,8 +133,6 @@ func (c *AlarmEnablementCache) InvalidateDevices(addrs []string) {
 // loadDevice 解析 device 的 alarm 使能配置：
 //  1. loadFromDeviceConfig 查 spatial_config alarm.device_config /128 精确匹配
 //  2. 无 row → alarm.GetDefaultAlarmItems(deviceType) 硬编码默认值兜底
-//
-// tenant 级 alarm.cloud_config 不读 — 那是 wisefido-data UI 的模板，与运行时无关。
 func (c *AlarmEnablementCache) loadDevice(ctx context.Context, deviceAddr string) {
 	if c.db == nil {
 		c.setDefaults(deviceAddr, "")
@@ -148,8 +147,6 @@ func (c *AlarmEnablementCache) loadDevice(ctx context.Context, deviceAddr string
 }
 
 // loadFromDeviceConfig 读 spatial_config alarm.device_config 精确匹配 /128。
-// 配置由 wisefido-data UpdateDeviceMonitorSettings 写入；schema = {alarm_items: []AlarmItem}。
-// 未配置 → nil（caller 用 GetDefaultAlarmItems 兜底）。
 func (c *AlarmEnablementCache) loadFromDeviceConfig(ctx context.Context, deviceAddr string) []alarm.AlarmItem {
 	if c.db == nil || deviceAddr == "" {
 		return nil
@@ -178,7 +175,7 @@ func (c *AlarmEnablementCache) loadFromDeviceConfig(ctx context.Context, deviceA
 	return packed.AlarmItems
 }
 
-// resolveDeviceType 按 device_addr 反查 device_type（Phase 2 一刀切）。
+// resolveDeviceType 按 device_addr 反查 device_type；仅在 device_config 缺失时用。
 func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceAddr string) string {
 	if c.db == nil || deviceAddr == "" {
 		return ""

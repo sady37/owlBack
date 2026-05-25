@@ -11,9 +11,10 @@ package consumer
 //     视为 second-line（产 + 消两端都不漏 + 不重复 gate）。
 //   - envelope.event_status = "start"（确认态）
 //
-// **pending state v2 在 sensor 内部**：zonealarm.Supervisor 维护 pending map + 自动 cancel
-// + Tick 到期 fire confirmed alarm（PublishAlarmFire）。PR1 时代的 PublishPendingArm /
-// PublishPendingCancel sentinel 已删（cardagg 端从未消费；E 收口 dead code）。
+// **state-anchored zonealarm**：sensor.Supervisor 不订阅 ZoneEvent，Tick 周期从 StreamPublisher
+// 拿 RoomState/BedState 快照按 anchor + KeepCounting 条件 + 阈值判 fire；fire-once-until-
+// anchor-invalidates。本 channel 只发 confirmed PublishAlarmFire；PR1 时代的
+// PublishPendingArm / PublishPendingCancel sentinel 已删（cardagg 端从未消费；E 收口 dead code）。
 
 import (
 	"context"
@@ -32,8 +33,8 @@ import (
 type EnablementGate func(ctx context.Context, deviceAddr, alarmType string) bool
 
 // EventStatusStart envelope.event_status 标记本条是 alarm 起始事件（confirmed）。
-// v2 sensor 内部 zonealarm.Supervisor 自维护 pending state，不外发 pending_arm/pending_cancel
-// sentinel — PR1 时代的 PublishPendingArm/PublishPendingCancel 已删（E 收口 dead code）。
+// state-anchored zonealarm 后无 pending 概念，本 channel 只发 confirmed alarm；
+// PR1 时代的 PublishPendingArm/PublishPendingCancel 已删（E 收口 dead code）。
 const EventStatusStart = "start"
 
 // AgentIdentity sensor 进程作为 platform agent 的 IPv6 + UID 身份。

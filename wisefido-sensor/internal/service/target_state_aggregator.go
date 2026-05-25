@@ -114,11 +114,13 @@ type lastActiveState struct {
 	lastActiveTs int64 // 写到 Target.LastActiveTs；60s 节流
 }
 
+// standingState — TS-based 连续站立追踪（per spatial /88）。
+//
+// continuousTs = 站立连续段的起始时刻；handleEventFrame 进入合格帧时 set（首帧），
+// 后续合格帧保持，任一不合格帧（多人 / 站立<55s / 走动 / 坐下 等）置 0。
+// MIN 派生在 GetSnapshot 时按 nowMs 现算（封顶 8）。
 type standingState struct {
-	// 当前累加值 0..8；坐/走/躺/多人时 reset 0
-	continuousMin int
-	// 上次 +1 的时刻；避免一分钟内多次跳号
-	lastIncrementTs int64
+	continuousTs int64 // 0 = 当前未站立
 }
 
 type weakBioWindow struct {
@@ -274,11 +276,11 @@ func (a *TargetStateAggregator) WeakBioScore(spatialPrefix string) int {
 	return acc.weakBio.score
 }
 
-// GetSnapshot StreamPublisher 60s tick pull 用（multi-return 实现 zoneengine.AggregatorPuller）。
+// GetSnapshot StreamPublisher tick pull 用（multi-return 实现 zoneengine.AggregatorPuller）。
 // 若该 spatial 实体无 accumulator entry 返回 ok=false。
 //
-// expire-on-read：先 lazy drop weakBio 窗外 events + 重算 score；score 实际变化时 dirty=true，
-// 触发本 tick publisher 推新 score 到 cardagg（防"WeakBio 卡老值随 LastActive 心跳偷渡"）。
+// standingMin = 现算 (nowMs - standing.continuousTs) / 60_000，cap 8；TS 为 0 时返 0。
+// expire-on-read：先 lazy drop weakBio 窗外 events + 重算 score；score 实际变化时 dirty=true。
 func (a *TargetStateAggregator) GetSnapshot(spatialPrefix string) (target *card.TargetState, standingMin int, dirty bool, ok bool) {
 	nowMs := time.Now().UnixMilli()
 	a.mu.Lock()
@@ -288,13 +290,24 @@ func (a *TargetStateAggregator) GetSnapshot(spatialPrefix string) (target *card.
 		return nil, 0, false, false
 	}
 	a.expireWeakBioLocked(acc, nowMs)
-	// 仅 3 个 sensor 单实体内判断字段；visitor 已挪到 cardagg VisitorDeriver。
 	target = &card.TargetState{
 		UpdatedAt:           nowMs,
 		LastActiveTs:        acc.lastActive.lastActiveTs,
 		WeakBiometricSignal: acc.weakBio.score,
 	}
-	return target, acc.standing.continuousMin, acc.dirty, true
+	return target, deriveStandingMinFromTs(acc.standing.continuousTs, nowMs), acc.dirty, true
+}
+
+// deriveStandingMinFromTs 把 standing 起始 TS 转成当前分钟数（cap 8）。
+func deriveStandingMinFromTs(continuousTs, nowMs int64) int {
+	if continuousTs == 0 || nowMs <= continuousTs {
+		return 0
+	}
+	m := int((nowMs - continuousTs) / 60_000)
+	if m > 8 {
+		m = 8
+	}
+	return m
 }
 
 // expireWeakBioLocked 丢弃 30min 窗外 events + 重算 score；score 变化时设 dirty=true。
@@ -348,7 +361,7 @@ func (a *TargetStateAggregator) MarkPublished(spatialPrefix string, tsMs int64) 
 // Internal: handler stubs (P3/P4 fill)
 // ===================================================================
 
-// handleEventFrame 解析 radar 分钟级 activity stat → LastActiveTs + StandingContinuousMin。
+// handleEventFrame 解析 radar 分钟级 activity stat → LastActiveTs + StandingContinuousTs。
 //
 // 输入来源：iot:event:stream category=activity（firmware 每分钟一发；详
 // [[radar_activity_stats_on_event_stream]]）。**心跳契约** = firmware 分钟级 push 既有事实，
@@ -356,10 +369,11 @@ func (a *TargetStateAggregator) MarkPublished(spatialPrefix string, tsMs int64) 
 //
 // 规则：
 //   - LastActiveTs：WalkDistance≥2m OR WalkDuration≥6s → 触发活跃；60s 节流（防同一分钟重复刷）
-//   - StandingContinuousMin：TotalPeople==1 + StandDurationSec≥55s + MultiPersonDuration==0
-//     → 累 +1 封顶 8；不满足条件 reset 0
+//   - StandingContinuousTs：TotalPeople==1 + StandDurationSec≥55s + MultiPersonDuration==0
+//     → 首次合格 set TsMs（站立段起点）；后续合格保持；任一不合格 → 0（reset）
 //
 // 多人 / 站立<55s（人坐/走/躺）→ standing reset；让 cardagg side risk_evaluator 看到 0 不误报。
+// MIN 派生在 GetSnapshot 时按 nowMs 现算（cap 8）。
 func (a *TargetStateAggregator) handleEventFrame(f EventFrame) {
 	if f.SpatialPrefix == "" {
 		return
@@ -376,18 +390,16 @@ func (a *TargetStateAggregator) handleEventFrame(f EventFrame) {
 		}
 	}
 
-	// Standing: gate（totalPeople==1 + 单人持续站≥55s + 无多人事件）→ +1 cap 8；否则 reset 0
-	if acc.totalPeople == 1 && f.StandDurationSec >= 55 && f.MultiPersonDurationSec == 0 {
-		if f.TsMs-acc.standing.lastIncrementTs >= 60_000 {
-			if acc.standing.continuousMin < 8 {
-				acc.standing.continuousMin++
-			}
-			acc.standing.lastIncrementTs = f.TsMs
+	// Standing: gate（totalPeople==1 + 单人持续站≥55s + 无多人事件）→ 首帧 set TS，后续保持；否则 reset 0
+	gateOK := acc.totalPeople == 1 && f.StandDurationSec >= 55 && f.MultiPersonDurationSec == 0
+	if gateOK {
+		if acc.standing.continuousTs == 0 {
+			acc.standing.continuousTs = f.TsMs
 			acc.dirty = true
 		}
-	} else if acc.standing.continuousMin > 0 {
-		acc.standing.continuousMin = 0
-		acc.standing.lastIncrementTs = 0
+		// 后续合格帧保持 ts 不动；dirty 不刷（MIN 由 nowMs 现算，无需 publish 端 push）
+	} else if acc.standing.continuousTs != 0 {
+		acc.standing.continuousTs = 0
 		acc.dirty = true
 	}
 }

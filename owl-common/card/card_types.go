@@ -335,6 +335,8 @@ func (b *BedState) MaxTs() int64 {
 }
 
 // MaxTs RoomState 内所有 per-field ts 的最大值。
+// 注：AloneContinuousMin / StandingContinuousMin 改成 MIN 后无对应 ts（sensor 60s tick 重算），
+// MaxTs 只看真正 state-change-anchored 的 ts 字段。
 func (r *RoomState) MaxTs() int64 {
 	if r == nil {
 		return 0
@@ -345,9 +347,6 @@ func (r *RoomState) MaxTs() int64 {
 	}
 	if r.LastExitTs > m {
 		m = r.LastExitTs
-	}
-	if r.AloneSinceTs > m {
-		m = r.AloneSinceTs
 	}
 	if r.RiskLevelTs > m {
 		m = r.RiskLevelTs
@@ -405,32 +404,33 @@ type RoomState struct {
 	// LastEnterTs — **最近一次 0→N+ 进房 transition** 时刻（房间从空 (0) 变占用 (>0) 瞬间）。
 	// 用途：判 "今日有人进过房" / visitor 派生 / 进入冷启动后第一次进入等。
 	// 1→2 / 2→1 等占用期内人数波动 **不更新此字段**。
-	// **不是 stay 锚点**（stay 锚 = AloneSinceTs，独居语义）。
 	LastEnterTs int64 `json:"last_enter_ts,omitempty"`
 
 	// LastExitTs — 最近一次 N→0 离房 transition 时刻（房间变空瞬间）。
 	// 房间再变占用后 LastExitTs 保持上次离开的时刻（"上一段空房结束时刻"语义）。
 	LastExitTs int64 `json:"last_exit_ts,omitempty"`
 
-	// AloneSinceTs — **最近一次 TotalPeople 变到 1 的时刻**（独居开始锚点）。
-	// **stay 时长唯一锚点（独居语义）**：
-	//   消费者 stay = (TotalPeople==1) ? now - AloneSinceTs : 0
+	// AloneContinuousMin — 当前独居连续分钟数（TotalPeople==1 的累计；否则 0）。
+	// sensor 60s tick 用内部 AloneContinuousTs anchor 派生：MIN = (now - anchor) / 60_000。
+	// FE 直接读，不依赖 client 时钟（避免不一致）。
 	//
-	// 触发更新的 transition：0→1（独自进入）/ 2→1（同伴离开剩单人）/ N→1（任意降到 1）
-	// 不触发更新：1→2 / 1→3 等"变多"（独居结束）/ 1→0 / 2→3（始终非 1）
-	//
-	// 业务意义：bathroom "alone too long" 风险评估、卧室"独睡太久"等都基于此锚点。
-	// 1 人独居 + 时长超阈值 = 风险；多人陪伴（count>1）期间 stay 不计。
-	AloneSinceTs int64 `json:"alone_since_ts,omitempty"`
+	// 业务意义：bathroom "alone too long" 风险评估、卧室"独睡太久"等都基于此值。
+	// 1 人独居 + MIN 超阈值 = 风险；多人陪伴（count>1）期间 = 0。
+	AloneContinuousMin int `json:"alone_continuous_min,omitempty"`
 
 	// LastExitToOutside — 最近 Vacant 是否由 EnterArea==outside 触发；不参与 SceneState 派生，
 	// 仅留作 risk/alarm 原始信号。bool 字段无 ts（变更频率低，由 LastExitTs 同期判定）。
 	LastExitToOutside bool `json:"last_exit_to_outside,omitempty"`
 
+	// StandingContinuousMin — 当前房间内连续站立分钟数（room-level）。
+	// sensor 60s tick 从 TargetState.StandingContinuousTs 派生：MIN = (now - anchor) / 60_000，cap 8。
+	// reset 0 = 多人 / 站立 <55s / 走动 / 坐下 等任一条件失败。
+	StandingContinuousMin int `json:"standing_continuous_min,omitempty"`
+
 	// RiskLevel — 风险等级：0=Normal 1=Muted 2=Attention 3=Risk；
-	// kind-specific 阈值 + night/multi-people 由 sensor 评估。
+	// sensor EvaluateRoomRiskLevel 用 AloneContinuousMin + StandingContinuousMin 算。
 	RiskLevel int `json:"risk_level,omitempty"`
-	// RiskLevelTs — RiskLevel 变到当前等级时刻；值不变不刷新。
+	// RiskLevelTs — RiskLevel 变到当前等级时刻；值不变不刷新（FE 用来显"X min ago 升档"）。
 	RiskLevelTs int64 `json:"risk_level_ts,omitempty"`
 }
 

@@ -88,6 +88,18 @@ func main() {
 	deviceRepo := repository.NewPostgresDeviceRepository(db)
 	streamPublisher := consumer.NewStreamPublisher(redisClient, cfg)
 
+	// alarm enablement cache + publisher gate（producer-first 原则）：
+	// vital 类 alarm publish 前查 spatial_config alarm.device_config，未启用 drop；
+	// device-class (Offline/SensorDetached/...) HIPAA 强审计跳过 gate（PublishAlarm 内置逻辑）。
+	// 失效路径：alarmDeviceConsumer 订阅 config:alarmDevice:stream，Invalidate per-device cache。
+	enablementCache := service.NewAlarmEnablementCache(db, logger)
+	streamPublisher.SetAlarmGate(func(ctx context.Context, deviceAddr, alarmType string) bool {
+		_, ok := enablementCache.IsEnabled(ctx, deviceAddr, alarmType)
+		return ok
+	})
+	alarmDeviceConsumer := consumer.NewAlarmDeviceConfigConsumer(redisClient, enablementCache, logger)
+	alarmDeviceConsumer.Start(ctx)
+
 	dataAPIURL := cfg.DataAPIURL
 	if dataAPIURL == "" {
 		dataAPIURL = "http://127.0.0.1:8080"

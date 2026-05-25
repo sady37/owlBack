@@ -6,7 +6,7 @@
 //   - 值变  → 用 incoming 值 + ts
 //   - incoming.ts=0 (placeholder) → 全保 prev
 //   - BedEvent 是事件类，每次 incoming.BedEventTs > 0 都更新（不走 state-change-anchored）
-//   - AloneSinceTs 走 cross-field 派生（依据 TotalPeople 转换）
+//   - AloneContinuousMin / StandingContinuousMin 是 incoming-wins (sensor 已 gate + 算)
 
 package consumer
 
@@ -96,90 +96,59 @@ func TestMergeBedStateSleepStage_OnlySleepFields(t *testing.T) {
 	}
 }
 
-func TestMergeRoomState_AloneSinceTs_TransitionToAlone(t *testing.T) {
-	// prev: 房间空（count=0）; incoming: 1人进 → AloneSinceTs 设
-	prev := &card.RoomState{TotalPeople: 0}
+// AloneContinuousMin/StandingContinuousMin 是 sensor 60s tick 算好的整数 MIN，
+// mergeRoomState 直接 incoming 覆 prev（不做 cross-field 派生 — sensor 端已 gate）。
+func TestMergeRoomState_AloneContinuousMin_IncomingOverwrites(t *testing.T) {
+	prev := &card.RoomState{TotalPeople: 1, AloneContinuousMin: 5}
 	incoming := &card.RoomState{
 		TotalPeople: 1, TotalPeopleTs: 200,
-		AloneSinceTs: 200,
-		LastEnterTs:  200,
+		AloneContinuousMin: 6, // sensor 下一 tick 算到 6min
 	}
 	out := mergeRoomState(prev, incoming)
-	if out.AloneSinceTs != 200 {
-		t.Errorf("0→1: AloneSinceTs should = 200, got %d", out.AloneSinceTs)
-	}
-	if out.LastEnterTs != 200 {
-		t.Errorf("0→1: LastEnterTs should = 200, got %d", out.LastEnterTs)
+	if out.AloneContinuousMin != 6 {
+		t.Errorf("incoming MIN should overwrite: got %d, want 6", out.AloneContinuousMin)
 	}
 }
 
-func TestMergeRoomState_AloneSinceTs_StaysAlone(t *testing.T) {
-	// prev: 1人独居 AloneSinceTs=100; incoming: 仍 1人 (incoming.AloneSinceTs=200 hint)
-	prev := &card.RoomState{
-		TotalPeople: 1, TotalPeopleTs: 100,
-		AloneSinceTs: 100,
-		LastEnterTs:  100,
-	}
-	incoming := &card.RoomState{
-		TotalPeople: 1, TotalPeopleTs: 200,
-		AloneSinceTs: 200, // hint, but merge 应保 prev
-	}
-	out := mergeRoomState(prev, incoming)
-	if out.AloneSinceTs != 100 {
-		t.Errorf("1→1 (stay alone): AloneSinceTs should stay 100, got %d", out.AloneSinceTs)
-	}
-}
-
-func TestMergeRoomState_AloneSinceTs_BecomesNotAlone(t *testing.T) {
-	// prev: 1人独居 AloneSinceTs=100; incoming: 来访客 1→2，独居结束
-	prev := &card.RoomState{
-		TotalPeople: 1, TotalPeopleTs: 100,
-		AloneSinceTs: 100,
-	}
+func TestMergeRoomState_AloneContinuousMin_ClearOnMultiPeople(t *testing.T) {
+	prev := &card.RoomState{TotalPeople: 1, AloneContinuousMin: 10}
 	incoming := &card.RoomState{
 		TotalPeople: 2, TotalPeopleTs: 200,
-		AloneSinceTs: 0, // sensor 输出 0（非独居）
+		AloneContinuousMin: 0, // sensor 已 gate（多人）
 	}
 	out := mergeRoomState(prev, incoming)
-	if out.AloneSinceTs != 0 {
-		t.Errorf("1→2: AloneSinceTs should clear to 0, got %d", out.AloneSinceTs)
+	if out.AloneContinuousMin != 0 {
+		t.Errorf("multi-people should clear MIN: got %d", out.AloneContinuousMin)
 	}
 	if out.TotalPeople != 2 {
 		t.Errorf("TotalPeople should = 2, got %d", out.TotalPeople)
 	}
 }
 
-func TestMergeRoomState_AloneSinceTs_BackToAlone(t *testing.T) {
-	// prev: 2人 AloneSinceTs=0; incoming: 2→1 重新独居 → AloneSinceTs=new ts
-	prev := &card.RoomState{
-		TotalPeople: 2, TotalPeopleTs: 100,
-		AloneSinceTs: 0,
-		LastEnterTs:  50, // 之前的 0→2 transition
-	}
+func TestMergeRoomState_StandingContinuousMin_IncomingOverwrites(t *testing.T) {
+	prev := &card.RoomState{TotalPeople: 1, StandingContinuousMin: 3}
 	incoming := &card.RoomState{
-		TotalPeople: 1, TotalPeopleTs: 300,
-		AloneSinceTs: 300, // 重新独居开始
+		TotalPeople: 1, TotalPeopleTs: 200,
+		StandingContinuousMin: 5,
 	}
 	out := mergeRoomState(prev, incoming)
-	if out.AloneSinceTs != 300 {
-		t.Errorf("2→1: AloneSinceTs should = 300, got %d", out.AloneSinceTs)
-	}
-	if out.LastEnterTs != 50 {
-		t.Errorf("LastEnterTs should NOT refresh on 2→1 (still occupied), got %d", out.LastEnterTs)
+	if out.StandingContinuousMin != 5 {
+		t.Errorf("incoming Standing MIN should overwrite: got %d, want 5", out.StandingContinuousMin)
 	}
 }
 
 func TestMergeRoomState_LastExitTs_OnVacant(t *testing.T) {
-	prev := &card.RoomState{TotalPeople: 1, AloneSinceTs: 100, LastEnterTs: 100}
+	prev := &card.RoomState{TotalPeople: 1, AloneContinuousMin: 10, LastEnterTs: 100}
 	incoming := &card.RoomState{
 		TotalPeople: 0, TotalPeopleTs: 500,
-		LastExitTs: 500,
+		LastExitTs:         500,
+		AloneContinuousMin: 0,
 	}
 	out := mergeRoomState(prev, incoming)
 	if out.LastExitTs != 500 {
 		t.Errorf("1→0: LastExitTs should = 500, got %d", out.LastExitTs)
 	}
-	if out.AloneSinceTs != 0 {
-		t.Errorf("1→0: AloneSinceTs should clear, got %d", out.AloneSinceTs)
+	if out.AloneContinuousMin != 0 {
+		t.Errorf("1→0: AloneContinuousMin should clear, got %d", out.AloneContinuousMin)
 	}
 }

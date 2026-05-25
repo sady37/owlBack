@@ -23,15 +23,17 @@ import (
 //
 // public 单元的 room 不应进入本函数 — 由 caller 按 unit_type==Public 直接跳过。
 //
-// standingMin 在 zoneengine 翻转点没有 card 视图传 0 — standing 分支永远不触发；
-// cardagg 端 TargetMerger 合并后可派 standing-driven risk（cardagg 二次评估覆盖 RiskLevel）。
-func EvaluateRoomRiskLevel(rs *card.RoomState, roomType int, standingMin int, nowMs int64, loc *time.Location) int {
+// 输入全部来自 RoomState 本身（都是 MIN 整数；无 ts 时间运算）：
+//   - rs.AloneContinuousMin     独居持续分钟（bathroom alone 通道）
+//   - rs.StandingContinuousMin  连续站立分钟（standing 通道）
+func EvaluateRoomRiskLevel(rs *card.RoomState, roomType int, nowMs int64, loc *time.Location) int {
 	if rs == nil || rs.TotalPeople <= 0 {
 		return card.RiskNormal
 	}
 	isRiskTime := card.IsRiskTime(nowMs, loc)
 	multi := rs.TotalPeople >= 2
-
+	standingMin := rs.StandingContinuousMin
+	aloneMin := rs.AloneContinuousMin
 	standingTh := card.LookupStandingThresholds(roomType, isRiskTime)
 
 	if roomType == card.RoomTypeBathroom {
@@ -44,22 +46,17 @@ func EvaluateRoomRiskLevel(rs *card.RoomState, roomType int, standingMin int, no
 		if standingMin >= standingTh.AttentionMin {
 			return card.RiskAttention
 		}
-		// 独居时长（state-change-anchored）：仅在 AloneSinceTs > 0 时计算
-		aloneSec := 0
-		if rs.AloneSinceTs > 0 && nowMs >= rs.AloneSinceTs {
-			aloneSec = int((nowMs - rs.AloneSinceTs) / 1000)
-		}
 		aloneTh := card.BathroomAlone
-		var attnSec, riskSec int
+		var attnMin, riskMin int
 		if isRiskTime {
-			attnSec, riskSec = aloneTh.RiskTimeAttentionMin*60, aloneTh.RiskTimeRiskMin*60
+			attnMin, riskMin = aloneTh.RiskTimeAttentionMin, aloneTh.RiskTimeRiskMin
 		} else {
-			attnSec, riskSec = aloneTh.DayAttentionMin*60, aloneTh.DayRiskMin*60
+			attnMin, riskMin = aloneTh.DayAttentionMin, aloneTh.DayRiskMin
 		}
-		if aloneSec >= riskSec {
+		if aloneMin >= riskMin {
 			return card.RiskRisk
 		}
-		if aloneSec >= attnSec {
+		if aloneMin >= attnMin {
 			return card.RiskAttention
 		}
 		return card.RiskNormal

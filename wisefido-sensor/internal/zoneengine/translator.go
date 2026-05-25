@@ -72,37 +72,27 @@ func bedConfidenceForSource(source string) int {
 	return 0
 }
 
-// TranslateRoomState 仅填 sensor owner 字段（不读外部 prev）。
-// roomType 是 caller 现场 hint（仅供 RiskLevel 计算）—— 不再写入 RoomState；
-// room_type 是静态属性，由 cardagg 通过 CardMeta (rooms.room_type LPM) 派生，sensor 不发。
+// TranslateRoomState 把 ZoneEvent 翻成 RoomState 的 sensor-owner 字段（不读外部 prev）。
 //
-// ts 选取（state-change-anchored 由 cardagg merge 端把关）：
-//   - LastEnterTs: engine.NewState.LastEnterTs（仅 0→N+ transition 时刻；engine 已正确维护）
+// **不在此处填**：AloneSinceTs / RiskLevel / RiskLevelTs — 这三项需要 prev cache 才能正确
+// 计算（state-change-anchored 锚点 + 真实 aloneSec 时长），由 stream_publisher.applyAloneAndRisk
+// 在 cache 入口前统一写入（单源真相，CLAUDE.md 规则 #1.3）。
+//
+// roomType 入参保留以兼容 caller，但本函数内不再使用（applyAloneAndRisk 用 publisher
+// roomKindByCIDR 查）。
+//
+// ts 选取（engine 已保证 state-change-anchored）：
+//   - LastEnterTs: engine.NewState.LastEnterTs（仅 0→N+ transition 时刻）
 //   - LastExitTs:  engine.NewState.LastExitTs（仅 N→0 transition 时刻）
-//   - AloneSinceTs: 当前 Count==1 时输出 NewState.UpdatedAt（cardagg merge 判 0→1 / N→1 才用）
 //   - 其它 ts = NewState.UpdatedAt
-//
-// RiskLevel: sensor 自评（StandingContinuousMin 已挪 TargetState，此处 0；bathroom standing
-// risk 待 cardagg merge target 后重构）。
 func TranslateRoomState(e ZoneEvent, roomType int) *card.RoomState {
+	_ = roomType
 	nowMs := e.NewState.UpdatedAt
-	out := &card.RoomState{
+	return &card.RoomState{
 		RoomIdentifier: card.RoomIdentifier{RoomID: e.ZoneID},
 		TotalPeople:    e.NewState.Count,
 		TotalPeopleTs:  nowMs,
 		LastEnterTs:    e.NewState.LastEnterTs,
 		LastExitTs:     e.NewState.LastExitTs,
 	}
-
-	// AloneSinceTs：当前 Count==1 时输出"刚才"为可能锚点；
-	// cardagg merge 端按 prev.TotalPeople 决定是 0→1 / N→1 重锚还是延续 prev。
-	if e.NewState.Count == 1 {
-		out.AloneSinceTs = nowMs
-	}
-
-	// RiskLevel + Ts：sensor 自评（同 zone-event 帧内一致）— 用 roomType 参数
-	out.RiskLevel = EvaluateRoomRiskLevel(out, roomType, 0, nowMs, nil)
-	out.RiskLevelTs = nowMs
-
-	return out
 }

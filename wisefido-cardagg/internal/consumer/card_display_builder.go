@@ -178,49 +178,24 @@ func pickSection2LeftIcon(s *card.CardStatus, bedHas, roomHas, hasBedDevice, isB
 
 // pickSection2LeftDown icon 底部时长 metric — 跟 RiskLevel 来源同源：
 //   - standing 超阈值 → "Stand Xm"
-//   - bathroom 独居超阈 → "Alone Xh Ym"
+//   - bathroom 独居超阈（sensor 已写 RiskLevel）→ "Alone Xh Ym"
 //   - 都未触发 → ""
 //
-// 阈值 + risktime 判断跟 sensor risk_evaluator.go 同源（owl-common/card/risk_thresholds.go）。
+// **单源真相收敛**：sensor 60s tick 算好 MIN + RiskLevel 直接 push；cardagg 端 display 只
+// switch RiskLevel 选模板 + 拼数值，不做任何阈值判定也不读 ts（FE 不依赖 client 时钟）。
 func pickSection2LeftDown(s *card.CardStatus, cache *service.SpatialCache) string {
 	if s.RoomState == nil || s.RoomState.TotalPeople == 0 {
 		return ""
 	}
-	roomType := card.RoomTypeDefault
-	if cache != nil && s.RoomState.RoomID != "" {
-		if rp, err := netip.ParsePrefix(s.RoomState.RoomID); err == nil {
-			if rm := cache.LookupRoom(rp); rm != nil {
-				roomType = rm.RoomType
-			}
-		}
+	risk := s.RoomState.RiskLevel
+	if risk != card.RiskAttention && risk != card.RiskRisk {
+		return ""
 	}
-	nowMs := time.Now().UnixMilli()
-	// unit local timezone → IsRiskTime 判夜间（server 仍 UTC，loc 仅决定 21:00-08:00 unit local 视角）
-	var cardPfx netip.Prefix
-	if pfx, perr := netip.ParsePrefix(s.CardID); perr == nil {
-		cardPfx = pfx
+	if s.RoomState.StandingContinuousMin > 0 {
+		return fmt.Sprintf("Stand %dm", s.RoomState.StandingContinuousMin)
 	}
-	loc := cache.LookupTimezoneByCard(cardPfx)
-	isRiskTime := card.IsRiskTime(nowMs, loc)
-
-	standing := 0
-	if s.Target != nil {
-		standing = s.Target.StandingContinuousMin
-	}
-	standingTh := card.LookupStandingThresholds(roomType, isRiskTime)
-	if standing >= standingTh.AttentionMin {
-		return fmt.Sprintf("Stand %dm", standing)
-	}
-	if roomType == card.RoomTypeBathroom && s.RoomState.AloneSinceTs > 0 {
-		aloneMin := int((nowMs - s.RoomState.AloneSinceTs) / 60_000)
-		aloneTh := card.BathroomAlone
-		threshold := aloneTh.DayAttentionMin
-		if isRiskTime {
-			threshold = aloneTh.RiskTimeAttentionMin
-		}
-		if aloneMin >= threshold {
-			return formatAloneText(aloneMin)
-		}
+	if s.RoomState.AloneContinuousMin > 0 {
+		return formatAloneText(s.RoomState.AloneContinuousMin)
 	}
 	return ""
 }

@@ -9,7 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"owl-common/alarm"
 	rediscommon "owl-common/redis"
+
 	"wisefido-qinglan/internal/config"
 
 	"github.com/go-redis/redis/v8"
@@ -25,11 +27,16 @@ import (
 // seqCounter: 协议层北极星 (TDPv2 envelope sequence_number) — publisher 内单调 monotonic uint64，
 // 每条消息自增；下游 sensor 派生 verdict 时把"触发的 source msg seq" 写入 evidence
 // （reasoning trace 链 = qinglan envelope.seq → sensor verdict.evidence.trigger_seq_num）。
+// EnablementGate qinglan 端 alarm 使能 gate；service.AlarmEnablementCache 包装 closure 实现。
+// 未启用返回 false → PublishAlarm 静默 drop。nil 时退化 always-allow（boot 期兼容）。
+type EnablementGate func(ctx context.Context, deviceAddr, alarmType string) bool
+
 type StreamPublisher struct {
 	redisClient *redis.Client
 	config      *config.Config
 	logger      *zap.Logger
 	seqCounter  atomic.Uint64
+	alarmGate   EnablementGate
 }
 
 // NewStreamPublisher 创建 Stream 发布器。
@@ -38,6 +45,13 @@ func NewStreamPublisher(redisClient *redis.Client, cfg *config.Config) *StreamPu
 		redisClient: redisClient,
 		config:      cfg,
 	}
+}
+
+// SetAlarmGate main wiring 注入 enablement gate；nil 退化 always-allow。
+// 把 alarm enablement 检查收到 producer 端：未启用直接 drop，cardagg 端不重复 gate
+// （符合 [[feedback_producer_first]] + [[platform_agent_addressing]] trust 模式）。
+func (p *StreamPublisher) SetAlarmGate(gate EnablementGate) {
+	p.alarmGate = gate
 }
 
 // PublishMonitor sends a redis.StreamMessage to iot:monitor:stream.
@@ -50,8 +64,42 @@ func (p *StreamPublisher) PublishEvent(ctx context.Context, msg *rediscommon.IoT
 	return p.publishObservation(ctx, rediscommon.StreamEvent, msg)
 }
 
+// alarmGateSkip 设备类 alarm（HIPAA 强制审计）跳过 enablement gate — 客户禁用了也强制存档。
+// 与 cardagg alarm_router.go 的 deviceClassOnset + recoveryMap 一致；Fall 走 event 流不在此处。
+var alarmGateSkip = map[string]struct{}{
+	alarm.AlarmTypeOffline:        {},
+	alarm.AlarmTypeOfflineRecover: {},
+	alarm.AlarmTypeDeviceFailure:  {},
+	alarm.AlarmTypeDeviceRecover:  {},
+	alarm.SensorDetached:          {},
+	alarm.SensorDetachedRecover:   {},
+	alarm.SignalPoor:              {},
+	alarm.SingalPoorRecover:       {}, // sic: 'Singal' 是 owl-common/alarm 常量原拼写
+	alarm.AngleException:          {},
+	alarm.AngleExceptionRecover:   {},
+}
+
 // PublishAlarm sends a redis.StreamMessage to iot:alarm:stream.
+//
+// 源头 enablement gate（仅对 vital 类生效）：
+//   - vital (HR/RR/Apnea/Weak)：查 spatial_config alarm.device_config，未启用 drop
+//   - device-class (Offline/SensorDetached/SignalPoor/AngleException + Recovers)：跳 gate，HIPAA 强制审计
+//
+// LeftBed / Stay / Fall / SittingOnGround 不走 qinglan PublishAlarm — 那些由 sensor 派生（zonealarm 或
+// roomengine 路径，从 event 流转化），各自源头自己 gate。
 func (p *StreamPublisher) PublishAlarm(ctx context.Context, msg *rediscommon.IoTStreamMessage) error {
+	if p.alarmGate != nil && msg != nil && msg.DeviceAddr.IsValid() && msg.Category != "" {
+		if _, skip := alarmGateSkip[msg.Category]; !skip {
+			if !p.alarmGate(ctx, msg.DeviceAddr.String(), msg.Category) {
+				if p.logger != nil {
+					p.logger.Debug("publish alarm gated (disabled in spatial_config)",
+						zap.String("device_addr", msg.DeviceAddr.String()),
+						zap.String("category", msg.Category))
+				}
+				return nil
+			}
+		}
+	}
 	return p.publishObservation(ctx, rediscommon.StreamAlarm, msg)
 }
 

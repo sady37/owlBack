@@ -117,7 +117,7 @@ func (c *Config) setDefaults() {
 		c.AI.OverrideTTLSec = 60
 	}
 	if c.Display.RebuildIntervalSec <= 0 {
-		c.Display.RebuildIntervalSec = 300 // 5 分钟
+		c.Display.RebuildIntervalSec = 300 // 5 分钟 keep-alive 兜底；事件驱动是主路径
 	}
 }
 

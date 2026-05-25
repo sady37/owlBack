@@ -329,7 +329,11 @@ func main() {
 
 		// 创建 ConfigPublisher（用于发送所有 config:* 消息）
 		configPublisher := publisher.NewConfigPublisher(redisClient, logger)
+		configPublisher.SetDB(db)
 		deviceService.SetConfigPublisher(configPublisher)
+		// alarm 配置变更链路：UI 改 device 级 setting → wisefido-data 写 alarm.device_config →
+		// publish config:alarmDevice:stream → sensor/cardagg alarmDeviceConsumer.Invalidate(deviceAddr)
+		//   → 下次 lookup lazy reload。tenant 级 alarm.cloud_config 仅 UI 模板用，不级联。
 
 		// 创建 CardSyncService — v2 Card 表唯一写入入口（ReconcileCards）
 		cardSyncService = service.NewCardSyncService(cardRepo, configPublisher, cardRealtimeSvc, logger)
@@ -358,6 +362,12 @@ func main() {
 		// DeviceMonitorSettingsService — backed by spatial_config (device /128) + tenant snapshot fallback.
 		// 实现 Get/Update/GetDefault/CheckOnline 4 个核心方法；其它 9 个（OTA / firmware / resync）返回 NotImplemented。
 		deviceMonitorSettingsService = service.NewDeviceMonitorSettingsService(db, alarmCloudRepo, logger)
+		// device-level UPSERT spatial_config(alarm.device_config) 后 publish invalidate
+		if dms, ok := deviceMonitorSettingsService.(interface {
+			SetConfigPublisher(p *publisher.ConfigPublisher)
+		}); ok {
+			dms.SetConfigPublisher(configPublisher)
+		}
 
 		var intervalScheduler *service.SleepaceIntervalScheduler
 		if cfg.SleepaceGateway.APIBaseURL != "" {

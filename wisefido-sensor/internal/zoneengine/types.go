@@ -104,6 +104,11 @@ type ZoneState struct {
 	LastSource  string     `json:"last_source,omitempty"`   // 最近翻转的决定信号源
 	UpdatedAt   int64      `json:"updated_at"`
 
+	// AloneContinuousTs — engine 内部独居锚点（Count==1 起点 ms）；Count 变到 1 时 set，
+	// Count!=1 时 0。translator/publisher 读此 anchor 派生 RoomState.AloneContinuousMin。
+	// 不入 RoomState（FE 不需 ts）；engine 内部状态。
+	AloneContinuousTs int64 `json:"alone_continuous_ts,omitempty"`
+
 	// Bayesian debug 字段（仅 bed zone + useBedBayesian=true 时填）。
 	// 不入 FE bedstate；仅供 zoneengine 运维观测 / log / 测试断言。
 	BayesianLogOdds float64 `json:"bayesian_log_odds,omitempty"`

@@ -10,6 +10,7 @@ import (
 
 	"owl-common/alarm"
 
+	"wisefido-data/internal/publisher"
 	"wisefido-data/internal/repository"
 
 	"go.uber.org/zap"
@@ -65,6 +66,7 @@ type deviceMonitorSettingsService struct {
 	alarmCloudRepo  repository.AlarmCloudRepository // tenant 层 spatial_config 读取 (Phase 1a 已 v2)
 	qinglanClient   *QinglanClient                  // 雷达在线检查 / device push (Phase 1c 用)
 	sleepaceGateway *SleepaceGatewayClient          // sleepad 厂家 HTTP 下发；nil = 不可下发，UI 会看到 device_write=false
+	configPublisher *publisher.ConfigPublisher      // 写 spatial_config 后 publish config:alarmDevice:stream 让 sensor 失效本地 cache
 	logger          *zap.Logger
 }
 
@@ -96,6 +98,12 @@ func (s *deviceMonitorSettingsService) SetQinglanClient(c *QinglanClient) {
 // 不实现这个方法 sleepad 配置就不会下发到厂家（device_write 永远 false）。
 func (s *deviceMonitorSettingsService) SetSleepaceGatewayClient(c *SleepaceGatewayClient) {
 	s.sleepaceGateway = c
+}
+
+// SetConfigPublisher — main.go 注入；nil 时跳过 publish（sensor 端依赖 lazy reload，
+// 但失效延迟变长——所以生产必须 inject）。
+func (s *deviceMonitorSettingsService) SetConfigPublisher(p *publisher.ConfigPublisher) {
+	s.configPublisher = p
 }
 
 var _ DeviceMonitorSettingsService = (*deviceMonitorSettingsService)(nil)
@@ -424,6 +432,19 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(
 		return nil, fmt.Errorf("failed to upsert device alarm config: %w", err)
 	}
 	dbWrite := true
+
+	// 失效 sensor/cardagg 端 alarm enablement cache（key=alarm.device_config /128）。
+	// 失败仅 warn — DB 已写入，sensor cache 自动 lazy reload（窗口最大 ~5min activeNoise，
+	// 实践中下一次 alarm 事件命中即触发）。fire-and-forget 不阻 UI 响应。
+	if s.configPublisher != nil {
+		if perr := s.configPublisher.PublishAlarmDeviceMessage(
+			ctx, tenantID, deviceIPv6, "", "alarm.device_config",
+			map[string]interface{}{"alarm_items": alarmItems},
+		); perr != nil {
+			s.logger.Warn("publish alarm.device_config invalidate failed (non-fatal; cache will lazy reload)",
+				zap.String("device_addr", deviceIPv6), zap.Error(perr))
+		}
+	}
 
 	switch deviceType {
 	case "radar", "Radar":

@@ -73,9 +73,24 @@ type StreamPublisher struct {
 	// 用途：
 	//   - bed event → republishRoomAfterBed 复用 RoomState 其它字段 + 更 TotalPeople
 	//   - 60s tick → tickRepublishStates 兜底 re-publish（覆盖 missed-message / cardagg 重启场景）
-	mu            sync.RWMutex
-	lastRoomState map[string]*card.RoomState
-	lastBedState  map[string]*card.BedState
+	//   - SnapshotRoomStates/SnapshotBedStates → zonealarm Tick 拿快照判 Stay/LeftBed/NightAbsence
+	// roomKindByCIDR 记录每个 /88 是 RoomTypeDefault 还是 RoomTypeBathroom（OnZoneEvent
+	// 时按 ZoneType 写入），SnapshotRoomStates 一并返回供 zonealarm rule 按 anchor entity 筛选。
+	mu             sync.RWMutex
+	lastRoomState  map[string]*card.RoomState
+	lastBedState   map[string]*card.BedState
+	roomKindByCIDR map[string]int // CIDR → card.RoomTypeDefault / RoomTypeBathroom
+
+	// engine 反向引用 — publisher 派生 AloneContinuousMin 时按 (ZoneType,ZoneID) 查
+	// ZoneState.AloneContinuousTs（engine 是真相源；publisher 不再缓存 ts，避免漂移）。
+	engine *Engine
+}
+
+// RoomStateSnapshot SnapshotRoomStates 返回项 — RoomState 深拷贝 + RoomKind。
+// zonealarm Evaluator 按 rule.Anchor (EntityRoom / EntityBathroom) 筛选 snapshot。
+type RoomStateSnapshot struct {
+	State *card.RoomState
+	Kind  int // card.RoomTypeDefault / RoomTypeBathroom
 }
 
 // AggregatorPuller StreamPublisher 60s tick 时 pull aggregator 数据用的接口。
@@ -97,13 +112,44 @@ type AggregatorPuller interface {
 
 func NewStreamPublisher(client *redislib.Client, logger *zap.Logger) *StreamPublisher {
 	return &StreamPublisher{
-		client:        client,
-		logger:        logger,
-		timeout:       2 * time.Second,
-		tickEvery:     60 * time.Second,
-		lastRoomState: make(map[string]*card.RoomState),
-		lastBedState:  make(map[string]*card.BedState),
+		client:         client,
+		logger:         logger,
+		timeout:        2 * time.Second,
+		tickEvery:      60 * time.Second,
+		lastRoomState:  make(map[string]*card.RoomState),
+		lastBedState:   make(map[string]*card.BedState),
+		roomKindByCIDR: make(map[string]int),
 	}
+}
+
+// SetEngine main wiring 注入 engine 反向引用；publisher 用之查 ZoneState.AloneContinuousTs。
+// nil 时 alone anchor 永 0（degraded — 不该发生在生产）。
+func (p *StreamPublisher) SetEngine(e *Engine) { p.engine = e }
+
+// lookupAloneAnchor 按 CIDR 查 engine ZoneState.AloneContinuousTs。
+// 通过 publisher 自家 roomKindByCIDR 反推 ZoneType（Room/Bathroom）。
+func (p *StreamPublisher) lookupAloneAnchor(roomCIDR string) int64 {
+	if p.engine == nil || roomCIDR == "" {
+		return 0
+	}
+	p.mu.RLock()
+	kind, ok := p.roomKindByCIDR[roomCIDR]
+	p.mu.RUnlock()
+	if !ok {
+		return 0
+	}
+	var zt ZoneType
+	switch kind {
+	case card.RoomTypeBathroom:
+		zt = ZoneTypeBathroom
+	default:
+		zt = ZoneTypeRoom
+	}
+	st, ok := p.engine.GetState(StateKey{ZoneType: zt, ZoneID: roomCIDR})
+	if !ok {
+		return 0
+	}
+	return st.AloneContinuousTs
 }
 
 // SetRoomDedup main wiring 注入 RoomState people count dedup 双源。两个都 nil 时退化为
@@ -263,15 +309,76 @@ func (p *StreamPublisher) OnZoneEvent(e ZoneEvent) {
 		_ = p.PublishBedState(ctx, e.ZoneID, bs)
 		p.republishRoomAfterBed(ctx, e)
 	case ZoneTypeRoom:
-		rs := TranslateRoomState(e, card.RoomTypeDefault)
-		p.applyRoomDedupInPlace(e.ZoneID, rs)
-		p.cacheLastRoom(e.ZoneID, rs)
-		_ = p.PublishRoomState(ctx, e.ZoneID, rs)
+		p.handleRoomZoneEvent(ctx, e, card.RoomTypeDefault)
 	case ZoneTypeBathroom:
-		rs := TranslateRoomState(e, card.RoomTypeBathroom)
-		p.applyRoomDedupInPlace(e.ZoneID, rs)
-		p.cacheLastRoom(e.ZoneID, rs)
-		_ = p.PublishRoomState(ctx, e.ZoneID, rs)
+		p.handleRoomZoneEvent(ctx, e, card.RoomTypeBathroom)
+	}
+}
+
+// handleRoomZoneEvent 统一 Room/Bathroom 的 OnZoneEvent 处理：
+// translate → dedup → cache engine anchor → derive MIN + Risk → cache + publish。
+//
+// engine 维护 ZoneState.AloneContinuousTs（独居锚点），publisher 缓存它派生 RoomState.AloneContinuousMin。
+// FE 只读 MIN（不依赖 client 时钟）。
+func (p *StreamPublisher) handleRoomZoneEvent(ctx context.Context, e ZoneEvent, roomType int) {
+	rs := TranslateRoomState(e, roomType)
+	p.applyRoomDedupInPlace(e.ZoneID, rs)
+
+	p.mu.RLock()
+	prev := p.lastRoomState[e.ZoneID]
+	var prevCopy *card.RoomState
+	if prev != nil {
+		c := *prev
+		prevCopy = &c
+	}
+	p.mu.RUnlock()
+
+	// ZoneEvent.NewState.AloneContinuousTs 是 engine 现刻发出的 anchor，直接用
+	p.applyAloneAndRisk(rs, prevCopy, roomType, e.NewState.AloneContinuousTs, e.NewState.UpdatedAt)
+	p.cacheLastRoom(e.ZoneID, rs, roomType)
+	_ = p.PublishRoomState(ctx, e.ZoneID, rs)
+}
+
+// applyAloneAndRisk 填 RoomState 派生 MIN + RiskLevel；FE 只接收 MIN（无 ts 字段）。
+//
+// 输入：
+//   - aloneAnchorTs：engine ZoneState.AloneContinuousTs（publisher 自家 cache 拉）
+//   - aggregator：standing 来源（per /88 standing min）
+//
+// 输出（in-place mutate rs）：
+//   - rs.AloneContinuousMin   = (nowMs - aloneAnchorTs) / 60_000  （TotalPeople==1 且 anchor>0 才计；否则 0）
+//   - rs.StandingContinuousMin = aggregator.GetSnapshot.standingMin （TotalPeople==1 才计；否则 0）
+//   - rs.RiskLevel + rs.RiskLevelTs（state-change-anchored）
+func (p *StreamPublisher) applyAloneAndRisk(rs, prev *card.RoomState, roomType int, aloneAnchorTs, nowMs int64) {
+	if rs == nil {
+		return
+	}
+	// AloneContinuousMin
+	if rs.TotalPeople == 1 && aloneAnchorTs > 0 && nowMs >= aloneAnchorTs {
+		rs.AloneContinuousMin = int((nowMs - aloneAnchorTs) / 60_000)
+	} else {
+		rs.AloneContinuousMin = 0
+	}
+	// StandingContinuousMin: 仅单人才取 aggregator standingMin；其它强制 0
+	rs.StandingContinuousMin = 0
+	if rs.TotalPeople == 1 && p.aggregator != nil && rs.RoomID != "" {
+		if _, s, _, ok := p.aggregator.GetSnapshot(rs.RoomID); ok {
+			rs.StandingContinuousMin = s
+		}
+	}
+	// RiskLevel（读 rs.AloneContinuousMin + rs.StandingContinuousMin）
+	prevRisk := 0
+	prevRiskTs := int64(0)
+	if prev != nil {
+		prevRisk = prev.RiskLevel
+		prevRiskTs = prev.RiskLevelTs
+	}
+	newRisk := EvaluateRoomRiskLevel(rs, roomType, nowMs, nil)
+	rs.RiskLevel = newRisk
+	if newRisk == prevRisk && prevRiskTs > 0 {
+		rs.RiskLevelTs = prevRiskTs
+	} else {
+		rs.RiskLevelTs = nowMs
 	}
 }
 
@@ -305,13 +412,15 @@ func (p *StreamPublisher) applyRoomDedupInPlace(roomCIDR string, rs *card.RoomSt
 }
 
 // cacheLastRoom 保存最近一次 publish 的 RoomState（深拷贝），bed event 后 re-publish 用。
-func (p *StreamPublisher) cacheLastRoom(roomCIDR string, rs *card.RoomState) {
+// 同时记录 roomType（snapshot 给 zonealarm 用）。
+func (p *StreamPublisher) cacheLastRoom(roomCIDR string, rs *card.RoomState, roomType int) {
 	if roomCIDR == "" || rs == nil {
 		return
 	}
 	cpy := *rs
 	p.mu.Lock()
 	p.lastRoomState[roomCIDR] = &cpy
+	p.roomKindByCIDR[roomCIDR] = roomType
 	p.mu.Unlock()
 }
 
@@ -345,6 +454,7 @@ func (p *StreamPublisher) republishRoomAfterBed(ctx context.Context, e ZoneEvent
 	}
 	p.mu.RLock()
 	prev, ok := p.lastRoomState[roomCIDR]
+	roomType := p.roomKindByCIDR[roomCIDR]
 	p.mu.RUnlock()
 	if !ok || prev == nil {
 		return
@@ -368,16 +478,83 @@ func (p *StreamPublisher) republishRoomAfterBed(ctx context.Context, e ZoneEvent
 	if rs.TotalPeople == prevCount {
 		return // 无变化跳过 publish 防风暴
 	}
-	// TotalPeople 真的变了 → 刷 TotalPeopleTs（state-change-anchored）
 	rs.TotalPeopleTs = e.NewState.UpdatedAt
-	// AloneSinceTs 锚：变到 1 时刷新；离开 1 时清 0
-	if rs.TotalPeople == 1 && prevCount != 1 {
-		rs.AloneSinceTs = e.NewState.UpdatedAt
-	} else if rs.TotalPeople != 1 {
-		rs.AloneSinceTs = 0
-	}
-	p.cacheLastRoom(roomCIDR, &rs)
+	prevCopy := *prev
+	// republish (bed event) 路径无 ZoneEvent 带 room anchor；查 engine 现刻 ZoneState
+	p.applyAloneAndRisk(&rs, &prevCopy, roomType, p.lookupAloneAnchor(roomCIDR), e.NewState.UpdatedAt)
+	p.cacheLastRoom(roomCIDR, &rs, roomType)
 	_ = p.PublishRoomState(ctx, roomCIDR, &rs)
+}
+
+// SnapshotRoomStates 返回当前所有 room/bathroom 的深拷贝 + Kind。
+// zonealarm Evaluator.Tick 用这个判 Stay/NightAbsence 的 anchor + condition。
+//
+// 深拷贝在锁内完成；caller 拿到独立副本可安全长持。
+func (p *StreamPublisher) SnapshotRoomStates() map[string]RoomStateSnapshot {
+	if p == nil {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make(map[string]RoomStateSnapshot, len(p.lastRoomState))
+	for cidr, rs := range p.lastRoomState {
+		if rs == nil {
+			continue
+		}
+		c := *rs
+		out[cidr] = RoomStateSnapshot{State: &c, Kind: p.roomKindByCIDR[cidr]}
+	}
+	return out
+}
+
+// SnapshotBedStates 返回当前所有 bed 的深拷贝。
+// zonealarm Evaluator.Tick 用这个判 LeftBed 的 anchor (BedStatusTs while NotInBed)。
+func (p *StreamPublisher) SnapshotBedStates() map[string]*card.BedState {
+	if p == nil {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make(map[string]*card.BedState, len(p.lastBedState))
+	for cidr, bs := range p.lastBedState {
+		if bs == nil {
+			continue
+		}
+		c := *bs
+		out[cidr] = &c
+	}
+	return out
+}
+
+// RefreshRoomRiskAndMaybePublish Tick 调度入口（建议 60s 周期；zonealarm Supervisor.Tick 也调）。
+// 用 publisher 缓存的 engine anchor (AloneContinuousTs) + 现 aggregator standingMin 派生
+// 最新 MIN + RiskLevel；任一变化即 republish RoomState。
+//
+// 这是 FE "每分钟刷新"机制的产生侧：FE 不需 ts 字段，sensor 周期算好 MIN 推过去。
+func (p *StreamPublisher) RefreshRoomRiskAndMaybePublish(ctx context.Context, roomCIDR string, nowMs int64) bool {
+	if p == nil || roomCIDR == "" {
+		return false
+	}
+	p.mu.RLock()
+	cached, ok := p.lastRoomState[roomCIDR]
+	roomType := p.roomKindByCIDR[roomCIDR]
+	if !ok || cached == nil {
+		p.mu.RUnlock()
+		return false
+	}
+	prevCopy := *cached
+	rs := *cached
+	p.mu.RUnlock()
+
+	p.applyAloneAndRisk(&rs, &prevCopy, roomType, p.lookupAloneAnchor(roomCIDR), nowMs)
+
+	if rs.AloneContinuousMin == prevCopy.AloneContinuousMin &&
+		rs.StandingContinuousMin == prevCopy.StandingContinuousMin &&
+		rs.RiskLevel == prevCopy.RiskLevel {
+		return false // 都没变跳过 republish 防风暴
+	}
+	p.cacheLastRoom(roomCIDR, &rs, roomType)
+	return p.PublishRoomState(ctx, roomCIDR, &rs) == nil
 }
 
 // PublishBedState 发完整 card.BedState 到 sensor:derived:stream，category=bed.state。

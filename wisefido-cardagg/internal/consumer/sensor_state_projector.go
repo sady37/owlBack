@@ -230,17 +230,14 @@ func mergeBedStateSleepStage(prev, incoming *card.BedState) *card.BedState {
 	return out
 }
 
-// mergeRoomState 字段级合并 room.state：所有字段走 state-change-anchored merge。
+// mergeRoomState 字段级合并 room.state。
 //
-// **AloneSinceTs 特殊规则**（基于 TotalPeople 的 cross-field 派生）：
-//   - new.TotalPeople != 1：AloneSinceTs = 0（独居语义失效）
-//   - new.TotalPeople == 1 且 prev.TotalPeople != 1：AloneSinceTs = incoming（新独居开始）
-//   - new.TotalPeople == 1 且 prev.TotalPeople == 1：保 prev.AloneSinceTs（独居延续）
+// AloneContinuousMin / StandingContinuousMin 由 sensor 60s tick 算好直接 push（MIN 整数），
+// 这里无 ts 对，直接 incoming 覆 prev（值变化时刷新；不变时保 prev）。
 //
-// **LastEnterTs / LastExitTs 也是 state-anchored**：
+// LastEnterTs / LastExitTs 是 state-anchored：
 //   - LastEnterTs 仅 prev.TotalPeople==0 && new.TotalPeople>0 时刷新（0→N+ transition）
 //   - LastExitTs  仅 prev.TotalPeople>0 && new.TotalPeople==0 时刷新（N→0 transition）
-//   - 其它情况保 prev（避免 visitor 来回时反复刷 anchor）
 func mergeRoomState(prev, incoming *card.RoomState) *card.RoomState {
 	if incoming == nil {
 		return prev
@@ -249,7 +246,6 @@ func mergeRoomState(prev, incoming *card.RoomState) *card.RoomState {
 	if prev != nil {
 		*out = *prev
 	}
-	// RoomID 跟 latest event（incoming.subject_entity 标定的 room）；display 派生靠它决定 room_icon_kind。
 	if incoming.RoomID != "" {
 		out.RoomID = incoming.RoomID
 	}
@@ -260,32 +256,21 @@ func mergeRoomState(prev, incoming *card.RoomState) *card.RoomState {
 	}
 	newPeople := incoming.TotalPeople
 
-	// 普通 state-change-anchored 字段
 	out.TotalPeople, out.TotalPeopleTs = mergeBedField(out.TotalPeople, out.TotalPeopleTs, incoming.TotalPeople, incoming.TotalPeopleTs)
 	out.RiskLevel, out.RiskLevelTs = mergeBedField(out.RiskLevel, out.RiskLevelTs, incoming.RiskLevel, incoming.RiskLevelTs)
 
-	// LastEnterTs: 仅在 0→N+ transition 时刷
+	// AloneContinuousMin / StandingContinuousMin — 无 ts 配对，sensor 现算好，incoming 覆 prev
+	out.AloneContinuousMin = incoming.AloneContinuousMin
+	out.StandingContinuousMin = incoming.StandingContinuousMin
+
 	if prevPeople == 0 && newPeople > 0 && incoming.LastEnterTs > 0 {
 		out.LastEnterTs = incoming.LastEnterTs
 	}
-	// LastExitTs: 仅在 N→0 transition 时刷
 	if prevPeople > 0 && newPeople == 0 && incoming.LastExitTs > 0 {
 		out.LastExitTs = incoming.LastExitTs
 	}
 
-	// AloneSinceTs: cross-field 派生（基于 TotalPeople）
-	switch {
-	case newPeople != 1:
-		out.AloneSinceTs = 0 // 不独居，clear anchor
-	case prevPeople != 1 && incoming.AloneSinceTs > 0:
-		// 新进入独居（任意值 → 1）
-		out.AloneSinceTs = incoming.AloneSinceTs
-	}
-	// case prevPeople==1 && newPeople==1: 已在 *out = *prev 保留 prev.AloneSinceTs
-
-	// LastExitToOutside 是 bool，无 ts；incoming 总是覆盖
 	out.LastExitToOutside = incoming.LastExitToOutside
-
 	return out
 }
 

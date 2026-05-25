@@ -31,7 +31,7 @@ ai:
   override_mode: "sandbox"
   override_ttl_sec: 60
 
-# display 周期重建：事件触发是主路径；本 ticker 是兜底（5min）。
-# dev 阶段可下调到 30s 加速验证；生产 300s 即可。
+# display 重建：事件驱动是主路径（sensor RoomState 变化即触发 sensor_state_projector.Rebuild）；
+# 本 ticker 是 keep-alive 兜底（5min 无 event 也强推一次，防 FE 长时间静默）。
 display:
   rebuild_interval_sec: 300

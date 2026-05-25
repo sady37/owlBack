@@ -1,3 +1,16 @@
+// alarm_enablement.go — cardagg 端 per-device alarm 使能缓存。
+//
+// **唯一数据源**：spatial_config (config_key='alarm.device_config', spatial_prefix=device /128)。
+// JSONB schema：{alarm_items: []alarm.AlarmItem, updated_at: ts}。
+//
+// **不读 alarm.cloud_config**（tenant 级模板）—— 那是 wisefido-data 给 UI"reset to default"和
+// 新设备 bind 时取 snapshot 用的，与运行时无关。device 一旦有 alarm.device_config row 即独立，
+// tenant 模板改动不影响已配置 device（用户拍板：snapshot model，不级联）。
+//
+// 失效路径：wisefido-data UpdateDeviceMonitorSettings 写 spatial_config 后 publish
+// config:alarmDevice:stream → cardagg AlarmDeviceConfigConsumer.Invalidate(deviceID) →
+// 下次 IsEnabled lazy reload。
+
 package service
 
 import (
@@ -19,12 +32,9 @@ type EnabledAlarm struct {
 	AlarmParams map[string]interface{} // e.g. duration_sec for LeftBed
 }
 
-// AlarmEnablementCache is a lazy-loading, invalidation-aware in-memory cache
-// of per-device alarm enablement.
+// AlarmEnablementCache lazy-loading + invalidation-aware per-device alarm 使能缓存。
 //
-// Key: deviceID → map[alarmType]*EnabledAlarm (only enabled alarms).
-// Load path: alarm_device.monitor_config → parse → filter enabled.
-// Fallback: alarm.DefaultAlarmSetting by device type.
+// Key: deviceID (canonical IPv6 string) → map[alarmType]*EnabledAlarm（仅已启用的 alarm）。
 type AlarmEnablementCache struct {
 	mu     sync.RWMutex
 	cache  map[string]*deviceEnablement
@@ -45,9 +55,13 @@ func NewAlarmEnablementCache(db *sql.DB, logger *zap.Logger) *AlarmEnablementCac
 	}
 }
 
-// IsEnabled checks whether the given alarm type is enabled for a device.
-// Returns (enabledAlarm, ok). When ok=false, the alarm is not enabled or not found.
+// IsEnabled 查 device 是否启用了某条 alarm。返 (enabledAlarm, ok)。
+// tenantID 参数保留兼容旧 signature；本实现不用（device_config 按 /128 精确匹配）。
 func (c *AlarmEnablementCache) IsEnabled(ctx context.Context, tenantID, deviceID, alarmType string) (*EnabledAlarm, bool) {
+	_ = tenantID
+	if deviceID == "" || alarmType == "" {
+		return nil, false
+	}
 	c.mu.RLock()
 	de := c.cache[deviceID]
 	if de != nil && de.loaded {
@@ -61,7 +75,7 @@ func (c *AlarmEnablementCache) IsEnabled(ctx context.Context, tenantID, deviceID
 	}
 	c.mu.RUnlock()
 
-	c.loadDevice(ctx, tenantID, deviceID)
+	c.loadDevice(ctx, deviceID)
 
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -77,14 +91,14 @@ func (c *AlarmEnablementCache) IsEnabled(ctx context.Context, tenantID, deviceID
 	return ea, ea != nil
 }
 
-// Invalidate marks a device's enablement as stale so it reloads on next access.
+// Invalidate 失效单 device cache（spatial_config 改了 → consumer 调）。
 func (c *AlarmEnablementCache) Invalidate(deviceID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.cache, deviceID)
 }
 
-// InvalidateAll clears the entire enablement cache (used on reset).
+// InvalidateAll 清空整个缓存。
 func (c *AlarmEnablementCache) InvalidateAll() {
 	if c == nil {
 		return
@@ -94,7 +108,7 @@ func (c *AlarmEnablementCache) InvalidateAll() {
 	c.mu.Unlock()
 }
 
-// InvalidateDevices 批量失效告警使能缓存（同 unit 下多设备）。
+// InvalidateDevices 批量失效。
 func (c *AlarmEnablementCache) InvalidateDevices(deviceIDs []string) {
 	if c == nil {
 		return
@@ -109,34 +123,26 @@ func (c *AlarmEnablementCache) InvalidateDevices(deviceIDs []string) {
 	}
 }
 
-// loadDevice v2：从 spatial_config longest-prefix-match 解析 device 的 alarm 使能配置。
+// loadDevice 解析 device 的 alarm 使能配置：
+//  1. loadFromDeviceConfig 查 spatial_config alarm.device_config /128 精确匹配
+//  2. 无 row → alarm.GetDefaultAlarmItems(deviceType) 硬编码默认值兜底
 //
-// 数据源：spatial_config 表，config_key='alarm.cloud_config'，spatial_prefix LPM 反查。
-// JSONB 结构：{"device_alarms": {"Radar": {"Fall": {"is_enabled":1, "alarm_level":"CRITICAL"}, ...}, "SleepPad": {...}}}
-// 命名 quirk：device_factory_meta.device_type 用 "Sleepad"，但 JSONB 键是 "SleepPad"（首字母大写 P），需兼容映射。
-//
-// 路径：
-//   1. resolveDeviceType 用 device_ipv6 LPM 反查 device_type（v2 IPv6 单程票后 deviceID 是 IPv6 字符串）
-//   2. 读 spatial_config LPM；解析 device_alarms.<deviceTypeKey>.<alarmType>.{is_enabled,alarm_level}
-//   3. 与 alarm.GetDefaultAlarmItems 合并（spatial_config 项覆盖 defaults，未配置项保留 default）
-//   4. spatial_config 完全未配 → 直接用 defaults
-//
-// 缓存：调用方通过 IsEnabled 触发，命中即缓存；spatial_config 改了需 Invalidate 才生效（admin 更新 alarm 配置后应触发，目前不自动）。
-func (c *AlarmEnablementCache) loadDevice(ctx context.Context, tenantID, deviceID string) {
+// tenant 级 alarm.cloud_config 不读 — 那是 wisefido-data UI 的模板，与运行时无关。
+func (c *AlarmEnablementCache) loadDevice(ctx context.Context, deviceID string) {
 	if c.db == nil {
 		c.setDefaults(deviceID, "")
 		return
 	}
-	deviceType := c.resolveDeviceType(ctx, deviceID)
-	items := c.loadFromSpatialConfig(ctx, deviceID, deviceType)
-	if items == nil {
-		items = alarm.GetDefaultAlarmItems(deviceType)
+	if items := c.loadFromDeviceConfig(ctx, deviceID); items != nil {
+		c.setFromItems(deviceID, items)
+		return
 	}
-	c.setFromItems(deviceID, items)
+	deviceType := c.resolveDeviceType(ctx, deviceID)
+	c.setFromItems(deviceID, alarm.GetDefaultAlarmItems(deviceType))
 }
 
-// resolveDeviceType Phase 2 一刀切：deviceID 入参是 IPv6 字符串（device_addr），
-// 用 devices JOIN device_factory_meta(device_uid) 反查 device_type。
+// resolveDeviceType 用 device_addr (IPv6 text) 反查 device_type。
+// 仅在 device_config 缺失时用（取 defaults 需知道设备类型）。
 func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceID string) string {
 	if c.db == nil || deviceID == "" {
 		return ""
@@ -152,9 +158,10 @@ func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceID s
 	return dt.String
 }
 
-// loadFromSpatialConfig 按 device_addr LPM 取 alarm.cloud_config，解析对应 device_type 节，
-// 与 defaults 合并返回。无配置或解析失败返回 nil（调用方 fallback 到 defaults）。
-func (c *AlarmEnablementCache) loadFromSpatialConfig(ctx context.Context, deviceID, deviceType string) []alarm.AlarmItem {
+// loadFromDeviceConfig 读 spatial_config alarm.device_config /128 精确匹配。
+// 配置由 wisefido-data UpdateDeviceMonitorSettings 写入；schema = {alarm_items: []AlarmItem}。
+// 未配置 → nil（caller 用 GetDefaultAlarmItems 兜底）。
+func (c *AlarmEnablementCache) loadFromDeviceConfig(ctx context.Context, deviceID string) []alarm.AlarmItem {
 	if c.db == nil || deviceID == "" {
 		return nil
 	}
@@ -162,160 +169,24 @@ func (c *AlarmEnablementCache) loadFromSpatialConfig(ctx context.Context, device
 	err := c.db.QueryRowContext(ctx,
 		`SELECT config_value
 		 FROM spatial_config
-		 WHERE config_key = 'alarm.cloud_config'
-		   AND spatial_prefix >>= $1::inet
-		 ORDER BY masklen(spatial_prefix) DESC
+		 WHERE config_key = 'alarm.device_config'
+		   AND spatial_prefix = $1::inet
 		 LIMIT 1`, deviceID,
 	).Scan(&raw)
 	if err != nil || len(raw) == 0 {
 		return nil
 	}
-	var cfg struct {
-		DeviceAlarms map[string]map[string]struct {
-			IsEnabled   *int                   `json:"is_enabled,omitempty"`
-			AlarmLevel  *string                `json:"alarm_level,omitempty"`
-			AlarmParams map[string]interface{} `json:"alarm_params,omitempty"`
-		} `json:"device_alarms"`
+	var packed struct {
+		AlarmItems []alarm.AlarmItem `json:"alarm_items"`
 	}
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		c.logger.Warn("parse alarm.cloud_config", zap.String("device", deviceID), zap.Error(err))
+	if err := json.Unmarshal(raw, &packed); err != nil {
+		c.logger.Warn("parse alarm.device_config", zap.String("device", deviceID), zap.Error(err))
 		return nil
 	}
-	if len(cfg.DeviceAlarms) == 0 {
+	if len(packed.AlarmItems) == 0 {
 		return nil
 	}
-	// 命名映射：device_factory_meta="Sleepad" ↔ JSONB key="SleepPad"
-	// 同时容错 lowercase（未来若改 lowercase 不破）
-	candidateKeys := alarmCloudConfigKeysForDeviceType(deviceType)
-	var override map[string]struct {
-		IsEnabled   *int                   `json:"is_enabled,omitempty"`
-		AlarmLevel  *string                `json:"alarm_level,omitempty"`
-		AlarmParams map[string]interface{} `json:"alarm_params,omitempty"`
-	}
-	for _, k := range candidateKeys {
-		if v, ok := cfg.DeviceAlarms[k]; ok {
-			override = v
-			break
-		}
-	}
-	if override == nil {
-		return nil
-	}
-	defaults := alarm.GetDefaultAlarmItems(deviceType)
-	defaultTypes := make(map[string]bool, len(defaults))
-	result := make([]alarm.AlarmItem, 0, len(defaults)+len(override))
-	for _, d := range defaults {
-		defaultTypes[d.AlarmType] = true
-		item := d
-		if o, ok := override[d.AlarmType]; ok {
-			if o.IsEnabled != nil {
-				item.IsEnabled = o.IsEnabled
-			}
-			if o.AlarmLevel != nil && *o.AlarmLevel != "" {
-				lvl := *o.AlarmLevel
-				item.AlarmLevel = &lvl
-			}
-			if len(o.AlarmParams) > 0 {
-				item.AlarmParams = o.AlarmParams
-			}
-		}
-		result = append(result, item)
-	}
-	// spatial_config 里有但 defaults 没有的项也保留（设备健康类 Offline / SignalPoor 等通常不在 defaults，由系统强制）
-	for alarmType, o := range override {
-		if defaultTypes[alarmType] {
-			continue
-		}
-		if o.IsEnabled == nil || *o.IsEnabled != 1 {
-			continue
-		}
-		var lvl *string
-		if o.AlarmLevel != nil && *o.AlarmLevel != "" {
-			s := *o.AlarmLevel
-			lvl = &s
-		}
-		result = append(result, alarm.AlarmItem{
-			AlarmType:   alarmType,
-			IsEnabled:   o.IsEnabled,
-			AlarmLevel:  lvl,
-			AlarmParams: o.AlarmParams,
-		})
-	}
-	return result
-}
-
-// alarmCloudConfigKeysForDeviceType 把 device_factory_meta.device_type 映射到 alarm.cloud_config JSONB key。
-// 已知 quirk：DB device_type="Sleepad"，但 JSONB key="SleepPad"（首字母大写 P）；同时兼容 lowercase 防未来归一。
-func alarmCloudConfigKeysForDeviceType(deviceType string) []string {
-	switch deviceType {
-	case "Radar", "radar":
-		return []string{"Radar", "radar"}
-	case "Sleepad", "sleepad", "SleepPad", "sleeppad":
-		return []string{"SleepPad", "Sleepad", "sleeppad", "sleepad"}
-	}
-	return nil
-}
-
-// parseMonitorConfig extracts AlarmItems from monitor_config JSON.
-// monitor_config 结构：{"items": [{alarm_type, is_enabled, alarm_level, alarm_params, display_setting}, ...]}
-// 由 wisefido-data 的 device_monitor_settings_service 写入，必须保持一致。
-func (c *AlarmEnablementCache) parseMonitorConfig(raw string, deviceType string) []alarm.AlarmItem {
-	if raw == "" {
-		return alarm.GetDefaultAlarmItems(deviceType)
-	}
-
-	var mc struct {
-		Items []alarm.AlarmItem `json:"items"`
-	}
-	if err := json.Unmarshal([]byte(raw), &mc); err != nil {
-		c.logger.Warn("parse monitor_config", zap.Error(err))
-		return alarm.GetDefaultAlarmItems(deviceType)
-	}
-
-	defaults := alarm.GetDefaultAlarmItems(deviceType)
-	if defaults == nil {
-		return nil
-	}
-
-	overrides := make(map[string]alarm.AlarmItem, len(mc.Items))
-	for _, it := range mc.Items {
-		if it.AlarmType == "" {
-			continue
-		}
-		overrides[it.AlarmType] = it
-	}
-
-	defaultTypes := make(map[string]bool, len(defaults))
-	result := make([]alarm.AlarmItem, 0, len(defaults)+len(overrides))
-	for _, d := range defaults {
-		defaultTypes[d.AlarmType] = true
-		item := d
-		if cfg, ok := overrides[d.AlarmType]; ok {
-			if cfg.IsEnabled != nil {
-				item.IsEnabled = cfg.IsEnabled
-			}
-			if cfg.AlarmLevel != nil {
-				item.AlarmLevel = cfg.AlarmLevel
-			}
-			if len(cfg.AlarmParams) > 0 {
-				item.AlarmParams = cfg.AlarmParams
-			}
-			if cfg.DisplaySetting != 0 {
-				item.DisplaySetting = cfg.DisplaySetting
-			}
-		}
-		result = append(result, item)
-	}
-	// monitor_config 里有但 defaults 没有的项也保留（设备健康类 Offline / SignalPoor /
-	// AngleException / DeviceFailure 通常不在 defaults 里——它们由系统强制审计，
-	// is_enabled / alarm_level 来自 monitor_config 即可）。
-	for _, cfg := range overrides {
-		if defaultTypes[cfg.AlarmType] {
-			continue
-		}
-		result = append(result, cfg)
-	}
-	return result
+	return packed.AlarmItems
 }
 
 func (c *AlarmEnablementCache) setDefaults(deviceID, deviceType string) {

@@ -2,57 +2,55 @@ package zonealarm
 
 import (
 	"context"
-	"net/netip"
-	"sync"
 	"time"
 
-	"wisefido-sensor/internal/zoneengine"
+	"owl-common/card"
 
 	"go.uber.org/zap"
 )
 
-// unitPrefixOfZoneID 从 ZoneID（CIDR 文本，/88 或 /96）派生 /80 unit prefix。
-// 用于 peer-zone cancel 匹配：同 unit 内的 bathroom /88 + bed /96 + room /88 共享 /80 unit。
-// 解析失败 → 返原值（不阻断流程；同字面值的 ZoneID 等效"自比较"）。
-func unitPrefixOfZoneID(zoneID string) string {
-	if zoneID == "" {
-		return ""
-	}
-	pfx, err := netip.ParsePrefix(zoneID)
-	if err != nil {
-		return zoneID
-	}
-	return netip.PrefixFrom(pfx.Addr(), 80).Masked().String()
+// StateProvider zonealarm Tick 时拿 sensor 派生 state 快照的窄接口。
+// 由 sensor StreamPublisher 实现。
+type StateProvider interface {
+	SnapshotRooms() map[string]RoomEntry
+	SnapshotBeds() map[string]*card.BedState
 }
 
-// Supervisor 实现 zoneengine.ZoneEventListener，按 Rules 派生 alarm。
+// RiskRefresher zonealarm Tick 周期 refresh room RiskLevel 的窄接口。
+// 由 StreamPublisher 实现：传 cidr+nowMs，内部用最新 AloneSinceTs 重算 RiskLevel，
+// 变化则 publish 让 cardagg display 跟随（5s coalesce）。
+type RiskRefresher interface {
+	RefreshRoomRiskAndMaybePublish(ctx context.Context, roomCIDR string, nowMs int64) bool
+}
+
+// Supervisor pure-Tick zonealarm 控制器（state-anchored 重构后）。
 //
-// 线程模型：
-//   - OnZoneEvent 写 / Tick 写 共用一把锁
-//   - AlarmFirer 调用在锁外 emit，避免 publish slow path 挡 ZoneEvent 流入
-//
-// **fire-once-until-zone-leave 语义（2026-05-15 用户拍板）**：
-//   - 已 fire 过的 (cardID, alarmType) 在 fired map 中标记
-//   - 标记存在期间不再 arm 同一规则（同一段 occupancy 期内最多 1 条 alarm_events）
-//   - arm zone "真正离开" arm status 时清除标记，允许下次重新 arm
-//     · arm=Occupied 规则（Stay）：仅 zone→Vacant 才清（Leaving 不算，可能软离开后回弹）
-//     · arm=Vacant 规则（LeftBed/NightAbsence）：zone→Occupied 或 zone→Leaving 都清
-//       （Leaving IsPresent=true 已表示人回来了）
-//   - 设计动机：alarm 是警报通知不是状态轮询；且 fire 之前 still_fall 等更紧急规则已先触发
+// 与旧版区别：
+//   - 不实现 ZoneEventListener；不订阅 ZoneEvent 流
+//   - 无 pending FSM（fire-once gate 在 Evaluator）
+//   - Tick 一份代码同时跑 ① RiskLevel refresh（5s coalesce）② Evaluator.Check（每 tick）
 type Supervisor struct {
-	rules  []Rule
-	firer  AlarmFirer
-	logger *zap.Logger
+	rules     []Rule
+	firer     AlarmFirer
+	logger    *zap.Logger
+	evaluator *Evaluator
 
-	mu      sync.Mutex
-	pending map[PendingKey]*Pending
-	fired   map[PendingKey]bool // fire-once-until-zone-leave gate
+	provider  StateProvider
+	refresher RiskRefresher
 
-	// fireCtxFactory 每次 fire / arm / cancel 操作生成新的 ctx 用 — 默认 2s timeout
+	// 5s coalesce RiskLevel refresh（Tick 上层 1s 喂）
+	riskRefreshEverySec int
+	lastRefreshMs       int64
+
+	// Timezone — 暂用 nil（UTC fallback）；per-card tz 注入留后续
+	loc *time.Location
+
 	timeout time.Duration
 }
 
 // NewSupervisor 实例化。firer=nil 时退化为 NopFirer（仅日志，不真发）。
+//
+// 注：必须随后调 SetProvider/SetRefresher 注入 sensor 派生 state 数据源，否则 Tick 无所作为。
 func NewSupervisor(rules []Rule, firer AlarmFirer, logger *zap.Logger) *Supervisor {
 	if firer == nil {
 		firer = NopFirer{}
@@ -61,237 +59,81 @@ func NewSupervisor(rules []Rule, firer AlarmFirer, logger *zap.Logger) *Supervis
 		logger = zap.NewNop()
 	}
 	return &Supervisor{
-		rules:   rules,
-		firer:   firer,
-		logger:  logger,
-		pending: make(map[PendingKey]*Pending),
-		fired:   make(map[PendingKey]bool),
-		timeout: 2 * time.Second,
+		rules:               rules,
+		firer:               firer,
+		logger:              logger,
+		evaluator:           NewEvaluator(),
+		riskRefreshEverySec: 5,
+		timeout:             2 * time.Second,
 	}
 }
 
-// ReloadRules 替换规则集（运行时 pending 保留 — 它们已 arm，新规则只影响后续）。
+// SetProvider main wiring 注入 state snapshot 源（StreamPublisher）。
+func (s *Supervisor) SetProvider(p StateProvider) { s.provider = p }
+
+// SetRefresher main wiring 注入 RiskLevel refresh 回调（同 StreamPublisher）。
+func (s *Supervisor) SetRefresher(r RiskRefresher) { s.refresher = r }
+
+// SetThresholdResolver main wiring 注入 per-device 阈值/使能查询（AlarmEnablementCache 适配）。
+func (s *Supervisor) SetThresholdResolver(r ThresholdResolver) { s.evaluator.SetResolver(r) }
+
+// SetDeviceLookup main wiring 注入 zone CIDR → device /128 查询（BedDeviceLookup 适配）。
+func (s *Supervisor) SetDeviceLookup(l DeviceLookup) { s.evaluator.SetDeviceLookup(l) }
+
+// SetTimezone per-card timezone 注入留后续；当前所有 rule 共享同一 loc。
+func (s *Supervisor) SetTimezone(loc *time.Location) { s.loc = loc }
+
+// ReloadRules 替换规则集；fired gate 不动（运行时连续性 — rule 改阈值不重置已 fire）。
 func (s *Supervisor) ReloadRules(rules []Rule) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.rules = rules
 	s.logger.Info("zonealarm rules reloaded", zap.Int("count", len(rules)))
 }
 
-// OnZoneEvent satisfy zoneengine.ZoneEventListener。
+// Tick 上层 ticker（建议 1s）调一次。两件事：
 //
-// 单条 event 可能命中多条规则的 arm 或 cancel：先收集所有动作，释放锁后再调 firer。
-func (s *Supervisor) OnZoneEvent(e zoneengine.ZoneEvent) {
-	if e.ZoneID == "" {
+//	1) RiskLevel refresh：5s coalesce，遍历所有 room/bathroom 让 StreamPublisher 用最新
+//	   nowMs 重算 RiskLevel 并 publish（cardagg display 跟随 alone 时长升档）
+//	2) Evaluator.Check：每 tick 跑，3 条 rule 对当前 snapshot 判 fire（fire 锁外调）
+func (s *Supervisor) Tick(nowMs int64) {
+	if s.provider == nil {
 		return
 	}
-	now := e.Ts
-	if now == 0 {
-		now = time.Now().UnixMilli()
-	}
+	snap := s.takeSnapshot()
 
-	s.mu.Lock()
-	var arms, cancels, fires []Pending
-	var cancelKeys []PendingKey
-	for i := range s.rules {
-		r := &s.rules[i]
-		key := PendingKey{ZoneID: e.ZoneID, AlarmType: r.AlarmType}
-
-		// fire-once-until-zone-leave: arm zone "真正离开" arm status → 清 fired 标记
-		// （允许下一段 occupancy 重新 arm）
-		if e.ZoneType == r.ArmZone && s.fired[key] && zoneLeftArmStatus(r.ArmStatus, e.NewState.Status) {
-			delete(s.fired, key)
-			s.logger.Debug("zonealarm fired flag cleared",
-				zap.String("alarm", r.AlarmType),
-				zap.String("zone_id", e.ZoneID),
-				zap.String("new_status", e.NewState.Status.String()))
+	// 1) RiskLevel refresh（5s coalesce）
+	if s.refresher != nil && nowMs-s.lastRefreshMs >= int64(s.riskRefreshEverySec)*1000 {
+		s.lastRefreshMs = nowMs
+		ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+		for cidr := range snap.Rooms {
+			s.refresher.RefreshRoomRiskAndMaybePublish(ctx, cidr, nowMs)
 		}
+		cancel()
+	}
 
-		// arm 检查
-		if matchesArm(r, e) {
-			// fire-once-until-zone-leave: 已 fired 则跳过 arm（同段 occupancy 不重复报）
-			if s.fired[key] {
-				continue
-			}
-			if r.TimeWindow.Active(time.UnixMilli(now)) {
-				p := s.armPendingLocked(r, e, now)
-				if p != nil {
-					if r.DurationSec == 0 {
-						// 立即 fire
-						fires = append(fires, *p)
-						delete(s.pending, p.Key)
-						s.fired[p.Key] = true // fire-once: 锁内标记
-					} else {
-						arms = append(arms, *p)
-					}
-				}
-			}
-		}
-		// cancel 检查（每条规则可能有多个 cancel trigger，任一命中即 cancel）
-		// 同 rule 任一 cancel trigger 命中 → 取消同 /80 unit 内同 AlarmType 的 pending
-		// （peer-zone cancel：Stay 在 /88 bathroom，InBed 在 /96 bed，但同 unit；
-		// 物理寻址用 netip 子网包含运算判"同 unit"，不依赖 card 概念）。
-		for j := range r.Cancels {
-			if matchesCancel(&r.Cancels[j], e) {
-				incomingUnit := unitPrefixOfZoneID(e.ZoneID)
-				for pkey, p := range s.pending {
-					if pkey.AlarmType != r.AlarmType {
-						continue
-					}
-					if unitPrefixOfZoneID(pkey.ZoneID) != incomingUnit {
-						continue
-					}
-					cancels = append(cancels, *p)
-					cancelKeys = append(cancelKeys, pkey)
-					delete(s.pending, pkey)
-				}
-				// cancel 不清 fired 标记 — fired 仅在 arm zone "真正离开" arm status 时清
-				// （cancel 可能由 peer-zone 触发，此时 arm zone 还在 arm status，不该解锁重 fire）
-				break // 同 rule 多 cancel trigger 命中一次足够
-			}
-		}
-	}
-	s.mu.Unlock()
-
-	// emit 阶段 — 锁外
-	for _, p := range arms {
-		s.callArm(p)
-	}
-	for i, p := range cancels {
-		s.callCancel(cancelKeys[i], e)
-		_ = p
-	}
-	for _, p := range fires {
-		s.callFire(p)
+	// 2) Evaluator.Check — ctx 给 resolver 用（cache 命中 ns 级；miss 走 DB）
+	checkCtx, checkCancel := context.WithTimeout(context.Background(), s.timeout)
+	decisions := s.evaluator.Check(checkCtx, s.rules, snap, nowMs, s.loc)
+	checkCancel()
+	for _, d := range decisions {
+		s.callFire(d)
 	}
 }
 
-// Tick 周期检查 pending 是否到期。建议每 1s 调一次（与 zone engine Tick 同步）。
-func (s *Supervisor) Tick(nowMs int64) {
-	if nowMs == 0 {
-		nowMs = time.Now().UnixMilli()
-	}
-	s.mu.Lock()
-	var due []Pending
-	for k, p := range s.pending {
-		if nowMs >= p.DueAt {
-			due = append(due, *p)
-			delete(s.pending, k)
-			s.fired[k] = true // fire-once: 锁内标记，避免与 callFire 之间 race re-arm
-		}
-	}
-	s.mu.Unlock()
-
-	for _, p := range due {
-		s.callFire(p)
+// takeSnapshot 从 StateProvider 抓 rooms+beds 组成 Evaluator 用的 snapshot。
+func (s *Supervisor) takeSnapshot() StateSnapshot {
+	return StateSnapshot{
+		Rooms: s.provider.SnapshotRooms(),
+		Beds:  s.provider.SnapshotBeds(),
 	}
 }
 
-// zoneLeftArmStatus 判断 zone NewState 是否表示"真正完成"离开 arm status（用于清 fired 标记）。
-//
-// 原则（2026-05-15 用户拍板）：Leaving 是 zone engine 软离开中间态，**未完成确认**，不参与
-// zonealarm 决策。只有完成态（Vacant 或 Occupied）才视为转换完成。
-//
-//	arm=Occupied 的规则（Stay）：仅 NewState=Vacant 算真离开。
-//	arm=Vacant 的规则（LeftBed / NightAbsence）：仅 NewState=Occupied 算人真回来。
-//	Leaving 在两种方向上都被忽略 — 保持现有 fired 标记。
-func zoneLeftArmStatus(armStatus, newStatus zoneengine.ZoneStatus) bool {
-	switch armStatus {
-	case zoneengine.StatusOccupied:
-		return newStatus == zoneengine.StatusVacant
-	case zoneengine.StatusVacant:
-		return newStatus == zoneengine.StatusOccupied
-	}
-	return false
-}
-
-// armPendingLocked 创建 pending 实例。若已有同 key 的 pending（之前的 arm 未 fire 也未 cancel），
-// 用新 trigger event **重置** DueAt（refresh）—— 这是相对宽容策略：避免老 pending 用过时
-// trigger 决策；如果业务侧需"first-arm-wins"语义后续可加 yaml flag。
-//
-// caller 必须已持锁。
-func (s *Supervisor) armPendingLocked(r *Rule, e zoneengine.ZoneEvent, now int64) *Pending {
-	key := PendingKey{ZoneID: e.ZoneID, AlarmType: r.AlarmType}
-	p := &Pending{
-		Key:     key,
-		ArmedAt: now,
-		DueAt:   now + int64(r.DurationSec)*1000,
-		Level:   r.Level,
-		Trigger: e,
-	}
-	s.pending[key] = p
-	return p
-}
-
-// matchesArm — event 是否触发本条 rule 的 arm。
-//
-// 同 zone type；status 翻转到 rule.ArmStatus。
-// count_change 不参与 arm（它不是状态翻转）。
-func matchesArm(r *Rule, e zoneengine.ZoneEvent) bool {
-	if e.ZoneType != r.ArmZone {
-		return false
-	}
-	if e.Transition == zoneengine.TransitionCountChange {
-		return false
-	}
-	return e.NewState.Status == r.ArmStatus
-}
-
-// matchesCancel — event 是否触发本条 cancel trigger。
-//
-//	Zone 必须匹配（不限 same-zone vs peer-zone — Stay 的 bed.InBed cancel 是 peer-zone）
-//	StatusAny=true → 不检查 status
-//	CountGtZero=true → NewState.Count > 0 才命中
-func matchesCancel(c *CancelTrigger, e zoneengine.ZoneEvent) bool {
-	if e.ZoneType != c.Zone {
-		return false
-	}
-	if c.CountGtZero {
-		return e.NewState.Count > 0
-	}
-	if c.StatusAny {
-		return true
-	}
-	return e.NewState.Status == c.Status
-}
-
-// callArm / callCancel / callFire — emit 包装，统一 timeout 控制 + 错误日志。
-func (s *Supervisor) callArm(p Pending) {
+func (s *Supervisor) callFire(d FireDecision) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
-	if err := s.firer.Arm(ctx, p); err != nil {
-		s.logger.Warn("zonealarm arm failed",
-			zap.String("alarm", p.Key.AlarmType),
-			zap.String("zone_id", p.Key.ZoneID),
-			zap.Error(err))
-	}
-}
-
-func (s *Supervisor) callCancel(key PendingKey, reason zoneengine.ZoneEvent) {
-	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
-	defer cancel()
-	if err := s.firer.Cancel(ctx, key, reason); err != nil {
-		s.logger.Warn("zonealarm cancel failed",
-			zap.String("alarm", key.AlarmType),
-			zap.String("zone_id", key.ZoneID),
-			zap.Error(err))
-	}
-}
-
-func (s *Supervisor) callFire(p Pending) {
-	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
-	defer cancel()
-	if err := s.firer.Fire(ctx, p); err != nil {
+	if err := s.firer.Fire(ctx, d.Event); err != nil {
 		s.logger.Warn("zonealarm fire failed",
-			zap.String("alarm", p.Key.AlarmType),
-			zap.String("zone_id", p.Key.ZoneID),
+			zap.String("alarm", d.Rule.AlarmType),
+			zap.String("zone_id", d.Event.Key.ZoneID),
 			zap.Error(err))
 	}
-}
-
-// PendingCount 当前 pending 数（监控 / 测试用）。
-func (s *Supervisor) PendingCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.pending)
 }
