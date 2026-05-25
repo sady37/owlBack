@@ -68,26 +68,28 @@ var deviceClassOnset = map[string]struct{}{
 const staleAlarmMs = 30_000 // gateway 时钟漂移 / 消息积压上限
 
 type AlarmRouter struct {
-	db        *sql.DB
-	writer    *card.Writer
-	reader    *card.Reader
-	enable    EnablementResolver
-	cache     *service.SpatialCache
-	devSignal DeviceSignal
-	rebuilder *DisplayRebuilder
-	logger    *zap.Logger
+	db         *sql.DB
+	writer     *card.Writer
+	reader     *card.Reader
+	enable     EnablementResolver
+	cache      *service.SpatialCache
+	devSignal  DeviceSignal
+	rebuilder  *DisplayRebuilder
+	monitorBuf *service.MonitorBuffer // alarm 触发时取报警设备 monitor 缓存写 evidence
+	logger     *zap.Logger
 }
 
-func NewAlarmRouter(db *sql.DB, writer *card.Writer, reader *card.Reader, enable EnablementResolver, cache *service.SpatialCache, devSignal DeviceSignal, rebuilder *DisplayRebuilder, logger *zap.Logger) *AlarmRouter {
+func NewAlarmRouter(db *sql.DB, writer *card.Writer, reader *card.Reader, enable EnablementResolver, cache *service.SpatialCache, devSignal DeviceSignal, rebuilder *DisplayRebuilder, monitorBuf *service.MonitorBuffer, logger *zap.Logger) *AlarmRouter {
 	return &AlarmRouter{
-		db:        db,
-		writer:    writer,
-		reader:    reader,
-		enable:    enable,
-		cache:     cache,
-		devSignal: devSignal,
-		rebuilder: rebuilder,
-		logger:    logger,
+		db:         db,
+		writer:     writer,
+		reader:     reader,
+		enable:     enable,
+		cache:      cache,
+		devSignal:  devSignal,
+		rebuilder:  rebuilder,
+		monitorBuf: monitorBuf,
+		logger:     logger,
 	}
 }
 
@@ -192,6 +194,18 @@ func (r *AlarmRouter) persist(ctx context.Context, msg *owlredis.IoTStreamMessag
 	triggerData, _ := json.Marshal(data)
 	parentSpan := service.BuildParentSpan(msg.Producer, msg.SequenceNumber)
 
+	// alarm 触发时刻取报警设备 monitor 缓存（HR/RR/position/pose 等所有 raw 字段），
+	// 写 alarm_events.evidence.monitor —— elder care 临床场景必需"事发现场"的瞬时值，
+	// 尤其 sleepace HR/RR alarm 之前只发 type+status 不带瞬时值（sleepace 厂家 payload 也不含），
+	// 由 cardagg 集中从 MonitorBuffer 取报警设备最近一帧统一处理，支持多种设备（sleepad/radar/...）。
+	var metadata json.RawMessage
+	if r.monitorBuf != nil {
+		if snap := r.monitorBuf.SnapshotByDevice(cardID, ac.DeviceAddr); snap != nil {
+			evidence := map[string]any{"monitor": snap}
+			metadata, _ = json.Marshal(evidence)
+		}
+	}
+
 	result, cas, err := card.InsertAlarmAndUpdateCard(ctx, r.db, cardID, card.AlarmInsertParams{
 		TenantID:    ac.TenantPref,
 		DeviceAddr:  ac.DeviceAddr,
@@ -200,6 +214,7 @@ func (r *AlarmRouter) persist(ctx context.Context, msg *owlredis.IoTStreamMessag
 		AlarmLevel:  level,
 		TriggeredAt: time.UnixMilli(msg.Timestamp),
 		TriggerData: triggerData,
+		Metadata:    metadata,
 		RoomID:      ac.RoomPref,
 		Producer:    msg.Producer,
 		ParentSpan:  parentSpan,

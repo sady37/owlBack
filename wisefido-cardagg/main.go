@@ -92,7 +92,7 @@ func main() {
 	go monitorHandler.RunLoop(ctx)
 
 	displayRebuilder := consumer.NewDisplayRebuilder(spatialCache, reader, writer, logger)
-	alarmRouter := consumer.NewAlarmRouter(db, writer, reader, enablementCache, spatialCache, deviceTracker, displayRebuilder, logger)
+	alarmRouter := consumer.NewAlarmRouter(db, writer, reader, enablementCache, spatialCache, deviceTracker, displayRebuilder, monitorBuf, logger)
 	// TargetMerger：per-device → owning card max-merge（LastActive / Standing / WeakBio）。
 	targetMerger := service.NewTargetMerger(spatialCache)
 	targetMerger.SetOnlineChecker(deviceTracker.IsOnline)

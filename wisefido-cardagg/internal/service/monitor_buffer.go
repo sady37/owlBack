@@ -42,6 +42,45 @@ func NewMonitorBuffer() *MonitorBuffer {
 // DefaultTrackID 无 track_id 时使用的默认 key（如 Sleepad 等单轨设备）
 const DefaultTrackID = "0"
 
+// SnapshotByDevice 返回某 device 下所有 track 的当前字段快照，按 track_id 分组。
+// 返回结构：{ "tracks": [ {track_id: "0", last_ts_ms: N, fields: {heart_rate: 65, ...}}, ... ] }
+// 用途：alarm 触发时附在 alarm_events.evidence —— 取报警设备最近 monitor 缓存值，
+// 不受设备网关限制（sleepace HR/RR、radar position/pose 同一渠道统一处理）。
+// 无数据时返回 nil（caller 自行省略 evidence.monitor 字段）。
+func (b *MonitorBuffer) SnapshotByDevice(cardID, deviceID string) map[string]any {
+	if cardID == "" || deviceID == "" {
+		return nil
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	cb := b.cards[cardID]
+	if cb == nil {
+		return nil
+	}
+	db := cb.Devices[deviceID]
+	if db == nil || len(db.Tracks) == 0 {
+		return nil
+	}
+
+	tracks := make([]map[string]any, 0, len(db.Tracks))
+	for tid, tb := range db.Tracks {
+		fields := make(map[string]any, len(tb.Fields))
+		for k, fv := range tb.Fields {
+			fields[k] = fv.Value
+		}
+		tracks = append(tracks, map[string]any{
+			"track_id":   tid,
+			"last_ts_ms": tb.LastTs,
+			"fields":     fields,
+		})
+	}
+	return map[string]any{
+		"device_id": deviceID,
+		"tracks":    tracks,
+	}
+}
+
 // Write updates fields for a card:device:track. Only fields present in the
 // incoming map are touched; each field gets the message timestamp.
 func (b *MonitorBuffer) Write(cardID, deviceID, trackID string, fields map[string]any, ts int64) {
