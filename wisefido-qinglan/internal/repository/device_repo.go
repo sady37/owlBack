@@ -11,7 +11,7 @@ import (
 
 // DeviceStoreInfo 设备库存信息（用于认证 + 路由）
 //
-// Phase 2 一刀切：device_id UUID 退役；identity = device_uid VARCHAR(50)；业务寻址 = device_addr INET /128。
+// device_id UUID 退役；identity = device_uid VARCHAR(50)；业务寻址 = device_addr INET /128。
 type DeviceStoreInfo struct {
 	DeviceUID       string         // VARCHAR(50)，dfm PK，硬件 identity 不变量
 	DeviceCode      sql.NullString // device_factory_meta.device_code
@@ -68,7 +68,7 @@ type DeviceRepository interface {
 	// GetDeviceStoreInfo 根据设备UID获取 device_store 信息（含 device_code）
 	GetDeviceStoreInfo(ctx context.Context, deviceUID string) (*DeviceStoreInfo, error)
 
-	// GetDeviceStoreByDeviceAddr Phase 2 一刀切：device_id UUID 退役，业务键改 device_addr。
+	// GetDeviceStoreByDeviceAddr device_id UUID 退役，业务键改 device_addr。
 	GetDeviceStoreByDeviceAddr(ctx context.Context, deviceAddr string) (*DeviceStoreInfo, error)
 
 	// GetAlarmEnablement 获取设备的报警使能配置

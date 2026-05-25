@@ -105,7 +105,7 @@ func main() {
 // 字段顺序与 sensor_v2 §10.1.1 一致，方便和文档对照阅读。
 func print(v map[string]interface{}, compact bool) {
 	keys := []string{
-		"updated_at_ms", "room_id", "device_id", "track_id",
+		"updated_at_ms", "room_id", "device_addr", "track_id",
 		"verdict", "ghost_penalty",
 		"x", "y", "z", "pose", "still_sec", "cell_area_type", "enter_target",
 		"in_bed_zone_id", "in_room_zone_id", "in_bathroom_zone_id",

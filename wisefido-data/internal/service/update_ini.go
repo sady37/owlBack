@@ -16,10 +16,10 @@ import (
 //	"deviceVerison":"6.89"
 //
 // 注：deviceVerison（少 s）是厂家文档原样字段名，故意保留。
-// DeviceID 字段对应厂家 /sleepace/firmware/delete 的 deviceType（49 = BM8701-2）。
+// DeviceAddr 字段对应厂家 /sleepace/firmware/delete 的 deviceType（49 = BM8701-2）。
 type UpdateIniSection struct {
 	File           string
-	DeviceID       string // 对应厂家 deviceType（数字字符串，如 "49"）
+	DeviceAddr       string // 对应厂家 deviceType（数字字符串，如 "49"）
 	DeviceVerison  string // 对应厂家 deviceVersion（如 "6.89"）
 }
 
@@ -47,7 +47,7 @@ func UpdateIniPath() string {
 	return filepath.Join(OtaDir(), "update.ini")
 }
 
-// LookupUpdateIni 在 update.ini 里按 filename 找一段，返回 deviceID/deviceVerison。
+// LookupUpdateIni 在 update.ini 里按 filename 找一段，返回 deviceAddr/deviceVerison。
 // 不区分键大小写；值带不带引号都接受。
 // 找不到段返回 (nil, nil)；解析错误返回 error。
 func LookupUpdateIni(filename string) (*UpdateIniSection, error) {
@@ -83,7 +83,7 @@ func LookupUpdateIni(filename string) (*UpdateIniSection, error) {
 		}
 		switch strings.ToLower(key) {
 		case "deviceid", "devicetype":
-			current.DeviceID = val
+			current.DeviceAddr = val
 		case "deviceverison", "deviceversion":
 			current.DeviceVerison = val
 		case "espsfver":
@@ -101,24 +101,24 @@ func LookupUpdateIni(filename string) (*UpdateIniSection, error) {
 //   - 同名 file: 段不存在 → 末尾追加新段
 //   - 已存在但 deviceId/deviceVerison 为空 → 把空字段就地填上（不覆盖已填值）
 //   - 已存在且字段已填 → 不动（避免覆盖人手填的值）
-func AppendUpdateIniStub(filename, deviceID, deviceVerison string) error {
+func AppendUpdateIniStub(filename, deviceAddr, deviceVerison string) error {
 	if filename == "" {
 		return fmt.Errorf("filename required")
 	}
 	existing, _ := LookupUpdateIni(filename)
 	if existing == nil {
-		return appendNewSection(filename, deviceID, deviceVerison)
+		return appendNewSection(filename, deviceAddr, deviceVerison)
 	}
 	// 仅当现有字段为空且新值非空时才填
-	needFillID := existing.DeviceID == "" && deviceID != ""
+	needFillID := existing.DeviceAddr == "" && deviceAddr != ""
 	needFillVer := existing.DeviceVerison == "" && deviceVerison != ""
 	if !needFillID && !needFillVer {
 		return nil
 	}
-	return fillExistingSection(filename, needFillID, deviceID, needFillVer, deviceVerison)
+	return fillExistingSection(filename, needFillID, deviceAddr, needFillVer, deviceVerison)
 }
 
-func appendNewSection(filename, deviceID, deviceVerison string) error {
+func appendNewSection(filename, deviceAddr, deviceVerison string) error {
 	if err := os.MkdirAll(OtaDir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir ota: %w", err)
 	}
@@ -131,7 +131,7 @@ func appendNewSection(filename, deviceID, deviceVerison string) error {
 	if deviceVerison != "" {
 		verVal = `"` + deviceVerison + `"`
 	}
-	section := fmt.Sprintf("\nfile:%s\n\"deviceId\": %s\n\"deviceVerison\":%s\n", filename, deviceID, verVal)
+	section := fmt.Sprintf("\nfile:%s\n\"deviceId\": %s\n\"deviceVerison\":%s\n", filename, deviceAddr, verVal)
 	if _, err := f.WriteString(section); err != nil {
 		return fmt.Errorf("write update.ini: %w", err)
 	}
@@ -140,7 +140,7 @@ func appendNewSection(filename, deviceID, deviceVerison string) error {
 
 // fillExistingSection 就地改写指定 file: 段的 deviceId/deviceVerison 行。
 // 简单实现：整文件读入 → 行扫描 → 进入目标段后改下一行匹配 key → 整文件回写。
-func fillExistingSection(filename string, fillID bool, deviceID string, fillVer bool, deviceVerison string) error {
+func fillExistingSection(filename string, fillID bool, deviceAddr string, fillVer bool, deviceVerison string) error {
 	path := UpdateIniPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -162,7 +162,7 @@ func fillExistingSection(filename string, fillID bool, deviceID string, fillVer 
 		key, val := splitIniKV(line)
 		lk := strings.ToLower(key)
 		if fillID && val == "" && (lk == "deviceid" || lk == "devicetype") {
-			lines[i] = `"deviceId": ` + deviceID
+			lines[i] = `"deviceId": ` + deviceAddr
 		}
 		if fillVer && val == "" && (lk == "deviceverison" || lk == "deviceversion") {
 			lines[i] = `"deviceVerison":"` + deviceVerison + `"`

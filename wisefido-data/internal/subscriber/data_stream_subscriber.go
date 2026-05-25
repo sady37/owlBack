@@ -106,7 +106,7 @@ func (s *DataStreamSubscriber) Start(ctx context.Context) error {
 }
 
 // HandleCardRealtimeMessage 处理卡片实时数据消息
-// stream 格式（cardagg PublishMonitor）：Values 含 type=MsgTypeMonitor, card_id, device_id, data；data 为 deviceId→{ trackId→fields } 的 JSON
+// stream 格式（cardagg PublishMonitor）：Values 含 type=MsgTypeMonitor, card_id, device_addr, data；data 为 deviceId→{ trackId→fields } 的 JSON
 func (s *DataStreamSubscriber) HandleCardRealtimeMessage(ctx context.Context, message redis.XMessage) error {
 	if t, _ := message.Values[card.MsgTypeKey].(string); t != "" && t != card.MsgTypeMonitor {
 		s.logger.Debug("card:realtime message_type mismatch", zap.String("got", t), zap.String("expected", card.MsgTypeMonitor))

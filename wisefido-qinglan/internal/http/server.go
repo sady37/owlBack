@@ -23,11 +23,11 @@ import (
 
 // DeviceSubscriptionManager 设备订阅管理器接口（与auth_service.go中的定义一致）
 type DeviceSubscriptionManager interface {
-	SubscribeDevice(ctx context.Context, deviceUID, deviceID string) error
-	EnablePeriodicSubscription(ctx context.Context, deviceUID, deviceID string) error
+	SubscribeDevice(ctx context.Context, deviceUID, deviceAddr string) error
+	EnablePeriodicSubscription(ctx context.Context, deviceUID, deviceAddr string) error
 	ClearForceUnsubscribed(deviceUID string)
 	GetDeviceOnlineStatus(deviceUID string) string
-	GetDeviceOnlineStatusByDeviceID(ctx context.Context, deviceID string) (string, error)
+	GetDeviceOnlineStatusByDeviceAddr(ctx context.Context, deviceAddr string) (string, error)
 	GetAllDeviceStatuses(tenantID string) []domain.DeviceStatusItem
 }
 

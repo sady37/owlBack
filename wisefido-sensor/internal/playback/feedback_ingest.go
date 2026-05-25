@@ -41,13 +41,13 @@ func IngestHistoricalFeedback(ctx context.Context, db *sql.DB, deviceUID string,
 
 	q := `
 		SELECT
-			ae.event_id::text, ae.device_id::text, ae.event_type, ae.operation,
+			ae.event_id::text, ae.device_addr::text, ae.event_type, ae.operation,
 			extract(epoch from ae.triggered_at)*1000 AS trigger_ms,
 			extract(epoch from COALESCE(ae.hand_time, ae.triggered_at))*1000 AS hand_ms,
 			COALESCE(ae.notes, '') AS notes,
 			COALESCE(ae.trigger_data->>'event_payload', '') AS payload
 		FROM alarm_events ae
-		JOIN devices d ON d.device_id = ae.device_id
+		JOIN devices d ON d.device_addr = ae.device_addr
 		WHERE d.device_uid = $1
 		  AND ae.event_type IN ('Fall', 'SittingOnGround', 'Stay')
 		  AND ae.operation IN ('false_alarm', 'verified')
@@ -64,9 +64,9 @@ func IngestHistoricalFeedback(ctx context.Context, db *sql.DB, deviceUID string,
 	total := 0
 	for rows.Next() {
 		total++
-		var eventID, deviceID, eventType, operation, notes, payload string
+		var eventID, deviceAddr, eventType, operation, notes, payload string
 		var triggerMs, handMs float64
-		if err := rows.Scan(&eventID, &deviceID, &eventType, &operation,
+		if err := rows.Scan(&eventID, &deviceAddr, &eventType, &operation,
 			&triggerMs, &handMs, &notes, &payload); err != nil {
 			continue
 		}
@@ -75,7 +75,7 @@ func IngestHistoricalFeedback(ctx context.Context, db *sql.DB, deviceUID string,
 		pc := parseConditionsLite(notes, operation)
 
 		// 2. 90s lookback 找 trigger 位置（radar local h/v/z）
-		h, v, z, ok := lookbackPositionFromIoT(ctx, db, deviceID, int64(triggerMs), payload)
+		h, v, z, ok := lookbackPositionFromIoT(ctx, db, deviceAddr, int64(triggerMs), payload)
 		if !ok {
 			continue
 		}
@@ -174,7 +174,7 @@ func parseConditionsLite(notes, operation string) parsedConditions {
 
 // lookbackPositionFromIoT 90s lookback iot_timeseries 找 trigger 时刻最接近的 monitor 帧。
 // 优先匹配 trigger_data 里的 track_id；找不到则取最接近 triggerMs 的任意 track 帧。
-func lookbackPositionFromIoT(ctx context.Context, db *sql.DB, deviceID string,
+func lookbackPositionFromIoT(ctx context.Context, db *sql.DB, deviceAddr string,
 	triggerMs int64, payload string) (h, v, z int, ok bool) {
 
 	// 抽 track_id（可选过滤）
@@ -191,12 +191,12 @@ func lookbackPositionFromIoT(ctx context.Context, db *sql.DB, deviceID string,
 	q := `
 		SELECT timestamp, data_value
 		FROM iot_timeseries
-		WHERE device_id = $1::uuid AND topic_type = 'monitor'
+		WHERE device_addr = $1::uuid AND topic_type = 'monitor'
 		  AND category = 'track'
 		  AND timestamp BETWEEN $2 AND $3
 		ORDER BY timestamp DESC LIMIT 50
 	`
-	rows, err := db.QueryContext(ctx, q, deviceID, triggerMs-90_000, triggerMs+1_000)
+	rows, err := db.QueryContext(ctx, q, deviceAddr, triggerMs-90_000, triggerMs+1_000)
 	if err != nil {
 		return
 	}

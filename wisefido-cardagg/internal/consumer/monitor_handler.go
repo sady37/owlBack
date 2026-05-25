@@ -99,7 +99,7 @@ func (h *MonitorHandler) RunLoop(ctx context.Context) {
 func (h *MonitorHandler) publishSnap(ctx context.Context, snap service.CardSnapshot) error {
 	data := make(map[string]any, len(snap.Devices))
 	for _, dev := range snap.Devices {
-		data[dev.DeviceID] = dev.Tracks
+		data[dev.DeviceAddr] = dev.Tracks
 	}
 	return h.writer.PublishMonitor(ctx, snap.CardID, "", data)
 }

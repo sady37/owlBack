@@ -1652,7 +1652,7 @@ func roomWithBedsAndDevicesToJSON(roomWithBeds *service.RoomWithBedsAndDevices) 
 	m["beds"] = beds
 
 	// 添加 Device IDs 和 Names
-	m["device_ids"] = roomWithBeds.DeviceIDs
+	m["device_addrs"] = roomWithBeds.DeviceAddrs
 	m["device_names"] = roomWithBeds.DeviceNames
 
 	return m
@@ -1664,7 +1664,7 @@ func bedWithDevicesToJSON(bedWithDevices *service.BedWithDevices) map[string]any
 	m := bedToJSON(bedWithDevices.Bed)
 
 	// 添加 Device IDs 和 Names
-	m["device_ids"] = bedWithDevices.DeviceIDs
+	m["device_addrs"] = bedWithDevices.DeviceAddrs
 	m["device_names"] = bedWithDevices.DeviceNames
 
 	return m

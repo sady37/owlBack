@@ -178,7 +178,7 @@ func (c *AlarmEnablementCache) loadFromDeviceConfig(ctx context.Context, deviceA
 	return packed.AlarmItems
 }
 
-// resolveDeviceType 按 device_addr 反查 device_type（Phase 2 一刀切）。
+// resolveDeviceType 按 device_addr 反查 device_type。
 func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceAddr string) string {
 	if c.db == nil || deviceAddr == "" {
 		return ""

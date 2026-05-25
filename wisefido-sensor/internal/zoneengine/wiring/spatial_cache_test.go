@@ -12,25 +12,23 @@ import (
 	"go.uber.org/zap"
 )
 
-// classifyRoomType (pure func) — 单测语义映射，不要 DB。
+// classifyRoomType — DB raw smallint 0/1/2，name 关键词作 0=Default 时兜底。
 func TestClassifyRoomType(t *testing.T) {
 	cases := []struct {
-		roomType, roomName string
-		want               int
+		roomType int
+		roomName string
+		want     int
 	}{
-		{"bathroom", "", card.RoomTypeBathroom},
-		{"restroom", "", card.RoomTypeBathroom},
-		{"BATHROOM", "", card.RoomTypeBathroom}, // 大小写不敏感
-		{"kitchen", "", card.RoomTypeKitchen},
-		{"", "Master Bathroom", card.RoomTypeBathroom}, // name 关键词兜底
-		{"", "Toilet 2F", card.RoomTypeBathroom},
-		{"", "Living Room", card.RoomTypeDefault},
-		{"living", "", card.RoomTypeDefault},
-		{"", "", card.RoomTypeDefault},
+		{card.RoomTypeBathroom, "", card.RoomTypeBathroom},   // 1 直判
+		{card.RoomTypeKitchen, "", card.RoomTypeKitchen},     // 2 直判
+		{card.RoomTypeDefault, "Master Bathroom", card.RoomTypeBathroom}, // 0 + name 兜底
+		{card.RoomTypeDefault, "Toilet 2F", card.RoomTypeBathroom},
+		{card.RoomTypeDefault, "Living Room", card.RoomTypeDefault},
+		{card.RoomTypeDefault, "", card.RoomTypeDefault},
 	}
 	for _, c := range cases {
 		if got := classifyRoomType(c.roomType, c.roomName); got != c.want {
-			t.Errorf("classifyRoomType(%q, %q): want %d, got %d",
+			t.Errorf("classifyRoomType(%d, %q): want %d, got %d",
 				c.roomType, c.roomName, c.want, got)
 		}
 	}
@@ -117,7 +115,7 @@ func TestSpatialCache_PerUnitCache(t *testing.T) {
 	c.units[unitID] = &UnitData{
 		UnitID:       unitID,
 		UnitProperty: UnitPropertyHome,
-		Rooms:        map[netip.Prefix]*RoomMeta{bathPrefix: {Prefix: bathPrefix, RoomTypeText: "bathroom"}},
+		Rooms:        map[netip.Prefix]*RoomMeta{bathPrefix: {Prefix: bathPrefix, RoomType: card.RoomTypeBathroom}},
 		Beds:         map[netip.Prefix]*BedMeta{bedPrefix: {Prefix: bedPrefix, SizeKindText: "queen"}},
 		Devices:      map[netip.Addr]*DeviceMeta{devAddr: {Addr: devAddr, DeviceType: "Radar", Access: true, Monitoring: true}},
 		loadedAt:     time.Now(),

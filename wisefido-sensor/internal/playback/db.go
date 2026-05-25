@@ -74,7 +74,7 @@ func LookupRoomLayout(ctx context.Context, db *sql.DB, deviceUID string) (roomID
 // Row iot_timeseries 单行（Run 内部消费）
 type Row struct {
 	ID          int64
-	DeviceID    string
+	DeviceAddr    string
 	DeviceUID   string
 	TimestampMs int64
 	TopicType   string // "monitor" / "event"（merge 后区分用）
@@ -99,7 +99,7 @@ func queryByTopic(ctx context.Context, db *sql.DB, tenantID, deviceUID, topic st
 	start, end time.Time, limit int) ([]Row, error) {
 
 	q := `
-SELECT its.id, its.device_id::text, its.device_uid, its."timestamp", its.category, its.data_value
+SELECT its.id, its.device_addr::text, its.device_uid, its."timestamp", its.category, its.data_value
 FROM iot_timeseries its
 WHERE its.tenant_id::text = $1
   AND its.device_uid = $2
@@ -134,7 +134,7 @@ LIMIT $6`
 		}
 		out = append(out, Row{
 			ID:          id,
-			DeviceID:    did.String,
+			DeviceAddr:    did.String,
 			DeviceUID:   duid.String,
 			TimestampMs: tsMs,
 			TopicType:   topic,

@@ -21,7 +21,7 @@ import (
 
 // StreamPublisher Redis Stream 发布器。
 //
-// device_ipv6 单程票后所有 publish 路径只发 device_addr / category；subject_entity 永远空，
+// 后所有 publish 路径只发 device_addr / category；subject_entity 永远空，
 // 由 cardagg IotPreparedHandler 按 device_addr LPM 反查解析（R-009 单源真相）。
 //
 // seqCounter: 协议层北极星 (TDPv2 envelope sequence_number) — publisher 内单调 monotonic uint64，
@@ -124,7 +124,7 @@ func streamLabelFrom(streamName string, msg *rediscommon.IoTStreamMessage) strin
 	return "iot:" + xxx + ":" + yyy
 }
 
-// skipQinglanIotHeadPublish — device_ipv6 单程票：subject_entity + device_addr 任一空都丢弃。
+// skipQinglanIotHeadPublish — subject_entity + device_addr 任一空都丢弃。
 //
 // device_addr 必填（路由层主键）；subject_entity 可空（unbound device 走 cardagg 反查 LPM）。
 func skipQinglanIotHeadPublish(subjectEntity string, deviceAddr netip.Addr) bool {
@@ -207,7 +207,7 @@ func (p *StreamPublisher) PublishToStream(ctx context.Context, streamName string
 
 // BuildEncodedData 构建 iot:*:stream 输出数据（顶层无 addressInfo，键 dataValue 为数组）。
 //
-// device_ipv6 单程票：addr 是 device 路由层主键；subjectEntity 已绑卡填 cardID，未绑卡留空。
+// addr 是 device 路由层主键；subjectEntity 已绑卡填 cardID，未绑卡留空。
 func (p *StreamPublisher) BuildEncodedData(
 	addr netip.Addr,
 	subjectEntity string,
@@ -234,7 +234,7 @@ func iotStreamMessageToMap(msg rediscommon.IoTStreamMessage) map[string]interfac
 
 // PublishDeviceStatus 发布设备状态到 iot:event:stream（device 属于 event）。
 //
-// device_ipv6 单程票：addr 是路由主键；deviceUID 仅作 cardID 反查用。
+// addr 是路由主键；deviceUID 仅作 cardID 反查用。
 // subject_entity 永远空：cardagg IotPreparedHandler 按 device_addr LPM 反查解析。
 func (p *StreamPublisher) PublishDeviceStatus(
 	ctx context.Context,

@@ -91,7 +91,7 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 			// 新创建的设备已分配给 Trash 租户（fd00:0:2::/48），access = FALSE，需要管理员审核
 			s.logger.Info("Device created in device_store (pending approval, assigned to system tenant)",
 				zap.String("uid", req.UID),
-				zap.String("device_id", device.DeviceUID),
+				zap.String("device_addr", device.DeviceUID),
 				zap.String("tenant_id", device.TenantID),
 			)
 			// 新设备需要管理员审批，直接返回 pending 响应
@@ -157,7 +157,7 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 	s.logger.Info("device authenticated",
 		zap.String("uid", req.UID),
 		zap.String("tenant_id", device.TenantID),
-		zap.String("device_id", device.DeviceUID),
+		zap.String("device_addr", device.DeviceUID),
 		zap.String("device_type", device.DeviceType),
 		zap.String("mqtt_server", mqttConfig.Server),
 		zap.Int("mqtt_port", mqttConfig.Port),
@@ -177,13 +177,13 @@ func (s *AuthService) AuthenticateDevice(ctx context.Context, req *models.AuthRe
 		if err := s.subscriptionManager.EnablePeriodicSubscription(ctx, req.UID, device.DeviceUID); err != nil {
 			s.logger.Warn("enable periodic subscription failed",
 				zap.String("uid", req.UID),
-				zap.String("device_id", device.DeviceUID),
+				zap.String("device_addr", device.DeviceUID),
 				zap.Error(err),
 			)
 		} else {
 			s.logger.Info("enabled periodic subscription",
 				zap.String("uid", req.UID),
-				zap.String("device_id", device.DeviceUID),
+				zap.String("device_addr", device.DeviceUID),
 			)
 		}
 	}
@@ -342,7 +342,7 @@ func (s *AuthService) publishAuthRequest(ctx context.Context, req *models.AuthRe
 		remoteAddr,
 	)
 
-	// Phase 2 一刀切：identity 收口到 device_uid；从 dfm + devices 派生 tenant_id 和 device_addr
+	// identity 收口到 device_uid；从 dfm + devices 派生 tenant_id 和 device_addr
 	resolvedTenantID := platformTrashTenantID
 	var deviceAddr sql.NullString
 	var storeTenantID sql.NullString
@@ -413,7 +413,7 @@ func (s *AuthService) publishAuthResponseSuccess(
 		fmt.Sprintf("Device authenticated successfully, MQTT server: %s:%d", mqttConfig.Server, mqttConfig.Port),
 	)
 
-	// Phase 2 一刀切：identity = device_uid；查 device_addr 用作 handshake response
+	// identity = device_uid；查 device_addr 用作 handshake response
 	var deviceAddr sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COALESCE(host(d.device_addr), '')
@@ -463,7 +463,7 @@ func (s *AuthService) publishAuthResponseSuccess(
 }
 
 // publishAuthResponseFailure 发布认证失败响应到 Redis Stream
-// Phase 2 一刀切：deviceAddr 替代旧 deviceID 参数（device_id UUID 退役）。
+// deviceAddr 替代旧 deviceAddr 参数（device_id UUID 退役）。
 func (s *AuthService) publishAuthResponseFailure(ctx context.Context, uid string, errorMsg string, deviceAddrHint ...string) {
 	authResponse := commonredis.BuildAuthResponseMessage(
 		uid,
@@ -833,7 +833,7 @@ func getStringOrNullFromNullString(s sql.NullString) interface{} {
 // 	SetOTAReconfig(ctx context.Context, uid string, props map[string]interface{}) error
 // }
 
-// authMessageToMap 将 AuthMessage 转换为 map（Phase 2: device_addr 替代旧 device_id）。
+// authMessageToMap 将 AuthMessage 转换为 map（Phase 2: device_addr 替代旧 device_addr）。
 func authMessageToMap(msg commonredis.AuthMessage, deviceAddr sql.NullString) map[string]interface{} {
 	actualDeviceAddr := ""
 	if deviceAddr.Valid && deviceAddr.String != "" {

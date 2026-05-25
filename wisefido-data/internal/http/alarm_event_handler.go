@@ -129,14 +129,14 @@ func (h *AlarmEventHandler) parseListAlarmEventsRequest(w http.ResponseWriter, r
 
 	cardID := strings.TrimSpace(q.Get("card_id"))
 	roomID := strings.TrimSpace(q.Get("room_id"))
-	var deviceIDs []string
-	if deviceIDsStr := strings.TrimSpace(q.Get("device_ids")); deviceIDsStr != "" {
-		deviceIDs = strings.Split(deviceIDsStr, ",")
+	var deviceAddrs []string
+	if deviceAddrsStr := strings.TrimSpace(q.Get("device_addrs")); deviceAddrsStr != "" {
+		deviceAddrs = strings.Split(deviceAddrsStr, ",")
 	}
 
 	scopeUnitID := strings.TrimSpace(q.Get("scope_unit_id"))
 	scopeRoomID := strings.TrimSpace(q.Get("scope_room_id"))
-	scopeDeviceID := strings.TrimSpace(q.Get("scope_device_id"))
+	scopeDeviceAddr := strings.TrimSpace(q.Get("scope_device_addr"))
 
 	req = service.ListAlarmEventsRequest{
 		TenantID:        tenantID,
@@ -153,11 +153,11 @@ func (h *AlarmEventHandler) parseListAlarmEventsRequest(w http.ResponseWriter, r
 		Categories:      categories,
 		AlarmLevels:     alarmLevels,
 		CardID:          cardID,
-		DeviceIDs:       deviceIDs,
+		DeviceAddrs:     deviceAddrs,
 		RoomID:          roomID,
 		ScopeUnitID:     scopeUnitID,
 		ScopeRoomID:     scopeRoomID,
-		ScopeDeviceID:   scopeDeviceID,
+		ScopeDeviceAddr: scopeDeviceAddr,
 		Page:            page,
 		PageSize:        pageSize,
 	}
@@ -165,9 +165,9 @@ func (h *AlarmEventHandler) parseListAlarmEventsRequest(w http.ResponseWriter, r
 }
 
 // ScopedListAlarmEvents：按 5W 严格 scope 查询。优先级：
-//   scope_unit_id + scope_room_id + scope_device_id   (alarm_events 直接列过滤，最快最精确)
+//   scope_unit_id + scope_room_id + scope_device_addr (alarm_events 直接列过滤，最快最精确)
 // > scope_unit_id + scope_room_id                     (alarm_events 直接列过滤，room 内全部设备)
-// > card_id / room_id / device_ids                    (反查 devices 兼容旧调用)
+// > card_id / room_id / device_addrs                  (反查 devices 兼容旧调用)
 //
 // scope 全空 → 400 Bad Request（不允许穿透到 role-based 宽过滤，这是 cross-card leak 根因）。
 func (h *AlarmEventHandler) ScopedListAlarmEvents(w http.ResponseWriter, r *http.Request) {
@@ -177,11 +177,11 @@ func (h *AlarmEventHandler) ScopedListAlarmEvents(w http.ResponseWriter, r *http
 		return
 	}
 
-	hasDirectScope := (req.ScopeUnitID != "" && req.ScopeRoomID != "") || req.ScopeDeviceID != ""
-	hasFallbackScope := req.CardID != "" || req.RoomID != "" || len(req.DeviceIDs) > 0
+	hasDirectScope := (req.ScopeUnitID != "" && req.ScopeRoomID != "") || req.ScopeDeviceAddr != ""
+	hasFallbackScope := req.CardID != "" || req.RoomID != "" || len(req.DeviceAddrs) > 0
 	if !hasDirectScope && !hasFallbackScope {
 		writeJSON(w, http.StatusBadRequest, Fail(
-			"scope required: scope_unit_id+scope_room_id (+scope_device_id) or card_id or room_id or device_ids",
+			"scope required: scope_unit_id+scope_room_id (+scope_device_addr) or card_id or room_id or device_addrs",
 		))
 		return
 	}
@@ -202,13 +202,17 @@ func buildAlarmEventsListPayload(resp *service.ListAlarmEventsResponse) map[stri
 		itemMap := map[string]any{
 			"event_id":     item.EventID,
 			"tenant_id":    item.TenantID,
-			"device_id":    item.DeviceID,
+			"device_addr":  item.DeviceAddr,
 			"event_type":   item.EventType,
 			"category":     item.Category,
 			"alarm_level":  item.AlarmLevel,
 			"alarm_status": item.AlarmStatus,
 			"triggered_at":    item.TriggeredAt,
 			"triggered_at_ms": item.TriggeredAtMs,
+		}
+		if item.AlertedAt != "" {
+			itemMap["alerted_at"] = item.AlertedAt
+			itemMap["alerted_at_ms"] = item.AlertedAtMs
 		}
 		if item.HandledAt != nil {
 			itemMap["handled_at"] = *item.HandledAt
@@ -304,7 +308,7 @@ func buildAlarmEventsListPayload(resp *service.ListAlarmEventsResponse) map[stri
 // ListAlarmEvents 查询报警事件列表（全局入口）
 //
 // 不强制 scope；admin 看 tenant 全部，staff 按 branch/unit，resident 按 bed/unit。
-// 注意：scope 参数（card_id/room_id/device_ids/scope_*）即使携带也仅生效在
+// 注意：scope 参数（card_id/room_id/device_addrs/scope_*）即使携带也仅生效在
 // service.ListAlarmEvents 内部已有的 fail-secure 反查路径上——本入口的语义
 // 是"全局列表"。需要严格 scope 的调用方请走 /admin/api/v1/alarm-events/by-card。
 func (h *AlarmEventHandler) ListAlarmEvents(w http.ResponseWriter, r *http.Request) {

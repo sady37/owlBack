@@ -1,11 +1,8 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
-
-	"wisefido-data/internal/service"
 
 	"go.uber.org/zap"
 )
@@ -36,68 +33,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mux.ServeHTTP(w, req)
 }
 
-// RegisterStubRoutes: 先把 owlFront 写死的其它 API 路由补齐（避免 404）
-func (r *Router) RegisterStubRoutes(s *StubHandler) {
-	// admin
-	// residents 路由已迁移到 ResidentHandler（见 RegisterResidentRoutes）
-	// 如果数据库未启用，这些路由将不可用（返回 404）
-
-	// tags - 已删除（tags 表不存在）
-
-	// users - 已迁移到 UserHandler，不再使用 StubHandler.AdminUsers
-	// 新路由在 RegisterUsersRoutes 中注册（需要数据库连接）
-	// 如果数据库未启用，这些路由将不可用（返回 404）
-
-	// roles - 已迁移到 RolesHandler，不再使用 StubHandler.AdminRoles
-	// 新路由在 RegisterRolesRoutes 中注册（需要数据库连接）
-	// 如果数据库未启用，这些路由将不可用（返回 404）
-	// r.Handle("/admin/api/v1/roles", s.AdminRoles)
-	// r.Handle("/admin/api/v1/roles/", s.AdminRoles)
-
-	// role-permissions - v2 已删（schema 改变 + FE redirect /admin/role-permissions → /admin/users）
-	// 6 角色权限固定 seed 不再运行期编辑；sibling 代码改用直查 role_permissions 表
-
-	// service-levels - v2 已删（service_levels 表合并到 residents.service_tier enum）
-	// FE 改用 SERVICE_LEVEL_PRESETS 常量；BE 路由保留会查不存在的表报错，已移除
-	// r.Handle("/admin/api/v1/service-levels", s.AdminServiceLevels)
-
-	// addresses - 已被 units 替换，前端未使用，已移除
-	// 数据库中没有 addresses 表，地址管理已迁移到 units 表
-	// 如果前端需要，应使用 /admin/api/v1/units API
-	// r.Handle("/admin/api/v1/addresses", s.AdminAddresses)
-	// r.Handle("/admin/api/v1/addresses/", s.AdminAddresses)
-
-	// alarm-cloud - 已迁移到 AlarmCloudHandler，不再使用 StubHandler.AdminAlarm
-	// 新路由在 RegisterAlarmCloudRoutes 中注册（需要数据库连接）
-	// 如果数据库未启用，这些路由将不可用（返回 404）
-	// r.Handle("/admin/api/v1/alarm-cloud", s.AdminAlarm)
-
-	// alarm-events 路由已迁移到 AlarmEventHandler（见 RegisterAlarmEventRoutes）
-	// 如果数据库未启用，这些路由将不可用（返回 404）
-
-	// settings - 已迁移到 DeviceMonitorSettingsHandler（见 RegisterDeviceMonitorSettingsRoutes）
-	// 如果数据库未启用，这些路由将不可用（返回 404）
-	// r.Handle("/settings/api/v1/monitor/sleepace/", s.SettingsMonitor)
-	// r.Handle("/settings/api/v1/monitor/radar/", s.SettingsMonitor)
-
-	// sleepace reports - 已迁移到 SleepaceReportHandler（见 RegisterSleepaceReportRoutes）
-	// 如果数据库未启用，这些路由将不可用（返回 404）
-
-	// device relations - 已迁移到 DeviceHandler，不再使用 StubHandler.DeviceRelations
-	// 新路由在 RegisterDeviceRoutes 中注册（需要数据库连接）
-	// 如果数据库未启用，这些路由将不可用（返回 404）
-	// r.Handle("/device/api/v1/device/", s.DeviceRelations)
-
-	// auth - 已迁移到 AuthHandler，不再使用 StubHandler.Auth
-	// 新路由在 RegisterAuthRoutes 中注册（需要数据库连接）
-	// 如果数据库未启用，这些路由将不可用（返回 404）
-
-	// example
-	r.Handle("/api/v1/example/items", s.Example)
-	r.Handle("/api/v1/example/", s.Example)
-	r.Handle("/api/v1/example/item", s.Example)
-}
-
 // RegisterAdminTenantRoutes：Tenant management（platform-level）
 func (r *Router) RegisterAdminTenantRoutes(h *TenantsHandler) {
 	r.Handle("/admin/api/v1/tenants", h.ServeHTTP)
@@ -120,65 +55,70 @@ func (r *Router) RegisterRadarRoutes(h *RadarHandler) {
 		http.NotFound(w, req)
 	})
 
-	// 设备路由（多个端点）
+	// 设备路由（多个端点；:id 类型按 sub-action 拆 device_addr vs device_uid，详 RadarHandler doc）
 	r.Handle("/radar-device/api/v1/radar-device/device/", func(w http.ResponseWriter, req *http.Request) {
 		path := req.URL.Path
-		// GET /radar-device/api/v1/radar-device/device/{deviceId}/card-devices
-		if strings.HasSuffix(path, "/card-devices") && req.Method == http.MethodGet {
-			h.GetCardDevicesByDeviceID(w, req)
+		// GET /radar-device/api/v1/radar-device/device/{device_addr}/card-context — 纯查询
+		if strings.HasSuffix(path, "/card-context") && req.Method == http.MethodGet {
+			h.GetCardContext(w, req)
 			return
 		}
-		// GET /radar-device/api/v1/radar-device/device/{deviceId}/stream (SSE)
+		// POST /radar-device/api/v1/radar-device/device/{device_addr}/init-subscriptions — 显式 side effect
+		if strings.HasSuffix(path, "/init-subscriptions") && req.Method == http.MethodPost {
+			h.InitSubscriptionsFromLayout(w, req)
+			return
+		}
+		// GET /radar-device/api/v1/radar-device/device/{device_addr}/stream (SSE) — 数据流
 		if strings.HasSuffix(path, "/stream") && req.Method == http.MethodGet {
 			h.SubscribeRealtimeStream(w, req)
 			return
 		}
-		// GET /radar-device/api/v1/radar-device/device/{deviceId}/original-properties
+		// GET /radar-device/api/v1/radar-device/device/{device_uid}/original-properties — 硬件读
 		if strings.HasSuffix(path, "/original-properties") && req.Method == http.MethodGet {
 			h.GetOriginalProperties(w, req)
 			return
 		}
-		// PUT /radar-device/api/v1/radar-device/device/{deviceId}/config
+		// PUT /radar-device/api/v1/radar-device/device/{device_uid}/config — 硬件写
 		if strings.HasSuffix(path, "/config") && req.Method == http.MethodPut {
 			h.UpdateConfig(w, req)
 			return
 		}
-		// POST /radar-device/api/v1/radar-device/device/{deviceId}/bind
+		// POST /radar-device/api/v1/radar-device/device/{device_uid}/bind — 硬件订阅
 		if strings.HasSuffix(path, "/bind") && req.Method == http.MethodPost {
 			h.BindDevice(w, req)
 			return
 		}
-		// POST /radar-device/api/v1/radar-device/device/{deviceId}/unbind
+		// POST /radar-device/api/v1/radar-device/device/{device_uid}/unbind — 硬件解订阅
 		if strings.HasSuffix(path, "/unbind") && req.Method == http.MethodPost {
 			h.UnbindDevice(w, req)
 			return
 		}
-		// POST /radar-device/api/v1/radar-device/device/{deviceId}/control
+		// POST /radar-device/api/v1/radar-device/device/{device_uid}/control — 硬件控制
 		if strings.HasSuffix(path, "/control") && req.Method == http.MethodPost {
 			h.Control(w, req)
 			return
 		}
-		// GET  /radar-device/api/v1/radar-device/device/{deviceId}/measure/tracks
+		// GET  /radar-device/api/v1/radar-device/device/{device_uid}/measure/tracks — 硬件测量
 		if strings.HasSuffix(path, "/measure/tracks") && req.Method == http.MethodGet {
 			h.GetTracks(w, req)
 			return
 		}
-		// POST /radar-device/api/v1/radar-device/device/{deviceId}/measure/fit-polygon
+		// POST /radar-device/api/v1/radar-device/device/{device_uid}/measure/fit-polygon
 		if strings.HasSuffix(path, "/measure/fit-polygon") && req.Method == http.MethodPost {
 			h.FitPolygon(w, req)
 			return
 		}
-		// POST /radar-device/api/v1/radar-device/device/{deviceId}/measure/fit-rectangle
+		// POST /radar-device/api/v1/radar-device/device/{device_uid}/measure/fit-rectangle
 		if strings.HasSuffix(path, "/measure/fit-rectangle") && req.Method == http.MethodPost {
 			h.FitRectangle(w, req)
 			return
 		}
-		// POST /radar-device/api/v1/radar-device/device/{deviceId}/measure/fit-entry-lines
+		// POST /radar-device/api/v1/radar-device/device/{device_uid}/measure/fit-entry-lines
 		if strings.HasSuffix(path, "/measure/fit-entry-lines") && req.Method == http.MethodPost {
 			h.FitEntryLines(w, req)
 			return
 		}
-		// POST /radar-device/api/v1/radar-device/device/{deviceId}/measure/detection-rectangle
+		// POST /radar-device/api/v1/radar-device/device/{device_uid}/measure/detection-rectangle
 		if strings.HasSuffix(path, "/measure/detection-rectangle") && req.Method == http.MethodPost {
 			h.ComputeDetectionRectangle(w, req)
 			return
@@ -224,28 +164,6 @@ func (r *Router) RegisterPlaybackRoutes(h *PlaybackHandler) {
 	r.Handle("/api/radar/playback", h.PostRadarPlayback)
 	r.Handle("/api/vital/playback", h.PostVitalPlayback)
 	r.Handle("/api/radar/alarm-replay-context", h.PostAlarmReplayContext)
-}
-
-// RegisterAdminUnitDeviceRoutes：Unit/Room/Bed + Devices（地址类 + 设备类）
-// 注意：Unit/Room/Bed 路由已迁移到 UnitHandler（见 RegisterUnitRoutes）
-// 注意：Devices 路由已迁移到 DeviceHandler（见 RegisterDeviceRoutes）
-// 此函数已废弃，保留仅为向后兼容（不再注册任何路由）
-func (r *Router) RegisterAdminUnitDeviceRoutes(admin *AdminAPI) {
-	// Unit/Room/Bed 路由已迁移到 UnitHandler，不再在这里注册
-	// r.Handle("/admin/api/v1/buildings", admin.BuildingsHandler)
-	// r.Handle("/admin/api/v1/buildings/", admin.BuildingsHandler)
-	// r.Handle("/admin/api/v1/units", admin.UnitsHandler)
-	// r.Handle("/admin/api/v1/units/", admin.UnitsHandler)
-	// r.Handle("/admin/api/v1/rooms", admin.RoomsHandler)
-	// r.Handle("/admin/api/v1/rooms/", admin.RoomByIDHandler)
-	// r.Handle("/admin/api/v1/beds", admin.BedsHandler)
-	// r.Handle("/admin/api/v1/beds/", admin.BedByIDHandler)
-
-	// Devices 路由已迁移到 DeviceHandler（见 RegisterDeviceRoutes），不再在这里注册
-	// r.Handle("/admin/api/v1/devices", admin.DevicesHandler)
-	// r.Handle("/admin/api/v1/devices/", admin.DevicesHandler)
-
-	// device-store：RegisterDeviceStoreRoutes（DeviceStoreHandler）
 }
 
 // RegisterRolesRoutes 注册角色管理路由
@@ -346,64 +264,16 @@ func (r *Router) RegisterSleepaceReportRoutes(h *SleepaceReportHandler) {
 	r.Handle("/sleepace/api/v1/sleepace/reports/", h.ServeHTTP)
 }
 
-// RegisterCardOverviewRoutes 注册卡片概览相关路由
-
-// CardRealtimeHandler 专门处理卡片实时数据的处理器
-type CardRealtimeHandler struct {
-	realtimeSvc *service.CardRealtimeService
-	staticSvc   *service.CardStaticService
-	logger      *zap.Logger
+// RegisterSleepaceResyncRoutes 注册 Sleepace DST resync / OTA 触发路由（DST cron + FE admin 共用同一 handler）
+func (r *Router) RegisterSleepaceResyncRoutes(h *SleepaceResyncHandler) {
+	r.Handle("/internal/sleepace/device/", h.Dispatch)             // /internal/* 跳过 auth，DST cron 用
+	r.Handle("/sleepace/api/v1/sleepace/device/", h.Dispatch)      // FE 走 nginx /sleepace/api/
 }
 
-// NewCardRealtimeHandler 创建卡片实时数据处理器
-func NewCardRealtimeHandler(realtimeSvc *service.CardRealtimeService, staticSvc *service.CardStaticService, logger *zap.Logger) *CardRealtimeHandler {
-	return &CardRealtimeHandler{
-		realtimeSvc: realtimeSvc,
-		staticSvc:   staticSvc,
-		logger:      logger,
-	}
-}
-
-// PullRealtimeData 处理实时数据拉取请求
-func (h *CardRealtimeHandler) PullRealtimeData(w http.ResponseWriter, req *http.Request) {
-	// 从请求中提取数据
-	ctx := req.Context()
-
-	// 解析请求体：cards_by_branch（branchID → cardIDs）
-	var body struct {
-		CardsByBranch map[string][]string `json:"cards_by_branch"`
-	}
-	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-		h.logger.Error("Failed to decode pull realtime request", zap.Error(err))
-		writeJSON(w, http.StatusBadRequest, Fail("Invalid request body"))
-		return
-	}
-	if body.CardsByBranch == nil {
-		body.CardsByBranch = map[string][]string{}
-	}
-
-	tenantID := req.Header.Get("X-Tenant-Id")
-	userID := req.Header.Get("X-User-Id")
-	if tenantID == "" || userID == "" {
-		h.logger.Error("Missing required authentication headers")
-		writeJSON(w, http.StatusUnauthorized, Fail("Missing required authentication headers"))
-		return
-	}
-
-	serviceReq := service.GetCardRealtimeRequest{
-		TenantID:      tenantID,
-		UserID:        userID,
-		CardsByBranch: body.CardsByBranch,
-	}
-
-	resp, err := h.realtimeSvc.GetCardRealtime(ctx, serviceReq)
-	if err != nil {
-		h.logger.Error("Failed to pull realtime data", zap.Error(err))
-		writeJSON(w, http.StatusInternalServerError, Fail(err.Error()))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, Ok(resp))
+// RegisterSleepaceFirmwareRoutes 注册 Sleepace 厂家固件库管理路由
+func (r *Router) RegisterSleepaceFirmwareRoutes(h *SleepaceFirmwareHandler) {
+	r.Handle("/internal/sleepace/firmware/", h.Dispatch)
+	r.Handle("/sleepace/api/v1/sleepace/firmware/", h.Dispatch)
 }
 
 // RegisterCardRealtimeRoutes 注册卡片实时数据相关路由

@@ -149,8 +149,8 @@ type Engine struct {
 	mounts     map[string]radarutils.RadarMount // roomID → Radar 安装参数（坐标转换用）
 	deviceRoom map[string]string                // deviceAddr → roomID (sensor 唯一物理寻址)
 	// PR-8: AI publish 用 — 源 radar UUID 反查 deviceUID + room 反查 tenant/card
-	deviceIDToUID   map[string]string // deviceID(UUID) → device_uid（IoTStreamMessage.DeviceUID）
-	deviceIDToType  map[string]string // deviceID(UUID) → 源 sensor 类型（"Radar"/"Sleepad"），AI publish 加 ".AI<node>" 后缀
+	deviceAddrToUID   map[string]string // deviceAddr(UUID) → device_uid（IoTStreamMessage.DeviceUID）
+	deviceAddrToType  map[string]string // deviceAddr(UUID) → 源 sensor 类型（"Radar"/"Sleepad"），AI publish 加 ".AI<node>" 后缀
 	roomTenants     map[string]string // roomID → tenant_id（alarm_events 必填）
 
 	// 北极星 reasoning trace 链：每 device 最近 inbound msg 的 envelope.SequenceNumber，
@@ -308,8 +308,8 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		grids:              make(map[string]*RoomGrid),
 		mounts:             make(map[string]radarutils.RadarMount),
 		deviceRoom:         make(map[string]string),
-		deviceIDToUID:      make(map[string]string),
-		deviceIDToType:     make(map[string]string),
+		deviceAddrToUID:      make(map[string]string),
+		deviceAddrToType:     make(map[string]string),
 		roomTenants:        make(map[string]string),
 		lastSrcSeq:         make(map[string]uint64),
 		aiSource:           "sensor.caregiver01",
@@ -446,7 +446,7 @@ func (e *Engine) SetOutputCallback(fn func(roomID string, outputs []TrackOutput)
 	e.onOutput = fn
 }
 
-// RoomForDevice 查 deviceKey（device_id 或 device_uid）对应的 room_id。
+// RoomForDevice 查 deviceKey（device_addr 或 device_uid）对应的 room_id。
 // 用于 alarm feedback 反查。空字符串 = 未路由（设备未绑定房间或未注册）。
 func (e *Engine) RoomForDevice(deviceKey string) string {
 	e.mu.RLock()
@@ -498,24 +498,24 @@ func (e *Engine) MapDeviceToRoom(deviceKey, roomID string) {
 	e.mu.Unlock()
 }
 
-// MapDeviceIDToUID 注册 device UUID → device_uid（PR-8 AI publish 反查源 radar UID 用）。
-func (e *Engine) MapDeviceIDToUID(deviceID, deviceUID string) {
-	if deviceID == "" || deviceUID == "" {
+// MapDeviceAddrToUID 注册 device UUID → device_uid（PR-8 AI publish 反查源 radar UID 用）。
+func (e *Engine) MapDeviceAddrToUID(deviceAddr, deviceUID string) {
+	if deviceAddr == "" || deviceUID == "" {
 		return
 	}
 	e.mu.Lock()
-	e.deviceIDToUID[deviceID] = deviceUID
+	e.deviceAddrToUID[deviceAddr] = deviceUID
 	e.mu.Unlock()
 }
 
-// MapDeviceIDToType 注册 device UUID → 源 sensor 类型（"Radar"/"Sleepad"）。
+// MapDeviceAddrToType 注册 device UUID → 源 sensor 类型（"Radar"/"Sleepad"）。
 // AI publish 时直接作 message.DeviceType（不再拼 AI 后缀）。缺失时兜底 "Radar"。
-func (e *Engine) MapDeviceIDToType(deviceID, deviceType string) {
-	if deviceID == "" || deviceType == "" {
+func (e *Engine) MapDeviceAddrToType(deviceAddr, deviceType string) {
+	if deviceAddr == "" || deviceType == "" {
 		return
 	}
 	e.mu.Lock()
-	e.deviceIDToType[deviceID] = deviceType
+	e.deviceAddrToType[deviceAddr] = deviceType
 	e.mu.Unlock()
 }
 
@@ -527,7 +527,7 @@ func (e *Engine) DeviceUIDHex(deviceAddr string) string {
 		return ""
 	}
 	e.mu.RLock()
-	hex := e.deviceIDToUID[deviceAddr]
+	hex := e.deviceAddrToUID[deviceAddr]
 	e.mu.RUnlock()
 	return hex
 }
@@ -764,7 +764,7 @@ func (e *Engine) applyVerdictDeltas(statuses []*TrackStatus, deltas []VerdictDel
 			if s.Verdict == VerdictAnchored && newV == VerdictGhost {
 				e.logger.Warn("adjudicator_anchored_to_ghost_rejected",
 					zap.Int("track_id", d.TrackID),
-					zap.String("device_id", s.DeviceID),
+					zap.String("device_addr", s.DeviceAddr),
 					zap.String("room_id", s.RoomID),
 					zap.String("reason", d.Reason),
 				)
@@ -883,7 +883,7 @@ func (e *Engine) publishTrackStatuses(ctx context.Context, roomID string, bases 
 		seen[b.TrackID] = nowMs
 		status := &TrackStatus{
 			TrackID:      b.TrackID,
-			DeviceID:     b.DeviceID,
+			DeviceAddr:     b.DeviceAddr,
 			RoomID:       b.RoomID,
 			Verdict:      b.Verdict,
 			GhostPenalty: b.GhostPenalty,
@@ -948,7 +948,7 @@ func (e *Engine) publishTrackStatuses(ctx context.Context, roomID string, bases 
 //   Producer:        e.aiSource（如 "sensor.caregiver01"），sensor agent layer 1 标识
 //   SubjectEntity:   留空（AI 不染卡概念，cardagg IotPreparedHandler 反查 device→subject）
 //   DeviceUID:       源 sensor 的 device_uid
-//   DeviceID:        源 sensor 的 UUID
+//   DeviceAddr:        源 sensor 的 UUID
 //   DeviceType:      源 sensor 类型（"Radar" / "Sleepad"）
 //   TenantID:        roomTenants[roomID]
 //   DataValue:       [{ track_id, ts, position_x/y/z, area_type, pose, track_confidence, source, ... }]
@@ -976,10 +976,10 @@ func (e *Engine) PublishAIAlarm(ctx context.Context, p AIPayload, category strin
 
 func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	category, topicType, streamName string, maxLen int64, retentionSec int, nowMs int64) {
-	// device_ipv6 单程票：p.DeviceID 现为 canonical IPv6 字符串（上游已切；engine 内部 Map 同步切）
-	addr, _ := netip.ParseAddr(p.DeviceID)
+	// p.DeviceAddr 现为 canonical IPv6 字符串（上游已切；engine 内部 Map 同步切）
+	addr, _ := netip.ParseAddr(p.DeviceAddr)
 	e.mu.RLock()
-	baseType := e.deviceIDToType[p.DeviceID]
+	baseType := e.deviceAddrToType[p.DeviceAddr]
 	defaultSource := e.aiSource
 	mode := e.aiPublishMode
 	g := e.grids[p.RoomID]
@@ -1066,9 +1066,12 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	if len(p.Evidence) > 0 {
 		fields["evidence"] = p.Evidence
 	}
+	if p.IncidentMs > 0 {
+		fields["incident_ts_ms"] = p.IncidentMs
+	}
 	// 北极星 reasoning trace：verdict 必带触发它的 source envelope.seq —
 	// 下游审计可一句 grep 把 AI verdict 反向链回 producer 的具体 envelope。
-	if srcSeq := e.readLastSrcSeq(p.DeviceID); srcSeq != 0 {
+	if srcSeq := e.readLastSrcSeq(p.DeviceAddr); srcSeq != 0 {
 		fields["trigger_seq_num"] = srcSeq
 	}
 
@@ -1089,8 +1092,8 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 		zap.String("source", source),
 		zap.String("mode", mode),
 		zap.String("device_type", deviceType),
-		zap.String("device_addr", p.DeviceID),
-		zap.String("device_uid_hex", e.DeviceUIDHex(p.DeviceID)),
+		zap.String("device_addr", p.DeviceAddr),
+		zap.String("device_uid_hex", e.DeviceUIDHex(p.DeviceAddr)),
 		zap.String("category", category),
 		zap.String("topic_type", topicType),
 		zap.String("would_publish_to", streamName),
@@ -1104,9 +1107,9 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 		return
 	}
 
-	// device_ipv6 单程票：Producer = sensor agent /128 INET；
+	// Producer = sensor agent /128 INET；
 	// SubjectEntity 留空（cardagg LPM 反查兜底，见上注释）；
-	// DeviceAddr = p.DeviceID parse 后 /128。
+	// DeviceAddr = p.DeviceAddr parse 后 /128。
 	msg := rediscommon.IoTStreamMessage{
 		Producer:       producer,
 		SequenceNumber: uint64(seq),
@@ -1123,7 +1126,7 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 			zap.String("source", source),
 			zap.String("stream", streamName),
 			zap.String("category", category),
-			zap.String("device_addr", p.DeviceID),
+			zap.String("device_addr", p.DeviceAddr),
 			zap.Error(err),
 		)
 	}
@@ -1483,7 +1486,7 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 		ts = time.Now().UnixMilli()
 	}
 
-	// 路由到房间（device_ipv6 单程票：addr 是唯一 device 标识）
+	// 路由到房间（addr 是唯一 device 标识）
 	addrStr := m.DeviceAddr.String()
 	// 北极星 reasoning trace：记录这条 envelope.seq → 后续 AI verdict 引用为 trigger_seq_num
 	e.recordLastSrcSeq(addrStr, m.SequenceNumber)
@@ -1599,7 +1602,7 @@ func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
 		ts = time.Now().UnixMilli()
 	}
 
-	// 路由（device_ipv6 单程票：addr 是唯一 device 标识）
+	// 路由（addr 是唯一 device 标识）
 	addrStr := m.DeviceAddr.String()
 	// 北极星 reasoning trace：记录这条 envelope.seq → 后续 AI verdict 引用
 	e.recordLastSrcSeq(addrStr, m.SequenceNumber)
@@ -1647,7 +1650,7 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 		return
 	}
 
-	// 路由到房间（device_ipv6 单程票：addr 是唯一 device 标识）
+	// 路由到房间（addr 是唯一 device 标识）
 	addrStr := m.DeviceAddr.String()
 	// 北极星 reasoning trace：记录这条 envelope.seq → 后续 AI verdict 引用
 	e.recordLastSrcSeq(addrStr, m.SequenceNumber)

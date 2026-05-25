@@ -12,7 +12,7 @@ func HashKey(cardID string) string {
 }
 
 // DeviceStatusHashKey 单设备运行时状态独立 Hash key（device:status:{ipv6}）。
-// 入参 deviceAddr = /128 IPv6 canonical host text（device_ipv6 单程票）。
+// 入参 deviceAddr = /128 IPv6 canonical host text。
 // Hash 字段：online / signal_poor / angle_abnormal / sensor_detached / last_seen_ms 等。
 func DeviceStatusHashKey(deviceAddr string) string {
 	return deviceStatusPrefix + deviceAddr

@@ -400,13 +400,13 @@ func (h *DeviceStoreHandler) BindSleepadOne(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var body struct {
-		DeviceID string `json:"device_addr"`
+		DeviceAddr string `json:"device_addr"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceID == "" {
-		writeJSON(w, http.StatusOK, Fail("device_id required"))
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceAddr == "" {
+		writeJSON(w, http.StatusOK, Fail("device_addr required"))
 		return
 	}
-	if err := h.deviceStoreSvc.BindSleepadOne(r.Context(), body.DeviceID); err != nil {
+	if err := h.deviceStoreSvc.BindSleepadOne(r.Context(), body.DeviceAddr); err != nil {
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
@@ -420,13 +420,13 @@ func (h *DeviceStoreHandler) UnbindSleepadOne(w http.ResponseWriter, r *http.Req
 		return
 	}
 	var body struct {
-		DeviceID string `json:"device_addr"`
+		DeviceAddr string `json:"device_addr"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceID == "" {
-		writeJSON(w, http.StatusOK, Fail("device_id required"))
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceAddr == "" {
+		writeJSON(w, http.StatusOK, Fail("device_addr required"))
 		return
 	}
-	if err := h.deviceStoreSvc.UnbindSleepadOne(r.Context(), body.DeviceID); err != nil {
+	if err := h.deviceStoreSvc.UnbindSleepadOne(r.Context(), body.DeviceAddr); err != nil {
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}

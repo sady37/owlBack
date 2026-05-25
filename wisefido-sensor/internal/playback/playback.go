@@ -366,7 +366,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 					continue
 				}
 
-				frames := roomengine.ParseRadarTracks(row.DataValue, row.DeviceID, cfg.Radar, ts)
+				frames := roomengine.ParseRadarTracks(row.DataValue, row.DeviceAddr, cfg.Radar, ts)
 				// PR-15.3 cycle 支持：强制 frame.TMs = shifted ts（覆盖 firmware 自带 timestamp）
 				for i := range frames {
 					frames[i].TMs = ts

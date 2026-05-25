@@ -109,7 +109,7 @@ type allocBedReq struct {
 
 type registerDeviceReq struct {
 	Base       string `json:"base"`        // bed /96 (also unit /80 / room /88 acceptable for public area device)
-	DeviceUID  string `json:"device_uid"`  // logMAC，末 32bit 派生 /128 host part；必须先在 device_factory_meta 已存在（Phase 2 一刀切 PK）
+	DeviceUID  string `json:"device_uid"`  // logMAC，末 32bit 派生 /128 host part；必须先在 device_factory_meta 已存在（ PK）
 	DNSName    string `json:"dns_name"`    // optional 短名 (e.g. "john-bed")，传则同步 DDNS 注册
 	DNSZone    string `json:"dns_zone"`    // 同上必填，e.g. "tenant3.owl."
 }

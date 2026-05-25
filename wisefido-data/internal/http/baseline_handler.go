@@ -32,7 +32,6 @@ func (h *BaselineHandler) GetDeviceBaseline(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "device not found", http.StatusNotFound)
 		return
 	}
-	// device_ipv6 单程票 R-009：unbound device CardID 留空（不再用 DeviceID UUID 占位）
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(b)
 }
@@ -54,7 +53,6 @@ func (h *BaselineHandler) ListDeviceBaselines(w http.ResponseWriter, r *http.Req
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	// device_ipv6 单程票 R-009：unbound device CardID 留空（不再用 DeviceID UUID 占位）
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(baselines)
 }

@@ -2,7 +2,7 @@
 //
 // 把 RoomEngine 接入 wisefido-sensor 实时流：
 //   1. 从 rooms 表加载所有 layout_config，注册到 Engine（自动 ApplyOptimizedExtent）
-//   2. 从 devices 表读 device_uid/device_id → bound_room_id 路由表
+//   2. 从 devices 表读 device_uid/device_addr → bound_room_id 路由表
 //   3. Configure RuntimeConfig（DecayParams + LearnParams + ParamSets + Persister）
 //   4. Engine.Run(ctx) 在 goroutine 跑 —— 自动消费 iot:monitor:stream + iot:event:stream
 //
@@ -60,7 +60,7 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB,
 	}
 	logger.Info("roomengine: rooms registered", zap.Int("count", registered))
 
-	// 3. 建立 device_uid / device_id → room_id 路由表
+	// 3. 建立 device_uid / device_addr → room_id 路由表
 	mapped, err := mapDevicesToRooms(ctx, engine, db, logger)
 	if err != nil {
 		return nil, fmt.Errorf("map devices: %w", err)
@@ -323,7 +323,7 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 // 由 device_ipv6 INET prefix 派生（room_id /88 contains device_ipv6 /128）。
 // device_factory_meta (dfm) 提供 device_type；旧 device_store 表已退役。
 //
-// device_ipv6 单程票（doc/device_ipv6_migration_checklist.md Phase D）后 engine 内部
+// （doc/device_ipv6_migration_checklist.md Phase D）后 engine 内部
 // map key 为 canonical IPv6 字符串（addr.String()），与 envelope DeviceAddr 一致。
 func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB,
 	logger *zap.Logger) (int, error) {
@@ -352,16 +352,16 @@ func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.D
 		if roomID == "" || deviceAddr == "" {
 			continue
 		}
-		// 单程票：addr 是唯一 device key（替代旧的 deviceID UUID + deviceUID MAC 双键）
+		// 单程票：addr 是唯一 device key（替代旧的 deviceAddr UUID + deviceUID MAC 双键）
 		engine.MapDeviceToRoom(deviceAddr, roomID)
 		// 注册 device_addr → device_type，AI publish 用作 envelope.DeviceType
 		if deviceType != "" {
-			engine.MapDeviceIDToType(deviceAddr, deviceType)
+			engine.MapDeviceAddrToType(deviceAddr, deviceType)
 		}
-		// MapDeviceIDToUID 单程票后语义重定向：addr (IPv6) → device_uid hex MAC
+		// MapDeviceAddrToUID 单程票后语义重定向：addr (IPv6) → device_uid hex MAC
 		// 用于 log 双格式 + 人眼可读（zap field "device_uid_hex"）
 		if deviceUIDHex != "" {
-			engine.MapDeviceIDToUID(deviceAddr, deviceUIDHex)
+			engine.MapDeviceAddrToUID(deviceAddr, deviceUIDHex)
 		}
 		count++
 	}

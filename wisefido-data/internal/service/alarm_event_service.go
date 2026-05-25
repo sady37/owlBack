@@ -23,8 +23,8 @@ import (
 
 // ConfigPublisher 配置发布器接口
 type ConfigPublisher interface {
-	PublishAlarmProcessMessage(ctx context.Context, tenantID, cardID, deviceID, alarmLevel, alarmType, processType, eventID string, alarmTimestamp int64) error
-	PublishAlarmDeviceMessage(ctx context.Context, tenantID, deviceID, deviceUID, settingType string, settingData map[string]interface{}) error
+	PublishAlarmProcessMessage(ctx context.Context, tenantID, cardID, deviceAddr, alarmLevel, alarmType, processType, eventID string, alarmTimestamp int64) error
+	PublishAlarmDeviceMessage(ctx context.Context, tenantID, deviceAddr, deviceUID, settingType string, settingData map[string]interface{}) error
 }
 
 // AlarmEventService 报警事件服务接口
@@ -104,15 +104,15 @@ type ListAlarmEventsRequest struct {
 	AlarmLevels []string // 报警级别过滤
 
 	// 关联过滤
-	CardID    string   // 按卡片ID过滤（后端通过 card.unit_id + card.bed_id 反查 devices 表的物理位置绑定，得 device_ids）
-	DeviceIDs []string // 按设备ID过滤（精确指定，绕过 card → location → devices 推导）
+	CardID    string   // 按卡片ID过滤（后端通过 card.unit_id + card.bed_id 反查 devices 表的物理位置绑定，得 device_addrs）
+	DeviceAddrs []string // 按设备ID过滤（精确指定，绕过 card → location → devices 推导）
 	RoomID    string   // 按 room 过滤（room_id → devices.bound_room_id 或 beds.room_id → bound_bed_id）
 
 	// 5W 直接 scope（仅在 ScopedListAlarmEvents 入口使用，其他入口忽略）：
-	// 优先级：UnitID + RoomID + DeviceID > UnitID + RoomID > CardID。
+	// 优先级：UnitID + RoomID + DeviceAddr > UnitID + RoomID > CardID。
 	ScopeUnitID   string // ae.unit_id 直接过滤（5W where snapshot）
 	ScopeRoomID   string // ae.room_id 直接过滤（5W where snapshot）
-	ScopeDeviceID string // ae.device_id 直接过滤
+	ScopeDeviceAddr string // ae.device_addr 直接过滤
 
 	// 分页
 	Page     int // 页码，默认 1
@@ -138,13 +138,15 @@ type AlarmEventDTO struct {
 	// 基础字段（来自 alarm_events 表）
 	EventID     string `json:"event_id"`     // UUID
 	TenantID    string `json:"tenant_id"`    // 租户ID
-	DeviceID    string `json:"device_addr"`    // 设备ID
+	DeviceAddr    string `json:"device_addr"`    // 设备ID
 	EventType   string `json:"event_type"`   // 事件类型
 	Category    string `json:"category"`     // 类别（safety, clinical, behavioral, device）
 	AlarmLevel  string `json:"alarm_level"`  // 报警级别
 	AlarmStatus string `json:"alarm_status"` // 报警状态（'active','acked','resolved','auto_resolved','expired'）
-	TriggeredAt   string `json:"triggered_at"`    // RFC3339 带 unit_timezone offset；unit_timezone 未知时回退 UTC（Z 结尾）
+	TriggeredAt   string `json:"triggered_at"`    // RFC3339 带 unit_timezone offset；unit_timezone 未知时回退 UTC（Z 结尾）— 实际发生时刻（incident moment）
 	TriggeredAtMs int64  `json:"triggered_at_ms"` // UTC unix milliseconds，FE 想在 viewer-local TZ 显示时用 new Date(ms)
+	AlertedAt     string `json:"alerted_at,omitempty"`    // 系统决策上抛时刻；推断类 fall ＞ triggered_at（延迟 = idle 时长）；nil/empty = 等于 triggered_at（firmware Fall 直发类）
+	AlertedAtMs   int64  `json:"alerted_at_ms,omitempty"`
 
 	// 处理信息
 	HandlingState   *string `json:"handling_state,omitempty"`   // 'verified' | 'false_alarm' | 'test'（从 operation 映射）
@@ -155,8 +157,8 @@ type AlarmEventDTO struct {
 	HandledAtMs     *int64  `json:"handled_at_ms,omitempty"`    // UTC unix milliseconds
 
 	// 关联数据（通过 JOIN 查询）
-	CardID     *string `json:"card_id,omitempty"`     // 卡片ID（通过 device_id JOIN cards 获取）
-	DeviceName *string `json:"device_name,omitempty"` // 设备名称（通过 device_id JOIN devices 获取）
+	CardID     *string `json:"card_id,omitempty"`     // 卡片ID（通过 device_addr JOIN cards 获取）
+	DeviceName *string `json:"device_name,omitempty"` // 设备名称（通过 device_addr JOIN devices 获取）
 
 	// 住户信息（通过 device → bed → resident 获取）
 	ResidentID      *string `json:"resident_id,omitempty"`      // 住户ID
@@ -207,7 +209,7 @@ type HandleAlarmEventResponse struct {
 	Success        bool   `json:"success"`                   // 处理是否成功
 	EventID        string `json:"event_id,omitempty"`        // 报警事件ID
 	CardID         string `json:"card_id,omitempty"`         // 卡片ID
-	DeviceID       string `json:"device_addr,omitempty"`       // 设备ID
+	DeviceAddr       string `json:"device_addr,omitempty"`       // 设备ID
 	AlarmLevel     string `json:"alarm_level,omitempty"`     // 报警级别
 	AlarmType      string `json:"alarm_type,omitempty"`      // 报警类型
 	AlarmTimestamp int64  `json:"alarm_timestamp,omitempty"` // 处理时间(hand_time)
@@ -336,7 +338,7 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 	}
 
 	// 5W 直接 scope（最快最精确，依赖 commit 4a854cb 起 alarm_events 持久化的 unit_id/room_id 列）：
-	// 优先级 ScopeUnitID + ScopeRoomID + ScopeDeviceID > ScopeUnitID + ScopeRoomID。
+	// 优先级 ScopeUnitID + ScopeRoomID + ScopeDeviceAddr > ScopeUnitID + ScopeRoomID。
 	// 这条路径不依赖 devices 当前 binding，scope 严格 = "trigger 时刻 device 所在的那个 room"。
 	if req.ScopeUnitID != "" {
 		v := req.ScopeUnitID
@@ -346,13 +348,13 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 		v := req.ScopeRoomID
 		filters.EventRoomID = &v
 	}
-	if req.ScopeDeviceID != "" {
-		v := req.ScopeDeviceID
-		filters.DeviceID = &v
+	if req.ScopeDeviceAddr != "" {
+		v := req.ScopeDeviceAddr
+		filters.DeviceAddr = &v
 	}
 
 	// 关联过滤——优先级（精确度由高到低）：
-	//   1. req.DeviceIDs    显式 device_ids（如 WaveMonitor 用 canvas 当前 room 内设备）
+	//   1. req.DeviceAddrs    显式 device_addrs（如 WaveMonitor 用 canvas 当前 room 内设备）
 	//   2. req.RoomID       按 room 反查 devices（room 内 radar + bed 上 sleepad）
 	//   3. req.CardID       按 card 物理位置（unit + bed）反查 devices
 	// 不再用 cards.devices JSONB 快照（易变量）。
@@ -373,19 +375,19 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 		}
 	}
 	switch {
-	case len(req.DeviceIDs) > 0:
-		filters.DeviceIDs = req.DeviceIDs
+	case len(req.DeviceAddrs) > 0:
+		filters.DeviceAddrs = req.DeviceAddrs
 	case req.RoomID != "":
-		deviceIDs, err := s.getRoomDeviceIDs(ctx, req.TenantID, req.RoomID)
-		if err != nil || len(deviceIDs) == 0 {
+		deviceAddrs, err := s.getRoomDeviceAddrs(ctx, req.TenantID, req.RoomID)
+		if err != nil || len(deviceAddrs) == 0 {
 			s.logger.Warn("room_id resolved to no devices — fail-secure empty",
 				zap.String("room_id", req.RoomID), zap.Error(err))
 			return emptyResp(), nil
 		}
-		filters.DeviceIDs = deviceIDs
+		filters.DeviceAddrs = deviceAddrs
 	case req.CardID != "":
 		// 2026-05-15 拍板：alarm 只在 card_id 精确匹配的卡上出现，不再走 "unit 卡 aggregate 子卡" fan-out。
-		// req.CardID 直接进 EventCardID（精确匹配 ae.card_id），不再走 getCardDeviceIDs 把整个 unit prefix 内
+		// req.CardID 直接进 EventCardID（精确匹配 ae.card_id），不再走 getCardDeviceAddrs 把整个 unit prefix 内
 		// 所有设备的 alarm 都返回。这样 unit 卡只能看到 LPM 时锁定到 unit 卡的 alarm，bed 卡只看自己。
 		//
 		// dns_short_name (6 位 base36) 解析为 spatial_prefix CIDR；防止 FE 传短码直接 INET cast 失败
@@ -427,7 +429,7 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 
 		if strings.EqualFold(userRole, "Admin") {
 			// Admin: tenant 下的所有报警，不需要过滤
-			// 不设置 filters.DeviceIDs，允许查看所有设备
+			// 不设置 filters.DeviceAddrs，允许查看所有设备
 		} else if strings.EqualFold(userRole, "Manager") {
 			// Manager: 指定 Branchs 的所有报警
 			// 查询用户关联的 branch_id 列表
@@ -491,8 +493,8 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 				}, nil
 			}
 
-			// 查询这些 unit 下的所有 device_ids
-			allowedDeviceIDs, err := s.getDeviceIDsByUnitIDs(ctx, req.TenantID, allUnitIDs)
+			// 查询这些 unit 下的所有 device_addrs
+			allowedDeviceAddrs, err := s.getDeviceAddrsByUnitIDs(ctx, req.TenantID, allUnitIDs)
 			if err != nil {
 				s.logger.Warn("Failed to get device IDs for Manager units, returning empty list",
 					zap.Error(err),
@@ -508,7 +510,7 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 				}, nil
 			}
 
-			if len(allowedDeviceIDs) == 0 {
+			if len(allowedDeviceAddrs) == 0 {
 				return &ListAlarmEventsResponse{
 					Items: []*AlarmEventDTO{},
 					Pagination: PaginationDTO{
@@ -520,22 +522,22 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 				}, nil
 			}
 
-			// 将允许的 device_ids 添加到过滤器中
-			if len(filters.DeviceIDs) > 0 {
+			// 将允许的 device_addrs 添加到过滤器中
+			if len(filters.DeviceAddrs) > 0 {
 				// 取交集
 				allowedSet := make(map[string]bool)
-				for _, id := range allowedDeviceIDs {
+				for _, id := range allowedDeviceAddrs {
 					allowedSet[id] = true
 				}
-				filteredDeviceIDs := []string{}
-				for _, id := range filters.DeviceIDs {
+				filteredDeviceAddrs := []string{}
+				for _, id := range filters.DeviceAddrs {
 					if allowedSet[id] {
-						filteredDeviceIDs = append(filteredDeviceIDs, id)
+						filteredDeviceAddrs = append(filteredDeviceAddrs, id)
 					}
 				}
-				filters.DeviceIDs = filteredDeviceIDs
+				filters.DeviceAddrs = filteredDeviceAddrs
 			} else {
-				filters.DeviceIDs = allowedDeviceIDs
+				filters.DeviceAddrs = allowedDeviceAddrs
 			}
 		} else if strings.EqualFold(userRole, "Caregiver") || strings.EqualFold(userRole, "Nurse") {
 			// Caregiver/Nurse: 通过指定的 resident → unit，可以看到该 unit 下的所有 device
@@ -599,8 +601,8 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 				}, nil
 			}
 
-			// 查询这些 unit 下的所有 device_ids（该 unit 下所有的 device，包括绑定到 bed 和绑定到 room 的）
-			allowedDeviceIDs, err := s.getDeviceIDsByUnitIDs(ctx, req.TenantID, unitIDs)
+			// 查询这些 unit 下的所有 device_addrs（该 unit 下所有的 device，包括绑定到 bed 和绑定到 room 的）
+			allowedDeviceAddrs, err := s.getDeviceAddrsByUnitIDs(ctx, req.TenantID, unitIDs)
 			if err != nil {
 				s.logger.Warn("Failed to get device IDs for Caregiver/Nurse units, returning empty list",
 					zap.Error(err),
@@ -616,7 +618,7 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 				}, nil
 			}
 
-			if len(allowedDeviceIDs) == 0 {
+			if len(allowedDeviceAddrs) == 0 {
 				return &ListAlarmEventsResponse{
 					Items: []*AlarmEventDTO{},
 					Pagination: PaginationDTO{
@@ -628,22 +630,22 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 				}, nil
 			}
 
-			// 将允许的 device_ids 添加到过滤器中
-			if len(filters.DeviceIDs) > 0 {
+			// 将允许的 device_addrs 添加到过滤器中
+			if len(filters.DeviceAddrs) > 0 {
 				// 取交集
 				allowedSet := make(map[string]bool)
-				for _, id := range allowedDeviceIDs {
+				for _, id := range allowedDeviceAddrs {
 					allowedSet[id] = true
 				}
-				filteredDeviceIDs := []string{}
-				for _, id := range filters.DeviceIDs {
+				filteredDeviceAddrs := []string{}
+				for _, id := range filters.DeviceAddrs {
 					if allowedSet[id] {
-						filteredDeviceIDs = append(filteredDeviceIDs, id)
+						filteredDeviceAddrs = append(filteredDeviceAddrs, id)
 					}
 				}
-				filters.DeviceIDs = filteredDeviceIDs
+				filters.DeviceAddrs = filteredDeviceAddrs
 			} else {
-				filters.DeviceIDs = allowedDeviceIDs
+				filters.DeviceAddrs = allowedDeviceAddrs
 			}
 		} else {
 			// 其他 Staff 角色（如 IT）：暂时不进行权限过滤，允许查看所有报警
@@ -677,7 +679,7 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 			}
 
 			// 查询该 resident 有权限查看的设备
-			allowedDeviceIDs, err := s.getDeviceIDsForResident(ctx, req.TenantID, req.CurrentUserID, residentBedID, residentUnitID, isSharedUnit)
+			allowedDeviceAddrs, err := s.getDeviceAddrsForResident(ctx, req.TenantID, req.CurrentUserID, residentBedID, residentUnitID, isSharedUnit)
 			if err != nil {
 				s.logger.Warn("Failed to get device IDs for resident, returning empty list",
 					zap.String("resident_id", req.CurrentUserID),
@@ -694,7 +696,7 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 				}, nil
 			}
 
-			if len(allowedDeviceIDs) == 0 {
+			if len(allowedDeviceAddrs) == 0 {
 				// 如果没有关联的设备，返回空列表
 				return &ListAlarmEventsResponse{
 					Items: []*AlarmEventDTO{},
@@ -707,22 +709,22 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 				}, nil
 			}
 
-			// 将允许的 device_ids 添加到过滤器中
-			if len(filters.DeviceIDs) > 0 {
-				// 取交集：只保留既在 filters.DeviceIDs 中，又在 allowedDeviceIDs 中的设备
+			// 将允许的 device_addrs 添加到过滤器中
+			if len(filters.DeviceAddrs) > 0 {
+				// 取交集：只保留既在 filters.DeviceAddrs 中，又在 allowedDeviceAddrs 中的设备
 				allowedSet := make(map[string]bool)
-				for _, id := range allowedDeviceIDs {
+				for _, id := range allowedDeviceAddrs {
 					allowedSet[id] = true
 				}
-				filteredDeviceIDs := []string{}
-				for _, id := range filters.DeviceIDs {
+				filteredDeviceAddrs := []string{}
+				for _, id := range filters.DeviceAddrs {
 					if allowedSet[id] {
-						filteredDeviceIDs = append(filteredDeviceIDs, id)
+						filteredDeviceAddrs = append(filteredDeviceAddrs, id)
 					}
 				}
-				filters.DeviceIDs = filteredDeviceIDs
+				filters.DeviceAddrs = filteredDeviceAddrs
 			} else {
-				filters.DeviceIDs = allowedDeviceIDs
+				filters.DeviceAddrs = allowedDeviceAddrs
 			}
 		} else {
 			// 既不是 staff 也不是 resident，返回空列表
@@ -810,16 +812,16 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 	if userType == "" {
 		userType = "staff"
 	}
-	err = s.checkHandlePermission(ctx, req.TenantID, event.DeviceID, req.CurrentUserID, userType, req.CurrentUserRole)
+	err = s.checkHandlePermission(ctx, req.TenantID, event.DeviceAddr, req.CurrentUserID, userType, req.CurrentUserRole)
 	if err != nil {
 		return nil, fmt.Errorf("permission denied: %w", err)
 	}
 
 	// 查 cardID（后续事务需要）
-	cardID, err := s.getCardIDByDeviceID(ctx, req.TenantID, event.DeviceID)
+	cardID, err := s.getCardIDByDeviceAddr(ctx, req.TenantID, event.DeviceAddr)
 	if err != nil {
 		s.logger.Warn("Failed to get card ID for alarm event, will publish with empty card_id",
-			zap.String("device_id", event.DeviceID),
+			zap.String("device_addr", event.DeviceAddr),
 			zap.String("event_id", req.EventID),
 			zap.Error(err),
 		)
@@ -882,7 +884,7 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 		Success:        true,
 		EventID:        req.EventID,
 		CardID:         cardID,
-		DeviceID:       event.DeviceID,
+		DeviceAddr:       event.DeviceAddr,
 		AlarmLevel:     event.AlarmLevel,
 		AlarmType:      event.EventType,
 		AlarmTimestamp: handTime.Unix(),
@@ -897,7 +899,7 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 			pubCtx,
 			req.TenantID,
 			cardID,
-			event.DeviceID,
+			event.DeviceAddr,
 			event.AlarmLevel,
 			event.EventType,
 			rediscommon.AlarmProcessActionAck,
@@ -924,13 +926,19 @@ func (s *alarmEventService) convertAlarmEventToDTO(ctx context.Context, tenantID
 	dto := &AlarmEventDTO{
 		EventID:     event.EventID,
 		TenantID:    event.TenantID,
-		DeviceID:    event.DeviceID,
+		DeviceAddr:    event.DeviceAddr,
 		EventType:   event.EventType,
 		Category:    event.Category,
 		AlarmLevel:  event.AlarmLevel,
 		AlarmStatus: event.AlarmStatus,
 		TriggeredAt:   event.TriggeredAt.UTC().Format(time.RFC3339),
 		TriggeredAtMs: event.TriggeredAt.UnixMilli(),
+	}
+
+	// 决策时刻：缺失（cutover 前历史行）→ 不渲染；存在 → RFC3339 + ms
+	if event.AlertedAt != nil {
+		dto.AlertedAt = event.AlertedAt.UTC().Format(time.RFC3339)
+		dto.AlertedAtMs = event.AlertedAt.UnixMilli()
 	}
 
 	// 处理信息
@@ -995,7 +1003,7 @@ func (s *alarmEventService) enrichAlarmEventDTO(ctx context.Context, tenantID st
 	// ── 2. live 补全 snapshot 中没有的字段 ──
 	var device *domain.Device
 	if dto.DeviceName == nil {
-		d, err := s.devicesRepo.GetDevice(ctx, tenantID, event.DeviceID)
+		d, err := s.devicesRepo.GetDevice(ctx, tenantID, event.DeviceAddr)
 		if err == nil {
 			device = d
 			if d.DeviceName != "" {
@@ -1005,7 +1013,7 @@ func (s *alarmEventService) enrichAlarmEventDTO(ctx context.Context, tenantID st
 	}
 
 	if dto.CardID == nil {
-		if cardID, err := s.getCardIDByDeviceID(ctx, tenantID, event.DeviceID); err == nil && cardID != "" {
+		if cardID, err := s.getCardIDByDeviceAddr(ctx, tenantID, event.DeviceAddr); err == nil && cardID != "" {
 			dto.CardID = &cardID
 		}
 	}
@@ -1013,7 +1021,7 @@ func (s *alarmEventService) enrichAlarmEventDTO(ctx context.Context, tenantID st
 	// 地址链缺失时 live 查询
 	if dto.UnitID == nil {
 		if device == nil {
-			device, _ = s.devicesRepo.GetDevice(ctx, tenantID, event.DeviceID)
+			device, _ = s.devicesRepo.GetDevice(ctx, tenantID, event.DeviceAddr)
 		}
 		if device != nil {
 			var unitID string
@@ -1064,7 +1072,7 @@ func (s *alarmEventService) enrichAlarmEventDTO(ctx context.Context, tenantID st
 	// ── 3. resident：snapshot 已有则跳过，否则 fallback live 查询 ──
 	if !snapshotHasResident {
 		if device == nil {
-			device, _ = s.devicesRepo.GetDevice(ctx, tenantID, event.DeviceID)
+			device, _ = s.devicesRepo.GetDevice(ctx, tenantID, event.DeviceAddr)
 		}
 		s.enrichResidentInfo(ctx, tenantID, device, dto)
 	}
@@ -1150,6 +1158,9 @@ func (s *alarmEventService) applyUnitTimezoneToTimestamps(event *domain.AlarmEve
 		return
 	}
 	dto.TriggeredAt = event.TriggeredAt.In(loc).Format(time.RFC3339)
+	if event.AlertedAt != nil {
+		dto.AlertedAt = event.AlertedAt.In(loc).Format(time.RFC3339)
+	}
 	if event.HandTime != nil {
 		t := event.HandTime.In(loc).Format(time.RFC3339)
 		dto.HandledAt = &t
@@ -1308,13 +1319,13 @@ func (s *alarmEventService) enrichResidentInfo(ctx context.Context, tenantID str
 // 2. Home 类型卡片：所有角色都可以处理
 // 3. Caregiver/Nurse：可处理 assign-only 住户的报警
 // 4. Manager：可处理 branch 住户的报警，如果 branch=null，处理 branch=null 的 unit 的住户
-func (s *alarmEventService) checkHandlePermission(ctx context.Context, tenantID, deviceID, userID, userType, userRole string) error {
+func (s *alarmEventService) checkHandlePermission(ctx context.Context, tenantID, deviceAddr, userID, userType, userRole string) error {
 	if s.db == nil {
 		return fmt.Errorf("database connection not available")
 	}
 
-	// 1. 查询卡片信息（通过 device_id）
-	cardID, err := s.getCardIDByDeviceID(ctx, tenantID, deviceID)
+	// 1. 查询卡片信息（通过 device_addr）
+	cardID, err := s.getCardIDByDeviceAddr(ctx, tenantID, deviceAddr)
 	if err != nil {
 		// 如果找不到卡片，允许处理（fallback）
 		return nil
@@ -1337,8 +1348,8 @@ func (s *alarmEventService) checkHandlePermission(ctx context.Context, tenantID,
 
 	// 4. Home 单元：检查 assigned_only 和 branch_only 权限
 	if unitProperty == commoncard.UnitPropertyHome {
-		// 通过 device_id 获取关联的住户信息
-		residentInfo, err := s.getResidentByDeviceID(ctx, tenantID, deviceID)
+		// 通过 device_addr 获取关联的住户信息
+		residentInfo, err := s.getResidentByDeviceAddr(ctx, tenantID, deviceAddr)
 		if err != nil {
 			// 如果设备没有关联住户，允许处理（fallback）
 			return nil
@@ -1488,10 +1499,10 @@ type residentInfo struct {
 	UnitID     sql.NullString
 }
 
-// getResidentByDeviceID 通过 device_addr 获取关联的住户信息
-// Phase 2: deviceID 入参承载 device_addr (INET text)。
+// getResidentByDeviceAddr 通过 device_addr 获取关联的住户信息
+// Phase 2: deviceAddr 入参承载 device_addr (INET text)。
 // 查询路径：devices → beds → residents 或 devices → rooms → units → residents
-func (s *alarmEventService) getResidentByDeviceID(ctx context.Context, tenantID, deviceID string) (*residentInfo, error) {
+func (s *alarmEventService) getResidentByDeviceAddr(ctx context.Context, tenantID, deviceAddr string) (*residentInfo, error) {
 	// 查询设备关联的住户（优先通过 bed，其次通过 room）
 	query := `
 		SELECT DISTINCT
@@ -1510,7 +1521,7 @@ func (s *alarmEventService) getResidentByDeviceID(ctx context.Context, tenantID,
 	`
 
 	var info residentInfo
-	err := s.db.QueryRowContext(ctx, query, tenantID, deviceID).Scan(
+	err := s.db.QueryRowContext(ctx, query, tenantID, deviceAddr).Scan(
 		&info.ResidentID,
 		&info.BranchName,
 		&info.UnitID,
@@ -1519,7 +1530,7 @@ func (s *alarmEventService) getResidentByDeviceID(ctx context.Context, tenantID,
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("no resident found for device")
 		}
-		return nil, fmt.Errorf("failed to get resident by device_id: %w", err)
+		return nil, fmt.Errorf("failed to get resident by device_addr: %w", err)
 	}
 
 	return &info, nil
@@ -1560,7 +1571,7 @@ func (s *alarmEventService) isResidentAssignedToUser(ctx context.Context, tenant
 	return false
 }
 
-// getCardDeviceIDs 通过 card 的物理位置（unit_id + bed_id）反查 devices 表得设备 ID 列表。
+// getCardDeviceAddrs 通过 card 的物理位置（unit_id + bed_id）反查 devices 表得设备 ID 列表。
 //
 // 设计原则：cards.devices JSONB 是衍生快照（易变量，重启服务/卡片重绑会变），
 // 不应作为 alarm 查询的 scope 来源。改用持久物理量。
@@ -1570,7 +1581,7 @@ func (s *alarmEventService) isResidentAssignedToUser(ctx context.Context, tenant
 //   - ActiveBedCard（bed_id 非空）：bed sleepad + 该 bed 所在 room 的 radar，仅此而已。
 //   - UnitCard（bed_id 空 + unit_id 非空）：整 unit 全 rooms 的 radar（公共区域卡，意图如此）。
 //   - 都为空（DeviceCard / 异常）：返回空。
-func (s *alarmEventService) getCardDeviceIDs(ctx context.Context, tenantID, cardID string) ([]string, error) {
+func (s *alarmEventService) getCardDeviceAddrs(ctx context.Context, tenantID, cardID string) ([]string, error) {
 	// Step 1: 取 card 的 unit_id / bed_id（物理锚点）
 	var unitID, bedID sql.NullString
 	err := s.db.QueryRowContext(ctx,
@@ -1622,23 +1633,23 @@ func (s *alarmEventService) getCardDeviceIDs(ctx context.Context, tenantID, card
 	}
 	defer rows.Close()
 
-	deviceIDs := make([]string, 0)
+	deviceAddrs := make([]string, 0)
 	for rows.Next() {
 		var did string
 		if err := rows.Scan(&did); err != nil {
-			return nil, fmt.Errorf("failed to scan device_id: %w", err)
+			return nil, fmt.Errorf("failed to scan device_addr: %w", err)
 		}
-		deviceIDs = append(deviceIDs, did)
+		deviceAddrs = append(deviceAddrs, did)
 	}
-	return deviceIDs, nil
+	return deviceAddrs, nil
 }
 
-// getRoomDeviceIDs 通过 room_id 反查 devices 表得设备 ID 列表。
+// getRoomDeviceAddrs 通过 room_id 反查 devices 表得设备 ID 列表。
 // 用于 WaveMonitor 等"按物理 room scope"的告警查询，避免跨 room 串入。
 //
 //   - bound_room_id = room_id       → 房间内传感器（radar）
 //   - bound_bed_id IN (该 room 下所有 bed) → 床上传感器（sleepad）
-func (s *alarmEventService) getRoomDeviceIDs(ctx context.Context, tenantID, roomID string) ([]string, error) {
+func (s *alarmEventService) getRoomDeviceAddrs(ctx context.Context, tenantID, roomID string) ([]string, error) {
 	query := `
 		SELECT DISTINCT host(device_addr)
 		FROM devices
@@ -1654,32 +1665,32 @@ func (s *alarmEventService) getRoomDeviceIDs(ctx context.Context, tenantID, room
 	}
 	defer rows.Close()
 
-	deviceIDs := make([]string, 0)
+	deviceAddrs := make([]string, 0)
 	for rows.Next() {
 		var did string
 		if err := rows.Scan(&did); err != nil {
-			return nil, fmt.Errorf("failed to scan device_id: %w", err)
+			return nil, fmt.Errorf("failed to scan device_addr: %w", err)
 		}
-		deviceIDs = append(deviceIDs, did)
+		deviceAddrs = append(deviceAddrs, did)
 	}
-	return deviceIDs, nil
+	return deviceAddrs, nil
 }
 
-// getDeviceIDsForResident 查询住户有权限查看的设备 ID 列表
+// getDeviceAddrsForResident 查询住户有权限查看的设备 ID 列表
 // 优先通过 card 表查找，失败时回退到直接查询 devices 表
 // 参考 card 创建逻辑：
 //   - shareUnit: 只能看到绑定到自己 bed 的设备（不能看到公共区域的设备）
 //   - 非 shareUnit: 可以看到绑定到自己 bed 的设备，以及同一 unit 下未绑定到 bed 的设备（绑定到 room 的设备）
-func (s *alarmEventService) getDeviceIDsForResident(ctx context.Context, tenantID, residentID string, bedID, unitID sql.NullString, isSharedUnit bool) ([]string, error) {
+func (s *alarmEventService) getDeviceAddrsForResident(ctx context.Context, tenantID, residentID string, bedID, unitID sql.NullString, isSharedUnit bool) ([]string, error) {
 	if s.db == nil {
 		return nil, fmt.Errorf("database connection not available")
 	}
 
 	// 优先尝试通过 card 表查找
-	deviceIDs, err := s.getDeviceIDsFromCardsForResident(ctx, tenantID, bedID, unitID, isSharedUnit)
-	if err == nil && len(deviceIDs) > 0 {
+	deviceAddrs, err := s.getDeviceAddrsFromCardsForResident(ctx, tenantID, bedID, unitID, isSharedUnit)
+	if err == nil && len(deviceAddrs) > 0 {
 		// 成功从 card 表获取，直接返回
-		return deviceIDs, nil
+		return deviceAddrs, nil
 	}
 
 	// card 表查找失败，回退到直接查询 devices 表
@@ -1739,23 +1750,23 @@ func (s *alarmEventService) getDeviceIDsForResident(ctx context.Context, tenantI
 	}
 	defer rows.Close()
 
-	deviceIDs = []string{}
+	deviceAddrs = []string{}
 	for rows.Next() {
-		var deviceID string
-		if err := rows.Scan(&deviceID); err != nil {
+		var deviceAddr string
+		if err := rows.Scan(&deviceAddr); err != nil {
 			return nil, fmt.Errorf("failed to scan device ID: %w", err)
 		}
-		deviceIDs = append(deviceIDs, deviceID)
+		deviceAddrs = append(deviceAddrs, deviceAddr)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating device IDs: %w", err)
 	}
 
-	return deviceIDs, nil
+	return deviceAddrs, nil
 }
 
-// getDeviceIDsFromCardsForResident 通过 card 表查询住户有权限查看的设备 ID 列表
-func (s *alarmEventService) getDeviceIDsFromCardsForResident(ctx context.Context, tenantID string, bedID, unitID sql.NullString, isSharedUnit bool) ([]string, error) {
+// getDeviceAddrsFromCardsForResident 通过 card 表查询住户有权限查看的设备 ID 列表
+func (s *alarmEventService) getDeviceAddrsFromCardsForResident(ctx context.Context, tenantID string, bedID, unitID sql.NullString, isSharedUnit bool) ([]string, error) {
 	if s.db == nil {
 		return nil, fmt.Errorf("database connection not available")
 	}
@@ -1804,7 +1815,7 @@ func (s *alarmEventService) getDeviceIDsFromCardsForResident(ctx context.Context
 	}
 	defer rows.Close()
 
-	deviceIDSet := make(map[string]bool)
+	deviceAddrSet := make(map[string]bool)
 	for rows.Next() {
 		var devicesJSON []byte
 		if err := rows.Scan(&devicesJSON); err != nil {
@@ -1817,10 +1828,10 @@ func (s *alarmEventService) getDeviceIDsFromCardsForResident(ctx context.Context
 			continue
 		}
 
-		// 提取 device_id
+		// 提取 device_addr
 		for _, device := range devices {
-			if deviceID, ok := device["device_id"].(string); ok {
-				deviceIDSet[deviceID] = true
+			if deviceAddr, ok := device["device_addr"].(string); ok {
+				deviceAddrSet[deviceAddr] = true
 			}
 		}
 	}
@@ -1830,12 +1841,12 @@ func (s *alarmEventService) getDeviceIDsFromCardsForResident(ctx context.Context
 	}
 
 	// 转换为数组
-	deviceIDs := make([]string, 0, len(deviceIDSet))
-	for deviceID := range deviceIDSet {
-		deviceIDs = append(deviceIDs, deviceID)
+	deviceAddrs := make([]string, 0, len(deviceAddrSet))
+	for deviceAddr := range deviceAddrSet {
+		deviceAddrs = append(deviceAddrs, deviceAddr)
 	}
 
-	return deviceIDs, nil
+	return deviceAddrs, nil
 }
 
 // getUserBranchIDs — Phase 3 + Step B：优先从 ctx 取 ScopeContext，fallback 直查 DB
@@ -1916,11 +1927,11 @@ func (s *alarmEventService) getUnitIDsByBranchIDs(ctx context.Context, tenantID 
 	return unitIDs, nil
 }
 
-// getDeviceIDsByUnitIDs 通过多个 unit_id 查询关联的所有 device_ids
+// getDeviceAddrsByUnitIDs 通过多个 unit_id 查询关联的所有 device_addrs
 // 优先通过 card 表查找，失败时回退到直接查询 devices 表
 // 查询路径：units → cards → devices（优先）或 units → rooms → devices（回退）
 // 返回该 unit 下所有的 device（包括绑定到 bed 和绑定到 room 的设备）
-func (s *alarmEventService) getDeviceIDsByUnitIDs(ctx context.Context, tenantID string, unitIDs []string) ([]string, error) {
+func (s *alarmEventService) getDeviceAddrsByUnitIDs(ctx context.Context, tenantID string, unitIDs []string) ([]string, error) {
 	if len(unitIDs) == 0 {
 		return []string{}, nil
 	}
@@ -1930,10 +1941,10 @@ func (s *alarmEventService) getDeviceIDsByUnitIDs(ctx context.Context, tenantID 
 	}
 
 	// 优先尝试通过 card 表查找
-	deviceIDs, err := s.getDeviceIDsFromCardsByUnitIDs(ctx, tenantID, unitIDs)
-	if err == nil && len(deviceIDs) > 0 {
+	deviceAddrs, err := s.getDeviceAddrsFromCardsByUnitIDs(ctx, tenantID, unitIDs)
+	if err == nil && len(deviceAddrs) > 0 {
 		// 成功从 card 表获取，直接返回
-		return deviceIDs, nil
+		return deviceAddrs, nil
 	}
 
 	// card 表查找失败，回退到直接查询 devices 表
@@ -1975,23 +1986,23 @@ func (s *alarmEventService) getDeviceIDsByUnitIDs(ctx context.Context, tenantID 
 	}
 	defer rows.Close()
 
-	deviceIDs = []string{}
+	deviceAddrs = []string{}
 	for rows.Next() {
-		var deviceID string
-		if err := rows.Scan(&deviceID); err != nil {
+		var deviceAddr string
+		if err := rows.Scan(&deviceAddr); err != nil {
 			return nil, fmt.Errorf("failed to scan device ID: %w", err)
 		}
-		deviceIDs = append(deviceIDs, deviceID)
+		deviceAddrs = append(deviceAddrs, deviceAddr)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating device IDs: %w", err)
 	}
 
-	return deviceIDs, nil
+	return deviceAddrs, nil
 }
 
-// getDeviceIDsFromCardsByUnitIDs 通过 card 表查询多个 unit_id 关联的所有 device_ids
-func (s *alarmEventService) getDeviceIDsFromCardsByUnitIDs(ctx context.Context, tenantID string, unitIDs []string) ([]string, error) {
+// getDeviceAddrsFromCardsByUnitIDs 通过 card 表查询多个 unit_id 关联的所有 device_addrs
+func (s *alarmEventService) getDeviceAddrsFromCardsByUnitIDs(ctx context.Context, tenantID string, unitIDs []string) ([]string, error) {
 	if len(unitIDs) == 0 {
 		return []string{}, nil
 	}
@@ -2032,7 +2043,7 @@ func (s *alarmEventService) getDeviceIDsFromCardsByUnitIDs(ctx context.Context, 
 	}
 	defer rows.Close()
 
-	deviceIDSet := make(map[string]bool)
+	deviceAddrSet := make(map[string]bool)
 	for rows.Next() {
 		var devicesJSON []byte
 		if err := rows.Scan(&devicesJSON); err != nil {
@@ -2045,10 +2056,10 @@ func (s *alarmEventService) getDeviceIDsFromCardsByUnitIDs(ctx context.Context, 
 			continue
 		}
 
-		// 提取 device_id
+		// 提取 device_addr
 		for _, device := range devices {
-			if deviceID, ok := device["device_id"].(string); ok {
-				deviceIDSet[deviceID] = true
+			if deviceAddr, ok := device["device_addr"].(string); ok {
+				deviceAddrSet[deviceAddr] = true
 			}
 		}
 	}
@@ -2058,12 +2069,12 @@ func (s *alarmEventService) getDeviceIDsFromCardsByUnitIDs(ctx context.Context, 
 	}
 
 	// 转换为数组
-	deviceIDs := make([]string, 0, len(deviceIDSet))
-	for deviceID := range deviceIDSet {
-		deviceIDs = append(deviceIDs, deviceID)
+	deviceAddrs := make([]string, 0, len(deviceAddrSet))
+	for deviceAddr := range deviceAddrSet {
+		deviceAddrs = append(deviceAddrs, deviceAddr)
 	}
 
-	return deviceIDs, nil
+	return deviceAddrs, nil
 }
 
 // getAssignedResidentIDs 查询分配给指定用户的住户 ID 列表
@@ -2153,9 +2164,9 @@ func (s *alarmEventService) getUnitIDsByResidentIDs(ctx context.Context, tenantI
 	return unitIDs, nil
 }
 
-// getCardIDByDeviceID 通过 device_addr 查询 card_id（直接查 DB）
-// Phase 2: deviceID 入参承载 device_addr (INET text)。
-func (s *alarmEventService) getCardIDByDeviceID(ctx context.Context, tenantID, deviceID string) (string, error) {
+// getCardIDByDeviceAddr 通过 device_addr 查询 card_id（直接查 DB）
+// Phase 2: deviceAddr 入参承载 device_addr (INET text)。
+func (s *alarmEventService) getCardIDByDeviceAddr(ctx context.Context, tenantID, deviceAddr string) (string, error) {
 	// v2 unified: card_id ≡ spatial_prefix；LPM 反查 (device_addr → cards)
 	_ = tenantID
 	query := `
@@ -2165,9 +2176,9 @@ func (s *alarmEventService) getCardIDByDeviceID(ctx context.Context, tenantID, d
 		LIMIT 1
 	`
 	var cardID sql.NullString
-	err := s.db.QueryRowContext(ctx, query, deviceID).Scan(&cardID)
+	err := s.db.QueryRowContext(ctx, query, deviceAddr).Scan(&cardID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get card by device_id: %w", err)
+		return "", fmt.Errorf("failed to get card by device_addr: %w", err)
 	}
 	if !cardID.Valid {
 		return "", nil

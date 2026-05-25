@@ -77,22 +77,7 @@ func main() {
 	}
 	defer logger.Sync()
 
-	// 3. 业务租户 ID（可选；内置租户由建库脚本写入，与启动无关）
-	tenantID := os.Getenv("TENANT_ID")
-	if tenantID == "" {
-		logger.Info("TENANT_ID unset — wisefido-sensor starts; card polling uses no tenant until set in .env")
-	}
-
-	// 4. 创建服务
-	alarmService, err := service.NewAlarmService(cfg, logger, tenantID)
-	if err != nil {
-		logger.Fatal("Failed to create alarm service",
-			zap.Error(err),
-		)
-	}
-	defer alarmService.Stop()
-
-	// 5. 创建上下文（支持优雅关闭）
+	// 3. 创建上下文（支持优雅关闭）
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -215,31 +200,15 @@ func main() {
 	// （如「OOR 29h」残留显示）。详 initial_publish.go。
 	publishInitialResetState(ctx, engineDB, zone.StreamPublisher, logger)
 
-	// 6. 启动服务（在 goroutine 中）
-	serviceErrChan := make(chan error, 1)
-	go func() {
-		if err := alarmService.Start(ctx); err != nil {
-			serviceErrChan <- err
-		}
-	}()
-
-	// 7. 等待信号（优雅关闭）
+	// 6. 等待信号（优雅关闭）
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	select {
-	case sig := <-sigChan:
-		logger.Info("Received signal, shutting down",
-			zap.String("signal", sig.String()),
-		)
-		cancel() // 取消上下文，停止服务
-	case err := <-serviceErrChan:
-		logger.Fatal("Service error",
-			zap.Error(err),
-		)
-	}
+	sig := <-sigChan
+	logger.Info("Received signal, shutting down", zap.String("signal", sig.String()))
+	cancel()
 
-	logger.Info("Alarm service stopped")
+	logger.Info("wisefido-sensor stopped")
 }
 
 // openEngineDeps 为 RoomEngine 单独建 db + redis 连接（与 alarm service 隔离）

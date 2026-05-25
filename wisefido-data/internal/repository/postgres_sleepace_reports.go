@@ -32,7 +32,7 @@ func NewPostgresSleepaceReportsRepository(db *sql.DB) *PostgresSleepaceReportsRe
 // 确保实现了接口
 var _ SleepaceReportsRepository = (*PostgresSleepaceReportsRepository)(nil)
 
-// sleepaceReportSelectColumns Phase 2 一刀切：sleepace_report.device_uid + device_addr。
+// sleepaceReportSelectColumns sleepace_report.device_uid + device_addr。
 const sleepaceReportSelectColumns = `
 	sr.report_id::text,
 	host(network(set_masklen(d.device_addr, 48))) || '/48' AS tenant_id,
@@ -273,7 +273,7 @@ func (r *PostgresSleepaceReportsRepository) GetValidDatesInRange(ctx context.Con
 	return dates, nil
 }
 
-// GetDeviceUIDByDeviceUID Phase 2 一刀切：identity = device_uid；本函数保留 idempotent 校验入参 device_uid 存在性。
+// GetDeviceUIDByDeviceUID identity = device_uid；本函数保留 idempotent 校验入参 device_uid 存在性。
 func (r *PostgresSleepaceReportsRepository) GetDeviceIDByDeviceUID(ctx context.Context, tenantID, deviceUID string) (string, error) {
 	if tenantID == "" || deviceUID == "" {
 		return "", fmt.Errorf("tenant_id and device_uid are required")
@@ -300,7 +300,7 @@ func (r *PostgresSleepaceReportsRepository) GetDeviceIDByDeviceUID(ctx context.C
 	return uid, nil
 }
 
-// SaveReport Phase 2 一刀切：UPSERT 用 (device_uid, date) UNIQUE 约束。
+// SaveReport UPSERT 用 (device_uid, date) UNIQUE 约束。
 // device_addr 从 devices 派生写入。
 // TODO Phase 2.1: sleepace SDK userId format verify — report.DeviceUID 现在 == sleepace.userId
 func (r *PostgresSleepaceReportsRepository) SaveReport(ctx context.Context, tenantID string, report *domain.SleepaceReport) error {

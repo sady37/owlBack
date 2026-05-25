@@ -480,7 +480,7 @@ func (s *CardStaticService) fillDevicesV3(ctx context.Context, cards []commoncar
 	// 例: guest radar 在 /88 guest, 但 guest 只有 1 bed → 不出 /88 guest card → cards 集合无此 prefix
 	//     若 WHERE 限 cards prefix 内，guest radar 落不到任何 cards prefix → 被滤掉 → bed 301 收不到
 	// 修法: 用 set_masklen 把 cards prefix 截到 /80 unit，device 在任一 unit 内即纳入
-	// device_id = UUID (外部对接) / device_ipv6 = INET host 文本（owlcare 内部 lookup 用，
+	// device_id = UUID (legacy 外部对接) / device_addr = INET host 文本（owlcare 内部 lookup 用，
 	// 与 card:realtime:stream.devices map key + device:status:{IPv6} 一致）
 	// [[feedback_api_ids_ipv6_only]]
 	// device 列表**不再按 monitoring_enabled 过滤** — 返回完整列表，由 FE 凭 device.monitoring_enabled

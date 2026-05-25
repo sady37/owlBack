@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-// Device 设备领域模型（Phase 2 一刀切后）：
+// Device 设备领域模型：
 //   - devices PK = device_addr INET /128
 //   - 硬件 identity = device_uid VARCHAR(50)（dfm PK；FK devices.device_uid）
 type Device struct {
@@ -35,7 +35,7 @@ type Device struct {
 }
 
 // DeviceStatusItem 设备在线状态项（用于批量查询 API）。
-// Phase 2 一刀切：DeviceAddr (INET /128) 是业务侧寻址；DeviceUID 是硬件 identity。
+// DeviceAddr (INET /128) 是业务侧寻址；DeviceUID 是硬件 identity。
 type DeviceStatusItem struct {
 	DeviceUID  string `json:"device_uid"`
 	DeviceAddr string `json:"device_addr,omitempty"`

@@ -26,7 +26,7 @@ import (
 // DeviceSubscription 设备订阅信息
 type DeviceSubscription struct {
 	DeviceUID                   string
-	DeviceID                    string
+	DeviceAddr                    string
 	PropTopic                   string
 	MonitorTopic                string
 	FuncTopic                   string
@@ -69,7 +69,7 @@ type DeviceSubscriptionManager struct {
 	logger                   *zap.Logger
 	messageHandler           MessageHandler                 // MQTT消息处理器（来自MQTT consumer）
 	subscriptionsByUID       map[string]*DeviceSubscription // device_uid -> subscription
-	subscriptionsByID        map[string]*DeviceSubscription // device_id -> subscription，与 subscriptionsByUID 指向同一个对象
+	subscriptionsByID        map[string]*DeviceSubscription // device_addr -> subscription，与 subscriptionsByUID 指向同一个对象
 	unsubscribedDueToTimeout map[string]struct{}            // 90s 超时后强制取消订阅，需重认证
 	mu                       sync.RWMutex
 	checkInterval            time.Duration // 检查间隔（30秒）
@@ -153,8 +153,8 @@ func (m *DeviceSubscriptionManager) Start(ctx context.Context) error {
 func (m *DeviceSubscriptionManager) restoreAuthenticatedDeviceSubscriptions(ctx context.Context) {
 	m.logger.Info("restoring authenticated Radar subscriptions from db")
 
-	// Phase 2 一刀切：已认证 Radar = dfm.device_type='Radar' AND devices.access=TRUE
-	// identity = device_uid (logMAC)；订阅内部用 device_addr 作为 deviceID 占位（保留字段名兼容）。
+	// 已认证 Radar = dfm.device_type='Radar' AND devices.access=TRUE
+	// identity = device_uid (logMAC)；订阅内部用 device_addr 作为 deviceAddr 占位（保留字段名兼容）。
 	query := `
 		SELECT dfm.device_uid, COALESCE(host(d.device_addr), '')
 		FROM device_factory_meta dfm
@@ -172,8 +172,8 @@ func (m *DeviceSubscriptionManager) restoreAuthenticatedDeviceSubscriptions(ctx 
 
 	restoredCount := 0
 	for rows.Next() {
-		var deviceUID, deviceID string
-		if err := rows.Scan(&deviceUID, &deviceID); err != nil {
+		var deviceUID, deviceAddr string
+		if err := rows.Scan(&deviceUID, &deviceAddr); err != nil {
 			m.logger.Warn("Failed to scan device row",
 				zap.Error(err),
 			)
@@ -186,7 +186,7 @@ func (m *DeviceSubscriptionManager) restoreAuthenticatedDeviceSubscriptions(ctx 
 			now := time.Now()
 			sub := &DeviceSubscription{
 				DeviceUID:       uid,
-				DeviceID:        id,
+				DeviceAddr:        id,
 				PropTopic:       m.mqttClient.BuildTopic("prop", uid),
 				MonitorTopic:    m.mqttClient.BuildTopic("monitor", uid),
 				FuncTopic:       m.mqttClient.BuildTopic("func", uid),
@@ -218,7 +218,7 @@ func (m *DeviceSubscriptionManager) restoreAuthenticatedDeviceSubscriptions(ctx 
 				} else {
 					m.logger.Info("restored device MQTT topics subscription",
 						zap.String("device_uid", uid),
-						zap.String("device_id", id),
+						zap.String("device_addr", id),
 					)
 				}
 			}
@@ -232,9 +232,9 @@ func (m *DeviceSubscriptionManager) restoreAuthenticatedDeviceSubscriptions(ctx 
 
 			m.logger.Info("Restored subscription record for device (monitor on first message)",
 				zap.String("device_uid", uid),
-				zap.String("device_id", id),
+				zap.String("device_addr", id),
 			)
-		}(deviceUID, deviceID)
+		}(deviceUID, deviceAddr)
 
 		restoredCount++
 	}
@@ -260,7 +260,7 @@ func (m *DeviceSubscriptionManager) Stop(ctx context.Context) error {
 
 // SubscribeDevice 订阅设备的实时数据（认证成功后调用）
 // 通过向设备发送MQTT命令来订阅，而不是订阅MQTT主题
-func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceUID, deviceID string) error {
+func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceUID, deviceAddr string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -275,16 +275,16 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 		if time.Since(monitorSubTime) < m.monitorMaxAge-10*time.Minute {
 			// 更新订阅信息
 			sub.mu.Lock()
-			oldDeviceID := sub.DeviceID
-			sub.DeviceID = deviceID
+			oldDeviceAddr := sub.DeviceAddr
+			sub.DeviceAddr = deviceAddr
 			sub.LastSeen = time.Now()
 			sub.mu.Unlock()
-			// 更新 subscriptionsByID（如果 deviceID 变化）
-			if deviceID != "" && deviceID != oldDeviceID {
+			// 更新 subscriptionsByID（如果 deviceAddr 变化）
+			if deviceAddr != "" && deviceAddr != oldDeviceAddr {
 				m.mu.Lock()
-				m.subscriptionsByID[deviceID] = sub
-				if oldDeviceID != "" {
-					delete(m.subscriptionsByID, oldDeviceID)
+				m.subscriptionsByID[deviceAddr] = sub
+				if oldDeviceAddr != "" {
+					delete(m.subscriptionsByID, oldDeviceAddr)
 				}
 				m.mu.Unlock()
 			}
@@ -370,7 +370,7 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 	now := time.Now()
 	sub := &DeviceSubscription{
 		DeviceUID:       deviceUID,
-		DeviceID:        deviceID,
+		DeviceAddr:        deviceAddr,
 		PropTopic:       propTopic,
 		MonitorTopic:    monitorTopic,
 		FuncTopic:       funcTopic,
@@ -390,8 +390,8 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 	}
 	// 同时存储到两个 map
 	m.subscriptionsByUID[deviceUID] = sub
-	if deviceID != "" {
-		m.subscriptionsByID[deviceID] = sub
+	if deviceAddr != "" {
+		m.subscriptionsByID[deviceAddr] = sub
 	}
 
 	// auth 成功后，立即发布 online event 到 deviceStatus stream
@@ -399,7 +399,7 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 		observation.FieldOffline: 0,
 	})
 	// 上线 → 根据 offline=0 推导 category=DeviceRecover
-	go m.publishDeviceAlarm(context.Background(), tenantID, deviceID, deviceUID, observation.FieldOffline, 0)
+	go m.publishDeviceAlarm(context.Background(), tenantID, deviceAddr, deviceUID, observation.FieldOffline, 0)
 	// 记录订阅状态
 	m.logger.Info("Device status changed",
 		zap.String("device_uid", deviceUID),
@@ -411,7 +411,7 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 
 	m.logger.Info("Device subscription recorded, sending monitor command",
 		zap.String("device_uid", deviceUID),
-		zap.String("device_id", deviceID),
+		zap.String("device_addr", deviceAddr),
 		zap.Time("monitor_sub_time", now),
 		zap.Int("duration", m.defaultDuration),
 		zap.Int("content", m.defaultContent),
@@ -422,13 +422,13 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 		if err := m.mqttPublisher.SubscribeRealtimeData(ctx, deviceUID, m.defaultContent, m.defaultDuration); err != nil {
 			m.logger.Warn("send monitor subscription command failed",
 				zap.String("device_uid", deviceUID),
-				zap.String("device_id", deviceID),
+				zap.String("device_addr", deviceAddr),
 				zap.Error(err),
 			)
 		} else {
 			m.logger.Info("sent monitor subscription command",
 				zap.String("device_uid", deviceUID),
-				zap.String("device_id", deviceID),
+				zap.String("device_addr", deviceAddr),
 			)
 		}
 	}()
@@ -438,7 +438,7 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 
 // EnablePeriodicSubscription 开启周期性订阅（认证成功后调用）
 // 检查是否已订阅MQTT主题：已订阅则仅记录，否则开启订阅
-func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Context, deviceUID, deviceID string) error {
+func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Context, deviceUID, deviceAddr string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -447,8 +447,8 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 	if exists {
 		// 已存在订阅记录：更新信息，重置 LastSeen（设备连上 MQTT 发第一条消息时自动触发 monitor 订阅）
 		sub.mu.Lock()
-		oldDeviceID := sub.DeviceID
-		sub.DeviceID = deviceID
+		oldDeviceAddr := sub.DeviceAddr
+		sub.DeviceAddr = deviceAddr
 		sub.Status = "online"
 		sub.MonitorSubTime = time.Now()
 		sub.LastSeen = time.Time{}
@@ -457,18 +457,18 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 		sub.LastEventTime = time.Time{}
 		sub.LastAlarmTime = time.Time{}
 		sub.mu.Unlock()
-		// 更新 subscriptionsByID（如果 deviceID 变化）
-		if deviceID != "" && deviceID != oldDeviceID {
+		// 更新 subscriptionsByID（如果 deviceAddr 变化）
+		if deviceAddr != "" && deviceAddr != oldDeviceAddr {
 			m.mu.Lock()
-			m.subscriptionsByID[deviceID] = sub
-			if oldDeviceID != "" {
-				delete(m.subscriptionsByID, oldDeviceID)
+			m.subscriptionsByID[deviceAddr] = sub
+			if oldDeviceAddr != "" {
+				delete(m.subscriptionsByID, oldDeviceAddr)
 			}
 			m.mu.Unlock()
 		}
 		m.logger.Info("device re-authenticated, lastseen reset",
 			zap.String("device_uid", deviceUID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 		)
 
 		// 重新发布 online 状态：先查 device_addr
@@ -479,10 +479,10 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 		go m.streamPublisher.PublishDeviceStatus(context.Background(), addrForReauth, deviceUID, sub.DeviceType, map[string]int{
 			observation.FieldOffline: 0,
 		})
-		go m.publishDeviceAlarm(context.Background(), sub.TenantID, deviceID, deviceUID, observation.FieldOffline, 0)
+		go m.publishDeviceAlarm(context.Background(), sub.TenantID, deviceAddr, deviceUID, observation.FieldOffline, 0)
 
 		// 延迟重试发送 monitor 订阅命令
-		go m.sendMonitorWithRetry(deviceUID, deviceID)
+		go m.sendMonitorWithRetry(deviceUID, deviceAddr)
 
 		return nil
 	}
@@ -541,7 +541,7 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 	now := time.Now()
 	sub = &DeviceSubscription{
 		DeviceUID:       deviceUID,
-		DeviceID:        deviceID,
+		DeviceAddr:        deviceAddr,
 		PropTopic:       propTopic,
 		MonitorTopic:    monitorTopic,
 		FuncTopic:       funcTopic,
@@ -566,7 +566,7 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 		observation.FieldOffline: 0,
 	})
 	// 上线 → 根据 offline=0 推导 category=DeviceRecover
-	go m.publishDeviceAlarm(context.Background(), sub.TenantID, deviceID, deviceUID, observation.FieldOffline, 0)
+	go m.publishDeviceAlarm(context.Background(), sub.TenantID, deviceAddr, deviceUID, observation.FieldOffline, 0)
 	// 记录周期订阅状态
 	m.logger.Info("Device subscription created (periodic)",
 		zap.String("device_uid", deviceUID),
@@ -575,7 +575,7 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 
 	m.logger.Info("periodic subscription enabled",
 		zap.String("device_uid", deviceUID),
-		zap.String("device_id", deviceID),
+		zap.String("device_addr", deviceAddr),
 		zap.String("monitor_topic", monitorTopic),
 		zap.String("tenant_id", tenantID),
 		zap.Bool("mqtt_already_subscribed", isMQTTSubscribed),
@@ -585,14 +585,14 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 	)
 
 	// 延迟重试发送 monitor 订阅命令：设备 auth 后需要时间连接 MQTT，立即发会丢失
-	go m.sendMonitorWithRetry(deviceUID, deviceID)
+	go m.sendMonitorWithRetry(deviceUID, deviceAddr)
 
 	return nil
 }
 
 // sendMonitorWithRetry auth 后延迟重试发送 monitor 订阅命令
 // 设备需要时间连接 MQTT，立即发 QoS0 会丢失；在 3s、6s、12s 后重试，收到 monitor 数据则停止
-func (m *DeviceSubscriptionManager) sendMonitorWithRetry(deviceUID, deviceID string) {
+func (m *DeviceSubscriptionManager) sendMonitorWithRetry(deviceUID, deviceAddr string) {
 	delays := []time.Duration{3 * time.Second, 6 * time.Second, 12 * time.Second}
 	for i, delay := range delays {
 		time.Sleep(delay)
@@ -654,7 +654,7 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 		// 设备可能已被取消订阅，需要重新认证
 		m.mu.Unlock()
 		// 设备未在订阅列表中，可能是首次收到消息
-		// 需要查询device_id并发送monitor订阅命令
+		// 需要查询device_addr并发送monitor订阅命令
 		go m.autoSubscribeOnFirstMessage(context.Background(), deviceUID)
 		return
 	}
@@ -712,11 +712,11 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 		m.mu.RUnlock()
 		if exists {
 			sub.mu.RLock()
-			deviceID := sub.DeviceID
+			deviceAddr := sub.DeviceAddr
 			deviceType := sub.DeviceType
 			tenantID := sub.TenantID
 			sub.mu.RUnlock()
-			if deviceID != "" {
+			if deviceAddr != "" {
 				var addrLocal netip.Addr
 				if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(context.Background(), deviceUID); dsErr == nil && dsi != nil {
 					addrLocal = dsi.DeviceAddr
@@ -771,8 +771,8 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 		FROM device_factory_meta dfm
 		JOIN devices d ON d.device_uid = dfm.device_uid
 		WHERE dfm.device_uid = $1 AND d.access = TRUE AND dfm.device_type = 'Radar'`
-	var deviceID string
-	err := m.db.QueryRowContext(ctx, query, deviceUID).Scan(&deviceID)
+	var deviceAddr string
+	err := m.db.QueryRowContext(ctx, query, deviceUID).Scan(&deviceAddr)
 	if err != nil {
 		m.logger.Warn("Failed to verify device for auto-subscribe",
 			zap.String("device_uid", deviceUID),
@@ -782,11 +782,11 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 	}
 
 	// 检查 devices.status，disabled 的设备不创建订阅（避免与 checkDeviceHeartbeat 形成创建→删除死循环）
-	dbStatus, err := m.getDeviceStatus(ctx, deviceID)
+	dbStatus, err := m.getDeviceStatus(ctx, deviceAddr)
 	if err == nil && dbStatus == "disabled" {
 		m.logger.Debug("Skipping auto-subscribe for disabled device",
 			zap.String("device_uid", deviceUID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 		)
 		return
 	}
@@ -824,7 +824,7 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 		now := time.Now()
 		sub := &DeviceSubscription{
 			DeviceUID:    deviceUID,
-			DeviceID:     deviceID,
+			DeviceAddr:     deviceAddr,
 			PropTopic:    m.mqttClient.BuildTopic("prop", deviceUID),
 			MonitorTopic: m.mqttClient.BuildTopic("monitor", deviceUID),
 			FuncTopic:    m.mqttClient.BuildTopic("func", deviceUID),
@@ -846,8 +846,8 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 		}
 		// 同时存储到两个 map
 		m.subscriptionsByUID[deviceUID] = sub
-		if deviceID != "" {
-			m.subscriptionsByID[deviceID] = sub
+		if deviceAddr != "" {
+			m.subscriptionsByID[deviceAddr] = sub
 		}
 		justCreated = true
 	}
@@ -856,7 +856,7 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 	// 首次创建 → 立即发 OfflineRecover（与 UpdateLastSeenByType 的 path A 等价，但提前一拍）。
 	// 这里的实证：本函数被调用本身证明 mqtt_consumer 收到了一条该设备的 MQTT 包；
 	// 不再依赖第二条 MQTT，离线/在线判定立刻反映真实状态。
-	if justCreated && deviceID != "" && m.streamPublisher != nil {
+	if justCreated && deviceAddr != "" && m.streamPublisher != nil {
 		var addrJC netip.Addr
 		if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(ctx, deviceUID); dsErr == nil && dsi != nil {
 			addrJC = dsi.DeviceAddr
@@ -881,7 +881,7 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 		// 真正异常（Offline onset）走 publishHealthIfChanged 仍是 Info（仅 fail 时 log）。
 		m.logger.Debug("Device online (first MQTT after subscription create), OfflineRecover published",
 			zap.String("device_uid", deviceUID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 		)
 	}
 
@@ -922,7 +922,7 @@ func (m *DeviceSubscriptionManager) checkDeviceHeartbeat(ctx context.Context) {
 	for _, sub := range subs {
 		sub.mu.Lock()
 		deviceUID := sub.DeviceUID
-		deviceID := sub.DeviceID
+		deviceAddr := sub.DeviceAddr
 		status := sub.Status
 
 		// 获取4种消息类型的最新时间戳
@@ -957,11 +957,11 @@ func (m *DeviceSubscriptionManager) checkDeviceHeartbeat(ctx context.Context) {
 		}
 
 		// disabled 设备：从 DB 查 status，立即从订阅中移除
-		dbStatus, err := m.getDeviceStatus(ctx, deviceID)
+		dbStatus, err := m.getDeviceStatus(ctx, deviceAddr)
 		if err != nil {
 			m.logger.Debug("Failed to get device status for heartbeat check",
 				zap.String("device_uid", deviceUID),
-				zap.String("device_id", deviceID),
+				zap.String("device_addr", deviceAddr),
 				zap.Error(err),
 			)
 			continue
@@ -969,12 +969,12 @@ func (m *DeviceSubscriptionManager) checkDeviceHeartbeat(ctx context.Context) {
 		if dbStatus == "disabled" {
 			m.logger.Info("Device disabled, removing from subscriptions",
 				zap.String("device_uid", deviceUID),
-				zap.String("device_id", deviceID),
+				zap.String("device_addr", deviceAddr),
 			)
 			m.mu.Lock()
 			delete(m.subscriptionsByUID, deviceUID)
-			if deviceID != "" {
-				delete(m.subscriptionsByID, deviceID)
+			if deviceAddr != "" {
+				delete(m.subscriptionsByID, deviceAddr)
 			}
 			delete(m.prevHealth, deviceUID)
 			m.mu.Unlock()
@@ -1011,7 +1011,7 @@ func (m *DeviceSubscriptionManager) PublishOnlineForConnectedDevices(ctx context
 			continue
 		}
 		sub.mu.RLock()
-		status, _, deviceType, _ := sub.Status, sub.DeviceID, sub.DeviceType, sub.TenantID
+		status, _, deviceType, _ := sub.Status, sub.DeviceAddr, sub.DeviceType, sub.TenantID
 		sub.mu.RUnlock()
 		if status != "online" {
 			continue
@@ -1042,7 +1042,7 @@ func (m *DeviceSubscriptionManager) unsubscribeDevice(deviceUID string) {
 	}
 
 	sub.mu.Lock()
-	deviceID := sub.DeviceID // 先获取 deviceID，用于删除索引
+	deviceAddr := sub.DeviceAddr // 先获取 deviceAddr，用于删除索引
 	if sub.Status == "offline" {
 		sub.Status = "unsubscribed"
 		sub.mu.Unlock()
@@ -1063,8 +1063,8 @@ func (m *DeviceSubscriptionManager) unsubscribeDevice(deviceUID string) {
 		// 3. 从订阅列表中移除并标记需要重认证（注销内存中的Device）
 		m.mu.Lock()
 		delete(m.subscriptionsByUID, deviceUID)
-		if deviceID != "" {
-			delete(m.subscriptionsByID, deviceID)
+		if deviceAddr != "" {
+			delete(m.subscriptionsByID, deviceAddr)
 		}
 		m.unsubscribedDueToTimeout[deviceUID] = struct{}{}
 		// 重新订阅时视作首次观测——清掉旧的 transition 缓存，避免上线"假恢复"
@@ -1108,7 +1108,7 @@ func (m *DeviceSubscriptionManager) renewSubscriptions(ctx context.Context) {
 		sub.mu.RLock()
 		monitorSubTime := sub.MonitorSubTime
 		deviceUID := sub.DeviceUID
-		deviceID := sub.DeviceID
+		deviceAddr := sub.DeviceAddr
 		sub.mu.RUnlock()
 
 		// 检查monitor订阅是否超过最大时长（1小时），在过期前10分钟续订
@@ -1118,7 +1118,7 @@ func (m *DeviceSubscriptionManager) renewSubscriptions(ctx context.Context) {
 			if err := m.mqttPublisher.SubscribeRealtimeData(ctx, deviceUID, m.defaultContent, m.defaultDuration); err != nil {
 				m.logger.Warn("Failed to renew monitor subscription command",
 					zap.String("device_uid", deviceUID),
-					zap.String("device_id", deviceID),
+					zap.String("device_addr", deviceAddr),
 					zap.Error(err),
 				)
 			} else {
@@ -1127,7 +1127,7 @@ func (m *DeviceSubscriptionManager) renewSubscriptions(ctx context.Context) {
 				sub.mu.Unlock()
 				m.logger.Info("renewed monitor subscription",
 					zap.String("device_uid", deviceUID),
-					zap.String("device_id", deviceID),
+					zap.String("device_addr", deviceAddr),
 					zap.Duration("age", now.Sub(monitorSubTime)),
 					zap.Int("duration", m.defaultDuration),
 				)
@@ -1139,11 +1139,11 @@ func (m *DeviceSubscriptionManager) renewSubscriptions(ctx context.Context) {
 // getDeviceStatus 获取设备当前状态（仅用于 disabled 检查；on/offline 不存 DB）
 //
 // Phase 2: devices.access=FALSE → "disabled"（platform 拒绝接入）；TRUE → "active"
-// deviceID 入参承载 device_uid (logMAC)。
-func (m *DeviceSubscriptionManager) getDeviceStatus(ctx context.Context, deviceID string) (string, error) {
+// deviceAddr 入参承载 device_uid (logMAC)。
+func (m *DeviceSubscriptionManager) getDeviceStatus(ctx context.Context, deviceAddr string) (string, error) {
 	var access bool
 	query := `SELECT access FROM devices WHERE device_uid = $1`
-	err := m.db.QueryRowContext(ctx, query, deviceID).Scan(&access)
+	err := m.db.QueryRowContext(ctx, query, deviceAddr).Scan(&access)
 	if err != nil {
 		return "", err
 	}
@@ -1219,12 +1219,12 @@ func (m *DeviceSubscriptionManager) GetDeviceOnlineStatus(identifier string) str
 	return status
 }
 
-// GetDeviceOnlineStatusByDeviceID 通过 device_addr (INET) 获取设备的在线状态
+// GetDeviceOnlineStatusByDeviceAddr 通过 device_addr (INET) 获取设备的在线状态
 // Phase 2: device_id UUID 列退役；入参承载 device_addr，反查 devices.device_uid。
-func (m *DeviceSubscriptionManager) GetDeviceOnlineStatusByDeviceID(ctx context.Context, deviceID string) (string, error) {
+func (m *DeviceSubscriptionManager) GetDeviceOnlineStatusByDeviceAddr(ctx context.Context, deviceAddr string) (string, error) {
 	query := `SELECT device_uid FROM devices WHERE device_addr = $1::INET`
 	var deviceUID string
-	err := m.db.QueryRowContext(ctx, query, deviceID).Scan(&deviceUID)
+	err := m.db.QueryRowContext(ctx, query, deviceAddr).Scan(&deviceUID)
 	if err != nil {
 		return "offline", err
 	}
@@ -1251,7 +1251,7 @@ func (m *DeviceSubscriptionManager) GetAllDeviceStatuses(tenantID string) []doma
 		sub.mu.RLock()
 		subTenantID := sub.TenantID
 		deviceUID := sub.DeviceUID
-		deviceID := sub.DeviceID
+		deviceAddr := sub.DeviceAddr
 		status := sub.Status
 		sub.mu.RUnlock()
 
@@ -1263,7 +1263,7 @@ func (m *DeviceSubscriptionManager) GetAllDeviceStatuses(tenantID string) []doma
 		}
 		result = append(result, domain.DeviceStatusItem{
 			DeviceUID:  deviceUID,
-			DeviceAddr: deviceID, // Phase 2: deviceID 内部承载 device_addr (canonical IPv6 text)
+			DeviceAddr: deviceAddr, // Phase 2: deviceAddr 内部承载 device_addr (canonical IPv6 text)
 			TenantID:   subTenantID,
 			Status:     status,
 		})
@@ -1273,7 +1273,7 @@ func (m *DeviceSubscriptionManager) GetAllDeviceStatuses(tenantID string) []doma
 
 // SetTCPDeviceOnline marks a TCP device as online in subscription manager memory
 // AND publishes online status to Redis cardagg (so wisefido-data API can read it)
-func (m *DeviceSubscriptionManager) SetTCPDeviceOnline(deviceUID, deviceID string) {
+func (m *DeviceSubscriptionManager) SetTCPDeviceOnline(deviceUID, deviceAddr string) {
 	m.mu.Lock()
 
 	if sub, exists := m.subscriptionsByUID[deviceUID]; exists {
@@ -1286,19 +1286,19 @@ func (m *DeviceSubscriptionManager) SetTCPDeviceOnline(deviceUID, deviceID strin
 		// Create a minimal subscription entry for TCP device
 		sub := &DeviceSubscription{
 			DeviceUID: deviceUID,
-			DeviceID:  deviceID,
+			DeviceAddr:  deviceAddr,
 			Status:    "online",
 			LastSeen:  time.Now(),
 		}
 		m.subscriptionsByUID[deviceUID] = sub
-		if deviceID != "" {
-			m.subscriptionsByID[deviceID] = sub
+		if deviceAddr != "" {
+			m.subscriptionsByID[deviceAddr] = sub
 		}
 		m.mu.Unlock()
 		m.logger.Info("tcp device online", zap.String("uid", deviceUID))
 	}
 
-	if deviceID != "" && m.streamPublisher != nil {
+	if deviceAddr != "" && m.streamPublisher != nil {
 		var addrTCP netip.Addr
 		if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(context.Background(), deviceUID); dsErr == nil && dsi != nil {
 			addrTCP = dsi.DeviceAddr
@@ -1308,7 +1308,7 @@ func (m *DeviceSubscriptionManager) SetTCPDeviceOnline(deviceUID, deviceID strin
 		})
 		m.logger.Info("tcp online published to cardagg",
 			zap.String("uid", deviceUID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 		)
 	}
 }
@@ -1316,18 +1316,18 @@ func (m *DeviceSubscriptionManager) SetTCPDeviceOnline(deviceUID, deviceID strin
 // SetTCPDeviceOffline marks a TCP device as offline in subscription manager memory
 // AND publishes offline status to Redis cardagg
 func (m *DeviceSubscriptionManager) SetTCPDeviceOffline(deviceUID string) {
-	var deviceID string
+	var deviceAddr string
 	m.mu.Lock()
 	if sub, exists := m.subscriptionsByUID[deviceUID]; exists {
 		sub.mu.Lock()
 		sub.Status = "offline"
-		deviceID = sub.DeviceID
+		deviceAddr = sub.DeviceAddr
 		sub.mu.Unlock()
 		m.logger.Info("tcp device offline", zap.String("uid", deviceUID))
 	}
 	m.mu.Unlock()
 
-	if deviceID != "" && m.streamPublisher != nil {
+	if deviceAddr != "" && m.streamPublisher != nil {
 		var addrTCP netip.Addr
 		if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(context.Background(), deviceUID); dsErr == nil && dsi != nil {
 			addrTCP = dsi.DeviceAddr

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 )
 
-// Device 设备领域模型（Phase 2 一刀切后）：
+// Device 设备领域模型：
 //   - devices PK = device_addr INET /128
 //   - 硬件 identity = device_uid VARCHAR(50)（dfm PK；FK devices.device_uid）
 //   - 其余字段由 JOIN device_factory_meta / device_ota 取，或由 device_addr prefix 派生。

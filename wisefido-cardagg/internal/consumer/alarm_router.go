@@ -206,13 +206,23 @@ func (r *AlarmRouter) persist(ctx context.Context, msg *owlredis.IoTStreamMessag
 		}
 	}
 
+	// 推断类 fall（silent/lost/still/bedside）传 incident_ts_ms = 真实发生时刻；envelope.Timestamp = 决策时刻。
+	// triggered_at = incident（FE 据此 [t-1, t+2] 拉 replay 窗口）；alerted_at = nowMs（延迟标记审计用）。
+	// 缺失（firmware Fall 等直发类）→ triggered_at = alerted_at = msg.Timestamp。
+	alertedAt := time.UnixMilli(msg.Timestamp)
+	triggeredAt := alertedAt
+	if incidentMs := parseIncidentTsMs(data); incidentMs > 0 {
+		triggeredAt = time.UnixMilli(incidentMs)
+	}
+
 	result, cas, err := card.InsertAlarmAndUpdateCard(ctx, r.db, cardID, card.AlarmInsertParams{
 		TenantID:    ac.TenantPref,
 		DeviceAddr:  ac.DeviceAddr,
 		EventType:   eventName,
 		Category:    alarm.GetFHIRCategory(eventName),
 		AlarmLevel:  level,
-		TriggeredAt: time.UnixMilli(msg.Timestamp),
+		TriggeredAt: triggeredAt,
+		AlertedAt:   alertedAt,
 		TriggerData: triggerData,
 		Metadata:    metadata,
 		RoomID:      ac.RoomPref,
@@ -255,6 +265,29 @@ func (r *AlarmRouter) autoResolve(ctx context.Context, msg *owlredis.IoTStreamMe
 		zap.String("cid", cardID),
 		zap.Int("count", result.ResolvedCount))
 	return r.writeAlarmState(ctx, cardID, cas)
+}
+
+// parseIncidentTsMs 从 alarm dataValue map 提 incident_ts_ms 数字字段。
+// sensor 推断类 fall 写入 fields["incident_ts_ms"]（engine.publishAIMessage）；
+// JSON unmarshal 后数字类型可能是 float64 / json.Number / int64，分别 cover。
+// 缺失 / 非法 → 返回 0（caller 退化 triggered_at = alerted_at = msg.Timestamp）。
+func parseIncidentTsMs(data map[string]interface{}) int64 {
+	v, ok := data["incident_ts_ms"]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case json.Number:
+		ms, _ := n.Int64()
+		return ms
+	}
+	return 0
 }
 
 // writeAlarmState 写 AlarmState 的同时合并 prev 状态重算 Display，单次 WriteCardStatus 落两块。

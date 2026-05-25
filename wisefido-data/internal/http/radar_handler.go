@@ -15,10 +15,37 @@ import (
 	"go.uber.org/zap"
 )
 
-// RadarHandler 雷达设备 API Handler
-// 对接 owlFront radarDeviceApi，路径 :id 为 device_id（devices.device_id），
-// 内部通过 radar_install_service 解析 device_uid 后调 qinglan_client → wisefido-qinglan。
-// 路由：/radar-device/api/v1/radar-device/device/:id/{realtime|original-properties|config}
+// RadarHandler 雷达设备 API Handler，对接 owlFront radarDeviceApi。
+//
+// =====================================================================
+// 设计：device_addr / device_uid / spatial_prefix 三种 identity 各司其职
+// =====================================================================
+//
+// 三类不同的"被指向物"，三类 endpoint 路径段：
+//
+//   1. business 层 — 「谁绑这张卡 / 在哪个空间集合」
+//       :device_addr   INET /128 host text (e.g., "fd00:0:3:411:2:100:7418:b267")
+//       device_addr 随 unit/room/bed 重绑改变 — 这正是想要的：跟"当前位置"对齐
+//       endpoint: /device/:device_addr/{card-context, init-subscriptions, stream, realtime}
+//
+//   2. hardware 层 — vendor MQTT 直接读写设备硬件
+//       :device_uid    12 hex MAC (e.g., "E598A2ACD523" — dfm.device_uid)
+//       device_uid 是 firmware 烧录的不变量 — qinglan MQTT topic 用它寻址
+//       endpoint: /device/:device_uid/{bind, unbind, original-properties, config, control}
+//
+//   3. spatial 层 — layout container（room_visual_layout PK）
+//       :spatial_prefix INET CIDR (/80 unit, /88 room, /128 device)
+//       endpoint: /room/:spatial_prefix/layout
+//
+// 融合点 (canvas 内部)：
+//   canvas.objects[] 里的 Device 条目应锚 device_uid（physical install identity），
+//   设备移出此 spatial_prefix 时 layout 残留 ghost 引用，由 read 时 lazy 过滤
+//   (device.device_addr <<= spatial_prefix 不成立 = ghost)。
+//   注：当前 radar_install_service.injectDeviceBindingsIntoLayout 仍注入 device_addr，
+//   待该层 follow-up 改为注入 device_uid + lazy filter；本 handler 已按目标 contract 命名。
+//
+// 见 memory feedback_api_ids_ipv6_only / layout_scope_by_entry_point。
+// =====================================================================
 type RadarHandler struct {
 	radarInstall         *service.RadarInstall
 	stubHandler          *StubHandler
@@ -29,7 +56,6 @@ type RadarHandler struct {
 	logger               *zap.Logger
 }
 
-// NewRadarHandler 创建 RadarHandler
 func NewRadarHandler(radarInstall *service.RadarInstall, stubHandler *StubHandler, kv store.KV, redisClient *redis.Client, monitorPlaybackRepo repository.MonitorPlaybackRepository, logger *zap.Logger) *RadarHandler {
 	return &RadarHandler{
 		radarInstall:        radarInstall,
@@ -41,12 +67,73 @@ func NewRadarHandler(radarInstall *service.RadarInstall, stubHandler *StubHandle
 	}
 }
 
-// SetDataStreamSubscriber 设置数据流订阅器
 func (h *RadarHandler) SetDataStreamSubscriber(subscriber interface{}) {
 	h.dataStreamSubscriber = subscriber
 }
 
-// GetCardDevices 获取卡片上所有设备（device_id, device_type, device_uid, device_name），供 vue-radar 画布 Bind 使用
+// =====================================================================
+// path identifier parsers — 按语义拆 INET vs MAC vs CIDR
+// =====================================================================
+
+// parseRadarDeviceAddr 校验 path :id 段为 device_addr (IPv6 host 或 /128 CIDR)；
+// 返 canonical /128 CIDR (与其他 spatial endpoint 一致)。
+func parseRadarDeviceAddr(raw string) (string, bool) {
+	return parseDeviceAddrFromPath(raw) // 复用 device_addr_helper.go
+}
+
+// parseRadarDeviceUID 校验 path :id 段为 12 hex char MAC (dfm.device_uid 格式)；返 upper-case canonical。
+func parseRadarDeviceUID(raw string) (string, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" || s == "undefined" || s == "null" {
+		return "", false
+	}
+	if len(s) != 12 {
+		return "", false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f')) {
+			return "", false
+		}
+	}
+	return strings.ToUpper(s), true
+}
+
+// extractRadarPathSeg 纯 path slicing（prefix+suffix 包夹的中间段），类型校验由 caller 用 parseRadar* 做。
+func extractRadarPathSeg(path, prefix, suffix string) string {
+	if len(path) < len(prefix)+len(suffix) {
+		return ""
+	}
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		return ""
+	}
+	return path[len(prefix) : len(path)-len(suffix)]
+}
+
+// extractRadarCardIDFromPath 从 /card/{cardId}/devices 中提取 cardId
+func extractRadarCardIDFromPath(path, prefix, suffix string) string {
+	return extractRadarPathSeg(path, prefix, suffix)
+}
+
+// extractRadarRoomIDFromPath 从 /room/{roomId}/layout 中提取 roomId
+func extractRadarRoomIDFromPath(path, prefix, suffix string) string {
+	return extractRadarPathSeg(path, prefix, suffix)
+}
+
+// tenantIDFromReq 从 X-Tenant-Id header 获取 tenant_id（AuthMiddleware 已注入）
+func (h *RadarHandler) tenantIDFromReq(w http.ResponseWriter, r *http.Request) (string, bool) {
+	tenantID := r.Header.Get("X-Tenant-Id")
+	if tenantID == "" || tenantID == "null" {
+		writeJSON(w, http.StatusOK, Fail("tenant_id is required"))
+		return "", false
+	}
+	return tenantID, true
+}
+
+// =====================================================================
+// 业务层 endpoint — 路径段 = device_addr (INET)
+// =====================================================================
+
+// GetCardDevices 获取卡片上所有设备列表
 // GET /radar-device/api/v1/radar-device/card/:cardId/devices
 func (h *RadarHandler) GetCardDevices(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -62,7 +149,6 @@ func (h *RadarHandler) GetCardDevices(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Phase 3: card 必须在 user scope 内（staff = Current Branch；family = own residents）
 	if h.stubHandler != nil && h.stubHandler.DB != nil {
 		uid := r.Header.Get("X-User-Id")
 		role := r.Header.Get("X-User-Role")
@@ -80,67 +166,42 @@ func (h *RadarHandler) GetCardDevices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Ok(list))
 }
 
-// extractRadarCardIDFromPath 从 /radar-device/.../card/{cardId}/devices 中提取 cardId
-func extractRadarCardIDFromPath(path, prefix, suffix string) string {
-	if len(path) < len(prefix)+len(suffix) {
-		return ""
-	}
-	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
-		return ""
-	}
-	return path[len(prefix) : len(path)-len(suffix)]
-}
-
-// GetCardDevicesByDeviceID 通过 device_id 查所属卡片并返回该卡设备列表
-// GET /radar-device/api/v1/radar-device/device/:deviceId/card-devices
-func (h *RadarHandler) GetCardDevicesByDeviceID(w http.ResponseWriter, r *http.Request) {
+// GetCardContext 通过 device_addr 查所属卡片 + spatial 元信息 + layout config (纯读，无 side effect)。
+// GET /radar-device/api/v1/radar-device/device/:device_addr/card-context
+//
+// 返回：{ card_id, room_id (/88 fallback 锚), spatial_prefix (本 canvas /128 save target), devices[], layout_config }
+//
+// 历史路径 /card-devices 已重命名为 /card-context — 旧 endpoint 的 init-subscriptions side effect
+// 拆到独立 POST /init-subscriptions 端点（HTTP 语义合规）。
+func (h *RadarHandler) GetCardContext(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	deviceID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/card-devices")
-	if !validateRadarDeviceID(deviceID) {
-		http.Error(w, "Invalid device ID", http.StatusBadRequest)
+	rawAddr := extractRadarPathSeg(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/card-context")
+	deviceAddr, ok := parseRadarDeviceAddr(rawAddr)
+	if !ok {
+		http.Error(w, "Invalid device_addr (expect IPv6 host or /128 CIDR)", http.StatusBadRequest)
 		return
 	}
 	tenantID, ok := h.tenantIDFromReq(w, r)
 	if !ok {
 		return
 	}
-	// Phase 3: device 必须在 user scope 内（staff = Current Branch；family = own residents space）
 	if h.stubHandler != nil && h.stubHandler.DB != nil {
 		uid := r.Header.Get("X-User-Id")
 		role := r.Header.Get("X-User-Role")
-		if err := VerifyDeviceInScope(h.stubHandler.DB, r.Context(), uid, role, deviceID); err != nil {
+		if err := VerifyDeviceInScope(h.stubHandler.DB, r.Context(), uid, role, deviceAddr); err != nil {
 			writeJSON(w, http.StatusOK, Fail(err.Error()))
 			return
 		}
 	}
-	cardID, roomID, spatialPrefix, list, layoutConfig, err := h.radarInstall.ListCardDevicesByDeviceID(r.Context(), tenantID, deviceID)
+	cardID, roomID, spatialPrefix, list, layoutConfig, err := h.radarInstall.ListCardDevicesByDeviceAddr(r.Context(), tenantID, deviceAddr)
 	if err != nil {
-		h.logger.Error("GetCardDevicesByDeviceID", zap.String("device_id", deviceID), zap.Error(err))
+		h.logger.Error("GetCardContext", zap.String("device_addr", deviceAddr), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-
-	// 初始化时，从 layout 配置自动订阅已绑定的设备
-	if len(layoutConfig) > 0 {
-		h.logger.Info("[RADAR_INIT_API] initializing subscriptions from layout",
-			zap.String("device_id", deviceID),
-			zap.String("tenant_id", tenantID),
-			zap.String("card_id", cardID),
-			zap.String("room_id", roomID))
-		if err := h.radarInstall.InitializeSubscriptionsFromLayout(r.Context(), tenantID, layoutConfig); err != nil {
-			h.logger.Warn("[RADAR_INIT_API] failed to initialize subscriptions from layout",
-				zap.String("device_id", deviceID),
-				zap.String("tenant_id", tenantID),
-				zap.Error(err))
-			// 不阻塞返回，继续返回数据
-		}
-	}
-
-	// spatial_prefix = 本 canvas 的 save target；当前 URL 是 device 切入，故为该 device 的 /128 CIDR。
-	// roomID (/88) 保留作 layout 加载的 fallback 锚 + 老 FE 兼容。
 	writeJSON(w, http.StatusOK, Ok(struct {
 		CardID        string                      `json:"card_id"`
 		RoomID        string                      `json:"room_id"`
@@ -150,12 +211,188 @@ func (h *RadarHandler) GetCardDevicesByDeviceID(w http.ResponseWriter, r *http.R
 	}{CardID: cardID, RoomID: roomID, SpatialPrefix: spatialPrefix, Devices: list, LayoutConfig: layoutConfig}))
 }
 
-// PutRoomLayout 保存房间布局到 room_visual_layout（spatial_prefix 三档作用域）。Body 为 canvas JSON。
+// InitSubscriptionsFromLayout 从 layout 配置自动订阅已绑定设备 (side effect endpoint)。
+// POST /radar-device/api/v1/radar-device/device/:device_addr/init-subscriptions
+//
+// FE 进 wave 页时显式调用一次；从 layout.canvas 解析 device 列表并触发 SubscribeRealtimeData。
+// 拆出独立 POST 避免在 GET /card-context 里搞 side effect (HTTP 语义合规)。
+func (h *RadarHandler) InitSubscriptionsFromLayout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	rawAddr := extractRadarPathSeg(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/init-subscriptions")
+	deviceAddr, ok := parseRadarDeviceAddr(rawAddr)
+	if !ok {
+		http.Error(w, "Invalid device_addr", http.StatusBadRequest)
+		return
+	}
+	tenantID, ok := h.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+	if h.stubHandler != nil && h.stubHandler.DB != nil {
+		uid := r.Header.Get("X-User-Id")
+		role := r.Header.Get("X-User-Role")
+		if err := VerifyDeviceInScope(h.stubHandler.DB, r.Context(), uid, role, deviceAddr); err != nil {
+			writeJSON(w, http.StatusOK, Fail(err.Error()))
+			return
+		}
+	}
+	_, _, _, _, layoutConfig, err := h.radarInstall.ListCardDevicesByDeviceAddr(r.Context(), tenantID, deviceAddr)
+	if err != nil {
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	if len(layoutConfig) == 0 {
+		writeJSON(w, http.StatusOK, Ok(map[string]any{"initialized": 0, "reason": "empty layout"}))
+		return
+	}
+	h.logger.Info("[RADAR_INIT_API] initializing subscriptions from layout",
+		zap.String("device_addr", deviceAddr), zap.String("tenant_id", tenantID))
+	if err := h.radarInstall.InitializeSubscriptionsFromLayout(r.Context(), tenantID, layoutConfig); err != nil {
+		h.logger.Warn("[RADAR_INIT_API] failed to initialize subscriptions",
+			zap.String("device_addr", deviceAddr), zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]any{"initialized": 1}))
+}
+
+// SubscribeRealtimeStream SSE 实时数据流。
+// GET /radar-device/api/v1/radar-device/device/:device_addr/stream
+func (h *RadarHandler) SubscribeRealtimeStream(w http.ResponseWriter, r *http.Request) {
+	// 必须最先设 SSE 响应头
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		io.WriteString(w, "event: error\ndata: {\"error\":\"Method not allowed\"}\n\n")
+		return
+	}
+
+	rawAddr := extractRadarPathSeg(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/stream")
+	deviceAddr, ok := parseRadarDeviceAddr(rawAddr)
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, "event: error\ndata: {\"error\":\"Invalid device_addr\"}\n\n")
+		return
+	}
+
+	tenantID := r.Header.Get("X-Tenant-Id")
+	if tenantID == "" || tenantID == "null" {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, "event: error\ndata: {\"error\":\"tenant_id is required\"}\n\n")
+		return
+	}
+	if h.stubHandler != nil && h.stubHandler.DB != nil {
+		uid := r.Header.Get("X-User-Id")
+		role := r.Header.Get("X-User-Role")
+		if err := VerifyDeviceInScope(h.stubHandler.DB, r.Context(), uid, role, deviceAddr); err != nil {
+			w.WriteHeader(http.StatusOK)
+			io.WriteString(w, "event: error\ndata: {\"error\":\""+err.Error()+"\"}\n\n")
+			return
+		}
+	}
+
+	h.logger.Info("[RADAR_STREAM_SSE] connection attempt",
+		zap.String("device_addr", deviceAddr), zap.String("tenant_id", tenantID))
+
+	if h.redisClient == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, "event: error\ndata: {\"error\":\"Redis client not available\"}\n\n")
+		return
+	}
+
+	ctx := r.Context()
+
+	cardID, _, _, _, _, err := h.radarInstall.ListCardDevicesByDeviceAddr(ctx, tenantID, deviceAddr)
+	if err != nil {
+		h.logger.Error("[RADAR_STREAM_SSE] failed to get card_id",
+			zap.String("device_addr", deviceAddr), zap.Error(err))
+		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, "event: error\ndata: {\"error\":\"Failed to get card info\"}\n\n")
+		return
+	}
+
+	sub, ok := h.dataStreamSubscriber.(*subscriber.DataStreamSubscriber)
+	if !ok || sub == nil {
+		h.logger.Error("[RADAR_STREAM_SSE] DataStreamSubscriber not available",
+			zap.String("device_addr", deviceAddr), zap.String("card_id", cardID))
+		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, "event: error\ndata: {\"error\":\"DataStreamSubscriber not available\"}\n\n")
+		return
+	}
+
+	cardRealtimeUpdatedChan := sub.GetCardRealtimeUpdatedChan()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "event: error\ndata: {\"error\":\"Streaming not supported\"}\n\n")
+		return
+	}
+
+	io.WriteString(w, ": SSE connection established\n")
+	io.WriteString(w, "event: connected\ndata: {\"device_addr\":\""+deviceAddr+"\",\"status\":\"connected\"}\n\n")
+	flusher.Flush()
+
+	h.logger.Info("[RADAR_STREAM_SSE] connection established",
+		zap.String("device_addr", deviceAddr), zap.String("tenant_id", tenantID), zap.String("card_id", cardID))
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				io.WriteString(w, ": heartbeat\n\n")
+				flusher.Flush()
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			h.logger.Info("[RADAR_STREAM_SSE] connection closed",
+				zap.String("device_addr", deviceAddr), zap.String("card_id", cardID))
+			return
+		case notifiedCardID := <-cardRealtimeUpdatedChan:
+			if notifiedCardID != cardID {
+				continue
+			}
+			cachedData := sub.GetCardRealtimeData(cardID)
+			if cachedData == nil {
+				continue
+			}
+			jsonData, err := json.Marshal(cachedData)
+			if err != nil {
+				h.logger.Warn("[RADAR_STREAM_SSE] failed to marshal", zap.Error(err))
+				continue
+			}
+			io.WriteString(w, "data: "+string(jsonData)+"\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+// =====================================================================
+// spatial 层 endpoint — 路径段 = spatial_prefix (CIDR)
+// =====================================================================
+
+// PutRoomLayout 保存房间布局到 room_visual_layout (spatial_prefix 三档作用域)。
 // PUT /radar-device/api/v1/radar-device/room/:roomId/layout
 //
-// 三档作用域优先级（高 → 低）：
-//  1. body.spatial_prefix 字段（FE 显式 CIDR，权威；用于 /80 unit 与 /128 device 明确指定）
-//  2. URL path roomID（host-only IPv6，backend 按 host bits 推断 /88 vs /128；无法表达 /80）
+// 三档作用域优先级：
+//  1. body.spatial_prefix 字段 (FE 显式 CIDR；/80 unit 与 /128 device 明确指定)
+//  2. URL path roomID (host-only IPv6；backend 按 host bits 推断 /88 vs /128)
 func (h *RadarHandler) PutRoomLayout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -175,7 +412,6 @@ func (h *RadarHandler) PutRoomLayout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid or empty body", http.StatusBadRequest)
 		return
 	}
-	// body 优先：解析 spatial_prefix 字段（如有），覆盖 path roomID
 	saveTarget := roomID
 	var bodyPeek struct {
 		SpatialPrefix string `json:"spatial_prefix"`
@@ -191,305 +427,89 @@ func (h *RadarHandler) PutRoomLayout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Ok("ok"))
 }
 
-// BindDevice 标记订阅 radar 数据。POST /radar-device/api/v1/radar-device/device/:id/bind
-// :id = device_uid (firmware MCU 寻址)；subscription 跟 firmware 不跟 spatial。
+// =====================================================================
+// hardware 层 endpoint — 路径段 = device_uid (MAC)
+// =====================================================================
+
+// BindDevice 标记订阅 radar 数据（vendor MQTT subscribe）。
+// POST /radar-device/api/v1/radar-device/device/:device_uid/bind
 func (h *RadarHandler) BindDevice(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	deviceUID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/bind")
-	if !validateRadarDeviceID(deviceUID) {
-		http.Error(w, "Invalid device UID", http.StatusBadRequest)
+	rawUID := extractRadarPathSeg(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/bind")
+	deviceUID, ok := parseRadarDeviceUID(rawUID)
+	if !ok {
+		http.Error(w, "Invalid device_uid (expect 12 hex chars)", http.StatusBadRequest)
 		return
 	}
 	tenantID, ok := h.tenantIDFromReq(w, r)
 	if !ok {
 		return
 	}
-
-	h.logger.Info("[RADAR_BIND_API] bind request received",
-		zap.String("device_uid", deviceUID),
-		zap.String("tenant_id", tenantID))
-
+	h.logger.Info("[RADAR_BIND_API] bind",
+		zap.String("device_uid", deviceUID), zap.String("tenant_id", tenantID))
 	if err := h.radarInstall.BindDevice(r.Context(), tenantID, deviceUID); err != nil {
 		h.logger.Error("[RADAR_BIND_API] bind failed",
-			zap.String("device_uid", deviceUID),
-			zap.String("tenant_id", tenantID),
-			zap.Error(err))
+			zap.String("device_uid", deviceUID), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-
-	h.logger.Info("[RADAR_BIND_API] bind success",
-		zap.String("device_uid", deviceUID),
-		zap.String("tenant_id", tenantID))
 	writeJSON(w, http.StatusOK, Ok("ok"))
 }
 
-// UnbindDevice 取消订阅 radar 数据。POST /radar-device/api/v1/radar-device/device/:id/unbind
-// :id = device_uid。
+// UnbindDevice 取消订阅 radar 数据。
+// POST /radar-device/api/v1/radar-device/device/:device_uid/unbind
 func (h *RadarHandler) UnbindDevice(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	deviceUID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/unbind")
-	if !validateRadarDeviceID(deviceUID) {
-		http.Error(w, "Invalid device UID", http.StatusBadRequest)
+	rawUID := extractRadarPathSeg(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/unbind")
+	deviceUID, ok := parseRadarDeviceUID(rawUID)
+	if !ok {
+		http.Error(w, "Invalid device_uid", http.StatusBadRequest)
 		return
 	}
 	tenantID, ok := h.tenantIDFromReq(w, r)
 	if !ok {
 		return
 	}
-
-	h.logger.Info("[RADAR_UNBIND_API] unbind request received",
-		zap.String("device_uid", deviceUID),
-		zap.String("tenant_id", tenantID))
-
+	h.logger.Info("[RADAR_UNBIND_API] unbind",
+		zap.String("device_uid", deviceUID), zap.String("tenant_id", tenantID))
 	if err := h.radarInstall.UnbindDevice(r.Context(), tenantID, deviceUID); err != nil {
 		h.logger.Error("[RADAR_UNBIND_API] unbind failed",
-			zap.String("device_uid", deviceUID),
-			zap.String("tenant_id", tenantID),
-			zap.Error(err))
+			zap.String("device_uid", deviceUID), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-
-	h.logger.Info("[RADAR_UNBIND_API] unbind success",
-		zap.String("device_uid", deviceUID),
-		zap.String("tenant_id", tenantID))
 	writeJSON(w, http.StatusOK, Ok("ok"))
 }
 
-func extractRadarRoomIDFromPath(path, prefix, suffix string) string {
-	if len(path) < len(prefix)+len(suffix) {
-		return ""
-	}
-	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
-		return ""
-	}
-	return path[len(prefix) : len(path)-len(suffix)]
-}
-
-// SubscribeRealtimeStream SSE 订阅实时数据流
-// GET /radar-device/api/v1/radar-device/device/:id/stream
-// 使用 Server-Sent Events (SSE) 实时推送 Redis stream 数据
-func (h *RadarHandler) SubscribeRealtimeStream(w http.ResponseWriter, r *http.Request) {
-	// 必须在函数最开始就设置 SSE 响应头，防止任何后续代码覆盖
-	// 注意：一旦调用了 WriteHeader，响应头就不能再修改
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")          // 禁用 nginx 缓冲
-	w.Header().Set("Access-Control-Allow-Origin", "*") // 允许 CORS（如果需要）
-
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		io.WriteString(w, "event: error\ndata: {\"error\":\"Method not allowed\"}\n\n")
-		return
-	}
-
-	deviceID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/stream")
-	if !validateRadarDeviceID(deviceID) {
-		// 使用 SSE 格式返回错误
-		w.WriteHeader(http.StatusBadRequest)
-		io.WriteString(w, "event: error\ndata: {\"error\":\"Invalid device ID\"}\n\n")
-		return
-	}
-
-	// AuthMiddleware 已经验证了 token 并注入了 X-Tenant-Id header
-	tenantID := r.Header.Get("X-Tenant-Id")
-	if tenantID == "" || tenantID == "null" {
-		// 使用 SSE 格式返回错误
-		w.WriteHeader(http.StatusBadRequest)
-		io.WriteString(w, "event: error\ndata: {\"error\":\"tenant_id is required\"}\n\n")
-		return
-	}
-	// Phase 3: device 必须在 user scope 内
-	if h.stubHandler != nil && h.stubHandler.DB != nil {
-		uid := r.Header.Get("X-User-Id")
-		role := r.Header.Get("X-User-Role")
-		if err := VerifyDeviceInScope(h.stubHandler.DB, r.Context(), uid, role, deviceID); err != nil {
-			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, "event: error\ndata: {\"error\":\""+err.Error()+"\"}\n\n")
-			return
-		}
-	}
-
-	// 记录连接尝试
-	h.logger.Info("[RADAR_STREAM_SSE] connection attempt",
-		zap.String("device_id", deviceID),
-		zap.String("tenant_id", tenantID),
-		zap.String("method", r.Method),
-		zap.String("path", r.URL.Path))
-
-	if h.redisClient == nil {
-		// 使用 SSE 格式返回错误
-		h.logger.Error("[RADAR_STREAM_SSE] Redis client not available",
-			zap.String("device_id", deviceID))
-		w.WriteHeader(http.StatusServiceUnavailable)
-		io.WriteString(w, "event: error\ndata: {\"error\":\"Redis client not available\"}\n\n")
-		return
-	}
-
-	ctx := r.Context()
-
-	// 转换 deviceID：如果是 device_uid，转换为 device_id
-	// device_id 是 UUID 格式，device_uid 是短字符串
-	// ListCardDevicesByDeviceID 需要 device_id
-	var actualDeviceID string = deviceID
-
-	// 判断是否为 UUID 格式（device_id）
-	if len(deviceID) != 36 || strings.Count(deviceID, "-") != 4 {
-		// 不是 UUID，可能是 device_uid，需要转换
-		device, err := h.radarInstall.GetDeviceByUID(ctx, tenantID, deviceID)
-		if err != nil {
-			h.logger.Warn("[RADAR_STREAM_SSE] Failed to convert device_uid to device_id",
-				zap.String("device_uid", deviceID),
-				zap.String("tenant_id", tenantID),
-				zap.Error(err))
-			w.WriteHeader(http.StatusBadRequest)
-			io.WriteString(w, "event: error\ndata: {\"error\":\"Device not found\"}\n\n")
-			return
-		}
-		actualDeviceID = device.DeviceAddr
-	}
-
-	// 获取该设备所属的 card_id
-	// SSE 推送基于 card_id，不需要检查 device 的绑定状态
-	cardID, _, _, _, _, err := h.radarInstall.ListCardDevicesByDeviceID(ctx, tenantID, actualDeviceID)
-	if err != nil {
-		h.logger.Error("[RADAR_STREAM_SSE] failed to get card_id",
-			zap.String("device_id", actualDeviceID),
-			zap.String("tenant_id", tenantID),
-			zap.Error(err))
-		w.WriteHeader(http.StatusServiceUnavailable)
-		io.WriteString(w, "event: error\ndata: {\"error\":\"Failed to get card info\"}\n\n")
-		return
-	}
-
-	// 获取 DataStreamSubscriber
-	sub, ok := h.dataStreamSubscriber.(*subscriber.DataStreamSubscriber)
-	if !ok || sub == nil {
-		h.logger.Error("[RADAR_STREAM_SSE] DataStreamSubscriber not available",
-			zap.String("device_id", deviceID),
-			zap.String("card_id", cardID))
-		w.WriteHeader(http.StatusServiceUnavailable)
-		io.WriteString(w, "event: error\ndata: {\"error\":\"DataStreamSubscriber not available\"}\n\n")
-		return
-	}
-
-	// 获取 cardRealtimeUpdated 通知通道
-	cardRealtimeUpdatedChan := sub.GetCardRealtimeUpdatedChan()
-
-	// 发送初始连接确认
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		// 使用 SSE 格式返回错误
-		w.WriteHeader(http.StatusInternalServerError)
-		io.WriteString(w, "event: error\ndata: {\"error\":\"Streaming not supported\"}\n\n")
-		return
-	}
-
-	// 发送初始连接确认消息（SSE 格式）
-	io.WriteString(w, ": SSE connection established\n")
-	io.WriteString(w, "event: connected\ndata: {\"device_id\":\""+deviceID+"\",\"status\":\"connected\"}\n\n")
-	flusher.Flush()
-
-	h.logger.Info("[RADAR_STREAM_SSE] connection established",
-		zap.String("device_id", deviceID),
-		zap.String("tenant_id", tenantID),
-		zap.String("card_id", cardID))
-
-	// 定期发送心跳（每 30 秒）
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				// 发送心跳注释（SSE 规范：以 : 开头的行是注释）
-				io.WriteString(w, ": heartbeat\n\n")
-				flusher.Flush()
-			}
-		}
-	}()
-
-	// 主循环：监听 cardRealtimeUpdated 通知（事件驱动模式）
-	// 当该 card 的缓存数据更新时，会收到通知
-	// 相比轮询模式：零延迟、零 Redis 压力
-	for {
-		select {
-		case <-ctx.Done():
-			h.logger.Info("[RADAR_STREAM_SSE] connection closed",
-				zap.String("device_id", deviceID),
-				zap.String("card_id", cardID))
-			return
-		case notifiedCardID := <-cardRealtimeUpdatedChan:
-			// 拒绝不是本连接关注的 card 的通知
-			if notifiedCardID != cardID {
-				continue
-			}
-
-			// 从 DataStreamSubscriber 缓存中获取该 card 的最新实时数据
-			cachedData := sub.GetCardRealtimeData(cardID)
-			if cachedData == nil {
-				continue
-			}
-
-			// 序列化为 JSON
-			jsonData, err := json.Marshal(cachedData)
-			if err != nil {
-				h.logger.Warn("[RADAR_STREAM_SSE] failed to marshal card realtime data",
-					zap.String("device_id", deviceID),
-					zap.String("card_id", cardID),
-					zap.Error(err))
-				continue
-			}
-
-			// 通过 SSE 推送给前端
-			io.WriteString(w, "data: "+string(jsonData)+"\n\n")
-			flusher.Flush()
-
-			// 调试日志（Debug 级别避免高频占用磁盘空间）
-			h.logger.Debug("[RADAR_STREAM_SSE] card realtime data pushed",
-				zap.String("device_id", deviceID),
-				zap.String("card_id", cardID))
-		}
-	}
-}
-
-// GetOriginalProperties 获取设备原始属性
-// GET /radar-device/api/v1/radar-device/device/:id/original-properties
-// 返回 qinglan 原始属性 JSON（radar_install_style, rectangle 等），供 radarDeviceApi.devicePropsToMqttReadFormat 转换。
-// 查询参数 source=db：从 DB 读（设备查失败时的回退），当前无持久化则返回 {}
+// GetOriginalProperties 获取设备原始属性 (vendor MQTT read)。
+// GET /radar-device/api/v1/radar-device/device/:device_uid/original-properties[?source=db&keys=...]
 func (h *RadarHandler) GetOriginalProperties(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	deviceUID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/original-properties")
-	if !validateRadarDeviceID(deviceUID) {
-		http.Error(w, "Invalid device UID", http.StatusBadRequest)
+	rawUID := extractRadarPathSeg(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/original-properties")
+	deviceUID, ok := parseRadarDeviceUID(rawUID)
+	if !ok {
+		http.Error(w, "Invalid device_uid", http.StatusBadRequest)
 		return
 	}
 	tenantID, ok := h.tenantIDFromReq(w, r)
 	if !ok {
 		return
 	}
-	// FE 直接传 firmware uid（不变量）；查 device 拿到当前 device_addr 用于 scope check
 	device, err := h.radarInstall.GetDeviceByUID(r.Context(), tenantID, deviceUID)
 	if err != nil {
 		h.logger.Warn("GetOriginalProperties: device not found", zap.String("uid", deviceUID), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-	// Phase 3: device 必须在 user scope 内（staff = Current Branch；family = own residents space）
 	if h.stubHandler != nil && h.stubHandler.DB != nil {
 		callerUID := r.Header.Get("X-User-Id")
 		role := r.Header.Get("X-User-Role")
@@ -520,10 +540,8 @@ func (h *RadarHandler) GetOriginalProperties(w http.ResponseWriter, r *http.Requ
 	}
 	propertiesJSON, err := h.radarInstall.GetOriginalProperties(r.Context(), deviceUID, keys)
 	if err != nil {
-		h.logger.Error("Failed to get device original properties",
-			zap.String("uid", deviceUID),
-			zap.Error(err),
-		)
+		h.logger.Error("GetOriginalProperties failed",
+			zap.String("uid", deviceUID), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
@@ -532,17 +550,18 @@ func (h *RadarHandler) GetOriginalProperties(w http.ResponseWriter, r *http.Requ
 	w.Write([]byte(propertiesJSON))
 }
 
-// UpdateConfig 更新设备安装配置
-// PUT /radar-device/api/v1/radar-device/device/:id/config
-// Body: v1 格式 { install_model, height, boundary_left/right/front/rear }，由 encode.EncodeV1ConfigToDeviceProps 转成 qinglan 属性后写入。
+// UpdateConfig 更新设备安装配置 (vendor MQTT write)。
+// PUT /radar-device/api/v1/radar-device/device/:device_uid/config
+// Body: v1 格式 { install_model, height, boundary_left/right/front/rear }
 func (h *RadarHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	deviceUID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/config")
-	if !validateRadarDeviceID(deviceUID) {
-		http.Error(w, "Invalid device UID", http.StatusBadRequest)
+	rawUID := extractRadarPathSeg(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/config")
+	deviceUID, ok := parseRadarDeviceUID(rawUID)
+	if !ok {
+		http.Error(w, "Invalid device_uid", http.StatusBadRequest)
 		return
 	}
 	tenantID, ok := h.tenantIDFromReq(w, r)
@@ -565,14 +584,13 @@ func (h *RadarHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	var config map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
-		h.logger.Warn("UpdateConfig: invalid body", zap.Error(err))
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 	if config == nil {
 		config = make(map[string]interface{})
 	}
-	// 兼容 body 被包成 { "data": { declare_area, ... } } 的情况
+	// 兼容 body 被包成 { "data": { ... } } 的情况
 	if len(config) == 1 {
 		if dataVal, ok := config["data"]; ok {
 			if dataMap, ok := dataVal.(map[string]interface{}); ok {
@@ -586,39 +604,35 @@ func (h *RadarHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	logFields := []zap.Field{zap.String("uid", deviceUID), zap.Int("keys", len(config)), zap.Strings("keys_list", configKeys)}
 	if v := config["declare_area"]; v != nil {
-		if s, ok := v.(string); ok {
-			logFields = append(logFields, zap.String("declare_area", s))
-		} else {
-			logFields = append(logFields, zap.Any("declare_area", v))
-		}
+		logFields = append(logFields, zap.Any("declare_area", v))
 	}
 	if v := config["rectangle"]; v != nil {
 		logFields = append(logFields, zap.Any("rectangle", v))
 	}
-	h.logger.Info("UpdateConfig: received config", logFields...)
+	h.logger.Info("UpdateConfig", logFields...)
 	deviceCode, err := h.radarInstall.UpdateConfig(r.Context(), deviceUID, config)
 	if err != nil {
-		h.logger.Error("Failed to update device config",
-			zap.String("uid", deviceUID),
-			zap.Int("device_code", deviceCode),
-			zap.Error(err),
-		)
+		h.logger.Error("UpdateConfig failed",
+			zap.String("uid", deviceUID), zap.Int("device_code", deviceCode), zap.Error(err))
 		writeJSON(w, http.StatusOK, Result[any]{Code: ResultError, Type: "error", Message: err.Error(), Result: map[string]interface{}{"device_code": deviceCode}})
 		return
 	}
 	writeJSON(w, http.StatusOK, Ok(map[string]interface{}{"device_code": deviceCode}))
 }
 
-// Control 3.8.1 重启/控制：POST /radar-device/api/v1/radar-device/device/:id/control
-// Body: { "dev": 0|1|2|100|101|102 }，0=雷达+主控 1=仅雷达 2=仅主控 100/101/102=清除数据
+// Control 设备重启/控制 (vendor MQTT command)。
+// POST /radar-device/api/v1/radar-device/device/:device_uid/control
+// Body: { "dev": 0|1|2|100|101|102 }
+//   0=雷达+主控  1=仅雷达  2=仅主控  100/101/102=清除数据
 func (h *RadarHandler) Control(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	deviceUID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/control")
-	if !validateRadarDeviceID(deviceUID) {
-		http.Error(w, "Invalid device UID", http.StatusBadRequest)
+	rawUID := extractRadarPathSeg(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/control")
+	deviceUID, ok := parseRadarDeviceUID(rawUID)
+	if !ok {
+		http.Error(w, "Invalid device_uid", http.StatusBadRequest)
 		return
 	}
 	tenantID, ok := h.tenantIDFromReq(w, r)
@@ -653,41 +667,10 @@ func (h *RadarHandler) Control(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.radarInstall.CallDeviceFunction(r.Context(), deviceUID, dev); err != nil {
-		h.logger.Error("Control: call device function", zap.String("uid", deviceUID), zap.Int("dev", dev), zap.Error(err))
+		h.logger.Error("Control failed", zap.String("uid", deviceUID), zap.Int("dev", dev), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
 	writeJSON(w, http.StatusOK, Ok([]string{}))
 }
 
-// extractRadarDeviceIDFromPath 从 URL 路径中提取 device_id（Radar 专用）
-// 例：/radar-device/api/v1/radar-device/device/{id}/config → {id}
-func extractRadarDeviceIDFromPath(path, prefix, suffix string) string {
-	if len(path) < len(prefix)+len(suffix) {
-		return ""
-	}
-	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
-		return ""
-	}
-	deviceID := path[len(prefix) : len(path)-len(suffix)]
-	if deviceID == "" || strings.Contains(deviceID, "/") {
-		return ""
-	}
-	return deviceID
-}
-
-// validateRadarDeviceID 校验 device_id 有效，与 devicesRepo.GetDevice 约定一致
-func validateRadarDeviceID(deviceID string) bool {
-	return deviceID != "" && deviceID != "undefined" && deviceID != "null"
-}
-
-// tenantIDFromReq 从 X-Tenant-Id header 获取 tenant_id
-// AuthMiddleware 已经验证了 token 并注入了 X-Tenant-Id header
-func (h *RadarHandler) tenantIDFromReq(w http.ResponseWriter, r *http.Request) (string, bool) {
-	tenantID := r.Header.Get("X-Tenant-Id")
-	if tenantID == "" || tenantID == "null" {
-		writeJSON(w, http.StatusOK, Fail("tenant_id is required"))
-		return "", false
-	}
-	return tenantID, true
-}

@@ -263,7 +263,7 @@ func (sc *ScopeContext) VerifyCard(ctx context.Context, db *sql.DB, cardID strin
 }
 
 // VerifyDevice — 校验 user 能查看该 deviceAddr (INET /128 canonical text)
-// Phase 2 一刀切：业务键改为 device_addr，原 device_id UUID 退役。
+// 业务键改为 device_addr，原 device_id UUID 退役。
 func (sc *ScopeContext) VerifyDevice(ctx context.Context, db *sql.DB, deviceAddr string) error {
 	if sc == nil || db == nil || strings.TrimSpace(deviceAddr) == "" {
 		return nil

@@ -72,7 +72,7 @@ func (s *MonitorVitalSource) ScanActiveBedVitals(nowMs, freshnessMs int64, emit 
 			if nowMs-devLastTs > freshnessMs {
 				continue
 			}
-			bedZoneID := bedPrefixFromDeviceID(dev.DeviceID)
+			bedZoneID := bedPrefixFromDeviceAddr(dev.DeviceAddr)
 			if bedZoneID == "" {
 				continue
 			}
@@ -146,14 +146,14 @@ func tsFromTrackMap(fields map[string]any) int64 {
 	return 0
 }
 
-// bedPrefixFromDeviceID device_id（/128 host text 或 CIDR）→ /96 CIDR text。
+// bedPrefixFromDeviceAddr device_addr（/128 host text 或 CIDR）→ /96 CIDR text。
 // 不合法 / 不能 parse → 返回 ""。
-func bedPrefixFromDeviceID(deviceID string) string {
-	if deviceID == "" {
+func bedPrefixFromDeviceAddr(deviceAddr string) string {
+	if deviceAddr == "" {
 		return ""
 	}
-	// device_id 通常是 /128 host text，无 CIDR mask；MonitorConsumer 写入用 addr.String()
-	s := deviceID
+	// device_addr 通常是 /128 host text，无 CIDR mask；MonitorConsumer 写入用 addr.String()
+	s := deviceAddr
 	if idx := strings.Index(s, "/"); idx >= 0 {
 		s = s[:idx]
 	}

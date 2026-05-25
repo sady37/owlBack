@@ -8,8 +8,8 @@ import (
 
 // AddrCtx 从 IoTStreamMessage.DeviceAddr 派生的全套字符串身份上下文。
 //
-// device_ipv6 单程票 (doc/device_ipv6_migration_checklist.md) 落地后，
-// 上游 envelope 不再带 TenantID/DeviceID/UnitID/RoomID/BedID 等独立字段；
+//  (doc/device_ipv6_migration_checklist.md) 落地后，
+// 上游 envelope 不再带 TenantID/DeviceAddr/UnitID/RoomID/BedID 等独立字段；
 // 各 consumer 在入口处一次派生 AddrCtx，下游业务代码用其字符串字段 (Redis hash key 等)。
 //
 // 字段全部是 INET CIDR 文本（"fd00:0:3::/48"）或 /128 host 文本（"fd00:0:3:111:3:101:a2ac:d523"）。

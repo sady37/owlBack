@@ -793,7 +793,7 @@ func (c *MQTTConsumer) handleOTAReturn(uid string, message map[string]interface{
 // resolveDeviceIdentity 统一解析 device_uid → 设备身份。monitor/stat/event 共用。
 // ok=false 表示无 device_store 或 DeviceAddr 无效，调用方应直接 return。
 //
-// Phase 2 一刀切：identity = device_uid (logMAC)；did 返回 device_uid（取代 v1 UUID）。
+// identity = device_uid (logMAC)；did 返回 device_uid（取代 v1 UUID）。
 // 返回字段：tid (tenant CIDR text)、did (device_uid)、bedID/roomID/unitID/bid（从 addr prefix 派生）、
 // addr (/128 IPv6 路由主键)、cid (CloudEvents subject = device_uid，"事件主体 = 观测设备" 的语义)。
 //
@@ -824,7 +824,7 @@ func (c *MQTTConsumer) resolveDeviceIdentity(ctx context.Context, uid string) (t
 
 // publishRadarMonitorHeartbeat monitoring 关闭时发单条 track_id=11（设备级），category=heart，供 cardagg MonitorBuffer 推导在线。
 //
-// device_ipv6 单程票：addr 是路由层主键；cid 是 SubjectEntity（unbound 时为空，cardagg LPM 反查兜底）。
+// addr 是路由层主键；cid 是 SubjectEntity（unbound 时为空，cardagg LPM 反查兜底）。
 func (c *MQTTConsumer) publishRadarMonitorHeartbeat(ctx context.Context, addr netip.Addr, cid string, ts int64) error {
 	hb := observation.Track{TrackID: observation.TrackDevice, TrackConfidence: 80}
 	msg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "monitor", observation.CategoryHeart, hb.ToFieldMap())
@@ -886,7 +886,7 @@ func (c *MQTTConsumer) handleMonitorMessage(uid string, message map[string]inter
 }
 
 // TargetMergeVital 根据 decode 结果合并 vital：仅当本条 MQTT 内「在 Bed 区域」的 track 恰有 1 个时合并到该 track，否则 vital 单独成条 track_id=9。
-// 入参 deviceUID 为流用设备标识；deviceID 写入包头；bedID/roomID 用于 vital 单独成条时的 area_id。返回每条 category 均为 track。
+// 入参 deviceUID 为流用设备标识；deviceAddr 写入包头；bedID/roomID 用于 vital 单独成条时的 area_id。返回每条 category 均为 track。
 func TargetMergeVital(
 	items []map[string]interface{},
 	ts int64,

@@ -83,8 +83,6 @@ func main() {
 	var sleepaceReportService service.SleepaceReportService
 	// Stub depends on tenantsRepo + authStore (used by /auth/api/v1/institutions/search + /auth/api/v1/login)
 	stub := httpapi.NewStubHandler(nil, authStore, nil)
-	// Always register admin routes; if DB is not available, AdminAPI will fall back to stub (no 404).
-	admin := httpapi.NewAdminAPI(stub, logger)
 	if cfg.DBEnabled {
 		if d, err := database.NewPostgresDB(&cfg.Database); err == nil {
 			db = d
@@ -108,7 +106,6 @@ func main() {
 		// For now, pass nil to StubHandler since it's mainly used for fallback
 		stub = httpapi.NewStubHandler(nil, authStore, db)
 		stub.SetLogger(logger) // Set logger for user login logging
-		admin = httpapi.NewAdminAPI(stub, logger)
 
 		// 创建 Role Service（仅创建，不保留变量）
 		roleRepo := repository.NewPostgresRolesRepository(db)
@@ -202,8 +199,6 @@ func main() {
 
 		// 创建 QinglanClient（调用 wisefido-qinglan HTTP API，统一与设备通信）
 		qinglanClient := service.NewQinglanClient(cfg.Qinglan.APIBaseURL, logger)
-
-		admin = httpapi.NewAdminAPI(stub, logger)
 
 		// 创建 Role Service 和 Handler
 		roleRepo := repository.NewPostgresRolesRepository(db)
@@ -404,8 +399,8 @@ func main() {
 		// 让 sleepad 厂家 bind 成功后立即清掉 scheduler 的 unbound backoff cache（不等 1h TTL），
 		// 下次 60s tick 即可重新评估并 push interval。
 		if intervalScheduler != nil {
-			deviceStoreService.SetOnSleepadVendorBound(func(deviceID string) {
-				intervalScheduler.InvalidateUnbound(context.Background(), deviceID)
+			deviceStoreService.SetOnSleepadVendorBound(func(deviceAddr string) {
+				intervalScheduler.InvalidateUnbound(context.Background(), deviceAddr)
 			})
 		}
 		deviceStoreHandler.SetDeviceStoreService(deviceStoreService)
@@ -424,7 +419,7 @@ func main() {
 			deviceMonitorSettingsService,
 			usersRepo,        // 用于安全验证：验证 user_id 和 tenant_id 一致性
 			userBranchesRepo, // 用于安全验证：验证 branch_id 与 user_id 一致性
-			devicesRepo,      // 用于安全验证：验证 device_id 与 tenant_id 一致性
+			devicesRepo,      // 用于安全验证：验证 device_addr 与 tenant_id 一致性
 			unitsRepo,        // 用于安全验证：获取设备的 branch_id
 			redisClient,
 			db,
@@ -511,10 +506,7 @@ func main() {
 		// 注意：StubHandler 仍使用旧的 TenantsRepo 接口，需要适配器或更新
 		// 暂时传递 nil，StubHandler 会处理
 		stub = httpapi.NewStubHandler(nil, authStore, nil)
-		// AdminAPI units/devices 等为 nil，回退 stub
-		admin = httpapi.NewAdminAPI(stub, logger)
 	}
-	router.RegisterAdminUnitDeviceRoutes(admin)
 	// 如果 DB 启用，传入 BranchesRepository 以便创建 tenant 时自动创建默认 branch
 	var branchesRepoForTenants repository.BranchesRepository
 	var tenantsHandler *httpapi.TenantsHandler
@@ -525,7 +517,6 @@ func main() {
 		tenantsHandler = httpapi.NewTenantsHandler(tenantsRepo, branchesRepoForTenants, authStore, db)
 	}
 	router.RegisterAdminTenantRoutes(tenantsHandler)
-	router.RegisterStubRoutes(stub)
 
 	// 注册 v2 spatial IPAM/DDNS API（owl_v2 IPv6 体系）— 独立于 v1
 	// owl-common/ipam.PGBackend 直接走 dbv2 spatial 表 + 可选 kea audit
@@ -594,23 +585,21 @@ func main() {
 	// 代码保留在 service/sleepace_report_time_scheduler.go 供参考/回滚。
 
 	// --- DST 脚本触发入口 ---
-	// 两个 internal endpoint，外部 DST 脚本按 device_id 调用，service 内部自己查 effective 值下发。
-	//   POST /internal/sleepace/device/{device_id}/resync-timezone    → bind with effective timezone + gender/age
-	//   POST /internal/sleepace/device/{device_id}/resync-report-time → setReportUploadTime with effective hour
-	//   POST /internal/sleepace/device/{device_id}/upgrade            → 触发厂家 OTA（body {"version":"6.89"}）
+	// 两个 internal endpoint，外部 DST 脚本按 device_addr 调用，service 内部自己查 effective 值下发。
+	//   POST /internal/sleepace/device/{device_addr}/resync-timezone    → bind with effective timezone + gender/age
+	//   POST /internal/sleepace/device/{device_addr}/resync-report-time → setReportUploadTime with effective hour
+	//   POST /internal/sleepace/device/{device_addr}/upgrade            → 触发厂家 OTA（body {"version":"6.89"}）
 	// 同样路径在 /sleepace/api/v1/sleepace/device/* 下挂一份给前端走 nginx /sleepace/api/ 转发使用（admin UI）。
 	if deviceMonitorSettingsService != nil {
 		resyncHandler := httpapi.NewSleepaceResyncHandler(deviceMonitorSettingsService, db, logger)
-		router.Handle("/internal/sleepace/device/", resyncHandler.Dispatch)
-		router.Handle("/sleepace/api/v1/sleepace/device/", resyncHandler.Dispatch)
+		router.RegisterSleepaceResyncRoutes(resyncHandler)
 
 		// 厂家固件库管理（uploadFile/delete/deviceVersions）。
 		//   POST /sleepace/api/v1/sleepace/firmware/upload    multipart "file"
 		//   POST /sleepace/api/v1/sleepace/firmware/delete    body {device_type, device_version}
 		//   GET  /sleepace/api/v1/sleepace/firmware/versions  channel 由 wisefido-sleepace 注入
 		firmwareHandler := httpapi.NewSleepaceFirmwareHandler(deviceMonitorSettingsService, logger)
-		router.Handle("/internal/sleepace/firmware/", firmwareHandler.Dispatch)
-		router.Handle("/sleepace/api/v1/sleepace/firmware/", firmwareHandler.Dispatch)
+		router.RegisterSleepaceFirmwareRoutes(firmwareHandler)
 	}
 
 	// 启动时全量检查并更新卡片（如果 DB 和 cardSyncService 可用）
@@ -632,7 +621,7 @@ func main() {
 			}
 
 			// card_id 已与底层物理实体 UUID 一体化（ActiveBedCard.card_id=bed_id, UnitCard.card_id=unit_id,
-			// DeviceCard.card_id=device_id），CreateCard 改为 idempotent UPSERT。重启时 unit/bed/device
+			// DeviceCard.card_id=device_addr），CreateCard 改为 idempotent UPSERT。重启时 unit/bed/device
 			// 不变 → 同 card_id 走 UPDATE 路径，业务表里现存的 card_id 引用全部仍有效。
 			//
 			// 启动 orphan cleanup：物理锚点（bed/unit/device）已不存在的 card 行兜底删除，

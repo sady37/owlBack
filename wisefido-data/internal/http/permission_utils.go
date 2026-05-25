@@ -125,20 +125,20 @@ func VerifyCardInScope(db *sql.DB, ctx context.Context, userID, role, cardID str
 	return sc.VerifyCard(ctx, db, cardID)
 }
 
-func VerifyDeviceInScope(db *sql.DB, ctx context.Context, userID, role, deviceID string) error {
+func VerifyDeviceInScope(db *sql.DB, ctx context.Context, userID, role, deviceAddr string) error {
 	sc, ok := scope.FromContext(ctx)
 	if !ok || sc == nil {
 		sc = &scope.ScopeContext{UserID: userID, Role: role}
 	}
-	return sc.VerifyDevice(ctx, db, deviceID)
+	return sc.VerifyDevice(ctx, db, deviceAddr)
 }
 
 // 兼容旧 caller（不传 role 的早期版本）
 func VerifyCardInCurrentBranch(db *sql.DB, ctx context.Context, userID, cardID string) error {
 	return VerifyCardInScope(db, ctx, userID, "", cardID)
 }
-func VerifyDeviceInCurrentBranch(db *sql.DB, ctx context.Context, userID, deviceID string) error {
-	return VerifyDeviceInScope(db, ctx, userID, "", deviceID)
+func VerifyDeviceInCurrentBranch(db *sql.DB, ctx context.Context, userID, deviceAddr string) error {
+	return VerifyDeviceInScope(db, ctx, userID, "", deviceAddr)
 }
 
 // ApplyBranchFilter 应用 branch 过滤条件到 SQL 查询

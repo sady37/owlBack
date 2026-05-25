@@ -47,8 +47,8 @@ const DefaultTrackID = "0"
 // 用途：alarm 触发时附在 alarm_events.evidence —— 取报警设备最近 monitor 缓存值，
 // 不受设备网关限制（sleepace HR/RR、radar position/pose 同一渠道统一处理）。
 // 无数据时返回 nil（caller 自行省略 evidence.monitor 字段）。
-func (b *MonitorBuffer) SnapshotByDevice(cardID, deviceID string) map[string]any {
-	if cardID == "" || deviceID == "" {
+func (b *MonitorBuffer) SnapshotByDevice(cardID, deviceAddr string) map[string]any {
+	if cardID == "" || deviceAddr == "" {
 		return nil
 	}
 	b.mu.RLock()
@@ -58,7 +58,7 @@ func (b *MonitorBuffer) SnapshotByDevice(cardID, deviceID string) map[string]any
 	if cb == nil {
 		return nil
 	}
-	db := cb.Devices[deviceID]
+	db := cb.Devices[deviceAddr]
 	if db == nil || len(db.Tracks) == 0 {
 		return nil
 	}
@@ -76,15 +76,15 @@ func (b *MonitorBuffer) SnapshotByDevice(cardID, deviceID string) map[string]any
 		})
 	}
 	return map[string]any{
-		"device_id": deviceID,
+		"device_addr": deviceAddr,
 		"tracks":    tracks,
 	}
 }
 
 // Write updates fields for a card:device:track. Only fields present in the
 // incoming map are touched; each field gets the message timestamp.
-func (b *MonitorBuffer) Write(cardID, deviceID, trackID string, fields map[string]any, ts int64) {
-	if cardID == "" || deviceID == "" || len(fields) == 0 {
+func (b *MonitorBuffer) Write(cardID, deviceAddr, trackID string, fields map[string]any, ts int64) {
+	if cardID == "" || deviceAddr == "" || len(fields) == 0 {
 		return
 	}
 	if trackID == "" {
@@ -100,10 +100,10 @@ func (b *MonitorBuffer) Write(cardID, deviceID, trackID string, fields map[strin
 		b.cards[cardID] = cb
 	}
 
-	db := cb.Devices[deviceID]
+	db := cb.Devices[deviceAddr]
 	if db == nil {
 		db = &DeviceBuffer{Tracks: make(map[string]*TrackBuffer)}
-		cb.Devices[deviceID] = db
+		cb.Devices[deviceAddr] = db
 	}
 
 	tb := db.Tracks[trackID]
@@ -125,7 +125,7 @@ func (b *MonitorBuffer) Write(cardID, deviceID, trackID string, fields map[strin
 
 // DeviceSnapshot is the flush output for one device: per-track fields (track_id -> fields+ts).
 type DeviceSnapshot struct {
-	DeviceID string                    // device_addr canonical IPv6 text
+	DeviceAddr string                    // device_addr canonical IPv6 text
 	Tracks   map[string]map[string]any // track_id -> { ...fields..., "ts": maxTs }
 }
 
@@ -163,7 +163,7 @@ func (b *MonitorBuffer) flushLocked(nowMs int64) []CardSnapshot {
 	var result []CardSnapshot
 	for cardID, cb := range b.cards {
 		var devSnaps []DeviceSnapshot
-		for devID, db := range cb.Devices {
+		for devAddr, db := range cb.Devices {
 			if len(db.Tracks) == 0 {
 				continue
 			}
@@ -182,7 +182,7 @@ func (b *MonitorBuffer) flushLocked(nowMs int64) []CardSnapshot {
 			if len(tracks) == 0 {
 				continue
 			}
-			devSnaps = append(devSnaps, DeviceSnapshot{DeviceID: devID, Tracks: tracks})
+			devSnaps = append(devSnaps, DeviceSnapshot{DeviceAddr: devAddr, Tracks: tracks})
 		}
 		if len(devSnaps) > 0 {
 			result = append(result, CardSnapshot{CardID: cardID, Devices: devSnaps})

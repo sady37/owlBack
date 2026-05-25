@@ -30,8 +30,8 @@ func (h *RadarHandler) GetTracks(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	deviceUID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/measure/tracks")
-	if !validateRadarDeviceID(deviceUID) {
+	rawUID := extractRadarPathSeg(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/measure/tracks")
+	deviceUID, ok := parseRadarDeviceUID(rawUID); if !ok {
 		http.Error(w, "Invalid device UID", http.StatusBadRequest)
 		return
 	}
@@ -196,8 +196,8 @@ func (h *RadarHandler) ComputeDetectionRectangle(w http.ResponseWriter, r *http.
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	deviceUID := extractRadarDeviceIDFromPath(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/measure/detection-rectangle")
-	if !validateRadarDeviceID(deviceUID) {
+	rawUID := extractRadarPathSeg(r.URL.Path, "/radar-device/api/v1/radar-device/device/", "/measure/detection-rectangle")
+	deviceUID, ok := parseRadarDeviceUID(rawUID); if !ok {
 		http.Error(w, "Invalid device UID", http.StatusBadRequest)
 		return
 	}

@@ -32,7 +32,7 @@ const (
 // DeviceBaseline 设备身份与策略的统一类型：CardDB 联合查询 Scan、网关流包头、Redis/JSON、进程内缓存均用此结构。
 // 约定：branch_id / building_id / floor 可选；同房判定以 tenant_id + unit_id（若 room 仅在 unit 内唯一则必填）+ room_id 为准。
 //
-// Phase 2 一刀切：device_id UUID 合成层退役。
+// device_id UUID 合成层退役。
 //   - DeviceAddr INET /128 路由层主键（业务侧寻址）
 //   - DeviceUID  VARCHAR(50) logMAC identity 不变量（dfm PK）
 //   - 未绑卡时 CardID 为空，publisher 在构造 envelope.SubjectEntity 时留空（R-009 红线）

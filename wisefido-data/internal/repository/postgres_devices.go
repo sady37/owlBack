@@ -64,8 +64,8 @@ func orderByClause(sort, direction string) string {
 		return "d.status " + dir
 	case "access":
 		return "d.access " + dir
-	case "device_id":
-		// Phase 2: device_id 列已退役；alias 到 device_addr 排序
+	case "device_addr":
+		// Phase 2: device_addr 列已退役；alias 到 device_addr 排序
 		return "d.device_addr " + dir
 	case "device_code":
 		return "ds.device_code " + dir
@@ -95,8 +95,8 @@ func orderByClauseDevicesV2(sortKey, direction string) string {
 		return "d.created_at " + dir
 	case "tenant_name":
 		return "t.tenant_name " + dir
-	case "device_id":
-		// Phase 2: dfm.device_id 列已退役；alias 到 device_uid（identity 排序）
+	case "device_addr":
+		// Phase 2: dfm.device_addr 列已退役；alias 到 device_uid（identity 排序）
 		return "dfm.device_uid " + dir
 	case "ota_target_firmware_version":
 		return "o.target_firmware_version " + dir
@@ -126,7 +126,7 @@ func orderByClauseDevicesV2(sortKey, direction string) string {
 //
 // v2.5 schema JOIN（详见 owlBack/doc/spatial_query_patterns.md；drs 已退役，online 在 Redis）：
 //
-//	device_factory_meta dfm  (PK device_id, 出厂元数据 + firmware_version：device_uid/device_code/device_type/mac_wifi/imei/...)
+//	device_factory_meta dfm  (PK device_addr, 出厂元数据 + firmware_version：device_uid/device_code/device_type/mac_wifi/imei/...)
 //	    LEFT JOIN devices d              ON d.device_uid = dfm.device_uid      (device_ipv6 → tenant/room/bed 反推)
 //	    LEFT JOIN device_ota o           ON o.device_uid = d.device_uid  (OTA 计划)
 //
@@ -171,7 +171,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 	}
 
 	// 搜索关键词：device_uid / device_code / mac_wifi / imei 模糊匹配
-	// Phase 2: dfm.device_id 列已退役；device_uid 已含 logMAC 搜索覆盖
+	// Phase 2: dfm.device_addr 列已退役；device_uid 已含 logMAC 搜索覆盖
 	if kw := strings.TrimSpace(filters.SearchKeyword); kw != "" {
 		where = append(where, fmt.Sprintf(
 			"(dfm.device_uid ILIKE $%d OR dfm.device_code ILIKE $%d OR dfm.mac_wifi ILIKE $%d OR dfm.imei ILIKE $%d)",
@@ -402,7 +402,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 	return out, total, nil
 }
 
-// GetDevice 查询单个设备 — Phase 2 一刀切：deviceAddr (INET /128) 是业务侧寻址主键。
+// GetDevice 查询单个设备 — deviceAddr (INET /128) 是业务侧寻址主键。
 //
 // 字段口径：
 //   - DeviceAddr     = devices.device_addr (INET /128)
@@ -616,7 +616,7 @@ func (r *PostgresDevicesRepository) GetDeviceByUID(ctx context.Context, tenantID
 
 // GetDevicesBoundToRoom 查询绑定到指定 room 的设备（仅 id/name，用于删除前检查）
 // v2: roomID 是 /88 prefix；device.device_ipv6 <<= room.spatial_prefix 即视为绑定到该 room（含 bed 下层）。
-// devices 表无 device_name 列；用 device_id 字符串占位回填 d.DeviceName 让上层错误信息能显示。
+// devices 表无 device_name 列；用 device_addr 字符串占位回填 d.DeviceName 让上层错误信息能显示。
 func (r *PostgresDevicesRepository) GetDevicesBoundToRoom(ctx context.Context, tenantID, roomID string) ([]*domain.Device, error) {
 	if tenantID == "" || roomID == "" || !looksLikeINETPrefix(roomID) {
 		return nil, nil
@@ -930,7 +930,7 @@ func (r *PostgresDevicesRepository) DeleteDevice(ctx context.Context, tenantID, 
 
 // GetDeviceRelations 获取设备关联关系（设备 + Address + Residents）。
 //
-// Phase 2 一刀切：业务键 = device_addr (INET /128)。
+// 业务键 = device_addr (INET /128)。
 //   - device_addr → join device_factory_meta(device_uid) 取 device_uid/code（DeviceName/InternalCode）
 //   - device_addr <<= units.unit_id 反查所属 unit (/80)，unit_name → AddressName
 //   - device_addr <<= resident_unit.spatial_prefix AND valid_to IS NULL 反查 active residents
@@ -958,7 +958,7 @@ func (r *PostgresDevicesRepository) GetDeviceRelations(ctx context.Context, tena
 	}
 
 	out := &DeviceRelations{
-		DeviceID:           deviceAddr,
+		DeviceAddr:           deviceAddr,
 		DeviceInternalCode: deviceUID,
 	}
 	if deviceCode.Valid && deviceCode.String != "" {
@@ -1104,8 +1104,8 @@ func (r *PostgresDevicesRepository) GetDevicesByBedIDs(ctx context.Context, tena
 
 // GetDeviceLocationInfo 获取设备的完整位置信息
 // v2 stub: Phase E.2 will rewrite using devices.device_ipv6 + reset_device_prefix()
-func (r *PostgresDevicesRepository) GetDeviceLocationInfo(ctx context.Context, tenantID, deviceID string) (*DeviceLocationInfo, error) {
-	return nil, fmt.Errorf("device not found: tenant_id=%s, device_id=%s", tenantID, deviceID)
+func (r *PostgresDevicesRepository) GetDeviceLocationInfo(ctx context.Context, tenantID, deviceAddr string) (*DeviceLocationInfo, error) {
+	return nil, fmt.Errorf("device not found: tenant_id=%s, device_addr=%s", tenantID, deviceAddr)
 }
 
 // GetDeviceLocationInfoByIdentifier 通过设备标识符（device_uid）获取位置信息

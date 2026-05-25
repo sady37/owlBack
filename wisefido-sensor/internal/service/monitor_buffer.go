@@ -48,8 +48,8 @@ const DefaultTrackID = "0"
 //
 // deviceType 可空（兼容旧 caller / 测试），传入时记录到 DeviceBuffer 供下游 vital_source
 // 等按 device_type 过滤（如 "sleepad" 才作 bed sustain，"radar" 不作）。
-func (b *MonitorBuffer) Write(cardID, deviceID, deviceType, trackID string, fields map[string]any, ts int64) {
-	if cardID == "" || deviceID == "" || len(fields) == 0 {
+func (b *MonitorBuffer) Write(cardID, deviceAddr, deviceType, trackID string, fields map[string]any, ts int64) {
+	if cardID == "" || deviceAddr == "" || len(fields) == 0 {
 		return
 	}
 	if trackID == "" {
@@ -65,10 +65,10 @@ func (b *MonitorBuffer) Write(cardID, deviceID, deviceType, trackID string, fiel
 		b.cards[cardID] = cb
 	}
 
-	db := cb.Devices[deviceID]
+	db := cb.Devices[deviceAddr]
 	if db == nil {
 		db = &DeviceBuffer{Tracks: make(map[string]*TrackBuffer)}
-		cb.Devices[deviceID] = db
+		cb.Devices[deviceAddr] = db
 	}
 	if deviceType != "" {
 		db.DeviceType = deviceType
@@ -93,8 +93,7 @@ func (b *MonitorBuffer) Write(cardID, deviceID, deviceType, trackID string, fiel
 
 // DeviceSnapshot is the flush output for one device: per-track fields (track_id -> fields+ts).
 type DeviceSnapshot struct {
-	DeviceID   string                    // 业务主 key（与 buffer key 一致）
-	DeviceUID  string                    // 仅 log 等用
+	DeviceAddr string                    // INET /128 host text (与 buffer key 一致)
 	DeviceType string                    // "Radar" / "Sleepad" / "SleepPad" — vital_source 用于 sustain 过滤
 	Tracks     map[string]map[string]any // track_id -> { ...fields..., "ts": maxTs }
 }
@@ -134,7 +133,7 @@ func (b *MonitorBuffer) SnapshotCard(cardID string) *CardSnapshot {
 		return nil
 	}
 	var devSnaps []DeviceSnapshot
-	for devID, db := range cb.Devices {
+	for devAddr, db := range cb.Devices {
 		if len(db.Tracks) == 0 {
 			continue
 		}
@@ -153,7 +152,7 @@ func (b *MonitorBuffer) SnapshotCard(cardID string) *CardSnapshot {
 		if len(tracks) == 0 {
 			continue
 		}
-		devSnaps = append(devSnaps, DeviceSnapshot{DeviceID: devID, DeviceUID: devID, DeviceType: db.DeviceType, Tracks: tracks})
+		devSnaps = append(devSnaps, DeviceSnapshot{DeviceAddr: devAddr, DeviceType: db.DeviceType, Tracks: tracks})
 	}
 	if len(devSnaps) == 0 {
 		return nil
@@ -172,7 +171,7 @@ func (b *MonitorBuffer) flushLocked(nowMs int64) []CardSnapshot {
 	var result []CardSnapshot
 	for cardID, cb := range b.cards {
 		var devSnaps []DeviceSnapshot
-		for devID, db := range cb.Devices {
+		for devAddr, db := range cb.Devices {
 			if len(db.Tracks) == 0 {
 				continue
 			}
@@ -191,7 +190,7 @@ func (b *MonitorBuffer) flushLocked(nowMs int64) []CardSnapshot {
 			if len(tracks) == 0 {
 				continue
 			}
-			devSnaps = append(devSnaps, DeviceSnapshot{DeviceID: devID, DeviceUID: devID, DeviceType: db.DeviceType, Tracks: tracks})
+			devSnaps = append(devSnaps, DeviceSnapshot{DeviceAddr: devAddr, DeviceType: db.DeviceType, Tracks: tracks})
 		}
 		if len(devSnaps) > 0 {
 			result = append(result, CardSnapshot{CardID: cardID, Devices: devSnaps})
@@ -225,9 +224,9 @@ func (b *MonitorBuffer) PruneStaleDevices(nowMs, deviceTTLMs int64) {
 	defer b.mu.Unlock()
 
 	for cardID, cb := range b.cards {
-		for devID, db := range cb.Devices {
+		for devAddr, db := range cb.Devices {
 			if nowMs-db.LastTs > deviceTTLMs {
-				delete(cb.Devices, devID)
+				delete(cb.Devices, devAddr)
 			}
 		}
 		if len(cb.Devices) == 0 {
@@ -238,7 +237,7 @@ func (b *MonitorBuffer) PruneStaleDevices(nowMs, deviceTTLMs int64) {
 
 // RemoveDevice removes all fields for a specific device from the buffer.
 // Called when a message exceeds the hard stale timeout.
-func (b *MonitorBuffer) RemoveDevice(cardID, deviceID string) {
+func (b *MonitorBuffer) RemoveDevice(cardID, deviceAddr string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -246,7 +245,7 @@ func (b *MonitorBuffer) RemoveDevice(cardID, deviceID string) {
 	if cb == nil {
 		return
 	}
-	delete(cb.Devices, deviceID)
+	delete(cb.Devices, deviceAddr)
 	if len(cb.Devices) == 0 {
 		delete(b.cards, cardID)
 	}
@@ -264,7 +263,7 @@ func (b *MonitorBuffer) ActiveCardIDs() []string {
 	return ids
 }
 
-// ActiveDevicesByCard returns cardID → deviceID set based on device-level
+// ActiveDevicesByCard returns cardID → deviceAddr set based on device-level
 // entries in the buffer (survives 90s device TTL, independent of field TTL).
 func (b *MonitorBuffer) ActiveDevicesByCard() map[string]map[string]bool {
 	b.mu.RLock()

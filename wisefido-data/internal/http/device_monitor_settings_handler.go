@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strings"
 
 	"github.com/go-redis/redis/v8"
@@ -92,31 +93,31 @@ func (h *DeviceMonitorSettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.
 			dt = "radar"
 			id = strings.TrimPrefix(pathNoSuffix, "/settings/api/v1/monitor/radar/")
 		}
-		if id != "" && !strings.Contains(id, "/") && id != "undefined" && id != "null" {
-			h.GetDeviceOnlineStatus(w, r, dt, id)
+		if addr, ok := parseDeviceAddrFromPath(id); ok {
+			h.GetDeviceOnlineStatus(w, r, dt, addr)
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
-	// 解析设备类型和设备ID
+	// 解析设备类型和设备 addr
 	var deviceType string
-	var deviceID string
+	var rawAddr string
 
 	if strings.HasPrefix(path, "/settings/api/v1/monitor/sleepad/") {
 		deviceType = "sleepad"
-		deviceID = strings.TrimPrefix(path, "/settings/api/v1/monitor/sleepad/")
+		rawAddr = strings.TrimPrefix(path, "/settings/api/v1/monitor/sleepad/")
 	} else if strings.HasPrefix(path, "/settings/api/v1/monitor/radar/") {
 		deviceType = "radar"
-		deviceID = strings.TrimPrefix(path, "/settings/api/v1/monitor/radar/")
+		rawAddr = strings.TrimPrefix(path, "/settings/api/v1/monitor/radar/")
 	} else {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
-	// 验证 deviceID 不为空且不包含 "/"，且不能是 "undefined" 或 "null"
-	if deviceID == "" || strings.Contains(deviceID, "/") || deviceID == "undefined" || deviceID == "null" {
+	deviceAddr, ok := parseDeviceAddrFromPath(rawAddr)
+	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -124,22 +125,22 @@ func (h *DeviceMonitorSettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.
 	// 根据 HTTP 方法分发
 	switch r.Method {
 	case http.MethodGet:
-		h.GetDeviceMonitorSettings(w, r, deviceType, deviceID)
+		h.GetDeviceMonitorSettings(w, r, deviceType, deviceAddr)
 	case http.MethodPut:
-		h.UpdateDeviceMonitorSettings(w, r, deviceType, deviceID)
+		h.UpdateDeviceMonitorSettings(w, r, deviceType, deviceAddr)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
 
 // GetDeviceOnlineStatus 返回设备在线状态（走 device_store/cardagg，不依赖 card；后期可直接从 device 进入配置）
-func (h *DeviceMonitorSettingsHandler) GetDeviceOnlineStatus(w http.ResponseWriter, r *http.Request, deviceType, deviceID string) {
+func (h *DeviceMonitorSettingsHandler) GetDeviceOnlineStatus(w http.ResponseWriter, r *http.Request, deviceType, deviceAddr string) {
 	ctx := r.Context()
 	tenantID, ok := h.base.tenantIDFromReq(w, r)
 	if !ok {
 		return
 	}
-	dev, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceID)
+	dev, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceAddr)
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -159,7 +160,7 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceOnlineStatus(w http.ResponseWrit
 // 权限矩阵 (alarm_device, READ)：
 //   - B2B: family 禁；tenant_admin / manager / nurse / platform_admin 放行
 //   - B2C: 全角色放行
-func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseWriter, r *http.Request, deviceType, deviceID string) {
+func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseWriter, r *http.Request, deviceType, deviceAddr string) {
 	ctx := r.Context()
 
 	tenantID, ok := h.base.tenantIDFromReq(w, r)
@@ -185,11 +186,11 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseW
 		}
 	}
 
-	alarmItems, err := h.deviceMonitorSettingsService.GetDeviceMonitorSettings(ctx, tenantID, deviceID, deviceType)
+	alarmItems, err := h.deviceMonitorSettingsService.GetDeviceMonitorSettings(ctx, tenantID, deviceAddr, deviceType)
 	if err != nil {
 		h.logger.Error("GetDeviceMonitorSettings failed",
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.String("device_type", deviceType),
 			zap.Error(err),
 		)
@@ -201,7 +202,7 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseW
 	deviceName := ""
 	timezone := ""
 	deviceIPv6 := ""
-	if dev, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceID); err == nil {
+	if dev, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceAddr); err == nil {
 		deviceUID = dev.DeviceUID
 		deviceName = dev.DeviceName
 		deviceIPv6 = dev.DeviceAddr
@@ -276,7 +277,7 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseW
 }
 
 // UpdateDeviceMonitorSettings 更新设备监控配置
-func (h *DeviceMonitorSettingsHandler) UpdateDeviceMonitorSettings(w http.ResponseWriter, r *http.Request, deviceType, deviceID string) {
+func (h *DeviceMonitorSettingsHandler) UpdateDeviceMonitorSettings(w http.ResponseWriter, r *http.Request, deviceType, deviceAddr string) {
 	ctx := r.Context()
 
 	tenantID, ok := h.base.tenantIDFromReq(w, r)
@@ -331,12 +332,12 @@ func (h *DeviceMonitorSettingsHandler) UpdateDeviceMonitorSettings(w http.Respon
 		}
 	}
 
-	// 4. 安全验证：验证 device_id 与 user_id/tenant_id 一致性
-	if err := h.verifyDeviceAccess(ctx, sessionUserID, tenantID, deviceID); err != nil {
+	// 4. 安全验证：验证 device_addr 与 user_id/tenant_id 一致性
+	if err := h.verifyDeviceAccess(ctx, sessionUserID, tenantID, deviceAddr); err != nil {
 		h.logger.Warn("Security check failed: device access denied",
 			zap.String("user_id", sessionUserID),
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.Error(err),
 		)
 		writeJSON(w, http.StatusOK, Fail("unauthorized: device access denied"))
@@ -345,10 +346,10 @@ func (h *DeviceMonitorSettingsHandler) UpdateDeviceMonitorSettings(w http.Respon
 
 	// 4.1. 设备验证增强：仅 Radar 通过 wisefido-qinglan 查在线；Sleepad 走 Sleepace 网关，不在此做在线校验
 	if strings.ToLower(deviceType) == "radar" {
-		if err := h.verifyDeviceOnline(ctx, tenantID, deviceID); err != nil {
+		if err := h.verifyDeviceOnline(ctx, tenantID, deviceAddr); err != nil {
 			h.logger.Warn("Security check failed: device is offline",
 				zap.String("tenant_id", tenantID),
-				zap.String("device_id", deviceID),
+				zap.String("device_addr", deviceAddr),
 				zap.Error(err),
 			)
 			writeJSON(w, http.StatusOK, Fail("device must be online to update settings"))
@@ -356,12 +357,12 @@ func (h *DeviceMonitorSettingsHandler) UpdateDeviceMonitorSettings(w http.Respon
 		}
 	}
 
-	// 5. 安全验证：验证 branch_id 与 user_id/device_id 一致性
-	if err := h.verifyBranchAccess(ctx, sessionUserID, tenantID, deviceID); err != nil {
+	// 5. 安全验证：验证 branch_id 与 user_id/device_addr 一致性
+	if err := h.verifyBranchAccess(ctx, sessionUserID, tenantID, deviceAddr); err != nil {
 		h.logger.Warn("Security check failed: branch access denied",
 			zap.String("user_id", sessionUserID),
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.Error(err),
 		)
 		writeJSON(w, http.StatusOK, Fail("unauthorized: branch access denied"))
@@ -415,11 +416,11 @@ func (h *DeviceMonitorSettingsHandler) UpdateDeviceMonitorSettings(w http.Respon
 	}
 
 	// 使用已验证的 sessionUserID（不能使用 payload 中的 user_id）
-	result, err := h.deviceMonitorSettingsService.UpdateDeviceMonitorSettings(ctx, tenantID, deviceID, deviceType, sessionUserID, alarmItems, nil)
+	result, err := h.deviceMonitorSettingsService.UpdateDeviceMonitorSettings(ctx, tenantID, deviceAddr, deviceType, sessionUserID, alarmItems, nil)
 	if err != nil {
 		h.logger.Error("UpdateDeviceMonitorSettings failed",
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.String("device_type", deviceType),
 			zap.Error(err),
 		)
@@ -547,57 +548,64 @@ func (h *DeviceMonitorSettingsHandler) verifyUserRole(ctx context.Context, userI
 	return fmt.Errorf("insufficient role: user.role=%s, allowed=%v", user.Role, allowedRoles)
 }
 
-// verifyDeviceAccess 验证 device_id 与 user_id/tenant_id 一致性
-// 2. branch_id: user_id device_id 一致（通过设备所属的 branch_id 验证）
-func (h *DeviceMonitorSettingsHandler) verifyDeviceAccess(ctx context.Context, userID, tenantID, deviceID string) error {
-	if userID == "" || tenantID == "" || deviceID == "" {
-		return fmt.Errorf("user_id, tenant_id and device_id are required")
+// verifyDeviceAccess 验证 device_addr 属于该 tenant — 走 IPv6 prefix-mask 含集判定，
+// 无 DB round-trip（tenant_id 是 /48 CIDR，device_addr 是 /128 host；含集即 trust）。
+// userID 不参与（不是 IPv6，无法 prefix-mask），如需 branch 级 user-device 一致性见 verifyBranchAccess。
+func (h *DeviceMonitorSettingsHandler) verifyDeviceAccess(_ context.Context, userID, tenantID, deviceAddr string) error {
+	if userID == "" || tenantID == "" || deviceAddr == "" {
+		return fmt.Errorf("user_id, tenant_id and device_addr are required")
 	}
-
-	// 验证设备存在且属于该租户
-	device, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceID)
+	tenantPrefix, err := netip.ParsePrefix(tenantID)
 	if err != nil {
-		return fmt.Errorf("device not found or access denied: %w", err)
+		return fmt.Errorf("invalid tenant_id (expect IPv6 CIDR): %w", err)
 	}
-
-	if device.TenantID != tenantID {
-		return fmt.Errorf("device does not belong to tenant: device.tenant_id=%s, expected=%s", device.TenantID, tenantID)
+	addr, ok := parseAddrAcceptCIDR(deviceAddr)
+	if !ok {
+		return fmt.Errorf("invalid device_addr (expect IPv6 host or /128 CIDR)")
 	}
-
+	if !tenantPrefix.Contains(addr) {
+		return fmt.Errorf("device_addr %s not in tenant %s", addr.String(), tenantPrefix.String())
+	}
 	return nil
 }
 
-// verifyBranchAccess 验证 branch_id 与 user_id/device_id 一致性
-// 2. branch_id: user_id device_id 一致
-func (h *DeviceMonitorSettingsHandler) verifyBranchAccess(ctx context.Context, userID, tenantID, deviceID string) error {
-	if userID == "" || tenantID == "" || deviceID == "" {
-		return fmt.Errorf("user_id, tenant_id and device_id are required")
-	}
-
-	// 获取设备信息
-	device, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceID)
-	if err != nil {
-		return fmt.Errorf("device not found: %w", err)
-	}
-
-	// 获取设备的 branch_id（通过 unit_id）
-	deviceBranchID := ""
-	if device.UnitID.Valid && device.UnitID.String != "" {
-		unit, err := h.unitsRepo.GetUnit(ctx, tenantID, device.UnitID.String)
-		if err == nil && unit.BranchID.Valid {
-			deviceBranchID = unit.BranchID.String
+// parseAddrAcceptCIDR 接受 IPv6 host text 或 /128 CIDR，返回 netip.Addr。
+func parseAddrAcceptCIDR(s string) (netip.Addr, bool) {
+	if prefix, err := netip.ParsePrefix(s); err == nil {
+		if prefix.IsValid() && prefix.Addr().Is6() && prefix.Bits() == 128 {
+			return prefix.Addr(), true
 		}
+		return netip.Addr{}, false
 	}
-
-	// 如果设备没有关联 branch_id，跳过验证（允许访问）
-	if deviceBranchID == "" {
-		return nil
+	addr, err := netip.ParseAddr(s)
+	if err != nil || !addr.IsValid() || !addr.Is6() {
+		return netip.Addr{}, false
 	}
+	return addr, true
+}
 
-	// 获取用户的所有 branch_id 列表
+// verifyBranchAccess 验证 user 有 device 所在 branch 权限。
+// 设备 branch /56 由 device_addr IPv6 prefix-mask 派生（无需 DB JOIN devices→units）；
+// 用户 branch 列表必须查 DB（user_id 是 UUID 非 IPv6，无法 prefix-mask）。
+func (h *DeviceMonitorSettingsHandler) verifyBranchAccess(ctx context.Context, userID, tenantID, deviceAddr string) error {
+	if userID == "" || tenantID == "" || deviceAddr == "" {
+		return fmt.Errorf("user_id, tenant_id and device_addr are required")
+	}
+	addr, ok := parseAddrAcceptCIDR(deviceAddr)
+	if !ok {
+		return fmt.Errorf("invalid device_addr (expect IPv6 host or /128 CIDR)")
+	}
+	// device branch /56 = device_addr 前 56 bit
+	branchPrefix, err := addr.Prefix(56)
+	if err != nil {
+		return fmt.Errorf("derive branch /56 from device_addr: %w", err)
+	}
+	deviceBranchID := branchPrefix.Masked().String() // canonical "fd00:0:3:100::/56"
+
+	// user 的 branch 列表必须查 DB
 	userBranches, err := h.userBranchesRepo.GetUserBranches(ctx, tenantID, userID)
 	if err != nil {
-		// 如果查询失败，记录警告但允许访问（向后兼容）
+		// 查询失败 → log + 允许（向后兼容；user_branches 当前为 no-op stub）
 		h.logger.Warn("Failed to get user branches, allowing access",
 			zap.String("user_id", userID),
 			zap.String("tenant_id", tenantID),
@@ -606,7 +614,7 @@ func (h *DeviceMonitorSettingsHandler) verifyBranchAccess(ctx context.Context, u
 		return nil
 	}
 
-	// 检查用户的 branch_id 列表中是否包含设备的 branch_id
+	// user 的 branch_id 列表中含设备 branch → 通过
 	for _, userBranch := range userBranches {
 		if userBranch.BranchID == deviceBranchID {
 			return nil
@@ -638,9 +646,9 @@ func getBranchIDs(branches []*domain.UserBranch) []string {
 
 // verifyDeviceOnline 验证设备是否在线（通过 wisefido-qinglan HTTP API 实时查询）
 // 仅允许设置在线的设备
-func (h *DeviceMonitorSettingsHandler) verifyDeviceOnline(ctx context.Context, tenantID, deviceID string) error {
+func (h *DeviceMonitorSettingsHandler) verifyDeviceOnline(ctx context.Context, tenantID, deviceAddr string) error {
 	// 获取设备信息
-	device, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceID)
+	device, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceAddr)
 	if err != nil {
 		return fmt.Errorf("device not found: %w", err)
 	}
@@ -648,7 +656,7 @@ func (h *DeviceMonitorSettingsHandler) verifyDeviceOnline(ctx context.Context, t
 	if device.DeviceUID == "" {
 		// 如果设备没有 device_uid，跳过在线状态检查
 		h.logger.Warn("Device has no device_uid, skipping online status check",
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 		)
 		return nil
 	}
@@ -656,7 +664,7 @@ func (h *DeviceMonitorSettingsHandler) verifyDeviceOnline(ctx context.Context, t
 	// 通过 wisefido-qinglan HTTP API 实时查询设备在线状态
 	if err := h.deviceMonitorSettingsService.CheckDeviceOnlineStatus(ctx, device.DeviceUID); err != nil {
 		h.logger.Warn("Device is not online",
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.String("device_uid", device.DeviceUID),
 			zap.Error(err),
 		)
@@ -700,17 +708,11 @@ func (h *DeviceMonitorSettingsHandler) verifyAlarmTypesForDevice(deviceType stri
 	return nil
 }
 
-// validateAlarmItemParams 验证参数值范围（阈值合理性）
-// 注意：此函数仅验证参数范围，不设置默认值。默认值由 AlarmItem 设置。
-// 雷达：呼吸心率参数范围验证
-// RespRateAlert:
-//   - max (upper breath): [10, 100]
-//   - min (lower breath): [1, 20]
-//   - 验证 min < max
-// HeartRateAlert:
-//   - max (upper heart): [10, 255]
-//   - min (lower heart): [1, 100]
-//   - 验证 min < max
+// validateAlarmItemParams 验证参数值范围（雷达阈值合理性）。
+// 单点 source of truth：owl-common/alarm/alarm.go Radar* 常量。
+//
+// RespRateAlert: min/max 都在 [RadarRrEffectiveMin, RadarRrEffectiveMax]，min < max
+// HeartRateAlert: min ∈ [RadarHrSlowMin, RadarHrSlowFastDiv]; max ∈ [RadarHrSlowFastDiv, RadarHrEffectiveMax], min < max
 func (h *DeviceMonitorSettingsHandler) validateAlarmItemParams(deviceType string, alarmItems []alarm.AlarmItem) error {
 	if deviceType != "radar" {
 		// 目前只验证雷达设备的参数
@@ -725,19 +727,21 @@ func (h *DeviceMonitorSettingsHandler) validateAlarmItemParams(deviceType string
 		}
 	}
 
-	// 验证雷达呼吸心率参数
+	// 验证雷达呼吸心率参数（边界 = alarm.go Radar*Effective 常量，TI mmWave 实测）
 	// RespRateAlert: max (upper breath), min (lower breath)
 	if item, ok := itemMap["RespRateAlert"]; ok && item.AlarmParams != nil {
 		if max, ok := item.AlarmParams["max"]; ok {
 			upperBreath := getIntValue(max)
-			if upperBreath < 10 || upperBreath > 100 {
-				return fmt.Errorf("RespRateAlert.max must be in range [10, 100], got %d", upperBreath)
+			if upperBreath < alarm.RadarRrEffectiveMin || upperBreath > alarm.RadarRrEffectiveMax {
+				return fmt.Errorf("RespRateAlert.max must be in range [%d, %d], got %d",
+					alarm.RadarRrEffectiveMin, alarm.RadarRrEffectiveMax, upperBreath)
 			}
 		}
 		if min, ok := item.AlarmParams["min"]; ok {
 			lowerBreath := getIntValue(min)
-			if lowerBreath < 1 || lowerBreath > 20 {
-				return fmt.Errorf("RespRateAlert.min must be in range [1, 20], got %d", lowerBreath)
+			if lowerBreath < alarm.RadarRrEffectiveMin || lowerBreath > alarm.RadarRrEffectiveMax {
+				return fmt.Errorf("RespRateAlert.min must be in range [%d, %d], got %d",
+					alarm.RadarRrEffectiveMin, alarm.RadarRrEffectiveMax, lowerBreath)
 			}
 		}
 		// 验证 min < max
@@ -753,17 +757,21 @@ func (h *DeviceMonitorSettingsHandler) validateAlarmItemParams(deviceType string
 	}
 
 	// HeartRateAlert: max (upper heart), min (lower heart)
+	// slow 阈值（min）落 [RadarHrSlowMin=40, RadarHrSlowFastDiv=80]；
+	// fast 阈值（max）落 [RadarHrSlowFastDiv=80, RadarHrEffectiveMax=110]
 	if item, ok := itemMap["HeartRateAlert"]; ok && item.AlarmParams != nil {
 		if max, ok := item.AlarmParams["max"]; ok {
 			upperHeart := getIntValue(max)
-			if upperHeart < 10 || upperHeart > 255 {
-				return fmt.Errorf("HeartRateAlert.max must be in range [10, 255], got %d", upperHeart)
+			if upperHeart < alarm.RadarHrSlowFastDiv || upperHeart > alarm.RadarHrEffectiveMax {
+				return fmt.Errorf("HeartRateAlert.max must be in range [%d, %d], got %d",
+					alarm.RadarHrSlowFastDiv, alarm.RadarHrEffectiveMax, upperHeart)
 			}
 		}
 		if min, ok := item.AlarmParams["min"]; ok {
 			lowerHeart := getIntValue(min)
-			if lowerHeart < 1 || lowerHeart > 100 {
-				return fmt.Errorf("HeartRateAlert.min must be in range [1, 100], got %d", lowerHeart)
+			if lowerHeart < alarm.RadarHrSlowMin || lowerHeart > alarm.RadarHrSlowFastDiv {
+				return fmt.Errorf("HeartRateAlert.min must be in range [%d, %d], got %d",
+					alarm.RadarHrSlowMin, alarm.RadarHrSlowFastDiv, lowerHeart)
 			}
 		}
 		// 验证 min < max

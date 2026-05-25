@@ -34,7 +34,7 @@ import (
 // 详 sensor_v2 §10.1.1。
 type TrackStatus struct {
 	TrackID  int    `json:"track_id"`
-	DeviceID string `json:"device_addr"` // radar IPv6 /128
+	DeviceAddr string `json:"device_addr"` // radar IPv6 /128
 	RoomID   string `json:"room_id"`   // room spatial_prefix
 
 	Verdict      TrackVerdict `json:"-"`             // 内部 int，wire 用 verdict 字段（字符串）
@@ -92,7 +92,7 @@ func areaTypeWireName(t AreaType) string {
 
 // ToStreamMap 序列化为 Redis stream values。
 // wire schema 稳定字段：
-//   verdict / ghost_penalty / track_id / device_id / room_id /
+//   verdict / ghost_penalty / track_id / device_addr / room_id /
 //   x / y / z / pose / still_sec / cell_area_type / enter_target /
 //   in_bed_zone_id / in_room_zone_id / in_bathroom_zone_id /
 //   person_id / person_role / updated_at_ms
@@ -103,7 +103,7 @@ func (ts *TrackStatus) ToStreamMap() map[string]interface{} {
 		"verdict":        VerdictName(ts.Verdict),
 		"ghost_penalty":  ts.GhostPenalty,
 		"track_id":       ts.TrackID,
-		"device_id":      ts.DeviceID,
+		"device_addr":      ts.DeviceAddr,
 		"room_id":        ts.RoomID,
 		"x":              ts.X,
 		"y":              ts.Y,
@@ -144,7 +144,7 @@ func PublishTrackStatus(ctx context.Context, client *redis.Client, logger *zap.L
 			logger.Warn("track_status_publish_failed",
 				zap.String("stream", def.Name),
 				zap.Int("track_id", ts.TrackID),
-				zap.String("device_id", ts.DeviceID),
+				zap.String("device_addr", ts.DeviceAddr),
 				zap.String("room_id", ts.RoomID),
 				zap.Error(err),
 			)

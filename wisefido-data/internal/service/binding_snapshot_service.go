@@ -12,7 +12,7 @@ import (
 
 // TakeBindingSnapshot 采集受影响 unit 下所有关联表的完整行，写入 binding_snapshots。
 //   - triggerType: "device_binding" | "resident_move" | "caregiver_change"
-//   - triggerEntityID: 触发变更的 device_id / resident_id
+//   - triggerEntityID: 触发变更的 device_addr / resident_id
 //   - triggerSummary: 人可读描述，如 "Radar_D523: Room101→Room201"
 //   - unitIDs: 受影响的 unit_id 列表（新旧都传）
 //   - changedBy: 操作人 user_id（可空）
@@ -129,7 +129,7 @@ func collectSnapshot(ctx context.Context, db *sql.DB, tenantID string, unitIDs [
 	}
 	snap["devices"] = devices
 
-	// alarm_device / layout_config 不冗余存储，通过 device_id/room_id + snapshot_at 去 config_versions 查
+	// alarm_device / layout_config 不冗余存储，通过 device_addr/room_id + snapshot_at 去 config_versions 查
 
 	// residents（unit_id 在这些 unit 下的）
 	residents, _, err := queryRows(ctx, db,

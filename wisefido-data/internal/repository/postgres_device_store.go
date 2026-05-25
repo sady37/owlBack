@@ -21,7 +21,7 @@ import (
 //   - devices — 业务空间绑定（device_addr INET /128 PK, device_uid UNIQUE FK→dfm, card_id INET, monitoring_enabled）
 //   - device_ota — OTA 升级计划（device_addr PK FK→devices, target_firmware_version, approve_way enum, schedule, status, ...）
 //
-// Phase 2 一刀切：device_id UUID 退役；identity 收口到 device_uid，业务寻址走 device_addr。
+// device_id UUID 退役；identity 收口到 device_uid，业务寻址走 device_addr。
 //
 // FE 期望的 v1 字段（OTAPermit/OTAWay/OTASchedule 等）由本 repo 在读写两端做映射。
 // access 已与 schema 同名（devices.access），不再做名称映射。
@@ -438,7 +438,7 @@ func (r *PostgresDeviceStoreRepository) ListDeviceStores(ctx context.Context, fi
 }
 
 // ----------------------------------------------------------------------------
-// GetDeviceStore / GetDeviceStoreByDeviceID
+// GetDeviceStore / GetDeviceStoreByDeviceAddr
 // ----------------------------------------------------------------------------
 
 func (r *PostgresDeviceStoreRepository) GetDeviceStore(ctx context.Context, deviceUID string) (*domain.DeviceStore, error) {
@@ -462,7 +462,7 @@ func (r *PostgresDeviceStoreRepository) GetDeviceStore(ctx context.Context, devi
 	return ds, nil
 }
 
-// GetDeviceStoreByDeviceAddr Phase 2 一刀切：device_id UUID 退役，业务键改 device_addr。
+// GetDeviceStoreByDeviceAddr device_id UUID 退役，业务键改 device_addr。
 func (r *PostgresDeviceStoreRepository) GetDeviceStoreByDeviceAddr(ctx context.Context, deviceAddr string) (*domain.DeviceStore, error) {
 	q := `
 		SELECT ` + expandSelectColumnsV2() + `

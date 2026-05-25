@@ -104,13 +104,13 @@ func NewTrackPlaybackService(devices repository.DevicesRepository, iot repositor
 
 // RadarTrackPlayback 返回 result：{ layout, data }，其中 data.rows 为 IoT 原始行（data_value 与入库一致），data.pages 为每页 500 条。
 // userRole 来自请求头 X-User-Role，用于 PlaybackLookbackForRole。
-func (s *TrackPlaybackService) RadarTrackPlayback(ctx context.Context, tenantID, deviceID string, startMs, endMs int64, userRole string) (map[string]interface{}, error) {
+func (s *TrackPlaybackService) RadarTrackPlayback(ctx context.Context, tenantID, deviceAddr string, startMs, endMs int64, userRole string) (map[string]interface{}, error) {
 	start := time.UnixMilli(startMs).UTC()
 	end := time.UnixMilli(endMs).UTC()
 	lb := PlaybackLookbackForRole(userRole)
 	s.log.Info("RadarTrackPlayback begin",
 		zap.String("tenant_id", tenantID),
-		zap.String("device_id", deviceID),
+		zap.String("device_addr", deviceAddr),
 		zap.Int64("start_ms", startMs),
 		zap.Int64("end_ms", endMs),
 		zap.Time("start_utc", start),
@@ -130,19 +130,19 @@ func (s *TrackPlaybackService) RadarTrackPlayback(ctx context.Context, tenantID,
 		return nil, err
 	}
 
-	dev, err := s.devices.GetDevice(ctx, tenantID, deviceID)
+	dev, err := s.devices.GetDevice(ctx, tenantID, deviceAddr)
 	if err != nil || dev == nil {
-		s.log.Warn("RadarTrackPlayback device lookup failed", zap.String("tenant_id", tenantID), zap.String("device_id", deviceID), zap.Error(err))
+		s.log.Warn("RadarTrackPlayback device lookup failed", zap.String("tenant_id", tenantID), zap.String("device_addr", deviceAddr), zap.Error(err))
 		return nil, fmt.Errorf("device not found or access denied")
 	}
 	if dev.DeviceAddr == "" {
-		s.log.Warn("RadarTrackPlayback device_addr empty", zap.String("device_id", deviceID))
+		s.log.Warn("RadarTrackPlayback device_addr empty", zap.String("device_addr", deviceAddr))
 		return nil, fmt.Errorf("device_addr missing")
 	}
 
 	s.log.Info("RadarTrackPlayback querying monitor_stream",
 		zap.String("tenant_id", tenantID),
-		zap.String("device_id", deviceID),
+		zap.String("device_addr", deviceAddr),
 		zap.String("device_addr", dev.DeviceAddr),
 		zap.Time("filter_start", start),
 		zap.Time("filter_end", end),
@@ -187,13 +187,13 @@ type VitalPlaybackPoint struct {
 
 // RadarVitalPlayback 从 monitor_stream 抽出 HR/RR/sleep_stage 数据点（Sleepad 主源；Radar 暂未发 vital MQTT）。
 // 与 RadarTrackPlayback 同样走 ValidatePlaybackWindow + 设备解析；返回 { points: [...], total: N }。
-func (s *TrackPlaybackService) RadarVitalPlayback(ctx context.Context, tenantID, deviceID string, startMs, endMs int64, userRole string) (map[string]interface{}, error) {
+func (s *TrackPlaybackService) RadarVitalPlayback(ctx context.Context, tenantID, deviceAddr string, startMs, endMs int64, userRole string) (map[string]interface{}, error) {
 	start := time.UnixMilli(startMs).UTC()
 	end := time.UnixMilli(endMs).UTC()
 	lb := PlaybackLookbackForRole(userRole)
 	s.log.Info("RadarVitalPlayback begin",
 		zap.String("tenant_id", tenantID),
-		zap.String("device_id", deviceID),
+		zap.String("device_addr", deviceAddr),
 		zap.Int64("start_ms", startMs),
 		zap.Int64("end_ms", endMs),
 		zap.String("user_role", strings.TrimSpace(userRole)),
@@ -204,9 +204,9 @@ func (s *TrackPlaybackService) RadarVitalPlayback(ctx context.Context, tenantID,
 		return nil, err
 	}
 
-	dev, err := s.devices.GetDevice(ctx, tenantID, deviceID)
+	dev, err := s.devices.GetDevice(ctx, tenantID, deviceAddr)
 	if err != nil || dev == nil {
-		s.log.Warn("RadarVitalPlayback device lookup failed", zap.String("tenant_id", tenantID), zap.String("device_id", deviceID), zap.Error(err))
+		s.log.Warn("RadarVitalPlayback device lookup failed", zap.String("tenant_id", tenantID), zap.String("device_addr", deviceAddr), zap.Error(err))
 		return nil, fmt.Errorf("device not found or access denied")
 	}
 	if dev.DeviceAddr == "" {

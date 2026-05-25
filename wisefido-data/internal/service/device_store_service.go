@@ -28,7 +28,7 @@ type DeviceStoreService struct {
 	// onSleepadVendorBound — sleepad 在厂家成功 bind+InitializeDevice 之后调（applyDefaultSleepadRealtime success）。
 	// 用于通知 SleepaceIntervalScheduler 立即清掉 1h vendor-unbound backoff cache，
 	// 让重新 bind 后下次 60s tick 就能 push interval（不等 1h TTL）。可空（未注入即 noop）。
-	onSleepadVendorBound func(deviceID string)
+	onSleepadVendorBound func(deviceAddr string)
 	logger               *zap.Logger
 }
 
@@ -58,7 +58,7 @@ func (s *DeviceStoreService) SetConfigPublisher(pub *publisher.ConfigPublisher) 
 
 // SetOnSleepadVendorBound — 注入 sleepad 厂家 bind 成功回调。
 // main.go wire scheduler 时调一次：deviceStoreService.SetOnSleepadVendorBound(intervalScheduler.InvalidateUnbound)
-func (s *DeviceStoreService) SetOnSleepadVendorBound(cb func(deviceID string)) {
+func (s *DeviceStoreService) SetOnSleepadVendorBound(cb func(deviceAddr string)) {
 	s.onSleepadVendorBound = cb
 }
 
@@ -180,11 +180,11 @@ func (s *DeviceStoreService) ImportDeviceStoresNotify(ctx context.Context, items
 	return
 }
 
-func (s *DeviceStoreService) getTimezoneForDevice(ctx context.Context, tenantID, deviceID string) int {
-	if s.devicesRepo == nil || s.unitsRepo == nil || tenantID == "" || deviceID == "" {
+func (s *DeviceStoreService) getTimezoneForDevice(ctx context.Context, tenantID, deviceAddr string) int {
+	if s.devicesRepo == nil || s.unitsRepo == nil || tenantID == "" || deviceAddr == "" {
 		return DefaultTimezoneOffsetSeconds
 	}
-	dev, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
+	dev, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceAddr)
 	if err != nil || dev == nil {
 		return DefaultTimezoneOffsetSeconds
 	}
@@ -357,7 +357,7 @@ func (s *DeviceStoreService) InitialAllSleepad(ctx context.Context) (*InitialAll
 }
 
 // BindSleepadOne 单条 Sleepad 绑定：调用 initialize(device_code, device_uid)。
-// 厂家映射：Sleepace device_id = device_factory_meta.device_code，Sleepace userid = device_factory_meta.device_uid。
+// 厂家映射：Sleepace device_addr = device_factory_meta.device_code，Sleepace userid = device_factory_meta.device_uid。
 // 当前仅绑定在 left（leftRight=0）。
 func (s *DeviceStoreService) BindSleepadOne(ctx context.Context, deviceUID string) error {
 	if s.sleepaceGateway == nil {
@@ -450,7 +450,7 @@ func (s *DeviceStoreService) applyDefaultSleepadRealtime(ctx context.Context, ds
 	if err := setIntervalWithRetry(ctx, s.sleepaceGateway, ds.DeviceUID, ds.DeviceCode.String, targetInterval); err != nil {
 		s.logger.Warn("post-bind SetRealtimeInterval failed",
 			zap.String("device_uid", ds.DeviceUID),
-			zap.String("device_id", ds.DeviceUID),
+			zap.String("device_addr", ds.DeviceUID),
 			zap.Error(err))
 	} else if s.onSleepadVendorBound != nil {
 		// bind+init 成功 → 通知 scheduler 清 unbound backoff，下次 tick 立即重新评估 push（不等 1h TTL）
@@ -463,7 +463,7 @@ func (s *DeviceStoreService) applyDefaultSleepadRealtime(ctx context.Context, ds
 	if err := setRealtimeModeWithRetry(ctx, s.sleepaceGateway, ds.DeviceUID, ds.DeviceCode.String, targetMode); err != nil {
 		s.logger.Warn("post-bind SetRealtimeModeAfterLeave failed",
 			zap.String("device_uid", ds.DeviceUID),
-			zap.String("device_id", ds.DeviceUID),
+			zap.String("device_addr", ds.DeviceUID),
 			zap.Error(err))
 	}
 }
@@ -535,20 +535,20 @@ func sleepadDefaultRealtimeInterval() int {
 	return 10
 }
 
-func setIntervalWithRetry(ctx context.Context, gw *SleepaceGatewayClient, deviceID, deviceCode string, interval int) error {
-	if err := gw.SetRealtimeInterval(ctx, deviceID, deviceCode, interval); err == nil {
+func setIntervalWithRetry(ctx context.Context, gw *SleepaceGatewayClient, deviceAddr, deviceCode string, interval int) error {
+	if err := gw.SetRealtimeInterval(ctx, deviceAddr, deviceCode, interval); err == nil {
 		return nil
 	}
 	time.Sleep(2 * time.Second)
-	return gw.SetRealtimeInterval(ctx, deviceID, deviceCode, interval)
+	return gw.SetRealtimeInterval(ctx, deviceAddr, deviceCode, interval)
 }
 
-func setRealtimeModeWithRetry(ctx context.Context, gw *SleepaceGatewayClient, deviceID, deviceCode string, mode int) error {
-	if err := gw.SetRealtimeModeAfterLeave(ctx, deviceID, deviceCode, mode); err == nil {
+func setRealtimeModeWithRetry(ctx context.Context, gw *SleepaceGatewayClient, deviceAddr, deviceCode string, mode int) error {
+	if err := gw.SetRealtimeModeAfterLeave(ctx, deviceAddr, deviceCode, mode); err == nil {
 		return nil
 	}
 	time.Sleep(2 * time.Second)
-	return gw.SetRealtimeModeAfterLeave(ctx, deviceID, deviceCode, mode)
+	return gw.SetRealtimeModeAfterLeave(ctx, deviceAddr, deviceCode, mode)
 }
 
 // sleepadSupportsRealtimeMode 仅 BM8701-2 + 固件 ≥ 6.67。fw "0.00" / 空 / 非数字均视为不支持（保守）。

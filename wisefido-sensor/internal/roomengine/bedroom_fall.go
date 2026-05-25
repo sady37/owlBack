@@ -272,7 +272,7 @@ func (r *BedroomFallRules) evaluateBedsideFall(
 		"timeout_sec":     bedroomBedsideNightStaticSec,
 		"margin_cm":       bedroomBedsideMarginCm,
 		"leftbed_at_ms":   latestLeftBed,
-	}, nowMs)
+	}, nowMs-int64(anchor.StillSec)*1000, nowMs)
 	state.BedsideFiredForLeftBedAt = latestLeftBed
 }
 
@@ -384,7 +384,7 @@ func (r *BedroomFallRules) evaluateLostFall(
 		"cell_area_type": int(cellAreaType),
 		"cell_source":    int(cellSource),
 		"last_active_ms": person.LastActiveMs,
-	}, nowMs)
+	}, person.LastActiveMs, nowMs)
 	state.LostFallFired[person.PersonID] = true
 }
 
@@ -415,9 +415,10 @@ func hasActiveBedSession(beds []BedSessionLatch) bool {
 }
 
 // fireFall 统一 fire 入口。aiPublisher nil 时 log-only（dev / playback 模式安全降级）。
+// incidentMs：实际发生时刻 ms（推断类必传 → alarm_events.triggered_at）；nowMs = 决策时刻 → alerted_at。
 func (r *BedroomFallRules) fireFall(
 	b *TrackStatusBase, roomID, suiteID, reason string,
-	evidence map[string]interface{}, nowMs int64,
+	evidence map[string]interface{}, incidentMs, nowMs int64,
 ) {
 	if evidence == nil {
 		evidence = map[string]interface{}{}
@@ -429,7 +430,7 @@ func (r *BedroomFallRules) fireFall(
 		zap.String("suite_id", suiteID),
 		zap.String("reason", reason),
 		zap.Int("track_id", b.TrackID),
-		zap.String("device_id", b.DeviceID),
+		zap.String("device_addr", b.DeviceAddr),
 		zap.Int("x", b.X), zap.Int("y", b.Y), zap.Int("z", b.Z),
 		zap.Int64("ts_ms", nowMs),
 	)
@@ -437,8 +438,8 @@ func (r *BedroomFallRules) fireFall(
 		return
 	}
 	payload := AIPayload{
-		DeviceID: b.DeviceID,
-		RoomID:   roomID,
+		DeviceAddr: b.DeviceAddr,
+		RoomID:     roomID,
 		Track: observation.Track{
 			TrackID:   b.TrackID,
 			PositionX: intPtr(b.X),
@@ -446,8 +447,9 @@ func (r *BedroomFallRules) fireFall(
 			PositionZ: intPtr(b.Z),
 			Pose:      b.Pose,
 		},
-		Reason:   reason,
-		Evidence: evidence,
+		Reason:     reason,
+		Evidence:   evidence,
+		IncidentMs: incidentMs,
 	}
 	r.aiPublisher.PublishAIAlarm(context.Background(), payload, alarm.Fall, nowMs)
 }

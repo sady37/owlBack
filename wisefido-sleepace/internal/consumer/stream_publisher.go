@@ -45,19 +45,13 @@ func (p *StreamPublisher) SetCardMappingService(svc *service.CardMappingService)
 	p.cardMappingSvc = svc
 }
 
-// ResolveToDeviceUID 将 device_code 或 device_id 转为 device_uid，供网关内部统一使用。
-func (p *StreamPublisher) ResolveToDeviceUID(ctx context.Context, id string) string {
-	if p.cardMappingSvc == nil || id == "" {
-		return id
-	}
-	return p.cardMappingSvc.ResolveToDeviceUID(ctx, id)
-}
-
-// Resolve 把 sleepace 厂家 MQTT 报文里的 deviceId（可能是 device_uid 或 device_code）翻译成 owl 内部
-// 设备身份 DeviceBaseline（tenant/branch/unit + device_uid/code/type + access + device_addr）。
+// Resolve 把 sleepace 厂家 MQTT 报文里的 deviceId（可能是 device_uid 或 device_code）翻译成 owl
+// 内部设备身份 DeviceBaseline（tenant/branch/unit + device_uid/code/type + access + device_addr）。
 //
-// 始终返回非 nil（未命中时 stub: DeviceUID=deviceKey, 其它字段 0 值；caller 用 access==false 过滤）。
-// 不再返回 v1 deviceID(UUID)——identity 一刀切走 device_uid (logMAC)。
+// 始终返回非 nil。未命中时返回 stub *DeviceBaseline{DeviceUID: deviceKey}，其余字段零值。
+// ⚠ stub 里 DeviceUID 字段可能装着 device_code 而非 logMAC（取决于 MQTT 入参形态）—— caller
+// 必须先看 info.Access == false 跳过 stub，**不要**读 stub 的 DeviceUID 当真实 logMAC 用。
+//
 // envelope SubjectEntity 由 caller 直接传 info.DeviceUID（CloudEvents subject = 观测设备）。
 // cardagg 需要 cardID 走自己 device_addr → card LPM（cards 表归 cardagg 自家域，不污染上游）。
 func (p *StreamPublisher) Resolve(ctx context.Context, deviceKey string) *card.DeviceBaseline {
@@ -95,7 +89,7 @@ func (p *StreamPublisher) publish(ctx context.Context, stream rediscommon.Stream
 	if msg.SequenceNumber == 0 {
 		msg.SequenceNumber = p.seqCounter.Add(1)
 	}
-	// device_ipv6 单程票 R-009：subject_entity 可空（unbound device，cardagg IotPreparedHandler
+	// subject_entity 可空（unbound device，cardagg IotPreparedHandler
 	// 用 LPM 反查 cards 兜底）；只要 device_addr 有效就发。
 	if !msg.DeviceAddr.IsValid() {
 		p.logger.Error("device_addr is invalid, message dropped",

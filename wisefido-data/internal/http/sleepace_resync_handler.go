@@ -13,10 +13,11 @@ import (
 
 // SleepaceResyncHandler 挂在 /internal/sleepace/device/* 下，供外部 DST 脚本使用。
 //
-// 两个端点（无 body，幂等）：
+// 端点（POST，无 body，幂等；path 占位 {device_addr} = devices.device_addr INET host 或 /128 CIDR）：
 //
-//	POST /internal/sleepace/device/{device_id}/resync-timezone
-//	POST /internal/sleepace/device/{device_id}/resync-report-time
+//	POST /internal/sleepace/device/{device_addr}/resync-timezone
+//	POST /internal/sleepace/device/{device_addr}/resync-report-time
+//	POST /internal/sleepace/device/{device_addr}/upgrade   (body: { version | filename })
 //
 // 外部不需要传 timezone 或 hour——service 内部按 effective 规则（device > tenant > default）
 // 查当前值后下发给厂家。典型用法：DST 切换当天 cron 脚本遍历所有 Sleepad 设备各调一次。
@@ -38,8 +39,8 @@ func (h *SleepaceResyncHandler) Dispatch(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
-	// path: /internal/sleepace/device/{device_id}/{action}
-	//   或 /sleepace/api/v1/sleepace/device/{device_id}/{action}（前端走 nginx /sleepace/api/）
+	// path: /internal/sleepace/device/{device_addr}/{action}
+	//   或 /sleepace/api/v1/sleepace/device/{device_addr}/{action}（FE 走 nginx /sleepace/api/）
 	path := r.URL.Path
 	path = strings.TrimPrefix(path, "/internal/sleepace/device/")
 	path = strings.TrimPrefix(path, "/sleepace/api/v1/sleepace/device/")
@@ -47,13 +48,13 @@ func (h *SleepaceResyncHandler) Dispatch(w http.ResponseWriter, r *http.Request)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		writeResyncJSON(w, http.StatusBadRequest, map[string]any{
 			"status": "error",
-			"error":  "path must be {prefix}/sleepace/device/{device_id}/{resync-timezone|resync-report-time|upgrade}",
+			"error":  "path must be {prefix}/sleepace/device/{device_addr}/{resync-timezone|resync-report-time|upgrade}",
 		})
 		return
 	}
-	deviceID, action := parts[0], parts[1]
+	deviceAddr, action := parts[0], parts[1]
 
-	tenantID, err := h.lookupTenantID(r, deviceID)
+	tenantID, err := h.lookupTenantID(r, deviceAddr)
 	if err != nil {
 		writeResyncJSON(w, http.StatusNotFound, map[string]any{"status": "error", "error": err.Error()})
 		return
@@ -61,12 +62,12 @@ func (h *SleepaceResyncHandler) Dispatch(w http.ResponseWriter, r *http.Request)
 
 	switch action {
 	case "resync-timezone":
-		iana, secs, err := h.svc.ResyncDeviceTimezone(r.Context(), tenantID, deviceID)
+		iana, secs, err := h.svc.ResyncDeviceTimezone(r.Context(), tenantID, deviceAddr)
 		resp := map[string]any{
-			"device_id":  deviceID,
-			"tenant_id":  tenantID,
-			"iana":       iana,
-			"tz_seconds": secs,
+			"device_addr": deviceAddr,
+			"tenant_id":   tenantID,
+			"iana":        iana,
+			"tz_seconds":  secs,
 		}
 		if err != nil {
 			resp["status"] = "error"
@@ -77,10 +78,10 @@ func (h *SleepaceResyncHandler) Dispatch(w http.ResponseWriter, r *http.Request)
 		resp["status"] = "ok"
 		writeResyncJSON(w, http.StatusOK, resp)
 	case "resync-report-time":
-		hour, err := h.svc.ResyncDeviceReportTime(r.Context(), tenantID, deviceID)
+		hour, err := h.svc.ResyncDeviceReportTime(r.Context(), tenantID, deviceAddr)
 		resp := map[string]any{
-			"device_id":         deviceID,
-			"tenant_id":         tenantID,
+			"device_addr":        deviceAddr,
+			"tenant_id":          tenantID,
 			"report_upload_time": hour,
 		}
 		if err != nil {
@@ -103,7 +104,7 @@ func (h *SleepaceResyncHandler) Dispatch(w http.ResponseWriter, r *http.Request)
 			v, err := h.svc.ResolveSleepaceUpgradeVersion(body.Filename)
 			if err != nil {
 				writeResyncJSON(w, http.StatusBadRequest, map[string]any{
-					"status": "error", "device_id": deviceID, "tenant_id": tenantID,
+					"status": "error", "device_addr": deviceAddr, "tenant_id": tenantID,
 					"filename": body.Filename, "error": "resolve version: " + err.Error(),
 				})
 				return
@@ -111,12 +112,12 @@ func (h *SleepaceResyncHandler) Dispatch(w http.ResponseWriter, r *http.Request)
 			version = v
 		}
 		resp := map[string]any{
-			"device_id": deviceID,
-			"tenant_id": tenantID,
-			"version":   version,
-			"filename":  body.Filename,
+			"device_addr": deviceAddr,
+			"tenant_id":   tenantID,
+			"version":     version,
+			"filename":    body.Filename,
 		}
-		if err := h.svc.TriggerSleepaceUpgrade(r.Context(), tenantID, deviceID, version); err != nil {
+		if err := h.svc.TriggerSleepaceUpgrade(r.Context(), tenantID, deviceAddr, version); err != nil {
 			resp["status"] = "error"
 			resp["error"] = err.Error()
 			writeResyncJSON(w, http.StatusInternalServerError, resp)
@@ -133,13 +134,13 @@ func (h *SleepaceResyncHandler) Dispatch(w http.ResponseWriter, r *http.Request)
 }
 
 // lookupTenantID 内部端点没有 session token，tenantID 从 device 行查出来。
-func (h *SleepaceResyncHandler) lookupTenantID(r *http.Request, deviceID string) (string, error) {
+func (h *SleepaceResyncHandler) lookupTenantID(r *http.Request, deviceAddr string) (string, error) {
 	if h.db == nil {
 		return "", errResyncDBUnavailable
 	}
 	var tenantID string
 	err := h.db.QueryRowContext(r.Context(),
-		`SELECT tenant_id::text FROM devices WHERE device_addr = $1::INET`, deviceID).Scan(&tenantID)
+		`SELECT tenant_id::text FROM devices WHERE device_addr = $1::INET`, deviceAddr).Scan(&tenantID)
 	if err != nil {
 		return "", err
 	}

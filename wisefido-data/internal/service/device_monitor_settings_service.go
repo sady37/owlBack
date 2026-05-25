@@ -19,13 +19,13 @@ import (
 type ProgressCallback func(percent int, message string)
 
 type DeviceMonitorSettingsService interface {
-	GetDeviceMonitorSettings(ctx context.Context, tenantID, deviceID, deviceType string) ([]alarm.AlarmItem, error)
-	UpdateDeviceMonitorSettings(ctx context.Context, tenantID, deviceID, deviceType, userID string, alarmItems []alarm.AlarmItem, progressCallback ProgressCallback) (interface{}, error)
+	GetDeviceMonitorSettings(ctx context.Context, tenantID, deviceAddr, deviceType string) ([]alarm.AlarmItem, error)
+	UpdateDeviceMonitorSettings(ctx context.Context, tenantID, deviceAddr, deviceType, userID string, alarmItems []alarm.AlarmItem, progressCallback ProgressCallback) (interface{}, error)
 	GetDefaultDeviceMonitorSettings(ctx context.Context, tenantID string, deviceType string) ([]alarm.AlarmItem, error)
 	CheckDeviceOnlineStatus(ctx context.Context, deviceUID string) error
-	ResyncDeviceTimezone(ctx context.Context, tenantID, deviceID string) (string, int, error)
-	ResyncDeviceReportTime(ctx context.Context, tenantID, deviceID string) (int, error)
-	TriggerSleepaceUpgrade(ctx context.Context, tenantID, deviceID, version string) error
+	ResyncDeviceTimezone(ctx context.Context, tenantID, deviceAddr string) (string, int, error)
+	ResyncDeviceReportTime(ctx context.Context, tenantID, deviceAddr string) (int, error)
+	TriggerSleepaceUpgrade(ctx context.Context, tenantID, deviceAddr, version string) error
 	UploadSleepaceFirmware(ctx context.Context, filename string, file io.Reader) error
 	DeleteSleepaceFirmware(ctx context.Context, deviceType int, deviceVersion string) error
 	ListSleepaceFirmwareVersions(ctx context.Context) ([]SleepaceFirmwareVersion, error)
@@ -114,18 +114,18 @@ func errNotImplemented(method string) error {
 
 // resolveDeviceIPv6 用 device_id (UUID) 查 devices.device_ipv6 (INET /128)。
 // 返回 host(...) 文本表示（不带 mask），用作 spatial_config.spatial_prefix 入参。
-// Phase 2 一刀切：deviceID 入参承载 device_addr (INET text)。
-func (s *deviceMonitorSettingsService) resolveDeviceIPv6(ctx context.Context, deviceID string) (string, error) {
-	if deviceID == "" {
+// deviceAddr 入参承载 device_addr (INET text)。
+func (s *deviceMonitorSettingsService) resolveDeviceIPv6(ctx context.Context, deviceAddr string) (string, error) {
+	if deviceAddr == "" {
 		return "", fmt.Errorf("device_addr is required")
 	}
 	var ipv6 string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT host(device_addr) FROM devices WHERE device_addr = $1::INET`,
-		deviceID,
+		deviceAddr,
 	).Scan(&ipv6)
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("device not found: %s", deviceID)
+		return "", fmt.Errorf("device not found: %s", deviceAddr)
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve device addr: %w", err)
@@ -135,8 +135,8 @@ func (s *deviceMonitorSettingsService) resolveDeviceIPv6(ctx context.Context, de
 
 // resolveDeviceCode 由 device_addr (INET text) 查 device_factory_meta.device_code（合作方 deviceId）。
 // 取不到 device_code 不算 hard error — 返回空串，由调用方根据 deviceType 决定是否需要。
-func (s *deviceMonitorSettingsService) resolveDeviceCode(ctx context.Context, deviceID string) (string, error) {
-	if deviceID == "" {
+func (s *deviceMonitorSettingsService) resolveDeviceCode(ctx context.Context, deviceAddr string) (string, error) {
+	if deviceAddr == "" {
 		return "", fmt.Errorf("device_addr is required")
 	}
 	var code sql.NullString
@@ -145,10 +145,10 @@ func (s *deviceMonitorSettingsService) resolveDeviceCode(ctx context.Context, de
 		   FROM device_factory_meta dfm
 		   JOIN devices d ON d.device_uid = dfm.device_uid
 		  WHERE d.device_addr = $1::INET`,
-		deviceID,
+		deviceAddr,
 	).Scan(&code)
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("device_factory_meta not found: %s", deviceID)
+		return "", fmt.Errorf("device_factory_meta not found: %s", deviceAddr)
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve device_code: %w", err)
@@ -161,17 +161,17 @@ func (s *deviceMonitorSettingsService) resolveDeviceCode(ctx context.Context, de
 
 // resolveDeviceUID 由 device_addr (INET text) 查 devices.device_uid（雷达走 qinglan 时的入参）。
 // device_uid 是 NOT NULL 字段，缺失即 hard error。
-func (s *deviceMonitorSettingsService) resolveDeviceUID(ctx context.Context, deviceID string) (string, error) {
-	if deviceID == "" {
+func (s *deviceMonitorSettingsService) resolveDeviceUID(ctx context.Context, deviceAddr string) (string, error) {
+	if deviceAddr == "" {
 		return "", fmt.Errorf("device_addr is required")
 	}
 	var uid string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT device_uid FROM devices WHERE device_addr = $1::INET`,
-		deviceID,
+		deviceAddr,
 	).Scan(&uid)
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("device not found: %s", deviceID)
+		return "", fmt.Errorf("device not found: %s", deviceAddr)
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve device_uid: %w", err)
@@ -290,8 +290,8 @@ func (s *deviceMonitorSettingsService) tenantSnapshot(ctx context.Context, tenan
 //
 // 每一层按 alarm_type + per-key 覆盖上一层；后一层显式给的字段才覆盖。
 // FE 拿到的 alarm_items 永远完整，模板里 hardcoded fallback 只是 BE 出错时的 emergency safety net。
-func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Context, tenantID, deviceID, deviceType string) ([]alarm.AlarmItem, error) {
-	deviceIPv6, err := s.resolveDeviceIPv6(ctx, deviceID)
+func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Context, tenantID, deviceAddr, deviceType string) ([]alarm.AlarmItem, error) {
+	deviceIPv6, err := s.resolveDeviceIPv6(ctx, deviceAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +305,7 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 	} else if err != sql.ErrNoRows {
 		// JSON 解析失败或其它 SQL 错误 — warn 记录，不阻塞 page；前两层已足以渲染。
 		s.logger.Warn("failed to read device alarm config; tenant-default layer used",
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.String("device_ipv6", deviceIPv6),
 			zap.Error(err),
 		)
@@ -391,11 +391,11 @@ func mergeAlarmItemsOverDefaults(defaults, overrides []alarm.AlarmItem) []alarm.
 //   - 不读 v1 的 alarm_device 表对比 — 该表已 drop，DB 现在是 spatial_config 单一来源
 //   - 错误处理：硬件下发失败仍写 DB（v1 是先推硬件再写库，失败回滚；v2 改为先写库再推，让 UI 有 partial 状态可显示）
 func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(
-	ctx context.Context, tenantID, deviceID, deviceType, userID string,
+	ctx context.Context, tenantID, deviceAddr, deviceType, userID string,
 	alarmItems []alarm.AlarmItem, progressCallback ProgressCallback,
 ) (interface{}, error) {
 
-	deviceIPv6, err := s.resolveDeviceIPv6(ctx, deviceID)
+	deviceIPv6, err := s.resolveDeviceIPv6(ctx, deviceAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -448,7 +448,7 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(
 
 	switch deviceType {
 	case "radar", "Radar":
-		deviceWrite, pushErr := s.pushRadarToHardware(ctx, deviceID, alarmItems, progressCallback)
+		deviceWrite, pushErr := s.pushRadarToHardware(ctx, deviceAddr, alarmItems, progressCallback)
 		result := &UpdateRadarResult{
 			DeviceWriteSuccess: deviceWrite,
 			DBWriteSuccess:     dbWrite,
@@ -457,7 +457,7 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(
 		}
 		if pushErr != nil {
 			s.logger.Error("[RADAR_WRITE_V2] qinglan push failed",
-				zap.String("device_id", deviceID),
+				zap.String("device_addr", deviceAddr),
 				zap.Error(pushErr),
 			)
 			// device 推失败，但 DB 已写：返回 result 让 handler 透传到 FE 显示半失败状态；
@@ -466,7 +466,7 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(
 		return result, nil
 	default:
 		// sleepad / Sleepad / sleepace
-		deviceWrite, pushErr := s.pushSleepadToHardware(ctx, tenantID, deviceID, alarmItems, progressCallback)
+		deviceWrite, pushErr := s.pushSleepadToHardware(ctx, tenantID, deviceAddr, alarmItems, progressCallback)
 		result := map[string]interface{}{
 			"success":        dbWrite, // 与 v1 一致：success 反映 DB 状态
 			"device_write":   deviceWrite,
@@ -486,18 +486,18 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(
 //
 // 返回 (deviceWrite, error)：error 仅作 log 用，调用方根据 deviceWrite=false 决定 UI 提示。
 func (s *deviceMonitorSettingsService) pushRadarToHardware(
-	ctx context.Context, deviceID string,
+	ctx context.Context, deviceAddr string,
 	alarmItems []alarm.AlarmItem, progressCallback ProgressCallback,
 ) (bool, error) {
 	if s.qinglanClient == nil {
 		return false, fmt.Errorf("qinglan client not configured")
 	}
-	deviceUID, err := s.resolveDeviceUID(ctx, deviceID)
+	deviceUID, err := s.resolveDeviceUID(ctx, deviceAddr)
 	if err != nil {
 		return false, err
 	}
 	if deviceUID == "" {
-		return false, fmt.Errorf("device_uid missing for device_id=%s", deviceID)
+		return false, fmt.Errorf("device_uid missing for device_addr=%s", deviceAddr)
 	}
 
 	if progressCallback != nil {
@@ -510,7 +510,7 @@ func (s *deviceMonitorSettingsService) pushRadarToHardware(
 	}
 
 	s.logger.Info("[RADAR_WRITE_V2] sending alarm items to device",
-		zap.String("device_id", deviceID),
+		zap.String("device_addr", deviceAddr),
 		zap.String("device_uid", deviceUID),
 		zap.Int("alarm_items_count", len(alarmItems)),
 	)
@@ -526,7 +526,7 @@ func (s *deviceMonitorSettingsService) pushRadarToHardware(
 		progressCallback(100, "radar config pushed")
 	}
 	s.logger.Info("[RADAR_WRITE_V2] device push succeeded",
-		zap.String("device_id", deviceID),
+		zap.String("device_addr", deviceAddr),
 		zap.String("device_uid", deviceUID),
 	)
 	return true, nil
@@ -538,25 +538,25 @@ func (s *deviceMonitorSettingsService) pushRadarToHardware(
 //
 // 任意一步失败都返回 deviceWrite=false + error，让 UI 能显式告警。
 func (s *deviceMonitorSettingsService) pushSleepadToHardware(
-	ctx context.Context, tenantID, deviceID string,
+	ctx context.Context, tenantID, deviceAddr string,
 	alarmItems []alarm.AlarmItem, progressCallback ProgressCallback,
 ) (bool, error) {
 	if s.sleepaceGateway == nil {
 		return false, fmt.Errorf("sleepace gateway not configured")
 	}
-	deviceCode, err := s.resolveDeviceCode(ctx, deviceID)
+	deviceCode, err := s.resolveDeviceCode(ctx, deviceAddr)
 	if err != nil {
 		return false, err
 	}
 	if deviceCode == "" {
-		return false, fmt.Errorf("device_code missing for device_id=%s (device_factory_meta.device_code is null)", deviceID)
+		return false, fmt.Errorf("device_code missing for device_addr=%s (device_factory_meta.device_code is null)", deviceAddr)
 	}
-	deviceUID, err := s.resolveDeviceUID(ctx, deviceID)
+	deviceUID, err := s.resolveDeviceUID(ctx, deviceAddr)
 	if err != nil {
 		return false, err
 	}
 	if deviceUID == "" {
-		return false, fmt.Errorf("device_uid missing for device_id=%s", deviceID)
+		return false, fmt.Errorf("device_uid missing for device_addr=%s", deviceAddr)
 	}
 
 	if progressCallback != nil {
@@ -568,7 +568,7 @@ func (s *deviceMonitorSettingsService) pushSleepadToHardware(
 
 	s.logger.Info("[SLEEPAD_WRITE_V2] sending alarm config to hardware",
 		zap.String("tenant_id", tenantID),
-		zap.String("device_id", deviceID),
+		zap.String("device_addr", deviceAddr),
 		zap.String("device_uid", deviceUID),
 		zap.String("device_code", deviceCode),
 		zap.Any("leftBedFlag", sleepaceConfig["leftBedFlag"]),
@@ -670,7 +670,7 @@ func (s *deviceMonitorSettingsService) CheckDeviceOnlineStatus(ctx context.Conte
 
 // ---- 以下 9 个方法暂不实现（OTA / firmware / resync wiring 待接） ----
 
-func (s *deviceMonitorSettingsService) ResyncDeviceTimezone(ctx context.Context, tenantID, deviceID string) (string, int, error) {
+func (s *deviceMonitorSettingsService) ResyncDeviceTimezone(ctx context.Context, tenantID, deviceAddr string) (string, int, error) {
 	return "", 0, errNotImplemented("ResyncDeviceTimezone")
 }
 
@@ -680,14 +680,14 @@ func (s *deviceMonitorSettingsService) ResyncDeviceTimezone(ctx context.Context,
 // server 直接传 unit local hour 整数即可，无须 server↔device 时区换算。Sleepace 厂家也不保存 timezone
 // （见 sleepace_gateway_client.go IANAToOffsetSeconds 注释）。
 //
-// 调用路径：POST /internal/sleepace/device/{device_id}/resync-report-time
+// 调用路径：POST /internal/sleepace/device/{device_addr}/resync-report-time
 // 外部 DST 脚本不再需要（device 端自治）；保留 endpoint 仅作"手动 resync" / UI trigger 用。
-func (s *deviceMonitorSettingsService) ResyncDeviceReportTime(ctx context.Context, tenantID, deviceID string) (int, error) {
+func (s *deviceMonitorSettingsService) ResyncDeviceReportTime(ctx context.Context, tenantID, deviceAddr string) (int, error) {
 	if s.sleepaceGateway == nil {
 		return 0, fmt.Errorf("sleepace gateway not wired")
 	}
-	if tenantID == "" || deviceID == "" {
-		return 0, fmt.Errorf("tenant_id and device_id are required")
+	if tenantID == "" || deviceAddr == "" {
+		return 0, fmt.Errorf("tenant_id and device_addr are required")
 	}
 
 	hour := alarm.DefaultSleepReportTime
@@ -700,11 +700,11 @@ func (s *deviceMonitorSettingsService) ResyncDeviceReportTime(ctx context.Contex
 		}
 	}
 
-	deviceCode, err := s.resolveDeviceCode(ctx, deviceID)
+	deviceCode, err := s.resolveDeviceCode(ctx, deviceAddr)
 	if err != nil {
 		return 0, fmt.Errorf("resolve device_code: %w", err)
 	}
-	deviceUID, err := s.resolveDeviceUID(ctx, deviceID)
+	deviceUID, err := s.resolveDeviceUID(ctx, deviceAddr)
 	if err != nil {
 		return 0, fmt.Errorf("resolve device_uid: %w", err)
 	}
@@ -714,12 +714,12 @@ func (s *deviceMonitorSettingsService) ResyncDeviceReportTime(ctx context.Contex
 	}
 	s.logger.Info("ResyncDeviceReportTime done",
 		zap.String("tenant_id", tenantID),
-		zap.String("device_id", deviceID),
+		zap.String("device_addr", deviceAddr),
 		zap.Int("report_upload_time_hour", hour))
 	return hour, nil
 }
 
-func (s *deviceMonitorSettingsService) TriggerSleepaceUpgrade(ctx context.Context, tenantID, deviceID, version string) error {
+func (s *deviceMonitorSettingsService) TriggerSleepaceUpgrade(ctx context.Context, tenantID, deviceAddr, version string) error {
 	return errNotImplemented("TriggerSleepaceUpgrade")
 }
 

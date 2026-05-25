@@ -5,7 +5,7 @@ import (
 	"wisefido-data/internal/domain"
 )
 
-// DeviceStoreRepository 设备库存Repository接口（Phase 2 一刀切：identity = device_uid VARCHAR(50)）。
+// DeviceStoreRepository 设备库存Repository接口（identity = device_uid VARCHAR(50)）。
 type DeviceStoreRepository interface {
 	// 查询
 	ListDeviceStores(ctx context.Context, filters DeviceStoreFilters, page, size int, sort, direction string) ([]*domain.DeviceStore, int, error)

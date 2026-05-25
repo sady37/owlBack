@@ -9,14 +9,14 @@ import (
 //
 // 输入：
 //   dv          可能是 []interface{}（多 track 一帧）或 map[string]interface{}（单 track）
-//   deviceID    设备 ID（写入 TrackFrame.DeviceID）
+//   deviceAddr    设备 ID（写入 TrackFrame.DeviceAddr）
 //   mount       雷达安装参数（坐标转换用）
 //   fallbackTs  本帧 timestamp 缺失时的兜底
 //
 // 行为：
 //   - 过滤无效帧（track_id 越界 / area_id=255+全 0 / 全 0）
 //   - 调 RadarToCanvas 把雷达本地坐标转画布坐标
-func ParseRadarTracks(dv interface{}, deviceID string, mount radarutils.RadarMount, fallbackTs int64) []TrackFrame {
+func ParseRadarTracks(dv interface{}, deviceAddr string, mount radarutils.RadarMount, fallbackTs int64) []TrackFrame {
 	if dv == nil {
 		return nil
 	}
@@ -75,7 +75,7 @@ func ParseRadarTracks(dv interface{}, deviceID string, mount radarutils.RadarMou
 
 		frames = append(frames, TrackFrame{
 			TrackID:         trackID,
-			DeviceID:        deviceID,
+			DeviceAddr:        deviceAddr,
 			X:               canvas.X,
 			Y:               canvas.Y,
 			Z:               canvas.Z,

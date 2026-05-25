@@ -74,10 +74,10 @@ func (p *ConfigPublisher) PublishConfigChanged(
 // 跟 PublishConfigChanged 是不同流不同 schema，不合并。
 func (p *ConfigPublisher) PublishAlarmProcessMessage(
 	ctx context.Context,
-	tenantID, cardID, deviceID, alarmLevel, alarmType, processType, eventID string,
+	tenantID, cardID, deviceAddr, alarmLevel, alarmType, processType, eventID string,
 	alarmTimestamp int64,
 ) error {
-	_ = deviceID
+	_ = deviceAddr
 	msg := rediscommon.BuildAlarmProcessMessage("wisefido-data", cardID, alarmLevel, alarmType, processType, eventID, alarmTimestamp)
 	stream := rediscommon.StreamConfigAlarmProcess.Name
 	maxLen, retention := rediscommon.GetStreamConfig(rediscommon.StreamConfigAlarmProcess, nil)

@@ -509,8 +509,8 @@ alarm_device.monitor_config.items[SleepadSetting].alarm_params:
 
 **DST 触发入口**（外部脚本调，service 内部自行查当前 effective 值下发）：
 
-- `POST /internal/sleepace/device/{device_id}/resync-timezone`
-- `POST /internal/sleepace/device/{device_id}/resync-report-time`
+- `POST /internal/sleepace/device/{device_addr}/resync-timezone`
+- `POST /internal/sleepace/device/{device_addr}/resync-report-time`
 
 典型用法：DST 切换日 cron 遍历所有 Sleepad 设备各调一次这两个端点即可。
 
@@ -598,8 +598,8 @@ alarm_device.monitor_config.items[SleepadSetting].alarm_params:
 #!/bin/bash
 # 遍历所有 Sleepad 设备，各调一次 resync endpoint。
 # /internal/* 跳过 auth，无需 token。
-for device_id in $(psql -At -c "SELECT d.device_id FROM devices d JOIN device_store ds ON ds.device_id=d.device_id WHERE ds.device_type='Sleepad' AND ds.device_code<>''"); do
-  curl -X POST "http://127.0.0.1:8080/internal/sleepace/device/$device_id/resync-timezone"
+for device_addr in $(psql -At -c "SELECT host(d.device_addr) FROM devices d JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid WHERE dfm.device_type='Sleepad' AND dfm.device_code<>''"); do
+  curl -X POST "http://127.0.0.1:8080/internal/sleepace/device/$device_addr/resync-timezone"
 done
 ```
 

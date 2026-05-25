@@ -10,24 +10,24 @@ import (
 type DevicesRepository interface {
 	// 查询
 	ListDevices(ctx context.Context, tenantID string, filters DeviceFilters, page, size int, sort string, direction string) ([]*domain.Device, int, error)
-	GetDevice(ctx context.Context, tenantID, deviceID string) (*domain.Device, error)
+	GetDevice(ctx context.Context, tenantID, deviceAddr string) (*domain.Device, error)
 	GetDeviceByUID(ctx context.Context, tenantID, deviceUID string) (*domain.Device, error)
-	GetDeviceRelations(ctx context.Context, tenantID, deviceID string) (*DeviceRelations, error)
+	GetDeviceRelations(ctx context.Context, tenantID, deviceAddr string) (*DeviceRelations, error)
 
 	// 创建（手动创建设备绑定）
 	CreateDevice(ctx context.Context, tenantID string, device *domain.Device) (string, error)
 
 	// 更新
 	// Deprecated: 使用 UpdateDeviceFields 替代，支持区分"不更新"、"更新"、"删除"三种状态
-	UpdateDevice(ctx context.Context, tenantID, deviceID string, device *domain.Device) error
+	UpdateDevice(ctx context.Context, tenantID, deviceAddr string, device *domain.Device) error
 
 	// UpdateDeviceWithFlags 更新设备（带更新标志，用于区分字段是否在 payload 中）
 	// updateBranchID: tenant_admin rebind device 到指定 branch（仅 bed/room flag 均 false 时生效）
-	UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceID string, device *domain.Device, updateBoundRoomID, updateBoundBedID, updateAccess, updateMonitoringEnabled, updateBranchID bool) error
+	UpdateDeviceWithFlags(ctx context.Context, tenantID, deviceAddr string, device *domain.Device, updateBoundRoomID, updateBoundBedID, updateAccess, updateMonitoringEnabled, updateBranchID bool) error
 
 
 	// 删除（物理删除，仅当设备未使用时）
-	DeleteDevice(ctx context.Context, tenantID, deviceID string) error
+	DeleteDevice(ctx context.Context, tenantID, deviceAddr string) error
 
 	// 自动创建（设备首次连接时自动创建）
 	GetOrCreateDeviceFromStore(ctx context.Context, identifier string, mqttTopic string) (*domain.Device, error)
@@ -62,7 +62,7 @@ type DeviceInfo struct {
 
 // DeviceRelations 设备关联关系
 type DeviceRelations struct {
-	DeviceID           string
+	DeviceAddr           string
 	DeviceName         string
 	DeviceInternalCode string // device_uid
 	DeviceType         int    // 从 device_store.device_type 转换
@@ -92,7 +92,7 @@ type DeviceFilters struct {
 
 // DeviceLocationInfo 设备位置信息
 type DeviceLocationInfo struct {
-	DeviceID     string  // 设备ID
+	DeviceAddr     string  // 设备ID
 	TenantID     string  // 租户ID
 	BranchID     *string // 分支ID（可选）
 	BranchName   *string // 分支名称（可选）

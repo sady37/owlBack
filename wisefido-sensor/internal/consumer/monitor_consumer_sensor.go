@@ -36,7 +36,7 @@ const (
 // BufferWriter 仅声明 sensor MonitorConsumer 所需的 buffer 写入面，便于注入而不引入 service 包依赖。
 // service.MonitorBuffer.Write 满足此接口。
 type BufferWriter interface {
-	Write(cardID, deviceID, deviceType, trackKey string, fields map[string]any, tsMs int64)
+	Write(cardID, deviceAddr, deviceType, trackKey string, fields map[string]any, tsMs int64)
 }
 
 // MonitorConsumer 喂 sensor 端 MonitorBuffer 的薄消费者。

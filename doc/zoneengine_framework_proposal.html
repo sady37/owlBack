@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>zoneengine 框架重整提案</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "PingFang SC", monospace; background:#0f1419; color:#d4d4d4; padding:24px; line-height:1.55; max-width:1400px; margin:0 auto; }
+  h1 { color:#fff; border-bottom:2px solid #4a90e2; padding-bottom:8px; }
+  h2 { color:#7cb342; margin-top:36px; border-bottom:1px dashed #555; padding-bottom:6px; }
+  h3 { color:#ffb74d; margin-top:24px; }
+  .responsibility { background:#1c2128; border-left:4px solid #4a90e2; padding:12px 16px; margin:12px 0; border-radius:0 6px 6px 0; }
+  .responsibility.input { border-color:#4a90e2; }
+  .responsibility.core  { border-color:#9c27b0; }
+  .responsibility.out   { border-color:#ff6e40; }
+  .responsibility.aux   { border-color:#7cb342; }
+  table { border-collapse:collapse; width:100%; margin:12px 0; }
+  th, td { border:1px solid #444; padding:8px 12px; text-align:left; font-size:0.9em; vertical-align:top; }
+  th { background:#1c2128; color:#fff; }
+  td.loc { text-align:right; color:#888; font-variant-numeric: tabular-nums; }
+  .ok    { color:#69f0ae; font-weight:bold; }
+  .bad   { color:#ff5252; font-weight:bold; }
+  .warn  { color:#ffb74d; font-weight:bold; }
+  .file  { font-family:monospace; color:#90caf9; }
+  pre { background:#0a0e13; padding:14px; border-radius:6px; overflow-x:auto; color:#e0e0e0; font-size:0.85em; line-height:1.5; }
+  .ascii { background:#0a0e13; padding:18px; border-radius:6px; font-size:0.95em; color:#bbb; }
+  .ascii .input { color:#4a90e2; }
+  .ascii .core { color:#bb86fc; }
+  .ascii .out  { color:#ff8a65; }
+  .ascii .aux  { color:#aed581; }
+  .ascii .label { color:#fff; font-weight:bold; }
+  .ascii .arrow { color:#ffeb3b; font-weight:bold; }
+  .ascii .data { color:#03dac6; }
+  .summary { background:#1d2917; border:2px solid #7cb342; padding:14px 18px; margin:20px 0; border-radius:6px; }
+  .proposal { background:#162437; border:2px solid #4a90e2; padding:14px 18px; margin:20px 0; border-radius:6px; }
+  .danger { background:#2a1815; border:2px solid #ff5252; padding:14px 18px; margin:20px 0; border-radius:6px; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:0.8em; margin-right:4px; }
+  .pill.input { background:#4a90e2; color:#fff; }
+  .pill.core { background:#9c27b0; color:#fff; }
+  .pill.out { background:#ff6e40; color:#fff; }
+  .pill.aux { background:#7cb342; color:#fff; }
+</style>
+</head>
+<body>
+
+<h1>zoneengine 框架重整提案</h1>
+
+<p>当前 <strong>23 文件 + wiring 子目录 10 文件</strong>（共 33 个），没有明确层次。先定责任边界，再决定文件分组。</p>
+
+<h2>① 一句话定义</h2>
+<div class="summary">
+<strong>zoneengine = 物理空间占用 FSM。</strong><br>
+输入 SignalEvidence（多源融合证据）→ 内部 (Vacant/Leaving/Occupied) 三态状态机 →
+输出 ZoneEvent（翻转沿事件）。
+</div>
+
+<h2>② 4 层架构 + 责任边界</h2>
+<div class="ascii">
+<pre>
+┌─────────────────────────────────────────────────────────────────────────┐
+│ <span class="label">EXTERNAL</span> (上游 Redis 流)                                                │
+│   <span class="data">iot:monitor:stream</span> (radar 1Hz / sleepad press)                       │
+│   <span class="data">iot:event:stream</span>   (radar firmware EnterRoom/LeftBed/activity)      │
+│   <span class="data">iot:alarm:stream</span>   (firmware confirmed fall/HR/RR)                  │
+└──────────────────────────┬──────────────────────────────────────────────┘
+                           ↓ subscribe + parse
+┌─────────────────────────────────────────────────────────────────────────┐
+│ <span class="input">①  INPUT LAYER  —  Adapters</span>                                            │
+│   ▸ 责任：把 vendor-specific stream message 翻译成统一 SignalEvidence    │
+│   ▸ 契约：只输出 SignalEvidence；不读 state，不知道 Engine 内部           │
+└──────────────────────────┬──────────────────────────────────────────────┘
+                           ↓ engine.Apply(SignalEvidence)
+┌─────────────────────────────────────────────────────────────────────────┐
+│ <span class="core">②  CORE LAYER  —  Engine (3 态 FSM)</span>                                  │
+│   ▸ 责任：维护 per-(ZoneType,ZoneID) 状态机；融合多源证据；翻转沿 emit    │
+│   ▸ 子件:                                                                │
+│       Rules — yaml 规则集（不同 ZoneType + Signal 的 score 配置）        │
+│       Scorer — SignalEvidence → Δscore                                  │
+│       StateMachine — Score → Status 翻转 (Vacant/Leaving/Occupied)      │
+│       BedBayesian — 床专用 alt 分类器 (Home/Facility 二档)              │
+│       BedEventDedup — 床 enter/leave 短窗去重                           │
+│   ▸ 契约：纯函数式核心；只 emit ZoneEvent，不知道 listeners 是谁         │
+└──────────────────────────┬──────────────────────────────────────────────┘
+                           ↓ ZoneEvent fanout (engine.listeners[])
+┌─────────────────────────────────────────────────────────────────────────┐
+│ <span class="out">③  OUTPUT LAYER  —  Publishers (ZoneEventListener)</span>                    │
+│                                                                          │
+│   StreamPublisher (主)                                                  │
+│     ▸ 责任：ZoneEvent → 业务态 (RoomState/BedState/TargetState)         │
+│             → 发 <span class="data">sensor:derived:stream</span>         │
+│     ▸ 子件:                                                              │
+│         Translator (纯函数: ZoneEvent → 骨架 RoomState/BedState)        │
+│         StateBuilder (骨架 + dedup + standing pull + Risk eval = 终态)  │
+│         RiskEvaluator (纯函数: RoomState → RiskLevel)                   │
+│         Cache (lastRoomState/lastBedState — 60s tick 重发兜底)          │
+│                                                                          │
+│   其它 listeners:                                                        │
+│     TargetStateAggregator (按 spatial 累 standing/lastActive/weakBio)    │
+│     SleepStageClear (bed Leaving → 清 SleepStage)                        │
+│     zonealarm.Supervisor (state-anchored；不订阅 ZoneEvent，纯 Tick)    │
+└──────────────────────────┬──────────────────────────────────────────────┘
+                           ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│ <span class="aux">④  WIRING / LOOKUPS</span>                                                   │
+│   subdir wiring/: setup.go (DI) + 4 DB lookups + 1 firer adapter        │
+└─────────────────────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+<h2>③ 当前 23 文件分类（生产码，不含 test）</h2>
+
+<table>
+<tr><th>层</th><th>文件</th><th>LOC</th><th>责任</th><th>判定</th></tr>
+
+<tr><td rowspan="3"><span class="pill input">INPUT</span></td>
+<td class="file">adapter_radar.go</td><td class="loc">290</td><td>iot:monitor radar → SignalEvidence</td><td class="ok">归位</td></tr>
+<tr><td class="file">adapter_sleepace.go</td><td class="loc">211</td><td>iot:monitor sleepad → SignalEvidence</td><td class="ok">归位</td></tr>
+<tr><td class="file">adapter_vital.go</td><td class="loc">119</td><td>MonitorBuffer vital → SignalEvidence (床 sustain)</td><td class="ok">归位</td></tr>
+
+<tr><td rowspan="6"><span class="pill core">CORE</span></td>
+<td class="file">engine.go</td><td class="loc">768</td><td>Apply/Tick/state map/listener fanout</td><td class="warn">略大，可瘦：将 Apply 路径主流抽出</td></tr>
+<tr><td class="file">state_machine.go</td><td class="loc">180</td><td>3 态 Status FSM</td><td class="ok">归位</td></tr>
+<tr><td class="file">scorer.go</td><td class="loc">316</td><td>Evidence → Δscore (yaml rules)</td><td class="ok">归位</td></tr>
+<tr><td class="file">rules.go</td><td class="loc">275</td><td>zone_rules.yaml loader</td><td class="ok">归位</td></tr>
+<tr><td class="file">bed_bayesian_scorer.go</td><td class="loc">547</td><td>床专用 Bayesian alt FSM</td><td class="warn">大；与主 FSM 解耦良好，归位</td></tr>
+<tr><td class="file">bed_event_dedup.go</td><td class="loc">60</td><td>床 enter/leave 短窗去重</td><td class="ok">归位</td></tr>
+
+<tr><td rowspan="3"><span class="pill out">OUTPUT</span></td>
+<td class="file"><strong>stream_publisher.go</strong></td><td class="loc"><strong>644</strong></td><td>OnZoneEvent + Translator 调用 + StateBuilder + Cache + Tick + 3 publish APIs + 60s tick + aggregator pull + standing fill + risk eval 调用</td><td class="bad"><strong>责任太杂，应拆 3+ 个文件</strong></td></tr>
+<tr><td class="file">translator.go</td><td class="loc">98</td><td>ZoneEvent → 骨架 RoomState/BedState (纯函数)</td><td class="ok">归位</td></tr>
+<tr><td class="file">risk_evaluator.go</td><td class="loc">83</td><td>RoomState → RiskLevel (纯函数)</td><td class="ok">归位</td></tr>
+
+<tr><td><span class="pill aux">SHARED</span></td>
+<td class="file">types.go</td><td class="loc">187</td><td>ZoneState/ZoneEvent/SignalEvidence/Type/Status 枚举</td><td class="ok">归位</td></tr>
+
+<tr><td rowspan="7"><span class="pill aux">WIRING</span></td>
+<td class="file">wiring/setup.go</td><td class="loc">412</td><td>DI 工厂 + Listener 注册 + Tick 主循环</td><td class="warn">略大但归位</td></tr>
+<tr><td class="file">wiring/alarm_firer.go</td><td class="loc">96</td><td>zonealarm.AlarmFirer 实现包装 AlarmBackChannel</td><td class="ok">归位</td></tr>
+<tr><td class="file">wiring/bed_size_lookup.go</td><td class="loc">104</td><td>DB lookup: bed size</td><td class="ok">归位</td></tr>
+<tr><td class="file">wiring/bathroom_lookup.go</td><td class="loc">116</td><td>DB lookup: bathroom kind</td><td class="ok">归位</td></tr>
+<tr><td class="file">wiring/bed_device_lookup.go</td><td class="loc">186</td><td>DB lookup: bed → device addr</td><td class="ok">归位</td></tr>
+<tr><td class="file">wiring/unit_property_lookup.go</td><td class="loc">131</td><td>DB lookup: unit_property (Home/Facility)</td><td class="ok">归位</td></tr>
+<tr><td class="file">wiring/vital_source.go</td><td class="loc">165</td><td>MonitorBuffer adapter → VitalSource interface</td><td class="warn">应该到 input 层 (VitalAdapter 的数据源)</td></tr>
+</table>
+
+<h2>④ 唯一的真正问题：<span class="bad">stream_publisher.go 644 行做了 7 件事</span></h2>
+
+<div class="danger">
+<h3>当前 stream_publisher.go 责任清单</h3>
+<table>
+<tr><th>#</th><th>内容</th><th>所属责任</th></tr>
+<tr><td>1</td><td>StreamPublisher struct + AggregatorPuller interface</td><td>装配</td></tr>
+<tr><td>2</td><td>Setters: SetRoomDedup / SetAggregator / SetIdentity</td><td>装配</td></tr>
+<tr><td>3</td><td>OnZoneEvent + handleRoomZoneEvent (ZoneEventListener 实现)</td><td><strong>Builder 入口</strong></td></tr>
+<tr><td>4</td><td>applyRoomDedupInPlace + republishRoomAfterBed (radar+sleepad fusion)</td><td><strong>Dedup</strong></td></tr>
+<tr><td>5</td><td>applyAloneAndRisk (Alone/Standing/Risk 派生 + state-change-anchored ts)</td><td><strong>Builder 主逻辑</strong></td></tr>
+<tr><td>6</td><td>cacheLastRoom/Bed + SnapshotRoomStates/BedStates (cache 管理 + 给 zonealarm)</td><td>Cache</td></tr>
+<tr><td>7</td><td>Run + tickRepublishStates + tickPullAndPublish (60s)</td><td>Tick</td></tr>
+<tr><td>8</td><td>RefreshRoomRiskAndMaybePublish (5s zonealarm Tick 调)</td><td><strong>Builder 重算</strong></td></tr>
+<tr><td>9</td><td>PublishRoomState/BedState/TargetState/BedSleepStage (Redis write)</td><td>Publish</td></tr>
+</table>
+
+<p>"东一个西一个" 主要在这里：<strong>RoomState 的派生 + 重算逻辑散在 #3 / #5 / #8 三处</strong>，每处都要记得 fillStanding+applyAloneAndRisk 顺序，容易遗漏（我刚刚改的时候就漏了一次）。</p>
+</div>
+
+<h2>⑤ 提案：拆 stream_publisher.go 为 4 个文件</h2>
+<div class="proposal">
+
+<table>
+<tr><th>新文件</th><th>责任</th><th>从原文件抽出</th><th>预估 LOC</th></tr>
+<tr>
+<td class="file">publisher.go</td>
+<td>StreamPublisher struct + setter + 3 Publish API + envelope marshal</td>
+<td>原 #1, #2, #9</td>
+<td>~180</td>
+</tr>
+<tr>
+<td class="file">room_state_builder.go</td>
+<td><strong>RoomState 唯一构建/重算入口</strong>：BuildFromEvent(e) / RefreshFromCache(cidr, now)<br>
+内部依次调 Translator / Dedup / fillStanding / applyAloneAndRisk</td>
+<td>原 #3, #4, #5, #8</td>
+<td>~250</td>
+</tr>
+<tr>
+<td class="file">state_cache.go</td>
+<td>lastRoomState/lastBedState/roomKindByCIDR + cache mutators + Snapshot APIs</td>
+<td>原 #6</td>
+<td>~110</td>
+</tr>
+<tr>
+<td class="file">publisher_tick.go</td>
+<td>Run(ctx) + tickRepublishStates + tickPullAndPublish (60s 主循环)</td>
+<td>原 #7</td>
+<td>~80</td>
+</tr>
+</table>
+
+<p><strong>关键收益</strong>：</p>
+<ul>
+<li>RoomState 的"诞生 / 重算"只在 <span class="file">room_state_builder.go</span> 一个文件 — 唯一入口，无散点</li>
+<li><span class="file">publisher.go</span> 变薄，只管 envelope + redis write</li>
+<li><span class="file">state_cache.go</span> 给 zonealarm Snapshot 用的接口独立成单元（可测）</li>
+<li>5s Refresh vs 60s tick 关系清楚（都通过 RoomStateBuilder 入口）</li>
+</ul>
+</div>
+
+<h2>⑥ 其它小整理（顺手）</h2>
+<table>
+<tr><th>变动</th><th>原因</th></tr>
+<tr><td><span class="file">bed_bayesian_scorer.go</span> 547 行 → 可拆 2 个：<span class="file">bed_bayesian.go</span> (FSM 主体) + <span class="file">bed_bayesian_lr.go</span> (LR/threshold lookup)</td><td>降低单文件复杂度，但非必须</td></tr>
+<tr><td><span class="file">wiring/vital_source.go</span> 移到 <span class="file">zoneengine/</span> 与 adapter_vital.go 并列</td><td>它是 VitalAdapter 的输入数据源，逻辑上属 INPUT 层；放 wiring 是历史</td></tr>
+<tr><td><span class="file">engine.go</span> 768 行可拆出 <span class="file">engine_subset_invariant.go</span> (Tick 内的 bed⊆room 巡检逻辑)</td><td>engine.go 主路径会更清晰</td></tr>
+</table>
+
+<h2>⑦ 最终目标文件清单（生产码）</h2>
+<div class="proposal">
+<pre>
+zoneengine/
+   <span class="label">--- shared ---</span>
+   types.go                   ✓ keep
+   <span class="label">--- input ---</span>
+   adapter_radar.go           ✓ keep
+   adapter_sleepace.go        ✓ keep
+   adapter_vital.go           ✓ keep
+   vital_source.go            ← 从 wiring/ 移入
+   <span class="label">--- core ---</span>
+   engine.go                  ✓ keep (可瘦)
+   engine_subset_invariant.go ← 可选拆
+   state_machine.go           ✓ keep
+   scorer.go                  ✓ keep
+   rules.go                   ✓ keep
+   bed_bayesian.go            ← 改名
+   bed_bayesian_lr.go         ← 可选拆
+   bed_event_dedup.go         ✓ keep
+   <span class="label">--- output ---</span>
+   publisher.go               ← 新 (从 stream_publisher 拆)
+   room_state_builder.go      ← 新 (从 stream_publisher 拆)  <span class="ok">RoomState 唯一入口</span>
+   state_cache.go             ← 新 (从 stream_publisher 拆)
+   publisher_tick.go          ← 新 (从 stream_publisher 拆)
+   translator.go              ✓ keep
+   risk_evaluator.go          ✓ keep
+   <span class="label">--- wiring 子目录 ---</span>
+   wiring/setup.go            ✓ keep
+   wiring/alarm_firer.go      ✓ keep
+   wiring/bed_size_lookup.go  ✓ keep
+   wiring/bathroom_lookup.go  ✓ keep
+   wiring/bed_device_lookup.go ✓ keep
+   wiring/unit_property_lookup.go ✓ keep
+
+共: 14 生产文件 (zoneengine/) + 6 wiring/ = 20 个
+对比当前: 13 + 7 = 20 个  (净不变, 但责任清晰)
+</pre>
+</div>
+
+<h2>⑧ 行动顺序（先框架后码）</h2>
+<ol>
+<li><strong>你确认 § ⑤ 拆分方案</strong>（4 个新文件 + RoomStateBuilder 唯一入口）</li>
+<li>建空文件 + 把现有代码块按上表搬运（纯 cut/paste，不改逻辑）</li>
+<li>每搬一块 go build 一次确认无 broken refs</li>
+<li>搬完跑 test 套确认 0 regression</li>
+<li>之后再讨论 RefreshRoomRiskAndMaybePublish 是否合理、5s vs 60s tick 等设计点</li>
+</ol>
+
+<p style="margin-top:36px; color:#888;">— 这版只描述"该长什么样" + "当前哪里不对"。等你 ok §⑤ 拆分思路再动手。</p>
+
+</body>
+</html>

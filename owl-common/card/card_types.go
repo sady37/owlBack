@@ -119,7 +119,7 @@ type BedInfo struct {
 	BedName string `json:"bed_name,omitempty"`
 }
 
-// DeviceInfo device information（Phase 2 一刀切后）。
+// DeviceInfo device information。
 //
 // 命名收口：
 //   - DeviceAddr = INET /128 canonical text，业务侧寻址 (devices.device_addr，spatial 可重分配)
@@ -483,7 +483,8 @@ type TargetState struct {
 //   - Pending 列表：详情页查询，覆盖 active + acked + auto_resolved（未到 resolved 终态）
 type AlarmState struct {
 	UpdatedAt   int64 `json:"updated_at,omitempty"`
-	TriggeredAt int64 `json:"triggered_at,omitempty"`
+	TriggeredAt int64 `json:"triggered_at,omitempty"` // 实际发生时刻 ms — FE RePlay 据此拉 [t-1, t+2] 窗口
+	AlertedAt   int64 `json:"alerted_at,omitempty"`   // 系统决策上抛时刻 ms — FE Handle modal "Alarm Time"；缺失 = 同 TriggeredAt
 
 	// Active*：未达 Resolved 终态的告警计数（Critical 含 acked/auto_resolved，Warning/Error 仅 active）
 	ActiveEmerg   int `json:"active_emerg"`   // lvl 0 — Critical 语义

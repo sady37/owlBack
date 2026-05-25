@@ -303,7 +303,7 @@ func (r *BathroomFallRules) evaluateStillFall(
 			"timeout_sec": timeoutSec,
 			"risk_time":   IsNightTime(nowMs, r.timezone),
 			"cell_area":   areaTypeWireName(b.CellAreaType),
-		}, nowMs)
+		}, nowMs-int64(b.StillSec)*1000, nowMs)
 		state.StillAlerted[b.TrackID] = true
 	}
 }
@@ -364,7 +364,7 @@ func (r *BathroomFallRules) evaluateBedsideFall(
 		"grace_sec":      bathroomBedsideGraceSec,
 		"occupied_since": state.BathroomOccupiedSinceMs,
 		"cell_area":      areaTypeWireName(anchor.CellAreaType),
-	}, nowMs)
+	}, nowMs-int64(anchor.StillSec)*1000, nowMs)
 	state.BedsideFiredAtSessionMs = state.BathroomOccupiedSinceMs
 }
 
@@ -428,7 +428,7 @@ func (r *BathroomFallRules) evaluateLostFallStrong(
 	if len(state.LastBases) > 0 {
 		anchor = &state.LastBases[0]
 	}
-	r.fireFallNoTrack(anchor, roomID, suiteID, c, ReasonSuitePersonCompletelyLost, evidence, nowMs)
+	r.fireFallNoTrack(anchor, roomID, suiteID, c, ReasonSuitePersonCompletelyLost, evidence, state.EmptySinceMs, nowMs)
 	state.LostStrongFired = true
 }
 
@@ -473,7 +473,7 @@ func (r *BathroomFallRules) evaluateLostFallWeak(
 		"person_id":   personID,
 		"still_sec":   staticTrack.StillSec,
 		"timeout_sec": bathroomLostWeakSilentSec,
-	}, nowMs)
+	}, nowMs-int64(staticTrack.StillSec)*1000, nowMs)
 	state.LostWeakAlerted[personID] = true
 }
 
@@ -493,18 +493,19 @@ func (r *BathroomFallRules) releaseDedupOnLostTracks(bases []TrackStatusBase, st
 }
 
 // fireFall 用单 track 信息 fire alarm（10a/10b/10d 路径）。
+// incidentMs：实际发生时刻 ms（推断类必传，写 alarm_events.triggered_at）；nowMs = 决策时刻 → alerted_at。
 func (r *BathroomFallRules) fireFall(
 	b *TrackStatusBase, roomID, suiteID string,
-	c *SuiteBedroomCensus, reason string, evidence map[string]interface{}, nowMs int64,
+	c *SuiteBedroomCensus, reason string, evidence map[string]interface{}, incidentMs, nowMs int64,
 ) {
-	r.fireFallCore(b, roomID, suiteID, c, reason, evidence, nowMs)
+	r.fireFallCore(b, roomID, suiteID, c, reason, evidence, incidentMs, nowMs)
 }
 
 // fireFallNoTrack 用 anchor（上帧 track）信息 fire alarm（10c 路径，当前帧无 track）。
 // anchor nil 时仅 log，不实发 alarm（无几何信息），避免 cardagg 端 LPM 反查失败。
 func (r *BathroomFallRules) fireFallNoTrack(
 	anchor *TrackStatusBase, roomID, suiteID string,
-	c *SuiteBedroomCensus, reason string, evidence map[string]interface{}, nowMs int64,
+	c *SuiteBedroomCensus, reason string, evidence map[string]interface{}, incidentMs, nowMs int64,
 ) {
 	if anchor == nil {
 		r.logger.Warn("bathroom_fall_no_anchor",
@@ -514,13 +515,13 @@ func (r *BathroomFallRules) fireFallNoTrack(
 		)
 		return
 	}
-	r.fireFallCore(anchor, roomID, suiteID, c, reason, evidence, nowMs)
+	r.fireFallCore(anchor, roomID, suiteID, c, reason, evidence, incidentMs, nowMs)
 }
 
 // fireFallCore 统一 fire 入口。aiPublisher nil 时 log-only（dev / playback 模式安全降级）。
 func (r *BathroomFallRules) fireFallCore(
 	b *TrackStatusBase, roomID, suiteID string,
-	c *SuiteBedroomCensus, reason string, evidence map[string]interface{}, nowMs int64,
+	c *SuiteBedroomCensus, reason string, evidence map[string]interface{}, incidentMs, nowMs int64,
 ) {
 	if evidence == nil {
 		evidence = map[string]interface{}{}
@@ -537,7 +538,7 @@ func (r *BathroomFallRules) fireFallCore(
 		zap.String("suite_id", suiteID),
 		zap.String("reason", reason),
 		zap.Int("track_id", b.TrackID),
-		zap.String("device_id", b.DeviceID),
+		zap.String("device_addr", b.DeviceAddr),
 		zap.Int("x", x), zap.Int("y", y), zap.Int("z", z),
 		zap.Int64("ts_ms", nowMs),
 	)
@@ -545,8 +546,8 @@ func (r *BathroomFallRules) fireFallCore(
 		return
 	}
 	payload := AIPayload{
-		DeviceID: b.DeviceID,
-		RoomID:   roomID,
+		DeviceAddr: b.DeviceAddr,
+		RoomID:     roomID,
 		Track: observation.Track{
 			TrackID:   b.TrackID,
 			PositionX: intPtr(x),
@@ -554,8 +555,9 @@ func (r *BathroomFallRules) fireFallCore(
 			PositionZ: intPtr(z),
 			Pose:      b.Pose,
 		},
-		Reason:   reason,
-		Evidence: evidence,
+		Reason:     reason,
+		Evidence:   evidence,
+		IncidentMs: incidentMs,
 	}
 	r.aiPublisher.PublishAIAlarm(context.Background(), payload, alarm.Fall, nowMs)
 }

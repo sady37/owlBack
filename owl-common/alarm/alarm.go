@@ -134,7 +134,7 @@ type AlarmDef struct {
 	AlarmParams  map[string]interface{} // 扩展参数，如 duration_sec、duration_min、min、max
 	Description  string                 // 规则说明
 	Display      string                 // UI 展示用友好名称（可选，空则用 Key）
-	// DedupWhileActive=true：同 (device_id, event_type) 已有 active 行时，
+	// DedupWhileActive=true：同 (device_addr, event_type) 已有 active 行时，
 	// InsertAlarmAndUpdateCard 不再插入新行，返回 Deduped=true 由调用方短路通知。
 	// 设备类（Offline/SignalPoor/AngleException/SensorDetached/DeviceFailure）开启；
 	// 事件型（Fall/SuspectedFall/NightAbsence/Stay/InBed/LeftBed/...）保持 false 各自独立成行。
@@ -370,6 +370,12 @@ const (
 	RadarHrEffectiveMax = 110 // 设了 110 以上也测不到 → high alarm 永不触发
 	RadarRrEffectiveMin = 6
 	RadarRrEffectiveMax = 30
+
+	// HR 输入边界（与 FE radar-monitor-settings.vue 对齐）：
+	// slow/fast 阈值在 80 处对齐，避免 slow > fast 区间重叠；
+	// low 端 input floor=40 是 FE 历史 backward-compat slop（雷达 <60 测不到，但旧 config 可能有 40-50 残留）。
+	RadarHrSlowMin    = 40
+	RadarHrSlowFastDiv = 80
 )
 
 const (

@@ -10,7 +10,7 @@ import (
 )
 
 // CardDB wraps *sql.DB for card-related queries.
-// Phase 2 一刀切：device_id UUID 退役。dfm PK = device_uid VARCHAR(50)；devices PK = device_addr INET /128。
+// device_id UUID 退役。dfm PK = device_uid VARCHAR(50)；devices PK = device_addr INET /128。
 //
 //	device_factory_meta (device_uid PK VARCHAR(50), device_code, device_type, device_model, firmware_version, ...)
 //	devices             (device_addr PK INET /128, device_uid UNIQUE FK→dfm, card_id, monitoring_enabled, access)

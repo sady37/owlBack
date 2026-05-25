@@ -84,17 +84,17 @@ func (r *PostgresAlarmEventsRepository) buildWhereClause(tenantID string, filter
 		*argN++
 	}
 
-	// 设备过滤（Phase 2: ae.device_id UUID 列已删，改用 device_addr INET 过滤）
-	if filters.DeviceID != nil {
+	// 设备过滤（v2: 直接对 ae.device_addr INET 过滤）
+	if filters.DeviceAddr != nil {
 		where = append(where, fmt.Sprintf("ae.device_addr = $%d::INET", *argN))
-		*args = append(*args, *filters.DeviceID)
+		*args = append(*args, *filters.DeviceAddr)
 		*argN++
 	}
-	if len(filters.DeviceIDs) > 0 {
-		placeholders := make([]string, len(filters.DeviceIDs))
-		for i := range filters.DeviceIDs {
+	if len(filters.DeviceAddrs) > 0 {
+		placeholders := make([]string, len(filters.DeviceAddrs))
+		for i := range filters.DeviceAddrs {
 			placeholders[i] = fmt.Sprintf("$%d::INET", *argN)
-			*args = append(*args, filters.DeviceIDs[i])
+			*args = append(*args, filters.DeviceAddrs[i])
 			*argN++
 		}
 		where = append(where, fmt.Sprintf("ae.device_addr IN (%s)", strings.Join(placeholders, ", ")))
@@ -278,6 +278,7 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 			ae.alarm_level::text                               AS alarm_level,
 			ae.alarm_status,
 			ae.triggered_at,
+			ae.alerted_at,
 			ae.hand_time,
 			COALESCE(ae.payload, '{}'::jsonb)                  AS trigger_data,
 			ae.handler::text,
@@ -320,19 +321,20 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 	events := []*domain.AlarmEvent{}
 	for rows.Next() {
 		var event domain.AlarmEvent
-		var handTimePtr sql.NullTime
+		var alertedAtPtr, handTimePtr sql.NullTime
 		var handler, operation, notes sql.NullString
 		var triggerData, metadata []byte
 
 		err := rows.Scan(
 			&event.EventID,
 			&event.TenantID,
-			&event.DeviceID,
+			&event.DeviceAddr,
 			&event.EventType,
 			&event.Category,
 			&event.AlarmLevel,
 			&event.AlarmStatus,
 			&event.TriggeredAt,
+			&alertedAtPtr,
 			&handTimePtr,
 			&triggerData,
 			&handler,
@@ -346,6 +348,9 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 			return nil, 0, fmt.Errorf("failed to scan alarm event: %w", err)
 		}
 
+		if alertedAtPtr.Valid {
+			event.AlertedAt = &alertedAtPtr.Time
+		}
 		if handTimePtr.Valid {
 			event.HandTime = &handTimePtr.Time
 		}
@@ -404,6 +409,7 @@ func (r *PostgresAlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenan
 			ae.alarm_level::text                               AS alarm_level,
 			ae.alarm_status,
 			ae.triggered_at,
+			ae.alerted_at,
 			ae.hand_time,
 			COALESCE(ae.payload, '{}'::jsonb)                  AS trigger_data,
 			ae.handler::text,
@@ -418,19 +424,20 @@ func (r *PostgresAlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenan
 	`
 
 	var event domain.AlarmEvent
-	var handTimePtr sql.NullTime
+	var alertedAtPtr, handTimePtr sql.NullTime
 	var handler, operation, notes sql.NullString
 	var triggerData, metadata []byte
 
 	err := r.db.QueryRowContext(ctx, query, eventID, tenantPrefix).Scan(
 		&event.EventID,
 		&event.TenantID,
-		&event.DeviceID,
+		&event.DeviceAddr,
 		&event.EventType,
 		&event.Category,
 		&event.AlarmLevel,
 		&event.AlarmStatus,
 		&event.TriggeredAt,
+		&alertedAtPtr,
 		&handTimePtr,
 		&triggerData,
 		&handler,
@@ -448,6 +455,9 @@ func (r *PostgresAlarmEventsRepository) GetAlarmEvent(ctx context.Context, tenan
 		return nil, fmt.Errorf("failed to get alarm event: %w", err)
 	}
 
+	if alertedAtPtr.Valid {
+		event.AlertedAt = &alertedAtPtr.Time
+	}
 	if handTimePtr.Valid {
 		event.HandTime = &handTimePtr.Time
 	}
@@ -545,12 +555,12 @@ func (r *PostgresAlarmEventsRepository) UpdateAlarmEvent(ctx context.Context, te
 
 // GetRecentAlarmEvent 获取最近的报警事件（用于去重检查，改进版）
 // 检查最近 N 分钟内是否已有相同类型的报警
-func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context, tenantID, deviceID, eventType string, withinMinutes int) (*domain.AlarmEvent, error) {
+func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context, tenantID, deviceAddr, eventType string, withinMinutes int) (*domain.AlarmEvent, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
-	if deviceID == "" {
-		return nil, fmt.Errorf("device_id is required")
+	if deviceAddr == "" {
+		return nil, fmt.Errorf("device_addr is required")
 	}
 	if eventType == "" {
 		return nil, fmt.Errorf("event_type is required")
@@ -575,6 +585,7 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 			ae.alarm_level::text                               AS alarm_level,
 			ae.alarm_status,
 			ae.triggered_at,
+			ae.alerted_at,
 			ae.hand_time,
 			COALESCE(ae.payload, '{}'::jsonb)                  AS trigger_data,
 			ae.handler::text,
@@ -595,20 +606,21 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 
 	var event domain.AlarmEvent
 	var cardID sql.NullString
-	var handTimePtr sql.NullTime
+	var alertedAtPtr, handTimePtr sql.NullTime
 	var handler, operation, notes sql.NullString
 	var triggerData, metadata []byte
 
-	err := r.db.QueryRowContext(ctx, query, tenantPrefix, deviceID, eventType, thresholdTime).Scan(
+	err := r.db.QueryRowContext(ctx, query, tenantPrefix, deviceAddr, eventType, thresholdTime).Scan(
 		&event.EventID,
 		&event.TenantID,
-		&event.DeviceID,
+		&event.DeviceAddr,
 		&cardID,
 		&event.EventType,
 		&event.Category,
 		&event.AlarmLevel,
 		&event.AlarmStatus,
 		&event.TriggeredAt,
+		&alertedAtPtr,
 		&handTimePtr,
 		&triggerData,
 		&handler,
@@ -628,6 +640,9 @@ func (r *PostgresAlarmEventsRepository) GetRecentAlarmEvent(ctx context.Context,
 
 	if cardID.Valid {
 		event.CardID = &cardID.String
+	}
+	if alertedAtPtr.Valid {
+		event.AlertedAt = &alertedAtPtr.Time
 	}
 	if handTimePtr.Valid {
 		event.HandTime = &handTimePtr.Time

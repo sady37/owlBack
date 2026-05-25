@@ -39,7 +39,7 @@ var _ DeviceRepository = (*PostgresDeviceRepository)(nil)
 // 自动注册的未授权设备落入此池，待 platform_admin 调拨。
 const systemTenantPrefix = "fd00:0:1::/48"
 
-// deviceSelectV2 Phase 2 一刀切：device_uid identity + device_addr 业务寻址。
+// deviceSelectV2 device_uid identity + device_addr 业务寻址。
 const deviceSelectV2 = `
 		dfm.device_uid                                                    AS device_uid,
 		COALESCE(host(d.device_addr), '')                                 AS device_addr,
@@ -121,7 +121,7 @@ func (r *PostgresDeviceRepository) GetDeviceByUID(ctx context.Context, uid strin
 	return d, nil
 }
 
-// UpdateDeviceMonitoring Phase 2 一刀切：直接按 device_uid 关联 devices。
+// UpdateDeviceMonitoring 直接按 device_uid 关联 devices。
 func (r *PostgresDeviceRepository) UpdateDeviceMonitoring(ctx context.Context, uid string, enabled bool) error {
 	query := `
 		UPDATE devices
@@ -206,7 +206,7 @@ func (r *PostgresDeviceRepository) SetDeviceProperties(ctx context.Context, uid 
 	return nil
 }
 
-// GetAllDeviceStoreInfo Phase 2 一刀切：dfm + devices 派生，启动时拉全集
+// GetAllDeviceStoreInfo dfm + devices 派生，启动时拉全集
 func (r *PostgresDeviceRepository) GetAllDeviceStoreInfo(ctx context.Context) ([]*DeviceStoreInfo, error) {
 	query := `
 		SELECT
@@ -292,7 +292,7 @@ func (r *PostgresDeviceRepository) GetDevicesByTenant(ctx context.Context, tenan
 	return devices, nil
 }
 
-// CreateDevice Phase 2 一刀切：写 device_factory_meta + devices；自动注册未授权设备
+// CreateDevice 写 device_factory_meta + devices；自动注册未授权设备
 //
 // 业务约定：未知 UID 从 MQTT 来认证 → 落 Trash pool (fd00:0:2::/48)，access=FALSE，
 // 待 platform_admin 决定接受（迁 System / 真 tenant）或保持丢弃。
@@ -378,7 +378,7 @@ func (r *PostgresDeviceRepository) UpdateDevice(ctx context.Context, device *dom
 	args = append(args, device.MonitoringEnabled)
 	argIdx++
 	updates = append(updates, "updated_at = NOW()")
-	// WHERE device_uid → dfm → device_id
+	// WHERE device_uid → dfm → device_addr
 	args = append(args, device.DeviceUID)
 	query := fmt.Sprintf(`
 		UPDATE devices
@@ -504,7 +504,7 @@ func (r *PostgresDeviceRepository) GetDeviceStoreInfo(ctx context.Context, devic
 	return r.queryDeviceStoreInfo(ctx, "WHERE dfm.device_uid = $1", deviceUID)
 }
 
-// GetDeviceStoreByDeviceAddr Phase 2 一刀切：device_id UUID 退役，业务键改 device_addr。
+// GetDeviceStoreByDeviceAddr device_id UUID 退役，业务键改 device_addr。
 func (r *PostgresDeviceRepository) GetDeviceStoreByDeviceAddr(ctx context.Context, deviceAddr string) (*DeviceStoreInfo, error) {
 	if deviceAddr == "" {
 		return nil, fmt.Errorf("device_addr is required")

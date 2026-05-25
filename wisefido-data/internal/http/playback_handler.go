@@ -35,7 +35,7 @@ func NewPlaybackHandler(track *service.TrackPlaybackService, tenants repository.
 }
 
 type radarPlaybackBody struct {
-	DeviceID      string `json:"deviceId"`
+	DeviceAddr      string `json:"deviceId"`
 	DataType      string `json:"dataType"`
 	StartTime     int64  `json:"startTime"`
 	EndTime       int64  `json:"endTime"`
@@ -127,7 +127,7 @@ func (h *PlaybackHandler) PostRadarPlayback(w http.ResponseWriter, r *http.Reque
 	}
 	rk := normReplayKindBodyOrFallback(req.ReplayKind, "track")
 	src := normRequestSource(req.RequestSource)
-	if strings.TrimSpace(req.DeviceID) == "" {
+	if strings.TrimSpace(req.DeviceAddr) == "" {
 		h.logReplayAudit("PostRadarPlayback", r, rk, src, reqTime, false, nil)
 		writeJSON(w, http.StatusOK, Fail("deviceId is required"))
 		return
@@ -138,7 +138,7 @@ func (h *PlaybackHandler) PostRadarPlayback(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	did := strings.TrimSpace(req.DeviceID)
+	did := strings.TrimSpace(req.DeviceAddr)
 	// Phase 3: device 必须在 user scope 内
 	if h.db != nil {
 		uid := r.Header.Get("X-User-Id")
@@ -154,7 +154,7 @@ func (h *PlaybackHandler) PostRadarPlayback(w http.ResponseWriter, r *http.Reque
 	h.log.Info("PostRadarPlayback received",
 		zap.String("tenant_header", tenantRaw),
 		zap.String("tenant_id", tenantID),
-		zap.String("device_id", did),
+		zap.String("device_addr", did),
 		zap.Int64("start_time_ms", req.StartTime),
 		zap.Int64("end_time_ms", req.EndTime),
 		zap.String("start_utc", startRFC),
@@ -216,7 +216,7 @@ func (h *PlaybackHandler) PostVitalPlayback(w http.ResponseWriter, r *http.Reque
 	h.log.Info("PostVitalPlayback received",
 		zap.String("tenant_header", tenantRaw),
 		zap.String("tenant_id", tenantID),
-		zap.String("device_id", strings.TrimSpace(req.DeviceID)),
+		zap.String("device_addr", strings.TrimSpace(req.DeviceAddr)),
 		zap.Int64("start_time_ms", req.StartTime),
 		zap.Int64("end_time_ms", req.EndTime),
 		zap.Time("start_utc", startT),
@@ -231,7 +231,7 @@ func (h *PlaybackHandler) PostVitalPlayback(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
 		return
 	}
-	if strings.TrimSpace(req.DeviceID) == "" {
+	if strings.TrimSpace(req.DeviceAddr) == "" {
 		h.logReplayAudit("PostVitalPlayback", r, rk, src, reqTime, false, nil)
 		writeJSON(w, http.StatusOK, Fail("deviceId is required"))
 		return
@@ -239,13 +239,13 @@ func (h *PlaybackHandler) PostVitalPlayback(w http.ResponseWriter, r *http.Reque
 	// Phase 3: device 必须在 user scope 内
 	if h.db != nil {
 		uid := r.Header.Get("X-User-Id")
-		if err := VerifyDeviceInScope(h.db, r.Context(), uid, vitalRole, strings.TrimSpace(req.DeviceID)); err != nil {
+		if err := VerifyDeviceInScope(h.db, r.Context(), uid, vitalRole, strings.TrimSpace(req.DeviceAddr)); err != nil {
 			h.logReplayAudit("PostVitalPlayback", r, rk, src, reqTime, false, err)
 			writeJSON(w, http.StatusOK, Fail(err.Error()))
 			return
 		}
 	}
-	result, err := h.track.RadarVitalPlayback(r.Context(), tenantID, strings.TrimSpace(req.DeviceID), req.StartTime, req.EndTime, vitalRole)
+	result, err := h.track.RadarVitalPlayback(r.Context(), tenantID, strings.TrimSpace(req.DeviceAddr), req.StartTime, req.EndTime, vitalRole)
 	if err != nil {
 		h.logReplayAudit("PostVitalPlayback", r, rk, src, reqTime, false, err)
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
@@ -257,7 +257,7 @@ func (h *PlaybackHandler) PostVitalPlayback(w http.ResponseWriter, r *http.Reque
 
 // alarmReplayContextBody WaveMonitor 从 alarm_records 点 RePlay 时上报，供后端查询/审计（与回放数据面解耦）
 type alarmReplayContextBody struct {
-	DeviceID      string `json:"device_addr"`
+	DeviceAddr      string `json:"device_addr"`
 	DeviceName    string `json:"device_name"`
 	AlarmTimeSec  int64  `json:"alarm_time_sec"`
 	EventID       string `json:"event_id"`
@@ -291,17 +291,17 @@ func (h *PlaybackHandler) PostAlarmReplayContext(w http.ResponseWriter, r *http.
 	}
 	src := normRequestSource(req.RequestSource)
 	// Phase 3: device 必须在 user scope 内
-	if h.db != nil && strings.TrimSpace(req.DeviceID) != "" {
+	if h.db != nil && strings.TrimSpace(req.DeviceAddr) != "" {
 		uid := r.Header.Get("X-User-Id")
 		role := r.Header.Get("X-User-Role")
-		if err := VerifyDeviceInScope(h.db, r.Context(), uid, role, strings.TrimSpace(req.DeviceID)); err != nil {
+		if err := VerifyDeviceInScope(h.db, r.Context(), uid, role, strings.TrimSpace(req.DeviceAddr)); err != nil {
 			h.logReplayAudit("PostAlarmReplayContext", r, rk, src, reqTime, false, err)
 			writeJSON(w, http.StatusOK, Fail(err.Error()))
 			return
 		}
 	}
 	h.logReplayAudit("PostAlarmReplayContext", r, rk, src, reqTime, true, nil,
-		zap.String("device_id", req.DeviceID),
+		zap.String("device_addr", req.DeviceAddr),
 		zap.String("event_id", req.EventID),
 		zap.String("event_type", req.EventType),
 		zap.Int64("alarm_time_sec", req.AlarmTimeSec))

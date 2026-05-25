@@ -73,12 +73,12 @@ func (h *CardRefreshHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requested := 0
 	nowMs := time.Now().UnixMilli()
 	for _, d := range devices {
-		if d.DeviceUID == "" || d.DeviceID == "" {
+		if d.DeviceUID == "" || d.DeviceAddr == "" {
 			continue
 		}
 		values := map[string]interface{}{
 			"device_uid":     d.DeviceUID,
-			"device_id":      d.DeviceID,
+			"device_addr":      d.DeviceAddr,
 			"device_type":    d.DeviceType,
 			"tenant_id":      tenantID,
 			"card_id":        cardID,
@@ -112,7 +112,7 @@ func (h *CardRefreshHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type cardDeviceTuple struct {
 	DeviceUID  string
-	DeviceID   string
+	DeviceAddr   string
 	DeviceType string
 }
 
@@ -141,13 +141,13 @@ func (h *CardRefreshHandler) loadCardDevices(ctx context.Context, tenantID, card
 		if v, ok := d["device_uid"].(string); ok {
 			t.DeviceUID = strings.TrimSpace(v)
 		}
-		if v, ok := d["device_id"].(string); ok {
-			t.DeviceID = strings.TrimSpace(v)
+		if v, ok := d["device_addr"].(string); ok {
+			t.DeviceAddr = strings.TrimSpace(v)
 		}
 		if v, ok := d["device_type"].(string); ok {
 			t.DeviceType = strings.TrimSpace(v)
 		}
-		if t.DeviceUID == "" || t.DeviceID == "" {
+		if t.DeviceUID == "" || t.DeviceAddr == "" {
 			continue
 		}
 		out = append(out, t)

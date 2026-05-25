@@ -17,7 +17,7 @@ import (
 )
 
 // NotifyWisefidoData 异步通知 wisefido-data 触发 APNs（env：WISEFIDO_DATA_ALARM_PUSH_URL、INTERNAL_ALARM_PUSH_SECRET）
-func NotifyWisefidoData(logger *zap.Logger, tenantID, cardID, deviceID, eventID, eventType, alarmLevel string) {
+func NotifyWisefidoData(logger *zap.Logger, tenantID, cardID, deviceAddr, eventID, eventType, alarmLevel string) {
 	base := strings.TrimSpace(os.Getenv("WISEFIDO_DATA_ALARM_PUSH_URL"))
 	sec := strings.TrimSpace(os.Getenv("INTERNAL_ALARM_PUSH_SECRET"))
 	if base == "" || sec == "" || tenantID == "" || cardID == "" {
@@ -27,7 +27,7 @@ func NotifyWisefidoData(logger *zap.Logger, tenantID, cardID, deviceID, eventID,
 	payload := map[string]string{
 		"tenant_id":   tenantID,
 		"card_id":     cardID,
-		"device_id":   deviceID,
+		"device_addr":   deviceAddr,
 		"event_id":    eventID,
 		"event_type":  eventType,
 		"alarm_level": alarmLevel,
@@ -59,7 +59,7 @@ func NotifyWisefidoData(logger *zap.Logger, tenantID, cardID, deviceID, eventID,
 	}()
 }
 
-// LookupCardIDByDevice Phase 2 一刀切：deviceAddr 是 canonical IPv6 (devices.device_addr)，
+// LookupCardIDByDevice deviceAddr 是 canonical IPv6 (devices.device_addr)，
 // 直读 devices.card_id（FE 已显式绑定）。
 func LookupCardIDByDevice(ctx context.Context, db *sql.DB, deviceAddr string) (string, error) {
 	if db == nil || deviceAddr == "" {

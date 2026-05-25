@@ -9,7 +9,7 @@ import (
 // device_factory_meta + devices + device_ota 三表 JOIN 的扁平视图（v1 兼容 wire format）。
 // 字段是 SELECT alias 派生，不对应单一物理列。
 //
-// Phase 2 一刀切：device_id UUID 退役 → identity = device_uid VARCHAR(50)；
+// device_id UUID 退役 → identity = device_uid VARCHAR(50)；
 //                业务寻址 = device_addr INET /128（devices PK）。
 type DeviceStore struct {
 	DeviceAddr string `db:"device_addr"` // devices.device_addr INET /128；同时是 redis device:status key

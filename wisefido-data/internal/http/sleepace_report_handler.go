@@ -47,32 +47,32 @@ func (h *SleepaceReportHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	//   - GET /sleepace/api/v1/sleepace/reports/:id/dates - 获取有效日期列表
 
 	path := r.URL.Path
-	deviceID := extractDeviceIDFromPath(path)
+	deviceAddr := extractDeviceAddrFromPath(path)
 
-	if deviceID == "" {
-		writeJSON(w, http.StatusOK, Fail("device_id is required"))
+	if deviceAddr == "" {
+		writeJSON(w, http.StatusOK, Fail("device_addr is required"))
 		return
 	}
 
 	// 根据路径后缀路由到不同的处理函数
 	if strings.HasSuffix(path, "/download") {
 		if r.Method == http.MethodPost {
-			h.DownloadReport(w, r, deviceID)
+			h.DownloadReport(w, r, deviceAddr)
 		} else {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	} else if strings.HasSuffix(path, "/detail") {
-		h.GetSleepaceReportDetail(w, r, deviceID)
+		h.GetSleepaceReportDetail(w, r, deviceAddr)
 	} else if strings.HasSuffix(path, "/dates") {
-		h.GetSleepaceReportDates(w, r, deviceID)
+		h.GetSleepaceReportDates(w, r, deviceAddr)
 	} else {
-		h.GetSleepaceReports(w, r, deviceID)
+		h.GetSleepaceReports(w, r, deviceAddr)
 	}
 }
 
 // GetSleepaceReports 获取睡眠报告列表
 // GET /sleepace/api/v1/sleepace/reports/:id?startDate=20240820&endDate=20240830&page=1&size=10
-func (h *SleepaceReportHandler) GetSleepaceReports(w http.ResponseWriter, r *http.Request, deviceID string) {
+func (h *SleepaceReportHandler) GetSleepaceReports(w http.ResponseWriter, r *http.Request, deviceAddr string) {
 	ctx := r.Context()
 	tenantID, ok := h.base.tenantIDFromReq(w, r)
 	if !ok {
@@ -83,10 +83,10 @@ func (h *SleepaceReportHandler) GetSleepaceReports(w http.ResponseWriter, r *htt
 	currentUserID := r.Header.Get("X-User-Id")
 	currentUserType := r.Header.Get("X-User-Type")
 	currentUserRole := r.Header.Get("X-User-Role")
-	if err := h.checkReportPermission(ctx, tenantID, deviceID, currentUserID, currentUserType, currentUserRole, "read"); err != nil {
+	if err := h.checkReportPermission(ctx, tenantID, deviceAddr, currentUserID, currentUserType, currentUserRole, "read"); err != nil {
 		h.logger.Warn("GetSleepaceReports permission denied",
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.String("user_id", currentUserID),
 			zap.String("user_type", currentUserType),
 			zap.String("user_role", currentUserRole),
@@ -104,7 +104,7 @@ func (h *SleepaceReportHandler) GetSleepaceReports(w http.ResponseWriter, r *htt
 
 	req := service.GetSleepaceReportsRequest{
 		TenantID:  tenantID,
-		DeviceID:  deviceID,
+		DeviceAddr:  deviceAddr,
 		StartDate: startDate,
 		EndDate:   endDate,
 		Page:      page,
@@ -115,7 +115,7 @@ func (h *SleepaceReportHandler) GetSleepaceReports(w http.ResponseWriter, r *htt
 	if err != nil {
 		h.logger.Error("GetSleepaceReports failed",
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.Error(err),
 		)
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
@@ -140,7 +140,7 @@ func (h *SleepaceReportHandler) GetSleepaceReports(w http.ResponseWriter, r *htt
 
 // GetSleepaceReportDetail 获取睡眠报告详情
 // GET /sleepace/api/v1/sleepace/reports/:id/detail?date=20240820
-func (h *SleepaceReportHandler) GetSleepaceReportDetail(w http.ResponseWriter, r *http.Request, deviceID string) {
+func (h *SleepaceReportHandler) GetSleepaceReportDetail(w http.ResponseWriter, r *http.Request, deviceAddr string) {
 	ctx := r.Context()
 	tenantID, ok := h.base.tenantIDFromReq(w, r)
 	if !ok {
@@ -151,10 +151,10 @@ func (h *SleepaceReportHandler) GetSleepaceReportDetail(w http.ResponseWriter, r
 	currentUserID := r.Header.Get("X-User-Id")
 	currentUserType := r.Header.Get("X-User-Type")
 	currentUserRole := r.Header.Get("X-User-Role")
-	if err := h.checkReportPermission(ctx, tenantID, deviceID, currentUserID, currentUserType, currentUserRole, "read"); err != nil {
+	if err := h.checkReportPermission(ctx, tenantID, deviceAddr, currentUserID, currentUserType, currentUserRole, "read"); err != nil {
 		h.logger.Warn("GetSleepaceReportDetail permission denied",
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.String("user_id", currentUserID),
 			zap.String("user_type", currentUserType),
 			zap.String("user_role", currentUserRole),
@@ -173,7 +173,7 @@ func (h *SleepaceReportHandler) GetSleepaceReportDetail(w http.ResponseWriter, r
 
 	req := service.GetSleepaceReportDetailRequest{
 		TenantID: tenantID,
-		DeviceID: deviceID,
+		DeviceAddr: deviceAddr,
 		Date:     date,
 	}
 
@@ -181,7 +181,7 @@ func (h *SleepaceReportHandler) GetSleepaceReportDetail(w http.ResponseWriter, r
 	if err != nil {
 		h.logger.Error("GetSleepaceReportDetail failed",
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.Int("date", date),
 			zap.Error(err),
 		)
@@ -210,7 +210,7 @@ func (h *SleepaceReportHandler) GetSleepaceReportDetail(w http.ResponseWriter, r
 
 // GetSleepaceReportDates 获取有效日期列表
 // GET /sleepace/api/v1/sleepace/reports/:id/dates
-func (h *SleepaceReportHandler) GetSleepaceReportDates(w http.ResponseWriter, r *http.Request, deviceID string) {
+func (h *SleepaceReportHandler) GetSleepaceReportDates(w http.ResponseWriter, r *http.Request, deviceAddr string) {
 	ctx := r.Context()
 	tenantID, ok := h.base.tenantIDFromReq(w, r)
 	if !ok {
@@ -221,10 +221,10 @@ func (h *SleepaceReportHandler) GetSleepaceReportDates(w http.ResponseWriter, r 
 	currentUserID := r.Header.Get("X-User-Id")
 	currentUserType := r.Header.Get("X-User-Type")
 	currentUserRole := r.Header.Get("X-User-Role")
-	if err := h.checkReportPermission(ctx, tenantID, deviceID, currentUserID, currentUserType, currentUserRole, "read"); err != nil {
+	if err := h.checkReportPermission(ctx, tenantID, deviceAddr, currentUserID, currentUserType, currentUserRole, "read"); err != nil {
 		h.logger.Warn("GetSleepaceReportDates permission denied",
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.String("user_id", currentUserID),
 			zap.String("user_type", currentUserType),
 			zap.String("user_role", currentUserRole),
@@ -236,14 +236,14 @@ func (h *SleepaceReportHandler) GetSleepaceReportDates(w http.ResponseWriter, r 
 
 	req := service.GetSleepaceReportDatesRequest{
 		TenantID: tenantID,
-		DeviceID: deviceID,
+		DeviceAddr: deviceAddr,
 	}
 
 	resp, err := h.sleepaceReportService.GetSleepaceReportDates(ctx, req)
 	if err != nil {
 		h.logger.Error("GetSleepaceReportDates failed",
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.Error(err),
 		)
 		writeJSON(w, http.StatusOK, Fail(err.Error()))
@@ -260,7 +260,7 @@ func (h *SleepaceReportHandler) GetSleepaceReportDates(w http.ResponseWriter, r 
 
 // DownloadReport 从厂家 get24HourDailyWithMaxReport 拉取并写入 sleepace_report（读权限即可）
 // POST /sleepace/api/v1/sleepace/reports/:id/download?startTime=1234567890&endTime=1234567890
-func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Request, deviceID string) {
+func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Request, deviceAddr string) {
 	ctx := r.Context()
 	tenantID, ok := h.base.tenantIDFromReq(w, r)
 	if !ok {
@@ -272,10 +272,10 @@ func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Re
 	currentUserType := r.Header.Get("X-User-Type")
 	currentUserRole := r.Header.Get("X-User-Role")
 	// 与列表/详情一致：能看报告即可触发从厂家拉取并入库（get24HourDailyWithMaxReport）
-	if err := h.checkReportPermission(ctx, tenantID, deviceID, currentUserID, currentUserType, currentUserRole, "read"); err != nil {
+	if err := h.checkReportPermission(ctx, tenantID, deviceAddr, currentUserID, currentUserType, currentUserRole, "read"); err != nil {
 		h.logger.Warn("DownloadReport permission denied",
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.String("user_id", currentUserID),
 			zap.String("user_type", currentUserType),
 			zap.String("user_role", currentUserRole),
@@ -298,11 +298,11 @@ func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	sleepaceDeviceID, deviceUID, err := h.getSleepaceDownloadIdentity(ctx, tenantID, deviceID)
+	sleepaceDeviceID, deviceUID, err := h.getSleepaceDownloadIdentity(ctx, tenantID, deviceAddr)
 	if err != nil {
 		h.logger.Error("Failed to resolve sleepace report identity",
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.Error(err),
 		)
 		writeJSON(w, http.StatusOK, Fail(fmt.Sprintf("failed to resolve device: %v", err)))
@@ -311,7 +311,7 @@ func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Re
 
 	req := service.DownloadReportRequest{
 		TenantID:         tenantID,
-		DeviceID:         deviceID,
+		DeviceAddr:       deviceAddr,
 		SleepaceDeviceID: sleepaceDeviceID,
 		DeviceUID:        deviceUID,
 		StartTime:        startTime,
@@ -322,7 +322,7 @@ func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		h.logger.Error("DownloadReport failed",
 			zap.String("tenant_id", tenantID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.String("sleepace_device_id", sleepaceDeviceID),
 			zap.String("device_uid", deviceUID),
 			zap.Int64("start_time", startTime),
@@ -338,11 +338,10 @@ func (h *SleepaceReportHandler) DownloadReport(w http.ResponseWriter, r *http.Re
 
 // getSleepaceDownloadIdentity 解析厂家 deviceId（device_factory_meta.device_code 优先）与 deviceName（device_factory_meta.device_uid）。
 // v2: tenant scope 用 INET <<= /48 prefix；devices 表已无 status 列，缺该过滤（软删通过 device_ipv6 退回 trash 池）。
-func (h *SleepaceReportHandler) getSleepaceDownloadIdentity(ctx context.Context, tenantID, deviceID string) (sleepaceDeviceID, deviceUID string, err error) {
+func (h *SleepaceReportHandler) getSleepaceDownloadIdentity(ctx context.Context, tenantID, deviceAddr string) (sleepaceDeviceID, deviceUID string, err error) {
 	if h.db == nil {
 		return "", "", fmt.Errorf("database connection not available")
 	}
-	// Phase 2 一刀切：deviceID 入参承载 device_addr (INET text)
 	q := `
 		SELECT COALESCE(NULLIF(TRIM(dfm.device_code), ''), dfm.device_uid), dfm.device_uid
 		FROM devices d
@@ -351,7 +350,7 @@ func (h *SleepaceReportHandler) getSleepaceDownloadIdentity(ctx context.Context,
 		  AND d.device_addr = $2::INET
 		LIMIT 1
 	`
-	err = h.db.QueryRowContext(ctx, q, tenantID, deviceID).Scan(&sleepaceDeviceID, &deviceUID)
+	err = h.db.QueryRowContext(ctx, q, tenantID, deviceAddr).Scan(&sleepaceDeviceID, &deviceUID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return "", "", fmt.Errorf("device not found")
@@ -364,23 +363,19 @@ func (h *SleepaceReportHandler) getSleepaceDownloadIdentity(ctx context.Context,
 	return sleepaceDeviceID, deviceUID, nil
 }
 
-// extractDeviceIDFromPath 从路径中提取 device_id
-// 路径格式：/sleepace/api/v1/sleepace/reports/:id 或 /sleepace/api/v1/sleepace/reports/:id/detail
-func extractDeviceIDFromPath(path string) string {
-	// 移除前缀
+// extractDeviceAddrFromPath 从路径中提取 device_addr (URL :id 占位为 vendor route 锁定保留)。
+// 路径格式：/sleepace/api/v1/sleepace/reports/:id[/detail|/dates|/download]
+func extractDeviceAddrFromPath(path string) string {
 	prefix := "/sleepace/api/v1/sleepace/reports/"
 	if !strings.HasPrefix(path, prefix) {
 		return ""
 	}
-
-	// 提取 device_id（移除后缀如 /detail, /dates, /download）
-	deviceID := strings.TrimPrefix(path, prefix)
-	deviceID = strings.TrimSuffix(deviceID, "/detail")
-	deviceID = strings.TrimSuffix(deviceID, "/dates")
-	deviceID = strings.TrimSuffix(deviceID, "/download")
-	deviceID = strings.TrimSuffix(deviceID, "/")
-
-	return deviceID
+	deviceAddr := strings.TrimPrefix(path, prefix)
+	deviceAddr = strings.TrimSuffix(deviceAddr, "/detail")
+	deviceAddr = strings.TrimSuffix(deviceAddr, "/dates")
+	deviceAddr = strings.TrimSuffix(deviceAddr, "/download")
+	deviceAddr = strings.TrimSuffix(deviceAddr, "/")
+	return deviceAddr
 }
 
 // parseIntQuery 解析整数查询参数
@@ -418,13 +413,13 @@ func parseInt64Query(r *http.Request, key string, defaultValue int64) (int64, er
 // 1. 住户及相关联系人：可查看住户自己的睡眠报告
 // 2. Caregiver/Nurse：可查看、处理 assign-only 住户的睡眠报告
 // 3. Manager：可查看、处理 branch 住户的睡眠报告，如果 branch=null，处理 branch=null 的 unit 的住户
-func (h *SleepaceReportHandler) checkReportPermission(ctx context.Context, tenantID, deviceID, userID, userType, userRole, permissionType string) error {
+func (h *SleepaceReportHandler) checkReportPermission(ctx context.Context, tenantID, deviceAddr, userID, userType, userRole, permissionType string) error {
 	if h.db == nil {
 		return fmt.Errorf("database connection not available")
 	}
 
-	// 1. 通过 device_id 获取关联的住户信息
-	residentInfo, err := h.getResidentByDeviceID(ctx, tenantID, deviceID)
+	// 1. 通过 device_addr 获取关联的住户信息
+	residentInfo, err := h.getResidentByDeviceAddr(ctx, tenantID, deviceAddr)
 	if err != nil {
 		// 如果设备没有关联住户，允许访问（fallback）
 		return nil
@@ -496,9 +491,8 @@ type residentInfo struct {
 	UnitID     sql.NullString
 }
 
-// getResidentByDeviceID Phase 2 一刀切：deviceID 入参承载 device_addr (INET text)。
-// 查询路径：device_addr → resident_unit.spatial_prefix LPM → residents。
-func (h *SleepaceReportHandler) getResidentByDeviceID(ctx context.Context, tenantID, deviceID string) (*residentInfo, error) {
+// getResidentByDeviceAddr 查询路径：device_addr → resident_unit.spatial_prefix LPM → residents。
+func (h *SleepaceReportHandler) getResidentByDeviceAddr(ctx context.Context, tenantID, deviceAddr string) (*residentInfo, error) {
 	query := `
 		SELECT host(r.resident_id),
 		       NULL::text AS branch_tag,
@@ -515,7 +509,7 @@ func (h *SleepaceReportHandler) getResidentByDeviceID(ctx context.Context, tenan
 	`
 
 	var info residentInfo
-	err := h.db.QueryRowContext(ctx, query, tenantID, deviceID).Scan(
+	err := h.db.QueryRowContext(ctx, query, tenantID, deviceAddr).Scan(
 		&info.ResidentID,
 		&info.BranchTag,
 		&info.UnitID,
@@ -524,7 +518,7 @@ func (h *SleepaceReportHandler) getResidentByDeviceID(ctx context.Context, tenan
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("no resident found for device")
 		}
-		return nil, fmt.Errorf("failed to get resident by device_id: %w", err)
+		return nil, fmt.Errorf("failed to get resident by device_addr: %w", err)
 	}
 
 	return &info, nil

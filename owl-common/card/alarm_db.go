@@ -17,11 +17,11 @@ import (
 // alarm_db.go — v2 Phase G 实施版（2026-05-14）
 //
 // 设计要点：
-//   - device_addr INET /128 是核心定位 key（device_ipv6 单程票）
+//   - device_addr INET /128 是核心定位 key
 //   - alarm_events v2 列：event_type / category / alarm_level SMALLINT (syslog 0-7) /
 //     alarm_status (active/acked/resolved/auto_resolved/expired) / payload / evidence
 //   - snapshot 列（tenant_name/branch_name/unit_name/room_name/bed_name/resident_nickname/
-//     device_uid + resident_id INET / device_id UUID）— trigger 时刻一次 SELECT 锁住
+//     device_uid + resident_id INET / device_addr INET）— trigger 时刻一次 SELECT 锁住
 //   - 北极星：producer / parent_span / trace_id 三列承载 datagram 因果链
 //   - cards 表 v2 无 alarm counter 列；CardAlarmState 由 alarm_events 实时聚合（GROUP BY alarm_level）
 //   - card_id INET 列：INSERT 时填入 cardID
@@ -33,11 +33,12 @@ import (
 // AlarmInsertParams INSERT alarm_events 所需参数
 type AlarmInsertParams struct {
 	TenantID    string
-	DeviceAddr  string          // IPv6 /128 canonical host text（device_ipv6 单程票）
+	DeviceAddr  string          // IPv6 /128 canonical host text
 	EventType   string          // 映射 alarm_events.event_type
 	Category    string
 	AlarmLevel  string          // 字符串名（EMERG/ALERT/...）；写库前 normalize → SMALLINT
-	TriggeredAt time.Time
+	TriggeredAt time.Time       // 实际发生时刻（incident moment）
+	AlertedAt   time.Time       // 系统决策上抛时刻；零值 → 默认 = TriggeredAt（producer 拆参后再实拍）
 	TriggerData json.RawMessage // 映射 payload
 	Metadata    json.RawMessage // 映射 evidence
 	RoomID      string
@@ -84,6 +85,7 @@ type CardAlarmState struct {
 	PopAlarmType     string // 同行 event_type
 	PopAlarmEventId  string
 	PopTriggeredAtMs int64
+	PopAlertedAtMs   int64
 	HandTime         time.Time
 }
 
@@ -105,6 +107,9 @@ func (c *CardAlarmState) ToAlarmState() *AlarmState {
 		s.EventID = c.PopAlarmEventId
 		if c.PopTriggeredAtMs > 0 {
 			s.TriggeredAt = c.PopTriggeredAtMs
+		}
+		if c.PopAlertedAtMs > 0 {
+			s.AlertedAt = c.PopAlertedAtMs
 		}
 	}
 	return s
@@ -221,6 +226,9 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 	if params.TriggeredAt.IsZero() {
 		params.TriggeredAt = time.Now()
 	}
+	if params.AlertedAt.IsZero() {
+		params.AlertedAt = params.TriggeredAt
+	}
 
 	def := alarm.LookupAlarm(params.EventType)
 	skipNotify := def != nil && def.SkipUnhandledCount
@@ -257,19 +265,19 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 	var triggeredAt time.Time
 	insertSQL := `
 		INSERT INTO alarm_events (
-		  device_addr, triggered_at, event_type, category, alarm_level,
+		  device_addr, triggered_at, alerted_at, event_type, category, alarm_level,
 		  tenant_name, branch_name, unit_name, room_name, bed_name,
 		  resident_nickname, device_uid,
 		  resident_id, card_id,
 		  trace_id, parent_span, producer,
 		  alarm_status, payload, evidence
 		) VALUES (
-		  $1::INET, $2, $3, $4, $5,
-		  $6, $7, $8, $9, $10,
-		  $11, $12,
-		  NULLIF($13, '')::INET, NULLIF($14, '')::INET,
-		  NULLIF($15, ''), NULLIF($16, ''), NULLIF($17, '')::INET,
-		  'active', $18::JSONB, $19::JSONB
+		  $1::INET, $2, $3, $4, $5, $6,
+		  $7, $8, $9, $10, $11,
+		  $12, $13,
+		  NULLIF($14, '')::INET, NULLIF($15, '')::INET,
+		  NULLIF($16, ''), NULLIF($17, ''), NULLIF($18, '')::INET,
+		  'active', $19::JSONB, $20::JSONB
 		)
 		RETURNING event_id::text, triggered_at
 	`
@@ -278,7 +286,7 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 		residentIDStr = snap.ResidentID.String
 	}
 	err = db.QueryRowContext(ctx, insertSQL,
-		addr.String(), params.TriggeredAt, params.EventType, nullStringOrNil(params.Category), alarmLevelToInt(params.AlarmLevel),
+		addr.String(), params.TriggeredAt, params.AlertedAt, params.EventType, nullStringOrNil(params.Category), alarmLevelToInt(params.AlarmLevel),
 		snap.TenantName, snap.BranchName, snap.UnitName, snap.RoomName, snap.BedName,
 		snap.ResidentNickname, snap.DeviceUID,
 		residentIDStr, cardID,
@@ -371,14 +379,15 @@ func QueryCardAlarmState(ctx context.Context, db *sql.DB, cardID string) (*CardA
 	var popType string
 	var popEvent string
 	var popTriggered time.Time
+	var popAlertedNull sql.NullTime
 	err = db.QueryRowContext(ctx, `
-		SELECT alarm_level, event_type, event_id::text, triggered_at
+		SELECT alarm_level, event_type, event_id::text, triggered_at, alerted_at
 		FROM alarm_events
 		WHERE card_id = $1::INET
 		  AND alarm_status = 'active'
 		ORDER BY alarm_level ASC, triggered_at DESC
 		LIMIT 1
-	`, cardID).Scan(&popLvl, &popType, &popEvent, &popTriggered)
+	`, cardID).Scan(&popLvl, &popType, &popEvent, &popTriggered, &popAlertedNull)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("query pop alarm for %s: %w", cardID, err)
 	}
@@ -387,6 +396,9 @@ func QueryCardAlarmState(ctx context.Context, db *sql.DB, cardID string) (*CardA
 		cas.PopAlarmType = popType
 		cas.PopAlarmEventId = popEvent
 		cas.PopTriggeredAtMs = popTriggered.UnixMilli()
+		if popAlertedNull.Valid {
+			cas.PopAlertedAtMs = popAlertedNull.Time.UnixMilli()
+		}
 	}
 	return cas, nil
 }
@@ -456,7 +468,7 @@ func RecalcCardAlarmState(ctx context.Context, db *sql.DB, cardID, tenantID stri
 	return QueryCardAlarmState(ctx, db, cardID)
 }
 
-// LookupCardIDByDeviceID 已删除（device_ipv6 单程票 R-001）。
+// LookupCardIDByDeviceAddr 已删除（ R-001）。
 // 使用 LookupCardByDeviceAddr(addr netip.Addr) 替代。
 
 // DeviceSelfRecoveryAlarmTypes 设备恢复时需自动解除的报警类型。

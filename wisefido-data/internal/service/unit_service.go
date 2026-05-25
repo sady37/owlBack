@@ -654,14 +654,14 @@ type UnitWithFullHierarchy struct {
 type RoomWithBedsAndDevices struct {
 	*domain.Room                   // Room 基本信息
 	Beds         []*BedWithDevices `json:"beds"`
-	DeviceIDs    []string          `json:"device_addrs"`   // 绑定到 room 的 device IDs（用于前端选中并向后端传递）
+	DeviceAddrs    []string          `json:"device_addrs"`   // 绑定到 room 的 device IDs（用于前端选中并向后端传递）
 	DeviceNames  []string          `json:"device_names"` // 绑定到 room 的 device names（用于前端显示）
 }
 
 // BedWithDevices 床位及其设备
 type BedWithDevices struct {
 	*domain.Bed          // Bed 基本信息
-	DeviceIDs   []string `json:"device_addrs"`   // 绑定到 bed 的 device IDs（用于前端选中并向后端传递）
+	DeviceAddrs   []string `json:"device_addrs"`   // 绑定到 bed 的 device IDs（用于前端选中并向后端传递）
 	DeviceNames []string `json:"device_names"` // 绑定到 bed 的 device names（用于前端显示）
 }
 
@@ -1515,32 +1515,32 @@ func (s *unitService) ListUnitsWithFullHierarchy(ctx context.Context, req ListUn
 			bedsWithDevices := make([]*BedWithDevices, 0, len(beds))
 			for _, bed := range beds {
 				bedDeviceList := bedDevices[bed.BedID]
-				deviceIDs := make([]string, 0, len(bedDeviceList))
+				deviceAddrs := make([]string, 0, len(bedDeviceList))
 				deviceNames := make([]string, 0, len(bedDeviceList))
 				for _, device := range bedDeviceList {
-					deviceIDs = append(deviceIDs, device.ID)
+					deviceAddrs = append(deviceAddrs, device.ID)
 					deviceNames = append(deviceNames, device.Name)
 				}
 				bedsWithDevices = append(bedsWithDevices, &BedWithDevices{
 					Bed:         bed,
-					DeviceIDs:   deviceIDs,
+					DeviceAddrs:   deviceAddrs,
 					DeviceNames: deviceNames,
 				})
 			}
 
 			// 获取该 room 的 devices
 			roomDeviceList := roomDevices[room.RoomID]
-			roomDeviceIDs := make([]string, 0, len(roomDeviceList))
+			roomDeviceAddrs := make([]string, 0, len(roomDeviceList))
 			roomDeviceNames := make([]string, 0, len(roomDeviceList))
 			for _, device := range roomDeviceList {
-				roomDeviceIDs = append(roomDeviceIDs, device.ID)
+				roomDeviceAddrs = append(roomDeviceAddrs, device.ID)
 				roomDeviceNames = append(roomDeviceNames, device.Name)
 			}
 
 			roomsWithBeds = append(roomsWithBeds, &RoomWithBedsAndDevices{
 				Room:        room,
 				Beds:        bedsWithDevices,
-				DeviceIDs:   roomDeviceIDs,
+				DeviceAddrs:   roomDeviceAddrs,
 				DeviceNames: roomDeviceNames,
 			})
 		}
@@ -1559,8 +1559,8 @@ func (s *unitService) ListUnitsWithFullHierarchy(ctx context.Context, req ListUn
 	// 	fmt.Printf("Result[%d]: unit_id=%s, unit_name=%s, building_name=%v, floor=%v, rooms_count=%d\n",
 	// 		i, item.Unit.UnitID, item.Unit.UnitName, item.Unit.BuildingName, item.Unit.Floor, len(item.Rooms))
 	// 	for j, room := range item.Rooms {
-	// 		fmt.Printf("  Room[%d]: room_id=%s, room_name=%s, beds_count=%d, device_ids_count=%d\n",
-	// 			j, room.Room.RoomID, room.Room.RoomName, len(room.Beds), len(room.DeviceIDs))
+	// 		fmt.Printf("  Room[%d]: room_id=%s, room_name=%s, beds_count=%d, device_addrs_count=%d\n",
+	// 			j, room.Room.RoomID, room.Room.RoomName, len(room.Beds), len(room.DeviceAddrs))
 	// 	}
 	// }
 	// fmt.Printf("==========================================\n\n")

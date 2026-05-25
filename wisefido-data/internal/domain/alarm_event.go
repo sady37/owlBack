@@ -12,7 +12,7 @@ type AlarmEvent struct {
 
 	// 租户和设备关联
 	TenantID string  `db:"tenant_id"` // UUID, NOT NULL
-	DeviceID string  `db:"device_id"` // UUID, NOT NULL
+	DeviceAddr string  `db:"device_addr"` // INET /128, NOT NULL
 	CardID   *string `db:"card_id"`   // UUID, nullable (FK → cards)
 
 	// 事件类型和级别
@@ -23,7 +23,8 @@ type AlarmEvent struct {
 	AlarmStatus string `db:"alarm_status"` // VARCHAR(20), DEFAULT 'active', CHECK IN ('active','acked','resolved','auto_resolved','expired')
 
 	// 时间信息
-	TriggeredAt time.Time  `db:"triggered_at"` // TIMESTAMPTZ, NOT NULL
+	TriggeredAt time.Time  `db:"triggered_at"` // TIMESTAMPTZ, NOT NULL — 实际发生时刻（incident）
+	AlertedAt   *time.Time `db:"alerted_at"`   // TIMESTAMPTZ, nullable — 系统决策上抛时刻；推断类 fall ＞ triggered_at；NULL = cutover 前历史行
 	HandTime    *time.Time `db:"hand_time"`     // TIMESTAMPTZ, nullable
 
 	// 触发数据

@@ -199,16 +199,16 @@ func (i *AlarmFeedbackIngester) IngestOnce(ctx context.Context) (int, error) {
 	var lastEventID string
 
 	for rows.Next() {
-		var eventID, deviceID, eventType, operation, notes string
+		var eventID, deviceAddr, eventType, operation, notes string
 		var triggeredAt, handTime time.Time
 		var triggerData []byte
-		if err := rows.Scan(&eventID, &deviceID, &eventType, &operation, &triggeredAt, &handTime, &triggerData, &notes); err != nil {
+		if err := rows.Scan(&eventID, &deviceAddr, &eventType, &operation, &triggeredAt, &handTime, &triggerData, &notes); err != nil {
 			i.logger.Warn("alarm_feedback: scan row", zap.Error(err))
 			continue
 		}
 
 		// 反查位置 → 按 conditions 分流到不同 cell counter
-		ok := i.processOne(ctx, eventID, deviceID, eventType, operation, triggeredAt, handTime, triggerData, notes)
+		ok := i.processOne(ctx, eventID, deviceAddr, eventType, operation, triggeredAt, handTime, triggerData, notes)
 		if ok {
 			processed++
 		}
@@ -246,15 +246,15 @@ func (i *AlarmFeedbackIngester) IngestOnce(ctx context.Context) (int, error) {
 //
 // 返回是否成功（false 时记 debug 日志，不阻塞批次）。
 func (i *AlarmFeedbackIngester) processOne(ctx context.Context,
-	eventID, deviceID, eventType, operation string,
+	eventID, deviceAddr, eventType, operation string,
 	triggeredAt, handTime time.Time,
 	triggerData []byte, notes string) bool {
 
 	// 1. 路由 device → room
-	roomID := i.engine.RoomForDevice(deviceID)
+	roomID := i.engine.RoomForDevice(deviceAddr)
 	if roomID == "" {
 		i.logger.Debug("alarm_feedback: device not routed",
-			zap.String("event_id", eventID), zap.String("device_id", deviceID))
+			zap.String("event_id", eventID), zap.String("device_addr", deviceAddr))
 		return false
 	}
 	mount, ok := i.engine.MountForRoom(roomID)
@@ -269,11 +269,11 @@ func (i *AlarmFeedbackIngester) processOne(ctx context.Context,
 
 	// 3. 90s lookback iot_timeseries 找最近的 monitor 帧
 	triggerMs := triggeredAt.UnixMilli()
-	loX, loY, loZ, foundLocal := i.findRadarPositionAt(ctx, deviceID, triggerMs, wantTrackID, hasWant)
+	loX, loY, loZ, foundLocal := i.findRadarPositionAt(ctx, deviceAddr, triggerMs, wantTrackID, hasWant)
 	if !foundLocal {
 		i.logger.Debug("alarm_feedback: no matching monitor frame in lookback",
 			zap.String("event_id", eventID),
-			zap.String("device_id", deviceID),
+			zap.String("device_addr", deviceAddr),
 			zap.Int64("trigger_ms", triggerMs))
 		return false
 	}
@@ -297,7 +297,7 @@ func (i *AlarmFeedbackIngester) processOne(ctx context.Context,
 
 	i.logger.Info("alarm_feedback_marked",
 		zap.String("event_id", eventID),
-		zap.String("device_id", deviceID),
+		zap.String("device_addr", deviceAddr),
 		zap.String("event_type", eventType),
 		zap.String("operation", operation),
 		zap.String("room_id", roomID),

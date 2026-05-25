@@ -8,7 +8,7 @@
 // tenant 模板改动不影响已配置 device（用户拍板：snapshot model，不级联）。
 //
 // 失效路径：wisefido-data UpdateDeviceMonitorSettings 写 spatial_config 后 publish
-// config:alarmDevice:stream → cardagg AlarmDeviceConfigConsumer.Invalidate(deviceID) →
+// config:alarmDevice:stream → cardagg AlarmDeviceConfigConsumer.Invalidate(deviceAddr) →
 // 下次 IsEnabled lazy reload。
 
 package service
@@ -34,7 +34,7 @@ type EnabledAlarm struct {
 
 // AlarmEnablementCache lazy-loading + invalidation-aware per-device alarm 使能缓存。
 //
-// Key: deviceID (canonical IPv6 string) → map[alarmType]*EnabledAlarm（仅已启用的 alarm）。
+// Key: deviceAddr (canonical IPv6 string) → map[alarmType]*EnabledAlarm（仅已启用的 alarm）。
 type AlarmEnablementCache struct {
 	mu     sync.RWMutex
 	cache  map[string]*deviceEnablement
@@ -57,13 +57,13 @@ func NewAlarmEnablementCache(db *sql.DB, logger *zap.Logger) *AlarmEnablementCac
 
 // IsEnabled 查 device 是否启用了某条 alarm。返 (enabledAlarm, ok)。
 // tenantID 参数保留兼容旧 signature；本实现不用（device_config 按 /128 精确匹配）。
-func (c *AlarmEnablementCache) IsEnabled(ctx context.Context, tenantID, deviceID, alarmType string) (*EnabledAlarm, bool) {
+func (c *AlarmEnablementCache) IsEnabled(ctx context.Context, tenantID, deviceAddr, alarmType string) (*EnabledAlarm, bool) {
 	_ = tenantID
-	if deviceID == "" || alarmType == "" {
+	if deviceAddr == "" || alarmType == "" {
 		return nil, false
 	}
 	c.mu.RLock()
-	de := c.cache[deviceID]
+	de := c.cache[deviceAddr]
 	if de != nil && de.loaded {
 		c.mu.RUnlock()
 		ea := de.enabled[alarmType]
@@ -75,11 +75,11 @@ func (c *AlarmEnablementCache) IsEnabled(ctx context.Context, tenantID, deviceID
 	}
 	c.mu.RUnlock()
 
-	c.loadDevice(ctx, deviceID)
+	c.loadDevice(ctx, deviceAddr)
 
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	de = c.cache[deviceID]
+	de = c.cache[deviceAddr]
 	if de == nil {
 		return nil, false
 	}
@@ -92,10 +92,10 @@ func (c *AlarmEnablementCache) IsEnabled(ctx context.Context, tenantID, deviceID
 }
 
 // Invalidate 失效单 device cache（spatial_config 改了 → consumer 调）。
-func (c *AlarmEnablementCache) Invalidate(deviceID string) {
+func (c *AlarmEnablementCache) Invalidate(deviceAddr string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.cache, deviceID)
+	delete(c.cache, deviceAddr)
 }
 
 // InvalidateAll 清空整个缓存。
@@ -109,13 +109,13 @@ func (c *AlarmEnablementCache) InvalidateAll() {
 }
 
 // InvalidateDevices 批量失效。
-func (c *AlarmEnablementCache) InvalidateDevices(deviceIDs []string) {
+func (c *AlarmEnablementCache) InvalidateDevices(deviceAddrs []string) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, id := range deviceIDs {
+	for _, id := range deviceAddrs {
 		if id == "" {
 			continue
 		}
@@ -128,23 +128,23 @@ func (c *AlarmEnablementCache) InvalidateDevices(deviceIDs []string) {
 //  2. 无 row → alarm.GetDefaultAlarmItems(deviceType) 硬编码默认值兜底
 //
 // tenant 级 alarm.cloud_config 不读 — 那是 wisefido-data UI 的模板，与运行时无关。
-func (c *AlarmEnablementCache) loadDevice(ctx context.Context, deviceID string) {
+func (c *AlarmEnablementCache) loadDevice(ctx context.Context, deviceAddr string) {
 	if c.db == nil {
-		c.setDefaults(deviceID, "")
+		c.setDefaults(deviceAddr, "")
 		return
 	}
-	if items := c.loadFromDeviceConfig(ctx, deviceID); items != nil {
-		c.setFromItems(deviceID, items)
+	if items := c.loadFromDeviceConfig(ctx, deviceAddr); items != nil {
+		c.setFromItems(deviceAddr, items)
 		return
 	}
-	deviceType := c.resolveDeviceType(ctx, deviceID)
-	c.setFromItems(deviceID, alarm.GetDefaultAlarmItems(deviceType))
+	deviceType := c.resolveDeviceType(ctx, deviceAddr)
+	c.setFromItems(deviceAddr, alarm.GetDefaultAlarmItems(deviceType))
 }
 
 // resolveDeviceType 用 device_addr (IPv6 text) 反查 device_type。
 // 仅在 device_config 缺失时用（取 defaults 需知道设备类型）。
-func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceID string) string {
-	if c.db == nil || deviceID == "" {
+func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceAddr string) string {
+	if c.db == nil || deviceAddr == "" {
 		return ""
 	}
 	var dt sql.NullString
@@ -153,7 +153,7 @@ func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceID s
 		 FROM device_factory_meta dfm
 		 JOIN devices d ON d.device_uid = dfm.device_uid
 		 WHERE d.device_addr = $1::inet
-		 LIMIT 1`, deviceID,
+		 LIMIT 1`, deviceAddr,
 	).Scan(&dt)
 	return dt.String
 }
@@ -161,8 +161,8 @@ func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceID s
 // loadFromDeviceConfig 读 spatial_config alarm.device_config /128 精确匹配。
 // 配置由 wisefido-data UpdateDeviceMonitorSettings 写入；schema = {alarm_items: []AlarmItem}。
 // 未配置 → nil（caller 用 GetDefaultAlarmItems 兜底）。
-func (c *AlarmEnablementCache) loadFromDeviceConfig(ctx context.Context, deviceID string) []alarm.AlarmItem {
-	if c.db == nil || deviceID == "" {
+func (c *AlarmEnablementCache) loadFromDeviceConfig(ctx context.Context, deviceAddr string) []alarm.AlarmItem {
+	if c.db == nil || deviceAddr == "" {
 		return nil
 	}
 	var raw []byte
@@ -171,7 +171,7 @@ func (c *AlarmEnablementCache) loadFromDeviceConfig(ctx context.Context, deviceI
 		 FROM spatial_config
 		 WHERE config_key = 'alarm.device_config'
 		   AND spatial_prefix = $1::inet
-		 LIMIT 1`, deviceID,
+		 LIMIT 1`, deviceAddr,
 	).Scan(&raw)
 	if err != nil || len(raw) == 0 {
 		return nil
@@ -180,7 +180,7 @@ func (c *AlarmEnablementCache) loadFromDeviceConfig(ctx context.Context, deviceI
 		AlarmItems []alarm.AlarmItem `json:"alarm_items"`
 	}
 	if err := json.Unmarshal(raw, &packed); err != nil {
-		c.logger.Warn("parse alarm.device_config", zap.String("device", deviceID), zap.Error(err))
+		c.logger.Warn("parse alarm.device_config", zap.String("device", deviceAddr), zap.Error(err))
 		return nil
 	}
 	if len(packed.AlarmItems) == 0 {
@@ -189,12 +189,12 @@ func (c *AlarmEnablementCache) loadFromDeviceConfig(ctx context.Context, deviceI
 	return packed.AlarmItems
 }
 
-func (c *AlarmEnablementCache) setDefaults(deviceID, deviceType string) {
+func (c *AlarmEnablementCache) setDefaults(deviceAddr, deviceType string) {
 	items := alarm.GetDefaultAlarmItems(deviceType)
-	c.setFromItems(deviceID, items)
+	c.setFromItems(deviceAddr, items)
 }
 
-func (c *AlarmEnablementCache) setFromItems(deviceID string, items []alarm.AlarmItem) {
+func (c *AlarmEnablementCache) setFromItems(deviceAddr string, items []alarm.AlarmItem) {
 	enabled := make(map[string]*EnabledAlarm)
 	for _, item := range items {
 		if item.IsEnabled == nil || *item.IsEnabled != 1 {
@@ -215,6 +215,6 @@ func (c *AlarmEnablementCache) setFromItems(deviceID string, items []alarm.Alarm
 	}
 
 	c.mu.Lock()
-	c.cache[deviceID] = &deviceEnablement{loaded: true, enabled: enabled}
+	c.cache[deviceAddr] = &deviceEnablement{loaded: true, enabled: enabled}
 	c.mu.Unlock()
 }

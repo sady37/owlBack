@@ -19,7 +19,7 @@ func intPtr(v int) *int { return &v }
 // TrackOutput Room Engine 对外输出的单条 track 评估结果
 type TrackOutput struct {
 	TrackID  int
-	DeviceID string
+	DeviceAddr string
 	RoomID   string
 	Verdict  TrackVerdict
 	Score    int // [0,100]
@@ -34,7 +34,7 @@ type TrackOutput struct {
 // TrackFrame 一帧输入（已由 engine 层做完 RadarToCanvas 转换）
 type TrackFrame struct {
 	TrackID  int
-	DeviceID string
+	DeviceAddr string
 	X, Y, Z  int // 画布坐标 cm
 	Pose     int
 	AreaType int // 雷达给的 area_id（保留兼容字段，engine 不信其判定，用 cell.AreaType）
@@ -162,7 +162,7 @@ type TrackManager struct {
 //   3. Reason / Evidence 是审计元数据 —— 解释"为什么 AI 这么判"，不参与下游
 //      分支判定（分支判定由 Source 或 Track 数值阈值驱动）。
 type AIPayload struct {
-	DeviceID string // 源 sensor UUID（FK to devices.device_id）
+	DeviceAddr string // 源 sensor UUID（FK to devices.device_addr）
 	RoomID   string
 
 	// AI 写的观测（与上游 firmware/engine 同一 schema）。
@@ -185,6 +185,12 @@ type AIPayload struct {
 	// 用于 firmware 撤销链路：qinglan 收到 Initialization (last_pose=2/7) → forward end →
 	// sensor 透传 → cardagg AlarmRouter 按 Registry[Fall/SittingOnGround].EndPolicy=AutoResolve 关 alarm。
 	EventStatus string
+
+	// IncidentMs 实际发生时刻 ms（推断类 fall 才有值）。
+	// firmware Fall = 0（incident == alerted == nowMs）；silent/lost/still fall = last_active/frozen_start/leftbed/empty_since 等真实 incident 时刻。
+	// 写到 fields["incident_ts_ms"]，cardagg AlarmRouter 当 alarm_events.triggered_at；nowMs 当 alerted_at。
+	// 0 = 不写字段，下游回退 triggered_at = alerted_at = nowMs。
+	IncidentMs int64
 }
 
 // CategoryTrackVerdict 是 track verdict 的 category 路由键（事件 TYPE，不是 verdict label）。
@@ -387,7 +393,7 @@ func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
 		conf = 100
 	}
 	return AIPayload{
-		DeviceID: ts.DeviceID,
+		DeviceAddr: ts.DeviceAddr,
 		RoomID:   ts.RoomID,
 		Track: observation.Track{
 			TrackID:         ts.TrackID,
@@ -703,7 +709,7 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 
 	// 构造 forward payload。track 信息从 firmware 抄；位置/HR/RR 现阶段不从 firmware 携带。
 	payload := AIPayload{
-		DeviceID:    a.DeviceUID, // = canonical IPv6 string
+		DeviceAddr:    a.DeviceUID, // = canonical IPv6 string
 		RoomID:      tm.roomID,
 		EventStatus: emitStatus,
 		Track: observation.Track{
@@ -766,7 +772,7 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 		for pid, p := range tm.pendingLostFalls {
 			tm.lostFallPendingCancelled++
 			tm.logger.Info("lost_fall_cancelled_by_exit_room",
-				zap.String("device_uid", p.DeviceID),
+				zap.String("device_uid", p.DeviceAddr),
 				zap.Int("track_id", p.OriginalTrackID),
 				zap.String("room_id", p.RoomID),
 				zap.Int64("pending_age_ms", e.TMs-p.DisappearMs),
@@ -823,7 +829,7 @@ func (tm *TrackManager) SetSleepadInBedCount(count int) {
 // SnapshotTrackStatuses 返回 base 列表，engine 层进一步 enrich 成 TrackStatus 再 publish。
 type TrackStatusBase struct {
 	TrackID       int
-	DeviceID      string
+	DeviceAddr      string
 	RoomID        string
 	Verdict       TrackVerdict
 	GhostPenalty  int
@@ -863,7 +869,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 
 		base := TrackStatusBase{
 			TrackID:      ts.TrackID,
-			DeviceID:     ts.DeviceID,
+			DeviceAddr:     ts.DeviceAddr,
 			RoomID:       ts.RoomID,
 			Verdict:      ts.Verdict,
 			GhostPenalty: ts.GhostPenalty,
@@ -963,7 +969,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			// 新 track 出生 — 是否有 pending lost-fall 在等候 → 人从盲区返回；取消 + 学习盲区出口
 			recoveredFromLost := tm.cancelPendingLostFallByBirth(f.X, f.Y, f.TMs)
 
-			ts = NewTrackState(f.TrackID, f.DeviceID, tm.roomID, f.X, f.Y, f.Z, f.TMs)
+			ts = NewTrackState(f.TrackID, f.DeviceAddr, tm.roomID, f.X, f.Y, f.Z, f.TMs)
 
 			// PR-5.3 反 ghost: service startup 5min grace 内 first-seen → 默认 Real
 			isStartupGrace := tm.startupMs > 0 && (f.TMs-tm.startupMs) < 5*60*1000
@@ -1077,7 +1083,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			// 失锁→lost_fall 又 fire"的同事件双报。
 			if ts.BedsideFallReported {
 				tm.logger.Info("lost_fall_pending_skipped_after_bedside_fall",
-					zap.String("device_uid", ts.DeviceID),
+					zap.String("device_uid", ts.DeviceAddr),
 					zap.Int("track_id", ts.TrackID),
 					zap.Int64("ts_ms", nowMs),
 				)
@@ -1096,7 +1102,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				}
 				tm.pendingLostFalls[id] = &PendingLostFall{
 					OriginalTrackID: id,
-					DeviceID:        ts.DeviceID,
+					DeviceAddr:        ts.DeviceAddr,
 					RoomID:          ts.RoomID,
 					LastX:           px,
 					LastY:           py,
@@ -1170,7 +1176,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			if !ts.LoggedGhost {
 				pxF, pyF := ts.Kalman.Position()
 				tm.logger.Info("track_verdict_ghost",
-					zap.String("device_uid", ts.DeviceID),
+					zap.String("device_uid", ts.DeviceAddr),
 					zap.Int("track_id", ts.TrackID),
 					zap.String("verdict", "ghost"),
 					zap.Int("score", ts.Score),
@@ -1201,7 +1207,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				if !ts.LoggedGhost {
 					pxF, pyF := ts.Kalman.Position()
 					tm.logger.Info("track_verdict_ghost",
-						zap.String("device_uid", ts.DeviceID),
+						zap.String("device_uid", ts.DeviceAddr),
 						zap.Int("track_id", ts.TrackID),
 						zap.String("verdict", "ghost"),
 						zap.Int("score", ts.Score),
@@ -1234,7 +1240,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		if tm.realTrackCount() >= 2 {
 			tm.lostFallPendingCancelled++
 			tm.logger.Info("lost_fall_cancelled_by_multiple_real",
-				zap.String("device_uid", p.DeviceID),
+				zap.String("device_uid", p.DeviceAddr),
 				zap.Int("track_id", p.OriginalTrackID),
 				zap.String("room_id", p.RoomID),
 				zap.Int64("nowMs", nowMs),
@@ -1254,14 +1260,15 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		// 否则列表显示 08:35 / replay 中心 08:30 二者对不上。
 		// anchor：frozen_start_ms 优先（track frozen ≈ 跌倒邻近时刻），
 		// 否则 nowMs - waitMs - 30s（最后活跃时刻 -30s 给 context）。
-		// engine 推断时刻保留在 Evidence.engine_fire_ms + 日志 ts_ms 里供审计。
+		// engine 推断时刻 nowMs 作 envelope.Timestamp → alarm.alerted_at；anchor 作 IncidentMs → triggered_at。
 		replayAnchorMs := p.FrozenStartMs
 		if replayAnchorMs <= 0 {
 			replayAnchorMs = nowMs - waitMs - 30_000
 		}
 		tm.emitAIAlarm(AIPayload{
-			DeviceID: p.DeviceID,
-			RoomID:   p.RoomID,
+			DeviceAddr: p.DeviceAddr,
+			RoomID:     p.RoomID,
+			IncidentMs: replayAnchorMs,
 			Track: observation.Track{
 				TrackID:   p.OriginalTrackID,
 				PositionX: intPtr(p.LastX),
@@ -1280,10 +1287,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				"replay_anchor_ms": replayAnchorMs,
 				"engine_fire_ms":   nowMs, // 引擎推断时刻（审计）
 			},
-		}, alarm.Fall, replayAnchorMs) // alarm Timestamp = anchor，让列表显示真正发生时刻
+		}, alarm.Fall, nowMs) // envelope.Timestamp = 决策时刻 → alerted_at；IncidentMs = anchor → triggered_at
 		tm.logger.Info("real_fall",
-			zap.String("device_uid", p.DeviceID),
-			zap.String("device_uid_hex", tm.devUIDHex(p.DeviceID)),
+			zap.String("device_uid", p.DeviceAddr),
+			zap.String("device_uid_hex", tm.devUIDHex(p.DeviceAddr)),
 			zap.Int("track_id", p.OriginalTrackID),
 			zap.String("kind", "engine_lost_fall"),
 			zap.Int("score", p.LastScore),
@@ -1300,7 +1307,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		)
 		out := TrackOutput{
 			TrackID:  p.OriginalTrackID,
-			DeviceID: p.DeviceID,
+			DeviceAddr: p.DeviceAddr,
 			RoomID:   p.RoomID,
 			Verdict:  p.LastVerdict,
 			Score:    p.LastScore,
@@ -1349,7 +1356,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 
 		out := TrackOutput{
 			TrackID:  ts.TrackID,
-			DeviceID: ts.DeviceID,
+			DeviceAddr: ts.DeviceAddr,
 			RoomID:   ts.RoomID,
 			Verdict:  ts.Verdict,
 			Score:    ts.Score,
@@ -1404,7 +1411,7 @@ func (tm *TrackManager) cancelPendingLostFallByBirth(birthX, birthY int, nowMs i
 		hit = true
 		tm.lostFallPendingCancelled++
 		tm.logger.Info("lost_fall_cancelled_by_recovery",
-			zap.String("device_uid", p.DeviceID),
+			zap.String("device_uid", p.DeviceAddr),
 			zap.Int("track_id", p.OriginalTrackID),
 			zap.String("room_id", p.RoomID),
 			zap.Int64("pending_age_ms", nowMs-p.DisappearMs),
@@ -1450,13 +1457,13 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 		// 等待窗满 — 检查 radar 是否仍在 Bed 邻域
 		if tm.anyActiveTrackNearBed(param.BedNeighborhood) {
 			// 矛盾 → 候选 silent fall；但需先过 AreaBed 人工标定躺区豁免（详 fall_exempt.go）
-			x, y, z, scoreVal, verdict, deviceID := tm.pickActiveTrackNearBed(param.BedNeighborhood)
+			x, y, z, scoreVal, verdict, deviceAddr := tm.pickActiveTrackNearBed(param.BedNeighborhood)
 			if isHumanBedAt(tm.grid, x, y) {
 				// 人就在人工标定的床上 — 不报；按 cancel 路径收尾（sleepad miscalibration 假阳）
 				tm.silentFallLeftbedCancelled++
 				tm.logger.Info("silent_fall_leftbed_exempt_human_bed",
 					zap.String("sleepad_uid", s.DeviceUID),
-					zap.String("device_uid", deviceID),
+					zap.String("device_uid", deviceAddr),
 					zap.Int64("leftbed_ms", s.LeftBedAtMs),
 					zap.Int("x", x), zap.Int("y", y),
 				)
@@ -1471,8 +1478,9 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 			// PR5c: alarm.Fall + Reason 区分子类型；BedStatus=1 反映 sleepad LeftBed 触发。
 			// fall 已确认，不发 track_confidence；fall 严重度进 Evidence.fall_score。
 			tm.emitAIAlarm(AIPayload{
-				DeviceID: deviceID,
-				RoomID:   tm.roomID,
+				DeviceAddr: deviceAddr,
+				RoomID:     tm.roomID,
+				IncidentMs: s.LeftBedAtMs,
 				Track: observation.Track{
 					PositionX: intPtr(x),
 					PositionY: intPtr(y),
@@ -1492,10 +1500,10 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 					"replay_anchor_ms": s.LeftBedAtMs, // sleepad LeftBed 时刻 = 跌倒矛盾起点
 					"engine_fire_ms":   nowMs,         // 引擎确认时刻（审计）
 				},
-			}, alarm.Fall, s.LeftBedAtMs) // alarm Timestamp = LeftBed 时刻
+			}, alarm.Fall, nowMs) // envelope.Timestamp = 决策时刻 → alerted_at；IncidentMs = LeftBed → triggered_at
 			tm.logger.Info("real_fall",
-				zap.String("device_uid", deviceID),
-				zap.String("device_uid_hex", tm.devUIDHex(deviceID)),
+				zap.String("device_uid", deviceAddr),
+				zap.String("device_uid_hex", tm.devUIDHex(deviceAddr)),
 				zap.String("kind", "engine_silent_leftbed"),
 				zap.String("sleepad_uid", s.DeviceUID),
 				zap.Int("score", scoreVal),
@@ -1511,7 +1519,7 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 				zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
 			)
 			out = append(out, TrackOutput{
-				DeviceID: deviceID,
+				DeviceAddr: deviceAddr,
 				RoomID:   tm.roomID,
 				Verdict:  verdict,
 				Score:    scoreVal,
@@ -1554,12 +1562,12 @@ func (tm *TrackManager) anyActiveTrackNearBed(marginCm int) bool {
 
 // pickActiveTrackNearBed 取最近 Bed 的 active track 信息（用于告警坐标）。
 // 找不到时返回 (0,0,0, 0, VerdictReal, "")（此时调用方已确认 anyActiveTrackNearBed=true，理论上不会走 fallback）。
-func (tm *TrackManager) pickActiveTrackNearBed(marginCm int) (x, y, z, score int, verdict TrackVerdict, deviceID string) {
+func (tm *TrackManager) pickActiveTrackNearBed(marginCm int) (x, y, z, score int, verdict TrackVerdict, deviceAddr string) {
 	for _, t := range tm.tracks {
 		pxF, pyF := t.Kalman.Position()
 		px, py := int(math.Round(pxF)), int(math.Round(pyF))
 		if tm.grid.IsNearPriorType(px, py, AreaBed, marginCm) {
-			return px, py, t.LastZ, t.Score, t.Verdict, t.DeviceID
+			return px, py, t.LastZ, t.Score, t.Verdict, t.DeviceAddr
 		}
 	}
 	return 0, 0, 0, 0, VerdictReal, ""
@@ -1790,7 +1798,7 @@ func (tm *TrackManager) applyLifetimeGhostFactors(ts *TrackState, nowMs int64) {
 			ts.GhostPenalty += 10
 			ts.BirthReason = "motion_symmetric_with_real_track"
 			tm.logger.Info("ghost_motion_symmetry_hit",
-				zap.String("device_uid", ts.DeviceID),
+				zap.String("device_uid", ts.DeviceAddr),
 				zap.Int("track_id", ts.TrackID),
 				zap.Int("ghost_penalty", ts.GhostPenalty),
 				zap.Int64("ts_ms", nowMs),
@@ -1800,7 +1808,7 @@ func (tm *TrackManager) applyLifetimeGhostFactors(ts *TrackState, nowMs int64) {
 			ts.BirthReason = "mirror_image_of_real_track"
 			bxF, byF := ts.Kalman.Position()
 			tm.logger.Info("ghost_mirror_symmetry_hit",
-				zap.String("device_uid", ts.DeviceID),
+				zap.String("device_uid", ts.DeviceAddr),
 				zap.Int("track_id", ts.TrackID),
 				zap.Int("partner_track_id", partner),
 				zap.Int("ghost_penalty", ts.GhostPenalty),
@@ -2069,7 +2077,7 @@ func (tm *TrackManager) markBothCellsAreaSit(ts *TrackState, prev TimedPoint, x,
 	tm.grid.MarkRestZoneFeedback(prev.X, prev.Y, AreaSit, nowMs)
 	tm.grid.MarkRestZoneFeedback(x, y, AreaSit, nowMs)
 	tm.logger.Info("area_sit_auto_learned_region",
-		zap.String("device_uid", ts.DeviceID),
+		zap.String("device_uid", ts.DeviceAddr),
 		zap.Int("track_id", ts.TrackID),
 		zap.String("trigger", trigger),
 		zap.Int("region_total_frames", ts.RegionTotalFrames),
@@ -2181,7 +2189,7 @@ func (tm *TrackManager) tryGraceUpgrade(ts *TrackState, nowMs int64) {
 		ts.BirthReason = "grace_enter_pair_recovered"
 		ts.Score = clampInt(ts.Score+delta, 0, 100)
 		tm.logger.Info("birth_grace_upgraded",
-			zap.String("device_uid", ts.DeviceID),
+			zap.String("device_uid", ts.DeviceAddr),
 			zap.Int("track_id", ts.TrackID),
 			zap.Int("new_birth_score", ts.BirthScore),
 			zap.Int("d_entry_cm", dEntry),
@@ -2249,7 +2257,7 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 				tm.grid.boostNeighborSameType(x, y, AreaBed, nowMs)
 				ts.AreaBedRefreshed = true
 				tm.logger.Info("area_bed_refreshed_by_lying4h",
-					zap.String("device_uid", ts.DeviceID),
+					zap.String("device_uid", ts.DeviceAddr),
 					zap.Int("track_id", ts.TrackID),
 					zap.Int("x", x), zap.Int("y", y),
 					zap.Int64("ts_ms", nowMs),
@@ -2268,7 +2276,7 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 				tm.grid.boostNeighborSameType(x, y, AreaToilet, nowMs)
 				ts.AreaToiletRefreshed = true
 				tm.logger.Info("area_toilet_refreshed_by_sit5min",
-					zap.String("device_uid", ts.DeviceID),
+					zap.String("device_uid", ts.DeviceAddr),
 					zap.Int("track_id", ts.TrackID),
 					zap.Int("x", x), zap.Int("y", y),
 					zap.Int64("ts_ms", nowMs),
@@ -2323,7 +2331,7 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 						tm.grid.boostNeighborSameType(x, y, AreaSit, nowMs)
 						ts.AreaSitAutoLearned = true
 						tm.logger.Info("area_sit_auto_learned",
-							zap.String("device_uid", ts.DeviceID),
+							zap.String("device_uid", ts.DeviceAddr),
 							zap.Int("track_id", ts.TrackID),
 							zap.Int("stand_static_sec", int((nowMs-ts.StandStaticSince)/1000)),
 							zap.Int("threshold_sec", int(threshold/1000)),
@@ -2432,8 +2440,8 @@ func (tm *TrackManager) updateLieStateMachine(ts *TrackState, pose, x, y, z int,
 			tm.grid.MarkFallEvent(x, y, nowMs)
 			ts.CurrentAnomaly = AnomalyFall
 			tm.logger.Info("real_fall",
-				zap.String("device_uid", ts.DeviceID),
-				zap.String("device_uid_hex", tm.devUIDHex(ts.DeviceID)),
+				zap.String("device_uid", ts.DeviceAddr),
+				zap.String("device_uid_hex", tm.devUIDHex(ts.DeviceAddr)),
 				zap.Int("track_id", ts.TrackID),
 				zap.String("kind", "engine_z_drop"),
 				zap.Int("score", ts.Score),

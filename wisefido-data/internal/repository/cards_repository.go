@@ -14,7 +14,7 @@ import (
 // CardDeviceItem 卡片上的设备项，供 vue-radar 画布 Bind 使用。
 // v2: device_code、device_uid 来自 device_factory_meta；name 来自 device_factory_meta.device_uid（待 Phase F 引入 device_label 列）。
 type CardDeviceItem struct {
-	DeviceID   string `json:"device_addr"`
+	DeviceAddr   string `json:"device_addr"`
 	DeviceType string `json:"device_type"`
 	DeviceUID  string `json:"device_uid"`
 	DeviceCode string `json:"device_code"`
@@ -25,7 +25,7 @@ type CardDeviceItem struct {
 type CardsRepository interface {
 	ListCards(ctx context.Context, req ListCardsRequest) ([]*domain.CardWithUnitInfo, error)
 	GetCardDevices(ctx context.Context, tenantID, cardID string) ([]CardDeviceItem, error)
-	GetCardIDByDeviceID(ctx context.Context, tenantID, deviceID string) (string, error)
+	GetCardIDByDeviceAddr(ctx context.Context, tenantID, deviceAddr string) (string, error)
 }
 
 // ListCardsRequest 查询卡片列表请求
@@ -279,7 +279,7 @@ func (r *PostgresCardsRepository) GetCardDevices(ctx context.Context, tenantID, 
 	var out []CardDeviceItem
 	for rows.Next() {
 		var it CardDeviceItem
-		if err := rows.Scan(&it.DeviceID, &it.DeviceType, &it.DeviceUID, &it.DeviceCode, &it.DeviceName); err != nil {
+		if err := rows.Scan(&it.DeviceAddr, &it.DeviceType, &it.DeviceUID, &it.DeviceCode, &it.DeviceName); err != nil {
 			return nil, fmt.Errorf("scan card device: %w", err)
 		}
 		if it.DeviceCode == "" {
@@ -290,9 +290,9 @@ func (r *PostgresCardsRepository) GetCardDevices(ctx context.Context, tenantID, 
 	return out, rows.Err()
 }
 
-// GetCardIDByDeviceID Phase 2 一刀切：deviceID 入参承载 device_addr (INET text)。
-func (r *PostgresCardsRepository) GetCardIDByDeviceID(ctx context.Context, tenantID, deviceID string) (string, error) {
-	if deviceID == "" {
+// GetCardIDByDeviceAddr deviceAddr 入参承载 device_addr (INET text)。
+func (r *PostgresCardsRepository) GetCardIDByDeviceAddr(ctx context.Context, tenantID, deviceAddr string) (string, error) {
+	if deviceAddr == "" {
 		return "", fmt.Errorf("device_addr is required")
 	}
 	var cardID sql.NullString
@@ -301,15 +301,15 @@ func (r *PostgresCardsRepository) GetCardIDByDeviceID(ctx context.Context, tenan
 		FROM devices d
 		WHERE d.device_addr = $1::INET
 		LIMIT 1
-	`, deviceID).Scan(&cardID)
+	`, deviceAddr).Scan(&cardID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("device not found: %s", deviceID)
+			return "", fmt.Errorf("device not found: %s", deviceAddr)
 		}
-		return "", fmt.Errorf("get card by device_id: %w", err)
+		return "", fmt.Errorf("get card by device_addr: %w", err)
 	}
 	if !cardID.Valid || cardID.String == "" {
-		return "", fmt.Errorf("no card for device_id: %s", deviceID)
+		return "", fmt.Errorf("no card for device_addr: %s", deviceAddr)
 	}
 	return cardID.String, nil
 }

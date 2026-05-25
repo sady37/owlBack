@@ -24,7 +24,7 @@ func main() {
 		stream    = flag.String("stream", "", "Redis Stream 名称 (仅当 source=redis 时使用，支持 iot:*:stream，如果未指定则根据 topic-type 自动设置)")
 		count     = flag.Int64("count", 1, "读取的消息数量 (source=redis 时取 stream 最新 N 条，可加大以看更多历史)")
 		topicType = flag.String("topic-type", "", "topic_type: monitor, stat, event, alarm (当 source=redis 时自动设置 stream，当 source=db 时作为过滤条件)")
-		deviceID  = flag.String("device-id", "", "设备ID (仅当 source=db 时使用，可选)")
+		deviceAddr  = flag.String("device-id", "", "设备ID (仅当 source=db 时使用，可选)")
 		limit     = flag.Int("limit", 1, "读取的记录数量 (仅当 source=db 时使用)")
 	)
 	flag.Parse()
@@ -100,7 +100,7 @@ func main() {
 		}
 
 	case "db":
-		dbRecords, err := ReadFromDatabase(ctx, dbConfig, *topicType, *deviceID, *limit)
+		dbRecords, err := ReadFromDatabase(ctx, dbConfig, *topicType, *deviceAddr, *limit)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to read from database: %v\n", err)
 			os.Exit(1)
@@ -111,8 +111,8 @@ func main() {
 			if *topicType != "" {
 				filterMsg += fmt.Sprintf(" topic_type='%s'", *topicType)
 			}
-			if *deviceID != "" {
-				filterMsg += fmt.Sprintf(" device_id='%s'", *deviceID)
+			if *deviceAddr != "" {
+				filterMsg += fmt.Sprintf(" device_addr='%s'", *deviceAddr)
 			}
 			if filterMsg != "" {
 				filterMsg = " with filter" + filterMsg
@@ -149,7 +149,7 @@ type StreamMessage struct {
 type DatabaseRecord struct {
 	ID           int64
 	TenantID     string
-	DeviceID     string
+	DeviceAddr     string
 	DeviceUID    *string
 	TimestampMs  int64
 	TopicType    *string
@@ -234,7 +234,7 @@ func ReadFromRedisStream(ctx context.Context, redisClient *redis.Client, streamN
 }
 
 // ReadFromDatabase 从数据库读取数据
-func ReadFromDatabase(ctx context.Context, dbConfig *commonconfig.DatabaseConfig, topicType, deviceID string, limit int) ([]DatabaseRecord, error) {
+func ReadFromDatabase(ctx context.Context, dbConfig *commonconfig.DatabaseConfig, topicType, deviceAddr string, limit int) ([]DatabaseRecord, error) {
 	db, err := database.NewPostgresDB(dbConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
@@ -249,7 +249,7 @@ func ReadFromDatabase(ctx context.Context, dbConfig *commonconfig.DatabaseConfig
 		SELECT 
 			id,
 			tenant_id::text,
-			device_id,
+			device_addr,
 			device_uid,
 			"timestamp",
 			topic_type,
@@ -272,9 +272,9 @@ func ReadFromDatabase(ctx context.Context, dbConfig *commonconfig.DatabaseConfig
 		argIndex++
 	}
 
-	if deviceID != "" {
-		query += fmt.Sprintf(" AND device_id = $%d", argIndex)
-		args = append(args, deviceID)
+	if deviceAddr != "" {
+		query += fmt.Sprintf(" AND device_addr = $%d", argIndex)
+		args = append(args, deviceAddr)
 		argIndex++
 	}
 
@@ -291,14 +291,14 @@ func ReadFromDatabase(ctx context.Context, dbConfig *commonconfig.DatabaseConfig
 	var results []DatabaseRecord
 	for rows.Next() {
 		var record DatabaseRecord
-		var tenantID, deviceID, deviceUID, topicTypeVal, categoryVal sql.NullString
+		var tenantID, deviceAddr, deviceUID, topicTypeVal, categoryVal sql.NullString
 		var dataValueJSON []byte
 		var branchName, buildingName, unitName, roomName, bedName sql.NullString
 
 		if err := rows.Scan(
 			&record.ID,
 			&tenantID,
-			&deviceID,
+			&deviceAddr,
 			&deviceUID,
 			&record.TimestampMs,
 			&topicTypeVal,
@@ -316,8 +316,8 @@ func ReadFromDatabase(ctx context.Context, dbConfig *commonconfig.DatabaseConfig
 		if tenantID.Valid {
 			record.TenantID = tenantID.String
 		}
-		if deviceID.Valid {
-			record.DeviceID = deviceID.String
+		if deviceAddr.Valid {
+			record.DeviceAddr = deviceAddr.String
 		}
 		if deviceUID.Valid {
 			s := deviceUID.String
@@ -369,8 +369,8 @@ func printStreamMessage(msg StreamMessage, streamName string) {
 	fmt.Printf("Timestamp: %s\n", msg.Timestamp.Format(time.RFC3339))
 	fmt.Println()
 
-	if deviceID, ok := msg.Data["device_id"].(string); ok {
-		fmt.Printf("Device ID: %s\n", deviceID)
+	if deviceAddr, ok := msg.Data["device_addr"].(string); ok {
+		fmt.Printf("Device ID: %s\n", deviceAddr)
 	}
 	if deviceUID, ok := msg.Data["device_uid"].(string); ok {
 		fmt.Printf("Device UID: %s\n", deviceUID)
@@ -399,7 +399,7 @@ func printStreamMessage(msg StreamMessage, streamName string) {
 		// 检查 data 中是否只有基础字段，没有实际数据
 		hasData := false
 		for key := range msg.Data {
-			if key != "device_id" && key != "device_uid" && key != "device_type" &&
+			if key != "device_addr" && key != "device_uid" && key != "device_type" &&
 				key != "tenant_id" && key != "timestamp" && key != "topic_type" &&
 				key != "category" && key != "dataValue" {
 				hasData = true
@@ -440,7 +440,7 @@ func printDBRecords(records []DatabaseRecord) {
 		if record.TenantID != "" {
 			fmt.Printf("Tenant ID: %s\n", record.TenantID)
 		}
-		fmt.Printf("Device ID: %s\n", record.DeviceID)
+		fmt.Printf("Device ID: %s\n", record.DeviceAddr)
 		if record.DeviceUID != nil {
 			fmt.Printf("Device UID: %s\n", *record.DeviceUID)
 		}

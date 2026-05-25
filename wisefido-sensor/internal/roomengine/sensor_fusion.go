@@ -11,8 +11,8 @@ package roomengine
 //     说明雷达消失只是失锁，不报警
 //
 // 未来扩展模板：
-//   1. 定义 XxxObservation struct（包含 DeviceID + TMs + 关键状态字段）
-//   2. TrackManager 加 xxxStates map[deviceID]*XxxObservation
+//   1. 定义 XxxObservation struct（包含 DeviceAddr + TMs + 关键状态字段）
+//   2. TrackManager 加 xxxStates map[deviceAddr]*XxxObservation
 //   3. 加 ProcessXxxObservation(obs) 方法（per-device 保留最新）
 //   4. Engine.handleMessage 按 device_type 路由
 //   5. 异常判定（silent fall / long still / 等）查询相关传感器状态做 short-circuit
@@ -33,7 +33,7 @@ import (
 //   - event_name=InBed → bed_status=0；event_name=LeftBed → bed_status=1
 //   - 故 InBed = (bed_status == 0)
 type SleepadObservation struct {
-	DeviceID        string
+	DeviceAddr        string
 	DeviceUID       string
 	TMs             int64
 	InBed           bool // bed_status == 0
@@ -50,7 +50,7 @@ func (o *SleepadObservation) HasVitalSign() bool {
 
 // ParseSleepadObservations 把 sleepad iot:monitor:stream 的 data_value 解析为多帧观测
 // data_value 是 array of object，每个 object 一条记录（同一设备一帧通常只 1 条 track_id=0）
-func ParseSleepadObservations(dv interface{}, deviceID, deviceUID string, fallbackTs int64) []SleepadObservation {
+func ParseSleepadObservations(dv interface{}, deviceAddr, deviceUID string, fallbackTs int64) []SleepadObservation {
 	if dv == nil {
 		return nil
 	}
@@ -75,7 +75,7 @@ func ParseSleepadObservations(dv interface{}, deviceID, deviceUID string, fallba
 	out := make([]SleepadObservation, 0, len(arr))
 	for _, m := range arr {
 		obs := SleepadObservation{
-			DeviceID:  deviceID,
+			DeviceAddr:  deviceAddr,
 			DeviceUID: deviceUID,
 			TMs:       fallbackTs,
 		}

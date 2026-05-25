@@ -56,7 +56,7 @@ type TimedPoint struct {
 type TrackState struct {
 	// ---- 身份 ----
 	TrackID  int
-	DeviceID string
+	DeviceAddr string
 	RoomID   string
 
 	// ---- 出生档案 ----
@@ -234,7 +234,7 @@ type BedSession struct {
 // 取消：① 新 track 出生（含 BlindSpotRecovery 反馈）② ExitRoom 事件 ③ room.NumberPeople ≥ 2
 type PendingLostFall struct {
 	OriginalTrackID int
-	DeviceID        string
+	DeviceAddr        string
 	RoomID          string
 	LastX, LastY    int
 	LastZ           int
@@ -247,11 +247,11 @@ type PendingLostFall struct {
 }
 
 // NewTrackState 新 track 出生
-func NewTrackState(trackID int, deviceID, roomID string, x, y, z int, tMs int64) *TrackState {
+func NewTrackState(trackID int, deviceAddr, roomID string, x, y, z int, tMs int64) *TrackState {
 	birth := TimedPoint{X: x, Y: y, Z: z, TMs: tMs}
 	return &TrackState{
 		TrackID:              trackID,
-		DeviceID:             deviceID,
+		DeviceAddr:             deviceAddr,
 		RoomID:               roomID,
 		BirthPos:             birth,
 		Kalman:               NewKalmanFilter2D(float64(x), float64(y)),

@@ -348,17 +348,17 @@ func runProbeDeviceStreamReader(ctx context.Context, redisClient *redis.Client, 
 					continue
 				}
 				deviceUID := streamFieldStr(msg.Values, "device_uid")
-				deviceID := streamFieldStr(msg.Values, "device_id")
+				deviceAddr := streamFieldStr(msg.Values, "device_addr")
 				tenantID := streamFieldStr(msg.Values, "tenant_id")
-				if deviceUID == "" || deviceID == "" {
+				if deviceUID == "" || deviceAddr == "" {
 					continue
 				}
 				logger.Info("probe radar requested",
 					zap.String("device_uid", deviceUID),
-					zap.String("device_id", deviceID),
+					zap.String("device_addr", deviceAddr),
 					zap.String("source", streamFieldStr(msg.Values, "trigger_source")),
 				)
-				go mgr.ProbeDevice(ctx, deviceUID, deviceID, deviceType, tenantID)
+				go mgr.ProbeDevice(ctx, deviceUID, deviceAddr, deviceType, tenantID)
 			}
 		}
 	}

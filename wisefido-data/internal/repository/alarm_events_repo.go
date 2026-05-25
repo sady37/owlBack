@@ -20,7 +20,7 @@ type AlarmEventsRepository interface {
 	UpdateAlarmEvent(ctx context.Context, tenantID, eventID string, updates map[string]interface{}) error
 
 	// 获取最近的报警事件（用于去重检查）
-	GetRecentAlarmEvent(ctx context.Context, tenantID, deviceID, eventType string, withinMinutes int) (*domain.AlarmEvent, error)
+	GetRecentAlarmEvent(ctx context.Context, tenantID, deviceAddr, eventType string, withinMinutes int) (*domain.AlarmEvent, error)
 
 	// 统计报警事件数量（按条件）
 	CountAlarmEvents(ctx context.Context, tenantID string, filters AlarmEventFilters) (int, error)
@@ -34,11 +34,11 @@ type AlarmEventFilters struct {
 	EndTime   *time.Time // 结束时间（triggered_at <= EndTime）
 
 	// 住户过滤
-	ResidentID *string // 住户ID（通过 device_id JOIN devices → beds → residents 获取）
+	ResidentID *string // 住户ID（通过 device_addr JOIN devices → beds → residents 获取）
 
 	// 位置过滤
-	BranchTag *string // 分支标签（通过 device_id JOIN devices → beds/rooms → units → units.branch_tag 获取）
-	UnitID    *string // 单元ID（通过 device_id JOIN devices → beds/rooms → units 获取）
+	BranchTag *string // 分支标签（通过 device_addr JOIN devices → beds/rooms → units → units.branch_tag 获取）
+	UnitID    *string // 单元ID（通过 device_addr JOIN devices → beds/rooms → units 获取）
 
 	// 5W where 直接过滤（alarm_events 表持久化的 trigger 时刻 snapshot，commit 4a854cb 起可用，
 	// 不依赖 devices 当前 binding，能 scope 到"那一刻该 device 在哪个 unit/room"）
@@ -51,9 +51,9 @@ type AlarmEventFilters struct {
 	EventCardID *string // 直接过滤 ae.card_id = $1::INET
 
 	// 设备过滤
-	DeviceID     *string   // 设备ID（直接过滤 ae.device_id）
-	DeviceName   *string   // 设备名称（通过 device_id JOIN devices.device_name 获取，支持模糊匹配）
-	DeviceIDs    []string  // 设备ID列表（IN 查询）
+	DeviceAddr   *string   // 设备 INET /128（直接过滤 ae.device_addr）
+	DeviceName   *string   // 设备名称（通过 device_addr JOIN devices.device_name 获取，支持模糊匹配）
+	DeviceAddrs  []string  // 设备 INET 列表（IN 查询）
 
 	// 事件类型和级别过滤
 	EventType   *string   // 事件类型（单选）

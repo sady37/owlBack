@@ -290,7 +290,7 @@ func BuildDeviceStatusMessage(addr netip.Addr, subjectEntity, deviceType string,
 
 // BuildAlarmDeviceMessage 设备告警配置变更通知（config 流）。
 // device_addr 是 v2 路由 key；qinglan/sleepace consumer 用 addr.Prefix(48) 派生 tenant，
-// 物理 MAC 由 consumer 自己 DB 反查 (device_addr → devices.device_id → dfm.device_uid)
+// 物理 MAC 由 consumer 自己 DB 反查 (device_addr → devices.device_addr → dfm.device_uid)
 // 后下推到设备（IPv6 只携 MAC 末 32 bit，OUI 段需 DB 补全）。
 func BuildAlarmDeviceMessage(source string, addr netip.Addr, settingType string, settingData map[string]interface{}) ConfigChangeMessage {
 	now := time.Now()
@@ -314,7 +314,7 @@ func BuildAlarmDeviceMessage(source string, addr netip.Addr, settingType string,
 
 // BuildAlarmProcessMessage 告警处置通知（config 流）；cardID 是路由 key（cards.card_id UUID 仍是 PK）。
 //
-// device_ipv6 单程票后不再带 device_addr/device_id —— consumer (cardagg/alarm_process_handler)
+// 后不再带 device_addr/device_addr —— consumer (cardagg/alarm_process_handler)
 // 验证只读 cardID + alarmLevel + alarmType + eventID，device 字段是历史冗余。
 func BuildAlarmProcessMessage(source, cardID, alarmLevel, alarmType, processType, eventID string, alarmTimestamp int64) ConfigChangeMessage {
 	now := time.Now()
@@ -336,7 +336,7 @@ func BuildAlarmProcessMessage(source, cardID, alarmLevel, alarmType, processType
 }
 
 // DeviceItemForMessage 是 admin/api 后台对设备清单的展示项（外部 API 边界 R-002，不进 internal routing）。
-// Phase 2 一刀切后：identity 字段只剩 device_uid；业务侧请用 device_addr 单独字段。
+// 后：identity 字段只剩 device_uid；业务侧请用 device_addr 单独字段。
 type DeviceItemForMessage struct {
 	DeviceUID  string      `json:"device_uid"`
 	DeviceCode string      `json:"device_code,omitempty"`

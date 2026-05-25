@@ -84,7 +84,7 @@ func (s *ReportService) DownloadAndSave(ctx context.Context, deviceUIDIn string,
 	return nil
 }
 
-// loadReportWriteContext Phase 2 一刀切：按 device_uid 解析 Sleepad 写库所需上下文。
+// loadReportWriteContext 按 device_uid 解析 Sleepad 写库所需上下文。
 //
 // TODO Phase 2.1: sleepace SDK userId format verify — caller 现在传 device_uid (logMAC)，
 // 不再传 dfm.device_id UUID；sleepace 厂家 SDK 接受性需 verify。
@@ -132,7 +132,7 @@ func (s *ReportService) loadReportWriteContext(ctx context.Context, deviceUIDIn 
 	return tenantID, deviceUID, deviceCode, deviceAddr, residentID, nil
 }
 
-// buildMetadata Phase 2 一刀切：按 device_uid 从 device_addr 派生 site/branch/unit/room/bed name snapshot。
+// buildMetadata 按 device_uid 从 device_addr 派生 site/branch/unit/room/bed name snapshot。
 func (s *ReportService) buildMetadata(ctx context.Context, deviceUID string) string {
 	if deviceUID == "" || s.db == nil {
 		return "{}"
@@ -168,7 +168,7 @@ func (s *ReportService) buildMetadata(ctx context.Context, deviceUID string) str
 	return meta
 }
 
-// upsert Phase 2 一刀切: sleepace_report (device_addr INET, device_uid VARCHAR(50), resident_id INET, ...)
+// upsert : sleepace_report (device_addr INET, device_uid VARCHAR(50), resident_id INET, ...)
 func (s *ReportService) upsert(ctx context.Context,
 	deviceAddr, deviceUID, residentID string,
 	recordCount int, startTimeMs, endTimeMs int64, date, stopMode, timeStep, timezone int,

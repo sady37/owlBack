@@ -199,7 +199,7 @@ func FillDeviceOnlineStatusFromCardagg(ctx context.Context, stateReader *card.Re
 // FillDeviceStatusFromCardagg 批量读 device:status:{IPv6} Hash，返回 ipv6 → DeviceStatus map。
 // 缺失/读失败的 device 在 map 中不存在；调用方负责决定 fallback（典型：构造 offline=1 占位）。
 //
-// device_ipv6 单程票：cardagg 写的 redis key 是 device:status:{IPv6}，调用方必须传 IPv6 字符串。
+// cardagg 写的 redis key 是 device:status:{IPv6}，调用方必须传 IPv6 字符串。
 func FillDeviceStatusFromCardagg(ctx context.Context, stateReader *card.Reader, deviceIPv6s []string, logger *zap.Logger) map[string]*card.DeviceStatus {
 	if stateReader == nil || len(deviceIPv6s) == 0 {
 		return make(map[string]*card.DeviceStatus)
@@ -249,7 +249,7 @@ func (s *deviceService) fillDeviceOnlineStatus(ctx context.Context, devices []*d
 // GetDeviceRequest 查询设备详情请求
 type GetDeviceRequest struct {
 	TenantID string // 必填
-	DeviceID string // 必填
+	DeviceAddr string // 必填
 }
 
 // GetDeviceResponse 查询设备详情响应
@@ -263,23 +263,23 @@ func (s *deviceService) GetDevice(ctx context.Context, req GetDeviceRequest) (*G
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
-	if req.DeviceID == "" {
-		return nil, fmt.Errorf("device_id is required")
+	if req.DeviceAddr == "" {
+		return nil, fmt.Errorf("device_addr is required")
 	}
 
 	// 2. 调用 Repository
-	device, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
+	device, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceAddr)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			s.logger.Warn("Device not found",
 				zap.String("tenant_id", req.TenantID),
-				zap.String("device_id", req.DeviceID),
+				zap.String("device_addr", req.DeviceAddr),
 			)
 			return nil, fmt.Errorf("device not found")
 		}
 		s.logger.Error("GetDevice failed",
 			zap.String("tenant_id", req.TenantID),
-			zap.String("device_id", req.DeviceID),
+			zap.String("device_addr", req.DeviceAddr),
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to get device")
@@ -295,7 +295,7 @@ func (s *deviceService) GetDevice(ctx context.Context, req GetDeviceRequest) (*G
 // UpdateDeviceRequest 更新设备请求
 type UpdateDeviceRequest struct {
 	TenantID          string         // 必填
-	DeviceID          string         // 必填
+	DeviceAddr          string         // 必填
 	Device            *domain.Device // 设备信息（部分更新）
 	UpdateBoundRoomID bool           // 是否更新 bound_room_id（即使为 null）
 	UpdateBoundBedID  bool           // 是否更新 bound_bed_id（即使为 null）
@@ -316,8 +316,8 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
-	if req.DeviceID == "" {
-		return nil, fmt.Errorf("device_id is required")
+	if req.DeviceAddr == "" {
+		return nil, fmt.Errorf("device_addr is required")
 	}
 	if req.Device == nil {
 		return nil, fmt.Errorf("device is required")
@@ -325,32 +325,32 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 
 	// 2. 取更新前设备（用于同步旧 unit 卡片）
 	var oldDevice *domain.Device
-	oldDevice, _ = s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
+	oldDevice, _ = s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceAddr)
 
 	// 3. 业务规则验证
 	// 注意：unit_id 验证在 Handler 层处理（因为 domain.Device 中没有 unit_id 字段）
 	// Service 层只验证 bound_room_id 和 bound_bed_id 的逻辑
 
 	// 4. 调用 Repository（传递更新标志）
-	if err := s.devicesRepo.UpdateDeviceWithFlags(ctx, req.TenantID, req.DeviceID, req.Device, req.UpdateBoundRoomID, req.UpdateBoundBedID, req.UpdateAccess, req.UpdateMonitoringEnabled, req.UpdateBranchID); err != nil {
+	if err := s.devicesRepo.UpdateDeviceWithFlags(ctx, req.TenantID, req.DeviceAddr, req.Device, req.UpdateBoundRoomID, req.UpdateBoundBedID, req.UpdateAccess, req.UpdateMonitoringEnabled, req.UpdateBranchID); err != nil {
 		s.logger.Error("UpdateDevice failed",
 			zap.String("tenant_id", req.TenantID),
-			zap.String("device_id", req.DeviceID),
+			zap.String("device_addr", req.DeviceAddr),
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to update device")
 	}
 
 	// 5. 任意 devices 更新后同步受影响 unit 的卡片（旧 unit + 新 unit，换绑时两边都刷）
-	newDevice, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
+	newDevice, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceAddr)
 	if err != nil {
-		s.logger.Warn("Failed to get updated device for card sync", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_id", req.DeviceID))
+		s.logger.Warn("Failed to get updated device for card sync", zap.Error(err), zap.String("tenant_id", req.TenantID), zap.String("device_addr", req.DeviceAddr))
 	}
 
 	// 任意 devices 字段更新均发 config.changed，供网关刷新 baseline / health。
-	// device_uid 优先取 newDevice；bind 后 device_addr 变化导致 GetDevice(req.DeviceID) 找不到
+	// device_uid 优先取 newDevice；bind 后 device_addr 变化导致 GetDevice(req.DeviceAddr) 找不到
 	// 时（newDevice=nil），回退用 oldDevice.DeviceUID（device_uid 是稳定身份，bind 不变）。
-	// device_addrs 故意用 req.DeviceID（pre-bind addr）：cardagg.enablement cache 持有的就是旧
+	// device_addrs 故意用 req.DeviceAddr（pre-bind addr）：cardagg.enablement cache 持有的就是旧
 	// addr，invalidate 旧 addr 正是要的语义；新 addr 还没有 cache 条目，无需特意带。
 	if s.configPublisher != nil {
 		var uids []string
@@ -360,10 +360,10 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 		case oldDevice != nil && oldDevice.DeviceUID != "":
 			uids = []string{oldDevice.DeviceUID}
 		}
-		if err := s.configPublisher.PublishConfigChanged(ctx, "update", nil, []string{req.DeviceID}, uids); err != nil {
+		if err := s.configPublisher.PublishConfigChanged(ctx, "update", nil, []string{req.DeviceAddr}, uids); err != nil {
 			s.logger.Warn("PublishConfigChanged failed",
 				zap.String("tenant_id", req.TenantID),
-				zap.String("device_id", req.DeviceID),
+				zap.String("device_addr", req.DeviceAddr),
 				zap.Error(err))
 		}
 	}
@@ -414,7 +414,7 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 				newDevice.DeviceName, newDevice.DeviceUID,
 				snapshotLocationLabel(ctx, s.db, req.TenantID, oldRoom, oldBed),
 				snapshotLocationLabel(ctx, s.db, req.TenantID, newRoom, newBed))
-			if err := TakeBindingSnapshot(ctx, s.db, s.logger, req.TenantID, "device_binding", req.DeviceID, summary, affectedUnits, ""); err != nil {
+			if err := TakeBindingSnapshot(ctx, s.db, s.logger, req.TenantID, "device_binding", req.DeviceAddr, summary, affectedUnits, ""); err != nil {
 				s.logger.Warn("TakeBindingSnapshot failed", zap.Error(err))
 			}
 		}
@@ -428,7 +428,7 @@ func (s *deviceService) UpdateDevice(ctx context.Context, req UpdateDeviceReques
 // DeleteDeviceRequest 删除设备请求
 type DeleteDeviceRequest struct {
 	TenantID string // 必填
-	DeviceID string // 必填
+	DeviceAddr string // 必填
 }
 
 // DeleteDeviceResponse 删除设备响应
@@ -444,13 +444,13 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
-	if req.DeviceID == "" {
-		return nil, fmt.Errorf("device_id is required")
+	if req.DeviceAddr == "" {
+		return nil, fmt.Errorf("device_addr is required")
 	}
 
 	// 2. 获取设备信息（删除前获取 unit_id / device_uid，用于后续通知）
 	var unitID, deviceUID string
-	device, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceID)
+	device, err := s.devicesRepo.GetDevice(ctx, req.TenantID, req.DeviceAddr)
 	if err == nil && device != nil {
 		deviceUID = device.DeviceUID
 		if device.UnitID.Valid && device.UnitID.String != "" {
@@ -460,10 +460,10 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 
 	// 3. 调用 Repository（硬删除：在事务中删除 devices 记录，更新 device_store tenant_id）
 	// 先执行数据库操作，保证事务的原子性
-	if err := s.devicesRepo.DeleteDevice(ctx, req.TenantID, req.DeviceID); err != nil {
+	if err := s.devicesRepo.DeleteDevice(ctx, req.TenantID, req.DeviceAddr); err != nil {
 		s.logger.Error("DeleteDevice failed",
 			zap.String("tenant_id", req.TenantID),
-			zap.String("device_id", req.DeviceID),
+			zap.String("device_addr", req.DeviceAddr),
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to delete device: %w", err)
@@ -482,9 +482,9 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 		if deviceUID != "" {
 			uids = []string{deviceUID}
 		}
-		if err := s.configPublisher.PublishConfigChanged(ctx, "update", nil, []string{req.DeviceID}, uids); err != nil {
+		if err := s.configPublisher.PublishConfigChanged(ctx, "update", nil, []string{req.DeviceAddr}, uids); err != nil {
 			s.logger.Warn("Failed to publish device deletion signal",
-				zap.String("device_id", req.DeviceID),
+				zap.String("device_addr", req.DeviceAddr),
 				zap.Error(err),
 			)
 		}
@@ -492,7 +492,7 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 
 	s.logger.Info("Device deleted successfully",
 		zap.String("tenant_id", req.TenantID),
-		zap.String("device_id", req.DeviceID),
+		zap.String("device_addr", req.DeviceAddr),
 		zap.String("unit_id", unitID),
 	)
 
@@ -504,12 +504,12 @@ func (s *deviceService) DeleteDevice(ctx context.Context, req DeleteDeviceReques
 // GetDeviceRelationsRequest 查询设备关联关系请求
 type GetDeviceRelationsRequest struct {
 	TenantID string // 必填
-	DeviceID string // 必填
+	DeviceAddr string // 必填
 }
 
 // GetDeviceRelationsResponse 查询设备关联关系响应
 type GetDeviceRelationsResponse struct {
-	DeviceID           string
+	DeviceAddr           string
 	DeviceName         string
 	DeviceInternalCode string
 	DeviceType         int
@@ -533,16 +533,16 @@ func (s *deviceService) GetDeviceRelations(ctx context.Context, req GetDeviceRel
 	if req.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
-	if req.DeviceID == "" {
-		return nil, fmt.Errorf("device_id is required")
+	if req.DeviceAddr == "" {
+		return nil, fmt.Errorf("device_addr is required")
 	}
 
 	// 2. 调用 Repository
-	relations, err := s.devicesRepo.GetDeviceRelations(ctx, req.TenantID, req.DeviceID)
+	relations, err := s.devicesRepo.GetDeviceRelations(ctx, req.TenantID, req.DeviceAddr)
 	if err != nil {
 		s.logger.Error("GetDeviceRelations failed",
 			zap.String("tenant_id", req.TenantID),
-			zap.String("device_id", req.DeviceID),
+			zap.String("device_addr", req.DeviceAddr),
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to get device relations: %w", err)
@@ -560,7 +560,7 @@ func (s *deviceService) GetDeviceRelations(ctx context.Context, req GetDeviceRel
 	}
 
 	return &GetDeviceRelationsResponse{
-		DeviceID:           relations.DeviceID,
+		DeviceAddr:           relations.DeviceAddr,
 		DeviceName:         relations.DeviceName,
 		DeviceInternalCode: relations.DeviceInternalCode,
 		DeviceType:         relations.DeviceType,

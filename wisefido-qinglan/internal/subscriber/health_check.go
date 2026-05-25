@@ -71,7 +71,7 @@ func (m *DeviceSubscriptionManager) checkAllDevicesHealth(ctx context.Context) {
 	for _, sub := range subs {
 		sub.mu.RLock()
 		deviceUID := sub.DeviceUID
-		deviceID := sub.DeviceID
+		deviceAddr := sub.DeviceAddr
 		status := sub.Status
 		deviceType := sub.DeviceType
 		tenantID := sub.TenantID
@@ -83,7 +83,7 @@ func (m *DeviceSubscriptionManager) checkAllDevicesHealth(ctx context.Context) {
 		}
 
 		// 发送read命令获取属性值
-		go m.checkDeviceHealth(ctx, deviceUID, deviceID, deviceType, tenantID)
+		go m.checkDeviceHealth(ctx, deviceUID, deviceAddr, deviceType, tenantID)
 	}
 }
 
@@ -95,18 +95,18 @@ func (m *DeviceSubscriptionManager) checkAllDevicesHealth(ctx context.Context) {
 // 等价于一次 health_check ticker 命中：调用 GetDeviceProperties → publishHealthIfChanged，
 // 把 Offline / OfflineRecover / SignalPoor 等 transition 立刻推到 iot:alarm:stream，
 // 跳过 10 分钟周期等待。仅 device_type=Radar 时调用方才触发本方法。
-func (m *DeviceSubscriptionManager) ProbeDevice(ctx context.Context, deviceUID, deviceID, deviceType, tenantID string) {
-	m.checkDeviceHealth(ctx, deviceUID, deviceID, deviceType, tenantID)
+func (m *DeviceSubscriptionManager) ProbeDevice(ctx context.Context, deviceUID, deviceAddr, deviceType, tenantID string) {
+	m.checkDeviceHealth(ctx, deviceUID, deviceAddr, deviceType, tenantID)
 }
 
-func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, deviceUID, deviceID, deviceType, tenantID string) {
+func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, deviceUID, deviceAddr, deviceType, tenantID string) {
 	m.logger.Info("Checking device health",
 		zap.String("device_uid", deviceUID),
-		zap.String("device_id", deviceID),
+		zap.String("device_addr", deviceAddr),
 	)
 
 	tid := strings.TrimSpace(tenantID)
-	did := strings.TrimSpace(deviceID)
+	did := strings.TrimSpace(deviceAddr)
 	if tid == "" || did == "" {
 		if m.deviceRepo == nil {
 			m.logger.Warn("health check skip stream publish: no deviceRepo", zap.String("device_uid", deviceUID))
@@ -216,7 +216,7 @@ func (m *DeviceSubscriptionManager) checkDeviceHealth(ctx context.Context, devic
 // 防御重复 onset。
 //
 // 这是 qinglan 侧的源头去重；cardagg Phase C 的 DedupWhileActive 是 defense-in-depth。
-func (m *DeviceSubscriptionManager) publishHealthIfChanged(ctx context.Context, tenantID, deviceID, deviceUID, fieldKey string, value int) {
+func (m *DeviceSubscriptionManager) publishHealthIfChanged(ctx context.Context, tenantID, deviceAddr, deviceUID, fieldKey string, value int) {
 	m.mu.Lock()
 	prev, ok := m.prevHealth[deviceUID]
 	if !ok {
@@ -234,7 +234,7 @@ func (m *DeviceSubscriptionManager) publishHealthIfChanged(ctx context.Context, 
 	default:
 		m.mu.Unlock()
 		// 未知字段直接透传（保留极端兜底，不应到这里）
-		m.publishDeviceAlarm(ctx, tenantID, deviceID, deviceUID, fieldKey, value)
+		m.publishDeviceAlarm(ctx, tenantID, deviceAddr, deviceUID, fieldKey, value)
 		return
 	}
 
@@ -272,7 +272,7 @@ func (m *DeviceSubscriptionManager) publishHealthIfChanged(ctx context.Context, 
 		zap.Bool("first_observation", !initialized),
 	)
 
-	m.publishDeviceAlarm(ctx, tenantID, deviceID, deviceUID, fieldKey, value)
+	m.publishDeviceAlarm(ctx, tenantID, deviceAddr, deviceUID, fieldKey, value)
 }
 
 // RefreshHealthFromProps 把任意"成功"读到的设备属性当作健康证据，仅做正向恢复（value=0）：
@@ -338,7 +338,7 @@ func (m *DeviceSubscriptionManager) RefreshHealthFromProps(ctx context.Context, 
 	}
 }
 
-// resolveTenantDevice 优先从内存订阅表取 (tenant_id, device_id)，未命中则回落到 device_store。
+// resolveTenantDevice 优先从内存订阅表取 (tenant_id, device_addr)，未命中则回落到 device_store。
 // 与 checkDeviceHealth 里的解析路径保持一致；外部调用方（install/HTTP）可能没在 subscriptionsByUID 里
 // （设备未认证或刚断线），所以 deviceRepo fallback 必要。
 func (m *DeviceSubscriptionManager) resolveTenantDevice(ctx context.Context, deviceUID string) (string, string, bool) {
@@ -348,7 +348,7 @@ func (m *DeviceSubscriptionManager) resolveTenantDevice(ctx context.Context, dev
 	if ok {
 		sub.mu.RLock()
 		tid := strings.TrimSpace(sub.TenantID)
-		did := strings.TrimSpace(sub.DeviceID)
+		did := strings.TrimSpace(sub.DeviceAddr)
 		sub.mu.RUnlock()
 		if tid != "" && did != "" {
 			return tid, did, true
@@ -484,9 +484,9 @@ func toIntFromInterface(v interface{}) int {
 }
 
 // publishDeviceAlarm 发布设备类：离线/恢复、SensorDetached/恢复 → iot:alarm:stream（直接影响报警）；信号差、倾角 → iot:event:stream（按使能落库）。
-// tenantID、deviceID（UUID）须由调用方从认证/订阅或 device_store 解析后传入；本函数不再查库。
+// tenantID、deviceAddr（UUID）须由调用方从认证/订阅或 device_store 解析后传入；本函数不再查库。
 // fieldKey：observation 字段（FieldOffline/FieldSignalPoor/FieldAngleAbnormal/FieldDetached）。
-func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tenantID, deviceID, deviceUID, fieldKey string, value int) {
+func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tenantID, deviceAddr, deviceUID, fieldKey string, value int) {
 	if m.streamPublisher == nil {
 		m.logger.Warn("publishDeviceAlarm: stream publisher nil",
 			zap.String("device_uid", deviceUID),
@@ -496,9 +496,9 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 		return
 	}
 	tid := strings.TrimSpace(tenantID)
-	did := strings.TrimSpace(deviceID)
+	did := strings.TrimSpace(deviceAddr)
 	if tid == "" || did == "" {
-		m.logger.Warn("skip publish device alarm: empty tenant_id or device_id",
+		m.logger.Warn("skip publish device alarm: empty tenant_id or device_addr",
 			zap.String("device_uid", deviceUID))
 		return
 	}
@@ -511,7 +511,7 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 		)
 		return
 	}
-	// device_ipv6 单程票：deviceUID 反查 addr（health_check 不是热路径，多一次 DB 查询可接受）
+	// deviceUID 反查 addr（health_check 不是热路径，多一次 DB 查询可接受）
 	var addr netip.Addr
 	if dsi, dsErr := m.deviceRepo.GetDeviceStoreInfo(ctx, deviceUID); dsErr == nil && dsi != nil {
 		addr = dsi.DeviceAddr

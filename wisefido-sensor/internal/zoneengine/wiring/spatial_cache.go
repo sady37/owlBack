@@ -37,9 +37,9 @@ type UnitData struct {
 
 // RoomMeta /88 room raw 字段。
 type RoomMeta struct {
-	Prefix       netip.Prefix
-	Name         string // raw rooms.room_name
-	RoomTypeText string // raw rooms.room_type ("bathroom"/"restroom"/"kitchen"/"")
+	Prefix   netip.Prefix
+	Name     string // raw rooms.room_name
+	RoomType int    // raw rooms.room_type smallint: 0=Default 1=Bathroom 2=Kitchen
 }
 
 // BedMeta /96 bed raw 字段。
@@ -157,7 +157,7 @@ func (c *SpatialCache) refreshCachedUnits(ctx context.Context) {
 	}
 }
 
-// IsBathroom satisfy zoneengine.BathroomLookup — 现算 raw text 分类。
+// IsBathroom satisfy zoneengine.BathroomLookup — room_type smallint 直判 + name 关键词兜底。
 func (c *SpatialCache) IsBathroom(roomZoneID string) bool {
 	p, err := netip.ParsePrefix(roomZoneID)
 	if err != nil {
@@ -171,7 +171,7 @@ func (c *SpatialCache) IsBathroom(roomZoneID string) bool {
 	if rm == nil {
 		return false
 	}
-	return classifyRoomType(rm.RoomTypeText, rm.Name) == card.RoomTypeBathroom
+	return classifyRoomType(rm.RoomType, rm.Name) == card.RoomTypeBathroom
 }
 
 // BedSizeBucket satisfy zoneengine.BedSizeLookup — 现算 raw size_kind → bucket。
@@ -260,47 +260,20 @@ func (c *SpatialCache) ensureUnit(unitID netip.Prefix) *UnitData {
 	return c.units[unitID]
 }
 
-// loadUnit 一次 SQL 装载指定 unit 的全部元素（unit_property + rooms + beds + devices）。
+// loadUnit 装载指定 unit 的全部元素：4 个 per-table query（各列类型对齐 DB schema）。
 //
-// SQL 用 UNION ALL flat rows + kind 列标记类型；devices JOIN device_factory_meta 拿 device_type。
-// unit_property 单独 1 行（kind='unit'）。
+// DB schema 字段类型：
+//   rooms.room_type     smallint NOT NULL  (0/1/2)
+//   beds.size_kind      varchar  NOT NULL  ('standard'/'queen'/...)
+//   devices.access/monitoring_enabled boolean
+//   units.unit_property smallint NOT NULL  (0=Home/1=Facility)
 func (c *SpatialCache) loadUnit(ctx context.Context, unitID netip.Prefix) error {
 	if c.db == nil {
 		return nil
 	}
 	qctx, cancel := context.WithTimeout(ctx, c.queryTimeout)
 	defer cancel()
-
-	// 6 列定值：kind/prefix/name/extra1/extra2/extra3
-	// rooms:   kind='room',   prefix=room_id::text, name=room_name, extra1=room_type
-	// beds:    kind='bed',    prefix=bed_id::text,  name=bed_name,  extra1=size_kind
-	// devices: kind='device', prefix=host(addr),    name='',        extra1=device_type, extra2=access, extra3=monitoring_enabled
-	// unit:    kind='unit',   prefix=unit_id::text, name='',        extra1=unit_property
-	const q = `
-		SELECT 'room'::text AS kind, room_id::text AS prefix, COALESCE(room_name,'') AS name,
-		       COALESCE(room_type,'') AS extra1, ''::text AS extra2, ''::text AS extra3
-		FROM rooms WHERE room_id <<= $1::inet
-		UNION ALL
-		SELECT 'bed', bed_id::text, COALESCE(bed_name,''),
-		       COALESCE(size_kind,''), '', ''
-		FROM beds WHERE bed_id <<= $1::inet
-		UNION ALL
-		SELECT 'device', host(d.device_addr), '',
-		       COALESCE(dfm.device_type::text,''),
-		       CASE WHEN COALESCE(d.access,false) THEN '1' ELSE '0' END,
-		       CASE WHEN COALESCE(d.monitoring_enabled,false) THEN '1' ELSE '0' END
-		FROM devices d JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
-		WHERE d.device_addr <<= $1::inet
-		UNION ALL
-		SELECT 'unit', unit_id::text, '',
-		       COALESCE(unit_property::text,'1'), '', ''
-		FROM units WHERE unit_id = $1::inet
-	`
-	rows, err := c.db.QueryContext(qctx, q, unitID.String())
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
+	uid := unitID.String()
 
 	ud := &UnitData{
 		UnitID:       unitID,
@@ -310,32 +283,76 @@ func (c *SpatialCache) loadUnit(ctx context.Context, unitID netip.Prefix) error 
 		Devices:      make(map[netip.Addr]*DeviceMeta),
 		loadedAt:     time.Now(),
 	}
-	for rows.Next() {
-		var kind, prefixStr, name, e1, e2, e3 string
-		if err := rows.Scan(&kind, &prefixStr, &name, &e1, &e2, &e3); err != nil {
-			continue
+
+	// rooms (room_type smallint)
+	if rows, err := c.db.QueryContext(qctx,
+		`SELECT room_id::text, room_name, room_type FROM rooms WHERE room_id <<= $1::inet`, uid,
+	); err == nil {
+		for rows.Next() {
+			var prefixStr, name string
+			var roomType int
+			if err := rows.Scan(&prefixStr, &name, &roomType); err != nil {
+				continue
+			}
+			if p, perr := netip.ParsePrefix(prefixStr); perr == nil {
+				ud.Rooms[p] = &RoomMeta{Prefix: p, Name: name, RoomType: roomType}
+			}
 		}
-		switch kind {
-		case "room":
-			if p, err := netip.ParsePrefix(prefixStr); err == nil {
-				ud.Rooms[p] = &RoomMeta{Prefix: p, Name: name, RoomTypeText: e1}
+		rows.Close()
+	} else {
+		return err
+	}
+
+	// beds (size_kind varchar)
+	if rows, err := c.db.QueryContext(qctx,
+		`SELECT bed_id::text, bed_name, size_kind FROM beds WHERE bed_id <<= $1::inet`, uid,
+	); err == nil {
+		for rows.Next() {
+			var prefixStr, name, sizeKind string
+			if err := rows.Scan(&prefixStr, &name, &sizeKind); err != nil {
+				continue
 			}
-		case "bed":
-			if p, err := netip.ParsePrefix(prefixStr); err == nil {
-				ud.Beds[p] = &BedMeta{Prefix: p, Name: name, SizeKindText: e1}
+			if p, perr := netip.ParsePrefix(prefixStr); perr == nil {
+				ud.Beds[p] = &BedMeta{Prefix: p, Name: name, SizeKindText: sizeKind}
 			}
-		case "device":
-			if addr, err := netip.ParseAddr(prefixStr); err == nil {
+		}
+		rows.Close()
+	} else {
+		return err
+	}
+
+	// devices
+	if rows, err := c.db.QueryContext(qctx, `
+		SELECT host(d.device_addr), COALESCE(dfm.device_type::text,''),
+		       d.access, d.monitoring_enabled
+		FROM devices d JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
+		WHERE d.device_addr <<= $1::inet`, uid,
+	); err == nil {
+		for rows.Next() {
+			var addrStr, devType string
+			var access, monitoring bool
+			if err := rows.Scan(&addrStr, &devType, &access, &monitoring); err != nil {
+				continue
+			}
+			if addr, aerr := netip.ParseAddr(addrStr); aerr == nil {
 				ud.Devices[addr] = &DeviceMeta{
-					Addr: addr, DeviceType: e1, Access: e2 == "1", Monitoring: e3 == "1",
+					Addr: addr, DeviceType: devType, Access: access, Monitoring: monitoring,
 				}
 			}
-		case "unit":
-			if e1 == "0" {
-				ud.UnitProperty = UnitPropertyHome
-			}
 		}
+		rows.Close()
+	} else {
+		return err
 	}
+
+	// unit_property (smallint)
+	var prop int
+	if err := c.db.QueryRowContext(qctx,
+		`SELECT unit_property FROM units WHERE unit_id = $1::inet`, uid,
+	).Scan(&prop); err == nil {
+		ud.UnitProperty = prop
+	}
+	// 查不到（unit 未注册）→ 保 Facility 默认
 
 	c.mu.Lock()
 	c.units[unitID] = ud
@@ -351,22 +368,20 @@ func maskToUnit(p netip.Prefix) netip.Prefix {
 	return netip.PrefixFrom(p.Addr(), 80).Masked()
 }
 
-// classifyRoomType room_type text → card.RoomType* int。
-// 兼容老数据 room_type=NULL 时按 name 关键词兜底 bathroom。
-func classifyRoomType(roomType, roomName string) int {
-	t := strings.ToLower(strings.TrimSpace(roomType))
-	switch t {
-	case "bathroom", "restroom":
+// classifyRoomType raw smallint room_type → card.RoomType* enum。
+// roomType=0 (Default) 时按 name 关键词兜底 bathroom（兼容历史命名习惯）。
+func classifyRoomType(roomType int, roomName string) int {
+	switch roomType {
+	case card.RoomTypeBathroom: // 1
 		return card.RoomTypeBathroom
-	case "kitchen":
+	case card.RoomTypeKitchen: // 2
 		return card.RoomTypeKitchen
 	}
-	if t == "" {
-		n := strings.ToLower(roomName)
-		for _, kw := range []string{"bathroom", "restroom", "toilet", "washroom"} {
-			if strings.Contains(n, kw) {
-				return card.RoomTypeBathroom
-			}
+	// roomType == 0 (Default) — name 关键词兜底
+	n := strings.ToLower(roomName)
+	for _, kw := range []string{"bathroom", "restroom", "toilet", "washroom"} {
+		if strings.Contains(n, kw) {
+			return card.RoomTypeBathroom
 		}
 	}
 	return card.RoomTypeDefault

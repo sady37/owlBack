@@ -33,7 +33,7 @@ type RadarInstall struct {
 	unitsRepo         repository.UnitsRepository
 	qinglanClient     *QinglanClient
 	logger            *zap.Logger
-	// 订阅管理器：记录哪些设备需要订阅（device_id -> bool）
+	// 订阅管理器：记录哪些设备需要订阅（device_addr -> bool）
 	// 当设备被 bind 时，标记为需要订阅；unbind 时，移除订阅标记
 	subscribedDevices map[string]bool
 	subscribedMutex   sync.RWMutex // 保护 subscribedDevices 的并发访问
@@ -62,16 +62,16 @@ func (s *RadarInstall) ListCardDevices(ctx context.Context, tenantID, cardID str
 	return s.cardsRepo.GetCardDevices(ctx, tenantID, cardID)
 }
 
-// ListCardDevicesByDeviceID 通过 device_id 查找所属卡片，返回 card_id、room_id (/88 fallback 锚)、
+// ListCardDevicesByDeviceAddr 通过 device_addr 查找所属卡片，返回 card_id、room_id (/88 fallback 锚)、
 // spatialPrefix (/128 device CIDR，本 canvas 的 save target)、该卡设备列表及 layout 配置（三层 fallback 取到的最具体一份）。
 //
 // scope 来源 = URL 切入点：当前 URL 是 device 切入，故 spatialPrefix 即该 device 的 /128 CIDR。
 // 未来若新增 room/unit 切入 URL，新 handler 负责返回相应 /88 或 /80 prefix。
-func (s *RadarInstall) ListCardDevicesByDeviceID(ctx context.Context, tenantID, deviceID string) (cardID, roomID, spatialPrefix string, devices []repository.CardDeviceItem, layoutConfig json.RawMessage, err error) {
+func (s *RadarInstall) ListCardDevicesByDeviceAddr(ctx context.Context, tenantID, deviceAddr string) (cardID, roomID, spatialPrefix string, devices []repository.CardDeviceItem, layoutConfig json.RawMessage, err error) {
 	if s.cardsRepo == nil {
 		return "", "", "", nil, nil, fmt.Errorf("cards repository not available")
 	}
-	cardID, err = s.cardsRepo.GetCardIDByDeviceID(ctx, tenantID, deviceID)
+	cardID, err = s.cardsRepo.GetCardIDByDeviceAddr(ctx, tenantID, deviceAddr)
 	if err != nil {
 		return "", "", "", nil, nil, err
 	}
@@ -86,7 +86,7 @@ func (s *RadarInstall) ListCardDevicesByDeviceID(ctx context.Context, tenantID, 
 	spatialPrefix = ""
 	devLookup := ""
 	if s.devicesRepo != nil {
-		dev, e := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
+		dev, e := s.devicesRepo.GetDevice(ctx, tenantID, deviceAddr)
 		if e == nil && dev != nil {
 			if dev.DeviceAddr != "" {
 				devLookup = dev.DeviceAddr // 完整 /128，让 getCurrentLayoutByRoomID 三层 fallback
@@ -109,7 +109,7 @@ func (s *RadarInstall) ListCardDevicesByDeviceID(ctx context.Context, tenantID, 
 	}
 
 	// Inject device bindings into layout for unit-level templates that contain
-	// temporary iot.deviceId like "Radar01" but lack real device_id values.
+	// temporary iot.deviceId like "Radar01" but lack real device_addr values.
 	if len(layoutConfig) > 0 && len(devices) > 0 {
 		layoutConfig = injectDeviceBindingsIntoLayout(layoutConfig, devices, s.logger)
 	}
@@ -117,7 +117,7 @@ func (s *RadarInstall) ListCardDevicesByDeviceID(ctx context.Context, tenantID, 
 	return cardID, roomID, spatialPrefix, devices, layoutConfig, nil
 }
 
-// injectDeviceBindingsIntoLayout 对 layout 中 device_id 为空的 Radar/Sleepad/Sensor 对象，
+// injectDeviceBindingsIntoLayout 对 layout 中 device_addr 为空的 Radar/Sleepad/Sensor 对象，
 // 按 iot.deviceId 序号（Radar01→0, Radar02→1）与 devices 列表对应项建立绑定，
 // 并补全顶层 radar/sleepad map供前端 loadFromLayoutConfig 使用。
 func injectDeviceBindingsIntoLayout(layout json.RawMessage, devices []repository.CardDeviceItem, logger *zap.Logger) json.RawMessage {
@@ -142,7 +142,7 @@ func injectDeviceBindingsIntoLayout(layout json.RawMessage, devices []repository
 		if t == "" {
 			t = "radar"
 		}
-		byType[t] = append(byType[t], devEntry{id: d.DeviceID, uid: d.DeviceUID})
+		byType[t] = append(byType[t], devEntry{id: d.DeviceAddr, uid: d.DeviceUID})
 	}
 
 	topMap := map[string]map[string]string{}
@@ -155,7 +155,7 @@ func injectDeviceBindingsIntoLayout(layout json.RawMessage, devices []repository
 			continue
 		}
 		// skip if already bound
-		if did, _ := obj["device_id"].(string); did != "" {
+		if did, _ := obj["device_addr"].(string); did != "" {
 			continue
 		}
 		if bid, _ := obj["bindedDeviceId"].(string); bid != "" {
@@ -185,7 +185,7 @@ func injectDeviceBindingsIntoLayout(layout json.RawMessage, devices []repository
 		}
 
 		entry := candidates[idx]
-		obj["device_id"] = entry.id
+		obj["device_addr"] = entry.id
 		obj["bindedDeviceId"] = entry.id
 
 		objID, _ := obj["id"].(string)
@@ -414,7 +414,7 @@ func (s *RadarInstall) SaveRoomLayout(ctx context.Context, tenantID, roomID stri
 	return nil
 }
 
-// normalizeLayoutPrefix 把入参 roomID/deviceID 规范成 spatial_prefix CIDR（/80, /88 或 /128）。
+// normalizeLayoutPrefix 把入参 roomID/deviceAddr 规范成 spatial_prefix CIDR（/80, /88 或 /128）。
 //
 // 三档作用域：
 //   - /80  unit 公共布局：caller 显式传 "fd00:0:3:111:3::/80"
@@ -458,27 +458,27 @@ func normalizeLayoutPrefix(roomID string) (string, error) {
 	return p.Masked().String(), nil
 }
 
-// GetDeviceUID 根据 device_id 和 tenant_id 获取设备 UID；设备不存在、未绑定或非雷达类型时返回明确错误
-func (s *RadarInstall) GetDeviceUID(ctx context.Context, tenantID, deviceID string) (string, error) {
+// GetDeviceUID 根据 device_addr 和 tenant_id 获取设备 UID；设备不存在、未绑定或非雷达类型时返回明确错误
+func (s *RadarInstall) GetDeviceUID(ctx context.Context, tenantID, deviceAddr string) (string, error) {
 	if s.devicesRepo == nil {
 		return "", fmt.Errorf("devices repository not available")
 	}
-	device, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceID)
+	device, err := s.devicesRepo.GetDevice(ctx, tenantID, deviceAddr)
 	if err != nil {
-		return "", fmt.Errorf("device not bound (device_id=%s) — please bind a real radar in the canvas first: %w", deviceID, err)
+		return "", fmt.Errorf("device not bound (device_addr=%s) — please bind a real radar in the canvas first: %w", deviceAddr, err)
 	}
 	if !device.DeviceType.Valid || !strings.EqualFold(device.DeviceType.String, "radar") {
 		return "", fmt.Errorf("device is not a radar, operation not allowed")
 	}
 	if device.DeviceUID == "" {
-		return "", fmt.Errorf("device UID not found for device_id: %s", deviceID)
+		return "", fmt.Errorf("device UID not found for device_addr: %s", deviceAddr)
 	}
 	return device.DeviceUID, nil
 }
 
 
 // GetDeviceByUID 根据 device_uid 和 tenant_id 获取设备信息
-// 用于从 device_uid 转换为 device_id（用于订阅检查等场景）
+// 用于从 device_uid 转换为 device_addr（用于订阅检查等场景）
 func (s *RadarInstall) GetDeviceByUID(ctx context.Context, tenantID, deviceUID string) (*domain.Device, error) {
 	if s.devicesRepo == nil {
 		return nil, fmt.Errorf("devices repository not available")
@@ -544,7 +544,7 @@ func (s *RadarInstall) GetOriginalProperties(ctx context.Context, uid string, ke
 
 // GetOriginalPropertiesFromDB 从 DB 读取雷达安装配置（设备查不到时的回退）
 // 当前无持久化表，返回空 JSON；后续可接 config_versions 等
-func (s *RadarInstall) GetOriginalPropertiesFromDB(ctx context.Context, tenantID, deviceID string) (string, error) {
+func (s *RadarInstall) GetOriginalPropertiesFromDB(ctx context.Context, tenantID, deviceAddr string) (string, error) {
 	return "{}", nil
 }
 
@@ -552,7 +552,7 @@ func (s *RadarInstall) GetOriginalPropertiesFromDB(ctx context.Context, tenantID
 // config 与 radarMqttConfig 输出对齐：dm（画布 cm/10），install_model 统一 0/1/2，
 // boundary_left/right/front/rear，可选 area_{i}_id/type/x1..y4；经 encode.EncodeV1ConfigToDeviceProps 转成
 // radar_install_style、rectangle、declare_area 等后通过 qinglan 写入（安装/边界/区域可能触发重启）。
-// 返回设备响应码（200=成功）和错误，供 HTTP 层透传 device_id 给前端。
+// 返回设备响应码（200=成功）和错误，供 HTTP 层透传 device_addr 给前端。
 func (s *RadarInstall) UpdateConfig(ctx context.Context, uid string, config map[string]interface{}) (deviceCode int, err error) {
 	// 前端已完成格式转换（cm→dm、boundary→rectangle 等），此处透传
 	properties := config
@@ -629,7 +629,7 @@ func (s *RadarInstall) InitializeSubscriptionsFromLayout(ctx context.Context, te
 	var layout struct {
 		Objects []struct {
 			TypeName       string `json:"typeName"`
-			BindedDeviceID string `json:"bindedDeviceId,omitempty"`
+			BindedDeviceAddr string `json:"bindedDeviceId,omitempty"`
 			DeviceAddr     string `json:"device_addr,omitempty"`
 		} `json:"objects"`
 	}
@@ -643,7 +643,7 @@ func (s *RadarInstall) InitializeSubscriptionsFromLayout(ctx context.Context, te
 		if obj.TypeName != "Radar" {
 			continue
 		}
-		deviceAddr := obj.BindedDeviceID
+		deviceAddr := obj.BindedDeviceAddr
 		if deviceAddr == "" {
 			deviceAddr = obj.DeviceAddr
 		}

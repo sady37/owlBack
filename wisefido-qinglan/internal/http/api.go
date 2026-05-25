@@ -20,7 +20,7 @@ import (
 // DeviceStatusManager 设备状态管理器接口
 type DeviceStatusManager interface {
 	GetDeviceOnlineStatus(deviceUID string) string
-	GetDeviceOnlineStatusByDeviceID(ctx context.Context, deviceID string) (string, error)
+	GetDeviceOnlineStatusByDeviceAddr(ctx context.Context, deviceAddr string) (string, error)
 	GetAllDeviceStatuses(tenantID string) []domain.DeviceStatusItem
 }
 

@@ -176,8 +176,9 @@ func (h *DeviceHandler) GetDeviceRelations(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	deviceID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/device/api/v1/device/"), "/relations")
-	if deviceID == "" || strings.Contains(deviceID, "/") {
+	rawAddr := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/device/api/v1/device/"), "/relations")
+	deviceAddr, ok := parseDeviceAddrFromPath(rawAddr)
+	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -190,7 +191,7 @@ func (h *DeviceHandler) GetDeviceRelations(w http.ResponseWriter, r *http.Reques
 	// 2. 调用 Service
 	req := service.GetDeviceRelationsRequest{
 		TenantID: tenantID,
-		DeviceID: deviceID,
+		DeviceAddr: deviceAddr,
 	}
 
 	resp, err := h.deviceService.GetDeviceRelations(ctx, req)
@@ -212,7 +213,7 @@ func (h *DeviceHandler) GetDeviceRelations(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, http.StatusOK, Ok(map[string]any{
-		"deviceId":           resp.DeviceID,
+		"deviceId":           resp.DeviceAddr,
 		"deviceName":         resp.DeviceName,
 		"deviceInternalCode": resp.DeviceInternalCode,
 		"deviceType":         resp.DeviceType,
@@ -290,8 +291,9 @@ func (h *DeviceHandler) GetDevice(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// 1. 参数解析
-	deviceID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/devices/")
-	if deviceID == "" || strings.Contains(deviceID, "/") {
+	rawAddr := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/devices/")
+	deviceAddr, ok := parseDeviceAddrFromPath(rawAddr)
+	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -304,7 +306,7 @@ func (h *DeviceHandler) GetDevice(w http.ResponseWriter, r *http.Request) {
 	// 2. 调用 Service
 	req := service.GetDeviceRequest{
 		TenantID: tenantID,
-		DeviceID: deviceID,
+		DeviceAddr: deviceAddr,
 	}
 
 	resp, err := h.deviceService.GetDevice(ctx, req)
@@ -323,8 +325,9 @@ func (h *DeviceHandler) UpdateDevice(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// 1. 参数解析
-	deviceID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/devices/")
-	if deviceID == "" || strings.Contains(deviceID, "/") {
+	rawAddr := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/devices/")
+	deviceAddr, ok := parseDeviceAddrFromPath(rawAddr)
+	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -374,7 +377,7 @@ func (h *DeviceHandler) UpdateDevice(w http.ResponseWriter, r *http.Request) {
 	// 5. 调用 Service
 	req := service.UpdateDeviceRequest{
 		TenantID: tenantID,
-		DeviceID: deviceID,
+		DeviceAddr: deviceAddr,
 		Device:   device,
 		// 传递 payload 信息，让 Repository 层知道哪些字段需要更新
 		// 如果字段在 payload 中（即使为 null），就更新它
@@ -401,8 +404,9 @@ func (h *DeviceHandler) DeleteDevice(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// 1. 参数解析
-	deviceID := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/devices/")
-	if deviceID == "" || strings.Contains(deviceID, "/") {
+	rawAddr := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/devices/")
+	deviceAddr, ok := parseDeviceAddrFromPath(rawAddr)
+	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -415,7 +419,7 @@ func (h *DeviceHandler) DeleteDevice(w http.ResponseWriter, r *http.Request) {
 	// 2. 调用 Service
 	req := service.DeleteDeviceRequest{
 		TenantID: tenantID,
-		DeviceID: deviceID,
+		DeviceAddr: deviceAddr,
 	}
 
 	resp, err := h.deviceService.DeleteDevice(ctx, req)
@@ -447,11 +451,12 @@ func (h *DeviceHandler) tenantIDFromReq(w http.ResponseWriter, r *http.Request) 
 // ApproveOTA 租户管理员审批 OTA 升级
 // POST /admin/api/v1/devices/{id}/ota-approve
 func (h *DeviceHandler) ApproveOTA(w http.ResponseWriter, r *http.Request) {
-	// 解析 device_id：路径格式 /admin/api/v1/devices/{id}/ota-approve
+	// 解析 device_addr：路径格式 /admin/api/v1/devices/{addr}/ota-approve
 	path := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/devices/")
-	deviceID := strings.TrimSuffix(path, "/ota-approve")
-	if deviceID == "" || strings.Contains(deviceID, "/") {
-		writeJSON(w, http.StatusOK, Fail("device_id is required"))
+	rawAddr := strings.TrimSuffix(path, "/ota-approve")
+	deviceAddr, ok := parseDeviceAddrFromPath(rawAddr)
+	if !ok {
+		writeJSON(w, http.StatusOK, Fail("device_addr is required"))
 		return
 	}
 
@@ -477,16 +482,16 @@ func (h *DeviceHandler) ApproveOTA(w http.ResponseWriter, r *http.Request) {
 	} else {
 		newPrefix = "system"
 	}
-	// Phase 2 一刀切：deviceID 入参承载 device_addr (INET text)
+	// deviceAddr 入参承载 device_addr (INET text)
 	_, err := h.db.ExecContext(r.Context(), `
 		UPDATE device_ota o
 		   SET approve_way = $1 || '_' || SPLIT_PART(o.approve_way, '_', 2),
 		       updated_at = NOW()
 		 WHERE o.device_uid IN (SELECT device_uid FROM devices WHERE device_addr = $2::INET)
 		   AND o.approve_way IS NOT NULL
-	`, newPrefix, deviceID)
+	`, newPrefix, deviceAddr)
 	if err != nil {
-		h.logger.Error("ApproveOTA failed", zap.String("device_id", deviceID), zap.Error(err))
+		h.logger.Error("ApproveOTA failed", zap.String("device_addr", deviceAddr), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail("failed to update OTA approval"))
 		return
 	}
@@ -497,9 +502,10 @@ func (h *DeviceHandler) ApproveOTA(w http.ResponseWriter, r *http.Request) {
 // SetOTASchedule allows tenant to update OTA schedule for their device
 func (h *DeviceHandler) SetOTASchedule(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/devices/")
-	deviceID := strings.TrimSuffix(path, "/ota-schedule")
-	if deviceID == "" || strings.Contains(deviceID, "/") {
-		writeJSON(w, http.StatusOK, Fail("device_id is required"))
+	rawAddr := strings.TrimSuffix(path, "/ota-schedule")
+	deviceAddr, ok := parseDeviceAddrFromPath(rawAddr)
+	if !ok {
+		writeJSON(w, http.StatusOK, Fail("device_addr is required"))
 		return
 	}
 
@@ -516,13 +522,13 @@ func (h *DeviceHandler) SetOTASchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Phase 2: 仅当 approve_way LIKE 'tenant_%' 时允许租户改 schedule。deviceID 入参承载 device_addr。
+	// Phase 2: 仅当 approve_way LIKE 'tenant_%' 时允许租户改 schedule。deviceAddr 入参承载 device_addr。
 	var approveWay sql.NullString
 	h.db.QueryRowContext(r.Context(), `
 		SELECT o.approve_way
 		  FROM device_ota o
 		 WHERE o.device_uid IN (SELECT device_uid FROM devices WHERE device_addr = $1::INET)
-	`, deviceID).Scan(&approveWay)
+	`, deviceAddr).Scan(&approveWay)
 	if !approveWay.Valid || !strings.HasPrefix(approveWay.String, "tenant_") {
 		writeJSON(w, http.StatusOK, Fail("schedule can only be modified when OTA way is tenant"))
 		return
@@ -536,9 +542,9 @@ func (h *DeviceHandler) SetOTASchedule(w http.ResponseWriter, r *http.Request) {
 		UPDATE device_ota o
 		   SET schedule = $1, updated_at = NOW()
 		 WHERE o.device_uid IN (SELECT device_uid FROM devices WHERE device_addr = $2::INET)
-	`, schedTime, deviceID)
+	`, schedTime, deviceAddr)
 	if err != nil {
-		h.logger.Error("SetOTASchedule failed", zap.String("device_id", deviceID), zap.Error(err))
+		h.logger.Error("SetOTASchedule failed", zap.String("device_addr", deviceAddr), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail("failed to update schedule"))
 		return
 	}
