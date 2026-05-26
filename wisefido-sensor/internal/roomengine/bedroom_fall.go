@@ -431,7 +431,8 @@ func (r *BedroomFallRules) fireFall(
 		zap.String("reason", reason),
 		zap.Int("track_id", b.TrackID),
 		zap.String("device_addr", b.DeviceAddr),
-		zap.Int("x", b.X), zap.Int("y", b.Y), zap.Int("z", b.Z),
+		zap.Int("canvas_x", b.X), zap.Int("canvas_y", b.Y), zap.Int("canvas_z", b.Z),
+		zap.Int("raw_h", b.RawH), zap.Int("raw_v", b.RawV), zap.Int("raw_z", b.RawZ),
 		zap.Int64("ts_ms", nowMs),
 	)
 	if r.aiPublisher == nil {
@@ -442,9 +443,9 @@ func (r *BedroomFallRules) fireFall(
 		RoomID:     roomID,
 		Track: observation.Track{
 			TrackID:   b.TrackID,
-			PositionX: intPtr(b.X),
-			PositionY: intPtr(b.Y),
-			PositionZ: intPtr(b.Z),
+			PositionX: intPtr(b.RawH),
+			PositionY: intPtr(b.RawV),
+			PositionZ: intPtr(b.RawZ),
 			Pose:      b.Pose,
 		},
 		Reason:     reason,

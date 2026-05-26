@@ -532,14 +532,14 @@ func (r *BathroomFallRules) fireFallCore(
 		evidence["bathroom_count"] = c.BathroomCount
 		evidence["is_public_bathroom"] = c.IsPublicBathroom
 	}
-	x, y, z := b.X, b.Y, b.Z
 	r.logger.Info("bathroom_fall_fired",
 		zap.String("room_id", roomID),
 		zap.String("suite_id", suiteID),
 		zap.String("reason", reason),
 		zap.Int("track_id", b.TrackID),
 		zap.String("device_addr", b.DeviceAddr),
-		zap.Int("x", x), zap.Int("y", y), zap.Int("z", z),
+		zap.Int("canvas_x", b.X), zap.Int("canvas_y", b.Y), zap.Int("canvas_z", b.Z),
+		zap.Int("raw_h", b.RawH), zap.Int("raw_v", b.RawV), zap.Int("raw_z", b.RawZ),
 		zap.Int64("ts_ms", nowMs),
 	)
 	if r.aiPublisher == nil {
@@ -550,9 +550,9 @@ func (r *BathroomFallRules) fireFallCore(
 		RoomID:     roomID,
 		Track: observation.Track{
 			TrackID:   b.TrackID,
-			PositionX: intPtr(x),
-			PositionY: intPtr(y),
-			PositionZ: intPtr(z),
+			PositionX: intPtr(b.RawH),
+			PositionY: intPtr(b.RawV),
+			PositionZ: intPtr(b.RawZ),
 			Pose:      b.Pose,
 		},
 		Reason:     reason,

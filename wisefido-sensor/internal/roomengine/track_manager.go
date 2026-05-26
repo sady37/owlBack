@@ -31,11 +31,15 @@ type TrackOutput struct {
 	Source   string // "radar_direct" / "engine_silent_leftbed" / "engine_lost" / "engine_still_fall" / ...
 }
 
-// TrackFrame 一帧输入（已由 engine 层做完 RadarToCanvas 转换）
+// TrackFrame 一帧输入。X/Y/Z 是 engine 层 RadarToCanvas 转换后的画布坐标，供
+// 内部 grid/cell/fall 算法使用；RawH/RawV/RawZ 是 firmware 直发的雷达本地坐标，
+// **不参与算法**，仅在 alarm/event publish 时作为"parent track" 原样上抛
+// （契约：对外 position_x/y/z 永远 == firmware 原始值，跟 monitor_stream 同语义）。
 type TrackFrame struct {
 	TrackID  int
 	DeviceAddr string
-	X, Y, Z  int // 画布坐标 cm
+	X, Y, Z  int // 画布坐标 cm（内部算法用）
+	RawH, RawV, RawZ int // firmware raw 雷达本地坐标（对外契约用，保持不变）
 	Pose     int
 	AreaType int // 雷达给的 area_id（保留兼容字段，engine 不信其判定，用 cell.AreaType）
 	TMs      int64
@@ -384,7 +388,6 @@ func (tm *TrackManager) SetAIPublisher(p AIPublisher) {
 // payloadFromTrack 从 TrackState 构造 AIPayload。
 
 func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
-	pxF, pyF := ts.Kalman.Position()
 	conf := 100 - ts.GhostPenalty
 	if conf < 0 {
 		conf = 0
@@ -397,9 +400,9 @@ func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
 		RoomID:   ts.RoomID,
 		Track: observation.Track{
 			TrackID:         ts.TrackID,
-			PositionX:       intPtr(int(pxF + 0.5)),
-			PositionY:       intPtr(int(pyF + 0.5)),
-			PositionZ:       intPtr(ts.LastZ),
+			PositionX:       intPtr(ts.LastRawH),
+			PositionY:       intPtr(ts.LastRawV),
+			PositionZ:       intPtr(ts.LastRawZ),
 			Pose:            ts.LastPose,
 			TrackConfidence: conf,
 		},
@@ -833,7 +836,8 @@ type TrackStatusBase struct {
 	RoomID        string
 	Verdict       TrackVerdict
 	GhostPenalty  int
-	X, Y, Z       int
+	X, Y, Z       int // 画布坐标（grid/cell 算法用；Kalman 输出）
+	RawH, RawV, RawZ int // firmware raw 雷达本地坐标 — alarm publish 用，对外契约不变
 	Pose          int
 	StillSec      int
 	CellAreaType  AreaType
@@ -876,6 +880,9 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			X:            px,
 			Y:            py,
 			Z:            ts.LastZ,
+			RawH:         ts.LastRawH,
+			RawV:         ts.LastRawV,
+			RawZ:         ts.LastRawZ,
 			Pose:         ts.LastPose,
 			MoveActive:   ts.StillSince == 0 || ts.LastObservedMs == nowMs,
 			SleepadInBed: sleepadInBed,
@@ -1000,6 +1007,11 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			}
 			tm.tracks[f.TrackID] = ts
 			ts.PrevCore = RadarPoseToCore(f.Pose)
+			ts.LastPose = f.Pose
+			ts.LastZ = f.Z
+			ts.LastRawH = f.RawH
+			ts.LastRawV = f.RawV
+			ts.LastRawZ = f.RawZ
 			quality = ts.Score
 			dtSec = 1
 		} else {
@@ -1035,6 +1047,9 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 
 			ts.LastPose = f.Pose
 			ts.LastZ = f.Z
+			ts.LastRawH = f.RawH
+			ts.LastRawV = f.RawV
+			ts.LastRawZ = f.RawZ
 		}
 
 		// 维度 B: 历史流（每帧无条件）
@@ -1107,6 +1122,9 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 					LastX:           px,
 					LastY:           py,
 					LastZ:           ts.LastZ,
+					LastRawH:        ts.LastRawH,
+					LastRawV:        ts.LastRawV,
+					LastRawZ:        ts.LastRawZ,
 					LastScore:       ts.Score,
 					LastVerdict:     ts.Verdict,
 					LastCellArea:    cellArea,
@@ -1271,9 +1289,9 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			IncidentMs: replayAnchorMs,
 			Track: observation.Track{
 				TrackID:   p.OriginalTrackID,
-				PositionX: intPtr(p.LastX),
-				PositionY: intPtr(p.LastY),
-				PositionZ: intPtr(p.LastZ),
+				PositionX: intPtr(p.LastRawH),
+				PositionY: intPtr(p.LastRawV),
+				PositionZ: intPtr(p.LastRawZ),
 			},
 			Reason: ReasonLostTrack,
 			Evidence: map[string]interface{}{
@@ -1457,7 +1475,7 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 		// 等待窗满 — 检查 radar 是否仍在 Bed 邻域
 		if tm.anyActiveTrackNearBed(param.BedNeighborhood) {
 			// 矛盾 → 候选 silent fall；但需先过 AreaBed 人工标定躺区豁免（详 fall_exempt.go）
-			x, y, z, scoreVal, verdict, deviceAddr := tm.pickActiveTrackNearBed(param.BedNeighborhood)
+			x, y, z, rawH, rawV, rawZ, scoreVal, verdict, deviceAddr := tm.pickActiveTrackNearBed(param.BedNeighborhood)
 			if isHumanBedAt(tm.grid, x, y) {
 				// 人就在人工标定的床上 — 不报；按 cancel 路径收尾（sleepad miscalibration 假阳）
 				tm.silentFallLeftbedCancelled++
@@ -1482,9 +1500,9 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 				RoomID:     tm.roomID,
 				IncidentMs: s.LeftBedAtMs,
 				Track: observation.Track{
-					PositionX: intPtr(x),
-					PositionY: intPtr(y),
-					PositionZ: intPtr(z),
+					PositionX: intPtr(rawH),
+					PositionY: intPtr(rawV),
+					PositionZ: intPtr(rawZ),
 					BedStatus: intPtr(1), // sleepad 报 LeftBed
 				},
 				Reason: ReasonSleepadRadarConflict,
@@ -1562,15 +1580,16 @@ func (tm *TrackManager) anyActiveTrackNearBed(marginCm int) bool {
 
 // pickActiveTrackNearBed 取最近 Bed 的 active track 信息（用于告警坐标）。
 // 找不到时返回 (0,0,0, 0, VerdictReal, "")（此时调用方已确认 anyActiveTrackNearBed=true，理论上不会走 fallback）。
-func (tm *TrackManager) pickActiveTrackNearBed(marginCm int) (x, y, z, score int, verdict TrackVerdict, deviceAddr string) {
+// 返回 canvas 坐标（x/y 给 grid 用）+ raw radar 坐标（rawH/rawV/rawZ 给 alarm publish 用，对外契约不变）。
+func (tm *TrackManager) pickActiveTrackNearBed(marginCm int) (x, y, z, rawH, rawV, rawZ, score int, verdict TrackVerdict, deviceAddr string) {
 	for _, t := range tm.tracks {
 		pxF, pyF := t.Kalman.Position()
 		px, py := int(math.Round(pxF)), int(math.Round(pyF))
 		if tm.grid.IsNearPriorType(px, py, AreaBed, marginCm) {
-			return px, py, t.LastZ, t.Score, t.Verdict, t.DeviceAddr
+			return px, py, t.LastZ, t.LastRawH, t.LastRawV, t.LastRawZ, t.Score, t.Verdict, t.DeviceAddr
 		}
 	}
-	return 0, 0, 0, 0, VerdictReal, ""
+	return 0, 0, 0, 0, 0, 0, 0, VerdictReal, ""
 }
 
 // LostFallStats lost-fall 统计快照（含三类 cancel 来源汇总）

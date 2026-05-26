@@ -8,6 +8,9 @@ import (
 
 	"wisefido-data/internal/repository"
 
+	"owl-common/alarm"
+	"owl-common/observation"
+
 	"go.uber.org/zap"
 )
 
@@ -88,18 +91,19 @@ func ValidatePlaybackWindow(start, end time.Time, kind PlaybackKind, lookback ti
 	return nil
 }
 
-// TrackPlaybackService 轨迹历史回放：monitor_stream 原始 monitor 行 → 前端自行解析
+// TrackPlaybackService 轨迹历史回放：monitor_stream 原始 monitor 行 + alarm_events trigger 点 → 前端自行解析
 type TrackPlaybackService struct {
 	devices repository.DevicesRepository
 	iot     repository.MonitorPlaybackRepository
+	alarms  repository.AlarmPlaybackRepository
 	log     *zap.Logger
 }
 
-func NewTrackPlaybackService(devices repository.DevicesRepository, iot repository.MonitorPlaybackRepository, log *zap.Logger) *TrackPlaybackService {
+func NewTrackPlaybackService(devices repository.DevicesRepository, iot repository.MonitorPlaybackRepository, alarms repository.AlarmPlaybackRepository, log *zap.Logger) *TrackPlaybackService {
 	if log == nil {
 		log = zap.NewNop()
 	}
-	return &TrackPlaybackService{devices: devices, iot: iot, log: log}
+	return &TrackPlaybackService{devices: devices, iot: iot, alarms: alarms, log: log}
 }
 
 // RadarTrackPlayback 返回 result：{ layout, data }，其中 data.rows 为 IoT 原始行（data_value 与入库一致），data.pages 为每页 500 条。
@@ -174,6 +178,129 @@ func (s *TrackPlaybackService) RadarTrackPlayback(ctx context.Context, tenantID,
 		},
 	}
 	return out, nil
+}
+
+// AlarmPlaybackTrigger fall/sit-on-ground trigger 时刻的位置 + pose（payload JSONB 抽取）。
+// FE 算 gap=alerted_at-triggered_at 决定 marker ttl（≤3s=0.2s，>3s=30s wall-clock）。
+type AlarmPlaybackTrigger struct {
+	PositionX *int `json:"position_x,omitempty"`
+	PositionY *int `json:"position_y,omitempty"`
+	PositionZ *int `json:"position_z,omitempty"`
+	Pose      *int `json:"pose,omitempty"`
+}
+
+// AlarmPlaybackItem replay 单条 alarm 事件（已扁平化）。
+type AlarmPlaybackItem struct {
+	EventID     string               `json:"event_id"`
+	EventType   string               `json:"event_type"`
+	AlarmLevel  int                  `json:"alarm_level"`
+	TriggeredAt int64                `json:"triggered_at"`
+	AlertedAt   *int64               `json:"alerted_at,omitempty"`
+	Trigger     AlarmPlaybackTrigger `json:"trigger"`
+}
+
+// alarmPlaybackKinds replay MVP scope：fall + sit-on-ground 两类（带 trigger 位置 + pose）。
+// 其它 alarm 不入 replay overlay；P3 视需要再扩。
+var alarmPlaybackKinds = []string{alarm.Fall, alarm.SittingOnGround}
+
+// RadarAlarmPlayback 返回 { alarms: [...] }，按 triggered_at 升序。
+// 过滤口径：triggered_at ∈ [start, end] AND event_type ∈ {Fall, SittingOnGround}。
+// alerted_at 不参与过滤（trigger 在窗内即取，gap 即便跨窗外亦保留）。
+func (s *TrackPlaybackService) RadarAlarmPlayback(ctx context.Context, tenantID, deviceAddr string, startMs, endMs int64, userRole string) (map[string]interface{}, error) {
+	start := time.UnixMilli(startMs).UTC()
+	end := time.UnixMilli(endMs).UTC()
+	lb := PlaybackLookbackForRole(userRole)
+	s.log.Info("RadarAlarmPlayback begin",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_addr", deviceAddr),
+		zap.Int64("start_ms", startMs),
+		zap.Int64("end_ms", endMs),
+		zap.String("user_role", strings.TrimSpace(userRole)),
+		zap.Duration("lookback", lb),
+	)
+	if err := ValidatePlaybackWindow(start, end, PlaybackKindTrack, lb); err != nil {
+		s.log.Warn("RadarAlarmPlayback window rejected", zap.Error(err))
+		return nil, err
+	}
+
+	dev, err := s.devices.GetDevice(ctx, tenantID, deviceAddr)
+	if err != nil || dev == nil {
+		s.log.Warn("RadarAlarmPlayback device lookup failed", zap.String("tenant_id", tenantID), zap.String("device_addr", deviceAddr), zap.Error(err))
+		return nil, fmt.Errorf("device not found or access denied")
+	}
+	if dev.DeviceAddr == "" {
+		return nil, fmt.Errorf("device_addr missing")
+	}
+
+	rows, err := s.alarms.GetAlarmRowsByAddr(ctx, dev.DeviceAddr, alarmPlaybackKinds, start, end, playbackRawMaxRows)
+	if err != nil {
+		s.log.Warn("RadarAlarmPlayback alarm_events error",
+			zap.Error(err),
+			zap.String("device_addr", dev.DeviceAddr),
+		)
+		return nil, fmt.Errorf("query alarm_events failed")
+	}
+
+	items := make([]AlarmPlaybackItem, 0, len(rows))
+	for _, row := range rows {
+		item := AlarmPlaybackItem{
+			EventID:     row.EventID,
+			EventType:   row.EventType,
+			AlarmLevel:  row.AlarmLevel,
+			TriggeredAt: row.TriggeredAt.Unix(),
+			Trigger:     extractAlarmTrigger(row.Payload),
+		}
+		if row.AlertedAt != nil {
+			ts := row.AlertedAt.Unix()
+			item.AlertedAt = &ts
+		}
+		items = append(items, item)
+	}
+	s.log.Info("RadarAlarmPlayback ok",
+		zap.String("device_addr", dev.DeviceAddr),
+		zap.Int("alarm_count", len(items)),
+	)
+
+	return map[string]interface{}{
+		"alarms": items,
+		"total":  len(items),
+	}, nil
+}
+
+// extractAlarmTrigger 从 alarm_events.payload JSONB 抽 trigger 位置 + pose。
+// 缺字段（如推断类 lost-fall 无连续 track）→ 指针为 nil，FE 自行降级。
+func extractAlarmTrigger(payload map[string]interface{}) AlarmPlaybackTrigger {
+	out := AlarmPlaybackTrigger{}
+	if x, ok := intPtrFromAny(payload[observation.FieldPositionX]); ok {
+		out.PositionX = x
+	}
+	if y, ok := intPtrFromAny(payload[observation.FieldPositionY]); ok {
+		out.PositionY = y
+	}
+	if z, ok := intPtrFromAny(payload[observation.FieldPositionZ]); ok {
+		out.PositionZ = z
+	}
+	if p, ok := intPtrFromAny(payload[observation.FieldPose]); ok {
+		out.Pose = p
+	}
+	return out
+}
+
+func intPtrFromAny(v interface{}) (*int, bool) {
+	switch t := v.(type) {
+	case int:
+		return &t, true
+	case int64:
+		i := int(t)
+		return &i, true
+	case float64:
+		i := int(t)
+		return &i, true
+	case float32:
+		i := int(t)
+		return &i, true
+	}
+	return nil, false
 }
 
 // VitalPlaybackPoint 一条 vital 数据点：来自 monitor_stream payload 中的 heart_rate / respiratory_rate / sleep_stage。

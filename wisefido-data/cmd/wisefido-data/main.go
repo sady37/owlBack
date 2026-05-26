@@ -266,12 +266,13 @@ func main() {
 		// 创建 Radar Install Service 和 Handler（通过 wisefido-qinglan 与设备通信）
 		radarInstall := service.NewRadarInstall(cfg, db, devicesRepo, cardsRepo, configVersionsRepo, unitsRepo, qinglanClient, logger)
 		monitorPlaybackRepo := repository.NewPostgresMonitorPlaybackRepository(db)
+		alarmPlaybackRepo := repository.NewPostgresAlarmPlaybackRepository(db)
 		radarHandler := httpapi.NewRadarHandler(radarInstall, stub, kv, redisClient, monitorPlaybackRepo, logger)
 		// 将 dataStreamSubscriber 传给 RadarHandler（供 SSE 推送使用）
 		radarHandler.SetDataStreamSubscriber(dataStreamSubscriber)
 		router.RegisterRadarRoutes(radarHandler)
 
-		trackPlaybackSvc := service.NewTrackPlaybackService(devicesRepo, monitorPlaybackRepo, logger)
+		trackPlaybackSvc := service.NewTrackPlaybackService(devicesRepo, monitorPlaybackRepo, alarmPlaybackRepo, logger)
 		playbackHandler := httpapi.NewPlaybackHandler(trackPlaybackSvc, tenantsRepo, db, logger)
 		router.RegisterPlaybackRoutes(playbackHandler)
 

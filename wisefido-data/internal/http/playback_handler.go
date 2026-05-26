@@ -132,7 +132,11 @@ func (h *PlaybackHandler) PostRadarPlayback(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusOK, Fail("deviceId is required"))
 		return
 	}
-	if req.DataType != "" && req.DataType != "track" {
+	dataType := req.DataType
+	if dataType == "" {
+		dataType = "track"
+	}
+	if dataType != "track" && dataType != "alarm" {
 		h.logReplayAudit("PostRadarPlayback", r, rk, src, reqTime, false, nil)
 		writeJSON(w, http.StatusOK, Fail("unsupported dataType"))
 		return
@@ -155,6 +159,7 @@ func (h *PlaybackHandler) PostRadarPlayback(w http.ResponseWriter, r *http.Reque
 		zap.String("tenant_header", tenantRaw),
 		zap.String("tenant_id", tenantID),
 		zap.String("device_addr", did),
+		zap.String("data_type", dataType),
 		zap.Int64("start_time_ms", req.StartTime),
 		zap.Int64("end_time_ms", req.EndTime),
 		zap.String("start_utc", startRFC),
@@ -165,10 +170,19 @@ func (h *PlaybackHandler) PostRadarPlayback(w http.ResponseWriter, r *http.Reque
 	)
 
 	userRole := strings.TrimSpace(r.Header.Get("X-User-Role"))
-	result, err := h.track.RadarTrackPlayback(r.Context(), tenantID, did, req.StartTime, req.EndTime, userRole)
-	if err != nil {
-		h.logReplayAudit("PostRadarPlayback", r, rk, src, reqTime, false, err)
-		writeJSON(w, http.StatusOK, Fail(err.Error()))
+	var (
+		result map[string]interface{}
+		err2   error
+	)
+	switch dataType {
+	case "alarm":
+		result, err2 = h.track.RadarAlarmPlayback(r.Context(), tenantID, did, req.StartTime, req.EndTime, userRole)
+	default:
+		result, err2 = h.track.RadarTrackPlayback(r.Context(), tenantID, did, req.StartTime, req.EndTime, userRole)
+	}
+	if err2 != nil {
+		h.logReplayAudit("PostRadarPlayback", r, rk, src, reqTime, false, err2)
+		writeJSON(w, http.StatusOK, Fail(err2.Error()))
 		return
 	}
 	h.logReplayAudit("PostRadarPlayback", r, rk, src, reqTime, true, nil)

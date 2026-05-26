@@ -132,6 +132,9 @@ type TrackState struct {
 	// ---- 最后观测 ----
 	LastPose     int
 	LastZ        int
+	// firmware 直发的最后一帧 raw 雷达本地坐标。仅用于 alarm/event publish 时作 parent track 原样上抛；
+	// 内部算法（grid/cell/fall）一律读 Kalman 后的画布坐标，不读这里。
+	LastRawH, LastRawV, LastRawZ int
 	// LastUpdateMs：每次 processFrameAt（含 miss tick）都会刷新到 nowMs，反映"engine
 	// 最近一次为该 track 计算/预测过的时间"。不能用作"最后真正看到 track 的时间"。
 	LastUpdateMs int64
@@ -236,8 +239,10 @@ type PendingLostFall struct {
 	OriginalTrackID int
 	DeviceAddr        string
 	RoomID          string
-	LastX, LastY    int
+	LastX, LastY    int // 画布坐标（grid 落点用）
 	LastZ           int
+	// firmware 直发的最后一帧 raw 雷达本地坐标 — alarm publish 时用，对外语义同 monitor_stream
+	LastRawH, LastRawV, LastRawZ int
 	LastScore       int
 	LastVerdict     TrackVerdict
 	LastCellArea    AreaType // 消失点 cell.Belief[0].Type，决定 wait 时长
