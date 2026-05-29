@@ -154,6 +154,22 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 		cfg.WallPolygon = boundaryPolygonForStamp(cfg.Radar)
 	}
 
+	// 客户未画 Enter 时沿 WallPolygon 周长生成隐式 Enter 薄带，让 NearestEntryDist
+	// 在 wall 边缘范围内回 0，lost-fall 的 "贴在门口正常通过" 检测（≤30cm）能继续
+	// 工作。否则 wall-fit-no-enter 的房间所有 track 失锁都会被判为非门口消失 →
+	// lost-fall pending 池被无关 track 灌满。
+	// trade-off：把整个 wall perimeter 当作 entry，比真画门口宽很多 → over-skip
+	// 部分 lost-fall。但客户没画 enter 本来就放弃这层精度，兜底比裸跑好。
+	if len(cfg.Enters) == 0 && len(cfg.WallPolygon) >= 3 {
+		cfg.Enters = deriveImplicitEntersFromPolygon(cfg.WallPolygon, FallRulesParam.Lost.ExitDistMinCm)
+		cfg.EnterHeights = make([]int, len(cfg.Enters))
+		cfg.EnterTargets = make([]string, len(cfg.Enters)) // "" = inside_enter 默认
+		for i := range cfg.Enters {
+			cfg.EnterHeights[i] = defaultHeightForType("Enter")
+			allObjectPoints = append(allObjectPoints, rectCorners(cfg.Enters[i])...)
+		}
+	}
+
 	// 推算房间画布范围（覆盖所有物体 + 留 margin）
 	cfg.RoomW, cfg.RoomH, cfg.OriginX, cfg.OriginY =
 		deriveRoomBounds(cfg.WallPolygon, allObjectPoints)
@@ -432,6 +448,38 @@ func buildWallPolygon(wallPoints []radarutils.Point, enters []radarutils.Rect) [
 		{X: bbox.X2, Y: bbox.Y2}, // 右下
 		{X: bbox.X1, Y: bbox.Y2}, // 左下
 	}
+}
+
+// deriveImplicitEntersFromPolygon 沿多边形周长生成隐式 Enter 薄带。
+// 每条边 → 一个 AABB rect 含端点 + thickness 余量。
+// 用于客户未画 Enter 的兜底：墙边 ≤ thickness 的 cell 被算作 entry 区，
+// NearestEntryDist 在此范围内回 0，配合 lost-fall ExitDistMinCm 判定保持原语义。
+// thickness 取 ExitDistMinCm 让"贴边 30cm"的检测覆盖整圈周长。
+func deriveImplicitEntersFromPolygon(poly []radarutils.Point, thickness int) []radarutils.Rect {
+	n := len(poly)
+	if n < 3 {
+		return nil
+	}
+	out := make([]radarutils.Rect, 0, n)
+	for i := 0; i < n; i++ {
+		p1 := poly[i]
+		p2 := poly[(i+1)%n]
+		minX, maxX := p1.X, p2.X
+		if minX > maxX {
+			minX, maxX = maxX, minX
+		}
+		minY, maxY := p1.Y, p2.Y
+		if minY > maxY {
+			minY, maxY = maxY, minY
+		}
+		out = append(out, radarutils.Rect{
+			X1: minX - thickness,
+			Y1: minY - thickness,
+			X2: maxX + thickness,
+			Y2: maxY + thickness,
+		})
+	}
+	return out
 }
 
 // boundaryPolygonForStamp 把 BoundaryVertices 重排成 PolygonContains 可用的闭合简单多边形。
