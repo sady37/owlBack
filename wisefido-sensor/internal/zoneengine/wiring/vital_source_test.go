@@ -119,9 +119,9 @@ func TestBedPrefixFromDeviceID(t *testing.T) {
 		{"not-an-ip", ""},
 	}
 	for _, c := range cases {
-		got := bedPrefixFromDeviceID(c.in)
+		got := bedPrefixFromDeviceAddr(c.in)
 		if got != c.want {
-			t.Errorf("bedPrefixFromDeviceID(%q): want %q, got %q", c.in, c.want, got)
+			t.Errorf("bedPrefixFromDeviceAddr(%q): want %q, got %q", c.in, c.want, got)
 		}
 	}
 }
