@@ -67,8 +67,11 @@ PGDATABASE="${DB_NAME:-owlrd}"
 export PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE
 
 RUN_PSQL() {
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'owl-postgresql'; then
-    docker exec -i owl-postgresql psql -U "$PGUSER" -d "$PGDATABASE" "$@"
+  # match container by suffix（some setups have hashed prefix like e8cd…_owl-postgresql）
+  local pg_container
+  pg_container=$(docker ps --format '{{.Names}}' 2>/dev/null | grep 'owl-postgresql' | head -1 || true)
+  if [[ -n "$pg_container" ]]; then
+    docker exec -i "$pg_container" psql -U "$PGUSER" -d "$PGDATABASE" "$@"
   else
     psql "$@"
   fi
