@@ -52,18 +52,16 @@ type RadarHandler struct {
 	kv                   store.KV
 	redisClient          *redis.Client
 	dataStreamSubscriber interface{} // DataStreamSubscriber
-	monitorPlaybackRepo  repository.MonitorPlaybackRepository
 	logger               *zap.Logger
 }
 
-func NewRadarHandler(radarInstall *service.RadarInstall, stubHandler *StubHandler, kv store.KV, redisClient *redis.Client, monitorPlaybackRepo repository.MonitorPlaybackRepository, logger *zap.Logger) *RadarHandler {
+func NewRadarHandler(radarInstall *service.RadarInstall, stubHandler *StubHandler, kv store.KV, redisClient *redis.Client, logger *zap.Logger) *RadarHandler {
 	return &RadarHandler{
-		radarInstall:        radarInstall,
-		stubHandler:         stubHandler,
-		kv:                  kv,
-		redisClient:         redisClient,
-		monitorPlaybackRepo: monitorPlaybackRepo,
-		logger:              logger,
+		radarInstall: radarInstall,
+		stubHandler:  stubHandler,
+		kv:           kv,
+		redisClient:  redisClient,
+		logger:       logger,
 	}
 }
 

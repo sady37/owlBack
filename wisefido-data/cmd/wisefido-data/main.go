@@ -267,7 +267,7 @@ func main() {
 		radarInstall := service.NewRadarInstall(cfg, db, devicesRepo, cardsRepo, configVersionsRepo, unitsRepo, qinglanClient, logger)
 		monitorPlaybackRepo := repository.NewPostgresMonitorPlaybackRepository(db)
 		alarmPlaybackRepo := repository.NewPostgresAlarmPlaybackRepository(db)
-		radarHandler := httpapi.NewRadarHandler(radarInstall, stub, kv, redisClient, monitorPlaybackRepo, logger)
+		radarHandler := httpapi.NewRadarHandler(radarInstall, stub, kv, redisClient, logger)
 		// 将 dataStreamSubscriber 传给 RadarHandler（供 SSE 推送使用）
 		radarHandler.SetDataStreamSubscriber(dataStreamSubscriber)
 		router.RegisterRadarRoutes(radarHandler)
