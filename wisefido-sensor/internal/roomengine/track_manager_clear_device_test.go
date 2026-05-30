@@ -56,7 +56,7 @@ func TestClearDevice_TracksNotTouched(t *testing.T) {
 	addr := "fd00:0:3:111:3:101::abcd"
 
 	// 加 track（按 trackID 索引，非 deviceAddr）
-	tm.tracks[7] = &TrackState{TrackID: 7, DeviceID: addr, Kalman: NewKalmanFilter2D(50, 50)}
+	tm.tracks[7] = &TrackState{TrackID: 7, DeviceAddr: addr, Kalman: NewKalmanFilter2D(50, 50)}
 	tm.bedSessions[addr] = &BedSession{InBedSinceMs: 1000}
 
 	tm.ClearDevice(addr)

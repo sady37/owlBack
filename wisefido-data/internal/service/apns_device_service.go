@@ -14,6 +14,11 @@ import (
 
 // APNSDeviceService iOS 设备 Token 管理 + 推送发送
 // DB 操作（apns_devices 表）+ 调用 notify.APNSSender
+//
+// v2 schema：apns_devices(user_id UUID, push_token, platform, environment, ...)
+//   - 无 tenant_id 列 → SendAlarmPush 通过 JOIN users 用 INET prefix 过滤
+//   - 无 user_type 列 → RegisterDevice HTTP gate 已限定 staff，DB 内隐式只剩 staff
+//   - notify_mode 过滤走 should_notify_user(user_id, NOW())
 type APNSDeviceService struct {
 	db         *sql.DB
 	sender     *notify.APNSSender // nil = APNs 未配置，静默跳过（不影响启动）
@@ -26,51 +31,51 @@ func NewAPNSDeviceService(db *sql.DB, sender *notify.APNSSender, logger *zap.Log
 	return &APNSDeviceService{db: db, sender: sender, logger: logger, popCounter: popCounter}
 }
 
-// Register 注册或更新 iOS 设备 token
-// ON CONFLICT(device_token) 直接 upsert，同一设备重复注册无副作用
+// Register 注册或更新 push token（iOS APNs / Android FCM 共用此入口）
+// 同一 (user_id, push_token) 复注册直接 upsert
 func (s *APNSDeviceService) Register(
 	ctx context.Context,
-	tenantID, userID, userType, deviceToken, env string,
+	userID, pushToken, platform, env string,
 ) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO apns_devices
-		    (tenant_id, user_id, user_type, device_token, environment, is_active, updated_at)
-		VALUES ($1, $2, $3, $4, $5, TRUE, NOW())
-		ON CONFLICT (device_token) DO UPDATE SET
-		    tenant_id   = EXCLUDED.tenant_id,
-		    user_id     = EXCLUDED.user_id,
-		    user_type   = EXCLUDED.user_type,
-		    environment = EXCLUDED.environment,
-		    is_active   = TRUE,
-		    updated_at  = NOW()
-	`, tenantID, userID, userType, deviceToken, env)
+		    (user_id, push_token, platform, environment, is_active, last_seen_at, registered_at, updated_at)
+		VALUES ($1::UUID, $2, $3, $4, TRUE, NOW(), NOW(), NOW())
+		ON CONFLICT (user_id, push_token) DO UPDATE SET
+		    platform     = EXCLUDED.platform,
+		    environment  = EXCLUDED.environment,
+		    is_active    = TRUE,
+		    last_seen_at = NOW(),
+		    updated_at   = NOW()
+	`, userID, pushToken, platform, env)
 	return err
 }
 
 // Unregister 登出时标记 token 为 inactive
-func (s *APNSDeviceService) Unregister(ctx context.Context, tenantID, deviceToken string) error {
+func (s *APNSDeviceService) Unregister(ctx context.Context, userID, pushToken string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE apns_devices
 		SET is_active = FALSE, updated_at = NOW()
-		WHERE tenant_id = $1 AND device_token = $2
-	`, tenantID, deviceToken)
+		WHERE user_id = $1::UUID AND push_token = $2
+	`, userID, pushToken)
 	return err
 }
 
 // deactivateStaleToken APNs 返回 410 时自动失效（goroutine 内调用，不对外暴露）
-func (s *APNSDeviceService) deactivateStaleToken(deviceToken string) {
+func (s *APNSDeviceService) deactivateStaleToken(pushToken string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, _ = s.db.ExecContext(ctx, `
 		UPDATE apns_devices
 		SET is_active = FALSE, updated_at = NOW()
-		WHERE device_token = $1
-	`, deviceToken)
+		WHERE push_token = $1
+	`, pushToken)
 	s.logger.Info("[APNS] stale token deactivated",
-		zap.String("token_prefix", tokenPrefix(deviceToken)))
+		zap.String("token_prefix", tokenPrefix(pushToken)))
 }
 
 // AlarmNotification 报警推送参数
+// TenantID 是 IPv6 /48 CIDR（如 "fd00:0:5::/48"）；由 cardagg 派生发来
 type AlarmNotification struct {
 	TenantID   string
 	CardID     string
@@ -79,8 +84,15 @@ type AlarmNotification struct {
 	AlarmLevel int // 0=EMERG 1=ALERT 2=CRITICAL 3=ERROR 4=WARNING
 }
 
-// SendAlarmPush 向租户下所有活跃 staff 异步推送报警（仅 user_type=staff；不向住户/联系人推送）
+// SendAlarmPush 向租户下所有符合 notify_mode 的 iOS staff 异步推送报警
 // 若 sender 为 nil（未配置 APNs），静默返回
+//
+// 过滤链：
+//   - u.tenant_id = $1::INET    限定租户
+//   - u.status = 'active'        见 should_notify_user 内部检查
+//   - d.is_active                token 未被 410 失效
+//   - d.platform = 'ios'         当前 APNs 仅 iOS（Android 走 FCM 不复用此发送器）
+//   - should_notify_user(...)    统一 forever/off/login_only/work_time 时间窗 + 节假日
 func (s *APNSDeviceService) SendAlarmPush(ctx context.Context, n AlarmNotification) {
 	if s.sender == nil {
 		return
@@ -90,11 +102,13 @@ func (s *APNSDeviceService) SendAlarmPush(ctx context.Context, n AlarmNotificati
 	var devices []row
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT device_token, environment, user_id
-		FROM   apns_devices
-		WHERE  tenant_id = $1
-		  AND  user_type = 'staff'
-		  AND  is_active = TRUE
+		SELECT d.push_token, d.environment, d.user_id::TEXT
+		FROM   apns_devices d
+		JOIN   users u ON u.user_id = d.user_id
+		WHERE  u.tenant_id = $1::INET
+		  AND  d.is_active = TRUE
+		  AND  d.platform  = 'ios'
+		  AND  should_notify_user(d.user_id, NOW())
 	`, n.TenantID)
 	if err != nil {
 		s.logger.Warn("[APNS] query devices failed", zap.Error(err))
@@ -135,7 +149,6 @@ func (s *APNSDeviceService) SendAlarmPush(ctx context.Context, n AlarmNotificati
 			if err == notify.ErrDeviceTokenInvalid {
 				s.deactivateStaleToken(token)
 			} else if strings.Contains(err.Error(), "BadDeviceToken") {
-				// Treat APNs 400 BadDeviceToken as stale and deactivate to avoid DB pollution
 				s.deactivateStaleToken(token)
 			} else {
 				s.logger.Warn("[APNS] send failed",

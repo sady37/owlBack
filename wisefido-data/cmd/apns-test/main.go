@@ -1,12 +1,12 @@
-// apns-test：从 apns_devices 取一条 staff 活跃 token 发测试推送，或 -token/-env 手动指定。
+// apns-test：从 apns_devices 取一条 iOS 活跃 token 发测试推送，或 -token/-env 手动指定。
 // 用法（与 wisefido-data 相同工作目录与 CONFIG_PATH、APNS_* 环境变量）：
 //
 //	cd owlBack/wisefido-data && CONFIG_PATH=config.yaml \
 //	  APNS_KEY_ID=... APNS_TEAM_ID=... APNS_BUNDLE_ID=... APNS_P8_KEY=... \
 //	  go run ./cmd/apns-test
 //
-//	go run ./cmd/apns-test -tenant <uuid>
-//	go run ./cmd/apns-test -tenant <uuid> -env sandbox   // 覆盖 apns_devices.environment（未上架调试常用）
+//	go run ./cmd/apns-test -tenant 'fd00:0:5::/48'
+//	go run ./cmd/apns-test -tenant 'fd00:0:5::/48' -env sandbox   // 覆盖 apns_devices.environment
 //	go run ./cmd/apns-test -token <hex> -env sandbox
 package main
 
@@ -27,7 +27,7 @@ import (
 )
 
 func main() {
-	tenant := flag.String("tenant", "", "optional tenant_id when picking from DB")
+	tenant := flag.String("tenant", "", "optional tenant prefix CIDR (e.g. 'fd00:0:5::/48') when picking from DB")
 	tokenArg := flag.String("token", "", "device token hex (skips DB pick)")
 	envArg := flag.String("env", "", "sandbox|production (required with -token; optional with -tenant to override DB column)")
 	tryBoth := flag.Bool("try-both", true, "on BadDeviceToken retry opposite env")
@@ -71,24 +71,25 @@ func main() {
 		var row *sql.Row
 		if strings.TrimSpace(*tenant) != "" {
 			row = db.QueryRowContext(ctxPick, `
-				SELECT device_token, environment
-				FROM apns_devices
-				WHERE is_active = TRUE AND user_type = 'staff' AND device_token <> ''
-				  AND tenant_id = $1::uuid
-				ORDER BY updated_at DESC
+				SELECT d.push_token, d.environment
+				FROM apns_devices d
+				JOIN users u ON u.user_id = d.user_id
+				WHERE d.is_active = TRUE AND d.platform = 'ios' AND d.push_token <> ''
+				  AND u.tenant_id = $1::INET
+				ORDER BY d.updated_at DESC
 				LIMIT 1
 			`, strings.TrimSpace(*tenant))
 		} else {
 			row = db.QueryRowContext(ctxPick, `
-				SELECT device_token, environment
+				SELECT push_token, environment
 				FROM apns_devices
-				WHERE is_active = TRUE AND user_type = 'staff' AND device_token <> ''
+				WHERE is_active = TRUE AND platform = 'ios' AND push_token <> ''
 				ORDER BY updated_at DESC
 				LIMIT 1
 			`)
 		}
 		if err := row.Scan(&token, &env); err != nil {
-			log.Fatalf("pick row: %v (need staff apns_devices or use -token)", err)
+			log.Fatalf("pick row: %v (need active iOS apns_devices or use -token)", err)
 		}
 		token = normalizeToken(token)
 		env = strings.TrimSpace(env)

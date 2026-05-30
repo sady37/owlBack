@@ -1,12 +1,22 @@
-// Package alarmpush 与 wisefido-cardagg alarm_service.notifyAlarmPushAsync 同一条 HTTP 链路：
-// POST wisefido-data /internal/v1/push/alarm（APNs 仅 staff，见 wisefido-data APNSDeviceService）。
-// cardagg 无独立 HTTP 服务，故 AI 与 cardagg 均直接调 data；责任与推送范围一致。
+// Package alarmpush cardagg → wisefido-data 的 alarm 推送 trigger。
+//
+// 职责：cardagg 写入 alarm_events 成功后异步通知 wisefido-data 触发 APNs。
+//   - 单源原则：alarm 由 cardagg 持久化 → 推送 trigger 也由 cardagg 发；sensor 不再持有此责
+//   - wisefido-data 只做 APNs HTTPS gateway + apns_devices 寿命管理
+//   - 过滤链（notify_mode / work_time / 节假日 / login_only）在 wisefido-data 端
+//     用 SQL should_notify_user() 统一执行
+//
+// 触发条件（由 caller 控制）：
+//   - alarm_events INSERT 成功（非 dedup / 非 SkippedNotify）
+//   - tenant_id 和 card_id 均存在
+//
+// 配置：WISEFIDO_DATA_ALARM_PUSH_URL / INTERNAL_ALARM_PUSH_SECRET 任一未设直接 no-op，
+// 便于 dev/test 环境无 APNs 凭证时正常跑业务流程。
 package alarmpush
 
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -16,7 +26,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// NotifyWisefidoData 异步通知 wisefido-data 触发 APNs（env：WISEFIDO_DATA_ALARM_PUSH_URL、INTERNAL_ALARM_PUSH_SECRET）
+// NotifyWisefidoData 异步触发 APNs；env 缺失时静默 no-op。
 func NotifyWisefidoData(logger *zap.Logger, tenantID, cardID, deviceAddr, eventID, eventType, alarmLevel string) {
 	base := strings.TrimSpace(os.Getenv("WISEFIDO_DATA_ALARM_PUSH_URL"))
 	sec := strings.TrimSpace(os.Getenv("INTERNAL_ALARM_PUSH_SECRET"))
@@ -27,7 +37,7 @@ func NotifyWisefidoData(logger *zap.Logger, tenantID, cardID, deviceAddr, eventI
 	payload := map[string]string{
 		"tenant_id":   tenantID,
 		"card_id":     cardID,
-		"device_addr":   deviceAddr,
+		"device_addr": deviceAddr,
 		"event_id":    eventID,
 		"event_type":  eventType,
 		"alarm_level": alarmLevel,
@@ -57,25 +67,4 @@ func NotifyWisefidoData(logger *zap.Logger, tenantID, cardID, deviceAddr, eventI
 			logger.Warn("alarm push to wisefido-data bad status", zap.Int("status", resp.StatusCode))
 		}
 	}()
-}
-
-// LookupCardIDByDevice deviceAddr 是 canonical IPv6 (devices.device_addr)，
-// 直读 devices.card_id（FE 已显式绑定）。
-func LookupCardIDByDevice(ctx context.Context, db *sql.DB, deviceAddr string) (string, error) {
-	if db == nil || deviceAddr == "" {
-		return "", sql.ErrNoRows
-	}
-	var cardID sql.NullString
-	err := db.QueryRowContext(ctx, `
-		SELECT card_id::text FROM devices
-		 WHERE device_addr = $1::INET
-		 LIMIT 1
-	`, deviceAddr).Scan(&cardID)
-	if err != nil {
-		return "", err
-	}
-	if !cardID.Valid {
-		return "", sql.ErrNoRows
-	}
-	return cardID.String, nil
 }

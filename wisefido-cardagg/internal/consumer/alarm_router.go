@@ -23,6 +23,7 @@ import (
 	owlredis "owl-common/redis"
 	"owl-common/spatial"
 
+	"wisefido-cardagg/internal/alarmpush"
 	"wisefido-cardagg/internal/service"
 
 	"go.uber.org/zap"
@@ -247,6 +248,9 @@ func (r *AlarmRouter) persist(ctx context.Context, msg *owlredis.IoTStreamMessag
 		zap.String("event_id", result.EventID),
 		zap.String("type", eventName),
 		zap.String("level", level))
+	// APNs 推送 trigger：alarm 已落 alarm_events 且非 dedup / 非 SkippedNotify。
+	// notify_mode / 节假日 / login_only 等过滤在 wisefido-data 端 should_notify_user() 统一执行。
+	alarmpush.NotifyWisefidoData(r.logger, ac.TenantPref, cardID, ac.DeviceAddr, result.EventID, eventName, level)
 	return r.writeAlarmState(ctx, cardID, cas)
 }
 

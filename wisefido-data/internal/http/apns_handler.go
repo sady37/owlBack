@@ -50,7 +50,8 @@ func (h *APNSHandler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.apnsSvc.Register(ctx, tenantID, userID, userType, req.DeviceToken, req.Environment); err != nil {
+	// v2 apns_devices 无 tenant_id/user_type 列；tenant 派生自 users.tenant_id (JOIN)
+	if err := h.apnsSvc.Register(ctx, userID, req.DeviceToken, "ios", req.Environment); err != nil {
 		h.logger.Error("[APNS] register device failed",
 			zap.String("user_id", userID),
 			zap.String("tenant_id", tenantID),
@@ -84,6 +85,6 @@ func (h *APNSHandler) UnregisterDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = h.apnsSvc.Unregister(ctx, tenantID, req.DeviceToken)
+	_ = h.apnsSvc.Unregister(ctx, userID, req.DeviceToken)
 	writeJSON(w, http.StatusOK, Ok(map[string]string{"status": "unregistered"}))
 }

@@ -33,7 +33,7 @@ func TestVerdictNameStable(t *testing.T) {
 func TestTrackStatusToStreamMap_RequiredFields(t *testing.T) {
 	ts := &TrackStatus{
 		TrackID:      7,
-		DeviceID:     "fd00:0:3:111:80::cafe",
+		DeviceAddr:   "fd00:0:3:111:80::cafe",
 		RoomID:       "fd00:0:3:111:80::/128",
 		Verdict:      VerdictReal,
 		GhostPenalty: 12,
@@ -45,10 +45,10 @@ func TestTrackStatusToStreamMap_RequiredFields(t *testing.T) {
 		UpdatedAtMs:  1700000000123,
 	}
 	m := ts.ToStreamMap()
-	// 必填字段：verdict / track_id / device_id / room_id / x / y / z / pose / still_sec / cell_area_type / updated_at_ms
+	// 必填字段：verdict / track_id / device_addr / room_id / x / y / z / pose / still_sec / cell_area_type / updated_at_ms
 	requireKey(t, m, "verdict", "real")
 	requireKey(t, m, "track_id", 7)
-	requireKey(t, m, "device_id", "fd00:0:3:111:80::cafe")
+	requireKey(t, m, "device_addr", "fd00:0:3:111:80::cafe")
 	requireKey(t, m, "room_id", "fd00:0:3:111:80::/128")
 	requireKey(t, m, "cell_area_type", "bed")
 	requireKey(t, m, "ghost_penalty", 12)

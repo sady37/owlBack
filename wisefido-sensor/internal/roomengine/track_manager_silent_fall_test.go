@@ -29,7 +29,7 @@ func newTestTM() (*TrackManager, *RoomGrid) {
 }
 
 func frameAt(tid int, x, y, z int, pose int, tms int64) TrackFrame {
-	return TrackFrame{TrackID: tid, DeviceID: "dev1", X: x, Y: y, Z: z, Pose: pose, TMs: tms}
+	return TrackFrame{TrackID: tid, DeviceAddr: "dev1", X: x, Y: y, Z: z, Pose: pose, TMs: tms}
 }
 
 // runFramesUntilReal 喂 ≥12 帧（保证 AgeSec≥10）+ 强制升 Verdict=Real。
@@ -586,7 +586,7 @@ func TestFrozenFrameDetection(t *testing.T) {
 
 	// 第 1 帧出生
 	tm.processFrameAt([]TrackFrame{
-		{TrackID: tid, DeviceID: "dev1", X: x, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: 1000},
+		{TrackID: tid, DeviceAddr: "dev1", X: x, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: 1000},
 	}, 1000)
 	ts := tm.tracks[tid]
 	if ts == nil {
@@ -598,7 +598,7 @@ func TestFrozenFrameDetection(t *testing.T) {
 
 	// 第 2 帧位置完全相同：进入 still box → FrozenRunStart 设为 History 最早帧（=1000）
 	tm.processFrameAt([]TrackFrame{
-		{TrackID: tid, DeviceID: "dev1", X: x, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: 2000},
+		{TrackID: tid, DeviceAddr: "dev1", X: x, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: 2000},
 	}, 2000)
 	if ts.FrozenRunStart != 1000 {
 		t.Errorf("after 2 still frames FrozenRunStart want 1000 (oldest history), got %d", ts.FrozenRunStart)
@@ -614,7 +614,7 @@ func TestFrozenFrameDetection(t *testing.T) {
 			dx = -10
 		}
 		tm.processFrameAt([]TrackFrame{
-			{TrackID: tid, DeviceID: "dev1", X: x + dx, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: tms},
+			{TrackID: tid, DeviceAddr: "dev1", X: x + dx, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: tms},
 		}, tms)
 	}
 	if ts.FrozenRunStart == 0 {
@@ -623,7 +623,7 @@ func TestFrozenFrameDetection(t *testing.T) {
 
 	// 一帧大幅跳出 box → 重置（位移 > 30cm）
 	tm.processFrameAt([]TrackFrame{
-		{TrackID: tid, DeviceID: "dev1", X: x + 100, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: 26000},
+		{TrackID: tid, DeviceAddr: "dev1", X: x + 100, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: 26000},
 	}, 26000)
 	if ts.FrozenRunStart != 0 {
 		t.Errorf("after big jump FrozenRunStart should reset, got %d", ts.FrozenRunStart)
@@ -672,14 +672,14 @@ func TestLostFallFrozenThenRecovery(t *testing.T) {
 
 	// 2) 移到 (-90, 320)（远离 entry，> ExitDistMinCm）
 	tm.processFrameAt([]TrackFrame{
-		{TrackID: tid, DeviceID: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
+		{TrackID: tid, DeviceAddr: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
 	}, tms)
 	tms += 1000
 
 	// 3) 连续 30 帧字面完全相同（frozen 模拟 firmware 失锁）
 	for i := 0; i < 30; i++ {
 		tm.processFrameAt([]TrackFrame{
-			{TrackID: tid, DeviceID: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
+			{TrackID: tid, DeviceAddr: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
 		}, tms)
 		tms += 1000
 	}
@@ -713,7 +713,7 @@ func TestLostFallFrozenThenRecovery(t *testing.T) {
 	const newTid = 1
 	const recoverX, recoverY = -240, 220
 	tm.processFrameAt([]TrackFrame{
-		{TrackID: newTid, DeviceID: "dev1", X: recoverX, Y: recoverY, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
+		{TrackID: newTid, DeviceAddr: "dev1", X: recoverX, Y: recoverY, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
 	}, tms)
 	if len(tm.pendingLostFalls) != 0 {
 		t.Errorf("pendingLostFalls should be empty after recovery, got %d", len(tm.pendingLostFalls))
@@ -763,7 +763,7 @@ func TestLostFallExitRoomCancel(t *testing.T) {
 	const tid = 0
 	tms := runFramesUntilReal(tm, tid, 100, 100, 1_000_000, 30)
 	tm.processFrameAt([]TrackFrame{
-		{TrackID: tid, DeviceID: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TMs: tms},
+		{TrackID: tid, DeviceAddr: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TMs: tms},
 	}, tms)
 	tms += 1000
 	for i := 0; i < 12; i++ {
@@ -874,7 +874,7 @@ func TestLostFall_SkippedAfterBedsideFall(t *testing.T) {
 
 	// 2) 移到合法 lost-fall 位置（远离 entry）
 	tm.processFrameAt([]TrackFrame{
-		{TrackID: tid, DeviceID: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
+		{TrackID: tid, DeviceAddr: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
 	}, tms)
 	tms += 1000
 
@@ -910,7 +910,7 @@ func settleAtPos(tm *TrackManager, tid, x, y, z int, pose int, startTms int64, f
 	tms := startTms
 	for i := 0; i < frames; i++ {
 		tm.processFrameAt([]TrackFrame{
-			{TrackID: tid, DeviceID: "dev1", X: x, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: tms},
+			{TrackID: tid, DeviceAddr: "dev1", X: x, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: tms},
 		}, tms)
 		tms += 1000
 	}
