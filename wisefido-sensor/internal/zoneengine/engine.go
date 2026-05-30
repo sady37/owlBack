@@ -24,9 +24,10 @@ import (
 type Engine struct {
 	rulesStore        *RulesStore
 	logger            *zap.Logger
-	bedSizeLookup     BedSizeLookup // 注入：根据 bedZoneID 查床型 bucket（legacy bed FSM 用）
-	bedModeLookup     BedModeLookup // 注入：根据 bedZoneID 查 BedMode（Bayesian 用）；nil → Facility
-	useBedBayesian    bool          // 切到贝叶斯 bed FSM；默认 false 用 legacy Scorer/StateMachine
+	bedSizeLookup     BedSizeLookup       // 注入：根据 bedZoneID 查床型 bucket（legacy bed FSM 用）
+	bedModeLookup     BedModeLookup       // 注入：根据 bedZoneID 查 BedMode（Bayesian 用）；nil → Facility
+	radarPresence     RadarPresenceLookup // 注入：/88 room 是否有 radar；nil → 历史语义（允许 lift）
+	useBedBayesian    bool                // 切到贝叶斯 bed FSM；默认 false 用 legacy Scorer/StateMachine
 	listeners         []ZoneEventListener
 	feedbackListeners []FeedbackListener
 
@@ -51,6 +52,14 @@ type BedModeLookup interface {
 // 实现侧（如 sensor 主进程）注入查 DB / cache 的具体逻辑；测试侧注入 stub。
 type BedSizeLookup interface {
 	BedSizeBucket(bedZoneID string) string // "small" / "large"
+}
+
+// RadarPresenceLookup 按 /88 room prefix 查该 room 名下是否存在 radar /128 设备。
+// subset_invariant lift_parent 用：纯 sleepace 房（无 radar）不允许把 room 抬到 Occupied，
+// 否则 Z 永远 stale、TotalPeople 永远从自身 fallback 复读、room 卡死 Occupied。
+// nil 时 fallback 行为 = 历史语义（一律允许 lift），保留单测 stub 兼容。
+type RadarPresenceLookup interface {
+	HasRadarInRoom(roomZoneID string) bool
 }
 
 // zoneInstance 单 (zoneType, zoneID) 的运行时实例。物理寻址，多源同 FSM。
@@ -104,6 +113,14 @@ func (e *Engine) SetUseBedBayesian(enabled bool, modeLookup BedModeLookup) {
 	defer e.mu.Unlock()
 	e.useBedBayesian = enabled
 	e.bedModeLookup = modeLookup
+}
+
+// SetRadarPresenceLookup 注入 /88 radar 存在查询。nil 保留历史语义（一律允许 lift）。
+// 仅启动期调用一次。
+func (e *Engine) SetRadarPresenceLookup(l RadarPresenceLookup) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.radarPresence = l
 }
 
 // AddFeedbackListener 注册 FeedbackEvent 监听者。
@@ -523,7 +540,10 @@ func (e *Engine) repairSubsetInvariant(nowMs int64, rules *Rules) []ZoneEvent {
 				Ts:         nowMs,
 			})
 		} else {
-			// 非 stale：信 bed，抬升 room
+			// 非 stale：信 bed，抬升 room（仅 /88 有 radar 时；否则 lift 后无 drop 路径）
+			if e.radarPresence != nil && !e.radarPresence.HasRadarInRoom(roomZoneID) {
+				continue
+			}
 			prev := roomInst.state
 			roomInst.stateMachine.ForceSet(StatusOccupied, nowMs)
 			roomInst.state.UpdatedAt = nowMs
@@ -543,7 +563,106 @@ func (e *Engine) repairSubsetInvariant(nowMs int64, rules *Rules) []ZoneEvent {
 			})
 		}
 	}
+
+	// 阶段 3：drop_no_radar — 扫所有 IsPresent 的 Room/Bathroom，若 /88 无 radar 且名下
+	// 无 IsPresent bed → 强制 Vacant。修复历史遗留的 lift_parent 卡死（card f61e8o 案例）；
+	// 也兜底 radar 设备下线/迁出后的清理。
+	if e.radarPresence != nil {
+		events = append(events, e.dropOrphanRoomsLocked(nowMs)...)
+	}
 	return events
+}
+
+// dropOrphanRoomsLocked 强制 /88 无 radar 且名下无活体 bed 的 Room 转 Vacant。
+// caller 必须已持锁。
+//
+// 触发条件三选一（全部满足）：
+//  1. room IsPresent (Occupied / Leaving)
+//  2. /88 名下不存在 radar 设备（radarPresence.HasRadarInRoom == false）
+//  3. /88 名下所有 bed instance 都 Vacant（subset_invariant 已落 stable）
+//
+// 不去重事件：caller emit 时通过 lastRoomState 字段级 merge 保 anchor。
+func (e *Engine) dropOrphanRoomsLocked(nowMs int64) []ZoneEvent {
+	// 阶段 1：收集候选 room keys（避免迭代时改 map）
+	var candidates []StateKey
+	for k, z := range e.states {
+		if k.ZoneType != ZoneTypeRoom && k.ZoneType != ZoneTypeBathroom {
+			continue
+		}
+		if !z.state.IsPresent() {
+			continue
+		}
+		candidates = append(candidates, k)
+	}
+	// 阶段 2：检查 + drop
+	var events []ZoneEvent
+	for _, roomKey := range candidates {
+		z, ok := e.states[roomKey]
+		if !ok {
+			continue
+		}
+		if !z.state.IsPresent() {
+			continue
+		}
+		if e.radarPresence.HasRadarInRoom(roomKey.ZoneID) {
+			continue // 有 radar → 走正常 NumberPeople/Vacant 路径，不干涉
+		}
+		// 名下任一 bed 仍 IsPresent → 让 lift 维持（虽然没 radar 但 bed 还在；之后 stale 路径会降 bed）
+		if e.anyBedPresentInRoomLocked(roomKey.ZoneID) {
+			continue
+		}
+		prev := z.state
+		if z.stateMachine != nil {
+			z.stateMachine.ForceSet(StatusVacant, nowMs)
+		}
+		z.state.UpdatedAt = nowMs
+		z.state.LastSource = "invariant_repair_drop_no_radar"
+		applyTransitionToState(&z.state, TransitionResult{
+			NewStatus:  StatusVacant,
+			Transition: TransitionVacant,
+		}, nowMs)
+		if e.logger != nil {
+			e.logger.Info("zone room flip (drop_no_radar)",
+				zap.String("zone_id", roomKey.ZoneID),
+				zap.Int64("ts_ms", nowMs),
+			)
+		}
+		events = append(events, ZoneEvent{
+			ZoneType:   roomKey.ZoneType,
+			ZoneID:     roomKey.ZoneID,
+			Transition: TransitionVacant,
+			NewState:   z.state,
+			PrevState:  prev,
+			Trace:      []SignalEvidence{{Source: "invariant_repair", Kind: "drop_no_radar", Ts: nowMs}},
+			Ts:         nowMs,
+		})
+	}
+	return events
+}
+
+// anyBedPresentInRoomLocked /88 roomZoneID 名下任一 /96 bed instance IsPresent 返 true。
+// caller 必须已持锁。
+func (e *Engine) anyBedPresentInRoomLocked(roomZoneID string) bool {
+	roomPfx, err := netip.ParsePrefix(roomZoneID)
+	if err != nil {
+		return false
+	}
+	for k, z := range e.states {
+		if k.ZoneType != ZoneTypeBed {
+			continue
+		}
+		if !z.state.IsPresent() {
+			continue
+		}
+		bedPfx, err := netip.ParsePrefix(k.ZoneID)
+		if err != nil {
+			continue
+		}
+		if roomPfx.Contains(bedPfx.Addr()) {
+			return true
+		}
+	}
+	return false
 }
 
 // getOrCreate 取或建 zoneInstance。caller 必须已持锁。
@@ -617,6 +736,11 @@ func (e *Engine) maybeReconcileSubset(zt ZoneType, changed ZoneState, now int64,
 	}
 	roomZoneID := deriveRoomZoneIDFromBed(changed.ZoneID)
 	if roomZoneID == "" {
+		return nil
+	}
+	// 无 radar 房：不允许 lift_parent。否则 Z 永远 stale → TotalPeople 从自身 fallback 复读
+	// → room 卡死 Occupied。详 [[ai_overrides 决策路径]]（card f61e8o 案例）。
+	if e.radarPresence != nil && !e.radarPresence.HasRadarInRoom(roomZoneID) {
 		return nil
 	}
 	roomKey := StateKey{ZoneType: ZoneTypeRoom, ZoneID: roomZoneID}

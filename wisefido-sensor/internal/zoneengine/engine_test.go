@@ -782,6 +782,187 @@ func TestEngine_Bayesian_DualLeaveFlipsVacant(t *testing.T) {
 	}
 }
 
+// stubRadarPresence：可控 /88 radar 存在性，用于 lift_parent gate 测试。
+type stubRadarPresence struct {
+	hasRadar map[string]bool
+}
+
+func (s stubRadarPresence) HasRadarInRoom(roomZoneID string) bool {
+	return s.hasRadar[roomZoneID]
+}
+
+// TestEngine_SubsetInvariant_NoRadar_SkipsLift card f61e8o 案例：/88 仅有 sleepace 时
+// maybeReconcileSubset 必须跳过 lift_parent；否则 RoomState.TotalPeople 卡死无 Vacant 反向路径。
+func TestEngine_SubsetInvariant_NoRadar_SkipsLift(t *testing.T) {
+	e := newTestEngine()
+	e.SetRadarPresenceLookup(stubRadarPresence{
+		hasRadar: map[string]bool{
+			// /88 200 无 radar
+			"fd00:0:3:111:3:200::/88": false,
+		},
+	})
+	cap := &captureListener{}
+	e.AddListener(cap)
+
+	now := int64(1_000_000_000_000)
+	e.Apply(SignalEvidence{
+		ZoneType: ZoneTypeBed, ZoneID: "fd00:0:3:111:3:201::/96",
+		Source: "sleepace", Kind: "enter", Ts: now,
+	})
+
+	for _, ev := range cap.Events() {
+		if ev.ZoneType == ZoneTypeRoom && ev.NewState.LastSource == "subset_invariant_from_bed" {
+			t.Fatalf("lift_parent fired on no-radar room: %+v", ev)
+		}
+	}
+}
+
+// TestEngine_SubsetInvariant_WithRadar_LiftsAsBefore /88 有 radar 时 lift_parent 保留旧行为。
+func TestEngine_SubsetInvariant_WithRadar_LiftsAsBefore(t *testing.T) {
+	e := newTestEngine()
+	e.SetRadarPresenceLookup(stubRadarPresence{
+		hasRadar: map[string]bool{
+			"fd00:0:3:111:3:100::/88": true,
+		},
+	})
+	cap := &captureListener{}
+	e.AddListener(cap)
+
+	now := int64(1_000_000_000_000)
+	e.Apply(SignalEvidence{
+		ZoneType: ZoneTypeBed, ZoneID: "fd00:0:3:111:3:101::/96",
+		Source: "sleepace", Kind: "enter", Ts: now,
+	})
+
+	hasLift := false
+	for _, ev := range cap.Events() {
+		if ev.ZoneType == ZoneTypeRoom && ev.NewState.LastSource == "subset_invariant_from_bed" {
+			hasLift = true
+		}
+	}
+	if !hasLift {
+		t.Fatalf("expected lift_parent on radar-present room")
+	}
+}
+
+// TestEngine_RepairSubsetInvariant_NoRadar_SkipsLift 周期巡检的 lift 分支同样需 gate。
+func TestEngine_RepairSubsetInvariant_NoRadar_SkipsLift(t *testing.T) {
+	rules := DefaultRules()
+	rules.Feedback.SubsetInvariant.RepairIntervalSec = 1
+	e := NewEngine(rules, StaticBedSizeLookup{Bucket: "small"}, zap.NewNop())
+	e.SetRadarPresenceLookup(stubRadarPresence{
+		hasRadar: map[string]bool{"fd00:0:3:111:3:200::/88": false},
+	})
+	cap := &captureListener{}
+	e.AddListener(cap)
+
+	now := int64(1_000_000_000_000)
+	bedID := "fd00:0:3:111:3:201::/96"
+	roomID := "fd00:0:3:111:3:200::/88"
+
+	// 准备 bed=Occupied、room=Vacant 的不一致状态（修复巡检的输入条件）。
+	e.Apply(SignalEvidence{
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
+		Source: "sleepace", Kind: "enter", Ts: now,
+	})
+	e.mu.Lock()
+	if roomInst, ok := e.states[StateKey{ZoneType: ZoneTypeRoom, ZoneID: roomID}]; ok {
+		roomInst.state.Status = StatusVacant
+		roomInst.state.Occupied = false
+		roomInst.stateMachine.ForceSet(StatusVacant, now)
+	}
+	e.mu.Unlock()
+
+	e.Tick(now + 11_000)
+
+	for _, ev := range cap.Events() {
+		if ev.ZoneType == ZoneTypeRoom && ev.NewState.LastSource == "invariant_repair_lift_room" {
+			t.Fatalf("repair lift fired on no-radar room: %+v", ev)
+		}
+	}
+}
+
+// TestEngine_DropNoRadar_DropsOrphanRoom drop_no_radar 阶段把无 radar / 无 active bed 的
+// Occupied room 强制 Vacant — 修复历史 lift_parent 卡死残留。
+func TestEngine_DropNoRadar_DropsOrphanRoom(t *testing.T) {
+	rules := DefaultRules()
+	rules.Feedback.SubsetInvariant.RepairIntervalSec = 1
+	e := NewEngine(rules, StaticBedSizeLookup{Bucket: "small"}, zap.NewNop())
+	e.SetRadarPresenceLookup(stubRadarPresence{
+		hasRadar: map[string]bool{"fd00:0:3:111:3:200::/88": false},
+	})
+	cap := &captureListener{}
+	e.AddListener(cap)
+
+	now := int64(1_000_000_000_000)
+	roomID := "fd00:0:3:111:3:200::/88"
+
+	// 历史遗留：room Occupied + 名下无任何 IsPresent bed instance。
+	e.mu.Lock()
+	r := e.getOrCreate(ZoneTypeRoom, roomID)
+	r.state.Status = StatusOccupied
+	r.state.Occupied = true
+	r.state.LastSource = "legacy_lift_parent"
+	r.stateMachine.ForceSet(StatusOccupied, now-3600_000)
+	e.mu.Unlock()
+
+	e.Tick(now + 11_000)
+
+	hasDrop := false
+	for _, ev := range cap.Events() {
+		if ev.ZoneType == ZoneTypeRoom && ev.Transition == TransitionVacant &&
+			ev.NewState.LastSource == "invariant_repair_drop_no_radar" {
+			hasDrop = true
+		}
+	}
+	if !hasDrop {
+		t.Fatalf("orphan room should be force-dropped to Vacant by drop_no_radar phase")
+	}
+	st, _ := e.GetState(StateKey{ZoneType: ZoneTypeRoom, ZoneID: roomID})
+	if st.IsPresent() {
+		t.Fatalf("room should be Vacant after drop_no_radar, got %v", st.Status)
+	}
+}
+
+// TestEngine_DropNoRadar_KeepsRoomWithActiveBed 当 /88 名下仍有 IsPresent bed 时，drop_no_radar
+// 不应强制 Vacant（让 stale_bed 路径处理 bed，先不动 room）。
+func TestEngine_DropNoRadar_KeepsRoomWithActiveBed(t *testing.T) {
+	rules := DefaultRules()
+	rules.Feedback.SubsetInvariant.RepairIntervalSec = 1
+	rules.Feedback.SubsetInvariant.StaleBedThresholdSec = 99999 // 让 stale 路径不踢 bed
+	e := NewEngine(rules, StaticBedSizeLookup{Bucket: "small"}, zap.NewNop())
+	e.SetRadarPresenceLookup(stubRadarPresence{
+		hasRadar: map[string]bool{"fd00:0:3:111:3:200::/88": false},
+	})
+	cap := &captureListener{}
+	e.AddListener(cap)
+
+	now := int64(1_000_000_000_000)
+	bedID := "fd00:0:3:111:3:201::/96"
+	roomID := "fd00:0:3:111:3:200::/88"
+
+	// bed Occupied（即使 gate 拦了 lift，bed instance 仍 IsPresent）；手动建 room Occupied 模拟历史 lift。
+	e.Apply(SignalEvidence{
+		ZoneType: ZoneTypeBed, ZoneID: bedID,
+		Source: "sleepace", Kind: "enter", Ts: now,
+	})
+	e.mu.Lock()
+	r := e.getOrCreate(ZoneTypeRoom, roomID)
+	r.state.Status = StatusOccupied
+	r.state.Occupied = true
+	r.state.LastSource = "legacy_lift_parent"
+	r.stateMachine.ForceSet(StatusOccupied, now-3600_000)
+	e.mu.Unlock()
+
+	e.Tick(now + 11_000)
+
+	for _, ev := range cap.Events() {
+		if ev.ZoneType == ZoneTypeRoom && ev.NewState.LastSource == "invariant_repair_drop_no_radar" {
+			t.Fatalf("drop_no_radar should not fire while bed still IsPresent: %+v", ev)
+		}
+	}
+}
+
 func TestEngine_DeriveRoomZoneIDFromBed(t *testing.T) {
 	cases := []struct {
 		bed  string

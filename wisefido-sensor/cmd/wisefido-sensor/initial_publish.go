@@ -22,6 +22,11 @@ import (
 //   - FE 渲染：active_anchor_ms=0 → "—"；scene_state=0 default → "OOR"；bed_status undefined → "No visitor today"
 //   - 旧实现 nowMs anchor 让重启后所有卡同步显示 "Active 3m ago / InBed 3m / LeftBed 3m"（假活跃）
 //
+// **2026-05-28 例外**：/88 无 radar 设备时，旧 lift_parent 可能写过 stale {TotalPeople>0} 状态
+// （详 [[ai_overrides 决策路径]]，card f61e8o 案例）。该路径下 ts=0 占位无法翻 stale → 单独走
+// 强制翻转分支：ts=now + LastExitTs=now，cardagg mergeRoomState 触发 N→0 transition 即清干净。
+// 之后维持 0（engine 不再 lift_parent，无再爬高来源）。
+//
 // 与 OnZoneEvent 路径互补——OnZoneEvent 只在 zone transition 时发，启动时无 transition；
 // 本函数主动一次性发清空，避免重启前的 stale anchor 在 cardagg hash 里持续。
 //
@@ -29,10 +34,10 @@ import (
 //   - RoomState category=room.state：整段覆盖（v2 sensor 全 owner，无第三方写者）
 //   - BedState  category=bed.state：sensor owner 字段（BedStatus/StartTime/TrackNumber 等）整段覆盖；
 //     SleepStage/SleepConfidence 由独立 category=bed.sleepstage 同步清，避免残留
-func publishInitialResetState(ctx context.Context, db *sql.DB, p *zoneengine.StreamPublisher, logger *zap.Logger) {
+func publishInitialResetState(ctx context.Context, db *sql.DB, p *zoneengine.StreamPublisher, radar zoneengine.RadarPresenceLookup, logger *zap.Logger) {
 	// 注意：UpdatedAt / StartTime / LastExitTime 全部 0，cardagg builder 当 "no data" 处理。
 	// 不再用 time.Now().UnixMilli() 否则所有卡同步显示假活跃。
-	_ = time.Now // 保留 import 兼容（PublishBedSleepStage 内部可能用）
+	nowMs := time.Now().UnixMilli()
 
 	// Rooms：扫所有 rooms（含无监控的，cardagg 端字段级覆盖，无 device 的 card 仍可正常显示 OOR）
 	rRows, err := db.QueryContext(ctx, `SELECT room_id::text FROM rooms`)
@@ -40,7 +45,7 @@ func publishInitialResetState(ctx context.Context, db *sql.DB, p *zoneengine.Str
 		logger.Warn("initial_reset: query rooms failed", zap.Error(err))
 		return
 	}
-	roomCount := 0
+	roomCount, forceVacantCount := 0, 0
 	for rRows.Next() {
 		var cardID string
 		if err := rRows.Scan(&cardID); err != nil {
@@ -52,6 +57,13 @@ func publishInitialResetState(ctx context.Context, db *sql.DB, p *zoneengine.Str
 		rs := &card.RoomState{
 			RoomIdentifier: card.RoomIdentifier{RoomID: cardID},
 			TotalPeople:    0,
+		}
+		// /88 无 radar：强制翻 stale state（card f61e8o 案例）。
+		// 给 ts 让 cardagg mergeBedField 看 prev=N → in=0+ts 触发 N→0 transition + LastExitTs。
+		if radar != nil && !radar.HasRadarInRoom(cardID) {
+			rs.TotalPeopleTs = nowMs
+			rs.LastExitTs = nowMs
+			forceVacantCount++
 		}
 		if err := p.PublishRoomState(ctx, cardID, rs); err != nil {
 			logger.Warn("initial_reset: publish room.state failed",
@@ -105,6 +117,7 @@ func publishInitialResetState(ctx context.Context, db *sql.DB, p *zoneengine.Str
 
 	logger.Info("sensor startup: initial vacant state published (anchors reset to now)",
 		zap.Int("rooms", roomCount),
+		zap.Int("rooms_force_vacant_no_radar", forceVacantCount),
 		zap.Int("beds", bedCount),
 		zap.Int("bed_sleepstage", sleepStageCount))
 }

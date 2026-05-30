@@ -108,6 +108,10 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 		opts.Logger.Warn("spatial cache initial load failed; continuing with empty cache",
 			zap.Error(err))
 	}
+	// HasRadarInRoom 需要 fitness 才能判 radar offline 等同无 radar；nil 时退化 DB-only。
+	if opts.Fitness != nil {
+		spatial.SetFitness(opts.Fitness)
+	}
 	vitalSrc := NewMonitorVitalSource(opts.MonitorBuffer)
 
 	// 3) engine + stream publisher（替代旧 RedisAdapter 直写 card:status；
@@ -116,6 +120,8 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 	// Bayesian bed FSM 启用：unit_property 驱动 Facility/Home LR 档 + 0.70/0.75 阈值。
 	// legacy Scorer+StateMachine 仅 room/bathroom 用。
 	engine.SetUseBedBayesian(true, spatial)
+	// subset_invariant lift_parent 必须知道 /88 是否真有 radar，否则纯 sleepace 房卡死 Occupied。
+	engine.SetRadarPresenceLookup(spatial)
 	streamPublisher := zoneengine.NewStreamPublisher(opts.Redis, opts.Logger)
 	streamPublisher.SetIdentity(opts.Identity)
 	streamPublisher.SetEngine(engine) // publisher 派生 AloneContinuousMin 时按 (ZoneType,ZoneID) 查 engine.GetState

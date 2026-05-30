@@ -63,6 +63,13 @@ const (
 	UnitPropertyFacility = 1
 )
 
+// RadarFitnessChecker 运行期 radar 健康判定（DeviceFitnessTracker.IsFit 接口）。
+// HasRadarInRoom 用之过滤 unfit/offline radar，让 drop_no_radar 在 radar 离线时也能触发。
+// nil 时退化为 DB-only 检查（仅 access 字段）。
+type RadarFitnessChecker interface {
+	IsFit(deviceAddr string) bool
+}
+
 // SpatialCache per-unit lazy spatial 缓存。
 type SpatialCache struct {
 	db     *sql.DB
@@ -73,6 +80,8 @@ type SpatialCache struct {
 
 	queryTimeout    time.Duration
 	refreshInterval time.Duration // unit TTL；超过即下次 query 时 reload
+
+	fitness RadarFitnessChecker // 运行期 radar fit/unfit；HasRadarInRoom 过滤离线 radar
 }
 
 func NewSpatialCache(db *sql.DB, logger *zap.Logger) *SpatialCache {
@@ -204,6 +213,55 @@ func (c *SpatialCache) BedMode(bedZoneID string) zoneengine.BedMode {
 		return zoneengine.BedModeHome
 	}
 	return zoneengine.BedModeFacility
+}
+
+// SetFitness 注入 radar fit/unfit 运行期判定（DeviceFitnessTracker）。
+// 未注入时 HasRadarInRoom 退化为 DB-only 检查（仅 access 字段）。
+func (c *SpatialCache) SetFitness(f RadarFitnessChecker) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fitness = f
+}
+
+// HasRadarInRoom satisfy zoneengine.RadarPresenceLookup — /88 room 名下是否存在
+// access=true 且**当前 fit** 的 Radar /128 设备。subset_invariant lift_parent 用：
+//
+//   - 纯 sleepace 房（无 DB radar）：无 Vacant 反向证据通道，永远不允许 lift
+//   - DB 有 radar 但全 unfit（offline/SensorDetached/AngleException/SignalPoor）：
+//     运行期等同无 radar — radar 翻 unfit 即触发 drop_no_radar 清状态（card f61e8o 同 bug
+//     的离线变种；详 [[subset_invariant_no_radar_gate]] R1）
+//
+// 注：fitness 未注入或 fitness 中无该 addr → IsFit 默认 true（兼容启动期 / 新设备）。
+// 注：仅看 access；不卡 monitoring_enabled —— monitoring 关闭只是 alarm 不上报，不改变
+// "这是 radar 房"的事实。
+func (c *SpatialCache) HasRadarInRoom(roomZoneID string) bool {
+	p, err := netip.ParsePrefix(roomZoneID)
+	if err != nil {
+		return false
+	}
+	ud := c.ensureUnit(maskToUnit(p))
+	if ud == nil {
+		return false
+	}
+	c.mu.RLock()
+	fitness := c.fitness
+	c.mu.RUnlock()
+	for addr, dm := range ud.Devices {
+		if !dm.Access {
+			continue
+		}
+		if !strings.EqualFold(dm.DeviceType, "Radar") {
+			continue
+		}
+		if !p.Contains(addr) {
+			continue
+		}
+		if fitness != nil && !fitness.IsFit(addr.String()) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // FindPrimaryDevice 替代旧 BedDeviceLookup — 按 alarm 类型选 preferred device_type，

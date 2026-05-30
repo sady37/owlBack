@@ -198,7 +198,7 @@ func main() {
 	// 重启清残留：sensor 启动后主动 publish 所有 room/bed 的 vacant 初始态，
 	// OOR/OOB anchor 重置为 now，避免 cardagg card:state hash 保留昨日 LastExitTime
 	// （如「OOR 29h」残留显示）。详 initial_publish.go。
-	publishInitialResetState(ctx, engineDB, zone.StreamPublisher, logger)
+	publishInitialResetState(ctx, engineDB, zone.StreamPublisher, zone.Spatial, logger)
 
 	// 6. 等待信号（优雅关闭）
 	sigChan := make(chan os.Signal, 1)
