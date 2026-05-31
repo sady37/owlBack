@@ -496,6 +496,8 @@ type AlarmState struct {
 	// PopAlarm：仅 status=active 行参与；空字符串表示当前无 active 告警（bar 不显示）
 	PopAlarm string `json:"pop_alarm"` // "<LEVEL>.<event_type>" 如 "EMERG.Fall" / ""
 	EventID  string `json:"event_id"`  // popAlarm 对应 alarm_events.event_id（UI dedup）
+	// 触发当前 pop alarm 的设备 /128 host text；FE Handle 弹窗 AlarmDevice 直读
+	DeviceAddr string `json:"device_addr,omitempty"`
 }
 
 // ========== CardDisplay：FE Overview dumb-render 契约 ==========

@@ -84,6 +84,7 @@ type CardAlarmState struct {
 	PopAlarmLevel    string // 最高优先级 (lvl 数字最小) + 最新 active 行的字符串级别
 	PopAlarmType     string // 同行 event_type
 	PopAlarmEventId  string
+	PopDeviceAddr    string
 	PopTriggeredAtMs int64
 	PopAlertedAtMs   int64
 	HandTime         time.Time
@@ -105,6 +106,7 @@ func (c *CardAlarmState) ToAlarmState() *AlarmState {
 	if c.PopAlarmLevel != "" {
 		s.PopAlarm = c.PopAlarmLevel + "." + c.PopAlarmType
 		s.EventID = c.PopAlarmEventId
+		s.DeviceAddr = c.PopDeviceAddr
 		if c.PopTriggeredAtMs > 0 {
 			s.TriggeredAt = c.PopTriggeredAtMs
 		}
@@ -380,14 +382,15 @@ func QueryCardAlarmState(ctx context.Context, db *sql.DB, cardID string) (*CardA
 	var popEvent string
 	var popTriggered time.Time
 	var popAlertedNull sql.NullTime
+	var popDeviceAddr string
 	err = db.QueryRowContext(ctx, `
-		SELECT alarm_level, event_type, event_id::text, triggered_at, alerted_at
+		SELECT alarm_level, event_type, event_id::text, triggered_at, alerted_at, COALESCE(host(device_addr), '')
 		FROM alarm_events
 		WHERE card_id = $1::INET
 		  AND alarm_status = 'active'
 		ORDER BY alarm_level ASC, triggered_at DESC
 		LIMIT 1
-	`, cardID).Scan(&popLvl, &popType, &popEvent, &popTriggered, &popAlertedNull)
+	`, cardID).Scan(&popLvl, &popType, &popEvent, &popTriggered, &popAlertedNull, &popDeviceAddr)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("query pop alarm for %s: %w", cardID, err)
 	}
@@ -395,6 +398,7 @@ func QueryCardAlarmState(ctx context.Context, db *sql.DB, cardID string) (*CardA
 		cas.PopAlarmLevel = intToAlarmLevelStr(popLvl)
 		cas.PopAlarmType = popType
 		cas.PopAlarmEventId = popEvent
+		cas.PopDeviceAddr = popDeviceAddr
 		cas.PopTriggeredAtMs = popTriggered.UnixMilli()
 		if popAlertedNull.Valid {
 			cas.PopAlertedAtMs = popAlertedNull.Time.UnixMilli()
