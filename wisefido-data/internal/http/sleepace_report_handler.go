@@ -425,17 +425,9 @@ func (h *SleepaceReportHandler) checkReportPermission(ctx context.Context, tenan
 		return nil
 	}
 
-	// 2. 住户及相关联系人：只能查看自己的
-	if userType == "resident" || userType == "family" {
-		if residentInfo.ResidentID != userID {
-			return fmt.Errorf("access denied: can only view own reports")
-		}
-		return nil
-	}
-
-	// 3. Staff 角色权限检查
+	// 2. Staff 角色权限检查
 	if userType == "staff" && userRole != "" {
-		// 3.1 Caregiver/Nurse：检查 assign-only
+		// 2.1 Caregiver/Nurse：检查 assign-only
 		if userRole == "Caregiver" || userRole == "Nurse" {
 			// 检查权限配置
 			perm, err := GetResourcePermission(h.db, ctx, userRole, "residents", "R")
@@ -448,7 +440,7 @@ func (h *SleepaceReportHandler) checkReportPermission(ctx context.Context, tenan
 			return nil
 		}
 
-		// 3.2 Manager：Phase 3 按 Current Branch (user_branches.is_primary) 严格过滤
+		// 2.2 Manager：Phase 3 按 Current Branch (user_branches.is_primary) 严格过滤
 		if userRole == "Manager" {
 			perm, err := GetResourcePermission(h.db, ctx, userRole, "residents", "R")
 			if err == nil && perm.BranchOnly {
@@ -480,7 +472,7 @@ func (h *SleepaceReportHandler) checkReportPermission(ctx context.Context, tenan
 		}
 	}
 
-	// 4. 其他角色：默认允许（SystemAdmin 等）
+	// 3. 其他角色：默认允许（SystemAdmin 等）
 	return nil
 }
 

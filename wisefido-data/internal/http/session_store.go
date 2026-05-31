@@ -18,7 +18,7 @@ type SessionData struct {
 	UserID       string
 	TenantID     string
 	TenantPrefix string
-	UserType     string // "resident" | "staff"
+	UserType     string // 恒为 "staff"：v2 仅 users 表账号可登录，resident 不登录（Family 靠 Role 区分）
 	Role         string
 	HoA          string
 }
@@ -88,9 +88,4 @@ func (s *MemSessionStore) cleanupLoop() {
 // GenerateSessionToken 生成会话 token
 func GenerateSessionToken() string {
 	return uuid.New().String()
-}
-
-// StoreSession 实现 service.LoginSessionWriter，供 AuthService 写入会话
-func (s *MemSessionStore) StoreSession(ctx context.Context, token, userID, tenantID, userType, role string, ttl time.Duration) error {
-	return s.Set(ctx, token, SessionData{UserID: userID, TenantID: tenantID, UserType: userType, Role: role}, ttl)
 }
