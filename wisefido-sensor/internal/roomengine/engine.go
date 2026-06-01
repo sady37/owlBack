@@ -72,7 +72,12 @@ type RoomConfig struct {
 	EnterTargets []string
 
 	// 雷达安装
-	Radar radarutils.RadarMount
+	// Radar = 主雷达（单雷达房 = 唯一一台；多雷达房 = 第一台，供 boundaryPolygon 兜底 +
+	// L1 mirror ghost tiebreaker 用）。Radars = 该房全部雷达 mount（per-device 坐标转换），
+	// RadarAddrs 平行存各 mount 的 deviceAddr。单雷达房 len(Radars)==1；空 = placeholder。
+	Radar      radarutils.RadarMount
+	Radars     []radarutils.RadarMount
+	RadarAddrs []string
 
 	// Sleepad 位置（point 几何，可能多个）— 用于事件路由 + 可视化
 	Sleepads []radarutils.Point
@@ -146,7 +151,7 @@ type Engine struct {
 	mu         sync.RWMutex
 	rooms      map[string]*TrackManager         // roomID → TrackManager
 	grids      map[string]*RoomGrid             // roomID → Grid
-	mounts     map[string]radarutils.RadarMount // roomID → Radar 安装参数（坐标转换用）
+	deviceMounts map[string]radarutils.RadarMount // deviceAddr(/128) → 该 radar 安装参数（坐标转换用）；多雷达房每台一份
 	deviceRoom map[string]string                // deviceAddr → roomID (sensor 唯一物理寻址)
 	// PR-8: AI publish 用 — 源 radar UUID 反查 deviceUID + room 反查 tenant/card
 	deviceAddrToUID   map[string]string // deviceAddr(UUID) → device_uid（IoTStreamMessage.DeviceUID）
@@ -306,7 +311,7 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 	return &Engine{
 		rooms:              make(map[string]*TrackManager),
 		grids:              make(map[string]*RoomGrid),
-		mounts:             make(map[string]radarutils.RadarMount),
+		deviceMounts:       make(map[string]radarutils.RadarMount),
 		deviceRoom:         make(map[string]string),
 		deviceAddrToUID:      make(map[string]string),
 		deviceAddrToType:     make(map[string]string),
@@ -454,13 +459,17 @@ func (e *Engine) RoomForDevice(deviceKey string) string {
 	return e.deviceRoom[deviceKey]
 }
 
-// MountForRoom 取指定房间的雷达安装参数（用于 RadarToCanvas 转换）。
-// found=false 表示 room 未注册或未 stamp radar。
-func (e *Engine) MountForRoom(roomID string) (radarutils.RadarMount, bool) {
+// MountForDevice 取指定 device 的雷达安装参数（用于 RadarToCanvas 转换）。
+// per-device：多雷达房每台 radar 各自坐标系；回退 roomID key 容老路径（RegisterRoom 无 RadarAddrs 时）。
+// found=false 表示 device 未注册或未 stamp radar。
+func (e *Engine) MountForDevice(deviceAddr string) (radarutils.RadarMount, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	mount, ok := e.mounts[roomID]
-	return mount, ok
+	if m, ok := e.deviceMounts[deviceAddr]; ok {
+		return m, true
+	}
+	m, ok := e.deviceMounts[e.deviceRoom[deviceAddr]]
+	return m, ok
 }
 
 // MarkFakeAlarmAt 在指定房间的 cell at (x, y) 累计 FakeAlarmCount + 1。
@@ -1220,8 +1229,16 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		grid.StampRoomPolygon(cfg.WallPolygon)
 	}
 
-	// 3. Stamp Radar 物理 FOV → InFOV / EdgeDist / MaxZ / MinZ
-	grid.StampRadar(cfg.Radar)
+	// 3. Stamp 每台 Radar 物理 FOV → InFOV / EdgeDist / MaxZ / MinZ。
+	// 多雷达房逐台 stamp（FOV 取并集）；单雷达房 cfg.Radars 含唯一一台。
+	// 空 cfg.Radars（placeholder / 老路径）回退到 cfg.Radar。
+	radars := cfg.Radars
+	if len(radars) == 0 {
+		radars = []radarutils.RadarMount{cfg.Radar}
+	}
+	for _, m := range radars {
+		grid.StampRadar(m)
+	}
 
 	// 4. Stamp Enters → 记 Enters 列表 + 覆写矩形内 InRoom=true（门洞可穿）
 	grid.StampEnters(cfg.Enters, cfg.EnterTargets)
@@ -1250,7 +1267,15 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	}
 
 	e.grids[cfg.RoomID] = grid
-	e.mounts[cfg.RoomID] = cfg.Radar
+	// per-device mount：每台 radar 的 deviceAddr → 自己 mount，handleMessage 按帧来源 device 取。
+	// 单雷达 / 老路径无 RadarAddrs 时回退把 roomID 当 key（与历史 e.mounts[roomID] 等价）。
+	if len(cfg.RadarAddrs) == len(radars) && len(cfg.RadarAddrs) > 0 {
+		for i, m := range radars {
+			e.deviceMounts[cfg.RadarAddrs[i]] = m
+		}
+	} else {
+		e.deviceMounts[cfg.RoomID] = cfg.Radar
+	}
 	tm := NewTrackManager(cfg.RoomID, grid)
 	tm.SetMoveSpeedCms(e.learnParams.MoveSpeedCms)
 	tm.SetBedsideFallConfig(e.bedsideFallCfg)
@@ -1657,7 +1682,12 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 	e.mu.RLock()
 	roomID := e.deviceRoom[addrStr]
 	tm := e.rooms[roomID]
-	mount, hasMount := e.mounts[roomID]
+	// per-device mount：按帧来源 device 取自己 mount（多雷达房各台独立坐标系）；
+	// 回退 roomID key 容老路径（RegisterRoom 无 RadarAddrs 时按 roomID 存）。
+	mount, hasMount := e.deviceMounts[addrStr]
+	if !hasMount {
+		mount, hasMount = e.deviceMounts[roomID]
+	}
 	e.mu.RUnlock()
 
 	if tm == nil {
@@ -1991,14 +2021,19 @@ func (e *Engine) runDailyLayoutReload(ctx context.Context) {
 	// v2 schema: layout 在 room_visual_layout 表（PK=spatial_prefix）；
 	// rooms 表无 tenant_id/unit_id 列；tenant_id 由 room_id INET prefix /48 派生；
 	// unit timezone 通过 unit /80 LPM contains room /88 取。
+	// 按 /128 device 加载 canvas、按 /88 room 聚合（与 registerAllRooms 共用 LoadRoomCanvases
+	// + BuildRoomConfigFromCanvases，避免双写漂移）。room 元数据单独查。
+	canvasesByRoom, err := LoadRoomCanvases(ctx, e.dailyReloadDB, e.logger)
+	if err != nil {
+		e.logger.Warn("daily_reload load canvases failed", zap.Error(err))
+		return
+	}
 	rows, err := e.dailyReloadDB.QueryContext(ctx, `
 		SELECT r.room_id::text,
 		       r.room_name,
-		       rvl.canvas::text AS layout_config,
 		       COALESCE(u.timezone, '') AS timezone,
 		       host(set_masklen(r.room_id, 48))::text || '/48' AS tenant_pref
 		FROM rooms r
-		JOIN room_visual_layout rvl ON rvl.spatial_prefix = r.room_id
 		LEFT JOIN units u ON u.unit_id >>= r.room_id`)
 	if err != nil {
 		e.logger.Warn("daily_reload query failed", zap.Error(err))
@@ -2014,16 +2049,11 @@ func (e *Engine) runDailyLayoutReload(ctx context.Context) {
 	var pending []pendingReload
 	for rows.Next() {
 		var roomID, roomName, tenantID, timezone string
-		var layoutStr sql.NullString
-		if err := rows.Scan(&roomID, &roomName, &layoutStr, &timezone, &tenantID); err != nil {
+		if err := rows.Scan(&roomID, &roomName, &timezone, &tenantID); err != nil {
 			continue
 		}
-		if !layoutStr.Valid || layoutStr.String == "" {
-			continue
-		}
-		cfg, err := ParseLayoutConfig(roomID, []byte(layoutStr.String))
-		if err != nil {
-			e.logger.Warn("daily_reload parse failed", zap.String("room_id", roomID), zap.Error(err))
+		cfg, hasLayout := BuildRoomConfigFromCanvases(roomID, canvasesByRoom[roomID], e.logger)
+		if !hasLayout {
 			continue
 		}
 		cfg.RoomName = roomName

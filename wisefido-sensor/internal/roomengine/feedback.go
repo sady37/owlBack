@@ -257,10 +257,10 @@ func (i *AlarmFeedbackIngester) processOne(ctx context.Context,
 			zap.String("event_id", eventID), zap.String("device_addr", deviceAddr))
 		return false
 	}
-	mount, ok := i.engine.MountForRoom(roomID)
+	mount, ok := i.engine.MountForDevice(deviceAddr)
 	if !ok {
-		i.logger.Debug("alarm_feedback: room not mounted",
-			zap.String("event_id", eventID), zap.String("room_id", roomID))
+		i.logger.Debug("alarm_feedback: device not mounted",
+			zap.String("event_id", eventID), zap.String("device_addr", deviceAddr))
 		return false
 	}
 

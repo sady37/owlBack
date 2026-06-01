@@ -237,7 +237,6 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 		           THEN r.room_id::text
 		         ELSE host(set_masklen(r.room_id, 80))::text || '/80'
 		       END                                                   AS suite_id,
-		       COALESCE(rvl.canvas::text, '')                        AS layout_config,
 		       COALESCE(u.timezone, '')                              AS timezone,
 		       host(set_masklen(r.room_id, 48))::text || '/48'       AS tenant_pref,
 		       (SELECT ru.resident_id::text
@@ -250,12 +249,18 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 		        LIMIT 1)                                              AS resident_id
 		FROM rooms r
 		LEFT JOIN units u ON u.unit_id >>= r.room_id
-		LEFT JOIN room_visual_layout rvl ON rvl.spatial_prefix = r.room_id
 	`)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
+
+	// 预取所有 /128 device layout canvas，按所属 /88 room 分组。
+	// 根因修复：layout 全是 /128 device 级，旧 JOIN `rvl.spatial_prefix = r.room_id`(/88) 0 命中。
+	canvasesByRoom, err := roomengine.LoadRoomCanvases(ctx, db, logger)
+	if err != nil {
+		return 0, err
+	}
 
 	count := 0
 	placeholderCount := 0
@@ -263,11 +268,10 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 		var roomID, roomName, suiteID, tenantID string
 		var roomType int
 		var isPublicBathroom bool
-		var layoutStr sql.NullString
 		var residentIDOpt sql.NullString
 		var timezone string
 		if err := rows.Scan(&roomID, &roomName, &roomType, &isPublicBathroom,
-			&suiteID, &layoutStr, &timezone, &tenantID, &residentIDOpt); err != nil {
+			&suiteID, &timezone, &tenantID, &residentIDOpt); err != nil {
 			logger.Warn("scan rooms row", zap.Error(err))
 			continue
 		}
@@ -276,22 +280,14 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 			residentID = residentIDOpt.String
 		}
 
-		var cfg roomengine.RoomConfig
-		if !layoutStr.Valid || layoutStr.String == "" {
+		cfg, hasLayout := roomengine.BuildRoomConfigFromCanvases(roomID, canvasesByRoom[roomID], logger)
+		if hasLayout {
+			cfg.RoomName = roomName
+			cfg.Timezone = timezone
+			roomengine.ApplyOptimizedExtent(&cfg)
+		} else {
 			cfg = roomengine.RoomConfig{RoomID: roomID, RoomName: roomName, Timezone: timezone}
 			placeholderCount++
-		} else {
-			cfg, err = roomengine.ParseLayoutConfig(roomID, []byte(layoutStr.String))
-			if err != nil {
-				logger.Warn("parse layout failed; registering as placeholder",
-					zap.String("room_id", roomID), zap.Error(err))
-				cfg = roomengine.RoomConfig{RoomID: roomID, RoomName: roomName, Timezone: timezone}
-				placeholderCount++
-			} else {
-				cfg.RoomName = roomName
-				cfg.Timezone = timezone
-				roomengine.ApplyOptimizedExtent(&cfg)
-			}
 		}
 		// sensor_v2 v2 字段填入：RoomType / IsPublicBathroom / SuiteID / ResidentID
 		// （RegisterRoom 内部检测 IsPublicBathroom + 调 MarkPublicBathroom — 见 PR-7）
