@@ -182,6 +182,7 @@
 
 - **Dev1**　允许直接 stop 整个 owlback；cutover 时必整套停。`Why:` 冷启动暴露跨服务 wiring 问题。
 - **Dev2**　改完代码无需问授权，直接 `sudo systemctl restart owlback.<name>`。`Why:` dev 阶段已授权。
+- **Dev3**　本机 dev 环境：所有 Bash 命令一律预先授权（含删除）；**唯一附加纪律 = 删除文件/数据（`rm` / `DROP` / `DELETE` / `TRUNCATE`）执行前我主动做一次二次确认**。`Why:` 2026-05-31 用户授权全部命令免反复弹窗；删除不可逆故保留一次人工确认。连接：DB `127.0.0.1:5432` postgres/postgres/owl_v2；Redis `127.0.0.1:6379` 密码 `TeLunSu-36kr`。
 
 ---
 

@@ -25,11 +25,15 @@ import (
 	"go.uber.org/zap"
 )
 
+// persistSustainedThreshold 连续持久化失败到此条数后，逐条 error 降噪为周期采样的 sustained 告警。
+const persistSustainedThreshold = 50
+
 type StreamConsumer struct {
 	config      *config.Config
 	redisClient *redis.Client
 	streamRepo  *repository.StreamRepo
 	logger      *zap.Logger
+	failStreak  map[string]int
 }
 
 func NewStreamConsumer(
@@ -43,6 +47,40 @@ func NewStreamConsumer(
 		redisClient: redisClient,
 		streamRepo:  streamRepo,
 		logger:      logger,
+		failStreak:  map[string]int{},
+	}
+}
+
+// notePersistFailure 跟踪每流连续持久化失败。逐条 error 在持续故障下会刷屏淹没告警；
+// 跨阈值后改为周期采样并打 sustained marker，让外部告警规则可抓「持续丢数据」这一态。
+func (c *StreamConsumer) notePersistFailure(stream, msgID string, err error) {
+	c.failStreak[stream]++
+	n := c.failStreak[stream]
+	if n < persistSustainedThreshold {
+		c.logger.Error("process message failed",
+			zap.String("stream", stream),
+			zap.String("message_id", msgID),
+			zap.Error(err),
+		)
+		return
+	}
+	if n == persistSustainedThreshold || n%500 == 0 {
+		c.logger.Error("event_persist_sustained_failure",
+			zap.String("stream", stream),
+			zap.Int("consecutive", n),
+			zap.String("message_id", msgID),
+			zap.Error(err),
+		)
+	}
+}
+
+func (c *StreamConsumer) notePersistSuccess(stream string) {
+	if c.failStreak[stream] > 0 {
+		c.logger.Info("event_persist_recovered",
+			zap.String("stream", stream),
+			zap.Int("after_failures", c.failStreak[stream]),
+		)
+		c.failStreak[stream] = 0
 	}
 }
 
@@ -118,11 +156,9 @@ func (c *StreamConsumer) consumeStream(ctx context.Context, streamName string) e
 
 	for _, raw := range messages {
 		if err := c.processMessage(ctx, streamName, raw); err != nil {
-			c.logger.Error("process message failed",
-				zap.String("stream", streamName),
-				zap.String("message_id", raw.ID),
-				zap.Error(err),
-			)
+			c.notePersistFailure(streamName, raw.ID, err)
+		} else {
+			c.notePersistSuccess(streamName)
 		}
 		if err := c.redisClient.XAck(ctx, streamName, c.config.ConsumerGroup, raw.ID).Err(); err != nil {
 			c.logger.Warn("XAck failed",

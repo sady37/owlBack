@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -88,16 +89,32 @@ func (r *StreamRepo) InsertEvent(ctx context.Context, msg *owlredis.IoTStreamMes
 	traceID := buildTraceID(msg.Producer, msg.SequenceNumber)
 	ts := tsFromMs(msg.Timestamp)
 
-	// subject_addr = SubjectEntity (cardID CIDR text)；空字串 NULLIF 转 NULL
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO event_log (
 			ts, device_addr, event_kind, subject_addr, payload,
 			datagram_id, trace_id, parent_span, severity, tags
-		) VALUES ($1, $2::INET, $3, NULLIF($4, '')::INET, $5::JSONB,
+		) VALUES ($1, $2::INET, $3, $4::INET, $5::JSONB,
 		          NULL, NULLIF($6, ''), NULLIF($6, ''), 6, NULL)
-	`, ts, msg.DeviceAddr.String(), msg.Category, msg.SubjectEntity, string(payload), traceID)
+	`, ts, msg.DeviceAddr.String(), msg.Category, subjectAddr(msg.SubjectEntity), string(payload), traceID)
 	if err != nil {
 		return fmt.Errorf("insert event_log: %w", err)
+	}
+	return nil
+}
+
+// subjectAddr 只在 SubjectEntity 是合法 INET（sensor 派生的 spatial prefix /88·/96·/128）时
+// 落 subject_addr；device-gateway 发的 device_uid（vendor MAC 串）非 INET → NULL（匿名事件，
+// device 身份已在 device_addr，device_uid 可由 device_addr 反查 dfm）。空串 → NULL。
+func subjectAddr(subjectEntity string) interface{} {
+	s := strings.TrimSpace(subjectEntity)
+	if s == "" {
+		return nil
+	}
+	if _, err := netip.ParsePrefix(s); err == nil {
+		return s
+	}
+	if _, err := netip.ParseAddr(s); err == nil {
+		return s
 	}
 	return nil
 }
