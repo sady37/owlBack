@@ -81,7 +81,7 @@ check_port 8080 "wisefido-data"
 check_cardagg_process
 check_port 8081 "wisefido-qinglan"
 check_port 8083 "wisefido-sleepace (Go gateway)"
-check_port 8085 "wisefido-iot"
+check_process "wisefido-iot" "wisefido-iot"   # 纯 stream 消费者，无监听端口，按进程判
 check_process "wisefido-sensor" "wisefido-sensor"
 
 echo ""
