@@ -8,8 +8,6 @@ import (
 	"os"
 	"time"
 
-	"go.uber.org/zap"
-
 	"wisefido-sensor/internal/roomengine"
 )
 
@@ -39,22 +37,23 @@ func LookupDeviceAddr(ctx context.Context, db *sql.DB, deviceUID string) (string
 	return addr, nil
 }
 
-// LoadDeviceRoomConfig 解析 device_uid 所属 /88 room 下全部 /128 device canvas（room_visual_layout）合并成 RoomConfig。
-// 复用 live engine 同款 LoadRoomCanvases + BuildRoomConfigFromCanvases，避免加载逻辑双写漂移。
-func LoadDeviceRoomConfig(ctx context.Context, db *sql.DB, deviceUID string, logger *zap.Logger) (string, roomengine.RoomConfig, error) {
-	var roomID string
-	row := db.QueryRowContext(ctx,
-		`SELECT network(set_masklen(device_addr, 88))::text FROM devices WHERE device_uid = $1 LIMIT 1`, deviceUID)
-	if err := row.Scan(&roomID); err != nil {
+// LoadDeviceRoomConfig 解析 device_uid 自己那块 /128 layout canvas（room_visual_layout）成 RoomConfig。
+// playback 按单 device 回放（只喂该 device 的 monitor_stream track），故只用该 /128 canvas；
+// 不合并同房其他雷达——多雷达房各 device-local 帧未配准，合并会把别台的家具/床错位叠进来。
+func LoadDeviceRoomConfig(ctx context.Context, db *sql.DB, deviceUID string) (string, roomengine.RoomConfig, error) {
+	var roomID, canvas string
+	row := db.QueryRowContext(ctx, `
+		SELECT network(set_masklen(rvl.spatial_prefix, 88))::text, rvl.canvas::text
+		FROM room_visual_layout rvl
+		JOIN devices d ON d.device_addr = rvl.spatial_prefix
+		WHERE d.device_uid = $1 AND masklen(rvl.spatial_prefix) = 128
+		LIMIT 1`, deviceUID)
+	if err := row.Scan(&roomID, &canvas); err != nil {
 		return "", roomengine.RoomConfig{}, err
 	}
-	byRoom, err := roomengine.LoadRoomCanvases(ctx, db, logger)
+	cfg, err := roomengine.ParseLayoutConfig(roomID, []byte(canvas))
 	if err != nil {
-		return "", roomengine.RoomConfig{}, err
-	}
-	cfg, ok := roomengine.BuildRoomConfigFromCanvases(roomID, byRoom[roomID], logger)
-	if !ok {
-		return roomID, roomengine.RoomConfig{}, fmt.Errorf("room %s has no usable layout canvas", roomID)
+		return roomID, roomengine.RoomConfig{}, err
 	}
 	return roomID, cfg, nil
 }

@@ -48,7 +48,6 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
-	"go.uber.org/zap"
 
 	"wisefido-sensor/internal/playback"
 	"wisefido-sensor/internal/roomengine"
@@ -58,9 +57,6 @@ const requestTimeout = 60 * time.Second
 
 // outDir 由 --out-dir flag 设置；存放生成的 HTML（跨进程复用，避免重生成）
 var outDir string
-
-// rlog 给 layout 合并加载（LoadRoomCanvases 多雷达房 warn）用
-var rlog *zap.Logger
 
 func main() {
 	listen := flag.String("listen", ":7788", "HTTP listen addr")
@@ -76,9 +72,6 @@ func main() {
 		log.Fatalf("mkdir out-dir: %v", err)
 	}
 	outDir = abs
-
-	rlog, _ = zap.NewDevelopment()
-	defer rlog.Sync()
 
 	db, err := playback.OpenDB()
 	if err != nil {
@@ -383,7 +376,7 @@ func loadLayout(ctx context.Context, db *sql.DB, deviceUID, layoutPath string) (
 		return roomID, cfg, nil
 	}
 
-	return playback.LoadDeviceRoomConfig(ctx, db, deviceUID, rlog)
+	return playback.LoadDeviceRoomConfig(ctx, db, deviceUID)
 }
 
 func lastSep(s string) int {
