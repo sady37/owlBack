@@ -142,6 +142,9 @@ func (m *DeviceSubscriptionManager) Start(ctx context.Context) error {
 	go m.subscriptionRenewal(ctx)
 	m.wg.Add(1)
 	go m.healthCheckMonitor(ctx)
+	// 重启后从 DB 重建所有已认证 radar 的订阅记录；monitor 命令在设备第一条 MQTT 消息到达时下发。
+	// 缺这步则旧 1h 实时订阅到期后无人续，radar.track 全静默（event 流不受影响，难察觉）。
+	go m.restoreAuthenticatedDeviceSubscriptions(ctx)
 	m.logger.Info("device subscription manager started")
 	return nil
 }
