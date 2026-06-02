@@ -1,4 +1,4 @@
-// Package playback 把"读取 iot_timeseries → 喂给 RoomEngine grid → 抓 SVG 快照"的完整回放流程
+// Package playback 把"读取 monitor_stream/event_log → 喂给 RoomEngine grid → 抓 SVG 快照"的完整回放流程
 // 抽成可复用单元。被 cmd/roomengine-playback（写 HTML 文件）和 cmd/roomengine-api（HTTP 返回）共用。
 //
 // 设计：函数式接口（Options in / Result out），不维护任何运行时状态；可在 HTTP handler 里安全并发调用。
@@ -29,7 +29,6 @@ type Options struct {
 	Cfg       roomengine.RoomConfig // 已解析的 layout（调用方负责 ParseLayoutConfig）
 	DB        *sql.DB
 	DeviceUID string
-	TenantID  string // 可空；空时从 devices 表查
 	Start     time.Time
 	End       time.Time
 	SnapMin   int // 快照间隔（分钟），默认 10
@@ -62,7 +61,7 @@ type Options struct {
 	// 用途：检查 PR-15.3 时间门控（15 天）等长期累积规则；3 cycles × 3 天 ≈ 9 天等效数据。
 	Cycles int
 
-	// FromDate 非零时，从 roomengine_grid_snapshot_history (room_id, snapshot_date=FromDate)
+	// FromDate 非零时，从 roomengine_grid_snapshot_history (spatial_prefix /88, archive_date=FromDate)
 	// 加载历史 snapshot 并 DecodeSnapshot 灌回 grid，作为演化起点（不再是空白 baseline）。
 	// layout_hash 不匹配（中途人工编辑过 layout）→ 警告 + fallback baseline。
 	FromDate time.Time
@@ -137,13 +136,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 
 	cfg := opts.Cfg
 
-	// 1. 自动查 tenant_id
-	if opts.TenantID == "" {
-		t, err := LookupTenantID(ctx, opts.DB, opts.DeviceUID)
-		if err != nil {
-			return nil, fmt.Errorf("lookup tenant_id for %s: %w", opts.DeviceUID, err)
-		}
-		opts.TenantID = t
+	// 1. device_uid → device_addr（v2 时序数据按 INET /128 寻址）
+	deviceAddr, err := LookupDeviceAddr(ctx, opts.DB, opts.DeviceUID)
+	if err != nil {
+		return nil, fmt.Errorf("lookup device_addr for %s: %w", opts.DeviceUID, err)
 	}
 
 	// 2. 构建 grid + TrackManager（与 engine.RegisterRoom 一致）
@@ -298,12 +294,12 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			if chunkEnd.After(opts.End) {
 				chunkEnd = opts.End
 			}
-			rows, err := QueryRows(ctx, opts.DB, opts.TenantID, opts.DeviceUID, chunkStart, chunkEnd, opts.RowLimit)
+			rows, err := QueryMonitorTracks(ctx, opts.DB, deviceAddr, opts.DeviceUID, chunkStart, chunkEnd, opts.RowLimit)
 			if err != nil {
 				return nil, fmt.Errorf("query rows %s~%s: %w",
 					chunkStart.Format("01-02 15:04"), chunkEnd.Format("01-02 15:04"), err)
 			}
-			eventRows, eErr := QueryEvents(ctx, opts.DB, opts.TenantID, opts.DeviceUID, chunkStart, chunkEnd, opts.RowLimit)
+			eventRows, eErr := QueryEvents(ctx, opts.DB, deviceAddr, opts.DeviceUID, chunkStart, chunkEnd, opts.RowLimit)
 			if eErr != nil {
 				return nil, fmt.Errorf("query events %s~%s: %w",
 					chunkStart.Format("01-02 15:04"), chunkEnd.Format("01-02 15:04"), eErr)

@@ -10,7 +10,7 @@
 // 与 internal/roomengine/feedback.go 的 IngestOnce 同样：
 //   1. 拉指定 device 的 alarm_events 历史（false_alarm + verified）
 //   2. parseConditions(notes) 解析 ☑ checkbox
-//   3. 90s lookback iot_timeseries 拿 monitor 帧（雷达本地 h/v/z）
+//   3. 90s lookback monitor_stream 拿 radar.track 帧（雷达本地 h/v/z）
 //   4. RadarToCanvas → 落到 cell
 //   5. 按 conditions 调 grid.Mark{Ghost,RestZone,RealFall,FakeAlarm}Feedback
 
@@ -41,11 +41,11 @@ func IngestHistoricalFeedback(ctx context.Context, db *sql.DB, deviceUID string,
 
 	q := `
 		SELECT
-			ae.event_id::text, ae.device_addr::text, ae.event_type, ae.operation,
+			ae.event_id::text, host(ae.device_addr) AS device_addr, ae.event_type, ae.operation,
 			extract(epoch from ae.triggered_at)*1000 AS trigger_ms,
 			extract(epoch from COALESCE(ae.hand_time, ae.triggered_at))*1000 AS hand_ms,
-			COALESCE(ae.notes, '') AS notes,
-			COALESCE(ae.trigger_data->>'event_payload', '') AS payload
+			COALESCE(ae.handler_notes, '') AS notes,
+			COALESCE(ae.payload::text, '') AS payload
 		FROM alarm_events ae
 		JOIN devices d ON d.device_addr = ae.device_addr
 		WHERE d.device_uid = $1
@@ -172,8 +172,8 @@ func parseConditionsLite(notes, operation string) parsedConditions {
 	return out
 }
 
-// lookbackPositionFromIoT 90s lookback iot_timeseries 找 trigger 时刻最接近的 monitor 帧。
-// 优先匹配 trigger_data 里的 track_id；找不到则取最接近 triggerMs 的任意 track 帧。
+// lookbackPositionFromIoT 90s lookback monitor_stream 找 trigger 时刻最接近的 radar.track 帧。
+// 优先匹配 payload 里的 track_id；找不到则取最接近 triggerMs 的任意 track 帧。
 func lookbackPositionFromIoT(ctx context.Context, db *sql.DB, deviceAddr string,
 	triggerMs int64, payload string) (h, v, z int, ok bool) {
 
@@ -189,14 +189,13 @@ func lookbackPositionFromIoT(ctx context.Context, db *sql.DB, deviceAddr string,
 	}
 
 	q := `
-		SELECT timestamp, data_value
-		FROM iot_timeseries
-		WHERE device_addr = $1::uuid AND topic_type = 'monitor'
-		  AND category = 'track'
-		  AND timestamp BETWEEN $2 AND $3
-		ORDER BY timestamp DESC LIMIT 50
+		SELECT extract(epoch from ts)*1000 AS tms, payload
+		FROM monitor_stream
+		WHERE device_addr = $1::inet AND stream_type = $2
+		  AND ts BETWEEN to_timestamp($3/1000.0) AND to_timestamp($4/1000.0)
+		ORDER BY ts DESC LIMIT 50
 	`
-	rows, err := db.QueryContext(ctx, q, deviceAddr, triggerMs-90_000, triggerMs+1_000)
+	rows, err := db.QueryContext(ctx, q, deviceAddr, streamRadarTrack, triggerMs-90_000, triggerMs+1_000)
 	if err != nil {
 		return
 	}
@@ -215,11 +214,12 @@ func lookbackPositionFromIoT(ctx context.Context, db *sql.DB, deviceAddr string,
 		return x
 	}
 	for rows.Next() {
-		var tms int64
+		var tmsF float64
 		var dv []byte
-		if err := rows.Scan(&tms, &dv); err != nil {
+		if err := rows.Scan(&tmsF, &dv); err != nil {
 			continue
 		}
+		tms := int64(tmsF)
 		var arr []map[string]interface{}
 		if err := json.Unmarshal(dv, &arr); err != nil {
 			continue
