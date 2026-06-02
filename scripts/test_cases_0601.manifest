@@ -1,0 +1,24 @@
+# 2026-06 标注测试 manifest —— 填 device_uid / 时间 / tz 后跑：
+#   ./export_cases_manifest.sh test_cases_0601.manifest
+#
+# 列: case_name | device_uid | start_local | end_local | tz | label | kind | note
+#   label: real(真摔 must-fire) | fp(假报 must-not-fire)
+#   kind:  ghost | lost | firmware-fall | bedside-fall
+#   时间:  "YYYY-MM-DD HH:MM[:SS]" 本地时刻（按 tz 解释）
+#
+# tz 示例: America/Los_Angeles (PDT) / America/Denver (MDT)
+# 一个物理测试若同时含 ghost 段和 lost 段，可拆两行（不同时间窗）或导一个大窗都行。
+
+# --- 101 bathroom（镜像干扰）：测 ghost + lost-fall，均 FP ---
+101-bath-ghost-0602  | FILL_UID | 2026-06-02 HH:MM | 2026-06-02 HH:MM | America/Los_Angeles | fp | ghost | 镜面反射 ghost
+101-bath-lost-0602   | FILL_UID | 2026-06-02 HH:MM | 2026-06-02 HH:MM | America/Los_Angeles | fp | lost  | 镜像房 lost-fall 假报
+
+# --- 201 bathroom（镜像干扰）：测 ghost + lost-fall，均 FP ---
+201-bath-ghost-0602  | FILL_UID | 2026-06-02 HH:MM | 2026-06-02 HH:MM | America/Los_Angeles | fp | ghost | 镜面反射 ghost
+201-bath-lost-0602   | FILL_UID | 2026-06-02 HH:MM | 2026-06-02 HH:MM | America/Los_Angeles | fp | lost  | 镜像房 lost-fall 假报
+
+# --- 101 bedroom：边缘静坐触发的假 firmware fall，FP（新类，模型未标定）---
+101-bed-firmwarefp-0602 | FILL_UID | 2026-06-02 HH:MM | 2026-06-02 HH:MM | America/Los_Angeles | fp | firmware-fall | 边缘静坐 false firmware fall
+
+# --- 201 bedroom：bedside-fall 真摔，REAL must-fire（新类，近床 geom 标定）---
+201-bed-bedsidefall-0602 | FILL_UID | 2026-06-02 HH:MM | 2026-06-02 HH:MM | America/Los_Angeles | real | bedside-fall | 床边真摔

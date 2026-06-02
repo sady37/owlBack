@@ -62,9 +62,10 @@ SI1 行号已修正（:460/:550）。冲突 1/2/3 的支柱规则已逐条核到
 | # | 规则 | file:line | 条件/阈值 | 动作 |
 |---|---|---|---|---|
 | L1 | checkLostFall 几何门 | :2502 | age≥5s 且 离门>30cm(ExitDistMinCm) 且 cell≠AreaEnter | 允许进 pending |
+| **L1b** | **走动前置（2026-06-01 止血）** | **checkLostFall** | **消失前 still-box 持续 ≥ MovingPreconditionMs(60s) → return false** | **不进 pending**（静止态归 Still-fall）|
 | L2 | lost_fall pending 入池 | :1105 | (Real∨Pending) 且 checkLostFall 且 !bedside_reported | 建 pending |
 | L3 | lost_fall fire | :1269 | 等待超时(cell-typed) 且 realTrackCount<2 | **fire Fall**(ReasonLostTrack) |
-| L4 | frozen credit 折抵 | :2557 | 算超时时 frozen 时长×50% 折抵 wait | 更快报 lost |
+| L4 | frozen credit 折抵 | :2557 | 算超时时 frozen 时长×50% 折抵 wait | ~~更快报 lost~~ **仅作用于 still-box<60s（L1b 后长静止已被挡）；语义存疑见下** |
 | L5 | ExitRoom 取消全部 pending | :772 | 收到 alarm.ExitRoom | **delete 全部** pendingLostFalls |
 | L6 | 新 track 出生取消 | :977 | 新 track 邻近 pending 消失点 | delete 该 pending（盲区返回） |
 | L7 | 实时多人取消 | :1258 | realTrackCount≥2 | delete pending |
@@ -73,6 +74,16 @@ SI1 行号已修正（:460/:550）。冲突 1/2/3 的支柱规则已逐条核到
 | L10 | bedside_fall R4 | :249 | LeftBed 后 180s 内 track 在床邻域<100cm 静止>900s | AnomalyBedsideFall |
 | L11 | bedside dedup | :1099 | 已报 bedside → 跳过 lost pending | 防同事件双报 |
 | L12 | RadarInBed 双源一致 | :738 | radar InBed 与 BedSession.LeftBedAtMs ±15s | 设 RadarInBedConfirmedMs |
+
+> **【2026-06-01 Lost-fall 定义修订（止血）】** Lost-fall 的**前置条件 = "走动中突然消失"**
+> （走动→跌倒+遮挡→丢 track），不是"静止很久才消失"。
+> - **判据**：消失前 still-box（30s 窗 box≤StillBoxCm）持续 **< 60s**（`MovingPreconditionMs`）→ 算"走动中"→ 进 lost-fall；
+>   持续 **≥60s** = 站洗手台/坐马桶/卧床不动 = 正常静止态 → **归 Still-fall 域**（长阈值兜底），不进 lost-fall（L1b）。
+> - **为何用 box-based still-box 而非"移动距离/时长"**：静止时的**信号丢失噪声 / ghost track_id swap** 会产生 2m+ 假跳，把路径长/移动时长撑大（Hunzi-0530 坐马桶"出" 213cm/12.9s = **16.5cm/s**，远低于人走速 110-140cm/s、老人 50-80cm/s → **不是真走动**，是噪声/ghost 来回跳）；这些假跳在 <30cm 小 box 内 net 抵消，**box(max-min) 不被撑破 → 正确判静止**，是可靠判据。**判"走动"本质应看走速**（持续人类走速位移），不是累计位移。
+> - **为何不看 pose**：radar pose 在信号边界 / ceiling(-H) / 45°(主副瓣凹线) 处 stand/sit 常误判（便秘坐桶被读成站立）；**判别只用移动（可靠），不碰 pose**。
+> - **纠正 frozen-credit 判反**：L4 原本"静止越久报越快"方向错了；L1b 后长静止根本不进 lost-fall，credit 仅作用于 <60s 的走动-急停 case。
+> - **治本**：CABB(=Hunzi)/MoM 等多条冻结站/坐 `track_lost_no_exit_room_no_recovery` FP（人无真跌倒，2026-06-01 用户实证）。Still-fall（BA1-5 / 浴室 ToiletShowerSec=15min）继续保护"真静止态丢失"。
+> - **⚠️ 已知缺陷（待 belief 阶段用走速判修）**：止血用 box-based still-box 近似"走动"。理论边界——若**静止的人**遇信号丢失抖出 >StillBoxCm(30cm) 的 spread（把 still-box 撑破、StillBoxRunStart 清零）→ 前置误判成"走动中" → 仍可能误报。**根因**：累计/box 位移分不清"真走动"和"噪声/ghost 假跳"；**正解 = 看走速**（持续人类走速 50-140cm/s 才算走动，>200cm/s=ghost-swap 不算）。已知 case 未触发（Hunzi-0530 假跳 net 在 30cm 内、box 未破），止血够用；走速判留 belief 状态矩阵阶段统一做。
 
 ### B.3 Bathroom fall 四类（bathroom_fall.go）
 

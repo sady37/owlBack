@@ -68,21 +68,10 @@ func (h *AlarmPushHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// v2: cards.card_id INET PK；tenant 由 card_id /48 派生（无独立 tenant_id 列）
-	cardName := req.CardID
-	var cn sql.NullString
-	if err := h.db.QueryRowContext(r.Context(), `
-		SELECT card_name FROM cards
-		 WHERE card_id = $1::INET
-		   AND set_masklen(card_id, 48) = $2::INET
-	`, req.CardID, req.TenantID).Scan(&cn); err == nil && cn.Valid && cn.String != "" {
-		cardName = cn.String
-	}
-
 	n := service.AlarmNotification{
 		TenantID:   req.TenantID,
 		CardID:     req.CardID,
-		CardName:   cardName,
+		CardName:   h.resolveDisplayName(r.Context(), req.EventID),
 		EventType:  req.EventType,
 		AlarmLevel: service.AlarmLevelStringToPushIndex(req.AlarmLevel),
 	}
@@ -91,4 +80,34 @@ func (h *AlarmPushHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+// resolveDisplayName 组装锁屏可读的推送显示名：Unit/Room/DeviceType（alarm_events 快照），
+// 缺哪段跳哪段，绝不暴露 card_id(INET) / hex uid。住户姓名是 PHI，刻意不进锁屏推送；
+// 护理员 app 内鉴权后再看。event_name 在 push body 单独给。
+func (h *AlarmPushHandler) resolveDisplayName(ctx context.Context, eventID string) string {
+	var unit, room, devType string
+	if eventID != "" {
+		_ = h.db.QueryRowContext(ctx, `
+			SELECT COALESCE(ae.unit_name, ''), COALESCE(ae.room_name, ''),
+			       COALESCE(dfm.device_type::text, '')
+			FROM alarm_events ae
+			LEFT JOIN device_factory_meta dfm ON dfm.device_uid = ae.device_uid
+			WHERE ae.event_id = $1::uuid
+		`, eventID).Scan(&unit, &room, &devType)
+	}
+	if name := joinNonEmpty("/", unit, room, devType); name != "" {
+		return name
+	}
+	return "Alarm"
+}
+
+func joinNonEmpty(sep string, parts ...string) string {
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, sep)
 }

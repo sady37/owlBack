@@ -1,0 +1,166 @@
+package belief
+
+import (
+	"testing"
+
+	"owl-common/observation"
+)
+
+// 3-case 回归 oracle（room_belief_state_machine.md §7）：
+// 复现现状判对的必须仍对（真跌倒）、判错的必须修对（CABB / John.Y）。
+// v1 scope = 单实体 + §5.5.2 弱耦合。
+
+func ob(ts int64, kind ObsKind, val, conf float64, g Geom) Observation {
+	return Observation{Kind: kind, Value: val, Conf: conf, Ts: ts, Fresh: true, Geom: g}
+}
+
+// Decider 确认窗：维持 ≥confirmMs 才确认 Fall；中途跌回 θ 下（如人返回）则永不确认。
+// 治本 cd2b 类"fire 后恢复"误报，同时真跌倒（持续维持）仍报。
+func TestDeciderConfirmWindow(t *testing.T) {
+	high := Vector{SFallen: 0.8, SStandWalk: 0.2}
+	low := Vector{SStandWalk: 0.7, SEmpty: 0.3}
+
+	var sustained Decider
+	now, fired := int64(0), false
+	for i := 0; i < 200; i++ {
+		now += 1000
+		if sustained.Update(high, now) == DecisionFall {
+			fired = true
+			break
+		}
+	}
+	if !fired {
+		t.Fatal("持续 Fallen 应在 confirmMs 后确认 Fall")
+	}
+
+	var recovered Decider
+	now = 0
+	for i := 0; i < 40; i++ { // 40s < 90s confirm
+		now += 1000
+		if recovered.Update(high, now) == DecisionFall {
+			t.Fatal("40s < confirmMs 不该提前确认")
+		}
+	}
+	for i := 0; i < 200; i++ { // 人返回，P 崩回 low
+		now += 1000
+		if recovered.Update(low, now) == DecisionFall {
+			t.Fatal("恢复（跌回 θ 下）后永不该确认 Fall")
+		}
+	}
+}
+
+// 真跌倒（cabb-fall 同型）：开阔地板行走 → z 骤降 + firmware 确认 + pose=fallen。
+// 期望 P(Fallen)>θ_fire → DecisionFall。今天判对，必须仍对。
+func TestGenuineFall(t *testing.T) {
+	be := New(DefaultModel())
+	ts := int64(1000)
+	// 进房 + 几帧行走
+	be.Step(ts, []Observation{ob(ts, ObsEnterExit, +1, 0.9, GeomInEnter)})
+	for i := 0; i < 5; i++ {
+		ts += 1000
+		be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseWalking, 0.8, GeomOpenFloor)})
+	}
+	// 跌倒帧：运动学签名 + firmware fall + pose fallen，全在开阔地板
+	ts += 1000
+	be.Step(ts, []Observation{
+		ob(ts, ObsKinematics, 0.95, 0.85, GeomOpenFloor),
+		ob(ts, ObsFirmwareFall, 1, 0.9, GeomOpenFloor),
+		ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomOpenFloor),
+	})
+	if d := be.Decide(); d != DecisionFall {
+		t.Fatalf("genuine fall not fired: decision=%v b=%v", d, be.Vector())
+	}
+}
+
+// CABB lost_track（今天误报）：浴室内行走至门口 track 丢失，firmware 未发 ExitRoom，
+// 全程无任何跌倒签名。期望 track 丢后信念漂向 Left/Empty，P(Fallen) 低 → 不报 Fall。
+func TestCabbLostTrackNoFall(t *testing.T) {
+	be := New(DefaultModel())
+	ts := int64(1000)
+	be.Step(ts, []Observation{ob(ts, ObsEnterExit, +1, 0.9, GeomInEnter)})
+	// 浴室内 Walking（pose=1×多帧，z 直立，从无 pose5/2）走到门口
+	for i := 0; i < 6; i++ {
+		ts += 1000
+		geom := GeomInToilet
+		if i >= 4 {
+			geom = GeomInEnter // 走到门口区
+		}
+		be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseWalking, 0.8, geom)})
+	}
+	// track 丢失：此后无观测（stale）。仅时间推进（5min ≈ lost_fall 等待窗）。
+	for i := 0; i < 30; i++ {
+		ts += 10_000
+		be.Step(ts, nil)
+	}
+	// 修对 = 不再误报 Fall。firmware 没发 ExitRoom，belief 无法观测"已离开"，故对
+	// in-room/left 摊平、输出 DecisionUncertain（§8 诚实边界：不创造可观测性，给恰当不确定度
+	// 让决策升级人工而非瞎猜）——但 P(Fallen) 必须被压到极低，Fallen 绝不能是主假设。
+	if d := be.Decide(); d == DecisionFall {
+		t.Fatalf("CABB lost_track falsely fired Fall: b=%v", be.Vector())
+	}
+	if be.Vector()[SFallen] > 0.05 {
+		t.Fatalf("CABB P(Fallen)=%.3f 应被压到极低", be.Vector()[SFallen])
+	}
+	if arg, _ := be.Vector().Max(); arg == SFallen {
+		t.Fatalf("CABB Fallen 不该是主假设: b=%v", be.Vector())
+	}
+}
+
+// John.Y 9h person_silent（今天误报）：D523 无床雷达把 track 静止冻结在开阔地板，人实际走进
+// 床区（09E7+sleepad，D523 盲区）。命门：长时间静止(StillBox) → ObsPose stale(Conf=0) 不更新；
+// 弱耦合 sleepad InBed 作 ObsNeighbor 压低 P(Fallen)。期望 9h 内 P(Fallen) 永不起来。
+func TestJohnY9hNoSilentFall(t *testing.T) {
+	be := New(DefaultModel())
+	ts := int64(1000)
+	be.Step(ts, []Observation{ob(ts, ObsEnterExit, +1, 0.9, GeomInEnter)})
+	// 走向床区边界（D523 视野里最后几帧 walking）
+	for i := 0; i < 4; i++ {
+		ts += 1000
+		be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseWalking, 0.8, GeomOpenFloor)})
+	}
+	// track 长时间静止：D523 这路停止更新（命门——stale 观测 effConf=0）。
+	// 同时 sleepad 在 09E7 床区报 InBed → 弱耦合 ObsNeighbor（邻居占用）。
+	for i := 0; i < 60; i++ { // 60×~9min step 覆盖 9h 量级
+		ts += 540_000
+		stale := ob(ts, ObsPose, observation.PoseStanding, 0.8, GeomOpenFloor)
+		stale.Fresh = false // 静止超时=非新鲜，effConf=0，不更新（治本命门）
+		neighbor := ob(ts, ObsNeighbor, 0.9, 0.85, GeomUnknown)
+		be.Step(ts, []Observation{stale, neighbor})
+	}
+	if d := be.Decide(); d == DecisionFall {
+		t.Fatalf("John.Y 9h falsely fired person_silent Fall: b=%v", be.Vector())
+	}
+	if be.Vector()[SFallen] > thFire {
+		t.Fatalf("John.Y P(Fallen)=%.3f over θ_fire", be.Vector()[SFallen])
+	}
+	resolved := be.Vector()[SEmpty] + be.Vector()[SLeft]
+	if resolved < 0.5 {
+		t.Fatalf("John.Y should resolve to person-left/elsewhere, got %.3f (b=%v)", resolved, be.Vector())
+	}
+}
+
+// 命门对照：同一静止 pose，Fresh=true（=今天 census 当活观测的 bug）会把信念钉死在原态，
+// 不再随时间漂向 Left；Fresh=false（治本）才让 A+邻居证据接管。
+func TestStaleEvidenceIsLinchpin(t *testing.T) {
+	run := func(fresh bool) Vector {
+		be := New(DefaultModel())
+		ts := int64(1000)
+		for i := 0; i < 4; i++ {
+			ts += 1000
+			be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseStanding, 0.8, GeomOpenFloor)})
+		}
+		for i := 0; i < 40; i++ {
+			ts += 10_000
+			o := ob(ts, ObsPose, observation.PoseStanding, 0.8, GeomOpenFloor)
+			o.Fresh = fresh
+			be.Step(ts, []Observation{o})
+		}
+		return be.Vector()
+	}
+	pinned := run(true)   // bug：静止当活观测
+	drifted := run(false) // fix：静止超时=缺证据
+	if drifted[SStandWalk] >= pinned[SStandWalk] {
+		t.Fatalf("freshness 命门未体现：fix 应让 StandWalk 信念衰减 (fix=%.3f bug=%.3f)",
+			drifted[SStandWalk], pinned[SStandWalk])
+	}
+}

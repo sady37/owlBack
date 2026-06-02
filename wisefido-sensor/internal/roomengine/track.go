@@ -55,9 +55,9 @@ type TimedPoint struct {
 // 不累计空间属性（那些归 Cell）。
 type TrackState struct {
 	// ---- 身份 ----
-	TrackID  int
+	TrackID    int
 	DeviceAddr string
-	RoomID   string
+	RoomID     string
 
 	// ---- 出生档案 ----
 	BirthPos    TimedPoint
@@ -130,8 +130,8 @@ type TrackState struct {
 	CurrentAnomaly Anomaly
 
 	// ---- 最后观测 ----
-	LastPose     int
-	LastZ        int
+	LastPose int
+	LastZ    int
 	// firmware 直发的最后一帧 raw 雷达本地坐标。仅用于 alarm/event publish 时作 parent track 原样上抛；
 	// 内部算法（grid/cell/fall）一律读 Kalman 后的画布坐标，不读这里。
 	LastRawH, LastRawV, LastRawZ int
@@ -148,12 +148,12 @@ type TrackState struct {
 	LastCellCol int
 	LastCellRow int
 
-	// ---- Frozen-frame 检测（box 判据，2026-05-03 由 byte-equal 改为 box）----
-	// FrozenRunStart：当前 still box run 起点 ms（0 = 未达 still 状态）。
+	// ---- StillBox（静止无移动）检测（box 判据，2026-05-03 由 byte-equal 改为 box）----
+	// StillBoxRunStart：当前 still box run 起点 ms（0 = 未达 still 状态）。
 	// 判据：失锁前 30s 滚动窗口内位移 box (max-min) <= StillBoxCm(30) → 视为 still。
 	// 抗 X/Y 抖动 / 抗摔倒抽搐（box 容差替代 byte-equal 严格相等）。
 	// 用于 lost-fall pending 计算 credit（半计入等待）+ PR-C 流式 cancel 守卫。
-	FrozenRunStart int64
+	StillBoxRunStart int64
 
 	// ---- Birth-coherence Kalman 域（每帧 O(1) 维护）----
 	// MaxKalmanResidual：track 生命周期内的峰值残差（Mahalanobis-like）。
@@ -187,14 +187,14 @@ type TrackState struct {
 
 // Track 生命周期常量
 const (
-	HistoryLen       = 30   // 滚动窗口帧数
-	MotionWindowSec  = 5    // 运动学判定窗口（近 5 秒）
-	ProbationFrames  = 5    // 试用期帧数
-	ScoreConfirmTh   = 50   // Score ≥ 此值 → Real
-	ScoreGhostTh     = 20   // Score < 此值 → Ghost
-	StillThreshCm    = 15   // 帧间位移 < 此值视为静止
-	MaxMissCount     = 10   // 连续丢失 > 此值 → 消失（约 10 秒）
-	LieRetractMs     = 8000 // 进入 Lie 后 < 此时长回到 Stand/Move → Retract
+	HistoryLen      = 30   // 滚动窗口帧数
+	MotionWindowSec = 5    // 运动学判定窗口（近 5 秒）
+	ProbationFrames = 5    // 试用期帧数
+	ScoreConfirmTh  = 50   // Score ≥ 此值 → Real
+	ScoreGhostTh    = 20   // Score < 此值 → Ghost
+	StillThreshCm   = 15   // 帧间位移 < 此值视为静止
+	MaxMissCount    = 10   // 连续丢失 > 此值 → 消失（约 10 秒）
+	LieRetractMs    = 8000 // 进入 Lie 后 < 此时长回到 Stand/Move → Retract
 	// 经验值：真跌倒 8 秒内爬起概率 < 5%；雷达固件的 fallSec 典型 10-30 秒，
 	// 8 秒远小于其最小值，确保只捕获"雷达尚未升级为 Fall 就回撤"的误报。
 )
@@ -204,17 +204,19 @@ const (
 // 用途：实现 silent fall（基于 sleepad LeftBed 与 radar 仍在 bed 邻域的矛盾）。
 //
 // 入场门控（PR-14）：
-//   只有当同房间 sleepad InBed 与 radar InBed 在 ±15s 内都到齐才会"成立"——
-//   RadarInBedConfirmedMs > 0 是 silent fall 触发先决条件；
-//   防止单源（仅 sleepad / 仅 radar）误报。
+//
+//	只有当同房间 sleepad InBed 与 radar InBed 在 ±15s 内都到齐才会"成立"——
+//	RadarInBedConfirmedMs > 0 是 silent fall 触发先决条件；
+//	防止单源（仅 sleepad / 仅 radar）误报。
 //
 // 生命周期：
-//   sleepad InBed 首次到达             → InBedSinceMs 记录起点；HasHRRR 重置
-//   radar InBed 同房间 ±15s 内到达     → RadarInBedConfirmedMs 标记
-//   sleepad observation 含 HR/RR > 0   → HasHRRR = true
-//   sleepad LeftBed 到达                → 若已满 MinInBedSec，进入「等待矛盾」状态
-//   每 tick 检查超时                     → 若 radar 仍在 Bed 邻域 → 报 silent fall
-//   重新 InBed                          → 重置 session
+//
+//	sleepad InBed 首次到达             → InBedSinceMs 记录起点；HasHRRR 重置
+//	radar InBed 同房间 ±15s 内到达     → RadarInBedConfirmedMs 标记
+//	sleepad observation 含 HR/RR > 0   → HasHRRR = true
+//	sleepad LeftBed 到达                → 若已满 MinInBedSec，进入「等待矛盾」状态
+//	每 tick 检查超时                     → 若 radar 仍在 Bed 邻域 → 报 silent fall
+//	重新 InBed                          → 重置 session
 //
 // LeftBedHadHRRR / LeftBedMaxPeople 在 LeftBed 时刻 latch，不受后续观测影响。
 // PR-9: MaxPeople 中间状态删除（依赖 bedPersonCount 已删）；LeftBedMaxPeople latch 字段保留
@@ -232,23 +234,23 @@ type BedSession struct {
 
 // PendingLostFall 已消失但等待 cell-area-typed 时长复现窗口的 track（lost-fall 规则）。
 //
-// 等待时长按消失点 cell areaType（5min~1h）+ frozen credit；
+// 等待时长按消失点 cell areaType（5min~1h）+ StillBox 静止 credit；
 // 触发：track 消失 + checkLostFall 通过（离门 >1m，非 Enter 区，年龄足够）
 // 取消：① 新 track 出生（含 BlindSpotRecovery 反馈）② ExitRoom 事件 ③ room.NumberPeople ≥ 2
 type PendingLostFall struct {
 	OriginalTrackID int
-	DeviceAddr        string
+	DeviceAddr      string
 	RoomID          string
 	LastX, LastY    int // 画布坐标（grid 落点用）
 	LastZ           int
 	// firmware 直发的最后一帧 raw 雷达本地坐标 — alarm publish 时用，对外语义同 monitor_stream
 	LastRawH, LastRawV, LastRawZ int
-	LastScore       int
-	LastVerdict     TrackVerdict
-	LastCellArea    AreaType // 消失点 cell.Belief[0].Type，决定 wait 时长
-	DisappearMs     int64
-	FrozenStartMs   int64 // 0 = 无 still box run；>0 = run 起点（半计入 wait credit + PR-C 守卫）
-	SpatialJump     bool  // MaxImpliedSpeedFromBirth > SuspectSpeedCm（更敏感）
+	LastScore                    int
+	LastVerdict                  TrackVerdict
+	LastCellArea                 AreaType // 消失点 cell.Belief[0].Type，决定 wait 时长
+	DisappearMs                  int64
+	StillBoxStartMs              int64 // 0 = 无 still box run；>0 = run 起点（半计入 wait credit + PR-C 守卫）
+	SpatialJump                  bool  // MaxImpliedSpeedFromBirth > SuspectSpeedCm（更敏感）
 }
 
 // NewTrackState 新 track 出生
@@ -256,7 +258,7 @@ func NewTrackState(trackID int, deviceAddr, roomID string, x, y, z int, tMs int6
 	birth := TimedPoint{X: x, Y: y, Z: z, TMs: tMs}
 	return &TrackState{
 		TrackID:              trackID,
-		DeviceAddr:             deviceAddr,
+		DeviceAddr:           deviceAddr,
 		RoomID:               roomID,
 		BirthPos:             birth,
 		Kalman:               NewKalmanFilter2D(float64(x), float64(y)),
@@ -292,7 +294,7 @@ func (ts *TrackState) HasHistory() bool {
 
 // DisplacementWithinMs 计算 History 中过去 windowMs 内的位移 box 对角线（cm）。
 //
-// 用于 frozen 检测的 box 判据：仅看 (max-min) 范围而非每帧累计，对 firmware
+// 用于 StillBox（静止无移动）检测的 box 判据：仅看 (max-min) 范围而非每帧累计，对 firmware
 // X/Y 抖动 + 摔倒抽搐鲁棒——只要轨迹被框在 box 内，box 对角线即上限。
 //
 // nowMs 通常是当前帧时间戳；窗口 = [nowMs - windowMs, nowMs]。

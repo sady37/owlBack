@@ -65,6 +65,10 @@ type BathroomFallRules struct {
 	timezone    *time.Location // 风险时段判定；nil 时退化 UTC
 	logger      *zap.Logger
 
+	// npZeroLookup 返回该 room 固件最近 number_people=0 的 ts（0/nil = 无）。
+	// 门区 exit 推断的「确认证据」分量；nil 时该推断整体关闭（lost-strong 退回原行为）。
+	npZeroLookup func(roomID string) int64
+
 	state map[string]*bathroomFallState
 }
 
@@ -133,6 +137,11 @@ func NewBathroomFallRules(
 // SetTimezone 注入 IANA 时区（用于风险时段判定）。nil = UTC（错位风险，bootstrap 必设）。
 func (r *BathroomFallRules) SetTimezone(loc *time.Location) {
 	r.timezone = loc
+}
+
+// SetNumberPeopleZeroLookup 注入 np=0 时间查询（门区 exit 推断用）。nil = 推断关闭。
+func (r *BathroomFallRules) SetNumberPeopleZeroLookup(fn func(roomID string) int64) {
+	r.npZeroLookup = fn
 }
 
 // Evaluate 由 engine.publishTrackStatuses 在 bathroom room 帧后调用（room.kind=="bathroom" 才入）。
@@ -417,6 +426,39 @@ func (r *BathroomFallRules) evaluateLostFallStrong(
 	if c == nil || c.BathroomCount < 1 {
 		return
 	}
+	// 失锁前最后观测的 track 若全是 ghost，则这次"消失"是镜面反射 ghost 闪灭，
+	// 不是真人倒地失锁 → 不 fire。镜面浴室（D5F7）越界反射帧占比近半，
+	// ghost adjudicator 已判出 verdict=ghost，此处把已判准的结论接进 lost-strong 决策路径。
+	if lastBasesAllGhost(state.LastBases) {
+		r.logger.Info("bathroom_lost_strong_suppressed_ghost",
+			zap.String("room_id", roomID),
+			zap.String("device_addr", state.LastBases[0].DeviceAddr),
+			zap.Int("last_track_id", state.LastBases[0].TrackID),
+			zap.Int("ghost_penalty", state.LastBases[0].GhostPenalty),
+			zap.Int("raw_v", state.LastBases[0].RawV),
+			zap.Int64("ts_ms", nowMs),
+		)
+		state.LostStrongFired = true
+		return
+	}
+	// 门区 exit 推断：失锁前最后观测的 track 全是「门区(Enter cell) 或 ghost」+ 固件近期发过
+	// number_people=0 → 推断真人正常从门口走出（合成 ExitRoom 语义）→ 不 fire。
+	// 两个证据缺一不可：np=0 单独不可信（盲区/水气会假报空房）；门区位置单独不可信
+	// （可能在门口倒地）。只有「门口走 + 固件确认空」合取才采信离开。
+	// 末帧在马桶/淋浴/房中央 → 不满足 → 保持武装，水气衰减倒地仍照报。
+	if r.inferredDoorExit(roomID, state) {
+		r.logger.Info("bathroom_lost_strong_suppressed_door_exit",
+			zap.String("room_id", roomID),
+			zap.String("device_addr", state.LastBases[0].DeviceAddr),
+			zap.Int("last_track_id", state.LastBases[0].TrackID),
+			zap.String("last_cell_area", areaTypeWireName(state.LastBases[0].CellAreaType)),
+			zap.Int64("np_zero_ms", r.npZeroLookup(roomID)),
+			zap.Int64("empty_since_ms", state.EmptySinceMs),
+			zap.Int64("ts_ms", nowMs),
+		)
+		state.LostStrongFired = true
+		return
+	}
 	// 用"最后一次观测的 track"位置作 evidence
 	evidence := map[string]interface{}{
 		"context":          "bathroom_empty_after_count_positive",
@@ -475,6 +517,60 @@ func (r *BathroomFallRules) evaluateLostFallWeak(
 		"timeout_sec": bathroomLostWeakSilentSec,
 	}, nowMs-int64(staticTrack.StillSec)*1000, nowMs)
 	state.LostWeakAlerted[personID] = true
+}
+
+// lastBasesAllGhost 失锁前最后一次非空观测是否「全为 ghost」。
+// 空快照返回 false（无证据，不抑制，保持原行为）。
+func lastBasesAllGhost(lastBases []TrackStatusBase) bool {
+	if len(lastBases) == 0 {
+		return false
+	}
+	for i := range lastBases {
+		if lastBases[i].Verdict != VerdictGhost {
+			return false
+		}
+	}
+	return true
+}
+
+// bathroomDoorExitNpZeroGraceMs np=0 相对 empty 起点的容差：
+// 固件 np=0 与 track 失锁近乎同时，允许 np=0 略早于 EmptySinceMs（事件乱序）。
+const bathroomDoorExitNpZeroGraceMs int64 = 3000
+
+// inferredDoorExit 门区 exit 推断：np=0「确认证据」+ 门区位置「空间证据」合取。
+//   - npZeroLookup 未注入 → 关闭推断（return false，退回原 lost-strong 行为）
+//   - 失锁前最后观测里，每个非 ghost track 都在 Enter(门) cell（门口走 / 残留 ghost）
+//   - 固件在 empty 起点附近发过 number_people=0（屋内空断言）
+//
+// 任一不满足 → false → lost-strong 照常 fire（末帧在马桶/淋浴 = 信号丢失，非离开）。
+func (r *BathroomFallRules) inferredDoorExit(roomID string, state *bathroomFallState) bool {
+	if r.npZeroLookup == nil || len(state.LastBases) == 0 {
+		return false
+	}
+	if !lastBasesAllExitedOrGhost(state.LastBases) {
+		return false
+	}
+	npZeroMs := r.npZeroLookup(roomID)
+	return npZeroMs > 0 && npZeroMs >= state.EmptySinceMs-bathroomDoorExitNpZeroGraceMs
+}
+
+// lastBasesAllExitedOrGhost 最后观测的每个 track 是否都「在门区 或 ghost」。
+// 即没有任何「非 ghost 且不在门口」的 track 残留（那种残留 = 可能仍在屋内的真人）。
+// 由 inferredDoorExit 在 method-2(全 ghost) 之后调，故命中时必含 ≥1 个门区真人 track。
+func lastBasesAllExitedOrGhost(lastBases []TrackStatusBase) bool {
+	if len(lastBases) == 0 {
+		return false
+	}
+	for i := range lastBases {
+		if lastBases[i].Verdict == VerdictGhost {
+			continue
+		}
+		if lastBases[i].CellAreaType == AreaEnter {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // releaseDedupOnLostTracks 当 track 不再出现在当前帧 → 释放 10a per-track dedup flag。

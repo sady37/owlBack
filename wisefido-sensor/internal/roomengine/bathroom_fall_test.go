@@ -280,6 +280,98 @@ func TestBathroomFall_LostStrong_ResetOnNewTrack(t *testing.T) {
 	}
 }
 
+func TestBathroomFall_LostStrong_SuppressedWhenLastTrackGhost(t *testing.T) {
+	const nowMs = int64(8_500_000)
+	r, m, pub := makeFallRules(t)
+	upgradeResidentInBathroom(t, m, tfSuite, tfRes, nowMs)
+
+	// 帧 1：失锁前最后观测是 ghost（镜面反射越界帧，RawV 超 FOV 深度）
+	r.Evaluate(tfRoom, []TrackStatusBase{
+		{TrackID: 0, RoomID: tfRoom, X: 130, Y: 440, RawV: 200, Verdict: VerdictGhost, GhostPenalty: 80},
+	}, nowMs)
+	// 帧 2：空 — EmptySinceMs 开始计时
+	r.Evaluate(tfRoom, nil, nowMs+1000)
+	// 帧 3：35s 后仍空 — 因最后是 ghost，不应 fire
+	r.Evaluate(tfRoom, nil, nowMs+1000+35_000)
+
+	if pub.countByReason(ReasonSuitePersonCompletelyLost) != 0 {
+		t.Fatalf("ghost-last loss must NOT fire lost-strong, got %d fires", pub.countByReason(ReasonSuitePersonCompletelyLost))
+	}
+}
+
+func TestBathroomFall_LostStrong_FiresWhenLastTrackRealMixedGhost(t *testing.T) {
+	const nowMs = int64(8_700_000)
+	r, m, pub := makeFallRules(t)
+	upgradeResidentInBathroom(t, m, tfSuite, tfRes, nowMs)
+
+	// 失锁前最后观测含一个 real track（1 真人 + 1 ghost）→ 不抑制，真人消失仍 fire
+	r.Evaluate(tfRoom, []TrackStatusBase{
+		{TrackID: 0, RoomID: tfRoom, X: -50, Y: 100, Verdict: VerdictReal},
+		{TrackID: 1, RoomID: tfRoom, X: 130, Y: 440, Verdict: VerdictGhost, GhostPenalty: 80},
+	}, nowMs)
+	r.Evaluate(tfRoom, nil, nowMs+1000)
+	r.Evaluate(tfRoom, nil, nowMs+1000+35_000)
+
+	if pub.countByReason(ReasonSuitePersonCompletelyLost) != 1 {
+		t.Fatalf("real-track loss must still fire lost-strong, got %d fires", pub.countByReason(ReasonSuitePersonCompletelyLost))
+	}
+}
+
+func TestBathroomFall_LostStrong_SuppressedDoorExitWithNpZero(t *testing.T) {
+	const nowMs = int64(8_900_000)
+	r, m, pub := makeFallRules(t)
+	upgradeResidentInBathroom(t, m, tfSuite, tfRes, nowMs)
+	// np=0 在 empty 起点(nowMs+1000)附近到达 → 门区 + np=0 合取成立
+	r.SetNumberPeopleZeroLookup(func(string) int64 { return nowMs + 1000 })
+
+	// 帧 1：失锁前最后帧在门区(Enter cell) + real
+	r.Evaluate(tfRoom, []TrackStatusBase{
+		{TrackID: 0, RoomID: tfRoom, X: 81, Y: 312, CellAreaType: AreaEnter, Verdict: VerdictReal},
+	}, nowMs)
+	r.Evaluate(tfRoom, nil, nowMs+1000)
+	r.Evaluate(tfRoom, nil, nowMs+1000+35_000)
+
+	if pub.countByReason(ReasonSuitePersonCompletelyLost) != 0 {
+		t.Fatalf("door-exit + np=0 must NOT fire lost-strong, got %d", pub.countByReason(ReasonSuitePersonCompletelyLost))
+	}
+}
+
+func TestBathroomFall_LostStrong_FiresWhenLostAtToiletDespiteNpZero(t *testing.T) {
+	const nowMs = int64(9_100_000)
+	r, m, pub := makeFallRules(t)
+	upgradeResidentInBathroom(t, m, tfSuite, tfRes, nowMs)
+	r.SetNumberPeopleZeroLookup(func(string) int64 { return nowMs + 1000 })
+
+	// 末帧在马桶(非门区)：水气/盲区丢信号 ≠ 离开 → 即便 np=0 也照报
+	r.Evaluate(tfRoom, []TrackStatusBase{
+		{TrackID: 0, RoomID: tfRoom, X: -90, Y: 100, CellAreaType: AreaToilet, Verdict: VerdictReal},
+	}, nowMs)
+	r.Evaluate(tfRoom, nil, nowMs+1000)
+	r.Evaluate(tfRoom, nil, nowMs+1000+35_000)
+
+	if pub.countByReason(ReasonSuitePersonCompletelyLost) != 1 {
+		t.Fatalf("loss at toilet must still fire despite np=0, got %d", pub.countByReason(ReasonSuitePersonCompletelyLost))
+	}
+}
+
+func TestBathroomFall_LostStrong_FiresAtDoorWithoutNpZero(t *testing.T) {
+	const nowMs = int64(9_300_000)
+	r, m, pub := makeFallRules(t)
+	upgradeResidentInBathroom(t, m, tfSuite, tfRes, nowMs)
+	// 无 np=0（lookup 返回 0）：门区位置单独不可信（门口倒地）→ 照报
+	r.SetNumberPeopleZeroLookup(func(string) int64 { return 0 })
+
+	r.Evaluate(tfRoom, []TrackStatusBase{
+		{TrackID: 0, RoomID: tfRoom, X: 81, Y: 312, CellAreaType: AreaEnter, Verdict: VerdictReal},
+	}, nowMs)
+	r.Evaluate(tfRoom, nil, nowMs+1000)
+	r.Evaluate(tfRoom, nil, nowMs+1000+35_000)
+
+	if pub.countByReason(ReasonSuitePersonCompletelyLost) != 1 {
+		t.Fatalf("door position without np=0 must still fire, got %d", pub.countByReason(ReasonSuitePersonCompletelyLost))
+	}
+}
+
 // ---- 10d BathroomLostFall weak ----
 
 func TestBathroomFall_LostWeak_TriggersOnTrackStatic7min(t *testing.T) {

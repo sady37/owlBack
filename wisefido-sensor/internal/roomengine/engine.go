@@ -262,6 +262,11 @@ type Engine struct {
 	//   单 goroutine 读写（publishTrackStatuses per-room 串行），无锁需要。
 	bathroomGates map[string]*BathroomGate
 
+	// §9 3b belief shadow（roomID → 旁路信念引擎，只 log 不 fire）。
+	// tick 在 publishTrackStatuses goroutine、event 在 handleEventMessage goroutine → beliefShadowMu 保护。
+	beliefShadows  map[string]*beliefShadow
+	beliefShadowMu sync.Mutex
+
 	// sensor_v2 PR-10 BathroomFallRules（§6.A）：
 	//   实例级单例（所有 bathroom rooms 共用一个 rules，内部 per-roomID 状态分桶）；
 	//   bootstrap 调 SetBathroomFallRules 注入；nil = 跳过 bathroom fall 判定（PR-9 后 v1 路径已删，
@@ -340,6 +345,7 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		roomType:             make(map[string]int),
 		trackLastSeen:        make(map[string]map[int]int64),
 		bathroomGates:        make(map[string]*BathroomGate),
+		beliefShadows:        make(map[string]*beliefShadow),
 	}
 }
 
@@ -670,6 +676,16 @@ func (e *Engine) SetBathroomFallRules(r *BathroomFallRules) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.bathroomFall = r
+	// 门区 exit 推断：把 per-room TrackManager 的 np=0 时间喂给 bathroom fall 规则。
+	r.SetNumberPeopleZeroLookup(func(roomID string) int64 {
+		e.mu.RLock()
+		tm := e.rooms[roomID]
+		e.mu.RUnlock()
+		if tm == nil {
+			return 0
+		}
+		return tm.LastNumberPeopleZeroMs()
+	})
 }
 
 // SetBedroomFallRules 注入 PR-11 BedroomFallRules（§6.B 11b + 11c）。
@@ -884,6 +900,9 @@ func (e *Engine) publishTrackStatuses(ctx context.Context, roomID string, bases 
 		}
 		e.bedroomFall.Evaluate(roomID, bases, beds, nowMs)
 	}
+
+	// 步骤 1.8：§9 3b belief shadow（旁路只 log 不 fire，与上面 gate-list fall 判定并行对账）。
+	e.beliefShadowTick(roomID, bases, nowMs)
 
 	// 步骤 2：Build TrackStatus 副本 + PR-3 PersonID 关联。
 	statuses := make([]*TrackStatus, 0, len(bases))
@@ -1572,6 +1591,7 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 		}
 		for _, evt := range evts {
 			tm.RecordRadarEvent(evt)
+			e.beliefShadowEvent(roomID, evt.EventName, ts) // §9 3b shadow：EnterRoom/ExitRoom 喂 belief（取消源）
 		}
 		tm.Tick(ts)
 	}

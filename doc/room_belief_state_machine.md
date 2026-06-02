@@ -155,6 +155,102 @@ v1 先用 HMM + 硬 duration gate 复现现状，v2 再上 HSMM。
 
 ---
 
+## 5.5 多实体耦合 — 元素之间的转移关系
+
+§5 的 A 只管**单个实体自己**从状态 i 到 j（时间转移）。但真实约束跨实体：
+"roomB 有人 → roomA risk 降"、"Bed-Enter → 间接进证 Room 没人倒地"。
+这类**实体间关系**单实体 HMM 表达不了 —— 它的世界里没有 roomB / bed 这些**别的变量**。
+这正是 gate-list 漏风最多处（跨实体推断全靠零散 gate，§见 fall_rule_inventory 冲突 1/3/4）。
+
+### 5.5.1 两种"转移关系"必须分清
+
+| 类型 | 例子 | 数学对象 | 单实体 A 能否表达 |
+|---|---|---|---|
+| **时间转移**（同实体，t→t+1） | roomA 的人 Stand→Walk | 转移矩阵 A（§5） | ✓ 能 |
+| **实体耦合**（同时刻，实体间） | roomB 有人→roomA risk 降；bed 有人→room 地板无人 | **约束 / 守恒项** | ✗ **不能** |
+
+你的两个例子都是第二种。**关键设计：耦合不进单实体的 A**（A 永远只管自己，否则状态空间
+指数爆炸），**而进每帧第③步的约束投影算子 C**（见 5.5.4）。复杂度隔离在一个明确的约束层。
+
+### 5.5.2 弱耦合 — 邻居 belief 当一条观测（先做）
+
+最轻量、不改单实体引擎：roomB 的 belief 输出，作 roomA 的一条 `ObsNeighbor` 观测，
+进 roomA 的 P(o|s)：
+
+```
+P( roomB_有人 | roomA=Empty )   = 高    ← 人在 B，A 大概率空
+P( roomB_有人 | roomA=Fallen )  = 低    ← 人在 B，A 不太可能有人倒地
+```
+
+这就表达"roomB 有人 → roomA risk 降"：roomB 占用信念通过似然项**压低 roomA 的 P(Fallen)**。
+在 [[belief_input_normalization.md]] schema 里就是加一条 ObsKind：
+
+```
+ObsNeighbor{ Source: roomB, Value: P(roomB 有人), Conf: roomB belief 的确定度 }
+```
+
+优点：零改引擎，roomA 照常单实体 forward，多吃一条邻居观测。
+缺点：单向快照耦合，不保证全局守恒（可能 A、B 同时被推成有人）。**v1 先做这个**，已能修一大类跨房误报。
+
+### 5.5.3 中耦合 — suite 级人数守恒（治本你的两个例子）
+
+你的例子本质是**守恒律**：一个 suite 就这么几个人，A 多一个、别处必少一个。
+把单实体 belief 升成 **suite 级联合分布**，加守恒约束：
+
+```
+suite 状态 = (roomA, roomB, bed, ...) 各 belief 的联合
+约束: Σ over 所有 room/bed 的 P(有人) ≈ 已知总人数 N
+
+→ Bed-Enter 不只更新 bed，它通过守恒把 room 地板的 P(有人) 拉低
+  （人进床，地板就少一个 → roomFloor 的 P(Fallen) 自动降）
+```
+
+这直接表达"**Bed Enter/Exit 间接进证 Room 状态**"：不是 room 自己观测到，而是
+**守恒约束从 bed 传导过来**。也是 9h bug 的治本：D523"地板有人倒地"的信念，被
+"sleepad 报床上有人 + 总人数=1"的守恒**强行压下去**（人就一个、在床上、地板不可能还有一个倒着）。
+
+**宿主天然就是 census**：census 已是 suiteID-key 的人数管理（[[cardagg_sensor_split.md]]）——
+把它从"计数器"升成"suite 联合 belief 的归一化器"，不新建实体。
+
+### 5.5.4 统一表达 — 每帧三步（而非两步）
+
+```
+单实体（§2 今天的 HMM）:
+  ① b ← A·b              时间转移
+  ② b ← diag(P(o|s))·b   观测更新
+
+多实体（加耦合）:
+  ① 各实体 b_i ← A_i·b_i        各自时间转移（不变）
+  ② 各实体 b_i ← diag(P(o|s))·b_i  各自观测更新（不变）
+  ③ 联合归一化: 对 suite 内所有 b_i 施加约束投影算子 C   ← 新增，表达耦合
+```
+
+第③步的 **C = 约束投影算子**，就是"元素间转移关系"的数学落点：
+- **弱耦合版（5.5.2）**：C = 把邻居 belief 当观测，等价于第②步多喂一条 ObsNeighbor
+- **中耦合版（5.5.3）**：C = 人数守恒的投影，在 census 层归一化各 b_i
+
+注意：**C 不改单实体 A**（A 永远只管自己），保持单实体引擎简洁不爆炸，把跨实体复杂度
+隔离在 C 这一层。
+
+### 5.5.5 对照你的两个例子
+
+| 你的话 | 模型表达 | 哪一层 |
+|---|---|---|
+| Bed Enter/Exit 间接进证 Room 状态 | bed belief → 人数守恒 C → 压低 room 地板 P(有人/Fallen) | 中耦合（census 守恒） |
+| roomB 有人 → roomA risk 降 | roomB 占用作 roomA 的 ObsNeighbor，似然压低 P(Fallen) | 弱耦合（先做） |
+
+两个都不靠"再加一条 gate"，而是同一个守恒/耦合机制的不同投影 —— **这就是 belief 封死缝的关键：
+跨实体推断有了统一的数学宿主（约束层 C），不再散落成无穷无尽的 gate**（fall_rule_inventory
+冲突 1/3/4 全是"跨实体推断靠零散 gate + 人工同步"，C 是它们的统一解）。
+
+### 5.5.6 强耦合 — 完整 DBN（远期，不现在做）
+
+每个实体一个节点，节点间画有向边（bed→room、room↔room、door→两侧 room），边上是条件
+概率表 = Murphy DBN 完全体。完备但工程重，留作 HSMM 之后的 v3。**v1 只做弱耦合（5.5.2），
+v2 上中耦合守恒（5.5.3）。**
+
+---
+
 ## 6 与现状一致 = 可证（用户硬约束）
 
 | 约束 | 做法 |
@@ -204,9 +300,13 @@ v1 先用 HMM + 硬 duration gate 复现现状，v2 再上 HSMM。
 3. **shadow 接线**：在 publishTrackStatuses 旁路跑 belief，**只 log 不 fire**，记录与现行 fall
    判定的分歧。
 4. **3-case 闭环**：CABB + John.Y + 一个真跌倒，跑"复现现状→只修 9h/CABB→零回归"。
-5. 闭环过了再谈：扩 case 集、HSMM、多人、cutover。
+   注：John.Y 9h 的治本依赖 §5.5.3 中耦合守恒（"床上有人+总人数=1→地板 P(Fallen)=0"），
+   v1 最小闭环可先用 §5.5.2 弱耦合（sleepad InBed 作 ObsNeighbor 压低 P(Fallen)）近似，
+   验证方向成立后 v2 再上守恒。
+5. 闭环过了再谈：扩 case 集、HSMM、中耦合守恒（§5.5.3）、多人、cutover。
 
-**不在本 PR**：HSMM、多人 belief、cutover（删 gate-list）。先证明一个最小闭环。
+**不在本 PR**：HSMM、中耦合守恒（§5.5.3）、强耦合 DBN（§5.5.6）、多人 belief、cutover（删
+gate-list）。本 PR 单实体 belief + §5.5.2 弱耦合，先证一个最小闭环。
 
 ---
 

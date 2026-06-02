@@ -237,7 +237,7 @@ func TestSilentFallLeftBed_NoFireBelowMinInBed(t *testing.T) {
 // ============================================================================
 
 // runStillStandFor 在 (x,y) 静止站立 N 秒（每秒一帧 pose=Stand）。
-// pose 不变、x/y 不变让 frozen 检测尽量不干扰；调用方先把 track 提到 Real。
+// pose 不变、x/y 不变让 StillBox 静止检测尽量不干扰；调用方先把 track 提到 Real。
 func runStillStandFor(tm *TrackManager, tid, x, y int, startTms int64, secs int) int64 {
 	tms := startTms
 	for i := 0; i < secs; i++ {
@@ -575,10 +575,10 @@ func TestRegionStatic_ResetOnLargeMove(t *testing.T) {
 }
 
 // ============================================================================
-// Frozen 检测（box 判据）：失锁前 30s 滚动窗口内位移 box ≤ StillBoxCm 时 FrozenRunStart 被填上
+// StillBox（静止无移动）检测（box 判据）：失锁前 30s 滚动窗口内位移 box ≤ StillBoxCm 时 StillBoxRunStart 被填上
 // ============================================================================
 
-func TestFrozenFrameDetection(t *testing.T) {
+func TestStillBoxDetection(t *testing.T) {
 	tm, _ := newTestTM()
 	const tid = 7
 	const x, y, z = 100, 100, 50
@@ -592,16 +592,16 @@ func TestFrozenFrameDetection(t *testing.T) {
 	if ts == nil {
 		t.Fatal("track not created")
 	}
-	if ts.FrozenRunStart != 0 {
-		t.Errorf("after 1 frame FrozenRunStart should be 0 (need >=2 history), got %d", ts.FrozenRunStart)
+	if ts.StillBoxRunStart != 0 {
+		t.Errorf("after 1 frame StillBoxRunStart should be 0 (need >=2 history), got %d", ts.StillBoxRunStart)
 	}
 
-	// 第 2 帧位置完全相同：进入 still box → FrozenRunStart 设为 History 最早帧（=1000）
+	// 第 2 帧位置完全相同：进入 still box → StillBoxRunStart 设为 History 最早帧（=1000）
 	tm.processFrameAt([]TrackFrame{
 		{TrackID: tid, DeviceAddr: "dev1", X: x, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: 2000},
 	}, 2000)
-	if ts.FrozenRunStart != 1000 {
-		t.Errorf("after 2 still frames FrozenRunStart want 1000 (oldest history), got %d", ts.FrozenRunStart)
+	if ts.StillBoxRunStart != 1000 {
+		t.Errorf("after 2 still frames StillBoxRunStart want 1000 (oldest history), got %d", ts.StillBoxRunStart)
 	}
 
 	// 喂 23 帧抖动在 box 内（±10cm 抖动，仍 ≤ 30cm box）—— byte-equal 旧判据这里就清零，box 判据应保持
@@ -617,29 +617,29 @@ func TestFrozenFrameDetection(t *testing.T) {
 			{TrackID: tid, DeviceAddr: "dev1", X: x + dx, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: tms},
 		}, tms)
 	}
-	if ts.FrozenRunStart == 0 {
-		t.Errorf("box judge: still 在 ±10cm 抖动应保持 FrozenRunStart > 0")
+	if ts.StillBoxRunStart == 0 {
+		t.Errorf("box judge: still 在 ±10cm 抖动应保持 StillBoxRunStart > 0")
 	}
 
 	// 一帧大幅跳出 box → 重置（位移 > 30cm）
 	tm.processFrameAt([]TrackFrame{
 		{TrackID: tid, DeviceAddr: "dev1", X: x + 100, Y: y, Z: z, Pose: pose, TrackConfidence: 60, TMs: 26000},
 	}, 26000)
-	if ts.FrozenRunStart != 0 {
-		t.Errorf("after big jump FrozenRunStart should reset, got %d", ts.FrozenRunStart)
+	if ts.StillBoxRunStart != 0 {
+		t.Errorf("after big jump StillBoxRunStart should reset, got %d", ts.StillBoxRunStart)
 	}
 }
 
-// TestLostFallFrozenThenRecovery 模拟 case_lostfall_cd2b_11351148 的核心时序：
+// TestLostFallStillBoxThenRecovery 模拟 case_lostfall_cd2b_11351148 的核心时序：
 //
 //	t=0       人进房，VerdictReal
 //	t=20s     track 进入"卧室盲区前"位置 (-90, 320)
-//	t=20-50s  连续 30 帧字面相同（frozen）
+//	t=20-50s  连续 30 帧字面相同（StillBox 静止）
 //	t=50+10s  firmware 放弃 → engine 看不到 → 入 pendingLostFalls
 //	t=120s    人重新出现在 (-240, 220) → 取消 pending（盲区返回）
 //
 // 校验：① pendingLostFalls 被创建 ② 被 birth 取消（不报 lost fall） ③ cell 学到 BlindSpotRecovery
-func TestLostFallFrozenThenRecovery(t *testing.T) {
+func TestLostFallStillBoxThenRecovery(t *testing.T) {
 	tm, g := newTestTM()
 	// 角落 cell 设为 AreaEnter（离 (-90,320) 足够远，触发 NearestEntryDist > ExitDistMinCm）
 	for i := range g.Cells {
@@ -654,7 +654,7 @@ func TestLostFallFrozenThenRecovery(t *testing.T) {
 		}
 	}
 	// 让消失点 (-90, 320) 的 cell 已累计 Sit 观测 → IsLikelyRestZone=true
-	// 物理含义：这位置之前有人坐过（沙发未标 layout）；测试 lost fall 走 frozen credit 路径
+	// 物理含义：这位置之前有人坐过（沙发未标 layout）；测试 lost fall 走 StillBox 静止 credit 路径
 	disappearCell := g.CellAt(-90, 320)
 	if disappearCell != nil {
 		disappearCell.ActiveType[ActiveIdxSit] = 50 // ≥30 触发 IsLikelyRestZone
@@ -676,17 +676,17 @@ func TestLostFallFrozenThenRecovery(t *testing.T) {
 	}, tms)
 	tms += 1000
 
-	// 3) 连续 30 帧字面完全相同（frozen 模拟 firmware 失锁）
+	// 3) 连续 30 帧字面完全相同（StillBox 静止,模拟 firmware 失锁）
 	for i := 0; i < 30; i++ {
 		tm.processFrameAt([]TrackFrame{
 			{TrackID: tid, DeviceAddr: "dev1", X: -90, Y: 320, Z: 0, Pose: 4, TrackConfidence: 60, TMs: tms},
 		}, tms)
 		tms += 1000
 	}
-	if ts.FrozenRunStart == 0 {
-		t.Fatalf("FrozenRunStart should be set after 30 still box frames, got 0")
+	if ts.StillBoxRunStart == 0 {
+		t.Fatalf("StillBoxRunStart should be set after 30 still box frames, got 0")
 	}
-	frozenStart := ts.FrozenRunStart
+	stillStart := ts.StillBoxRunStart
 
 	// 4) firmware giveup — 不再喂 frame；engine 走 segment 2 判失锁
 	// MaxMissCount = 10，连续 11 个空 tick 后 track 应该消失
@@ -704,9 +704,9 @@ func TestLostFallFrozenThenRecovery(t *testing.T) {
 	for _, p := range tm.pendingLostFalls {
 		pending = p
 	}
-	if pending.FrozenStartMs != frozenStart {
-		t.Errorf("PendingLostFall should carry FrozenStartMs from track, want %d got %d",
-			frozenStart, pending.FrozenStartMs)
+	if pending.StillBoxStartMs != stillStart {
+		t.Errorf("PendingLostFall should carry StillBoxStartMs from track, want %d got %d",
+			stillStart, pending.StillBoxStartMs)
 	}
 
 	// 5) 人重新出现 — 新 track 出生 → 触发 cancel by recovery
@@ -1104,5 +1104,28 @@ func TestMirrorSymmetry_NoInterferes(t *testing.T) {
 	tm.applyLifetimeGhostFactors(ts, 5_000)
 	if ts.GhostPenalty != 70 {
 		t.Errorf("no interferes should leave penalty unchanged at 70, got %d", ts.GhostPenalty)
+	}
+}
+
+// TestCheckLostFall_MovingPrecondition 走动前置（2026-06-01 止血）：
+// 走动中突然消失（still-box <60s）→ 进 lost-fall；消失前已 settle 进长静止（still-box ≥60s）
+// = 站/坐/卧不动 → 不进 lost-fall（归 Still-fall）。判别用 box-based still-box，不碰 pose。
+func TestCheckLostFall_MovingPrecondition(t *testing.T) {
+	tm, _ := newTestTM()
+	runFramesUntilReal(tm, 0, 100, 100, 1_700_000_000_000, 5) // 真实 epoch ms 基准；walking 升 Real
+	ts := tm.tracks[0]
+	last := ts.LastObservedMs
+
+	ts.StillBoxRunStart = 0 // 走动中（无 still-box）
+	if !tm.checkLostFall(ts) {
+		t.Fatal("走动中突然消失应进 lost-fall")
+	}
+	ts.StillBoxRunStart = last - 30_000 // still-box 30s (<60s) = 刚停不久，走动尚在 60s 内
+	if !tm.checkLostFall(ts) {
+		t.Fatal("still-box 30s(<60s)应进 lost-fall")
+	}
+	ts.StillBoxRunStart = last - 120_000 // still-box 120s (≥60s) = 静止态
+	if tm.checkLostFall(ts) {
+		t.Fatal("still-box ≥60s(静止态)不该进 lost-fall，应归 Still-fall")
 	}
 }

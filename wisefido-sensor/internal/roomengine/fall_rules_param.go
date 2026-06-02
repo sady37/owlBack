@@ -64,11 +64,17 @@ type lostFallParam struct {
 	// 0.5 = 跳过的等待时间砍半（更敏感）
 	SpatialJumpFactor float64
 
-	// Frozen 检测（box 判据，2026-05-03 由 byte-equal 改为 box）：
+	// StillBox（静止无移动）检测（box 判据，2026-05-03 由 byte-equal 改为 box）：
 	//   StillBoxCm：失锁前 30s 滚动窗口内的 (max-min) 位移 <= 此值视为 still box
 	//   原 byte-equal "连续 25 帧字面相同"判据被 firmware X/Y 抖动 + 摔倒抽搐打破，
 	//   改 box 容差更鲁棒。判据见 updateContinuousIndicators。
 	StillBoxCm int
+
+	// 走动前置（2026-06-01）：lost-fall 只认"走动中突然消失"（走动→跌倒+遮挡→丢 track）。
+	// 消失前若已 settle 进长静止（still-box 持续 ≥ 此值）= 站洗手台/坐马桶/卧床不动 = 正常静止态，
+	// 归 Still-fall 域（长阈值），**不进 lost-fall**。判据用 box-based still-box（抗坐姿 jitter，
+	// 路径长/移动时长会被 jitter 骗）。治本：CABB/MoM 多条冻结站/坐 lost_track FP（无真跌倒）。
+	MovingPreconditionMs int
 
 	// 速度二档判定（cm/s）：
 	// > ImpossibleSpeedCm 硬 ghost（无 EnterRoom 也判定）：老人最快 100-150cm/s
@@ -141,16 +147,17 @@ var FallRulesParam = fallRulesParam{
 		StaticPosCm:       20,
 	},
 	Lost: lostFallParam{
-		RestZoneWaitSec:       60 * 60, // 60 min
-		DenyZoneWaitSec:       5 * 60,
-		WalkwayWaitSec:        5 * 60,
-		ExitDistMinCm:         30, // 30cm（贴近门口）；2026-04-30 从 100cm 收紧
-		SpatialJumpFactor:     0.5,
-		StillBoxCm:                 30,   // 失锁前 30s 位移 box <= 30cm 视为 still
-		ImpossibleSpeedCm:          200,  // 硬 ghost：老人最快 100-150cm/s
-		SuspectSpeedCm:             100,  // 软 ghost：需 EnterRoom 反证
-		BirthFinalGraceMs:          2000, // birth 终判延迟 2s
-		EffectiveWaitFloorSec:      60,   // 兜底最少等 60s
+		RestZoneWaitSec:            60 * 60, // 60 min
+		DenyZoneWaitSec:            5 * 60,
+		WalkwayWaitSec:             5 * 60,
+		ExitDistMinCm:              30, // 30cm（贴近门口）；2026-04-30 从 100cm 收紧
+		SpatialJumpFactor:          0.5,
+		StillBoxCm:                 30,    // 失锁前 30s 位移 box <= 30cm 视为 still
+		MovingPreconditionMs:       60_000, // 消失前 still-box ≥60s = 静止态 → 不进 lost-fall（走 Still-fall）
+		ImpossibleSpeedCm:          200,   // 硬 ghost：老人最快 100-150cm/s
+		SuspectSpeedCm:             100,   // 软 ghost：需 EnterRoom 反证
+		BirthFinalGraceMs:          2000,  // birth 终判延迟 2s
+		EffectiveWaitFloorSec:      60,    // 兜底最少等 60s
 		NumberPeopleZeroFallbackMs: 60000, // ExitRoom 缺失时 number_people=0 兜底窗口 60s（仅 non-frozen 时生效）
 	},
 	CellHistory: cellHistoryParam{

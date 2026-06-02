@@ -56,11 +56,15 @@ type RadarFallAlarm struct {
 type RadarTrackEvent struct {
 	DeviceUID    string
 	TMs          int64
-	EventName    string // "EnterRoom" / "ExitRoom" / "InBed" / "LeftBed" / "NumberPeople"
+	EventName    string // EnterRoom / ExitRoom / InBed / LeftBed / EventNameNumberPeople
 	TrackID      int
 	Status       string // "instant" / "start" / "end"
-	NumberPeople int    // 仅 EventName=="NumberPeople" 时有效
+	NumberPeople int    // 仅 EventName==EventNameNumberPeople 时有效
 }
+
+// EventNameNumberPeople 是 number_people envelope 归一后的内部 EventName。
+// envelope 用 alarm.NumberPeople（"number_people" 小写），内部统一成此 canonical 形式。
+const EventNameNumberPeople = "NumberPeople"
 
 // ParseRadarFallAlarm 解析 alarm:stream 或 event:stream 一条消息的 data_value 为 RadarFallAlarm 列表。
 // 仅接受 confirmed 类 envelope.Category：alarm.Fall / alarm.SittingOnGround。
@@ -128,8 +132,8 @@ func ParseRadarTrackEvents(dv interface{}, deviceUID, envelopeCat string, fallba
 	canonical := envelopeCat
 	switch envelopeCat {
 	case alarm.EnterRoom, alarm.ExitRoom, alarm.InBed, alarm.LeftBed:
-	case alarm.NumberPeople, "NumberPeople":
-		canonical = "NumberPeople"
+	case alarm.NumberPeople, EventNameNumberPeople:
+		canonical = EventNameNumberPeople
 	default:
 		return nil
 	}
@@ -154,7 +158,7 @@ func ParseRadarTrackEvents(dv interface{}, deviceUID, envelopeCat string, fallba
 			TrackID:   jsonInt(m["track_id"]),
 			Status:    st,
 		}
-		if canonical == "NumberPeople" {
+		if canonical == EventNameNumberPeople {
 			evt.NumberPeople = jsonInt(m["number_people"])
 		}
 		out = append(out, evt)
