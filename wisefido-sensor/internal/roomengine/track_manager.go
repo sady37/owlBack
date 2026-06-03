@@ -69,6 +69,11 @@ type TrackManager struct {
 	// （tracks 按 trackID 索引、ts.DeviceAddr 出生即定不随帧刷新——多雷达同 trackID 会污染 TrackState）。
 	lastRealTrackByDevice map[string]int64
 
+	// bedCount：本房结构床数（RegisterRoom 注入 = len(cfg.Beds)）。同房多雷达占用对账**仅在单床房(==1)
+	// 启用**：双床房可能两位老人，A 摔(lost)+B 在场被另一台看着会被误压成漏报，故双床房不启用（宁报勿漏）。
+	// 固件确认跌倒(pose5)走独立路径、不受此守卫影响。
+	bedCount int
+
 	// bedSessions：sleepad 设备维度的"在床会话"状态机；新版 silent fall 触发源。
 	// key = sleepad device_uid。详见 BedSession 结构体。
 	bedSessions map[string]*BedSession
@@ -1303,9 +1308,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			delete(tm.pendingLostFalls, pid)
 			continue
 		}
-		// 同房多雷达占用对账：另一台雷达近期仍见真人 → 人还在房（被别台看着，本台只是丢/幻影）→ 抑制。
-		// 治 D523 无床雷达持幻影、09E7 同房看到真人那类 lost_track FP（active 永不 auto_resolve）。
-		if tm.otherDeviceRealTrackRecent(p.DeviceAddr, nowMs) {
+		// 同房多雷达占用对账（**仅单床房 bedCount==1**）：另一台雷达近期仍见真人 → 人还在房
+		// （被别台看着，本台只是丢/幻影）→ 抑制。治 D523 无床雷达持幻影、09E7 同房看到真人那类 lost_track FP。
+		// 双床房不启用：可能两位老人，A 摔(lost)+B 在场会被误压成漏报（宁报勿漏；固件确认跌倒不受此守卫影响）。
+		if tm.bedCount == 1 && tm.otherDeviceRealTrackRecent(p.DeviceAddr, nowMs) {
 			tm.lostFallPendingCancelled++
 			tm.logger.Info("lost_fall_cancelled_by_other_radar_in_room",
 				zap.String("device_uid", p.DeviceAddr),

@@ -148,20 +148,20 @@ func (a *AccuracyTracker) Accuracy() float64 {
 // ========================================================================
 
 type Engine struct {
-	mu         sync.RWMutex
-	rooms      map[string]*TrackManager         // roomID → TrackManager
-	grids      map[string]*RoomGrid             // roomID → Grid
+	mu           sync.RWMutex
+	rooms        map[string]*TrackManager         // roomID → TrackManager
+	grids        map[string]*RoomGrid             // roomID → Grid
 	deviceMounts map[string]radarutils.RadarMount // deviceAddr(/128) → 该 radar 安装参数（坐标转换用）；多雷达房每台一份
-	deviceRoom map[string]string                // deviceAddr → roomID (sensor 唯一物理寻址)
+	deviceRoom   map[string]string                // deviceAddr → roomID (sensor 唯一物理寻址)
 	// PR-8: AI publish 用 — 源 radar UUID 反查 deviceUID + room 反查 tenant/card
-	deviceAddrToUID   map[string]string // deviceAddr(UUID) → device_uid（IoTStreamMessage.DeviceUID）
-	deviceAddrToType  map[string]string // deviceAddr(UUID) → 源 sensor 类型（"Radar"/"Sleepad"），AI publish 加 ".AI<node>" 后缀
-	roomTenants     map[string]string // roomID → tenant_id（alarm_events 必填）
+	deviceAddrToUID  map[string]string // deviceAddr(UUID) → device_uid（IoTStreamMessage.DeviceUID）
+	deviceAddrToType map[string]string // deviceAddr(UUID) → 源 sensor 类型（"Radar"/"Sleepad"），AI publish 加 ".AI<node>" 后缀
+	roomTenants      map[string]string // roomID → tenant_id（alarm_events 必填）
 
 	// 北极星 reasoning trace 链：每 device 最近 inbound msg 的 envelope.SequenceNumber，
 	// AI verdict publish 时 evidence["trigger_seq_num"] = lastSrcSeq[deviceAddr]。
 	// 多 producer (qinglan/sleepace) 各自有独立 seq counter；本 map 按 deviceAddr 区分。
-	srcSeqMu  sync.RWMutex
+	srcSeqMu   sync.RWMutex
 	lastSrcSeq map[string]uint64
 	// 不再维护 roomCards：AI 是 sensor 层 producer，只发 device 标识；card_id (subject_entity)
 	// 由 cardagg IotPreparedHandler 反查 device→cards 路由（多卡共享设备时自然 fan-out）。
@@ -185,9 +185,9 @@ type Engine struct {
 	winner    int // 当前 winner 组（0/1/2），-1=无 winner 用 baseline
 
 	// 运行时参数（由 Configure 注入；Decay/Learn 字段语义见 cell.go / cell_learning.go）
-	decayParams     DecayParams
-	learnParams     LearnParams
-	bedsideFallCfg  BedsideFallConfig // R4 床边晕倒参数；RegisterRoom 时下发到 TrackManager
+	decayParams    DecayParams
+	learnParams    LearnParams
+	bedsideFallCfg BedsideFallConfig // R4 床边晕倒参数；RegisterRoom 时下发到 TrackManager
 
 	// 定时器
 	decayInterval      time.Duration // 默认 1 小时（Decay 计算一次）
@@ -205,9 +205,9 @@ type Engine struct {
 	historyRetainDays   int // <=0 表示不清理
 
 	// alarm-feedback ingestion（cell.IncrFakeAlarm 反馈链）
-	feedbackDB        *sql.DB
-	feedbackInterval  time.Duration // 默认 5 分钟；0 = 关闭
-	feedbackIngester  *AlarmFeedbackIngester
+	feedbackDB       *sql.DB
+	feedbackInterval time.Duration // 默认 5 分钟；0 = 关闭
+	feedbackIngester *AlarmFeedbackIngester
 
 	// PR-15: 每日定时 layout reload。dailyReloadHour 0-23（local time）；-1=禁用
 	// 目的：管理员下班后重读 rooms.layout_config，hash 变 → 重置该 room grid，从 0 重学
@@ -314,38 +314,38 @@ type RuntimeConfig struct {
 // NewEngine 创建 Room Engine（默认参数）。生产环境调用 Configure 注入 yaml 配置。
 func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 	return &Engine{
-		rooms:              make(map[string]*TrackManager),
-		grids:              make(map[string]*RoomGrid),
-		deviceMounts:       make(map[string]radarutils.RadarMount),
-		deviceRoom:         make(map[string]string),
-		deviceAddrToUID:      make(map[string]string),
-		deviceAddrToType:     make(map[string]string),
-		roomTenants:        make(map[string]string),
-		lastSrcSeq:         make(map[string]uint64),
-		aiSource:           "sensor.caregiver01",
-		aiPublishMode:      "log&publish",
-		layoutHashes:       make(map[string]string),
-		paramSets:          DefaultParamSets,
-		winner:             1, // 默认 balanced
-		decayParams:        DefaultDecayParams(),
-		learnParams:        DefaultLearnParams(),
-		decayInterval:        1 * time.Hour,
-		beliefScanInterval:   10 * time.Minute, // PR-11
-		winnerEvalInterval:   24 * time.Hour,
-		snapshotInterval:     5 * time.Minute,
-		dailyReloadHour:      22, // PR-15：22:00 local 重读 layout
-		dailySnapshotHour:    11, // 每天 11:50 local 归档 daily history
-		dailySnapshotMinute:  50,
-		historyRetainDays:    365, // 一年滚动清理
-		unrouted:             make(map[string]int64),
-		redisClient:          redisClient,
-		logger:               logger,
-		roomSuiteID:          make(map[string]string),
-		roomResidentID:       make(map[string]string),
-		roomType:             make(map[string]int),
-		trackLastSeen:        make(map[string]map[int]int64),
-		bathroomGates:        make(map[string]*BathroomGate),
-		beliefShadows:        make(map[string]*beliefShadow),
+		rooms:               make(map[string]*TrackManager),
+		grids:               make(map[string]*RoomGrid),
+		deviceMounts:        make(map[string]radarutils.RadarMount),
+		deviceRoom:          make(map[string]string),
+		deviceAddrToUID:     make(map[string]string),
+		deviceAddrToType:    make(map[string]string),
+		roomTenants:         make(map[string]string),
+		lastSrcSeq:          make(map[string]uint64),
+		aiSource:            "sensor.caregiver01",
+		aiPublishMode:       "log&publish",
+		layoutHashes:        make(map[string]string),
+		paramSets:           DefaultParamSets,
+		winner:              1, // 默认 balanced
+		decayParams:         DefaultDecayParams(),
+		learnParams:         DefaultLearnParams(),
+		decayInterval:       1 * time.Hour,
+		beliefScanInterval:  10 * time.Minute, // PR-11
+		winnerEvalInterval:  24 * time.Hour,
+		snapshotInterval:    5 * time.Minute,
+		dailyReloadHour:     22, // PR-15：22:00 local 重读 layout
+		dailySnapshotHour:   11, // 每天 11:50 local 归档 daily history
+		dailySnapshotMinute: 50,
+		historyRetainDays:   365, // 一年滚动清理
+		unrouted:            make(map[string]int64),
+		redisClient:         redisClient,
+		logger:              logger,
+		roomSuiteID:         make(map[string]string),
+		roomResidentID:      make(map[string]string),
+		roomType:            make(map[string]int),
+		trackLastSeen:       make(map[string]map[int]int64),
+		bathroomGates:       make(map[string]*BathroomGate),
+		beliefShadows:       make(map[string]*beliefShadow),
 	}
 }
 
@@ -762,9 +762,10 @@ func (e *Engine) pickAdjudicator(roomType int) GhostAdjudicator {
 // applyVerdictDeltas 应用 GhostAdjudicator 输出到 TrackStatus 副本（**唯一 verdict 写点**）。
 //
 // 不变量守卫（sensor_v2 决定 21 / Q4 review）：
-//   Anchored → Ghost 转换被拒绝；verdict 字段保持 Anchored，penalty 仍累加供 PR-6 BathroomGhost
-//   "持续疑似"审计观察。未来若需真正 unanchor，必须走显式重置路径（重启 / FeedbackEvent 清
-//   LongSurvival/StartupGrace），不能在单帧 delta 里悄悄做。
+//
+//	Anchored → Ghost 转换被拒绝；verdict 字段保持 Anchored，penalty 仍累加供 PR-6 BathroomGhost
+//	"持续疑似"审计观察。未来若需真正 unanchor，必须走显式重置路径（重启 / FeedbackEvent 清
+//	LongSurvival/StartupGrace），不能在单帧 delta 里悄悄做。
 //
 // 边界：
 //   - PenaltyDelta clamp 到 [0, 100]
@@ -820,16 +821,17 @@ const trackLostAnchorMs int64 = 60_000
 // 跑 GhostAdjudicator → apply deltas → 推流。调用时机：handleMessage 在 tm.ProcessFrame 之后。
 //
 // 流水线（PR-4）：
-//   1) 失锁清理：上一帧出现但本帧未出现且 ≥ 60s 的 trackID → census.ClearAnchorOnLostTrack（PR-3）
-//   2) Build：bases → []*TrackStatus 副本（含 PR-3 PersonID 关联 / zone 占位推断）
-//   3) Adjudicate：按 room.kind 挑 GhostAdjudicator（决定 16），调 Adjudicate(bases, nowMs)
-//   4) Apply：applyVerdictDeltas 执行 Anchored 守卫 + penalty clamp（决定 21 / Q4）
-//   5) Publish：每条 TrackStatus 推 sensor:track:status:stream
+//  1. 失锁清理：上一帧出现但本帧未出现且 ≥ 60s 的 trackID → census.ClearAnchorOnLostTrack（PR-3）
+//  2. Build：bases → []*TrackStatus 副本（含 PR-3 PersonID 关联 / zone 占位推断）
+//  3. Adjudicate：按 room.kind 挑 GhostAdjudicator（决定 16），调 Adjudicate(bases, nowMs)
+//  4. Apply：applyVerdictDeltas 执行 Anchored 守卫 + penalty clamp（决定 21 / Q4）
+//  5. Publish：每条 TrackStatus 推 sensor:track:status:stream
 //
 // PersonID 写入规则（sensor_v2 PR-3 review）：
-//   if person, upgraded := suiteCensus.UpdatePersonFromTrack(...); upgraded && person != nil {
-//       status.PersonID, status.PersonRole = person.PersonID, person.Role
-//   } // else 一律空
+//
+//	if person, upgraded := suiteCensus.UpdatePersonFromTrack(...); upgraded && person != nil {
+//	    status.PersonID, status.PersonRole = person.PersonID, person.Role
+//	} // else 一律空
 //
 // Bathroom room 不调 UpdatePersonFromTrack —— bathroom 内 person 关联由 PR-5 BathroomGate
 // 入口流量 + suiteCensus.MarkPersonExitToBathroom/Return 维护，bathroom 帧只读 AnchorRoomType。
@@ -911,7 +913,7 @@ func (e *Engine) publishTrackStatuses(ctx context.Context, roomID string, bases 
 		seen[b.TrackID] = nowMs
 		status := &TrackStatus{
 			TrackID:      b.TrackID,
-			DeviceAddr:     b.DeviceAddr,
+			DeviceAddr:   b.DeviceAddr,
 			RoomID:       b.RoomID,
 			Verdict:      b.Verdict,
 			GhostPenalty: b.GhostPenalty,
@@ -973,13 +975,14 @@ func (e *Engine) publishTrackStatuses(ctx context.Context, roomID string, bases 
 // 旧代码可能仍传 "ghost" 兼容（按 track_verdict 等价处理）。
 //
 // 消息字段（Phase A v2 envelope）：
-//   Producer:        e.aiSource（如 "sensor.caregiver01"），sensor agent layer 1 标识
-//   SubjectEntity:   留空（AI 不染卡概念，cardagg IotPreparedHandler 反查 device→subject）
-//   DeviceUID:       源 sensor 的 device_uid
-//   DeviceAddr:        源 sensor 的 UUID
-//   DeviceType:      源 sensor 类型（"Radar" / "Sleepad"）
-//   TenantID:        roomTenants[roomID]
-//   DataValue:       [{ track_id, ts, position_x/y/z, area_type, pose, track_confidence, source, ... }]
+//
+//	Producer:        e.aiSource（如 "sensor.caregiver01"），sensor agent layer 1 标识
+//	SubjectEntity:   留空（AI 不染卡概念，cardagg IotPreparedHandler 反查 device→subject）
+//	DeviceUID:       源 sensor 的 device_uid
+//	DeviceAddr:        源 sensor 的 UUID
+//	DeviceType:      源 sensor 类型（"Radar" / "Sleepad"）
+//	TenantID:        roomTenants[roomID]
+//	DataValue:       [{ track_id, ts, position_x/y/z, area_type, pose, track_confidence, source, ... }]
 //
 // 推送失败仅 warn 日志，不阻塞调用方。任何模式都打 ai_emit 结构化日志，作演示
 // 与审计追溯依据；mode=log 时 published=false 仅 log，mode=log&publish 时尝试推流。
@@ -1296,6 +1299,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		e.deviceMounts[cfg.RoomID] = cfg.Radar
 	}
 	tm := NewTrackManager(cfg.RoomID, grid)
+	tm.bedCount = len(cfg.Beds) // 同房多雷达占用对账单床闸（仅 ==1 启用）
 	tm.SetMoveSpeedCms(e.learnParams.MoveSpeedCms)
 	tm.SetBedsideFallConfig(e.bedsideFallCfg)
 	tm.SetLogger(e.logger)

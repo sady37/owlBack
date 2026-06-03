@@ -19,6 +19,7 @@ func newMaturedPending(dev string, now int64) *PendingLostFall {
 
 func TestLostFall_SuppressedByOtherRadarInRoom(t *testing.T) {
 	tm, _ := newTestTM()
+	tm.bedCount = 1 // 单床房 → 守卫启用
 	var now int64 = 1_700_000_000_000
 	tm.pendingLostFalls[0] = newMaturedPending("devA", now)
 	tm.lastRealTrackByDevice["devB"] = now - 2_000 // 同房另一台 2s 前见真人
@@ -38,6 +39,7 @@ func TestLostFall_SuppressedByOtherRadarInRoom(t *testing.T) {
 
 func TestLostFall_FiresWhenNoOtherRadar(t *testing.T) {
 	tm, _ := newTestTM()
+	tm.bedCount = 1
 	var now int64 = 1_700_000_000_000
 	tm.pendingLostFalls[0] = newMaturedPending("devA", now)
 	tm.lastRealTrackByDevice["devA"] = now - 2_000 // 只有本台自己（被 exclude）→ 不抑制
@@ -46,6 +48,21 @@ func TestLostFall_FiresWhenNoOtherRadar(t *testing.T) {
 
 	if tm.lostFallReported == 0 {
 		t.Error("同房无他台真人 → 应正常 fire")
+	}
+}
+
+// 双床房（bedCount≥2）：即便同房另一台见真人也**不**抑制——可能两位老人，A 摔 lost + B 在场，宁报勿漏。
+func TestLostFall_MultiBedRoom_NotSuppressed(t *testing.T) {
+	tm, _ := newTestTM()
+	tm.bedCount = 2 // 双床房 → 守卫关闭
+	var now int64 = 1_700_000_000_000
+	tm.pendingLostFalls[0] = newMaturedPending("devA", now)
+	tm.lastRealTrackByDevice["devB"] = now - 2_000 // 另一台见真人，但双床房不抑制
+
+	tickAt(tm, now)
+
+	if tm.lostFallReported == 0 {
+		t.Error("双床房 → 即便他台见真人也应照报 lost_fall（宁报勿漏）")
 	}
 }
 
