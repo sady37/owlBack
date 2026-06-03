@@ -189,13 +189,13 @@ func (c *MQTTConsumer) monitorConnection(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// paho 原生 AutoReconnect 负责重建连接（拨本机 broker 时可用）；
+			// 这里仅在检测到 false→true 翻转时补一次显式重订（与 ResumeSubs 双保险）。
 			isConnected := c.mqttClient.IsConnected()
-
 			if !wasConnected && isConnected {
 				c.logger.Info("mqtt reconnected, resubscribing")
 				c.resubscribeTopics()
 			}
-
 			wasConnected = isConnected
 		}
 	}

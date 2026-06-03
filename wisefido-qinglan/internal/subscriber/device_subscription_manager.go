@@ -282,14 +282,12 @@ func (m *DeviceSubscriptionManager) SubscribeDevice(ctx context.Context, deviceU
 			sub.DeviceAddr = deviceAddr
 			sub.LastSeen = time.Now()
 			sub.mu.Unlock()
-			// 更新 subscriptionsByID（如果 deviceAddr 变化）
+			// 更新 subscriptionsByID（如果 deviceAddr 变化）。已在外层 m.mu.Lock 内，不可再 Lock（RWMutex 不可重入＝自死锁）。
 			if deviceAddr != "" && deviceAddr != oldDeviceAddr {
-				m.mu.Lock()
 				m.subscriptionsByID[deviceAddr] = sub
 				if oldDeviceAddr != "" {
 					delete(m.subscriptionsByID, oldDeviceAddr)
 				}
-				m.mu.Unlock()
 			}
 			m.logger.Debug("device already subscribed",
 				zap.String("device_uid", deviceUID),
@@ -460,14 +458,12 @@ func (m *DeviceSubscriptionManager) EnablePeriodicSubscription(ctx context.Conte
 		sub.LastEventTime = time.Time{}
 		sub.LastAlarmTime = time.Time{}
 		sub.mu.Unlock()
-		// 更新 subscriptionsByID（如果 deviceAddr 变化）
+		// 更新 subscriptionsByID（如果 deviceAddr 变化）。已在外层 m.mu.Lock 内，不可再 Lock（RWMutex 不可重入＝自死锁）。
 		if deviceAddr != "" && deviceAddr != oldDeviceAddr {
-			m.mu.Lock()
 			m.subscriptionsByID[deviceAddr] = sub
 			if oldDeviceAddr != "" {
 				delete(m.subscriptionsByID, oldDeviceAddr)
 			}
-			m.mu.Unlock()
 		}
 		m.logger.Info("device re-authenticated, lastseen reset",
 			zap.String("device_uid", deviceUID),

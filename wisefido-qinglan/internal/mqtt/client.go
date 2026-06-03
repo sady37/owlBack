@@ -15,40 +15,18 @@ type Client struct {
 	config *config.MQTTConfig
 }
 
-func isLoopbackMQTTBroker(host string) bool {
-	h := strings.TrimSpace(strings.ToLower(host))
-	h = strings.TrimPrefix(h, "tcp://")
-	if i := strings.Index(h, ":"); i >= 0 {
-		h = h[:i]
-	}
-	switch h {
-	case "", "localhost", "127.0.0.1", "::1":
-		return true
-	default:
-		return false
-	}
-}
-
-// effectiveMQTTConnect 本服务订阅/发布所用的 broker 与账号。
-// 若顶层 mqtt.broker 为回环而 radar_device_mqtt.server 为外网地址，则设备与青兰不在同一 broker，会永远收不到上行；此时改用雷达配置建连（与主题里的 product_id/prefix 一致）。
+// effectiveMQTTConnect 本服务自身订阅/发布所连的 broker 与账号。
+// 拨号地址由 MQTT_BROKER 决定，与下发给设备的 RADAR_MQTT_SERVER 解耦——后者只进 auth 响应告诉设备连哪，
+// 不是本服务连哪。二者同一 broker 时本服务应走本机回环（稳），曾经的"回环→改拨 RADAR_MQTT_SERVER 公网"
+// 启发式会把本服务推上 hairpin NAT 公网路径、掉线后无法重连。仅当顶层未配账号时借雷达账号登录同一 broker。
 func effectiveMQTTConnect(cfg *config.MQTTConfig) (host string, port int, username, password string) {
 	host = strings.TrimSpace(cfg.Broker)
 	port = cfg.Port
 	username = cfg.Username
 	password = cfg.Password
-	rs := strings.TrimSpace(cfg.RadarDeviceMQTT.Server)
-	if rs == "" {
-		return host, port, username, password
-	}
-	if isLoopbackMQTTBroker(host) && !isLoopbackMQTTBroker(rs) {
-		host = rs
-		if cfg.RadarDeviceMQTT.Port > 0 {
-			port = cfg.RadarDeviceMQTT.Port
-		}
-		if username == "" && password == "" {
-			username = cfg.RadarDeviceMQTT.Account
-			password = cfg.RadarDeviceMQTT.Password
-		}
+	if username == "" && password == "" {
+		username = cfg.RadarDeviceMQTT.Account
+		password = cfg.RadarDeviceMQTT.Password
 	}
 	return host, port, username, password
 }
