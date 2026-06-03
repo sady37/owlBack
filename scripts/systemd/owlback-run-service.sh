@@ -44,6 +44,11 @@ else
 fi
 
 export LOG_LEVEL="${LOG_LEVEL:-info}"
+# per-module 日志级别：<KEY>_LOG_LEVEL（KEY=模块名去 wisefido- 前缀、大写、- 换 _）覆盖全局 LOG_LEVEL
+MODULE_LOG_KEY="$(printf '%s' "${MODULE#wisefido-}" | tr 'a-z-' 'A-Z_')_LOG_LEVEL"
+if [[ -n "${!MODULE_LOG_KEY:-}" ]]; then
+  export LOG_LEVEL="${!MODULE_LOG_KEY}"
+fi
 export LOG_FORMAT="${LOG_FORMAT:-json}"
 export CARD_TRIGGER_MODE="${CARD_TRIGGER_MODE:-polling}"
 export CARD_POLLING_INTERVAL="${CARD_POLLING_INTERVAL:-86400}"
