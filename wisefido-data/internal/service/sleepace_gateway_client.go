@@ -37,6 +37,12 @@ import (
 // 所以：不要试图用"DST 当周 re-bind"之类的方式解决时差问题——厂家不收货，只会增加 bind 被副作用伤害的风险。
 // 保留此函数仅为兼容现有 bind 接口签名。
 func IANAToOffsetSeconds(iana string) int {
+	return IANAToOffsetSecondsAt(iana, time.Now())
+}
+
+// IANAToOffsetSecondsAt 返回 IANA 时区在指定时刻 t 的 UTC 偏移秒数（含 t 当时的 DST 状态）。
+// DST 调度器用它取"切换后偏移"（采当天正午）+ 比较今昨判断是否切换日。
+func IANAToOffsetSecondsAt(iana string, t time.Time) int {
 	if iana == "" {
 		return DefaultTimezoneOffsetSeconds
 	}
@@ -44,7 +50,7 @@ func IANAToOffsetSeconds(iana string) int {
 	if err != nil {
 		return DefaultTimezoneOffsetSeconds
 	}
-	_, offset := time.Now().In(loc).Zone()
+	_, offset := t.In(loc).Zone()
 	return offset
 }
 

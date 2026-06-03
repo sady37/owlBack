@@ -392,6 +392,9 @@ func main() {
 			// 用户在 device monitor settings 设了 interval >= 10 视为明确选择低频，scheduler 跳过。
 			intervalScheduler = service.NewSleepaceIntervalScheduler(db, redisClient, sleepaceGateway, alarmCloudRepo, logger)
 			go intervalScheduler.Start(context.Background())
+
+			// SleepaceDstRebindScheduler — 每日 0 点检测 DST 切换日，用切换后偏移重 bind（一年 2 天）。
+			go service.NewSleepaceDstRebindScheduler(db, sleepaceGateway, logger).Start(context.Background())
 		} else {
 			logger.Warn("Sleepace gateway client not initialized (SLEEPACE_GATEWAY_API_BASE_URL not set)")
 		}
