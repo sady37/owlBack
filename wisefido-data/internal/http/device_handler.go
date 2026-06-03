@@ -514,8 +514,12 @@ func (h *DeviceHandler) SetOTASchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// schedule_local = 设备所在 unit 时区的墙上时刻（"YYYY-MM-DD HH:mm[:ss]" 或带 T）；window_hours = 窗口小时。
+	// BE 按设备 unit tz 把它转成 UTC 存（device list 没带 tz，故在此边界转，符合"server 内部全 UTC"）。
+	// 空 schedule_local = 清除调度（立即/manual）。
 	var body struct {
-		Schedule string `json:"schedule"`
+		ScheduleLocal string `json:"schedule_local"`
+		WindowHours   *int   `json:"window_hours"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusOK, Fail("invalid request"))
@@ -534,15 +538,49 @@ func (h *DeviceHandler) SetOTASchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// v1 schedule 形如 "now+3d"/"MMDDHH+xH" — 直接落 text 字段以保持向后兼容会破 v2 CHECK；
-	// 让 wisefido-data Repository 层 mapV1OTAWayToV2 类似函数解析。这里仅做最小切换：
-	// 空串 → NULL（取消）；非空时解析为 timestamptz。
-	schedTime := parseV1OTAScheduleToTimestamp(body.Schedule)
+	// schedule = UTC 起点 timestamptz，schedule_window_h = 窗口小时。调度器按 now ∈ [start, start+window] 判（纯 UTC）。
+	var schedTime sql.NullTime
+	var windowH sql.NullInt32
+	if local := strings.TrimSpace(body.ScheduleLocal); local != "" {
+		// 设备 unit 时区级联 unit → branch → tenant（同 ResyncDeviceTimezone）
+		var iana sql.NullString
+		h.db.QueryRowContext(r.Context(), `
+			SELECT COALESCE(NULLIF(u.timezone,''), NULLIF(br.timezone,''), NULLIF(t.timezone,''))
+			  FROM devices d
+			  LEFT JOIN units    u  ON u.unit_id    = network(set_masklen(d.device_addr, 80))
+			  LEFT JOIN branches br ON br.branch_id = network(set_masklen(d.device_addr, 56))
+			  LEFT JOIN tenants  t  ON t.tenant_id  = network(set_masklen(d.device_addr, 48))
+			 WHERE d.device_addr = $1::INET
+		`, deviceAddr).Scan(&iana)
+		loc := time.UTC
+		if iana.Valid && strings.TrimSpace(iana.String) != "" {
+			if l, err := time.LoadLocation(strings.TrimSpace(iana.String)); err == nil {
+				loc = l
+			}
+		}
+		// 接受 datetime-local("2006-01-02T15:04[:05]") 与空格形式
+		local = strings.Replace(local, "T", " ", 1)
+		var parsed time.Time
+		var perr error
+		for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02 15:04"} {
+			if parsed, perr = time.ParseInLocation(layout, local, loc); perr == nil {
+				break
+			}
+		}
+		if perr != nil {
+			writeJSON(w, http.StatusOK, Fail("invalid schedule_local (expected YYYY-MM-DD HH:mm)"))
+			return
+		}
+		schedTime = sql.NullTime{Time: parsed.UTC(), Valid: true}
+		if body.WindowHours != nil && *body.WindowHours > 0 {
+			windowH = sql.NullInt32{Int32: int32(*body.WindowHours), Valid: true}
+		}
+	}
 	_, err := h.db.ExecContext(r.Context(), `
 		UPDATE device_ota o
-		   SET schedule = $1, updated_at = NOW()
-		 WHERE o.device_uid IN (SELECT device_uid FROM devices WHERE device_addr = $2::INET)
-	`, schedTime, deviceAddr)
+		   SET schedule = $1, schedule_window_h = $2, updated_at = NOW()
+		 WHERE o.device_uid IN (SELECT device_uid FROM devices WHERE device_addr = $3::INET)
+	`, schedTime, windowH, deviceAddr)
 	if err != nil {
 		h.logger.Error("SetOTASchedule failed", zap.String("device_addr", deviceAddr), zap.Error(err))
 		writeJSON(w, http.StatusOK, Fail("failed to update schedule"))
@@ -552,19 +590,6 @@ func (h *DeviceHandler) SetOTASchedule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Ok(map[string]any{"success": true}))
 }
 
-// parseV1OTAScheduleToTimestamp 接 v1 形 schedule 字串 → sql.NullTime (timestamptz)。
-// 空串 → NULL；不可解析 → NULL（与 repository.parseV1OTAScheduleToTime 同语义，简化版）。
-func parseV1OTAScheduleToTimestamp(v1 string) sql.NullTime {
-	s := strings.TrimSpace(v1)
-	if s == "" {
-		return sql.NullTime{}
-	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return sql.NullTime{Time: t, Valid: true}
-	}
-	// v1 形态由 wisefido-data Repository 解析；这里 caller 一般传 RFC3339。
-	return sql.NullTime{}
-}
 
 // payloadToDevice 将map[string]any转换为domain.Device
 func payloadToDevice(payload map[string]any) *domain.Device {

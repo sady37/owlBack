@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -108,7 +107,8 @@ func (s *Scheduler) scan(ctx context.Context) {
 	query := `
 		SELECT o.device_uid,
 		       COALESCE(o.approve_way, '')                   AS approve_way,
-		       COALESCE(o.schedule::text, '')                AS schedule_ts,
+		       o.schedule                                    AS schedule,
+		       o.schedule_window_h                           AS schedule_window_h,
 		       COALESCE(o.target_firmware_version, '')       AS ota_target_fw,
 		       COALESCE(o.target_mcu_model, '')              AS ota_target_mcu,
 		       COALESCE(o.updated_at, NOW())                 AS ota_updated_at
@@ -131,21 +131,35 @@ func (s *Scheduler) scan(ctx context.Context) {
 	count := 0
 	pushed := 0
 	for rows.Next() {
-		var uid, way, schedule, targetFW, targetMCU string
+		var uid, way, targetFW, targetMCU string
+		var schedule sql.NullTime
+		var windowH sql.NullInt32
 		var updatedAt time.Time
-		if err := rows.Scan(&uid, &way, &schedule, &targetFW, &targetMCU, &updatedAt); err != nil {
+		if err := rows.Scan(&uid, &way, &schedule, &windowH, &targetFW, &targetMCU, &updatedAt); err != nil {
 			s.logger.Warn("ota scheduler scan row", zap.Error(err))
 			continue
 		}
 		count++
 
-		if strings.HasSuffix(way, "_schedule") && schedule != "" {
-			if !IsInScheduleWindow(schedule, time.Now(), updatedAt) {
-				s.logger.Debug("schedule not in window",
-					zap.String("uid", uid),
-					zap.String("schedule", schedule),
-				)
+		// *_schedule：纯 UTC 判窗 now ∈ [schedule, schedule + window_h]。schedule 为 UTC 起点（FE 已转）。
+		// 无 schedule_window_h（NULL/<=0）= 起点后即可（无上限）。
+		if strings.HasSuffix(way, "_schedule") {
+			if !schedule.Valid {
+				s.logger.Debug("schedule type but no start time", zap.String("uid", uid))
 				continue
+			}
+			now := time.Now().UTC()
+			start := schedule.Time.UTC()
+			if now.Before(start) {
+				s.logger.Debug("schedule not started yet", zap.String("uid", uid), zap.Time("start", start))
+				continue
+			}
+			if windowH.Valid && windowH.Int32 > 0 {
+				end := start.Add(time.Duration(windowH.Int32) * time.Hour)
+				if !now.Before(end) {
+					s.logger.Debug("schedule window passed", zap.String("uid", uid), zap.Time("end", end))
+					continue
+				}
 			}
 		}
 
@@ -384,93 +398,6 @@ func getFileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// ParseSchedule parses a schedule string in MMDDHH+xH format
-// e.g. "01150200+8H" means January 15, 02:00, 8 hour window
-func ParseSchedule(s string) (month, day, hour, windowHours int, err error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, 0, 0, 0, fmt.Errorf("empty schedule")
-	}
-
-	// Split on '+'
-	parts := strings.SplitN(s, "+", 2)
-	if len(parts) != 2 {
-		return 0, 0, 0, 0, fmt.Errorf("invalid schedule format: %s (expected MMDDHH+xH)", s)
-	}
-
-	datePart := parts[0]
-	windowPart := strings.TrimSuffix(strings.ToUpper(parts[1]), "H")
-
-	if len(datePart) != 6 {
-		return 0, 0, 0, 0, fmt.Errorf("invalid date part: %s (expected MMDDHH)", datePart)
-	}
-
-	month, err = strconv.Atoi(datePart[0:2])
-	if err != nil || month < 1 || month > 12 {
-		return 0, 0, 0, 0, fmt.Errorf("invalid month: %s", datePart[0:2])
-	}
-	day, err = strconv.Atoi(datePart[2:4])
-	if err != nil || day < 1 || day > 31 {
-		return 0, 0, 0, 0, fmt.Errorf("invalid day: %s", datePart[2:4])
-	}
-	hour, err = strconv.Atoi(datePart[4:6])
-	if err != nil || hour < 0 || hour > 23 {
-		return 0, 0, 0, 0, fmt.Errorf("invalid hour: %s", datePart[4:6])
-	}
-	windowHours, err = strconv.Atoi(windowPart)
-	if err != nil || windowHours < 1 {
-		return 0, 0, 0, 0, fmt.Errorf("invalid window: %s", windowPart)
-	}
-
-	return month, day, hour, windowHours, nil
-}
-
-// IsInScheduleWindow checks if the given time is within the schedule window.
-// 支持三种格式：
-//   1. "auto"        → 永远在窗口内（持续自动升级，直到手动改或 status=success）
-//   2. "now+Nd"/"Nh" → 从 updatedAt 起 N 天/小时内有效（有明确截止）
-//   3. "MMDDHH+xH"   → 绝对时间窗（原格式）
-func IsInScheduleWindow(schedule string, now time.Time, updatedAt time.Time) bool {
-	s := strings.ToLower(strings.TrimSpace(schedule))
-	if s == "" {
-		return false
-	}
-
-	// 识别码 1: auto → 永远在窗口内
-	if s == "auto" {
-		return true
-	}
-
-	// 识别码 2: now+Nd 或 now+Nh → 从 updatedAt 起的窗口
-	if strings.HasPrefix(s, "now+") {
-		dur := strings.TrimPrefix(s, "now+")
-		if len(dur) < 2 {
-			return false
-		}
-		unit := dur[len(dur)-1]
-		nStr := dur[:len(dur)-1]
-		n, err := strconv.Atoi(nStr)
-		if err != nil || n < 1 {
-			return false
-		}
-		var window time.Duration
-		switch unit {
-		case 'd':
-			window = time.Duration(n) * 24 * time.Hour
-		case 'h':
-			window = time.Duration(n) * time.Hour
-		default:
-			return false
-		}
-		return !now.Before(updatedAt) && now.Before(updatedAt.Add(window))
-	}
-
-	// 格式 3: 原 MMDDHH+xH 绝对时间窗
-	month, day, hour, windowHours, err := ParseSchedule(schedule)
-	if err != nil {
-		return false
-	}
-	start := time.Date(now.Year(), time.Month(month), day, hour, 0, 0, 0, now.Location())
-	end := start.Add(time.Duration(windowHours) * time.Hour)
-	return now.After(start) && now.Before(end)
-}
+// 调度窗判断已内联到 scan()：纯 UTC now ∈ [schedule, schedule + schedule_window_h]。
+// 旧的 MMDDHH+xH / now+Nd / auto 字符串格式连同 ParseSchedule / IsInScheduleWindow 已退役
+// （FE 统一把 unit 本地时刻转 UTC epoch + 窗口小时发来）。
