@@ -63,6 +63,12 @@ type TrackManager struct {
 	// 取消条件：新 track 出生 / ExitRoom 事件 / room.NumberPeople ≥ 2。
 	pendingLostFalls map[int]*PendingLostFall
 
+	// lastRealTrackByDevice：每雷达设备最近一次本房观测到"真 track"的 ms（key=源 device_addr）。
+	// 同房多雷达占用对账：lost-fall fire 前若**另一台**雷达近期仍见真人 → 人还在房里被别台看着 → 抑制。
+	// 按"批次源设备"(frames[0].DeviceAddr) 记，绕开 tracks[trackID] 在多雷达房的 trackID 碰撞
+	// （tracks 按 trackID 索引、ts.DeviceAddr 出生即定不随帧刷新——多雷达同 trackID 会污染 TrackState）。
+	lastRealTrackByDevice map[string]int64
+
 	// bedSessions：sleepad 设备维度的"在床会话"状态机；新版 silent fall 触发源。
 	// key = sleepad device_uid。详见 BedSession 结构体。
 	bedSessions map[string]*BedSession
@@ -269,22 +275,23 @@ var defaultBedsideFallCfg = BedsideFallConfig{
 // NewTrackManager 创建 track 管理器
 func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 	return &TrackManager{
-		roomID:            roomID,
-		grid:              grid,
-		tracks:            make(map[int]*TrackState),
-		outputs:           make(map[int]*TrackOutput),
-		pendingLostFalls:  make(map[int]*PendingLostFall),
-		bedSessions:       make(map[string]*BedSession),
-		sleepadStates:     make(map[string]*SleepadObservation),
-		moveSpeedCms:      20, // 默认值（与 DefaultLearnParams.MoveSpeedCms 一致）
-		bedsideFallCfg:    defaultBedsideFallCfg,
-		recentRadarAlarms: make(map[int64]*RadarFallAlarm),
-		recentRadarEvents: make(map[int64]*RadarTrackEvent),
-		recentBufferMs:    5 * 60 * 1000, // 5 min
-		logger:            zap.NewNop(),
-		startupMs:         time.Now().UnixMilli(),
-		mirrorBuffer:      make(map[mirrorPairKey]*mirrorPairBuffer),
-		mirrorCooldownMs:  60_000,
+		roomID:                roomID,
+		grid:                  grid,
+		tracks:                make(map[int]*TrackState),
+		outputs:               make(map[int]*TrackOutput),
+		pendingLostFalls:      make(map[int]*PendingLostFall),
+		lastRealTrackByDevice: make(map[string]int64),
+		bedSessions:           make(map[string]*BedSession),
+		sleepadStates:         make(map[string]*SleepadObservation),
+		moveSpeedCms:          20, // 默认值（与 DefaultLearnParams.MoveSpeedCms 一致）
+		bedsideFallCfg:        defaultBedsideFallCfg,
+		recentRadarAlarms:     make(map[int64]*RadarFallAlarm),
+		recentRadarEvents:     make(map[int64]*RadarTrackEvent),
+		recentBufferMs:        5 * 60 * 1000, // 5 min
+		logger:                zap.NewNop(),
+		startupMs:             time.Now().UnixMilli(),
+		mirrorBuffer:          make(map[mirrorPairKey]*mirrorPairBuffer),
+		mirrorCooldownMs:      60_000,
 	}
 }
 
@@ -1264,6 +1271,17 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	// silent fall 现在仅通过 BedSession LeftBed 矛盾路径触发（scanSilentFallLeftBed）。
 	results := make([]TrackOutput, 0, len(tm.tracks)+len(tm.pendingLostFalls))
 
+	// 同房多雷达占用对账：记录本批次源设备本帧是否见到真 track（按批次设备记，绕 trackID 碰撞）。
+	if len(frames) > 0 {
+		batchDev := frames[0].DeviceAddr
+		for id := range activeIDs {
+			if t := tm.tracks[id]; t != nil && t.Verdict == VerdictReal {
+				tm.lastRealTrackByDevice[batchDev] = nowMs
+				break
+			}
+		}
+	}
+
 	// ========== 段 4b: 扫挂起的 lost fall，按 cell-area-typed wait + StillBox 静止 credit 超时即报 ==========
 	// 取消条件已在他处处理（cancelPendingByBirth / handleExitRoom / numberPeopleCancel）。
 	// 此处仅扫超时触发：等待时间到达且未被取消 → 报 lost fall。
@@ -1277,6 +1295,19 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		if tm.realTrackCount() >= 2 {
 			tm.lostFallPendingCancelled++
 			tm.logger.Info("lost_fall_cancelled_by_multiple_real",
+				zap.String("device_uid", p.DeviceAddr),
+				zap.Int("track_id", p.OriginalTrackID),
+				zap.String("room_id", p.RoomID),
+				zap.Int64("nowMs", nowMs),
+			)
+			delete(tm.pendingLostFalls, pid)
+			continue
+		}
+		// 同房多雷达占用对账：另一台雷达近期仍见真人 → 人还在房（被别台看着，本台只是丢/幻影）→ 抑制。
+		// 治 D523 无床雷达持幻影、09E7 同房看到真人那类 lost_track FP（active 永不 auto_resolve）。
+		if tm.otherDeviceRealTrackRecent(p.DeviceAddr, nowMs) {
+			tm.lostFallPendingCancelled++
+			tm.logger.Info("lost_fall_cancelled_by_other_radar_in_room",
 				zap.String("device_uid", p.DeviceAddr),
 				zap.Int("track_id", p.OriginalTrackID),
 				zap.String("room_id", p.RoomID),
@@ -2703,6 +2734,24 @@ func (tm *TrackManager) realTrackCount() int {
 		}
 	}
 	return n
+}
+
+// otherDeviceRealTTLMs 同房另一雷达"近期见过真 track"的有效窗（>radar 1Hz + 抖动）。
+const otherDeviceRealTTLMs = 8_000
+
+// otherDeviceRealTrackRecent 同房是否有 excludeDevice 之外的雷达在 TTL 内见过真 track。
+// 用于 lost-fall fire 前的同房占用对账：本台丢/幻影但别台仍见真人 → 人还在房 → 抑制。
+// 调用方持锁（segment 内部）。
+func (tm *TrackManager) otherDeviceRealTrackRecent(excludeDevice string, nowMs int64) bool {
+	for dev, ts := range tm.lastRealTrackByDevice {
+		if dev == excludeDevice {
+			continue
+		}
+		if nowMs-ts <= otherDeviceRealTTLMs {
+			return true
+		}
+	}
+	return false
 }
 
 // updateContinuousIndicators 每帧维护 StillBox（静止无移动）检测 + Kalman birth-coherence 指标。
