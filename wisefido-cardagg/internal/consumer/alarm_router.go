@@ -66,7 +66,7 @@ var deviceClassOnset = map[string]struct{}{
 	alarm.SensorDetached:   {},
 }
 
-const staleAlarmMs = 30_000 // gateway 时钟漂移 / 消息积压上限
+const staleAlarmMs = 300_000 // gateway 时钟漂移 / 消息积压上限；alarm 稀疏，宽容到 5min 优先保不丢
 
 type AlarmRouter struct {
 	db         *sql.DB
