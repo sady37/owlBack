@@ -49,6 +49,28 @@ func TestTrackRealLostOpenFloor(t *testing.T) {
 	}
 }
 
+func TestTrackPeerLiveSuppressesLost(t *testing.T) {
+	// 真人开阔地板 present 后消失：若同房别台此刻仍见真人（TObsPeerLive）→ 本 track 是重影/重复，
+	// TLost 被压住（对照 TestTrackRealLostOpenFloor 无 peer 时 TLost 主导）。
+	tb := NewTrackBelief()
+	ts := int64(1000)
+	for i := 0; i < 10; i++ {
+		tb.Step(ts, []TObservation{present(0.0, GeomOpenFloor, ts)})
+		ts += 1000
+	}
+	for i := 0; i < 8; i++ {
+		tb.Step(ts, []TObservation{
+			absent(GeomOpenFloor, ts),
+			{Kind: TObsPeerLive, Conf: 0.9, Ts: ts, Fresh: true},
+		})
+		ts += 1000
+	}
+	v := tb.Vector()
+	if v.P(TLost) > 0.15 {
+		t.Errorf("同房别台见真人 → 本 track 应被压住不 Lost，得 P(Lost)=%.3f (%v)", v.P(TLost), v)
+	}
+}
+
 func TestTrackGhostVanishNotLost(t *testing.T) {
 	// 结构核心：ghost present 后消失 → None，绝不 Lost（method-2 在 A_T 内）。
 	v := runTrack(t, 10, 1.0, GeomOpenFloor, GeomOpenFloor, 8)

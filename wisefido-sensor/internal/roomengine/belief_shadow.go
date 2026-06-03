@@ -39,7 +39,8 @@ type beliefShadowTLayer struct {
 	tb       *belief.TrackBelief
 	lastSeen int64
 	geom     belief.Geom
-	loggedLo bool // 已 log 过本次 Lost 峰（防重复）
+	device   string // 源雷达 device_addr（同房对等雷达占用对账排除自身用）
+	loggedLo bool   // 已 log 过本次 Lost 峰（防重复）
 }
 
 type beliefShadow struct {
@@ -135,6 +136,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		}})
 		tl.lastSeen = nowMs
 		tl.geom = tlGeom
+		tl.device = b.DeviceAddr
 		tl.loggedLo = false // 重新检出 → 允许后续再次 Lost 时重新 log
 
 		if b.Verdict == VerdictGhost {
@@ -195,9 +197,15 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		if nowMs-tl.lastSeen <= beliefShadowLostTTLMs {
 			continue
 		}
-		tl.tb.Step(nowMs, []belief.TObservation{{
+		tobs := []belief.TObservation{{
 			Kind: belief.TObsAbsent, Geom: tl.geom, Conf: 0.9, Ts: nowMs, Fresh: true,
-		}})
+		}}
+		// 同房多雷达占用对账（仅单床房）：本台丢失，但同房别台此刻仍见真人 → 本 track 更可能是
+		// 别台真人的重影/重复 → 喂 TObsPeerLive 压 TLost（与生产 gate-list 守卫同构；单床闸在此把关）。
+		if tm.bedCount == 1 && tm.otherDeviceRealTrackRecent(tl.device, nowMs) {
+			tobs = append(tobs, belief.TObservation{Kind: belief.TObsPeerLive, Conf: 0.9, Ts: nowMs, Fresh: true})
+		}
+		tl.tb.Step(nowMs, tobs)
 		v := tl.tb.Vector()
 		pLost := v.P(belief.TLost)
 		if pLost >= tLostLogThresh && !tl.loggedLo {

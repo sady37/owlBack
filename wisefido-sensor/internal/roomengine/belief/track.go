@@ -71,6 +71,7 @@ const (
 	TObsPresent  TObsKind = iota // 本帧有 track 检出（带 ghostness + geom）
 	TObsAbsent                   // 本帧无检出（缺测发射，带 last-geom）
 	TObsExit                     // firmware ExitRoom 事件（强推 →JustLeft）
+	TObsPeerLive                 // 同房（单床）对等雷达此刻见真人 → 本 track 更可能是重影/重复（压 Lost）
 )
 
 // TObservation track 层观测。Ghostness/Geom 仅对 TObsPresent；Geom（last）对 TObsAbsent。
@@ -93,17 +94,20 @@ func (o TObservation) effConf() float64 {
 // transitionPropensityT A_T 转移倾向（行未归一，init 归一）。白盒，每格可解释。
 //
 // 关键格（替代 gate）：
+//
 //   - Ghost→Lost = floor：ghost 闪灭绝不变"丢失候选倒地"（method-2 结构化）。ghost 消散走 →None。
+//
 //   - Lost 近吸收（83）：真人丢失不自愈；recapture→Real / 门事件→JustLeft 由观测主动反证才出。
+//
 //   - Real→Lost / Real→JustLeft 给中等值：真人持续在场为主，丢失/离开由缺测发射 + geom 决定去向。
 //
-//	→None →Real →Ghost →JustLeft →Lost
+//     →None →Real →Ghost →JustLeft →Lost
 var transitionPropensityT = [numTStates][numTStates]float64{
-	TNone:     {85, 7, 7, 0.5, 0.5},  // 多数维持；出生到 Real/Ghost 靠 present 发射
-	TReal:     {0, 88, 1, 5, 6},      // 持续在场为主；离开/丢失靠缺测发射分流
-	TGhost:    {33, 1, 63, 0, 0.1},   // ghost 消散到 None；→Lost=floor（结构核心）
-	TJustLeft: {88, 6, 0, 6, 0},      // 收敛 None；可能被重新检出回 Real
-	TLost:     {2, 7, 0, 11, 80},     // 近吸收；recapture→Real / 门→JustLeft 才出
+	TNone:     {85, 7, 7, 0.5, 0.5}, // 多数维持；出生到 Real/Ghost 靠 present 发射
+	TReal:     {0, 88, 1, 5, 6},     // 持续在场为主；离开/丢失靠缺测发射分流
+	TGhost:    {33, 1, 63, 0, 0.1},  // ghost 消散到 None；→Lost=floor（结构核心）
+	TJustLeft: {88, 6, 0, 6, 0},     // 收敛 None；可能被重新检出回 Real
+	TLost:     {2, 7, 0, 11, 80},    // 近吸收；recapture→Real / 门→JustLeft 才出
 }
 
 // tlk 构造 T 层 likelihood：默认全 1（中性），覆盖 set 中状态权重，下限 likelihoodFloor。
@@ -148,8 +152,8 @@ func rawTLikelihood(o TObservation) TVector {
 		} else if g > 1 {
 			g = 1
 		}
-		realW := 1.0 + 4.0*(1.0-g)  // [1,5]
-		ghostW := 1.0 + 4.0*g       // [1,5]
+		realW := 1.0 + 4.0*(1.0-g) // [1,5]
+		ghostW := 1.0 + 4.0*g      // [1,5]
 		return tlk(map[TState]float64{
 			TReal: realW, TGhost: ghostW,
 			TNone: 0.2, TJustLeft: 0.2, TLost: 0.2,
@@ -184,6 +188,14 @@ func rawTLikelihood(o TObservation) TVector {
 		// firmware ExitRoom：真人从门离开 → 强推 JustLeft，压 Lost。
 		return tlk(map[TState]float64{
 			TJustLeft: 6, TNone: 2, TLost: 0.1, TReal: 0.3,
+		})
+
+	case TObsPeerLive:
+		// 同房（单床）对等雷达此刻见真人 → 房里那个真人是别台的 track，本 track 更可能是它的
+		// 重影/重复，绝非独自倒地 → 压 TLost，偏 Ghost/None。单床闸在 adapter 已把关（仅单床房发此观测）；
+		// 双床房不发，避免把另一位老人当"对等"误压（漏报）。固件确认跌倒走 Room 层 ObsFirmwareFall，不受此影响。
+		return tlk(map[TState]float64{
+			TLost: 0.15, TGhost: 2, TNone: 2, TReal: 0.5,
 		})
 	}
 	return tlk(nil)
