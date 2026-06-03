@@ -262,7 +262,7 @@ func (r *PostgresDevicesRepository) ListDevices(ctx context.Context, tenantID st
 		    WHEN o.approve_way LIKE '%_manual'        THEN 'manual'
 		    ELSE NULL
 		  END                                                                                  AS ota_way,
-		  to_char(o.schedule, 'YYYY-MM-DD HH24:MI:SS')                                         AS ota_schedule,
+		  to_char(o.schedule AT TIME ZONE COALESCE(NULLIF(u.timezone, ''), 'UTC'), 'YYYY-MM-DD HH24:MI') AS ota_schedule,
 		  o.status                                                                             AS ota_status,
 		  o.progress                                                                           AS ota_progress,
 		  CASE WHEN o.approve_way LIKE 'tenant_%' THEN TRUE ELSE FALSE END                     AS ota_tenant_approved,
@@ -468,7 +468,7 @@ func (r *PostgresDevicesRepository) GetDevice(ctx context.Context, tenantID, dev
 		    WHEN o.approve_way LIKE '%_manual'        THEN 'manual'
 		    ELSE NULL
 		  END                                                                                  AS ota_way,
-		  to_char(o.schedule, 'YYYY-MM-DD HH24:MI:SS')                                         AS ota_schedule,
+		  to_char(o.schedule AT TIME ZONE COALESCE(NULLIF(u.timezone, ''), 'UTC'), 'YYYY-MM-DD HH24:MI') AS ota_schedule,
 		  o.status                                                                             AS ota_status,
 		  o.progress                                                                           AS ota_progress,
 		  CASE WHEN o.approve_way LIKE 'tenant_%' THEN TRUE ELSE FALSE END                     AS ota_tenant_approved,
