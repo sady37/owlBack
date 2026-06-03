@@ -76,8 +76,8 @@ func (r *PostgresAlarmEventsRepository) buildWhereClause(tenantID string, filter
 		*args = append(*args, *filters.EventRoomID)
 		*argN++
 	}
-	// 精确 card_id 匹配（fan-out 修复，2026-05-15）：alarm 只属于 LPM 锁定的那张卡，
-	// 父卡（unit/branch）不再 aggregate 子卡 alarm。
+	// card_id 精确匹配（标准格式带 masklen；保留快照的时间维度，不按当前设备归属反查）。
+	// 入参由 service.resolveCardIDToCIDR 规范成 canonical card_id（带正确 masklen）。
 	if filters.EventCardID != nil {
 		where = append(where, fmt.Sprintf("ae.card_id = $%d::INET", *argN))
 		*args = append(*args, *filters.EventCardID)
@@ -294,7 +294,7 @@ func (r *PostgresAlarmEventsRepository) ListAlarmEvents(ctx context.Context, ten
 			    'bed_name',       ae.bed_name,
 			    'resident_name',  ae.resident_nickname,
 			    'resident_id',    CASE WHEN ae.resident_id IS NULL THEN NULL ELSE host(ae.resident_id) END,
-			    'card_id',        CASE WHEN ae.card_id IS NULL THEN NULL ELSE host(ae.card_id) END,
+			    'card_id',        CASE WHEN ae.card_id IS NULL THEN NULL ELSE ae.card_id::text END,
 			    'unit_id',        host(network(set_masklen(ae.device_addr, 80))),
 			    'room_id',        host(network(set_masklen(ae.device_addr, 88))),
 			    'bed_id',         host(network(set_masklen(ae.device_addr, 96))),

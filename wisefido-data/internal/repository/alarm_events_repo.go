@@ -45,10 +45,10 @@ type AlarmEventFilters struct {
 	EventUnitID *string // 直接过滤 ae.unit_id（5W where snapshot）
 	EventRoomID *string // 直接过滤 ae.room_id（5W where snapshot）
 
-	// 精确 card_id 匹配（用户拍板 2026-05-15：alarm 只应在 card_id 精确匹配的卡上出现，
-	// 不再走"unit 卡 aggregate 子卡 alarm"的 fan-out。alarm_events.card_id 在 InsertAlarmAndUpdateCard
-	// 时由 cards GiST LPM 锁定到 trigger 瞬时最长前缀匹配卡，本字段 = 精确等于该值）
-	EventCardID *string // 直接过滤 ae.card_id = $1::INET
+	// card scope 查 alarm：按 card_id 精确匹配，保留快照的时间/空间集合语义——alarm 属于 trigger 时刻
+	// LPM 锁定的那张卡（设备会随时间迁卡，按当前设备归属反查会丢历史）。card_id 必须是标准格式（带 masklen）：
+	// DTO 返回 ae.card_id::text，FE round-trip 后精确命中；masklen 区分 unit(/80)/room(/88)/bed(/96) 卡层级。
+	EventCardID *string // 直接过滤 ae.card_id = $::INET（标准格式带 masklen）
 
 	// 设备过滤
 	DeviceAddr   *string   // 设备 INET /128（直接过滤 ae.device_addr）

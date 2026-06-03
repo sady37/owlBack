@@ -171,6 +171,8 @@ type ResidentInfo struct {
 // CardType v2.5：只区分 'card'（业务） / 'public'（公共）二态；由 cards_display view 派生
 type CardStatic struct {
 	// 基础信息（cards 表权威）
+	// 【全栈约定】card_id 一律 CIDR 带掩码（card_id::text，如 fd00:0:3:411:3::/80）。掩码区分卡层级（见 CardType），
+	// 是身份的一部分；任何输出/round-trip 禁止 host() 抹掉——否则 ae.card_id = $::INET 精确匹配会 masklen 不等失配。
 	CardID       string `json:"card_id"`
 	CardType     string `json:"card_type"`                  // 派生自 masklen + card_name：'tenant'|'branch'|'site'|'unit'|'public'|'room'|'bed'|'device'
 	CardName     string `json:"card_name"`                  // nickname / NoOne / public
@@ -215,7 +217,8 @@ type DeviceRealtimeTracks map[string]TrackFields
 
 // CardRealTime 卡片实时数据（monitor 格式）
 type CardRealTime struct {
-	CardID    string                          `json:"card_id"`
+	CardID    string                          `json:"card_id"` // CIDR 带掩码，见 CardStatic.CardID 约定
+
 	Timestamp int64                           `json:"timestamp,omitempty"`
 	Devices   map[string]DeviceRealtimeTracks `json:"devices,omitempty"` // device_uid -> track_id -> fields+ts
 }
@@ -609,7 +612,7 @@ type CardDisplay struct {
 // Display 字段 by cardagg card_display_projector 投影；FE Overview 卡列表 dumb render 读此字段，
 // 不再派生 picker/scene/tier。RoomState/BedState 给 Detail/RadarCanvas 等诊断视图保留。
 type CardStatus struct {
-	CardID     string                 `json:"card_id"`
+	CardID     string                 `json:"card_id"` // CIDR 带掩码，见 CardStatic.CardID 约定
 	Target     *TargetState           `json:"target,omitempty"`
 	RoomState  *RoomState             `json:"room_state,omitempty"`
 	BedState   *BedState              `json:"bed_state,omitempty"`
