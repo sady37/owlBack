@@ -116,6 +116,13 @@ func (h *DeviceMonitorSettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// 子路径 .../{addr}/monitoring-enabled：monitoring 业务开关，归属 setting alarm，复用同一 alarm-matrix 权限。
+	monitoringToggle := false
+	if strings.HasSuffix(rawAddr, "/monitoring-enabled") {
+		monitoringToggle = true
+		rawAddr = strings.TrimSuffix(rawAddr, "/monitoring-enabled")
+	}
+
 	deviceAddr, ok := parseDeviceAddrFromPath(rawAddr)
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
@@ -127,7 +134,11 @@ func (h *DeviceMonitorSettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.
 	case http.MethodGet:
 		h.GetDeviceMonitorSettings(w, r, deviceType, deviceAddr)
 	case http.MethodPut:
-		h.UpdateDeviceMonitorSettings(w, r, deviceType, deviceAddr)
+		if monitoringToggle {
+			h.SetDeviceMonitoringEnabled(w, r, deviceType, deviceAddr)
+		} else {
+			h.UpdateDeviceMonitorSettings(w, r, deviceType, deviceAddr)
+		}
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
@@ -200,12 +211,14 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseW
 
 	deviceUID := ""
 	deviceName := ""
+	monitoringEnabled := false
 	timezone := ""
 	deviceIPv6 := ""
 	if dev, err := h.devicesRepo.GetDevice(ctx, tenantID, deviceAddr); err == nil {
 		deviceUID = dev.DeviceUID
 		deviceName = dev.DeviceName
 		deviceIPv6 = dev.DeviceAddr
+		monitoringEnabled = dev.MonitoringEnabled
 	}
 	// timezone 级联：unit → branch → tenant（spatial-prefix 派生）。
 	// tenant.timezone NOT NULL DEFAULT，三级一起 NULL/空概率为 0；保留下一级 alarmItems 兜底是为了健壮性。
@@ -272,7 +285,69 @@ func (h *DeviceMonitorSettingsHandler) GetDeviceMonitorSettings(w http.ResponseW
 		"device_uid":               deviceUID,
 		"device_name":              deviceName,
 		"timezone":                 timezone,
+		"monitoring_enabled":       monitoringEnabled,
 		"tenant_sleepreport_time": tenantSleepReportTime,
+	}))
+}
+
+// SetDeviceMonitoringEnabled 切换 monitoring 业务开关（devices.monitoring_enabled）。
+// 归属 setting alarm：复用 UpdateDeviceMonitorSettings 的 alarm-matrix 写权限
+// （B2B: tenant_admin / manager / nurse / platform_admin 放行，family 禁）。
+func (h *DeviceMonitorSettingsHandler) SetDeviceMonitoringEnabled(w http.ResponseWriter, r *http.Request, deviceType, deviceAddr string) {
+	ctx := r.Context()
+	tenantID, ok := h.base.tenantIDFromReq(w, r)
+	if !ok {
+		return
+	}
+	if h.db == nil {
+		writeJSON(w, http.StatusOK, Fail("database not available"))
+		return
+	}
+
+	// alarm_device WRITE 权限矩阵（与 UpdateDeviceMonitorSettings 完全相同的闸）
+	userRole := r.Header.Get("X-User-Role")
+	if userRole != "" {
+		allowed, perr := service.IsAlarmAccessAllowed(ctx, h.db, tenantID, userRole, service.AlarmResourceDevice, service.AlarmActionWrite)
+		if perr != nil {
+			writeJSON(w, http.StatusOK, Fail("permission check failed"))
+			return
+		}
+		if !allowed {
+			writeJSON(w, http.StatusOK, Fail("unauthorized: role cannot modify monitoring"))
+			return
+		}
+	}
+
+	var body struct {
+		MonitoringEnabled *bool `json:"monitoring_enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.MonitoringEnabled == nil {
+		writeJSON(w, http.StatusOK, Fail("monitoring_enabled (bool) required"))
+		return
+	}
+
+	// tenant prefix 防跨租户写
+	tenantPrefix := tenantID
+	if !strings.Contains(tenantPrefix, "/") && strings.Contains(tenantPrefix, ":") {
+		tenantPrefix = tenantPrefix + "/48"
+	}
+	res, err := h.db.ExecContext(ctx, `
+		UPDATE devices SET monitoring_enabled = $1, updated_at = NOW()
+		 WHERE device_addr = $2::INET AND device_addr <<= $3::INET
+	`, *body.MonitoringEnabled, deviceAddr, tenantPrefix)
+	if err != nil {
+		h.logger.Error("SetDeviceMonitoringEnabled update failed",
+			zap.String("device_addr", deviceAddr), zap.Error(err))
+		writeJSON(w, http.StatusOK, Fail("failed to update monitoring"))
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeJSON(w, http.StatusOK, Fail("device not found in tenant"))
+		return
+	}
+	writeJSON(w, http.StatusOK, Ok(map[string]interface{}{
+		"success":            true,
+		"monitoring_enabled": *body.MonitoringEnabled,
 	}))
 }
 
